@@ -27,6 +27,11 @@ until [ "$(docker exec s1b psql -U postgres -tAc 'select pg_is_in_recovery()')" 
 done
 echo "  s1b в recovery (реплика шарда 1)"
 
+until docker exec etcd etcdctl endpoint health --endpoints=http://localhost:2379 >/dev/null 2>&1; do
+  sleep 1
+done
+echo "  etcd ready (контрол-плейн v2, P7)"
+
 # Assert: HAProxy ведёт write-трафик на s1a
 ip_s1a="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' s1a)"
 got=""

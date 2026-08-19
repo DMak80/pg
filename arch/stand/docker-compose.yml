@@ -3,6 +3,9 @@
 #   шард1: s1a (мастер) + s1b (реплика, failover slots) + hap1 (HAProxy :5432)
 #          + hc1a/hc1b (сайдкары /primary — эмуляция Patroni REST API)
 #   шард2: s2 (приёмник, одиночная нода — его failover это открытый P8)
+#   etcd: контрол-плейн v2 (одиночный, не HA — только стенд; P7-проверки)
+#   opsbox: psql+etcdctl+jq, машина запуска v2-скриптов (профиль ops —
+#          поднимается по требованию: docker compose run --rm opsbox ...)
 #
 # ⚠️ Только стенд: POSTGRES_HOST_AUTH_METHOD=trust (без паролей и TLS).
 # max_slot_wal_keep_size=32MB — специально маленький, чтобы проверить P4.
@@ -91,6 +94,36 @@ services:
       - max_replication_slots=16
     networks: [pgnet]
 
+  # Контрол-плейн v2: одиночный etcd (в проде — кластер из 04-deploy-etcd.md).
+  # Версия — как в доке 04. Хранит /buckets/routing/*, /buckets/status/*.
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.21
+    container_name: etcd
+    command:
+      - etcd
+      - --data-dir=/var/etcd/data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+    volumes:
+      - etcd-data:/var/etcd/data
+    networks: [pgnet]
+
+  # «Ops-бокс»: машина запуска v2-скриптов (arch/scripts/abort-move.sh) —
+  # ходит в etcd и шарды по внутренней сети стенда. Профиль ops: не поднимается
+  # при обычном `docker compose up`, только `docker compose run --rm opsbox`.
+  opsbox:
+    build: ./opsbox
+    profiles: ["ops"]
+    environment:
+      BUCKETS_ENV: /arch/stand/buckets.stand.env
+    volumes:
+      - ..:/arch:ro
+    networks: [pgnet]
+    depends_on: [etcd]
+
 networks:
   pgnet:
     name: pgstand_pgnet
+
+volumes:
+  etcd-data:

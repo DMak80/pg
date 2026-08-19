@@ -106,7 +106,7 @@ arch/
 │       ├── haproxy.cfg                 (базовый, 3 ноды)
 │       └── haproxy-4nodes.cfg          (★ для 4 нод: + server pg4 в обоих backend'ах)
 │   └── buckets/
-│       └── buckets.env.example         (★ конфиг бакетных скриптов: каталог + DSN шардов)
+│       └── buckets.env.example         (★ конфиг бакетных скриптов: каталог, DSN шардов, etcd)
 └── scripts/
     ├── find-leader.sh         ← найти текущего лидера кластера
     ├── get-role.sh            ← узнать роль конкретной ноды (master/replica)
@@ -118,6 +118,7 @@ arch/
     ├── buckets-common.sh      ← ★ общие функции бакетных скриптов (11-bucket-sharding.md)
     ├── create-bucket.sh       ← ★ создать бакет-схему на шарде + регистрация в каталоге
     ├── move-bucket.sh         ← ★ онлайн-переезд бакета: move/status/rollback/finalize
+    ├── abort-move.sh          ← ★ v2/etcd: отмена незавершённого переезда + уборка артефактов (P7)
     # все скрипты читают ALL_NODES из env → автоматически работают и с 3, и с 4 нодами
 ```
 

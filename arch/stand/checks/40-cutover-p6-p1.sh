@@ -53,8 +53,9 @@ done
 echo "— инвариант-проверка перед flip:"
 fail=0
 for seq in $seqs; do
-  read -r lv ic <<< "$(q s1b -c "select last_value||' '||is_called from bucket_42.$seq")"
-  if [ "$ic" = "t" ]; then issued=$lv; else issued=$((lv-1)); fi
+  # issued считаем в SQL: конкатенация boolean с текстом даёт 'true'/'false'
+  # (не 't'/'f' дисплея psql) — парсить его в bash нельзя
+  issued="$(q s1b -c "select case when is_called then last_value else last_value-1 end from bucket_42.$seq")"
   next_dst="$(q s2 -c "select case when is_called then last_value+1 else last_value end from bucket_42.$seq")"
   if [ "$next_dst" -gt "$issued" ]; then
     echo "  ✓ $seq: следующий на s2=$next_dst > последнего выданного на s1b=$issued"

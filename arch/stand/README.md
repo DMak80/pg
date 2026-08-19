@@ -1,4 +1,4 @@
-# Стенд практической проверки P1–P6 (PostgreSQL 18.4)
+# Стенд практической проверки P1–P7 (PostgreSQL 18.4)
 
 Docker-стенд для проверки решений реестра рисков [12-bucket-pitfalls.md](../12-bucket-pitfalls.md)
 практически — имитацией ситуаций, а не чтением документации. Результаты внесены
@@ -13,9 +13,13 @@ Docker-стенд для проверки решений реестра риск
   hc1a/hc1b  сайдкары: эмуляция Patroni REST /primary (python+pg8000,
              netns нод — HAProxy видит их как порты 8008 нод)
   hap1  HAProxy :5432 → текущий мастер (option httpchk GET /primary)
+
+etcd (v3.5.21)  контрол-плейн v2: /buckets/routing/*, /buckets/status/* (P7)
+opsbox          psql+etcdctl+jq — машина запуска v2-скриптов (профиль ops:
+                docker compose run --rm opsbox ..., хостовые бинарики не нужны)
 ```
 
-Патрони/etcd/pg_doorman нет — их роль в проверках играет HAProxy с health-check
+Патрони/pg_doorman нет — их роль в проверках играет HAProxy с health-check
 по `/primary` (сайдкары отвечают 200 только на мастере). Параметры: `wal_level=logical`
 на всех нодах, `sync_replication_slots=on` + `hot_standby_feedback=on` на s1b,
 `max_slot_wal_keep_size=32MB` (занижен для скорости), аутентификация trust
@@ -31,6 +35,7 @@ Docker-стенд для проверки решений реестра риск
 | `checks/30-failover-p2-p3.sh` | P2, P3 | `docker stop s1a` + promote s1b; hap1 сам → s1b; подписка переподключилась (conninfo не менялся); счётчики равны; duplicate-key 0 | ✓ |
 | `checks/40-cutover-p6-p1.sh` | P1, P6 | заморозка на s1b; провал v1-эвристики sequences (тихий duplicate key); sequence→sequence + инвариант; DROP SUBSCRIPTION; запись на s2 | ✓ |
 | `checks/50-p4-wal-lost.sh` | P4 | «зависший подписчик» (slowconsumer.pl) + пачки несжимаемого WAL → `wal_status='lost'`; шард жив; уборка срезает слот | ✓ |
+| `checks/60-p7-abort.sh` | P7 | фаза 1: зависший FROZEN — list, отказы-защиты, журнал в etcd до манипуляций (s2 недоступен → phase=blocked, БД не тронута), resume после возврата s2, откат в ACTIVE у s1; фаза 2: routing==target (flip прошёл, статус завис) — отказ без --force, с --force доведение: sequences довинчены (P6), приёмник владелец, старый шард вычищен | ✓ |
 | `checks/90-down.sh` | — | разбор стенда | — |
 
 Полный прогон по порядку номеров; логи — в `logs/`.
@@ -60,6 +65,13 @@ Docker-стенд для проверки решений реестра риск
    duplicate key. Рабочая схема — sequence→sequence (`last_value`/`is_called` →
    `setval`) поимённо для всех sequence схемы + инвариант
    «следующее на приёмнике > последнего выданного на источнике».
+7. **`boolean||text` даёт 'true'/'false', а не 't'/'f'** (P6/P7): конкатенация
+   `last_value||' '||is_called` возвращает `50 true` — короткая форма `t` это
+   только дисплей psql. Сравнение `[ "$ic" = "t" ]` в bash всегда ложно: в
+   checks/40 латентно ослабляло P6-инвариант на 1 (пропускало next==issued),
+   в sync-функции abort-move.sh дало `setval(49)` при выданных 50 → duplicate key.
+   Лечение: issued/next считать на стороне SQL (`CASE WHEN is_called ...`),
+   boolean в bash не парсить.
 
 ## Нюансы воспроизведения
 
@@ -77,7 +89,13 @@ Docker-стенд для проверки решений реестра риск
 ```bash
 cd arch/stand
 checks/00-up.sh && checks/10-p1-p5-freeze.sh && checks/20-move-subscription.sh \
-  && checks/30-failover-p2-p3.sh && checks/40-cutover-p6-p1.sh && checks/50-p4-wal-lost.sh
+  && checks/30-failover-p2-p3.sh && checks/40-cutover-p6-p1.sh && checks/50-p4-wal-lost.sh \
+  && checks/60-p7-abort.sh
 # разбор:
 checks/90-down.sh
 ```
+
+v2-скрипты (`abort-move.sh`) запускаются из ops-бокса по внутренней сети стенда
+(конфиг `buckets.stand.env`); руками: `docker compose run --rm -T opsbox bash
+/arch/scripts/abort-move.sh list`. На хосте нужен только docker (+ jq для
+ассертов проверок).
