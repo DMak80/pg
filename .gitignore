@@ -1,0 +1,5 @@
+# Кэш graphify (пересоздаётся скиллом; готовый граф — в graphify-out/)
+arch/graphify-out/cache/
+
+# Логи прогонов стенда (пересоздаются checks/*.sh)
+arch/stand/logs/

@@ -1,0 +1,25 @@
+# configs/haproxy/docker-compose.yml
+#
+# Запускается на ноде pg-lb (или на любой из pg1/pg2/pg3 — см. 02-topology.md).
+# См. 06-deploy-haproxy.md.
+#
+#   sudo mkdir -p /opt/haproxy && cd /opt/haproxy
+#   cp configs/haproxy/docker-compose.yml .
+#   cp configs/haproxy/haproxy.cfg .
+#   docker compose up -d
+
+services:
+  haproxy:
+    image: haproxy:2.8-alpine
+    container_name: haproxy
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    # NB: при host-сети HAProxy резолвит имена pg1/pg2/pg3 через /etc/hosts хоста.
+    #     Если на этой ноде их нет — добавь, либо замени имена на IP прямо в haproxy.cfg.
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"

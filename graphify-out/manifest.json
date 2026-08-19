@@ -1,0 +1,137 @@
+{
+  "scripts/buckets-common.sh": {
+    "mtime": 1787121027.5037813,
+    "ast_hash": "92563fc780e5a363c936c9b4793db223",
+    "semantic_hash": "92563fc780e5a363c936c9b4793db223"
+  },
+  "scripts/cluster-state.sh": {
+    "mtime": 1786017263.5518568,
+    "ast_hash": "56ff5b89f59fad82a52339d0887a27e5",
+    "semantic_hash": "56ff5b89f59fad82a52339d0887a27e5"
+  },
+  "scripts/create-bucket.sh": {
+    "mtime": 1787120241.5305665,
+    "ast_hash": "9d0b2e2e18e0b5e1ba99de1c2c371381",
+    "semantic_hash": "9d0b2e2e18e0b5e1ba99de1c2c371381"
+  },
+  "scripts/find-leader.sh": {
+    "mtime": 1786017241.4796364,
+    "ast_hash": "75750e7b1764d06ff33dcc01c83f0e27",
+    "semantic_hash": "75750e7b1764d06ff33dcc01c83f0e27"
+  },
+  "scripts/get-role.sh": {
+    "mtime": 1786017241.4918575,
+    "ast_hash": "ea392e1323012cb0fcbcc667b2c176a2",
+    "semantic_hash": "ea392e1323012cb0fcbcc667b2c176a2"
+  },
+  "scripts/health.sh": {
+    "mtime": 1786017263.5632467,
+    "ast_hash": "843ffeef354bb1864cc50177ba7f50cf",
+    "semantic_hash": "843ffeef354bb1864cc50177ba7f50cf"
+  },
+  "scripts/move-bucket.sh": {
+    "mtime": 1787121121.17848,
+    "ast_hash": "f2e9feb31c392ae7355783e4f1362204",
+    "semantic_hash": "f2e9feb31c392ae7355783e4f1362204"
+  },
+  "scripts/patronictl.sh": {
+    "mtime": 1786017276.413903,
+    "ast_hash": "e2cd0bfa75378362692556bc65e38a66",
+    "semantic_hash": "e2cd0bfa75378362692556bc65e38a66"
+  },
+  "scripts/rebuild-node.sh": {
+    "mtime": 1786023921.0182602,
+    "ast_hash": "109e1d507b9eb2567955fc896b4cdc95",
+    "semantic_hash": "109e1d507b9eb2567955fc896b4cdc95"
+  },
+  "scripts/switchover.sh": {
+    "mtime": 1786017276.401454,
+    "ast_hash": "a18262ad267b2a20de0a21d03b60aeea",
+    "semantic_hash": "a18262ad267b2a20de0a21d03b60aeea"
+  },
+  "01-architecture.md": {
+    "mtime": 1786016859.3410237,
+    "ast_hash": "85ee16eb8e0241ffd4114c5124d2789b",
+    "semantic_hash": "85ee16eb8e0241ffd4114c5124d2789b"
+  },
+  "02-topology.md": {
+    "mtime": 1786016892.2429292,
+    "ast_hash": "32f351212b513a43e808f39acf22db4c",
+    "semantic_hash": "32f351212b513a43e808f39acf22db4c"
+  },
+  "03-prerequisites.md": {
+    "mtime": 1786016923.8659706,
+    "ast_hash": "992cd6ee26491c21634ad4fa6b0f5158",
+    "semantic_hash": "992cd6ee26491c21634ad4fa6b0f5158"
+  },
+  "04-deploy-etcd.md": {
+    "mtime": 1786016962.1685371,
+    "ast_hash": "f5fcaa84e6b845a979a00588de9acc84",
+    "semantic_hash": "f5fcaa84e6b845a979a00588de9acc84"
+  },
+  "05-deploy-postgres.md": {
+    "mtime": 1787136911.550968,
+    "ast_hash": "9c5d8b90da94bb30138dc1e86ac30035",
+    "semantic_hash": "9c5d8b90da94bb30138dc1e86ac30035"
+  },
+  "06-deploy-haproxy.md": {
+    "mtime": 1786017383.6107178,
+    "ast_hash": "682d964c29b7af2638699b2d2e13a00a",
+    "semantic_hash": "682d964c29b7af2638699b2d2e13a00a"
+  },
+  "07-identify-master.md": {
+    "mtime": 1786017065.2801998,
+    "ast_hash": "f63680ee11df358c4c172d20230b2fad",
+    "semantic_hash": "f63680ee11df358c4c172d20230b2fad"
+  },
+  "08-operations.md": {
+    "mtime": 1786023948.806051,
+    "ast_hash": "0535d583397a670cc41a23267dfdb258",
+    "semantic_hash": "0535d583397a670cc41a23267dfdb258"
+  },
+  "09-troubleshooting.md": {
+    "mtime": 1786017150.6253111,
+    "ast_hash": "fb5c63864dcb7dcd4961fdebfd574d3d",
+    "semantic_hash": "fb5c63864dcb7dcd4961fdebfd574d3d"
+  },
+  "10-four-nodes.md": {
+    "mtime": 1786024587.057769,
+    "ast_hash": "cedd152d34f1b090c348963fc5a94bd9",
+    "semantic_hash": "cedd152d34f1b090c348963fc5a94bd9"
+  },
+  "11-bucket-sharding.md": {
+    "mtime": 1787136947.4615765,
+    "ast_hash": "2d23ddbfc44a942581d242af56962a80",
+    "semantic_hash": "2d23ddbfc44a942581d242af56962a80"
+  },
+  "12-bucket-pitfalls.md": {
+    "mtime": 1787136947.5376773,
+    "ast_hash": "c4f2b3d1deb142721eb9146e7b03b8ce",
+    "semantic_hash": "c4f2b3d1deb142721eb9146e7b03b8ce"
+  },
+  "README.md": {
+    "mtime": 1787124895.062891,
+    "ast_hash": "bd161c3f44e717a70ff317e95b1136fb",
+    "semantic_hash": "bd161c3f44e717a70ff317e95b1136fb"
+  },
+  "configs/etcd/docker-compose.yml": {
+    "mtime": 1786017167.6381114,
+    "ast_hash": "659f2cfe219e2b16df54fe9da11f3d9b",
+    "semantic_hash": "659f2cfe219e2b16df54fe9da11f3d9b"
+  },
+  "configs/haproxy/docker-compose.yml": {
+    "mtime": 1786017200.6683447,
+    "ast_hash": "1f236e6059071315dd182fa28febdaa4",
+    "semantic_hash": "1f236e6059071315dd182fa28febdaa4"
+  },
+  "configs/patroni/patroni.yml": {
+    "mtime": 1786017218.8708117,
+    "ast_hash": "fb31b1b30c67a15efa8b6fc512fb05f9",
+    "semantic_hash": "fb31b1b30c67a15efa8b6fc512fb05f9"
+  },
+  "configs/postgres/docker-compose.yml": {
+    "mtime": 1786017187.0491083,
+    "ast_hash": "04ea64a9aa354bdf2c15bf0e779af215",
+    "semantic_hash": "04ea64a9aa354bdf2c15bf0e779af215"
+  }
+}

@@ -1,0 +1,96 @@
+# Практический стенд проверки решений P1–P6 (12-bucket-pitfalls.md).
+#
+#   шард1: s1a (мастер) + s1b (реплика, failover slots) + hap1 (HAProxy :5432)
+#          + hc1a/hc1b (сайдкары /primary — эмуляция Patroni REST API)
+#   шард2: s2 (приёмник, одиночная нода — его failover это открытый P8)
+#
+# ⚠️ Только стенд: POSTGRES_HOST_AUTH_METHOD=trust (без паролей и TLS).
+# max_slot_wal_keep_size=32MB — специально маленький, чтобы проверить P4.
+name: pgstand
+
+services:
+  s1a:
+    image: postgres:18
+    container_name: s1a
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=16
+      - -c
+      - max_wal_senders=16
+      - -c
+      - max_slot_wal_keep_size=32MB
+    networks: [pgnet]
+
+  s1b:
+    image: postgres:18
+    container_name: s1b
+    user: postgres
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    command:
+      - bash
+      - -c
+      - |
+        # Arrange: клонируем мастера (с retry — ждём hba/готовность s1a),
+        # поднимаем реплику с failover slots (P3).
+        # Внимание: в образе postgres:18 PGDATA = /var/lib/postgresql/18/docker.
+        # Для sync_replication_slots нужны: physical-слот реплики (primary_slot_name),
+        # dbname в primary_conninfo, wal_level=logical на реплике.
+        set -e
+        if [ ! -s "$$PGDATA/PG_VERSION" ]; then
+          while ! pg_basebackup -h s1a -U postgres -D "$$PGDATA" -X stream -R -C -S s1b_phys; do
+            echo "s1b: жду s1a (инициализация/hba)..."; sleep 2; rm -rf "$$PGDATA"
+          done
+          chmod 700 "$$PGDATA"
+          sed -i "s|^primary_conninfo.*|primary_conninfo = 'host=s1a port=5432 user=postgres dbname=postgres'|" \
+            "$$PGDATA/postgresql.auto.conf"
+        fi
+        exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 \
+             -c max_slot_wal_keep_size=32MB \
+             -c sync_replication_slots=on -c hot_standby_feedback=on
+    networks: [pgnet]
+    depends_on: [s1a]
+
+  hc1a:
+    build: ./sidecar
+    container_name: hc1a
+    network_mode: "service:s1a"
+    depends_on: [s1a]
+    restart: unless-stopped
+
+  hc1b:
+    build: ./sidecar
+    container_name: hc1b
+    network_mode: "service:s1b"
+    depends_on: [s1b]
+    restart: unless-stopped
+
+  hap1:
+    image: haproxy:2.8-alpine
+    container_name: hap1
+    volumes:
+      - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks: [pgnet]
+    depends_on: [s1a, s1b]
+
+  s2:
+    image: postgres:18
+    container_name: s2
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    command:
+      - postgres
+      - -c
+      - wal_level=logical
+      - -c
+      - max_replication_slots=16
+    networks: [pgnet]
+
+networks:
+  pgnet:
+    name: pgstand_pgnet

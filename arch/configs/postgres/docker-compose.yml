@@ -1,0 +1,38 @@
+# configs/postgres/docker-compose.yml
+#
+# Запускается на КАЖДОЙ из 3 нод (pg1/pg2/pg3) со своим pg.env.
+# См. 05-deploy-postgres.md.
+#
+#   sudo mkdir -p /opt/postgres && cd /opt/postgres
+#   cp configs/postgres/docker-compose.yml .
+#   cp configs/postgres/pg.env .          # отредактировать под ноду (в т.ч. hostname)
+#   docker compose up -d
+#
+# ⚠️ Параметр hostname: в секции services ниже должен быть УНИКАЛЕН на каждой ноде
+#    (pg1/pg2/pg3). Patroni использует его как своё имя в DCS.
+
+services:
+  postgres:
+    image: ghcr.io/zalando/spilo-16:3.3-p3
+    container_name: postgres
+    hostname: pg1                       # ← МЕНЯТЬ под ноду: pg1 | pg2 | pg3
+    restart: unless-stopped
+    env_file: pg.env
+    network_mode: host                  # Patroni API (8008) и PG (5432) видны с хоста
+    volumes:
+      # PGROOT внутри контейнера Spilo = /home/postgres/pgroot
+      # Монтируем сюда локальный диск /data/pg
+      - /data/pg:/home/postgres/pgroot
+    # ulimits — поднять лимиты под серьёзные нагрузки
+    ulimits:
+      nofile:
+        soft: 1048576
+        hard: 1048576
+      nproc:
+        soft: 65536
+        hard: 65536
+    logging:
+      driver: json-file
+      options:
+        max-size: "100m"
+        max-file: "7"

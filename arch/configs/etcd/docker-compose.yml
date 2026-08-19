@@ -1,0 +1,41 @@
+# configs/etcd/docker-compose.yml
+#
+# Запускается на КАЖДОЙ из 3 нод (pg1/pg2/pg3) со своим etcd.env.
+# См. 04-deploy-etcd.md.
+#
+#   sudo mkdir -p /opt/etcd && cd /opt/etcd
+#   cp configs/etcd/docker-compose.yml .
+#   cp configs/etcd/etcd.env .       # отредактировать NODE_NAME/NODE_IP под ноду
+#   docker compose up -d
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.21
+    container_name: etcd
+    restart: unless-stopped
+    env_file: etcd.env
+    # host-сеть: контейнер видит IP хоста как свой, peer/client URL работают «как есть»
+    network_mode: host
+    volumes:
+      - ${DATA_DIR}:/data
+    command:
+      - /usr/local/bin/etcd
+      - --name=${NODE_NAME}
+      - --data-dir=/data
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --initial-advertise-peer-urls=http://${NODE_IP}:2380
+      - --advertise-client-urls=http://${NODE_IP}:2379
+      - --initial-cluster=${PEERS}
+      - --initial-cluster-token=${CLUSTER_TOKEN}
+      - --initial-cluster-state=${INITIAL_CLUSTER_STATE}
+      # raft/health tuning (под LAN)
+      - --heartbeat-interval=250          # ms
+      - --election-timeout=2000           # ms (ставь выше при нестабильной сети)
+      - --auto-compaction-retention=1     # часов — автоочистка старых ревизий
+      - --quota-backend-bytes=8589934592  # 8 GiB лимт БД etcd
+    logging:
+      driver: json-file
+      options:
+        max-size: "50m"
+        max-file: "5"

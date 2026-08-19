@@ -1,0 +1,70 @@
+# configs/patroni/patroni.yml
+#
+# АЛЬТЕРНАТИВНЫЙ вариант: Patroni поверх обычного postgres-образа (без Spilo).
+# Нужен, если по каким-то причинам Spilo не подходит (например, нужен строгий контроль
+# версий/расширений). В основной схеме (05-deploy-postgres.md) мы используем Spilo —
+# этот файл приведён для справки.
+#
+# Как использовать (на каждой ноде, имя ноды → через PATRONI_NAME или имя хоста):
+#   docker run -d --name patroni \
+#     --network host \
+#     -v /data/pg:/var/lib/postgresql/data \
+#     -v /opt/patroni/patroni.yml:/patroni.yml \
+#     -e PATRONI_name=pg1 \
+#     patroni:latest /patroni.py /patroni.yml
+#
+# Полная док: https://patroni.readthedocs.io/en/latest/SETTINGS.html
+
+scope: pgcluster
+name: pg1                      # ← уникально на ноде (pg1/pg2/pg3)
+
+restapi:
+  listen: 0.0.0.0:8008
+  connect_address: 10.0.0.11:8008   # ← IP этой ноды
+
+etcd3:
+  hosts: pg1:2379,pg2:2379,pg3:2379
+
+bootstrap:
+  dcs:
+    ttl: 30
+    loop_wait: 10
+    retry_timeout: 20
+    synchronous_mode: true
+    postgresql:
+      use_pg_rewind: true
+      parameters:
+        wal_level: replica
+        hot_standby: "on"
+        max_wal_senders: 10
+        max_replication_slots: 10
+        wal_keep_size: 2048MB
+  initdb:                       # выполняется на первой ноде при bootstrap
+    - encoding: UTF8
+    - data-checksums
+  pg_hba:
+    - "replication standby 10.0.0.0/24 md5"
+    - "host all all 10.0.0.0/24 md5"
+
+postgresql:
+  listen: 0.0.0.0:5432
+  connect_address: 10.0.0.11:5432   # ← IP этой ноды
+  bin_dir: /usr/lib/postgresql/16/bin
+  data_dir: /var/lib/postgresql/data/pgdata
+  use_unix_socket: true
+  authentication:
+    replication:
+      username: standby
+      password: ChangeMe_replication_strong_password
+    superuser:
+      username: postgres
+      password: ChangeMe_superuser_strong_password
+  parameters:
+    shared_buffers: 2GB
+    max_connections: 200
+
+tags:
+  nofailover: false
+  noloadbalance: false
+  clonefrom: false
+  nosync: false
