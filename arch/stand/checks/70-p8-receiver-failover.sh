@@ -43,8 +43,8 @@ echo "  s2a мастер, s2b реплика (клоны свежие)"
 
 # ═══ RED: тихий пропуск без защиты ════════════════════════════════════════════
 echo ">>> RED / Arrange: ручная подписка (synccommit по умолчанию = off), мастер приёмника s2a"
-ect del /buckets/routing/bucket_46 >/dev/null
-ect del /buckets/status/bucket_46 >/dev/null
+ect del /clusters/legacy/buckets/routing/bucket_46 >/dev/null
+ect del /clusters/legacy/buckets/status/bucket_46 >/dev/null
 h2 -c "DROP SUBSCRIPTION IF EXISTS sub_bucket_46;" >/dev/null 2>&1 || true
 h1 -c "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE slot_name LIKE 'sub_bucket_46%';" >/dev/null 2>&1 || true
 h1 -c "DROP PUBLICATION IF EXISTS pub_bucket_46;" >/dev/null 2>&1 || true
@@ -60,8 +60,8 @@ h2 -c "CREATE SUBSCRIPTION sub_bucket_46
          CONNECTION 'host=hap1 port=5432 dbname=postgres user=postgres'
          PUBLICATION pub_bucket_46 WITH (copy_data = true, failover = true);"
 # «зависший переезд»: routing + протухший статус (mover мёртв — свежесть не мешает abort'у)
-ect put /buckets/routing/bucket_46 s1 >/dev/null
-ect put /buckets/status/bucket_46 "{\"state\":\"SYNCING\",\"target\":\"s2\",\"updated_unix\":$(( $(date +%s) - 3600 ))}" >/dev/null
+ect put /clusters/legacy/buckets/routing/bucket_46 s1 >/dev/null
+ect put /clusters/legacy/buckets/status/bucket_46 "{\"state\":\"SYNCING\",\"target\":\"s2\",\"updated_unix\":$(( $(date +%s) - 3600 ))}" >/dev/null
 until [ "$(h2 -c "SELECT count(*) FROM pg_subscription_rel r JOIN pg_subscription s ON s.oid=r.srsubid
                   JOIN pg_class c ON c.oid=r.srrelid
                   WHERE s.subname='sub_bucket_46' AND r.srsubstate='r'")" = "1" ]; do sleep 1; done
@@ -110,7 +110,7 @@ ops abort-move.sh abort bucket_46 --yes 2>&1 | tee logs/70-red-abort.log | grep 
 [ "$(h1 -c 'SELECT count(*) FROM bucket_46.events')" = "151" ] || { echo "❌ данные владельца повреждены"; exit 1; }
 [ "$(h2 -c "SELECT count(*) FROM pg_subscription WHERE subname='sub_bucket_46'")" = "0" ] || { echo "❌ подписка не срезана"; exit 1; }
 [ "$(h2 -c "SELECT count(*) FROM pg_namespace WHERE nspname='bucket_46'")" = "0" ] || { echo "❌ схема-копия не удалена"; exit 1; }
-[ -z "$(ect get /buckets/status/bucket_46 --print-value-only)" ] || { echo "❌ статус-ключ не удалён"; exit 1; }
+[ -z "$(ect get /clusters/legacy/buckets/status/bucket_46 --print-value-only)" ] || { echo "❌ статус-ключ не удалён"; exit 1; }
 
 # ═══ GREEN: remote_apply спасает ══════════════════════════════════════════════
 echo ">>> GREEN / Arrange: восстанавливаем пару шарда2 (s2a ребейзится репликой s2b)"
@@ -194,8 +194,8 @@ if [ "$alive" = 1 ]; then echo "❌ move не завершился за тайм
 move_rc=0; wait "$mv" || move_rc=$?
 grep -v "Container\|Creating\|Created" logs/70-move-green.log | tail -25 | sed 's/^/  /'
 [ "$move_rc" = 0 ] || { echo "❌ move завершился с кодом $move_rc"; exit 1; }
-[ "$(ect get /buckets/routing/bucket_46 --print-value-only)" = "s2" ] || { echo "❌ routing != s2"; exit 1; }
-[ -z "$(ect get /buckets/status/bucket_46 --print-value-only)" ] || { echo "❌ статус-ключ не удалён"; exit 1; }
+[ "$(ect get /clusters/legacy/buckets/routing/bucket_46 --print-value-only)" = "s2" ] || { echo "❌ routing != s2"; exit 1; }
+[ -z "$(ect get /clusters/legacy/buckets/status/bucket_46 --print-value-only)" ] || { echo "❌ статус-ключ не удалён"; exit 1; }
 grep -q "сверка строк сошлась" logs/70-move-green.log || { echo "❌ cutover без сверки строк (P8-барьер)"; exit 1; }
 
 src_big="$(h1 -c 'SELECT count(*) FROM bucket_46.big')"

@@ -18,8 +18,12 @@ Docker-стенд для проверки решений реестра риск
   hasync1  синкер: /cluster/nodes/* →          hasync2 — симметрично
   HAProxy runtime API (set server addr)
 
-etcd (v3.5.21)  контрол-плейн — источник правды: /buckets/routing/*,
-                 /buckets/status/*, /cluster/nodes/<node> → адрес ноды
+etcd (v3.5.21)  контрол-плейн — источник правды; один etcd — несколько
+                 независимых кластеров (префиксы /clusters/<C>/): чеки 10–70
+                 работают в legacy, 72-й создаёт alpha/beta;
+                 внутри кластера: config (N, dbname), shards/<X>/{dsn,replicas},
+                 buckets/{routing,status}/*; /cluster/nodes/<node> → адрес ноды
+                 (стендовая топология HAProxy)
 opsbox          psql+pg_dump+etcdctl+jq — машина запуска скриптов (профиль ops:
                 docker compose run --rm opsbox ..., хостовые бинарики не нужны)
 ```
@@ -27,7 +31,7 @@ opsbox          psql+pg_dump+etcdctl+jq — машина запуска скри
 Патрони/pg_doorman нет — их роль в проверках играет HAProxy с health-check
 по `/primary` (сайдкары отвечают 200 только на мастере). IP контейнеров НЕ
 фиксируются: стенд моделирует service discovery на etcd (стендовая инкарнация
-`/shards/X/master` из референса 12-й доки — в проде адрес пишет Patroni).
+`/clusters/<C>/shards/X/master` из референса 12-й доки — в проде адрес пишет Patroni).
 Сайдкар ноды регистрирует её адрес в `/cluster/nodes/<node>` с lease TTL
 (ключ исчезает со смертью ноды); hasync применяет адрес в HAProxy через
 runtime API, проверив идентичность ноды (`GET /whoami` — docker переиспользует
@@ -56,6 +60,7 @@ runtime API, проверив идентичность ноды (`GET /whoami` �
 | `checks/65-move-e2e.sh` | P1–P8 | e2e настоящими скриптами из ops-бокса: create-bucket → move (заморозка P1, инвентарь P5, sequence→sequence P6, сверка строк P8, атомарный etcd-flip) → призрак → rollback через обратную подписку → повторный move → finalize; негатив: move в шард без sync-standby отказывается (P8-предусловие) | ✓ |
 | `checks/68-topology-etcd.sh` | топология | IP не фиксированы: etcd = фактам, HAProxy runtime = etcd; смена адреса реплики s2b (пересоздание, старый IP занят ipblocker'ом) подхватывается цепочкой сайдкар → etcd → hasync → runtime без рестарта HAProxy; sync-standby возвращается | ✓ |
 | `checks/70-p8-receiver-failover.sh` | P8 | RED: подписка с дефолтным synchronous_commit=off — failover приёмника молча пропускает срез W1 при «здоровом» стриме (лаг 0), лечение — abort (P7); GREEN: move-bucket.sh с `remote_apply` — W2 висит в SyncRep (не подтверждается при replay-паузе), после failover переслан и применён; mover пережил обрывы, copy рестартовал на новом мастере, cutover со сверкой строк и атомарным flip; finalize добил осиротевшие sync-слоты | ✓ |
+| `checks/72-shard-lifecycle.sh` | P23 | настоящими init/add/remove-shard: init alpha (N=8, dbname=postgres) — константы config, dsn/replicas шардов, все бакеты поровну round-robin (4/4, строго чётные/нечётные), USAGE app_role; повторный init — отказ; init beta (N=4, **dbname=beta**) на том же etcd — своя БД, alpha нетронута (мульти-кластерность); add-shard s1x — пустой, routing не тронут; create-bucket вне диапазона 0..N-1 — отказ; move bucket_0 s1→s2 — атомарный flip; remove-shard непустого s2 — отказ, пустого s1x — успех | ✓ |
 | `checks/90-down.sh` | — | разбор стенда | — |
 
 Полный прогон по порядку номеров; логи — в `logs/`.
@@ -136,14 +141,14 @@ cd arch/stand
 checks/00-up.sh && checks/10-p1-p5-freeze.sh && checks/20-move-subscription.sh \
   && checks/30-failover-p2-p3.sh && checks/40-cutover-p6-p1.sh && checks/50-p4-wal-lost.sh \
   && checks/60-p7-abort.sh && checks/65-move-e2e.sh && checks/68-topology-etcd.sh \
-  && checks/70-p8-receiver-failover.sh
+  && checks/70-p8-receiver-failover.sh && checks/72-shard-lifecycle.sh
 # разбор:
 checks/90-down.sh
 ```
 
 Порядок важен: 30-й делает failover шарда 1 (мастер — s1b, s1a не поднимается),
 70-й ломает и восстанавливает шард 2 (s2a пересоздаётся репликой s2b, потом
-наоборот). Все скрипты (`create/move/abort-move.sh`) запускаются из ops-бокса
+наоборот). Все скрипты (`init-cluster/add-shard/remove-shard/create-bucket/move-bucket/abort-move.sh`) запускаются из ops-бокса
 по внутренней сети стенда (конфиг `buckets.stand.env`); руками:
 `docker compose run --rm -T opsbox bash /arch/scripts/move-bucket.sh status bucket_45`.
 На хосте нужен только docker (+ jq для ассертов проверок).

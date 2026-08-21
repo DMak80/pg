@@ -37,8 +37,8 @@ echo "opsbox собран (psql+etcdctl+jq, профиль ops)"
 # заморозка P1 (REVOKE) + мораторий P5 на s1. etcd-ключи выставляет фаза.
 arrange_stuck_move() {
   # хвосты прошлого прогона/фазы — подчищаем
-  ect del /buckets/status/bucket_43 >/dev/null
-  ect del /buckets/routing/bucket_43 >/dev/null
+  ect del /clusters/legacy/buckets/status/bucket_43 >/dev/null
+  ect del /clusters/legacy/buckets/routing/bucket_43 >/dev/null
   h2 -c "DROP SUBSCRIPTION IF EXISTS sub_bucket_43;" >/dev/null 2>&1 || true
   h2 -c "DROP SCHEMA IF EXISTS bucket_43 CASCADE;" >/dev/null
   h1 -c "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE slot_name LIKE 'sub_bucket_43%';" >/dev/null 2>&1 || true
@@ -92,8 +92,8 @@ echo ">>> Фаза 1 / Arrange: зависший FROZEN bucket_43 (s1 → s2), r
 arrange_stuck_move
 echo "  initial copy готов, подписка стримит, s1 заморожен"
 # etcd: routing + зависший статус (обновлён час назад — mover точно мёртв)
-ect put /buckets/routing/bucket_43 s1 >/dev/null
-ect put /buckets/status/bucket_43 "{\"state\":\"FROZEN\",\"target\":\"s2\",\"updated_unix\":$(( $(date +%s) - 3600 ))}" >/dev/null
+ect put /clusters/legacy/buckets/routing/bucket_43 s1 >/dev/null
+ect put /clusters/legacy/buckets/status/bucket_43 "{\"state\":\"FROZEN\",\"target\":\"s2\",\"updated_unix\":$(( $(date +%s) - 3600 ))}" >/dev/null
 
 # ── Act/Assert: list видит зависший переезд ─────────────────────────────────
 echo ">>> abort-move.sh list: bucket_43 = FROZEN"
@@ -103,20 +103,20 @@ grep -q "bucket_43.*FROZEN" logs/60-list.log \
 
 # ── Assert: отказы-защиты ────────────────────────────────────────────────────
 echo ">>> отказы: ACTIVE-бакет (нет статуса) и свежий статус (mover жив?)"
-ect put /buckets/routing/bucket_42 s1 >/dev/null
+ect put /clusters/legacy/buckets/routing/bucket_42 s1 >/dev/null
 if abort abort bucket_42 --yes 2>logs/60-refuse1.log; then
   echo "❌ abort должен отказаться: бакет ACTIVE (нет статус-ключа)"; exit 1
 fi
 grep -q "статус-ключа" logs/60-refuse1.log || { echo "❌ неожиданный отказ:"; cat logs/60-refuse1.log; exit 1; }
-ect del /buckets/routing/bucket_42 >/dev/null
-ect put /buckets/routing/bucket_44 s1 >/dev/null
-ect put /buckets/status/bucket_44 "{\"state\":\"SYNCING\",\"target\":\"s2\",\"updated_unix\":$(date +%s)}" >/dev/null
+ect del /clusters/legacy/buckets/routing/bucket_42 >/dev/null
+ect put /clusters/legacy/buckets/routing/bucket_44 s1 >/dev/null
+ect put /clusters/legacy/buckets/status/bucket_44 "{\"state\":\"SYNCING\",\"target\":\"s2\",\"updated_unix\":$(date +%s)}" >/dev/null
 if abort abort bucket_44 --yes 2>logs/60-refuse2.log; then
   echo "❌ abort должен отказаться: статус свежий, mover может быть жив"; exit 1
 fi
 grep -q "ещё жив" logs/60-refuse2.log || { echo "❌ неожиданный отказ:"; cat logs/60-refuse2.log; exit 1; }
-ect del /buckets/status/bucket_44 >/dev/null
-ect del /buckets/routing/bucket_44 >/dev/null
+ect del /clusters/legacy/buckets/status/bucket_44 >/dev/null
+ect del /clusters/legacy/buckets/routing/bucket_44 >/dev/null
 echo "  ✓ оба отказа корректны"
 
 # ── Act: крах уборки — приёмник недоступен ──────────────────────────────────
@@ -128,7 +128,7 @@ fi
 grep -v "Container\|Creating\|Created" logs/60-abort-blocked.log | sed 's/^/  /'
 # Assert: журнал в etcd УЖЕ есть, а в БД ещё НИЧЕГО не тронуто —
 # журнал строго ДО манипуляций
-j="$(ect get /buckets/status/bucket_43 --print-value-only)"
+j="$(ect get /clusters/legacy/buckets/status/bucket_43 --print-value-only)"
 echo "  журнал: $j"
 echo "$j" | jq -e '.state=="ABORTING" and .phase=="blocked" and (.unreachable_shards|index("s2"))!=null' >/dev/null \
   || { echo "❌ журнал blocked не записан/не так записан"; exit 1; }
@@ -164,16 +164,16 @@ h1a -c "CREATE TABLE bucket_43.tmp_app_ddl(id int);" \
 h1 -c "DROP TABLE bucket_43.tmp_app_ddl;"
 [ "$(h1 -c "SELECT count(*) FROM bucket_43.orders")" = "51" ] || { echo "❌ данные владельца повреждены"; exit 1; }
 # etcd: статус-ключ удалён (нет ключа = ACTIVE), routing не изменился
-[ -z "$(ect get /buckets/status/bucket_43 --print-value-only)" ] || { echo "❌ статус-ключ не удалён"; exit 1; }
-[ "$(ect get /buckets/routing/bucket_43 --print-value-only)" = "s1" ] || { echo "❌ routing изменился"; exit 1; }
+[ -z "$(ect get /clusters/legacy/buckets/status/bucket_43 --print-value-only)" ] || { echo "❌ статус-ключ не удалён"; exit 1; }
+[ "$(ect get /clusters/legacy/buckets/routing/bucket_43 --print-value-only)" = "s1" ] || { echo "❌ routing изменился"; exit 1; }
 echo "  ✓ фаза 1 зелёная: откат к ACTIVE у s1"
 
 # ═══ Фаза 2: routing==target — переключение ПРОИЗОШЛО, статус завис ═════════
 
 echo ">>> Фаза 2 / Arrange: то же в БД, но routing УЖЕ на s2 (flip прошёл, статус остался)"
 arrange_stuck_move
-ect put /buckets/routing/bucket_43 s2 >/dev/null
-ect put /buckets/status/bucket_43 "{\"state\":\"FROZEN\",\"target\":\"s2\",\"updated_unix\":$(( $(date +%s) - 3600 ))}" >/dev/null
+ect put /clusters/legacy/buckets/routing/bucket_43 s2 >/dev/null
+ect put /clusters/legacy/buckets/status/bucket_43 "{\"state\":\"FROZEN\",\"target\":\"s2\",\"updated_unix\":$(( $(date +%s) - 3600 ))}" >/dev/null
 [ "$(h2 -c "SELECT count(*) FROM bucket_43.orders")" = "50" ] \
   || { echo "❌ arrange: копия на s2 не догнала"; exit 1; }
 echo "  etcd: routing=s2 (flip прошёл), status=FROZEN (завис)"
@@ -185,7 +185,7 @@ if abort abort bucket_43 --yes >logs/60-refuse3.log 2>&1; then
 fi
 grep -q "flip прошёл" logs/60-refuse3.log \
   || { echo "❌ неожиданный отказ:"; cat logs/60-refuse3.log; exit 1; }
-ect get /buckets/status/bucket_43 --print-value-only | grep -q FROZEN \
+ect get /clusters/legacy/buckets/status/bucket_43 --print-value-only | grep -q FROZEN \
   || { echo "❌ статус-ключ тронут при отказе"; exit 1; }
 [ "$(h1 -c "SELECT count(*) FROM pg_publication WHERE pubname='pub_bucket_43'")" = "1" ] \
   || { echo "❌ БД тронута при отказе"; exit 1; }
@@ -210,8 +210,8 @@ h2a -c "CREATE TABLE bucket_43.tmp_app_ddl(id int);" \
   || { echo "❌ app_role не делает DDL на s2 после abort --force (P5)"; exit 1; }
 h2 -c "DROP TABLE bucket_43.tmp_app_ddl;"
 [ "$(h2 -c "SELECT count(*) FROM bucket_43.orders")" = "51" ] || { echo "❌ данные нового владельца повреждены"; exit 1; }
-[ -z "$(ect get /buckets/status/bucket_43 --print-value-only)" ] || { echo "❌ статус-ключ не удалён"; exit 1; }
-[ "$(ect get /buckets/routing/bucket_43 --print-value-only)" = "s2" ] || { echo "❌ routing изменился"; exit 1; }
+[ -z "$(ect get /clusters/legacy/buckets/status/bucket_43 --print-value-only)" ] || { echo "❌ статус-ключ не удалён"; exit 1; }
+[ "$(ect get /clusters/legacy/buckets/routing/bucket_43 --print-value-only)" = "s2" ] || { echo "❌ routing изменился"; exit 1; }
 abort list >logs/60-list-final.log 2>&1
 if grep -q "bucket_43" logs/60-list-final.log; then
   echo "❌ list всё ещё видит bucket_43"; cat logs/60-list-final.log; exit 1

@@ -1,15 +1,25 @@
 #!/usr/bin/env bash
 # scripts/buckets-common.sh
 #
-# Общие функции для скриптов бакетного шардирования (create-bucket.sh,
-# move-bucket.sh, abort-move.sh). Сам по себе не запускается.
+# Общие функции для скриптов бакетного шардирования (init-cluster.sh,
+# add-shard.sh, remove-shard.sh, create-bucket.sh, move-bucket.sh,
+# abort-move.sh). Сам по себе не запускается.
 #
-# Состояние бакетов живёт в etcd-контрол-плейне (12-bucket-pitfalls.md,
+# Один etcd обслуживает НЕСКОЛЬКО независимых шардированных кластеров:
+# всё состояние системы живёт под её префиксом (12-bucket-pitfalls.md,
 # «Референс топологии»):
-#   /buckets/routing/<bucket> → "shard1"      — владелец (авторитет)
-#   /buckets/status/<bucket>  → {"state":...}  — только при переезде; нет ключа = ACTIVE
+#   /clusters/<C>/config          → {"buckets":N,"dbname":"app"}  — константы init
+#   /clusters/<C>/shards/X/dsn    → "host=... dbname=..."  — вход шарда, БЕЗ пароля
+#   /clusters/<C>/shards/X/replicas → число реплик (декларативно)
+#   /clusters/<C>/shards/X/master → "host:6432"  — lease/TTL, Patroni-callback
+#   /clusters/<C>/buckets/routing/<bucket> → "shard1"  — владелец (авторитет)
+#   /clusters/<C>/buckets/status/<bucket>  → {"state":...} — только при
+#     переезде; нет ключа = ACTIVE.
+# Кластер (система) выбирается --cluster у каждого скрипта, дефолт —
+# CLUSTER_NAME из buckets.env. Patroni живёт отдельно в /service/<scope>/.
 #
-# Конфиг: configs/buckets/buckets.env (переопределяется через BUCKETS_ENV).
+# Конфиг: configs/buckets/buckets.env (переопределяется через BUCKETS_ENV):
+# адреса etcd, CLUSTER_NAME, роли и ПАРОЛИ (в etcd паролей нет — только DSN).
 # См. arch/11-bucket-sharding.md.
 
 BUCKETS_ENV="${BUCKETS_ENV:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../configs/buckets" && pwd)/buckets.env}"
@@ -31,6 +41,10 @@ SUB_SYNCCOMMIT="${SUB_SYNCCOMMIT:-remote_apply}"    # P8: synccommit подпи�
 ETCD_ENDPOINTS="${ETCD_ENDPOINTS:-http://127.0.0.1:2379}"
 ABORT_MIN_AGE_SEC="${ABORT_MIN_AGE_SEC:-120}"
 
+# Имя кластера (шардированной системы): дефолт из buckets.env, перекрывается
+# опцией --cluster каждого скрипта (cluster_set).
+CLUSTER_NAME="${CLUSTER_NAME:-}"
+
 info() { echo "✓ $*"; }
 step() { echo; echo ">>> $*"; }
 err()  { echo "❌ ОШИБКА: $*" >&2; }
@@ -43,29 +57,110 @@ require_bins() { # require_bins psql pg_dump ... — выход 9, если че
   done
 }
 
-# Имя шарда валидно и известно в конфиге
+# ── Кластер = шардированная система, префикс в etcd ───────────────────────────
+
+valid_cluster() { [[ "$1" =~ ^[a-z][a-z0-9_-]*$ ]]; }
+
+cluster_set() { # $1 = значение --cluster: валидация + перекрытие env-дефолта
+  CLUSTER_NAME="$1"
+  valid_cluster "$CLUSTER_NAME" \
+    || { err "неверное имя кластера '$CLUSTER_NAME' (шаблон: ^[a-z][a-z0-9_-]*$)"; exit 2; }
+}
+
+cluster_root() { # префикс кластера в etcd; отказ, если кластер не выбран
+  [ -n "${CLUSTER_NAME:-}" ] \
+    || { err "кластер не задан: передай --cluster или CLUSTER_NAME в buckets.env"; exit 9; }
+  printf '/clusters/%s' "$CLUSTER_NAME"
+}
+
+config_key()  { printf '%s/config' "$(cluster_root)"; }
+shard_key()   { printf '%s/shards/%s' "$(cluster_root)" "$1"; }
+routing_key() { printf '%s/buckets/routing/%s' "$(cluster_root)" "$1"; }
+status_key()  { printf '%s/buckets/status/%s' "$(cluster_root)" "$1"; }
+
+cluster_config() { # JSON конфига кластера (пусто = кластер не инициализирован)
+  etcd_value "$(config_key)"
+}
+
+cfg_field() { # $1 = поле config (buckets|dbname) → значение (пусто = нет)
+  jstr ".$1" "$(cluster_config)"
+}
+
+# Имя шарда валидно и известно: зарегистрировано в etcd кластера (dsn-ключ)
+# или описано в buckets.env (legacy-режим до init-cluster.sh)
 valid_shard() {
   [[ "$1" =~ ^[a-z][a-z0-9_]*$ ]] || return 1
+  [ -n "$(shard_dsn_base "$1")" ] && return 0
   local s
-  for s in $SHARDS; do [ "$s" = "$1" ] && return 0; done
+  for s in ${SHARDS:-}; do [ "$s" = "$1" ] && return 0; done
   return 1
 }
 
-shard_dsn() { # $1 = имя шарда → DSN для psql/pg_dump с ops-хоста (write-эндпоинт шарда)
-  local v="SHARD_${1}_DSN"
-  local d="${!v:-}"
-  [ -n "$d" ] || { err "для шарда '$1' не задан ${v} в buckets.env"; exit 9; }
+shards_list() { # шарды кластера из etcd (по dsn-ключам), построчно
+  etcd_prefix_keys "$(cluster_root)/shards/" 2>/dev/null \
+    | sed -nE 's|^.*/shards/([^/]+)/dsn$|\1|p' | sort -u
+}
+
+cluster_shards() { # имена шардов для обхода: etcd-реестр, fallback — SHARDS env
+  local l
+  l="$(shards_list)"
+  if [ -n "$l" ]; then printf '%s\n' "$l"; return; fi
+  [ -n "${SHARDS:-}" ] && printf '%s\n' $SHARDS
+}
+
+# DSN шарда: канонический вход в etcd (БЕЗ пароля — пароли в etcd не хранятся,
+# P12/P17), пароль подставляется из SHARD_<X>_PASSWORD в buckets.env.
+# Для подписок переездов роль меняется на MOVER_USER_<X> (дефолт bucket_mover).
+# Legacy: пока шарда нет в etcd — берём SHARD_<X>_DSN / MOVER_CONNINFO_<X> из
+# buckets.env (кластеры, созданные до введения /clusters/<C>/).
+shard_dsn_base() { # $1 = шард → dsn без пароля (etcd → env), пусто = неизвестен
+  local d v
+  d="$(etcd_value "$(shard_key "$1")/dsn" 2>/dev/null)"
+  if [ -z "$d" ]; then
+    v="SHARD_${1}_DSN"; d="${!v:-}"
+    [ -n "$d" ] && d="$(dsn_strip_password "$d")"
+  fi
   printf '%s' "$d"
+}
+
+dsn_strip_password() { # убрать password= из DSN (для записи в etcd/логи)
+  sed -E 's/(^| )password=[^ ]*/\1/g' <<<"$1" | sed -E 's/ +$//'
+}
+
+dsn_with_password() { # $1 = dsn без пароля, $2 = шард → + SHARD_<X>_PASSWORD
+  local v pw
+  v="SHARD_${2}_PASSWORD"; pw="${!v:-}"
+  [ -n "$pw" ] && printf '%s password=%s' "$1" "$pw" || printf '%s' "$1"
+}
+
+shard_dsn() { # $1 = имя шарда → полная DSN для psql/pg_dump (write-эндпоинт)
+  local d
+  d="$(shard_dsn_base "$1")"
+  [ -n "$d" ] \
+    || { err "для шарда '$1' нет DSN: ни в etcd ($(shard_key "$1")/dsn), ни SHARD_${1}_DSN в buckets.env"; exit 9; }
+  dsn_with_password "$d" "$1"
 }
 
 mover_conninfo() { # $1 = имя шарда → conninfo, по которому ДРУГИЕ шарды подписываются на него
-  local v="MOVER_CONNINFO_${1}"
-  local d="${!v:-}"
-  [ -n "$d" ] || { err "для шарда '$1' не задан ${v} в buckets.env (нужен для CREATE SUBSCRIPTION)"; exit 9; }
-  printf '%s' "$d"
+  local d v u
+  d="$(etcd_value "$(shard_key "$1")/dsn" 2>/dev/null)"
+  if [ -n "$d" ]; then
+    v="MOVER_USER_${1}"; u="${!v:-bucket_mover}"
+    d="$(sed -E "s/(^| )user=[^ ]*/\\1user=$u/" <<<"$d")"
+    v="MOVER_PASSWORD_${1}"
+    if [ -n "${!v:-}" ]; then d="$d password=${!v}"; fi
+    printf '%s' "$d"
+    return
+  fi
+  v="MOVER_CONNINFO_${1}"
+  local d2="${!v:-}"
+  [ -n "$d2" ] || { err "для шарда '$1' не задан ${v} в buckets.env (нужен для CREATE SUBSCRIPTION)"; exit 9; }
+  printf '%s' "$d2"
 }
 
 valid_bucket() { [[ "$1" =~ ^[a-z][a-z0-9_]*$ ]]; }
+
+valid_dbname() { [[ "$1" =~ ^[a-z_][a-z0-9_]*$ ]]; }
 
 # SQL-хелперы. Пароли лежат в DSN — не выводим DSN в логи сами, psql их не печатает.
 sql()    { psql "$1" -X -q -v ON_ERROR_STOP=1 -c "$2"; }   # выполнить (тихо)
@@ -106,9 +201,6 @@ etcd_alive() {
 }
 
 jstr() { [ -n "${2:-}" ] && jq -r "$1 // empty" <<<"$2" 2>/dev/null || true; }
-
-routing_key() { printf '/buckets/routing/%s' "$1"; }
-status_key()  { printf '/buckets/status/%s' "$1"; }
 
 routing_get() { # <bucket> → шард-владелец (пусто = ключа нет, P12)
   etcd_value "$(routing_key "$1")"

@@ -7,14 +7,16 @@
 # Решения P1/P4/P5/P6/P7/P8 из 12-bucket-pitfalls.md внесены.
 #
 # Использование:
-#   ./scripts/move-bucket.sh move     <bucket> --to <shard> [--yes] [--skip-reverse] [--resume]
-#   ./scripts/move-bucket.sh status   <bucket>
-#   ./scripts/move-bucket.sh rollback <bucket> [--yes]
-#   ./scripts/move-bucket.sh finalize <bucket> --old-shard <shard> [--yes]
+#   ./scripts/move-bucket.sh [--cluster <C>] move     <bucket> --to <shard> [--yes] [--skip-reverse] [--resume]
+#   ./scripts/move-bucket.sh [--cluster <C>] status   <bucket>
+#   ./scripts/move-bucket.sh [--cluster <C>] rollback <bucket> [--yes]
+#   ./scripts/move-bucket.sh [--cluster <C>] finalize <bucket> --old-shard <shard> [--yes]
 #
-# Модель (etcd-контрол-плейн):
-#   /buckets/routing/<bucket> → владелец (авторитет); нет статус-ключа = ACTIVE.
-#   /buckets/status/<bucket>  → {"state":"SYNCING|FROZEN", "owner":…, "target":…,
+#   --cluster  кластер в etcd (дефолт CLUSTER_NAME из buckets.env)
+#
+# Модель (etcd-контрол-плейн, всё под префиксом кластера /clusters/<C>/):
+#   .../buckets/routing/<bucket> → владелец (авторитет); нет статус-ключа = ACTIVE.
+#   .../buckets/status/<bucket>  → {"state":"SYNCING|FROZEN", "owner":…, "target":…,
 #                                "phase":…, started/updated_unix} — только при переезде.
 #   Cutover = атомарная etcd-транзакция: routing → новый владелец + delete status
 #   («flip применился, но etcd не знает» невозможно по построению).
@@ -49,10 +51,10 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 usage() {
   cat >&2 <<EOF
 Usage:
-  $0 move     <bucket> --to <shard> [--yes] [--skip-reverse] [--resume]
-  $0 status   <bucket>
-  $0 rollback <bucket> [--yes]
-  $0 finalize <bucket> --old-shard <shard> [--yes]
+  $0 [--cluster <C>] move     <bucket> --to <shard> [--yes] [--skip-reverse] [--resume]
+  $0 [--cluster <C>] status   <bucket>
+  $0 [--cluster <C>] rollback <bucket> [--yes]
+  $0 [--cluster <C>] finalize <bucket> --old-shard <shard> [--yes]
 EOF
   exit 2
 }
@@ -196,7 +198,7 @@ cutover_flip() {
 # ── move ──────────────────────────────────────────────────────────────────────
 cmd_move() {
   local state target sub_on_dst schema_on_dst mover_src max_fails fail_streak s ready total last
-  valid_shard "$TO" || { err "неизвестный шард '$TO' (SHARDS в buckets.env: ${SHARDS})"; exit 2; }
+  valid_shard "$TO" || { err "неизвестный шард '$TO' (etcd-реестр кластера '$CLUSTER_NAME' или SHARDS в buckets.env)"; exit 2; }
 
   etcd_alive
   OWNER="$(routing_get "$BUCKET")"
@@ -411,7 +413,7 @@ cmd_status() {
   else
     echo "$BUCKET: владелец=$OWNER  state=ACTIVE (статус-ключа нет)"
   fi
-  for s in $SHARDS; do
+  for s in $(cluster_shards); do
     dsn="$(shard_dsn "$s")"
     line="  $s:"
     schema_exists "$dsn" "$BUCKET" && line="$line схема=да" || line="$line схема=нет"
@@ -436,7 +438,7 @@ cmd_rollback() {
   STATUS_JSON="$(status_get "$BUCKET")"
   [ -z "$STATUS_JSON" ] || { err "откат возможен только из ACTIVE (сейчас state=$(jstr .state "$STATUS_JSON"))"; exit 3; }
 
-  for s in $SHARDS; do
+  for s in $(cluster_shards); do
     sub_exists "$(shard_dsn "$s")" "$SUB_RB" && { old="$s"; break; }
   done
   [ -n "$old" ] || { err "обратная подписка $SUB_RB не найдена ни на одном шарде — откат только полным re-copy (§6)"; exit 3; }
@@ -506,10 +508,14 @@ cmd_finalize() {
 
 # ── запуск ────────────────────────────────────────────────────────────────────
 CMD="${1:-}"
+CLUSTER=""
+# ведущий --cluster допустим до команды (usage: [--cluster <C>] move ...)
+if [ "$CMD" = "--cluster" ]; then CLUSTER="${2:-}"; shift 2; CMD="${1:-}"; fi
 [ -n "$CMD" ] && shift || usage
 BUCKET="" TO="" OLD_SHARD="" ASSUME_YES=0 SKIP_REVERSE=0 RESUME=0
 while [ $# -gt 0 ]; do
   case "$1" in
+    --cluster)      CLUSTER="${2:-}"; shift 2 ;;
     --to)           TO="${2:-}"; shift 2 ;;
     --old-shard)    OLD_SHARD="${2:-}"; shift 2 ;;
     --yes|-y)       ASSUME_YES=1; shift ;;
@@ -519,6 +525,7 @@ while [ $# -gt 0 ]; do
     *)              if [ -z "$BUCKET" ]; then BUCKET="$1"; else usage; fi; shift ;;
   esac
 done
+[ -n "$CLUSTER" ] && cluster_set "$CLUSTER"
 
 require_bins psql pg_dump jq etcdctl
 [ -n "$BUCKET" ] || usage

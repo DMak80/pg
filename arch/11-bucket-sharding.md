@@ -39,7 +39,7 @@ HAProxy). На одном шарде живёт несколько бакето�
                                  │
                     ┌────────────┴────────────┐
                     │  etcd-контрол-плейн     │  ← где какой бакет лежит + состояние
-                    │  /buckets/*, /shards/*  │    (watch; P9–P12 — риски etcd)
+                    │  /clusters/<C>/…        │    (watch; P9–P12 — риски etcd)
                     └────────────┬────────────┘
                                  │ DSN = мастер шарда-владельца, :6432 (pg_doorman)
           ┌──────────────────────┼──────────────────────┐
@@ -53,10 +53,11 @@ HAProxy). На одном шарде живёт несколько бакето�
 
 Каждый шард — HA-кластер из [01-architecture.md](01-architecture.md)–[10](10-four-nodes.md):
 failover делает Patroni. Отличие от базовой топологии: **приложение не ходит
-через HAProxy шарда** — роутер берёт из etcd адрес мастер-ноды (`/shards/X/master`,
-его пишет Patroni-callback) и подключается к её **pg_doorman :6432** (per-node
-sidecar, бэкенд `127.0.0.1:5432`). HAProxy остаётся точкой входа только
-репликационного трафика переездов (P2). Раскладка сервисов на ноде — §4.
+через HAProxy шарда** — роутер берёт из etcd адрес мастер-ноды
+(`/clusters/<C>/shards/X/master`, его пишет Patroni-callback) и подключается к её
+**pg_doorman :6432** (per-node sidecar, бэкенд `127.0.0.1:5432`). HAProxy остаётся
+точкой входа только репликационного трафика переездов (P2). Раскладка сервисов
+на ноде — §4.
 
 > Почему не Citus / pgEdge: Citus 12+ умеет schema-based шардирование и онлайн-ребалансинг
 > из коробки, но требует перейти на топологию «координатор + воркеры» вместо N независимых
@@ -68,19 +69,39 @@ sidecar, бэкенд `127.0.0.1:5432`). HAProxy остаётся точкой �
 
 ## 2. Контрол-плейн: etcd
 
-Состояние бакетов живёт в etcd (рецепт кластера — [04](04-deploy-etcd.md); риски
-P9–P12 — в [12](12-bucket-pitfalls.md)). **Доступность etcd = доступность
-роутинга**: пропал кворум — новые маршруты не выдаются и переезды невозможны,
-старые маршруты продолжают работать из кэша. Ключей два вида:
+Состояние живёт в etcd (рецепт кластера — [04](04-deploy-etcd.md); риски
+P9–P12 — в [12](12-bucket-pitfalls.md)). **Один etcd обслуживает несколько
+независимых кластеров (систем)**: всё состояние каждого — под своим префиксом
+`/clusters/<C>/`, системы друг про друга не знают (watch своего префикса);
+Patroni каждого шарда живёт отдельно в `/service/<scope>/`. **Доступность etcd =
+доступность роутинга**: пропал кворум — новые маршруты не выдаются и переезды
+невозможны, старые маршруты продолжают работать из кэша.
+
+Ключи одного кластера:
 
 ```
-/buckets/routing/bucket_42 → "shard1"                   # владелец (авторитет)
-/buckets/status/bucket_42  → {"state":"SYNCING", ...}   # только при переезде
+/clusters/<C>/config              → {"buckets": 256, "dbname": "app"}   # константы init (P18: навсегда)
+/clusters/<C>/shards/X/dsn        → "host=n1,n2,n3 port=5432 dbname=app user=bucket_admin"  # вход шарда
+/clusters/<C>/shards/X/replicas   → 2            # декларативное число реплик
+/clusters/<C>/shards/X/master     → "host:6432"  # lease/TTL, пишет Patroni-callback on_role_change
+/clusters/<C>/buckets/routing/bucket_42 → "shard1"                  # владелец (авторитет)
+/clusters/<C>/buckets/status/bucket_42  → {"state":"SYNCING", ...}  # только при переезде
 ```
 
-`/buckets/routing/N` — единственный ответ на «где бакет»: значение = имя шарда из
-конфига mover'а. Нет статус-ключа = бакет **ACTIVE**. Статус-ключ появляется только
-на время переезда и удаляется атомарно с flip:
+- **config** — константы создания: N (число бакетов) и имя БД. Одна БД на
+  кластер, имя фиксируется при init и хранится здесь (в статическом конфиге
+  приложений его нет). N — навсегда (P18).
+- **shards/X/dsn** — статическая multi-host строка подключения к write-эндпоинту
+  шарда (HAProxy любой ноды ведёт на текущего мастера, P2): для подписок
+  переездов, mover'а и админки. **Без пароля**: пароли в etcd не хранятся
+  (P12/P17) — секреты в env/секрет-хранилище приложений и mover'а.
+- **shards/X/master** — динамический адрес мастер-ноды для роутера приложений
+  (→ pg_doorman :6432); единственный писатель — Patroni-callback `on_role_change`,
+  lease/TTL. Consumer — роутер (§3); полная схема — [12](12-bucket-pitfalls.md), §4.
+- **routing/status** — как в базовой модели: `buckets/routing/N` — единственный
+  ответ на «где бакет» (значение = имя шарда из реестра кластера); нет
+  статус-ключа = бакет **ACTIVE**; статус-ключ появляется только на время
+  переезда и удаляется атомарно с flip:
 
 | state (status-ключ) | Запись | Чтение | Что означает |
 |---|---|---|---|
@@ -93,15 +114,9 @@ P9–P12 — в [12](12-bucket-pitfalls.md)). **Доступность etcd = д
 старый владелец → put routing = новый + delete status): «flip применился, а
 контрол-плейн об этом не знает» невозможно по построению.
 
-Кроме бакетных ключей, в том же etcd живёт **топология кластеров**: адрес
-мастера каждого шарда `/shards/X/master → "host:6432"` (lease/TTL, пишет
-Patroni-callback `on_role_change` — никто больше). Потребитель — роутер
-приложений (§3); полная схема ключей и раскладка ноды — референс топологии
-в [12](12-bucket-pitfalls.md) и §4.
-
 > ⚠️ Бэкапируется отдельно от шардов (P12, `etcdctl snapshot`); потеря карты —
 > не потеря данных (список схем на шардах восстанавливает истину), но restore-процедуру
-> описать заранее.
+> описать заранее. Снапшот покрывает ВСЕ кластеры etcd сразу.
 
 ---
 
@@ -112,26 +127,29 @@ Patroni-callback `on_role_change` — никто больше). Потребит
 знает `bucket_id` (из контекста клиента) и строит DSN так:
 
 1. **bootstrap**: в статическом конфиге приложения — только адреса etcd
-   (`ETCD_ENDPOINTS` + TLS к etcd). Адресов БД в статическом конфиге нет вообще;
-2. `bucket_id = hash(tenant_id) % N` (N — константа из `/buckets/config`);
-3. шард-владелец — `/buckets/routing/bucket_id` (кэш с TTL секунды,
-   инвалидация watch'ем префикса `/buckets/`);
-4. адрес мастера — `/shards/<shard>/master` (формат `host:6432`; lease/TTL,
-   пишет Patroni-callback `on_role_change`) — тоже из кэша/watch;
-5. DSN конструируется на лету: `host=<из ключа> port=6432 dbname=<общая БД>
-   user=app sslmode=...` — dbname один на все бакеты (бакет = схема);
-   подключение — к pg_doorman мастер-ноды (§4). Пулы соединений держим
-   **на каждый шард** (map `shard_id → pool`), не на бакет: переезд бакета
-   не рвёт пулы — меняется только соответствие бакет→шард.
+   (`ETCD_ENDPOINTS` + TLS к etcd) и **имя кластера** `<C>` (префикс
+   `/clusters/<C>/` — один etcd обслуживает несколько независимых систем).
+   Адресов БД и имени базы в статическом конфиге нет вообще;
+2. `N` и `dbname` — из `/clusters/<C>/config` (константы init);
+3. `bucket_id = hash(tenant_id) % N`, схема бакета = `bucket_<id>`;
+4. шард-владелец — `/clusters/<C>/buckets/routing/bucket_id` (кэш с TTL
+   секунды, инвалидация watch'ем префикса `/clusters/<C>/buckets/`);
+5. адрес мастера — `/clusters/<C>/shards/<shard>/master` (формат `host:6432`;
+   lease/TTL, пишет Patroni-callback `on_role_change`) — тоже из кэша/watch;
+6. DSN конструируется на лету: `host=<из master-ключа> port=6432
+   dbname=<из config> user=app sslmode=...` — подключение к pg_doorman
+   мастер-ноды (§4). Пулы соединений держим **на каждый шард** (map
+   `shard_id → pool`), не на бакет: переезд бакета не рвёт пулы — меняется
+   только соответствие бакет→шард.
 
 Отказы и переходы:
 - `state = FROZEN` (статус-ключ) — write-запросы отклоняются **повторяемой**
   ошибкой («бакет переезжает, повторите через N сек»), read-запросы идут
   на владельца;
-- failover мастера шарда — Patroni-callback обновляет `/shards/X/master`
-  (секунды): новые соединения идут на нового мастера, оборванные
-  реконнектятся по тому же ключу;
-- переезд бакета — flip меняет `/buckets/routing/N`: коннекты перетекают
+- failover мастера шарда — Patroni-callback обновляет
+  `/clusters/<C>/shards/X/master` (секунды): новые соединения идут на нового
+  мастера, оборванные реконнектятся по тому же ключу;
+- переезд бакета — flip меняет `/clusters/<C>/buckets/routing/N`: коннекты перетекают
   на нового владельца после разморозки записи.
 
 ---
@@ -145,7 +163,7 @@ Patroni-callback `on_role_change` — никто больше). Потребит
 | Сервис | Слушает | Роль |
 |---|---|---|
 | PostgreSQL | `:5432` (локально) | принимает только pg_doorman, подписки переездов (через HAProxy) и админку |
-| **Patroni** (агент) | REST `:8008` | управляет **локальным** PG; кластер агентов выбирает лидера через etcd; callback `on_role_change` делает lease-put `/shards/X/master` — единственный авторитет «кто мастер». REST `/primary` потребляет health-check HAProxy |
+| **Patroni** (агент) | REST `:8008` | управляет **локальным** PG; кластер агентов выбирает лидера через etcd; callback `on_role_change` делает lease-put `/clusters/<C>/shards/X/master` — единственный авторитет «кто мастер». REST `/primary` потребляет health-check HAProxy |
 | **pg_doorman** (sidecar) | `:6432` | пулер приложений, бэкенд **только** `127.0.0.1:5432` этой ноды; конфиг одинаков на всех нодах (N пулов `bucket_0..N-1 → localhost`), переезды бакетов его не трогают |
 | **HAProxy** | `:5432` | **не клиентский**: вход репликационного трафика переездов (P2); health-check `GET /primary` у Patroni всех нод кластера → ведёт на текущего мастера. Per-node или пара выделенных LB на шард — HAProxy **любой** ноды кластера эквивалентен, подписке дают multi-host conninfo (плашка ниже) |
 | **etcd** (член) | `:2379` | пока кластер ≤ 7 нод — etcd на нодах (локальные чтения/watch, паттерн [10](10-four-nodes.md)); при росте — отдельный etcd-кластер 3–5 нод по [04](04-deploy-etcd.md). Записи всегда через лидера (кворум), локальность ускоряет чтения/watch |
@@ -180,9 +198,68 @@ Patroni-callback `on_role_change` — никто больше). Потребит
 > остаётся в инфраструктуре каждого шарда: он выведен из data path приложений,
 > но остаётся точкой входа репликационного трафика переездов (P2).
 
-Создание нового бакета (когда переездов нет) — `create-bucket.sh <bucket> --shard <shard>`
-(накатывает DDL шаблона, выдаёт гранты app-роли и регистрирует
-`/buckets/routing/N → shard`); раскладка — по свободному месту / round-robin.
+Шард регистрируется в кластере командами жизненного цикла (следующий
+раздел); адрес шарда в etcd — `/clusters/<C>/shards/X/dsn` (multi-host,
+без пароля), имена шардов реестра — те же, что в значениях routing-ключей.
+
+---
+
+## 4.5. Жизненный цикл системы: init → add-shard → move → remove-shard ★
+
+Кластер (шардированная система) создаётся **один раз** с константами, дальше
+масштабируется только по шардам. Сами кластеры-шарды поднимаются отдельно по
+докам [04](04-deploy-etcd.md)–[06](06-deploy-haproxy.md) с параметрами §4 —
+команды ниже лишь регистрируют их в контрол-плейне. Автоматизация — §5.
+
+### init-cluster.sh — создание системы (один раз)
+
+```bash
+./scripts/init-cluster.sh --cluster shop --buckets 256 --dbname app --replicas 2 \
+  --shard shard1='host=10.0.1.1,10.0.1.2,10.0.1.3 port=5432 dbname=app user=bucket_admin' \
+  --shard shard2='host=10.0.2.1,10.0.2.2,10.0.2.3 port=5432 dbname=app user=bucket_admin'
+```
+
+- фиксирует константы `/clusters/shop/config`: **N=256** бакетов и **БД `app`**
+  (одна на кластер, создаётся на шардах заранее). N и dbname — навсегда:
+  смена N ломает хеш-маппинг всех тенантов (P18), повторный init отказывает;
+- регистрирует шарды: `dsn` (multi-host write-эндпоинт, **без пароля** —
+  пароли в etcd не хранятся) и `replicas`;
+- создаёт **все N бакетов сразу** — пустые схемы `bucket_0..bucket_255`,
+  распределённые по шардам **поровну round-robin** (256 на 2 шарда → 128+128);
+  выдаёт app-роли USAGE на схемы;
+- пишет routing-ключи всех бакетов. Структуру (таблицы) в бакеты накатывает
+  миграционная роль позже — журналом миграций (P5).
+
+### add-shard.sh — подключить пустой шард
+
+```bash
+./scripts/add-shard.sh --cluster shop shard3 \
+  --dsn 'host=10.0.3.1,10.0.3.2,10.0.3.3 port=5432 dbname=app user=bucket_admin'
+```
+
+Шард регистрируется **пустым**: привязки бакетов к нему нет. Бакеты
+мигрируются на него позже отдельными командами `move-bucket.sh` — обычно для
+балансировки нагрузки/места. Число шардов и реплик — меняемые величины
+(в отличие от N).
+
+### remove-shard.sh — снять пустой шард
+
+```bash
+./scripts/remove-shard.sh --cluster shop shard3
+```
+
+Инвариант (P23): **удаляться могут только шарды без бакетов** — скрипт
+отказывает, если хоть один routing-ключ указывает на шард или есть
+незавершённый переезд с `target` = шард (сначала мигрируй бакеты). Убирает
+регистрацию из контрол-плейна (`dsn`/`replicas`; `master` гаснет по lease);
+физический демонтаж кластера — вручную.
+
+### Число реплик
+
+`/clusters/<C>/shards/X/replicas` — декларативное намерение (учёт/префлайты).
+Фактическое изменение числа реплик — операция Patroni-кластера шарда
+(добавление ноды — [08](08-operations.md) §5): контрол-плейн хранит только
+желаемое значение, выставляемое init/add-shard или `etcdctl put`.
 
 ---
 
@@ -223,7 +300,7 @@ REVOKE CREATE ON SCHEMA bucket_42 FROM app_role;   -- и на шард1, и на
 
 ```bash
 # контрол-плейн: заявить переезд (после всех проверок выше)
-etcdctl put /buckets/status/bucket_42 \
+etcdctl put /clusters/<C>/buckets/status/bucket_42 \
   '{"state":"SYNCING","target":"shard2","updated_unix":...}'
 ```
 С этого момента действует DDL-мораторий (выше) — до finalize (шаг 5).
@@ -290,7 +367,7 @@ tablesync-слотом (осиротевшие доберёт finalize).
 ### Шаг 4. Cutover (секунды)
 ```bash
 # 4.1 Заморозить запись в контрол-плейне (роутер отклоняет запись, чтение живёт):
-etcdctl put /buckets/status/bucket_42 \
+etcdctl put /clusters/<C>/buckets/status/bucket_42 \
   '{"state":"FROZEN","owner":"shard1","target":"shard2",...}'
 ```
 ```sql
@@ -347,10 +424,10 @@ SELECT pg_current_wal_lsn();          -- запомнить, напр. '0/A00012
 # 4.7 Переключить владельца — ОДНА атомарная etcd-транзакция (compare→put+del):
 #    «flip применился, а контрол-плейн не знает» невозможно по построению
 etcdctl txn <<'EOF'
-val("/buckets/routing/bucket_42") = "shard1"
+val("/clusters/<C>/buckets/routing/bucket_42") = "shard1"
 
-put /buckets/routing/bucket_42 shard2
-del /buckets/status/bucket_42
+put /clusters/<C>/buckets/routing/bucket_42 shard2
+del /clusters/<C>/buckets/status/bucket_42
 
 
 EOF
@@ -385,14 +462,24 @@ EOF
 образец в `buckets.env.example`; на машине запуска нужны `psql`/`pg_dump`):
 
 ```bash
-./scripts/create-bucket.sh bucket_42 --shard shard1 [--ddl ddl.sql | --template bucket_41]
-./scripts/move-bucket.sh move     bucket_42 --to shard2 [--yes] [--skip-reverse] [--resume]
-./scripts/move-bucket.sh status   bucket_42
-./scripts/move-bucket.sh rollback bucket_42 [--yes]
-./scripts/move-bucket.sh finalize bucket_42 --old-shard shard1 [--yes]
-./scripts/abort-move.sh list                       # etcd: незавершённые переезды (P7)
-./scripts/abort-move.sh abort bucket_42 [--yes]    # etcd: отмена + уборка артефактов
+./scripts/init-cluster.sh --cluster C --buckets 256 --dbname app --replicas 2 \
+     --shard shard1='<dsn>' --shard shard2='<dsn>'      # создание системы (§4.5)
+./scripts/add-shard.sh    --cluster C shard3 --dsn '<dsn>'   # подключить ПУСТОЙ шард
+./scripts/remove-shard.sh --cluster C shard3                 # снять пустой шард (P23)
+./scripts/create-bucket.sh --cluster C bucket_42 --shard shard1 [--ddl ddl.sql | --template bucket_41]
+     # аварийная утилита: восстановить/зарегистрировать ОДИН бакет; штатно все
+     # N бакетов создаёт init-cluster.sh, вне диапазона 0..N-1 — отказ
+./scripts/move-bucket.sh --cluster C move     bucket_42 --to shard2 [--yes] [--skip-reverse] [--resume]
+./scripts/move-bucket.sh --cluster C status   bucket_42
+./scripts/move-bucket.sh --cluster C rollback bucket_42 [--yes]
+./scripts/move-bucket.sh --cluster C finalize bucket_42 --old-shard shard1 [--yes]
+./scripts/abort-move.sh  list                       # etcd: незавершённые переезды (все кластеры)
+./scripts/abort-move.sh  --cluster C abort bucket_42 [--yes]    # отмена + уборка артефактов
 ```
+
+`--cluster` у всех скриптов опционален: дефолт — `CLUSTER_NAME` из
+`configs/buckets/buckets.env`. Пароли шардов — там же (`SHARD_<X>_PASSWORD`,
+`MOVER_PASSWORD_<X>`); в etcd паролей нет.
 
 Свойства: шаги идемпотентны — прерванный `move` перезапускается теми же аргументами
 (`--resume` — только если на приёмнике пустая схема после сорванного pg_dump, скрипт
@@ -407,7 +494,7 @@ create → move → призрак-P1 → rollback → повторный move �
 не осталось (`arch/stand/checks/65-move-e2e.sh`).
 
 `abort-move.sh` — отмена незавершённого переезда (P7): состояние читает из
-etcd-контрол-плейна (`/buckets/routing/N` — владелец, `/buckets/status/N` — статус;
+etcd-контрол-плейна (`buckets/routing/N` — владелец, `buckets/status/N` — статус;
 нет ключа = ACTIVE). До любых манипуляций с БД записывает в тот же статус-ключ
 журнал уборки (`state=ABORTING` + план + `phase`) — крах уборки оставляет в etcd
 самодокументирующийся след, повторный запуск продолжает. Порядок уборки: подписки →
@@ -489,7 +576,7 @@ etcd-контрол-плейна (`/buckets/routing/N` — владелец, `/b
 - Sync-standby у мастеров обоих шардов (`pg_stat_replication.sync_state`): живой
   sync-standby приёмника — предусловие переездов (P8: без него `remote_apply`
   вырождается в асинхронность); его пропажа — алерт, а не сюрприз на preflight.
-- Контрол-плейн: бакеты со статус-ключом (`/buckets/status/*`) дольше X минут —
+- Контрол-плейн: бакеты со статус-ключом (`.../buckets/status/*`) дольше X минут —
   деградация переезда; `state=ABORTING` — незавершённая уборка (P7).
 - Роутер: доля запросов, получивших FROZEN-ошибку, и длительность фризов.
 - Постфактум переезда: сверка `count(*)` / `sum(hashtext(t::text))` таблиц на обоих
@@ -537,9 +624,10 @@ etcd-контрол-плейна (`/buckets/routing/N` — владелец, `/b
 
 ## Дальше
 
-→ Возврат к [README.md](README.md). Скрипты: `scripts/create-bucket.sh`,
-`scripts/move-bucket.sh`, `scripts/abort-move.sh` (+ `buckets-common.sh`); конфиг —
-`configs/buckets/buckets.env.example`.
+→ Возврат к [README.md](README.md). Скрипты: `scripts/init-cluster.sh`,
+`scripts/add-shard.sh`, `scripts/remove-shard.sh` (жизненный цикл, §4.5),
+`scripts/move-bucket.sh`, `scripts/abort-move.sh`, `scripts/create-bucket.sh`
+(+ `buckets-common.sh`); конфиг — `configs/buckets/buckets.env.example`.
 → [12-bucket-pitfalls.md](12-bucket-pitfalls.md) — реестр рисков топологии
 (константа N, etcd-контрол-плейн, pg_doorman per-node). Решения P1–P8 применены
 в этом документе (P1–P7 — 2026-08-19, P8 — 2026-08-21). Открытые риски: P9–P22.

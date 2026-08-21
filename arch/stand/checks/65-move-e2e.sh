@@ -19,8 +19,8 @@ ect() { docker exec etcd etcdctl --endpoints=http://localhost:2379 "$@"; }
 
 # ═══ Arrange: bucket_45 на шарде s1 через create-bucket.sh ═══════════════════
 echo ">>> Arrange: чистка хвостов + create-bucket.sh bucket_45 --shard s1"
-ect del /buckets/routing/bucket_45 >/dev/null
-ect del /buckets/status/bucket_45 >/dev/null
+ect del /clusters/legacy/buckets/routing/bucket_45 >/dev/null
+ect del /clusters/legacy/buckets/status/bucket_45 >/dev/null
 h2 -c "DROP SUBSCRIPTION IF EXISTS sub_bucket_45;" >/dev/null 2>&1 || true
 h1 -c "SELECT pg_drop_replication_slot(slot_name) FROM pg_replication_slots WHERE slot_name LIKE 'sub_bucket_45%';" >/dev/null 2>&1 || true
 h1 -c "DROP SUBSCRIPTION IF EXISTS sub_bucket_45_rb; DROP PUBLICATION IF EXISTS pub_bucket_45; DROP PUBLICATION IF EXISTS pub_bucket_45_rb;" >/dev/null 2>&1 || true
@@ -28,7 +28,7 @@ h1 -c "DROP SCHEMA IF EXISTS bucket_45 CASCADE;" >/dev/null
 h2 -c "DROP SCHEMA IF EXISTS bucket_45 CASCADE;" >/dev/null
 
 ops create-bucket.sh bucket_45 --shard s1 2>&1 | grep -v "Container\|Creating\|Created" | sed 's/^/  /'
-[ "$(ect get /buckets/routing/bucket_45 --print-value-only)" = "s1" ] || { echo "❌ create-bucket не зарегистрировал в etcd"; exit 1; }
+[ "$(ect get /clusters/legacy/buckets/routing/bucket_45 --print-value-only)" = "s1" ] || { echo "❌ create-bucket не зарегистрировал в etcd"; exit 1; }
 # данные: serial + standalone sequence с «сожжёнными» номерами (кейс P6)
 h1 -c "CREATE TABLE bucket_45.orders(id serial PRIMARY KEY, note text);
        CREATE SEQUENCE bucket_45.seq_ticket START 1;
@@ -45,8 +45,8 @@ ops move-bucket.sh move bucket_45 --to s2 --yes 2>&1 | tee logs/65-move1.log | g
 
 # ═══ Assert 1: etcd-атомарность + данные + P6 + P1-призрак + запись ═══════════
 echo ">>> Assert 1: атомарный flip (routing=s2, статус-ключ удалён)"
-[ "$(ect get /buckets/routing/bucket_45 --print-value-only)" = "s2" ] || { echo "❌ routing != s2"; exit 1; }
-[ -z "$(ect get /buckets/status/bucket_45 --print-value-only)" ] || { echo "❌ статус-ключ не удалён"; exit 1; }
+[ "$(ect get /clusters/legacy/buckets/routing/bucket_45 --print-value-only)" = "s2" ] || { echo "❌ routing != s2"; exit 1; }
+[ -z "$(ect get /clusters/legacy/buckets/status/bucket_45 --print-value-only)" ] || { echo "❌ статус-ключ не удалён"; exit 1; }
 grep -q "атомарный flip" logs/65-move1.log || { echo "❌ в логе нет атомарного flip"; exit 1; }
 
 echo ">>> Assert 1: копия на s2 + P6 (следующий ticket > 5000) + обратная подписка"
@@ -74,8 +74,8 @@ echo ">>> Act 2: move-bucket.sh rollback bucket_45 --yes"
 ops move-bucket.sh rollback bucket_45 --yes 2>&1 | tee logs/65-rollback.log | grep -v "Container\|Creating\|Created" | sed 's/^/  /'
 
 echo ">>> Assert 2: владелец снова s1, разморожен, артефакты обратной репликации срезаны"
-[ "$(ect get /buckets/routing/bucket_45 --print-value-only)" = "s1" ] || { echo "❌ routing != s1 после rollback"; exit 1; }
-[ -z "$(ect get /buckets/status/bucket_45 --print-value-only)" ] || { echo "❌ статус-ключ не удалён при rollback"; exit 1; }
+[ "$(ect get /clusters/legacy/buckets/routing/bucket_45 --print-value-only)" = "s1" ] || { echo "❌ routing != s1 после rollback"; exit 1; }
+[ -z "$(ect get /clusters/legacy/buckets/status/bucket_45 --print-value-only)" ] || { echo "❌ статус-ключ не удалён при rollback"; exit 1; }
 h1a -c "INSERT INTO bucket_45.orders(note) VALUES ('after-rollback')" \
   || { echo "❌ s1 не разморожен после rollback (P1)"; exit 1; }
 [ "$(h1 -c "SELECT count(*) FROM pg_subscription WHERE subname='sub_bucket_45_rb'")" = "0" ] || { echo "❌ sub_rb не срезана"; exit 1; }
@@ -94,7 +94,7 @@ ops move-bucket.sh finalize bucket_45 --old-shard s2 --yes 2>&1 | tee logs/65-fi
 # ═══ Act 3: повторный move (после отката и уборки всё живо) ═══════════════════
 echo ">>> Act 3: повторный move bucket_45 --to s2 --yes"
 ops move-bucket.sh move bucket_45 --to s2 --yes 2>&1 | tee logs/65-move2.log | grep -v "Container\|Creating\|Created" | sed 's/^/  /'
-[ "$(ect get /buckets/routing/bucket_45 --print-value-only)" = "s2" ] || { echo "❌ повторный move не дошёл до flip"; exit 1; }
+[ "$(ect get /clusters/legacy/buckets/routing/bucket_45 --print-value-only)" = "s2" ] || { echo "❌ повторный move не дошёл до flip"; exit 1; }
 
 # ═══ Act 4: finalize — уборка старого шарда ═══════════════════════════════════
 echo ">>> Act 4: finalize bucket_45 --old-shard s1"
@@ -113,10 +113,10 @@ if ops move-bucket.sh move bucket_44 --to s1 --yes >logs/65-refuse.log 2>&1; the
 fi
 grep -Eq "synchronous_standby_names|sync-standby" logs/65-refuse.log || { echo "❌ неожиданный отказ:"; cat logs/65-refuse.log; exit 1; }
 grep -v "Container\|Creating\|Created" logs/65-refuse.log | sed 's/^/  /'
-[ "$(ect get /buckets/routing/bucket_44 --print-value-only)" = "s2" ] || { echo "❌ routing изменился при отказе"; exit 1; }
-[ -z "$(ect get /buckets/status/bucket_44 --print-value-only)" ] || { echo "❌ отказ оставил статус-ключ"; exit 1; }
+[ "$(ect get /clusters/legacy/buckets/routing/bucket_44 --print-value-only)" = "s2" ] || { echo "❌ routing изменился при отказе"; exit 1; }
+[ -z "$(ect get /clusters/legacy/buckets/status/bucket_44 --print-value-only)" ] || { echo "❌ отказ оставил статус-ключ"; exit 1; }
 # уборка негативного бакета
-ect del /buckets/routing/bucket_44 >/dev/null
+ect del /clusters/legacy/buckets/routing/bucket_44 >/dev/null
 h2 -c "DROP SCHEMA IF EXISTS bucket_44 CASCADE;" >/dev/null
 
 echo "✓ скрипты: create→move(атомарный flip)→призрак→rollback→move→finalize зелёные;"

@@ -4,15 +4,19 @@
 # P7 (arch/12-bucket-pitfalls.md): отмена незавершённого переезда и уборка его
 # артефактов. Состояние переезда живёт в etcd-контрол-плейне.
 #
-# Модель («Референс топологии» в 12-bucket-pitfalls.md):
-#   /buckets/routing/<bucket> → "shard1"                                 — владелец (авторитет)
-#   /buckets/status/<bucket>  → {"state":"SYNCING","target":"shard2",...} — только при переезде
+# Модель («Референс топологии» в 12-bucket-pitfalls.md; всё под префиксом
+# кластера /clusters/<C>/):
+#   .../buckets/routing/<bucket> → "shard1"                                 — владелец (авторитет)
+#   .../buckets/status/<bucket>  → {"state":"SYNCING","target":"shard2",...} — только при переезде
 #   нет статус-ключа = бакет ACTIVE.
 #
 # Использование:
-#   ./scripts/abort-move.sh list                 # кто застрял: статус-ключи etcd
-#   ./scripts/abort-move.sh artifacts <bucket>   # инвентаризация артефактов (read-only)
+#   ./scripts/abort-move.sh list                     # кто застрял: статус-ключи etcd
+#   ./scripts/abort-move.sh artifacts <bucket>       # инвентаризация артефактов (read-only)
 #   ./scripts/abort-move.sh abort <bucket> [--yes] [--force]
+#
+#   без --cluster (и без CLUSTER_NAME в buckets.env) list показывает все
+#   кластеры etcd; artifacts/abort требуют конкретный кластер.
 #
 # Порядок abort (журнал в etcd СТРОГО до манипуляций с БД):
 #   1) etcd: владелец (routing, обязателен) + статус переезда (обязателен: нет
@@ -66,9 +70,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 usage() {
   cat >&2 <<EOF
 Usage:
-  $0 list
-  $0 artifacts <bucket>
-  $0 abort <bucket> [--yes] [--force]
+  $0 [--cluster <C>] list
+  $0 --cluster <C> artifacts <bucket>
+  $0 --cluster <C> abort <bucket> [--yes] [--force]
 EOF
   exit 2
 }
@@ -92,7 +96,7 @@ UNREACHABLE=""
 scan_artifacts() {
   ARTIFACTS=""; UNREACHABLE=""
   local s dsn
-  for s in $SHARDS; do
+  for s in $(cluster_shards); do
     dsn="$(shard_dsn "$s")"
     if ! scalar "$dsn" 'SELECT 1' >/dev/null 2>&1; then
       UNREACHABLE+="$s"$'\n'
@@ -269,26 +273,32 @@ sync_sequences_postflip() {
 # ── Команды ────────────────────────────────────────────────────────────────────
 
 cmd_list() {
-  local keys k b v st tg up owner age note
+  local keys k b c v st tg up owner age note
   etcd_alive
-  keys="$(etcd_prefix_keys /buckets/status/)"
+  if [ -n "${CLUSTER_NAME:-}" ]; then
+    keys="$(etcd_prefix_keys "$(cluster_root)/buckets/status/")"
+  else
+    # кластер не выбран — показываем незавершённые переезды ВСЕХ кластеров etcd
+    keys="$(etcd_prefix_keys /clusters/ | grep '/buckets/status/' || true)"
+  fi
   if [ -z "$keys" ]; then
-    echo "незавершённых переездов нет (статус-ключей в /buckets/status/ нет; нет ключа = ACTIVE)"
+    echo "незавершённых переездов нет (статус-ключей .../buckets/status/ нет; нет ключа = ACTIVE)"
     return 0
   fi
-  printf '%-16s %-9s %-8s %9s  %s\n' BUCKET STATE TARGET 'AGE,с' ЗАМЕТКА
+  printf '%-10s %-16s %-9s %-8s %9s  %s\n' CLUSTER BUCKET STATE TARGET 'AGE,с' ЗАМЕТКА
   while IFS= read -r k; do
     [ -n "$k" ] || continue
-    b="${k#/buckets/status/}"
+    c="$(sed -nE 's|^/clusters/([^/]+)/buckets/status/.*$|\1|p' <<<"$k")"
+    b="${k##*/}"
     v="$(etcd_value "$k")"
     st="$(jstr .state "$v")"; tg="$(jstr .target "$v")"; up="$(jstr .updated_unix "$v")"
-    owner="$(etcd_value "/buckets/routing/$b")"
+    owner="$(etcd_value "/clusters/$c/buckets/routing/$b")"
     age="-"
     if [ -n "$up" ]; then age=$(( $(date +%s) - up )); fi
     note=""
-    if [ "$st" = "ABORTING" ]; then note="уборка не закончена → $0 abort $b"; fi
+    if [ "$st" = "ABORTING" ]; then note="уборка не закончена → $0 --cluster $c abort $b"; fi
     if [ -z "$owner" ]; then note="${note:+$note; }нет routing-ключа!"; fi
-    printf '%-16s %-9s %-8s %9s  %s\n' "$b" "${st:-?}" "${tg:--}" "$age" "$note"
+    printf '%-10s %-16s %-9s %-8s %9s  %s\n' "$c" "$b" "${st:-?}" "${tg:--}" "$age" "$note"
   done <<<"$keys"
 }
 
@@ -297,7 +307,7 @@ cmd_artifacts() {
   OWNER="$(etcd_value "$ROUTING_KEY")"
   echo "$BUCKET: владелец(routing)=${OWNER:-<нет ключа>}"
   if ! valid_shard "$OWNER"; then
-    err "владелец '${OWNER:-}' не описан в buckets.env (SHARDS) — DSN неизвестны"
+    err "владелец '${OWNER:-}' не зарегистрирован (etcd-реестр кластера '$CLUSTER_NAME' или SHARDS в buckets.env) — DSN неизвестны"
     exit 3
   fi
   scan_artifacts
@@ -325,7 +335,7 @@ cmd_abort() {
     exit 3
   fi
   if ! valid_shard "$OWNER"; then
-    err "владелец '$OWNER' не описан в buckets.env (SHARDS)"
+    err "владелец '$OWNER' не зарегистрирован (etcd-реестр кластера '$CLUSTER_NAME' или SHARDS в buckets.env)"
     exit 3
   fi
   if ! etcd_key_exists "$STATUS_KEY"; then
@@ -372,7 +382,7 @@ cmd_abort() {
     journal_set "blocked" "недоступны шарды: $(tr '\n' ' ' <<<"$UNREACHABLE")— инвентаризация неполна, уборка не начиналась"
     info "журнал записан в etcd: state=ABORTING, phase=blocked"
     err "недоступны шарды: $(tr '\n' ' ' <<<"$UNREACHABLE")— с неполной картиной уборку не начинаю."
-    echo "  Верни шард и повтори: $0 abort $BUCKET" >&2
+    echo "  Верни шард и повтори: $0 --cluster $CLUSTER_NAME abort $BUCKET" >&2
     exit 4
   fi
   echo "  схема владельца '$OWNER' остаётся на месте; остальное — в план уборки"
@@ -431,6 +441,9 @@ cmd_abort() {
 
 # ── Разбор аргументов ──────────────────────────────────────────────────────────
 CMD="${1:-}"
+CLUSTER=""
+# ведущий --cluster допустим до команды (usage: [--cluster <C>] list)
+if [ "$CMD" = "--cluster" ]; then CLUSTER="${2:-}"; shift 2; CMD="${1:-}"; fi
 [ -n "$CMD" ] && shift || usage
 case "$CMD" in
   list|artifacts|abort) ;;
@@ -439,12 +452,14 @@ esac
 BUCKET="" ASSUME_YES=0 FORCE=0
 while [ $# -gt 0 ]; do
   case "$1" in
+    --cluster) CLUSTER="${2:-}"; shift 2 ;;
     --yes|-y)  ASSUME_YES=1; shift ;;
     --force)   FORCE=1; shift ;;
     -h|--help) usage ;;
     *)         if [ -z "$BUCKET" ]; then BUCKET="$1"; else usage; fi; shift ;;
   esac
 done
+[ -n "$CLUSTER" ] && cluster_set "$CLUSTER"
 
 for b in psql jq etcdctl; do
   command -v "$b" >/dev/null 2>&1 || { echo "❌ ОШИБКА: не найден '$b' (нужен на машине запуска)" >&2; exit 9; }
@@ -454,6 +469,7 @@ case "$CMD" in
   list)      [ -z "$BUCKET" ] || usage ;;
   artifacts|abort)
              [ -n "$BUCKET" ] || usage
+             [ -n "${CLUSTER_NAME:-}" ] || { echo "❌ ОШИБКА: artifacts/abort требуют кластер: --cluster <C> или CLUSTER_NAME в buckets.env" >&2; exit 2; }
              valid_bucket "$BUCKET" || { err "неверное имя бакета '$BUCKET' (шаблон: ^[a-z][a-z0-9_]*$)"; exit 2; } ;;
 esac
 
@@ -461,8 +477,8 @@ PUB="pub_${BUCKET}"        # прямая публикация: на источ�
 SUB="sub_${BUCKET}"        # прямая подписка: на приёмнике, пока идёт переезд
 PUB_RB="pub_${BUCKET}_rb"  # обратная публикация: на новом владельце после flip
 SUB_RB="sub_${BUCKET}_rb"  # обратная подписка: на старом шарде после flip
-ROUTING_KEY="/buckets/routing/$BUCKET"
-STATUS_KEY="/buckets/status/$BUCKET"
+ROUTING_KEY="$(routing_key "$BUCKET")"
+STATUS_KEY="$(status_key "$BUCKET")"
 
 case "$CMD" in
   list)      cmd_list ;;

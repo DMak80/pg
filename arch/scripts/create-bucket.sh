@@ -2,15 +2,21 @@
 # scripts/create-bucket.sh
 #
 # Создать бакет (схему) на шарде и зарегистрировать его в etcd-контрол-плейне
-# (/buckets/routing/<bucket> → шард).
-# См. arch/11-bucket-sharding.md §2, §4.
+# (/clusters/<C>/buckets/routing/<bucket> → шард).
+#
+# ⚠️ Штатно ВСЕ бакеты кластера (bucket_0..bucket_<N-1>, N — константа)
+# создаёт init-cluster.sh при инициализации, распределяя их по шардам поровну.
+# Этот скрипт — утилита точечного восстановления/регистрации: утерянный бакет
+# из диапазона 0..N-1, бакет с DDL из файла/шаблона, кластер без init (legacy).
+# В инициализированном кластере бакет ВНЕ диапазона будет отклонён.
 #
 # Использование:
-#   ./scripts/create-bucket.sh <bucket> --shard <shard>                    # пустая схема
-#   ./scripts/create-bucket.sh <bucket> --shard <shard> --ddl <file.sql>   # схема + DDL из файла
-#   ./scripts/create-bucket.sh <bucket> --shard <shard> --template <другой bucket на этом же шарде>
+#   ./scripts/create-bucket.sh [--cluster <C>] <bucket> --shard <shard>
+#   ./scripts/create-bucket.sh [--cluster <C>] <bucket> --shard <shard> --ddl <file.sql>
+#   ./scripts/create-bucket.sh [--cluster <C>] <bucket> --shard <shard> --template <другой bucket на этом же шарде>
 #
-#   --shard     шард, на котором создать бакет (имя из SHARDS в buckets.env)
+#   --cluster   кластер (дефолт CLUSTER_NAME из buckets.env)
+#   --shard     шард, на котором создать бакет (имя из etcd-реестра или SHARDS)
 #   --ddl       файл SQL: применяется после CREATE SCHEMA; объекты должны быть
 #               квалифицированы именем схемы (или задай search_path в самом файле)
 #   --template  взять структуру существующего бакета на ТОМ ЖЕ шарде
@@ -29,29 +35,32 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 usage() {
   cat >&2 <<EOF
-Usage: $0 <bucket> --shard <shard> [--ddl <file.sql> | --template <bucket>]
-  bucket   имя нового бакета = имя схемы, напр. bucket_42
-  --shard  шард-владелец (из SHARDS в buckets.env)
+Usage: $0 [--cluster <C>] <bucket> --shard <shard> [--ddl <file.sql> | --template <bucket>]
+  --cluster  кластер в etcd (дефолт CLUSTER_NAME из buckets.env)
+  bucket     имя бакета = имя схемы, напр. bucket_42
+  --shard    шард-владелец (etcd-реестр или SHARDS в buckets.env)
 EOF
   exit 2
 }
 
-BUCKET="" SHARD="" DDL_FILE="" TEMPLATE=""
+CLUSTER="" BUCKET="" SHARD="" DDL_FILE="" TEMPLATE=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --shard)     SHARD="${2:-}"; shift 2 ;;
-    --ddl)       DDL_FILE="${2:-}"; shift 2 ;;
-    --template)  TEMPLATE="${2:-}"; shift 2 ;;
-    -h|--help)   usage ;;
-    *)           [ -z "$BUCKET" ] && BUCKET="$1" || usage; shift ;;
+    --cluster)  CLUSTER="${2:-}"; shift 2 ;;
+    --shard)    SHARD="${2:-}"; shift 2 ;;
+    --ddl)      DDL_FILE="${2:-}"; shift 2 ;;
+    --template) TEMPLATE="${2:-}"; shift 2 ;;
+    -h|--help)  usage ;;
+    *)          [ -z "$BUCKET" ] && BUCKET="$1" || usage; shift ;;
   esac
 done
+[ -n "$CLUSTER" ] && cluster_set "$CLUSTER"
 [ -n "$BUCKET" ] && [ -n "$SHARD" ] || usage
 [ -z "$DDL_FILE" ] || [ -z "$TEMPLATE" ] || { echo "❌ --ddl и --template взаимоисключающие" >&2; exit 2; }
 
 require_bins psql pg_dump perl etcdctl
 valid_bucket "$BUCKET" || { echo "❌ неверное имя бакета '$BUCKET' (шаблон: ^[a-z][a-z0-9_]*$)" >&2; exit 2; }
-valid_shard "$SHARD"   || { echo "❌ неизвестный шард '$SHARD' (SHARDS в buckets.env: ${SHARDS})" >&2; exit 2; }
+valid_shard "$SHARD"   || { echo "❌ неизвестный шард '$SHARD' (etcd-реестр кластера '$CLUSTER_NAME' или SHARDS в buckets.env: ${SHARDS})" >&2; exit 2; }
 if [ -n "$TEMPLATE" ]; then
   valid_bucket "$TEMPLATE" || { echo "❌ неверное имя шаблона '$TEMPLATE'" >&2; exit 2; }
 fi
@@ -60,6 +69,25 @@ if [ -n "$DDL_FILE" ]; then
 fi
 
 etcd_alive
+
+# Guard инициализированного кластера: набор бакетов фиксирован (N — константа,
+# P18); штатно все схемы создаёт init-cluster.sh.
+cfg="$(cluster_config)"
+if [ -n "$cfg" ]; then
+  N="$(cfg_field buckets)"
+  if [[ "$BUCKET" =~ ^bucket_([0-9]+)$ ]]; then
+    idx="${BASH_REMATCH[1]}"
+    if [ -z "$N" ] || [ "$idx" -ge "$N" ]; then
+      echo "❌ бакет '$BUCKET' вне диапазона кластера '$CLUSTER_NAME' (N=$N: bucket_0..bucket_$((N - 1)))" >&2
+      echo "   Штатно все бакеты создаёт init-cluster.sh; расширить N нельзя (P18)." >&2
+      exit 3
+    fi
+  else
+    echo "❌ в инициализированном кластере имена бакетов фиксированы: bucket_0..bucket_$(( ${N:-?} - 1 ))" >&2
+    exit 3
+  fi
+fi
+
 DSN="$(shard_dsn "$SHARD")"
 
 # ─────────────────────────────────────────────────────────────────────────────
