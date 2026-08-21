@@ -11,9 +11,20 @@ PostgreSQL 18.4 (P1–P7 — 2026-08-19, P8 — 2026-08-21, `arch/stand/` — с
 ## Референс топологии (согласована)
 
 ```
+нода кластера-шарда X:
+  Patroni (агент, REST :8008) ──► PostgreSQL :5432 (локально)
+      on_role_change ──► etcdctl put --lease /shards/X/master
+      (единственный авторитет «кто мастер»; /primary потребляет health-check HAProxy)
+  pg_doorman :6432 (sidecar) ──► 127.0.0.1:5432   # только локальный PG
+  HAProxy :5432 ──► PG-ноды кластера (httpchk /primary)   # НЕ клиентский:
+      вход репликационного трафика переездов (P2); per-node или пара LB на шард
+  etcd-член :2379   # пока нод кластера ≤7; при росте — отдельный etcd (04-я)
+
 приложение (роутер: etcd watch: бакет → шард → мастер-хост)
     → pg_doorman :6432 на ноде-мастере (sidecar)
         → 127.0.0.1:5432 (локальный PG)
+bootstrap приложения: статикой — только адреса etcd; DSN конструируется
+на лету (host из /shards/X/master, port 6432; dbname общий — бакет это схема)
 
 etcd-контрол-плейн:
   /buckets/config    → {"buckets": 256}            # N — константа
@@ -22,8 +33,9 @@ etcd-контрол-плейн:
   /shards/X/master   → "10.0.1.11:6432"            # lease/TTL, пишет Patroni-callback или watcher
   /shards/X/replicas → [...]                       # опционально
 
-Переезд бакета: логическая репликация через HAProxy шардов (мимо пулеров),
-cutover = etcd-транзакция (routing/N + delete status/N).
+Переезд бакета: логическая репликация через HAProxy шардов (мимо пулеров;
+подписка с multi-host conninfo host=node1,node2,... — HAProxy любой ноды
+ведёт к мастеру), cutover = etcd-транзакция (routing/N + delete status/N).
 HAProxy удалён из data path приложений; остаётся точкой входа репликационного
 трафика переездов (см. P2).
 ```
