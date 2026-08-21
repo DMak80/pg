@@ -90,7 +90,7 @@ arch/
 ├── 10-four-nodes.md           ← ★ опция: 4-нодовая схема (3 узла etcd + 4 БД-ноды)
 ├── 11-bucket-sharding.md      ← ★ опция: бакеты (схемы) поверх нескольких кластеров,
 │                                  онлайн-переезд бакета между шардами
-├── 12-bucket-pitfalls.md      ← ★ реестр рисков v2-топологии бакетов (etcd + pg_doorman)
+├── 12-bucket-pitfalls.md      ← ★ реестр рисков топологии бакетов (etcd + pg_doorman)
 ├── configs/
 │   ├── etcd/
 │   │   ├── docker-compose.yml
@@ -106,7 +106,7 @@ arch/
 │       ├── haproxy.cfg                 (базовый, 3 ноды)
 │       └── haproxy-4nodes.cfg          (★ для 4 нод: + server pg4 в обоих backend'ах)
 │   └── buckets/
-│       └── buckets.env.example         (★ конфиг бакетных скриптов: каталог, DSN шардов, etcd)
+│       └── buckets.env.example         (★ конфиг бакетных скриптов: etcd, DSN шардов)
 └── scripts/
     ├── find-leader.sh         ← найти текущего лидера кластера
     ├── get-role.sh            ← узнать роль конкретной ноды (master/replica)
@@ -116,9 +116,9 @@ arch/
     ├── health.sh              ← быстрая проверка здоровья всех нод
     ├── patronictl.sh          ← обёртка над patronictl в контейнере
     ├── buckets-common.sh      ← ★ общие функции бакетных скриптов (11-bucket-sharding.md)
-    ├── create-bucket.sh       ← ★ создать бакет-схему на шарде + регистрация в каталоге
+    ├── create-bucket.sh       ← ★ создать бакет-схему на шарде + регистрация в etcd
     ├── move-bucket.sh         ← ★ онлайн-переезд бакета: move/status/rollback/finalize
-    ├── abort-move.sh          ← ★ v2/etcd: отмена незавершённого переезда + уборка артефактов (P7)
+    ├── abort-move.sh          ← ★ etcd: отмена незавершённого переезда + уборка артефактов (P7)
     # все скрипты читают ALL_NODES из env → автоматически работают и с 3, и с 4 нодами
 ```
 
@@ -161,5 +161,5 @@ arch/
 8. [10-four-nodes.md](10-four-nodes.md) — **опционально**: расширение до 4 нод.
 9. [11-bucket-sharding.md](11-bucket-sharding.md) — **опционально**: виртуальные
    шарды-бакеты поверх нескольких кластеров.
-10. [12-bucket-pitfalls.md](12-bucket-pitfalls.md) — реестр рисков v2-топологии
+10. [12-bucket-pitfalls.md](12-bucket-pitfalls.md) — реестр рисков топологии
     (константа N, etcd-контрол-плейн, pg_doorman).

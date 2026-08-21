@@ -4,8 +4,11 @@
 #
 # Нюанс, выявленный на стенде: НЕАКТИВНЫЙ слот при плавной записи не
 # инвалидируется — checkpoint'ы подтягивают его restart_lsn. Лимит ловит
-# реальный сценарий: слот АКТИВЕН (walsender жив), а потребитель молчит
-# и не подтверждает — его эмулирует slowconsumer.pl.
+# реальный сценарий: слот АКТИВЕН (walsender жив), а потребитель не
+# подтверждает применение — его эмулирует slowconsumer.pl (читает поток,
+# отвечает на keepalive стоячим feedback'ом: TCP жив, confirmed_flush стоит;
+# «не читать вовсе» нельзя — walsender зависает в ClientWrite и блокирует
+# CHECKPOINT, который инвалидирует слот только после освобождения walsender'а).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p logs
@@ -21,9 +24,11 @@ q -c "DROP PUBLICATION IF EXISTS pub_p4;" >/dev/null
 q -c "CREATE PUBLICATION pub_p4 FOR TABLE walgen;" >/dev/null
 q -c "SELECT pg_drop_replication_slot('stuck_move');" >/dev/null 2>&1 || true
 q -c "SELECT * FROM pg_create_logical_replication_slot('stuck_move', 'pgoutput');" >/dev/null
+# стоячая позиция для feedback'а потребителя: confirmed слота на момент создания
+SS_LSN="$(q -c "select confirmed_flush_lsn from pg_replication_slots where slot_name='stuck_move'")"
 docker exec s1b pkill -f slowconsumer 2>/dev/null || true
 docker cp "$PWD/slowconsumer.pl" s1b:/tmp/slowconsumer.pl >/dev/null
-docker exec -d s1b sh -c 'perl /tmp/slowconsumer.pl stuck_move pub_p4 > /tmp/sc.log 2>&1'
+docker exec -d s1b sh -c "perl /tmp/slowconsumer.pl stuck_move pub_p4 $SS_LSN > /tmp/sc.log 2>&1"
 for i in $(seq 1 15); do
   a="$(q -c "select active from pg_replication_slots where slot_name='stuck_move'")"
   [ "$a" = "t" ] && break; sleep 1

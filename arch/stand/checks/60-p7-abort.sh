@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# P7: артефакты незавершённых переездов. Скрипт abort-move.sh (v2, etcd):
+# P7: артефакты незавершённых переездов. Скрипт abort-move.sh (etcd):
 # находит остатки в etcd, пишет журнал уборки в etcd ДО любых манипуляций
 # с БД, идемпотентно чистит БД, затем возвращает ACTIVE удалением статус-ключа.
 #
@@ -23,9 +23,9 @@ h1()  { docker compose run --rm -T opsbox psql -X -qAt -v ON_ERROR_STOP=1 \
 h1a() { docker compose run --rm -T opsbox psql -X -qAt -v ON_ERROR_STOP=1 \
           "host=hap1 port=5432 dbname=postgres user=app_role" "$@"; }
 h2()  { docker compose run --rm -T opsbox psql -X -qAt -v ON_ERROR_STOP=1 \
-          "host=s2 port=5432 dbname=postgres user=postgres" "$@"; }
+          "host=hap2 port=5432 dbname=postgres user=postgres" "$@"; }
 h2a() { docker compose run --rm -T opsbox psql -X -qAt -v ON_ERROR_STOP=1 \
-          "host=s2 port=5432 dbname=postgres user=app_role" "$@"; }
+          "host=hap2 port=5432 dbname=postgres user=app_role" "$@"; }
 abort() { docker compose run --rm -T opsbox bash /arch/scripts/abort-move.sh "$@"; }
 ect() { docker exec etcd etcdctl --endpoints=http://localhost:2379 "$@"; }
 
@@ -121,9 +121,9 @@ echo "  ✓ оба отказа корректны"
 
 # ── Act: крах уборки — приёмник недоступен ──────────────────────────────────
 echo ">>> s2 недоступен → abort пишет журнал (phase=blocked) и НЕ трогает БД"
-docker stop s2 > /dev/null
+docker stop s2a > /dev/null
 if abort abort bucket_43 --yes >logs/60-abort-blocked.log 2>&1; then
-  echo "❌ abort должен был споткнуться о недоступный s2"; docker start s2 >/dev/null; exit 1
+  echo "❌ abort должен был споткнуться о недоступный s2"; docker start s2a >/dev/null; exit 1
 fi
 grep -v "Container\|Creating\|Created" logs/60-abort-blocked.log | sed 's/^/  /'
 # Assert: журнал в etcd УЖЕ есть, а в БД ещё НИЧЕГО не тронуто —
@@ -140,8 +140,12 @@ echo "  ✓ журнал в etcd есть, БД не тронута"
 
 # ── Act: s2 вернулся → повторный abort продолжает (resume по журналу) ────────
 echo ">>> s2 вернулся → повторный abort дочищает"
-docker start s2 >/dev/null
-until docker exec s2 pg_isready -U postgres -q; do sleep 1; done
+docker start s2a >/dev/null
+# сайдкар не переподключается к новому netns перезапущенной ноды — рестартуем
+docker restart hc2a >/dev/null 2>&1 || true
+until docker exec s2a pg_isready -U postgres -q; do sleep 1; done
+# abort ходит через hap2 — ждём, пока HAProxy снова видит живой бэкенд (health-check)
+until [ "$(h2 -c 'SELECT 1' 2>/dev/null)" = "1" ]; do sleep 1; done
 abort abort bucket_43 --yes 2>&1 | tee logs/60-abort-resume.log | grep -v "Container\|Creating\|Created" | sed 's/^/  /'
 grep -q "продолжаю" logs/60-abort-resume.log || { echo "❌ resume не увидел журнал ABORTING"; exit 1; }
 

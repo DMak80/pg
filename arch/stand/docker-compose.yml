@@ -1,14 +1,27 @@
-# Практический стенд проверки решений P1–P6 (12-bucket-pitfalls.md).
+# Практический стенд проверки решений P1–P8 (12-bucket-pitfalls.md).
 #
 #   шард1: s1a (мастер) + s1b (реплика, failover slots) + hap1 (HAProxy :5432)
 #          + hc1a/hc1b (сайдкары /primary — эмуляция Patroni REST API)
-#   шард2: s2 (приёмник, одиночная нода — его failover это открытый P8)
-#   etcd: контрол-плейн v2 (одиночный, не HA — только стенд; P7-проверки)
-#   opsbox: psql+etcdctl+jq, машина запуска v2-скриптов (профиль ops —
+#   шард2: s2a (мастер) + s2b (реплика) + hap2 + hc2a/hc2b — симметричный кластер:
+#          приёмник с failover-способностью (P8), подписки ходят через hap2/hap1
+#   etcd: контрол-плейн (одиночный, не HA — только стенд)
+#   opsbox: psql+pg_dump+etcdctl+jq, машина запуска скриптов (профиль ops —
 #          поднимается по требованию: docker compose run --rm opsbox ...)
+#
+# synchronous_standby_names НЕ запекаются во флаги -c: флаг командной строки
+# сильнее любого ALTER SYSTEM/конфига, и после промоушена без второй реплики
+# коммиты навсегда зависают в SyncRep. Имена выставляет 00-up.sh через
+# ALTER SYSTEM на действующих мастерах (после коннекта реплик) — так их же
+# можно снять при промоушене. Это предусловие P8: подписки переездов создаются
+# с synchronous_commit=remote_apply, у приёмника обязан быть живой sync-standby.
 #
 # ⚠️ Только стенд: POSTGRES_HOST_AUTH_METHOD=trust (без паролей и TLS).
 # max_slot_wal_keep_size=32MB — специально маленький, чтобы проверить P4.
+#
+# PG-нодам заданы фиксированные IP: docker stop/start выдаёт контейнеру новый
+# адрес, а HAProxy резолвит бэкенды только при своём старте — health-check
+# ушёл бы в Layer4-timeout по устаревшему IP после рестарта ноды (найдено
+# на стенде в проверках P7/P8, где ноды стопаются и поднимаются).
 name: pgstand
 
 services:
@@ -27,7 +40,9 @@ services:
       - max_wal_senders=16
       - -c
       - max_slot_wal_keep_size=32MB
-    networks: [pgnet]
+    networks:
+      pgnet:
+        ipv4_address: 172.28.0.11
 
   s1b:
     image: postgres:18
@@ -44,19 +59,22 @@ services:
         # Внимание: в образе postgres:18 PGDATA = /var/lib/postgresql/18/docker.
         # Для sync_replication_slots нужны: physical-слот реплики (primary_slot_name),
         # dbname в primary_conninfo, wal_level=logical на реплике.
+        # application_name нужен для synchronous_standby_names мастера (P8).
         set -e
         if [ ! -s "$$PGDATA/PG_VERSION" ]; then
           while ! pg_basebackup -h s1a -U postgres -D "$$PGDATA" -X stream -R -C -S s1b_phys; do
             echo "s1b: жду s1a (инициализация/hba)..."; sleep 2; rm -rf "$$PGDATA"
           done
           chmod 700 "$$PGDATA"
-          sed -i "s|^primary_conninfo.*|primary_conninfo = 'host=s1a port=5432 user=postgres dbname=postgres'|" \
+          sed -i "s|^primary_conninfo.*|primary_conninfo = 'host=s1a port=5432 user=postgres dbname=postgres application_name=s1b'|" \
             "$$PGDATA/postgresql.auto.conf"
         fi
         exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 \
              -c max_slot_wal_keep_size=32MB \
              -c sync_replication_slots=on -c hot_standby_feedback=on
-    networks: [pgnet]
+    networks:
+      pgnet:
+        ipv4_address: 172.28.0.12
     depends_on: [s1a]
 
   hc1a:
@@ -81,20 +99,102 @@ services:
     networks: [pgnet]
     depends_on: [s1a, s1b]
 
-  s2:
+  s2a:
     image: postgres:18
-    container_name: s2
+    container_name: s2a
+    user: postgres
     environment:
       POSTGRES_HOST_AUTH_METHOD: trust
     command:
-      - postgres
+      - bash
       - -c
-      - wal_level=logical
-      - -c
-      - max_replication_slots=16
-    networks: [pgnet]
+      - |
+        # Самовосстанавливающийся узел шарда 2 (для P8-проверок: после промоушена
+        # s2b контейнер s2a пересоздаётся репликой — docker compose rm -sf s2a &&
+        # docker compose up -d s2a). При пустом PGDATA: если s2b уже мастер —
+        # клонируемся от него; если недоступен — первый старт, initdb-мастер.
+        set -e
+        if [ ! -s "$$PGDATA/PG_VERSION" ]; then
+          cloned=0
+          for i in $$(seq 1 15); do
+            if pg_isready -h s2b -U postgres -q 2>/dev/null \
+               && [ "$$(psql -h s2b -U postgres -d postgres -tAc 'select pg_is_in_recovery()' 2>/dev/null)" = "f" ]; then
+              echo "s2a: клонируюсь от мастера s2b"
+              rm -rf "$$PGDATA"
+              psql -h s2b -U postgres -d postgres -tAc "select pg_drop_replication_slot('s2a_phys')" >/dev/null 2>&1 || true
+              pg_basebackup -h s2b -U postgres -D "$$PGDATA" -X stream -R -C -S s2a_phys
+              chmod 700 "$$PGDATA"
+              sed -i "s|^primary_conninfo.*|primary_conninfo = 'host=s2b port=5432 user=postgres dbname=postgres application_name=s2a'|" \
+                "$$PGDATA/postgresql.auto.conf"
+              cloned=1; break
+            fi
+            sleep 1
+          done
+          if [ "$$cloned" = 0 ]; then
+            echo "s2a: peer s2b не мастер — первый старт, initdb-мастер"
+            exec docker-entrypoint.sh postgres -c wal_level=logical -c max_wal_senders=16 \
+                 -c max_replication_slots=16 -c max_slot_wal_keep_size=32MB
+          fi
+        fi
+        exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 \
+             -c max_slot_wal_keep_size=32MB
+    networks:
+      pgnet:
+        ipv4_address: 172.28.0.21
 
-  # Контрол-плейн v2: одиночный etcd (в проде — кластер из 04-deploy-etcd.md).
+  s2b:
+    image: postgres:18
+    container_name: s2b
+    user: postgres
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    command:
+      - bash
+      - -c
+      - |
+        # Реплика шарда 2 — зеркально s1b: failover slots (симметрия P3:
+        # шард2 сам бывает источником после flip'а) + application_name
+        # для sync-standby мастера (P8).
+        set -e
+        if [ ! -s "$$PGDATA/PG_VERSION" ]; then
+          while ! pg_basebackup -h s2a -U postgres -D "$$PGDATA" -X stream -R -C -S s2b_phys; do
+            echo "s2b: жду s2a (инициализация/hba)..."; sleep 2; rm -rf "$$PGDATA"
+          done
+          chmod 700 "$$PGDATA"
+          sed -i "s|^primary_conninfo.*|primary_conninfo = 'host=s2a port=5432 user=postgres dbname=postgres application_name=s2b'|" \
+            "$$PGDATA/postgresql.auto.conf"
+        fi
+        exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 \
+             -c max_slot_wal_keep_size=32MB \
+             -c sync_replication_slots=on -c hot_standby_feedback=on
+    networks:
+      pgnet:
+        ipv4_address: 172.28.0.22
+    depends_on: [s2a]
+
+  hc2a:
+    build: ./sidecar
+    container_name: hc2a
+    network_mode: "service:s2a"
+    depends_on: [s2a]
+    restart: unless-stopped
+
+  hc2b:
+    build: ./sidecar
+    container_name: hc2b
+    network_mode: "service:s2b"
+    depends_on: [s2b]
+    restart: unless-stopped
+
+  hap2:
+    image: haproxy:2.8-alpine
+    container_name: hap2
+    volumes:
+      - ./haproxy-s2.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks: [pgnet]
+    depends_on: [s2a, s2b]
+
+  # Контрол-плейн: одиночный etcd (в проде — кластер из 04-deploy-etcd.md).
   # Версия — как в доке 04. Хранит /buckets/routing/*, /buckets/status/*.
   etcd:
     image: quay.io/coreos/etcd:v3.5.21
@@ -108,9 +208,9 @@ services:
       - etcd-data:/var/etcd/data
     networks: [pgnet]
 
-  # «Ops-бокс»: машина запуска v2-скриптов (arch/scripts/abort-move.sh) —
-  # ходит в etcd и шарды по внутренней сети стенда. Профиль ops: не поднимается
-  # при обычном `docker compose up`, только `docker compose run --rm opsbox`.
+  # «Ops-бокс»: машина запуска скриптов (move/create/abort-move) — ходит в etcd
+  # и шарды по внутренней сети стенда. Профиль ops: не поднимается при обычном
+  # `docker compose up`, только `docker compose run --rm opsbox`.
   opsbox:
     build: ./opsbox
     profiles: ["ops"]
@@ -124,6 +224,9 @@ services:
 networks:
   pgnet:
     name: pgstand_pgnet
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
 
 volumes:
   etcd-data:

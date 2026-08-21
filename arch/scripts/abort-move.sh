@@ -2,10 +2,9 @@
 # scripts/abort-move.sh
 #
 # P7 (arch/12-bucket-pitfalls.md): отмена незавершённого переезда и уборка его
-# артефактов. Первый скрипт v2: состояние переезда живёт в etcd-контрол-плейне,
-# каталог v1 (таблица buckets) этим скриптом не пользуется.
+# артефактов. Состояние переезда живёт в etcd-контрол-плейне.
 #
-# Модель v2 («Референс топологии v2» в 12-bucket-pitfalls.md):
+# Модель («Референс топологии» в 12-bucket-pitfalls.md):
 #   /buckets/routing/<bucket> → "shard1"                                 — владелец (авторитет)
 #   /buckets/status/<bucket>  → {"state":"SYNCING","target":"shard2",...} — только при переезде
 #   нет статус-ключа = бакет ACTIVE.
@@ -64,9 +63,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/buckets-common.sh"
 
-ETCD_ENDPOINTS="${ETCD_ENDPOINTS:-http://127.0.0.1:2379}"
-ABORT_MIN_AGE_SEC="${ABORT_MIN_AGE_SEC:-120}"
-
 usage() {
   cat >&2 <<EOF
 Usage:
@@ -84,29 +80,9 @@ confirm() {
   [ "${a:-}" = "YES" ] || { echo "Отменено."; exit 1; }
 }
 
-# ── etcd (v2-контрол-плейн) ───────────────────────────────────────────────────
-# Чтение — через -w json + jq: значения в json-выводе лежат в base64, зато
-# разбор не зависит от версии etcdctl (у --print-value-only история сложнее).
-ect() { ETCDCTL_API=3 etcdctl --endpoints="$ETCD_ENDPOINTS" --command-timeout="${ETCD_TIMEOUT_SEC:-5}s" "$@"; }
-
-etcd_value() { # <ключ> → значение (пусто = ключа нет)
-  ect get "$1" -w json | jq -r '.kvs[0].value // "" | @base64d'
-}
-
-etcd_key_exists() { [ "$(ect get "$1" -w json | jq '.kvs | length')" -gt 0 ]; }
-
-etcd_prefix_keys() { # <префикс> → ключи построчно
-  ect get "$1" --prefix -w json | jq -r '.kvs[]?.key | @base64d'
-}
-
-etcd_alive() {
-  ect get / --prefix --limit=1 -w json >/dev/null 2>&1 \
-    || { err "etcd недоступен: $ETCD_ENDPOINTS"; exit 9; }
-}
-
-jstr() { [ -n "${2:-}" ] && jq -r "$1 // empty" <<<"$2" 2>/dev/null || true; }
-
-slot_exists() { [ "$(scalar "$1" "SELECT count(*) FROM pg_replication_slots WHERE slot_name='$2'")" -gt 0 ]; }
+# ── etcd (контрол-плейн) ──────────────────────────────────────────────────────
+# Хелперы ect/etcd_value/etcd_key_exists/etcd_prefix_keys/etcd_alive/jstr —
+# общие, в buckets-common.sh.
 
 # ── Инвентаризация артефактов на всех шардах ──────────────────────────────────
 # ARTIFACTS — строки "шард|тип|имя" (типы: sub/slot/pub/schema);
@@ -278,40 +254,16 @@ cleanup_schemas() { # схемы НЕ-владельцев, последним (
 
 # Доведение P6 (routing==target): sequence не реплицируются — если cutover
 # прошёл без шага 4.5, счётчики владельца отстают от выданных на старом шарде.
-# issued (последнее выданное) и next (следующее) считаем НА СТОРОНЕ SQL:
-# конкатенация boolean с текстом даёт 'true'/'false' (не 't'/'f' дисплея psql)
-# — парсить его в bash не надо.
+# sync_sequences_forward (общая, buckets-common.sh): setval только ВПЕРЁД —
+# пост-flip записи уже расходовали значения владельца; issued/next считаются
+# на стороне SQL (boolean||text даёт 'true'/'false', парсить в bash нельзя).
 sync_sequences_postflip() {
-  local s t n dsn_own dsn_old seqs seq qseq issued next fixed=0
-  dsn_own="$(shard_dsn "$OWNER")"
+  local s t n
   while IFS='|' read -r s t n; do
     [ "$t" = "schema" ] || continue
     [ "$s" != "$OWNER" ] || continue
-    dsn_old="$(shard_dsn "$s")"
-    seqs="$(scalar "$dsn_old" "SELECT s.relname FROM pg_class s
-                               JOIN pg_namespace ns ON ns.oid=s.relnamespace
-                               WHERE s.relkind='S' AND ns.nspname='$BUCKET' ORDER BY 1")" || return 1
-    for seq in $seqs; do
-      qseq="$(scalar "$dsn_old" "SELECT format('%I.%I', '$BUCKET', '$seq')")" || return 1
-      # последнее ВЫДАННОЕ на старом шарде: is_called→last_value, иначе last_value-1
-      issued="$(scalar "$dsn_old" "SELECT CASE WHEN is_called THEN last_value ELSE last_value-1 END
-                                  FROM $qseq" 2>/dev/null)" \
-        || { echo "  ⚠️ не прочитался sequence $BUCKET.$seq на '$s' — пропускаю"; continue; }
-      if [ "$(scalar "$dsn_own" "SELECT to_regclass('${BUCKET}.${seq}') IS NOT NULL")" != "t" ]; then
-        echo "  ⚠️ у владельца '$OWNER' нет sequence $BUCKET.$seq (дрейф схем, P5) — проверь DDL!"
-        continue
-      fi
-      # следующее, которое выдаст sequence владельца: is_called→last_value+1, иначе last_value
-      next="$(scalar "$dsn_own" "SELECT CASE WHEN is_called THEN last_value+1 ELSE last_value END
-                                FROM $qseq")" || return 1
-      if [ "$next" -le "$issued" ]; then
-        scalar "$dsn_own" "SELECT setval('$qseq', $issued, true)" >/dev/null || return 1
-        info "P6: $BUCKET.$seq → setval($issued) на '$OWNER' (следующее $((issued + 1)) > выданного на '$s')"
-        fixed=1
-      fi
-    done
+    sync_sequences_forward "$(shard_dsn "$s")" "$(shard_dsn "$OWNER")" "$BUCKET" "$s" || return 1
   done <<<"$ARTIFACTS"
-  [ "$fixed" = 1 ] || info "инвариант P6 уже соблюдён — sequences не трогаю"
 }
 
 # ── Команды ────────────────────────────────────────────────────────────────────

@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # scripts/create-bucket.sh
 #
-# Создать бакет (схему) на шарде и зарегистрировать его в каталоге.
+# Создать бакет (схему) на шарде и зарегистрировать его в etcd-контрол-плейне
+# (/buckets/routing/<bucket> → шард).
 # См. arch/11-bucket-sharding.md §2, §4.
 #
 # Использование:
@@ -14,6 +15,9 @@
 #               квалифицированы именем схемы (или задай search_path в самом файле)
 #   --template  взять структуру существующего бакета на ТОМ ЖЕ шарде
 #               (pg_dump --schema-only + замена имени схемы)
+#
+# Если задан APP_ROLE — выдаёт базовые гранты (USAGE/DML/sequences, §4):
+# заморозка P1 на cutover отнимает их, значит до переезда они обязаны быть.
 #
 # Конфиг: configs/buckets/buckets.env (см. buckets.env.example).
 
@@ -43,9 +47,9 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$BUCKET" ] && [ -n "$SHARD" ] || usage
-[ -z "$DDL_FILE" ] || [ -z "$TEMPLATE" ] || { echo "❌ --ddl и --template взаимоисключимы" >&2; exit 2; }
+[ -z "$DDL_FILE" ] || [ -z "$TEMPLATE" ] || { echo "❌ --ddl и --template взаимоисключающие" >&2; exit 2; }
 
-require_bins
+require_bins psql pg_dump perl etcdctl
 valid_bucket "$BUCKET" || { echo "❌ неверное имя бакета '$BUCKET' (шаблон: ^[a-z][a-z0-9_]*$)" >&2; exit 2; }
 valid_shard "$SHARD"   || { echo "❌ неизвестный шард '$SHARD' (SHARDS в buckets.env: ${SHARDS})" >&2; exit 2; }
 if [ -n "$TEMPLATE" ]; then
@@ -55,17 +59,20 @@ if [ -n "$DDL_FILE" ]; then
   [ -r "$DDL_FILE" ] || { echo "❌ файл DDL не читается: $DDL_FILE" >&2; exit 2; }
 fi
 
-catalog_check_table
+etcd_alive
 DSN="$(shard_dsn "$SHARD")"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 1) Проверки: бакета ещё нет ни в каталоге, ни на шарде
+# 1) Проверки: бакета ещё нет ни в etcd, ни на шарде
 # ─────────────────────────────────────────────────────────────────────────────
 step "Проверки"
-[ -z "$(catalog_row "$BUCKET")" ] || { err "бакет '$BUCKET' уже есть в каталоге: $(catalog_row "$BUCKET")"; exit 3; }
+if [ -n "$(routing_get "$BUCKET")" ]; then
+  err "бакет '$BUCKET' уже зарегистрирован: $(routing_key "$BUCKET") → $(routing_get "$BUCKET")"
+  exit 3
+fi
+[ "$(poll_scalar "$DSN" 'SELECT 1' 3)" = "1" ] || { err "шард '$SHARD' недоступен"; exit 3; }
 schema_exists "$DSN" "$BUCKET" && { err "схема '$BUCKET' уже существует на '$SHARD'"; exit 3; }
-[ "$(scalar "$DSN" 'SELECT 1')" = "1" ] || { err "шард '$SHARD' недоступен"; exit 3; }
-info "каталог: бакета нет; шард '$SHARD' доступен; схемы нет"
+info "etcd: бакета нет; шард '$SHARD' доступен; схемы нет"
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 2) CREATE SCHEMA + структура
@@ -98,12 +105,29 @@ TABLES="$(scalar "$DSN" "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON 
 info "таблиц в '$BUCKET': $TABLES"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 3) Регистрация в каталоге
+# 3) Базовые гранты app-роли (§4): до первого переезда права обязаны быть —
+#    заморозка P1 на cutover их ОТНИМАЕТ и возвращает при abort/rollback
 # ─────────────────────────────────────────────────────────────────────────────
-step "Регистрирую в каталоге"
-catalog_sql "INSERT INTO buckets(bucket_id, shard_id, state) VALUES ('$BUCKET', '$SHARD', 'ACTIVE')"
-info "готово: $BUCKET → $SHARD (ACTIVE)"
+if [ -n "${APP_ROLE:-}" ]; then
+  valid_bucket "$APP_ROLE" || { err "APP_ROLE='$APP_ROLE' не похоже на имя роли (^[a-z][a-z0-9_]*$)"; exit 9; }
+  if [ "$(scalar "$DSN" "SELECT count(*) FROM pg_roles WHERE rolname='$APP_ROLE'")" = "0" ]; then
+    sql "$DSN" "CREATE ROLE $APP_ROLE LOGIN"
+    info "роль $APP_ROLE создана на '$SHARD'"
+  fi
+  sql "$DSN" "GRANT USAGE ON SCHEMA $BUCKET TO $APP_ROLE;
+              GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA $BUCKET TO $APP_ROLE;
+              GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA $BUCKET TO $APP_ROLE;"
+  [ "${APP_GRANT_CREATE:-0}" = 1 ] && sql "$DSN" "GRANT CREATE ON SCHEMA $BUCKET TO $APP_ROLE"
+  info "базовые гранты $APP_ROLE выданы"
+fi
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 4) Регистрация в etcd: routing-ключ = владелец; нет статус-ключа = ACTIVE
+# ─────────────────────────────────────────────────────────────────────────────
+step "Регистрирую в etcd"
+ect put "$(routing_key "$BUCKET")" "$SHARD" >/dev/null
+info "готово: $(routing_key "$BUCKET") → $SHARD (ACTIVE)"
 
 echo
-echo "Дальше: маршрутизируй в приложение (кэш каталога) — и следи за DDL-миграциями:"
+echo "Дальше: роутер приложения читает routing из etcd (watch) — и следи за DDL-миграциями:"
 echo "  ./scripts/move-bucket.sh status $BUCKET"
