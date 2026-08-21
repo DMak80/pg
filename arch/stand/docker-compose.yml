@@ -18,10 +18,15 @@
 # ⚠️ Только стенд: POSTGRES_HOST_AUTH_METHOD=trust (без паролей и TLS).
 # max_slot_wal_keep_size=32MB — специально маленький, чтобы проверить P4.
 #
-# PG-нодам заданы фиксированные IP: docker stop/start выдаёт контейнеру новый
-# адрес, а HAProxy резолвит бэкенды только при своём старте — health-check
-# ушёл бы в Layer4-timeout по устаревшему IP после рестарта ноды (найдено
-# на стенде в проверках P7/P8, где ноды стопаются и поднимаются).
+# Топология — тоже в etcd (источник правды): IP контейнеров НЕ фиксируются
+# (docker stop/start выдаёт новые адреса, docker переиспользует освободившиеся).
+# Сайдкар каждой PG-ноды (hc*) регистрирует её адрес с lease TTL:
+# /cluster/nodes/<node> → <ip>; ключ исчезает со смертью ноды. Синкеры
+# hasync1/hasync2 применяют адресы в HAProxy через runtime API (set server
+# ... addr), сверив идентичность ноды (GET /whoami на сайдкаре) — чужая нода,
+# получившая переиспользованный IP, мастером чужого шарда не станет; нет
+# ключа → адрес отводится в 127.0.0.1 (health-check роняет сервер). Живость
+# нод решает health-check /primary, отказ etcd (P9) — не дело дата-плейна.
 name: pgstand
 
 services:
@@ -40,9 +45,7 @@ services:
       - max_wal_senders=16
       - -c
       - max_slot_wal_keep_size=32MB
-    networks:
-      pgnet:
-        ipv4_address: 172.28.0.11
+    networks: [pgnet]
 
   s1b:
     image: postgres:18
@@ -72,32 +75,59 @@ services:
         exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 \
              -c max_slot_wal_keep_size=32MB \
              -c sync_replication_slots=on -c hot_standby_feedback=on
-    networks:
-      pgnet:
-        ipv4_address: 172.28.0.12
+    networks: [pgnet]
     depends_on: [s1a]
 
   hc1a:
     build: ./sidecar
     container_name: hc1a
     network_mode: "service:s1a"
+    environment:
+      NODE_NAME: s1a
+      ETCD_ENDPOINTS: http://etcd:2379
     depends_on: [s1a]
-    restart: unless-stopped
+    # БЕЗ restart-политики: старт контейнера с network_mode container:X
+    # автоматически поднимает X — рестарт сайдкара реанимировал бы
+    # остановленную ноду со старым PGDATA (мастер-призрак → split brain
+    # для HAProxy). После старта ноды сайдкар стартуют чеки/руки.
 
   hc1b:
     build: ./sidecar
     container_name: hc1b
     network_mode: "service:s1b"
+    environment:
+      NODE_NAME: s1b
+      ETCD_ENDPOINTS: http://etcd:2379
     depends_on: [s1b]
-    restart: unless-stopped
 
   hap1:
     image: haproxy:2.8-alpine
     container_name: hap1
+    # образ работает от юзера haproxy(99) и не может создать runtime-сокет в
+    # root-владельце named volume → запускаем от root (только стенд)
+    user: root
     volumes:
       - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - hapsock1:/run/haproxy
     networks: [pgnet]
     depends_on: [s1a, s1b]
+
+  # Синкер топологии: /cluster/nodes/* из etcd → HAProxy runtime API
+  hasync1:
+    image: python:3.12-alpine
+    container_name: hasync1
+    command: ["python", "/hasync.py"]
+    environment:
+      ETCD_ENDPOINTS: http://etcd:2379
+      HAPROXY_SOCKET: /run/haproxy/admin.sock
+      BACKEND: bk_master
+      SERVERS: s1a,s1b
+    volumes:
+      - ./hasync.py:/hasync.py:ro
+      - hapsock1:/run/haproxy
+    networks: [pgnet]
+    depends_on: [hap1, etcd]
+    restart: unless-stopped
 
   s2a:
     image: postgres:18
@@ -138,9 +168,7 @@ services:
         fi
         exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 \
              -c max_slot_wal_keep_size=32MB
-    networks:
-      pgnet:
-        ipv4_address: 172.28.0.21
+    networks: [pgnet]
 
   s2b:
     image: postgres:18
@@ -167,35 +195,57 @@ services:
         exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 \
              -c max_slot_wal_keep_size=32MB \
              -c sync_replication_slots=on -c hot_standby_feedback=on
-    networks:
-      pgnet:
-        ipv4_address: 172.28.0.22
+    networks: [pgnet]
     depends_on: [s2a]
 
   hc2a:
     build: ./sidecar
     container_name: hc2a
     network_mode: "service:s2a"
+    environment:
+      NODE_NAME: s2a
+      ETCD_ENDPOINTS: http://etcd:2379
     depends_on: [s2a]
-    restart: unless-stopped
 
   hc2b:
     build: ./sidecar
     container_name: hc2b
     network_mode: "service:s2b"
+    environment:
+      NODE_NAME: s2b
+      ETCD_ENDPOINTS: http://etcd:2379
     depends_on: [s2b]
-    restart: unless-stopped
 
   hap2:
     image: haproxy:2.8-alpine
     container_name: hap2
+    user: root   # иначе runtime-сокет не создаётся в root-владельце volume
     volumes:
       - ./haproxy-s2.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+      - hapsock2:/run/haproxy
     networks: [pgnet]
     depends_on: [s2a, s2b]
 
+  # Синкер топологии: /cluster/nodes/* из etcd → HAProxy runtime API
+  hasync2:
+    image: python:3.12-alpine
+    container_name: hasync2
+    command: ["python", "/hasync.py"]
+    environment:
+      ETCD_ENDPOINTS: http://etcd:2379
+      HAPROXY_SOCKET: /run/haproxy/admin.sock
+      BACKEND: bk_master
+      SERVERS: s2a,s2b
+    volumes:
+      - ./hasync.py:/hasync.py:ro
+      - hapsock2:/run/haproxy
+    networks: [pgnet]
+    depends_on: [hap2, etcd]
+    restart: unless-stopped
+
   # Контрол-плейн: одиночный etcd (в проде — кластер из 04-deploy-etcd.md).
-  # Версия — как в доке 04. Хранит /buckets/routing/*, /buckets/status/*.
+  # Версия — как в доке 04. Хранит /buckets/routing/*, /buckets/status/*,
+  # /cluster/nodes/* (адреса нод — источник правды топологии).
   etcd:
     image: quay.io/coreos/etcd:v3.5.21
     container_name: etcd
@@ -230,3 +280,5 @@ networks:
 
 volumes:
   etcd-data:
+  hapsock1:
+  hapsock2:

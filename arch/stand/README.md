@@ -11,18 +11,31 @@ Docker-стенд для проверки решений реестра риск
   s1a  postgres:18 мастер                      s2a  postgres:18 мастер
   s1b  postgres:18 реплика (phys. слот)        s2b  postgres:18 реплика (phys. слот)
   hc1a/hc1b  сайдкары: эмуляция Patroni REST /primary   hc2a/hc2b — симметрично
-                                               (python+pg8000, netns нод — HAProxy
-                                                видит их как порты 8008 нод)
+  (python+pg8000, netns нод — HAProxy          + регистрация адреса ноды в etcd
+   видит их как порты 8008 нод)
   hap1  HAProxy :5432 → текущий мастер         hap2 — симметрично
   (option httpchk GET /primary)
+  hasync1  синкер: /cluster/nodes/* →          hasync2 — симметрично
+  HAProxy runtime API (set server addr)
 
-etcd (v3.5.21)  контрол-плейн: /buckets/routing/*, /buckets/status/*
+etcd (v3.5.21)  контрол-плейн — источник правды: /buckets/routing/*,
+                 /buckets/status/*, /cluster/nodes/<node> → адрес ноды
 opsbox          psql+pg_dump+etcdctl+jq — машина запуска скриптов (профиль ops:
                 docker compose run --rm opsbox ..., хостовые бинарики не нужны)
 ```
 
 Патрони/pg_doorman нет — их роль в проверках играет HAProxy с health-check
-по `/primary` (сайдкары отвечают 200 только на мастере). Параметры: `wal_level=logical`
+по `/primary` (сайдкары отвечают 200 только на мастере). IP контейнеров НЕ
+фиксируются: стенд моделирует service discovery на etcd (стендовая инкарнация
+`/shards/X/master` из референса 12-й доки — в проде адрес пишет Patroni).
+Сайдкар ноды регистрирует её адрес в `/cluster/nodes/<node>` с lease TTL
+(ключ исчезает со смертью ноды); hasync применяет адрес в HAProxy через
+runtime API, проверив идентичность ноды (`GET /whoami` — docker переиспользует
+освободившиеся IP, и без проверки чужая нода стала бы «мастером» чужого
+шарда); при исчезновении ключа адрес отводится в 127.0.0.1 — health-check
+роняет сервер. Отказ etcd (P9) не выламывает дата-плейн: при недоступности
+контрол-плейна hasync держит последние применённые адреса.
+Параметры: `wal_level=logical`
 на всех нодах, `sync_replication_slots=on` + `hot_standby_feedback=on` на репликах,
 `max_slot_wal_keep_size=32MB` (занижен для скорости), аутентификация trust
 (только стенд). `synchronous_standby_names` выставляет `00-up.sh` через ALTER SYSTEM
@@ -41,6 +54,7 @@ opsbox          psql+pg_dump+etcdctl+jq — машина запуска скри
 | `checks/50-p4-wal-lost.sh` | P4 | «зависший подписчик» (slowconsumer.pl) + пачки несжимаемого WAL → `wal_status='lost'`; шард жив; уборка срезает слот | ✓ |
 | `checks/60-p7-abort.sh` | P7 | фаза 1: зависший FROZEN — list, отказы-защиты, журнал в etcd до манипуляций (s2 недоступен → phase=blocked, БД не тронута), resume после возврата s2, откат в ACTIVE у s1; фаза 2: routing==target (flip прошёл, статус завис) — отказ без --force, с --force доведение: sequences довинчены (P6), приёмник владелец, старый шард вычищен | ✓ |
 | `checks/65-move-e2e.sh` | P1–P8 | e2e настоящими скриптами из ops-бокса: create-bucket → move (заморозка P1, инвентарь P5, sequence→sequence P6, сверка строк P8, атомарный etcd-flip) → призрак → rollback через обратную подписку → повторный move → finalize; негатив: move в шард без sync-standby отказывается (P8-предусловие) | ✓ |
+| `checks/68-topology-etcd.sh` | топология | IP не фиксированы: etcd = фактам, HAProxy runtime = etcd; смена адреса реплики s2b (пересоздание, старый IP занят ipblocker'ом) подхватывается цепочкой сайдкар → etcd → hasync → runtime без рестарта HAProxy; sync-standby возвращается | ✓ |
 | `checks/70-p8-receiver-failover.sh` | P8 | RED: подписка с дефолтным synchronous_commit=off — failover приёмника молча пропускает срез W1 при «здоровом» стриме (лаг 0), лечение — abort (P7); GREEN: move-bucket.sh с `remote_apply` — W2 висит в SyncRep (не подтверждается при replay-паузе), после failover переслан и применён; mover пережил обрывы, copy рестартовал на новом мастере, cutover со сверкой строк и атомарным flip; finalize добил осиротевшие sync-слоты | ✓ |
 | `checks/90-down.sh` | — | разбор стенда | — |
 
@@ -104,10 +118,16 @@ opsbox          psql+pg_dump+etcdctl+jq — машина запуска скри
   pg_hba патчит `00-up.sh` после старта.
 - `docker stop`/`start` ноды меняет её netns — сайдкар (network_mode: service:...)
   не переподключается сам: после старта ноды рестартуй и его (`docker restart hc2b`).
-- Рестарт контейнера меняет его IP в сети — HAProxy резолвит бэкенды только при
-  своём старте и ловит Layer4-timeout по устаревшему адресу. Поэтому PG-нодам
-  в compose заданы фиксированные IP (172.28.0.11/.12/.21/.22); после пересоздания
-  ноды `docker compose up -d` адрес стабилен.
+- Сайдкары hc* НЕ имеют restart-политики — это осознанно: старт контейнера с
+  network_mode container:X автоматически поднимает X, и рестарт сайдкара после
+  умышленного `docker stop` ноды РЕАНИМИРОВАЛ бы её со старым PGDATA — получали
+  мастер-призрак и split brain для HAProxy (находка прогона: оба бэкенда UP,
+  roundrobin раскидывает запросы mover'а между настоящим мастером и призраком).
+- Рестарт контейнера меняет его IP в сети, а HAProxy резолвит бэкенды только
+  при своём старте. Адреса НЕ фиксированы: сайдкар регистрирует актуальный
+  IP в etcd (`/cluster/nodes/*`), hasync применяет его в HAProxy runtime
+  (`set server ... addr`). Доказательная смена адреса (старый IP на время
+  занимает одноразовый контейнер) — в `checks/68-topology-etcd.sh`.
 
 ## Запуск / разбор
 
@@ -115,7 +135,8 @@ opsbox          psql+pg_dump+etcdctl+jq — машина запуска скри
 cd arch/stand
 checks/00-up.sh && checks/10-p1-p5-freeze.sh && checks/20-move-subscription.sh \
   && checks/30-failover-p2-p3.sh && checks/40-cutover-p6-p1.sh && checks/50-p4-wal-lost.sh \
-  && checks/60-p7-abort.sh && checks/65-move-e2e.sh && checks/70-p8-receiver-failover.sh
+  && checks/60-p7-abort.sh && checks/65-move-e2e.sh && checks/68-topology-etcd.sh \
+  && checks/70-p8-receiver-failover.sh
 # разбор:
 checks/90-down.sh
 ```

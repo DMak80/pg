@@ -41,8 +41,21 @@ until docker exec etcd etcdctl endpoint health --endpoints=http://localhost:2379
 done
 echo "  etcd ready (контрол-плейн)"
 
-# Assert: HAProxy ведёт write-трафик на текущих мастерах
+# Assert: ноды зарегистрировали адреса в etcd — источник правды топологии
+# (сайдкары hc* пишут /cluster/nodes/<node>; hasync транслирует их в HAProxy)
 ip() { docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$1"; }
+ect() { docker exec etcd etcdctl --endpoints=http://localhost:2379 "$@"; }
+for c in s1a s1b s2a s2b; do
+  ok=""
+  for i in $(seq 1 30); do
+    [ "$(ect get /cluster/nodes/$c --print-value-only 2>/dev/null)" = "$(ip $c)" ] && { ok=1; break; }
+    sleep 1
+  done
+  [ -n "$ok" ] || { echo "❌ $c не зарегистрировался в etcd (сайдкар hc*/NODE_NAME?)"; exit 1; }
+  echo "  etcd /cluster/nodes/$c → $(ip $c)"
+done
+
+# Assert: HAProxy ведёт write-трафик на текущих мастерах
 for pair in "hap1 s1a $(ip s1a)" "hap2 s2a $(ip s2a)"; do
   set -- $pair
   hap="$1" node="$2" want="$3"
