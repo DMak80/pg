@@ -19,6 +19,7 @@
 
     <ItemGroup>
         <ProjectReference Include="..\..\AdminPanel.Infrastructure\AdminPanel.Infrastructure.csproj"/>
+        <ProjectReference Include="..\..\AdminPanel.Api\AdminPanel.Api.csproj"/>
     </ItemGroup>
 
 </Project>
