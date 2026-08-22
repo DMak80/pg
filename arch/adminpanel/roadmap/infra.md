@@ -5,7 +5,7 @@
 
 ## Задачи
 
-- `t11-finalize` ← `t09-frontend-ha`, `t10-dev-stand`
+- `t11-finalize` ← `t10-dev-stand`
   — финализация. README корня (запуск, стенд, карта репо), docs/ в стиле
   Puzzle (индекс + документы подсистем с чек-листами/граблями: каркас DI/CQRS,
   etcd-контракт, пробы, фронт), многостадийный Dockerfile (node build фронта →
