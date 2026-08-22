@@ -46,3 +46,9 @@ export function formatIso(iso: string | null): string {
 export function formatUnixAge(unix: number | null): string {
   return unix === null ? '—' : formatAge(Date.now() - unix * 1000);
 }
+
+// Относительный возраст от ISO-штампа (DateTimeOffset-строка) — для probeAtUtc
+// (t09 spec §4.16); null → «—».
+export function formatIsoAge(iso: string | null): string {
+  return iso === null ? '—' : formatAge(Date.now() - Date.parse(iso));
+}
