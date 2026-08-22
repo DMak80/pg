@@ -5,7 +5,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Мапперы кластерных DTO: чистые функции (spec §10.2).
+// Мапперы кластерных DTO: чистые функции (spec §10.2) + standNodes (t08 spec §8).
 public class ClustersMappersTests
 {
     private static readonly DateTimeOffset Now = new(2026, 8, 22, 12, 0, 0, TimeSpan.Zero);
@@ -49,7 +49,7 @@ public class ClustersMappersTests
         var cluster = TestSnapshots.MovingCluster(Now);
 
         // Act
-        var dto = ClusterDetailsMapper.Map(cluster, NowUnix, null, null);
+        var dto = ClusterDetailsMapper.Map(cluster, NowUnix, null, null, []);
 
         // Assert: config-константы + полные блоки (arch/03 §2).
         dto.Name.Should().Be("demo");
@@ -68,13 +68,14 @@ public class ClustersMappersTests
         dto.Shards[1].MasterLeaseAlive.Should().BeFalse();
         dto.Buckets.Should().HaveCount(16);
         dto.Heals.Should().HaveCount(2);
+        dto.StandNodes.Should().BeEmpty(); // пустой реестр → пустой список (t08 spec §8)
     }
 
     [Fact]
     public void ClusterDetailsMapper_AgeSec_FromMoveAge()
     {
         // Arrange: SYNCING −30 / FROZEN −10 / ABORTING −5; ACTIVE — null (spec §3.7).
-        var dto = ClusterDetailsMapper.Map(TestSnapshots.MovingCluster(Now), NowUnix, null, null);
+        var dto = ClusterDetailsMapper.Map(TestSnapshots.MovingCluster(Now), NowUnix, null, null, []);
 
         // Act — возрасты по id из DTO.
         var ages = dto.Buckets.ToDictionary(b => b.Id, b => b.AgeSec);
@@ -96,12 +97,12 @@ public class ClustersMappersTests
         var cluster = TestSnapshots.MovingCluster(Now);
 
         // Act / Assert: owner — точное совпадение; state — по enum; оба — пересечение (spec §3.9).
-        ClusterDetailsMapper.Map(cluster, NowUnix, "s1", null).Buckets.Should().HaveCount(8);
-        ClusterDetailsMapper.Map(cluster, NowUnix, "s1", BucketState.Syncing).Buckets
+        ClusterDetailsMapper.Map(cluster, NowUnix, "s1", null, []).Buckets.Should().HaveCount(8);
+        ClusterDetailsMapper.Map(cluster, NowUnix, "s1", BucketState.Syncing, []).Buckets
             .Should().ContainSingle().Which.Id.Should().Be(1);
-        ClusterDetailsMapper.Map(cluster, NowUnix, null, BucketState.Active).Buckets.Should().HaveCount(13);
-        ClusterDetailsMapper.Map(cluster, NowUnix, "nope", null).Buckets.Should().BeEmpty();
-        ClusterDetailsMapper.Map(cluster, NowUnix, null, null).Buckets.Should().HaveCount(16);
+        ClusterDetailsMapper.Map(cluster, NowUnix, null, BucketState.Active, []).Buckets.Should().HaveCount(13);
+        ClusterDetailsMapper.Map(cluster, NowUnix, "nope", null, []).Buckets.Should().BeEmpty();
+        ClusterDetailsMapper.Map(cluster, NowUnix, null, null, []).Buckets.Should().HaveCount(16);
     }
 
     [Fact]
@@ -119,7 +120,7 @@ public class ClustersMappersTests
         };
 
         // Act
-        var dto = ClusterDetailsMapper.Map(cluster, NowUnix, null, null);
+        var dto = ClusterDetailsMapper.Map(cluster, NowUnix, null, null, []);
 
         // Assert
         dto.Heals.Select(h => h.Bucket).Should().Equal("bucket_5", "bucket_9", "bucket_7");
@@ -155,7 +156,7 @@ public class ClustersMappersTests
         };
 
         // Act
-        var dto = ClusterDetailsMapper.Map(cluster, NowUnix, null, null);
+        var dto = ClusterDetailsMapper.Map(cluster, NowUnix, null, null, []);
 
         // Assert: standbiesSync — только sync/quorum; лаг слотов — max; lost — имена слотов.
         var mapped = dto.Shards.Single().Runtime.Should().NotBeNull().And.Subject.As<ShardRuntimeDto>();
@@ -189,5 +190,22 @@ public class ClustersMappersTests
 
         BucketStates.TryParse("bogus", out _).Should().BeFalse();
         BucketStates.TryParse(null, out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public void ClusterDetailsMapper_StandNodes_MappedFromSnapshot()
+    {
+        // Arrange: стендовый топо-реестр глобален — передаётся в маппер отдельно от кластера (t08 spec §8).
+        var nodes = new[] { new StandNode("node1", "10.0.0.5"), new StandNode("node2", null) };
+
+        // Act
+        var dto = ClusterDetailsMapper.Map(TestSnapshots.MovingCluster(Now), NowUnix, null, null, nodes);
+
+        // Assert
+        dto.StandNodes.Should().HaveCount(2);
+        dto.StandNodes[0].Name.Should().Be("node1");
+        dto.StandNodes[0].Address.Should().Be("10.0.0.5");
+        dto.StandNodes[1].Name.Should().Be("node2");
+        dto.StandNodes[1].Address.Should().BeNull();
     }
 }

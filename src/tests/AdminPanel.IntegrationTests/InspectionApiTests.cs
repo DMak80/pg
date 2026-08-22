@@ -98,7 +98,12 @@ internal static class InspectionSnapshots
                 new HealRecord("bucket_5", "s2", "s1", "restore-heal", unix - 3600),
                 new HealRecord("bucket_9", "s1", "s2", "restore-heal", unix - 7200),
             ]);
-        return Fixture(builtAt) with { Clusters = [cluster] };
+        // t08 spec §8: реестр /cluster/nodes/ — 2 ноды, у второй адрес пуст.
+        return Fixture(builtAt) with
+        {
+            Clusters = [cluster],
+            StandNodes = [new StandNode("node1", "10.0.0.5"), new StandNode("node2", null)],
+        };
     }
 
     // HA-фикстура HTTP-тестов (spec §9.2): demo-s1 с пробами, other-scope unmatched

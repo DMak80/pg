@@ -19,7 +19,8 @@ public sealed record ClusterDto(
     bool Incomplete,
     IReadOnlyList<ShardDto> Shards,
     IReadOnlyList<BucketDto> Buckets,
-    IReadOnlyList<HealDto> Heals);
+    IReadOnlyList<HealDto> Heals,
+    IReadOnlyList<StandNodeDto> StandNodes);
 
 // arch/03 §2: masterLeaseAlive — семантика lease (arch/02 §1); hosts — multi-host из DsnParser t03.
 public sealed record ShardDto(
@@ -58,6 +59,9 @@ public sealed record MoveDto(
 
 public sealed record HealDto(string Bucket, string? Was, string? Now, string? Reason, long? TsUnix);
 
+// Стендовая топология (arch/02 §2.3): реестр /cluster/nodes/ — глобален для всех кластеров, обычно пуст.
+public sealed record StandNodeDto(string Name, string? Address);
+
 // Строки state — верхний регистр канона (arch/02 §2.1); общий источник мапперов и валидации query.
 public static class BucketStates
 {
@@ -86,7 +90,9 @@ public static class BucketStates
 // Core → DTO: чистая функция; фильтры buckets, возраст MoveAge, heals по TsUnix desc (spec §3.3, §3.7, §3.9).
 public static class ClusterDetailsMapper
 {
-    public static ClusterDto Map(ClusterInfo cluster, long nowUnix, string? owner, BucketState? state)
+    public static ClusterDto Map(
+        ClusterInfo cluster, long nowUnix, string? owner, BucketState? state,
+        IReadOnlyList<StandNode> standNodes)
     {
         var buckets = cluster.Buckets
             .Where(b => owner is null || b.Owner == owner)
@@ -115,7 +121,8 @@ public static class ClusterDetailsMapper
                 MoveAge.Seconds(b, nowUnix)))],
             [.. cluster.Heals
                 .OrderByDescending(h => h.TsUnix) // журнал: новые сверху; null — в конец (spec §3.3)
-                .Select(h => new HealDto(h.Bucket, h.Was, h.Now, h.Reason, h.TsUnix))]);
+                .Select(h => new HealDto(h.Bucket, h.Was, h.Now, h.Reason, h.TsUnix))],
+            [.. standNodes.Select(n => new StandNodeDto(n.Name, n.Address))]);
     }
 
     // Маппинг runtime — по стабильной модели t03; поля arch/03 §2 (spec §3.14).
@@ -145,6 +152,6 @@ public sealed class ClusterDetailsQueryHandler(ISnapshotStore store, TimeProvide
         return ValueTask.FromResult(cluster is null
             ? Result<ClusterDto>.Failed(new InspectionModule.ClusterNotFoundException(query.Cluster))
             : Result<ClusterDto>.Success(ClusterDetailsMapper.Map(
-                cluster, time.GetUtcNow().ToUnixTimeSeconds(), query.Owner, query.State)));
+                cluster, time.GetUtcNow().ToUnixTimeSeconds(), query.Owner, query.State, snapshot.StandNodes)));
     }
 }
