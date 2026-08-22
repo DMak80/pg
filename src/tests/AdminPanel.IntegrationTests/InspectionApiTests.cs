@@ -400,6 +400,17 @@ public class InspectionEtcdApiTests(AuthWebFactory factory, EtcdContainerFixture
         detailsDto.GetProperty("buckets").GetArrayLength().Should().Be(16);
         detailsDto.GetProperty("buckets")[3].GetProperty("state").GetString().Should().Be("SYNCING");
         detailsDto.GetProperty("buckets")[3].GetProperty("move").GetProperty("target").GetString().Should().Be("s2");
+
+        // t06: HA-эндпоинты против живого сида (без проб — обогащение только через стор, §3.1).
+        using var haList = await client.GetAsync("/api/ha", TestContext.Current.CancellationToken);
+        var haScopes = await haList.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        haScopes.GetArrayLength().Should().Be(2);
+        haScopes[0].GetProperty("scope").GetString().Should().Be("demo-s1");
+        haScopes[0].GetProperty("leaderName").GetString().Should().Be("s1a");
+        using var haDetails = await client.GetAsync("/api/ha/demo-s1", TestContext.Current.CancellationToken);
+        var haDto = await haDetails.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        haDto.GetProperty("members").GetArrayLength().Should().Be(2);
+        haDto.GetProperty("members")[0].GetProperty("timeline").ValueKind.Should().Be(JsonValueKind.Null);
     }
 
 }

@@ -33,6 +33,7 @@ public static class EtcdTestHarness
             NewGateway(),
             new AlertEngine(
             [
+                // t04+t05: 15 правил (список как раньше, без изменений)
                 new EtcdUnreachableRule(),
                 new EtcdNoQuorumRule(),
                 new EtcdEndpointDownRule(),
@@ -48,6 +49,16 @@ public static class EtcdTestHarness
                 new BucketLostRule(),
                 new BucketNoRoutingRule(),
                 new BucketOutOfRangeRule(),
+                // t06: 9 HA-правил (spec §5)
+                new ShardNoLeaderRule(),
+                new HaMemberNotStreamingRule(),
+                new ReplicaLagHighRule(Options.Create(new AlertsOptions())),
+                new SlotLagHighRule(Options.Create(new AlertsOptions())),
+                new SlotWalLostRule(),
+                new SlotInvalidationRiskRule(Options.Create(new AlertsOptions())),
+                new SyncStandbyMissingRule(),
+                new InventoryMismatchRule(),
+                new ProbeFailedRule(),
             ]),
             store,
             probes ?? new SettableProbeStateStore(),
@@ -199,6 +210,51 @@ public class EtcdSnapshotIntegrationTests(EtcdContainerFixture fixture) : IClass
         store.Current!.Etcd.ActiveEndpoint.Should().Be(fixture.Endpoint);
         store.Current.Etcd.Endpoints.Should().HaveCount(2);
         store.Current.Etcd.Endpoints[0].Reachable.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Refresher_EnrichesSnapshot_FromProbeState()
+    {
+        // Arrange: живой etcd с сидом + стор проб (members demo-s1, runtime demo/s1).
+        // Инвентарь s1 — чётные bucket_0..14: ровно ожидания routing сида (8/8 round-robin).
+        var at = DateTimeOffset.UtcNow;
+        var probes = new SettableProbeStateStore
+        {
+            Current = new ProbeState(
+                at,
+                [new ProbeResult("demo-s1/s1b", "patroni", true, 1.0, null, at)],
+                new Dictionary<string, HaMemberProbe>
+                {
+                    ["demo-s1/s1a"] = new("master", "running", 1L, 0L, at, null),
+                    ["demo-s1/s1b"] = new("replica", "streaming", 2L, 123L, at, null),
+                },
+                new Dictionary<string, ShardRuntime>
+                {
+                    ["demo/s1"] = new(
+                        "s1", [], [], [],
+                        [.. Enumerable.Range(0, 16).Where(i => i % 2 == 0).Select(i => $"bucket_{i}")],
+                        false, null),
+                }),
+        };
+        var store = new SnapshotStore();
+        var refresher = EtcdTestHarness.NewRefresher(store, probes, fixture.Endpoint);
+
+        // Act
+        var result = await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert: обогащение в снапшоте; инвентарь = routing => inventory-mismatch нет;
+        // standbies пусты => sync-standby-missing есть; проб-ошибок нет.
+        result.IsSuccess.Should().BeTrue();
+        var snapshot = store.Current!;
+        var member = snapshot.HaScopes.Single(s => s.Scope == "demo-s1").Members.Single(m => m.Name == "s1b");
+        member.Timeline.Should().Be(2L);
+        member.LagBytes.Should().Be(123L);
+        snapshot.Probes.Should().ContainSingle().Which.Ok.Should().BeTrue();
+        var runtime = snapshot.Clusters.Single().Shards.Single(s => s.Name == "s1").Runtime;
+        runtime.Should().NotBeNull();
+        snapshot.Alerts.Should().NotContain(a => a.Kind == "inventory-mismatch");
+        snapshot.Alerts.Should().Contain(a => a.Id == "sync-standby-missing:demo/s1");
+        snapshot.Alerts.Should().NotContain(a => a.Kind == "probe-failed");
     }
 
     [Fact]
