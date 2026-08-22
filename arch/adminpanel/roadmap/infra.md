@@ -5,17 +5,6 @@
 
 ## Задачи
 
-- `t01-skeleton` — скелет решения. `src/AdminPanel.slnx` + проекты
-  `Api`, `Infrastructure`, `Core`, `Etcd`, `Probes` (пустые),
-  `tests/UnitTests`, `tests/IntegrationTests`; `src/Directory.Build.props`
-  (`net10.0`, `LangVersion=latest`, `Nullable=enable`,
-  `TreatWarningsAsErrors=true`), `Directory.Packages.props` (CPM),
-  `NuGet.Config`, `.editorconfig` — по образцу Puzzle. Скопировать в
-  `Infrastructure` и адаптировать: `Result`-монада, attribute-DI
-  (`[InjectAs*]`, `[Config]`, `AutoRegistration`), CQRS
-  (`IQuery<T>`/`IQueryHandler`, `IHandler`; команды не заводить),
-  health-check базис. `Program.cs` — модульная композиция, `GET /api/healthz`.
-  Результат: `dotnet build`/`dotnet test` зелёные, пустой API отвечает.
 - `t02-auth` ← `t01-skeleton` — аутентификация. Cookie-сессия из настроек
   (`AdminPanel:Auth:*`: Username, Password|PasswordHash PBKDF2, SessionHours,
   AllowHttp), `POST /api/auth/login` (rate-limit 5/мин на IP, constant-time
