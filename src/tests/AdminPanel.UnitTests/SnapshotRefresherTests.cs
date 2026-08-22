@@ -1,4 +1,5 @@
 using AdminPanel.Core;
+using AdminPanel.Core.Alerting;
 using AdminPanel.Etcd;
 using AdminPanel.Etcd.Client;
 using AdminPanel.Infrastructure;
@@ -16,6 +17,7 @@ internal static class RefresherTestHarness
     public static SnapshotRefresher New(FakeEtcdGateway gateway, ISnapshotStore store, params string[] endpoints)
         => new(
             gateway,
+            new AlertEngine(AlertTestRules.All()),
             store,
             Options.Create(new EtcdOptions { Endpoints = endpoints }),
             new FixedTimeProvider(),
@@ -213,5 +215,57 @@ public class SnapshotRefresherTests
         store.Current.Clusters.Should().BeEmpty();
         refresher.Inited.Should().BeTrue();
         refresher.Working.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Refresh_AlertsStoredOnSuccessTick()
+    {
+        // Arrange: полный demo-сид + один битый статус-ключ → key-malformed (spec §10.2).
+        var store = new SnapshotStore();
+        var gateway = new FakeEtcdGateway
+        {
+            ClustersKv =
+            [
+                .. EtcdFixtures.LoadKv("clusters-full.json"),
+                new Kv("/clusters/demo/buckets/status/bucket_9", "not json", 99),
+            ],
+            ServiceKv = EtcdFixtures.LoadKv("service-full.json"),
+        };
+        var refresher = RefresherTestHarness.New(gateway, store, "http://e1");
+
+        // Act
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert: единственный алерт — битый ключ (кластер demo полный, endpoints живы).
+        var alert = store.Current!.Alerts.Should().ContainSingle().Subject;
+        alert.Kind.Should().Be("key-malformed");
+        alert.Target.Should().Be("/clusters/demo/buckets/status/bucket_9");
+    }
+
+    [Fact]
+    public async Task Refresh_AlertsComputedOnFailTick()
+    {
+        // Arrange: первый тик собирает снапшот с incomplete-кластером; затем endpoints умирают.
+        var store = new SnapshotStore();
+        var gateway = new FakeEtcdGateway
+        {
+            ClustersKv = [new Kv("/clusters/ghost/shards/g1/dsn", "host=g1 port=5432", 1)],
+        };
+        var refresher = RefresherTestHarness.New(gateway, store, "http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        gateway.StatusFailEndpoints.Add("http://e1");
+
+        // Act: два отказных тика — порог etcd-unreachable = 2 (spec §4.2).
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert: unreachable вспыхнул; data-алерт из прежних данных сохранён,
+        // sinceUnix не рвётся (перенос null с первого тика — §3.4).
+        var alerts = store.Current!.Alerts;
+        alerts.Should().Contain(a => a.Id == "etcd-unreachable:etcd"
+            && a.Severity == AlertSeverity.Critical);
+        var incomplete = alerts.Single(a => a.Kind == "cluster-incomplete");
+        incomplete.Target.Should().Be("ghost");
+        incomplete.SinceUnix.Should().BeNull();
     }
 }

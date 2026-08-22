@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using AdminPanel.Core;
+using AdminPanel.Core.Alerting;
 using AdminPanel.Etcd.Client;
 using AdminPanel.Etcd.Parsing;
 using AdminPanel.Infrastructure;
@@ -16,6 +17,7 @@ namespace AdminPanel.Etcd;
 [InjectAsSingleton(typeof(IHostedService))]
 public sealed class SnapshotRefresher(
     IEtcdGateway gateway,
+    IAlertEngine alertEngine,
     ISnapshotStore store,
     IOptions<EtcdOptions> options,
     TimeProvider time,
@@ -128,10 +130,14 @@ public sealed class SnapshotRefresher(
             now,
             0);
 
-        // 6. Сборка + атомарная замена (arch/02 §4 п.4; Alerts — t04).
-        store.Replace(SnapshotBuilder.Build(
+        // 6. Сборка + алерты + атомарная замена (arch/02 §4 п.4–5; Alerts на обоих путях тика, spec §5).
+        var built = SnapshotBuilder.Build(
             time, clustersParsed, serviceParsed, nodes,
-            etcd.Members, etcd.Alarms, etcd));
+            etcd.Members, etcd.Alarms, etcd);
+        store.Replace(built with
+        {
+            Alerts = alertEngine.Evaluate(built, previous, now, EffectiveIntervalSeconds()),
+        });
         return Finish(Result.Success(), working: true);
     }
 
@@ -187,7 +193,7 @@ public sealed class SnapshotRefresher(
             previous?.Etcd.QuorumSuspected ?? false,
             now,
             (previous?.Etcd.ConsecutiveFailures ?? 0) + 1);
-        store.Replace(new EtcdSnapshot(
+        var failed = new EtcdSnapshot(
             previous?.BuiltAtUtc ?? now,
             etcd,
             previous?.Clusters ?? [],
@@ -196,7 +202,14 @@ public sealed class SnapshotRefresher(
             [],
             [],
             previous?.ParseErrors ?? [],
-            previous?.UnknownKeyCount ?? 0));
+            previous?.UnknownKeyCount ?? 0);
+
+        // Алерты вычисляются и на отказном тике: etcd-unreachable/snapshot-stale
+        // живут именно здесь (spec §3.5); data-алерты пересчитываются по прежним данным.
+        store.Replace(failed with
+        {
+            Alerts = alertEngine.Evaluate(failed, previous, now, EffectiveIntervalSeconds()),
+        });
         return Finish(error, working: false);
     }
 
@@ -212,6 +225,14 @@ public sealed class SnapshotRefresher(
         => Uri.TryCreate(endpoint, UriKind.Absolute, out var uri)
             && uri.Scheme is "http" or "https"
             && !string.IsNullOrEmpty(uri.Host);
+
+    // Эффективный интервал тика: RefreshIntervalSeconds или fallback 3 c (t03 §3.3);
+    // тот же порог ×3 кормит snapshot-stale (spec §3.3).
+    private double EffectiveIntervalSeconds()
+    {
+        var seconds = options.Value.RefreshIntervalSeconds;
+        return seconds > 0 ? seconds : 3;
+    }
 
     private static bool IsRaftError(string message)
         => message.Contains("raft", StringComparison.OrdinalIgnoreCase)

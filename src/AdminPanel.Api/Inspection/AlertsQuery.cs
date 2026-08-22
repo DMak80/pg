@@ -1,0 +1,67 @@
+using AdminPanel.Core;
+using AdminPanel.Etcd;
+using AdminPanel.Infrastructure;
+using AdminPanel.Infrastructure.CQRS;
+using AdminPanel.Infrastructure.DI;
+
+namespace AdminPanel.Api.Inspection;
+
+// Запрос ленты алертов с фильтрами (arch/03 §1; severity уже провалидирован эндпоинтом).
+public sealed record AlertsQuery(AlertSeverity? Severity, string? Kind) : IQuery<IReadOnlyList<AlertDto>>;
+
+// Ответ: один алерт (arch/03 §2; severity — строчная строка, spec §3.11).
+public sealed record AlertDto(
+    string Id,
+    string Severity,
+    string Kind,
+    string Target,
+    string Message,
+    IReadOnlyDictionary<string, string>? Details,
+    long? SinceUnix);
+
+// Core → DTO + фильтры: чистые функции (spec §6.2).
+public static class AlertsMapper
+{
+    public static IReadOnlyList<AlertDto> Map(IReadOnlyList<Alert> alerts)
+        => [.. alerts.Select(ToDto)];
+
+    public static AlertDto ToDto(Alert alert)
+        => new(
+            alert.Id,
+            SeverityName(alert.Severity),
+            alert.Kind,
+            alert.Target,
+            alert.Message,
+            alert.Details,
+            alert.SinceUnix);
+
+    // Фильтры до маппинга: severity и kind — точные совпадения (spec §3.13).
+    public static IReadOnlyList<Alert> ApplyFilters(
+        IReadOnlyList<Alert> alerts, AlertSeverity? severity, string? kind)
+        => [.. alerts
+            .Where(a => severity is null || a.Severity == severity)
+            .Where(a => kind is null || a.Kind == kind)];
+
+    private static string SeverityName(AlertSeverity severity)
+        => severity switch
+        {
+            AlertSeverity.Critical => "critical",
+            AlertSeverity.Warning => "warning",
+            _ => "info",
+        };
+}
+
+// Хендлер: store → отказ «снапшота нет» или фильтры+маппер (spec §3.12).
+[InjectAsScoped]
+public sealed class AlertsQueryHandler(ISnapshotStore store)
+    : IQueryHandler<AlertsQuery, IReadOnlyList<AlertDto>>
+{
+    public ValueTask<Result<IReadOnlyList<AlertDto>>> Handle(AlertsQuery query, CancellationToken ct)
+    {
+        var snapshot = store.Current;
+        return ValueTask.FromResult(snapshot is null
+            ? Result<IReadOnlyList<AlertDto>>.Failed(new InspectionModule.SnapshotNotReadyException())
+            : Result<IReadOnlyList<AlertDto>>.Success(
+                AlertsMapper.Map(AlertsMapper.ApplyFilters(snapshot.Alerts, query.Severity, query.Kind))));
+    }
+}

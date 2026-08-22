@@ -2,12 +2,15 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using AdminPanel.Core;
+using AdminPanel.Etcd;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using Xunit;
 
 namespace AdminPanel.IntegrationTests;
@@ -36,8 +39,26 @@ public sealed class AuthWebFactory : WebApplicationFactory<Program>
         // Подмена времени ПОСЛЕ композиции Program (ConfigureTestServices):
         // singleton-лимитер живёт на управляемом времени фабрики.
         builder.ConfigureTestServices(services =>
-            services.Replace(ServiceDescriptor.Singleton(typeof(TimeProvider), Time)));
+        {
+            services.Replace(ServiceDescriptor.Singleton(typeof(TimeProvider), Time));
+
+            // t04: hosted не стартуют — тики refresher'а перезатирали бы тестовые снапшоты (spec §3.16);
+            // снапшот общего хоста под контролем тестов через TestSnapshotStore.
+            // Заметка: при появлении новых hosted-сервисов (t06 пробы) потребуется точечное
+            // отключение только refresher'а (spec §16).
+            services.RemoveAll<IHostedService>();
+            services.Replace(new ServiceDescriptor(typeof(ISnapshotStore), new TestSnapshotStore()));
+        });
     }
+
+    // t04: снапшот хоста под контролем тестов инспекции (spec §3.16).
+    public EtcdSnapshot? Snapshot
+    {
+        get => Store.Current;
+        set => Store.Current = value;
+    }
+
+    private TestSnapshotStore Store => (TestSnapshotStore)Services.GetRequiredService<ISnapshotStore>();
 }
 
 // Единственный хост на тестовую сборку: AuthTests и HealthzTests.
