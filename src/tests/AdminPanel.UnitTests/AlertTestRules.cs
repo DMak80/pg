@@ -25,10 +25,15 @@ internal static class AlertTestRules
             new BucketLostRule(),
             new BucketNoRoutingRule(),
             new BucketOutOfRangeRule(),
-            // t06: HA-правила (SQL-часть добавит следующим таском Task 8)
+            // t06: 9 HA-правил (spec §5)
             new ShardNoLeaderRule(),
             new HaMemberNotStreamingRule(),
             new ReplicaLagHighRule(Options.Create(new AlertsOptions())),
             new ProbeFailedRule(),
+            new SlotLagHighRule(Options.Create(new AlertsOptions())),
+            new SlotWalLostRule(),
+            new SlotInvalidationRiskRule(Options.Create(new AlertsOptions())),
+            new SyncStandbyMissingRule(),
+            new InventoryMismatchRule(),
         ];
 }
