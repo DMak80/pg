@@ -37,7 +37,10 @@ EtcdStatusDto: endpoints[{url, reachable, latencyMs, version, dbSizeBytes,
               peerUrls, clientUrls, isLeader}], alarms[{memberId, type}],
               quorumSuspected, lastRefreshUtc
 ClusterDto:   name, dbname, bucketsCount, createdUnix, incomplete(bool),
-              shards[ShardDto], buckets[BucketDto], heals[HealDto]
+              shards[ShardDto], buckets[BucketDto], heals[HealDto],
+              standNodes[{name,address}] — стендовый топо-реестр снапшота
+              (02 §2.3; поле глобально для всех кластеров, обычно пусто;
+              UI-блок «Стендовая топология» рисуется при наличии)
 ShardDto:     name, dsn, hosts[], replicasDeclared, masterAddress,
               masterLeaseAlive(bool), runtime{standbiesSync, slotsLagMaxBytes,
               walStatusLost[], subscriptions[], bucketSchemas[], error}(nullable)
@@ -60,10 +63,10 @@ AlertDto:     id, severity, kind, target, message, details{...}, sinceUnix
 | Панель | Что показывает |
 |---|---|
 | **Login** | форма логин/пароль; ошибка 401 |
-| **Overview** | бейдж stale; карточки: etcd (reachable, endpoints ok/total, alarms), кластеры (шарды/бакеты/переезды), активные переезды списком, лента алертов (critical/warning); сводка HA: скольки scope'ов без лидера |
+| **Overview** | бейдж stale; карточки: etcd (reachable, endpoints ok/total; alarms — в ленте алертов и на панели etcd), кластеры (шарды/бакеты/переезды), активные переезды списком, лента алертов (critical/warning); сводка HA: скольки scope'ов без лидера |
 | **etcd** | таблица endpoints (reachable, latency, версия, raftTerm, ошибки, метка «активный»), members (+лидер), alarms; `lastRefreshUtc` |
 | **Clusters** | список: имя, dbname, N, шард мастеровых/всего, активные переезды, пометки (incomplete) |
-| **Cluster details** | вкладки: Шарды (dsn, replicas, master+leaseAlive, sync-standby, лаг слотов), Бакеты (грид id×owner×state, фильтр по owner/state, подсветка не-ACTIVE, возраст), Переезды (только не-ACTIVE: phase, updated, last_error), Heals (журнал), «Стендовая топология» (если `/cluster/nodes/` есть) |
+| **Cluster details** | вкладки: Шарды (dsn, replicas, master+leaseAlive, sync-standby, лаг слотов), Бакеты (грид id×owner×state, фильтр по owner/state, подсветка не-ACTIVE, возраст), Переезды (только не-ACTIVE: phase, updated, last_error), Heals (журнал), «Стендовая топология» (блок по `standNodes` деталей — реестр `/cluster/nodes/`, скрыт при пустом) |
 | **HA** | список scope'ов: scope, cluster/shard, лидер, члены (роль/состояние), лаг max, пометка unmatched |
 | **HA details** | leader, optime, таблица members: name/role/state/timeline/lag/probe-статус; raw config (свернуто) |
 | **Alerts** | таблица всех алертов: severity-цвет, kind, target, message, since; фильтр по severity |
