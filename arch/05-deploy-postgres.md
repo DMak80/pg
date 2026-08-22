@@ -86,7 +86,11 @@ SPILO_CONFIGURATION: |
 > небольшая задержка на запись.
 
 > Если этот кластер будет **шардом бакетов** ([11](11-bucket-sharding.md) §4,
-> P3/P4 из [12](12-bucket-pitfalls.md)): дополнительно в `postgresql.parameters` —
+> P3/P4 из [12](12-bucket-pitfalls.md)): `SCOPE` = `<C>-<X>`, например
+> `shop-shard1` — **не** дефолтный `pgcluster` и не просто имя кластера `<C>`
+> (шардов в кластере много, у каждого свой Patroni-кластер; совпадение scope
+> двух шардов в общем etcd сливает их в один виртуальный кластер). Дополнительно
+> в `postgresql.parameters` —
 > `wal_level: logical` (на всех нодах, не только мастере), `sync_replication_slots: 'on'`
 > + `hot_standby_feedback: 'on'` (failover slots на репликах) и
 > `max_slot_wal_keep_size` (изоляция взрыва WAL). Тогда логические слоты переездов
