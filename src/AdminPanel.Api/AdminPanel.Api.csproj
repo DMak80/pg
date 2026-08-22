@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+    <ItemGroup>
+        <PackageReference Include="Microsoft.AspNetCore.OpenApi"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\AdminPanel.Core\AdminPanel.Core.csproj"/>
+        <ProjectReference Include="..\AdminPanel.Etcd\AdminPanel.Etcd.csproj"/>
+        <ProjectReference Include="..\AdminPanel.Infrastructure\AdminPanel.Infrastructure.csproj"/>
+        <ProjectReference Include="..\AdminPanel.Probes\AdminPanel.Probes.csproj"/>
+    </ItemGroup>
+
+</Project>
