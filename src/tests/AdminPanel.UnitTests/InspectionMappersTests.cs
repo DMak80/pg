@@ -64,14 +64,61 @@ public class InspectionMappersTests
     }
 
     [Fact]
-    public void OverviewMapper_ClusterStubs_Empty()
+    public void OverviewMapper_ClustersAndMovesFilled()
     {
-        // Arrange / Act
-        var dto = OverviewMapper.Map(TestSnapshots.Healthy(BuiltAt), BuiltAt, 3);
+        // Arrange: MovingCluster — 2 шарда (1 без master), 3 переезда (spec §10.3).
+        var snapshot = TestSnapshots.Healthy(BuiltAt) with
+        {
+            Clusters = [TestSnapshots.MovingCluster(BuiltAt)],
+        };
 
-        // Assert: кластерная часть — заглушки t05 (spec §3.15).
-        dto.Clusters.Should().BeEmpty();
-        dto.ActiveMoves.Should().BeEmpty();
+        // Act
+        var dto = OverviewMapper.Map(snapshot, BuiltAt + TimeSpan.FromSeconds(1), 3);
+
+        // Assert: заглушки t04 наполнены (spec §3.15 t04 → §1 t05).
+        var cluster = dto.Clusters.Should().ContainSingle().Subject;
+        cluster.Name.Should().Be("demo");
+        cluster.Shards.Should().Be(2);
+        cluster.Buckets.Should().Be(16);
+        cluster.ActiveMoves.Should().Be(3);
+        cluster.MasterlessShards.Should().Be(1);
+        dto.ActiveMoves.Should().HaveCount(3);
+        dto.ActiveMoves.Should().Contain(m => m.Cluster == "demo" && m.Bucket == 1
+            && m.State == "SYNCING" && m.Owner == "s1" && m.Target == "s2");
+    }
+
+    [Fact]
+    public void OverviewMapper_MovesAcrossClusters_Ordered()
+    {
+        // Arrange: два кластера — порядок кластеров снапшота, внутри по bucket id (spec §3.6).
+        var snapshot = TestSnapshots.Healthy(BuiltAt) with
+        {
+            Clusters =
+            [
+                TestSnapshots.MovingCluster(BuiltAt),
+                TestSnapshots.FullCluster() with
+                {
+                    Name = "other",
+                    Buckets =
+                    [
+                        new BucketInfo(7, "s2", BucketState.Syncing,
+                            new MoveInfo("s2", "s1", null, BuiltAt.ToUnixTimeSeconds() - 5, null, null)),
+                        new BucketInfo(0, "s1", BucketState.Aborting,
+                            new MoveInfo("s1", "s2", null, null, null, null)),
+                    ],
+                },
+            ],
+        };
+
+        // Act
+        var dto = OverviewMapper.Map(snapshot, BuiltAt, 3);
+
+        // Assert: id по возрастанию внутри кластера; state-строки канона; nullable-поля как есть.
+        string.Join("|", dto.ActiveMoves.Select(m => $"{m.Cluster}/{m.Bucket}"))
+            .Should().Be("demo/1|demo/2|demo/3|other/0|other/7");
+        dto.ActiveMoves[4].State.Should().Be("SYNCING");
+        dto.ActiveMoves[4].UpdatedUnix.Should().Be(BuiltAt.ToUnixTimeSeconds() - 5);
+        dto.ActiveMoves[3].UpdatedUnix.Should().BeNull();
     }
 
     [Fact]
