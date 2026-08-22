@@ -7,6 +7,7 @@ import { PollingToggle } from './PollingToggle';
 import { StaleBadge } from './StaleBadge';
 
 // Пункты навигации: маршрут + человекочитаемое имя (arch/03 §3).
+// Активность: '/' — точное совпадение, остальные — по префиксу (t08 spec §4.2).
 const NAV_ITEMS = [
   { to: '/', label: 'Обзор' },
   { to: '/etcd', label: 'etcd' },
@@ -77,7 +78,7 @@ export function AppLayout() {
               label={item.label}
               component={Link}
               to={item.to}
-              active={location.pathname === item.to}
+              active={item.to === '/' ? location.pathname === '/' : location.pathname.startsWith(item.to)}
             />
           ))}
         </Stack>
