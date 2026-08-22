@@ -236,10 +236,15 @@ public class SnapshotRefresherTests
         // Act
         await refresher.RefreshOnceAsync(CancellationToken.None);
 
-        // Assert: единственный алерт — битый ключ (кластер demo полный, endpoints живы).
-        var alert = store.Current!.Alerts.Should().ContainSingle().Subject;
-        alert.Kind.Should().Be("key-malformed");
-        alert.Target.Should().Be("/clusters/demo/buckets/status/bucket_9");
+        // Assert: key-malformed от битого ключа + 5 move-алертов сида demo (spec §3.15, §10.4).
+        var alerts = store.Current!.Alerts;
+        alerts.Should().HaveCount(6);
+        alerts.Should().Contain(a => a.Id == "key-malformed:/clusters/demo/buckets/status/bucket_9");
+        alerts.Should().Contain(a => a.Id == "move-stale:demo/bucket_3");
+        alerts.Should().Contain(a => a.Id == "move-stale:demo/bucket_7");
+        alerts.Should().Contain(a => a.Id == "move-stale:demo/bucket_11");
+        alerts.Should().Contain(a => a.Id == "move-frozen-long:demo/bucket_11");
+        alerts.Should().Contain(a => a.Id == "move-aborting:demo/bucket_7");
     }
 
     [Fact]

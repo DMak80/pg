@@ -187,4 +187,142 @@ public class ShardingAlertRulesTests
         alerts.Should().Contain(x => x.Target == "demo/bucket_0");
         alerts.Should().Contain(x => x.Target == "other/bucket_0");
     }
+
+    [Fact]
+    public void MoveStale_OlderThanThreshold_Warning()
+    {
+        // Arrange: 601 c — есть; ровно 600 и 599 — нет: порог каталога 600 (03 §4).
+        var stale = TestSnapshots.FullCluster() with
+        {
+            Buckets =
+            [
+                new BucketInfo(3, "s1", BucketState.Syncing,
+                    new MoveInfo("s1", "s2", NowUnix - 700, NowUnix - 601, "copy", null)),
+                new BucketInfo(4, "s1", BucketState.Syncing,
+                    new MoveInfo("s1", "s2", NowUnix - 700, NowUnix - 600, "copy", null)),
+                new BucketInfo(5, "s1", BucketState.Syncing,
+                    new MoveInfo("s1", "s2", NowUnix - 700, NowUnix - 599, "copy", null)),
+            ],
+        };
+
+        // Act
+        var alerts = Evaluate(new MoveStaleRule(DefaultOptions), Snapshot(stale));
+
+        // Assert
+        var alert = alerts.Should().ContainSingle().Subject;
+        alert.Severity.Should().Be(AlertSeverity.Warning);
+        alert.Id.Should().Be("move-stale:demo/bucket_3");
+        alert.Details!["state"].Should().Be("SYNCING");
+        alert.Details["ageSeconds"].Should().Be("601");
+        alert.Details["thresholdSeconds"].Should().Be("600");
+        alert.Details["updatedUnix"].Should().Be((NowUnix - 601).ToString());
+    }
+
+    [Fact]
+    public void MoveStale_CustomThreshold_FromOptions()
+    {
+        // Arrange: порог реально читается из AdminPanel:Alerts (spec §3.11): 5 c вместо 600.
+        var snapshot = Snapshot(TestSnapshots.FullCluster() with
+        {
+            Buckets =
+            [
+                new BucketInfo(3, "s1", BucketState.Syncing,
+                    new MoveInfo("s1", "s2", NowUnix - 10, NowUnix - 6, "copy", null)),
+            ],
+        });
+
+        // Act
+        var custom = Evaluate(
+            new MoveStaleRule(Options.Create(new AlertsOptions { StaleMoveSeconds = 5 })), snapshot);
+
+        // Assert: возраст 6 > порога 5 — алерт с фактическим порогом в details.
+        var alert = custom.Should().ContainSingle().Subject;
+        alert.Details!["thresholdSeconds"].Should().Be("5");
+    }
+
+    [Fact]
+    public void MoveStale_FallsBackToStartedUnix()
+    {
+        // Arrange: updated отсутствует — база started (spec §3.7).
+        var snapshot = Snapshot(TestSnapshots.FullCluster() with
+        {
+            Buckets =
+            [
+                new BucketInfo(3, "s1", BucketState.Syncing,
+                    new MoveInfo("s1", "s2", NowUnix - 700, null, "copy", null)),
+            ],
+        });
+
+        // Act / Assert
+        Evaluate(new MoveStaleRule(DefaultOptions), snapshot)
+            .Should().ContainSingle().Which.Details!["updatedUnix"].Should().Be((NowUnix - 700).ToString());
+    }
+
+    [Fact]
+    public void MoveStale_NoTimestamps_Skipped()
+    {
+        // Arrange: оба штампа отсутствуют — меры возраста нет, правило молчит (spec §4.2).
+        var snapshot = Snapshot(TestSnapshots.FullCluster() with
+        {
+            Buckets = [new BucketInfo(3, "s1", BucketState.Syncing, new MoveInfo("s1", "s2", null, null, null, null))],
+        });
+
+        // Act / Assert
+        Evaluate(new MoveStaleRule(DefaultOptions), snapshot).Should().BeEmpty();
+    }
+
+    [Fact]
+    public void MoveFrozenLong_FrozenOlderThan60s_Critical()
+    {
+        // Arrange: FROZEN 61 c — порог 60 (cutover секундами, 03 §4); 59 c — чисто.
+        var frozen = TestSnapshots.FullCluster() with
+        {
+            Buckets =
+            [
+                new BucketInfo(2, "s1", BucketState.Frozen,
+                    new MoveInfo("s1", "s2", NowUnix - 100, NowUnix - 61, "cutover-wait", null)),
+                new BucketInfo(8, "s1", BucketState.Frozen,
+                    new MoveInfo("s1", "s2", NowUnix - 100, NowUnix - 59, "cutover-wait", null)),
+            ],
+        };
+
+        // Act
+        var alerts = Evaluate(new MoveFrozenLongRule(DefaultOptions), Snapshot(frozen));
+
+        // Assert
+        var alert = alerts.Should().ContainSingle().Subject;
+        alert.Severity.Should().Be(AlertSeverity.Critical);
+        alert.Id.Should().Be("move-frozen-long:demo/bucket_2");
+        alert.Details!["ageSeconds"].Should().Be("61");
+        alert.Details["thresholdSeconds"].Should().Be("60");
+    }
+
+    [Fact]
+    public void ShardingScenario_AllFourAnomalies_ThroughFullEngine()
+    {
+        // Arrange: сценарий roadmap — протухший lease + зависший FROZEN + routing в никуда + дыра карты.
+        var cluster = new ClusterInfo(
+            "demo", "demo", 4, 1755800000,
+            [new ShardInfo("s1", "host=s1a port=5432 dbname=demo user=postgres",
+                ["s1a"], 5432, "demo", "postgres", 1, null, null)],
+            [
+                new BucketInfo(0, "s1", BucketState.Active, null),
+                new BucketInfo(1, null, BucketState.Active, null),
+                new BucketInfo(2, "s9", BucketState.Active, null),
+                new BucketInfo(3, "s1", BucketState.Frozen,
+                    new MoveInfo("s1", "s2", NowUnix - 500, NowUnix - 100, "cutover-wait", null)),
+            ],
+            []);
+        var snapshot = TestSnapshots.Healthy(Now) with { Clusters = [cluster] };
+        var engine = new AlertEngine(AlertTestRules.All());
+
+        // Act: previous без этого id → sinceUnix = unix оценки (механика t04 §3.4).
+        var alerts = engine.Evaluate(snapshot, snapshot with { Alerts = [] }, Now, 3);
+
+        // Assert: 3 critical (no-master, frozen-long, lost) + 1 warning (no-routing),
+        // сортировка severity → kind (Ordinal); etcd-правила на здоровом базисе молчат.
+        string.Join("|", alerts.Select(a => a.Kind))
+            .Should().Be("bucket-lost|move-frozen-long|shard-no-master|bucket-no-routing");
+        alerts.Should().OnlyContain(a => a.SinceUnix == NowUnix);
+    }
 }
