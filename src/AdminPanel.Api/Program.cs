@@ -26,7 +26,8 @@ builder
    .AddProbes()
    .AddOpenApi()
    .AddHealthChecks()
-   .AddCheck("self", () => HealthCheckResult.Healthy(), ["live"]);
+   .AddCheck("self", () => HealthCheckResult.Healthy(), ["live"])
+   .AddCheck<EtcdHealthCheck>("etcd"); // [t03] чек refresher'а; без тега live — healthz не роняет (arch/03 §1)
 
 // t02: cookie-схема аутентификации (настройки — AdminPanel:Auth).
 builder.Services.AddCookieAuth();
@@ -49,10 +50,15 @@ app.UseAuthentication();
 app.UseApiAuthorization();
 app.MapAuthApi();
 
-// Живость самой панели; без авторизации.
+// Живость самой панели (liveness, arch/03 §1): только чеки с тегом live.
+// Чек etcd (readiness-семантика) не роняет /api/healthz — его статус отдают t04+ эндпоинты.
 app.MapHealthChecks(
     "/api/healthz",
-    new HealthCheckOptions { ResponseWriter = HealthzWriter.WriteStatus });
+    new HealthCheckOptions
+    {
+        Predicate = registration => registration.Tags.Contains("live"),
+        ResponseWriter = HealthzWriter.WriteStatus,
+    });
 
 app.Run();
 
