@@ -1,5 +1,5 @@
-// Панель Обзор: карточки etcd/кластеров/алертов (HA — t09), активные переезды,
-// лента алертов critical/warning (t08 spec §4.3–4.5).
+// Панель Обзор: карточки etcd/кластеров/алертов/HA, активные переезды,
+// лента алертов critical/warning (t08 spec §4.3–4.5; HA-карточка — t09 §4.13).
 import { useQuery } from '@tanstack/react-query';
 import {
   Alert,
@@ -15,8 +15,8 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { Link } from 'react-router';
-import type { AlertSeverityName, OverviewDto } from '../api/dto';
-import { fetchAlerts, fetchOverview, queryKeys } from '../api/queries';
+import type { AlertSeverityName, HaScopeSummaryDto, OverviewDto } from '../api/dto';
+import { fetchAlerts, fetchHaScopes, fetchOverview, queryKeys } from '../api/queries';
 import { BucketStateBadge } from '../components/BucketStateBadge';
 import { AlertSeverityBadge } from '../components/AlertSeverityBadge';
 import { ErrorSection, LoadingSection } from '../components/LoadState';
@@ -44,6 +44,11 @@ export function OverviewPage() {
     queryFn: () => fetchAlerts(),
     refetchInterval: intervalMs,
   });
+  const haScopes = useQuery({
+    queryKey: queryKeys.haScopes,
+    queryFn: fetchHaScopes,
+    refetchInterval: intervalMs,
+  });
 
   if (overview.data === undefined)
     return overview.isError ? (
@@ -60,10 +65,11 @@ export function OverviewPage() {
         <EtcdCard data={data} />
         <ClustersCard data={data} />
         <AlertsCard data={data} />
-        <Card withBorder padding="md" radius="md">
-          <Text fw={600} mb="xs">HA</Text>
-          <Text c="dimmed" size="sm">Сводка HA будет реализована в t09</Text>
-        </Card>
+        <HaCard
+          scopes={haScopes.data}
+          isPending={haScopes.isPending}
+          onRetry={() => void haScopes.refetch()}
+        />
       </SimpleGrid>
       <MovesSection data={data} />
       <AlertsFeedSection
@@ -238,6 +244,71 @@ function AlertsFeedSection({ isPending, isError, onRetry, rows }: {
         <Text fw={600}>Лента алертов</Text>
         <Anchor component={Link} to="/alerts" size="sm">Все алерты →</Anchor>
       </Group>
+      {content}
+    </Card>
+  );
+}
+
+// Карточка HA дашборда: счётчики скопов/без лидера/unmatched + строки-ссылки
+// на детали (t09 spec §4.13). «Без лидера» — только matched-скопы: согласовано
+// с алертом shard-no-leader, чтобы счётчик не расходился с лентой алертов.
+// Ошибка без данных — своя (не роняет остальные карточки); ошибка при данных
+// — тихо (StaleBadge сигнализирует), паттерн AlertsFeedSection (t08 §4.4).
+function HaCard({ scopes, isPending, onRetry }: {
+  scopes: HaScopeSummaryDto[] | undefined;
+  isPending: boolean;
+  onRetry: () => void;
+}) {
+  let content;
+  if (scopes === undefined)
+    content = isPending ? (
+      <Text c="dimmed" size="sm">Загрузка HA…</Text>
+    ) : (
+      <Stack gap="xs" align="flex-start">
+        <Alert color="red">Нет данных HA</Alert>
+        <Anchor size="sm" onClick={onRetry}>Повторить</Anchor>
+      </Stack>
+    );
+  else if (scopes.length === 0) content = <Text c="dimmed" size="sm">HA-scope'ы не найдены</Text>;
+  else {
+    const withoutLeader = scopes.filter((s) => s.matched && s.leaderName === null).length;
+    const unmatched = scopes.filter((s) => !s.matched).length;
+    content = (
+      <Stack gap={4}>
+        <Group gap="xs" wrap="nowrap">
+          <Text size="sm" c="dimmed">скопов: {scopes.length}</Text>
+          <Badge color={withoutLeader > 0 ? 'red' : 'gray'} variant="light">
+            без лидера: {withoutLeader}
+          </Badge>
+          <Badge color={unmatched > 0 ? 'yellow' : 'gray'} variant="light">
+            unmatched: {unmatched}
+          </Badge>
+        </Group>
+        {scopes.map((s) => (
+          <Group key={s.scope} justify="space-between" gap="xs" wrap="nowrap">
+            <Anchor
+              component={Link}
+              to={`/ha/${s.scope}`}
+              size="sm"
+              ff="monospace"
+              truncate="end"
+            >
+              {s.scope}
+            </Anchor>
+            <Group gap={5} wrap="nowrap">
+              {s.matched && s.leaderName === null ? (
+                <Badge color="red" variant="light">нет лидера</Badge>
+              ) : null}
+              {!s.matched ? <Badge color="yellow" variant="light">unmatched</Badge> : null}
+            </Group>
+          </Group>
+        ))}
+      </Stack>
+    );
+  }
+  return (
+    <Card withBorder padding="md" radius="md">
+      <Text fw={600} mb="xs">HA</Text>
       {content}
     </Card>
   );
