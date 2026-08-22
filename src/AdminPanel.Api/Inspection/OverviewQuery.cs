@@ -11,7 +11,7 @@ namespace AdminPanel.Api.Inspection;
 // Запрос сводки дашборда (arch/03 §1 GET /api/overview).
 public sealed record OverviewQuery : IQuery<OverviewDto>;
 
-// Ответ GET /api/overview: etcd-часть реальна, кластерная — заглушки t05 (spec §3.15).
+// Ответ GET /api/overview: etcd-часть реальна, кластерная часть — t05 (spec §3.15).
 public sealed record OverviewDto(
     int AlertsCritical,
     int AlertsWarning,
@@ -24,6 +24,7 @@ public sealed record OverviewDto(
 public sealed record OverviewEtcdDto(bool Reachable, int EndpointsOk, int EndpointsTotal);
 
 // Заглушки контракта t05 (arch/03 §2): поля полные, значения — всегда пусто в t04.
+// Наполнены из снапшота в t05 (spec §6.2).
 public sealed record OverviewClusterDto(
     string Name, int Shards, int Buckets, int ActiveMoves, int MasterlessShards);
 
@@ -43,8 +44,19 @@ public static class OverviewMapper
                 snapshot.Etcd.Reachable,
                 snapshot.Etcd.Endpoints.Count(e => e.Reachable),
                 snapshot.Etcd.Endpoints.Count),
-            [],
-            [],
+            [.. snapshot.Clusters.Select(c => new OverviewClusterDto(
+                c.Name,
+                c.Shards.Count,
+                c.BucketsCount,
+                c.Buckets.Count(b => b.State != BucketState.Active),
+                c.Shards.Count(s => s.MasterAddress is null)))],
+            [.. snapshot.Clusters
+                .SelectMany(c => c.Buckets
+                    .Where(b => b.State != BucketState.Active)
+                    .OrderBy(b => b.Id) // внутри кластера — по Id (spec §3.6): модель порядка Buckets не гарантирует
+                    .Select(b => new OverviewMoveDto(
+                        c.Name, b.Id, BucketStates.Name(b.State),
+                        b.Move?.Owner, b.Move?.Target, b.Move?.UpdatedUnix)))],
             Math.Max(0L, (long)Math.Round(age.TotalMilliseconds)),
             age > TimeSpan.FromSeconds(SnapshotStaleRule.Multiplier * refreshIntervalSeconds));
     }

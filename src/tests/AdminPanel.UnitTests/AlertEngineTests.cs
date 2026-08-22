@@ -138,7 +138,7 @@ public class AlertEngineTests
         var kinds = AlertTestRules.All().Select(r => r.Kind).ToList();
 
         // Assert: защита каркаса от copy-paste новых правил t05/t06 (spec §10.1).
-        kinds.Should().HaveCount(7).And.OnlyHaveUniqueItems();
+        kinds.Should().HaveCount(15).And.OnlyHaveUniqueItems();
     }
 
     [Fact]

@@ -33,6 +33,14 @@ public static class EtcdTestHarness
                 new SnapshotStaleRule(),
                 new ClusterIncompleteRule(),
                 new KeyMalformedRule(),
+                new ShardNoMasterRule(),
+                new MoveStaleRule(Options.Create(new AlertsOptions())),
+                new MoveFrozenLongRule(Options.Create(new AlertsOptions())),
+                new MoveAbortingRule(),
+                new MoveFlippedStatusStuckRule(),
+                new BucketLostRule(),
+                new BucketNoRoutingRule(),
+                new BucketOutOfRangeRule(),
             ]),
             store,
             Options.Create(new EtcdOptions { Endpoints = endpoints }),
@@ -136,7 +144,10 @@ public class EtcdSnapshotIntegrationTests(EtcdContainerFixture fixture) : IClass
         scope.Members.Should().HaveCount(2);
         snapshot.StandNodes.Should().HaveCount(4);
         snapshot.Etcd.Members.Should().ContainSingle(m => m.Name == "test");
-        snapshot.Alerts.Should().BeEmpty();
+        // t05: сид demo несёт 3 статус-ключа с протухшими штампами → ровно 5 move-алертов (spec §3.15);
+        // сортировка: critical (frozen-long) → warnings по kind/target (Ordinal).
+        string.Join("|", snapshot.Alerts.Select(a => a.Id))
+            .Should().Be("move-frozen-long:demo/bucket_11|move-aborting:demo/bucket_7|move-stale:demo/bucket_11|move-stale:demo/bucket_3|move-stale:demo/bucket_7");
         snapshot.Probes.Should().BeEmpty();
     }
 

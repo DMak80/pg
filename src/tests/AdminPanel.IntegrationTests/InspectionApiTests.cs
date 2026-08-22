@@ -69,6 +69,37 @@ internal static class InspectionSnapshots
             [],
             0);
     }
+
+    // Кластерный снапшот HTTP-тестов (spec §9): Fixture + кластер demo — 2 шарда (s2 без master),
+    // бакеты 0..15 (у 4 — дыра), SYNCING −30 c / FROZEN −10 c / ABORTING −5 c, 2 heals.
+    public static EtcdSnapshot Clustered(DateTimeOffset builtAt, DateTimeOffset now)
+    {
+        var unix = now.ToUnixTimeSeconds();
+        var cluster = new ClusterInfo(
+            "demo", "demo", 16, 1755800000,
+            [
+                new ShardInfo("s1", "host=s1a,s1b port=5432 dbname=demo user=postgres",
+                    ["s1a", "s1b"], 5432, "demo", "postgres", 1, "s1a:5432", null),
+                new ShardInfo("s2", "host=s2a,s2b port=5432 dbname=demo user=postgres",
+                    ["s2a", "s2b"], 5432, "demo", "postgres", 1, null, null),
+            ],
+            [.. Enumerable.Range(0, 16).Select(i => i switch
+            {
+                1 => new BucketInfo(1, "s1", BucketState.Syncing,
+                    new MoveInfo("s1", "s2", unix - 130, unix - 30, "copy", null)),
+                2 => new BucketInfo(2, "s1", BucketState.Frozen,
+                    new MoveInfo("s1", "s2", unix - 70, unix - 10, "cutover-wait", null)),
+                3 => new BucketInfo(3, "s2", BucketState.Aborting,
+                    new MoveInfo("s2", "s1", unix - 45, unix - 5, "cleanup", "receiver went away")),
+                4 => new BucketInfo(4, null, BucketState.Active, null),
+                _ => new BucketInfo(i, i % 2 == 0 ? "s1" : "s2", BucketState.Active, null),
+            })],
+            [
+                new HealRecord("bucket_5", "s2", "s1", "restore-heal", unix - 3600),
+                new HealRecord("bucket_9", "s1", "s2", "restore-heal", unix - 7200),
+            ]);
+        return Fixture(builtAt) with { Clusters = [cluster] };
+    }
 }
 
 // HTTP-контракт инспекционных эндпоинтов: 401/503/200/400/фильтры (spec §9.1).
@@ -116,14 +147,18 @@ public class InspectionApiTests
         var overview = await client.GetAsync("/api/overview", TestContext.Current.CancellationToken);
         var status = await client.GetAsync("/api/etcd/status", TestContext.Current.CancellationToken);
         var alerts = await client.GetAsync("/api/alerts", TestContext.Current.CancellationToken);
+        var clustersList = await client.GetAsync("/api/clusters", TestContext.Current.CancellationToken);
+        var clusterDetails = await client.GetAsync("/api/clusters/demo", TestContext.Current.CancellationToken);
 
-        // Assert: 503 ProblemDetails на всех трёх эндпоинтах (spec §9.1).
+        // Assert: 503 ProblemDetails на всех эндпоинтах (spec §9.1).
         overview.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
         overview.Content.Headers.ContentType!.MediaType.Should().Be("application/problem+json");
         var body = await overview.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         body.GetProperty("title").GetString().Should().Be("Snapshot not ready");
         status.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
         alerts.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        clustersList.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        clusterDetails.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
     }
 
     [Fact]
@@ -132,7 +167,7 @@ public class InspectionApiTests
         // Arrange: сначала логин (сдвиг окна лимитера), затем снапшот по текущему времени
         // фабрики → возраст 0 (spec §9.1).
         using var client = await LoginAsync();
-        _factory.Snapshot = InspectionSnapshots.Fixture(_factory.Time.Utc);
+        _factory.Snapshot = InspectionSnapshots.Clustered(_factory.Time.Utc, _factory.Time.Utc);
 
         // Act
         var dto = await GetJsonAsync(client, "/api/overview");
@@ -146,8 +181,14 @@ public class InspectionApiTests
         etcd.GetProperty("reachable").GetBoolean().Should().BeTrue();
         etcd.GetProperty("endpointsOk").GetInt32().Should().Be(1);
         etcd.GetProperty("endpointsTotal").GetInt32().Should().Be(2);
-        dto.GetProperty("clusters").GetArrayLength().Should().Be(0);
-        dto.GetProperty("activeMoves").GetArrayLength().Should().Be(0);
+        var clusters = dto.GetProperty("clusters");
+        clusters.GetArrayLength().Should().Be(1);
+        clusters[0].GetProperty("name").GetString().Should().Be("demo");
+        clusters[0].GetProperty("shards").GetInt32().Should().Be(2);
+        clusters[0].GetProperty("buckets").GetInt32().Should().Be(16);
+        clusters[0].GetProperty("activeMoves").GetInt32().Should().Be(3);
+        clusters[0].GetProperty("masterlessShards").GetInt32().Should().Be(1);
+        dto.GetProperty("activeMoves").GetArrayLength().Should().Be(3);
     }
 
     [Fact]
@@ -305,7 +346,7 @@ public class InspectionEtcdApiTests(AuthWebFactory factory, EtcdContainerFixture
     private readonly AuthWebFactory _factory = factory;
 
     [Fact]
-    public async Task LiveEtcd_Endpoints_ReflectRealSnapshot()
+    public async Task LiveEtcd_InspectionEndpoints_ReflectRealSnapshot()
     {
         // Arrange
         var store = new SnapshotStore();
@@ -318,8 +359,10 @@ public class InspectionEtcdApiTests(AuthWebFactory factory, EtcdContainerFixture
         using var status = await client.GetAsync("/api/etcd/status", TestContext.Current.CancellationToken);
         var overview = await client.GetAsync("/api/overview", TestContext.Current.CancellationToken);
         var alerts = await client.GetAsync("/api/alerts", TestContext.Current.CancellationToken);
+        using var clustersList = await client.GetAsync("/api/clusters", TestContext.Current.CancellationToken);
+        using var details = await client.GetAsync("/api/clusters/demo", TestContext.Current.CancellationToken);
 
-        // Assert: чистый сид demo — etcd жив, алертов нет.
+        // Assert: etcd жив; 5 move-алертов протухшего сида demo (spec §3.15); кластеры отдают данные.
         status.StatusCode.Should().Be(HttpStatusCode.OK);
         var etcd = await status.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         etcd.GetProperty("endpoints")[0].GetProperty("version").GetString().Should().Be("3.5.21");
@@ -327,8 +370,17 @@ public class InspectionEtcdApiTests(AuthWebFactory factory, EtcdContainerFixture
         var overviewDto = await overview.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         overviewDto.GetProperty("etcd").GetProperty("reachable").GetBoolean().Should().BeTrue();
         overviewDto.GetProperty("etcd").GetProperty("endpointsOk").GetInt32().Should().Be(1);
-        (await alerts.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken))
-            .GetArrayLength().Should().Be(0);
+        var alertList = await alerts.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        string.Join("|", alertList.EnumerateArray().Select(a => a.GetProperty("id").GetString()))
+            .Should().Be("move-frozen-long:demo/bucket_11|move-aborting:demo/bucket_7|move-stale:demo/bucket_11|move-stale:demo/bucket_3|move-stale:demo/bucket_7");
+        clustersList.StatusCode.Should().Be(HttpStatusCode.OK);
+        var summaries = await clustersList.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        summaries.GetArrayLength().Should().Be(1);
+        summaries[0].GetProperty("shardsWithMaster").GetInt32().Should().Be(2); // оба master сида живы
+        var detailsDto = await details.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        detailsDto.GetProperty("buckets").GetArrayLength().Should().Be(16);
+        detailsDto.GetProperty("buckets")[3].GetProperty("state").GetString().Should().Be("SYNCING");
+        detailsDto.GetProperty("buckets")[3].GetProperty("move").GetProperty("target").GetString().Should().Be("s2");
     }
 
 }
@@ -359,13 +411,18 @@ public class InspectionSeededAnomaliesApiTests(AuthWebFactory factory, EtcdConta
         // Act
         using var response = await client.GetAsync("/api/alerts", TestContext.Current.CancellationToken);
 
-        // Assert: оба warning; "cluster-incomplete" < "key-malformed" по Ordinal.
+        // Assert: 5 move-алертов сида demo + shard-no-master:ghost/g1 (dsn-шард ghost без master —
+        // живое покрытие P11-правила, сид не сужается; spec §9.3) + cluster-incomplete:ghost
+        // + key-malformed битого ключа; порядок severity → kind → target (Ordinal);
+        // sinceUnix null — первое наблюдение (spec §3.4).
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var alerts = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
-        alerts.GetArrayLength().Should().Be(2);
-        alerts[0].GetProperty("kind").GetString().Should().Be("cluster-incomplete");
-        alerts[0].GetProperty("target").GetString().Should().Be("ghost");
-        alerts[1].GetProperty("kind").GetString().Should().Be("key-malformed");
-        alerts[1].GetProperty("sinceUnix").ValueKind.Should().Be(JsonValueKind.Null);
+        alerts.GetArrayLength().Should().Be(8);
+        string.Join("|", alerts.EnumerateArray().Select(a => a.GetProperty("id").GetString()))
+            .Should().Be("move-frozen-long:demo/bucket_11|shard-no-master:ghost/g1|cluster-incomplete:ghost|key-malformed:/clusters/demo/buckets/status/bucket_1|move-aborting:demo/bucket_7|move-stale:demo/bucket_11|move-stale:demo/bucket_3|move-stale:demo/bucket_7");
+        alerts[1].GetProperty("kind").GetString().Should().Be("shard-no-master");
+        alerts[1].GetProperty("target").GetString().Should().Be("ghost/g1");
+        alerts[2].GetProperty("target").GetString().Should().Be("ghost");
+        alerts[3].GetProperty("sinceUnix").ValueKind.Should().Be(JsonValueKind.Null);
     }
 }
