@@ -101,6 +101,7 @@ export interface ClusterDto {
   shards: ShardDto[];
   buckets: BucketDto[];
   heals: HealDto[];
+  standNodes: StandNodeDto[];
 }
 
 export interface ShardDto {
@@ -145,6 +146,12 @@ export interface HealDto {
   now: string | null;
   reason: string | null;
   tsUnix: number | null;
+}
+
+// Стендовая топология в деталях кластера: глобальный реестр снапшота, обычно пуст (t08 spec §8).
+export interface StandNodeDto {
+  name: string;
+  address: string | null;
 }
 
 // GET /api/ha — сводный список.

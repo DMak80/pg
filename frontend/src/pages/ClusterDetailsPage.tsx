@@ -1,0 +1,70 @@
+// Детали кластера: шапка + вкладки Шарды/Бакеты/Переезды/Heals + стендовая топология (t08 spec §4.7–4.8).
+import { useQuery } from '@tanstack/react-query';
+import { Anchor, Badge, Group, Stack, Tabs, Text, Title } from '@mantine/core';
+import { Link, useParams } from 'react-router';
+import { fetchClusterDetails, queryKeys } from '../api/queries';
+import { ErrorSection, LoadingSection } from '../components/LoadState';
+import { usePollingIntervalMs } from '../polling/PollingContext';
+import { formatUnix } from '../utils/format';
+import { BucketsTab } from './cluster-details/BucketsTab';
+import { HealsTab } from './cluster-details/HealsTab';
+import { MovesTab } from './cluster-details/MovesTab';
+import { ShardsTab } from './cluster-details/ShardsTab';
+import { StandNodesBlock } from './cluster-details/StandNodesBlock';
+
+export function ClusterDetailsPage() {
+  const { cluster = '' } = useParams();
+  const intervalMs = usePollingIntervalMs();
+  const query = useQuery({
+    queryKey: queryKeys.cluster(cluster),
+    queryFn: () => fetchClusterDetails(cluster),
+    refetchInterval: intervalMs,
+  });
+
+  // Паттерн состояний (t08 spec §4.15): 404 → notFound-контент; 503/прочее при
+  // отсутствии данных → ErrorSection; polling-сбой при данных — тихо.
+  if (query.data === undefined)
+    return query.isError ? (
+      <ErrorSection
+        error={query.error}
+        onRetry={() => void query.refetch()}
+        notFound={
+          <Stack gap="xs">
+            <Text>Кластер не найден</Text>
+            <Anchor component={Link} to="/clusters" size="sm">← Кластеры</Anchor>
+          </Stack>
+        }
+      />
+    ) : (
+      <LoadingSection />
+    );
+
+  const data = query.data;
+  return (
+    <Stack gap="md">
+      <div>
+        <Anchor component={Link} to="/clusters" size="sm">← Кластеры</Anchor>
+        <Group gap="sm" mt={4}>
+          <Title order={2}>{data.name}</Title>
+          {data.incomplete ? <Badge color="yellow" variant="light">incomplete</Badge> : null}
+        </Group>
+        <Text c="dimmed" size="sm">
+          БД: {data.dbName ?? '—'} · Бакеты: {data.bucketsCount} · Создан: {formatUnix(data.createdUnix)}
+        </Text>
+      </div>
+      <Tabs defaultValue="shards">
+        <Tabs.List>
+          <Tabs.Tab value="shards">Шарды</Tabs.Tab>
+          <Tabs.Tab value="buckets">Бакеты</Tabs.Tab>
+          <Tabs.Tab value="moves">Переезды</Tabs.Tab>
+          <Tabs.Tab value="heals">Heals</Tabs.Tab>
+        </Tabs.List>
+        <Tabs.Panel value="shards" pt="sm"><ShardsTab shards={data.shards} /></Tabs.Panel>
+        <Tabs.Panel value="buckets" pt="sm"><BucketsTab buckets={data.buckets} /></Tabs.Panel>
+        <Tabs.Panel value="moves" pt="sm"><MovesTab buckets={data.buckets} /></Tabs.Panel>
+        <Tabs.Panel value="heals" pt="sm"><HealsTab heals={data.heals} /></Tabs.Panel>
+      </Tabs>
+      <StandNodesBlock standNodes={data.standNodes} />
+    </Stack>
+  );
+}

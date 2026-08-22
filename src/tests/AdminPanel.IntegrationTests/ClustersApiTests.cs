@@ -110,6 +110,11 @@ public class ClustersApiTests
         var heals = dto.GetProperty("heals");
         heals.GetArrayLength().Should().Be(2);
         heals[0].GetProperty("bucket").GetString().Should().Be("bucket_5"); // новые сверху (spec §3.3)
+        var standNodes = dto.GetProperty("standNodes"); // стендовая топология (t08 spec §8)
+        standNodes.GetArrayLength().Should().Be(2);
+        standNodes[0].GetProperty("name").GetString().Should().Be("node1");
+        standNodes[0].GetProperty("address").GetString().Should().Be("10.0.0.5");
+        standNodes[1].GetProperty("address").ValueKind.Should().Be(JsonValueKind.Null);
     }
 
     [Fact]
