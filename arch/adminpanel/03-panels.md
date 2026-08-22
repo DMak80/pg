@@ -68,9 +68,12 @@ AlertDto:     id, severity, kind, target, message, details{...}, sinceUnix
 | **HA details** | leader, optime, таблица members: name/role/state/timeline/lag/probe-статус; raw config (свернуто) |
 | **Alerts** | таблица всех алертов: severity-цвет, kind, target, message, since; фильтр по severity |
 
-Общие элементы: переключатель интервала polling (2/5/15 с/off, default 5 с),
-тёмная тема, авто-logout при 401 (redirect на /login). Никаких форм ввода,
-кроме логина — панель немая по отношению к данным.
+Общие элементы: переключатель интервала polling (2/5/15 с/off, default 5 с,
+выбор сохраняется в localStorage), тёмная тема, авто-logout при 401
+(redirect на /login), stale-бейдж в шапке layout'а — по `snapshotAgeMs`/`stale`
+ответа `/api/overview`, опрашиваемого с текущим polling-интервалом (при
+недоступности данных — «нет данных»). Никаких форм ввода, кроме логина —
+панель немая по отношению к данным.
 
 ## 4. Каталог алертов (`AlertEngine`)
 
