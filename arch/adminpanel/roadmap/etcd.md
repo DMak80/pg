@@ -5,17 +5,6 @@
 
 ## Задачи
 
-- `t03-etcd-snapshot` ← `t01-skeleton` — etcd-клиент и снапшот.
-  `AdminPanel.Etcd`: `IEtcdGateway` (HTTP JSON gateway `/v3/*`: range,
-  member/list, alarm, maintenance/status на каждый endpoint), парсеры
-  `/clusters/`, `/service/`, `/cluster/nodes/` в модель `Core`
-  (`EtcdSnapshot` по контракту 02 §3, толерантность к неизвестным/битым
-  ключам), `SnapshotStore` (атомарная замена), `SnapshotRefresher`
-  (BackgroundService, тик `RefreshInterval`, endpoint-failover sticky).
-  Unit: парсеры на реальных фрагментах из `../pg` (фикстуры
-  `EtcdFixtures/*.json`, включая вырожденные случаи 02 §7–8).
-  Integration: Testcontainers etcd + сид → refresher строит ожидаемый
-  снапшот; отказ etcd → снапшот прежний, счётчик ошибок растёт.
 - `t04-etcd-api` ← `t02-auth`, `t03-etcd-snapshot` — API инспекции etcd и
   каркас алертов. `AlertEngine` (чистая функция, стабильные id
   `kind:target`, сравнение с прошлым снапшотом для `sinceUnix`) с etcd-частью
