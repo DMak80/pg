@@ -127,6 +127,9 @@ arch/
     ├── create-bucket.sh       ← ★ аварийное восстановление/регистрация одного бакета
     ├── move-bucket.sh         ← ★ онлайн-переезд бакета: move/status/rollback/finalize
     ├── abort-move.sh          ← ★ etcd: отмена незавершённого переезда + уборка артефактов (P7)
+    ├── restore-cluster.sh     ← ★ P12: снапшоты etcd + verify/heal/restore контрол-плейна
+    ├── restore-system.sh      ← ★ P22: восстановление системы в правильном порядке
+    │                              (etcd → шарды → verify/heal → приложение)
     # все скрипты читают ALL_NODES из env → автоматически работают и с 3, и с 4 нодами
 ```
 
