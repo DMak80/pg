@@ -94,6 +94,7 @@ arch/
 ├── 11-bucket-sharding.md      ← ★ опция: бакеты (схемы) поверх нескольких кластеров,
 │                                  онлайн-переезд бакета между шардами
 ├── 12-bucket-pitfalls.md      ← ★ реестр рисков топологии бакетов (etcd + pg_doorman)
+├── 13-network-security.md     ← ★ сетевая модель бакетов: firewall-матрица, TLS, аутентификация (P17)
 ├── configs/
 │   ├── etcd/
 │   │   ├── docker-compose.yml
@@ -170,3 +171,5 @@ arch/
    шарды-бакеты поверх нескольких кластеров.
 10. [12-bucket-pitfalls.md](12-bucket-pitfalls.md) — реестр рисков топологии
     (константа N, etcd-контрол-плейн, pg_doorman).
+11. [13-network-security.md](13-network-security.md) — **опционально**: сетевая
+    модель бакетов (firewall-матрица, TLS, аутентификация).
