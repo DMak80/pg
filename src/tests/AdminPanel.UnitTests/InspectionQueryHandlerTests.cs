@@ -135,4 +135,55 @@ public class InspectionQueryHandlerTests
         summary.ShardsTotal.Should().Be(2);
         summary.ShardsWithMaster.Should().Be(1);
     }
+
+    [Fact]
+    public async Task ClusterDetailsHandle_NoSnapshot_ReturnsFailedSnapshotNotReady()
+    {
+        // Arrange
+        var handler = new ClusterDetailsQueryHandler(new SnapshotStore(), _time);
+
+        // Act
+        var result = await handler.Handle(new ClusterDetailsQuery("demo", null, null), CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().BeOfType<InspectionModule.SnapshotNotReadyException>();
+    }
+
+    [Fact]
+    public async Task ClusterDetailsHandle_UnknownCluster_ReturnsFailedClusterNotFound()
+    {
+        // Arrange
+        var store = new SnapshotStore();
+        store.Replace(TestSnapshots.Healthy(_time.Utc));
+        var handler = new ClusterDetailsQueryHandler(store, _time);
+
+        // Act
+        var result = await handler.Handle(new ClusterDetailsQuery("ghost", null, null), CancellationToken.None);
+
+        // Assert: 404-отказ отличается от 503 — различает эндпоинт (spec §3.10).
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().BeOfType<InspectionModule.ClusterNotFoundException>();
+    }
+
+    [Fact]
+    public async Task ClusterDetailsHandle_WithSnapshot_ReturnsDtoWithFilters()
+    {
+        // Arrange
+        var store = new SnapshotStore();
+        store.Replace(TestSnapshots.Healthy(_time.Utc) with
+        {
+            Clusters = [TestSnapshots.MovingCluster(_time.Utc)],
+        });
+        var handler = new ClusterDetailsQueryHandler(store, _time);
+
+        // Act
+        var result = await handler.Handle(
+            new ClusterDetailsQuery("demo", "s1", BucketState.Syncing), CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Buckets.Should().ContainSingle().Which.Id.Should().Be(1);
+        result.Value.Buckets[0].AgeSec.Should().Be(30);
+    }
 }
