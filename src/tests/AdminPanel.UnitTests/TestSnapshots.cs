@@ -49,4 +49,34 @@ internal static class TestSnapshots
 
     // Кластер без config-ключа: Incomplete = true (t03 §3.6).
     public static ClusterInfo GhostCluster() => new("ghost", null, 0, null, [], [], []);
+
+    // Кластер с динамикой переездов и аномалиями (spec §10.5): 2 шарда (s2 — без master),
+    // бакеты 0..15 (routing s1/s2, у 4 — дыра), 3 статус-ключа относительно now, 2 heals.
+    public static ClusterInfo MovingCluster(DateTimeOffset now)
+    {
+        var unix = now.ToUnixTimeSeconds();
+        return new ClusterInfo(
+            "demo", "demo", 16, 1755800000,
+            [
+                new ShardInfo("s1", "host=s1a,s1b port=5432 dbname=demo user=postgres",
+                    ["s1a", "s1b"], 5432, "demo", "postgres", 1, "s1a:5432", null),
+                new ShardInfo("s2", "host=s2a,s2b port=5432 dbname=demo user=postgres",
+                    ["s2a", "s2b"], 5432, "demo", "postgres", 1, null, null),
+            ],
+            [.. Enumerable.Range(0, 16).Select(i => i switch
+            {
+                1 => new BucketInfo(1, "s1", BucketState.Syncing,
+                    new MoveInfo("s1", "s2", unix - 130, unix - 30, "copy", null)),
+                2 => new BucketInfo(2, "s1", BucketState.Frozen,
+                    new MoveInfo("s1", "s2", unix - 70, unix - 10, "cutover-wait", null)),
+                3 => new BucketInfo(3, "s2", BucketState.Aborting,
+                    new MoveInfo("s2", "s1", unix - 45, unix - 5, "cleanup", "receiver went away")),
+                4 => new BucketInfo(4, null, BucketState.Active, null),
+                _ => new BucketInfo(i, i % 2 == 0 ? "s1" : "s2", BucketState.Active, null),
+            })],
+            [
+                new HealRecord("bucket_5", "s2", "s1", "restore-heal", unix - 3600),
+                new HealRecord("bucket_9", "s1", "s2", "restore-heal", unix - 7200),
+            ]);
+    }
 }
