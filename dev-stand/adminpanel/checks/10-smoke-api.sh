@@ -43,10 +43,15 @@ api /api/clusters/demo | jq -e \
   || { echo "❌ /api/clusters/demo: master/buckets/heals"; exit 1; }
 echo "  /api/clusters/demo: master s1a:5432, 16 бакетов, heal bucket_5"
 
-api /api/ha/demo-s1 | jq -e \
-  '.leaderName == "s1a" and (.members | length) == 2
-   and ([.members[] | select(.name=="s1a")][0].role == "master")' >/dev/null \
-  || { echo "❌ /api/ha/demo-s1: leader/members"; exit 1; }
+# /api/ha обогащается пробами (тик 15 c): на холодном старте панель могла
+# поймать окно «PG ещё поднимается» (replica/stopped) — ждём свежей пробы.
+ha1_ok() {
+  api /api/ha/demo-s1 | jq -e \
+    '.leaderName == "s1a" and (.members | length) == 2
+     and ([.members[] | select(.name=="s1a")][0].role == "master")' >/dev/null
+}
+for i in $(seq 1 25); do ha1_ok && break; sleep 1; done
+ha1_ok || { echo "❌ /api/ha/demo-s1: leader/members"; exit 1; }
 echo "  /api/ha/demo-s1: leader s1a, 2 члена"
 
 # Сид-аномалии видны в алертах (тик панели 3 c — ждём до 15 c)

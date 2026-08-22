@@ -68,8 +68,13 @@ curl -fsS http://127.0.0.1:8011/cluster | jq -e \
 echo "  Patroni-REST: s1b master, s1a stopped"
 wait_no_alert shard-no-master demo/s1; echo "  shard-no-master погас"
 wait_no_alert shard-no-leader demo-s1; echo "  shard-no-leader погас"
-api /api/ha/demo-s1 | jq -e 'any(.members[]; .name=="s1b" and .role=="master")' >/dev/null \
-  || { echo "❌ /api/ha/demo-s1 не видит s1b мастером"; exit 1; }
+# /api/ha обогащается пробами (тик 15 c) — новый мастер появляется в API
+# с задержкой после перезаписи etcd-ключей: ждём свежей пробы.
+ha_b_master() {
+  api /api/ha/demo-s1 | jq -e 'any(.members[]; .name=="s1b" and .role=="master")' >/dev/null
+}
+for i in $(seq 1 25); do ha_b_master && break; sleep 1; done
+ha_b_master || { echo "❌ /api/ha/demo-s1 не видит s1b мастером"; exit 1; }
 echo "  /api/ha/demo-s1: s1b master"
 
 # Act 6: rejoin s1a репликой (self-healing: пустой PGDATA -> клон от s1b)
