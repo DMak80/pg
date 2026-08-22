@@ -63,7 +63,7 @@ AlertDto:     id, severity, kind, target, message, details{...}, sinceUnix
 | Панель | Что показывает |
 |---|---|
 | **Login** | форма логин/пароль; ошибка 401 |
-| **Overview** | бейдж stale; карточки: etcd (reachable, endpoints ok/total; alarms — в ленте алертов и на панели etcd), кластеры (шарды/бакеты/переезды), активные переезды списком, лента алертов (critical/warning); сводка HA: скольки scope'ов без лидера |
+| **Overview** | бейдж stale; карточки: etcd (reachable, endpoints ok/total; alarms — в ленте алертов и на панели etcd), кластеры (шарды/бакеты/переезды), активные переезды списком, лента алертов (critical/warning); сводка HA: скольки scope'ов без лидера (клиентская агрегация `GET /api/ha` — `OverviewDto` HA-полей не содержит) |
 | **etcd** | таблица endpoints (reachable, latency, версия, raftTerm, ошибки, метка «активный»), members (+лидер), alarms; `lastRefreshUtc` |
 | **Clusters** | список: имя, dbname, N, шард мастеровых/всего, активные переезды, пометки (incomplete) |
 | **Cluster details** | вкладки: Шарды (dsn, replicas, master+leaseAlive, sync-standby, лаг слотов), Бакеты (грид id×owner×state, фильтр по owner/state, подсветка не-ACTIVE, возраст), Переезды (только не-ACTIVE: phase, updated, last_error), Heals (журнал), «Стендовая топология» (блок по `standNodes` деталей — реестр `/cluster/nodes/`, скрыт при пустом) |
@@ -75,8 +75,10 @@ AlertDto:     id, severity, kind, target, message, details{...}, sinceUnix
 выбор сохраняется в localStorage), тёмная тема, авто-logout при 401
 (redirect на /login), stale-бейдж в шапке layout'а — по `snapshotAgeMs`/`stale`
 ответа `/api/overview`, опрашиваемого с текущим polling-интервалом (при
-недоступности данных — «нет данных»). Никаких форм ввода, кроме логина —
-панель немая по отношению к данным.
+недоступности данных — «нет данных»), счётчики critical/warning у пункта
+«Алерты» в навигации (клиентский подсчёт по ответу `/api/alerts`, опрашиваемому
+с тем же интервалом; скрыты при нуле/ошибке). Никаких форм ввода, кроме
+логина — панель немая по отношению к данным.
 
 ## 4. Каталог алертов (`AlertEngine`)
 
