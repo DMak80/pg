@@ -69,6 +69,37 @@ internal static class InspectionSnapshots
             [],
             0);
     }
+
+    // Кластерный снапшот HTTP-тестов (spec §9): Fixture + кластер demo — 2 шарда (s2 без master),
+    // бакеты 0..15 (у 4 — дыра), SYNCING −30 c / FROZEN −10 c / ABORTING −5 c, 2 heals.
+    public static EtcdSnapshot Clustered(DateTimeOffset builtAt, DateTimeOffset now)
+    {
+        var unix = now.ToUnixTimeSeconds();
+        var cluster = new ClusterInfo(
+            "demo", "demo", 16, 1755800000,
+            [
+                new ShardInfo("s1", "host=s1a,s1b port=5432 dbname=demo user=postgres",
+                    ["s1a", "s1b"], 5432, "demo", "postgres", 1, "s1a:5432", null),
+                new ShardInfo("s2", "host=s2a,s2b port=5432 dbname=demo user=postgres",
+                    ["s2a", "s2b"], 5432, "demo", "postgres", 1, null, null),
+            ],
+            [.. Enumerable.Range(0, 16).Select(i => i switch
+            {
+                1 => new BucketInfo(1, "s1", BucketState.Syncing,
+                    new MoveInfo("s1", "s2", unix - 130, unix - 30, "copy", null)),
+                2 => new BucketInfo(2, "s1", BucketState.Frozen,
+                    new MoveInfo("s1", "s2", unix - 70, unix - 10, "cutover-wait", null)),
+                3 => new BucketInfo(3, "s2", BucketState.Aborting,
+                    new MoveInfo("s2", "s1", unix - 45, unix - 5, "cleanup", "receiver went away")),
+                4 => new BucketInfo(4, null, BucketState.Active, null),
+                _ => new BucketInfo(i, i % 2 == 0 ? "s1" : "s2", BucketState.Active, null),
+            })],
+            [
+                new HealRecord("bucket_5", "s2", "s1", "restore-heal", unix - 3600),
+                new HealRecord("bucket_9", "s1", "s2", "restore-heal", unix - 7200),
+            ]);
+        return Fixture(builtAt) with { Clusters = [cluster] };
+    }
 }
 
 // HTTP-контракт инспекционных эндпоинтов: 401/503/200/400/фильтры (spec §9.1).
@@ -116,14 +147,18 @@ public class InspectionApiTests
         var overview = await client.GetAsync("/api/overview", TestContext.Current.CancellationToken);
         var status = await client.GetAsync("/api/etcd/status", TestContext.Current.CancellationToken);
         var alerts = await client.GetAsync("/api/alerts", TestContext.Current.CancellationToken);
+        var clustersList = await client.GetAsync("/api/clusters", TestContext.Current.CancellationToken);
+        var clusterDetails = await client.GetAsync("/api/clusters/demo", TestContext.Current.CancellationToken);
 
-        // Assert: 503 ProblemDetails на всех трёх эндпоинтах (spec §9.1).
+        // Assert: 503 ProblemDetails на всех эндпоинтах (spec §9.1).
         overview.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
         overview.Content.Headers.ContentType!.MediaType.Should().Be("application/problem+json");
         var body = await overview.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         body.GetProperty("title").GetString().Should().Be("Snapshot not ready");
         status.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
         alerts.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        clustersList.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        clusterDetails.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
     }
 
     [Fact]
@@ -132,7 +167,7 @@ public class InspectionApiTests
         // Arrange: сначала логин (сдвиг окна лимитера), затем снапшот по текущему времени
         // фабрики → возраст 0 (spec §9.1).
         using var client = await LoginAsync();
-        _factory.Snapshot = InspectionSnapshots.Fixture(_factory.Time.Utc);
+        _factory.Snapshot = InspectionSnapshots.Clustered(_factory.Time.Utc, _factory.Time.Utc);
 
         // Act
         var dto = await GetJsonAsync(client, "/api/overview");
@@ -146,8 +181,14 @@ public class InspectionApiTests
         etcd.GetProperty("reachable").GetBoolean().Should().BeTrue();
         etcd.GetProperty("endpointsOk").GetInt32().Should().Be(1);
         etcd.GetProperty("endpointsTotal").GetInt32().Should().Be(2);
-        dto.GetProperty("clusters").GetArrayLength().Should().Be(0);
-        dto.GetProperty("activeMoves").GetArrayLength().Should().Be(0);
+        var clusters = dto.GetProperty("clusters");
+        clusters.GetArrayLength().Should().Be(1);
+        clusters[0].GetProperty("name").GetString().Should().Be("demo");
+        clusters[0].GetProperty("shards").GetInt32().Should().Be(2);
+        clusters[0].GetProperty("buckets").GetInt32().Should().Be(16);
+        clusters[0].GetProperty("activeMoves").GetInt32().Should().Be(3);
+        clusters[0].GetProperty("masterlessShards").GetInt32().Should().Be(1);
+        dto.GetProperty("activeMoves").GetArrayLength().Should().Be(3);
     }
 
     [Fact]
