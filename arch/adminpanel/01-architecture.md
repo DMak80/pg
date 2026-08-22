@@ -111,10 +111,21 @@ FluentAssertions, Testcontainers, Npgsql, Microsoft.Extensions.*); новые
   Сборка `frontend/` → `src/AdminPanel.Api/wwwroot` (vite `outDir`), ASP.NET
   Core раздаёт статику и SPA-fallback на `index.html`.
 - **Обновление — только polling**: TanStack Query `refetchInterval` 5 c
-  (переключатель в UI: 2/5/15/off). WebSocket/SSE сознательно нет: данные
+  (переключатель в UI: 2/5/15/off, default 5 c; выбор сохраняется в
+  localStorage). WebSocket/SSE сознательно нет: данные
   и так производные от тиков refresher'а, а меньше движущихся частей.
 - **Dev-режим**: `vite dev` с proxy `/api` → `http://localhost:5000`
   (Kestrel), CORS не нужен.
+- **Каркас SPA** (t07): `frontend/src` — общий API-клиент (fetch-обёртка с
+  обработкой 401/ProblemDetails + типы DTO из [03](03-panels.md) §2),
+  layout с навигацией и страницей Login; остальные панели — заглушки,
+  наполняются задачами t08/t09. Guard: layout при монтировании проверяет
+  `GET /api/auth/me`; любой 401 от API (кроме запроса самой формы логина)
+  → редирект на `/login`.
+- **Раздача SPA**: статику и SPA-fallback (`index.html` на неизвестных
+  путях) хост отдаёт без авторизации; неизвестные пути `/api/*` при этом —
+  404, а не SPA-fallback. Если wwwroot пуст (бандл не собран) — хост
+  стартует с предупреждением в лог, `/api/*` работает.
 - **Страницы**: Login, Overview (дашборд), etcd, Clusters (список → детали:
   шарды/бакеты/переезды/heals), HA (список scope'ов → детали), Alerts.
   Спецификация панелей — [03-panels.md](03-panels.md).
