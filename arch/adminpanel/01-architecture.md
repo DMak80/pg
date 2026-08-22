@@ -124,7 +124,7 @@ FluentAssertions, Testcontainers, Npgsql, Microsoft.Extensions.*); новые
 | Секция | Ключи (по умолчанию) | Назначение |
 |---|---|---|
 | `AdminPanel:Etcd` | `Endpoints` (обязательно), `RefreshInterval` (3 c), `RequestTimeout` (2 c) | единственное обязательное подключение к данным |
-| `AdminPanel:Probes` | `PatroniEnabled` (true), `SqlEnabled` (true), `Interval` (15 c), `Timeout` (3 c), `Password` (для SQL; DSN берётся из etcd) | live-пробы; отключаются целиком |
+| `AdminPanel:Probes` | `PatroniEnabled` (true), `SqlEnabled` (true), `Interval` (15 c), `Timeout` (3 c), `Password` (для SQL; DSN берётся из etcd), `HostMap` (пусто; словарь «etcd-адрес ноды `host:port`» → «адрес, достижимый с хоста панели») | live-пробы; отключаются целиком; `HostMap` — override адресов проб для локальных стендов ([02](02-etcd-contract.md) §6, [04](04-local-stand.md) §2.3) |
 | `AdminPanel:Auth` | `Username`, `Password`, `PasswordHash`, `SessionHours` (8), `AllowHttp` (false) | аутентификация |
 | `AdminPanel:Alerts` | `StaleMoveSeconds` (600), `FrozenSeconds` (60), `ReplicaLagBytes` (16 МБ) | пороги алертов |
 

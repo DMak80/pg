@@ -164,11 +164,25 @@ range-запроса раз в 3 с; (в) инспектируемые данн�
 отдельно (`PatroniEnabled` / `SqlEnabled`), ошибка пробы не роняет данные из
 etcd.
 
+Разрешение адреса цели: адрес всегда берётся из etcd (`conn_url` member'а —
+Patroni, DSN шарда — SQL), но подключается панель из своей сети. Перед
+каждым подключением `host:port` прогоняется через маппинг
+`AdminPanel:Probes:HostMap` — словарь «etcd-адрес ноды `host:port`» →
+«реальный адрес, достижимый с хоста панели». Порядок: адрес из etcd →
+override из `HostMap` при точном совпадении ключа → прямое подключение
+к полученному адресу. По умолчанию словарь пуст (прод: панель видит ноды по
+их настоящим адресам); маппинг нужен локальным стендам, где compose-имена
+нод не резолвятся с хоста, а порты опубликованы под другими номерами —
+значения для стенда в [04-local-stand.md](04-local-stand.md) §2.3.
+
 ### 6.1. Patroni REST `:8008` (по умолчанию включена)
 
 - Для каждого HA-scope и каждого его member (host из `/service/…/members/`):
   `GET http://<host>:8008/cluster` (timeout 3 c) → JSON Patroni:
-  `members[]{name,role,state,timeline,lag,host,port}`.
+  `members[]{name,role,state,timeline,lag,host,port}`. Адрес `<host>:8008`
+  прогоняется через `HostMap` (порядок разрешения — §6): на стенде `:8008`
+  слушает patroni-эмулятор `hc*` — отдельный контейнер, опубликованный на
+  хосте под другим портом.
 - Даёт: фактическое состояние нод (`running`/`streaming`/`stopped`), лаг
   реплик в байтах, timeline — то, чего в etcd-DCS нет «в реальном времени».
 - Порт `:8008` и путь — стандарт Patroni (`../pg` `arch/01-architecture.md`,
@@ -179,7 +193,10 @@ etcd.
 - Подключение: DSN шарда из etcd **+ Password из настроек панели**
   (`AdminPanel:Probes:Password`; в DSN пароля нет никогда) +
   `TargetSessionAttributes=ReadWrite` (multi-host DSN ведёт на мастер),
-  `Application Name=adminpanel`, `statement_timeout`.
+  `Application Name=adminpanel`, `statement_timeout`. Каждый `host:port`
+  из DSN перед построением connection string прогоняется через `HostMap`
+  (порядок разрешения — §6): compose-имена стенда резолвятся только внутри
+  compose-сети.
 - Только `SELECT` к `pg_catalog`/`pg_stat_*` (образцы запросов —
   `../pg/arch/scripts/buckets-common.sh`, `move-bucket.sh`; список в
   [03-panels.md](03-panels.md) §5). Двойная защита от записи: сама панель
