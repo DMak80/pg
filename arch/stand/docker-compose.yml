@@ -263,6 +263,9 @@ services:
   # «Ops-бокс»: машина запуска скриптов (move/create/abort-move) — ходит в etcd
   # и шарды по внутренней сети стенда. Профиль ops: не поднимается при обычном
   # `docker compose up`, только `docker compose run --rm opsbox`.
+  # snapshots — P12: etcdctl snapshot save пишет файл на клиенте (в боксе),
+  # bind в ./snapshots хоста, чтобы переживал пересоздание бокса и читался
+  # restore-cluster.sh restore с хоста.
   opsbox:
     build: ./opsbox
     profiles: ["ops"]
@@ -270,6 +273,7 @@ services:
       BUCKETS_ENV: /arch/stand/buckets.stand.env
     volumes:
       - ..:/arch:ro
+      - ./snapshots:/snapshots
     networks: [pgnet]
     depends_on: [etcd]
 

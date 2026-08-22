@@ -61,6 +61,7 @@ runtime API, проверив идентичность ноды (`GET /whoami` �
 | `checks/68-topology-etcd.sh` | топология | IP не фиксированы: etcd = фактам, HAProxy runtime = etcd; смена адреса реплики s2b (пересоздание, старый IP занят ipblocker'ом) подхватывается цепочкой сайдкар → etcd → hasync → runtime без рестарта HAProxy; sync-standby возвращается | ✓ |
 | `checks/70-p8-receiver-failover.sh` | P8 | RED: подписка с дефолтным synchronous_commit=off — failover приёмника молча пропускает срез W1 при «здоровом» стриме (лаг 0), лечение — abort (P7); GREEN: move-bucket.sh с `remote_apply` — W2 висит в SyncRep (не подтверждается при replay-паузе), после failover переслан и применён; mover пережил обрывы, copy рестартовал на новом мастере, cutover со сверкой строк и атомарным flip; finalize добил осиротевшие sync-слоты | ✓ |
 | `checks/72-shard-lifecycle.sh` | P23 | настоящими init/add/remove-shard: init alpha (N=8, dbname=postgres) — константы config, dsn/replicas шардов, все бакеты поровну round-robin (4/4, строго чётные/нечётные), USAGE app_role; повторный init — отказ; init beta (N=4, **dbname=beta**) на том же etcd — своя БД, alpha нетронута (мульти-кластерность); add-shard s1x — пустой, routing не тронут; create-bucket вне диапазона 0..N-1 — отказ; move bucket_0 s1→s2 — атомарный flip; remove-shard непустого s2 — отказ, пустого s1x — успех | ✓ |
+| `checks/74-p12-restore.sh` | P12, P9 | свой кластер gamma (N=4, БД gamma): настоящий move снимает снапшоты ТОЧЕК переезда (после SYNCING и после flip — появились в snapshots/); stop etcd → hap1/hap2 живы (P9: fail-open, hasync держит адреса); data-dir etcd уничтожен → пустой etcd; `restore-cluster.sh restore` из УСТАРЕВШЕГО (до-flip) снапшота с хоста (docker-автоматика); verify ловит routing=s1 при схеме на s2 → heal чинит с журналом `/heals/*` → verify 4/4; сосед alpha вернулся из общего снапшота нетронутым | ✓ |
 | `checks/90-down.sh` | — | разбор стенда | — |
 
 Полный прогон по порядку номеров; логи — в `logs/`.
@@ -133,6 +134,16 @@ runtime API, проверив идентичность ноды (`GET /whoami` �
   IP в etcd (`/cluster/nodes/*`), hasync применяет его в HAProxy runtime
   (`set server ... addr`). Доказательная смена адреса (старый IP на время
   занимает одноразовый контейнер) — в `checks/68-topology-etcd.sh`.
+- PGDATA нод — в АНОНИМНЫХ volume (named только у etcd): `docker compose rm`
+  стирает базу ноды начисто (на это сознательно опираются RESET'ы чеков
+  68/70/72). Обратная сторона: если compose пересоздаст контейнер ноды
+  внезапно, данные теряются, а её сайдкар остаётся в мёртвом netns — ключ
+  `/cluster/nodes/*` гаснет, HAProxy отводит адрес. Такой флак случился один
+  раз (68-й, прогон 2026-08-22: `up -d s2b hc2b` пересоздал заодно running
+  s2a — не воспроизведён повторно, docker 29.7.2 + compose v5.4.0). Лечение
+  эпизода: `docker restart hc1a hc1b hc2a hc2b` (перерегистрация) и повтор
+  упавшего чека; систематическое — named volume для PGDATA нод (потребует
+  явной чистки volume в RESET'ах 68/70/72 — не сделано).
 
 ## Запуск / разбор
 
@@ -141,7 +152,8 @@ cd arch/stand
 checks/00-up.sh && checks/10-p1-p5-freeze.sh && checks/20-move-subscription.sh \
   && checks/30-failover-p2-p3.sh && checks/40-cutover-p6-p1.sh && checks/50-p4-wal-lost.sh \
   && checks/60-p7-abort.sh && checks/65-move-e2e.sh && checks/68-topology-etcd.sh \
-  && checks/70-p8-receiver-failover.sh && checks/72-shard-lifecycle.sh
+  && checks/70-p8-receiver-failover.sh && checks/72-shard-lifecycle.sh \
+  && checks/74-p12-restore.sh
 # разбор:
 checks/90-down.sh
 ```

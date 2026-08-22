@@ -200,6 +200,28 @@ etcd_alive() {
     || { err "etcd недоступен: $ETCD_ENDPOINTS"; exit 9; }
 }
 
+# ── P12: снапшоты контрол-плейна ──────────────────────────────────────────────
+# etcdctl snapshot save пишет файл НА КЛИЕНТЕ (ops-боксе): каталог SNAPSHOT_DIR
+# обязан быть persistence (volume) — иначе снапшоты умрут вместе с боксом.
+# Снапшот физический, покрывает ВЕСЬ etcd (все кластеры): кластер в имени
+# файла — только метка для удобства поиска. Восстановление/сверка —
+# restore-cluster.sh.
+etcd_snapshot() { # <label> → имя файла в выводе; код 1 = не снялся
+  local dir="${SNAPSHOT_DIR:-/var/lib/etcd-snapshots}" f sz
+  if [ ! -d "$dir" ]; then
+    echo "⚠️ P12: нет каталога снапшотов '$dir' (создай / укажи SNAPSHOT_DIR)"
+    return 1
+  fi
+  # .snapshot — суффикс ставим сами: etcdctl пишет ровно по заданному пути
+  f="$dir/snap-${CLUSTER_NAME:-default}-$(date -u +%Y%m%dT%H%M%SZ)-$1.snapshot"
+  if ! ect snapshot save "$f" >/dev/null 2>&1; then
+    echo "⚠️ P12: etcdctl snapshot save НЕ удался (etcd недоступен?)"
+    return 1
+  fi
+  sz="$(ect snapshot status -w json "$f" 2>/dev/null | jq -r '.totalSize // "?"')"
+  info "P12: снапшот контрол-плейна → $f (${sz} байт)"
+}
+
 jstr() { [ -n "${2:-}" ] && jq -r "$1 // empty" <<<"$2" 2>/dev/null || true; }
 
 routing_get() { # <bucket> → шард-владелец (пусто = ключа нет, P12)

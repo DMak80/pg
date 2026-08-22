@@ -33,8 +33,8 @@ PG = dict(
 
 ETCD = os.getenv("ETCD_ENDPOINTS", "http://etcd:2379").rstrip("/")
 NODE_NAME = os.getenv("NODE_NAME", "")  # пусто = сайдкар без регистрации
-LEASE_TTL = 15        # ключ живёт 15с после смерти ноды
-KEEPALIVE_SEC = 5     # продлеваем lease втрое чаще TTL
+LEASE_TTL = 5         # ключ гаснет ≤5с после смерти ноды (P11: как в проде)
+KEEPALIVE_SEC = 1     # продлеваем lease в 5 раз чаще TTL — переживает 2–3 потери
 
 
 def node_ip():

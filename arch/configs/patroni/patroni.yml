@@ -27,9 +27,11 @@ etcd3:
 
 bootstrap:
   dcs:
-    ttl: 30
-    loop_wait: 10
-    retry_timeout: 20
+    # окно ошибок записи при failover ~ ttl + loop_wait + promote ≈ 5–8с (P11,
+    # arch/12-bucket-pitfalls.md); честные ≤5с = ttl 3 — риск ложных failover
+    ttl: 5
+    loop_wait: 2
+    retry_timeout: 3
     synchronous_mode: true
     postgresql:
       use_pg_rewind: true

@@ -193,6 +193,11 @@ cutover_flip() {
     return 5
   fi
   info "атомарный flip: routing '$BUCKET' → '$new', статус-ключ удалён (нет ключа = ACTIVE)"
+  # P12: снапшот точки «переключил на нового владельца»: flip атомарен и
+  # статус-ключа уже нет — restore из него даёт сразу согласованную карту.
+  # Flip уже случился — сбоем снапшота move не роняем, только громко просим.
+  etcd_snapshot "flip-${BUCKET}-${new}" \
+    || echo "⚠️ P12: сними снапшот вручную: restore-cluster.sh [--cluster $CLUSTER_NAME] snapshot flip-${BUCKET}"
 }
 
 # ── move ──────────────────────────────────────────────────────────────────────
@@ -290,6 +295,10 @@ cmd_move() {
   sub_exists "$src_dsn" "$SUB_RB" && { err "на '$OWNER' осталась $SUB_RB — сначала finalize прошлого переезда"; exit 3; }
 
   status_put SYNCING ddl
+  # P12: снапшот обязателен в точках переезда — «после начала»: restore при
+  # потере etcd получит карту с зафиксированным SYNCING (сужает сверку)
+  etcd_snapshot "move-${BUCKET}-start" \
+    || { err "без стартового снапшота переезд не начинаю (P12: restore-cluster.sh)"; exit 4; }
   info "etcd: SYNCING $OWNER → $TO (бакет продолжает работать на запись)"
   echo "  ⚠️ Напоминаю: до конца переезда — DDL-мораторий на '$BUCKET'."
 
