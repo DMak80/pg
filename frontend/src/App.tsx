@@ -7,6 +7,7 @@ import { ClusterDetailsPage } from './pages/ClusterDetailsPage';
 import { ClustersPage } from './pages/ClustersPage';
 import { EtcdPage } from './pages/EtcdPage';
 import { HaPage } from './pages/HaPage';
+import { HaScopeDetailsPage } from './pages/HaScopeDetailsPage';
 import { OverviewPage } from './pages/OverviewPage';
 
 export const router = createBrowserRouter([
@@ -20,6 +21,7 @@ export const router = createBrowserRouter([
       { path: 'clusters', element: <ClustersPage /> },
       { path: 'clusters/:cluster', element: <ClusterDetailsPage /> },
       { path: 'ha', element: <HaPage /> },
+      { path: 'ha/:scope', element: <HaScopeDetailsPage /> },
       { path: 'alerts', element: <AlertsPage /> },
       { path: '*', element: <Navigate to="/" replace /> },
     ],

@@ -5,6 +5,7 @@ import { Link, Outlet, useLocation, useNavigate } from 'react-router';
 import { fetchSession, logoutRequest, queryKeys } from '../api/queries';
 import { PollingToggle } from './PollingToggle';
 import { StaleBadge } from './StaleBadge';
+import { AlertsNavCounters } from './AlertsNavCounters';
 
 // Пункты навигации: маршрут + человекочитаемое имя (arch/03 §3).
 // Активность: '/' — точное совпадение, остальные — по префиксу (t08 spec §4.2).
@@ -79,6 +80,7 @@ export function AppLayout() {
               component={Link}
               to={item.to}
               active={item.to === '/' ? location.pathname === '/' : location.pathname.startsWith(item.to)}
+              rightSection={item.to === '/alerts' ? <AlertsNavCounters /> : undefined}
             />
           ))}
         </Stack>
