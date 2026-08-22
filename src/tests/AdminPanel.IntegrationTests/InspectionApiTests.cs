@@ -346,7 +346,7 @@ public class InspectionEtcdApiTests(AuthWebFactory factory, EtcdContainerFixture
     private readonly AuthWebFactory _factory = factory;
 
     [Fact]
-    public async Task LiveEtcd_Endpoints_ReflectRealSnapshot()
+    public async Task LiveEtcd_InspectionEndpoints_ReflectRealSnapshot()
     {
         // Arrange
         var store = new SnapshotStore();
@@ -359,8 +359,10 @@ public class InspectionEtcdApiTests(AuthWebFactory factory, EtcdContainerFixture
         using var status = await client.GetAsync("/api/etcd/status", TestContext.Current.CancellationToken);
         var overview = await client.GetAsync("/api/overview", TestContext.Current.CancellationToken);
         var alerts = await client.GetAsync("/api/alerts", TestContext.Current.CancellationToken);
+        using var clustersList = await client.GetAsync("/api/clusters", TestContext.Current.CancellationToken);
+        using var details = await client.GetAsync("/api/clusters/demo", TestContext.Current.CancellationToken);
 
-        // Assert: чистый сид demo — etcd жив, алертов нет.
+        // Assert: etcd жив; 5 move-алертов протухшего сида demo (spec §3.15); кластеры отдают данные.
         status.StatusCode.Should().Be(HttpStatusCode.OK);
         var etcd = await status.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         etcd.GetProperty("endpoints")[0].GetProperty("version").GetString().Should().Be("3.5.21");
@@ -368,8 +370,17 @@ public class InspectionEtcdApiTests(AuthWebFactory factory, EtcdContainerFixture
         var overviewDto = await overview.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         overviewDto.GetProperty("etcd").GetProperty("reachable").GetBoolean().Should().BeTrue();
         overviewDto.GetProperty("etcd").GetProperty("endpointsOk").GetInt32().Should().Be(1);
-        (await alerts.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken))
-            .GetArrayLength().Should().Be(0);
+        var alertList = await alerts.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        string.Join("|", alertList.EnumerateArray().Select(a => a.GetProperty("id").GetString()))
+            .Should().Be("move-frozen-long:demo/bucket_11|move-aborting:demo/bucket_7|move-stale:demo/bucket_11|move-stale:demo/bucket_3|move-stale:demo/bucket_7");
+        clustersList.StatusCode.Should().Be(HttpStatusCode.OK);
+        var summaries = await clustersList.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        summaries.GetArrayLength().Should().Be(1);
+        summaries[0].GetProperty("shardsWithMaster").GetInt32().Should().Be(2); // оба master сида живы
+        var detailsDto = await details.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        detailsDto.GetProperty("buckets").GetArrayLength().Should().Be(16);
+        detailsDto.GetProperty("buckets")[3].GetProperty("state").GetString().Should().Be("SYNCING");
+        detailsDto.GetProperty("buckets")[3].GetProperty("move").GetProperty("target").GetString().Should().Be("s2");
     }
 
 }
@@ -400,13 +411,18 @@ public class InspectionSeededAnomaliesApiTests(AuthWebFactory factory, EtcdConta
         // Act
         using var response = await client.GetAsync("/api/alerts", TestContext.Current.CancellationToken);
 
-        // Assert: оба warning; "cluster-incomplete" < "key-malformed" по Ordinal.
+        // Assert: 5 move-алертов сида demo + shard-no-master:ghost/g1 (dsn-шард ghost без master —
+        // живое покрытие P11-правила, сид не сужается; spec §9.3) + cluster-incomplete:ghost
+        // + key-malformed битого ключа; порядок severity → kind → target (Ordinal);
+        // sinceUnix null — первое наблюдение (spec §3.4).
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         var alerts = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
-        alerts.GetArrayLength().Should().Be(2);
-        alerts[0].GetProperty("kind").GetString().Should().Be("cluster-incomplete");
-        alerts[0].GetProperty("target").GetString().Should().Be("ghost");
-        alerts[1].GetProperty("kind").GetString().Should().Be("key-malformed");
-        alerts[1].GetProperty("sinceUnix").ValueKind.Should().Be(JsonValueKind.Null);
+        alerts.GetArrayLength().Should().Be(8);
+        string.Join("|", alerts.EnumerateArray().Select(a => a.GetProperty("id").GetString()))
+            .Should().Be("move-frozen-long:demo/bucket_11|shard-no-master:ghost/g1|cluster-incomplete:ghost|key-malformed:/clusters/demo/buckets/status/bucket_1|move-aborting:demo/bucket_7|move-stale:demo/bucket_11|move-stale:demo/bucket_3|move-stale:demo/bucket_7");
+        alerts[1].GetProperty("kind").GetString().Should().Be("shard-no-master");
+        alerts[1].GetProperty("target").GetString().Should().Be("ghost/g1");
+        alerts[2].GetProperty("target").GetString().Should().Be("ghost");
+        alerts[3].GetProperty("sinceUnix").ValueKind.Should().Be(JsonValueKind.Null);
     }
 }
