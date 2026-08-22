@@ -24,8 +24,9 @@ etcd (v3.5.21)  контрол-плейн — источник правды; о�
                  внутри кластера: config (N, dbname), shards/<X>/{dsn,replicas},
                  buckets/{routing,status}/*; /cluster/nodes/<node> → адрес ноды
                  (стендовая топология HAProxy)
-opsbox          psql+pg_dump+etcdctl+jq — машина запуска скриптов (профиль ops:
-                docker compose run --rm opsbox ..., хостовые бинарики не нужны)
+opsbox          psql+pg_dump+etcdctl+jq+curl — машина запуска скриптов (профиль
+                ops: docker compose run --rm opsbox ..., хостовые бинарики
+                не нужны; curl — для Patroni-REST скриптов, чек 76)
 ```
 
 Патрони/pg_doorman нет — их роль в проверках играет HAProxy с health-check
@@ -62,6 +63,7 @@ runtime API, проверив идентичность ноды (`GET /whoami` �
 | `checks/70-p8-receiver-failover.sh` | P8 | RED: подписка с дефолтным synchronous_commit=off — failover приёмника молча пропускает срез W1 при «здоровом» стриме (лаг 0), лечение — abort (P7); GREEN: move-bucket.sh с `remote_apply` — W2 висит в SyncRep (не подтверждается при replay-паузе), после failover переслан и применён; mover пережил обрывы, copy рестартовал на новом мастере, cutover со сверкой строк и атомарным flip; finalize добил осиротевшие sync-слоты | ✓ |
 | `checks/72-shard-lifecycle.sh` | P23 | настоящими init/add/remove-shard: init alpha (N=8, dbname=postgres) — константы config, dsn/replicas шардов, все бакеты поровну round-robin (4/4, строго чётные/нечётные), USAGE app_role; повторный init — отказ; init beta (N=4, **dbname=beta**) на том же etcd — своя БД, alpha нетронута (мульти-кластерность); add-shard s1x — пустой, routing не тронут; create-bucket вне диапазона 0..N-1 — отказ; move bucket_0 s1→s2 — атомарный flip; remove-shard непустого s2 — отказ, пустого s1x — успех | ✓ |
 | `checks/74-p12-restore.sh` | P12, P9 | свой кластер gamma (N=4, БД gamma): настоящий move снимает снапшоты ТОЧЕК переезда (после SYNCING и после flip — появились в snapshots/); stop etcd → hap1/hap2 живы (P9: fail-open, hasync держит адреса); data-dir etcd уничтожен → пустой etcd; `restore-cluster.sh restore` из УСТАРЕВШЕГО (до-flip) снапшота с хоста (docker-автоматика); verify ловит routing=s1 при схеме на s2 → heal чинит с журналом `/heals/*` → verify 4/4; сосед alpha вернулся из общего снапшота нетронутым | ✓ |
+| `checks/76-ops-scripts.sh` | P22 | покрытие ops-скриптов вне чеков 10–74: bash -n всех `scripts/*.sh` (patronictl/switchover/rebuild-node на стенде не запускаются — нет Patroni, их роль делают чеки 30/68/70); find-leader/get-role/health/cluster-state из opsbox против сайдкаров (эмуляция Patroni REST: `/primary` только мастер, `/replica`; health честно ругается на кворум — стендовой etcd один); `restore-system.sh`: plan/run на живой системе (шаги etcd→шарды→карта, verify зелёный), при остановленном etcd — plan указывает шаг 1, `run --snapshot` делегирует restore и без docker честно завершается rc=3, после возврата etcd — доведение до зелёного | ✓ |
 | `checks/90-down.sh` | — | разбор стенда | — |
 
 Полный прогон по порядку номеров; логи — в `logs/`.
@@ -153,14 +155,21 @@ checks/00-up.sh && checks/10-p1-p5-freeze.sh && checks/20-move-subscription.sh \
   && checks/30-failover-p2-p3.sh && checks/40-cutover-p6-p1.sh && checks/50-p4-wal-lost.sh \
   && checks/60-p7-abort.sh && checks/65-move-e2e.sh && checks/68-topology-etcd.sh \
   && checks/70-p8-receiver-failover.sh && checks/72-shard-lifecycle.sh \
-  && checks/74-p12-restore.sh
+  && checks/74-p12-restore.sh && checks/76-ops-scripts.sh
 # разбор:
 checks/90-down.sh
 ```
 
 Порядок важен: 30-й делает failover шарда 1 (мастер — s1b, s1a не поднимается),
 70-й ломает и восстанавливает шард 2 (s2a пересоздаётся репликой s2b, потом
-наоборот). Все скрипты (`init-cluster/add-shard/remove-shard/create-bucket/move-bucket/abort-move.sh`) запускаются из ops-бокса
-по внутренней сети стенда (конфиг `buckets.stand.env`); руками:
-`docker compose run --rm -T opsbox bash /arch/scripts/move-bucket.sh status bucket_45`.
-На хосте нужен только docker (+ jq для ассертов проверок).
+наоборот). Все bucket-скрипты (`init-cluster/add-shard/remove-shard/create-bucket/move-bucket/abort-move/restore-cluster/restore-system.sh`)
+запускаются из ops-бокса по внутренней сети стенда (конфиг `buckets.stand.env`);
+руками: `docker compose run --rm -T opsbox bash /arch/scripts/move-bucket.sh status bucket_45`.
+Patroni-скрипты (`find-leader/get-role/health/cluster-state.sh`) — тоже из
+ops-бокса, но с env топологии (`-e ETCD_ENDPOINTS=... -e ALL_NODES="s2a s2b"`,
+чек 76): их REST-эндпоинты на стенде эмулируют сайдкары hc*. `patronictl/
+switchover/rebuild-node.sh` на стенде не запускаются совсем (нужны
+Patroni-контейнеры прод-топологии из доков 01–10; их операции — switchover,
+пересоздание ноды — чеки 30/68/70 выполняют руками docker stop/promote/
+pg_basebackup), чек 76 проверяет их синтаксис (`bash -n`). На хосте нужен
+только docker (+ jq для ассертов проверок).
