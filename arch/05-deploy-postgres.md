@@ -95,7 +95,12 @@ SPILO_CONFIGURATION: |
 > + `hot_standby_feedback: 'on'` (failover slots на репликах) и
 > `max_slot_wal_keep_size` (изоляция взрыва WAL). Тогда логические слоты переездов
 > переживают failover источника, а переполнение WAL при зависшем переезде
-> инвалидирует слот, а не диск всего шарда.
+> инвалидирует слот, а не диск всего шарда. Также `max_connections: '60'` вместо
+> базовых 200 — бюджет P15 ([12](12-bucket-pitfalls.md)): весь app-трафик ноды идёт
+> через pg_doorman (`max_db_connections = 55`), остаётся 2 админ/mover + 3
+> `superuser_reserved_connections`; walsender'ы с PG 13 не занимают слоты
+> `max_connections` — свои пулы `max_wal_senders = max_replication_slots = 10`
+> (до 3 переездов одновременно с одного источника).
 >
 > Рецепт failover slots, проверенный на стенде PG 18.4 (`arch/stand/`) — помимо
 > параметров выше обязательны все три пункта:
