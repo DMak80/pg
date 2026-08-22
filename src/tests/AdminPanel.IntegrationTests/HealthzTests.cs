@@ -2,20 +2,24 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using FluentAssertions;
-using Microsoft.AspNetCore.Mvc.Testing;
 using Xunit;
 
 namespace AdminPanel.IntegrationTests;
 
 // Смоук живости панели: /api/healthz без авторизации отвечает контрактом {"status":"ok"}.
+// t02: тест в общей коллекции "api" — второй хост в процессе невозможен (кеш DI-скана сборок).
+[Collection("api")]
 public class HealthzTests
 {
+    private readonly AuthWebFactory _factory;
+
+    public HealthzTests(AuthWebFactory factory) => _factory = factory;
+
     [Fact]
     public async Task Healthz_ReturnsOkStatus()
     {
         // Arrange
-        await using var factory = new WebApplicationFactory<Program>();
-        using var client = factory.CreateClient();
+        using var client = _factory.CreateClient();
 
         // Act
         var response = await client.GetAsync("/api/healthz", TestContext.Current.CancellationToken);
