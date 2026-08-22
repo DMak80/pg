@@ -100,4 +100,39 @@ public class InspectionQueryHandlerTests
         both.Value.Should().ContainSingle().Which.Kind.Should().Be("b");
         none.Value.Should().HaveCount(2);
     }
+
+    [Fact]
+    public async Task ClustersHandle_NoSnapshot_ReturnsFailedSnapshotNotReady()
+    {
+        // Arrange
+        var handler = new ClustersQueryHandler(new SnapshotStore());
+
+        // Act
+        var result = await handler.Handle(new ClustersQuery(), CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().BeOfType<InspectionModule.SnapshotNotReadyException>();
+    }
+
+    [Fact]
+    public async Task ClustersHandle_WithSnapshot_ReturnsSummaries()
+    {
+        // Arrange
+        var store = new SnapshotStore();
+        store.Replace(TestSnapshots.Healthy(_time.Utc) with
+        {
+            Clusters = [TestSnapshots.MovingCluster(_time.Utc)],
+        });
+        var handler = new ClustersQueryHandler(store);
+
+        // Act
+        var result = await handler.Handle(new ClustersQuery(), CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        var summary = result.Value.Should().ContainSingle().Subject;
+        summary.ShardsTotal.Should().Be(2);
+        summary.ShardsWithMaster.Should().Be(1);
+    }
 }
