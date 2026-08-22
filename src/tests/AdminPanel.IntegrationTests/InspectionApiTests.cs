@@ -100,6 +100,25 @@ internal static class InspectionSnapshots
             ]);
         return Fixture(builtAt) with { Clusters = [cluster] };
     }
+
+    // HA-фикстура HTTP-тестов (spec §9.2): demo-s1 с пробами, other-scope unmatched
+    // с упавшей пробой; alerts — руками из Fixture (движок тут не работает).
+    public static EtcdSnapshot Ha(DateTimeOffset builtAt, DateTimeOffset now)
+    {
+        var scopes = new List<AdminPanel.Core.HaScope>
+        {
+            new("demo-s1", "demo", "s1", true, "s1a", 738273634528L, true,
+                [
+                    new HaMember("s1a", "s1a", 5432, "master", "running", 1L, 0L, now, null),
+                    new HaMember("s1b", "s1b", 5432, "replica", "streaming", 1L, 17L * 1024 * 1024, now, null),
+                ],
+                "{\"ttl\":5,\"loop_wait\":2}"),
+            new("other-scope", null, null, false, null, null, false,
+                [new HaMember("n1", "n1", 5432, "replica", "stopped", null, null, now, "connection refused")],
+                null),
+        };
+        return Fixture(builtAt) with { HaScopes = scopes };
+    }
 }
 
 // HTTP-контракт инспекционных эндпоинтов: 401/503/200/400/фильтры (spec §9.1).
