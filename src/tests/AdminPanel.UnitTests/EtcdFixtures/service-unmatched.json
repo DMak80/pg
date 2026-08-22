@@ -1,0 +1,6 @@
+[
+  { "key": "/service/other-scope/leader", "value": "plain-name", "modRevision": 30 },
+  { "key": "/service/other-scope/members/only", "value": "{\"name\":\"only\",\"conn_url\":\"only:5432\",\"role\":\"master\"}", "modRevision": 31 },
+  { "key": "/service/demo-s9/leader", "value": "{\"name\":\"m1\"}", "modRevision": 32 },
+  { "key": "/service/stray/what/is/this", "value": "x", "modRevision": 33 }
+]

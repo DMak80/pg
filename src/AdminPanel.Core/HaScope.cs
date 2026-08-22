@@ -7,7 +7,7 @@ public sealed record HaScope(
     string? Shard,
     bool Matched,
     string? LeaderName,
-    string? OptimeLeader,
+    long? OptimeLeader,
     bool Initialized,
     IReadOnlyList<HaMember> Members,
     string? RawConfig);
