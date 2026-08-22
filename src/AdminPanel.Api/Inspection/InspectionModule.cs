@@ -17,6 +17,10 @@ public static class InspectionModule
     public sealed class ClusterNotFoundException(string cluster)
         : Exception($"кластер {cluster} не найден в снапшоте");
 
+    // HA-scope отсутствует в снапшоте: 404 — как неизвестный кластер (spec §3.18).
+    public sealed class ScopeNotFoundException(string scope)
+        : Exception($"HA-scope {scope} не найден в снапшоте");
+
     // GET /api/overview | /api/etcd/status | /api/alerts (arch/03 §1, spec §6.1).
     public static IEndpointRouteBuilder MapInspectionApi(this IEndpointRouteBuilder endpoints)
     {
@@ -66,6 +70,33 @@ public static class InspectionModule
                 ? Results.Problem(
                     statusCode: StatusCodes.Status404NotFound,
                     title: "Cluster not found",
+                    detail: result.Error.Message)
+                : Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable,
+                    title: "Snapshot not ready",
+                    detail: result.Error!.Message);
+        });
+
+        // GET /api/ha — сводный список HA-скопов (arch/03 §1).
+        endpoints.MapGet("/api/ha", async (IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleQuery<HaScopesQuery, IReadOnlyList<HaScopeSummaryDto>>(
+                new HaScopesQuery(), ct);
+            return ResultToHttp(result);
+        });
+
+        // GET /api/ha/{scope} — детали скопа (arch/03 §1); ScopeNotFoundException → 404,
+        // прочий отказ → 503 — маппинг как у /api/clusters/{cluster} (t05 §6.1).
+        endpoints.MapGet("/api/ha/{scope}", async (string scope, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleQuery<HaScopeDetailsQuery, HaScopeDto>(
+                new HaScopeDetailsQuery(scope), ct);
+            if (result.IsSuccess)
+                return Results.Ok(result.Value);
+            return result.Error is ScopeNotFoundException
+                ? Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound,
+                    title: "Scope not found",
                     detail: result.Error.Message)
                 : Results.Problem(
                     statusCode: StatusCodes.Status503ServiceUnavailable,

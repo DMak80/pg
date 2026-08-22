@@ -19,6 +19,7 @@ public sealed class SnapshotRefresher(
     IEtcdGateway gateway,
     IAlertEngine alertEngine,
     ISnapshotStore store,
+    IProbeStateStore probeStateStore,
     IOptions<EtcdOptions> options,
     TimeProvider time,
     ILogger<SnapshotRefresher> logger) : BackgroundService, IHealthCheckService
@@ -130,10 +131,13 @@ public sealed class SnapshotRefresher(
             now,
             0);
 
-        // 6. Сборка + алерты + атомарная замена (arch/02 §4 п.4–5; Alerts на обоих путях тика, spec §5).
-        var built = SnapshotBuilder.Build(
-            time, clustersParsed, serviceParsed, nodes,
-            etcd.Members, etcd.Alarms, etcd);
+        // 6. Сборка + внесение проб (arch/02 §4 п.3) + алерты + атомарная замена
+        // (arch/02 §4 п.4–5; Alerts на обоих путях тика, spec §5; spec §3.1).
+        var built = ProbeEnricher.Apply(
+            SnapshotBuilder.Build(
+                time, clustersParsed, serviceParsed, nodes,
+                etcd.Members, etcd.Alarms, etcd),
+            probeStateStore.Current);
         store.Replace(built with
         {
             Alerts = alertEngine.Evaluate(built, previous, now, EffectiveIntervalSeconds()),
@@ -199,7 +203,7 @@ public sealed class SnapshotRefresher(
             previous?.Clusters ?? [],
             previous?.HaScopes ?? [],
             previous?.StandNodes ?? [],
-            [],
+            previous?.Probes ?? [],   // t06: пробы — часть снапшота, отказ etcd их не теряет (spec §4.3)
             [],
             previous?.ParseErrors ?? [],
             previous?.UnknownKeyCount ?? 0);

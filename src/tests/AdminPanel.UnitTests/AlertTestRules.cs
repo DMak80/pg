@@ -4,7 +4,7 @@ using Microsoft.Extensions.Options;
 
 namespace AdminPanel.UnitTests;
 
-// Все правила t04+t05 одним списком: харнессы refresher'а и тест уникальности kind'ов (spec §10.1, §3.16).
+// Все правила t04+t05+t06 одним списком: харнессы refresher'а и тест уникальности kind'ов (spec §10.1, §3.16).
 internal static class AlertTestRules
 {
     public static IReadOnlyList<IAlertRule> All()
@@ -25,5 +25,15 @@ internal static class AlertTestRules
             new BucketLostRule(),
             new BucketNoRoutingRule(),
             new BucketOutOfRangeRule(),
+            // t06: 9 HA-правил (spec §5)
+            new ShardNoLeaderRule(),
+            new HaMemberNotStreamingRule(),
+            new ReplicaLagHighRule(Options.Create(new AlertsOptions())),
+            new ProbeFailedRule(),
+            new SlotLagHighRule(Options.Create(new AlertsOptions())),
+            new SlotWalLostRule(),
+            new SlotInvalidationRiskRule(Options.Create(new AlertsOptions())),
+            new SyncStandbyMissingRule(),
+            new InventoryMismatchRule(),
         ];
 }
