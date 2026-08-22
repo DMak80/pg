@@ -55,14 +55,30 @@ public class SqlConnectionFactoryTests
         // Act
         var builder = SqlProbe.BuildConnectionString(Shard(), options);
 
-        // Assert: двойная защита от записи + теги панели (arch/02 §6.2, spec §3.6).
+        // Assert: маршрутизация на мастера + теги панели (arch/02 §6.2, spec §3.6).
         // Npgsql 10: TargetSessionAttributes — string c libpq-значением "read-write"
-        // (enum NpgsqlTargetSessionAttributes удалён в 10-й мажорной версии).
+        // (enum NpgsqlTargetSessionAttributes удалён в 10-й мажорной версии);
+        // двойная защита от записи — сессионный SET в ProbeAsync (несовместимость
+        // read-write-фильтра и connection-Options у PostgreSQL).
         builder.TargetSessionAttributes.Should().Be("read-write");
-        builder.Options.Should().Be("-c default_transaction_read_only=on");
         builder.ApplicationName.Should().Be("adminpanel");
         builder.Timeout.Should().Be(7);
         builder.CommandTimeout.Should().Be(7);
+    }
+
+    [Fact]
+    public void Build_SingleHost_OmitsTargetSessionAttributes()
+    {
+        // Arrange: одиночный хост — Npgsql 10 отвергает read-write не-Any с одним
+        // хостом (NotSupportedException), фильтровать некого.
+        var shard = Shard() with { DsnHosts = ["s1a"] };
+
+        // Act
+        var builder = SqlProbe.BuildConnectionString(shard, new ProbesOptions());
+
+        // Assert: ключ не ставится — идём на единственный хост.
+        builder.TargetSessionAttributes.Should().BeNullOrEmpty();
+        builder.Host.Should().Be("s1a:5432");
     }
 
     [Fact]

@@ -27,21 +27,26 @@ public sealed class SqlProbe(IOptions<ProbesOptions> options, TimeProvider time)
         => (int)Math.Ceiling(value.TimeoutSeconds <= 0 ? 3 : value.TimeoutSeconds);
 
     // Строка подключения пробы — публичный static: чистая часть для unit-тестов (spec §10.5).
+    // Npgsql 10: TargetSessionAttributes — string с libpq-значением "read-write"
+    // (enum-тип удалён в 10-й версии Npgsql) и допускается ТОЛЬКО при мульти-хосте:
+    // с одиночным хостом Npgsql бросает NotSupportedException, а фильтровать некого —
+    // ключ не ставится. default_transaction_read_only несовместим с read-write-фильтром
+    // (PG отвергает сервер с default_transaction_read_only=on как не-writable), поэтому
+    // «двойная защита от записи» (arch/02 §6.2) включается сессионным SET после выбора
+    // мастера — см. ReadOnlyGuardSql и ProbeAsync.
     public static NpgsqlConnectionStringBuilder BuildConnectionString(ShardInfo shard, ProbesOptions options)
     {
         var port = shard.Port ?? 5432;
-        var endpoints = shard.DsnHosts.Select(host => HostMapResolver.Resolve(options.HostMap, host, port));
+        var hosts = shard.DsnHosts.Select(host => HostMapResolver.Resolve(options.HostMap, host, port)).ToList();
         var builder = new NpgsqlConnectionStringBuilder
         {
-            Host = string.Join(",", endpoints),
-            // Npgsql 10: TargetSessionAttributes — string с libpq-значением "read-write"
-            // (мульти-хост ведёт на мастер; enum-тип удалён в 10-й версии Npgsql).
-            TargetSessionAttributes = "read-write",
+            Host = string.Join(",", hosts),
             ApplicationName = "adminpanel",
             Timeout = TimeoutSeconds(options),
             CommandTimeout = TimeoutSeconds(options), // statement_timeout (arch/02 §6.2)
-            Options = "-c default_transaction_read_only=on", // двойная защита от записи
         };
+        if (hosts.Count > 1)
+            builder.TargetSessionAttributes = "read-write"; // multi-host ведёт на мастер
         if (shard.DbName is not null)
             builder.Database = shard.DbName;
         if (shard.User is not null)
@@ -75,6 +80,10 @@ public sealed class SqlProbe(IOptions<ProbesOptions> options, TimeProvider time)
 
     private const string RecoverySql = "select pg_is_in_recovery()";
 
+    // Двойная защита от записи (arch/02 §6.2): сессионный SET после выбора мастера —
+    // в строке подключения несовместим с read-write-фильтром (см. BuildConnectionString).
+    private const string ReadOnlyGuardSql = "set default_transaction_read_only = on";
+
     public async Task<SqlShardResult> ProbeAsync(ClusterInfo cluster, ShardInfo shard, CancellationToken ct)
     {
         var at = time.GetUtcNow();
@@ -85,6 +94,8 @@ public sealed class SqlProbe(IOptions<ProbesOptions> options, TimeProvider time)
             await using var connection = new NpgsqlConnection(
                 BuildConnectionString(shard, options.Value).ConnectionString);
             await connection.OpenAsync(ct);
+            await using (var guard = new NpgsqlCommand(ReadOnlyGuardSql, connection))
+                await guard.ExecuteNonQueryAsync(ct);
 
             var inRecovery = await ScalarBoolAsync(connection, RecoverySql, ct);
             var standbies = await StandbiesAsync(connection, ct);
