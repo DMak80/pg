@@ -15,9 +15,10 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { Link } from 'react-router';
-import type { OverviewDto } from '../api/dto';
+import type { AlertSeverityName, OverviewDto } from '../api/dto';
 import { fetchAlerts, fetchOverview, queryKeys } from '../api/queries';
 import { BucketStateBadge } from '../components/BucketStateBadge';
+import { AlertSeverityBadge } from '../components/AlertSeverityBadge';
 import { ErrorSection, LoadingSection } from '../components/LoadState';
 import { usePollingIntervalMs } from '../polling/PollingContext';
 import { formatUnix, formatUnixAge } from '../utils/format';
@@ -201,7 +202,7 @@ function AlertsFeedSection({ isPending, isError, onRetry, rows }: {
   isPending: boolean;
   isError: boolean;
   onRetry: () => void;
-  rows: { id: string; severity: string; kind: string; target: string; message: string; sinceUnix: number | null }[];
+  rows: { id: string; severity: AlertSeverityName; kind: string; target: string; message: string; sinceUnix: number | null }[];
 }) {
   let content;
   if (isPending) content = <Text c="dimmed" size="sm">Загрузка алертов…</Text>;
@@ -218,7 +219,7 @@ function AlertsFeedSection({ isPending, isError, onRetry, rows }: {
       <Stack gap={4}>
         {rows.map((a) => (
           <Group key={a.id} gap="sm" wrap="nowrap" align="flex-start">
-            <Badge color={a.severity === 'critical' ? 'red' : 'yellow'} variant="light">{a.severity}</Badge>
+            <AlertSeverityBadge severity={a.severity} />
             <Text size="sm" ff="monospace">{a.kind}</Text>
             <Text size="sm" ff="monospace" c="dimmed">{a.target}</Text>
             <Text size="sm" style={{ flex: 1 }}>{a.message}</Text>
