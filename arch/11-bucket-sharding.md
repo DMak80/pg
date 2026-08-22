@@ -89,8 +89,10 @@ failover невозможны, кэш не протухает; не может �
 Ключи одного кластера:
 
 ```
-/clusters/<C>/config              → {"buckets": 256, "dbname": "app"}   # константы init (P18: навсегда)
-/clusters/<C>/shards/X/dsn        → "host=n1,n2,n3 port=5432 dbname=app user=bucket_admin"  # вход шарда
+/clusters/<C>/config              → {"buckets": 256, "dbname": "<C>"}   # константы init (P18: навсегда);
+                                                                        # имя БД = имя кластера — ОДНО на все
+                                                                        # шарды и ноды; бакеты — СХЕМЫ в ней
+/clusters/<C>/shards/X/dsn        → "host=n1,n2,n3 port=5432 dbname=<C> user=bucket_admin"  # вход шарда
 /clusters/<C>/shards/X/replicas   → 2            # декларативное число реплик
 /clusters/<C>/shards/X/master     → "host:6432"  # lease TTL 5с + продление, Patroni-callback on_role_change
 /clusters/<C>/buckets/routing/bucket_42 → "shard1"                  # владелец (авторитет)
@@ -143,7 +145,8 @@ failover невозможны, кэш не протухает; не может �
    (`ETCD_ENDPOINTS` + TLS к etcd) и **имя кластера** `<C>` (префикс
    `/clusters/<C>/` — один etcd обслуживает несколько независимых систем).
    Адресов БД и имени базы в статическом конфиге нет вообще;
-2. `N` и `dbname` — из `/clusters/<C>/config` (константы init);
+2. `N` и `dbname` — из `/clusters/<C>/config` (константы init; dbname = имя
+   кластера `<C>` — одно на все шарды и ноды, бакеты — схемы в этой БД, P14);
 3. `bucket_id = hash(tenant_id) % N`, схема бакета = `bucket_<id>`;
 4. шард-владелец — `/clusters/<C>/buckets/routing/bucket_id` (кэш с TTL
    секунды, инвалидация watch'ем префикса `/clusters/<C>/buckets/`);
@@ -187,7 +190,7 @@ failover невозможны, кэш не протухает; не может �
 |---|---|---|
 | PostgreSQL | `:5432` (локально) | принимает только pg_doorman, подписки переездов (через HAProxy) и админку |
 | **Patroni** (агент) | REST `:8008` | управляет **локальным** PG; кластер агентов выбирает лидера через etcd; callback `on_role_change` делает lease-put `/clusters/<C>/shards/X/master` — единственный авторитет «кто мастер». REST `/primary` потребляет health-check HAProxy |
-| **pg_doorman** (sidecar) | `:6432` | пулер приложений, бэкенд **только** `127.0.0.1:5432` этой ноды; конфиг одинаков на всех нодах (N пулов `bucket_0..N-1 → localhost`), переезды бакетов его не трогают |
+| **pg_doorman** (sidecar) | `:6432` | пулер приложений, бэкенд **только** `127.0.0.1:5432` этой ноды; конфиг одинаков на всех нодах (ЕДИНСТВЕННЫЙ пул `<dbname>` = имя кластера → localhost; бакеты — схемы в этой БД, не отдельные БД/пулы), переезды бакетов его не трогают |
 | **HAProxy** | `:5432` | **не клиентский**: вход репликационного трафика переездов (P2); health-check `GET /primary` у Patroni всех нод кластера → ведёт на текущего мастера. Per-node или пара выделенных LB на шард — HAProxy **любой** ноды кластера эквивалентен, подписке дают multi-host conninfo (плашка ниже) |
 | **etcd** (член) | `:2379` | пока кластер ≤ 7 нод — etcd на нодах (локальные чтения/watch, паттерн [10](10-four-nodes.md)); при росте — отдельный etcd-кластер 3–5 нод по [04](04-deploy-etcd.md). Записи всегда через лидера (кворум), локальность ускоряет чтения/watch |
 
@@ -212,7 +215,8 @@ failover невозможны, кэш не протухает; не может �
 | App-роль приложения (≠ owner схемы): `GRANT INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES`, `GRANT USAGE, UPDATE ON ALL SEQUENCES` | оба шарда | write-доступ, который срезается `REVOKE` при заморозке (P1); на sequences обе привилегии — `nextval` даёт И `USAGE`, И `UPDATE`, заморозка обязана отобрать обе (проверено на стенде). Различимость сессий бакета в `pg_stat_activity`. Owner пишет вопреки REVOKE — поэтому app ≠ owner |
 | Миграционная роль-владелец схем бакетов | оба шарда | единственная, кто выполняет DDL (P5); в окне переезда — процедурный мораторий (правами владельца не остановить → страховка сверками) |
 | Правило в `pg_hba.conf` для `bucket_mover` с IP HAProxy **своего** шарда (per-node HAProxy — со всех нод кластера) | источник | подписка подключается через HAProxy источника → источник видит IP этого HAProxy (не приёмника) |
-| `max_db_connections = 55` (pg_doorman, конфиг одинаков на всех нодах); на нодах PG: `max_connections = 60`, `max_wal_senders = max_replication_slots = 10` | все ноды | бюджет соединений (P15 из [12](12-bucket-pitfalls.md)): doorman → PG ≤ 55 серверных соединений на ноду (60 = 55 + 2 админ/mover + 3 reserved; walsender'ы с PG 13 вне max_connections — свои пулы); подписки переездов ≤ 10 слотов/walsender'ов → до 3 параллельных переездов с одного источника (префлайт ограничивает). Клиентский вход :6432 — лимит 1000 при наличии параметра, иначе без ограничений (бюджетом PG не является) |
+| `max_db_connections = 55` (pg_doorman, единственный пул `<C>` на ноду — кап пула = бюджет ноды); на нодах PG: `max_connections = 60`, `max_wal_senders = max_replication_slots = 10` | все ноды | бюджет соединений (P15 из [12](12-bucket-pitfalls.md)): doorman → PG ≤ 55 серверных соединений на ноду (60 = 55 + 2 админ/mover + 3 reserved; walsender'ы с PG 13 вне max_connections — свои пулы); подписки переездов ≤ 10 слотов/walsender'ов → до 3 параллельных переездов с одного источника (префлайт ограничивает). Клиентский вход :6432 — лимит 1000 при наличии параметра, иначе без ограничений (бюджетом PG не является) |
+| `pool_mode: "transaction"` (pg_doorman, единственный пул `<C>`; пер-юзер override в `"session"` — для исключений) | все ноды | режим пулинга (P13 из [12](12-bucket-pitfalls.md)): бэкенд держится на время транзакции — 55 серверных соединений обслуживают тысячи клиентов; работают prepared statements (вкл. анонимные), COPY, `SET LOCAL`; сессионное состояние (`SET` вне транзакции, кросс-транзакционные advisory locks, `WITH HOLD`, temp tables) — запрещено гайдлайнами pool-aware. Адресация бакета — схема: `bucket_N.table` или `SET LOCAL search_path` (P14) |
 
 > ⚠️ **Строка подключения подписки — всегда через write-эндпоинт HAProxy шарда-источника**
 > (порт 5432), не в конкретную ноду. Иначе failover источника рвёт репликацию намертво.
@@ -239,13 +243,14 @@ failover невозможны, кэш не протухает; не может �
 ### init-cluster.sh — создание системы (один раз)
 
 ```bash
-./scripts/init-cluster.sh --cluster shop --buckets 256 --dbname app --replicas 2 \
-  --shard shard1='host=10.0.1.1,10.0.1.2,10.0.1.3 port=5432 dbname=app user=bucket_admin' \
-  --shard shard2='host=10.0.2.1,10.0.2.2,10.0.2.3 port=5432 dbname=app user=bucket_admin'
+./scripts/init-cluster.sh --cluster shop --buckets 256 --dbname shop --replicas 2 \
+  --shard shard1='host=10.0.1.1,10.0.1.2,10.0.1.3 port=5432 dbname=shop user=bucket_admin' \
+  --shard shard2='host=10.0.2.1,10.0.2.2,10.0.2.3 port=5432 dbname=shop user=bucket_admin'
 ```
 
-- фиксирует константы `/clusters/shop/config`: **N=256** бакетов и **БД `app`**
-  (одна на кластер, создаётся на шардах заранее). N и dbname — навсегда:
+- фиксирует константы `/clusters/shop/config`: **N=256** бакетов и **БД `shop`**
+  (одна на кластер, имя = имя кластера — одно на все шарды и ноды, создаётся
+  на шардах заранее; бакеты — схемы в ней). N и dbname — навсегда:
   смена N ломает хеш-маппинг всех тенантов (P18), повторный init отказывает;
 - регистрирует шарды: `dsn` (multi-host write-эндпоинт, **без пароля** —
   пароли в etcd не хранятся) и `replicas`;
@@ -259,7 +264,7 @@ failover невозможны, кэш не протухает; не может �
 
 ```bash
 ./scripts/add-shard.sh --cluster shop shard3 \
-  --dsn 'host=10.0.3.1,10.0.3.2,10.0.3.3 port=5432 dbname=app user=bucket_admin'
+  --dsn 'host=10.0.3.1,10.0.3.2,10.0.3.3 port=5432 dbname=shop user=bucket_admin'
 ```
 
 Шард регистрируется **пустым**: привязки бакетов к нему нет. Бакеты
@@ -340,8 +345,8 @@ etcdctl put /clusters/<C>/buckets/status/bucket_42 \
 ### Шаг 1. Перенести DDL (без данных) на шард2
 ```bash
 pg_dump --schema-only --schema=bucket_42 --no-owner --no-privileges \
-  "host=<haproxy_shard1> port=5432 dbname=app user=..." \
-| psql "host=<haproxy_shard2> port=5432 dbname=app user=..."
+  "host=<haproxy_shard1> port=5432 dbname=shop user=..." \
+| psql "host=<haproxy_shard2> port=5432 dbname=shop user=..."
 ```
 Схемы, таблицы, индексы, последовательности, ограничения — всё кроме данных.
 
@@ -354,7 +359,7 @@ CREATE PUBLICATION pub_b42 FOR TABLES IN SCHEMA bucket_42;
 CREATE SUBSCRIPTION sub_b42
     -- multi-host: HAProxy любой ноды шарда1 ведёт к мастеру (§4), libpq
     -- перебирает адреса — подписка переживает и failover, и смерть ноды
-    CONNECTION 'host=<hap1_node1>,<hap1_node2>,<hap1_node3> port=5432 dbname=app user=bucket_mover password=...'
+    CONNECTION 'host=<hap1_node1>,<hap1_node2>,<hap1_node3> port=5432 dbname=shop user=bucket_mover password=...'
     PUBLICATION pub_b42
     WITH (copy_data = true, failover = true,          -- failover=true: слот синхронизируется
           synchronous_commit = remote_apply);         -- на реплики источника (P3);
