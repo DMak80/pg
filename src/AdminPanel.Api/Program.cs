@@ -46,6 +46,15 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
+// [t07] SPA из wwwroot — без авторизации (в бандле секретов нет, arch/01 §4/§5).
+// Бандла нет (npm run build не запускался) — хост жив, отдаётся только API.
+if (!Directory.Exists(app.Environment.WebRootPath))
+    app.Logger.LogWarning("wwwroot пуст — SPA-бандл не собран (cd frontend && npm run build)");
+
+// [t07] default-документ и статика; guard /api/* ниже статике не мешает.
+app.UseDefaultFiles();
+app.UseStaticFiles();
+
 // t02: аутентификация + default-deny guard — всё /api/*, кроме login и healthz, → 401.
 app.UseAuthentication();
 app.UseApiAuthorization();
@@ -61,6 +70,14 @@ app.MapHealthChecks(
         Predicate = registration => registration.Tags.Contains("live"),
         ResponseWriter = HealthzWriter.WriteStatus,
     });
+
+// [t07] неизвестные /api/* — 404 ProblemDetails, а не SPA-fallback (arch/01 §5).
+app.MapFallback(
+    "/api/{**_}",
+    () => Results.Problem(statusCode: StatusCodes.Status404NotFound, title: "Not found"));
+
+// [t07] SPA-fallback: клиентская маршрутизация неизвестных путей через index.html.
+app.MapFallbackToFile("index.html");
 
 app.Run();
 
