@@ -1,0 +1,34 @@
+# Dev-стенд AdminPanel (arch/04, spec t10): профили quick (etcd+seed) и
+# full (+PG-шарды и patroni-эмуляторы; добавляются задачами 3-4).
+# Имена сервисов канонические (DNS сети стенда: на них построены
+# DSN/репликация), container_name — с префиксом as- (не конфликтуют со
+# стендом ../pg, который порты на хост не публикует; arch/04 §1).
+name: adminpanel-stand
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.21
+    container_name: as-etcd
+    ports:
+      - "2379:2379"
+    command:
+      - etcd
+      - --data-dir=/var/etcd/data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+    volumes:
+      - etcd-data:/var/etcd/data
+
+  seed:
+    build: ./seed
+    container_name: as-seed
+    restart: "no"
+    environment:
+      ETCDCTL_ENDPOINTS: http://etcd:2379
+    volumes:
+      - ./seed.sh:/seed.sh:ro
+    entrypoint: ["/bin/sh", "/seed.sh"]
+    depends_on: [etcd]
+
+volumes:
+  etcd-data:
