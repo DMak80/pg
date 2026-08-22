@@ -1,4 +1,6 @@
 using AdminPanel.Core;
+using AdminPanel.Core.Alerting;
+using AdminPanel.Core.Alerting.Rules;
 using AdminPanel.Etcd;
 using AdminPanel.Etcd.Client;
 using FluentAssertions;
@@ -22,6 +24,16 @@ public static class EtcdTestHarness
     public static SnapshotRefresher NewRefresher(ISnapshotStore store, params string[] endpoints)
         => new(
             NewGateway(),
+            new AlertEngine(
+            [
+                new EtcdUnreachableRule(),
+                new EtcdNoQuorumRule(),
+                new EtcdEndpointDownRule(),
+                new EtcdAlarmRule(),
+                new SnapshotStaleRule(),
+                new ClusterIncompleteRule(),
+                new KeyMalformedRule(),
+            ]),
             store,
             Options.Create(new EtcdOptions { Endpoints = endpoints }),
             new RealTimeProvider(),
@@ -210,6 +222,8 @@ public class EtcdFailureTests(EtcdContainerFixture fixture) : IClassFixture<Etcd
         store.Current.Clusters.Should().BeSameAs(clusters);
         store.Current.Etcd.Reachable.Should().BeFalse();
         store.Current.Etcd.ConsecutiveFailures.Should().Be(2);
+        // t04: алерты вычислены и на отказном тике — unreachable на пороге 2 (spec §3.5).
+        store.Current.Alerts.Should().Contain(a => a.Id == "etcd-unreachable:etcd");
         health.Status.Should().Be(Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy);
     }
 }
