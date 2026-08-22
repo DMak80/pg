@@ -14,14 +14,32 @@ namespace AdminPanel.UnitTests;
 // Используется и EtcdHealthCheckTests (Task 10) — internal на сборку.
 internal static class RefresherTestHarness
 {
+    // Старая сигнатура (обёртка) — существующие вызовы не меняются.
     public static SnapshotRefresher New(FakeEtcdGateway gateway, ISnapshotStore store, params string[] endpoints)
+        => New(gateway, store, null, endpoints);
+
+    // Расширенная: с стором проб (spec §10.8 — конструктор refresher'а t06).
+    public static SnapshotRefresher New(
+        FakeEtcdGateway gateway,
+        ISnapshotStore store,
+        SettableProbeStateStore? probes,
+        params string[] endpoints)
         => new(
             gateway,
             new AlertEngine(AlertTestRules.All()),
             store,
+            probes ?? new SettableProbeStateStore(),
             Options.Create(new EtcdOptions { Endpoints = endpoints }),
             new FixedTimeProvider(),
             NullLogger<SnapshotRefresher>.Instance);
+}
+
+// Управляемый стор состояния проб (unit-аналог TestSnapshotStore; spec §10.8).
+internal sealed class SettableProbeStateStore : IProbeStateStore
+{
+    public ProbeState? Current { get; set; }
+
+    public void Replace(ProbeState state) => Current = state;
 }
 
 // Управляемый gateway: данные/отказы по endpoints, счётчики вызовов.
@@ -272,5 +290,74 @@ public class SnapshotRefresherTests
         var incomplete = alerts.Single(a => a.Kind == "cluster-incomplete");
         incomplete.Target.Should().Be("ghost");
         incomplete.SinceUnix.Should().BeNull();
+    }
+
+    // Минимальный gateway с /service/ demo-s1 и шардем demo/s1 (spec §10.8).
+    private static FakeEtcdGateway HaGateway() => new()
+    {
+        ClustersKv =
+        [
+            new Kv("/clusters/demo/config", "{\"buckets\":16,\"dbname\":\"demo\",\"created_unix\":1755800000}", 1),
+            new Kv("/clusters/demo/shards/s1/dsn", "host=s1a port=5432 dbname=demo user=postgres", 2),
+        ],
+        ServiceKv =
+        [
+            new Kv("/service/demo-s1/leader", "{\"name\":\"s1a\"}", 3),
+            new Kv("/service/demo-s1/members/s1a", "{\"name\":\"s1a\",\"conn_url\":\"s1a:5432\",\"role\":\"master\",\"state\":\"running\"}", 4),
+        ],
+    };
+
+    private static readonly DateTimeOffset ProbesAt = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public async Task Refresh_EnrichesFromProbeState()
+    {
+        // Arrange: стор проб с member-обогащением и runtime шарда.
+        var store = new SnapshotStore();
+        var probes = new SettableProbeStateStore
+        {
+            Current = new ProbeState(
+                ProbesAt,
+                [],
+                new Dictionary<string, HaMemberProbe>
+                {
+                    ["demo-s1/s1a"] = new("master", "running", 2L, 123L, ProbesAt, null),
+                },
+                new Dictionary<string, ShardRuntime>
+                {
+                    ["demo/s1"] = new("s1", [], [], [], ["bucket_0"], false, null),
+                }),
+        };
+        var refresher = RefresherTestHarness.New(HaGateway(), store, probes, "http://etcd:2379");
+
+        // Act
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert: член обогащён, runtime проставлен (spec §4.2 через refresher).
+        var member = store.Current!.HaScopes.Single(s => s.Scope == "demo-s1").Members.Single(m => m.Name == "s1a");
+        member.Timeline.Should().Be(2L);
+        member.LagBytes.Should().Be(123L);
+        member.ProbeAtUtc.Should().Be(ProbesAt);
+        var shard = store.Current.Clusters.Single().Shards.Single();
+        shard.Runtime.Should().NotBeNull();
+        shard.Runtime!.BucketSchemas.Should().ContainSingle().Which.Should().Be("bucket_0");
+    }
+
+    [Fact]
+    public async Task Refresh_FailTick_PreservesProbes()
+    {
+        // Arrange: снапшот с живым проб-результатом; все endpoints мертвы.
+        var probe = new ProbeResult("demo-s1/s1a", "patroni", true, 5.0, null, ProbesAt);
+        var store = new SnapshotStore();
+        store.Replace(TestSnapshots.Healthy(ProbesAt) with { Probes = [probe] });
+        var gateway = new FakeEtcdGateway();
+        gateway.StatusFailEndpoints.Add("http://etcd:2379"); // свойство get-only — наполняется (CS8852 на object initializer)
+        var refresher = RefresherTestHarness.New(gateway, store, (SettableProbeStateStore?)null, "http://etcd:2379");
+
+        // Act
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert: отказ etcd не теряет снапшотные пробы (spec §4.3).
+        store.Current!.Probes.Should().ContainSingle().Which.Should().BeSameAs(probe);
     }
 }

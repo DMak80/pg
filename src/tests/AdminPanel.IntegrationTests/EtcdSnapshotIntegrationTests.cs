@@ -21,7 +21,14 @@ public static class EtcdTestHarness
     public static EtcdGateway NewGateway()
         => new(new HttpClient { Timeout = TimeSpan.FromSeconds(2) });
 
+    // probes — стор состояния проб t06: по умолчанию пустой (существующие сценарии без правок).
     public static SnapshotRefresher NewRefresher(ISnapshotStore store, params string[] endpoints)
+        => NewRefresher(store, null, endpoints);
+
+    public static SnapshotRefresher NewRefresher(
+        ISnapshotStore store,
+        IProbeStateStore? probes,
+        params string[] endpoints)
         => new(
             NewGateway(),
             new AlertEngine(
@@ -43,9 +50,19 @@ public static class EtcdTestHarness
                 new BucketOutOfRangeRule(),
             ]),
             store,
+            probes ?? new SettableProbeStateStore(),
             Options.Create(new EtcdOptions { Endpoints = endpoints }),
             new RealTimeProvider(),
             NullLogger<SnapshotRefresher>.Instance);
+}
+
+// Управляемый стор состояния проб для живых сценариев (spec §9.4; unit-аналог —
+// SettableProbeStateStore в юнит-сборке).
+public sealed class SettableProbeStateStore : IProbeStateStore
+{
+    public ProbeState? Current { get; set; }
+
+    public void Replace(ProbeState state) => Current = state;
 }
 
 // Gateway + refresher против живого etcd с сидом demo (spec §11.2).
