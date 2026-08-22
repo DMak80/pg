@@ -157,5 +157,61 @@ services:
              -c sync_replication_slots=on -c hot_standby_feedback=on
     depends_on: [s2a]
 
+  # Patroni-эмуляторы (spec t10 §5): отдельные контейнеры в общей сети,
+  # :8008 опубликован на хосте под стендовыми портами (HostMap панели,
+  # arch/04 §1). Без restart-политики: рестарт эмулятора не должен
+  # реанимировать остановленную ноду (урок ../pg).
+  hc1a:
+    build: ./sidecar
+    container_name: as-hc1a
+    profiles: ["full"]
+    ports: ["8011:8008"]
+    environment:
+      NODE_NAME: s1a
+      ETCD_ENDPOINTS: http://etcd:2379
+      CLUSTER: demo
+      SHARD: s1
+      MEMBERS: s1a,s1b
+    depends_on: [s1a]
+
+  hc1b:
+    build: ./sidecar
+    container_name: as-hc1b
+    profiles: ["full"]
+    ports: ["8012:8008"]
+    environment:
+      NODE_NAME: s1b
+      ETCD_ENDPOINTS: http://etcd:2379
+      CLUSTER: demo
+      SHARD: s1
+      MEMBERS: s1a,s1b
+    depends_on: [s1b]
+
+  hc2a:
+    build: ./sidecar
+    container_name: as-hc2a
+    profiles: ["full"]
+    ports: ["8021:8008"]
+    environment:
+      NODE_NAME: s2a
+      ETCD_ENDPOINTS: http://etcd:2379
+      CLUSTER: demo
+      SHARD: s2
+      MEMBERS: s2a,s2b
+    depends_on: [s2a]
+
+  hc2b:
+    build: ./sidecar
+    container_name: as-hc2b
+    profiles: ["full"]
+    ports: ["8022:8008"]
+    environment:
+      NODE_NAME: s2b
+      ETCD_ENDPOINTS: http://etcd:2379
+      CLUSTER: demo
+      SHARD: s2
+      MEMBERS: s2a,s2b
+    depends_on: [s2b]
+
 volumes:
   etcd-data:
