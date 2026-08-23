@@ -9,7 +9,7 @@ using Xunit;
 namespace AdminPanel.IntegrationTests;
 
 // DELETE /api/clusters/{name} против реального etcd: перевод config.state в
-// DELETING (arch/02 §9.4), идемпотентность и коды отказов (arch/03 §1.2).
+// TO_REMOVE (arch/02 §9.4), идемпотентность и коды отказов (arch/03 §1.2).
 [Collection("api")]
 public class DeleteClusterApiTests(AuthWebFactory factory, EtcdContainerFixture fixture)
     : IClassFixture<EtcdContainerFixture>
@@ -54,7 +54,7 @@ public class DeleteClusterApiTests(AuthWebFactory factory, EtcdContainerFixture 
     }
 
     [Fact]
-    public async Task Delete_ExistingCluster_Returns204AndWritesDeletingConfig()
+    public async Task Delete_ExistingCluster_Returns204AndWritesToRemoveConfig()
     {
         // Arrange
         using var client = await CreateClusterAsync("shop");
@@ -63,13 +63,13 @@ public class DeleteClusterApiTests(AuthWebFactory factory, EtcdContainerFixture 
         using var response = await client.DeleteAsync(
             "/api/clusters/shop", TestContext.Current.CancellationToken);
 
-        // Assert: 204; config в etcd — state=DELETING, константы сохранены (§9.4 п.5)
+        // Assert: 204; config в etcd — state=TO_REMOVE, константы сохранены (§9.4 п.5)
         response.StatusCode.Should().Be(HttpStatusCode.NoContent);
         var gateway = EtcdTestHarness.NewGateway();
         var range = await gateway.RangeAsync(fixture.Endpoint, "/clusters/shop/config", TestContext.Current.CancellationToken);
         var config = range.Value.Single(kv => kv.Key == "/clusters/shop/config").Value;
         using var doc = JsonDocument.Parse(config);
-        doc.RootElement.GetProperty("state").GetString().Should().Be("DELETING");
+        doc.RootElement.GetProperty("state").GetString().Should().Be("TO_REMOVE");
         doc.RootElement.GetProperty("buckets").GetInt32().Should().Be(4);
         doc.RootElement.GetProperty("dbname").GetString().Should().Be("shop");
         doc.RootElement.TryGetProperty("created_unix", out _).Should().BeTrue();
@@ -78,11 +78,11 @@ public class DeleteClusterApiTests(AuthWebFactory factory, EtcdContainerFixture 
         var prefix = await gateway.RangeAsync(fixture.Endpoint, "/clusters/shop/", TestContext.Current.CancellationToken);
         prefix.Value.Should().HaveCount(15); // config + 2×(replicas+2 nodes) + 4 routing + 4 status
 
-        // Читающий путь: refresher-тик распознаёт DELETING (parser → ClusterState.Deleting)
+        // Читающий путь: refresher-тик распознаёт TO_REMOVE (parser → ClusterState.ToRemove)
         var store = new SnapshotStore();
         var refresher = EtcdTestHarness.NewRefresher(store, fixture.Endpoint);
         (await refresher.RefreshOnceAsync(CancellationToken.None)).IsSuccess.Should().BeTrue();
-        store.Current!.Clusters.Single(c => c.Name == "shop").State.Should().Be(ClusterState.Deleting);
+        store.Current!.Clusters.Single(c => c.Name == "shop").State.Should().Be(ClusterState.ToRemove);
     }
 
     [Fact]
@@ -95,7 +95,7 @@ public class DeleteClusterApiTests(AuthWebFactory factory, EtcdContainerFixture 
         using var first = await client.DeleteAsync("/api/clusters/dup", TestContext.Current.CancellationToken);
         using var second = await client.DeleteAsync("/api/clusters/dup", TestContext.Current.CancellationToken);
 
-        // Assert: идемпотентность — повтор к DELETING-кластеру тоже 204 (§9.4 п.4)
+        // Assert: идемпотентность — повтор к TO_REMOVE-кластеру тоже 204 (§9.4 п.4)
         first.StatusCode.Should().Be(HttpStatusCode.NoContent);
         second.StatusCode.Should().Be(HttpStatusCode.NoContent);
     }

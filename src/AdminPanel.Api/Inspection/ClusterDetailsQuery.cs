@@ -49,7 +49,7 @@ public static class ClusterStates
         => state switch
         {
             ClusterState.NotInitialized => "NOT_INITIALIZED",
-            ClusterState.Deleting => "DELETING", // arch/02 §9.4
+            ClusterState.ToRemove => "TO_REMOVE", // arch/02 §9.4
             _ => "ACTIVE",
         };
 }

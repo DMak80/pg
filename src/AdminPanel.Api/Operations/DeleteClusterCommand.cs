@@ -9,7 +9,7 @@ using AdminPanel.Infrastructure.DI;
 
 namespace AdminPanel.Api.Operations;
 
-// Команда удаления кластера: перевод config.state в DELETING (arch/02 §9.4).
+// Команда удаления кластера: перевод config.state в TO_REMOVE (arch/02 §9.4).
 // Ключи кластера не удаляются — очистка у внешнего оркестратора/runbook.
 public sealed record DeleteClusterCommand(string Name) : ICommand<ClusterDeletedDto>;
 
@@ -24,14 +24,14 @@ public sealed class ClusterNotFoundException(string name)
 public sealed class InvalidClusterConfigException(string name)
     : Exception($"config кластера {name} битый или без обязательных полей buckets/dbname");
 
-// Читает config напрямую у etcd и перезаписывает state=DELETING (arch/02 §9.4).
+// Читает config напрямую у etcd и перезаписывает state=TO_REMOVE (arch/02 §9.4).
 // Без txn: config уже существует (уникальность не участвует), конкурентные
 // удаления сходятся к одному значению. Без ретраев — повтор = новый DELETE.
 [InjectAsScoped]
 public sealed class DeleteClusterCommandHandler(ISnapshotStore store, IEtcdGateway gateway)
     : ICommandHandler<DeleteClusterCommand, ClusterDeletedDto>
 {
-    public const string DeletingState = "DELETING"; // канон config.state (arch/02 §9.4)
+    public const string ToRemoveState = "TO_REMOVE"; // канон config.state (arch/02 §9.4)
 
     public async ValueTask<Result<ClusterDeletedDto>> Handle(DeleteClusterCommand command, CancellationToken ct)
     {
@@ -58,12 +58,12 @@ public sealed class DeleteClusterCommandHandler(ISnapshotStore store, IEtcdGatew
         string rewritten;
         try
         {
-            // 4) Уже DELETING — идемпотентный успех без записи (§9.4).
-            if (ReadState(config.Value) == DeletingState)
-                return Result<ClusterDeletedDto>.Success(new ClusterDeletedDto(name, DeletingState));
+            // 4) Уже TO_REMOVE — идемпотентный успех без записи (§9.4).
+            if (ReadState(config.Value) == ToRemoveState)
+                return Result<ClusterDeletedDto>.Success(new ClusterDeletedDto(name, ToRemoveState));
 
-            // 5) Перезапись канонического набора полей с state=DELETING (§9.4).
-            rewritten = WithDeletingState(config.Value);
+            // 5) Перезапись канонического набора полей с state=TO_REMOVE (§9.4).
+            rewritten = WithToRemoveState(config.Value);
         }
         catch (JsonException)
         {
@@ -73,7 +73,7 @@ public sealed class DeleteClusterCommandHandler(ISnapshotStore store, IEtcdGatew
         var put = await gateway.PutAsync(endpoint, configKey, rewritten, ct);
         if (!put.IsSuccess)
             return Result<ClusterDeletedDto>.Failed(put.Error!);
-        return Result<ClusterDeletedDto>.Success(new ClusterDeletedDto(name, DeletingState));
+        return Result<ClusterDeletedDto>.Success(new ClusterDeletedDto(name, ToRemoveState));
     }
 
     // state без проверки формата: битый JSON ловит вызывающий (JsonException).
@@ -87,9 +87,9 @@ public sealed class DeleteClusterCommandHandler(ISnapshotStore store, IEtcdGatew
     }
 
     // Канонический config §2.1: buckets/dbname/created_unix сохраняются,
-    // state заменяется на DELETING. created_unix отсутствует у старых init —
+    // state заменяется на TO_REMOVE. created_unix отсутствует у старых init —
     // не добавляем. Прочие/будущие поля config не переносятся (§9.4).
-    private static string WithDeletingState(string raw)
+    private static string WithToRemoveState(string raw)
     {
         using var doc = JsonDocument.Parse(raw);
         var root = doc.RootElement;
@@ -109,7 +109,7 @@ public sealed class DeleteClusterCommandHandler(ISnapshotStore store, IEtcdGatew
             writer.WriteString("dbname", dbname.GetString());
             if (created is not null)
                 writer.WriteNumber("created_unix", created.Value);
-            writer.WriteString("state", DeletingState);
+            writer.WriteString("state", ToRemoveState);
             writer.WriteEndObject();
         }
         return Encoding.UTF8.GetString(buffer.ToArray());

@@ -8,7 +8,7 @@ using AdminPanel.Infrastructure.DI;
 namespace AdminPanel.Api.Operations;
 
 // Команда создания кластера — первая мутация панели (arch/01 §1; spec t12 §3.5);
-// вторая — перевод в DELETING (DeleteClusterCommand, arch/02 §9.4).
+// вторая — перевод в TO_REMOVE (DeleteClusterCommand, arch/02 §9.4).
 public sealed record CreateClusterCommand(CreateClusterRequest Request) : ICommand<ClusterCreatedDto>;
 
 // Ответ 201 POST /api/clusters (arch/03 §1.1).

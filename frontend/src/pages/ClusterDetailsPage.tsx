@@ -43,7 +43,7 @@ export function ClusterDetailsPage() {
     );
 
   const data = query.data;
-  const deleting = data.state === 'DELETING';
+  const toRemove = data.state === 'TO_REMOVE';
   return (
     <Stack gap="md">
       <div>
@@ -52,10 +52,10 @@ export function ClusterDetailsPage() {
           <Group gap="sm">
             <Title order={2}>{data.name}</Title>
             {data.incomplete ? <Badge color="yellow" variant="light">incomplete</Badge> : null}
-            {deleting ? <Badge color="red" variant="light">удаляется</Badge> : null}
+            {toRemove ? <Badge color="red" variant="light">к удалению</Badge> : null}
           </Group>
-          {/* Обратного перехода из DELETING нет — у удаляемого кластера кнопки нет (arch/02 §9.4). */}
-          {deleting ? null : <DeleteClusterButton name={data.name} />}
+          {/* Обратного перехода из TO_REMOVE нет — у удаляемого кластера кнопки нет (arch/02 §9.4). */}
+          {toRemove ? null : <DeleteClusterButton name={data.name} />}
         </Group>
         <Text c="dimmed" size="sm">
           БД: {data.dbName ?? '—'} · Бакеты: {data.bucketsCount} · Создан: {formatUnix(data.createdUnix)}

@@ -77,7 +77,7 @@ export function createCluster(request: CreateClusterRequestDto): Promise<Cluster
   return apiFetch<ClusterCreatedDto>('/api/clusters', { method: 'POST', body: request });
 }
 
-// DELETE /api/clusters/{name} — перевод кластера в DELETING (arch/02 §9.4);
+// DELETE /api/clusters/{name} — перевод кластера в TO_REMOVE (arch/02 §9.4);
 // 204 без тела; ключи etcd не удаляются (очистка — внешний оркестратор).
 export function deleteCluster(name: string): Promise<void> {
   return apiFetch<void>(`/api/clusters/${encodeURIComponent(name)}`, { method: 'DELETE' });

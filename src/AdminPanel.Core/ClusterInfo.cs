@@ -20,7 +20,7 @@ public enum ClusterState
 {
     Active,
     NotInitialized,
-    Deleting,
+    ToRemove,
 }
 
 // Шард кластера: dsn, декларативные реплики, master-ключ с lease-семантикой (arch/02 §2.1).

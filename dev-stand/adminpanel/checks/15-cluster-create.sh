@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # E2E создания и удаления кластера: POST /api/clusters -> ключи в etcd ->
-# список/детали (spec t12 §3.9); DELETE -> config.state=DELETING (arch/02 §9.4).
+# список/детали (spec t12 §3.9); DELETE -> config.state=TO_REMOVE (arch/02 §9.4).
 # Идемпотентность чека: префиксы кластеров чистятся перед прогоном.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -122,7 +122,7 @@ routing="$(ect get --prefix /clusters/canon10/buckets/routing --print-value-only
   || { echo "❌ canon10 routing 3+4+3: $routing"; exit 1; }
 echo "  canon10: 10×3 → 3+4+3 — канон §9.1.1 соблюдён"
 
-# --- Кейс удаления (arch/02 §9.4): DELETE → DELETING, ключи не тронуты ---
+# --- Кейс удаления (arch/02 §9.4): DELETE → TO_REMOVE, ключи не тронуты ---
 ect del --prefix /clusters/delme >/dev/null
 for k in request_cpu request_mem request_disk; do
   ect del "/service/delme-shard1/$k" >/dev/null
@@ -136,9 +136,9 @@ code="$(curl -s -o /tmp/t15-del.json -w '%{http_code}' -b "$JAR" -X POST "$BASE/
 code="$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -X DELETE "$BASE/api/clusters/delme")"
 [ "$code" = 204 ] || { echo "❌ DELETE /api/clusters/delme = $code, ожидался 204"; exit 1; }
 
-# config перезаписан: state=DELETING, константы сохранены; ключи кластера НЕ удалены
+# config перезаписан: state=TO_REMOVE, константы сохранены; ключи кластера НЕ удалены
 cfg="$(ect get /clusters/delme/config --print-value-only)"
-[ "$(echo "$cfg" | jq -r '.state')" = "DELETING" ] || { echo "❌ delme config.state != DELETING: $cfg"; exit 1; }
+[ "$(echo "$cfg" | jq -r '.state')" = "TO_REMOVE" ] || { echo "❌ delme config.state != TO_REMOVE: $cfg"; exit 1; }
 [ "$(echo "$cfg" | jq -r '.buckets')" = "1" ] || { echo "❌ delme config.buckets != 1 (константы потеряны): $cfg"; exit 1; }
 [ -n "$(ect get /clusters/delme/buckets/routing/bucket_0 --print-value-only)" ] \
   || { echo "❌ delme: ключи кластера удалены (панель их не трогает, §9.4)"; exit 1; }
@@ -151,16 +151,16 @@ code="$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -X DELETE "$BASE/api/cl
 code="$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -X POST "$BASE/api/clusters" \
   -H 'Content-Type: application/json' \
   -d '{"name":"delme","sharded":false,"replicas":1,"requestCpu":0.5,"requestMem":4,"requestDisk":10}')"
-[ "$code" = 409 ] || { echo "❌ создание поверх DELETING = $code, ожидался 409 (клэйм §9.2)"; exit 1; }
+[ "$code" = 409 ] || { echo "❌ создание поверх TO_REMOVE = $code, ожидался 409 (клэйм §9.2)"; exit 1; }
 
-# Панель видит DELETING (следующий тик ≤ 3 c + polling): детали + сводка deleting
+# Панель видит TO_REMOVE (следующий тик ≤ 3 c + polling): детали + сводка toRemove
 for i in $(seq 1 15); do
-  curl -fsS -b "$JAR" "$BASE/api/clusters/delme" | jq -e '.state=="DELETING"' >/dev/null && break
+  curl -fsS -b "$JAR" "$BASE/api/clusters/delme" | jq -e '.state=="TO_REMOVE"' >/dev/null && break
   sleep 1
 done
-curl -fsS -b "$JAR" "$BASE/api/clusters/delme" | jq -e '.state=="DELETING"' >/dev/null \
-  || { echo "❌ /api/clusters/delme: state != DELETING"; exit 1; }
-curl -fsS -b "$JAR" "$BASE/api/clusters" | jq -e 'any(.[]; .name=="delme" and .deleting)' >/dev/null \
-  || { echo "❌ /api/clusters: delme не помечен deleting"; exit 1; }
-echo "  delme: DELETE → DELETING (config сохранён, ключи на месте), 204/404/409 — контракт §9.4"
+curl -fsS -b "$JAR" "$BASE/api/clusters/delme" | jq -e '.state=="TO_REMOVE"' >/dev/null \
+  || { echo "❌ /api/clusters/delme: state != TO_REMOVE"; exit 1; }
+curl -fsS -b "$JAR" "$BASE/api/clusters" | jq -e 'any(.[]; .name=="delme" and .toRemove)' >/dev/null \
+  || { echo "❌ /api/clusters: delme не помечен toRemove"; exit 1; }
+echo "  delme: DELETE → TO_REMOVE (config сохранён, ключи на месте), 204/404/409 — контракт §9.4"
 echo "✓ 15-cluster-create: создание и удаление кластера e2e прошли"

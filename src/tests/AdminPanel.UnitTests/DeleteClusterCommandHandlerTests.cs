@@ -8,7 +8,7 @@ using Xunit;
 
 namespace AdminPanel.UnitTests;
 
-// Хендлер удаления: чтение config → идемпотентность / перезапись state=DELETING
+// Хендлер удаления: чтение config → идемпотентность / перезапись state=TO_REMOVE
 // (arch/02 §9.4). FakeGateway подменяет только Range/Put — путь команды.
 public class DeleteClusterCommandHandlerTests
 {
@@ -71,7 +71,7 @@ public class DeleteClusterCommandHandlerTests
         => gateway.RangeKvs = [new Kv(ConfigKey, value, 1)];
 
     [Fact]
-    public async Task Handle_ExistingCluster_RewritesConfigWithDeletingState()
+    public async Task Handle_ExistingCluster_RewritesConfigWithToRemoveState()
     {
         // Arrange: созданный панелью кластер — state NOT_INITIALIZED (§9.1)
         var (handler, gateway, _) = NewHandler();
@@ -80,27 +80,27 @@ public class DeleteClusterCommandHandlerTests
         // Act
         var result = await handler.Handle(new DeleteClusterCommand("shop"), CancellationToken.None);
 
-        // Assert: один PUT ровно в config — канонический набор полей с state=DELETING,
+        // Assert: один PUT ровно в config — канонический набор полей с state=TO_REMOVE,
         // buckets/dbname/created_unix сохранены (§9.4)
         result.IsSuccess.Should().BeTrue();
-        result.Value.Should().Be(new ClusterDeletedDto("shop", "DELETING"));
+        result.Value.Should().Be(new ClusterDeletedDto("shop", "TO_REMOVE"));
         gateway.Puts.Should().ContainSingle().Which.Should().Be(
-            (ConfigKey, """{"buckets":4,"dbname":"shop","created_unix":1755900000,"state":"DELETING"}"""));
+            (ConfigKey, """{"buckets":4,"dbname":"shop","created_unix":1755900000,"state":"TO_REMOVE"}"""));
     }
 
     [Fact]
-    public async Task Handle_AlreadyDeleting_IdempotentSuccessWithoutWrite()
+    public async Task Handle_AlreadyToRemove_IdempotentSuccessWithoutWrite()
     {
-        // Arrange: повторный DELETE кластера в DELETING (§9.4)
+        // Arrange: повторный DELETE кластера в TO_REMOVE (§9.4)
         var (handler, gateway, _) = NewHandler();
-        SetConfig(gateway, """{"buckets":4,"dbname":"shop","created_unix":1755900000,"state":"DELETING"}""");
+        SetConfig(gateway, """{"buckets":4,"dbname":"shop","created_unix":1755900000,"state":"TO_REMOVE"}""");
 
         // Act
         var result = await handler.Handle(new DeleteClusterCommand("shop"), CancellationToken.None);
 
         // Assert: успех без записи — перестановка одного и того же значения не нужна
         result.IsSuccess.Should().BeTrue();
-        result.Value.State.Should().Be("DELETING");
+        result.Value.State.Should().Be("TO_REMOVE");
         gateway.Puts.Should().BeEmpty();
     }
 
@@ -114,10 +114,10 @@ public class DeleteClusterCommandHandlerTests
         // Act
         var result = await handler.Handle(new DeleteClusterCommand("shop"), CancellationToken.None);
 
-        // Assert: created_unix не добавляется, state=DELETING появился
+        // Assert: created_unix не добавляется, state=TO_REMOVE появился
         result.IsSuccess.Should().BeTrue();
         gateway.Puts.Should().ContainSingle().Which.Value.Should().Be(
-            """{"buckets":16,"dbname":"shop","state":"DELETING"}""");
+            """{"buckets":16,"dbname":"shop","state":"TO_REMOVE"}""");
     }
 
     [Fact]

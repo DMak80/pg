@@ -1,7 +1,7 @@
 // Кнопка «Удалить кластер» на странице деталей: подтверждение → DELETE
-// /api/clusters/{name} → кластер переходит в DELETING (arch/02 §9.4, arch/03 §3).
+// /api/clusters/{name} → кластер переходит в TO_REMOVE (arch/02 §9.4, arch/03 §3).
 // Панель не удаляет ключи etcd — только помечает состояние; обратного
-// перехода из DELETING нет, поэтому у удаляемого кластера кнопка не рисуется.
+// перехода из TO_REMOVE нет, поэтому у удаляемого кластера кнопка не рисуется.
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Alert, Button, Group, Modal, Stack, Text } from '@mantine/core';
 import { useState } from 'react';
@@ -14,7 +14,7 @@ export function DeleteClusterButton({ name }: { name: string }) {
   const mutation = useMutation({
     mutationFn: () => deleteCluster(name),
     onSuccess: async () => {
-      // Следующий тик refresher'а (≤3 с) подхватит DELETING; шапка перерисуется.
+      // Следующий тик refresher'а (≤3 с) подхватит TO_REMOVE; шапка перерисуется.
       setOpened(false);
       await queryClient.invalidateQueries({ queryKey: ['clusters'] });
     },
@@ -29,7 +29,7 @@ export function DeleteClusterButton({ name }: { name: string }) {
       <Modal opened={opened} onClose={() => setOpened(false)} title="Удалить кластер" centered>
         <Stack gap="sm">
           <Text>
-            Кластер <b>{name}</b> перейдёт в состояние <b>DELETING</b>. Ключи etcd и ноды панель
+            Кластер <b>{name}</b> перейдёт в состояние <b>TO_REMOVE</b>. Ключи etcd и ноды панель
             не удаляет — снятие ресурсов выполняет внешний оркестратор.
           </Text>
           {serverError ? <Alert color="red" variant="light">{serverError.message}</Alert> : null}

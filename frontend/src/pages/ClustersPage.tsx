@@ -86,10 +86,10 @@ function ClusterRow({ cluster }: { cluster: ClusterSummaryDto }) {
             <Badge color="gray" variant="light" ml={cluster.incomplete ? 5 : 0}>не инициализирован</Badge>
           </Tooltip>
         ) : null}
-        {cluster.deleting ? (
-          <Tooltip label="переведён в DELETING, ждёт очистки оркестратором">
+        {cluster.toRemove ? (
+          <Tooltip label="переведён в TO_REMOVE, ждёт очистки оркестратором">
             <Badge color="red" variant="light" ml={cluster.incomplete || cluster.notInitialized ? 5 : 0}>
-              удаляется
+              к удалению
             </Badge>
           </Tooltip>
         ) : null}

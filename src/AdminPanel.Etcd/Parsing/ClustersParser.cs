@@ -165,7 +165,7 @@ public static class ClustersParser
                 JsonValues.ReadString(root, "state") switch
                 {
                     "NOT_INITIALIZED" => ClusterState.NotInitialized,
-                    "DELETING" => ClusterState.Deleting, // arch/02 §9.4
+                    "TO_REMOVE" => ClusterState.ToRemove, // arch/02 §9.4
                     _ => ClusterState.Active, // отсутствие state = Active (arch/02 §9)
                 });
         }

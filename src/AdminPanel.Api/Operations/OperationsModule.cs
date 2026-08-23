@@ -7,7 +7,7 @@ using Microsoft.AspNetCore.Routing;
 namespace AdminPanel.Api.Operations;
 
 // Модуль операций (мутирующие эндпоинты): POST /api/clusters — создание
-// (arch/03 §1.1), DELETE /api/clusters/{name} — перевод в DELETING
+// (arch/03 §1.1), DELETE /api/clusters/{name} — перевод в TO_REMOVE
 // (arch/03 §1.2). InspectionModule остаётся read-only (spec t12 §8.16).
 public static class OperationsModule
 {
@@ -45,7 +45,7 @@ public static class OperationsModule
             };
         });
 
-        // DELETE /api/clusters/{name} — перевод в DELETING (arch/02 §9.4, arch/03 §1.2);
+        // DELETE /api/clusters/{name} — перевод в TO_REMOVE (arch/02 §9.4, arch/03 §1.2);
         // 204 без тела, идемпотентен; 404 «не найден», прочие отказы — 503.
         endpoints.MapDelete("/api/clusters/{name}", async (
             string name, IHandler handler, CancellationToken ct) =>

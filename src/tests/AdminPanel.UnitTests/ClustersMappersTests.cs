@@ -253,24 +253,24 @@ public class ClustersMappersTests
     }
 
     [Fact]
-    public void ClustersMapper_DeletingCluster_FlaggedNotNotInitialized()
+    public void ClustersMapper_ToRemoveCluster_FlaggedNotNotInitialized()
     {
-        // Arrange: кластер после DELETE — config.state=DELETING (arch/02 §9.4)
-        var cluster = new ClusterInfo("dying", "dying", 4, 1755900000, ClusterState.Deleting, [], [], []);
+        // Arrange: кластер после DELETE — config.state=TO_REMOVE (arch/02 §9.4)
+        var cluster = new ClusterInfo("dying", "dying", 4, 1755900000, ClusterState.ToRemove, [], [], []);
 
         // Act
         var summary = ClustersMapper.Map([cluster]).Single();
 
-        // Assert: пометка «удаляется» — и это НЕ notInitialized (arch/03 §2)
-        summary.Deleting.Should().BeTrue();
+        // Assert: пометка «к удалению» — и это НЕ notInitialized (arch/03 §2)
+        summary.ToRemove.Should().BeTrue();
         summary.NotInitialized.Should().BeFalse();
     }
 
     [Fact]
-    public void ClusterStates_Name_DeletingIsCanonical()
+    public void ClusterStates_Name_ToRemoveIsCanonical()
     {
         // Arrange/Act/Assert: канон state-строк деталей — arch/03 §2
-        ClusterStates.Name(ClusterState.Deleting).Should().Be("DELETING");
+        ClusterStates.Name(ClusterState.ToRemove).Should().Be("TO_REMOVE");
         ClusterStates.Name(ClusterState.Active).Should().Be("ACTIVE");
         ClusterStates.Name(ClusterState.NotInitialized).Should().Be("NOT_INITIALIZED");
     }
