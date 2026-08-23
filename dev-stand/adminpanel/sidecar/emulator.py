@@ -35,11 +35,19 @@ last_role = {m: "replica" for m in MEMBERS}  # последняя известн
 def probe_node(host):
     con = pg8000.native.Connection(host=host, port=PG_PORT, user=PG_USER, database=PG_DB)
     try:
-        # Поле контроль-точки в PG18 называется timeline_id (не timeline)
-        inrec, timeline, lag = con.run(
-            "select pg_is_in_recovery(), (pg_control_checkpoint()).timeline_id,"
-            " coalesce(pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn()), 0)"
-        )[0]
+        try:
+            # Поле контроль-точки в PG18 называется timeline_id (не timeline)
+            inrec, timeline, lag = con.run(
+                "select pg_is_in_recovery(), (pg_control_checkpoint()).timeline_id,"
+                " coalesce(pg_wal_lsn_diff(pg_last_wal_receive_lsn(), pg_last_wal_replay_lsn()), 0)"
+            )[0]
+        except Exception:
+            # Фолбэк spec §5.1: сбой enrichment-полей не должен гасить ноду
+            # (и её lease) — роль узнаём минимальным запросом, timeline/lag
+            # дефолтны. Падение и его = PG реально недоступна -> исключение
+            # наружу, poll_loop пометит ноду stopped.
+            inrec = con.run("select pg_is_in_recovery()")[0][0]
+            timeline, lag = 1, 0
         inrec = bool(inrec)
         return {
             "alive": True,
