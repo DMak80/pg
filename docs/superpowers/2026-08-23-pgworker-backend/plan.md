@@ -532,14 +532,14 @@ JSON → в parseErrors, остальное живо; routing без status → 
 **Проверка:** `dotnet test src/PgWorker.slnx --filter ClusterSnapshotParser`.
 **Spec:** §4.1, Д1.
 
-- [ ] Шаг 1: перенести фикстуры: скопировать JSON-файлы AdminPanel (список
+- [x] Шаг 1: перенести фикстуры: скопировать JSON-файлы AdminPanel (список
   выше) в `src/tests/PgWorker.UnitTests/EtcdFixtures/` (csproj —
   `None`+`CopyToOutputDirectory` для каталога); скопировать `EtcdFixtures.cs`
   в `src/tests/PgWorker.UnitTests/` и адаптировать (namespace
   `PgWorker.UnitTests`, наш `PgWorker.Etcd.Client.Kv`).
-- [ ] Шаг 2: AAA-тесты (5 кейсов выше) на загруженных фикстурах → красный.
-- [ ] Шаг 3: парсеры → зелёный.
-- [ ] Шаг 4: commit `"feat(etcd): парсер /clusters/ и /service/ в доменную модель"`.
+- [x] Шаг 2: AAA-тесты (5 кейсов выше) на загруженных фикстурах → красный.
+- [x] Шаг 3: парсеры → зелёный.
+- [x] Шаг 4: commit `"feat(etcd): парсер /clusters/ и /service/ в доменную модель"`.
 
 ### Задача 12: ClaimStore (клэймы/лидерство) + WorkJournal
 

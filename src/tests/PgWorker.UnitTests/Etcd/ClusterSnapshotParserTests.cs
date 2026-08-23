@@ -1,0 +1,155 @@
+using PgWorker.Core.Model;
+using PgWorker.Etcd.Client;
+using PgWorker.Etcd.Parsing;
+using Xunit;
+
+namespace PgWorker.UnitTests.Etcd;
+
+// Парсер /clusters/ и /service/ в доменную модель PgWorker (задача 11, spec §4.1).
+public class ClusterSnapshotParserTests
+{
+    [Fact]
+    public void ParseClusters_PanelSeed_NotInitializedCluster()
+    {
+        // Arrange — сид панели (02 §9.1): config NOT_INITIALIZED, 2 шарда, nodes, routing+status
+        var kvs = EtcdFixtures.LoadKv("clusters-provisioning.json");
+
+        // Act
+        var result = ClusterSnapshotParser.ParseClusters(kvs, out var errors);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        errors.Should().BeEmpty();
+        var snap = result.Value.Should().ContainSingle().Subject;
+        snap.Config.Cluster.Should().Be("shop");
+        snap.Config.DbName.Should().Be("shop");
+        snap.Config.Buckets.Should().Be(6);
+        snap.Config.State.Should().Be(ClusterState.NotInitialized);
+        snap.Shards.Should().HaveCount(2);
+        var shard1 = snap.Shards.Should().Contain(s => s.Name == "shard1").Subject;
+        shard1.Replicas.Should().Be(2);
+        shard1.Nodes.Should().HaveCount(2);
+        shard1.Nodes.Should().Contain(n => n.Name == "shard1a" && n.State == NodeState.NotInitialized);
+        shard1.Nodes.Should().Contain(n => n.Name == "shard1b" && n.State == NodeState.NotInitialized);
+        snap.Routing.Should().HaveCount(6); // все N бакетов из config.buckets
+        snap.Routing.Should().Contain(r => r.Id == 0 && r.Owner == "shard1" && r.Status == BucketMoveState.NotInitialized);
+        snap.Routing.Should().Contain(r => r.Id == 5 && r.Owner == "shard2");
+    }
+
+    [Fact]
+    public void ParseClusters_ConfigWithoutState_IsActive()
+    {
+        // Arrange — clusters-full: config демо-кластера без поля state
+        var kvs = EtcdFixtures.LoadKv("clusters-full.json");
+
+        // Act
+        var result = ClusterSnapshotParser.ParseClusters(kvs, out _);
+
+        // Assert: отсутствие state = Active (контракт панели 02 §2.1)
+        result.IsSuccess.Should().BeTrue();
+        var demo = result.Value.Should().Contain(c => c.Config.Cluster == "demo").Subject;
+        demo.Config.State.Should().Be(ClusterState.Active);
+        demo.Config.Buckets.Should().Be(16);
+        demo.Config.CreatedUnix.Should().Be(1755800000);
+        var s1 = demo.Shards.Should().Contain(s => s.Name == "s1").Subject;
+        s1.Dsn.Should().Be("host=s1a,s1b port=5432 dbname=demo user=postgres");
+        s1.Master.Should().Be("s1a:5432");
+        s1.Replicas.Should().Be(1);
+    }
+
+    [Fact]
+    public void ParseClusters_BrokenJson_GoesToErrors_OthersAlive()
+    {
+        // Arrange — degenerate-фикстура + кластер с реально битым JSON config
+        var kvs = EtcdFixtures.LoadKv("clusters-degenerate.json")
+            .Concat([new Kv("/clusters/badjson/config", "{\"buckets\":", 99)])
+            .ToList();
+
+        // Act
+        var result = ClusterSnapshotParser.ParseClusters(kvs, out var errors);
+
+        // Assert: битые ключи — в parseErrors, живые кластеры (demo2) парсятся
+        result.IsSuccess.Should().BeTrue();
+        errors.Should().NotBeEmpty();
+        errors.Should().Contain(e => e.Contains("/clusters/badjson/config"));
+        errors.Should().Contain(e => e.Contains("/clusters/broken/shards/x1/replicas"));
+        var demo2 = result.Value.Should().Contain(c => c.Config.Cluster == "demo2").Subject;
+        demo2.Routing.Should().Contain(r => r.Id == 0 && r.Owner == "s1");
+    }
+
+    [Fact]
+    public void ParseClusters_RoutingWithoutStatus_StatusNull()
+    {
+        // Arrange — у большинства бакетов demo нет status-ключа (= ACTIVE)
+        var kvs = EtcdFixtures.LoadKv("clusters-full.json");
+
+        // Act
+        var result = ClusterSnapshotParser.ParseClusters(kvs, out _);
+
+        // Assert
+        var demo = result.Value.Should().Contain(c => c.Config.Cluster == "demo").Subject;
+        demo.Routing.Should().Contain(r => r.Id == 0 && r.Owner == "s1" && r.Status == null);
+        demo.Routing.Should().Contain(r => r.Id == 3 && r.Status == BucketMoveState.Syncing);
+        demo.Routing.Should().Contain(r => r.Id == 7 && r.Status == BucketMoveState.Aborting);
+        demo.Routing.Should().Contain(r => r.Id == 11 && r.Status == BucketMoveState.Frozen);
+    }
+
+    [Fact]
+    public void ParseClusters_PgWorkerKeys_DoNotBreakParsing()
+    {
+        // Arrange — координационный префикс /pgworker/ попадает в общий range-снапшот
+        var kvs = EtcdFixtures.LoadKv("clusters-provisioning.json").Concat(
+        [
+            new Kv("/pgworker/leader", """{"instance":"abc","since_unix":1}""", 200),
+            new Kv("/pgworker/work/shop", """{"op":"provision","phase":"planned"}""", 201),
+            new Kv("/pgworker/portalloc/shop", """{"shard1/shard1a":{"host":"h1","pg":15432}}""", 202),
+        ]).ToList();
+
+        // Act
+        var result = ClusterSnapshotParser.ParseClusters(kvs, out var errors);
+
+        // Assert: неизвестный префикс игнорируется, кластер цел
+        result.IsSuccess.Should().BeTrue();
+        errors.Should().BeEmpty();
+        result.Value.Should().ContainSingle(c => c.Config.Cluster == "shop");
+    }
+
+    [Fact]
+    public void ParseService_ScopesWithLeaderAndInitialize()
+    {
+        // Arrange
+        var kvs = EtcdFixtures.LoadKv("service-full.json");
+
+        // Act
+        var scopes = ClusterSnapshotParser.ParseService(kvs);
+
+        // Assert
+        scopes.Should().HaveCount(2);
+        var s1 = scopes.Should().Contain(s => s.Scope == "demo-s1").Subject;
+        s1.Initialized.Should().BeTrue();
+        s1.LeaderName.Should().Be("s1a");
+        var s2 = scopes.Should().Contain(s => s.Scope == "demo-s2").Subject;
+        s2.Initialized.Should().BeTrue();
+        s2.LeaderName.Should().Be("s2a");
+    }
+
+    [Fact]
+    public void ParseService_NoKeys_NotInitializedNoLeader()
+    {
+        // Arrange — scope без initialize/leader (Patroni ещё не поднялся, P2.2)
+        var kvs = new List<Kv>
+        {
+            new("/service/shop-shard1/config", """{"ttl":5}""", 1),
+            new("/service/shop-shard1/members/shard1a", """{"role":"replica","state":"starting"}""", 2),
+        };
+
+        // Act
+        var scopes = ClusterSnapshotParser.ParseService(kvs);
+
+        // Assert
+        var scope = scopes.Should().ContainSingle().Subject;
+        scope.Scope.Should().Be("shop-shard1");
+        scope.Initialized.Should().BeFalse();
+        scope.LeaderName.Should().BeNull();
+    }
+}

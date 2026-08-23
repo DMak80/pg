@@ -1,0 +1,14 @@
+[
+  { "key": "/service/demo-s1/leader", "value": "{\"name\":\"s1a\"}", "modRevision": 10 },
+  { "key": "/service/demo-s1/members/s1a", "value": "{\"name\":\"s1a\",\"conn_url\":\"s1a:5432\",\"role\":\"master\",\"state\":\"running\",\"timeline\":1,\"lag\":0}", "modRevision": 11 },
+  { "key": "/service/demo-s1/members/s1b", "value": "{\"name\":\"s1b\",\"conn_url\":\"s1b:5432\",\"role\":\"replica\",\"state\":\"streaming\",\"timeline\":1,\"lag\":0}", "modRevision": 12 },
+  { "key": "/service/demo-s1/optime/leader", "value": "738273634528", "modRevision": 13 },
+  { "key": "/service/demo-s1/initialize", "value": "738273612345678", "modRevision": 14 },
+  { "key": "/service/demo-s1/config", "value": "{\"ttl\":5,\"loop_wait\":2,\"retry_timeout\":3}", "modRevision": 15 },
+  { "key": "/service/demo-s2/leader", "value": "{\"name\":\"s2a\"}", "modRevision": 16 },
+  { "key": "/service/demo-s2/members/s2a", "value": "{\"name\":\"s2a\",\"conn_url\":\"s2a:5432\",\"role\":\"master\",\"state\":\"running\",\"timeline\":1,\"lag\":0}", "modRevision": 17 },
+  { "key": "/service/demo-s2/members/s2b", "value": "{\"name\":\"s2b\",\"conn_url\":\"s2b:5432\",\"role\":\"replica\",\"state\":\"streaming\",\"timeline\":1,\"lag\":0}", "modRevision": 18 },
+  { "key": "/service/demo-s2/optime/leader", "value": "738273634001", "modRevision": 19 },
+  { "key": "/service/demo-s2/initialize", "value": "738273611234567", "modRevision": 20 },
+  { "key": "/service/demo-s2/config", "value": "{\"ttl\":5,\"loop_wait\":2,\"retry_timeout\":3}", "modRevision": 21 }
+]
