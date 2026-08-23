@@ -142,8 +142,8 @@ spec §4 присутствуют: `grep -o "/pgworker/[a-z]*" arch/14-pgworker.
 `grep -c "t0" arch/roadmap/pgworker.md` ≥ 6.
 **Spec:** §2 (out of scope), §13.4.
 
-- [ ] Шаг 1: `arch/roadmap/README.md` + `arch/roadmap/pgworker.md` (список выше).
-- [ ] Шаг 2: `git add arch/roadmap && git commit -m "arch: roadmap — отложенные задачи PgWorker (t01–t06)"`.
+- [x] Шаг 1: `arch/roadmap/README.md` + `arch/roadmap/pgworker.md` (список выше).
+- [x] Шаг 2: `git add arch/roadmap && git commit -m "arch: roadmap — отложенные задачи PgWorker (t01–t06)"`.
 
 ---
 
