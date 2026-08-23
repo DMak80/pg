@@ -14,6 +14,7 @@ public sealed record CreateClusterCommand(CreateClusterRequest Request) : IComma
 public sealed record ClusterCreatedDto(
     string Name,
     string DbName,
+    bool Sharded,
     int BucketsCount,
     int ShardsTotal,
     int Replicas,
@@ -49,6 +50,10 @@ public sealed class CreateClusterCommandHandler(
     {
         var request = command.Request;
 
+        // 0) Нормализация: sharded=false → 1/1; отсутствует = true (arch/02 §9.3).
+        //    ДО Validate — валидатор и план работают с каноническим запросом.
+        request = request.Normalize();
+
         // 1) Валидация (сервер — источник истины, spec t12 §2)
         var errors = CreateClusterValidator.Validate(request);
         if (errors.Count > 0)
@@ -80,8 +85,9 @@ public sealed class CreateClusterCommandHandler(
         }
 
         return Result<ClusterCreatedDto>.Success(new ClusterCreatedDto(
-            request.Name, request.Name, request.Buckets, request.Shards, request.Replicas,
-            plan.CanonicalCpu, plan.CanonicalMem, plan.CanonicalDisk, ClusterCreatePlan.NotInitialized));
+            request.Name, request.Name, request.Sharded!.Value, request.Buckets, request.Shards,
+            request.Replicas, plan.CanonicalCpu, plan.CanonicalMem, plan.CanonicalDisk,
+            ClusterCreatePlan.NotInitialized));
     }
 
     // Компенсация best-effort: префикс кластера целиком + точечные request_*
