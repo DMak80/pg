@@ -1203,9 +1203,9 @@ Degraded.
 **Проверка:** команды выше зелёные; `grep -c "TODO\|TBD" src -r` == 0.
 **Spec:** весь.
 
-- [ ] Шаг 1: build + test полные.
-- [ ] Шаг 2: self-review spec-чеклиста; правки-при-пробеле.
-- [ ] Шаг 3: финальный commit `"chore: финальная верификация PgWorker (build+tests green)"`.
+- [x] Шаг 1: build + test полные.
+- [x] Шаг 2: self-review spec-чеклиста; правки-при-пробеле.
+- [x] Шаг 3: финальный commit `"chore: финальная верификация PgWorker (build+tests green)"`.
 
 ---
 

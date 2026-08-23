@@ -74,27 +74,44 @@ PgWorker (roadmap: C#-порт).
 ### 2.1. Образ узлы `pgworker-node` (единая единица размещения)
 
 Нода кластера-шарда = **один контейнер/сервис** из кастомного образа:
-`ghcr.io/zalando/spilo-16:3.3-p3` + `pg_doorman` + `haproxy` + `supervisord`
-+ python-скрипт мастер-lease (эталон — [stand/sidecar/rolecheck.py](stand/sidecar/rolecheck.py):
-`/v3/lease/grant` + keepalive цикл 1 с, TTL 5 с). Внутри контейнера всё
-общается через localhost — работает и в plain, и в swarm (у swarm нет
-host-network и «подов»; sidecar'ы отдельными сервисами громоздки).
+`ghcr.io/zalando/spilo-16:3.3-p3` + `pg_doorman` (опционально, R1) +
+`supervisord` + python-скрипт мастер-lease (эталон —
+[stand/sidecar/rolecheck.py](stand/sidecar/rolecheck.py): `/v3/lease/grant` +
+keepalive цикл 1 с, TTL 5 с). Внутри контейнера всё общается через localhost —
+работает и в plain, и в swarm (у swarm нет host-network и «подов»; sidecar'ы
+отдельными сервисами громоздки).
+
+Решения фазы исполнения (дока синхронизирована с кодом):
+
+- **HAProxy в образе не поднимается**: его write-фронтенд `:5432` конфликтует
+  с PostgreSQL в одном netns (Д4 — один контейнер на ноду). Write-вход MVP —
+  прямой pg-порт master-ноды (portalloc, multi-host DSN); конфиг-генератор
+  (`HaproxyConfigBuilder`) остаётся в Core для отдельного фронтенд-слоя (roadmap).
+- **Patroni DCS — etcd v3 API** (env `ETCD3_HOSTS`, формат `host:port` БЕЗ
+  scheme; v2-клиент Spilo с etcd 3.5 несовместим). Адреса etcd для нод —
+  отдельная настройка `PgWorker:Etcd:AdvertisedEndpoints` (ноды ходят в etcd
+  через docker-сеть, а не через endpoint'ы самого PgWorker).
+- Ноды кластера подключаются к общей docker-сети `pgw-net` (alias = имя ноды):
+  Patroni-репликация по внутренним адресам (в default bridge hostname-резолва нет).
+- Callback мастер-ключа — `on_start` + `on_role_change` (в `on_start` Patroni
+  роль аргументами не передаёт — скрипт узнаёт её сам по `GET /primary`).
 
 Роли внутри:
 
 | Сервис | Слушает | Роль |
 |---|---|---|
-| PostgreSQL | `:5432` (локально) | принимает только pg_doorman, подписки переездов (через HAProxy) и админку |
-| Patroni (в Spilo) | REST `:8008` | управляет локальным PG; callback `on_role_change` → lease-put `shards/X/master` (P11); REST `/primary` потребляет health-check HAProxy |
-| pg_doorman | `:6432` | пулер приложений, бэкенд только `127.0.0.1:5432`; единственный пул `<dbname>` (`pool_mode=transaction`, TLS `sslmode=require`, P13/P14/P17) |
-| HAProxy | `:5432` | не клиентский: вход репликационного трафика переездов (P2); health-check `GET /primary` всех Patroni-нод шарда |
+| PostgreSQL | `:5432` | подписки переездов (прямой порт master из portalloc, P2) и админка; в образе без doorman — и клиентский вход |
+| Patroni (в Spilo) | REST `:8008` | управляет локальным PG; callback `on_start`/`on_role_change` → lease-put `shards/X/master` (P11); REST `/primary` потребляет PgWorker (пробы/сверка) |
+| pg_doorman | `:6432` | пулер приложений, бэкенд только `127.0.0.1:5432`; единственный пул `<dbname>` (`pool_mode=transaction`, TLS `sslmode=require`, P13/P14/P17); ставится при сборке с `DOORMAN_URL` (R1) |
 
 Наружу (хост) публикуются порты: `pg` (5432→выделенный), `patroni`
 (8008→выделенный), `doorman` (6432→выделенный) — тройка из порт-аллокатора
 (§2.4). Конфиги (env Spilo, doorman.ini, haproxy.cfg) генерирует PgWorker при
 создании ноды (§6.5 решения в коде; параметры — §4 [11](11-bucket-sharding.md)).
 
-Volume: `pgw-<C>-<X>-<n>-data` → `/home/postgres/pgroot` (PGROOT Spilo).
+Volume: `pgw-<C>-<X>-<n>-data` → `/home/postgres/pgdata` (дефолтный
+PGDATA-корень Spilo; переопределение `PGROOT` ломает bootstrap —
+data-каталог создаётся от root и недоступен patroni под postgres).
 
 ### 2.2. Режим Plain (docker на выделенных хостах)
 
@@ -132,7 +149,8 @@ Volume: `pgw-<C>-<X>-<n>-data` → `/home/postgres/pgroot` (PGROOT Spilo).
    фактической занятости (`GET /containers/json` + свои записи). Закрепление —
    `/pgworker/portalloc/<C>` (переживает rebuild: та же нода = те же порты).
 3. Итог — план размещения (node → host + порты); он же вход для генерации
-   конфигов (HAProxy-бэкенды = Patroni-адреса всех нод шарда, DSN multi-host).
+   конфигов (DSN multi-host по нодам шарда; HAProxy-конфиг — генератор
+   остаётся в Core, в контейнере не поднимается — см. §2.1).
 
 Сам PgWorker — контейнер с примонтированным `/var/run/docker.sock` (plain на
 одном хосте / swarm manager), volume под снапшоты etcd, env-секреты (§8).
@@ -242,7 +260,7 @@ P0 claim + journal(/pgworker/work/<C>, op=provision)
 P1 план: placement (§2.4) для всех шард/нод; порт-аллокация; journal phase=planned
 P2 на каждый шард X:
    P2.1 для каждой ноды n: создать volume + контейнер/сервис с конфигом
-       (Spilo env: SCOPE=<C>-<X>, ETCD_HOSTS, ttl=5/loop_wait=2 (P11),
+       (Spilo env: SCOPE=<C>-<X>, ETCD3_HOSTS=host:port (etcd v3), ttl=5/loop_wait=2 (P11),
         wal_level=logical + sync_replication_slots + max_slot_wal_keep_size
         (P3/P4), max_connections=60 и бюджет P15, callback on_role_change →
         lease-скрипт мастер-ключа; doorman: пул <dbname>, TLS require;
@@ -294,7 +312,8 @@ D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый �
   state=PROVISIONING→RUNNING.
 - Patroni-REST каждой ноды (`GET /cluster`, timeout 3 с). Нода недоступна
   дольше `NodeDeadSec` (90 с, конфиг) и **не лидер** и кворум шарда жив
-  (≥2 нод с REST 200) → **rebuild**: удалить контейнер + volume, создать
+  (мертва максимум одна нода: живых ≥ max(1, nodes−1) — обобщение «≥2»
+  фазы исполнения для 2-нодовых шардов) → **rebuild**: удалить контейнер + volume, создать
   заново (Patroni сделает pg_basebackup с лидера — эталон
   `rebuild-node.sh`), state=REBUILDING→RUNNING. Лидер недоступен → ничего:
   failover делает Patroni (P11, окно ~5–8 с); лидер-призрак станет репликой
