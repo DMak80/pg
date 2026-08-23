@@ -492,10 +492,10 @@ public sealed record TxnResult(bool Succeeded);
 **Проверка:** `dotnet test src/PgWorker.slnx --filter EtcdGateway`.
 **Spec:** §4 (транспорт/txn/lease), Д8.
 
-- [ ] Шаг 1: копия 3 файлов клиента + вырезка лишнего + namespace.
-- [ ] Шаг 2: AAA-тесты на мок-хендлере (4 выше) → красный.
-- [ ] Шаг 3: расширение интерфейса и реализации (txn/lease/snapshot) → зелёный.
-- [ ] Шаг 4: commit `"feat(etcd): gateway-клиент с txn-compare/lease/snapshot"`.
+- [x] Шаг 1: копия 3 файлов клиента + вырезка лишнего + namespace.
+- [x] Шаг 2: AAA-тесты на мок-хендлере (4 выше) → красный.
+- [x] Шаг 3: расширение интерфейса и реализации (txn/lease/snapshot) → зелёный.
+- [x] Шаг 4: commit `"feat(etcd): gateway-клиент с txn-compare/lease/snapshot"`.
 
 ### Задача 11: ClusterSnapshotParser
 
