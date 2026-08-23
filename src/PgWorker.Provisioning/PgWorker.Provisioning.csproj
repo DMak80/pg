@@ -6,4 +6,8 @@
         <ProjectReference Include="..\PgWorker.Docker\PgWorker.Docker.csproj"/>
     </ItemGroup>
 
+    <ItemGroup>
+        <PackageReference Include="Npgsql"/>
+    </ItemGroup>
+
 </Project>

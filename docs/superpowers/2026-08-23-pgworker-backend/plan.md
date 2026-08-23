@@ -853,9 +853,9 @@ NOT EXISTS bucket_7`, гранты для всех ролей, `CREATE DATABASE`
 **Проверка:** `dotnet test src/PgWorker.slnx --filter DatabaseProvisioner`.
 **Spec:** §6.4 A (P2.3–P2.4), P1/P5 (роли), Д7.
 
-- [ ] Шаг 1: AAA-тесты на SQL-тексты → красный.
-- [ ] Шаг 2: реализация → зелёный.
-- [ ] Шаг 3: commit `"feat(provisioning): DatabaseProvisioner — БД/роли/схемы (идемпотентный SQL)"`.
+- [x] Шаг 1: AAA-тесты на SQL-тексты → красный.
+- [x] Шаг 2: реализация → зелёный.
+- [x] Шаг 3: commit `"feat(provisioning): DatabaseProvisioner — БД/роли/схемы (идемпотентный SQL)"`.
 
 ### Задача 19: ProvisioningProcess (машина состояний P0–P5)
 
