@@ -138,6 +138,31 @@ public class ReconcileLoopTests
     }
 
     [Fact]
+    public async Task Tick_TwoClustersDeadShardOnlyInOne_EvacuatesOnlyOwnShard()
+    {
+        // Arrange — шаблонно одноимённые шарды «shard1» в двух кластерах,
+        // DeadShards — только у shopA (rework №1: мёртвые шарды — значение
+        // тика своего кластера, эвакуация чужого живого шарда исключена)
+        SeedCluster("shopA", null);
+        SeedCluster("shopB", null);
+        var processes = new FakeProcesses
+        {
+            SuperviseResult = cluster => cluster == "shopA"
+                ? new SuperviseOutcome(ProcessOutcome.Done, ["shard1"])
+                : new SuperviseOutcome(ProcessOutcome.Done, []),
+        };
+        var loop = CreateLoop(processes);
+
+        // Act
+        var tick = await loop.TickAsync(TestContext.Current.CancellationToken);
+
+        // Assert — эвакуирован ТОЛЬКО шард кластера, сообщившего о смерти
+        tick.IsSuccess.Should().BeTrue();
+        processes.Evacuated.Should().BeEquivalentTo(["shopA/shard1"]);
+        processes.Evacuated.Should().NotContain(e => e.StartsWith("shopB/", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Tick_TwoClusters_ParallelismCappedBySemaphore()
     {
         // Arrange — два кластера, лимит параллелизма 1: второй ждёт первого

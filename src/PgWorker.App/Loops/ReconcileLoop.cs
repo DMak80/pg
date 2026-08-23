@@ -16,7 +16,8 @@ namespace PgWorker.App.Loops;
 /// из Puzzle): тик = снапшот /clusters/ + /service/ → классификация → клэйм →
 /// процесс; ошибка тика не роняет цикл (лог + ErrorDelayMs, следующий тик — ретрай).
 /// Кластеры обрабатываются параллельно (SemaphoreSlim MaxClusters), внутри
-/// кластера — строго последовательно. Эвакуационные события NodeSupervisor.DeadShards
+/// кластера — строго последовательно. Эвакуационные события надзора
+/// (SuperviseOutcome.DeadShards — значение тика, не состояние синглтона)
 /// передаются BucketEvacuator в этом же тике.
 /// </summary>
 internal sealed class ReconcileLoop(

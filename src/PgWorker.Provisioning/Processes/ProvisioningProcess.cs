@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using PgWorker.Core;
@@ -45,7 +46,9 @@ public sealed class ProvisioningProcess(
 
     // Время первого наблюдения «шард без живого Patroni» (бюджет P2.2; memory —
     // после takeover отсчёт начнётся заново: диагностический бюджет, не клэйм).
-    private readonly Dictionary<string, long> _patroniWaitSince = [];
+    // ConcurrentDictionary (rework №1): процесс — синглтон DI, кластеры
+    // обрабатываются параллельно — обычный Dictionary не потокобезопасен.
+    private readonly ConcurrentDictionary<string, long> _patroniWaitSince = new();
 
     public async Task<Result<ProcessOutcome>> TickAsync(ClusterSnapshot snap, CancellationToken ct)
     {
@@ -258,7 +261,8 @@ public sealed class ProvisioningProcess(
         if (!scopeReady || !probesAlive)
         {
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-            var since = _patroniWaitSince.TryGetValue(scope, out var s) ? s : (_patroniWaitSince[scope] = now);
+            // GetOrAdd — атомарно при параллельных тиках разных кластеров (rework №1).
+            var since = _patroniWaitSince.GetOrAdd(scope, now);
             if (now - since > placementOpts.PatroniBootSec)
                 return Result<bool>.Failed(new ApplicationException(
                     $"Patroni шарда {scope} не поднялся за бюджет {placementOpts.PatroniBootSec} с"));
@@ -266,7 +270,7 @@ public sealed class ProvisioningProcess(
             return Result<bool>.Success(false);
         }
 
-        _patroniWaitSince.Remove(scope);
+        _patroniWaitSince.TryRemove(scope, out _);
         foreach (var node in shard.Nodes.Where(n => n.State != NodeState.Running))
         {
             var running = await PutAsync(NodeStateKey(cluster, shard.Name, node.Name), "RUNNING", ct);

@@ -29,34 +29,37 @@ public sealed class NodeSupervisor(
     TimeProvider clock,
     InstallSecrets secrets,
     MasterKeyReconciler? masterKeys = null,
-    EtcdEndpoints? etcdForNodes = null) : IClusterProcess
+    EtcdEndpoints? etcdForNodes = null)
 {
-    /// <summary>Полностью мёртвые шарды последнего тика (эвакуация — цикл задачи 23).</summary>
-    public IReadOnlyList<string> DeadShards { get; private set; } = [];
-
-    public async Task<Result<ProcessOutcome>> TickAsync(ClusterSnapshot snap, CancellationToken ct)
+    /// <summary>
+    /// Один тик надзора (не IClusterProcess: исход несёт мёртвые шарды).
+    /// Мёртвые шарды возвращаются ЗНАЧЕНИЕМ, а не состоянием синглтона:
+    /// процессы — синглтоны DI, кластеры обрабатываются параллельно, и общее
+    /// mutable-свойство перезаписывалось бы тиками чужих кластеров (rework №1).
+    /// </summary>
+    public async Task<Result<SuperviseOutcome>> TickAsync(ClusterSnapshot snap, CancellationToken ct)
     {
         var cluster = snap.Config.Cluster;
 
         // Мутации — только держателем живого клэйма (инвариант spec §4.3).
         if (!claims.IsMine(cluster))
-            return Result<ProcessOutcome>.Failed(new ApplicationException(
+            return Fail(new ApplicationException(
                 $"supervise {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
 
         var addresses = await ReadPortAllocAsync(cluster, ct);
         if (!addresses.IsSuccess)
-            return Result<ProcessOutcome>.Failed(addresses.Error!);
+            return Fail(addresses.Error!);
 
         // 1) Сверка декларации: каждой плановой ноде — контейнер/сервис по имени;
         //    снесённый руками пересоздаётся (декларативное самовосстановление).
         var declared = await EnsureDeclaredNodesAsync(cluster, snap, addresses.Value, ct);
         if (!declared.IsSuccess)
-            return Result<ProcessOutcome>.Failed(declared.Error!);
+            return Fail(declared.Error!);
 
         // 2) Пробы + сценарии недоступности (трек в work-журнале, план №4).
         var unreachable = await journal.ReadUnreachableAsync(cluster, ct);
         if (!unreachable.IsSuccess)
-            return Result<ProcessOutcome>.Failed(unreachable.Error!);
+            return Fail(unreachable.Error!);
         var track = new Dictionary<string, long>(unreachable.Value);
         var deadShards = new List<string>();
 
@@ -64,7 +67,7 @@ public sealed class NodeSupervisor(
         {
             var shardTrack = await SuperviseShardAsync(cluster, snap, shard, addresses.Value, track, ct);
             if (!shardTrack.IsSuccess)
-                return Result<ProcessOutcome>.Failed(shardTrack.Error!);
+                return Fail(shardTrack.Error!);
 
             // Весь шард недоступен (все ноды молчат) + master-ключ протух дольше
             // ShardDeadSec → кандидат на эвакуацию (spec §6.4 D).
@@ -85,7 +88,7 @@ public sealed class NodeSupervisor(
         // даже если REST уже жив и в deadShards он не попал.
         var evacuations = await RangeAsync($"/pgworker/evacuations/{cluster}/", ct);
         if (!evacuations.IsSuccess)
-            return Result<ProcessOutcome>.Failed(evacuations.Error!);
+            return Fail(evacuations.Error!);
         foreach (var kv in evacuations.Value)
         {
             if (!kv.Value.Contains("\"state\":\"DONE\"", StringComparison.Ordinal))
@@ -95,7 +98,6 @@ public sealed class NodeSupervisor(
                 deadShards.Add(evacuated);
         }
 
-        DeadShards = deadShards;
         await journal.WriteSupervisionAsync(cluster, claims.InstanceId, track, ct);
 
         // 3) P11-сверка мастер-ключей (только при рассинхроне — отдельный контур).
@@ -103,12 +105,16 @@ public sealed class NodeSupervisor(
         {
             var keys = await masterKeys.ReconcileAsync(snap, addresses.Value, ct);
             if (!keys.IsSuccess)
-                return Result<ProcessOutcome>.Failed(keys.Error!);
+                return Fail(keys.Error!);
         }
 
-        // Надзор не имеет терминальной фазы: успешный тик = Done (цикл повторит).
-        return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        // Надзор не имеет терминальной фазы: успешный тик = Done (цикл повторит);
+        // мёртвые шарды — значением (изоляция параллельных тиков, rework №1).
+        return Result<SuperviseOutcome>.Success(new SuperviseOutcome(ProcessOutcome.Done, deadShards));
     }
+
+    private static Result<SuperviseOutcome> Fail(Exception error)
+        => Result<SuperviseOutcome>.Failed(error);
 
     // Сверка декларации: EnsureNode плановых нод без docker-объекта.
     private async Task<Result> EnsureDeclaredNodesAsync(

@@ -56,11 +56,11 @@ public class NodeSupervisorTests
         etcd.Seed("/pgworker/portalloc/shop", PgWorker.Core.Model.Portalloc.Serialize(alloc));
     }
 
-    private static async Task<ClusterSnapshot> Snapshot(Fakes.FakeEtcd etcd)
+    private static async Task<ClusterSnapshot> Snapshot(Fakes.FakeEtcd etcd, string cluster = "shop")
     {
         var range = await etcd.RangeAsync(Ep, "/clusters/", CancellationToken.None);
         var parsed = ClusterSnapshotParser.ParseClusters(range.Value, out _);
-        return parsed.Value.Single(c => c.Config.Cluster == "shop");
+        return parsed.Value.Single(c => c.Config.Cluster == cluster);
     }
 
     private sealed record Rig(Fakes.FakeEtcd Etcd, Fakes.FakeDriver Driver, ClaimStore Claims,
@@ -115,7 +115,7 @@ public class NodeSupervisorTests
         var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
         // Assert: декларативное самовосстановление — нода пересоздана, state PROVISIONING
-        outcome.Value.Should().Be(ProcessOutcome.Done);
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
         rig.Driver.EnsuredNodes.Should().ContainSingle().Which.Should().Be("shard1/shard1a");
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("PROVISIONING");
     }
@@ -136,7 +136,7 @@ public class NodeSupervisorTests
         var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
         // Assert: rebuild — RemoveNode + EnsureNode того же addr, state REBUILDING
-        outcome.Value.Should().Be(ProcessOutcome.Done);
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
         rig.Driver.RemovedNodes.Should().ContainSingle().Which.Should().Be("shard1/shard1a");
         rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("REBUILDING");
@@ -156,7 +156,7 @@ public class NodeSupervisorTests
         var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
         // Assert: никаких docker-мутаций, нода отмечена UNREACHABLE
-        outcome.Value.Should().Be(ProcessOutcome.Done);
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
         rig.Driver.RemovedNodes.Should().BeEmpty();
         rig.Driver.EnsuredNodes.Should().BeEmpty();
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("UNREACHABLE");
@@ -173,8 +173,8 @@ public class NodeSupervisorTests
         var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
         // Assert: шард попал в DeadShards (триггер эвакуации для цикла, задачи 22/23)
-        outcome.Value.Should().Be(ProcessOutcome.Done);
-        rig.Supervisor.DeadShards.Should().BeEquivalentTo(["shard1"]);
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        outcome.Value.DeadShards.Should().BeEquivalentTo(["shard1"]);
     }
 
     [Fact]
@@ -189,8 +189,75 @@ public class NodeSupervisorTests
         var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
         // Assert: эвакуация не запускается (arch/14 §5 C: master протух — обязательное условие)
-        outcome.Value.Should().Be(ProcessOutcome.Done);
-        rig.Supervisor.DeadShards.Should().BeEmpty();
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        outcome.Value.DeadShards.Should().BeEmpty();
+    }
+
+    // Сид кластера с параметризованными именами/портами (параллельный тест).
+    private static void SeedNamedCluster(Fakes.FakeEtcd etcd, string cluster, int portOffset)
+    {
+        etcd.Seed($"/clusters/{cluster}/config",
+            $$"""{"buckets":2,"dbname":"{{cluster}}","created_unix":1755900000}""");
+        etcd.Seed($"/clusters/{cluster}/shards/shard1/replicas", "3");
+        for (var i = 0; i < 3; i++)
+            etcd.Seed($"/clusters/{cluster}/shards/shard1/nodes/shard1{(char)('a' + i)}/state", "RUNNING");
+        etcd.Seed($"/clusters/{cluster}/shards/shard1/dsn", "host=h1,h2 port=15000,15001 dbname=x user=bucket_admin");
+        etcd.Seed($"/clusters/{cluster}/buckets/routing/bucket_0", "shard1");
+        etcd.Seed($"/clusters/{cluster}/buckets/routing/bucket_1", "shard1");
+        var alloc = new Dictionary<string, NodeAddress>();
+        for (var i = 0; i < 3; i++)
+            alloc[$"shard1/shard1{(char)('a' + i)}"] = new NodeAddress(
+                i % 2 == 0 ? "h1" : "h2",
+                new NodePorts(15000 + portOffset + i, 18000 + portOffset + i, 16500 + portOffset + i));
+        etcd.Seed($"/pgworker/portalloc/{cluster}", PgWorker.Core.Model.Portalloc.Serialize(alloc));
+    }
+
+    [Fact]
+    public async Task Tick_TwoClustersParallel_OneSupervisorSingleton_DeadShardsDoNotCross()
+    {
+        // Arrange — ОДИН синглтон-надзор (как в DI) и два кластера с шаблонно
+        // совпадающими именами шардов «shard1» (rework №1): у shopA шард
+        // полностью мёртв дольше ShardDeadSec, у shopB — жив. Тики идут
+        // параллельно, как в ReconcileLoop при MaxClusters > 1.
+        var etcd = new Fakes.FakeEtcd();
+        SeedNamedCluster(etcd, "shopA", portOffset: 0);
+        SeedNamedCluster(etcd, "shopB", portOffset: 100);
+        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        await claims.TryClaimClusterAsync("shopA", CancellationToken.None);
+        await claims.TryClaimClusterAsync("shopB", CancellationToken.None);
+        var journal = new WorkJournal(etcd, [Ep]);
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        await journal.WriteSupervisionAsync("shopA", "seed", new Dictionary<string, long>
+        {
+            ["shard1/shard1a"] = now - 400,
+            ["shard1/shard1b"] = now - 400,
+            ["shard1/shard1c"] = now - 400,
+        }, CancellationToken.None);
+
+        var driver = new Fakes.FakeDriver
+        {
+            NodeObjects =
+            [
+                "pgw-shopA-shard1-shard1a", "pgw-shopA-shard1-shard1b", "pgw-shopA-shard1-shard1c",
+                "pgw-shopB-shard1-shard1a", "pgw-shopB-shard1-shard1b", "pgw-shopB-shard1-shard1c",
+            ],
+        };
+        // Пробы по Patroni-порту: shopA (18000–18002) — глухо, shopB (18100–18102) — жив.
+        var supervisor = new NodeSupervisor(
+            etcd, [Ep], driver, Probe(port => port >= 18100 ? Ok() : Down()),
+            claims, journal, Thresholds, TimeProvider.System, Secrets);
+
+        // Act — параллельные тики двух кластеров одним синглтоном
+        var results = await Task.WhenAll(
+            supervisor.TickAsync(await Snapshot(etcd, "shopA"), CancellationToken.None),
+            supervisor.TickAsync(await Snapshot(etcd, "shopB"), CancellationToken.None));
+
+        // Assert — мёртвые шарды изолированы ЗНАЧЕНИЕМ тика: событие эвакуации
+        // получил только свой кластер, живой shopB не «унаследовал» shopA.
+        results.Should().OnlyContain(r => r.IsSuccess);
+        results[0].Value.DeadShards.Should().Equal("shard1");
+        results[1].Value.DeadShards.Should().BeEmpty();
+        driver.EnsuredNodes.Should().BeEmpty(); // контейнеры на месте — пересозданий нет
     }
 
     [Fact]
