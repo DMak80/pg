@@ -187,4 +187,106 @@ public class ClusterCreatePlanTests
         // Assert: i % S: 0→shard1,1→shard2,2→shard1,3→shard2,4→shard1
         plan.Puts.Single(p => p.Key == "/clusters/u/buckets/routing/bucket_4").Value.Should().Be("shard1");
     }
+
+    [Fact]
+    public void Build_NormalizedSingle_DegenerateStructure()
+    {
+        // Arrange: нешардированная — нормализованный запрос (мусор перезаписан в 1×1)
+        var request = new CreateClusterRequest("solo", 999, 99, 2, 0.5m, 8, 100, Sharded: false).Normalize();
+
+        // Act
+        var plan = ClusterCreatePlan.Build(request, nowUnix: 1755900000);
+
+        // Assert: config.buckets=1; единственный shard1 (ноды a/b); единственный
+        // bucket_0 → shard1; заявки только /service/solo-shard1/* (arch/02 §9.1)
+        plan.ConfigValue.Should().Contain("\"buckets\":1");
+        var keys = plan.Puts.Select(p => p.Key).ToList();
+        keys.Should().Contain(
+        [
+            "/clusters/solo/shards/shard1/replicas",
+            "/clusters/solo/shards/shard1/nodes/shard1a/state",
+            "/clusters/solo/shards/shard1/nodes/shard1b/state",
+            "/clusters/solo/buckets/routing/bucket_0",
+            "/clusters/solo/buckets/status/bucket_0",
+        ]);
+        keys.Where(k => k.Contains("shard2")).Should().BeEmpty();
+        keys.Where(k => k.Contains("bucket_1")).Should().BeEmpty();
+        plan.Puts.Single(p => p.Key == "/clusters/solo/buckets/routing/bucket_0").Value.Should().Be("shard1");
+        plan.RequestKeys.Should().BeEquivalentTo(
+        [
+            "/service/solo-shard1/request_cpu",
+            "/service/solo-shard1/request_mem",
+            "/service/solo-shard1/request_disk",
+        ]);
+    }
+}
+
+// Нормализация запроса создания: arch/02 §9.3 — sharded=false → buckets/shards
+// игнорируются и перезаписываются в 1/1; отсутствующий sharded = true.
+public class CreateClusterNormalizeTests
+{
+    [Fact]
+    public void Normalize_ShardedAbsent_TrueAndValuesKept()
+    {
+        // Arrange: легаси-запрос без sharded (null) — обратная совместимость
+        var request = new CreateClusterRequest("shop", 4, 2, 2, 0.5m, 8, 100);
+
+        // Act
+        var normalized = request.Normalize();
+
+        // Assert: sharded=true, buckets/shards без изменений
+        normalized.Sharded.Should().BeTrue();
+        normalized.Buckets.Should().Be(4);
+        normalized.Shards.Should().Be(2);
+    }
+
+    [Fact]
+    public void Normalize_ShardedFalse_OverwritesToOneAndOne()
+    {
+        // Arrange: мусорные buckets/shards при нешардированной — игнорируются
+        var request = new CreateClusterRequest("solo", 9999, -5, 2, 1m, 8, 100, Sharded: false);
+
+        // Act
+        var normalized = request.Normalize();
+
+        // Assert: вырожденный случай 1×1 (arch/02 §9.1)
+        normalized.Sharded.Should().BeFalse();
+        normalized.Buckets.Should().Be(1);
+        normalized.Shards.Should().Be(1);
+    }
+
+    [Fact]
+    public void Normalize_ShardedTrue_KeepsValues()
+    {
+        // Arrange
+        var request = new CreateClusterRequest("shop", 8, 4, 2, 1m, 8, 100, Sharded: true);
+
+        // Act
+        var normalized = request.Normalize();
+
+        // Assert
+        normalized.Sharded.Should().BeTrue();
+        normalized.Buckets.Should().Be(8);
+        normalized.Shards.Should().Be(4);
+    }
+
+    [Fact]
+    public void Normalize_Idempotent()
+    {
+        // Arrange
+        var request = new CreateClusterRequest("solo", 7, 3, 2, 1m, 8, 100, Sharded: false);
+
+        // Act/Assert: повторная нормализация ничего не меняет
+        request.Normalize().Normalize().Should().Be(request.Normalize());
+    }
+
+    [Fact]
+    public void Validate_AfterNormalizeSingleWithGarbage_NoErrors()
+    {
+        // Arrange: невалидные buckets/shards нормализованы ДО валидации
+        var normalized = new CreateClusterRequest("solo", 0, 999, 2, 1m, 8, 100, Sharded: false).Normalize();
+
+        // Act/Assert: ошибок по buckets/shards нет — сервер нормализовал (arch/02 §9.3)
+        CreateClusterValidator.Validate(normalized).Should().BeEmpty();
+    }
 }
