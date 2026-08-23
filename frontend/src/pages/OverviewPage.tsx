@@ -61,7 +61,9 @@ export function OverviewPage() {
   return (
     <Stack gap="md">
       <Title order={2}>Обзор</Title>
-      <SimpleGrid cols={{ base: 1, sm: 2, lg: 4 }}>
+      {/* Мин. ширина карточки 330px = 1.5× проектного минимума старой 4-колоночной
+          сетки (220px при lg); колонки перестраиваются auto-fill'ом по ширине. */}
+      <SimpleGrid minColWidth={330}>
         <EtcdCard data={data} />
         <ClustersCard data={data} />
         <AlertsCard data={data} />
