@@ -111,4 +111,129 @@ public static class MoveSql
     // рестартует таблицу новым слотом) — уборка finalize.
     public static string OrphanTablesyncSlots(string sub)
         => $"SELECT slot_name FROM pg_replication_slots WHERE slot_name LIKE '{Ident(sub)}_sync_%'";
+
+    // ── Заморозка/разморозка P1/P5 (freeze_source/unfreeze_shard/grant_app_role) ──
+
+    // Заморозка источника: три REVOKE + барьер LOCK в ОДНОМ батче (REVOKE —
+    // лёгкая блокировка и писателей НЕ ждёт). BEGIN/COMMIT и lock_timeout
+    // НЕ входят — их ставит исполнитель (ExecuteTransactionalAsync).
+    // tables — уже собранный список из TableNames; пустой → без LOCK.
+    public static string Freeze(string schema, string appRole, string? tables = null)
+    {
+        Ident(schema);
+        Ident(appRole);
+        var barrier = string.IsNullOrEmpty(tables)
+            ? string.Empty
+            : $"\nLOCK TABLE {tables} IN ACCESS EXCLUSIVE MODE;";
+        return
+            $"REVOKE INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA {schema} FROM {appRole};\n" +
+            $"REVOKE USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA {schema} FROM {appRole};\n" +
+            $"REVOKE CREATE ON SCHEMA {schema} FROM {appRole};" +
+            barrier;
+    }
+
+    // Разморозка: симметричные GRANT; БЕЗ GRANT CREATE — его app-роли никогда
+    // не выдавалось (дефолт скриптов APP_GRANT_CREATE=0, глобальное ограничение t01).
+    public static string Unfreeze(string schema, string appRole)
+        => $"GRANT INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA {Ident(schema)} TO {Ident(appRole)};\n" +
+           $"GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA {Ident(schema)} TO {Ident(appRole)};";
+
+    // Базовые гранты app-роли на приёмнике (grant_app_role скрипта, §4 доки 11):
+    // USAGE + DML + sequences; CREATE ROLE здесь нет — роль создаёт provisioning.
+    public static string GrantAppOnSchema(string schema, string appRole)
+        => $"GRANT USAGE ON SCHEMA {Ident(schema)} TO {Ident(appRole)};\n" +
+           $"GRANT SELECT, INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA {Ident(schema)} TO {Ident(appRole)};\n" +
+           $"GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA {Ident(schema)} TO {Ident(appRole)};";
+
+    // ── Публикации/подписки (P3/P8) ──
+
+    // Публикация бакета на источнике (шаг 2 move).
+    public static string CreatePublication(string pub, string schema)
+        => $"CREATE PUBLICATION {Ident(pub)} FOR TABLES IN SCHEMA {Ident(schema)}";
+
+    // Подписка на приёмнике: conninfo — строка libpq в SQL-литерале (одинарные
+    // кавычки экранируются удвоением); failover-флаг конфигурируем (PG17+),
+    // synchronous_commit=remote_apply — всегда (P8).
+    public static string CreateSubscription(
+        string sub, string conninfo, string pub, bool copyData, bool failover)
+        => $"CREATE SUBSCRIPTION {Ident(sub)} CONNECTION '{conninfo.Replace("'", "''")}' PUBLICATION {Ident(pub)} " +
+           $"WITH (copy_data = {Bool(copyData)}, failover = {Bool(failover)}, " +
+           "synchronous_commit = remote_apply)";
+
+    // Fallback-цепочка среза подписки при недоступном источнике (drop_sub
+    // abort-move.sh): DISABLE → SET (slot_name = NONE) → DROP.
+    public static string DisableSubscription(string sub)
+        => $"ALTER SUBSCRIPTION {Ident(sub)} DISABLE";
+
+    public static string SetSlotNone(string sub)
+        => $"ALTER SUBSCRIPTION {Ident(sub)} SET (slot_name = NONE)";
+
+    public static string DropSubscription(string sub)
+        => $"DROP SUBSCRIPTION {Ident(sub)}";
+
+    public static string DropPublication(string pub)
+        => $"DROP PUBLICATION {Ident(pub)}";
+
+    // Схема на не-владельце — с данными (finalize/abort; схема владельца не трогается).
+    public static string DropSchemaCascade(string schema)
+        => $"DROP SCHEMA {Ident(schema)} CASCADE";
+
+    // ── Cutover: LSN/слоты/sequences/сверки ──
+
+    // Последний LSN записи источника (текстом для сравнения с confirmed_flush).
+    public static string CurrentWalLsn()
+        => "SELECT pg_current_wal_lsn()::text";
+
+    // Слот догнал: активен и подтвердил LSN (slot_caught_up скрипта).
+    public static string SlotCaughtUp(string slot, string lsn)
+        => $"SELECT coalesce(bool_and(active AND confirmed_flush_lsn >= '{lsn}'::pg_lsn), false) " +
+           $"FROM pg_replication_slots WHERE slot_name = '{Ident(slot)}'";
+
+    // Отставание слота в байтах (slot_lag скрипта; 0, если слота нет).
+    public static string SlotLag(string slot)
+        => "SELECT coalesce(max(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)), 0)::bigint " +
+           $"FROM pg_replication_slots WHERE slot_name = '{Ident(slot)}'";
+
+    // Слот активен (cleanup_slots: до/после terminate walsender'а).
+    public static string SlotActive(string slot)
+        => $"SELECT active FROM pg_replication_slots WHERE slot_name = '{Ident(slot)}'";
+
+    // Глушилка walsender'а активного слота (cleanup_slots abort-move.sh).
+    public static string TerminateSlotBackend(string slot)
+        => $"SELECT pg_terminate_backend(active_pid) FROM pg_replication_slots " +
+           $"WHERE slot_name = '{Ident(slot)}' AND active";
+
+    public static string DropSlot(string slot)
+        => $"SELECT pg_drop_replication_slot('{Ident(slot)}')";
+
+    // Готовность подписки «ready/total» (sub_sync скрипта: srsubstate='r').
+    public static string SubSyncReady(string sub)
+        => "SELECT coalesce(sum((srsubstate = 'r')::int), 0) || '/' || count(*) " +
+           "FROM pg_subscription_rel " +
+           $"WHERE srsubid = (SELECT oid FROM pg_subscription WHERE subname = '{Ident(sub)}')";
+
+    // Последнее ВЫДАННОЕ на источнике (is_called учитывается на стороне SQL —
+    // баш-нюанс стенда, P6): is_called → last_value, иначе last_value-1.
+    public static string SequenceIssued(string schema, string seq)
+        => $"SELECT CASE WHEN is_called THEN last_value ELSE last_value - 1 END FROM {Qualified(schema, seq)}";
+
+    // Следующее, которое выдаст sequence приёмника: +1 при is_called.
+    public static string SequenceNext(string schema, string seq)
+        => $"SELECT CASE WHEN is_called THEN last_value + 1 ELSE last_value END FROM {Qualified(schema, seq)}";
+
+    // setval только ВПЕРЁД (P6): счётчик приёмника доводится до выданного на
+    // источнике; is_called=true, чтобы следующий nextval выдал issued+1.
+    public static string SetvalForward(string schema, string seq, long issued)
+        => $"SELECT setval('{Qualified(schema, seq)}', {issued}, true)";
+
+    // Count таблицы для сверки строк P8 (verify_row_counts).
+    public static string RowCount(string schema, string table)
+        => $"SELECT count(*) FROM {Qualified(schema, table)}";
+
+    // Схема.имя в кавычках-идентификаторах (имя всегда в «…»: последовательности
+    // и таблицы могут называться зарезервированными словами).
+    private static string Qualified(string schema, string name)
+        => $"{Ident(schema)}.\"{Ident(name)}\"";
+
+    private static string Bool(bool value) => value ? "true" : "false";
 }
