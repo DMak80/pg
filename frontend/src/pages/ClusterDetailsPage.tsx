@@ -1,4 +1,6 @@
 // Детали кластера: шапка + вкладки Шарды/Бакеты/Переезды/Heals + стендовая топология (t08 spec §4.7–4.8).
+// Вкладка «Бакеты» скрыта для нешардированных (sharded=false, arch/03 §3; spec
+// bucket-block-distribution §4.4): у БД 1×1 нет карты бакетов.
 import { useQuery } from '@tanstack/react-query';
 import { Anchor, Badge, Group, Stack, Tabs, Text, Title } from '@mantine/core';
 import { Link, useParams } from 'react-router';
@@ -55,12 +57,14 @@ export function ClusterDetailsPage() {
       <Tabs defaultValue="shards">
         <Tabs.List>
           <Tabs.Tab value="shards">Шарды</Tabs.Tab>
-          <Tabs.Tab value="buckets">Бакеты</Tabs.Tab>
+          {data.sharded ? <Tabs.Tab value="buckets">Бакеты</Tabs.Tab> : null}
           <Tabs.Tab value="moves">Переезды</Tabs.Tab>
           <Tabs.Tab value="heals">Heals</Tabs.Tab>
         </Tabs.List>
         <Tabs.Panel value="shards" pt="sm"><ShardsTab shards={data.shards} /></Tabs.Panel>
-        <Tabs.Panel value="buckets" pt="sm"><BucketsTab buckets={data.buckets} /></Tabs.Panel>
+        {data.sharded ? (
+          <Tabs.Panel value="buckets" pt="sm"><BucketsTab buckets={data.buckets} /></Tabs.Panel>
+        ) : null}
         <Tabs.Panel value="moves" pt="sm"><MovesTab buckets={data.buckets} /></Tabs.Panel>
         <Tabs.Panel value="heals" pt="sm"><HealsTab heals={data.heals} /></Tabs.Panel>
       </Tabs>

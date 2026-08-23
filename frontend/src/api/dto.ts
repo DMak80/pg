@@ -131,6 +131,9 @@ export interface ClusterDto {
   createdUnix: number | null;
   incomplete: boolean;
   state: ClusterStateName;
+  // Вычисляется сервером (arch/03 §2): false ⟺ 1 бакет и ≤1 шард —
+  // нешардированная БД; скрывает вкладку «Бакеты» на странице деталей.
+  sharded: boolean;
   shards: ShardDto[];
   buckets: BucketDto[];
   heals: HealDto[];
