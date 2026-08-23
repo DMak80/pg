@@ -8,13 +8,26 @@ using PgWorker.Core.Templates;
 namespace PgWorker.Provisioning.Sql;
 
 /// <summary>
+/// SQL-исполнитель процессов (мокабельная грань DatabaseProvisioner): все
+/// операции идемпотентны на стороне SQL-текстов; DSN собирает процесс.
+/// </summary>
+public interface ISqlExecutor
+{
+    Task<Result> ExecuteAsync(string dsn, string sql, CancellationToken ct);
+
+    Task<Result<object?>> ExecuteScalarAsync(string dsn, string sql, CancellationToken ct);
+
+    Task<Result> EnsureDatabaseAsync(string dsn, string dbname, CancellationToken ct);
+}
+
+/// <summary>
 /// SQL-слой инициализации шарда (задача 18; эталоны: init-cluster.sh шаг 5,
 /// гранты — §4 доки 11). Все тексты идемпотентны: роли/БД — guard через
 /// каталоги (pg_database/pg_roles, паттерн «SELECT команды WHERE NOT EXISTS»),
 /// схемы — IF NOT EXISTS. Подключение — к master-ноде шарда (user=postgres,
 /// пароль из InstallSecrets Д7); пароли живут только в DSN-строке в памяти.
 /// </summary>
-public sealed partial class DatabaseProvisioner
+public sealed partial class DatabaseProvisioner : ISqlExecutor
 {
     private const int RetryCount = 3;
 

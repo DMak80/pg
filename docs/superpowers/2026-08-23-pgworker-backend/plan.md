@@ -908,9 +908,9 @@ nodes, routing всех N) — иначе journal phase=waiting-keys, InProgress
 **Проверка:** `dotnet test src/PgWorker.slnx --filter ProvisioningProcess`.
 **Spec:** §6.4 A, Д1, Д5.
 
-- [ ] Шаг 1: интерфейс IClusterProcess + AAA-тесты (4 сценария) → красный.
-- [ ] Шаг 2: реализация фаз P0–P5 (каждая — private-метод, вход через journal) → зелёный.
-- [ ] Шаг 3: commit `"feat(provisioning): ProvisioningProcess P0–P5"`.
+- [x] Шаг 1: интерфейс IClusterProcess + AAA-тесты (4 сценария) → красный.
+- [x] Шаг 2: реализация фаз P0–P5 (каждая — private-метод, вход через journal) → зелёный.
+- [x] Шаг 3: commit `"feat(provisioning): ProvisioningProcess P0–P5"`.
 
 ### Задача 20: DeprovisioningProcess (D0–D3)
 

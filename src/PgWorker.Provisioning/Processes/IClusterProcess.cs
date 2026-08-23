@@ -1,0 +1,34 @@
+using PgWorker.Core;
+using PgWorker.Core.Model;
+
+namespace PgWorker.Provisioning.Processes;
+
+/// <summary>Исход такта процесса (arch/14 §5): ожидание / цель достигнута / недостижимо без вмешательства.</summary>
+public enum ProcessOutcome
+{
+    /// <summary>Продолжить следующими тиками (ждём Patroni, ключей панели, мастера).</summary>
+    InProgress,
+
+    /// <summary>Цель процесса достигнута (кластер в целевом состоянии).</summary>
+    Done,
+
+    /// <summary>Бюджет исчерпан / guard отказал — внимание оператора (journal.last_error).</summary>
+    Failed,
+}
+
+/// <summary>
+/// Один такт процесса-машины состояний: доводит кластер насколько возможно за
+/// вызов (все фазы идемпотентны — повтор безопасен). Прогресс — в
+/// /pgworker/work/&lt;C&gt; + nodes state; вход — снапшот кластера от цикла
+/// (задача 23 ReconcileLoop), etcd/docker — через внедрённые зависимости.
+/// </summary>
+public interface IClusterProcess
+{
+    Task<Result<ProcessOutcome>> TickAsync(ClusterSnapshot snap, CancellationToken ct);
+}
+
+/// <summary>
+/// Параметры размещения/бюджетов процессов (appsettings → задача 23):
+/// диапазон портов нод (arch/14 §2.4) и бюджет ожидания Patroni (P2.2, сек).
+/// </summary>
+public sealed record PlacementOptions(int PortFrom, int PortTo, int PatroniBootSec);
