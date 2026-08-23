@@ -28,6 +28,9 @@ public sealed class MoveStaleRule(IOptions<AlertsOptions> options) : IAlertRule
             if (bucket.State == BucketState.Active)
                 continue;
 
+            if (bucket.State == BucketState.NotInitialized)
+                continue; // не переезд: начальное состояние создаваемого кластера (arch/03 §4)
+
             var stamp = MoveAge.Stamp(bucket);
             if (stamp is null || nowUnix - stamp.Value <= ThresholdSeconds)
                 continue; // нет меры возраста (spec §4.2) либо прогресс свежий

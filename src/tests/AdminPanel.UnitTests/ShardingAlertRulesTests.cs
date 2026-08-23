@@ -325,4 +325,52 @@ public class ShardingAlertRulesTests
             .Should().Be("bucket-lost|move-frozen-long|shard-no-master|bucket-no-routing");
         alerts.Should().OnlyContain(a => a.SinceUnix == NowUnix);
     }
+
+    [Fact]
+    public void ClusterNotInitialized_Rule_FiresInfoAlert()
+    {
+        // Arrange
+        var cluster = new ClusterInfo("fresh", "fresh", 1, null, ClusterState.NotInitialized, [], [], []);
+
+        // Act
+        var alerts = Evaluate(new ClusterNotInitializedRule(), Snapshot(cluster));
+
+        // Assert
+        var alert = alerts.Should().ContainSingle().Subject;
+        alert.Severity.Should().Be(AlertSeverity.Info);
+        alert.Kind.Should().Be("cluster-not-initialized");
+        alert.Target.Should().Be("fresh");
+    }
+
+    [Fact]
+    public void MoveStale_DoesNotFire_ForNotInitializedBuckets()
+    {
+        // Arrange: NOT_INITIALIZED со штампом старше порога (600 c)
+        var cluster = new ClusterInfo("fresh", "fresh", 1, null, ClusterState.Active, [],
+            [new BucketInfo(0, "shard1", BucketState.NotInitialized,
+                new MoveInfo("shard1", null, null, 1, null, null))], []);
+
+        // Act
+        var alerts = Evaluate(new MoveStaleRule(DefaultOptions), Snapshot(cluster));
+
+        // Assert: NOT_INITIALIZED — не переезд (arch/03 §4)
+        alerts.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ShardNoLeader_DoesNotFire_ForNotInitializedClusterScope()
+    {
+        // Arrange: matched scope без leader, кластер fresh — NOT_INITIALIZED
+        var cluster = new ClusterInfo("fresh", "fresh", 1, null, ClusterState.NotInitialized,
+            [new ShardInfo("shard1", "", [], null, null, null, 2, null, [], null)], [], []);
+        var scope = new HaScope("fresh-shard1", "fresh", "shard1", true, null, null, false,
+            null, null, null, [], null);
+        var snapshot = TestSnapshots.Healthy(Now) with { Clusters = [cluster], HaScopes = [scope] };
+
+        // Act
+        var alerts = Evaluate(new ShardNoLeaderRule(), snapshot);
+
+        // Assert: лидера нет потому, что ноды не подняты (spec t12 §3.7)
+        alerts.Should().BeEmpty();
+    }
 }
