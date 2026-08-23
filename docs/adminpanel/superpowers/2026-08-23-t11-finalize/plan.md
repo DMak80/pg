@@ -788,16 +788,24 @@ docker rm -f adminpanel-smoke 2>/dev/null; docker run -d --name adminpanel-smoke
   -e AdminPanel__Auth__AllowHttp=true \
   -e AdminPanel__Probes__PatroniEnabled=false -e AdminPanel__Probes__SqlEnabled=false \
   adminpanel
-sleep 12   # start-period + первый тик refresher'а (3 c)
+sleep 3    # старт Kestrel в контейнере до первой curl-проверки
 curl -sf http://localhost:18080/api/healthz
 curl -sf http://localhost:18080/ | head -c 200
 curl -s -c /tmp/t11jar -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}' http://localhost:18080/api/auth/login -o /dev/null -w '%{http_code}\n'
 curl -s -b /tmp/t11jar http://localhost:18080/api/overview | head -c 300
-docker inspect --format '{{.State.Health.Status}}' adminpanel-smoke
+# HEALTHCHECK: первый прогон — ~30 с от старта (--start-period не сдвигает первый чек,
+# лишь не засчитывает неудачи) → ждём healthy ретраями, а не разовым inspect (иначе `starting`).
+for i in $(seq 1 24); do
+  [ "$(docker inspect --format '{{.State.Health.Status}}' adminpanel-smoke)" = healthy ] && break
+  sleep 5
+done
+docker inspect --format '{{.State.Health.Status}}' adminpanel-smoke   # ожидание: healthy
 ```
 Expected: healthz → `{"status":"ok"}`; `/` → начало `index.html` (SPA отдаётся —
 бандл попал в образ); login → `204`; `/api/overview` → JSON с данными сида (cluster
-demo); Health → `healthy`.
+demo); Health → `healthy` — финальный inspect после ретрай-цикла (≤ ~2 мин; разовый
+inspect сразу после `docker run` дал бы ложный `starting` — первый чек только через
+~30 с). Интервалы HEALTHCHECK в Dockerfile не менять — контракт spec §6.1/arch §7.
 Разбор: `docker rm -f adminpanel-smoke && cd dev-stand && checks/90-down.sh -v`.
 
 - [ ] **Шаг 4.5. Коммит**
@@ -847,12 +855,15 @@ nohup dotnet run --project src/AdminPanel.Api >/tmp/adminpanel-t11.log 2>&1 &
 Run (терминал 2):
 ```bash
 cd dev-stand
+# [spec §7.3] хостовая раздача SPA: GET / отдаёт index.html из wwwroot (бандл Шага 5.3)
+curl -sf http://localhost:5000/ | head -c 200
 checks/90-down.sh -v
 checks/00-up.sh && checks/10-smoke-api.sh && checks/20-alerts.sh \
   && checks/30-failover.sh && checks/40-live-probes.sh
 checks/90-down.sh -v
 ```
-Expected: каждый чек завершается `OK`/exit 0; в конце — разбор стенда.
+Expected: `curl http://localhost:5000/` → начало `index.html` (SPA отдаётся хостом);
+каждый чек завершается `OK`/exit 0; в конце — разбор стенда.
 Панель остановить: `pkill -f 'AdminPanel.Api' || kill %1`.
 
 - [ ] **Шаг 5.5. Выход**: дерево чистое (`git status --short` — пусто; wwwroot и
