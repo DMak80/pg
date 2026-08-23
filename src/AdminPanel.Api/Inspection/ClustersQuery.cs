@@ -16,6 +16,7 @@ public sealed record ClusterSummaryDto(
     int BucketsCount,
     bool Incomplete,
     bool NotInitialized,
+    bool Deleting,
     int ShardsTotal,
     int ShardsWithMaster,
     int ActiveMoves);
@@ -30,6 +31,7 @@ public static class ClustersMapper
             c.BucketsCount,
             c.Incomplete,
             c.State == ClusterState.NotInitialized,
+            c.State == ClusterState.Deleting, // «удаляется» — config.state DELETING (arch/02 §9.4)
             c.Shards.Count,
             c.Shards.Count(s => s.MasterAddress is not null),
             // NOT_INITIALIZED — не переезд: только реальные состояния перемещения (spec t12 §3.6)

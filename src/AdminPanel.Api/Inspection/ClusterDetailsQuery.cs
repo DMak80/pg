@@ -46,7 +46,12 @@ public sealed record NodeRequestsDto(string Cpu, string Mem, string Disk);
 public static class ClusterStates
 {
     public static string Name(ClusterState state)
-        => state == ClusterState.NotInitialized ? "NOT_INITIALIZED" : "ACTIVE";
+        => state switch
+        {
+            ClusterState.NotInitialized => "NOT_INITIALIZED",
+            ClusterState.Deleting => "DELETING", // arch/02 §9.4
+            _ => "ACTIVE",
+        };
 }
 
 // Контракт runtime фиксируется сейчас (фронтенд t08 типизирует сразу), данные — t06 (spec §3.14).

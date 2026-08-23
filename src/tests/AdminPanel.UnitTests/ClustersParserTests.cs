@@ -213,6 +213,23 @@ public class ClustersParserTests
     }
 
     [Fact]
+    public void Parse_ConfigStateDeleting_MapsToClusterState()
+    {
+        // Arrange: config после DELETE /api/clusters (arch/02 §9.4)
+        var kvs = new[]
+        {
+            Kv("/clusters/dying/config",
+                """{"buckets":4,"dbname":"dying","created_unix":1755900000,"state":"DELETING"}"""),
+        };
+
+        // Act
+        var result = ClustersParser.Parse(kvs);
+
+        // Assert: DELETING распознан; отсутствие поля = Active.
+        result.Clusters.Should().ContainSingle().Which.State.Should().Be(ClusterState.Deleting);
+    }
+
+    [Fact]
     public void Parse_BucketStatusNotInitialized_MapsStateAndOwner()
     {
         // Arrange

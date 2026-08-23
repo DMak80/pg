@@ -251,4 +251,27 @@ public class ClustersMappersTests
         dto.StandNodes[1].Name.Should().Be("node2");
         dto.StandNodes[1].Address.Should().BeNull();
     }
+
+    [Fact]
+    public void ClustersMapper_DeletingCluster_FlaggedNotNotInitialized()
+    {
+        // Arrange: кластер после DELETE — config.state=DELETING (arch/02 §9.4)
+        var cluster = new ClusterInfo("dying", "dying", 4, 1755900000, ClusterState.Deleting, [], [], []);
+
+        // Act
+        var summary = ClustersMapper.Map([cluster]).Single();
+
+        // Assert: пометка «удаляется» — и это НЕ notInitialized (arch/03 §2)
+        summary.Deleting.Should().BeTrue();
+        summary.NotInitialized.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ClusterStates_Name_DeletingIsCanonical()
+    {
+        // Arrange/Act/Assert: канон state-строк деталей — arch/03 §2
+        ClusterStates.Name(ClusterState.Deleting).Should().Be("DELETING");
+        ClusterStates.Name(ClusterState.Active).Should().Be("ACTIVE");
+        ClusterStates.Name(ClusterState.NotInitialized).Should().Be("NOT_INITIALIZED");
+    }
 }

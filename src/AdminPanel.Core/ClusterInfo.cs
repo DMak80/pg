@@ -15,11 +15,12 @@ public sealed record ClusterInfo(
     public bool Incomplete => DbName is null || BucketsCount <= 0;
 }
 
-// Состояние кластера: config.state (arch/02 §9); отсутствие = Active (старые init).
+// Состояние кластера: config.state (arch/02 §9/§9.4); отсутствие = Active (старые init).
 public enum ClusterState
 {
     Active,
     NotInitialized,
+    Deleting,
 }
 
 // Шард кластера: dsn, декларативные реплики, master-ключ с lease-семантикой (arch/02 §2.1).

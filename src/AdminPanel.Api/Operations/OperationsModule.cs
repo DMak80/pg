@@ -6,8 +6,9 @@ using Microsoft.AspNetCore.Routing;
 
 namespace AdminPanel.Api.Operations;
 
-// Модуль операций (мутирующие эндпоинты): единственный — POST /api/clusters
-// (arch/03 §1.1). InspectionModule остаётся read-only (spec t12 §8.16).
+// Модуль операций (мутирующие эндпоинты): POST /api/clusters — создание
+// (arch/03 §1.1), DELETE /api/clusters/{name} — перевод в DELETING
+// (arch/03 §1.2). InspectionModule остаётся read-only (spec t12 §8.16).
 public static class OperationsModule
 {
     public static IEndpointRouteBuilder MapOperationsApi(this IEndpointRouteBuilder endpoints)
@@ -37,6 +38,33 @@ public static class OperationsModule
                     statusCode: StatusCodes.Status409Conflict,
                     title: "Cluster already exists",
                     detail: result.Error!.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable,
+                    title: "Etcd write failed",
+                    detail: result.Error!.Message),
+            };
+        });
+
+        // DELETE /api/clusters/{name} — перевод в DELETING (arch/02 §9.4, arch/03 §1.2);
+        // 204 без тела, идемпотентен; 404 «не найден», прочие отказы — 503.
+        endpoints.MapDelete("/api/clusters/{name}", async (
+            string name, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<DeleteClusterCommand, ClusterDeletedDto>(
+                new DeleteClusterCommand(name), ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return result.Error switch
+            {
+                ClusterNotFoundException => Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound,
+                    title: "Cluster not found",
+                    detail: result.Error.Message),
+                EtcdWriteUnavailableException => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable,
+                    title: "Etcd write unavailable",
+                    detail: result.Error.Message),
                 _ => Results.Problem(
                     statusCode: StatusCodes.Status503ServiceUnavailable,
                     title: "Etcd write failed",

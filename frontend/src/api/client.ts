@@ -13,7 +13,7 @@ export class ApiError extends Error {
 
 // Опции запроса: только то, что нужно каркасу (метод + JSON-тело).
 export interface ApiFetchInit {
-  method?: 'GET' | 'POST';
+  method?: 'GET' | 'POST' | 'DELETE';
   body?: unknown;
 }
 

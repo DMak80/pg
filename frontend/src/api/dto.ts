@@ -5,7 +5,7 @@
 export type BucketStateName = 'ACTIVE' | 'SYNCING' | 'FROZEN' | 'ABORTING' | 'NOT_INITIALIZED';
 
 // Канон состояния кластера (arch/03 §2): отсутствие записи о state = ACTIVE.
-export type ClusterStateName = 'ACTIVE' | 'NOT_INITIALIZED';
+export type ClusterStateName = 'ACTIVE' | 'NOT_INITIALIZED' | 'DELETING';
 
 // POST /api/clusters — тело и ответ (arch/03 §1.1).
 // sharded: фронт передаёт всегда; buckets/shards — только при sharded=true
@@ -118,6 +118,8 @@ export interface ClusterSummaryDto {
   bucketsCount: number;
   incomplete: boolean;
   notInitialized: boolean;
+  // config.state=DELETING (arch/02 §9.4): пометка «удаляется» в списке.
+  deleting: boolean;
   shardsTotal: number;
   shardsWithMaster: number;
   activeMoves: number;

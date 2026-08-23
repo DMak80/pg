@@ -1,4 +1,4 @@
-# 02. Контракт etcd (чтение + единственная запись)
+# 02. Контракт etcd (чтение + записи панели)
 
 AdminPanel читает etcd для инспекции. Источник схемы — инспектируемая система
 (`../pg`: `arch/11-bucket-sharding.md` §2, `arch/12-bucket-pitfalls.md` §3,
@@ -36,7 +36,7 @@ AdminPanel читает etcd для инспекции. Источник схе�
 
 | Ключ | Формат значения | В модель | Примечания |
 |---|---|---|---|
-| `/clusters/<C>/config` | JSON `{"buckets":N,"dbname":"<C>","created_unix":…,"state"?:"NOT_INITIALIZED"}` | `ClusterInfo` (константы) | N — константа навсегда (P18); `created_unix` может отсутствовать (старые init); `state` пишется только панелью при создании (§9): отсутствует/иное = обычный инициализированный кластер |
+| `/clusters/<C>/config` | JSON `{"buckets":N,"dbname":"<C>","created_unix":…,"state"?:"NOT_INITIALIZED"\|"DELETING"}` | `ClusterInfo` (константы) | N — константа навсегда (P18); `created_unix` может отсутствовать (старые init); `state` пишется только панелью: при создании (§9) и переводе в удаление (§9.4); отсутствует/иное = обычный инициализированный кластер |
 | `/clusters/<C>/shards/<X>/dsn` | libpq-строка `host=n1,n2,n3 port=5432 dbname=<C> user=bucket_admin` | `ShardInfo.Dsn`, парсим хосты/порт/dbname/user | пароля нет (секреты в env); пароль для SQL-побы приходит из настроек панели; у создаваемого панелью кластера ключа нет — ноды ещё не подняты (§9) |
 | `/clusters/<C>/shards/<X>/replicas` | целое-строка `"2"` | `ShardInfo.ReplicasDeclared` | декларативное намерение; факт — в HA (`/service/`) |
 | `/clusters/<C>/shards/<X>/master` | `"host:6432"` | `ShardInfo.MasterAddress` (nullable) | lease TTL 5 c; отсутствие = нет живого мастера (P11) |
@@ -98,7 +98,7 @@ sealed record EtcdSnapshot(
 
 sealed record ClusterInfo(
     string Name, string? DbName, int BucketsCount, long? CreatedUnix,
-    ClusterState State,                       // Active|NotInitialized (config.state, §9)
+    ClusterState State,                       // Active|NotInitialized|Deleting (config.state, §9/§9.4)
     IReadOnlyList<ShardInfo> Shards,
     IReadOnlyList<BucketInfo> Buckets,     // все N, включая ACTIVE
     IReadOnlyList<HealRecord> Heals);
@@ -248,7 +248,8 @@ Unit-тесты парсеров прогоняют **реальные фраг�
 
 ## 9. Запись: создание кластера (декларативный provisioning)
 
-Единственная мутация панели. По параметрам формы (POST `/api/clusters`,
+Первая из двух мутаций панели (вторая — перевод в удаление, §9.4). По
+параметрам формы (POST `/api/clusters`,
 03 §1) панель пишет в etcd **заявленную структуру** кластера; поднятие нод PG,
 Patroni и инициализация схем — отдельная задача вне панели (будущий
 provisioning читает эти ключи). Паттерн — `../pg arch/scripts/init-cluster.sh`
@@ -369,3 +370,30 @@ provisioning читает эти ключи). Паттерн — `../pg arch/scr
 | `replicas` | целое 1..26 (буквы нод a..z), по умолчанию 2; 1 = только мастер |
 | `requestCpu` | десятичные ядра, 0.01..64, каноническая invariant-строка (`"0.5"`, `"2"`) |
 | `requestMem` / `requestDisk` | целые GiB 1..65536, в etcd — `"<n>Gi"` |
+
+### 9.4. Удаление кластера (перевод в DELETING)
+
+Вторая мутация панели: `DELETE /api/clusters/<C>` (03 §1.2) не удаляет ключи,
+а переводит кластер в состояние удаления — `config.state = "DELETING"`.
+Снятие нод PG и очистка ключей — задача внешнего оркестратора/будущего
+provisioning'а (панель read-only к чужим ключам); до очистки кластер виден
+в UI с пометкой «удаляется» (03 §3).
+
+Протокол (одиночный PUT, без txn):
+
+1. Имя проверяется паттерном §9.3: неканоническое → 404 (такое имя не могло
+   быть создано панелью; чужие ключи панель не трогает).
+2. Активный endpoint из снапшота (как §9.2); нет — 503.
+3. Читается `config` напрямую у etcd (снапшот отстаёт до тика): ключа нет —
+   404 «кластер не найден».
+4. `state` уже `"DELETING"` → успех без записи (идемпотентность).
+5. Иначе — единственный PUT `config` с сохранением `buckets`/`dbname`/
+   `created_unix` и `state:"DELETING"` (перезапись канонического набора
+   полей §2.1; прочие/будущие поля config не переносятся).
+
+Без txn-клэйма: config уже существует, уникальность не участвует;
+конкурентные удаления сходятся к одному значению `DELETING` (перестановка
+одного и того же PUT — безопасна). Обратного перехода из `DELETING` нет.
+Пока config занят, повторное создание имени невозможно (клэйм §9.2 → 409) —
+имя освобождается только очисткой ключей кластера (runbook: `etcdctl del
+--prefix /clusters/<C>/` + точечные `/service/<C>-shard<k>/request_*`).

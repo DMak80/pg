@@ -59,6 +59,18 @@ ClusterCreatedDto: name, dbname, sharded (bool), bucketsCount, shardsTotal,
 503 (нет снапшота/активного endpoint'а, etcd-ошибка записи). Компенсация
 частичной записи — 02 §9.2.
 
+### 1.2. Контракт `DELETE /api/clusters/{name}`
+
+Перевод кластера в состояние удаления (протокол — 02 §9.4): панель не
+удаляет ключи, а пишет `config.state="DELETING"`; снятие нод и очистка —
+внешний оркестратор/runbook. Идемпотентен: повторный DELETE кластера уже
+в `DELETING` — тоже 204.
+
+Успех — 204 (без тела). Отказы: 404 `Cluster not found` (config-ключа нет
+или имя неканоническое — 02 §9.3); 503 (нет снапшота/активного endpoint'а,
+etcd-ошибка, битый config). Пока config занят, имя не создаётся повторно
+(409 на POST — 02 §9.2).
+
 ## 2. DTO (ключевые поля)
 
 ```text
@@ -72,13 +84,14 @@ EtcdStatusDto: endpoints[{url, reachable, latencyMs, version, dbSizeBytes,
               peerUrls, clientUrls, isLeader}], alarms[{memberId, type}],
               quorumSuspected, lastRefreshUtc
 ClusterDto:   name, dbname, bucketsCount, createdUnix, incomplete(bool),
-              state(ACTIVE|NOT_INITIALIZED), sharded(bool), shards[ShardDto],
+              state(ACTIVE|NOT_INITIALIZED|DELETING), sharded(bool), shards[ShardDto],
               buckets[BucketDto], heals[HealDto],
               standNodes[{name,address}] — стендовый топо-реестр снапшота
               (02 §2.3; поле глобально для всех кластеров, обычно пусто;
               UI-блок «Стендовая топология» рисуется при наличии)
 ClusterSummaryDto: name, dbname, bucketsCount, incomplete(bool),
-              notInitialized(bool), shardsTotal, shardsWithMaster, activeMoves
+              notInitialized(bool), deleting(bool), shardsTotal, shardsWithMaster,
+              activeMoves
 ShardDto:     name, dsn, hosts[], replicasDeclared, masterAddress,
               masterLeaseAlive(bool), nodes[{name, state}],
               requests{cpu, mem, disk}?(nullable) — заявка на ноду из
@@ -123,8 +136,8 @@ AlertDto:     id, severity, kind, target, message, details{...}, sinceUnix
 | **Login** | форма логин/пароль; ошибка 401 |
 | **Overview** | бейдж stale; карточки: etcd (reachable, endpoints ok/total; alarms — в ленте алертов и на панели etcd), кластеры (шарды/бакеты/переезды), активные переезды списком, лента алертов (critical/warning); сводка HA: скольки scope'ов без лидера (клиентская агрегация `GET /api/ha` — `OverviewDto` HA-полей не содержит) |
 | **etcd** | таблица endpoints (reachable, latency, версия, raftTerm, ошибки, метка «активный»), members (+лидер), alarms; `lastRefreshUtc` |
-| **Clusters** | список: имя, dbname, N, шард мастеровых/всего, активные переезды, пометки (incomplete, not-initialized); кнопка «Создать кластер» → модальная форма (§3.1) |
-| **Cluster details** | вкладки: Шарды (dsn, replicas, master+leaseAlive, sync-standby, лаг слотов; ноды: имя+state; заявка ресурсов на ноду cpu/mem/disk), Бакеты (грид id×owner×state, фильтр по owner/state, подсветка не-ACTIVE, возраст; вкладка скрыта при `sharded=false` — нешардированная БД 1×1 без карты бакетов, 02 §9.1), Переезды (только не-ACTIVE, кроме NOT_INITIALIZED: phase, updated, last_error), Heals (журнал), «Стендовая топология» (блок по `standNodes` деталей — реестр `/cluster/nodes/`, скрыт при пустом) |
+| **Clusters** | список: имя, dbname, N, шард мастеровых/всего, активные переезды, пометки (incomplete, not-initialized, «удаляется» при `deleting`); кнопка «Создать кластер» → модальная форма (§3.1) |
+| **Cluster details** | вкладки: Шарды (dsn, replicas, master+leaseAlive, sync-standby, лаг слотов; ноды: имя+state; заявка ресурсов на ноду cpu/mem/disk), Бакеты (грид id×owner×state, фильтр по owner/state, подсветка не-ACTIVE, возраст; вкладка скрыта при `sharded=false` — нешардированная БД 1×1 без карты бакетов, 02 §9.1), Переезды (только не-ACTIVE, кроме NOT_INITIALIZED: phase, updated, last_error), Heals (журнал), «Стендовая топология» (блок по `standNodes` деталей — реестр `/cluster/nodes/`, скрыт при пустом); шапка: бейдж DELETING и кнопка «Удалить кластер» (красная, с подтверждением; → `DELETE /api/clusters/{name}` — 02 §9.4; при `state=DELETING` кнопка скрыта — обратного перехода нет) |
 | **HA** | список scope'ов: scope, cluster/shard, лидер, члены (роль/состояние), лаг max, пометка unmatched |
 | **HA details** | leader, optime, таблица members: name/role/state/timeline/lag/probe-статус; блок «Заявленные ресурсы нод» (request_*, при наличии); raw config (свернуто) |
 | **Alerts** | таблица всех алертов: severity-цвет, kind, target, message, since; фильтр по severity |

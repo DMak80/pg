@@ -9,6 +9,7 @@ import { ErrorSection, LoadingSection } from '../components/LoadState';
 import { usePollingIntervalMs } from '../polling/PollingContext';
 import { formatUnix } from '../utils/format';
 import { BucketsTab } from './cluster-details/BucketsTab';
+import { DeleteClusterButton } from './cluster-details/DeleteClusterButton';
 import { HealsTab } from './cluster-details/HealsTab';
 import { MovesTab } from './cluster-details/MovesTab';
 import { ShardsTab } from './cluster-details/ShardsTab';
@@ -42,13 +43,19 @@ export function ClusterDetailsPage() {
     );
 
   const data = query.data;
+  const deleting = data.state === 'DELETING';
   return (
     <Stack gap="md">
       <div>
         <Anchor component={Link} to="/clusters" size="sm">← Кластеры</Anchor>
-        <Group gap="sm" mt={4}>
-          <Title order={2}>{data.name}</Title>
-          {data.incomplete ? <Badge color="yellow" variant="light">incomplete</Badge> : null}
+        <Group gap="sm" mt={4} justify="space-between">
+          <Group gap="sm">
+            <Title order={2}>{data.name}</Title>
+            {data.incomplete ? <Badge color="yellow" variant="light">incomplete</Badge> : null}
+            {deleting ? <Badge color="red" variant="light">удаляется</Badge> : null}
+          </Group>
+          {/* Обратного перехода из DELETING нет — у удаляемого кластера кнопки нет (arch/02 §9.4). */}
+          {deleting ? null : <DeleteClusterButton name={data.name} />}
         </Group>
         <Text c="dimmed" size="sm">
           БД: {data.dbName ?? '—'} · Бакеты: {data.bucketsCount} · Создан: {formatUnix(data.createdUnix)}

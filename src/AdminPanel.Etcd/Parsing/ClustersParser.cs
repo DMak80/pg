@@ -162,9 +162,12 @@ public static class ClustersParser
                 JsonValues.ReadString(root, "dbname"),
                 buckets is null ? 0 : (int)buckets.Value,
                 JsonValues.ReadLong(root, "created_unix"), // может отсутствовать у старых init (arch/02 §2.1)
-                JsonValues.ReadString(root, "state") == "NOT_INITIALIZED"
-                    ? ClusterState.NotInitialized
-                    : ClusterState.Active); // отсутствие state = Active (arch/02 §9)
+                JsonValues.ReadString(root, "state") switch
+                {
+                    "NOT_INITIALIZED" => ClusterState.NotInitialized,
+                    "DELETING" => ClusterState.Deleting, // arch/02 §9.4
+                    _ => ClusterState.Active, // отсутствие state = Active (arch/02 §9)
+                });
         }
         catch (JsonException)
         {
