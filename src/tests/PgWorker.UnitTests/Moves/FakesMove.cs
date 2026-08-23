@@ -121,7 +121,9 @@ internal static class MoveRig
         string? EmptySchemaGen = null,
         long EmptySchemaRows = 0,
         string SubSyncReady = "3/3",
-        IReadOnlyList<string>? SchemaInventory = null);
+        long SubOnDstCount = 0,
+        IReadOnlyList<string>? InventorySrc = null,
+        IReadOnlyList<string>? InventoryDst = null);
 
     // Зелёный резолвер M0/M1–M3: wal_level=logical, слоты свободны, mover-роль с
     // REPLICATION, sync-standby приёмника жив, схема есть на источнике/нет на приёмнике.
@@ -151,7 +153,13 @@ internal static class MoveRig
                 var s when s.Contains("rolsuper") => p.MoverRoleOk,
                 var s when s.Contains("synchronous_standby_names") => p.SyncStandbyNames,
                 var s when s.Contains("pg_publication") => 0L,
-                var s when s.Contains("pg_subscription") => 0L,
+                // Готовность подписки (M3): «ready/total» — до ветки pg_subscription
+                // (SubSyncReady тоже содержит FROM pg_subscription).
+                var s when s.Contains("srsubstate") => p.SubSyncReady,
+                // Остатки прошлого переезда (_rb) — всегда чисты; прямая подписка — на приёмнике.
+                var s when s.Contains("pub_bucket_42_rb") => 0L,
+                var s when s.Contains("sub_bucket_42_rb") => 0L,
+                var s when s.Contains("pg_subscription") => p.SubOnDstCount,
                 // Проверка пустоты схемы приёмника: первый скаляр — генератор, второй — сумма строк.
                 var s when s.Contains("coalesce(string_agg('(SELECT count(*)") => p.EmptySchemaGen switch
                 {
@@ -159,13 +167,11 @@ internal static class MoveRig
                     var gen => gen,
                 },
                 var s when s.Contains("(SELECT count(*)") => p.EmptySchemaRows,
-                // Готовность подписки (M3): «ready/total».
-                var s when s.Contains("srsubstate") => p.SubSyncReady,
                 _ => 1L, // SELECT 1 доступности и прочие безымянные скаляры
             };
         };
         fake.ListResolver = sql => sql.Contains("c.relkind IN ('r','S','v','m','p')") // инвентарь P5
-            ? p.SchemaInventory ?? []
+            ? fake.LastDsn == SrcDsn ? p.InventorySrc ?? [] : p.InventoryDst ?? []
             : []; // SequenceNames и прочие списки
         return fake;
     }
@@ -185,7 +191,8 @@ internal static class MoveRig
     public static async Task<Rig> NewAsync(
         PreflightSql? preflight = null, bool claim = true, MoveStatus? seededStatus = null,
         string requestJson = """{"op":"move","to":"shard2","requested_unix":100}""",
-        bool seedRequest = true, params Result[] snapshotResults)
+        bool seedRequest = true, bool failoverSlots = true, TimeProvider? clock = null,
+        params Result[] snapshotResults)
     {
         var etcd = new Fakes.FakeEtcd();
         SeedTopology(etcd);
@@ -209,7 +216,7 @@ internal static class MoveRig
         var queue = new Queue<Result>(snapshotResults);
         var process = new MoveProcess(
             etcd, [Ep], sql, new MoveDdl(driver, sql), driver, shards, claims, journal, Secrets,
-            new MovesRuntimeOptions(), TimeProvider.System,
+            new MovesRuntimeOptions(FailoverSlots: failoverSlots), clock ?? TimeProvider.System,
             logger: null,
             snapshot: ct =>
             {

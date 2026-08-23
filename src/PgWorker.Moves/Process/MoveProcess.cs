@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Microsoft.Extensions.Logging;
 using PgWorker.Core;
 using PgWorker.Core.Model;
@@ -53,6 +54,10 @@ public sealed class MoveProcess(
     private readonly MoveDdl ddl = ddl;
     private readonly IClusterDriver driver = driver;
     private readonly MovesRuntimeOptions options = options;
+
+    // Последняя записанная в лог готовность подписки (cluster/bucket → «N/N») —
+    // лог только на изменение; кластеры обрабатываются параллельно.
+    private readonly ConcurrentDictionary<string, string> _lastReady = [];
 
     /// <summary>Один тик: клэйм-гвард → старейшая заявка кластера → диспетчер по op.</summary>
     public async Task<Result<ProcessOutcome>> TickAsync(ClusterSnapshot snap, CancellationToken ct)
@@ -263,17 +268,150 @@ public sealed class MoveProcess(
                 if (!shot.IsSuccess)
                     return await FailTransientAsync(cluster, shot.Error!, ct);
             }
+
+            var put = await PutStatusAsync(cluster, bucket, owner, to, startedUnix, MovePhases.Ddl, ct);
+            if (!put.IsSuccess)
+                return await FailTransientAsync(cluster, put.Error!, ct);
+
+            logger?.LogInformation("move {cluster}/{bucket}: SYNCING {owner} → {to} (префлайт пройден)",
+                cluster, bucket, owner, to);
+
+            // M0-конец: точка старта зафиксирована снапшотом — M1 продолжит следующим
+            // тиком (повтор тика перепроверяет факты, идемпотентность spec §7).
+            return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
         }
 
-        var put = await PutStatusAsync(cluster, bucket, owner, to, startedUnix, MovePhases.Ddl, ct);
-        if (!put.IsSuccess)
-            return await FailTransientAsync(cluster, put.Error!, ct);
+        // Resume: снапшот-точка уже есть, статус ≥ ddl — фазы M1–M3 этим же тиком.
+        return await RunMovePhasesAsync(
+            snap, bucket, owner, to, srcShard, srcDsn, dstDsn, startedUnix,
+            subOnDst: ToBool(subDst.Value) == true,
+            schemaOnDst: ToBool(schemaDst.Value) == true,
+            ct);
+    }
 
-        logger?.LogInformation("move {cluster}/{bucket}: SYNCING {owner} → {to} (префлайт пройден)",
-            cluster, bucket, owner, to);
+    // ── M1–M3 (t01 задача 13, spec §6.1): DDL → pub/sub → copy-wait ──
 
-        // M0-конец: точка старта зафиксирована — M1 продолжит следующим тиком (задача 13).
+    private async Task<Result<ProcessOutcome>> RunMovePhasesAsync(
+        ClusterSnapshot snap, string bucket, string owner, string to,
+        ShardSpec srcShard, string srcDsn, string dstDsn, long startedUnix,
+        bool subOnDst, bool schemaOnDst, CancellationToken ct)
+    {
+        var cluster = snap.Config.Cluster;
+
+        // M1: DDL-перенос — только когда схемы на приёмнике нет (resume пропускает).
+        if (!subOnDst && !schemaOnDst)
+        {
+            if (srcShard.Master?.Split(':')[0] is not { } srcNode)
+                return await FailTransientAsync(cluster, new ApplicationException(
+                    $"мастер '{owner}' без master-ключа — имя ноды для pg_dump неизвестно"), ct);
+            var dump = await ddl.DumpAsync(cluster, owner, srcNode, snap.Config.DbName, bucket, ct);
+            if (!dump.IsSuccess)
+                return await FailTransientAsync(cluster, dump.Error!, ct);
+            var applied = await ddl.ApplyAsync(dstDsn, dump.Value, ct);
+            if (!applied.IsSuccess)
+                return await FailTransientAsync(cluster, applied.Error!, ct);
+        }
+
+        // Гранты app-роли на приёмнике — всегда (идемпотентный GRANT, grant_app_role).
+        var granted = await ddl.GrantAppOnSchemaAsync(dstDsn, bucket, ct);
+        if (!granted.IsSuccess)
+            return await FailTransientAsync(cluster, granted.Error!, ct);
+
+        // P5: двойная сверка инвентаря — мораторий DDL могли нарушить до переезда.
+        var inventory = await ddl.InventoryMatchesAsync(srcDsn, dstDsn, bucket, ct);
+        if (!inventory.IsSuccess)
+            return await FailTransientAsync(cluster, inventory.Error!, ct);
+        if (inventory.Value != true)
+            return await RejectAsync(cluster, bucket,
+                $"инвентарь '{bucket}' на '{owner}' и '{to}' расходится (inventory-mismatch) — мораторий DDL (P5) нарушен?", ct);
+
+        // M2: pub/sub идемпотентно — pub на источнике, sub на приёмнике (P3/P8).
+        var pub = await sql.ScalarAsync(srcDsn, MoveSql.PubExists(MoveNames.Pub(bucket)), ct);
+        if (!pub.IsSuccess)
+            return await FailTransientAsync(cluster, pub.Error!, ct);
+        if (ToLong(pub.Value) == 0)
+        {
+            var createPub = await sql.ExecuteAsync(
+                srcDsn, MoveSql.CreatePublication(MoveNames.Pub(bucket), bucket), ct);
+            if (!createPub.IsSuccess)
+                return await FailTransientAsync(cluster, createPub.Error!, ct);
+        }
+
+        if (!subOnDst)
+        {
+            // copy_data=true (initial copy), failover-флаг конфигурируем (PG17+, R1),
+            // synchronous_commit=remote_apply — P8; CONNECTION — mover-роль источника.
+            var createSub = await sql.ExecuteAsync(dstDsn,
+                MoveSql.CreateSubscription(MoveNames.Sub(bucket),
+                    ShardEndpoints.MoverConninfo(srcShard.Dsn!, secrets),
+                    MoveNames.Pub(bucket), copyData: true, failover: options.FailoverSlots), ct);
+            if (!createSub.IsSuccess)
+                return await FailTransientAsync(cluster, createSub.Error!, ct);
+        }
+
+        var pubsub = await PutStatusAsync(cluster, bucket, owner, to, startedUnix, MovePhases.PubSub, ct);
+        if (!pubsub.IsSuccess)
+            return await FailTransientAsync(cluster, pubsub.Error!, ct);
+
+        // M3: copy-wait — каждый тик перезаписывает статус-ключ с обновлённым
+        // updated_unix (Д12: по нему abort отличает живой mover, ревью №4); большой
+        // бакет копируется часами — общего таймаута нет (спека §6.1 M3).
+        var copyWait = await PutStatusAsync(cluster, bucket, owner, to, startedUnix, MovePhases.CopyWait, ct);
+        if (!copyWait.IsSuccess)
+            return await FailTransientAsync(cluster, copyWait.Error!, ct);
+
+        var ready = await sql.ScalarAsync(dstDsn, MoveSql.SubSyncReady(MoveNames.Sub(bucket)), ct);
+        if (!ready.IsSuccess)
+            return await FailTransientAsync(cluster, new ApplicationException(
+                $"приёмник '{to}' недоступен ({ready.Error!.Message}) — тики продолжаются, бюджеты недоступности: ConnFailBudgetSec={options.ConnFailBudgetSec}с"), ct);
+        var readyText = ToText(ready.Value);
+        if (readyText is null || !TryParseReady(readyText, out var done, out var total))
+            return await FailTransientAsync(cluster, new ApplicationException(
+                $"нечитаемая готовность подписки на '{to}': '{readyText}'"), ct);
+
+        await LogCopyProgressAsync(cluster, bucket, srcDsn, readyText, ct);
+
+        if (done == total)
+        {
+            // initial copy завершён: фаза cutover-wait — cutover продолжит следующим
+            // тиком (единый непрерывный блок, M4 — задача 14).
+            var cutoverWait = await PutStatusAsync(cluster, bucket, owner, to, startedUnix, MovePhases.CutoverWait, ct);
+            if (!cutoverWait.IsSuccess)
+                return await FailTransientAsync(cluster, cutoverWait.Error!, ct);
+            logger?.LogInformation("move {cluster}/{bucket}: initial copy завершён — готов к cutover", cluster, bucket);
+        }
+
         return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
+    }
+
+    // Лог готовности «N/N» + лаг слота — только на ИЗМЕНЕНИЕ готовности (образец —
+    // шаг 3 move-bucket.sh, ревью №7); лог-высказывание, не контракт: unit не покрывается.
+    private async Task LogCopyProgressAsync(
+        string cluster, string bucket, string srcDsn, string ready, CancellationToken ct)
+    {
+        if (logger is null)
+            return;
+
+        var key = $"{cluster}/{bucket}";
+        if (_lastReady.TryGetValue(key, out var prev) && prev == ready)
+            return;
+
+        _lastReady[key] = ready;
+        var lag = await sql.ScalarAsync(srcDsn, MoveSql.SlotLag(MoveNames.Sub(bucket)), ct);
+        logger.LogInformation("move {cluster}/{bucket}: таблицы готовы {ready}, лаг слота {lag} байт",
+            cluster, bucket, ready, lag.IsSuccess ? ToLong(lag.Value).ToString() : "?");
+    }
+
+    // «ready/total» из pg_subscription_rel (sub_sync скрипта).
+    private static bool TryParseReady(string text, out int ready, out int total)
+    {
+        ready = 0;
+        total = 0;
+        var parts = text.Split('/');
+        return parts.Length == 2
+               && int.TryParse(parts[0], out ready)
+               && int.TryParse(parts[1], out total)
+               && total >= 0;
     }
 
     // Заглушки op-веток (реализация — задачи 15–16: rollback/finalize/abort).
