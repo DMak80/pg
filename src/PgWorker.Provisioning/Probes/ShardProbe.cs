@@ -56,6 +56,23 @@ public sealed class ShardProbe(HttpClient http)
         return result.IsSuccess;
     }
 
+    // Является ли нода текущим primary шарда: GET /primary → 200 (P11-сверка
+    // мастер-ключа; HAProxy использует тот же эндпоинт, arch/14 §2.1).
+    public async Task<bool> IsPrimaryAsync(NodeAddress node, CancellationToken ct)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(ProbeTimeout);
+            using var response = await http.GetAsync(BuildUri(node, "primary"), timeout.Token);
+            return response.IsSuccessStatusCode;
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
+        {
+            return false; // транспортная недоступность — не primary
+        }
+    }
+
     private static Uri BuildUri(NodeAddress node, string path)
         => new($"http://{node.Host}:{node.Ports.Patroni}/{path}");
 }

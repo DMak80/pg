@@ -32,3 +32,10 @@ public interface IClusterProcess
 /// диапазон портов нод (arch/14 §2.4) и бюджет ожидания Patroni (P2.2, сек).
 /// </summary>
 public sealed record PlacementOptions(int PortFrom, int PortTo, int PatroniBootSec);
+
+/// <summary>
+/// Пороги надзора (spec §10 Thresholds → задача 23): нода мертва дольше
+/// NodeDeadSec → rebuild (при кворуме и не-лидере); шард целиком мертв дольше
+/// ShardDeadSec → эвакуация (arch/14 §5 C).
+/// </summary>
+public sealed record ThresholdsOptions(int NodeDeadSec, int ShardDeadSec);

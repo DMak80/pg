@@ -974,9 +974,9 @@ reconciler: ключ = реплика → перезапись по факту p
 **Проверка:** `dotnet test src/PgWorker.slnx --filter "NodeSupervisor|MasterKeyReconciler"`.
 **Spec:** §6.4 C, P11, §7.
 
-- [ ] Шаг 1: AAA-тесты (6 кейсов) → красный.
-- [ ] Шаг 2: реализация → зелёный.
-- [ ] Шаг 3: commit `"feat(provisioning): NodeSupervisor + MasterKeyReconciler (P11)"`.
+- [x] Шаг 1: AAA-тесты (6 кейсов) → красный.
+- [x] Шаг 2: реализация → зелёный.
+- [x] Шаг 3: commit `"feat(provisioning): NodeSupervisor + MasterKeyReconciler (P11)"`.
 
 ### Задача 22: BucketEvacuator + SnapshotJob
 

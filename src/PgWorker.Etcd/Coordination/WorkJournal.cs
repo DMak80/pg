@@ -6,12 +6,16 @@ using PgWorker.Etcd.Client;
 namespace PgWorker.Etcd.Coordination;
 
 // Журнал текущего процесса кластера (spec §4.3): journal-before-manipulations (P7).
+// Unreachable — трек недоступности нод надзора (решение плана №4: значение
+// nodes/<n>/state — плоская строка по контракту панели, время живёт здесь):
+// "shard/node" → first_seen_unix.
 public sealed record WorkState(
     [property: JsonPropertyName("op")] string Op,
     [property: JsonPropertyName("phase")] string Phase,
     [property: JsonPropertyName("instance")] string Instance,
     [property: JsonPropertyName("updated_unix")] long UpdatedUnix,
-    [property: JsonPropertyName("last_error")] string? LastError);
+    [property: JsonPropertyName("last_error")] string? LastError,
+    [property: JsonPropertyName("unreachable")] IReadOnlyDictionary<string, long>? Unreachable = null);
 
 // Журнал эвакуации шарда: bucketId → новый владелец, состояние карантина (spec §4.3).
 public sealed record EvacuationJournal(
@@ -62,6 +66,26 @@ public sealed class WorkJournal(IEtcdGateway gateway, string[] endpoints)
     public Task<Result> WriteEvacuationAsync(string cluster, string shard, EvacuationJournal j, CancellationToken ct)
         => WithFailoverAsync(endpoint => gateway.PutAsync(
             endpoint, EvacuationKey(cluster, shard), JsonSerializer.Serialize(j, Json), lease: null, ct));
+
+    // Тик надзора: op=supervise + трек недоступности (пороги NodeDead/ShardDead).
+    public Task<Result> WriteSupervisionAsync(
+        string cluster, string instance, IReadOnlyDictionary<string, long> unreachable, CancellationToken ct)
+        => WithFailoverAsync(endpoint => gateway.PutAsync(
+            endpoint, WorkKey(cluster),
+            JsonSerializer.Serialize(new WorkState("supervise", "supervising", instance,
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds(), null, unreachable), Json),
+            lease: null, ct));
+
+    // Прочитать трек недоступности (null = журнала нет/поля нет).
+    public async Task<Result<IReadOnlyDictionary<string, long>>> ReadUnreachableAsync(string cluster, CancellationToken ct)
+    {
+        var state = await ReadAsync(cluster, ct);
+        if (!state.IsSuccess)
+            return Result<IReadOnlyDictionary<string, long>>.Failed(state.Error!);
+
+        return Result<IReadOnlyDictionary<string, long>>.Success(
+            state.Value?.Unreachable ?? (IReadOnlyDictionary<string, long>)new Dictionary<string, long>());
+    }
 
     public async Task<Result<EvacuationJournal?>> ReadEvacuationAsync(string cluster, string shard, CancellationToken ct)
     {
