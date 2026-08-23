@@ -65,17 +65,17 @@ public class ProbeOrchestratorTests
                 Shards =
                 [
                     TestSnapshots.FullCluster().Shards.Single(),
-                    new ShardInfo("empty", "", [], null, null, null, null, null, null),
+                    new ShardInfo("empty", "", [], null, null, null, null, null, [], null),
                 ],
             },
         ],
         HaScopes =
         [
-            new HaScope("demo-s1", "demo", "s1", true, "s1a", null, true,
+            new HaScope("demo-s1", "demo", "s1", true, "s1a", null, true, null, null, null,
                 [new HaMember("s1a", "s1a", 5432, "master", "running", null, null, null, null),
                  new HaMember("s1b", "s1b", 5432, "replica", "streaming", null, null, null, null)],
                 null),
-            new HaScope("other-scope", null, null, false, null, null, false,
+            new HaScope("other-scope", null, null, false, null, null, false, null, null, null,
                 [new HaMember("n1", "n1", 5432, "replica", "streaming", null, null, null, null)],
                 null),
         ],

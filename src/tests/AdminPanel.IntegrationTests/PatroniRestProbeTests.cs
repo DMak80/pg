@@ -78,7 +78,7 @@ public class PatroniRestProbeTests : IAsyncLifetime
     }
 
     private static HaScope Scope() => new(
-        "demo-s1", "demo", "s1", true, "s1a", null, true,
+        "demo-s1", "demo", "s1", true, "s1a", null, true, null, null, null,
         [Member("s1a"), Member("s1b"), Member("zz")],
         null);
 

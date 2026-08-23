@@ -233,7 +233,7 @@ public class ClustersApiTests
             Clusters =
             [
                 .. clustered.Clusters,
-                new ClusterInfo("ghost", null, 0, null, [], [], []),
+                new ClusterInfo("ghost", null, 0, null, ClusterState.Active, [], [], []),
             ],
         };
 

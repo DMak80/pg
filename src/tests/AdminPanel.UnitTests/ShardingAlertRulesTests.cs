@@ -49,7 +49,7 @@ public class ShardingAlertRulesTests
         // Arrange: шард без dsn-ключа — писателя нет, ожидание lease неуместно (spec §4.2).
         var cluster = TestSnapshots.FullCluster() with
         {
-            Shards = [new ShardInfo("s1", "", [], null, null, null, null, null, null)],
+            Shards = [new ShardInfo("s1", "", [], null, null, null, null, null, [], null)],
         };
 
         // Act
@@ -302,9 +302,9 @@ public class ShardingAlertRulesTests
     {
         // Arrange: сценарий roadmap — протухший lease + зависший FROZEN + routing в никуда + дыра карты.
         var cluster = new ClusterInfo(
-            "demo", "demo", 4, 1755800000,
+            "demo", "demo", 4, 1755800000, ClusterState.Active,
             [new ShardInfo("s1", "host=s1a port=5432 dbname=demo user=postgres",
-                ["s1a"], 5432, "demo", "postgres", 1, null, null)],
+                ["s1a"], 5432, "demo", "postgres", 1, null, [], null)],
             [
                 new BucketInfo(0, "s1", BucketState.Active, null),
                 new BucketInfo(1, null, BucketState.Active, null),

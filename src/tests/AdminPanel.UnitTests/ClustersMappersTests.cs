@@ -151,7 +151,7 @@ public class ClustersMappersTests
             Shards =
             [
                 new ShardInfo("s1", "host=s1a port=5432 dbname=demo user=postgres",
-                    ["s1a"], 5432, "demo", "postgres", 1, "s1a:5432", runtime),
+                    ["s1a"], 5432, "demo", "postgres", 1, "s1a:5432", [], runtime),
             ],
         };
 

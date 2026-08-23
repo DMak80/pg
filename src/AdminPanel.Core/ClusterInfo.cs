@@ -6,12 +6,20 @@ public sealed record ClusterInfo(
     string? DbName,
     int BucketsCount,
     long? CreatedUnix,
+    ClusterState State,
     IReadOnlyList<ShardInfo> Shards,
     IReadOnlyList<BucketInfo> Buckets,
     IReadOnlyList<HealRecord> Heals)
 {
     // Пометка «incomplete» (arch/02 §7): префикс есть, config отсутствует/пуст.
     public bool Incomplete => DbName is null || BucketsCount <= 0;
+}
+
+// Состояние кластера: config.state (arch/02 §9); отсутствие = Active (старые init).
+public enum ClusterState
+{
+    Active,
+    NotInitialized,
 }
 
 // Шард кластера: dsn, декларативные реплики, master-ключ с lease-семантикой (arch/02 §2.1).
@@ -24,11 +32,16 @@ public sealed record ShardInfo(
     string? User,
     int? ReplicasDeclared,
     string? MasterAddress,
+    IReadOnlyList<NodeInfo> Nodes,
     ShardRuntime? Runtime)
 {
     // Lease-семантика master-ключа (arch/02 §1): ключ есть = lease жив.
     public bool MasterLeaseAlive => MasterAddress is not null;
 }
+
+// Плановая нода шарда: /clusters/<C>/shards/<X>/nodes/<n>/state (arch/02 §9.1);
+// State — raw-строка (толерантно к будущим состояниям provisioning'а).
+public sealed record NodeInfo(string Name, string? State);
 
 // Бакет: id, владелец (routing), состояние переезда (arch/02 §2.1).
 public sealed record BucketInfo(
@@ -44,6 +57,7 @@ public enum BucketState
     Syncing,
     Frozen,
     Aborting,
+    NotInitialized,
 }
 
 // Поля статус-ключа переезда (значение /clusters/<C>/buckets/status/bucket_<N>).

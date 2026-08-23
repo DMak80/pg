@@ -20,6 +20,7 @@ public static class ClustersParser
         public string? Dsn;
         public string? ReplicasRaw;
         public string? Master;
+        public readonly List<(string Name, string? State)> Nodes = [];
     }
 
     private sealed class ClusterAcc(string name)
@@ -76,6 +77,17 @@ public static class ClustersParser
                     break;
                 }
 
+                case "shards" when segments.Length == 8
+                    && segments[4].Length > 0
+                    && segments[5] == "nodes"
+                    && segments[6].Length > 0
+                    && segments[7] == "state":
+                {
+                    var shard = GetOrAdd(acc.Shards, segments[4], static _ => new ShardAcc());
+                    shard.Nodes.Add((segments[6], string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim()));
+                    break;
+                }
+
                 case "buckets" when segments.Length == 6 && segments[4] == "routing"
                     && segments[5].StartsWith("bucket_", StringComparison.Ordinal):
                 {
@@ -123,7 +135,7 @@ public static class ClustersParser
 
     private static ClusterInfo BuildCluster(ClusterAcc acc, List<KeyParseError> errors)
     {
-        var (dbName, bucketsCount, createdUnix) = ParseConfig(acc.Name, acc.ConfigRaw, errors);
+        var (dbName, bucketsCount, createdUnix, state) = ParseConfig(acc.Name, acc.ConfigRaw, errors);
 
         var shards = acc.Shards
             .OrderBy(pair => pair.Key, StringComparer.Ordinal)
@@ -132,14 +144,14 @@ public static class ClustersParser
 
         var buckets = BuildBuckets(bucketsCount, acc, errors);
 
-        return new ClusterInfo(acc.Name, dbName, bucketsCount, createdUnix, shards, buckets, acc.Heals);
+        return new ClusterInfo(acc.Name, dbName, bucketsCount, createdUnix, state, shards, buckets, acc.Heals);
     }
 
-    private static (string? DbName, int BucketsCount, long? CreatedUnix) ParseConfig(
+    private static (string? DbName, int BucketsCount, long? CreatedUnix, ClusterState State) ParseConfig(
         string cluster, string? raw, List<KeyParseError> errors)
     {
         if (raw is null)
-            return (null, 0, null); // ключа нет — incomplete, не ошибка (arch/02 §7)
+            return (null, 0, null, ClusterState.Active); // ключа нет — incomplete, не ошибка (arch/02 §7)
 
         try
         {
@@ -149,12 +161,15 @@ public static class ClustersParser
             return (
                 JsonValues.ReadString(root, "dbname"),
                 buckets is null ? 0 : (int)buckets.Value,
-                JsonValues.ReadLong(root, "created_unix")); // может отсутствовать у старых init (arch/02 §2.1)
+                JsonValues.ReadLong(root, "created_unix"), // может отсутствовать у старых init (arch/02 §2.1)
+                JsonValues.ReadString(root, "state") == "NOT_INITIALIZED"
+                    ? ClusterState.NotInitialized
+                    : ClusterState.Active); // отсутствие state = Active (arch/02 §9)
         }
         catch (JsonException)
         {
             errors.Add(new KeyParseError($"/clusters/{cluster}/config", "битый JSON config"));
-            return (null, 0, null);
+            return (null, 0, null, ClusterState.Active);
         }
     }
 
@@ -173,6 +188,11 @@ public static class ClustersParser
         if (shard.Master == string.Empty)
             errors.Add(new KeyParseError(prefix + "master", "пустое значение"));
 
+        var nodes = shard.Nodes
+            .OrderBy(n => n.Name, StringComparer.Ordinal)
+            .Select(n => new NodeInfo(n.Name, n.State))
+            .ToList();
+
         var dsn = DsnParser.Parse(shard.Dsn ?? "");
         return new ShardInfo(
             name,
@@ -183,6 +203,7 @@ public static class ClustersParser
             dsn.User,
             replicas,
             string.IsNullOrWhiteSpace(shard.Master) ? null : shard.Master.Trim(),
+            nodes,
             null); // Runtime — SQL-проба t06
     }
 
@@ -229,10 +250,24 @@ public static class ClustersParser
                 "SYNCING" => BucketState.Syncing,
                 "FROZEN" => BucketState.Frozen,
                 "ABORTING" => BucketState.Aborting,
+                "NOT_INITIALIZED" => BucketState.NotInitialized,
                 _ => BucketState.Active,
             };
             if (state == BucketState.Active)
                 return false; // state отсутствует или неизвестен — считаем ключ битым
+
+            if (state == BucketState.NotInitialized)
+            {
+                // начальное состояние создаваемого кластера: без target/phase — не переезд (arch/02 §9)
+                move = new MoveInfo(
+                    JsonValues.ReadString(root, "owner"),
+                    null,
+                    null,
+                    JsonValues.ReadLong(root, "updated_unix"),
+                    null,
+                    null);
+                return true;
+            }
 
             move = new MoveInfo(
                 JsonValues.ReadString(root, "owner"),
