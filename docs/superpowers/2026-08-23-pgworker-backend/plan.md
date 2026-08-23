@@ -934,9 +934,9 @@ revoke lease) — клэйм не висит до TTL (spec §6.4 D2 включ�
 **Проверка:** `dotnet test src/PgWorker.slnx --filter DeprovisioningProcess`.
 **Spec:** §6.4 B, §4.2.
 
-- [ ] Шаг 1: AAA-тесты (5 кейсов, включая снятие клэйма после Done) → красный.
-- [ ] Шаг 2: реализация → зелёный.
-- [ ] Шаг 3: commit `"feat(provisioning): DeprovisioningProcess D0–D3 (со снятием клэйма)"`.
+- [x] Шаг 1: AAA-тесты (5 кейсов, включая снятие клэйма после Done) → красный.
+- [x] Шаг 2: реализация → зелёный.
+- [x] Шаг 3: commit `"feat(provisioning): DeprovisioningProcess D0–D3 (со снятием клэйма)"`.
 
 ### Задача 21: NodeSupervisor + MasterKeyReconciler
 

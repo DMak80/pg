@@ -108,6 +108,8 @@ internal static class Fakes
         public readonly List<string> StoppedNodes = [];
         public List<string> NodeObjects = [];
         public Func<string, Result>? EnsureResultByNode { get; set; }
+        public bool RemoveFailsOnce { get; set; }
+        private bool _removeFailed;
         public IReadOnlyList<HostInfo> Hosts = [new HostInfo("h1", 0), new HostInfo("h2", 0)];
         public IReadOnlySet<(string Host, int Port)> BusyPorts = new HashSet<(string, int)>();
 
@@ -126,7 +128,15 @@ internal static class Fakes
 
         public Task<Result> RemoveNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct)
         {
+            if (RemoveFailsOnce && !_removeFailed)
+            {
+                _removeFailed = true; // первый вызов падает (docker-хост недоступен)
+                return Task.FromResult(Result.Failed(new ApplicationException("docker: connection refused")));
+            }
+
             RemovedNodes.Add($"{shard}/{nodeName}");
+            // docker больше не видит объект (guard D2 читает список заново)
+            NodeObjects.Remove($"pgw-{cluster}-{shard}-{nodeName}");
             return Task.FromResult(Result.Success());
         }
 
