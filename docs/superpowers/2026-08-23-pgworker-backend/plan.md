@@ -784,9 +784,9 @@ stop-only для карантина).
 **Проверка:** `PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx --filter FullyQualifiedName~DockerDriverTests`.
 **Spec:** §9, §11.1 (docker-серия).
 
-- [ ] Шаг 1: `DockerTrait` helper + 5 AAA-тестов.
-- [ ] Шаг 2: прогон с `PGW_TEST_DOCKER=1` — зелёный (без переменной — skipped).
-- [ ] Шаг 3: commit `"test(docker): integration-тесты драйвера на живом docker"`.
+- [x] Шаг 1: `DockerTrait` helper + 5 AAA-тестов.
+- [x] Шаг 2: прогон с `PGW_TEST_DOCKER=1` — зелёный (без переменной — skipped).
+- [x] Шаг 3: commit `"test(docker): integration-тесты драйвера на живом docker"`.
 
 ---
 

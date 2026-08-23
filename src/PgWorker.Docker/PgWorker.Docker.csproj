@@ -2,6 +2,7 @@
 
     <ItemGroup>
         <InternalsVisibleTo Include="PgWorker.UnitTests"/>
+        <InternalsVisibleTo Include="PgWorker.IntegrationTests"/>
     </ItemGroup>
 
     <ItemGroup>

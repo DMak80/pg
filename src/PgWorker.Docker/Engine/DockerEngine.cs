@@ -361,6 +361,8 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             ["Hostname"] = spec.Hostname,
             ["HostConfig"] = hostConfig,
         };
+        if (spec.Cmd is { Count: > 0 } cmd)
+            body["Cmd"] = cmd;
         if (spec.Label is { Length: > 0 } label)
             body["Labels"] = new Dictionary<string, string> { ["pgworker"] = label };
         return body;
@@ -465,6 +467,10 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
 
         return JsonSerializer.Deserialize<T>(text, Json);
     }
+
+    // Pull образа (POST /images/create): гарантирует наличие nodeImage перед create.
+    internal Task PullImageAsync(string imageName, CancellationToken ct)
+        => SendAsync(HttpMethod.Post, $"/images/create?fromImage={Uri.EscapeDataString(imageName)}", ct: ct);
 
     public ValueTask DisposeAsync()
     {

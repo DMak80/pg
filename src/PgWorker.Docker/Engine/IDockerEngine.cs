@@ -58,6 +58,8 @@ public sealed record DockerTask(string Id, string NodeId, string State, string? 
 public sealed record PortMap(int ContainerPort, int HostPort);
 
 // Спецификация контейнера ноды (env из NodeConfigBuilders, volume данных, publish-порты).
+// Cmd — опциональная команда (не задаётся драйвером: у образа pgworker-node свой
+// entrypoint; используется интеграционными тестами для alpine-контейнеров).
 public sealed record ContainerSpec(
     string Image,
     IReadOnlyDictionary<string, string> Env,
@@ -67,7 +69,8 @@ public sealed record ContainerSpec(
     string Hostname,
     double? CpuCores,
     long? MemoryBytes,
-    string? Label);
+    string? Label,
+    IReadOnlyList<string>? Cmd = null);
 
 // Спецификация swarm-сервиса ноды: constraint на конкретную ноду (node.id==<id>).
 public sealed record ServiceSpec(string Name, ContainerSpec Template, string NodeConstraint);
