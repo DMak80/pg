@@ -22,6 +22,38 @@ public class HostMapResolverTests
     }
 
     [Fact]
+    public void Resolve_ConfigStyleKey_Overrides()
+    {
+        // Arrange — appsettings: ключ host__port, т.к. ':' в ключах режется
+        // конфиг-провайдерами .NET (t10: arch/04 §2.3).
+        var map = new Dictionary<string, string> { ["s1a__8008"] = "127.0.0.1:8011" };
+
+        // Act
+        var resolved = HostMapResolver.Resolve(map, "s1a", 8008);
+
+        // Assert — config-стиль резолвится в тот же override.
+        resolved.Should().Be("127.0.0.1:8011");
+    }
+
+    [Fact]
+    public void Resolve_BothKeys_CanonicalWins()
+    {
+        // Arrange — в карте оба формата (например, конфиг + ручной overlay):
+        // канонический host:port приоритетен.
+        var map = new Dictionary<string, string>
+        {
+            ["s1a:8008"] = "127.0.0.1:9999",
+            ["s1a__8008"] = "127.0.0.1:8011",
+        };
+
+        // Act
+        var resolved = HostMapResolver.Resolve(map, "s1a", 8008);
+
+        // Assert
+        resolved.Should().Be("127.0.0.1:9999");
+    }
+
+    [Fact]
     public void Resolve_NoMatch_Identity()
     {
         // Arrange

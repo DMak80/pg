@@ -26,7 +26,6 @@
 | [sharding.md](sharding.md) | инспекция кластеров/шардов/бакетов/переездов/heals |
 | [ha.md](ha.md) | HA: /service/, Patroni/SQL live-пробы, HA-алерты |
 | [frontend.md](frontend.md) | React-панели |
-| [stand.md](stand.md) | собственный dev-стенд и e2e, финализация проекта |
 
 Контекст всех задач — [`../`](../README.md) (особенно
 [02-etcd-contract.md](../02-etcd-contract.md),

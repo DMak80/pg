@@ -1,0 +1,217 @@
+# Dev-стенд AdminPanel (arch/04, spec t10): профили quick (etcd+seed) и
+# full (+PG-шарды и patroni-эмуляторы; добавляются задачами 3-4).
+# Имена сервисов канонические (DNS сети стенда: на них построены
+# DSN/репликация), container_name — с префиксом as- (не конфликтуют со
+# стендом ../pg, который порты на хост не публикует; arch/04 §1).
+name: adminpanel-stand
+
+services:
+  etcd:
+    image: quay.io/coreos/etcd:v3.5.21
+    container_name: as-etcd
+    ports:
+      - "2379:2379"
+    command:
+      - etcd
+      - --data-dir=/var/etcd/data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --advertise-client-urls=http://etcd:2379
+    volumes:
+      - etcd-data:/var/etcd/data
+
+  seed:
+    build: ./seed
+    container_name: as-seed
+    restart: "no"
+    environment:
+      ETCDCTL_ENDPOINTS: http://etcd:2379
+    volumes:
+      - ./seed.sh:/seed.sh:ro
+    entrypoint: ["/bin/sh", "/seed.sh"]
+    depends_on: [etcd]
+
+  # Шард 1: s1a (мастер; self-healing — при пустом PGDATA и живом мастере-пире
+  # клонируется репликой: повторные прогоны после failover, spec t10 §3) + s1b
+  # (физическая реплика через pg_basebackup -R; паттерн ../pg arch/stand).
+  # Имена sync-standby НЕ запекаются во флаги -c: флаг сильнее ALTER SYSTEM и
+  # после promote без реплики повесит коммиты в SyncRep (урок ../pg) — их
+  # ставит 00-up.sh ALTER SYSTEM'ом.
+  s1a:
+    image: postgres:18
+    container_name: as-s1a
+    profiles: ["full"]
+    ports: ["5433:5432"]
+    user: postgres
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_DB: demo
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        if [ ! -s "$$PGDATA/PG_VERSION" ]; then
+          cloned=0
+          for i in $$(seq 1 15); do
+            if pg_isready -h s1b -U postgres -q 2>/dev/null \
+               && [ "$$(psql -h s1b -U postgres -d postgres -tAc 'select pg_is_in_recovery()' 2>/dev/null)" = "f" ]; then
+              echo "s1a: клонируюсь от мастера s1b (self-healing)"
+              rm -rf "$$PGDATA"
+              psql -h s1b -U postgres -d postgres -tAc "select pg_drop_replication_slot('s1a_phys')" >/dev/null 2>&1 || true
+              pg_basebackup -h s1b -U postgres -D "$$PGDATA" -X stream -R -C -S s1a_phys
+              chmod 700 "$$PGDATA"
+              sed -i "s|^primary_conninfo.*|primary_conninfo = 'host=s1b port=5432 user=postgres dbname=postgres application_name=s1a'|" "$$PGDATA/postgresql.auto.conf"
+              exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 \
+                   -c sync_replication_slots=on -c hot_standby_feedback=on
+            fi
+            sleep 1
+          done
+          echo "s1a: пир s1b не мастер — первый старт, initdb-мастер"
+          exec docker-entrypoint.sh postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16
+        fi
+        exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16
+
+  s1b:
+    image: postgres:18
+    container_name: as-s1b
+    profiles: ["full"]
+    ports: ["5434:5432"]
+    user: postgres
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    command:
+      - bash
+      - -c
+      - |
+        # Реплика шарда 1: клон с retry (ждёт hba/готовность s1a — их патчит
+        # 00-up.sh), failover-слоты + application_name для sync-standby.
+        set -e
+        if [ ! -s "$$PGDATA/PG_VERSION" ]; then
+          while ! pg_basebackup -h s1a -U postgres -D "$$PGDATA" -X stream -R -C -S s1b_phys; do
+            echo "s1b: жду s1a (инициализация/hba)..."; sleep 2; rm -rf "$$PGDATA"
+          done
+          chmod 700 "$$PGDATA"
+          sed -i "s|^primary_conninfo.*|primary_conninfo = 'host=s1a port=5432 user=postgres dbname=postgres application_name=s1b'|" "$$PGDATA/postgresql.auto.conf"
+        fi
+        exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 \
+             -c sync_replication_slots=on -c hot_standby_feedback=on
+    depends_on: [s1a]
+
+  # Шард 2 — зеркально шарду 1 (s2a self-healing мастер, s2b реплика)
+  s2a:
+    image: postgres:18
+    container_name: as-s2a
+    profiles: ["full"]
+    ports: ["5435:5432"]
+    user: postgres
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_DB: demo
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        if [ ! -s "$$PGDATA/PG_VERSION" ]; then
+          cloned=0
+          for i in $$(seq 1 15); do
+            if pg_isready -h s2b -U postgres -q 2>/dev/null \
+               && [ "$$(psql -h s2b -U postgres -d postgres -tAc 'select pg_is_in_recovery()' 2>/dev/null)" = "f" ]; then
+              echo "s2a: клонируюсь от мастера s2b (self-healing)"
+              rm -rf "$$PGDATA"
+              psql -h s2b -U postgres -d postgres -tAc "select pg_drop_replication_slot('s2a_phys')" >/dev/null 2>&1 || true
+              pg_basebackup -h s2b -U postgres -D "$$PGDATA" -X stream -R -C -S s2a_phys
+              chmod 700 "$$PGDATA"
+              sed -i "s|^primary_conninfo.*|primary_conninfo = 'host=s2b port=5432 user=postgres dbname=postgres application_name=s2a'|" "$$PGDATA/postgresql.auto.conf"
+              exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 \
+                   -c sync_replication_slots=on -c hot_standby_feedback=on
+            fi
+            sleep 1
+          done
+          echo "s2a: пир s2b не мастер — первый старт, initdb-мастер"
+          exec docker-entrypoint.sh postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16
+        fi
+        exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16
+
+  s2b:
+    image: postgres:18
+    container_name: as-s2b
+    profiles: ["full"]
+    ports: ["5436:5432"]
+    user: postgres
+    environment:
+      POSTGRES_HOST_AUTH_METHOD: trust
+    command:
+      - bash
+      - -c
+      - |
+        set -e
+        if [ ! -s "$$PGDATA/PG_VERSION" ]; then
+          while ! pg_basebackup -h s2a -U postgres -D "$$PGDATA" -X stream -R -C -S s2b_phys; do
+            echo "s2b: жду s2a (инициализация/hba)..."; sleep 2; rm -rf "$$PGDATA"
+          done
+          chmod 700 "$$PGDATA"
+          sed -i "s|^primary_conninfo.*|primary_conninfo = 'host=s2a port=5432 user=postgres dbname=postgres application_name=s2b'|" "$$PGDATA/postgresql.auto.conf"
+        fi
+        exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 \
+             -c sync_replication_slots=on -c hot_standby_feedback=on
+    depends_on: [s2a]
+
+  # Patroni-эмуляторы (spec t10 §5): отдельные контейнеры в общей сети,
+  # :8008 опубликован на хосте под стендовыми портами (HostMap панели,
+  # arch/04 §1). Без restart-политики: рестарт эмулятора не должен
+  # реанимировать остановленную ноду (урок ../pg).
+  hc1a:
+    build: ./sidecar
+    container_name: as-hc1a
+    profiles: ["full"]
+    ports: ["8011:8008"]
+    environment:
+      NODE_NAME: s1a
+      ETCD_ENDPOINTS: http://etcd:2379
+      CLUSTER: demo
+      SHARD: s1
+      MEMBERS: s1a,s1b
+    depends_on: [s1a]
+
+  hc1b:
+    build: ./sidecar
+    container_name: as-hc1b
+    profiles: ["full"]
+    ports: ["8012:8008"]
+    environment:
+      NODE_NAME: s1b
+      ETCD_ENDPOINTS: http://etcd:2379
+      CLUSTER: demo
+      SHARD: s1
+      MEMBERS: s1a,s1b
+    depends_on: [s1b]
+
+  hc2a:
+    build: ./sidecar
+    container_name: as-hc2a
+    profiles: ["full"]
+    ports: ["8021:8008"]
+    environment:
+      NODE_NAME: s2a
+      ETCD_ENDPOINTS: http://etcd:2379
+      CLUSTER: demo
+      SHARD: s2
+      MEMBERS: s2a,s2b
+    depends_on: [s2a]
+
+  hc2b:
+    build: ./sidecar
+    container_name: as-hc2b
+    profiles: ["full"]
+    ports: ["8022:8008"]
+    environment:
+      NODE_NAME: s2b
+      ETCD_ENDPOINTS: http://etcd:2379
+      CLUSTER: demo
+      SHARD: s2
+      MEMBERS: s2a,s2b
+    depends_on: [s2b]
+
+volumes:
+  etcd-data:
