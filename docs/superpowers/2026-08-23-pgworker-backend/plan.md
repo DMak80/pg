@@ -820,10 +820,10 @@ Patroni-фикстура — образец `ProbesFixtures/patroni-cluster.json
 **Проверка:** `dotnet test src/PgWorker.slnx --filter ShardProbe`.
 **Spec:** §6.4 C, P11.
 
-- [ ] Шаг 1: скопировать `patroni-cluster.json` в `src/tests/PgWorker.UnitTests/ProbesFixtures/` (CopyToOutputDirectory).
-- [ ] Шаг 2: AAA-тесты (3 кейса) → красный.
-- [ ] Шаг 3: реализация → зелёный.
-- [ ] Шаг 4: commit `"feat(provisioning): ShardProbe — Patroni REST пробы"`.
+- [x] Шаг 1: скопировать `patroni-cluster.json` в `src/tests/PgWorker.UnitTests/ProbesFixtures/` (CopyToOutputDirectory).
+- [x] Шаг 2: AAA-тесты (3 кейса) → красный.
+- [x] Шаг 3: реализация → зелёный.
+- [x] Шаг 4: commit `"feat(provisioning): ShardProbe — Patroni REST пробы"`.
 
 ### Задача 18: DatabaseProvisioner (SQL-слой)
 

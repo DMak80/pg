@@ -6,6 +6,7 @@
 
     <ItemGroup>
         <None Include="EtcdFixtures/**" CopyToOutputDirectory="PreserveNewest"/>
+        <None Include="ProbesFixtures/**" CopyToOutputDirectory="PreserveNewest"/>
     </ItemGroup>
 
     <ItemGroup>

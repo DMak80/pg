@@ -1,0 +1,7 @@
+{
+  "members": [
+    { "name": "s1a", "host": "10.0.0.11", "port": 5432, "role": "master", "state": "running", "timeline": 1, "lag": 0 },
+    { "name": "s1b", "host": "10.0.0.12", "port": 5432, "role": "replica", "state": "streaming", "timeline": 1, "lag": 52428800 },
+    { "name": "s1c", "host": "10.0.0.13", "port": 5432, "role": "replica", "state": "stopped", "timeline": 1, "lag": null }
+  ]
+}
