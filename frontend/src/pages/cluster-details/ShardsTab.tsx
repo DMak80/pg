@@ -1,5 +1,6 @@
-// Вкладка «Шарды»: dsn, реплики, master+lease, runtime-колонки проб (t08 spec §4.10).
-import { Badge, Stack, Table, Text, Tooltip } from '@mantine/core';
+// Вкладка «Шарды»: dsn, реплики, master+lease, плановые ноды, заявка ресурсов,
+// runtime-колонки проб (t08 spec §4.10; ноды/заявка — t12).
+import { Badge, Group, Stack, Table, Text, Tooltip } from '@mantine/core';
 import type { ShardDto } from '../../api/dto';
 import { formatBytes } from '../../utils/format';
 
@@ -9,7 +10,7 @@ export function ShardsTab({ shards }: { shards: ShardDto[] }) {
   const probeErrors = shards.filter((s) => s.runtime?.error != null);
   return (
     <Stack gap="xs">
-      <Table.ScrollContainer minWidth={1000}>
+      <Table.ScrollContainer minWidth={1200}>
         <Table highlightOnHover>
           <Table.Thead>
             <Table.Tr>
@@ -17,6 +18,8 @@ export function ShardsTab({ shards }: { shards: ShardDto[] }) {
               <Table.Th>DSN</Table.Th>
               <Table.Th>Реплики</Table.Th>
               <Table.Th>Мастер</Table.Th>
+              <Table.Th>Ноды</Table.Th>
+              <Table.Th>Ресурсы на ноду</Table.Th>
               <Table.Th>Sync-standby</Table.Th>
               <Table.Th>Лаг слотов</Table.Th>
               <Table.Th>WAL lost</Table.Th>
@@ -60,6 +63,26 @@ function ShardRow({ shard }: { shard: ShardDto }) {
               <Badge color="teal" variant="light">lease</Badge>
             </span>
           </Tooltip>
+        )}
+      </Table.Td>
+      <Table.Td>
+        {shard.nodes.length === 0 ? '—' : (
+          <Group gap={4}>
+            {shard.nodes.map((n) => (
+              <Tooltip key={n.name} label={n.state ?? '—'}>
+                <Badge color={n.state === 'NOT_INITIALIZED' ? 'gray' : 'teal'} variant="light">
+                  {n.name}
+                </Badge>
+              </Tooltip>
+            ))}
+          </Group>
+        )}
+      </Table.Td>
+      <Table.Td>
+        {shard.requests === null ? '—' : (
+          <Text ff="monospace" size="sm">
+            {shard.requests.cpu} CPU · {shard.requests.mem} · {shard.requests.disk}
+          </Text>
         )}
       </Table.Td>
       <Table.Td>{runtime === null ? '—' : runtime.standbiesSync ?? '—'}</Table.Td>

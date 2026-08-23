@@ -1,5 +1,5 @@
-// Вкладка «Бакеты»: грид id×owner×state, локальные фильтры, подсветка не-ACTIVE,
-// возраст не-ACTIVE статуса (t08 spec §4.9).
+// Вкладка «Бакеты»: грид id×owner×state, локальные фильтры, подсветка переездов +
+// нейтральная для NOT_INITIALIZED, возраст не-ACTIVE статуса (t08 spec §4.9; t12).
 import { useMemo, useState } from 'react';
 import { Badge, Group, Select, Stack, Table, Text, Tooltip } from '@mantine/core';
 import type { BucketDto, BucketStateName } from '../../api/dto';
@@ -14,6 +14,7 @@ const STATE_FILTERS = [
   { value: 'SYNCING', label: 'SYNCING' },
   { value: 'FROZEN', label: 'FROZEN' },
   { value: 'ABORTING', label: 'ABORTING' },
+  { value: 'NOT_INITIALIZED', label: 'NOT_INITIALIZED' },
 ];
 
 export function BucketsTab({ buckets }: { buckets: BucketDto[] }) {
@@ -81,12 +82,22 @@ export function BucketsTab({ buckets }: { buckets: BucketDto[] }) {
 }
 
 function BucketRow({ bucket }: { bucket: BucketDto }) {
-  const nonActive = bucket.state !== 'ACTIVE';
+  // Жёлтый фон — только реальные переезды (SYNCING/FROZEN/ABORTING);
+  // NOT_INITIALIZED — нейтральный серый: это начальное состояние
+  // создаваемого кластера, не деградация (spec t12 §3.8).
+  const moveRow = bucket.state === 'SYNCING' || bucket.state === 'FROZEN' || bucket.state === 'ABORTING';
+  const notInitialized = bucket.state === 'NOT_INITIALIZED';
   const phase = bucket.move?.phase ?? null;
   const lastError = bucket.move?.lastError ?? null;
   return (
     <Table.Tr
-      style={{ backgroundColor: nonActive ? 'var(--mantine-color-yellow-light)' : undefined }}
+      style={{
+        backgroundColor: moveRow
+          ? 'var(--mantine-color-yellow-light)'
+          : notInitialized
+            ? 'var(--mantine-color-gray-light)'
+            : undefined,
+      }}
     >
       <Table.Td>{bucket.id}</Table.Td>
       <Table.Td>

@@ -10,7 +10,8 @@ function truncateText(text: string, limit: number): string {
 }
 
 export function MovesTab({ buckets }: { buckets: BucketDto[] }) {
-  const moves = buckets.filter((b) => b.state !== 'ACTIVE');
+  // Только реальные переезды: NOT_INITIALIZED — начальное состояние, не перемещение (spec t12 §3.8).
+  const moves = buckets.filter((b) => b.state === 'SYNCING' || b.state === 'FROZEN' || b.state === 'ABORTING');
   if (moves.length === 0) return <Text c="dimmed">Активных переездов нет</Text>;
   return (
     <Table.ScrollContainer minWidth={900}>

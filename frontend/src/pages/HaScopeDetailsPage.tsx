@@ -93,6 +93,14 @@ export function HaScopeDetailsPage() {
         </Group>
       </div>
       <MembersTable members={data.members} leaderName={data.leaderName} />
+      {data.requests === null ? null : (
+        <Group gap="sm">
+          <Text c="dimmed" size="sm">Заявленные ресурсы нод:</Text>
+          <Badge variant="light" color="gray">{data.requests.cpu} CPU</Badge>
+          <Badge variant="light" color="gray">{data.requests.mem}</Badge>
+          <Badge variant="light" color="gray">{data.requests.disk}</Badge>
+        </Group>
+      )}
       {data.rawConfig === null ? null : (
         <Accordion>
           <Accordion.Item value="raw-config">

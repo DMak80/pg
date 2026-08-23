@@ -117,7 +117,12 @@ function ClustersCard({ data }: { data: OverviewDto }) {
         <Stack gap={4}>
           {data.clusters.map((c) => (
             <Group key={c.name} justify="space-between" gap="xs" wrap="nowrap">
-              <Anchor component={Link} to={`/clusters/${c.name}`} size="sm" truncate="end">{c.name}</Anchor>
+              <Group gap="xs" wrap="nowrap">
+                <Anchor component={Link} to={`/clusters/${c.name}`} size="sm" truncate="end">{c.name}</Anchor>
+                {c.notInitialized ? (
+                  <Badge color="gray" variant="light">не инициализирован</Badge>
+                ) : null}
+              </Group>
               <Group gap={5} wrap="nowrap">
                 <Text size="sm" c="dimmed">шарды {c.shards}</Text>
                 <Text size="sm" c="dimmed">бакеты {c.buckets}</Text>
