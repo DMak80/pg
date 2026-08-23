@@ -160,7 +160,13 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
     // Экранирование литерала: одинарная кавычка удваяется (SQL-инъекции паролей).
     private static string Escape(string value) => value.Replace("'", "''");
 
-    // Пароль не должен попадать в тексты ошибок/логов (P12/P17).
-    private static string Redact(string dsn)
-        => Regex.Replace(dsn, "password=[^ ]*", "password=***");
+    // Пароль не должен попадать в тексты ошибок/логов (P12/P17). Значение
+    // ограничено: «;» (Npgsql-DSN, BuildAdminDsn пишет «Password=» с большой
+    // буквы) либо пробел/конец строки (libpq dsn-ключи панели/клиентов);
+    // quoted-вариант '…' — libpq-пароль с пробелами. Регистр не важен.
+    [GeneratedRegex("password=(?:'[^']*'|[^; ]*)", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant)]
+    private static partial Regex PasswordRegex();
+
+    // internal для unit-тестов редакции (rework №2).
+    internal static string Redact(string dsn) => PasswordRegex().Replace(dsn, "password=***");
 }

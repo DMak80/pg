@@ -93,4 +93,89 @@ public class DatabaseProvisionerTests
         var act = () => DatabaseProvisioner.BuildCreateDatabaseSql("shop; DROP TABLE x");
         act.Should().Throw<ArgumentException>();
     }
+
+    // ===== Редакция пароля в DSN (rework №2: «Password=…;» Npgsql + libpq) =====
+
+    [Fact]
+    public void Redact_NpgsqlDsn_BuildAdminDsnFormat_Masked()
+    {
+        // Arrange — внутренний DSN BuildAdminDsn: «Password=» с большой буквы,
+        // разделитель «;», пароль в конце строки
+        var dsn = DatabaseProvisioner.BuildAdminDsn("h1", 5432, "shop", Secrets);
+
+        // Act
+        var redacted = DatabaseProvisioner.Redact(dsn);
+
+        // Assert: пароль замаскирован (не утекает в journal.last_error/логи),
+        // остальная часть DSN не тронута
+        redacted.Should().NotContain("su-pw");
+        redacted.Should().Be("Host=h1;Port=5432;Database=shop;Username=postgres;password=***");
+    }
+
+    [Fact]
+    public void Redact_NpgsqlDsn_PasswordInMiddle_SemicolonBoundary()
+    {
+        // Arrange — «Password=…;» в середине строки: хвост после «;» сохраняется
+        const string dsn = "Host=h1;Password=s3cret;Timeout=10";
+
+        // Act
+        var redacted = DatabaseProvisioner.Redact(dsn);
+
+        // Assert
+        redacted.Should().Be("Host=h1;password=***;Timeout=10");
+    }
+
+    [Fact]
+    public void Redact_LibpqDsn_SpaceBoundary()
+    {
+        // Arrange — libpq-формат dsn-ключей (пробел-разделитель, пароль в конце)
+        const string dsn = "host=h1,h2 port=15000,15001 dbname=shop user=bucket_admin password=s3cret";
+
+        // Act
+        var redacted = DatabaseProvisioner.Redact(dsn);
+
+        // Assert
+        redacted.Should().Be("host=h1,h2 port=15000,15001 dbname=shop user=bucket_admin password=***");
+    }
+
+    [Fact]
+    public void Redact_LibpqQuotedPassword_MaskedFully()
+    {
+        // Arrange — libpq-пароль с пробелами пишется в кавычках: маскируем целиком
+        const string dsn = "host=h1 password='my s3cret' dbname=shop";
+
+        // Act
+        var redacted = DatabaseProvisioner.Redact(dsn);
+
+        // Assert
+        redacted.Should().Be("host=h1 password=*** dbname=shop");
+    }
+
+    [Fact]
+    public void Redact_NoPassword_Unchanged()
+    {
+        // Arrange — DSN без пароля (dsn-ключ панели user=bucket_admin)
+        const string dsn = "host=h1 port=5432 dbname=shop user=bucket_admin";
+
+        // Act + Assert
+        DatabaseProvisioner.Redact(dsn).Should().Be(dsn);
+    }
+
+    [Fact]
+    public async Task ExecuteAsync_FailingDsn_ErrorContainsRedactedPassword()
+    {
+        // Arrange — битый keyword в DSN: Npgsql падает мгновенно (без ретраев),
+        // сообщение ошибки несёт отредактированный DSN
+        var provisioner = new DatabaseProvisioner();
+
+        // Act
+        var result = await provisioner.ExecuteAsync(
+            "Host=h1;Port=5432;Database=d;Username=postgres;Password=s3cret;BogusKeyword=1",
+            "SELECT 1", CancellationToken.None);
+
+        // Assert: ошибка завернута в Result, пароля в тексте нет
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Message.Should().Contain("password=***");
+        result.Error!.Message.Should().NotContain("s3cret");
+    }
 }
