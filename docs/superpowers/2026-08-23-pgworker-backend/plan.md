@@ -347,9 +347,9 @@ public static class PortAllocator
 **Проверка:** `dotnet test src/PgWorker.slnx --filter PortAllocator`.
 **Spec:** §6.3, Д5.
 
-- [ ] Шаг 1: AAA-тесты (5 кейсов выше) → красный.
-- [ ] Шаг 2: реализация → зелёный.
-- [ ] Шаг 3: commit `"feat(core): PortAllocator — выделение и закрепление портов нод"`.
+- [x] Шаг 1: AAA-тесты (5 кейсов выше) → красный.
+- [x] Шаг 2: реализация → зелёный.
+- [x] Шаг 3: commit `"feat(core): PortAllocator — выделение и закрепление портов нод"`.
 
 ### Задача 8: EvacuationPlanner
 
