@@ -1,7 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk.Worker">
 
     <ItemGroup>
+        <InternalsVisibleTo Include="PgWorker.UnitTests"/>
+    </ItemGroup>
+
+    <ItemGroup>
         <PackageReference Include="Microsoft.Extensions.Hosting"/>
+        <PackageReference Include="Microsoft.Extensions.Http"/>
     </ItemGroup>
 
     <ItemGroup>

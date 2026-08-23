@@ -1084,9 +1084,9 @@ TO_REMOVE→Deprovisioning, Active→Supervisor); ReconcileLoop на моках:
 `dotnet test src/PgWorker.slnx --filter "ReconcileLoop|ClassificationTests"`.
 **Spec:** §6.2, §10.
 
-- [ ] Шаг 1: Options + AAA unit-тесты классификации/цикла → красный.
-- [ ] Шаг 2: циклы + Program → зелёный.
-- [ ] Шаг 3: commit `"feat(app): циклы Reconcile/Keepalive/Snapshot + Program"`.
+- [x] Шаг 1: Options + AAA unit-тесты классификации/цикла → красный.
+- [x] Шаг 2: циклы + Program → зелёный.
+- [x] Шаг 3: commit `"feat(app): циклы Reconcile/Keepalive/Snapshot + Program"`.
 
 ### Задача 24: Health checks
 

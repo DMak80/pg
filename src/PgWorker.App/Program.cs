@@ -1,8 +1,154 @@
-using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
+using PgWorker.App;
+using PgWorker.App.Loops;
+using PgWorker.Core;
+using PgWorker.Core.Model;
+using PgWorker.Core.Templates;
+using PgWorker.Docker.Drivers;
+using PgWorker.Docker.Engine;
+using PgWorker.Etcd.Client;
+using PgWorker.Etcd.Coordination;
+using PgWorker.Provisioning.Probes;
+using PgWorker.Provisioning.Processes;
+using PgWorker.Provisioning.Snapshots;
+using PgWorker.Provisioning.Sql;
+using ProcessThresholds = PgWorker.Provisioning.Processes.ThresholdsOptions;
 
-// Точка входа PgWorker. Каркас host-builder'а: циклы Reconcile/Keepalive/Snapshot,
-// DI и конфигурация подключаются в последующих задачах (блок G плана).
+// Точка входа PgWorker (задача 23): host-builder, конфигурация appsettings+env,
+// DI всех слоёв (etcd → координация → docker → процессы → циклы). Секреты
+// установки — ТОЛЬКО env (Д7), fail-fast при отсутствии.
 
 var builder = Host.CreateApplicationBuilder(args);
 
+// Конфигурация: appsettings.json + env-оверрайды PgWorker__* (пример — в корне проекта).
+builder.Services.Configure<PgWorkerOptions>(builder.Configuration.GetSection("PgWorker"));
+builder.Services.AddSingleton(TimeProvider.System);
+builder.Services.AddSingleton<HealthState>();
+
+// Секреты per-install (Д7, spec §10): не в git, не в etcd — только env процесса.
+builder.Services.AddSingleton(_ => SecretsFromEnv());
+
+builder.Services.AddHttpClient("etcd");
+builder.Services.AddHttpClient("patroni");
+
+// etcd-клиент (HTTP JSON gateway /v3/*) + координация (клэймы/лидерство, журнал).
+builder.Services.AddSingleton<IEtcdGateway>(sp =>
+    new EtcdGateway(sp.GetRequiredService<IHttpClientFactory>().CreateClient("etcd")));
+builder.Services.AddSingleton(sp => new ClaimStore(
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton(sp => new WorkJournal(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
+
+// docker: драйвер по режиму (Plain: таблица Hosts; Swarm: manager endpoint).
+builder.Services.AddSingleton<IClusterDriver>(sp =>
+{
+    var docker = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Docker;
+    var factory = new DockerEngineFactory();
+    if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
+    {
+        if (string.IsNullOrWhiteSpace(docker.SwarmManager))
+            throw new ApplicationException("PgWorker:Docker:Mode=Swarm требует PgWorker:Docker:SwarmManager");
+        return new SwarmClusterDriver(docker.SwarmManager, factory, docker.EnableDoorman, docker.Images.Node);
+    }
+
+    var hosts = docker.Hosts
+        .Select(h => new HostEndpoint(h.Name, h.Endpoint))
+        .ToList();
+    if (hosts.Count == 0)
+        throw new ApplicationException("PgWorker:Docker:Mode=Plain требует непустую таблицу PgWorker:Docker:Hosts");
+    return new PlainClusterDriver(hosts, factory, docker.EnableDoorman, docker.Images.Node);
+});
+
+// Пробы Patroni REST и SQL-слой (Npgsql + Polly-ретраи).
+builder.Services.AddSingleton(sp =>
+    new ShardProbe(sp.GetRequiredService<IHttpClientFactory>().CreateClient("patroni")));
+builder.Services.AddSingleton<ISqlExecutor, DatabaseProvisioner>();
+
+// Снапшоты P12 (SnapshotLoop-лидер + процессы в точках изменений).
+builder.Services.AddSingleton(sp =>
+{
+    var opts = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value;
+    return new SnapshotJob(
+        sp.GetRequiredService<IEtcdGateway>(), opts.Etcd.Endpoints,
+        opts.Snapshots.Dir, opts.Snapshots.RetentionFiles);
+});
+
+// Процессы-машины состояний (§6.4): снапшот передаётся делегатом от SnapshotJob.
+builder.Services.AddSingleton(sp =>
+{
+    var opts = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value;
+    var endpoints = opts.Etcd.Endpoints;
+    var job = sp.GetRequiredService<SnapshotJob>();
+    return new ProvisioningProcess(
+        sp.GetRequiredService<IEtcdGateway>(), endpoints,
+        sp.GetRequiredService<IClusterDriver>(), sp.GetRequiredService<ISqlExecutor>(),
+        sp.GetRequiredService<ShardProbe>(), sp.GetRequiredService<ClaimStore>(),
+        sp.GetRequiredService<WorkJournal>(),
+        new PlacementOptions(opts.Docker.PortRange.From, opts.Docker.PortRange.To, opts.Thresholds.PatroniBootSec),
+        sp.GetRequiredService<InstallSecrets>(),
+        new EtcdEndpoints(endpoints),
+        SnapshotDelegate(job));
+});
+builder.Services.AddSingleton(sp => new DeprovisioningProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+builder.Services.AddSingleton(sp => new NodeSupervisor(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<ShardProbe>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    new ProcessThresholds(sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.NodeDeadSec,
+        sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.ShardDeadSec),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<InstallSecrets>(),
+    new MasterKeyReconciler(
+        sp.GetRequiredService<IEtcdGateway>(),
+        sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+        sp.GetRequiredService<ShardProbe>())));
+builder.Services.AddSingleton(sp => new BucketEvacuator(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<ISqlExecutor>(),
+    sp.GetRequiredService<ShardProbe>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<InstallSecrets>(),
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+
+// Циклы (§6.2): keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
+builder.Services.AddSingleton<ClusterProcesses>();
+builder.Services.AddHostedService<KeepaliveLoop>();
+builder.Services.AddHostedService<SnapshotLoop>();
+builder.Services.AddHostedService<ReconcileLoop>();
+
 await builder.Build().RunAsync();
+
+// Секреты из env с fail-fast: отсутствующий секрет — ошибка старта (Д7).
+static InstallSecrets SecretsFromEnv()
+{
+    string Required(string name) =>
+        Environment.GetEnvironmentVariable(name)
+        ?? throw new ApplicationException(
+            $"не задан обязательный env-секрет {name} (Д7: per-install, не в git и не в etcd)");
+
+    return new InstallSecrets(
+        Required("PGW_PG_SUPERUSER_PASSWORD"),
+        Required("PGW_PG_STANDBY_PASSWORD"),
+        Required("PGW_APP_ROLE_PASSWORD"),
+        Required("PGW_BUCKET_ADMIN_PASSWORD"),
+        Required("PGW_BUCKET_MOVER_PASSWORD"));
+}
+
+// Делегат снапшота для процессов (P12 «до/после» в точках изменений).
+static Func<CancellationToken, Task<Result>> SnapshotDelegate(SnapshotJob job)
+    => async ct => await job.TakeAsync(ct);
