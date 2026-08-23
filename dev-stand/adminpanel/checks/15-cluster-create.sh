@@ -29,6 +29,11 @@ code="$(curl -s -o /tmp/t12-create.json -w '%{http_code}' -b "$JAR" -X POST "$BA
 [ "$code" = 201 ] || { echo "❌ POST /api/clusters = $code: $(cat /tmp/t12-create.json)"; exit 1; }
 echo "  создан: $(jq -c '{name,bucketsCount,shardsTotal,replicas,requestCpu,requestMem,requestDisk,state}' /tmp/t12-create.json)"
 
+# Assert: smoke-тело без sharded — заодно регрессия обратной совместимости:
+# отсутствующее поле трактуется как sharded=true (arch/02 §9.3)
+jq -e '.sharded == true' /tmp/t12-create.json >/dev/null \
+  || { echo "❌ ответ без поля sharded не вернул sharded=true"; exit 1; }
+
 # Assert: ключи контракта в etcd (arch/02 §9.1)
 [ "$(ect get /clusters/smoke/config --print-value-only | jq -r '.state')" = "NOT_INITIALIZED" ] \
   || { echo "❌ config.state != NOT_INITIALIZED"; exit 1; }
@@ -60,4 +65,40 @@ curl -fsS -b "$JAR" "$BASE/api/clusters/smoke" | jq -e \
   '.state=="NOT_INITIALIZED" and .shards[0].requests.cpu=="0.5" and (.shards[0].nodes|length)==2' >/dev/null \
   || { echo "❌ /api/clusters/smoke: state/requests/nodes"; exit 1; }
 echo "  /api/clusters/smoke: NOT_INITIALIZED, заявки и ноды видны"
+
+# --- Кейс нешардированной (spec cluster-sharded-toggle §3.6): sharded=false, без buckets/shards ---
+ect del --prefix /clusters/solo >/dev/null
+for k in request_cpu request_mem request_disk; do
+  ect del "/service/solo-shard1/$k" >/dev/null
+done
+
+code="$(curl -s -o /tmp/t12-create-solo.json -w '%{http_code}' -b "$JAR" -X POST "$BASE/api/clusters" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"solo","sharded":false,"replicas":2,"requestCpu":0.5,"requestMem":8,"requestDisk":100}')"
+[ "$code" = 201 ] || { echo "❌ POST /api/clusters (solo, sharded=false) = $code: $(cat /tmp/t12-create-solo.json)"; exit 1; }
+echo "  создан solo: $(jq -c '{name,sharded,bucketsCount,shardsTotal,state}' /tmp/t12-create-solo.json)"
+
+# Вырожденная структура 1×1 (arch/02 §9.1): один бакет, один шард, заявки только shard1
+[ "$(ect get /clusters/solo/config --print-value-only | jq -r '.buckets')" = "1" ] \
+  || { echo "❌ solo config.buckets != 1"; exit 1; }
+[ "$(ect get /clusters/solo/buckets/routing/bucket_0 --print-value-only)" = "shard1" ] \
+  || { echo "❌ solo routing bucket_0 != shard1"; exit 1; }
+[ -z "$(ect get /clusters/solo/buckets/routing/bucket_1 --print-value-only)" ] \
+  || { echo "❌ solo: появился лишний bucket_1"; exit 1; }
+[ -z "$(ect get /service/solo-shard2/request_cpu --print-value-only)" ] \
+  || { echo "❌ solo: появились заявки shard2"; exit 1; }
+jq -e '.sharded == false and .bucketsCount == 1 and .shardsTotal == 1' /tmp/t12-create-solo.json >/dev/null \
+  || { echo "❌ solo-ответ не вырожденный (sharded/bucketsCount/shardsTotal)"; exit 1; }
+echo "  etcd solo: вырожденная структура 1x1 — контракт §9.1 соблюдён"
+
+# Панель видит solo (следующий тик ≤ 3 c + polling): 1 бакет, 1 шард
+for i in $(seq 1 15); do
+  curl -fsS -b "$JAR" "$BASE/api/clusters/solo" | jq -e \
+    '.state=="NOT_INITIALIZED" and .bucketsCount==1 and (.shards|length)==1' >/dev/null && break
+  sleep 1
+done
+curl -fsS -b "$JAR" "$BASE/api/clusters/solo" | jq -e \
+  '.state=="NOT_INITIALIZED" and .bucketsCount==1 and (.shards|length)==1' >/dev/null \
+  || { echo "❌ /api/clusters/solo: вырожденная структура не видна"; exit 1; }
+echo "  /api/clusters/solo: 1 бакет × 1 шард, NOT_INITIALIZED"
 echo "✓ 15-cluster-create: создание кластера e2e прошло"

@@ -4,6 +4,7 @@ using System.Text.RegularExpressions;
 namespace AdminPanel.Etcd.Writing;
 
 // Тело POST /api/clusters (arch/03 §1.1): биндится Minimal API как JSON.
+// Sharded: отсутствует/null = true — обратная совместимость старых клиентов (arch/02 §9.3).
 public sealed record CreateClusterRequest(
     string Name,
     int Buckets,
@@ -11,7 +12,21 @@ public sealed record CreateClusterRequest(
     int Replicas,
     decimal RequestCpu,
     int RequestMem,
-    int RequestDisk);
+    int RequestDisk,
+    bool? Sharded = null)
+{
+    // Нормализация (arch/02 §9.3): sharded=false → buckets/shards игнорируются и
+    // перезаписываются в 1/1 (нешардированная БД — вырожденный случай §9.1);
+    // отсутствующий sharded трактуется как true. Вызывается ДО Validate
+    // (симметрично «Build — только после Validate»). Идемпотентна.
+    public CreateClusterRequest Normalize()
+    {
+        var sharded = Sharded ?? true;
+        return sharded
+            ? this with { Sharded = sharded }
+            : this with { Sharded = sharded, Buckets = 1, Shards = 1 };
+    }
+}
 
 // Ошибка валидации одного поля (ProblemDetails errors, arch/03 §1.1).
 public sealed record ValidationError(string Field, string Message);

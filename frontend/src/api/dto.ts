@@ -8,10 +8,13 @@ export type BucketStateName = 'ACTIVE' | 'SYNCING' | 'FROZEN' | 'ABORTING' | 'NO
 export type ClusterStateName = 'ACTIVE' | 'NOT_INITIALIZED';
 
 // POST /api/clusters — тело и ответ (arch/03 §1.1).
+// sharded: фронт передаёт всегда; buckets/shards — только при sharded=true
+// (для нешардированной не запрашиваются вовсе, сервер нормализует в 1/1).
 export interface CreateClusterRequestDto {
   name: string;
-  buckets: number;
-  shards: number;
+  sharded: boolean;
+  buckets?: number;
+  shards?: number;
   replicas: number;
   requestCpu: number;
   requestMem: number;
@@ -21,6 +24,7 @@ export interface CreateClusterRequestDto {
 export interface ClusterCreatedDto {
   name: string;
   dbName: string;
+  sharded: boolean;
   bucketsCount: number;
   shardsTotal: number;
   replicas: number;

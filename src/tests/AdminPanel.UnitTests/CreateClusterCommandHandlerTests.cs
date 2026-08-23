@@ -88,6 +88,7 @@ public class CreateClusterCommandHandlerTests
         result.IsSuccess.Should().BeTrue();
         result.Value.Name.Should().Be("shop");
         result.Value.State.Should().Be("NOT_INITIALIZED");
+        result.Value.Sharded.Should().BeTrue(); // legacy-запрос без sharded = true
         result.Value.RequestCpu.Should().Be("0.5");
         result.Value.RequestMem.Should().Be("8Gi");
         result.Value.RequestDisk.Should().Be("100Gi");
@@ -159,5 +160,39 @@ public class CreateClusterCommandHandlerTests
             "/service/shop-shard1/request_cpu", "/service/shop-shard1/request_mem", "/service/shop-shard1/request_disk",
             "/service/shop-shard2/request_cpu", "/service/shop-shard2/request_mem", "/service/shop-shard2/request_disk",
         ]);
+    }
+
+    [Fact]
+    public async Task Handle_SingleCluster_ReturnsDegenerateDto()
+    {
+        // Arrange: нешардированная — buckets/shards не переданы (0) и не важны
+        var (handler, gateway, _) = NewHandler();
+
+        // Act
+        var result = await handler.Handle(new CreateClusterCommand(
+            new("solo", 0, 0, 2, 0.5m, 8, 100, Sharded: false)), CancellationToken.None);
+
+        // Assert: DTO вырожденный — sharded=false, 1/1; ключи только solo-shard1
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Sharded.Should().BeFalse();
+        result.Value.BucketsCount.Should().Be(1);
+        result.Value.ShardsTotal.Should().Be(1);
+        gateway.Puts.Where(k => k.Contains("shard2")).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Handle_ShardedFalseWithGarbage_NormalizesAndSucceeds()
+    {
+        // Arrange: sharded=false + мусорные buckets/shards — игнорируются
+        var (handler, _, _) = NewHandler();
+
+        // Act
+        var result = await handler.Handle(new CreateClusterCommand(
+            new("solo2", 99999, -3, 2, 1m, 8, 100, Sharded: false)), CancellationToken.None);
+
+        // Assert: не 400-валидация, а успешная вырожденная запись
+        result.IsSuccess.Should().BeTrue();
+        result.Value.BucketsCount.Should().Be(1);
+        result.Value.ShardsTotal.Should().Be(1);
     }
 }

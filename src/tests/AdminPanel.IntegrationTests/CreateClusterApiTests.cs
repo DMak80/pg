@@ -59,6 +59,8 @@ public class CreateClusterApiTests(AuthWebFactory factory, EtcdContainerFixture 
         response.Headers.Location!.ToString().Should().Be("/api/clusters/shop");
         var dto = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         dto.GetProperty("state").GetString().Should().Be("NOT_INITIALIZED");
+        // Тело без sharded — обратная совместимость: ответ трактует как sharded=true
+        dto.GetProperty("sharded").GetBoolean().Should().BeTrue();
         dto.GetProperty("requestCpu").GetString().Should().Be("0.5");
         dto.GetProperty("requestMem").GetString().Should().Be("8Gi");
 
@@ -177,5 +179,70 @@ public class CreateClusterApiTests(AuthWebFactory factory, EtcdContainerFixture 
         scope.RequestCpu.Should().Be("2");
         scope.RequestMem.Should().Be("8Gi");
         scope.RequestDisk.Should().Be("100Gi");
+    }
+
+    [Fact]
+    public async Task Create_SingleWithoutBucketsShards_WritesDegenerateStructure()
+    {
+        // Arrange
+        SetLiveSnapshot();
+        using var client = await ApiTestLogin.LoginAsync(_factory);
+
+        // Act: нешардированная — buckets/shards в теле отсутствуют вовсе (arch/03 §1.1)
+        using var response = await client.PostAsJsonAsync(
+            "/api/clusters",
+            new { name = "solo", sharded = false, replicas = 2, requestCpu = 0.5m, requestMem = 8, requestDisk = 100 },
+            TestContext.Current.CancellationToken);
+
+        // Assert: 201 + вырожденный DTO (sharded=false, 1/1)
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        var dto = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        dto.GetProperty("sharded").GetBoolean().Should().BeFalse();
+        dto.GetProperty("bucketsCount").GetInt32().Should().Be(1);
+        dto.GetProperty("shardsTotal").GetInt32().Should().Be(1);
+
+        // Ключи в etcd — ровно вырожденная структура arch/02 §9.1
+        var gateway = EtcdTestHarness.NewGateway();
+        var range = await gateway.RangeAsync(fixture.Endpoint, "/clusters/solo/", TestContext.Current.CancellationToken);
+        range.Value.Select(kv => kv.Key).Should().BeEquivalentTo(
+        [
+            "/clusters/solo/config",
+            "/clusters/solo/shards/shard1/replicas",
+            "/clusters/solo/shards/shard1/nodes/shard1a/state",
+            "/clusters/solo/shards/shard1/nodes/shard1b/state",
+            "/clusters/solo/buckets/routing/bucket_0",
+            "/clusters/solo/buckets/status/bucket_0",
+        ]);
+        range.Value.Single(kv => kv.Key == "/clusters/solo/config").Value.Should().Contain("\"buckets\":1");
+        var requests = await gateway.RangeAsync(fixture.Endpoint, "/service/solo-", TestContext.Current.CancellationToken);
+        requests.Value.Select(kv => kv.Key).Should().BeEquivalentTo(
+        [
+            "/service/solo-shard1/request_cpu",
+            "/service/solo-shard1/request_mem",
+            "/service/solo-shard1/request_disk",
+        ]);
+    }
+
+    [Fact]
+    public async Task Create_SingleWithGarbageBuckets_IgnoresAndNormalizes()
+    {
+        // Arrange
+        SetLiveSnapshot();
+        using var client = await ApiTestLogin.LoginAsync(_factory);
+
+        // Act: sharded=false + невалидные buckets/shards — сервер игнорирует
+        using var response = await client.PostAsJsonAsync(
+            "/api/clusters",
+            new { name = "solo2", sharded = false, buckets = 99999, shards = -3, replicas = 2, requestCpu = 1m, requestMem = 8, requestDisk = 100 },
+            TestContext.Current.CancellationToken);
+
+        // Assert: 201 (не 400) и вырожденная структура — без bucket_1/shard2
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        var dto = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        dto.GetProperty("bucketsCount").GetInt32().Should().Be(1);
+        var gateway = EtcdTestHarness.NewGateway();
+        var range = await gateway.RangeAsync(fixture.Endpoint, "/clusters/solo2/", TestContext.Current.CancellationToken);
+        range.Value.Select(kv => kv.Key).Where(k => k.Contains("bucket_1") || k.Contains("shard2"))
+            .Should().BeEmpty();
     }
 }

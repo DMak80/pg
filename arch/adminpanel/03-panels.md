@@ -33,7 +33,11 @@ POST (login/logout — не мутируют инспектируемые сис
 ProblemDetails 400 с деталями по полям):
 
 ```text
-CreateClusterRequestDto: name, buckets, shards, replicas,
+CreateClusterRequestDto: name, sharded (bool, опционально: отсутствует/null
+                          = true — обратная совместимость), buckets, shards
+                          (передаются ТОЛЬКО при sharded=true; при
+                          sharded=false не требуются — сервер нормализует
+                          в 1/1, 02 §9.3), replicas,
                           requestCpu (число ядер, десятичное),
                           requestMem (GiB, целое), requestDisk (GiB, целое)
 ```
@@ -42,10 +46,14 @@ CreateClusterRequestDto: name, buckets, shards, replicas,
 подхватит на следующем тике):
 
 ```text
-ClusterCreatedDto: name, dbname, bucketsCount, shardsTotal, replicas,
-                    requestCpu, requestMem, requestDisk (строки-каноны 02 §9.1),
-                    state:"NOT_INITIALIZED"
+ClusterCreatedDto: name, dbname, sharded (bool), bucketsCount, shardsTotal,
+                    replicas, requestCpu, requestMem, requestDisk (строки-каноны
+                    02 §9.1), state:"NOT_INITIALIZED"
 ```
+
+Нешардированная БД (`sharded=false`): в etcd пишется вырожденная структура
+1 бакет × 1 шард (02 §9.1), ответ возвращает `bucketsCount=1`,
+`shardsTotal=1`, `sharded=false`.
 
 Отказы: 409 `Cluster already exists` (клэйм-txn не сошёлся — имя занято);
 503 (нет снапшота/активного endpoint'а, etcd-ошибка записи). Компенсация
