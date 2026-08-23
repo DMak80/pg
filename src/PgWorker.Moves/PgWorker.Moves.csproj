@@ -10,4 +10,8 @@
         <ProjectReference Include="..\PgWorker.Provisioning\PgWorker.Provisioning.csproj"/>
     </ItemGroup>
 
+    <ItemGroup>
+        <PackageReference Include="Npgsql"/>
+    </ItemGroup>
+
 </Project>
