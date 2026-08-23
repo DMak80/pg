@@ -132,6 +132,23 @@ public class ClustersMappersTests
     }
 
     [Fact]
+    public void ClusterDetailsMapper_ShardedFlag_SingleVsMultiBucket()
+    {
+        // Arrange: lone — нешардированная 1×1 (arch/02 §9.1); orphan — incomplete-обрывок
+        // config.buckets=1 без шардов (spec §8.6); MovingCluster — 16 бакетов × 2 шарда
+        var lone = new ClusterInfo("lone", "lone", 1, 1755900000, ClusterState.NotInitialized,
+            [new ShardInfo("shard1", "", [], null, null, null, 2, null,
+                [new NodeInfo("shard1a", "NOT_INITIALIZED"), new NodeInfo("shard1b", "NOT_INITIALIZED")], null)],
+            [new BucketInfo(0, "shard1", BucketState.NotInitialized, null)], []);
+        var orphan = new ClusterInfo("orphan", null, 1, null, ClusterState.Active, [], [], []);
+
+        // Act/Assert: false ⟺ ровно 1 бакет и ≤1 шард (arch/03 §2)
+        ClusterDetailsMapper.Map(lone, NowUnix, null, null, [], []).Sharded.Should().BeFalse();
+        ClusterDetailsMapper.Map(orphan, NowUnix, null, null, [], []).Sharded.Should().BeFalse();
+        ClusterDetailsMapper.Map(TestSnapshots.MovingCluster(Now), NowUnix, null, null, [], []).Sharded.Should().BeTrue();
+    }
+
+    [Fact]
     public void ClusterDetailsMapper_Heals_NewestFirst()
     {
         // Arrange: журнал — новые сверху; null-штамп в конец (spec §3.3).

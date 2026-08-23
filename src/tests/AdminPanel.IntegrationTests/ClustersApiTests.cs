@@ -285,4 +285,32 @@ public class ClustersApiTests
         details.GetProperty("buckets")[0].GetProperty("state").GetString().Should().Be("NOT_INITIALIZED");
         filtered.GetProperty("buckets").GetArrayLength().Should().Be(2);
     }
+
+    [Fact]
+    public async Task ClusterDetails_ShardedFlag_SingleFalse_MultiTrue()
+    {
+        // Arrange: lone — нешардированная 1×1 (arch/02 §9.1); mini — 2×1; паттерн
+        // Clusters_NotInitializedCluster_FlaggedInSummaryAndDetails (поверх Fixture)
+        using var client = await LoginAsync();
+        var lone = new ClusterInfo("lone", "lone", 1, 1755900000, ClusterState.NotInitialized,
+            [new ShardInfo("shard1", "", [], null, null, null, 2, null,
+                [new NodeInfo("shard1a", "NOT_INITIALIZED"), new NodeInfo("shard1b", "NOT_INITIALIZED")], null)],
+            [new BucketInfo(0, "shard1", BucketState.NotInitialized, null)], []);
+        var mini = new ClusterInfo("mini", "mini", 2, 1755900000, ClusterState.NotInitialized,
+            [new ShardInfo("shard1", "", [], null, null, null, 2, null,
+                [new NodeInfo("shard1a", "NOT_INITIALIZED"), new NodeInfo("shard1b", "NOT_INITIALIZED")], null)],
+            [
+                new BucketInfo(0, "shard1", BucketState.NotInitialized, null),
+                new BucketInfo(1, "shard1", BucketState.NotInitialized, null),
+            ], []);
+        _factory.Snapshot = InspectionSnapshots.Fixture(_factory.Time.Utc) with { Clusters = [lone, mini] };
+
+        // Act
+        var loneDto = await GetJsonAsync(client, "/api/clusters/lone");
+        var miniDto = await GetJsonAsync(client, "/api/clusters/mini");
+
+        // Assert: sharded=false ⟺ 1 бакет и ≤1 шард (arch/03 §2)
+        loneDto.GetProperty("sharded").GetBoolean().Should().BeFalse();
+        miniDto.GetProperty("sharded").GetBoolean().Should().BeTrue();
+    }
 }

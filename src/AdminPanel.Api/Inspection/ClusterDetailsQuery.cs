@@ -18,6 +18,7 @@ public sealed record ClusterDto(
     long? CreatedUnix,
     bool Incomplete,
     string State,
+    bool Sharded,
     IReadOnlyList<ShardDto> Shards,
     IReadOnlyList<BucketDto> Buckets,
     IReadOnlyList<HealDto> Heals,
@@ -122,6 +123,9 @@ public static class ClusterDetailsMapper
             cluster.CreatedUnix,
             cluster.Incomplete,
             ClusterStates.Name(cluster.State),
+            // sharded — вычисляемое поле отображения (arch/03 §2): false ⟺ ровно 1
+            // бакет и не более 1 шарда; признак «тип БД» в etcd не хранится (02 §9.1).
+            !(cluster.BucketsCount == 1 && cluster.Shards.Count <= 1),
             [.. cluster.Shards.Select(s =>
             {
                 // Заявка шарда — join scope "<C>-<X>" (все три ключа обязательны)

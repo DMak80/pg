@@ -41,11 +41,11 @@ jq -e '.sharded == true' /tmp/t12-create.json >/dev/null \
   || { echo "❌ нода shard1b не NOT_INITIALIZED"; exit 1; }
 [ "$(ect get /service/smoke-shard2/request_mem --print-value-only)" = "8Gi" ] \
   || { echo "❌ /service/smoke-shard2/request_mem != 8Gi"; exit 1; }
-# etcdctl get --prefix отдаёт значения в порядке ключей (bucket_0..3) — БЕЗ sort,
-# чтобы проверить именно round-robin-раскладку: shard1 shard2 shard1 shard2
+# etcdctl get --prefix отдаёт значения в порядке ключей (bucket_0..3) — БЕЗ sort:
+# блочное распределение (arch/02 §9.1.1) — 4×2: бакеты 0,1→shard1; 2,3→shard2
 routing="$(ect get --prefix /clusters/smoke/buckets/routing --print-value-only | tr '\n' ' ')"
-[ "$routing" = "shard1 shard2 shard1 shard2 " ] || { echo "❌ routing round-robin: $routing"; exit 1; }
-echo "  etcd: config/nodes/request_*/routing — контракт §9.1 соблюдён"
+[ "$routing" = "shard1 shard1 shard2 shard2 " ] || { echo "❌ routing blocks 4×2: $routing"; exit 1; }
+echo "  etcd: config/nodes/request_*/routing — контракт §9.1.1 (блоки) соблюдён"
 
 # Assert: повтор — 409 (клэйм)
 code="$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -X POST "$BASE/api/clusters" \
@@ -62,8 +62,8 @@ done
 curl -fsS -b "$JAR" "$BASE/api/clusters" | jq -e 'any(.[]; .name=="smoke" and .notInitialized)' >/dev/null \
   || { echo "❌ /api/clusters не видит smoke (notInitialized)"; exit 1; }
 curl -fsS -b "$JAR" "$BASE/api/clusters/smoke" | jq -e \
-  '.state=="NOT_INITIALIZED" and .shards[0].requests.cpu=="0.5" and (.shards[0].nodes|length)==2' >/dev/null \
-  || { echo "❌ /api/clusters/smoke: state/requests/nodes"; exit 1; }
+  '.sharded == true and .state=="NOT_INITIALIZED" and .shards[0].requests.cpu=="0.5" and (.shards[0].nodes|length)==2' >/dev/null \
+  || { echo "❌ /api/clusters/smoke: sharded/state/requests/nodes"; exit 1; }
 echo "  /api/clusters/smoke: NOT_INITIALIZED, заявки и ноды видны"
 
 # --- Кейс нешардированной (spec cluster-sharded-toggle §3.6): sharded=false, без buckets/shards ---
@@ -94,11 +94,30 @@ echo "  etcd solo: вырожденная структура 1x1 — контр�
 # Панель видит solo (следующий тик ≤ 3 c + polling): 1 бакет, 1 шард
 for i in $(seq 1 15); do
   curl -fsS -b "$JAR" "$BASE/api/clusters/solo" | jq -e \
-    '.state=="NOT_INITIALIZED" and .bucketsCount==1 and (.shards|length)==1' >/dev/null && break
+    '.sharded == false and .state=="NOT_INITIALIZED" and .bucketsCount==1 and (.shards|length)==1' >/dev/null && break
   sleep 1
 done
 curl -fsS -b "$JAR" "$BASE/api/clusters/solo" | jq -e \
-  '.state=="NOT_INITIALIZED" and .bucketsCount==1 and (.shards|length)==1' >/dev/null \
-  || { echo "❌ /api/clusters/solo: вырожденная структура не видна"; exit 1; }
+  '.sharded == false and .state=="NOT_INITIALIZED" and .bucketsCount==1 and (.shards|length)==1' >/dev/null \
+  || { echo "❌ /api/clusters/solo: sharded=false / вырожденная структура не видна"; exit 1; }
 echo "  /api/clusters/solo: 1 бакет × 1 шард, NOT_INITIALIZED"
+
+# --- Кейс канона (spec bucket-block-distribution §2.1): 10×3 → 3+4+3 ---
+ect del --prefix /clusters/canon10 >/dev/null
+for s in 1 2 3; do
+  for k in request_cpu request_mem request_disk; do
+    ect del "/service/canon10-shard$s/$k" >/dev/null
+  done
+done
+
+code="$(curl -s -o /tmp/t15-canon10.json -w '%{http_code}' -b "$JAR" -X POST "$BASE/api/clusters" \
+  -H 'Content-Type: application/json' \
+  -d '{"name":"canon10","buckets":10,"shards":3,"replicas":2,"requestCpu":0.5,"requestMem":8,"requestDisk":100}')"
+[ "$code" = 201 ] || { echo "❌ POST /api/clusters (canon10) = $code: $(cat /tmp/t15-canon10.json)"; exit 1; }
+
+# Значения в порядке bucket_0..9: блоки 3+4+3 — остаток среднему шарду (§9.1.1)
+routing="$(ect get --prefix /clusters/canon10/buckets/routing --print-value-only | tr '\n' ' ')"
+[ "$routing" = "shard1 shard1 shard1 shard2 shard2 shard2 shard2 shard3 shard3 shard3 " ] \
+  || { echo "❌ canon10 routing 3+4+3: $routing"; exit 1; }
+echo "  canon10: 10×3 → 3+4+3 — канон §9.1.1 соблюдён"
 echo "✓ 15-cluster-create: создание кластера e2e прошло"
