@@ -704,10 +704,10 @@ tasks?filters={"service"...}). `BusyPortsAsync` — из `containers/json?all=1`
 **Проверка:** `dotnet test src/PgWorker.slnx --filter DockerEngine`.
 **Spec:** §5.2–5.3, Д3.
 
-- [ ] Шаг 1: контракт (файлы выше, пустая реализация) + сборка.
-- [ ] Шаг 2: AAA-тесты на моках → красный.
-- [ ] Шаг 3: реализация → зелёный.
-- [ ] Шаг 4: commit `"feat(docker): тонкий клиент Engine API (containers/services/nodes/ports)"`.
+- [x] Шаг 1: контракт (файлы выше, пустая реализация) + сборка.
+- [x] Шаг 2: AAA-тесты на моках → красный.
+- [x] Шаг 3: реализация → зелёный.
+- [x] Шаг 4: commit `"feat(docker): тонкий клиент Engine API (containers/services/nodes/ports)"`.
 
 ### Задача 15: Драйверы кластера (plain / swarm)
 
