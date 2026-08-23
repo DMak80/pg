@@ -63,6 +63,38 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
             .ToList());
     }
 
+    public async Task<Result<TxnResult>> TxnAsync(
+        string endpoint, IReadOnlyList<TxnCompare> compares, IReadOnlyList<KvPut> puts, CancellationToken ct)
+    {
+        var body = new
+        {
+            compare = compares.Select(c => new { key = ToB64(c.Key), version = c.Version }),
+            success = puts.Select(p => new
+            {
+                request_put = new { key = ToB64(p.Key), value = ToB64(p.Value) },
+            }),
+        };
+        var result = await Result<TxnResponse>.FromAsync(
+            async () => await PostAsync<TxnResponse>(endpoint, "/v3/kv/txn", body, ct));
+        return result.Map(r => new TxnResult(r.Succeeded));
+    }
+
+    public async Task<Result> PutAsync(string endpoint, string key, string value, CancellationToken ct)
+    {
+        var body = new { key = ToB64(key), value = ToB64(value) };
+        return await Result.FromAsync(
+            async () => await PostAsync<StatusResponse>(endpoint, "/v3/kv/put", body, ct));
+    }
+
+    public async Task<Result> DeleteAsync(string endpoint, string keyOrPrefix, bool prefix, CancellationToken ct)
+    {
+        object body = prefix
+            ? new { key = ToB64(keyOrPrefix), range_end = ToB64(PrefixEnd(keyOrPrefix)) }
+            : new { key = ToB64(keyOrPrefix) };
+        return await Result.FromAsync(
+            async () => await PostAsync<StatusResponse>(endpoint, "/v3/kv/deleterange", body, ct));
+    }
+
     private async Task<T> PostAsync<T>(string endpoint, string path, object body, CancellationToken ct)
     {
         using var response = await httpClient.PostAsJsonAsync(endpoint + path, body, Json, ct);
@@ -163,6 +195,12 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
     {
         [JsonPropertyName("alarms")]
         public List<AlarmDto>? Alarms { get; set; }
+    }
+
+    private sealed class TxnResponse
+    {
+        [JsonPropertyName("succeeded")]
+        public bool Succeeded { get; set; }
     }
 
     private sealed class AlarmDto
