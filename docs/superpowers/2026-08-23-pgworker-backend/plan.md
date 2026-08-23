@@ -314,9 +314,9 @@ public static class PlacementPlanner
 **Проверка:** `dotnet test src/PgWorker.slnx --filter PlacementPlanner`.
 **Spec:** §6.3, Д5 (анти-аффинити «если топология позволяет»).
 
-- [ ] Шаг 1: тест-файл с 5 AAA-тестами выше → запуск → красный (типа нет).
-- [ ] Шаг 2: реализация `PlacementPlanner.Plan` → зелёный.
-- [ ] Шаг 3: `git add -A && git commit -m "feat(core): PlacementPlanner — анти-аффинити нод шарда"`.
+- [x] Шаг 1: тест-файл с 5 AAA-тестами выше → запуск → красный (типа нет).
+- [x] Шаг 2: реализация `PlacementPlanner.Plan` → зелёный.
+- [x] Шаг 3: `git add -A && git commit -m "feat(core): PlacementPlanner — анти-аффинити нод шарда"`.
 
 ### Задача 7: PortAllocator
 
