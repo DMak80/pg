@@ -1135,10 +1135,10 @@ Degraded.
 **Проверка:** `docker build -f docker/PgWorker.Dockerfile -t pgworker:dev .` — успех.
 **Spec:** §10, Д4, Д7.
 
-- [ ] Шаг 1: appsettings.json + Dockerfile сервиса (образец AdminPanel).
-- [ ] Шаг 2: node-Dockerfile + master-lease.py (адаптация rolecheck.py) + supervisord.conf.
-- [ ] Шаг 3: compose; локальная сборка образа — успех.
-- [ ] Шаг 4: commit `"build: поставка — Dockerfile сервиса и узла, compose, appsettings"`.
+- [x] Шаг 1: appsettings.json + Dockerfile сервиса (образец AdminPanel).
+- [x] Шаг 2: node-Dockerfile + master-lease.py (адаптация rolecheck.py) + supervisord.conf.
+- [x] Шаг 3: compose; локальная сборка образа — успех.
+- [x] Шаг 4: commit `"build: поставка — Dockerfile сервиса и узла, compose, appsettings"`.
 
 ### Задача 26: dev-stand + e2e (критерии приёмки §11)
 

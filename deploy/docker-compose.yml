@@ -1,0 +1,27 @@
+# Запуск PgWorker (spec §5.4, §10): docker.sock (plain на одном хосте /
+# swarm manager), том снапшотов P12, секреты per-install из env (Д7).
+# etcd запускается отдельно (dev-stand/compose.yaml или свой кластер).
+services:
+  pgworker:
+    build:
+      context: ..
+      dockerfile: docker/PgWorker.Dockerfile
+    image: pgworker:dev
+    restart: unless-stopped
+    ports:
+      - "8080:8080" # /healthz
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - pgw-snapshots:/snapshots
+    environment:
+      # Обязательные секреты установки (Д7): не в git, не в etcd.
+      PGW_PG_SUPERUSER_PASSWORD: ${PGW_PG_SUPERUSER_PASSWORD:?задайте секрет}
+      PGW_PG_STANDBY_PASSWORD: ${PGW_PG_STANDBY_PASSWORD:?задайте секрет}
+      PGW_APP_ROLE_PASSWORD: ${PGW_APP_ROLE_PASSWORD:?задайте секрет}
+      PGW_BUCKET_ADMIN_PASSWORD: ${PGW_BUCKET_ADMIN_PASSWORD:?задайте секрет}
+      PGW_BUCKET_MOVER_PASSWORD: ${PGW_BUCKET_MOVER_PASSWORD:?задайте секрет}
+      # Конфигурация — env-оверрайды appsettings (пример: endpoints etcd).
+      PgWorker__Etcd__Endpoints__0: ${PGW_ETCD_ENDPOINT:-http://localhost:2379}
+
+volumes:
+  pgw-snapshots:
