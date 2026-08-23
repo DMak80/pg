@@ -186,11 +186,11 @@ spec §4 присутствуют: `grep -o "/pgworker/[a-z]*" arch/14-pgworker.
 **Проверка:** `dotnet build src/PgWorker.slnx -c Release` → 0 warnings, 0 errors.
 **Spec:** §6.1.
 
-- [ ] Шаг 1: `dotnet new classlib -n PgWorker.Core -o src/PgWorker.Core -f net10.0` и аналогично остальные (App — `dotnet new worker -n PgWorker.App` как exe-заготовка; тесты — `dotnet new xunit3`).
-- [ ] Шаг 2: прописать ProjectReference по карте выше; пакеты в csproj — только `ProjectReference` + `<PackageReference />` без версий (CPM).
-- [ ] Шаг 3: файлы props/NuGet.Config/.editorconfig/slnx (содержимое выше).
-- [ ] Шаг 4: `dotnet build src/PgWorker.slnx -c Release` — зелёная сборка.
-- [ ] Шаг 5: `git add -A src .editorconfig && git commit -m "feat: каркас решения PgWorker (slnx, CPM, проекты)"`.
+- [x] Шаг 1: `dotnet new classlib -n PgWorker.Core -o src/PgWorker.Core -f net10.0` и аналогично остальные (App — `dotnet new worker -n PgWorker.App` как exe-заготовка; тесты — `dotnet new xunit3`).
+- [x] Шаг 2: прописать ProjectReference по карте выше; пакеты в csproj — только `ProjectReference` + `<PackageReference />` без версий (CPM).
+- [x] Шаг 3: файлы props/NuGet.Config/.editorconfig/slnx (содержимое выше).
+- [x] Шаг 4: `dotnet build src/PgWorker.slnx -c Release` — зелёная сборка.
+- [x] Шаг 5: `git add -A src .editorconfig && git commit -m "feat: каркас решения PgWorker (slnx, CPM, проекты)"`.
 
 ---
 
