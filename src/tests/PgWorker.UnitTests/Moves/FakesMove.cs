@@ -176,6 +176,25 @@ internal static class MoveRig
         return fake;
     }
 
+    /// <summary>
+    /// Cutover-слой поверх префлайт-резолвера стенда (задачи 14–15): таблицы схемы,
+    /// слот догнал, сверки строк по DSN источник/приёмник. Параметры — расхождения.
+    /// </summary>
+    public static void CutoverLayer(
+        FakeMoveSql sql, bool caughtUp = true, long srcRows = 50, long dstRows = 50,
+        string tables = "bucket_42.\"items\"")
+    {
+        var preflight = sql.ScalarResolver;
+        sql.ScalarResolver = s => s switch
+        {
+            var x when x.Contains("string_agg(format('%I.%I'") => tables,
+            var x when x.Contains("bool_and(active") => caughtUp,
+            var x when x.Contains("count(*) FROM bucket_42.") =>
+                sql.LastDsn == SrcDsn ? srcRows : dstRows,
+            _ => preflight(s),
+        };
+    }
+
     /// <summary>Стенд: etcd-сид + SQL-мок + клэйм (claim=true) + MoveProcess со снапшот-очередью.</summary>
     internal sealed record Rig(
         Fakes.FakeEtcd Etcd,

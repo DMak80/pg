@@ -19,22 +19,6 @@ public class MoveProcessCutoverTests
     // Быстрые опции тика: без пауз заморозки/поллинга (таймаут cutover — по тесту).
     private static readonly MovesRuntimeOptions Fast = new(PollIntervalSec: 0, FreezeWaitSec: 0);
 
-    // Cutover-слой поверх префлайт-резолвера стенда: таблицы схемы, слот догнал,
-    // сверки строк (по DSN источник/приёмник).
-    private static void CutoverLayer(
-        FakeMoveSql sql, bool caughtUp = true, long srcRows = 50, long dstRows = 50)
-    {
-        var preflight = sql.ScalarResolver;
-        sql.ScalarResolver = s => s switch
-        {
-            var x when x.Contains("string_agg(format('%I.%I'") => "bucket_42.\"items\"",
-            var x when x.Contains("bool_and(active") => caughtUp,
-            var x when x.Contains("count(*) FROM bucket_42.") =>
-                sql.LastDsn == MoveRig.SrcDsn ? srcRows : dstRows,
-            _ => preflight(s),
-        };
-    }
-
     // AAA: happy cutover — flip прошёл, прямая подписка срезана, обратная pub/sub
     //      создана (copy_data=false — без re-copy), заявка удалена, Done
     [Fact]
@@ -42,7 +26,7 @@ public class MoveProcessCutoverTests
     {
         // Arrange — initial copy завершён, сверка строк сойдётся
         var rig = await MoveRig.NewAsync(seededStatus: CutoverWaitStatus(), runtime: Fast);
-        CutoverLayer(rig.Sql);
+        MoveRig.CutoverLayer(rig.Sql);
 
         // Act
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
@@ -75,7 +59,7 @@ public class MoveProcessCutoverTests
         // Arrange — слот никогда не подтверждает LSN, таймаут 0 (мгновенный)
         var rig = await MoveRig.NewAsync(seededStatus: CutoverWaitStatus(),
             runtime: new MovesRuntimeOptions(PollIntervalSec: 0, FreezeWaitSec: 0, CutoverTimeoutSec: 0));
-        CutoverLayer(rig.Sql, caughtUp: false);
+        MoveRig.CutoverLayer(rig.Sql, caughtUp: false);
 
         // Act
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
@@ -98,7 +82,7 @@ public class MoveProcessCutoverTests
     {
         // Arrange — приёмник потерял строку (failover приёмника, P8)
         var rig = await MoveRig.NewAsync(seededStatus: CutoverWaitStatus(), runtime: Fast);
-        CutoverLayer(rig.Sql, srcRows: 50, dstRows: 49);
+        MoveRig.CutoverLayer(rig.Sql, srcRows: 50, dstRows: 49);
 
         // Act
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
@@ -123,7 +107,7 @@ public class MoveProcessCutoverTests
     {
         // Arrange — конкурент уже перевёл routing
         var rig = await MoveRig.NewAsync(seededStatus: CutoverWaitStatus(), runtime: Fast);
-        CutoverLayer(rig.Sql);
+        MoveRig.CutoverLayer(rig.Sql);
         rig.Etcd.Seed(MoveNames.RoutingKey("shop", "bucket_42"), "shard9");
 
         // Act
@@ -150,7 +134,7 @@ public class MoveProcessCutoverTests
     {
         // Arrange — источник прямой подписки недоступен (DROP не проходит)
         var rig = await MoveRig.NewAsync(seededStatus: CutoverWaitStatus(), runtime: Fast);
-        CutoverLayer(rig.Sql);
+        MoveRig.CutoverLayer(rig.Sql);
         rig.Sql.ExecuteResult = _ => Result.Failed(new ApplicationException("источник подписки недоступен"));
 
         // Act
@@ -175,7 +159,7 @@ public class MoveProcessCutoverTests
         var rig = await MoveRig.NewAsync(
             seededStatus: CutoverWaitStatus(), runtime: Fast,
             requestJson: """{"op":"move","to":"shard2","skip_reverse":true,"requested_unix":100}""");
-        CutoverLayer(rig.Sql);
+        MoveRig.CutoverLayer(rig.Sql);
 
         // Act
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
@@ -197,7 +181,7 @@ public class MoveProcessCutoverTests
         // Arrange — прошлый тик умер перед flip: FROZEN/flip, routing ещё старый
         var rig = await MoveRig.NewAsync(seededStatus: new MoveStatus(
             "bucket_42", MoveStates.Frozen, "shard1", "shard2", 111, 122, "flip"), runtime: Fast);
-        CutoverLayer(rig.Sql);
+        MoveRig.CutoverLayer(rig.Sql);
 
         // Act
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
