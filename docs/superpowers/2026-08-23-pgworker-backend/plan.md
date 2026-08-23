@@ -436,9 +436,9 @@ doorman/haproxy-конфиги.
 **Проверка:** `dotnet test src/PgWorker.slnx --filter NodeConfigBuilders`.
 **Spec:** §5.1, §6.1 (Core/шаблоны), P2/P3/P11/P13/P14/P15/P17, Д4.
 
-- [ ] Шаг 1: AAA-тесты → красный.
-- [ ] Шаг 2: три билдера (YAML/конфиг — интерполяция строк по эталонам) → зелёный.
-- [ ] Шаг 3: commit `"feat(core): генераторы конфигов ноды (Spilo env, doorman, haproxy)"`.
+- [x] Шаг 1: AAA-тесты → красный.
+- [x] Шаг 2: три билдера (YAML/конфиг — интерполяция строк по эталонам) → зелёный.
+- [x] Шаг 3: commit `"feat(core): генераторы конфигов ноды (Spilo env, doorman, haproxy)"`.
 
 ---
 
