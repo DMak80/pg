@@ -128,8 +128,11 @@ public class DockerEngineTests
         hostConfig.GetProperty("PortBindings").GetProperty("5432/tcp")[0].GetProperty("HostPort").GetString().Should().Be("15432");
         hostConfig.GetProperty("PortBindings").GetProperty("8008/tcp")[0].GetProperty("HostPort").GetString().Should().Be("18008");
         hostConfig.GetProperty("RestartPolicy").GetProperty("Name").GetString().Should().Be("unless-stopped");
-        hostConfig.GetProperty("Resources").GetProperty("NanoCPUs").GetInt64().Should().Be(2_000_000_000);
-        hostConfig.GetProperty("Resources").GetProperty("MemoryBytes").GetInt64().Should().Be(2147483648);
+        // Лимиты — полями HostConfig напрямую (rework №5): вложенный
+        // HostConfig.Resources docker молча игнорирует
+        hostConfig.GetProperty("NanoCPUs").GetInt64().Should().Be(2_000_000_000);
+        hostConfig.GetProperty("Memory").GetInt64().Should().Be(2147483648);
+        hostConfig.TryGetProperty("Resources", out _).Should().BeFalse();
     }
 
     [Fact]
@@ -266,5 +269,33 @@ public class DockerEngineTests
         port.GetProperty("TargetPort").GetInt32().Should().Be(5432);
         port.GetProperty("PublishedPort").GetInt32().Should().Be(15432);
         port.GetProperty("PublishMode").GetString().Should().Be("host");
+    }
+
+    [Fact]
+    public async Task CreateService_ResourceLimits_InTaskTemplateResources()
+    {
+        // Arrange — лимиты заявки request_* у ЗАДАЧИ swarm (rework №5):
+        // TaskTemplate.Resources.Limits (NanoCPUs/MemoryBytes); вложение в
+        // ContainerSpec docker игнорирует
+        var handler = new FakeHandler(_ => Json("""{"ID":"svc-1"}""", HttpStatusCode.Created));
+        var engine = NewEngine(handler);
+        var template = new ContainerSpec(
+            "pgworker-node:dev", new Dictionary<string, string>(),
+            "pgw-shop-shard1-shard1a-data", "/home/postgres/pgdata",
+            [new PortMap(5432, 15432)], "shard1a",
+            CpuCores: 0.5, MemoryBytes: 8L * 1024 * 1024 * 1024, Label: null);
+
+        // Act
+        var result = await engine.CreateServiceAsync(
+            new ServiceSpec("pgw-shop-shard1-shard1a", template, "node-abc"), CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        var body = JsonDocument.Parse(handler.Requests.Single().Body).RootElement;
+        var task = body.GetProperty("TaskTemplate");
+        var limits = task.GetProperty("Resources").GetProperty("Limits");
+        limits.GetProperty("NanoCPUs").GetInt64().Should().Be(500_000_000);
+        limits.GetProperty("MemoryBytes").GetInt64().Should().Be(8_589_934_592);
+        task.GetProperty("ContainerSpec").TryGetProperty("Resources", out _).Should().BeFalse();
     }
 }

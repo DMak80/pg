@@ -132,6 +132,10 @@ public sealed class NodeSupervisor(
             if (topology.Nodes.Count == 0)
                 continue; // нет закреплённых адресов (внешний кластер) — не наш объект
 
+            // Заявка ресурсов читается лениво: только если ноду правда recreate'им.
+            NodeResources? resources = null;
+            var resourcesLoaded = false;
+
             foreach (var node in shard.Nodes)
             {
                 if (node.State is NodeState.Quarantined or NodeState.Removing)
@@ -140,6 +144,12 @@ public sealed class NodeSupervisor(
                     continue;
                 if (existing.Contains($"pgw-{cluster}-{shard.Name}-{node.Name}"))
                     continue; // контейнер на месте
+
+                if (!resourcesLoaded)
+                {
+                    resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
+                    resourcesLoaded = true;
+                }
 
                 if (node.State != NodeState.Provisioning)
                 {
@@ -152,7 +162,7 @@ public sealed class NodeSupervisor(
 
                 var ensured = await driver.EnsureNodeAsync(
                     topology, node.Name, topology.Nodes[node.Name], secrets,
-                    etcdForNodes ?? new EtcdEndpoints(endpoints), ct);
+                    etcdForNodes ?? new EtcdEndpoints(endpoints), resources, ct);
                 if (!ensured.IsSuccess)
                     return ensured;
             }
@@ -210,9 +220,11 @@ public sealed class NodeSupervisor(
                 if (!removed.IsSuccess)
                     return removed;
                 var topology = TopologyOf(cluster, snap, shard.Name, addresses);
+                // Лимиты пересозданной ноды — из той же заявки request_* (rework №5).
+                var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
                 var ensured = await driver.EnsureNodeAsync(
                     topology, name, addr, secrets,
-                    etcdForNodes ?? new EtcdEndpoints(endpoints), ct);
+                    etcdForNodes ?? new EtcdEndpoints(endpoints), resources, ct);
                 if (!ensured.IsSuccess)
                     return ensured;
                 var rebuilding = await PutAsync(
@@ -256,6 +268,21 @@ public sealed class NodeSupervisor(
             addresses
                 .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
                 .ToDictionary(p => p.Key.Split('/')[1], p => p.Value));
+
+    // Заявки ресурсов шарда (rework №5): те же ключи, что в provisioning —
+    // пересозданный (rebuild/самовосстановление) контейнер получает те же
+    // лимиты. Чтение не удалось/нечитаемо — null (заявка — не контракт);
+    // request_disk лимита в docker не имеет — игнор.
+    private async Task<NodeResources?> ReadShardResourcesAsync(
+        string cluster, string shard, CancellationToken ct)
+    {
+        var scope = $"{cluster}-{shard}";
+        var cpu = await GetAsync($"/service/{scope}/request_cpu", ct);
+        if (!cpu.IsSuccess)
+            return null;
+        var mem = await GetAsync($"/service/{scope}/request_mem", ct);
+        return mem.IsSuccess ? NodeResourcesParser.Parse(cpu.Value?.Value, mem.Value?.Value) : null;
+    }
 
     private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> ReadPortAllocAsync(
         string cluster, CancellationToken ct)

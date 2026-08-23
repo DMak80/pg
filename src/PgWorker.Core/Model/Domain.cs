@@ -1,5 +1,7 @@
 namespace PgWorker.Core.Model;
 
+using System.Globalization;
+
 // Доменная модель PgWorker (spec §4, §6.4): состояния и структуры, которые
 // читаются из etcd / строятся планировщиками. Идентификаторы — английские.
 
@@ -58,3 +60,65 @@ public sealed record NodeAddress(string Host, NodePorts Ports);
 
 /// <summary>Адреса etcd (http://host:2379) — для lease-скрипта мастер-ключа ноды.</summary>
 public sealed record EtcdEndpoints(IReadOnlyList<string> Http);
+
+/// <summary>
+/// Заявка ресурсов ноды из /service/&lt;scope&gt;/request_{cpu,mem} (rework №5):
+/// становится лимитами контейнера (plain) / таска сервиса (swarm).
+/// null = ключа нет/нечитаем — без лимита. request_disk аналога в docker нет —
+/// лимита диска у контейнера с volume не существует (осознанный игнор).
+/// </summary>
+public sealed record NodeResources(double? CpuCores, long? MemoryBytes);
+
+/// <summary>
+/// Парсер заявок ресурсов панели: request_cpu — инвариант-десятичное число
+/// ядер («2», «0.5»); request_mem — байты с суффиксами (без суффикса/B — байты;
+/// K/M/G/T — десятичные 10^3..; Ki/Mi/Gi/Ti — двоичные 2^10.., как у панели
+/// «8Gi»). Нечитаемое значение → null: заявка — не контракт, кластер обязан
+/// подняться и без лимита.
+/// </summary>
+public static class NodeResourcesParser
+{
+    // Оба значения нечитаемы/отсутствуют → null (заявки нет — без лимита).
+    public static NodeResources? Parse(string? requestCpu, string? requestMem)
+    {
+        var cpu = ParseCpu(requestCpu);
+        var mem = ParseMem(requestMem);
+        return cpu is null && mem is null ? null : new NodeResources(cpu, mem);
+    }
+
+    public static double? ParseCpu(string? raw)
+        => double.TryParse(raw?.Trim().Replace(',', '.'), NumberStyles.Float,
+               CultureInfo.InvariantCulture, out var cores) && cores > 0
+            ? cores
+            : null;
+
+    public static long? ParseMem(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return null;
+
+        var s = raw.Trim();
+        var end = 0;
+        while (end < s.Length && (char.IsAsciiDigit(s[end]) || s[end] is '.' or ','))
+            end++;
+        var number = s[..end].Replace(',', '.'); // инвариант-десятичное
+        var suffix = s[end..].Trim();
+        if (suffix.EndsWith("B", StringComparison.Ordinal))
+            suffix = suffix[..^1]; // «GB»/«GiB» → «G»/«Gi»
+        if (number.Length == 0
+            || !double.TryParse(number, NumberStyles.Float, CultureInfo.InvariantCulture, out var value)
+            || value <= 0)
+            return null;
+
+        var multiplier = suffix switch
+        {
+            "" => 1L,
+            "K" => 1_000L, "Ki" => 1L << 10,
+            "M" => 1_000_000L, "Mi" => 1L << 20,
+            "G" => 1_000_000_000L, "Gi" => 1L << 30,
+            "T" => 1_000_000_000_000L, "Ti" => 1L << 40,
+            _ => -1L, // неизвестный суффикс — толерантно без лимита
+        };
+        return multiplier > 0 ? (long)(value * multiplier) : null;
+    }
+}

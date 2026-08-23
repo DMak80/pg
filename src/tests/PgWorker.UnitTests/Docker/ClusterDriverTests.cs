@@ -148,7 +148,7 @@ public class ClusterDriverTests
         var driver = NewPlainDriver(engine);
 
         // Act
-        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, CancellationToken.None);
+        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, ct: CancellationToken.None);
 
         // Assert: ни create, ни start — только сверка списком
         result.IsSuccess.Should().BeTrue();
@@ -164,7 +164,7 @@ public class ClusterDriverTests
         var driver = NewPlainDriver(engine);
 
         // Act
-        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, CancellationToken.None);
+        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, ct: CancellationToken.None);
 
         // Assert: имя pgw-<C>-<X>-<n>; env из SpiloEnvBuilder + PGW_NODE_HOST;
         // volume -data; publish тройка портов; затем start
@@ -199,7 +199,7 @@ public class ClusterDriverTests
             [new HostEndpoint("h1", "fake://h1")], new FakeFactory(engine), enableDoorman: false);
 
         // Act
-        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, CancellationToken.None);
+        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, ct: CancellationToken.None);
 
         // Assert: порт 6432 не публикуется, DOORMAN_CONFIG не генерируется
         result.IsSuccess.Should().BeTrue();
@@ -279,7 +279,7 @@ public class ClusterDriverTests
         var driver = new SwarmClusterDriver("fake://manager", new FakeFactory(engine), enableDoorman: true);
 
         // Act
-        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, CancellationToken.None);
+        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, ct: CancellationToken.None);
 
         // Assert: ServiceSpec с constraint по id найденной ноды; шаблон — как у plain
         result.IsSuccess.Should().BeTrue();
@@ -289,6 +289,25 @@ public class ClusterDriverTests
         spec.NodeConstraint.Should().Be("node-id-1");
         spec.Template.Ports.Should().Contain(p => p.ContainerPort == 5432 && p.HostPort == 15432);
         spec.Template.VolumeName.Should().Be("pgw-shop-shard1-shard1a-data");
+    }
+
+    [Fact]
+    public async Task EnsureNode_WithResources_LimitsReachContainerSpec()
+    {
+        // Arrange — заявка request_* (rework №5): 2 ядра/8GiB должны дойти до
+        // ContainerSpec (драйвер транспортирует; упаковку в тело create
+        // проверяют DockerEngineTests)
+        var engine = new FakeEngine();
+        var driver = NewPlainDriver(engine);
+        var resources = new NodeResources(CpuCores: 2, MemoryBytes: 8L * 1024 * 1024 * 1024);
+
+        // Act
+        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        engine.CreatedSpec!.CpuCores.Should().Be(2);
+        engine.CreatedSpec!.MemoryBytes.Should().Be(8_589_934_592);
     }
 
     [Fact]

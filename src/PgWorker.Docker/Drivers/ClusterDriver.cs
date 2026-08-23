@@ -24,9 +24,10 @@ public interface IClusterDriver
     // Идемпотентно создать ноду (plain: container pgw-<C>-<X>-<n> + volume
     // pgw-<C>-<X>-<n>-data; swarm: service с constraint node.id==<id>, publish
     // mode=host). env/конфиги — из NodeConfigBuilders; существующий объект
-    // сверяется по имени и не пересоздаётся.
+    // сверяется по имени и не пересоздаётся. resources — заявка request_*
+    // (лимиты NanoCPUs/Memory; request_disk лимита в docker не имеет — игнор).
     Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
-        InstallSecrets secrets, EtcdEndpoints etcd, CancellationToken ct);
+        InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, CancellationToken ct);
 
     // Остановить и удалить ноду + volume (404 = успех). swarm: service rm
     // (volume остаётся на ноде таска — manager не управляет volume нод).
@@ -91,7 +92,7 @@ public sealed class PlainClusterDriver(
     }
 
     public async Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
-        InstallSecrets secrets, EtcdEndpoints etcd, CancellationToken ct)
+        InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, CancellationToken ct)
     {
         if (!_engines.TryGetValue(addr.Host, out var engine))
             return Result.Failed(new ApplicationException(
@@ -113,7 +114,7 @@ public sealed class PlainClusterDriver(
             if (existing.Value.Any(c => c.Names.Contains(name)))
                 return;
 
-            var spec = BuildSpec(topology, nodeName, addr, secrets, etcd);
+            var spec = BuildSpec(topology, nodeName, addr, secrets, etcd, resources);
             var created = await engine.CreateContainerAsync(spec, name, ct);
             if (!created.IsSuccess)
                 throw created.Error!;
@@ -178,7 +179,7 @@ public sealed class PlainClusterDriver(
 
     // Сборка ContainerSpec: env Spilo + PGW_NODE_HOST + конфиги doorman/haproxy (Д4).
     internal ContainerSpec BuildSpec(ShardTopology topology, string nodeName, NodeAddress addr,
-        InstallSecrets secrets, EtcdEndpoints etcd)
+        InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources)
     {
         var env = new Dictionary<string, string>(SpiloEnvBuilder.Build(topology, etcd, secrets))
         {
@@ -212,8 +213,8 @@ public sealed class PlainClusterDriver(
             "/home/postgres/pgdata", // дефолтный PGDATA-корень Spilo (pgroot ломает bootstrap)
             ports,
             nodeName,
-            CpuCores: null,
-            MemoryBytes: null,
+            CpuCores: resources?.CpuCores,
+            MemoryBytes: resources?.MemoryBytes,
             Label: topology.Cluster,
             Network: NodesNetwork,
             NetworkAliases: [nodeName, NodeName(topology.Cluster, topology.Shard, nodeName)]);
@@ -256,7 +257,7 @@ public sealed class SwarmClusterDriver(
         => _engine.BusyPortsAsync(ct);
 
     public async Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
-        InstallSecrets secrets, EtcdEndpoints etcd, CancellationToken ct)
+        InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, CancellationToken ct)
     {
         return await Result.FromAsync(async () =>
         {
@@ -269,7 +270,7 @@ public sealed class SwarmClusterDriver(
                 throw new ApplicationException($"swarm-нода с Hostname={addr.Host} не найдена");
 
             var plain = new PlainClusterDriver([], new DockerEngineFactory(), enableDoorman, nodeImage);
-            var template = plain.BuildSpec(topology, nodeName, addr, secrets, etcd);
+            var template = plain.BuildSpec(topology, nodeName, addr, secrets, etcd, resources);
             var spec = new ServiceSpec(
                 PlainClusterDriver.NodeName(topology.Cluster, topology.Shard, nodeName),
                 template,

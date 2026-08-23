@@ -86,7 +86,9 @@ public class E2eScenarios(E2eFixture fixture)
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}a/state", "NOT_INITIALIZED", null, ct);
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}b/state", "NOT_INITIALIZED", null, ct);
             await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_cpu", "2", null, ct);
-            await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_mem", "2G", null, ct);
+            // 8Gi: лимит памяти применяется к контейнеру (rework №5); 2G хватало
+            // бы только заявке — Spilo с shared_buffers=2GB был бы убит cgroup.
+            await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_mem", "8Gi", null, ct);
         }
 
         for (var i = 0; i < 6; i++)

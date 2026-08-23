@@ -113,6 +113,7 @@ internal static class Fakes
     internal sealed class FakeDriver : IClusterDriver
     {
         public readonly List<string> EnsuredNodes = [];
+        public readonly List<(string Node, NodeResources? Resources)> EnsuredDetails = [];
         public readonly List<string> RemovedNodes = [];
         public readonly List<string> StoppedNodes = [];
         public List<string> NodeObjects = [];
@@ -126,12 +127,13 @@ internal static class Fakes
             => Task.FromResult(Result<IReadOnlyList<HostInfo>>.Success(Hosts));
 
         public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct)
-            => Task.FromResult(Result<IReadOnlySet<(string Host, int Port)>>.Success(BusyPorts));
+            => Task.FromResult(Result<IReadOnlySet<(string, int)>>.Success(BusyPorts));
 
         public Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
-            InstallSecrets secrets, EtcdEndpoints etcd, CancellationToken ct)
+            InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, CancellationToken ct)
         {
             EnsuredNodes.Add($"{topology.Shard}/{nodeName}");
+            EnsuredDetails.Add((nodeName, resources));
             return Task.FromResult(EnsureResultByNode is { } f ? f(nodeName) : Result.Success());
         }
 

@@ -197,6 +197,28 @@ public class ProvisioningProcessTests
     }
 
     [Fact]
+    public async Task Tick_RequestResources_PassedToEnsureNodePerShard()
+    {
+        // Arrange — панель заявила ресурсы только у shard1 (rework №5):
+        // request_cpu=2 (ядра), request_mem=8Gi → лимиты нод shard1; ноды
+        // shard2 без заявки — без лимита
+        var rig = await NewRig(_ => DeadPatroni());
+        rig.Etcd.Seed("/service/shop-shard1/request_cpu", "2");
+        rig.Etcd.Seed("/service/shop-shard1/request_mem", "8Gi");
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — заявка дошла до драйвера только для своего шарда
+        outcome.IsSuccess.Should().BeTrue();
+        rig.Driver.EnsuredDetails.Should().Contain(d =>
+            d.Node == "shard1a" && d.Resources == new NodeResources(2, 8L << 30));
+        rig.Driver.EnsuredDetails.Should().Contain(d =>
+            d.Node == "shard1b" && d.Resources == new NodeResources(2, 8L << 30));
+        rig.Driver.EnsuredDetails.Should().Contain(d => d.Node == "shard2a" && d.Resources == null);
+    }
+
+    [Fact]
     public async Task Tick_NoRoutingKeys_WaitingKeys_NoDocker()
     {
         // Arrange — полуфабрикат панели: config есть, routing-ключей нет

@@ -154,6 +154,12 @@ data-каталог создаётся от root и недоступен patroni
 3. Итог — план размещения (node → host + порты); он же вход для генерации
    конфигов (DSN multi-host по нодам шарда; HAProxy-конфиг — генератор
    остаётся в Core, в контейнере не поднимается — см. §2.1).
+4. Заявки ресурсов `/service/<scope>/request_{cpu,mem}` — лимиты ноды:
+   plain — `HostConfig.NanoCPUs` (cores × 10⁹) / `HostConfig.Memory` (байты;
+   суффиксы панели: `K/M/G/T` десятичные, `Ki/Mi/Gi/Ti` двоичные);
+   swarm — `TaskTemplate.Resources.Limits` (те же поля). Нечитаемое значение —
+   без лимита (заявка — не контракт). `request_disk` примитива лимита в docker
+   не имеет — игнорируется (квоты volume — roadmap).
 
 Сам PgWorker — контейнер с примонтированным `/var/run/docker.sock` (plain на
 одном хосте / swarm manager), volume под снапшоты etcd, env-секреты (§8).

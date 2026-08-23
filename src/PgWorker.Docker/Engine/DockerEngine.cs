@@ -379,14 +379,12 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             hostConfig["PortBindings"] = bindings;
         }
 
-        if (spec.CpuCores is { } cores || spec.MemoryBytes is { } memory)
-        {
-            hostConfig["Resources"] = new Dictionary<string, object?>
-            {
-                ["NanoCPUs"] = spec.CpuCores is { } c ? (long)(c * 1_000_000_000) : null,
-                ["MemoryBytes"] = spec.MemoryBytes,
-            };
-        }
+        // Лимиты ресурсов (rework №5): поля HostConfig НАПРЯМУЮ — NanoCPUs/Memory;
+        // вложенный HostConfig.Resources docker молча игнорирует.
+        if (spec.CpuCores is { } cores)
+            hostConfig["NanoCPUs"] = (long)(cores * 1_000_000_000);
+        if (spec.MemoryBytes is { } memory)
+            hostConfig["Memory"] = memory;
 
         var body = new Dictionary<string, object?>
         {
@@ -434,9 +432,18 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         if (spec.Template.Label is { Length: > 0 } label)
             container["Labels"] = new Dictionary<string, string> { ["pgworker"] = label };
 
+        var taskTemplate = new Dictionary<string, object?>
+        {
+            ["ContainerSpec"] = container,
+            // NodeConstraint — id swarm-ноды; полный вид constraint: node.id==<id> (spec §5.3)
+            ["Placement"] = new { Constraints = new[] { "node.id==" + spec.NodeConstraint } },
+        };
+
+        // Лимиты таска (rework №5): TaskTemplate.Resources.Limits — поля уровня
+        // задачи swarm (вложение в ContainerSpec docker игнорирует).
         if (spec.Template.CpuCores is { } cores || spec.Template.MemoryBytes is { } memory)
         {
-            container["Resources"] = new Dictionary<string, object?>
+            taskTemplate["Resources"] = new Dictionary<string, object?>
             {
                 ["Limits"] = new Dictionary<string, object?>
                 {
@@ -445,13 +452,6 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
                 },
             };
         }
-
-        var taskTemplate = new Dictionary<string, object?>
-        {
-            ["ContainerSpec"] = container,
-            // NodeConstraint — id swarm-ноды; полный вид constraint: node.id==<id> (spec §5.3)
-            ["Placement"] = new { Constraints = new[] { "node.id==" + spec.NodeConstraint } },
-        };
 
         object? endpoint = null;
         if (spec.Template.Ports.Count > 0)

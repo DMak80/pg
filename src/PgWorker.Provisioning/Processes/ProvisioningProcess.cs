@@ -85,7 +85,8 @@ public sealed class ProvisioningProcess(
 
             var topology = Topology(cluster, shard.Name, addresses);
             topologies[shard.Name] = topology;
-            var ensured = await EnsureNodesAsync(cluster, shard, topology, ct);
+            var resources = await ReadShardResourcesAsync(cluster, shard, ct);
+            var ensured = await EnsureNodesAsync(cluster, shard, topology, resources, ct);
             if (!ensured.IsSuccess)
                 return await FailAsync(cluster, ensured.Error!, "ensure-nodes", ct);
         }
@@ -213,7 +214,7 @@ public sealed class ProvisioningProcess(
 
     // P2.1: EnsureNode всех нод шарда (state != RUNNING) + nodes/<n>/state=PROVISIONING.
     private async Task<Result> EnsureNodesAsync(
-        string cluster, ShardSpec shard, ShardTopology topology, CancellationToken ct)
+        string cluster, ShardSpec shard, ShardTopology topology, NodeResources? resources, CancellationToken ct)
     {
         foreach (var node in shard.Nodes)
         {
@@ -227,12 +228,28 @@ public sealed class ProvisioningProcess(
                     return marked;
             }
 
-            var ensured = await driver.EnsureNodeAsync(topology, node.Name, topology.Nodes[node.Name], secrets, etcdEndpoints, ct);
+            var ensured = await driver.EnsureNodeAsync(
+                topology, node.Name, topology.Nodes[node.Name], secrets, etcdEndpoints, resources, ct);
             if (!ensured.IsSuccess)
                 return ensured;
         }
 
         return Result.Success();
+    }
+
+    // Заявки ресурсов шарда (rework №5): /service/<scope>/request_{cpu,mem} →
+    // лимиты контейнера/сервиса нод (NanoCPUs/Memory). Чтение не удалось или
+    // значение нечитаемо — null: заявка — не контракт, кластер обязан подняться
+    // и без лимита. request_disk примитива лимита в docker не имеет — игнор.
+    private async Task<NodeResources?> ReadShardResourcesAsync(
+        string cluster, ShardSpec shard, CancellationToken ct)
+    {
+        var scope = $"{cluster}-{shard.Name}";
+        var cpu = await GetAsync($"/service/{scope}/request_cpu", ct);
+        if (!cpu.IsSuccess)
+            return null;
+        var mem = await GetAsync($"/service/{scope}/request_mem", ct);
+        return mem.IsSuccess ? NodeResourcesParser.Parse(cpu.Value?.Value, mem.Value?.Value) : null;
     }
 
     // P2.2: scope initialized + leader + Patroni REST всех нод отвечает →
