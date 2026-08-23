@@ -603,9 +603,9 @@ public sealed class WorkJournal(IEtcdGateway gateway, string[] endpoints)
 **Проверка:** `dotnet test src/PgWorker.slnx --filter "ClaimStore|WorkJournal"`.
 **Spec:** §4.3, §6.2, Д2.
 
-- [ ] Шаг 1: AAA-тесты ClaimStore (5 кейсов) + WorkJournal (2 кейса) → красный.
-- [ ] Шаг 2: реализация обоих классов → зелёный.
-- [ ] Шаг 3: commit `"feat(etcd): ClaimStore + WorkJournal — координация и журнал /pgworker/*"`.
+- [x] Шаг 1: AAA-тесты ClaimStore (5 кейсов) + WorkJournal (2 кейса) → красный.
+- [x] Шаг 2: реализация обоих классов → зелёный.
+- [x] Шаг 3: commit `"feat(etcd): ClaimStore + WorkJournal — координация и журнал /pgworker/*"`.
 
 ### Задача 13: Integration: etcd (Testcontainers) — клэймы, txn, контракт форматов §4.2/§4.3
 
