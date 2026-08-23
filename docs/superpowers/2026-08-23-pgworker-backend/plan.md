@@ -378,9 +378,9 @@ public static class EvacuationPlanner
 **Проверка:** `dotnet test src/PgWorker.slnx --filter EvacuationPlanner`.
 **Spec:** §6.4 D, Д6.
 
-- [ ] Шаг 1: AAA-тесты → красный.
-- [ ] Шаг 2: реализация → зелёный.
-- [ ] Шаг 3: commit `"feat(core): EvacuationPlanner — план аварийной эвакуации"`.
+- [x] Шаг 1: AAA-тесты → красный.
+- [x] Шаг 2: реализация → зелёный.
+- [x] Шаг 3: commit `"feat(core): EvacuationPlanner — план аварийной эвакуации"`.
 
 ### Задача 9: Генераторы конфигов ноды (Spilo env, doorman, haproxy)
 
