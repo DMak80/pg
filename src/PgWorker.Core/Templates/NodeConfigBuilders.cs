@@ -29,14 +29,18 @@ public static class SpiloEnvBuilder
     public static IReadOnlyDictionary<string, string> Build(
         ShardTopology topology, EtcdEndpoints etcd, InstallSecrets secrets)
     {
-        var etcdHosts = string.Join(",", etcd.Http);
+        // Patroni DCS: Spilo строит его из env ETCD3_HOSTS (etcd v3 API; наш etcd
+        // 3.5 без v2). Формат — "host:port" БЕЗ scheme (полный URL Patroni
+        // оборачивает в "[...]:" и падает); lease-скрипту нужен полный URL — PGW_ETCD.
+        var etcdHosts = string.Join(",", etcd.Http.Select(StripScheme));
+        var etcdUrls = string.Join(",", etcd.Http);
         var masterKey = $"/clusters/{topology.Cluster}/shards/{topology.Shard}/master";
 
         return new Dictionary<string, string>
         {
             // Идентификация Patroni-кластера (scope глобально уникален, arch/11 §2).
             ["SCOPE"] = topology.Scope,
-            ["ETCD_HOSTS"] = etcdHosts,
+            ["ETCD3_HOSTS"] = etcdHosts,
 
             // Учётные данные PostgreSQL (bootstrap Spilo).
             ["PGUSER_SUPERUSER"] = "postgres",
@@ -51,11 +55,13 @@ public static class SpiloEnvBuilder
             ["PGW_BUCKET_MOVER_PASSWORD"] = secrets.MoverPassword,
 
             // ENV lease-скрипта мастер-ключа (callback on_role_change, P11).
-            ["PGW_ETCD"] = etcdHosts,
+            ["PGW_ETCD"] = etcdUrls,
             ["PGW_MASTER_KEY"] = masterKey,
 
-            // Пути Spilo (эталон pg.env).
-            ["PGROOT"] = "/home/postgres/pgroot",
+            // Пути Spilo: PGROOT НЕ переопределяем — кастомный PGROOT ломает
+            // bootstrap (data-каталог создаётся root'ом, patroni под postgres
+            // падает); данные живут в дефолтном /home/postgres/pgdata (туда
+            // монтируется volume, ClusterDriver).
             ["USE_DATA_DIR_FOR_WAL"] = "true",
 
             // Patroni-конфигурация: эталон pg.env с wal_level: logical (P3).
@@ -71,6 +77,10 @@ public static class SpiloEnvBuilder
                     postgresql:
                       use_pg_rewind: true
                       callbacks:
+                        # P11: ключ /clusters/<C>/shards/<X>/master под etcd-lease.
+                        # on_start — старт ноды (роль может быть уже master);
+                        # on_role_change — промоушен/демоут.
+                        on_start: /home/postgres/master-lease.py
                         on_role_change: /home/postgres/master-lease.py
                       parameters:
                         # P15: 55 pg_doorman + 2 админ/mover + 3 reserved
@@ -93,12 +103,21 @@ public static class SpiloEnvBuilder
                         log_filename: "postgresql-%Y-%m-%d.log"
                         log_rotation_age: "1d"
                         log_rotation_size: "100MB"
-                postgresql:
-                  bin_dir: /usr/lib/postgresql/16/bin
-                  use_unix_socket: true
                 """,
         };
     }
+
+    // Примечание: секию postgresql (bin_dir/use_unix_socket) НЕ задаём —
+    // дефолты Spilo корректны; переопределение use_unix_socket ломает
+    // bootstrap (patroni не может создать data_dir от пользователя postgres).
+
+    // "http://host:port" → "host:port" (Patroni etcd3.hosts без scheme).
+    private static string StripScheme(string url)
+        => url.StartsWith("http://", StringComparison.Ordinal)
+            ? url["http://".Length..]
+            : url.StartsWith("https://", StringComparison.Ordinal)
+                ? url["https://".Length..]
+                : url;
 }
 
 /// <summary>

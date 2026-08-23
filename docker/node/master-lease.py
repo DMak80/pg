@@ -12,6 +12,39 @@ import sys
 import time
 import urllib.request
 
+# Patroni-callback стартует с обрезанным runit'ом env: параметры дублируются
+# entrypoint'ом в файл (env-переменные имеют приоритет над файлом).
+ENV_FILE = "/home/postgres/pgw-node.env"
+
+# Patroni 3.x называет мастера по-разному в зависимости от контекста.
+MASTER_ROLES = {"master", "leader", "primary"}
+REPLICA_ROLES = {"replica", "standby_leader"}
+
+
+def load_env_file():
+    try:
+        with open(ENV_FILE) as f:
+            for line in f:
+                name, sep, value = line.strip().partition("=")
+                if sep and name:
+                    os.environ.setdefault(name, value)
+    except OSError:
+        pass  # файла нет — ручной запуск, остаёмся на env
+
+
+def local_role():
+    """Фактическая роль этой ноды: GET /primary локального Patroni (для
+    on_start Patroni не передаёт роль аргументами)."""
+    try:
+        req = urllib.request.Request("http://127.0.0.1:8008/primary")
+        with urllib.request.urlopen(req, timeout=3) as r:
+            return "master" if r.status == 200 else "replica"
+    except Exception:
+        return None  # Patroni недоступен — ничего не делаем
+
+
+load_env_file()
+
 ETCD = os.getenv("PGW_ETCD", "http://etcd:2379")
 KEY = os.getenv("PGW_MASTER_KEY", "")
 HOST = os.getenv("PGW_NODE_HOST", "")
@@ -90,9 +123,20 @@ def main():
         print("master-lease: PGW_MASTER_KEY/PGW_NODE_HOST не заданы — выходим", flush=True)
         return
 
-    # Новая роль приходит аргументами callback (master/replica/standby_leader).
+    # Новая роль приходит аргументами callback (master/leader/replica); для
+    # on_start Patroni роль НЕ передаёт — узнаём фактическую сами.
     args = {a.strip().lower() for a in sys.argv[1:]}
-    is_master = bool(args & MASTER_ROLES)
+    if args & REPLICA_ROLES:
+        is_master = False
+    elif args & MASTER_ROLES:
+        is_master = True
+    else:
+        role = local_role()
+        if role is None:
+            print("master-lease: роль не передана и Patroni недоступен — выходим", flush=True)
+            return
+        is_master = role == "master"
+
     stop_running_daemon()
 
     if not is_master:

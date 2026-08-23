@@ -47,6 +47,10 @@ public sealed class PlainClusterDriver(
     bool enableDoorman,
     string nodeImage = "pgworker-node:dev") : IClusterDriver
 {
+    // Общая сеть нод кластера: Patroni-репликация по внутренним адресам
+    // (alias = имя ноды); без user-defined сети hostname-резолва нет.
+    public const string NodesNetwork = "pgw-net";
+
     private readonly Dictionary<string, IDockerEngine> _engines = hosts.ToDictionary(
         h => h.Name,
         h => factory.Create(h.Endpoint, hostAlias: h.Name));
@@ -96,6 +100,11 @@ public sealed class PlainClusterDriver(
         return await Result.FromAsync(async () =>
         {
             var name = NodeName(topology.Cluster, topology.Shard, nodeName);
+
+            // Сеть нод (идемпотентно; 409 already exists = успех).
+            var network = await engine.EnsureNetworkAsync(NodesNetwork, ct);
+            if (!network.IsSuccess)
+                throw network.Error!;
 
             // Идемпотентность: существующий контейнер не пересоздаётся (P2.1).
             var existing = await engine.ListContainersAsync(name, all: true, ct);
@@ -183,7 +192,10 @@ public sealed class PlainClusterDriver(
             env["PGW_DOORMAN_PORT"] = addr.Ports.Doorman.ToString();
         }
 
-        env["HAPROXY_CONFIG"] = HaproxyConfigBuilder.Build(topology);
+        // HAProxy-фронтенд НЕ поднимаем: PG и HAProxy конфликтуют на :5432 в
+        // одном netns (Д4 — один контейнер на ноду). Write-вход MVP — прямой
+        // pg-порт master-ноды (portalloc, multi-host DSN); конфиг остаётся в
+        // Core (HaproxyConfigBuilder) для отдельного фронтенд-слоя (roadmap).
 
         var ports = new List<PortMap>
         {
@@ -197,12 +209,14 @@ public sealed class PlainClusterDriver(
             nodeImage,
             env,
             VolumeName(topology.Cluster, topology.Shard, nodeName),
-            "/home/postgres/pgroot", // PGROOT Spilo (spec §5.1)
+            "/home/postgres/pgdata", // дефолтный PGDATA-корень Spilo (pgroot ломает bootstrap)
             ports,
             nodeName,
             CpuCores: null,
             MemoryBytes: null,
-            Label: topology.Cluster);
+            Label: topology.Cluster,
+            Network: NodesNetwork,
+            NetworkAliases: [nodeName, NodeName(topology.Cluster, topology.Shard, nodeName)]);
     }
 
     internal static string NodeName(string cluster, string shard, string nodeName)

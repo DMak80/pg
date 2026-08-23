@@ -28,7 +28,8 @@ public sealed class NodeSupervisor(
     ThresholdsOptions thresholds,
     TimeProvider clock,
     InstallSecrets secrets,
-    MasterKeyReconciler? masterKeys = null) : IClusterProcess
+    MasterKeyReconciler? masterKeys = null,
+    EtcdEndpoints? etcdForNodes = null) : IClusterProcess
 {
     /// <summary>Полностью мёртвые шарды последнего тика (эвакуация — цикл задачи 23).</summary>
     public IReadOnlyList<string> DeadShards { get; private set; } = [];
@@ -77,6 +78,21 @@ public sealed class NodeSupervisor(
                 if (Now() - oldest > thresholds.ShardDeadSec)
                     deadShards.Add(shard.Name);
             }
+        }
+
+        // Возврат эвакуированного шарда (E3): DONE-журнал эвакуации — тоже
+        // событие для эвакуатора (оживший шард останавливают и карантинят),
+        // даже если REST уже жив и в deadShards он не попал.
+        var evacuations = await RangeAsync($"/pgworker/evacuations/{cluster}/", ct);
+        if (!evacuations.IsSuccess)
+            return Result<ProcessOutcome>.Failed(evacuations.Error!);
+        foreach (var kv in evacuations.Value)
+        {
+            if (!kv.Value.Contains("\"state\":\"DONE\"", StringComparison.Ordinal))
+                continue;
+            var evacuated = kv.Key.Split('/')[^1];
+            if (!deadShards.Contains(evacuated))
+                deadShards.Add(evacuated);
         }
 
         DeadShards = deadShards;
@@ -130,7 +146,7 @@ public sealed class NodeSupervisor(
 
                 var ensured = await driver.EnsureNodeAsync(
                     topology, node.Name, topology.Nodes[node.Name], secrets,
-                    new EtcdEndpoints(endpoints), ct);
+                    etcdForNodes ?? new EtcdEndpoints(endpoints), ct);
                 if (!ensured.IsSuccess)
                     return ensured;
             }
@@ -172,7 +188,10 @@ public sealed class NodeSupervisor(
             // Лидер недоступен → НИЧЕГО: failover делает Patroni (P11); лидер-призрак
             // станет репликой/умершей и обработается общим путём (arch/14 §5 C).
             var isLeader = leader == name;
-            var quorum = alive.Count >= 2;
+            // Guard кворума (spec §6.4 C «живых ≥2») для 2-нодовых шардов
+            // обобщён: rebuild одиночной смерти допустим, пока жив кластер —
+            // мертва максимум ОДНА нода (иначе — сценарий всего-шарда-мёртв).
+            var quorum = alive.Count >= Math.Max(1, shard.Nodes.Count - 1);
             var expired = Now() - track[trackKey] > thresholds.NodeDeadSec;
 
             if (!isLeader && quorum && expired)
@@ -187,7 +206,7 @@ public sealed class NodeSupervisor(
                 var topology = TopologyOf(cluster, snap, shard.Name, addresses);
                 var ensured = await driver.EnsureNodeAsync(
                     topology, name, addr, secrets,
-                    new EtcdEndpoints(endpoints), ct);
+                    etcdForNodes ?? new EtcdEndpoints(endpoints), ct);
                 if (!ensured.IsSuccess)
                     return ensured;
                 var rebuilding = await PutAsync(
@@ -242,17 +261,7 @@ public sealed class NodeSupervisor(
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(
                 (IReadOnlyDictionary<string, NodeAddress>)new Dictionary<string, NodeAddress>());
 
-        try
-        {
-            var parsed = JsonSerializer.Deserialize<Dictionary<string, NodeAddress>>(kv.Value);
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(
-                (IReadOnlyDictionary<string, NodeAddress>)(parsed ?? []));
-        }
-        catch (JsonException e)
-        {
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(
-                new ApplicationException($"битый portalloc {cluster}: {e.Message}", e));
-        }
+        return Portalloc.Parse(cluster, kv.Value);
     }
 
     private long Now() => clock.GetUtcNow().ToUnixTimeSeconds();

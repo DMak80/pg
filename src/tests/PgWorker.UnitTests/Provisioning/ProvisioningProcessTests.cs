@@ -155,9 +155,9 @@ public class ProvisioningProcessTests
         // БД создаётся на мастере каждого шарда (shard1a → h1:15000, shard2a → h1:15001);
         // оба тика повторяют вызовы — SQL идемпотентен (повтор безопасен, §7)
         rig.Sql.EnsuredDatabases.Should().Contain(
-            ("host=h1 port=15000 dbname=postgres user=postgres password=su-pw", "shop"));
+            ("Host=h1;Port=15000;Database=postgres;Username=postgres;Password=su-pw", "shop"));
         rig.Sql.EnsuredDatabases.Should().Contain(
-            ("host=h1 port=15001 dbname=postgres user=postgres password=su-pw", "shop"));
+            ("Host=h1;Port=15001;Database=postgres;Username=postgres;Password=su-pw", "shop"));
         rig.Sql.Executed.Should().Contain(e => e.Sql.Contains("CREATE SCHEMA IF NOT EXISTS bucket_0"));
         rig.Sql.Executed.Should().Contain(e => e.Sql.Contains("CREATE SCHEMA IF NOT EXISTS bucket_1"));
 

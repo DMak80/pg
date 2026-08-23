@@ -33,16 +33,16 @@ public class DatabaseProvisionerTests
     {
         // Arrange — три роли бакетного слоя (§4 доки 11), пароли из InstallSecrets
         // Act
-        var sql = DatabaseProvisioner.BuildRolesSql(Secrets);
+        var sql = string.Join("\n", DatabaseProvisioner.BuildRoleGuardsSql(Secrets));
 
         // Assert: роли создаются идемпотентно (NOT EXISTS pg_roles) с LOGIN
         sql.Should().Contain("rolname = 'app'");
         sql.Should().Contain("rolname = 'bucket_admin'");
         sql.Should().Contain("rolname = 'bucket_mover'");
-        sql.Should().Contain("CREATE ROLE \"app\" LOGIN PASSWORD 'app-pw'");
-        sql.Should().Contain("CREATE ROLE \"bucket_admin\" LOGIN PASSWORD 'admin-pw'");
+        sql.Should().Contain("CREATE ROLE \"app\" LOGIN PASSWORD ''app-pw''"); // gexec: кавычки удвоены
+        sql.Should().Contain("CREATE ROLE \"bucket_admin\" LOGIN PASSWORD ''admin-pw''");
         // mover — атрибут REPLICATION (подписки переездов, P2/P3)
-        sql.Should().Contain("CREATE ROLE \"bucket_mover\" LOGIN REPLICATION PASSWORD 'mover-pw'");
+        sql.Should().Contain("CREATE ROLE \"bucket_mover\" LOGIN REPLICATION PASSWORD ''mover-pw''");
         // идемпотентность: каждая роль — только при отсутствии
         Regex.Matches(sql, "NOT EXISTS").Count.Should().BeGreaterThanOrEqualTo(3);
     }
@@ -79,10 +79,10 @@ public class DatabaseProvisionerTests
         var secrets = Secrets with { AppPassword = "o'brien" };
 
         // Act
-        var sql = DatabaseProvisioner.BuildRolesSql(secrets);
+        var sql = string.Join("\n", DatabaseProvisioner.BuildRoleGuardsSql(secrets));
 
         // Assert: кавычка удвоена
-        sql.Should().Contain("PASSWORD 'o''brien'");
+        sql.Should().Contain("PASSWORD ''o''''brien''");
     }
 
     [Fact]

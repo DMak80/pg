@@ -47,16 +47,22 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
                $"WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{dbname}')";
     }
 
-    // Роли бакетного слоя (§4 доки 11): app (write-доступ клиентов), bucket_admin
-    // (DSN-точка входа), bucket_mover (REPLICATION — подписки переездов P2/P3).
-    // Пароли per-install (Д7) — из InstallSecrets; идемпотентно через pg_roles.
-    public static string BuildRolesSql(InstallSecrets s)
+    // Guard-SELECT'ы ролей бакетного слоя (§4 доки 11): app (write-доступ
+    // клиентов), bucket_admin (DSN-точка входа), bucket_mover (REPLICATION —
+    // подписки переездов P2/P3). Паттерн \gexec: скаляр ВОЗВРАЩАЕТ текст
+    // CREATE ROLE, если её нет — исполнитель запускает его отдельной командой
+    // (Npgsql ExecuteNonQuery батчем gexec-SELECT не исполняет).
+    public static IReadOnlyList<string> BuildRoleGuardsSql(InstallSecrets s)
+        => [Role("app", s.AppPassword), Role("bucket_admin", s.BucketAdminPassword),
+            Role("bucket_mover", s.MoverPassword, replication: true)];
+
+    private static string Role(string name, string password, bool replication = false)
     {
-        var sb = new StringBuilder();
-        sb.AppendLine(Role("app", s.AppPassword, replication: false));
-        sb.Append(Role("bucket_admin", s.BucketAdminPassword, replication: false));
-        sb.Append(Role("bucket_mover", s.MoverPassword, replication: true));
-        return sb.ToString();
+        var attr = replication ? " REPLICATION" : string.Empty;
+        // Пароль лежит внутри внешнего строкового литерала; хвост ''pw''' =
+        // '' (кавычка внутри литерала) + закрывающая кавычка литерала.
+        return $"SELECT 'CREATE ROLE \"{name}\" LOGIN{attr} PASSWORD ''{Escape(Escape(password))}''' " +
+               $"WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{Escape(name)}');\n";
     }
 
     // Схемы бакетов шарда + гранты (шаг 5 init-cluster.sh; «гранты — при
@@ -140,15 +146,10 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
     }
 
     // DSN master-ноды шарда для админ-операций: user=postgres, пароль Д7.
+    // Внутренний DSN Npgsql: разделитель ';' (libpq-пробелы Npgsql не парсит).
+    // dsn-ключ etcd (P2.5) — остаётся libpq-форматом для панели/клиентов.
     public static string BuildAdminDsn(string host, int pgPort, string dbname, InstallSecrets secrets)
-        => $"host={host} port={pgPort} dbname={dbname} user=postgres password={Escape(secrets.SuPassword)}";
-
-    private static string Role(string name, string password, bool replication)
-    {
-        var attr = replication ? " REPLICATION" : string.Empty;
-        return $"SELECT 'CREATE ROLE \"{name}\" LOGIN{attr} PASSWORD '{Escape(password)}' " +
-               $"WHERE NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{name}');\n";
-    }
+        => $"Host={host};Port={pgPort};Database={dbname};Username=postgres;Password={Escape(secrets.SuPassword)}";
 
     private static void ValidateIdentifier(string name)
     {

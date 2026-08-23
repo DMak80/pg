@@ -25,6 +25,12 @@ public class ClusterDriverTests
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
+        public Task<Result> EnsureNetworkAsync(string name, CancellationToken ct)
+        {
+            Calls.Add(("ensure-network", name));
+            return Task.FromResult(Result.Success());
+        }
+
         public Task<Result> PingAsync(CancellationToken ct)
         {
             Calls.Add(("ping", null));
@@ -156,20 +162,21 @@ public class ClusterDriverTests
         engine.CreatedSpec.Should().NotBeNull();
         var spec = engine.CreatedSpec!;
         spec.VolumeName.Should().Be("pgw-shop-shard1-shard1a-data");
-        spec.VolumeDest.Should().Be("/home/postgres/pgroot");
+        spec.VolumeDest.Should().Be("/home/postgres/pgdata"); // дефолтный PGDATA-корень Spilo
         spec.Hostname.Should().Be("shard1a");
         spec.Env["SCOPE"].Should().Be("shop-shard1");
-        spec.Env["ETCD_HOSTS"].Should().Be("http://etcd:2379");
+        spec.Env["ETCD3_HOSTS"].Should().Be("etcd:2379"); // Patroni: host:port без scheme
         spec.Env["PGW_NODE_HOST"].Should().Be("h1");
         spec.Env["DOORMAN_CONFIG"].Should().Contain("pool_mode = \"transaction\"");
-        spec.Env["HAPROXY_CONFIG"].Should().Contain("server shard1a h1:15432 check port 18008");
+        // HAPROXY_CONFIG не передаётся: PG и HAProxy конфликтуют на :5432 (Д4).
+        spec.Env.Should().NotContainKey("HAPROXY_CONFIG");
         spec.Ports.Should().BeEquivalentTo(
         [
             new PortMap(5432, 15432),
             new PortMap(8008, 18008),
             new PortMap(6432, 16432),
         ]);
-        engine.Calls.Select(c => c.Call).Should().Equal("list-containers", "create", "start");
+        engine.Calls.Select(c => c.Call).Should().Equal("ensure-network", "list-containers", "create", "start");
     }
 
     [Fact]

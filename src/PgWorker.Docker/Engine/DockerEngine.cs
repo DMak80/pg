@@ -153,6 +153,20 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             }
         });
 
+    public async Task<Result> EnsureNetworkAsync(string name, CancellationToken ct)
+        => await Result.FromAsync(async () =>
+        {
+            try
+            {
+                await SendAsync(HttpMethod.Post, "/networks/create",
+                    new Dictionary<string, object?> { ["Name"] = name }, ct);
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 409)
+            {
+                // сеть с таким именем уже есть — идемпотентность
+            }
+        });
+
     public async Task<Result<IReadOnlyList<DockerSwarmNode>>> ListNodesAsync(CancellationToken ct)
     {
         return await Result<IReadOnlyList<DockerSwarmNode>>.FromAsync(async () =>
@@ -361,6 +375,19 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             ["Hostname"] = spec.Hostname,
             ["HostConfig"] = hostConfig,
         };
+        if (spec.Network is { Length: > 0 } network)
+        {
+            // Общая сеть нод кластера: контейнеры резолвят друг друга по alias
+            // (hostname) — внутренние адреса Patroni-репликации.
+            hostConfig["NetworkMode"] = network;
+            body["NetworkingConfig"] = new Dictionary<string, object?>
+            {
+                ["EndpointsConfig"] = new Dictionary<string, object?>
+                {
+                    [network] = new { Aliases = spec.NetworkAliases ?? [] },
+                },
+            };
+        }
         if (spec.Cmd is { Count: > 0 } cmd)
             body["Cmd"] = cmd;
         if (spec.Label is { Length: > 0 } label)

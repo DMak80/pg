@@ -285,7 +285,9 @@ public sealed class BucketEvacuator(
             var members = await probe.GetClusterAsync(node.Value, ct);
             if (!members.IsSuccess)
                 continue;
-            var master = members.Value.FirstOrDefault(m => m.Role == "master" && m.State == "running");
+            // Patroni 3.x в /cluster называет мастера "leader" (legacy: "master").
+            var master = members.Value.FirstOrDefault(m =>
+                m.Role is "master" or "leader" or "primary" && m.State == "running");
             if (master is not null && shardNodes.TryGetValue(master.Name, out var addr))
                 return addr;
         }
@@ -310,17 +312,7 @@ public sealed class BucketEvacuator(
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(
                 (IReadOnlyDictionary<string, NodeAddress>)new Dictionary<string, NodeAddress>());
 
-        try
-        {
-            var parsed = JsonSerializer.Deserialize<Dictionary<string, NodeAddress>>(kv.Value);
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(
-                (IReadOnlyDictionary<string, NodeAddress>)(parsed ?? []));
-        }
-        catch (JsonException e)
-        {
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(
-                new ApplicationException($"битый portalloc {cluster}: {e.Message}", e));
-        }
+        return Portalloc.Parse(cluster, kv.Value);
     }
 
     // Failover-обёртки: первый успешный endpoint выигрывает.

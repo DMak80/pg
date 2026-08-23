@@ -294,7 +294,9 @@ public sealed class ProvisioningProcess(
             var members = await probe.GetClusterAsync(topology.Nodes[node], ct);
             if (!members.IsSuccess)
                 continue;
-            var master = members.Value.FirstOrDefault(m => m.Role == "master" && m.State == "running");
+            // Patroni 3.x в /cluster называет мастера "leader" (legacy: "master").
+            var master = members.Value.FirstOrDefault(m =>
+                m.Role is "master" or "leader" or "primary" && m.State == "running");
             if (master is not null && topology.Nodes.TryGetValue(master.Name, out var addr))
                 return addr;
         }
@@ -315,9 +317,19 @@ public sealed class ProvisioningProcess(
             return ensured;
 
         var dbDsn = DatabaseProvisioner.BuildAdminDsn(master.Host, master.Ports.Pg, dbname, secrets);
-        var roles = await db.ExecuteAsync(dbDsn, DatabaseProvisioner.BuildRolesSql(secrets), ct);
-        if (!roles.IsSuccess)
-            return roles;
+        // Роли — guard-SELECT → CREATE отдельной командой (gexec-паттерн).
+        foreach (var guard in DatabaseProvisioner.BuildRoleGuardsSql(secrets))
+        {
+            var probe = await db.ExecuteScalarAsync(dbDsn, guard, ct);
+            if (!probe.IsSuccess)
+                return probe;
+            if (probe.Value is string create)
+            {
+                var created = await db.ExecuteAsync(dbDsn, create, ct);
+                if (!created.IsSuccess)
+                    return created;
+            }
+        }
 
         var bucketIds = snap.Routing
             .Where(r => r.Owner == shard.Name)
@@ -436,21 +448,12 @@ public sealed class ProvisioningProcess(
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(
                 (IReadOnlyDictionary<string, NodeAddress>)new Dictionary<string, NodeAddress>());
 
-        try
-        {
-            var parsed = JsonSerializer.Deserialize<Dictionary<string, NodeAddress>>(kv.Value);
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(
-                (IReadOnlyDictionary<string, NodeAddress>)(parsed ?? []));
-        }
-        catch (JsonException e)
-        {
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(
-                new ApplicationException($"битый portalloc {cluster}: {e.Message}", e));
-        }
+        // Контрактный плоский формат (spec §4.3) — см. Core.Model.Portalloc.
+        return Portalloc.Parse(cluster, kv.Value);
     }
 
     private static string SerializePortAlloc(IReadOnlyDictionary<string, NodeAddress> addresses)
-        => JsonSerializer.Serialize(addresses);
+        => Portalloc.Serialize(addresses); // плоский контрактный формат §4.3
 
     private static string PortAllocKey(string cluster) => $"/pgworker/portalloc/{cluster}";
 

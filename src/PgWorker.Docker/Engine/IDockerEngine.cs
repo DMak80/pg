@@ -29,6 +29,9 @@ public interface IDockerEngine : IAsyncDisposable
     // DELETE /volumes/<name> (404 = успех).
     Task<Result> RemoveVolumeAsync(string name, CancellationToken ct);
 
+    // POST /networks/create (409 already exists = успех) — сеть нод кластера.
+    Task<Result> EnsureNetworkAsync(string name, CancellationToken ct);
+
     // swarm: GET /nodes (+ счётчик running-тасков по нодам).
     Task<Result<IReadOnlyList<DockerSwarmNode>>> ListNodesAsync(CancellationToken ct);
 
@@ -60,6 +63,9 @@ public sealed record PortMap(int ContainerPort, int HostPort);
 // Спецификация контейнера ноды (env из NodeConfigBuilders, volume данных, publish-порты).
 // Cmd — опциональная команда (не задаётся драйвером: у образа pgworker-node свой
 // entrypoint; используется интеграционными тестами для alpine-контейнеров).
+// Network/NetworkAliases — общая docker-сеть нод кластера (внутренние адреса
+// Patroni-репликации; alias = имя ноды): вне user-defined сети контейнеры друг
+// друга по hostname не резолвят.
 public sealed record ContainerSpec(
     string Image,
     IReadOnlyDictionary<string, string> Env,
@@ -70,7 +76,9 @@ public sealed record ContainerSpec(
     double? CpuCores,
     long? MemoryBytes,
     string? Label,
-    IReadOnlyList<string>? Cmd = null);
+    IReadOnlyList<string>? Cmd = null,
+    string? Network = null,
+    IReadOnlyList<string>? NetworkAliases = null);
 
 // Спецификация swarm-сервиса ноды: constraint на конкретную ноду (node.id==<id>).
 public sealed record ServiceSpec(string Name, ContainerSpec Template, string NodeConstraint);

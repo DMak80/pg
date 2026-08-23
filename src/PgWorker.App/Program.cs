@@ -45,10 +45,11 @@ builder.Services.AddSingleton(sp => new WorkJournal(
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
 
 // docker: драйвер по режиму (Plain: таблица Hosts; Swarm: manager endpoint).
+builder.Services.AddSingleton<DockerEngineFactory>();
 builder.Services.AddSingleton<IClusterDriver>(sp =>
 {
     var docker = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Docker;
-    var factory = new DockerEngineFactory();
+    var factory = sp.GetRequiredService<DockerEngineFactory>();
     if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
     {
         if (string.IsNullOrWhiteSpace(docker.SwarmManager))
@@ -79,6 +80,12 @@ builder.Services.AddSingleton(sp =>
 });
 
 // Процессы-машины состояний (§6.4): снапшот передаётся делегатом от SnapshotJob.
+// EtcdEndpoints для КОНТЕЙНЕРОВ нод — из AdvertisedEndpoints (ноды ходят в etcd
+// через docker-сеть, а не через endpoint'ы самого PgWorker).
+builder.Services.AddSingleton(sp => new EtcdEndpoints(
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.AdvertisedEndpoints is { Length: > 0 } advertised
+        ? advertised
+        : sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
 builder.Services.AddSingleton(sp =>
 {
     var opts = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value;
@@ -91,7 +98,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<WorkJournal>(),
         new PlacementOptions(opts.Docker.PortRange.From, opts.Docker.PortRange.To, opts.Thresholds.PatroniBootSec),
         sp.GetRequiredService<InstallSecrets>(),
-        new EtcdEndpoints(endpoints),
+        sp.GetRequiredService<EtcdEndpoints>(),
         SnapshotDelegate(job));
 });
 builder.Services.AddSingleton(sp => new DeprovisioningProcess(
@@ -115,7 +122,8 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
     new MasterKeyReconciler(
         sp.GetRequiredService<IEtcdGateway>(),
         sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
-        sp.GetRequiredService<ShardProbe>())));
+        sp.GetRequiredService<ShardProbe>()),
+    sp.GetRequiredService<EtcdEndpoints>()));
 builder.Services.AddSingleton(sp => new BucketEvacuator(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
@@ -129,7 +137,7 @@ builder.Services.AddSingleton(sp => new BucketEvacuator(
 
 // Циклы (§6.2): keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
 // Регистрируются синглтонами — health-обёртки читают их состояние напрямую.
-builder.Services.AddSingleton<ClusterProcesses>();
+builder.Services.AddSingleton<IClusterProcesses, ClusterProcesses>();
 builder.Services.AddSingleton<KeepaliveLoop>();
 builder.Services.AddSingleton<SnapshotLoop>();
 builder.Services.AddSingleton<ReconcileLoop>();

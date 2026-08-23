@@ -1180,12 +1180,12 @@ Degraded.
 **Проверка:** `PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx --filter E2e`.
 **Spec:** §11 (полный список, включая §11.8 через задачу 13), §9, §12 O2.
 
-- [ ] Шаг 1: dev-stand compose + сид (кластер shop 6×2×2).
-- [ ] Шаг 2: E2E-фикстура (node-образ, хост-инстанс PgWorker, этcd-клиент
+- [x] Шаг 1: dev-stand compose + сид (кластер shop 6×2×2).
+- [x] Шаг 2: E2E-фикстура (node-образ, хост-инстанс PgWorker, этcd-клиент
   теста) + сценарий AC2 (provisioning + O2 multi-host DSN probe) — зелёный.
-- [ ] Шаг 3: сценарии AC3/AC4 (takeover, deprovisioning) — зелёные.
-- [ ] Шаг 4: сценарии AC5/AC6/AC7 — зелёные.
-- [ ] Шаг 5: commit `"test(e2e): сценарии приёмки spec §11 на dev-stand"`.
+- [x] Шаг 3: сценарии AC3/AC4 (takeover, deprovisioning) — зелёные.
+- [x] Шаг 4: сценарии AC5/AC6/AC7 — зелёные.
+- [x] Шаг 5: commit `"test(e2e): сценарии приёмки spec §11 на dev-stand"`.
 
 ### Задача 27: Финальная верификация и self-review
 

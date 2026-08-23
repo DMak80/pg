@@ -51,7 +51,7 @@ public class BucketEvacuatorTests
         etcd.Seed("/clusters/shop/buckets/routing/bucket_2", "shard1");
         etcd.Seed("/clusters/shop/buckets/routing/bucket_3", "shard2");
         // portalloc: patroni-порты 18000/18001 (shard1), 18002/18003 (shard2)
-        etcd.Seed("/pgworker/portalloc/shop", System.Text.Json.JsonSerializer.Serialize(
+        etcd.Seed("/pgworker/portalloc/shop", PgWorker.Core.Model.Portalloc.Serialize(
             new Dictionary<string, NodeAddress>
             {
                 ["shard1/shard1a"] = new("h1", new NodePorts(15000, 18000, 16500)),
@@ -124,7 +124,7 @@ public class BucketEvacuatorTests
 
         // схемы эвакуированных бакетов созданы на цели (мастер shard2 = h1:15002)
         rig.Sql.Executed.Should().Contain(e =>
-            e.Dsn.Contains("host=h1 port=15002") && e.Sql.Contains("CREATE SCHEMA IF NOT EXISTS bucket_0"));
+            e.Dsn.Contains("Host=h1;Port=15002") && e.Sql.Contains("CREATE SCHEMA IF NOT EXISTS bucket_0"));
         rig.Sql.Executed.Should().Contain(e => e.Sql.Contains("CREATE SCHEMA IF NOT EXISTS bucket_2"));
 
         // ноды мёртвого шарда — QUARANTINED (контейнеры не тронуты), журнал DONE,

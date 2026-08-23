@@ -53,7 +53,7 @@ public class NodeSupervisorTests
             alloc[$"shard1/shard1{(char)('a' + i)}"] = new NodeAddress(
                 i % 2 == 0 ? "h1" : "h2",
                 new NodePorts(15000 + i, 18000 + i, 16500 + i));
-        etcd.Seed("/pgworker/portalloc/shop", System.Text.Json.JsonSerializer.Serialize(alloc));
+        etcd.Seed("/pgworker/portalloc/shop", PgWorker.Core.Model.Portalloc.Serialize(alloc));
     }
 
     private static async Task<ClusterSnapshot> Snapshot(Fakes.FakeEtcd etcd)

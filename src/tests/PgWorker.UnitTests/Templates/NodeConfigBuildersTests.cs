@@ -50,7 +50,7 @@ public class NodeConfigBuildersTests
 
         // Assert: идентификация Patroni-кластера и адреса DCS на месте.
         env["SCOPE"].Should().Be("shop-shard1");
-        env["ETCD_HOSTS"].Should().Be("http://e1:2379,http://e2:2379");
+        env["ETCD3_HOSTS"].Should().Be("e1:2379,e2:2379"); // Patroni: host:port без scheme (etcd v3)
         env["PGW_ETCD"].Should().Be("http://e1:2379,http://e2:2379");
         env["PGW_MASTER_KEY"].Should().Be("/clusters/shop/shards/shard1/master");
     }

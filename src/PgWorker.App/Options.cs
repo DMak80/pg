@@ -24,6 +24,13 @@ public sealed class PgWorkerOptions
 public sealed class EtcdOptions
 {
     public string[] Endpoints { get; set; } = [];
+
+    /// <summary>
+    /// Адреса etcd для КОНТЕЙНЕРОВ нод (Patroni DCS): когда PgWorker ходит в etcd
+    /// по localhost/tunnel, а ноды — через docker-сеть (host.docker.internal:порт).
+    /// Null/пусто → используются Endpoints.
+    /// </summary>
+    public string[]? AdvertisedEndpoints { get; set; }
 }
 
 /// <summary>docker: режим (Plain|Swarm), хосты plain / manager swarm, порты, образы.</summary>
