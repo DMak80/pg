@@ -88,6 +88,14 @@ public class CreateClusterApiTests(AuthWebFactory factory, EtcdContainerFixture 
             "/service/shop-shard1/request_cpu", "/service/shop-shard1/request_mem", "/service/shop-shard1/request_disk",
             "/service/shop-shard2/request_cpu", "/service/shop-shard2/request_mem", "/service/shop-shard2/request_disk",
         ]);
+
+        // routing — блочное распределение (arch/02 §9.1.1): 4×2 → 0,1=shard1; 2,3=shard2
+        // (порядок ключей bucket_0..3 лексикографичен — одна разрядность)
+        var routing = range.Value
+            .Where(kv => kv.Key.StartsWith("/clusters/shop/buckets/routing/"))
+            .OrderBy(kv => kv.Key)
+            .Select(kv => kv.Value).ToArray();
+        routing.Should().Equal("shard1", "shard1", "shard2", "shard2");
     }
 
     [Fact]
@@ -107,6 +115,31 @@ public class CreateClusterApiTests(AuthWebFactory factory, EtcdContainerFixture 
         second.StatusCode.Should().Be(HttpStatusCode.Conflict);
         var problem = await second.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         problem.GetProperty("title").GetString().Should().Be("Cluster already exists");
+    }
+
+    [Fact]
+    public async Task Create_CanonicalTenByThree_WritesBlockRouting()
+    {
+        // Arrange: канон spec §2.1 — 10 бакетов × 3 шарда, остаток среднему шарду
+        SetLiveSnapshot();
+        using var client = await ApiTestLogin.LoginAsync(_factory);
+
+        // Act
+        using var response = await client.PostAsJsonAsync(
+            "/api/clusters",
+            new { name = "canon10", buckets = 10, shards = 3, replicas = 2, requestCpu = 0.5m, requestMem = 8, requestDisk = 100 },
+            TestContext.Current.CancellationToken);
+
+        // Assert: через реальный gateway — блоки 3+4+3 (arch/02 §9.1.1)
+        response.StatusCode.Should().Be(HttpStatusCode.Created);
+        var gateway = EtcdTestHarness.NewGateway();
+        var range = await gateway.RangeAsync(
+            fixture.Endpoint, "/clusters/canon10/buckets/routing/", TestContext.Current.CancellationToken);
+        var routing = range.Value.OrderBy(kv => kv.Key).Select(kv => kv.Value).ToArray();
+        routing.Should().Equal(
+            "shard1", "shard1", "shard1",
+            "shard2", "shard2", "shard2", "shard2",
+            "shard3", "shard3", "shard3");
     }
 
     [Theory]
