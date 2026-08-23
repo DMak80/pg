@@ -765,9 +765,9 @@ stop-only для карантина).
 **Проверка:** `dotnet test src/PgWorker.slnx --filter ClusterDriver`.
 **Spec:** §5.2, §5.3, §6.4 E3, Д3, Д4, Д5.
 
-- [ ] Шаг 1: AAA-тесты → красный.
-- [ ] Шаг 2: реализация двух драйверов → зелёный.
-- [ ] Шаг 3: commit `"feat(docker): драйверы plain/swarm — создание/остановка/удаление нод"`.
+- [x] Шаг 1: AAA-тесты → красный.
+- [x] Шаг 2: реализация двух драйверов → зелёный.
+- [x] Шаг 3: commit `"feat(docker): драйверы plain/swarm — создание/остановка/удаление нод"`.
 
 ### Задача 16: Integration: docker (trait DockerAvailable)
 

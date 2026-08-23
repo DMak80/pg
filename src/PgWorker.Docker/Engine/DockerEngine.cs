@@ -9,7 +9,7 @@ namespace PgWorker.Docker.Engine;
 
 // Фабрика движков: endpoint "unix:///var/run/docker.sock" | "tcp://host:2375".
 // API-версия закреплена v1.44 (решение фазы plan №2; docker >= 23).
-public sealed class DockerEngineFactory
+public class DockerEngineFactory
 {
     // Транспортный handler: unix → ConnectCallback с UnixDomainSocketEndPoint.
     internal HttpMessageHandler CreateHandler(string endpoint)
@@ -42,7 +42,7 @@ public sealed class DockerEngineFactory
     }
 
     // hostAlias — имя docker-хоста для BusyPorts plain-режима (swarm: null).
-    public IDockerEngine Create(string endpoint, string? hostAlias = null)
+    public virtual IDockerEngine Create(string endpoint, string? hostAlias = null)
     {
         var baseAddress = endpoint.StartsWith("unix://", StringComparison.Ordinal)
             ? "http://localhost" // фиктивный хост: соединение уходит в unix-сокет через ConnectCallback
@@ -116,7 +116,16 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
 
     public async Task<Result> StopContainerAsync(string idOrName, int timeoutSec, CancellationToken ct)
         => await Result.FromAsync(async () =>
-            await SendAsync(HttpMethod.Post, $"/containers/{Uri.EscapeDataString(idOrName)}/stop?t={timeoutSec}", ct: ct));
+        {
+            try
+            {
+                await SendAsync(HttpMethod.Post, $"/containers/{Uri.EscapeDataString(idOrName)}/stop?t={timeoutSec}", ct: ct);
+            }
+            catch (DockerHttpException e) when (e.StatusCode is 304 or 404)
+            {
+                // 304 — уже остановлен; 404 — контейнера нет (идемпотентность карантина E3)
+            }
+        });
 
     public async Task<Result> RemoveContainerAsync(string idOrName, bool force, CancellationToken ct)
         => await Result.FromAsync(async () =>
