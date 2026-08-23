@@ -35,7 +35,7 @@
 - Consumes: `CreateClusterRequest` (поля `Buckets`, `Shards` — после Normalize это канонические N≥S≥1).
 - Produces: `public static int OwnerShard(int bucket, int buckets, int shards)` — 1-based номер шарда (`1..shards`); используется `Build` и тестами Tasks 1; на неё же опираются интеграционные ожидания Task 3.
 
-- [ ] **Step 1.1: Написать падающие тесты формулы (новые члены класса `ClusterCreatePlanTests`)**
+- [x] **Step 1.1: Написать падающие тесты формулы (новые члены класса `ClusterCreatePlanTests`)**
 
 Вход: файл `src/tests/AdminPanel.UnitTests/CreateClusterPlanTests.cs`, класс `ClusterCreatePlanTests` (после `Build_NormalizedSingle_DegenerateStructure`).
 
@@ -132,7 +132,7 @@ public void OwnerShard_LargeSizes_ExactSplits()
 
 Связь со spec: §2/§2.1 (таблица), §4.2, критерии приёмки 1–2.
 
-- [ ] **Step 1.2: Реализовать `OwnerShard` в `ClusterCreatePlan`**
+- [x] **Step 1.2: Реализовать `OwnerShard` в `ClusterCreatePlan`**
 
 Вход: `src/AdminPanel.Etcd/Writing/ClusterCreatePlan.cs`.
 
@@ -154,7 +154,7 @@ public static int OwnerShard(int bucket, int buckets, int shards)
 
 Связь со spec: §4.2 (сигнатура и реализация — дословно).
 
-- [ ] **Step 1.3: Обновить ожидания `Build`-тестов под блочный расклад**
+- [x] **Step 1.3: Обновить ожидания `Build`-тестов под блочный расклад**
 
 Вход: `src/tests/AdminPanel.UnitTests/CreateClusterPlanTests.cs`.
 
@@ -197,7 +197,7 @@ public void Build_BlockUneven_RemainderToLaterShards()
 
 Связь со spec: §4.6 (обновление план-тестов), критерий 3.
 
-- [ ] **Step 1.4: Переключить `Build` на `OwnerShard`**
+- [x] **Step 1.4: Переключить `Build` на `OwnerShard`**
 
 Вход: `src/AdminPanel.Etcd/Writing/ClusterCreatePlan.cs`, цикл бакетов в `Build`.
 
@@ -226,7 +226,7 @@ for (var i = 0; i < request.Buckets; i++)
 
 Связь со spec: §4.2, критерии 1–3, 5.
 
-- [ ] **Step 1.5: Коммит**
+- [x] **Step 1.5: Коммит**
 
 Вход: зелёные тесты Task 1.
 Действие:
@@ -252,7 +252,7 @@ git commit -m "feat(etcd): OwnerShard — блочное распределен�
 - Consumes: `ClusterInfo` из `AdminPanel.Core` (поля `BucketsCount`, `Shards`).
 - Produces: поле `bool Sharded` в `ClusterDto` (позиционно после `State`; JSON — `sharded` camelCase). Потребители: интеграционные тесты Task 3 (JSON `sharded`), фронт Task 4 (`ClusterDto.sharded: boolean`). Единственное место конструирования `new ClusterDto(` — маппер (проверено).
 
-- [ ] **Step 2.1: Написать падающий тест маппера**
+- [x] **Step 2.1: Написать падающий тест маппера**
 
 Вход: `src/tests/AdminPanel.UnitTests/ClustersMappersTests.cs`, после `ClusterDetailsMapper_Filters_OwnerStateBothNull`.
 
@@ -282,7 +282,7 @@ public void ClusterDetailsMapper_ShardedFlag_SingleVsMultiBucket()
 Ожидание: **ошибка компиляции** `CS1061: 'ClusterDto' does not contain a definition for 'Sharded'`.
 Связь со spec: §4.3, §8.2, §8.6, критерий 4.
 
-- [ ] **Step 2.2: Добавить поле и вычисление**
+- [x] **Step 2.2: Добавить поле и вычисление**
 
 Вход: `src/AdminPanel.Api/Inspection/ClusterDetailsQuery.cs`.
 
@@ -319,7 +319,7 @@ public sealed record ClusterDto(
 Ожидание: **PASS** (включая новый тест); build решения — 0 warnings (в т.ч. `InspectionQueryHandlerTests` и прочие юзеры маппера компилируются — поле позиционное, конструктор один).
 Связь со spec: §4.3 (дословно), arch/03 §2.
 
-- [ ] **Step 2.3: Прогнать весь юнит-проект (регресс соседей)**
+- [x] **Step 2.3: Прогнать весь юнит-проект (регресс соседей)**
 
 Вход: правки Task 2.
 Действие: `dotnet test src/tests/AdminPanel.UnitTests`
@@ -327,7 +327,7 @@ public sealed record ClusterDto(
 Проверка: полный прогон — **все зелёные**; при падении `Inspection*`-тестов — сверить порядок аргументов `new ClusterDto(...)` (должно быть единственное место).
 Связь со spec: критерий 4 (unit-уровень).
 
-- [ ] **Step 2.4: Коммит**
+- [x] **Step 2.4: Коммит**
 
 Вход: зелёный юнит-проект.
 Действие:
@@ -354,7 +354,7 @@ git commit -m "feat(api): ClusterDto.sharded — вычисляемый приз
 
 Требование к окружению: Docker (Testcontainers `quay.io/coreos/etcd:v3.5.21`).
 
-- [ ] **Step 3.1: Routing-значения в существующем кейсе (4×2) + канонический кейс (10×3)**
+- [x] **Step 3.1: Routing-значения в существующем кейсе (4×2) + канонический кейс (10×3)**
 
 Вход: `src/tests/AdminPanel.IntegrationTests/CreateClusterApiTests.cs`.
 
@@ -406,7 +406,7 @@ public async Task Create_CanonicalTenByThree_WritesBlockRouting()
 Ожидание: **PASS** (код Tasks 1–2 уже реализован; при FAIL — читать фактические значения routing из сообщения FluentAssertions).
 Связь со spec: §4.6 (integration), критерии 1, 5.
 
-- [ ] **Step 3.2: `sharded` в GET-деталях**
+- [x] **Step 3.2: `sharded` в GET-деталях**
 
 Вход: `src/tests/AdminPanel.IntegrationTests/ClustersApiTests.cs`, после `Clusters_NotInitializedCluster_FlaggedInSummaryAndDetails` (паттерн построения кластера поверх `Fixture` — оттуда же).
 
@@ -447,7 +447,7 @@ public async Task ClusterDetails_ShardedFlag_SingleFalse_MultiTrue()
 Ожидание: **PASS**; `Clusters_WithSnapshot_ReturnSummaries` (Be(1)) и прочие — не затронуты.
 Связь со spec: §4.6, критерии 4–5.
 
-- [ ] **Step 3.3: Прогон всего integration-проекта и коммит**
+- [x] **Step 3.3: Прогон всего integration-проекта и коммит**
 
 Вход: правки Task 3.
 Действие:
@@ -474,7 +474,7 @@ git commit -m "test(api): integration — блочный routing 4×2 и кан�
 - Consumes: JSON-поле `sharded` (camelCase) ответа `GET /api/clusters/{cluster}` (Task 2).
 - Produces: `ClusterDto.sharded: boolean` — единственный источник условия для вкладки; более ничего на фронте не меняется.
 
-- [ ] **Step 4.1: Поле в TS-DTO**
+- [x] **Step 4.1: Поле в TS-DTO**
 
 Вход: `frontend/src/api/dto.ts`.
 
@@ -490,7 +490,7 @@ git commit -m "test(api): integration — блочный routing 4×2 и кан�
 Проверка: `cd frontend && npm run typecheck && cd ..` — без ошибок.
 Связь со spec: §4.4.
 
-- [ ] **Step 4.2: Условная вкладка на странице деталей**
+- [x] **Step 4.2: Условная вкладка на странице деталей**
 
 Вход: `frontend/src/pages/ClusterDetailsPage.tsx`.
 
@@ -530,7 +530,7 @@ git commit -m "test(api): integration — блочный routing 4×2 и кан�
 Проверка: `cd frontend && npm run build && cd ..` (tsc --noEmit двух конфигов + vite build) — без ошибок.
 Связь со spec: §4.4, критерий 4; arch/03 §3.
 
-- [ ] **Step 4.3: Коммит**
+- [x] **Step 4.3: Коммит**
 
 Вход: зелёный build фронта.
 Действие:
@@ -554,7 +554,7 @@ git commit -m "feat(frontend): вкладка Бакеты скрыта для �
 - Consumes: всё выше (сервер пишет блоки, детали содержат `sharded`); переменные чека `BASE`, `JAR`, функция `ect` — существуют.
 - Produces: зелёный e2e-чек — критерий приёмки 6; кейсы: smoke (4×2 блоки + `sharded:true`), solo (`sharded:false`), canon10 (3+4+3).
 
-- [ ] **Step 5.1: Заменить round-robin-ассерт smoke на блочный**
+- [x] **Step 5.1: Заменить round-robin-ассерт smoke на блочный**
 
 Вход: `dev-stand/checks/15-cluster-create.sh`, строки 44–48.
 
@@ -582,7 +582,7 @@ echo "  etcd: config/nodes/request_*/routing — контракт §9.1.1 (бл�
 Проверка: `bash -n dev-stand/checks/15-cluster-create.sh` — синтаксис ок (полный прогон — Task 6).
 Связь со spec: §4.5, §8.5.
 
-- [ ] **Step 5.2: `.sharded` в проверках деталей smoke и solo**
+- [x] **Step 5.2: `.sharded` в проверках деталей smoke и solo**
 
 Вход: тот же файл; smoke-блок (строки 64–66) и solo-блок (строки 94–103).
 
@@ -610,7 +610,7 @@ curl -fsS -b "$JAR" "$BASE/api/clusters/solo" | jq -e \
 Проверка: `bash -n dev-stand/checks/15-cluster-create.sh`.
 Связь со spec: §4.5, критерий 4.
 
-- [ ] **Step 5.3: Кейс `canon10` — канон 10×3 → 3+4+3**
+- [x] **Step 5.3: Кейс `canon10` — канон 10×3 → 3+4+3**
 
 Вход: тот же файл; вставка после solo-блока (после строки `echo "  /api/clusters/solo: 1 бакет × 1 шард, NOT_INITIALIZED"`), до финального `echo "✓ 15-cluster-create: …"`.
 
@@ -641,7 +641,7 @@ echo "  canon10: 10×3 → 3+4+3 — канон §9.1.1 соблюдён"
 Проверка: `bash -n dev-stand/checks/15-cluster-create.sh`.
 Связь со spec: §4.5, §8.5, критерии 1, 5.
 
-- [ ] **Step 5.4: Коммит**
+- [x] **Step 5.4: Коммит**
 
 Вход: синтаксически валидный чек.
 Действие:
@@ -665,7 +665,7 @@ git commit -m "chore(stand): e2e-чек 15 — блочная раскладка
 - Consumes: все предыдущие Tasks.
 - Produces: подтверждение критериев приёмки spec §7 (1–7) — отчёт исполнителя.
 
-- [ ] **Step 6.1: Сервер — сборка и все тесты**
+- [x] **Step 6.1: Сервер — сборка и все тесты**
 
 Вход: ветка с Tasks 1–5.
 Действие:
@@ -679,7 +679,7 @@ dotnet test src/AdminPanel.slnx
 Проверка: build — **0 warnings, 0 errors**; `dotnet test src/AdminPanel.slnx` — **все зелёные**.
 Связь со spec: критерий 6.
 
-- [ ] **Step 6.2: Фронтенд — production-сборка**
+- [x] **Step 6.2: Фронтенд — production-сборка**
 
 Вход: правки Task 4.
 Действие: `cd frontend && npm run build && cd ..`
@@ -687,7 +687,7 @@ dotnet test src/AdminPanel.slnx
 Проверка: **без ошибок**.
 Связь со spec: критерий 6.
 
-- [ ] **Step 6.3: e2e на dev-стенде**
+- [x] **Step 6.3: e2e на dev-стенде**
 
 Вход: Docker-стенд.
 Действие:
@@ -700,7 +700,7 @@ cd dev-stand && ./checks/00-up.sh && ./checks/15-cluster-create.sh; cd ..
 Проверка: вывод заканчивается `✓ 15-cluster-create: создание кластера e2e прошло`; в логе видны строки всех кейсов: smoke (routing blocks 4×2, `sharded==true`), solo (`sharded==false`), canon10 (3+4+3). Любая `❌`-строка = FAIL → фикс и повтор.
 Связь со spec: критерии 1, 4, 5, 6.
 
-- [ ] **Step 6.4: UI-проверка скрытия вкладки «Бакеты» (браузер или curl-фолбэк)**
+- [x] **Step 6.4: UI-проверка скрытия вкладки «Бакеты» (браузер или curl-фолбэк)**
 
 Вход: стенд поднят (Step 6.3), панель `http://localhost:5050` отдаёт собранный бандл (SPA хостится панелью, arch/03 §6), кластеры `solo` (нешардированная) и `smoke`/`canon10` (шардированные) существуют.
 
@@ -717,7 +717,7 @@ curl -s "http://localhost:5050/$bundle" | grep -c 'sharded'
 Проверка: вариант A — у solo вкладка «Бакеты» отсутствует, у smoke присутствует; вариант B — `grep -c` вернул ≥ 1 (обращение к `sharded` в бандле есть). При нуле — панель отдаёт старый бандл: пересобрать/переподнять стенд и повторить.
 Связь со spec: §4.6 (UI покрывается e2e и ручной проверкой), критерий 4.
 
-- [ ] **Step 6.5: Сверка соответствия arch ↔ код и итог ветки**
+- [x] **Step 6.5: Сверка соответствия arch ↔ код и итог ветки**
 
 Вход: всё зелёное.
 Действие:
