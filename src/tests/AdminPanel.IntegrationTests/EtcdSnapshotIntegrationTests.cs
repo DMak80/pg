@@ -180,22 +180,6 @@ public class EtcdSnapshotIntegrationTests(EtcdContainerFixture fixture) : IClass
     }
 
     [Fact]
-    public async Task Refresher_SecondTick_PicksUpChanges()
-    {
-        // Arrange
-        var store = new SnapshotStore();
-        var refresher = EtcdTestHarness.NewRefresher(store, fixture.Endpoint);
-        await refresher.RefreshOnceAsync(CancellationToken.None);
-
-        // Act — перевладение routing bucket_0 шарду s2
-        await EtcdSeed.PutAsync(fixture.Endpoint, "/clusters/demo/buckets/routing/bucket_0", "s2", CancellationToken.None);
-        await refresher.RefreshOnceAsync(CancellationToken.None);
-
-        // Assert
-        store.Current!.Clusters.Single().Buckets.Single(b => b.Id == 0).Owner.Should().Be("s2");
-    }
-
-    [Fact]
     public async Task Refresher_Failover_DeadFirstEndpoint()
     {
         // Arrange — localhost:1: connection refused мгновенен
@@ -309,5 +293,28 @@ public class EtcdFailureTests(EtcdContainerFixture fixture) : IClassFixture<Etcd
         // t04: алерты вычислены и на отказном тике — unreachable на пороге 2 (spec §3.5).
         store.Current.Alerts.Should().Contain(a => a.Id == "etcd-unreachable:etcd");
         health.Status.Should().Be(Microsoft.Extensions.Diagnostics.HealthChecks.HealthStatus.Unhealthy);
+    }
+}
+
+// Мутационные сценарии — отдельный класс со СВОИМ контейнером (по образцу EtcdFailureTests):
+// перевладение routing bucket_0 меняет ACTIVE-раскладку s1 и ломает ожидание инвентаря
+// "чётные bucket_0..14" в EnrichesSnapshot-тесте общего класса (t90: order-dependent
+// флак "лишний bucket_0" → inventory-mismatch). Мутации сида — только здесь.
+public class EtcdRoutingMutationTests(EtcdContainerFixture fixture) : IClassFixture<EtcdContainerFixture>
+{
+    [Fact]
+    public async Task Refresher_SecondTick_PicksUpChanges()
+    {
+        // Arrange
+        var store = new SnapshotStore();
+        var refresher = EtcdTestHarness.NewRefresher(store, fixture.Endpoint);
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Act — перевладение routing bucket_0 шарду s2
+        await EtcdSeed.PutAsync(fixture.Endpoint, "/clusters/demo/buckets/routing/bucket_0", "s2", CancellationToken.None);
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert
+        store.Current!.Clusters.Single().Buckets.Single(b => b.Id == 0).Owner.Should().Be("s2");
     }
 }
