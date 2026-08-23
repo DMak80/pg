@@ -95,6 +95,8 @@ arch/
 │                                  онлайн-переезд бакета между шардами
 ├── 12-bucket-pitfalls.md      ← ★ реестр рисков топологии бакетов (etcd + pg_doorman)
 ├── 13-network-security.md     ← ★ сетевая модель бакетов: firewall-матрица, TLS, аутентификация (P17)
+├── 14-pgworker.md             ← ★ оркестратор PgWorker: provisioning/deprovisioning/надзор/эвакуация
+│                                  (docker-управление кластерами, префикс /pgworker/, roadmap/)
 ├── configs/
 │   ├── etcd/
 │   │   ├── docker-compose.yml
@@ -176,3 +178,6 @@ arch/
     (константа N, etcd-контрол-плейн, pg_doorman).
 11. [13-network-security.md](13-network-security.md) — **опционально**: сетевая
     модель бакетов (firewall-матрица, TLS, аутентификация).
+12. [14-pgworker.md](14-pgworker.md) — оркестратор PgWorker: декларативный
+    provisioning/deprovisioning кластеров, контроль нод, эвакуация бакетов
+    (отложенные задачи — [roadmap/](roadmap/)).
