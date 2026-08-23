@@ -21,6 +21,7 @@
 - Язык: комментарии и тексты UI русские, идентификаторы английские; тесты — с AAA-комментариями (`// Arrange`, `// Act`, `// Assert`); стиль окружающего кода.
 - Сборка: 0 warnings (`TreatWarningsAsErrors=true` — любой warning = ошибка).
 - Команды выполнять из корня worktree (`/Users/demakaev/ZCodeProject/worktrees/feat-bucket-block-distribution`), если не указано иное.
+- ⚠️ Решение — `src/AdminPanel.slnx`: в корне worktree нет .slnx/.csproj, голые `dotnet build` / `dotnet test` из корня падают (MSB1003). Всегда указывать путь: `dotnet build src/AdminPanel.slnx`, `dotnet test src/AdminPanel.slnx` либо путь конкретного тест-проекта.
 
 ---
 
@@ -220,8 +221,8 @@ for (var i = 0; i < request.Buckets; i++)
 
 Выход: round-robin (`i % request.Shards`) в кодовой базе плана отсутствует; вырожденный 1×1 проходит формулой без спецеветки (`OwnerShard(0,1,1) == 1` — тест `Build_NormalizedSingle_DegenerateStructure` не меняется).
 
-Проверка: `dotnet test src/tests/AdminPanel.UnitTests --filter "FullyQualifiedName~ClusterCreatePlanTests" && dotnet build`
-Ожидание: **PASS** всеми тестами; build — 0 warnings/0 errors.
+Проверка: `dotnet test src/tests/AdminPanel.UnitTests --filter "FullyQualifiedName~ClusterCreatePlanTests" && dotnet build src/AdminPanel.slnx`
+Ожидание: **PASS** всеми тестами; build решения — 0 warnings/0 errors.
 
 Связь со spec: §4.2, критерии 1–3, 5.
 
@@ -314,8 +315,8 @@ public sealed record ClusterDto(
 ```
 
 Выход: `ClusterDto.Sharded` вычисляется в единственном месте конструирования.
-Проверка: `dotnet test src/tests/AdminPanel.UnitTests --filter "FullyQualifiedName~ClustersMappersTests" && dotnet build`
-Ожидание: **PASS** (включая новый тест); build — 0 warnings (в т.ч. `InspectionQueryHandlerTests` и прочие юзеры маппера компилируются — поле позиционное, конструктор один).
+Проверка: `dotnet test src/tests/AdminPanel.UnitTests --filter "FullyQualifiedName~ClustersMappersTests" && dotnet build src/AdminPanel.slnx`
+Ожидание: **PASS** (включая новый тест); build решения — 0 warnings (в т.ч. `InspectionQueryHandlerTests` и прочие юзеры маппера компилируются — поле позиционное, конструктор один).
 Связь со spec: §4.3 (дословно), arch/03 §2.
 
 - [ ] **Step 2.3: Прогнать весь юнит-проект (регресс соседей)**
@@ -670,12 +671,12 @@ git commit -m "chore(stand): e2e-чек 15 — блочная раскладка
 Действие:
 
 ```bash
-dotnet build
-dotnet test
+dotnet build src/AdminPanel.slnx
+dotnet test src/AdminPanel.slnx
 ```
 
-Выход: сборка решения `AdminPanel.slnx`.
-Проверка: build — **0 warnings, 0 errors**; `dotnet test` — **все зелёные** (unit + integration; integration требует запущенного Docker).
+Выход: сборка и полный прогон решения (unit + integration; integration требует запущенного Docker).
+Проверка: build — **0 warnings, 0 errors**; `dotnet test src/AdminPanel.slnx` — **все зелёные**.
 Связь со spec: критерий 6.
 
 - [ ] **Step 6.2: Фронтенд — production-сборка**
@@ -699,7 +700,24 @@ cd dev-stand && ./checks/00-up.sh && ./checks/15-cluster-create.sh; cd ..
 Проверка: вывод заканчивается `✓ 15-cluster-create: создание кластера e2e прошло`; в логе видны строки всех кейсов: smoke (routing blocks 4×2, `sharded==true`), solo (`sharded==false`), canon10 (3+4+3). Любая `❌`-строка = FAIL → фикс и повтор.
 Связь со spec: критерии 1, 4, 5, 6.
 
-- [ ] **Step 6.4: Сверка соответствия arch ↔ код и итог ветки**
+- [ ] **Step 6.4: UI-проверка скрытия вкладки «Бакеты» (браузер или curl-фолбэк)**
+
+Вход: стенд поднят (Step 6.3), панель `http://localhost:5050` отдаёт собранный бандл (SPA хостится панелью, arch/03 §6), кластеры `solo` (нешардированная) и `smoke`/`canon10` (шардированные) существуют.
+
+Действие (вариант A — IAB-браузер доступен): открыть `http://localhost:5050` → логин admin/admin → Clusters → `solo`: на странице деталей есть вкладки Шарды/Переезды/Heals и **нет** вкладки «Бакеты» (ни таба, ни панели); `smoke`: вкладка «Бакеты» **есть**, грид бакетов (4 строки) открывается. При наличии — снять domSnapshot.
+
+Действие (вариант B — браузер недоступен; основной в этой среде): curl-проверка, что панель отдаёт бандл из нового кода — в JS-бандле есть обращение к полю `sharded` (условие `data.sharded ? … : null` не минифицирует имя свойства):
+
+```bash
+bundle="$(curl -s http://localhost:5050/ | grep -o 'assets/index-[^"]*\.js' | head -1)"
+curl -s "http://localhost:5050/$bundle" | grep -c 'sharded'
+```
+
+Выход: подтверждение, что UI-слой с условным рендером задеплоен; само решение «показывать ли вкладку» принимает фронт по полю `sharded`, корректность которого уже доказана e2e на API-уровне (`jq '.sharded == false'` у solo, `'.sharded == true'` у smoke — Step 6.3).
+Проверка: вариант A — у solo вкладка «Бакеты» отсутствует, у smoke присутствует; вариант B — `grep -c` вернул ≥ 1 (обращение к `sharded` в бандле есть). При нуле — панель отдаёт старый бандл: пересобрать/переподнять стенд и повторить.
+Связь со spec: §4.6 (UI покрывается e2e и ручной проверкой), критерий 4.
+
+- [ ] **Step 6.5: Сверка соответствия arch ↔ код и итог ветки**
 
 Вход: всё зелёное.
 Действие:
@@ -726,6 +744,6 @@ git log --oneline main..HEAD
 | §4.6 integration (routing 4×2/10×3, sharded) | Task 3 |
 | §4.4 фронт (dto.ts + условная вкладка) | Task 4 |
 | §4.5 e2e-чек 15 (блоки, canon10, .sharded) | Task 5 |
-| §5 фаза 7 / §7 критерии 1–7 (полные проверки) | Task 6 |
+| §5 фаза 7 / §7 критерии 1–7 (полные проверки) | Task 6 (6.4 — UI-проверка критерия 4) |
 | §4.1 контракт arch | уже сделано (коммит a6aebef, Фаза 1) |
 | §2.1 таблица распределений | Task 1 Steps 1.1 (теория + свойства + точные расклады) |
