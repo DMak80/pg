@@ -122,6 +122,52 @@ public class InspectionMappersTests
     }
 
     [Fact]
+    public void Map_NotInitializedCluster_StateNodesAndRequests()
+    {
+        // Arrange: снапшот с HaScope-заявкой (join по <C>-<X>)
+        var shard = new ShardInfo("shard1", "", [], null, null, null, 2, null,
+            [new NodeInfo("shard1a", "NOT_INITIALIZED")], null);
+        var cluster = new ClusterInfo("fresh", "fresh", 1, null, ClusterState.NotInitialized,
+            [shard], [new BucketInfo(0, "shard1", BucketState.NotInitialized, null)], []);
+        var scopes = new List<HaScope>
+        {
+            new("fresh-shard1", "fresh", "shard1", true, null, null, false,
+                "2", "8Gi", "100Gi", [], null),
+        };
+
+        // Act
+        var dto = ClusterDetailsMapper.Map(cluster, nowUnix: 100, null, null, [], scopes);
+
+        // Assert
+        dto.State.Should().Be("NOT_INITIALIZED");
+        dto.Shards.Single().Nodes.Single().Name.Should().Be("shard1a");
+        var requests = dto.Shards.Single().Requests.Should().NotBeNull().And.Subject.As<NodeRequestsDto>();
+        requests.Cpu.Should().Be("2");
+        requests.Mem.Should().Be("8Gi");
+        dto.Buckets.Single().State.Should().Be("NOT_INITIALIZED");
+    }
+
+    [Fact]
+    public void Map_NotInitializedCluster_ZeroMasterlessAndNotInActiveMovesList()
+    {
+        // Arrange: 2 бакета без мастера, бакеты NOT_INITIALIZED
+        var shard = new ShardInfo("shard1", "", [], null, null, null, 1, null, [], null);
+        var cluster = new ClusterInfo("fresh", "fresh", 2, null, ClusterState.NotInitialized,
+            [shard],
+            [new BucketInfo(0, "shard1", BucketState.NotInitialized, null),
+             new BucketInfo(1, "shard1", BucketState.NotInitialized, null)], []);
+        var snapshot = TestSnapshots.Healthy(DateTimeOffset.UnixEpoch) with { Clusters = [cluster] };
+
+        // Act
+        var dto = OverviewMapper.Map(snapshot, DateTimeOffset.UnixEpoch, 3);
+
+        // Assert: masterless=0 (ожидаемо), notInitialized=true; в activeMoves не попали
+        dto.Clusters.Single().MasterlessShards.Should().Be(0);
+        dto.Clusters.Single().NotInitialized.Should().BeTrue();
+        dto.ActiveMoves.Should().BeEmpty();
+    }
+
+    [Fact]
     public void EtcdStatusMapper_ActiveFlag_OnlyForActiveEndpoint()
     {
         // Arrange: ActiveEndpoint = etcd1, endpoints etcd1..etcd3.

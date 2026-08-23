@@ -32,6 +32,7 @@ public sealed record HaScopeDto(
     bool Matched,
     string? LeaderName,
     long? OptimeLeader,
+    NodeRequestsDto? Requests,
     IReadOnlyList<HaMemberDto> Members,
     string? RawConfig);
 
@@ -68,6 +69,10 @@ public static class HaMappers
             scope.Matched,
             scope.LeaderName,
             scope.OptimeLeader,
+            // Заявка есть только при всех трёх ключах request_* (arch/02 §9.1)
+            scope.RequestCpu is null || scope.RequestMem is null || scope.RequestDisk is null
+                ? null
+                : new NodeRequestsDto(scope.RequestCpu, scope.RequestMem, scope.RequestDisk),
             [.. scope.Members.Select(m => new HaMemberDto(
                 m.Name, m.Host, m.Port, m.Role, m.State, m.Timeline, m.LagBytes, m.ProbeAtUtc, m.ProbeError))],
             scope.RawConfig);

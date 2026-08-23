@@ -84,6 +84,22 @@ public class HaMappersTests
     }
 
     [Fact]
+    public void MapDetails_WithRequests_MapsRequests()
+    {
+        // Arrange
+        var scope = new HaScope("fresh-shard1", "fresh", "shard1", true, null, null, false,
+            "0.5", "8Gi", "100Gi", [], null);
+
+        // Act
+        var dto = HaMappers.MapDetails(scope);
+
+        // Assert
+        var requests = dto.Requests.Should().NotBeNull().And.Subject.As<NodeRequestsDto>();
+        requests.Cpu.Should().Be("0.5");
+        requests.Disk.Should().Be("100Gi");
+    }
+
+    [Fact]
     public async Task HaScopesHandler_NoSnapshot_ReturnsSnapshotNotReady()
     {
         // Arrange
