@@ -2,6 +2,7 @@ using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
 using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
+using PgWorker.Moves;
 using PgWorker.Provisioning.Processes;
 
 namespace PgWorker.UnitTests.Provisioning;
@@ -119,6 +120,27 @@ public class DeprovisioningProcessTests
         firstPhase.Should().Be("removing-nodes");
         second.Value.Should().Be(ProcessOutcome.Done);
         rig.Driver.RemovedNodes.Should().BeEquivalentTo(["shard1/shard1a", "shard1/shard1b"]);
+    }
+
+    // AAA: D2 чистит и заявки переездов — /pgworker/moves/<C>/ не переживает кластер (t01, spec §5.3)
+    [Fact]
+    public async Task Deprovision_RemovesMovesPrefix()
+    {
+        // Arrange — снимаемый кластер с живой заявкой переезда бакета
+        var rig = await NewRig();
+        rig.Etcd.Seed(MoveNames.MoveKey("shop", "bucket_0"),
+            """{"op":"move","to":"shard2","requested_unix":1770000000}""");
+        rig.Etcd.Store.Keys.Should().Contain(k =>
+            k.StartsWith(MoveNames.MovesPrefix("shop"), StringComparison.Ordinal));
+
+        // Act — полный цикл deprovisioning
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — префикс заявок вычищен вместе с кластером (заявки не переживают D2)
+        outcome.Value.Should().Be(ProcessOutcome.Done);
+        rig.Etcd.Store.Keys.Should().NotContain(k =>
+            k.StartsWith(MoveNames.MovesPrefix("shop"), StringComparison.Ordinal),
+            "заявки переездов не переживают удаление кластера");
     }
 
     [Fact]

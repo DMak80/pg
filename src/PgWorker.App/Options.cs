@@ -1,3 +1,5 @@
+using PgWorker.Moves;
+
 namespace PgWorker.App;
 
 // Конфигурация PgWorker (spec §10): секция "PgWorker" в appsettings.json +
@@ -18,6 +20,9 @@ public sealed class PgWorkerOptions
     public ParallelismOptions Parallelism { get; set; } = new();
 
     public SnapshotOptions Snapshots { get; set; } = new();
+
+    /// <summary>Параметры процессов переезда бакетов (t01, spec §9).</summary>
+    public MovesOptions Moves { get; set; } = new();
 }
 
 /// <summary>etcd-кластер: HTTP JSON gateway endpoints (failover по списку).</summary>
@@ -87,7 +92,8 @@ public sealed class LoopsOptions
     public int ErrorDelayMs { get; set; } = 2000;
 }
 
-/// <summary>Пороги надзора: rebuild ноды / эвакуация шарда / бюджет ожидания Patroni.</summary>
+/// <summary>Пороги надзора: rebuild ноды / эвакуация шарда / бюджет ожидания Patroni
+/// + пороги cutover-переездов (t01, spec §9).</summary>
 public sealed class ThresholdsOptions
 {
     public int NodeDeadSec { get; set; } = 90;
@@ -95,6 +101,40 @@ public sealed class ThresholdsOptions
     public int ShardDeadSec { get; set; } = 300;
 
     public int PatroniBootSec { get; set; } = 600;
+
+    /// <summary>Бюджет ожидания слота на догон LSN при cutover (t01, spec §9).</summary>
+    public int CutoverTimeoutSec { get; set; } = 90;
+
+    /// <summary>Бюджет недоступности шарда в ожиданиях переезда (t01, spec §9).</summary>
+    public int ConnFailBudgetSec { get; set; } = 120;
+}
+
+/// <summary>Параметры процессов переезда бакетов (t01, spec §9; дефолты — из скриптов
+/// move-bucket.sh/abort-move.sh). Склейка с порогами Thresholds — ToRuntime.</summary>
+public sealed class MovesOptions
+{
+    /// <summary>Поллинг внутри ожиданий (copy-wait, слот).</summary>
+    public int PollIntervalSec { get; set; } = 2;
+
+    /// <summary>Пауза после FROZEN (TTL кэша роутера).</summary>
+    public int FreezeWaitSec { get; set; } = 5;
+
+    /// <summary>lock_timeout барьера заморозки P1.</summary>
+    public int FreezeLockTimeoutSec { get; set; } = 5;
+
+    /// <summary>Попытки заморозки (lock_timeout → пауза → повтор).</summary>
+    public int FreezeLockTries { get; set; } = 3;
+
+    /// <summary>Защита abort от живого mover (по updated_unix, Д12).</summary>
+    public int AbortMinAgeSec { get; set; } = 120;
+
+    /// <summary>failover=true у подписок (PG17+; false для PG16-образа, R1/Д11).</summary>
+    public bool FailoverSlots { get; set; } = true;
+
+    /// <summary>Runtime-опции процессов переезда: склейка Moves + Thresholds (t01 задача 17).</summary>
+    public MovesRuntimeOptions ToRuntime(ThresholdsOptions thresholds) => new(
+        PollIntervalSec, FreezeWaitSec, FreezeLockTimeoutSec, FreezeLockTries,
+        AbortMinAgeSec, FailoverSlots, thresholds.CutoverTimeoutSec, thresholds.ConnFailBudgetSec);
 }
 
 /// <summary>Параллелизм процессов разных кластеров (SemaphoreSlim).</summary>

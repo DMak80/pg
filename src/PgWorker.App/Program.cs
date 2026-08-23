@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using PgWorker.App;
 using PgWorker.App.HealthChecks;
@@ -10,6 +11,7 @@ using PgWorker.Docker.Drivers;
 using PgWorker.Docker.Engine;
 using PgWorker.Etcd.Client;
 using PgWorker.Etcd.Coordination;
+using PgWorker.Moves;
 using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Probes;
 using PgWorker.Provisioning.Processes;
@@ -142,6 +144,32 @@ builder.Services.AddSingleton(sp => new BucketEvacuator(
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<InstallSecrets>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+
+// Переезды бакетов (t01 задача 17): SQL-слой Npgsql+Polly, DDL через docker exec,
+// машина состояний MoveProcess (M0–M6/rollback/finalize/abort); runtime-опции —
+// склейка секций Moves + Thresholds; TimeProvider/System — источник unix-времени
+// статусов; снапшот-делегат — точки «до/после» P12.
+builder.Services.AddSingleton<IMoveSqlExecutor, NpgsqlMoveSqlExecutor>();
+builder.Services.AddSingleton(sp => new MoveDdl(
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<IMoveSqlExecutor>()));
+builder.Services.AddSingleton(sp =>
+{
+    var opts = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value;
+    return new MoveProcess(
+        sp.GetRequiredService<IEtcdGateway>(), opts.Etcd.Endpoints,
+        sp.GetRequiredService<IMoveSqlExecutor>(),
+        sp.GetRequiredService<MoveDdl>(),
+        sp.GetRequiredService<IClusterDriver>(),
+        sp.GetRequiredService<ShardEndpoints>(),
+        sp.GetRequiredService<ClaimStore>(),
+        sp.GetRequiredService<WorkJournal>(),
+        sp.GetRequiredService<InstallSecrets>(),
+        opts.Moves.ToRuntime(opts.Thresholds),
+        sp.GetRequiredService<TimeProvider>(),
+        sp.GetRequiredService<ILoggerFactory>().CreateLogger<MoveProcess>(),
+        SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
+});
 
 // Циклы (§6.2): keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
 // Регистрируются синглтонами — health-обёртки читают их состояние напрямую.
