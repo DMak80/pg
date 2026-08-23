@@ -275,12 +275,12 @@ spec §4 присутствуют: `grep -o "/pgworker/[a-z]*" arch/14-pgworker.
 `dotnet test src/PgWorker.slnx --filter ResultTests`.
 **Spec:** §6.1 (Core), Д9.
 
-- [ ] Шаг 1: копии файлов + namespace-замены (`sed` или вручную; в Result.cs
+- [x] Шаг 1: копии файлов + namespace-замены (`sed` или вручную; в Result.cs
   заменить `PuzzleServer.Infrastructure.App` → `PgWorker.Core`; DI → `PgWorker.Core.DI`).
-- [ ] Шаг 2: `RetryPolicies` под Polly 8 (код выше).
-- [ ] Шаг 3: модель (`Model/Domain.cs` одним файлом — записи выше).
-- [ ] Шаг 4: `ResultTests.cs` (AAA), `dotnet test` — зелёный.
-- [ ] Шаг 5: `git add -A && git commit -m "feat(core): Result/DI/Retry из Puzzle + доменная модель"`.
+- [x] Шаг 2: `RetryPolicies` под Polly 8 (код выше).
+- [x] Шаг 3: модель (`Model/Domain.cs` одним файлом — записи выше).
+- [x] Шаг 4: `ResultTests.cs` (AAA), `dotnet test` — зелёный.
+- [x] Шаг 5: `git add -A && git commit -m "feat(core): Result/DI/Retry из Puzzle + доменная модель"`.
 
 ### Задача 6: PlacementPlanner (анти-аффинити)
 
