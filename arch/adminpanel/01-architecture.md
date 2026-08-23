@@ -149,8 +149,16 @@ FluentAssertions, Testcontainers, Npgsql, Microsoft.Extensions.*); новые
   src/AdminPanel.Api` (отдаёт и SPA из wwwroot, если бандл собран).
 - Frontend: `cd frontend && npm ci && npm run build` (prod-бандл в wwwroot)
   или `npm run dev` (проксирует на Kestrel).
-- Контейнер (поставка): многостадийный Dockerfile — node-сборка фронта →
-  `dotnet publish` → runtime-образ; один процесс, один порт.
+- Контейнер (поставка): многостадийный `Dockerfile` в корне репо —
+  `node:22-alpine` (сборка SPA, `npm ci && npm run build`) →
+  `sdk:10.0` (`dotnet publish -c Release`) → `aspnet:10.0` (runtime);
+  один процесс, один порт 8080 (`ASPNETCORE_HTTP_PORTS`, `EXPOSE`),
+  не-root пользователь, `HEALTHCHECK` на `GET /api/healthz`; прод-настройки
+  — только ENV поверх образа (`AdminPanel__Etcd__Endpoints__0`,
+  `AdminPanel__Auth__*`, `AdminPanel__Probes__*`; секретов в образе нет,
+  auth fail-closed). Бандл SPA собирается в образе (wwwroot в git
+  отсутствует); контекст сборки ограничен `frontend/` + `src/`
+  (`.dockerignore`).
 - Локальный стенд с данными — [04-local-stand.md](04-local-stand.md):
   `docker compose` поднимает etcd + шардированную PG и сеет контроль-плейн.
 
