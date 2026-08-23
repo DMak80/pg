@@ -21,11 +21,18 @@ internal static class Fakes
         public readonly Dictionary<string, Entry> Store = [];
         public readonly List<TxnRequest> Txns = [];
         public Action<string>? OnPut { get; set; }
+
+        // Сбой-инъекция: prefix → исключение (имитация широкого сбоя шлюза,
+        // когда gateway бросает, а не возвращает Result.Failed).
+        public Func<string, Exception?>? RangeFault { get; set; }
+
         private long _rev;
         private long _lease;
 
         public Task<Result<IReadOnlyList<Kv>>> RangeAsync(string endpoint, string prefix, CancellationToken ct)
         {
+            if (RangeFault?.Invoke(prefix) is { } fault)
+                throw fault;
             var kvs = Store
                 .Where(p => p.Key.StartsWith(prefix, StringComparison.Ordinal))
                 .Select(p => new Kv(p.Key, p.Value.Value, (ulong)p.Value.ModRevision))

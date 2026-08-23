@@ -29,6 +29,7 @@ public class ReconcileLoopTests
         claims ??= new ClaimStore(_options.CurrentValue.Etcd.Endpoints, _etcd, TimeProvider.System);
         return new ReconcileLoop(
             _options, _etcd, claims, processes,
+            new WorkJournal(_etcd, _options.CurrentValue.Etcd.Endpoints),
             NullLogger<ReconcileLoop>.Instance, new HealthState(TimeProvider.System));
     }
 
@@ -190,6 +191,7 @@ public class ReconcileLoopTests
         var processes = new FakeProcesses();
         var loop = new ReconcileLoop(
             _options, deadEtcd, claims, processes,
+            new WorkJournal(deadEtcd, ["http://dead:2379"]),
             NullLogger<ReconcileLoop>.Instance, new HealthState(TimeProvider.System));
 
         // Act
@@ -198,6 +200,62 @@ public class ReconcileLoopTests
         // Assert — тик не прошёл (цикл залогирует и повторит с ErrorDelayMs)
         tick.IsSuccess.Should().BeFalse();
         processes.Supervised.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Tick_ProcessThrowsException_TickSurvives_JournalHasLastError_NextTickContinues()
+    {
+        // Arrange — процесс бросает НЕОБРАБОТАННОЕ исключение (баг процесса),
+        // а не Result.Failed: раньше оно уходило в Task.WhenAll → StopHost
+        SeedCluster("shop", "NOT_INITIALIZED");
+        var processes = new FakeProcesses { ThrowProvisions = 1 };
+        var loop = CreateLoop(processes);
+
+        // Act — первый тик: исключение процесса проглочено (catch-all, rework №3)
+        var tick1 = await loop.TickAsync(TestContext.Current.CancellationToken);
+
+        // Assert — тик успешен (сервис жив), след краха — в journal.last_error
+        tick1.IsSuccess.Should().BeTrue();
+        var work = _etcd.Store.Should().ContainKey("/pgworker/work/shop").WhoseValue.Value;
+        work.Should().Contain("\"op\":\"provision\"");
+        work.Should().Contain("\"phase\":\"crashed\"");
+        work.Should().Contain("process bug");
+
+        // Act — второй тик: процесс уже не бросает — цикл продолжил работу
+        var tick2 = await loop.TickAsync(TestContext.Current.CancellationToken);
+
+        // Assert — упавший вызов не зарегистрирован, второй тик дошёл до процесса
+        tick2.IsSuccess.Should().BeTrue();
+        processes.Provisioned.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public async Task TickSafelyAsync_TickThrows_ReturnsFailed_NextTickWorks()
+    {
+        // Arrange — первый Range /clusters/ бросает исключение (широкий сбой
+        // шлюза): защита тела ExecuteAsync (rework №3) превращает его в ошибку тика
+        SeedCluster("shop", null);
+        var faulted = true;
+        _etcd.RangeFault = prefix =>
+        {
+            if (!faulted || prefix != "/clusters/")
+                return null;
+            faulted = false;
+            return new HttpRequestException("gateway exploded");
+        };
+        var processes = new FakeProcesses();
+        var loop = CreateLoop(processes);
+
+        // Act
+        var first = await loop.TickSafelyAsync(TestContext.Current.CancellationToken);
+        var second = await loop.TickSafelyAsync(TestContext.Current.CancellationToken);
+
+        // Assert — исключение тика не покинуло цикл: ошибка тика (лог +
+        // ErrorDelayMs в ExecuteAsync), следующий тик полностью жив
+        first.IsSuccess.Should().BeFalse();
+        first.Error.Should().BeAssignableTo<HttpRequestException>();
+        second.IsSuccess.Should().BeTrue();
+        processes.Supervised.Should().Equal("shop");
     }
 
     // Фиксированный IOptionsMonitor и DeadEtcd — общие даблы TestSupport.cs.
@@ -220,8 +278,18 @@ public class ReconcileLoopTests
 
         public Func<string, SuperviseOutcome>? SuperviseResult { get; set; }
 
+        // Сколько следующих вызовов ProvisionAsync бросают исключение (баг
+        // процесса вместо Result.Failed — catch-all цикла, rework №3).
+        public int ThrowProvisions { get; set; }
+
         public Task<Result<ProcessOutcome>> ProvisionAsync(ClusterSnapshot snap, CancellationToken ct)
         {
+            if (ThrowProvisions > 0)
+            {
+                ThrowProvisions--;
+                throw new InvalidOperationException("process bug");
+            }
+
             using var _ = Track(snap.Config.Cluster, Provisioned);
             return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
         }

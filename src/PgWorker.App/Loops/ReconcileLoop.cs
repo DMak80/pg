@@ -25,6 +25,7 @@ internal sealed class ReconcileLoop(
     IEtcdGateway etcd,
     ClaimStore claims,
     IClusterProcesses processes,
+    WorkJournal journal,
     ILogger<ReconcileLoop> logger,
     HealthState health) : BackgroundService, IHealthCheckService
 {
@@ -42,7 +43,7 @@ internal sealed class ReconcileLoop(
             Working = true;
             while (!stoppingToken.IsCancellationRequested)
             {
-                var tick = await TickAsync(stoppingToken);
+                var tick = await TickSafelyAsync(stoppingToken);
                 if (tick.IsSuccess)
                 {
                     await Task.Delay(
@@ -65,6 +66,27 @@ internal sealed class ReconcileLoop(
         finally
         {
             Working = false;
+        }
+    }
+
+    /// <summary>
+    /// Тик с защитой тела цикла (rework №3): исключение тика (внезапный баг) не
+    /// роняет BackgroundService (ExceptionBehavior.StopHost) — превращается в
+    /// ошибку тика (лог + ErrorDelayMs), следующий проход продолжит.
+    /// </summary>
+    internal async Task<Result> TickSafelyAsync(CancellationToken ct)
+    {
+        try
+        {
+            return await TickAsync(ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw; // остановка host'а — не «ошибка тика»
+        }
+        catch (Exception ex)
+        {
+            return Result.Failed(ex);
         }
     }
 
@@ -109,6 +131,8 @@ internal sealed class ReconcileLoop(
     }
 
     // Обработка одного кластера под семафором: клэйм → процесс → эвакуация.
+    // Исключение ЛЮБОГО кластера не роняет тик и сервис (rework №3): catch-all
+    // → лог + journal.last_error, следующий тик продолжит этот кластер.
     private async Task ProcessClusterAsync(ClusterSnapshot snap, SemaphoreSlim gate, CancellationToken ct)
     {
         await gate.WaitAsync(ct);
@@ -131,26 +155,24 @@ internal sealed class ReconcileLoop(
             switch (work)
             {
                 case ClusterWork.Provision:
-                    await LogOutcomeAsync(cluster, "provision", await processes.ProvisionAsync(snap, ct));
+                    await RunClusterOpAsync(cluster, "provision",
+                        () => processes.ProvisionAsync(snap, ct), ct);
                     break;
 
                 case ClusterWork.Deprovision:
-                    await LogOutcomeAsync(cluster, "deprovision", await processes.DeprovisionAsync(snap, ct));
+                    await RunClusterOpAsync(cluster, "deprovision",
+                        () => processes.DeprovisionAsync(snap, ct), ct);
                     break;
 
                 default:
-                    var supervised = await processes.SuperviseAsync(snap, ct);
-                    if (!supervised.IsSuccess)
-                    {
-                        logger.LogError(supervised.Error, "supervise {Cluster} не прошёл: {Message}",
-                            cluster, supervised.Error!.Message);
-                        return;
-                    }
+                    var supervised = await RunSuperviseAsync(cluster, snap, ct);
+                    if (supervised is null)
+                        break;
 
                     // События эвакуации: полностью мёртвые шарды (spec §6.4 D/E).
-                    foreach (var deadShard in supervised.Value.DeadShards)
-                        await LogOutcomeAsync(cluster, $"evacuate/{deadShard}",
-                            await processes.EvacuateAsync(snap, deadShard, ct));
+                    foreach (var deadShard in supervised.DeadShards)
+                        await RunClusterOpAsync(cluster, $"evacuate/{deadShard}",
+                            () => processes.EvacuateAsync(snap, deadShard, ct), ct);
                     break;
             }
         }
@@ -158,9 +180,80 @@ internal sealed class ReconcileLoop(
         {
             // остановка host'а посреди тика — не ошибка цикла
         }
+        catch (Exception ex)
+        {
+            // Страховка контура кластера (rework №3): даже исключение вне
+            // вызова процесса не должно уходить в Task.WhenAll → StopHost.
+            logger.LogError(ex, "кластер {Cluster}: необработанное исключение (тик продолжается)",
+                snap.Config.Cluster);
+        }
         finally
         {
             gate.Release();
+        }
+    }
+
+    // Вызов процесса под catch-all: исключение процесса → лог + журнал
+    // (phase=crashed, last_error), штатный Result — в обычный лог цикла.
+    private async Task RunClusterOpAsync(
+        string cluster, string op, Func<Task<Result<ProcessOutcome>>> call, CancellationToken ct)
+    {
+        try
+        {
+            await LogOutcomeAsync(cluster, op, await call());
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw; // остановка host'а — пробрасываем (обработана уровнем выше)
+        }
+        catch (Exception ex)
+        {
+            await LogCrashAsync(cluster, op, ex);
+        }
+    }
+
+    // Надзор: результат — SuperviseOutcome (мёртвые шарды); null = не прошёл
+    // (ошибка Result залогирована) либо упал исключением (журнал записан).
+    private async Task<SuperviseOutcome?> RunSuperviseAsync(string cluster, ClusterSnapshot snap, CancellationToken ct)
+    {
+        try
+        {
+            var supervised = await processes.SuperviseAsync(snap, ct);
+            if (!supervised.IsSuccess)
+            {
+                logger.LogError(supervised.Error, "supervise {Cluster} не прошёл: {Message}",
+                    cluster, supervised.Error!.Message);
+                return null;
+            }
+
+            return supervised.Value;
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            await LogCrashAsync(cluster, "supervise", ex);
+            return null;
+        }
+    }
+
+    // Крэш процесса (P7-след): journal.last_error — оператору видно из etcd,
+    // не только из логов; op для журнала = метка до «/» (evacuate/shard1 → evacuate).
+    private async Task LogCrashAsync(string cluster, string op, Exception ex)
+    {
+        logger.LogError(ex, "процесс {Op} {Cluster} бросил исключение: {Message}", op, cluster, ex.Message);
+        try
+        {
+            // CancellationToken.None: запись должна доехать даже при остановке
+            // host'а посреди тика.
+            await journal.WritePhaseAsync(
+                cluster, op.Split('/')[0], "crashed", claims.InstanceId, ex.Message, CancellationToken.None);
+        }
+        catch (Exception journalEx)
+        {
+            logger.LogWarning(journalEx, "журнал работы {Cluster} не записан после исключения", cluster);
         }
     }
 
