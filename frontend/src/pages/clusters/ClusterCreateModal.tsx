@@ -84,9 +84,12 @@ export function ClusterCreateModal({ opened, onClose }: { opened: boolean; onClo
           onChange={(e) => set('name', e.currentTarget.value)}
         />
         <Group grow gap="sm">
+          {/* NBSP-заглушка: резервирует высоту description, чтобы ряд совпадал с «Репликами» */}
           <NumberInput label="Бакеты" min={1} max={8192} value={form.buckets}
+            description={'\u00A0'}
             error={fieldErrors.buckets} onChange={(v) => set('buckets', Number(v ?? 0))} />
           <NumberInput label="Шарды" min={1} max={128} value={form.shards}
+            description={'\u00A0'}
             error={fieldErrors.shards} onChange={(v) => set('shards', Number(v ?? 0))} />
           <NumberInput label="Реплики" min={1} max={26} value={form.replicas}
             description="2 = мастер + реплика"
