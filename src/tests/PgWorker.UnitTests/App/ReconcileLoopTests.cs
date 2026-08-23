@@ -175,15 +175,7 @@ public class ReconcileLoopTests
         processes.Supervised.Should().BeEmpty();
     }
 
-    // Фиксированный IOptionsMonitor (значение не меняется в тесте).
-    private sealed class FixedOptionsMonitor(PgWorkerOptions value) : IOptionsMonitor<PgWorkerOptions>
-    {
-        public PgWorkerOptions CurrentValue => value;
-
-        public IDisposable? OnChange(Action<PgWorkerOptions, string?> listener) => null;
-
-        public PgWorkerOptions Get(string? name) => value;
-    }
+    // Фиксированный IOptionsMonitor и DeadEtcd — общие даблы TestSupport.cs.
 
     // Мок агрегатора процессов: фиксирует вызовы, меряет параллелизм.
     private sealed class FakeProcesses : IClusterProcesses
@@ -251,40 +243,5 @@ public class ReconcileLoopTests
         {
             public void Dispose() => dispose();
         }
-    }
-
-    // Полностью недоступный etcd: любой вызов — ошибка сети.
-    private sealed class DeadEtcd : PgWorker.Etcd.Client.IEtcdGateway
-    {
-        private static Result<T> Fail<T>()
-            => Result<T>.Failed(new HttpRequestException("etcd недоступен"));
-
-        public Task<Result<IReadOnlyList<PgWorker.Etcd.Client.Kv>>> RangeAsync(string endpoint, string prefix, CancellationToken ct)
-            => Task.FromResult(Fail<IReadOnlyList<PgWorker.Etcd.Client.Kv>>());
-
-        public Task<Result<PgWorker.Etcd.Client.Kv?>> GetAsync(string endpoint, string key, CancellationToken ct)
-            => Task.FromResult(Fail<PgWorker.Etcd.Client.Kv?>());
-
-        public Task<Result> PutAsync(string endpoint, string key, string value, long? lease, CancellationToken ct)
-            => Task.FromResult(Result.Failed(new HttpRequestException("etcd недоступен")));
-
-        public Task<Result> DeleteAsync(string endpoint, string keyOrPrefix, bool prefix, CancellationToken ct)
-            => Task.FromResult(Result.Failed(new HttpRequestException("etcd недоступен")));
-
-        public Task<Result<PgWorker.Etcd.Client.TxnResult>> TxnAsync(
-            string endpoint, PgWorker.Etcd.Client.TxnRequest req, CancellationToken ct)
-            => Task.FromResult(Fail<PgWorker.Etcd.Client.TxnResult>());
-
-        public Task<Result<long>> LeaseGrantAsync(string endpoint, int ttlSec, CancellationToken ct)
-            => Task.FromResult(Fail<long>());
-
-        public Task<Result> LeaseRevokeAsync(string endpoint, long lease, CancellationToken ct)
-            => Task.FromResult(Result.Failed(new HttpRequestException("etcd недоступен")));
-
-        public Task<Result> LeaseKeepaliveAsync(string endpoint, long lease, CancellationToken ct)
-            => Task.FromResult(Result.Failed(new HttpRequestException("etcd недоступен")));
-
-        public Task<Result<byte[]>> SnapshotSaveAsync(string endpoint, CancellationToken ct)
-            => Task.FromResult(Fail<byte[]>());
     }
 }

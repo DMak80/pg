@@ -1,6 +1,8 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using PgWorker.App.HealthChecks;
+using PgWorker.Core;
 using PgWorker.Etcd.Coordination;
 
 namespace PgWorker.App.Loops;
@@ -15,12 +17,20 @@ internal sealed class KeepaliveLoop(
     IOptionsMonitor<PgWorkerOptions> options,
     ClaimStore claims,
     ILogger<KeepaliveLoop> logger,
-    HealthState health) : BackgroundService
+    HealthState health) : BackgroundService, IHealthCheckService
 {
+    public bool Inited { get; private set; }
+
+    public bool Working { get; private set; }
+
+    public Result StatusError { get; private set; } = Result.Success();
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        Inited = true;
         try
         {
+            Working = true;
             // Продление lease'ов + instance-ключ — фоновый контур ClaimStore (задача 12).
             await claims.StartAsync(stoppingToken);
             logger.LogInformation("keepalive-контур запущен: instance {InstanceId}", claims.InstanceId);
@@ -35,6 +45,10 @@ internal sealed class KeepaliveLoop(
         catch (OperationCanceledException)
         {
             // штатная остановка host'а
+        }
+        finally
+        {
+            Working = false;
         }
     }
 }

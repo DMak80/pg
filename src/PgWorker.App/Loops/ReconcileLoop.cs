@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using PgWorker.App.HealthChecks;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Etcd.Client;
@@ -24,12 +25,20 @@ internal sealed class ReconcileLoop(
     ClaimStore claims,
     IClusterProcesses processes,
     ILogger<ReconcileLoop> logger,
-    HealthState health) : BackgroundService
+    HealthState health) : BackgroundService, IHealthCheckService
 {
+    public bool Inited { get; private set; }
+
+    public bool Working { get; private set; }
+
+    public Result StatusError { get; private set; } = Result.Success();
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        Inited = true;
         try
         {
+            Working = true;
             while (!stoppingToken.IsCancellationRequested)
             {
                 var tick = await TickAsync(stoppingToken);
@@ -41,6 +50,7 @@ internal sealed class ReconcileLoop(
                 else
                 {
                     // Тик не прошёл (etcd недоступен и т.п.): лог + короткая задержка.
+                    StatusError = tick;
                     logger.LogError(tick.Error, "тик ReconcileLoop не прошёл: {Message}", tick.Error!.Message);
                     await Task.Delay(
                         TimeSpan.FromMilliseconds(options.CurrentValue.Loops.ErrorDelayMs), stoppingToken);
@@ -50,6 +60,10 @@ internal sealed class ReconcileLoop(
         catch (OperationCanceledException)
         {
             // штатная остановка host'а
+        }
+        finally
+        {
+            Working = false;
         }
     }
 

@@ -1,5 +1,7 @@
+using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Options;
 using PgWorker.App;
+using PgWorker.App.HealthChecks;
 using PgWorker.App.Loops;
 using PgWorker.Core;
 using PgWorker.Core.Model;
@@ -14,11 +16,11 @@ using PgWorker.Provisioning.Snapshots;
 using PgWorker.Provisioning.Sql;
 using ProcessThresholds = PgWorker.Provisioning.Processes.ThresholdsOptions;
 
-// Точка входа PgWorker (задача 23): host-builder, конфигурация appsettings+env,
-// DI всех слоёв (etcd → координация → docker → процессы → циклы). Секреты
-// установки — ТОЛЬКО env (Д7), fail-fast при отсутствии.
+// Точка входа PgWorker (задача 23–24): host-builder с HTTP-granью /healthz,
+// конфигурация appsettings+env, DI всех слоёв (etcd → координация → docker →
+// процессы → циклы). Секреты установки — ТОЛЬКО env (Д7), fail-fast при отсутствии.
 
-var builder = Host.CreateApplicationBuilder(args);
+var builder = WebApplication.CreateBuilder(args);
 
 // Конфигурация: appsettings.json + env-оверрайды PgWorker__* (пример — в корне проекта).
 builder.Services.Configure<PgWorkerOptions>(builder.Configuration.GetSection("PgWorker"));
@@ -126,12 +128,35 @@ builder.Services.AddSingleton(sp => new BucketEvacuator(
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 
 // Циклы (§6.2): keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
+// Регистрируются синглтонами — health-обёртки читают их состояние напрямую.
 builder.Services.AddSingleton<ClusterProcesses>();
-builder.Services.AddHostedService<KeepaliveLoop>();
-builder.Services.AddHostedService<SnapshotLoop>();
-builder.Services.AddHostedService<ReconcileLoop>();
+builder.Services.AddSingleton<KeepaliveLoop>();
+builder.Services.AddSingleton<SnapshotLoop>();
+builder.Services.AddSingleton<ReconcileLoop>();
+builder.Services.AddHostedService(sp => sp.GetRequiredService<KeepaliveLoop>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<SnapshotLoop>());
+builder.Services.AddHostedService(sp => sp.GetRequiredService<ReconcileLoop>());
 
-await builder.Build().RunAsync();
+// Наблюдаемость §8: агрегированный health (etcd/docker/loops/claims/snapshot)
+// + per-loop обёртки паттерна Puzzle (Inited/Working/StatusError).
+builder.Services.AddSingleton<ServiceProbes>();
+builder.Services.AddSingleton<PgWorkerHealth>();
+builder.Services.AddSingleton<HealthCheckAbstract<ReconcileLoop>>(
+    sp => new(sp.GetRequiredService<ReconcileLoop>()));
+builder.Services.AddSingleton<HealthCheckAbstract<KeepaliveLoop>>(
+    sp => new(sp.GetRequiredService<KeepaliveLoop>()));
+builder.Services.AddSingleton<HealthCheckAbstract<SnapshotLoop>>(
+    sp => new(sp.GetRequiredService<SnapshotLoop>()));
+builder.Services.AddHealthChecks()
+    .AddCheck<PgWorkerHealth>("pgworker", tags: ["ready"])
+    .AddCheck<HealthCheckAbstract<ReconcileLoop>>("reconcile-loop")
+    .AddCheck<HealthCheckAbstract<KeepaliveLoop>>("keepalive-loop")
+    .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop");
+
+var app = builder.Build();
+app.MapHealthChecks("/healthz");
+
+await app.RunAsync();
 
 // Секреты из env с fail-fast: отсутствующий секрет — ошибка старта (Д7).
 static InstallSecrets SecretsFromEnv()

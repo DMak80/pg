@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using PgWorker.App.HealthChecks;
 using PgWorker.Core;
 using PgWorker.Etcd.Coordination;
 using PgWorker.Provisioning.Snapshots;
@@ -18,12 +19,20 @@ internal sealed class SnapshotLoop(
     ClaimStore claims,
     SnapshotJob snapshots,
     ILogger<SnapshotLoop> logger,
-    HealthState health) : BackgroundService
+    HealthState health) : BackgroundService, IHealthCheckService
 {
+    public bool Inited { get; private set; }
+
+    public bool Working { get; private set; }
+
+    public Result StatusError { get; private set; } = Result.Success();
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        Inited = true;
         try
         {
+            Working = true;
             while (!stoppingToken.IsCancellationRequested)
             {
                 // Лидерство — только здесь (singleton-работа снапшотов).
@@ -44,6 +53,7 @@ internal sealed class SnapshotLoop(
                     }
                     else
                     {
+                        StatusError = shot;
                         logger.LogError(shot.Error, "снапшот etcd не снят: {Message}", shot.Error!.Message);
                     }
 
@@ -63,6 +73,10 @@ internal sealed class SnapshotLoop(
         catch (OperationCanceledException)
         {
             // штатная остановка host'а
+        }
+        finally
+        {
+            Working = false;
         }
     }
 }

@@ -1105,8 +1105,8 @@ Degraded.
 **Проверка:** `dotnet test src/PgWorker.slnx --filter Health`.
 **Spec:** §8.
 
-- [ ] Шаг 1: копия + реализация + AAA-тесты → красный → зелёный.
-- [ ] Шаг 2: commit `"feat(app): health checks (/healthz: etcd/docker/loops/claims/snapshots)"`.
+- [x] Шаг 1: копия + реализация + AAA-тесты → красный → зелёный.
+- [x] Шаг 2: commit `"feat(app): health checks (/healthz: etcd/docker/loops/claims/snapshots)"`.
 
 ---
 
