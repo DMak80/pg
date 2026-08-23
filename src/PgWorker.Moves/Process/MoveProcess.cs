@@ -30,7 +30,8 @@ public static class MovePhases
 /// кластера; одновременно обрабатывается старейшая заявка (Д2). Отказы M0:
 /// permanent (del заявки + журнал rejected) — дефект заявки/факт-несоответствие;
 /// transient (заявка жива, work.last_error) — недоступность, ретраи тиками.
-/// Фазы M1–M6/rollback/finalize/abort — задачи 13–16.
+/// M4–M6 (задача 14): cutover с классификацией исходов, post-flip, done.
+/// Rollback/finalize/abort — задачи 15–16.
 /// </summary>
 public sealed class MoveProcess(
     IEtcdGateway etcd,
@@ -49,6 +50,10 @@ public sealed class MoveProcess(
 {
     private readonly MoveRequestsStore requests = new(etcd, etcdEndpoints);
     private readonly MoveStatusStore status = new(etcd, etcdEndpoints);
+
+    // Cutover-блок M4/rollback (задача 12/14) — свой стор статуса поверх того же etcd.
+    private readonly CutoverSequence cutover = new(
+        sql, new MoveStatusStore(etcd, etcdEndpoints), secrets);
 
     // Читаются фазами M1–M6 (задачи 13–16): DDL-перенос, exec-транспорт, опции ожиданий.
     private readonly MoveDdl ddl = ddl;
@@ -123,6 +128,7 @@ public sealed class MoveProcess(
             return await FailTransientAsync(cluster, existing.Error!, ct);
         long startedUnix = Now();
         var snapshotRequired = true;
+        var reachedCutover = false;
         if (existing.Value is { } prev)
         {
             switch (prev.State)
@@ -130,6 +136,9 @@ public sealed class MoveProcess(
                 case MoveStates.Syncing or MoveStates.Frozen when prev.Target == to:
                     startedUnix = prev.StartedUnix; // resume: возраст переезда сохраняется
                     snapshotRequired = prev.Phase == MovePhases.WaitingSnapshot;
+                    // M3 пройден (или прошлый cutover сорвался) — тик идёт сразу в M4:
+                    // повтор cutover с начала безопасен (freeze идемпотентен, spec §6.2).
+                    reachedCutover = ReachedCutover(prev.State, prev.Phase);
                     break;
                 case MoveStates.Aborting:
                     return await RejectAsync(cluster, bucket,
@@ -281,21 +290,29 @@ public sealed class MoveProcess(
             return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
         }
 
-        // Resume: снапшот-точка уже есть, статус ≥ ddl — фазы M1–M3 этим же тиком.
+        // Resume: снапшот-точка уже есть, статус ≥ ddl — фазы M1–M3 (или сразу M4,
+        // если initial copy завершён) этим же тиком.
         return await RunMovePhasesAsync(
-            snap, bucket, owner, to, srcShard, srcDsn, dstDsn, startedUnix,
+            snap, bucket, owner, to, srcShard, dstShard, srcDsn, dstDsn, startedUnix,
             subOnDst: ToBool(subDst.Value) == true,
             schemaOnDst: ToBool(schemaDst.Value) == true,
-            ct);
+            reachedCutover, request, ct);
     }
 
     // ── M1–M3 (t01 задача 13, spec §6.1): DDL → pub/sub → copy-wait ──
 
     private async Task<Result<ProcessOutcome>> RunMovePhasesAsync(
         ClusterSnapshot snap, string bucket, string owner, string to,
-        ShardSpec srcShard, string srcDsn, string dstDsn, long startedUnix,
-        bool subOnDst, bool schemaOnDst, CancellationToken ct)
+        ShardSpec srcShard, ShardSpec dstShard, string srcDsn, string dstDsn, long startedUnix,
+        bool subOnDst, bool schemaOnDst, bool reachedCutover, MoveRequest request,
+        CancellationToken ct)
     {
+        // M4–M6: initial copy завершён (cutover-wait) или прошлый cutover сорвался —
+        // единый непрерывный блок этого тика (задача 14, spec §6.1 M4/§6.2).
+        if (reachedCutover)
+            return await RunCutoverAsync(
+                snap, bucket, owner, to, srcShard, dstShard, srcDsn, dstDsn, startedUnix, request, ct);
+
         var cluster = snap.Config.Cluster;
 
         // M1: DDL-перенос — только когда схемы на приёмнике нет (resume пропускает).
@@ -383,6 +400,96 @@ public sealed class MoveProcess(
 
         return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
     }
+
+    // ── M4–M6 (t01 задача 14, spec §6.1/§6.2): cutover → post-flip → done ──
+
+    private async Task<Result<ProcessOutcome>> RunCutoverAsync(
+        ClusterSnapshot snap, string bucket, string owner, string to,
+        ShardSpec srcShard, ShardSpec dstShard, string srcDsn, string dstDsn,
+        long startedUnix, MoveRequest request, CancellationToken ct)
+    {
+        var cluster = snap.Config.Cluster;
+
+        // M4: cutover — единый непрерывный блок (слот подтверждения sub_<b> живёт на
+        // источнике). Снапшот flip — best-effort: неудача пишется в журнал, flip не
+        // отменяет (P12); снапшот-колбэк снимается внутри cutover сразу после flip.
+        var postFlipErrors = new List<string>();
+        var flip = await cutover.RunAsync(shards, snap,
+            new CutoverContext(cluster, bucket, owner, to, MoveNames.Sub(bucket), MoveStates.Syncing),
+            options, ct,
+            snapshot is null ? null : async token =>
+            {
+                var shot = await snapshot(token);
+                if (!shot.IsSuccess)
+                    postFlipErrors.Add($"снапшот flip-{bucket}-{to} не снялся: {shot.Error!.Message} — сними вручную");
+                return shot;
+            });
+        if (!flip.IsSuccess)
+        {
+            // Перманентные исходы (ревью №1): verify-failed (дефектная копия — «abort +
+            // повторный move»; статус SYNCING/verify-failed оставлен: переезд живёт до
+            // abort) и flip-conflict (заморозка ОСТАВЛЕНА cutover'ом — разбор вручную).
+            if (flip.Error is CutoverPermanentException)
+                return await RejectAsync(cluster, bucket, flip.Error.Message, ct);
+
+            // Transient (freeze/lsn/catchup/sequences): статус уже записан cutover'ом,
+            // заявка жива — ретраи тиками (повтор cutover с начала безопасен).
+            return await FailTransientAsync(cluster, flip.Error!, ct);
+        }
+
+        // M5: прямая подписка срезается ДО обратной — иначе петля репликации; сбой
+        // НЕ отменяет состоявшийся flip (work.last_error, остатки добьёт finalize).
+        var drop = await sql.ExecuteAsync(dstDsn, MoveSql.DropSubscription(MoveNames.Sub(bucket)), ct);
+        if (!drop.IsSuccess)
+        {
+            postFlipErrors.Add(
+                $"не удалось срезать {MoveNames.Sub(bucket)} на '{to}' ({drop.Error!.Message}) — добьёт finalize");
+        }
+        else if (!request.SkipReverse)
+        {
+            var pubRb = await sql.ExecuteAsync(
+                dstDsn, MoveSql.CreatePublication(MoveNames.PubRb(bucket), bucket), ct);
+            if (pubRb.IsSuccess)
+            {
+                var subRb = await sql.ExecuteAsync(srcDsn,
+                    MoveSql.CreateSubscription(MoveNames.SubRb(bucket),
+                        ShardEndpoints.MoverConninfo(dstShard.Dsn!, secrets),
+                        MoveNames.PubRb(bucket), copyData: false, failover: options.FailoverSlots), ct);
+                if (!subRb.IsSuccess)
+                    postFlipErrors.Add(
+                        $"не удалось поставить {MoveNames.SubRb(bucket)} на '{owner}' ({subRb.Error!.Message}) — rollback недоступен, поставь вручную");
+            }
+            else
+            {
+                postFlipErrors.Add(
+                    $"не удалось создать {MoveNames.PubRb(bucket)} на '{to}' ({pubRb.Error!.Message}) — обратная подписка не ставится, rollback недоступен");
+            }
+        }
+
+        // M6: del заявки + журнал done (снапшот уже снят cutover'ом; накопленные
+        // post-flip ошибки не отменяют завершение — старый шард остаётся замороженным
+        // до rollback/finalize, P1-призраки).
+        var deleted = await requests.DeleteAsync(cluster, bucket, ct);
+        if (!deleted.IsSuccess)
+            return Result<ProcessOutcome>.Failed(deleted.Error!);
+
+        await journal.WritePhaseAsync(cluster, "move", "done", claims.InstanceId,
+            postFlipErrors.Count > 0 ? string.Join("; ", postFlipErrors) : null, ct);
+        logger?.LogInformation("move {cluster}/{bucket}: переехал {owner} → {to} (старый шард заморожен до rollback/finalize)",
+            cluster, bucket, owner, to);
+        return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+    }
+
+    // Фаза «дошли до cutover»: initial copy завершён, заморозка прошлого тика или
+    // fail-фаза cutover — M1–M3 уже пройдены, тик продолжается блоком M4–M6.
+    private static bool ReachedCutover(string? state, string? phase) =>
+        state == MoveStates.Frozen
+        || phase is MovePhases.CutoverWait
+            or CutoverPhases.FreezeFailed
+            or CutoverPhases.LsnFailed
+            or CutoverPhases.CatchupTimeout
+            or CutoverPhases.SequencesFailed
+            or CutoverPhases.VerifyFailed;
 
     // Лог готовности «N/N» + лаг слота — только на ИЗМЕНЕНИЕ готовности (образец —
     // шаг 3 move-bucket.sh, ревью №7); лог-высказывание, не контракт: unit не покрывается.

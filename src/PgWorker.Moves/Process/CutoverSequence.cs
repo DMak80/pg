@@ -5,6 +5,19 @@ using PgWorker.Provisioning.Endpoints;
 
 namespace PgWorker.Moves;
 
+/// <summary>Фазы cutover-блока (значения — как в move-bucket.sh; пишутся в статус-ключ).</summary>
+public static class CutoverPhases
+{
+    public const string Frozen = "frozen";
+    public const string Verify = "verify";
+    public const string Flip = "flip";
+    public const string FreezeFailed = "freeze-failed";
+    public const string LsnFailed = "lsn-failed";
+    public const string CatchupTimeout = "catchup-timeout";
+    public const string SequencesFailed = "sequences-failed";
+    public const string VerifyFailed = "verify-failed";
+}
+
 /// <summary>
 /// Перманентный отказ cutover (t01 задача 12, ревью №1, spec §6.2 п.6/п.7):
 /// verify-failed (дефектная копия P8 — разморозка сделана) и flip-conflict
@@ -96,10 +109,10 @@ public sealed class CutoverSequence(
 
         // Транзакция заморозки атомарна: fail = откат — разморозка не нужна.
         if (!freeze.IsSuccess)
-            return await FailAsync(c, curDsn, startedUnix, "freeze-failed", freeze.Error!, unfreeze: false, ct);
+            return await FailAsync(c, curDsn, startedUnix, CutoverPhases.FreezeFailed, freeze.Error!, unfreeze: false, ct);
 
         // 2. FROZEN/frozen + пауза TTL кэша роутера (роутер перестаёт писать в старого).
-        var frozen = await PutPhaseAsync(c, startedUnix, MoveStates.Frozen, "frozen", ct);
+        var frozen = await PutPhaseAsync(c, startedUnix, MoveStates.Frozen, CutoverPhases.Frozen, ct);
         if (!frozen.IsSuccess)
             return Result<bool>.Failed(frozen.Error!);
         await Task.Delay(TimeSpan.FromSeconds(o.FreezeWaitSec), ct);
@@ -107,9 +120,9 @@ public sealed class CutoverSequence(
         // 3. Целевой LSN последней записи источника.
         var lsn = await sql.ScalarAsync(curDsn, MoveSql.CurrentWalLsn(), ct);
         if (!lsn.IsSuccess)
-            return await FailAsync(c, curDsn, startedUnix, "lsn-failed", lsn.Error!, unfreeze: true, ct);
+            return await FailAsync(c, curDsn, startedUnix, CutoverPhases.LsnFailed, lsn.Error!, unfreeze: true, ct);
         if (ToText(lsn.Value) is not { } lsnText)
-            return await FailAsync(c, curDsn, startedUnix, "lsn-failed",
+            return await FailAsync(c, curDsn, startedUnix, CutoverPhases.LsnFailed,
                 new ApplicationException("пустой pg_current_wal_lsn на источнике"), unfreeze: true, ct);
 
         // 4. Ожидание слота: активен и подтвердил LSN; таймаут → разморозка + transient.
@@ -121,7 +134,7 @@ public sealed class CutoverSequence(
                 break;
 
             if (waited >= o.CutoverTimeoutSec)
-                return await FailAsync(c, curDsn, startedUnix, "catchup-timeout",
+                return await FailAsync(c, curDsn, startedUnix, CutoverPhases.CatchupTimeout,
                     new ApplicationException(
                         $"слот {c.Slot} не подтвердил LSN за {o.CutoverTimeoutSec}с — разморозил, репликация продолжает догонять (перезапусти позже)"),
                     unfreeze: true, ct);
@@ -133,15 +146,15 @@ public sealed class CutoverSequence(
         // 5. Sequences P6: issued на источнике → next на приёмнике; setval только вперёд.
         var sequences = await sql.ListAsync(curDsn, MoveSql.SequenceNames(c.Bucket), ct);
         if (!sequences.IsSuccess)
-            return await FailAsync(c, curDsn, startedUnix, "sequences-failed", sequences.Error!, unfreeze: true, ct);
+            return await FailAsync(c, curDsn, startedUnix, CutoverPhases.SequencesFailed, sequences.Error!, unfreeze: true, ct);
         foreach (var sequence in sequences.Value)
         {
             var issued = await sql.ScalarAsync(curDsn, MoveSql.SequenceIssued(c.Bucket, sequence), ct);
             if (!issued.IsSuccess)
-                return await FailAsync(c, curDsn, startedUnix, "sequences-failed", issued.Error!, unfreeze: true, ct);
+                return await FailAsync(c, curDsn, startedUnix, CutoverPhases.SequencesFailed, issued.Error!, unfreeze: true, ct);
             var next = await sql.ScalarAsync(newDsn, MoveSql.SequenceNext(c.Bucket, sequence), ct);
             if (!next.IsSuccess)
-                return await FailAsync(c, curDsn, startedUnix, "sequences-failed",
+                return await FailAsync(c, curDsn, startedUnix, CutoverPhases.SequencesFailed,
                     new ApplicationException($"sequence '{sequence}' отсутствует на '{c.New}' (дрейф P5?) — {next.Error!.Message}"),
                     unfreeze: true, ct);
 
@@ -150,34 +163,34 @@ public sealed class CutoverSequence(
                 var setval = await sql.ExecuteAsync(
                     newDsn, MoveSql.SetvalForward(c.Bucket, sequence, ToLong(issued.Value)), ct);
                 if (!setval.IsSuccess)
-                    return await FailAsync(c, curDsn, startedUnix, "sequences-failed", setval.Error!, unfreeze: true, ct);
+                    return await FailAsync(c, curDsn, startedUnix, CutoverPhases.SequencesFailed, setval.Error!, unfreeze: true, ct);
             }
         }
 
         // 6. Сверка строк P8: лаг 0 не гарантирует полноты копии после failover приёмника.
-        var verify = await PutPhaseAsync(c, startedUnix, MoveStates.Frozen, "verify", ct);
+        var verify = await PutPhaseAsync(c, startedUnix, MoveStates.Frozen, CutoverPhases.Verify, ct);
         if (!verify.IsSuccess)
             return Result<bool>.Failed(verify.Error!);
         var tables = await sql.ScalarAsync(curDsn, MoveSql.TableNames(c.Bucket), ct);
         if (!tables.IsSuccess)
-            return await FailAsync(c, curDsn, startedUnix, "verify-failed", tables.Error!, unfreeze: true, ct);
+            return await FailAsync(c, curDsn, startedUnix, CutoverPhases.VerifyFailed, tables.Error!, unfreeze: true, ct);
         foreach (var table in ParseTables(ToText(tables.Value)))
         {
             var src = await sql.ScalarAsync(curDsn, MoveSql.RowCount(c.Bucket, table), ct);
             if (!src.IsSuccess)
-                return await FailAsync(c, curDsn, startedUnix, "verify-failed", src.Error!, unfreeze: true, ct);
+                return await FailAsync(c, curDsn, startedUnix, CutoverPhases.VerifyFailed, src.Error!, unfreeze: true, ct);
             var dst = await sql.ScalarAsync(newDsn, MoveSql.RowCount(c.Bucket, table), ct);
             if (!dst.IsSuccess)
-                return await FailAsync(c, curDsn, startedUnix, "verify-failed", dst.Error!, unfreeze: true, ct);
+                return await FailAsync(c, curDsn, startedUnix, CutoverPhases.VerifyFailed, dst.Error!, unfreeze: true, ct);
             if (ToLong(src.Value) != ToLong(dst.Value))
-                return await FailAsync(c, curDsn, startedUnix, "verify-failed",
+                return await FailAsync(c, curDsn, startedUnix, CutoverPhases.VerifyFailed,
                     new CutoverPermanentException(
                         $"сверка строк не сошлась — копия дефектна (P8, таблица {table}: {ToLong(src.Value)} против {ToLong(dst.Value)}): abort + повторный move"),
                     unfreeze: true, ct);
         }
 
         // 7. FROZEN/flip + атомарный flip-txn: compare routing=cur → put new + delete status.
-        var flipping = await PutPhaseAsync(c, startedUnix, MoveStates.Frozen, "flip", ct);
+        var flipping = await PutPhaseAsync(c, startedUnix, MoveStates.Frozen, CutoverPhases.Flip, ct);
         if (!flipping.IsSuccess)
             return Result<bool>.Failed(flipping.Error!);
 
