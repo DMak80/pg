@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Globalization;
 using System.Net.Sockets;
 using System.Text;
@@ -167,6 +168,83 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             }
         });
 
+    // Exec в контейнере (t01): create → start (raw-stream) → inspect ExitCode.
+    public async Task<Result<string>> ExecAsync(string containerId, IReadOnlyList<string> cmd, CancellationToken ct)
+        => await Result<string>.FromAsync(async () =>
+        {
+            // 1) создать exec-инстанс (AttachStdout/Stderr — стрим в ответе /start).
+            var exec = await PostAsync<ExecDto>(
+                $"/containers/{Uri.EscapeDataString(containerId)}/exec",
+                new Dictionary<string, object?>
+                {
+                    ["AttachStdout"] = true,
+                    ["AttachStderr"] = true,
+                    ["Cmd"] = cmd,
+                }, ct);
+            if (exec is not { Id.Length: > 0 })
+                throw new DockerHttpException("POST", $"/containers/{containerId}/exec", 500, "пустой ответ exec create");
+
+            // 2) старт: тело ответа — application/vnd.docker.raw-stream (мультиплексирован).
+            var (stdout, stderr) = await StartExecAsync(exec.Id, ct);
+
+            // 3) exit-код; ненулевой — ошибка со stderr (не выбрасываем его молча).
+            var inspect = await GetAsync<ExecInspectDto>($"/exec/{Uri.EscapeDataString(exec.Id)}/json", ct);
+            var exit = inspect?.ExitCode ?? -1;
+            if (exit != 0)
+                throw new ApplicationException($"exec {string.Join(' ', cmd)} → exit {exit}: {stderr}");
+
+            return stdout;
+        });
+
+    // POST /exec/<id>/start {"Detach":false,"Tty":false} — чтение всего тела
+    // байтами (raw-stream), демультиплексирование фреймов stdout/stderr.
+    private async Task<(string Stdout, string Stderr)> StartExecAsync(string execId, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, Api + $"/exec/{Uri.EscapeDataString(execId)}/start")
+        {
+            Content = new StringContent("""{"Detach":false,"Tty":false}""", Encoding.UTF8, "application/json"),
+        };
+        using var response = await httpClient.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = response.Content is null
+                ? string.Empty
+                : await response.Content.ReadAsStringAsync(ct);
+            throw new DockerHttpException("POST", $"/exec/{execId}/start", (int)response.StatusCode, errorBody);
+        }
+
+        var payload = response.Content is null ? [] : await response.Content.ReadAsByteArrayAsync(ct);
+        return Demux(payload);
+    }
+
+    // Демультиплексирование raw-stream: фрейм = 8-байтный заголовок
+    // [stream-type,0,0,0, size BE32] + size байт payload; тип 1 = stdout, 2 = stderr.
+    internal static (string Stdout, string Stderr) Demux(byte[] payload)
+    {
+        var stdout = new MemoryStream();
+        var stderr = new MemoryStream();
+        var offset = 0;
+        while (offset + 8 <= payload.Length)
+        {
+            var type = payload[offset];
+            var size = BinaryPrimitives.ReadInt32BigEndian(payload.AsSpan(offset + 4, 4));
+            if (size < 0 || offset + 8 + size > payload.Length)
+                break; // обрезанный фрейм — игнорируем хвост
+
+            var target = type switch
+            {
+                1 => stdout,
+                2 => stderr,
+                _ => null, // stdin-заголовки и пр. — не наши стримы
+            };
+            if (target is not null)
+                target.Write(payload, offset + 8, size);
+            offset += 8 + size;
+        }
+
+        return (Encoding.UTF8.GetString(stdout.ToArray()), Encoding.UTF8.GetString(stderr.ToArray()));
+    }
+
     public async Task<Result<IReadOnlyList<DockerSwarmNode>>> ListNodesAsync(CancellationToken ct)
     {
         return await Result<IReadOnlyList<DockerSwarmNode>>.FromAsync(async () =>
@@ -246,7 +324,8 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
                     t.NodeId ?? string.Empty,
                     t.Status?.State ?? string.Empty,
                     t.NodeId is { } nodeId && nodes.TryGetValue(nodeId, out var host) ? host : null,
-                    published))
+                    published,
+                    t.Status?.ContainerStatus?.ContainerId))
                 .ToList();
         });
     }
@@ -515,6 +594,29 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         return JsonSerializer.Deserialize<T>(text, Json);
     }
 
+    // POST с JSON-ответом (exec create): любой не-2xx → DockerHttpException.
+    private async Task<T?> PostAsync<T>(string path, object body, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, Api + path)
+        {
+            Content = new StringContent(JsonSerializer.Serialize(body, Json), Encoding.UTF8, "application/json"),
+        };
+        using var response = await httpClient.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = response.Content is null
+                ? string.Empty
+                : await response.Content.ReadAsStringAsync(ct);
+            throw new DockerHttpException("POST", path, (int)response.StatusCode, errorBody);
+        }
+
+        var text = await response.Content.ReadAsStringAsync(ct);
+        if (text.Length == 0)
+            return default;
+
+        return JsonSerializer.Deserialize<T>(text, Json);
+    }
+
     // Pull образа (POST /images/create): гарантирует наличие nodeImage перед create.
     internal Task PullImageAsync(string imageName, CancellationToken ct)
         => SendAsync(HttpMethod.Post, $"/images/create?fromImage={Uri.EscapeDataString(imageName)}", ct: ct);
@@ -579,6 +681,25 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
     private sealed class TaskStatusDto
     {
         [JsonPropertyName("State")] public string? State { get; set; }
+
+        [JsonPropertyName("ContainerStatus")] public TaskContainerStatusDto? ContainerStatus { get; set; }
+    }
+
+    private sealed class TaskContainerStatusDto
+    {
+        [JsonPropertyName("ContainerID")] public string? ContainerId { get; set; }
+    }
+
+    // exec-инстанс из POST /containers/<id>/exec.
+    private sealed class ExecDto
+    {
+        [JsonPropertyName("Id")] public string Id { get; set; } = "";
+    }
+
+    // GET /exec/<id>/json — только exit-код.
+    private sealed class ExecInspectDto
+    {
+        [JsonPropertyName("ExitCode")] public int? ExitCode { get; set; }
     }
 
     private sealed class ServiceDto

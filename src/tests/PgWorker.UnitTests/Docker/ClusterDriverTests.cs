@@ -79,6 +79,12 @@ public class ClusterDriverTests
             return Task.FromResult(Result.Success());
         }
 
+        public Task<Result<string>> ExecAsync(string containerId, IReadOnlyList<string> cmd, CancellationToken ct)
+        {
+            Calls.Add(("exec", containerId));
+            return Task.FromResult(Result<string>.Success(string.Empty));
+        }
+
         public Task<Result<IReadOnlyList<DockerSwarmNode>>> ListNodesAsync(CancellationToken ct)
         {
             Calls.Add(("list-nodes", null));

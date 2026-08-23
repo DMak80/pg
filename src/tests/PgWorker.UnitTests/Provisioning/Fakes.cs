@@ -116,8 +116,10 @@ internal static class Fakes
         public readonly List<(string Node, NodeResources? Resources)> EnsuredDetails = [];
         public readonly List<string> RemovedNodes = [];
         public readonly List<string> StoppedNodes = [];
+        public readonly List<(string Node, IReadOnlyList<string> Cmd)> Executed = [];
         public List<string> NodeObjects = [];
         public Func<string, Result>? EnsureResultByNode { get; set; }
+        public Func<string, IReadOnlyList<string>, Result<string>>? ExecResult { get; set; }
         public bool RemoveFailsOnce { get; set; }
         private bool _removeFailed;
         public IReadOnlyList<HostInfo> Hosts = [new HostInfo("h1", 0), new HostInfo("h2", 0)];
@@ -155,6 +157,15 @@ internal static class Fakes
         {
             StoppedNodes.Add($"{shard}/{nodeName}");
             return Task.FromResult(Result.Success());
+        }
+
+        public Task<Result<string>> ExecNodeAsync(
+            string cluster, string shard, string node, IReadOnlyList<string> cmd, CancellationToken ct)
+        {
+            Executed.Add(($"{shard}/{node}", cmd));
+            return Task.FromResult(ExecResult is { } f
+                ? f(node, cmd)
+                : Result<string>.Success(string.Empty));
         }
 
         public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)

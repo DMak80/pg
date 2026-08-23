@@ -37,6 +37,11 @@ public interface IClusterDriver
     // шарда — данные на месте, нода не удаляется). 404/304 = успех.
     Task<Result> StopNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct);
 
+    // Выполнить команду в контейнере ноды (t01: pg_dump внутри мастер-контейнера
+    // источника), вернуть stdout. Идемпотентности не требует (read-only утилита).
+    Task<Result<string>> ExecNodeAsync(
+        string cluster, string shard, string node, IReadOnlyList<string> cmd, CancellationToken ct);
+
     // Имена объектов нод кластера (pgw-<C>-*): сверка декларации + сироты (D1).
     Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct);
 }
@@ -156,6 +161,35 @@ public sealed class PlainClusterDriver(
                 if (!stopped.IsSuccess)
                     throw stopped.Error!; // карантин E3: только stop, volume/данные на месте
             }
+        });
+    }
+
+    // Контейнер ноды по имени pgw-<C>-<X>-<n>: перебор хостов (аналог StopNode),
+    // на первом, где найден running-контейнер — exec (t01: pg_dump-транспорт).
+    public async Task<Result<string>> ExecNodeAsync(
+        string cluster, string shard, string node, IReadOnlyList<string> cmd, CancellationToken ct)
+    {
+        return await Result<string>.FromAsync(async () =>
+        {
+            var name = NodeName(cluster, shard, node);
+            foreach (var engine in _engines.Values)
+            {
+                var containers = await engine.ListContainersAsync(name, all: false, ct);
+                if (!containers.IsSuccess)
+                    throw containers.Error!;
+
+                var running = containers.Value.FirstOrDefault(c =>
+                    c.Names.Contains(name) && c.State == "running");
+                if (running is null)
+                    continue; // контейнера нет на этом хосте — следующий
+
+                var exec = await engine.ExecAsync(running.Id, cmd, ct);
+                if (!exec.IsSuccess)
+                    throw exec.Error!;
+                return exec.Value;
+            }
+
+            throw new ApplicationException($"контейнер ноды {name} не найден (нет running-контейнера ни на одном хосте)");
         });
     }
 
@@ -297,6 +331,29 @@ public sealed class SwarmClusterDriver(
         // volume ноды на месте); supervisor-перезапуск исключён.
         var stopped = await _engine.RemoveServiceAsync(PlainClusterDriver.NodeName(cluster, shard, nodeName), ct);
         return stopped;
+    }
+
+    // Контейнер ноды — running-таск сервиса (ContainerID уже в ответе /tasks).
+    public async Task<Result<string>> ExecNodeAsync(
+        string cluster, string shard, string node, IReadOnlyList<string> cmd, CancellationToken ct)
+    {
+        return await Result<string>.FromAsync(async () =>
+        {
+            var tasks = await _engine.ListTasksAsync(PlainClusterDriver.NodeName(cluster, shard, node), ct);
+            if (!tasks.IsSuccess)
+                throw tasks.Error!;
+
+            var running = tasks.Value.FirstOrDefault(t =>
+                t.State == "running" && t.ContainerId is { Length: > 0 });
+            if (running is null)
+                throw new ApplicationException(
+                    $"контейнер ноды {cluster}/{shard}/{node} не найден (нет running-таска)");
+
+            var exec = await _engine.ExecAsync(running.ContainerId!, cmd, ct);
+            if (!exec.IsSuccess)
+                throw exec.Error!;
+            return exec.Value;
+        });
     }
 
     // Объекты нод кластера в swarm — СЕРВИСЫ (rework №4): GET /services с
