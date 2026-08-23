@@ -10,6 +10,7 @@ using PgWorker.Docker.Drivers;
 using PgWorker.Docker.Engine;
 using PgWorker.Etcd.Client;
 using PgWorker.Etcd.Coordination;
+using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Probes;
 using PgWorker.Provisioning.Processes;
 using PgWorker.Provisioning.Snapshots;
@@ -124,12 +125,19 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
         sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
         sp.GetRequiredService<ShardProbe>()),
     sp.GetRequiredService<EtcdEndpoints>()));
+// Адресация шардов (t01 задача 9): master-ключ/portalloc + DSN-билдеры —
+// общий сервис эвакуатора и процессов переезда (MoveProcess — задача 17).
+builder.Services.AddSingleton(sp => new ShardEndpoints(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<ShardProbe>()));
 builder.Services.AddSingleton(sp => new BucketEvacuator(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ISqlExecutor>(),
     sp.GetRequiredService<ShardProbe>(),
+    sp.GetRequiredService<ShardEndpoints>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<InstallSecrets>(),
