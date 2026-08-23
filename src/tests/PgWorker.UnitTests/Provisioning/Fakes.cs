@@ -20,6 +20,7 @@ internal static class Fakes
 
         public readonly Dictionary<string, Entry> Store = [];
         public readonly List<TxnRequest> Txns = [];
+        public Action<string>? OnPut { get; set; }
         private long _rev;
         private long _lease;
 
@@ -39,6 +40,7 @@ internal static class Fakes
         public Task<Result> PutAsync(string endpoint, string key, string value, long? lease, CancellationToken ct)
         {
             Store[key] = new Entry(value, ++_rev, Store.TryGetValue(key, out var old) ? old.Version + 1 : 1);
+            OnPut?.Invoke(key);
             return Task.FromResult(Result.Success());
         }
 
@@ -156,10 +158,12 @@ internal static class Fakes
         public readonly List<(string Dsn, string Sql)> Executed = [];
         public readonly List<(string Dsn, string DbName)> EnsuredDatabases = [];
         public Func<Result>? ExecuteResult { get; set; }
+        public Action<string>? OnExecute { get; set; }
 
         public Task<Result> ExecuteAsync(string dsn, string sql, CancellationToken ct)
         {
             Executed.Add((dsn, sql));
+            OnExecute?.Invoke(dsn);
             return Task.FromResult(ExecuteResult is { } f ? f() : Result.Success());
         }
 

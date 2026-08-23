@@ -1011,9 +1011,9 @@ RemoveNode — данные целы); SnapshotJob пишет файл и чис
 **Проверка:** `dotnet test src/PgWorker.slnx --filter "BucketEvacuator|SnapshotJob"`.
 **Spec:** §6.4 D/E, Д6, P12.
 
-- [ ] Шаг 1: AAA-тесты → красный.
-- [ ] Шаг 2: реализация → зелёный.
-- [ ] Шаг 3: commit `"feat(provisioning): BucketEvacuator + SnapshotJob (P12)"`.
+- [x] Шаг 1: AAA-тесты → красный.
+- [x] Шаг 2: реализация → зелёный.
+- [x] Шаг 3: commit `"feat(provisioning): BucketEvacuator + SnapshotJob (P12)"`.
 
 ---
 
