@@ -11,7 +11,7 @@ public class CoreModelTests
     public void ClusterInfo_WithoutConfig_IsIncomplete()
     {
         // Arrange
-        var cluster = new ClusterInfo("demo", null, 0, null, [], [], []);
+        var cluster = new ClusterInfo("demo", null, 0, null, ClusterState.Active, [], [], []);
 
         // Act
         var incomplete = cluster.Incomplete;
@@ -24,7 +24,7 @@ public class CoreModelTests
     public void ClusterInfo_WithConfig_IsComplete()
     {
         // Arrange
-        var cluster = new ClusterInfo("demo", "demo", 16, 1755800000, [], [], []);
+        var cluster = new ClusterInfo("demo", "demo", 16, 1755800000, ClusterState.Active, [], [], []);
 
         // Act
         var incomplete = cluster.Incomplete;
@@ -37,7 +37,7 @@ public class CoreModelTests
     public void ShardInfo_MasterAddressNull_LeaseNotAlive()
     {
         // Arrange
-        var shard = new ShardInfo("s1", "dsn", ["s1a"], 5432, "demo", "u", 1, null, null);
+        var shard = new ShardInfo("s1", "dsn", ["s1a"], 5432, "demo", "u", 1, null, [], null);
 
         // Act
         var alive = shard.MasterLeaseAlive;
@@ -50,7 +50,7 @@ public class CoreModelTests
     public void ShardInfo_MasterAddressSet_LeaseAlive()
     {
         // Arrange
-        var shard = new ShardInfo("s1", "dsn", ["s1a"], 5432, "demo", "u", 1, "s1a:5432", null);
+        var shard = new ShardInfo("s1", "dsn", ["s1a"], 5432, "demo", "u", 1, "s1a:5432", [], null);
 
         // Act
         var alive = shard.MasterLeaseAlive;

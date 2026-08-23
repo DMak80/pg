@@ -16,7 +16,7 @@ public class SqlProbeIntegrationTests(PostgresFixture fixture) : IClassFixture<P
 {
     private static ShardInfo Shard() => new(
         "s1", "host=pg port=5432 dbname=postgres user=postgres",
-        ["pg"], 5432, "postgres", "postgres", 1, null, null);
+        ["pg"], 5432, "postgres", "postgres", 1, null, [], null);
 
     private SqlProbe Probe(string? password = null)
     {
@@ -31,7 +31,7 @@ public class SqlProbeIntegrationTests(PostgresFixture fixture) : IClassFixture<P
     }
 
     private static ClusterInfo DemoCluster(ShardInfo shard) => new(
-        "demo", "demo", 16, null, [shard],
+        "demo", "demo", 16, null, ClusterState.Active, [shard],
         [.. Enumerable.Range(0, 16).Select(i => new BucketInfo(i, "s1", BucketState.Active, null))],
         []);
 

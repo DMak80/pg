@@ -24,6 +24,32 @@ public class CQRSTests
         result.IsSuccess.Should().BeTrue();
         result.Value.Should().Be("pong");
     }
+
+    [Fact]
+    public async Task HandleCommand_FromRootProvider_ReturnsHandlerValue()
+    {
+        // Arrange
+        var provider = TestHost.BuildProvider();
+        var handler = provider.GetRequiredService<IHandler>();
+
+        // Act
+        var result = await handler.HandleCommand<TestCommand, string>(new TestCommand("hi"), CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Be("hi");
+    }
+}
+
+// Тестовая команда (spec t12 §3.4).
+public sealed record TestCommand(string Value) : ICommand<string>;
+
+// Тестовый хендлер команды: scoped — как query, диспётчер резолвит из scope.
+[InjectAsScoped]
+public class TestCommandHandler : ICommandHandler<TestCommand, string>
+{
+    public ValueTask<Result<string>> Handle(TestCommand command, CancellationToken ct)
+        => new(Result<string>.Success(command.Value));
 }
 
 // Тестовый запрос.

@@ -43,13 +43,39 @@ public class ClustersMappersTests
     }
 
     [Fact]
+    public void Map_NotInitializedCluster_SetsFlagAndCountsMovesAsRealOnly()
+    {
+        // Arrange: все бакеты NOT_INITIALIZED + один SYNCING; шард без master и dsn
+        var shard = new ShardInfo("shard1", "", [], null, null, null, 2, null,
+            [new NodeInfo("shard1a", "NOT_INITIALIZED"), new NodeInfo("shard1b", "NOT_INITIALIZED")], null);
+        var cluster = new ClusterInfo("fresh", "fresh", 4, 1755900000, ClusterState.NotInitialized,
+            [shard],
+            [
+                new BucketInfo(0, "shard1", BucketState.NotInitialized, null),
+                new BucketInfo(1, "shard1", BucketState.NotInitialized, null),
+                new BucketInfo(2, "shard1", BucketState.NotInitialized, null),
+                new BucketInfo(3, "shard1", BucketState.Syncing,
+                    new MoveInfo("shard1", "shard1", 1, 2, "copy", null)),
+            ], []);
+
+        // Act
+        var dto = ClustersMapper.Map([cluster]).Single();
+
+        // Assert: бейдж-флаг есть; activeMoves = только реальные переезды (spec t12 §3.6);
+        // «без мастера» у не поднятого кластера — не деградация (arch/03 §2)
+        dto.NotInitialized.Should().BeTrue();
+        dto.ActiveMoves.Should().Be(1);
+        dto.ShardsWithMaster.Should().Be(0);
+    }
+
+    [Fact]
     public void ClusterDetailsMapper_FullDto()
     {
         // Arrange
         var cluster = TestSnapshots.MovingCluster(Now);
 
         // Act
-        var dto = ClusterDetailsMapper.Map(cluster, NowUnix, null, null, []);
+        var dto = ClusterDetailsMapper.Map(cluster, NowUnix, null, null, [], []);
 
         // Assert: config-константы + полные блоки (arch/03 §2).
         dto.Name.Should().Be("demo");
@@ -75,7 +101,7 @@ public class ClustersMappersTests
     public void ClusterDetailsMapper_AgeSec_FromMoveAge()
     {
         // Arrange: SYNCING −30 / FROZEN −10 / ABORTING −5; ACTIVE — null (spec §3.7).
-        var dto = ClusterDetailsMapper.Map(TestSnapshots.MovingCluster(Now), NowUnix, null, null, []);
+        var dto = ClusterDetailsMapper.Map(TestSnapshots.MovingCluster(Now), NowUnix, null, null, [], []);
 
         // Act — возрасты по id из DTO.
         var ages = dto.Buckets.ToDictionary(b => b.Id, b => b.AgeSec);
@@ -97,12 +123,12 @@ public class ClustersMappersTests
         var cluster = TestSnapshots.MovingCluster(Now);
 
         // Act / Assert: owner — точное совпадение; state — по enum; оба — пересечение (spec §3.9).
-        ClusterDetailsMapper.Map(cluster, NowUnix, "s1", null, []).Buckets.Should().HaveCount(8);
-        ClusterDetailsMapper.Map(cluster, NowUnix, "s1", BucketState.Syncing, []).Buckets
+        ClusterDetailsMapper.Map(cluster, NowUnix, "s1", null, [], []).Buckets.Should().HaveCount(8);
+        ClusterDetailsMapper.Map(cluster, NowUnix, "s1", BucketState.Syncing, [], []).Buckets
             .Should().ContainSingle().Which.Id.Should().Be(1);
-        ClusterDetailsMapper.Map(cluster, NowUnix, null, BucketState.Active, []).Buckets.Should().HaveCount(13);
-        ClusterDetailsMapper.Map(cluster, NowUnix, "nope", null, []).Buckets.Should().BeEmpty();
-        ClusterDetailsMapper.Map(cluster, NowUnix, null, null, []).Buckets.Should().HaveCount(16);
+        ClusterDetailsMapper.Map(cluster, NowUnix, null, BucketState.Active, [], []).Buckets.Should().HaveCount(13);
+        ClusterDetailsMapper.Map(cluster, NowUnix, "nope", null, [], []).Buckets.Should().BeEmpty();
+        ClusterDetailsMapper.Map(cluster, NowUnix, null, null, [], []).Buckets.Should().HaveCount(16);
     }
 
     [Fact]
@@ -120,7 +146,7 @@ public class ClustersMappersTests
         };
 
         // Act
-        var dto = ClusterDetailsMapper.Map(cluster, NowUnix, null, null, []);
+        var dto = ClusterDetailsMapper.Map(cluster, NowUnix, null, null, [], []);
 
         // Assert
         dto.Heals.Select(h => h.Bucket).Should().Equal("bucket_5", "bucket_9", "bucket_7");
@@ -151,12 +177,12 @@ public class ClustersMappersTests
             Shards =
             [
                 new ShardInfo("s1", "host=s1a port=5432 dbname=demo user=postgres",
-                    ["s1a"], 5432, "demo", "postgres", 1, "s1a:5432", runtime),
+                    ["s1a"], 5432, "demo", "postgres", 1, "s1a:5432", [], runtime),
             ],
         };
 
         // Act
-        var dto = ClusterDetailsMapper.Map(cluster, NowUnix, null, null, []);
+        var dto = ClusterDetailsMapper.Map(cluster, NowUnix, null, null, [], []);
 
         // Assert: standbiesSync — только sync/quorum; лаг слотов — max; lost — имена слотов.
         var mapped = dto.Shards.Single().Runtime.Should().NotBeNull().And.Subject.As<ShardRuntimeDto>();
@@ -199,7 +225,7 @@ public class ClustersMappersTests
         var nodes = new[] { new StandNode("node1", "10.0.0.5"), new StandNode("node2", null) };
 
         // Act
-        var dto = ClusterDetailsMapper.Map(TestSnapshots.MovingCluster(Now), NowUnix, null, null, nodes);
+        var dto = ClusterDetailsMapper.Map(TestSnapshots.MovingCluster(Now), NowUnix, null, null, nodes, []);
 
         // Assert
         dto.StandNodes.Should().HaveCount(2);

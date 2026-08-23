@@ -9,12 +9,12 @@ public class ScopeMatcherTests
 {
     private static readonly IReadOnlyList<ClusterInfo> Clusters =
     [
-        new("demo", "demo", 16, null,
-            [new ShardInfo("s1", "", [], null, null, null, null, null, null),
-             new ShardInfo("s2", "", [], null, null, null, null, null, null)],
+        new("demo", "demo", 16, null, ClusterState.Active,
+            [new ShardInfo("s1", "", [], null, null, null, null, null, [], null),
+             new ShardInfo("s2", "", [], null, null, null, null, null, [], null)],
             [], []),
-        new("shop", "shop", 4, null,
-            [new ShardInfo("shard1", "", [], null, null, null, null, null, null)],
+        new("shop", "shop", 4, null, ClusterState.Active,
+            [new ShardInfo("shard1", "", [], null, null, null, null, null, [], null)],
             [], []),
     ];
 

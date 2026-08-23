@@ -23,7 +23,7 @@
   `host__port` (`:` в ключах режут конфиг-провайдеры .NET, урок t10); в памяти/ENV —
   канонический `host:port`, он приоритетен при наличии обоих.
 
-## AlertEngine — 24 правила
+## AlertEngine — 25 правил
 
 `Core/Alerting/Rules/*` — все `[InjectAsSingleton(typeof(IAlertRule))]`, движок
 (`AlertEngine`, `[InjectAsSingleton(typeof(IAlertEngine))]`) собирает
@@ -34,7 +34,7 @@
 | Группа | Правила (kind) |
 |---|---|
 | etcd-здоровье (5) | `etcd-unreachable`, `etcd-endpoint-down`, `etcd-no-quorum`, `etcd-alarm`, `snapshot-stale` |
-| шардирование/переезды (11) | `cluster-incomplete`, `key-malformed`, `shard-no-master`, `bucket-no-routing`, `bucket-lost`, `bucket-out-of-range`, `move-stale`, `move-frozen-long`, `move-aborting`, `move-flipped-status-stuck`, `inventory-mismatch` |
+| шардирование/переезды (12) | `cluster-not-initialized`, `cluster-incomplete`, `key-malformed`, `shard-no-master`, `bucket-no-routing`, `bucket-lost`, `bucket-out-of-range`, `move-stale`, `move-frozen-long`, `move-aborting`, `move-flipped-status-stuck`, `inventory-mismatch` |
 | HA/слоты (7) | `shard-no-leader`, `ha-member-not-streaming`, `replica-lag-high`, `sync-standby-missing`, `slot-lag-high`, `slot-invalidation-risk`, `slot-wal-lost` |
 | пробы (1) | `probe-failed` |
 

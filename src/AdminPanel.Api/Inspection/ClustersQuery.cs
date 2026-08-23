@@ -15,6 +15,7 @@ public sealed record ClusterSummaryDto(
     string? DbName,
     int BucketsCount,
     bool Incomplete,
+    bool NotInitialized,
     int ShardsTotal,
     int ShardsWithMaster,
     int ActiveMoves);
@@ -28,9 +29,11 @@ public static class ClustersMapper
             c.DbName,
             c.BucketsCount,
             c.Incomplete,
+            c.State == ClusterState.NotInitialized,
             c.Shards.Count,
             c.Shards.Count(s => s.MasterAddress is not null),
-            c.Buckets.Count(b => b.State != BucketState.Active)))];
+            // NOT_INITIALIZED — не переезд: только реальные состояния перемещения (spec t12 §3.6)
+            c.Buckets.Count(b => b.State is BucketState.Syncing or BucketState.Frozen or BucketState.Aborting)))];
 }
 
 // Хендлер: store → отказ «снапшота нет» или маппер (spec §3.12).

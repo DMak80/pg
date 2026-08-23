@@ -1,4 +1,5 @@
 using AdminPanel.Core;
+using AdminPanel.Etcd.Client;
 using AdminPanel.Etcd.Parsing;
 using FluentAssertions;
 using Xunit;
@@ -8,6 +9,9 @@ namespace AdminPanel.UnitTests;
 // Парсер /clusters/: полный demo-сид и вырожденные случаи (spec §10.1, arch/02 §7–8).
 public class ClustersParserTests
 {
+    // Локальный конструктор Kv для ad-hoc-ключей (modRevision не важен парсеру).
+    private static Kv Kv(string key, string value) => new(key, value, 1);
+
     [Fact]
     public void Parse_FullDemoSeed_BuildsClustersShardsBuckets()
     {
@@ -189,5 +193,65 @@ public class ClustersParserTests
         result.Clusters.Should().BeEmpty();
         result.Errors.Should().BeEmpty();
         result.UnknownKeyCount.Should().Be(0);
+    }
+
+    [Fact]
+    public void Parse_ConfigStateNotInitialized_MapsToClusterState()
+    {
+        // Arrange
+        var kvs = new[]
+        {
+            Kv("/clusters/fresh/config",
+                """{"buckets":4,"dbname":"fresh","created_unix":1755900000,"state":"NOT_INITIALIZED"}"""),
+        };
+
+        // Act
+        var result = ClustersParser.Parse(kvs);
+
+        // Assert: state из config; отсутствие поля = Active (arch/02 §2.1).
+        result.Clusters.Should().ContainSingle().Which.State.Should().Be(ClusterState.NotInitialized);
+    }
+
+    [Fact]
+    public void Parse_BucketStatusNotInitialized_MapsStateAndOwner()
+    {
+        // Arrange
+        var kvs = new[]
+        {
+            Kv("/clusters/fresh/config", """{"buckets":1,"dbname":"fresh","state":"NOT_INITIALIZED"}"""),
+            Kv("/clusters/fresh/buckets/routing/bucket_0", "shard1"),
+            Kv("/clusters/fresh/buckets/status/bucket_0",
+                """{"bucket":"bucket_0","state":"NOT_INITIALIZED","owner":"shard1","updated_unix":1755900000}"""),
+        };
+
+        // Act
+        var bucket = ClustersParser.Parse(kvs).Clusters.Single().Buckets.Single();
+
+        // Assert: NOT_INITIALIZED — не ACTIVE-по-умолчанию и не ошибка; owner сохранён.
+        bucket.State.Should().Be(BucketState.NotInitialized);
+        bucket.Owner.Should().Be("shard1");
+        bucket.Move!.Owner.Should().Be("shard1");
+        bucket.Move.Target.Should().BeNull();
+        bucket.Move.UpdatedUnix.Should().Be(1755900000);
+    }
+
+    [Fact]
+    public void Parse_ShardNodesState_MapsToNodeInfo()
+    {
+        // Arrange
+        var kvs = new[]
+        {
+            Kv("/clusters/fresh/config", """{"buckets":1,"dbname":"fresh"}"""),
+            Kv("/clusters/fresh/shards/shard1/replicas", "2"),
+            Kv("/clusters/fresh/shards/shard1/nodes/shard1a/state", "NOT_INITIALIZED"),
+            Kv("/clusters/fresh/shards/shard1/nodes/shard1b/state", "NOT_INITIALIZED"),
+        };
+
+        // Act
+        var shard = ClustersParser.Parse(kvs).Clusters.Single().Shards.Single();
+
+        // Assert: плановые ноды отсортированы по имени (arch/02 §9.1).
+        shard.Nodes.Select(n => n.Name).Should().Equal("shard1a", "shard1b");
+        shard.Nodes.Should().OnlyContain(n => n.State == "NOT_INITIALIZED");
     }
 }

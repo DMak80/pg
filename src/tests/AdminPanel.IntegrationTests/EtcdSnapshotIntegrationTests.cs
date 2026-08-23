@@ -41,6 +41,7 @@ public static class EtcdTestHarness
                 new SnapshotStaleRule(),
                 new ClusterIncompleteRule(),
                 new KeyMalformedRule(),
+                new ClusterNotInitializedRule(),
                 new ShardNoMasterRule(),
                 new MoveStaleRule(Options.Create(new AlertsOptions())),
                 new MoveFrozenLongRule(Options.Create(new AlertsOptions())),

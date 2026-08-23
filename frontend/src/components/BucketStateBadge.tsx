@@ -8,6 +8,7 @@ const STATE_META: Record<BucketStateName, { color: string; label: string }> = {
   SYNCING: { color: 'blue', label: 'синхронизация' },
   FROZEN: { color: 'yellow', label: 'заморожен' },
   ABORTING: { color: 'red', label: 'отменяется' },
+  NOT_INITIALIZED: { color: 'gray', label: 'не инициализирован' },
 };
 
 export function BucketStateBadge({ state }: { state: BucketStateName }) {

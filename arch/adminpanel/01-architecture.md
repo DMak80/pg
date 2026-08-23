@@ -1,9 +1,11 @@
 # 01. Общая архитектура AdminPanel
 
-Read-only панель администрирования шардированных HA-кластеров PostgreSQL
+Панель администрирования шардированных HA-кластеров PostgreSQL
 (репозиторий `../pg`). Четыре зоны инспекции: **etcd**, **шардирование**
 (кластеры/шарды/бакеты/переезды/heals), **HA** (лидеры/члены/реплики/лаги),
-**алерты**. Операций нет: ни одного эндпоинта, мутирующего etcd или PG.
+**алерты**. Единственная мутация инспектируемых систем — **создание кластера**
+(декларативный provisioning в etcd, [02](02-etcd-contract.md) §9): остальные
+операции над etcd/PG панель не выполняет никогда.
 
 ## 1. Слои и потоки данных
 
@@ -32,6 +34,15 @@ Read-only панель администрирования шардированн
         │ Probes (Patroni REST :8008, Npgsql)    │──► PG-ноды и HAProxy
         │  обогащают снапшот полями runtime      │    шардов
         └────────────────────────────────────────┘
+
+                 ┌──────────────────────────────────────────────────────┐
+                 │ POST /api/clusters — создание кластера (02 §9)       │
+                 │  CQRS-команда → etcd-gateway (txn-клэйм + пакет PUT  │
+                 │  на активном endpoint из снапшота)                   │
+                 └───────────────┬──────────────────────────────────────┘
+                                 │ ключи созданы; следующий тик refresher'а
+                                 ▼ подхватывает их в снапшот (принудительного
+                                   обновления нет)
 ```
 
 Правила потоков:
@@ -39,7 +50,10 @@ Read-only панель администрирования шардированн
 - **API не ходит в etcd на запрос** — только читает текущий снапшот из
   `SnapshotStore` (singleton, атомарная замена ссылки). Скорость UI не зависит
   от латентности etcd, а отказ etcd не роняет панель: снапшок остаётся со
-  штампом `lastRefreshUtc` и алертом «данные устарели».
+  штампом `lastRefreshUtc` и алертом «данные устарели». Исключение — команда
+  создания кластера: она пишет в etcd напрямую (мимо снапшота), опираясь на
+  активный endpoint снапшота; корректность не зависит от свежести снапшота
+  (уникальность имени — txn-клэйм в etcd, не чтение).
 - **Refresher — единственный писатель снапшота**; пробы пишут в него же
   (отдельным тиком, реже). Всё, что видит пользователь, — производные от
   снапшота: DTO для API, алерты, badge «stale».
@@ -51,11 +65,11 @@ Read-only панель администрирования шардированн
 
 | Проект | Роль |
 |---|---|
-| `AdminPanel.Infrastructure` | Каркас, скопированный из референса `../Puzzle` и обрезанный под read-only: `Result`-монада, attribute-DI (`[InjectAs*]`, `[Config]`, `AutoRegistration`), CQRS (`IQuery<T>`/`IQueryHandler`, `IHandler`-диспетчер), health-check базис. Без Bus/Outbox/Kafka/миграций — панели не нужны |
-| `AdminPanel.Core` | Домен снапшота: `EtcdSnapshot` и его модели (`ClusterInfo`, `ShardInfo`, `BucketInfo`, `HaScope`, `Alert`, …), `AlertEngine` (чистая функция `Snapshot → Alert[]`), парсинг scope `<C>-<X>` |
-| `AdminPanel.Etcd` | Клиент etcd через HTTP JSON gateway (`IEtcdGateway`), парсеры ключей `/clusters/`, `/service/`, `/cluster/nodes/` в модель Core, `SnapshotRefresher`, `SnapshotStore` |
+| `AdminPanel.Infrastructure` | Каркас, скопированный из референса `../Puzzle` и обрезанный под панель: `Result`-монада, attribute-DI (`[InjectAs*]`, `[Config]`, `AutoRegistration`), CQRS (`IQuery<T>`/`IQueryHandler`, `ICommand<T>`/`ICommandHandler` — единственная команда: создание кластера; `IHandler`-диспетчер), health-check базис. Без Bus/Outbox/Kafka/миграций — панели не нужны |
+| `AdminPanel.Core` | Домен снапшота: `EtcdSnapshot` и его модели (`ClusterInfo`, `ShardInfo`, `NodeInfo`, `BucketInfo`, `HaScope`, `Alert`, …), `AlertEngine` (чистая функция `Snapshot → Alert[]`), парсинг scope `<C>-<X>` |
+| `AdminPanel.Etcd` | Клиент etcd через HTTP JSON gateway (`IEtcdGateway`): чтение (range/status/member/alarm) + минимальная запись для создания кластера (txn/put/delete, 02 §9); парсеры ключей `/clusters/`, `/service/`, `/cluster/nodes/` в модель Core, `SnapshotRefresher`, `SnapshotStore` |
 | `AdminPanel.Probes` | Опциональные live-пробы: Patroni REST `:8008` (`/cluster`), SQL через Npgsql (read-only к `pg_catalog`/`pg_stat_*`). Обогащение снапшота полями runtime |
-| `AdminPanel.Api` | Host: `Program.cs` (модульная композиция ~50 строк), auth-модуль, REST-эндпоинты, раздача SPA из `wwwroot`, `/api/healthz` |
+| `AdminPanel.Api` | Host: `Program.cs` (модульная композиция ~50 строк), auth-модуль, REST-эндпоинты (GET-инспекция + `POST /api/clusters`), раздача SPA из `wwwroot`, `/api/healthz` |
 | `frontend/` | React+Vite+TS (не dotnet-проект); `npm run build` кладёт бандл в `src/AdminPanel.Api/wwwroot` |
 | `tests/AdminPanel.UnitTests` | xunit v3 + FluentAssertions: парсеры etcd-ключей, `AlertEngine`, auth-логика, DTO-мапперы |
 | `tests/AdminPanel.IntegrationTests` | Testcontainers (etcd + postgres:18) + `WebApplicationFactory`: refresher против реального etcd, API-смоук, пробы |
@@ -74,12 +88,12 @@ FluentAssertions, Testcontainers, Npgsql, Microsoft.Extensions.*); новые
 - `EtcdStatus` — endpoints (reachable/latency/version/dbSize/raftTerm),
   members (+leader), alarms, кворум-признак, `lastRefreshUtc`,
   `consecutiveFailures`;
-- `Clusters[]` — по каждому кластеру `<C>`: константы (`config`), шарды
-  (`dsn`, `replicas`, master-lease), бакеты (`routing` + `status`),
-  журнал `heals`;
+- `Clusters[]` — по каждому кластеру `<C>`: константы (`config` + `state`),
+  шарды (`dsn`, `replicas`, master-lease, плановые `nodes`), бакеты
+  (`routing` + `status`), журнал `heals`;
 - `HaScopes[]` — по каждому `/service/<scope>`: leader, members
-  (role/state/лаг — из Patroni-пробы, если включена), optime, связь
-  scope → (cluster, shard);
+  (role/state/лаг — из Patroni-пробы, если включена), optime, заявка ресурсов
+  `request_*` на ноду, связь scope → (cluster, shard);
 - `Probes[]` — результаты live-проб ( Patroni/SQL: ok/error/latency),
   `Runtime`-поля по шардам (слоты, sync-standby, подписки, inventory
   бакетов) — только при включённых пробах;
@@ -175,8 +189,11 @@ FluentAssertions, Testcontainers, Npgsql, Microsoft.Extensions.*); новые
 
 ## 9. Что сознательно НЕ делаем (YAGNI)
 
-- Мутации (move/abort/heal, patronictl, switchover) — вне зоны панели
-  навсегда; это runbook-операции `../pg`.
+- Мутации, кроме создания кластера (move/abort/heal, patronictl, switchover,
+  поднятие нод/инициализация схем) — вне зоны панели; это runbook-операции
+  `../pg`. Создание кластера — заявка структуры в etcd, не управление данными:
+  ноды, Patroni и схемы поднимает отдельный provisioning (читает ключи
+  [02](02-etcd-contract.md) §9).
 - WebSocket/SSE-пуш, история метрик и графики — polling и «текущее состояние»
   достаточно (P21 просит дашборд, не Prometheus).
 - Пользователи/роли/аудит — один админ из настроек.

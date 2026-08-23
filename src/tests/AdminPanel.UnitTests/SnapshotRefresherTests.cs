@@ -89,6 +89,17 @@ internal sealed class FakeEtcdGateway : IEtcdGateway
 
     public Task<Result<IReadOnlyList<EtcdAlarm>>> AlarmAsync(string endpoint, CancellationToken ct)
         => Task.FromResult(Result<IReadOnlyList<EtcdAlarm>>.Success(Alarms));
+
+    // Write-методы (t12): refresher не пишет — заглушки ради интерфейса.
+    public Task<Result<TxnResult>> TxnAsync(
+        string endpoint, IReadOnlyList<TxnCompare> compares, IReadOnlyList<KvPut> puts, CancellationToken ct)
+        => Task.FromResult(Result<TxnResult>.Failed(new EtcdUnreachableException(endpoint)));
+
+    public Task<Result> PutAsync(string endpoint, string key, string value, CancellationToken ct)
+        => Task.FromResult(Result.Failed(new EtcdUnreachableException(endpoint)));
+
+    public Task<Result> DeleteAsync(string endpoint, string keyOrPrefix, bool prefix, CancellationToken ct)
+        => Task.FromResult(Result.Failed(new EtcdUnreachableException(endpoint)));
 }
 
 // Refresher: живые/мёртвые endpoints, sticky-failover, отказ с сохранением данных (spec §10.9).

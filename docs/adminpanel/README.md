@@ -3,11 +3,13 @@
 Read-only панель администрирования шардированных HA-кластеров PostgreSQL
 (инспектируемая система — репозиторий `../pg`): etcd-контроль-плейн,
 кластеры/шарды/бакеты/переезды/heals, HA (Patroni), live-пробы и алерты.
-Панель ничего не мутирует: ни одной операции записи в etcd/PG.
+Панель read-only по отношению ко всему, кроме единственной мутации —
+создание кластера `POST /api/clusters` (запись структуры в etcd,
+arch/02 §9); все прочие операции записи в etcd/PG по-прежнему запрещены.
 
 Стек: .NET 10 (Minimal API, warnings как ошибки, CPM, `.slnx`) + React/Vite/TS
 (Mantine, TanStack Query); снапшот-модель из etcd (тик 3 c), опциональные live-пробы
-Patroni REST/SQL (тик 15 c), 24 правила алертов.
+Patroni REST/SQL (тик 15 c), 25 правил алертов.
 
 ## Карта репозитория
 
@@ -16,7 +18,7 @@ Patroni REST/SQL (тик 15 c), 24 правила алертов.
 | [`arch/`](arch/README.md) | Контракт (источник истины): [архитектура](arch/01-architecture.md), [etcd-контракт](arch/02-etcd-contract.md), [панели/API](arch/03-panels.md), [dev-стенд](arch/04-local-stand.md), [roadmap](arch/roadmap/README.md) |
 | [`docs/`](docs/README.md) | Практические документы подсистем: чек-листы и грабли t01–t10 |
 | `src/AdminPanel.Api` | Host: Program.cs (модульная композиция), auth, REST `/api/*`, `/api/healthz`, раздача SPA |
-| `src/AdminPanel.Core` | Домен снапшота + `AlertEngine` (24 правила) |
+| `src/AdminPanel.Core` | Домен снапшота + `AlertEngine` (25 правил) |
 | `src/AdminPanel.Etcd` | etcd-клиент (HTTP JSON gateway), парсеры, `SnapshotRefresher`/`SnapshotStore` |
 | `src/AdminPanel.Probes` | Live-пробы Patroni REST/SQL, `HostMapResolver` |
 | `src/AdminPanel.Infrastructure` | Каркас из референса `../Puzzle`: attribute-DI, CQRS, `Result`, health-checks |
@@ -78,7 +80,8 @@ docker run -d --name adminpanel -p 8080:8080 \
 ```bash
 cd dev-stand
 checks/90-down.sh -v && checks/00-up.sh && checks/10-smoke-api.sh \
-  && checks/20-alerts.sh && checks/30-failover.sh && checks/40-live-probes.sh
+  && checks/15-cluster-create.sh && checks/20-alerts.sh \
+  && checks/30-failover.sh && checks/40-live-probes.sh
 ```
 
 Порядок важен (30-й меняет топологию s1, 40-й на неё рассчитан); повтор — только с

@@ -17,6 +17,7 @@ public sealed record ClusterDto(
     int BucketsCount,
     long? CreatedUnix,
     bool Incomplete,
+    string State,
     IReadOnlyList<ShardDto> Shards,
     IReadOnlyList<BucketDto> Buckets,
     IReadOnlyList<HealDto> Heals,
@@ -30,7 +31,22 @@ public sealed record ShardDto(
     int? ReplicasDeclared,
     string? MasterAddress,
     bool MasterLeaseAlive,
+    IReadOnlyList<NodeDto> Nodes,
+    NodeRequestsDto? Requests,
     ShardRuntimeDto? Runtime);
+
+// Плановая нода шарда (arch/02 §9.1); state — raw-строка.
+public sealed record NodeDto(string Name, string? State);
+
+// Заявка ресурсов на ноду scope /service/<C>-<X>/request_* (arch/02 §2.2, §9.1).
+public sealed record NodeRequestsDto(string Cpu, string Mem, string Disk);
+
+// Канон state кластера (arch/03 §2).
+public static class ClusterStates
+{
+    public static string Name(ClusterState state)
+        => state == ClusterState.NotInitialized ? "NOT_INITIALIZED" : "ACTIVE";
+}
 
 // Контракт runtime фиксируется сейчас (фронтенд t08 типизирует сразу), данные — t06 (spec §3.14).
 public sealed record ShardRuntimeDto(
@@ -71,6 +87,7 @@ public static class BucketStates
             BucketState.Syncing => "SYNCING",
             BucketState.Frozen => "FROZEN",
             BucketState.Aborting => "ABORTING",
+            BucketState.NotInitialized => "NOT_INITIALIZED",
             _ => "ACTIVE",
         };
 
@@ -82,6 +99,7 @@ public static class BucketStates
             case "SYNCING": state = BucketState.Syncing; return true;
             case "FROZEN": state = BucketState.Frozen; return true;
             case "ABORTING": state = BucketState.Aborting; return true;
+            case "NOT_INITIALIZED": state = BucketState.NotInitialized; return true;
             default: state = BucketState.Active; return false;
         }
     }
@@ -92,7 +110,7 @@ public static class ClusterDetailsMapper
 {
     public static ClusterDto Map(
         ClusterInfo cluster, long nowUnix, string? owner, BucketState? state,
-        IReadOnlyList<StandNode> standNodes)
+        IReadOnlyList<StandNode> standNodes, IReadOnlyList<HaScope> haScopes)
     {
         var buckets = cluster.Buckets
             .Where(b => owner is null || b.Owner == owner)
@@ -103,14 +121,21 @@ public static class ClusterDetailsMapper
             cluster.BucketsCount,
             cluster.CreatedUnix,
             cluster.Incomplete,
-            [.. cluster.Shards.Select(s => new ShardDto(
-                s.Name,
-                s.Dsn,
-                s.DsnHosts,
-                s.ReplicasDeclared,
-                s.MasterAddress,
-                s.MasterLeaseAlive,
-                s.Runtime is null ? null : MapRuntime(s.Runtime)))],
+            ClusterStates.Name(cluster.State),
+            [.. cluster.Shards.Select(s =>
+            {
+                // Заявка шарда — join scope "<C>-<X>" (все три ключа обязательны)
+                var requests = haScopes
+                    .Where(h => h.Matched && h.Cluster == cluster.Name && h.Shard == s.Name
+                        && h.RequestCpu is not null && h.RequestMem is not null && h.RequestDisk is not null)
+                    .Select(h => new NodeRequestsDto(h.RequestCpu!, h.RequestMem!, h.RequestDisk!))
+                    .FirstOrDefault();
+                return new ShardDto(
+                    s.Name, s.Dsn, s.DsnHosts, s.ReplicasDeclared, s.MasterAddress, s.MasterLeaseAlive,
+                    [.. s.Nodes.Select(n => new NodeDto(n.Name, n.State))],
+                    requests,
+                    s.Runtime is null ? null : MapRuntime(s.Runtime));
+            })],
             [.. buckets.Select(b => new BucketDto(
                 b.Id,
                 b.Owner,
@@ -152,6 +177,7 @@ public sealed class ClusterDetailsQueryHandler(ISnapshotStore store, TimeProvide
         return ValueTask.FromResult(cluster is null
             ? Result<ClusterDto>.Failed(new InspectionModule.ClusterNotFoundException(query.Cluster))
             : Result<ClusterDto>.Success(ClusterDetailsMapper.Map(
-                cluster, time.GetUtcNow().ToUnixTimeSeconds(), query.Owner, query.State, snapshot.StandNodes)));
+                cluster, time.GetUtcNow().ToUnixTimeSeconds(), query.Owner, query.State, snapshot.StandNodes,
+                snapshot.HaScopes)));
     }
 }

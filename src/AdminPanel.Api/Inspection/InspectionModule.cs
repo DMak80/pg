@@ -45,8 +45,8 @@ public static class InspectionModule
         });
 
         // GET /api/clusters/{cluster}?owner=&state= — детали (arch/03 §1); state строго
-        // ACTIVE|SYNCING|FROZEN|ABORTING, иначе 400 (spec §3.9); ClusterNotFoundException → 404,
-        // прочий отказ → 503 (spec §3.10).
+        // ACTIVE|SYNCING|FROZEN|ABORTING|NOT_INITIALIZED, иначе 400 (spec §3.9);
+        // ClusterNotFoundException → 404, прочий отказ → 503 (spec §3.10).
         endpoints.MapGet("/api/clusters/{cluster}", async (
             string cluster, string? owner, string? state, IHandler handler, CancellationToken ct) =>
         {
@@ -58,7 +58,7 @@ public static class InspectionModule
                     return Results.Problem(
                         statusCode: StatusCodes.Status400BadRequest,
                         title: "Invalid state",
-                        detail: $"state должен быть ACTIVE|SYNCING|FROZEN|ABORTING, получено: {state}");
+                        detail: $"state должен быть ACTIVE|SYNCING|FROZEN|ABORTING|NOT_INITIALIZED, получено: {state}");
                 parsed = value;
             }
 

@@ -1,14 +1,17 @@
-// Панель Кластеры: сводный список кластеров снапшота (t08 spec §4.6).
+// Панель Кластеры: сводный список кластеров снапшота (t08 spec §4.6) + создание (t12).
 import { useQuery } from '@tanstack/react-query';
-import { Anchor, Badge, Card, Table, Text, Title } from '@mantine/core';
+import { Anchor, Badge, Button, Card, Group, Table, Text, Title, Tooltip } from '@mantine/core';
 import { Link } from 'react-router';
+import { useState } from 'react';
 import type { ClusterSummaryDto } from '../api/dto';
 import { fetchClusters, queryKeys } from '../api/queries';
 import { ErrorSection, LoadingSection } from '../components/LoadState';
 import { usePollingIntervalMs } from '../polling/PollingContext';
+import { ClusterCreateModal } from './clusters/ClusterCreateModal';
 
 export function ClustersPage() {
   const intervalMs = usePollingIntervalMs();
+  const [createOpened, setCreateOpened] = useState(false);
   const query = useQuery({
     queryKey: queryKeys.clusters,
     queryFn: fetchClusters,
@@ -26,7 +29,11 @@ export function ClustersPage() {
   const clusters = query.data;
   return (
     <>
-      <Title order={2} mb="md">Кластеры</Title>
+      <Group justify="space-between" mb="md">
+        <Title order={2}>Кластеры</Title>
+        <Button onClick={() => setCreateOpened(true)}>Создать кластер</Button>
+      </Group>
+      <ClusterCreateModal opened={createOpened} onClose={() => setCreateOpened(false)} />
       <Card withBorder padding="md" radius="md">
         {clusters.length === 0 ? (
           <Text c="dimmed">Кластеры не найдены</Text>
@@ -73,8 +80,13 @@ function ClusterRow({ cluster }: { cluster: ClusterSummaryDto }) {
       </Table.Td>
       <Table.Td>
         {cluster.incomplete ? <Badge color="yellow" variant="light">incomplete</Badge> : null}
+        {cluster.notInitialized ? (
+          <Tooltip label="кластер заявлен, ноды не подняты">
+            <Badge color="gray" variant="light" ml={cluster.incomplete ? 5 : 0}>не инициализирован</Badge>
+          </Tooltip>
+        ) : null}
         {mastersMissing > 0 ? (
-          <Badge color="red" variant="light" ml={cluster.incomplete ? 5 : 0}>
+          <Badge color="red" variant="light" ml={cluster.incomplete || cluster.notInitialized ? 5 : 0}>
             {mastersMissing} без мастера
           </Badge>
         ) : null}

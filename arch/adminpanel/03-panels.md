@@ -1,9 +1,10 @@
 # 03. Панели и REST API
 
-Спецификация UI-панелей и HTTP-контракта. Всё read-only: GET-эндпоинты и два
-POST (login/logout — не мутируют инспектируемые системы). JSON, camelCase,
-`ProblemDetails` для ошибок. Все эндпоинты, кроме `login` и `healthz`,
-требуют cookie-сессию (401 без неё).
+Спецификация UI-панелей и HTTP-контракта. Всё read-only, кроме единственной
+мутации `POST /api/clusters` (создание кластера, 02 §9): GET-эндпоинты и три
+POST (login/logout — не мутируют инспектируемые системы; clusters — пишет
+только ключи своего создания). JSON, camelCase, `ProblemDetails` для ошибок.
+Все эндпоинты, кроме `login` и `healthz`, требуют cookie-сессию (401 без неё).
 
 ## 1. Список эндпоинтов
 
@@ -16,20 +17,46 @@ POST (login/logout — не мутируют инспектируемые сис
 | `GET /api/overview` | дашборд: сводка etcd+кластеров+алертов, `snapshotAgeMs` |
 | `GET /api/etcd/status` | endpoints, members, leader, alarms, reachable, версия |
 | `GET /api/clusters` | список кластеров (сводный) |
+| `POST /api/clusters` | создание кластера (единственная мутация, 02 §9): тело `CreateClusterRequestDto` → 201+`ClusterCreatedDto` \| 400 (валидация) \| 409 (имя занято) \| 503 (etcd/снапшот) |
 | `GET /api/clusters/{cluster}` | детали: config, шарды, бакеты, heals (всё сразу; N ≤ тысяч — грид фильтруется на клиенте) |
 | `GET /api/ha` | список HA-scope'ов (сводный) |
-| `GET /api/ha/{scope}` | детали scope: leader, members+runtime, optime, raw config |
+| `GET /api/ha/{scope}` | детали scope: leader, members+runtime, optime, raw config, request_* |
 | `GET /api/alerts` | все алерты; query `?severity=critical|warning|info`, `?kind=` |
 
 Дополнительно к квери-параметрам: `?owner=&state=` на `/api/clusters/{c}`
 возвращают отфильтрованный `buckets` (удобно для детальной страницы; по
-умолчанию — все).
+умолчанию — все). `state` принимает и `NOT_INITIALIZED` (02 §2.1).
+
+### 1.1. Контракт `POST /api/clusters`
+
+Тело `CreateClusterRequestDto` (валидация — 02 §9.3; все ограничения —
+ProblemDetails 400 с деталями по полям):
+
+```text
+CreateClusterRequestDto: name, buckets, shards, replicas,
+                          requestCpu (число ядер, десятичное),
+                          requestMem (GiB, целое), requestDisk (GiB, целое)
+```
+
+Ответ 201 (кластер записан в etcd, состояние NOT_INITIALIZED; снапшот
+подхватит на следующем тике):
+
+```text
+ClusterCreatedDto: name, dbname, bucketsCount, shardsTotal, replicas,
+                    requestCpu, requestMem, requestDisk (строки-каноны 02 §9.1),
+                    state:"NOT_INITIALIZED"
+```
+
+Отказы: 409 `Cluster already exists` (клэйм-txn не сошёлся — имя занято);
+503 (нет снапшота/активного endpoint'а, etcd-ошибка записи). Компенсация
+частичной записи — 02 §9.2.
 
 ## 2. DTO (ключевые поля)
 
 ```text
 OverviewDto:  alertsCritical, alertsWarning, etcd{reachable, endpointsOk, endpointsTotal},
-              clusters[{name, shards, buckets, activeMoves, masterlessShards}],
+              clusters[{name, shards, buckets, activeMoves, masterlessShards,
+              notInitialized(bool)}],
               activeMoves[{cluster,bucket,state,owner,target,updatedUnix}],
               snapshotAgeMs, stale(bool)
 EtcdStatusDto: endpoints[{url, reachable, latencyMs, version, dbSizeBytes,
@@ -37,26 +64,41 @@ EtcdStatusDto: endpoints[{url, reachable, latencyMs, version, dbSizeBytes,
               peerUrls, clientUrls, isLeader}], alarms[{memberId, type}],
               quorumSuspected, lastRefreshUtc
 ClusterDto:   name, dbname, bucketsCount, createdUnix, incomplete(bool),
-              shards[ShardDto], buckets[BucketDto], heals[HealDto],
+              state(ACTIVE|NOT_INITIALIZED), shards[ShardDto], buckets[BucketDto],
+              heals[HealDto],
               standNodes[{name,address}] — стендовый топо-реестр снапшота
               (02 §2.3; поле глобально для всех кластеров, обычно пусто;
               UI-блок «Стендовая топология» рисуется при наличии)
+ClusterSummaryDto: name, dbname, bucketsCount, incomplete(bool),
+              notInitialized(bool), shardsTotal, shardsWithMaster, activeMoves
 ShardDto:     name, dsn, hosts[], replicasDeclared, masterAddress,
-              masterLeaseAlive(bool), runtime{standbiesSync, slotsLagMaxBytes,
+              masterLeaseAlive(bool), nodes[{name, state}],
+              requests{cpu, mem, disk}?(nullable) — заявка на ноду из
+              HaScope `<C>-<X>` (02 §2.2 request_*), null у старых кластеров,
+              runtime{standbiesSync, slotsLagMaxBytes,
               walStatusLost[], subscriptions[], bucketSchemas[], error}(nullable)
-BucketDto:    id, owner, state(ACTIVE|SYNCING|FROZEN|ABORTING),
+BucketDto:    id, owner, state(ACTIVE|SYNCING|FROZEN|ABORTING|NOT_INITIALIZED),
               move{owner,target,startedUnix,updatedUnix,phase,lastError}? ,
               ageSec (для не-ACTIVE)
 HealDto:      bucket, was, now, reason, tsUnix
 HaScopeDto:   scope, cluster?, shard?, matched(bool), leaderName, optimeLeader,
               members[{name, host, port, role, state, timeline, lagBytes,
-              probeAtUtc, probeError}], rawConfig
+              probeAtUtc, probeError}], rawConfig,
+              requests{cpu, mem, disk}?(nullable) — заявка на ноду (02 §9.1)
 AlertDto:     id, severity, kind, target, message, details{...}, sinceUnix
 ```
 
 `sinceUnix` алерта: `AlertEngine` сравнивает с прошлым снапшотом по
 стабильному `id` (`kind:target`) — «присутствует с»; живёт в снапшоте, без
 хранения истории.
+
+`masterlessShards` кластера в NOT_INITIALIZED всегда 0: «без мастера» у ещё
+не поднятого кластера — ожидаемое состояние, не деградация (кластер помечен
+`notInitialized`, UI показывает серым).
+
+`activeMoves` (сводка кластера и Overview) считает только
+`SYNCING|FROZEN|ABORTING`: `NOT_INITIALIZED` — не переезд, а начальное
+состояние бакета (02 §9).
 
 ## 3. Панели UI
 
@@ -65,11 +107,25 @@ AlertDto:     id, severity, kind, target, message, details{...}, sinceUnix
 | **Login** | форма логин/пароль; ошибка 401 |
 | **Overview** | бейдж stale; карточки: etcd (reachable, endpoints ok/total; alarms — в ленте алертов и на панели etcd), кластеры (шарды/бакеты/переезды), активные переезды списком, лента алертов (critical/warning); сводка HA: скольки scope'ов без лидера (клиентская агрегация `GET /api/ha` — `OverviewDto` HA-полей не содержит) |
 | **etcd** | таблица endpoints (reachable, latency, версия, raftTerm, ошибки, метка «активный»), members (+лидер), alarms; `lastRefreshUtc` |
-| **Clusters** | список: имя, dbname, N, шард мастеровых/всего, активные переезды, пометки (incomplete) |
-| **Cluster details** | вкладки: Шарды (dsn, replicas, master+leaseAlive, sync-standby, лаг слотов), Бакеты (грид id×owner×state, фильтр по owner/state, подсветка не-ACTIVE, возраст), Переезды (только не-ACTIVE: phase, updated, last_error), Heals (журнал), «Стендовая топология» (блок по `standNodes` деталей — реестр `/cluster/nodes/`, скрыт при пустом) |
+| **Clusters** | список: имя, dbname, N, шард мастеровых/всего, активные переезды, пометки (incomplete, not-initialized); кнопка «Создать кластер» → модальная форма (§3.1) |
+| **Cluster details** | вкладки: Шарды (dsn, replicas, master+leaseAlive, sync-standby, лаг слотов; ноды: имя+state; заявка ресурсов на ноду cpu/mem/disk), Бакеты (грид id×owner×state, фильтр по owner/state, подсветка не-ACTIVE, возраст), Переезды (только не-ACTIVE, кроме NOT_INITIALIZED: phase, updated, last_error), Heals (журнал), «Стендовая топология» (блок по `standNodes` деталей — реестр `/cluster/nodes/`, скрыт при пустом) |
 | **HA** | список scope'ов: scope, cluster/shard, лидер, члены (роль/состояние), лаг max, пометка unmatched |
-| **HA details** | leader, optime, таблица members: name/role/state/timeline/lag/probe-статус; raw config (свернуто) |
+| **HA details** | leader, optime, таблица members: name/role/state/timeline/lag/probe-статус; блок «Заявленные ресурсы нод» (request_*, при наличии); raw config (свернуто) |
 | **Alerts** | таблица всех алертов: severity-цвет, kind, target, message, since; фильтр по severity |
+
+### 3.1. Форма «Создать кластер» (единственная форма данных)
+
+Модальный диалог (Mantine Modal + TextInput/NumberInput) с кнопки «Создать
+кластер» на панели Clusters. Поля: имя; бакеты; шарды (≤ бакетов); реплики
+(дефолт 2, минимум 1 — только мастер); группа «Ресурсы нод (заявка, на каждую
+ноду)»: CPU (ядра, шаг 0.1), память (GiB), диск (GiB). Клиентская валидация —
+зеркало 02 §9.3 (быстрая ошибка у поля); серверная — источник истины.
+Отправка — POST `/api/clusters`; успех → закрыть форму, инвалидировать
+`clusters`-запросы (список обновится, новый кластер — с бейджем
+«не инициализирован»); ошибка — ProblemDetails в теле формы (409 — «имя
+занято», 400 — по полям, 503 — «etcd недоступен»). Двойной клик защищён
+блокировкой кнопки на время мутации. Никаких других форм ввода, кроме логина
+и этой, — панель немая по отношению к данным.
 
 Общие элементы: переключатель интервала polling (2/5/15 с/off, default 5 с,
 выбор сохраняется в localStorage), тёмная тема, авто-logout при 401
@@ -77,8 +133,8 @@ AlertDto:     id, severity, kind, target, message, details{...}, sinceUnix
 ответа `/api/overview`, опрашиваемого с текущим polling-интервалом (при
 недоступности данных — «нет данных»), счётчики critical/warning у пункта
 «Алерты» в навигации (клиентский подсчёт по ответу `/api/alerts`, опрашиваемому
-с тем же интервалом; скрыты при нуле/ошибке). Никаких форм ввода, кроме
-логина — панель немая по отношению к данным.
+с тем же интервалом; скрыты при нуле/ошибке). Форм ввода две: логин и создание
+кластера (§3.1) — всё остальное панель немая по отношению к данным.
 
 ## 4. Каталог алертов (`AlertEngine`)
 
@@ -93,8 +149,9 @@ AlertDto:     id, severity, kind, target, message, details{...}, sinceUnix
 | `etcd-alarm` | critical | есть alarms (NOSPACE и др.) | `/v3/maintenance/alarm` |
 | `snapshot-stale` | warning | `BuiltAtUtc` старше `3×RefreshInterval` | refresher |
 | `shard-no-master` | critical | `dsn` есть, `master`-ключа нет (P11: протухший lease) | `/clusters/…/master` |
-| `shard-no-leader` | critical | HA-scope без `leader`-ключа | `/service/…/leader` |
-| `move-stale` | warning | status-ключ не-ACTIVE дольше `StaleMoveSeconds` (600 c) | `…/buckets/status/*` |
+| `shard-no-leader` | critical | HA-scope без `leader`-ключа, **кроме scope'ов кластера в NOT_INITIALIZED** (ноды ещё не подняты — 02 §9) | `/service/…/leader` |
+| `cluster-not-initialized` | info | кластер в `NOT_INITIALIZED` (заявлен, ноды не подняты) — заметка, пока provisioning не переведёт в ACTIVE | config.state |
+| `move-stale` | warning | status-ключ не-ACTIVE (кроме NOT_INITIALIZED) дольше `StaleMoveSeconds` (600 c) | `…/buckets/status/*` |
 | `move-frozen-long` | critical | `FROZEN` дольше `FrozenSeconds` (60 c) — cutover обязан быть секундами | `…/buckets/status/*` |
 | `move-aborting` | warning | `ABORTING` (незавершённая уборка, P7) | `…/buckets/status/*` |
 | `move-flipped-status-stuck` | warning | status есть, routing уже = target (P7) | routing+status |
@@ -112,6 +169,11 @@ AlertDto:     id, severity, kind, target, message, details{...}, sinceUnix
 | `probe-failed` | info | Patroni/SQL-проба ошибки (детали в probe) | пробы |
 
 SQL-алерты вычисляются только при включённых пробах; etcd-алерты — всегда.
+`NOT_INITIALIZED`-бакеты — не переезды: `move-*` правила их не алертят
+(`move-frozen-long`/`move-aborting` смотрят свои точные состояния,
+`move-flipped-status-stuck` — требует `target`, у NOT_INITIALIZED его нет);
+бейдж «не инициализирован» в UI + `cluster-not-initialized` (info) вместо
+critical-шума от ещё не поднятого кластера.
 
 ## 5. SQL-каталог пробы (read-only, только `pg_catalog`/`pg_stat_*`)
 

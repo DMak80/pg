@@ -38,8 +38,8 @@ open http://localhost:5050
 ```bash
 checks/90-down.sh -v        # если стенд уже поднимался
 # панель: dotnet run --project src/AdminPanel.Api (отдельный терминал)
-checks/00-up.sh && checks/10-smoke-api.sh && checks/20-alerts.sh \
-  && checks/30-failover.sh && checks/40-live-probes.sh
+checks/00-up.sh && checks/10-smoke-api.sh && checks/15-cluster-create.sh \
+  && checks/20-alerts.sh && checks/30-failover.sh && checks/40-live-probes.sh
 ```
 
 Порядок важен: 30-й делает failover s1 (мастером остаётся s1b, s1a

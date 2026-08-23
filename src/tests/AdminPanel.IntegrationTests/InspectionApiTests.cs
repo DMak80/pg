@@ -76,12 +76,12 @@ internal static class InspectionSnapshots
     {
         var unix = now.ToUnixTimeSeconds();
         var cluster = new ClusterInfo(
-            "demo", "demo", 16, 1755800000,
+            "demo", "demo", 16, 1755800000, ClusterState.Active,
             [
                 new ShardInfo("s1", "host=s1a,s1b port=5432 dbname=demo user=postgres",
-                    ["s1a", "s1b"], 5432, "demo", "postgres", 1, "s1a:5432", null),
+                    ["s1a", "s1b"], 5432, "demo", "postgres", 1, "s1a:5432", [], null),
                 new ShardInfo("s2", "host=s2a,s2b port=5432 dbname=demo user=postgres",
-                    ["s2a", "s2b"], 5432, "demo", "postgres", 1, null, null),
+                    ["s2a", "s2b"], 5432, "demo", "postgres", 1, null, [], null),
             ],
             [.. Enumerable.Range(0, 16).Select(i => i switch
             {
@@ -112,13 +112,13 @@ internal static class InspectionSnapshots
     {
         var scopes = new List<AdminPanel.Core.HaScope>
         {
-            new("demo-s1", "demo", "s1", true, "s1a", 738273634528L, true,
+            new("demo-s1", "demo", "s1", true, "s1a", 738273634528L, true, null, null, null,
                 [
                     new HaMember("s1a", "s1a", 5432, "master", "running", 1L, 0L, now, null),
                     new HaMember("s1b", "s1b", 5432, "replica", "streaming", 1L, 17L * 1024 * 1024, now, null),
                 ],
                 "{\"ttl\":5,\"loop_wait\":2}"),
-            new("other-scope", null, null, false, null, null, false,
+            new("other-scope", null, null, false, null, null, false, null, null, null,
                 [new HaMember("n1", "n1", 5432, "replica", "stopped", null, null, now, "connection refused")],
                 null),
         };

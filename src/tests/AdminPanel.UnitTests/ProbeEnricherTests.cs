@@ -17,7 +17,7 @@ public class ProbeEnricherTests
     {
         HaScopes =
         [
-            new HaScope("demo-s1", "demo", "s1", true, "s1a", null, true,
+            new HaScope("demo-s1", "demo", "s1", true, "s1a", null, true, null, null, null,
                 [Member("s1a", "master", "running"), Member("s1b")], null),
         ],
     };

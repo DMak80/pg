@@ -7,6 +7,9 @@ namespace AdminPanel.UnitTests;
 // Парсер /service/<scope>/ (Patroni DCS): leader-варианты, members, optime, initialize, unmatched (spec §10.2).
 public class ServiceParserTests
 {
+    // Локальный конструктор Kv для ad-hoc-ключей.
+    private static AdminPanel.Etcd.Client.Kv Kv(string key, string value) => new(key, value, 1);
+
     // Кластеры для мэтчинга — из реальной фикстуры /clusters/ (связка тика одного снапшота).
     private static readonly IReadOnlyList<AdminPanel.Core.ClusterInfo> DemoClusters =
         ClustersParser.Parse(EtcdFixtures.LoadKv("clusters-full.json")).Clusters;
@@ -135,5 +138,38 @@ public class ServiceParserTests
 
         // Assert
         result.Scopes.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Parse_RequestResources_MapsRawStrings()
+    {
+        // Arrange
+        var kvs = new[]
+        {
+            Kv("/service/fresh-shard1/request_cpu", "0.5"),
+            Kv("/service/fresh-shard1/request_mem", "8Gi"),
+            Kv("/service/fresh-shard1/request_disk", "100Gi"),
+        };
+
+        // Act
+        var scope = ServiceParser.Parse(kvs, []).Scopes.Single();
+
+        // Assert: заявки — raw-строки на ноду (arch/02 §2.2); пустое значение = null.
+        scope.RequestCpu.Should().Be("0.5");
+        scope.RequestMem.Should().Be("8Gi");
+        scope.RequestDisk.Should().Be("100Gi");
+    }
+
+    [Fact]
+    public void Parse_RequestKeysEmptyValues_MapsToNulls()
+    {
+        // Arrange
+        var kvs = new[] { Kv("/service/fresh-shard1/request_cpu", "  ") };
+
+        // Act
+        var scope = ServiceParser.Parse(kvs, []).Scopes.Single();
+
+        // Assert
+        scope.RequestCpu.Should().BeNull();
     }
 }

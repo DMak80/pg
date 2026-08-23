@@ -2,8 +2,10 @@
 import { apiFetch } from './client';
 import type {
   AlertDto,
+  ClusterCreatedDto,
   ClusterDto,
   ClusterSummaryDto,
+  CreateClusterRequestDto,
   EtcdStatusDto,
   HaScopeDto,
   HaScopeSummaryDto,
@@ -68,6 +70,11 @@ export function fetchAlerts(severity?: string, kind?: string): Promise<AlertDto[
 
 export function loginRequest(username: string, password: string): Promise<void> {
   return apiFetch<void>('/api/auth/login', { method: 'POST', body: { username, password } });
+}
+
+// POST /api/clusters — единственная мутация панели (spec t12 §3.8).
+export function createCluster(request: CreateClusterRequestDto): Promise<ClusterCreatedDto> {
+  return apiFetch<ClusterCreatedDto>('/api/clusters', { method: 'POST', body: request });
 }
 
 export function logoutRequest(): Promise<void> {

@@ -21,6 +21,9 @@ public static class ServiceParser
         public string? OptimeRaw;
         public string? InitializeRaw;
         public string? RawConfig;
+        public string? RequestCpu;
+        public string? RequestMem;
+        public string? RequestDisk;
         public readonly List<(string Name, string Raw)> Members = [];
     }
 
@@ -58,6 +61,18 @@ public static class ServiceParser
                     acc.OptimeRaw = kv.Value;
                     break;
 
+                case "request_cpu" when segments.Length == 4:
+                    acc.RequestCpu = NullIfBlank(kv.Value);
+                    break;
+
+                case "request_mem" when segments.Length == 4:
+                    acc.RequestMem = NullIfBlank(kv.Value);
+                    break;
+
+                case "request_disk" when segments.Length == 4:
+                    acc.RequestDisk = NullIfBlank(kv.Value);
+                    break;
+
                 case "members" when segments.Length == 5 && segments[4].Length > 0:
                     acc.Members.Add((segments[4], kv.Value));
                     break;
@@ -81,6 +96,9 @@ public static class ServiceParser
                     ParseLeader(a.LeaderRaw),
                     ParseOptime(a.OptimeRaw),
                     a.InitializeRaw is { Length: > 0 },
+                    NullIfBlank(a.RequestCpu),
+                    NullIfBlank(a.RequestMem),
+                    NullIfBlank(a.RequestDisk),
                     a.Members
                         .OrderBy(m => m.Name, StringComparer.Ordinal)
                         .Select(m => ParseMember(m.Name, m.Raw))
@@ -118,6 +136,10 @@ public static class ServiceParser
             && long.TryParse(raw.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var lsn)
             ? lsn
             : null;
+
+    // Пустое/пробельное значение request_* = отсутствие заявки.
+    private static string? NullIfBlank(string? raw)
+        => string.IsNullOrWhiteSpace(raw) ? null : raw.Trim();
 
     private static HaMember ParseMember(string name, string raw)
     {

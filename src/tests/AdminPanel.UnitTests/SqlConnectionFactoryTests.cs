@@ -12,7 +12,7 @@ public class SqlConnectionFactoryTests
 {
     private static ShardInfo Shard() => new(
         "s1", "host=s1a,s1b port=5432 dbname=demo user=postgres",
-        ["s1a", "s1b"], 5432, "demo", "postgres", 1, "s1a:5432", null);
+        ["s1a", "s1b"], 5432, "demo", "postgres", 1, "s1a:5432", [], null);
 
     [Fact]
     public void Build_MapsHostsPerEndpoint()

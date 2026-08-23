@@ -2,7 +2,33 @@
 // Nullable-поля C# → '| null'; unix-время → number | null; DateTimeOffset → string.
 
 // Строковый канон статусов бакета (arch/02 §2.1).
-export type BucketStateName = 'ACTIVE' | 'SYNCING' | 'FROZEN' | 'ABORTING';
+export type BucketStateName = 'ACTIVE' | 'SYNCING' | 'FROZEN' | 'ABORTING' | 'NOT_INITIALIZED';
+
+// Канон состояния кластера (arch/03 §2): отсутствие записи о state = ACTIVE.
+export type ClusterStateName = 'ACTIVE' | 'NOT_INITIALIZED';
+
+// POST /api/clusters — тело и ответ (arch/03 §1.1).
+export interface CreateClusterRequestDto {
+  name: string;
+  buckets: number;
+  shards: number;
+  replicas: number;
+  requestCpu: number;
+  requestMem: number;
+  requestDisk: number;
+}
+
+export interface ClusterCreatedDto {
+  name: string;
+  dbName: string;
+  bucketsCount: number;
+  shardsTotal: number;
+  replicas: number;
+  requestCpu: string;
+  requestMem: string;
+  requestDisk: string;
+  state: ClusterStateName;
+}
 
 // Строковый канон severity алертов (arch/03 §1).
 export type AlertSeverityName = 'critical' | 'warning' | 'info';
@@ -35,6 +61,7 @@ export interface OverviewClusterDto {
   buckets: number;
   activeMoves: number;
   masterlessShards: number;
+  notInitialized: boolean;
 }
 
 export interface OverviewMoveDto {
@@ -86,6 +113,7 @@ export interface ClusterSummaryDto {
   dbName: string | null;
   bucketsCount: number;
   incomplete: boolean;
+  notInitialized: boolean;
   shardsTotal: number;
   shardsWithMaster: number;
   activeMoves: number;
@@ -98,6 +126,7 @@ export interface ClusterDto {
   bucketsCount: number;
   createdUnix: number | null;
   incomplete: boolean;
+  state: ClusterStateName;
   shards: ShardDto[];
   buckets: BucketDto[];
   heals: HealDto[];
@@ -111,7 +140,22 @@ export interface ShardDto {
   replicasDeclared: number | null;
   masterAddress: string | null;
   masterLeaseAlive: boolean;
+  nodes: NodeDto[];
+  requests: NodeRequestsDto | null;
   runtime: ShardRuntimeDto | null;
+}
+
+// Плановая нода шарда (arch/02 §9.1).
+export interface NodeDto {
+  name: string;
+  state: string | null;
+}
+
+// Заявка ресурсов на ноду scope /service/<C>-<X>/request_* (arch/02 §9.1).
+export interface NodeRequestsDto {
+  cpu: string;
+  mem: string;
+  disk: string;
 }
 
 export interface ShardRuntimeDto {
@@ -174,6 +218,7 @@ export interface HaScopeDto {
   matched: boolean;
   leaderName: string | null;
   optimeLeader: number | null;
+  requests: NodeRequestsDto | null;
   members: HaMemberDto[];
   rawConfig: string | null;
 }

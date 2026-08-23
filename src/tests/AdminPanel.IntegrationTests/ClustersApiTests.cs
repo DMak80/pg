@@ -233,7 +233,7 @@ public class ClustersApiTests
             Clusters =
             [
                 .. clustered.Clusters,
-                new ClusterInfo("ghost", null, 0, null, [], [], []),
+                new ClusterInfo("ghost", null, 0, null, ClusterState.Active, [], [], []),
             ],
         };
 
@@ -245,5 +245,44 @@ public class ClustersApiTests
         clusters[1].GetProperty("name").GetString().Should().Be("ghost");
         clusters[1].GetProperty("incomplete").GetBoolean().Should().BeTrue();
         clusters[1].GetProperty("dbName").ValueKind.Should().Be(JsonValueKind.Null);
+    }
+
+    [Fact]
+    public async Task Clusters_NotInitializedCluster_FlaggedInSummaryAndDetails()
+    {
+        // Arrange: fresh — 1 шард (nodes a/b), бакеты NOT_INITIALIZED, scope с заявкой
+        using var client = await LoginAsync();
+        var unix = _factory.Time.Utc.ToUnixTimeSeconds();
+        var cluster = new ClusterInfo("fresh", "fresh", 2, 1755900000, ClusterState.NotInitialized,
+            [new ShardInfo("shard1", "", [], null, null, null, 2, null,
+                [new NodeInfo("shard1a", "NOT_INITIALIZED"), new NodeInfo("shard1b", "NOT_INITIALIZED")], null)],
+            [
+                new BucketInfo(0, "shard1", BucketState.NotInitialized,
+                    new MoveInfo("shard1", null, null, unix - 100, null, null)),
+                new BucketInfo(1, "shard1", BucketState.NotInitialized,
+                    new MoveInfo("shard1", null, null, unix - 100, null, null)),
+            ], []);
+        var scope = new AdminPanel.Core.HaScope("fresh-shard1", "fresh", "shard1", true, null, null, false,
+            "2", "8Gi", "100Gi", [], null);
+        _factory.Snapshot = InspectionSnapshots.Fixture(_factory.Time.Utc) with
+        {
+            Clusters = [cluster],
+            HaScopes = [scope],
+        };
+
+        // Act
+        var summary = await GetJsonAsync(client, "/api/clusters");
+        var details = await GetJsonAsync(client, "/api/clusters/fresh");
+        var filtered = await GetJsonAsync(client, "/api/clusters/fresh?state=NOT_INITIALIZED");
+
+        // Assert: сводка (notInitialized, activeMoves=0), детали (state/nodes/requests), фильтр
+        summary[0].GetProperty("notInitialized").GetBoolean().Should().BeTrue();
+        summary[0].GetProperty("activeMoves").GetInt32().Should().Be(0);
+        details.GetProperty("state").GetString().Should().Be("NOT_INITIALIZED");
+        var shard = details.GetProperty("shards")[0];
+        shard.GetProperty("nodes").GetArrayLength().Should().Be(2);
+        shard.GetProperty("requests").GetProperty("cpu").GetString().Should().Be("2");
+        details.GetProperty("buckets")[0].GetProperty("state").GetString().Should().Be("NOT_INITIALIZED");
+        filtered.GetProperty("buckets").GetArrayLength().Should().Be(2);
     }
 }

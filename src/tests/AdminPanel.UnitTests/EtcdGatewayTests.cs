@@ -169,4 +169,81 @@ public class EtcdGatewayTests
         // Assert
         result.IsSuccess.Should().BeFalse();
     }
+
+    [Fact]
+    public async Task Txn_CompareAndPuts_RequestHasBase64Bodies()
+    {
+        // Arrange
+        var handler = new FakeHandler(_ => Json("""{"succeeded":true}"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        var result = await gateway.TxnAsync(
+            "http://etcd:2379",
+            [new TxnCompare("/clusters/shop/config", 0)],
+            [new KvPut("/clusters/shop/config", "{}")],
+            CancellationToken.None);
+
+        // Assert: compare version=0 + request_put; base64("/clusters/shop/config") = L2NsdXN0ZXJzL3Nob3AvY29uZmln
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Succeeded.Should().BeTrue();
+        var request = handler.Requests.Should().ContainSingle().Subject;
+        request.Url.Should().Be("http://etcd:2379/v3/kv/txn");
+        var body = JsonDocument.Parse(request.Body).RootElement;
+        body.GetProperty("compare")[0].GetProperty("key").GetString().Should().Be("L2NsdXN0ZXJzL3Nob3AvY29uZmln");
+        body.GetProperty("compare")[0].GetProperty("version").GetInt32().Should().Be(0);
+        body.GetProperty("success")[0].GetProperty("request_put").GetProperty("key").GetString().Should().Be("L2NsdXN0ZXJzL3Nob3AvY29uZmln");
+    }
+
+    [Fact]
+    public async Task Txn_CompareFailed_MapsSucceededFalse()
+    {
+        // Arrange
+        var handler = new FakeHandler(_ => Json("""{"succeeded":false,"responses":[]}"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        var result = await gateway.TxnAsync(
+            "http://etcd:2379", [new TxnCompare("/k", 0)], [new KvPut("/k", "v")], CancellationToken.None);
+
+        // Assert: отказ compare — не исключение, а Succeeded=false (клэйм имени занят, arch/02 §9.2).
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Succeeded.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Put_RequestHasBase64KeyValue()
+    {
+        // Arrange
+        var handler = new FakeHandler(_ => Json("""{"header":{}}"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        var result = await gateway.PutAsync("http://etcd:2379", "/a/b", "v", CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        var request = handler.Requests.Should().ContainSingle().Subject;
+        request.Url.Should().Be("http://etcd:2379/v3/kv/put");
+        var body = JsonDocument.Parse(request.Body).RootElement;
+        body.GetProperty("key").GetString().Should().Be("L2EvYg==");
+        body.GetProperty("value").GetString().Should().Be("dg==");
+    }
+
+    [Fact]
+    public async Task Delete_Prefix_RequestHasKeyAndRangeEnd()
+    {
+        // Arrange
+        var handler = new FakeHandler(_ => Json("""{"deleted":3}"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        await gateway.DeleteAsync("http://etcd:2379", "/clusters/shop/", prefix: true, CancellationToken.None);
+        await gateway.DeleteAsync("http://etcd:2379", "/service/shop-shard1/request_cpu", prefix: false, CancellationToken.None);
+
+        // Assert: prefix=true → key+range_end (префиксный deleterange); точечный — только key.
+        var bodies = handler.Requests.Select(r => JsonDocument.Parse(r.Body).RootElement).ToList();
+        bodies[0].TryGetProperty("range_end", out _).Should().BeTrue();
+        bodies[1].TryGetProperty("range_end", out _).Should().BeFalse();
+    }
 }
