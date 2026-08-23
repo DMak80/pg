@@ -29,16 +29,16 @@ Patroni REST/SQL (тик 15 c), 24 правила алертов.
 ## Быстрый старт (стенд)
 
 ```bash
-# терминал 1 — панель (http://localhost:5000, логин admin/admin из appsettings.Development.json)
+# терминал 1 — панель (http://localhost:5050, логин admin/admin из appsettings.Development.json)
 dotnet run --project src/AdminPanel.Api
 
 # терминал 2 — стенд full (etcd+сид+2 PG-шарда+эмуляторы); quick: docker compose up -d
 cd dev-stand && checks/00-up.sh
 
-open http://localhost:5000
+open http://localhost:5050
 ```
 
-Без стенда панель тоже стартует (`curl http://localhost:5000/api/healthz` →
+Без стенда панель тоже стартует (`curl http://localhost:5050/api/healthz` →
 `{"status":"ok"}`), но данных нет: единственное подключение к данным — etcd
 (`AdminPanel:Etcd:Endpoints`).
 
@@ -48,7 +48,7 @@ open http://localhost:5000
 dotnet build src/AdminPanel.slnx     # 0 warnings (warnings как ошибки)
 dotnet test src/AdminPanel.slnx      # нужен Docker: integration — Testcontainers
 cd frontend && npm ci && npm run build   # tsc-typecheck + бандл в wwwroot
-cd frontend && npm run dev           # либо dev-режим: vite:5173, proxy /api → :5000
+cd frontend && npm run dev           # либо dev-режим: vite:5173, proxy /api → :5050
 ```
 
 ## Контейнер

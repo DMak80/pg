@@ -114,7 +114,7 @@ FluentAssertions, Testcontainers, Npgsql, Microsoft.Extensions.*); новые
   (переключатель в UI: 2/5/15/off, default 5 c; выбор сохраняется в
   localStorage). WebSocket/SSE сознательно нет: данные
   и так производные от тиков refresher'а, а меньше движущихся частей.
-- **Dev-режим**: `vite dev` с proxy `/api` → `http://localhost:5000`
+- **Dev-режим**: `vite dev` с proxy `/api` → `http://localhost:5050`
   (Kestrel), CORS не нужен.
 - **Каркас SPA** (t07): `frontend/src` — общий API-клиент (fetch-обёртка с
   обработкой 401/ProblemDetails + типы DTO из [03](03-panels.md) §2),

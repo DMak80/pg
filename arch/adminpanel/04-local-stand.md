@@ -192,7 +192,7 @@ dotnet run --project src/AdminPanel.Api   # appsettings читает Endpoints=h
 # терминал 2 — стенд
 cd dev-stand && checks/00-up.sh           # или: docker compose up -d (quick-профиль: только etcd+seed)
 
-open http://localhost:5000                # логин admin/admin из appsettings.Development.json
+open http://localhost:5050                # логин admin/admin из appsettings.Development.json
 ```
 
 `appsettings.Development.json` содержит: `AdminPanel:Etcd:Endpoints=http://localhost:2379`,

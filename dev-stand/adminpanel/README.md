@@ -6,14 +6,14 @@
 ## Быстрый старт
 
 ```bash
-# терминал 1 — панель (localhost:5000, admin/admin)
+# терминал 1 — панель (localhost:5050, admin/admin)
 dotnet run --project src/AdminPanel.Api
 
 # терминал 2 — стенд
 cd dev-stand && checks/00-up.sh        # full: etcd+seed+2 PG-шарда+эмуляторы
 # или: docker compose up -d            # quick: только etcd+сид (без PG/проб)
 
-open http://localhost:5000
+open http://localhost:5050
 ```
 
 Порт панели/логин переопределяются: `ADMINPANEL_URL`, `AdminPanel:Auth`.

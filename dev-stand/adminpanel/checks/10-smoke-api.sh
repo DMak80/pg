@@ -3,7 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-BASE="${ADMINPANEL_URL:-http://localhost:5000}"
+BASE="${ADMINPANEL_URL:-http://localhost:5050}"
 JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
 
 # Arrange: панель поднята (до 60 c; запуск руками — arch/04 §5)

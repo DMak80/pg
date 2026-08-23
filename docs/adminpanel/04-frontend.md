@@ -5,7 +5,7 @@
 
 Кратко: `npm run build` кладёт бандл в `src/AdminPanel.Api/wwwroot` (vite `outDir`
 вне корня проекта — `emptyOutDir: true` обязателен), Kestrel раздаёт его без auth и
-делает SPA-fallback; `npm run dev` — vite:5173 с proxy `/api` → `http://localhost:5000`
+делает SPA-fallback; `npm run dev` — vite:5173 с proxy `/api` → `http://localhost:5050`
 (cookie same-origin, CORS не нужен). Данные — только polling (TanStack Query,
 `refetchInterval` из контекста), WebSocket/SSE нет.
 
