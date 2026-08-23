@@ -94,7 +94,7 @@ public class CreateClusterValidatorTests
     }
 }
 
-// План ключей одного создания: arch/02 §9.1 — конфиг, шарды, ноды, routing round-robin, request_*.
+// План ключей одного создания: arch/02 §9.1 — конфиг, шарды, ноды, routing блоками (§9.1.1), request_*.
 public class ClusterCreatePlanTests
 {
     [Fact]
@@ -126,10 +126,10 @@ public class ClusterCreatePlanTests
             "/service/shop-shard2/request_disk",
         ]);
 
-        // round-robin: bucket_i → shard_(i % S + 1) — как init-cluster.sh
+        // блочное распределение (arch/02 §9.1.1): 4×2 → бакеты 0,1=shard1; 2,3=shard2
         plan.Puts.Single(p => p.Key == "/clusters/shop/buckets/routing/bucket_0").Value.Should().Be("shard1");
-        plan.Puts.Single(p => p.Key == "/clusters/shop/buckets/routing/bucket_1").Value.Should().Be("shard2");
-        plan.Puts.Single(p => p.Key == "/clusters/shop/buckets/routing/bucket_2").Value.Should().Be("shard1");
+        plan.Puts.Single(p => p.Key == "/clusters/shop/buckets/routing/bucket_1").Value.Should().Be("shard1");
+        plan.Puts.Single(p => p.Key == "/clusters/shop/buckets/routing/bucket_2").Value.Should().Be("shard2");
 
         // статус бакета: NOT_INITIALIZED + owner + updated_unix, без target/phase
         plan.Puts.Single(p => p.Key == "/clusters/shop/buckets/status/bucket_3").Value.Should().Be(
@@ -176,16 +176,16 @@ public class ClusterCreatePlanTests
     }
 
     [Fact]
-    public void Build_RoundRobinUneven_FirstShardsGetExtra()
+    public void Build_BlockUneven_RemainderToLaterShards()
     {
-        // Arrange: 5 бакетов, 2 шарда — как init-cluster.sh (первые rem шардов по +1)
+        // Arrange: 5 бакетов, 2 шарда — блоки 2+3, остаток у ПОСЛЕДНЕГО (spec §2.1)
         var request = new CreateClusterRequest("u", 5, 2, 1, 1m, 1, 1);
 
         // Act
         var plan = ClusterCreatePlan.Build(request, 1);
 
-        // Assert: i % S: 0→shard1,1→shard2,2→shard1,3→shard2,4→shard1
-        plan.Puts.Single(p => p.Key == "/clusters/u/buckets/routing/bucket_4").Value.Should().Be("shard1");
+        // Assert: floor((2i+1)·2/10): b0,b1→shard1; b2,b3,b4→shard2
+        plan.Puts.Single(p => p.Key == "/clusters/u/buckets/routing/bucket_4").Value.Should().Be("shard2");
     }
 
     [Fact]
@@ -218,6 +218,88 @@ public class ClusterCreatePlanTests
             "/service/solo-shard1/request_mem",
             "/service/solo-shard1/request_disk",
         ]);
+    }
+
+    // Канон распределения (arch/02 §9.1.1): непрерывные блоки, «бакет к ближайшему
+    // центру отрезка» — floor((2i+1)·S/(2N)); таблица и свойства — spec §2.1.
+    [Fact]
+    public void OwnerShard_CanonicalTenByThree_BlocksThreeFourThree()
+    {
+        // Arrange: канон пользователя — 10×3, остаток СРЕДНЕМУ шарду (spec §2.1)
+        // Act
+        var owners = Enumerable.Range(0, 10)
+            .Select(i => ClusterCreatePlan.OwnerShard(i, 10, 3)).ToArray();
+
+        // Assert: shard1={0,1,2}, shard2={3,4,5,6}, shard3={7,8,9} — расклад 3+4+3
+        owners.Should().Equal(1, 1, 1, 2, 2, 2, 2, 3, 3, 3);
+    }
+
+    [Theory]
+    [InlineData(4, 2, new[] { 1, 1, 2, 2 })]
+    [InlineData(5, 2, new[] { 1, 1, 2, 2, 2 })]
+    [InlineData(7, 3, new[] { 1, 1, 2, 2, 2, 3, 3 })]
+    [InlineData(8, 3, new[] { 1, 1, 1, 2, 2, 3, 3, 3 })]
+    [InlineData(9, 4, new[] { 1, 1, 2, 2, 3, 3, 3, 4, 4 })]
+    [InlineData(3, 3, new[] { 1, 2, 3 })]
+    [InlineData(1, 1, new[] { 1 })]
+    public void OwnerShard_Table_MatchesSpec(int buckets, int shards, int[] expected)
+    {
+        // Arrange: строки таблицы распределений spec §2.1
+        // Act
+        var owners = Enumerable.Range(0, buckets)
+            .Select(i => ClusterCreatePlan.OwnerShard(i, buckets, shards));
+
+        // Assert
+        owners.Should().Equal(expected);
+    }
+
+    [Theory]
+    [InlineData(10, 3)]
+    [InlineData(4, 2)]
+    [InlineData(5, 2)]
+    [InlineData(7, 3)]
+    [InlineData(8, 3)]
+    [InlineData(9, 4)]
+    [InlineData(16, 3)]
+    [InlineData(100, 7)]
+    [InlineData(3, 3)]
+    [InlineData(1, 1)]
+    [InlineData(8192, 128)]
+    public void OwnerShard_Properties_ContinuousBalancedNonEmpty(int buckets, int shards)
+    {
+        // Arrange: свойства формулы §9.1.1 при допустимых N ≥ S ≥ 1
+        // Act
+        var owners = Enumerable.Range(0, buckets)
+            .Select(i => ClusterCreatePlan.OwnerShard(i, buckets, shards)).ToArray();
+
+        // Assert: размеры шардов — сумма N, размах не более 1
+        var sizes = Enumerable.Range(1, shards)
+            .Select(k => owners.Count(o => o == k)).ToArray();
+        sizes.Sum().Should().Be(buckets);
+        (sizes.Max() - sizes.Min()).Should().BeLessThanOrEqualTo(1);
+
+        // Assert: каждый шард непуст, его бакеты — непрерывный диапазон (блок)
+        foreach (var k in Enumerable.Range(1, shards))
+        {
+            var ids = Enumerable.Range(0, buckets).Where(i => owners[i] == k).ToArray();
+            ids.Should().NotBeEmpty();
+            (ids.Last() - ids.First() + 1).Should().Be(ids.Length);
+        }
+    }
+
+    [Fact]
+    public void OwnerShard_LargeSizes_ExactSplits()
+    {
+        // Arrange/Act/Assert: точные расклады больших N×S из таблицы spec §2.1
+        BlockSizes(16, 3).Should().Equal(5, 6, 5);
+        BlockSizes(100, 7).Should().Equal(14, 15, 14, 14, 14, 15, 14);
+        BlockSizes(8192, 128).Should().Match(l => l.Count() == 128 && l.All(s => s == 64));
+
+        static int[] BlockSizes(int buckets, int shards)
+            => Enumerable.Range(1, shards)
+                .Select(k => Enumerable.Range(0, buckets)
+                    .Count(i => ClusterCreatePlan.OwnerShard(i, buckets, shards) == k))
+                .ToArray();
     }
 }
 

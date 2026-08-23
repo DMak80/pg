@@ -51,8 +51,8 @@ public sealed record ClusterCreatePlan(
 
         for (var i = 0; i < request.Buckets; i++)
         {
-            // round-robin по шардам — как init-cluster.sh bucket_shard(): i % S
-            var owner = $"shard{i % request.Shards + 1}";
+            // владелец — непрерывный блок: канон arch/02 §9.1.1
+            var owner = $"shard{OwnerShard(i, request.Buckets, request.Shards)}";
             puts.Add(new($"/clusters/{request.Name}/buckets/routing/bucket_{i}", owner));
             puts.Add(new(
                 $"/clusters/{request.Name}/buckets/status/bucket_{i}",
@@ -69,6 +69,13 @@ public sealed record ClusterCreatePlan(
             mem,
             disk);
     }
+
+    // Распределение бакетов непрерывными блоками — «бакет к ближайшему центру
+    // отрезка» (arch/02 §9.1.1): floor((2·i+1)·S/(2·N)); канон 10×3 → 3+4+3
+    // (остаток — среднему шарду). Целочисленно, без float:
+    // max (2·8191+1)·128 = 2 097 024 — переполнение int исключено.
+    public static int OwnerShard(int bucket, int buckets, int shards)
+        => (2 * bucket + 1) * shards / (2 * buckets) + 1;
 
     // config-JSON: имена полей — канон init-cluster.sh (snake_case).
     private sealed record ConfigJson(
