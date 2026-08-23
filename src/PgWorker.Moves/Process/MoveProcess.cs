@@ -808,10 +808,14 @@ public sealed class MoveProcess(
         return await sql.ExecuteAsync(dsn, MoveSql.DropSlot(slot), ct);
     }
 
-    // Заглушка op=abort (реализация — задача 16: AbortSequence).
+    // op=abort — делегирует AbortSequence (t01 задача 16, spec §6.5): журнал
+    // ABORTING ДО манипуляций, идемпотентная уборка, AbortMinAgeSec/force.
     private Task<Result<ProcessOutcome>> RunAbortAsync(
         ClusterSnapshot snap, string bucket, MoveRequest request, CancellationToken ct)
-        => throw new NotSupportedException("op=abort — реализация в задаче 16");
+    {
+        var abort = new AbortSequence(sql, status, requests, journal, shards, secrets);
+        return abort.RunAsync(snap, bucket, request, claims, clock, options, ct, snapshot);
+    }
 
     // ── Исходы M0/оп-веток ──
 

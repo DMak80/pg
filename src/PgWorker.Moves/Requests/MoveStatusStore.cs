@@ -34,6 +34,14 @@ public sealed class MoveStatusStore(IEtcdGateway gateway, string[] endpoints)
             endpoint, MoveNames.StatusKey(cluster, status.Bucket), status.Serialize(), lease: null, ct));
 
     /// <summary>
+    /// Запись сырого значения статус-ключа — журнал уборки ABORTING (AbortJournal
+    /// сериализуется с state=ABORTING константой, abort-move.sh journal_set).
+    /// </summary>
+    public Task<Result> PutRawAsync(string cluster, string bucket, string json, CancellationToken ct)
+        => WithFailoverAsync(endpoint => gateway.PutAsync(
+            endpoint, MoveNames.StatusKey(cluster, bucket), json, lease: null, ct));
+
+    /// <summary>
     /// Атомарный flip: txn [ValueEqual(routing, current)] → [Put(routing, next), Delete(status)].
     /// false = compare не сошёлся (routing изменился под руками — заморозка остаётся, разбор вручную).
     /// </summary>
