@@ -216,6 +216,28 @@ public class DockerEngineTests
     }
 
     [Fact]
+    public async Task ListServices_ParsesNamesAndAppliesPrefixFilter()
+    {
+        // Arrange — фрагмент ответа GET /services (swarm): имя живёт в Spec.Name;
+        // docker name-фильтр подстрочный → клиент дублирует строгий StartsWith
+        var handler = new FakeHandler(_ => Json(
+            """
+            [{"ID":"svc-1","Spec":{"Name":"pgw-shop-shard1-shard1a"},"Endpoint":{"Ports":[]}},
+             {"ID":"svc-2","Spec":{"Name":"pgw-shop2-shard1-shard1a"},"Endpoint":{"Ports":[]}}]
+            """));
+        var engine = NewEngine(handler);
+
+        // Act
+        var result = await engine.ListServicesAsync("pgw-shop-", CancellationToken.None);
+
+        // Assert: только имена нужного префикса (rework №4), фильтр в query
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Equal("pgw-shop-shard1-shard1a");
+        handler.Requests.Single().Url.Should().Contain("/v1.44/services");
+        handler.Requests.Single().Url.Should().Contain("filters=");
+    }
+
+    [Fact]
     public async Task CreateService_SendsConstraintAndHostPublish()
     {
         // Arrange

@@ -205,13 +205,33 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         {
             try
             {
-                await SendAsync(HttpMethod.Delete, $"/services/{Uri.EscapeDataString(name)}", ct: ct);
+                await SendAsync(HttpMethod.Delete, $"/services/{Uri.EscapeDataString(name)}", ct);
             }
             catch (DockerHttpException e) when (e.StatusCode == 404)
             {
                 // сервиса уже нет — идемпотентность
             }
         });
+
+    // Имена swarm-сервисов по префиксу (rework №4): docker-фильтр name —
+    // подстрочный, поэтому дублируем строгий StartsWith на клиенте.
+    public async Task<Result<IReadOnlyList<string>>> ListServicesAsync(string namePrefix, CancellationToken ct)
+    {
+        var query = namePrefix.Length > 0
+            ? "?filters=" + Uri.EscapeDataString("{\"name\":[\"" + namePrefix + "\"]}")
+            : string.Empty;
+        return await Result<IReadOnlyList<string>>.FromAsync(async () =>
+        {
+            var services = await GetAsync<List<ServiceDto>>("/services" + query, ct) ?? [];
+            return (IReadOnlyList<string>)services
+                .Select(s => s.Spec?.Name)
+                .Where(name => name is { Length: > 0 }
+                    && (namePrefix.Length == 0 || name.StartsWith(namePrefix, StringComparison.Ordinal)))
+                .Select(name => name!)
+                .OrderBy(name => name, StringComparer.Ordinal)
+                .ToList();
+        });
+    }
 
     public async Task<Result<IReadOnlyList<DockerTask>>> ListTasksAsync(string serviceName, CancellationToken ct)
     {
@@ -565,7 +585,14 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
     {
         [JsonPropertyName("ID")] public string Id { get; set; } = "";
 
+        [JsonPropertyName("Spec")] public ServiceSpecDto? Spec { get; set; }
+
         [JsonPropertyName("Endpoint")] public EndpointDto? Endpoint { get; set; }
+    }
+
+    private sealed class ServiceSpecDto
+    {
+        [JsonPropertyName("Name")] public string? Name { get; set; }
     }
 
     private sealed class EndpointDto

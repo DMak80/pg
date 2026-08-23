@@ -18,6 +18,7 @@ public class ClusterDriverTests
 
         public List<DockerContainer> Containers = [];
         public List<DockerSwarmNode> Nodes = [];
+        public List<string> Services = [];
         public IReadOnlySet<(string, int)> Busy = new HashSet<(string, int)>();
         public ContainerSpec? CreatedSpec;
         public ServiceSpec? CreatedService;
@@ -95,6 +96,16 @@ public class ClusterDriverTests
         {
             Calls.Add(("rm-service", name));
             return Task.FromResult(Result.Success());
+        }
+
+        public Task<Result<IReadOnlyList<string>>> ListServicesAsync(string namePrefix, CancellationToken ct)
+        {
+            Calls.Add(("list-services", namePrefix));
+            var matched = Services
+                .Where(n => n.StartsWith(namePrefix, StringComparison.Ordinal))
+                .OrderBy(n => n, StringComparer.Ordinal)
+                .ToList();
+            return Task.FromResult(Result<IReadOnlyList<string>>.Success(matched));
         }
 
         public Task<Result<IReadOnlyList<DockerTask>>> ListTasksAsync(string serviceName, CancellationToken ct)
@@ -324,5 +335,31 @@ public class ClusterDriverTests
 
         // Assert: имена pgw-<C>-*, детерминированный порядок
         result.Value.Should().Equal("pgw-shop-shard1-shard1a", "pgw-shop-shard2-shard2a");
+    }
+
+    [Fact]
+    public async Task Swarm_ListNodeObjects_ReturnsPrefixedServiceNames()
+    {
+        // Arrange — объекты нод кластера в swarm = сервисы (rework №4): drift-
+        // сверка надзора и guard D2 видят живые сервисы, осцилляция
+        // PROVISIONING→RUNNING исключена
+        var engine = new FakeEngine
+        {
+            Services =
+            [
+                "pgw-shop-shard1-shard1a",
+                "pgw-shop-shard2-shard2a",
+                "pgw-other-shard1-shard1a", // чужой кластер
+            ],
+        };
+        var driver = new SwarmClusterDriver("fake://manager", new FakeFactory(engine), enableDoorman: true);
+
+        // Act
+        var result = await driver.ListNodeObjectsAsync("shop", CancellationToken.None);
+
+        // Assert: только сервисы кластера pgw-shop-*
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Equal("pgw-shop-shard1-shard1a", "pgw-shop-shard2-shard2a");
+        engine.Calls.Should().Contain(c => c.Call == "list-services" && c.Arg!.Equals("pgw-shop-"));
     }
 }

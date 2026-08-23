@@ -41,6 +41,10 @@ public interface IDockerEngine : IAsyncDisposable
     // swarm: DELETE /services/<name> (404 = успех).
     Task<Result> RemoveServiceAsync(string name, CancellationToken ct);
 
+    // swarm: GET /services?filters={"name":…} — имена сервисов по префиксу
+    // (объекты нод кластера в swarm — сервисы; rework №4).
+    Task<Result<IReadOnlyList<string>>> ListServicesAsync(string namePrefix, CancellationToken ct);
+
     // swarm: GET /tasks?filters={"service":…} — таски сервиса с хостом ноды.
     Task<Result<IReadOnlyList<DockerTask>>> ListTasksAsync(string serviceName, CancellationToken ct);
 

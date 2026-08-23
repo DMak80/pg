@@ -298,7 +298,11 @@ public sealed class SwarmClusterDriver(
         return stopped;
     }
 
-    public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
-        => Task.FromResult(Result<IReadOnlyList<string>>.Success(
-            (IReadOnlyList<string>)[])); // MVP: список сервисов недоступен без ListServices — сироты plain-only
+    // Объекты нод кластера в swarm — СЕРВИСЫ (rework №4): GET /services с
+    // префиксом pgw-<C>-. Ранее возвращался пустой список → drift-сверка
+    // надзора и guard D2 не видели живые сервисы (осцилляция PROVISIONING→
+    // RUNNING каждый тик, сироты не чистились). Существование сервиса ≠ живой
+    // таск: сверка декларации проверяет объект, живость — Patroni-пробы.
+    public async Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
+        => await _engine.ListServicesAsync($"pgw-{cluster}-", ct);
 }
