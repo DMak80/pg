@@ -21,10 +21,8 @@
 
 | Файл | Направление |
 |---|---|
-| [infra.md](infra.md) | каркас решения, аутентификация, сборка/поставка |
 | [etcd.md](etcd.md) | etcd-клиент, снапшот, инспекция etcd, базовые алерты |
 | [sharding.md](sharding.md) | инспекция кластеров/шардов/бакетов/переездов/heals |
-| [ha.md](ha.md) | HA: /service/, Patroni/SQL live-пробы, HA-алерты |
 | [frontend.md](frontend.md) | React-панели |
 
 Контекст всех задач — [`../`](../README.md) (особенно
