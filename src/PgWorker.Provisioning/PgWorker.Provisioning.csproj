@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="PgWorker.UnitTests"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\PgWorker.Core\PgWorker.Core.csproj"/>
+        <ProjectReference Include="..\PgWorker.Etcd\PgWorker.Etcd.csproj"/>
+        <ProjectReference Include="..\PgWorker.Docker\PgWorker.Docker.csproj"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Npgsql"/>
+    </ItemGroup>
+
+</Project>

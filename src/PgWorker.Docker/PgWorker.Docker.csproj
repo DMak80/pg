@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="PgWorker.UnitTests"/>
+        <InternalsVisibleTo Include="PgWorker.IntegrationTests"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\PgWorker.Core\PgWorker.Core.csproj"/>
+    </ItemGroup>
+
+</Project>

@@ -3,3 +3,14 @@ arch/graphify-out/cache/
 
 # Логи прогонов стенда (пересоздаются checks/*.sh)
 arch/stand/logs/
+
+# Состояние dev-flow (не артефакт задачи)
+.dev-flow/
+
+# Билд-артефакты .NET (src/PgWorker)
+bin/
+obj/
+*.user
+.vs/
+artifacts/
+TestResults/

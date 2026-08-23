@@ -1,0 +1,25 @@
+<Solution>
+    <Folder Name="/common/">
+        <File Path="Directory.Build.props" />
+        <File Path="Directory.Packages.props" />
+    </Folder>
+    <Folder Name="/core/">
+        <Project Path="PgWorker.Core/PgWorker.Core.csproj" />
+    </Folder>
+    <Folder Name="/etcd/">
+        <Project Path="PgWorker.Etcd/PgWorker.Etcd.csproj" />
+    </Folder>
+    <Folder Name="/docker/">
+        <Project Path="PgWorker.Docker/PgWorker.Docker.csproj" />
+    </Folder>
+    <Folder Name="/provisioning/">
+        <Project Path="PgWorker.Provisioning/PgWorker.Provisioning.csproj" />
+    </Folder>
+    <Folder Name="/app/">
+        <Project Path="PgWorker.App/PgWorker.App.csproj" />
+    </Folder>
+    <Folder Name="/tests/">
+        <Project Path="tests/PgWorker.UnitTests/PgWorker.UnitTests.csproj" />
+        <Project Path="tests/PgWorker.IntegrationTests/PgWorker.IntegrationTests.csproj" />
+    </Folder>
+</Solution>

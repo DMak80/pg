@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="PgWorker.UnitTests"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <FrameworkReference Include="Microsoft.AspNetCore.App"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\PgWorker.Core\PgWorker.Core.csproj"/>
+        <ProjectReference Include="..\PgWorker.Etcd\PgWorker.Etcd.csproj"/>
+        <ProjectReference Include="..\PgWorker.Docker\PgWorker.Docker.csproj"/>
+        <ProjectReference Include="..\PgWorker.Provisioning\PgWorker.Provisioning.csproj"/>
+    </ItemGroup>
+
+</Project>

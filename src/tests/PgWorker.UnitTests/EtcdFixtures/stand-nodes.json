@@ -1,0 +1,6 @@
+[
+  { "key": "/cluster/nodes/s1a", "value": "172.28.0.11", "modRevision": 90 },
+  { "key": "/cluster/nodes/s1b", "value": "172.28.0.12", "modRevision": 91 },
+  { "key": "/cluster/nodes/s2a", "value": "172.28.0.21", "modRevision": 92 },
+  { "key": "/cluster/nodes/s2b", "value": "", "modRevision": 93 }
+]
