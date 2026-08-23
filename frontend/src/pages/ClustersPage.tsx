@@ -69,7 +69,8 @@ function ClusterRow({ cluster }: { cluster: ClusterSummaryDto }) {
         <Anchor component={Link} to={`/clusters/${cluster.name}`}>{cluster.name}</Anchor>
       </Table.Td>
       <Table.Td>{cluster.dbName ?? '—'}</Table.Td>
-      <Table.Td>{cluster.bucketsCount}</Table.Td>
+      {/* Нешардированная БД = 1 бакет: счётчик не информативен — прочерк. */}
+      <Table.Td>{cluster.bucketsCount === 1 ? '—' : cluster.bucketsCount}</Table.Td>
       <Table.Td>
         <Text c={mastersMissing > 0 ? 'red' : undefined}>
           {cluster.shardsWithMaster}/{cluster.shardsTotal}
