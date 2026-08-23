@@ -209,7 +209,7 @@ public class EtcdGatewayTests
         // Assert
         result.IsSuccess.Should().BeTrue();
         result.Value.Should().Equal(bytes);
-        handler.Requests.Single().Url.Should().Be("http://etcd:2379/v3/snapshot/save");
+        handler.Requests.Single().Url.Should().Be("http://etcd:2379/v3/maintenance/snapshot");
     }
 
     [Fact]

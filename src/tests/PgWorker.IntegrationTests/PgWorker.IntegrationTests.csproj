@@ -1,6 +1,7 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <ItemGroup>
+        <Using Include="FluentAssertions"/>
         <Using Include="Xunit"/>
     </ItemGroup>
 

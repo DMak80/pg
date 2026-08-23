@@ -635,11 +635,11 @@ public sealed class WorkJournal(IEtcdGateway gateway, string[] endpoints)
 **Проверка:** `dotnet test src/PgWorker.slnx --filter FullyQualifiedName~PgWorker.IntegrationTests.Etcd`.
 **Spec:** §4.2, §4.3, §9, §11.8.
 
-- [ ] Шаг 1: фикстура etcd-контейнера (общая `EtcdFixture` с WithPortBinding(2379)).
-- [ ] Шаг 2: 5 координационных AAA-тестов → зелёные.
-- [ ] Шаг 3: 3 контрактных AAA-теста (сид панели; WorkJournal round-trip;
+- [x] Шаг 1: фикстура etcd-контейнера (общая `EtcdFixture` с WithPortBinding(2379)).
+- [x] Шаг 2: 5 координационных AAA-тестов → зелёные.
+- [x] Шаг 3: 3 контрактных AAA-теста (сид панели; WorkJournal round-trip;
   portalloc round-trip) → зелёные.
-- [ ] Шаг 4: commit `"test(etcd): integration — клэймы/txn/lease/snapshot + контракт форматов §4.2/§4.3"`.
+- [x] Шаг 4: commit `"test(etcd): integration — клэймы/txn/lease/snapshot + контракт форматов §4.2/§4.3"`.
 
 ---
 

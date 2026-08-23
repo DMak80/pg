@@ -102,7 +102,8 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
     {
         var result = await Result<byte[]>.FromAsync(async () =>
         {
-            using var response = await httpClient.PostAsJsonAsync(endpoint + "/v3/snapshot/save", new { }, Json, ct);
+            // etcd 3.5.x: путь /v3/maintenance/snapshot (путь /v3/snapshot/save появился в 3.6+).
+            using var response = await httpClient.PostAsJsonAsync(endpoint + "/v3/maintenance/snapshot", new { }, Json, ct);
             if (!response.IsSuccessStatusCode)
             {
                 var errorBody = response.Content is null
@@ -117,13 +118,21 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
         return result;
     }
 
-    // Compare → protojson: имя поля сравнения = цели (version/value/mod_revision), result — числовой enum.
+    // Compare → protojson: target (enum: VERSION=0, MOD=2, VALUE=3), result (EQUAL=0/GREATER=1),
+    // поле сравнения = цели (version/mod_revision/value).
     private static Dictionary<string, object> CompareToDto(TxnCompare c)
     {
         var dto = new Dictionary<string, object>
         {
             ["key"] = ToB64(c.Key),
-            ["result"] = c.Pred == TxnPredicate.Greater ? 1 : 0, // proto: EQUAL=0, GREATER=1
+            ["target"] = c.Target switch
+            {
+                TxnTarget.Version => 0,
+                TxnTarget.ModRevision => 2,
+                TxnTarget.Value => 3,
+                _ => throw new InvalidOperationException($"неподдерживаемая цель txn-compare: {c.Target}"),
+            },
+            ["result"] = c.Pred == TxnPredicate.Greater ? 1 : 0,
         };
         switch (c.Target)
         {
