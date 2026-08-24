@@ -19,6 +19,7 @@ public static class ClusterSnapshotParser
         public string? Dsn;
         public string? ReplicasRaw;
         public string? Master;
+        public string? StateRaw;
         public readonly List<(string Name, string? State)> Nodes = [];
     }
 
@@ -55,6 +56,17 @@ public static class ClusterSnapshotParser
                 case "config" when segments.Length == 4:
                     acc.ConfigRaw = kv.Value;
                     break;
+
+                case "shards" when segments.Length == 6
+                    && segments[4].Length > 0
+                    && segments[5] == "state":
+                {
+                    // Маркер демонтажа шарда (t06 §4.2): единственное значение "TO_REMOVE";
+                    // иное/битое — не ошибка, ToRemove=false (значение одно — parseError не пишем).
+                    var shard = GetOrAdd(acc.Shards, segments[4], static _ => new ShardAcc());
+                    shard.StateRaw = kv.Value;
+                    break;
+                }
 
                 case "shards" when segments.Length == 6
                     && segments[4].Length > 0
@@ -221,7 +233,8 @@ public static class ClusterSnapshotParser
             replicas,
             string.IsNullOrWhiteSpace(shard.Dsn) ? null : shard.Dsn.Trim(),
             string.IsNullOrWhiteSpace(shard.Master) ? null : shard.Master.Trim(),
-            nodes);
+            nodes,
+            ToRemove: shard.StateRaw?.Trim() == "TO_REMOVE");
     }
 
     private static IReadOnlyList<BucketRoute> BuildRouting(int bucketsCount, ClusterAcc acc, List<string> errors)
@@ -237,7 +250,10 @@ public static class ClusterSnapshotParser
         {
             acc.Routing.TryGetValue(id, out var owner);
             BucketMoveState? status = null; // нет status-ключа = ACTIVE
-            if (acc.StatusRaw.TryGetValue(id, out var raw) && !TryParseStatus(raw, out status))
+            string? moveSource = null;
+            string? moveTarget = null;
+            if (acc.StatusRaw.TryGetValue(id, out var raw)
+                && !TryParseStatus(raw, out status, out moveSource, out moveTarget))
             {
                 errors.Add($"/clusters/{acc.Name}/buckets/status/bucket_{id}: битый JSON или неизвестное state");
                 status = null;
@@ -246,19 +262,25 @@ public static class ClusterSnapshotParser
             result.Add(new BucketRoute(
                 id,
                 string.IsNullOrWhiteSpace(owner) ? null : owner.Trim(),
-                status));
+                status,
+                MoveTarget: moveTarget,
+                MoveSource: moveSource));
         }
 
         return result;
     }
 
-    private static bool TryParseStatus(string raw, out BucketMoveState? state)
+    private static bool TryParseStatus(string raw, out BucketMoveState? state,
+        out string? source, out string? target)
     {
         state = null;
+        source = null;
+        target = null;
         try
         {
             using var doc = JsonDocument.Parse(raw);
-            state = ReadString(doc.RootElement, "state") switch
+            var root = doc.RootElement;
+            state = ReadString(root, "state") switch
             {
                 "SYNCING" => BucketMoveState.Syncing,
                 "FROZEN" => BucketMoveState.Frozen,
@@ -266,7 +288,14 @@ public static class ClusterSnapshotParser
                 "NOT_INITIALIZED" => BucketMoveState.NotInitialized,
                 _ => null,
             };
-            return state is not null;
+            if (state is null)
+                return false;
+
+            // owner/target из СТАТУС-ключа (guard G4 t06): после flip статус-owner
+            // отличается от routing-owner; у NOT_INITIALIZED — owner без target (02 §9).
+            source = ReadString(root, "owner");
+            target = state == BucketMoveState.NotInitialized ? null : ReadString(root, "target");
+            return true;
         }
         catch (JsonException)
         {

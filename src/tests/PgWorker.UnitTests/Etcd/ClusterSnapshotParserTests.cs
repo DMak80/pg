@@ -115,6 +115,95 @@ public class ClusterSnapshotParserTests
     }
 
     [Fact]
+    public void ParseClusters_ShardStateToRemove_SetsToRemoveTrue()
+    {
+        // Arrange — Active-кластер с маркером демонтажа шарда (t06 §4.2)
+        var kvs = new List<Kv>
+        {
+            new("/clusters/shop/config", """{"buckets":2,"dbname":"shop"}""", 1),
+            new("/clusters/shop/shards/shard1/replicas", "2", 2),
+            new("/clusters/shop/shards/shard1/state", "TO_REMOVE", 3),
+            new("/clusters/shop/buckets/routing/bucket_0", "shard1", 4),
+            new("/clusters/shop/buckets/routing/bucket_1", "shard1", 5),
+        };
+
+        // Act
+        var result = ClusterSnapshotParser.ParseClusters(kvs, out var errors);
+
+        // Assert — маркер прочитан; parseError нет (значение одно — толерантность)
+        errors.Should().BeEmpty();
+        result.Value.Single().Shards.Single().ToRemove.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData(null)] [InlineData("ACTIVE")] [InlineData("")]
+    public void ParseClusters_ShardStateAbsentOrOther_ToRemoveFalse(string? raw)
+    {
+        // Arrange — ключа нет / иное значение = обычный шард (толерантность как у config.state)
+        var kvs = new List<Kv>
+        {
+            new("/clusters/shop/config", """{"buckets":1,"dbname":"shop"}""", 1),
+            new("/clusters/shop/shards/shard1/replicas", "1", 2),
+        };
+        if (raw is not null) kvs.Add(new("/clusters/shop/shards/shard1/state", raw, 3));
+
+        // Act
+        var result = ClusterSnapshotParser.ParseClusters(kvs, out _);
+
+        // Assert
+        result.Value.Single().Shards.Single().ToRemove.Should().BeFalse();
+    }
+
+    [Fact]
+    public void ParseClusters_StatusOwnerAndTarget_ProduceMoveSourceAndMoveTarget()
+    {
+        // Arrange — «flip прошёл, статус завис» (P7/G4): routing уже на shard2,
+        // статус-ключ ещё жив с owner=shard1 (статус-owner ≠ routing-owner)
+        var kvs = new List<Kv>
+        {
+            new("/clusters/shop/config", """{"buckets":1,"dbname":"shop"}""", 1),
+            new("/clusters/shop/shards/shard1/replicas", "1", 2),
+            new("/clusters/shop/shards/shard2/replicas", "1", 3),
+            new("/clusters/shop/buckets/routing/bucket_0", "shard2", 4),
+            new("/clusters/shop/buckets/status/bucket_0",
+                """{"state":"FROZEN","owner":"shard1","target":"shard2","phase":"flip"}""", 5),
+        };
+
+        // Act
+        var result = ClusterSnapshotParser.ParseClusters(kvs, out _);
+
+        // Assert — owner И target статус-ключа попадают в маршрут; routing-owner —
+        // отдельно (guard G4 сравнивает X со статус-owner/target, не с routing)
+        var route = result.Value.Single().Routing.Single();
+        route.Owner.Should().Be("shard2");
+        route.Status.Should().Be(BucketMoveState.Frozen);
+        route.MoveSource.Should().Be("shard1");
+        route.MoveTarget.Should().Be("shard2");
+    }
+
+    [Fact]
+    public void ParseClusters_StatusNotInitialized_OwnerOnlyNoTarget()
+    {
+        // Arrange — начальный статус создаваемого кластера: owner есть, target нет (02 §9)
+        var kvs = new List<Kv>
+        {
+            new("/clusters/shop/config", """{"buckets":1,"dbname":"shop"}""", 1),
+            new("/clusters/shop/buckets/routing/bucket_0", "shard1", 2),
+            new("/clusters/shop/buckets/status/bucket_0",
+                """{"state":"NOT_INITIALIZED","owner":"shard1","updated_unix":1}""", 3),
+        };
+
+        // Act
+        var result = ClusterSnapshotParser.ParseClusters(kvs, out _);
+
+        // Assert — NOT_INITIALIZED: MoveSource = owner статуса, MoveTarget = null
+        var route = result.Value.Single().Routing.Single();
+        route.Status.Should().Be(BucketMoveState.NotInitialized);
+        route.MoveSource.Should().Be("shard1");
+        route.MoveTarget.Should().BeNull();
+    }
+
+    [Fact]
     public void ParseService_ScopesWithLeaderAndInitialize()
     {
         // Arrange
