@@ -87,7 +87,9 @@ export function ClusterDetailsPage() {
               buckets={data.buckets} pendingMoves={data.pendingMoves} />
           </Tabs.Panel>
         ) : null}
-        <Tabs.Panel value="moves" pt="sm"><MovesTab buckets={data.buckets} /></Tabs.Panel>
+        <Tabs.Panel value="moves" pt="sm">
+          <MovesTab buckets={data.buckets} pendingMoves={data.pendingMoves} />
+        </Tabs.Panel>
         <Tabs.Panel value="heals" pt="sm"><HealsTab heals={data.heals} /></Tabs.Panel>
       </Tabs>
       <StandNodesBlock standNodes={data.standNodes} />
