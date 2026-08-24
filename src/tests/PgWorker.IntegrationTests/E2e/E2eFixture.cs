@@ -145,6 +145,19 @@ public sealed class E2eFixture : IAsyncLifetime
             ["PgWorker__Thresholds__NodeDeadSec"] = "6",
             ["PgWorker__Thresholds__ShardDeadSec"] = "5",
             ["PgWorker__Thresholds__PatroniBootSec"] = "600",
+
+            // Переезды (t01): spilo-16 → FailoverSlots=false (R1/Д11); короткие
+            // паузы заморозки/поллинга — окно FROZEN в e2e измеряется секундами;
+            // AbortMinAgeSec=3 — abort-сценарий без долгого ожидания свежести.
+            // AdvertisedPublisherHost: подписки ходят ИЗ контейнеров приёмников —
+            // на single-host стенде издатель виден как host.docker.internal.
+            ["PgWorker__Moves__FailoverSlots"] = "false",
+            ["PgWorker__Moves__FreezeWaitSec"] = "1",
+            ["PgWorker__Moves__PollIntervalSec"] = "1",
+            ["PgWorker__Moves__AbortMinAgeSec"] = "3",
+            ["PgWorker__Moves__AdvertisedPublisherHost"] = "host.docker.internal",
+            ["PgWorker__Thresholds__CutoverTimeoutSec"] = "60",
+            ["PgWorker__Thresholds__ConnFailBudgetSec"] = "15",
             ["PgWorker__Parallelism__MaxClusters"] = "2",
             ["PgWorker__Snapshots__Dir"] = snapshotsDir,
             ["PgWorker__Snapshots__RetentionFiles"] = "10",
@@ -171,14 +184,17 @@ public sealed class E2eFixture : IAsyncLifetime
             throw new ApplicationException($"не удалось запустить инстанс {name}");
 
         // Читаем вывод в фоне (иначе буфер пайпа переполнится и процесс зависнет);
-        // последние строки попадают в диагностику при неудачном старте.
+        // последние строки попадают в диагностику при неудачном старте, полный
+        // лог — в host.log каталога снапшотов (writer живёт столько же, сколько
+        // инстанс — закрывается в HostInstance.DisposeAsync).
         var tail = new Queue<string>();
-        process.OutputDataReceived += (_, e) => Collect(tail, e.Data);
-        process.ErrorDataReceived += (_, e) => Collect(tail, e.Data);
+        var logWriter = new StreamWriter(Path.Combine(snapshotsDir, "host.log"), append: false) { AutoFlush = true };
+        process.OutputDataReceived += (_, e) => { Collect(tail, e.Data); if (e.Data is not null) logWriter.WriteLine(e.Data); };
+        process.ErrorDataReceived += (_, e) => { Collect(tail, e.Data); if (e.Data is not null) logWriter.WriteLine(e.Data); };
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
-        var instance = new HostInstance(name, process, snapshotsDir, _healthHttp);
+        var instance = new HostInstance(name, process, snapshotsDir, _healthHttp, logWriter);
 
         // Готовность: /healthz отвечает (любой статус, кроме 404 = маршрут жив).
         var ready = await WaitForAsync(async () =>
@@ -280,7 +296,8 @@ public sealed class HostInstance(
     string name,
     Process process,
     string snapshotsDir,
-    HttpClient healthHttp) : IAsyncDisposable
+    HttpClient healthHttp,
+    StreamWriter? logWriter = null) : IAsyncDisposable
 {
     public string Name { get; } = name;
 
@@ -312,7 +329,12 @@ public sealed class HostInstance(
         {
             // не дождались — Process.Dispose разорвёт дескрипторы
         }
+        catch (InvalidOperationException)
+        {
+            // процесс уже заверён сам (крах/kill ранее) — дескрипторы чистит Dispose
+        }
 
+        logWriter?.Dispose();
         Process.Dispose();
         _ = healthHttp; // dispose делает фикстура
     }
