@@ -12,6 +12,7 @@ public static class SnapshotBuilder
         ClustersParseResult clusters,
         ServiceParseResult service,
         IReadOnlyList<StandNode> standNodes,
+        MovesParseResult moves,
         IReadOnlyList<EtcdMember> members,
         IReadOnlyList<EtcdAlarm> alarms,
         EtcdStatus etcd)
@@ -21,9 +22,9 @@ public static class SnapshotBuilder
             clusters.Clusters,
             service.Scopes,
             standNodes,
-            [],                                            // очередь заявок — параметр с Task 3
+            moves.Tickets,
             [],
             [],
-            [.. clusters.Errors, .. service.Errors],
+            [.. clusters.Errors, .. service.Errors, .. moves.Errors],
             clusters.UnknownKeyCount + service.UnknownKeyCount);
 }
