@@ -3,9 +3,10 @@
 Панель администрирования шардированных HA-кластеров PostgreSQL
 (репозиторий `../pg`). Четыре зоны инспекции: **etcd**, **шардирование**
 (кластеры/шарды/бакеты/переезды/heals), **HA** (лидеры/члены/реплики/лаги),
-**алерты**. Единственная мутация инспектируемых систем — **создание кластера**
-(декларативный provisioning в etcd, [02](02-etcd-contract.md) §9): остальные
-операции над etcd/PG панель не выполняет никогда.
+**алерты**. Мутации инспектируемых систем — **четыре**: создание кластера,
+перевод кластера в TO_REMOVE, добавление шарда, маркер демонтажа шарда
+([02](02-etcd-contract.md) §9–§9.6): остальные операции над etcd/PG панель
+не выполняет никогда.
 
 ## 1. Слои и потоки данных
 
@@ -36,8 +37,8 @@
         └────────────────────────────────────────┘
 
                  ┌──────────────────────────────────────────────────────┐
-                 │ POST /api/clusters — создание кластера (02 §9)       │
-                 │  CQRS-команда → etcd-gateway (txn-клэйм + пакет PUT  │
+                 │ POST /api/clusters|shards — мутации панели (02 §9–§9.6)│
+                 │  CQRS-команды → etcd-gateway (txn-клэйм + пакет PUT  │
                  │  на активном endpoint из снапшота)                   │
                  └───────────────┬──────────────────────────────────────┘
                                  │ ключи созданы; следующий тик refresher'а
@@ -50,10 +51,11 @@
 - **API не ходит в etcd на запрос** — только читает текущий снапшот из
   `SnapshotStore` (singleton, атомарная замена ссылки). Скорость UI не зависит
   от латентности etcd, а отказ etcd не роняет панель: снапшок остаётся со
-  штампом `lastRefreshUtc` и алертом «данные устарели». Исключение — команда
-  создания кластера: она пишет в etcd напрямую (мимо снапшота), опираясь на
-  активный endpoint снапшота; корректность не зависит от свежести снапшота
-  (уникальность имени — txn-клэйм в etcd, не чтение).
+  штампом `lastRefreshUtc` и алертом «данные устарели». Исключение — команды
+  мутаций (создание/удаление кластера, добавление/демонтаж шарда): они пишут
+  в etcd напрямую (мимо снапшота), опираясь на активный endpoint снапшота;
+  корректность не зависит от свежести снапшота (уникальность имени —
+  txn-клэйм в etcd, не чтение).
 - **Refresher — единственный писатель снапшота**; пробы пишут в него же
   (отдельным тиком, реже). Всё, что видит пользователь, — производные от
   снапшота: DTO для API, алерты, badge «stale».
@@ -65,11 +67,11 @@
 
 | Проект | Роль |
 |---|---|
-| `AdminPanel.Infrastructure` | Каркас, скопированный из референса `../Puzzle` и обрезанный под панель: `Result`-монада, attribute-DI (`[InjectAs*]`, `[Config]`, `AutoRegistration`), CQRS (`IQuery<T>`/`IQueryHandler`, `ICommand<T>`/`ICommandHandler` — единственная команда: создание кластера; `IHandler`-диспетчер), health-check базис. Без Bus/Outbox/Kafka/миграций — панели не нужны |
+| `AdminPanel.Infrastructure` | Каркас, скопированный из референса `../Puzzle` и обрезанный под панель: `Result`-монада, attribute-DI (`[InjectAs*]`, `[Config]`, `AutoRegistration`), CQRS (`IQuery<T>`/`IQueryHandler`, `ICommand<T>`/`ICommandHandler` — команды мутаций: создание/удаление кластера, добавление/демонтаж шарда; `IHandler`-диспетчер), health-check базис. Без Bus/Outbox/Kafka/миграций — панели не нужны |
 | `AdminPanel.Core` | Домен снапшота: `EtcdSnapshot` и его модели (`ClusterInfo`, `ShardInfo`, `NodeInfo`, `BucketInfo`, `HaScope`, `Alert`, …), `AlertEngine` (чистая функция `Snapshot → Alert[]`), парсинг scope `<C>-<X>` |
-| `AdminPanel.Etcd` | Клиент etcd через HTTP JSON gateway (`IEtcdGateway`): чтение (range/status/member/alarm) + минимальная запись для создания кластера (txn/put/delete, 02 §9); парсеры ключей `/clusters/`, `/service/`, `/cluster/nodes/` в модель Core, `SnapshotRefresher`, `SnapshotStore` |
+| `AdminPanel.Etcd` | Клиент etcd через HTTP JSON gateway (`IEtcdGateway`): чтение (range/status/member/alarm) + минимальная запись для мутаций панели (txn/put/delete, 02 §9–§9.6); парсеры ключей `/clusters/`, `/service/`, `/cluster/nodes/` в модель Core, `SnapshotRefresher`, `SnapshotStore` |
 | `AdminPanel.Probes` | Опциональные live-пробы: Patroni REST `:8008` (`/cluster`), SQL через Npgsql (read-only к `pg_catalog`/`pg_stat_*`). Обогащение снапшота полями runtime |
-| `AdminPanel.Api` | Host: `Program.cs` (модульная композиция ~50 строк), auth-модуль, REST-эндпоинты (GET-инспекция + `POST /api/clusters`), раздача SPA из `wwwroot`, `/api/healthz` |
+| `AdminPanel.Api` | Host: `Program.cs` (модульная композиция ~50 строк), auth-модуль, REST-эндпоинты (GET-инспекция + мутации `POST/DELETE /api/clusters…`, 03 §1), раздача SPA из `wwwroot`, `/api/healthz` |
 | `frontend/` | React+Vite+TS (не dotnet-проект); `npm run build` кладёт бандл в `src/AdminPanel.Api/wwwroot` |
 | `tests/AdminPanel.UnitTests` | xunit v3 + FluentAssertions: парсеры etcd-ключей, `AlertEngine`, auth-логика, DTO-мапперы |
 | `tests/AdminPanel.IntegrationTests` | Testcontainers (etcd + postgres:18) + `WebApplicationFactory`: refresher против реального etcd, API-смоук, пробы |
@@ -189,11 +191,12 @@ FluentAssertions, Testcontainers, Npgsql, Microsoft.Extensions.*); новые
 
 ## 9. Что сознательно НЕ делаем (YAGNI)
 
-- Мутации, кроме создания кластера (move/abort/heal, patronictl, switchover,
-  поднятие нод/инициализация схем) — вне зоны панели; это runbook-операции
-  `../pg`. Создание кластера — заявка структуры в etcd, не управление данными:
-  ноды, Patroni и схемы поднимает отдельный provisioning (читает ключи
-  [02](02-etcd-contract.md) §9).
+- Мутации, кроме четырёх канонических (создание/удаление кластера,
+  добавление/демонтаж шарда — 02 §9–§9.6), — вне зоны панели (move/abort/heal,
+  patronictl, switchover, поднятие нод/инициализация схем) — это runbook-операции
+  `../pg`. Канонические мутации — заявки в etcd, не управление данными:
+  ноды, Patroni, схемы и демонтаж выполняет PgWorker (читает ключи
+  [02](02-etcd-contract.md) §9–§9.6).
 - WebSocket/SSE-пуш, история метрик и графики — polling и «текущее состояние»
   достаточно (P21 просит дашборд, не Prometheus).
 - Пользователи/роли/аудит — один админ из настроек.

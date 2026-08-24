@@ -1,9 +1,12 @@
 # 03. Панели и REST API
 
-Спецификация UI-панелей и HTTP-контракта. Всё read-only, кроме единственной
-мутации `POST /api/clusters` (создание кластера, 02 §9): GET-эндпоинты и три
-POST (login/logout — не мутируют инспектируемые системы; clusters — пишет
-только ключи своего создания). JSON, camelCase, `ProblemDetails` для ошибок.
+Спецификация UI-панелей и HTTP-контракта. Всё read-only, кроме четырёх мутаций:
+`POST /api/clusters` (создание кластера, 02 §9), `DELETE /api/clusters/{name}`
+(перевод в TO_REMOVE, 02 §9.4), `POST /api/clusters/{cluster}/shards`
+(добавление шарда, 02 §9.5), `DELETE /api/clusters/{cluster}/shards/{shard}`
+(маркер демонтажа шарда, 02 §9.6): GET-эндпоинты и POST login/logout не
+мутируют инспектируемые системы (кластерные мутации пишут только ключи своих
+операций). JSON, camelCase, `ProblemDetails` для ошибок.
 Все эндпоинты, кроме `login` и `healthz`, требуют cookie-сессию (401 без неё).
 
 ## 1. Список эндпоинтов
@@ -19,6 +22,8 @@ POST (login/logout — не мутируют инспектируемые сис
 | `GET /api/clusters` | список кластеров (сводный) |
 | `POST /api/clusters` | создание кластера (единственная мутация, 02 §9): тело `CreateClusterRequestDto` → 201+`ClusterCreatedDto` \| 400 (валидация) \| 409 (имя занято) \| 503 (etcd/снапшот) |
 | `GET /api/clusters/{cluster}` | детали: config, шарды, бакеты, heals (всё сразу; N ≤ тысяч — грид фильтруется на клиенте) |
+| `POST /api/clusters/{cluster}/shards` | добавить шард Active-кластеру (02 §9.5): тело `AddShardRequestDto` → 201+`ShardAddedDto` \| 400 \| 404 \| 409 \| 503 |
+| `DELETE /api/clusters/{cluster}/shards/{shard}` | маркер демонтажа шарда `TO_REMOVE` (02 §9.6): 204 \| 404 \| 409 \| 503 |
 | `GET /api/ha` | список HA-scope'ов (сводный) |
 | `GET /api/ha/{scope}` | детали scope: leader, members+runtime, optime, raw config, request_* |
 | `GET /api/alerts` | все алерты; query `?severity=critical|warning|info`, `?kind=` |
@@ -71,6 +76,56 @@ ClusterCreatedDto: name, dbname, sharded (bool), bucketsCount, shardsTotal,
 etcd-ошибка, битый config). Пока config занят, имя не создаётся повторно
 (409 на POST — 02 §9.2).
 
+### 1.3. Контракт `POST /api/clusters/{cluster}/shards`
+
+Добавление шарда Active-кластеру (протокол — 02 §9.5): панель дописывает
+декларацию нового шарда (replicas + nodes/NOT_INITIALIZED + request_*),
+подъём выполняет PgWorker. Шард стартует ПУСТЫМ — routing/status не пишутся,
+перераспределения бакетов нет (явные переезды — отдельная задача t07).
+
+Тело `AddShardRequestDto` (валидация — 02 §9.3, те же границы, что создания
+кластера; все ограничения — ProblemDetails 400 с деталями по полям):
+
+```text
+AddShardRequestDto: replicas (целое 1..26, дефолт 2 — отсутствие поля = 2),
+                    requestCpu (десятичные ядра 0.01..64),
+                    requestMem (GiB, целое 1..65536),
+                    requestDisk (GiB, целое 1..65536)
+```
+
+Имя шарда генерирует сервер: `shard<max+1>` по числовым суффиксам
+существующих шардов (02 §9.5); свободного ввода нет.
+
+Ответ 201 (декларация записана в etcd, шард `NOT_INITIALIZED`; PgWorker
+поднимет ноды — снапшот подхватит на следующем тике):
+
+```text
+ShardAddedDto:  cluster, name (сгенерированное shard<k>), replicas,
+                requestCpu, requestMem, requestDisk (строки-каноны 02 §9.1),
+                state:"NOT_INITIALIZED"
+```
+
+Отказы: 404 `Cluster not found` (config-ключа нет или имя кластера
+неканоническое); 409 (кластер не Active — NOT_INITIALIZED «дождитесь
+инициализации» / TO_REMOVE «кластер удаляется»; клэйм-txn имени не сошёлся —
+конкурентный POST занял имя; достигнут предел 128 шардов); 400 (валидация
+полей); 503 (нет снапшота/активного endpoint'а, etcd-ошибка чтения/записи,
+битый config). Компенсация частичной записи — 02 §9.5.
+
+### 1.4. Контракт `DELETE /api/clusters/{cluster}/shards/{shard}`
+
+Маркер демонтажа шарда (протокол — 02 §9.6): панель не удаляет ключи, а
+ставит `shards/<X>/state="TO_REMOVE"`; снятие нод и очистку выполняет
+PgWorker (guard'ы G1–G7; до демонтажа шард виден с бейджем «к удалению»).
+Идемпотентен: повторный DELETE шарда уже в `TO_REMOVE` — тоже 204.
+
+Успех — 204 (без тела). Отказы: 404 (кластер или шард не найдены, имена
+неканонические); 409 (кластер не Active; серверные пред-проверки guard'ов —
+бакеты на шарде, незавершённый переезд, последний шард, карантин — тексты
+02 §9.6); 503 (нет снапшота/активного endpoint'а, etcd-ошибка, битый config,
+снапшот отстаёт — повтор запроса). Гонки между пред-проверкой и flip'ом
+переезда ловят guard'ы PgWorker G3/G4 — маркер останется, демонтаж подождёт.
+
 ## 2. DTO (ключевые поля)
 
 ```text
@@ -92,8 +147,9 @@ ClusterDto:   name, dbname, bucketsCount, createdUnix, incomplete(bool),
 ClusterSummaryDto: name, dbname, bucketsCount, incomplete(bool),
               notInitialized(bool), toRemove(bool), shardsTotal, shardsWithMaster,
               activeMoves
-ShardDto:     name, dsn, hosts[], replicasDeclared, masterAddress,
-              masterLeaseAlive(bool), nodes[{name, state}],
+ShardDto:     name, state(ACTIVE|TO_REMOVE — маркер демонтажа 02 §2.1/§9.6,
+              отсутствие ключа = ACTIVE), dsn, hosts[], replicasDeclared,
+              masterAddress, masterLeaseAlive(bool), nodes[{name, state}],
               requests{cpu, mem, disk}?(nullable) — заявка на ноду из
               HaScope `<C>-<X>` (02 §2.2 request_*), null у старых кластеров,
               runtime{standbiesSync, slotsLagMaxBytes,
@@ -107,6 +163,12 @@ HaScopeDto:   scope, cluster?, shard?, matched(bool), leaderName, optimeLeader,
               probeAtUtc, probeError}], rawConfig,
               requests{cpu, mem, disk}?(nullable) — заявка на ноду (02 §9.1)
 AlertDto:     id, severity, kind, target, message, details{...}, sinceUnix
+AddShardRequestDto: replicas (целое 1..26, дефолт 2), requestCpu (десятичные
+              ядра 0.01..64), requestMem/requestDisk (GiB, целые 1..65536) —
+              тело POST шардов (§1.3, валидация 02 §9.3)
+ShardAddedDto: cluster, name (сгенерированное shard<k>), replicas, requestCpu,
+              requestMem, requestDisk (строки-каноны 02 §9.1),
+              state:"NOT_INITIALIZED" — ответ 201 (§1.3)
 ```
 
 `sinceUnix` алерта: `AlertEngine` сравнивает с прошлым снапшотом по
@@ -137,12 +199,12 @@ AlertDto:     id, severity, kind, target, message, details{...}, sinceUnix
 | **Overview** | бейдж stale; карточки: etcd (reachable, endpoints ok/total; alarms — в ленте алертов и на панели etcd), кластеры (шарды/бакеты/переезды), активные переезды списком, лента алертов (critical/warning); сводка HA: скольки scope'ов без лидера (клиентская агрегация `GET /api/ha` — `OverviewDto` HA-полей не содержит) |
 | **etcd** | таблица endpoints (reachable, latency, версия, raftTerm, ошибки, метка «активный»), members (+лидер), alarms; `lastRefreshUtc` |
 | **Clusters** | список: имя, dbname, N, шард мастеровых/всего, активные переезды, пометки (incomplete, not-initialized, «к удалению» при `toRemove`); кнопка «Создать кластер» → модальная форма (§3.1) |
-| **Cluster details** | вкладки: Шарды (dsn, replicas, master+leaseAlive, sync-standby, лаг слотов; ноды: имя+state; заявка ресурсов на ноду cpu/mem/disk), Бакеты (грид id×owner×state, фильтр по owner/state, подсветка не-ACTIVE, возраст; вкладка скрыта при `sharded=false` — нешардированная БД 1×1 без карты бакетов, 02 §9.1), Переезды (только не-ACTIVE, кроме NOT_INITIALIZED: phase, updated, last_error), Heals (журнал), «Стендовая топология» (блок по `standNodes` деталей — реестр `/cluster/nodes/`, скрыт при пустом); шапка: бейдж TO_REMOVE и кнопка «Удалить кластер» (красная, с подтверждением; → `DELETE /api/clusters/{name}` — 02 §9.4; при `state=TO_REMOVE` кнопка скрыта — обратного перехода нет) |
+| **Cluster details** | вкладки: Шарды (dsn, replicas, master+leaseAlive, sync-standby, лаг слотов; ноды: имя+state; заявка ресурсов на ноду cpu/mem/disk; колонка действий — кнопка «Убрать шард» (красная, per-row; диалог со счётчиком бакетов шарда, дизейбл при N>0 с пояснением «сначала перевезите бакеты», серверный 409 — текстом ProblemDetails); бейдж «к удалению» у шарда state=TO_REMOVE; кнопка «Добавить шард» в заголовке вкладки — модальная форма §3.2: реплики/CPU/память/диск, без имени — генерируется; подпись «Шард стартует пустым — перераспределение бакетов выполняется отдельными явными переездами»; кнопки скрыты, когда кластер не Active — симметрия с «Удалить кластер»), Бакеты (грид id×owner×state, фильтр по owner/state, подсветка не-ACTIVE, возраст; вкладка скрыта при `sharded=false` — нешардированная БД 1×1 без карты бакетов, 02 §9.1), Переезды (только не-ACTIVE, кроме NOT_INITIALIZED: phase, updated, last_error), Heals (журнал), «Стендовая топология» (блок по `standNodes` деталей — реестр `/cluster/nodes/`, скрыт при пустом); шапка: бейдж TO_REMOVE и кнопка «Удалить кластер» (красная, с подтверждением; → `DELETE /api/clusters/{name}` — 02 §9.4; при `state=TO_REMOVE` кнопка скрыта — обратного перехода нет) |
 | **HA** | список scope'ов: scope, cluster/shard, лидер, члены (роль/состояние), лаг max, пометка unmatched |
 | **HA details** | leader, optime, таблица members: name/role/state/timeline/lag/probe-статус; блок «Заявленные ресурсы нод» (request_*, при наличии); raw config (свернуто) |
 | **Alerts** | таблица всех алертов: severity-цвет, kind, target, message, since; фильтр по severity |
 
-### 3.1. Форма «Создать кластер» (единственная форма данных)
+### 3.1. Форма «Создать кластер» (единственная форма данных + форма добавления шарда на Cluster details, t06 §3.2)
 
 Модальный диалог (Mantine Modal + TextInput/NumberInput) с кнопки «Создать
 кластер» на панели Clusters. Поля: имя; бакеты; шарды (≤ бакетов); реплики
@@ -153,8 +215,23 @@ AlertDto:     id, severity, kind, target, message, details{...}, sinceUnix
 `clusters`-запросы (список обновится, новый кластер — с бейджем
 «не инициализирован»); ошибка — ProblemDetails в теле формы (409 — «имя
 занято», 400 — по полям, 503 — «etcd недоступен»). Двойной клик защищён
-блокировкой кнопки на время мутации. Никаких других форм ввода, кроме логина
-и этой, — панель немая по отношению к данным.
+блокировкой кнопки на время мутации.
+
+### 3.2. Форма «Добавить шард» (t06)
+
+Модальный диалог с кнопки «Добавить шард» в заголовке вкладки Шарды на
+Cluster details (только Active-кластер). Поля: реплики (дефолт 2, минимум 1 —
+только мастер), группа «Ресурсы нод (заявка, на каждую ноду)»: CPU (ядра,
+шаг 0.1), память (GiB), диск (GiB); поля имени НЕТ — имя генерирует сервер
+(`shard<max+1>`, 02 §9.5). Подпись в форме: «Шард стартует пустым —
+перераспределение бакетов выполняется отдельными явными переездами (UI
+переездов — t07)». Клиентская валидация — зеркало 02 §9.3; серверная —
+источник истины. Отправка — POST `/api/clusters/{cluster}/shards` (§1.3);
+успех → закрыть форму, инвалидировать `clusters`-запросы и детали кластера
+(новый шард появится с нодами NOT_INITIALIZED → PROVISIONING → RUNNING по
+мере подъёма PgWorker); ошибка — ProblemDetails в теле формы (409 — «кластер
+не Active или имя занято», 400 — по полям, 503 — «etcd недоступен»). Двойной
+клик защищён блокировкой кнопки на время мутации.
 
 Общие элементы: переключатель интервала polling (2/5/15 с/off, default 5 с,
 выбор сохраняется в localStorage), тёмная тема, авто-logout при 401
@@ -162,8 +239,9 @@ AlertDto:     id, severity, kind, target, message, details{...}, sinceUnix
 ответа `/api/overview`, опрашиваемого с текущим polling-интервалом (при
 недоступности данных — «нет данных»), счётчики critical/warning у пункта
 «Алерты» в навигации (клиентский подсчёт по ответу `/api/alerts`, опрашиваемому
-с тем же интервалом; скрыты при нуле/ошибке). Форм ввода две: логин и создание
-кластера (§3.1) — всё остальное панель немая по отношению к данным.
+с тем же интервалом; скрыты при нуле/ошибке). Форм ввода три: логин, создание
+кластера (§3.1) и добавление шарда (§3.2) — всё остальное панель немая
+по отношению к данным.
 
 ## 4. Каталог алертов (`AlertEngine`)
 
