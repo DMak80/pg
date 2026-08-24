@@ -274,4 +274,27 @@ public class ClustersMappersTests
         ClusterStates.Name(ClusterState.Active).Should().Be("ACTIVE");
         ClusterStates.Name(ClusterState.NotInitialized).Should().Be("NOT_INITIALIZED");
     }
+
+    [Fact]
+    public void ClusterDetailsMapper_ShardState_MappedToDto()
+    {
+        // Arrange: шард с маркером демонтажа + обычный шард (t06 arch/03 §2)
+        var cluster = TestSnapshots.FullCluster() with
+        {
+            Shards =
+            [
+                new ShardInfo("s1", "host=s1a port=5432 dbname=demo user=postgres",
+                    ["s1a"], 5432, "demo", "postgres", 1, "s1a:5432", [], null, ShardState.ToRemove),
+                new ShardInfo("s2", "host=s2a port=5432 dbname=demo user=postgres",
+                    ["s2a"], 5432, "demo", "postgres", 1, "s2a:5432", [], null),
+            ],
+        };
+
+        // Act
+        var dto = ClusterDetailsMapper.Map(cluster, NowUnix, null, null, [], []);
+
+        // Assert: TO_REMOVE — бейдж «к удалению»; отсутствие ключа = ACTIVE.
+        dto.Shards.Single(s => s.Name == "s1").State.Should().Be("TO_REMOVE");
+        dto.Shards.Single(s => s.Name == "s2").State.Should().Be("ACTIVE");
+    }
 }
