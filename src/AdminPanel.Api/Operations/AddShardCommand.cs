@@ -38,6 +38,11 @@ public sealed class ShardNameTakenException(string cluster, string shard)
 public sealed class ShardLimitReachedException(string cluster)
     : Exception($"кластер {cluster} достиг предела числа шардов (128)");
 
+// Нешардированная БД (1 бакет, ≤1 шард — arch/03 §2): шарды есть только в
+// шардированной; добавить шард к нешардированной нельзя — это просто кластер.
+public sealed class NonShardedClusterException(string cluster)
+    : Exception($"БД {cluster} нешардированная — шарды только в шардированной (для полного демонтажа/расширения пересоздайте кластер нужного типа)");
+
 // Клэйм имени → пакет PUT → компенсация при сбое (arch/02 §9.5). Без ретраев:
 // повтор = новый POST от пользователя; повтор вычислит ТО ЖЕ имя (max по префиксу).
 [InjectAsScoped]
@@ -75,9 +80,11 @@ public sealed partial class AddShardCommandHandler(ISnapshotStore store, IEtcdGa
         if (config.Value is null)
             return Result<ShardAddedDto>.Failed(new ClusterNotFoundException(cluster));
         string? rawState;
+        int declaredBuckets;
         try
         {
             rawState = ReadStateField(config.Value);
+            declaredBuckets = ReadBucketsField(config.Value);
         }
         catch (JsonException)
         {
@@ -119,6 +126,11 @@ public sealed partial class AddShardCommandHandler(ISnapshotStore store, IEtcdGa
             .Select(m => int.Parse(m.Groups[1].Value))
             .DefaultIfEmpty(0)
             .Max();
+        // Нешардированная БД (arch/03 §2): 1 бакет + не более 1 существующего
+        // шарда — добавление шарда превратило бы её в шардированную мимо
+        // типа, заявленного при создании (02 §9.1 признак в etcd не хранится).
+        if (declaredBuckets == 1 && replicasShards.Count <= 1)
+            return Result<ShardAddedDto>.Failed(new NonShardedClusterException(cluster));
         if (max + 1 > MaxShards)
             return Result<ShardAddedDto>.Failed(new ShardLimitReachedException(cluster));
         var shard = $"shard{max + 1}";
@@ -170,5 +182,16 @@ public sealed partial class AddShardCommandHandler(ISnapshotStore store, IEtcdGa
             && state.ValueKind == JsonValueKind.String
             ? state.GetString()
             : null;
+    }
+
+    // buckets из config-JSON (0 — поля нет у легаси-конфига: трактуем как
+    // шардированную, guard не срабатывает).
+    private static int ReadBucketsField(string raw)
+    {
+        using var doc = JsonDocument.Parse(raw);
+        return doc.RootElement.TryGetProperty("buckets", out var buckets)
+            && buckets.ValueKind == JsonValueKind.Number
+            ? buckets.GetInt32()
+            : 0;
     }
 }

@@ -249,6 +249,27 @@ public class DeleteShardCommandHandlerTests
     }
 
     [Fact]
+    public async Task Handle_NonShardedCluster_Returns409NonSharded()
+    {
+        // Arrange: нешардированная БД — 1 бакет и единственный шард (arch/03 §2):
+        // сообщение про тип БД, а не про «последний шард»
+        var (handler, gateway, _) = NewHandler(cluster: ShopCluster() with
+        {
+            Shards = [ShopCluster().Shards[0]],
+            Buckets = [new BucketInfo(0, "shard1", BucketState.Active, null)],
+            BucketsCount = 1,
+        });
+        SeedActive(gateway);
+
+        // Act
+        var result = await handler.Handle(new DeleteShardCommand("shop", "shard1"), CancellationToken.None);
+
+        // Assert
+        result.Error.Should().BeOfType<NonShardedClusterException>();
+        gateway.Puts.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Handle_SingleShardCluster_Returns409LastShard()
     {
         // Arrange: шард один в кластере — G7 (§9.6 п.4)

@@ -94,7 +94,8 @@ public static class OperationsModule
                     }),
                 ClusterNotFoundException => Results.Problem(
                     statusCode: StatusCodes.Status404NotFound, title: "Cluster not found", detail: result.Error.Message),
-                ClusterNotActiveException or ShardNameTakenException or ShardLimitReachedException => Results.Problem(
+                ClusterNotActiveException or ShardNameTakenException or ShardLimitReachedException
+                    or NonShardedClusterException => Results.Problem(
                     statusCode: StatusCodes.Status409Conflict, title: "Shard add rejected", detail: result.Error.Message),
                 EtcdWriteUnavailableException => Results.Problem(
                     statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable", detail: result.Error.Message),
@@ -117,7 +118,7 @@ public static class OperationsModule
             {
                 ClusterNotFoundException or ShardNotFoundException => Results.Problem(
                     statusCode: StatusCodes.Status404NotFound, title: "Not found", detail: result.Error.Message),
-                ClusterNotActiveException or ShardRemoveBlockedException => Results.Problem(
+                ClusterNotActiveException or ShardRemoveBlockedException or NonShardedClusterException => Results.Problem(
                     statusCode: StatusCodes.Status409Conflict, title: "Shard remove rejected", detail: result.Error.Message),
                 EtcdWriteUnavailableException or ShardPrecheckUnavailableException => Results.Problem(
                     statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable", detail: result.Error.Message),

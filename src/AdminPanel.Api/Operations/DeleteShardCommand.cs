@@ -101,6 +101,11 @@ public sealed partial class DeleteShardCommandHandler(ISnapshotStore store, IEtc
         if (info is null)
             return Result<ShardDeletedDto>.Failed(new ShardPrecheckUnavailableException());
         var shardInfo = info.Shards.FirstOrDefault(s => s.Name == shard);
+        // Нешардированная БД (arch/03 §2): демонтаж единственного вырожденного
+        // шарда = удаление кластера; guard до бакетов — единственный бакет solo
+        // лежит на единственном шарде, сообщение про «последний шард» сбивает.
+        if (info.BucketsCount == 1 && info.Shards.Count <= 1)
+            return Result<ShardDeletedDto>.Failed(new NonShardedClusterException(cluster));
         var owned = info.Buckets.Count(b => b.Owner == shard);
         if (owned > 0)
             return Result<ShardDeletedDto>.Failed(ShardRemoveBlockedException.Buckets(owned));

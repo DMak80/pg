@@ -44,9 +44,10 @@ export function ClusterDetailsPage() {
 
   const data = query.data;
   const toRemove = data.state === 'TO_REMOVE';
-  // Кнопки add/remove шарда — только у Active (t06 spec §6.3, симметрия с «Удалить кластер»);
+  // Кнопки add/remove шарда — только у шардированной Active-БД (t06 spec §6.3;
+  // нешардированная — просто кластер, шкалирование шардов ей недоступно);
   // счётчик бакетов шарда — по routing (диалог удаления, Д4).
-  const canScale = data.state === 'ACTIVE';
+  const canScale = data.state === 'ACTIVE' && data.sharded;
   const bucketCounts = Object.fromEntries(
     data.shards.map((s) => [s.name, data.buckets.filter((b) => b.owner === s.name).length]),
   );

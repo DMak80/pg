@@ -173,6 +173,28 @@ public class AddShardCommandHandlerTests
     }
 
     [Fact]
+    public async Task Handle_NonShardedCluster_ReturnsNonSharded()
+    {
+        // Arrange: нешардированная БД — 1 бакет и единственный шард (arch/03 §2)
+        var (handler, gateway) = NewHandler();
+        gateway.All =
+        [
+            new Kv(ConfigKey, """{"buckets":1,"dbname":"solo","created_unix":1755900000}""", 1),
+            new Kv("/clusters/shop/shards/shard1/replicas", "2", 2),
+            new Kv("/clusters/shop/shards/shard1/nodes/shard1a/state", "RUNNING", 3),
+        ];
+
+        // Act
+        var result = await handler.Handle(
+            new AddShardCommand("shop", new AddShardRequest(2, 2, 8, 100)), CancellationToken.None);
+
+        // Assert: 409 до клэйма — в etcd ничего не записано
+        result.Error.Should().BeOfType<NonShardedClusterException>();
+        gateway.Txns.Should().BeEmpty();
+        gateway.Puts.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Handle_ComputesShardNameMaxPlusOne()
     {
         // Arrange: существующие shard1/shard2 → имя shard3 (§9.5 п.2)
