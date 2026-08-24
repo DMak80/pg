@@ -142,7 +142,7 @@ public class SqlProbeIntegrationTests(PostgresFixture fixture) : IClassFixture<P
             DateTimeOffset.UtcNow,
             TestSnapshotEtcd(),
             [DemoCluster(shard)],
-            [], [], [], [], [], 0);
+            [], [], [], [], [], [], 0);
 
         // Act
         var alerts = new AlertEngine(
@@ -192,7 +192,7 @@ public class SqlProbeIntegrationTests(PostgresFixture fixture) : IClassFixture<P
             DateTimeOffset.UtcNow,
             TestSnapshotEtcd(),
             [DemoCluster(shard)],
-            [], [], [], [], [], 0);
+            [], [], [], [], [], [], 0);
 
         // Act
         var alerts = new SlotLagHighRule(Options.Create(new AlertsOptions { ReplicaLagBytes = 1 }))

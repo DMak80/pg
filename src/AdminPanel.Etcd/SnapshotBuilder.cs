@@ -21,6 +21,7 @@ public static class SnapshotBuilder
             clusters.Clusters,
             service.Scopes,
             standNodes,
+            [],                                            // очередь заявок — параметр с Task 3
             [],
             [],
             [.. clusters.Errors, .. service.Errors],

@@ -58,6 +58,7 @@ internal static class InspectionSnapshots
             [],
             [],
             [],
+            [],
             [
                 new Alert("etcd-alarm:42:nospace", AlertSeverity.Critical, "etcd-alarm", "42:nospace",
                     "тревога etcd NOSPACE на member 42", new Dictionary<string, string> { ["memberId"] = "42" }, null),

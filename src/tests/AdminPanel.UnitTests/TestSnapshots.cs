@@ -16,6 +16,7 @@ internal static class TestSnapshots
         [],
         [],
         [],
+        [],
         0);
 
     // Все endpoints живые; alive < total — хвост мёртвый с ошибкой транспорта.

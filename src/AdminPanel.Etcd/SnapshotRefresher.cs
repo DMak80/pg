@@ -206,6 +206,7 @@ public sealed class SnapshotRefresher(
             previous?.Clusters ?? [],
             previous?.HaScopes ?? [],
             previous?.StandNodes ?? [],
+            previous?.MoveTickets ?? [],  // очередь заявок не теряется на отказном тике — как Clusters
             previous?.Probes ?? [],   // t06: пробы — часть снапшота, отказ etcd их не теряет (spec §4.3)
             [],
             previous?.ParseErrors ?? [],
