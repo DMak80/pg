@@ -224,8 +224,13 @@ public sealed class RemoveShardProcess(
             return delScope;
 
         // portalloc: точечная фильтрация записей "<X>/<n>" из JSON (Д10 — ключ общий
-        // на кластер, read-modify-write под клэймом безопасен).
+        // на кластер, read-modify-write под клэймом безопасен). Сбой чтения ≠
+        // «ключа нет»: молчаливый пропуск фильтрации оставил бы записи шарда в
+        // portalloc навсегда (шард исчез из /clusters/ — повторного тика не будет) —
+        // возвращаем ошибку, ретрай следующим тиком доведёт чистку.
         var ports = await GetAsync($"/pgworker/portalloc/{cluster}", ct);
+        if (ports is { IsSuccess: false })
+            return ports;
         if (ports is { IsSuccess: true, Value: not null })
         {
             var parsed = Portalloc.Parse(cluster, ports.Value.Value);

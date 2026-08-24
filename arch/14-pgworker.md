@@ -493,7 +493,9 @@ bucket_<i>` в **формате скриптов 1:1** (`SYNCING|FROZEN|ABORTING
 DatabaseProvisioner). Guard A1: кластер Active; полное объявление (replicas>0,
 nodes.Count==replicas, ноды NOT_INITIALIZED/PROVISIONING — иначе
 phase=waiting-keys); `dsn` нет (есть → Done); scope `/service/<C>-<X>/initialize`
-отсутствует (живой чужой Patroni-кластер = коллизия имён — перманентная ошибка);
+отсутствует — либо есть, но лидер совпадает с именем нод НАШЕГО шарда (наш же
+поднимающийся Patroni после A3 — идемпотентность повторных тиков); коллизия
+имён — initialize с чужим лидером (перманентная ошибка);
 имя шарда `^[a-z][a-z0-9_]{0,30}$`; перечитывание config (R6) — NOT_INITIALIZED/
 TO_REMOVE → phase=aborted. A5: БД/роли — ТОЛЬКО они; СХЕМЫ БАКЕТОВ НЕ
 СОЗДАЮТСЯ (шард пустой, routing не указывает). Routing/status не пишутся ВООБЩЕ.
