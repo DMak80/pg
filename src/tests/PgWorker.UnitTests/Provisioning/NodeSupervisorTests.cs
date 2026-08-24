@@ -193,6 +193,141 @@ public class NodeSupervisorTests
         outcome.Value.DeadShards.Should().BeEmpty();
     }
 
+    // ---------- Границы надзора (t06 spec §5.4) ----------
+
+    // Дозасев второго шарда в существующий сид (порты не пересекаются с shard1).
+    private static void SeedShard2(Fakes.FakeEtcd etcd, bool withDsn, bool markedToRemove)
+    {
+        etcd.Seed("/clusters/shop/shards/shard2/replicas", "3");
+        for (var i = 0; i < 3; i++)
+            etcd.Seed($"/clusters/shop/shards/shard2/nodes/shard2{(char)('a' + i)}/state", "RUNNING");
+        if (withDsn)
+            etcd.Seed("/clusters/shop/shards/shard2/dsn", "host=h1,h2 port=15010,15011 dbname=shop user=bucket_admin");
+        if (markedToRemove)
+            etcd.Seed("/clusters/shop/shards/shard2/state", "TO_REMOVE");
+        // portalloc: объединённый (shard1 из SeedCluster + новый shard2)
+        var alloc = new Dictionary<string, NodeAddress>();
+        for (var i = 0; i < 3; i++)
+        {
+            alloc[$"shard1/shard1{(char)('a' + i)}"] = new(
+                i % 2 == 0 ? "h1" : "h2", new NodePorts(15000 + i, 18000 + i, 16500 + i));
+            alloc[$"shard2/shard2{(char)('a' + i)}"] = new(
+                i % 2 == 0 ? "h2" : "h1", new NodePorts(15010 + i, 18010 + i, 16510 + i));
+        }
+
+        etcd.Store["/pgworker/portalloc/shop"] = new(
+            Portalloc.Serialize(alloc), 99, 1);
+    }
+
+    // Трек «мёртв давно» для всех нод shard2 (порог ShardDeadSec истёк).
+    private static async Task SeedShard2DeadTrackAsync(WorkJournal journal)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var track = new Dictionary<string, long>();
+        for (var i = 0; i < 3; i++)
+            track[$"shard2/shard2{(char)('a' + i)}"] = now - 400;
+        await journal.WriteSupervisionAsync("shop", "seed", track, CancellationToken.None);
+    }
+
+    [Fact]
+    public async Task Tick_ShardWithoutDsn_DockerRm_NotRecreated()
+    {
+        // Arrange — declared-шард без dsn (add идёт): контейнер снесён руками;
+        // восстановление — домен AddShardProcess, не надзора (t06 §5.4)
+        var rig = await NewRig(_ => Ok(), nodeObjects: ["pgw-shop-shard1-shard1a",
+            "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c"]);
+        SeedShard2(rig.Etcd, withDsn: false, markedToRemove: false);
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — надзор не пересоздаёт ноды недоднятого шарда
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        rig.Driver.EnsuredNodes.Should().NotContain(n => n.StartsWith("shard2/", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Tick_MarkedShard_DockerRm_NotRecreated()
+    {
+        // Arrange — шард с dsn помечен TO_REMOVE; контейнер снесён руками —
+        // пересоздавать демонтируемое нельзя (домен RemoveShardProcess)
+        var rig = await NewRig(_ => Ok(), nodeObjects: ["pgw-shop-shard1-shard1a",
+            "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c"]);
+        SeedShard2(rig.Etcd, withDsn: true, markedToRemove: true);
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — самовосстановление отключено для помеченного шарда
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        rig.Driver.EnsuredNodes.Should().NotContain(n => n.StartsWith("shard2/", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Tick_DeadShardWithoutBuckets_NotEvacuationCandidate()
+    {
+        // Arrange — мёртвый шарда2 без бакетов по routing (routing → shard1):
+        // эвакуация пустого шарда бессмысленна и карантинила бы ноды (G6)
+        var rig = await NewRig(port => port >= 18010 ? Down() : Ok(), nodeObjects:
+        [
+            "pgw-shop-shard1-shard1a", "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c",
+            "pgw-shop-shard2-shard2a", "pgw-shop-shard2-shard2b", "pgw-shop-shard2-shard2c",
+        ]);
+        SeedShard2(rig.Etcd, withDsn: true, markedToRemove: false);
+        await SeedShard2DeadTrackAsync(rig.Journal);
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — пустой мёртвый шард не попадает в DeadShards (t06 §5.4)
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        outcome.Value.DeadShards.Should().NotContain("shard2");
+    }
+
+    [Fact]
+    public async Task Tick_DeadShardWithoutDsn_NotEvacuationCandidate()
+    {
+        // Arrange — мёртвый declared-шард БЕЗ dsn, routing аномально указывает на
+        // него: add ещё идёт — эвакуировать нечего (t06 §5.4)
+        var rig = await NewRig(port => port >= 18010 ? Down() : Ok(), nodeObjects:
+        [
+            "pgw-shop-shard1-shard1a", "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c",
+            "pgw-shop-shard2-shard2a", "pgw-shop-shard2-shard2b", "pgw-shop-shard2-shard2c",
+        ]);
+        SeedShard2(rig.Etcd, withDsn: false, markedToRemove: false);
+        rig.Etcd.Seed("/clusters/shop/buckets/routing/bucket_1", "shard2"); // аномалия сида
+        await SeedShard2DeadTrackAsync(rig.Journal);
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — незарегистрированный шард не эвакуируется
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        outcome.Value.DeadShards.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Tick_DeadMarkedShardWithBuckets_IsEvacuationCandidate()
+    {
+        // Arrange — мёртвый помеченный шард С бакетами: эвакуация — способ
+        // освободить бакеты умирающего шарда, после чего G3 пропустит демонтаж (Д6)
+        var rig = await NewRig(port => port >= 18010 ? Down() : Ok(), nodeObjects:
+        [
+            "pgw-shop-shard1-shard1a", "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c",
+            "pgw-shop-shard2-shard2a", "pgw-shop-shard2-shard2b", "pgw-shop-shard2-shard2c",
+        ]);
+        SeedShard2(rig.Etcd, withDsn: true, markedToRemove: true);
+        rig.Etcd.Seed("/clusters/shop/buckets/routing/bucket_1", "shard2");
+        await SeedShard2DeadTrackAsync(rig.Journal);
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — TO_REMOVE-маркер НЕ отключает аварийную эвакуацию (Д6)
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        outcome.Value.DeadShards.Should().Contain("shard2");
+    }
+
     // Сид кластера с параметризованными именами/портами (параллельный тест).
     private static void SeedNamedCluster(Fakes.FakeEtcd etcd, string cluster, int portOffset)
     {

@@ -73,7 +73,15 @@ public sealed class NodeSupervisor(
             // ShardDeadSec → кандидат на эвакуацию (spec §6.4 D).
             var allDead = shard.Nodes is { Count: > 0 }
                 && shard.Nodes.All(n => track.ContainsKey($"{shard.Name}/{n.Name}"));
-            if (allDead && string.IsNullOrWhiteSpace(shard.Master))
+
+            // Кандидат эвакуации (t06 §5.4): только зарегистрированный шард (dsn
+            // есть — add завершён) И с бакетами по routing (эвакуация пустого
+            // шарда бессмысленна и карантинила бы ноды, блокируя демонтаж по G6).
+            // Шард с TO_REMOVE-маркером кандидатом БЫТЬ МОЖЕТ — эвакуация
+            // освобождает бакеты умирающего помеченного шарда, после чего G3
+            // пропустит демонтаж (Д6).
+            var hasBuckets = snap.Routing.Any(r => r.Owner == shard.Name);
+            if (allDead && string.IsNullOrWhiteSpace(shard.Master) && shard.Dsn is not null && hasBuckets)
             {
                 var oldest = shard.Nodes
                     .Select(n => track[$"{shard.Name}/{n.Name}"])
@@ -128,6 +136,11 @@ public sealed class NodeSupervisor(
 
         foreach (var shard in snap.Shards)
         {
+            // Границы надзора (t06 §5.4): шард без dsn — домен AddShardProcess;
+            // TO_REMOVE — домен RemoveShardProcess (не пересоздавать демонтируемое).
+            if (shard.Dsn is null || shard.ToRemove)
+                continue;
+
             var topology = TopologyOf(cluster, snap, shard.Name, addresses);
             if (topology.Nodes.Count == 0)
                 continue; // нет закреплённых адресов (внешний кластер) — не наш объект
