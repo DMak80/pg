@@ -23,6 +23,10 @@ internal interface IClusterProcesses
 
     /// <summary>Обработка заявок переездов бакетов /pgworker/moves/&lt;C&gt;/ (t01, spec §5.3).</summary>
     Task<Result<ProcessOutcome>> ProcessMovesAsync(ClusterSnapshot snap, CancellationToken ct);
+
+    /// <summary>Scale-проход Active-ветки (t06, spec §5.1): remove-кандидаты →
+    /// add-кандидаты, по одному шард-за-тик (Д13: демонтаж освобождает хосты/порты).</summary>
+    Task<Result<ProcessOutcome>> ScaleShardsAsync(ClusterSnapshot snap, CancellationToken ct);
 }
 
 /// <summary>Реализация поверх процессов задач 19–22 + MoveProcess t01 (синглтоны DI).</summary>
@@ -31,7 +35,9 @@ internal sealed class ClusterProcesses(
     DeprovisioningProcess deprovision,
     NodeSupervisor supervisor,
     BucketEvacuator evacuator,
-    MoveProcess moves) : IClusterProcesses
+    MoveProcess moves,
+    AddShardProcess addShards,
+    RemoveShardProcess removeShards) : IClusterProcesses
 {
     public Task<Result<ProcessOutcome>> ProvisionAsync(ClusterSnapshot snap, CancellationToken ct)
         => provision.TickAsync(snap, ct);
@@ -50,4 +56,32 @@ internal sealed class ClusterProcesses(
 
     public Task<Result<ProcessOutcome>> ProcessMovesAsync(ClusterSnapshot snap, CancellationToken ct)
         => moves.TickAsync(snap, ct);
+
+    public async Task<Result<ProcessOutcome>> ScaleShardsAsync(ClusterSnapshot snap, CancellationToken ct)
+    {
+        var candidates = ShardScaleClassifier.Detect(snap);
+
+        // Remove-проход первым (Д13): помеченные демонтируются, недоднятый add
+        // отменяется этим же путём (Д5).
+        if (candidates.Remove.Count > 0)
+        {
+            var removed = await removeShards.TickAsync(snap, candidates.Remove[0], ct);
+            if (!removed.IsSuccess)
+                return removed;
+        }
+
+        // Add-проход: только НЕпомеченные кандидаты. Шард из обоих списков
+        // (TO_REMOVE + declared без dsn) уже демонтирован remove-проходом выше —
+        // снапшот тика ещё видит его declared-ноды, и без фильтра add поднял бы
+        // шард заново; AddShardProcess (A1) также guard'ит ToRemove (blocked-removing).
+        var addCandidate = candidates.Add.FirstOrDefault(name => !candidates.Remove.Contains(name));
+        if (addCandidate is { } shard)
+        {
+            var added = await addShards.TickAsync(snap, shard, ct);
+            if (!added.IsSuccess)
+                return added;
+        }
+
+        return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+    }
 }
