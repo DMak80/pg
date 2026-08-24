@@ -39,8 +39,12 @@ public sealed class PgWorkerHealth(
             degraded.Add($"docker-хост {failed.Key} недоступен");
 
         // loops-alive: возраст последнего тика каждого цикла (пассивно, HealthState).
-        var staleAfter = TimeSpan.FromSeconds(
-            3 * Math.Max(options.CurrentValue.Loops.ScanIntervalSec, options.CurrentValue.Loops.KeepaliveSec) + 15);
+        var loops = options.CurrentValue.Loops;
+        var staleAfter = TimeSpan.FromSeconds(3 * Math.Max(loops.ScanIntervalSec, loops.KeepaliveSec) + 15);
+        // snapshot-цикл между тиками спит SnapshotIntervalMin (лидер) — порог
+        // свежести у него свой, а не как у scan-циклов.
+        var snapshotStaleAfter = TimeSpan.FromSeconds(
+            3 * Math.Max(loops.ScanIntervalSec, 60 * loops.SnapshotIntervalMin) + 15);
         var snapshot = health.Snapshot();
         data["loops"] = string.Join("; ", new[]
         {
@@ -48,16 +52,16 @@ public sealed class PgWorkerHealth(
             LoopEntry("keepalive", snapshot.LastKeepaliveTick),
             LoopEntry("snapshot", snapshot.LastSnapshotTick),
         });
-        foreach (var (name, at) in new[]
+        foreach (var (name, at, threshold) in new[]
                  {
-                     ("reconcile", snapshot.LastReconcileTick),
-                     ("keepalive", snapshot.LastKeepaliveTick),
-                     ("snapshot", snapshot.LastSnapshotTick),
+                     ("reconcile", snapshot.LastReconcileTick, staleAfter),
+                     ("keepalive", snapshot.LastKeepaliveTick, staleAfter),
+                     ("snapshot", snapshot.LastSnapshotTick, snapshotStaleAfter),
                  })
         {
             if (at is null)
                 degraded.Add($"цикл {name} ещё не тикал");
-            else if (clock.GetUtcNow() - at.Value > staleAfter)
+            else if (clock.GetUtcNow() - at.Value > threshold)
                 degraded.Add($"цикл {name} не тикал {(clock.GetUtcNow() - at.Value).TotalSeconds:F0} с");
         }
 

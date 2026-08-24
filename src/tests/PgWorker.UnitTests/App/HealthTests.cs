@@ -88,6 +88,30 @@ public class HealthTests
     }
 
     [Fact]
+    public async Task Check_SnapshotTickAge_WithinSnapshotInterval_Healthy()
+    {
+        // Arrange — тик snapshot на 6 мин старше scan-тиков, но моложе
+        // SnapshotIntervalMin (360 мин): лидер между снапшотами так и спит
+        var clock = new MutableClock(DateTimeOffset.Parse("2026-08-24T12:00:00Z"));
+        var etcd = new Fakes.FakeEtcd();
+        var health = new HealthState(clock);
+        health.MarkEtcdOk();
+        health.MarkSnapshotTaken();
+        health.MarkSnapshotTick();
+        clock.Advance(TimeSpan.FromMinutes(6));
+        health.MarkReconcileTick(ok: true, claimsHeld: 1);
+        health.MarkKeepaliveTick();
+        var claims = new ClaimStore(["http://etcd:2379"], etcd, clock);
+        var check = new PgWorkerHealth(Probes(etcd), health, claims, Options, clock);
+
+        // Act
+        var result = await check.CheckHealthAsync(new HealthCheckContext(), TestContext.Current.CancellationToken);
+
+        // Assert — порог свежести snapshot-тика считается от SnapshotIntervalMin, а не от scan-интервала
+        result.Status.Should().Be(HealthStatus.Healthy);
+    }
+
+    [Fact]
     public async Task Abstract_StatusError_Unhealthy()
     {
         // Arrange — цикл с ошибкой последнего тика
@@ -130,5 +154,13 @@ public class HealthTests
         public bool Working { get; init; }
 
         public Result StatusError { get; init; } = Result.Success();
+    }
+
+    // Управляемое время для возрастов тиков в HealthState.
+    private sealed class MutableClock(DateTimeOffset now) : TimeProvider
+    {
+        public void Advance(TimeSpan delta) => now = now.Add(delta);
+
+        public override DateTimeOffset GetUtcNow() => now;
     }
 }

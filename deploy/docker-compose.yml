@@ -13,6 +13,11 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - pgw-snapshots:/snapshots
+    extra_hosts:
+      # Ноды несут docker-хост "local" (appsettings Docker:Hosts) и пробируются
+      # по этому имени; из контейнера резолвим его в docker-хост
+      # (на Docker Desktop = host.docker.internal, на Linux — шлюз bridge).
+      - "local:host-gateway"
     environment:
       # Обязательные секреты установки (Д7): не в git, не в etcd.
       PGW_PG_SUPERUSER_PASSWORD: ${PGW_PG_SUPERUSER_PASSWORD:?задайте секрет}
