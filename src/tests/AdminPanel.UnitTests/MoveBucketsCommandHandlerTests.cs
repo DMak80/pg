@@ -113,6 +113,25 @@ public class MoveBucketsCommandHandlerTests
     }
 
     [Fact]
+    public async Task Handle_NullFieldsBody_Returns400WithFieldErrors()
+    {
+        // Arrange: тело {} или {"from":null,"to":null} — JSON-биндинг даёт null-поля
+        // (non-nullable аннотации STJ не проверяет); валидатор обязан вернуть
+        // ошибки по полям, а не упасть NRE на сравнении from==to.
+        var (handler, gateway) = NewHandler();
+        Seed(gateway);
+
+        // Act
+        var result = await handler.Handle(
+            new MoveBucketsCommand("shop", null!, null!, null!, "admin"), CancellationToken.None);
+
+        // Assert: 400-путь — MoveBucketsValidationException с errors по from/to/buckets; в etcd не ходили
+        var error = result.Error.Should().BeOfType<MoveBucketsValidationException>().Subject;
+        error.Errors.Select(e => e.Field).Should().BeEquivalentTo(["from", "to", "buckets"]);
+        gateway.Txns.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Handle_FromEqualsTo_Returns400()
     {
         // Arrange / Act

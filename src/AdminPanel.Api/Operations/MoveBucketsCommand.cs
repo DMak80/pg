@@ -56,11 +56,16 @@ public static class MoveBucketsValidator
     public static IReadOnlyList<ValidationError> Validate(MoveBucketsRequest request)
     {
         var errors = new List<ValidationError>();
-        if (string.IsNullOrWhiteSpace(request.From))
+        // Null-поля (тело {} или {"from":null,…}): JSON-биндинг не проверяет
+        // non-nullable аннотации — ловим здесь, а не NRE; сравнение from==to —
+        // только при обоих ненулевых.
+        var fromEmpty = string.IsNullOrWhiteSpace(request.From);
+        var toEmpty = string.IsNullOrWhiteSpace(request.To);
+        if (fromEmpty)
             errors.Add(new("from", "шард-источник обязателен"));
-        if (string.IsNullOrWhiteSpace(request.To))
+        if (toEmpty)
             errors.Add(new("to", "шард-приёмник обязателен"));
-        if (request.From == request.To && request.From.Length > 0)
+        if (!fromEmpty && !toEmpty && request.From == request.To)
             errors.Add(new("to", "приёмник должен отличаться от источника"));
         if (request.Buckets is null || request.Buckets.Count == 0)
             errors.Add(new("buckets", "выберите хотя бы один бакет"));

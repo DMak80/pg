@@ -242,6 +242,22 @@ public class MovesApiTests(AuthWebFactory factory, EtcdContainerFixture fixture)
     }
 
     [Fact]
+    public async Task Moves_EmptyObjectBody_Returns400()
+    {
+        // Arrange: тело {} — биндинг даёт null-поля; 400, а не 500-NRE
+        SetLiveSnapshot(TwoShardCluster("mvnull"));
+        using var client = await LoginAsync();
+
+        // Act
+        using var response = await client.PostAsJsonAsync("/api/clusters/mvnull/moves",
+            new { }, TestContext.Current.CancellationToken);
+
+        // Assert: errors по from/to/buckets; в etcd ничего не записано
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await ReadMovesAsync("mvnull")).Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Moves_UnknownShard_Returns404()
     {
         // Arrange
