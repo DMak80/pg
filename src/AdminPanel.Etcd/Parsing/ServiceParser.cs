@@ -156,15 +156,25 @@ public static class ServiceParser
             var connUrl = JsonValues.ReadString(root, "conn_url");
             if (connUrl is not null)
             {
-                var colon = connUrl.LastIndexOf(':');
-                if (colon > 0
-                    && int.TryParse(connUrl[(colon + 1)..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedPort))
+                // Patroni пишет conn_url как URI (postgres://host:port/dbname);
+                // старый стенд — plain host:port (URI без authority туда не попадает).
+                if (Uri.TryCreate(connUrl, UriKind.Absolute, out var uri) && !string.IsNullOrEmpty(uri.Host))
                 {
-                    host = connUrl[..colon];
-                    port = parsedPort;
+                    host = uri.Host;
+                    port = uri.Port > 0 ? uri.Port : null;
                 }
                 else
-                    host = connUrl;
+                {
+                    var colon = connUrl.LastIndexOf(':');
+                    if (colon > 0
+                        && int.TryParse(connUrl[(colon + 1)..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedPort))
+                    {
+                        host = connUrl[..colon];
+                        port = parsedPort;
+                    }
+                    else
+                        host = connUrl;
+                }
             }
         }
         catch (JsonException)

@@ -1,3 +1,4 @@
+using AdminPanel.Etcd.Client;
 using AdminPanel.Etcd.Parsing;
 using FluentAssertions;
 using Xunit;
@@ -80,6 +81,26 @@ public class ServiceParserTests
         master.Timeline.Should().BeNull();
         master.LagBytes.Should().BeNull();
         members.Should().Contain(m => m.Name == "s1b" && m.Role == "replica");
+    }
+
+    [Fact]
+    public void Parse_Members_PatroniConnUri_HostPortExtracted()
+    {
+        // Arrange — conn_url реального Patroni: URI postgres://host:port/dbname
+        var kvs = new List<Kv>
+        {
+            new("/service/demo-s1/members/s1a",
+                "{\"conn_url\":\"postgres://172.20.0.7:5432/postgres\",\"role\":\"master\",\"state\":\"running\"}", 11),
+        };
+
+        // Act
+        var result = ServiceParser.Parse(kvs, DemoClusters);
+
+        // Assert — из URI извлечены host и port (не сырая строка целиком)
+        var member = result.Scopes.Single(s => s.Scope == "demo-s1").Members
+            .Should().ContainSingle(m => m.Name == "s1a").Subject;
+        member.Host.Should().Be("172.20.0.7");
+        member.Port.Should().Be(5432);
     }
 
     [Fact]

@@ -36,14 +36,21 @@ public sealed class SqlProbe(IOptions<ProbesOptions> options, TimeProvider time)
     // мастера — см. ReadOnlyGuardSql и ProbeAsync.
     public static NpgsqlConnectionStringBuilder BuildConnectionString(ShardInfo shard, ProbesOptions options)
     {
-        var port = shard.Port ?? 5432;
-        var hosts = shard.DsnHosts.Select(host => HostMapResolver.Resolve(options.HostMap, host, port)).ToList();
+        var defaultPort = shard.Port ?? 5432;
+        var ports = shard.DsnPorts is { Count: > 0 } list ? list : [];
+        // Порт per-host (libpq port=h1p,h2p); без порта в списке — Port/5432.
+        var hosts = shard.DsnHosts.Select((host, i) => HostMapResolver.Resolve(
+                options.HostMap, host, i < ports.Count && ports[i] is { } p ? p : defaultPort))
+            .ToList();
         var builder = new NpgsqlConnectionStringBuilder
         {
             Host = string.Join(",", hosts),
             ApplicationName = "adminpanel",
             Timeout = TimeoutSeconds(options),
             CommandTimeout = TimeoutSeconds(options), // statement_timeout (arch/02 §6.2)
+            // Prefer: узлы PgWorker (Spilo) пускают внешние хосты только hostssl
+            // (pg_hba «no encryption» reject); trust-стенд без SSL — фолбэк.
+            SslMode = SslMode.Prefer,
         };
         if (hosts.Count > 1)
             builder.TargetSessionAttributes = "read-write"; // multi-host ведёт на мастер

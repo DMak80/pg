@@ -65,4 +65,18 @@ public class DsnParserTests
         info.Hosts.Should().BeEmpty();
         info.Port.Should().BeNull();
     }
+
+    [Fact]
+    public void Parse_PortList_PerHostPorts()
+    {
+        // Arrange — dsn PgWorker-стенда: по порту на хост (port=15000,15001)
+        var dsn = "host=local,local port=15000,15001 dbname=shop user=bucket_admin";
+
+        // Act
+        var info = DsnParser.Parse(dsn);
+
+        // Assert — Ports выровнен с Hosts; Port — первый из списка
+        info.Ports.Should().Equal(15000, 15001);
+        info.Port.Should().Be(15000);
+    }
 }

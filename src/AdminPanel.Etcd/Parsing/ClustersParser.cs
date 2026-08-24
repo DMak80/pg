@@ -219,7 +219,8 @@ public static class ClustersParser
             string.IsNullOrWhiteSpace(shard.Master) ? null : shard.Master.Trim(),
             nodes,
             null, // Runtime — SQL-проба t06
-            shard.StateRaw?.Trim() == "TO_REMOVE" ? ShardState.ToRemove : ShardState.Active);
+            shard.StateRaw?.Trim() == "TO_REMOVE" ? ShardState.ToRemove : ShardState.Active,
+            dsn.Ports);
     }
 
     private static IReadOnlyList<BucketInfo> BuildBuckets(int bucketsCount, ClusterAcc acc, List<KeyParseError> errors)

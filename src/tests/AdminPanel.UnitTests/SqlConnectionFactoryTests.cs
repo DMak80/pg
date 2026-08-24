@@ -64,6 +64,8 @@ public class SqlConnectionFactoryTests
         builder.ApplicationName.Should().Be("adminpanel");
         builder.Timeout.Should().Be(7);
         builder.CommandTimeout.Should().Be(7);
+        // Spilo-узлы пускают внешние хосты только по SSL (pg_hba); trust-стенд — фолбэк.
+        builder.SslMode.Should().Be(SslMode.Prefer);
     }
 
     [Fact]
@@ -94,5 +96,28 @@ public class SqlConnectionFactoryTests
         builder.Database.Should().BeNullOrEmpty();
         builder.Username.Should().BeNullOrEmpty();
         builder.Host.Should().Be("s1a:5432,s1b:5432");
+    }
+
+    [Fact]
+    public void Build_PerHostPorts_EndpointsAndHostMap()
+    {
+        // Arrange: dsn PgWorker-стенда — port=15000,15001, хост local;
+        // HostMap матчится по фактическому порту эндпоинта.
+        var shard = Shard() with
+        {
+            DsnHosts = ["local", "local"],
+            Port = null,
+            DsnPorts = [15000, 15001],
+        };
+        var options = new ProbesOptions
+        {
+            HostMap = new Dictionary<string, string> { ["local:15000"] = "127.0.0.1:15000" },
+        };
+
+        // Act
+        var builder = SqlProbe.BuildConnectionString(shard, options);
+
+        // Assert: порты расклеены по хостам; замапленный хост подменён.
+        builder.Host.Should().Be("127.0.0.1:15000,local:15001");
     }
 }
