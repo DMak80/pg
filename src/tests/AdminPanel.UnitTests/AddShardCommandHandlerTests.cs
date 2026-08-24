@@ -82,14 +82,17 @@ public class AddShardCommandHandlerTests
         return (new AddShardCommandHandler(store, gateway), gateway);
     }
 
-    // Сид Active-кластера shop: config без state, shard1/shard2 с replicas.
+    // Сид Active-кластера shop: config без state, shard1/shard2 с replicas + nodes
+    // (nodes/dsn «закрепляют» шард — см. вычисление max в handler).
     private static void SeedActiveCluster(FakeGateway gateway)
     {
         gateway.All =
         [
             new Kv(ConfigKey, """{"buckets":6,"dbname":"shop","created_unix":1755900000}""", 1),
             new Kv("/clusters/shop/shards/shard1/replicas", "2", 2),
-            new Kv("/clusters/shop/shards/shard2/replicas", "2", 3),
+            new Kv("/clusters/shop/shards/shard1/nodes/shard1a/state", "RUNNING", 3),
+            new Kv("/clusters/shop/shards/shard2/replicas", "2", 4),
+            new Kv("/clusters/shop/shards/shard2/nodes/shard2a/state", "RUNNING", 5),
         ];
     }
 

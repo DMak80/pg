@@ -88,13 +88,33 @@ public sealed partial class AddShardCommandHandler(ISnapshotStore store, IEtcdGa
             return Result<ShardAddedDto>.Failed(new ClusterNotActiveException(cluster, rawState));
 
         // 4) Имя shard<max+1> по фактическому префиксу shards/ (range).
+        //    «Существующий» шард = replicas + (nodes ИЛИ dsn/master/state):
+        //    недодекларация (выжил только replicas после провалившейся
+        //    компенсации) НЕ считается — повтор вычислит ТО ЖЕ имя и проиграет
+        //    клэйм → 409 (молча создать «другой» шард повтор не может, §9.5).
         var shardsRange = await gateway.RangeAsync(endpoint, $"/clusters/{cluster}/shards/", ct);
         if (!shardsRange.IsSuccess)
             return Result<ShardAddedDto>.Failed(shardsRange.Error!);
-        var max = shardsRange.Value
-            .Select(kv => kv.Key.Split('/')[..^1])
-            .Where(segments => segments.Length == 5 && segments[3] == "shards")
-            .Select(segments => PanelShardPattern().Match(segments[4]))
+        var replicasShards = new HashSet<string>();
+        var anchoredShards = new HashSet<string>();
+        foreach (var kv in shardsRange.Value)
+        {
+            var segments = kv.Key.Split('/');
+            if (segments.Length < 6 || segments[3] != "shards" || segments[4].Length == 0)
+                continue;
+            if (segments.Length == 6)
+            {
+                if (segments[5] == "replicas")
+                    replicasShards.Add(segments[4]);
+                else if (segments[5] is "dsn" or "master" or "state")
+                    anchoredShards.Add(segments[4]);
+            }
+            else if (segments.Length == 8 && segments[5] == "nodes")
+                anchoredShards.Add(segments[4]);
+        }
+
+        var max = replicasShards.Where(anchoredShards.Contains)
+            .Select(name => PanelShardPattern().Match(name))
             .Where(m => m.Success)
             .Select(m => int.Parse(m.Groups[1].Value))
             .DefaultIfEmpty(0)
