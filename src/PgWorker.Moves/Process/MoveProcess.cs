@@ -318,10 +318,25 @@ public sealed class MoveProcess(
         // M1: DDL-перенос — только когда схемы на приёмнике нет (resume пропускает).
         if (!subOnDst && !schemaOnDst)
         {
-            if (srcShard.Master?.Split(':')[0] is not { } srcNode)
+            // Имя ноды мастера для docker exec (pg_dump): формат master-ключа —
+            // <host>:<doormanPort> (писатели — Patroni-callback/reconciler),
+            // поэтому резолвим адрес через ShardEndpoints и ищем ноду шарда по
+            // её PG-порту (уникален) — Split(':')[0] давал бы host, не имя (e2e t01).
+            var addresses = await shards.ReadPortAllocAsync(cluster, ct);
+            if (!addresses.IsSuccess)
+                return await FailTransientAsync(cluster, addresses.Error!, ct);
+            var srcMaster = await shards.ResolveMasterAsync(srcShard, addresses.Value, ct);
+            if (!srcMaster.IsSuccess)
+                return await FailTransientAsync(cluster, srcMaster.Error!, ct);
+            if (srcMaster.Value is not { } master)
                 return await FailTransientAsync(cluster, new ApplicationException(
-                    $"мастер '{owner}' без master-ключа — имя ноды для pg_dump неизвестно"), ct);
-            var dump = await ddl.DumpAsync(cluster, owner, srcNode, snap.Config.DbName, bucket, ct);
+                    $"мастер '{owner}' не определён — имя ноды для pg_dump неизвестно"), ct);
+            var masterEntry = addresses.Value.FirstOrDefault(p =>
+                p.Key.StartsWith($"{owner}/", StringComparison.Ordinal) && p.Value.Ports.Pg == master.Ports.Pg);
+            if (masterEntry.Key is not { Length: > 0 } entry)
+                return await FailTransientAsync(cluster, new ApplicationException(
+                    $"мастер '{owner}' (pg:{master.Ports.Pg}) не найден среди нод шарда в portalloc"), ct);
+            var dump = await ddl.DumpAsync(cluster, owner, entry.Split('/')[1], snap.Config.DbName, bucket, ct);
             if (!dump.IsSuccess)
                 return await FailTransientAsync(cluster, dump.Error!, ct);
             var applied = await ddl.ApplyAsync(dstDsn, dump.Value, ct);
@@ -360,7 +375,7 @@ public sealed class MoveProcess(
             // synchronous_commit=remote_apply — P8; CONNECTION — mover-роль источника.
             var createSub = await sql.ExecuteAsync(dstDsn,
                 MoveSql.CreateSubscription(MoveNames.Sub(bucket),
-                    ShardEndpoints.MoverConninfo(srcShard.Dsn!, secrets),
+                    ShardEndpoints.MoverConninfo(srcShard.Dsn!, secrets, options.AdvertisedPublisherHost),
                     MoveNames.Pub(bucket), copyData: true, failover: options.FailoverSlots), ct);
             if (!createSub.IsSuccess)
                 return await FailTransientAsync(cluster, createSub.Error!, ct);
@@ -453,7 +468,7 @@ public sealed class MoveProcess(
             {
                 var subRb = await sql.ExecuteAsync(srcDsn,
                     MoveSql.CreateSubscription(MoveNames.SubRb(bucket),
-                        ShardEndpoints.MoverConninfo(dstShard.Dsn!, secrets),
+                        ShardEndpoints.MoverConninfo(dstShard.Dsn!, secrets, options.AdvertisedPublisherHost),
                         MoveNames.PubRb(bucket), copyData: false, failover: options.FailoverSlots), ct);
                 if (!subRb.IsSuccess)
                     postFlipErrors.Add(

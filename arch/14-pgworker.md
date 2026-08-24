@@ -487,7 +487,10 @@ PgWorker:Loops { ScanIntervalSec=5, KeepaliveSec=5, SnapshotIntervalMin=360,
 PgWorker:Thresholds { NodeDeadSec=90, ShardDeadSec=300, PatroniBootSec=600,
                      CutoverTimeoutSec=90, ConnFailBudgetSec=120 }
 PgWorker:Moves { PollIntervalSec=2, FreezeWaitSec=5, FreezeLockTimeoutSec=5,
-                 FreezeLockTries=3, AbortMinAgeSec=120, FailoverSlots=true }
+                 FreezeLockTries=3, AbortMinAgeSec=120, FailoverSlots=true,
+                 AdvertisedPublisherHost=null } # host издателя, как виден из
+                 # контейнеров приёмников (single-docker-host стенды:
+                 # host.docker.internal; прод — null, адреса dsn достижимы)
 PgWorker:Parallelism { MaxClusters=4 }
 PgWorker:Snapshots { Dir="/snapshots", RetentionFiles=10 }
 # секреты — env PGW_* (§4)

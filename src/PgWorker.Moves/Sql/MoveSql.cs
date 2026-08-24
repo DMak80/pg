@@ -154,11 +154,18 @@ public static class MoveSql
     // Подписка на приёмнике: conninfo — строка libpq в SQL-литерале (одинарные
     // кавычки экранируются удвоением); failover-флаг конфигурируем (PG17+),
     // synchronous_commit=remote_apply — всегда (P8).
+    // failover=true — только PG17+ (R1/Д11); при false опция ОПУСКАЕТСЯ: в PG16
+    // параметра failover нет вовсе («unrecognized subscription parameter», e2e-факт
+    // t01 на spilo-16), а в PG17 отсутствие опции семантически равно false.
     public static string CreateSubscription(
         string sub, string conninfo, string pub, bool copyData, bool failover)
-        => $"CREATE SUBSCRIPTION {Ident(sub)} CONNECTION '{conninfo.Replace("'", "''")}' PUBLICATION {Ident(pub)} " +
-           $"WITH (copy_data = {Bool(copyData)}, failover = {Bool(failover)}, " +
-           "synchronous_commit = remote_apply)";
+    {
+        var options = failover
+            ? $"copy_data = {Bool(copyData)}, failover = true, synchronous_commit = remote_apply"
+            : $"copy_data = {Bool(copyData)}, synchronous_commit = remote_apply";
+        return $"CREATE SUBSCRIPTION {Ident(sub)} CONNECTION '{conninfo.Replace("'", "''")}' PUBLICATION {Ident(pub)} " +
+               $"WITH ({options})";
+    }
 
     // Fallback-цепочка среза подписки при недоступном источнике (drop_sub
     // abort-move.sh): DISABLE → SET (slot_name = NONE) → DROP.

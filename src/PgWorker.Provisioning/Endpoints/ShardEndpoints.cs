@@ -65,13 +65,20 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
 
         if (!string.IsNullOrWhiteSpace(shard.Master))
         {
-            var left = shard.Master.Split(':')[0];
-            var byName = shardNodes.FirstOrDefault(p => p.Key == left);
+            var parts = shard.Master.Split(':');
+            var byName = shardNodes.FirstOrDefault(p => p.Key == parts[0]);
             if (byName.Value is not null)
                 return Result<NodeAddress?>.Success(byName.Value);
-            var byHost = shardNodes.FirstOrDefault(p => p.Value.Host == left);
-            if (byHost.Value is not null)
-                return Result<NodeAddress?>.Success(byHost.Value);
+            // Формат писателей ключа (Patroni-callback и reconciler): <host>:<doormanPort>.
+            // Host неуникален (single-docker-host стенды: все ноды localhost) —
+            // ноду различает doorman-порт (e2e-факт t01).
+            if (parts.Length == 2 && int.TryParse(parts[1], out var doorman))
+            {
+                var byHostPort = shardNodes.FirstOrDefault(
+                    p => p.Value.Host == parts[0] && p.Value.Ports.Doorman == doorman);
+                if (byHostPort.Value is not null)
+                    return Result<NodeAddress?>.Success(byHostPort.Value);
+            }
         }
 
         foreach (var node in shardNodes)
@@ -98,21 +105,33 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
     // libpq-conninfo для CREATE SUBSCRIPTION из dsn-ключа шарда (P2):
     // multi-host host=… port=… — семантический эквивалент HAProxy-входа
     // скриптов; user подменяется на bucket_mover, добавляется его пароль.
-    public static string MoverConninfo(string shardDsn, InstallSecrets secrets)
+    // advertisedHost — как издатель виден ИЗ контейнера приёмника (single-host
+    // стенды: host.docker.internal; null — адреса dsn-ключа как есть, прод).
+    // Подмена ПОЭЛЕМЕНТНО: libpq требует соответствия числа host и port.
+    public static string MoverConninfo(string shardDsn, InstallSecrets secrets, string? advertisedHost = null)
     {
         var dsn = UserRegex().Replace(shardDsn, "$1user=" + MoverRole);
         if (!UserRegex().IsMatch(dsn))
             dsn += " user=" + MoverRole;
+        if (advertisedHost is { Length: > 0 })
+            dsn = HostRegex().Replace(dsn, m =>
+                (m.Value.StartsWith(' ') ? " " : "") + "host=" +
+                string.Join(",", m.Value[(m.Value.IndexOf('=') + 1)..].Split(',').Select(_ => advertisedHost)));
         return dsn + " password=" + secrets.MoverPassword;
     }
+
+    // host=… пары key=value conninfo (замена хостов издателя на advertised).
+    [GeneratedRegex(@"(^| )host=[^ ]*", RegexOptions.CultureInvariant)]
+    private static partial Regex HostRegex();
 
     // Npgsql-DSN для SQL-проб роли bucket_mover (spec §6.1 M0, ревью №2):
     // конвертация той же libpq-строки — сплит по пробелам → пары key=value →
     // маппинг host→Host, port→Port, dbname→Database, user→Username (mover).
+    // Разные порты нод Npgsql принимает ТОЛЬКО парами «Host=h1:p1,h2:p2» —
+    // список в Port= отвергается («Couldn't set port», e2e-факт t01).
     public static string MoverNpgsqlDsn(string shardDsn, InstallSecrets secrets)
     {
-        var parts = new List<string>();
-        var hasUser = false;
+        string? host = null, port = null, dbname = null;
         foreach (var token in shardDsn.Split(' ', StringSplitOptions.RemoveEmptyEntries))
         {
             var eq = token.IndexOf('=');
@@ -122,23 +141,33 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
             switch (token[..eq])
             {
                 case "host":
-                    parts.Add("Host=" + value);
+                    host = value;
                     break;
                 case "port":
-                    parts.Add("Port=" + value);
+                    port = value;
                     break;
                 case "dbname":
-                    parts.Add("Database=" + value);
-                    break;
-                case "user":
-                    parts.Add("Username=" + MoverRole);
-                    hasUser = true;
+                    dbname = value;
                     break;
             }
         }
 
-        if (!hasUser)
-            parts.Add("Username=" + MoverRole); // вход без user= — роль добавляется
+        var parts = new List<string>();
+        var hosts = host?.Split(',') ?? [];
+        var ports = port?.Split(',') ?? [];
+        if (hosts.Length > 1 && ports.Length == hosts.Length)
+            parts.Add("Host=" + string.Join(",", hosts.Zip(ports, (h, p) => $"{h}:{p}")));
+        else
+        {
+            if (hosts.Length > 0)
+                parts.Add("Host=" + string.Join(",", hosts));
+            if (ports.Length == 1)
+                parts.Add("Port=" + ports[0]);
+        }
+
+        if (dbname is not null)
+            parts.Add("Database=" + dbname);
+        parts.Add("Username=" + MoverRole);
         parts.Add("Password=" + secrets.MoverPassword);
         return string.Join(";", parts);
     }

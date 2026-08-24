@@ -131,10 +131,17 @@ public sealed class MovesOptions
     /// <summary>failover=true у подписок (PG17+; false для PG16-образа, R1/Д11).</summary>
     public bool FailoverSlots { get; set; } = true;
 
+    /// <summary>host CONNECTION-строк подписок, как издатель виден ИЗ контейнеров
+    /// приёмников (single-docker-host стенды: host.docker.internal; в проде null —
+    /// адреса dsn-ключа достижимы из контейнеров напрямую; паттерн уже
+    /// используемого Etcd:AdvertisedEndpoints).</summary>
+    public string? AdvertisedPublisherHost { get; set; }
+
     /// <summary>Runtime-опции процессов переезда: склейка Moves + Thresholds (t01 задача 17).</summary>
     public MovesRuntimeOptions ToRuntime(ThresholdsOptions thresholds) => new(
         PollIntervalSec, FreezeWaitSec, FreezeLockTimeoutSec, FreezeLockTries,
-        AbortMinAgeSec, FailoverSlots, thresholds.CutoverTimeoutSec, thresholds.ConnFailBudgetSec);
+        AbortMinAgeSec, FailoverSlots, thresholds.CutoverTimeoutSec, thresholds.ConnFailBudgetSec,
+        AdvertisedPublisherHost);
 }
 
 /// <summary>Параллелизм процессов разных кластеров (SemaphoreSlim).</summary>

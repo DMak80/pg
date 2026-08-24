@@ -14,4 +14,5 @@ public sealed record MovesRuntimeOptions(
     int AbortMinAgeSec = 120,
     bool FailoverSlots = true,
     int CutoverTimeoutSec = 90,
-    int ConnFailBudgetSec = 120);
+    int ConnFailBudgetSec = 120,
+    string? AdvertisedPublisherHost = null);

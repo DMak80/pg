@@ -66,11 +66,13 @@ public class MoveProcessPhasesTests
     }
 
     // AAA: pub/sub отсутствуют — создаются: pub на источнике, sub на приёмнике с
-    //      mover-conninfo, copy_data=true, failover=<конфиг>, synchronous_commit=remote_apply
+    //      mover-conninfo, copy_data=true, remote_apply; failover=true только при
+    //      конфиге (false опускает опцию — PG16 не знает параметра, e2e-факт t01)
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public async Task M2_PubMissing_Created_SubMissing_CreatedWithFailoverOption(bool failover)
+    [InlineData(true, "failover = true, ")]
+    [InlineData(false, "")]
+    public async Task M2_PubMissing_Created_SubMissing_CreatedWithFailoverOption(
+        bool failover, string failoverOption)
     {
         // Arrange — схемы/подписки на приёмнике нет (полный путь M1→M2), pub нет
         var rig = await MoveRig.NewAsync(
@@ -87,7 +89,7 @@ public class MoveProcessPhasesTests
             "публикация создаётся на источнике");
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.DstDsn && c.Sql ==
             "CREATE SUBSCRIPTION sub_bucket_42 CONNECTION 'host=h1,h2 port=15000,15001 dbname=shop user=bucket_mover password=mov-pw' PUBLICATION pub_bucket_42 " +
-            $"WITH (copy_data = true, failover = {failover.ToString().ToLowerInvariant()}, synchronous_commit = remote_apply)",
+            $"WITH (copy_data = true, {failoverOption}synchronous_commit = remote_apply)",
             "подписка на приёмнике: mover-conninfo источника, remote_apply и конфигурируемый failover");
     }
 

@@ -31,11 +31,12 @@ public class MoveSqlPart2Tests
         sql.Should().NotContain("GRANT CREATE");
     }
 
-    // AAA: подписка — failover-флаг конфигурируем (PG17+), remote_apply всегда (P3/P8)
+    // AAA: подписка — failover=true только PG17+ (R1/Д11); false опускает опцию
+    // (в PG16 параметра нет вовсе — e2e-факт t01), remote_apply всегда (P3/P8)
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public void CreateSubscription_Flags(bool failover)
+    [InlineData(true, "copy_data = true, failover = true, synchronous_commit = remote_apply")]
+    [InlineData(false, "copy_data = true, synchronous_commit = remote_apply")]
+    public void CreateSubscription_Flags(bool failover, string withOptions)
     {
         // Act
         var sql = MoveSql.CreateSubscription("sub_b42", "host=h1,h2 port=1,2 dbname=shop user=bucket_mover password=p'x",
@@ -44,7 +45,7 @@ public class MoveSqlPart2Tests
         // Assert
         sql.Should().StartWith("CREATE SUBSCRIPTION sub_b42 CONNECTION '");
         sql.Should().Contain("password=p''x'"); // кавычка conninfo экранирована
-        sql.Should().Contain($"WITH (copy_data = true, failover = {failover.ToString().ToLowerInvariant()}, synchronous_commit = remote_apply)");
+        sql.Should().Contain($"WITH ({withOptions})");
     }
 
     // AAA: sequence-issued — is_called учитывается на стороне SQL (баш-нюанс стенда, P6)

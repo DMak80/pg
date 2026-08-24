@@ -61,7 +61,24 @@ public class ShardEndpointsTests
         conninfo.Should().Be("host=n1 dbname=shop user=bucket_mover password=moverpw");
     }
 
-    // AAA: mover-Npgsql-DSN — libpq→Npgsql конвертация для SQL-проб роли (spec §6.1 M0)
+    // AAA: advertisedHost — подмена хостов издателя для контейнеров приёмника
+    // (single-host стенды: подписка из контейнера по localhost бьёт в сам контейнер);
+    // ПОЭЛЕМЕНТНО — libpq требует соответствия числа host и port
+    [Fact]
+    public void MoverConninfo_AdvertisedHost_ReplacesHosts()
+    {
+        // Act
+        var conninfo = ShardEndpoints.MoverConninfo(
+            "host=n1,n2 port=1,2 dbname=shop user=bucket_admin",
+            new InstallSecrets("s", "s", "s", "s", "pw"), "host.docker.internal");
+
+        // Assert
+        conninfo.Should().Be(
+            "host=host.docker.internal,host.docker.internal port=1,2 dbname=shop user=bucket_mover password=pw");
+    }
+
+    // AAA: mover-Npgsql-DSN — libpq→Npgsql конвертация для SQL-проб роли (spec §6.1 M0);
+    // разные порты нод — только парами host:port (список портов в Port= Npgsql отвергает)
     [Fact]
     public void MoverNpgsqlDsn_ConvertsLibpqToNpgsql()
     {
@@ -73,7 +90,7 @@ public class ShardEndpointsTests
         var dsn = ShardEndpoints.MoverNpgsqlDsn(dsnKey, secrets);
 
         // Assert
-        dsn.Should().Be("Host=n1,n2,n3;Port=15432,15433,15434;Database=shop;Username=bucket_mover;Password=moverpw");
+        dsn.Should().Be("Host=n1:15432,n2:15433,n3:15434;Database=shop;Username=bucket_mover;Password=moverpw");
     }
 
     // AAA: Npgsql-DSN без user= — Username добавляется, пароль всегда
