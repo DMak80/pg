@@ -55,6 +55,31 @@ export interface ShardAddedDto {
   state: ClusterStateName;
 }
 
+// POST /api/clusters/{cluster}/moves — тело и ответ (arch/03 §1.5, 02 §9.7).
+export interface MoveBucketsRequestDto {
+  from: string;
+  to: string;
+  buckets: number[];
+}
+
+export interface MovesQueuedDto {
+  cluster: string;
+  from: string;
+  to: string;
+  queued: number[];
+  skipped: number[];
+}
+
+// Строка очереди заявок кластера (arch/03 §2): /pgworker/moves/<C>/<bucket>.
+export interface MoveTicketDto {
+  bucketId: number | null;
+  bucket: string;
+  op: string;
+  to: string | null;
+  requestedUnix: number;
+  requestedBy: string | null;
+}
+
 // Строковый канон severity алертов (arch/03 §1).
 export type AlertSeverityName = 'critical' | 'warning' | 'info';
 
@@ -162,6 +187,7 @@ export interface ClusterDto {
   sharded: boolean;
   shards: ShardDto[];
   buckets: BucketDto[];
+  pendingMoves: MoveTicketDto[]; // очередь заявок переездов (arch/02 §2.3.1)
   heals: HealDto[];
   standNodes: StandNodeDto[];
 }
