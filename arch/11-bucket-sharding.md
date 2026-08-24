@@ -107,6 +107,7 @@ failover невозможны, кэш не протухает; не может �
                                                                         # шарды и ноды; бакеты — СХЕМЫ в ней
 /clusters/<C>/shards/X/dsn        → "host=n1,n2,n3 port=5432 dbname=<C> user=bucket_admin"  # вход шарда
 /clusters/<C>/shards/X/replicas   → 2            # декларативное число реплик
+/clusters/<C>/shards/X/state      → "TO_REMOVE"  # маркер демонтажа (t06: пишет панель, читают PgWorker и панель; отсутствие = обычный шард)
 /clusters/<C>/shards/X/master     → "host:6432"  # lease TTL 5с + продление, Patroni-callback on_role_change
 /clusters/<C>/buckets/routing/bucket_42 → "shard1"                  # владелец (авторитет)
 /clusters/<C>/buckets/status/bucket_42  → {"state":"SYNCING", ...}  # только при переезде
@@ -270,6 +271,14 @@ etcd на нодах кластера **не живёт** — внешний и�
 > поднимает ноды, создаёт БД/роли/схемы бакетов и переводит кластер в рабочее
 > состояние (снятие `state` и status-ключей). Скрипты этого раздела остаются
 > ручным путём для уже поднятых кластеров и стендов без PgWorker.
+
+**Декларативный add/remove-shard (t06).** Для кластеров под управлением
+PgWorker панель AdminPanel заявляет новый шард переиспользованием ключей
+декларации (replicas + nodes/NOT_INITIALIZED + request_*, без dsn — его
+запишет PgWorker) и помечает демонтаж маркером `shards/<X>/state=TO_REMOVE`;
+PgWorker поднимает/демонтирует шард (инвариант P23 воспроизведён guard'ом
+G3). Скрипты этого раздела остаются ручным путём для внешних кластеров
+(без PgWorker).
 
 ### init-cluster.sh — создание системы (один раз)
 
