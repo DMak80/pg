@@ -67,9 +67,9 @@
 
 | Проект | Роль |
 |---|---|
-| `AdminPanel.Infrastructure` | Каркас, скопированный из референса `../Puzzle` и обрезанный под панель: `Result`-монада, attribute-DI (`[InjectAs*]`, `[Config]`, `AutoRegistration`), CQRS (`IQuery<T>`/`IQueryHandler`, `ICommand<T>`/`ICommandHandler` — команды мутаций: создание/удаление кластера, добавление/демонтаж шарда; `IHandler`-диспетчер), health-check базис. Без Bus/Outbox/Kafka/миграций — панели не нужны |
+| `AdminPanel.Infrastructure` | Каркас, скопированный из референса `../Puzzle` и обрезанный под панель: `Result`-монада, attribute-DI (`[InjectAs*]`, `[Config]`, `AutoRegistration`), CQRS (`IQuery<T>`/`IQueryHandler`, `ICommand<T>`/`ICommandHandler` — команды мутаций: создание/удаление кластера, добавление/демонтаж шарда, заявки на переезды бакетов; `IHandler`-диспетчер), health-check базис. Без Bus/Outbox/Kafka/миграций — панели не нужны |
 | `AdminPanel.Core` | Домен снапшота: `EtcdSnapshot` и его модели (`ClusterInfo`, `ShardInfo`, `NodeInfo`, `BucketInfo`, `HaScope`, `Alert`, …), `AlertEngine` (чистая функция `Snapshot → Alert[]`), парсинг scope `<C>-<X>` |
-| `AdminPanel.Etcd` | Клиент etcd через HTTP JSON gateway (`IEtcdGateway`): чтение (range/status/member/alarm) + минимальная запись для мутаций панели (txn/put/delete, 02 §9–§9.6); парсеры ключей `/clusters/`, `/service/`, `/cluster/nodes/` в модель Core, `SnapshotRefresher`, `SnapshotStore` |
+| `AdminPanel.Etcd` | Клиент etcd через HTTP JSON gateway (`IEtcdGateway`): чтение (range/status/member/alarm) + минимальная запись для мутаций панели (txn/put/delete, 02 §9–§9.7); парсеры ключей `/clusters/`, `/service/`, `/cluster/nodes/`, `/pgworker/` (portalloc — адреса проб, moves — очередь заявок) в модель Core, `SnapshotRefresher`, `SnapshotStore` |
 | `AdminPanel.Probes` | Опциональные live-пробы: Patroni REST `:8008` (`/cluster`), SQL через Npgsql (read-only к `pg_catalog`/`pg_stat_*`). Обогащение снапшота полями runtime |
 | `AdminPanel.Api` | Host: `Program.cs` (модульная композиция ~50 строк), auth-модуль, REST-эндпоинты (GET-инспекция + мутации `POST/DELETE /api/clusters…`, 03 §1), раздача SPA из `wwwroot`, `/api/healthz` |
 | `frontend/` | React+Vite+TS (не dotnet-проект); `npm run build` кладёт бандл в `src/AdminPanel.Api/wwwroot` |
