@@ -85,6 +85,11 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
             sb.AppendLine($"GRANT SELECT ON ALL TABLES IN SCHEMA bucket_{id} TO \"bucket_mover\";");
         }
 
+        // Мониторинг панели: SQL-проба шарда идёт под bucket_admin (dsn) и читает
+        // pg_stat_replication/pg_replication_slots — без pg_monitor PG маскирует
+        // эти поля NULL и проба падает (arch/02 §6.2, arch/03 §5).
+        sb.AppendLine($"GRANT pg_monitor TO \"bucket_admin\";");
+
         return sb.ToString();
     }
 

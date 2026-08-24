@@ -70,6 +70,9 @@ public class DatabaseProvisionerTests
         // то же для bucket_7
         sql.Should().Contain("GRANT USAGE ON SCHEMA bucket_7");
         sql.Should().Contain("GRANT SELECT ON ALL TABLES IN SCHEMA bucket_7 TO \"bucket_mover\"");
+
+        // мониторинг панели: SQL-проба читает статы под bucket_admin (arch/02 §6.2)
+        sql.Should().Contain("GRANT pg_monitor TO \"bucket_admin\"");
     }
 
     [Fact]
