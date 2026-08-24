@@ -19,7 +19,10 @@ public sealed record ClusterSummaryDto(
     bool ToRemove,
     int ShardsTotal,
     int ShardsWithMaster,
-    int ActiveMoves);
+    int ActiveMoves,
+    // Как в деталях (arch/03 §2): false ⟺ 1 бакет и ≤1 шард — нешардированная
+    // БД; список рисует прочерк в «Бакеты»/«Шарды».
+    bool Sharded);
 
 // Снапшот → сводки: чистая функция; порядок кластеров — как в снапшоте (spec §3.3).
 public static class ClustersMapper
@@ -35,7 +38,8 @@ public static class ClustersMapper
             c.Shards.Count,
             c.Shards.Count(s => s.MasterAddress is not null),
             // NOT_INITIALIZED — не переезд: только реальные состояния перемещения (spec t12 §3.6)
-            c.Buckets.Count(b => b.State is BucketState.Syncing or BucketState.Frozen or BucketState.Aborting)))];
+            c.Buckets.Count(b => b.State is BucketState.Syncing or BucketState.Frozen or BucketState.Aborting),
+            !(c.BucketsCount == 1 && c.Shards.Count <= 1)))];
 }
 
 // Хендлер: store → отказ «снапшота нет» или маппер (spec §3.12).

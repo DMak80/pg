@@ -31,6 +31,25 @@ public class ClustersMappersTests
     }
 
     [Fact]
+    public void ClustersMapper_SoloCluster_NotSharded()
+    {
+        // Arrange: нешардированная БД — 1 бакет и единственный шард (arch/03 §2)
+        var shard = new ShardInfo("shard1", "dsn", [], null, null, null, 2, null,
+            [new NodeInfo("shard1a", "RUNNING"), new NodeInfo("shard1b", "RUNNING")], null);
+        var cluster = new ClusterInfo("solo", "solo", 1, 1755900000, ClusterState.Active,
+            [shard], [new BucketInfo(0, "shard1", BucketState.Active, null)], []);
+
+        // Act
+        var summary = ClustersMapper.Map([cluster]).Single();
+
+        // Assert: список рисует прочерк в «Бакеты»/«Шарды»
+        summary.Sharded.Should().BeFalse();
+        // 2 шарда при 1 бакете — уже шардированная
+        ClustersMapper.Map([cluster with { Shards = [shard, shard with { Name = "shard2" }] }])
+            .Single().Sharded.Should().BeTrue();
+    }
+
+    [Fact]
     public void ClustersMapper_IncompleteFlagAndNullDbName()
     {
         // Arrange / Act

@@ -64,7 +64,9 @@ export function ClusterDetailsPage() {
           {toRemove ? null : <DeleteClusterButton name={data.name} />}
         </Group>
         <Text c="dimmed" size="sm">
-          БД: {data.dbName ?? '—'} · Бакеты: {data.bucketsCount} · Создан: {formatUnix(data.createdUnix)}
+          {/* Бакеты — только у шардированных (arch/03 §2): нешардированная = 1
+              вырожденный бакет, счётчик не информативен — прочерк. */}
+          БД: {data.dbName ?? '—'} · Бакеты: {data.sharded ? data.bucketsCount : '—'} · Создан: {formatUnix(data.createdUnix)}
         </Text>
       </div>
       <Tabs defaultValue="shards">

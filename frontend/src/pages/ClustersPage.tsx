@@ -71,10 +71,15 @@ function ClusterRow({ cluster }: { cluster: ClusterSummaryDto }) {
       <Table.Td>{cluster.dbName ?? '—'}</Table.Td>
       {/* Нешардированная БД = 1 бакет: счётчик не информативен — прочерк. */}
       <Table.Td>{cluster.bucketsCount === 1 ? '—' : cluster.bucketsCount}</Table.Td>
+      {/* Нешардированная БД = единственный вырожденный шард — прочерк. */}
       <Table.Td>
-        <Text c={mastersMissing > 0 ? 'red' : undefined}>
-          {cluster.shardsWithMaster}/{cluster.shardsTotal}
-        </Text>
+        {cluster.sharded ? (
+          <Text c={mastersMissing > 0 ? 'red' : undefined}>
+            {cluster.shardsWithMaster}/{cluster.shardsTotal}
+          </Text>
+        ) : (
+          '—'
+        )}
       </Table.Td>
       <Table.Td>
         <Text c={cluster.activeMoves > 0 ? 'yellow' : undefined}>{cluster.activeMoves}</Text>

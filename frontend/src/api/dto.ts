@@ -144,6 +144,9 @@ export interface ClusterSummaryDto {
   shardsTotal: number;
   shardsWithMaster: number;
   activeMoves: number;
+  // Вычисляется сервером (arch/03 §2), как в деталях: false ⟺ 1 бакет и ≤1
+  // шард — список рисует прочерк в «Бакеты»/«Шарды».
+  sharded: boolean;
 }
 
 // GET /api/clusters/{cluster} — детали.
