@@ -37,6 +37,9 @@ put /clusters/demo/shards/s2/master 's2a:5432'
 for b in 0 2 3 4 6 8 10 11 12 14; do put "/clusters/demo/buckets/routing/bucket_$b" s1; done
 for b in 1 5 7 9 13 15;           do put "/clusters/demo/buckets/routing/bucket_$b" s2; done
 
+# Очередь заявок PgWorker (arch/02 §2.3.1): bucket_13 (принадлежит s2) — «увезти на s1»
+put /pgworker/moves/demo/bucket_13 '{"op":"move","to":"s1","requested_unix":1755850000,"requested_by":"ops"}'
+
 # Статусы переездов: bucket_3 свежий; 7/11 протухшие (порог StaleMoveSeconds=600)
 put /clusters/demo/buckets/status/bucket_3 \
   "{\"bucket\":\"bucket_3\",\"state\":\"SYNCING\",\"owner\":\"s1\",\"target\":\"s2\",\"started_unix\":$((now-120)),\"updated_unix\":$((now-60)),\"phase\":\"copy\"}"
