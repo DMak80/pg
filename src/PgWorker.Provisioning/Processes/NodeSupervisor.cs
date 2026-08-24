@@ -65,6 +65,12 @@ public sealed class NodeSupervisor(
 
         foreach (var shard in snap.Shards)
         {
+            // Границы надзора (t06 §5.4): шард без dsn — домен AddShardProcess;
+            // пробы/UNREACHABLE-переходы не трогаем (state нод — вход A1-гварда
+            // add: ожидаемы только NOT_INITIALIZED/PROVISIONING).
+            if (shard.Dsn is null)
+                continue;
+
             var shardTrack = await SuperviseShardAsync(cluster, snap, shard, addresses.Value, track, ct);
             if (!shardTrack.IsSuccess)
                 return Fail(shardTrack.Error!);

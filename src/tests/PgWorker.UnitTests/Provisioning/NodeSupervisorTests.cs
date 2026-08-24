@@ -247,6 +247,31 @@ public class NodeSupervisorTests
     }
 
     [Fact]
+    public async Task Tick_ShardWithoutDsn_DeadProbes_NodeStateNotTouched()
+    {
+        // Arrange — declared-шард без dsn с НЕ_INITIALIZED-нодами, пробы глухие
+        // (Patroni поднимается): state нод — вход A1-гварда AddShardProcess,
+        // UNREACHABLE-перезапись ломала бы декларацию (waiting-keys, t06 §5.4)
+        var rig = await NewRig(port => port >= 18010 ? Down() : Ok(), nodeObjects:
+        [
+            "pgw-shop-shard1-shard1a", "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c",
+            "pgw-shop-shard2-shard2a", "pgw-shop-shard2-shard2b", "pgw-shop-shard2-shard2c",
+        ]);
+        SeedShard2(rig.Etcd, withDsn: false, markedToRemove: false);
+        foreach (var node in new[] { "shard2a", "shard2b", "shard2c" })
+            rig.Etcd.Seed($"/clusters/shop/shards/shard2/nodes/{node}/state", "NOT_INITIALIZED");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — ноды недоднятого шарда надзору не принадлежат: state не тронут
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        foreach (var node in new[] { "shard2a", "shard2b", "shard2c" })
+            rig.Etcd.Store[$"/clusters/shop/shards/shard2/nodes/{node}/state"].Value
+                .Should().Be("NOT_INITIALIZED", $"{node} — домен AddShardProcess");
+    }
+
+    [Fact]
     public async Task Tick_MarkedShard_DockerRm_NotRecreated()
     {
         // Arrange — шард с dsn помечен TO_REMOVE; контейнер снесён руками —
