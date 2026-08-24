@@ -20,7 +20,7 @@
 | `GET /api/overview` | дашборд: сводка etcd+кластеров+алертов, `snapshotAgeMs` |
 | `GET /api/etcd/status` | endpoints, members, leader, alarms, reachable, версия |
 | `GET /api/clusters` | список кластеров (сводный) |
-| `POST /api/clusters` | создание кластера (единственная мутация, 02 §9): тело `CreateClusterRequestDto` → 201+`ClusterCreatedDto` \| 400 (валидация) \| 409 (имя занято) \| 503 (etcd/снапшот) |
+| `POST /api/clusters` | создание кластера (02 §9): тело `CreateClusterRequestDto` → 201+`ClusterCreatedDto` \| 400 (валидация) \| 409 (имя занято) \| 503 (etcd/снапшот) |
 | `GET /api/clusters/{cluster}` | детали: config, шарды, бакеты, heals (всё сразу; N ≤ тысяч — грид фильтруется на клиенте) |
 | `POST /api/clusters/{cluster}/shards` | добавить шард Active-кластеру (02 §9.5): тело `AddShardRequestDto` → 201+`ShardAddedDto` \| 400 \| 404 \| 409 \| 503 |
 | `DELETE /api/clusters/{cluster}/shards/{shard}` | маркер демонтажа шарда `TO_REMOVE` (02 §9.6): 204 \| 404 \| 409 \| 503 |
