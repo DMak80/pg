@@ -271,4 +271,40 @@ public class ClustersParserTests
         shard.Nodes.Select(n => n.Name).Should().Equal("shard1a", "shard1b");
         shard.Nodes.Should().OnlyContain(n => n.State == "NOT_INITIALIZED");
     }
+
+    [Fact]
+    public void Parse_ShardStateToRemove_MapsToShardInfoState()
+    {
+        // Arrange — маркер демонтажа шарда (t06 §9.6); сегодня ключ уходит в unknown
+        var kvs = new List<Kv>
+        {
+            Kv("/clusters/shop/config", """{"buckets":1,"dbname":"shop"}"""),
+            Kv("/clusters/shop/shards/shard1/replicas", "2"),
+            Kv("/clusters/shop/shards/shard1/state", "TO_REMOVE"),
+        };
+
+        // Act
+        var result = ClustersParser.Parse(kvs);
+
+        // Assert — state в модели; unknown-счётчик не вырос
+        result.Clusters.Single().Shards.Single().State.Should().Be(ShardState.ToRemove);
+        result.UnknownKeyCount.Should().Be(0);
+    }
+
+    [Fact]
+    public void Parse_NoShardState_DefaultsActive()
+    {
+        // Arrange — ключа state нет: обычный шард (02 §2.1-паттерн «отсутствие = Active»)
+        var kvs = new List<Kv>
+        {
+            Kv("/clusters/shop/config", """{"buckets":1,"dbname":"shop"}"""),
+            Kv("/clusters/shop/shards/shard1/replicas", "2"),
+        };
+
+        // Act
+        var result = ClustersParser.Parse(kvs);
+
+        // Assert
+        result.Clusters.Single().Shards.Single().State.Should().Be(ShardState.Active);
+    }
 }

@@ -24,6 +24,7 @@ public enum ClusterState
 }
 
 // Шард кластера: dsn, декларативные реплики, master-ключ с lease-семантикой (arch/02 §2.1).
+// State — маркер демонтажа shards/<X>/state (t06 §9.6); отсутствие ключа = Active.
 public sealed record ShardInfo(
     string Name,
     string Dsn,
@@ -34,10 +35,18 @@ public sealed record ShardInfo(
     int? ReplicasDeclared,
     string? MasterAddress,
     IReadOnlyList<NodeInfo> Nodes,
-    ShardRuntime? Runtime)
+    ShardRuntime? Runtime,
+    ShardState State = ShardState.Active)
 {
     // Lease-семантика master-ключа (arch/02 §1): ключ есть = lease жив.
     public bool MasterLeaseAlive => MasterAddress is not null;
+}
+
+// Состояние шарда: shards/<X>/state (t06 §9.6); отсутствие = Active.
+public enum ShardState
+{
+    Active,
+    ToRemove,
 }
 
 // Плановая нода шарда: /clusters/<C>/shards/<X>/nodes/<n>/state (arch/02 §9.1);
