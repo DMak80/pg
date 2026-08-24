@@ -136,7 +136,7 @@ public class InspectionMappersTests
         };
 
         // Act
-        var dto = ClusterDetailsMapper.Map(cluster, nowUnix: 100, null, null, [], scopes);
+        var dto = ClusterDetailsMapper.Map(cluster, nowUnix: 100, null, null, [], scopes, []);
 
         // Assert
         dto.State.Should().Be("NOT_INITIALIZED");
@@ -330,4 +330,30 @@ public class InspectionMappersTests
         AlertsMapper.ApplyFilters(alerts, null, null)
             .Should().HaveCount(3);
     }
+
+    [Fact]
+    public void Map_PendingMoves_FilteredByClusterSortedByUnixThenBucket()
+    {
+        // Arrange: очередь demo — перемешанные requested_unix и чужой кластер
+        var cluster = TestSnapshots.FullCluster();
+        var tickets = new[]
+        {
+            new MoveTicket("demo", "bucket_5", 5, "move", "s2", 300, "ops"),
+            new MoveTicket("demo", "bucket_2", 2, "move", "s2", 100, "ops"),
+            new MoveTicket("shop", "bucket_1", 1, "move", "shard9", 50, "ops"), // чужой кластер
+            new MoveTicket("demo", "bucket_3", 3, "move", "s2", 100, "etcdctl"), // tie unix → по bucket
+        };
+
+        // Act
+        var dto = ClusterDetailsMapper.Map(cluster, 0, null, null, [], [], tickets);
+
+        // Assert: только demo, по requestedUnix затем bucket (ordinal)
+        dto.PendingMoves.Should().BeEquivalentTo(
+        [
+            new MoveTicketDto(2, "bucket_2", "move", "s2", 100, "ops"),
+            new MoveTicketDto(3, "bucket_3", "move", "s2", 100, "etcdctl"),
+            new MoveTicketDto(5, "bucket_5", "move", "s2", 300, "ops"),
+        ], o => o.WithStrictOrdering());
+    }
+
 }
