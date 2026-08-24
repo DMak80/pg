@@ -1,10 +1,12 @@
 // Вкладка «Бакеты»: грид id×owner×state, локальные фильтры, подсветка переездов +
-// нейтральная для NOT_INITIALIZED, возраст не-ACTIVE статуса (t08 spec §4.9; t12).
+// нейтральная для NOT_INITIALIZED, возраст не-ACTIVE статуса (t08 spec §4.9; t12);
+// кнопка «Перенести бакеты» при canScale открывает MoveBucketsModal (arch/03 §3.3).
 import { useMemo, useState } from 'react';
-import { Badge, Group, Select, Stack, Table, Text, Tooltip } from '@mantine/core';
-import type { BucketDto, BucketStateName } from '../../api/dto';
+import { Badge, Button, Group, Select, Stack, Table, Text, Tooltip } from '@mantine/core';
+import type { BucketDto, BucketStateName, MoveTicketDto, ShardDto } from '../../api/dto';
 import { BucketStateBadge } from '../../components/BucketStateBadge';
 import { formatAge } from '../../utils/format';
+import { MoveBucketsModal } from './MoveBucketsModal';
 
 // Значения фильтра состояния: «все», «не-ACTIVE» и канонические состояния.
 const STATE_FILTERS = [
@@ -17,9 +19,13 @@ const STATE_FILTERS = [
   { value: 'NOT_INITIALIZED', label: 'NOT_INITIALIZED' },
 ];
 
-export function BucketsTab({ buckets }: { buckets: BucketDto[] }) {
+export function BucketsTab({ cluster, canScale, shards, buckets, pendingMoves }: {
+  cluster: string; canScale: boolean; shards: ShardDto[];
+  buckets: BucketDto[]; pendingMoves: MoveTicketDto[];
+}) {
   const [stateFilter, setStateFilter] = useState('all');
   const [ownerFilter, setOwnerFilter] = useState('all');
+  const [moveOpened, setMoveOpened] = useState(false);
 
   // Уникальные владельцы из данных — источник фильтра owner (t08 spec §4.9).
   const owners = useMemo(
@@ -41,6 +47,16 @@ export function BucketsTab({ buckets }: { buckets: BucketDto[] }) {
 
   return (
     <Stack gap="xs">
+      <Group justify="space-between">
+        <Text fw={500}>Бакеты</Text>
+        {canScale ? (
+          <Group gap="xs">
+            <Button size="xs" variant="light" onClick={() => setMoveOpened(true)}>Перенести бакеты</Button>
+            <MoveBucketsModal cluster={cluster} shards={shards} buckets={buckets}
+              pendingMoves={pendingMoves} opened={moveOpened} onClose={() => setMoveOpened(false)} />
+          </Group>
+        ) : null}
+      </Group>
       <Group gap="sm">
         <Select
           label="Состояние"

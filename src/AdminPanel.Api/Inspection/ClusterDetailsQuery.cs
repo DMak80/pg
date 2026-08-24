@@ -21,6 +21,7 @@ public sealed record ClusterDto(
     bool Sharded,
     IReadOnlyList<ShardDto> Shards,
     IReadOnlyList<BucketDto> Buckets,
+    IReadOnlyList<MoveTicketDto> PendingMoves,   // очередь заявок переездов кластера (arch/03 §2)
     IReadOnlyList<HealDto> Heals,
     IReadOnlyList<StandNodeDto> StandNodes);
 
@@ -89,6 +90,10 @@ public sealed record MoveDto(
 
 public sealed record HealDto(string Bucket, string? Was, string? Now, string? Reason, long? TsUnix);
 
+// Строка очереди заявок кластера: /pgworker/moves/<C>/<bucket> (arch/03 §2).
+public sealed record MoveTicketDto(
+    int? BucketId, string Bucket, string Op, string? To, long RequestedUnix, string? RequestedBy);
+
 // Стендовая топология (arch/02 §2.3): реестр /cluster/nodes/ — глобален для всех кластеров, обычно пуст.
 public sealed record StandNodeDto(string Name, string? Address);
 
@@ -124,7 +129,8 @@ public static class ClusterDetailsMapper
 {
     public static ClusterDto Map(
         ClusterInfo cluster, long nowUnix, string? owner, BucketState? state,
-        IReadOnlyList<StandNode> standNodes, IReadOnlyList<HaScope> haScopes)
+        IReadOnlyList<StandNode> standNodes, IReadOnlyList<HaScope> haScopes,
+        IReadOnlyList<MoveTicket> moveTickets)
     {
         var buckets = cluster.Buckets
             .Where(b => owner is null || b.Owner == owner)
@@ -162,6 +168,11 @@ public static class ClusterDetailsMapper
                     b.Move.Owner, b.Move.Target, b.Move.StartedUnix, b.Move.UpdatedUnix,
                     b.Move.Phase, b.Move.LastError),
                 MoveAge.Seconds(b, nowUnix)))],
+            [.. moveTickets
+                .Where(t => t.Cluster == cluster.Name)
+                .OrderBy(t => t.RequestedUnix)
+                .ThenBy(t => t.Bucket, StringComparer.Ordinal)
+                .Select(t => new MoveTicketDto(t.BucketId, t.Bucket, t.Op, t.To, t.RequestedUnix, t.RequestedBy))],
             [.. cluster.Heals
                 .OrderByDescending(h => h.TsUnix) // журнал: новые сверху; null — в конец (spec §3.3)
                 .Select(h => new HealDto(h.Bucket, h.Was, h.Now, h.Reason, h.TsUnix))],
@@ -196,6 +207,6 @@ public sealed class ClusterDetailsQueryHandler(ISnapshotStore store, TimeProvide
             ? Result<ClusterDto>.Failed(new InspectionModule.ClusterNotFoundException(query.Cluster))
             : Result<ClusterDto>.Success(ClusterDetailsMapper.Map(
                 cluster, time.GetUtcNow().ToUnixTimeSeconds(), query.Owner, query.State, snapshot.StandNodes,
-                snapshot.HaScopes)));
+                snapshot.HaScopes, snapshot.MoveTickets)));
     }
 }

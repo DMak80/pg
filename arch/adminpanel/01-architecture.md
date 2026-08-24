@@ -37,9 +37,9 @@
         └────────────────────────────────────────┘
 
                  ┌──────────────────────────────────────────────────────┐
-                 │ POST /api/clusters|shards — мутации панели (02 §9–§9.6)│
-                 │  CQRS-команды → etcd-gateway (txn-клэйм + пакет PUT  │
-                 │  на активном endpoint из снапшота)                   │
+                 │ POST /api/clusters|shards|moves — мутации панели    │
+                 │  (02 §9–§9.7): CQRS-команды → etcd-gateway          │
+                 │  (txn-клэйм + put на активном endpoint из снапшота) │
                  └───────────────┬──────────────────────────────────────┘
                                  │ ключи созданы; следующий тик refresher'а
                                  ▼ подхватывает их в снапшот (принудительного
@@ -67,9 +67,9 @@
 
 | Проект | Роль |
 |---|---|
-| `AdminPanel.Infrastructure` | Каркас, скопированный из референса `../Puzzle` и обрезанный под панель: `Result`-монада, attribute-DI (`[InjectAs*]`, `[Config]`, `AutoRegistration`), CQRS (`IQuery<T>`/`IQueryHandler`, `ICommand<T>`/`ICommandHandler` — команды мутаций: создание/удаление кластера, добавление/демонтаж шарда; `IHandler`-диспетчер), health-check базис. Без Bus/Outbox/Kafka/миграций — панели не нужны |
+| `AdminPanel.Infrastructure` | Каркас, скопированный из референса `../Puzzle` и обрезанный под панель: `Result`-монада, attribute-DI (`[InjectAs*]`, `[Config]`, `AutoRegistration`), CQRS (`IQuery<T>`/`IQueryHandler`, `ICommand<T>`/`ICommandHandler` — команды мутаций: создание/удаление кластера, добавление/демонтаж шарда, заявки на переезды бакетов; `IHandler`-диспетчер), health-check базис. Без Bus/Outbox/Kafka/миграций — панели не нужны |
 | `AdminPanel.Core` | Домен снапшота: `EtcdSnapshot` и его модели (`ClusterInfo`, `ShardInfo`, `NodeInfo`, `BucketInfo`, `HaScope`, `Alert`, …), `AlertEngine` (чистая функция `Snapshot → Alert[]`), парсинг scope `<C>-<X>` |
-| `AdminPanel.Etcd` | Клиент etcd через HTTP JSON gateway (`IEtcdGateway`): чтение (range/status/member/alarm) + минимальная запись для мутаций панели (txn/put/delete, 02 §9–§9.6); парсеры ключей `/clusters/`, `/service/`, `/cluster/nodes/` в модель Core, `SnapshotRefresher`, `SnapshotStore` |
+| `AdminPanel.Etcd` | Клиент etcd через HTTP JSON gateway (`IEtcdGateway`): чтение (range/status/member/alarm) + минимальная запись для мутаций панели (txn/put/delete, 02 §9–§9.7); парсеры ключей `/clusters/`, `/service/`, `/cluster/nodes/`, `/pgworker/` (portalloc — адреса проб, moves — очередь заявок) в модель Core, `SnapshotRefresher`, `SnapshotStore` |
 | `AdminPanel.Probes` | Опциональные live-пробы: Patroni REST `:8008` (`/cluster`), SQL через Npgsql (read-only к `pg_catalog`/`pg_stat_*`). Обогащение снапшота полями runtime |
 | `AdminPanel.Api` | Host: `Program.cs` (модульная композиция ~50 строк), auth-модуль, REST-эндпоинты (GET-инспекция + мутации `POST/DELETE /api/clusters…`, 03 §1), раздача SPA из `wwwroot`, `/api/healthz` |
 | `frontend/` | React+Vite+TS (не dotnet-проект); `npm run build` кладёт бандл в `src/AdminPanel.Api/wwwroot` |
@@ -191,12 +191,13 @@ FluentAssertions, Testcontainers, Npgsql, Microsoft.Extensions.*); новые
 
 ## 9. Что сознательно НЕ делаем (YAGNI)
 
-- Мутации, кроме четырёх канонических (создание/удаление кластера,
-  добавление/демонтаж шарда — 02 §9–§9.6), — вне зоны панели (move/abort/heal,
-  patronictl, switchover, поднятие нод/инициализация схем) — это runbook-операции
-  `../pg`. Канонические мутации — заявки в etcd, не управление данными:
-  ноды, Patroni, схемы и демонтаж выполняет PgWorker (читает ключи
-  [02](02-etcd-contract.md) §9–§9.6).
+- Мутации, кроме пяти канонических (создание/удаление кластера,
+  добавление/демонтаж шарда, заявки на переезды бакетов — 02 §9–§9.7), — вне
+  зоны панели (отмена/правка заявок, abort, heal, patronictl, switchover,
+  поднятие нод/инициализация схем) — это runbook-операции `../pg`.
+  Канонические мутации — заявки в etcd, не управление данными:
+  ноды, Patroni, схемы, демонтаж и сами переезды выполняет PgWorker (читает
+  ключи [02](02-etcd-contract.md) §9–§9.7).
 - WebSocket/SSE-пуш, история метрик и графики — polling и «текущее состояние»
   достаточно (P21 просит дашборд, не Prometheus).
 - Пользователи/роли/аудит — один админ из настроек.

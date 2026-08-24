@@ -23,13 +23,15 @@ public class SnapshotBuilderTests
         var etcd = new EtcdStatus(true, [], members, alarms, "http://e1", false, time.GetUtcNow(), 0);
 
         // Act
-        var snapshot = SnapshotBuilder.Build(time, clusters, service, nodes, members, alarms, etcd);
+        var snapshot = SnapshotBuilder.Build(
+            time, clusters, service, nodes, MovesQueueParser.Parse([]), members, alarms, etcd);
 
         // Assert
         snapshot.BuiltAtUtc.Should().Be(time.Utc);
         snapshot.Clusters.Should().ContainSingle(c => c.Name == "demo");
         snapshot.HaScopes.Should().Contain(s => s.Scope == "demo-s1");
         snapshot.StandNodes.Should().HaveCount(4);
+        snapshot.MoveTickets.Should().BeEmpty(); // очередь заявок — образец portalloc
         snapshot.Alerts.Should().BeEmpty();   // AlertEngine — t04
         snapshot.Probes.Should().BeEmpty();   // пробы — t06
         snapshot.UnknownKeyCount.Should().Be(0);
@@ -46,7 +48,7 @@ public class SnapshotBuilderTests
         var etcd = new EtcdStatus(true, [], [], [], null, false, time.GetUtcNow(), 0);
 
         // Act
-        var snapshot = SnapshotBuilder.Build(time, clusters, service, [], [], [], etcd);
+        var snapshot = SnapshotBuilder.Build(time, clusters, service, [], MovesQueueParser.Parse([]), [], [], etcd);
 
         // Assert
         snapshot.UnknownKeyCount.Should().Be(2); // surprise (/clusters/) + stray (/service/)

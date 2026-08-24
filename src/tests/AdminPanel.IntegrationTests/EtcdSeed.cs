@@ -32,6 +32,7 @@ public static class EtcdSeed
         ("/clusters/demo/buckets/routing/bucket_13", "s2"),
         ("/clusters/demo/buckets/routing/bucket_14", "s1"),
         ("/clusters/demo/buckets/routing/bucket_15", "s2"),
+        ("/pgworker/moves/demo/bucket_13", "{\"op\":\"move\",\"to\":\"s1\",\"requested_unix\":1755850000,\"requested_by\":\"ops\"}"),
         ("/clusters/demo/buckets/status/bucket_3", "{\"bucket\":\"bucket_3\",\"state\":\"SYNCING\",\"owner\":\"s1\",\"target\":\"s2\",\"started_unix\":1755900000,\"updated_unix\":1755900600,\"phase\":\"copy\"}"),
         ("/clusters/demo/buckets/status/bucket_7", "{\"bucket\":\"bucket_7\",\"state\":\"ABORTING\",\"owner\":\"s2\",\"target\":\"s1\",\"started_unix\":1755800000,\"updated_unix\":1755800500,\"phase\":\"cleanup\",\"last_error\":\"receiver went away\"}"),
         ("/clusters/demo/buckets/status/bucket_11", "{\"bucket\":\"bucket_11\",\"state\":\"FROZEN\",\"owner\":\"s1\",\"target\":\"s2\",\"started_unix\":1755700000,\"updated_unix\":1755700200,\"phase\":\"cutover-wait\"}"),

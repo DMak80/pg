@@ -10,6 +10,8 @@ import type {
   EtcdStatusDto,
   HaScopeDto,
   HaScopeSummaryDto,
+  MoveBucketsRequestDto,
+  MovesQueuedDto,
   OverviewDto,
   SessionDto,
   ShardAddedDto,
@@ -98,6 +100,13 @@ export function removeShard(cluster: string, shard: string): Promise<void> {
   return apiFetch<void>(
     `/api/clusters/${encodeURIComponent(cluster)}/shards/${encodeURIComponent(shard)}`,
     { method: 'DELETE' });
+}
+
+// POST /api/clusters/{cluster}/moves — пятая мутация панели (arch/02 §9.7):
+// заявки в очередь /pgworker/moves/; выполнение — PgWorker (последовательно).
+export function moveBuckets(cluster: string, request: MoveBucketsRequestDto): Promise<MovesQueuedDto> {
+  return apiFetch<MovesQueuedDto>(`/api/clusters/${encodeURIComponent(cluster)}/moves`,
+    { method: 'POST', body: request });
 }
 
 export function logoutRequest(): Promise<void> {

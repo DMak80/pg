@@ -49,11 +49,15 @@ internal sealed class FakeEtcdGateway : IEtcdGateway
 
     public List<string> RangeFailEndpoints { get; } = [];
 
+    public List<string> RangeFailPrefixes { get; } = [];
+
     public IReadOnlyList<Kv> ClustersKv { get; init; } = [];
 
     public IReadOnlyList<Kv> ServiceKv { get; init; } = [];
 
     public IReadOnlyList<Kv> NodesKv { get; init; } = [];
+
+    public IReadOnlyList<Kv> MovesKv { get; set; } = [];
 
     public IReadOnlyList<EtcdMember> Members { get; init; } = [];
 
@@ -66,12 +70,13 @@ internal sealed class FakeEtcdGateway : IEtcdGateway
     public Task<Result<IReadOnlyList<Kv>>> RangeAsync(string endpoint, string prefix, CancellationToken ct)
     {
         RangeCalls++;
-        return Task.FromResult(RangeFailEndpoints.Contains(endpoint)
+        return Task.FromResult(RangeFailEndpoints.Contains(endpoint) || RangeFailPrefixes.Contains(prefix)
             ? Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException(endpoint))
             : Result<IReadOnlyList<Kv>>.Success(prefix switch
             {
                 "/clusters/" => ClustersKv,
                 "/service/" => ServiceKv,
+                "/pgworker/moves/" => MovesKv,
                 _ => NodesKv,
             }));
     }
@@ -370,5 +375,47 @@ public class SnapshotRefresherTests
 
         // Assert: отказ etcd не теряет снапшотные пробы (spec §4.3).
         store.Current!.Probes.Should().ContainSingle().Which.Should().BeSameAs(probe);
+    }
+
+    [Fact]
+    public async Task Refresh_WithMovesQueue_StoresTickets()
+    {
+        // Arrange: тик с непустой очередью заявок (арх/02 §2.3.1)
+        var gateway = DemoGateway();
+        gateway.MovesKv = EtcdFixtures.LoadKv("moves-queue.json");
+        var store = new SnapshotStore();
+
+        // Act
+        await RefresherTestHarness.New(gateway, store, "http://etcd1:2379")
+            .RefreshOnceAsync(CancellationToken.None);
+
+        // Assert: валидные заявки — в MoveTickets, битые — в ParseErrors (Д11)
+        var snapshot = store.Current!;
+        snapshot.MoveTickets.Should().HaveCount(6);
+        snapshot.MoveTickets.Should().Contain(t =>
+            t.Cluster == "demo" && t.Bucket == "bucket_3" && t.Op == "move" && t.To == "shard2");
+        snapshot.ParseErrors.Should().Contain(e => e.Key == "/pgworker/moves/demo/bucket_13");
+    }
+
+    [Fact]
+    public async Task Refresh_MovesRangeFails_FailsTickKeepsPrevious()
+    {
+        // Arrange: точечный отказ чтения очереди — неполный снапшот хуже прежнего (Д10)
+        var gateway = DemoGateway();
+        gateway.MovesKv = EtcdFixtures.LoadKv("moves-queue.json"); // первый тик — с очередью
+        var store = new SnapshotStore();
+        var refresher = RefresherTestHarness.New(gateway, store, "http://etcd1:2379");
+        await refresher.RefreshOnceAsync(CancellationToken.None); // успешный тик ДО поломки
+        var before = store.Current;
+        gateway.RangeFailPrefixes.Add("/pgworker/moves/");        // ломаем только новый range
+
+        // Act
+        var result = await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert: отказ тика (FailTick строит новый снапшот с прежними данными — образец
+        // Refresh_AllDead); BuiltAtUtc и очередь заявок — прежние (Д10)
+        result.IsSuccess.Should().BeFalse();
+        store.Current!.BuiltAtUtc.Should().Be(before!.BuiltAtUtc);
+        store.Current.MoveTickets.Should().BeSameAs(before.MoveTickets);
     }
 }
