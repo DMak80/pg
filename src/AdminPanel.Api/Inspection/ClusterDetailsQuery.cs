@@ -32,6 +32,7 @@ public sealed record ShardDto(
     int? ReplicasDeclared,
     string? MasterAddress,
     bool MasterLeaseAlive,
+    string State,
     IReadOnlyList<NodeDto> Nodes,
     NodeRequestsDto? Requests,
     ShardRuntimeDto? Runtime);
@@ -52,6 +53,13 @@ public static class ClusterStates
             ClusterState.ToRemove => "TO_REMOVE", // arch/02 §9.4
             _ => "ACTIVE",
         };
+}
+
+// Канон state шарда (arch/03 §2, t06): отсутствие ключа = ACTIVE.
+public static class ShardStates
+{
+    public static string Name(ShardState state)
+        => state == ShardState.ToRemove ? "TO_REMOVE" : "ACTIVE";
 }
 
 // Контракт runtime фиксируется сейчас (фронтенд t08 типизирует сразу), данные — t06 (spec §3.14).
@@ -141,6 +149,7 @@ public static class ClusterDetailsMapper
                     .FirstOrDefault();
                 return new ShardDto(
                     s.Name, s.Dsn, s.DsnHosts, s.ReplicasDeclared, s.MasterAddress, s.MasterLeaseAlive,
+                    ShardStates.Name(s.State),
                     [.. s.Nodes.Select(n => new NodeDto(n.Name, n.State))],
                     requests,
                     s.Runtime is null ? null : MapRuntime(s.Runtime));

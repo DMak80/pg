@@ -20,6 +20,7 @@ public static class ClustersParser
         public string? Dsn;
         public string? ReplicasRaw;
         public string? Master;
+        public string? StateRaw;
         public readonly List<(string Name, string? State)> Nodes = [];
     }
 
@@ -55,6 +56,16 @@ public static class ClustersParser
                 case "config" when segments.Length == 4:
                     acc.ConfigRaw = kv.Value;
                     break;
+
+                case "shards" when segments.Length == 6
+                    && segments[4].Length > 0
+                    && segments[5] == "state":
+                {
+                    // Маркер демонтажа шарда (t06 §9.6): уходит из unknown-счётчика в модель.
+                    var shard = GetOrAdd(acc.Shards, segments[4], static _ => new ShardAcc());
+                    shard.StateRaw = kv.Value;
+                    break;
+                }
 
                 case "shards" when segments.Length == 6
                     && segments[4].Length > 0
@@ -207,7 +218,8 @@ public static class ClustersParser
             replicas,
             string.IsNullOrWhiteSpace(shard.Master) ? null : shard.Master.Trim(),
             nodes,
-            null); // Runtime — SQL-проба t06
+            null, // Runtime — SQL-проба t06
+            shard.StateRaw?.Trim() == "TO_REMOVE" ? ShardState.ToRemove : ShardState.Active);
     }
 
     private static IReadOnlyList<BucketInfo> BuildBuckets(int bucketsCount, ClusterAcc acc, List<KeyParseError> errors)
