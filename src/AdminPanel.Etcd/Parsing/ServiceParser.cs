@@ -27,7 +27,10 @@ public static class ServiceParser
         public readonly List<(string Name, string Raw)> Members = [];
     }
 
-    public static ServiceParseResult Parse(IReadOnlyList<Kv> kvs, IReadOnlyList<ClusterInfo> clusters)
+    public static ServiceParseResult Parse(
+        IReadOnlyList<Kv> kvs,
+        IReadOnlyList<ClusterInfo> clusters,
+        IReadOnlyDictionary<string, IReadOnlyDictionary<string, (string Host, int Patroni)>>? portAlloc = null)
     {
         var unknown = 0;
         var accs = new Dictionary<string, ScopeAcc>();
@@ -88,6 +91,14 @@ public static class ServiceParser
             .Select(a =>
             {
                 var (cluster, shard, matched) = ScopeMatcher.Match(a.Scope, clusters);
+
+                // Канонический адрес ноды — portalloc PgWorker (host + patroni-порт):
+                // Patroni пишет в conn_url контейнерный IP, недостижимый с хоста
+                // панели; portalloc — тот же источник, из которого собран DSN шарда.
+                IReadOnlyDictionary<string, (string Host, int Patroni)>? alloc = null;
+                if (matched && cluster is not null && shard is not null)
+                    portAlloc?.TryGetValue(cluster, out alloc);
+
                 return new HaScope(
                     a.Scope,
                     cluster,
@@ -101,13 +112,61 @@ public static class ServiceParser
                     NullIfBlank(a.RequestDisk),
                     a.Members
                         .OrderBy(m => m.Name, StringComparer.Ordinal)
-                        .Select(m => ParseMember(m.Name, m.Raw))
+                        .Select(m =>
+                        {
+                            var member = ParseMember(m.Name, m.Raw);
+                            return alloc is not null
+                                && alloc.TryGetValue($"{shard}/{m.Name}", out var entry)
+                                ? member with { Host = entry.Host, Port = entry.Patroni }
+                                : member;
+                        })
                         .ToList(),
                     a.RawConfig);
             })
             .ToList();
 
         return new ServiceParseResult(scopes, [], unknown);
+    }
+
+    // Разбор /pgworker/portalloc/<cluster>: {"shard1/shard1a":{"host":"local",
+    // "pg":15000,"patroni":18000,…}} → cluster → "shard/node" → (host, patroni).
+    // Битые JSON-значения толерантно пропускаются — без записи нода остаётся
+    // на conn_url из DCS.
+    public static IReadOnlyDictionary<string, IReadOnlyDictionary<string, (string Host, int Patroni)>> ParsePortAlloc(
+        IReadOnlyList<Kv> kvs)
+    {
+        var result = new Dictionary<string, IReadOnlyDictionary<string, (string, int)>>();
+        foreach (var kv in kvs)
+        {
+            // "/pgworker/portalloc/<cluster>" → ["", "pgworker", "portalloc", <cluster>]
+            var segments = kv.Key.Split('/');
+            if (segments.Length != 4 || segments[3] is "")
+                continue;
+
+            try
+            {
+                using var doc = JsonDocument.Parse(kv.Value);
+                if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                    continue;
+                var nodes = new Dictionary<string, (string, int)>();
+                foreach (var node in doc.RootElement.EnumerateObject())
+                {
+                    if (node.Value.ValueKind != JsonValueKind.Object
+                        || !node.Value.TryGetProperty("host", out var host)
+                        || host.ValueKind != JsonValueKind.String
+                        || !node.Value.TryGetProperty("patroni", out var patroni)
+                        || patroni.ValueKind != JsonValueKind.Number)
+                        continue;
+                    nodes[node.Name] = (host.GetString()!, patroni.GetInt32());
+                }
+                result[segments[3]] = nodes;
+            }
+            catch (JsonException)
+            {
+                // толерантно: битый кластер не ломает разбор остальных
+            }
+        }
+        return result;
     }
 
     // leader: JSON {"name":…} (Patroni) либо plain-строка-имя (стенд) — arch/02 §2.2.

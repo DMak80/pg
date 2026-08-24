@@ -28,12 +28,14 @@ public sealed class PatroniRestProbe(
 {
     public const string HttpClientName = "patroni";
 
-    // Порт Patroni REST — стандарт :8008 (arch/02 §6.1; PG-порт member'а не используется).
+    // Порт Patroni REST — стандарт :8008 (arch/02 §6.1); реальный порт ноды
+    // несёт portalloc PgWorker (HostMember.Port после ServiceParser) — на стенде
+    // это опубликованный 18xxx, в проде — выделенный REST-порт ноды.
     private const int RestPort = 8008;
 
     public async Task<PatroniMemberResult> ProbeAsync(HaScope scope, HaMember member, CancellationToken ct)
     {
-        var url = $"http://{HostMapResolver.Resolve(options.Value.HostMap, member.Host, RestPort)}/cluster";
+        var url = $"http://{HostMapResolver.Resolve(options.Value.HostMap, member.Host, member.Port ?? RestPort)}/cluster";
         var started = Stopwatch.GetTimestamp();
         var at = time.GetUtcNow();
         try

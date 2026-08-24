@@ -85,23 +85,26 @@ public sealed class SnapshotRefresher(
         var clustersTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Clusters, t), ct);
         var serviceTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Service, t), ct);
         var nodesTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Nodes, t), ct);
+        var portAllocTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PortAlloc, t), ct);
         var membersTask = WithFailoverAsync(alive, active, (ep, t) => gateway.MemberListAsync(ep, t), ct);
         var alarmsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.AlarmAsync(ep, t), ct);
 
         var clustersKv = await clustersTask;
         var serviceKv = await serviceTask;
         var nodesKv = await nodesTask;
+        var portAllocKv = await portAllocTask;
         var members = await membersTask;
         var alarms = await alarmsTask;
 
         // Частичный KV-провал = неполный снапшот: консервативно отказ тика, данные прежние
         // (уточнение к spec §7.2 п.5: пустой префикс — валидные данные, транспортный отказ — нет).
-        if (!clustersKv.IsSuccess || !serviceKv.IsSuccess || !nodesKv.IsSuccess)
+        if (!clustersKv.IsSuccess || !serviceKv.IsSuccess || !nodesKv.IsSuccess || !portAllocKv.IsSuccess)
             return FailTick(previous, statuses, now, "KV-чтения etcd не удались");
 
         // 4. Парсеры → модель (чистые функции, arch/02 §4 п.3).
         var clustersParsed = ClustersParser.Parse(clustersKv.Value);
-        var serviceParsed = ServiceParser.Parse(serviceKv.Value, clustersParsed.Clusters);
+        var serviceParsed = ServiceParser.Parse(
+            serviceKv.Value, clustersParsed.Clusters, ServiceParser.ParsePortAlloc(portAllocKv.Value));
         var nodes = StandNodesParser.Parse(nodesKv.Value);
 
         // 5. Кворум-эвристика (spec §3.11) + мягкие метаданные member/alarm (ошибка не роняет тик).
@@ -248,5 +251,6 @@ public sealed class SnapshotRefresher(
         public const string Clusters = "/clusters/";
         public const string Service = "/service/";
         public const string Nodes = "/cluster/nodes/";
+        public const string PortAlloc = "/pgworker/portalloc/";
     }
 }

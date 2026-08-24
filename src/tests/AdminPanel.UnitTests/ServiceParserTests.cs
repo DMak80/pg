@@ -16,6 +16,43 @@ public class ServiceParserTests
         ClustersParser.Parse(EtcdFixtures.LoadKv("clusters-full.json")).Clusters;
 
     [Fact]
+    public void Parse_PortAlloc_OverridesMemberHostAndPort()
+    {
+        // Arrange: conn_url члена — контейнерный IP из DCS; portalloc несёт
+        // канонический адрес ноды (host + patroni-порт) — источник DSN шарда
+        var member = Kv("/service/demo-s1/members/s1a",
+            """{"role":"replica","state":"running","conn_url":"postgres://172.20.0.9:5432/demo"}""");
+        var alloc = Kv("/pgworker/portalloc/demo",
+            """{"s1/s1a":{"host":"local","pg":15009,"patroni":18009,"doorman":16509}}""");
+
+        // Act
+        var scope = ServiceParser.Parse(
+            [member], DemoClusters, ServiceParser.ParsePortAlloc([alloc])).Scopes.Single();
+
+        // Assert: адрес члена = portalloc-запись, не conn_url
+        var m = scope.Members.Should().ContainSingle().Subject;
+        m.Host.Should().Be("local");
+        m.Port.Should().Be(18009);
+    }
+
+    [Fact]
+    public void Parse_PortAlloc_BadJson_Tolerated()
+    {
+        // Arrange: битый JSON значения пропускается; член без записи остаётся
+        // на conn_url из DCS
+        var member = Kv("/service/demo-s1/members/s1a",
+            """{"role":"replica","state":"running","conn_url":"postgres://172.20.0.9:5432/demo"}""");
+
+        // Act
+        var alloc = ServiceParser.ParsePortAlloc([Kv("/pgworker/portalloc/demo", "{broken")]);
+        var scope = ServiceParser.Parse([member], DemoClusters, alloc).Scopes.Single();
+
+        // Assert
+        alloc.Should().BeEmpty();
+        scope.Members.Single().Host.Should().Be("172.20.0.9");
+    }
+
+    [Fact]
     public void Parse_DemoScopes_MatchedToClusters()
     {
         // Arrange
