@@ -82,7 +82,10 @@ export function ClusterDetailsPage() {
             bucketCounts={bucketCounts} />
         </Tabs.Panel>
         {data.sharded ? (
-          <Tabs.Panel value="buckets" pt="sm"><BucketsTab buckets={data.buckets} /></Tabs.Panel>
+          <Tabs.Panel value="buckets" pt="sm">
+            <BucketsTab cluster={data.name} canScale={canScale} shards={data.shards}
+              buckets={data.buckets} pendingMoves={data.pendingMoves} />
+          </Tabs.Panel>
         ) : null}
         <Tabs.Panel value="moves" pt="sm"><MovesTab buckets={data.buckets} /></Tabs.Panel>
         <Tabs.Panel value="heals" pt="sm"><HealsTab heals={data.heals} /></Tabs.Panel>
