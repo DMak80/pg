@@ -9,14 +9,16 @@ AdminPanel **заявляет** кластер (`config.state=NOT_INITIALIZED`, 
 в рабочее состояние; перевод панелью в `TO_REMOVE` — PgWorker аккуратно
 демонтирует кластер.
 
-Четыре процесса:
+Пять процессов:
 1. **Provisioning** — от `NOT_INITIALIZED` до рабочего кластера (§6);
 2. **Deprovisioning** — от `TO_REMOVE` до чистого etcd и удалённых контейнеров;
 3. **Контроль нод** (надзор) — failover отслеживает Patroni, умершая нода
    пересобирается, снесённый руками контейнер пересоздаётся;
 4. **Эвакуация бакетов** — при полной смерти шарда: аварийный перевод бакетов
    на живые шарды (без логической репликации — источник недоступен) с
-   карантином вернувшегося.
+   карантином вернувшегося;
+5. **Переезды бакетов** (MoveProcess, §5 F) — плановые онлайн-переезды/откаты/
+   уборка/отмена по заявкам в etcd (t01).
 
 Свойства: несколько инстансов PgWorker работают одновременно (координация —
 lease-клэймы в etcd, §3); смерть контролирующего инстанса не роняет процессы —
@@ -24,8 +26,9 @@ lease-клэймы в etcd, §3); смерть контролирующего и
 идемпотентны; всё значимое состояние переживает смерть контроллера (etcd +
 самих нодах).
 
-Границы (что НЕ входит): плановые переезды бакетов (move P1–P8 остаются
-скриптами [11](11-bucket-sharding.md) §5 — roadmap), балансировка по метрикам,
+Границы (что НЕ входит): CLI-обёртки заявок и панельные кнопки переездов —
+roadmap (t06); ручной скриптовый путь остаётся для стендов без PgWorker — не
+смешивать с заявками в одном окне переезда; балансировка по метрикам,
 per-cluster секреты, TLS к Docker API/SSH-туннели, Prometheus-метрики,
 управление etcd-слоем, слияние данных карантинного шарда —
 [roadmap/pgworker.md](roadmap/pgworker.md).
@@ -64,8 +67,10 @@ only, всё видит)         снятие status-ключей,
 Связь со скриптами: скрипты жизненного цикла [11](11-bucket-sharding.md) §4.5
 (`init-cluster.sh`, `add-shard.sh`, `remove-shard.sh`) остаются **ручным
 путём** для уже поднятых кластеров; PgWorker — декларативный путь для новых
-(см. §4.5 указатель). Скрипты переездов (`move-bucket.sh` и др.) — вне зоны
-PgWorker (roadmap: C#-порт).
+(см. §4.5 указатель). Скрипты переездов (`move-bucket.sh` и др.) —
+дублирующий ручной путь (формат статус-ключа общий, но не смешивать с
+заявками в одном окне переезда — у скрипта нет клэйма); C#-путь — процесс
+F (§5).
 
 ---
 
@@ -200,6 +205,7 @@ success-ветке). **Poll, без watch** (аргументация — AdminP
 | `/service/<C>-shard<k>/request_*` | TO_REMOVE, финал | точечные `del` (свои заявки; остальное пространство Patroni не трогаем) |
 | `/service/<C>-<X>/` (весь scope) | TO_REMOVE, после удаления нод | `del --prefix` (guard: контейнеров/сервисов нет) |
 | `/clusters/<C>/shards/<X>/master` | ТОЛЬКО при рассинхроне (P11-сверка) | lease-put `host:<doorman-port>` по фактическому primary из Patroni REST |
+| `/pgworker/moves/<C>/` (префикс) | TO_REMOVE, финал (D2) | `del --prefix` — заявки переездов не переживают удаление кластера |
 
 **Финальное состояние кластера после provisioning**: `config` без поля
 `state` (унификация с кластерами `init-cluster.sh` — панель видит «Active»
@@ -219,6 +225,7 @@ success-ветке). **Poll, без watch** (аргументация — AdminP
 | `/pgworker/evacuations/<C>/<X>` | обычный | журнал эвакуации шарда: `{"evacuated_unix","reason","buckets":{...старый→новый владелец...},"state":"DONE\|QUARANTINED"}` — истина для разбора после возврата шарда. |
 | `/pgworker/portalloc/<C>` | обычный | закрепление выделенных портов за нодами (§2.4): `{"<shard>/<node>":{"host":"h1","pg":15432,"patroni":18008,"doorman":16432}}` — переживает смерть инстанса, переиспользуется при rebuild. |
 | `/pgworker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика; необязательно для работы) |
+| `/pgworker/moves/<C>/bucket_<i>` | обычный | заявка на плановый переезд/откат/уборку/отмену (t01): `{"op":"move\|rollback\|finalize\|abort","to":…,"old_shard":…,"skip_reverse":…,"resume":…,"force":…,"requested_unix":…,"requested_by":…}`. Успех или перманентный валидационный отказ → ключ удаляется; transient-сбой → остаётся, фазы — в статус-ключе бакета. Обрабатывается только держателем клэйма `<C>`; одновременно — старейшая заявка кластера. Deprovisioning D2 чистит `/pgworker/moves/<C>/` (префикс). |
 
 Инварианты: любая мутация чужих данных (`/clusters/`, docker) выполняется
 **только держателем клэйма** `<C>`; txn-записи в `/clusters/` сопровождаются
@@ -305,7 +312,8 @@ D1 для каждого шарда/ноды: остановить и удали
    имена pgw-<C>-*) — тоже удаляются
 D2 удалить префикс /clusters/<C>/ (del --prefix) + точечные
    /service/<C>-shard<k>/request_* + префикс /service/<C>-<X>/
-   (guard: docker-объектов не осталось) + /pgworker/{portalloc,work,claims}/<C>*
+   (guard: docker-объектов не осталось) + /pgworker/moves/<C>/ +
+   /pgworker/{portalloc,work,claims}/<C>*
 D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый клэйм; имя
    освобождается (повторное создание панели пройдёт)
 ```
@@ -362,6 +370,69 @@ E4 journal state=DONE; снапшот P12 «после»
 удаляет и не запускает сам. RPO эвакуации = момент смерти шарда (фиксируется
 в journal).
 
+### F. MoveProcess (плановые переезды бакетов, M0–M6; t01)
+
+Порт `move-bucket.sh`/`abort-move.sh` (runbook [11](11-bucket-sharding.md)
+§5–§7, ловушки P1–P8 — [12](12-bucket-pitfalls.md)) в тиковый процесс по
+**заявкам** `/pgworker/moves/<C>/bucket_<i>` (§3.3): `op=move|rollback|
+finalize|abort`. Обрабатывается только держателем клэйма `<C>`; одновременно —
+старейшая заявка кластера (по `requested_unix`). Успех или перманентный
+валидационный отказ → заявка удаляется (отказ — `work.last_error` с
+подсказкой); transient-сбой → заявка жива, ретраи тиками с фазы из
+статус-ключа. Статус переезда — существующий `/clusters/<C>/buckets/status/
+bucket_<i>` в **формате скриптов 1:1** (`SYNCING|FROZEN|ABORTING` + `phase`;
+нет ключа = ACTIVE): скрипты и PgWorker взаимозаменяемы на разборе, но не
+смешивать их в одном окне переезда — у скрипта нет клэйма.
+
+- **Move (M0–M6)**: M0 валидация/префлайт (routing/to≠owner/схема на
+  источнике/wal_level=logical/слоты/walsender'ы/`mover`-роль/sync-standby
+  приёмника P8/остатки `_rb`; отказы — перманентные, недоступность —
+  transient) → статус `SYNCING/ddl` + снапшот `move-<bucket>-start`
+  **обязателен** (сбой → фаза waiting-snapshot, ретрай); M1 DDL-перенос
+  (`pg_dump --schema-only` через docker exec → применение → гранты app →
+  сверка инвентаря P5); M2 `CREATE PUBLICATION pub_<b>` на источнике +
+  `CREATE SUBSCRIPTION sub_<b>` на приёмнике (`copy_data = true`,
+  `failover` (PG17+, конфиг `FailoverSlots`), `synchronous_commit =
+  remote_apply` — P3/P8); M3 copy-wait (поллинг готовности таблиц, каждый
+  тик обновляет `updated_unix` — защита abort Д12); M4 cutover (ниже);
+  M5 post-flip: прямая подписка срезается, обратная `pub_<b>_rb`/`sub_<b>_rb`
+  (`copy_data = false`) ставится при `!skip_reverse` — прямая ДО обратной,
+  иначе петля репликации; M6 снапшот `flip-<bucket>-<to>` **best-effort** +
+  del заявки. Старый шард остаётся замороженным до rollback/finalize
+  (P1-призраки).
+- **Cutover (M4, непрерывный блок одного тика; общий для move/rollback)**:
+  1) заморозка P1/P5 — REVOKE DML/sequences/CREATE у app-роли + барьер
+  `LOCK TABLE ACCESS EXCLUSIVE` в одной транзакции с `lock_timeout`
+  (REVOKE — не барьер); 2) `FROZEN/frozen` + пауза `FreezeWaitSec`;
+  3) `pg_current_wal_lsn()` источника; 4) ожидание слота
+  (`active AND confirmed_flush_lsn >= lsn`, бюджет `CutoverTimeoutSec`);
+  5) sequences P6 (issued источника → `setval` только вперёд на приёмнике);
+  6) сверка строк P8 (`count(*)` всех таблиц); 7) `FROZEN/flip` +
+  атомарный txn-flip (compare routing=cur → put new + delete status).
+  Отказы: **transient** (freeze-failed / lsn-failed / catchup-timeout /
+  sequences-failed — разморозка, статус в fail_state, заявка жива, ретраи
+  тиками) и **permanent** (verify-failed — дефектная копия, разморозка
+  сделана, заявка удаляется с подсказкой «abort + повторный move»;
+  flip-conflict — routing изменился под руками, заморозка ОСТАВЛЕНА,
+  разбор вручную).
+- **Rollback**: только из ACTIVE; по живой обратной подписке `sub_<b>_rb`
+  (найдена ровно на одном не-владельце) — зеркальный cutover; при отказе
+  до flip — статус-ключ удаляется (нет ключа = ACTIVE). Нет `sub_rb` →
+  перманентный отказ «откат только полным re-copy».
+- **Finalize**: уборка не-владельца (подписки → публикации → осиротевшие
+  tablesync-слоты P8 → `DROP SCHEMA CASCADE` последним); `DROP
+  SUBSCRIPTION` при недоступном источнике — fallback (DISABLE →
+  `SET (slot_name = NONE)` → DROP, слот-сирота добивается следом).
+- **Abort**: порт `abort-move.sh` — журнал `ABORTING` в статус-ключе ДО
+  манипуляций (план уборки, takeover продолжает фазу); защита свежести
+  `AbortMinAgeSec` по `updated_unix` (ломается `force`); routing==target
+  без `force` → отказ, с `force` — доведение перевода (sequences вперёд,
+  затем уборка старого шарда).
+
+Снапшот-точки P12: `move-<bucket>-start` (после SYNCING-put, обязателен) и
+`flip-<bucket>-<shard>` (после flip, best-effort). Конфигурация — §8
+(`PgWorker:Moves` + пороги `CutoverTimeoutSec`/`ConnFailBudgetSec`).
+
 ---
 
 ## 6. Надёжность
@@ -413,7 +484,13 @@ PgWorker:Docker { Mode: Plain|Swarm, Hosts[{Name,Endpoint}],
                   SwarmManager, PortRange{From,To}, Images{Node}, EnableDoorman }
 PgWorker:Loops { ScanIntervalSec=5, KeepaliveSec=5, SnapshotIntervalMin=360,
                  ErrorDelayMs=2000 }
-PgWorker:Thresholds { NodeDeadSec=90, ShardDeadSec=300, PatroniBootSec=600 }
+PgWorker:Thresholds { NodeDeadSec=90, ShardDeadSec=300, PatroniBootSec=600,
+                     CutoverTimeoutSec=90, ConnFailBudgetSec=120 }
+PgWorker:Moves { PollIntervalSec=2, FreezeWaitSec=5, FreezeLockTimeoutSec=5,
+                 FreezeLockTries=3, AbortMinAgeSec=120, FailoverSlots=true,
+                 AdvertisedPublisherHost=null } # host издателя, как виден из
+                 # контейнеров приёмников (single-docker-host стенды:
+                 # host.docker.internal; прод — null, адреса dsn достижимы)
 PgWorker:Parallelism { MaxClusters=4 }
 PgWorker:Snapshots { Dir="/snapshots", RetentionFiles=10 }
 # секреты — env PGW_* (§4)

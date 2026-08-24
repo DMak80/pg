@@ -173,6 +173,11 @@ internal sealed class ReconcileLoop(
                     foreach (var deadShard in supervised.DeadShards)
                         await RunClusterOpAsync(cluster, $"evacuate/{deadShard}",
                             () => processes.EvacuateAsync(snap, deadShard, ct), ct);
+
+                    // Заявки переездов бакетов (t01, spec §5.3): после надзора и
+                    // эвакуаций; MoveProcess сам держит клэйм-гвард (инвариант §4.3).
+                    await RunClusterOpAsync(cluster, "moves",
+                        () => processes.ProcessMovesAsync(snap, ct), ct);
                     break;
             }
         }

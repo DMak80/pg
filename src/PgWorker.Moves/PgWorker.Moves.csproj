@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!-- Зависимость от Provisioning нужна для ProcessOutcome, ShardProbe, SnapshotJob-делегата
+         и ISqlExecutor-паттернов — переносить их в Core вне скоупа t01 (план Task 2, уточнение
+         spec §5.1 по Core/Etcd/Docker). -->
+    <ItemGroup>
+        <ProjectReference Include="..\PgWorker.Core\PgWorker.Core.csproj"/>
+        <ProjectReference Include="..\PgWorker.Etcd\PgWorker.Etcd.csproj"/>
+        <ProjectReference Include="..\PgWorker.Docker\PgWorker.Docker.csproj"/>
+        <ProjectReference Include="..\PgWorker.Provisioning\PgWorker.Provisioning.csproj"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="Npgsql"/>
+    </ItemGroup>
+
+</Project>

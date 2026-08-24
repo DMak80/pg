@@ -6,6 +6,7 @@ using PgWorker.Core.Templates;
 using PgWorker.Etcd.Client;
 using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
+using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Processes;
 using PgWorker.Provisioning.Probes;
 using PgWorker.Provisioning.Snapshots;
@@ -88,8 +89,9 @@ public class BucketEvacuatorTests
             OnExecute = dsn => events.Add($"sql:{dsn}"),
         };
         var snapshots = new List<int>();
+        var probe = Probe(respond);
         var evacuator = new BucketEvacuator(
-            etcd, [Ep], driver, sql, Probe(respond), claims, journal, Secrets,
+            etcd, [Ep], driver, sql, probe, new ShardEndpoints(etcd, [Ep], probe), claims, journal, Secrets,
             snapshot: ct =>
             {
                 snapshots.Add(1);

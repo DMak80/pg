@@ -54,7 +54,8 @@ public sealed class DeprovisioningProcess(
                 ct);
 
         // D2: del prefix /clusters/<C>/ + заявки request_* + префиксы service-скопов
-        // + /pgworker/portalloc и /pgworker/work (spec §4.2, arch/14 §5 B).
+        // + /pgworker/portalloc, /pgworker/work и заявки переездов /pgworker/moves/<C>/
+        // (spec §4.2, arch/14 §5 B; t01 spec §5.3 — заявки не переживают кластер).
         var cleaned = await CleanKeysAsync(cluster, snap, ct);
         if (!cleaned.IsSuccess)
             return await FailAsync(cluster, cleaned.Error!, "cleaning-keys", ct);
@@ -154,7 +155,12 @@ public sealed class DeprovisioningProcess(
         if (!delPorts.IsSuccess)
             return delPorts;
 
-        return await DeleteAsync($"/pgworker/work/{cluster}", prefix: false, ct);
+        var delWork = await DeleteAsync($"/pgworker/work/{cluster}", prefix: false, ct);
+        if (!delWork.IsSuccess)
+            return delWork;
+
+        // Заявки переездов (t01, spec §5.3 D2): префикс /pgworker/moves/<C>/ целиком.
+        return await DeleteAsync($"/pgworker/moves/{cluster}/", prefix: true, ct);
     }
 
     private static string PlainNodeName(string cluster, string shard, string node)

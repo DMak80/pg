@@ -1,5 +1,6 @@
 using PgWorker.Core;
 using PgWorker.Core.Model;
+using PgWorker.Moves;
 using PgWorker.Provisioning.Processes;
 
 namespace PgWorker.App.Loops;
@@ -19,14 +20,18 @@ internal interface IClusterProcesses
 
     /// <summary>Эвакуация конкретного мёртвого шарда (BucketEvacuator E0–E4).</summary>
     Task<Result<ProcessOutcome>> EvacuateAsync(ClusterSnapshot snap, string deadShard, CancellationToken ct);
+
+    /// <summary>Обработка заявок переездов бакетов /pgworker/moves/&lt;C&gt;/ (t01, spec §5.3).</summary>
+    Task<Result<ProcessOutcome>> ProcessMovesAsync(ClusterSnapshot snap, CancellationToken ct);
 }
 
-/// <summary>Реализация поверх процессов задач 19–22 (все — синглтоны DI).</summary>
+/// <summary>Реализация поверх процессов задач 19–22 + MoveProcess t01 (синглтоны DI).</summary>
 internal sealed class ClusterProcesses(
     ProvisioningProcess provision,
     DeprovisioningProcess deprovision,
     NodeSupervisor supervisor,
-    BucketEvacuator evacuator) : IClusterProcesses
+    BucketEvacuator evacuator,
+    MoveProcess moves) : IClusterProcesses
 {
     public Task<Result<ProcessOutcome>> ProvisionAsync(ClusterSnapshot snap, CancellationToken ct)
         => provision.TickAsync(snap, ct);
@@ -42,4 +47,7 @@ internal sealed class ClusterProcesses(
 
     public Task<Result<ProcessOutcome>> EvacuateAsync(ClusterSnapshot snap, string deadShard, CancellationToken ct)
         => evacuator.TickAsync(snap, deadShard, ct);
+
+    public Task<Result<ProcessOutcome>> ProcessMovesAsync(ClusterSnapshot snap, CancellationToken ct)
+        => moves.TickAsync(snap, ct);
 }

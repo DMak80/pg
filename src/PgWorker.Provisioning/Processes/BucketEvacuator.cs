@@ -6,6 +6,7 @@ using PgWorker.Core.Templates;
 using PgWorker.Docker.Drivers;
 using PgWorker.Etcd.Client;
 using PgWorker.Etcd.Coordination;
+using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Probes;
 using PgWorker.Provisioning.Sql;
 
@@ -20,6 +21,7 @@ namespace PgWorker.Provisioning.Processes;
 /// /pgworker/evacuations/&lt;C&gt;/&lt;X&gt; — ДО манипуляций (P7); снапшоты до/после
 /// (P12). Возврат шарда (journal DONE + живой REST) — карантин: docker stop
 /// БЕЗ удаления (данные целы), state=QUARANTINED, returned_unix.
+/// Адресация мастеров — общий сервис ShardEndpoints (t01 задача 9).
 /// </summary>
 public sealed class BucketEvacuator(
     IEtcdGateway etcd,
@@ -27,6 +29,7 @@ public sealed class BucketEvacuator(
     IClusterDriver driver,
     ISqlExecutor db,
     ShardProbe probe,
+    ShardEndpoints shards,
     ClaimStore claims,
     WorkJournal journal,
     InstallSecrets secrets,
@@ -96,15 +99,17 @@ public sealed class BucketEvacuator(
             return Result<ProcessOutcome>.Failed(written.Error!);
 
         // E1: пустые схемы эвакуированных бакетов на целевых шардах.
-        var addresses = await ReadPortAllocAsync(cluster, ct);
+        var addresses = await shards.ReadPortAllocAsync(cluster, ct);
         if (!addresses.IsSuccess)
             return Result<ProcessOutcome>.Failed(addresses.Error!);
 
         foreach (var target in plan.Value.GroupBy(a => a.ToShard))
         {
             var shardSpec = snap.Shards.Single(s => s.Name == target.Key);
-            var master = await ResolveMasterAsync(shardSpec, addresses.Value, ct);
-            if (master is null)
+            var resolved = await shards.ResolveMasterAsync(shardSpec, addresses.Value, ct);
+            if (!resolved.IsSuccess)
+                return Result<ProcessOutcome>.Failed(resolved.Error!);
+            if (resolved.Value is not { } master)
                 return await FailWaiting(cluster, deadShard, $"нет мастера целевого шарда {target.Key}", ct);
 
             var dsn = DatabaseProvisioner.BuildAdminDsn(master.Host, master.Ports.Pg, snap.Config.DbName, secrets);
@@ -254,45 +259,10 @@ public sealed class BucketEvacuator(
 
     private async Task<NodeAddress?> NodeAddressOf(string cluster, string shard, string node, CancellationToken ct)
     {
-        var addresses = await ReadPortAllocAsync(cluster, ct);
+        var addresses = await shards.ReadPortAllocAsync(cluster, ct);
         if (!addresses.IsSuccess)
             return null;
         return addresses.Value.TryGetValue($"{shard}/{node}", out var addr) ? addr : null;
-    }
-
-    // Мастер шарда для SQL: master-ключ → host/имя ноды → portalloc; поиск
-    // ТОЛЬКО среди нод этого шарда (host неуникален — на нём ноды разных шардов).
-    private async Task<NodeAddress?> ResolveMasterAsync(
-        ShardSpec shard, IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
-    {
-        var shardNodes = addresses
-            .Where(p => p.Key.StartsWith($"{shard.Name}/", StringComparison.Ordinal))
-            .ToDictionary(p => p.Key.Split('/')[1], p => p.Value);
-
-        if (!string.IsNullOrWhiteSpace(shard.Master))
-        {
-            var left = shard.Master.Split(':')[0];
-            var byName = shardNodes.FirstOrDefault(p => p.Key == left);
-            if (byName.Value is not null)
-                return byName.Value;
-            var byHost = shardNodes.FirstOrDefault(p => p.Value.Host == left);
-            if (byHost.Value is not null)
-                return byHost.Value;
-        }
-
-        foreach (var node in shardNodes)
-        {
-            var members = await probe.GetClusterAsync(node.Value, ct);
-            if (!members.IsSuccess)
-                continue;
-            // Patroni 3.x в /cluster называет мастера "leader" (legacy: "master").
-            var master = members.Value.FirstOrDefault(m =>
-                m.Role is "master" or "leader" or "primary" && m.State == "running");
-            if (master is not null && shardNodes.TryGetValue(master.Name, out var addr))
-                return addr;
-        }
-
-        return null;
     }
 
     private async Task<Result<ProcessOutcome>> FailWaiting(
@@ -300,19 +270,6 @@ public sealed class BucketEvacuator(
     {
         await journal.WritePhaseAsync(cluster, "evacuate", "waiting-master", claims.InstanceId, message, ct);
         return Result<ProcessOutcome>.Failed(new ApplicationException(message));
-    }
-
-    private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> ReadPortAllocAsync(
-        string cluster, CancellationToken ct)
-    {
-        var result = await GetAsync($"/pgworker/portalloc/{cluster}", ct);
-        if (!result.IsSuccess)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(result.Error!);
-        if (result.Value is not { } kv)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(
-                (IReadOnlyDictionary<string, NodeAddress>)new Dictionary<string, NodeAddress>());
-
-        return Portalloc.Parse(cluster, kv.Value);
     }
 
     // Failover-обёртки: первый успешный endpoint выигрывает.

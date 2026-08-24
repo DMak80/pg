@@ -60,11 +60,13 @@ public class ReconcileLoopTests
         // Act
         var tick = await loop.TickAsync(TestContext.Current.CancellationToken);
 
-        // Assert — тик успешен и доволен ровно нужный процесс
+        // Assert — тик успешен и доволен ровно нужный процесс; заявки переездов
+        // в NOT_INITIALIZED не обрабатываются (spec §5.3 — только Active)
         tick.IsSuccess.Should().BeTrue();
         processes.Provisioned.Should().Equal("shop");
         processes.Deprovisioned.Should().BeEmpty();
         processes.Supervised.Should().BeEmpty();
+        processes.Moved.Should().BeEmpty();
     }
 
     [Fact]
@@ -83,6 +85,7 @@ public class ReconcileLoopTests
         processes.Deprovisioned.Should().Equal("shop");
         processes.Provisioned.Should().BeEmpty();
         processes.Supervised.Should().BeEmpty();
+        processes.Moved.Should().BeEmpty("TO_REMOVE не обрабатывает заявки переездов (spec §5.3)");
     }
 
     [Fact]
@@ -100,6 +103,25 @@ public class ReconcileLoopTests
         tick.IsSuccess.Should().BeTrue();
         processes.Supervised.Should().Equal("shop");
         processes.Provisioned.Should().BeEmpty();
+    }
+
+    // AAA: кластер Active после надзора обрабатывает заявки переездов (t01, spec §5.3)
+    [Fact]
+    public async Task Tick_ActiveCluster_CallsProcessMoves()
+    {
+        // Arrange — Active-кластер (state отсутствует, Д1): надзор → эвакуации → moves
+        SeedCluster("shop", null);
+        var processes = new FakeProcesses();
+        var loop = CreateLoop(processes);
+
+        // Act
+        var tick = await loop.TickAsync(TestContext.Current.CancellationToken);
+
+        // Assert — ProcessMovesAsync вызван после SuperviseAsync (порядок — Calls);
+        // мёртвых шардов нет — moves идёт сразу за supervise
+        tick.IsSuccess.Should().BeTrue();
+        processes.Moved.Should().Equal("shop");
+        processes.Calls.Should().ContainInOrder("supervise/shop", "moves/shop");
     }
 
     [Fact]
@@ -260,7 +282,7 @@ public class ReconcileLoopTests
 
     // Фиксированный IOptionsMonitor и DeadEtcd — общие даблы TestSupport.cs.
 
-    // Мок агрегатора процессов: фиксирует вызовы, меряет параллелизм.
+    // Мок агрегатора процессов: фиксирует вызовы (включая порядок), меряет параллелизм.
     private sealed class FakeProcesses : IClusterProcesses
     {
         private readonly object _sync = new();
@@ -273,6 +295,11 @@ public class ReconcileLoopTests
         public List<string> Supervised { get; } = [];
 
         public List<string> Evacuated { get; } = [];
+
+        public List<string> Moved { get; } = [];
+
+        // Порядок вызовов процессов кластера ("supervise/shop", "moves/shop", …).
+        public List<string> Calls { get; } = [];
 
         public int MaxConcurrent { get; private set; }
 
@@ -302,7 +329,7 @@ public class ReconcileLoopTests
 
         public async Task<Result<SuperviseOutcome>> SuperviseAsync(ClusterSnapshot snap, CancellationToken ct)
         {
-            using var _ = Track(snap.Config.Cluster, Supervised);
+            using var _ = Track(snap.Config.Cluster, Supervised, callName: "supervise");
             await Task.Yield(); // расшиваем параллелизм: оба кластера стартуют
             return Result<SuperviseOutcome>.Success(
                 SuperviseResult?.Invoke(snap.Config.Cluster) ?? new SuperviseOutcome(ProcessOutcome.Done, []));
@@ -314,12 +341,20 @@ public class ReconcileLoopTests
             return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
         }
 
-        private TrackHandle Track(string cluster, List<string> sink, string? suffix = null)
+        public Task<Result<ProcessOutcome>> ProcessMovesAsync(ClusterSnapshot snap, CancellationToken ct)
+        {
+            using var _ = Track(snap.Config.Cluster, Moved, callName: "moves");
+            return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
+        }
+
+        private TrackHandle Track(string cluster, List<string> sink, string? suffix = null, string? callName = null)
         {
             lock (_sync)
             {
                 _concurrent++;
                 MaxConcurrent = Math.Max(MaxConcurrent, _concurrent);
+                if (callName is not null)
+                    Calls.Add($"{callName}/{cluster}");
             }
 
             sink.Add(suffix is null ? cluster : $"{cluster}/{suffix}");

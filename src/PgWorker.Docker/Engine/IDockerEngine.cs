@@ -29,6 +29,11 @@ public interface IDockerEngine : IAsyncDisposable
     // DELETE /volumes/<name> (404 = успех).
     Task<Result> RemoveVolumeAsync(string name, CancellationToken ct);
 
+    // POST /containers/<id>/exec + /exec/<id>/start + /exec/<id>/json —
+    // выполнить команду в контейнере, вернуть demultiplexed stdout;
+    // exit != 0 → Failed со stderr в сообщении (t01: pg_dump-транспорт).
+    Task<Result<string>> ExecAsync(string containerId, IReadOnlyList<string> cmd, CancellationToken ct);
+
     // POST /networks/create (409 already exists = успех) — сеть нод кластера.
     Task<Result> EnsureNetworkAsync(string name, CancellationToken ct);
 
@@ -58,8 +63,10 @@ public sealed record DockerContainer(string Id, string[] Names, string State, st
 // Swarm-нода из /nodes + число работающих тасков.
 public sealed record DockerSwarmNode(string Id, string Hostname, string State, int RunningTasks);
 
-// Таск swarm-сервиса; Host — hostname ноды (NodeId → /nodes), PublishedPort — publish mode=host.
-public sealed record DockerTask(string Id, string NodeId, string State, string? Host, int? PublishedPort);
+// Таск swarm-сервиса; Host — hostname ноды (NodeId → /nodes), PublishedPort —
+// publish mode=host, ContainerId — контейнер running-таска (t01: exec).
+public sealed record DockerTask(string Id, string NodeId, string State, string? Host, int? PublishedPort,
+    string? ContainerId = null);
 
 // Пара портов контейнер→хост (tcp).
 public sealed record PortMap(int ContainerPort, int HostPort);

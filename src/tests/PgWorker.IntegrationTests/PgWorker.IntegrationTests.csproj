@@ -26,6 +26,7 @@
         <ProjectReference Include="..\..\PgWorker.Etcd\PgWorker.Etcd.csproj"/>
         <ProjectReference Include="..\..\PgWorker.Docker\PgWorker.Docker.csproj"/>
         <ProjectReference Include="..\..\PgWorker.Provisioning\PgWorker.Provisioning.csproj"/>
+        <ProjectReference Include="..\..\PgWorker.Moves\PgWorker.Moves.csproj"/>
         <ProjectReference Include="..\..\PgWorker.App\PgWorker.App.csproj"/>
     </ItemGroup>
 
