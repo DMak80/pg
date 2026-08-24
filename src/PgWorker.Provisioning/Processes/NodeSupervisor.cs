@@ -65,6 +65,12 @@ public sealed class NodeSupervisor(
 
         foreach (var shard in snap.Shards)
         {
+            // Границы надзора (t06 §5.4): шард без dsn — домен AddShardProcess;
+            // пробы/UNREACHABLE-переходы не трогаем (state нод — вход A1-гварда
+            // add: ожидаемы только NOT_INITIALIZED/PROVISIONING).
+            if (shard.Dsn is null)
+                continue;
+
             var shardTrack = await SuperviseShardAsync(cluster, snap, shard, addresses.Value, track, ct);
             if (!shardTrack.IsSuccess)
                 return Fail(shardTrack.Error!);
@@ -73,7 +79,15 @@ public sealed class NodeSupervisor(
             // ShardDeadSec → кандидат на эвакуацию (spec §6.4 D).
             var allDead = shard.Nodes is { Count: > 0 }
                 && shard.Nodes.All(n => track.ContainsKey($"{shard.Name}/{n.Name}"));
-            if (allDead && string.IsNullOrWhiteSpace(shard.Master))
+
+            // Кандидат эвакуации (t06 §5.4): только зарегистрированный шард (dsn
+            // есть — add завершён) И с бакетами по routing (эвакуация пустого
+            // шарда бессмысленна и карантинила бы ноды, блокируя демонтаж по G6).
+            // Шард с TO_REMOVE-маркером кандидатом БЫТЬ МОЖЕТ — эвакуация
+            // освобождает бакеты умирающего помеченного шарда, после чего G3
+            // пропустит демонтаж (Д6).
+            var hasBuckets = snap.Routing.Any(r => r.Owner == shard.Name);
+            if (allDead && string.IsNullOrWhiteSpace(shard.Master) && shard.Dsn is not null && hasBuckets)
             {
                 var oldest = shard.Nodes
                     .Select(n => track[$"{shard.Name}/{n.Name}"])
@@ -128,6 +142,11 @@ public sealed class NodeSupervisor(
 
         foreach (var shard in snap.Shards)
         {
+            // Границы надзора (t06 §5.4): шард без dsn — домен AddShardProcess;
+            // TO_REMOVE — домен RemoveShardProcess (не пересоздавать демонтируемое).
+            if (shard.Dsn is null || shard.ToRemove)
+                continue;
+
             var topology = TopologyOf(cluster, snap, shard.Name, addresses);
             if (topology.Nodes.Count == 0)
                 continue; // нет закреплённых адресов (внешний кластер) — не наш объект
@@ -187,6 +206,13 @@ public sealed class NodeSupervisor(
         var dead = new List<string>();
         foreach (var node in shard.Nodes)
         {
+            // Карантин/демонтаж — не домен надзора (E3-инвариант arch/14 §5):
+            // QUARANTINED ставится эвакуатором и держится до разбора runbook'ом
+            // (возврат обрабатывает эвакуатор), REMOVING — RemoveShardProcess/
+            // Deprovisioning. Проба мёртвой карантинной ноды затирала бы state
+            // на UNREACHABLE — на инварианте строятся guard'ы G6/Д6 (t06).
+            if (node.State is NodeState.Quarantined or NodeState.Removing)
+                continue;
             if (!addresses.TryGetValue($"{shard.Name}/{node.Name}", out var addr))
                 continue; // без закреплённого адреса пробу не сделать
             if (await probe.IsAliveAsync(addr, ct))

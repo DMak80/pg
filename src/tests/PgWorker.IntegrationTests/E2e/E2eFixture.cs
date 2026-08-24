@@ -53,9 +53,24 @@ public sealed class E2eFixture : IAsyncLifetime
         foreach (var id in (await RunDockerAsync(["ps", "-aq", "--filter", "name=pgw-"])).Split(
                      ['\n', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             await RunDockerAsync(["rm", "-f", id]);
+        // docker rm -f возвращает управление до фактического освобождения
+        // volume-ссылки демоном (гонка Docker Desktop: GC ссылки может идти
+        // секундами) — ретраим с бюджетом ~20 с, иначе уборка остатков
+        // прошлого прогона роняет инициализацию фикстуры целиком.
         foreach (var id in (await RunDockerAsync(["volume", "ls", "-q", "--filter", "name=pgw-"])).Split(
                      ['\n', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
-            await RunDockerAsync(["volume", "rm", "-f", id]);
+            for (var attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    await RunDockerAsync(["volume", "rm", "-f", id]);
+                    break;
+                }
+                catch (ApplicationException) when (attempt < 10)
+                {
+                    await Task.Delay(2000, TestContext.Current.CancellationToken);
+                }
+            }
 
         // Образ узла (задача 25): собирается ДО запуска процессов (Д4, R1:
         // без DOORMAN_URL — узел без пулера, PgWorker запускается с EnableDoorman=false).

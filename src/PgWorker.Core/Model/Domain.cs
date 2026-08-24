@@ -41,12 +41,17 @@ public sealed record ClusterConfig(string Cluster, int Buckets, string DbName,
 /// <summary>Плановая нода шарда: имя = имя шарда + буква ("shard1", "shard1a").</summary>
 public sealed record NodeSpec(string Shard, string Name, NodeState State);
 
-/// <summary>Шард кластера: replicas — плановое число нод, Dsn/Master — runtime.</summary>
+/// <summary>Шард кластера: replicas — плановое число нод, Dsn/Master — runtime;
+/// ToRemove — маркер демонтажа shards/&lt;X&gt;/state=TO_REMOVE (t06; пишет панель).</summary>
 public sealed record ShardSpec(string Name, int Replicas, string? Dsn, string? Master,
-    IReadOnlyList<NodeSpec> Nodes);
+    IReadOnlyList<NodeSpec> Nodes, bool ToRemove = false);
 
-/// <summary>Маршрут бакета: владелец (шард) + статус переезда (null → ACTIVE).</summary>
-public sealed record BucketRoute(int Id, string? Owner, BucketMoveState? Status);
+/// <summary>Маршрут бакета: Owner — владелец по ROUTING (единственный авторитет
+/// «где бакет»); Status — статус переезда (null → ACTIVE); MoveSource/MoveTarget —
+/// owner/target из СТАТУС-ключа (guard G4 t06: после flip статус-owner ≠ routing-owner;
+/// null без статуса; у NOT_INITIALIZED — owner без target).</summary>
+public sealed record BucketRoute(int Id, string? Owner, BucketMoveState? Status,
+    string? MoveTarget = null, string? MoveSource = null);
 
 /// <summary>Полный снапшот кластера: config + шарды + все N маршрутов бакетов.</summary>
 public sealed record ClusterSnapshot(ClusterConfig Config, IReadOnlyList<ShardSpec> Shards,

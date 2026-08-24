@@ -9,7 +9,7 @@ AdminPanel **заявляет** кластер (`config.state=NOT_INITIALIZED`, 
 в рабочее состояние; перевод панелью в `TO_REMOVE` — PgWorker аккуратно
 демонтирует кластер.
 
-Пять процессов:
+Шесть процессов:
 1. **Provisioning** — от `NOT_INITIALIZED` до рабочего кластера (§6);
 2. **Deprovisioning** — от `TO_REMOVE` до чистого etcd и удалённых контейнеров;
 3. **Контроль нод** (надзор) — failover отслеживает Patroni, умершая нода
@@ -18,7 +18,10 @@ AdminPanel **заявляет** кластер (`config.state=NOT_INITIALIZED`, 
    на живые шарды (без логической репликации — источник недоступен) с
    карантином вернувшегося;
 5. **Переезды бакетов** (MoveProcess, §5 F) — плановые онлайн-переезды/откаты/
-   уборка/отмена по заявкам в etcd (t01).
+   уборка/отмена по заявкам в etcd (t01);
+6. **Add/remove шарда** (§5 G/H) — подъём/демонтаж отдельного шарда живого
+   Active-кластера по декларации/маркеру от панели (t06); без автоматической
+   перебалансировки бакетов.
 
 Свойства: несколько инстансов PgWorker работают одновременно (координация —
 lease-клэймы в etcd, §3); смерть контролирующего инстанса не роняет процессы —
@@ -26,8 +29,9 @@ lease-клэймы в etcd, §3); смерть контролирующего и
 идемпотентны; всё значимое состояние переживает смерть контроллера (etcd +
 самих нодах).
 
-Границы (что НЕ входит): CLI-обёртки заявок и панельные кнопки переездов —
-roadmap (t06); ручной скриптовый путь остаётся для стендов без PgWorker — не
+Границы (что НЕ входит): панельные кнопки ЯВНЫХ переездов бакетов — roadmap
+`t07-move-bucket-ui`; в t06 переезды инициируются только etcdctl'ом (заявки
+`/pgworker/moves/`, t01); ручной скриптовый путь остаётся для стендов без PgWorker — не
 смешивать с заявками в одном окне переезда; балансировка по метрикам,
 per-cluster секреты, TLS к Docker API/SSH-туннели, Prometheus-метрики,
 управление etcd-слоем, слияние данных карантинного шарда —
@@ -53,8 +57,10 @@ only, всё видит)         снятие status-ключей,
 ```
 
 - **Панель** — декларатор и наблюдатель: пишет ТОЛЬКО `state=NOT_INITIALIZED`
-  (создание, claim-txn — AdminPanel 02 §9.2) и `state=TO_REMOVE` (удаление,
-  02 §9.4); читает всё. Контракт панели не меняется: её толерантность к
+  (создание, claim-txn — AdminPanel 02 §9.2), `state=TO_REMOVE` (удаление,
+  02 §9.4), декларацию add-shard (02 §9.5: replicas + nodes/NOT_INITIALIZED +
+  request_*) и маркер демонтажа шарда `shards/<X>/state=TO_REMOVE`
+  (02 §9.6; t06); читает всё. Контракт панели не меняется: её толерантность к
   значениям `nodes/<n>/state` и отсутствию status-ключей уже описана (02 §2.1).
 - **PgWorker** — исполнитель: единственный, кто поднимает/удаляет ноды,
   пишет `dsn`, меняет `nodes/<n>/state`, снимает `status/bucket_*`
@@ -192,6 +198,7 @@ success-ветке). **Poll, без watch** (аргументация — AdminP
 | `/clusters/<C>/buckets/status/bucket_<i>` | `NOT_INITIALIZED` — снять после создания схемы; SYNCING/FROZEN/ABORTING — незавершённый переезд (эвакуация такого бакета запрещена) |
 | `/service/<scope>/…` (scope=`<C>-<X>`) | Patroni DCS: `leader`, `members/<name>`, `initialize` — подтверждение поднятия HA-кластера |
 | `/service/<scope>/request_{cpu,mem,disk}` | заявки ресурсов на ноду (лимиты контейнера/сервиса) |
+| `/clusters/<C>/shards/<X>/state` | маркер демонтажа шарда `TO_REMOVE` (пишет ТОЛЬКО панель; отсутствие = обычный шард; t06) |
 
 ### 3.2. Пишемые ключи (существующая схема)
 
@@ -211,6 +218,25 @@ success-ветке). **Poll, без watch** (аргументация — AdminP
 `state` (унификация с кластерами `init-cluster.sh` — панель видит «Active»
 без правок), все `status/bucket_<i>` удалены (бакеты ACTIVE), у каждого
 шарда есть `dsn`, у каждой ноды `state=RUNNING`.
+
+Дельта add/remove шарда живого кластера (t06; процессы §5 G/H):
+
+| Ключ | Когда | Действие |
+|---|---|---|
+| `/clusters/<C>/shards/<X>/nodes/<n>/state` | add-shard A3/A4 | `PROVISIONING` → `RUNNING` (те же значения) |
+| `/clusters/<C>/shards/<X>/dsn` | add-shard A5 | put multi-host (порты из portalloc, без пароля) |
+| `/clusters/<C>/shards/<X>/nodes/<n>/state` | remove-shard S2 | `REMOVING` |
+| `/clusters/<C>/shards/<X>/` (весь префикс) | remove-shard S3, после удаления docker-объектов | del prefix (state/replicas/nodes/dsn/master — всё) |
+| `/service/<C>-<X>/` (весь scope) | remove-shard S3, guard: docker-объектов нет | del prefix |
+| `/service/<C>-<X>/request_{cpu,mem,disk}` | remove-shard S3 | точечные del (даже если scope ещё жив) |
+| `/pgworker/portalloc/<C>` | remove-shard S3 | read-modify-write: из JSON удалить записи `"<X>/<n>"` (merge под клэймом) |
+| `/pgworker/evacuations/<C>/<X>` | remove-shard S3 | del (журнал эвакуации не переживает демонтаж шарда) |
+
+Контрактное **финальное состояние после add-shard**: у шарда есть `dsn`,
+все ноды `RUNNING`, `nodes`-ключи = декларации, routing/status/schema-
+мир кластера не изменён НИКАК. После remove-shard: префиксы `shards/<X>/`
+и `/service/<C>-<X>/` пусты, записей шарда в portalloc нет, остальные
+шарды кластера не затронуты.
 
 ### 3.3. НОВЫЕ ключи координации воркеров (префикс `/pgworker/`)
 
@@ -264,6 +290,11 @@ PgWorker; панель отображает как строку — правок
 Классификация в цикле: `config.state=NOT_INITIALIZED` → Provisioning;
 `TO_REMOVE` → Deprovisioning; иначе (инициализирован) → надзор.
 
+Active-ветка после надзора выполняет scale-проход `ScaleShardsAsync` (t06):
+remove-кандидаты (`shards/<X>/state=TO_REMOVE`) → затем add-кандидаты
+(declared-ноды без `dsn`), по одному шард-за-тик; демонтаж освобождает
+хосты/порты до подъёма (Д13).
+
 ### A. ProvisioningProcess (P0–P5)
 
 Все шаги идемпотентны — перепроверяют факт (эталон `init-cluster.sh`).
@@ -314,6 +345,8 @@ D2 удалить префикс /clusters/<C>/ (del --prefix) + точечны�
    /service/<C>-shard<k>/request_* + префикс /service/<C>-<X>/
    (guard: docker-объектов не осталось) + /pgworker/moves/<C>/ +
    /pgworker/{portalloc,work,claims}/<C>*
+   + del --prefix /pgworker/evacuations/<C>/ — журналы эвакуаций не
+   переживают удаление кластера (t06, симметрия с S3)
 D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый клэйм; имя
    освобождается (повторное создание панели пройдёт)
 ```
@@ -342,6 +375,19 @@ D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый �
   фактом (`GET /primary` по нодам): расхождение или ключа нет при живом
   primary → lease-put коррекция `host:<doorman-port>` (пишет только при
   рассинхроне — не второй регулярный писатель).
+
+Границы надзора (t06): шард без `dsn` — домен AddShardProcess (пробы/
+самовосстановление/UNREACHABLE-переходы не трогаем — state нод входит в
+A1-гвард add); с маркером TO_REMOVE самовосстановление отключено (домен
+RemoveShardProcess — не пересоздавать демонтируемое), пробы остаются (шард
+жив и обслуживает бакеты до демонтажа). Ноды в `QUARANTINED`/`REMOVING` надзор
+не пробирует и их state не трогает — карантин держится эвакуатором до разбора
+runbook'ом (E3-инвариант; UNREACHABLE-перезезапись ломала бы G6/Д6), демонтаж
+идёт своим процессом. Кандидат эвакуации требует `dsn` и
+≥1 бакета на шарде по routing (эвакуация пустого/незарегистрированного шарда
+бессмысленна и блокировала бы G6 карантином); шард с TO_REMOVE-маркером
+кандидатом МОЖЕТ быть — эвакуация умирающего помеченного шарда освобождает
+бакеты, после чего G3 пропускает демонтаж (Д6).
 
 ### D. BucketEvacuator (аварийная эвакуация, E0–E4)
 
@@ -432,6 +478,42 @@ bucket_<i>` в **формате скриптов 1:1** (`SYNCING|FROZEN|ABORTING
 Снапшот-точки P12: `move-<bucket>-start` (после SYNCING-put, обязателен) и
 `flip-<bucket>-<shard>` (после flip, best-effort). Конфигурация — §8
 (`PgWorker:Moves` + пороги `CutoverTimeoutSec`/`ConnFailBudgetSec`).
+
+Отказы M0 (t06): move `to` = шард в TO_REMOVE → перманентный отказ
+«шард помечен к удалению — выберите другую цель»; `to` без dsn → «шард ещё
+не поднят (add-shard не завершён)»; finalize с `old_shard` без dsn →
+«шард удалён — убирать нечего». Переезды ИЗ TO_REMOVE-шарда разрешены.
+
+### G. AddShardProcess (A0–A6; t06)
+
+Подъём ОТДЕЛЬНОГО пустого шарда в Active-кластере (панель заявила декларацию
+§9.5 контракта панели: replicas + nodes/NOT_INITIALIZED + request_*).
+Машина состояний одного тика, идемпотентна (механика ProvisioningProcess
+в scoped-to-shard виде: EnsureNode, WaitPatroni, portalloc-merge,
+DatabaseProvisioner). Guard A1: кластер Active; полное объявление (replicas>0,
+nodes.Count==replicas, ноды NOT_INITIALIZED/PROVISIONING — иначе
+phase=waiting-keys); `dsn` нет (есть → Done); scope `/service/<C>-<X>/initialize`
+отсутствует — либо есть, но лидер совпадает с именем нод НАШЕГО шарда (наш же
+поднимающийся Patroni после A3 — идемпотентность повторных тиков); коллизия
+имён — initialize с чужим лидером (перманентная ошибка);
+имя шарда `^[a-z][a-z0-9_]{0,30}$`; перечитывание config (R6) — NOT_INITIALIZED/
+TO_REMOVE → phase=aborted. A5: БД/роли — ТОЛЬКО они; СХЕМЫ БАКЕТОВ НЕ
+СОЗДАЮТСЯ (шард пустой, routing не указывает). Routing/status не пишутся ВООБЩЕ.
+
+### H. RemoveShardProcess (S0–S4; t06)
+
+Демонтаж шарда по маркеру `shards/<X>/state=TO_REMOVE` (пишет панель).
+Guard'ы G1–G7 в S1 перед любым разрушающим действием (таблица §4.4):
+G1 кластер Active; G2 шард заявлен; G3 ни один routing не указывает на шард
+(P23); G4 ни один status-ключ не ссылается (owner ИЛИ target); G5 нет заявок
+`/pgworker/moves/<C>/` с to=X или old_shard=X (саморазрешающийся); G6 нет нод
+QUARANTINED; G7 в кластере есть другой шард. Провал guard'а = journal
+last_error с причиной + InProgress (маркер-состояние живёт; после уезда
+бакетов демонтаж продолжится сам). Порядок «сначала docker, потом etcd»
+сохранён (мёртвые ключи при сбое безвредны — повторный тик продолжает).
+S3: del prefix shards/<X>/ + точечные request_* + del prefix scope +
+portalloc-фильтрация "<X>/<n>" (read-modify-write под клэймом) +
+del /pgworker/evacuations/<C>/<X>.
 
 ---
 

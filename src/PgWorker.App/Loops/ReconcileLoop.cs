@@ -169,6 +169,11 @@ internal sealed class ReconcileLoop(
                     if (supervised is null)
                         break;
 
+                    // Scale-проход (t06 spec §5.1): remove → add, после надзора, до
+                    // эвакуаций/moves — демонтаж освобождает хосты/порты для подъёма (Д13).
+                    await RunClusterOpAsync(cluster, "scale-shards",
+                        () => processes.ScaleShardsAsync(snap, ct), ct);
+
                     // События эвакуации: полностью мёртвые шарды (spec §6.4 D/E).
                     foreach (var deadShard in supervised.DeadShards)
                         await RunClusterOpAsync(cluster, $"evacuate/{deadShard}",

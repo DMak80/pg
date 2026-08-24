@@ -145,6 +145,28 @@ builder.Services.AddSingleton(sp => new BucketEvacuator(
     sp.GetRequiredService<InstallSecrets>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 
+// Scale-процессы шардов (t06): подъём/демонтаж отдельного шарда Active-кластера.
+builder.Services.AddSingleton(sp =>
+{
+    var opts = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value;
+    return new AddShardProcess(
+        sp.GetRequiredService<IEtcdGateway>(), opts.Etcd.Endpoints,
+        sp.GetRequiredService<IClusterDriver>(), sp.GetRequiredService<ISqlExecutor>(),
+        sp.GetRequiredService<ShardProbe>(), sp.GetRequiredService<ClaimStore>(),
+        sp.GetRequiredService<WorkJournal>(),
+        new PlacementOptions(opts.Docker.PortRange.From, opts.Docker.PortRange.To, opts.Thresholds.PatroniBootSec),
+        sp.GetRequiredService<InstallSecrets>(),
+        sp.GetRequiredService<EtcdEndpoints>(),
+        SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
+});
+builder.Services.AddSingleton(sp => new RemoveShardProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+
 // Переезды бакетов (t01 задача 17): SQL-слой Npgsql+Polly, DDL через docker exec,
 // машина состояний MoveProcess (M0–M6/rollback/finalize/abort); runtime-опции —
 // склейка секций Moves + Thresholds; TimeProvider/System — источник unix-времени

@@ -176,6 +176,7 @@ internal static class Fakes
     internal sealed class FakeSql : ISqlExecutor
     {
         public readonly List<(string Dsn, string Sql)> Executed = [];
+        public readonly List<(string Dsn, string Sql)> Scalars = [];
         public readonly List<(string Dsn, string DbName)> EnsuredDatabases = [];
         public Func<Result>? ExecuteResult { get; set; }
         public Action<string>? OnExecute { get; set; }
@@ -188,7 +189,10 @@ internal static class Fakes
         }
 
         public Task<Result<object?>> ExecuteScalarAsync(string dsn, string sql, CancellationToken ct)
-            => Task.FromResult(Result<object?>.Success(null));
+        {
+            Scalars.Add((dsn, sql)); // t06: гварды ролей идут скалярами — трекаем их
+            return Task.FromResult(Result<object?>.Success(null));
+        }
 
         public Task<Result> EnsureDatabaseAsync(string dsn, string dbname, CancellationToken ct)
         {

@@ -67,6 +67,7 @@ public class ReconcileLoopTests
         processes.Deprovisioned.Should().BeEmpty();
         processes.Supervised.Should().BeEmpty();
         processes.Moved.Should().BeEmpty();
+        processes.Scaled.Should().BeEmpty();
     }
 
     [Fact]
@@ -86,6 +87,7 @@ public class ReconcileLoopTests
         processes.Provisioned.Should().BeEmpty();
         processes.Supervised.Should().BeEmpty();
         processes.Moved.Should().BeEmpty("TO_REMOVE не обрабатывает заявки переездов (spec §5.3)");
+        processes.Scaled.Should().BeEmpty();
     }
 
     [Fact]
@@ -122,6 +124,25 @@ public class ReconcileLoopTests
         tick.IsSuccess.Should().BeTrue();
         processes.Moved.Should().Equal("shop");
         processes.Calls.Should().ContainInOrder("supervise/shop", "moves/shop");
+    }
+
+    // AAA: scale-проход Active-ветки — после надзора, до эвакуаций/moves (t06 §5.1)
+    [Fact]
+    public async Task Tick_ActiveCluster_ScaleShardsAfterSuperviseBeforeMoves()
+    {
+        // Arrange — Active-кластер; надзор → scale-проход → moves (порядок §5.1)
+        SeedCluster("shop", null);
+        var processes = new FakeProcesses();
+        var loop = CreateLoop(processes);
+
+        // Act
+        var tick = await loop.TickAsync(TestContext.Current.CancellationToken);
+
+        // Assert — scale-проход вызван ровно один раз; порядок — Calls-трейс
+        // (FakeProcesses записывает порядок: supervise → scale-shards → moves)
+        tick.IsSuccess.Should().BeTrue();
+        processes.Scaled.Should().Equal("shop");
+        processes.Calls.Should().ContainInOrder("supervise/shop", "scale-shards/shop", "moves/shop");
     }
 
     [Fact]
@@ -298,6 +319,8 @@ public class ReconcileLoopTests
 
         public List<string> Moved { get; } = [];
 
+        public List<string> Scaled { get; } = [];
+
         // Порядок вызовов процессов кластера ("supervise/shop", "moves/shop", …).
         public List<string> Calls { get; } = [];
 
@@ -344,6 +367,12 @@ public class ReconcileLoopTests
         public Task<Result<ProcessOutcome>> ProcessMovesAsync(ClusterSnapshot snap, CancellationToken ct)
         {
             using var _ = Track(snap.Config.Cluster, Moved, callName: "moves");
+            return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
+        }
+
+        public Task<Result<ProcessOutcome>> ScaleShardsAsync(ClusterSnapshot snap, CancellationToken ct)
+        {
+            using var _ = Track(snap.Config.Cluster, Scaled, callName: "scale-shards");
             return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
         }
 
