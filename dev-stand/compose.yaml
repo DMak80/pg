@@ -14,7 +14,10 @@ services:
       - --name=etcd
       - --data-dir=/etcd-data
       - --listen-client-urls=http://0.0.0.0:2379
-      - --advertise-client-urls=http://127.0.0.1:2379
+      # Advertise — адрес, который возвращается в /v3/cluster/member/list:
+      # его потребляют Patroni-ноды (контейнеры) для DCS; из контейнера
+      # 127.0.0.1 недостижим — только host.docker.internal (как в e2e-фикстуре).
+      - --advertise-client-urls=http://host.docker.internal:2379
     ports:
       - "2379:2379"
     volumes:
