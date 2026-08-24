@@ -3,6 +3,17 @@ using PgWorker.Etcd.Client;
 
 namespace PgWorker.Moves;
 
+/// <summary>Листинг заявок кластера: распарсенные + ошибки битых ключей (их
+/// залогирует процесс — «исправь или удали ключ», план Task 3 Step 3, ревью №2).</summary>
+public sealed record MoveRequestsListing(
+    IReadOnlyList<(string Bucket, MoveRequest Request)> Requests,
+    IReadOnlyList<string> ParseErrors);
+
+/// <summary>Старейшая заявка кластера (null Request = заявок нет) + ошибки битых ключей.</summary>
+public sealed record OldestMoveRequest(
+    (string Bucket, MoveRequest Request)? Request,
+    IReadOnlyList<string> ParseErrors);
+
 /// <summary>
 /// Заявки на переезды кластера — чтение/удаление ключей /pgworker/moves/&lt;C&gt;/bucket_&lt;i&gt;
 /// (spec §4.1, arch/14 §3.3). Успех или перманентный отказ — заявку удаляет процесс;
@@ -11,33 +22,35 @@ namespace PgWorker.Moves;
 /// </summary>
 public sealed class MoveRequestsStore(IEtcdGateway gateway, string[] endpoints)
 {
-    /// <summary>Все заявки кластера; битые ключи пропускаются (ошибки — в errors, их залогирует процесс).</summary>
-    public async Task<Result<IReadOnlyList<(string Bucket, MoveRequest Request)>>> ListAsync(
+    /// <summary>Все заявки кластера; битые ключи пропускаются в Requests, их причины —
+    /// в ParseErrors (процесс залогирует: «исправь или удали ключ», ревью №2).</summary>
+    public async Task<Result<MoveRequestsListing>> ListAsync(
         string cluster, CancellationToken ct)
     {
         var range = await WithFailoverAsync(endpoint => gateway.RangeAsync(endpoint, MoveNames.MovesPrefix(cluster), ct));
         if (!range.IsSuccess)
-            return Result<IReadOnlyList<(string Bucket, MoveRequest Request)>>.Failed(range.Error!);
+            return Result<MoveRequestsListing>.Failed(range.Error!);
 
-        return ParseRange(range.Value, out _);
+        var requests = ParseRange(range.Value, out var errors);
+        return Result<MoveRequestsListing>.Success(new MoveRequestsListing(requests.Value, errors));
     }
 
-    /// <summary>Старейшая заявка кластера по requested_unix (tie-break — лексикографика ключа, детерминизм); null = заявок нет.</summary>
-    public async Task<Result<(string Bucket, MoveRequest Request)?>> OldestAsync(
+    /// <summary>Старейшая заявка кластера по requested_unix (tie-break — лексикографика ключа, детерминизм);
+    /// null = заявок нет. Ошибки битых ключей — рядом (ревью №2: логирует процесс).</summary>
+    public async Task<Result<OldestMoveRequest>> OldestAsync(
         string cluster, CancellationToken ct)
     {
         var list = await ListAsync(cluster, ct);
         if (!list.IsSuccess)
-            return Result<(string Bucket, MoveRequest Request)?>.Failed(list.Error!);
+            return Result<OldestMoveRequest>.Failed(list.Error!);
 
-        var oldest = list.Value
+        var oldest = list.Value.Requests
             .OrderBy(r => r.Request.RequestedUnix)
             .ThenBy(r => MoveNames.MoveKey(cluster, r.Bucket), StringComparer.Ordinal)
+            .Cast<(string Bucket, MoveRequest Request)?>()
             .FirstOrDefault();
 
-        return oldest == default
-            ? Result<(string Bucket, MoveRequest Request)?>.Success(null)
-            : Result<(string Bucket, MoveRequest Request)?>.Success((oldest.Bucket, oldest.Request));
+        return Result<OldestMoveRequest>.Success(new OldestMoveRequest(oldest, list.Value.ParseErrors));
     }
 
     /// <summary>Удаление заявки по завершении (успех/перманентный отказ, spec §4.1).</summary>

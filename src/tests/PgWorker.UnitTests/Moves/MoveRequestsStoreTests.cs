@@ -23,7 +23,8 @@ public class MoveRequestsStoreTests
         var list = await StoreOf(etcd).ListAsync("shop", CancellationToken.None);
 
         // Assert
-        list.Value.Should().HaveCount(2, "чужой кластер не попадает в выборку");
+        list.Value.Requests.Should().HaveCount(2, "чужой кластер не попадает в выборку");
+        list.Value.ParseErrors.Should().BeEmpty("все ключи валидны");
     }
 
     // AAA: старейшая заявка — по requested_unix (Д2: одна активная заявка на кластер)
@@ -39,7 +40,7 @@ public class MoveRequestsStoreTests
         var oldest = await StoreOf(etcd).OldestAsync("shop", CancellationToken.None);
 
         // Assert
-        oldest.Value!.Value.Bucket.Should().Be("bucket_2");
+        oldest.Value.Request!.Value.Bucket.Should().Be("bucket_2");
     }
 
     // AAA: удаление заявки по завершении (успех/перманентный отказ, spec §4.1)
@@ -58,7 +59,8 @@ public class MoveRequestsStoreTests
         etcd.Store.ContainsKey(MoveNames.MoveKey("shop", "bucket_1")).Should().BeFalse();
     }
 
-    // AAA: битая заявка не роняет список — исключается из выборки
+    // AAA: битая заявка не роняет список — исключается из выборки, причина
+    //      возвращается рядом (её залогирует процесс, ревью №2)
     [Fact]
     public async Task ListAsync_SkipsBrokenJson()
     {
@@ -71,6 +73,27 @@ public class MoveRequestsStoreTests
 
         // Assert
         list.IsSuccess.Should().BeTrue("битая заявка — не ошибка тика, её увидит оператор в логе");
-        list.Value.Should().BeEmpty();
+        list.Value.Requests.Should().BeEmpty();
+        list.Value.ParseErrors.Should().ContainSingle().Which.Should().Contain("/pgworker/moves/shop/bucket_9",
+            "ошибка называет ключ по имени");
+    }
+
+    // AAA: старейшая выбирается и при битых соседях — ошибки едут рядом (ревью №2)
+    [Fact]
+    public async Task OldestAsync_WithBrokenKeys_StillPicksOldestAndReportsErrors()
+    {
+        // Arrange — валидная заявка + битый ключ того же кластера
+        var etcd = new FakeEtcd();
+        etcd.Seed(MoveNames.MoveKey("shop", "bucket_1"), """{"op":"abort","requested_unix":10}""");
+        etcd.Seed(MoveNames.MoveKey("shop", "bucket_9"), "not-json");
+
+        // Act
+        var oldest = await StoreOf(etcd).OldestAsync("shop", CancellationToken.None);
+
+        // Assert
+        oldest.Value.Request!.Value.Bucket.Should().Be("bucket_1",
+            "битая заявка не мешает выбору старейшей валидной");
+        oldest.Value.ParseErrors.Should().ContainSingle().Which.Should().Contain("bucket_9",
+            "ошибка битого ключа не теряется");
     }
 }

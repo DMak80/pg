@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using PgWorker.Core;
 using PgWorker.Moves;
 using PgWorker.Provisioning.Processes;
@@ -176,6 +177,33 @@ public class MoveProcessPhasesTests
         afterSecond.Value.StartedUnix.Should().Be(111, "старт переезда не сдвигается");
     }
 
+    // AAA: битая заявка в сторе — тик НЕ падает: warning с именем ключа попадает
+    //      в лог («исправь или удали ключ»), валидные заявки обрабатываются
+    //      (план Task 3 Step 3, ревью №2)
+    [Fact]
+    public async Task TickAsync_BrokenRequestKey_WarnsAndProcessesValidRequests()
+    {
+        // Arrange — валидная заявка bucket_42 + битый JSON на bucket_9
+        var logger = new RecordingLogger();
+        var rig = await MoveRig.NewAsync(logger: logger);
+        rig.Etcd.Seed(MoveNames.MoveKey("shop", "bucket_9"), "not-json");
+
+        // Act
+        var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
+
+        // Assert
+        tick.Value.Should().Be(ProcessOutcome.InProgress,
+            "битая заявка — не сбой тика; валидная заявка обработана (M0 пройден)");
+        logger.Entries.Should().Contain(e =>
+            e.Level == LogLevel.Warning && e.Text.Contains("/pgworker/moves/shop/bucket_9"),
+            "предупреждение называет битый ключ по имени");
+        logger.Entries.Should().Contain(e =>
+            e.Level == LogLevel.Warning && e.Text.Contains("исправь или удали ключ"),
+            "подсказка оператору — что делать с битым ключом");
+        rig.Etcd.Store.ContainsKey(MoveNames.MoveKey("shop", "bucket_9")).Should().BeTrue(
+            "ключ не удаляется автоматически — битую заявку правит оператор");
+    }
+
     // Сдвигаемые часы для детерминированного updated_unix (TimeProvider-хук процесса).
     private sealed class StepClock : TimeProvider
     {
@@ -184,5 +212,20 @@ public class MoveProcessPhasesTests
         public void Advance(TimeSpan delta) => _now += delta;
 
         public override DateTimeOffset GetUtcNow() => _now;
+    }
+
+    // Записывающий логгер (ревью №2): фиксирует уровень и текст — ассерты по факту.
+    private sealed class RecordingLogger : ILogger<MoveProcess>
+    {
+        public readonly List<(LogLevel Level, string Text)> Entries = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(
+            LogLevel logLevel, EventId eventId, TState state, Exception? exception,
+            Func<TState, Exception?, string> formatter)
+            => Entries.Add((logLevel, formatter(state, exception)));
     }
 }

@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
@@ -213,7 +214,7 @@ internal static class MoveRig
         PreflightSql? preflight = null, bool claim = true, MoveStatus? seededStatus = null,
         string requestJson = """{"op":"move","to":"shard2","requested_unix":100}""",
         bool seedRequest = true, bool failoverSlots = true, TimeProvider? clock = null,
-        MovesRuntimeOptions? runtime = null,
+        MovesRuntimeOptions? runtime = null, ILogger<MoveProcess>? logger = null,
         params Result[] snapshotResults)
     {
         var etcd = new Fakes.FakeEtcd();
@@ -240,7 +241,7 @@ internal static class MoveRig
             etcd, [Ep], sql, new MoveDdl(driver, sql), driver, shards, claims, journal, Secrets,
             runtime ?? new MovesRuntimeOptions(FailoverSlots: failoverSlots),
             clock ?? TimeProvider.System,
-            logger: null,
+            logger: logger,
             snapshot: ct =>
             {
                 snapshots.Add(1);

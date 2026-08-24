@@ -29,8 +29,8 @@ public class MoveContractTests(EtcdFixture fixture)
 
         // Assert — выбран минимальный requested_unix (ordering контракта заявок)
         oldest.IsSuccess.Should().BeTrue(oldest.Error?.ToString());
-        oldest.Value!.Value.Bucket.Should().Be("bucket_2");
-        oldest.Value.Value.Request.Op.Should().Be(MoveOp.Rollback);
+        oldest.Value!.Request!.Value.Bucket.Should().Be("bucket_2");
+        oldest.Value.Request.Value.Request.Op.Should().Be(MoveOp.Rollback);
 
         // Cleanup — ключи теста не переживают прогон (общий etcd коллекции)
         await store.DeleteAsync(cluster, "bucket_1", CancellationToken.None);
@@ -52,8 +52,8 @@ public class MoveContractTests(EtcdFixture fixture)
         put.IsSuccess.Should().BeTrue(put.Error?.ToString());
 
         // Act — первый flip проходит; конкурентный (тот же устаревший cur) — нет
-        var first = await store.FlipAsync(cluster, bucket, "shard1", "shard2", ct);
-        var competing = await store.FlipAsync(cluster, bucket, "shard1", "shardX", ct);
+        var first = await store.FlipAsync(cluster, bucket, "shard1", "shard2", ct: ct);
+        var competing = await store.FlipAsync(cluster, bucket, "shard1", "shardX", ct: ct);
 
         // Assert — чужой flip отклонён txn-compare, значение не перебито
         first.Value.Should().BeTrue("routing соответствовал cur=shard1");
@@ -79,7 +79,7 @@ public class MoveContractTests(EtcdFixture fixture)
             new MoveStatus(bucket, MoveStates.Frozen, "shard1", "shard2", 1, 2, "flip"), ct);
 
         // Act
-        var flipped = await store.FlipAsync(cluster, bucket, "shard1", "shard2", ct);
+        var flipped = await store.FlipAsync(cluster, bucket, "shard1", "shard2", ct: ct);
 
         // Assert — той же txn: routing переведён, статус-ключ исчез (ACTIVE)
         flipped.Value.Should().BeTrue(flipped.Error?.ToString());

@@ -77,10 +77,16 @@ public sealed class MoveProcess(
         var oldest = await requests.OldestAsync(cluster, ct);
         if (!oldest.IsSuccess)
             return Result<ProcessOutcome>.Failed(oldest.Error!);
-        if (oldest.Value is null)
+
+        // Битые заявки молча висеть не должны (ревью №2, план Task 3 Step 3):
+        // парсинг их уже пропустил — громко называем ключ оператору.
+        foreach (var parseError in oldest.Value.ParseErrors)
+            logger?.LogWarning("moves {cluster}: {error} — исправь или удали ключ", cluster, parseError);
+
+        if (oldest.Value.Request is null)
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // заявок нет
 
-        var (bucket, request) = oldest.Value.Value;
+        var (bucket, request) = oldest.Value.Request.Value;
         return request.Op switch
         {
             MoveOp.Move => await RunMoveAsync(snap, bucket, request, ct),
