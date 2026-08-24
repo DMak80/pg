@@ -1,4 +1,5 @@
 using PgWorker.Core;
+using PgWorker.Core.Model;
 using PgWorker.Moves;
 using PgWorker.Provisioning.Processes;
 using Xunit;
@@ -297,5 +298,83 @@ public class MoveProcessPreflightTests
         probes.Should().OnlyContain(c => c.Dsn == MoveRig.MoverDsn,
             "обе пробы обязаны идти по DSN роли bucket_mover, а не по admin-DSN");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"), "заявка удалена");
+    }
+
+    // ---------- Отказы M0 t06 (spec §5.5) ----------
+
+    // Снапшот с параметризованными шардами (bucket_42 у shard1 — как в MoveRig.Snap).
+    private static ClusterSnapshot SnapWith(params ShardSpec[] shards) => new(
+        new ClusterConfig("shop", 6, "shop", 1755900000, ClusterState.Active),
+        shards,
+        [new BucketRoute(42, "shard1", null)]);
+
+    private static ShardSpec LiveShard(string name, string dsn) => new(
+        name, 2, dsn, name + "a:18000",
+        [new NodeSpec(name, name + "a", NodeState.Running), new NodeSpec(name, name + "b", NodeState.Running)]);
+
+    // AAA: цель переезда помечена TO_REMOVE — перманентный отказ с подсказкой (t06 §5.5)
+    [Fact]
+    public async Task Move_ToMarkedShard_RejectedPermanently()
+    {
+        // Arrange — цель shard2 поднята (dsn есть), но помечена к демонтажу
+        var rig = await MoveRig.NewAsync();
+        var snap = SnapWith(
+            LiveShard("shard1", "host=h1,h2 port=15000,15001 dbname=shop user=bucket_admin"),
+            LiveShard("shard2", MoveRig.DstDsnKey) with { ToRemove = true });
+
+        // Act
+        var tick = await rig.Process.TickAsync(snap, CancellationToken.None);
+
+        // Assert — Reject: заявка удалена, SQL не звался, подсказка оператору
+        tick.IsSuccess.Should().BeFalse();
+        tick.Error!.Message.Should().Contain("помечен к удалению");
+        rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"));
+        var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        work.Value!.Phase.Should().Be("rejected");
+        work.Value.LastError.Should().Contain("помечен к удалению");
+        rig.Sql.Calls.Should().BeEmpty("отказ до любых SQL-проб");
+    }
+
+    // AAA: цель без dsn (add-shard не завершён) — уточнённый отказ с подсказкой
+    [Fact]
+    public async Task Move_ToShardWithoutDsn_RejectedWithAddHint()
+    {
+        // Arrange — цель shard2 declared (ноды есть), dsn НЕТ, маркера нет
+        var rig = await MoveRig.NewAsync();
+        var declared = new ShardSpec("shard2", 2, null, null,
+        [
+            new NodeSpec("shard2", "shard2a", NodeState.NotInitialized),
+            new NodeSpec("shard2", "shard2b", NodeState.NotInitialized),
+        ]);
+        var snap = SnapWith(
+            LiveShard("shard1", "host=h1,h2 port=15000,15001 dbname=shop user=bucket_admin"),
+            declared);
+
+        // Act
+        var tick = await rig.Process.TickAsync(snap, CancellationToken.None);
+
+        // Assert — заявка удалена; причина называет незавершённый add-shard
+        tick.IsSuccess.Should().BeFalse();
+        tick.Error!.Message.Should().Contain("ещё не поднят (add-shard не завершён)");
+        rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"));
+    }
+
+    // AAA: finalize удалённого шарда (нет dsn) — убирать нечего, артефакты исчезли
+    [Fact]
+    public async Task Finalize_OldShardRemoved_RejectedNothingToClean()
+    {
+        // Arrange — заявка finalize с old_shard=shard2; шарда уже нет (dsn-ключа нет)
+        var rig = await MoveRig.NewAsync(
+            requestJson: """{"op":"finalize","old_shard":"shard2","requested_unix":100}""");
+        var snap = SnapWith(LiveShard("shard1", "host=h1,h2 port=15000,15001 dbname=shop user=bucket_admin"));
+
+        // Act
+        var tick = await rig.Process.TickAsync(snap, CancellationToken.None);
+
+        // Assert — перманентный отказ с подсказкой; заявка удалена
+        tick.IsSuccess.Should().BeFalse();
+        tick.Error!.Message.Should().Contain("удалён — убирать нечего");
+        rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"));
+        rig.Sql.Calls.Should().BeEmpty("SQL-уборки не было — артефактов нет");
     }
 }

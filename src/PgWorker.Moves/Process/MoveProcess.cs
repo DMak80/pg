@@ -131,10 +131,17 @@ public sealed class MoveProcess(
 
         var srcShard = snap.Shards.FirstOrDefault(s => s.Name == owner);
         var dstShard = snap.Shards.FirstOrDefault(s => s.Name == to);
+        // t06 §5.5: помеченный к удалению шард — не цель переезда (его демонтаж
+        // блокировал бы G3 до разбора заявки; переезды ИЗ него разрешены).
+        if (dstShard?.ToRemove == true)
+            return await RejectAsync(cluster, bucket,
+                $"шард-приёмник '{to}' помечен к удалению — выберите другую цель", ct);
         if (dstShard?.Dsn is null)
-            return await RejectAsync(cluster, bucket, $"шард-приёмник '{to}' не зарегистрирован (нет dsn-ключа)", ct);
+            return await RejectAsync(cluster, bucket,
+                $"шард-приёмник '{to}' ещё не поднят (add-shard не завершён)", ct);
         if (srcShard?.Dsn is null)
-            return await RejectAsync(cluster, bucket, $"шард-источник '{owner}' не зарегистрирован (нет dsn-ключа)", ct);
+            return await RejectAsync(cluster, bucket,
+                $"шард-источник '{owner}' не зарегистрирован (нет dsn-ключа)", ct);
 
         // Статус-ключ: новый переезд / resume (started_unix наследуется) / конфликт.
         var existing = await status.GetAsync(cluster, bucket, ct);
@@ -755,7 +762,13 @@ public sealed class MoveProcess(
         var oldShard = snap.Shards.FirstOrDefault(s => s.Name == old);
         var ownerShard = snap.Shards.FirstOrDefault(s => s.Name == owner);
         if (oldShard?.Dsn is null)
-            return await RejectAsync(cluster, bucket, $"шард '{old}' не зарегистрирован (нет dsn-ключа)", ct, op);
+        {
+            // t06 §5.5: старый шард демонтирован (артефакты исчезли вместе с
+            // volume) — убирать нечего; отказ перманентный с подсказкой.
+            return await RejectAsync(cluster, bucket,
+                $"шард '{old}' удалён — убирать нечего (артефакты исчезли вместе с volume)", ct, op);
+        }
+
         if (ownerShard?.Dsn is null)
             return await RejectAsync(cluster, bucket, $"шард-владелец '{owner}' не зарегистрирован (нет dsn-ключа)", ct, op);
 
