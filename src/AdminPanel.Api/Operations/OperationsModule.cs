@@ -1,3 +1,4 @@
+using System.Security.Claims;
 using AdminPanel.Etcd.Writing;
 using AdminPanel.Infrastructure.CQRS;
 using Microsoft.AspNetCore.Builder;
@@ -9,7 +10,8 @@ namespace AdminPanel.Api.Operations;
 // Модуль операций (мутирующие эндпоинты): POST /api/clusters — создание
 // (arch/03 §1.1), DELETE /api/clusters/{name} — перевод в TO_REMOVE
 // (arch/03 §1.2), POST/DELETE /api/clusters/{cluster}/shards… — добавление
-// и демонтаж шарда (arch/03 §1.3/§1.4, t06). InspectionModule остаётся read-only.
+// и демонтаж шарда (arch/03 §1.3/§1.4, t06), POST /api/clusters/{cluster}/moves —
+// заявки на переезды (arch/03 §1.5). InspectionModule остаётся read-only.
 public static class OperationsModule
 {
     public static IEndpointRouteBuilder MapOperationsApi(this IEndpointRouteBuilder endpoints)
@@ -120,6 +122,40 @@ public static class OperationsModule
                     statusCode: StatusCodes.Status404NotFound, title: "Not found", detail: result.Error.Message),
                 ClusterNotActiveException or ShardRemoveBlockedException or NonShardedClusterException => Results.Problem(
                     statusCode: StatusCodes.Status409Conflict, title: "Shard remove rejected", detail: result.Error.Message),
+                EtcdWriteUnavailableException or ShardPrecheckUnavailableException => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable", detail: result.Error.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed", detail: result.Error!.Message),
+            };
+        });
+
+        // POST /api/clusters/{cluster}/moves — заявки на переезды бакетов (02 §9.7, 03 §1.5):
+        // txn-клэйм per key; сбой посередине без компенсации — повтор досдаст остаток.
+        endpoints.MapPost("/api/clusters/{cluster}/moves", async (
+            string cluster, MoveBucketsRequest request, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<MoveBucketsCommand, MovesQueuedDto>(
+                new MoveBucketsCommand(
+                    cluster, request.From, request.To, request.Buckets ?? [],
+                    user.Identity?.Name ?? "adminpanel"), ct);
+            if (result.IsSuccess)
+                return Results.Created($"/api/clusters/{cluster}", result.Value);
+
+            return result.Error switch
+            {
+                MoveBucketsValidationException validation => Results.Problem(
+                    statusCode: StatusCodes.Status400BadRequest,
+                    title: "Validation failed",
+                    detail: result.Error.Message,
+                    extensions: new Dictionary<string, object?>
+                    {
+                        ["errors"] = validation.Errors.ToDictionary(e => e.Field, e => new[] { e.Message }),
+                    }),
+                ClusterNotFoundException or ShardNotFoundException => Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound, title: "Not found", detail: result.Error.Message),
+                ClusterNotActiveException or NonShardedClusterException or MoveTargetRemovingException
+                    or BucketNotOnSourceException or MoveRequestConflictException or MoveClaimLostException => Results.Problem(
+                    statusCode: StatusCodes.Status409Conflict, title: "Moves rejected", detail: result.Error.Message),
                 EtcdWriteUnavailableException or ShardPrecheckUnavailableException => Results.Problem(
                     statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable", detail: result.Error.Message),
                 _ => Results.Problem(
