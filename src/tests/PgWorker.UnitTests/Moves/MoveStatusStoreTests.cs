@@ -49,12 +49,36 @@ public class MoveStatusStoreTests
         await store.PutAsync("shop", new MoveStatus("bucket_42", MoveStates.Frozen, "shard1", "shard2", 1, 2, "flip"), CancellationToken.None);
 
         // Act
-        var flipped = await store.FlipAsync("shop", "bucket_42", "shard1", "shard2", CancellationToken.None);
+        var flipped = await store.FlipAsync("shop", "bucket_42", "shard1", "shard2", ct: CancellationToken.None);
 
         // Assert
         flipped.Value.Should().BeTrue("routing соответствовал cur");
         etcd.Store[MoveNames.RoutingKey("shop", "bucket_42")].Value.Should().Be("shard2");
         etcd.Store.ContainsKey(MoveNames.StatusKey("shop", "bucket_42")).Should().BeFalse("статус-ключ удалён той же txn");
+    }
+
+    // AAA: flip с пост-flip статусом (rollback-доведение, ревью №1) — атомарная
+    //      txn кладёт фазу доведения ВМЕСТО удаления статус-ключа: маркер «flip был»
+    //      не теряется даже при сбое etcd между flip и записью фазы
+    [Fact]
+    public async Task FlipAsync_WithPostFlipStatus_PutsPhaseInsteadOfDelete()
+    {
+        // Arrange
+        var etcd = new FakeEtcd();
+        etcd.Seed(MoveNames.RoutingKey("shop", "bucket_42"), "shard1");
+        var store = new MoveStatusStore(etcd, ["http://x"]);
+        await store.PutAsync("shop", new MoveStatus("bucket_42", MoveStates.Frozen, "shard2", "shard1", 1, 2, "flip"), CancellationToken.None);
+        var postFlip = new MoveStatus("bucket_42", MoveStates.Frozen, "shard1", "shard2", 1, 3, MovePhases.RollbackPostFlip);
+
+        // Act
+        var flipped = await store.FlipAsync("shop", "bucket_42", "shard1", "shard2", postFlip, CancellationToken.None);
+
+        // Assert
+        flipped.Value.Should().BeTrue("routing соответствовал cur");
+        etcd.Store[MoveNames.RoutingKey("shop", "bucket_42")].Value.Should().Be("shard2",
+            "routing перевёрнут той же txn");
+        etcd.Store[MoveNames.StatusKey("shop", "bucket_42")].Value.Should().Be(postFlip.Serialize(),
+            "фаза доведения положена атомарно с flip — не отдельным put");
     }
 
     // AAA: конкурентный flip (routing изменился под руками) — Succeeded=false, всё нетронуто
@@ -67,7 +91,7 @@ public class MoveStatusStoreTests
         var store = new MoveStatusStore(etcd, ["http://x"]);
 
         // Act
-        var flipped = await store.FlipAsync("shop", "bucket_42", "shard1", "shard2", CancellationToken.None);
+        var flipped = await store.FlipAsync("shop", "bucket_42", "shard1", "shard2", ct: CancellationToken.None);
 
         // Assert
         flipped.Value.Should().BeFalse("compare по routing=cur обязан не сойтись");

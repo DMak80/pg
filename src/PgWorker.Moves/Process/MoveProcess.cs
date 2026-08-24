@@ -17,6 +17,14 @@ public static class MovePhases
     /// <summary>Снапшот-точка «после начала» ещё не снята — тик повторит (C#-фаза).</summary>
     public const string WaitingSnapshot = "waiting-snapshot";
 
+    /// <summary>
+    /// Rollback: flip уже состоялся — доводятся пост-шаги (срез sub_rb, DROP pub_rb,
+    /// разморозка вернувшегося владельца). Статус с этой фазой кладётся атомарно
+    /// flip-txn вместо удаления: transient-сбой доведения не теряет маркер «flip был»
+    /// (ревью №1); после успешного доведения ключ удаляется (= ACTIVE).
+    /// </summary>
+    public const string RollbackPostFlip = "rollback-post-flip";
+
     public const string Ddl = "ddl";
     public const string PubSub = "pubsub";
     public const string CopyWait = "copy-wait";
@@ -139,6 +147,12 @@ public sealed class MoveProcess(
         {
             switch (prev.State)
             {
+                // Фаза доведения отката (ревью №1): flip отката уже был — move не
+                // резюмируется повторным cutover, пока откат не доведён (по образцу
+                // гварда ABORTING).
+                case { } when prev.Phase == MovePhases.RollbackPostFlip:
+                    return await RejectAsync(cluster, bucket,
+                        "завершается доведение отката (rollback-post-flip) — сначала дожди его завершения", ct);
                 case MoveStates.Syncing or MoveStates.Frozen when prev.Target == to:
                     startedUnix = prev.StartedUnix; // resume: возраст переезда сохраняется
                     snapshotRequired = prev.Phase == MovePhases.WaitingSnapshot;
@@ -562,12 +576,25 @@ public sealed class MoveProcess(
                 $"нет {MoveNames.RoutingKey(cluster, bucket)} — владелец неизвестен (восстанови контрол-плейн, P12)", ct, op);
 
         // Откат — только из ACTIVE: живой переезд сначала заверши (или отмени abort'ом).
+        // ИСКЛЮЧЕНИЕ (ревью №1): фаза rollback-post-flip — flip отката уже состоялся,
+        // доводим пост-шаги (маркер атомарно положен flip-txn: повторный тик не
+        // перепутает доведение с новым откатом и не потеряет GRANT-разморозку P1).
         var existing = await status.GetAsync(cluster, bucket, ct);
         if (!existing.IsSuccess)
             return await FailTransientAsync(cluster, existing.Error!, ct, op);
         if (existing.Value is { } live)
+        {
+            if (live.Phase == MovePhases.RollbackPostFlip)
+            {
+                if (live.Owner != owner)
+                    return await RejectAsync(cluster, bucket,
+                        $"routing указывает на '{owner}', а фаза доведения отката — на '{live.Owner}' (изменили вручную?) — разбор вручную", ct, op);
+                return await FinishRollbackPostFlipAsync(
+                    snap, bucket, returned: live.Owner, former: live.Target, ct);
+            }
             return await RejectAsync(cluster, bucket,
                 $"откат возможен только из ACTIVE (сейчас state={live.State}) — сначала заверши переезд/abort", ct, op);
+        }
 
         // Обратная подписка — ровно на одном НЕ-владельце (поиск по всем шардам).
         var dsns = await ResolveAllDsnAsync(snap, ct);
@@ -605,10 +632,13 @@ public sealed class MoveProcess(
         // Зеркальный cutover: Cur=владелец, New=шард с sub_rb (слот sub_rb — на Cur,
         // создан обратной подпиской). Отказ ДО flip: cutover сам разморозит Cur и
         // УДАЛИТ статус-ключ (DropStatusOnFail: нет ключа = ACTIVE — эквивалент
-        // скриптового state=ACTIVE без нестандартного значения state).
+        // скриптового state=ACTIVE без нестандартного значения state; применяется
+        // только к фазам ДО flip). PostFlipPhase: сам flip-txn атомарно кладёт фазу
+        // доведения вместо удаления (ревью №1) — transient-сбой пост-шагов не теряет
+        // маркер «flip был», заявка жива и доводится повторными тиками.
         var flip = await cutover.RunAsync(shards, snap,
             new CutoverContext(cluster, bucket, owner, reverseShard, MoveNames.SubRb(bucket),
-                MoveStates.Syncing, DropStatusOnFail: true),
+                MoveStates.Syncing, DropStatusOnFail: true, PostFlipPhase: MovePhases.RollbackPostFlip),
             options, ct,
             snapshot is null ? null : async token => await SnapshotBestEffortAsync(cluster, token));
         if (!flip.IsSuccess)
@@ -618,22 +648,65 @@ public sealed class MoveProcess(
             return await FailTransientAsync(cluster, flip.Error!, ct, op);
         }
 
-        // Пост-flip: срез sub_rb на вернувшемся владельце, DROP pub_rb на бывшем —
-        // best-effort (остатки доберёт finalize); разморозка вернувшегося владельца
-        // ОБЯЗАТЕЛЬНА (P1: владелец без записи не может считаться откатом).
-        var postErrors = new List<string>();
-        var subDrop = await SubscriptionDrop.DropAsync(sql, dsns.Value[reverseShard], MoveNames.SubRb(bucket), ct);
-        if (!subDrop.IsSuccess)
-            postErrors.Add($"не удалось срезать {MoveNames.SubRb(bucket)} на '{reverseShard}' ({subDrop.Error!.Message}) — добьёт finalize");
-        var pubDrop = await sql.ExecuteAsync(dsns.Value[owner], MoveSql.DropPublication(MoveNames.PubRb(bucket)), ct);
-        if (!pubDrop.IsSuccess)
-            postErrors.Add($"не удалось удалить {MoveNames.PubRb(bucket)} на '{owner}' ({pubDrop.Error!.Message}) — удали вручную");
+        // Пост-flip доведение (идемпотентно — тот же метод доводит и повторные тики).
+        return await FinishRollbackPostFlipAsync(snap, bucket, returned: reverseShard, former: owner, ct);
+    }
 
+    // Пост-flip доведение отката (spec §6.3, ревью №1): все шаги перепроверяют факт
+    // и потому идемпотентны — метод доводит как первый тик после flip, так и повторы
+    // по фазе rollback-post-flip (статус жив до завершения). Разморозка вернувшегося
+    // владельца ОБЯЗАТЕЛЬНА (P1: владелец без записи не может считаться откатом) —
+    // её сбой transient; срез sub_rb/DROP pub_rb — best-effort (остатки доберёт finalize).
+    private async Task<Result<ProcessOutcome>> FinishRollbackPostFlipAsync(
+        ClusterSnapshot snap, string bucket, string returned, string former, CancellationToken ct)
+    {
+        const string op = "rollback";
+        var cluster = snap.Config.Cluster;
+
+        var dsns = await ResolveAllDsnAsync(snap, ct);
+        if (!dsns.IsSuccess)
+            return await FailTransientAsync(cluster, dsns.Error!, ct, op);
+        if (!dsns.Value.TryGetValue(returned, out var returnedDsn) ||
+            !dsns.Value.TryGetValue(former, out var formerDsn))
+            return await FailTransientAsync(cluster, new ApplicationException(
+                $"шарды доведения отката ('{returned}'/'{former}') не резолвятся — ждём (Patroni-выборы?)"), ct, op);
+
+        var postErrors = new List<string>();
+
+        // Срез sub_rb на вернувшемся владельце — только если ещё жива (идемпотентность).
+        var subRb = await sql.ScalarAsync(returnedDsn, MoveSql.SubExists(MoveNames.SubRb(bucket)), ct);
+        if (!subRb.IsSuccess)
+            return await FailTransientAsync(cluster, subRb.Error!, ct, op);
+        if (ToLong(subRb.Value) > 0)
+        {
+            var subDrop = await SubscriptionDrop.DropAsync(sql, returnedDsn, MoveNames.SubRb(bucket), ct);
+            if (!subDrop.IsSuccess)
+                postErrors.Add($"не удалось срезать {MoveNames.SubRb(bucket)} на '{returned}' ({subDrop.Error!.Message}) — добьёт finalize");
+        }
+
+        // DROP pub_rb на бывшем владельце — только если ещё жива (идемпотентность).
+        var pubRb = await sql.ScalarAsync(formerDsn, MoveSql.PubExists(MoveNames.PubRb(bucket)), ct);
+        if (!pubRb.IsSuccess)
+            return await FailTransientAsync(cluster, pubRb.Error!, ct, op);
+        if (ToLong(pubRb.Value) > 0)
+        {
+            var pubDrop = await sql.ExecuteAsync(formerDsn, MoveSql.DropPublication(MoveNames.PubRb(bucket)), ct);
+            if (!pubDrop.IsSuccess)
+                postErrors.Add($"не удалось удалить {MoveNames.PubRb(bucket)} на '{former}' ({pubDrop.Error!.Message}) — удали вручную");
+        }
+
+        // Разморозка вернувшегося владельца — обязательный шаг: сбой transient, фаза
+        // rollback-post-flip в статус-ключе ведёт повторный тик сюда снова (ревью №1).
         var unfrozen = await sql.ExecuteAsync(
-            dsns.Value[reverseShard], MoveSql.Unfreeze(bucket, MoveNames.AppRole), ct);
+            returnedDsn, MoveSql.Unfreeze(bucket, MoveNames.AppRole), ct);
         if (!unfrozen.IsSuccess)
             return await FailTransientAsync(cluster, new ApplicationException(
-                $"откат прошёл (routing='{reverseShard}'), но владельца не разморозить: {unfrozen.Error!.Message} — верни GRANT вручную (P1)"), ct, op);
+                $"откат прошёл (routing='{returned}'), но владельца не разморозить: {unfrozen.Error!.Message} — повторный тик доведёт GRANT (фаза rollback-post-flip)"), ct, op);
+
+        // Завершение: del статус-ключа (= ACTIVE) + del заявки + журнал done.
+        var statusDeleted = await status.DeleteAsync(cluster, bucket, ct);
+        if (!statusDeleted.IsSuccess)
+            return Result<ProcessOutcome>.Failed(statusDeleted.Error!);
 
         var deleted = await requests.DeleteAsync(cluster, bucket, ct);
         if (!deleted.IsSuccess)
@@ -641,8 +714,8 @@ public sealed class MoveProcess(
 
         await journal.WritePhaseAsync(cluster, op, "done", claims.InstanceId,
             postErrors.Count > 0 ? string.Join("; ", postErrors) : null, ct);
-        logger?.LogInformation("rollback {cluster}/{bucket}: вернулся {owner} → {shard} (остатки бывшего владельца — finalize)",
-            cluster, bucket, owner, reverseShard);
+        logger?.LogInformation("rollback {cluster}/{bucket}: вернулся {former} → {shard} (остатки бывшего владельца — finalize)",
+            cluster, bucket, former, returned);
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
     }
 

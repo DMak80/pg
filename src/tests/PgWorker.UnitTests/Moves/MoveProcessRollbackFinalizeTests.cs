@@ -70,6 +70,105 @@ public class MoveProcessRollbackFinalizeTests
             "вернувшийся владелец разморожен (обязательный пост-шаг)");
     }
 
+    // AAA: transient-сбой разморозки ПОСЛЕ flip — flip атомарно оставляет фазу
+    //      rollback-post-flip в статус-ключе (заявка жива); повторный тик доводит
+    //      GRANT и завершает откат, не путая доведение с новым откатом — иначе
+    //      бакет остаётся замороженным навсегда без записи (P1, ревью №1)
+    [Fact]
+    public async Task Rollback_UnfreezeTransientFails_RetickCompletesGrantAndDone()
+    {
+        // Arrange — move завершён: routing=shard2, sub_rb на shard1, pub_rb на shard2;
+        // разморозка вернувшегося владельца на первом тике падает (transient)
+        var rig = await MoveRig.NewAsync(requestJson: RollbackRequest, runtime: Fast);
+        rig.Etcd.Seed(MoveNames.RoutingKey("shop", "bucket_42"), "shard2");
+        ReverseLayer(rig.Sql);
+        MoveRig.CutoverLayer(rig.Sql);
+
+        // Слой с памятью: артефакты исчезают после первого доведения (срез/удаление),
+        // GRANT разморозки валим, пока unfreezeBroken=true.
+        var unfreezeBroken = true;
+        var subRbGone = false;
+        var pubRbGone = false;
+        var preflight = rig.Sql.ScalarResolver;
+        rig.Sql.ScalarResolver = s => s switch
+        {
+            var x when x.Contains("pg_subscription") && s.Contains("sub_bucket_42_rb")
+                => !subRbGone && rig.Sql.LastDsn == MoveRig.SrcDsn ? 1L : 0L,
+            var x when x.Contains("pg_publication") && s.Contains("pub_bucket_42_rb")
+                => !pubRbGone && rig.Sql.LastDsn == MoveRig.DstDsn ? 1L : 0L,
+            _ => preflight(s),
+        };
+        rig.Sql.ExecuteResult = s =>
+        {
+            if (rig.Sql.LastDsn == MoveRig.SrcDsn && s.Contains("GRANT INSERT") && unfreezeBroken)
+                return Result.Failed(new ApplicationException("владелец недоступен (transient)"));
+            if (s == "DROP SUBSCRIPTION sub_bucket_42_rb")
+                subRbGone = true;
+            if (s == "DROP PUBLICATION pub_bucket_42_rb")
+                pubRbGone = true;
+            return Result.Success();
+        };
+
+        // Act — тик 1: flip состоялся, доведение упало на разморозке
+        var tick1 = await rig.Process.TickAsync(RollbackSnap(), CancellationToken.None);
+
+        // Assert — transient: заявка жива, фаза доведения ПЕРСИСТИРОВАНА (маркер «flip был»)
+        tick1.IsSuccess.Should().BeFalse("сбой разморозки — не успех тика");
+        tick1.Error!.Message.Should().Contain("не разморозить", "причина — transient разморозки");
+        rig.Etcd.Store[MoveNames.RoutingKey("shop", "bucket_42")].Value.Should().Be("shard1",
+            "flip прошёл до сбоя — routing уже вернулся");
+        rig.Etcd.Store.Should().ContainKey(MoveNames.MoveKey("shop", "bucket_42"),
+            "transient-сбой оставляет заявку живой");
+        rig.Etcd.Store.Should().ContainKey(MoveNames.StatusKey("shop", "bucket_42"),
+            "фаза rollback-post-flip записана — повторный тик отличит доведение от нового отката");
+        var status = MoveStatus.Parse(rig.Etcd.Store[MoveNames.StatusKey("shop", "bucket_42")].Value);
+        status.Value.Phase.Should().Be(MovePhases.RollbackPostFlip, "фаза доведения отката");
+        status.Value.Owner.Should().Be("shard1", "владелец после flip — вернувшийся шард");
+        status.Value.Target.Should().Be("shard2", "target — бывший владелец (остатки доберёт finalize)");
+
+        // Act — тик 2 (свежий снапшот: routing=shard1): доведение без повторного cutover
+        unfreezeBroken = false;
+        var callsAfterTick1 = rig.Sql.Calls.Count;
+        var tick2 = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
+
+        // Assert — GRANT доведён, заявка Done/удалена, статус снят (= ACTIVE)
+        tick2.Value.Should().Be(ProcessOutcome.Done, "доведение завершает откат");
+        var retickCalls = rig.Sql.Calls.Skip(callsAfterTick1).ToList();
+        retickCalls.Should().Contain(c => c.Dsn == MoveRig.SrcDsn && c.Sql.Contains("GRANT INSERT"),
+            "разморозка владельца доведена повторным тиком");
+        retickCalls.Should().NotContain(c => c.Sql.Contains("REVOKE"),
+            "повторного cutover (заморозки) не было — только пост-шаги");
+        rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"),
+            "успех — заявка удалена");
+        rig.Etcd.Store.Should().NotContainKey(MoveNames.StatusKey("shop", "bucket_42"),
+            "нет ключа = ACTIVE — семантика сохранена после доведения");
+        var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        work.Value!.Phase.Should().Be("done", "журнал фиксирует завершение отката");
+    }
+
+    // AAA: откат доводится (фаза rollback-post-flip в статус-ключе) — параллельная
+    //      move-заявка НЕ встраивается повторным cutover, а отвергается: сначала
+    //      дожидаемся доведения отката (по образцу гварда ABORTING, ревью №1)
+    [Fact]
+    public async Task Move_WhileRollbackPostFlipStatus_RejectsInsteadOfCutover()
+    {
+        // Arrange — статус доведения отката жив, заявка move на тот же бакет
+        var rig = await MoveRig.NewAsync(seededStatus: new MoveStatus(
+            "bucket_42", MoveStates.Frozen, "shard1", "shard2", 111, 122, MovePhases.RollbackPostFlip));
+        MoveRig.CutoverLayer(rig.Sql);
+
+        // Act
+        var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
+
+        // Assert
+        tick.IsSuccess.Should().BeFalse("move не резюмируется в cutover поверх доведения отката");
+        tick.Error!.Message.Should().Contain("откат", "подсказка — сначала довести откат");
+        rig.Etcd.Store[MoveNames.RoutingKey("shop", "bucket_42")].Value.Should().Be("shard1",
+            "routing не тронут — повторного flip не было");
+        rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"),
+            "permanent-отказ удаляет заявку");
+    }
+
     // AAA: обратной подписки нет нигде — permanent «откат только полным re-copy»
     [Fact]
     public async Task Rollback_NoReverseAnywhere_RejectsPermanent()

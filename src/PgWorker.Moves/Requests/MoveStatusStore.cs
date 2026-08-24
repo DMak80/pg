@@ -43,16 +43,22 @@ public sealed class MoveStatusStore(IEtcdGateway gateway, string[] endpoints)
 
     /// <summary>
     /// Атомарный flip: txn [ValueEqual(routing, current)] → [Put(routing, next), Delete(status)].
-    /// false = compare не сошёлся (routing изменился под руками — заморозка остаётся, разбор вручную).
+    /// При postFlipStatus (rollback-доведение, ревью №1) вместо Delete кладётся фаза
+    /// доведения — атомарно с flip. false = compare не сошёлся (routing изменился
+    /// под руками — заморозка остаётся, разбор вручную).
     /// </summary>
     public async Task<Result<bool>> FlipAsync(
-        string cluster, string bucket, string current, string next, CancellationToken ct)
+        string cluster, string bucket, string current, string next,
+        MoveStatus? postFlipStatus = null, CancellationToken ct = default)
     {
+        TxnOp statusOp = postFlipStatus is { } phase
+            ? new TxnOp.Put(MoveNames.StatusKey(cluster, bucket), phase.Serialize(), null)
+            : new TxnOp.Delete(MoveNames.StatusKey(cluster, bucket), Prefix: false);
         var txn = await WithFailoverAsync(endpoint => gateway.TxnAsync(endpoint, TxnRequest.Of(
             [TxnCompare.ValueEqual(MoveNames.RoutingKey(cluster, bucket), current)],
             [
                 new TxnOp.Put(MoveNames.RoutingKey(cluster, bucket), next, null),
-                new TxnOp.Delete(MoveNames.StatusKey(cluster, bucket), Prefix: false),
+                statusOp,
             ]), ct));
         if (!txn.IsSuccess)
             return Result<bool>.Failed(txn.Error!);

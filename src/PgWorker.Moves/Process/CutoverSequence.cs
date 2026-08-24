@@ -35,6 +35,9 @@ public sealed class CutoverPermanentException(string reason) : Exception(reason)
 /// <param name="Slot">Слот подтверждения (живёт на Cur — создан подпиской приёмника).</param>
 /// <param name="FailState">Статус при отказе до flip ("SYNCING" для move).</param>
 /// <param name="DropStatusOnFail">Rollback-семантика: fail-пути удаляют статус-ключ (нет ключа = ACTIVE).</param>
+/// <param name="PostFlipPhase">Rollback-доведение (ревью №1): flip-txn атомарно кладёт
+/// статус FROZEN/&lt;фаза&gt; (owner=New, target=Cur) вместо удаления — маркер «flip был»
+/// переживает transient-сбой пост-шагов; процесс доводит их и удаляет ключ (= ACTIVE).</param>
 public sealed record CutoverContext(
     string Cluster,
     string Bucket,
@@ -42,7 +45,8 @@ public sealed record CutoverContext(
     string New,
     string Slot,
     string FailState,
-    bool DropStatusOnFail = false);
+    bool DropStatusOnFail = false,
+    string? PostFlipPhase = null);
 
 /// <summary>
 /// Cutover — единый непрерывный блок одного тика (t01 задача 12, spec §6.2; точный
@@ -50,7 +54,8 @@ public sealed record CutoverContext(
 /// одной транзакции, до FreezeLockTries) → FROZEN/frozen + пауза роутера → LSN
 /// источника → ожидание слота (лаг 0, таймаут CutoverTimeoutSec) → sequences P6
 /// (setval только вперёд) → сверка строк P8 → атомарный flip-txn (compare routing
-/// → put+delete status). Отказ до flip: разморозка + возврат FailState (transient);
+/// → put new + delete status; при PostFlipPhase — put фазы доведения вместо delete,
+/// ревью №1). Отказ до flip: разморозка + возврат FailState (transient);
 /// verify-failed и flip-conflict — CutoverPermanentException (ревью №1).
 /// </summary>
 public sealed class CutoverSequence(
@@ -189,12 +194,18 @@ public sealed class CutoverSequence(
                     unfreeze: true, ct);
         }
 
-        // 7. FROZEN/flip + атомарный flip-txn: compare routing=cur → put new + delete status.
+        // 7. FROZEN/flip + атомарный flip-txn: compare routing=cur → put new +
+        //    delete status (при PostFlipPhase rollback-доведения — put фазы вместо
+        //    delete, ревью №1: маркер «flip был» атомарен с самим flip).
         var flipping = await PutPhaseAsync(c, startedUnix, MoveStates.Frozen, CutoverPhases.Flip, ct);
         if (!flipping.IsSuccess)
             return Result<bool>.Failed(flipping.Error!);
 
-        var flip = await status.FlipAsync(c.Cluster, c.Bucket, c.Cur, c.New, ct);
+        var postFlipStatus = c.PostFlipPhase is { } postPhase
+            ? new MoveStatus(c.Bucket, MoveStates.Frozen, c.New, c.Cur, startedUnix,
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds(), postPhase)
+            : null;
+        var flip = await status.FlipAsync(c.Cluster, c.Bucket, c.Cur, c.New, postFlipStatus, ct);
         if (!flip.IsSuccess)
             return Result<bool>.Failed(flip.Error!); // etcd-сбой: заморозка оставлена, тик повторит (transient)
         if (flip.Value != true)
