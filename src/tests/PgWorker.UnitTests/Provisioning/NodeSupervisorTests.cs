@@ -506,4 +506,71 @@ public class NodeSupervisorTests
         result.IsSuccess.Should().BeTrue();
         etcd.Store["/clusters/shop/shards/shard1/master"].ModRevision.Should().Be(before);
     }
+
+    [Fact]
+    public async Task MasterKeyReconciler_HeldLease_RenewedEveryPass()
+    {
+        // Arrange — ключа нет, primary жив: reconcile выдаст lease и запомнит его
+        var etcd = new Fakes.FakeEtcd();
+        var addresses = new Dictionary<string, NodeAddress>
+        {
+            ["shard1/shard1a"] = new("h1", new NodePorts(15000, 18000, 16500)),
+        };
+        var snap = new ClusterSnapshot(
+            new ClusterConfig("shop", 1, "shop", null, ClusterState.Active),
+            [new ShardSpec("shard1", 1, null, null,
+            [
+                new NodeSpec("shard1", "shard1a", NodeState.Running),
+            ])],
+            []);
+        var reconciler = new MasterKeyReconciler(etcd, [Ep], Probe(port => port == 18000 ? Ok() : Down()));
+
+        // Act — сверка (put под lease), затем два прохода продления
+        var result = await reconciler.ReconcileAsync(snap, addresses, CancellationToken.None);
+        await reconciler.RenewHeldAsync(CancellationToken.None);
+        await reconciler.RenewHeldAsync(CancellationToken.None);
+
+        // Assert — выданный lease продлевается каждым проходом (период TTL/2.5),
+        // ключ не мигает между тиками сверки
+        result.IsSuccess.Should().BeTrue();
+        etcd.Keepalives.Should().HaveCount(2);
+    }
+
+    [Fact]
+    public async Task MasterKeyReconciler_PrimaryDead_HeldLeaseDropped()
+    {
+        // Arrange — ключ записан reconciler'ом (primary был жив), потом primary замолчал
+        var etcd = new Fakes.FakeEtcd();
+        var addresses = new Dictionary<string, NodeAddress>
+        {
+            ["shard1/shard1a"] = new("h1", new NodePorts(15000, 18000, 16500)),
+        };
+        var snap = new ClusterSnapshot(
+            new ClusterConfig("shop", 1, "shop", null, ClusterState.Active),
+            [new ShardSpec("shard1", 1, null, null,
+            [
+                new NodeSpec("shard1", "shard1a", NodeState.Running),
+            ])],
+            []);
+        var alive = true;
+        var reconciler = new MasterKeyReconciler(
+            etcd, [Ep], Probe(port => port == 18000 && alive ? Ok() : Down()));
+        await reconciler.ReconcileAsync(snap, addresses, CancellationToken.None);
+
+        // Act — сверка с замолчавшим primary + проход продления тем же инстансом
+        alive = false;
+        await reconciler.ReconcileAsync(snap, addresses, CancellationToken.None);
+        await reconciler.RenewHeldAsync(CancellationToken.None);
+
+        // Assert — lease снят с продления: ключ гаснет ≤ TTL (P11, эвакуация)
+        etcd.Keepalives.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void MasterKeyReconciler_KeepalivePeriod_TwoAndHalfTimesFasterThanTtl()
+    {
+        // Arrange/Act/Assert — продление в 2.5 раза чаще периода протухания:
+        // TTL 5с → период keepalive 2с
+        MasterKeyReconciler.KeepalivePeriod.Should().Be(TimeSpan.FromSeconds(2));
+    }
 }

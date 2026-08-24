@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Etcd.Client;
@@ -11,11 +12,23 @@ namespace PgWorker.Provisioning.Processes;
 /// «сверяющий демон»: GET /primary по нодам шарда → фактический primary;
 /// расхождение (или ключа нет при живом primary) → lease-put TTL 5с значения
 /// host:doormanPort. Ключ корректен → НИКАКИХ мутаций (не второй регулярный
-/// писатель). Отказ callback (R3) закрыт этим двойным контуром.
+/// писатель). Отказ callback (R3) закрыт этим двойным контуром. Lease,
+/// выданный reconciler'ом (писатель-callback не работает), продлевается
+/// отдельным циклом с периодом TTL/2.5 — ключ не мигает между тиками сверки;
+/// продление снимается, когда primary перестал отвечать (ключ протухает ≤ TTL,
+/// P11 и условие эвакуации мёртвого шарда).
 /// </summary>
 public sealed class MasterKeyReconciler(IEtcdGateway etcd, string[] endpoints, ShardProbe probe)
 {
     private const int MasterLeaseTtlSec = 5; // P11: TTL 5с (ttl=5/loop_wait=2 Patroni)
+
+    // Продление lease — в 2.5 раза чаще периода протухания (TTL/2.5 = 2с).
+    internal static readonly TimeSpan KeepalivePeriod = TimeSpan.FromSeconds(MasterLeaseTtlSec / 2.5);
+
+    // Выданные нами lease по мастер-ключам (шард без alive-primary удаляется).
+    private readonly ConcurrentDictionary<string, long> _held = new();
+    private readonly object _loopSync = new();
+    private CancellationTokenSource? _renewalLoop;
 
     public async Task<Result> ReconcileAsync(
         ClusterSnapshot snap, IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
@@ -23,6 +36,8 @@ public sealed class MasterKeyReconciler(IEtcdGateway etcd, string[] endpoints, S
         var cluster = snap.Config.Cluster;
         foreach (var shard in snap.Shards)
         {
+            var key = $"/clusters/{cluster}/shards/{shard.Name}/master";
+
             // Фактический primary: первая нода, ответившая 200 на /primary.
             var nodes = shard.Nodes
                 .Where(n => addresses.ContainsKey($"{shard.Name}/{n.Name}"))
@@ -38,14 +53,18 @@ public sealed class MasterKeyReconciler(IEtcdGateway etcd, string[] endpoints, S
             }
 
             if (primary is null)
-                continue; // primary не отвечает (failover-окно/шард мёртв) — Patroni сам
+            {
+                // primary не отвечает (failover-окно/шард мёртв) — Patroni сам;
+                // наш lease больше не продлеваем: ключ гаснет ≤ TTL (P11).
+                _held.TryRemove(key, out _);
+                continue;
+            }
 
-            var key = $"/clusters/{cluster}/shards/{shard.Name}/master";
             var expected = $"{primary.Host}:{primary.Ports.Doorman}";
             if (shard.Master == expected)
                 continue; // синхрон — мутаций нет (инвариант «только при рассинхроне»)
 
-            // Коррекция: lease TTL 5 + put (ключ перепишет callback на on_role_change).
+            // Коррекция: lease TTL 5 + put (ключ перепишет callback on_role_change).
             var grant = await WithFailoverAsync(endpoint => etcd.LeaseGrantAsync(endpoint, MasterLeaseTtlSec, ct));
             if (!grant.IsSuccess)
                 return grant;
@@ -54,9 +73,52 @@ public sealed class MasterKeyReconciler(IEtcdGateway etcd, string[] endpoints, S
                 etcd.PutAsync(endpoint, key, expected, grant.Value, ct));
             if (!put.IsSuccess)
                 return put;
+
+            _held[key] = grant.Value;
+            EnsureRenewalLoop();
         }
 
         return Result.Success();
+    }
+
+    /// <summary>
+    /// Продление удерживаемых lease (вызывается циклом с периодом KeepalivePeriod;
+    /// PackageInternal для тестов). Ошибочный keepalive = lease протух —
+    /// следующий reconcile перепишет ключ заново.
+    /// </summary>
+    internal async Task RenewHeldAsync(CancellationToken ct)
+    {
+        foreach (var (key, lease) in _held)
+        {
+            var renewed = await WithFailoverAsync(endpoint => etcd.LeaseKeepaliveAsync(endpoint, lease, ct));
+            if (!renewed.IsSuccess)
+                _held.TryRemove(key, out _);
+        }
+    }
+
+    private void EnsureRenewalLoop()
+    {
+        lock (_loopSync)
+        {
+            if (_renewalLoop is not null)
+                return;
+            _renewalLoop = new CancellationTokenSource();
+            _ = RenewalLoopAsync(_renewalLoop.Token);
+        }
+    }
+
+    private async Task RenewalLoopAsync(CancellationToken ct)
+    {
+        using var timer = new PeriodicTimer(KeepalivePeriod);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(ct))
+                await RenewHeldAsync(ct);
+        }
+        catch (OperationCanceledException)
+        {
+            // остановка приложения
+        }
     }
 
     private async Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)

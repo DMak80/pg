@@ -99,7 +99,12 @@ internal static class Fakes
             => Task.FromResult(Result.Success());
 
         public Task<Result> LeaseKeepaliveAsync(string endpoint, long lease, CancellationToken ct)
-            => Task.FromResult(Result.Success());
+        {
+            Keepalives.Add(lease);
+            return Task.FromResult(Result.Success());
+        }
+
+        public readonly List<long> Keepalives = [];
 
         public Task<Result<byte[]>> SnapshotSaveAsync(string endpoint, CancellationToken ct)
             => Task.FromResult(Result<byte[]>.Success([1, 2, 3]));
