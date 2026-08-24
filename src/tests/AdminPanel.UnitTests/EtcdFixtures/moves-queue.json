@@ -1,0 +1,12 @@
+[
+  {"key": "/pgworker/moves/demo/bucket_3", "value": "{\"op\":\"move\",\"to\":\"shard2\",\"requested_unix\":1755850000,\"requested_by\":\"ops\"}", "modRevision": 41},
+  {"key": "/pgworker/moves/demo/bucket_5", "value": "{\"op\":\"rollback\",\"to\":\"shard1\",\"old_shard\":\"shard2\",\"skip_reverse\":true,\"requested_unix\":1755850060,\"requested_by\":\"etcdctl\"}", "modRevision": 42},
+  {"key": "/pgworker/moves/demo/bucket_7", "value": "{\"op\":\"finalize\",\"old_shard\":\"shard1\",\"force\":true,\"requested_unix\":1755850120}", "modRevision": 43},
+  {"key": "/pgworker/moves/demo/bucket_9", "value": "{\"op\":\"abort\",\"requested_unix\":1755850180,\"requested_by\":\"ops\"}", "modRevision": 44},
+  {"key": "/pgworker/moves/demo/weird", "value": "{\"op\":\"move\",\"to\":\"shard2\",\"requested_unix\":1755850200}", "modRevision": 45},
+  {"key": "/pgworker/moves/shop/bucket_1", "value": "{\"op\":\"move\",\"to\":\"shard9\",\"requested_unix\":1755850240,\"requested_by\":\"ops\"}", "modRevision": 46},
+  {"key": "/pgworker/moves/demo/bucket_11", "value": "{\"op\":\"dance\",\"to\":\"shard2\",\"requested_unix\":1755850260}", "modRevision": 47},
+  {"key": "/pgworker/moves/demo/bucket_13", "value": "{oops", "modRevision": 48},
+  {"key": "/pgworker/moves/demo/bucket_15", "value": "{\"to\":\"shard2\",\"requested_unix\":1755850320}", "modRevision": 49},
+  {"key": "/pgworker/moves/broken", "value": "{\"op\":\"move\",\"to\":\"x\",\"requested_unix\":1}", "modRevision": 50}
+]
