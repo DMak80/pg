@@ -143,6 +143,26 @@ public class DeprovisioningProcessTests
             "заявки переездов не переживают удаление кластера");
     }
 
+    // AAA: журналы эвакуаций не переживают удаление кластера (t06 §5.6, Д12)
+    [Fact]
+    public async Task Tick_CleanKeys_RemovesEvacuationJournals()
+    {
+        // Arrange — снимаемый кластер + журнал эвакуации (пробел D2, найден при
+        // проектировании S3 remove-shard — симметрия с демонтажем шарда)
+        var rig = await NewRig();
+        rig.Etcd.Seed("/pgworker/evacuations/shop/shard1",
+            """{"buckets":{"0":"shard2"},"reason":"shard-dead","evacuated_unix":1,"state":"DONE","returned_unix":null}""");
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — префикс /pgworker/evacuations/<C>/ вычищен вместе с кластером
+        outcome.Value.Should().Be(ProcessOutcome.Done);
+        rig.Etcd.Store.Keys.Should().NotContain(k =>
+            k.StartsWith("/pgworker/evacuations/shop/", StringComparison.Ordinal),
+            "журналы эвакуаций не переживают удаление кластера");
+    }
+
     [Fact]
     public async Task Tick_AfterDone_ClaimReleasedImmediately()
     {

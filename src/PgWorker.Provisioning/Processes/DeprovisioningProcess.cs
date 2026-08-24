@@ -159,6 +159,11 @@ public sealed class DeprovisioningProcess(
         if (!delWork.IsSuccess)
             return delWork;
 
+        // Журналы эвакуаций не переживают удаление кластера (t06 §5.6, симметрия с S3).
+        var delEvacuations = await DeleteAsync($"/pgworker/evacuations/{cluster}/", prefix: true, ct);
+        if (!delEvacuations.IsSuccess)
+            return delEvacuations;
+
         // Заявки переездов (t01, spec §5.3 D2): префикс /pgworker/moves/<C>/ целиком.
         return await DeleteAsync($"/pgworker/moves/{cluster}/", prefix: true, ct);
     }
