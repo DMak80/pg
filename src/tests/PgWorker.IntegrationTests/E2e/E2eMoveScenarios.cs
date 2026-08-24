@@ -99,6 +99,18 @@ public class E2eMoveScenarios(E2eFixture fixture)
         // Сверка данных (AC5): counts источника/приёмника равны — на приостановленной
         // нагрузке (замороженный источник фиксирован, приёмник догнал до flip).
         load.Pause();
+
+        // Обратная подписка (sub_rb, приёмник→источник) асинхронна: последний
+        // пост-flip бит мог ещё не доехать до источника — перед сверкой ждём
+        // выравнивания (без ожидания приёмник на бит впереди — гонка, P8 цел).
+        var aligned = await E2eFixture.WaitForAsync(async () =>
+        {
+            var c1 = await SqlScalarAsync(shard1.Dsn, "SELECT count(*) FROM bucket_0.items", ct);
+            var c2 = await SqlScalarAsync(shard2.Dsn, "SELECT count(*) FROM bucket_0.items", ct);
+            return c1 == c2;
+        }, TimeSpan.FromSeconds(15), ct);
+        aligned.Should().BeTrue("обратная репликация sub_rb должна догнать (counts выровнялись)");
+
         var count1 = await SqlScalarAsync(shard1.Dsn, "SELECT count(*) FROM bucket_0.items", ct);
         var count2 = await SqlScalarAsync(shard2.Dsn, "SELECT count(*) FROM bucket_0.items", ct);
         count1.Should().Be(count2, "после flip counts всех таблиц источника/приёмника совпадают (P8)");

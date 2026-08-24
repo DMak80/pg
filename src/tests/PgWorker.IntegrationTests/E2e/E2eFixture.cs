@@ -54,9 +54,9 @@ public sealed class E2eFixture : IAsyncLifetime
                      ['\n', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             await RunDockerAsync(["rm", "-f", id]);
         // docker rm -f возвращает управление до фактического освобождения
-        // volume-ссылки демоном (гонка Docker Desktop): volume только что
-        // удалённого контейнера ещё «in use» долю секунды — ретраим,
-        // иначе уборка роняет инициализацию фикстуры целиком.
+        // volume-ссылки демоном (гонка Docker Desktop: GC ссылки может идти
+        // секундами) — ретраим с бюджетом ~20 с, иначе уборка остатков
+        // прошлого прогона роняет инициализацию фикстуры целиком.
         foreach (var id in (await RunDockerAsync(["volume", "ls", "-q", "--filter", "name=pgw-"])).Split(
                      ['\n', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
             for (var attempt = 0; ; attempt++)
@@ -66,9 +66,9 @@ public sealed class E2eFixture : IAsyncLifetime
                     await RunDockerAsync(["volume", "rm", "-f", id]);
                     break;
                 }
-                catch (ApplicationException) when (attempt < 5)
+                catch (ApplicationException) when (attempt < 10)
                 {
-                    await Task.Delay(1000, TestContext.Current.CancellationToken);
+                    await Task.Delay(2000, TestContext.Current.CancellationToken);
                 }
             }
 
