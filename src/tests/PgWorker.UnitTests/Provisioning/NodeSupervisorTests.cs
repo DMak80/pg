@@ -272,6 +272,30 @@ public class NodeSupervisorTests
     }
 
     [Fact]
+    public async Task Tick_QuarantinedNodes_StateKept_NoUnreachableOverwrite()
+    {
+        // Arrange — эвакуированный шард: все ноды QUARANTINED (E3), REST глухой
+        // (остановлены намеренно), журнал эвакуации DONE; docker-объекты на месте
+        // (stop без удаления). Пробы надзора не должны затирать QUARANTINED на
+        // UNREACHABLE — на инварианте строятся guard'ы G6/Д6 (t06 §5.4).
+        var rig = await NewRig(_ => Down());
+        foreach (var node in new[] { "shard1a", "shard1b", "shard1c" })
+            rig.Etcd.Seed($"/clusters/shop/shards/shard1/nodes/{node}/state", "QUARANTINED");
+        rig.Etcd.Seed("/pgworker/evacuations/shop/shard1",
+            """{"evacuated_unix":1755900000,"reason":"shard-dead","buckets":{},"state":"DONE"}""");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — тик надзора прошёл, state карантинных нод не тронут
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        foreach (var node in new[] { "shard1a", "shard1b", "shard1c" })
+            rig.Etcd.Store[$"/clusters/shop/shards/shard1/nodes/{node}/state"].Value
+                .Should().Be("QUARANTINED", $"{node} — карантин держится до разбора (E3)");
+        rig.Driver.EnsuredNodes.Should().BeEmpty("карантинные ноды не пересоздаются");
+    }
+
+    [Fact]
     public async Task Tick_MarkedShard_DockerRm_NotRecreated()
     {
         // Arrange — шард с dsn помечен TO_REMOVE; контейнер снесён руками —

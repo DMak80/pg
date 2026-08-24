@@ -206,6 +206,13 @@ public sealed class NodeSupervisor(
         var dead = new List<string>();
         foreach (var node in shard.Nodes)
         {
+            // Карантин/демонтаж — не домен надзора (E3-инвариант arch/14 §5):
+            // QUARANTINED ставится эвакуатором и держится до разбора runbook'ом
+            // (возврат обрабатывает эвакуатор), REMOVING — RemoveShardProcess/
+            // Deprovisioning. Проба мёртвой карантинной ноды затирала бы state
+            // на UNREACHABLE — на инварианте строятся guard'ы G6/Д6 (t06).
+            if (node.State is NodeState.Quarantined or NodeState.Removing)
+                continue;
             if (!addresses.TryGetValue($"{shard.Name}/{node.Name}", out var addr))
                 continue; // без закреплённого адреса пробу не сделать
             if (await probe.IsAliveAsync(addr, ct))
