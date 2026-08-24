@@ -7,6 +7,9 @@ export type BucketStateName = 'ACTIVE' | 'SYNCING' | 'FROZEN' | 'ABORTING' | 'NO
 // Канон состояния кластера (arch/03 §2): отсутствие записи о state = ACTIVE.
 export type ClusterStateName = 'ACTIVE' | 'NOT_INITIALIZED' | 'TO_REMOVE';
 
+// Канон состояния шарда (t06, arch/03 §2): отсутствие ключа = ACTIVE.
+export type ShardStateName = 'ACTIVE' | 'TO_REMOVE';
+
 // POST /api/clusters — тело и ответ (arch/03 §1.1).
 // sharded: фронт передаёт всегда; buckets/shards — только при sharded=true
 // (для нешардированной не запрашиваются вовсе, сервер нормализует в 1/1).
@@ -27,6 +30,24 @@ export interface ClusterCreatedDto {
   sharded: boolean;
   bucketsCount: number;
   shardsTotal: number;
+  replicas: number;
+  requestCpu: string;
+  requestMem: string;
+  requestDisk: string;
+  state: ClusterStateName;
+}
+
+// POST /api/clusters/{cluster}/shards — тело и ответ (t06, arch/03 §1.3).
+export interface AddShardRequestDto {
+  replicas: number;
+  requestCpu: number;
+  requestMem: number;
+  requestDisk: number;
+}
+
+export interface ShardAddedDto {
+  cluster: string;
+  name: string;
   replicas: number;
   requestCpu: string;
   requestMem: string;
@@ -144,6 +165,8 @@ export interface ClusterDto {
 
 export interface ShardDto {
   name: string;
+  // Маркер демонтажа shards/<X>/state (t06, arch/02 §9.6): отсутствие = ACTIVE.
+  state: ShardStateName;
   dsn: string;
   hosts: string[];
   replicasDeclared: number | null;

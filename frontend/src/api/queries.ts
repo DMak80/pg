@@ -1,6 +1,7 @@
 // Query-ключи и fetch-функции всех эндпоинтов (arch/03 §1); t08/t09 используют без правок слоя api.
 import { apiFetch } from './client';
 import type {
+  AddShardRequestDto,
   AlertDto,
   ClusterCreatedDto,
   ClusterDto,
@@ -11,6 +12,7 @@ import type {
   HaScopeSummaryDto,
   OverviewDto,
   SessionDto,
+  ShardAddedDto,
 } from './dto';
 
 export const queryKeys = {
@@ -81,6 +83,21 @@ export function createCluster(request: CreateClusterRequestDto): Promise<Cluster
 // 204 без тела; ключи etcd не удаляются (очистка — внешний оркестратор).
 export function deleteCluster(name: string): Promise<void> {
   return apiFetch<void>(`/api/clusters/${encodeURIComponent(name)}`, { method: 'DELETE' });
+}
+
+// POST /api/clusters/{cluster}/shards — третья мутация панели (t06, 02 §9.5):
+// шард стартует пустым; имя генерирует сервер (shard<max+1>).
+export function addShard(cluster: string, request: AddShardRequestDto): Promise<ShardAddedDto> {
+  return apiFetch<ShardAddedDto>(`/api/clusters/${encodeURIComponent(cluster)}/shards`,
+    { method: 'POST', body: request });
+}
+
+// DELETE /api/clusters/{cluster}/shards/{shard} — маркер демонтажа TO_REMOVE
+// (t06, 02 §9.6); 204 без тела; демонтаж выполняет PgWorker.
+export function removeShard(cluster: string, shard: string): Promise<void> {
+  return apiFetch<void>(
+    `/api/clusters/${encodeURIComponent(cluster)}/shards/${encodeURIComponent(shard)}`,
+    { method: 'DELETE' });
 }
 
 export function logoutRequest(): Promise<void> {

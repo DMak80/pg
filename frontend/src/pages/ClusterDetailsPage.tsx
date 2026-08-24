@@ -44,6 +44,12 @@ export function ClusterDetailsPage() {
 
   const data = query.data;
   const toRemove = data.state === 'TO_REMOVE';
+  // Кнопки add/remove шарда — только у Active (t06 spec §6.3, симметрия с «Удалить кластер»);
+  // счётчик бакетов шарда — по routing (диалог удаления, Д4).
+  const canScale = data.state === 'ACTIVE';
+  const bucketCounts = Object.fromEntries(
+    data.shards.map((s) => [s.name, data.buckets.filter((b) => b.owner === s.name).length]),
+  );
   return (
     <Stack gap="md">
       <div>
@@ -68,7 +74,10 @@ export function ClusterDetailsPage() {
           <Tabs.Tab value="moves">Переезды</Tabs.Tab>
           <Tabs.Tab value="heals">Heals</Tabs.Tab>
         </Tabs.List>
-        <Tabs.Panel value="shards" pt="sm"><ShardsTab shards={data.shards} /></Tabs.Panel>
+        <Tabs.Panel value="shards" pt="sm">
+          <ShardsTab cluster={data.name} canScale={canScale} shards={data.shards}
+            bucketCounts={bucketCounts} />
+        </Tabs.Panel>
         {data.sharded ? (
           <Tabs.Panel value="buckets" pt="sm"><BucketsTab buckets={data.buckets} /></Tabs.Panel>
         ) : null}
