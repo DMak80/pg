@@ -57,7 +57,21 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
         string? bucketAdminUser = null, string? bucketAdminPassword = null)
         => [Role("app", s.AppPassword),
             Role(bucketAdminUser ?? "bucket_admin", bucketAdminPassword ?? s.BucketAdminPassword),
-            Role("bucket_mover", s.MoverPassword, replication: true)];
+            Role("bucket_mover", s.MoverPassword, replication: true),
+            PgMonitorGrant(bucketAdminUser ?? "bucket_admin")];
+
+    private static string PgMonitorGrant(string bucketAdminUser)
+    {
+        ValidateIdentifier(bucketAdminUser);
+        // pg_monitor: SQL-проба панели читает pg_stat_replication/pg_replication_slots
+        // под bucket_admin — без pg_monitor PG маскирует state/sync_state NULL (arch/02 §6.2).
+        // Идемпотентно: GRANT повторно не ошибёт, выдаётся при создании ролей (в т.ч. AddShard).
+        return $"DO $do$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_auth_members am " +
+               $"JOIN pg_roles r ON r.oid = am.roleid AND r.rolname = 'pg_monitor' " +
+               $"JOIN pg_roles m ON m.oid = am.member AND m.rolname = '{Escape(bucketAdminUser)}' " +
+               $"THEN RAISE NOTICE 'pg_monitor уже выдан'; ELSE " +
+               $"EXECUTE 'GRANT pg_monitor TO \"{bucketAdminUser}\"'; END IF; END $do$;\n";
+    }
 
     private static string Role(string name, string password, bool replication = false)
     {
@@ -90,10 +104,8 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
             sb.AppendLine($"GRANT SELECT ON ALL TABLES IN SCHEMA bucket_{id} TO \"bucket_mover\";");
         }
 
-        // Мониторинг панели: SQL-проба шарда идёт под bucket_admin (dsn) и читает
-        // pg_stat_replication/pg_replication_slots — без pg_monitor PG маскирует
-        // эти поля NULL и проба падает (arch/02 §6.2, arch/03 §5).
-        sb.AppendLine($"GRANT pg_monitor TO \"{bucketAdminUser}\";");
+        // pg_monitor выдан в BuildRoleGuardsSql (при создании ролей — работает
+        // и на AddShard, где BuildSchemasSql не вызывается).
 
         return sb.ToString();
     }
