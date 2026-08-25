@@ -457,6 +457,76 @@ public class HaAlertRulesTests
     }
 
     [Fact]
+    public void InventoryMismatch_PostMoveLeftoverWithRbSubscription_NoAlert()
+    {
+        // Arrange: bucket_1 УЖЕ Active на новом владельце s2, но на старом шарде s1
+        // до finalize остаются замороженная схема и подписка sub_bucket_1_rb —
+        // окно rollback завершённого переезда (t01), не аномалия.
+        var oldShard = TestSnapshots.FullCluster().Shards.Single() with
+        {
+            Name = "s1",
+            Runtime = TestSnapshots.ShardRuntimeOf("s1") with
+            {
+                BucketSchemas = [.. Enumerable.Range(0, 16).Select(i => $"bucket_{i}")],
+                Subscriptions = [new SubscriptionInfo("sub_bucket_1_rb", null, null, null)],
+            },
+        };
+        var newShard = TestSnapshots.FullCluster().Shards.Single() with
+        {
+            Name = "s2",
+            Runtime = TestSnapshots.ShardRuntimeOf("s2") with
+            {
+                BucketSchemas = ["bucket_1"],
+            },
+        };
+        var cluster = TestSnapshots.FullCluster() with
+        {
+            Buckets = [.. Enumerable.Range(0, 16).Select(i =>
+                i == 1
+                    ? new BucketInfo(1, "s2", BucketState.Active, null)
+                    : new BucketInfo(i, "s1", BucketState.Active, null))],
+            Shards = [oldShard, newShard],
+        };
+        var snapshot = TestSnapshots.Healthy(Now) with { Clusters = [cluster] };
+
+        // Act
+        var alerts = new InventoryMismatchRule().Evaluate(snapshot, Context()).ToList();
+
+        // Assert: bucket_1 на s1 — «лишняя» (routing → s2), но подавлена окном rollback.
+        alerts.Should().BeEmpty("окно rollback до finalize — управляемое состояние");
+    }
+
+    [Fact]
+    public void InventoryMismatch_PostMoveLeftoverWithoutRbSubscription_Alerts()
+    {
+        // Arrange: то же, но подписки sub_bucket_2_rb НЕТ — схема на старом шарде
+        // осталась без окна rollback (finalize прошёл частично?) — сигнал нужен.
+        var cluster = TestSnapshots.FullCluster() with
+        {
+            Buckets = [.. Enumerable.Range(0, 16).Select(i =>
+                i == 2
+                    ? new BucketInfo(2, "s2", BucketState.Active, null)
+                    : new BucketInfo(i, "s1", BucketState.Active, null))],
+            Shards = [TestSnapshots.FullCluster().Shards.Single() with
+            {
+                Name = "s1",
+                Runtime = TestSnapshots.ShardRuntimeOf("s1") with
+                {
+                    BucketSchemas = [.. Enumerable.Range(0, 16).Select(i => $"bucket_{i}")],
+                },
+            }],
+        };
+        var snapshot = TestSnapshots.Healthy(Now) with { Clusters = [cluster] };
+
+        // Act
+        var alerts = new InventoryMismatchRule().Evaluate(snapshot, Context()).ToList();
+
+        // Assert
+        var alert = alerts.Should().ContainSingle().Subject;
+        alert.Details!["extra"].Should().Be("bucket_2", "схема без окна rollback — рассинхрон");
+    }
+
+    [Fact]
     public void HaRules_FullEngine_Scenario()
     {
         // Arrange: нет лидера + реплика не стримит + слот lost + нет sync-standby + проба падала.

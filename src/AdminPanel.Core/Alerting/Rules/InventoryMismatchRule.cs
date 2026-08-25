@@ -36,7 +36,17 @@ public sealed class InventoryMismatchRule : IAlertRule
                .Where(b => b.State is BucketState.Syncing or BucketState.Frozen or BucketState.Aborting)
                .Select(b => $"bucket_{b.Id}")
                .ToHashSet();
-            var actual = runtime.BucketSchemas.Where(s => !moving.Contains(s)).ToHashSet();
+            // Окно rollback ЗАВЕРШЁННОГО переезда (t01): до finalize/rollback на старом
+            // шарде намеренно остаются замороженная схема и подписка sub_<bucket>_rb —
+            // это управляемое состояние, а не рассинхрон (аномалия без подписки — сигнал).
+            var rollbackWindow = runtime.Subscriptions
+               .Where(s => s.Name.StartsWith("sub_", StringComparison.Ordinal)
+                           && s.Name.EndsWith("_rb", StringComparison.Ordinal))
+               .Select(s => s.Name["sub_".Length..^"_rb".Length])
+               .ToHashSet();
+            var actual = runtime.BucketSchemas
+               .Where(s => !moving.Contains(s) && !rollbackWindow.Contains(s))
+               .ToHashSet();
             var missing = expected.Except(actual).Order().ToList(); // Order() без компаратора — Ordinal для строк
             var extra = actual.Except(expected).Order().ToList();
             if (missing.Count == 0 && extra.Count == 0)
