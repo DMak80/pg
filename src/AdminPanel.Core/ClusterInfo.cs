@@ -37,7 +37,8 @@ public sealed record ShardInfo(
     IReadOnlyList<NodeInfo> Nodes,
     ShardRuntime? Runtime,
     ShardState State = ShardState.Active,
-    IReadOnlyList<int?>? DsnPorts = null)
+    IReadOnlyList<int?>? DsnPorts = null,
+    string? Password = null)
 {
     // Lease-семантика master-ключа (arch/02 §1): ключ есть = lease жив.
     public bool MasterLeaseAlive => MasterAddress is not null;

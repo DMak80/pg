@@ -220,7 +220,8 @@ public static class ClustersParser
             nodes,
             null, // Runtime — SQL-проба t06
             shard.StateRaw?.Trim() == "TO_REMOVE" ? ShardState.ToRemove : ShardState.Active,
-            dsn.Ports);
+            dsn.Ports,
+            dsn.Password);
     }
 
     private static IReadOnlyList<BucketInfo> BuildBuckets(int bucketsCount, ClusterAcc acc, List<KeyParseError> errors)

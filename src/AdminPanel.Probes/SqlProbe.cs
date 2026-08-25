@@ -58,8 +58,9 @@ public sealed class SqlProbe(IOptions<ProbesOptions> options, TimeProvider time)
             builder.Database = shard.DbName;
         if (shard.User is not null)
             builder.Username = shard.User;
-        if (!string.IsNullOrEmpty(options.Password))
-            builder.Password = options.Password;
+        // Per-cluster password: приоритет — пароль из DSN (per-cluster), фолбэк на
+        // глобальный из ProbesOptions (для старых кластеров без password в DSN).
+        builder.Password = shard.Password ?? options.Password;
         return builder;
     }
 

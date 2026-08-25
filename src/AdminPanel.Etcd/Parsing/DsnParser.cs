@@ -9,7 +9,8 @@ public sealed record DsnInfo(
     int? Port,
     IReadOnlyList<int?> Ports,
     string? DbName,
-    string? User);
+    string? User,
+    string? Password = null);
 
 // Парсер libpq keyword-строки: токены key=value по пробелам; нераспознанное игнорируется
 // (DSN пишут init-скрипты ../pg; quoting-синтаксис libpq в системе не используется).
@@ -22,6 +23,7 @@ public static class DsnParser
         int? port = null;
         string? dbName = null;
         string? user = null;
+        string? password = null;
 
         foreach (var token in dsn.Split(' ', StringSplitOptions.RemoveEmptyEntries))
         {
@@ -50,10 +52,13 @@ public static class DsnParser
                 case "user":
                     user = value;
                     break;
+                case "password":
+                    password = value;
+                    break;
             }
         }
 
-        return new DsnInfo(hosts, port, ports, dbName, user);
+        return new DsnInfo(hosts, port, ports, dbName, user, password);
     }
 
     private static int? ParsePort(string raw)
