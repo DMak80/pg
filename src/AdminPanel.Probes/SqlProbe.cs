@@ -51,6 +51,7 @@ public sealed class SqlProbe(IOptions<ProbesOptions> options, TimeProvider time)
             // Spilo включает SSL (self-signed сертификат); pg_hba требует
             // hostssl — Require гарантирует шифрование, Reject на no-SSL.
             SslMode = SslMode.Require,
+            TrustServerCertificate = true,
         };
         if (hosts.Count > 1)
             builder.TargetSessionAttributes = "read-write"; // multi-host ведёт на мастер
