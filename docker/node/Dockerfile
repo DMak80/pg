@@ -1,12 +1,13 @@
 # syntax=docker/dockerfile:1
 
 # Образ узла кластера pgworker-node (Д4, spec §5.1, arch/14 §2.1):
-# Spilo (PG16+Patroni) + haproxy (P2 write-фронтенд) + pg_doorman (P13–P17,
+# Spilo (PG18+Patroni; R1/Д11 закрыт: failover-слоты поддерживаются с PG17)
+# + haproxy (P2 write-фронтенд) + pg_doorman (P13–P17,
 # опционально) + supervisord + lease-скрипт мастер-ключа (P11).
 # Сборка: docker build -f docker/node/Dockerfile -t pgworker-node:dev .
 #   --build-arg DOORMAN_URL=<url-бинарника-релиза>  — включает пулер (версия
 #   пинится в самом URL); без него узел без doorman (R1: EnableDoorman=false).
-FROM ghcr.io/zalando/spilo-16:3.3-p3
+FROM ghcr.io/zalando/spilo-18:4.1-p2
 
 ARG DOORMAN_URL=""
 

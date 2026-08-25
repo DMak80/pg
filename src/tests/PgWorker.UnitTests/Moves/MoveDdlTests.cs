@@ -77,6 +77,32 @@ public class MoveDdlTests
         driver.Executed.Should().BeEmpty("exec не должен уходить с невалидным идентификатором");
     }
 
+    // AAA: psql-метакоманды (\restrict/\unrestrict — pg_dump PG17.2+/18) вырезаются
+    // перед применением: серверный протокол их не понимает (42601)
+    [Fact]
+    public async Task ApplyAsync_StripsPsqlMetaCommands()
+    {
+        // Arrange — дамп PG18 с охранными метакомандами pg_dump
+        var sql = new StubSql();
+        var ddl = new MoveDdl(new Fakes.FakeDriver(), sql);
+        var dump = """
+            \restrict 01f0f4c6
+            SET statement_timeout = 0;
+            CREATE SCHEMA bucket_42;
+            \unrestrict 01f0f4c6
+            """;
+
+        // Act
+        var apply = await ddl.ApplyAsync("dsn", dump, CancellationToken.None);
+
+        // Assert
+        apply.IsSuccess.Should().BeTrue();
+        var sent = sql.Calls.Should().ContainSingle().Subject.Sql;
+        sent.Should().NotContain("\\restrict", "метакоманды psql не должны попадать в SQL-батч");
+        sent.Should().NotContain("\\unrestrict", "метакоманды psql не должны попадать в SQL-батч");
+        sent.Should().Contain("CREATE SCHEMA bucket_42;", "SQL дампа сохраняется");
+    }
+
     // AAA: dump-провал драйвера прокидывается (shard недоступен — transient тика)
     [Fact]
     public async Task DumpAsync_DriverFails_Propagates()

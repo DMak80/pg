@@ -161,12 +161,13 @@ public sealed class E2eFixture : IAsyncLifetime
             ["PgWorker__Thresholds__ShardDeadSec"] = "5",
             ["PgWorker__Thresholds__PatroniBootSec"] = "600",
 
-            // Переезды (t01): spilo-16 → FailoverSlots=false (R1/Д11); короткие
+            // Переезды (t01): spilo-18 → FailoverSlots=true (штатный путь PG17+,
+            // R1/Д11); короткие
             // паузы заморозки/поллинга — окно FROZEN в e2e измеряется секундами;
             // AbortMinAgeSec=3 — abort-сценарий без долгого ожидания свежести.
             // AdvertisedPublisherHost: подписки ходят ИЗ контейнеров приёмников —
             // на single-host стенде издатель виден как host.docker.internal.
-            ["PgWorker__Moves__FailoverSlots"] = "false",
+            ["PgWorker__Moves__FailoverSlots"] = "true",
             ["PgWorker__Moves__FreezeWaitSec"] = "1",
             ["PgWorker__Moves__PollIntervalSec"] = "1",
             ["PgWorker__Moves__AbortMinAgeSec"] = "3",

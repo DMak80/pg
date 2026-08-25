@@ -29,8 +29,20 @@ public sealed class MoveDdl(IClusterDriver driver, IMoveSqlExecutor sql)
 
     // Применение DDL на приёмнике: батч Npgsql (ON_ERROR_STOP-эквивалент —
     // исключение батча → transient-отказ тика, повтор безопасен по P5-сверке).
+    // psql-метакоманды (PG17.2+/18: пары \restrict/\unrestrict против инъекций
+    // имён при restore) вырезаются — серверный протокол их не понимает.
     public Task<Result> ApplyAsync(string dsn, string ddl, CancellationToken ct)
-        => sql.ExecuteAsync(dsn, ddl, ct);
+        => sql.ExecuteAsync(dsn, StripPsqlMeta(ddl), ct);
+
+    internal static string StripPsqlMeta(string ddl)
+    {
+        // Строки, начинающиеся с '\' — psql-метакоманды (\restrict, \unrestrict…);
+        // внутри SQL-строк/комментариев '\' в начале строки не встречается
+        // (pg_dump цитирует и комментирует по своим правилам).
+        var lines = ddl.Split('\n');
+        var kept = lines.Where(l => !l.StartsWith('\\'));
+        return string.Join('\n', kept);
+    }
 
     // Гранты app-роли на приёмнике: USAGE + DML + sequences (grant_app_role).
     public Task<Result> GrantAppOnSchemaAsync(string dsn, string bucket, CancellationToken ct)
