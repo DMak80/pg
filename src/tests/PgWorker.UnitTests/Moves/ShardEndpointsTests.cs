@@ -47,7 +47,7 @@ public class ShardEndpointsTests
         var conninfo = ShardEndpoints.MoverConninfo(dsnKey, secrets);
 
         // Assert
-        conninfo.Should().Be("host=n1,n2,n3 port=15432,15433,15434 dbname=shop user=bucket_mover password=moverpw");
+        conninfo.Should().Be("host=n1,n2,n3 port=15432,15433,15434 dbname=shop user=bucket_mover password=moverpw sslmode=require");
     }
 
     // AAA: dsn без user= — user добавляется (не теряем вход)
@@ -58,7 +58,7 @@ public class ShardEndpointsTests
         var conninfo = ShardEndpoints.MoverConninfo("host=n1 dbname=shop", new InstallSecrets("s", "s", "s", "s", "moverpw"));
 
         // Assert
-        conninfo.Should().Be("host=n1 dbname=shop user=bucket_mover password=moverpw");
+        conninfo.Should().Be("host=n1 dbname=shop user=bucket_mover password=moverpw sslmode=require");
     }
 
     // AAA: advertisedHost — подмена хостов издателя для контейнеров приёмника
@@ -74,7 +74,7 @@ public class ShardEndpointsTests
 
         // Assert
         conninfo.Should().Be(
-            "host=host.docker.internal,host.docker.internal port=1,2 dbname=shop user=bucket_mover password=pw");
+            "host=host.docker.internal,host.docker.internal port=1,2 dbname=shop user=bucket_mover password=pw sslmode=require");
     }
 
     // AAA: mover-Npgsql-DSN — libpq→Npgsql конвертация для SQL-проб роли (spec §6.1 M0);
@@ -90,7 +90,7 @@ public class ShardEndpointsTests
         var dsn = ShardEndpoints.MoverNpgsqlDsn(dsnKey, secrets);
 
         // Assert
-        dsn.Should().Be("Host=n1:15432,n2:15433,n3:15434;Database=shop;Username=bucket_mover;Password=moverpw");
+        dsn.Should().Be("Host=n1:15432,n2:15433,n3:15434;Database=shop;Username=bucket_mover;Password=moverpw;SSL Mode=Require;Trust Server Certificate=true");
     }
 
     // AAA: Npgsql-DSN без user= — Username добавляется, пароль всегда
@@ -101,7 +101,7 @@ public class ShardEndpointsTests
         var dsn = ShardEndpoints.MoverNpgsqlDsn("host=n1 port=1 dbname=d", new InstallSecrets("s", "s", "s", "s", "pw"));
 
         // Assert
-        dsn.Should().Be("Host=n1;Port=1;Database=d;Username=bucket_mover;Password=pw");
+        dsn.Should().Be("Host=n1;Port=1;Database=d;Username=bucket_mover;Password=pw;SSL Mode=Require;Trust Server Certificate=true");
     }
 
     // AAA: admin-DSN мастера — postgres + пароль Д7 (паттерн BuildAdminDsn)
@@ -116,7 +116,7 @@ public class ShardEndpointsTests
         var dsn = ShardEndpoints.AdminDsn(master, "shop", secrets);
 
         // Assert
-        dsn.Should().Be("Host=h1;Port=15000;Database=shop;Username=postgres;Password=su-pw");
+        dsn.Should().Be("Host=h1;Port=15000;Database=shop;Username=postgres;Password=su-pw;SSL Mode=Require;Trust Server Certificate=true");
     }
 
     // AAA: portalloc читается префиксом кластера, ключа нет → пустой словарь

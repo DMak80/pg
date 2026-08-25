@@ -117,7 +117,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
             dsn = HostRegex().Replace(dsn, m =>
                 (m.Value.StartsWith(' ') ? " " : "") + "host=" +
                 string.Join(",", m.Value[(m.Value.IndexOf('=') + 1)..].Split(',').Select(_ => advertisedHost)));
-        return dsn + " password=" + secrets.MoverPassword;
+        return dsn + " password=" + secrets.MoverPassword + " sslmode=require";
     }
 
     // host=… пары key=value conninfo (замена хостов издателя на advertised).
@@ -169,6 +169,8 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
             parts.Add("Database=" + dbname);
         parts.Add("Username=" + MoverRole);
         parts.Add("Password=" + secrets.MoverPassword);
+        parts.Add("SSL Mode=Require");
+        parts.Add("Trust Server Certificate=true");
         return string.Join(";", parts);
     }
 }

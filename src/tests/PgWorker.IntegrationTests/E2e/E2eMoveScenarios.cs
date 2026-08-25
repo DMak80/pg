@@ -330,7 +330,7 @@ public class E2eMoveScenarios(E2eFixture fixture)
             GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA {bucket} TO app;
             GRANT SELECT ON ALL TABLES IN SCHEMA {bucket} TO bucket_mover;
             """;
-        await using var con = new NpgsqlConnection($"{adminDsn};Timeout=10");
+        await using var con = new NpgsqlConnection($"{adminDsn};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
         await con.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(ddl, con);
         await cmd.ExecuteNonQueryAsync(ct);
@@ -450,11 +450,11 @@ public class E2eMoveScenarios(E2eFixture fixture)
     }
 
     private static string AppDsn(int port)
-        => $"Host=localhost;Port={port};Database={Cluster};Username=app;Password={E2eFixture.AppPassword}";
+        => $"Host=localhost;Port={port};Database={Cluster};Username=app;Password={E2eFixture.AppPassword};SSL Mode=Require;Trust Server Certificate=true";
 
     private static async Task<string> SqlScalarAsync(string dsn, string sql, CancellationToken ct)
     {
-        await using var con = new NpgsqlConnection($"{dsn};Timeout=10");
+        await using var con = new NpgsqlConnection($"{dsn};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
         await con.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(sql, con);
         return (await cmd.ExecuteScalarAsync(ct))?.ToString() ?? "";
@@ -465,7 +465,7 @@ public class E2eMoveScenarios(E2eFixture fixture)
     {
         try
         {
-            await using var con = new NpgsqlConnection($"{AppDsn(masterPort)};Timeout=10");
+            await using var con = new NpgsqlConnection($"{AppDsn(masterPort)};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
             await con.OpenAsync(ct);
             await using var cmd = new NpgsqlCommand(
                 $"INSERT INTO {bucket}.items(note) VALUES ('probe')", con);
@@ -484,7 +484,7 @@ public class E2eMoveScenarios(E2eFixture fixture)
     private async Task<Artifacts> ArtifactsAsync(string shard, string bucket, CancellationToken ct)
     {
         var master = await MasterInfoAsync(shard, ct);
-        await using var con = new NpgsqlConnection($"{master.Dsn};Timeout=10");
+        await using var con = new NpgsqlConnection($"{master.Dsn};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
         await con.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand($"""
             SELECT
@@ -596,7 +596,7 @@ public class E2eMoveScenarios(E2eFixture fixture)
                         }
 
                         var port = (await owner.MasterInfoAsync(shard, ct)).Port;
-                        await using var con = new NpgsqlConnection($"{AppDsn(port)};Timeout=5");
+                        await using var con = new NpgsqlConnection($"{AppDsn(port)};Timeout=5;SSL Mode=Require;Trust Server Certificate=true");
                         await con.OpenAsync(ct);
                         await using var cmd = new NpgsqlCommand(
                             "INSERT INTO bucket_0.items(note) VALUES ('load')", con);

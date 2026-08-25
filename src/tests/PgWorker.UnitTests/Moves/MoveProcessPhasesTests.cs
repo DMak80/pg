@@ -89,7 +89,7 @@ public class MoveProcessPhasesTests
             && c.Sql == "CREATE PUBLICATION pub_bucket_42 FOR TABLES IN SCHEMA bucket_42",
             "публикация создаётся на источнике");
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.DstDsn && c.Sql ==
-            "CREATE SUBSCRIPTION sub_bucket_42 CONNECTION 'host=h1,h2 port=15000,15001 dbname=shop user=bucket_mover password=mov-pw' PUBLICATION pub_bucket_42 " +
+            "CREATE SUBSCRIPTION sub_bucket_42 CONNECTION 'host=h1,h2 port=15000,15001 dbname=shop user=bucket_mover password=mov-pw sslmode=require' PUBLICATION pub_bucket_42 " +
             $"WITH (copy_data = true, {failoverOption}synchronous_commit = remote_apply)",
             "подписка на приёмнике: mover-conninfo источника, remote_apply и конфигурируемый failover");
     }

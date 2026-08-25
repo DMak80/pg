@@ -19,11 +19,6 @@ RUN apt-get update \
         && chmod +x /usr/local/bin/pg_doorman; \
     fi
 
-# Spilo template: без ALLOW_NOSSL генерится hostnossl reject — блокирует
-# внешние хосты без SSL (стенд docker-сеть). Патчим шаблон configure_spilo.py:
-# заменяем hostnossl reject на host all md5 (без env ALLOW_NOSSL).
-RUN sed -i 's/hostnossl all           all                all                reject/host    all             all                all                md5/' /scripts/configure_spilo.py
-
 # Lease-скрипт мастер-ключа — путь совпадает с callback on_role_change
 # в SPILO_CONFIGURATION (NodeConfigBuilders, задача 9). Контекст сборки —
 # корень репозитория: docker build -f docker/node/Dockerfile -t pgworker-node:dev .

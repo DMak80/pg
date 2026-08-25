@@ -244,7 +244,7 @@ public class AddShardProcessTests
         outcome.IsSuccess.Should().BeTrue();
         outcome.Value.Should().Be(ProcessOutcome.Done);
         rig.Sql.EnsuredDatabases.Should().Contain(
-            ("Host=h1;Port=15002;Database=postgres;Username=postgres;Password=su-pw", "shop"));
+            ("Host=h1;Port=15002;Database=postgres;Username=postgres;Password=su-pw;SSL Mode=Require;Trust Server Certificate=true", "shop"));
         rig.Sql.Scalars.Should().Contain(s => s.Sql.Contains("CREATE ROLE \"app\""));
         rig.Sql.Scalars.Should().Contain(s => s.Sql.Contains("CREATE ROLE \"bucket_admin\""));
         rig.Sql.Executed.Should().NotContain(e => e.Sql.Contains("CREATE SCHEMA bucket_"));

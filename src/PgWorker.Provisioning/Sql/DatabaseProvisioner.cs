@@ -159,7 +159,7 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
     // Внутренний DSN Npgsql: разделитель ';' (libpq-пробелы Npgsql не парсит).
     // dsn-ключ etcd (P2.5) — остаётся libpq-форматом для панели/клиентов.
     public static string BuildAdminDsn(string host, int pgPort, string dbname, InstallSecrets secrets)
-        => $"Host={host};Port={pgPort};Database={dbname};Username=postgres;Password={Escape(secrets.SuPassword)}";
+        => $"Host={host};Port={pgPort};Database={dbname};Username=postgres;Password={Escape(secrets.SuPassword)};SSL Mode=Require;Trust Server Certificate=true";
 
     private static void ValidateIdentifier(string name)
     {

@@ -112,7 +112,7 @@ public class DatabaseProvisionerTests
         // Assert: пароль замаскирован (не утекает в journal.last_error/логи),
         // остальная часть DSN не тронута
         redacted.Should().NotContain("su-pw");
-        redacted.Should().Be("Host=h1;Port=5432;Database=shop;Username=postgres;password=***");
+        redacted.Should().Be("Host=h1;Port=5432;Database=shop;Username=postgres;password=***;SSL Mode=Require;Trust Server Certificate=true");
     }
 
     [Fact]

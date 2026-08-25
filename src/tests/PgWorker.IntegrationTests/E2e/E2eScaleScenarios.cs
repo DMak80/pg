@@ -334,7 +334,7 @@ public class E2eScaleScenarios(E2eFixture fixture)
             GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA {bucket} TO app;
             GRANT SELECT ON ALL TABLES IN SCHEMA {bucket} TO bucket_mover;
             """;
-        await using var con = new NpgsqlConnection($"{adminDsn};Timeout=10");
+        await using var con = new NpgsqlConnection($"{adminDsn};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
         await con.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(ddl, con);
         await cmd.ExecuteNonQueryAsync(ct);
@@ -401,7 +401,7 @@ public class E2eScaleScenarios(E2eFixture fixture)
 
     private static async Task<string> SqlScalarAsync(string dsn, string sql, CancellationToken ct)
     {
-        await using var con = new NpgsqlConnection($"{dsn};Timeout=10");
+        await using var con = new NpgsqlConnection($"{dsn};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
         await con.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(sql, con);
         return (await cmd.ExecuteScalarAsync(ct))?.ToString() ?? "";
@@ -414,7 +414,7 @@ public class E2eScaleScenarios(E2eFixture fixture)
         {
             var master = await MasterInfoAsync(cluster, shard, ct);
             await using var con = new NpgsqlConnection(
-                $"Host=localhost;Port={master.Port};Database={cluster};Username=app;Password={E2eFixture.AppPassword};Timeout=10");
+                $"Host=localhost;Port={master.Port};Database={cluster};Username=app;Password={E2eFixture.AppPassword};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
             await con.OpenAsync(ct);
             await using var cmd = new NpgsqlCommand($"INSERT INTO {bucket}.items(note) VALUES ('scale-probe')", con);
             await cmd.ExecuteNonQueryAsync(ct);

@@ -198,7 +198,7 @@ public class E2eScenarios(E2eFixture fixture)
                 try
                 {
                     await using var con = new NpgsqlConnection(
-                        $"Host={host};Port={port};Database=shop;Username=bucket_admin;Password={E2eFixture.BucketAdminPassword};Timeout=5");
+                        $"Host={host};Port={port};Database=shop;Username=bucket_admin;Password={E2eFixture.BucketAdminPassword};SSL Mode=Require;Trust Server Certificate=true;Timeout=5");
                     await con.OpenAsync(ct);
                     await using var cmd = new NpgsqlCommand("SELECT 1", con);
                     return await cmd.ExecuteScalarAsync(ct) is 1;
@@ -450,7 +450,7 @@ public class E2eScenarios(E2eFixture fixture)
 
     private static async Task<List<string>> SqlListAsync(string dsn, string sql, CancellationToken ct)
     {
-        await using var con = new NpgsqlConnection($"{dsn};Timeout=10");
+        await using var con = new NpgsqlConnection($"{dsn};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
         await con.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(sql, con);
         var result = new List<string>();
@@ -462,7 +462,7 @@ public class E2eScenarios(E2eFixture fixture)
 
     private static async Task<string> SqlScalarAsync(string dsn, string sql, CancellationToken ct)
     {
-        await using var con = new NpgsqlConnection($"{dsn};Timeout=10");
+        await using var con = new NpgsqlConnection($"{dsn};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
         await con.OpenAsync(ct);
         await using var cmd = new NpgsqlCommand(sql, con);
         return (await cmd.ExecuteScalarAsync(ct))?.ToString() ?? "";

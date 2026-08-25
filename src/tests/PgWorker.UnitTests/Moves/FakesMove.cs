@@ -73,11 +73,11 @@ internal static class MoveRig
     public static readonly InstallSecrets Secrets = new("su-pw", "sb-pw", "app-pw", "adm-pw", "mov-pw");
 
     // DSN стенда: админ (postgres) источника/приёмника и mover-пробы (bucket_mover).
-    public const string SrcDsn = "Host=h1;Port=15000;Database=shop;Username=postgres;Password=su-pw";
-    public const string DstDsn = "Host=h1;Port=15002;Database=shop;Username=postgres;Password=su-pw";
+    public const string SrcDsn = "Host=h1;Port=15000;Database=shop;Username=postgres;Password=su-pw;SSL Mode=Require;Trust Server Certificate=true";
+    public const string DstDsn = "Host=h1;Port=15002;Database=shop;Username=postgres;Password=su-pw;SSL Mode=Require;Trust Server Certificate=true";
     // Mover-DSN: multi-host с разными портами — парами host:port (Npgsql не
     // принимает список портов в Port=; см. ShardEndpoints.MoverNpgsqlDsn).
-    public const string MoverDsn = "Host=h1:15000,h2:15001;Database=shop;Username=bucket_mover;Password=mov-pw";
+    public const string MoverDsn = "Host=h1:15000,h2:15001;Database=shop;Username=bucket_mover;Password=mov-pw;SSL Mode=Require;Trust Server Certificate=true";
     public const string DstDsnKey = "host=h1,h2 port=15002,15003 dbname=shop user=bucket_admin";
 
     public static ClusterSnapshot Snap() => new(
