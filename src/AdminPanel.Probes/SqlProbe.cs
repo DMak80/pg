@@ -51,7 +51,6 @@ public sealed class SqlProbe(IOptions<ProbesOptions> options, TimeProvider time)
             // Spilo включает SSL (self-signed сертификат); pg_hba требует
             // hostssl — Require гарантирует шифрование, Reject на no-SSL.
             SslMode = SslMode.Require,
-            TrustServerCertificate = true,
         };
         if (hosts.Count > 1)
             builder.TargetSessionAttributes = "read-write"; // multi-host ведёт на мастер
@@ -149,8 +148,8 @@ public sealed class SqlProbe(IOptions<ProbesOptions> options, TimeProvider time)
             result.Add(new StandbyInfo(
                 reader.GetString(0),
                 reader.IsDBNull(1) ? null : reader.GetValue(1)?.ToString(),
-                reader.GetString(2),
-                reader.GetString(3),
+                reader.IsDBNull(2) ? null : reader.GetString(2),
+                reader.IsDBNull(3) ? null : reader.GetString(3),
                 reader.IsDBNull(4) ? null : (long)reader.GetDecimal(4)));
         }
 

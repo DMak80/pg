@@ -23,8 +23,8 @@ public sealed record ReplicationSlotInfo(
 public sealed record StandbyInfo(
     string ApplicationName,
     string? ClientAddr,
-    string State,
-    string SyncState,
+    string? State,
+    string? SyncState,
     long? LagBytes);
 
 // Подписка логической репликации (pg_stat_subscription — прогресс переездов).
