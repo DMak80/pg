@@ -109,6 +109,32 @@ internal static class Fakes
         public Task<Result<byte[]>> SnapshotSaveAsync(string endpoint, CancellationToken ct)
             => Task.FromResult(Result<byte[]>.Success([1, 2, 3]));
 
+        public readonly List<string> StatusCalls = [];
+
+        public long StatusRevision { get; set; } = 42;
+
+        public Task<Result<long>> StatusAsync(string endpoint, CancellationToken ct)
+        {
+            StatusCalls.Add(endpoint);
+            return Task.FromResult(Result<long>.Success(StatusRevision));
+        }
+
+        public readonly List<(string Endpoint, long Revision)> CompactCalls = [];
+
+        public Task<Result> CompactAsync(string endpoint, long revision, CancellationToken ct)
+        {
+            CompactCalls.Add((endpoint, revision));
+            return Task.FromResult(Result.Success());
+        }
+
+        public readonly List<string> DefragmentCalls = [];
+
+        public Task<Result> DefragmentAsync(string endpoint, CancellationToken ct)
+        {
+            DefragmentCalls.Add(endpoint);
+            return Task.FromResult(Result.Success());
+        }
+
         // Утилита тестов: простой Put вне txn (сборка сида).
         public void Seed(string key, string value) =>
             Store[key] = new Entry(value, ++_rev, Store.TryGetValue(key, out var old) ? old.Version + 1 : 1);

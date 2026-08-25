@@ -49,4 +49,13 @@ internal sealed class DeadEtcd : IEtcdGateway
 
     public Task<Result<byte[]>> SnapshotSaveAsync(string endpoint, CancellationToken ct)
         => Task.FromResult(Fail<byte[]>());
+
+    public Task<Result<long>> StatusAsync(string endpoint, CancellationToken ct)
+        => Task.FromResult(Fail<long>());
+
+    public Task<Result> CompactAsync(string endpoint, long revision, CancellationToken ct)
+        => Task.FromResult(Result.Failed(new HttpRequestException("etcd недоступен")));
+
+    public Task<Result> DefragmentAsync(string endpoint, CancellationToken ct)
+        => Task.FromResult(Result.Failed(new HttpRequestException("etcd недоступен")));
 }

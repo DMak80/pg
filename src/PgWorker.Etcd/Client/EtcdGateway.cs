@@ -118,6 +118,26 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
         return result;
     }
 
+    public async Task<Result<long>> StatusAsync(string endpoint, CancellationToken ct)
+    {
+        var result = await Result<StatusResponse>.FromAsync(
+            async () => await PostAsync<StatusResponse>(endpoint, "/v3/maintenance/status", new { }, ct));
+        return result.Map(r => (long)r.Header!.Revision);
+    }
+
+    public async Task<Result> CompactAsync(string endpoint, long revision, CancellationToken ct)
+    {
+        var body = new { revision };
+        return await Result.FromAsync(
+            async () => await PostAsync<CompactionResponse>(endpoint, "/v3/kv/compaction", body, ct));
+    }
+
+    public async Task<Result> DefragmentAsync(string endpoint, CancellationToken ct)
+    {
+        return await Result.FromAsync(
+            async () => await PostAsync<DefragmentResponse>(endpoint, "/v3/maintenance/defragment", new { }, ct));
+    }
+
     // Compare → protojson: target (enum: VERSION=0, MOD=2, VALUE=3), result (EQUAL=0/GREATER=1),
     // поле сравнения = цели (version/mod_revision/value).
     private static Dictionary<string, object> CompareToDto(TxnCompare c)
@@ -270,5 +290,30 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
     {
         [JsonPropertyName("TTL")]
         public long Ttl { get; set; }
+    }
+
+    private sealed class StatusResponse
+    {
+        [JsonPropertyName("header")]
+        public StatusHeader? Header { get; set; }
+    }
+
+    private sealed class StatusHeader
+    {
+        // int64 в protojson → decimal-строка; AllowReadingFromString читает как long.
+        [JsonPropertyName("revision")]
+        public ulong Revision { get; set; }
+    }
+
+    private sealed class CompactionResponse
+    {
+        [JsonPropertyName("header")]
+        public object? Header { get; set; }
+    }
+
+    private sealed class DefragmentResponse
+    {
+        [JsonPropertyName("header")]
+        public object? Header { get; set; }
     }
 }

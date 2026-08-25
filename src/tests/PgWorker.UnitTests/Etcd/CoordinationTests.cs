@@ -120,6 +120,15 @@ public class CoordinationTests
 
         public Task<Result<byte[]>> SnapshotSaveAsync(string endpoint, CancellationToken ct)
             => Task.FromResult(Result<byte[]>.Success([1, 2, 3]));
+
+        public Task<Result<long>> StatusAsync(string endpoint, CancellationToken ct)
+            => Task.FromResult(Result<long>.Success(1));
+
+        public Task<Result> CompactAsync(string endpoint, long revision, CancellationToken ct)
+            => Task.FromResult(Result.Success());
+
+        public Task<Result> DefragmentAsync(string endpoint, CancellationToken ct)
+            => Task.FromResult(Result.Success());
     }
 
     private static ClaimStore NewStore(FakeGateway gateway)

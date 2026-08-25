@@ -156,4 +156,7 @@ public sealed class SnapshotOptions
     public string Dir { get; set; } = "/snapshots";
 
     public int RetentionFiles { get; set; } = 10;
+
+    /// <summary>Интервал обслуживания etcd: compact + defrag (минуты, по умолчанию 60).</summary>
+    public int MaintenanceIntervalMin { get; set; } = 60;
 }

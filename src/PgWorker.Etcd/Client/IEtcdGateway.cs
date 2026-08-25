@@ -33,6 +33,15 @@ public interface IEtcdGateway
 
     // POST /v3/snapshot/save — бинарный слепок БД etcd (P12).
     Task<Result<byte[]>> SnapshotSaveAsync(string endpoint, CancellationToken ct);
+
+    // POST /v3/maintenance/status — текущая ревизия кластера (header.revision).
+    Task<Result<long>> StatusAsync(string endpoint, CancellationToken ct);
+
+    // POST /v3/kv/compaction — сжатие истории до указанной ревизии (кластерная операция).
+    Task<Result> CompactAsync(string endpoint, long revision, CancellationToken ct);
+
+    // POST /v3/maintenance/defragment — дефрагментация БД на конкретной ноде.
+    Task<Result> DefragmentAsync(string endpoint, CancellationToken ct);
 }
 
 // Цель сравнения в txn-compare.

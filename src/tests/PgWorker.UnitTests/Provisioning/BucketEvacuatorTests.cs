@@ -238,4 +238,69 @@ public class SnapshotJobTests
         Directory.GetFiles(dir, "snapshot-*.db").Should().HaveCount(10);
         Directory.Delete(dir, recursive: true);
     }
+
+    // MaintainAsync: первый запуск — compact с ревизией из status + defrag каждой ноды.
+    [Fact]
+    public async Task MaintainAsync_FirstRun_CompactsAndDefragsEachNode()
+    {
+        // Arrange — два endpoint, static-состояние сброшено
+        SnapshotJobTests.ResetTestState();
+        var etcd = new Fakes.FakeEtcd { StatusRevision = 77 };
+        var job = new SnapshotJob(
+            etcd, ["http://etcd1:2379", "http://etcd2:2379"], "/snapshots", retentionFiles: 10, maintenanceIntervalMin: 60);
+
+        // Act
+        var result = await job.MaintainAsync(TestContext.Current.CancellationToken);
+
+        // Assert — compact вызван с ревизией из status; defrag на каждой ноде последовательно
+        result.IsSuccess.Should().BeTrue();
+        etcd.StatusCalls.Should().ContainSingle().Which.Should().Be("http://etcd1:2379");
+        etcd.CompactCalls.Should().ContainSingle().Which.Should().Be(("http://etcd1:2379", 77L));
+        etcd.DefragmentCalls.Should().Equal(["http://etcd1:2379", "http://etcd2:2379"]);
+    }
+
+    // MaintainAsync: повторный вызов в пределах интервала — пропускает процедуру.
+    [Fact]
+    public async Task MaintainAsync_WithinInterval_SkipsProcedure()
+    {
+        // Arrange — static-состояние сброшено, затем первый запуск
+        SnapshotJobTests.ResetTestState();
+        var etcd = new Fakes.FakeEtcd { StatusRevision = 1 };
+        var job = new SnapshotJob(etcd, ["http://etcd:2379"], "/snapshots", 10, maintenanceIntervalMin: 60);
+
+        await job.MaintainAsync(TestContext.Current.CancellationToken);
+        etcd.StatusCalls.Clear();
+        etcd.CompactCalls.Clear();
+        etcd.DefragmentCalls.Clear();
+
+        // Act — повторный вызов сразу после первого
+        var result = await job.MaintainAsync(TestContext.Current.CancellationToken);
+
+        // Assert — процедура пропущена, вызовов нет
+        result.IsSuccess.Should().BeTrue();
+        etcd.StatusCalls.Should().BeEmpty();
+        etcd.CompactCalls.Should().BeEmpty();
+        etcd.DefragmentCalls.Should().BeEmpty();
+    }
+
+    // MaintainAsync: дефрагментация строго последовательно — порядок вызовов = порядок endpoints.
+    [Fact]
+    public async Task MaintainAsync_DefragIsStrictlySequential()
+    {
+        // Arrange — три endpoint, static-состояние сброшено
+        SnapshotJobTests.ResetTestState();
+        var etcd = new Fakes.FakeEtcd { StatusRevision = 10 };
+        var endpoints = new[] { "http://e1:2379", "http://e2:2379", "http://e3:2379" };
+        var job = new SnapshotJob(etcd, endpoints, "/snapshots", 10, maintenanceIntervalMin: 60);
+
+        // Act
+        await job.MaintainAsync(TestContext.Current.CancellationToken);
+
+        // Assert — defrag вызван в порядке endpoints (не параллельно)
+        etcd.DefragmentCalls.Should().HaveCount(3);
+        etcd.DefragmentCalls.Should().BeInAscendingOrder();
+        etcd.DefragmentCalls.Should().Equal(endpoints);
+    }
+
+    internal static void ResetTestState() => SnapshotJob.ResetMaintenanceState();
 }

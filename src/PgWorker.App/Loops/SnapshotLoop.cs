@@ -50,6 +50,10 @@ internal sealed class SnapshotLoop(
                     {
                         health.MarkSnapshotTaken();
                         logger.LogInformation("снапшот etcd снят: {Path}", shot.Value);
+                        // Обслуживание etcd: compact + defrag (не чаще раза в час).
+                        var maintenance = await snapshots.MaintainAsync(stoppingToken);
+                        if (!maintenance.IsSuccess)
+                            logger.LogWarning(maintenance.Error, "обслуживание etcd не выполнено: {Message}", maintenance.Error!.Message);
                     }
                     else
                     {

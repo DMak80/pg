@@ -79,7 +79,7 @@ builder.Services.AddSingleton(sp =>
     var opts = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value;
     return new SnapshotJob(
         sp.GetRequiredService<IEtcdGateway>(), opts.Etcd.Endpoints,
-        opts.Snapshots.Dir, opts.Snapshots.RetentionFiles);
+        opts.Snapshots.Dir, opts.Snapshots.RetentionFiles, opts.Snapshots.MaintenanceIntervalMin);
 });
 
 // Процессы-машины состояний (§6.4): снапшот передаётся делегатом от SnapshotJob.
