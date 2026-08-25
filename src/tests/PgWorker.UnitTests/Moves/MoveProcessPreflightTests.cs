@@ -262,6 +262,54 @@ public class MoveProcessPreflightTests
             "перманентный отказ удаляет заявку");
     }
 
+    // AAA: свой статус SYNCING/ddl + схема на приёмнике (M1 успел, M2 упал transient) —
+    // НЕ перманентный отказ: resume собственного переезда неявное, пустота схемы проверяется
+    [Fact]
+    public async Task Move_OwnStatus_SchemaOnDst_ImplicitResume_Proceeds()
+    {
+        // Arrange — статус нашего переезда (shard1→shard2), DDL уже применён на приёмник
+        var rig = await MoveRig.NewAsync(
+            new MoveRig.PreflightSql(
+                SchemaOnDst: true,
+                EmptySchemaGen: """SELECT (SELECT count(*) FROM bucket_42."items")""",
+                EmptySchemaRows: 0),
+            seededStatus: new MoveStatus(
+                "bucket_42", MoveStates.Syncing, "shard1", "shard2", 111, 122, "ddl"));
+
+        // Act — заявка БЕЗ resume (её писал пользователь до первого тика)
+        var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
+
+        // Assert
+        tick.Value.Should().Be(ProcessOutcome.InProgress,
+            "схема на приёмнике — продукт нашего M1: transient-сбой M2 не должен убивать переезд");
+        rig.Etcd.Store.Should().ContainKey(MoveNames.MoveKey("shop", "bucket_42"), "заявка жива");
+        rig.Sql.Calls.Should().Contain(c => c.Sql.Contains("(SELECT count(*)"),
+            "пустота схемы на приёмнике проверена перед продолжением");
+    }
+
+    // AAA: свой статус + НЕ пустая схема на приёмнике (данные прошлого запуска) —
+    // перманентный отказ с подсказкой abort
+    [Fact]
+    public async Task Move_OwnStatus_NonEmptySchemaOnDst_RejectsWithAbortHint()
+    {
+        // Arrange
+        var rig = await MoveRig.NewAsync(
+            new MoveRig.PreflightSql(
+                SchemaOnDst: true,
+                EmptySchemaGen: """SELECT (SELECT count(*) FROM bucket_42."items")""",
+                EmptySchemaRows: 9),
+            seededStatus: new MoveStatus(
+                "bucket_42", MoveStates.Syncing, "shard1", "shard2", 111, 122, "ddl"));
+
+        // Act
+        var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
+
+        // Assert
+        tick.IsSuccess.Should().BeFalse("copy_data=true в непустую схему даст дубликаты");
+        tick.Error!.Message.Should().Contain("abort", "подсказка — abort и новый переезд");
+        rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"), "заявка удалена");
+    }
+
     // AAA: схемы бакета нет на источнике — перманентный отказ (ревью №5)
     [Fact]
     public async Task Move_SchemaMissingOnSource_RejectsPermanent()

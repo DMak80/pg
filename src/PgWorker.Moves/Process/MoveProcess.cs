@@ -150,6 +150,9 @@ public sealed class MoveProcess(
         long startedUnix = Now();
         var snapshotRequired = true;
         var reachedCutover = false;
+        // Resume собственного переезда (статус с тем же target): схема на приёмнике
+        // — продукт нашего M1, а не чужой остаток — флаг resume в заявке не требуется.
+        var ownMove = false;
         if (existing.Value is { } prev)
         {
             switch (prev.State)
@@ -161,6 +164,7 @@ public sealed class MoveProcess(
                     return await RejectAsync(cluster, bucket,
                         "завершается доведение отката (rollback-post-flip) — сначала дожди его завершения", ct);
                 case MoveStates.Syncing or MoveStates.Frozen when prev.Target == to:
+                    ownMove = true;
                     startedUnix = prev.StartedUnix; // resume: возраст переезда сохраняется
                     snapshotRequired = prev.Phase == MovePhases.WaitingSnapshot;
                     // M3 пройден (или прошлый cutover сорвался) — тик идёт сразу в M4:
@@ -259,7 +263,9 @@ public sealed class MoveProcess(
             return await FailTransientAsync(cluster, schemaDst.Error!, ct);
         if (ToBool(subDst.Value) != true && ToBool(schemaDst.Value) == true)
         {
-            if (!request.Resume)
+            // ownMove: возобновляем СВОЙ переезд — схема на приёмнике положена нашим M1
+            // (transient-сбой после DDL не должен убивать заявку на следующем тике).
+            if (!request.Resume && !ownMove)
                 return await RejectAsync(cluster, bucket,
                     $"схема '{bucket}' уже есть на '{to}' без подписки (остаток сорванного запуска?) — resume=true или DROP SCHEMA", ct);
             // resume допустим только для ПУСТОЙ схемы: copy_data=true в непустую даст дубликаты.
@@ -273,8 +279,9 @@ public sealed class MoveProcess(
             if (!rows.IsSuccess)
                 return await FailTransientAsync(cluster, rows.Error!, ct);
             if (ToLong(rows.Value) != 0)
-                return await RejectAsync(cluster, bucket,
-                    $"схема на '{to}' не пустая ({ToLong(rows.Value)} строк) — остатки данных, а не сорванный DDL; DROP SCHEMA и запускай без resume", ct);
+                return await RejectAsync(cluster, bucket, ownMove
+                    ? $"схема на '{to}' не пустая ({ToLong(rows.Value)} строк) — данные прошлого запуска; abort и заводи переезд заново"
+                    : $"схема на '{to}' не пустая ({ToLong(rows.Value)} строк) — остатки данных, а не сорванный DDL; DROP SCHEMA и запускай без resume", ct);
         }
 
         var pubRb = await sql.ScalarAsync(dstDsn, MoveSql.PubExists(MoveNames.PubRb(bucket)), ct);
