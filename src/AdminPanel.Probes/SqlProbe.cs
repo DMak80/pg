@@ -48,9 +48,9 @@ public sealed class SqlProbe(IOptions<ProbesOptions> options, TimeProvider time)
             ApplicationName = "adminpanel",
             Timeout = TimeoutSeconds(options),
             CommandTimeout = TimeoutSeconds(options), // statement_timeout (arch/02 §6.2)
-            // Prefer: узлы PgWorker (Spilo) пускают внешние хосты только hostssl
-            // (pg_hba «no encryption» reject); trust-стенд без SSL — фолбэк.
-            SslMode = SslMode.Prefer,
+            // Spilo включает SSL (self-signed сертификат); pg_hba требует
+            // hostssl — Require гарантирует шифрование, Reject на no-SSL.
+            SslMode = SslMode.Require,
         };
         if (hosts.Count > 1)
             builder.TargetSessionAttributes = "read-write"; // multi-host ведёт на мастер

@@ -64,8 +64,8 @@ public class SqlConnectionFactoryTests
         builder.ApplicationName.Should().Be("adminpanel");
         builder.Timeout.Should().Be(7);
         builder.CommandTimeout.Should().Be(7);
-        // Spilo-узлы пускают внешние хосты только по SSL (pg_hba); trust-стенд — фолбэк.
-        builder.SslMode.Should().Be(SslMode.Prefer);
+        // Spilo включает SSL (self-signed); pg_hba требует hostssl — Require.
+        builder.SslMode.Should().Be(SslMode.Require);
     }
 
     [Fact]
