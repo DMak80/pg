@@ -28,7 +28,15 @@ public sealed class InventoryMismatchRule : IAlertRule
                .Where(b => b.Owner == shard.Name && b.State == BucketState.Active)
                .Select(b => $"bucket_{b.Id}")
                .ToHashSet();
-            var actual = runtime.BucketSchemas.ToHashSet();
+            // Переездные бакеты (SYNCING/FROZEN/ABORTING) живут на ДВУХ шардах сразу:
+            // схема остаётся на источнике до finalize и появляется на приёмнике с M1 —
+            // «лишними» они не считаются ни там, ни там (spec §3.11). NOT_INITIALIZED
+            // не исключаем: схема у неинициализированного бакета — аномалия, сигнал нужен.
+            var moving = cluster.Buckets
+               .Where(b => b.State is BucketState.Syncing or BucketState.Frozen or BucketState.Aborting)
+               .Select(b => $"bucket_{b.Id}")
+               .ToHashSet();
+            var actual = runtime.BucketSchemas.Where(s => !moving.Contains(s)).ToHashSet();
             var missing = expected.Except(actual).Order().ToList(); // Order() без компаратора — Ordinal для строк
             var extra = actual.Except(expected).Order().ToList();
             if (missing.Count == 0 && extra.Count == 0)

@@ -419,6 +419,44 @@ public class HaAlertRulesTests
     }
 
     [Fact]
+    public void InventoryMismatch_MovingBucketSchemaOnSourceAndTarget_NoAlert()
+    {
+        // Arrange: bucket_1 в SYNCING (s1→s2): схема ОСТАЁТСЯ на источнике s1 до finalize
+        // и уже ПРИСУТСТВУЕТ на приёмнике s2 (M1 применил DDL) — «лишние» ни там, ни там.
+        var source = TestSnapshots.FullCluster().Shards.Single() with
+        {
+            Name = "s1",
+            Runtime = TestSnapshots.ShardRuntimeOf("s1") with
+            {
+                BucketSchemas = [.. Enumerable.Range(0, 16).Select(i => $"bucket_{i}")],
+            },
+        };
+        var target = TestSnapshots.FullCluster().Shards.Single() with
+        {
+            Name = "s2",
+            Runtime = TestSnapshots.ShardRuntimeOf("s2") with
+            {
+                BucketSchemas = ["bucket_1"],
+            },
+        };
+        var cluster = TestSnapshots.FullCluster() with
+        {
+            Buckets = [.. Enumerable.Range(0, 16).Select(i =>
+                i == 1
+                    ? new BucketInfo(1, "s1", BucketState.Syncing, new MoveInfo("s1", "s2", null, null, "copy", null))
+                    : new BucketInfo(i, "s1", BucketState.Active, null))],
+            Shards = [source, target],
+        };
+        var snapshot = TestSnapshots.Healthy(Now) with { Clusters = [cluster] };
+
+        // Act
+        var alerts = new InventoryMismatchRule().Evaluate(snapshot, Context()).ToList();
+
+        // Assert: инвентарь здорового переезда — не аномалия (регрессия стенда audit2).
+        alerts.Should().BeEmpty();
+    }
+
+    [Fact]
     public void HaRules_FullEngine_Scenario()
     {
         // Arrange: нет лидера + реплика не стримит + слот lost + нет sync-standby + проба падала.
