@@ -45,8 +45,10 @@ public class DatabaseProvisionerTests
         sql.Should().Contain("CREATE ROLE \"bucket_mover\" LOGIN REPLICATION PASSWORD ''mover-pw''");
         // идемпотентность: каждая роль — только при отсутствии
         Regex.Matches(sql, "NOT EXISTS").Count.Should().BeGreaterThanOrEqualTo(3);
-        // pg_monitor для bucket_admin (SQL-проба панели: pg_stat_replication без pg_monitor маскирует state NULL)
-        sql.Should().Contain("pg_monitor").And.Contain("bucket_admin");
+        // pg_monitor для bucket_admin — в BuildRoleExecSql (DO-блок, не guard-SELECT)
+        var execSql = string.Join("\n", DatabaseProvisioner.BuildRoleExecSql());
+        execSql.Should().Contain("pg_monitor").And.Contain("bucket_admin");
+        sql.Should().NotContain("pg_monitor", "pg_monitor — в BuildRoleExecSql, не в guard-SELECT");
     }
 
     [Fact]
@@ -73,7 +75,7 @@ public class DatabaseProvisionerTests
         sql.Should().Contain("GRANT USAGE ON SCHEMA bucket_7");
         sql.Should().Contain("GRANT SELECT ON ALL TABLES IN SCHEMA bucket_7 TO \"bucket_mover\"");
 
-        // pg_monitor — в BuildRoleGuardsSql (не в BuildSchemasSql)
+        // pg_monitor — в BuildRoleExecSql (не в BuildSchemasSql)
         sql.Should().NotContain("pg_monitor");
     }
 

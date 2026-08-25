@@ -57,6 +57,11 @@ public sealed class MoveRequestsStore(IEtcdGateway gateway, string[] endpoints)
     public Task<Result> DeleteAsync(string cluster, string bucket, CancellationToken ct)
         => WithFailoverAsync(endpoint => gateway.DeleteAsync(endpoint, MoveNames.MoveKey(cluster, bucket), prefix: false, ct));
 
+    /// <summary>Запись/замена заявки (auto-finalize после успешного move).</summary>
+    public Task<Result> PutAsync(string cluster, string bucket, MoveRequest request, CancellationToken ct)
+        => WithFailoverAsync(endpoint => gateway.PutAsync(
+            endpoint, MoveNames.MoveKey(cluster, bucket), request.Serialize(), null, ct));
+
     // Range по префиксу кластера → (bucket, заявка); битый JSON — не ошибка тика (образец
     // ClusterSnapshotParser.ParseClusters: пропуск + запись в errors).
     internal static Result<IReadOnlyList<(string Bucket, MoveRequest Request)>> ParseRange(

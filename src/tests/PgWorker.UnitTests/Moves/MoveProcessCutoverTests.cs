@@ -32,13 +32,18 @@ public class MoveProcessCutoverTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.Value.Should().Be(ProcessOutcome.Done, "переезд завершён в один cutover-тик");
+        tick.Value.Should().Be(ProcessOutcome.Done, "переезд завершён, auto-finalize поставлена");
         rig.Etcd.Store[MoveNames.RoutingKey("shop", "bucket_42")].Value.Should().Be("shard2",
             "атомарный flip перевёл routing на приёмник");
         rig.Etcd.Store.Should().NotContainKey(MoveNames.StatusKey("shop", "bucket_42"),
             "flip удалил статус-ключ той же txn (нет ключа = ACTIVE)");
-        rig.Etcd.Store.Should().NotContainKey(MoveNames.MoveKey("shop", "bucket_42"),
-            "успех — заявка удалена");
+        // Auto-finalize: заявка заменена на finalize (не удалена)
+        rig.Etcd.Store.Should().ContainKey(MoveNames.MoveKey("shop", "bucket_42"),
+            "auto-finalize: заявка заменена на op=finalize, не удалена");
+        rig.Etcd.Store[MoveNames.MoveKey("shop", "bucket_42")].Value.Should().Contain("\"op\":\"finalize\"",
+            "заявка перезаписана как finalize");
+        rig.Etcd.Store[MoveNames.MoveKey("shop", "bucket_42")].Value.Should().Contain("\"old_shard\":\"shard1\"",
+            "finalize знает старый шард");
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.DstDsn
             && c.Sql == "DROP SUBSCRIPTION sub_bucket_42",
             "прямая подписка срезана на новом владельце");
@@ -141,7 +146,7 @@ public class MoveProcessCutoverTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.Value.Should().Be(ProcessOutcome.Done, "flip состоялся — move завершён");
+        tick.Value.Should().Be(ProcessOutcome.Done, "flip состоялся — move завершён, auto-finalize поставлена");
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
         work.Value!.Phase.Should().Be("done");
         work.Value.LastError.Should().Contain("finalize",
@@ -187,7 +192,7 @@ public class MoveProcessCutoverTests
         var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
 
         // Assert
-        tick.Value.Should().Be(ProcessOutcome.Done, "повтор cutover довёл переезд");
+        tick.Value.Should().Be(ProcessOutcome.Done, "повтор cutover довёл переезд, auto-finalize поставлена");
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.SrcDsn && c.Sql.Contains("REVOKE INSERT"),
             "заморозка идемпотентно повторена");
         rig.Etcd.Store[MoveNames.RoutingKey("shop", "bucket_42")].Value.Should().Be("shard2",

@@ -83,43 +83,67 @@ public sealed class ProvisioningProcess(
             BucketAdminPassword = snap.Config.BucketAdminPassword ?? secrets.BucketAdminPassword,
         };
 
-        // P2.1: EnsureNode всех нод ВСЕХ шардов (контейнеры стартуют параллельно,
-        // ожидание Patroni — следующим проходом) + nodes/<n>/state=PROVISIONING.
-        var topologies = new Dictionary<string, ShardTopology>();
-        foreach (var shard in snap.Shards.OrderBy(s => s.Name, StringComparer.Ordinal))
+        // P2.1: EnsureNode всех нод ВСЕХ шардов ПАРАЛЛЕЛЬНО (контейнеры стартуют
+        // одновременно, ожидание Patroni — следующим проходом) + nodes/<n>/state=PROVISIONING.
+        var topologies = new ConcurrentDictionary<string, ShardTopology>();
+        var orderedShards = snap.Shards.OrderBy(s => s.Name, StringComparer.Ordinal).ToList();
+
+        var ensureErrors = new ConcurrentQueue<Exception>();
+        await Parallel.ForEachAsync(orderedShards, ct, async (shard, token) =>
         {
-            if (await IsRemovedAsync(cluster, ct))
-                return await Finish(cluster, "aborted", ProcessOutcome.InProgress, ct);
+            if (await IsRemovedAsync(cluster, token))
+                return;
 
             var topology = Topology(cluster, shard.Name, addresses);
             topologies[shard.Name] = topology;
-            var resources = await ReadShardResourcesAsync(cluster, shard, ct);
-            var ensured = await EnsureNodesAsync(cluster, shard, topology, resources, clusterSecrets, ct);
+            var resources = await ReadShardResourcesAsync(cluster, shard, token);
+            var ensured = await EnsureNodesAsync(cluster, shard, topology, resources, clusterSecrets, token);
             if (!ensured.IsSuccess)
-                return await FailAsync(cluster, ensured.Error!, "ensure-nodes", ct);
-        }
+                ensureErrors.Enqueue(ensured.Error!);
+        });
 
-        // P2.2–P2.5: по каждому шарду — ожидание Patroni, master, БД/роли/схемы, dsn.
-        foreach (var shard in snap.Shards.OrderBy(s => s.Name, StringComparer.Ordinal))
+        if (ensureErrors.TryDequeue(out var ensureError))
+            return await FailAsync(cluster, ensureError, "ensure-nodes", ct);
+        if (await IsRemovedAsync(cluster, ct))
+            return await Finish(cluster, "aborted", ProcessOutcome.InProgress, ct);
+
+        // P2.2–P2.5: по каждому шарду ПАРАЛЛЕЛЬНО — ожидание Patroni, master, БД/роли/схемы, dsn.
+        var shardErrors = new ConcurrentQueue<Exception>();
+        await Parallel.ForEachAsync(orderedShards, ct, async (shard, token) =>
         {
             // R6: перечитываем config перед фазами шарда.
-            if (await IsRemovedAsync(cluster, ct))
-                return await Finish(cluster, "aborted", ProcessOutcome.InProgress, ct);
+            if (await IsRemovedAsync(cluster, token))
+                return;
 
             var topology = topologies[shard.Name];
-            var booted = await WaitPatroniAsync(cluster, shard, topology, ct);
+            var booted = await WaitPatroniAsync(cluster, shard, topology, token);
             if (!booted.IsSuccess)
-                return await FailAsync(cluster, booted.Error!, "waiting-patroni", ct);
+            {
+                shardErrors.Enqueue(booted.Error!);
+                return;
+            }
             if (!booted.Value)
-                return await Finish(cluster, "waiting-patroni", ProcessOutcome.InProgress, ct);
+                return; // InProgress — не ошибка, следующий тик
 
-            var master = await ResolveMasterAsync(shard, topology, ct);
+            var master = await ResolveMasterAsync(shard, topology, token);
             if (master is null)
-                return await Finish(cluster, "waiting-master", ProcessOutcome.InProgress, ct);
+                return; // waiting-master — InProgress
 
-            var sqlDone = await ProvisionShardSqlAsync(snap, shard, topology, master, ct);
+            var sqlDone = await ProvisionShardSqlAsync(snap, shard, topology, master, token);
             if (!sqlDone.IsSuccess)
-                return await FailAsync(cluster, sqlDone.Error!, "sql", ct);
+                shardErrors.Enqueue(sqlDone.Error!);
+        });
+
+        if (shardErrors.TryDequeue(out var firstError))
+            return await FailAsync(cluster, firstError, "shard-provision", ct);
+
+        // Если хоть один шард не доведён (Patroni/master ещё не готовы) — InProgress.
+        foreach (var shard in orderedShards)
+        {
+            if (shard.Nodes.Any(n => n.State != NodeState.Running))
+                return await Finish(cluster, "waiting-patroni", ProcessOutcome.InProgress, ct);
+            if (string.IsNullOrEmpty(shard.Dsn))
+                return await Finish(cluster, "waiting-shard-sql", ProcessOutcome.InProgress, ct);
         }
 
         // R6 перед финальными мутациями контрол-плейна.
@@ -361,6 +385,14 @@ public sealed class ProvisioningProcess(
                 if (!created.IsSuccess)
                     return created;
             }
+        }
+
+        // pg_monitor — через ExecuteAsync (DO-блок, не guard-SELECT).
+        foreach (var exec in DatabaseProvisioner.BuildRoleExecSql(bucketAdminUser))
+        {
+            var executed = await db.ExecuteAsync(dbDsn, exec, ct);
+            if (!executed.IsSuccess)
+                return executed;
         }
 
         var bucketIds = snap.Routing

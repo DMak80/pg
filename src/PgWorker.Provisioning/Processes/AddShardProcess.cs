@@ -348,6 +348,14 @@ public sealed partial class AddShardProcess(
             }
         }
 
+        // pg_monitor — через ExecuteAsync (DO-блок, не guard-SELECT).
+        foreach (var exec in DatabaseProvisioner.BuildRoleExecSql(bucketAdminUser))
+        {
+            var executed = await db.ExecuteAsync(dbDsn, exec, ct);
+            if (!executed.IsSuccess)
+                return executed;
+        }
+
         // НИКАКИХ BuildSchemasSql/routing/status-записей (граница §2.1).
 
         var nodes = shard.Nodes.OrderBy(n => n.Name, StringComparer.Ordinal).ToList();

@@ -95,6 +95,7 @@ public sealed class MoveProcess(
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // заявок нет
 
         var (bucket, request) = oldest.Value.Request.Value;
+
         return request.Op switch
         {
             MoveOp.Move => await RunMoveAsync(snap, bucket, request, ct),
@@ -515,17 +516,21 @@ public sealed class MoveProcess(
             }
         }
 
-        // M6: del заявки + журнал done (снапшот уже снят cutover'ом; накопленные
-        // post-flip ошибки не отменяют завершение — старый шард остаётся замороженным
-        // до rollback/finalize, P1-призраки).
-        var deleted = await requests.DeleteAsync(cluster, bucket, ct);
-        if (!deleted.IsSuccess)
-            return Result<ProcessOutcome>.Failed(deleted.Error!);
+        // M6: auto-finalize — вместо удаления заявки ставим finalize (old_shard=owner),
+        // следующий тик вычистит rb-подписку/публикации/слоты/схему на старом шарде.
+        // После cutover откат невозможен — finalize безусловный и немедленный.
+        // post-flip ошибки не отменяют завершение — старый шард заморожен, finalize добьёт.
+        var finalizeRequest = new MoveRequest(bucket, MoveOp.Finalize, to, owner,
+            SkipReverse: false, Resume: false, Force: false,
+            RequestedUnix: request.RequestedUnix, RequestedBy: request.RequestedBy);
+        var replaced = await requests.PutAsync(cluster, bucket, finalizeRequest, ct);
+        if (!replaced.IsSuccess)
+            return Result<ProcessOutcome>.Failed(replaced.Error!);
 
         await journal.WritePhaseAsync(cluster, "move", "done", claims.InstanceId,
             postFlipErrors.Count > 0 ? string.Join("; ", postFlipErrors) : null, ct);
-        logger?.LogInformation("move {cluster}/{bucket}: переехал {owner} → {to} (старый шард заморожен до rollback/finalize)",
-            cluster, bucket, owner, to);
+        logger?.LogInformation("move {cluster}/{bucket}: переехал {owner} → {to} (поставлена auto-finalize для уборки {owner})",
+            cluster, bucket, owner, to, owner);
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
     }
 
