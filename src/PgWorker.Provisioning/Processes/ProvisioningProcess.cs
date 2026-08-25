@@ -75,6 +75,14 @@ public sealed class ProvisioningProcess(
             return await FailAsync(cluster, allocation.Error!, "planning", ct);
         var addresses = allocation.Value;
 
+        // Per-cluster credentials: переопределение bucket_admin user/password
+        // из config кластера (fallback на глобальные InstallSecrets).
+        var clusterSecrets = secrets with
+        {
+            BucketAdminUser = snap.Config.BucketAdminUser ?? secrets.BucketAdminUser,
+            BucketAdminPassword = snap.Config.BucketAdminPassword ?? secrets.BucketAdminPassword,
+        };
+
         // P2.1: EnsureNode всех нод ВСЕХ шардов (контейнеры стартуют параллельно,
         // ожидание Patroni — следующим проходом) + nodes/<n>/state=PROVISIONING.
         var topologies = new Dictionary<string, ShardTopology>();
@@ -86,7 +94,7 @@ public sealed class ProvisioningProcess(
             var topology = Topology(cluster, shard.Name, addresses);
             topologies[shard.Name] = topology;
             var resources = await ReadShardResourcesAsync(cluster, shard, ct);
-            var ensured = await EnsureNodesAsync(cluster, shard, topology, resources, ct);
+            var ensured = await EnsureNodesAsync(cluster, shard, topology, resources, clusterSecrets, ct);
             if (!ensured.IsSuccess)
                 return await FailAsync(cluster, ensured.Error!, "ensure-nodes", ct);
         }
@@ -214,7 +222,8 @@ public sealed class ProvisioningProcess(
 
     // P2.1: EnsureNode всех нод шарда (state != RUNNING) + nodes/<n>/state=PROVISIONING.
     private async Task<Result> EnsureNodesAsync(
-        string cluster, ShardSpec shard, ShardTopology topology, NodeResources? resources, CancellationToken ct)
+        string cluster, ShardSpec shard, ShardTopology topology, NodeResources? resources,
+        InstallSecrets clusterSecrets, CancellationToken ct)
     {
         foreach (var node in shard.Nodes)
         {
@@ -229,7 +238,7 @@ public sealed class ProvisioningProcess(
             }
 
             var ensured = await driver.EnsureNodeAsync(
-                topology, node.Name, topology.Nodes[node.Name], secrets, etcdEndpoints, resources, ct);
+                topology, node.Name, topology.Nodes[node.Name], clusterSecrets, etcdEndpoints, resources, ct);
             if (!ensured.IsSuccess)
                 return ensured;
         }
@@ -331,6 +340,8 @@ public sealed class ProvisioningProcess(
     {
         var cluster = snap.Config.Cluster;
         var dbname = snap.Config.DbName;
+        var bucketAdminUser = snap.Config.BucketAdminUser ?? "bucket_admin";
+        var bucketAdminPassword = snap.Config.BucketAdminPassword ?? secrets.BucketAdminPassword;
 
         var adminDsn = DatabaseProvisioner.BuildAdminDsn(master.Host, master.Ports.Pg, "postgres", secrets);
         var ensured = await db.EnsureDatabaseAsync(adminDsn, dbname, ct);
@@ -339,7 +350,7 @@ public sealed class ProvisioningProcess(
 
         var dbDsn = DatabaseProvisioner.BuildAdminDsn(master.Host, master.Ports.Pg, dbname, secrets);
         // Роли — guard-SELECT → CREATE отдельной командой (gexec-паттерн).
-        foreach (var guard in DatabaseProvisioner.BuildRoleGuardsSql(secrets))
+        foreach (var guard in DatabaseProvisioner.BuildRoleGuardsSql(secrets, bucketAdminUser, bucketAdminPassword))
         {
             var probe = await db.ExecuteScalarAsync(dbDsn, guard, ct);
             if (!probe.IsSuccess)
@@ -357,16 +368,18 @@ public sealed class ProvisioningProcess(
             .Select(r => r.Id)
             .OrderBy(i => i)
             .ToList();
-        var schemas = await db.ExecuteAsync(dbDsn, DatabaseProvisioner.BuildSchemasSql(dbname, bucketIds), ct);
+        var schemas = await db.ExecuteAsync(
+            dbDsn, DatabaseProvisioner.BuildSchemasSql(dbname, bucketIds, bucketAdminUser), ct);
         if (!schemas.IsSuccess)
             return schemas;
 
         // P2.5: dsn = write-эндпоинт шарда — HAProxy :5432 каждой ноды (P2):
         // multi-host по нодам в порядке имени, pg-порты из portalloc.
+        // Per-cluster credentials: user+password из config кластера.
         var nodes = shard.Nodes.OrderBy(n => n.Name, StringComparer.Ordinal).ToList();
         var hosts = string.Join(",", nodes.Select(n => topology.Nodes[n.Name].Host));
         var ports = string.Join(",", nodes.Select(n => topology.Nodes[n.Name].Ports.Pg));
-        var dsn = $"host={hosts} port={ports} dbname={dbname} user=bucket_admin";
+        var dsn = $"host={hosts} port={ports} dbname={dbname} user={bucketAdminUser} password={bucketAdminPassword}";
         if (shard.Dsn != dsn)
             return await PutAsync($"/clusters/{cluster}/shards/{shard.Name}/dsn", dsn, ct);
 

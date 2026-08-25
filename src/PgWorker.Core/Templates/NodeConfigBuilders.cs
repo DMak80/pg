@@ -13,7 +13,8 @@ public sealed record ShardTopology(string Cluster, string Shard, string Scope,
 /// doorman/haproxy (текстовые файлы томов).
 /// </summary>
 public sealed record InstallSecrets(string SuPassword, string StandbyPassword,
-    string AppPassword, string BucketAdminPassword, string MoverPassword);
+    string AppPassword, string BucketAdminPassword, string MoverPassword,
+    string BucketAdminUser = "bucket_admin");
 
 /// <summary>
 /// ENV контейнера pgworker-node для Spilo/Patroni. SPILO_CONFIGURATION —
@@ -49,9 +50,12 @@ public static class SpiloEnvBuilder
             ["PGPASSWORD_STANDBY"] = secrets.StandbyPassword,
 
             // Пароли ролей бакетного слоя (создаёт DatabaseProvisioner; здесь —
-            // доступность внутри контейнера для админ-скриптов).
+            // доступность внутри контейнера для админ-скриптов). Per-cluster
+            // credentials передаются через InstallSecrets (переопределённые
+            // в ProvisioningProcess из config кластера).
             ["PGW_APP_PASSWORD"] = secrets.AppPassword,
             ["PGW_BUCKET_ADMIN_PASSWORD"] = secrets.BucketAdminPassword,
+            ["PGW_BUCKET_ADMIN_USER"] = secrets.BucketAdminUser,
             ["PGW_BUCKET_MOVER_PASSWORD"] = secrets.MoverPassword,
 
             // ENV lease-скрипта мастер-ключа (callback on_role_change, P11).

@@ -185,7 +185,7 @@ public static class ClusterSnapshotParser
     private static ClusterConfig ParseConfig(string cluster, string? raw, List<string> errors)
     {
         if (raw is null)
-            return new ClusterConfig(cluster, 0, string.Empty, null, ClusterState.Active); // нет ключа — не ошибка
+            return new ClusterConfig(cluster, 0, string.Empty, null, ClusterState.Active, null, null); // нет ключа — не ошибка
 
         try
         {
@@ -202,12 +202,14 @@ public static class ClusterSnapshotParser
                     "NOT_INITIALIZED" => ClusterState.NotInitialized,
                     "TO_REMOVE" => ClusterState.ToRemove,
                     _ => ClusterState.Active, // отсутствие state = Active (02 §2.1)
-                });
+                },
+                ReadString(root, "bucket_admin_user"),
+                ReadString(root, "bucket_admin_password"));
         }
         catch (JsonException)
         {
             errors.Add($"/clusters/{cluster}/config: битый JSON config");
-            return new ClusterConfig(cluster, 0, string.Empty, null, ClusterState.Active);
+            return new ClusterConfig(cluster, 0, string.Empty, null, ClusterState.Active, null, null);
         }
     }
 

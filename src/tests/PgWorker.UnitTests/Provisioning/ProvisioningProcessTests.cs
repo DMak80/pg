@@ -144,9 +144,9 @@ public class ProvisioningProcessTests
         // placement: анти-аффинити → ноды шарда на h1,h2; на каждом хосте свой base
         // (шард1: 15000, шард2: 15001 — тройки портов не пересекаются на хосте)
         rig.Etcd.Store["/clusters/shop/shards/shard1/dsn"].Value.Should()
-            .Be("host=h1,h2 port=15000,15000 dbname=shop user=bucket_admin");
+            .Be("host=h1,h2 port=15000,15000 dbname=shop user=bucket_admin password=adm-pw");
         rig.Etcd.Store["/clusters/shop/shards/shard2/dsn"].Value.Should()
-            .Be("host=h1,h2 port=15001,15001 dbname=shop user=bucket_admin");
+            .Be("host=h1,h2 port=15001,15001 dbname=shop user=bucket_admin password=adm-pw");
 
         // portalloc закреплён (ключ создан txn-ом NotExists)
         rig.Etcd.Txns.Should().Contain(t => t.Compare.Any(c =>

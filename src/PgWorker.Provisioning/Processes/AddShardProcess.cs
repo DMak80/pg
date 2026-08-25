@@ -99,7 +99,12 @@ public sealed partial class AddShardProcess(
 
         // A3: EnsureNode каждой ноды + state=PROVISIONING (идемпотентно).
         var resources = await ReadShardResourcesAsync(cluster, shardName, ct);
-        var ensured = await EnsureNodesAsync(cluster, shard, topology, resources, ct);
+        var clusterSecrets = secrets with
+        {
+            BucketAdminUser = snap.Config.BucketAdminUser ?? secrets.BucketAdminUser,
+            BucketAdminPassword = snap.Config.BucketAdminPassword ?? secrets.BucketAdminPassword,
+        };
+        var ensured = await EnsureNodesAsync(cluster, shard, topology, resources, clusterSecrets, ct);
         if (!ensured.IsSuccess)
             return await FailAsync(cluster, ensured.Error!, "ensure-nodes", ct);
 
@@ -208,7 +213,8 @@ public sealed partial class AddShardProcess(
 
     // A3: EnsureNode всех нод шарда (state != RUNNING) + state=PROVISIONING.
     private async Task<Result> EnsureNodesAsync(
-        string cluster, ShardSpec shard, ShardTopology topology, NodeResources? resources, CancellationToken ct)
+        string cluster, ShardSpec shard, ShardTopology topology, NodeResources? resources,
+        InstallSecrets clusterSecrets, CancellationToken ct)
     {
         foreach (var node in shard.Nodes)
         {
@@ -223,7 +229,7 @@ public sealed partial class AddShardProcess(
             }
 
             var ensured = await driver.EnsureNodeAsync(
-                topology, node.Name, topology.Nodes[node.Name], secrets, etcdEndpoints, resources, ct);
+                topology, node.Name, topology.Nodes[node.Name], clusterSecrets, etcdEndpoints, resources, ct);
             if (!ensured.IsSuccess)
                 return ensured;
         }
@@ -320,6 +326,8 @@ public sealed partial class AddShardProcess(
     {
         var cluster = snap.Config.Cluster;
         var dbname = snap.Config.DbName;
+        var bucketAdminUser = snap.Config.BucketAdminUser ?? "bucket_admin";
+        var bucketAdminPassword = snap.Config.BucketAdminPassword ?? secrets.BucketAdminPassword;
 
         var adminDsn = DatabaseProvisioner.BuildAdminDsn(master.Host, master.Ports.Pg, "postgres", secrets);
         var ensured = await db.EnsureDatabaseAsync(adminDsn, dbname, ct);
@@ -327,7 +335,7 @@ public sealed partial class AddShardProcess(
             return ensured;
 
         var dbDsn = DatabaseProvisioner.BuildAdminDsn(master.Host, master.Ports.Pg, dbname, secrets);
-        foreach (var guard in DatabaseProvisioner.BuildRoleGuardsSql(secrets))
+        foreach (var guard in DatabaseProvisioner.BuildRoleGuardsSql(secrets, bucketAdminUser, bucketAdminPassword))
         {
             var probeResult = await db.ExecuteScalarAsync(dbDsn, guard, ct);
             if (!probeResult.IsSuccess)
@@ -345,7 +353,7 @@ public sealed partial class AddShardProcess(
         var nodes = shard.Nodes.OrderBy(n => n.Name, StringComparer.Ordinal).ToList();
         var hosts = string.Join(",", nodes.Select(n => topology.Nodes[n.Name].Host));
         var ports = string.Join(",", nodes.Select(n => topology.Nodes[n.Name].Ports.Pg));
-        var dsn = $"host={hosts} port={ports} dbname={dbname} user=bucket_admin";
+        var dsn = $"host={hosts} port={ports} dbname={dbname} user={bucketAdminUser} password={bucketAdminPassword}";
         if (shard.Dsn == dsn)
             return Result.Success();
         return await PutAsync($"/clusters/{cluster}/shards/{shard.Name}/dsn", dsn, ct);

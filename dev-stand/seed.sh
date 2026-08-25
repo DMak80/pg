@@ -11,6 +11,10 @@ C="${2:-shop}"
 N=6
 SHARDS="shard1 shard2"
 
+# Per-cluster credentials для bucket_admin (логин+пароль).
+BA_USER="${3:-bucket_admin}"
+BA_PASS="${4:-${BA_PASS:-bucket_admin_secret}}"
+
 put() {
     key_b64=$(printf %s "$1" | base64 | tr -d '\n')
     value_b64=$(printf %s "$2" | base64 | tr -d '\n')
@@ -20,7 +24,7 @@ put() {
 }
 
 put "/clusters/$C/config" \
-    "{\"buckets\":$N,\"dbname\":\"$C\",\"created_unix\":$(date +%s),\"state\":\"NOT_INITIALIZED\"}"
+    "{\"buckets\":$N,\"dbname\":\"$C\",\"created_unix\":$(date +%s),\"state\":\"NOT_INITIALIZED\",\"bucket_admin_user\":\"$BA_USER\",\"bucket_admin_password\":\"$BA_PASS\"}"
 
 i=0
 for shard in $SHARDS; do

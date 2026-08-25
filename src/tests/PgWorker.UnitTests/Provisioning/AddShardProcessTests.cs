@@ -249,7 +249,7 @@ public class AddShardProcessTests
         rig.Sql.Scalars.Should().Contain(s => s.Sql.Contains("CREATE ROLE \"bucket_admin\""));
         rig.Sql.Executed.Should().NotContain(e => e.Sql.Contains("CREATE SCHEMA bucket_"));
         rig.Etcd.Store["/clusters/shop/shards/shard3/dsn"].Value.Should()
-            .Be("host=h1,h2 port=15002,15002 dbname=shop user=bucket_admin");
+            .Be("host=h1,h2 port=15002,15002 dbname=shop user=bucket_admin password=adm-pw");
         rig.Etcd.Store["/clusters/shop/shards/shard3/nodes/shard3a/state"].Value.Should().Be("RUNNING");
         rig.Etcd.Store["/clusters/shop/shards/shard3/nodes/shard3b/state"].Value.Should().Be("RUNNING");
         var routingAfter = rig.Etcd.Store
@@ -264,7 +264,7 @@ public class AddShardProcessTests
     {
         // Arrange — шард уже зарегистрирован (dsn записан ранее)
         var rig = await NewRig(_ => DeadPatroni());
-        rig.Etcd.Seed("/clusters/shop/shards/shard3/dsn", "host=h1,h2 port=15002,15002 dbname=shop user=bucket_admin");
+        rig.Etcd.Seed("/clusters/shop/shards/shard3/dsn", "host=h1,h2 port=15002,15002 dbname=shop user=bucket_admin password=adm-pw");
 
         // Act
         var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
@@ -283,7 +283,7 @@ public class AddShardProcessTests
         // Arrange — первый тик с глухим Patroni (ноды PROVISIONING, portalloc записан)
         var rig = await NewRig(_ => DeadPatroni(), busyPorts: LiveNodePorts());
         await rig.Process.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
-        var firstDsn = "host=h1,h2 port=15002,15002 dbname=shop user=bucket_admin";
+        var firstDsn = "host=h1,h2 port=15002,15002 dbname=shop user=bucket_admin password=adm-pw";
 
         // Act — Patroni ожил; второй тик по СВЕЖЕМУ снапшоту доводит до dsn
         rig.Etcd.Seed("/service/shop-shard3/initialize", "7403705125687833998");

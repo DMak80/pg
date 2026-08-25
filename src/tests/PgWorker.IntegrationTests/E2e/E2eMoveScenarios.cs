@@ -299,7 +299,7 @@ public class E2eMoveScenarios(E2eFixture fixture)
     {
         var ct = TestContext.Current.CancellationToken;
         var config = $$"""
-            {"buckets":6,"dbname":"{{cluster}}","created_unix":1755800000,"state":"NOT_INITIALIZED"}
+            {"buckets":6,"dbname":"{{cluster}}","created_unix":1755800000,"state":"NOT_INITIALIZED","bucket_admin_password":"{{E2eFixture.BucketAdminPassword}}"}
             """;
         await G.PutAsync(Endpoint, $"/clusters/{cluster}/config", config, null, ct);
         foreach (var shard in new[] { "shard1", "shard2" })

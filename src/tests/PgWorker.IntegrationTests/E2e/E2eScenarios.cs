@@ -77,7 +77,7 @@ public class E2eScenarios(E2eFixture fixture)
     {
         var ct = TestContext.Current.CancellationToken;
         var config = $$"""
-            {"buckets":6,"dbname":"{{cluster}}","created_unix":1755800000,"state":"NOT_INITIALIZED"}
+            {"buckets":6,"dbname":"{{cluster}}","created_unix":1755800000,"state":"NOT_INITIALIZED","bucket_admin_password":"{{E2eFixture.BucketAdminPassword}}"}
             """;
         await G.PutAsync(Endpoint, $"/clusters/{cluster}/config", config, null, ct);
         foreach (var shard in new[] { "shard1", "shard2" })
@@ -180,7 +180,7 @@ public class E2eScenarios(E2eFixture fixture)
         dsnKv.Should().NotBeNull();
         var dsn = dsnKv!.Value;
         dsn.Should().Contain(",", "multi-host DSN: обе ноды шарда (разные порты)")
-            .And.Contain("user=bucket_admin").And.NotContain("Password");
+            .And.Contain("user=bucket_admin").And.Contain("password=");
         // Npgsql не поддерживает СПИСОК портов (только один порт на все хосты),
         // поэтому multi-host DSN с разными портами пробуем пофрагментно:
         // каждая пара host:port из ключа должна отвечать на SELECT 1 (libpq

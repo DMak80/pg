@@ -34,9 +34,10 @@ public enum BucketMoveState
     Aborting,
 }
 
-/// <summary>/clusters/&lt;C&gt;/config: константы создания + state.</summary>
+/// <summary>/clusters/&lt;C&gt;/config: константы создания + state + per-cluster credentials.</summary>
 public sealed record ClusterConfig(string Cluster, int Buckets, string DbName,
-    long? CreatedUnix, ClusterState State);
+    long? CreatedUnix, ClusterState State,
+    string? BucketAdminUser = null, string? BucketAdminPassword = null);
 
 /// <summary>Плановая нода шарда: имя = имя шарда + буква ("shard1", "shard1a").</summary>
 public sealed record NodeSpec(string Shard, string Name, NodeState State);

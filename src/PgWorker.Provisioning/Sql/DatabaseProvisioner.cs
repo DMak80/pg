@@ -52,8 +52,11 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
     // подписки переездов P2/P3). Паттерн \gexec: скаляр ВОЗВРАЩАЕТ текст
     // CREATE ROLE, если её нет — исполнитель запускает его отдельной командой
     // (Npgsql ExecuteNonQuery батчем gexec-SELECT не исполняет).
-    public static IReadOnlyList<string> BuildRoleGuardsSql(InstallSecrets s)
-        => [Role("app", s.AppPassword), Role("bucket_admin", s.BucketAdminPassword),
+    // bucket_admin: per-cluster credentials (user+password из config кластера).
+    public static IReadOnlyList<string> BuildRoleGuardsSql(InstallSecrets s,
+        string? bucketAdminUser = null, string? bucketAdminPassword = null)
+        => [Role("app", s.AppPassword),
+            Role(bucketAdminUser ?? "bucket_admin", bucketAdminPassword ?? s.BucketAdminPassword),
             Role("bucket_mover", s.MoverPassword, replication: true)];
 
     private static string Role(string name, string password, bool replication = false)
@@ -68,9 +71,11 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
     // Схемы бакетов шарда + гранты (шаг 5 init-cluster.sh; «гранты — при
     // создании схем, пустых таблиц нет» — GRANT ON ALL безвреден и на пустой
     // схеме, применяется идемпотентно повторными тиками).
-    public static string BuildSchemasSql(string dbname, IEnumerable<int> bucketIds)
+    public static string BuildSchemasSql(string dbname, IEnumerable<int> bucketIds,
+        string bucketAdminUser = "bucket_admin")
     {
         ValidateIdentifier(dbname);
+        ValidateIdentifier(bucketAdminUser);
         var sb = new StringBuilder();
         sb.AppendLine($"-- схемы бакетов БД {dbname} (идемпотентно; §4 доки 11)");
         foreach (var id in bucketIds.OrderBy(i => i))
@@ -79,16 +84,16 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
                 throw new ArgumentException($"идентификатор бакета не может быть отрицательным: {id}");
 
             sb.AppendLine($"CREATE SCHEMA IF NOT EXISTS bucket_{id};");
-            sb.AppendLine($"GRANT USAGE ON SCHEMA bucket_{id} TO \"app\", \"bucket_admin\", \"bucket_mover\";");
-            sb.AppendLine($"GRANT INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA bucket_{id} TO \"app\", \"bucket_admin\";");
-            sb.AppendLine($"GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA bucket_{id} TO \"app\", \"bucket_admin\";");
+            sb.AppendLine($"GRANT USAGE ON SCHEMA bucket_{id} TO \"app\", \"{bucketAdminUser}\", \"bucket_mover\";");
+            sb.AppendLine($"GRANT INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA bucket_{id} TO \"app\", \"{bucketAdminUser}\";");
+            sb.AppendLine($"GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA bucket_{id} TO \"app\", \"{bucketAdminUser}\";");
             sb.AppendLine($"GRANT SELECT ON ALL TABLES IN SCHEMA bucket_{id} TO \"bucket_mover\";");
         }
 
         // Мониторинг панели: SQL-проба шарда идёт под bucket_admin (dsn) и читает
         // pg_stat_replication/pg_replication_slots — без pg_monitor PG маскирует
         // эти поля NULL и проба падает (arch/02 §6.2, arch/03 §5).
-        sb.AppendLine($"GRANT pg_monitor TO \"bucket_admin\";");
+        sb.AppendLine($"GRANT pg_monitor TO \"{bucketAdminUser}\";");
 
         return sb.ToString();
     }

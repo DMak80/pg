@@ -293,7 +293,7 @@ public class E2eScaleScenarios(E2eFixture fixture)
     {
         var ct = TestContext.Current.CancellationToken;
         await G.PutAsync(Endpoint, $"/clusters/{cluster}/config",
-            $$"""{"buckets":6,"dbname":"{{cluster}}","created_unix":1755800000,"state":"NOT_INITIALIZED"}""",
+            $$"""{"buckets":6,"dbname":"{{cluster}}","created_unix":1755800000,"state":"NOT_INITIALIZED","bucket_admin_password":"{{E2eFixture.BucketAdminPassword}}"}""",
             null, ct);
         foreach (var shard in new[] { "shard1", "shard2" })
         {
