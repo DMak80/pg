@@ -14,6 +14,8 @@ internal static class Fakes
 {
     // etcd в памяти: Put инкрементирует mod_revision; txn-compare честно
     // сверяет Version/Value/ModRevision (нужно P1-portalloc и P4-config).
+    // Потокобезопасен: процессы реально параллелят шарды/ноды
+    // (Parallel.ForEachAsync), обычный Dictionary терял записи (флaky-тесты).
     internal sealed class FakeEtcd : IEtcdGateway
     {
         internal sealed record Entry(string Value, long ModRevision, long Version);
@@ -28,36 +30,56 @@ internal static class Fakes
 
         private long _rev;
         private long _lease;
+        private readonly object _gate = new();
 
         public Task<Result<IReadOnlyList<Kv>>> RangeAsync(string endpoint, string prefix, CancellationToken ct)
         {
             if (RangeFault?.Invoke(prefix) is { } fault)
                 throw fault;
-            var kvs = Store
-                .Where(p => p.Key.StartsWith(prefix, StringComparison.Ordinal))
-                .Select(p => new Kv(p.Key, p.Value.Value, (ulong)p.Value.ModRevision))
-                .ToList();
+            List<Kv> kvs;
+            lock (_gate)
+            {
+                kvs = Store
+                    .Where(p => p.Key.StartsWith(prefix, StringComparison.Ordinal))
+                    .Select(p => new Kv(p.Key, p.Value.Value, (ulong)p.Value.ModRevision))
+                    .ToList();
+            }
+
             return Task.FromResult(Result<IReadOnlyList<Kv>>.Success(kvs));
         }
 
         public Task<Result<Kv?>> GetAsync(string endpoint, string key, CancellationToken ct)
-            => Task.FromResult(Result<Kv?>.Success(
-                Store.TryGetValue(key, out var e) ? new Kv(key, e.Value, (ulong)e.ModRevision) : null));
+        {
+            Kv? kv;
+            lock (_gate)
+            {
+                kv = Store.TryGetValue(key, out var e) ? new Kv(key, e.Value, (ulong)e.ModRevision) : null;
+            }
+
+            return Task.FromResult(Result<Kv?>.Success(kv));
+        }
 
         public Task<Result> PutAsync(string endpoint, string key, string value, long? lease, CancellationToken ct)
         {
-            Store[key] = new Entry(value, ++_rev, Store.TryGetValue(key, out var old) ? old.Version + 1 : 1);
+            lock (_gate)
+            {
+                Store[key] = new Entry(value, ++_rev, Store.TryGetValue(key, out var old) ? old.Version + 1 : 1);
+            }
+
             OnPut?.Invoke(key);
             return Task.FromResult(Result.Success());
         }
 
         public Task<Result> DeleteAsync(string endpoint, string keyOrPrefix, bool prefix, CancellationToken ct)
         {
-            foreach (var key in Store.Keys.Where(k => prefix
-                         ? k.StartsWith(keyOrPrefix, StringComparison.Ordinal)
-                         : k == keyOrPrefix).ToList())
+                       lock (_gate)
             {
-                Store.Remove(key);
+                foreach (var key in Store.Keys.Where(k => prefix
+                             ? k.StartsWith(keyOrPrefix, StringComparison.Ordinal)
+                             : k == keyOrPrefix).ToList())
+                {
+                    Store.Remove(key);
+                }
             }
 
             return Task.FromResult(Result.Success());
@@ -65,17 +87,22 @@ internal static class Fakes
 
         public Task<Result<TxnResult>> TxnAsync(string endpoint, TxnRequest req, CancellationToken ct)
         {
-            Txns.Add(req);
-            var succeeded = req.Compare.All(c => c.Target switch
+            bool succeeded;
+            lock (_gate)
             {
-                TxnTarget.Version => Store.TryGetValue(c.Key, out var e) ? e.Version == c.Num : c.Num == 0,
-                TxnTarget.Value => Store.TryGetValue(c.Key, out var e) && e.Value == c.Arg,
-                TxnTarget.ModRevision => Store.TryGetValue(c.Key, out var e) && e.ModRevision == c.Num,
-                _ => false,
-            });
-            if (succeeded)
-                foreach (var op in req.Success)
-                    Apply(op);
+                Txns.Add(req);
+                succeeded = req.Compare.All(c => c.Target switch
+                {
+                    TxnTarget.Version => Store.TryGetValue(c.Key, out var e) ? e.Version == c.Num : c.Num == 0,
+                    TxnTarget.Value => Store.TryGetValue(c.Key, out var e) && e.Value == c.Arg,
+                    TxnTarget.ModRevision => Store.TryGetValue(c.Key, out var e) && e.ModRevision == c.Num,
+                    _ => false,
+                });
+                if (succeeded)
+                    foreach (var op in req.Success)
+                        Apply(op);
+            }
+
             return Task.FromResult(Result<TxnResult>.Success(new TxnResult(succeeded)));
         }
 
@@ -93,14 +120,23 @@ internal static class Fakes
         }
 
         public Task<Result<long>> LeaseGrantAsync(string endpoint, int ttlSec, CancellationToken ct)
-            => Task.FromResult(Result<long>.Success(++_lease));
+        {
+            lock (_gate)
+            {
+                return Task.FromResult(Result<long>.Success(++_lease));
+            }
+        }
 
         public Task<Result> LeaseRevokeAsync(string endpoint, long lease, CancellationToken ct)
             => Task.FromResult(Result.Success());
 
         public Task<Result> LeaseKeepaliveAsync(string endpoint, long lease, CancellationToken ct)
         {
-            Keepalives.Add(lease);
+            lock (_gate)
+            {
+                Keepalives.Add(lease);
+            }
+
             return Task.FromResult(Result.Success());
         }
 
@@ -136,13 +172,22 @@ internal static class Fakes
         }
 
         // Утилита тестов: простой Put вне txn (сборка сида).
-        public void Seed(string key, string value) =>
-            Store[key] = new Entry(value, ++_rev, Store.TryGetValue(key, out var old) ? old.Version + 1 : 1);
+        public void Seed(string key, string value)
+        {
+            lock (_gate)
+            {
+                Store[key] = new Entry(value, ++_rev, Store.TryGetValue(key, out var old) ? old.Version + 1 : 1);
+            }
+        }
     }
 
     // Записывающий мок драйвера кластера: порядок вызовов проверяют тесты.
+    // Потокобезопасен: EnsureNode идёт параллельно по нодам/шардам —
+    // обычные List-ы теряли записи (флaky-тесты).
     internal sealed class FakeDriver : IClusterDriver
     {
+        private readonly object _gate = new();
+
         public readonly List<string> EnsuredNodes = [];
         public readonly List<(string Node, NodeResources? Resources)> EnsuredDetails = [];
         public readonly List<string> RemovedNodes = [];
@@ -160,13 +205,17 @@ internal static class Fakes
             => Task.FromResult(Result<IReadOnlyList<HostInfo>>.Success(Hosts));
 
         public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct)
-            => Task.FromResult(Result<IReadOnlySet<(string, int)>>.Success(BusyPorts));
+            => Task.FromResult(Result<IReadOnlySet<(string Host, int Port)>>.Success(BusyPorts));
 
         public Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
             InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, CancellationToken ct)
         {
-            EnsuredNodes.Add($"{topology.Shard}/{nodeName}");
-            EnsuredDetails.Add((nodeName, resources));
+            lock (_gate)
+            {
+                EnsuredNodes.Add($"{topology.Shard}/{nodeName}");
+                EnsuredDetails.Add((nodeName, resources));
+            }
+
             return Task.FromResult(EnsureResultByNode is { } f ? f(nodeName) : Result.Success());
         }
 
@@ -178,34 +227,57 @@ internal static class Fakes
                 return Task.FromResult(Result.Failed(new ApplicationException("docker: connection refused")));
             }
 
-            RemovedNodes.Add($"{shard}/{nodeName}");
-            // docker больше не видит объект (guard D2 читает список заново)
-            NodeObjects.Remove($"pgw-{cluster}-{shard}-{nodeName}");
+            lock (_gate)
+            {
+                RemovedNodes.Add($"{shard}/{nodeName}");
+                // docker больше не видит объект (guard D2 читает список заново)
+                NodeObjects.Remove($"pgw-{cluster}-{shard}-{nodeName}");
+            }
+
             return Task.FromResult(Result.Success());
         }
 
         public Task<Result> StopNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct)
         {
-            StoppedNodes.Add($"{shard}/{nodeName}");
+            lock (_gate)
+            {
+                StoppedNodes.Add($"{shard}/{nodeName}");
+            }
+
             return Task.FromResult(Result.Success());
         }
 
         public Task<Result<string>> ExecNodeAsync(
             string cluster, string shard, string node, IReadOnlyList<string> cmd, CancellationToken ct)
         {
-            Executed.Add(($"{shard}/{node}", cmd));
+            lock (_gate)
+            {
+                Executed.Add(($"{shard}/{node}", cmd));
+            }
+
             return Task.FromResult(ExecResult is { } f
                 ? f(node, cmd)
                 : Result<string>.Success(string.Empty));
         }
 
         public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
-            => Task.FromResult(Result<IReadOnlyList<string>>.Success(NodeObjects));
+        {
+            List<string> objects;
+            lock (_gate)
+            {
+                objects = NodeObjects.ToList(); // снапшот: читатель может идти параллельно
+            }
+
+            return Task.FromResult(Result<IReadOnlyList<string>>.Success(objects));
+        }
     }
 
     // Мок SQL: запоминает DSN/SQL вызовов (порядок journal-before-SQL проверяют тесты).
+    // Потокобезопасен: шарды провижинятся параллельно (Parallel.ForEachAsync).
     internal sealed class FakeSql : ISqlExecutor
     {
+        private readonly object _gate = new();
+
         public readonly List<(string Dsn, string Sql)> Executed = [];
         public readonly List<(string Dsn, string Sql)> Scalars = [];
         public readonly List<(string Dsn, string DbName)> EnsuredDatabases = [];
@@ -214,20 +286,32 @@ internal static class Fakes
 
         public Task<Result> ExecuteAsync(string dsn, string sql, CancellationToken ct)
         {
-            Executed.Add((dsn, sql));
+            lock (_gate)
+            {
+                Executed.Add((dsn, sql));
+            }
+
             OnExecute?.Invoke(dsn);
             return Task.FromResult(ExecuteResult is { } f ? f() : Result.Success());
         }
 
         public Task<Result<object?>> ExecuteScalarAsync(string dsn, string sql, CancellationToken ct)
         {
-            Scalars.Add((dsn, sql)); // t06: гварды ролей идут скалярами — трекаем их
+            lock (_gate)
+            {
+                Scalars.Add((dsn, sql)); // t06: гварды ролей идут скалярами — трекаем их
+            }
+
             return Task.FromResult(Result<object?>.Success(null));
         }
 
         public Task<Result> EnsureDatabaseAsync(string dsn, string dbname, CancellationToken ct)
         {
-            EnsuredDatabases.Add((dsn, dbname));
+            lock (_gate)
+            {
+                EnsuredDatabases.Add((dsn, dbname));
+            }
+
             return Task.FromResult(Result.Success());
         }
     }

@@ -145,6 +145,113 @@ public class NodeSupervisorTests
     }
 
     [Fact]
+    public async Task Tick_StaleFailoverKeyForOtherLeader_Cleaned()
+    {
+        // Arrange — хвост ускоренного failover: ключ остался (Patroni не всегда
+        // потребляет), но лидер уже ДРУГОЙ — висящий ключ заставил бы бывшего
+        // лидера при возврате уступить лидерство
+        var rig = await NewRig(_ => Ok());
+        rig.Etcd.Seed("/service/shop-shard1/leader", "shard1b");
+        rig.Etcd.Seed("/service/shop-shard1/failover",
+            """{"leader":"shard1a","member":"shard1b","scheduled_at":"2026-08-26T19:00:00Z"}""");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — устаревший ключ удалён надзором
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        rig.Etcd.Store.Should().NotContainKey("/service/shop-shard1/failover",
+            "ключ про другого лидера — исполнен или устарел, не должен висеть");
+    }
+
+    [Fact]
+    public async Task Tick_FailoverKeyFromCurrentLeader_Kept()
+    {
+        // Arrange — оператор запланировал switchover patronictl от ЖИВОГО лидера:
+        // ключ про текущего лидера — не наш объект, не трогаем
+        var rig = await NewRig(_ => Ok());
+        rig.Etcd.Seed("/service/shop-shard1/leader", "shard1a");
+        rig.Etcd.Seed("/service/shop-shard1/failover",
+            """{"leader":"shard1a","member":"shard1b","scheduled_at":"2030-01-01T00:00:00Z"}""");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — заявка оператора сохранена
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        rig.Etcd.Store.Should().ContainKey("/service/shop-shard1/failover");
+    }
+
+    [Fact]
+    public async Task Tick_DeletedLeaderContainer_FailoverAccelerated_NodeRecreated()
+    {
+        // Arrange — контейнер ЛИДЕРА shard1a снесён руками, лидер-ключ в DCS ещё
+        // висит (lease протух бы через ttl), реплики живы: надзор должен УСКОРИТЬ
+        // failover (ключ + удаление мёртвого лидер-ключа), а не ждать возврата
+        // того же лидера рестартом; контейнер поднимается параллельно
+        var rig = await NewRig(_ => Ok(), nodeObjects:
+        [
+            "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c",
+        ]);
+        rig.Etcd.Seed("/service/shop-shard1/leader", "shard1a");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — failover-first: ключ написан (кандидат — живая нода), мёртвый
+        // лидер-ключ удалён, контейнер лидера пересоздаётся параллельно
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        var failover = rig.Etcd.Store.Should().ContainKey("/service/shop-shard1/failover").WhoseValue.Value;
+        failover.Should().Contain("\"leader\":\"shard1a\"").And.Contain("\"member\":");
+        rig.Etcd.Store.Should().NotContainKey("/service/shop-shard1/leader",
+            "мёртвый лидер-лок снят — кандидат промоутится в пределах loop_wait, не ttl");
+        rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
+        rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("PROVISIONING");
+    }
+
+    [Fact]
+    public async Task Tick_DeletedReplicaContainer_NoFailoverAcceleration()
+    {
+        // Arrange — снесён контейнер РЕПЛИКИ (лидер жив на месте): ускорение
+        // failover не нужно — обычное самовосстановление декларации
+        var rig = await NewRig(_ => Ok(), nodeObjects:
+        [
+            "pgw-shop-shard1-shard1a", "pgw-shop-shard1-shard1c",
+        ]);
+        rig.Etcd.Seed("/service/shop-shard1/leader", "shard1a");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — никаких ключей failover/удалений лидера, реплика пересоздана
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        rig.Etcd.Store.Should().NotContainKey("/service/shop-shard1/failover");
+        rig.Etcd.Store.Should().ContainKey("/service/shop-shard1/leader");
+        rig.Driver.EnsuredNodes.Should().ContainSingle().Which.Should().Be("shard1/shard1b");
+    }
+
+    [Fact]
+    public async Task Tick_DeletedLeaderContainer_NoAliveCandidate_NoAcceleration()
+    {
+        // Arrange — контейнер лидера снесён, но НЕТ живых кандидатов (пробы глухие):
+        // промоутить некого — лидер возвращается рестартом контейнера
+        var rig = await NewRig(_ => Down(), nodeObjects:
+        [
+            "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c",
+        ]);
+        rig.Etcd.Seed("/service/shop-shard1/leader", "shard1a");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — ключей не писали, лидер-ключ не трогали, контейнер поднят
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        rig.Etcd.Store.Should().NotContainKey("/service/shop-shard1/failover");
+        rig.Etcd.Store.Should().ContainKey("/service/shop-shard1/leader");
+        rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
+    }
+
+    [Fact]
     public async Task Tick_MarkedNode_Recreated_StateRebuildingNotOverwrittenByUnreachable()
     {
         // Arrange — оператор пометил shard1b (TO_RECREATE), лидер shard1a жив:

@@ -176,6 +176,19 @@ public sealed class NodeSupervisor(
                     resourcesLoaded = true;
                 }
 
+                // Failover-first (доступность данных первична, arch/14 §5 C):
+                // отсутствует docker-объект ЛИДЕРА — свидетельство смерти
+                // процесса, не сетевой флап. Быстрый рестарт контейнера вернул
+                // бы того же лидера в пределах ttl — без переезда и с простоем
+                // на весь подъём PG. Вместо этого ускоряем Patroni-failover
+                // (ключ + снятие протухающего лока — живая реплика принимает
+                // лидерство в пределах loop_wait), контейнер ниже поднимем
+                // параллельно — нода вернётся репликой и догонит нового лидера.
+                var accelerated = await AccelerateDeadLeaderFailoverAsync(
+                    cluster, shard, node.Name, addresses, ct);
+                if (!accelerated.IsSuccess)
+                    return accelerated;
+
                 if (node.State != NodeState.Provisioning)
                 {
                     var marked = await PutAsync(
@@ -194,6 +207,56 @@ public sealed class NodeSupervisor(
         }
 
         return Result.Success();
+    }
+
+    // Ускорение failover при доказанно мёртвом лидере (docker-объект отсутствует
+    // — в отличие от пробы, это положительное свидетельство, флапа нет):
+    // 1) DCS-ключ /service/<scope>/failover {"leader","member","scheduled_at"}
+    //    (Patroni-формат: поле кандидата — member, см. Failover.from_node);
+    // 2) удаление лидер-ключа — его lease протух бы только через ttl (~20с),
+    //    кандидат без этого ждёт истечения и промоушен не ускоряется.
+    // Кандидат — живая нода с ролью sync_standby (по GET /cluster), иначе
+    // первая живая. Нет живых — не ускоряем: некому промоутиться, лидер
+    // вернётся рестартом контейнера.
+    private async Task<Result> AccelerateDeadLeaderFailoverAsync(
+        string cluster, ShardSpec shard, string missing,
+        IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
+    {
+        var scope = $"{cluster}-{shard.Name}";
+        var scopeKvs = await RangeAsync($"/service/{scope}/", ct);
+        if (!scopeKvs.IsSuccess)
+            return scopeKvs;
+        var leader = ClusterSnapshotParser.ParseService(scopeKvs.Value).FirstOrDefault()?.LeaderName;
+        if (leader != missing)
+            return Result.Success(); // лидер не она (уже переехал/не была) — обычный подъём
+
+        string? candidate = null;
+        foreach (var other in shard.Nodes.Where(n => n.Name != missing
+                 && n.State is not (NodeState.Quarantined or NodeState.Removing)))
+        {
+            if (!addresses.TryGetValue($"{shard.Name}/{other.Name}", out var addr))
+                continue;
+            var clusterState = await probe.GetClusterAsync(addr, ct);
+            if (!clusterState.IsSuccess)
+                continue; // мертва — не кандидат
+            if (clusterState.Value.Any(m => m.Name == other.Name && m.Role == "sync_standby"))
+            {
+                candidate = other.Name; // синхронная реплика — без потерь данных
+                break;
+            }
+            candidate ??= other.Name; // первая живая — запасной кандидат
+        }
+
+        if (candidate is null)
+            return Result.Success();
+
+        var scheduled = clock.GetUtcNow().UtcDateTime.ToString("o");
+        var marked = await PutAsync($"/service/{scope}/failover",
+            $$"""{"leader":"{{missing}}","member":"{{candidate}}","scheduled_at":"{{scheduled}}"}""", ct);
+        if (!marked.IsSuccess)
+            return marked;
+
+        return await DeleteAsync($"/service/{scope}/leader", ct);
     }
 
     // Operator-triggered recreate (TO_RECREATE): оператор панелью просит
@@ -314,6 +377,21 @@ public sealed class NodeSupervisor(
         if (!scopeKvs.IsSuccess)
             return scopeKvs;
         var leader = ClusterSnapshotParser.ParseService(scopeKvs.Value).FirstOrDefault()?.LeaderName;
+
+        // Санитизация failover-ключа (хвост failover-first ускорения): Patroni
+        // не всегда потребляет ключ после промоушена — висящий ключ с чужим
+        // leader позже заставил бы вернувшегося лидера уступить лидерство.
+        // Удаляем только ключи про ДРУГОГО лидера (leader не совпадает с
+        // текущим); заявки оператора от живого лидера не трогаем. Лидера нет —
+        // нет и положительного знания, тоже не трогаем.
+        if (leader is not null
+            && scopeKvs.Value.FirstOrDefault(kv => kv.Key == $"/service/{scope}/failover") is { } failoverKey
+            && !failoverKey.Value.Contains($"\"leader\":\"{leader}\"", StringComparison.Ordinal))
+        {
+            var cleaned = await DeleteAsync($"/service/{scope}/failover", ct);
+            if (!cleaned.IsSuccess)
+                return cleaned;
+        }
 
         var alive = new List<string>();
         var dead = new List<string>();
