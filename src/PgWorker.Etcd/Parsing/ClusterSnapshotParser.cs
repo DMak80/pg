@@ -314,6 +314,7 @@ public static class ClusterSnapshotParser
         "UNREACHABLE" => NodeState.Unreachable,
         "QUARANTINED" => NodeState.Quarantined,
         "REMOVING" => NodeState.Removing,
+        "TO_RECREATE" => NodeState.ToRecreate,
         _ => NodeState.NotInitialized,
     };
 

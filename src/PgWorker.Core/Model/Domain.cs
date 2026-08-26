@@ -23,6 +23,7 @@ public enum NodeState
     Unreachable,
     Quarantined,
     Removing,
+    ToRecreate,
 }
 
 /// <summary>Статус-ключ бакета; null (нет ключа) = ACTIVE (arch/11 §2).</summary>

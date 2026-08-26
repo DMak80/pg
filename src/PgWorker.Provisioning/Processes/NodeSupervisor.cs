@@ -71,6 +71,12 @@ public sealed class NodeSupervisor(
             if (shard.Dsn is null)
                 continue;
 
+            // Operator-triggered recreate (TO_RECREATE): оператор панелью просит
+            // пересоздать ноду — rebuild немедленно, без ожидания NodeDeadSec.
+            var recreated = await RecreateMarkedNodesAsync(cluster, snap, shard, addresses.Value, ct);
+            if (!recreated.IsSuccess)
+                return Fail(recreated.Error!);
+
             var shardTrack = await SuperviseShardAsync(cluster, snap, shard, addresses.Value, track, ct);
             if (!shardTrack.IsSuccess)
                 return Fail(shardTrack.Error!);
@@ -185,6 +191,61 @@ public sealed class NodeSupervisor(
                 if (!ensured.IsSuccess)
                     return ensured;
             }
+        }
+
+        return Result.Success();
+    }
+
+    // Operator-triggered recreate: нода в TO_RECREATE — пересоздать немедленно
+    // (аналог rebuild мёртвой, но по требованию оператора, без ожидания порога).
+    // Guard: не лидер + жив кворум (≥1 другой ноды) — лидера не трогаем (failover
+    // делает Patroni), без кворума rebuild небезопасен (нет источника для basebackup).
+    private async Task<Result> RecreateMarkedNodesAsync(
+        string cluster, ClusterSnapshot snap, ShardSpec shard,
+        IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
+    {
+        var marked = shard.Nodes.Where(n => n.State == NodeState.ToRecreate).ToList();
+        if (marked.Count == 0)
+            return Result.Success();
+
+        var scope = $"{cluster}-{shard.Name}";
+        var scopeKvs = await RangeAsync($"/service/{scope}/", ct);
+        if (!scopeKvs.IsSuccess)
+            return scopeKvs;
+        var leader = ClusterSnapshotParser.ParseService(scopeKvs.Value).FirstOrDefault()?.LeaderName;
+
+        // Кворум: хотя бы одна другая нода жива (не в TO_RECREATE/QUARANTINED/REMOVING).
+        var safe = shard.Nodes.Where(n => n.State != NodeState.ToRecreate
+                                       && n.State is not NodeState.Quarantined
+                                       && n.State is not NodeState.Removing).ToList();
+        var quorum = safe.Count >= 1;
+
+        foreach (var node in marked)
+        {
+            var isLeader = leader == node.Name;
+            if (isLeader || !quorum)
+                continue; // лидера и без кворума не трогаем — ждём failover/оживления
+
+            if (!addresses.TryGetValue($"{shard.Name}/{node.Name}", out var addr))
+                continue;
+
+            var removed = await driver.RemoveNodeAsync(cluster, shard.Name, node.Name, ct);
+            if (!removed.IsSuccess)
+                return removed;
+
+            var topology = TopologyOf(cluster, snap, shard.Name, addresses);
+            var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
+            var ensured = await driver.EnsureNodeAsync(
+                topology, node.Name, addr, secrets,
+                etcdForNodes ?? new EtcdEndpoints(endpoints), resources, ct);
+            if (!ensured.IsSuccess)
+                return ensured;
+
+            var rebuilding = await PutAsync(
+                $"/clusters/{cluster}/shards/{shard.Name}/nodes/{node.Name}/state",
+                "REBUILDING", ct);
+            if (!rebuilding.IsSuccess)
+                return rebuilding;
         }
 
         return Result.Success();
