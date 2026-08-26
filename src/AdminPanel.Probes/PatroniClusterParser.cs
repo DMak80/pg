@@ -50,7 +50,28 @@ public static class PatroniClusterParser
         [JsonPropertyName("timeline")]
         public long? Timeline { get; set; }
 
+        // Patroni в переходных состояниях члена (starting/creating replica при
+        // пересоздании ноды) отдаёт "lag": "unknown" — нечисловая строка валит
+        // весь парсер и ломает пробы ВСЕХ членов скопа (каждая проба парсит
+        // полный /cluster). Терпим: нечисловое → null (лаг неизвестен).
         [JsonPropertyName("lag")]
+        [JsonConverter(typeof(LenientNullableLongConverter))]
         public long? Lag { get; set; }
+    }
+
+    // long? с прощением строк: число-строка ("123") читается, прочее ("unknown")
+    // — null, без JsonException.
+    private sealed class LenientNullableLongConverter : JsonConverter<long?>
+    {
+        public override long? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+            => reader.TokenType switch
+            {
+                JsonTokenType.Number => reader.GetInt64(),
+                JsonTokenType.String when long.TryParse(reader.GetString(), out var value) => value,
+                _ => null,
+            };
+
+        public override void Write(Utf8JsonWriter writer, long? value, JsonSerializerOptions options)
+            => writer.WriteNumberValue(value ?? 0);
     }
 }

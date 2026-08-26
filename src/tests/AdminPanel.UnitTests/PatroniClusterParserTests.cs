@@ -51,6 +51,28 @@ public class PatroniClusterParserTests
     }
 
     [Fact]
+    public void Parse_TransitionalLagUnknown_DoesNotThrow()
+    {
+        // Arrange — Patroni 4.x в переходных состояниях члена (starting при
+        // пересоздании ноды) отдаёт "lag": "unknown" (и lsn-поля строками):
+        // строгое чтение валило ВЕСЬ парсер и роняло пробы всех членов скопа.
+        const string json = """
+            {"members":[
+              {"name":"a","role":"leader","state":"running","timeline":3},
+              {"name":"b","role":"replica","state":"starting",
+               "receive_lsn":"unknown","lsn":"unknown","lag":"unknown"}]}
+            """;
+
+        // Act
+        var members = PatroniClusterParser.Parse(json);
+
+        // Assert — парсер не упал, лаг переходного члена — null (неизвестен)
+        members.Should().HaveCount(2);
+        members.Single(m => m.Name == "b").LagBytes.Should().BeNull();
+        members.Single(m => m.Name == "a").Timeline.Should().Be(3L);
+    }
+
+    [Fact]
     public void Parse_BrokenJson_Throws()
     {
         // Arrange — мусор парсер не глотает: ошибку ловит проба (spec §10.3).

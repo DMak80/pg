@@ -1,3 +1,4 @@
+using System.Net.Http.Json;
 using System.Security.Claims;
 using AdminPanel.Etcd.Writing;
 using AdminPanel.Infrastructure.CQRS;
@@ -164,12 +165,29 @@ public static class OperationsModule
         });
 
         // POST /api/ha/{scope}/nodes/{node}/recreate — маркер пересоздания ноды
-        // (TO_RECREATE); NodeSupervisor PgWorker выполнит rebuild.
+        // (TO_RECREATE) с режимом soft|hard (нет тела — soft); NodeSupervisor
+        // PgWorker выполнит rebuild.
         endpoints.MapPost("/api/ha/{scope}/nodes/{node}/recreate", async (
-            string scope, string node, IHandler handler, CancellationToken ct) =>
+            string scope, string node, HttpRequest http, IHandler handler, CancellationToken ct) =>
         {
+            // Тело опционально (обратная совместимость: POST без тела = soft);
+            // битый JSON — 400, а не 500.
+            RecreateNodeRequest? body = null;
+            if (http.HasJsonContentType())
+            {
+                try
+                {
+                    body = await http.ReadFromJsonAsync<RecreateNodeRequest>(ct);
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    return Results.Problem(
+                        statusCode: StatusCodes.Status400BadRequest, title: "Invalid body",
+                        detail: "тело запроса — JSON вида {\"mode\":\"soft|hard\"}");
+                }
+            }
             var result = await handler.HandleCommand<RecreateNodeCommand, NodeRecreatedDto>(
-                new RecreateNodeCommand(scope, node), ct);
+                new RecreateNodeCommand(scope, node, body?.Mode), ct);
             if (result.IsSuccess)
                 return Results.Created($"/api/ha/{scope}", result.Value);
 
@@ -181,6 +199,8 @@ public static class OperationsModule
                     statusCode: StatusCodes.Status409Conflict, title: "Cluster not active", detail: result.Error.Message),
                 LastNodeException or AllOthersRecreatingException => Results.Problem(
                     statusCode: StatusCodes.Status409Conflict, title: "Recreate rejected", detail: result.Error.Message),
+                InvalidRecreateModeException => Results.Problem(
+                    statusCode: StatusCodes.Status400BadRequest, title: "Invalid mode", detail: result.Error.Message),
                 EtcdWriteUnavailableException => Results.Problem(
                     statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable", detail: result.Error.Message),
                 _ => Results.Problem(

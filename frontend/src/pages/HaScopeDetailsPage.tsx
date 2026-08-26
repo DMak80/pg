@@ -1,11 +1,12 @@
 // Детали HA-скопа: шапка (лидер, optime, кластер/шард), таблица членов с
 // probe-статусом, raw config свёрнуто (t09 spec §4.4–4.9).
-// Кнопка «Пересоздать» — operator-triggered rebuild ноды (TO_RECREATE).
+// Кнопка «Пересоздать» — operator-triggered rebuild ноды (TO_RECREATE):
+// мягко (switchover для лидера) или грубо (снос сразу, failover — Patroni).
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Accordion, Alert, Anchor, Badge, Button, Group, Modal, Select, Stack, Table, Text, Title, Tooltip } from '@mantine/core';
+import { Accordion, Alert, Anchor, Badge, Button, Group, Modal, Radio, Select, Stack, Table, Text, Title, Tooltip } from '@mantine/core';
 import { Link, useParams } from 'react-router';
 import { useState } from 'react';
-import type { HaMemberDto } from '../api/dto';
+import type { HaMemberDto, RecreateMode } from '../api/dto';
 import { fetchHaScope, queryKeys, recreateNode } from '../api/queries';
 import { ErrorSection, LoadingSection } from '../components/LoadState';
 import { usePollingIntervalMs } from '../polling/PollingContext';
@@ -129,6 +130,7 @@ export function HaScopeDetailsPage() {
 function RecreateNodeButton({ scope, members }: { scope: string; members: HaMemberDto[] }) {
   const [opened, setOpened] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
+  const [mode, setMode] = useState<RecreateMode>('soft');
   const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
@@ -147,7 +149,7 @@ function RecreateNodeButton({ scope, members }: { scope: string; members: HaMemb
   }));
 
   const mutation = useMutation({
-    mutationFn: (node: string) => recreateNode(scope, node),
+    mutationFn: (node: string) => recreateNode(scope, node, mode),
     onSuccess: async () => {
       setOpened(false);
       setSelected(null);
@@ -159,15 +161,22 @@ function RecreateNodeButton({ scope, members }: { scope: string; members: HaMemb
     },
   });
 
+  // Каждое открытие — безопасный дефолт «мягко».
+  const openModal = () => {
+    setMode('soft');
+    setError(null);
+    setOpened(true);
+  };
+
   return (
     <>
-      <Button size="xs" variant="light" color="orange" onClick={() => { setOpened(true); setError(null); }}>
+      <Button size="xs" variant="light" color="orange" onClick={openModal}>
         Пересоздать ноду
       </Button>
       <Modal opened={opened} onClose={() => { setOpened(false); setError(null); }} title="Пересоздать ноду" centered>
         <Stack gap="sm">
           <Text size="sm" c="dimmed">
-            Нода будет удалена и пересоздана с тем же адресом. Patroni сделает pg_basebackup с живой реплики.
+            Нода будет удалена (контейнер и volume) и пересоздана с тем же адресом. Patroni сделает pg_basebackup с живой реплики.
           </Text>
           <Select
             label="Нода"
@@ -177,6 +186,16 @@ function RecreateNodeButton({ scope, members }: { scope: string; members: HaMemb
             onChange={setSelected}
             searchable={false}
           />
+          <Radio.Group
+            label="Режим (важен для лидера)"
+            value={mode}
+            onChange={(v) => setMode(v as RecreateMode)}
+          >
+            <Stack gap="xs" mt={4}>
+              <Radio value="soft" label="Мягко — сначала switchover: лидерство переезжает без паузы на запись, затем пересоздание" />
+              <Radio value="hard" label="Грубо — снести сразу: Patroni сам сделает failover (короткая пауза на запись)" />
+            </Stack>
+          </Radio.Group>
           {error ? <Alert color="red" variant="light">{error}</Alert> : null}
           <Group justify="flex-end">
             <Button variant="default" onClick={() => { setOpened(false); setError(null); }}>Отмена</Button>

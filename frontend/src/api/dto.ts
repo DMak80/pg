@@ -302,7 +302,12 @@ export interface NodeRecreatedDto {
   scope: string;
   node: string;
   state: string;
+  mode: RecreateMode;
 }
+
+// Режим пересоздания: soft — живой лидер сначала переезжает switchover'ом;
+// hard — снос сразу, failover делает Patroni.
+export type RecreateMode = 'soft' | 'hard';
 
 // GET /api/alerts
 export interface AlertDto {

@@ -14,6 +14,7 @@ import type {
   MovesQueuedDto,
   NodeRecreatedDto,
   OverviewDto,
+  RecreateMode,
   SessionDto,
   ShardAddedDto,
 } from './dto';
@@ -114,10 +115,11 @@ export function logoutRequest(): Promise<void> {
   return apiFetch<void>('/api/auth/logout', { method: 'POST' });
 }
 
-// POST /api/ha/{scope}/nodes/{node}/recreate — маркер TO_RECREATE (sixth mutation);
-// NodeSupervisor PgWorker выполнит rebuild ноды.
-export function recreateNode(scope: string, node: string): Promise<NodeRecreatedDto> {
+// POST /api/ha/{scope}/nodes/{node}/recreate — маркер TO_RECREATE с режимом
+// soft|hard (sixth mutation); NodeSupervisor PgWorker выполнит rebuild ноды.
+// apiFetch сериализует body сам — передаём объект, не строку.
+export function recreateNode(scope: string, node: string, mode: RecreateMode): Promise<NodeRecreatedDto> {
   return apiFetch<NodeRecreatedDto>(
     `/api/ha/${encodeURIComponent(scope)}/nodes/${encodeURIComponent(node)}/recreate`,
-    { method: 'POST' });
+    { method: 'POST', body: { mode } });
 }

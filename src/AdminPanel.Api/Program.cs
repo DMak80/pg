@@ -53,6 +53,14 @@ if (!Directory.Exists(app.Environment.WebRootPath))
     app.Logger.LogWarning("wwwroot пуст — SPA-бандл не собран (cd frontend && npm run build)");
 
 // [t07] default-документ и статика; guard /api/* ниже статике не мешает.
+// index.html — no-cache: имена ассетов хешируются (vite), но сам html должен
+// перекачиваться каждый раз, иначе браузер тянет старый бандл после деплоя.
+app.Use(async (context, next) =>
+{
+    if (context.Request.Path.Value is "/" or "/index.html")
+        context.Response.Headers.CacheControl = "no-cache";
+    await next();
+});
 app.UseDefaultFiles();
 app.UseStaticFiles();
 

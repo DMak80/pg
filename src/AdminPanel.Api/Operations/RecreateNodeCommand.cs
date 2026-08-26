@@ -11,10 +11,19 @@ using AdminPanel.Infrastructure.DI;
 namespace AdminPanel.Api.Operations;
 
 // Команда пересоздания ноды — шестая мутация панели: ставит маркер
-// nodes/<n>/state=TO_RECREATE; NodeSupervisor PgWorker выполнит rebuild.
-public sealed record RecreateNodeCommand(string Scope, string Node) : ICommand<NodeRecreatedDto>;
+// nodes/<n>/state=TO_RECREATE + режим nodes/<n>/recreate=soft|hard.
+// NodeSupervisor PgWorker выполнит rebuild: soft — живой лидер сначала
+// переезжает switchover'ом; hard — снос сразу, failover делает Patroni.
+public sealed record RecreateNodeCommand(string Scope, string Node, string? Mode = null) : ICommand<NodeRecreatedDto>;
 
-public sealed record NodeRecreatedDto(string Scope, string Node, string State);
+public sealed record NodeRecreatedDto(string Scope, string Node, string State, string Mode);
+
+// Неизвестный режим пересоздания (допустимы только soft|hard).
+public sealed class InvalidRecreateModeException(string mode)
+    : Exception($"режим пересоздания «{mode}» недопустим: только soft или hard");
+
+// Тело POST /api/ha/{scope}/nodes/{node}/recreate (mode опционален: soft).
+public sealed record RecreateNodeRequest(string? Mode);
 
 public sealed class ScopeNotFoundException(string scope)
     : Exception($"HA-скоп {scope} не найден");
@@ -108,19 +117,30 @@ public sealed partial class RecreateNodeCommandHandler(ISnapshotStore store, IEt
         if (othersRecreating)
             return Result<NodeRecreatedDto>.Failed(new AllOthersRecreatingException(scope, node));
 
-        // 7) Идемпотентность: уже TO_RECREATE → успех без записи.
+        // 7) Идемпотентность + смена режима: уже TO_RECREATE → режим всё равно
+        // (пере)записываем — оператор может передумать soft↔hard на висящем
+        // маркере; state не трогаем (REBUILDING-переходы — дело воркера).
         var markerKey = $"/clusters/{cluster}/shards/{shard}/nodes/{node}/state";
+        var modeKey = $"/clusters/{cluster}/shards/{shard}/nodes/{node}/recreate";
+        var mode = command.Mode is null or "" ? "soft" : command.Mode.Trim().ToLowerInvariant();
+        if (mode is not ("soft" or "hard"))
+            return Result<NodeRecreatedDto>.Failed(new InvalidRecreateModeException(command.Mode!));
+
+        var putMode = await gateway.PutAsync(endpoint, modeKey, mode, ct);
+        if (!putMode.IsSuccess)
+            return Result<NodeRecreatedDto>.Failed(putMode.Error!);
+
         var marker = await ReadKeyAsync(endpoint, markerKey, ct);
         if (!marker.IsSuccess)
             return Result<NodeRecreatedDto>.Failed(marker.Error!);
         if (marker.Value == ToRecreateState)
-            return Result<NodeRecreatedDto>.Success(new NodeRecreatedDto(scope, node, ToRecreateState));
+            return Result<NodeRecreatedDto>.Success(new NodeRecreatedDto(scope, node, ToRecreateState, mode));
 
         // 8) PUT маркера.
         var put = await gateway.PutAsync(endpoint, markerKey, ToRecreateState, ct);
         if (!put.IsSuccess)
             return Result<NodeRecreatedDto>.Failed(put.Error!);
-        return Result<NodeRecreatedDto>.Success(new NodeRecreatedDto(scope, node, ToRecreateState));
+        return Result<NodeRecreatedDto>.Success(new NodeRecreatedDto(scope, node, ToRecreateState, mode));
     }
 
     private async Task<Result<string?>> ReadKeyAsync(string endpoint, string key, CancellationToken ct)
