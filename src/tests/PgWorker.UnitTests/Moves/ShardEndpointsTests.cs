@@ -47,7 +47,7 @@ public class ShardEndpointsTests
         var conninfo = ShardEndpoints.MoverConninfo(dsnKey, secrets);
 
         // Assert
-        conninfo.Should().Be("host=n1,n2,n3 port=15432,15433,15434 dbname=shop user=bucket_mover password=moverpw sslmode=require");
+        conninfo.Should().Be("host=n1,n2,n3 port=15432,15433,15434 dbname=shop user=bucket_mover password=moverpw sslmode=require target_session_attrs=read-write");
     }
 
     // AAA: dsn без user= — user добавляется (не теряем вход)
@@ -58,7 +58,7 @@ public class ShardEndpointsTests
         var conninfo = ShardEndpoints.MoverConninfo("host=n1 dbname=shop", new InstallSecrets("s", "s", "s", "s", "moverpw"));
 
         // Assert
-        conninfo.Should().Be("host=n1 dbname=shop user=bucket_mover password=moverpw sslmode=require");
+        conninfo.Should().Be("host=n1 dbname=shop user=bucket_mover password=moverpw sslmode=require target_session_attrs=read-write");
     }
 
     // AAA: advertisedHost — подмена хостов издателя для контейнеров приёмника
@@ -74,7 +74,26 @@ public class ShardEndpointsTests
 
         // Assert
         conninfo.Should().Be(
-            "host=host.docker.internal,host.docker.internal port=1,2 dbname=shop user=bucket_mover password=pw sslmode=require");
+            "host=host.docker.internal,host.docker.internal port=1,2 dbname=shop user=bucket_mover password=pw sslmode=require target_session_attrs=read-write");
+    }
+
+    // AAA: multi-host conninfo ЦЕЛИТся в писателя (add-кластер, 2026-08-26):
+    // libpq без target_session_attrs берёт ПЕРВЫЙ доступный хост — слот failover
+    // создавался на стендбае источника («cannot enable failover for a replication
+    // slot created on the standby»); read-write — семантический эквивалент
+    // HAProxy-входа скриптов, переживающий failover источника (переподключение
+    // заново выбирает писателя)
+    [Fact]
+    public void MoverConninfo_MultiHost_TargetsReadWritePrimary()
+    {
+        // Arrange — источник из двух нод, лидер — вторая
+        var dsnKey = "host=standby,primary port=15006,15007 dbname=add user=bucket_admin";
+
+        // Act
+        var conninfo = ShardEndpoints.MoverConninfo(dsnKey, new InstallSecrets("s", "s", "s", "s", "pw"));
+
+        // Assert
+        conninfo.Should().EndWith("target_session_attrs=read-write");
     }
 
     // AAA: mover-Npgsql-DSN — libpq→Npgsql конвертация для SQL-проб роли (spec §6.1 M0);
@@ -90,7 +109,7 @@ public class ShardEndpointsTests
         var dsn = ShardEndpoints.MoverNpgsqlDsn(dsnKey, secrets);
 
         // Assert
-        dsn.Should().Be("Host=n1:15432,n2:15433,n3:15434;Database=shop;Username=bucket_mover;Password=moverpw;SSL Mode=Require;Trust Server Certificate=true");
+        dsn.Should().Be("Host=n1:15432,n2:15433,n3:15434;Database=shop;Username=bucket_mover;Password=moverpw;SSL Mode=Require;Trust Server Certificate=true;Target Session Attributes=read-write");
     }
 
     // AAA: Npgsql-DSN без user= — Username добавляется, пароль всегда
@@ -101,7 +120,7 @@ public class ShardEndpointsTests
         var dsn = ShardEndpoints.MoverNpgsqlDsn("host=n1 port=1 dbname=d", new InstallSecrets("s", "s", "s", "s", "pw"));
 
         // Assert
-        dsn.Should().Be("Host=n1;Port=1;Database=d;Username=bucket_mover;Password=pw;SSL Mode=Require;Trust Server Certificate=true");
+        dsn.Should().Be("Host=n1;Port=1;Database=d;Username=bucket_mover;Password=pw;SSL Mode=Require;Trust Server Certificate=true;Target Session Attributes=read-write");
     }
 
     // AAA: admin-DSN мастера — postgres + пароль Д7 (паттерн BuildAdminDsn)

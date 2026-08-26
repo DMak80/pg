@@ -51,7 +51,7 @@ public class MoveProcessCutoverTests
             && c.Sql == "CREATE PUBLICATION pub_bucket_42_rb FOR TABLES IN SCHEMA bucket_42",
             "обратная публикация — на новом владельце");
         rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.SrcDsn && c.Sql ==
-            "CREATE SUBSCRIPTION sub_bucket_42_rb CONNECTION 'host=h1,h2 port=15002,15003 dbname=shop user=bucket_mover password=mov-pw sslmode=require' PUBLICATION pub_bucket_42_rb " +
+            "CREATE SUBSCRIPTION sub_bucket_42_rb CONNECTION 'host=h1,h2 port=15002,15003 dbname=shop user=bucket_mover password=mov-pw sslmode=require target_session_attrs=read-write' PUBLICATION pub_bucket_42_rb " +
             "WITH (copy_data = false, failover = true, synchronous_commit = remote_apply)",
             "обратная подписка — на старом владельце: conninfo приёмника, БЕЗ initial copy");
     }

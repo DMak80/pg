@@ -108,6 +108,12 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
     // advertisedHost — как издатель виден ИЗ контейнера приёмника (single-host
     // стенды: host.docker.internal; null — адреса dsn-ключа как есть, прод).
     // Подмена ПОЭЛЕМЕНТНО: libpq требует соответствия числа host и port.
+    // target_session_attrs=read-write ОБЯЗАТЕЛЕН (add-кластер, 2026-08-26):
+    // без него libpq берёт первый доступный хост — replication-слот failover
+    // создавался на стендбае источника («cannot enable failover … created on
+    // the standby», 08P01); read-write и есть эквивалент HAProxy-входа, и
+    // переподключение apply-worker'а после failover источника заново выбирает
+    // писателя.
     public static string MoverConninfo(string shardDsn, InstallSecrets secrets, string? advertisedHost = null)
     {
         var dsn = UserRegex().Replace(shardDsn, "$1user=" + MoverRole);
@@ -117,7 +123,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
             dsn = HostRegex().Replace(dsn, m =>
                 (m.Value.StartsWith(' ') ? " " : "") + "host=" +
                 string.Join(",", m.Value[(m.Value.IndexOf('=') + 1)..].Split(',').Select(_ => advertisedHost)));
-        return dsn + " password=" + secrets.MoverPassword + " sslmode=require";
+        return dsn + " password=" + secrets.MoverPassword + " sslmode=require target_session_attrs=read-write";
     }
 
     // host=… пары key=value conninfo (замена хостов издателя на advertised).
@@ -129,6 +135,11 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
     // маппинг host→Host, port→Port, dbname→Database, user→Username (mover).
     // Разные порты нод Npgsql принимает ТОЛЬКО парами «Host=h1:p1,h2:p2» —
     // список в Port= отвергается («Couldn't set port», e2e-факт t01).
+    // Target Session Attributes=read-write — Npgsql-эквивалент target_session_attrs
+    // (та же причина, что у MoverConninfo): пробы издателя — про писателя
+    // (wal_level/слоты/walsender'ы), первый хост может быть стендбаем. Значение
+    // строго libpq-формой через дефис («ReadWrite» Npgsql отвергает — e2e-факт
+    // add-кластера: «Couldn't set target session attributes»).
     public static string MoverNpgsqlDsn(string shardDsn, InstallSecrets secrets)
     {
         string? host = null, port = null, dbname = null;
@@ -171,6 +182,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
         parts.Add("Password=" + secrets.MoverPassword);
         parts.Add("SSL Mode=Require");
         parts.Add("Trust Server Certificate=true");
+        parts.Add("Target Session Attributes=read-write");
         return string.Join(";", parts);
     }
 }
