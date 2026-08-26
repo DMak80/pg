@@ -143,6 +143,49 @@ public class NodeSupervisorTests
     }
 
     [Fact]
+    public async Task Tick_MarkedNode_Recreated_StateRebuildingNotOverwrittenByUnreachable()
+    {
+        // Arrange — оператор пометил shard1b (TO_RECREATE), лидер shard1a жив:
+        // recreate выполняется этим же тиком (Remove+Ensure+REBUILDING), проба
+        // новой ноды ещё глухая (Patroni грузится) — тот же тик не должен
+        // затирать REBUILDING на UNREACHABLE по устаревшему снапшоту
+        var rig = await NewRig(port => port == 18001 ? Down() : Ok());
+        rig.Etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1b/state", "TO_RECREATE");
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a"}""");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — контейнер+volume снесены и пересозданы, финальный state REBUILDING
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        rig.Driver.RemovedNodes.Should().ContainSingle().Which.Should().Be("shard1/shard1b");
+        rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1b");
+        rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1b/state"].Value
+            .Should().Be("REBUILDING", "UNREACHABLE того же тика затирал бы REBUILDING (гонка снапшота)");
+    }
+
+    [Fact]
+    public async Task Tick_MarkedLeaderAlive_MarkerPreserved_NotErasedByRunning()
+    {
+        // Arrange — оператор пометил ЛИДЕРА shard1a (TO_RECREATE): recreate гвардом
+        // отложен до failover, нода жива — живой путь надзора не должен стирать
+        // маркер оператора записью RUNNING (иначе заявка теряется навсегда)
+        var rig = await NewRig(_ => Ok());
+        rig.Etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1a/state", "TO_RECREATE");
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a"}""");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — маркер ждёт failover: никаких docker-мутаций, state не тронут
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        rig.Driver.RemovedNodes.Should().BeEmpty("лидер не трогаем — failover делает Patroni");
+        rig.Driver.EnsuredNodes.Should().BeEmpty();
+        rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value
+            .Should().Be("TO_RECREATE", "ожившая нода не отменяет заявку оператора на пересоздание");
+    }
+
+    [Fact]
     public async Task Tick_DeadLeaderNode_NoRebuild()
     {
         // Arrange — мертва ЛИДЕР-нода shard1a: failover делает Patroni (P11), не мы

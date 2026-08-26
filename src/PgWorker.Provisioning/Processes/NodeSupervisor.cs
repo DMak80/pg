@@ -322,7 +322,11 @@ public sealed class NodeSupervisor(
                 continue;
             }
 
-            if (node.State is not (NodeState.Unreachable or NodeState.Rebuilding or NodeState.Provisioning))
+            // TO_RECREATE не перезначим: в этом же тике RecreateMarkedNodes уже
+            // писал REBUILDING, а снапшот ещё несёт старый маркер (гонка) —
+            // живой/мёртвый путь надзора не перезаписывает заявки оператора.
+            if (node.State is not (NodeState.Unreachable or NodeState.Rebuilding
+                                   or NodeState.Provisioning or NodeState.ToRecreate))
             {
                 var marked = await PutAsync(
                     $"/clusters/{cluster}/shards/{shard.Name}/nodes/{name}/state", "UNREACHABLE", ct);
@@ -331,12 +335,14 @@ public sealed class NodeSupervisor(
             }
         }
 
-        // Живая нода: снятие UNREACHABLE/REBUILDING → RUNNING.
+        // Живая нода: снятие UNREACHABLE/REBUILDING → RUNNING. TO_RECREATE — не
+        // трогаем: маркер с гвардом (лидер/без кворума) ждёт failover/оживления,
+        // а RUNNING живого пути затёр бы заявку оператора без исполнения.
         foreach (var name in alive)
         {
             var node = shard.Nodes.Single(n => n.Name == name);
             track.Remove($"{shard.Name}/{name}");
-            if (node.State is not NodeState.Running)
+            if (node.State is not (NodeState.Running or NodeState.ToRecreate))
             {
                 var running = await PutAsync(
                     $"/clusters/{cluster}/shards/{shard.Name}/nodes/{name}/state", "RUNNING", ct);
