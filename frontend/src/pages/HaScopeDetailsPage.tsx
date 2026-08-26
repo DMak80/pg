@@ -1,13 +1,16 @@
 // Детали HA-скопа: шапка (лидер, optime, кластер/шард), таблица членов с
 // probe-статусом, raw config свёрнуто (t09 spec §4.4–4.9).
-import { useQuery } from '@tanstack/react-query';
-import { Accordion, Anchor, Badge, Group, Stack, Table, Text, Title, Tooltip } from '@mantine/core';
+// Кнопка «Пересоздать» — operator-triggered rebuild ноды (TO_RECREATE).
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { Accordion, Alert, Anchor, Badge, Button, Group, Modal, Select, Stack, Table, Text, Title, Tooltip } from '@mantine/core';
 import { Link, useParams } from 'react-router';
+import { useState } from 'react';
 import type { HaMemberDto } from '../api/dto';
-import { fetchHaScope, queryKeys } from '../api/queries';
+import { fetchHaScope, queryKeys, recreateNode } from '../api/queries';
 import { ErrorSection, LoadingSection } from '../components/LoadState';
 import { usePollingIntervalMs } from '../polling/PollingContext';
 import { formatBytes, formatIso, formatIsoAge } from '../utils/format';
+import { ApiError } from '../api/client';
 
 // Карта ролей Patroni: русские подписи известных, канон — в Tooltip (t09 spec §4.6);
 // master — violet, рифма с Badge «лидер» etcd-панели (t08 EtcdPage).
@@ -92,6 +95,10 @@ export function HaScopeDetailsPage() {
           </Text>
         </Group>
       </div>
+      <Group justify="space-between">
+        <div />
+        {data.matched ? <RecreateNodeButton scope={data.scope} members={data.members} /> : null}
+      </Group>
       <MembersTable members={data.members} leaderName={data.leaderName} />
       {data.requests === null ? null : (
         <Group gap="sm">
@@ -117,6 +124,77 @@ export function HaScopeDetailsPage() {
   );
 }
 
+// Кнопка «Пересоздать»: открывает модалку с выбором ноды.
+// Недоступна если: 1 нода (последняя), или все остальные уже в REBUILDING/TO_RECREATE.
+function RecreateNodeButton({ scope, members }: { scope: string; members: HaMemberDto[] }) {
+  const [opened, setOpened] = useState(false);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+
+  const recreatingStates = new Set(['REBUILDING', 'TO_RECREATE']);
+  // Доступные для пересоздания: ноды, у которых хотя бы одна ДРУГАЯ нода не в процессе пересоздания.
+  const canRecreate = (member: HaMemberDto) => {
+    const others = members.filter((m) => m.name !== member.name);
+    if (others.length === 0) return false;
+    return !others.every((m) => m.nodeState !== null && recreatingStates.has(m.nodeState));
+  };
+
+  const options = members.map((m) => ({
+    value: m.name,
+    label: m.name + (m.nodeState && recreatingStates.has(m.nodeState) ? ' (уже пересоздаётся)' : ''),
+    disabled: !canRecreate(m),
+  }));
+
+  const mutation = useMutation({
+    mutationFn: (node: string) => recreateNode(scope, node),
+    onSuccess: async () => {
+      setOpened(false);
+      setSelected(null);
+      setError(null);
+      await queryClient.invalidateQueries({ queryKey: queryKeys.haScope(scope) });
+    },
+    onError: (e: unknown) => {
+      setError(e instanceof ApiError ? e.message : 'Не удалось поставить маркер пересоздания');
+    },
+  });
+
+  return (
+    <>
+      <Button size="xs" variant="light" color="orange" onClick={() => { setOpened(true); setError(null); }}>
+        Пересоздать ноду
+      </Button>
+      <Modal opened={opened} onClose={() => { setOpened(false); setError(null); }} title="Пересоздать ноду" centered>
+        <Stack gap="sm">
+          <Text size="sm" c="dimmed">
+            Нода будет удалена и пересоздана с тем же адресом. Patroni сделает pg_basebackup с живой реплики.
+          </Text>
+          <Select
+            label="Нода"
+            placeholder="Выберите ноду"
+            data={options}
+            value={selected}
+            onChange={setSelected}
+            searchable={false}
+          />
+          {error ? <Alert color="red" variant="light">{error}</Alert> : null}
+          <Group justify="flex-end">
+            <Button variant="default" onClick={() => { setOpened(false); setError(null); }}>Отмена</Button>
+            <Button
+              color="orange"
+              loading={mutation.isPending}
+              disabled={selected === null}
+              onClick={() => selected && mutation.mutate(selected)}
+            >
+              Пересоздать
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+    </>
+  );
+}
+
 // Таблица членов: имя (+метка лидера), адрес, роль, состояние, timeline, лаг,
 // probe-статус (t09 spec §4.5).
 function MembersTable({ members, leaderName }: { members: HaMemberDto[]; leaderName: string | null }) {
@@ -133,6 +211,7 @@ function MembersTable({ members, leaderName }: { members: HaMemberDto[]; leaderN
             <Table.Th>Timeline</Table.Th>
             <Table.Th>Лаг</Table.Th>
             <Table.Th>Проба</Table.Th>
+            <Table.Th>Node state</Table.Th>
           </Table.Tr>
         </Table.Thead>
         <Table.Tbody>
@@ -164,6 +243,7 @@ function MemberRow({ member, isLeader }: { member: HaMemberDto; isLeader: boolea
       <Table.Td>{member.timeline ?? '—'}</Table.Td>
       <Table.Td>{formatBytes(member.lagBytes)}</Table.Td>
       <Table.Td><ProbeCell member={member} /></Table.Td>
+      <Table.Td><NodeStateCell nodeState={member.nodeState} /></Table.Td>
     </Table.Tr>
   );
 }
@@ -205,4 +285,21 @@ function ProbeCell({ member }: { member: HaMemberDto }) {
       </Tooltip>
     );
   return <Text c="dimmed">—</Text>;
+}
+
+// Node state из etcd (/clusters/<C>/shards/<X>/nodes/<n>/state).
+// REBUILDING/TO_RECREATE — оранжевым (в процессе пересоздания), RUNNING — зелёным.
+function NodeStateCell({ nodeState }: { nodeState: string | null }) {
+  if (nodeState === null) return <Text c="dimmed">—</Text>;
+  const colors: Record<string, string> = {
+    RUNNING: 'teal',
+    PROVISIONING: 'yellow',
+    REBUILDING: 'orange',
+    TO_RECREATE: 'orange',
+    UNREACHABLE: 'red',
+    QUARANTINED: 'red',
+    REMOVING: 'red',
+    NOT_INITIALIZED: 'gray',
+  };
+  return <Badge color={colors[nodeState] ?? 'gray'} variant="light">{nodeState}</Badge>;
 }

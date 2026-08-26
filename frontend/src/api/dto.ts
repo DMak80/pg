@@ -294,6 +294,14 @@ export interface HaMemberDto {
   lagBytes: number | null;
   probeAtUtc: string | null;
   probeError: string | null;
+  nodeState: string | null;
+}
+
+// POST /api/ha/{scope}/nodes/{node}/recreate — ответ.
+export interface NodeRecreatedDto {
+  scope: string;
+  node: string;
+  state: string;
 }
 
 // GET /api/alerts

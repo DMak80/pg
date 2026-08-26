@@ -11,7 +11,7 @@ public class ProbeEnricherTests
     private static readonly DateTimeOffset Now = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
     private static HaMember Member(string name, string? role = "replica", string? state = "streaming") =>
-        new(name, name, 5432, role, state, null, null, null, null);
+        new(name, name, 5432, role, state, null, null, null, null, null);
 
     private static EtcdSnapshot SnapshotWithScope() => TestSnapshots.Healthy(Now) with
     {

@@ -59,8 +59,8 @@ public class HaAlertRulesTests
             {
                 Members =
                 [
-                    new HaMember("s1a", "s1a", 5432, "master", "running", 1L, 0L, Now, null),
-                    new HaMember("s1b", "s1b", 5432, "replica", "starting", 1L, 10L, Now, null),
+                    new HaMember("s1a", "s1a", 5432, "master", "running", 1L, 0L, Now, null, null),
+                    new HaMember("s1b", "s1b", 5432, "replica", "starting", 1L, 10L, Now, null, null),
                 ],
             },
         };
@@ -85,7 +85,7 @@ public class HaAlertRulesTests
         {
             TestSnapshots.HaScopeDemo(Now) with
             {
-                Members = [new HaMember("s1a", "s1a", 5432, "master", "stopped", 1L, null, Now, null)],
+                Members = [new HaMember("s1a", "s1a", 5432, "master", "stopped", 1L, null, Now, null, null)],
             },
         };
         var snapshot = TestSnapshots.Healthy(Now) with { HaScopes = scopes };
@@ -105,7 +105,7 @@ public class HaAlertRulesTests
         {
             TestSnapshots.HaScopeDemo(Now) with
             {
-                Members = [new HaMember("s1c", "s1c", 5432, "sync_standby", "streaming", 1L, 0L, Now, null)],
+                Members = [new HaMember("s1c", "s1c", 5432, "sync_standby", "streaming", 1L, 0L, Now, null, null)],
             },
         };
         var snapshot = TestSnapshots.Healthy(Now) with { HaScopes = scopes };
@@ -129,9 +129,9 @@ public class HaAlertRulesTests
             {
                 Members =
                 [
-                    new HaMember("s1a", "s1a", 5432, "master", "running", 1L, 0L, Now, null),
-                    new HaMember("err", "err", 5432, "replica", "crashed", null, null, Now, "connection refused"),
-                    new HaMember("cold", "cold", 5432, "replica", null, null, null, null, null),
+                    new HaMember("s1a", "s1a", 5432, "master", "running", 1L, 0L, Now, null, null),
+                    new HaMember("err", "err", 5432, "replica", "crashed", null, null, Now, "connection refused", null),
+                    new HaMember("cold", "cold", 5432, "replica", null, null, null, null, null, null),
                 ],
             },
         };
@@ -169,7 +169,7 @@ public class HaAlertRulesTests
         {
             TestSnapshots.HaScopeDemo(Now) with
             {
-                Members = [new HaMember("s1b", "s1b", 5432, "replica", "streaming", 1L, 16L * 1024 * 1024, Now, null)],
+                Members = [new HaMember("s1b", "s1b", 5432, "replica", "streaming", 1L, 16L * 1024 * 1024, Now, null, null)],
             },
         };
         var snapshot = TestSnapshots.Healthy(Now) with { HaScopes = scopes };
@@ -203,7 +203,7 @@ public class HaAlertRulesTests
         {
             TestSnapshots.HaScopeDemo(Now) with
             {
-                Members = [new HaMember("s1b", "s1b", 5432, "replica", "streaming", null, null, null, null)],
+                Members = [new HaMember("s1b", "s1b", 5432, "replica", "streaming", null, null, null, null, null)],
             },
         };
         var snapshot = TestSnapshots.Healthy(Now) with { HaScopes = scopes };
@@ -542,8 +542,8 @@ public class HaAlertRulesTests
                 LeaderName = null,
                 Members =
                 [
-                    new HaMember("s1a", "s1a", 5432, "master", "running", 1L, 0L, Now, null),
-                    new HaMember("s1b", "s1b", 5432, "replica", "starting", 1L, 10L, Now, null),
+                    new HaMember("s1a", "s1a", 5432, "master", "running", 1L, 0L, Now, null, null),
+                    new HaMember("s1b", "s1b", 5432, "replica", "starting", 1L, 10L, Now, null, null),
                 ],
             },
         };

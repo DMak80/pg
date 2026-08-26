@@ -115,12 +115,12 @@ internal static class InspectionSnapshots
         {
             new("demo-s1", "demo", "s1", true, "s1a", 738273634528L, true, null, null, null,
                 [
-                    new HaMember("s1a", "s1a", 5432, "master", "running", 1L, 0L, now, null),
-                    new HaMember("s1b", "s1b", 5432, "replica", "streaming", 1L, 17L * 1024 * 1024, now, null),
+                    new HaMember("s1a", "s1a", 5432, "master", "running", 1L, 0L, now, null, null),
+                    new HaMember("s1b", "s1b", 5432, "replica", "streaming", 1L, 17L * 1024 * 1024, now, null, null),
                 ],
                 "{\"ttl\":5,\"loop_wait\":2}"),
             new("other-scope", null, null, false, null, null, false, null, null, null,
-                [new HaMember("n1", "n1", 5432, "replica", "stopped", null, null, now, "connection refused")],
+                [new HaMember("n1", "n1", 5432, "replica", "stopped", null, null, now, "connection refused", null)],
                 null),
         };
         return Fixture(builtAt) with { HaScopes = scopes };

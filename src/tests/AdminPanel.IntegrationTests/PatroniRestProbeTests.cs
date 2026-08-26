@@ -83,7 +83,7 @@ public class PatroniRestProbeTests : IAsyncLifetime
         null);
 
     private static HaMember Member(string name)
-        => new(name, name, 5432, null, null, null, null, null, null);
+        => new(name, name, 5432, null, null, null, null, null, null, null);
 
     private PatroniRestProbe Probe(Dictionary<string, string>? hostMap = null) => new(
         new HttpClient { Timeout = TimeSpan.FromSeconds(3) },

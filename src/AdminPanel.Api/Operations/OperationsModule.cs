@@ -163,6 +163,31 @@ public static class OperationsModule
             };
         });
 
+        // POST /api/ha/{scope}/nodes/{node}/recreate — маркер пересоздания ноды
+        // (TO_RECREATE); NodeSupervisor PgWorker выполнит rebuild.
+        endpoints.MapPost("/api/ha/{scope}/nodes/{node}/recreate", async (
+            string scope, string node, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<RecreateNodeCommand, NodeRecreatedDto>(
+                new RecreateNodeCommand(scope, node), ct);
+            if (result.IsSuccess)
+                return Results.Created($"/api/ha/{scope}", result.Value);
+
+            return result.Error switch
+            {
+                ScopeNotFoundException or NodeNotFoundException or ClusterNotFoundException => Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound, title: "Not found", detail: result.Error.Message),
+                ClusterNotActiveException => Results.Problem(
+                    statusCode: StatusCodes.Status409Conflict, title: "Cluster not active", detail: result.Error.Message),
+                LastNodeException or AllOthersRecreatingException => Results.Problem(
+                    statusCode: StatusCodes.Status409Conflict, title: "Recreate rejected", detail: result.Error.Message),
+                EtcdWriteUnavailableException => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable", detail: result.Error.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed", detail: result.Error!.Message),
+            };
+        });
+
         return endpoints;
     }
 }

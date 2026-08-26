@@ -99,6 +99,16 @@ public static class ServiceParser
                 if (matched && cluster is not null && shard is not null)
                     portAlloc?.TryGetValue(cluster, out alloc);
 
+                // NodeState из /clusters/<C>/shards/<X>/nodes/<n>/state (для recreate-блокировки).
+                IReadOnlyDictionary<string, string?>? nodeStates = null;
+                if (matched && cluster is not null && shard is not null)
+                {
+                    var shardInfo = clusters.FirstOrDefault(c => c.Name == cluster)
+                        ?.Shards.FirstOrDefault(s => s.Name == shard);
+                    if (shardInfo is not null)
+                        nodeStates = shardInfo.Nodes.ToDictionary(n => n.Name, n => n.State);
+                }
+
                 return new HaScope(
                     a.Scope,
                     cluster,
@@ -115,10 +125,12 @@ public static class ServiceParser
                         .Select(m =>
                         {
                             var member = ParseMember(m.Name, m.Raw);
-                            return alloc is not null
-                                && alloc.TryGetValue($"{shard}/{m.Name}", out var entry)
-                                ? member with { Host = entry.Host, Port = entry.Patroni }
-                                : member;
+                            if (alloc is not null
+                                && alloc.TryGetValue($"{shard}/{m.Name}", out var entry))
+                                member = member with { Host = entry.Host, Port = entry.Patroni };
+                            if (nodeStates is not null && nodeStates.TryGetValue(m.Name, out var ns))
+                                member = member with { NodeState = ns };
+                            return member;
                         })
                         .ToList(),
                     a.RawConfig);
@@ -241,7 +253,7 @@ public static class ServiceParser
             // толерантно: member без валидного JSON остаётся именем-хостом
         }
 
-        return new HaMember(name, host, port, role, state, null, null, null, null);
+        return new HaMember(name, host, port, role, state, null, null, null, null, null);
     }
 
     private static TValue GetOrAdd<TKey, TValue>(Dictionary<TKey, TValue> dictionary, TKey key, Func<TKey, TValue> factory)

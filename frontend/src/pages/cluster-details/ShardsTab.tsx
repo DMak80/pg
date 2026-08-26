@@ -1,8 +1,9 @@
 // Вкладка «Шарды»: dsn, реплики, master+lease, плановые ноды, заявка ресурсов,
 // runtime-колонки проб (t08 spec §4.10; ноды/заявка — t12); кнопки add/remove
 // шарда и бейдж «к удалению» — t06 (arch/03 §3).
-import { Badge, Button, Group, Stack, Table, Text, Tooltip } from '@mantine/core';
+import { Anchor, Badge, Button, Group, Stack, Table, Text, Tooltip } from '@mantine/core';
 import { useState } from 'react';
+import { Link } from 'react-router';
 import type { ShardDto } from '../../api/dto';
 import { formatBytes } from '../../utils/format';
 import { AddShardModal } from './AddShardModal';
@@ -76,7 +77,9 @@ function ShardRow({ shard, cluster, canScale, bucketCount }: {
     <Table.Tr>
       <Table.Td>
         <Group gap={6}>
-          <span>{shard.name}</span>
+          <Anchor component={Link} to={`/ha/${cluster}-${shard.name}`} size="sm" ff="monospace">
+            {shard.name}
+          </Anchor>
           {shard.state === 'TO_REMOVE' ? (
             <Badge color="red" variant="light">к удалению</Badge>
           ) : null}

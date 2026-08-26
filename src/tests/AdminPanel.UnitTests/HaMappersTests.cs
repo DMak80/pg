@@ -45,7 +45,7 @@ public class HaMappersTests
         // Arrange: ни у одного члена лага нет.
         var scope = TestSnapshots.HaScopeDemo(Now) with
         {
-            Members = [new HaMember("s1a", "s1a", 5432, "master", "running", 1L, null, Now, null)],
+            Members = [new HaMember("s1a", "s1a", 5432, "master", "running", 1L, null, Now, null, null)],
         };
 
         // Act

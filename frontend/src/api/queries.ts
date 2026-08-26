@@ -12,6 +12,7 @@ import type {
   HaScopeSummaryDto,
   MoveBucketsRequestDto,
   MovesQueuedDto,
+  NodeRecreatedDto,
   OverviewDto,
   SessionDto,
   ShardAddedDto,
@@ -111,4 +112,12 @@ export function moveBuckets(cluster: string, request: MoveBucketsRequestDto): Pr
 
 export function logoutRequest(): Promise<void> {
   return apiFetch<void>('/api/auth/logout', { method: 'POST' });
+}
+
+// POST /api/ha/{scope}/nodes/{node}/recreate — маркер TO_RECREATE (sixth mutation);
+// NodeSupervisor PgWorker выполнит rebuild ноды.
+export function recreateNode(scope: string, node: string): Promise<NodeRecreatedDto> {
+  return apiFetch<NodeRecreatedDto>(
+    `/api/ha/${encodeURIComponent(scope)}/nodes/${encodeURIComponent(node)}/recreate`,
+    { method: 'POST' });
 }

@@ -45,7 +45,8 @@ public sealed record HaMemberDto(
     long? Timeline,
     long? LagBytes,
     DateTimeOffset? ProbeAtUtc,
-    string? ProbeError);
+    string? ProbeError,
+    string? NodeState);
 
 // Core → DTO: чистые функции; порядок — как в снапшоте (парсер Scope Ordinal, t03).
 public static class HaMappers
@@ -74,7 +75,7 @@ public static class HaMappers
                 ? null
                 : new NodeRequestsDto(scope.RequestCpu, scope.RequestMem, scope.RequestDisk),
             [.. scope.Members.Select(m => new HaMemberDto(
-                m.Name, m.Host, m.Port, m.Role, m.State, m.Timeline, m.LagBytes, m.ProbeAtUtc, m.ProbeError))],
+                m.Name, m.Host, m.Port, m.Role, m.State, m.Timeline, m.LagBytes, m.ProbeAtUtc, m.ProbeError, m.NodeState))],
             scope.RawConfig);
 }
 

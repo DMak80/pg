@@ -85,14 +85,14 @@ internal static class TestSnapshots
     public static HaScope HaScopeDemo(DateTimeOffset now) => new(
         "demo-s1", "demo", "s1", true, "s1a", 738273634528L, true, null, null, null,
         [
-            new HaMember("s1a", "s1a", 5432, "master", "running", 1L, 0L, now, null),
-            new HaMember("s1b", "s1b", 5432, "replica", "streaming", 1L, 17L * 1024 * 1024, now, null),
+            new HaMember("s1a", "s1a", 5432, "master", "running", 1L, 0L, now, null, null),
+            new HaMember("s1b", "s1b", 5432, "replica", "streaming", 1L, 17L * 1024 * 1024, now, null, null),
         ],
         "{\"ttl\":5,\"loop_wait\":2}");
 
     public static HaScope UnmatchedNoLeader(DateTimeOffset now) => new(
         "other-scope", null, null, false, null, null, false, null, null, null,
-        [new HaMember("n1", "n1", 5432, "replica", "stopped", null, null, now, "connection refused")],
+        [new HaMember("n1", "n1", 5432, "replica", "stopped", null, null, now, "connection refused", null)],
         null);
 
     // Снапшот с HA-скопами (без runtime — SQL-часть добавляется через with).

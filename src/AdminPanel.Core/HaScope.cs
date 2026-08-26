@@ -17,6 +17,8 @@ public sealed record HaScope(
     string? RawConfig);
 
 // Член HA-кластера: что есть в etcd + поля Patroni-пробы (t06 — null).
+// NodeState — raw-строка из /clusters/<C>/shards/<X>/nodes/<n>/state (или null
+// для unmatched-скопов); нужно для блокировки «Пересоздать» (REBUILDING/TO_RECREATE).
 public sealed record HaMember(
     string Name,
     string Host,
@@ -26,4 +28,5 @@ public sealed record HaMember(
     long? Timeline,
     long? LagBytes,
     DateTimeOffset? ProbeAtUtc,
-    string? ProbeError);
+    string? ProbeError,
+    string? NodeState);
