@@ -73,6 +73,33 @@ public sealed class ShardProbe(HttpClient http)
         }
     }
 
+    // Graceful-переезд лидерства (пересоздание «мягко», режим soft): POST
+    // /switchover на Patroni-порт ЛИДЕРА с телом {"leader": имя} — Patroni
+    // переведёт лидерство на лучшую реплику (sync-standby) без паузы записи.
+    // Таймаут больше пробы: switchover выполняется в рамках запроса и занимает
+    // пару loop_wait-циклов Patroni.
+    public async Task<Result> SwitchoverAsync(NodeAddress leader, string leaderName, CancellationToken ct)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(15));
+            using var content = new StringContent(
+                $$"""{"leader":"{{leaderName}}"}""", System.Text.Encoding.UTF8, "application/json");
+            using var response = await http.PostAsync(BuildUri(leader, "switchover"), content, timeout.Token);
+            if (!response.IsSuccessStatusCode)
+                return Result.Failed(new ApplicationException(
+                    $"Patroni {leader.Host}:{leader.Ports.Patroni} /switchover → HTTP {(int)response.StatusCode}"));
+
+            return Result.Success();
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
+        {
+            return Result.Failed(new ApplicationException(
+                $"Patroni {leader.Host}:{leader.Ports.Patroni} /switchover недоступен: {e.Message}", e));
+        }
+    }
+
     private static Uri BuildUri(NodeAddress node, string path)
         => new($"http://{node.Host}:{node.Ports.Patroni}/{path}");
 }

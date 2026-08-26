@@ -70,7 +70,8 @@ public class NodeSupervisorTests
         Func<int, HttpResponseMessage> respond,
         IReadOnlyList<string>? nodeObjects = null,
         long? staleUnreachableForShard1A = null,
-        long? staleUnreachableAll = null)
+        long? staleUnreachableAll = null,
+        Func<HttpRequestMessage, HttpResponseMessage>? respondRaw = null)
     {
         var etcd = new Fakes.FakeEtcd();
         SeedCluster(etcd);
@@ -95,7 +96,8 @@ public class NodeSupervisorTests
                 "pgw-shop-shard1-shard1a", "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c",
             }).ToList(),
         };
-        var probe = Probe(respond);
+        var probe = new ShardProbe(new HttpClient(
+            new FakeHandler(respondRaw ?? (r => respond(r.RequestUri!.Port)))));
         var supervisor = new NodeSupervisor(
             etcd, [Ep], driver, probe, claims, journal, Thresholds, TimeProvider.System, Secrets,
             new MasterKeyReconciler(etcd, [Ep], probe));
@@ -165,24 +167,79 @@ public class NodeSupervisorTests
     }
 
     [Fact]
-    public async Task Tick_MarkedLeaderAlive_MarkerPreserved_NotErasedByRunning()
+    public async Task Tick_MarkedLeaderSoft_SwitchoverTriggered_NodeKept()
     {
-        // Arrange — оператор пометил ЛИДЕРА shard1a (TO_RECREATE): recreate гвардом
-        // отложен до failover, нода жива — живой путь надзора не должен стирать
-        // маркер оператора записью RUNNING (иначе заявка теряется навсегда)
-        var rig = await NewRig(_ => Ok());
+        // Arrange — оператор пометил ЛИДЕРА shard1a (TO_RECREATE, режим soft по
+        // умолчанию): нода жива — сначала graceful-switchover через Patroni REST,
+        // снос в этом тике НЕ происходит (лидерство должно уехать первым)
+        var switchover = new List<string>();
+        var rig = await NewRig(_ => Ok(), respondRaw: r =>
+        {
+            switchover.Add($"{r.Method} {r.RequestUri!.AbsolutePath}");
+            return Ok();
+        });
         rig.Etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1a/state", "TO_RECREATE");
         rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a"}""");
 
         // Act
         var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
-        // Assert — маркер ждёт failover: никаких docker-мутаций, state не тронут
+        // Assert — switchover отправлен лидеру, docker не тронут, маркер ждёт
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
-        rig.Driver.RemovedNodes.Should().BeEmpty("лидер не трогаем — failover делает Patroni");
+        switchover.Should().Contain("POST /switchover");
+        rig.Driver.RemovedNodes.Should().BeEmpty("мягко: сначала переезд лидерства, снос — следующим тиком");
         rig.Driver.EnsuredNodes.Should().BeEmpty();
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value
             .Should().Be("TO_RECREATE", "ожившая нода не отменяет заявку оператора на пересоздание");
+    }
+
+    [Fact]
+    public async Task Tick_MarkedLeaderHard_RemovedImmediately()
+    {
+        // Arrange — оператор пометил ЛИДЕРА shard1a в режиме hard (маркер
+        // nodes/shard1a/recreate=hard): снос сразу, failover делает Patroni;
+        // живой свидетель-реплика (b, c) для приёма лидерства есть
+        var switchover = new List<string>();
+        var rig = await NewRig(_ => Ok(), respondRaw: r =>
+        {
+            switchover.Add($"{r.Method} {r.RequestUri!.AbsolutePath}");
+            return Ok();
+        });
+        rig.Etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1a/state", "TO_RECREATE");
+        rig.Etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1a/recreate", "hard");
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a"}""");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — грубо: немедленное удаление+пересоздание, switchover не звался
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        switchover.Should().NotContain("POST /switchover");
+        rig.Driver.RemovedNodes.Should().ContainSingle().Which.Should().Be("shard1/shard1a");
+        rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
+        rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("REBUILDING");
+        rig.Etcd.Store.Should().NotContainKey("/clusters/shop/shards/shard1/nodes/shard1a/recreate",
+            "маркер режима исполнен и убран");
+    }
+
+    [Fact]
+    public async Task Tick_MarkedDeadLeader_HardAutomatically()
+    {
+        // Arrange — помеченный ЛИДЕР shard1a УМЕР (проба глухая, режим даже soft):
+        // мягкий switchover бессмыслен — грубо срабатывает автоматически;
+        // свидетели b/c живы, примут лидерство через failover Patroni
+        var rig = await NewRig(port => port == 18000 ? Down() : Ok());
+        rig.Etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1a/state", "TO_RECREATE");
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a"}""");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — авто-грубо: мёртвый лидер удалён и пересоздан несмотря на soft
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        rig.Driver.RemovedNodes.Should().ContainSingle().Which.Should().Be("shard1/shard1a");
+        rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
+        rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("REBUILDING");
     }
 
     [Fact]

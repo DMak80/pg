@@ -196,10 +196,14 @@ public sealed class NodeSupervisor(
         return Result.Success();
     }
 
-    // Operator-triggered recreate: нода в TO_RECREATE — пересоздать немедленно
-    // (аналог rebuild мёртвой, но по требованию оператора, без ожидания порога).
-    // Guard: не лидер + жив кворум (≥1 другой ноды) — лидера не трогаем (failover
-    // делает Patroni), без кворума rebuild небезопасен (нет источника для basebackup).
+    // Operator-triggered recreate (TO_RECREATE): оператор панелью просит
+    // пересоздать ноду — rebuild немедленно, без ожидания NodeDeadSec.
+    // Режим в маркере nodes/<n>/recreate (панель): soft — живой лидер сначала
+    // переезжает graceful-switchover'ом (без паузы записи), удаление — следующим
+    // тиком; hard — лидер сносится сразу, failover делает Patroni. Мёртвый
+    // лидер — всегда грубо (режим не важен: нода уже не обслуживает).
+    // Guard: для удаления нужен источник basebackup — живая (или хотя бы
+    // плановая) нода-свидетель помимо помеченной; без кворума ждём.
     private async Task<Result> RecreateMarkedNodesAsync(
         string cluster, ClusterSnapshot snap, ShardSpec shard,
         IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
@@ -214,7 +218,7 @@ public sealed class NodeSupervisor(
             return scopeKvs;
         var leader = ClusterSnapshotParser.ParseService(scopeKvs.Value).FirstOrDefault()?.LeaderName;
 
-        // Кворум: хотя бы одна другая нода жива (не в TO_RECREATE/QUARANTINED/REMOVING).
+        // Кворум: хотя бы одна другая нода жива по плану (не в TO_RECREATE/QUARANTINED/REMOVING).
         var safe = shard.Nodes.Where(n => n.State != NodeState.ToRecreate
                                        && n.State is not NodeState.Quarantined
                                        && n.State is not NodeState.Removing).ToList();
@@ -222,12 +226,43 @@ public sealed class NodeSupervisor(
 
         foreach (var node in marked)
         {
-            var isLeader = leader == node.Name;
-            if (isLeader || !quorum)
-                continue; // лидера и без кворума не трогаем — ждём failover/оживления
-
             if (!addresses.TryGetValue($"{shard.Name}/{node.Name}", out var addr))
                 continue;
+
+            if (leader == node.Name)
+            {
+                var mode = await ReadRecreateModeAsync(cluster, shard.Name, node.Name, ct);
+                var alive = await probe.IsAliveAsync(addr, ct);
+
+                // Мягко + живой лидер: попросить Patroni переехать; снос — следующим
+                // тиком, когда нода уже не лидер (снапшот тика устареет сам собой).
+                if (alive && mode != "hard")
+                {
+                    var switched = await probe.SwitchoverAsync(addr, node.Name, ct);
+                    if (!switched.IsSuccess)
+                        return switched;
+                    continue;
+                }
+
+                // Грубо (или мёртвый лидер): удаляем сразу, но failover-свидетель
+                // должен быть ЖИВ — иначе сносим лидерство в пустоту.
+                var witness = false;
+                foreach (var other in safe.Where(n => n.Name != node.Name))
+                {
+                    if (addresses.TryGetValue($"{shard.Name}/{other.Name}", out var otherAddr)
+                        && await probe.IsAliveAsync(otherAddr, ct))
+                    {
+                        witness = true;
+                        break;
+                    }
+                }
+                if (!witness)
+                    continue; // некому принять лидерство — ждём оживления/эвакуации
+            }
+            else if (!quorum)
+            {
+                continue; // не лидер, но и источника basebackup нет — ждём
+            }
 
             var removed = await driver.RemoveNodeAsync(cluster, shard.Name, node.Name, ct);
             if (!removed.IsSuccess)
@@ -246,9 +281,26 @@ public sealed class NodeSupervisor(
                 "REBUILDING", ct);
             if (!rebuilding.IsSuccess)
                 return rebuilding;
+
+            // Маркер режима исполнен — убрать (state=REBUILDING дальше живёт сам).
+            var unmarked = await DeleteAsync(
+                $"/clusters/{cluster}/shards/{shard.Name}/nodes/{node.Name}/recreate", ct);
+            if (!unmarked.IsSuccess)
+                return unmarked;
         }
 
         return Result.Success();
+    }
+
+    // Режим пересоздания из маркера nodes/<n>/recreate: «hard» — грубо (снос
+    // лидера сразу, failover делает Patroni), иначе — мягко (switchover).
+    // Нет ключа — мягко (безопасный дефолт для следов без режима).
+    private async Task<string> ReadRecreateModeAsync(
+        string cluster, string shard, string node, CancellationToken ct)
+    {
+        var marker = await GetAsync(
+            $"/clusters/{cluster}/shards/{shard}/nodes/{node}/recreate", ct);
+        return marker.IsSuccess && marker.Value?.Value == "hard" ? "hard" : "soft";
     }
 
     // Надзор одного шарда: пробы, rebuild, UNREACHABLE/RUNNING-переходы.
@@ -413,6 +465,21 @@ public sealed class NodeSupervisor(
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.PutAsync(endpoint, key, value, null, ct);
+            if (result.IsSuccess)
+                return result;
+            last = result;
+        }
+
+        return last!;
+    }
+
+    // Failover-обёртка удаления ключа (маркер режима recreate).
+    private async Task<Result> DeleteAsync(string key, CancellationToken ct)
+    {
+        Result? last = null;
+        foreach (var endpoint in endpoints)
+        {
+            var result = await etcd.DeleteAsync(endpoint, key, prefix: false, ct);
             if (result.IsSuccess)
                 return result;
             last = result;
