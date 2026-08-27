@@ -5,9 +5,9 @@
 с обоснованием в §14 «Принятые решения». Источники: `../pg/arch/11-bucket-sharding.md`
 (схема etcd, процессы), `../pg/arch/12-bucket-pitfalls.md` (реестр P1–P23,
 все закрыты — обязателен к учёту), `../pg/arch/scripts/*` (эталоны процессов),
-`../AdminPanel/arch/02-etcd-contract.md` (контракт панели, особенно §9),
+`arch/adminpanel/02-etcd-contract.md` (контракт панели, особенно §9),
 референс `../Puzzle` (Result, retry, worker-циклы, health checks) и
-`../AdminPanel/src/AdminPanel.Etcd` (HTTP JSON gateway etcd-клиент).
+`src/AdminPanel.Etcd` (HTTP JSON gateway etcd-клиент).
 
 ---
 
@@ -107,7 +107,7 @@ only, всё видит)         снятие status-ключей,
 ## 4. Контракт etcd
 
 Транспорт — HTTP JSON gateway `/v3/*` (как панель, 02 §1): клиент копируется
-из `../AdminPanel/src/AdminPanel.Etcd` и расширяется lease-операциями
+из `src/AdminPanel.Etcd` и расширяется lease-операциями
 (`POST /v3/lease/grant`, `/v3/lease/keepalive`, `/v3/kv/put` с `lease`,
 txn с compare по `value`/`mod_revision` и `delete` в success-ветке).
 Poll, без watch (аргументация — 02 §5; тик 5 с покрывает динамику).

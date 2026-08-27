@@ -4,7 +4,7 @@
 жизненным циклом шардированных HA-кластеров PostgreSQL через docker (plain /
 docker swarm). Это исполнительная сторона декларативного контракта: панель
 AdminPanel **заявляет** кластер (`config.state=NOT_INITIALIZED`, контракт
-панели — репозиторий AdminPanel, `arch/02-etcd-contract.md` §9) — PgWorker
+панели — `arch/adminpanel/02-etcd-contract.md` §9, перенесён из репозитория AdminPanel) — PgWorker
 **поднимает** ноды, инициализирует БД/роли/схемы бакетов и переводит кластер
 в рабочее состояние; перевод панелью в `TO_REMOVE` — PgWorker аккуратно
 демонтирует кластер.

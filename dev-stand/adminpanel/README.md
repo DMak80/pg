@@ -1,0 +1,62 @@
+# dev-stand — локальный docker-стенд AdminPanel
+
+Канон — `../../arch/adminpanel/04-local-stand.md`; спецификация —
+`docs/adminpanel/superpowers/2026-08-23-t10-dev-stand/spec.md`.
+
+## Быстрый старт
+
+```bash
+# терминал 1 — панель (localhost:5050, admin/admin)
+dotnet run --project src/AdminPanel.Api
+
+# терминал 2 — стенд
+cd dev-stand/adminpanel && checks/00-up.sh        # full: etcd+seed+2 PG-шарда+эмуляторы
+# или: docker compose up -d            # quick: только etcd+сид (без PG/проб)
+
+open http://localhost:5050
+```
+
+Порт панели/логин переопределяются: `ADMINPANEL_URL`, `AdminPanel:Auth`.
+
+## Профили
+
+| Профиль | Состав | Для чего |
+|---|---|---|
+| quick (по умолчанию) | etcd + seed | цикл бэкенд-разработки: API/алерты на сиде; Patroni/SQL-пробы закономерно падают (нод нет) |
+| full | + s1a/s1b, s2a/s2b, hc1a/hc1b, hc2a/hc2b | live-пробы, failover, e2e |
+
+## HostMap
+
+`appsettings.Development.json` мапит стендовые адреса на хост-порты
+(5433–5436 → PG-ноды, 8011/8012/8021/8022 → эмуляторы). Ключи записываются
+как `host__port` (двойное подчёркивание вместо двоеточия): конфиг-провайдеры
+.NET режут ключи секций по `:`, словарь с `host:port`-ключами биндится
+пустым; `HostMapResolver` принимает оба формата.
+
+## E2E (полный прогон; с чистого состояния)
+
+```bash
+checks/90-down.sh -v        # если стенд уже поднимался
+# панель: dotnet run --project src/AdminPanel.Api (отдельный терминал)
+checks/00-up.sh && checks/10-smoke-api.sh && checks/15-cluster-create.sh \
+  && checks/20-alerts.sh && checks/30-failover.sh && checks/40-live-probes.sh
+```
+
+Порядок важен: 30-й делает failover s1 (мастером остаётся s1b, s1a
+rejoin'ится репликой) — 40-й рассчитан на эту топологию. Повторный
+прогон — только с чистого состояния (`90-down.sh -v`).
+
+Quick-режим: `checks/90-down.sh -v && docker compose up -d` → зелёные
+`10-smoke-api.sh` и `20-alerts.sh` (quick-ветка); 30/40 требуют full.
+После full-прогонов переход в quick — только с `-v` (lease-ключи
+протухли, идемпотентный сид их не восстановит).
+
+## Отладка
+
+- контейнеры: `docker compose ps`, логи `docker compose logs <сервис>`;
+  ноды — по имени сервиса (`s1a`…), контейнеры — `as-*` (не конфликтуют
+  со стендом pg (этот монорепозиторий));
+- etcd: `docker compose exec etcd etcdctl --endpoints=http://localhost:2379 get / --prefix --keys-only`;
+- эмуляторы: `curl 127.0.0.1:8011/cluster | jq .` (8011/8012/8021/8022);
+- панель: логи запуска `/tmp/adminpanel.log` (если через nohup), API —
+  `curl -b jar $BASE/api/overview`.

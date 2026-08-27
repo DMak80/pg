@@ -1,0 +1,14 @@
+[
+  { "key": "/clusters/broken/config", "value": "{\"buckets\":\"8\",\"dbname\":\"broken\"}", "modRevision": 1 },
+  { "key": "/clusters/broken/shards/x1/dsn", "value": "host=n1 port=5432 dbname=broken user=bucket_admin", "modRevision": 2 },
+  { "key": "/clusters/broken/shards/x1/replicas", "value": "two", "modRevision": 3 },
+  { "key": "/clusters/broken/heals/bucket_2", "value": "{\"was\":\"s1\",\"now\":\"s2\",\"reason\":\"manual\",\"ts\":1755650000}", "modRevision": 12 },
+  { "key": "/clusters/noconfig/shards/y1/dsn", "value": "host=m1 port=5432 dbname=noconfig user=postgres", "modRevision": 4 },
+  { "key": "/clusters/demo2/config", "value": "{\"buckets\":4,\"dbname\":\"demo2\",\"created_unix\":1755800099}", "modRevision": 5 },
+  { "key": "/clusters/demo2/shards/s1/master", "value": "", "modRevision": 6 },
+  { "key": "/clusters/demo2/buckets/routing/bucket_0", "value": "s1", "modRevision": 7 },
+  { "key": "/clusters/demo2/buckets/routing/bucket_99", "value": "s9", "modRevision": 8 },
+  { "key": "/clusters/demo2/buckets/routing/bucket_abc", "value": "s1", "modRevision": 9 },
+  { "key": "/clusters/demo2/buckets/status/bucket_1", "value": "{\"state\":\"WEIRD\"", "modRevision": 10 },
+  { "key": "/clusters/demo2/surprise", "value": "?", "modRevision": 11 }
+]

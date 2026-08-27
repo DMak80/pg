@@ -20,7 +20,7 @@ per-host, swarm: сервисы+spread); нода кластера = один к
 
 **Стек:** .NET 10 (`net10.0`, `Nullable=enable`, `TreatWarningsAsErrors=true`),
 CPM, `.slnx`; Npgsql, Polly 8, Microsoft.Extensions.*; тесты xunit.v3 +
-FluentAssertions + Testcontainers. Версии — из `../AdminPanel/src/Directory.Packages.props`.
+FluentAssertions + Testcontainers. Версии — из `src/Directory.Packages.props`.
 
 **Spec:** `docs/superpowers/2026-08-23-pgworker-backend/spec.md` (в этом же
 worktree; дальше — «spec §N», решения «Д1–Д9»).
