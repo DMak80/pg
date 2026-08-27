@@ -1,7 +1,7 @@
 # 01. Общая архитектура AdminPanel
 
 Панель администрирования шардированных HA-кластеров PostgreSQL
-(репозиторий `../pg`). Четыре зоны инспекции: **etcd**, **шардирование**
+(репозиторий pg (этот монорепозиторий)). Четыре зоны инспекции: **etcd**, **шардирование**
 (кластеры/шарды/бакеты/переезды/heals), **HA** (лидеры/члены/реплики/лаги),
 **алерты**. Мутации инспектируемых систем — **четыре**: создание кластера,
 перевод кластера в TO_REMOVE, добавление шарда, маркер демонтажа шарда
@@ -67,7 +67,7 @@
 
 | Проект | Роль |
 |---|---|
-| `AdminPanel.Infrastructure` | Каркас, скопированный из референса `../Puzzle` и обрезанный под панель: `Result`-монада, attribute-DI (`[InjectAs*]`, `[Config]`, `AutoRegistration`), CQRS (`IQuery<T>`/`IQueryHandler`, `ICommand<T>`/`ICommandHandler` — команды мутаций: создание/удаление кластера, добавление/демонтаж шарда, заявки на переезды бакетов; `IHandler`-диспетчер), health-check базис. Без Bus/Outbox/Kafka/миграций — панели не нужны |
+| `AdminPanel.Infrastructure` | Каркас, скопированный из референса `Puzzle` и обрезанный под панель: `Result`-монада, attribute-DI (`[InjectAs*]`, `[Config]`, `AutoRegistration`), CQRS (`IQuery<T>`/`IQueryHandler`, `ICommand<T>`/`ICommandHandler` — команды мутаций: создание/удаление кластера, добавление/демонтаж шарда, заявки на переезды бакетов; `IHandler`-диспетчер), health-check базис. Без Bus/Outbox/Kafka/миграций — панели не нужны |
 | `AdminPanel.Core` | Домен снапшота: `EtcdSnapshot` и его модели (`ClusterInfo`, `ShardInfo`, `NodeInfo`, `BucketInfo`, `HaScope`, `Alert`, …), `AlertEngine` (чистая функция `Snapshot → Alert[]`), парсинг scope `<C>-<X>` |
 | `AdminPanel.Etcd` | Клиент etcd через HTTP JSON gateway (`IEtcdGateway`): чтение (range/status/member/alarm) + минимальная запись для мутаций панели (txn/put/delete, 02 §9–§9.7); парсеры ключей `/clusters/`, `/service/`, `/cluster/nodes/`, `/pgworker/` (portalloc — адреса проб, moves — очередь заявок) в модель Core, `SnapshotRefresher`, `SnapshotStore` |
 | `AdminPanel.Probes` | Опциональные live-пробы: Patroni REST `:8008` (`/cluster`), SQL через Npgsql (read-only к `pg_catalog`/`pg_stat_*`). Обогащение снапшота полями runtime |
@@ -194,7 +194,7 @@ FluentAssertions, Testcontainers, Npgsql, Microsoft.Extensions.*); новые
 - Мутации, кроме пяти канонических (создание/удаление кластера,
   добавление/демонтаж шарда, заявки на переезды бакетов — 02 §9–§9.7), — вне
   зоны панели (отмена/правка заявок, abort, heal, patronictl, switchover,
-  поднятие нод/инициализация схем) — это runbook-операции `../pg`.
+  поднятие нод/инициализация схем) — это runbook-операции pg (этот монорепозиторий).
   Канонические мутации — заявки в etcd, не управление данными:
   ноды, Patroni, схемы, демонтаж и сами переезды выполняет PgWorker (читает
   ключи [02](02-etcd-contract.md) §9–§9.7).

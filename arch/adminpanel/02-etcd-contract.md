@@ -1,7 +1,7 @@
 # 02. Контракт etcd (чтение + записи панели)
 
 AdminPanel читает etcd для инспекции. Источник схемы — инспектируемая система
-(`../pg`: `arch/11-bucket-sharding.md` §2, `arch/12-bucket-pitfalls.md` §3,
+(pg (этот монорепозиторий): `arch/11-bucket-sharding.md` §2, `arch/12-bucket-pitfalls.md` §3,
 скрипты `arch/scripts/`). Панель выполняет **пять мутаций**: создание
 кластера (§9), перевод кластера в TO_REMOVE (§9.4), добавление шарда (§9.5),
 маркер демонтажа шарда (§9.6), заявки на переезды бакетов (§9.7). Все
@@ -11,7 +11,7 @@ AdminPanel читает etcd для инспекции. Источник схе�
 
 - Клиент — `HttpClient` против **gRPC-gateway etcd** (JSON+base64), не gRPC.
   Обоснование: (а) это стабильный API etcd 3.5 (`/v3/*`; включён по умолчанию
-  при запуске флагами — наш стенд и прод `../pg` так и стартуют); (б) тот же
+  при запуске флагами — наш стенд и прод pg (этот монорепозиторий) так и стартуют); (б) тот же
   транспорт уже использует сама система (`arch/stand/sidecar/rolecheck.py`:
   `/v3/kv/range`, `/v3/lease/*`) — т.е. паттерн проверен в инспектируемом
   окружении; (в) не тащим gRPC-стек и заброшенные .NET-клиенты etcd.
@@ -42,7 +42,7 @@ AdminPanel читает etcd для инспекции. Источник схе�
 | `/clusters/<C>/shards/<X>/dsn` | libpq-строка `host=n1,n2,n3 port=5432 dbname=<C> user=bucket_admin` | `ShardInfo.Dsn`, парсим хосты/порт/dbname/user | пароля нет (секреты в env); пароль для SQL-побы приходит из настроек панели; у создаваемого панелью кластера ключа нет — ноды ещё не подняты (§9) |
 | `/clusters/<C>/shards/<X>/replicas` | целое-строка `"2"` | `ShardInfo.ReplicasDeclared` | декларативное намерение; факт — в HA (`/service/`) |
 | `/clusters/<C>/shards/<X>/master` | `"host:6432"` | `ShardInfo.MasterAddress` (nullable) | lease TTL 5 c; отсутствие = нет живого мастера (P11) |
-| `/clusters/<C>/shards/<X>/nodes/<n>/state` | строка `"NOT_INITIALIZED"` | `NodeInfo.State` | плановые ноды создаваемого панелью кластера (§9); имена `<X><буква>` (`s1a`,`s1b`… — конвенция стенда `../pg`); нода поднята/инициализирована — ключ меняет будущий provisioning |
+| `/clusters/<C>/shards/<X>/nodes/<n>/state` | строка `"NOT_INITIALIZED"` | `NodeInfo.State` | плановые ноды создаваемого панелью кластера (§9); имена `<X><буква>` (`s1a`,`s1b`… — конвенция стенда pg (этот монорепозиторий)); нода поднята/инициализирована — ключ меняет будущий provisioning |
 | `/clusters/<C>/shards/<X>/state` | строка `"TO_REMOVE"` | `ShardInfo.State` | маркер демонтажа шарда (§9.6): пишет ТОЛЬКО панель (one-way, обратного перехода нет); отсутствие = обычный шард (ACTIVE); читают панель (бейдж «к удалению») и PgWorker (RemoveShardProcess, t06) |
 | `/clusters/<C>/buckets/routing/bucket_<N>` | имя шарда `"shard1"` | `BucketInfo.Owner` | единственный авторитет «где бакет»; отсутствие при N из config = «дыра» в карте |
 | `/clusters/<C>/buckets/status/bucket_<N>` | JSON `{"bucket","state":"SYNCING"\|"FROZEN"\|"ABORTING"\|"NOT_INITIALIZED","owner","target"?,"started_unix"?,"updated_unix","phase"?,"last_error"?}` | `BucketInfo.State=ACTIVE`-иначе, `MoveInfo` | отсутствие ключа = ACTIVE; ключ удаляется атомарно с flip; `NOT_INITIALIZED` — начальное состояние бакетов создаваемого кластера (§9), `target/started_unix/phase` при нём отсутствуют |
@@ -78,13 +78,13 @@ Scope = `<C>-<X>`, глобально уникален. Связь со шард
 
 ### 2.3.1. `/pgworker/…` — координация воркеров (читается избирательно)
 
-Префикс координации PgWorker (`../pg arch/14` §3.3) панель читает точечно —
+Префикс координации PgWorker (`arch/14` §3.3) панель читает точечно —
 два ключа-семейства, остальные ключи префикса (`leader`, `claims`, `work`,
 `evacuations`, `instances`) панель НЕ читает и не пишет:
 
 | Ключ | Формат значения | В модель | Примечания |
 |---|---|---|---|
-| `/pgworker/portalloc/<C>` | JSON `{"<shard>/<node>":{"host":"h1","pg":15432,"patroni":18008,"doorman":16432}}` | адреса Patroni-проб (`../pg arch/14` §2.4) | канонический `host:patroni-порт` члена HA (источник — DSN шарда); в UI не отображается |
+| `/pgworker/portalloc/<C>` | JSON `{"<shard>/<node>":{"host":"h1","pg":15432,"patroni":18008,"doorman":16432}}` | адреса Patroni-проб (`arch/14` §2.4) | канонический `host:patroni-порт` члена HA (источник — DSN шарда); в UI не отображается |
 | `/pgworker/moves/<C>/<bucket>` | JSON-заявка `{"op":"move"\|"rollback"\|"finalize"\|"abort","to"?,"old_shard"?,"skip_reverse"?,"resume"?,"force"?,"requested_unix":<unix>,"requested_by"?}` | `MoveTicket` (§3) | очередь заявок на переезды: панель читает (вкладка «Переезды») и **пишет** (мутация §9.7); после успеха/перманентного отказа заявку УДАЛЯЕТ PgWorker — исчезновение из очереди без изменения routing/status = отвергнутая заявка |
 
 ### 2.4. Кластерные метаданные etcd (не KV)
@@ -223,7 +223,7 @@ override из `HostMap` при точном совпадении ключа → 
   хосте под другим портом.
 - Даёт: фактическое состояние нод (`running`/`streaming`/`stopped`), лаг
   реплик в байтах, timeline — то, чего в etcd-DCS нет «в реальном времени».
-- Порт `:8008` и путь — стандарт Patroni (`../pg` `arch/01-architecture.md`,
+- Порт `:8008` и путь — стандарт Patroni (pg (этот монорепозиторий) `arch/01-architecture.md`,
   HAProxy health-check использует те же).
 
 ### 6.2. SQL через Npgsql (по умолчанию включена; в проде — на усмотрение)
@@ -236,7 +236,7 @@ override из `HostMap` при точном совпадении ключа → 
   (порядок разрешения — §6): compose-имена стенда резолвятся только внутри
   compose-сети.
 - Только `SELECT` к `pg_catalog`/`pg_stat_*` (образцы запросов —
-  `../pg/arch/scripts/buckets-common.sh`, `move-bucket.sh`; список в
+  `arch/scripts/buckets-common.sh`, `move-bucket.sh`; список в
   [03-panels.md](03-panels.md) §5). Двойная защита от записи: сама панель
   не генерирует DML, дополнительно connection string содержит
   `Options=-c default_transaction_read_only=on`.
@@ -265,7 +265,7 @@ override из `HostMap` при точном совпадении ключа → 
 ## 8. Контракт тестирования парсеров
 
 Unit-тесты парсеров прогоняют **реальные фрагменты** значений, взятые из
-`../pg` (скрипты `init-cluster.sh`, `move-bucket.sh`, Patroni JSON) — включая
+pg (этот монорепозиторий) (скрипты `init-cluster.sh`, `move-bucket.sh`, Patroni JSON) — включая
 вырожденные: отсутствующие поля, строковые числа, пустой префикс, неизвестный
 ключ. Фикстуры хранятся в `tests/AdminPanel.UnitTests/EtcdFixtures/` как
 .json-файлы. Интеграционные тесты поднимают etcd (Testcontainers,
@@ -278,7 +278,7 @@ Unit-тесты парсеров прогоняют **реальные фраг�
 параметрам формы (POST `/api/clusters`,
 03 §1) панель пишет в etcd **заявленную структуру** кластера; поднятие нод PG,
 Patroni и инициализация схем — отдельная задача вне панели (будущий
-provisioning читает эти ключи). Паттерн — `../pg arch/scripts/init-cluster.sh`
+provisioning читает эти ключи). Паттерн — `arch/scripts/init-cluster.sh`
 (регистрация в etcd последним пакетом), но без PG-шагов.
 
 ### 9.1. Набор ключей одного создания
@@ -313,7 +313,7 @@ provisioning читает эти ключи). Паттерн — `../pg arch/scr
   (не ACTIVE: схемы `bucket_<i>` на нодах ещё не существуют). Будущий
   provisioning переводит в ACTIVE (снятием status-ключа — семантика §2.1).
 - `nodes/<n>/state` — плановые ноды шарда; имя = имя шарда + буква
-  (`shard1a` — мастер, `shard1b…` — реплики), конвенция стенда `../pg`
+  (`shard1a` — мастер, `shard1b…` — реплики), конвенция стенда pg (этот монорепозиторий)
   (`s1a`,`s1b`). `replicas = 1` — только мастер (`<X>a`), стандартно `2`.
 - `request_*` в DCS-пространстве scope (`scope = <C>-shard<k>`): заявка
   ресурсов **на каждую ноду** scope — будущий provisioning создаёт ноды с
@@ -355,9 +355,9 @@ provisioning читает эти ключи). Паттерн — `../pg arch/scr
 - N = S → по одному бакету на шард; вырожденный 1×1 → `bucket_0 → shard1`
   (нешардированная БД §9.1 — без специального случая).
 
-Осознанное расхождение с `../pg arch/scripts/init-cluster.sh` (round-robin
+Осознанное расхождение с `arch/scripts/init-cluster.sh` (round-robin
 `i % S`, «первые rem шардов по +1»): панель назначает владельцев блоками —
-канон задан этой секцией, скрипты `../pg` не меняются. На протокол записи
+канон задан этой секцией, скрипты pg (этот монорепозиторий) не меняются. На протокол записи
 §9.2 и читателей контракта алгоритм не влияет: routing — те же ключи со
 значениями `shard<k>`, меняется только распределение значений по новым
 созданиям (существующие кластеры не перезаписываются — N константа, P18).

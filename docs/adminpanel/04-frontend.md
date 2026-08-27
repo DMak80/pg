@@ -1,7 +1,7 @@
 # 04 — Фронтенд: каркас SPA
 
-> Назад: [docs/README.md](README.md) · Подсистема: `frontend/` (React+Vite+TS7+Mantine,
-  вне .slnx). Контракт: [arch/01](../arch/01-architecture.md) §5, [arch/03](../arch/03-panels.md).
+> Назад: [INDEX.md](INDEX.md) · Подсистема: `frontend/` (React+Vite+TS7+Mantine,
+  вне .slnx). Контракт: [arch/01](../../arch/adminpanel/01-architecture.md) §5, [arch/03](../../arch/adminpanel/03-panels.md).
 
 Кратко: `npm run build` кладёт бандл в `src/AdminPanel.Api/wwwroot` (vite `outDir`
 вне корня проекта — `emptyOutDir: true` обязателен), Kestrel раздаёт его без auth и

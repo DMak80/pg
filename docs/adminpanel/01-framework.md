@@ -1,8 +1,8 @@
 # 01 — Каркас: attribute-DI, CQRS, Result
 
-> Назад: [docs/README.md](README.md) · Подсистема: `src/AdminPanel.Infrastructure`
-> (скопирован из `../Puzzle`, обрезан до read-only: без Bus/Outbox/миграций).
-> Контракт слоёв: [arch/01](../arch/01-architecture.md) §1–2.
+> Назад: [INDEX.md](INDEX.md) · Подсистема: `src/AdminPanel.Infrastructure`
+> (скопирован из `Puzzle`, обрезан до read-only: без Bus/Outbox/миграций).
+> Контракт слоёв: [arch/01](../../arch/adminpanel/01-architecture.md) §1–2.
 
 Как пользоваться (99% случаев):
 
@@ -41,7 +41,7 @@ sp.GetService(type)`), т.е. интерфейс и класс разрешаю�
 `[Config]` / `[Config("Section")]` на POCO с parameterless-конструктором (примеры:
 `EtcdOptions`, `ProbesOptions`, `AuthOptions`, `AlertsOptions`). Значения биндятся
 из `IConfiguration` секцией `AdminPanel:*`; в appsettings/env — `AdminPanel__*`
-(env-разделитель `__`, см. [arch/01](../arch/01-architecture.md) §6).
+(env-разделитель `__`, см. [arch/01](../../arch/adminpanel/01-architecture.md) §6).
 
 ## CQRS (только queries) и Result
 

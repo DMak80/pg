@@ -5,7 +5,7 @@
 PR/коммитом).
 
 инспектируемая система — шардированные HA-кластеры PostgreSQL из репозитория
-`../pg` (Patroni + etcd + бакетное шардирование). AdminPanel — read-only
+pg (этот монорепозиторий) (Patroni + etcd + бакетное шардирование). AdminPanel — read-only
 инспекция **плюс пять мутаций**: создание кластера, удаление кластера, добавление/демонтаж шарда, заявки на переезды бакетов (02 §9, §9.4, §9.5, §9.6, §9.7)
 (декларативный provisioning в etcd, [02](02-etcd-contract.md) §9); все
 остальные ключи etcd и PG панель не пишет никогда.
@@ -21,9 +21,9 @@ PR/коммитом).
 | [roadmap/](roadmap/README.md) | Задачи на исполнение (теги `tNN-slug`, `←`-зависимости) |
 
 Практические документы подсистем («как менять, чек-листы, грабли») — в
-[`../docs/`](../docs/README.md); arch — контракт, docs — практики: при
+[`../docs/`](../../docs/adminpanel/INDEX.md); arch — контракт, docs — практики: при
 расхождении правится arch. История задач (spec/plan) — в
-`docs/superpowers/`.
+`docs/adminpanel/superpowers/`.
 
 ## Ключевые решения (кратко)
 
@@ -36,7 +36,7 @@ PR/коммитом).
    каждый HTTP-запрос» нет.
 3. **etcd-клиент — HTTP JSON gateway** (`/v3/*`, base64-ключи), без gRPC;
    тот же механизм используют сайдкары инспектируемой системы.
-4. **Backend .NET 10** по конвенциям референса `../Puzzle`: Minimal API,
+4. **Backend .NET 10** по конвенциям референса `Puzzle`: Minimal API,
    attribute-DI (`[InjectAs*]`, `[Config]`), CQRS (только queries) + `Result`,
    модульная композиция, `.slnx`, CPM.
 5. **Frontend React + Vite + TypeScript** (Mantine, TanStack Query), собирается

@@ -1,7 +1,7 @@
 # 02 — etcd-клиент и снапшот
 
-> Назад: [docs/README.md](README.md) · Подсистема: `src/AdminPanel.Etcd`.
-> Контракт ключей/модели: [arch/02](../arch/02-etcd-contract.md) — здесь только
+> Назад: [INDEX.md](INDEX.md) · Подсистема: `src/AdminPanel.Etcd`.
+> Контракт ключей/модели: [arch/02](../../arch/adminpanel/02-etcd-contract.md) — здесь только
 > реализация и её грабли.
 
 Кратко: `SnapshotRefresher` (тик 3 c, `EtcdOptions.RefreshIntervalSeconds`) —
@@ -32,7 +32,7 @@ Sticky+failover: активный endpoint держится, отказ → сл
 
 ## Чек-лист «добавить ключ/поле снапшота»
 
-1. Контракт: правка [arch/02](../arch/02-etcd-contract.md) (формат ключа, семантика) —
+1. Контракт: правка [arch/02](../../arch/adminpanel/02-etcd-contract.md) (формат ключа, семантика) —
    первой.
 2. Модель: поле в `Core` (`ClusterInfo`/`ShardInfo`/…), immutable.
 3. Парсер: чтение ключа/поля (`Parsing/*`, толерантный `JsonValues`).
@@ -48,7 +48,7 @@ Sticky+failover: активный endpoint держится, отказ → сл
 - **Числа int64 из gateway — decimal-строки** (`mod_revision`, `dbSize`, `raftTerm`,
   lease-ID): DTO читаются `System.Text.Json` с `JsonNumberHandling.
   AllowReadingFromString|WriteAsString` (t03 §3.17); lease-ID — десятичная строка
-  (урок rolecheck `../pg`).
+  (урок rolecheck pg (этот монорепозиторий)).
 - **«Тесты недоступности»**: `http://localhost:1` даёт мгновенный connection refused —
   сценарий отказа не флакает по таймауту (t03).
 - **Мутации сида в тестах** — только в классе со **своим** контейнером

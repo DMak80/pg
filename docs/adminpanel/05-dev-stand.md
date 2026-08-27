@@ -1,8 +1,8 @@
 # 05 — Dev-стенд и e2e
 
-> Назад: [docs/README.md](README.md) · Подсистема: `dev-stand/` (docker compose,
-> проект `adminpanel-stand`). Канон: [arch/04](../arch/04-local-stand.md);
-> быстрый старт — `dev-stand/README.md`.
+> Назад: [INDEX.md](INDEX.md) · Подсистема: `dev-stand/adminpanel/` (docker compose,
+> проект `adminpanel-stand`). Канон: [arch/04](../../arch/adminpanel/04-local-stand.md);
+> быстрый старт — `dev-stand/adminpanel/README.md`.
 
 Кратко: quick-профиль (по умолчанию) — etcd + идемпотентный сид контроль-плейна;
 full — + 4 PG-ноды (2 шарда: мастер+реплика) и 4 patroni-эмулятора `hc*`
@@ -28,7 +28,7 @@ compose-адреса проб маппятся `HostMap` на хост-порт�
 # терминал 1: панель
 dotnet run --project src/AdminPanel.Api
 # терминал 2:
-cd dev-stand
+cd dev-stand/adminpanel
 checks/90-down.sh -v                      # чистое состояние (обязательно)
 checks/00-up.sh && checks/10-smoke-api.sh && checks/20-alerts.sh \
   && checks/30-failover.sh && checks/40-live-probes.sh
@@ -56,8 +56,8 @@ checks/90-down.sh -v                      # разбор
   quick — тоже только с `-v` (t10).
 - **SyncRep-ловушка после promote**: коммиты висят без реплики — 30-й чек снимает
   `synchronous_standby_names` сразу после promote и возвращает после rejoin (урок
-  `../pg`).
-- **Контейнеры `as-*`** (container_name): не конфликтуют со стендом `../pg`, который
+  pg (этот монорепозиторий)).
+- **Контейнеры `as-*`** (container_name): не конфликтуют со стендом pg (этот монорепозиторий), который
   порты на хост не публикует; имена сервисов (`etcd`, `s1a`…) — канон, на них DSN и
   скрипты.
 - **Официальный etcd-образ distroless** (нет shell) — seed-образ это `alpine:3.20` +

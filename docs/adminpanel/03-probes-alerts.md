@@ -1,8 +1,8 @@
 # 03 — Live-пробы и алерты
 
-> Назад: [docs/README.md](README.md) · Подсистемы: `src/AdminPanel.Probes` +
-> `src/AdminPanel.Core/Alerting`. Контракт: [arch/02](../arch/02-etcd-contract.md)
-> §4/§6, [arch/03](../arch/03-panels.md) §4–5.
+> Назад: [INDEX.md](INDEX.md) · Подсистемы: `src/AdminPanel.Probes` +
+> `src/AdminPanel.Core/Alerting`. Контракт: [arch/02](../../arch/adminpanel/02-etcd-contract.md)
+> §4/§6, [arch/03](../../arch/adminpanel/03-panels.md) §4–5.
 
 Кратко: `ProbeOrchestrator` (`BackgroundService`, `[InjectAsSingleton(typeof(IHostedService))]`)
 раз в `Probes.IntervalSeconds` (15 c) берёт цели из текущего снапшота и гонит пробы

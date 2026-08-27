@@ -1,7 +1,7 @@
 # dev-stand — локальный docker-стенд AdminPanel
 
-Канон — `arch/04-local-stand.md`; спецификация —
-`docs/superpowers/2026-08-23-t10-dev-stand/spec.md`.
+Канон — `../../arch/adminpanel/04-local-stand.md`; спецификация —
+`docs/adminpanel/superpowers/2026-08-23-t10-dev-stand/spec.md`.
 
 ## Быстрый старт
 
@@ -10,7 +10,7 @@
 dotnet run --project src/AdminPanel.Api
 
 # терминал 2 — стенд
-cd dev-stand && checks/00-up.sh        # full: etcd+seed+2 PG-шарда+эмуляторы
+cd dev-stand/adminpanel && checks/00-up.sh        # full: etcd+seed+2 PG-шарда+эмуляторы
 # или: docker compose up -d            # quick: только etcd+сид (без PG/проб)
 
 open http://localhost:5050
@@ -55,7 +55,7 @@ Quick-режим: `checks/90-down.sh -v && docker compose up -d` → зелён�
 
 - контейнеры: `docker compose ps`, логи `docker compose logs <сервис>`;
   ноды — по имени сервиса (`s1a`…), контейнеры — `as-*` (не конфликтуют
-  со стендом `../pg`);
+  со стендом pg (этот монорепозиторий));
 - etcd: `docker compose exec etcd etcdctl --endpoints=http://localhost:2379 get / --prefix --keys-only`;
 - эмуляторы: `curl 127.0.0.1:8011/cluster | jq .` (8011/8012/8021/8022);
 - панель: логи запуска `/tmp/adminpanel.log` (если через nohup), API —
