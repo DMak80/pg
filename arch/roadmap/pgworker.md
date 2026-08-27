@@ -30,3 +30,10 @@
   выбор «кто куда переезжает» — только оператор, никакой автоперебалансировки).
   Выделена из t06 по решению пользователя; зависимостей нет (контракт заявок —
   t01, в main).
+- **`t08-unify-adminpanel-duplicates`** — унификация дублей кода после переноса
+  AdminPanel в монорепо (2026-08-27): etcd-клиент `AdminPanel.Etcd/Client/`
+  (`EtcdGateway`/`IEtcdGateway`/`Kv` — урезанный аналог `PgWorker.Etcd/Client`,
+  без Coordination) → перевод панели на `PgWorker.Etcd`; Puzzle-каркас
+  `AdminPanel.Infrastructure` (attribute-DI, CQRS, `Result`, Traces) → перевод
+  на `PgWorker.Core`. Механика: панель получает ProjectReference на общие
+  сборки, дубли удаляются; поведение обеих систем не меняется (тесты зелёные).
