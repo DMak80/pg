@@ -8,7 +8,9 @@ namespace PgWorker.Provisioning.Processes;
 /// Ensure per-cluster app-секрета (spec §3.1/§4.1, arch/14 §5 P1.5): чтение
 /// /clusters/&lt;C&gt;/{app_user,app_password}; отсутствующие ключи генерируются
 /// и кладутся ОДНОЙ txn put-if-absent (compare NotExists только на отсутствующие).
-/// Проигрыш txn (гонка/re-run) → re-read и использование существующих значений.
+/// И чтение, и txn — с failover по endpoints до первого живого (паттерн
+/// ReadPortAllocAsync); повтор txn на другом endpoint безопасен для
+/// put-if-absent: проигрыш compare корректно разрешается re-read.
 /// Вызывается только держателем клэйма &lt;C&gt; (инвариант мутаций /clusters/).
 /// </summary>
 public interface IAppSecretEnsurer
@@ -48,13 +50,28 @@ public sealed class AppSecretEnsurer(IEtcdGateway etcd, string[] endpoints) : IA
             put.Add(new TxnOp.Put(PasswordKey(cluster), newPassword, null));
         }
 
+        // Txn с failover по endpoints (образец ReadAsync ниже): упавший
+        // endpoint → следующий; ни один не ответил — Failed(lastError).
+        // Замечание: txn.IsSuccess=false — транспортный сбой вызова; проигрыш
+        // compare (txn.Value.Succeeded=false) — НЕ сбой: законный исход
+        // put-if-absent, обрабатывается re-read ниже.
+        Result<TxnResult>? lastTxnError = null;
+        var txnDone = false;
         foreach (var endpoint in endpoints)
         {
             var txn = await etcd.TxnAsync(endpoint, TxnRequest.Of(compare, put), ct);
             if (!txn.IsSuccess)
-                return Result<AppCredentials>.Failed(txn.Error!);
-            break; // первый живой endpoint (паттерн ReadPortAllocAsync)
+            {
+                lastTxnError = txn;
+                continue;
+            }
+
+            txnDone = true;
+            break;
         }
+
+        if (!txnDone)
+            return Result<AppCredentials>.Failed(lastTxnError!.Error!);
 
         // Re-read: txn мог проиграть (гонка) — актуальны существующие значения.
         var final = await ReadAsync(cluster, ct);
