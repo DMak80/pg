@@ -17,7 +17,7 @@ namespace PgWorker.UnitTests.Provisioning;
 // снятие status-ключей, config без state, снапшот, journal-фазы.
 public class ProvisioningProcessTests
 {
-    private static readonly InstallSecrets Secrets = new("su-pw", "sb-pw", "app-pw", "adm-pw", "mov-pw");
+    private static readonly InstallSecrets Secrets = new("su-pw", "sb-pw", "adm-pw", "mov-pw");
     private static readonly EtcdEndpoints EtcdEndp = new(["http://etcd:2379"]);
     private static readonly PlacementOptions Opts = new(15000, 15100, PatroniBootSec: 600);
     private const string Ep = "http://etcd:2379";

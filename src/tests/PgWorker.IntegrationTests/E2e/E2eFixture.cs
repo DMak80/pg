@@ -20,7 +20,6 @@ public sealed class E2eFixture : IAsyncLifetime
     // Секреты e2e-установки (Д7): передаются обоим процессам и SQL-пробам теста.
     public const string SuPassword = "pgw-e2e-su";
     public const string StandbyPassword = "pgw-e2e-standby";
-    public const string AppPassword = "pgw-e2e-app";
     public const string BucketAdminPassword = "pgw-e2e-admin";
     public const string MoverPassword = "pgw-e2e-mover";
 
@@ -134,7 +133,6 @@ public sealed class E2eFixture : IAsyncLifetime
             // Секреты установки (Д7).
             ["PGW_PG_SUPERUSER_PASSWORD"] = SuPassword,
             ["PGW_PG_STANDBY_PASSWORD"] = StandbyPassword,
-            ["PGW_APP_ROLE_PASSWORD"] = AppPassword,
             ["PGW_BUCKET_ADMIN_PASSWORD"] = BucketAdminPassword,
             ["PGW_BUCKET_MOVER_PASSWORD"] = MoverPassword,
 
@@ -236,6 +234,17 @@ public sealed class E2eFixture : IAsyncLifetime
         }
 
         return instance;
+    }
+
+    /// <summary>
+    /// Пароль app-роли кластера из etcd (spec §3.1): e2e-сценарии читают секрет
+    /// тем же путём, что и приложение — /clusters/&lt;C&gt;/app_password.
+    /// </summary>
+    public async Task<string> GetAppPasswordAsync(string cluster, CancellationToken ct = default)
+    {
+        var result = await Gateway.GetAsync(EtcdEndpoint, $"/clusters/{cluster}/app_password", ct);
+        result.IsSuccess.Should().BeTrue("app-секрет обязан появиться после provisioning");
+        return result.Value!.Value;
     }
 
     private static void Collect(Queue<string> tail, string? line)

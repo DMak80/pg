@@ -17,7 +17,7 @@ namespace PgWorker.UnitTests.Provisioning;
 public class NodeSupervisorTests
 {
     private const string Ep = "http://etcd:2379";
-    private static readonly InstallSecrets Secrets = new("su-pw", "sb-pw", "app-pw", "adm-pw", "mov-pw");
+    private static readonly InstallSecrets Secrets = new("su-pw", "sb-pw", "adm-pw", "mov-pw");
     private static readonly ThresholdsOptions Thresholds = new(NodeDeadSec: 90, ShardDeadSec: 300);
 
     // Patroni-проба: 200/500 по порту ноды (два Patroni-порта на хостах h1/h2).

@@ -10,7 +10,7 @@ namespace PgWorker.UnitTests.Provisioning;
 public class DatabaseProvisionerTests
 {
     private static readonly InstallSecrets Secrets = new(
-        "su-pw", "standby-pw", "app-pw", "admin-pw", "mover-pw");
+        "su-pw", "standby-pw", "admin-pw", "mover-pw");
 
     [Fact]
     public void BuildCreateDatabaseSql_GuardThroughPgDatabase_Idempotent()

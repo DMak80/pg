@@ -16,7 +16,7 @@ namespace PgWorker.UnitTests.Provisioning;
 // содержит CREATE SCHEMA bucket_*, routing/status не пишутся.
 public class AddShardProcessTests
 {
-    private static readonly InstallSecrets Secrets = new("su-pw", "sb-pw", "app-pw", "adm-pw", "mov-pw");
+    private static readonly InstallSecrets Secrets = new("su-pw", "sb-pw", "adm-pw", "mov-pw");
     private static readonly EtcdEndpoints EtcdEndp = new(["http://etcd:2379"]);
     private const string Ep = "http://etcd:2379";
 

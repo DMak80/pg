@@ -243,7 +243,6 @@ static InstallSecrets SecretsFromEnv()
     return new InstallSecrets(
         Required("PGW_PG_SUPERUSER_PASSWORD"),
         Required("PGW_PG_STANDBY_PASSWORD"),
-        Required("PGW_APP_ROLE_PASSWORD"),
         Required("PGW_BUCKET_ADMIN_PASSWORD"),
         Required("PGW_BUCKET_MOVER_PASSWORD"));
 }

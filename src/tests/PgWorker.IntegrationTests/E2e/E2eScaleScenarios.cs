@@ -408,13 +408,15 @@ public class E2eScaleScenarios(E2eFixture fixture)
     }
 
     // Запись под app в бакет (мастер шарда): true = прошла, false = ошибка.
+    // Пароль — из etcd-ключа /clusters/<C>/app_password (путь приложения, spec §4.3).
     private async Task<bool> TryInsertAppAsync(string cluster, string shard, string bucket, CancellationToken ct)
     {
         try
         {
             var master = await MasterInfoAsync(cluster, shard, ct);
             await using var con = new NpgsqlConnection(
-                $"Host=localhost;Port={master.Port};Database={cluster};Username=app;Password={E2eFixture.AppPassword};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
+                $"Host=localhost;Port={master.Port};Database={cluster};Username=app;" +
+                $"Password={await fixture.GetAppPasswordAsync(cluster, ct)};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
             await con.OpenAsync(ct);
             await using var cmd = new NpgsqlCommand($"INSERT INTO {bucket}.items(note) VALUES ('scale-probe')", con);
             await cmd.ExecuteNonQueryAsync(ct);

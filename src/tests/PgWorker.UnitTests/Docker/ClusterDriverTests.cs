@@ -136,7 +136,7 @@ public class ClusterDriverTests
 
     private static readonly NodeAddress Addr = new("h1", new NodePorts(15432, 18008, 16432));
 
-    private static readonly InstallSecrets Secrets = new("su", "sb", "app", "ba", "mv");
+    private static readonly InstallSecrets Secrets = new("su", "sb", "ba", "mv");
 
     private static readonly EtcdEndpoints Etcd = new(["http://etcd:2379"]);
 
