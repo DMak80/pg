@@ -33,6 +33,7 @@ public sealed class ProvisioningProcess(
     WorkJournal journal,
     PlacementOptions placementOpts,
     InstallSecrets secrets,
+    IAppSecretEnsurer appSecret,
     EtcdEndpoints etcdEndpoints,
     Func<CancellationToken, Task<Result>>? snapshot = null) : IClusterProcess
 {
@@ -83,6 +84,12 @@ public sealed class ProvisioningProcess(
             BucketAdminPassword = snap.Config.BucketAdminPassword ?? secrets.BucketAdminPassword,
         };
 
+        // P1.5 (spec §3.3): ensure per-cluster app-секрета — до любых контейнеров/ролей:
+        // приложение получает креды в etcd раньше, чем поднимутся ноды.
+        var appCreds = await appSecret.EnsureAsync(cluster, ct);
+        if (!appCreds.IsSuccess)
+            return await FailAsync(cluster, appCreds.Error!, "ensure-app-secret", ct);
+
         // P2.1: EnsureNode всех нод ВСЕХ шардов ПАРАЛЛЕЛЬНО (контейнеры стартуют
         // одновременно, ожидание Patroni — следующим проходом) + nodes/<n>/state=PROVISIONING.
         var topologies = new ConcurrentDictionary<string, ShardTopology>();
@@ -129,7 +136,7 @@ public sealed class ProvisioningProcess(
             if (master is null)
                 return; // waiting-master — InProgress
 
-            var sqlDone = await ProvisionShardSqlAsync(snap, shard, topology, master, token);
+            var sqlDone = await ProvisionShardSqlAsync(snap, shard, topology, master, appCreds.Value, token);
             if (!sqlDone.IsSuccess)
                 shardErrors.Enqueue(sqlDone.Error!);
         });
@@ -360,7 +367,8 @@ public sealed class ProvisioningProcess(
 
     // P2.3–P2.5: БД/роли на мастере, схемы по routing шарда, dsn (multi-host).
     private async Task<Result> ProvisionShardSqlAsync(
-        ClusterSnapshot snap, ShardSpec shard, ShardTopology topology, NodeAddress master, CancellationToken ct)
+        ClusterSnapshot snap, ShardSpec shard, ShardTopology topology, NodeAddress master,
+        AppCredentials app, CancellationToken ct)
     {
         var cluster = snap.Config.Cluster;
         var dbname = snap.Config.DbName;
@@ -374,7 +382,7 @@ public sealed class ProvisioningProcess(
 
         var dbDsn = DatabaseProvisioner.BuildAdminDsn(master.Host, master.Ports.Pg, dbname, secrets);
         // Роли — guard-SELECT → CREATE отдельной командой (gexec-паттерн).
-        foreach (var guard in DatabaseProvisioner.BuildRoleGuardsSql(secrets, bucketAdminUser, bucketAdminPassword))
+        foreach (var guard in DatabaseProvisioner.BuildRoleGuardsSql(secrets, app, bucketAdminUser, bucketAdminPassword))
         {
             var probe = await db.ExecuteScalarAsync(dbDsn, guard, ct);
             if (!probe.IsSuccess)
@@ -395,13 +403,19 @@ public sealed class ProvisioningProcess(
                 return executed;
         }
 
+        // Выравнивание app-роли паролю из etcd-ключа (идемпотентно; spec §4.1):
+        // кластеры, созданные до app-секрета, и rebuild нод получают актуальный пароль.
+        var alterApp = await db.ExecuteAsync(dbDsn, DatabaseProvisioner.BuildAlterAppPasswordSql(app), ct);
+        if (!alterApp.IsSuccess)
+            return alterApp;
+
         var bucketIds = snap.Routing
             .Where(r => r.Owner == shard.Name)
             .Select(r => r.Id)
             .OrderBy(i => i)
             .ToList();
         var schemas = await db.ExecuteAsync(
-            dbDsn, DatabaseProvisioner.BuildSchemasSql(dbname, bucketIds, bucketAdminUser), ct);
+            dbDsn, DatabaseProvisioner.BuildSchemasSql(dbname, bucketIds, bucketAdminUser, app.User), ct);
         if (!schemas.IsSuccess)
             return schemas;
 

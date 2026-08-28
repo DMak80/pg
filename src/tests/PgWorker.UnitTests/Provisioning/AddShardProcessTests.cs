@@ -110,7 +110,7 @@ public class AddShardProcessTests
         var process = new AddShardProcess(
             etcd, [Ep], driver, sql, Probe(patroniResponse), claims, journal,
             opts ?? new PlacementOptions(15000, 15100, PatroniBootSec: 600),
-            Secrets, EtcdEndp, snapshot: null);
+            Secrets, new AppSecretEnsurer(etcd, [Ep]), EtcdEndp, snapshot: null);
         return new Rig(etcd, driver, sql, claims, journal, process);
     }
 
@@ -133,7 +133,8 @@ public class AddShardProcessTests
         var driver = new Fakes.FakeDriver();
         var process = new AddShardProcess(
             etcd, [Ep], driver, new Fakes.FakeSql(), Probe(_ => DeadPatroni()),
-            claims, journal, new PlacementOptions(15000, 15100, 600), Secrets, EtcdEndp, snapshot: null);
+            claims, journal, new PlacementOptions(15000, 15100, 600), Secrets,
+            new AppSecretEnsurer(etcd, [Ep]), EtcdEndp, snapshot: null);
 
         // Act
         var outcome = await process.TickAsync(await Snapshot(etcd), "shard3", CancellationToken.None);
@@ -260,6 +261,29 @@ public class AddShardProcessTests
     }
 
     [Fact]
+    public async Task Tick_AddShard_UsesClusterAppSecret_NoRegenerate()
+    {
+        // Arrange — кластер Active с app-ключами (созданы provisioning'ом раньше)
+        // + декларация нового шарда; Patroni шарда поднялся (как в соседних тестах)
+        var rig = await NewRig(port => port == 18002 ? Patroni("shard3a") : DeadPatroni(),
+            busyPorts: LiveNodePorts());
+        rig.Etcd.Seed("/service/shop-shard3/initialize", "7403705125687833998");
+        rig.Etcd.Seed("/service/shop-shard3/leader", """{"name":"shard3a","poll_queued_commands":0}""");
+        rig.Etcd.Seed("/clusters/shop/app_user", "app");
+        rig.Etcd.Seed("/clusters/shop/app_password", "ClusterPw0000000000000000000000A");
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
+
+        // Assert (spec §7.3) — пароль кластера использован, НЕ перегенерирован
+        outcome.IsSuccess.Should().BeTrue();
+        rig.Sql.Scalars.Should().Contain(s =>
+            s.Sql.Contains("CREATE ROLE \"app\" LOGIN PASSWORD ''ClusterPw0000000000000000000000A'''"));
+        rig.Sql.Executed.Should().Contain(s => s.Sql.Contains("ALTER ROLE \"app\" PASSWORD 'ClusterPw0000000000000000000000A'"));
+        rig.Etcd.Store["/clusters/shop/app_password"].Value.Should().Be("ClusterPw0000000000000000000000A");
+    }
+
+    [Fact]
     public async Task Tick_DsnAlreadyWritten_DoneIdempotent()
     {
         // Arrange — шард уже зарегистрирован (dsn записан ранее)
@@ -291,7 +315,8 @@ public class AddShardProcessTests
         var alive = new AddShardProcess(
             rig.Etcd, [Ep], rig.Driver, rig.Sql,
             Probe(port => port == 18002 ? Patroni("shard3a") : DeadPatroni()),
-            rig.Claims, rig.Journal, new PlacementOptions(15000, 15100, 600), Secrets, EtcdEndp, snapshot: null);
+            rig.Claims, rig.Journal, new PlacementOptions(15000, 15100, 600), Secrets,
+            new AppSecretEnsurer(rig.Etcd, [Ep]), EtcdEndp, snapshot: null);
         var outcome = await alive.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
 
         // Assert — детерминизм multi-host: dsn тот же; схем/routing-мутаций нет
