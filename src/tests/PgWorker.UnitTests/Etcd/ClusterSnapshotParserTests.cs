@@ -204,6 +204,58 @@ public class ClusterSnapshotParserTests
     }
 
     [Fact]
+    public void ParseClusters_AppSecretKeys_FilledIntoSnapshot()
+    {
+        // Arrange — оба ключа app_user/app_password (spec §3.1)
+        var kvs = EtcdFixtures.LoadKv("clusters-app-secret.json");
+
+        // Act
+        var result = ClusterSnapshotParser.ParseClusters(kvs, out var errors);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        errors.Should().BeEmpty();
+        var snap = result.Value.Should().ContainSingle().Subject;
+        snap.App.Should().NotBeNull();
+        snap.App!.User.Should().Be("app");
+        snap.App.Password.Should().Be("Kj9mP2qR7sT3vW5xYz1aBc4dEf6Gh8Jk");
+        // bucket_admin-поля config не задеты (механизм сохраняется)
+        snap.Config.BucketAdminUser.Should().BeNull();
+        snap.Config.BucketAdminPassword.Should().BeNull();
+    }
+
+    [Fact]
+    public void ParseClusters_NoAppKeys_AppIsNull()
+    {
+        // Arrange — кластер без app-ключей (до первого ensure)
+        var kvs = EtcdFixtures.LoadKv("clusters-provisioning.json");
+
+        // Act
+        var result = ClusterSnapshotParser.ParseClusters(kvs, out _);
+
+        // Assert
+        result.Value.Single().App.Should().BeNull();
+    }
+
+    [Fact]
+    public void ParseClusters_PartialAppKeys_AppIsNull()
+    {
+        // Arrange — только app_user без пароля (битое состояние): толерантно null
+        var kvs = new List<Kv>
+        {
+            new("/clusters/shop/config", "{\"buckets\":1,\"dbname\":\"shop\"}", 1),
+            new("/clusters/shop/app_user", "app", 2),
+        };
+
+        // Act
+        var result = ClusterSnapshotParser.ParseClusters(kvs, out var errors);
+
+        // Assert — не ошибка парсинга: ensure допишет недостающий ключ
+        errors.Should().BeEmpty();
+        result.Value.Single().App.Should().BeNull();
+    }
+
+    [Fact]
     public void ParseService_ScopesWithLeaderAndInitialize()
     {
         // Arrange
