@@ -193,4 +193,24 @@ public class DeprovisioningProcessTests
         outcome.IsSuccess.Should().BeTrue();
         outcome.Value.Should().Be(ProcessOutcome.Done);
     }
+
+    // AAA: app-ключи уходят вместе с префиксом кластера (spec §3.1/§7.4) —
+    // секрет пер-кластерный и удаление кластера не должно оставлять его в etcd.
+    [Fact]
+    public async Task Tick_FullRemoval_DeletesAppSecretKeys()
+    {
+        // Arrange — сид кластера как в Tick_FullRemoval + app-ключи
+        var rig = await NewRig();
+        rig.Etcd.Seed("/clusters/shop/app_user", "app");
+        rig.Etcd.Seed("/clusters/shop/app_password", "Pw0000000000000000000000000000A");
+        rig.Etcd.Store.Keys.Should().Contain("/clusters/shop/app_user");
+        rig.Etcd.Store.Keys.Should().Contain("/clusters/shop/app_password");
+
+        // Act — полный проход deprovision (как соседний тест)
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert (spec §7.4): ключи удалены вместе с префиксом кластера
+        outcome.Value.Should().Be(ProcessOutcome.Done);
+        rig.Etcd.Store.Keys.Should().NotContain(k => k.StartsWith("/clusters/shop/", StringComparison.Ordinal));
+    }
 }
