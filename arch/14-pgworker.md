@@ -199,12 +199,14 @@ success-ветке). **Poll, без watch** (аргументация — AdminP
 | `/service/<scope>/…` (scope=`<C>-<X>`) | Patroni DCS: `leader`, `members/<name>`, `initialize` — подтверждение поднятия HA-кластера |
 | `/service/<scope>/request_{cpu,mem,disk}` | заявки ресурсов на ноду (лимиты контейнера/сервиса) |
 | `/clusters/<C>/shards/<X>/state` | маркер демонтажа шарда `TO_REMOVE` (пишет ТОЛЬКО панель; отсутствие = обычный шард; t06) |
+| `/clusters/<C>/app_user` | per-cluster логин приложения; значение `"app"`; пишет ТОЛЬКО PgWorker (P1.5 ensure, txn put-if-absent); читают PgWorker (роли) и приложение |
+| `/clusters/<C>/app_password` | per-cluster пароль приложения; строка 32 симв `[A-Za-z0-9]`; те же писатель/читатели; удаляется с префиксом кластера (D2) |
 
 ### 3.2. Пишемые ключи (существующая схема)
 
 | Ключ | Когда | Значение |
 |---|---|---|
-| `/clusters/<C>/shards/<X>/dsn` | после поднятия нод шарда | `host=h1,h2 port=15432,15433 dbname=<C> user=bucket_admin` (multi-host, **без пароля**, P12/P17; порты — выделенные аллокатором, §2.4) |
+| `/clusters/<C>/shards/<X>/dsn` | после поднятия нод шарда | `host=h1,h2 port=15432,15433 dbname=<C> user=<bucket_admin> password=<per-cluster bucket_admin>` (multi-host; креды bucket_admin per-cluster из config с env-fallback, 6edc80b; порты — выделенные аллокатором, §2.4; app-секрет в DSN не попадает никогда) |
 | `/clusters/<C>/shards/<X>/nodes/<n>/state` | весь жизненный цикл | таблица состояний §5 |
 | `/clusters/<C>/buckets/status/bucket_<i>` | DELETE при завершении provisioning | снятие = бакет ACTIVE (семантика [11](11-bucket-sharding.md) §2, панели 02 §2.1) |
 | `/clusters/<C>/config` | txn по завершении provisioning | пере-put канонического JSON **без поля `state`** (инициализирован = поле отсутствует, 02 §2.1; compare по `mod_revision`) |
@@ -224,7 +226,7 @@ success-ветке). **Poll, без watch** (аргументация — AdminP
 | Ключ | Когда | Действие |
 |---|---|---|
 | `/clusters/<C>/shards/<X>/nodes/<n>/state` | add-shard A3/A4 | `PROVISIONING` → `RUNNING` (те же значения) |
-| `/clusters/<C>/shards/<X>/dsn` | add-shard A5 | put multi-host (порты из portalloc, без пароля) |
+| `/clusters/<C>/shards/<X>/dsn` | add-shard A5 | put multi-host (порты из portalloc, с per-cluster bucket_admin user+password) |
 | `/clusters/<C>/shards/<X>/nodes/<n>/state` | remove-shard S2 | `REMOVING` |
 | `/clusters/<C>/shards/<X>/` (весь префикс) | remove-shard S3, после удаления docker-объектов | del prefix (state/replicas/nodes/dsn/master — всё) |
 | `/service/<C>-<X>/` (весь scope) | remove-shard S3, guard: docker-объектов нет | del prefix |
@@ -263,12 +265,18 @@ compare (routing=старое значение, config.mod_revision) — «пр�
 
 ## 4. Секреты
 
-Per-install, из env PgWorker (не в git, не в etcd — P12/P17):
-`PGW_PG_SUPERUSER_PASSWORD`, `PGW_PG_STANDBY_PASSWORD`,
-`PGW_APP_ROLE_PASSWORD`, `PGW_BUCKET_ADMIN_PASSWORD`,
-`PGW_BUCKET_MOVER_PASSWORD`. Прокидываются в ноды при создании (env
-контейнера). Роли — по [11](11-bucket-sharding.md) §4 (app/bucket_admin/
-bucket_mover + гранты). Per-cluster генерация/ротация — roadmap.
+Три группы:
+
+1. **per-cluster, в etcd, генерирует PgWorker**: `app_user`/`app_password`
+   (provisioning P1.5: txn put-if-absent, 32 симв `[A-Za-z0-9]`; роль app
+   в БД выравнивается идемпотентным `ALTER ROLE … PASSWORD` на каждом шарде).
+2. **per-cluster, в etcd, задаётся снаружи** (config JSON кластера, fallback
+   env): `bucket_admin_user`/`bucket_admin_password` — попадают в dsn-ключ
+   шарда и env контейнера ноды.
+3. **per-install, из env PgWorker** (не в git, не в etcd — P12/P17):
+   `PGW_PG_SUPERUSER_PASSWORD`, `PGW_PG_STANDBY_PASSWORD`,
+   `PGW_BUCKET_ADMIN_PASSWORD` (fallback группы 2), `PGW_BUCKET_MOVER_PASSWORD`.
+   `PGW_APP_ROLE_PASSWORD` исключён (app-секрет — только группа 1).
 
 ---
 
@@ -305,6 +313,11 @@ routing всех N) — иначе journal `phase=waiting-keys`, ожидани�
 ```
 P0 claim + journal(/pgworker/work/<C>, op=provision)
 P1 план: placement (§2.4) для всех шард/нод; порт-аллокация; journal phase=planned
+P1.5 ensure app-секрета: прочитать /clusters/<C>/{app_user,app_password};
+    отсутствующие — сгенерировать (32 симв [A-Za-z0-9]) и положить ОДНОЙ txn
+    (compare NotExists на отсутствующие + put); txn проигран (гонка/re-run) —
+    re-read и использовать существующие; роль app на каждом шарде создаётся
+    с этим паролем и выравнивается ALTER ROLE (идемпотентно)
 P2 на каждый шард X:
    P2.1 для каждой ноды n: создать volume + контейнер/сервис с конфигом
        (Spilo env: SCOPE=<C>-<X>, ETCD3_HOSTS=host:port (etcd v3), ttl=5/loop_wait=2 (P11),
@@ -322,7 +335,7 @@ P2 на каждый шард X:
         если нет
    P2.4 создать схемы bucket_<i> по routing (только шардовы бакеты;
         CREATE SCHEMA IF NOT EXISTS, GRANT USAGE) — идемпотентно
-   P2.5 записать shards/X/dsn (multi-host, без пароля)
+   P2.5 записать shards/X/dsn (multi-host, с per-cluster bucket_admin user+password)
 P3 снять ВСЕ status/bucket_<i> (txn-пакетами ≤128 ops) — бакеты ACTIVE
 P4 config: txn (compare mod_revision) → put канонического JSON без state
 P5 снапшот P12; journal phase=done; кластер переходит в обычный надзор
@@ -497,7 +510,11 @@ phase=waiting-keys); `dsn` нет (есть → Done); scope `/service/<C>-<X>/i
 поднимающийся Patroni после A3 — идемпотентность повторных тиков); коллизия
 имён — initialize с чужим лидером (перманентная ошибка);
 имя шарда `^[a-z][a-z0-9_]{0,30}$`; перечитывание config (R6) — NOT_INITIALIZED/
-TO_REMOVE → phase=aborted. A5: БД/роли — ТОЛЬКО они; СХЕМЫ БАКЕТОВ НЕ
+TO_REMOVE → phase=aborted. Перед созданием ролей — ensure app-секрета
+кластера (образец P1.5: у живого кластера ключи уже есть — читаем;
+отсутствуют, кластер создан до app-секрета, — генерируем и кладём txn
+put-if-absent; роль app выравнивается `ALTER ROLE … PASSWORD`).
+A5: БД/роли — ТОЛЬКО они; СХЕМЫ БАКЕТОВ НЕ
 СОЗДАЮТСЯ (шард пустой, routing не указывает). Routing/status не пишутся ВООБЩЕ.
 
 ### H. RemoveShardProcess (S0–S4; t06)

@@ -6,9 +6,10 @@
 
 ## Задачи
 
-- **`t02-per-cluster-secrets`** — генерация и ротация секретов per-cluster
-  (сейчас per-install из env, Д7): пароли app/bucket_admin/bucket_mover на
-  кластер, смена без остановки записи, интеграция с secret-manager.
+- **`t02-per-cluster-secrets`** — ротация секретов per-cluster (смена без
+  остановки записи), генерация per-cluster `bucket_mover`, интеграция с
+  secret-manager. Генерация per-cluster app-секрета в etcd сделана
+  (2026-08-28, feat-etcd-password-field).
 - **`t03-docker-tls-ssh`** — TLS к Docker Engine API и SSH-туннели к
   docker-хостам (сейчас plaintext TCP/unix-socket в доверенной сети),
   RBAC/docker-группы.

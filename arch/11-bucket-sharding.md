@@ -105,6 +105,11 @@ failover невозможны, кэш не протухает; не может �
 /clusters/<C>/config              → {"buckets": 256, "dbname": "<C>"}   # константы init (P18: навсегда);
                                                                         # имя БД = имя кластера — ОДНО на все
                                                                         # шарды и ноды; бакеты — СХЕМЫ в ней
+/clusters/<C>/app_user             → "app"          # per-cluster креды приложения (логин):
+                                                     # пишет PgWorker при provisioning (генерация),
+                                                     # читают PgWorker (роли/гранты) и приложение
+/clusters/<C>/app_password         → "<32 симв [A-Za-z0-9]>"  # per-cluster креды приложения (пароль);
+                                                     # кладётся txn put-if-absent — оба ключа атомарно
 /clusters/<C>/shards/X/dsn        → "host=n1,n2,n3 port=5432 dbname=<C> user=bucket_admin"  # вход шарда
 /clusters/<C>/shards/X/replicas   → 2            # декларативное число реплик
 /clusters/<C>/shards/X/state      → "TO_REMOVE"  # маркер демонтажа (t06: пишет панель, читают PgWorker и панель; отсутствие = обычный шард)
@@ -118,8 +123,12 @@ failover невозможны, кэш не протухает; не может �
   приложений его нет). N — навсегда (P18).
 - **shards/X/dsn** — статическая multi-host строка подключения к write-эндпоинту
   шарда (HAProxy любой ноды ведёт на текущего мастера, P2): для подписок
-  переездов, mover'а и админки. **Без пароля**: пароли в etcd не хранятся
-  (P12/P17) — секреты в env/секрет-хранилище приложений и mover'а.
+  переездов, mover'а и админки. У кластеров под PgWorker несёт per-cluster
+  креды bucket_admin (`password=`, из config кластера). App-секрет в DSN
+  не попадает никогда. В etcd хранятся: per-cluster app-пара
+  (app_user/app_password — генерирует PgWorker) и per-cluster креды
+  bucket_admin (config + DSN); superuser/standby/bucket_mover — per-install
+  env PgWorker.
 - **shards/X/master** — динамический адрес мастер-ноды для роутера приложений
   (→ pg_doorman :6432); единственный писатель — Patroni-callback `on_role_change`:
   lease TTL 5с + продление процессом на мастере раз в 1–2с, смерть ноды гасит ключ
@@ -233,7 +242,7 @@ etcd на нодах кластера **не живёт** — внешний и�
 | `max_logical_replication_workers`, `max_sync_workers_per_subscription` | шард-приёмник | apply-воркеры; по воркеру на активную подписку + на таблицу при initial copy |
 | `synchronous_standby_names` + живая реплика у мастера | оба шарда | P8: подписки переездов с `synchronous_commit=remote_apply` — коммит применённой транзакции ждёт replay на standby ПРИЁМНИКА; без sync-standby защита тихо вырождается в асинхронную → preflight move проверяет и отказывает |
 | Роль `bucket_mover` с атрибутом `REPLICATION` и `GRANT SELECT ON ALL TABLES IN SCHEMA` | источник | подключение подписки (через HAProxy :5432!) + initial COPY. НЕ трогаем при заморозке `REVOKE` (P1) — обратная репликация пишет через неё |
-| App-роль приложения (≠ owner схемы): `GRANT INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES`, `GRANT USAGE, UPDATE ON ALL SEQUENCES` | оба шарда | write-доступ, который срезается `REVOKE` при заморозке (P1); на sequences обе привилегии — `nextval` даёт И `USAGE`, И `UPDATE`, заморозка обязана отобрать обе (проверено на стенде). Различимость сессий бакета в `pg_stat_activity`. Owner пишет вопреки REVOKE — поэтому app ≠ owner |
+| App-роль приложения (≠ owner схемы): `GRANT INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES`, `GRANT USAGE, UPDATE ON ALL SEQUENCES` | оба шарда | write-доступ, который срезается `REVOKE` при заморозке (P1); на sequences обе привилегии — `nextval` даёт И `USAGE`, И `UPDATE`, заморозка обязана отобрать обе (проверено на стенде). Различимость сессий бакета в `pg_stat_activity`. Owner пишет вопреки REVOKE — поэтому app ≠ owner. Логин+пароль — per-cluster ключи `/clusters/<C>/app_user\|app_password` (генерирует PgWorker), приложение берёт адрес из `shards/X/master` (doorman :6432) |
 | Миграционная роль-владелец схем бакетов | оба шарда | единственная, кто выполняет DDL (P5); в окне переезда — процедурный мораторий (правами владельца не остановить → страховка сверками) |
 | Правило в `pg_hba.conf` для `bucket_mover` с IP HAProxy **своего** шарда (per-node HAProxy — со всех нод кластера) | источник | подписка подключается через HAProxy источника → источник видит IP этого HAProxy (не приёмника) |
 | `max_db_connections = 55` (pg_doorman, единственный пул `<C>` на ноду — кап пула = бюджет ноды); на нодах PG: `max_connections = 60`, `max_wal_senders = max_replication_slots = 10` | все ноды | бюджет соединений (P15 из [12](12-bucket-pitfalls.md)): doorman → PG ≤ 55 серверных соединений на ноду (60 = 55 + 2 админ/mover + 3 reserved; walsender'ы с PG 13 вне max_connections — свои пулы); подписки переездов ≤ 10 слотов/walsender'ов → до 3 параллельных переездов с одного источника (префлайт ограничивает). Клиентский вход :6432 — лимит 1000 при наличии параметра, иначе без ограничений (бюджетом PG не является) |
@@ -572,7 +581,9 @@ EOF
 
 `--cluster` у всех скриптов опционален: дефолт — `CLUSTER_NAME` из
 `configs/buckets/buckets.env`. Пароли шардов — там же (`SHARD_<X>_PASSWORD`,
-`MOVER_PASSWORD_<X>`); в etcd паролей нет.
+`MOVER_PASSWORD_<X>`); в etcd паролей ручных скриптовых кластеров нет.
+У кластеров под управлением PgWorker в etcd хранятся app-пара и
+bucket_admin-креды (канон §2).
 
 Свойства: шаги идемпотентны — прерванный `move` перезапускается теми же аргументами
 (`--resume` — только если на приёмнике пустая схема после сорванного pg_dump, скрипт
