@@ -101,6 +101,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<WorkJournal>(),
         new PlacementOptions(opts.Docker.PortRange.From, opts.Docker.PortRange.To, opts.Thresholds.PatroniBootSec),
         sp.GetRequiredService<InstallSecrets>(),
+        sp.GetRequiredService<IAppSecretEnsurer>(),
         sp.GetRequiredService<EtcdEndpoints>(),
         SnapshotDelegate(job));
 });
@@ -133,6 +134,12 @@ builder.Services.AddSingleton(sp => new ShardEndpoints(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<ShardProbe>()));
+
+// Ensure per-cluster app-секрета (spec §4.1): чтение/txn put-if-absent
+// /clusters/<C>/{app_user,app_password} — общий для Provisioning/AddShard.
+builder.Services.AddSingleton<IAppSecretEnsurer>(sp => new AppSecretEnsurer(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
 builder.Services.AddSingleton(sp => new BucketEvacuator(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
@@ -156,6 +163,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<WorkJournal>(),
         new PlacementOptions(opts.Docker.PortRange.From, opts.Docker.PortRange.To, opts.Thresholds.PatroniBootSec),
         sp.GetRequiredService<InstallSecrets>(),
+        sp.GetRequiredService<IAppSecretEnsurer>(),
         sp.GetRequiredService<EtcdEndpoints>(),
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
 });
@@ -235,7 +243,6 @@ static InstallSecrets SecretsFromEnv()
     return new InstallSecrets(
         Required("PGW_PG_SUPERUSER_PASSWORD"),
         Required("PGW_PG_STANDBY_PASSWORD"),
-        Required("PGW_APP_ROLE_PASSWORD"),
         Required("PGW_BUCKET_ADMIN_PASSWORD"),
         Required("PGW_BUCKET_MOVER_PASSWORD"));
 }

@@ -31,6 +31,7 @@ public sealed partial class AddShardProcess(
     WorkJournal journal,
     PlacementOptions placementOpts,
     InstallSecrets secrets,
+    IAppSecretEnsurer appSecret,
     EtcdEndpoints etcdEndpoints,
     Func<CancellationToken, Task<Result>>? snapshot = null)
 {
@@ -104,6 +105,12 @@ public sealed partial class AddShardProcess(
             BucketAdminUser = snap.Config.BucketAdminUser ?? secrets.BucketAdminUser,
             BucketAdminPassword = snap.Config.BucketAdminPassword ?? secrets.BucketAdminPassword,
         };
+
+        // Ensure app-секрета кластера (spec §3.3, образец P1.5): у живого кластера
+        // ключи уже есть — читаем; отсутствующие (кластер до app-секрета) — создаём.
+        var appCreds = await appSecret.EnsureAsync(cluster, ct);
+        if (!appCreds.IsSuccess)
+            return await FailAsync(cluster, appCreds.Error!, "ensure-app-secret", ct);
         var ensured = await EnsureNodesAsync(cluster, shard, topology, resources, clusterSecrets, ct);
         if (!ensured.IsSuccess)
             return await FailAsync(cluster, ensured.Error!, "ensure-nodes", ct);
@@ -125,7 +132,7 @@ public sealed partial class AddShardProcess(
 
         // A5: БД/роли на мастере НОВОГО шарда; СХЕМЫ БАКЕТОВ НЕ СОЗДАЮТСЯ (§2.1);
         // dsn multi-host (порты portalloc, без пароля).
-        var sqlDone = await ProvisionShardSqlAsync(snap, shard, topology, master, ct);
+        var sqlDone = await ProvisionShardSqlAsync(snap, shard, topology, master, appCreds.Value, ct);
         if (!sqlDone.IsSuccess)
             return await FailAsync(cluster, sqlDone.Error!, "sql", ct);
 
@@ -322,7 +329,8 @@ public sealed partial class AddShardProcess(
     // A5: БД/роли — ТОЛЬКО (идемпотентные гварды); СХЕМЫ БАКЕТОВ НЕ СОЗДАЮТСЯ:
     // шард стартует пустым (§2.1) — routing на него не указывает. dsn — multi-host.
     private async Task<Result> ProvisionShardSqlAsync(
-        ClusterSnapshot snap, ShardSpec shard, ShardTopology topology, NodeAddress master, CancellationToken ct)
+        ClusterSnapshot snap, ShardSpec shard, ShardTopology topology, NodeAddress master,
+        AppCredentials app, CancellationToken ct)
     {
         var cluster = snap.Config.Cluster;
         var dbname = snap.Config.DbName;
@@ -335,7 +343,7 @@ public sealed partial class AddShardProcess(
             return ensured;
 
         var dbDsn = DatabaseProvisioner.BuildAdminDsn(master.Host, master.Ports.Pg, dbname, secrets);
-        foreach (var guard in DatabaseProvisioner.BuildRoleGuardsSql(secrets, bucketAdminUser, bucketAdminPassword))
+        foreach (var guard in DatabaseProvisioner.BuildRoleGuardsSql(secrets, app, bucketAdminUser, bucketAdminPassword))
         {
             var probeResult = await db.ExecuteScalarAsync(dbDsn, guard, ct);
             if (!probeResult.IsSuccess)
@@ -355,6 +363,12 @@ public sealed partial class AddShardProcess(
             if (!executed.IsSuccess)
                 return executed;
         }
+
+        // Выравнивание app-роли паролю из etcd-ключа (идемпотентно; spec §4.1):
+        // кластеры, созданные до app-секрета, и rebuild нод получают актуальный пароль.
+        var alterApp = await db.ExecuteAsync(dbDsn, DatabaseProvisioner.BuildAlterAppPasswordSql(app), ct);
+        if (!alterApp.IsSuccess)
+            return alterApp;
 
         // НИКАКИХ BuildSchemasSql/routing/status-записей (граница §2.1).
 

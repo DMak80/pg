@@ -70,7 +70,7 @@ internal static class MoveRig
 {
     public const string Ep = "http://etcd:2379";
 
-    public static readonly InstallSecrets Secrets = new("su-pw", "sb-pw", "app-pw", "adm-pw", "mov-pw");
+    public static readonly InstallSecrets Secrets = new("su-pw", "sb-pw", "adm-pw", "mov-pw");
 
     // DSN стенда: админ (postgres) источника/приёмника и mover-пробы (bucket_mover).
     public const string SrcDsn = "Host=h1;Port=15000;Database=shop;Username=postgres;Password=su-pw;SSL Mode=Require;Trust Server Certificate=true";

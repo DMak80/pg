@@ -28,7 +28,7 @@ public class DockerDriverTests
         cluster, "s1", $"{cluster}-s1",
         new Dictionary<string, NodeAddress> { ["n1"] = addr });
 
-    private static readonly InstallSecrets Secrets = new("su", "sb", "app", "ba", "mv");
+    private static readonly InstallSecrets Secrets = new("su", "sb", "ba", "mv");
 
     private static readonly EtcdEndpoints Etcd = new(["http://localhost:2379"]);
 

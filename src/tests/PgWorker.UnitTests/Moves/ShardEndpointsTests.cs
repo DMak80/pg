@@ -41,7 +41,7 @@ public class ShardEndpointsTests
     {
         // Arrange
         var dsnKey = "host=n1,n2,n3 port=15432,15433,15434 dbname=shop user=bucket_admin";
-        var secrets = new InstallSecrets("su", "sb", "app", "adm", "moverpw");
+        var secrets = new InstallSecrets("su", "sb", "adm", "moverpw");
 
         // Act
         var conninfo = ShardEndpoints.MoverConninfo(dsnKey, secrets);
@@ -55,7 +55,7 @@ public class ShardEndpointsTests
     public void MoverConninfo_AppendsUserIfMissing()
     {
         // Act
-        var conninfo = ShardEndpoints.MoverConninfo("host=n1 dbname=shop", new InstallSecrets("s", "s", "s", "s", "moverpw"));
+        var conninfo = ShardEndpoints.MoverConninfo("host=n1 dbname=shop", new InstallSecrets("s", "s", "s", "moverpw"));
 
         // Assert
         conninfo.Should().Be("host=n1 dbname=shop user=bucket_mover password=moverpw sslmode=require target_session_attrs=read-write");
@@ -70,7 +70,7 @@ public class ShardEndpointsTests
         // Act
         var conninfo = ShardEndpoints.MoverConninfo(
             "host=n1,n2 port=1,2 dbname=shop user=bucket_admin",
-            new InstallSecrets("s", "s", "s", "s", "pw"), "host.docker.internal");
+            new InstallSecrets("s", "s", "s", "pw"), "host.docker.internal");
 
         // Assert
         conninfo.Should().Be(
@@ -90,7 +90,7 @@ public class ShardEndpointsTests
         var dsnKey = "host=standby,primary port=15006,15007 dbname=add user=bucket_admin";
 
         // Act
-        var conninfo = ShardEndpoints.MoverConninfo(dsnKey, new InstallSecrets("s", "s", "s", "s", "pw"));
+        var conninfo = ShardEndpoints.MoverConninfo(dsnKey, new InstallSecrets("s", "s", "s", "pw"));
 
         // Assert
         conninfo.Should().EndWith("target_session_attrs=read-write");
@@ -103,7 +103,7 @@ public class ShardEndpointsTests
     {
         // Arrange
         var dsnKey = "host=n1,n2,n3 port=15432,15433,15434 dbname=shop user=bucket_admin";
-        var secrets = new InstallSecrets("su", "sb", "app", "adm", "moverpw");
+        var secrets = new InstallSecrets("su", "sb", "adm", "moverpw");
 
         // Act
         var dsn = ShardEndpoints.MoverNpgsqlDsn(dsnKey, secrets);
@@ -117,7 +117,7 @@ public class ShardEndpointsTests
     public void MoverNpgsqlDsn_MissingUser_AddsUsername()
     {
         // Act
-        var dsn = ShardEndpoints.MoverNpgsqlDsn("host=n1 port=1 dbname=d", new InstallSecrets("s", "s", "s", "s", "pw"));
+        var dsn = ShardEndpoints.MoverNpgsqlDsn("host=n1 port=1 dbname=d", new InstallSecrets("s", "s", "s", "pw"));
 
         // Assert
         dsn.Should().Be("Host=n1;Port=1;Database=d;Username=bucket_mover;Password=pw;SSL Mode=Require;Trust Server Certificate=true;Target Session Attributes=read-write");
@@ -129,7 +129,7 @@ public class ShardEndpointsTests
     {
         // Arrange
         var master = new NodeAddress("h1", new NodePorts(15000, 18000, 16500));
-        var secrets = new InstallSecrets("su-pw", "sb", "app", "adm", "mov");
+        var secrets = new InstallSecrets("su-pw", "sb", "adm", "mov");
 
         // Act
         var dsn = ShardEndpoints.AdminDsn(master, "shop", secrets);

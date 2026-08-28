@@ -2,6 +2,7 @@ using System.Text;
 using System.Text.RegularExpressions;
 using Npgsql;
 using PgWorker.Core;
+using PgWorker.Core.Model;
 using PgWorker.Core.Retry;
 using PgWorker.Core.Templates;
 
@@ -48,14 +49,14 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
     }
 
     // Guard-SELECT'ы ролей бакетного слоя (§4 доки 11): app (write-доступ
-    // клиентов), bucket_admin (DSN-точка входа), bucket_mover (REPLICATION —
-    // подписки переездов P2/P3). Паттерн \gexec: скаляр ВОЗВРАЩАЕТ текст
-    // CREATE ROLE, если её нет — исполнитель запускает его отдельной командой
-    // (Npgsql ExecuteNonQuery батчем gexec-SELECT не исполняет).
-    // bucket_admin: per-cluster credentials (user+password из config кластера).
+    // клиентов; per-cluster креды из etcd-ключей — spec §4.1), bucket_admin
+    // (DSN-точка входа, per-cluster из config с env-fallback), bucket_mover
+    // (REPLICATION — подписки переездов P2/P3). Паттерн \gexec: скаляр
+    // ВОЗВРАЩАЕТ текст CREATE ROLE, если её нет — исполнитель запускает его
+    // отдельной командой (Npgsql ExecuteNonQuery батчем gexec-SELECT не исполняет).
     public static IReadOnlyList<string> BuildRoleGuardsSql(InstallSecrets s,
-        string? bucketAdminUser = null, string? bucketAdminPassword = null)
-        => [Role("app", s.AppPassword),
+        AppCredentials app, string? bucketAdminUser = null, string? bucketAdminPassword = null)
+        => [Role(app.User, app.Password),
             Role(bucketAdminUser ?? "bucket_admin", bucketAdminPassword ?? s.BucketAdminPassword),
             Role("bucket_mover", s.MoverPassword, replication: true)];
 
@@ -72,6 +73,16 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
         return $"GRANT pg_monitor TO \"{bucketAdminUser}\";\n";
     }
 
+    // Идемпотентное выравнивание пароля app-роли значению etcd-ключа (spec §4.1):
+    // исполняется напрямую (ExecuteAsync, не gexec) — одинарное экранирование.
+    // Гарантирует «роль ↔ ключ» на любом шарде, включая кластеры, созданные
+    // до появления app-секрета (миграция) и rebuild нод.
+    public static string BuildAlterAppPasswordSql(AppCredentials app)
+    {
+        ValidateIdentifier(app.User);
+        return $"ALTER ROLE \"{app.User}\" PASSWORD '{Escape(app.Password)}';";
+    }
+
     private static string Role(string name, string password, bool replication = false)
     {
         var attr = replication ? " REPLICATION" : string.Empty;
@@ -85,10 +96,11 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
     // создании схем, пустых таблиц нет» — GRANT ON ALL безвреден и на пустой
     // схеме, применяется идемпотентно повторными тиками).
     public static string BuildSchemasSql(string dbname, IEnumerable<int> bucketIds,
-        string bucketAdminUser = "bucket_admin")
+        string bucketAdminUser = "bucket_admin", string appUser = "app")
     {
         ValidateIdentifier(dbname);
         ValidateIdentifier(bucketAdminUser);
+        ValidateIdentifier(appUser);
         var sb = new StringBuilder();
         sb.AppendLine($"-- схемы бакетов БД {dbname} (идемпотентно; §4 доки 11)");
         foreach (var id in bucketIds.OrderBy(i => i))
@@ -97,9 +109,9 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
                 throw new ArgumentException($"идентификатор бакета не может быть отрицательным: {id}");
 
             sb.AppendLine($"CREATE SCHEMA IF NOT EXISTS bucket_{id};");
-            sb.AppendLine($"GRANT USAGE ON SCHEMA bucket_{id} TO \"app\", \"{bucketAdminUser}\", \"bucket_mover\";");
-            sb.AppendLine($"GRANT INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA bucket_{id} TO \"app\", \"{bucketAdminUser}\";");
-            sb.AppendLine($"GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA bucket_{id} TO \"app\", \"{bucketAdminUser}\";");
+            sb.AppendLine($"GRANT USAGE ON SCHEMA bucket_{id} TO \"{appUser}\", \"{bucketAdminUser}\", \"bucket_mover\";");
+            sb.AppendLine($"GRANT INSERT, UPDATE, DELETE, TRUNCATE ON ALL TABLES IN SCHEMA bucket_{id} TO \"{appUser}\", \"{bucketAdminUser}\";");
+            sb.AppendLine($"GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA bucket_{id} TO \"{appUser}\", \"{bucketAdminUser}\";");
             sb.AppendLine($"GRANT SELECT ON ALL TABLES IN SCHEMA bucket_{id} TO \"bucket_mover\";");
         }
 

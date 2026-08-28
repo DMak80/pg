@@ -1,4 +1,5 @@
 using System.Text.RegularExpressions;
+using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
 using PgWorker.Provisioning.Sql;
 
@@ -9,7 +10,7 @@ namespace PgWorker.UnitTests.Provisioning;
 public class DatabaseProvisionerTests
 {
     private static readonly InstallSecrets Secrets = new(
-        "su-pw", "standby-pw", "app-pw", "admin-pw", "mover-pw");
+        "su-pw", "standby-pw", "admin-pw", "mover-pw");
 
     [Fact]
     public void BuildCreateDatabaseSql_GuardThroughPgDatabase_Idempotent()
@@ -31,9 +32,9 @@ public class DatabaseProvisionerTests
     [Fact]
     public void BuildRolesSql_AllThreeRoles_WithPasswordsAndReplication()
     {
-        // Arrange — три роли бакетного слоя (§4 доки 11), пароли из InstallSecrets
+        // Arrange — три роли бакетного слоя (§4 доки 11), app-пароль из etcd-кредов
         // Act
-        var sql = string.Join("\n", DatabaseProvisioner.BuildRoleGuardsSql(Secrets));
+        var sql = string.Join("\n", DatabaseProvisioner.BuildRoleGuardsSql(Secrets, new AppCredentials("app", "app-pw")));
 
         // Assert: роли создаются идемпотентно (NOT EXISTS pg_roles) с LOGIN
         sql.Should().Contain("rolname = 'app'");
@@ -49,6 +50,46 @@ public class DatabaseProvisionerTests
         var execSql = string.Join("\n", DatabaseProvisioner.BuildRoleExecSql());
         execSql.Should().Contain("pg_monitor").And.Contain("bucket_admin");
         sql.Should().NotContain("pg_monitor", "pg_monitor — в BuildRoleExecSql, не в guard-SELECT");
+    }
+
+    [Fact]
+    public void BuildRoleGuardsSql_AppRole_FromAppCredentials()
+    {
+        // Arrange — креды из etcd-ключей (после ensure)
+        var app = new AppCredentials("app", "AppPw1234567890AppPw1234567890");
+
+        // Act
+        var sql = string.Join("\n", DatabaseProvisioner.BuildRoleGuardsSql(Secrets, app));
+
+        // Assert — app-роль из кредов (env AppPassword больше не источник)
+        sql.Should().Contain("CREATE ROLE \"app\" LOGIN PASSWORD ''AppPw1234567890AppPw1234567890'''");
+        sql.Should().Contain("bucket_admin");
+        sql.Should().Contain("bucket_mover");
+    }
+
+    [Fact]
+    public void BuildAlterAppPasswordSql_EscapesAndTargetsApp()
+    {
+        // Arrange
+        var app = new AppCredentials("app", "pw'with'quotes");
+
+        // Act
+        var sql = DatabaseProvisioner.BuildAlterAppPasswordSql(app);
+
+        // Assert — прямой литерал (одинарный Escape), идемпотентный текст
+        sql.Should().Be("ALTER ROLE \"app\" PASSWORD 'pw''with''quotes';");
+    }
+
+    [Fact]
+    public void BuildSchemasSql_GrantsParameterizedAppUser()
+    {
+        // Act — кастомное имя app-роли
+        var sql = DatabaseProvisioner.BuildSchemasSql("shop", [1], "bucket_admin", "appsvc");
+
+        // Assert — гранты параметризованы app-именем (без хардкода "app")
+        sql.Should().Contain("TO \"appsvc\", \"bucket_admin\", \"bucket_mover\"");
+        sql.Should().Contain("TO \"appsvc\", \"bucket_admin\"");
+        sql.Should().NotContain(" \"app\",");
     }
 
     [Fact]
@@ -83,10 +124,8 @@ public class DatabaseProvisionerTests
     public void BuildRolesSql_PasswordWithQuote_Escaped()
     {
         // Arrange — одинарная кавычка в пароле: SQL-инъекция невозможна
-        var secrets = Secrets with { AppPassword = "o'brien" };
-
         // Act
-        var sql = string.Join("\n", DatabaseProvisioner.BuildRoleGuardsSql(secrets));
+        var sql = string.Join("\n", DatabaseProvisioner.BuildRoleGuardsSql(Secrets, new AppCredentials("app", "o'brien")));
 
         // Assert: кавычка удвоена
         sql.Should().Contain("PASSWORD ''o''''brien''");

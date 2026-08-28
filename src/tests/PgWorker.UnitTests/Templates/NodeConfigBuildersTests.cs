@@ -19,7 +19,7 @@ public class NodeConfigBuildersTests
     private static readonly EtcdEndpoints Etcd = new(["http://e1:2379", "http://e2:2379"]);
 
     private static readonly InstallSecrets Secrets = new(
-        "su-secret", "standby-secret", "app-secret", "admin-secret", "mover-secret");
+        "su-secret", "standby-secret", "admin-secret", "mover-secret");
 
     [Fact]
     public void SpiloEnv_ContainsPatroniAndPgParameters()
@@ -67,9 +67,30 @@ public class NodeConfigBuildersTests
 
         // Assert: секреты прокинуты в env контейнера (Spilo/bootstrap),
         // но не попадают в тексты doorman/haproxy (их читаютvolume-маунты).
-        env.Values.Should().Contain(new[] { "su-secret", "standby-secret", "app-secret", "admin-secret", "mover-secret" });
-        doorman.Should().NotContainAny("su-secret", "standby-secret", "app-secret", "admin-secret", "mover-secret");
-        haproxy.Should().NotContainAny("su-secret", "standby-secret", "app-secret", "admin-secret", "mover-secret");
+        env.Values.Should().Contain(new[] { "su-secret", "standby-secret", "admin-secret", "mover-secret" });
+        doorman.Should().NotContainAny("su-secret", "standby-secret", "admin-secret", "mover-secret");
+        haproxy.Should().NotContainAny("su-secret", "standby-secret", "admin-secret", "mover-secret");
+    }
+
+    [Fact]
+    public void SpiloEnv_NoAppPasswordLeak()
+    {
+        // Arrange
+        var topology = new ShardTopology("shop", "shard1", "shop-shard1",
+            new Dictionary<string, NodeAddress>
+            {
+                ["shard1a"] = new("h1", new NodePorts(15432, 18008, 16432)),
+            });
+        var secrets = new InstallSecrets("su", "sb", "adm", "mov");
+
+        // Act
+        var env = SpiloEnvBuilder.Build(topology, new EtcdEndpoints(["http://etcd:2379"]), secrets);
+
+        // Assert — app-пароль в env контейнера не попадает (spec §2.4, критерий 6);
+        // bucket_admin-механизм env не тронут
+        env.Keys.Should().NotContain("PGW_APP_PASSWORD");
+        env.Keys.Should().Contain("PGW_BUCKET_ADMIN_PASSWORD");
+        env.Keys.Should().Contain("PGW_BUCKET_ADMIN_USER");
     }
 
     [Fact]

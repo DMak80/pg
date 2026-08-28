@@ -39,7 +39,7 @@ AdminPanel читает etcd для инспекции. Источник схе�
 | Ключ | Формат значения | В модель | Примечания |
 |---|---|---|---|
 | `/clusters/<C>/config` | JSON `{"buckets":N,"dbname":"<C>","created_unix":…,"state"?:"NOT_INITIALIZED"\|"TO_REMOVE"}` | `ClusterInfo` (константы) | N — константа навсегда (P18); `created_unix` может отсутствовать (старые init); `state` пишется только панелью: при создании (§9) и переводе в удаление (§9.4); отсутствует/иное = обычный инициализированный кластер |
-| `/clusters/<C>/shards/<X>/dsn` | libpq-строка `host=n1,n2,n3 port=5432 dbname=<C> user=bucket_admin` | `ShardInfo.Dsn`, парсим хосты/порт/dbname/user | пароля нет (секреты в env); пароль для SQL-побы приходит из настроек панели; у создаваемого панелью кластера ключа нет — ноды ещё не подняты (§9) |
+| `/clusters/<C>/shards/<X>/dsn` | libpq-строка `host=n1,n2,n3 port=5432 dbname=<C> user=bucket_admin` | `ShardInfo.Dsn`, парсим хосты/порт/dbname/user | dsn PgWorker-кластеров несёт `password=` (per-cluster bucket_admin); панель разбирает его в `ShardInfo.Password`, SQL-проба использует `shard.Password ?? AdminPanel:Probes:Password`; у создаваемого панелью кластера ключа нет — ноды ещё не подняты (§9) |
 | `/clusters/<C>/shards/<X>/replicas` | целое-строка `"2"` | `ShardInfo.ReplicasDeclared` | декларативное намерение; факт — в HA (`/service/`) |
 | `/clusters/<C>/shards/<X>/master` | `"host:6432"` | `ShardInfo.MasterAddress` (nullable) | lease TTL 5 c; отсутствие = нет живого мастера (P11) |
 | `/clusters/<C>/shards/<X>/nodes/<n>/state` | строка `"NOT_INITIALIZED"` | `NodeInfo.State` | плановые ноды создаваемого панелью кластера (§9); имена `<X><буква>` (`s1a`,`s1b`… — конвенция стенда pg (этот монорепозиторий)); нода поднята/инициализирована — ключ меняет будущий provisioning |
@@ -50,6 +50,11 @@ AdminPanel читает etcd для инспекции. Источник схе�
 
 Неизвестные ключи внутри `/clusters/` не ошибка: лог-строка + счётчик
 `unknownKeys` в снапшоте (система развивается, панель не должна падать).
+
+Ожидаемые игнорируемые ключи: `/clusters/<C>/app_user` и
+`/clusters/<C>/app_password` — per-cluster креды приложения (генерирует
+PgWorker). Панель их НЕ читает и НЕ отображает: парсер пропускает без
+`unknownKeys`-счётчика, значение не попадает в модель/UI/API.
 
 ### 2.2. `/service/<scope>/…` — Patroni DCS (HA)
 
@@ -228,8 +233,8 @@ override из `HostMap` при точном совпадении ключа → 
 
 ### 6.2. SQL через Npgsql (по умолчанию включена; в проде — на усмотрение)
 
-- Подключение: DSN шарда из etcd **+ Password из настроек панели**
-  (`AdminPanel:Probes:Password`; в DSN пароля нет никогда) +
+- Подключение: DSN шарда из etcd (пароль из DSN при наличии, иначе
+  `AdminPanel:Probes:Password`; в DSN app-секрета не бывает никогда) +
   `TargetSessionAttributes=ReadWrite` (multi-host DSN ведёт на мастер),
   `Application Name=adminpanel`, `statement_timeout`. Каждый `host:port`
   из DSN перед построением connection string прогоняется через `HostMap`

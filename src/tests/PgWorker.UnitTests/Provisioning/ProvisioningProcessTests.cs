@@ -1,6 +1,7 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
+using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
 using PgWorker.Etcd.Client;
@@ -16,7 +17,7 @@ namespace PgWorker.UnitTests.Provisioning;
 // снятие status-ключей, config без state, снапшот, journal-фазы.
 public class ProvisioningProcessTests
 {
-    private static readonly InstallSecrets Secrets = new("su-pw", "sb-pw", "app-pw", "adm-pw", "mov-pw");
+    private static readonly InstallSecrets Secrets = new("su-pw", "sb-pw", "adm-pw", "mov-pw");
     private static readonly EtcdEndpoints EtcdEndp = new(["http://etcd:2379"]);
     private static readonly PlacementOptions Opts = new(15000, 15100, PatroniBootSec: 600);
     private const string Ep = "http://etcd:2379";
@@ -96,8 +97,10 @@ public class ProvisioningProcessTests
         var journal = new WorkJournal(etcd, [Ep]);
         var driver = new Fakes.FakeDriver();
         var sql = new Fakes.FakeSql();
+        var appSecret = new AppSecretEnsurer(etcd, [Ep]);
         var process = new ProvisioningProcess(
-            etcd, [Ep], driver, sql, Probe(patroniResponse, trace), claims, journal, Opts, Secrets, EtcdEndp, snapshot: null);
+            etcd, [Ep], driver, sql, Probe(patroniResponse, trace), claims, journal, Opts, Secrets,
+            appSecret, EtcdEndp, snapshot: null);
         return new Rig(etcd, driver, sql, claims, journal, process);
     }
 
@@ -234,7 +237,7 @@ public class ProvisioningProcessTests
         var driver = new Fakes.FakeDriver();
         var process = new ProvisioningProcess(
             etcd, [Ep], driver, new Fakes.FakeSql(), Probe(_ => Patroni("shard1a")),
-            claims, journal, Opts, Secrets, EtcdEndp, snapshot: null);
+            claims, journal, Opts, Secrets, new AppSecretEnsurer(etcd, [Ep]), EtcdEndp, snapshot: null);
 
         // Act
         var outcome = await process.TickAsync(await Snapshot(etcd), CancellationToken.None);
@@ -261,5 +264,44 @@ public class ProvisioningProcessTests
         outcome.Value.Should().Be(ProcessOutcome.InProgress);
         rig.Driver.EnsuredNodes.Should().BeEmpty();
         (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.Phase.Should().Be("aborted");
+    }
+
+    [Fact]
+    public async Task Tick_CreatesAppSecretKeysAndAlignsRole()
+    {
+        // Arrange — Patroni жив (проход до SQL-фазы)
+        var rig = await NewRig(_ => Patroni("shard1a"));
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — P1.5: оба ключа созданы и валидны (spec §7.1)
+        rig.Etcd.Store["/clusters/shop/app_user"].Value.Should().Be("app");
+        rig.Etcd.Store["/clusters/shop/app_password"].Value.Should().MatchRegex("^[A-Za-z0-9]{32}$");
+        // Роль app создаётся из кредов + выравнивается ALTER (SQL через фейк)
+        var password = rig.Etcd.Store["/clusters/shop/app_password"].Value;
+        rig.Sql.Executed.Should().Contain(s => s.Sql.Contains("ALTER ROLE \"app\" PASSWORD"));
+        rig.Sql.Scalars.Should().Contain(s =>
+            s.Sql.Contains($"CREATE ROLE \"app\" LOGIN PASSWORD ''{password}'''"));
+    }
+
+    [Fact]
+    public async Task Tick_SqlFailure_ErrorAndJournalHaveNoAppPassword()
+    {
+        // Arrange — Patroni жив; SQL-исполнение падает на ALTER/схемах
+        var rig = await NewRig(_ => Patroni("shard1a"));
+        rig.Sql.ExecuteResult = () => Result.Failed(new ApplicationException("connection refused"));
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — сбой не выносит app-пароль ни в текст ошибки процесса,
+        // ни в last_error журнала /pgworker/work/<C> (SQL-тексты с паролем
+        // в сообщения исключений не включаются — spec §4.1)
+        outcome.IsSuccess.Should().BeFalse();
+        var password = rig.Etcd.Store["/clusters/shop/app_password"].Value;
+        outcome.Error!.ToString().Should().NotContain(password);
+        var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        work.Value!.LastError.Should().NotContain(password);
     }
 }

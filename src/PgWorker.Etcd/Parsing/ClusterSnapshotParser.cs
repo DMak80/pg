@@ -27,6 +27,8 @@ public static class ClusterSnapshotParser
     {
         public readonly string Name = name;
         public string? ConfigRaw;
+        public string? AppUser;
+        public string? AppPassword;
         public readonly Dictionary<string, ShardAcc> Shards = [];
         public readonly Dictionary<int, string> Routing = [];
         public readonly Dictionary<int, string> StatusRaw = [];
@@ -120,6 +122,14 @@ public static class ClusterSnapshotParser
                     break;
                 }
 
+                case "app_user" when segments.Length == 4:
+                    acc.AppUser = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
+                    break;
+
+                case "app_password" when segments.Length == 4:
+                    acc.AppPassword = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
+                    break;
+
                 default:
                     // система развивается — неизвестный ключ не ошибка, просто игнор
                     break;
@@ -179,7 +189,10 @@ public static class ClusterSnapshotParser
             .Select(pair => BuildShard(acc.Name, pair.Key, pair.Value, errors))
             .ToList();
         var routing = BuildRouting(config.Buckets, acc, errors);
-        return new ClusterSnapshot(config, shards, routing);
+        AppCredentials? app = acc.AppUser is { Length: > 0 } u && acc.AppPassword is { Length: > 0 } p
+            ? new AppCredentials(u, p)
+            : null;
+        return new ClusterSnapshot(config, shards, routing, app);
     }
 
     private static ClusterConfig ParseConfig(string cluster, string? raw, List<string> errors)

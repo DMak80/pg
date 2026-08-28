@@ -19,7 +19,7 @@ namespace PgWorker.UnitTests.Provisioning;
 public class BucketEvacuatorTests
 {
     private const string Ep = "http://etcd:2379";
-    private static readonly InstallSecrets Secrets = new("su-pw", "sb-pw", "app-pw", "adm-pw", "mov-pw");
+    private static readonly InstallSecrets Secrets = new("su-pw", "sb-pw", "adm-pw", "mov-pw");
 
     private static ShardProbe Probe(Func<int, HttpResponseMessage> respondByPort)
         => new(new HttpClient(new FakeHandler(r => respondByPort(r.RequestUri!.Port))));

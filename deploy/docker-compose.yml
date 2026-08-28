@@ -22,7 +22,6 @@ services:
       # Обязательные секреты установки (Д7): не в git, не в etcd.
       PGW_PG_SUPERUSER_PASSWORD: ${PGW_PG_SUPERUSER_PASSWORD:?задайте секрет}
       PGW_PG_STANDBY_PASSWORD: ${PGW_PG_STANDBY_PASSWORD:?задайте секрет}
-      PGW_APP_ROLE_PASSWORD: ${PGW_APP_ROLE_PASSWORD:?задайте секрет}
       PGW_BUCKET_ADMIN_PASSWORD: ${PGW_BUCKET_ADMIN_PASSWORD:?задайте секрет}
       PGW_BUCKET_MOVER_PASSWORD: ${PGW_BUCKET_MOVER_PASSWORD:?задайте секрет}
       # Конфигурация — env-оверрайды appsettings (пример: endpoints etcd).

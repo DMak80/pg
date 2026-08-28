@@ -40,6 +40,9 @@ public sealed record ClusterConfig(string Cluster, int Buckets, string DbName,
     long? CreatedUnix, ClusterState State,
     string? BucketAdminUser = null, string? BucketAdminPassword = null);
 
+/// <summary>Per-cluster креды приложения: /clusters/&lt;C&gt;/app_user + app_password.</summary>
+public sealed record AppCredentials(string User, string Password);
+
 /// <summary>Плановая нода шарда: имя = имя шарда + буква ("shard1", "shard1a").</summary>
 public sealed record NodeSpec(string Shard, string Name, NodeState State);
 
@@ -55,9 +58,10 @@ public sealed record ShardSpec(string Name, int Replicas, string? Dsn, string? M
 public sealed record BucketRoute(int Id, string? Owner, BucketMoveState? Status,
     string? MoveTarget = null, string? MoveSource = null);
 
-/// <summary>Полный снапшот кластера: config + шарды + все N маршрутов бакетов.</summary>
+/// <summary>Полный снапшот кластера: config + шарды + все N маршрутов бакетов
+/// + per-cluster app-креды (null до первого ensure — spec §4.1).</summary>
 public sealed record ClusterSnapshot(ClusterConfig Config, IReadOnlyList<ShardSpec> Shards,
-    IReadOnlyList<BucketRoute> Routing);
+    IReadOnlyList<BucketRoute> Routing, AppCredentials? App = null);
 
 /// <summary>Тройка портов ноды, выделенная аллокатором (pg/patroni/doorman).</summary>
 public sealed record NodePorts(int Pg, int Patroni, int Doorman);

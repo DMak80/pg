@@ -79,7 +79,7 @@ public class E2eMoveScenarios(E2eFixture fixture, ITestOutputHelper output)
         var shard1 = await MasterInfoAsync("shard1", ct);
         var shard2 = await MasterInfoAsync("shard2", ct);
 
-        await using var ghost = new NpgsqlConnection(AppDsn(shard1.Port));
+        await using var ghost = new NpgsqlConnection(await AppDsnAsync(shard1.Port, ct));
         await ghost.OpenAsync(ct);
         await using (var warm = new NpgsqlCommand("SELECT 1", ghost))
             await warm.ExecuteNonQueryAsync(ct);
@@ -405,8 +405,11 @@ public class E2eMoveScenarios(E2eFixture fixture, ITestOutputHelper output)
         synced.Should().BeTrue($"у мастера {shard} должен появиться sync-standby после PATCH");
     }
 
-    private static string AppDsn(int port)
-        => $"Host=localhost;Port={port};Database={Cluster};Username=app;Password={E2eFixture.AppPassword};SSL Mode=Require;Trust Server Certificate=true";
+    // DSN приложения: пароль — из etcd-ключа /clusters/<C>/app_password
+    // (тот же путь, что и приложение — spec §4.3), не из env фикстуры.
+    private async Task<string> AppDsnAsync(int port, CancellationToken ct)
+        => $"Host=localhost;Port={port};Database={Cluster};Username=app;" +
+           $"Password={await fixture.GetAppPasswordAsync(Cluster, ct)};SSL Mode=Require;Trust Server Certificate=true";
 
     private static async Task<string> SqlScalarAsync(string dsn, string sql, CancellationToken ct)
     {
@@ -416,11 +419,11 @@ public class E2eMoveScenarios(E2eFixture fixture, ITestOutputHelper output)
         return (await cmd.ExecuteScalarAsync(ct))?.ToString() ?? "";
     }
 
-    private static async Task<bool> TryInsertAppAsync(int masterPort, string bucket, CancellationToken ct)
+    private async Task<bool> TryInsertAppAsync(int masterPort, string bucket, CancellationToken ct)
     {
         try
         {
-            await using var con = new NpgsqlConnection($"{AppDsn(masterPort)};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
+            await using var con = new NpgsqlConnection($"{await AppDsnAsync(masterPort, ct)};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
             await con.OpenAsync(ct);
             await using var cmd = new NpgsqlCommand(
                 $"INSERT INTO {bucket}.items(note) VALUES ('probe')", con);
@@ -508,7 +511,7 @@ public class E2eMoveScenarios(E2eFixture fixture, ITestOutputHelper output)
                         if (shard != prevShard) { await Task.Delay(700, ct); prevShard = shard; }
 
                         var port = (await owner.MasterInfoAsync(shard, ct)).Port;
-                        await using var con = new NpgsqlConnection($"{AppDsn(port)};Timeout=5;SSL Mode=Require;Trust Server Certificate=true");
+                        await using var con = new NpgsqlConnection($"{await owner.AppDsnAsync(port, ct)};Timeout=5;SSL Mode=Require;Trust Server Certificate=true");
                         await con.OpenAsync(ct);
                         await using var cmd = new NpgsqlCommand(
                             "INSERT INTO bucket_0.items(note) VALUES ('load')", con);
