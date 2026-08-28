@@ -129,6 +129,11 @@ public static class ClustersParser
                     break;
                 }
 
+                // Креды приложения (генерирует PgWorker, spec §3.4): expected-skip — панель
+                // их не читает и не отображает; значение не попадает в модель/UI/API.
+                case "app_user" or "app_password" when segments.Length == 4:
+                    break;
+
                 default:
                     // система развивается — неизвестный ключ не ошибка, только счётчик (arch/02 §2.1)
                     unknown++;

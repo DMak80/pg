@@ -307,4 +307,24 @@ public class ClustersParserTests
         // Assert
         result.Clusters.Single().Shards.Single().State.Should().Be(ShardState.Active);
     }
+
+    [Fact]
+    public void Parse_AppSecretKeys_SkippedWithoutUnknown()
+    {
+        // Arrange — app-ключи в префиксе /clusters/ (spec §3.4: панель их не читает)
+        var kvs = new List<Kv>
+        {
+            Kv("/clusters/demo/config", "{\"buckets\":1,\"dbname\":\"demo\"}"),
+            Kv("/clusters/demo/app_user", "app"),
+            Kv("/clusters/demo/app_password", "Kj9mP2qR7sT3vW5xYz1aBc4dEf6Gh8Jk"),
+        };
+
+        // Act
+        var result = ClustersParser.Parse(kvs);
+
+        // Assert — expected-skip: не unknown, не в модели
+        result.UnknownKeyCount.Should().Be(0);
+        result.Errors.Should().BeEmpty();
+        result.Clusters.Should().ContainSingle();
+    }
 }
