@@ -12,6 +12,7 @@ import { BucketsTab } from './cluster-details/BucketsTab';
 import { DeleteClusterButton } from './cluster-details/DeleteClusterButton';
 import { HealsTab } from './cluster-details/HealsTab';
 import { MovesTab } from './cluster-details/MovesTab';
+import { RotateAppPasswordButton } from './cluster-details/RotateAppPasswordButton';
 import { ShardsTab } from './cluster-details/ShardsTab';
 import { StandNodesBlock } from './cluster-details/StandNodesBlock';
 
@@ -61,8 +62,14 @@ export function ClusterDetailsPage() {
             {data.incomplete ? <Badge color="yellow" variant="light">incomplete</Badge> : null}
             {toRemove ? <Badge color="red" variant="light">к удалению</Badge> : null}
           </Group>
-          {/* Обратного перехода из TO_REMOVE нет — у удаляемого кластера кнопки нет (arch/02 §9.4). */}
-          {toRemove ? null : <DeleteClusterButton name={data.name} />}
+          {/* Ротация — только Active (у NOT_INITIALIZED пароль ещё не используется);
+              у TO_REMOVE обе кнопки скрыты (обратного перехода нет, arch/02 §9.4). */}
+          {toRemove ? null : (
+            <Group gap="sm">
+              {data.state === 'ACTIVE' ? <RotateAppPasswordButton name={data.name} /> : null}
+              <DeleteClusterButton name={data.name} />
+            </Group>
+          )}
         </Group>
         <Text c="dimmed" size="sm">
           {/* Бакеты — только у шардированных (arch/03 §2): нешардированная = 1

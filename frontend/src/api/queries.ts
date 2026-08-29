@@ -3,6 +3,7 @@ import { apiFetch } from './client';
 import type {
   AddShardRequestDto,
   AlertDto,
+  AppPasswordRotatedDto,
   ClusterCreatedDto,
   ClusterDto,
   ClusterSummaryDto,
@@ -122,4 +123,12 @@ export function recreateNode(scope: string, node: string, mode: RecreateMode): P
   return apiFetch<NodeRecreatedDto>(
     `/api/ha/${encodeURIComponent(scope)}/nodes/${encodeURIComponent(node)}/recreate`,
     { method: 'POST', body: { mode } });
+}
+
+// POST /api/clusters/{cluster}/app-password/rotate — заявка ротации app-пароля
+// (arch/02 §9.8): ставит /pgworker/rotations/<C>; выполняет PgWorker (AppPasswordRotator).
+export function rotateAppPassword(cluster: string): Promise<AppPasswordRotatedDto> {
+  return apiFetch<AppPasswordRotatedDto>(
+    `/api/clusters/${encodeURIComponent(cluster)}/app-password/rotate`,
+    { method: 'POST' });
 }
