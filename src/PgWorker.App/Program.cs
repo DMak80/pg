@@ -172,6 +172,7 @@ builder.Services.AddSingleton(sp =>
         new PlacementOptions(opts.Docker.PortRange.From, opts.Docker.PortRange.To, opts.Thresholds.PatroniBootSec),
         sp.GetRequiredService<InstallSecrets>(),
         sp.GetRequiredService<IAppSecretEnsurer>(),
+        sp.GetRequiredService<IAppParamsEnsurer>(),
         sp.GetRequiredService<EtcdEndpoints>(),
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
 });
