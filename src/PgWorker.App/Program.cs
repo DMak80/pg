@@ -211,6 +211,19 @@ builder.Services.AddSingleton(sp =>
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
 });
 
+// Ротация app-пароля (spec §4.3, arch/14 §5 I): заявка /pgworker/rotations/<C>;
+// Active-ветка цикла зовёт через ClusterProcesses (scale → rotate → evacuate → moves).
+builder.Services.AddSingleton(sp => new AppPasswordRotator(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<ISqlExecutor>(),
+    sp.GetRequiredService<ShardProbe>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<InstallSecrets>(),
+    sp.GetRequiredService<IAppSecretEnsurer>(),
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+
 // Циклы (§6.2): keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
 // Регистрируются синглтонами — health-обёртки читают их состояние напрямую.
 builder.Services.AddSingleton<IClusterProcesses, ClusterProcesses>();

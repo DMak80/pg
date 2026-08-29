@@ -145,6 +145,24 @@ public class ReconcileLoopTests
         processes.Calls.Should().ContainInOrder("supervise/shop", "scale-shards/shop", "moves/shop");
     }
 
+    // AAA: ротация app-пароля — после scale-прохода, до moves (spec §4.3)
+    [Fact]
+    public async Task Tick_ActiveCluster_RotatesAfterScaleBeforeMoves()
+    {
+        // Arrange — Active-кластер: надзор → scale → rotate → moves
+        SeedCluster("shop", null);
+        var processes = new FakeProcesses();
+        var loop = CreateLoop(processes);
+
+        // Act
+        var tick = await loop.TickAsync(TestContext.Current.CancellationToken);
+
+        // Assert — ротация вызвана между scale и moves (порядок §4.3)
+        tick.IsSuccess.Should().BeTrue();
+        processes.Rotated.Should().Equal("shop");
+        processes.Calls.Should().ContainInOrder("supervise/shop", "rotate-app-password/shop", "moves/shop");
+    }
+
     [Fact]
     public async Task Tick_ClusterClaimedByOtherInstance_SkipsProcessing()
     {
@@ -321,6 +339,8 @@ public class ReconcileLoopTests
 
         public List<string> Scaled { get; } = [];
 
+        public List<string> Rotated { get; } = [];
+
         // Порядок вызовов процессов кластера ("supervise/shop", "moves/shop", …).
         public List<string> Calls { get; } = [];
 
@@ -373,6 +393,12 @@ public class ReconcileLoopTests
         public Task<Result<ProcessOutcome>> ScaleShardsAsync(ClusterSnapshot snap, CancellationToken ct)
         {
             using var _ = Track(snap.Config.Cluster, Scaled, callName: "scale-shards");
+            return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
+        }
+
+        public Task<Result<ProcessOutcome>> RotateAppPasswordAsync(ClusterSnapshot snap, CancellationToken ct)
+        {
+            using var _ = Track(snap.Config.Cluster, Rotated, callName: "rotate-app-password");
             return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
         }
 

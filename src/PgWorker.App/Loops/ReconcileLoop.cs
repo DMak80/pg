@@ -174,6 +174,11 @@ internal sealed class ReconcileLoop(
                     await RunClusterOpAsync(cluster, "scale-shards",
                         () => processes.ScaleShardsAsync(snap, ct), ct);
 
+                    // Ротация app-пароля (spec §4.3, arch/14 §5 I): короткая плановая
+                    // операция — до эвакуаций/переездов, не ждёт длинных moves.
+                    await RunClusterOpAsync(cluster, "rotate-app-password",
+                        () => processes.RotateAppPasswordAsync(snap, ct), ct);
+
                     // События эвакуации: полностью мёртвые шарды (spec §6.4 D/E).
                     foreach (var deadShard in supervised.DeadShards)
                         await RunClusterOpAsync(cluster, $"evacuate/{deadShard}",

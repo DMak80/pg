@@ -164,6 +164,11 @@ public sealed class DeprovisioningProcess(
         if (!delEvacuations.IsSuccess)
             return delEvacuations;
 
+        // Заявка ротации app-пароля (spec §3.2/D2): точечно — не переживает удаление.
+        var delRotation = await DeleteAsync($"/pgworker/rotations/{cluster}", prefix: false, ct);
+        if (!delRotation.IsSuccess)
+            return delRotation;
+
         // Заявки переездов (t01, spec §5.3 D2): префикс /pgworker/moves/<C>/ целиком.
         return await DeleteAsync($"/pgworker/moves/{cluster}/", prefix: true, ct);
     }

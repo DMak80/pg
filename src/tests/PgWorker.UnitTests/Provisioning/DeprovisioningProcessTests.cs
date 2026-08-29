@@ -62,14 +62,16 @@ public class DeprovisioningProcessTests
     [Fact]
     public async Task Tick_FullRemoval_RemovesNodesKeysAndScope()
     {
-        // Arrange — кластер в TO_REMOVE, клэйм наш
+        // Arrange — кластер в TO_REMOVE, клэйм наш; живая заявка ротации app-пароля
         var rig = await NewRig();
+        rig.Etcd.Seed("/pgworker/rotations/shop", """{"requested_unix":1755900100,"requested_by":"admin"}""");
 
         // Act
         var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
         // Assert: Done; все ноды удалены, префикс кластера пуст, service-скоп
-        // очищен (заявки + Patroni-ключи), portalloc/work удалены, снапшот снят
+        // очищен (заявки + Patroni-ключи), portalloc/work удалены, снапшот снят;
+        // заявка ротации не переживает удаление кластера (D2, spec §3.2)
         outcome.IsSuccess.Should().BeTrue();
         outcome.Value.Should().Be(ProcessOutcome.Done);
         rig.Driver.RemovedNodes.Should().BeEquivalentTo(["shard1/shard1a", "shard1/shard1b"]);
@@ -77,6 +79,7 @@ public class DeprovisioningProcessTests
         rig.Etcd.Store.Keys.Should().NotContain(k => k.StartsWith("/service/shop-shard1/", StringComparison.Ordinal));
         rig.Etcd.Store.Keys.Should().NotContain(k =>
             k == "/pgworker/portalloc/shop" || k == "/pgworker/work/shop");
+        rig.Etcd.Store.Should().NotContainKey("/pgworker/rotations/shop");
         rig.Snapshots.Should().ContainSingle();
     }
 
