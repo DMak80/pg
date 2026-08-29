@@ -100,6 +100,7 @@ public class NodeSupervisorTests
             new FakeHandler(respondRaw ?? (r => respond(r.RequestUri!.Port)))));
         var supervisor = new NodeSupervisor(
             etcd, [Ep], driver, probe, claims, journal, Thresholds, TimeProvider.System, Secrets,
+            new AppParamsEnsurer(etcd, [Ep], "sslmode=require"),
             new MasterKeyReconciler(etcd, [Ep], probe));
         return new Rig(etcd, driver, claims, journal, supervisor);
     }
@@ -636,7 +637,8 @@ public class NodeSupervisorTests
         // Пробы по Patroni-порту: shopA (18000–18002) — глухо, shopB (18100–18102) — жив.
         var supervisor = new NodeSupervisor(
             etcd, [Ep], driver, Probe(port => port >= 18100 ? Ok() : Down()),
-            claims, journal, Thresholds, TimeProvider.System, Secrets);
+            claims, journal, Thresholds, TimeProvider.System, Secrets,
+            new AppParamsEnsurer(etcd, [Ep], "sslmode=require"));
 
         // Act — параллельные тики двух кластеров одним синглтоном
         var results = await Task.WhenAll(
@@ -779,5 +781,25 @@ public class NodeSupervisorTests
         // Arrange/Act/Assert — продление в 2.5 раза чаще периода протухания:
         // TTL 5с → период keepalive 2с
         MasterKeyReconciler.KeepalivePeriod.Should().Be(TimeSpan.FromSeconds(2));
+    }
+
+    // AAA: миграция app_params (arch/14 §5 C) — ноды шарда с dsn без ключа получают
+    // дефолт; ручное значение существующего ключа не перезаписывается
+    [Fact]
+    public async Task Tick_NodeWithoutAppParams_MigrationPutsDefault()
+    {
+        // Arrange — кластер «до app_params»: у shard1b ключ есть (ручной), у остальных нет
+        var rig = await NewRig(_ => Ok());
+        rig.Etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1b/app_params", "sslmode=verify-full");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — отсутствующие дописаны дефолтом, ручное значение живо (put-if-absent)
+        outcome.IsSuccess.Should().BeTrue();
+        rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/app_params"].Value
+            .Should().Be("sslmode=require");
+        rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1b/app_params"].Value
+            .Should().Be("sslmode=verify-full");
     }
 }
