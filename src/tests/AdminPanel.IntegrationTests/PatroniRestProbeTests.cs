@@ -93,8 +93,8 @@ public class PatroniRestProbeTests : IAsyncLifetime
     [Fact]
     public async Task Probe_MapsHostAndParsesSelfEntry()
     {
-        // Arrange: s1a:8008 маппится на стаб.
-        var probe = Probe(new Dictionary<string, string> { ["s1a:8008"] = $"127.0.0.1:{_port}" });
+        // Arrange: s1a:5432 (host:member-port) маппится на стаб.
+        var probe = Probe(new Dictionary<string, string> { ["s1a:5432"] = $"127.0.0.1:{_port}" });
 
         // Act
         var result = await probe.ProbeAsync(Scope(), Member("s1a"), CancellationToken.None);
@@ -114,7 +114,7 @@ public class PatroniRestProbeTests : IAsyncLifetime
     public async Task Probe_AnotherMember_PicksOwnEntry()
     {
         // Arrange
-        var probe = Probe(new Dictionary<string, string> { ["s1b:8008"] = $"127.0.0.1:{_port}" });
+        var probe = Probe(new Dictionary<string, string> { ["s1b:5432"] = $"127.0.0.1:{_port}" });
 
         // Act
         var result = await probe.ProbeAsync(Scope(), Member("s1b"), CancellationToken.None);
@@ -128,8 +128,8 @@ public class PatroniRestProbeTests : IAsyncLifetime
     [Fact]
     public async Task Probe_MemberMissingInResponse_Error()
     {
-        // Arrange: member "zz" в ответе стаба нет (spec §3.4).
-        var probe = Probe(new Dictionary<string, string> { ["zz:8008"] = $"127.0.0.1:{_port}" });
+        // Arrange: member "zz" в ответе стаба нет (spec §3.4); ключ — host:member-port.
+        var probe = Probe(new Dictionary<string, string> { ["zz:5432"] = $"127.0.0.1:{_port}" });
 
         // Act
         var result = await probe.ProbeAsync(Scope(), Member("zz"), CancellationToken.None);
@@ -142,8 +142,8 @@ public class PatroniRestProbeTests : IAsyncLifetime
     [Fact]
     public async Task Probe_DeadPort_ReturnsError()
     {
-        // Arrange: HostMap ведёт на закрытый порт.
-        var probe = Probe(new Dictionary<string, string> { ["s1a:8008"] = "127.0.0.1:1" });
+        // Arrange: HostMap ведёт на закрытый порт (ключ — host:member-port).
+        var probe = Probe(new Dictionary<string, string> { ["s1a:5432"] = "127.0.0.1:1" });
 
         // Act
         var result = await probe.ProbeAsync(Scope(), Member("s1a"), CancellationToken.None);
