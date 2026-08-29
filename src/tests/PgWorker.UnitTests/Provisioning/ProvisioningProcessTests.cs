@@ -100,7 +100,7 @@ public class ProvisioningProcessTests
         var appSecret = new AppSecretEnsurer(etcd, [Ep]);
         var process = new ProvisioningProcess(
             etcd, [Ep], driver, sql, Probe(patroniResponse, trace), claims, journal, Opts, Secrets,
-            appSecret, EtcdEndp, snapshot: null);
+            appSecret, new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp, snapshot: null);
         return new Rig(etcd, driver, sql, claims, journal, process);
     }
 
@@ -237,7 +237,8 @@ public class ProvisioningProcessTests
         var driver = new Fakes.FakeDriver();
         var process = new ProvisioningProcess(
             etcd, [Ep], driver, new Fakes.FakeSql(), Probe(_ => Patroni("shard1a")),
-            claims, journal, Opts, Secrets, new AppSecretEnsurer(etcd, [Ep]), EtcdEndp, snapshot: null);
+            claims, journal, Opts, Secrets, new AppSecretEnsurer(etcd, [Ep]),
+            new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp, snapshot: null);
 
         // Act
         var outcome = await process.TickAsync(await Snapshot(etcd), CancellationToken.None);
@@ -303,5 +304,25 @@ public class ProvisioningProcessTests
         outcome.Error!.ToString().Should().NotContain(password);
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
         work.Value!.LastError.Should().NotContain(password);
+    }
+
+    // AAA: P2.5' — после SQL-фазы шарда у КАЖДОЙ ноды есть app_params дефолта (spec §4.2)
+    [Fact]
+    public async Task Tick_SqlPhase_WritesNodeAppParamsForAllShardNodes()
+    {
+        // Arrange — Patroni жив, мастера shard1a/shard2a; первый тик создаёт ноды,
+        // SQL-фаза идёт вторым тиком по свежему снапшоту (образец DoesEverythingToDone)
+        var rig = await NewRig(port => Patroni(port == 18000 ? "shard1a" : "shard2a"));
+        await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — все 4 ноды двух шардов получили ключ-дефолт
+        outcome.Value.Should().Be(ProcessOutcome.Done);
+        foreach (var (shard, node) in new[]
+                 { ("shard1", "shard1a"), ("shard1", "shard1b"), ("shard2", "shard2a"), ("shard2", "shard2b") })
+            rig.Etcd.Store[$"/clusters/shop/shards/{shard}/nodes/{node}/app_params"].Value
+                .Should().Be("sslmode=require");
     }
 }

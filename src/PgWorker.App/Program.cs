@@ -102,6 +102,7 @@ builder.Services.AddSingleton(sp =>
         new PlacementOptions(opts.Docker.PortRange.From, opts.Docker.PortRange.To, opts.Thresholds.PatroniBootSec),
         sp.GetRequiredService<InstallSecrets>(),
         sp.GetRequiredService<IAppSecretEnsurer>(),
+        sp.GetRequiredService<IAppParamsEnsurer>(),
         sp.GetRequiredService<EtcdEndpoints>(),
         SnapshotDelegate(job));
 });
@@ -140,6 +141,13 @@ builder.Services.AddSingleton(sp => new ShardEndpoints(
 builder.Services.AddSingleton<IAppSecretEnsurer>(sp => new AppSecretEnsurer(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
+
+// Ensure per-node app_params (spec §4.2): put-if-absent дефолта — общий для
+// Provisioning (P2.5')/AddShard (A5)/надзора (миграция C).
+builder.Services.AddSingleton<IAppParamsEnsurer>(sp => new AppParamsEnsurer(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.AppParams.Default));
 builder.Services.AddSingleton(sp => new BucketEvacuator(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
