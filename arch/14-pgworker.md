@@ -9,7 +9,7 @@ AdminPanel **заявляет** кластер (`config.state=NOT_INITIALIZED`, 
 в рабочее состояние; перевод панелью в `TO_REMOVE` — PgWorker аккуратно
 демонтирует кластер.
 
-Шесть процессов:
+Семь процессов:
 1. **Provisioning** — от `NOT_INITIALIZED` до рабочего кластера (§6);
 2. **Deprovisioning** — от `TO_REMOVE` до чистого etcd и удалённых контейнеров;
 3. **Контроль нод** (надзор) — failover отслеживает Patroni, умершая нода
@@ -21,7 +21,9 @@ AdminPanel **заявляет** кластер (`config.state=NOT_INITIALIZED`, 
    уборка/отмена по заявкам в etcd (t01);
 6. **Add/remove шарда** (§5 G/H) — подъём/демонтаж отдельного шарда живого
    Active-кластера по декларации/маркеру от панели (t06); без автоматической
-   перебалансировки бакетов.
+   перебалансировки бакетов;
+7. **Ротация app-пароля** (AppPasswordRotator, §5 I) — смена per-cluster
+   app-пароля на всех нодах кластера по заявке из etcd (панель).
 
 Свойства: несколько инстансов PgWorker работают одновременно (координация —
 lease-клэймы в etcd, §3); смерть контролирующего инстанса не роняет процессы —
@@ -200,7 +202,8 @@ success-ветке). **Poll, без watch** (аргументация — AdminP
 | `/service/<scope>/request_{cpu,mem,disk}` | заявки ресурсов на ноду (лимиты контейнера/сервиса) |
 | `/clusters/<C>/shards/<X>/state` | маркер демонтажа шарда `TO_REMOVE` (пишет ТОЛЬКО панель; отсутствие = обычный шард; t06) |
 | `/clusters/<C>/app_user` | per-cluster логин приложения; значение `"app"`; пишет ТОЛЬКО PgWorker (P1.5 ensure, txn put-if-absent); читают PgWorker (роли) и приложение |
-| `/clusters/<C>/app_password` | per-cluster пароль приложения; строка 32 симв `[A-Za-z0-9]`; те же писатель/читатели; удаляется с префиксом кластера (D2) |
+| `/clusters/<C>/app_password` | per-cluster пароль приложения; строка 32 симв `[A-Za-z0-9]`; те же писатель/читатели; удаляется с префиксом кластера (D2); ротация — процесс I по заявке `/pgworker/rotations/<C>` (§3.3) |
+| `/clusters/<C>/shards/<X>/nodes/<n>/app_params` | per-node серверные параметры подключения (libpq `keyword=value` через пробел, дефолт `sslmode=require` из `PgWorker:AppParams:Default`); пишет ТОЛЬКО PgWorker put-if-absent (существующее значение — ручные правки оператора — НЕ перезаписывается); ensure в provisioning P2.5'/AddShard A5 и миграционно в надзоре C; читает приложение (concat к DSN, [11](11-bucket-sharding.md) §3); панель не читает |
 
 ### 3.2. Пишемые ключи (существующая схема)
 
@@ -214,6 +217,9 @@ success-ветке). **Poll, без watch** (аргументация — AdminP
 | `/service/<C>-shard<k>/request_*` | TO_REMOVE, финал | точечные `del` (свои заявки; остальное пространство Patroni не трогаем) |
 | `/service/<C>-<X>/` (весь scope) | TO_REMOVE, после удаления нод | `del --prefix` (guard: контейнеров/сервисов нет) |
 | `/clusters/<C>/shards/<X>/master` | ТОЛЬКО при рассинхроне (P11-сверка) | lease-put `host:<doorman-port>` по фактическому primary из Patroni REST |
+| `/clusters/<C>/shards/<X>/nodes/<n>/app_params` | provisioning P2.5'/AddShard A5 (после dsn), миграционно в надзоре C (ноды шардов с dsn без ключа) | put-if-absent (txn NotExists): значение по умолчанию `PgWorker:AppParams:Default`; существующий ключ не перезаписывается (ручные правки живы) |
+| `/clusters/<C>/app_password` | ротация (§5 I): после успешного ALTER ROLE на всех шардах | txn `[compare value==старый] [put новый, del /pgworker/rotations/<C>]` — атомарный коммит с удалением заявки |
+| `/pgworker/rotations/<C>` | успех ротации или битая заявка-мусор (§5 I) | del (в той же txn, что и put app_password; мусор — отдельным del с journal); TO_REMOVE-финал D2 тоже чистит |
 | `/pgworker/moves/<C>/` (префикс) | TO_REMOVE, финал (D2) | `del --prefix` — заявки переездов не переживают удаление кластера |
 
 **Финальное состояние кластера после provisioning**: `config` без поля
@@ -254,6 +260,7 @@ success-ветке). **Poll, без watch** (аргументация — AdminP
 | `/pgworker/portalloc/<C>` | обычный | закрепление выделенных портов за нодами (§2.4): `{"<shard>/<node>":{"host":"h1","pg":15432,"patroni":18008,"doorman":16432}}` — переживает смерть инстанса, переиспользуется при rebuild. |
 | `/pgworker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика; необязательно для работы) |
 | `/pgworker/moves/<C>/bucket_<i>` | обычный | заявка на плановый переезд/откат/уборку/отмену (t01): `{"op":"move\|rollback\|finalize\|abort","to":…,"old_shard":…,"skip_reverse":…,"resume":…,"force":…,"requested_unix":…,"requested_by":…}`. Успех или перманентный валидационный отказ → ключ удаляется; transient-сбой → остаётся, фазы — в статус-ключе бакета. Обрабатывается только держателем клэйма `<C>`; одновременно — старейшая заявка кластера. Deprovisioning D2 чистит `/pgworker/moves/<C>/` (префикс). |
+| `/pgworker/rotations/<C>` | обычный | заявка на ротацию app-пароля ВСЕГО кластера (панель, клэйм-txn `version==0` + put): `{"requested_unix":<unix>,"requested_by":"<username панели>"}`. Выполняет держатель клэйма `<C>` (§5 I): ALTER ROLE на мастере каждого поднятого шарда → атомарный txn-коммит (put `app_password` + del заявки). Уже стоит → панель получает 409 (идемпотентность повтора). Deprovisioning D2 удаляет ключ точечно. |
 
 Инварианты: любая мутация чужих данных (`/clusters/`, docker) выполняется
 **только держателем клэйма** `<C>`; txn-записи в `/clusters/` сопровождаются
@@ -336,6 +343,9 @@ P2 на каждый шард X:
    P2.4 создать схемы bucket_<i> по routing (только шардовы бакеты;
         CREATE SCHEMA IF NOT EXISTS, GRANT USAGE) — идемпотентно
    P2.5 записать shards/X/dsn (multi-host, с per-cluster bucket_admin user+password)
+P2.5' ensure app_params КАЖДОЙ ноды шарда: put-if-absent (txn NotExists)
+      nodes/<n>/app_params = PgWorker:AppParams:Default ("sslmode=require");
+      существующий ключ не трогаем (ручные правки оператора живы)
 P3 снять ВСЕ status/bucket_<i> (txn-пакетами ≤128 ops) — бакеты ACTIVE
 P4 config: txn (compare mod_revision) → put канонического JSON без state
 P5 снапшот P12; journal phase=done; кластер переходит в обычный надзор
@@ -357,7 +367,7 @@ D1 для каждого шарда/ноды: остановить и удали
 D2 удалить префикс /clusters/<C>/ (del --prefix) + точечные
    /service/<C>-shard<k>/request_* + префикс /service/<C>-<X>/
    (guard: docker-объектов не осталось) + /pgworker/moves/<C>/ +
-   /pgworker/{portalloc,work,claims}/<C>*
+   /pgworker/rotations/<C> + /pgworker/{portalloc,work,claims}/<C>*
    + del --prefix /pgworker/evacuations/<C>/ — журналы эвакуаций не
    переживают удаление кластера (t06, симметрия с S3)
 D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый клэйм; имя
@@ -388,6 +398,12 @@ D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый �
   фактом (`GET /primary` по нодам): расхождение или ключа нет при живом
   primary → lease-put коррекция `host:<doorman-port>` (пишет только при
   рассинхроне — не второй регулярный писатель).
+- **Миграция app_params** (ленивый ensure): у нод шардов с dsn (любого
+  state — мастером может стать любая нода) без `nodes/<n>/app_params`
+  (кластеры, созданные до ключа) — put-if-absent значения по умолчанию
+  (как P2.5'). Модель снапшота уже несёт наличие ключа — прогон без
+  etcd-запросов, put только для отсутствующих; после первого обеспечения
+  последующие тики — no-op.
 
 Границы надзора (t06): шард без `dsn` — домен AddShardProcess (пробы/
 самовосстановление/UNREACHABLE-переходы не трогаем — state нод входит в
@@ -516,6 +532,8 @@ TO_REMOVE → phase=aborted. Перед созданием ролей — ensure
 put-if-absent; роль app выравнивается `ALTER ROLE … PASSWORD`).
 A5: БД/роли — ТОЛЬКО они; СХЕМЫ БАКЕТОВ НЕ
 СОЗДАЮТСЯ (шард пустой, routing не указывает). Routing/status не пишутся ВООБЩЕ.
+В SQL-фазе A5 — свежий re-read app-кредов (пока нода поднималась, ротация
+§5 I могла сменить app_password) и ensure app_params нод шарда (как P2.5').
 
 ### H. RemoveShardProcess (S0–S4; t06)
 
@@ -531,6 +549,43 @@ last_error с причиной + InProgress (маркер-состояние ж�
 S3: del prefix shards/<X>/ + точечные request_* + del prefix scope +
 portalloc-фильтрация "<X>/<n>" (read-modify-write под клэймом) +
 del /pgworker/evacuations/<C>/<X>.
+
+### I. AppPasswordRotator (ротация app-пароля кластера, R0–R4)
+
+Смена per-cluster app-пароля по заявке `/pgworker/rotations/<C>` (ставит
+панель, клэйм-txn; формат — §3.3). Исполнитель — держатель клэйма `<C>`;
+цикл ReconcileLoop зовёт процесс в Active-ветке после scale-прохода (короткая
+секундная операция — не ждёт длинных переездов). Порядок фаз гарантирует
+консистентность «роль app на каждом шарде ⟺ app_password в etcd»:
+
+```
+R0 заявка есть → journal op=rotate-app-password phase=started; клэйм-гвард
+R1 прочитать {app_user, app_password} (OLD); отсутствуют — ensure (P1.5)
+R2 NEW = сгенерировать (32 симв [A-Za-z0-9]); для каждого шарда С dsn
+   (поднятого; шард без dsn — домен AddShard: роль создастся по свежему
+   app_password): мастер (master-ключ → Patroni fallback) → admin-DSN →
+   ALTER ROLE "<app_user>" PASSWORD '<NEW>' (реплики получают pg_authid
+   физической репликацией). Любой сбой → transient: journal last_error,
+   заявка жива, следующий тик повторяет С НАЧАЛА со свежим NEW (ALTER
+   идемпотентен перезаписью — регенерация между тиками безопасна)
+R3 все шарды OK → ОДНА txn: [compare value(app_password)==OLD (NotExists,
+   если ключа не было)] [put app_password=NEW; del /pgworker/rotations/<C>]
+   — коммит и снятие заявки неразделимы (нет двойной ротации из-за сбоя
+   между put и del). Compare проигран (внешняя запись etcdctl) → re-read,
+   ретрай тиком со свежим OLD
+R4 снапшот P12 (точка изменения) + journal phase=done
+```
+
+Пока R3 не прошёл, `app_password` в etcd НЕ меняется — приложение работает
+со старым паролем; окно расхождения (часть шардов уже с NEW, etcd со OLD,
+приложение падает на переехавших шардах) существует только при transient-отказе
+посередине и закрывается ретраями. После R3 клиенты обязаны перечитать
+`app_password` из etcd (живые пулы реконнектятся с ошибкой до перечитывания —
+плановая операция, выполнять в тихое окно; предупреждение — в UI-модалке
+панели). Битая заявка (не-JSON/без `requested_unix`) — мусор: процесс её
+удаляет с journal-записью (панель до того получает 409 «уже запрошена»).
+Заявка кластера в NOT_INITIALIZED/TO_REMOVE панелью не ставится
+(guard 409, контракт панели 02 §9.8); Deprovisioning D2 удаляет ключ точечно.
 
 ---
 
@@ -592,6 +647,8 @@ PgWorker:Moves { PollIntervalSec=2, FreezeWaitSec=5, FreezeLockTimeoutSec=5,
                  # host.docker.internal; прод — null, адреса dsn достижимы)
 PgWorker:Parallelism { MaxClusters=4 }
 PgWorker:Snapshots { Dir="/snapshots", RetentionFiles=10 }
+PgWorker:AppParams { Default="sslmode=require" }  # per-node ключ
+                  # shards/<X>/nodes/<n>/app_params (P2.5'/A5/C; P17)
 # секреты — env PGW_* (§4)
 ```
 

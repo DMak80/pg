@@ -1,11 +1,14 @@
 # 03. Панели и REST API
 
-Спецификация UI-панелей и HTTP-контракта. Всё read-only, кроме пяти мутаций:
+Спецификация UI-панелей и HTTP-контракта. Всё read-only, кроме мутаций:
 `POST /api/clusters` (создание кластера, 02 §9), `DELETE /api/clusters/{name}`
 (перевод в TO_REMOVE, 02 §9.4), `POST /api/clusters/{cluster}/shards`
 (добавление шарда, 02 §9.5), `DELETE /api/clusters/{cluster}/shards/{shard}`
 (маркер демонтажа шарда, 02 §9.6), `POST /api/clusters/{cluster}/moves`
-(заявки на переезды бакетов, 02 §9.7): GET-эндпоинты и POST login/logout не
+(заявки на переезды бакетов, 02 §9.7), `POST /api/clusters/{cluster}/app-password/rotate`
+(заявка ротации app-пароля, 02 §9.8), а также мутация пересоздания ноды
+`POST /api/ha/{scope}/nodes/{node}/recreate` (маркеры TO_RECREATE/recreate —
+зафиксирована кодом): GET-эндпоинты и POST login/logout не
 мутируют инспектируемые системы (кластерные мутации пишут только ключи своих
 операций). JSON, camelCase, `ProblemDetails` для ошибок.
 Все эндпоинты, кроме `login` и `healthz`, требуют cookie-сессию (401 без неё).
@@ -26,6 +29,7 @@
 | `POST /api/clusters/{cluster}/shards` | добавить шард Active-кластеру (02 §9.5): тело `AddShardRequestDto` → 201+`ShardAddedDto` \| 400 \| 404 \| 409 \| 503 |
 | `DELETE /api/clusters/{cluster}/shards/{shard}` | маркер демонтажа шарда `TO_REMOVE` (02 §9.6): 204 \| 404 \| 409 \| 503 |
 | `POST /api/clusters/{cluster}/moves` | заявки на переезды бакетов (02 §9.7): тело `MoveBucketsRequestDto` → 201+`MovesQueuedDto` \| 400 \| 404 \| 409 \| 503 |
+| `POST /api/clusters/{cluster}/app-password/rotate` | заявка ротации app-пароля кластера (02 §9.8): без тела → 201+`AppPasswordRotatedDto` \| 404 \| 409 \| 503 |
 | `GET /api/ha` | список HA-scope'ов (сводный) |
 | `GET /api/ha/{scope}` | детали scope: leader, members+runtime, optime, raw config, request_* |
 | `GET /api/alerts` | все алерты; query `?severity=critical|warning|info`, `?kind=` |
@@ -161,6 +165,28 @@ MovesQueuedDto: cluster, from, to, queued[int[]] (поставлены сейч�
 записи, битый config). Сбой посередине — без компенсации (02 §9.7 п.5):
 повтор досдаст остаток.
 
+### 1.6. Контракт `POST /api/clusters/{cluster}/app-password/rotate`
+
+Заявка ротации per-cluster app-пароля (протокол — 02 §9.8): панель ставит
+ключ `/pgworker/rotations/<C>` (txn-клэйм); выполнение — PgWorker
+(AppPasswordRotator): ALTER ROLE на всех поднятых шардах и атомарная замена
+`/clusters/<C>/app_password`. Сам пароль панель не знает и не показывает.
+
+Тело не требуется (пустое/отсутствующее; посторонние поля игнорируются).
+
+Ответ 201 (заявка в etcd; применение асинхронно — секунды при живых шардах):
+
+```text
+AppPasswordRotatedDto: cluster, requestedUnix, requestedBy
+```
+
+Отказы: 404 (кластер не найден, имя неканоническое); 409 (кластер не Active;
+ротация уже запрошена — живая заявка; конкурентный POST по txn-клэйму);
+503 (нет снапшота/активного endpoint'а, etcd-ошибка чтения/записи, битый
+config). Повтор после успеха валиден (заявки уже нет). UI-модалка
+предупреждает о разрыве подключений со старым паролем до перечитывания
+кредов клиентами.
+
 ## 2. DTO (ключевые поля)
 
 ```text
@@ -209,6 +235,9 @@ ShardAddedDto: cluster, name (сгенерированное shard<k>), replicas
 MoveBucketsRequestDto: from, to, buckets[int[]] — тело POST заявок на переезды
               (§1.5, валидация 02 §9.7)
 MovesQueuedDto: cluster, from, to, queued[int[]], skipped[int[]] — ответ 201 (§1.5)
+AppPasswordRotatedDto: cluster, requestedUnix, requestedBy — ответ 201 заявки
+              ротации app-пароля (§1.6, протокол 02 §9.8; значение пароля
+              панели неизвестно — только факт заявки)
 MoveTicketDto: bucketId(int? — null у неканонического leaf'а), bucket(raw-leaf),
               op(move|rollback|finalize|abort), to, requestedUnix, requestedBy —
               строка очереди заявок кластера (ClusterDto.pendingMoves)
@@ -242,7 +271,7 @@ MoveTicketDto: bucketId(int? — null у неканонического leaf'а)
 | **Overview** | бейдж stale; карточки: etcd (reachable, endpoints ok/total; alarms — в ленте алертов и на панели etcd), кластеры (шарды/бакеты/переезды), активные переезды списком, лента алертов (critical/warning); сводка HA: скольки scope'ов без лидера (клиентская агрегация `GET /api/ha` — `OverviewDto` HA-полей не содержит) |
 | **etcd** | таблица endpoints (reachable, latency, версия, raftTerm, ошибки, метка «активный»), members (+лидер), alarms; `lastRefreshUtc` |
 | **Clusters** | список: имя, dbname, N, шард мастеровых/всего, активные переезды, пометки (incomplete, not-initialized, «к удалению» при `toRemove`); кнопка «Создать кластер» → модальная форма (§3.1) |
-| **Cluster details** | вкладки: Шарды (dsn, replicas, master+leaseAlive, sync-standby, лаг слотов; ноды: имя+state; заявка ресурсов на ноду cpu/mem/disk; колонка действий — кнопка «Убрать шард» (красная, per-row; диалог со счётчиком бакетов шарда, дизейбл при N>0 с пояснением «сначала перевезите бакеты», серверный 409 — текстом ProblemDetails); бейдж «к удалению» у шарда state=TO_REMOVE; кнопка «Добавить шард» в заголовке вкладки — модальная форма §3.2: реплики/CPU/память/диск, без имени — генерируется; подпись «Шард стартует пустым — перераспределение бакетов выполняется отдельными явными переездами»; кнопки скрыты, когда кластер не Active — симметрия с «Удалить кластер»), Бакеты (грид id×owner×state, фильтр по owner/state, подсветка не-ACTIVE, возраст; вкладка скрыта при `sharded=false` — нешардированная БД 1×1 без карты бакетов, 02 §9.1; кнопка «Перенести бакеты» в заголовке вкладки (только Active && sharded — canScale) — модальная форма §3.3), Переезды (только не-ACTIVE, кроме NOT_INITIALIZED: phase, updated, last_error; блок «Очередь заявок» — `pendingMoves` по возрастанию requestedUnix: бакет, op, to, возраст заявки, кем поставлена; исчезновение заявки без смены routing/status = отвергнута PgWorker'ом), Heals (журнал), «Стендовая топология» (блок по `standNodes` деталей — реестр `/cluster/nodes/`, скрыт при пустом); шапка: бейдж TO_REMOVE и кнопка «Удалить кластер» (красная, с подтверждением; → `DELETE /api/clusters/{name}` — 02 §9.4; при `state=TO_REMOVE` кнопка скрыта — обратного перехода нет) |
+| **Cluster details** | вкладки: Шарды (dsn, replicas, master+leaseAlive, sync-standby, лаг слотов; ноды: имя+state; заявка ресурсов на ноду cpu/mem/disk; колонка действий — кнопка «Убрать шард» (красная, per-row; диалог со счётчиком бакетов шарда, дизейбл при N>0 с пояснением «сначала перевезите бакеты», серверный 409 — текстом ProblemDetails); бейдж «к удалению» у шарда state=TO_REMOVE; кнопка «Добавить шард» в заголовке вкладки — модальная форма §3.2: реплики/CPU/память/диск, без имени — генерируется; подпись «Шард стартует пустым — перераспределение бакетов выполняется отдельными явными переездами»; кнопки скрыты, когда кластер не Active — симметрия с «Удалить кластер»), Бакеты (грид id×owner×state, фильтр по owner/state, подсветка не-ACTIVE, возраст; вкладка скрыта при `sharded=false` — нешардированная БД 1×1 без карты бакетов, 02 §9.1; кнопка «Перенести бакеты» в заголовке вкладки (только Active && sharded — canScale) — модальная форма §3.3), Переезды (только не-ACTIVE, кроме NOT_INITIALIZED: phase, updated, last_error; блок «Очередь заявок» — `pendingMoves` по возрастанию requestedUnix: бакет, op, to, возраст заявки, кем поставлена; исчезновение заявки без смены routing/status = отвергнута PgWorker'ом), Heals (журнал), «Стендовая топология» (блок по `standNodes` деталей — реестр `/cluster/nodes/`, скрыт при пустом); шапка: бейдж TO_REMOVE, кнопка «Сменить app-пароль» (только Active; → `POST /api/clusters/{cluster}/app-password/rotate` — 02 §9.8; модальное подтверждение с предупреждением «после применения подключения со старым паролем отвергаются до перечитывания кредов приложением — выполняйте в тихое окно»; 409 «уже запрошена» — текстом) и кнопка «Удалить кластер» (красная, с подтверждением; → `DELETE /api/clusters/{name}` — 02 §9.4; при `state=TO_REMOVE` обе кнопки скрыты — обратного перехода нет) |
 | **HA** | список scope'ов: scope, cluster/shard, лидер, члены (роль/состояние), лаг max, пометка unmatched |
 | **HA details** | leader, optime, таблица members: name/role/state/timeline/lag/probe-статус; блок «Заявленные ресурсы нод» (request_*, при наличии); raw config (свернуто) |
 | **Alerts** | таблица всех алертов: severity-цвет, kind, target, message, since; фильтр по severity |
