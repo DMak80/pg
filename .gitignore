@@ -1,5 +1,8 @@
 # Кэш graphify (пересоздаётся скиллом; готовый граф — в graphify-out/)
-arch/graphify-out/cache/
+#arch/graphify-out/cache/
+
+# Артефакты graphify корня (граф пересоздаётся скиллом)
+graphify-out/
 
 # Логи прогонов стенда (пересоздаются checks/*.sh)
 arch/stand/logs/
@@ -19,3 +22,5 @@ TestResults/
 node_modules/
 dist/
 src/AdminPanel.Api/wwwroot/
+
+.idea/
