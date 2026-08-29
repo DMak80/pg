@@ -8,11 +8,31 @@ namespace AdminPanel.IntegrationTests;
 // Testcontainers postgres:18 (spec §9.6): trust-стенд + wal_level=logical ради живых
 // логических слотов; готовность — ретрай-подключение Npgsql (паттерн EtcdContainerFixture).
 // IClassFixture — контейнер на тестовый класс, изоляция между классами.
+// TLS: самоподписанный сертификат генерируется на старте контейнера (openssl
+// есть в debian-образе postgres); ssl=on — как у Spilo-нод стенда, к которым
+// подключается SqlProbe с SslMode.Require. Npgsql Require цепочку не проверяет
+// (Require ≠ Verify) — самоподписанный сертификат достаточен.
 public sealed class PostgresFixture : IAsyncLifetime
 {
+    // Команда выполняется от root (это не "postgres"), поэтому сертификат
+    // генерируем здесь же и передаём владением postgres (ключ 600 — требование
+    // PG); сервер стартуем через штатный docker-entrypoint.sh: он выполнит
+    // initdb и exec postgres от пользователя postgres с нашими -c опциями.
+    private const string StartWithSsl =
+        """
+        openssl req -new -x509 -days 1 -nodes -subj /CN=localhost \
+          -keyout /tmp/server.key -out /tmp/server.crt \
+          && chown postgres:postgres /tmp/server.key /tmp/server.crt \
+          && chmod 600 /tmp/server.key \
+          && exec docker-entrypoint.sh postgres -c ssl=on \
+               -c ssl_cert_file=/tmp/server.crt \
+               -c ssl_key_file=/tmp/server.key \
+               -c wal_level=logical
+        """;
+
     private readonly IContainer _container = new ContainerBuilder("postgres:18")
         .WithEnvironment("POSTGRES_HOST_AUTH_METHOD", "trust")
-        .WithCommand("postgres", "-c", "wal_level=logical")
+        .WithCommand("bash", "-c", StartWithSsl)
         .WithPortBinding(5432, assignRandomHostPort: true)
         .Build();
 
