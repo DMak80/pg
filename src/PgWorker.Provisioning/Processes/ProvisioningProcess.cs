@@ -34,6 +34,7 @@ public sealed class ProvisioningProcess(
     PlacementOptions placementOpts,
     InstallSecrets secrets,
     IAppSecretEnsurer appSecret,
+    IAppParamsEnsurer appParams,
     EtcdEndpoints etcdEndpoints,
     Func<CancellationToken, Task<Result>>? snapshot = null) : IClusterProcess
 {
@@ -427,7 +428,19 @@ public sealed class ProvisioningProcess(
         var ports = string.Join(",", nodes.Select(n => topology.Nodes[n.Name].Ports.Pg));
         var dsn = $"host={hosts} port={ports} dbname={dbname} user={bucketAdminUser} password={bucketAdminPassword}";
         if (shard.Dsn != dsn)
-            return await PutAsync($"/clusters/{cluster}/shards/{shard.Name}/dsn", dsn, ct);
+        {
+            var dsnPut = await PutAsync($"/clusters/{cluster}/shards/{shard.Name}/dsn", dsn, ct);
+            if (!dsnPut.IsSuccess)
+                return dsnPut;
+        }
+
+        // P2.5' (spec §4.2, arch/14 §5 A): ensure app_params КАЖДОЙ ноды шарда —
+        // put-if-absent дефолта; существующие (ручные) значения не трогаем.
+        // Выполняется и при уже записанном dsn (повторные тики доводят миграцию).
+        var appParamsEnsured = await appParams.EnsureShardAsync(
+            cluster, shard.Name, shard.Nodes.Select(n => n.Name), ct);
+        if (!appParamsEnsured.IsSuccess)
+            return appParamsEnsured;
 
         return Result.Success();
     }

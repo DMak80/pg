@@ -28,6 +28,7 @@ public sealed class NodeSupervisor(
     ThresholdsOptions thresholds,
     TimeProvider clock,
     InstallSecrets secrets,
+    IAppParamsEnsurer appParams,
     MasterKeyReconciler? masterKeys = null,
     EtcdEndpoints? etcdForNodes = null)
 {
@@ -55,6 +56,22 @@ public sealed class NodeSupervisor(
         var declared = await EnsureDeclaredNodesAsync(cluster, snap, addresses.Value, ct);
         if (!declared.IsSuccess)
             return Fail(declared.Error!);
+
+        // 1.5) Миграция app_params (ленивый ensure, arch/14 §5 C): ноды шардов
+        // с dsn без ключа (кластеры, созданные до app_params) — put-if-absent
+        // дефолта; после первого обеспечения последующие тики — no-op (модель
+        // снапшота уже несёт наличие ключа). Шард без dsn — домен AddShardProcess.
+        foreach (var shard in snap.Shards)
+        {
+            if (shard.Dsn is null)
+                continue;
+            var missing = shard.Nodes.Where(n => n.AppParams is null).Select(n => n.Name).ToList();
+            if (missing.Count == 0)
+                continue;
+            var migrated = await appParams.EnsureShardAsync(cluster, shard.Name, missing, ct);
+            if (!migrated.IsSuccess)
+                return Fail(migrated.Error!);
+        }
 
         // 2) Пробы + сценарии недоступности (трек в work-журнале, план №4).
         var unreachable = await journal.ReadUnreachableAsync(cluster, ct);

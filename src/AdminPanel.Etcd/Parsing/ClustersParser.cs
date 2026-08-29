@@ -99,6 +99,15 @@ public static class ClustersParser
                     break;
                 }
 
+                // Per-node серверные параметры подключения (spec §3.1; ведёт PgWorker,
+                // панель не читает): expected-skip без unknownKeys-счётчика.
+                case "shards" when segments.Length == 8
+                    && segments[4].Length > 0
+                    && segments[5] == "nodes"
+                    && segments[6].Length > 0
+                    && segments[7] == "app_params":
+                    break;
+
                 case "buckets" when segments.Length == 6 && segments[4] == "routing"
                     && segments[5].StartsWith("bucket_", StringComparison.Ordinal):
                 {

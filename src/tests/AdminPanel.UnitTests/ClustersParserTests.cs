@@ -327,4 +327,28 @@ public class ClustersParserTests
         result.Errors.Should().BeEmpty();
         result.Clusters.Should().ContainSingle();
     }
+
+    [Fact]
+    public void Parse_NodeAppParams_SkippedWithoutUnknown()
+    {
+        // Arrange — per-node app_params в префиксе нод (spec §3.1: панель не читает)
+        var kvs = new List<Kv>
+        {
+            Kv("/clusters/demo/config", "{\"buckets\":1,\"dbname\":\"demo\"}"),
+            Kv("/clusters/demo/shards/shard1/replicas", "2"),
+            Kv("/clusters/demo/shards/shard1/nodes/shard1a/state", "RUNNING"),
+            Kv("/clusters/demo/shards/shard1/nodes/shard1a/app_params", "sslmode=require"),
+            Kv("/clusters/demo/shards/shard1/nodes/shard1b/state", "RUNNING"),
+            Kv("/clusters/demo/shards/shard1/nodes/shard1b/app_params", "sslmode=verify-full"),
+        };
+
+        // Act
+        var result = ClustersParser.Parse(kvs);
+
+        // Assert — expected-skip: не unknown, значение не в модели
+        result.UnknownKeyCount.Should().Be(0);
+        result.Errors.Should().BeEmpty();
+        var nodes = result.Clusters.Single().Shards.Single().Nodes;
+        nodes.Should().HaveCount(2); // app_params не влияет на ноды
+    }
 }

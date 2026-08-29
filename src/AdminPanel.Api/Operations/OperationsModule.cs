@@ -164,6 +164,30 @@ public static class OperationsModule
             };
         });
 
+        // POST /api/clusters/{cluster}/app-password/rotate — заявка ротации app-пароля
+        // (02 §9.8): панель только клэймит заявку; выполнение — PgWorker.
+        endpoints.MapPost("/api/clusters/{cluster}/app-password/rotate", async (
+            string cluster, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<RotateAppPasswordCommand, AppPasswordRotatedDto>(
+                new RotateAppPasswordCommand(cluster, user.Identity?.Name ?? "adminpanel"), ct);
+            if (result.IsSuccess)
+                return Results.Created($"/api/clusters/{cluster}", result.Value);
+
+            return result.Error switch
+            {
+                ClusterNotFoundException => Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound, title: "Cluster not found",
+                    detail: result.Error.Message),
+                ClusterNotActiveException or RotationAlreadyRequestedException => Results.Problem(
+                    statusCode: StatusCodes.Status409Conflict, title: "Rotation rejected",
+                    detail: result.Error.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
+                    detail: result.Error!.Message),
+            };
+        });
+
         // POST /api/ha/{scope}/nodes/{node}/recreate — маркер пересоздания ноды
         // (TO_RECREATE) с режимом soft|hard (нет тела — soft); NodeSupervisor
         // PgWorker выполнит rebuild.

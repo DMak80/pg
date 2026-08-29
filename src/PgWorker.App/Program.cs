@@ -102,6 +102,7 @@ builder.Services.AddSingleton(sp =>
         new PlacementOptions(opts.Docker.PortRange.From, opts.Docker.PortRange.To, opts.Thresholds.PatroniBootSec),
         sp.GetRequiredService<InstallSecrets>(),
         sp.GetRequiredService<IAppSecretEnsurer>(),
+        sp.GetRequiredService<IAppParamsEnsurer>(),
         sp.GetRequiredService<EtcdEndpoints>(),
         SnapshotDelegate(job));
 });
@@ -123,6 +124,7 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
         sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.ShardDeadSec),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<InstallSecrets>(),
+    sp.GetRequiredService<IAppParamsEnsurer>(),
     new MasterKeyReconciler(
         sp.GetRequiredService<IEtcdGateway>(),
         sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
@@ -140,6 +142,13 @@ builder.Services.AddSingleton(sp => new ShardEndpoints(
 builder.Services.AddSingleton<IAppSecretEnsurer>(sp => new AppSecretEnsurer(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
+
+// Ensure per-node app_params (spec §4.2): put-if-absent дефолта — общий для
+// Provisioning (P2.5')/AddShard (A5)/надзора (миграция C).
+builder.Services.AddSingleton<IAppParamsEnsurer>(sp => new AppParamsEnsurer(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.AppParams.Default));
 builder.Services.AddSingleton(sp => new BucketEvacuator(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
@@ -164,6 +173,7 @@ builder.Services.AddSingleton(sp =>
         new PlacementOptions(opts.Docker.PortRange.From, opts.Docker.PortRange.To, opts.Thresholds.PatroniBootSec),
         sp.GetRequiredService<InstallSecrets>(),
         sp.GetRequiredService<IAppSecretEnsurer>(),
+        sp.GetRequiredService<IAppParamsEnsurer>(),
         sp.GetRequiredService<EtcdEndpoints>(),
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
 });
@@ -200,6 +210,19 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<ILoggerFactory>().CreateLogger<MoveProcess>(),
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
 });
+
+// Ротация app-пароля (spec §4.3, arch/14 §5 I): заявка /pgworker/rotations/<C>;
+// Active-ветка цикла зовёт через ClusterProcesses (scale → rotate → evacuate → moves).
+builder.Services.AddSingleton(sp => new AppPasswordRotator(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<ISqlExecutor>(),
+    sp.GetRequiredService<ShardProbe>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<InstallSecrets>(),
+    sp.GetRequiredService<IAppSecretEnsurer>(),
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 
 // Циклы (§6.2): keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
 // Регистрируются синглтонами — health-обёртки читают их состояние напрямую.

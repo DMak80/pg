@@ -32,6 +32,7 @@ public sealed partial class AddShardProcess(
     PlacementOptions placementOpts,
     InstallSecrets secrets,
     IAppSecretEnsurer appSecret,
+    IAppParamsEnsurer appParams,
     EtcdEndpoints etcdEndpoints,
     Func<CancellationToken, Task<Result>>? snapshot = null)
 {
@@ -132,7 +133,7 @@ public sealed partial class AddShardProcess(
 
         // A5: БД/роли на мастере НОВОГО шарда; СХЕМЫ БАКЕТОВ НЕ СОЗДАЮТСЯ (§2.1);
         // dsn multi-host (порты portalloc, без пароля).
-        var sqlDone = await ProvisionShardSqlAsync(snap, shard, topology, master, appCreds.Value, ct);
+        var sqlDone = await ProvisionShardSqlAsync(snap, shard, topology, master, ct);
         if (!sqlDone.IsSuccess)
             return await FailAsync(cluster, sqlDone.Error!, "sql", ct);
 
@@ -330,12 +331,19 @@ public sealed partial class AddShardProcess(
     // шард стартует пустым (§2.1) — routing на него не указывает. dsn — multi-host.
     private async Task<Result> ProvisionShardSqlAsync(
         ClusterSnapshot snap, ShardSpec shard, ShardTopology topology, NodeAddress master,
-        AppCredentials app, CancellationToken ct)
+        CancellationToken ct)
     {
         var cluster = snap.Config.Cluster;
         var dbname = snap.Config.DbName;
         var bucketAdminUser = snap.Config.BucketAdminUser ?? "bucket_admin";
         var bucketAdminPassword = snap.Config.BucketAdminPassword ?? secrets.BucketAdminPassword;
+
+        // Свежий re-read app-кредов в SQL-фазе (spec §4.4): пока шард поднимался
+        // (минуты ожидания Patroni), ротация §5 I могла сменить app_password.
+        var freshCreds = await appSecret.EnsureAsync(cluster, ct);
+        if (!freshCreds.IsSuccess)
+            return freshCreds;
+        var app = freshCreds.Value;
 
         var adminDsn = DatabaseProvisioner.BuildAdminDsn(master.Host, master.Ports.Pg, "postgres", secrets);
         var ensured = await db.EnsureDatabaseAsync(adminDsn, dbname, ct);
@@ -376,9 +384,20 @@ public sealed partial class AddShardProcess(
         var hosts = string.Join(",", nodes.Select(n => topology.Nodes[n.Name].Host));
         var ports = string.Join(",", nodes.Select(n => topology.Nodes[n.Name].Ports.Pg));
         var dsn = $"host={hosts} port={ports} dbname={dbname} user={bucketAdminUser} password={bucketAdminPassword}";
-        if (shard.Dsn == dsn)
-            return Result.Success();
-        return await PutAsync($"/clusters/{cluster}/shards/{shard.Name}/dsn", dsn, ct);
+        if (shard.Dsn != dsn)
+        {
+            var dsnPut = await PutAsync($"/clusters/{cluster}/shards/{shard.Name}/dsn", dsn, ct);
+            if (!dsnPut.IsSuccess)
+                return dsnPut;
+        }
+
+        // A5 (spec §4.2): ensure app_params нод НОВОГО шарда — как P2.5'.
+        var appParamsEnsured = await appParams.EnsureShardAsync(
+            cluster, shard.Name, shard.Nodes.Select(n => n.Name), ct);
+        if (!appParamsEnsured.IsSuccess)
+            return appParamsEnsured;
+
+        return Result.Success();
     }
 
     // Топология шарда из полного закрепления адресов.

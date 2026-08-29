@@ -293,4 +293,31 @@ public class ClusterSnapshotParserTests
         scope.Initialized.Should().BeFalse();
         scope.LeaderName.Should().BeNull();
     }
+
+    // AAA: per-node app_params (spec §3.1): значение на ноду; пустое = "" (ключ есть),
+    // отсутствие ключа = null (не обеспечен — фильтр миграции надзора)
+    [Fact]
+    public void Parse_NodeAppParams_PerNodeValueEmptyStringAndMissing()
+    {
+        // Arrange — ноды шарда с app_params: значение / пустое / отсутствие
+        var kvs = new List<Kv>
+        {
+            new("/clusters/shop/config", """{"buckets":1,"dbname":"shop"}""", 1),
+            new("/clusters/shop/shards/shard1/replicas", "2", 2),
+            new("/clusters/shop/shards/shard1/nodes/shard1a/state", "RUNNING", 3),
+            new("/clusters/shop/shards/shard1/nodes/shard1a/app_params", "sslmode=require", 4),
+            new("/clusters/shop/shards/shard1/nodes/shard1b/state", "RUNNING", 5),
+            new("/clusters/shop/shards/shard1/nodes/shard1b/app_params", "  ", 6),
+            new("/clusters/shop/shards/shard1/nodes/shard1c/state", "RUNNING", 7),
+        };
+
+        // Act
+        var result = ClusterSnapshotParser.ParseClusters(kvs, out _);
+
+        // Assert — значение на своей ноде; whitespace → ""; нет ключа → null
+        var nodes = result.Value.Single().Shards.Single().Nodes;
+        nodes.Single(n => n.Name == "shard1a").AppParams.Should().Be("sslmode=require");
+        nodes.Single(n => n.Name == "shard1b").AppParams.Should().Be("");
+        nodes.Single(n => n.Name == "shard1c").AppParams.Should().BeNull();
+    }
 }

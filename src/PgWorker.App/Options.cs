@@ -23,6 +23,10 @@ public sealed class PgWorkerOptions
 
     /// <summary>Параметры процессов переезда бакетов (t01, spec §9).</summary>
     public MovesOptions Moves { get; set; } = new();
+
+    /// <summary>Per-node серверные параметры подключения (app_params, spec §3.1;
+    /// P17: doorman tls_mode=require → клиентский sslmode=require).</summary>
+    public AppParamsOptions AppParams { get; set; } = new();
 }
 
 /// <summary>etcd-кластер: HTTP JSON gateway endpoints (failover по списку).</summary>
@@ -159,4 +163,11 @@ public sealed class SnapshotOptions
 
     /// <summary>Интервал обслуживания etcd: compact + defrag (минуты, по умолчанию 60).</summary>
     public int MaintenanceIntervalMin { get; set; } = 60;
+}
+
+/// <summary>Дефолт значения ключа nodes/&lt;n&gt;/app_params (spec §3.1): libpq-строка
+/// keyword=value; применяется put-if-absent (P2.5'/A5/надзор-C).</summary>
+public sealed class AppParamsOptions
+{
+    public string Default { get; set; } = "sslmode=require";
 }

@@ -27,6 +27,10 @@ internal interface IClusterProcesses
     /// <summary>Scale-проход Active-ветки (t06, spec §5.1): remove-кандидаты →
     /// add-кандидаты, по одному шард-за-тик (Д13: демонтаж освобождает хосты/порты).</summary>
     Task<Result<ProcessOutcome>> ScaleShardsAsync(ClusterSnapshot snap, CancellationToken ct);
+
+    /// <summary>Ротация app-пароля по заявке /pgworker/rotations/&lt;C&gt; (spec §4.3,
+    /// arch/14 §5 I); no-op без заявки.</summary>
+    Task<Result<ProcessOutcome>> RotateAppPasswordAsync(ClusterSnapshot snap, CancellationToken ct);
 }
 
 /// <summary>Реализация поверх процессов задач 19–22 + MoveProcess t01 (синглтоны DI).</summary>
@@ -37,7 +41,8 @@ internal sealed class ClusterProcesses(
     BucketEvacuator evacuator,
     MoveProcess moves,
     AddShardProcess addShards,
-    RemoveShardProcess removeShards) : IClusterProcesses
+    RemoveShardProcess removeShards,
+    AppPasswordRotator rotator) : IClusterProcesses
 {
     public Task<Result<ProcessOutcome>> ProvisionAsync(ClusterSnapshot snap, CancellationToken ct)
         => provision.TickAsync(snap, ct);
@@ -84,4 +89,7 @@ internal sealed class ClusterProcesses(
 
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
     }
+
+    public Task<Result<ProcessOutcome>> RotateAppPasswordAsync(ClusterSnapshot snap, CancellationToken ct)
+        => rotator.TickAsync(snap, ct);
 }

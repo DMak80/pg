@@ -110,7 +110,8 @@ public class AddShardProcessTests
         var process = new AddShardProcess(
             etcd, [Ep], driver, sql, Probe(patroniResponse), claims, journal,
             opts ?? new PlacementOptions(15000, 15100, PatroniBootSec: 600),
-            Secrets, new AppSecretEnsurer(etcd, [Ep]), EtcdEndp, snapshot: null);
+            Secrets, new AppSecretEnsurer(etcd, [Ep]),
+            new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp, snapshot: null);
         return new Rig(etcd, driver, sql, claims, journal, process);
     }
 
@@ -134,7 +135,8 @@ public class AddShardProcessTests
         var process = new AddShardProcess(
             etcd, [Ep], driver, new Fakes.FakeSql(), Probe(_ => DeadPatroni()),
             claims, journal, new PlacementOptions(15000, 15100, 600), Secrets,
-            new AppSecretEnsurer(etcd, [Ep]), EtcdEndp, snapshot: null);
+            new AppSecretEnsurer(etcd, [Ep]),
+            new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp, snapshot: null);
 
         // Act
         var outcome = await process.TickAsync(await Snapshot(etcd), "shard3", CancellationToken.None);
@@ -316,7 +318,8 @@ public class AddShardProcessTests
             rig.Etcd, [Ep], rig.Driver, rig.Sql,
             Probe(port => port == 18002 ? Patroni("shard3a") : DeadPatroni()),
             rig.Claims, rig.Journal, new PlacementOptions(15000, 15100, 600), Secrets,
-            new AppSecretEnsurer(rig.Etcd, [Ep]), EtcdEndp, snapshot: null);
+            new AppSecretEnsurer(rig.Etcd, [Ep]),
+            new AppParamsEnsurer(rig.Etcd, [Ep], "sslmode=require"), EtcdEndp, snapshot: null);
         var outcome = await alive.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
 
         // Assert — детерминизм multi-host: dsn тот же; схем/routing-мутаций нет
@@ -352,5 +355,35 @@ public class AddShardProcessTests
         var again = await rig.Process.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
         again.IsSuccess.Should().BeFalse();
         again.Error!.Message.Should().Contain("расширьте PortRange");
+    }
+
+    // AAA: A5 — SQL-фаза нового шарда ensure'ит app_params его нод и перечитывает
+    // app-креды непосредственно перед ALTER (гонка с ротацией, spec §4.4/О3)
+    [Fact]
+    public async Task Tick_SqlPhase_WritesAppParamsAndUsesFreshAppPassword()
+    {
+        // Arrange — add-shard shard3 доведён до SQL-фазы (Patroni жив — образец
+        // Tick_PatroniAlive); app-секрет кластера меняется ПОСЛЕ старта тика
+        // (ротация успела закоммитить новый пароль)
+        var rig = await NewRig(port => port == 18002 ? Patroni("shard3a") : DeadPatroni(),
+            busyPorts: LiveNodePorts());
+        rig.Etcd.Seed("/service/shop-shard3/initialize", "7403705125687833998");
+        rig.Etcd.Seed("/service/shop-shard3/leader", """{"name":"shard3a","poll_queued_commands":0}""");
+        await new AppSecretEnsurer(rig.Etcd, [Ep]).EnsureAsync("shop", CancellationToken.None);
+        var newPassword = "Rotated00000000000000000000000Z";
+        await rig.Etcd.PutAsync(Ep, "/clusters/shop/app_password", newPassword, null, CancellationToken.None);
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
+
+        // Assert — DONE: ноды нового шарда с app_params; ALTER выравнивает роль
+        // по СВЕЖЕМУ паролю (не по креду, прочитанному до ожидания Patroni)
+        outcome.Value.Should().Be(ProcessOutcome.Done);
+        rig.Etcd.Store["/clusters/shop/shards/shard3/nodes/shard3a/app_params"].Value
+            .Should().Be("sslmode=require");
+        rig.Etcd.Store["/clusters/shop/shards/shard3/nodes/shard3b/app_params"].Value
+            .Should().Be("sslmode=require");
+        rig.Sql.Executed.Should().Contain(e =>
+            e.Sql.Contains("ALTER ROLE") && e.Sql.Contains(newPassword));
     }
 }

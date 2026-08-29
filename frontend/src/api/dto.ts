@@ -319,3 +319,11 @@ export interface AlertDto {
   details: Record<string, string> | null;
   sinceUnix: number | null;
 }
+
+// POST /api/clusters/{cluster}/app-password/rotate — заявка ротации app-пароля
+// (arch/03 §1.6, протокол arch/02 §9.8): панель пароль не знает — только факт заявки.
+export interface AppPasswordRotatedDto {
+  cluster: string;
+  requestedUnix: number;
+  requestedBy: string;
+}
