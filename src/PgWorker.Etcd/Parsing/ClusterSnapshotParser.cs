@@ -21,6 +21,7 @@ public static class ClusterSnapshotParser
         public string? Master;
         public string? StateRaw;
         public readonly List<(string Name, string? State)> Nodes = [];
+        public readonly Dictionary<string, string?> AppParams = [];
     }
 
     private sealed class ClusterAcc(string name)
@@ -99,6 +100,19 @@ public static class ClusterSnapshotParser
                 {
                     var shard = GetOrAdd(acc.Shards, segments[4], static _ => new ShardAcc());
                     shard.Nodes.Add((segments[6], string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim()));
+                    break;
+                }
+
+                case "shards" when segments.Length == 8
+                    && segments[4].Length > 0
+                    && segments[5] == "nodes"
+                    && segments[6].Length > 0
+                    && segments[7] == "app_params":
+                {
+                    var shard = GetOrAdd(acc.Shards, segments[4], static _ => new ShardAcc());
+                    // Kv.Value non-nullable: Trim() пустой строки даёт "" — ключ есть
+                    // с пустым значением (spec §3.1); Trim() — нормализация пробелов.
+                    shard.AppParams[segments[6]] = kv.Value.Trim();
                     break;
                 }
 
@@ -240,7 +254,9 @@ public static class ClusterSnapshotParser
 
         var nodes = shard.Nodes
             .OrderBy(n => n.Name, StringComparer.Ordinal)
-            .Select(n => new NodeSpec(name, n.Name, ParseNodeState(n.State)))
+            .Select(n => new NodeSpec(
+                name, n.Name, ParseNodeState(n.State),
+                shard.AppParams.TryGetValue(n.Name, out var appParams) ? appParams : null))
             .ToList();
 
         return new ShardSpec(

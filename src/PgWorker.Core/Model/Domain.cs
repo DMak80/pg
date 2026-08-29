@@ -43,8 +43,10 @@ public sealed record ClusterConfig(string Cluster, int Buckets, string DbName,
 /// <summary>Per-cluster креды приложения: /clusters/&lt;C&gt;/app_user + app_password.</summary>
 public sealed record AppCredentials(string User, string Password);
 
-/// <summary>Плановая нода шарда: имя = имя шарда + буква ("shard1", "shard1a").</summary>
-public sealed record NodeSpec(string Shard, string Name, NodeState State);
+/// <summary>Плановая нода шарда: имя = имя шарда + буква ("shard1", "shard1a");
+/// AppParams — per-node серверные параметры подключения (libpq-строка; null —
+/// ключа nodes/&lt;n&gt;/app_params нет, "" — ключ с пустым значением; spec §3.1).</summary>
+public sealed record NodeSpec(string Shard, string Name, NodeState State, string? AppParams = null);
 
 /// <summary>Шард кластера: replicas — плановое число нод, Dsn/Master — runtime;
 /// ToRemove — маркер демонтажа shards/&lt;X&gt;/state=TO_REMOVE (t06; пишет панель).</summary>
