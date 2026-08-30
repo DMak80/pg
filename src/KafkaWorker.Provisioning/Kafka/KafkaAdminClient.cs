@@ -37,8 +37,9 @@ public sealed class KafkaAdminClient(
                 cluster.Controller?.Id);
         }, ct);
 
-    public Task<Result<IReadOnlyList<KafkaTopicView>>> DescribeTopicsAsync(CancellationToken ct)
-        => RunAsync<IReadOnlyList<KafkaTopicView>>(client => Task.FromResult(DescribeTopicsViaMetadata(client)), ct);
+    public Task<Result<IReadOnlyList<KafkaTopicView>>> DescribeTopicsAsync(bool includeInternal, CancellationToken ct)
+        => RunAsync<IReadOnlyList<KafkaTopicView>>(
+            client => Task.FromResult(DescribeTopicsViaMetadata(client, includeInternal)), ct);
 
     public Task<Result<IReadOnlyDictionary<string, string>>> DescribeBrokerConfigsAsync(int brokerId, CancellationToken ct)
         => RunAsync<IReadOnlyDictionary<string, string>>(async client =>
@@ -107,17 +108,21 @@ public sealed class KafkaAdminClient(
             return Result.Success();
         }, ct);
 
-    // Полный список топиков + реплики партиций — через метаданные
-    // (DescribeTopicsAsync требует имена заранее). Internal-топики __* — вне реестра.
-    private IReadOnlyList<KafkaTopicView> DescribeTopicsViaMetadata(IAdminClient client)
+    // Полный список топиков + реплики/ISR партиций — через метаданные
+    // (DescribeTopicsAsync требует имена заранее). Internal-топики __* — только
+    // при includeInternal (drain/guard G по describe-all, arch/16 §5 I/G);
+    // TopicSync ведёт реестр юзер-топиков — ему false. ISR — рядом с Replicas
+    // (PartitionMetadata Confluent-клиента), адаптер заполняет всегда.
+    private IReadOnlyList<KafkaTopicView> DescribeTopicsViaMetadata(IAdminClient client, bool includeInternal)
     {
         var metadata = client.GetMetadata(requestTimeout);
         return metadata.Topics
-            .Where(t => !t.Topic.StartsWith("__", StringComparison.Ordinal))
+            .Where(t => includeInternal || !t.Topic.StartsWith("__", StringComparison.Ordinal))
             .Select(t => new KafkaTopicView(
                 t.Topic,
                 t.Partitions.Count,
-                t.Partitions.Select(p => (IReadOnlyList<int>)[.. p.Replicas]).ToList()))
+                t.Partitions.Select(p => (IReadOnlyList<int>)[.. p.Replicas]).ToList(),
+                t.Partitions.Select(p => (IReadOnlyList<int>)[.. p.InSyncReplicas]).ToList()))
             .ToList();
     }
 

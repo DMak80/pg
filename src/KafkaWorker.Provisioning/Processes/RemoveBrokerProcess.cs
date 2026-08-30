@@ -107,7 +107,9 @@ public sealed class RemoveBrokerProcess(
 
         var brokerId = BrokerEnvBuilder.NodeId(broker);
         await using var admin = adminFactory.Create(snap.Endpoints, snap.AppUser, snap.AppPassword);
-        var topics = await admin.DescribeTopicsAsync(ct);
+        // До t02 A6: includeInternal=false; шаг 6.2 переключит на describe-all
+        // (guard G должен видеть и __-реплики — фиксятся в этой же задаче).
+        var topics = await admin.DescribeTopicsAsync(includeInternal: false, ct);
         if (!topics.IsSuccess)
             return true; // факт неизвестен — консервативно ждём
 
