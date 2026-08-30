@@ -67,6 +67,16 @@ public sealed class TopicSyncProcess(
         if (!facts.IsSuccess)
             return facts;
 
+        // Lifecycle-заявки — до факт-синка (порядок §3.1: чистка create → delete → create → sync).
+        var lifecycle = TopicSyncDecision.DecideLifecycle(
+            snap.LifecycleTickets ?? [], facts.Value, snap.Topics);
+        foreach (var action in lifecycle)
+        {
+            var applied = await ActLifecycleAsync(snap, action, ct);
+            if (!applied.IsSuccess)
+                return applied; // транзиент: заявка жива, следующий тик повторит
+        }
+
         var actions = TopicSyncDecision.Decide(facts.Value, snap.Topics);
         var factsByTopic = facts.Value.ToDictionary(f => f.Topic, StringComparer.Ordinal);
         var regsByTopic = snap.Topics.ToDictionary(r => r.Topic, StringComparer.Ordinal);
@@ -113,9 +123,89 @@ public sealed class TopicSyncProcess(
         return Result<IReadOnlyList<TopicFact>>.Success(facts);
     }
 
+    // Исполнение lifecycle-действий (arch/15 §3.1): journal → Kafka-мутация →
+    // txn-чистка (del заявки по mod_revision; при delete — вместе с факт-ключом).
+    private async Task<Result> ActLifecycleAsync(KafkaClusterSnapshot snap, TopicSyncAction action, CancellationToken ct)
+    {
+        var cluster = snap.Cluster;
+        switch (action)
+        {
+            case TopicSyncAction.LifecycleDelete del:
+            {
+                var ticketKey = LifecycleKey(cluster, del.Topic, TopicLifecycleOps.Delete);
+                await using var admin = adminFactory.Create(snap.Endpoints!, snap.AppUser!, snap.AppPassword!);
+                var journaled = await journal.WriteAsync(cluster, Op, $"deleting-topic:{del.Topic}", claims.InstanceId, null, ct);
+                if (!journaled.IsSuccess)
+                    return journaled;
+
+                var deleted = await WithJitterRetryAsync(() => admin.DeleteTopicAsync(del.Topic, ct));
+                if (!deleted.IsSuccess)
+                    return deleted; // транзиент — заявка жива, тик повторит
+
+                return await DeleteKeysAsync(
+                    [TopicKey(cluster, del.Topic), ticketKey], ticketKey, ct);
+            }
+
+            case TopicSyncAction.LifecycleCreate create:
+            {
+                var ticketKey = LifecycleKey(cluster, create.Topic, TopicLifecycleOps.Create);
+                await using var admin = adminFactory.Create(snap.Endpoints!, snap.AppUser!, snap.AppPassword!);
+                var journaled = await journal.WriteAsync(cluster, Op, $"creating-topic:{create.Topic}", claims.InstanceId, null, ct);
+                if (!journaled.IsSuccess)
+                    return journaled;
+
+                var created = await WithJitterRetryAsync(
+                    () => admin.CreateTopicAsync(create.Topic, create.Partitions, create.ReplicationFactor, create.Configs, ct));
+                if (!created.IsSuccess)
+                    return created;
+
+                // AlreadyExists = исполнено ранее; факт-ключ положит автосинк (§3.1).
+                return await DeleteKeysAsync([ticketKey], ticketKey, ct);
+            }
+
+            case TopicSyncAction.LifecycleCleanup cleanup:
+            {
+                // Чистка без исполнения: журнал-примечание + del заявки (для
+                // delete-ветки при отсутствующем топике — снести и missing-ключ).
+                var journaled = await journal.WriteAsync(cluster, Op, $"ticket-cleanup:{cleanup.Topic}", claims.InstanceId, cleanup.Reason, ct);
+                if (!journaled.IsSuccess)
+                    return journaled;
+
+                var keys = new List<string> { LifecycleKey(cluster, cleanup.Topic, cleanup.Op) };
+                if (cleanup.Op == TopicLifecycleOps.Delete)
+                    keys.Add(TopicKey(cluster, cleanup.Topic)); // missing-ключ висит без топика
+                return await DeleteKeysAsync([.. keys], keys[0], ct);
+            }
+
+            default:
+                return Result.Failed(new ApplicationException(
+                    $"topicsync {cluster}: неизвестное lifecycle-действие {action.GetType().Name}"));
+        }
+    }
+
+    // txn-удаление группы ключей с compare по mod_revision первого (заявки);
+    // проигрыш compare — не ошибка (следующий тик).
+    private async Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, string compareKey, CancellationToken ct)
+    {
+        var fresh = await GetAsync(compareKey, ct);
+        if (!fresh.IsSuccess)
+            return fresh;
+        if (fresh.Value is null)
+            return Result.Success(); // заявку уже снесли — идемпотентность
+
+        var ops = keys.Select(k => new TxnOp.Delete(k, Prefix: false)).ToList();
+        var txn = await TxnAsync(
+            TxnRequest.Of([TxnCompare.ModRevisionEqual(compareKey, (long)fresh.Value.ModRevision)], ops), ct);
+        if (!txn.IsSuccess)
+            return txn;
+        return Result.Success();
+    }
+
+    private static string LifecycleKey(string cluster, string topic, string op)
+        => $"/kafka/clusters/{cluster}/topics/{topic}/desired.{op}";
+
     // Act: исполнение одного действия поверх СВЕЖЕГО значения ключа (RMW).
-    private async Task<Result> ActAsync(
-        KafkaClusterSnapshot snap,
+    private async Task<Result> ActAsync(        KafkaClusterSnapshot snap,
         TopicSyncAction action,
         IReadOnlyDictionary<string, TopicFact> factsByTopic,
         IReadOnlyDictionary<string, KafkaTopicReg> regsByTopic,

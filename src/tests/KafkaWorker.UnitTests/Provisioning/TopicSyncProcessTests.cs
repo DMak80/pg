@@ -370,4 +370,148 @@ public class TopicSyncProcessTests
         result.Error!.Message.Should().Contain("клэйм");
         rig.Admin.CallLog.Should().BeEmpty();
     }
+
+    [Fact]
+    public async Task LifecycleCreateTicket_CreatesTopicAndRemovesTicket()
+    {
+        // Arrange: create-заявка на несуществующий топик; fact-ключа нет.
+        var rig = await NewRigAsync();
+        rig.Etcd.Seed("/kafka/clusters/events/topics/audit/desired.create",
+            """{"partitions":12,"replication_factor":1,"configs":{"retention.ms":"86400000"},"requested_unix":1750000000,"requested_by":"admin"}""");
+
+        // Act
+        var result = await rig.Process.RunAsync(await rig.Snapshot(), CancellationToken.None);
+
+        // Assert: CreateTopics вызван с параметрами заявки; заявка удалена;
+        // факт-ключ появится следующим автосинк-тиком (топик теперь в fake).
+        result.IsSuccess.Should().BeTrue();
+        var created = rig.Admin.CreatedTopics.Should().ContainSingle().Which;
+        created.Topic.Should().Be("audit");
+        created.Partitions.Should().Be(12);
+        created.ReplicationFactor.Should().Be((short)1);
+        created.Configs.Should().ContainKey("retention.ms").WhoseValue.Should().Be("86400000");
+        (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/topics/audit/desired.create", CancellationToken.None))
+            .Value.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task LifecycleCreateTicket_TopicAlreadyExists_CleansTicketWithoutCreate()
+    {
+        // Arrange: топик уже в факте Kafka (создан параллельно CLI) + живая create-заявка.
+        var rig = await NewRigAsync();
+        SeedTopicFact(rig.Admin, "orders");
+        rig.Etcd.Seed("/kafka/clusters/events/topics/orders/desired.create",
+            """{"partitions":6,"replication_factor":1,"requested_unix":1750000000,"requested_by":"admin"}""");
+
+        // Act
+        var result = await rig.Process.RunAsync(await rig.Snapshot(), CancellationToken.None);
+
+        // Assert: повторный create НЕ вызван (идемпотентность AlreadyExists решена на нашей стороне).
+        result.IsSuccess.Should().BeTrue();
+        rig.Admin.CreatedTopics.Should().BeEmpty();
+        (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/topics/orders/desired.create", CancellationToken.None))
+            .Value.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task LifecycleDeleteTicket_DeletesTopicRegistryKeyAndTicket()
+    {
+        // Arrange: факт-ключ + delete-заявка на живой топик.
+        var rig = await NewRigAsync();
+        SeedTopicFact(rig.Admin, "orders");
+        SeedRegistry(rig.Etcd);
+        rig.Etcd.Seed("/kafka/clusters/events/topics/orders/desired.delete",
+            """{"requested_unix":1750000100,"requested_by":"admin"}""");
+
+        // Act
+        var result = await rig.Process.RunAsync(await rig.Snapshot(), CancellationToken.None);
+
+        // Assert: DeleteTopics вызван; одной txn снесены факт-ключ и заявка.
+        result.IsSuccess.Should().BeTrue();
+        rig.Admin.DeletedTopics.Should().Contain("orders");
+        (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/topics/orders", CancellationToken.None)).Value.Should().BeNull();
+        (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/topics/orders/desired.delete", CancellationToken.None)).Value.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task LifecycleDeleteTicket_TransientFailure_RetriedNextTick()
+    {
+        // Arrange: DeleteTopics падает дольше jitter-ретраев одного тика
+        // (3 попытки — образец AlterTopicFailCount в существующих тестах).
+        var rig = await NewRigAsync();
+        SeedTopicFact(rig.Admin, "orders");
+        SeedRegistry(rig.Etcd);
+        rig.Etcd.Seed("/kafka/clusters/events/topics/orders/desired.delete",
+            """{"requested_unix":1,"requested_by":"u"}""");
+        rig.Admin.DeleteTopicFailCount = 3;
+
+        // Act
+        var first = await rig.Process.RunAsync(await rig.Snapshot(), CancellationToken.None);
+        var second = await rig.Process.RunAsync(await rig.Snapshot(), CancellationToken.None);
+
+        // Assert: первый тик неуспешен (заявка жива), второй доводит.
+        first.IsSuccess.Should().BeFalse();
+        second.IsSuccess.Should().BeTrue();
+        rig.Admin.DeletedTopics.Should().Contain("orders");
+    }
+
+    [Fact]
+    public async Task LifecycleCreate_TopicAppearsBetweenDescribeAndAct_AlreadyExistsTicketRemoved()
+    {
+        // Arrange: describe топика не видел, но к моменту create-мутации топик
+        // уже создан CLI (рассинхрон окна describe→act; ревью Фазы 4 r2).
+        // Точка врезки: journal-write — после decide, до CreateTopicsAsync.
+        var rig = await NewRigAsync();
+        rig.Etcd.Seed("/kafka/clusters/events/topics/audit/desired.create",
+            """{"partitions":12,"replication_factor":1,"requested_unix":1750000000,"requested_by":"admin"}""");
+        var fired = false;
+        rig.Etcd.OnPut = key =>
+        {
+            if (fired || key != "/kafkaworker/work/events")
+                return;
+            fired = true;
+            SeedTopicFact(rig.Admin, "audit"); // топик «появился» между describe и act
+        };
+
+        // Act
+        var result = await rig.Process.RunAsync(await rig.Snapshot(), CancellationToken.None);
+
+        // Assert: адаптер вернул AlreadyExists — тик успешен, заявка снята
+        // (исходы адаптера — не ошибки; сходимость следующего тика).
+        result.IsSuccess.Should().BeTrue();
+        rig.Admin.CreatedTopics.Should().BeEmpty("повторный CreateTopics не выполнялся");
+        (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/topics/audit/desired.create", CancellationToken.None))
+            .Value.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task LifecycleDelete_TopicVanishesBetweenDescribeAndAct_NotFoundKeysRemoved()
+    {
+        // Arrange: describe видел топик (delete-заявка решена), но к моменту
+        // DeleteTopics топик уже удалён CLI (ревью Фазы 4 r2).
+        var rig = await NewRigAsync();
+        SeedTopicFact(rig.Admin, "orders");
+        SeedRegistry(rig.Etcd);
+        rig.Etcd.Seed("/kafka/clusters/events/topics/orders/desired.delete",
+            """{"requested_unix":1750000100,"requested_by":"admin"}""");
+        var fired = false;
+        rig.Etcd.OnPut = key =>
+        {
+            if (fired || key != "/kafkaworker/work/events")
+                return;
+            fired = true;
+            rig.Admin.Topics = []; // топик «исчез» между describe и act
+            rig.Admin.TopicConfigs = new Dictionary<string, IReadOnlyDictionary<string, string>>();
+        };
+
+        // Act
+        var result = await rig.Process.RunAsync(await rig.Snapshot(), CancellationToken.None);
+
+        // Assert: адаптер вернул NotFound = исполнено — тик успешен, оба ключа
+        // удалены (факт-ключ снесён cleanup-веткой txn).
+        result.IsSuccess.Should().BeTrue();
+        rig.Admin.DeletedTopics.Should().BeEmpty("DeleteTopics не нашёл топик — NotFound");
+        (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/topics/orders", CancellationToken.None)).Value.Should().BeNull();
+        (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/topics/orders/desired.delete", CancellationToken.None)).Value.Should().BeNull();
+    }
 }

@@ -30,6 +30,13 @@ public sealed class FakeKafkaAdminClient : IKafkaAdminClient
     public int AlterTopicFailCount { get; set; }
     private int _alterTopicFailures;
 
+    // Lifecycle-журнал вызовов (t01): создание/удаление + транзиенты.
+    public List<(string Topic, int Partitions, short ReplicationFactor, IReadOnlyDictionary<string, string>? Configs)> CreatedTopics = [];
+    public List<string> DeletedTopics = [];
+    public int CreateTopicFailCount { get; set; }
+    public int DeleteTopicFailCount { get; set; }
+    private int _createFails, _deleteFails;
+
     public Task<Result<KafkaClusterView>> DescribeClusterAsync(CancellationToken ct)
         => ClusterError is not null
             ? Task.FromResult(Result<KafkaClusterView>.Failed(ClusterError))
@@ -98,6 +105,41 @@ public sealed class FakeKafkaAdminClient : IKafkaAdminClient
         CallLog.Add($"create-partitions:{topic}:{totalPartitions}");
         CreatePartitionsCalls.Add((topic, totalPartitions));
         return Task.FromResult(Result.Success());
+    }
+
+    public Task<Result<TopicCreateOutcome>> CreateTopicAsync(
+        string topic, int partitions, short replicationFactor,
+        IReadOnlyDictionary<string, string>? configs, CancellationToken ct)
+    {
+        CallLog.Add($"create-topic:{topic}");
+        if (_createFails++ < CreateTopicFailCount)
+            return Task.FromResult(Result<TopicCreateOutcome>.Failed(new ApplicationException("create transient")));
+
+        if (Topics is not null && Topics.Any(t => t.Topic == topic))
+            return Task.FromResult(Result<TopicCreateOutcome>.Success(TopicCreateOutcome.AlreadyExists));
+
+        var views = (Topics ?? []).ToList();
+        views.Add(new KafkaTopicView(topic, partitions,
+            Enumerable.Repeat((IReadOnlyList<int>)[1], partitions).ToList()));
+        Topics = views;
+        CreatedTopics.Add((topic, partitions, replicationFactor, configs));
+        return Task.FromResult(Result<TopicCreateOutcome>.Success(TopicCreateOutcome.Created));
+    }
+
+    public Task<Result<TopicDeleteOutcome>> DeleteTopicAsync(string topic, CancellationToken ct)
+    {
+        CallLog.Add($"delete-topic:{topic}");
+        if (_deleteFails++ < DeleteTopicFailCount)
+            return Task.FromResult(Result<TopicDeleteOutcome>.Failed(new ApplicationException("delete transient")));
+
+        if (Topics is not null && Topics.Any(t => t.Topic == topic))
+        {
+            Topics = Topics.Where(t => !string.Equals(t.Topic, topic, StringComparison.Ordinal)).ToList();
+            DeletedTopics.Add(topic);
+            return Task.FromResult(Result<TopicDeleteOutcome>.Success(TopicDeleteOutcome.Deleted));
+        }
+
+        return Task.FromResult(Result<TopicDeleteOutcome>.Success(TopicDeleteOutcome.NotFound));
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
