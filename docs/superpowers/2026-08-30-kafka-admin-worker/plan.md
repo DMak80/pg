@@ -224,7 +224,7 @@ public sealed record NodeEnvSpec(
 **Файлы:** Modify `src/Directory.Packages.props` (+`<PackageVersion Include="Confluent.Kafka" Version="2.14.2" />`); Modify `src/KafkaWorker.Provisioning/KafkaWorker.Provisioning.csproj` (+PackageReference Confluent.Kafka); Create `src/KafkaWorker.Provisioning/Kafka/{IKafkaAdminClient.cs,KafkaAdminClient.cs,KafkaAdminClientFactory.cs}`; Test `src/tests/KafkaWorker.UnitTests/Provisioning/FakeKafkaAdminClient.cs` (hand-written fake).
 
 **Действие (шаги):**
-- [ ] 1. Seam-интерфейс (без Confluent-типов):
+- [x] 1. Seam-интерфейс (без Confluent-типов):
 
 ```csharp
 public interface IKafkaAdminClient : IAsyncDisposable
@@ -241,8 +241,8 @@ public sealed record KafkaTopicView(string Topic, int Partitions,
 // Factory: IKafkaAdminClient Create(string bootstrap, string user, string password)
 ```
 
-- [ ] 2. `KafkaAdminClient` — адаптер над `Confluent.Kafka.IAdminClient` (SecurityProtocol.SaslPlaintext, SaslMechanism.Plain; RequestTimeout из опций; исключения → `Result.Failed`). Волна C добавит сюда же AlterTopicConfigs/CreatePartitions (не сейчас — YAGNI).
-- [ ] 3. Fake для юнит-тестов процессов (сценарии: cluster not ready → failure; brokers list; topics+replicas; configs diff).
+- [x] 2. `KafkaAdminClient` — адаптер над `Confluent.Kafka.IAdminClient` (SecurityProtocol.SaslPlaintext, SaslMechanism.Plain; RequestTimeout из опций; исключения → `Result.Failed`). Волна C добавит сюда же AlterTopicConfigs/CreatePartitions (не сейчас — YAGNI).
+- [x] 3. Fake для юнит-тестов процессов (сценарии: cluster not ready → failure; brokers list; topics+replicas; configs diff).
 
 **Выход:** изолированный Kafka-доступ (все процессы через seam), включая данные для guard'ов волны B.
 **Проверка:** `dotnet build src/PgWorker.slnx` — 0 warnings (пакет подтянулся); fake компилируется в тестах.
