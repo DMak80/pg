@@ -1,0 +1,12 @@
+[
+  { "key": "/kafka/clusters/broken/config", "value": "{\"brokers\":3,\"replication_factor\"", "modRevision": 1 },
+  { "key": "/kafka/clusters/broken/surprise", "value": "?", "modRevision": 2 },
+  { "key": "/kafka/clusters/broken/topics/bad", "value": "{\"partitions\":12", "modRevision": 3 },
+  { "key": "/kafka/clusters/broken/brokers/broker1/state", "value": "RUNNING", "modRevision": 4 },
+  { "key": "/kafka/clusters/broken/brokers/broker1/resources", "value": "{\"cpu\":\"много\",\"mem\":\"4Gi\",\"disk\":\"40Gi\"}", "modRevision": 5 },
+  { "key": "/kafka/clusters/dying/config", "value": "{\"brokers\":1,\"replication_factor\":1,\"min_insync_replicas\":1,\"default_partitions\":12,\"default_retention_ms\":604800000,\"created_unix\":1756500200,\"state\":\"TO_REMOVE\"}", "modRevision": 6 },
+  { "key": "/kafka/clusters/dying/brokers/broker1/state", "value": "RUNNING", "modRevision": 7 },
+  { "key": "/kafka/clusters/legacy/brokers/broker1/state", "value": "WEIRD_STATE", "modRevision": 8 },
+  { "key": "/kafka/clusters/legacy/endpoints", "value": "host.docker.internal:16010", "modRevision": 9 },
+  { "key": "/pgworker/clusters/other/config", "value": "{}", "modRevision": 10 }
+]

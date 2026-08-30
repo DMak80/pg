@@ -159,9 +159,9 @@ dev-stand/adminpanel/    (kafka-seed.sh — compose-сервис в профил
 **Файлы:** Create `src/KafkaWorker.Core/Model/KafkaDomain.cs`, `src/KafkaWorker.Etcd/Parsing/KafkaSnapshotParser.cs`; Test `src/tests/KafkaWorker.UnitTests/Etcd/KafkaSnapshotParserTests.cs`, `src/tests/KafkaWorker.UnitTests/EtcdFixtures/Kafka/*.json`.
 
 **Действие (шаги):**
-- [ ] 1. Тесты-фикстуры FIRST: `.json`-файлы со строками `Kv(Key,Value)` из примеров arch/15 (Active-кластер, NOT_INITIALIZED, TO_REMOVE, topic с desired, topic missing, битый config-JSON, неизвестный ключ).
-- [ ] 2. Тесты (AAA): parse полного префикса `/kafka/clusters/` → 2 кластера с конфигом/брокерами/topics; `state` отсутствует → `Active`; битый JSON → parseError-запись без исключения; unknown key → счётчик; topic desired/null/missing; brokers state-значения строкой (толерантно к новым).
-- [ ] 3. Реализация:
+- [x] 1. Тесты-фикстуры FIRST: `.json`-файлы со строками `Kv(Key,Value)` из примеров arch/15 (Active-кластер, NOT_INITIALIZED, TO_REMOVE, topic с desired, topic missing, битый config-JSON, неизвестный ключ).
+- [x] 2. Тесты (AAA): parse полного префикса `/kafka/clusters/` → 2 кластера с конфигом/брокерами/topics; `state` отсутствует → `Active`; битый JSON → parseError-запись без исключения; unknown key → счётчик; topic desired/null/missing; brokers state-значения строкой (толерантно к новым).
+- [x] 3. Реализация:
 
 ```csharp
 // KafkaWorker.Core/Model/KafkaDomain.cs — immutable records

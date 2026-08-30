@@ -1,0 +1,173 @@
+using System.Text.Json;
+using FluentAssertions;
+using KafkaWorker.Core.Model;
+using KafkaWorker.Etcd.Client;
+using KafkaWorker.Etcd.Parsing;
+
+namespace KafkaWorker.UnitTests.Etcd;
+
+// Тесты парсера контроль-плейна /kafka/clusters/ (arch/15 §2–3): фикстуры —
+// канонические примеры значений из arch-канона; толерантность к битому JSON
+// и неизвестным ключам обязательна (parseError-запись, не исключение).
+
+public class KafkaSnapshotParserTests
+{
+    private static IReadOnlyList<Kv> LoadFixture(string name)
+    {
+        var path = Path.Combine(AppContext.BaseDirectory, "EtcdFixtures", "Kafka", name);
+        var items = JsonSerializer.Deserialize<List<FixtureKv>>(File.ReadAllText(path), Json) ?? [];
+        return items.Select(i => new Kv(i.Key, i.Value, i.ModRevision)).ToList();
+    }
+
+    private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
+
+    private sealed record FixtureKv(string Key, string Value, ulong ModRevision);
+
+    [Fact]
+    public void Parse_FullPrefix_TwoClustersWithConfigBrokersTopics()
+    {
+        // Arrange: полный префикс — Active-кластер events + заявка pending (arch/15 §2.1).
+        var kvs = LoadFixture("kafka-full.json");
+
+        // Act: разбор префикса /kafka/clusters/.
+        var result = KafkaSnapshotParser.Parse(kvs);
+
+        // Assert: два кластера; events — Active с полным набором, pending — NOT_INITIALIZED.
+        result.IsSuccess.Should().BeTrue();
+        var clusters = result.Value;
+        clusters.Should().HaveCount(2);
+        var events = clusters.Single(c => c.Cluster == "events");
+        events.Config.State.Should().BeNull(); // отсутствие state = Active
+        events.Config.Brokers.Should().Be(3);
+        events.Config.ReplicationFactor.Should().Be(3);
+        events.Config.MinInSyncReplicas.Should().Be(2);
+        events.Config.DefaultPartitions.Should().Be(12);
+        events.Config.DefaultRetentionMs.Should().Be(604800000L);
+        events.Config.CreatedUnix.Should().Be(1756500000L);
+        events.Brokers.Should().HaveCount(3);
+        events.Brokers[0].Name.Should().Be("broker1");
+        events.Brokers[0].State.Should().Be("RUNNING");
+        events.Brokers[0].Role.Should().Be("controller");
+        events.Brokers[0].Resources.Should().NotBeNull();
+        events.Brokers[0].Resources.Should().Be(new BrokerResources(2m, 4, 40));
+        events.Topics.Should().HaveCount(3);
+        events.Endpoints.Should().Be("host.docker.internal:16001,host.docker.internal:16002,host.docker.internal:16003");
+        events.AppUser.Should().Be("app");
+        events.AppPassword.Should().Be("AbCdEf0123456789AbCdEf0123456789");
+        events.ParseErrors.Should().BeEmpty();
+
+        var pending = clusters.Single(c => c.Cluster == "pending");
+        pending.Config.State.Should().Be("NOT_INITIALIZED");
+        pending.Brokers.Should().OnlyContain(b => b.State == "NOT_INITIALIZED");
+        pending.Brokers.Should().OnlyContain(b => b.Role == null); // роль фиксирует воркер
+        pending.Endpoints.Should().BeNull();
+    }
+
+    [Fact]
+    public void Parse_OrdersTopic_DesiredPresent()
+    {
+        // Arrange: топик orders с живой desired-заявкой (arch/15 §3).
+        var kvs = LoadFixture("kafka-full.json");
+
+        // Act: разбор и выбор топика.
+        var orders = KafkaSnapshotParser.Parse(kvs).Value
+            .Single(c => c.Cluster == "events").Topics.Single(t => t.Topic == "orders");
+
+        // Assert: факт + заявка читаются полностью.
+        orders.Partitions.Should().Be(12);
+        orders.ReplicationFactor.Should().Be(3);
+        orders.Configs!["retention.ms"].Should().Be("604800000");
+        orders.Desired.Should().NotBeNull();
+        orders.Desired!.Partitions.Should().Be(16);
+        orders.Desired.Configs!["retention.ms"].Should().Be("86400000");
+        orders.DesiredUnix.Should().Be(1750000000L);
+        orders.DesiredBy.Should().Be("admin");
+        orders.SyncedUnix.Should().Be(1750000100L);
+        orders.Missing.Should().BeFalse();
+    }
+
+    [Fact]
+    public void Parse_PaymentsTopic_NoDesired_GhostMissing()
+    {
+        // Arrange: payments — без заявки; ghost — missing (топик исчез при живой заявке).
+        var kvs = LoadFixture("kafka-full.json");
+
+        // Act: разбор и выбор топиков.
+        var topics = KafkaSnapshotParser.Parse(kvs).Value
+            .Single(c => c.Cluster == "events").Topics;
+
+        // Assert: desired=null у payments; missing=true у ghost.
+        var payments = topics.Single(t => t.Topic == "payments");
+        payments.Desired.Should().BeNull();
+        payments.DesiredUnix.Should().BeNull();
+        payments.Missing.Should().BeFalse();
+
+        var ghost = topics.Single(t => t.Topic == "ghost");
+        ghost.Missing.Should().BeTrue();
+        ghost.Desired.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Parse_BrokenConfig_ParseErrorWithoutException()
+    {
+        // Arrange: битый JSON config + битый topic + неизвестный ключ (arch/15 §6).
+        var kvs = LoadFixture("kafka-degenerate.json");
+
+        // Act: разбор вырожденного префикса.
+        var result = KafkaSnapshotParser.Parse(kvs);
+
+        // Assert: исключения нет; parseError-записи по config и topics/<bad>;
+        // кластер broken всё равно построен (brokers видны), unknown-ключ не валит.
+        result.IsSuccess.Should().BeTrue();
+        var broken = result.Value.Single(c => c.Cluster == "broken");
+        broken.ParseErrors.Should().Contain(e => e.Contains("config"));
+        broken.ParseErrors.Should().Contain(e => e.Contains("topics/bad"));
+        broken.Brokers.Should().HaveCount(1); // брокер жив, несмотря на битый config
+        broken.ParseErrors.Should().Contain(e => e.Contains("resources")); // cpu="много" не разобрался
+        broken.UnknownKeys.Should().Be(1); // /kafka/clusters/broken/surprise
+    }
+
+    [Fact]
+    public void Parse_ToRemoveState_ReadAsString()
+    {
+        // Arrange: кластер dying с state=TO_REMOVE (arch/15 §2.1).
+        var kvs = LoadFixture("kafka-degenerate.json");
+
+        // Act: разбор.
+        var dying = KafkaSnapshotParser.Parse(kvs).Value.Single(c => c.Cluster == "dying");
+
+        // Assert: state — строка-значение (толерантно к будущим значениям).
+        dying.Config.State.Should().Be("TO_REMOVE");
+    }
+
+    [Fact]
+    public void Parse_UnknownBrokerState_KeptAsRawString()
+    {
+        // Arrange: брокер с незнакомым state (система развивается, arch/15 §6).
+        var kvs = LoadFixture("kafka-degenerate.json");
+
+        // Act: разбор.
+        var result = KafkaSnapshotParser.Parse(kvs);
+
+        // Assert: state — как есть строкой; ключи pg-домена игнорируются
+        // (3 кластера kafka: broken/dying/legacy, /pgworker/ не считается).
+        var legacy = result.Value.Single(c => c.Cluster == "legacy");
+        legacy.Brokers.Single().State.Should().Be("WEIRD_STATE");
+        legacy.Endpoints.Should().Be("host.docker.internal:16010");
+        result.Value.Should().HaveCount(3);
+    }
+
+    [Fact]
+    public void Parse_EmptyPrefix_NoClusters()
+    {
+        // Arrange: пустой префикс (кластеров нет).
+        var kvs = Array.Empty<Kv>();
+
+        // Act: разбор пустого набора.
+        var result = KafkaSnapshotParser.Parse(kvs);
+
+        // Assert: успех, пустой список, нет ошибок.
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().BeEmpty();
+    }
+}
