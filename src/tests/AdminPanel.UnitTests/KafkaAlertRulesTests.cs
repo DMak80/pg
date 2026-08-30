@@ -415,4 +415,101 @@ public class KafkaAlertRulesTests
         alerts.Select(a => a.Severity).Should().BeInDescendingOrder();
     }
 
+
+    // ===== Ребалансировка (t02, arch/03 §7.4): pending + stale =====
+
+    [Fact]
+    public void RebalanceTicket_PendingInfoAlert()
+    {
+        // Arrange: живая заявка ребалансировки живого кластера.
+        var snapshot = Snapshot(ActiveCluster()) with
+        {
+            Rebalances = [new KafkaRebalanceTicket("events", 1750000200, "admin")],
+        };
+
+        // Act
+        var alerts = Evaluate(snapshot);
+
+        // Assert
+        var alert = alerts.Should().ContainSingle(a => a.Kind == "kafka-rebalance-pending").Subject;
+        alert.Severity.Should().Be(AlertSeverity.Info);
+        alert.Id.Should().Be("kafka-rebalance-pending:events");
+        alert.Target.Should().Be("events");
+        alert.Details!["requestedBy"].Should().Be("admin");
+    }
+
+    [Fact]
+    public void RebalanceTicketOfDeadCluster_NotAlerted()
+    {
+        // Arrange: заявка-сирота (кластера нет) — как ротация.
+        var snapshot = Snapshot(ActiveCluster()) with
+        {
+            Rebalances = [new KafkaRebalanceTicket("ghost", 1750000200, "admin")],
+        };
+
+        // Act
+        var alerts = Evaluate(snapshot);
+
+        // Assert
+        alerts.Should().NotContain(a => a.Kind == "kafka-rebalance-pending");
+    }
+
+    [Fact]
+    public void ReassignmentStale_RemainingNotMoving_Warning()
+    {
+        // Arrange: прогресс жив в обоих тиках, remaining не двигается дольше
+        // ReassignStaleSec (prev обновлён давно, next — тем же остатком).
+        var progress = new KafkaReassignmentProgress("events", "drain", "broker4", 12, 5, 1750000215, null);
+        var prev = Snapshot(ActiveCluster()) with { Reassignments = [progress] };
+        var next = prev with
+        {
+            BuiltAtUtc = prev.BuiltAtUtc.AddSeconds(901),
+            Reassignments = [progress with { UpdatedUnix = 1750000215 }],
+        };
+
+        // Act
+        var alerts = Evaluate(next, prev);
+
+        // Assert
+        var alert = alerts.Should().ContainSingle(a => a.Kind == "kafka-reassignment-stale").Subject;
+        alert.Severity.Should().Be(AlertSeverity.Warning);
+        alert.Target.Should().Be("events");
+    }
+
+    [Fact]
+    public void ReassignmentStale_NoPrev_WarningByAge()
+    {
+        // Arrange: prev нет — алерт по возрасту updated_unix (ключ стоит).
+        var snapshot = Snapshot(ActiveCluster()) with
+        {
+            Reassignments = [new KafkaReassignmentProgress("events", "balance", null, 8, 3, 1750000215, null)],
+        };
+        var aged = snapshot with
+        {
+            BuiltAtUtc = snapshot.BuiltAtUtc.AddSeconds(1000),
+        };
+
+        // Act
+        var alerts = Evaluate(aged);
+
+        // Assert: ключ обновлён 1000 c назад (порог 900) — стагнация.
+        alerts.Should().ContainSingle(a => a.Kind == "kafka-reassignment-stale");
+    }
+
+    [Fact]
+    public void ReassignmentFresh_RemainingMoving_NoAlert()
+    {
+        // Arrange: prev нет, ключ свежий (обновлён недавно относительно Now).
+        var snapshot = Snapshot(ActiveCluster()) with
+        {
+            Reassignments = [new KafkaReassignmentProgress(
+                "events", "drain", "broker4", 12, 5, Now.ToUnixTimeSeconds() - 10, null)],
+        };
+
+        // Act
+        var alerts = Evaluate(snapshot);
+
+        // Assert: свежий прогресс — не алерт.
+        alerts.Should().NotContain(a => a.Kind == "kafka-reassignment-stale");
+    }
 }

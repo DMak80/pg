@@ -86,6 +86,48 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 },
                 null);
 
+        // Заявки ребалансировки (t02, arch/03 §7.4) — только живых кластеров.
+        foreach (var rebalance in next.Rebalances.Where(r => alive.Contains(r.Cluster)))
+            yield return new Alert(
+                $"kafka-rebalance-pending:{rebalance.Cluster}",
+                AlertSeverity.Info,
+                "kafka-rebalance-pending",
+                rebalance.Cluster,
+                $"ребалансировка партиций кластера {rebalance.Cluster} заявлена, исполняется воркером",
+                new Dictionary<string, string>
+                {
+                    ["requestedBy"] = rebalance.RequestedBy ?? "unknown",
+                    ["requestedUnix"] = rebalance.RequestedUnix.ToString(),
+                },
+                null);
+
+        // Стагнация reassignment (t02): прогресс жив, но partitions_remaining не
+        // двигается дольше ReassignStaleSec. Пара (prev, next): остаток тот же
+        // и стоит дольше порога; prev нет — алерт по возрасту updated_unix.
+        foreach (var progress in next.Reassignments.Where(p => alive.Contains(p.Cluster)))
+        {
+            var prevProgress = previous?.Reassignments.FirstOrDefault(p => p.Cluster == progress.Cluster);
+            var stale = prevProgress is not null
+                ? prevProgress.PartitionsRemaining == progress.PartitionsRemaining
+                  && next.BuiltAtUtc.ToUnixTimeSeconds() - progress.UpdatedUnix > _options.ReassignStaleSec
+                : next.BuiltAtUtc.ToUnixTimeSeconds() - progress.UpdatedUnix > _options.ReassignStaleSec;
+            if (stale)
+                yield return new Alert(
+                    $"kafka-reassignment-stale:{progress.Cluster}",
+                    AlertSeverity.Warning,
+                    "kafka-reassignment-stale",
+                    progress.Cluster,
+                    $"reassignment кластера {progress.Cluster} буксует: partitions_remaining={progress.PartitionsRemaining} "
+                    + $"не меняется дольше {_options.ReassignStaleSec} c",
+                    new Dictionary<string, string>
+                    {
+                        ["mode"] = progress.Mode,
+                        ["partitionsRemaining"] = progress.PartitionsRemaining.ToString(),
+                        ["updatedUnix"] = progress.UpdatedUnix.ToString(),
+                    },
+                    null);
+        }
+
         foreach (var error in next.ParseErrors)
             yield return new Alert(
                 $"kafka-key-malformed:{error.Key}",
