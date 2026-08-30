@@ -2,7 +2,7 @@
 // resources/live + «Убрать брокера» (guard-дизейблы) и «Добавить брокера».
 import { useState } from 'react';
 import { Badge, Button, Card, Group, Table, Text, Title, Tooltip } from '@mantine/core';
-import type { KafkaBrokerDto } from '../../api/dto';
+import type { KafkaBrokerDto, KafkaReassignmentDto } from '../../api/dto';
 import { AddBrokerModal } from './AddBrokerModal';
 import { RemoveBrokerButton } from './RemoveBrokerButton';
 
@@ -10,10 +10,12 @@ export function BrokersTab({
   cluster,
   brokers,
   canScale,
+  reassignment,
 }: {
   cluster: string;
   brokers: KafkaBrokerDto[];
   canScale: boolean;
+  reassignment: KafkaReassignmentDto | null;
 }) {
   const [addOpened, setAddOpened] = useState(false);
   const lastBroker = brokers.length <= 1;
@@ -45,7 +47,7 @@ export function BrokersTab({
             <Table.Tbody>
               {brokers.map((b) => (
                 <BrokerRow key={b.name} cluster={cluster} broker={b} canScale={canScale}
-                  lastBroker={lastBroker} />
+                  lastBroker={lastBroker} reassignment={reassignment} />
               ))}
             </Table.Tbody>
           </Table>
@@ -60,13 +62,20 @@ function BrokerRow({
   broker,
   canScale,
   lastBroker,
+  reassignment,
 }: {
   cluster: string;
   broker: KafkaBrokerDto;
   canScale: boolean;
   lastBroker: boolean;
+  reassignment: KafkaReassignmentDto | null;
 }) {
   const isController = broker.role === 'controller';
+  // Подпись drain: живой reassignment в режиме drain указывает на этот брокер.
+  const draining = broker.state === 'TO_REMOVE'
+    && reassignment !== null
+    && reassignment.mode === 'drain'
+    && reassignment.drainBroker === broker.name;
   const reason = isController
     ? 'controller-нода: роль фиксируется при создании навсегда, демонтаж запрещён'
     : lastBroker
@@ -77,7 +86,14 @@ function BrokerRow({
 
   return (
     <Table.Tr>
-      <Table.Td>{broker.name}</Table.Td>
+      <Table.Td>
+        {broker.name}
+        {draining ? (
+          <Text size="xs" c="violet" display="block">
+            drain: осталось {reassignment!.partitionsRemaining} партиций
+          </Text>
+        ) : null}
+      </Table.Td>
       <Table.Td><BrokerStateBadge state={broker.state} /></Table.Td>
       <Table.Td>
         {isController ? (
