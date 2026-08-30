@@ -129,8 +129,8 @@ only, всё видит)         топиков, снятие state
 | `KAFKA_INTER_BROKER_LISTENER_NAME` | `INTERNAL` |
 | `KAFKA_SASL_ENABLED_MECHANISMS` | `PLAIN` |
 | `KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL` | `PLAIN` (Kafka требует явный механизм при SASL на INTERNAL) |
-| `KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG` | JAAS: `user_app=<pwd>` (при ротации + `user_app2=<new>`) |
-| `KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG` | тот же список пользователей |
+| `KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG` | JAAS: `username="inter" password="<inter-pwd>" user_inter="<inter-pwd>" user_app=<pwd>` (при ротации + `user_app2=<new>`); inter-креды — inter-broker-клиент (§2.2) |
+| `KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG` | только список пользователей (без username/password — клиенты внешние) |
 | `KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR` | `min(3,B)` |
 | `KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR` | `min(3,B)` |
 | `KAFKA_TRANSACTION_STATE_LOG_MIN_ISR` | `min(2,B)` |
@@ -142,6 +142,14 @@ only, всё видит)         топиков, снятие state
 | `KAFKA_LOG_DIRS` | `/var/lib/kafka/data` (том `kfw-<C>-<b>-data`) |
 
 JAAS-формат (PLAIN): `org.apache.kafka.common.security.plain.PlainLoginModule required user_app="<password>";`.
+
+**Inter-broker-креды (§2.2)**: INTERNAL требует SASL и у брокера-КЛИЕНТА —
+`username`/`password` прямо в INTERNAL-JAAS (без них фолловеры не подключаются,
+ISR проседает до лидера → NOT_ENOUGH_REPLICAS при minISR≥2; вскрыто 3-брокерным
+e2e волны C). Пользователь `inter` с детерминированным per-cluster паролем
+(`InterBrokerPassword` NodeEnvBuilder: SHA-256 имени кластера → 32 симв
+[A-Za-z0-9]); НЕ ротируется (ротация app не должна ломать репликацию), в etcd
+не хранится — listener доступен только внутри закрытой сети `kfw-net`.
 
 ### 2.3. Режимы Plain / Swarm
 
