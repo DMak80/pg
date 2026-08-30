@@ -490,10 +490,10 @@ public sealed record KafkaRotationTicket(string Cluster, long RequestedUnix, str
 **Файлы:** Modify `frontend/src/api/dto.ts` (+Kafka*Dto), `frontend/src/api/queries.ts` (+`kafkaClusters`, `kafkaCluster(name)`, мутации), `frontend/src/App.tsx` (маршруты `/kafka`, `/kafka/:cluster`), `frontend/src/layout/AppLayout.tsx` (nav «Kafka»), `frontend/src/pages/OverviewPage.tsx` (карточка kafka); Create `frontend/src/pages/KafkaClustersPage.tsx`, `frontend/src/pages/kafka-cluster/{KafkaClusterDetailsPage.tsx,BrokersTab.tsx,CreateKafkaClusterModal.tsx,AddBrokerModal.tsx,EditClusterConfigModal.tsx,RemoveBrokerButton.tsx,RotatePasswordButton.tsx,DeleteKafkaClusterButton.tsx}`.
 
 **Действие (шаги):**
-- [ ] 1. dto/queries по arch/adminpanel/03 (camelCase-зеркало DTO B5).
-- [ ] 2. Список кластеров (Mantine Table: name, state-бейдж, brokers running/total, topics count, endpoints; кнопка «Создать кластер» → модал полей §3.4 с дефолтами 3/3/2/12/7д — клиентская валидация-зеркало).
-- [ ] 3. Детали: шапка (бейджи TO_REMOVE/NOT_INITIALIZED, кнопки «Изменить параметры»/«Сменить app-пароль»/«Удалить кластер» — подтверждения с предупреждением ротации) + вкладка Брокеры (name/state/role/resources/host + «Убрать брокера» с guard-дизейблами controller/последний/непустой + «Добавить брокера»).
-- [ ] 4. Общие компоненты переиспользовать (PollingToggle, StaleBadge, ProblemDetails-обработка client.ts); 401→login как везде.
+- [x] 1. dto/queries по arch/adminpanel/03 (camelCase-зеркало DTO B5).
+- [x] 2. Список кластеров (Mantine Table: name, state-бейдж, brokers running/total, topics count, endpoints; кнопка «Создать кластер» → модал полей §3.4 с дефолтами 3/3/2/12/7д — клиентская валидация-зеркало).
+- [x] 3. Детали: шапка (бейджи TO_REMOVE/NOT_INITIALIZED, кнопки «Изменить параметры»/«Сменить app-пароль»/«Удалить кластер» — подтверждения с предупреждением ротации) + вкладка Брокеры (name/state/role/resources/host + «Убрать брокера» с guard-дизейблами controller/последний/непустой + «Добавить брокера»).
+- [x] 4. Общие компоненты переиспользовать (PollingToggle, StaleBadge, ProblemDetails-обработка client.ts); 401→login как везде.
 
 **Выход:** UI раздела kafka (без вкладок Топики/Группы — заглушки «волна C»).
 **Проверка:** `cd frontend && npm run build` — без ошибок; ручной смоук против стенда B8.
