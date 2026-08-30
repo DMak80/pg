@@ -10,7 +10,9 @@
 `POST /api/ha/{scope}/nodes/{node}/recreate` (маркеры TO_RECREATE/recreate —
 зафиксирована кодом): GET-эндпоинты и POST login/logout не
 мутируют инспектируемые системы (кластерные мутации пишут только ключи своих
-операций). JSON, camelCase, `ProblemDetails` для ошибок.
+операций). Отдельный модуль **Kafka** (`/api/kafka/*` — §7): свои GET и 8
+мутаций декларативной модели (протоколы — 02 §10). JSON, camelCase,
+`ProblemDetails` для ошибок.
 Все эндпоинты, кроме `login` и `healthz`, требуют cookie-сессию (401 без неё).
 
 ## 1. Список эндпоинтов
@@ -407,7 +409,110 @@ select pg_is_in_recovery();
 `arch/scripts/buckets-common.sh`; запросы не меняются в SQL-семантике
 без правки этого документа.
 
-## 6. Версионирование контракта
+## 7. Kafka: панель и REST API (`/api/kafka/*`)
+
+Третий домен (спец-файл kafka-admin-worker §5; etcd-контракт — 02 §10,
+канон ключей — arch/15). Источник данных — отдельный снапшот `KafkaSnapshot`
+(свой refresher, тик 3 с) + опциональная live-проба (тип 15 с, DescribeCluster;
+группы/лаги — arch/15 §3-домен волны C). Пароль `app_password` в UI/API
+не отдаётся никогда (02 §10.1).
+
+### 7.1. Список эндпоинтов
+
+| Метод+путь | Назначение |
+|---|---|
+| `GET /api/kafka/clusters` | сводный список kafka-кластеров |
+| `POST /api/kafka/clusters` | создание кластера (02 §10.2-1): тело `CreateKafkaClusterRequestDto` → 201+`KafkaClusterCreatedDto` \| 400 \| 409 \| 503 |
+| `GET /api/kafka/clusters/{cluster}` | детали: config, брокеры, топики (desired/missing), ротация; groups+lags — из пробы (волна C) |
+| `DELETE /api/kafka/clusters/{cluster}` | перевод в TO_REMOVE (02 §10.2-2): 204 \| 404 \| 503 |
+| `PUT /api/kafka/clusters/{cluster}/config` | изменение default-конфигов (02 §10.2-3): тело `KafkaConfigUpdateRequestDto` → 204 \| 400 \| 404 \| 409 \| 503 |
+| `POST /api/kafka/clusters/{cluster}/brokers` | добавление брокера (02 §10.2-4): тело `AddKafkaBrokerRequestDto` → 201+`KafkaBrokerAddedDto` \| 400 \| 404 \| 409 \| 503 |
+| `DELETE /api/kafka/clusters/{cluster}/brokers/{broker}` | маркер демонтажа брокера TO_REMOVE (02 §10.2-5): 204 \| 404 \| 409 \| 503 |
+| `PUT /api/kafka/clusters/{cluster}/topics/{topic}` | конфиг-заявка топика (02 §10.2-6, волна C): тело `KafkaTopicDesiredRequestDto` → 204 \| 400 \| 404 \| 409 \| 503 |
+| `DELETE /api/kafka/clusters/{cluster}/topics/{topic}/desired` | отмена конфиг-заявки (02 §10.2-7, волна C): 204 \| 404 \| 503 |
+| `POST /api/kafka/clusters/{cluster}/app-password/rotate` | заявка ротации app-пароля (02 §10.2-8): без тела → 201+`KafkaPasswordRotatedDto` \| 404 \| 409 \| 503 |
+
+`GET /api/alerts` объединяет алерты обоих движков (kind уже различает
+`kafka-*`); `GET /api/overview` получает kafka-сводку (clustersTotal,
+clustersCritical — critical-алерты `kafka-broker-not-running`/
+`kafka-endpoints-missing`).
+
+### 7.2. DTO (ключевые поля)
+
+```text
+KafkaClusterSummaryDto: name, state(ACTIVE|NOT_INITIALIZED|TO_REMOVE),
+    brokersTotal, brokersRunning, topicsCount, endpoints, rotationPending(bool)
+KafkaClusterDto: name, state, replicationFactor, minInSyncReplicas,
+    defaultPartitions, defaultRetentionMs, createdUnix, endpoints,
+    brokers[KafkaBrokerDto], topics[KafkaTopicDto], groups[KafkaGroupDto]
+    (волна C — из пробы), rotation{requestedUnix, requestedBy}?(nullable)
+KafkaBrokerDto: name, state(raw: NOT_INITIALIZED|PROVISIONING|RUNNING|
+    UNREACHABLE|REMOVING|TO_REMOVE), role(controller|broker|null — до
+    provisioning), cpu, memGi, diskGi (nullable — заявка resources),
+    live(bool|null — из пробы: брокер id/host виден в DescribeCluster),
+    brokerId(int|null — из пробы)
+KafkaTopicDto: name, partitions, replicationFactor, retentionMs, minInSyncReplicas
+    (null — конфиг отсутствует в факте), desired{partitions, retentionMs,
+    minInSyncReplicas, requestedUnix, requestedBy}?(nullable), missing(bool),
+    syncedUnix
+KafkaGroupDto: group, state, members, totalLag (волна C — из пробы)
+CreateKafkaClusterRequestDto: name, brokers(1..9 def 3), replicationFactor
+    (1..9 ≤ brokers def 3), minInSyncReplicas(1..RF def 2), defaultPartitions
+    (1..1000 def 12), defaultRetentionMs(1..2147483647 def 604800000),
+    cpu(0.01..64 def 2), memGi(1..65536 def 2), diskGi(1..65536 def 20)
+    — валидация 02 §10.3
+KafkaClusterCreatedDto: name, state:"NOT_INITIALIZED", brokers,
+    replicationFactor, minInSyncReplicas, defaultPartitions,
+    defaultRetentionMs, cpu, memGi, diskGi
+KafkaConfigUpdateRequestDto: replicationFactor?, minInSyncReplicas?,
+    defaultPartitions?, defaultRetentionMs? (хотя бы одно; границы 02 §10.3)
+AddKafkaBrokerRequestDto: cpu, memGi, diskGi (границы 02 §10.3)
+KafkaBrokerAddedDto: cluster, name (сгенерированное broker<k>), cpu, memGi,
+    diskGi, state:"NOT_INITIALIZED"
+KafkaTopicDesiredRequestDto: partitions?, retentionMs?, minInSyncReplicas?
+    (хотя бы одно; partitions только > фактического) — волна C
+KafkaPasswordRotatedDto: cluster, requestedUnix, requestedBy
+```
+
+### 7.3. Панели UI
+
+| Панель | Что показывает |
+|---|---|
+| **KafkaClusters** | список: имя, state-бейдж, брокеры running/всего, топики (кол-во), endpoints (сокращённо), бейдж ротации; кнопка «Создать кластер» → модальная форма §7.3.1 |
+| **KafkaClusterDetails** | шапка: state-бейджи (TO_REMOVE/NOT_INITIALIZED), кнопки «Изменить параметры» (default-конфиги — модал), «Сменить app-пароль» (модал-предупреждение о rolling-перезапуске брокеров; 409 «уже запрошена» — текстом), «Удалить кластер» (красная, подтверждение; при TO_REMOVE скрыты); вкладка **Брокеры**: name/state/role/resources/live, колонка действий «Убрать брокера» (controller/последний — дизейбл с пояснением, серверный 409 текстом; непустой — дизейбл по live-пробе как UX-подсказка: серверного отказа нет, занятый брокер удержит воркер — 02 §10 мутация 5) + кнопка «Добавить брокера» (форма resources); вкладки **Топики** и **Группы** — волна C (до неё — заглушка) |
+
+### 7.3.1. Форма «Создать kafka-кластер»
+
+Модальный диалог (Mantine) с кнопки «Создать кластер» на панели Kafka:
+имя; брокеры (def 3); RF (def 3, ≤ брокеров); minISR (def 2, ≤ RF); партиции
+(def 12); retention ms (def 7 дней); группа «Ресурсы брокера»: CPU/память/
+диск (def 2/2/20). Клиентская валидация — зеркало 02 §10.3; серверная —
+источник истины. Отправка — POST `/api/kafka/clusters`; успех → инвалидация
+списка (новый кластер с бейджем «не инициализирован»); ошибка —
+ProblemDetails в теле формы. Двойной клик — блокировка кнопки.
+
+### 7.4. Каталог kafka-алертов (`KafkaAlertEngine`)
+
+Чистая функция `KafkaSnapshot (prev, next) → Alert[]`; пороги —
+`AdminPanel:KafkaAlerts`. sinceUnix — по стабильному `id = kind:target`
+(§2-механика). Ротационный алерт живёт только у живого кластера: заявка
+ротации удаляется демонтажем кластера (arch/16 X-фазы) — вечный
+`kafka-rotation-pending` невозможен по построению.
+
+| kind | severity | Условие |
+|---|---|---|
+| `kafka-cluster-not-initialized` | info | state=NOT_INITIALIZED |
+| `kafka-cluster-to-remove` | info | state=TO_REMOVE |
+| `kafka-broker-not-running` | critical | Active-кластер, broker state ∉ {RUNNING}, кроме fresh-PROVISIONING (< 60 с) |
+| `kafka-endpoints-missing` | critical | Active без `endpoints` |
+| `kafka-rotation-pending` | info | живая заявка ротации `/kafkaworker/rotations/<C>` |
+| `kafka-key-malformed` | warning | kafka-ключ не разобран (parseError) |
+| `kafka-topic-missing-desired` | warning | topics: `missing=true` (волна C) |
+| `kafka-desired-stale` | warning | desired не снят дольше `StaleDesiredSec` (600) — волна C |
+| `kafka-topic-under-replicated` | warning | проба: партиции с USR>0 — волна C |
+| `kafka-group-lag-high` | warning | проба: totalLag > `GroupLagMessages` (100000) — волна C |
+
+## 8. Версионирование контракта
 
 Контракт API не версонируется (панель и API развёртываются одним артефактом,
 фронт и бэк всегда согласованы). Изменение DTO — правкой этого документа

@@ -16,7 +16,7 @@ public class InspectionQueryHandlerTests
     public async Task OverviewHandle_NoSnapshot_ReturnsFailedSnapshotNotReady()
     {
         // Arrange: до первого тика Current = null (t03 §3.13).
-        var handler = new OverviewQueryHandler(new SnapshotStore(), _time, Options.Create(new EtcdOptions()));
+        var handler = new OverviewQueryHandler(new SnapshotStore(), new KafkaSnapshotStore(), _time, Options.Create(new EtcdOptions()));
 
         // Act
         var result = await handler.Handle(new OverviewQuery(), CancellationToken.None);
@@ -44,7 +44,7 @@ public class InspectionQueryHandlerTests
     public async Task AlertsHandle_NoSnapshot_ReturnsFailedSnapshotNotReady()
     {
         // Arrange
-        var handler = new AlertsQueryHandler(new SnapshotStore());
+        var handler = new AlertsQueryHandler(new SnapshotStore(), new KafkaSnapshotStore());
 
         // Act
         var result = await handler.Handle(new AlertsQuery(null, null), CancellationToken.None);
@@ -63,7 +63,7 @@ public class InspectionQueryHandlerTests
         {
             Alerts = [new Alert("a:etcd", AlertSeverity.Critical, "a", "etcd", "m", null, null)],
         });
-        var handler = new OverviewQueryHandler(store, _time, Options.Create(new EtcdOptions()));
+        var handler = new OverviewQueryHandler(store, new KafkaSnapshotStore(), _time, Options.Create(new EtcdOptions()));
 
         // Act
         var result = await handler.Handle(new OverviewQuery(), CancellationToken.None);
@@ -88,7 +88,7 @@ public class InspectionQueryHandlerTests
                 new Alert("b:1", AlertSeverity.Warning, "b", "1", "m", null, null),
             ],
         });
-        var handler = new AlertsQueryHandler(store);
+        var handler = new AlertsQueryHandler(store, new KafkaSnapshotStore());
 
         // Act
         var critical = await handler.Handle(new AlertsQuery(AlertSeverity.Critical, null), CancellationToken.None);

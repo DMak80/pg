@@ -213,5 +213,44 @@ services:
       MEMBERS: s2a,s2b
     depends_on: [s2b]
 
+  # Kafka-сид (план B8): РОВНО 2 кластера /kafka/ (events Active + pending
+  # NOT_INITIALIZED + заявка ротации events). Профиль seed — опционален:
+  # дефолтный up и профиль kafka его НЕ поднимают (изоляция от живого воркера).
+  kafka-seed:
+    build: ./seed
+    container_name: as-kafka-seed
+    restart: "no"
+    profiles: ["seed"]
+    environment:
+      ETCDCTL_ENDPOINTS: http://etcd:2379
+    volumes:
+      - ./kafka-seed.sh:/kafka-seed.sh:ro
+    entrypoint: ["/bin/sh", "/kafka-seed.sh"]
+    depends_on: [etcd]
+
+  # Живой KafkaWorker (план B8): профиль kafka — только явно. Управляет docker-
+  # хостом через сокет; advertised host.docker.internal делает endpoints в etcd
+  # резолвимыми для клиентов (arch/16 §2.1). НЕ смешивать с профилем seed.
+  kafkaworker:
+    build:
+      context: ../..
+      dockerfile: docker/KafkaWorker.Dockerfile
+    image: kafkaworker:dev
+    container_name: as-kafkaworker
+    restart: unless-stopped
+    profiles: ["kafka"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - kfw-snapshots:/snapshots
+    extra_hosts:
+      # docker-хост "local" (appsettings KafkaWorker:Docker:Hosts) — резолвим
+      # в шлюз docker-хоста (прецедент pgworker, deploy/docker-compose.yml)
+      - "local:host-gateway"
+    environment:
+      KafkaWorker__Etcd__Endpoints__0: http://etcd:2379
+      KafkaWorker__AdvertisedClientHost: host.docker.internal
+    depends_on: [etcd]
+
 volumes:
   etcd-data:
+  kfw-snapshots:

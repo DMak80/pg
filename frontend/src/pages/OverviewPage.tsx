@@ -66,6 +66,7 @@ export function OverviewPage() {
       <SimpleGrid minColWidth={330}>
         <EtcdCard data={data} />
         <ClustersCard data={data} />
+        <KafkaCard data={data} />
         <AlertsCard data={data} />
         <HaCard
           scopes={haScopes.data}
@@ -136,6 +137,35 @@ function ClustersCard({ data }: { data: OverviewDto }) {
             </Group>
           ))}
         </Stack>
+      )}
+    </Card>
+  );
+}
+
+// Карточка kafka-домена: сводка из OverviewDto.kafka (arch/03 §7.1; null до
+// первого тика kafka-refresher'а).
+function KafkaCard({ data }: { data: OverviewDto }) {
+  return (
+    <Card withBorder padding="md" radius="md">
+      <Group justify="space-between" wrap="nowrap" mb="xs">
+        <Text fw={600}>Kafka</Text>
+        <Anchor component={Link} to="/kafka" size="sm">все кластеры →</Anchor>
+      </Group>
+      {data.kafka === null ? (
+        <Text c="dimmed" size="sm">Kafka-снапшот ещё не собран</Text>
+      ) : (
+        <Group gap="md">
+          <Group gap={5}>
+            <Text size="xl" fw={600}>{data.kafka.clustersTotal}</Text>
+            <Text size="sm" c="dimmed">кластеров</Text>
+          </Group>
+          <Group gap={5}>
+            <Text size="xl" fw={600} c={data.kafka.clustersCritical > 0 ? 'red' : undefined}>
+              {data.kafka.clustersCritical}
+            </Text>
+            <Text size="sm" c="dimmed">критических</Text>
+          </Group>
+        </Group>
       )}
     </Card>
   );

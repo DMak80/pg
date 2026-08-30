@@ -68,7 +68,10 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
     {
         var body = new
         {
-            compare = compares.Select(c => new { key = ToB64(c.Key), version = c.Version }),
+            // Compare → protojson (образец воркера): target обязателен — VERSION=0,
+            // MODREV=2; без target etcd трактует условие как VERSION (kafka RMW
+            // по mod_revision, arch/02 §10.2).
+            compare = compares.Select(CompareToDto).ToList(),
             success = puts.Select(p => new
             {
                 request_put = new { key = ToB64(p.Key), value = ToB64(p.Value) },
@@ -93,6 +96,23 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
             : new { key = ToB64(keyOrPrefix) };
         return await Result.FromAsync(
             async () => await PostAsync<StatusResponse>(endpoint, "/v3/kv/deleterange", body, ct));
+    }
+
+    // Compare → protojson: target (VERSION=0, MODREV=2), result EQUAL=0/GREATER=1;
+    // поле сравнения = цели (version/mod_revision).
+    private static Dictionary<string, object> CompareToDto(TxnCompare c)
+    {
+        var dto = new Dictionary<string, object>
+        {
+            ["key"] = ToB64(c.Key),
+            ["target"] = c.ModRevision is null ? 0 : 2,
+            ["result"] = 0,
+        };
+        if (c.ModRevision is { } mod)
+            dto["mod_revision"] = mod;
+        else
+            dto["version"] = c.Version;
+        return dto;
     }
 
     private async Task<T> PostAsync<T>(string endpoint, string path, object body, CancellationToken ct)

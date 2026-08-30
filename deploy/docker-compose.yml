@@ -27,5 +27,31 @@ services:
       # Конфигурация — env-оверрайды appsettings (пример: endpoints etcd).
       PgWorker__Etcd__Endpoints__0: ${PGW_ETCD_ENDPOINT:-http://localhost:2379}
 
+  # KafkaWorker (arch/16 §2.1/§8): docker.sock, том снапшотов P12.
+  # Env-секретов per-install нет (единственный секрет — per-cluster
+  # app_password в etcd).
+  kafkaworker:
+    build:
+      context: ..
+      dockerfile: docker/KafkaWorker.Dockerfile
+    image: kafkaworker:dev
+    restart: unless-stopped
+    ports:
+      - "8081:8080" # /healthz (8081 — не конфликтует с pgworker)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - kfw-snapshots:/snapshots
+    extra_hosts:
+      # docker-хост "local" (appsettings Docker:Hosts) — из контейнера резолвим
+      # его в шлюз docker-хоста (прецедент pgworker выше).
+      - "local:host-gateway"
+    environment:
+      KafkaWorker__Etcd__Endpoints__0: ${KFW_ETCD_ENDPOINT:-http://localhost:2379}
+      # Advertised-хост CLIENT-listener → endpoints в etcd резолвимы клиентами
+      # (arch/16 advertised-правило; null допустим только когда имя docker-хоста
+      # резолвимо клиентами само по себе).
+      KafkaWorker__AdvertisedClientHost: ${KFW_ADVERTISED_CLIENT_HOST:-host.docker.internal}
+
 volumes:
   pgw-snapshots:
+  kfw-snapshots:

@@ -95,8 +95,15 @@ export interface OverviewDto {
   etcd: OverviewEtcdDto;
   clusters: OverviewClusterDto[];
   activeMoves: OverviewMoveDto[];
+  // Сводка kafka-домена (arch/03 §7.1); null до первого тика kafka-refresher'а.
+  kafka: OverviewKafkaDto | null;
   snapshotAgeMs: number;
   stale: boolean;
+}
+
+export interface OverviewKafkaDto {
+  clustersTotal: number;
+  clustersCritical: number;
 }
 
 export interface OverviewEtcdDto {
@@ -323,6 +330,168 @@ export interface AlertDto {
 // POST /api/clusters/{cluster}/app-password/rotate — заявка ротации app-пароля
 // (arch/03 §1.6, протокол arch/02 §9.8): панель пароль не знает — только факт заявки.
 export interface AppPasswordRotatedDto {
+  cluster: string;
+  requestedUnix: number;
+  requestedBy: string;
+}
+
+// ===== Kafka-домен (arch/03 §7.2; C#-DTO B5/B6) =====
+
+// Канон состояния kafka-кластера: config.state (arch/15 §2); отсутствие = ACTIVE.
+export type KafkaClusterStateName = 'ACTIVE' | 'NOT_INITIALIZED' | 'TO_REMOVE';
+
+// GET /api/kafka/clusters — сводный список.
+export interface KafkaClusterSummaryDto {
+  name: string;
+  state: KafkaClusterStateName;
+  brokersTotal: number;
+  brokersRunning: number;
+  topicsCount: number;
+  endpoints: string | null;
+  rotationPending: boolean;
+}
+
+// GET /api/kafka/clusters/{cluster} — детали.
+export interface KafkaClusterDto {
+  name: string;
+  state: KafkaClusterStateName;
+  brokers: number;
+  replicationFactor: number;
+  minInSyncReplicas: number;
+  defaultPartitions: number;
+  defaultRetentionMs: number;
+  createdUnix: number | null;
+  endpoints: string | null;
+  brokersList: KafkaBrokerDto[];
+  topics: KafkaTopicDto[];
+  rotation: KafkaRotationTicketDto | null;
+  // Live-группы из пробы (волна C): null — проба молчит о кластере.
+  groups: KafkaGroupDto[] | null;
+  probeOk: boolean | null;
+  probeError: string | null;
+}
+
+export interface KafkaBrokerDto {
+  name: string;
+  state: string | null;
+  role: string | null;
+  cpu: number | null;
+  memGi: number | null;
+  diskGi: number | null;
+  live: boolean | null;
+  brokerId: number | null;
+}
+
+export interface KafkaTopicDto {
+  name: string;
+  partitions: number;
+  replicationFactor: number | null;
+  retentionMs: number | null;
+  minInSyncReplicas: number | null;
+  desired: KafkaTopicDesiredDto | null;
+  missing: boolean;
+  syncedUnix: number | null;
+  // Live-USR из пробы (волна C): null — проба молчит.
+  underReplicatedPartitions: number | null;
+}
+
+// Live-группа консьюмеров (вкладка Группы, волна C).
+export interface KafkaGroupDto {
+  group: string;
+  state: string | null;
+  members: number;
+  totalLag: number;
+}
+
+export interface KafkaTopicDesiredDto {
+  partitions: number | null;
+  retentionMs: number | null;
+  minInSyncReplicas: number | null;
+  requestedUnix: number | null;
+  requestedBy: string | null;
+}
+
+export interface KafkaRotationTicketDto {
+  requestedUnix: number;
+  requestedBy: string | null;
+}
+
+// POST /api/kafka/clusters — тело и ответ (arch/02 §10.3).
+export interface CreateKafkaClusterRequestDto {
+  name: string;
+  brokers?: number;
+  replicationFactor?: number;
+  minInSyncReplicas?: number;
+  defaultPartitions?: number;
+  defaultRetentionMs?: number;
+  cpu?: number;
+  memGi?: number;
+  diskGi?: number;
+}
+
+export interface KafkaClusterCreatedDto {
+  name: string;
+  state: string;
+  brokers: number;
+  replicationFactor: number;
+  minInSyncReplicas: number;
+  defaultPartitions: number;
+  defaultRetentionMs: number;
+  cpu: string;
+  memGi: string;
+  diskGi: string;
+}
+
+// PUT /api/kafka/clusters/{cluster}/config — тело и ответ.
+export interface KafkaConfigUpdateRequestDto {
+  replicationFactor?: number;
+  minInSyncReplicas?: number;
+  defaultPartitions?: number;
+  defaultRetentionMs?: number;
+}
+
+export interface KafkaConfigUpdatedDto {
+  cluster: string;
+  replicationFactor: number;
+  minInSyncReplicas: number;
+  defaultPartitions: number;
+  defaultRetentionMs: number;
+}
+
+// POST /api/kafka/clusters/{cluster}/brokers — тело и ответ.
+export interface AddKafkaBrokerRequestDto {
+  cpu?: number;
+  memGi?: number;
+  diskGi?: number;
+}
+
+export interface KafkaBrokerAddedDto {
+  cluster: string;
+  name: string;
+  cpu: string;
+  memGi: string;
+  diskGi: string;
+  state: string;
+}
+
+// PUT /api/kafka/clusters/{cluster}/topics/{topic} — конфиг-заявка топика
+// (arch/02 §10.2-7): хотя бы одно поле; partitions — только увеличение.
+export interface TopicDesiredRequestDto {
+  partitions?: number;
+  retentionMs?: number;
+  minInSyncReplicas?: number;
+}
+
+export interface TopicDesiredDto {
+  cluster: string;
+  topic: string;
+  partitions: number | null;
+  retentionMs: number | null;
+  minInSyncReplicas: number | null;
+}
+
+// POST /api/kafka/clusters/{cluster}/app-password/rotate — ответ.
+export interface KafkaPasswordRotatedDto {
   cluster: string;
   requestedUnix: number;
   requestedBy: string;

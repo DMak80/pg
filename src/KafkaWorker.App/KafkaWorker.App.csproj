@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="KafkaWorker.UnitTests"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <FrameworkReference Include="Microsoft.AspNetCore.App"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\KafkaWorker.Core\KafkaWorker.Core.csproj"/>
+        <ProjectReference Include="..\KafkaWorker.Etcd\KafkaWorker.Etcd.csproj"/>
+        <ProjectReference Include="..\KafkaWorker.Docker\KafkaWorker.Docker.csproj"/>
+        <ProjectReference Include="..\KafkaWorker.Provisioning\KafkaWorker.Provisioning.csproj"/>
+    </ItemGroup>
+
+</Project>

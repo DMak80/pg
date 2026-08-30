@@ -31,8 +31,14 @@ public interface IEtcdGateway
     Task<Result> DeleteAsync(string endpoint, string keyOrPrefix, bool prefix, CancellationToken ct);
 }
 
-// Compare-условие txn: версия ключа (0 = ключа нет).
-public sealed record TxnCompare(string Key, long Version);
+// Compare-условие txn: версия ключа (0 = ключа нет) либо mod_revision (RMW-перезапись,
+// kafka-мутации arch/02 §10.2: config-update/topics desired — compare по mod_revision).
+public sealed record TxnCompare(string Key, long Version, long? ModRevision = null)
+{
+    // Ключ не менялся с момента чтения — RMW-примитив kafka-мутаций (arch/02 §10.2).
+    public static TxnCompare ByModRevision(string key, long modRevision)
+        => new(key, 0, modRevision);
+}
 
 // Один put внутри txn либо самостоятельный.
 public sealed record KvPut(string Key, string Value);

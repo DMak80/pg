@@ -126,6 +126,39 @@ public static class InspectionModule
         return endpoints;
     }
 
+    // GET /api/kafka/clusters[...] — инспекция kafka-домена из KafkaSnapshot (arch/03 §7.1).
+    public static IEndpointRouteBuilder MapKafkaInspectionApi(this IEndpointRouteBuilder endpoints)
+    {
+        // GET /api/kafka/clusters — сводный список (arch/03 §7.1).
+        endpoints.MapGet("/api/kafka/clusters", async (IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleQuery<KafkaClustersQuery, IReadOnlyList<KafkaClusterSummaryDto>>(
+                new KafkaClustersQuery(), ct);
+            return ResultToHttp(result);
+        });
+
+        // GET /api/kafka/clusters/{cluster} — детали; 404 кластера нет, прочее — 503.
+        endpoints.MapGet("/api/kafka/clusters/{cluster}", async (
+            string cluster, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleQuery<KafkaClusterDetailsQuery, KafkaClusterDto>(
+                new KafkaClusterDetailsQuery(cluster), ct);
+            if (result.IsSuccess)
+                return Results.Ok(result.Value);
+            return result.Error is KafkaClusterNotFound
+                ? Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound,
+                    title: "Cluster not found",
+                    detail: result.Error.Message)
+                : Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable,
+                    title: "Snapshot not ready",
+                    detail: result.Error!.Message);
+        });
+
+        return endpoints;
+    }
+
     // Допустимые значения ?severity= — строчный канон arch/03 §1.
     private static readonly Dictionary<string, AlertSeverity> SeverityNames = new()
     {
