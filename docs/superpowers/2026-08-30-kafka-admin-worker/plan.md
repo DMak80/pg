@@ -317,8 +317,8 @@ public sealed record KafkaTopicView(string Topic, int Partitions,
 **Файлы:** Create `docker/KafkaWorker.Dockerfile`; Modify `deploy/docker-compose.yml` (+service `kafkaworker`); проверить `.gitignore` (данных/томов в git попадать не должно — named volumes, ничего добавлять обычно не нужно).
 
 **Действие (шаги):**
-- [ ] 1. `docker/KafkaWorker.Dockerfile` — копия `docker/PgWorker.Dockerfile` с заменой проекта на `KafkaWorker.App` (multi-stage sdk→aspnet, curl+HEALTHCHECK `/healthz`).
-- [ ] 2. В `deploy/docker-compose.yml` добавить (портативный паттерн pgworker: `extra_hosts` резолвит имя локального docker-хоста `local` в шлюз хоста; `AdvertisedClientHost=host.docker.internal` делает endpoints etcd резолвимыми для клиентов-контейнеров, клиенты на хосте — через HostMap панели):
+- [x] 1. `docker/KafkaWorker.Dockerfile` — копия `docker/PgWorker.Dockerfile` с заменой проекта на `KafkaWorker.App` (multi-stage sdk→aspnet, curl+HEALTHCHECK `/healthz`).
+- [x] 2. В `deploy/docker-compose.yml` добавить (портативный паттерн pgworker: `extra_hosts` резолвит имя локального docker-хоста `local` в шлюз хоста; `AdvertisedClientHost=host.docker.internal` делает endpoints etcd резолвимыми для клиентов-контейнеров, клиенты на хосте — через HostMap панели):
 
 ```yaml
   kafkaworker:
