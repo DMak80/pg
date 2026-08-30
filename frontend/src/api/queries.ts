@@ -1,7 +1,9 @@
 // Query-ключи и fetch-функции всех эндпоинтов (arch/03 §1); t08/t09 используют без правок слоя api.
 import { apiFetch } from './client';
 import type {
+  AddKafkaBrokerRequestDto,
   AddShardRequestDto,
+  CreateKafkaClusterRequestDto,
   AlertDto,
   AppPasswordRotatedDto,
   ClusterCreatedDto,
@@ -10,6 +12,13 @@ import type {
   CreateClusterRequestDto,
   EtcdStatusDto,
   HaScopeDto,
+  KafkaBrokerAddedDto,
+  KafkaClusterCreatedDto,
+  KafkaClusterDto,
+  KafkaClusterSummaryDto,
+  KafkaConfigUpdatedDto,
+  KafkaConfigUpdateRequestDto,
+  KafkaPasswordRotatedDto,
   HaScopeSummaryDto,
   MoveBucketsRequestDto,
   MovesQueuedDto,
@@ -130,5 +139,69 @@ export function recreateNode(scope: string, node: string, mode: RecreateMode): P
 export function rotateAppPassword(cluster: string): Promise<AppPasswordRotatedDto> {
   return apiFetch<AppPasswordRotatedDto>(
     `/api/clusters/${encodeURIComponent(cluster)}/app-password/rotate`,
+    { method: 'POST' });
+}
+
+// ===== Kafka-домен (arch/03 §7.1) =====
+
+export const kafkaQueryKeys = {
+  clusters: ['kafka-clusters'] as const,
+  cluster: (name: string) => ['kafka-clusters', name] as const,
+};
+
+export function fetchKafkaClusters(): Promise<KafkaClusterSummaryDto[]> {
+  return apiFetch<KafkaClusterSummaryDto[]>('/api/kafka/clusters');
+}
+
+export function fetchKafkaClusterDetails(name: string): Promise<KafkaClusterDto> {
+  return apiFetch<KafkaClusterDto>(`/api/kafka/clusters/${encodeURIComponent(name)}`);
+}
+
+// POST /api/kafka/clusters — создание kafka-кластера (arch/02 §10.2-1).
+export function createKafkaCluster(
+  request: CreateKafkaClusterRequestDto,
+): Promise<KafkaClusterCreatedDto> {
+  return apiFetch<KafkaClusterCreatedDto>('/api/kafka/clusters', { method: 'POST', body: request });
+}
+
+// DELETE /api/kafka/clusters/{cluster} — перевод в TO_REMOVE (arch/02 §10.2-2).
+export function deleteKafkaCluster(cluster: string): Promise<void> {
+  return apiFetch<void>(`/api/kafka/clusters/${encodeURIComponent(cluster)}`, { method: 'DELETE' });
+}
+
+// PUT /api/kafka/clusters/{cluster}/config — default-конфиги (arch/02 §10.2-3).
+export function updateKafkaConfig(
+  cluster: string,
+  request: KafkaConfigUpdateRequestDto,
+): Promise<KafkaConfigUpdatedDto> {
+  return apiFetch<KafkaConfigUpdatedDto>(
+    `/api/kafka/clusters/${encodeURIComponent(cluster)}/config`,
+    { method: 'PUT', body: request });
+}
+
+// POST /api/kafka/clusters/{cluster}/brokers — добавление брокера (arch/02 §10.2-4);
+// имя генерирует сервер (broker<max+1>).
+export function addKafkaBroker(
+  cluster: string,
+  request: AddKafkaBrokerRequestDto,
+): Promise<KafkaBrokerAddedDto> {
+  return apiFetch<KafkaBrokerAddedDto>(
+    `/api/kafka/clusters/${encodeURIComponent(cluster)}/brokers`,
+    { method: 'POST', body: request });
+}
+
+// DELETE /api/kafka/clusters/{cluster}/brokers/{broker} — маркер TO_REMOVE
+// (arch/02 §10.2-5); демонтаж выполняет KafkaWorker.
+export function removeKafkaBroker(cluster: string, broker: string): Promise<void> {
+  return apiFetch<void>(
+    `/api/kafka/clusters/${encodeURIComponent(cluster)}/brokers/${encodeURIComponent(broker)}`,
+    { method: 'DELETE' });
+}
+
+// POST /api/kafka/clusters/{cluster}/app-password/rotate — заявка ротации
+// (arch/02 §10.2-8): rolling-перезапуск брокеров; выполняет KafkaWorker.
+export function rotateKafkaPassword(cluster: string): Promise<KafkaPasswordRotatedDto> {
+  return apiFetch<KafkaPasswordRotatedDto>(
+    `/api/kafka/clusters/${encodeURIComponent(cluster)}/app-password/rotate`,
     { method: 'POST' });
 }
