@@ -97,6 +97,10 @@ arch/
 ├── 13-network-security.md     ← ★ сетевая модель бакетов: firewall-матрица, TLS, аутентификация (P17)
 ├── 14-pgworker.md             ← ★ оркестратор PgWorker: provisioning/deprovisioning/надзор/эвакуация
 │                                  (docker-управление кластерами, префикс /pgworker/, roadmap/)
+├── 15-kafka-clusters.md       ← ★ Kafka-кластера: контракт etcd /kafka/ + координация /kafkaworker/
+│                                  + клиентский дискавери (endpoints/app-креды/реестр топиков)
+├── 16-kafkaworker.md          ← ★ KafkaWorker: оркестратор Kafka-кластеров
+│                                  (provisioning/deprovisioning/надзор/автосинк топиков/converge)
 ├── configs/
 │   ├── etcd/
 │   │   ├── docker-compose.yml
@@ -181,3 +185,9 @@ arch/
 12. [14-pgworker.md](14-pgworker.md) — оркестратор PgWorker: декларативный
     provisioning/deprovisioning кластеров, контроль нод, эвакуация бакетов
     (отложенные задачи — [roadmap/](roadmap/)).
+13. [15-kafka-clusters.md](15-kafka-clusters.md) — Kafka-кластера: контракт
+    etcd (контроль-плейн `/kafka/`, координация `/kafkaworker/`) и клиентский
+    дискавери.
+14. [16-kafkaworker.md](16-kafkaworker.md) — оркестратор KafkaWorker:
+    декларативный жизненный цикл Kafka-кластеров (KRaft, docker plain/swarm),
+    автосинк топиков, converge конфигов.
