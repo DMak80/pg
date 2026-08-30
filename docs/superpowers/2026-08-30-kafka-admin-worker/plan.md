@@ -141,11 +141,11 @@ dev-stand/adminpanel/    (kafka-seed.sh — compose-сервис в профил
 - Create тест-проекты: `src/tests/KafkaWorker.UnitTests/KafkaWorker.UnitTests.csproj` + `ResultTests.cs` (копия-проверка каркаса), `src/tests/KafkaWorker.IntegrationTests/KafkaWorker.IntegrationTests.csproj`.
 
 **Действие (шаги):**
-- [ ] 1. Скопировать из `src/PgWorker.*` с заменой namespace `PgWorker.*`→`KafkaWorker.*` и удалением pg-специфики: Core → Result/DI/Retry как есть; `PortAllocator` — упростить до одного порта на ноду (диапазон из опций, без «тройки» pg); `PlacementPlanner` — как есть (анти-аффинити); `KafkaPasswordGenerator` — по образцу `AppSecretGenerator` (32 симв `[A-Za-z0-9]`).
-- [ ] 2. `EtcdGateway`/`ClaimStore`/`WorkJournal` — копии (префикс `/pgworker/` → `/kafkaworker/` внутри констант координации).
-- [ ] 3. `DockerEngine`/драйверы — копии с заменой `pgw-`→`kfw-` и удалением doorman/haproxy-специфики (env-генерация уходит в A7 `NodeEnvBuilder`).
-- [ ] 4. Пять csproj + оба тест-проекта в `src/PgWorker.slnx` (папки `/kafka/` и `/tests/`). Проекты Provisioning/App пока пустые (кроме csproj) — наполняются с A8/A12.
-- [ ] 5. Скопировать `ResultTests.cs` как smoke теста каркаса (AAA).
+- [x] 1. Скопировать из `src/PgWorker.*` с заменой namespace `PgWorker.*`→`KafkaWorker.*` и удалением pg-специфики: Core → Result/DI/Retry как есть; `PortAllocator` — упростить до одного порта на ноду (диапазон из опций, без «тройки» pg); `PlacementPlanner` — как есть (анти-аффинити); `KafkaPasswordGenerator` — по образцу `AppSecretGenerator` (32 симв `[A-Za-z0-9]`).
+- [x] 2. `EtcdGateway`/`ClaimStore`/`WorkJournal` — копии (префикс `/pgworker/` → `/kafkaworker/` внутри констант координации).
+- [x] 3. `DockerEngine`/драйверы — копии с заменой `pgw-`→`kfw-` и удалением doorman/haproxy-специфики (env-генерация уходит в A7 `NodeEnvBuilder`).
+- [x] 4. Пять csproj + оба тест-проекта в `src/PgWorker.slnx` (папки `/kafka/` и `/tests/`). Проекты Provisioning/App пока пустые (кроме csproj) — наполняются с A8/A12.
+- [x] 5. Скопировать `ResultTests.cs` как smoke теста каркаса (AAA).
 
 **Интерфейсы (Produces):** `Result`/`Result<T>`; `IEtcdGateway` (RangeAsync/TxnAsync/PutAsync/DeletePrefixAsync — как у PgWorker); `ClaimStore`(`AcquireAsync(claim, instanceId, ttl)`/`ReleaseAsync`); `WorkJournal`(`WriteAsync(cluster, op, phase, err)`); `IClusterDriver`(`EnsureNodeAsync(name, env, resources, volumes)`/`RemoveNodeAsync(name, removeVolume)`/`ListAsync(prefix)`); `KafkaPasswordGenerator.Generate()`.
 **Выход:** собирающийся каркас воркера в решении (все 5 проектов в slnx).

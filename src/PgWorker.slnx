@@ -21,6 +21,13 @@
     <Folder Name="/app/">
         <Project Path="PgWorker.App/PgWorker.App.csproj" />
     </Folder>
+    <Folder Name="/kafka/">
+        <Project Path="KafkaWorker.Core/KafkaWorker.Core.csproj" />
+        <Project Path="KafkaWorker.Etcd/KafkaWorker.Etcd.csproj" />
+        <Project Path="KafkaWorker.Docker/KafkaWorker.Docker.csproj" />
+        <Project Path="KafkaWorker.Provisioning/KafkaWorker.Provisioning.csproj" />
+        <Project Path="KafkaWorker.App/KafkaWorker.App.csproj" />
+    </Folder>
     <Folder Name="/admin/">
         <Project Path="AdminPanel.Api/AdminPanel.Api.csproj" />
         <Project Path="AdminPanel.Core/AdminPanel.Core.csproj" />
@@ -33,5 +40,7 @@
         <Project Path="tests/PgWorker.IntegrationTests/PgWorker.IntegrationTests.csproj" />
         <Project Path="tests/AdminPanel.UnitTests/AdminPanel.UnitTests.csproj" />
         <Project Path="tests/AdminPanel.IntegrationTests/AdminPanel.IntegrationTests.csproj" />
+        <Project Path="tests/KafkaWorker.UnitTests/KafkaWorker.UnitTests.csproj" />
+        <Project Path="tests/KafkaWorker.IntegrationTests/KafkaWorker.IntegrationTests.csproj" />
     </Folder>
 </Solution>

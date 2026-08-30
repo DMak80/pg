@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="KafkaWorker.UnitTests"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\KafkaWorker.Core\KafkaWorker.Core.csproj"/>
+        <ProjectReference Include="..\KafkaWorker.Etcd\KafkaWorker.Etcd.csproj"/>
+        <ProjectReference Include="..\KafkaWorker.Docker\KafkaWorker.Docker.csproj"/>
+    </ItemGroup>
+
+</Project>
