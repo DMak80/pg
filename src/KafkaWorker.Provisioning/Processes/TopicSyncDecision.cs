@@ -55,6 +55,23 @@ public abstract record TopicSyncAction
 
     /// <summary>No-op: факт и реестр согласованы.</summary>
     public sealed record Skip(string Topic) : TopicSyncAction;
+
+    /// <summary>Исполнить delete-заявку: DeleteTopics → txn del факт-ключа + del заявки.</summary>
+    public sealed record LifecycleDelete(string Topic) : TopicSyncAction;
+
+    /// <summary>Исполнить create-заявку: CreateTopics(P, RF, configs?) → del заявки.</summary>
+    public sealed record LifecycleCreate(
+        string Topic,
+        int Partitions,
+        short ReplicationFactor,
+        IReadOnlyDictionary<string, string>? Configs) : TopicSyncAction;
+
+    /// <summary>
+    /// Чистка заявки без исполнения (arch/15 §3.1): create при живом топике /
+    /// delete при отсутствующем / коллизия / __-имя. Op определяет, сносит ли
+    /// act и факт-ключ (delete + топика нет → да).
+    /// </summary>
+    public sealed record LifecycleCleanup(string Topic, string Op, string Reason) : TopicSyncAction;
 }
 
 /// <summary>
@@ -92,7 +109,6 @@ public static class TopicSyncDecision
                 actions.Add(new TopicSyncAction.Skip(fact.Topic));
                 continue;
             }
-
             if (!byTopic.Remove(fact.Topic, out var reg))
             {
                 // Новый топик (создан CLI/клиентом) → ключ с фактом, заявки нет.
@@ -162,10 +178,82 @@ public static class TopicSyncDecision
         }
 
         return actions;
-
-        static bool IsInternal(string topic)
-            => topic.StartsWith("__", StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// Decide-ветки lifecycle-заявок (arch/15 §3.1, чистые функции): один
+    /// топик — одно lifecycle-действие за тик; порядок выхода — чистка
+    /// create-коллизий → delete → чистка delete → create (исполнение перед
+    /// факт-синком процесса).
+    /// </summary>
+    public static IReadOnlyList<TopicSyncAction> DecideLifecycle(
+        IReadOnlyList<TopicLifecycleTicket> tickets,
+        IReadOnlyList<TopicFact> facts,
+        IReadOnlyList<KafkaTopicReg> registry)
+    {
+        var actions = new List<TopicSyncAction>();
+        var factsByTopic = facts.ToDictionary(f => f.Topic, StringComparer.Ordinal);
+        var byTopic = tickets.GroupBy(t => t.Topic, StringComparer.Ordinal);
+
+        foreach (var group in byTopic)
+        {
+            var delete = group.FirstOrDefault(t => t.Op == TopicLifecycleOps.Delete);
+            var create = group.FirstOrDefault(t => t.Op == TopicLifecycleOps.Create);
+
+            // Коллизия заявок (etcd-мусор): delete авторитетен — create чистится
+            // ДО исполнения delete (arch/15 §3.1: «del desired.create; исполняется delete»).
+            if (delete is not null && create is not null)
+                actions.Add(new TopicSyncAction.LifecycleCleanup(
+                    group.Key, TopicLifecycleOps.Create, "коллизия с delete-заявкой — delete авторитетен"));
+
+            if (delete is not null)
+            {
+                // Симметричный guard __-имени (не полагаемся на неявный фильтр
+                // DescribeFactsAsync): заявка на internal-топик — мусор.
+                if (IsInternal(group.Key))
+                    actions.Add(new TopicSyncAction.LifecycleCleanup(
+                        group.Key, TopicLifecycleOps.Delete, "internal-топик __* — не исполняется"));
+                else if (factsByTopic.ContainsKey(group.Key))
+                    actions.Add(new TopicSyncAction.LifecycleDelete(group.Key));
+                else
+                    actions.Add(new TopicSyncAction.LifecycleCleanup(
+                        group.Key, TopicLifecycleOps.Delete, "топика нет в Kafka — исполнено внешне"));
+                continue;
+            }
+
+            if (create is not null)
+            {
+                if (IsInternal(group.Key))
+                    actions.Add(new TopicSyncAction.LifecycleCleanup(
+                        group.Key, TopicLifecycleOps.Create, "internal-топик __* — не исполняется"));
+                else if (factsByTopic.ContainsKey(group.Key))
+                    actions.Add(new TopicSyncAction.LifecycleCleanup(
+                        group.Key, TopicLifecycleOps.Create, "топик уже существует — параметры заявки не применяются"));
+                else
+                    actions.Add(new TopicSyncAction.LifecycleCreate(
+                        group.Key, create.Partitions, create.ReplicationFactor ?? 1, create.Configs));
+            }
+        }
+
+        // Порядок исполнения за тик (arch/15 §3.1): сначала чистка create-заявок
+        // (в т.ч. коллизия — до delete), затем delete-действия и чистка delete-заявок,
+        // затем создание. Факт-синк процесса идёт после всех lifecycle-действий.
+        return actions
+            .OrderBy(a => a switch
+            {
+                TopicSyncAction.LifecycleCleanup { Op: TopicLifecycleOps.Create } => 0,
+                TopicSyncAction.LifecycleDelete => 1,
+                TopicSyncAction.LifecycleCleanup { Op: TopicLifecycleOps.Delete } => 2,
+                TopicSyncAction.LifecycleCreate => 3,
+                _ => 4,
+            })
+            .ToList();
+    }
+
+    // Internal-топик Kafka (__*): в реестр не попадает, lifecycle-заявки на
+    // него — etcd-мусор (arch/15 §3/§3.1).
+    private static bool IsInternal(string topic)
+        => topic.StartsWith("__", StringComparison.Ordinal);
 
     // Дрейф факта против записи реестра: partitions/RF/управляемые конфиги.
     private static bool Drifted(KafkaTopicReg reg, TopicFact fact)

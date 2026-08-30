@@ -224,4 +224,131 @@ public class TopicSyncDecisionTests
         actions.OfType<TopicSyncAction.Forget>().Should().ContainSingle().Which.Topic.Should().Be("gone");
         actions.OfType<TopicSyncAction.Skip>().Should().ContainSingle().Which.Topic.Should().Be("kept");
     }
+
+    [Fact]
+    public void DecideLifecycle_DeleteWithTopicInFacts_ProducesLifecycleDelete()
+    {
+        // Arrange: delete-заявка на топик, который есть в факте Kafka.
+        var tickets = new[] { new TopicLifecycleTicket("orders", TopicLifecycleOps.Delete, 0, null, null, 1, "u") };
+        var facts = new[] { new TopicFact("orders", 3, 1, null) };
+        var registry = new[] { new KafkaTopicReg("orders", 3, 1, null, null, null, null, 1, false) };
+
+        // Act
+        var actions = TopicSyncDecision.DecideLifecycle(tickets, facts, registry);
+
+        // Assert
+        actions.Should().ContainSingle().Which.Should().BeOfType<TopicSyncAction.LifecycleDelete>()
+            .Which.Topic.Should().Be("orders");
+    }
+
+    [Fact]
+    public void DecideLifecycle_CreateWithoutTopic_ProducesLifecycleCreate()
+    {
+        // Arrange: create-заявка, топика нет ни в факте, ни в реестре.
+        var tickets = new[] { new TopicLifecycleTicket("audit", TopicLifecycleOps.Create, 12, 3,
+            new Dictionary<string, string> { ["retention.ms"] = "86400000" }, 1, "u") };
+
+        // Act
+        var actions = TopicSyncDecision.DecideLifecycle(tickets, [], []);
+
+        // Assert
+        actions.Should().ContainSingle().Which.Should().BeOfType<TopicSyncAction.LifecycleCreate>()
+            .Which.Should().BeEquivalentTo(new { Topic = "audit", Partitions = 12, ReplicationFactor = (short)3 });
+    }
+
+    [Fact]
+    public void DecideLifecycle_CreateWithMissingRegistryKey_ProducesLifecycleCreate()
+    {
+        // Arrange: create-заявка при висящем missing-ключе реестра (топика нет в
+        // факте — «пересоздание», arch/15 §3.1): desired у ключа уже отменён.
+        var tickets = new[] { new TopicLifecycleTicket("ghost", TopicLifecycleOps.Create, 3, 1, null, 1, "u") };
+        var registry = new[] { new KafkaTopicReg("ghost", 3, 1, null, null, null, null, 1, true) };
+
+        // Act
+        var actions = TopicSyncDecision.DecideLifecycle(tickets, [], registry);
+
+        // Assert: топика нет в факте — создаём (missing-ветка автосинка снимет
+        // missing следующим тиком по появившемуся факту).
+        actions.Should().ContainSingle().Which.Should().BeOfType<TopicSyncAction.LifecycleCreate>()
+            .Which.Topic.Should().Be("ghost");
+    }
+
+    [Fact]
+    public void DecideLifecycle_CreateWithTopicInFacts_CleanupAsAlreadyExists()
+    {
+        // Arrange: create-заявка при живом топике (панель обошла проверку — мусор).
+        var tickets = new[] { new TopicLifecycleTicket("orders", TopicLifecycleOps.Create, 6, 1, null, 1, "u") };
+        var facts = new[] { new TopicFact("orders", 3, 1, null) };
+
+        // Act
+        var actions = TopicSyncDecision.DecideLifecycle(tickets, facts, []);
+
+        // Assert: cleanup create-заявки («уже существует, параметры не применены»).
+        actions.Should().ContainSingle().Which.Should().BeOfType<TopicSyncAction.LifecycleCleanup>()
+            .Which.Should().BeEquivalentTo(new { Topic = "orders", Op = TopicLifecycleOps.Create });
+    }
+
+    [Fact]
+    public void DecideLifecycle_BothTickets_CleanupCreateThenDelete()
+    {
+        // Arrange: обе заявки живы (etcd-мусор).
+        var tickets = new[]
+        {
+            new TopicLifecycleTicket("orders", TopicLifecycleOps.Create, 6, 1, null, 1, "u"),
+            new TopicLifecycleTicket("orders", TopicLifecycleOps.Delete, 0, null, null, 2, "u"),
+        };
+        var facts = new[] { new TopicFact("orders", 3, 1, null) };
+
+        // Act
+        var actions = TopicSyncDecision.DecideLifecycle(tickets, facts, []);
+
+        // Assert: сначала чистка create (арх/15 §3.1 — ДО исполнения delete),
+        // затем delete; create не исполняется.
+        actions.Should().HaveCount(2);
+        actions[0].Should().BeOfType<TopicSyncAction.LifecycleCleanup>().Which.Op.Should().Be(TopicLifecycleOps.Create);
+        actions[1].Should().BeOfType<TopicSyncAction.LifecycleDelete>();
+    }
+
+    [Fact]
+    public void DecideLifecycle_DeleteWithoutTopic_CleanupExternal()
+    {
+        // Arrange: delete-заявка, топика нет в факте (удалён CLI раньше).
+        var tickets = new[] { new TopicLifecycleTicket("orders", TopicLifecycleOps.Delete, 0, null, null, 1, "u") };
+        var registry = new[] { new KafkaTopicReg("orders", 3, 1, null, null, null, null, 1, true) }; // missing-ключ висит
+
+        // Act
+        var actions = TopicSyncDecision.DecideLifecycle(tickets, [], registry);
+
+        // Assert: cleanup delete-заявки; act-ветка снесёт и missing-ключ.
+        actions.Should().ContainSingle().Which.Should().BeOfType<TopicSyncAction.LifecycleCleanup>()
+            .Which.Op.Should().Be(TopicLifecycleOps.Delete);
+    }
+
+    [Fact]
+    public void DecideLifecycle_InternalTopicTicket_CleanupWithoutExecution()
+    {
+        // Arrange: заявка на __-имя — панель такие не ставит, мусор.
+        var tickets = new[] { new TopicLifecycleTicket("__consumer_offsets", TopicLifecycleOps.Create, 1, 1, null, 1, "u") };
+
+        // Act
+        var actions = TopicSyncDecision.DecideLifecycle(tickets, [], []);
+
+        // Assert
+        actions.Should().ContainSingle().Which.Should().BeOfType<TopicSyncAction.LifecycleCleanup>();
+    }
+
+    [Fact]
+    public void DecideLifecycle_InternalTopicDeleteTicket_CleanupWithoutExecution()
+    {
+        // Arrange: delete-заявка на __-имя — симметричный guard (не полагаемся
+        // на неявный фильтр DescribeFactsAsync; ревью Фазы 4 r1).
+        var tickets = new[] { new TopicLifecycleTicket("__consumer_offsets", TopicLifecycleOps.Delete, 0, null, null, 1, "u") };
+
+        // Act
+        var actions = TopicSyncDecision.DecideLifecycle(tickets, [], []);
+
+        // Assert: cleanup без DeleteTopics — даже если бы факт содержал __-имя.
+        actions.Should().ContainSingle().Which.Should().BeOfType<TopicSyncAction.LifecycleCleanup>()
+            .Which.Op.Should().Be(TopicLifecycleOps.Delete);
+    }
 }
