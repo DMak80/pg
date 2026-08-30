@@ -48,6 +48,13 @@ put /kafka/clusters/events/topics/ghost \
 put /kafkaworker/rotations/events \
   "{\"requested_unix\":$now,\"requested_by\":\"seed\"}"
 
+# Ребалансировка (t02): живая заявка + drain-прогресс — парсер/UI/алерты
+# видны без живого воркера (арх/15 §4).
+put /kafkaworker/rebalances/events \
+  '{"requested_unix":1756500123,"requested_by":"seed"}'
+put /kafkaworker/reassignments/events \
+  '{"mode":"drain","drain_broker":"broker2","partitions_total":6,"partitions_remaining":3,"submitted_unix":1756500130,"updated_unix":1756500135,"instance":"seed"}'
+
 # --- pending: заявка NOT_INITIALIZED ---
 put /kafka/clusters/pending/config \
   '{"brokers":3,"replication_factor":3,"min_insync_replicas":2,"default_partitions":12,"default_retention_ms":604800000,"created_unix":1756500900,"state":"NOT_INITIALIZED"}'
@@ -60,4 +67,6 @@ done
 [ -n "$(ECT get /kafka/clusters/events/config --print-value-only)" ] || { echo "kafka-seed: ❌ events/config не записан"; exit 1; }
 [ -n "$(ECT get /kafka/clusters/pending/config --print-value-only)" ] || { echo "kafka-seed: ❌ pending/config не записан"; exit 1; }
 [ -n "$(ECT get /kafkaworker/rotations/events --print-value-only)" ] || { echo "kafka-seed: ❌ заявка ротации не записана"; exit 1; }
-echo "kafka-seed: ✓ events (Active) + pending (NOT_INITIALIZED) + ротация events"
+[ -n "$(ECT get /kafkaworker/rebalances/events --print-value-only)" ] || { echo "kafka-seed: ❌ заявка ребалансировки не записана"; exit 1; }
+[ -n "$(ECT get /kafkaworker/reassignments/events --print-value-only)" ] || { echo "kafka-seed: ❌ прогресс reassignment не записан"; exit 1; }
+echo "kafka-seed: ✓ events (Active) + pending (NOT_INITIALIZED) + ротация/ребалансировка events"
