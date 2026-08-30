@@ -603,7 +603,7 @@ public sealed record KafkaRotationTicket(string Cluster, long RequestedUnix, str
 **Файлы:** Create `dev-stand/adminpanel/checks/55-kafka-e2e.sh`; Modify `dev-stand/adminpanel/README.md` (e2e-порядок).
 
 **Действие (шаги):**
-- [ ] 1. Скрипт (чистое состояние, БЕЗ сида). Цепочка шагов (каждый дожидается устойчивого состояния перед следующим):
+- [x] 1. Скрипт (чистое состояние, БЕЗ сида). Цепочка шагов (каждый дожидается устойчивого состояния перед следующим):
   1. `./checks/90-down.sh -v` → `docker compose up -d --profile kafka` (kafka-seed не поднимается — профиль seed не активен; контроль: `etcdctl get /kafka/ --prefix --keys-only` пусто);
   2. создать кластер (3 брокера) через API → ждать RUNNING+endpoints;
   3. создать топик `docker run --rm --add-host host.docker.internal:host-gateway apache/kafka:4.0.0 kafka-topics --create` (адреса/креды — ТОЛЬКО чтением ключей etcd через etcdctl) → ждать автосинка: ключ `topics/e2e` в etcd ≤ 2 тиков;
@@ -614,7 +614,7 @@ public sealed record KafkaRotationTicket(string Cluster, long RequestedUnix, str
   8. **демонтаж брокера**: при B=3 все broker1..3 — controller (m=min(3,3)) — удалять их нельзя; сценарий: POST /brokers → broker4 (broker-only) → ждать RUNNING → DELETE brokers/broker1 → 409 (controller-guard, негативная проверка) → DELETE brokers/broker4 → 204 (пустой broker-only);
   9. TO_REMOVE кластера → префикс `/kafka/clusters/<C>/` пуст.
   (Converge-шаг «без рестартов» уже верифицирован в B9 — здесь не дублируется.)
-- [ ] 2. README: строка e2e-прогона (55-й требует чистого состояния — как 30/40 pg-чеков; сид-профиль не поднимать).
+- [x] 2. README: строка e2e-прогона (55-й требует чистого состояния — как 30/40 pg-чеков; сид-профиль не поднимать).
 
 **Выход:** автоматизированный критерий §9.5, включая достижимую missing-ветку (валидная заявка перед CLI-удалением) и согласование с KRaft-ролями (controller-ноды не демонтируются).
 **Проверка:** `./checks/55-kafka-e2e.sh` с чистого состояния — зелёный (все 9 подшагов).
