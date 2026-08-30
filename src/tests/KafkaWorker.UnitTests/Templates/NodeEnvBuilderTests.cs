@@ -105,16 +105,16 @@ public class NodeEnvBuilderTests
         var singleEnv = NodeEnvBuilder.Build(single);
         var dualEnv = NodeEnvBuilder.Build(dual);
 
-        // Assert: JAAS содержит user_<name>=<password>; в окне ротации — оба
+        // Assert: JAAS содержит user_<name>="<password>"; в окне ротации — оба
         // пользователя (фаза A: OLD рабочий, NEW уже валиден).
         singleEnv["KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG"]
-            .Should().Contain("user_app=OldPassword0123456789AbCdEf01")
+            .Should().Contain("user_app=\"OldPassword0123456789AbCdEf01\"")
             .And.NotContain("user_app2");
         dualEnv["KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG"]
-            .Should().Contain("user_app=OldPassword0123456789AbCdEf01")
-            .And.Contain("user_app2=NewPassword0123456789AbCdEf0");
+            .Should().Contain("user_app=\"OldPassword0123456789AbCdEf01\"")
+            .And.Contain("user_app2=\"NewPassword0123456789AbCdEf0\"");
         dualEnv["KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG"]
-            .Should().Contain("user_app=OldPassword0123456789AbCdEf01");
+            .Should().Contain("user_app=\"OldPassword0123456789AbCdEf01\"");
 
         // Inter-broker-креды (фикс 3-брокерного e2e C5): INTERNAL-JAAS несёт
         // username/password клиента (broker-as-client) + user_inter; CLIENT —
@@ -128,6 +128,29 @@ public class NodeEnvBuilderTests
             .Should().Contain("username=\"inter\"");
         singleEnv["KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG"]
             .Should().NotContain("username=");
+    }
+
+    [Fact]
+    public void Build_Jaas_PasswordsQuoted_EvenDigitLeading()
+    {
+        // Arrange: пароль начинается с ЦИФРЫ (алфавит [A-Za-z0-9] — ~16%
+        // генераций): Java JAAS-парсер не принимает незакавыченное значение,
+        // начинающееся с цифры («Value not specified for key …» — брокер
+        // падает на старте, вскрыто flaky-падением интеграционного теста).
+        var digitLeading = Spec(passwords: ["0epSfWoy7q5SJu9RhhK8F8eHxzHuvx1A"]);
+
+        // Act: генерация env.
+        var env = NodeEnvBuilder.Build(digitLeading);
+
+        // Assert: все пароли user_* — в двойных кавычках (валидны для
+        // Java-парсера при любом первом символе; согласовано с
+        // username/password/user_inter в INTERNAL-JAAS).
+        env["KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG"]
+            .Should().Contain("user_app=\"0epSfWoy7q5SJu9RhhK8F8eHxzHuvx1A\"");
+        env["KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG"]
+            .Should().Contain("user_app=\"0epSfWoy7q5SJu9RhhK8F8eHxzHuvx1A\"");
+        env.Values.OfType<string>().Where(v => v.Contains("user_app"))
+            .Should().NotContain(v => v.Contains("user_app=0epSfWoy"));
     }
 
     [Fact]

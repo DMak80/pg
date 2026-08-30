@@ -123,12 +123,16 @@ public static class NodeEnvBuilder
             .Replace('/', '_');
     }
 
-    // user_<name>=<password> через пробел; в окне ротации второй кред — user_<name>2.
+    // user_<name>="<password>" через пробел; в окне ротации второй кред —
+    // user_<name>2. Пароли ТОЛЬКО в двойных кавычках: Java JAAS-парсер не
+    // принимает незакавыченное значение, начинающееся с цифры («Value not
+    // specified for key …» — брокер падает на старте; алфавит генератора
+    // [A-Za-z0-9] даёт ~16% таких паролей).
     private static string BuildJaasUsers(string appUser, IReadOnlyList<string> passwords)
     {
-        var users = $"user_{appUser}={passwords[0]}";
+        var users = $"user_{appUser}=\"{passwords[0]}\"";
         if (passwords.Count > 1)
-            users += $" user_{appUser}2={passwords[1]}";
+            users += $" user_{appUser}2=\"{passwords[1]}\"";
         return users;
     }
 

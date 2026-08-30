@@ -131,9 +131,10 @@ public class ProvisioningProcessTests
         rig.Etcd.Store["/kafka/clusters/events/app_password"].Value.Should().HaveLength(32);
         rig.Etcd.Store["/kafkaworker/portalloc/events"].Value
             .Should().Contain("\"client\":16000").And.Contain("\"broker3\"");
-        // Секреты переданы в env (JAAS).
+        // Секреты переданы в env (JAAS; пароли в кавычках — валидны для
+        // Java-парсера при любом первом символе).
         broker1.Env["KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG"]
-            .Should().Contain($"user_app={rig.Etcd.Store["/kafka/clusters/events/app_password"].Value}");
+            .Should().Contain($"user_app=\"{rig.Etcd.Store["/kafka/clusters/events/app_password"].Value}\"");
     }
 
     [Fact]
