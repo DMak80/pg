@@ -150,6 +150,7 @@ internal static class Fakes
         private readonly object _gate = new();
 
         public readonly List<KafkaNodeSpec> Ensured = [];
+        public readonly List<KafkaNodeSpec> AllEnsured = []; // включая повторы имён (rolling-фазы)
         public readonly List<(string Node, bool RemoveVolume)> Removed = [];
         public List<string> NodeObjects = []; // имена kfw-<C>-<b>
         public Func<string, Result>? EnsureResultByNode { get; set; }
@@ -175,6 +176,7 @@ internal static class Fakes
 
             lock (_gate)
             {
+                AllEnsured.Add(spec);
                 if (Ensured.All(e => e.NodeName != spec.NodeName))
                     Ensured.Add(spec);
                 var name = $"kfw-{spec.Cluster}-{spec.NodeName}";

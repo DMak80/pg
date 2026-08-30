@@ -13,16 +13,22 @@ internal interface IKafkaClusterProcesses
 
     Task<Result> DeprovisionAsync(KafkaClusterSnapshot snap, CancellationToken ct);
 
-    /// <summary>Active-ветка: надзор (C) → converge (E); scale/ротация/TopicSync — волны B/C.</summary>
+    /// <summary>
+    /// Active-ветка (порядок — план B4): надзор (C) → converge (E) → scale-проход
+    /// remove (G) → add (F) → ротация (H). TopicSync (D) — волна C.
+    /// </summary>
     Task<Result> ActiveAsync(KafkaClusterSnapshot snap, CancellationToken ct);
 }
 
-/// <summary>Реализация поверх процессов волны A (синглтоны DI).</summary>
+/// <summary>Реализация поверх процессов (синглтоны DI).</summary>
 internal sealed class KafkaClusterProcesses(
     ProvisioningProcess provision,
     DeprovisioningProcess deprovision,
     NodeSupervisor supervisor,
-    IClusterConfigConverger converger) : IKafkaClusterProcesses
+    IClusterConfigConverger converger,
+    RemoveBrokerProcess removeBroker,
+    AddBrokerProcess addBroker,
+    AppPasswordRotator rotator) : IKafkaClusterProcesses
 {
     public Task<Result> ProvisionAsync(KafkaClusterSnapshot snap, CancellationToken ct)
         => provision.RunAsync(snap, ct);
@@ -39,10 +45,25 @@ internal sealed class KafkaClusterProcesses(
             return supervised;
 
         // Converge (E) — только для поднявшегося кластера (endpoints есть).
-        if (snap.Endpoints is null || snap.AppUser is null || snap.AppPassword is null)
-            return Result.Success(); // ещё поднимается — converge нечем
+        if (snap.Endpoints is not null && snap.AppUser is not null && snap.AppPassword is not null)
+        {
+            var converged = await converger.ApplyAsync(
+                snap.Cluster, snap.Endpoints, snap.AppUser, snap.AppPassword, snap.Config, ct);
+            if (!converged.IsSuccess)
+                return converged;
+        }
 
-        return await converger.ApplyAsync(
-            snap.Cluster, snap.Endpoints, snap.AppUser, snap.AppPassword, snap.Config, ct);
+        // Scale-проход: сначала демонтаж (G), затем добавление (F) — endpoints
+        // не «прыгает» туда-сюда в одном тике.
+        var removed = await removeBroker.RunAsync(snap, ct);
+        if (!removed.IsSuccess)
+            return removed;
+
+        var added = await addBroker.RunAsync(snap, ct);
+        if (!added.IsSuccess)
+            return added;
+
+        // Ротация app-пароля (H) — по заявке /kafkaworker/rotations/<C>.
+        return await rotator.RunAsync(snap, ct);
     }
 }
