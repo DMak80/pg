@@ -72,6 +72,41 @@ public sealed class KafkaAdminClient(
         return ValueTask.CompletedTask;
     }
 
+    public Task<Result<IReadOnlyDictionary<string, string>>> DescribeTopicConfigsAsync(string topic, CancellationToken ct)
+        => RunAsync<IReadOnlyDictionary<string, string>>(async client =>
+        {
+            var resource = new ConfigResource { Type = ResourceType.Topic, Name = topic };
+            var described = await client.DescribeConfigsAsync(
+                [resource],
+                new DescribeConfigsOptions { RequestTimeout = requestTimeout });
+            var entries = described.Single().Entries.Values
+                .Where(e => e.Value is not null)
+                .ToDictionary(e => e.Name, e => e.Value!);
+            return (IReadOnlyDictionary<string, string>)entries;
+        }, ct);
+
+    public Task<Result> AlterTopicConfigsAsync(string topic, IReadOnlyDictionary<string, string> configs, CancellationToken ct)
+        => RunAsync(async client =>
+        {
+            var resource = new ConfigResource { Type = ResourceType.Topic, Name = topic };
+            var entries = configs
+                .Select(pair => new ConfigEntry { Name = pair.Key, Value = pair.Value, IncrementalOperation = AlterConfigOpType.Set })
+                .ToList();
+            await client.IncrementalAlterConfigsAsync(
+                new Dictionary<ConfigResource, List<ConfigEntry>> { [resource] = entries },
+                new IncrementalAlterConfigsOptions { RequestTimeout = requestTimeout });
+            return Result.Success();
+        }, ct);
+
+    public Task<Result> CreatePartitionsAsync(string topic, int totalPartitions, CancellationToken ct)
+        => RunAsync(async client =>
+        {
+            await client.CreatePartitionsAsync(
+                [new PartitionsSpecification { Topic = topic, IncreaseTo = totalPartitions }],
+                new CreatePartitionsOptions { RequestTimeout = requestTimeout });
+            return Result.Success();
+        }, ct);
+
     // Полный список топиков + реплики партиций — через метаданные
     // (DescribeTopicsAsync требует имена заранее). Internal-топики __* — вне реестра.
     private IReadOnlyList<KafkaTopicView> DescribeTopicsViaMetadata(IAdminClient client)

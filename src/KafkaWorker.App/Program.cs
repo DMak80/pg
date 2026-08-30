@@ -143,6 +143,16 @@ builder.Services.AddSingleton(sp => new AppPasswordRotator(
     ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 
+// Автосинк топиков (arch/16 §5 D): троттлинг TopicSyncIntervalSec внутри.
+builder.Services.AddSingleton(sp => new TopicSyncProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<IKafkaAdminClientFactory>(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Loops.TopicSyncIntervalSec));
+
 // Циклы: keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
 builder.Services.AddSingleton<IKafkaClusterProcesses, KafkaClusterProcesses>();
 builder.Services.AddSingleton<KeepaliveLoop>();

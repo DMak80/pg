@@ -4,9 +4,11 @@ using KafkaWorker.Provisioning.Processes;
 
 namespace KafkaWorker.App.Loops;// Агрегатор процессов для ReconcileLoop (порт ClusterProcesses PgWorker):
 // цикл не знает конкретных машин состояний — только эту грань (мокабельно
-// в unit-тестах цикла). Волны B/C добавят сюда scale-проходы, ротацию и TopicSync.
+// в unit-тестах цикла).
 
-/// <summary>Точка входа цикла к процессам-машинам состояний (arch/16 §5).</summary>
+/// <summary>
+/// Точка входа цикла к процессам-машинам состояний (arch/16 §5).
+/// </summary>
 internal interface IKafkaClusterProcesses
 {
     Task<Result> ProvisionAsync(KafkaClusterSnapshot snap, CancellationToken ct);
@@ -14,8 +16,9 @@ internal interface IKafkaClusterProcesses
     Task<Result> DeprovisionAsync(KafkaClusterSnapshot snap, CancellationToken ct);
 
     /// <summary>
-    /// Active-ветка (порядок — план B4): надзор (C) → converge (E) → scale-проход
-    /// remove (G) → add (F) → ротация (H). TopicSync (D) — волна C.
+    /// Active-ветка (порядок — план B4/C1): надзор (C) → converge (E) →
+    /// scale-проход remove (G) → add (F) → ротация (H) → автосинк топиков (D,
+    /// тик TopicSyncIntervalSec — троттлится внутри процесса).
     /// </summary>
     Task<Result> ActiveAsync(KafkaClusterSnapshot snap, CancellationToken ct);
 }
@@ -28,7 +31,8 @@ internal sealed class KafkaClusterProcesses(
     IClusterConfigConverger converger,
     RemoveBrokerProcess removeBroker,
     AddBrokerProcess addBroker,
-    AppPasswordRotator rotator) : IKafkaClusterProcesses
+    AppPasswordRotator rotator,
+    TopicSyncProcess topicSync) : IKafkaClusterProcesses
 {
     public Task<Result> ProvisionAsync(KafkaClusterSnapshot snap, CancellationToken ct)
         => provision.RunAsync(snap, ct);
@@ -64,6 +68,12 @@ internal sealed class KafkaClusterProcesses(
             return added;
 
         // Ротация app-пароля (H) — по заявке /kafkaworker/rotations/<C>.
-        return await rotator.RunAsync(snap, ct);
+        var rotated = await rotator.RunAsync(snap, ct);
+        if (!rotated.IsSuccess)
+            return rotated;
+
+        // Автосинк топиков (D) — последним: реестр сходится к итоговому факту
+        // кластера (в т.ч. после изменения состава брокеров).
+        return await topicSync.RunAsync(snap, ct);
     }
 }

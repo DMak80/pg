@@ -33,6 +33,15 @@ public interface IKafkaAdminClient : IAsyncDisposable
 
     // IncrementalAlterConfigs (Set) на брокере — converge без рестартов (E).
     Task<Result> AlterBrokerConfigsAsync(int brokerId, IReadOnlyDictionary<string, string> configs, CancellationToken ct);
+
+    // Факт-конфиги топика (name → значение; TopicSync волны C, arch/16 §5 D).
+    Task<Result<IReadOnlyDictionary<string, string>>> DescribeTopicConfigsAsync(string topic, CancellationToken ct);
+
+    // IncrementalAlterConfigs (Set) на топике — исполнение desired-заявок (D).
+    Task<Result> AlterTopicConfigsAsync(string topic, IReadOnlyDictionary<string, string> configs, CancellationToken ct);
+
+    // Увеличение партиций топика до итогового числа (уменьшение Kafka не умеет).
+    Task<Result> CreatePartitionsAsync(string topic, int totalPartitions, CancellationToken ct);
 }
 
 /// <summary>Фабрика клиентов по bootstrap+кредам кластера (SASL/PLAIN, arch/15 §5).</summary>

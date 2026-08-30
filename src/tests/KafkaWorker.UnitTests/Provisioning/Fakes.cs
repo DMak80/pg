@@ -19,6 +19,10 @@ internal static class Fakes
         public readonly List<TxnRequest> Txns = [];
         public Action<string>? OnPut { get; set; }
 
+        // Гонка «панель пишет между read и txn»: вызывается ДО compare —
+        // тест успевает переписать ключ и сломать ModRevisionEqual.
+        public Action<TxnRequest>? OnTxnBeforeCompare { get; set; }
+
         private long _rev;
         private long _lease;
         private readonly object _gate = new();
@@ -80,6 +84,7 @@ internal static class Fakes
             lock (_gate)
             {
                 Txns.Add(req);
+                OnTxnBeforeCompare?.Invoke(req);
                 succeeded = req.Compare.All(c => c.Target switch
                 {
                     TxnTarget.Version => Store.TryGetValue(c.Key, out var e) ? e.Version == c.Num : c.Num == 0,
