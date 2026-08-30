@@ -55,9 +55,10 @@ public sealed class PartitionReassignerProcess(
     };
 
     // Время последнего успешного тика (троттл IntervalSec; провал — без штрафа)
-    // и последней подачи батча (дедуп переподачи RetrySubmitSec) по кластеру.
+    // и последней подачи батча (дедуп переподачи RetrySubmitSec) по кластеру:
+    // повтор ТОГО ЖЕ батча не чаще окна, новый батч (факт двинулся) — сразу.
     private readonly ConcurrentDictionary<string, long> _lastOk = new();
-    private readonly ConcurrentDictionary<string, long> _lastSubmit = new();
+    private readonly ConcurrentDictionary<string, (string Signature, long Unix)> _lastSubmit = new();
 
     public async Task<Result> RunAsync(KafkaClusterSnapshot snap, CancellationToken ct)
     {
@@ -283,10 +284,14 @@ public sealed class PartitionReassignerProcess(
         var pending = ReassignPlanner.Pending(all, plan);
         var batch = pending.Take(options.BatchPartitions).ToList();
 
-        // Дедуп: повторная подача не чаще RetrySubmitSec — между ними только
-        // put прогресса (идемпотентность повторов — семантика KIP-455).
+        // Дедуп (spec D5): переподача ТОГО ЖЕ батча не чаще RetrySubmitSec —
+        // между ними только put прогресса (идемпотентность повторов —
+        // семантика KIP-455); следующий батч (факт двинулся) — сразу.
+        var signature = string.Join(";", batch.Select(m => $"{m.Topic}:{m.Partition}"));
         var submittedUnix = previous?.SubmittedUnix ?? 0;
-        if (_lastSubmit.TryGetValue(cluster, out var lastSubmit) && now - lastSubmit < options.RetrySubmitSec)
+        if (_lastSubmit.TryGetValue(cluster, out var lastSubmit)
+            && lastSubmit.Signature == signature
+            && now - lastSubmit.Unix < options.RetrySubmitSec)
         {
             var kept = await PutProgressAsync(cluster, new ReassignProgress(
                 mode, drainBroker,
@@ -324,7 +329,7 @@ public sealed class PartitionReassignerProcess(
             return Fail(cluster, exec.Error!, "submitting-batch"); // следующий тик переподаст
 
         submittedUnix = now;
-        _lastSubmit[cluster] = now;
+        _lastSubmit[cluster] = (signature, now);
         _lastOk[cluster] = now;
 
         // D6: прогресс-ключ (total от первого тика операции живёт до конца).
