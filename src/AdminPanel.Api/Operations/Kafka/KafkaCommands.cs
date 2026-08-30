@@ -422,7 +422,148 @@ public sealed class RotateKafkaPasswordCommandHandler(ISnapshotStore store, IEtc
     }
 }
 
+// ===== 7. Конфиг-заявка топика — RMW desired (arch/02 §10.2-7; arch/15 §3) =====
+
+public sealed record UpsertTopicDesiredCommand(string Cluster, string Topic, TopicDesiredRequest Request, string RequestedBy)
+    : ICommand<KafkaTopicDesiredDto>;
+
+// Ответ 200 PUT /api/kafka/clusters/{c}/topics/{t} (arch/03 §7.2).
+public sealed record KafkaTopicDesiredDto(
+    string Cluster, string Topic, int? Partitions, long? RetentionMs, int? MinInSyncReplicas);
+
+public sealed class KafkaTopicNotFoundException(string cluster, string topic, string? reason = null)
+    : Exception($"топик {topic} kafka-кластера {cluster} не найден" + (reason is null ? "" : $" ({reason})"));
+
+// Битый ключ topics/<T> — 503 (факт реестра испорчен; чинит автосинк/оператор).
+public sealed class InvalidKafkaTopicKeyException(string cluster, string topic)
+    : Exception($"ключ топика {topic} kafka-кластера {cluster} не читается (битый JSON)");
+
+[InjectAsScoped]
+public sealed class UpsertTopicDesiredCommandHandler(
+    ISnapshotStore store,
+    IEtcdGateway gateway,
+    TimeProvider time) : ICommandHandler<UpsertTopicDesiredCommand, KafkaTopicDesiredDto>
+{
+    public async ValueTask<Result<KafkaTopicDesiredDto>> Handle(
+        UpsertTopicDesiredCommand command, CancellationToken ct)
+    {
+        var (cluster, topic) = (command.Cluster, command.Topic);
+
+        // Имя топика каноническое и не internal (arch/15 §3) — иначе 404.
+        if (!KafkaLimits.TopicPattern().IsMatch(topic) || KafkaLimits.IsInternalTopic(topic))
+            return Result<KafkaTopicDesiredDto>.Failed(new KafkaTopicNotFoundException(cluster, topic));
+
+        if (KafkaCommandHelpers.ActiveEndpoint(store) is not { } endpoint)
+            return Result<KafkaTopicDesiredDto>.Failed(new EtcdWriteUnavailableException());
+
+        var config = await KafkaCommandHelpers.ReadConfigAsync(gateway, endpoint, cluster, ct);
+        if (config.Error is not null)
+            return Result<KafkaTopicDesiredDto>.Failed(config.Error);
+        if (config.Value is null)
+            return Result<KafkaTopicDesiredDto>.Failed(new KafkaClusterNotFoundException(cluster));
+        if (config.Value.State is not null)
+            return Result<KafkaTopicDesiredDto>.Failed(
+                new KafkaClusterNotActiveException(cluster, config.Value.State));
+
+        // Ключ топика напрямую (снапшот отстаёт): нет/missing/битый.
+        var key = KafkaCommandHelpers.TopicKey(cluster, topic);
+        var read = await KafkaCommandHelpers.ReadTopicKeyAsync(gateway, endpoint, key, ct);
+        if (read.Error is not null)
+            return Result<KafkaTopicDesiredDto>.Failed(read.Error);
+        if (read.Json is null)
+            return Result<KafkaTopicDesiredDto>.Failed(new KafkaTopicNotFoundException(cluster, topic));
+        if (read.Json.Missing)
+            return Result<KafkaTopicDesiredDto>.Failed(
+                new KafkaTopicNotFoundException(cluster, topic, "топик отсутствует в кластере"));
+
+        // Валидация против факта (partitions — только увеличение, §3.2).
+        var errors = KafkaTopicDesiredPlan.Validate(command.Request, read.Json.Partitions);
+        if (errors.Count > 0)
+            return Result<KafkaTopicDesiredDto>.Failed(new KafkaValidationException(errors));
+
+        // RMW-txn: compare mod_revision + put с desired (факт не трогаем).
+        var updated = read.Json.WithDesired(
+            KafkaTopicDesiredPlan.Build(command.Request),
+            time.GetUtcNow().ToUnixTimeSeconds(),
+            command.RequestedBy);
+        var txn = await gateway.TxnAsync(
+            endpoint,
+            [TxnCompare.ByModRevision(key, read.Revision!.Value)],
+            [new KvPut(key, updated.Serialize())],
+            ct);
+        if (!txn.IsSuccess)
+            return Result<KafkaTopicDesiredDto>.Failed(new EtcdWriteUnavailableException());
+        if (!txn.Value.Succeeded)
+            return Result<KafkaTopicDesiredDto>.Failed(new KafkaConcurrentWriteException(key));
+
+        return Result<KafkaTopicDesiredDto>.Success(new KafkaTopicDesiredDto(
+            cluster, topic, command.Request.Partitions, command.Request.RetentionMs,
+            command.Request.MinInSyncReplicas));
+    }
+}
+
+// ===== 8. Отмена конфиг-заявки — desired=null RMW (arch/02 §10.2-8) =====
+
+public sealed record CancelTopicDesiredCommand(string Cluster, string Topic)
+    : ICommand<KafkaTopicDesiredCancelledDto>;
+
+public sealed record KafkaTopicDesiredCancelledDto(string Cluster, string Topic);
+
+public sealed class KafkaTopicDesiredNotFoundException(string cluster, string topic)
+    : Exception($"конфиг-заявка топика {topic} kafka-кластера {cluster} не найдена");
+
+[InjectAsScoped]
+public sealed class CancelTopicDesiredCommandHandler(ISnapshotStore store, IEtcdGateway gateway)
+    : ICommandHandler<CancelTopicDesiredCommand, KafkaTopicDesiredCancelledDto>
+{
+    public async ValueTask<Result<KafkaTopicDesiredCancelledDto>> Handle(
+        CancelTopicDesiredCommand command, CancellationToken ct)
+    {
+        var (cluster, topic) = (command.Cluster, command.Topic);
+
+        if (!KafkaLimits.TopicPattern().IsMatch(topic) || KafkaLimits.IsInternalTopic(topic))
+            return Result<KafkaTopicDesiredCancelledDto>.Failed(new KafkaTopicNotFoundException(cluster, topic));
+
+        if (KafkaCommandHelpers.ActiveEndpoint(store) is not { } endpoint)
+            return Result<KafkaTopicDesiredCancelledDto>.Failed(new EtcdWriteUnavailableException());
+
+        var config = await KafkaCommandHelpers.ReadConfigAsync(gateway, endpoint, cluster, ct);
+        if (config.Error is not null)
+            return Result<KafkaTopicDesiredCancelledDto>.Failed(config.Error);
+        if (config.Value is null)
+            return Result<KafkaTopicDesiredCancelledDto>.Failed(new KafkaClusterNotFoundException(cluster));
+        if (config.Value.State is not null)
+            return Result<KafkaTopicDesiredCancelledDto>.Failed(
+                new KafkaClusterNotActiveException(cluster, config.Value.State));
+
+        var key = KafkaCommandHelpers.TopicKey(cluster, topic);
+        var read = await KafkaCommandHelpers.ReadTopicKeyAsync(gateway, endpoint, key, ct);
+        if (read.Error is not null)
+            return Result<KafkaTopicDesiredCancelledDto>.Failed(read.Error);
+        if (read.Json is null)
+            return Result<KafkaTopicDesiredCancelledDto>.Failed(new KafkaTopicNotFoundException(cluster, topic));
+        if (read.Json.Desired is null)
+            return Result<KafkaTopicDesiredCancelledDto>.Failed(
+                new KafkaTopicDesiredNotFoundException(cluster, topic));
+
+        // RMW-txn: compare mod_revision + put без desired-полей (факт сохранён).
+        var txn = await gateway.TxnAsync(
+            endpoint,
+            [TxnCompare.ByModRevision(key, read.Revision!.Value)],
+            [new KvPut(key, read.Json.WithoutDesired().Serialize())],
+            ct);
+        if (!txn.IsSuccess)
+            return Result<KafkaTopicDesiredCancelledDto>.Failed(new EtcdWriteUnavailableException());
+        if (!txn.Value.Succeeded)
+            return Result<KafkaTopicDesiredCancelledDto>.Failed(new KafkaConcurrentWriteException(key));
+
+        return Result<KafkaTopicDesiredCancelledDto>.Success(
+            new KafkaTopicDesiredCancelledDto(cluster, topic));
+    }
+}
+
 // ===== Общие хелперы чтения (config/ключи напрямую у etcd — снапшот отстаёт) =====
+
 
 internal static class KafkaCommandHelpers
 {
@@ -485,4 +626,29 @@ internal static class KafkaCommandHelpers
 
     internal static string BrokerKey(string cluster, string broker, string leaf)
         => $"/kafka/clusters/{cluster}/brokers/{broker}/{leaf}";
+
+    internal static string TopicKey(string cluster, string topic)
+        => $"/kafka/clusters/{cluster}/topics/{topic}";
+
+    // Чтение ключа топика с revision для RMW: (json, mod_revision, ошибка).
+    internal sealed record TopicKeyRead(KafkaTopicKeyJson? Json, long? Revision, Exception? Error);
+
+    internal static async Task<TopicKeyRead> ReadTopicKeyAsync(
+        IEtcdGateway gateway, string endpoint, string key, CancellationToken ct)
+    {
+        var range = await gateway.RangeAsync(endpoint, key, ct);
+        if (!range.IsSuccess)
+            return new TopicKeyRead(null, null, new EtcdWriteUnavailableException());
+
+        var kv = range.Value.FirstOrDefault(k => k.Key == key);
+        if (kv is null)
+            return new TopicKeyRead(null, null, null);
+
+        // /kafka/clusters/<C>/topics/<T>: ["", "kafka", "clusters", <C>, "topics", <T>].
+        var segments = key.Split('/');
+        var json = KafkaTopicKeyJson.TryParse(kv.Value);
+        return json is null
+            ? new TopicKeyRead(null, null, new InvalidKafkaTopicKeyException(segments[3], segments[5]))
+            : new TopicKeyRead(json, (long)kv.ModRevision, null);
+    }
 }

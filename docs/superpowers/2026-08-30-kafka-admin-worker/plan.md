@@ -560,8 +560,8 @@ public sealed record KafkaRotationTicket(string Cluster, long RequestedUnix, str
 **Файлы:** Modify `src/AdminPanel.Api/Operations/Kafka/{KafkaCommands.cs,KafkaOperationsModule.cs}` (+`UpsertTopicDesiredCommand`: PUT `/api/kafka/clusters/{c}/topics/{t}` — тело `{partitions?, retentionMs?, minInSyncReplicas?}`, 404 кластер/топик/missing, partitions ≤ факт → 400, RMW-txn; +`CancelTopicDesiredCommand`: DELETE `.../topics/{t}/desired` — desired=null, 404 если заявки нет); Modify `src/AdminPanel.Etcd/Writing/KafkaWriting.cs` (+topic RMW); Test `src/tests/AdminPanel.UnitTests/Kafka/{UpsertTopicDesiredCommandTests,CancelTopicDesiredCommandTests}.cs`.
 
 **Действие (шаги):**
-- [ ] 1. Тесты (AAA): валидация полей (хотя бы одно; partitions > фактического; имя топика Kafka-паттерн `^[a-zA-Z0-9._-]{1,249}$` без `__`-префикса → 400/404-грань); RMW-txn проигрыш → 503/retry-семантика; отмена отсутствующей заявки → 404.
-- [ ] 2. Реализация команд + эндпоинты (в модуль B5 — добавить две записи).
+- [x] 1. Тесты (AAA): валидация полей (хотя бы одно; partitions > фактического; имя топика Kafka-паттерн `^[a-zA-Z0-9._-]{1,249}$` без `__`-префикса → 400/404-грань); RMW-txn проигрыш → 503/retry-семантика; отмена отсутствующей заявки → 404.
+- [x] 2. Реализация команд + эндпоинты (в модуль B5 — добавить две записи).
 
 **Выход:** конфиг-заявки топиков из панели.
 **Проверка:** юнит-фильтры TopicDesired — зелёные.

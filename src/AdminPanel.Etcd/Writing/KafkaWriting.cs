@@ -261,3 +261,104 @@ public sealed record KafkaRotationTicketJson(
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         });
 }
+
+// Тело PUT /api/kafka/clusters/{c}/topics/{t} — конфиг-заявка топика (arch/02
+// §10.2-7; управляемые поля §3.2): хотя бы одно поле; partitions — только
+// увеличение (сверяется с фактом ключа в хендлере).
+public sealed record TopicDesiredRequest(
+    int? Partitions = null,
+    long? RetentionMs = null,
+    int? MinInSyncReplicas = null);
+
+// desired-часть ключа topics/<T> (arch/15 §3).
+public sealed record KafkaTopicDesiredJson(
+    [property: JsonPropertyName("partitions")] int? Partitions,
+    [property: JsonPropertyName("configs")] Dictionary<string, string>? Configs);
+
+// Значение ключа topics/<T> (arch/15 §3): факт (partitions/RF/configs/
+// synced_unix) + заявка desired + missing. Толерантный разбор/каноническая
+// запись — панель меняет ТОЛЬКО desired-поля (RMW), факт — территория воркера.
+public sealed record KafkaTopicKeyJson(
+    [property: JsonPropertyName("partitions")] int Partitions,
+    [property: JsonPropertyName("replication_factor")] int? ReplicationFactor,
+    [property: JsonPropertyName("configs")] Dictionary<string, string>? Configs,
+    [property: JsonPropertyName("desired")] KafkaTopicDesiredJson? Desired,
+    [property: JsonPropertyName("desired_unix")] long? DesiredUnix,
+    [property: JsonPropertyName("desired_by")] string? DesiredBy,
+    [property: JsonPropertyName("synced_unix")] long? SyncedUnix,
+    [property: JsonPropertyName("missing")] bool Missing)
+{
+    private static readonly JsonSerializerOptions Json = new()
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+    };
+
+    // Толерантный разбор значения ключа (битый JSON → null → 503 хендлером).
+    public static KafkaTopicKeyJson? TryParse(string raw)
+    {
+        try
+        {
+            return JsonSerializer.Deserialize<KafkaTopicKeyJson>(raw, Json);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    public string Serialize() => JsonSerializer.Serialize(this, Json);
+
+    // Постановка заявки: факт не трогаем, desired/desired_unix/desired_by.
+    public KafkaTopicKeyJson WithDesired(KafkaTopicDesiredJson desired, long unix, string by)
+        => this with { Desired = desired, DesiredUnix = unix, DesiredBy = by };
+
+    // Отмена заявки: убрать desired-поля (desire=null → поля не пишутся).
+    public KafkaTopicKeyJson WithoutDesired()
+        => this with { Desired = null, DesiredUnix = null, DesiredBy = null };
+}
+
+// Чистые функции desired-мутаций топика (arch/02 §10.2-7/8): валидация тела
+// против факта ключа + построение desired-JSON.
+public static class KafkaTopicDesiredPlan
+{
+    // Валидация: хотя бы одно поле; границы; partitions — строго больше факта
+    // (уменьшение Kafka не поддерживает — отсекает панель, spec §3.2).
+    public static IReadOnlyList<ValidationError> Validate(TopicDesiredRequest request, int actualPartitions)
+    {
+        var errors = new List<ValidationError>();
+        if (request.Partitions is null && request.RetentionMs is null && request.MinInSyncReplicas is null)
+            errors.Add(new("", "хотя бы одно поле заявки обязательно"));
+
+        if (request.Partitions is { } p && p <= actualPartitions)
+            errors.Add(new("partitions",
+                $"partitions: только увеличение (фактически {actualPartitions})"));
+        if (request.Partitions is { } p2 && (p2 < KafkaLimits.MinPartitions || p2 > KafkaLimits.MaxPartitions))
+            errors.Add(new("partitions",
+                $"partitions: целое {KafkaLimits.MinPartitions}..{KafkaLimits.MaxPartitions}"));
+
+        if (request.RetentionMs is { } r && (r < KafkaLimits.MinRetentionMs || r > KafkaLimits.MaxRetentionMs))
+            errors.Add(new("retentionMs",
+                $"retentionMs: {KafkaLimits.MinRetentionMs}..{KafkaLimits.MaxRetentionMs}"));
+
+        if (request.MinInSyncReplicas is { } isr && isr < 1)
+            errors.Add(new("minInSyncReplicas", "minInSyncReplicas: целое ≥ 1"));
+
+        return errors;
+    }
+
+    // desired-JSON из запроса: только управляемые конфиги (§3.2).
+    public static KafkaTopicDesiredJson Build(TopicDesiredRequest request)
+    {
+        Dictionary<string, string>? configs = null;
+        if (request.RetentionMs is not null || request.MinInSyncReplicas is not null)
+        {
+            configs = new Dictionary<string, string>();
+            if (request.RetentionMs is { } r)
+                configs["retention.ms"] = r.ToString(CultureInfo.InvariantCulture);
+            if (request.MinInSyncReplicas is { } isr)
+                configs["min.insync.replicas"] = isr.ToString(CultureInfo.InvariantCulture);
+        }
+
+        return new KafkaTopicDesiredJson(request.Partitions, configs);
+    }
+}

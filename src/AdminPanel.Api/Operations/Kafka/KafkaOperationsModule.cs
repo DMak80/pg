@@ -7,8 +7,8 @@ using Microsoft.AspNetCore.Routing;
 
 namespace AdminPanel.Api.Operations.Kafka;
 
-// Модуль kafka-мутаций (arch/03 §7.1): 6 эндпоинтов волны B; PUT/DELETE
-// topics/{t}[/desired] — desired-мутации топиков, реализуются в волне C (C2).
+// Модуль kafka-мутаций (arch/03 §7.1): 8 эндпоинтов (волна B + C2 desired-
+// мутации топиков PUT/DELETE topics/{t}[/desired]).
 public static class KafkaOperationsModule
 {
     public static IEndpointRouteBuilder MapKafkaOperationsApi(this IEndpointRouteBuilder endpoints)
@@ -189,6 +189,76 @@ public static class KafkaOperationsModule
                 EtcdWriteUnavailableException or InvalidKafkaConfigException => Results.Problem(
                     statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
                     detail: result.Error.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
+                    detail: result.Error!.Message),
+            };
+        });
+
+        // PUT /api/kafka/clusters/{cluster}/topics/{topic} — конфиг-заявка (02 §10.2-7).
+        endpoints.MapPut("/api/kafka/clusters/{cluster}/topics/{topic}", async (
+            string cluster, string topic, TopicDesiredRequest request, ClaimsPrincipal user,
+            IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<UpsertTopicDesiredCommand, KafkaTopicDesiredDto>(
+                new UpsertTopicDesiredCommand(cluster, topic, request, user.Identity?.Name ?? "adminpanel"), ct);
+            if (result.IsSuccess)
+                return Results.Ok(result.Value);
+
+            return result.Error switch
+            {
+                KafkaValidationException validation => Results.Problem(
+                    statusCode: StatusCodes.Status400BadRequest,
+                    title: "Validation failed",
+                    detail: result.Error.Message,
+                    extensions: new Dictionary<string, object?>
+                    {
+                        ["errors"] = validation.Errors.ToDictionary(e => e.Field, e => new[] { e.Message }),
+                    }),
+                KafkaClusterNotFoundException or KafkaTopicNotFoundException => Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound, title: "Not found",
+                    detail: result.Error.Message),
+                KafkaClusterNotActiveException => Results.Problem(
+                    statusCode: StatusCodes.Status409Conflict, title: "Cluster not active",
+                    detail: result.Error.Message),
+                KafkaConcurrentWriteException => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Concurrent write",
+                    detail: result.Error.Message),
+                EtcdWriteUnavailableException or InvalidKafkaConfigException or InvalidKafkaTopicKeyException
+                    => Results.Problem(
+                        statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
+                        detail: result.Error.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
+                    detail: result.Error!.Message),
+            };
+        });
+
+        // DELETE /api/kafka/clusters/{cluster}/topics/{topic}/desired — отмена заявки (02 §10.2-8).
+        endpoints.MapDelete("/api/kafka/clusters/{cluster}/topics/{topic}/desired", async (
+            string cluster, string topic, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<CancelTopicDesiredCommand, KafkaTopicDesiredCancelledDto>(
+                new CancelTopicDesiredCommand(cluster, topic), ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return result.Error switch
+            {
+                KafkaClusterNotFoundException or KafkaTopicNotFoundException
+                    or KafkaTopicDesiredNotFoundException => Results.Problem(
+                        statusCode: StatusCodes.Status404NotFound, title: "Not found",
+                        detail: result.Error.Message),
+                KafkaClusterNotActiveException => Results.Problem(
+                    statusCode: StatusCodes.Status409Conflict, title: "Cluster not active",
+                    detail: result.Error.Message),
+                KafkaConcurrentWriteException => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Concurrent write",
+                    detail: result.Error.Message),
+                EtcdWriteUnavailableException or InvalidKafkaConfigException or InvalidKafkaTopicKeyException
+                    => Results.Problem(
+                        statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
+                        detail: result.Error.Message),
                 _ => Results.Problem(
                     statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
                     detail: result.Error!.Message),
