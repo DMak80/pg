@@ -365,8 +365,8 @@ volumes: + kfw-snapshots
 
 **Вход:** A1–A14 (A3 уже выполнен как предпоследний шаг волны).
 **Действие:**
-- [ ] 1. `dotnet build src/PgWorker.slnx` — 0 warnings; `dotnet test src/PgWorker.slnx` — всё зелёное (включая pg-тесты — регрессов нет).
-- [ ] 2. Коммит волны: `feat(kafka): волна A — контракт etcd + KafkaWorker (provision/deprovision/надзор/converge)`.
+- [x] 1. `dotnet build src/PgWorker.slnx` — 0 warnings; `dotnet test src/PgWorker.slnx` — всё зелёное (включая pg-тесты — регрессов нет).
+- [x] 2. Коммит волны: `feat(kafka): волна A — контракт etcd + KafkaWorker (provision/deprovision/надзор/converge)`.
 
 **Выход:** волна A закрыта (spec §7 A: всё, кроме add/remove/ротации/TopicSync); arch-зеркало (A3) синхронизировано до закрытия границы.
 **Проверка:** команды выше; в git — коммит волны.
