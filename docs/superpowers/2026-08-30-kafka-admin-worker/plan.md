@@ -285,9 +285,9 @@ public sealed record KafkaTopicView(string Topic, int Partitions,
 **Файлы:** Create `src/KafkaWorker.Provisioning/Processes/{NodeSupervisor,ClusterConfigConverger}.cs`; Test `src/tests/KafkaWorker.UnitTests/Provisioning/{NodeSupervisorTests,ClusterConfigConvergerTests}.cs`.
 
 **Действие (шаги):**
-- [ ] 1. Тесты (AAA) supervisor: снесённый контейнер → EnsureNodeAsync (тот же volume/env); брокер молчит > NodeDeadSec → state=UNREACHABLE + recreate; том отсутствует и RF>1 → чистый том; ноды TO_REMOVE/REMOVING/PROVISIONING не трогаются.
-- [ ] 2. Тесты (AAA) converger: фактические dynamic-конфиги ≠ config.default_* → AlterBrokerConfigsAsync на всех брокерах (маппинг `default_retention_ms`→`log.retention.ms`, `default_partitions`→`num.partitions`, `replication_factor`→`default.replication.factor`, `min_insync_replicas`→`min.insync.replicas`); совпадают → no-op. Живую (Testcontainers) верификацию converge даёт B9-шаг e2e.
-- [ ] 3. Реализация: `NodeSupervisor.RunAsync(snap, ct)` — сверка декларации/факта docker + AdminClient-проба; `ClusterConfigConverger.ApplyAsync(snap, ct)` — describe→decide→act (порт паттерна describe→decide→act из Puzzle §7.2).
+- [x] 1. Тесты (AAA) supervisor: снесённый контейнер → EnsureNodeAsync (тот же volume/env); брокер молчит > NodeDeadSec → state=UNREACHABLE + recreate; том отсутствует и RF>1 → чистый том; ноды TO_REMOVE/REMOVING/PROVISIONING не трогаются.
+- [x] 2. Тесты (AAA) converger: фактические dynamic-конфиги ≠ config.default_* → AlterBrokerConfigsAsync на всех брокерах (маппинг `default_retention_ms`→`log.retention.ms`, `default_partitions`→`num.partitions`, `replication_factor`→`default.replication.factor`, `min_insync_replicas`→`min.insync.replicas`); совпадают → no-op. Живую (Testcontainers) верификацию converge даёт B9-шаг e2e.
+- [x] 3. Реализация: `NodeSupervisor.RunAsync(snap, ct)` — сверка декларации/факта docker + AdminClient-проба; `ClusterConfigConverger.ApplyAsync(snap, ct)` — describe→decide→act (порт паттерна describe→decide→act из Puzzle §7.2).
 
 **Выход:** самовосстановление нод и converge конфигов без рестартов.
 **Проверка:** юнит-фильтры NodeSupervisor|ClusterConfigConverger — зелёные.

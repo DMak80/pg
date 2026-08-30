@@ -77,7 +77,7 @@ public class ProvisioningProcessTests
             new AppSecretEnsurer(etcd, [Ep]),
             new FakeAdminFactory(admin),
             converger,
-            new ProvisioningOptions(16000, 16999, brokerBootSec, null, "apache/kafka:4.0.0"),
+            new ProvisioningOptions(16000, 16999, brokerBootSec, 90, null, "apache/kafka:4.0.0"),
             snapshot: ct =>
             {
                 snapshotPoints.Add($"n{snapshotPoints.Count}");

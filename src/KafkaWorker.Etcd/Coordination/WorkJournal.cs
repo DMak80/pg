@@ -54,13 +54,15 @@ public sealed class WorkJournal(IEtcdGateway gateway, string[] endpoints)
         }
     }
 
-    // Тик надзора: op=supervise + трек недоступности (порог NodeDeadSec).
+    // Тик надзора: op=supervise + трек недоступности (порог NodeDeadSec);
+    // lastError — накопленные warning-ы тика (RF=1-пересоздания и т.п.).
     public Task<Result> WriteSupervisionAsync(
-        string cluster, string instance, IReadOnlyDictionary<string, long> unreachable, CancellationToken ct)
+        string cluster, string instance, IReadOnlyDictionary<string, long> unreachable,
+        string? lastError, CancellationToken ct)
         => WithFailoverAsync(endpoint => gateway.PutAsync(
             endpoint, WorkKey(cluster),
             JsonSerializer.Serialize(new WorkState("supervise", "supervising", instance,
-                DateTimeOffset.UtcNow.ToUnixTimeSeconds(), null, unreachable), Json),
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds(), lastError, unreachable), Json),
             lease: null, ct));
 
     // Прочитать трек недоступности (null = журнала нет/поля нет).

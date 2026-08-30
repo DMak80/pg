@@ -22,10 +22,11 @@ public sealed record ProvisioningOptions(
     int PortFrom,
     int PortTo,
     int BrokerBootSec,
+    int NodeDeadSec,
     string? AdvertisedClientHost,
     string NodeImage)
 {
-    public static ProvisioningOptions Default { get; } = new(16000, 16999, 600, null, "apache/kafka:4.0.0");
+    public static ProvisioningOptions Default { get; } = new(16000, 16999, 600, 90, null, "apache/kafka:4.0.0");
 }
 
 /// <summary>
