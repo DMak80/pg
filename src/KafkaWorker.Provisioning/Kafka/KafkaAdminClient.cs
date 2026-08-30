@@ -107,6 +107,53 @@ public sealed class KafkaAdminClient(
             return Result.Success();
         }, ct);
 
+    public Task<Result<TopicCreateOutcome>> CreateTopicAsync(
+        string topic, int partitions, short replicationFactor,
+        IReadOnlyDictionary<string, string>? configs, CancellationToken ct)
+        => RunAsync<TopicCreateOutcome>(async client =>
+        {
+            var spec = new TopicSpecification
+            {
+                Name = topic,
+                NumPartitions = partitions,
+                ReplicationFactor = replicationFactor,
+            };
+            if (configs is { Count: > 0 })
+                spec.Configs = new Dictionary<string, string>(configs);
+
+            try
+            {
+                // CreateTopicsAsync 2.14 не возвращает отчётов — исходы по исключению.
+                await client.CreateTopicsAsync(
+                    [spec], new CreateTopicsOptions { RequestTimeout = requestTimeout });
+            }
+            catch (CreateTopicsException e) when (
+                e.Results.Any(r => r.Error.Code == ErrorCode.TopicAlreadyExists))
+            {
+                return TopicCreateOutcome.AlreadyExists; // идемпотентность: исполнено (§3.1)
+            }
+
+            return TopicCreateOutcome.Created;
+        }, ct);
+
+    public Task<Result<TopicDeleteOutcome>> DeleteTopicAsync(string topic, CancellationToken ct)
+        => RunAsync<TopicDeleteOutcome>(async client =>
+        {
+            try
+            {
+                // DeleteTopicsAsync возвращает Task без отчётов — исход по исключению.
+                await client.DeleteTopicsAsync(
+                    [topic], new DeleteTopicsOptions { RequestTimeout = requestTimeout });
+            }
+            catch (DeleteTopicsException e) when (
+                e.Results.Any(r => r.Error.Code == ErrorCode.UnknownTopicOrPart))
+            {
+                return TopicDeleteOutcome.NotFound; // идемпотентность: исполнено (§3.1)
+            }
+
+            return TopicDeleteOutcome.Deleted;
+        }, ct);
+
     // Полный список топиков + реплики партиций — через метаданные
     // (DescribeTopicsAsync требует имена заранее). Internal-топики __* — вне реестра.
     private IReadOnlyList<KafkaTopicView> DescribeTopicsViaMetadata(IAdminClient client)

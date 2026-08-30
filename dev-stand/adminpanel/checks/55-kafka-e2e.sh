@@ -8,8 +8,11 @@
 # 3) топик kafka-topics CLI (креды из etcd) → автосинк ключа; 4) desired
 # (partitions↑+retention) применяется и снимается; 5) негатив partitions↓ → 400;
 # 6) группа+лаг (GET деталей: totalLag>0); 7) missing-ветка (валидная заявка →
-# CLI-удаление → missing=true + алерт → отмена → ключ удалён); 8) демонтаж
-# broker-only (controller-409 негатив); 9) TO_REMOVE → /kafka/ пуст.
+# CLI-удаление → missing=true + алерт → отмена → ключ удалён); 8) создание
+# топика из панели (lifecycle, t01) → воркер исполняет → факт-ключ; 9) негативы
+# create (409/400); 10) удаление топика из панели → ключи исчезают; 11) отмена
+# создания до тика; 12) отмена удаления до тика (топик остаётся); 13) демонтаж
+# broker-only (controller-409 негатив); 14) TO_REMOVE → /kafka/ пуст.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -63,7 +66,7 @@ wait_until() { # wait_until <описание> <секунд> <cmd…>
 }
 
 # ===== 1) Чистое состояние: стенд разобран, kfw-объекты и /kafka/ пусты =====
-echo ">>> (1/9) чистый стенд: down -v + kfw-очистка + up --profile kafka"
+echo ">>> (1/14) чистый стенд: down -v + kfw-очистка + up --profile kafka"
 ./checks/90-down.sh -v >/dev/null
 docker compose --profile kafka down -v --remove-orphans >/dev/null 2>&1 || true
 # kfw-объекты живут вне compose-проекта — чистим вручную (handoff-рецепт B9).
@@ -84,7 +87,7 @@ curl -fsS -c "$JAR" -o /dev/null -X POST "$BASE/api/auth/login" \
 echo "  ✓ панель жива, login ok"
 
 # ===== 2) Кластер 3 брокера через API → RUNNING + endpoints =====
-echo ">>> (2/9) создание кластера $CLUSTER (3 брокера) через API"
+echo ">>> (2/14) создание кластера $CLUSTER (3 брокера) через API"
 # Панель могла стартовать раньше стенда: 503 (etcd endpoint ещё не выбран)
 # повторяем до появления kafka-снапшота.
 for i in $(seq 1 30); do
@@ -101,7 +104,7 @@ wait_until "RUNNING 3/3 + endpoints" 240 bash -c '
 echo "  endpoints: $(etcd_key /kafka/clusters/$CLUSTER/endpoints)"
 
 # ===== 3) Топик kafka-topics CLI → автосинк ключа ≤ 2 тиков =====
-echo ">>> (3/9) топик $TOPIC kafka-topics CLI (креды из etcd) → автосинк"
+echo ">>> (3/14) топик $TOPIC kafka-topics CLI (креды из etcd) → автосинк"
 kafka_cli kafka-topics --create --topic "$TOPIC" --partitions 3 --replication-factor 3 >/dev/null \
   || { echo "❌ kafka-topics --create не прошёл"; exit 1; }
 wait_until "ключ topics/$TOPIC в etcd (автосинк ≤ 2 тиков)" 60 \
@@ -112,7 +115,7 @@ etcd_key "/kafka/clusters/$CLUSTER/topics/$TOPIC" \
 echo "  ключ topics/$TOPIC: факт 3 партиции/RF 3, без заявки"
 
 # ===== 4) desired (partitions↑ + retention) применяется и снимается =====
-echo ">>> (4/9) desired: partitions 3→6 + retention 1д → автосинк применяет и снимает"
+echo ">>> (4/14) desired: partitions 3→6 + retention 1д → автосинк применяет и снимает"
 c="$(code -X PUT "$BASE/api/kafka/clusters/$CLUSTER/topics/$TOPIC" \
   -H 'Content-Type: application/json' -d '{"partitions":6,"retentionMs":86400000}')"
 [ "$c" = 200 ] || { echo "❌ PUT desired = $c, ожидался 200"; exit 1; }
@@ -125,7 +128,7 @@ kafka_cli kafka-configs --entity-type topics --entity-name "$TOPIC" --describe 2
 echo "  факт: 6 партиций, retention.ms=86400000, desired снят"
 
 # ===== 5) Негатив: уменьшение partitions → 400, заявка не пишется =====
-echo ">>> (5/9) негатив: desired partitions 6→3 → 400"
+echo ">>> (5/14) негатив: desired partitions 6→3 → 400"
 c="$(code -X PUT "$BASE/api/kafka/clusters/$CLUSTER/topics/$TOPIC" \
   -H 'Content-Type: application/json' -d '{"partitions":3}')"
 [ "$c" = 400 ] || { echo "❌ PUT partitions↓ = $c, ожидался 400"; exit 1; }
@@ -134,7 +137,7 @@ etcd_key "/kafka/clusters/$CLUSTER/topics/$TOPIC" | jq -e 'has("desired") | not'
 echo "  400 ProblemDetails, desired в ключе отсутствует"
 
 # ===== 6) Группа + лаг: сообщения → частичное чтение → totalLag>0 =====
-echo ">>> (6/9) группа lag-test: лаги в деталях кластера (live-проба)"
+echo ">>> (6/14) группа lag-test: лаги в деталях кластера (live-проба)"
 # Продюсер пишет 20 сообщений; консьюмер читает --from-beginning только 5 и
 # уходит (committed=5) — оставшиеся 15 светятся лагом группы в панели.
 for i in $(seq 1 20); do echo "msg-$i"; done \
@@ -148,7 +151,7 @@ wait_until "группа lag-test с totalLag>0 в GET деталях" 120 bash 
 echo "  группа lag-test видна с totalLag>0"
 
 # ===== 7) missing-ветка: заявка → CLI-удаление → missing + алерт → отмена =====
-echo ">>> (7/9) missing-ветка: валидная заявка → удаление топика → missing=true + алерт → отмена"
+echo ">>> (7/14) missing-ветка: валидная заявка → удаление топика → missing=true + алерт → отмена"
 c="$(code -X PUT "$BASE/api/kafka/clusters/$CLUSTER/topics/$TOPIC" \
   -H 'Content-Type: application/json' -d '{"retentionMs":3600000}')"
 [ "$c" = 200 ] || { echo "❌ PUT валидной заявки = $c"; exit 1; }
@@ -169,8 +172,86 @@ wait_until "ключ topics/$TOPIC удалён (топика и заявки н
   bash -c '! docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/topics/e2e --print-value-only 2>/dev/null | grep -q .'
 echo "  отмена заявки → автосинк удалил ключ"
 
-# ===== 8) Демонтаж брокера: broker-only (controller-негатив) =====
-echo ">>> (8/9) демонтаж: broker4 (broker-only), controller-409 негатив"
+# ===== 8) Создание топика из панели → воркер исполняет (t01) =====
+echo ">>> (8/14) POST create e2e-panel (6 партиций, RF 3, retention 1д) → автосинк приносит факт"
+c="$(code -X POST "$BASE/api/kafka/clusters/$CLUSTER/topics" -H 'Content-Type: application/json' \
+  -d '{"name":"e2e-panel","partitions":6,"replicationFactor":3,"retentionMs":86400000}')"
+[ "$c" = 201 ] || { echo "❌ POST create = $c"; exit 1; }
+wait_until "факт-ключ e2e-panel (partitions 6 / RF 3 / retention 1д, без заявок)" 90 bash -c '
+  docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/topics/e2e-panel --print-value-only 2>/dev/null \
+  | jq -e ".partitions == 6 and .replication_factor == 3 and .configs[\"retention.ms\"] == \"86400000\" and (has(\"desired\") | not)"'
+# NB: pipefail + grep -q здесь нельзя: grep выходит после совпадения, java
+# CLI дописывает строки → docker run получает SIGPIPE (141) → пайплайн падает;
+# grep … >/dev/null читает до EOF.
+kafka_cli kafka-topics --describe --topic e2e-panel </dev/null 2>/dev/null | grep "PartitionCount: 6" >/dev/null \
+  || { echo "❌ kafka-topics --describe: не 6 партиций"; exit 1; }
+echo "  топик e2e-panel в Kafka (6 партиций), факт-ключ с теми же значениями"
+
+# ===== 9) Негативы create =====
+c="$(code -X POST "$BASE/api/kafka/clusters/$CLUSTER/topics" -H 'Content-Type: application/json' -d '{"name":"e2e-panel","partitions":1,"replicationFactor":1}')"
+[ "$c" = 409 ] || { echo "❌ повторный create = $c, ожидался 409"; exit 1; }
+c="$(code -X POST "$BASE/api/kafka/clusters/$CLUSTER/topics" -H 'Content-Type: application/json' -d '{"name":"x","replicationFactor":10}')"
+[ "$c" = 400 ] || { echo "❌ RF 10 = $c, ожидался 400"; exit 1; }
+c="$(code -X POST "$BASE/api/kafka/clusters/$CLUSTER/topics" -H 'Content-Type: application/json' -d '{"name":"x","partitions":0}')"
+[ "$c" = 400 ] || { echo "❌ partitions 0 = $c, ожидался 400"; exit 1; }
+echo "  негативы: повторный create 409, RF 10 → 400, partitions 0 → 400"
+
+# ===== 10) Удаление топика из панели → ключи исчезают =====
+echo ">>> (10/14) DELETE e2e-panel → топик и ключи исчезли"
+c="$(code -X DELETE "$BASE/api/kafka/clusters/$CLUSTER/topics/e2e-panel")"
+[ "$c" = 204 ] || { echo "❌ DELETE = $c"; exit 1; }
+wait_until "факт-ключ и заявка e2e-panel удалены" 60 bash -c '
+  ! docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/topics/e2e-panel --print-value-only 2>/dev/null | grep -q .'
+if kafka_cli kafka-topics --list </dev/null 2>/dev/null | grep e2e-panel >/dev/null; then
+  echo "❌ топик e2e-panel всё ещё в Kafka"; exit 1
+fi
+echo "  топик e2e-panel удалён из Kafka, оба ключа etcd чисты"
+
+# ===== 11) Отмена создания: заявка снята до тика =====
+echo ">>> (11/14) отмена create: e2e-cancel не создаётся"
+c="$(code -X POST "$BASE/api/kafka/clusters/$CLUSTER/topics" -H 'Content-Type: application/json' -d '{"name":"e2e-cancel","partitions":1,"replicationFactor":1}')"
+[ "$c" = 201 ] || { echo "❌ POST create e2e-cancel = $c"; exit 1; }
+c="$(code -X DELETE "$BASE/api/kafka/clusters/$CLUSTER/topics/e2e-cancel/desired.create")"
+[ "$c" = 204 ] || { echo "❌ отмена = $c"; exit 1; }
+sleep 35  # 2 тика автосинка
+if docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/topics/e2e-cancel --print-value-only </dev/null 2>/dev/null | grep . >/dev/null; then
+  # Гонка задокументирована (спека §6): тик успел раньше отмены — доводим до удаления.
+  echo "  гонка: тик исполнил create раньше отмены — доводим до удаления"
+  c="$(code -X DELETE "$BASE/api/kafka/clusters/$CLUSTER/topics/e2e-cancel")"
+  [ "$c" = 204 ] || { echo "❌ cleanup e2e-cancel = $c"; exit 1; }
+  wait_until "e2e-cancel удалён (гонка тика)" 60 bash -c '
+    ! docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/topics/e2e-cancel --print-value-only 2>/dev/null | grep -q .'
+fi
+echo "  заявка e2e-cancel отменена до исполнения (или гонка доведена)"
+
+# ===== 12) Отмена удаления: топик остаётся (spec §9.3) =====
+echo ">>> (12/14) отмена delete: e2e-undo остаётся жив"
+c="$(code -X POST "$BASE/api/kafka/clusters/$CLUSTER/topics" -H 'Content-Type: application/json' \
+  -d '{"name":"e2e-undo","partitions":1,"replicationFactor":1}')"
+[ "$c" = 201 ] || { echo "❌ POST create e2e-undo = $c"; exit 1; }
+wait_until "факт-ключ e2e-undo" 90 bash -c '
+  docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/topics/e2e-undo --print-value-only 2>/dev/null | grep -q .'
+c="$(code -X DELETE "$BASE/api/kafka/clusters/$CLUSTER/topics/e2e-undo")"
+[ "$c" = 204 ] || { echo "❌ DELETE e2e-undo = $c"; exit 1; }
+c="$(code -X DELETE "$BASE/api/kafka/clusters/$CLUSTER/topics/e2e-undo/desired.delete")"
+[ "$c" = 204 ] || { echo "❌ отмена delete = $c"; exit 1; }
+sleep 35  # 2 тика: тик воркера не должен был исполнить удаление
+if ! kafka_cli kafka-topics --list </dev/null 2>/dev/null | grep e2e-undo >/dev/null; then
+  # Гонка задокументирована (спека §6, симметрично шагу 11): тик успел раньше
+  # отмены — топик пересоздаём и шаг считается пройденным.
+  echo "  гонка: тик исполнил удаление раньше отмены — пересоздаём e2e-undo"
+  c="$(code -X POST "$BASE/api/kafka/clusters/$CLUSTER/topics" -H 'Content-Type: application/json' \
+    -d '{"name":"e2e-undo","partitions":1,"replicationFactor":1}')"
+  [ "$c" = 201 ] || { echo "❌ восстановление e2e-undo = $c"; exit 1; }
+  wait_until "факт-ключ e2e-undo восстановлен" 90 bash -c '
+    docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/topics/e2e-undo --print-value-only 2>/dev/null | grep -q .'
+fi
+docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/topics/e2e-undo --print-value-only </dev/null 2>/dev/null \
+  | grep . >/dev/null || { echo "❌ факт-ключ e2e-undo пропал после отмены delete"; exit 1; }
+echo "  отмена delete до тика: топик e2e-undo жив"
+
+# ===== 13) Демонтаж брокера: broker-only (controller-негатив) =====
+echo ">>> (13/14) демонтаж: broker4 (broker-only), controller-409 негатив"
 curl -fsS -b "$JAR" -X POST "$BASE/api/kafka/clusters/$CLUSTER/brokers" \
   -H 'Content-Type: application/json' -d '{"cpu":1,"memGi":2,"diskGi":20}' \
   | jq -e '.name == "broker4"' >/dev/null \
@@ -187,8 +268,8 @@ wait_until "broker4 демонтирован (ключей brokers/broker4 не�
   bash -c '! docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/brokers/broker4/ --prefix --keys-only 2>/dev/null | grep -q broker4'
 echo "  broker4 (пустой broker-only) демонтирован"
 
-# ===== 9) TO_REMOVE кластера → префикс пуст, координация чиста =====
-echo ">>> (9/9) удаление кластера → /kafka/ пуст"
+# ===== 14) TO_REMOVE кластера → префикс пуст, координация чиста =====
+echo ">>> (14/14) удаление кластера → /kafka/ пуст"
 c="$(code -X DELETE "$BASE/api/kafka/clusters/$CLUSTER")"
 [ "$c" = 204 ] || { echo "❌ DELETE cluster = $c"; exit 1; }
 wait_until "префикс /kafka/clusters/$CLUSTER/ пуст + kfw-контейнеров нет" 180 bash -c '
@@ -198,4 +279,4 @@ left="$(docker compose exec -T etcd etcdctl get /kafkaworker/ --prefix --keys-on
 [ -z "$left" ] || { echo "❌ остаточные kafkaworker-ключи: $left"; exit 1; }
 echo "  демонтаж завершён: контейнеры/тома/ключи чисты"
 
-echo "✅ 55-kafka-e2e: полный цикл §9.5 зелёный (все 9 подшагов)"
+echo "✅ 55-kafka-e2e: полный цикл §9.5 зелёный (все 14 подшагов)"

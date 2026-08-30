@@ -137,4 +137,106 @@ public class KafkaWritingPlanTests
         // Arrange / Act / Assert
         KafkaConfigJson.TryParse("{oops").Should().BeNull();
     }
+
+    [Fact]
+    public void TopicValidate_FullBodyWithDefaults_EffectiveFromClusterConfig()
+    {
+        // Arrange: тело без partitions/RF — дефолты из config кластера (12/3);
+        // minISR 5 > эффективного RF 3 — ошибка.
+        var request = new CreateTopicRequest("audit", null, null, 86400000L, 5);
+        var config = new KafkaConfigJson(3, 3, 2, 12, 604800000L, 1, null);
+
+        // Act
+        var errors = KafkaTopicCreateValidator.Validate(request, config);
+
+        // Assert: единственная ошибка — minISR > RF.
+        errors.Should().ContainSingle().Which.Field.Should().Be("minInSyncReplicas");
+    }
+
+    [Fact]
+    public void TopicValidate_RfAboveClusterBrokers_Rejected()
+    {
+        // Arrange: RF 4 при brokers 3.
+        var request = new CreateTopicRequest("audit", 6, 4, null, null);
+        var config = new KafkaConfigJson(3, 3, 2, 12, 604800000L, 1, null);
+
+        // Act
+        var errors = KafkaTopicCreateValidator.Validate(request, config);
+
+        // Assert
+        errors.Should().ContainSingle().Which.Field.Should().Be("replicationFactor");
+    }
+
+    [Fact]
+    public void TopicValidate_BadNameOrInternal_Rejected()
+    {
+        // Arrange: __-префикс и пустое имя.
+        var config = new KafkaConfigJson(3, 3, 2, 12, 604800000L, 1, null);
+
+        // Act / Assert
+        KafkaTopicCreateValidator.Validate(new("__x", 1, 1, null, null), config)
+            .Should().Contain(e => e.Field == "name");
+        KafkaTopicCreateValidator.Validate(new("", 1, 1, null, null), config)
+            .Should().Contain(e => e.Field == "name");
+    }
+
+    [Fact]
+    public void TopicValidate_PartitionsBounds()
+    {
+        // Arrange: partitions 0 и 1001 — вне 1..1000.
+        var config = new KafkaConfigJson(3, 3, 2, 12, 604800000L, 1, null);
+
+        // Act / Assert
+        KafkaTopicCreateValidator.Validate(new("audit", 0, 1, null, null), config)
+            .Should().Contain(e => e.Field == "partitions");
+        KafkaTopicCreateValidator.Validate(new("audit", 1001, 1, null, null), config)
+            .Should().Contain(e => e.Field == "partitions");
+    }
+
+    [Fact]
+    public void BuildCreateJson_CanonicalShape()
+    {
+        // Arrange: полный запрос + config.
+        var request = new CreateTopicRequest("audit", 6, 2, 86400000L, 2);
+        var config = new KafkaConfigJson(3, 3, 2, 12, 604800000L, 1, null);
+
+        // Act
+        var json = KafkaTopicCreatePlan.Build(request, config, 1750000000L, "admin").Serialize();
+
+        // Assert: канон arch/15 §2.1 (значения явные — дефолты не подставлялись).
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        doc.RootElement.GetProperty("partitions").GetInt32().Should().Be(6);
+        doc.RootElement.GetProperty("replication_factor").GetInt32().Should().Be(2);
+        doc.RootElement.GetProperty("configs").GetProperty("retention.ms").GetString().Should().Be("86400000");
+        doc.RootElement.GetProperty("configs").GetProperty("min.insync.replicas").GetString().Should().Be("2");
+        doc.RootElement.GetProperty("requested_unix").GetInt64().Should().Be(1750000000L);
+        doc.RootElement.GetProperty("requested_by").GetString().Should().Be("admin");
+    }
+
+    [Fact]
+    public void BuildCreateJson_NoConfigs_OmitsConfigsField()
+    {
+        // Arrange: без retention/minISR → брокерные дефолты (поле отсутствует).
+        var request = new CreateTopicRequest("audit", null, null, null, null);
+        var config = new KafkaConfigJson(3, 3, 2, 12, 604800000L, 1, null);
+
+        // Act
+        var json = KafkaTopicCreatePlan.Build(request, config, 1L, "u").Serialize();
+
+        // Assert
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        doc.RootElement.TryGetProperty("configs", out _).Should().BeFalse();
+        doc.RootElement.GetProperty("partitions").GetInt32().Should().Be(12); // дефолт config
+        doc.RootElement.GetProperty("replication_factor").GetInt32().Should().Be(3);
+    }
+
+    [Fact]
+    public void DeleteJson_CanonicalShape()
+    {
+        // Arrange / Act
+        var json = new TopicLifecycleDeleteJson(1750000100L, "admin").Serialize();
+
+        // Assert: только аудит (arch/15 §2.1).
+        json.Should().Be("""{"requested_unix":1750000100,"requested_by":"admin"}""");
+    }
 }

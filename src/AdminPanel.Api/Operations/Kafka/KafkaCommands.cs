@@ -503,7 +503,6 @@ public sealed class UpsertTopicDesiredCommandHandler(
 }
 
 // ===== 8. Отмена конфиг-заявки — desired=null RMW (arch/02 §10.2-8) =====
-
 public sealed record CancelTopicDesiredCommand(string Cluster, string Topic)
     : ICommand<KafkaTopicDesiredCancelledDto>;
 
@@ -559,6 +558,217 @@ public sealed class CancelTopicDesiredCommandHandler(ISnapshotStore store, IEtcd
 
         return Result<KafkaTopicDesiredCancelledDto>.Success(
             new KafkaTopicDesiredCancelledDto(cluster, topic));
+    }
+}
+
+// ===== 9. Создание топика — клэйм-txn desired.create (arch/02 §10.2-9) =====
+
+// Топик уже существует в реестре (не missing) — 409 (create).
+public sealed class KafkaTopicExistsException(string cluster, string topic)
+    : Exception($"топик {topic} kafka-кластера {cluster} уже существует");
+
+// Живая lifecycle-заявка на топик — 409.
+public sealed class KafkaLifecyclePendingException(string cluster, string topic, string op)
+    : Exception($"заявка {op} топика {topic} kafka-кластера {cluster} уже жива — дождитесь исполнения или отмените");
+
+// Живая конфиг-заявка desired у топика — 409 (create/delete требуют отмены).
+public sealed class KafkaDesiredPendingException(string cluster, string topic)
+    : Exception($"у топика {topic} кластера {cluster} живая конфиг-заявка desired — сначала отмените её");
+
+// Lifecycle-заявка не найдена (отмена) — 404.
+public sealed class KafkaLifecycleNotFoundException(string cluster, string topic, string op)
+    : Exception($"заявка {op} топика {topic} kafka-кластера {cluster} не найдена");
+
+public sealed record CreateKafkaTopicCommand(string Cluster, CreateTopicRequest Request, string RequestedBy)
+    : ICommand<KafkaTopicCreatedDto>;
+
+// Ответ 201 POST /api/kafka/clusters/{c}/topics (arch/03 §7.2).
+public sealed record KafkaTopicCreatedDto(string Cluster, string Topic, int Partitions, int ReplicationFactor);
+
+[InjectAsScoped]
+public sealed class CreateKafkaTopicCommandHandler(
+    ISnapshotStore store, IEtcdGateway gateway, TimeProvider time)
+    : ICommandHandler<CreateKafkaTopicCommand, KafkaTopicCreatedDto>
+{
+    public async ValueTask<Result<KafkaTopicCreatedDto>> Handle(CreateKafkaTopicCommand command, CancellationToken ct)
+    {
+        var (cluster, request) = (command.Cluster, command.Request);
+        var topic = request.Name ?? "";
+
+        // Имя каноническое (404 при мусоре — как мутации 6–7).
+        if (!KafkaLimits.TopicPattern().IsMatch(topic) || KafkaLimits.IsInternalTopic(topic))
+            return Result<KafkaTopicCreatedDto>.Failed(new KafkaTopicNotFoundException(cluster, topic));
+
+        if (KafkaCommandHelpers.ActiveEndpoint(store) is not { } endpoint)
+            return Result<KafkaTopicCreatedDto>.Failed(new EtcdWriteUnavailableException());
+
+        var config = await KafkaCommandHelpers.ReadConfigAsync(gateway, endpoint, cluster, ct);
+        if (config.Error is not null)
+            return Result<KafkaTopicCreatedDto>.Failed(config.Error);
+        if (config.Value is null)
+            return Result<KafkaTopicCreatedDto>.Failed(new KafkaClusterNotFoundException(cluster));
+        if (config.Value.State is not null)
+            return Result<KafkaTopicCreatedDto>.Failed(new KafkaClusterNotActiveException(cluster, config.Value.State));
+
+        // Guards по свежему ключу топика: есть и не missing → 409; missing с
+        // живым desired → 409; обе lifecycle-заявки отсутствуют (§10.2-9).
+        var key = KafkaCommandHelpers.TopicKey(cluster, topic);
+        var read = await KafkaCommandHelpers.ReadTopicKeyAsync(gateway, endpoint, key, ct);
+        if (read.Error is not null)
+            return Result<KafkaTopicCreatedDto>.Failed(read.Error);
+        if (read.Json is not null && !read.Json.Missing)
+            return Result<KafkaTopicCreatedDto>.Failed(new KafkaTopicExistsException(cluster, topic));
+        if (read.Json is { Missing: true, Desired: not null })
+            return Result<KafkaTopicCreatedDto>.Failed(new KafkaDesiredPendingException(cluster, topic));
+
+        foreach (var op in new[] { "create", "delete" })
+        {
+            var ticket = await KafkaCommandHelpers.ReadKeyAsync(
+                gateway, endpoint, KafkaCommandHelpers.LifecycleKey(cluster, topic, op), ct);
+            if (!ticket.IsSuccess)
+                return Result<KafkaTopicCreatedDto>.Failed(new EtcdWriteUnavailableException());
+            if (ticket.Value is not null)
+                return Result<KafkaTopicCreatedDto>.Failed(new KafkaLifecyclePendingException(cluster, topic, op));
+        }
+
+        var errors = KafkaTopicCreateValidator.Validate(request, config.Value);
+        if (errors.Count > 0)
+            return Result<KafkaTopicCreatedDto>.Failed(new KafkaValidationException(errors));
+
+        // Клэйм-txn: version(desired.create)==0 + put (порт §9.8).
+        var ticketKey = KafkaCommandHelpers.LifecycleKey(cluster, topic, "create");
+        var plan = KafkaTopicCreatePlan.Build(
+            request, config.Value, time.GetUtcNow().ToUnixTimeSeconds(), command.RequestedBy);
+        var txn = await gateway.TxnAsync(
+            endpoint, [new TxnCompare(ticketKey, 0)], [new KvPut(ticketKey, plan.Serialize())], ct);
+        if (!txn.IsSuccess)
+            return Result<KafkaTopicCreatedDto>.Failed(new EtcdWriteUnavailableException());
+        if (!txn.Value.Succeeded)
+            return Result<KafkaTopicCreatedDto>.Failed(new KafkaLifecyclePendingException(cluster, topic, "create"));
+
+        return Result<KafkaTopicCreatedDto>.Success(new KafkaTopicCreatedDto(
+            cluster, topic, plan.Partitions, plan.ReplicationFactor));
+    }
+}
+
+// ===== 10. Удаление топика — клэйм-txn desired.delete (arch/02 §10.2-10) =====
+
+public sealed record DeleteKafkaTopicCommand(string Cluster, string Topic, string RequestedBy)
+    : ICommand<KafkaTopicDeletedDto>;
+
+public sealed record KafkaTopicDeletedDto(string Cluster, string Topic);
+
+[InjectAsScoped]
+public sealed class DeleteKafkaTopicCommandHandler(
+    ISnapshotStore store, IEtcdGateway gateway, TimeProvider time)
+    : ICommandHandler<DeleteKafkaTopicCommand, KafkaTopicDeletedDto>
+{
+    public async ValueTask<Result<KafkaTopicDeletedDto>> Handle(DeleteKafkaTopicCommand command, CancellationToken ct)
+    {
+        var (cluster, topic) = (command.Cluster, command.Topic);
+
+        if (!KafkaLimits.TopicPattern().IsMatch(topic) || KafkaLimits.IsInternalTopic(topic))
+            return Result<KafkaTopicDeletedDto>.Failed(new KafkaTopicNotFoundException(cluster, topic));
+
+        if (KafkaCommandHelpers.ActiveEndpoint(store) is not { } endpoint)
+            return Result<KafkaTopicDeletedDto>.Failed(new EtcdWriteUnavailableException());
+
+        var config = await KafkaCommandHelpers.ReadConfigAsync(gateway, endpoint, cluster, ct);
+        if (config.Error is not null)
+            return Result<KafkaTopicDeletedDto>.Failed(config.Error);
+        if (config.Value is null)
+            return Result<KafkaTopicDeletedDto>.Failed(new KafkaClusterNotFoundException(cluster));
+        if (config.Value.State is not null)
+            return Result<KafkaTopicDeletedDto>.Failed(new KafkaClusterNotActiveException(cluster, config.Value.State));
+
+        // Топик должен существовать и не быть missing (404), живой desired — 409.
+        var read = await KafkaCommandHelpers.ReadTopicKeyAsync(
+            gateway, endpoint, KafkaCommandHelpers.TopicKey(cluster, topic), ct);
+        if (read.Error is not null)
+            return Result<KafkaTopicDeletedDto>.Failed(read.Error);
+        if (read.Json is null || read.Json.Missing)
+            return Result<KafkaTopicDeletedDto>.Failed(
+                new KafkaTopicNotFoundException(cluster, topic, "топик отсутствует в кластере"));
+        if (read.Json.Desired is not null)
+            return Result<KafkaTopicDeletedDto>.Failed(new KafkaDesiredPendingException(cluster, topic));
+
+        var createTicket = await KafkaCommandHelpers.ReadKeyAsync(
+            gateway, endpoint, KafkaCommandHelpers.LifecycleKey(cluster, topic, "create"), ct);
+        if (!createTicket.IsSuccess)
+            return Result<KafkaTopicDeletedDto>.Failed(new EtcdWriteUnavailableException());
+        if (createTicket.Value is not null)
+            return Result<KafkaTopicDeletedDto>.Failed(new KafkaLifecyclePendingException(cluster, topic, "create"));
+
+        // Клэйм-txn + идемпотентность: живая delete-заявка → 204 без записи.
+        var ticketKey = KafkaCommandHelpers.LifecycleKey(cluster, topic, "delete");
+        var existing = await KafkaCommandHelpers.ReadKeyAsync(gateway, endpoint, ticketKey, ct);
+        if (!existing.IsSuccess)
+            return Result<KafkaTopicDeletedDto>.Failed(new EtcdWriteUnavailableException());
+        if (existing.Value is not null)
+            return Result<KafkaTopicDeletedDto>.Success(new KafkaTopicDeletedDto(cluster, topic));
+
+        var txn = await gateway.TxnAsync(
+            endpoint, [new TxnCompare(ticketKey, 0)],
+            [new KvPut(ticketKey, new TopicLifecycleDeleteJson(
+                time.GetUtcNow().ToUnixTimeSeconds(), command.RequestedBy).Serialize())], ct);
+        if (!txn.IsSuccess)
+            return Result<KafkaTopicDeletedDto>.Failed(new EtcdWriteUnavailableException());
+        if (!txn.Value.Succeeded)
+            return Result<KafkaTopicDeletedDto>.Success(new KafkaTopicDeletedDto(cluster, topic)); // гонка постановки — уже стоит
+
+        return Result<KafkaTopicDeletedDto>.Success(new KafkaTopicDeletedDto(cluster, topic));
+    }
+}
+
+// ===== 11–12. Отмена lifecycle-заявок — del ключа (arch/02 §10.2-11/12) =====
+
+public sealed record CancelTopicLifecycleCommand(string Cluster, string Topic, string Op)
+    : ICommand<KafkaTopicLifecycleCancelledDto>;
+
+public sealed record KafkaTopicLifecycleCancelledDto(string Cluster, string Topic, string Op);
+
+[InjectAsScoped]
+public sealed class CancelTopicLifecycleCommandHandler(ISnapshotStore store, IEtcdGateway gateway)
+    : ICommandHandler<CancelTopicLifecycleCommand, KafkaTopicLifecycleCancelledDto>
+{
+    public async ValueTask<Result<KafkaTopicLifecycleCancelledDto>> Handle(
+        CancelTopicLifecycleCommand command, CancellationToken ct)
+    {
+        var (cluster, topic, op) = (command.Cluster, command.Topic, command.Op);
+        if (op is not ("create" or "delete"))
+            return Result<KafkaTopicLifecycleCancelledDto>.Failed(
+                new KafkaLifecycleNotFoundException(cluster, topic, op));
+
+        if (!KafkaLimits.TopicPattern().IsMatch(topic) || KafkaLimits.IsInternalTopic(topic))
+            return Result<KafkaTopicLifecycleCancelledDto>.Failed(new KafkaTopicNotFoundException(cluster, topic));
+
+        if (KafkaCommandHelpers.ActiveEndpoint(store) is not { } endpoint)
+            return Result<KafkaTopicLifecycleCancelledDto>.Failed(new EtcdWriteUnavailableException());
+
+        var config = await KafkaCommandHelpers.ReadConfigAsync(gateway, endpoint, cluster, ct);
+        if (config.Error is not null)
+            return Result<KafkaTopicLifecycleCancelledDto>.Failed(config.Error);
+        if (config.Value is null)
+            return Result<KafkaTopicLifecycleCancelledDto>.Failed(new KafkaClusterNotFoundException(cluster));
+        if (config.Value.State is not null)
+            return Result<KafkaTopicLifecycleCancelledDto>.Failed(
+                new KafkaClusterNotActiveException(cluster, config.Value.State));
+
+        // 404 если заявки нет; del ключа заявки (окно отмены — до тика воркера).
+        var ticketKey = KafkaCommandHelpers.LifecycleKey(cluster, topic, op);
+        var range = await KafkaCommandHelpers.ReadKeyAsync(gateway, endpoint, ticketKey, ct);
+        if (!range.IsSuccess)
+            return Result<KafkaTopicLifecycleCancelledDto>.Failed(new EtcdWriteUnavailableException());
+        if (range.Value is null)
+            return Result<KafkaTopicLifecycleCancelledDto>.Failed(
+                new KafkaLifecycleNotFoundException(cluster, topic, op));
+
+        var deleted = await gateway.DeleteAsync(endpoint, ticketKey, prefix: false, ct);
+        if (!deleted.IsSuccess)
+            return Result<KafkaTopicLifecycleCancelledDto>.Failed(new EtcdWriteUnavailableException());
+
+        return Result<KafkaTopicLifecycleCancelledDto>.Success(
+            new KafkaTopicLifecycleCancelledDto(cluster, topic, op));
     }
 }
 
@@ -629,6 +839,10 @@ internal static class KafkaCommandHelpers
 
     internal static string TopicKey(string cluster, string topic)
         => $"/kafka/clusters/{cluster}/topics/{topic}";
+
+    // Leaf-ключ lifecycle-заявки (arch/15 §3.1): тот же формат, что у воркера.
+    internal static string LifecycleKey(string cluster, string topic, string op)
+        => $"/kafka/clusters/{cluster}/topics/{topic}/desired.{op}";
 
     // Чтение ключа топика с revision для RMW: (json, mod_revision, ошибка).
     internal sealed record TopicKeyRead(KafkaTopicKeyJson? Json, long? Revision, Exception? Error);

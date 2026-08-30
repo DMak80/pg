@@ -29,6 +29,9 @@ public sealed record KafkaClusterInfo(
     string? Endpoints,           // null/пусто — воркер не дописал (алерт у Active)
     IReadOnlyList<KafkaBrokerInfo> BrokersList,
     IReadOnlyList<KafkaTopicInfo> Topics,
+    // Lifecycle-заявки топиков (t01, arch/15 §3.1): create без факт-ключа —
+    // «виртуальная» строка в DTO, delete — бейдж у живого топика.
+    IReadOnlyList<KafkaTopicLifecycleTicket>? LifecycleTickets = null,
     // Live-группы из пробы (волна C): пусто — проба не знает кластер.
     IReadOnlyList<KafkaGroupInfo>? Groups = null);
 
@@ -89,3 +92,15 @@ public sealed record KafkaGroupInfo(string Group, string? State, int Members, lo
 
 // Заявка ротации app-пароля /kafkaworker/rotations/<C> (arch/15 §4).
 public sealed record KafkaRotationTicket(string Cluster, long RequestedUnix, string? RequestedBy);
+
+// Lifecycle-заявка топика topics/<T>/desired.{create,delete} (arch/15 §3.1):
+// create — параметры (configs развёрнуты в типизированные поля), delete — аудит.
+public sealed record KafkaTopicLifecycleTicket(
+    string Topic,
+    string Op,                 // "create" | "delete" (raw-строка, толерантно)
+    int? Partitions,
+    short? ReplicationFactor,
+    long? RetentionMs,
+    short? MinInSyncReplicas,
+    long RequestedUnix,
+    string? RequestedBy);

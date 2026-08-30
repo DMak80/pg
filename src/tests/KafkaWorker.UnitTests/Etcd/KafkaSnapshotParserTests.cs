@@ -23,6 +23,9 @@ public class KafkaSnapshotParserTests
 
     private sealed record FixtureKv(string Key, string Value, ulong ModRevision);
 
+    // Хелпер инлайновых Kv для lifecycle-кейсов (mod_revision непринципиален).
+    private static Kv Kv(string key, string value) => new(key, value, 1);
+
     [Fact]
     public void Parse_FullPrefix_TwoClustersWithConfigBrokersTopics()
     {
@@ -169,5 +172,86 @@ public class KafkaSnapshotParserTests
         // Assert: успех, пустой список, нет ошибок.
         result.IsSuccess.Should().BeTrue();
         result.Value.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Parse_LifecycleCreateTicket_FillsLifecycleTickets()
+    {
+        // Arrange: leaf-ключ заявки создания рядом с факт-ключом топика.
+        var kvs = new List<Kv>
+        {
+            Kv("/kafka/clusters/events/config", """{"brokers":3,"replication_factor":3,"min_insync_replicas":2,"default_partitions":12,"default_retention_ms":604800000,"created_unix":1}"""),
+            Kv("/kafka/clusters/events/topics/audit/desired.create",
+                """{"partitions":12,"replication_factor":3,"configs":{"retention.ms":"86400000"},"requested_unix":1750000000,"requested_by":"admin"}"""),
+        };
+
+        // Act
+        var result = KafkaSnapshotParser.Parse(kvs);
+
+        // Assert: один тикет create с полными полями; факт-топиков нет.
+        var cluster = result.Value.Single(c => c.Cluster == "events");
+        cluster.LifecycleTickets.Should().ContainSingle().Which.Should().BeEquivalentTo(new TopicLifecycleTicket(
+            "audit", "create", 12, 3,
+            new Dictionary<string, string> { ["retention.ms"] = "86400000" },
+            1750000000L, "admin"));
+        cluster.Topics.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Parse_LifecycleDeleteTicket_AndMalformedTicket()
+    {
+        // Arrange: заявка удаления + битый JSON второй заявки.
+        var kvs = new List<Kv>
+        {
+            Kv("/kafka/clusters/events/config", """{"brokers":3,"replication_factor":3,"min_insync_replicas":2,"default_partitions":12,"default_retention_ms":604800000}"""),
+            Kv("/kafka/clusters/events/topics/orders/desired.delete",
+                """{"requested_unix":1750000100,"requested_by":"admin"}"""),
+            Kv("/kafka/clusters/events/topics/bad/desired.create", """{oops"""),
+        };
+
+        // Act
+        var result = KafkaSnapshotParser.Parse(kvs);
+
+        // Assert: валидный delete-тикет; битый — parseError, не исключение.
+        var cluster = result.Value.Single(c => c.Cluster == "events");
+        cluster.LifecycleTickets.Should().ContainSingle(t => t.Topic == "orders" && t.Op == "delete");
+        cluster.ParseErrors.Should().Contain(e => e.Contains("topics/bad"));
+    }
+
+    [Fact]
+    public void Parse_TicketWithoutRequestedUnix_IsParseError()
+    {
+        // Arrange: JSON валиден, но аудита requested_unix нет — заявка битая
+        // (панель пишет аудит всегда; образец — ParseRotations панели).
+        var kvs = new List<Kv>
+        {
+            Kv("/kafka/clusters/events/config", """{"brokers":1,"replication_factor":1,"min_insync_replicas":1,"default_partitions":1,"default_retention_ms":1}"""),
+            Kv("/kafka/clusters/events/topics/x/desired.delete", """{"requested_by":"u"}"""),
+        };
+
+        // Act
+        var result = KafkaSnapshotParser.Parse(kvs);
+
+        // Assert: parseError, тикет не создан.
+        var cluster = result.Value.Single();
+        cluster.LifecycleTickets.Should().BeEmpty();
+        cluster.ParseErrors.Should().Contain(e => e.Contains("topics/x"));
+    }
+
+    [Fact]
+    public void Parse_UnknownTopicsLeaf_CountsUnknownKey()
+    {
+        // Arrange: неизвестный leaf под topics/<T>/ — не ошибка, счётчик.
+        var kvs = new List<Kv>
+        {
+            Kv("/kafka/clusters/events/config", """{"brokers":1,"replication_factor":1,"min_insync_replicas":1,"default_partitions":1,"default_retention_ms":1}"""),
+            Kv("/kafka/clusters/events/topics/x/desired.pause", "{}"),
+        };
+
+        // Act
+        var result = KafkaSnapshotParser.Parse(kvs);
+
+        // Assert
+        result.Value.Single().UnknownKeys.Should().Be(1);
     }
 }

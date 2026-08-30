@@ -431,6 +431,10 @@ select pg_is_in_recovery();
 | `PUT /api/kafka/clusters/{cluster}/topics/{topic}` | конфиг-заявка топика (02 §10.2-6, волна C): тело `KafkaTopicDesiredRequestDto` → 204 \| 400 \| 404 \| 409 \| 503 |
 | `DELETE /api/kafka/clusters/{cluster}/topics/{topic}/desired` | отмена конфиг-заявки (02 §10.2-7, волна C): 204 \| 404 \| 503 |
 | `POST /api/kafka/clusters/{cluster}/app-password/rotate` | заявка ротации app-пароля (02 §10.2-8): без тела → 201+`KafkaPasswordRotatedDto` \| 404 \| 409 \| 503 |
+| `POST /api/kafka/clusters/{cluster}/topics` | создание топика — lifecycle-заявка (02 §10.2-9, t01): тело `CreateTopicRequestDto` → 201+`KafkaTopicCreatedDto` \| 400 \| 404 \| 409 \| 503 |
+| `DELETE /api/kafka/clusters/{cluster}/topics/{topic}` | удаление топика — lifecycle-заявка (02 §10.2-10, t01; идемпотентен): 204 \| 404 \| 409 \| 503 |
+| `DELETE /api/kafka/clusters/{cluster}/topics/{topic}/desired.create` | отмена заявки создания (02 §10.2-11, t01): 204 \| 404 \| 409 \| 503 |
+| `DELETE /api/kafka/clusters/{cluster}/topics/{topic}/desired.delete` | отмена заявки удаления (02 §10.2-12, t01; окно деструктивности): 204 \| 404 \| 409 \| 503 |
 
 `GET /api/alerts` объединяет алерты обоих движков (kind уже различает
 `kafka-*`); `GET /api/overview` получает kafka-сводку (clustersTotal,
@@ -454,7 +458,10 @@ KafkaBrokerDto: name, state(raw: NOT_INITIALIZED|PROVISIONING|RUNNING|
 KafkaTopicDto: name, partitions, replicationFactor, retentionMs, minInSyncReplicas
     (null — конфиг отсутствует в факте), desired{partitions, retentionMs,
     minInSyncReplicas, requestedUnix, requestedBy}?(nullable), missing(bool),
-    syncedUnix
+    syncedUnix, lifecycle{op(create|delete), partitions?, replicationFactor?,
+    retentionMs?, minInSyncReplicas?, requestedUnix, requestedBy}?(nullable — t01;
+    create-заявка без факт-ключа — «виртуальная» строка: факт-поля null/0,
+    параметры — в lifecycle-части)
 KafkaGroupDto: group, state, members, totalLag (волна C — из пробы)
 CreateKafkaClusterRequestDto: name, brokers(1..9 def 3), replicationFactor
     (1..9 ≤ brokers def 3), minInSyncReplicas(1..RF def 2), defaultPartitions
@@ -472,6 +479,11 @@ KafkaBrokerAddedDto: cluster, name (сгенерированное broker<k>), c
 KafkaTopicDesiredRequestDto: partitions?, retentionMs?, minInSyncReplicas?
     (хотя бы одно; partitions только > фактического) — волна C
 KafkaPasswordRotatedDto: cluster, requestedUnix, requestedBy
+CreateTopicRequestDto: name, partitions?(1..1000 def config.default_partitions),
+    replicationFactor?(1..9 ≤ brokers def config.replication_factor),
+    retentionMs?(1..2147483647 опц.), minInSyncReplicas?(1..RF опц.)
+    — валидация 02 §10.3 (t01)
+KafkaTopicCreatedDto: cluster, topic, partitions, replicationFactor (t01)
 ```
 
 ### 7.3. Панели UI
@@ -479,7 +491,7 @@ KafkaPasswordRotatedDto: cluster, requestedUnix, requestedBy
 | Панель | Что показывает |
 |---|---|
 | **KafkaClusters** | список: имя, state-бейдж, брокеры running/всего, топики (кол-во), endpoints (сокращённо), бейдж ротации; кнопка «Создать кластер» → модальная форма §7.3.1 |
-| **KafkaClusterDetails** | шапка: state-бейджи (TO_REMOVE/NOT_INITIALIZED), кнопки «Изменить параметры» (default-конфиги — модал), «Сменить app-пароль» (модал-предупреждение о rolling-перезапуске брокеров; 409 «уже запрошена» — текстом), «Удалить кластер» (красная, подтверждение; при TO_REMOVE скрыты); вкладка **Брокеры**: name/state/role/resources/live, колонка действий «Убрать брокера» (controller/последний — дизейбл с пояснением, серверный 409 текстом; непустой — дизейбл по live-пробе как UX-подсказка: серверного отказа нет, занятый брокер удержит воркер — 02 §10 мутация 5) + кнопка «Добавить брокера» (форма resources); вкладки **Топики** и **Группы** — волна C (до неё — заглушка) |
+| **KafkaClusterDetails** | шапка: state-бейджи (TO_REMOVE/NOT_INITIALIZED), кнопки «Изменить параметры» (default-конфиги — модал), «Сменить app-пароль» (модал-предупреждение о rolling-перезапуске брокеров; 409 «уже запрошена» — текстом), «Удалить кластер» (красная, подтверждение; при TO_REMOVE скрыты); вкладка **Брокеры**: name/state/role/resources/live, колонка действий «Убрать брокера» (controller/последний — дизейбл с пояснением, серверный 409 текстом; непустой — дизейбл по live-пробе как UX-подсказка: серверного отказа нет, занятый брокер удержит воркер — 02 §10 мутация 5) + кнопка «Добавить брокера» (форма resources); вкладка **Топики** (t01): кнопка «Создать топик» (модал: name/partitions/RF/retention/minISR, дефолты из config кластера, клиентская валидация-зеркало 02 §10.3), per-row бейджи lifecycle-заявок («создание: N партиций, RF R» / «удаление…» + возраст/автор) с кнопкой «Отменить заявку», красная per-row «Удалить топик» (подтверждение с вводом имени топика: «данные будут удалены безвозвратно; заявка исполнится в течение ~15 с, до этого можно отменить»); create-заявка без факт-ключа — «виртуальная» строка (факт-поля `—`, параметры в бейдже); подпись: «создание/удаление топиков — заявками панели; внешние изменения (CLI/клиенты) подхватываются автосинком»; `canMutate` = Active; вкладка **Группы** — волна C (до неё — заглушка) |
 
 ### 7.3.1. Форма «Создать kafka-кластер»
 
@@ -511,6 +523,9 @@ ProblemDetails в теле формы. Двойной клик — блокир�
 | `kafka-desired-stale` | warning | desired не снят дольше `StaleDesiredSec` (600) — волна C |
 | `kafka-topic-under-replicated` | warning | проба: партиции с USR>0 — волна C |
 | `kafka-group-lag-high` | warning | проба: totalLag > `GroupLagMessages` (100000) — волна C |
+| `kafka-topic-create-pending` | info | живая create-заявка `topics/<T>/desired.create` (t01) |
+| `kafka-topic-delete-pending` | warning | живая delete-заявка `topics/<T>/desired.delete` (t01 — деструктивная близка к исполнению) |
+| `kafka-lifecycle-stale` | warning | lifecycle-заявка не снята дольше `StaleDesiredSec` (600) — воркер буксует/кластер лежит (t01) |
 
 ## 8. Версионирование контракта
 
