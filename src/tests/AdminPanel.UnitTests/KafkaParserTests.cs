@@ -174,4 +174,100 @@ public class KafkaParserTests
         parsed.Tickets.Should().BeEmpty();
         parsed.Errors.Should().ContainSingle().Which.Key.Should().Be("/kafkaworker/rotations/x/y");
     }
+
+    [Fact]
+    public void LifecycleCreateTicket_ParsedWithConfigsUnwrapped()
+    {
+        // Arrange: leaf-ключ заявки создания рядом с факт-ключом (arch/15 §3.1);
+        // configs развёрнуты в типизированные поля.
+        var kvs = new List<Kv>
+        {
+            new("/kafka/clusters/events/config",
+                "{\"brokers\":3,\"replication_factor\":3,\"min_insync_replicas\":2," +
+                "\"default_partitions\":12,\"default_retention_ms\":604800000,\"created_unix\":1}", 1),
+            new("/kafka/clusters/events/topics/audit/desired.create",
+                "{\"partitions\":12,\"replication_factor\":3," +
+                "\"configs\":{\"retention.ms\":\"86400000\"}," +
+                "\"requested_unix\":1750000000,\"requested_by\":\"admin\"}", 2),
+        };
+
+        // Act
+        var parsed = KafkaParser.ParseClusters(kvs);
+
+        // Assert: один create-тикет с развёрнутыми полями; факт-топиков нет.
+        parsed.Errors.Should().BeEmpty();
+        var cluster = parsed.Clusters.Single(c => c.Name == "events");
+        cluster.LifecycleTickets.Should().ContainSingle().Which.Should().BeEquivalentTo(
+            new KafkaTopicLifecycleTicket(
+                "audit", "create", 12, 3, 86400000L, null, 1750000000L, "admin"));
+        cluster.Topics.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void LifecycleDeleteTicket_ParsedAsAuditOnly()
+    {
+        // Arrange: заявка удаления — только аудит (arch/15 §2.1).
+        var kvs = new List<Kv>
+        {
+            new("/kafka/clusters/events/config",
+                "{\"brokers\":3,\"replication_factor\":3,\"min_insync_replicas\":2," +
+                "\"default_partitions\":12,\"default_retention_ms\":604800000}", 1),
+            new("/kafka/clusters/events/topics/orders/desired.delete",
+                "{\"requested_unix\":1750000100,\"requested_by\":\"admin\"}", 2),
+        };
+
+        // Act
+        var parsed = KafkaParser.ParseClusters(kvs);
+
+        // Assert
+        var ticket = parsed.Clusters.Single().LifecycleTickets.Should().ContainSingle().Which;
+        ticket.Topic.Should().Be("orders");
+        ticket.Op.Should().Be("delete");
+        ticket.Partitions.Should().BeNull();
+        ticket.ReplicationFactor.Should().BeNull();
+        ticket.RequestedUnix.Should().Be(1750000100L);
+    }
+
+    [Fact]
+    public void LifecycleTicket_BrokenJsonOrNoAudit_ProduceParseErrors()
+    {
+        // Arrange: битый JSON + заявка без requested_unix (панель пишет аудит
+        // всегда — образец ParseRotations).
+        var kvs = new List<Kv>
+        {
+            new("/kafka/clusters/events/config",
+                "{\"brokers\":1,\"replication_factor\":1,\"min_insync_replicas\":1," +
+                "\"default_partitions\":1,\"default_retention_ms\":1}", 1),
+            new("/kafka/clusters/events/topics/bad/desired.create", "{oops", 2),
+            new("/kafka/clusters/events/topics/noaudit/desired.delete", "{\"requested_by\":\"u\"}", 3),
+        };
+
+        // Act
+        var parsed = KafkaParser.ParseClusters(kvs);
+
+        // Assert: оба — parseError, тикеты не созданы.
+        parsed.Clusters.Single().LifecycleTickets.Should().BeEmpty();
+        parsed.Errors.Should().Contain(e => e.Key == "/kafka/clusters/events/topics/bad/desired.create");
+        parsed.Errors.Should().Contain(e => e.Key == "/kafka/clusters/events/topics/noaudit/desired.delete");
+    }
+
+    [Fact]
+    public void LifecycleTicket_UnknownTopicsLeaf_CountsUnknownKey()
+    {
+        // Arrange: неизвестный leaf под topics/<T>/ — счётчик, не ошибка (arch/15 §6).
+        var kvs = new List<Kv>
+        {
+            new("/kafka/clusters/events/config",
+                "{\"brokers\":1,\"replication_factor\":1,\"min_insync_replicas\":1," +
+                "\"default_partitions\":1,\"default_retention_ms\":1}", 1),
+            new("/kafka/clusters/events/topics/x/desired.pause", "{}", 2),
+        };
+
+        // Act
+        var parsed = KafkaParser.ParseClusters(kvs);
+
+        // Assert
+        parsed.UnknownKeyCount.Should().Be(1);
+        parsed.Clusters.Single().LifecycleTickets.Should().BeEmpty();
+    }
 }

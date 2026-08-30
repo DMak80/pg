@@ -36,6 +36,7 @@ public static class KafkaParser
         public string? Endpoints;
         public readonly Dictionary<string, BrokerAcc> Brokers = [];
         public readonly List<(string Name, string Raw)> Topics = [];
+        public readonly List<(string Topic, string Op, string Raw)> Lifecycle = [];
     }
 
     public static KafkaClustersParseResult ParseClusters(IReadOnlyList<Kv> kvs)
@@ -94,6 +95,12 @@ public static class KafkaParser
 
                 case "topics" when segments.Length == 6 && segments[5].Length > 0:
                     acc.Topics.Add((segments[5], kv.Value));
+                    break;
+
+                case "topics" when segments.Length == 7
+                    && segments[5].Length > 0
+                    && segments[6] is "desired.create" or "desired.delete":
+                    acc.Lifecycle.Add((segments[5], segments[6] == "desired.create" ? "create" : "delete", kv.Value));
                     break;
 
                 default:
@@ -164,9 +171,51 @@ public static class KafkaParser
             .OfType<KafkaTopicInfo>()
             .ToList();
 
+        var lifecycle = acc.Lifecycle
+            .OrderBy(t => t.Topic, StringComparer.Ordinal)
+            .Select(t => BuildLifecycleTicket(acc.Name, t.Topic, t.Op, t.Raw, errors))
+            .OfType<KafkaTopicLifecycleTicket>()
+            .ToList();
+
         return new KafkaClusterInfo(
             acc.Name, state, brokers, rf, minIsr, partitions, retention, createdUnix,
-            acc.Endpoints, brokerInfos, topics);
+            acc.Endpoints, brokerInfos, topics, lifecycle);
+    }
+
+    // Lifecycle-заявка topics/<T>/desired.{create,delete} (arch/15 §3.1):
+    // толерантный разбор; битый JSON или отсутствие requested_unix → parseError
+    // (образец ParseRotations), тикет не создаётся.
+    private static KafkaTopicLifecycleTicket? BuildLifecycleTicket(
+        string cluster, string topic, string op, string raw, List<KeyParseError> errors)
+    {
+        var key = $"/kafka/clusters/{cluster}/topics/{topic}/desired.{op}";
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            var root = doc.RootElement;
+            var requested = JsonValues.ReadLong(root, "requested_unix");
+            if (requested is null)
+            {
+                errors.Add(new KeyParseError(key, "нет поля requested_unix"));
+                return null;
+            }
+
+            var partitions = AsInt(JsonValues.ReadLong(root, "partitions"));
+            return new KafkaTopicLifecycleTicket(
+                topic,
+                op,
+                partitions > 0 ? partitions : null,
+                AsShort(JsonValues.ReadLong(root, "replication_factor")),
+                ConfigValue(root, "retention.ms"),
+                AsShort(ConfigValue(root, "min.insync.replicas")),
+                requested.Value,
+                JsonValues.ReadString(root, "requested_by"));
+        }
+        catch (JsonException)
+        {
+            errors.Add(new KeyParseError(key, "битый JSON заявки"));
+            return null;
+        }
     }
 
     private static (
