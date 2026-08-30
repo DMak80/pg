@@ -349,6 +349,7 @@ export interface KafkaClusterSummaryDto {
   topicsCount: number;
   endpoints: string | null;
   rotationPending: boolean;
+  rebalancePending: boolean;
 }
 
 // GET /api/kafka/clusters/{cluster} — детали.
@@ -365,6 +366,9 @@ export interface KafkaClusterDto {
   brokersList: KafkaBrokerDto[];
   topics: KafkaTopicDto[];
   rotation: KafkaRotationTicketDto | null;
+  // Ребалансировка партиций (t02): null = заявки/операции нет.
+  rebalance: KafkaRebalanceTicketDto | null;
+  reassignment: KafkaReassignmentDto | null;
   // Live-группы из пробы (волна C): null — проба молчит о кластере.
   groups: KafkaGroupDto[] | null;
   probeOk: boolean | null;
@@ -414,6 +418,21 @@ export interface KafkaTopicDesiredDto {
 export interface KafkaRotationTicketDto {
   requestedUnix: number;
   requestedBy: string | null;
+}
+
+// Заявка ребалансировки (t02, arch/03 §7.2); null = заявки нет.
+export interface KafkaRebalanceTicketDto {
+  requestedUnix: number;
+  requestedBy: string | null;
+}
+
+// Прогресс reassignment (t02, arch/03 §7.2); null = операции нет.
+export interface KafkaReassignmentDto {
+  mode: 'drain' | 'balance';
+  drainBroker: string | null;
+  partitionsTotal: number;
+  partitionsRemaining: number;
+  updatedUnix: number;
 }
 
 // POST /api/kafka/clusters — тело и ответ (arch/02 §10.3).
@@ -492,6 +511,13 @@ export interface TopicDesiredDto {
 
 // POST /api/kafka/clusters/{cluster}/app-password/rotate — ответ.
 export interface KafkaPasswordRotatedDto {
+  cluster: string;
+  requestedUnix: number;
+  requestedBy: string;
+}
+
+// POST /api/kafka/clusters/{cluster}/rebalance — ответ (t02).
+export interface KafkaRebalanceRequestedDto {
   cluster: string;
   requestedUnix: number;
   requestedBy: string;

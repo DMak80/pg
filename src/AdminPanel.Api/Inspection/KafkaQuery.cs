@@ -20,9 +20,11 @@ public sealed record KafkaClusterSummaryDto(
     int BrokersRunning,
     int TopicsCount,
     string? Endpoints,
-    bool RotationPending);
+    bool RotationPending,
+    bool RebalancePending);
 
-// Детали кластера: config, брокеры, топики, группы пробы (волна C), ротация.
+// Детали кластера: config, брокеры, топики, группы пробы (волна C), ротация,
+// ребалансировка (t02).
 public sealed record KafkaClusterDto(
     string Name,
     string State,
@@ -36,6 +38,8 @@ public sealed record KafkaClusterDto(
     IReadOnlyList<KafkaBrokerDto> BrokersList,
     IReadOnlyList<KafkaTopicDto> Topics,
     KafkaRotationTicketDto? Rotation,
+    KafkaRebalanceTicketDto? Rebalance,
+    KafkaReassignmentDto? Reassignment,
     IReadOnlyList<KafkaGroupDto>? Groups = null, // null — проба молчит о кластере
     bool? ProbeOk = null,
     string? ProbeError = null);
@@ -73,15 +77,30 @@ public sealed record TopicDesiredDto(
 
 public sealed record KafkaRotationTicketDto(long RequestedUnix, string? RequestedBy);
 
+// Заявка ребалансировки (t02, 03 §7.2); null = заявки нет.
+public sealed record KafkaRebalanceTicketDto(long RequestedUnix, string? RequestedBy);
+
+// Прогресс reassignment (t02, 03 §7.2); null = операции нет.
+public sealed record KafkaReassignmentDto(
+    string Mode,
+    string? DrainBroker,
+    int PartitionsTotal,
+    int PartitionsRemaining,
+    long UpdatedUnix);
+
 // Core → DTO: чистые функции (arch/03 §7.2; camelCase-зеркало модели B2).
 public static class KafkaMappers
 {
     public static IReadOnlyList<KafkaClusterSummaryDto> MapSummaries(KafkaSnapshot snapshot)
         => [.. snapshot.Clusters.Select(c => MapSummary(
-            c, snapshot.Rotations.Any(r => r.Cluster == c.Name)))];
+            c,
+            snapshot.Rotations.Any(r => r.Cluster == c.Name),
+            snapshot.Rebalances.Any(r => r.Cluster == c.Name)))];
 
-    // Ротационный бейдж — только у живого кластера (заявка не переживает демонтаж).
-    public static KafkaClusterSummaryDto MapSummary(KafkaClusterInfo cluster, bool rotationPending)
+    // Ротационный/rebalance-бейджи — только у живого кластера (заявки не
+    // переживают демонтаж).
+    public static KafkaClusterSummaryDto MapSummary(
+        KafkaClusterInfo cluster, bool rotationPending, bool rebalancePending)
         => new(
             cluster.Name,
             StateName(cluster.State),
@@ -89,16 +108,21 @@ public static class KafkaMappers
             cluster.BrokersList.Count(b => b.State == "RUNNING"),
             cluster.Topics.Count,
             cluster.Endpoints,
-            rotationPending);
+            rotationPending,
+            rebalancePending);
 
     public static KafkaClusterDto MapDetails(
         KafkaClusterInfo cluster,
         IReadOnlyList<KafkaRotationTicket> rotations,
+        IReadOnlyList<KafkaRebalanceTicket> rebalances,
+        IReadOnlyList<KafkaReassignmentProgress> reassignments,
         IReadOnlyDictionary<string, KafkaClusterLive>? live = null,
         ProbeResult? probe = null)
     {
         live ??= new Dictionary<string, KafkaClusterLive>();
         var rotation = rotations.FirstOrDefault(r => r.Cluster == cluster.Name);
+        var rebalance = rebalances.FirstOrDefault(r => r.Cluster == cluster.Name);
+        var reassignment = reassignments.FirstOrDefault(r => r.Cluster == cluster.Name);
         var clusterLive = live.GetValueOrDefault(cluster.Name);
         return new KafkaClusterDto(
             cluster.Name,
@@ -123,6 +147,10 @@ public static class KafkaMappers
                     t.Desired.RequestedUnix, t.Desired.RequestedBy),
                 t.Missing, t.SyncedUnix, t.UnderReplicatedPartitions))],
             rotation is null ? null : new KafkaRotationTicketDto(rotation.RequestedUnix, rotation.RequestedBy),
+            rebalance is null ? null : new KafkaRebalanceTicketDto(rebalance.RequestedUnix, rebalance.RequestedBy),
+            reassignment is null ? null : new KafkaReassignmentDto(
+                reassignment.Mode, reassignment.DrainBroker,
+                reassignment.PartitionsTotal, reassignment.PartitionsRemaining, reassignment.UpdatedUnix),
             Groups: cluster.Groups is null ? null :
                 [.. cluster.Groups.Select(g => new KafkaGroupDto(g.Group, g.State, g.Members, g.TotalLag))],
             ProbeOk: probe?.Ok,
@@ -178,7 +206,9 @@ public sealed class KafkaClusterDetailsQueryHandler(
         var readOnlyLive = probeState?.Clusters;
         var probe = probeState?.Results.FirstOrDefault(r => r.Target == query.Cluster);
         return ValueTask.FromResult(Result<KafkaClusterDto>.Success(
-            KafkaMappers.MapDetails(cluster, snapshot.Rotations, readOnlyLive, probe)));
+            KafkaMappers.MapDetails(
+                cluster, snapshot.Rotations, snapshot.Rebalances, snapshot.Reassignments,
+                readOnlyLive, probe)));
     }
 }
 
