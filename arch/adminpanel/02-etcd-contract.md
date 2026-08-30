@@ -588,13 +588,13 @@ read-only). Отдельный домен-снапшот `KafkaSnapshot` (не `
 | `/kafka/clusters/<C>/brokers/broker<k>/{state,resources,role}` | `KafkaBrokerInfo` | `state` — raw-строка (толерантно к новым); `role` пишет воркер |
 | `/kafka/clusters/<C>/endpoints` | `KafkaClusterInfo.Endpoints` | точка дискавери клиентов (arch/15 §2); отсутствие у Active — critical-алерт |
 | `/kafka/clusters/<C>/app_user`, `app_password` | internal-словарь стора (не в `KafkaClusterInfo`, не в UI/API) | читаются ТОЛЬКО для SASL-проб (§6-аналог: как dsn-пароль pg); значение пароля наружу не отдаётся |
-| `/kafka/clusters/<C>/topics/<T>` | `KafkaTopicInfo` | гибрид автосинк+desired, формат arch/15 §3; `__`-топиков в etcd не бывает |
+| `/kafka/clusters/<C>/topics/<T>` | `KafkaTopicInfo` | гибрид автосинк+desired, формат arch/15 §3; `__`-топиков в etcd не бывает. + leaf-ключи заявок `topics/<T>/desired.{create,delete}` (arch/15 §3.1) → `KafkaTopicLifecycleTicket` |
 | `/kafkaworker/rotations/<C>` | `KafkaRotationTicket` | единственное читаемое из `/kafkaworker/` (arch/15 §4); остальные ключи префикса панель не читает и не пишет |
 
 Неизвестные ключи внутри `/kafka/` — лог + счётчик `unknownKeys`; битый JSON —
 parseError-запись + warning-алерт `kafka-key-malformed` (arch/15 §6).
 
-### 10.2. Мутации панели (8; протоколы — порты §9)
+### 10.2. Мутации панели (12; протоколы — порты §9)
 
 Общие: активный endpoint из kafka-снапшота, имена канонические
 (`^[a-z][a-z0-9_]{0,62}$` — иначе 404), чтение config **напрямую** у etcd
@@ -610,6 +610,10 @@ parseError-запись + warning-алерт `kafka-key-malformed` (arch/15 §6)
 | 6 | **Конфиг-заявка топика** `PUT /api/kafka/clusters/{c}/topics/{t}` | RMW-txn по §10.4: read `topics/<t>` → set `desired`/`desired_unix`/`desired_by` → txn compare `mod_revision` → put. Топик должен существовать в реестре и не быть missing (404 иначе); partitions — только больше фактического (400). Без компенсации: неудавшаяся запись не встала — повтор идемпотентен | 400, 404, 409 (не Active), 503 |
 | 7 | **Отмена конфиг-заявки** `DELETE /api/kafka/clusters/{c}/topics/{t}/desired` | RMW-txn: `desired=null` (убрать `desired`/`desired_*`); 404 если заявки нет. Нужна для missing-топиков (после отмены автосинк удалит ключ) и для «передумали» | 404, 409, 503 |
 | 8 | **Ротация app-пароля** `POST /api/kafka/clusters/{c}/app-password/rotate` | клэйм-txn `/kafkaworker/rotations/<C>` `version==0` + put `{"requested_unix","requested_by"}` — §9.8 один в один; исполнение — AppPasswordRotator KafkaWorker (фазы A/B/C); UI-модалка предупреждает о rolling-перезапуске брокеров | 404, 409 (не Active / уже запрошена), 503 |
+| 9 | **Создание топика** `POST /api/kafka/clusters/{c}/topics` | тело `{name, partitions?, replicationFactor?, retentionMs?, minInSyncReplicas?}` (валидация §10.3). Проверки: кластер Active; имя — Kafka-паттерн без `__`; факт-ключ `topics/<t>` отсутствует или `missing=true` (пересоздание) — иначе 409 «топик существует»; нет живых `desired.create`/`desired.delete` — 409; нет живого `desired` у missing-ключа — 409 «сначала отмените конфиг-заявку». Развёртка дефолтов из config кластера (partitions = `default_partitions`, replicationFactor = `replication_factor` — значения пишутся в etcd полностью). Клэйм-txn `version(desired.create)==0` + put канонического JSON (arch/15 §2.1); 201 `{cluster, topic, partitions, replicationFactor}`. Без компенсаций: неудавшаяся клэйм-txn запись просто не встала (повтор безопасен) | 400 (§10.3), 404 (кластер), 409 (не Active / топик есть / заявка жива), 503 |
+| 10 | **Удаление топика** `DELETE /api/kafka/clusters/{c}/topics/{t}` | клэйм-txn `version(desired.delete)==0` + put `{"requested_unix","requested_by"}`. Пред-проверки: Active; факт-ключ существует и не missing (иначе 404); нет живого `desired.create` (409 «сначала отмените заявку создания»); нет живого `desired` (409 «сначала отмените конфиг-заявку»). Идемпотентно: живая delete-заявка → 204 без записи (порт TO_REMOVE-семантики §9.4/9.6) | 404, 409, 503 |
+| 11 | **Отмена заявки создания** `DELETE /api/kafka/clusters/{c}/topics/{t}/desired.create` | del ключа заявки; 404 если заявки нет | 404, 409 (не Active), 503 |
+| 12 | **Отмена заявки удаления** `DELETE /api/kafka/clusters/{c}/topics/{t}/desired.delete` | del ключа заявки; 404 если заявки нет. **Окно деструктивности**: снимает удаление до тика воркера | 404, 409, 503 |
 
 ### 10.3. Валидация создания/конфиг-мутации (сервер — источник истины)
 
@@ -625,6 +629,20 @@ parseError-запись + warning-алерт `kafka-key-malformed` (arch/15 §6)
 | `mem`/`disk` | целые GiB 1..65536, def 2/20 (на брокера; в etcd `"<n>Gi"`) |
 
 Топик `<t>` (мутации 6–7): Kafka-паттерн `^[a-zA-Z0-9._-]{1,249}$`, без `__`-префикса.
+
+Создание топика (мутация 9, t01):
+
+| Поле | Правило |
+|---|---|
+| `name` | Kafka-паттерн `^[a-zA-Z0-9._-]{1,249}$`, без `__`-префикса (как мутации 6–7); неканоническое — 404 |
+| `partitions` | целое 1..1000, def = config.default_partitions |
+| `replicationFactor` | целое 1..9 и ≤ config.brokers, def = config.replication_factor |
+| `retentionMs` | 1..2147483647, опц. (нет → брокерный default, не пишется в configs) |
+| `minInSyncReplicas` | ≥ 1 и ≤ эффективного RF, опц. |
+
+`configs` create-заявки — только управляемые ключи (`retention.ms`,
+`min.insync.replicas`); сервер собирает их из retentionMs/minInSyncReplicas
+(как `KafkaTopicDesiredPlan.Build`).
 
 ### 10.4. Интеракция desired/missing (заявки конфигов топиков)
 
@@ -645,3 +663,11 @@ min.insync.replicas?}}` + `desired_unix`=now + `desired_by`=username → txn
 - Отмена несуществующей заявки → 404 («заявки нет» — desired уже снят/не
   ставился); идемпотентность повтора PUT — перезапись той же заявки
   свежим `desired_unix` (безопасно).
+- **Lifecycle-заявки** (мутации 9–12, arch/15 §3.1): постановка — клэйм-txn
+  `version==0` на leaf-ключ `desired.create`/`desired.delete` (гварды —
+  таблица §10.2), отмена — del ключа заявки (404 если нет), исполнение/чистка —
+  del воркером. DELETE удаления идемпотентен (живая заявка → 204 без записи —
+  порт TO_REMOVE-семантики кластера/брокера). Конфиг-заявка `desired` и
+  lifecycle-заявки не живут одновременно: create/delete требуют отмены живого
+  `desired` (409), живой `desired` у удаляемого топика гасится вместе с
+  факт-ключом одной txn воркера.

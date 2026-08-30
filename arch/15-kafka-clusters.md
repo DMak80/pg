@@ -35,6 +35,8 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
 | `app_user` | `"app"` | воркер (ensure, txn put-if-absent) | per-cluster SASL-пользователь |
 | `app_password` | 32 симв `[A-Za-z0-9]` | воркер (ensure + ротация) | per-cluster SASL-пароль; панель читает для проб, в UI/API не отдаёт (как dsn-пароль pg) |
 | `topics/<T>` | JSON — гибрид автосинка и конфиг-заявки, см. §3 | воркер (автосинк факта), панель (только `desired`-часть, RMW) | реестр топиков для дискавери |
+| `topics/<T>/desired.create` | JSON `{"partitions":P,"replication_factor":R,"configs"?:{...},"requested_unix":T,"requested_by":"u"}` | панель (клэйм-txn `version==0`), воркер — только del | заявка создания (t01); `configs` — только управляемые (`retention.ms`, `min.insync.replicas`); отсутствие = брокерные дефолты |
+| `topics/<T>/desired.delete` | JSON `{"requested_unix":T,"requested_by":"u"}` | панель (клэйм-txn `version==0`), воркер — только del | заявка удаления (деструктивная; t01) |
 
 Неизвестные ключи внутри `/kafka/` — не ошибка: лог + счётчик `unknownKeys`
 в снапшоте читателя (как pg 02 §2.1; система развивается, парсеры не падают).
@@ -83,6 +85,27 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
  "synced_unix":1750000300,"missing":true}
 ```
 
+`topics/audit/desired.create` (заявка создания с начальными конфигами, t01 §3.1):
+
+```json
+{"partitions":12,"replication_factor":3,
+ "configs":{"retention.ms":"86400000","min.insync.replicas":"2"},
+ "requested_unix":1750000000,"requested_by":"admin"}
+```
+
+`topics/audit/desired.create` без начальных конфигов (брокерные дефолты):
+
+```json
+{"partitions":6,"replication_factor":3,
+ "requested_unix":1750000050,"requested_by":"admin"}
+```
+
+`topics/orders/desired.delete` (заявка удаления):
+
+```json
+{"requested_unix":1750000100,"requested_by":"admin"}
+```
+
 ## 3. Ключ топика: автосинк + конфиг-заявка
 
 Канонический JSON значения `topics/<T>`:
@@ -121,6 +144,32 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
   фактом (`desired` отсутствует). Исчезновение и появление — штатные циклы
   реестра.
 
+### 3.1. Lifecycle-заявки создания/удаления (t01)
+
+Ключи `topics/<T>/desired.create` / `topics/<T>/desired.delete` (§2): ставит панель
+клэйм-txn `version==0` (повтор при живой заявке — 409; отмена — del ключа заявки),
+воркер после исполнения/чистки делает del. Обе заявки на один `<T>` запрещены
+панелью; etcd-мусор — delete авторитетен, create чистится ДО исполнения delete.
+
+Исполнение — тем же тиком TopicSync (§16 5 D), порядок decide: чистка create
+(коллизия) → delete → create → факт-синк; один топик — одно lifecycle-действие
+за тик:
+
+| Ситуация | Действие воркера |
+|---|---|
+| `desired.delete` + топик в факте | journal → DeleteTopics → одной txn: del `topics/<T>` (факт-ключ; живой `desired` гасится с ним) + del заявки |
+| `desired.delete` + топика нет | del заявки (+ del факт-ключа, если висит missing-ключ) — «исполнено внешне» |
+| `desired.create` + топика нет | journal → CreateTopics(partitions, RF, configs?) → del заявки; факт-ключ кладёт следующий автосинк-тик |
+| `desired.create` + топик есть | del заявки + journal-note «уже существует, параметры не применены» |
+| обе живы | del `desired.create` + journal-warning; исполняется delete |
+| заявка на `__`-имя | del + журнал, не исполняя |
+
+Идемпотентность: CreateTopics → AlreadyExists = исполнено; DeleteTopics →
+TopicDoesNotExist = исполнено; отказ между мутацией и del заявки — следующий тик
+сходится по факту. `missing`-семантика не меняется; create на missing-топике —
+«пересоздание» (панель требует отменить живой `desired` раньше; обход etcd не
+ломается: после create `missing=false`, `desired` применится штатно).
+
 ## 4. Координация воркера `/kafkaworker/`
 
 Порт схемы `/pgworker/` ([14-pgworker.md](14-pgworker.md) §3.3) один в один,
@@ -148,7 +197,8 @@ dsn/app_password/routing):
    (`security.protocol=SASL_PLAINTEXT`, `sasl.mechanisms=PLAIN`);
 3. `/kafka/clusters/<C>/topics/` (префикс) → реестр топиков: имена +
    partitions + RF + конфиги (по нему выбирается топик и ожидаемая
-   параллельность).
+   параллельность). Читатель реестра фильтрует leaf-ключи заявок
+   `desired.{create,delete}` по числу сегментов (факт-ключи — 6 сегментов).
 
 Библиотека дискавери (по образцу `Puzzle .../ha-db-etcd-clusters`,
 watch-long-poll/poll) — roadmap (`t05-kafka-discovery-lib`, в репозиторий
@@ -158,8 +208,8 @@ Puzzle); контракт etcd выше уже содержит всё необ�
 
 | Случай | Поведение |
 |---|---|
-| Битый JSON в значении ключа (`config`, `resources`, `topics/<T>`, заявка ротации) | ключ пропускается, в снапшот попадает parseError-запись (без исключения), warning-алерт `kafka-key-malformed` |
-| Неизвестный ключ внутри `/kafka/` | лог-строка + счётчик `unknownKeys`; парсер не падает |
+| Битый JSON в значении ключа (`config`, `resources`, `topics/<T>`, `topics/<T>/desired.create`/`desired.delete`, заявка ротации) | ключ пропускается, в снапшот попадает parseError-запись (без исключения), warning-алерт `kafka-key-malformed` |
+| Неизвестный ключ внутри `/kafka/` | лог-строка + счётчик `unknownKeys`; парсер не падает. В т.ч. неизвестный leaf под `topics/<T>/` |
 | Active-кластер без `endpoints` | критический алерт `kafka-endpoints-missing` (воркер ещё не дописал / потеря ключа) |
 | `config.state` — незнакомое значение | толерантно: трактуется как Active-ветка с raw-строкой state (state-значения строкой — система развивается) |
 | Топик без части факт-полей | читается с null-полями (desired/missing — главные для UI) |

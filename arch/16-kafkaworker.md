@@ -28,10 +28,9 @@ lease-клэймы в etcd, `/kafkaworker/`); смерть контролиру�
 роняет процессы — takeover ≤ TTL 15 с + тик; все операции идемпотентны;
 состояние переживает смерть контроллера (etcd + тома брокеров).
 
-Границы (что НЕ входит): создание/удаление топиков из панели, reassignment
-партиций, TLS/ACL, Prometheus-метрики, клиентская библиотека дискавери,
-rolling-перегенерация нод с новыми ресурсами —
-[roadmap/kafkaworker.md](roadmap/kafkaworker.md).
+Границы (что НЕ входит): reassignment партиций, TLS/ACL, Prometheus-метрики,
+клиентская библиотека дискавери, rolling-перегенерация нод с новыми
+ресурсами — [roadmap/kafkaworker.md](roadmap/kafkaworker.md).
 
 ---
 
@@ -46,13 +45,16 @@ AdminPanel (UI)          KafkaWorker (исполнитель)             docker
 add/remove брокера ──►   brokers/<b>/state         удаёт ──►    (KRaft, SASL)
 ротация пароля     ──►   /kafkaworker/rotations/<C>
 конфиг-заявка      ──►   topics/<T>.desired
+создание/удаление  ──►   topics/<T>/desired.{create,delete}
+топика
 инспекция (read-   ◄──   endpoints, states, реестр
 only, всё видит)         топиков, снятие state
 ```
 
 - **Панель** — декларатор и наблюдатель: пишет только `state`-ключи заявок
-  (`NOT_INITIALIZED`/`TO_REMOVE`), `resources`, `topics/<T>.desired` и заявку
-  ротации; читает всё (контракт мутаций — adminpanel/02 §Kafka).
+  (`NOT_INITIALIZED`/`TO_REMOVE`), `resources`, `topics/<T>.desired`,
+  lifecycle-заявки топиков и заявку ротации; читает всё (контракт мутаций —
+  adminpanel/02 §Kafka).
 - **KafkaWorker** — исполнитель: единственный, кто создаёт/удаляет контейнеры
   брокеров, пишет `endpoints`, `brokers/<b>/{state,role}`, `app_user`/
   `app_password`, факт `topics/<T>`, снимает `state` у config, чистит
@@ -98,7 +100,8 @@ only, всё видит)         топиков, снятие state
   `user_app2=<new>`, §5 H).
 - **Служебные топики**: RF `min(3,B)`, minISR `min(2,B)` (формулы от
   фактического B — 1-брокерный стенд стартует); `auto.create.topics.enable=
-  false` (создание топиков — явное, CLI/клиентами).
+  false` (создание — явное: панелью (lifecycle-заявки, 15 §3.1) или
+  CLI/клиентами; автосоздание продюсером запрещено).
 - **Начальные default-конфиги** из заявки (`config.{default_*}`) — env
   брокеров при создании (§2.2) и одновременно converge-цель (§5 E).
 - **Volume**: `kfw-<C>-<b>-data` → `/var/lib/kafka/data` (`KAFKA_LOG_DIRS`);
@@ -183,7 +186,7 @@ provisioning (аналог `pgw-net`).
 | `/kafka/clusters/<C>/brokers/broker<k>/role` | план provisioning | `controller`\|`broker` (фиксация навсегда) |
 | `/kafka/clusters/<C>/endpoints` | после подъёма; RMW при add/remove | `h1:p1,...` — advertised-хосты + клиентские порты |
 | `/kafka/clusters/<C>/app_user` + `app_password` | provisioning ensure; ротация | `"app"` / 32 симв; txn put-if-absent / txn-коммит ротации |
-| `/kafka/clusters/<C>/topics/<T>` | автосинк (тик D) | факт + сохранение/снятие desired (RMW- txn) |
+| `/kafka/clusters/<C>/topics/<T>` | автосинк (тик D) | факт + сохранение/снятие desired (RMW-txn); + del `topics/<T>/desired.{create,delete}` после исполнения lifecycle-заявок (одной txn с del факт-ключа при delete) |
 | `/kafka/clusters/<C>/config` | txn по завершении provisioning | пере-put канонического JSON **без** `state` (compare mod_revision) |
 | `/kafka/clusters/<C>/` (префикс) | TO_REMOVE, финал X2 | `del --prefix` |
 | `/kafkaworker/{claims,work,portalloc}/<C>*` + `/kafkaworker/rotations/<C>` | TO_REMOVE, финал X2 | del — **очистка координации включает rotations**: остаточная заявка ротации не переживает удаление кластера (иначе вечный алерт `kafka-rotation-pending`) |
@@ -285,6 +288,9 @@ desired отличается по управляемым полям → прим
 следующий тик). Уменьшение partitions — перманентный отказ журнала
 (панель отсекает раньше). `__`-топики — пропуск. Ретраи Polly jitter
 поверх оркестрации (повтор безопасен).
+
+Lifecycle-заявки (15 §3.1): исполнение перед факт-синком (порядок: чистка
+create-коллизий → delete → create → sync), guards и идемпотентность — там же.
 
 ### E. ClusterConfigConverger
 
