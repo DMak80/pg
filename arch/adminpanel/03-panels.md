@@ -443,13 +443,14 @@ clustersCritical — critical-алерты `kafka-broker-not-running`/
 
 ```text
 KafkaClusterSummaryDto: name, state(ACTIVE|NOT_INITIALIZED|TO_REMOVE),
-    brokersTotal, brokersRunning, topicsCount, endpoints, rotationPending(bool)
+    brokersTotal, brokersRunning, topicsCount, endpoints,
+    rotationPending(bool), rebalancePending(bool)
 KafkaClusterDto: name, state, replicationFactor, minInSyncReplicas,
     defaultPartitions, defaultRetentionMs, createdUnix, endpoints,
     brokers[KafkaBrokerDto], topics[KafkaTopicDto], groups[KafkaGroupDto]
     (волна C — из пробы), rotation{requestedUnix, requestedBy}?(nullable),
     rebalance{requestedUnix, requestedBy}?(nullable),
-    reassignment{mode(DRAIN|BALANCE), drainBroker?, partitionsTotal,
+    reassignment{mode(drain|balance), drainBroker?, partitionsTotal,
     partitionsRemaining, updatedUnix}?(nullable — ключа нет = операции нет)
 KafkaBrokerDto: name, state(raw: NOT_INITIALIZED|PROVISIONING|RUNNING|
     UNREACHABLE|REMOVING|TO_REMOVE), role(controller|broker|null — до

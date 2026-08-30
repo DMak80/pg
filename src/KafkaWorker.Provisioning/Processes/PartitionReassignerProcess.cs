@@ -313,18 +313,30 @@ public sealed class PartitionReassignerProcess(
             .ToList();
 
         // Exec-цель: контейнер drain-брокера (drain) или первый RUNNING.
-        var execNode = mode == "drain" && drainBroker is not null
-            ? drainBroker
-            : snap.Brokers.Where(b => b.State == "RUNNING")
-                .OrderBy(b => b.Name, StringComparer.Ordinal)
-                .Select(b => b.Name)
-                .First();
+        var firstRunning = snap.Brokers
+            .Where(b => b.State == "RUNNING")
+            .OrderBy(b => b.Name, StringComparer.Ordinal)
+            .Select(b => b.Name)
+            .FirstOrDefault();
+        var execNode = mode == "drain" && drainBroker is not null ? drainBroker : firstRunning;
 
         using var execCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         execCts.CancelAfter(TimeSpan.FromSeconds(options.ExecSec));
         var cmd = ReassignCli.BuildExecCommand(
             batch, ReassignCli.Bootstrap(liveBrokerNames), snap.AppUser!, snap.AppPassword!);
-        var exec = await driver.ExecNodeAsync(cluster, execNode, cmd, execCts.Token);
+        var exec = await driver.ExecNodeAsync(cluster, execNode!, cmd, execCts.Token);
+
+        // Fallback (spec §5.4 «выберет другой живой контейнер»; code-review
+        // Фазы 7): контейнер drain-брокера может быть недоступен (docker-хост
+        // умер/выведен, контейнер снесён; надзор TO_REMOVE не восстанавливает,
+        // маркер one-way) — иначе вечный Failed тика блокировал бы конвейер
+        // (G/F/H/D). Подача идемпотентна (KIP-455), bootstrap — список живых
+        // адресов (мёртвый контакт клиент перебирает), копирование новых
+        // реплик идёт с лидера, мёртвая исходная реплика не нужна —
+        // переподаём через первый RUNNING-контейнер.
+        if (!exec.IsSuccess && mode == "drain" && drainBroker is not null && firstRunning is not null)
+            exec = await driver.ExecNodeAsync(cluster, firstRunning, cmd, execCts.Token);
+
         if (!exec.IsSuccess)
             return Fail(cluster, exec.Error!, "submitting-batch"); // следующий тик переподаст
 

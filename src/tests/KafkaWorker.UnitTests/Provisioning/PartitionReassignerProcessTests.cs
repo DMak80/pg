@@ -193,6 +193,66 @@ public class PartitionReassignerProcessTests
     }
 
     [Fact]
+    public async Task Drain_exec_в_drain_контейнер_упал_переподача_через_RUNNING()
+    {
+        // Arrange: broker4 TO_REMOVE с репликами; контейнер drain-брокера
+        // мёртв (docker-хост умер/выведен, снесён) — exec в него Failed,
+        // живые узлы отвечают (code-review Фазы 7: надзор TO_REMOVE не
+        // восстанавливает, fallback обязателен — иначе вечный Failed тика).
+        var rig = await NewRig();
+        rig.Etcd.Seed("/kafka/clusters/events/brokers/broker4/state", "TO_REMOVE");
+        rig.Admin.Topics = [new KafkaTopicView("orders", 2, [[1, 2, 4], [2, 4, 1]])];
+        rig.Driver.ExecHandler = (node, _) => node == "broker4"
+            ? Result<string>.Failed(new ApplicationException("нет running-контейнера kfw-events-broker4"))
+            : Result<string>.Success("");
+
+        // Act
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: тик успешен — после отказа в drain-контейнер тот же батч
+        // переподан через первый RUNNING-узел (broker1 по имени), прогресс
+        // записан: drain не застревает на мёртвой exec-цели.
+        result.IsSuccess.Should().BeTrue();
+        rig.Driver.Execs.Should().HaveCount(2);
+        rig.Driver.Execs[0].Node.Should().Be("broker4");
+        rig.Driver.Execs[1].Node.Should().Be("broker1");
+        string.Join(' ', rig.Driver.Execs[1].Cmd).Should().Contain("--execute");
+        var progress = ReadProgress(rig.Etcd);
+        progress.Mode.Should().Be("drain");
+        progress.PartitionsRemaining.Should().Be(2);
+    }
+
+    [Fact]
+    public async Task Drain_сходится_без_контейнера_drain_брокера()
+    {
+        // Arrange: broker4 TO_REMOVE, его контейнера нет вовсе (exec в broker4
+        // всегда Failed); поданный батч Kafka применяется между тиками.
+        var rig = await NewRig();
+        rig.Etcd.Seed("/kafka/clusters/events/brokers/broker4/state", "TO_REMOVE");
+        rig.Admin.Topics = [new KafkaTopicView("orders", 2, [[1, 2, 4], [2, 4, 1]])];
+        rig.Driver.ExecHandler = (node, _) => node == "broker4"
+            ? Result<string>.Failed(new ApplicationException("контейнер не найден"))
+            : Result<string>.Success("");
+
+        // Act: тик 1 — отказ в drain-контейнер, переподача через RUNNING;
+        // факт «доиграл» поданный батч (реплик broker4 нет, ISR полный).
+        (await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None))
+            .IsSuccess.Should().BeTrue();
+        rig.Admin.Topics = [new KafkaTopicView("orders", 2, [[1, 2], [2, 1]], [[1, 2], [2, 1]])];
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: drain завершён по факту — прогресс удалён, journal done;
+        // попыток exec ровно две (тик 1: broker4 → fallback broker1), тик 2
+        // без подач — сходимость не зависит от drain-контейнера.
+        result.IsSuccess.Should().BeTrue();
+        rig.Driver.Execs.Should().HaveCount(2);
+        rig.Etcd.Store.Keys.Should().NotContain(ProgressKey);
+        var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
+        state.Value!.Op.Should().Be("reassign");
+        state.Value!.Phase.Should().Be("done");
+    }
+
+    [Fact]
     public async Task Balance_исполняет_и_снимает_заявку()
     {
         // Arrange: TO_REMOVE нет; заявка жива; факт RF=2 при трёх живых.

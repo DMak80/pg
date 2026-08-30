@@ -12,7 +12,8 @@ namespace KafkaWorker.Provisioning.Processes;
 /// <summary>
 /// RemoveBrokerProcess (arch/16 §5 G): маркер brokers/&lt;b&gt;/state=TO_REMOVE →
 /// guards (кластер Active; не controller; не последний; на брокере нет реплик
-/// партиций — по DescribeTopics, иначе journal-ожидание до roadmap t02) →
+/// партиций — по DescribeTopics включая __-топики, иначе journal-ожидание —
+/// drain идёт процессом I (reassign), демонтаж продолжится сам) →
 /// удаление контейнера+тома → del префикса brokers/&lt;b&gt;/ → RMW endpoints
 /// (убрать адрес) → portalloc-фильтрация → journal done. Идемпотентен.
 /// Вызывается только держателем клэйма &lt;C&gt;.

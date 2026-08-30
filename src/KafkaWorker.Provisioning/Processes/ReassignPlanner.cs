@@ -144,9 +144,6 @@ public static class ReassignPlanner
         var facts = topics
             .SelectMany(t => t.ReplicasPerPartition.Select((_, p) => (t.Topic, Partition: p)))
             .ToHashSet();
-        var planByPartition = plan
-            .GroupBy(m => (m.Topic, m.Partition))
-            .ToDictionary(g => g.Key, g => g.Single());
 
         return plan
             .Where(m =>
