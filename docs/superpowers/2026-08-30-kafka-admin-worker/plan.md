@@ -190,8 +190,8 @@ public sealed record KafkaClusterSnapshot(string Cluster, KafkaClusterConfig Con
 **Файлы:** Create `src/KafkaWorker.Core/Templates/NodeEnvBuilder.cs`; Test `src/tests/KafkaWorker.UnitTests/Templates/NodeEnvBuilderTests.cs`.
 
 **Действие (шаги):**
-- [ ] 1. Тесты (AAA): 3-ноды-кворум (роли/quorum voters), broker-only нода (voters не включает её), 1-брокерный кластер (offsets-RF=1), JAAS содержит `user_app=<pwd>` (и двухпользовательский вариант `user_app=<old>`+`user_app2=<new>` для ротации), default-конфиги из заявки попадают в env; CLIENT advertised = `<AdvertisedClientHost || имя хоста placement>:<клиентский порт>` (arch/16 A2-шаг 2).
-- [ ] 2. Реализация:
+- [x] 1. Тесты (AAA): 3-ноды-кворум (роли/quorum voters), broker-only нода (voters не включает её), 1-брокерный кластер (offsets-RF=1), JAAS содержит `user_app=<pwd>` (и двухпользовательский вариант `user_app=<old>`+`user_app2=<new>` для ротации), default-конфиги из заявки попадают в env; CLIENT advertised = `<AdvertisedClientHost || имя хоста placement>:<клиентский порт>` (arch/16 A2-шаг 2).
+- [x] 2. Реализация:
 
 ```csharp
 public static IReadOnlyDictionary<string,string> Build(NodeEnvSpec spec);
