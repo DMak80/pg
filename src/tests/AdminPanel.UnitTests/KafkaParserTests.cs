@@ -174,4 +174,77 @@ public class KafkaParserTests
         parsed.Tickets.Should().BeEmpty();
         parsed.Errors.Should().ContainSingle().Which.Key.Should().Be("/kafkaworker/rotations/x/y");
     }
+
+    [Fact]
+    public void Rebalances_ValidAndBroken()
+    {
+        // Arrange: две валидные заявки + битый JSON (формат ротаций, t02 §4).
+        var kvs = EtcdFixtures.LoadKv("Kafka/kafka-rebalances.json");
+
+        // Act
+        var parsed = KafkaParser.ParseRebalances(kvs);
+
+        // Assert
+        parsed.Tickets.Should().HaveCount(2);
+        var events = parsed.Tickets.Single(t => t.Cluster == "events");
+        events.RequestedUnix.Should().Be(1750000200L);
+        events.RequestedBy.Should().Be("admin");
+        parsed.Tickets.Single(t => t.Cluster == "shop").RequestedBy.Should().BeNull();
+        parsed.Errors.Should().ContainSingle(e => e.Key == "/kafkaworker/rebalances/broken");
+    }
+
+    [Fact]
+    public void Rebalances_UnknownShapeIsError()
+    {
+        // Arrange: мусорный префикс-ключ под /kafkaworker/rebalances/.
+        var kvs = new List<Kv> { new("/kafkaworker/rebalances/x/y", "{}", 1) };
+
+        // Act
+        var parsed = KafkaParser.ParseRebalances(kvs);
+
+        // Assert
+        parsed.Tickets.Should().BeEmpty();
+        parsed.Errors.Should().ContainSingle().Which.Key.Should().Be("/kafkaworker/rebalances/x/y");
+    }
+
+    [Fact]
+    public void Reassignments_ValidAndBroken()
+    {
+        // Arrange: drain-прогресс + balance-прогресс + битые ключи (нет
+        // обязательных полей / битый JSON).
+        var kvs = EtcdFixtures.LoadKv("Kafka/kafka-reassignments.json");
+
+        // Act
+        var parsed = KafkaParser.ParseReassignments(kvs);
+
+        // Assert
+        parsed.Progress.Should().HaveCount(2);
+        var events = parsed.Progress.Single(p => p.Cluster == "events");
+        events.Mode.Should().Be("drain");
+        events.DrainBroker.Should().Be("broker4");
+        events.PartitionsTotal.Should().Be(12);
+        events.PartitionsRemaining.Should().Be(5);
+        events.UpdatedUnix.Should().Be(1750000215L);
+        events.LastError.Should().BeNull();
+        var shop = parsed.Progress.Single(p => p.Cluster == "shop");
+        shop.Mode.Should().Be("balance");
+        shop.DrainBroker.Should().BeNull();
+        parsed.Errors.Should().HaveCount(2);
+        parsed.Errors.Select(e => e.Key).Should().Contain("/kafkaworker/reassignments/nofields")
+            .And.Contain("/kafkaworker/reassignments/broken");
+    }
+
+    [Fact]
+    public void Reassignments_UnknownShapeIsError()
+    {
+        // Arrange: мусорный префикс-ключ под /kafkaworker/reassignments/.
+        var kvs = new List<Kv> { new("/kafkaworker/reassignments/x/y", "{}", 1) };
+
+        // Act
+        var parsed = KafkaParser.ParseReassignments(kvs);
+
+        // Assert
+        parsed.Progress.Should().BeEmpty();
+        parsed.Errors.Should().ContainSingle().Which.Key.Should().Be("/kafkaworker/reassignments/x/y");
+    }
 }

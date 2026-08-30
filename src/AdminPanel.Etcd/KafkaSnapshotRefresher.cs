@@ -76,7 +76,10 @@ public sealed class KafkaSnapshotRefresher(
 
         var clustersKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Clusters, ct);
         var rotationsKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Rotations, ct);
-        if (!clustersKv.IsSuccess || !rotationsKv.IsSuccess)
+        var rebalancesKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Rebalances, ct);
+        var reassignmentsKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Reassignments, ct);
+        if (!clustersKv.IsSuccess || !rotationsKv.IsSuccess
+            || !rebalancesKv.IsSuccess || !reassignmentsKv.IsSuccess)
             return FailTick(previous, now, "KV-чтения etcd не удались");
 
         _activeEndpoint = active;
@@ -84,6 +87,8 @@ public sealed class KafkaSnapshotRefresher(
         // Парсеры → модель → алерты → атомарная замена (механика pg-цикла §4).
         var clusters = KafkaParser.ParseClusters(clustersKv.Value);
         var rotations = KafkaParser.ParseRotations(rotationsKv.Value);
+        var rebalances = KafkaParser.ParseRebalances(rebalancesKv.Value);
+        var reassignments = KafkaParser.ParseReassignments(reassignmentsKv.Value);
 
         // SASL-креды для проб (B6): в модель кластера НЕ попадают (arch/02 §10.1) —
         // отдельный internal-словарь стора.
@@ -95,9 +100,11 @@ public sealed class KafkaSnapshotRefresher(
             ConsecutiveFailures: 0,
             MergeRuntime(clusters.Clusters, probeReader?.Current?.Clusters),
             rotations.Tickets,
+            rebalances.Tickets,
+            reassignments.Progress,
             previous?.Probes ?? [],       // пробы переживают отказ etcd (симметрия pg spec §4.3)
             Alerts: [],
-            [.. clusters.Errors, .. rotations.Errors],
+            [.. clusters.Errors, .. rotations.Errors, .. rebalances.Errors, .. reassignments.Errors],
             clusters.UnknownKeyCount);
 
         store.Replace(built with { Alerts = alertEngine.Evaluate(built, previous) });
@@ -162,7 +169,7 @@ public sealed class KafkaSnapshotRefresher(
         var error = Result.Failed(new EtcdUnreachableException(reason));
         var failed = previous
             ?? new KafkaSnapshot(now, EtcdReachable: false, ConsecutiveFailures: 0,
-                [], [], [], [], [], 0);
+                [], [], [], [], [], [], [], 0);
         failed = failed with
         {
             EtcdReachable = false,
@@ -212,5 +219,7 @@ public sealed class KafkaSnapshotRefresher(
     {
         public const string Clusters = "/kafka/clusters/";
         public const string Rotations = "/kafkaworker/rotations/";
+        public const string Rebalances = "/kafkaworker/rebalances/";
+        public const string Reassignments = "/kafkaworker/reassignments/";
     }
 }

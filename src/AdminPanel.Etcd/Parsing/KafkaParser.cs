@@ -17,6 +17,16 @@ public sealed record KafkaRotationsParseResult(
     IReadOnlyList<KafkaRotationTicket> Tickets,
     IReadOnlyList<KeyParseError> Errors);
 
+// Результат разбора заявок ребалансировки /kafkaworker/rebalances/ (t02).
+public sealed record KafkaRebalancesParseResult(
+    IReadOnlyList<KafkaRebalanceTicket> Tickets,
+    IReadOnlyList<KeyParseError> Errors);
+
+// Результат разбора прогресса reassignment /kafkaworker/reassignments/ (t02).
+public sealed record KafkaReassignmentsParseResult(
+    IReadOnlyList<KafkaReassignmentProgress> Progress,
+    IReadOnlyList<KeyParseError> Errors);
+
 // Парсер kafka-домена: чистые функции Kv[] → модель, битые значения не бросают
 // исключений — порождают KeyParseError (порт стиля ClustersParser; arch/15 §6).
 public static class KafkaParser
@@ -146,6 +156,91 @@ public static class KafkaParser
         }
 
         return new(tickets, errors);
+    }
+
+    // Заявки ребалансировки: формат ротаций (requested_unix обязателен, t02 §4).
+    public static KafkaRebalancesParseResult ParseRebalances(IReadOnlyList<Kv> kvs)
+    {
+        var tickets = new List<KafkaRebalanceTicket>();
+        var errors = new List<KeyParseError>();
+        foreach (var kv in kvs)
+        {
+            // "/kafkaworker/rebalances/<C>" → ["", "kafkaworker", "rebalances", <C>]
+            var segments = kv.Key.Split('/');
+            if (segments.Length != 4 || segments[3].Length == 0)
+            {
+                errors.Add(new(kv.Key, "ожидается /kafkaworker/rebalances/<cluster>"));
+                continue;
+            }
+
+            try
+            {
+                using var doc = JsonDocument.Parse(kv.Value);
+                var root = doc.RootElement;
+                var requested = JsonValues.ReadLong(root, "requested_unix");
+                if (requested is null)
+                {
+                    errors.Add(new(kv.Key, "нет поля requested_unix"));
+                    continue;
+                }
+
+                tickets.Add(new KafkaRebalanceTicket(
+                    segments[3], requested.Value, JsonValues.ReadString(root, "requested_by")));
+            }
+            catch (JsonException e)
+            {
+                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+            }
+        }
+
+        return new(tickets, errors);
+    }
+
+    // Прогресс reassignment: обязательны mode/partitions_remaining/updated_unix
+    // (t02 §4); остальное — опционально (drain_broker/last_error).
+    public static KafkaReassignmentsParseResult ParseReassignments(IReadOnlyList<Kv> kvs)
+    {
+        var progress = new List<KafkaReassignmentProgress>();
+        var errors = new List<KeyParseError>();
+        foreach (var kv in kvs)
+        {
+            // "/kafkaworker/reassignments/<C>" → ["", "kafkaworker", "reassignments", <C>]
+            var segments = kv.Key.Split('/');
+            if (segments.Length != 4 || segments[3].Length == 0)
+            {
+                errors.Add(new(kv.Key, "ожидается /kafkaworker/reassignments/<cluster>"));
+                continue;
+            }
+
+            try
+            {
+                using var doc = JsonDocument.Parse(kv.Value);
+                var root = doc.RootElement;
+                var mode = JsonValues.ReadString(root, "mode");
+                var remaining = JsonValues.ReadLong(root, "partitions_remaining");
+                var updated = JsonValues.ReadLong(root, "updated_unix");
+                if (mode is null || remaining is null || updated is null)
+                {
+                    errors.Add(new(kv.Key, "нет обязательных полей mode/partitions_remaining/updated_unix"));
+                    continue;
+                }
+
+                progress.Add(new KafkaReassignmentProgress(
+                    segments[3],
+                    mode,
+                    JsonValues.ReadString(root, "drain_broker"),
+                    AsInt(JsonValues.ReadLong(root, "partitions_total")),
+                    (int)remaining.Value,
+                    updated.Value,
+                    JsonValues.ReadString(root, "last_error")));
+            }
+            catch (JsonException e)
+            {
+                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+            }
+        }
+
+        return new(progress, errors);
     }
 
     private static KafkaClusterInfo BuildCluster(ClusterAcc acc, List<KeyParseError> errors)

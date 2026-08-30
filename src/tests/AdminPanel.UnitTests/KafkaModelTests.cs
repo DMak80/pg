@@ -1,5 +1,6 @@
 using AdminPanel.Core;
 using AdminPanel.Core.Kafka;
+using Inspection = AdminPanel.Api.Inspection;
 using FluentAssertions;
 using Xunit;
 
@@ -82,6 +83,8 @@ public class KafkaModelTests
                 ]),
         ],
         Rotations: [new KafkaRotationTicket("events", 1750000200, "admin")],
+        Rebalances: [],
+        Reassignments: [],
         Probes: [],
         Alerts: [],
         ParseErrors: [new KeyParseError("/kafka/clusters/x/config", "bad json")],

@@ -22,6 +22,10 @@ public class KafkaRefresherTests
 
         public IReadOnlyList<Kv> RotationsKv { get; set; } = [];
 
+        public IReadOnlyList<Kv> RebalancesKv { get; set; } = [];
+
+        public IReadOnlyList<Kv> ReassignmentsKv { get; set; } = [];
+
         public List<string> FailEndpoints { get; } = [];
 
         public Task<Result<IReadOnlyList<Kv>>> RangeAsync(string endpoint, string prefix, CancellationToken ct)
@@ -31,6 +35,8 @@ public class KafkaRefresherTests
                 {
                     "/kafka/clusters/" => ClustersKv,
                     "/kafkaworker/rotations/" => RotationsKv,
+                    "/kafkaworker/rebalances/" => RebalancesKv,
+                    "/kafkaworker/reassignments/" => ReassignmentsKv,
                     _ => [],
                 }));
 
@@ -72,6 +78,8 @@ public class KafkaRefresherTests
     {
         ClustersKv = EtcdFixtures.LoadKv("Kafka/kafka-clusters-full.json"),
         RotationsKv = EtcdFixtures.LoadKv("Kafka/kafka-rotations.json"),
+        RebalancesKv = EtcdFixtures.LoadKv("Kafka/kafka-rebalances.json"),
+        ReassignmentsKv = EtcdFixtures.LoadKv("Kafka/kafka-reassignments.json"),
     };
 
     [Fact]
@@ -93,7 +101,17 @@ public class KafkaRefresherTests
         snapshot.ConsecutiveFailures.Should().Be(0);
         snapshot.Clusters.Should().HaveCount(2);
         snapshot.Rotations.Should().HaveCount(2);
+        snapshot.Rebalances.Should().HaveCount(2);
+        snapshot.Reassignments.Should().HaveCount(2);
         snapshot.UnknownKeyCount.Should().Be(0);
+        // Битые ключи новых префиксов — parseError (алерт kafka-key-malformed
+        // по ним даст Task 12), тик не падает.
+        snapshot.ParseErrors.Select(e => e.Key).Should()
+            .Contain("/kafkaworker/rebalances/broken")
+            .And.Contain("/kafkaworker/reassignments/broken");
+        var progress = snapshot.Reassignments.Single(p => p.Cluster == "events");
+        progress.Mode.Should().Be("drain");
+        progress.PartitionsRemaining.Should().Be(5);
         // Алерты движка на собранном снапшоте: заявка ротации events + pending-кластер.
         snapshot.Alerts.Should().Contain(a => a.Id == "kafka-rotation-pending:events");
         snapshot.Alerts.Should().Contain(a => a.Id == "kafka-cluster-not-initialized:pending");
@@ -201,7 +219,7 @@ public class KafkaSnapshotStoreTests
         // Arrange
         var store = new KafkaSnapshotStore();
         var first = new KafkaSnapshot(
-            new DateTimeOffset(2026, 8, 30, 0, 0, 0, TimeSpan.Zero), true, 0, [], [], [], [], [], 0);
+            new DateTimeOffset(2026, 8, 30, 0, 0, 0, TimeSpan.Zero), true, 0, [], [], [], [], [], [], [], 0);
         var second = first with { BuiltAtUtc = first.BuiltAtUtc.AddSeconds(3) };
 
         // Act
