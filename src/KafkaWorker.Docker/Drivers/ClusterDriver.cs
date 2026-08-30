@@ -44,6 +44,12 @@ public interface IClusterDriver
     // (deprovisioning/remove-broker; 404 = успех).
     Task<Result> RemoveNodeAsync(string cluster, string nodeName, bool removeVolume, CancellationToken ct);
 
+    // Существует ли том данных брокера (kfw-<C>-<b>-data). Консервативная
+    // семантика надзора (arch/16 §5 C): «неизвестно/не управляем» = true —
+    // чистый том допускается только при доказанной утрате (потери данных
+    // недопустимы).
+    Task<Result<bool>> NodeVolumeExistsAsync(string cluster, string nodeName, CancellationToken ct);
+
     // Имена объектов брокеров кластера (kfw-<C>-*): сверка декларации + сироты (X1).
     Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct);
 }
@@ -189,6 +195,22 @@ public sealed class PlainClusterDriver(
         });
     }
 
+    // Том есть на любом хосте таблицы → жив; недоступность хоста = Failed
+    // (надзор не решает судьбу тома вслепую — тик завершится ошибкой).
+    public async Task<Result<bool>> NodeVolumeExistsAsync(string cluster, string nodeName, CancellationToken ct)
+    {
+        foreach (var engine in _engines.Values)
+        {
+            var exists = await engine.VolumeExistsAsync(VolumeName(cluster, nodeName), ct);
+            if (!exists.IsSuccess)
+                return exists.Error!;
+            if (exists.Value)
+                return Result<bool>.Success(true);
+        }
+
+        return Result<bool>.Success(false);
+    }
+
     internal static string NodeName(string cluster, string nodeName)
         => $"kfw-{cluster}-{nodeName}";
 
@@ -265,6 +287,11 @@ public sealed class SwarmClusterDriver(
         // остаются в volume ноды; полный демонтаж — runbook).
         return _engine.RemoveServiceAsync(PlainClusterDriver.NodeName(cluster, nodeName), ct);
     }
+
+    // Менеджер тома ноды таска не видит: консервативно «жив» — надзор не
+    // удаляет то, чем не управляет (потери данных недопустимы).
+    public Task<Result<bool>> NodeVolumeExistsAsync(string cluster, string nodeName, CancellationToken ct)
+        => Task.FromResult(Result<bool>.Success(true));
 
     // Объекты брокеров кластера в swarm — СЕРВИСЫ: GET /services с префиксом
     // kfw-<C>-. Существование сервиса ≠ живой таск: живость — AdminClient-пробы.

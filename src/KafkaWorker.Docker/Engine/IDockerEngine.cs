@@ -29,6 +29,10 @@ public interface IDockerEngine : IAsyncDisposable
     // DELETE /volumes/<name> (404 = успех).
     Task<Result> RemoveVolumeAsync(string name, CancellationToken ct);
 
+    // GET /volumes/<name> — существует ли volume (404 = нет; надзор arch/16 §5 C:
+    // чистый том только при доказанной физической утрате, потери данных недопустимы).
+    Task<Result<bool>> VolumeExistsAsync(string name, CancellationToken ct);
+
     // POST /containers/<id>/exec + /exec/<id>/start + /exec/<id>/json —
     // выполнить команду в контейнере, вернуть demultiplexed stdout;
     // exit != 0 → Failed со stderr в сообщении (t01: pg_dump-транспорт).

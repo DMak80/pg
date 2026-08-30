@@ -12,13 +12,19 @@ using KafkaWorker.Provisioning.Kafka;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// Надзор нод Active-кластера (arch/16 §5 C, порт NodeSupervisor PgWorker):
-/// сверка декларации с фактом docker + AdminClient-проба. Снесённый контейнер
-/// пересоздаётся (тот же volume/env — self-healing); брокер молчит дольше
-/// NodeDeadSec → state=UNREACHABLE + пересоздание с ЧИСТЫМ томом (RF&gt;1 —
-/// rejoin репликацией; RF=1 — journal-warning о потере данных, документированное
-/// поведение). Ноды TO_REMOVE/REMOVING/PROVISIONING чужих процессов не трогаем.
-/// Вызывается только держателем клэйма &lt;C&gt;.
+/// Надзор нод Active-кластера (arch/16 §5 C, spec §4.2 C, порт NodeSupervisor
+/// PgWorker): сверка декларации с фактом docker + AdminClient-проба. Снесённый
+/// контейнер пересоздаётся (тот же volume/env — self-healing). Брокер молчит
+/// дольше NodeDeadSec (по УСПЕШНОМУ ответу пробы) → state=UNREACHABLE +
+/// пересоздание КОНТЕЙНЕРА с сохранением тома — данные неприкосновенны;
+/// чистый том — только при доказанной физической утрате тома в docker
+/// (RF=1 + утрата → journal-warning о потере единственной копии). Не более
+/// ОДНОГО пересоздания по молчанию за тик (ждём возврата брокера в кластер).
+/// Слепая проба (DescribeCluster недоступен / кластер не поднят) не стартует
+/// и не исполняет бюджет молчания: пересоздания из-за собственной слепоты
+/// воркера запрещены (потеря данных недопустима). Ноды TO_REMOVE/REMOVING/
+/// PROVISIONING чужих процессов не трогаем. Вызывается только держателем
+/// клэйма &lt;C&gt;.
 /// </summary>
 public sealed class NodeSupervisor(
     IEtcdGateway etcd,
@@ -50,30 +56,49 @@ public sealed class NodeSupervisor(
             return Result.Failed(objects.Error!);
         var alive = objects.Value.ToHashSet();
 
-        // AdminClient-проба: кто реально в кластере (по NodeId).
+        // AdminClient-проба: кто реально в кластере (по NodeId). null = проба
+        // недоступна (кластер целиком не отвечает или ещё не поднят) — слепота
+        // пробы НЕ является молчанием брокеров: бюджет молчания не стартует и
+        // не исполняется, прошлый трек сохраняется (данные неприкосновенны).
         var view = await DescribeAliveAsync(snap, ct);
         if (!view.IsSuccess)
             return Result.Failed(view.Error!);
-        var inCluster = view.Value ?? new HashSet<int>();
-        var unreachableNow = snap.Brokers
-            .Where(b => b.State == "RUNNING")
-            .Where(b => !inCluster.Contains(NodeId(b.Name)))
-            .Select(b => b.Name)
-            .ToList();
+        var probeBlind = view.Value is null;
+        var inCluster = view.Value ?? [];
+        var unreachableNow = probeBlind
+            ? null
+            : snap.Brokers
+                .Where(b => b.State == "RUNNING")
+                .Where(b => !inCluster.Contains(NodeId(b.Name)))
+                .Select(b => b.Name)
+                .ToList();
 
         // Трек молчания: journal.unreachable broker → first_seen (порт PgWorker).
+        // Только УСПЕШНЫЙ ответ пробы «в кластере нет брокера X» начинает/держит
+        // бюджет молчания X; при слепой пробе трек заморожен (чистка только по
+        // исчезновению из декларации — «ожил» решит зрячая проба).
         var rawTrack = await journal.ReadUnreachableAsync(cluster, ct);
         if (!rawTrack.IsSuccess)
             return Result.Failed(rawTrack.Error!);
         var track = new Dictionary<string, long>(rawTrack.Value);
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        foreach (var broker in unreachableNow)
-            if (!track.ContainsKey(broker))
-                track[broker] = now;
-        foreach (var stale in track.Keys
-                     .Where(k => snap.Brokers.All(b => b.Name != k) || !unreachableNow.Contains(k))
-                     .ToList())
-            track.Remove(stale); // брокер ожил или исчез из декларации
+        if (unreachableNow is not null)
+        {
+            foreach (var broker in unreachableNow)
+                if (!track.ContainsKey(broker))
+                    track[broker] = now;
+            foreach (var stale in track.Keys
+                         .Where(k => snap.Brokers.All(b => b.Name != k) || !unreachableNow.Contains(k))
+                         .ToList())
+                track.Remove(stale); // брокер ожил или исчез из декларации
+        }
+        else
+        {
+            foreach (var gone in track.Keys
+                         .Where(k => snap.Brokers.All(b => b.Name != k))
+                         .ToList())
+                track.Remove(gone); // брокера нет в декларации — трек бессмысленен
+        }
 
         // Warning-ы тика (RF=1-пересоздания) — в финальную supervision-запись.
         var warnings = new List<string>();
@@ -90,34 +115,52 @@ public sealed class NodeSupervisor(
                 return Fail(cluster, recreated.Error!, "recreate-container");
         }
 
-        // 2) Молчание дольше NodeDeadSec → UNREACHABLE + пересоздание с чистым томом.
-        foreach (var (brokerName, since) in track)
+        // 2) Молчание дольше NodeDeadSec → UNREACHABLE + пересоздание
+        // КОНТЕЙНЕРА. Том неприкосновенен: чистый том — только при доказанной
+        // утрате тома в docker («не можем проверить» = том жив). Не более
+        // ОДНОГО пересоздания за тик — ждём возврата брокера в кластер/ISR.
+        // При слепой пробе секция не исполняется вовсе: собственная слепота
+        // воркера — не повод пересоздавать брокеров.
+        if (!probeBlind)
         {
-            if (now - since <= options.NodeDeadSec)
-                continue; // молчание ещё в пределах NodeDeadSec — терпим
+            foreach (var (brokerName, since) in track
+                         .OrderBy(t => t.Key, StringComparer.Ordinal)
+                         .ToList()) // снимок: track.Remove внутри цикла
+            {
+                if (now - since <= options.NodeDeadSec)
+                    continue; // молчание ещё в пределах NodeDeadSec — терпим
 
-            var broker = snap.Brokers.FirstOrDefault(b => b.Name == brokerName);
-            if (broker is null || !Supervisable(snap).Contains(broker))
-                continue;
+                var broker = snap.Brokers.FirstOrDefault(b => b.Name == brokerName);
+                if (broker is null || !Supervisable(snap).Contains(broker))
+                    continue;
 
-            var marked = await PutAsync(BrokerStateKey(cluster, brokerName), "UNREACHABLE", ct);
-            if (!marked.IsSuccess)
-                return Fail(cluster, marked.Error!, "mark-unreachable");
+                // Том жив, пока docker не докажет обратного (потеря данных
+                // недопустима): проверка существования volume по имени.
+                var volume = await driver.NodeVolumeExistsAsync(cluster, brokerName, ct);
+                if (!volume.IsSuccess)
+                    return Fail(cluster, volume.Error!, "check-volume");
+                var removeVolume = !volume.Value; // чистый том — только утраченный
 
-            // RF=1: чистый том = потеря единственной копии — journal-warning
-            // (документированное поведение, arch/16 §5 C).
-            string? warning = snap.Config.ReplicationFactor <= 1
-                ? $"брокер {brokerName}: RF=1, пересоздание с чистым томом — данные кластера потеряны"
-                : null;
+                var marked = await PutAsync(BrokerStateKey(cluster, brokerName), "UNREACHABLE", ct);
+                if (!marked.IsSuccess)
+                    return Fail(cluster, marked.Error!, "mark-unreachable");
 
-            var recreated = await RecreateAsync(snap, broker, addresses.Value, removeVolume: true, ct);
-            if (!recreated.IsSuccess)
-                return Fail(cluster, recreated.Error!, "recreate-unreachable");
+                // RF=1 и том утрачен: чистый том = потеря единственной копии —
+                // journal-warning (документированное поведение, arch/16 §5 C).
+                string? warning = removeVolume && snap.Config.ReplicationFactor <= 1
+                    ? $"брокер {brokerName}: том данных утрачен, RF=1 — единственная копия данных кластера потеряна"
+                    : null;
 
-            if (warning is not null)
-                warnings.Add(warning);
+                var recreated = await RecreateAsync(snap, broker, addresses.Value, removeVolume, ct);
+                if (!recreated.IsSuccess)
+                    return Fail(cluster, recreated.Error!, "recreate-unreachable");
 
-            track.Remove(brokerName); // пересоздан — счётчик молчания заново
+                if (warning is not null)
+                    warnings.Add(warning);
+
+                track.Remove(brokerName); // пересоздан — счётчик молчания заново
+                break; // одно пересоздание по молчанию за тик
+            }
         }
 
         await journal.WriteSupervisionAsync(
@@ -141,14 +184,13 @@ public sealed class NodeSupervisor(
     {
         var cluster = snap.Cluster;
 
-        // Пересоздание: снести (том — по флагу) и поднять заново с тем же
-        // детерминированным env (том/адреса из portalloc — advertised стабилен).
-        if (removeVolume)
-        {
-            var removed = await driver.RemoveNodeAsync(cluster, broker.Name, removeVolume: true, ct);
-            if (!removed.IsSuccess)
-                return removed;
-        }
+        // Пересоздание: снести контейнер (том — по флагу; при молчании
+        // контейнер ещё жив — его нужно снять перед пересозданием) и поднять
+        // заново с тем же детерминированным env (адреса из portalloc —
+        // advertised стабилен). 404 на удалении — успех (движок).
+        var removed = await driver.RemoveNodeAsync(cluster, broker.Name, removeVolume, ct);
+        if (!removed.IsSuccess)
+            return removed;
 
         var ensured = await EnsureNodeAsync(snap, broker, addresses, ct);
         if (!ensured.IsSuccess)

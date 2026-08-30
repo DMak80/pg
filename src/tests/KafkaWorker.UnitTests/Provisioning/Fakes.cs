@@ -158,6 +158,7 @@ internal static class Fakes
         public readonly List<KafkaNodeSpec> AllEnsured = []; // включая повторы имён (rolling-фазы)
         public readonly List<(string Node, bool RemoveVolume)> Removed = [];
         public List<string> NodeObjects = []; // имена kfw-<C>-<b>
+        public HashSet<string> MissingVolumes = []; // физически утраченные тома kfw-<C>-<b>-data
         public Func<string, Result>? EnsureResultByNode { get; set; }
         public bool RemoveFailsOnce { get; set; }
         private bool _removeFailed;
@@ -220,5 +221,9 @@ internal static class Fakes
 
             return Task.FromResult(Result<IReadOnlyList<string>>.Success(objects));
         }
+
+        public Task<Result<bool>> NodeVolumeExistsAsync(string cluster, string nodeName, CancellationToken ct)
+            => Task.FromResult(Result<bool>.Success(
+                !MissingVolumes.Contains($"kfw-{cluster}-{nodeName}-data")));
     }
 }

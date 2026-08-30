@@ -160,6 +160,20 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             }
         });
 
+    public async Task<Result<bool>> VolumeExistsAsync(string name, CancellationToken ct)
+        => await Result<bool>.FromAsync(async () =>
+        {
+            try
+            {
+                await SendAsync(HttpMethod.Get, $"/volumes/{Uri.EscapeDataString(name)}", ct: ct);
+                return true;
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                return false; // volume не существует — физически утрачен
+            }
+        });
+
     public async Task<Result> EnsureNetworkAsync(string name, CancellationToken ct)
         => await Result.FromAsync(async () =>
         {
