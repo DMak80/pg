@@ -300,11 +300,11 @@ public sealed record KafkaTopicView(string Topic, int Partitions,
 **Файлы:** Create `src/KafkaWorker.App/{Program.cs,Options.cs}`, `src/KafkaWorker.App/Loops/{ReconcileLoop,KeepaliveLoop,SnapshotLoop,KafkaClusterClassifier}.cs`, `src/KafkaWorker.App/HealthChecks/{KafkaWorkerHealth,ServiceProbes}.cs` (порты PgWorker.App), `src/KafkaWorker.App/appsettings.json`; Test `src/tests/KafkaWorker.UnitTests/App/KafkaClusterClassifierTests.cs`.
 
 **Действие (шаги):**
-- [ ] 1. `KafkaWorkerOptions` — дерево секций из spec §4.3 (Etcd/Docker/Loops/Thresholds/Parallelism/Snapshots/AdvertisedClientHost).
-- [ ] 2. `KafkaClusterClassifier`-тесты (AAA): NOT_INITIALIZED→Provision, TO_REMOVE→Deprovision, иначе→Active(+кандидаты add/remove по стейтам брокеров — для волн B). Реализация — порт `ClusterClassifier`.
-- [ ] 3. `ReconcileLoop` — тик ScanIntervalSec: range `/kafka/clusters/` → parse → классификация → процессы под клэймом (параллелизм MaxClusters; Active-ветка: supervisor → converger; add/remove/ротация/TopicSync — заглушки-расширения волн B/C). `KeepaliveLoop`/`SnapshotLoop` — порты PgWorker (leader-снапшоты 6 ч + retention; SnapshotJob собирается из `KafkaWorker.Etcd/SnapshotJob.cs` — копия PgWorker с префиксом `/kafka/`).
-- [ ] 4. `Program.cs` — композиция по образцу PgWorker.App (без SecretsFromEnv — секретов per-install нет; fail-fast на пустые Etcd:Endpoints/Hosts); `appsettings.json` с дефолтами §4.3 (`AdvertisedClientHost=null` — правило arch/16).
-- [ ] 5. Health: `/healthz` (etcd-reachable, docker-hosts, loops-alive, claims) — порт `PgWorkerHealth`.
+- [x] 1. `KafkaWorkerOptions` — дерево секций из spec §4.3 (Etcd/Docker/Loops/Thresholds/Parallelism/Snapshots/AdvertisedClientHost).
+- [x] 2. `KafkaClusterClassifier`-тесты (AAA): NOT_INITIALIZED→Provision, TO_REMOVE→Deprovision, иначе→Active(+кандидаты add/remove по стейтам брокеров — для волн B). Реализация — порт `ClusterClassifier`.
+- [x] 3. `ReconcileLoop` — тик ScanIntervalSec: range `/kafka/clusters/` → parse → классификация → процессы под клэймом (параллелизм MaxClusters; Active-ветка: supervisor → converger; add/remove/ротация/TopicSync — заглушки-расширения волн B/C). `KeepaliveLoop`/`SnapshotLoop` — порты PgWorker (leader-снапшоты 6 ч + retention; SnapshotJob собирается из `KafkaWorker.Etcd/SnapshotJob.cs` — копия PgWorker с префиксом `/kafka/`).
+- [x] 4. `Program.cs` — композиция по образцу PgWorker.App (без SecretsFromEnv — секретов per-install нет; fail-fast на пустые Etcd:Endpoints/Hosts); `appsettings.json` с дефолтами §4.3 (`AdvertisedClientHost=null` — правило arch/16).
+- [x] 5. Health: `/healthz` (etcd-reachable, docker-hosts, loops-alive, claims) — порт `PgWorkerHealth`.
 
 **Выход:** runnable-хост воркера (`dotnet run` для локальной отладки; прод — docker).
 **Проверка:** `dotnet build src/PgWorker.slnx` — 0 warnings; юнит App-тесты зелёные.

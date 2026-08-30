@@ -1,0 +1,48 @@
+using KafkaWorker.Core;
+using KafkaWorker.Core.Model;
+using KafkaWorker.Provisioning.Processes;
+
+namespace KafkaWorker.App.Loops;// Агрегатор процессов для ReconcileLoop (порт ClusterProcesses PgWorker):
+// цикл не знает конкретных машин состояний — только эту грань (мокабельно
+// в unit-тестах цикла). Волны B/C добавят сюда scale-проходы, ротацию и TopicSync.
+
+/// <summary>Точка входа цикла к процессам-машинам состояний (arch/16 §5).</summary>
+internal interface IKafkaClusterProcesses
+{
+    Task<Result> ProvisionAsync(KafkaClusterSnapshot snap, CancellationToken ct);
+
+    Task<Result> DeprovisionAsync(KafkaClusterSnapshot snap, CancellationToken ct);
+
+    /// <summary>Active-ветка: надзор (C) → converge (E); scale/ротация/TopicSync — волны B/C.</summary>
+    Task<Result> ActiveAsync(KafkaClusterSnapshot snap, CancellationToken ct);
+}
+
+/// <summary>Реализация поверх процессов волны A (синглтоны DI).</summary>
+internal sealed class KafkaClusterProcesses(
+    ProvisioningProcess provision,
+    DeprovisioningProcess deprovision,
+    NodeSupervisor supervisor,
+    IClusterConfigConverger converger) : IKafkaClusterProcesses
+{
+    public Task<Result> ProvisionAsync(KafkaClusterSnapshot snap, CancellationToken ct)
+        => provision.RunAsync(snap, ct);
+
+    public Task<Result> DeprovisionAsync(KafkaClusterSnapshot snap, CancellationToken ct)
+        => deprovision.RunAsync(snap.Cluster, snap.Brokers.Select(b => b.Name).ToList(), ct);
+
+    public async Task<Result> ActiveAsync(KafkaClusterSnapshot snap, CancellationToken ct)
+    {
+        // Надзор (C) — самовосстановление нод; конвейер Active-ветки останавливать
+        // не должен: ошибка надзора — ошибка тика кластера (следующий тик повторит).
+        var supervised = await supervisor.RunAsync(snap, ct);
+        if (!supervised.IsSuccess)
+            return supervised;
+
+        // Converge (E) — только для поднявшегося кластера (endpoints есть).
+        if (snap.Endpoints is null || snap.AppUser is null || snap.AppPassword is null)
+            return Result.Success(); // ещё поднимается — converge нечем
+
+        return await converger.ApplyAsync(
+            snap.Cluster, snap.Endpoints, snap.AppUser, snap.AppPassword, snap.Config, ct);
+    }
+}
