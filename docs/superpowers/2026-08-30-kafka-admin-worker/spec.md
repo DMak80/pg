@@ -147,7 +147,7 @@ etcd кластер со стендом pg. Два новых корневых �
 | **Удаление кластера** `DELETE /api/kafka/clusters/{c}` | PUT config RMW: `state=TO_REMOVE` с сохранением остальных полей (идемпотентно; протокол = pg §9.4). Съём контейнеров/очистка ключей — воркер |
 | **Изменение default-конфигов** `PUT /api/kafka/clusters/{c}/config` | RMW- txn по `mod_revision`: обновить `replication_factor`/`min_insync_replicas`/`default_partitions`/`default_retention_ms` (те же границы); применяет воркер как dynamic broker configs (converge, без рестартов). 404/409 (не Active)/503 — как pg |
 | **Добавление брокера** `POST /api/kafka/clusters/{c}/brokers` | тело: resources {cpu, mem, disk}; имя генерит сервер `broker<max+1>`; клэйм-txn `version(brokers/<b>/state)==0` + put `NOT_INITIALIZED` + put resources; сбой → компенсация точечными del (аналог pg §9.5). Поднимает воркер (broker-only, кворум не меняется) |
-| **Удаление брокера** `DELETE /api/kafka/clusters/{c}/brokers/{b}` | маркер `brokers/<b>/state=TO_REMOVE` (one-way, идемпотентно; протокол = pg §9.6). Серверные пред-проверки: не `controller`; не последний брокер; по live-пробе на брокере нет партиций-реплик (иначе 409 «сначала reassignment» — roadmap). Воркер перепроверит авторитетно (guard'ы) |
+| **Удаление брокера** `DELETE /api/kafka/clusters/{c}/brokers/{b}` | маркер `brokers/<b>/state=TO_REMOVE` (one-way, идемпотентно; протокол = pg §9.6). Серверные пред-проверки (детерминированные, по etcd-снапшоту): не `controller`; не последний брокер — иначе 409. Live-проверку размещения реплик панель НЕ делает (в etcd-снапшоте фактических реплик нет, live-проба асинхронна — серверный 409 был бы нестабильным): маркер ставится всегда (204); guard «на брокере есть партиции» авторитетно исполняет воркер (DescribeTopics → journal-ожидание waiting-partitions); разблокировка drain непустого брокера — `t02-kafka-reassignment` (roadmap) |
 | **Конфиг-заявка топика** `PUT /api/kafka/clusters/{c}/topics/{t}` | тело `{partitions?, retentionMs?, minInSyncReplicas?}` (хотя бы одно поле; partitions — только больше фактического); 404 кластер/топик (топик должен существовать в реестре и не быть missing); RMW-txn по §3.2. Без компенсации: неудавшаяся запись просто не встала — повтор идемпотентен |
 | **Отмена конфиг-заявки** `DELETE /api/kafka/clusters/{c}/topics/{t}/desired` | RMW-txn: `desired=null` (убрать поля desired_*); 404 если заявки нет. Нужна для missing-топиков (после отмены автосинк удалит ключ) и для «передумали» |
 | **Ротация app-пароля** `POST /api/kafka/clusters/{c}/app-password/rotate` | клэйм-txn `/kafkaworker/rotations/<C>` `version==0` + put (протокол = pg §9.8 один в один: 409 «уже запрошена», 201 `{cluster, requestedUnix, requestedBy}`); UI-модалка предупреждает о rolling-перезапуске брокеров |
@@ -328,8 +328,9 @@ running/всего, топики, endpoints; кнопка «Создать кл�
 с дефолтами 3/3/2) и `KafkaClusterDetailsPage` с вкладками:
 
 - **Брокеры**: name, state, role (controller/broker), resources, host-адрес; колонка
-  действий — «Убрать брокера» (guards: controller/последний/непустой — дизейбл с
-  пояснением, серверный 409 текстом); кнопка «Добавить брокера» (форма resources);
+  действий — «Убрать брокера» (controller/последний — дизейбл с пояснением, серверный
+  409 текстом; непустой — дизейбл по live-пробе как UX-подсказка: серверного отказа
+  нет, занятый брокер удержит воркер — §3.4); кнопка «Добавить брокера» (форма resources);
 - **Топики**: name, partitions, RF, retention, minISR, `desired`-бейдж («заявка:
   +partitions/конфиги», возраст), `missing`-подсветка; per-row «Изменить конфиги»
   (модал: partitions↑/retention/minISR) и «Отменить заявку»; подпись «состав топиков
@@ -441,8 +442,10 @@ Polling/тема/401-обработка — общие компоненты layo
 3. **Жизненный цикл** (волны A/B): заявка панели (или сида) → воркер поднимает
    кластер (3 брокера, RF=3, minISR=2), `endpoints` и `RUNNING`-статы в etcd, config
    без `state`; конфиг-мутация применяется без рестартов (проверка DescribeConfigs);
-   add broker — кворум не меняется, новый брокер в кластере; remove broker — guards
-   (controller/последний/непустой) отклоняют, пустой демонтируется с RMW `endpoints`;
+   add broker — кворум не меняется, новый брокер в кластере; remove broker —
+   серверные guards controller/последний → 409; занятый партициями брокер
+   авторитетно удерживает воркер (journal waiting-partitions; серверного 409 нет),
+   пустой демонтируется с RMW `endpoints`;
    TO_REMOVE удаляет контейнеры, тома и весь префикс `/kafka/clusters/<C>/` +
    координационные ключи.
 4. **Ротация** (волна B): заявка → фазы A/B/C без окна «брокер не принимает рабочий
