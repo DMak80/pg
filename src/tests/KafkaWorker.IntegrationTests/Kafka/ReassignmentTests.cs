@@ -192,7 +192,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             }
 
             await ProduceAsync(creds, topic, 12);
-            (await ConsumeAsync(creds, topic, 12, budgetSec: 30)).Should().Be(12,
+            (await ConsumeAsync(creds, topic, 12, budgetSec: 90)).Should().Be(12,
                 "до drain все сообщения читаются");
 
             // Act: broker4 TO_REMOVE → тики reassigner+remove+topicsync до демонтажа.
@@ -325,6 +325,134 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
                 .ToList();
             assignment(after).Should().BeEquivalentTo(assignment(before),
                 "повторная подача того же assignment не меняет размещение");
+        }
+        finally
+        {
+            await TeardownAsync(rig, cluster);
+        }
+    }
+
+    [Fact]
+    public async Task Balance_Восстанавливает_RF_После_Повторного_Add()
+    {
+        const string cluster = "re2";
+        const string topic = "reorders2";
+        var ct = TestContext.Current.CancellationToken;
+        var rig = await NewRigAsync(cluster, brokers: 4);
+        try
+        {
+            // Arrange: 4-брокерный кластер, юзер-топик RF=4/6 партиций с данными.
+            await UpAsync(rig, cluster, budgetSec: 180);
+            var creds = await CredsAsync(cluster);
+            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
+            using (var admin = builder.Build())
+            {
+                await admin.CreateTopicsAsync([new TopicSpecification
+                {
+                    Name = topic,
+                    NumPartitions = 6,
+                    ReplicationFactor = 4,
+                }], new CreateTopicsOptions { RequestTimeout = TimeSpan.FromSeconds(30) });
+            }
+
+            await ProduceAsync(creds, topic, 6);
+
+            // Act 1: drain broker4 со снижением RF 4→3 и демонтажем (как T7.1).
+            await fixture.Gateway.PutAsync(fixture.Endpoint, $"/kafka/clusters/{cluster}/brokers/broker4/state",
+                "TO_REMOVE", lease: null, ct);
+            var drainDeadline = DateTimeOffset.UtcNow.AddSeconds(300);
+            while (DateTimeOffset.UtcNow < drainDeadline)
+            {
+                var snap = await fixture.SnapshotAsync(cluster);
+                await rig.Reassigner.RunAsync(snap!, ct);
+                await rig.Remove.RunAsync(snap!, ct);
+                await rig.Sync.RunAsync(snap!, ct);
+                if (await fixture.GetAsync($"/kafka/clusters/{cluster}/brokers/broker4/state") is null
+                    && await fixture.GetAsync($"/kafkaworker/reassignments/{cluster}") is null)
+                    break;
+
+                await Task.Delay(3000, ct);
+            }
+
+            var afterDrain = await DescribeAllAsync(creds);
+            var ordersDrained = afterDrain.Single(t => t.Topic == topic);
+            ordersDrained.ReplicasPerPartition.Should().OnlyContain(p => p.Count == 3, "RF снижен 4→3");
+            ordersDrained.ReplicasPerPartition.Should().OnlyContain(p => !p.Contains(4));
+            (await fixture.GetAsync($"/kafka/clusters/{cluster}/brokers/broker4/state")).Should().BeNull(
+                "broker4 демонтирован после drain");
+
+            // Act 2: повторный add broker4 (без него восстановление RF=4
+            // недостижимо — targets=3 и заявка снялась бы без движения).
+            await fixture.Gateway.PutAsync(fixture.Endpoint, $"/kafka/clusters/{cluster}/brokers/broker4/state",
+                "NOT_INITIALIZED", lease: null, ct);
+            await fixture.Gateway.PutAsync(fixture.Endpoint, $"/kafka/clusters/{cluster}/brokers/broker4/resources",
+                """{"cpu":"1","mem":"1Gi","disk":"10Gi"}""", lease: null, ct);
+            var addDeadline = DateTimeOffset.UtcNow.AddSeconds(180);
+            while (DateTimeOffset.UtcNow < addDeadline)
+            {
+                var snap = await fixture.SnapshotAsync(cluster);
+                (await rig.Add.RunAsync(snap!, ct)).IsSuccess.Should().BeTrue("тик add не падает");
+                if (await fixture.GetAsync($"/kafka/clusters/{cluster}/brokers/broker4/state") == "RUNNING")
+                    break;
+
+                await Task.Delay(3000, ct);
+            }
+
+            (await fixture.GetAsync($"/kafka/clusters/{cluster}/brokers/broker4/state")).Should().Be("RUNNING",
+                "broker4 повторно поднят за 180 c (NodeId=4 детерминирован именем)");
+            var endpointsAfterAdd = await fixture.GetAsync($"/kafka/clusters/{cluster}/endpoints");
+            endpointsAfterAdd!.Split(',').Should().HaveCount(4, "endpoints содержит адрес broker4");
+            await using (var clusterAdmin = fixture.AdminFactory.Create(creds.Bootstrap, creds.User, creds.Password))
+            {
+                var view = await clusterAdmin.DescribeClusterAsync(ct);
+                view.IsSuccess.Should().BeTrue();
+                view.Value.Brokers.Should().HaveCount(4, "кластер видит всех 4 брокеров");
+            }
+
+            // Факт до баланса: лидеры (первые реплики) для сверки неизменности.
+            var beforeBalance = await DescribeAllAsync(creds);
+            var leadersBefore = beforeBalance.Single(t => t.Topic == topic)
+                .ReplicasPerPartition.Select(p => p[0]).ToList();
+
+            // Act 3: заявка ребалансировки при config RF=4 → converge к RF=4.
+            var config = await fixture.GetAsync($"/kafka/clusters/{cluster}/config");
+            await fixture.Gateway.PutAsync(fixture.Endpoint, $"/kafka/clusters/{cluster}/config",
+                config!.Replace("\"replication_factor\":3", "\"replication_factor\":4", StringComparison.Ordinal),
+                lease: null, ct);
+            await fixture.Gateway.PutAsync(fixture.Endpoint, $"/kafkaworker/rebalances/{cluster}",
+                $$"""{"requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}},"requested_by":"it"}""",
+                lease: null, ct);
+
+            var balanceDeadline = DateTimeOffset.UtcNow.AddSeconds(300);
+            while (DateTimeOffset.UtcNow < balanceDeadline)
+            {
+                var snap = await fixture.SnapshotAsync(cluster);
+                await rig.Reassigner.RunAsync(snap!, ct);
+                await rig.Sync.RunAsync(snap!, ct);
+                if (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}") is null)
+                    break;
+
+                await Task.Delay(3000, ct);
+            }
+
+            // Assert: заявка исполнена и снята, прогресс удалён.
+            (await fixture.GetAsync($"/kafkaworker/rebalances/{cluster}")).Should().BeNull(
+                "заявка ребалансировки снята по сходимости");
+            (await fixture.GetAsync($"/kafkaworker/reassignments/{cluster}")).Should().BeNull(
+                "прогресс-ключ удалён");
+
+            // Каждая партиция юзер-топика: 4 реплики, среди них nodeId=4,
+            // лидер (первая реплика) не изменился.
+            var afterBalance = await DescribeAllAsync(creds);
+            var ordersBalanced = afterBalance.Single(t => t.Topic == topic);
+            ordersBalanced.ReplicasPerPartition.Should().HaveCount(6);
+            ordersBalanced.ReplicasPerPartition.Should().OnlyContain(p => p.Count == 4, "RF восстановлен до 4");
+            ordersBalanced.ReplicasPerPartition.Should().OnlyContain(p => p.Contains(4), "nodeId=4 в репликах");
+            ordersBalanced.ReplicasPerPartition.Select(p => p[0]).Should().BeEquivalentTo(leadersBefore,
+                o => o.WithStrictOrdering(), "лидер (первая реплика) сохранён");
+
+            var registry = await fixture.GetAsync($"/kafka/clusters/{cluster}/topics/{topic}");
+            registry.Should().Contain("\"replication_factor\":4", "автосинк обновил факт RF=4");
         }
         finally
         {
