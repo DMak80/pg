@@ -18,6 +18,7 @@ public sealed class KafkaSnapshotRefresher(
     IEtcdGateway gateway,
     IKafkaAlertEngine alertEngine,
     IKafkaSnapshotStore store,
+    IKafkaSecretsStore secretsStore,
     IOptions<EtcdOptions> etcdOptions,
     IOptions<KafkaPanelOptions> kafkaOptions,
     TimeProvider time,
@@ -83,6 +84,10 @@ public sealed class KafkaSnapshotRefresher(
         var clusters = KafkaParser.ParseClusters(clustersKv.Value);
         var rotations = KafkaParser.ParseRotations(rotationsKv.Value);
 
+        // SASL-креды для проб (B6): в модель кластера НЕ попадают (arch/02 §10.1) —
+        // отдельный internal-словарь стора.
+        secretsStore.Replace(ReadSecrets(clustersKv.Value));
+
         var built = new KafkaSnapshot(
             now,
             EtcdReachable: true,
@@ -140,6 +145,35 @@ public sealed class KafkaSnapshotRefresher(
         // Алерты пересчитываются и на отказном тике (pg-семантика §4).
         store.Replace(failed with { Alerts = alertEngine.Evaluate(failed, previous) });
         return error;
+    }
+
+    // Креды /kafka/clusters/<C>/{app_user,app_password} (expected-skip парсера).
+    private static IReadOnlyDictionary<string, KafkaClusterSecrets> ReadSecrets(IReadOnlyList<Kv> kvs)
+    {
+        var users = new Dictionary<string, string>();
+        var passwords = new Dictionary<string, string>();
+        foreach (var kv in kvs)
+        {
+            // "/kafka/clusters/<C>/app_user" → ["", "kafka", "clusters", <C>, "app_user"]
+            var segments = kv.Key.Split('/');
+            if (segments.Length != 5)
+                continue;
+            switch (segments[4])
+            {
+                case "app_user":
+                    users[segments[3]] = kv.Value;
+                    break;
+                case "app_password":
+                    passwords[segments[3]] = kv.Value;
+                    break;
+            }
+        }
+
+        var secrets = new Dictionary<string, KafkaClusterSecrets>();
+        foreach (var (cluster, password) in passwords)
+            if (users.TryGetValue(cluster, out var user))
+                secrets[cluster] = new KafkaClusterSecrets(cluster, user, password);
+        return secrets;
     }
 
     private static bool IsValidEndpoint(string endpoint)

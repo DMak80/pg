@@ -62,6 +62,7 @@ public class KafkaRefresherTests
             gateway,
             new KafkaAlertEngine(Options.Create(new KafkaAlertsOptions())),
             store,
+            new KafkaSecretsStore(),
             Options.Create(new EtcdOptions { Endpoints = endpoints }),
             Options.Create(new KafkaPanelOptions()),
             new FixedTimeProvider(),

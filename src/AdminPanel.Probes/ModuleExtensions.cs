@@ -33,6 +33,14 @@ public static class ModuleExtensions
                 client.Timeout = TimeSpan.FromSeconds(seconds);
             });
 
+        // Kafka-проба (план B6): отдельный тик DescribeCluster, состояние — свой стор
+        // (в снапшот вносит KafkaSnapshotRefresher); адаптер Confluent — единственный.
+        services.AddSingleton<AdminPanel.Etcd.IKafkaSecretsStore, AdminPanel.Etcd.KafkaSecretsStore>();
+        services.AddSingleton<Kafka.IKafkaProbeStore, Kafka.KafkaProbeStore>();
+        services.AddSingleton<Kafka.IKafkaProbeClient, Kafka.ConfluentKafkaProbeClient>();
+        services.AddSingleton<Kafka.KafkaProbeLoop>();
+        services.AddHostedService(sp => sp.GetRequiredService<Kafka.KafkaProbeLoop>());
+
         return services;
     }
 }

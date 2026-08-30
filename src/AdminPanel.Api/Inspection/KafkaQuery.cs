@@ -35,7 +35,9 @@ public sealed record KafkaClusterDto(
     string? Endpoints,
     IReadOnlyList<KafkaBrokerDto> BrokersList,
     IReadOnlyList<KafkaTopicDto> Topics,
-    KafkaRotationTicketDto? Rotation);
+    KafkaRotationTicketDto? Rotation,
+    bool? ProbeOk = null,
+    string? ProbeError = null);
 
 public sealed record KafkaBrokerDto(
     string Name,
@@ -43,7 +45,9 @@ public sealed record KafkaBrokerDto(
     string? Role,
     decimal? Cpu,
     int? MemGi,
-    int? DiskGi);
+    int? DiskGi,
+    bool? Live = null,
+    int? BrokerId = null);
 
 public sealed record KafkaTopicDto(
     string Name,
@@ -83,9 +87,14 @@ public static class KafkaMappers
             rotationPending);
 
     public static KafkaClusterDto MapDetails(
-        KafkaClusterInfo cluster, IReadOnlyList<KafkaRotationTicket> rotations)
+        KafkaClusterInfo cluster,
+        IReadOnlyList<KafkaRotationTicket> rotations,
+        IReadOnlyDictionary<string, KafkaClusterLive>? live = null,
+        ProbeResult? probe = null)
     {
+        live ??= new Dictionary<string, KafkaClusterLive>();
         var rotation = rotations.FirstOrDefault(r => r.Cluster == cluster.Name);
+        var clusterLive = live.GetValueOrDefault(cluster.Name);
         return new KafkaClusterDto(
             cluster.Name,
             StateName(cluster.State),
@@ -97,15 +106,25 @@ public static class KafkaMappers
             cluster.CreatedUnix,
             cluster.Endpoints,
             [.. cluster.BrokersList.Select(b => new KafkaBrokerDto(
-                b.Name, b.State, b.Role, b.Cpu, b.MemGi, b.DiskGi))],
+                b.Name, b.State, b.Role, b.Cpu, b.MemGi, b.DiskGi,
+                Live: clusterLive is null ? null : clusterLive.Brokers.Count > 0,
+                BrokerId: clusterLive?.Brokers.FirstOrDefault(lb => lb.Host.Contains(b.Name, StringComparison.Ordinal)
+                    || b.Name.Contains("broker", StringComparison.Ordinal)
+                        && lb.Id == BrokerIdOf(b.Name))?.Id))],
             [.. cluster.Topics.Select(t => new KafkaTopicDto(
                 t.Name, t.Partitions, t.ReplicationFactor, t.RetentionMs, t.MinInSyncReplicas,
                 t.Desired is null ? null : new TopicDesiredDto(
                     t.Desired.Partitions, t.Desired.RetentionMs, t.Desired.MinInSyncReplicas,
                     t.Desired.RequestedUnix, t.Desired.RequestedBy),
                 t.Missing, t.SyncedUnix))],
-            rotation is null ? null : new KafkaRotationTicketDto(rotation.RequestedUnix, rotation.RequestedBy));
+            rotation is null ? null : new KafkaRotationTicketDto(rotation.RequestedUnix, rotation.RequestedBy),
+            probe?.Ok,
+            probe?.Error);
     }
+
+    // BrokerId по имени broker<k> (для сверки с live-списком пробы).
+    private static int BrokerIdOf(string name)
+        => int.TryParse(name["broker".Length..], out var id) ? id : 0;
 
     public static string StateName(KafkaClusterState state) => state switch
     {
@@ -130,10 +149,12 @@ public sealed class KafkaClustersQueryHandler(IKafkaSnapshotReader store)
     }
 }
 
-// Детали: 404 кластера нет в снапшоте (парсер собирает даже неполные префиксы).
+// Детали: 404 кластера нет в снапшоте (парсер собирает даже неполные префиксы);
+// live-обогащение из состояния kafka-пробы (B6).
 [InjectAsScoped]
-public sealed class KafkaClusterDetailsQueryHandler(IKafkaSnapshotReader store)
-    : IQueryHandler<KafkaClusterDetailsQuery, KafkaClusterDto>
+public sealed class KafkaClusterDetailsQueryHandler(
+    IKafkaSnapshotReader store,
+    AdminPanel.Probes.Kafka.IKafkaProbeStore probes) : IQueryHandler<KafkaClusterDetailsQuery, KafkaClusterDto>
 {
     public ValueTask<Result<KafkaClusterDto>> Handle(KafkaClusterDetailsQuery query, CancellationToken ct)
     {
@@ -143,9 +164,14 @@ public sealed class KafkaClusterDetailsQueryHandler(IKafkaSnapshotReader store)
                 new InspectionModule.SnapshotNotReadyException()));
 
         var cluster = snapshot.Clusters.FirstOrDefault(c => c.Name == query.Cluster);
-        return ValueTask.FromResult(cluster is null
-            ? Result<KafkaClusterDto>.Failed(new KafkaClusterNotFound(query.Cluster))
-            : Result<KafkaClusterDto>.Success(KafkaMappers.MapDetails(cluster, snapshot.Rotations)));
+        if (cluster is null)
+            return ValueTask.FromResult(Result<KafkaClusterDto>.Failed(new KafkaClusterNotFound(query.Cluster)));
+
+        var probeState = probes.Current;
+        var readOnlyLive = probeState?.Clusters;
+        var probe = probeState?.Results.FirstOrDefault(r => r.Target == query.Cluster);
+        return ValueTask.FromResult(Result<KafkaClusterDto>.Success(
+            KafkaMappers.MapDetails(cluster, snapshot.Rotations, readOnlyLive, probe)));
     }
 }
 

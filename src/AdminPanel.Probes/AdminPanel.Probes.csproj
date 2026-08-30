@@ -5,6 +5,8 @@
         <PackageReference Include="Microsoft.Extensions.Http" />
         <PackageReference Include="Npgsql" />
         <ProjectReference Include="..\AdminPanel.Core\AdminPanel.Core.csproj"/>
+        <ProjectReference Include="..\AdminPanel.Etcd\AdminPanel.Etcd.csproj"/>
+        <PackageReference Include="Confluent.Kafka"/>
     </ItemGroup>
 
 </Project>
