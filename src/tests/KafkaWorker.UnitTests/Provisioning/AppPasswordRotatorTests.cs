@@ -127,9 +127,9 @@ public class AppPasswordRotatorTests
             .Select(e => (e.NodeName, Jaas: e.Env["KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG"]))
             .ToList();
         jaas.Should().HaveCount(4); // 2 брокера × 2 фазы
-        jaas.Take(2).Should().OnlyContain(j => j.Jaas.Contains($"user_app={OldPassword}")
-                                               && j.Jaas.Contains($"user_app2={newPassword}"));
-        jaas.Skip(2).Should().OnlyContain(j => j.Jaas.Contains($"user_app={newPassword}")
+        jaas.Take(2).Should().OnlyContain(j => j.Jaas.Contains($"user_app=\"{OldPassword}\"")
+                                               && j.Jaas.Contains($"user_app2=\"{newPassword}\""));
+        jaas.Skip(2).Should().OnlyContain(j => j.Jaas.Contains($"user_app=\"{newPassword}\"")
                                                && !j.Jaas.Contains("user_app2"));
 
         rig.Etcd.Store.Should().NotContainKey("/kafkaworker/rotations/events");
@@ -151,10 +151,12 @@ public class AppPasswordRotatorTests
                 ? Result.Failed(new ApplicationException("docker down"))
                 : Result.Success();
 
-        // Act: первый прогон падает посреди фазы A.
+        // Act: первый прогон падает посреди фазы A (broker1 уже пересоздан
+        // с [OLD, NEW1]; NEW1 нигде не зафиксирован — генерация в памяти).
         var first = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
         first.IsSuccess.Should().BeFalse();
         rig.Etcd.Store["/kafka/clusters/events/app_password"].Value.Should().Be(OldPassword);
+        var firstRunEnsured = rig.Driver.AllEnsured.Count; // orphan-запись [OLD, NEW1]
 
         // Act-2: docker ожил — повтор доводит ротацию до конца.
         failNext = false;
@@ -163,8 +165,25 @@ public class AppPasswordRotatorTests
         // Assert: пароль заменён, заявка снята, фазы завершены (окно A держало
         // оба креда — клиенты со старым паролем работали всё время до B).
         second.IsSuccess.Should().BeTrue();
-        rig.Etcd.Store["/kafka/clusters/events/app_password"].Value.Should().HaveLength(32);
+        var finalPassword = rig.Etcd.Store["/kafka/clusters/events/app_password"].Value;
+        finalPassword.Should().HaveLength(32);
         rig.Etcd.Store.Should().NotContainKey("/kafkaworker/rotations/events");
+
+        // Assert-2 (специфика повторного прогона): ЕДИНЫЙ новый пароль на ВСЕХ
+        // брокерах к моменту B. Повтор фазы A генерирует NEW2 и обязан
+        // пересоздать ВСЕХ с [OLD, NEW2] (трек _rolled прошлой попытки
+        // сбрасывается): иначе broker1 остался бы с [OLD, NEW1] и после
+        // коммита NEW2 отбрасывал SASL-логины NEW2 до конца фазы C — окно
+        // недоступности, невозможное по построению (spec §4.2 H, §9.4).
+        var secondRunJaas = rig.Driver.AllEnsured
+            .Skip(firstRunEnsured)
+            .Select(e => e.Env["KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG"])
+            .ToList();
+        secondRunJaas.Where(j => j.Contains("user_app2="))
+            .Should().HaveCount(2, "повтор фазы A пересоздаёт ВСЕХ брокеров (трек сброшен)");
+        secondRunJaas.Should().OnlyContain(
+            j => !j.Contains("user_app2=") || j.Contains($"user_app2=\"{finalPassword}\""),
+            "все пересоздания фазы A повтора несут закоммиченный в B пароль");
     }
 
     [Fact]
@@ -201,7 +220,7 @@ public class AppPasswordRotatorTests
         var phaseC = rig.Driver.AllEnsured
             .Where(e => e.NodeName == "broker1").Last()
             .Env["KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG"];
-        phaseC.Should().Contain($"user_app={newPassword}").And.NotContain("user_app2");
+        phaseC.Should().Contain($"user_app=\"{newPassword}\"").And.NotContain("user_app2");
         var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
         state.Value!.Phase.Should().Be("done");
     }

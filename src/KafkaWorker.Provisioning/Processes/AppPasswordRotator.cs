@@ -103,6 +103,14 @@ public sealed class AppPasswordRotator(
             // Фаза A: rolling с JAAS OLD+NEW (том сохраняется — данные и метаданные).
             var oldPassword = snap.AppPassword;
             var newPassword = KafkaPasswordGenerator.Generate();
+
+            // Новая генерация = новая попытка фазы A: трек прошлой попытки
+            // недействителен (брокеры с [OLD, NEW_прошлый] обязаны пересоздаться
+            // с [OLD, NEW_текущий]) — иначе B закоммитит пароль, которого нет
+            // на части брокеров: SASL-отказ NEW-клиентам до конца C (окно
+            // недоступности, невозможное по построению — spec §4.2 H).
+            _rolled.TryRemove((cluster, "phase-a"), out _);
+
             var rolledA = await RollingRecreateAsync(snap, brokers, [oldPassword, newPassword], "phase-a", ct);
             if (!rolledA.IsSuccess)
                 return Fail(cluster, rolledA.Error!, "phase-a");
