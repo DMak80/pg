@@ -59,7 +59,8 @@ public sealed record KafkaTopicDto(
     TopicDesiredDto? Desired,
     bool Missing,
     long? SyncedUnix,
-    int? UnderReplicatedPartitions = null); // null — проба молчит
+    int? UnderReplicatedPartitions = null, // null — проба молчит
+    TopicLifecycleDto? Lifecycle = null);  // живая lifecycle-заявка (t01)
 
 // Live-группа пробы (вкладка Группы, arch/03 §7.2).
 public sealed record KafkaGroupDto(string Group, string? State, int Members, long TotalLag);
@@ -69,6 +70,16 @@ public sealed record TopicDesiredDto(
     long? RetentionMs,
     short? MinInSyncReplicas,
     long? RequestedUnix,
+    string? RequestedBy);
+
+// Lifecycle-часть строки топика (arch/03 §7.2, t01): op + параметры + аудит.
+public sealed record TopicLifecycleDto(
+    string Op,
+    int? Partitions,
+    short? ReplicationFactor,
+    long? RetentionMs,
+    short? MinInSyncReplicas,
+    long RequestedUnix,
     string? RequestedBy);
 
 public sealed record KafkaRotationTicketDto(long RequestedUnix, string? RequestedBy);
@@ -100,6 +111,28 @@ public static class KafkaMappers
         live ??= new Dictionary<string, KafkaClusterLive>();
         var rotation = rotations.FirstOrDefault(r => r.Cluster == cluster.Name);
         var clusterLive = live.GetValueOrDefault(cluster.Name);
+
+        // Мерж lifecycle-тикетов (t01): delete/create — к существующей строке;
+        // create без топика — «виртуальная» строка: факт-поля null/0 (спека
+        // §5.3), параметры — только в lifecycle-части.
+        var lifecycleByTopic = (cluster.LifecycleTickets ?? [])
+            .ToDictionary(t => t.Topic, StringComparer.Ordinal);
+        var topics = cluster.Topics
+            .Select(t => new KafkaTopicDto(
+                t.Name, t.Partitions, t.ReplicationFactor, t.RetentionMs, t.MinInSyncReplicas,
+                t.Desired is null ? null : new TopicDesiredDto(
+                    t.Desired.Partitions, t.Desired.RetentionMs, t.Desired.MinInSyncReplicas,
+                    t.Desired.RequestedUnix, t.Desired.RequestedBy),
+                t.Missing, t.SyncedUnix, t.UnderReplicatedPartitions,
+                Lifecycle: LifecycleDto(lifecycleByTopic.GetValueOrDefault(t.Name))))
+            .ToList();
+        foreach (var ticket in lifecycleByTopic.Values)
+            if (ticket.Op == "create" && topics.All(t => t.Name != ticket.Topic))
+                topics.Add(new KafkaTopicDto(
+                    ticket.Topic, 0, null, null, null,
+                    Desired: null, Missing: false, SyncedUnix: null, UnderReplicatedPartitions: null,
+                    Lifecycle: LifecycleDto(ticket)));
+
         return new KafkaClusterDto(
             cluster.Name,
             StateName(cluster.State),
@@ -116,18 +149,20 @@ public static class KafkaMappers
                 BrokerId: clusterLive?.Brokers.FirstOrDefault(lb => lb.Host.Contains(b.Name, StringComparison.Ordinal)
                     || b.Name.Contains("broker", StringComparison.Ordinal)
                         && lb.Id == BrokerIdOf(b.Name))?.Id))],
-            [.. cluster.Topics.Select(t => new KafkaTopicDto(
-                t.Name, t.Partitions, t.ReplicationFactor, t.RetentionMs, t.MinInSyncReplicas,
-                t.Desired is null ? null : new TopicDesiredDto(
-                    t.Desired.Partitions, t.Desired.RetentionMs, t.Desired.MinInSyncReplicas,
-                    t.Desired.RequestedUnix, t.Desired.RequestedBy),
-                t.Missing, t.SyncedUnix, t.UnderReplicatedPartitions))],
+            [.. topics],
             rotation is null ? null : new KafkaRotationTicketDto(rotation.RequestedUnix, rotation.RequestedBy),
             Groups: cluster.Groups is null ? null :
                 [.. cluster.Groups.Select(g => new KafkaGroupDto(g.Group, g.State, g.Members, g.TotalLag))],
             ProbeOk: probe?.Ok,
             ProbeError: probe?.Error);
     }
+
+    private static TopicLifecycleDto? LifecycleDto(KafkaTopicLifecycleTicket? ticket)
+        => ticket is null
+            ? null
+            : new TopicLifecycleDto(
+                ticket.Op, ticket.Partitions, ticket.ReplicationFactor,
+                ticket.RetentionMs, ticket.MinInSyncReplicas, ticket.RequestedUnix, ticket.RequestedBy);
 
     // BrokerId по имени broker<k> (для сверки с live-списком пробы).
     private static int BrokerIdOf(string name)

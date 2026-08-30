@@ -63,6 +63,8 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                         yield return alert;
                     foreach (var alert in TopicAlerts(cluster, nowUnix: next.BuiltAtUtc.ToUnixTimeSeconds()))
                         yield return alert;
+                    foreach (var alert in LifecycleAlerts(cluster, nowUnix: next.BuiltAtUtc.ToUnixTimeSeconds()))
+                        yield return alert;
                     foreach (var alert in GroupAlerts(cluster))
                         yield return alert;
                     break;
@@ -138,6 +140,47 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                         ["underReplicatedPartitions"] = topic.UnderReplicatedPartitions.Value.ToString(),
                     },
                     null);
+        }
+    }
+
+    // Lifecycle-алерты (t01, arch/03 §7.4): pending-заявки + буксование.
+    // Stale-порог тот же, что у desired (StaleDesiredSeconds).
+    private IEnumerable<Alert> LifecycleAlerts(KafkaClusterInfo cluster, long nowUnix)
+    {
+        foreach (var ticket in cluster.LifecycleTickets ?? [])
+        {
+            if (nowUnix - ticket.RequestedUnix > _options.StaleDesiredSeconds)
+            {
+                yield return new Alert(
+                    $"kafka-lifecycle-stale:{cluster.Name}/{ticket.Topic}",
+                    AlertSeverity.Warning,
+                    "kafka-lifecycle-stale",
+                    $"{cluster.Name}/{ticket.Topic}",
+                    $"заявка {ticket.Op} топика {ticket.Topic} кластера {cluster.Name} не исполнена дольше {_options.StaleDesiredSeconds} c — воркер буксует или кластер недоступен",
+                    new Dictionary<string, string>
+                    {
+                        ["op"] = ticket.Op,
+                        ["requestedUnix"] = ticket.RequestedUnix.ToString(),
+                        ["requestedBy"] = ticket.RequestedBy ?? "unknown",
+                    },
+                    null);
+                continue;
+            }
+
+            yield return new Alert(
+                $"kafka-topic-{ticket.Op}-pending:{cluster.Name}/{ticket.Topic}",
+                ticket.Op == "delete" ? AlertSeverity.Warning : AlertSeverity.Info,
+                ticket.Op == "delete" ? "kafka-topic-delete-pending" : "kafka-topic-create-pending",
+                $"{cluster.Name}/{ticket.Topic}",
+                ticket.Op == "delete"
+                    ? $"заявка удаления топика {ticket.Topic} кластера {cluster.Name} жива — топик и данные будут удалены (до тика можно отменить)"
+                    : $"заявка создания топика {ticket.Topic} кластера {cluster.Name} жива — ждёт тика воркера",
+                new Dictionary<string, string>
+                {
+                    ["requestedUnix"] = ticket.RequestedUnix.ToString(),
+                    ["requestedBy"] = ticket.RequestedBy ?? "unknown",
+                },
+                null);
         }
     }
 

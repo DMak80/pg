@@ -413,4 +413,77 @@ public class KafkaAlertRulesTests
         // Assert: Critical → Warning → Info (pg-механика AlertEngine).
         alerts.Select(a => a.Severity).Should().BeInDescendingOrder();
     }
+
+    // ===== Lifecycle-заявки топиков (t01, arch/03 §7.4) =====
+
+    private static KafkaClusterInfo ActiveWithTickets(params KafkaTopicLifecycleTicket[] tickets)
+        => new(
+            "events", KafkaClusterState.Active, 1, 1, 1, 12, 604800000, 1756500000,
+            "host.docker.internal:16001",
+            [new KafkaBrokerInfo("broker1", "RUNNING", "controller", 2m, 4, 40)],
+            Topics: [],
+            LifecycleTickets: [.. tickets]);
+
+    [Fact]
+    public void LifecycleCreateTicket_PendingInfoAlert()
+    {
+        // Arrange: живая create-заявка (свежая — не stale).
+        var snapshot = Snapshot(ActiveWithTickets(
+            new KafkaTopicLifecycleTicket("audit", "create", 12, 3, 86400000L, null, NowUnix - 10, "admin")));
+
+        // Act
+        var alerts = Evaluate(snapshot);
+
+        // Assert
+        var alert = alerts.Should().ContainSingle(a => a.Kind == "kafka-topic-create-pending").Subject;
+        alert.Severity.Should().Be(AlertSeverity.Info);
+        alert.Id.Should().Be("kafka-topic-create-pending:events/audit");
+        alert.Details!["requestedBy"].Should().Be("admin");
+    }
+
+    [Fact]
+    public void LifecycleDeleteTicket_PendingWarningAlert()
+    {
+        // Arrange: живая delete-заявка — деструктивная близка к исполнению.
+        var snapshot = Snapshot(ActiveWithTickets(
+            new KafkaTopicLifecycleTicket("orders", "delete", null, null, null, null, NowUnix - 5, "admin")));
+
+        // Act
+        var alerts = Evaluate(snapshot);
+
+        // Assert
+        var alert = alerts.Should().ContainSingle(a => a.Kind == "kafka-topic-delete-pending").Subject;
+        alert.Severity.Should().Be(AlertSeverity.Warning);
+        alert.Target.Should().Be("events/orders");
+    }
+
+    [Fact]
+    public void LifecycleTicket_StaleWarningOverridesPending()
+    {
+        // Arrange: заявка висит дольше StaleDesiredSeconds (600) — воркер буксует.
+        var snapshot = Snapshot(ActiveWithTickets(
+            new KafkaTopicLifecycleTicket("orders", "delete", null, null, null, null, NowUnix - 700, "admin")));
+
+        // Act
+        var alerts = Evaluate(snapshot);
+
+        // Assert: stale-warning; обычного pending-алерта у той же заявки нет.
+        var alert = alerts.Should().ContainSingle(a => a.Kind == "kafka-lifecycle-stale").Subject;
+        alert.Severity.Should().Be(AlertSeverity.Warning);
+        alerts.Should().NotContain(a => a.Kind == "kafka-topic-delete-pending");
+    }
+
+    [Fact]
+    public void NoLifecycleTickets_NoLifecycleAlerts()
+    {
+        // Arrange: заявок нет — тишина.
+        var snapshot = Snapshot(ActiveCluster());
+
+        // Act
+        var alerts = Evaluate(snapshot);
+
+        // Assert
+        alerts.Should().NotContain(a => a.Kind == "kafka-topic-create-pending"
+            || a.Kind == "kafka-topic-delete-pending" || a.Kind == "kafka-lifecycle-stale");
+    }
 }
