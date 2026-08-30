@@ -1,0 +1,5 @@
+[
+  {"key": "/kafkaworker/rotations/events", "value": "{\"requested_unix\":1750000200,\"requested_by\":\"admin\"}", "modRevision": 50},
+  {"key": "/kafkaworker/rotations/shop", "value": "{\"requested_unix\":1750000300}", "modRevision": 51},
+  {"key": "/kafkaworker/rotations/broken", "value": "{oops", "modRevision": 52}
+]

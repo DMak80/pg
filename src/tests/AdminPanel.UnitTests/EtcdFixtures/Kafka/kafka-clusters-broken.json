@@ -1,0 +1,12 @@
+[
+  {"key": "/kafka/clusters/broken/config", "value": "{oops", "modRevision": 40},
+  {"key": "/kafka/clusters/broken/brokers/broker1/state", "value": "RUNNING", "modRevision": 41},
+  {"key": "/kafka/clusters/broken/brokers/broker1/resources", "value": "{\"cpu\":\"not-a-number\",\"mem\":\"4Gi\",\"disk\":\"40Gi\"}", "modRevision": 42},
+  {"key": "/kafka/clusters/broken/brokers/broker2/state", "value": "UNREACHABLE", "modRevision": 43},
+  {"key": "/kafka/clusters/broken/brokers/broker2/resources", "value": "{\"cpu\":\"2\",\"mem\":\"XGi\",\"disk\":\"40Gi\"}", "modRevision": 44},
+  {"key": "/kafka/clusters/broken/topics/bad", "value": "{\"partitions\":", "modRevision": 45},
+  {"key": "/kafka/clusters/broken/surprise", "value": "something-new", "modRevision": 46},
+  {"key": "/kafka/clusters/broken2/config", "value": "{\"brokers\":1,\"replication_factor\":1,\"min_insync_replicas\":1,\"default_partitions\":1,\"default_retention_ms\":1000,\"created_unix\":1756501234}", "modRevision": 47},
+  {"key": "/kafka/clusters/broken2/brokers/broker1/state", "value": "RUNNING", "modRevision": 48},
+  {"key": "/kafka/clusters/broken2/topics/partial", "value": "{\"partitions\":3,\"synced_unix\":1750000400}", "modRevision": 49}
+]

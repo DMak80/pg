@@ -37,4 +37,19 @@ public static class ModuleExtensions
 
         return services;
     }
+
+    // Модуль kafka-домена (план B3): hosted-service refresher'а + стор снапшота.
+    // Отдельный HttpClient "kafka-etcd" не заводится осознанно: транспорт общий
+    // с pg-циклом (IEtcdGateway/«etcd», таймаут один — EtcdOptions), дублирование
+    // клиента не даёт изоляции; failover/sticky — внутри refresher'а.
+    public static IServiceCollection AddKafka(this IServiceCollection services)
+    {
+        services.AddSingleton<KafkaSnapshotStore>();
+        services.AddSingleton<IKafkaSnapshotStore>(sp => sp.GetRequiredService<KafkaSnapshotStore>());
+        services.AddSingleton<IKafkaSnapshotReader>(sp => sp.GetRequiredService<KafkaSnapshotStore>());
+
+        services.AddSingleton<KafkaSnapshotRefresher>();
+        services.AddHostedService(sp => sp.GetRequiredService<KafkaSnapshotRefresher>());
+        return services;
+    }
 }

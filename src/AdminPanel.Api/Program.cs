@@ -25,6 +25,7 @@ builder
    .AddApi() // t02: auth-сервисы и [Config]-POCO Api-сборки
    .AddCore()
    .AddEtcd()
+   .AddKafka() // [B3] kafka-домен: refresher + стор снапшота (арх/02 §10)
    .AddProbes()
    .AddOpenApi()
    .AddHealthChecks()
