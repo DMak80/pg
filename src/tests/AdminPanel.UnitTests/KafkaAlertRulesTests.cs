@@ -50,6 +50,121 @@ public class KafkaAlertRulesTests
     private static Alert AlertOf(string id, long sinceUnix) => new(
         id, AlertSeverity.Critical, id[..id.IndexOf(':')], "", "", null, sinceUnix);
 
+    // ===== Волна C (план C3): missing-desired / stale / under-replicated / lag-high =====
+
+    private static KafkaTopicInfo Topic(
+        string name = "orders",
+        bool missing = false,
+        TopicDesiredDto? desired = null,
+        int? underReplicated = null) => new(
+        name, 3, 1, 604800000, 1, desired, missing, 1756500900, underReplicated);
+
+    private static KafkaClusterInfo ActiveWithTopics(
+        KafkaTopicInfo[] topics, KafkaGroupInfo[]? groups = null)
+        => new(
+            "events", KafkaClusterState.Active, 1, 1, 1, 12, 604800000, 1756500000,
+            "host.docker.internal:16001",
+            [new KafkaBrokerInfo("broker1", "RUNNING", "controller", 2m, 4, 40)],
+            [.. topics],
+            Groups: groups);
+
+    [Fact]
+    public void TopicMissing_WithLiveDesired_WarningAlert()
+    {
+        // Arrange
+        var snapshot = Snapshot(ActiveWithTopics(
+        [
+            Topic("ghost", missing: true, desired: new TopicDesiredDto(null, 86400000, null, NowUnix - 30, "admin")),
+        ]));
+
+        // Act
+        var alerts = Evaluate(snapshot);
+
+        // Assert
+        alerts.Should().Contain(a =>
+            a.Kind == "kafka-topic-missing-desired" && a.Target == "events/ghost"
+            && a.Severity == AlertSeverity.Warning);
+    }
+
+    [Fact]
+    public void DesiredStale_AfterThreshold_WarningAlert()
+    {
+        // Arrange: заявка висит дольше 600 c (дефолт StaleDesiredSeconds).
+        var snapshot = Snapshot(ActiveWithTopics(
+        [
+            Topic("orders", desired: new TopicDesiredDto(6, null, null, NowUnix - 601, "admin")),
+        ]));
+
+        // Act
+        var alerts = Evaluate(snapshot);
+
+        // Assert
+        alerts.Should().Contain(a => a.Kind == "kafka-desired-stale" && a.Target == "events/orders");
+    }
+
+    [Fact]
+    public void DesiredFresh_NoStaleAlert()
+    {
+        // Arrange: заявка молодая (30 c).
+        var snapshot = Snapshot(ActiveWithTopics(
+        [
+            Topic("orders", desired: new TopicDesiredDto(6, null, null, NowUnix - 30, "admin")),
+        ]));
+
+        // Act
+        var alerts = Evaluate(snapshot);
+
+        // Assert
+        alerts.Should().NotContain(a => a.Kind == "kafka-desired-stale");
+    }
+
+    [Fact]
+    public void TopicUnderReplicated_FromRuntime_WarningAlert()
+    {
+        // Arrange: runtime-USR из пробы (refresher мерджит в кластер).
+        var snapshot = Snapshot(ActiveWithTopics([Topic("orders", underReplicated: 2)]));
+
+        // Act
+        var alerts = Evaluate(snapshot);
+
+        // Assert
+        alerts.Should().Contain(a =>
+            a.Kind == "kafka-topic-under-replicated" && a.Target == "events/orders"
+            && a.Details!["underReplicatedPartitions"] == "2");
+    }
+
+    [Fact]
+    public void GroupLag_AboveThreshold_WarningAlert()
+    {
+        // Arrange: лаг 150000 > порога 100000 (дефолт GroupLagMessages).
+        var snapshot = Snapshot(ActiveWithTopics(
+            [],
+            groups: [new KafkaGroupInfo("lag-test", "Stable", 2, 150_000)]));
+
+        // Act
+        var alerts = Evaluate(snapshot);
+
+        // Assert
+        alerts.Should().Contain(a =>
+            a.Kind == "kafka-group-lag-high" && a.Target == "events/lag-test"
+            && a.Details!["totalLag"] == "150000");
+    }
+
+    [Fact]
+    public void GroupLag_BelowThreshold_NoAlert()
+    {
+        // Arrange
+        var snapshot = Snapshot(ActiveWithTopics(
+            [],
+            groups: [new KafkaGroupInfo("ok-group", "Stable", 1, 99_999)]));
+
+        // Act
+        var alerts = Evaluate(snapshot);
+
+        // Assert
+        alerts.Should().NotContain(a => a.Kind == "kafka-group-lag-high");
+    }
+
     [Fact]
     public void NotInitializedCluster_InfoAlert()
     {

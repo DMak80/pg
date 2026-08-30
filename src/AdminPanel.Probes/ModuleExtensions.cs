@@ -37,10 +37,21 @@ public static class ModuleExtensions
         // (в снапшот вносит KafkaSnapshotRefresher); адаптер Confluent — единственный.
         services.AddSingleton<AdminPanel.Etcd.IKafkaSecretsStore, AdminPanel.Etcd.KafkaSecretsStore>();
         services.AddSingleton<Kafka.IKafkaProbeStore, Kafka.KafkaProbeStore>();
+        // Live-состояние проб — читатель снапшот-цикла (USR/группы, волна C).
+        services.AddSingleton<AdminPanel.Etcd.IKafkaProbeReader>(sp =>
+            new ProbeReaderAdapter(sp.GetRequiredService<Kafka.IKafkaProbeStore>()));
         services.AddSingleton<Kafka.IKafkaProbeClient, Kafka.ConfluentKafkaProbeClient>();
+        services.AddSingleton<Kafka.IKafkaProbeRuntimeClient, Kafka.ConfluentKafkaRuntimeProbeClient>();
         services.AddSingleton<Kafka.KafkaProbeLoop>();
         services.AddHostedService(sp => sp.GetRequiredService<Kafka.KafkaProbeLoop>());
 
         return services;
     }
+}
+
+// Адаптер проб-стора для Etcd-читателя: Etcd не ссылается на Probes-сборку.
+internal sealed class ProbeReaderAdapter(Kafka.IKafkaProbeStore store)
+    : AdminPanel.Etcd.IKafkaProbeReader
+{
+    public AdminPanel.Core.Kafka.KafkaProbeState? Current => store.Current;
 }

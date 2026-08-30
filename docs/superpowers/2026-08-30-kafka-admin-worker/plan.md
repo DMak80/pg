@@ -574,9 +574,9 @@ public sealed record KafkaRotationTicket(string Cluster, long RequestedUnix, str
 **Файлы:** Modify `src/AdminPanel.Probes/Kafka/{KafkaProbe.cs,+KafkaGroupLag.cs}` (+`IKafkaProbeClient`: ListGroups/DescribeGroups/ListOffsets/endOffsets → totalLag); Test `src/tests/AdminPanel.UnitTests/ProbesKafka/{KafkaGroupLagTests.cs,KafkaProbeTopicsTests.cs}`.
 
 **Действие (шаги):**
-- [ ] 1. `KafkaGroupLag` — чистая функция (AAA): `(endOffsets, committed) → totalLag` (сумма по партициям, отсутствие коммита = весь лаг).
-- [ ] 2. Проба: describeTopics (partitions/RF/under-replicated по ISR), группы (state/members/totalLag); enrichment в store (topics/groups в `KafkaClusterInfo` runtime-поля — `KafkaTopicRuntime`, `KafkaGroupInfo(Group, State, Members, TotalLag)`).
-- [ ] 3. AlertEngine-дополнение (тесты AAA): `kafka-topic-under-replicated` (warning), `kafka-group-lag-high` (warning, порог `AdminPanel:KafkaAlerts:GroupLagMessages=100000`), `kafka-topic-missing-desired`, `kafka-desired-stale` (600 c) — последние два по etcd-данным (модель B2 уже несёт поля).
+- [x] 1. `KafkaGroupLag` — чистая функция (AAA): `(endOffsets, committed) → totalLag` (сумма по партициям, отсутствие коммита = весь лаг).
+- [x] 2. Проба: describeTopics (partitions/RF/under-replicated по ISR), группы (state/members/totalLag); enrichment в store (topics/groups в `KafkaClusterInfo` runtime-поля — `KafkaTopicRuntime`, `KafkaGroupInfo(Group, State, Members, TotalLag)`).
+- [x] 3. AlertEngine-дополнение (тесты AAA): `kafka-topic-under-replicated` (warning), `kafka-group-lag-high` (warning, порог `AdminPanel:KafkaAlerts:GroupLagMessages=100000`), `kafka-topic-missing-desired`, `kafka-desired-stale` (600 c) — последние два по etcd-данным (модель B2 уже несёт поля).
 
 **Выход:** лаги и живое состояние топиков в панели.
 **Проверка:** юнит-фильтры — зелёные.

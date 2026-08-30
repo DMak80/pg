@@ -28,7 +28,9 @@ public sealed record KafkaClusterInfo(
     long? CreatedUnix,
     string? Endpoints,           // null/пусто — воркер не дописал (алерт у Active)
     IReadOnlyList<KafkaBrokerInfo> BrokersList,
-    IReadOnlyList<KafkaTopicInfo> Topics);
+    IReadOnlyList<KafkaTopicInfo> Topics,
+    // Live-группы из пробы (волна C): пусто — проба не знает кластер.
+    IReadOnlyList<KafkaGroupInfo>? Groups = null);
 
 // Состояние кластера: config.state (arch/15 §2); отсутствие = Active.
 public enum KafkaClusterState
@@ -69,7 +71,9 @@ public sealed record KafkaTopicInfo(
     short? MinInSyncReplicas,
     TopicDesiredDto? Desired,
     bool Missing,
-    long? SyncedUnix);
+    long? SyncedUnix,
+    // Live-факт пробы (волна C): партиции с ISR < replicas; null — проба молчит.
+    int? UnderReplicatedPartitions = null);
 
 // desired-часть ключа топика (арх/15 §3): управляемые поля + аудит.
 public sealed record TopicDesiredDto(
@@ -78,6 +82,10 @@ public sealed record TopicDesiredDto(
     short? MinInSyncReplicas,
     long? RequestedUnix,
     string? RequestedBy);
+
+// Live-группа консьюмеров из пробы (волна C, arch/02 §10.1): state/members/
+// totalLag (сумма end − committed по партициям назначения).
+public sealed record KafkaGroupInfo(string Group, string? State, int Members, long TotalLag);
 
 // Заявка ротации app-пароля /kafkaworker/rotations/<C> (arch/15 §4).
 public sealed record KafkaRotationTicket(string Cluster, long RequestedUnix, string? RequestedBy);

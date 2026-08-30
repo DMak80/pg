@@ -41,7 +41,8 @@ public sealed class KafkaProbeLoop(
     IOptions<KafkaProbeOptions> kafkaOptions,
     IOptions<ProbesOptions> probesOptions,
     TimeProvider time,
-    ILogger<KafkaProbeLoop> logger) : BackgroundService
+    ILogger<KafkaProbeLoop> logger,
+    IKafkaProbeRuntimeClient? runtimeClient = null) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
@@ -132,8 +133,84 @@ public sealed class KafkaProbeLoop(
         var brokers = view.Value.Brokers
             .Select(b => new KafkaBrokerLive(b.Id, b.Host, b.Id == view.Value.ControllerId))
             .ToList();
+
+        // Runtime-уровень (волна C): топики (USR по ISR) + группы с лагами.
+        // Ошибка runtime НЕ роняет брокерскую часть пробы: live-брокеры живы,
+        // топики/группы просто недоступны (в DTO их не будет).
+        IReadOnlyList<KafkaTopicRuntime>? topics = null;
+        IReadOnlyList<KafkaGroupInfo>? groups = null;
+        if (runtimeClient is not null)
+        {
+            var runtime = await ProbeRuntimeAsync(cluster.Name, bootstrap, creds, timeout, ct);
+            topics = runtime.Topics;
+            groups = runtime.Groups;
+        }
+
         return new KafkaProbeOutcome(
-            new KafkaClusterLive(cluster.Name, at, brokers),
+            new KafkaClusterLive(cluster.Name, at, brokers, topics, groups),
             new ProbeResult(cluster.Name, "kafka", true, null, null, at));
+    }
+
+    // Топики и группы с лагами (план C3): describe→чистый расчёт KafkaGroupLag;
+    // частичный отказ — недостающие данные опускаются (null).
+    private async Task<(IReadOnlyList<KafkaTopicRuntime>? Topics, IReadOnlyList<KafkaGroupInfo>? Groups)>
+        ProbeRuntimeAsync(
+            string cluster, string bootstrap, KafkaClusterSecrets creds, TimeSpan timeout, CancellationToken ct)
+    {
+        IReadOnlyList<KafkaTopicRuntime>? topics = null;
+        IReadOnlyList<KafkaGroupInfo>? groups = null;
+
+        var topicsView = await runtimeClient!.DescribeTopicsAsync(bootstrap, creds.User, creds.Password, timeout, ct);
+        if (topicsView.IsSuccess)
+            topics = [.. topicsView.Value.Select(t => new KafkaTopicRuntime(
+                t.Topic, t.Partitions, (short?)t.ReplicationFactor, t.UnderReplicatedPartitions))];
+
+        var groupIds = await runtimeClient.ListGroupsAsync(bootstrap, creds.User, creds.Password, timeout, ct);
+        if (groupIds.IsSuccess && groupIds.Value.Count > 0)
+        {
+            var details = await runtimeClient.DescribeGroupsAsync(
+                bootstrap, creds.User, creds.Password, groupIds.Value, timeout, ct);
+            if (details.IsSuccess)
+            {
+                var end = new Dictionary<(string Topic, int Partition), long>();
+                var found = new List<KafkaGroupInfo>();
+                foreach (var detail in details.Value)
+                {
+                    if (detail.Assignment.Count == 0)
+                    {
+                        found.Add(new KafkaGroupInfo(detail.Group, detail.State, detail.Members, 0));
+                        continue;
+                    }
+
+                    var missing = detail.Assignment.Where(p => !end.ContainsKey(p)).ToList();
+                    if (missing.Count > 0)
+                    {
+                        var fetched = await runtimeClient.EndOffsetsAsync(
+                            bootstrap, creds.User, creds.Password, missing, timeout, ct);
+                        if (!fetched.IsSuccess)
+                            continue; // лаги недоступны — группа не показана в этом тике
+
+                        foreach (var pair in fetched.Value)
+                            end[pair.Key] = pair.Value;
+                    }
+
+                    var committed = await runtimeClient.CommittedAsync(
+                        bootstrap, creds.User, creds.Password, detail.Group, detail.Assignment, timeout, ct);
+                    if (!committed.IsSuccess)
+                        continue;
+
+                    found.Add(new KafkaGroupInfo(
+                        detail.Group,
+                        detail.State,
+                        detail.Members,
+                        KafkaGroupLag.Total(end, committed.Value)));
+                }
+
+                groups = [.. found.OrderBy(g => g.TotalLag, Comparer<long>.Create((x, y) => y.CompareTo(x)))
+                    .ThenBy(g => g.Group, StringComparer.Ordinal)];
+            }
+        }
+
+        return (topics, groups);
     }
 }

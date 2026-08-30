@@ -22,7 +22,7 @@ public sealed record KafkaClusterSummaryDto(
     string? Endpoints,
     bool RotationPending);
 
-// Детали кластера: config, брокеры, топики, ротация (groups — волна C).
+// Детали кластера: config, брокеры, топики, группы пробы (волна C), ротация.
 public sealed record KafkaClusterDto(
     string Name,
     string State,
@@ -36,6 +36,7 @@ public sealed record KafkaClusterDto(
     IReadOnlyList<KafkaBrokerDto> BrokersList,
     IReadOnlyList<KafkaTopicDto> Topics,
     KafkaRotationTicketDto? Rotation,
+    IReadOnlyList<KafkaGroupDto>? Groups = null, // null — проба молчит о кластере
     bool? ProbeOk = null,
     string? ProbeError = null);
 
@@ -57,7 +58,11 @@ public sealed record KafkaTopicDto(
     short? MinInSyncReplicas,
     TopicDesiredDto? Desired,
     bool Missing,
-    long? SyncedUnix);
+    long? SyncedUnix,
+    int? UnderReplicatedPartitions = null); // null — проба молчит
+
+// Live-группа пробы (вкладка Группы, arch/03 §7.2).
+public sealed record KafkaGroupDto(string Group, string? State, int Members, long TotalLag);
 
 public sealed record TopicDesiredDto(
     int? Partitions,
@@ -116,10 +121,12 @@ public static class KafkaMappers
                 t.Desired is null ? null : new TopicDesiredDto(
                     t.Desired.Partitions, t.Desired.RetentionMs, t.Desired.MinInSyncReplicas,
                     t.Desired.RequestedUnix, t.Desired.RequestedBy),
-                t.Missing, t.SyncedUnix))],
+                t.Missing, t.SyncedUnix, t.UnderReplicatedPartitions))],
             rotation is null ? null : new KafkaRotationTicketDto(rotation.RequestedUnix, rotation.RequestedBy),
-            probe?.Ok,
-            probe?.Error);
+            Groups: cluster.Groups is null ? null :
+                [.. cluster.Groups.Select(g => new KafkaGroupDto(g.Group, g.State, g.Members, g.TotalLag))],
+            ProbeOk: probe?.Ok,
+            ProbeError: probe?.Error);
     }
 
     // BrokerId по имени broker<k> (для сверки с live-списком пробы).

@@ -61,6 +61,10 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 case KafkaClusterState.Active:
                     foreach (var alert in BrokerAlerts(cluster, previous, next))
                         yield return alert;
+                    foreach (var alert in TopicAlerts(cluster, nowUnix: next.BuiltAtUtc.ToUnixTimeSeconds()))
+                        yield return alert;
+                    foreach (var alert in GroupAlerts(cluster))
+                        yield return alert;
                     break;
             }
         }
@@ -91,6 +95,69 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 $"kafka-ключ не разобран: {error.Key}",
                 new Dictionary<string, string> { ["reason"] = error.Reason },
                 null);
+    }
+
+    // Топиковые алерты волны C (arch/03 §7.4): missing-desired и stale по etcd-
+    // данным модели, under-replicated — по runtime-USR из пробы (refresher мерджит).
+    private IEnumerable<Alert> TopicAlerts(KafkaClusterInfo cluster, long nowUnix)
+    {
+        foreach (var topic in cluster.Topics)
+        {
+            if (topic.Missing)
+                yield return new Alert(
+                    $"kafka-topic-missing-desired:{cluster.Name}/{topic.Name}",
+                    AlertSeverity.Warning,
+                    "kafka-topic-missing-desired",
+                    $"{cluster.Name}/{topic.Name}",
+                    $"топик {topic.Name} кластера {cluster.Name} отсутствует в Kafka при живой заявке desired (заявка не исполнима; отмена уберёт ключ)",
+                    null, null);
+
+            if (topic.Desired?.RequestedUnix is { } requested && nowUnix - requested > _options.StaleDesiredSeconds)
+                yield return new Alert(
+                    $"kafka-desired-stale:{cluster.Name}/{topic.Name}",
+                    AlertSeverity.Warning,
+                    "kafka-desired-stale",
+                    $"{cluster.Name}/{topic.Name}",
+                    $"заявка desired топика {topic.Name} кластера {cluster.Name} не снята дольше {_options.StaleDesiredSeconds} c — converge буксует",
+                    new Dictionary<string, string>
+                    {
+                        ["requestedUnix"] = requested.ToString(),
+                        ["requestedBy"] = topic.Desired.RequestedBy ?? "unknown",
+                    },
+                    null);
+
+            if (topic.UnderReplicatedPartitions is > 0)
+                yield return new Alert(
+                    $"kafka-topic-under-replicated:{cluster.Name}/{topic.Name}",
+                    AlertSeverity.Warning,
+                    "kafka-topic-under-replicated",
+                    $"{cluster.Name}/{topic.Name}",
+                    $"партиции топика {topic.Name} кластера {cluster.Name} недореплицированы (ISR < RF): {topic.UnderReplicatedPartitions}",
+                    new Dictionary<string, string>
+                    {
+                        ["underReplicatedPartitions"] = topic.UnderReplicatedPartitions.Value.ToString(),
+                    },
+                    null);
+        }
+    }
+
+    // Групповые алерты волны C: totalLag > GroupLagMessages (данные пробы).
+    private IEnumerable<Alert> GroupAlerts(KafkaClusterInfo cluster)
+    {
+        foreach (var group in cluster.Groups ?? [])
+            if (group.TotalLag > _options.GroupLagMessages)
+                yield return new Alert(
+                    $"kafka-group-lag-high:{cluster.Name}/{group.Group}",
+                    AlertSeverity.Warning,
+                    "kafka-group-lag-high",
+                    $"{cluster.Name}/{group.Group}",
+                    $"лаг группы {group.Group} кластера {cluster.Name}: {group.TotalLag} сообщений (порог {_options.GroupLagMessages})",
+                    new Dictionary<string, string>
+                    {
+                        ["totalLag"] = group.TotalLag.ToString(),
+                        ["members"] = group.Members.ToString(),
+                    },
+                    null);
     }
 
     // kafka-broker-not-running + kafka-endpoints-missing (только Active-кластер).

@@ -22,7 +22,8 @@ public sealed class KafkaSnapshotRefresher(
     IOptions<EtcdOptions> etcdOptions,
     IOptions<KafkaPanelOptions> kafkaOptions,
     TimeProvider time,
-    ILogger<KafkaSnapshotRefresher> logger) : BackgroundService
+    ILogger<KafkaSnapshotRefresher> logger,
+    IKafkaProbeReader? probeReader = null) : BackgroundService
 {
     private string? _activeEndpoint;
     private bool _endpointsWarned;
@@ -92,7 +93,7 @@ public sealed class KafkaSnapshotRefresher(
             now,
             EtcdReachable: true,
             ConsecutiveFailures: 0,
-            clusters.Clusters,
+            MergeRuntime(clusters.Clusters, probeReader?.Current?.Clusters),
             rotations.Tickets,
             previous?.Probes ?? [],       // пробы переживают отказ etcd (симметрия pg spec §4.3)
             Alerts: [],
@@ -101,6 +102,32 @@ public sealed class KafkaSnapshotRefresher(
 
         store.Replace(built with { Alerts = alertEngine.Evaluate(built, previous) });
         return Result.Success();
+    }
+
+    // Мердж live-данных проб (волна C): USR топиков и группы с лагами — в
+    // runtime-поля кластеров; пробы молчат о кластере — etcd-данные как есть.
+    private static IReadOnlyList<KafkaClusterInfo> MergeRuntime(
+        IReadOnlyList<KafkaClusterInfo> clusters,
+        IReadOnlyDictionary<string, KafkaClusterLive>? live)
+    {
+        if (live is null || live.Count == 0)
+            return clusters;
+
+        return [.. clusters.Select(c =>
+        {
+            if (!live.TryGetValue(c.Name, out var clusterLive))
+                return c; // проба не знает кластер — runtime-полей нет
+
+            var runtimeTopics = clusterLive.Topics is { Count: > 0 }
+                ? c.Topics.Select(t => t with
+                {
+                    UnderReplicatedPartitions = clusterLive.Topics
+                        .FirstOrDefault(lt => string.Equals(lt.Topic, t.Name, StringComparison.Ordinal))
+                        ?.UnderReplicatedPartitions,
+                }).ToList()
+                : c.Topics;
+            return c with { Topics = runtimeTopics, Groups = clusterLive.Groups };
+        })];
     }
 
     // Failover: один проход по endpoints по кругу от активного (pg-механика §4).
