@@ -50,6 +50,12 @@ public interface IClusterDriver
     // недопустимы).
     Task<Result<bool>> NodeVolumeExistsAsync(string cluster, string nodeName, CancellationToken ct);
 
+    // Выполнить команду в контейнере живого брокера (arch/16 §2.4; t02:
+    // kafka-reassign-partitions CLI): plain — running-контейнер по имени
+    // kfw-<C>-<b> перебором хостов; swarm — running-таск сервиса →
+    // ContainerId. stdout → строка; exit != 0 → Failed (движок).
+    Task<Result<string>> ExecNodeAsync(string cluster, string nodeName, IReadOnlyList<string> cmd, CancellationToken ct);
+
     // Имена объектов брокеров кластера (kfw-<C>-*): сверка декларации + сироты (X1).
     Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct);
 }
@@ -211,6 +217,35 @@ public sealed class PlainClusterDriver(
         return Result<bool>.Success(false);
     }
 
+    // Контейнер брокера по имени kfw-<C>-<b>: перебор хостов (аналог Remove),
+    // на первом, где найден running-контейнер — exec (порт PgWorker t01).
+    public async Task<Result<string>> ExecNodeAsync(
+        string cluster, string nodeName, IReadOnlyList<string> cmd, CancellationToken ct)
+    {
+        return await Result<string>.FromAsync(async () =>
+        {
+            var name = NodeName(cluster, nodeName);
+            foreach (var engine in _engines.Values)
+            {
+                var containers = await engine.ListContainersAsync(name, all: false, ct);
+                if (!containers.IsSuccess)
+                    throw containers.Error!;
+
+                var running = containers.Value.FirstOrDefault(c =>
+                    c.Names.Contains(name) && c.State == "running");
+                if (running is null)
+                    continue; // контейнера нет на этом хосте — следующий
+
+                var exec = await engine.ExecAsync(running.Id, cmd, ct);
+                if (!exec.IsSuccess)
+                    throw exec.Error!;
+                return exec.Value;
+            }
+
+            throw new ApplicationException($"контейнер брокера {name} не найден (нет running-контейнера ни на одном хосте)");
+        });
+    }
+
     internal static string NodeName(string cluster, string nodeName)
         => $"kfw-{cluster}-{nodeName}";
 
@@ -297,4 +332,28 @@ public sealed class SwarmClusterDriver(
     // kfw-<C>-. Существование сервиса ≠ живой таск: живость — AdminClient-пробы.
     public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
         => _engine.ListServicesAsync($"kfw-{cluster}-", ct);
+
+    // Контейнер брокера — running-таск сервиса (ContainerID уже в ответе
+    // /tasks; порт PgWorker t01).
+    public async Task<Result<string>> ExecNodeAsync(
+        string cluster, string nodeName, IReadOnlyList<string> cmd, CancellationToken ct)
+    {
+        return await Result<string>.FromAsync(async () =>
+        {
+            var tasks = await _engine.ListTasksAsync(PlainClusterDriver.NodeName(cluster, nodeName), ct);
+            if (!tasks.IsSuccess)
+                throw tasks.Error!;
+
+            var running = tasks.Value.FirstOrDefault(t =>
+                t.State == "running" && t.ContainerId is { Length: > 0 });
+            if (running is null)
+                throw new ApplicationException(
+                    $"контейнер брокера {cluster}/{nodeName} не найден (нет running-таска)");
+
+            var exec = await _engine.ExecAsync(running.ContainerId!, cmd, ct);
+            if (!exec.IsSuccess)
+                throw exec.Error!;
+            return exec.Value;
+        });
+    }
 }

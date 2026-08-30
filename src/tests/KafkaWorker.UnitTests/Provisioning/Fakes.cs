@@ -225,5 +225,16 @@ internal static class Fakes
         public Task<Result<bool>> NodeVolumeExistsAsync(string cluster, string nodeName, CancellationToken ct)
             => Task.FromResult(Result<bool>.Success(
                 !MissingVolumes.Contains($"kfw-{cluster}-{nodeName}-data")));
+
+        // Записывающий мок exec: команды видят тесты; опциональный хук
+        // симулирует Kafka (применение поданного reassignment тестом).
+        public readonly List<(string Node, IReadOnlyList<string> Cmd)> Execs = [];
+        public Func<string, IReadOnlyList<string>, Result<string>>? ExecHandler { get; set; }
+
+        public Task<Result<string>> ExecNodeAsync(string cluster, string nodeName, IReadOnlyList<string> cmd, CancellationToken ct)
+        {
+            lock (_gate) { Execs.Add((nodeName, cmd)); }
+            return Task.FromResult(ExecHandler is { } h ? h(nodeName, cmd) : Result<string>.Success(""));
+        }
     }
 }
