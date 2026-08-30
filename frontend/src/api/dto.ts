@@ -393,6 +393,9 @@ export interface KafkaTopicDto {
   syncedUnix: number | null;
   // Live-USR из пробы (волна C): null — проба молчит.
   underReplicatedPartitions: number | null;
+  // Живая lifecycle-заявка (t01): create без факт-ключа — «виртуальная» строка
+  // (факт-поля null/0, параметры — здесь).
+  lifecycle: KafkaTopicLifecycleDto | null;
 }
 
 // Live-группа консьюмеров (вкладка Группы, волна C).
@@ -409,6 +412,33 @@ export interface KafkaTopicDesiredDto {
   minInSyncReplicas: number | null;
   requestedUnix: number | null;
   requestedBy: string | null;
+}
+
+// Lifecycle-заявка топика topics/<T>/desired.{create,delete} (t01, arch/15 §3.1).
+export interface KafkaTopicLifecycleDto {
+  op: 'create' | 'delete';
+  partitions: number | null;
+  replicationFactor: number | null;
+  retentionMs: number | null;
+  minInSyncReplicas: number | null;
+  requestedUnix: number;
+  requestedBy: string | null;
+}
+
+// POST /api/kafka/clusters/{cluster}/topics — создание топика (arch/02 §10.2-9).
+export interface CreateTopicRequestDto {
+  name: string;
+  partitions?: number;
+  replicationFactor?: number;
+  retentionMs?: number;
+  minInSyncReplicas?: number;
+}
+
+export interface KafkaTopicCreatedDto {
+  cluster: string;
+  topic: string;
+  partitions: number;
+  replicationFactor: number;
 }
 
 export interface KafkaRotationTicketDto {

@@ -18,6 +18,8 @@ import type {
   KafkaClusterSummaryDto,
   KafkaConfigUpdatedDto,
   KafkaConfigUpdateRequestDto,
+  KafkaTopicCreatedDto,
+  CreateTopicRequestDto,
   KafkaPasswordRotatedDto,
   TopicDesiredDto,
   TopicDesiredRequestDto,
@@ -225,5 +227,36 @@ export function upsertTopicDesired(
 export function cancelTopicDesired(cluster: string, topic: string): Promise<void> {
   return apiFetch<void>(
     `/api/kafka/clusters/${encodeURIComponent(cluster)}/topics/${encodeURIComponent(topic)}/desired`,
+    { method: 'DELETE' });
+}
+
+// POST /api/kafka/clusters/{cluster}/topics — создание топика, lifecycle-заявка
+// (arch/02 §10.2-9, t01): исполняет воркер (CreateTopics с начальными конфигами).
+export function createKafkaTopic(
+  cluster: string,
+  request: CreateTopicRequestDto,
+): Promise<KafkaTopicCreatedDto> {
+  return apiFetch<KafkaTopicCreatedDto>(
+    `/api/kafka/clusters/${encodeURIComponent(cluster)}/topics`,
+    { method: 'POST', body: request });
+}
+
+// DELETE /api/kafka/clusters/{cluster}/topics/{topic} — удаление топика,
+// lifecycle-заявка (arch/02 §10.2-10, t01); идемпотентен (живая заявка → 204).
+export function deleteKafkaTopic(cluster: string, topic: string): Promise<void> {
+  return apiFetch<void>(
+    `/api/kafka/clusters/${encodeURIComponent(cluster)}/topics/${encodeURIComponent(topic)}`,
+    { method: 'DELETE' });
+}
+
+// DELETE /api/kafka/clusters/{cluster}/topics/{topic}/desired.{op} — отмена
+// lifecycle-заявки (arch/02 §10.2-11/12): окно отмены до тика воркера.
+export function cancelTopicLifecycle(
+  cluster: string,
+  topic: string,
+  op: 'create' | 'delete',
+): Promise<void> {
+  return apiFetch<void>(
+    `/api/kafka/clusters/${encodeURIComponent(cluster)}/topics/${encodeURIComponent(topic)}/desired.${op}`,
     { method: 'DELETE' });
 }

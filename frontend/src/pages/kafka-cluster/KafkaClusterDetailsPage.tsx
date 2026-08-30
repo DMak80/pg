@@ -84,7 +84,12 @@ export function KafkaClusterDetailsPage() {
       </Card>
 
       <BrokersTab cluster={c.name} brokers={c.brokersList} canScale={active} />
-      <TopicsTab cluster={c.name} topics={c.topics} canMutate={active} />
+      <TopicsTab
+        cluster={c.name}
+        topics={c.topics}
+        canMutate={active}
+        defaults={{ defaultPartitions: c.defaultPartitions, replicationFactor: c.replicationFactor, brokers: c.brokers }}
+      />
       <GroupsTab groups={c.groups} probeOk={c.probeOk} />
     </Stack>
   );

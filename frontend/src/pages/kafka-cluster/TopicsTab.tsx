@@ -1,33 +1,43 @@
-// Вкладка Топики деталей kafka-кластера (arch/03 §7.3, план C4): факт из etcd
-// (автосинк воркера) + desired-бейдж с возрастом + missing-подсветка; per-row
-// «Изменить конфиги» и «Отменить заявку».
+// Вкладка Топики деталей kafka-кластера (arch/03 §7.3, t01): факт из etcd
+// (автосинк воркера) + desired-бейдж с возрастом + missing-подсветка + бейджи
+// lifecycle-заявок (создание/удаление) с отменой; «Создать топик» и красное
+// «Удалить топик» (подтверждение с вводом имени).
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { Badge, Button, Card, Group, Table, Text, Title, Tooltip } from '@mantine/core';
 import { useState } from 'react';
 import { ApiError } from '../../api/client';
-import { cancelTopicDesired } from '../../api/queries';
+import { cancelTopicDesired, cancelTopicLifecycle } from '../../api/queries';
 import type { KafkaTopicDto } from '../../api/dto';
+import { DeleteTopicModal } from './DeleteTopicModal';
+import { TopicCreateModal } from './TopicCreateModal';
 import { TopicDesiredModal } from './TopicDesiredModal';
 
 export function TopicsTab({
   cluster,
   topics,
   canMutate,
+  defaults,
 }: {
   cluster: string;
   topics: KafkaTopicDto[];
   canMutate: boolean;
+  defaults: { defaultPartitions: number; replicationFactor: number; brokers: number };
 }) {
   const [desiredTopic, setDesiredTopic] = useState<KafkaTopicDto | null>(null);
+  const [createOpened, setCreateOpened] = useState(false);
+  const [deleteTopic, setDeleteTopic] = useState<string | null>(null);
 
   return (
     <Card withBorder padding="md" radius="md">
       <Group justify="space-between" mb="sm">
         <Title order={4}>Топики</Title>
+        {canMutate ? (
+          <Button size="compact-sm" onClick={() => setCreateOpened(true)}>+ Создать топик</Button>
+        ) : null}
       </Group>
       <Text size="sm" c="dimmed" mb="sm">
-        Состав топиков управляется на стороне Kafka (CLI/клиенты) — панель
-        синхронизирует реестр из etcd. Заявками меняются только конфиги.
+        Создание/удаление топиков — заявками панели; внешние изменения
+        (CLI/клиенты) подхватываются автосинком.
       </Text>
       {topics.length === 0 ? (
         <Text c="dimmed">Топиков в реестре нет</Text>
@@ -54,6 +64,7 @@ export function TopicsTab({
                   topic={t}
                   canMutate={canMutate}
                   onDesired={() => setDesiredTopic(t)}
+                  onDelete={() => setDeleteTopic(t.name)}
                 />
               ))}
             </Table.Tbody>
@@ -62,6 +73,12 @@ export function TopicsTab({
       )}
       {desiredTopic !== null ? (
         <TopicDesiredModal cluster={cluster} topic={desiredTopic} onClose={() => setDesiredTopic(null)} />
+      ) : null}
+      {createOpened ? (
+        <TopicCreateModal cluster={cluster} defaults={defaults} onClose={() => setCreateOpened(false)} />
+      ) : null}
+      {deleteTopic !== null ? (
+        <DeleteTopicModal cluster={cluster} topic={deleteTopic} onClose={() => setDeleteTopic(null)} />
       ) : null}
     </Card>
   );
@@ -72,11 +89,13 @@ function TopicRow({
   topic,
   canMutate,
   onDesired,
+  onDelete,
 }: {
   cluster: string;
   topic: KafkaTopicDto;
   canMutate: boolean;
   onDesired: () => void;
+  onDelete: () => void;
 }) {
   const queryClient = useQueryClient();
   const [error, setError] = useState<string | null>(null);
@@ -88,11 +107,22 @@ function TopicRow({
     },
     onError: (e) => setError(e instanceof ApiError ? e.message : 'ошибка отмены'),
   });
+  const cancelLifecycle = useMutation({
+    mutationFn: () => cancelTopicLifecycle(cluster, topic.name, topic.lifecycle!.op),
+    onSuccess: async () => {
+      setError(null);
+      await queryClient.invalidateQueries({ queryKey: ['kafka-clusters'] });
+    },
+    onError: (e) => setError(e instanceof ApiError ? e.message : 'ошибка отмены заявки'),
+  });
+
+  // Виртуальная строка create-заявки: факта нет — прочерки в факт-полях.
+  const virtual = topic.partitions === 0 && topic.lifecycle !== null;
 
   return (
     <Table.Tr>
       <Table.Td>{topic.name}</Table.Td>
-      <Table.Td>{String(topic.partitions)}</Table.Td>
+      <Table.Td>{virtual ? '—' : String(topic.partitions)}</Table.Td>
       <Table.Td>{topic.replicationFactor !== null ? String(topic.replicationFactor) : '—'}</Table.Td>
       <Table.Td>{formatRetention(topic.retentionMs)}</Table.Td>
       <Table.Td>{topic.minInSyncReplicas !== null ? String(topic.minInSyncReplicas) : '—'}</Table.Td>
@@ -108,8 +138,32 @@ function TopicRow({
         )}
       </Table.Td>
       <Table.Td>
-        {topic.missing ? (
-          <Tooltip label="топик отсутствует в Kafka при живой заявке — создание топиков из панели недоступно (roadmap); отмените заявку, чтобы убрать ключ">
+        {topic.lifecycle !== null ? (
+          <Group gap="xs" wrap="nowrap">
+            <Tooltip label={`${formatAge(topic.lifecycle.requestedUnix)} · автор: ${topic.lifecycle.requestedBy ?? '—'}`}>
+              {topic.lifecycle.op === 'create' ? (
+                <Badge color="blue" variant="light">
+                  создание{topic.lifecycle.partitions !== null ? `: ${topic.lifecycle.partitions} партиций` : ''}
+                  {topic.lifecycle.replicationFactor !== null ? `, RF ${topic.lifecycle.replicationFactor}` : ''}
+                </Badge>
+              ) : (
+                <Badge color="red" variant="light">удаление — ожидает тика воркера</Badge>
+              )}
+            </Tooltip>
+            {canMutate ? (
+              <Button
+                size="compact-xs"
+                variant="light"
+                color="orange"
+                loading={cancelLifecycle.isPending}
+                onClick={() => cancelLifecycle.mutate()}
+              >
+                Отменить заявку
+              </Button>
+            ) : null}
+          </Group>
+        ) : topic.missing ? (
+          <Tooltip label="топик отсутствует в Kafka при живой заявке; отмените заявку, чтобы убрать ключ, или пересоздайте топик заявкой создания">
             <Badge color="red" variant="light">missing: топик отсутствует</Badge>
           </Tooltip>
         ) : topic.desired !== null ? (
@@ -125,7 +179,7 @@ function TopicRow({
       </Table.Td>
       <Table.Td>
         <Group gap="xs" wrap="nowrap">
-          {canMutate && !topic.missing ? (
+          {canMutate && !topic.missing && !virtual ? (
             <Button size="compact-xs" variant="light" onClick={onDesired}>Изменить конфиги</Button>
           ) : null}
           {canMutate && topic.desired !== null ? (
@@ -137,6 +191,11 @@ function TopicRow({
               onClick={() => cancel.mutate()}
             >
               Отменить заявку
+            </Button>
+          ) : null}
+          {canMutate && !topic.missing && topic.lifecycle?.op !== 'create' ? (
+            <Button size="compact-xs" variant="light" color="red" onClick={onDelete}>
+              Удалить топик
             </Button>
           ) : null}
         </Group>
