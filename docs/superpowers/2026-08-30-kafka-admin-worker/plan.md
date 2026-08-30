@@ -624,10 +624,10 @@ public sealed record KafkaRotationTicket(string Cluster, long RequestedUnix, str
 
 **Вход:** C1–C5 (+A3 arch-зеркало актуально).
 **Действие:**
-- [ ] 1. `dotnet build src/PgWorker.slnx` — 0 warnings; `dotnet test src/PgWorker.slnx` — всё зелёное; `cd frontend && npm run build` — ок.
-- [ ] 2. Полный прогон стенда: quick-чеки pg (10/20) + 50-kafka (с сид-профилем) + 55-kafka (чистое состояние, профиль kafka) — зелёные.
-- [ ] 3. Пройтись по критериям приёмки spec §9.1–9.8 построчно (чек-лист в PR-описании).
-- [ ] 4. Коммит: `feat(kafka): волна C — топики/группы/лаги + e2e`.
+- [x] 1. `dotnet build src/PgWorker.slnx` — 0 warnings; `dotnet test src/PgWorker.slnx` — всё зелёное; `cd frontend && npm run build` — ок.
+- [x] 2. Полный прогон стенда: quick-чеки pg (10/20) + 50-kafka (с сид-профилем) + 55-kafka (чистое состояние, профиль kafka) — зелёные.
+- [x] 3. Пройтись по критериям приёмки spec §9.1–9.8 построчно (чек-лист в PR-описании).
+- [x] 4. Коммит: `feat(kafka): волна C — топики/группы/лаги + e2e`.
 
 **Выход:** spec реализована полностью.
 **Проверка:** все команды зелёные; чек-лист §9 закрыт.
