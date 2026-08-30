@@ -398,7 +398,7 @@ volumes: + kfw-snapshots
 **Файлы:** Create `src/AdminPanel.Core/Kafka/KafkaSnapshot.cs`, `src/AdminPanel.Core/Kafka/KafkaAlerting/{KafkaAlertEngine.cs,KafkaAlertsOptions.cs}`; Test `src/tests/AdminPanel.UnitTests/{KafkaModelTests.cs,KafkaAlertRulesTests.cs}` (по образцу `CoreModelTests`/`ShardingAlertRulesTests`).
 
 **Действие (шаги):**
-- [ ] 1. Модель (AAA-тесты: value-equality, state-маппинг):
+- [x] 1. Модель (AAA-тесты: value-equality, state-маппинг):
 
 ```csharp
 public sealed record KafkaSnapshot(DateTimeOffset BuiltAtUtc, bool EtcdReachable, int ConsecutiveFailures,
@@ -414,7 +414,7 @@ public sealed record KafkaTopicInfo(string Name, int Partitions, short? Replicat
 public sealed record KafkaRotationTicket(string Cluster, long RequestedUnix, string? RequestedBy);
 ```
 
-- [ ] 2. `KafkaAlertEngine.Evaluate(KafkaSnapshot prev, KafkaSnapshot next)` — кластерные kinds волны B: `kafka-cluster-not-initialized` (info), `kafka-cluster-to-remove` (info), `kafka-broker-not-running` (critical; fresh-PROVISIONING < 60 с — не алерт), `kafka-endpoints-missing` (critical), `kafka-rotation-pending` (info), `kafka-key-malformed` (warning). Тесты (AAA): каждый kind + `sinceUnix` по стабильному `id = kind:target` (ротационный алерт живёт только у живого кластера — A10 гарантирует очистку заявки при удалении кластера).
+- [x] 2. `KafkaAlertEngine.Evaluate(KafkaSnapshot prev, KafkaSnapshot next)` — кластерные kinds волны B: `kafka-cluster-not-initialized` (info), `kafka-cluster-to-remove` (info), `kafka-broker-not-running` (critical; fresh-PROVISIONING < 60 с — не алерт), `kafka-endpoints-missing` (critical), `kafka-rotation-pending` (info), `kafka-key-malformed` (warning). Тесты (AAA): каждый kind + `sinceUnix` по стабильному `id = kind:target` (ротационный алерт живёт только у живого кластера — A10 гарантирует очистку заявки при удалении кластера).
 
 **Выход:** домен снапшота kafka + алерты.
 **Проверка:** `dotnet test src/tests/AdminPanel.UnitTests --filter Kafka` — зелёный.
@@ -427,10 +427,10 @@ public sealed record KafkaRotationTicket(string Cluster, long RequestedUnix, str
 **Файлы:** Create `src/AdminPanel.Etcd/Parsing/KafkaParser.cs`, `src/AdminPanel.Etcd/{KafkaSnapshotRefresher,KafkaSnapshotStore}.cs`, Modify `src/AdminPanel.Etcd/ModuleExtensions.cs` (`AddKafka()` — HttpClient `kafka-etcd`, hosted-service, store); Test `src/tests/AdminPanel.UnitTests/{KafkaParserTests.cs,KafkaRefresherTests.cs,KafkaSnapshotStoreTests.cs}` + `src/tests/AdminPanel.UnitTests/EtcdFixtures/Kafka/*.json`.
 
 **Действие (шаги):**
-- [ ] 1. Тесты-фикстуры (значения — из arch/15 примеров): полный префикс, битые JSON, unknown-ключи, rotations.
-- [ ] 2. `KafkaParser` — толерантный разбор (порт стиля `ClustersParser`; errors → ParseError-записи).
-- [ ] 3. `KafkaSnapshotRefresher` — BackgroundService: тик `AdminPanel:Kafka:RefreshInterval` (3 c): range `/kafka/clusters/` + `/kafkaworker/rotations/`; failover/sticky endpoints общий через `EtcdOptions`; отказ → прежний снапшот + `EtcdReachable=false`/`ConsecutiveFailures++`. Тесты на fake `IEtcdGateway` (AAA): тик-сборка, транспортный провал роняет тик (неполный снапшот не публикуется).
-- [ ] 4. `KafkaSnapshotStore` — volatile-ссылка + `Get()` (порт `SnapshotStore`).
+- [x] 1. Тесты-фикстуры (значения — из arch/15 примеров): полный префикс, битые JSON, unknown-ключи, rotations.
+- [x] 2. `KafkaParser` — толерантный разбор (порт стиля `ClustersParser`; errors → ParseError-записи).
+- [x] 3. `KafkaSnapshotRefresher` — BackgroundService: тик `AdminPanel:Kafka:RefreshInterval` (3 c): range `/kafka/clusters/` + `/kafkaworker/rotations/`; failover/sticky endpoints общий через `EtcdOptions`; отказ → прежний снапшот + `EtcdReachable=false`/`ConsecutiveFailures++`. Тесты на fake `IEtcdGateway` (AAA): тик-сборка, транспортный провал роняет тик (неполный снапшот не публикуется).
+- [x] 4. `KafkaSnapshotStore` — volatile-ссылка + `Get()` (порт `SnapshotStore`).
 
 **Выход:** снапшот kafka обновляется в фоне.
 **Проверка:** юнит-фильтры Kafka — зелёные; `dotnet build` — 0 warnings.
