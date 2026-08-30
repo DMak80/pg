@@ -271,8 +271,8 @@ public sealed record KafkaTopicView(string Topic, int Partitions,
 **Файлы:** Create `src/KafkaWorker.Provisioning/Processes/DeprovisioningProcess.cs`; Test `src/tests/KafkaWorker.UnitTests/Provisioning/DeprovisioningProcessTests.cs`.
 
 **Действие (шаги):**
-- [ ] 1. Тесты (AAA): удаление контейнеров+томов `kfw-<C>-*` (включая сироты из ListAsync); **etcd-очистка полным набором: `del --prefix /kafka/clusters/<C>/` + del `/kafkaworker/{claims,work,portalloc}/<C>*` + del `/kafkaworker/rotations/<C>` (остаточная заявка ротации не переживает удаление кластера — иначе вечный алерт kafka-rotation-pending)**; порядок docker→etcd; 404 от docker = ок; повтор — идемпотентен; снапшот-делегат вызван «до» (старт) и «после» (финал).
-- [ ] 2. Реализация X0–X3 (порт DeprovisioningProcess PgWorker: claim+journal → снапшот «до» → docker-удаление → etcd-очистка (включая `/kafkaworker/rotations/<C>`) → снапшот «после» → клэйм снят явно).
+- [x] 1. Тесты (AAA): удаление контейнеров+томов `kfw-<C>-*` (включая сироты из ListAsync); **etcd-очистка полным набором: `del --prefix /kafka/clusters/<C>/` + del `/kafkaworker/{claims,work,portalloc}/<C>*` + del `/kafkaworker/rotations/<C>` (остаточная заявка ротации не переживает удаление кластера — иначе вечный алерт kafka-rotation-pending)**; порядок docker→etcd; 404 от docker = ок; повтор — идемпотентен; снапшот-делегат вызван «до» (старт) и «после» (финал).
+- [x] 2. Реализация X0–X3 (порт DeprovisioningProcess PgWorker: claim+journal → снапшот «до» → docker-удаление → etcd-очистка (включая `/kafkaworker/rotations/<C>`) → снапшот «после» → клэйм снят явно).
 
 **Выход:** полный демонтаж кластера со снапшотами P12 и без остаточных заявок ротации.
 **Проверка:** юнит-фильтр Deprovisioning — зелёный (в т.ч. кейс «заявка ротации существовала → ключ удалён»).
