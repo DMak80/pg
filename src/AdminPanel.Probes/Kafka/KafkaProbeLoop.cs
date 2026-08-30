@@ -176,34 +176,39 @@ public sealed class KafkaProbeLoop(
                 var found = new List<KafkaGroupInfo>();
                 foreach (var detail in details.Value)
                 {
-                    if (detail.Assignment.Count == 0)
+                    // Лаг — по COMMITTED-оффсетам группы (не по живому assignment:
+                    // умерший консьюмер оставляет committed и отставание — это
+                    // ровно то, что должен подсветить мониторинг/алерт).
+                    var committed = await runtimeClient.CommittedAsync(
+                        bootstrap, creds.User, creds.Password, detail.Group, [], timeout, ct);
+                    if (!committed.IsSuccess)
+                        continue; // оффсеты недоступны — группа не показана в этом тике
+
+                    if (committed.Value.Count == 0)
                     {
                         found.Add(new KafkaGroupInfo(detail.Group, detail.State, detail.Members, 0));
                         continue;
                     }
 
-                    var missing = detail.Assignment.Where(p => !end.ContainsKey(p)).ToList();
+                    var missing = committed.Value.Keys.Where(p => !end.ContainsKey(p)).ToList();
                     if (missing.Count > 0)
                     {
                         var fetched = await runtimeClient.EndOffsetsAsync(
                             bootstrap, creds.User, creds.Password, missing, timeout, ct);
                         if (!fetched.IsSuccess)
-                            continue; // лаги недоступны — группа не показана в этом тике
+                            continue;
 
                         foreach (var pair in fetched.Value)
                             end[pair.Key] = pair.Value;
                     }
 
-                    var committed = await runtimeClient.CommittedAsync(
-                        bootstrap, creds.User, creds.Password, detail.Group, detail.Assignment, timeout, ct);
-                    if (!committed.IsSuccess)
-                        continue;
-
+                    var groupEnd = end.Where(p => committed.Value.ContainsKey(p.Key))
+                        .ToDictionary(p => p.Key, p => p.Value);
                     found.Add(new KafkaGroupInfo(
                         detail.Group,
                         detail.State,
                         detail.Members,
-                        KafkaGroupLag.Total(end, committed.Value)));
+                        KafkaGroupLag.Total(groupEnd, committed.Value)));
                 }
 
                 groups = [.. found.OrderBy(g => g.TotalLag, Comparer<long>.Create((x, y) => y.CompareTo(x)))

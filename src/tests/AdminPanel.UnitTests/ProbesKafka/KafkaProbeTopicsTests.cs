@@ -57,8 +57,14 @@ public class KafkaProbeTopicsTests
         public Task<Result<IReadOnlyDictionary<(string Topic, int Partition), long>>> CommittedAsync(
             string bootstrap, string user, string password, string group,
             IReadOnlyList<(string Topic, int Partition)> partitions, TimeSpan timeout, CancellationToken ct)
-            => Task.FromResult(Result<IReadOnlyDictionary<(string Topic, int Partition), long>>.Success(
-                CommittedByGroup.GetValueOrDefault(group, new Dictionary<(string Topic, int Partition), long>())));
+        {
+            // Пустой набор партиций = все закоммиченные группы (Burrow-семантика).
+            var all = CommittedByGroup.GetValueOrDefault(group, new Dictionary<(string Topic, int Partition), long>());
+            return Task.FromResult(Result<IReadOnlyDictionary<(string Topic, int Partition), long>>.Success(
+                partitions.Count == 0
+                    ? all
+                    : all.Where(p => partitions.Contains(p.Key)).ToDictionary(p => p.Key, p => p.Value)));
+        }
     }
 
     private static (KafkaProbeLoop Loop, KafkaProbeStore Store, FakeRuntimeClient Runtime) NewRig(
@@ -142,9 +148,10 @@ public class KafkaProbeTopicsTests
     }
 
     [Fact]
-    public async Task RunOnce_GroupWithoutCommit_WholeEndIsLag()
+    public async Task RunOnce_GroupWithoutCommit_ShownWithZeroLag()
     {
-        // Arrange: группа не коммитилась — весь end в лаг.
+        // Arrange: группа ни разу не коммитилась — committed-оффсетов нет,
+        // лаг по committed-семантике неопределим: группа показана с 0.
         var runtime = new FakeRuntimeClient
         {
             Groups = ["fresh"],
@@ -157,7 +164,33 @@ public class KafkaProbeTopicsTests
         await loop.RunOnceAsync(CancellationToken.None);
 
         // Assert
-        store.Current!.Clusters["events"].Groups!.Single().TotalLag.Should().Be(42);
+        var group = store.Current!.Clusters["events"].Groups!.Single();
+        group.Group.Should().Be("fresh");
+        group.TotalLag.Should().Be(0, "нет committed — лаг по committed-семантике не определён");
+    }
+
+    [Fact]
+    public async Task RunOnce_DeadGroupWithCommitted_LagSurvives()
+    {
+        // Arrange: консьюмер умер (Empty, 0 участников), но committed остались:
+        // отставание продолжает светиться — ровно то, для чего мониторинг.
+        var runtime = new FakeRuntimeClient
+        {
+            Groups = ["dead"],
+            GroupDetails = [new KafkaProbeGroupDetail("dead", "Empty", 0, [])],
+            End = new Dictionary<(string Topic, int Partition), long> { [("orders", 0)] = 100 },
+            CommittedByGroup = new Dictionary<string, IReadOnlyDictionary<(string Topic, int Partition), long>>
+            {
+                ["dead"] = new Dictionary<(string Topic, int Partition), long> { [("orders", 0)] = 90 },
+            },
+        };
+        var (loop, store, _) = NewRig(runtime);
+
+        // Act
+        await loop.RunOnceAsync(CancellationToken.None);
+
+        // Assert: лаг 10 жив и без участников группы.
+        store.Current!.Clusters["events"].Groups!.Single().TotalLag.Should().Be(10);
     }
 
     [Fact]

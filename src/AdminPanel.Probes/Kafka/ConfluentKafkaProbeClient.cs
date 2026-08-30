@@ -130,7 +130,18 @@ public sealed class ConfluentKafkaRuntimeProbeClient : IKafkaProbeRuntimeClient
         try
         {
             ct.ThrowIfCancellationRequested();
-            using var consumer = new ConsumerBuilder<Ignore, Ignore>(BaseConfig(bootstrap, user, password))
+
+            // group.id обязательна для QueryWatermarkOffsets (librdkafka):
+            // техническая группа, оффсеты не коммитятся и не читаются.
+            using var consumer = new ConsumerBuilder<Ignore, Ignore>(new ConsumerConfig
+            {
+                BootstrapServers = bootstrap,
+                SecurityProtocol = SecurityProtocol.SaslPlaintext,
+                SaslMechanism = SaslMechanism.Plain,
+                SaslUsername = user,
+                SaslPassword = password,
+                GroupId = "adminpanel-probe",
+            })
                 .SetErrorHandler((_, _) => { }) // ошибки партиции — ниже по исключению вызова
                 .Build();
             var result = new Dictionary<(string Topic, int Partition), long>();
@@ -158,12 +169,17 @@ public sealed class ConfluentKafkaRuntimeProbeClient : IKafkaProbeRuntimeClient
         {
             ct.ThrowIfCancellationRequested();
             using var admin = BuildAdmin(bootstrap, user, password);
+
+            // Пустой набор партиций = ВСЕ закоммиченные оффсеты группы (lag
+            // мониторинга живёт и после смерти консьюмера: группа Empty с
+            // committed — это и есть отставание, Burrow-семантика).
+            List<TopicPartition>? requested = partitions.Count == 0
+                ? null
+                : [.. partitions
+                    .Distinct()
+                    .Select(p => new TopicPartition(p.Topic, new Partition(p.Partition)))];
             var result = await admin.ListConsumerGroupOffsetsAsync(
-                [new ConsumerGroupTopicPartitions(
-                    group,
-                    [.. partitions
-                        .Distinct()
-                        .Select(p => new TopicPartition(p.Topic, new Partition(p.Partition)))])],
+                [new ConsumerGroupTopicPartitions(group, requested)],
                 new ListConsumerGroupOffsetsOptions { RequestTimeout = timeout });
 
             // Нет коммита (ErrorCode != None) — пропускаем: отсутствие ключа
