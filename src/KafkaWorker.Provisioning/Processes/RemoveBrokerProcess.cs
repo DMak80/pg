@@ -66,7 +66,7 @@ public sealed class RemoveBrokerProcess(
             {
                 var waiting = await journal.WriteAsync(
                     cluster, Op, "waiting-partitions", claims.InstanceId,
-                    $"на {broker.Name} есть реплики партиций — демонтаж ждёт reassignment (roadmap t02)", ct);
+                    $"на {broker.Name} есть реплики партиций — drain идёт (процесс reassign), демонтаж продолжится сам", ct);
                 return waiting; // не ошибка: следующий тик повторит проверку
             }
 
@@ -107,9 +107,10 @@ public sealed class RemoveBrokerProcess(
 
         var brokerId = BrokerEnvBuilder.NodeId(broker);
         await using var admin = adminFactory.Create(snap.Endpoints, snap.AppUser, snap.AppPassword);
-        // До t02 A6: includeInternal=false; шаг 6.2 переключит на describe-all
-        // (guard G должен видеть и __-реплики — фиксятся в этой же задаче).
-        var topics = await admin.DescribeTopicsAsync(includeInternal: false, ct);
+        // Describe-all: guard видит и internal-реплики (__consumer_offsets) —
+        // раньше фильтр __ прятал их и «пустой» брокер демонтировался с
+        // потерей этих реплик (t02 §1, arch/16 §5 I/G).
+        var topics = await admin.DescribeTopicsAsync(includeInternal: true, ct);
         if (!topics.IsSuccess)
             return true; // факт неизвестен — консервативно ждём
 

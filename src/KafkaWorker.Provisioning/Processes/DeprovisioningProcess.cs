@@ -123,6 +123,8 @@ public sealed class DeprovisioningProcess(
             ($"/kafkaworker/work/{cluster}", false),
             ($"/kafkaworker/portalloc/{cluster}", false),
             ($"/kafkaworker/rotations/{cluster}", false), // заявка ротации не переживает кластер
+            ($"/kafkaworker/rebalances/{cluster}", false), // заявка ребалансировки не переживает кластер (t02 §11.9)
+            ($"/kafkaworker/reassignments/{cluster}", false), // прогресс reassignment не переживает кластер
         };
 
         foreach (var (key, prefix) in deletions)

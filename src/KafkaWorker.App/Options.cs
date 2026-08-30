@@ -82,6 +82,12 @@ public sealed class LoopsOptions
     /// <summary>Тик автосинка топиков (волна C, arch/16 §5 D).</summary>
     public int TopicSyncIntervalSec { get; set; } = 15;
 
+    /// <summary>Тик reassignment партиций (t02, arch/16 §5 I: drain/balance).</summary>
+    public int ReassignIntervalSec { get; set; } = 15;
+
+    /// <summary>Максимум партиций в одной подаче reassignment (батчи, t02).</summary>
+    public int ReassignBatchPartitions { get; set; } = 10;
+
     public int SnapshotIntervalMin { get; set; } = 360;
 
     public int ErrorDelayMs { get; set; } = 2000;
@@ -95,6 +101,12 @@ public sealed class ThresholdsOptions
 
     /// <summary>Молчание брокера дольше порога → UNREACHABLE + пересоздание (C).</summary>
     public int NodeDeadSec { get; set; } = 90;
+
+    /// <summary>Бюджет exec kafka-reassign-partitions CLI в контейнере (t02).</summary>
+    public int ReassignExecSec { get; set; } = 180;
+
+    /// <summary>Дедуп переподачи одного батча reassignment (t02, KIP-455).</summary>
+    public int ReassignRetrySubmitSec { get; set; } = 120;
 }
 
 /// <summary>Параллелизм обработки кластеров тика.</summary>

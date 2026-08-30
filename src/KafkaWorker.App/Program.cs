@@ -117,6 +117,22 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
     ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value)));
 
 // Scale-проход и ротация (arch/16 §5 F/G/H): ротатор — со снапшот-делегатом P12.
+// Reassignment (I, t02) — перед G: drain TO_REMOVE-брокеров + заявки balance.
+builder.Services.AddSingleton(sp =>
+{
+    var opts = sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value;
+    return new PartitionReassignerProcess(
+        sp.GetRequiredService<IEtcdGateway>(),
+        opts.Etcd.Endpoints,
+        sp.GetRequiredService<IClusterDriver>(),
+        sp.GetRequiredService<ClaimStore>(),
+        sp.GetRequiredService<WorkJournal>(),
+        sp.GetRequiredService<IKafkaAdminClientFactory>(),
+        new ReassignOptions(
+            opts.Loops.ReassignIntervalSec, opts.Loops.ReassignBatchPartitions,
+            opts.Thresholds.ReassignExecSec, opts.Thresholds.ReassignRetrySubmitSec),
+        sp.GetRequiredService<TimeProvider>());
+});
 builder.Services.AddSingleton(sp => new RemoveBrokerProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
