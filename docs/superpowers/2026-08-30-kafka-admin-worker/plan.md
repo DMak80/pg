@@ -589,8 +589,8 @@ public sealed record KafkaRotationTicket(string Cluster, long RequestedUnix, str
 **Файлы:** Create `frontend/src/pages/kafka-cluster/{TopicsTab.tsx,GroupsTab.tsx,TopicDesiredModal.tsx}`; Modify `KafkaClusterDetailsPage.tsx` (включить вкладки), `dto.ts`/`queries.ts` (+desired-мутации, groups).
 
 **Действие (шаги):**
-- [ ] 1. Топики: таблица (name/partitions/RF/retention/minISR/desired-бейдж с возрастом/missing-подсветка); per-row «Изменить конфиги» (модал partitions↑/retention/minISR) и «Отменить заявку»; подпись «состав топиков управляется на стороне Kafka (CLI/клиенты) — панель синхронизирует реестр из etcd».
-- [ ] 2. Группы: таблица (group/state/members/totalLag, сортировка по лагу); fallback «проба отключена/недоступна».
+- [x] 1. Топики: таблица (name/partitions/RF/retention/minISR/desired-бейдж с возрастом/missing-подсветка); per-row «Изменить конфиги» (модал partitions↑/retention/minISR) и «Отменить заявку»; подпись «состав топиков управляется на стороне Kafka (CLI/клиенты) — панель синхронизирует реестр из etcd».
+- [x] 2. Группы: таблица (group/state/members/totalLag, сортировка по лагу); fallback «проба отключена/недоступна».
 
 **Выход:** UI полный по spec §5.3.
 **Проверка:** `npm run build` — ок; ручной смоук на стенде.

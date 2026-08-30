@@ -19,6 +19,8 @@ import type {
   KafkaConfigUpdatedDto,
   KafkaConfigUpdateRequestDto,
   KafkaPasswordRotatedDto,
+  TopicDesiredDto,
+  TopicDesiredRequestDto,
   HaScopeSummaryDto,
   MoveBucketsRequestDto,
   MovesQueuedDto,
@@ -204,4 +206,24 @@ export function rotateKafkaPassword(cluster: string): Promise<KafkaPasswordRotat
   return apiFetch<KafkaPasswordRotatedDto>(
     `/api/kafka/clusters/${encodeURIComponent(cluster)}/app-password/rotate`,
     { method: 'POST' });
+}
+
+// PUT /api/kafka/clusters/{cluster}/topics/{topic} — конфиг-заявка топика
+// (arch/02 §10.2-7): применяет автосинк воркера (конфиги → partitions↑).
+export function upsertTopicDesired(
+  cluster: string,
+  topic: string,
+  request: TopicDesiredRequestDto,
+): Promise<TopicDesiredDto> {
+  return apiFetch<TopicDesiredDto>(
+    `/api/kafka/clusters/${encodeURIComponent(cluster)}/topics/${encodeURIComponent(topic)}`,
+    { method: 'PUT', body: request });
+}
+
+// DELETE /api/kafka/clusters/{cluster}/topics/{topic}/desired — отмена заявки
+// (arch/02 §10.2-8): для missing-топиков следующий автосинк удалит ключ.
+export function cancelTopicDesired(cluster: string, topic: string): Promise<void> {
+  return apiFetch<void>(
+    `/api/kafka/clusters/${encodeURIComponent(cluster)}/topics/${encodeURIComponent(topic)}/desired`,
+    { method: 'DELETE' });
 }

@@ -365,6 +365,8 @@ export interface KafkaClusterDto {
   brokersList: KafkaBrokerDto[];
   topics: KafkaTopicDto[];
   rotation: KafkaRotationTicketDto | null;
+  // Live-группы из пробы (волна C): null — проба молчит о кластере.
+  groups: KafkaGroupDto[] | null;
   probeOk: boolean | null;
   probeError: string | null;
 }
@@ -389,6 +391,16 @@ export interface KafkaTopicDto {
   desired: KafkaTopicDesiredDto | null;
   missing: boolean;
   syncedUnix: number | null;
+  // Live-USR из пробы (волна C): null — проба молчит.
+  underReplicatedPartitions: number | null;
+}
+
+// Live-группа консьюмеров (вкладка Группы, волна C).
+export interface KafkaGroupDto {
+  group: string;
+  state: string | null;
+  members: number;
+  totalLag: number;
 }
 
 export interface KafkaTopicDesiredDto {
@@ -460,6 +472,22 @@ export interface KafkaBrokerAddedDto {
   memGi: string;
   diskGi: string;
   state: string;
+}
+
+// PUT /api/kafka/clusters/{cluster}/topics/{topic} — конфиг-заявка топика
+// (arch/02 §10.2-7): хотя бы одно поле; partitions — только увеличение.
+export interface TopicDesiredRequestDto {
+  partitions?: number;
+  retentionMs?: number;
+  minInSyncReplicas?: number;
+}
+
+export interface TopicDesiredDto {
+  cluster: string;
+  topic: string;
+  partitions: number | null;
+  retentionMs: number | null;
+  minInSyncReplicas: number | null;
 }
 
 // POST /api/kafka/clusters/{cluster}/app-password/rotate — ответ.

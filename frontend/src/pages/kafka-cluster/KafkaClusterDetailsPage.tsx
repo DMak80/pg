@@ -1,5 +1,5 @@
 // Детали kafka-кластера: шапка (state-бейджи, конфиг-мутация/ротация/удаление)
-// + вкладки Брокеры (волна B); Топики/Группы — волна C (заглушка).
+// + вкладки Брокеры/Топики/Группы (arch/03 §7.3).
 import { useQuery } from '@tanstack/react-query';
 import { Alert, Badge, Card, Group, SimpleGrid, Stack, Text, Title, Tooltip } from '@mantine/core';
 import { useParams } from 'react-router';
@@ -9,7 +9,9 @@ import { usePollingIntervalMs } from '../../polling/PollingContext';
 import { BrokersTab } from './BrokersTab';
 import { DeleteKafkaClusterButton } from './DeleteKafkaClusterButton';
 import { EditClusterConfigModal } from './EditClusterConfigModal';
+import { GroupsTab } from './GroupsTab';
 import { RotatePasswordButton } from './RotatePasswordButton';
+import { TopicsTab } from './TopicsTab';
 
 const DAY_MS = 86_400_000;
 
@@ -82,12 +84,8 @@ export function KafkaClusterDetailsPage() {
       </Card>
 
       <BrokersTab cluster={c.name} brokers={c.brokersList} canScale={active} />
-
-      <Alert color="gray" variant="light">
-        Вкладки «Топики» и «Группы» появятся в волне C (автосинк реестра + desired-заявки,
-        лаги консьюмер-групп). Состав топиков управляется на стороне Kafka (CLI/клиенты) —
-        панель синхронизирует реестр из etcd.
-      </Alert>
+      <TopicsTab cluster={c.name} topics={c.topics} canMutate={active} />
+      <GroupsTab groups={c.groups} probeOk={c.probeOk} />
     </Stack>
   );
 }
