@@ -65,6 +65,7 @@ public static class NodeEnvBuilder
             ["KAFKA_CONTROLLER_LISTENER_NAMES"] = "CONTROLLER",
             ["KAFKA_INTER_BROKER_LISTENER_NAME"] = "INTERNAL",
             ["KAFKA_SASL_ENABLED_MECHANISMS"] = "PLAIN",
+            ["KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL"] = "PLAIN", // требует Kafka при SASL на INTERNAL
             ["KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG"] = Jaas(users),
             ["KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG"] = Jaas(users),
 

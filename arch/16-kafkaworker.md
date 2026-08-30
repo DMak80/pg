@@ -128,6 +128,7 @@ only, всё видит)         топиков, снятие state
 | `KAFKA_CONTROLLER_LISTENER_NAMES` | `CONTROLLER` |
 | `KAFKA_INTER_BROKER_LISTENER_NAME` | `INTERNAL` |
 | `KAFKA_SASL_ENABLED_MECHANISMS` | `PLAIN` |
+| `KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL` | `PLAIN` (Kafka требует явный механизм при SASL на INTERNAL) |
 | `KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG` | JAAS: `user_app=<pwd>` (при ротации + `user_app2=<new>`) |
 | `KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG` | тот же список пользователей |
 | `KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR` | `min(3,B)` |

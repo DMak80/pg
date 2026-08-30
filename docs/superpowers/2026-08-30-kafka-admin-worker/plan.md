@@ -353,9 +353,9 @@ volumes: + kfw-snapshots
 **Файлы:** Create `src/tests/KafkaWorker.IntegrationTests/{Kafka/KafkaClusterFixture.cs, Kafka/ProvisioningTests.cs, Etcd/ClaimStoreTests.cs}` (по образцу `src/tests/PgWorker.IntegrationTests/Etcd/`).
 
 **Действие (шаги):**
-- [ ] 1. Fixture: Testcontainers etcd `quay.io/coreos/etcd:v3.5.21` + docker-host (локальный сокет) — воркер в тесте хост-процессом управляет docker-хостом (как PgWorker.IntegrationTests). AdvertisedClientHost fixture = `host.docker.internal` (endpoints резолвимы из тест-процесса и контейнеров). Fixture переиспользуется задачей C1.
-- [ ] 2. Тест (AAA, Docker required): сеять заявку 1-брокерного кластера (config NOT_INITIALIZED + broker1/state+resources) → запустить Reconcile-проход → дождаться: контейнер `kfw-<C>-broker1` Running, ключи `endpoints`/`app_password`/state=RUNNING, config без `state` → **дискавери-проверка**: `Confluent.Kafka AdminClient` с bootstrap из `endpoints`-ключа и SASL из `app_*`-ключей успешно DescribeCluster → **положить заявку ротации `/kafkaworker/rotations/<C>` → сеять TO_REMOVE → проход** → контейнер/том удалены, префикс `/kafka/clusters/<C>/` пуст, `/kafkaworker/rotations/<C>` отсутствует (A10-очистка).
-- [ ] 3. Таймауты: готовность брокера ≤ 120 с (политика ретраев в тесте).
+- [x] 1. Fixture: Testcontainers etcd `quay.io/coreos/etcd:v3.5.21` + docker-host (локальный сокет) — воркер в тесте хост-процессом управляет docker-хостом (как PgWorker.IntegrationTests). AdvertisedClientHost fixture = `host.docker.internal` (endpoints резолвимы из тест-процесса и контейнеров). Fixture переиспользуется задачей C1.
+- [x] 2. Тест (AAA, Docker required): сеять заявку 1-брокерного кластера (config NOT_INITIALIZED + broker1/state+resources) → запустить Reconcile-проход → дождаться: контейнер `kfw-<C>-broker1` Running, ключи `endpoints`/`app_password`/state=RUNNING, config без `state` → **дискавери-проверка**: `Confluent.Kafka AdminClient` с bootstrap из `endpoints`-ключа и SASL из `app_*`-ключей успешно DescribeCluster → **положить заявку ротации `/kafkaworker/rotations/<C>` → сеять TO_REMOVE → проход** → контейнер/том удалены, префикс `/kafka/clusters/<C>/` пуст, `/kafkaworker/rotations/<C>` отсутствует (A10-очистка).
+- [x] 3. Таймауты: готовность брокера ≤ 120 с (политика ретраев в тесте).
 
 **Выход:** e2e-доказательство волны A на реальном kafka+etcd+docker, включая очистку координационных ключей.
 **Проверка:** `dotnet test src/tests/KafkaWorker.IntegrationTests` — зелёный (Docker запущен).

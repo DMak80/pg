@@ -109,6 +109,12 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             {
                 // идемпотентность: контейнер с именем уже существует
             }
+            catch (DockerHttpException e) when (e.StatusCode == 404 && e.Body.Contains("No such image", StringComparison.OrdinalIgnoreCase))
+            {
+                // Образа нет на хосте — тянем и повторяем create (первый запуск на чистом хосте).
+                await PullImageAsync(spec.Image, ct);
+                await SendAsync(HttpMethod.Post, $"/containers/create?name={Uri.EscapeDataString(name)}", BuildContainerBody(spec), ct);
+            }
         });
 
     public async Task<Result> StartContainerAsync(string idOrName, CancellationToken ct)
