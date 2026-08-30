@@ -238,13 +238,19 @@ X3 снапшот P12 «после»; клэйм снят явно
 
 ### C. NodeSupervisor (надзор)
 
-Сверка декларации с фактом: снесённый контейнер пересоздаётся (тот же
-volume/env); `PROVISIONING→RUNNING`. AdminClient-проба: брокер молчит
-дольше `NodeDeadSec` (90 с) → `state=UNREACHABLE` + пересоздание
-контейнера; том утрачен и RF>1 → чистый том, брокер rejoin'ится
-репликацией (self-healing Kafka); RF=1 и том утрачен → warning-журнал
-(данные потеряны — документированное поведение). Ноды
-`TO_REMOVE`/`REMOVING`/`PROVISIONING` чужих процессов надзор не трогает.
+Сверка декларации с фактом docker + AdminClient-проба (DescribeCluster —
+кто реально в кластере; кластер целиком недоступен → молчание трекается
+по всем RUNNING-брокерам):
+
+- **Снесённый контейнер** (объекта `kfw-<C>-<b>` нет) → пересоздание с тем же
+  volume/env (адреса из portalloc, advertised стабилен), `state=PROVISIONING`;
+  в `RUNNING` переводит следующий цикл по факту готовности.
+- **Брокер молчит** дольше `NodeDeadSec` (90 с; трек first_seen — в
+  `/kafkaworker/work/<C>`.unreachable, порт PgWorker) → `state=UNREACHABLE` +
+  пересоздание с ЧИСТЫМ томом: RF>1 — rejoin репликацией (self-healing
+  Kafka); RF=1 — journal-warning «данные потеряны» (документированное
+  поведение) — warning-ы тика агрегируются в supervision-запись журнала.
+- Ноды `TO_REMOVE`/`REMOVING`/`PROVISIONING` чужих процессов надзор не трогает.
 
 ### D. TopicSyncProcess (автосинк + desired-converge)
 
