@@ -9,7 +9,9 @@ AdminPanel читает etcd для инспекции. Источник схе�
 `POST /api/ha/{scope}/nodes/{node}/recreate` ставит маркеры
 `nodes/<n>/state=TO_RECREATE` + `nodes/<n>/recreate=soft|hard` (исполняет
 NodeSupervisor PgWorker); она зафиксирована кодом ранее и контрактно ведёт
-себя как §9.6-подобный маркер. Все остальные ключи панель не пишет и не
+себя как §9.6-подобный маркер. Отдельный домен **Kafka** (§10): чтение
+`/kafka/clusters/` + `/kafkaworker/rotations/` и 8 мутаций декларативной
+модели (исполняет KafkaWorker). Все остальные ключи панель не пишет и не
 удаляет никогда.
 
 ## 1. Транспорт: HTTP JSON gateway `/v3/*`
@@ -566,3 +568,80 @@ ALTER ROLE на мастере каждого поднятого шарда, з�
    (тики PgWorker, секунды при живых шардах). UI-модалка предупреждает:
    после применения подключения со старым паролем отвергаются до
    перечитывания `app_password` клиентами — выполнять в тихое окно.
+
+## 10. Kafka (чтение + записи панели)
+
+Третий домен панели. Канон ключей — [15-kafka-clusters.md](../15-kafka-clusters.md)
+(контроль-плейн `/kafka/clusters/`, координация `/kafkaworker/`, формат
+`topics/<T>` §3 — дословно источник истины); эта глава фиксирует панельную
+проекцию: что панель читает и как мутирует. Декларатор — панель, исполнитель —
+KafkaWorker ([16-kafkaworker.md](../16-kafkaworker.md)); панель никогда не
+трогает контейнеры и Kafka напрямую (мутации — только ключи etcd, пробы —
+read-only). Отдельный домен-снапшот `KafkaSnapshot` (не `EtcdSnapshot` pg) —
+своя механика тика §4, тем же транспортом §1 и настройками endpoints.
+
+### 10.1. Читаемые ключи
+
+| Префикс/ключ | В модель | Примечание |
+|---|---|---|
+| `/kafka/clusters/<C>/config` | `KafkaClusterInfo` (config + state-маппинг arch/15 §2) | `state` отсутствует = Active; поля 2–5 — mutable-конфиги |
+| `/kafka/clusters/<C>/brokers/broker<k>/{state,resources,role}` | `KafkaBrokerInfo` | `state` — raw-строка (толерантно к новым); `role` пишет воркер |
+| `/kafka/clusters/<C>/endpoints` | `KafkaClusterInfo.Endpoints` | точка дискавери клиентов (arch/15 §2); отсутствие у Active — critical-алерт |
+| `/kafka/clusters/<C>/app_user`, `app_password` | internal-словарь стора (не в `KafkaClusterInfo`, не в UI/API) | читаются ТОЛЬКО для SASL-проб (§6-аналог: как dsn-пароль pg); значение пароля наружу не отдаётся |
+| `/kafka/clusters/<C>/topics/<T>` | `KafkaTopicInfo` | гибрид автосинк+desired, формат arch/15 §3; `__`-топиков в etcd не бывает |
+| `/kafkaworker/rotations/<C>` | `KafkaRotationTicket` | единственное читаемое из `/kafkaworker/` (arch/15 §4); остальные ключи префикса панель не читает и не пишет |
+
+Неизвестные ключи внутри `/kafka/` — лог + счётчик `unknownKeys`; битый JSON —
+parseError-запись + warning-алерт `kafka-key-malformed` (arch/15 §6).
+
+### 10.2. Мутации панели (8; протоколы — порты §9)
+
+Общие: активный endpoint из kafka-снапшота, имена канонические
+(`^[a-z][a-z0-9_]{0,62}$` — иначе 404), чтение config **напрямую** у etcd
+(не из снапшота — он отстаёт до тика), ProblemDetails.
+
+| # | Мутация | Протокол записи | Отказы |
+|---|---|---|---|
+| 1 | **Создание кластера** `POST /api/kafka/clusters` | (1) клэйм-txn `version(config)==0` + put config `state=NOT_INITIALIZED` (§9.2-паттерн); (2) пакет PUT: `brokers/broker<k>/state=NOT_INITIALIZED` × B + `brokers/broker<k>/resources` × B (порядок k=1..B); (3) сбой → компенсация `del --prefix /kafka/clusters/<C>/`; повтор — 409 на клэйме | 400 (валидация §10.3), 409 (имя занято), 503 |
+| 2 | **Удаление кластера** `DELETE /api/kafka/clusters/{c}` | PUT config RMW: `state=TO_REMOVE` с сохранением остальных полей (§9.4 один в один: уже TO_REMOVE → 204 без записи) | 404, 503 |
+| 3 | **Изменение default-конфигов** `PUT /api/kafka/clusters/{c}/config` | RMW-txn по `mod_revision`: обновить `replication_factor`/`min_insync_replicas`/`default_partitions`/`default_retention_ms` (границы §10.3); применяет воркер как dynamic broker configs (converge, без рестартов); проигрыш compare → 503 (retry клиентом) | 400, 404, 409 (не Active), 503 |
+| 4 | **Добавление брокера** `POST /api/kafka/clusters/{c}/brokers` | имя генерит сервер `broker<max+1>` (≤9); клэйм-txn `version(brokers/<b>/state)==0` + put `NOT_INITIALIZED` + put resources; сбой → компенсация точечными del `brokers/<b>/` (§9.5-паттерн); поднимает воркер (broker-only, кворум не меняется) | 400, 404, 409 (не Active / имя занято / предел 9), 503 |
+| 5 | **Удаление брокера** `DELETE /api/kafka/clusters/{c}/brokers/{b}` | маркер `brokers/<b>/state=TO_REMOVE` (one-way, идемпотентно; §9.6-паттерн). Серверные пред-проверки: не `controller` (role-ключ); не последний; по live-пробе на брокере нет партиций-реплик (иначе 409 «сначала reassignment» — roadmap t02). Guard «на брокере есть партиции» авторитетно перепроверяет воркер (DescribeTopics) — в etcd фактических реплик нет | 404, 409 (guards), 503 |
+| 6 | **Конфиг-заявка топика** `PUT /api/kafka/clusters/{c}/topics/{t}` | RMW-txn по §10.4: read `topics/<t>` → set `desired`/`desired_unix`/`desired_by` → txn compare `mod_revision` → put. Топик должен существовать в реестре и не быть missing (404 иначе); partitions — только больше фактического (400). Без компенсации: неудавшаяся запись не встала — повтор идемпотентен | 400, 404, 409 (не Active), 503 |
+| 7 | **Отмена конфиг-заявки** `DELETE /api/kafka/clusters/{c}/topics/{t}/desired` | RMW-txn: `desired=null` (убрать `desired`/`desired_*`); 404 если заявки нет. Нужна для missing-топиков (после отмены автосинк удалит ключ) и для «передумали» | 404, 409, 503 |
+| 8 | **Ротация app-пароля** `POST /api/kafka/clusters/{c}/app-password/rotate` | клэйм-txn `/kafkaworker/rotations/<C>` `version==0` + put `{"requested_unix","requested_by"}` — §9.8 один в один; исполнение — AppPasswordRotator KafkaWorker (фазы A/B/C); UI-модалка предупреждает о rolling-перезапуске брокеров | 404, 409 (не Active / уже запрошена), 503 |
+
+### 10.3. Валидация создания/конфиг-мутации (сервер — источник истины)
+
+| Поле | Правило |
+|---|---|
+| `name` | `^[a-z][a-z0-9_]{0,62}$`; уникальность — клэйм-txn §10.2 п.1 |
+| `brokers` | целое 1..9, def 3 |
+| `replicationFactor` | целое 1..9 и ≤ brokers, def 3 |
+| `minInSyncReplicas` | целое 1..RF, def 2 |
+| `defaultPartitions` | целое 1..1000, def 12 |
+| `defaultRetentionMs` | целое 1..2147483647, def 604800000 (7 дней) |
+| `cpu` | десятичные ядра 0.01..64, def 2 (на брокера) |
+| `mem`/`disk` | целые GiB 1..65536, def 2/20 (на брокера; в etcd `"<n>Gi"`) |
+
+Топик `<t>` (мутации 6–7): Kafka-паттерн `^[a-zA-Z0-9._-]{1,249}$`, без `__`-префикса.
+
+### 10.4. Интеракция desired/missing (заявки конфигов топиков)
+
+Панель пишет **только** `desired`-часть значения `topics/<T>` (формат —
+arch/15 §3): RMW read → set `desired{partitions?, configs{retention.ms?,
+min.insync.replicas?}}` + `desired_unix`=now + `desired_by`=username → txn
+`compare mod_revision == прочитанной` → put. Управляемые поля: `partitions` —
+только увеличение (≤ фактического — 400); `configs.retention.ms`,
+`configs.min.insync.replicas`; лишние поля — 400.
+
+- Применение и снятие заявки — автосинк воркера (arch/15 §3): desired
+  отличается от факта → применить к Kafka + снять desired; проигрыш compare →
+  re-read (панель успела переписать — применится свежий).
+- **missing-ветка**: топик исчез из Kafka при живой заявке → воркер ставит
+  `missing=true`, ключ не удаляет; панель показывает «топик отсутствует,
+  заявка не исполнена» + warning-алерт `kafka-topic-missing-desired`;
+  отмена (мутация 7) → следующий автосинк удаляет ключ.
+- Отмена несуществующей заявки → 404 («заявки нет» — desired уже снят/не
+  ставился); идемпотентность повтора PUT — перезапись той же заявки
+  свежим `desired_unix` (безопасно).

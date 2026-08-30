@@ -383,9 +383,9 @@ volumes: + kfw-snapshots
 **Файлы:** Modify `arch/adminpanel/02-etcd-contract.md` (+глава «Kafka»: читаемые ключи — ссылка на arch/15 + панельные мутации §3.4 дословно с протоколами), `arch/adminpanel/03-panels.md` (+секция kafka: таблица эндпоинтов, DTO, панели UI, алерты — из spec §5.2–5.4).
 
 **Действие (шаги):**
-- [ ] 1. 02: глава «Kafka (чтение + записи панели)»: чтение `/kafka/clusters/` + `/kafkaworker/rotations/`; 8 мутаций таблицей (метод/путь/протокол/отказы — из spec §3.4); интеракция desired/missing (ссылка arch/15 §3).
-- [ ] 2. 03: эндпоинты `GET /api/kafka/clusters[...]`, мутации §3.4, DTO (`KafkaClusterDto`, `KafkaBrokerDto`, `KafkaTopicDto`, `KafkaGroupDto`, `CreateKafkaClusterRequestDto` и ответы), панели UI (список/детали/вкладки), каталог алертов §5.4.
-- [ ] 3. README adminpanel-канона — без правок (структура файлов не меняется).
+- [x] 1. 02: глава «Kafka (чтение + записи панели)»: чтение `/kafka/clusters/` + `/kafkaworker/rotations/`; 8 мутаций таблицей (метод/путь/протокол/отказы — из spec §3.4); интеракция desired/missing (ссылка arch/15 §3).
+- [x] 2. 03: эндпоинты `GET /api/kafka/clusters[...]`, мутации §3.4, DTO (`KafkaClusterDto`, `KafkaBrokerDto`, `KafkaTopicDto`, `KafkaGroupDto`, `CreateKafkaClusterRequestDto` и ответы), панели UI (список/детали/вкладки), каталог алертов §5.4.
+- [x] 3. README adminpanel-канона — без правок (структура файлов не меняется).
 
 **Выход:** контракт панели заканонизирован до кода.
 **Проверка:** grep `api/kafka` в `arch/adminpanel/03-panels.md` — находит все эндпоинты; grep `desired` в 02 — находит интеракцию.
