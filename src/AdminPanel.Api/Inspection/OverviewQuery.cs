@@ -18,8 +18,14 @@ public sealed record OverviewDto(
     OverviewEtcdDto Etcd,
     IReadOnlyList<OverviewClusterDto> Clusters,
     IReadOnlyList<OverviewMoveDto> ActiveMoves,
+    OverviewKafkaDto? Kafka,
     long SnapshotAgeMs,
     bool Stale);
+
+// Сводка kafka-домена (arch/03 §7.1): из KafkaSnapshot + kafka-алертов.
+public sealed record OverviewKafkaDto(
+    int ClustersTotal,
+    int ClustersCritical);
 
 public sealed record OverviewEtcdDto(bool Reachable, int EndpointsOk, int EndpointsTotal);
 
@@ -61,6 +67,7 @@ public static class OverviewMapper
                     .Select(b => new OverviewMoveDto(
                         c.Name, b.Id, BucketStates.Name(b.State),
                         b.Move?.Owner, b.Move?.Target, b.Move?.UpdatedUnix)))],
+            null, // kafka-сводка — хендлер дополняет из KafkaSnapshot (B5)
             Math.Max(0L, (long)Math.Round(age.TotalMilliseconds)),
             age > TimeSpan.FromSeconds(SnapshotStaleRule.Multiplier * refreshIntervalSeconds));
     }
@@ -70,17 +77,30 @@ public static class OverviewMapper
 [InjectAsScoped]
 public sealed class OverviewQueryHandler(
     ISnapshotStore store,
+    IKafkaSnapshotReader kafkaStore,
     TimeProvider time,
     IOptions<EtcdOptions> etcdOptions) : IQueryHandler<OverviewQuery, OverviewDto>
 {
     public ValueTask<Result<OverviewDto>> Handle(OverviewQuery query, CancellationToken ct)
     {
         var snapshot = store.Current;
-        return ValueTask.FromResult(snapshot is null
-            ? Result<OverviewDto>.Failed(new InspectionModule.SnapshotNotReadyException())
-            : Result<OverviewDto>.Success(OverviewMapper.Map(
-                snapshot, time.GetUtcNow(), EffectiveInterval(etcdOptions))));
+        if (snapshot is null)
+            return ValueTask.FromResult(
+                Result<OverviewDto>.Failed(new InspectionModule.SnapshotNotReadyException()));
+
+        var overview = OverviewMapper.Map(snapshot, time.GetUtcNow(), EffectiveInterval(etcdOptions))
+            with { Kafka = MapKafka(kafkaStore.Current) };
+        return ValueTask.FromResult(Result<OverviewDto>.Success(overview));
     }
+
+    // kafka-сводка: кластеры + critical-алерты kafka-* (arch/03 §7.1); null до
+    // первого тика kafka-refresher'а.
+    private static OverviewKafkaDto? MapKafka(Core.Kafka.KafkaSnapshot? kafka)
+        => kafka is null
+            ? null
+            : new OverviewKafkaDto(
+                kafka.Clusters.Count,
+                kafka.Alerts.Count(a => a.Severity == Core.AlertSeverity.Critical));
 
     // Эффективный интервал: fallback 3 c при опечатке конфига — как в refresher (t03 §3.3).
     private static double EffectiveInterval(IOptions<EtcdOptions> options)

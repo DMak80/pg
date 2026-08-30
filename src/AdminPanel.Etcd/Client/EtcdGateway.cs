@@ -68,7 +68,11 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
     {
         var body = new
         {
-            compare = compares.Select(c => new { key = ToB64(c.Key), version = c.Version }),
+            // target: version (по умолчанию) либо mod_revision — RMW kafka-мутаций (arch/02 §10.2).
+            // object-обёртка: ветки — разные анонимные типы, сериализуется runtime-тип.
+            compare = compares.Select(c => c.ModRevision is { } mod
+                ? (object)new { key = ToB64(c.Key), mod_revision = mod }
+                : new { key = ToB64(c.Key), version = c.Version }),
             success = puts.Select(p => new
             {
                 request_put = new { key = ToB64(p.Key), value = ToB64(p.Value) },

@@ -52,8 +52,10 @@ public static class AlertsMapper
 }
 
 // Хендлер: store → отказ «снапшота нет» или фильтры+маппер (spec §3.12).
+// GET /api/alerts объединяет алерты pg- и kafka-движков (kind различает kafka-*,
+// arch/03 §7.1); до первого kafka-тика — только pg-лента.
 [InjectAsScoped]
-public sealed class AlertsQueryHandler(ISnapshotStore store)
+public sealed class AlertsQueryHandler(ISnapshotStore store, IKafkaSnapshotReader kafkaStore)
     : IQueryHandler<AlertsQuery, IReadOnlyList<AlertDto>>
 {
     public ValueTask<Result<IReadOnlyList<AlertDto>>> Handle(AlertsQuery query, CancellationToken ct)
@@ -61,7 +63,17 @@ public sealed class AlertsQueryHandler(ISnapshotStore store)
         var snapshot = store.Current;
         return ValueTask.FromResult(snapshot is null
             ? Result<IReadOnlyList<AlertDto>>.Failed(new InspectionModule.SnapshotNotReadyException())
-            : Result<IReadOnlyList<AlertDto>>.Success(
-                AlertsMapper.Map(AlertsMapper.ApplyFilters(snapshot.Alerts, query.Severity, query.Kind))));
+            : Result<IReadOnlyList<AlertDto>>.Success(AlertsMapper.Map(AlertsMapper.ApplyFilters(
+                Merge(snapshot.Alerts, kafkaStore.Current?.Alerts),
+                query.Severity, query.Kind))));
     }
+
+    // Merge: единая сортировка severity → kind → target (механика движков).
+    private static IReadOnlyList<Alert> Merge(IReadOnlyList<Alert> pg, IReadOnlyList<Alert>? kafka)
+        => kafka is null
+            ? pg
+            : [.. pg.Concat(kafka)
+                .OrderBy(a => a.Severity, Comparer<AlertSeverity>.Create((x, y) => y.CompareTo(x)))
+                .ThenBy(a => a.Kind, StringComparer.Ordinal)
+                .ThenBy(a => a.Target, StringComparer.Ordinal)];
 }
