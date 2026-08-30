@@ -10,7 +10,8 @@ AdminPanel читает etcd для инспекции. Источник схе�
 `nodes/<n>/state=TO_RECREATE` + `nodes/<n>/recreate=soft|hard` (исполняет
 NodeSupervisor PgWorker); она зафиксирована кодом ранее и контрактно ведёт
 себя как §9.6-подобный маркер. Отдельный домен **Kafka** (§10): чтение
-`/kafka/clusters/` + `/kafkaworker/rotations/` и 8 мутаций декларативной
+`/kafka/clusters/` + `/kafkaworker/{rotations,rebalances,reassignments}/` и
+10 мутаций декларативной
 модели (исполняет KafkaWorker). Все остальные ключи панель не пишет и не
 удаляет никогда.
 
@@ -589,12 +590,14 @@ read-only). Отдельный домен-снапшот `KafkaSnapshot` (не `
 | `/kafka/clusters/<C>/endpoints` | `KafkaClusterInfo.Endpoints` | точка дискавери клиентов (arch/15 §2); отсутствие у Active — critical-алерт |
 | `/kafka/clusters/<C>/app_user`, `app_password` | internal-словарь стора (не в `KafkaClusterInfo`, не в UI/API) | читаются ТОЛЬКО для SASL-проб (§6-аналог: как dsn-пароль pg); значение пароля наружу не отдаётся |
 | `/kafka/clusters/<C>/topics/<T>` | `KafkaTopicInfo` | гибрид автосинк+desired, формат arch/15 §3; `__`-топиков в etcd не бывает |
-| `/kafkaworker/rotations/<C>` | `KafkaRotationTicket` | единственное читаемое из `/kafkaworker/` (arch/15 §4); остальные ключи префикса панель не читает и не пишет |
+| `/kafkaworker/rotations/<C>` | `KafkaRotationTicket` | читаемые из `/kafkaworker/` — только `rotations/`, `rebalances/`, `reassignments/` (arch/15 §4); остальные ключи префикса панель не читает и не пишет |
+| `/kafkaworker/rebalances/<C>` | `KafkaRebalanceTicket` | заявка ребалансировки партиций (жива = очередь в UI) |
+| `/kafkaworker/reassignments/<C>` | `KafkaReassignmentProgress` | прогресс текущего reassignment воркера (drain/balance: остаток партиций, режим); отсутствие ключа = операции нет |
 
 Неизвестные ключи внутри `/kafka/` — лог + счётчик `unknownKeys`; битый JSON —
 parseError-запись + warning-алерт `kafka-key-malformed` (arch/15 §6).
 
-### 10.2. Мутации панели (8; протоколы — порты §9)
+### 10.2. Мутации панели (10; протоколы — порты §9)
 
 Общие: активный endpoint из kafka-снапшота, имена канонические
 (`^[a-z][a-z0-9_]{0,62}$` — иначе 404), чтение config **напрямую** у etcd
@@ -606,10 +609,12 @@ parseError-запись + warning-алерт `kafka-key-malformed` (arch/15 §6)
 | 2 | **Удаление кластера** `DELETE /api/kafka/clusters/{c}` | PUT config RMW: `state=TO_REMOVE` с сохранением остальных полей (§9.4 один в один: уже TO_REMOVE → 204 без записи) | 404, 503 |
 | 3 | **Изменение default-конфигов** `PUT /api/kafka/clusters/{c}/config` | RMW-txn по `mod_revision`: обновить `replication_factor`/`min_insync_replicas`/`default_partitions`/`default_retention_ms` (границы §10.3); применяет воркер как dynamic broker configs (converge, без рестартов); проигрыш compare → 503 (retry клиентом) | 400, 404, 409 (не Active), 503 |
 | 4 | **Добавление брокера** `POST /api/kafka/clusters/{c}/brokers` | имя генерит сервер `broker<max+1>` (≤9); клэйм-txn `version(brokers/<b>/state)==0` + put `NOT_INITIALIZED` + put resources; сбой → компенсация точечными del `brokers/<b>/` (§9.5-паттерн); поднимает воркер (broker-only, кворум не меняется) | 400, 404, 409 (не Active / имя занято / предел 9), 503 |
-| 5 | **Удаление брокера** `DELETE /api/kafka/clusters/{c}/brokers/{b}` | маркер `brokers/<b>/state=TO_REMOVE` (one-way, идемпотентно; §9.6-паттерн). Серверные пред-проверки (детерминированные, по снапшоту): не `controller` (role-ключ); не последний — иначе 409. Live-проверку размещения реплик панель НЕ делает (в etcd фактических реплик нет, live-проба асинхронна — серверный 409 был бы нестабильным): маркер ставится всегда (204); guard «на брокере есть партиции» авторитетно исполняет воркер (DescribeTopics → journal-ожидание waiting-partitions) — drain непустого брокера до roadmap `t02-kafka-reassignment` | 404, 409 (controller/последний), 503 |
+| 5 | **Удаление брокера** `DELETE /api/kafka/clusters/{c}/brokers/{b}` | маркер `brokers/<b>/state=TO_REMOVE` (one-way, идемпотентно; §9.6-паттерн). Серверные пред-проверки (детерминированные, по снапшоту): не `controller` (role-ключ); не последний — иначе 409. Live-проверку размещения реплик панель НЕ делает (в etcd фактических реплик нет, live-проба асинхронна — серверный 409 был бы нестабильным): маркер ставится всегда (204); guard «на брокере есть партиции» авторитетно исполняет воркер (describe-all → drain процессом I арх/16 §5 → демонтаж продолжится сам) | 404, 409 (controller/последний), 503 |
 | 6 | **Конфиг-заявка топика** `PUT /api/kafka/clusters/{c}/topics/{t}` | RMW-txn по §10.4: read `topics/<t>` → set `desired`/`desired_unix`/`desired_by` → txn compare `mod_revision` → put. Топик должен существовать в реестре и не быть missing (404 иначе); partitions — только больше фактического (400). Без компенсации: неудавшаяся запись не встала — повтор идемпотентен | 400, 404, 409 (не Active), 503 |
 | 7 | **Отмена конфиг-заявки** `DELETE /api/kafka/clusters/{c}/topics/{t}/desired` | RMW-txn: `desired=null` (убрать `desired`/`desired_*`); 404 если заявки нет. Нужна для missing-топиков (после отмены автосинк удалит ключ) и для «передумали» | 404, 409, 503 |
 | 8 | **Ротация app-пароля** `POST /api/kafka/clusters/{c}/app-password/rotate` | клэйм-txn `/kafkaworker/rotations/<C>` `version==0` + put `{"requested_unix","requested_by"}` — §9.8 один в один; исполнение — AppPasswordRotator KafkaWorker (фазы A/B/C); UI-модалка предупреждает о rolling-перезапуске брокеров | 404, 409 (не Active / уже запрошена), 503 |
+| 9 | **Ребалансировка партиций** `POST /api/kafka/clusters/{c}/rebalance` | клэйм-txn `/kafkaworker/rebalances/<C>` `version==0` + put `{"requested_unix","requested_by"}` — протокол ротаций §9.8 один в один; исполнение — PartitionReassigner KafkaWorker (арх/16 §5 I; converge RF к `config.replication_factor`, лидеры сохраняются); UI-модалка предупреждает о переносе данных между брокерами | 404, 409 (не Active / уже запрошена), 503 |
+| 10 | **Отмена ребалансировки** `DELETE /api/kafka/clusters/{c}/rebalance` | del заявки: новые батчи не подаются, уже поданные reassignment-бакеты Kafka доигрывает сама (безопасно — данные не теряются, converge просто останавливается на полпути); 404 если заявки нет | 404, 503 |
 
 ### 10.3. Валидация создания/конфиг-мутации (сервер — источник истины)
 

@@ -431,6 +431,8 @@ select pg_is_in_recovery();
 | `PUT /api/kafka/clusters/{cluster}/topics/{topic}` | конфиг-заявка топика (02 §10.2-6, волна C): тело `KafkaTopicDesiredRequestDto` → 204 \| 400 \| 404 \| 409 \| 503 |
 | `DELETE /api/kafka/clusters/{cluster}/topics/{topic}/desired` | отмена конфиг-заявки (02 §10.2-7, волна C): 204 \| 404 \| 503 |
 | `POST /api/kafka/clusters/{cluster}/app-password/rotate` | заявка ротации app-пароля (02 §10.2-8): без тела → 201+`KafkaPasswordRotatedDto` \| 404 \| 409 \| 503 |
+| `POST /api/kafka/clusters/{cluster}/rebalance` | заявка ребалансировки партиций (02 §10.2-9): без тела → 201+`KafkaRebalanceRequestedDto` \| 404 \| 409 \| 503 |
+| `DELETE /api/kafka/clusters/{cluster}/rebalance` | отмена заявки ребалансировки (02 §10.2-10): 204 \| 404 \| 503 |
 
 `GET /api/alerts` объединяет алерты обоих движков (kind уже различает
 `kafka-*`); `GET /api/overview` получает kafka-сводку (clustersTotal,
@@ -445,7 +447,10 @@ KafkaClusterSummaryDto: name, state(ACTIVE|NOT_INITIALIZED|TO_REMOVE),
 KafkaClusterDto: name, state, replicationFactor, minInSyncReplicas,
     defaultPartitions, defaultRetentionMs, createdUnix, endpoints,
     brokers[KafkaBrokerDto], topics[KafkaTopicDto], groups[KafkaGroupDto]
-    (волна C — из пробы), rotation{requestedUnix, requestedBy}?(nullable)
+    (волна C — из пробы), rotation{requestedUnix, requestedBy}?(nullable),
+    rebalance{requestedUnix, requestedBy}?(nullable),
+    reassignment{mode(DRAIN|BALANCE), drainBroker?, partitionsTotal,
+    partitionsRemaining, updatedUnix}?(nullable — ключа нет = операции нет)
 KafkaBrokerDto: name, state(raw: NOT_INITIALIZED|PROVISIONING|RUNNING|
     UNREACHABLE|REMOVING|TO_REMOVE), role(controller|broker|null — до
     provisioning), cpu, memGi, diskGi (nullable — заявка resources),
@@ -472,6 +477,7 @@ KafkaBrokerAddedDto: cluster, name (сгенерированное broker<k>), c
 KafkaTopicDesiredRequestDto: partitions?, retentionMs?, minInSyncReplicas?
     (хотя бы одно; partitions только > фактического) — волна C
 KafkaPasswordRotatedDto: cluster, requestedUnix, requestedBy
+KafkaRebalanceRequestedDto: cluster, requestedUnix, requestedBy
 ```
 
 ### 7.3. Панели UI
@@ -479,7 +485,7 @@ KafkaPasswordRotatedDto: cluster, requestedUnix, requestedBy
 | Панель | Что показывает |
 |---|---|
 | **KafkaClusters** | список: имя, state-бейдж, брокеры running/всего, топики (кол-во), endpoints (сокращённо), бейдж ротации; кнопка «Создать кластер» → модальная форма §7.3.1 |
-| **KafkaClusterDetails** | шапка: state-бейджи (TO_REMOVE/NOT_INITIALIZED), кнопки «Изменить параметры» (default-конфиги — модал), «Сменить app-пароль» (модал-предупреждение о rolling-перезапуске брокеров; 409 «уже запрошена» — текстом), «Удалить кластер» (красная, подтверждение; при TO_REMOVE скрыты); вкладка **Брокеры**: name/state/role/resources/live, колонка действий «Убрать брокера» (controller/последний — дизейбл с пояснением, серверный 409 текстом; непустой — дизейбл по live-пробе как UX-подсказка: серверного отказа нет, занятый брокер удержит воркер — 02 §10 мутация 5) + кнопка «Добавить брокера» (форма resources); вкладки **Топики** и **Группы** — волна C (до неё — заглушка) |
+| **KafkaClusterDetails** | шапка: state-бейджи (TO_REMOVE/NOT_INITIALIZED), бейдж reassignment («drain broker4: осталось 5/12 партиций» / «ребалансировка: 7/20»), кнопки «Изменить параметры» (default-конфиги — модал), «Сменить app-пароль» (модал-предупреждение о rolling-перезапуске брокеров; 409 «уже запрошена» — текстом), «Перебалансировать» (модал-предупреждение о переносе данных между брокерами; живая заявка — «Отменить ребалансировку»; 409 — текстом), «Удалить кластер» (красная, подтверждение; при TO_REMOVE скрыты); вкладка **Брокеры**: name/state/role/resources/live, колонка действий «Убрать брокера» (controller/последний — дизейбл с пояснением, серверный 409 текстом; непустой — подпись «drain: осталось N партиций» по прогресс-ключу, кнопка активна: воркер сам дренирует и демонтирует) + кнопка «Добавить брокера» (форма resources); вкладки **Топики** и **Группы** — волна C (до неё — заглушка) |
 
 ### 7.3.1. Форма «Создать kafka-кластер»
 
@@ -506,6 +512,8 @@ ProblemDetails в теле формы. Двойной клик — блокир�
 | `kafka-broker-not-running` | critical | Active-кластер, broker state ∉ {RUNNING}, кроме fresh-PROVISIONING (< 60 с) |
 | `kafka-endpoints-missing` | critical | Active без `endpoints` |
 | `kafka-rotation-pending` | info | живая заявка ротации `/kafkaworker/rotations/<C>` |
+| `kafka-rebalance-pending` | info | живая заявка ребалансировки `/kafkaworker/rebalances/<C>` |
+| `kafka-reassignment-stale` | warning | прогресс-ключ `/kafkaworker/reassignments/<C>` жив, но `partitions_remaining` не двигается дольше `ReassignStaleSec` (900) — drain/баланс буксует |
 | `kafka-key-malformed` | warning | kafka-ключ не разобран (parseError) |
 | `kafka-topic-missing-desired` | warning | topics: `missing=true` (волна C) |
 | `kafka-desired-stale` | warning | desired не снят дольше `StaleDesiredSec` (600) — волна C |
