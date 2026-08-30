@@ -12,11 +12,6 @@
   снимает ограничение «desired применим только к существующим топикам»
   (арх-канон 15 §3: missing-топик — заявка не исполнима, создание — только
   CLI/клиентами).
-- **`t02-kafka-reassignment`** — reassignment партиций (drain брокера,
-  ребалансировка); разблокирует удаление непустого брокера (guard G
-  «на брокере есть реплики» — 16 §5 G); требует kafka-reassign-интеграцию
-  (Confluent.Kafka API нет — через AdminClient-обход или kafka-инструменты
-  в контейнере).
 - **`t03-kafka-security`** — TLS (SASL_SSL), ACL/authorization, разделение
   admin/app кредов (арх-канон 16 §2.1: сейчас один per-cluster SASL-кред
   для всех ролей, CONTROLLER-listener PLAINTEXT внутри закрытой сети).
