@@ -44,6 +44,14 @@ public static class NodeEnvBuilder
     public static IReadOnlyDictionary<string, string> Build(NodeEnvSpec spec)
     {
         var users = BuildJaasUsers(spec.AppUser, spec.AppPasswords);
+
+        // Inter-broker: INTERNAL требует SASL и у БРОКЕРА-КЛИЕНТА должны быть
+        // креды — иначе фолловеры не подключаются и ISR проседает до лидера
+        // (вскрыто 3-брокерным e2e волны C). Креды inter НЕ ротируются
+        // (ротация app не должна ломать репликацию) — детерминированный
+        // per-cluster пароль, живёт пересоздания контейнеров; listener доступен
+        // только внутри закрытой сети kfw-net (arch/16 §2.1).
+        var interPassword = InterBrokerPassword(spec.Cluster);
         var env = new Dictionary<string, string>
         {
             // KRaft-идентичность: cluster-id детерминирован из имени кластера —
@@ -66,7 +74,10 @@ public static class NodeEnvBuilder
             ["KAFKA_INTER_BROKER_LISTENER_NAME"] = "INTERNAL",
             ["KAFKA_SASL_ENABLED_MECHANISMS"] = "PLAIN",
             ["KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL"] = "PLAIN", // требует Kafka при SASL на INTERNAL
-            ["KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG"] = Jaas(users),
+            // INTERNAL-JAAS: username/password (клиент inter-broker) + серверные
+            // пользователи (inter и app-креды с окном ротации).
+            ["KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG"] =
+                $"org.apache.kafka.common.security.plain.PlainLoginModule required username=\"inter\" password=\"{interPassword}\" user_inter=\"{interPassword}\" {users};",
             ["KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG"] = Jaas(users),
 
             // Служебные топики: формулы от фактического B (1-брокерный стенд стартует).
@@ -86,6 +97,19 @@ public static class NodeEnvBuilder
         };
 
         return env;
+    }
+
+    // Детерминированный inter-broker-пароль: 32 симв [A-Za-z0-9] из SHA-256
+    // имени кластера (не хранится в etcd: не ротируется, нужен только нодам
+    // кластера внутри kfw-net).
+    public static string InterBrokerPassword(string cluster)
+    {
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes("kafka-inter:" + cluster));
+        const string alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+        var chars = new char[32];
+        for (var i = 0; i < 32; i++)
+            chars[i] = alphabet[hash[i] % alphabet.Length];
+        return new string(chars);
     }
 
     // Детерминированный KRaft cluster-id: 16 байт SHA-256 имени кластера в

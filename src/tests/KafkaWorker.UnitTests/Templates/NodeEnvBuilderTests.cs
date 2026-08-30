@@ -115,6 +115,33 @@ public class NodeEnvBuilderTests
             .And.Contain("user_app2=NewPassword0123456789AbCdEf0");
         dualEnv["KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG"]
             .Should().Contain("user_app=OldPassword0123456789AbCdEf01");
+
+        // Inter-broker-креды (фикс 3-брокерного e2e C5): INTERNAL-JAAS несёт
+        // username/password клиента (broker-as-client) + user_inter; CLIENT —
+        // нет (внешние клиенты не inter). Пароль inter детерминирован и НЕ
+        // ротируется (app-окно его не трогает).
+        var inter = NodeEnvBuilder.InterBrokerPassword(dual.Cluster);
+        dualEnv["KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG"]
+            .Should().Contain($"username=\"inter\" password=\"{inter}\"")
+            .And.Contain($"user_inter=\"{inter}\"");
+        singleEnv["KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG"]
+            .Should().Contain("username=\"inter\"");
+        singleEnv["KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG"]
+            .Should().NotContain("username=");
+    }
+
+    [Fact]
+    public void InterBrokerPassword_DeterministicAndStable()
+    {
+        // Arrange / Act
+        var first = NodeEnvBuilder.InterBrokerPassword("events");
+        var second = NodeEnvBuilder.InterBrokerPassword("events");
+        var other = NodeEnvBuilder.InterBrokerPassword("payments");
+
+        // Assert: стабилен, уникален per-cluster, 32 симв [A-Za-z0-9].
+        first.Should().Be(second);
+        first.Should().NotBe(other);
+        first.Should().HaveLength(32).And.MatchRegex("^[A-Za-z0-9]{32}$");
     }
 
     [Fact]
