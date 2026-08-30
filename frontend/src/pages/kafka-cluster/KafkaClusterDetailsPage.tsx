@@ -10,6 +10,7 @@ import { BrokersTab } from './BrokersTab';
 import { DeleteKafkaClusterButton } from './DeleteKafkaClusterButton';
 import { EditClusterConfigModal } from './EditClusterConfigModal';
 import { GroupsTab } from './GroupsTab';
+import { RebalanceButton } from './RebalanceButton';
 import { RotatePasswordButton } from './RotatePasswordButton';
 import { TopicsTab } from './TopicsTab';
 
@@ -50,11 +51,22 @@ export function KafkaClusterDetailsPage() {
               <Badge color="blue" variant="light">ротация app-пароля</Badge>
             </Tooltip>
           ) : null}
+          {c.reassignment !== null ? (
+            <Tooltip label="reassignment выполняется воркером: перенос реплик батчами">
+              <Badge color="violet" variant="light">
+                {c.reassignment.mode === 'drain'
+                  ? `drain ${c.reassignment.drainBroker ?? ''}`.trim()
+                  : 'ребалансировка'}
+                : осталось {c.reassignment.partitionsRemaining}/{c.reassignment.partitionsTotal} партиций
+              </Badge>
+            </Tooltip>
+          ) : null}
         </Group>
         {active ? (
           <Group gap="sm">
             <EditClusterConfigModal cluster={c} />
             <RotatePasswordButton cluster={c.name} disabled={c.rotation !== null} />
+            <RebalanceButton cluster={c.name} rebalance={c.rebalance} disabled={!active} />
             <DeleteKafkaClusterButton cluster={c.name} />
           </Group>
         ) : null}
@@ -83,7 +95,7 @@ export function KafkaClusterDetailsPage() {
         </SimpleGrid>
       </Card>
 
-      <BrokersTab cluster={c.name} brokers={c.brokersList} canScale={active} />
+      <BrokersTab cluster={c.name} brokers={c.brokersList} canScale={active} reassignment={c.reassignment} />
       <TopicsTab
         cluster={c.name}
         topics={c.topics}

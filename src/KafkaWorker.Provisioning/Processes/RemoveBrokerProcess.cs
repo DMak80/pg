@@ -12,7 +12,8 @@ namespace KafkaWorker.Provisioning.Processes;
 /// <summary>
 /// RemoveBrokerProcess (arch/16 §5 G): маркер brokers/&lt;b&gt;/state=TO_REMOVE →
 /// guards (кластер Active; не controller; не последний; на брокере нет реплик
-/// партиций — по DescribeTopics, иначе journal-ожидание до roadmap t02) →
+/// партиций — по DescribeTopics включая __-топики, иначе journal-ожидание —
+/// drain идёт процессом I (reassign), демонтаж продолжится сам) →
 /// удаление контейнера+тома → del префикса brokers/&lt;b&gt;/ → RMW endpoints
 /// (убрать адрес) → portalloc-фильтрация → journal done. Идемпотентен.
 /// Вызывается только держателем клэйма &lt;C&gt;.
@@ -66,7 +67,7 @@ public sealed class RemoveBrokerProcess(
             {
                 var waiting = await journal.WriteAsync(
                     cluster, Op, "waiting-partitions", claims.InstanceId,
-                    $"на {broker.Name} есть реплики партиций — демонтаж ждёт reassignment (roadmap t02)", ct);
+                    $"на {broker.Name} есть реплики партиций — drain идёт (процесс reassign), демонтаж продолжится сам", ct);
                 return waiting; // не ошибка: следующий тик повторит проверку
             }
 
@@ -107,7 +108,10 @@ public sealed class RemoveBrokerProcess(
 
         var brokerId = BrokerEnvBuilder.NodeId(broker);
         await using var admin = adminFactory.Create(snap.Endpoints, snap.AppUser, snap.AppPassword);
-        var topics = await admin.DescribeTopicsAsync(ct);
+        // Describe-all: guard видит и internal-реплики (__consumer_offsets) —
+        // раньше фильтр __ прятал их и «пустой» брокер демонтировался с
+        // потерей этих реплик (t02 §1, arch/16 §5 I/G).
+        var topics = await admin.DescribeTopicsAsync(includeInternal: true, ct);
         if (!topics.IsSuccess)
             return true; // факт неизвестен — консервативно ждём
 

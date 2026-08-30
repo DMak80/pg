@@ -183,9 +183,12 @@ TopicDoesNotExist = исполнено; отказ между мутацией �
 | `/kafkaworker/portalloc/<C>` | обычный | `{"broker<k>":{"host":"h","client":16001}}` — закрепление клиентских портов (переживает rebuild) |
 | `/kafkaworker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика) |
 | `/kafkaworker/rotations/<C>` | обычный | заявка ротации app-пароля `{"requested_unix","requested_by"}` (панель, клэйм-txn; формат и протокол — pg 02 §9.8) |
+| `/kafkaworker/rebalances/<C>` | обычный | заявка ребалансировки партиций `{"requested_unix","requested_by"}` (панель, клэйм-txn — протокол ротаций; del воркером по завершении или панелью — отмена) |
+| `/kafkaworker/reassignments/<C>` | обычный | прогресс текущего reassignment — пишет только воркер: `{"mode":"drain"\|"balance","drain_broker"?,"partitions_total","partitions_remaining","submitted_unix","updated_unix","instance","last_error"?}`; ключ живёт только во время операции (put при старте, del по завершении — пусто = операции нет) |
 
-Панель читает из `/kafkaworker/` только `rotations/` (очередь ротаций в UI);
-остальные ключи не читает и не пишет.
+Панель читает из `/kafkaworker/` только `rotations/`, `rebalances/`,
+`reassignments/` (очередь ротаций и ребалансировок + прогресс reassignment
+в UI); остальные ключи не читает и не пишет.
 
 ## 5. Клиентский дискавери (приложения)
 
@@ -208,7 +211,7 @@ Puzzle); контракт etcd выше уже содержит всё необ�
 
 | Случай | Поведение |
 |---|---|
-| Битый JSON в значении ключа (`config`, `resources`, `topics/<T>`, `topics/<T>/desired.create`/`desired.delete`, заявка ротации) | ключ пропускается, в снапшот попадает parseError-запись (без исключения), warning-алерт `kafka-key-malformed` |
+| Битый JSON в значении ключа (`config`, `resources`, `topics/<T>`, `topics/<T>/desired.create`/`desired.delete`, заявка ротации/ребалансировки, прогресс reassignment) | ключ пропускается, в снапшот попадает parseError-запись (без исключения), warning-алерт `kafka-key-malformed`; заявка/прогресс с битым JSON для воркера — мусор: reassignment-оператор разбирается по факту Kafka, битый прогресс перезаписывается |
 | Неизвестный ключ внутри `/kafka/` | лог-строка + счётчик `unknownKeys`; парсер не падает. В т.ч. неизвестный leaf под `topics/<T>/` |
 | Active-кластер без `endpoints` | критический алерт `kafka-endpoints-missing` (воркер ещё не дописал / потеря ключа) |
 | `config.state` — незнакомое значение | толерантно: трактуется как Active-ветка с raw-строкой state (state-значения строкой — система развивается) |

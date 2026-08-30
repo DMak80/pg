@@ -207,11 +207,14 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             // 2) старт: тело ответа — application/vnd.docker.raw-stream (мультиплексирован).
             var (stdout, stderr) = await StartExecAsync(exec.Id, ct);
 
-            // 3) exit-код; ненулевой — ошибка со stderr (не выбрасываем его молча).
+            // 3) exit-код; ненулевой — ошибка со stderr И stdout (Kafka-CLI
+            // 4.x печатает диагностику, включая stack trace, в stdout).
             var inspect = await GetAsync<ExecInspectDto>($"/exec/{Uri.EscapeDataString(exec.Id)}/json", ct);
             var exit = inspect?.ExitCode ?? -1;
             if (exit != 0)
-                throw new ApplicationException($"exec {string.Join(' ', cmd)} → exit {exit}: {stderr}");
+                throw new ApplicationException(
+                    $"exec {string.Join(' ', cmd)} → exit {exit}: {stderr}"
+                    + (stdout.Length > 0 ? $" / stdout: {stdout}" : ""));
 
             return stdout;
         });

@@ -98,7 +98,7 @@ public sealed class TopicSyncProcess(
     {
         await using var admin = adminFactory.Create(snap.Endpoints!, snap.AppUser!, snap.AppPassword!);
 
-        var topics = await WithJitterRetryAsync(() => admin.DescribeTopicsAsync(ct));
+        var topics = await WithJitterRetryAsync(() => admin.DescribeTopicsAsync(includeInternal: false, ct));
         if (!topics.IsSuccess)
             return Result<IReadOnlyList<TopicFact>>.Failed(topics.Error!);
 

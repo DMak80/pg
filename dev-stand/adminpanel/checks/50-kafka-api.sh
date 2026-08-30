@@ -38,25 +38,31 @@ wait_clusters() {
 wait_clusters
 echo "  GET /api/kafka/clusters: 2 кластера (events, pending)"
 
-# 1) Сводка: events Active + 3/3 брокеров + ротация; pending NOT_INITIALIZED.
+# 1) Сводка: events Active + 3/3 брокеров + ротация + ребалансировка; pending NOT_INITIALIZED.
 api /api/kafka/clusters | jq -e '
   ([.[] | select(.name=="events")][0].state == "ACTIVE")
    and ([.[] | select(.name=="events")][0].brokersRunning == 3)
    and ([.[] | select(.name=="events")][0].rotationPending == true)
+   and ([.[] | select(.name=="events")][0].rebalancePending == true)
    and ([.[] | select(.name=="pending")][0].state == "NOT_INITIALIZED")' >/dev/null \
-  || { echo "❌ сводка: state/брокеры/ротация"; exit 1; }
-echo "  сводка: events ACTIVE 3/3 + rotationPending, pending NOT_INITIALIZED"
+  || { echo "❌ сводка: state/брокеры/ротация/ребалансировка"; exit 1; }
+echo "  сводка: events ACTIVE 3/3 + rotationPending + rebalancePending, pending NOT_INITIALIZED"
 
-# 2) Детали events: брокеры/topics/заявка ротации (4 строки: 3 факт + виртуальная audit).
+# 2) Детали events: брокеры/topics/заявка ротации + rebalance/reassignment
+#    (4 строки топиков: 3 факт + виртуальная audit).
 api /api/kafka/clusters/events | jq -e '
   (.brokersList | length) == 3
   and ([.brokersList[] | select(.name=="broker1")][0].role == "controller")
   and (.topics | length) == 4
   and ([.topics[] | select(.name=="ghost")][0].missing == true)
   and ([.topics[] | select(.name=="payments")][0].desired.partitions == 12)
-  and (.rotation.requestedBy == "seed")' >/dev/null \
-  || { echo "❌ детали events: brokers/topics/rotation"; exit 1; }
-echo "  детали events: 3 брокера controller, 4 строки топиков (3 факт + виртуальная create), ротация seed"
+  and (.rotation.requestedBy == "seed")
+  and (.rebalance.requestedBy == "seed")
+  and (.reassignment.mode == "drain")
+  and (.reassignment.drainBroker == "broker2")
+  and (.reassignment.partitionsRemaining == 3)' >/dev/null \
+  || { echo "❌ детали events: brokers/topics/rotation/rebalance"; exit 1; }
+echo "  детали events: 3 брокера controller, 4 топика (3 факт + виртуальная create), ротация+ребалансировка seed, drain-прогресс"
 
 # 3) lifecycle: виртуальная строка audit (create) + бейдж delete у orders (t01).
 api /api/kafka/clusters/events | jq -e '
@@ -136,6 +142,21 @@ echo "  DELETE pending -> 204; бейдж TO_REMOVE виден"
 c="$(code -X POST "$BASE/api/kafka/clusters/events/app-password/rotate")"
 [ "$c" = 409 ] || { echo "❌ POST rotate events = $c, ожидался 409 (заявка сида жива)"; exit 1; }
 echo "  POST rotate events (заявка жива) -> 409"
+
+# 12b) Ребалансировка events: заявка уже стоит (сид) → 409; отмена → 204;
+#      повторная отмена → 404; несуществующий кластер → 404.
+c="$(code -X POST "$BASE/api/kafka/clusters/events/rebalance")"
+[ "$c" = 409 ] || { echo "❌ POST rebalance events = $c, ожидался 409 (заявка жива)"; exit 1; }
+echo "  POST rebalance events (заявка жива) -> 409"
+c="$(code -X DELETE "$BASE/api/kafka/clusters/events/rebalance")"
+[ "$c" = 204 ] || { echo "❌ DELETE rebalance events = $c, ожидался 204"; exit 1; }
+echo "  DELETE rebalance events (отмена) -> 204"
+c="$(code -X DELETE "$BASE/api/kafka/clusters/events/rebalance")"
+[ "$c" = 404 ] || { echo "❌ повторный DELETE rebalance = $c, ожидался 404"; exit 1; }
+echo "  повторный DELETE rebalance -> 404"
+c="$(code -X POST "$BASE/api/kafka/clusters/nope/rebalance")"
+[ "$c" = 404 ] || { echo "❌ POST rebalance nope = $c, ожидался 404"; exit 1; }
+echo "  POST rebalance nope (нет кластера) -> 404"
 
 # 13) Алерты: kafka-домен в общей ленте (kafka-rotation-pending: events).
 for i in $(seq 1 15); do

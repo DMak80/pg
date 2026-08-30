@@ -195,6 +195,57 @@ public static class KafkaOperationsModule
             };
         });
 
+        // POST /api/kafka/clusters/{cluster}/rebalance — заявка ребалансировки
+        // партиций (t02, 02 §10.2-9): клэйм-txn по живой заявке.
+        endpoints.MapPost("/api/kafka/clusters/{cluster}/rebalance", async (
+            string cluster, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<RequestKafkaRebalanceCommand, KafkaRebalanceRequestedDto>(
+                new RequestKafkaRebalanceCommand(cluster, user.Identity?.Name ?? "adminpanel"), ct);
+            if (result.IsSuccess)
+                return Results.Created($"/api/kafka/clusters/{cluster}", result.Value);
+
+            return result.Error switch
+            {
+                KafkaClusterNotFoundException => Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound, title: "Cluster not found",
+                    detail: result.Error.Message),
+                KafkaClusterNotActiveException or KafkaRebalanceAlreadyRequestedException => Results.Problem(
+                    statusCode: StatusCodes.Status409Conflict, title: "Rebalance rejected",
+                    detail: result.Error.Message),
+                EtcdWriteUnavailableException or InvalidKafkaConfigException => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
+                    detail: result.Error.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
+                    detail: result.Error!.Message),
+            };
+        });
+
+        // DELETE /api/kafka/clusters/{cluster}/rebalance — отмена ребалансировки
+        // (t02, 02 §10.2-10): новые батчи не подаются, поданные Kafka доиграет.
+        endpoints.MapDelete("/api/kafka/clusters/{cluster}/rebalance", async (
+            string cluster, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<CancelKafkaRebalanceCommand, KafkaRebalanceCancelledDto>(
+                new CancelKafkaRebalanceCommand(cluster), ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return result.Error switch
+            {
+                KafkaClusterNotFoundException or KafkaRebalanceNotFoundException => Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound, title: "Not found",
+                    detail: result.Error.Message),
+                EtcdWriteUnavailableException or InvalidKafkaConfigException => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
+                    detail: result.Error.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
+                    detail: result.Error!.Message),
+            };
+        });
+
         // PUT /api/kafka/clusters/{cluster}/topics/{topic} — конфиг-заявка (02 §10.2-7).
         endpoints.MapPut("/api/kafka/clusters/{cluster}/topics/{topic}", async (
             string cluster, string topic, TopicDesiredRequest request, ClaimsPrincipal user,

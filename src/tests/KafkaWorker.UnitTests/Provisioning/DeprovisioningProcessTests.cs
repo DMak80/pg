@@ -78,6 +78,27 @@ public class DeprovisioningProcessTests
     }
 
     [Fact]
+    public async Task Run_RemovesRebalanceKeys()
+    {
+        // Arrange: живая заявка ребалансировки и прогресс reassignment (t02
+        // §11.9: вечные заявки/прогресс не переживают кластер).
+        var rig = await NewRig((etcd, _) =>
+        {
+            etcd.Seed("/kafkaworker/rebalances/events", """{"requested_unix":1756500123,"requested_by":"ops"}""");
+            etcd.Seed("/kafkaworker/reassignments/events",
+                """{"mode":"drain","drain_broker":"broker2","partitions_total":6,"partitions_remaining":3,"submitted_unix":1756500130,"updated_unix":1756500135,"instance":"x"}""");
+        });
+
+        // Act
+        var result = await rig.Process.RunAsync("events", ["broker1", "broker2"], CancellationToken.None);
+
+        // Assert: оба ключа удалены вместе с остальной координацией.
+        result.IsSuccess.Should().BeTrue();
+        rig.Etcd.Store.Should().NotContainKey("/kafkaworker/rebalances/events");
+        rig.Etcd.Store.Should().NotContainKey("/kafkaworker/reassignments/events");
+    }
+
+    [Fact]
     public async Task Run_SnapshotDelegate_BeforeAndAfter()
     {
         // Arrange: полный демонтаж с snapshot-делегатом.

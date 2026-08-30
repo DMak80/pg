@@ -16,9 +16,10 @@ internal interface IKafkaClusterProcesses
     Task<Result> DeprovisionAsync(KafkaClusterSnapshot snap, CancellationToken ct);
 
     /// <summary>
-    /// Active-ветка (порядок — план B4/C1): надзор (C) → converge (E) →
-    /// scale-проход remove (G) → add (F) → ротация (H) → автосинк топиков (D,
-    /// тик TopicSyncIntervalSec — троттлится внутри процесса).
+    /// Active-ветка (порядок — arch/16 §5): надзор (C) → converge (E) →
+    /// reassignment (I, t02: drain TO_REMOVE + заявки balance) → scale-проход
+    /// remove (G) → add (F) → ротация (H) → автосинк топиков (D, тик
+    /// TopicSyncIntervalSec — троттлится внутри процесса).
     /// </summary>
     Task<Result> ActiveAsync(KafkaClusterSnapshot snap, CancellationToken ct);
 }
@@ -29,6 +30,7 @@ internal sealed class KafkaClusterProcesses(
     DeprovisioningProcess deprovision,
     NodeSupervisor supervisor,
     IClusterConfigConverger converger,
+    PartitionReassignerProcess reassigner,
     RemoveBrokerProcess removeBroker,
     AddBrokerProcess addBroker,
     AppPasswordRotator rotator,
@@ -56,6 +58,12 @@ internal sealed class KafkaClusterProcesses(
             if (!converged.IsSuccess)
                 return converged;
         }
+
+        // Reassignment (I) перед remove: к моменту G дренируемый брокер пуст
+        // (drain TO_REMOVE-кандидатов + заявка balance; arch/16 §5 классификация).
+        var reassigned = await reassigner.RunAsync(snap, ct);
+        if (!reassigned.IsSuccess)
+            return reassigned;
 
         // Scale-проход: сначала демонтаж (G), затем добавление (F) — endpoints
         // не «прыгает» туда-сюда в одном тике.

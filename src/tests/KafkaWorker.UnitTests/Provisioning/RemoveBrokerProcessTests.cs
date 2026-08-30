@@ -165,6 +165,30 @@ public class RemoveBrokerProcessTests
     }
 
     [Fact]
+    public async Task HasPartitions_учитывает_internal_топики()
+    {
+        // Arrange: broker3 broker-only TO_REMOVE, реплики ТОЛЬКО в
+        // __consumer_offsets — guard обязан видеть internal-реплики и не
+        // отпускать брокер мимо drain (регресс t02 §1, фикс describe-all).
+        var rig = await NewRig();
+        ReadyCluster(rig.Admin, 4);
+        rig.Etcd.Seed("/kafka/clusters/events/brokers/broker3/role", "broker");
+        rig.Etcd.Seed("/kafka/clusters/events/brokers/broker3/state", "TO_REMOVE");
+        rig.Admin.Topics = [new KafkaTopicView("__consumer_offsets", 1, [[1, 2, 3]])];
+
+        // Act
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: демонтажа нет, journal waiting-partitions. Фейк не фильтрует
+        // __-топики (фильтрация живёт в реальном адаптере, Task 1.2) — тест
+        // фиксирует контракт guard'а; реальный describe-all подтверждает T7.1.
+        result.IsSuccess.Should().BeTrue();
+        rig.Driver.Removed.Should().BeEmpty();
+        var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
+        state.Value!.Phase.Should().Be("waiting-partitions");
+    }
+
+    [Fact]
     public async Task Run_RepeatAfterRemoval_IdempotentDone()
     {
         // Arrange: первый прогон демонтировал broker4; маркер исчез вместе с ключами.

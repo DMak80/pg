@@ -1,0 +1,6 @@
+[
+  {"key": "/kafkaworker/reassignments/events", "value": "{\"mode\":\"drain\",\"drain_broker\":\"broker4\",\"partitions_total\":12,\"partitions_remaining\":5,\"submitted_unix\":1750000210,\"updated_unix\":1750000215,\"instance\":\"w1\"}", "modRevision": 63},
+  {"key": "/kafkaworker/reassignments/shop", "value": "{\"mode\":\"balance\",\"partitions_total\":8,\"partitions_remaining\":0,\"submitted_unix\":1750000310,\"updated_unix\":1750000320,\"instance\":\"w2\"}", "modRevision": 64},
+  {"key": "/kafkaworker/reassignments/nofields", "value": "{\"partitions_total\":8}", "modRevision": 65},
+  {"key": "/kafkaworker/reassignments/broken", "value": "{oops", "modRevision": 66}
+]

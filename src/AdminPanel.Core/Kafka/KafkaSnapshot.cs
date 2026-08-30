@@ -11,6 +11,8 @@ public sealed record KafkaSnapshot(
     int ConsecutiveFailures,
     IReadOnlyList<KafkaClusterInfo> Clusters,
     IReadOnlyList<KafkaRotationTicket> Rotations,   // /kafkaworker/rotations/ (arch/15 §4)
+    IReadOnlyList<KafkaRebalanceTicket> Rebalances, // /kafkaworker/rebalances/ (t02, arch/15 §4)
+    IReadOnlyList<KafkaReassignmentProgress> Reassignments, // /kafkaworker/reassignments/ (t02)
     IReadOnlyList<ProbeResult> Probes,              // live-проба DescribeCluster (B6+)
     IReadOnlyList<Alert> Alerts,                    // KafkaAlertEngine (arch/03 §7.4)
     IReadOnlyList<KeyParseError> ParseErrors,       // битые JSON kafka-ключей (arch/15 §6)
@@ -104,3 +106,19 @@ public sealed record KafkaTopicLifecycleTicket(
     short? MinInSyncReplicas,
     long RequestedUnix,
     string? RequestedBy);
+
+/// <summary>Заявка ребалансировки /kafkaworker/rebalances/&lt;C&gt; (arch/15 §4, t02).</summary>
+public sealed record KafkaRebalanceTicket(string Cluster, long RequestedUnix, string? RequestedBy);
+
+/// <summary>
+/// Прогресс reassignment /kafkaworker/reassignments/&lt;C&gt; (arch/15 §4, t02);
+/// отсутствие ключа = операции нет.
+/// </summary>
+public sealed record KafkaReassignmentProgress(
+    string Cluster,
+    string Mode,
+    string? DrainBroker,
+    int PartitionsTotal,
+    int PartitionsRemaining,
+    long UpdatedUnix,
+    string? LastError);

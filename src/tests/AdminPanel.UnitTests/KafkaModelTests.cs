@@ -1,5 +1,6 @@
 using AdminPanel.Core;
 using AdminPanel.Core.Kafka;
+using Inspection = AdminPanel.Api.Inspection;
 using FluentAssertions;
 using Xunit;
 using KafkaMappers = AdminPanel.Api.Inspection.KafkaMappers;
@@ -83,6 +84,8 @@ public class KafkaModelTests
                 ]),
         ],
         Rotations: [new KafkaRotationTicket("events", 1750000200, "admin")],
+        Rebalances: [],
+        Reassignments: [],
         Probes: [],
         Alerts: [],
         ParseErrors: [new KeyParseError("/kafka/clusters/x/config", "bad json")],
@@ -113,7 +116,7 @@ public class KafkaMappersLifecycleTests
             ]);
 
         // Act
-        var dto = KafkaMappers.MapDetails(cluster, []);
+        var dto = KafkaMappers.MapDetails(cluster, [], [], []);
 
         // Assert: delete — бейдж у существующей строки orders; audit —
         // виртуальная строка с факт-полями null/0 и параметрами в lifecycle.
@@ -153,7 +156,7 @@ public class KafkaMappersLifecycleTests
             ]);
 
         // Act
-        var dto = KafkaMappers.MapDetails(cluster, []);
+        var dto = KafkaMappers.MapDetails(cluster, [], [], []);
 
         // Assert
         dto.Topics.Should().BeEmpty();
@@ -181,7 +184,7 @@ public class KafkaMappersLifecycleTests
             ]);
 
         // Act: не бросает (ToDictionary на дубликате ронял GET в 500).
-        var dto = KafkaMappers.MapDetails(cluster, []);
+        var dto = KafkaMappers.MapDetails(cluster, [], [], []);
 
         // Assert: один бейдж; delete авторитетен (arch/15 §3.1 — delete
         // доминирует, create чистится воркером) — оператор видит/отменяет его.
@@ -208,7 +211,7 @@ public class KafkaMappersLifecycleTests
             ]);
 
         // Act
-        var dto = KafkaMappers.MapDetails(cluster, []);
+        var dto = KafkaMappers.MapDetails(cluster, [], [], []);
 
         // Assert: строк не добавлено (delete-виртуальных строк нет, спека §5.3),
         // читатель не упал.
@@ -230,9 +233,77 @@ public class KafkaMappersLifecycleTests
             ]);
 
         // Act
-        var dto = KafkaMappers.MapDetails(cluster, []);
+        var dto = KafkaMappers.MapDetails(cluster, [], [], []);
 
         // Assert
         dto.Topics.Single().Lifecycle.Should().BeNull();
+    }
+}
+
+// Маппинг rebalance/reassignment в DTO деталей и сводки (t02, 03 §7.2).
+public class KafkaRebalanceDtoMappingTests
+{
+    private static KafkaClusterInfo Cluster(string name = "events")
+        => new(
+            name, KafkaClusterState.Active,
+            Brokers: 3, ReplicationFactor: 3, MinInSyncReplicas: 2, DefaultPartitions: 12,
+            DefaultRetentionMs: 604800000, CreatedUnix: 1756500000,
+            Endpoints: "host.docker.internal:16001",
+            BrokersList: [new KafkaBrokerInfo("broker1", "RUNNING", "controller", 2m, 4, 40)],
+            Topics: []);
+
+    [Fact]
+    public void MapDetails_WithTicketAndProgress_FillsFields()
+    {
+        // Arrange: заявка ребалансировки + drain-прогресс кластера events.
+        var rebalances = new[] { new KafkaRebalanceTicket("events", 1750000200, "admin") };
+        var reassignments = new[]
+        {
+            new KafkaReassignmentProgress("events", "drain", "broker4", 12, 5, 1750000215, null),
+        };
+
+        // Act
+        var dto = Inspection.KafkaMappers.MapDetails(Cluster(), [], rebalances, reassignments);
+
+        // Assert: DTO-поля заполнены по join-имени кластера.
+        dto.Rebalance.Should().NotBeNull();
+        dto.Rebalance!.RequestedUnix.Should().Be(1750000200);
+        dto.Rebalance.RequestedBy.Should().Be("admin");
+        dto.Reassignment.Should().NotBeNull();
+        dto.Reassignment!.Mode.Should().Be("drain");
+        dto.Reassignment.DrainBroker.Should().Be("broker4");
+        dto.Reassignment.PartitionsTotal.Should().Be(12);
+        dto.Reassignment.PartitionsRemaining.Should().Be(5);
+        dto.Reassignment.UpdatedUnix.Should().Be(1750000215);
+    }
+
+    [Fact]
+    public void MapDetails_NoTicketNoProgress_NullFields()
+    {
+        // Arrange: ни заявки, ни прогресса (чужой кластер в списках не мешает).
+        var rebalances = new[] { new KafkaRebalanceTicket("shop", 1750000300, "ops") };
+        var reassignments = new[]
+        {
+            new KafkaReassignmentProgress("shop", "balance", null, 8, 0, 1750000320, null),
+        };
+
+        // Act
+        var dto = Inspection.KafkaMappers.MapDetails(Cluster(), [], rebalances, reassignments);
+
+        // Assert: null = операции нет (03 §7.2).
+        dto.Rebalance.Should().BeNull();
+        dto.Reassignment.Should().BeNull();
+    }
+
+    [Fact]
+    public void MapSummary_RebalancePendingFlag()
+    {
+        // Arrange / Act: сводка с живой заявкой и без.
+        var pending = Inspection.KafkaMappers.MapSummary(Cluster(), rotationPending: false, rebalancePending: true);
+        var idle = Inspection.KafkaMappers.MapSummary(Cluster(), rotationPending: false, rebalancePending: false);
+
+        // Assert
+        pending.RebalancePending.Should().BeTrue();
+        idle.RebalancePending.Should().BeFalse();
     }
 }

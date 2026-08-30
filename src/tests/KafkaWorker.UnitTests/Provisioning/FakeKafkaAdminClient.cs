@@ -13,6 +13,11 @@ public sealed class FakeKafkaAdminClient : IKafkaAdminClient
 {
     public KafkaClusterView? ClusterView;
     public IReadOnlyList<KafkaTopicView>? Topics;
+
+    // ISR топиков (по имени): подставляется в view при describe; null — ISR
+    // не задан (semantics «данных о USR нет», HasUnderReplicated → false).
+    public IReadOnlyDictionary<string, IReadOnlyList<IReadOnlyList<int>>>? Isr;
+
     public IReadOnlyDictionary<string, string>? BrokerConfigs = new Dictionary<string, string>();
     public Exception? ClusterError;
     public Exception? TopicsError;
@@ -44,14 +49,21 @@ public sealed class FakeKafkaAdminClient : IKafkaAdminClient
                 ? Result<KafkaClusterView>.Success(ClusterView)
                 : Result<KafkaClusterView>.Failed(new ApplicationException("cluster not ready")));
 
-    public Task<Result<IReadOnlyList<KafkaTopicView>>> DescribeTopicsAsync(CancellationToken ct)
+    // Флаг includeInternal фейк игнорирует: фильтрация __-топиков живёт в
+    // реальном адаптере (KafkaAdminClient), фейк отдаёт Topics как есть.
+    public Task<Result<IReadOnlyList<KafkaTopicView>>> DescribeTopicsAsync(bool includeInternal, CancellationToken ct)
     {
         CallLog.Add("describe-topics");
         return TopicsError is not null
             ? Task.FromResult(Result<IReadOnlyList<KafkaTopicView>>.Failed(TopicsError))
             : Task.FromResult(Result<IReadOnlyList<KafkaTopicView>>.Success(
-                Topics ?? []));
+                (Topics ?? []).Select(WithIsr).ToList()));
     }
+
+    private KafkaTopicView WithIsr(KafkaTopicView view)
+        => Isr is not null && Isr.TryGetValue(view.Topic, out var isr)
+            ? view with { IsrPerPartition = isr }
+            : view;
 
     public Task<Result<IReadOnlyDictionary<string, string>>> DescribeBrokerConfigsAsync(int brokerId, CancellationToken ct)
         => Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Success(

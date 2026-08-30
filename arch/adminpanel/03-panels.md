@@ -435,6 +435,8 @@ select pg_is_in_recovery();
 | `DELETE /api/kafka/clusters/{cluster}/topics/{topic}` | удаление топика — lifecycle-заявка (02 §10.2-10, t01; идемпотентен): 204 \| 404 \| 409 \| 503 |
 | `DELETE /api/kafka/clusters/{cluster}/topics/{topic}/desired.create` | отмена заявки создания (02 §10.2-11, t01): 204 \| 404 \| 409 \| 503 |
 | `DELETE /api/kafka/clusters/{cluster}/topics/{topic}/desired.delete` | отмена заявки удаления (02 §10.2-12, t01; окно деструктивности): 204 \| 404 \| 409 \| 503 |
+| `POST /api/kafka/clusters/{cluster}/rebalance` | заявка ребалансировки партиций (02 §10.2-13, t02): без тела → 201+`KafkaRebalanceRequestedDto` \| 404 \| 409 \| 503 |
+| `DELETE /api/kafka/clusters/{cluster}/rebalance` | отмена заявки ребалансировки (02 §10.2-14, t02): 204 \| 404 \| 503 |
 
 `GET /api/alerts` объединяет алерты обоих движков (kind уже различает
 `kafka-*`); `GET /api/overview` получает kafka-сводку (clustersTotal,
@@ -445,11 +447,15 @@ clustersCritical — critical-алерты `kafka-broker-not-running`/
 
 ```text
 KafkaClusterSummaryDto: name, state(ACTIVE|NOT_INITIALIZED|TO_REMOVE),
-    brokersTotal, brokersRunning, topicsCount, endpoints, rotationPending(bool)
+    brokersTotal, brokersRunning, topicsCount, endpoints,
+    rotationPending(bool), rebalancePending(bool)
 KafkaClusterDto: name, state, replicationFactor, minInSyncReplicas,
     defaultPartitions, defaultRetentionMs, createdUnix, endpoints,
     brokers[KafkaBrokerDto], topics[KafkaTopicDto], groups[KafkaGroupDto]
-    (волна C — из пробы), rotation{requestedUnix, requestedBy}?(nullable)
+    (волна C — из пробы), rotation{requestedUnix, requestedBy}?(nullable),
+    rebalance{requestedUnix, requestedBy}?(nullable),
+    reassignment{mode(drain|balance), drainBroker?, partitionsTotal,
+    partitionsRemaining, updatedUnix}?(nullable — ключа нет = операции нет)
 KafkaBrokerDto: name, state(raw: NOT_INITIALIZED|PROVISIONING|RUNNING|
     UNREACHABLE|REMOVING|TO_REMOVE), role(controller|broker|null — до
     provisioning), cpu, memGi, diskGi (nullable — заявка resources),
@@ -484,6 +490,7 @@ CreateTopicRequestDto: name, partitions?(1..1000 def config.default_partitions),
     retentionMs?(1..2147483647 опц.), minInSyncReplicas?(1..RF опц.)
     — валидация 02 §10.3 (t01)
 KafkaTopicCreatedDto: cluster, topic, partitions, replicationFactor (t01)
+KafkaRebalanceRequestedDto: cluster, requestedUnix, requestedBy (t02)
 ```
 
 ### 7.3. Панели UI
@@ -491,7 +498,7 @@ KafkaTopicCreatedDto: cluster, topic, partitions, replicationFactor (t01)
 | Панель | Что показывает |
 |---|---|
 | **KafkaClusters** | список: имя, state-бейдж, брокеры running/всего, топики (кол-во), endpoints (сокращённо), бейдж ротации; кнопка «Создать кластер» → модальная форма §7.3.1 |
-| **KafkaClusterDetails** | шапка: state-бейджи (TO_REMOVE/NOT_INITIALIZED), кнопки «Изменить параметры» (default-конфиги — модал), «Сменить app-пароль» (модал-предупреждение о rolling-перезапуске брокеров; 409 «уже запрошена» — текстом), «Удалить кластер» (красная, подтверждение; при TO_REMOVE скрыты); вкладка **Брокеры**: name/state/role/resources/live, колонка действий «Убрать брокера» (controller/последний — дизейбл с пояснением, серверный 409 текстом; непустой — дизейбл по live-пробе как UX-подсказка: серверного отказа нет, занятый брокер удержит воркер — 02 §10 мутация 5) + кнопка «Добавить брокера» (форма resources); вкладка **Топики** (t01): кнопка «Создать топик» (модал: name/partitions/RF/retention/minISR, дефолты из config кластера, клиентская валидация-зеркало 02 §10.3), per-row бейджи lifecycle-заявок («создание: N партиций, RF R» / «удаление…» + возраст/автор) с кнопкой «Отменить заявку», красная per-row «Удалить топик» (подтверждение с вводом имени топика: «данные будут удалены безвозвратно; заявка исполнится в течение ~15 с, до этого можно отменить»); create-заявка без факт-ключа — «виртуальная» строка (факт-поля `—`, параметры в бейдже); подпись: «создание/удаление топиков — заявками панели; внешние изменения (CLI/клиенты) подхватываются автосинком»; `canMutate` = Active; вкладка **Группы** — волна C (до неё — заглушка) |
+| **KafkaClusterDetails** | шапка: state-бейджи (TO_REMOVE/NOT_INITIALIZED), бейдж reassignment («drain broker4: осталось 5/12 партиций» / «ребалансировка: 7/20»), кнопки «Изменить параметры» (default-конфиги — модал), «Сменить app-пароль» (модал-предупреждение о rolling-перезапуске брокеров; 409 «уже запрошена» — текстом), «Перебалансировать» (модал-предупреждение о переносе данных между брокерами; живая заявка — «Отменить ребалансировку»; 409 — текстом), «Удалить кластер» (красная, подтверждение; при TO_REMOVE скрыты); вкладка **Брокеры**: name/state/role/resources/live, колонка действий «Убрать брокера» (controller/последний — дизейбл с пояснением, серверный 409 текстом; непустой — подпись «drain: осталось N партиций» по прогресс-ключу, кнопка активна: воркер сам дренирует и демонтирует) + кнопка «Добавить брокера» (форма resources); вкладка **Топики** (t01): кнопка «Создать топик» (модал: name/partitions/RF/retention/minISR, дефолты из config кластера, клиентская валидация-зеркало 02 §10.3), per-row бейджи lifecycle-заявок («создание: N партиций, RF R» / «удаление…» + возраст/автор) с кнопкой «Отменить заявку», красная per-row «Удалить топик» (подтверждение с вводом имени топика: «данные будут удалены безвозвратно; заявка исполнится в течение ~15 с, до этого можно отменить»); create-заявка без факт-ключа — «виртуальная» строка (факт-поля `—`, параметры в бейдже); подпись: «создание/удаление топиков — заявками панели; внешние изменения (CLI/клиенты) подхватываются автосинком»; `canMutate` = Active; вкладка **Группы** — волна C (до неё — заглушка) |
 
 ### 7.3.1. Форма «Создать kafka-кластер»
 
@@ -518,6 +525,8 @@ ProblemDetails в теле формы. Двойной клик — блокир�
 | `kafka-broker-not-running` | critical | Active-кластер, broker state ∉ {RUNNING}, кроме fresh-PROVISIONING (< 60 с) |
 | `kafka-endpoints-missing` | critical | Active без `endpoints` |
 | `kafka-rotation-pending` | info | живая заявка ротации `/kafkaworker/rotations/<C>` |
+| `kafka-rebalance-pending` | info | живая заявка ребалансировки `/kafkaworker/rebalances/<C>` |
+| `kafka-reassignment-stale` | warning | прогресс-ключ `/kafkaworker/reassignments/<C>` жив, но `partitions_remaining` не двигается дольше `ReassignStaleSec` (900) — drain/баланс буксует |
 | `kafka-key-malformed` | warning | kafka-ключ не разобран (parseError) |
 | `kafka-topic-missing-desired` | warning | topics: `missing=true` (волна C) |
 | `kafka-desired-stale` | warning | desired не снят дольше `StaleDesiredSec` (600) — волна C |

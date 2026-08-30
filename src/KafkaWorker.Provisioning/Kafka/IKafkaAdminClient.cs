@@ -22,11 +22,15 @@ public enum TopicDeleteOutcome
 }
 
 // Факт топика из DescribeTopics: партиции и реплики каждой партиции — данные
-// для guard'а RemoveBroker «на брокере нет реплик» (arch/16 §5 G).
+// для guard'а RemoveBroker «на брокере нет реплик» (arch/16 §5 G) и планов
+// reassigner'а (arch/16 §5 I). IsrPerPartition — ISR каждой партиции
+// (USR-критерий завершения drain, spec t02 §5.2 D4); опционален (= null —
+// «ISR не задан», фейк без ISR): реальный адаптер заполняет всегда.
 public sealed record KafkaTopicView(
     string Topic,
     int Partitions,
-    IReadOnlyList<IReadOnlyList<int>> ReplicasPerPartition);
+    IReadOnlyList<IReadOnlyList<int>> ReplicasPerPartition,
+    IReadOnlyList<IReadOnlyList<int>>? IsrPerPartition = null);
 
 /// <summary>
 /// Seam-интерфейс Kafka-доступа воркера (паттерн Puzzle §7: без Confluent-типов
@@ -39,8 +43,11 @@ public interface IKafkaAdminClient : IAsyncDisposable
     // DescribeCluster: брокеры (id, host) + id контроллера; кластер не поднят → Failed.
     Task<Result<KafkaClusterView>> DescribeClusterAsync(CancellationToken ct);
 
-    // DescribeTopics: все топики с партициями и репликами (волнам B/C).
-    Task<Result<IReadOnlyList<KafkaTopicView>>> DescribeTopicsAsync(CancellationToken ct);
+    // DescribeTopics: топики с партициями, репликами и ISR. includeInternal:
+    // false — без __-топиков (TopicSync D: реестр ведёт только юзер-топики);
+    // true — все топики, включая __ (reassigner I: drain internal-реплик и
+    // guard G по describe-all, arch/16 §5 I/G).
+    Task<Result<IReadOnlyList<KafkaTopicView>>> DescribeTopicsAsync(bool includeInternal, CancellationToken ct);
 
     // Dynamic broker configs конкретного брокера: name → value (только заданные).
     Task<Result<IReadOnlyDictionary<string, string>>> DescribeBrokerConfigsAsync(int brokerId, CancellationToken ct);

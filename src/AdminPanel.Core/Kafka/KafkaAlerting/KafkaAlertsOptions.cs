@@ -16,4 +16,8 @@ public class KafkaAlertsOptions
 
     // kafka-group-lag-high (волна C): порог totalLag группы в сообщениях.
     public long GroupLagMessages { get; set; } = 100000;
+
+    // kafka-reassignment-stale (t02): partitions_remaining не двигается дольше
+    // N секунд — reassignment буксует.
+    public int ReassignStaleSec { get; set; } = 900;
 }

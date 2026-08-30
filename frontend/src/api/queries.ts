@@ -21,6 +21,7 @@ import type {
   KafkaTopicCreatedDto,
   CreateTopicRequestDto,
   KafkaPasswordRotatedDto,
+  KafkaRebalanceRequestedDto,
   TopicDesiredDto,
   TopicDesiredRequestDto,
   HaScopeSummaryDto,
@@ -208,6 +209,22 @@ export function rotateKafkaPassword(cluster: string): Promise<KafkaPasswordRotat
   return apiFetch<KafkaPasswordRotatedDto>(
     `/api/kafka/clusters/${encodeURIComponent(cluster)}/app-password/rotate`,
     { method: 'POST' });
+}
+
+// POST /api/kafka/clusters/{cluster}/rebalance — заявка ребалансировки
+// партиций (t02, arch/02 §10.2-9): перенос реплик выполняет KafkaWorker.
+export function requestKafkaRebalance(cluster: string): Promise<KafkaRebalanceRequestedDto> {
+  return apiFetch<KafkaRebalanceRequestedDto>(
+    `/api/kafka/clusters/${encodeURIComponent(cluster)}/rebalance`,
+    { method: 'POST' });
+}
+
+// DELETE /api/kafka/clusters/{cluster}/rebalance — отмена ребалансировки
+// (t02, arch/02 §10.2-10): новые батчи не подаются, поданные Kafka доиграет.
+export async function cancelKafkaRebalance(cluster: string): Promise<void> {
+  await apiFetch<void>(
+    `/api/kafka/clusters/${encodeURIComponent(cluster)}/rebalance`,
+    { method: 'DELETE' });
 }
 
 // PUT /api/kafka/clusters/{cluster}/topics/{topic} — конфиг-заявка топика

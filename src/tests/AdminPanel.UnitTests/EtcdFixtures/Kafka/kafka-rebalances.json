@@ -1,0 +1,5 @@
+[
+  {"key": "/kafkaworker/rebalances/events", "value": "{\"requested_unix\":1750000200,\"requested_by\":\"admin\"}", "modRevision": 60},
+  {"key": "/kafkaworker/rebalances/shop", "value": "{\"requested_unix\":1750000300}", "modRevision": 61},
+  {"key": "/kafkaworker/rebalances/broken", "value": "{oops", "modRevision": 62}
+]
