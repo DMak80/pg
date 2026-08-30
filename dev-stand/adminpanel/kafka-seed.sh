@@ -44,6 +44,12 @@ put /kafka/clusters/events/topics/payments \
 put /kafka/clusters/events/topics/ghost \
   '{"partitions":3,"replication_factor":1,"configs":{"retention.ms":"604800000"},"desired":{"configs":{"retention.ms":"86400000"}},"desired_unix":1750000200,"desired_by":"admin","synced_unix":1750000300,"missing":true}'
 
+# lifecycle-заявки (t01, arch/15 §3.1): create без факт-ключа + delete на живой orders
+put /kafka/clusters/events/topics/audit/desired.create \
+  '{"partitions":12,"replication_factor":3,"configs":{"retention.ms":"86400000"},"requested_unix":1756501200,"requested_by":"seed"}'
+put /kafka/clusters/events/topics/orders/desired.delete \
+  '{"requested_unix":1756501300,"requested_by":"seed"}'
+
 # Живая заявка ротации (чистится только исполнением/удалением кластера — A10)
 put /kafkaworker/rotations/events \
   "{\"requested_unix\":$now,\"requested_by\":\"seed\"}"
