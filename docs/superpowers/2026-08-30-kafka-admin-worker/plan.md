@@ -475,9 +475,9 @@ public sealed record KafkaRotationTicket(string Cluster, long RequestedUnix, str
 **Файлы:** Modify `src/AdminPanel.Probes/AdminPanel.Probes.csproj` (+PackageReference), `src/AdminPanel.Probes/ModuleExtensions.cs`; Create `src/AdminPanel.Probes/Kafka/{KafkaProbe.cs,KafkaProbeOptions.cs}` (+ wired: отдельный тик 15 c, пишет в KafkaSnapshotStore); Test `src/tests/AdminPanel.UnitTests/ProbesKafka/{KafkaProbeTests.cs}` (fake AdminClient seam — вынести `IKafkaProbeClient` по образцу проб pg).
 
 **Действие (шаги):**
-- [ ] 1. `KafkaProbeOptions`: `Enabled=true`, `Interval=15 c`, `Timeout=3 c`; HostMap-резолюция endpoints (переиспользовать `HostMapResolver`; на стенде `host.docker.internal:<port>` → `localhost:<port>` — симметрия advertised-паттерна A2/A13).
-- [ ] 2. Проба per-кластер: bootstrap из `endpoints`, SASL из `app_user`/`app_password` (панель читает из etcd — добавить чтение в `KafkaSnapshotRefresher`: поля в `KafkaClusterInfo` НЕ попадают, отдельный internal-словарь стора); результат: brokers(id/host/controller/live) + error → `ProbeResult` (kind `kafka`).
-- [ ] 3. Тесты (AAA): маппинг адресов HostMap; ошибка → ProbeResult.Error, etcd-часть жива; пароль в ProbeResult отсутствует.
+- [x] 1. `KafkaProbeOptions`: `Enabled=true`, `Interval=15 c`, `Timeout=3 c`; HostMap-резолюция endpoints (переиспользовать `HostMapResolver`; на стенде `host.docker.internal:<port>` → `localhost:<port>` — симметрия advertised-паттерна A2/A13).
+- [x] 2. Проба per-кластер: bootstrap из `endpoints`, SASL из `app_user`/`app_password` (панель читает из etcd — добавить чтение в `KafkaSnapshotRefresher`: поля в `KafkaClusterInfo` НЕ попадают, отдельный internal-словарь стора); результат: brokers(id/host/controller/live) + error → `ProbeResult` (kind `kafka`).
+- [x] 3. Тесты (AAA): маппинг адресов HostMap; ошибка → ProbeResult.Error, etcd-часть жива; пароль в ProbeResult отсутствует.
 
 **Выход:** live-данные брокеров в панели.
 **Проверка:** юнит — зелёный; сборка 0 warnings.
