@@ -108,9 +108,16 @@ public sealed class AddBrokerProcess(
             if (!busy.IsSuccess)
                 return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(busy.Error!);
 
-            var plan = PlacementPlanner.Plan([.. addresses.Keys, .. missing], hosts.Value);
+            // План — ТОЛЬКО новые ноды (порт PgWorker AddShard): собственные порты
+            // живых контейнеров числятся в busy и при полном плане аллокатор счёл бы
+            // их «занятыми» и перевыделил (рассинхрон portalloc/endpoints/контейнера).
+            // Закреплённые адреса при этом исключаются из кандидатов явно.
+            var plan = PlacementPlanner.Plan(missing, hosts.Value);
+            var taken = new HashSet<(string Host, int Port)>(busy.Value);
+            foreach (var addr in addresses.Values)
+                taken.Add((addr.Host, addr.ClientPort));
             var allocated = PortAllocator.Allocate(
-                plan, addresses, busy.Value, options.PortFrom, options.PortTo);
+                plan, addresses, taken, options.PortFrom, options.PortTo);
             if (!allocated.IsSuccess)
                 return allocated;
             foreach (var (node, addr) in allocated.Value)

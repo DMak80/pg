@@ -139,6 +139,29 @@ public class AddBrokerProcessTests
     }
 
     [Fact]
+    public async Task Run_PinnedBrokerPortBusyByOwnContainer_NotReallocated()
+    {
+        // Arrange: broker1 закреплён на 16000 и его контейнер публикует порт —
+        // busy содержит (h1,16000); заявка broker4 (регрессия: полный план
+        // перевыделял broker1 на 16001 и рассинхронил portalloc/endpoints).
+        var rig = await NewRig();
+        rig.Driver.BusyPorts = new HashSet<(string, int)> { ("h1", 16000), ("h1", 16001), ("h1", 16002) };
+        SeedPendingBroker(rig.Etcd);
+        ReadyCluster(rig.Admin, 4);
+
+        // Act
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: broker1 остался на 16000; broker4 — следующий свободный.
+        result.IsSuccess.Should().BeTrue();
+        var portAlloc = rig.Etcd.Store["/kafkaworker/portalloc/events"].Value;
+        portAlloc.Should().Contain("\"broker1\":{\"host\":\"h1\",\"client\":16000}");
+        portAlloc.Should().Contain("broker4");
+        rig.Etcd.Store["/kafka/clusters/events/endpoints"].Value
+            .Should().StartWith("h1:16000");
+    }
+
+    [Fact]
     public async Task Run_NoPendingBrokers_NoOp()
     {
         // Arrange: Active-кластер без заявок.
