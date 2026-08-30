@@ -434,3 +434,102 @@ public class RotateKafkaPasswordCommandTests
         result.Error.Should().BeOfType<KafkaClusterNotActiveException>();
     }
 }
+
+// ===== Rebalance: заявка и отмена ребалансировки (t02, 02 §10.2-9/10) =====
+
+public class RebalanceCommandTests
+{
+    private static RequestKafkaRebalanceCommandHandler Handler(FakeKafkaEtcd etcd)
+        => new(StoreWithEndpoint(), etcd);
+
+    private static CancelKafkaRebalanceCommandHandler CancelHandler(FakeKafkaEtcd etcd)
+        => new(StoreWithEndpoint(), etcd);
+
+    [Fact]
+    public async Task RequestRebalance_ActiveCluster_ClaimsTicket()
+    {
+        // Arrange: Active-кластер без живой заявки.
+        var etcd = new FakeKafkaEtcd();
+        SeedActiveCluster(etcd);
+
+        // Act
+        var result = await Handler(etcd).Handle(
+            new RequestKafkaRebalanceCommand("events", "admin"), CancellationToken.None);
+
+        // Assert: заявка /kafkaworker/rebalances/events через клэйм-txn.
+        result.IsSuccess.Should().BeTrue();
+        result.Value.RequestedBy.Should().Be("admin");
+        etcd.Store["/kafkaworker/rebalances/events"].Value
+            .Should().Contain("\"requested_by\":\"admin\"");
+        etcd.Txns.Should().Contain(t => t.Compares.Any(c =>
+            c.Key == "/kafkaworker/rebalances/events" && c.Version == 0));
+    }
+
+    [Fact]
+    public async Task RequestRebalance_TicketAlreadyLive_409()
+    {
+        // Arrange: заявка уже стоит — панель не перезаписывает.
+        var etcd = new FakeKafkaEtcd();
+        SeedActiveCluster(etcd);
+        etcd.Seed("/kafkaworker/rebalances/events",
+            """{"requested_unix":1750000200,"requested_by":"ops"}""");
+
+        // Act
+        var result = await Handler(etcd).Handle(
+            new RequestKafkaRebalanceCommand("events", "admin"), CancellationToken.None);
+
+        // Assert
+        result.Error.Should().BeOfType<KafkaRebalanceAlreadyRequestedException>();
+        etcd.Store["/kafkaworker/rebalances/events"].Value.Should().Contain("ops");
+    }
+
+    [Fact]
+    public async Task RequestRebalance_NotActive_409()
+    {
+        // Arrange: кластер удаляется.
+        var etcd = new FakeKafkaEtcd();
+        SeedActiveCluster(etcd);
+        etcd.Seed("/kafka/clusters/events/config",
+            etcd.Store["/kafka/clusters/events/config"].Value.Replace("}", ",\"state\":\"TO_REMOVE\"}"));
+
+        // Act
+        var result = await Handler(etcd).Handle(
+            new RequestKafkaRebalanceCommand("events", "admin"), CancellationToken.None);
+
+        // Assert
+        result.Error.Should().BeOfType<KafkaClusterNotActiveException>();
+    }
+
+    [Fact]
+    public async Task CancelRebalance_RemovesTicket()
+    {
+        // Arrange: живая заявка.
+        var etcd = new FakeKafkaEtcd();
+        SeedActiveCluster(etcd);
+        etcd.Seed("/kafkaworker/rebalances/events",
+            """{"requested_unix":1750000200,"requested_by":"ops"}""");
+
+        // Act
+        var result = await CancelHandler(etcd).Handle(
+            new CancelKafkaRebalanceCommand("events"), CancellationToken.None);
+
+        // Assert: заявка снята (поданные батчи Kafka доиграет сама).
+        result.IsSuccess.Should().BeTrue();
+        etcd.Store.Should().NotContainKey("/kafkaworker/rebalances/events");
+    }
+
+    [Fact]
+    public async Task CancelRebalance_NoTicket_404()
+    {
+        // Arrange: пустой etcd.
+        var etcd = new FakeKafkaEtcd();
+        SeedActiveCluster(etcd);
+
+        // Act
+        var result = await CancelHandler(etcd).Handle(
+            new CancelKafkaRebalanceCommand("events"), CancellationToken.None);
+
+        // Assert
+        result.Error.Should().BeOfType<KafkaRebalanceNotFoundException>();
+    }
+}
