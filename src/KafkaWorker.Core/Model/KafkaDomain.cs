@@ -44,6 +44,28 @@ public sealed record KafkaTopicReg(
     long? SyncedUnix,
     bool Missing);
 
+/// <summary>Операции lifecycle-заявки топика (arch/15 §3.1).</summary>
+public static class TopicLifecycleOps
+{
+    public const string Create = "create";
+    public const string Delete = "delete";
+}
+
+/// <summary>
+/// Lifecycle-заявка топика (leaf-ключ topics/&lt;T&gt;/desired.create|delete,
+/// arch/15 §3.1): create — параметры создания (configs — начальные, управляемые),
+/// delete — только аудит. RequestedUnix обязателен (панель пишет аудит всегда;
+/// образец толерантности — KafkaRotationTicket панели).
+/// </summary>
+public sealed record TopicLifecycleTicket(
+    string Topic,
+    string Op,
+    int Partitions,
+    short? ReplicationFactor,
+    IReadOnlyDictionary<string, string>? Configs,
+    long RequestedUnix,
+    string? RequestedBy);
+
 /// <summary>
 /// Снимок кластера после разбора префикса: config + брокеры + топики;
 /// Endpoints/AppUser/AppPassword — дискавери-поля (arch/15 §2/§5), читаются
@@ -58,4 +80,5 @@ public sealed record KafkaClusterSnapshot(
     int UnknownKeys,
     string? Endpoints = null,
     string? AppUser = null,
-    string? AppPassword = null);
+    string? AppPassword = null,
+    IReadOnlyList<TopicLifecycleTicket>? LifecycleTickets = null);

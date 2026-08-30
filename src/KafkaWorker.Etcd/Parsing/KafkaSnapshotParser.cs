@@ -29,6 +29,7 @@ public static class KafkaSnapshotParser
         public string? AppPassword;
         public readonly Dictionary<string, BrokerAcc> Brokers = [];
         public readonly List<(string Topic, string Raw)> TopicRaw = [];
+        public readonly List<(string Topic, string Op, string Raw)> LifecycleRaw = [];
         public readonly List<string> Errors = [];
         public int UnknownKeys;
     }
@@ -92,6 +93,12 @@ public static class KafkaSnapshotParser
                     acc.TopicRaw.Add((segments[5], kv.Value));
                     break;
 
+                case "topics" when segments.Length == 7
+                    && segments[5].Length > 0
+                    && segments[6] is "desired.create" or "desired.delete":
+                    acc.LifecycleRaw.Add((segments[5], segments[6] == "desired.create" ? TopicLifecycleOps.Create : TopicLifecycleOps.Delete, kv.Value));
+                    break;
+
                 default:
                     // система развивается — неизвестный ключ не ошибка: счётчик unknownKeys.
                     acc.UnknownKeys++;
@@ -123,7 +130,12 @@ public static class KafkaSnapshotParser
             acc.UnknownKeys,
             acc.Endpoints,
             acc.AppUser,
-            acc.AppPassword);
+            acc.AppPassword,
+            acc.LifecycleRaw
+                .OrderBy(t => t.Topic, StringComparer.Ordinal)
+                .Select(t => BuildLifecycleTicket(acc.Name, t.Topic, t.Op, t.Raw, acc.Errors))
+                .OfType<TopicLifecycleTicket>()
+                .ToList());
 
     private static KafkaClusterConfig ParseConfig(string cluster, string? raw, List<string> errors)
     {
@@ -228,6 +240,39 @@ public static class KafkaSnapshotParser
         {
             errors.Add($"/kafka/clusters/{cluster}/topics/{topic}: битый JSON топика");
             return new KafkaTopicReg(topic, 0, null, null, null, null, null, null, false);
+        }
+    }
+
+    // Lifecycle-заявка topics/<T>/desired.{create,delete} (arch/15 §3.1):
+    // толерантный разбор; битый JSON или отсутствие requested_unix → parseError,
+    // null (заявка битая — воркер не исполняет).
+    private static TopicLifecycleTicket? BuildLifecycleTicket(
+        string cluster, string topic, string op, string raw, List<string> errors)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            var root = doc.RootElement;
+            var requestedUnix = ReadLong(root, "requested_unix");
+            if (requestedUnix is null)
+            {
+                errors.Add($"/kafka/clusters/{cluster}/topics/{topic}/desired.{op}: нет поля requested_unix");
+                return null;
+            }
+
+            return new TopicLifecycleTicket(
+                topic,
+                op,
+                ReadInt(root, "partitions") ?? 0,
+                (short?)ReadInt(root, "replication_factor"),
+                ReadConfigs(root),
+                requestedUnix.Value,
+                ReadString(root, "requested_by"));
+        }
+        catch (JsonException)
+        {
+            errors.Add($"/kafka/clusters/{cluster}/topics/{topic}/desired.{op}: битый JSON заявки");
+            return null;
         }
     }
 
