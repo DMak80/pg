@@ -114,9 +114,14 @@ public static class KafkaMappers
 
         // Мерж lifecycle-тикетов (t01): delete/create — к существующей строке;
         // create без топика — «виртуальная» строка: факт-поля null/0 (спека
-        // §5.3), параметры — только в lifecycle-части.
+        // §5.3), параметры — только в lifecycle-части. Коллизия заявок на один
+        // топик (etcd-мусор, arch/15 §3.1) — не ошибка читателя (arch/15 §6):
+        // один бейдж, delete авторитетен (доминирует, create чистит воркер).
         var lifecycleByTopic = (cluster.LifecycleTickets ?? [])
-            .ToDictionary(t => t.Topic, StringComparer.Ordinal);
+            .GroupBy(t => t.Topic, StringComparer.Ordinal)
+            .ToDictionary(
+                g => g.Key,
+                g => g.FirstOrDefault(t => t.Op == "delete") ?? g.First());
         var topics = cluster.Topics
             .Select(t => new KafkaTopicDto(
                 t.Name, t.Partitions, t.ReplicationFactor, t.RetentionMs, t.MinInSyncReplicas,

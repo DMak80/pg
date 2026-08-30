@@ -160,6 +160,62 @@ public class KafkaMappersLifecycleTests
     }
 
     [Fact]
+    public void MapDetails_CollidingCreateAndDeleteTickets_NoThrowDeleteBadgeWins()
+    {
+        // Arrange: обе заявки живы на один топик (etcd-мусор, arch/15 §3.1 —
+        // панельные клэймы txn на РАЗНЫЕ ключи, гонка двух API-запросов) при
+        // живом факт-ключе: читатель обязан терпеть (arch/15 §6).
+        var cluster = new KafkaClusterInfo(
+            "events", KafkaClusterState.Active, 1, 1, 1, 12, 604800000, 1756500000,
+            "host.docker.internal:16001",
+            [new KafkaBrokerInfo("broker1", "RUNNING", "controller", 2m, 4, 40)],
+            Topics:
+            [
+                new KafkaTopicInfo("orders", 12, 3, 604800000L, 2,
+                    Desired: null, Missing: false, SyncedUnix: 1750000100),
+            ],
+            LifecycleTickets:
+            [
+                new KafkaTopicLifecycleTicket("orders", "create", 6, 1, null, null, 1750000000, "a"),
+                new KafkaTopicLifecycleTicket("orders", "delete", null, null, null, null, 1750000100, "b"),
+            ]);
+
+        // Act: не бросает (ToDictionary на дубликате ронял GET в 500).
+        var dto = KafkaMappers.MapDetails(cluster, []);
+
+        // Assert: один бейдж; delete авторитетен (arch/15 §3.1 — delete
+        // доминирует, create чистится воркером) — оператор видит/отменяет его.
+        dto.Topics.Should().ContainSingle().Which.Name.Should().Be("orders");
+        dto.Topics.Single().Lifecycle!.Op.Should().Be("delete");
+        dto.Topics.Single().Lifecycle!.RequestedBy.Should().Be("b");
+    }
+
+    [Fact]
+    public void MapDetails_CollidingTicketsWithoutTopic_SingleVirtualDeleteRow()
+    {
+        // Arrange: коллизия заявок на топик БЕЗ факт-ключа (пересоздание
+        // отсутствующего + параллельное удаление) — виртуальная create-строка
+        // не строится: авторитетный delete рендерится, исключений нет.
+        var cluster = new KafkaClusterInfo(
+            "events", KafkaClusterState.Active, 1, 1, 1, 12, 604800000, 1756500000,
+            "host.docker.internal:16001",
+            [new KafkaBrokerInfo("broker1", "RUNNING", "controller", 2m, 4, 40)],
+            Topics: [],
+            LifecycleTickets:
+            [
+                new KafkaTopicLifecycleTicket("audit", "create", 12, 3, null, null, 1750000000, "a"),
+                new KafkaTopicLifecycleTicket("audit", "delete", null, null, null, null, 1750000100, "b"),
+            ]);
+
+        // Act
+        var dto = KafkaMappers.MapDetails(cluster, []);
+
+        // Assert: строк не добавлено (delete-виртуальных строк нет, спека §5.3),
+        // читатель не упал.
+        dto.Topics.Should().BeEmpty();
+    }
+
+    [Fact]
     public void MapDetails_NoTickets_LifecycleNull()
     {
         // Arrange: заявок нет.
