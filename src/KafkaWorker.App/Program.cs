@@ -75,6 +75,26 @@ builder.Services.AddSingleton(sp => new RebalanceHandler(
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<TimeProvider>()));
 
+// Топиковые мутации (arch/02 §10.2-6,7,9..12; task etcd-via-worker-api).
+builder.Services.AddSingleton(sp => new UpdateTopicDesiredHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton(sp => new DeleteDesiredHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
+builder.Services.AddSingleton(sp => new CreateTopicHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton(sp => new DeleteTopicHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton(sp => new CancelLifecycleHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
+
 // docker: драйвер по режиму (Plain: таблица Hosts; Swarm: manager endpoint).
 builder.Services.AddSingleton<DockerEngineFactory>();
 builder.Services.AddSingleton<IClusterDriver>(sp =>

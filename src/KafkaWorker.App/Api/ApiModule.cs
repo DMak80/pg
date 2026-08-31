@@ -177,11 +177,7 @@ public static class ApiModule
         endpoints.MapPost("/api/kafka/clusters/{cluster}/app-password/rotate", async (
             string cluster, HttpRequest http, RotateAppPasswordHandler handler, CancellationToken ct) =>
         {
-            var requestedBy = http.Headers.TryGetValue("X-Requested-By", out var by)
-                && !string.IsNullOrWhiteSpace(by)
-                ? by.ToString()
-                : "api";
-            var result = await handler.HandleAsync(cluster, requestedBy, ct);
+            var result = await handler.HandleAsync(cluster, RequestedBy(http), ct);
             if (result.IsSuccess)
                 return Results.Created((string?)null, result.Value);
 
@@ -208,11 +204,7 @@ public static class ApiModule
         endpoints.MapPost("/api/kafka/clusters/{cluster}/rebalance", async (
             string cluster, HttpRequest http, RebalanceHandler handler, CancellationToken ct) =>
         {
-            var requestedBy = http.Headers.TryGetValue("X-Requested-By", out var by)
-                && !string.IsNullOrWhiteSpace(by)
-                ? by.ToString()
-                : "api";
-            var result = await handler.RequestAsync(cluster, requestedBy, ct);
+            var result = await handler.RequestAsync(cluster, RequestedBy(http), ct);
             if (result.IsSuccess)
                 return Results.Created((string?)null, result.Value);
 
@@ -256,6 +248,186 @@ public static class ApiModule
             };
         });
 
+        // PUT /api/kafka/clusters/{cluster}/topics/{topic} — конфиг-заявка
+        // (§10.2-6). desired_by — заголовок X-Requested-By, fallback "api".
+        endpoints.MapPut("/api/kafka/clusters/{cluster}/topics/{topic}", async (
+            string cluster, string topic, TopicDesiredRequest request, HttpRequest http,
+            UpdateTopicDesiredHandler handler, CancellationToken ct) =>
+        {
+            var requestedBy = RequestedBy(http);
+            var result = await handler.HandleAsync(cluster, topic, request, requestedBy, ct);
+            if (result.IsSuccess)
+                return Results.Ok(result.Value);
+
+            return result.Error switch
+            {
+                KafkaValidationException validation => Results.Problem(
+                    statusCode: StatusCodes.Status400BadRequest,
+                    title: "Validation failed",
+                    detail: result.Error.Message,
+                    extensions: new Dictionary<string, object?>
+                    {
+                        ["errors"] = validation.Errors.ToDictionary(e => e.Field, e => new[] { e.Message }),
+                    }),
+                KafkaClusterNotFoundException or KafkaTopicNotFoundException => Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound, title: "Not found",
+                    detail: result.Error.Message),
+                KafkaClusterNotActiveException => Results.Problem(
+                    statusCode: StatusCodes.Status409Conflict, title: "Cluster not active",
+                    detail: result.Error.Message),
+                KafkaConcurrentWriteException => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Concurrent write",
+                    detail: result.Error.Message),
+                EtcdWriteUnavailableException or InvalidKafkaConfigException or InvalidKafkaTopicKeyException
+                    => Results.Problem(
+                        statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
+                        detail: result.Error.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
+                    detail: result.Error!.Message),
+            };
+        });
+
+        // DELETE /api/kafka/clusters/{cluster}/topics/{topic}/desired — отмена
+        // конфиг-заявки (§10.2-7): desired=null RMW.
+        endpoints.MapDelete("/api/kafka/clusters/{cluster}/topics/{topic}/desired", async (
+            string cluster, string topic, DeleteDesiredHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleAsync(cluster, topic, ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return result.Error switch
+            {
+                KafkaClusterNotFoundException or KafkaTopicNotFoundException
+                    or KafkaTopicDesiredNotFoundException => Results.Problem(
+                        statusCode: StatusCodes.Status404NotFound, title: "Not found",
+                        detail: result.Error.Message),
+                KafkaClusterNotActiveException => Results.Problem(
+                    statusCode: StatusCodes.Status409Conflict, title: "Cluster not active",
+                    detail: result.Error.Message),
+                KafkaConcurrentWriteException => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Concurrent write",
+                    detail: result.Error.Message),
+                EtcdWriteUnavailableException or InvalidKafkaConfigException or InvalidKafkaTopicKeyException
+                    => Results.Problem(
+                        statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
+                        detail: result.Error.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
+                    detail: result.Error!.Message),
+            };
+        });
+
+        // POST /api/kafka/clusters/{cluster}/topics — создание топика (§10.2-9);
+        // requested_by заявки — заголовок X-Requested-By, fallback "api".
+        endpoints.MapPost("/api/kafka/clusters/{cluster}/topics", async (
+            string cluster, CreateTopicRequest request, HttpRequest http,
+            CreateTopicHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleAsync(cluster, request, RequestedBy(http), ct);
+            if (result.IsSuccess)
+                return Results.Created((string?)null, result.Value);
+
+            return result.Error switch
+            {
+                KafkaValidationException validation => Results.Problem(
+                    statusCode: StatusCodes.Status400BadRequest,
+                    title: "Validation failed",
+                    detail: result.Error.Message,
+                    extensions: new Dictionary<string, object?>
+                    {
+                        ["errors"] = validation.Errors.ToDictionary(e => e.Field, e => new[] { e.Message }),
+                    }),
+                KafkaClusterNotFoundException or KafkaTopicNotFoundException => Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound, title: "Not found",
+                    detail: result.Error.Message),
+                KafkaClusterNotActiveException or KafkaTopicExistsException
+                    or KafkaLifecyclePendingException or KafkaDesiredPendingException => Results.Problem(
+                        statusCode: StatusCodes.Status409Conflict, title: "Topic create rejected",
+                        detail: result.Error.Message),
+                EtcdWriteUnavailableException or InvalidKafkaConfigException or InvalidKafkaTopicKeyException
+                    => Results.Problem(
+                        statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
+                        detail: result.Error.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
+                    detail: result.Error!.Message),
+            };
+        });
+
+        // DELETE /api/kafka/clusters/{cluster}/topics/{topic} — удаление топика
+        // (§10.2-10): клэйм desired.delete; идемпотентен.
+        endpoints.MapDelete("/api/kafka/clusters/{cluster}/topics/{topic}", async (
+            string cluster, string topic, HttpRequest http, DeleteTopicHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleAsync(cluster, topic, RequestedBy(http), ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return result.Error switch
+            {
+                KafkaClusterNotFoundException or KafkaTopicNotFoundException => Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound, title: "Not found",
+                    detail: result.Error.Message),
+                KafkaClusterNotActiveException or KafkaLifecyclePendingException
+                    or KafkaDesiredPendingException => Results.Problem(
+                        statusCode: StatusCodes.Status409Conflict, title: "Topic delete rejected",
+                        detail: result.Error.Message),
+                EtcdWriteUnavailableException or InvalidKafkaConfigException or InvalidKafkaTopicKeyException
+                    => Results.Problem(
+                        statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
+                        detail: result.Error.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
+                    detail: result.Error!.Message),
+            };
+        });
+
+        // DELETE .../desired.create и .../desired.delete — отмена lifecycle-заявок
+        // (§10.2-11/12): успех → 204 (общая ветка, порт панельного модуля).
+        endpoints.MapDelete("/api/kafka/clusters/{cluster}/topics/{topic}/desired.create", async (
+            string cluster, string topic, CancelLifecycleHandler handler, CancellationToken ct) =>
+            await CancelTopicLifecycleAsync(cluster, topic, "create", handler, ct));
+        endpoints.MapDelete("/api/kafka/clusters/{cluster}/topics/{topic}/desired.delete", async (
+            string cluster, string topic, CancelLifecycleHandler handler, CancellationToken ct) =>
+            await CancelTopicLifecycleAsync(cluster, topic, "delete", handler, ct));
+
         return endpoints;
+    }
+
+    // Имя оператора из заголовка X-Requested-By (панель шлёт на прокси-мутациях);
+    // fallback "api" — тот же источник, что ClaimsPrincipal у панели (spec §3.7).
+    private static string RequestedBy(HttpRequest http)
+        => http.Headers.TryGetValue("X-Requested-By", out var by)
+            && !string.IsNullOrWhiteSpace(by)
+            ? by.ToString()
+            : "api";
+
+    // Общий хендлер отмены lifecycle-заявок (§10.2-11/12): успех → 204.
+    private static async Task<IResult> CancelTopicLifecycleAsync(
+        string cluster, string topic, string op, CancelLifecycleHandler handler, CancellationToken ct)
+    {
+        var result = await handler.HandleAsync(cluster, topic, op, ct);
+        if (result.IsSuccess)
+            return Results.NoContent();
+
+        return result.Error switch
+        {
+            KafkaClusterNotFoundException or KafkaTopicNotFoundException
+                or KafkaLifecycleNotFoundException => Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound, title: "Not found",
+                    detail: result.Error.Message),
+            KafkaClusterNotActiveException => Results.Problem(
+                statusCode: StatusCodes.Status409Conflict, title: "Cluster not active",
+                detail: result.Error.Message),
+            EtcdWriteUnavailableException or InvalidKafkaConfigException or InvalidKafkaTopicKeyException
+                => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
+                    detail: result.Error.Message),
+            _ => Results.Problem(
+                statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
+                detail: result.Error!.Message),
+        };
     }
 }
