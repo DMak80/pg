@@ -5,20 +5,22 @@ namespace PgWorker.Core.Model;
 
 /// <summary>
 /// Формат значения /pgworker/portalloc/&lt;C&gt; (spec §4.3, arch/14 §3):
-/// плоский lowercase-JSON {"&lt;shard&gt;/&lt;node&gt;":{host,pg,patroni,doorman}}
-/// — единый контракт для процессов, панели-диагностики и тестов.
+/// плоский lowercase-JSON {"&lt;shard&gt;/&lt;node&gt;":{host,pg,patroni,doorman,object}}
+/// — единый контракт для процессов, панели-диагностики и тестов; object — имя
+/// docker-контейнера усыновлённой ноды (arch/14 §2.4), отсутствует у канонических.
 /// </summary>
 public sealed record PortallocEntry(
     [property: JsonPropertyName("host")] string Host,
     [property: JsonPropertyName("pg")] int Pg,
     [property: JsonPropertyName("patroni")] int Patroni,
-    [property: JsonPropertyName("doorman")] int Doorman)
+    [property: JsonPropertyName("doorman")] int Doorman,
+    [property: JsonPropertyName("object")] string? Object = null)
 {
     public NodeAddress ToAddress()
-        => new(Host, new NodePorts(Pg, Patroni, Doorman));
+        => new(Host, new NodePorts(Pg, Patroni, Doorman), Object);
 
     public static PortallocEntry From(NodeAddress address)
-        => new(address.Host, address.Ports.Pg, address.Ports.Patroni, address.Ports.Doorman);
+        => new(address.Host, address.Ports.Pg, address.Ports.Patroni, address.Ports.Doorman, address.Object);
 }
 
 /// <summary>Сериализация словаря portalloc в контрактный плоский формат.</summary>

@@ -68,8 +68,10 @@ public sealed record ClusterSnapshot(ClusterConfig Config, IReadOnlyList<ShardSp
 /// <summary>Тройка портов ноды, выделенная аллокатором (pg/patroni/doorman).</summary>
 public sealed record NodePorts(int Pg, int Patroni, int Doorman);
 
-/// <summary>Адрес ноды: docker-хост + выделенные host-порты.</summary>
-public sealed record NodeAddress(string Host, NodePorts Ports);
+/// <summary>Адрес ноды: docker-хост + выделенные host-порты; Object — имя
+/// фактического docker-контейнера усыновлённой ноды (arch/14 §2.4/§5 J),
+/// null = каноническая pgw-нода нашего провижининга.</summary>
+public sealed record NodeAddress(string Host, NodePorts Ports, string? Object = null);
 
 /// <summary>Адреса etcd (http://host:2379) — для lease-скрипта мастер-ключа ноды.</summary>
 public sealed record EtcdEndpoints(IReadOnlyList<string> Http);
