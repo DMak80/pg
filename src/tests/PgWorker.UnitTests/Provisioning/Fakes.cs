@@ -306,6 +306,8 @@ internal static class Fakes
         public readonly List<(string Dsn, string Sql)> Scalars = [];
         public readonly List<(string Dsn, string DbName)> EnsuredDatabases = [];
         public Func<Result>? ExecuteResult { get; set; }
+        public Func<string, Result>? ExecuteResultByDsn { get; set; }
+        public Func<string, Result<object?>>? ScalarResultByDsn { get; set; }
         public Action<string>? OnExecute { get; set; }
 
         public Task<Result> ExecuteAsync(string dsn, string sql, CancellationToken ct)
@@ -316,7 +318,8 @@ internal static class Fakes
             }
 
             OnExecute?.Invoke(dsn);
-            return Task.FromResult(ExecuteResult is { } f ? f() : Result.Success());
+            return Task.FromResult(ExecuteResultByDsn is { } byDsn ? byDsn(dsn)
+                : ExecuteResult is { } f ? f() : Result.Success());
         }
 
         public Task<Result<object?>> ExecuteScalarAsync(string dsn, string sql, CancellationToken ct)
@@ -326,7 +329,8 @@ internal static class Fakes
                 Scalars.Add((dsn, sql)); // t06: гварды ролей идут скалярами — трекаем их
             }
 
-            return Task.FromResult(Result<object?>.Success(null));
+            return Task.FromResult(ScalarResultByDsn is { } byDsn ? byDsn(dsn)
+                : Result<object?>.Success(null));
         }
 
         public Task<Result> EnsureDatabaseAsync(string dsn, string dbname, CancellationToken ct)

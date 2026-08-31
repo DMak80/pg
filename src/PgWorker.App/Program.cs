@@ -118,6 +118,7 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ShardProbe>(),
+    sp.GetRequiredService<ISqlExecutor>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     new ProcessThresholds(sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.NodeDeadSec,
