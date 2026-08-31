@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Подъём полного стенда (profile full) и приведение в рабочее состояние:
-# реплики, sync-standby, инвентарь схем (spec t10 §7.1).
+# Подъём полного стенда (профили full + kafka) и приведение в рабочее
+# состояние: реплики, sync-standby, инвентарь схем (spec t10 §7.1), живой
+# kafkaworker. Управление кафкой входит в стенд всегда (не только e2e-гейтом):
+# без воркера kafka-домен панели глух — отсюда «глупые» алерты и разборы.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -9,8 +11,8 @@ for bin in docker jq curl; do
   command -v "$bin" >/dev/null || { echo "❌ нет $bin в PATH"; exit 1; }
 done
 
-echo ">>> поднимаю стенд (docker compose --profile full up -d --build)"
-docker compose --profile full up -d --build 2>&1 | tail -5
+echo ">>> поднимаю стенд (docker compose --profile full --profile kafka up -d --build)"
+docker compose --profile full --profile kafka up -d --build 2>&1 | tail -5
 
 ect() { docker compose exec -T etcd etcdctl --endpoints=http://localhost:2379 "$@"; }
 # Запрос — только через -c: позиционный аргумент psql трактуется как DBNAME
@@ -119,4 +121,15 @@ schemas "$master1" "0 2 4 6 8 10 12 14"
 schemas "$master2" "1 5 9 13 15"
 echo "  инвентарь: 8 схем на $master1, 5 на $master2"
 
-echo "✓ стенд поднят"
+# 7) kafkaworker жив: heartbeat /kafkaworker/instances/* (lease TTL — ключ
+#    исчезает со смертью воркера). Сид (чек 50) с живым воркером несовместим —
+#    прогон 50-го сам останавливает воркера перед наливкой сида.
+for i in $(seq 1 60); do
+  [ -n "$(ect get /kafkaworker/instances/ --prefix --keys-only 2>/dev/null | head -1)" ] && break
+  sleep 1
+done
+[ -n "$(ect get /kafkaworker/instances/ --prefix --keys-only 2>/dev/null | head -1)" ] \
+  || { echo "❌ kafkaworker не ожил за 60 c (docker compose logs kafkaworker)"; exit 1; }
+echo "  kafkaworker жив (heartbeat /kafkaworker/instances/*)"
+
+echo "✓ стенд поднят (PG + kafka)"

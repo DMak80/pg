@@ -10,8 +10,8 @@
 dotnet run --project src/AdminPanel.Api
 
 # терминал 2 — стенд
-cd dev-stand/adminpanel && checks/00-up.sh        # full: etcd+seed+2 PG-шарда+эмуляторы
-# или: docker compose up -d            # quick: только etcd+сид (без PG/проб)
+cd dev-stand/adminpanel && checks/00-up.sh        # full: etcd+seed+2 PG-шарда+эмуляторы+kafkaworker
+# или: docker compose up -d            # quick: только etcd+сид (без PG/kafka)
 
 open http://localhost:5050
 ```
@@ -25,15 +25,16 @@ open http://localhost:5050
 | quick (по умолчанию) | etcd + seed | цикл бэкенд-разработки: API/алерты на сиде; Patroni/SQL-пробы закономерно падают (нод нет) |
 | full | + s1a/s1b, s2a/s2b, hc1a/hc1b, hc2a/hc2b | live-пробы, failover, e2e |
 | seed | + kafka-seed (разовый) | kafka-домен: 2 кластера `/kafka/` для чека `50-kafka-api.sh` (API на статике) |
-| kafka | + kafkaworker | живой воркер: e2e полного цикла kafka (чек `55-kafka-e2e.sh`, волна C) |
+| kafka | + kafkaworker | живой воркер: управление кафкой; входит в полный подъём `00-up.sh` (full+kafka) всегда; e2e — чек `55-kafka-e2e.sh` (волна C) |
 
 ⚠️ **kafka-профили не смешивать**: `--profile seed` и `--profile kafka`
 одновременно не поднимать. Сид выглядит для живого воркера как заявки
 (`pending` → provisioning, `events`-RUNNING без контейнеров →
-supervisor-пересоздания, заявка ротации → journal-fail). Сид поднимается
-разово: `docker compose --profile seed run --rm kafka-seed` (идемпотентен);
-e2e-гейты (`55-kafka-e2e.sh`) идут на чистом `/kafka/` (контроль:
-`etcdctl get /kafka/ --prefix --keys-only` пусто до старта).
+supervisor-пересоздания, заявка ротации → journal-fail). Чек `50-kafka-api.sh`
+сам останавливает поднятого `00-up.sh` воркера перед наливкой сида. Сид
+поднимается разово: `docker compose --profile seed run --rm kafka-seed`
+(идемпотентен); e2e-гейты (`55-kafka-e2e.sh`) идут на чистом `/kafka/`
+(контроль: `etcdctl get /kafka/ --prefix --keys-only` пусто до старта).
 
 ## Kafka-чеки
 

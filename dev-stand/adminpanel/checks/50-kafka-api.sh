@@ -11,6 +11,11 @@ BASE="${ADMINPANEL_URL:-http://localhost:5050}"
 JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
 
 # Arrange: сид kafka-домена (идемпотентен; ошибки «профиль не поднимался» нет).
+# Живой воркер (поднимается 00-up.sh всегда) с сидом несовместим — seed/kafka
+# не смешивать (README): сид для воркера выглядит заявками. Останавливаем
+# поднятого; обратно — 90-down.sh -v && 00-up.sh (сид из etcd уходит с томом).
+docker compose --profile kafka stop kafkaworker >/dev/null 2>&1 || true
+echo "  kafkaworker остановлен (если был поднят: сид и живой воркер несовместимы)"
 echo ">>> активирую kafka-сид (docker compose --profile seed run --rm kafka-seed)"
 docker compose --profile seed run --rm kafka-seed
 
