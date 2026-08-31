@@ -1,3 +1,4 @@
+using AdminPanel.Core;
 using AdminPanel.Core.Kafka;
 using AdminPanel.Core.Kafka.KafkaAlerting;
 using AdminPanel.Etcd.Client;
@@ -78,8 +79,9 @@ public sealed class KafkaSnapshotRefresher(
         var rotationsKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Rotations, ct);
         var rebalancesKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Rebalances, ct);
         var reassignmentsKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Reassignments, ct);
+        var workerApiKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApi, ct);
         if (!clustersKv.IsSuccess || !rotationsKv.IsSuccess
-            || !rebalancesKv.IsSuccess || !reassignmentsKv.IsSuccess)
+            || !rebalancesKv.IsSuccess || !reassignmentsKv.IsSuccess || !workerApiKv.IsSuccess)
             return FailTick(previous, now, "KV-чтения etcd не удались");
 
         _activeEndpoint = active;
@@ -89,6 +91,7 @@ public sealed class KafkaSnapshotRefresher(
         var rotations = KafkaParser.ParseRotations(rotationsKv.Value);
         var rebalances = KafkaParser.ParseRebalances(rebalancesKv.Value);
         var reassignments = KafkaParser.ParseReassignments(reassignmentsKv.Value);
+        var workerApi = WorkerEndpointsParser.Parse(workerApiKv.Value);
 
         // SASL-креды для проб (B6): в модель кластера НЕ попадают (arch/02 §10.1) —
         // отдельный internal-словарь стора.
@@ -102,9 +105,11 @@ public sealed class KafkaSnapshotRefresher(
             rotations.Tickets,
             rebalances.Tickets,
             reassignments.Progress,
+            workerApi.Endpoints,
             previous?.Probes ?? [],       // пробы переживают отказ etcd (симметрия pg spec §4.3)
             Alerts: [],
-            [.. clusters.Errors, .. rotations.Errors, .. rebalances.Errors, .. reassignments.Errors],
+            [.. clusters.Errors, .. rotations.Errors, .. rebalances.Errors, .. reassignments.Errors,
+                .. workerApi.Errors],
             clusters.UnknownKeyCount);
 
         store.Replace(built with { Alerts = alertEngine.Evaluate(built, previous) });
@@ -169,7 +174,7 @@ public sealed class KafkaSnapshotRefresher(
         var error = Result.Failed(new EtcdUnreachableException(reason));
         var failed = previous
             ?? new KafkaSnapshot(now, EtcdReachable: false, ConsecutiveFailures: 0,
-                [], [], [], [], [], [], [], 0);
+                [], [], [], [], [], [], [], [], 0);
         failed = failed with
         {
             EtcdReachable = false,
@@ -221,5 +226,6 @@ public sealed class KafkaSnapshotRefresher(
         public const string Rotations = "/kafkaworker/rotations/";
         public const string Rebalances = "/kafkaworker/rebalances/";
         public const string Reassignments = "/kafkaworker/reassignments/";
+        public const string WorkerApi = "/kafkaworker/api/";
     }
 }

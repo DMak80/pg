@@ -86,6 +86,7 @@ public class KafkaModelTests
         Rotations: [new KafkaRotationTicket("events", 1750000200, "admin")],
         Rebalances: [],
         Reassignments: [],
+        WorkerEndpoints: [],
         Probes: [],
         Alerts: [],
         ParseErrors: [new KeyParseError("/kafka/clusters/x/config", "bad json")],

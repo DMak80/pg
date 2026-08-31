@@ -26,6 +26,8 @@ public class KafkaRefresherTests
 
         public IReadOnlyList<Kv> ReassignmentsKv { get; set; } = [];
 
+        public IReadOnlyList<Kv> WorkerApiKv { get; set; } = [];
+
         public List<string> FailEndpoints { get; } = [];
 
         public Task<Result<IReadOnlyList<Kv>>> RangeAsync(string endpoint, string prefix, CancellationToken ct)
@@ -37,6 +39,7 @@ public class KafkaRefresherTests
                     "/kafkaworker/rotations/" => RotationsKv,
                     "/kafkaworker/rebalances/" => RebalancesKv,
                     "/kafkaworker/reassignments/" => ReassignmentsKv,
+                    "/kafkaworker/api/" => WorkerApiKv,
                     _ => [],
                 }));
 
@@ -115,6 +118,26 @@ public class KafkaRefresherTests
         // Алерты движка на собранном снапшоте: заявка ротации events + pending-кластер.
         snapshot.Alerts.Should().Contain(a => a.Id == "kafka-rotation-pending:events");
         snapshot.Alerts.Should().Contain(a => a.Id == "kafka-cluster-not-initialized:pending");
+    }
+
+    [Fact]
+    public async Task Refresh_WithWorkerApiKeys_StoresWorkerEndpoints()
+    {
+        // Arrange: живой ключ доступа kafkaworker (arch/02 §2.3.2)
+        var gateway = DemoGateway();
+        gateway.WorkerApiKv =
+        [
+            new Kv("/kafkaworker/api/kw1", """{"url":"http://kafkaworker:8080","instance":"kw1","since_unix":1756000001}""", 9),
+        ];
+        var store = new KafkaSnapshotStore();
+
+        // Act
+        var result = await New(gateway, store, "http://e1").RefreshOnceAsync(CancellationToken.None);
+
+        // Assert: ключ — в WorkerEndpoints снапшота (резолв мутаций панели)
+        result.IsSuccess.Should().BeTrue();
+        store.Current!.WorkerEndpoints.Should().ContainSingle().Which
+            .Should().Be(new WorkerEndpoint("kw1", "http://kafkaworker:8080", 1756000001));
     }
 
     [Fact]
@@ -219,7 +242,7 @@ public class KafkaSnapshotStoreTests
         // Arrange
         var store = new KafkaSnapshotStore();
         var first = new KafkaSnapshot(
-            new DateTimeOffset(2026, 8, 30, 0, 0, 0, TimeSpan.Zero), true, 0, [], [], [], [], [], [], [], 0);
+            new DateTimeOffset(2026, 8, 30, 0, 0, 0, TimeSpan.Zero), true, 0, [], [], [], [], [], [], [], [], 0);
         var second = first with { BuiltAtUtc = first.BuiltAtUtc.AddSeconds(3) };
 
         // Act

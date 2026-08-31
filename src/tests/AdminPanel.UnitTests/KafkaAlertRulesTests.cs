@@ -24,7 +24,7 @@ public class KafkaAlertRulesTests
     private static KafkaSnapshot Snapshot(params KafkaClusterInfo[] clusters) => new(
         Now, EtcdReachable: true, ConsecutiveFailures: 0,
         [.. clusters], Rotations: [], Rebalances: [], Reassignments: [],
-        Probes: [], Alerts: [], ParseErrors: [], UnknownKeyCount: 0);
+        WorkerEndpoints: [], Probes: [], Alerts: [], ParseErrors: [], UnknownKeyCount: 0);
 
     // Active-кластер с брокерами (по умолчанию один RUNNING broker1).
     private static KafkaClusterInfo ActiveCluster(

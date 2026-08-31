@@ -59,8 +59,8 @@ internal static class InspectionSnapshots
             [],
             [],
             [],
-            [
-                new Alert("etcd-alarm:42:nospace", AlertSeverity.Critical, "etcd-alarm", "42:nospace",
+            [],
+            [                new Alert("etcd-alarm:42:nospace", AlertSeverity.Critical, "etcd-alarm", "42:nospace",
                     "тревога etcd NOSPACE на member 42", new Dictionary<string, string> { ["memberId"] = "42" }, null),
                 new Alert("etcd-endpoint-down:http://etcd2:2379", AlertSeverity.Warning, "etcd-endpoint-down",
                     "http://etcd2:2379", "endpoint etcd недоступен", new Dictionary<string, string> { ["errors"] = "connection refused" }, null),
