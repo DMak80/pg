@@ -6,6 +6,10 @@ using AdminPanel.Etcd.Client;
 
 namespace AdminPanel.Etcd.Writing;
 
+// Ошибка валидации одного поля (ProblemDetails errors; дубль pg-объявления —
+// pg-часть Writing удалена, kafka уйдёт от него в Task 14).
+public sealed record ValidationError(string Field, string Message);
+
 // Тело POST /api/kafka/clusters (arch/02 §10.3; arch/03 §7.2): nullable-поля с
 // дефолтами 3/3/2/12/7д/2/2/20 — биндится Minimal API как JSON (camelCase).
 public sealed record CreateKafkaClusterRequest(

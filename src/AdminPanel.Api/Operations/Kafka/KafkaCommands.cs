@@ -15,6 +15,11 @@ namespace AdminPanel.Api.Operations.Kafka;
 public sealed class KafkaClusterNotFoundException(string cluster)
     : Exception($"kafka-кластер {cluster} не найден");
 
+// Нет снапшота/активного endpoint'а — писать некуда — 503 (дубль прежнего
+// pg-объявления; kafka-мутации станут прокси в Task 14 и уйдут от него).
+public sealed class EtcdWriteUnavailableException()
+    : Exception("нет активного etcd-endpoint'а (снапшот пуст или etcd недоступен)");
+
 // Кластер не Active (NOT_INITIALIZED/TO_REMOVE) — 409.
 public sealed class KafkaClusterNotActiveException(string cluster, string state)
     : Exception($"kafka-кластер {cluster} не Active (state={state}) — операция отклонена");

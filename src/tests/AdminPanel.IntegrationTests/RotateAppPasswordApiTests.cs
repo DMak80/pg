@@ -1,148 +1,107 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
-using AdminPanel.Core;
-using AdminPanel.Etcd;
+using AdminPanel.Etcd.Workers;
 using FluentAssertions;
 using Xunit;
 
 namespace AdminPanel.IntegrationTests;
 
-// POST /api/clusters/{cluster}/app-password/rotate против реального etcd (arch/02 §9.8):
-// клэйм-txn заявки /pgworker/rotations/<C>, 409 на живую заявку/не-Active, 404/503.
+// POST /api/clusters/{c}/app-password/rotate — прокси в API PgWorker (task
+// etcd-via-worker-api): стаб-воркер; 201/409/404/503 прежние тела, оператор
+// сессии уходит заголовком X-Requested-By (spec §3.7).
 [Collection("api")]
-public class RotateAppPasswordApiTests(AuthWebFactory factory, EtcdContainerFixture fixture)
-    : IClassFixture<EtcdContainerFixture>
+public class RotateAppPasswordApiTests(AuthWebFactory factory)
 {
     private readonly AuthWebFactory _factory = factory;
 
-    private void SetLiveSnapshot(string cluster)
-    {
-        var etcd = new EtcdStatus(
-            true,
-            [new EtcdEndpoint(fixture.Endpoint, true, 1, "3.5.21", null, null, null, null, [])],
-            [], [], fixture.Endpoint, false, _factory.Time.GetUtcNow(), 0);
-        _factory.Snapshot = InspectionSnapshots.Fixture(_factory.Time.GetUtcNow()) with
-        {
-            Etcd = etcd,
-            Clusters =
-            [
-                new ClusterInfo(cluster, cluster, 6, 1755900000, ClusterState.Active,
-                [
-                    new ShardInfo("s1", $"host=s1a port=5432 dbname={cluster} user=bucket_admin",
-                        ["s1a"], 5432, cluster, "bucket_admin", 2, null,
-                        [new NodeInfo("s1a", "RUNNING")], null),
-                ],
-                [.. Enumerable.Range(0, 6).Select(i => new BucketInfo(i, "s1", BucketState.Active, null))],
-                []),
-            ],
-        };
-    }
+    private void SetLiveSnapshot()
+        => _factory.Snapshot = InspectionSnapshots.Fixture(_factory.Time.GetUtcNow());
 
     private async Task<HttpClient> LoginAsync() => await ApiTestLogin.LoginAsync(_factory);
 
-    private async Task SeedAsync(params (string Key, string Value)[] kvs)
-    {
-        foreach (var (key, value) in kvs)
-            await EtcdSeed.PutAsync(fixture.Endpoint, key, value, TestContext.Current.CancellationToken);
-    }
-
-    private async Task<string?> ReadKeyAsync(string key)
-    {
-        var gateway = EtcdTestHarness.NewGateway();
-        var range = await gateway.RangeAsync(fixture.Endpoint, key, TestContext.Current.CancellationToken);
-        return range.Value.FirstOrDefault(kv => kv.Key == key)?.Value;
-    }
-
-    private async Task SeedActiveConfigAsync(string cluster)
-        => await SeedAsync(($"/clusters/{cluster}/config",
-            $$"""{"buckets":6,"dbname":"{{cluster}}","created_unix":1755900000}"""));
-
     [Fact]
-    public async Task Rotate_ActiveCluster_ClaimsTicketWithAudit()
+    public async Task Rotate_ActiveCluster_Returns201WithAudit()
     {
-        // Arrange — Active-кластер в снапшоте и в etcd; заявки нет
-        const string cluster = "rot1";
-        SetLiveSnapshot(cluster);
-        await SeedActiveConfigAsync(cluster);
+        // Arrange: стаб-воркер отвечает прежним DTO с оператором сессии
+        SetLiveSnapshot();
+        _factory.WorkerApi.Reset();
+        _factory.WorkerApi.Respond = _ => new WorkerApiResult(201,
+            """{"cluster":"rot1","requestedUnix":1755900000,"requestedBy":"admin"}""");
         using var client = await LoginAsync();
 
         // Act
-        var response = await client.PostAsync($"/api/clusters/{cluster}/app-password/rotate", null, TestContext.Current.CancellationToken);
+        using var response = await client.PostAsync(
+            "/api/clusters/rot1/app-password/rotate", null, TestContext.Current.CancellationToken);
 
-        // Assert — 201 с телом; заявка в etcd с аудполями панели (§9.8 п.3)
+        // Assert — 201 с телом прежнего формата
         response.StatusCode.Should().Be(HttpStatusCode.Created);
         var dto = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
-        dto.GetProperty("cluster").GetString().Should().Be(cluster);
+        dto.GetProperty("cluster").GetString().Should().Be("rot1");
         dto.GetProperty("requestedBy").GetString().Should().Be("admin");
-        var ticket = await ReadKeyAsync($"/pgworker/rotations/{cluster}");
-        ticket.Should().NotBeNull();
-        ticket.Should().Contain("admin").And.Contain("requested_unix");
+
+        // Прокси-вызов: оператор сессии «admin» уходит воркеру (X-Requested-By)
+        _factory.WorkerApi.Calls.Should().ContainSingle().Which.Should().Match<TestWorkerApi.Call>(c =>
+            c.Worker == "pgworker" && c.Method == HttpMethod.Post
+            && c.Path == "/api/clusters/rot1/app-password/rotate"
+            && c.RequestedBy == "admin");
+        _factory.EtcdStub.WriteCalls.Should().Be(0); // панель не пишет в etcd
     }
 
     [Fact]
     public async Task Rotate_LiveTicket_Conflict()
     {
         // Arrange — заявка уже стоит (повтор до исполнения → 409, §9.8 п.2)
-        const string cluster = "rot2";
-        SetLiveSnapshot(cluster);
-        await SeedActiveConfigAsync(cluster);
-        await SeedAsync(($"/pgworker/rotations/{cluster}",
-            """{"requested_unix":1755900100,"requested_by":"someone"}"""));
+        SetLiveSnapshot();
+        _factory.WorkerApi.Reset();
+        _factory.WorkerApi.Respond = _ => new WorkerApiResult(409,
+            """{"title":"Rotation rejected","status":409,"detail":"ротация app-пароля rot2 уже запрошена — дождитесь исполнения (ключ /pgworker/rotations/rot2)"}""");
         using var client = await LoginAsync();
 
         // Act
-        var response = await client.PostAsync($"/api/clusters/{cluster}/app-password/rotate", null, TestContext.Current.CancellationToken);
+        using var response = await client.PostAsync(
+            "/api/clusters/rot2/app-password/rotate", null, TestContext.Current.CancellationToken);
 
-        // Assert — 409, значение заявки НЕ перезаписано
+        // Assert — 409 прежним телом
         response.StatusCode.Should().Be(HttpStatusCode.Conflict);
-        (await ReadKeyAsync($"/pgworker/rotations/{cluster}"))
-            .Should().Contain("someone");
-    }
-
-    [Fact]
-    public async Task Rotate_NotActiveCluster_Conflict()
-    {
-        // Arrange — config с state=NOT_INITIALIZED (§9.8 п.1)
-        const string cluster = "rot3";
-        SetLiveSnapshot(cluster);
-        await SeedAsync(($"/clusters/{cluster}/config",
-            $$"""{"buckets":6,"dbname":"{{cluster}}","created_unix":1755900000,"state":"NOT_INITIALIZED"}"""));
-        using var client = await LoginAsync();
-
-        // Act
-        var response = await client.PostAsync($"/api/clusters/{cluster}/app-password/rotate", null, TestContext.Current.CancellationToken);
-
-        // Assert — 409, заявки нет
-        response.StatusCode.Should().Be(HttpStatusCode.Conflict);
-        (await ReadKeyAsync($"/pgworker/rotations/{cluster}")).Should().BeNull();
+        var problem = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        problem.GetProperty("title").GetString().Should().Be("Rotation rejected");
     }
 
     [Fact]
     public async Task Rotate_UnknownCluster_NotFound()
     {
-        // Arrange — имени нет в etcd (404 по §9.8 п.1)
-        SetLiveSnapshot("rot4");
+        // Arrange — имени нет (404 по §9.8 п.1)
+        SetLiveSnapshot();
+        _factory.WorkerApi.Reset();
+        _factory.WorkerApi.Respond = _ => new WorkerApiResult(404,
+            """{"title":"Cluster not found","status":404,"detail":"кластер nosuch не найден"}""");
         using var client = await LoginAsync();
 
         // Act
-        var response = await client.PostAsync("/api/clusters/nosuch/app-password/rotate", null, TestContext.Current.CancellationToken);
+        using var response = await client.PostAsync(
+            "/api/clusters/nosuch/app-password/rotate", null, TestContext.Current.CancellationToken);
 
         // Assert — 404
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
     [Fact]
-    public async Task Rotate_NoSnapshot_ServiceUnavailable()
+    public async Task Rotate_WorkerApiUnavailable_ServiceUnavailable()
     {
-        // Arrange — снапшота нет (etcd недоступен) → 503
+        // Arrange — живых ключей api нет → 503 панели
         _factory.Snapshot = null;
+        _factory.WorkerApi.Reset();
+        _factory.WorkerApi.Throw = new WorkerApiUnavailableException("pgworker");
         using var client = await LoginAsync();
 
         // Act
-        var response = await client.PostAsync("/api/clusters/rot5/app-password/rotate", null, TestContext.Current.CancellationToken);
+        using var response = await client.PostAsync(
+            "/api/clusters/rot5/app-password/rotate", null, TestContext.Current.CancellationToken);
 
         // Assert — 503
         response.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);
+        var problem = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        problem.GetProperty("title").GetString().Should().Be("API воркера недоступен");
     }
 }
