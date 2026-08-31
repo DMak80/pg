@@ -393,6 +393,28 @@ public static class ApiModule
             string cluster, string topic, CancelLifecycleHandler handler, CancellationToken ct) =>
             await CancelTopicLifecycleAsync(cluster, topic, "delete", handler, ct));
 
+        // POST /api/seed/demo — демо-сид kafka-домена (arch/16 §1.1.1, стенд):
+        // перенос kafka-seed.sh 1:1; идемпотентен по /kafka/clusters/events/config.
+        // Флаг EnableSeedEndpoint проверяет хендлер (выключен → 404).
+        endpoints.MapPost("/api/seed/demo", async (SeedDemoHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleAsync(ct);
+            if (result.IsSuccess)
+                return Results.Ok(result.Value);
+
+            return result.Error switch
+            {
+                WorkerApiNotFoundException => Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound, title: "Not found", detail: result.Error.Message),
+                EtcdWriteUnavailableException => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
+                    detail: result.Error.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
+                    detail: result.Error!.Message),
+            };
+        });
+
         return endpoints;
     }
 

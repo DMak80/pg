@@ -95,6 +95,13 @@ builder.Services.AddSingleton(sp => new CancelLifecycleHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
 
+// Демо-сид kafka-домена (arch/16 §1.1.1; task etcd-via-worker-api).
+builder.Services.AddSingleton(sp => new SeedDemoHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Api.EnableSeedEndpoint));
+
 // docker: драйвер по режиму (Plain: таблица Hosts; Swarm: manager endpoint).
 builder.Services.AddSingleton<DockerEngineFactory>();
 builder.Services.AddSingleton<IClusterDriver>(sp =>
