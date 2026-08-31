@@ -64,4 +64,37 @@ public class ClaimStoreTests(Kafka.KafkaClusterFixture fixture)
         reclaimed.Value.Should().BeTrue();
         await second.DisposeAsync();
     }
+
+    // AAA: инстанс ClaimStore с advertiseApiUrl ставит ключ /kafkaworker/api/<id>
+    // (arch/16 §1.1) со значением-JSON url+instance; DisposeAsync гасит lease —
+    // ключ исчезает. Store без await using: DisposeAsync не идемпотентен, зовём явно.
+    [Fact]
+    public async Task StartAsync_WithAdvertiseApiUrl_PutsApiDiscoveryKey()
+    {
+        // Arrange — префикс /kafkaworker/api/ в фикстурном etcd кроме нас никто не пишет
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var store = new ClaimStore(
+            [Endpoint], Gateway, TimeProvider.System,
+            advertiseApiUrl: "http://kafkaworker:8080");
+
+        // Act — keepalive-цикл ставит ключи асинхронно
+        await store.StartAsync(cts.Token);
+        await Task.Delay(500, cts.Token);
+
+        // Assert — контракт snake_case (arch/02 §2.3.2): {"url","instance","since_unix"};
+        // NotContain-проверки ловят регрессию к PascalCase (PayloadJson без policy).
+        var api = await Gateway.RangeAsync(Endpoint, "/kafkaworker/api/", cts.Token);
+        api.IsSuccess.Should().BeTrue();
+        var kv = api.Value.Should().ContainSingle().Subject;
+        kv.Key.Should().Be($"/kafkaworker/api/{store.InstanceId}");
+        kv.Value.Should().Contain("\"url\":\"http://kafkaworker:8080\"")
+            .And.Contain($"\"instance\":\"{store.InstanceId}\"")
+            .And.Contain("\"since_unix\":")
+            .And.NotContain("\"Url\"").And.NotContain("\"Instance\"").And.NotContain("\"SinceUnix\"");
+
+        // ключ на lease инстанса: DisposeAsync гасит lease — ключ исчезает
+        await store.DisposeAsync();
+        var goneApi = await Gateway.RangeAsync(Endpoint, "/kafkaworker/api/", cts.Token);
+        goneApi.Value.Should().BeEmpty();
+    }
 }

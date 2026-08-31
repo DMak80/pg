@@ -26,9 +26,12 @@ builder.Services.AddSingleton<HealthState>();
 
 builder.Services.AddHttpClient("etcd");
 
-// Fail-fast при старте: без etcd-endpoints воркер бессмысленен (hosts — в DI-фабрике драйвера).
+// Fail-fast при старте: без etcd-endpoints воркер бессмысленен (hosts — в DI-фабрике драйвера);
+// ключ доступа /kafkaworker/api/<id> без URL бессмысленен (arch/16 §1.1).
 builder.Services.AddOptions<KafkaWorkerOptions>()
     .Validate(o => o.Etcd.Endpoints is { Length: > 0 }, "KafkaWorker:Etcd:Endpoints не заданы")
+    .Validate(o => !string.IsNullOrWhiteSpace(o.Api.AdvertiseUrl),
+        "KafkaWorker:Api:AdvertiseUrl не задан (env KFW_API_ADVERTISE_URL)")
     .ValidateOnStart();
 
 // etcd-клиент (HTTP JSON gateway /v3/*) + координация (клэймы/лидерство, журнал).
@@ -37,7 +40,8 @@ builder.Services.AddSingleton<IEtcdGateway>(sp =>
 builder.Services.AddSingleton(sp => new ClaimStore(
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<IEtcdGateway>(),
-    sp.GetRequiredService<TimeProvider>()));
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Api.AdvertiseUrl));
 builder.Services.AddSingleton(sp => new WorkJournal(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
