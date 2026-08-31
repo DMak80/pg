@@ -260,6 +260,30 @@ internal static class Fakes
                 : Result<string>.Success(string.Empty));
         }
 
+        // Инспекция усыновления (adopt-repair T3): фиксированная карта находок;
+        // пустая карта = docker-хосты не видят ни одной ноды (тихий skip).
+        public IReadOnlyDictionary<string, DiscoveredNode> InspectResult { get; set; }
+            = new Dictionary<string, DiscoveredNode>();
+
+        public readonly List<(string Container, IReadOnlyList<string> Cmd)> ContainerExecs = [];
+
+        public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
+            IReadOnlyCollection<string> nodeNames, CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlyDictionary<string, DiscoveredNode>>.Success(
+                (IReadOnlyDictionary<string, DiscoveredNode>)InspectResult
+                    .Where(p => nodeNames.Contains(p.Key))
+                    .ToDictionary(p => p.Key, p => p.Value)));
+
+        public Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct)
+        {
+            lock (_gate)
+            {
+                ContainerExecs.Add((containerName, cmd));
+            }
+
+            return Task.FromResult(Result<string>.Success(string.Empty));
+        }
+
         public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
         {
             List<string> objects;

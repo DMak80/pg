@@ -42,6 +42,15 @@ public interface IClusterDriver
     Task<Result<string>> ExecNodeAsync(
         string cluster, string shard, string node, IReadOnlyList<string> cmd, CancellationToken ct);
 
+    // Docker-инспекция нод усыновления (spec §3.1, arch/14 §5 J AD1): по именам
+    // нод вернуть DiscoveredNode (host/object/порты). 0 находок — пустой словарь.
+    Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
+        IReadOnlyCollection<string> nodeNames, CancellationToken ct);
+
+    // Exec в контейнер по имени (docker-exec fallback для pg_dump усыновлённых
+    // нод, spec §3.3): 404/не найден — Failed.
+    Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct);
+
     // Имена объектов нод кластера (pgw-<C>-*): сверка декларации + сироты (D1).
     Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct);
 }
@@ -190,6 +199,66 @@ public sealed class PlainClusterDriver(
             }
 
             throw new ApplicationException($"контейнер ноды {name} не найден (нет running-контейнера ни на одном хосте)");
+        });
+    }
+
+    // Docker-инспекция нод усыновления (spec §3.1): по каждому хосту собираем
+    // ВСЕ пары (контейнер, инспект) и зовём NodeMatcher.Match один раз на хост —
+    // только так работают merge patroni-порта из сайдкара (env NODE_NAME) и
+    // skip-on-ambiguity «два контейнера на имя → пропуск» (юнит-тесты NodeMatcher).
+    public async Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
+        IReadOnlyCollection<string> nodeNames, CancellationToken ct)
+    {
+        return await Result<IReadOnlyDictionary<string, DiscoveredNode>>.FromAsync(async () =>
+        {
+            var found = new Dictionary<string, DiscoveredNode>();
+            foreach (var (host, engine) in _engines)
+            {
+                var list = await engine.ListContainersAsync("", all: false, ct);
+                if (!list.IsSuccess)
+                    throw list.Error!; // хост недоступен — не тихий список (паттерн GetHostsAsync)
+
+                // Собираем ВСЕ пары хоста: Match должен видеть и ноду, и её
+                // patroni-сайдкар (env NODE_NAME), и пары конкурирующих контейнеров
+                // (неоднозначность → пропуск имени) — один вызов на хост.
+                var pairs = new List<(DockerContainer, DockerContainerInspect)>();
+                foreach (var c in list.Value)
+                {
+                    var inspect = await engine.InspectContainerAsync(c.Id, ct);
+                    if (inspect.IsSuccess)
+                        pairs.Add((c, inspect.Value)); // контейнер исчез между list и inspect — не наша находка
+                }
+
+                foreach (var (name, node) in NodeMatcher.Match(host, pairs, nodeNames))
+                    if (!found.ContainsKey(name))
+                        found[name] = node;
+            }
+
+            return (IReadOnlyDictionary<string, DiscoveredNode>)found;
+        });
+    }
+
+    // Exec в контейнер по имени (docker-exec fallback pg_dump усыновлённых нод,
+    // spec §3.3): перебор хостов, первый running-контейнер с точным именем.
+    public async Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct)
+    {
+        return await Result<string>.FromAsync(async () =>
+        {
+            foreach (var engine in _engines.Values)
+            {
+                var list = await engine.ListContainersAsync(containerName, all: false, ct);
+                if (!list.IsSuccess)
+                    throw list.Error!;
+                if (list.Value.FirstOrDefault(c => c.Names.Contains(containerName)) is not { } hit)
+                    continue;
+
+                var exec = await engine.ExecAsync(hit.Id, cmd, ct);
+                if (!exec.IsSuccess)
+                    throw exec.Error!;
+                return exec.Value;
+            }
+
+            throw new ApplicationException($"контейнер '{containerName}' не найден на хостах драйвера");
         });
     }
 
@@ -348,6 +417,36 @@ public sealed class SwarmClusterDriver(
             if (running is null)
                 throw new ApplicationException(
                     $"контейнер ноды {cluster}/{shard}/{node} не найден (нет running-таска)");
+
+            var exec = await _engine.ExecAsync(running.ContainerId!, cmd, ct);
+            if (!exec.IsSuccess)
+                throw exec.Error!;
+            return exec.Value;
+        });
+    }
+
+    // Усыновление swarm-кластеров: за пределами текущей задачи (стенд plain,
+    // spec §3.1); при необходимости — инспект тасков сервисов.
+    public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
+        IReadOnlyCollection<string> nodeNames, CancellationToken ct)
+        => Task.FromResult(Result<IReadOnlyDictionary<string, DiscoveredNode>>.Success(
+            (IReadOnlyDictionary<string, DiscoveredNode>)new Dictionary<string, DiscoveredNode>()));
+
+    // Exec в контейнент по имени сервиса (образец ExecNodeAsync): running-таск
+    // сервиса → ContainerId → engine.ExecAsync.
+    public async Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct)
+    {
+        return await Result<string>.FromAsync(async () =>
+        {
+            var tasks = await _engine.ListTasksAsync(containerName, ct);
+            if (!tasks.IsSuccess)
+                throw tasks.Error!;
+
+            var running = tasks.Value.FirstOrDefault(t =>
+                t.State == "running" && t.ContainerId is { Length: > 0 });
+            if (running is null)
+                throw new ApplicationException(
+                    $"контейнер '{containerName}' не найден (нет running-таска)");
 
             var exec = await _engine.ExecAsync(running.ContainerId!, cmd, ct);
             if (!exec.IsSuccess)
