@@ -56,9 +56,11 @@ public sealed record ShardSpec(string Name, int Replicas, string? Dsn, string? M
 /// <summary>Маршрут бакета: Owner — владелец по ROUTING (единственный авторитет
 /// «где бакет»); Status — статус переезда (null → ACTIVE); MoveSource/MoveTarget —
 /// owner/target из СТАТУС-ключа (guard G4 t06: после flip статус-owner ≠ routing-owner;
-/// null без статуса; у NOT_INITIALIZED — owner без target).</summary>
+/// null без статуса; у NOT_INITIALIZED — owner без target); MovePhase/MoveUpdatedUnix —
+/// phase/updated_unix из статус-ключа (репарация §3.5); null без статуса.</summary>
 public sealed record BucketRoute(int Id, string? Owner, BucketMoveState? Status,
-    string? MoveTarget = null, string? MoveSource = null);
+    string? MoveTarget = null, string? MoveSource = null,
+    string? MovePhase = null, long? MoveUpdatedUnix = null);
 
 /// <summary>Полный снапшот кластера: config + шарды + все N маршрутов бакетов
 /// + per-cluster app-креды (null до первого ensure — spec §4.1).</summary>
@@ -68,8 +70,10 @@ public sealed record ClusterSnapshot(ClusterConfig Config, IReadOnlyList<ShardSp
 /// <summary>Тройка портов ноды, выделенная аллокатором (pg/patroni/doorman).</summary>
 public sealed record NodePorts(int Pg, int Patroni, int Doorman);
 
-/// <summary>Адрес ноды: docker-хост + выделенные host-порты.</summary>
-public sealed record NodeAddress(string Host, NodePorts Ports);
+/// <summary>Адрес ноды: docker-хост + выделенные host-порты; Object — имя
+/// фактического docker-контейнера усыновлённой ноды (arch/14 §2.4/§5 J),
+/// null = каноническая pgw-нода нашего провижининга.</summary>
+public sealed record NodeAddress(string Host, NodePorts Ports, string? Object = null);
 
 /// <summary>Адреса etcd (http://host:2379) — для lease-скрипта мастер-ключа ноды.</summary>
 public sealed record EtcdEndpoints(IReadOnlyList<string> Http);

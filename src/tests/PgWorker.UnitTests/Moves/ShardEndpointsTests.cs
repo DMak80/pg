@@ -27,6 +27,16 @@ public class ShardEndpointsTests
             ["shard2/shard2a"] = new("h1", new NodePorts(15002, 18002, 16502)),
         }));
 
+    // Сид portalloc усыновлённого кластера (adopt-repair spec §3.2): object-ноды
+    // внешнего HA-контура без doorman/patroni-REST.
+    private static void SeedPortallocWithObjects(Fakes.FakeEtcd etcd) => etcd.Seed(
+        "/pgworker/portalloc/shop",
+        Portalloc.Serialize(new Dictionary<string, NodeAddress>
+        {
+            ["shard1/shard1a"] = new("local", new NodePorts(5433, 0, 0), "as-s1a"),
+            ["shard1/shard1b"] = new("local", new NodePorts(5434, 0, 0), "as-s1b"),
+        }));
+
     private static ShardSpec Shard1(string? master) => new(
         "shard1", 2, Dsn: null, Master: master,
         Nodes:
@@ -169,7 +179,7 @@ public class ShardEndpointsTests
         var addresses = await endpoints.ReadPortAllocAsync("shop", CancellationToken.None);
 
         // Act
-        var master = await endpoints.ResolveMasterAsync(Shard1("shard1a:18000"), addresses.Value, CancellationToken.None);
+        var master = await endpoints.ResolveMasterAsync("shop", Shard1("shard1a:18000"), addresses.Value, CancellationToken.None);
 
         // Assert
         master.Value.Should().NotBeNull();
@@ -190,7 +200,7 @@ public class ShardEndpointsTests
         var addresses = await endpoints.ReadPortAllocAsync("shop", CancellationToken.None);
 
         // Act
-        var master = await endpoints.ResolveMasterAsync(Shard1("h2:16501"), addresses.Value, CancellationToken.None);
+        var master = await endpoints.ResolveMasterAsync("shop", Shard1("h2:16501"), addresses.Value, CancellationToken.None);
 
         // Assert
         master.Value.Should().NotBeNull();
@@ -209,9 +219,75 @@ public class ShardEndpointsTests
         var addresses = await endpoints.ReadPortAllocAsync("shop", CancellationToken.None);
 
         // Act
-        var master = await endpoints.ResolveMasterAsync(Shard1(null), addresses.Value, CancellationToken.None);
+        var master = await endpoints.ResolveMasterAsync("shop", Shard1(null), addresses.Value, CancellationToken.None);
 
         // Assert
         master.Value.Should().BeNull("ни master-ключа, ни Patroni-ответа — мастера нет");
+    }
+
+    // AAA (adopt-repair §3.3): master-ключа нет — HA-leader контура называет
+    // лидера по имени ноды; адрес из portalloc, Patroni-REST не нужен
+    [Fact]
+    public async Task ResolveMasterAsync_NoMasterKey_HaLeaderNameResolves()
+    {
+        // Arrange: master-ключа нет; HA-контур называет лидера по имени ноды.
+        var etcd = new Fakes.FakeEtcd();
+        SeedPortalloc(etcd);
+        await etcd.PutAsync(Ep, "/service/shop-shard1/leader", """{"name":"shard1a"}""", null, CancellationToken.None);
+        var endpoints = EndpointsOf(etcd);
+        var addresses = await endpoints.ReadPortAllocAsync("shop", CancellationToken.None);
+
+        // Act: шард shard1 без мастера, Patroni недоступен (фakes-проба молчит).
+        var master = await endpoints.ResolveMasterAsync("shop", Shard1(null), addresses.Value, CancellationToken.None);
+
+        // Assert: адрес ноды shard1a из portalloc — REST не понадобился.
+        master.Value.Should().NotBeNull();
+        master.Value!.Ports.Pg.Should().Be(15000);
+        master.Value.Host.Should().Be("h1");
+    }
+
+    // AAA (adopt-repair §3.3, §6): усыновлённый master-ключ формата node:pg-port
+    // (пишет внешний HA-контур) — byName-резолв по первому сегменту ключа
+    [Fact]
+    public async Task ResolveMasterAsync_AdoptedMasterKeyNodePort_ResolvesByNodeName()
+    {
+        // Arrange: усыновлённый кластер — master-ключ внешнего формата node:pg-port
+        // (пишет эмулятор/Patroni-callback стендового контура), portalloc с
+        // object-нодами; Patroni-REST недоступен.
+        var etcd = new Fakes.FakeEtcd();
+        SeedPortallocWithObjects(etcd);
+        var endpoints = EndpointsOf(etcd);
+        var addresses = await endpoints.ReadPortAllocAsync("shop", CancellationToken.None);
+
+        // Act: шард shard1 с master-ключом "shard1a:5433" (имя ноды:pg-порт).
+        var master = await endpoints.ResolveMasterAsync(
+            "shop", Shard1("shard1a:5433"), addresses.Value, CancellationToken.None);
+
+        // Assert: byName-резолв по части имени ноды — адрес object-ноды, REST не нужен.
+        master.Value.Should().NotBeNull();
+        master.Value!.Ports.Pg.Should().Be(5433);
+        master.Value.Object.Should().Be("as-s1a");
+    }
+
+    // AAA (adopt-repair §3.3): валидный master-ключ приоритетнее HA-leader'а
+    // (цепочка: master-ключ → service/leader → Patroni-REST)
+    [Fact]
+    public async Task ResolveMasterAsync_MasterKeyWinsOverHaLeader()
+    {
+        // Arrange: master-ключ валиден (имя ноды) + есть HA-leader с ДРУГИМ именем.
+        var etcd = new Fakes.FakeEtcd();
+        SeedPortalloc(etcd);
+        await etcd.PutAsync(Ep, "/clusters/shop/shards/shard1/master", "shard1a:18000", null, CancellationToken.None);
+        await etcd.PutAsync(Ep, "/service/shop-shard1/leader", """{"name":"shard1b"}""", null, CancellationToken.None);
+        var endpoints = EndpointsOf(etcd);
+        var addresses = await endpoints.ReadPortAllocAsync("shop", CancellationToken.None);
+
+        // Act
+        var master = await endpoints.ResolveMasterAsync(
+            "shop", Shard1("shard1a:18000"), addresses.Value, CancellationToken.None);
+
+        // Assert: приоритет master-ключа — резолв по нему (цепочка spec §3.3).
+        master.Value.Should().NotBeNull();
+        master.Value!.Ports.Pg.Should().Be(15000, "master-ключ назвал shard1a, HA-leader (shard1b) проиграл");
     }
 }

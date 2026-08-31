@@ -1,5 +1,6 @@
 using System.Net;
 using System.Text;
+using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
 using PgWorker.Etcd.Client;
@@ -71,10 +72,14 @@ public class NodeSupervisorTests
         IReadOnlyList<string>? nodeObjects = null,
         long? staleUnreachableForShard1A = null,
         long? staleUnreachableAll = null,
-        Func<HttpRequestMessage, HttpResponseMessage>? respondRaw = null)
+        Func<HttpRequestMessage, HttpResponseMessage>? respondRaw = null,
+        IReadOnlyDictionary<string, NodeAddress>? addresses = null,
+        Fakes.FakeSql? sql = null)
     {
         var etcd = new Fakes.FakeEtcd();
         SeedCluster(etcd);
+        if (addresses is not null)
+            etcd.Seed("/pgworker/portalloc/shop", Portalloc.Serialize(addresses));
         var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("shop", CancellationToken.None);
         var journal = new WorkJournal(etcd, [Ep]);
@@ -99,7 +104,8 @@ public class NodeSupervisorTests
         var probe = new ShardProbe(new HttpClient(
             new FakeHandler(respondRaw ?? (r => respond(r.RequestUri!.Port)))));
         var supervisor = new NodeSupervisor(
-            etcd, [Ep], driver, probe, claims, journal, Thresholds, TimeProvider.System, Secrets,
+            etcd, [Ep], driver, probe, sql ?? new Fakes.FakeSql(), claims, journal,
+            Thresholds, TimeProvider.System, Secrets,
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"),
             new MasterKeyReconciler(etcd, [Ep], probe));
         return new Rig(etcd, driver, claims, journal, supervisor);
@@ -585,6 +591,197 @@ public class NodeSupervisorTests
         outcome.Value.DeadShards.Should().Contain("shard2");
     }
 
+    // ---------- Границы надзора для усыновлённых нод (adopt-repair spec §3.4) ----------
+
+    // Portalloc усыновлённого шарда: object-контейнеры вместо pgw-имён, patroni=0
+    // (Patroni-REST у внешних нод нет — живость по SQL-пробе).
+    private static Dictionary<string, NodeAddress> AdoptedAddresses()
+    {
+        var alloc = new Dictionary<string, NodeAddress>();
+        for (var i = 0; i < 3; i++)
+        {
+            var name = $"shard1{(char)('a' + i)}";
+            alloc[$"shard1/{name}"] =
+                new NodeAddress(i % 2 == 0 ? "h1" : "h2", new NodePorts(15000 + i, 0, 0), $"as-{name}");
+        }
+
+        return alloc;
+    }
+
+    // AAA (spec §3.4, arch/14 §5 C/R9): усыновлённая (object) нода ВНЕ домена
+    // EnsureNode — self-healing off. Реальный ListNodeObjectsAsync отдаёт только
+    // имена pgw-<C>- (фейк синхронизирован с этим контрактом и выкидывает as-*),
+    // поэтому не-пересоздание обеспечивает GUARD по object-полю, а не матчинг
+    // docker-списка: ревью Фазы 7 — старая версия теста сеяла as-* в фейк и
+    // маскировала дефект (guard отсутствовал → в рантайме плодились pgw-дубли).
+    [Fact]
+    public async Task EnsureDeclared_ExternalObjectContainerAlive_NodeNotRecreated()
+    {
+        // Arrange — у всех нод object-адреса; docker-список НЕ содержит pgw-*
+        // (реальный драйвер as-* не отдаёт — фейк отфильтрует их так же);
+        // Patroni жив (не влияет — сверка декларации раньше проб).
+        var rig = await NewRig(_ => Ok(),
+            nodeObjects: ["as-shard1a", "as-shard1b", "as-shard1c"],
+            addresses: AdoptedAddresses());
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: дубль не создан (guard self-healing off при пустом docker-списке),
+        // состояние нод не PROVISIONING, failover-ключи HA-контура не тронуты.
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        rig.Driver.EnsuredNodes.Should().BeEmpty("guard: object-нода вне домена EnsureNode");
+        foreach (var node in new[] { "shard1a", "shard1b", "shard1c" })
+            rig.Etcd.Store[$"/clusters/shop/shards/shard1/nodes/{node}/state"].Value
+                .Should().NotBe("PROVISIONING");
+    }
+
+    // AAA (spec §3.4, R9): мёртвый object-контейнер тоже НЕ пересоздаётся —
+    // rebuild поднял бы второй Patroni на тот же scope; сверка декларации не
+    // применяется к усыновлённым ни в состоянии «жив», ни в состоянии «мёртв»
+    // (честный UNREACHABLE — домен SuperviseShardAsync, не EnsureNode).
+    [Fact]
+    public async Task EnsureDeclared_AdoptedNodeObjectMissing_StillNoEnsureNode()
+    {
+        // Arrange — docker-список пуст: object-контейнеров нет (как будто
+        // внешний контейнер умер); без guard это дало бы EnsureNode на каждый тик.
+        var rig = await NewRig(_ => Ok(),
+            nodeObjects: [],
+            addresses: AdoptedAddresses());
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: ни EnsureNode, ни PROVISIONING — self-healing off (R9).
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        rig.Driver.EnsuredNodes.Should().BeEmpty("мёртвый object не rebuild'ится (R9)");
+        foreach (var node in new[] { "shard1a", "shard1b", "shard1c" })
+            rig.Etcd.Store[$"/clusters/shop/shards/shard1/nodes/{node}/state"].Value
+                .Should().NotBe("PROVISIONING");
+    }
+
+    // AAA (spec §3.4): усыновлённая нода без Patroni-REST (patroni=0) — живость
+    // SQL-пробой SELECT 1 по admin-DSN: PG жив, сайдкар мёртв ≠ нода мертва.
+    [Fact]
+    public async Task Supervise_AdoptedNodeWithoutPatroni_SqlProbeKeepsRunning()
+    {
+        // Arrange — Patroni-пробы глухие (эмуляторы остановлены), но SQL жив;
+        // у всех нод patroni=0 (object) — живость определяется SQL-пробой.
+        var sql = new Fakes.FakeSql();
+        var rig = await NewRig(_ => Down(),
+            nodeObjects: ["as-shard1a", "as-shard1b", "as-shard1c"],
+            addresses: AdoptedAddresses(), sql: sql);
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: state остаётся RUNNING (не UNREACHABLE), трек недоступности пуст.
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        sql.Scalars.Should().Contain(s => s.Sql == "SELECT 1", "живость object-ноды — SQL-проба");
+        foreach (var node in new[] { "shard1a", "shard1b", "shard1c" })
+            rig.Etcd.Store[$"/clusters/shop/shards/shard1/nodes/{node}/state"].Value
+                .Should().Be("RUNNING", "SQL жив — PG жив");
+        var track = await rig.Journal.ReadUnreachableAsync("shop", CancellationToken.None);
+        track.Value.Should().BeEmpty("ни одна нода не ушла в трек недоступности");
+    }
+
+    // AAA (spec §3.4): мёртвая усыновлённая нода (SQL тоже падает) дольше
+    // NodeDeadSec при живом кворуме — НЕ rebuild (self-healing off, R9),
+    // только честный UNREACHABLE для оператора.
+    [Fact]
+    public async Task Supervise_DeadAdoptedNode_NoRebuildOnlyUnreachable()
+    {
+        // Arrange — shard1a мертва (SQL-проба падает по её DSN), кворум жив:
+        // b/c — канонические ноды с живым Patroni; лидер shard1b.
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var sql = new Fakes.FakeSql
+        {
+            ScalarResultByDsn = dsn => dsn.Contains("Port=15000;")
+                ? Result<object?>.Failed(new ApplicationException("PG недоступен"))
+                : Result<object?>.Success(1L),
+        };
+        var rig = await NewRig(
+            port => port == 18000 ? Down() : Ok(),
+            nodeObjects: ["as-shard1a", "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c"],
+            staleUnreachableForShard1A: now - 200,
+            addresses: AdoptedAddresses().ToDictionary(p => p.Key, p => p.Key is "shard1/shard1b" or "shard1/shard1c"
+                ? new NodeAddress(p.Value.Host, new NodePorts(p.Value.Ports.Pg, 18000 + (p.Value.Ports.Pg - 15000), 16500 + (p.Value.Ports.Pg - 15000)))
+                : p.Value),
+            sql: sql);
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1b"}""");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: state=UNREACHABLE, docker не тронут (rebuild поднял бы второй Patroni).
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("UNREACHABLE");
+        rig.Driver.RemovedNodes.Should().BeEmpty("усыновлённые не пересоздаются (R9)");
+        rig.Driver.EnsuredNodes.Should().BeEmpty();
+    }
+
+    // AAA (spec §3.4): маркер recreate у object-ноды — self-healing off:
+    // контейнер не пересоздаётся, только журнальная запись оператору.
+    [Fact]
+    public async Task Recreate_AdoptedNodeMarker_IgnoredWithJournal()
+    {
+        // Arrange — панель пометила shard1b (TO_RECREATE, soft); нода — object.
+        var journalPhases = new List<string>();
+        var rig = await NewRig(_ => Ok(), addresses: AdoptedAddresses());
+        rig.Etcd.OnPut = key =>
+        {
+            if (key == "/pgworker/work/shop")
+                journalPhases.Add(rig.Etcd.Store[key].Value);
+        };
+        rig.Etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1b/state", "TO_RECREATE");
+        rig.Etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1b/recreate", "soft");
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a"}""");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: контейнер не пересоздан; журнал содержит recreate-external (оператору).
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        rig.Driver.RemovedNodes.Should().BeEmpty("self-healing off для object-нод (R9)");
+        rig.Driver.EnsuredNodes.Should().BeEmpty();
+        journalPhases.Should().Contain(p => p.Contains("recreate-external"),
+            "журнал сообщает: пересоздание усыновлённой ноды — вручную");
+    }
+
+    // AAA (spec §3.4, R8): шарды с object-нодами не сверяются reconciler'ом —
+    // их master-ключ пишет внешний HA-контур своим форматом node:port.
+    [Fact]
+    public async Task Reconcile_ShardWithObjectNodes_SkippedNoWrite()
+    {
+        // Arrange — у шарда адрес с Object; фактический primary жив (probe 200);
+        // ключ указывает «не туда» — но писатель внешний, reconciler не воюет.
+        var etcd = new Fakes.FakeEtcd();
+        etcd.Seed("/clusters/shop/shards/shard1/master", "s1a:5433");
+        var addresses = new Dictionary<string, NodeAddress>
+        {
+            ["shard1/shard1a"] = new("local", new NodePorts(5433, 0, 0), "as-shard1a"),
+        };
+        var snap = new ClusterSnapshot(
+            new ClusterConfig("shop", 2, "shop", null, ClusterState.Active),
+            [new ShardSpec("shard1", 1, null, "s1a:5433",
+            [
+                new NodeSpec("shard1", "shard1a", NodeState.Running),
+            ])],
+            []);
+        var probe = Probe(_ => Ok());
+        var reconciler = new MasterKeyReconciler(etcd, [Ep], probe);
+        var before = etcd.Store["/clusters/shop/shards/shard1/master"].ModRevision;
+
+        // Act
+        var result = await reconciler.ReconcileAsync(snap, addresses, CancellationToken.None);
+
+        // Assert: etcd-put мастера НЕ было (внешний писатель не воюет, R8).
+        result.IsSuccess.Should().BeTrue();
+        etcd.Store["/clusters/shop/shards/shard1/master"].Value.Should().Be("s1a:5433");
+        etcd.Store["/clusters/shop/shards/shard1/master"].ModRevision.Should().Be(before);
+        etcd.Keepalives.Should().BeEmpty();
+    }
+
     // Сид кластера с параметризованными именами/портами (параллельный тест).
     private static void SeedNamedCluster(Fakes.FakeEtcd etcd, string cluster, int portOffset)
     {
@@ -636,7 +833,7 @@ public class NodeSupervisorTests
         };
         // Пробы по Patroni-порту: shopA (18000–18002) — глухо, shopB (18100–18102) — жив.
         var supervisor = new NodeSupervisor(
-            etcd, [Ep], driver, Probe(port => port >= 18100 ? Ok() : Down()),
+            etcd, [Ep], driver, Probe(port => port >= 18100 ? Ok() : Down()), new Fakes.FakeSql(),
             claims, journal, Thresholds, TimeProvider.System, Secrets,
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"));
 

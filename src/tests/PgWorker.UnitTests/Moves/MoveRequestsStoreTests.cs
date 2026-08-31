@@ -27,6 +27,47 @@ public class MoveRequestsStoreTests
         list.Value.ParseErrors.Should().BeEmpty("все ключи валидны");
     }
 
+    // AAA (adopt-repair §3.5 MR1): синтетическая заявка put-if-absent НЕ
+    // затирает операторскую (гонка с оператором безопасна, txn NotExists)
+    [Fact]
+    public async Task PutIfAbsentAsync_ExistingOperatorRequest_NotReplaced()
+    {
+        // Arrange: операторская заявка move уже стоит.
+        const string raw = """{"op":"move","to":"shard2","requested_unix":100,"requested_by":"operator"}""";
+        var etcd = new FakeEtcd();
+        etcd.Seed(MoveNames.MoveKey("shop", "bucket_3"), raw);
+
+        // Act: PutIfAbsentAsync синтетической abort-заявки того же бакета.
+        var put = await StoreOf(etcd).PutIfAbsentAsync("shop", "bucket_3",
+            new MoveRequest("bucket_3", MoveOp.Abort, To: null, OldShard: null, SkipReverse: false,
+                Resume: false, Force: true, RequestedUnix: 200, RequestedBy: "pgworker-repair"),
+            CancellationToken.None);
+
+        // Assert: вернула false; значение ключа — исходное (операторское).
+        put.IsSuccess.Should().BeTrue();
+        put.Value.Should().BeFalse("txn NotExists проиграна — ключ занят оператором");
+        etcd.Store[MoveNames.MoveKey("shop", "bucket_3")].Value.Should().Be(raw);
+    }
+
+    // AAA (adopt-repair §3.5 MR1): свободный ключ — заявка пишется, txn true
+    [Fact]
+    public async Task PutIfAbsentAsync_FreeKey_WritesAndTrue()
+    {
+        // Arrange: ключа нет.
+        var etcd = new FakeEtcd();
+        var request = new MoveRequest("bucket_7", MoveOp.Abort, To: null, OldShard: null, SkipReverse: false,
+            Resume: false, Force: false, RequestedUnix: 200, RequestedBy: "pgworker-repair");
+
+        // Act: PutIfAbsentAsync.
+        var put = await StoreOf(etcd).PutIfAbsentAsync("shop", "bucket_7", request, CancellationToken.None);
+
+        // Assert: true, заявка читается.
+        put.IsSuccess.Should().BeTrue();
+        put.Value.Should().BeTrue("ключ был свободен — txn сошлась");
+        var list = await StoreOf(etcd).ListAsync("shop", CancellationToken.None);
+        list.Value.Requests.Should().ContainSingle().Which.Request.RequestedBy.Should().Be("pgworker-repair");
+    }
+
     // AAA: старейшая заявка — по requested_unix (Д2: одна активная заявка на кластер)
     [Fact]
     public async Task OldestAsync_PicksMinRequestedUnix()

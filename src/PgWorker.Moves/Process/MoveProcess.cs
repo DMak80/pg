@@ -230,11 +230,13 @@ public sealed class MoveProcess(
                 $"warning: на '{owner}' {ToLong(lost.Value)} слотов(а) с wal_status='lost' (P4) — прибери: abort/finalize", ct);
 
         // Пробы mover-роли ПО MOVER-DSN источника (ревью №2): доступность + REPLICATION.
-        var moverDsn = ShardEndpoints.MoverNpgsqlDsn(srcShard.Dsn, secrets);
-        var probe = await sql.ScalarAsync(moverDsn, "SELECT 1", ct);
+        var moverDsn = await MoverProbeDsnAsync(snap, srcShard, ct);
+        if (!moverDsn.IsSuccess)
+            return await FailTransientAsync(cluster, moverDsn.Error!, ct);
+        var probe = await sql.ScalarAsync(moverDsn.Value, "SELECT 1", ct);
         if (!probe.IsSuccess)
             return await FailTransientAsync(cluster, probe.Error!, ct);
-        var roleOk = await sql.ScalarAsync(moverDsn, MoveSql.MoverRoleOk(), ct);
+        var roleOk = await sql.ScalarAsync(moverDsn.Value, MoveSql.MoverRoleOk(), ct);
         if (!roleOk.IsSuccess)
             return await FailTransientAsync(cluster, roleOk.Error!, ct);
         if (ToBool(roleOk.Value) != true)
@@ -360,7 +362,7 @@ public sealed class MoveProcess(
             var addresses = await shards.ReadPortAllocAsync(cluster, ct);
             if (!addresses.IsSuccess)
                 return await FailTransientAsync(cluster, addresses.Error!, ct);
-            var srcMaster = await shards.ResolveMasterAsync(srcShard, addresses.Value, ct);
+            var srcMaster = await shards.ResolveMasterAsync(cluster, srcShard, addresses.Value, ct);
             if (!srcMaster.IsSuccess)
                 return await FailTransientAsync(cluster, srcMaster.Error!, ct);
             if (srcMaster.Value is not { } master)
@@ -371,7 +373,8 @@ public sealed class MoveProcess(
             if (masterEntry.Key is not { Length: > 0 } entry)
                 return await FailTransientAsync(cluster, new ApplicationException(
                     $"мастер '{owner}' (pg:{master.Ports.Pg}) не найден среди нод шарда в portalloc"), ct);
-            var dump = await ddl.DumpAsync(cluster, owner, entry.Split('/')[1], snap.Config.DbName, bucket, ct);
+            var dump = await ddl.DumpAsync(cluster, owner, entry.Split('/')[1], snap.Config.DbName, bucket, ct,
+                containerOverride: master.Object); // усыновлённая нода: exec в object-контейнер (spec §3.3)
             if (!dump.IsSuccess)
                 return await FailTransientAsync(cluster, dump.Error!, ct);
             var applied = await ddl.ApplyAsync(dstDsn, dump.Value, ct);
@@ -408,9 +411,12 @@ public sealed class MoveProcess(
         {
             // copy_data=true (initial copy), failover-флаг конфигурируем (PG17+, R1),
             // synchronous_commit=remote_apply — P8; CONNECTION — mover-роль источника.
+            // Advertised-правило (spec §3.3): подмена только для канонических
+            // pgw-исполнителей — внешний приёмник видит адреса dsn напрямую.
+            var advertised = await AdvertisedForShardAsync(cluster, to, ct);
             var createSub = await sql.ExecuteAsync(dstDsn,
                 MoveSql.CreateSubscription(MoveNames.Sub(bucket),
-                    ShardEndpoints.MoverConninfo(srcShard.Dsn!, secrets, options.AdvertisedPublisherHost),
+                    ShardEndpoints.MoverConninfo(srcShard.Dsn!, secrets, advertised),
                     MoveNames.Pub(bucket), copyData: true, failover: options.FailoverSlots), ct);
             if (!createSub.IsSuccess)
                 return await FailTransientAsync(cluster, createSub.Error!, ct);
@@ -501,9 +507,12 @@ public sealed class MoveProcess(
                 dstDsn, MoveSql.CreatePublication(MoveNames.PubRb(bucket), bucket), ct);
             if (pubRb.IsSuccess)
             {
+                // Advertised-правило (spec §3.3): исполнитель sub_rb — бывший
+                // владелец (owner); подмена только для канонических pgw-нод.
+                var advertised = await AdvertisedForShardAsync(cluster, owner, ct);
                 var subRb = await sql.ExecuteAsync(srcDsn,
                     MoveSql.CreateSubscription(MoveNames.SubRb(bucket),
-                        ShardEndpoints.MoverConninfo(dstShard.Dsn!, secrets, options.AdvertisedPublisherHost),
+                        ShardEndpoints.MoverConninfo(dstShard.Dsn!, secrets, advertised),
                         MoveNames.PubRb(bucket), copyData: false, failover: options.FailoverSlots), ct);
                 if (!subRb.IsSuccess)
                     postFlipErrors.Add(
@@ -972,7 +981,7 @@ public sealed class MoveProcess(
         var result = new Dictionary<string, string>();
         foreach (var shard in snap.Shards)
         {
-            var master = await shards.ResolveMasterAsync(shard, addresses.Value, ct);
+            var master = await shards.ResolveMasterAsync(snap.Config.Cluster, shard, addresses.Value, ct);
             if (!master.IsSuccess)
                 return Result<Dictionary<string, string>>.Failed(master.Error!);
             if (master.Value is null)
@@ -997,6 +1006,46 @@ public sealed class MoveProcess(
         return shot;
     }
 
+    // Mover-DSN префлайта (spec §3.3, усыновлённые кластеры): multi-host
+    // dsn-ключ несёт ВНУТРЕННИЕ имена нод — они резолвимы из нод-исполнителей
+    // подписок, но НЕ из контейнера воркера. Для шард с object-нодами пробуем
+    // по адресу мастера из portalloc (host:pg мастера + mover-креды,
+    // read-write как у подписки); канонические шард — по dsn-ключу (как раньше).
+    private async Task<Result<string>> MoverProbeDsnAsync(
+        ClusterSnapshot snap, ShardSpec srcShard, CancellationToken ct)
+    {
+        var addresses = await shards.ReadPortAllocAsync(snap.Config.Cluster, ct);
+        if (!addresses.IsSuccess)
+            return Result<string>.Failed(addresses.Error!);
+        if (!ShardEndpoints.HasAdoptedNodes(srcShard.Name, addresses.Value))
+            return Result<string>.Success(ShardEndpoints.MoverNpgsqlDsn(srcShard.Dsn!, secrets));
+
+        var master = await shards.ResolveMasterAsync(snap.Config.Cluster, srcShard, addresses.Value, ct);
+        if (!master.IsSuccess)
+            return Result<string>.Failed(master.Error!);
+        if (master.Value is not { } m)
+            return Result<string>.Failed(new ApplicationException(
+                $"мастер '{srcShard.Name}' не определён — mover-проба невозможна"));
+
+        // Single-host DSN: Npgsql допускает Target Session Attributes только
+        // с multi-host (e2e-факт стенда); адрес и так мастер — атрибут не нужен.
+        return Result<string>.Success(
+            $"Host={m.Host};Port={m.Ports.Pg};Database={snap.Config.DbName};Username={ShardEndpoints.MoverRole};" +
+            $"Password={secrets.MoverPassword};SSL Mode=Require;Trust Server Certificate=true");
+    }
+
+    // Подмена advertised-хоста только для канонических исполнителей подписок
+    // (spec §3.3): усыновлённый (object) исполнитель в compose-сети резолвит
+    // адреса dsn-ключа сам — host.docker.internal сломал бы подключение.
+    // Недоступность portalloc — не повод рвать переезд: без подмены (консервативно).
+    private async Task<string?> AdvertisedForShardAsync(string cluster, string shard, CancellationToken ct)
+    {
+        var addresses = await shards.ReadPortAllocAsync(cluster, ct);
+        return !addresses.IsSuccess || ShardEndpoints.HasAdoptedNodes(shard, addresses.Value)
+            ? null
+            : options.AdvertisedPublisherHost;
+    }
+
     private async Task<Result<(string Src, string Dst)>> ResolveShardDsnsAsync(
         ClusterSnapshot snap, ShardSpec srcShard, ShardSpec dstShard, CancellationToken ct)
     {
@@ -1004,14 +1053,14 @@ public sealed class MoveProcess(
         if (!addresses.IsSuccess)
             return Result<(string, string)>.Failed(addresses.Error!);
 
-        var srcMaster = await shards.ResolveMasterAsync(srcShard, addresses.Value, ct);
+        var srcMaster = await shards.ResolveMasterAsync(snap.Config.Cluster, srcShard, addresses.Value, ct);
         if (!srcMaster.IsSuccess)
             return Result<(string, string)>.Failed(srcMaster.Error!);
         if (srcMaster.Value is null)
             return Result<(string, string)>.Failed(new ApplicationException(
                 $"мастер '{srcShard.Name}' не определён — ждём (Patroni-выборы?)"));
 
-        var dstMaster = await shards.ResolveMasterAsync(dstShard, addresses.Value, ct);
+        var dstMaster = await shards.ResolveMasterAsync(snap.Config.Cluster, dstShard, addresses.Value, ct);
         if (!dstMaster.IsSuccess)
             return Result<(string, string)>.Failed(dstMaster.Error!);
         if (dstMaster.Value is null)

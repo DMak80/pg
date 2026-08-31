@@ -384,6 +384,13 @@ public class ReconcileLoopTests
             return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
         }
 
+        public Task<Result<ProcessOutcome>> AdoptAsync(ClusterSnapshot snap, CancellationToken ct)
+        {
+            // Усыновление (adopt-repair spec §3.2): порядок — сразу после supervise.
+            using var _ = Track(snap.Config.Cluster, [], callName: "adopt");
+            return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
+        }
+
         public Task<Result<ProcessOutcome>> ProcessMovesAsync(ClusterSnapshot snap, CancellationToken ct)
         {
             using var _ = Track(snap.Config.Cluster, Moved, callName: "moves");
@@ -399,6 +406,13 @@ public class ReconcileLoopTests
         public Task<Result<ProcessOutcome>> RotateAppPasswordAsync(ClusterSnapshot snap, CancellationToken ct)
         {
             using var _ = Track(snap.Config.Cluster, Rotated, callName: "rotate-app-password");
+            return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
+        }
+
+        public Task<Result<ProcessOutcome>> RepairAsync(ClusterSnapshot snap, CancellationToken ct)
+        {
+            // Репарация (adopt-repair spec §3.5): порядок — после rotate, до moves.
+            using var _ = Track(snap.Config.Cluster, [], callName: "repair");
             return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
         }
 

@@ -3,9 +3,11 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 if [ "${1:-}" = "-v" ]; then
-  docker compose --profile full down -v --remove-orphans
+  # Профили как в 00-up (full + kafka): kafkaworker не должен переживать
+  # teardown со стёртым etcd (adopt-repair: полный прогон детерминирован).
+  docker compose --profile full --profile kafka down -v --remove-orphans
   echo "✓ стенд разобран (данные стёрты)"
 else
-  docker compose --profile full down --remove-orphans
+  docker compose --profile full --profile kafka down --remove-orphans
   echo "✓ стенд разобран (etcd-data сохранён)"
 fi

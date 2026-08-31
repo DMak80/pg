@@ -109,17 +109,17 @@ master2="${m2%:*}"; rep2=s2b; [ "$master2" = s2b ] && rep2=s2a
 set_sync "$master1" "$rep1"
 set_sync "$master2" "$rep2"
 
-# 6) инвентарь: схемы bucket_% только ACTIVE-бакетов владельца (spec §6:
-#    inventory-mismatch сверяет только ACTIVE; 8 на s1, 5 на s2)
+# 6) инвентарь: схемы ВСЕХ бакетов владельца по routing (adopt-repair: сид
+#    больше не сеет аномалий — все 16 ACTIVE; 10 на s1, 6 на s2)
 schemas() { # master "список бакетов"
   for b in $2; do
     docker compose exec -T "$1" psql -U postgres -d demo -qAt \
       -c "CREATE SCHEMA IF NOT EXISTS bucket_$b" >/dev/null
   done
 }
-schemas "$master1" "0 2 4 6 8 10 12 14"
-schemas "$master2" "1 5 9 13 15"
-echo "  инвентарь: 8 схем на $master1, 5 на $master2"
+schemas "$master1" "0 2 3 4 6 8 10 11 12 14"
+schemas "$master2" "1 5 7 9 13 15"
+echo "  инвентарь: 10 схем на $master1, 6 на $master2"
 
 # 7) kafkaworker жив: heartbeat /kafkaworker/instances/* (lease TTL — ключ
 #    исчезает со смертью воркера). Сид (чек 50) с живым воркером несовместим —

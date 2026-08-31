@@ -1,5 +1,7 @@
 using PgWorker.Core;
+using PgWorker.Core.Model;
 using PgWorker.Moves;
+using PgWorker.Provisioning.Endpoints;
 using PgWorker.UnitTests.Provisioning;
 using Xunit;
 
@@ -57,6 +59,44 @@ public class MoveDdlTests
         dump.Value.Should().Be("-- ddl");
         driver.Executed.Should().ContainSingle().Which.Cmd.Should().BeEquivalentTo(
             ["su", "postgres", "-c", "pg_dump --schema-only --no-owner --no-privileges --schema=bucket_42 shop"]);
+    }
+
+    // AAA (adopt-repair §3.3): pg_dump усыновлённой ноды — exec в её фактический
+    // object-контейнер (postgres-образ несёт утилиты), не в каноническое pgw-имя
+    [Fact]
+    public async Task DumpAsync_WithOverride_ExecsInObjectContainer()
+    {
+        // Arrange: драйвер-фейк записывает ExecContainerAsync-вызовы.
+        var driver = new Fakes.FakeDriver();
+        var ddl = new MoveDdl(driver, new StubSql());
+
+        // Act
+        var dump = await ddl.DumpAsync("demo", "s2", "s2a", "demo", "bucket_13", CancellationToken.None,
+            containerOverride: "as-s2a");
+
+        // Assert: exec ушёл в object-контейнер, а не в pgw-имя.
+        dump.IsSuccess.Should().BeTrue();
+        driver.ContainerExecs.Should().ContainSingle();
+        driver.ContainerExecs[0].Container.Should().Be("as-s2a");
+        driver.ContainerExecs[0].Cmd.Should().BeEquivalentTo(
+            ["pg_dump", "--schema-only", "--no-owner", "--no-privileges", "--schema=bucket_13", "demo"]);
+        driver.Executed.Should().BeEmpty("канонический ExecNodeAsync не звался");
+    }
+
+    // AAA (adopt-repair §3.3): внешний ли исполнитель подписок — object-нода в portalloc
+    [Fact]
+    public void HasAdoptedNodes_MixedShard_True()
+    {
+        // Arrange: в шарде есть object-нода.
+        var addresses = new Dictionary<string, NodeAddress>
+        {
+            ["s2/s2a"] = new("local", new NodePorts(5435, 8021, 0), "as-s2a"),
+            ["s2/s2b"] = new("local", new NodePorts(5436, 8022, 0)),
+        };
+
+        // Act / Assert
+        ShardEndpoints.HasAdoptedNodes("s2", addresses).Should().BeTrue();
+        ShardEndpoints.HasAdoptedNodes("s1", addresses).Should().BeFalse();
     }
 
     // AAA: невалидное имя бакета — исключение до docker exec (SQL/shell-инъекция)

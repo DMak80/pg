@@ -14,17 +14,34 @@ public sealed class MoveDdl(IClusterDriver driver, IMoveSqlExecutor sql)
     // Dump схемы бакета из мастер-контейнера узла-источника: флаги 1:1 со
     // скриптом шага 1 (--schema-only --no-owner --no-privileges). Имя бакета
     // валидируется до подстановки в shell-команду (SQL/shell-инъекции).
+    // containerOverride (adopt-repair spec §3.3): у усыновлённой ноды pg_dump
+    // идёт в её фактический docker-контейнер (postgres-образ несёт утилиты),
+    // а не в каноническое pgw-имя; null — обычное поведение.
     public Task<Result<string>> DumpAsync(
-        string cluster, string shard, string node, string dbname, string bucket, CancellationToken ct)
+        string cluster, string shard, string node, string dbname, string bucket,
+        CancellationToken ct, string? containerOverride = null)
     {
         if (!MoveNames.ValidateIdentifier(bucket))
             throw new ArgumentException($"недопустимое имя бакета: '{bucket}' (шаблон ^[a-z][a-z0-9_]*)");
 
-        return driver.ExecNodeAsync(
-            cluster, shard, node,
-            ["su", "postgres", "-c",
-                $"pg_dump --schema-only --no-owner --no-privileges --schema={bucket} {dbname}"],
-            ct);
+        // Канонический pgw-контейнер (Spilo) — exec от root, утилиты под postgres
+        // → su postgres. Усыновлённый postgres:18-контейнер работает ОТ юзера
+        // postgres — su требует пароль (e2e-факт), зовём pg_dump напрямую.
+        var cmd = containerOverride is { Length: > 0 }
+            ? new[]
+            {
+                "pg_dump", "--schema-only", "--no-owner", "--no-privileges",
+                $"--schema={bucket}", dbname
+            }
+            : new[]
+            {
+                "su", "postgres", "-c",
+                $"pg_dump --schema-only --no-owner --no-privileges --schema={bucket} {dbname}"
+            };
+
+        return containerOverride is { Length: > 0 }
+            ? driver.ExecContainerAsync(containerOverride, cmd, ct)
+            : driver.ExecNodeAsync(cluster, shard, node, cmd, ct);
     }
 
     // Применение DDL на приёмнике: батч Npgsql (ON_ERROR_STOP-эквивалент —

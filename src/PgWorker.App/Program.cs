@@ -118,6 +118,7 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ShardProbe>(),
+    sp.GetRequiredService<ISqlExecutor>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     new ProcessThresholds(sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.NodeDeadSec,
@@ -136,6 +137,21 @@ builder.Services.AddSingleton(sp => new ShardEndpoints(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<ShardProbe>()));
+
+// Усыновление кластеров (adopt-repair spec §3.2): адреса из HA-контура+docker →
+// portalloc; ensure секретов/ролей — общие ensurer'ы выше.
+builder.Services.AddSingleton(sp => new AdoptionProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<ShardEndpoints>(),
+    sp.GetRequiredService<ISqlExecutor>(),
+    sp.GetRequiredService<IAppSecretEnsurer>(),
+    sp.GetRequiredService<IAppParamsEnsurer>(),
+    sp.GetRequiredService<InstallSecrets>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 
 // Ensure per-cluster app-секрета (spec §4.1): чтение/txn put-if-absent
 // /clusters/<C>/{app_user,app_password} — общий для Provisioning/AddShard.
@@ -210,6 +226,18 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<ILoggerFactory>().CreateLogger<MoveProcess>(),
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
 });
+
+// Репарация брошенных переездов (adopt-repair spec §3.5): синтетические заявки
+// put-if-absent в существующий MoveProcess; пороги = панельные алерты.
+builder.Services.AddSingleton(sp => new MoveRepairProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Moves.ToRuntime(
+        sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<MoveRepairProcess>()));
 
 // Ротация app-пароля (spec §4.3, arch/14 §5 I): заявка /pgworker/rotations/<C>;
 // Active-ветка цикла зовёт через ClusterProcesses (scale → rotate → evacuate → moves).

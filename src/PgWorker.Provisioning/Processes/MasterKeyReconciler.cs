@@ -38,6 +38,14 @@ public sealed class MasterKeyReconciler(IEtcdGateway etcd, string[] endpoints, S
         {
             var key = $"/clusters/{cluster}/shards/{shard.Name}/master";
 
+            // Усыновлённые шарды не сверяем (spec §3.4, arch/14 §5 C/R8): их master-ключ
+            // пишет внешний HA-контур своим форматом node:port — коррекция порождает
+            // войну писателей; резолв мастера понимает оба формата (§5 F).
+            var adopted = shard.Nodes.Any(n =>
+                addresses.TryGetValue($"{shard.Name}/{n.Name}", out var a) && a.Object is not null);
+            if (adopted)
+                continue;
+
             // Фактический primary: первая нода, ответившая 200 на /primary.
             var nodes = shard.Nodes
                 .Where(n => addresses.ContainsKey($"{shard.Name}/{n.Name}"))

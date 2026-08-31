@@ -169,6 +169,12 @@ internal sealed class ReconcileLoop(
                     if (supervised is null)
                         break;
 
+                    // Усыновление (spec §3.2, arch/14 §5 J): адреса dsn-шард без
+                    // portalloc — до scale (add смотрит pinned portalloc) и до
+                    // repair/moves (SQL нужен адрес).
+                    await RunClusterOpAsync(cluster, "adopt",
+                        () => processes.AdoptAsync(snap, ct), ct);
+
                     // Scale-проход (t06 spec §5.1): remove → add, после надзора, до
                     // эвакуаций/moves — демонтаж освобождает хосты/порты для подъёма (Д13).
                     await RunClusterOpAsync(cluster, "scale-shards",
@@ -178,6 +184,11 @@ internal sealed class ReconcileLoop(
                     // операция — до эвакуаций/переездов, не ждёт длинных moves.
                     await RunClusterOpAsync(cluster, "rotate-app-password",
                         () => processes.RotateAppPasswordAsync(snap, ct), ct);
+
+                    // Репарация брошенных переездов (spec §3.5, arch/14 §5 K): синтетические
+                    // заявки до moves — этот же тик начнёт их обработку (старейшая заявка).
+                    await RunClusterOpAsync(cluster, "repair",
+                        () => processes.RepairAsync(snap, ct), ct);
 
                     // События эвакуации: полностью мёртвые шарды (spec §6.4 D/E).
                     foreach (var deadShard in supervised.DeadShards)

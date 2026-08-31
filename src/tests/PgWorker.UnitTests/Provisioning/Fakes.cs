@@ -260,12 +260,41 @@ internal static class Fakes
                 : Result<string>.Success(string.Empty));
         }
 
+        // Инспекция усыновления (adopt-repair T3): фиксированная карта находок;
+        // пустая карта = docker-хосты не видят ни одной ноды (тихий skip).
+        public IReadOnlyDictionary<string, DiscoveredNode> InspectResult { get; set; }
+            = new Dictionary<string, DiscoveredNode>();
+
+        public readonly List<(string Container, IReadOnlyList<string> Cmd)> ContainerExecs = [];
+
+        public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
+            IReadOnlyCollection<string> nodeNames, CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlyDictionary<string, DiscoveredNode>>.Success(
+                (IReadOnlyDictionary<string, DiscoveredNode>)InspectResult
+                    .Where(p => nodeNames.Contains(p.Key))
+                    .ToDictionary(p => p.Key, p => p.Value)));
+
+        public Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct)
+        {
+            lock (_gate)
+            {
+                ContainerExecs.Add((containerName, cmd));
+            }
+
+            return Task.FromResult(Result<string>.Success(string.Empty));
+        }
+
         public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
         {
             List<string> objects;
             lock (_gate)
             {
-                objects = NodeObjects.ToList(); // снапшот: читатель может идти параллельно
+                // Контракт реального PlainClusterDriver (ревью Фазы 7): список
+                // строится docker-фильтром по префиксу pgw-<C>- — object-контейнеры
+                // усыновлённых нод (as-*) сюда НЕ попадают никогда. Фейк обязан
+                // вести себя так же, иначе тесты маскируют дефекты матчинга.
+                var prefix = $"pgw-{cluster}-";
+                objects = NodeObjects.Where(n => n.StartsWith(prefix, StringComparison.Ordinal)).ToList();
             }
 
             return Task.FromResult(Result<IReadOnlyList<string>>.Success(objects));
@@ -282,6 +311,8 @@ internal static class Fakes
         public readonly List<(string Dsn, string Sql)> Scalars = [];
         public readonly List<(string Dsn, string DbName)> EnsuredDatabases = [];
         public Func<Result>? ExecuteResult { get; set; }
+        public Func<string, Result>? ExecuteResultByDsn { get; set; }
+        public Func<string, Result<object?>>? ScalarResultByDsn { get; set; }
         public Action<string>? OnExecute { get; set; }
 
         public Task<Result> ExecuteAsync(string dsn, string sql, CancellationToken ct)
@@ -292,7 +323,8 @@ internal static class Fakes
             }
 
             OnExecute?.Invoke(dsn);
-            return Task.FromResult(ExecuteResult is { } f ? f() : Result.Success());
+            return Task.FromResult(ExecuteResultByDsn is { } byDsn ? byDsn(dsn)
+                : ExecuteResult is { } f ? f() : Result.Success());
         }
 
         public Task<Result<object?>> ExecuteScalarAsync(string dsn, string sql, CancellationToken ct)
@@ -302,7 +334,8 @@ internal static class Fakes
                 Scalars.Add((dsn, sql)); // t06: гварды ролей идут скалярами — трекаем их
             }
 
-            return Task.FromResult(Result<object?>.Success(null));
+            return Task.FromResult(ScalarResultByDsn is { } byDsn ? byDsn(dsn)
+                : Result<object?>.Success(null));
         }
 
         public Task<Result> EnsureDatabaseAsync(string dsn, string dbname, CancellationToken ct)

@@ -7,6 +7,7 @@ using PgWorker.Etcd.Client;
 using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Probes;
+using PgWorker.Provisioning.Sql;
 
 namespace PgWorker.Provisioning.Processes;
 
@@ -23,6 +24,7 @@ public sealed class NodeSupervisor(
     string[] endpoints,
     IClusterDriver driver,
     ShardProbe probe,
+    ISqlExecutor sql,
     ClaimStore claims,
     WorkJournal journal,
     ThresholdsOptions thresholds,
@@ -182,10 +184,20 @@ public sealed class NodeSupervisor(
             {
                 if (node.State is NodeState.Quarantined or NodeState.Removing)
                     continue; // карантин/удаление — не пересоздаём (E3/задача 22)
-                if (!topology.Nodes.ContainsKey(node.Name))
+                if (!topology.Nodes.TryGetValue(node.Name, out var declaredAddr))
                     continue;
+                // Границы надзора (spec §3.4, arch/14 §5 C/R9): усыновлённая нода
+                // (object) ВНЕ домена EnsureNode — self-healing off. Её контейнер
+                // не входит в docker-домен pgw-<C>- (ListNodeObjectsAsync отдаёт
+                // только канонические имена, object-контейнер там не виден), а
+                // пересоздание подняло бы второй Patroni на тот же scope (R9).
+                // Живость object-нод — SQL-проба в SuperviseShardAsync; сверка
+                // декларации к ним не применяется (живой и мёртвый — одинаково skip).
+                if (declaredAddr.Object is not null)
+                    continue;
+                // Матчинг декларации: канонический docker-объект ноды на месте?
                 if (existing.Contains($"pgw-{cluster}-{shard.Name}-{node.Name}"))
-                    continue; // контейнер на месте
+                    continue; // объект на месте
 
                 if (!resourcesLoaded)
                 {
@@ -309,6 +321,15 @@ public sealed class NodeSupervisor(
             if (!addresses.TryGetValue($"{shard.Name}/{node.Name}", out var addr))
                 continue;
 
+            // Self-healing off для усыновлённых (spec §3.4, R9): rebuild поднял бы
+            // канонический pgw-контейнер рядом с внешним orchestration — только журнал.
+            if (addr.Object is not null)
+            {
+                await journal.WritePhaseAsync(cluster, "supervise", "recreate-external", claims.InstanceId,
+                    $"{shard.Name}/{node.Name}: усыновлённая нода — пересоздание вручную (object={addr.Object})", ct);
+                continue;
+            }
+
             if (leader == node.Name)
             {
                 var mode = await ReadRecreateModeAsync(cluster, shard.Name, node.Name, ct);
@@ -423,7 +444,22 @@ public sealed class NodeSupervisor(
                 continue;
             if (!addresses.TryGetValue($"{shard.Name}/{node.Name}", out var addr))
                 continue; // без закреплённого адреса пробу не сделать
-            if (await probe.IsAliveAsync(addr, ct))
+
+            // Живость усыновлённой ноды без Patroni-REST (spec §3.4): SQL-проба —
+            // положительное свидетельство живости PG (сайдкар мёртв ≠ PG мёртв).
+            bool nodeAlive;
+            if (addr.Ports.Patroni == 0)
+            {
+                var dsn = DatabaseProvisioner.BuildAdminDsn(addr.Host, addr.Ports.Pg, snap.Config.DbName, secrets);
+                var probeResult = await sql.ExecuteScalarAsync(dsn, "SELECT 1", ct);
+                nodeAlive = probeResult.IsSuccess;
+            }
+            else
+            {
+                nodeAlive = await probe.IsAliveAsync(addr, ct);
+            }
+
+            if (nodeAlive)
                 alive.Add(node.Name);
             else
                 dead.Add(node.Name);
@@ -444,11 +480,16 @@ public sealed class NodeSupervisor(
             var quorum = alive.Count >= Math.Max(1, shard.Nodes.Count - 1);
             var expired = Now() - track[trackKey] > thresholds.NodeDeadSec;
 
-            if (!isLeader && quorum && expired)
+            // Усыновлённые (object) НЕ пересоздаются (spec §3.4, R9): rebuild
+            // поднял бы второй Patroni на тот же scope — мёртвая усыновлённая
+            // получает честный UNREACHABLE ниже (реальная проблема, разбор оператором).
+            var adopted = addresses.TryGetValue(trackKey, out var addr) && addr.Object is not null;
+
+            if (!isLeader && quorum && expired && !adopted)
             {
                 // Rebuild (эталон rebuild-node.sh): удалить контейнер+volume,
                 // пересоздать с тем же адресом; Patroni сделает pg_basebackup.
-                if (!addresses.TryGetValue(trackKey, out var addr))
+                if (addr is null)
                     continue;
                 var removed = await driver.RemoveNodeAsync(cluster, shard.Name, name, ct);
                 if (!removed.IsSuccess)

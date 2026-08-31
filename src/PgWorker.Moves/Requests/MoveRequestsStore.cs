@@ -62,6 +62,21 @@ public sealed class MoveRequestsStore(IEtcdGateway gateway, string[] endpoints)
         => WithFailoverAsync(endpoint => gateway.PutAsync(
             endpoint, MoveNames.MoveKey(cluster, bucket), request.Serialize(), null, ct));
 
+    /// <summary>Заявка put-if-absent (txn NotExists = version==0, spec §3.5 MR1):
+    /// синтетическая заявка репарации НЕ затирает операторскую (гонка с
+    /// оператором безопасна). Эталон txn — ClaimStore.TryPutLeasedKeyAsync.</summary>
+    public async Task<Result<bool>> PutIfAbsentAsync(
+        string cluster, string bucket, MoveRequest request, CancellationToken ct)
+    {
+        var key = MoveNames.MoveKey(cluster, bucket);
+        var txn = await WithFailoverAsync(endpoint => gateway.TxnAsync(endpoint, TxnRequest.Of(
+            [TxnCompare.NotExists(key)],
+            [new TxnOp.Put(key, request.Serialize(), null)]), ct));
+        return txn.IsSuccess
+            ? Result<bool>.Success(txn.Value.Succeeded)
+            : Result<bool>.Failed(txn.Error!);
+    }
+
     // Range по префиксу кластера → (bucket, заявка); битый JSON — не ошибка тика (образец
     // ClusterSnapshotParser.ParseClusters: пропуск + запись в errors).
     internal static Result<IReadOnlyList<(string Bucket, MoveRequest Request)>> ParseRange(

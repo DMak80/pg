@@ -44,6 +44,20 @@ public sealed class StubScaleDriver : IClusterDriver
         string cluster, string shard, string node, IReadOnlyList<string> cmd, CancellationToken ct)
         => Task.FromResult(Result<string>.Success(string.Empty));
 
+    // Инспекция усыновления (adopt-repair T3): фиксированная карта находок.
+    public IReadOnlyDictionary<string, DiscoveredNode> InspectResult { get; set; }
+        = new Dictionary<string, DiscoveredNode>();
+
+    public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
+        IReadOnlyCollection<string> nodeNames, CancellationToken ct)
+        => Task.FromResult(Result<IReadOnlyDictionary<string, DiscoveredNode>>.Success(
+            (IReadOnlyDictionary<string, DiscoveredNode>)InspectResult
+                .Where(p => nodeNames.Contains(p.Key))
+                .ToDictionary(p => p.Key, p => p.Value)));
+
+    public Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct)
+        => Task.FromResult(Result<string>.Success(string.Empty));
+
     public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
         => Task.FromResult(Result<IReadOnlyList<string>>.Success(
             (IReadOnlyList<string>)NodeObjects));

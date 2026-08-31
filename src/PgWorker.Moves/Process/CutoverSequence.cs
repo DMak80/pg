@@ -266,14 +266,14 @@ public sealed class CutoverSequence(
         if (!addresses.IsSuccess)
             return Result<(string, string)>.Failed(addresses.Error!);
 
-        var curMaster = await shards.ResolveMasterAsync(curShard, addresses.Value, ct);
+        var curMaster = await shards.ResolveMasterAsync(c.Cluster, curShard, addresses.Value, ct);
         if (!curMaster.IsSuccess)
             return Result<(string, string)>.Failed(curMaster.Error!);
         if (curMaster.Value is null)
             return Result<(string, string)>.Failed(new ApplicationException(
                 $"cutover {c.Cluster}/{c.Bucket}: мастер '{c.Cur}' не определён — ждём"));
 
-        var newMaster = await shards.ResolveMasterAsync(newShard, addresses.Value, ct);
+        var newMaster = await shards.ResolveMasterAsync(c.Cluster, newShard, addresses.Value, ct);
         if (!newMaster.IsSuccess)
             return Result<(string, string)>.Failed(newMaster.Error!);
         if (newMaster.Value is null)

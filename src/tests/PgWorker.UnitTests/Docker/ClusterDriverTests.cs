@@ -47,6 +47,17 @@ public class ClusterDriverTests
             return Task.FromResult(Result<IReadOnlyList<DockerContainer>>.Success(matched));
         }
 
+        // Инспекты по Id (adopt-repair T2): пустая карта → Failed — движок честно не нашёл.
+        public Dictionary<string, DockerContainerInspect> Inspects = [];
+
+        public Task<Result<DockerContainerInspect>> InspectContainerAsync(string id, CancellationToken ct)
+        {
+            Calls.Add(("inspect-container", id));
+            return Task.FromResult(Inspects.TryGetValue(id, out var inspect)
+                ? Result<DockerContainerInspect>.Success(inspect)
+                : Result<DockerContainerInspect>.Failed(new ApplicationException($"инспект {id} недоступен (стаб)")));
+        }
+
         public Task<Result> CreateContainerAsync(ContainerSpec spec, string name, CancellationToken ct)
         {
             Calls.Add(("create", spec));

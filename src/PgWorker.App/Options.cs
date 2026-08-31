@@ -141,11 +141,19 @@ public sealed class MovesOptions
     /// используемого Etcd:AdvertisedEndpoints).</summary>
     public string? AdvertisedPublisherHost { get; set; }
 
+    /// <summary>Репарация брошенных статусов: возраст без заявки для
+    /// SYNCING/ABORTING (600 = StaleMoveSeconds панели, spec §2.3).</summary>
+    public int RepairStaleSec { get; set; } = 600;
+
+    /// <summary>Репарация FROZEN (заморозка режет запись — чиним быстрее;
+    /// 120 = AbortMinAgeSec, spec §2.3).</summary>
+    public int RepairFrozenSec { get; set; } = 120;
+
     /// <summary>Runtime-опции процессов переезда: склейка Moves + Thresholds (t01 задача 17).</summary>
     public MovesRuntimeOptions ToRuntime(ThresholdsOptions thresholds) => new(
         PollIntervalSec, FreezeWaitSec, FreezeLockTimeoutSec, FreezeLockTries,
         AbortMinAgeSec, FailoverSlots, thresholds.CutoverTimeoutSec, thresholds.ConnFailBudgetSec,
-        AdvertisedPublisherHost);
+        AdvertisedPublisherHost, RepairStaleSec, RepairFrozenSec);
 }
 
 /// <summary>Параллелизм процессов разных кластеров (SemaphoreSlim).</summary>

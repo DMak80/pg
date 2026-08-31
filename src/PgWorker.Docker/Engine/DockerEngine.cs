@@ -98,6 +98,31 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         });
     }
 
+    // GET /containers/<id>/json — инспект контейнера для матчинга усыновления
+    // (spec §3.1): hostname/aliases/env + host-биндинги NetworkSettings.Ports.
+    public async Task<Result<DockerContainerInspect>> InspectContainerAsync(string id, CancellationToken ct)
+        => await Result<DockerContainerInspect>.FromAsync(async () =>
+        {
+            var dto = await GetAsync<ContainerInspectDto>($"/containers/{Uri.EscapeDataString(id)}/json", ct)
+                      ?? throw new ApplicationException($"инспект контейнера {id} пуст");
+            var ports = new List<PortMap>();
+            foreach (var (key, bindings) in dto.NetworkSettings?.Ports ?? [])
+            {
+                // ключ вида "<port>/<proto>" (например "5432/tcp"): только tcp-биндинги.
+                var parts = key.Split('/');
+                if (parts.Length != 2 || parts[1] != "tcp" || !int.TryParse(parts[0], out var containerPort))
+                    continue;
+                foreach (var binding in bindings ?? [])
+                    if (int.TryParse(binding.HostPort, out var hostPort))
+                        ports.Add(new PortMap(containerPort, hostPort));
+            }
+
+            var aliases = (dto.NetworkSettings?.Networks ?? new Dictionary<string, NetworkDto>())
+                .Values.SelectMany(n => n.Aliases ?? []).Distinct().ToArray();
+            return new DockerContainerInspect(dto.Id, dto.Config?.Hostname ?? "", aliases, dto.Config?.Env ?? [],
+                ports.Distinct().ToArray());
+        });
+
     public async Task<Result> CreateContainerAsync(ContainerSpec spec, string name, CancellationToken ct)
         => await Result.FromAsync(async () =>
         {
@@ -646,6 +671,42 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         [JsonPropertyName("PrivatePort")] public int PrivatePort { get; set; }
 
         [JsonPropertyName("PublicPort")] public int PublicPort { get; set; }
+    }
+
+    // GET /containers/<id>/json — только поля матчинга усыновления (spec §3.1).
+    private sealed class ContainerInspectDto
+    {
+        [JsonPropertyName("Id")] public string Id { get; set; } = "";
+
+        [JsonPropertyName("Config")] public ContainerConfigDto? Config { get; set; }
+
+        [JsonPropertyName("NetworkSettings")] public NetworkSettingsDto? NetworkSettings { get; set; }
+    }
+
+    private sealed class ContainerConfigDto
+    {
+        [JsonPropertyName("Hostname")] public string? Hostname { get; set; }
+
+        [JsonPropertyName("Env")] public string[]? Env { get; set; }
+    }
+
+    private sealed class NetworkSettingsDto
+    {
+        [JsonPropertyName("Ports")] public Dictionary<string, List<PortBindingDto>?>? Ports { get; set; }
+
+        [JsonPropertyName("Networks")] public Dictionary<string, NetworkDto>? Networks { get; set; }
+    }
+
+    private sealed class NetworkDto
+    {
+        [JsonPropertyName("Aliases")] public string[]? Aliases { get; set; }
+    }
+
+    private sealed class PortBindingDto
+    {
+        [JsonPropertyName("HostIp")] public string? HostIp { get; set; }
+
+        [JsonPropertyName("HostPort")] public string? HostPort { get; set; }
     }
 
     private sealed class NodeDto
