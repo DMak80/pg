@@ -24,7 +24,8 @@ public class KafkaAlertRulesTests
     private static KafkaSnapshot Snapshot(params KafkaClusterInfo[] clusters) => new(
         Now, EtcdReachable: true, ConsecutiveFailures: 0,
         [.. clusters], Rotations: [], Rebalances: [], Reassignments: [],
-        WorkerEndpoints: [], Probes: [], Alerts: [], ParseErrors: [], UnknownKeyCount: 0);
+        WorkerEndpoints: [new WorkerEndpoint("kw1", "http://kafkaworker:8080", 1)],
+        Probes: [], Alerts: [], ParseErrors: [], UnknownKeyCount: 0);
 
     // Active-кластер с брокерами (по умолчанию один RUNNING broker1).
     private static KafkaClusterInfo ActiveCluster(
@@ -49,7 +50,8 @@ public class KafkaAlertRulesTests
         => new(name, state, role, 2m, 4, 40);
 
     private static Alert AlertOf(string id, long sinceUnix) => new(
-        id, AlertSeverity.Critical, id[..id.IndexOf(':')], "", "", null, sinceUnix);
+        id, AlertSeverity.Critical, id[..id.IndexOf(':')], "", "", null, sinceUnix,
+        "тестовый hint", AlertRemedy.WorkerAuto, "тестовое действие");
 
     // ===== Волна C (план C3): missing-desired / stale / under-replicated / lag-high =====
 

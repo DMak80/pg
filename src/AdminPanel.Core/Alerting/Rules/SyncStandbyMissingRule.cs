@@ -32,7 +32,10 @@ public sealed class SyncStandbyMissingRule : IAlertRule
                 $"{cluster.Name}/{shard.Name}",
                 $"у мастера шарда {cluster.Name}/{shard.Name} нет sync-standby (sync_state sync/quorum) — предусловие переездов не выполнено (P8)",
                 new Dictionary<string, string> { ["standbiesTotal"] = runtime.Standbies.Count.ToString() },
-                null);
+                null,
+                "у мастера нет синхронного standby (sync/quorum): синхронная репликация — предусловие бесшовных переездов (cutover требует sync-подтверждения); мастер обязан держать sync-standby",
+                AlertRemedy.WorkerAuto,
+                "надзор воркера восстановит реплику (rebuild); висит — проверьте /service/<scope>/members и recreate отстающей ноды");
         }
     }
 }

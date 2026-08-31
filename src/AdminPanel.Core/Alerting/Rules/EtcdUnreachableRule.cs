@@ -27,6 +27,9 @@ public sealed class EtcdUnreachableRule : IAlertRule
             "etcd",
             $"etcd недоступен: {failures} подряд неудачных тика",
             new Dictionary<string, string> { ["consecutiveFailures"] = failures.ToString() },
-            SinceUnix: null); // проставляет AlertEngine (spec §3.4)
+            SinceUnix: null, // проставляет AlertEngine (spec §3.4)
+            Hint: "все endpoints etcd недоступны: панель держит прежние данные (BuiltAtUtc не растёт) и не видит изменений контракта; etcd — единственный источник правды и обязан быть достижим",
+            Remedy: AlertRemedy.OperatorRunbook,
+            RemedyText: "проверьте сеть/контейнеры etcd-контура (as-etcd стенда) по arch/09; после восстановления тик подхватит данные сам");
     }
 }

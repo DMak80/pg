@@ -40,7 +40,10 @@ public sealed class ShardNoLeaderRule : IAlertRule
                     ["cluster"] = scope.Cluster!,
                     ["shard"] = scope.Shard!,
                 },
-                null);
+                null,
+                "у matched HA-скопа нет leader-ключа: leader — точка маршрутизации записи и предусловие переездов; Patroni обязан писать /service/<scope>/leader при живом большинстве",
+                AlertRemedy.OperatorRunbook,
+                "проверьте патрони-скоп (REST :8008/overview, members) — выборы лидера обязаны сходиться; рестартуйте patroni-эмулятор/ноды скопа");
         }
     }
 }

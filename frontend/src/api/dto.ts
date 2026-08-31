@@ -317,6 +317,8 @@ export interface NodeRecreatedDto {
 export type RecreateMode = 'soft' | 'hard';
 
 // GET /api/alerts
+export type AlertRemedyName = 'worker-auto' | 'operator-api' | 'operator-runbook';
+
 export interface AlertDto {
   id: string;
   severity: AlertSeverityName;
@@ -325,6 +327,11 @@ export interface AlertDto {
   message: string;
   details: Record<string, string> | null;
   sinceUnix: number | null;
+  // Объяснение и движитель (arch/03 §4.1, task etcd-via-worker-api): null —
+  // обратно совместимые старые алерты без полей.
+  hint: string | null;
+  remedy: AlertRemedyName | null;
+  remedyText: string | null;
 }
 
 // POST /api/clusters/{cluster}/app-password/rotate — заявка ротации app-пароля

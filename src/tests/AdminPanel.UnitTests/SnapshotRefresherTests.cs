@@ -273,9 +273,11 @@ public class SnapshotRefresherTests
         // Act
         await refresher.RefreshOnceAsync(CancellationToken.None);
 
-        // Assert: key-malformed от битого ключа + 5 move-алертов сида demo (spec §3.15, §10.4).
+        // Assert: key-malformed от битого ключа + 5 move-алертов сида demo (spec §3.15, §10.4)
+        // + worker-api-unreachable (живых ключей /pgworker/api/ в фикстуре нет, arch/03 §4.1).
         var alerts = store.Current!.Alerts;
-        alerts.Should().HaveCount(6);
+        alerts.Should().HaveCount(7);
+        alerts.Should().Contain(a => a.Id == "worker-api-unreachable:pgworker");
         alerts.Should().Contain(a => a.Id == "key-malformed:/clusters/demo/buckets/status/bucket_9");
         alerts.Should().Contain(a => a.Id == "move-stale:demo/bucket_3");
         alerts.Should().Contain(a => a.Id == "move-stale:demo/bucket_7");

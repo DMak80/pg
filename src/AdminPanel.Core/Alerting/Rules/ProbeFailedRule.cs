@@ -30,7 +30,10 @@ public sealed class ProbeFailedRule : IAlertRule
                     ["target"] = probe.Target,
                     ["error"] = probe.Error ?? string.Empty,
                 },
-                null);
+                null,
+                "проба панели не дошла до цели: пробы (Patroni REST/SQL) идут из контейнера панели, неудача означает сетевую недостижимость или нездоровье цели; успешная проба — предусловие live-данных",
+                AlertRemedy.OperatorRunbook,
+                "проверьте достижимость цели из сети панели (сервисы стенда) и живость самой цели; панель ретраит пробу следующим тиком");
         }
     }
 }

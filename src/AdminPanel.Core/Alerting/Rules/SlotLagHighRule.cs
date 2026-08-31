@@ -37,7 +37,10 @@ public sealed class SlotLagHighRule(IOptions<AlertsOptions> options) : IAlertRul
                     ["lagBytes"] = lag.Value.ToString(),
                     ["thresholdBytes"] = ThresholdBytes.ToString(),
                 },
-                null);
+                null,
+                "лаг слота выше порога: слот копит WAL на мастере (риск среза и потери слота); каждый слот шарда обязан догонять",
+                AlertRemedy.WorkerAuto,
+                "надзор воркера следит за слотами (rebuild зависшей реплики); висит — проверьте нагрузку или запустите recreate ноды");
         }
     }
 

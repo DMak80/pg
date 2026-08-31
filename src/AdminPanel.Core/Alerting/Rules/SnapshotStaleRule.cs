@@ -34,6 +34,9 @@ public sealed class SnapshotStaleRule : IAlertRule
                 ["thresholdSeconds"] = ((long)threshold.TotalSeconds).ToString(),
                 ["builtAtUnix"] = snapshot.BuiltAtUtc.ToUnixTimeSeconds().ToString(),
             },
-            null);
+            null,
+            "снапшот панели не обновляется дольше 3 тиков: панель работает на устаревших данных (BuiltAtUtc не растёт), UI и алерты могут врать; тик обязан сходить каждый RefreshIntervalSeconds",
+            AlertRemedy.OperatorRunbook,
+            "проверьте etcd-контур по arch/09 (endpoints/кворум/alarms) — refresher оживёт сам после восстановления");
     }
 }

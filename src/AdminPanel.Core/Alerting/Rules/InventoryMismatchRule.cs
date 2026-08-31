@@ -63,7 +63,10 @@ public sealed class InventoryMismatchRule : IAlertRule
                     ["missing"] = string.Join(", ", missing),
                     ["extra"] = string.Join(", ", extra),
                 },
-                null);
+                null,
+                "фактические схемы bucket_% на шарде не совпадают с routing: SQL-сверка ловит «тихие» расхождения декларации и факта — расхождение ломает переезды (бакет есть в routing, схемы нет — и наоборот)",
+                AlertRemedy.WorkerAuto,
+                "SQL-автосинк воркера сводит фактические схемы с routing (feat автосинка); висит — дефект воркера или ручная схема на ноде");
         }
     }
 }

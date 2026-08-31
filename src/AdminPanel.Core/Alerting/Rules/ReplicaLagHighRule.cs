@@ -39,7 +39,10 @@ public sealed class ReplicaLagHighRule(IOptions<AlertsOptions> options) : IAlert
                     ["lagBytes"] = lag.Value.ToString(),
                     ["thresholdBytes"] = ThresholdBytes.ToString(),
                 },
-                null);
+                null,
+                "лаг члена Patroni-скопа выше порога: отставшая реплика копит WAL на мастере и теряет гарантию failover; каждый член обязан догонять",
+                AlertRemedy.WorkerAuto,
+                "надзор воркера следит за репликацией (rebuild зависшей); висит — проверьте нагрузку/сеть или запустите recreate ноды");
         }
     }
 }

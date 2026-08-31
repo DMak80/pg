@@ -44,7 +44,10 @@ public sealed class HaMemberNotStreamingRule : IAlertRule
                     ["state"] = member.State!,
                     ["expected"] = expected,
                 },
-                null);
+                null,
+                "реплика Patroni не в streaming: потоковая репликация — основа HA, отставшая реплика не примет failover; каждая реплика скопа обязана стримить",
+                AlertRemedy.WorkerAuto,
+                "надзор воркера закроет rebuild (TO_RECREATE); висит — проверьте /service/<scope>/members и запустите recreate ноды через API панели");
         }
     }
 }

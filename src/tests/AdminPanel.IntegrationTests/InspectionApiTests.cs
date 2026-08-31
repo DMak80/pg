@@ -61,11 +61,11 @@ internal static class InspectionSnapshots
             [],
             [],
             [                new Alert("etcd-alarm:42:nospace", AlertSeverity.Critical, "etcd-alarm", "42:nospace",
-                    "тревога etcd NOSPACE на member 42", new Dictionary<string, string> { ["memberId"] = "42" }, null),
+                    "тревога etcd NOSPACE на member 42", new Dictionary<string, string> { ["memberId"] = "42" }, null, "тестовый hint", AlertRemedy.WorkerAuto, "тестовое действие"),
                 new Alert("etcd-endpoint-down:http://etcd2:2379", AlertSeverity.Warning, "etcd-endpoint-down",
-                    "http://etcd2:2379", "endpoint etcd недоступен", new Dictionary<string, string> { ["errors"] = "connection refused" }, null),
+                    "http://etcd2:2379", "endpoint etcd недоступен", new Dictionary<string, string> { ["errors"] = "connection refused" }, null, "тестовый hint", AlertRemedy.WorkerAuto, "тестовое действие"),
                 new Alert("key-malformed:/x", AlertSeverity.Warning, "key-malformed", "/x",
-                    "ключ не разобран", null, null),
+                    "ключ не разобран", null, null, "тестовый hint", AlertRemedy.WorkerAuto, "тестовое действие"),
             ],
             [],
             0);
@@ -281,6 +281,10 @@ public class InspectionApiTests
         alerts[1].GetProperty("kind").GetString().Should().Be("etcd-endpoint-down");
         alerts[2].GetProperty("kind").GetString().Should().Be("key-malformed");
         alerts[0].GetProperty("sinceUnix").ValueKind.Should().Be(JsonValueKind.Null);
+        // Объяснение и движитель (arch/03 §4.1): hint/remedy/remedyText в ответе
+        alerts[0].GetProperty("hint").GetString().Should().NotBeNullOrEmpty();
+        alerts[0].GetProperty("remedy").GetString().Should().Be("worker-auto");
+        alerts[0].GetProperty("remedyText").GetString().Should().NotBeNullOrEmpty();
     }
 
     [Fact]

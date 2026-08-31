@@ -21,6 +21,9 @@ public sealed class ClusterIncompleteRule : IAlertRule
                 cluster.Name,
                 $"кластер {cluster.Name} без config-ключа (incomplete)",
                 new Dictionary<string, string> { ["dbname"] = cluster.DbName ?? "missing" },
-                null);
+                null,
+                "префикс /clusters/<C> есть, но config-ключа нет: config — входная точка декларации (buckets/dbname), без неё кластер невидим для процессов панели и воркера; префикс обязан начинаться с config",
+                AlertRemedy.WorkerAuto,
+                "воркер ждёт доустойчивости ключей (journal /pgworker/work); при вечном висе — дефект воркера");
     }
 }

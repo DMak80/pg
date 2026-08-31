@@ -9,7 +9,8 @@ namespace AdminPanel.Api.Inspection;
 // Запрос ленты алертов с фильтрами (arch/03 §1; severity уже провалидирован эндпоинтом).
 public sealed record AlertsQuery(AlertSeverity? Severity, string? Kind) : IQuery<IReadOnlyList<AlertDto>>;
 
-// Ответ: один алерт (arch/03 §2; severity — строчная строка, spec §3.11).
+// Ответ: один алерт (arch/03 §2 + §4.1; severity — строчная строка, spec §3.11;
+// hint/remedy/remedyText — объяснение и движитель, task etcd-via-worker-api).
 public sealed record AlertDto(
     string Id,
     string Severity,
@@ -17,7 +18,10 @@ public sealed record AlertDto(
     string Target,
     string Message,
     IReadOnlyDictionary<string, string>? Details,
-    long? SinceUnix);
+    long? SinceUnix,
+    string? Hint = null,
+    string? Remedy = null,
+    string? RemedyText = null);
 
 // Core → DTO + фильтры: чистые функции (spec §6.2).
 public static class AlertsMapper
@@ -33,7 +37,10 @@ public static class AlertsMapper
             alert.Target,
             alert.Message,
             alert.Details,
-            alert.SinceUnix);
+            alert.SinceUnix,
+            alert.Hint,
+            RemedyName(alert.Remedy),
+            alert.RemedyText);
 
     // Фильтры до маппинга: severity и kind — точные совпадения (spec §3.13).
     public static IReadOnlyList<Alert> ApplyFilters(
@@ -48,6 +55,17 @@ public static class AlertsMapper
             AlertSeverity.Critical => "critical",
             AlertSeverity.Warning => "warning",
             _ => "info",
+        };
+
+    // Движитель — строка camel-дефисом (канон arch/03 §4.1): worker-auto |
+    // operator-api | operator-runbook; null-толерантность для старых алертов.
+    private static string? RemedyName(AlertRemedy? remedy)
+        => remedy switch
+        {
+            AlertRemedy.WorkerAuto => "worker-auto",
+            AlertRemedy.OperatorApi => "operator-api",
+            AlertRemedy.OperatorRunbook => "operator-runbook",
+            _ => null,
         };
 }
 
