@@ -57,4 +57,36 @@ fi
 wait_no_alert shard-no-master demo/s2
 echo "  shard-no-master -> demo/s2 погас"
 
+# 6) Доступность API воркера (full; spec §9.3/§9.5): ключ жив → мутации идут;
+#    остановлен → 503 + алерт worker-api-unreachable; возврат → гашение.
+#    Quick-стенд без pgworker (нет :8080/healthz) — шаг пропускается.
+if curl -fsS -m 3 http://localhost:8080/healthz >/dev/null 2>&1; then
+  ect get /pgworker/api/ --prefix --keys-only | grep -q . || { echo "❌ нет /pgworker/api/*"; exit 1; }
+  ( cd ../../deploy && docker compose stop pgworker >/dev/null 2>&1 )
+  code="$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -X POST "$BASE/api/clusters" \
+    -H 'Content-Type: application/json' -d '{"name":"probeapi"}')"
+  [ "$code" = 503 ] || { echo "❌ мутация при мёртвом воркере = $code (ожидался 503)"; exit 1; }
+  echo "  мутация панели при остановленном pgworker -> 503 (чтение живо)"
+  # алерт: тик ≤3 c ×2 + lease ≤15 c
+  for i in $(seq 1 20); do
+    curl -fsS -b "$JAR" "$BASE/api/alerts" | jq -e 'any(.[]; .kind=="worker-api-unreachable" and .target=="pgworker")' >/dev/null 2>&1 && break
+    sleep 2
+  done
+  curl -fsS -b "$JAR" "$BASE/api/alerts" | jq -e 'any(.[]; .kind=="worker-api-unreachable" and .target=="pgworker")' >/dev/null \
+    || { echo "❌ worker-api-unreachable не появился"; exit 1; }
+  echo "  worker-api-unreachable -> pgworker (critical) появился"
+  ( cd ../../deploy && docker compose start pgworker >/dev/null 2>&1 )
+  for i in $(seq 1 30); do curl -fsS -m 3 http://localhost:8080/healthz >/dev/null 2>&1 && break; sleep 1; done
+  # Гашение: ключ /pgworker/api/ восстановился (keepalive ≤15 c) + 2 тика панели → алерт исчез.
+  for i in $(seq 1 20); do
+    curl -fsS -b "$JAR" "$BASE/api/alerts" | jq -e 'any(.[]; .kind=="worker-api-unreachable" and .target=="pgworker") | not' >/dev/null 2>&1 && break
+    sleep 2
+  done
+  curl -fsS -b "$JAR" "$BASE/api/alerts" | jq -e 'any(.[]; .kind=="worker-api-unreachable" and .target=="pgworker") | not' >/dev/null \
+    || { echo "❌ worker-api-unreachable не погас после возврата pgworker"; exit 1; }
+  echo "  worker-api-unreachable: 503 мутаций + алерт + jq-гашение после восстановления — ok"
+else
+  echo "  (quick: pgworker не поднят — шаг worker-api-unreachable пропущен)"
+fi
+
 echo "✓ alerts-сценарий зелёный"

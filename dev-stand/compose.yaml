@@ -1,10 +1,11 @@
 # Dev-стенд PgWorker (задача 26; spec §9): внешний слой etcd. PgWorker в стенд
-# НЕ входит — запускается хост-процессом (dotnet run --project src/PgWorker.App
-# или integration/e2e-тесты) и управляет локальным docker через сокет.
+# НЕ входит — поднимается из deploy/ (docker compose up -d pgworker) и
+# управляет локальным docker через сокет.
 #
 #   docker compose -f dev-stand/compose.yaml up -d
-#   ./dev-stand/seed.sh                      # сид кластера shop (панель 02 §9.1)
-#   ./dev-stand/seed.sh http://localhost:2379 shop2   # ещё один кластер
+#   ( cd deploy && docker compose up -d pgworker )     # воркер (docker-only)
+#   ./dev-stand/seed.sh                        # декларация кластера shop через API воркера
+#   ./dev-stand/seed.sh http://localhost:8080 shop2    # ещё один кластер
 services:
   etcd:
     image: quay.io/coreos/etcd:v3.5.21

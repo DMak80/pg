@@ -26,6 +26,12 @@ services:
       PGW_BUCKET_MOVER_PASSWORD: ${PGW_BUCKET_MOVER_PASSWORD:?задайте секрет}
       # Конфигурация — env-оверрайды appsettings (пример: endpoints etcd).
       PgWorker__Etcd__Endpoints__0: ${PGW_ETCD_ENDPOINT:-http://localhost:2379}
+      # HTTP API воркера (arch/14 §1.1): advertise-URL в /pgworker/api/<id>,
+      # ключ X-Api-Key (пуст — проверка отключена, доверенная docker-сеть),
+      # демо-сид POST /api/seed/demo за флагом (стенд; прод — false).
+      PgWorker__Api__AdvertiseUrl: ${PGW_API_ADVERTISE_URL:-http://host.docker.internal:8080}
+      PgWorker__Api__ApiKey: ${PGW_API_KEY:-}
+      PgWorker__Api__EnableSeedEndpoint: ${PGW_API_ENABLE_SEED:-false}
 
   # KafkaWorker (arch/16 §2.1/§8): docker.sock, том снапшотов P12.
   # Env-секретов per-install нет (единственный секрет — per-cluster
@@ -51,6 +57,11 @@ services:
       # (arch/16 advertised-правило; null допустим только когда имя docker-хоста
       # резолвимо клиентами само по себе).
       KafkaWorker__AdvertisedClientHost: ${KFW_ADVERTISED_CLIENT_HOST:-host.docker.internal}
+      # HTTP API воркера (arch/16 §1.1): advertise-URL в /kafkaworker/api/<id>,
+      # ключ X-Api-Key, демо-сид за флагом (стенд; прод — false).
+      KafkaWorker__Api__AdvertiseUrl: ${KFW_API_ADVERTISE_URL:-http://host.docker.internal:8081}
+      KafkaWorker__Api__ApiKey: ${KFW_API_KEY:-}
+      KafkaWorker__Api__EnableSeedEndpoint: ${KFW_API_ENABLE_SEED:-false}
 
 volumes:
   pgw-snapshots:

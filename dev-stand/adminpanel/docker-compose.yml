@@ -1,5 +1,6 @@
-# Dev-стенд AdminPanel (arch/04, spec t10): профили quick (etcd+seed) и
-# full (+PG-шарды и patroni-эмуляторы; добавляются задачами 3-4).
+# Dev-стенд AdminPanel (arch/04, spec t10): профили quick (etcd+панель) и
+# full (+PG-шарды и patroni-эмуляторы); kafka-профиль — живой kafkaworker.
+# Сиды наливаются API воркеров (05-seed.sh, spec §3.5) — сервисов сида нет.
 # Имена сервисов канонические (DNS сети стенда: на них построены
 # DSN/репликация), container_name — с префиксом as- (не конфликтуют со
 # стендом pg (монорепозиторий), который порты на хост не публикует; arch/04 §1).
@@ -22,17 +23,6 @@ services:
       - --advertise-client-urls=http://host.docker.internal:2379
     volumes:
       - etcd-data:/var/etcd/data
-
-  seed:
-    build: ./seed
-    container_name: as-seed
-    restart: "no"
-    environment:
-      ETCDCTL_ENDPOINTS: http://etcd:2379
-    volumes:
-      - ./seed.sh:/seed.sh:ro
-    entrypoint: ["/bin/sh", "/seed.sh"]
-    depends_on: [etcd]
 
   # Шард 1: s1a (мастер; self-healing — при пустом PGDATA и живом мастере-пире
   # клонируется репликой: повторные прогоны после failover, spec t10 §3) + s1b
@@ -246,24 +236,11 @@ services:
       - ./adminpanel.appsettings.json:/app/appsettings.Stand.json:ro
     depends_on: [etcd]
 
-  # Kafka-сид (план B8): РОВНО 2 кластера /kafka/ (events Active + pending
-  # NOT_INITIALIZED + заявка ротации events). Профиль seed — опционален:
-  # дефолтный up и профиль kafka его НЕ поднимают (изоляция от живого воркера).
-  kafka-seed:
-    build: ./seed
-    container_name: as-kafka-seed
-    restart: "no"
-    profiles: ["seed"]
-    environment:
-      ETCDCTL_ENDPOINTS: http://etcd:2379
-    volumes:
-      - ./kafka-seed.sh:/kafka-seed.sh:ro
-    entrypoint: ["/bin/sh", "/kafka-seed.sh"]
-    depends_on: [etcd]
-
   # Живой KafkaWorker (план B8): профиль kafka — только явно. Управляет docker-
   # хостом через сокет; advertised host.docker.internal делает endpoints в etcd
-  # резолвимыми для клиентов (arch/16 §2.1). НЕ смешивать с профилем seed.
+  # резолвимыми для клиентов (arch/16 §2.1). Сид kafka-домена наливается его
+  # API (05-seed.sh kafka, spec §3.5): пробы контейнеров брокеров слепые →
+  # сидовые заявки не исполняются, данные стабильны (arch/16 §5 C).
   kafkaworker:
     build:
       context: ../..
@@ -272,6 +249,8 @@ services:
     container_name: as-kafkaworker
     restart: unless-stopped
     profiles: ["kafka"]
+    ports:
+      - "8082:8080" # /healthz + /api (хост-доступ чеков; 8082 — свободен)
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - kfw-snapshots:/snapshots
@@ -282,6 +261,10 @@ services:
     environment:
       KafkaWorker__Etcd__Endpoints__0: http://etcd:2379
       KafkaWorker__AdvertisedClientHost: host.docker.internal
+      # HTTP API воркера (arch/16 §1.1): панель ходит по compose-DNS
+      # (lease-ключ /kafkaworker/api/<id>), демо-сид включён (стенд).
+      KafkaWorker__Api__AdvertiseUrl: http://kafkaworker:8080
+      KafkaWorker__Api__EnableSeedEndpoint: "true"
     depends_on: [etcd]
 
 volumes:

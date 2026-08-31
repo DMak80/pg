@@ -10,7 +10,8 @@
 # панель (докер, localhost:5050, admin/admin), PG-шарды+эмуляторы, kafkaworker,
 # PgWorker (deploy/) — и ВСЕ на одном etcd (as-etcd, источник правды, контур один)
 cd dev-stand/adminpanel && checks/00-up.sh
-# или: docker compose up -d            # стенд части: etcd+сид+панель (без PG/kafka/PgWorker)
+# или: docker compose up -d   # стенд части: etcd+панель (без PG/kafka/PgWorker);
+#                             # сиды — отдельно через checks/05-seed.sh
 
 open http://localhost:5050
 ```
@@ -23,32 +24,46 @@ open http://localhost:5050
 
 | Профиль | Состав | Для чего |
 |---|---|---|
-| quick (по умолчанию) | etcd + seed | цикл бэкенд-разработки: API/алерты на сиде; Patroni/SQL-пробы закономерно падают (нод нет) |
+| quick (по умолчанию) | etcd + панель | цикл бэкенд-разработки: сиды — через `checks/05-seed.sh` (поднимает воркеров); Patroni/SQL-пробы закономерно падают (нод нет) |
 | full | + s1a/s1b, s2a/s2b, hc1a/hc1b, hc2a/hc2b | live-пробы, failover, e2e |
-| seed | + kafka-seed (разовый) | kafka-домен: 2 кластера `/kafka/` для чека `50-kafka-api.sh` (API на статике) |
 | kafka | + kafkaworker | живой воркер: управление кафкой; входит в полный подъём `00-up.sh` (full+kafka) всегда; e2e — чек `55-kafka-e2e.sh` (волна C) |
 
-⚠️ **kafka-профили не смешивать**: `--profile seed` и `--profile kafka`
-одновременно не поднимать. Сид выглядит для живого воркера как заявки
-(`pending` → provisioning, `events`-RUNNING без контейнеров →
-supervisor-пересоздания, заявка ротации → journal-fail). Чек `50-kafka-api.sh`
-сам останавливает поднятого `00-up.sh` воркера перед наливкой сида. Сид
-поднимается разово: `docker compose --profile seed run --rm kafka-seed`
-(идемпотентен); e2e-гейты (`55-kafka-e2e.sh`) идут на чистом `/kafka/`
-(контроль: `etcdctl get /kafka/ --prefix --keys-only` пусто до старта).
+## Сиды через API воркеров
+
+Прямая запись etcdctl'ом упразднена (spec etcd-via-worker-api §3.5): демо-сид
+pg-контура наливается `POST /api/seed/demo` PgWorker, kafka-домена — тем же
+эндпоинтом KafkaWorker (обa за флагом `EnableSeedEndpoint`, в стеночных compose —
+`true`). Идемпотентны: повторный вызов — no-op `{"seeded":false}`.
+
+- `checks/05-seed.sh [pg|kafka|all]` (default `all`) — поднимает нужного
+  воркера (pgworker — `deploy/`, kafkaworker — `--profile kafka`, хост-порт
+  8082), ждёт `/healthz`, зовёт `POST /api/seed/demo`, в kafka-режиме
+  дожидается живого lease-ключа `/kafkaworker/api/<id>`. Жизнью воркера ПОСЛЕ
+  наливки НЕ управляет — решает потребитель сида.
+- `00-up.sh` зовёт `05-seed.sh pg` после подъёма PgWorker (kafka-сид в полный
+  подъём не входит — e2e 55-го идёт на чистом `/kafka/`).
+- Совместимость kafka-сида с живым воркером: у сида нет контейнеров брокеров →
+  пробы воркера слепые (arch/16 §5 C: слепая проба = бездействие) → сидовые
+  заявки (lifecycle/rotate/rebalance) не исполняются, данные сида стабильны.
+  End-state полного прогона — «kafkaworker остановлен после сида»: чек 50
+  сам останавливает его финальным шагом; изолированный `05-seed.sh kafka`
+  оставляет воркера поднятым (безопасно — см. выше).
 
 ## Kafka-чеки
 
-- `checks/50-kafka-api.sh` — API kafka-домена на сиде: сам активирует
-  `--profile seed` первым шагом; воркер в чеке не запускается, контейнеров
-  не поднимает. Панель — хост-процессом как всегда.
+- `checks/50-kafka-api.sh` — API kafka-домена на сиде, налитом ЧЕРЕЗ API
+  живого воркера: `05-seed.sh kafka` поднимает kafkaworker и ждёт живой ключ
+  `/kafkaworker/api/<id>` (без него мутации панели — 503); все мутации шагов
+  1–13 идут панель → прокси (`WorkerApiGateway`) → API живого воркера; финал —
+  `docker compose stop kafkaworker` + kafka-грань алерта
+  `worker-api-unreachable`.
 - `checks/55-kafka-e2e.sh` (волна C) — полный цикл с живым воркером, с чистого
-  состояния (14 подшагов: создание → автосинк → desired → негатив → группа+лаг →
+  состояния (15 подшагов: создание → автосинк → desired → негатив → группа+лаг →
   missing-ветка → lifecycle создание/удаление топиков из панели (t01) → обе
-  отмены заявок → демонтаж broker-only → TO_REMOVE). Чек сам разбирает стенд,
-  чистит kfw-объекты, собирает образ kafkaworker и поднимает `--profile kafka`;
-  панель — хост-процессом (fresh-сборка с кодом волны C). Порт 2379 хоста не
-  должен быть занят внешним etcd (на время прогона его можно остановить).
+  отмены заявок → демонтаж broker-only → ребалансировка → TO_REMOVE). Чек сам
+  разбирает стенд, чистит kfw-объекты, собирает образ kafkaworker и поднимает
+  `--profile kafka`; панельные мутации физически идут через прокси в API
+  живого воркера. Порт 2379 хоста не должен быть занят внешним etcd.
 
 ## HostMap
 
@@ -64,16 +79,18 @@ adminpanel-стенда не нужен. `appsettings.Development.json` несё
 ```bash
 checks/90-down.sh -v        # если стенд уже поднимался
 checks/00-up.sh && checks/10-smoke-api.sh && checks/15-cluster-create.sh \
-  && checks/20-alerts.sh && checks/30-failover.sh && checks/40-live-probes.sh
-# панель уже в докере (шаг 8 подъёма); kafka: 50-й поднимает сид сам (профиль
-# seed); e2e 55-й — отдельно с чистого состояния
+  && checks/20-alerts.sh && checks/30-failover.sh && checks/40-live-probes.sh \
+  && checks/50-kafka-api.sh
+# сиды — внутри: 00-up наливает pg-сид (05-seed.sh pg), 50-й — kafka-сид
+# (05-seed.sh kafka, живой API, финальный stop воркера); e2e 55-й — отдельно
+# с чистого состояния (разбирает стенд)
 ```
 
 Порядок важен: 30-й делает failover s1 (мастером остаётся s1b, s1a
 rejoin'ится репликой) — 40-й рассчитан на эту топологию. Повторный
 прогон — только с чистого состояния (`90-down.sh -v`).
 
-Quick-режим: `checks/90-down.sh -v && docker compose up -d` → зелёные
+Quick-режим: `checks/90-down.sh -v && checks/05-seed.sh` → зелёные
 `10-smoke-api.sh` и `20-alerts.sh` (quick-ветка); 30/40 требуют full.
 После full-прогонов переход в quick — только с `-v` (lease-ключи
 протухли, идемпотентный сид их не восстановит).
@@ -84,6 +101,8 @@ Quick-режим: `checks/90-down.sh -v && docker compose up -d` → зелён�
   ноды — по имени сервиса (`s1a`…), контейнеры — `as-*` (не конфликтуют
   со стендом pg (этот монорепозиторий));
 - etcd: `docker compose exec etcd etcdctl --endpoints=http://localhost:2379 get / --prefix --keys-only`;
+- живые ключи API воркеров (lease TTL 15 c): `etcdctl get /pgworker/api/ --prefix`
+  и `/kafkaworker/api/` — ключ есть = инстанс жив и URL валиден;
 - эмуляторы: `curl 127.0.0.1:8011/cluster | jq .` (8011/8012/8021/8022);
 - панель (докер): логи `docker compose logs adminpanel`, API —
   `curl -b jar $BASE/api/overview`.
