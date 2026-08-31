@@ -63,6 +63,22 @@ builder.Services.AddSingleton(sp => new CreateClusterHandler(
 builder.Services.AddSingleton(sp => new DeleteClusterHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
+builder.Services.AddSingleton(sp => new AddShardHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
+builder.Services.AddSingleton(sp => new DeleteShardHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
+builder.Services.AddSingleton(sp => new MoveBucketsHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton(sp => new RotateAppPasswordHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
+builder.Services.AddSingleton(sp => new RecreateNodeHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
 
 // docker: драйвер по режиму (Plain: таблица Hosts; Swarm: manager endpoint).
 builder.Services.AddSingleton<DockerEngineFactory>();
