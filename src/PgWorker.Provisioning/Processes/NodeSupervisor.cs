@@ -184,14 +184,19 @@ public sealed class NodeSupervisor(
             {
                 if (node.State is NodeState.Quarantined or NodeState.Removing)
                     continue; // карантин/удаление — не пересоздаём (E3/задача 22)
-                if (!topology.Nodes.ContainsKey(node.Name))
+                if (!topology.Nodes.TryGetValue(node.Name, out var declaredAddr))
                     continue;
-                // Матчинг декларации (spec §3.4): каноническое имя ИЛИ object-контейнер
-                // усыновлённой ноды — живой внешний контейнер = «нода на месте», дубль не создаём.
-                var canonical = $"pgw-{cluster}-{shard.Name}-{node.Name}";
-                var adoptedObject = topology.Nodes.TryGetValue(node.Name, out var declaredAddr)
-                    ? declaredAddr.Object : null;
-                if (existing.Contains(canonical) || (adoptedObject is { } && existing.Contains(adoptedObject)))
+                // Границы надзора (spec §3.4, arch/14 §5 C/R9): усыновлённая нода
+                // (object) ВНЕ домена EnsureNode — self-healing off. Её контейнер
+                // не входит в docker-домен pgw-<C>- (ListNodeObjectsAsync отдаёт
+                // только канонические имена, object-контейнер там не виден), а
+                // пересоздание подняло бы второй Patroni на тот же scope (R9).
+                // Живость object-нод — SQL-проба в SuperviseShardAsync; сверка
+                // декларации к ним не применяется (живой и мёртвый — одинаково skip).
+                if (declaredAddr.Object is not null)
+                    continue;
+                // Матчинг декларации: канонический docker-объект ноды на месте?
+                if (existing.Contains($"pgw-{cluster}-{shard.Name}-{node.Name}"))
                     continue; // объект на месте
 
                 if (!resourcesLoaded)

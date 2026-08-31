@@ -289,7 +289,12 @@ internal static class Fakes
             List<string> objects;
             lock (_gate)
             {
-                objects = NodeObjects.ToList(); // снапшот: читатель может идти параллельно
+                // Контракт реального PlainClusterDriver (ревью Фазы 7): список
+                // строится docker-фильтром по префиксу pgw-<C>- — object-контейнеры
+                // усыновлённых нод (as-*) сюда НЕ попадают никогда. Фейк обязан
+                // вести себя так же, иначе тесты маскируют дефекты матчинга.
+                var prefix = $"pgw-{cluster}-";
+                objects = NodeObjects.Where(n => n.StartsWith(prefix, StringComparison.Ordinal)).ToList();
             }
 
             return Task.FromResult(Result<IReadOnlyList<string>>.Success(objects));

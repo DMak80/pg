@@ -608,13 +608,18 @@ public class NodeSupervisorTests
         return alloc;
     }
 
-    // AAA (spec §3.4): живой object-контейнер усыновлённой ноды = «нода на месте»:
-    // дубль не создаётся (матчинг декларации по pgw-имени ИЛИ object).
+    // AAA (spec §3.4, arch/14 §5 C/R9): усыновлённая (object) нода ВНЕ домена
+    // EnsureNode — self-healing off. Реальный ListNodeObjectsAsync отдаёт только
+    // имена pgw-<C>- (фейк синхронизирован с этим контрактом и выкидывает as-*),
+    // поэтому не-пересоздание обеспечивает GUARD по object-полю, а не матчинг
+    // docker-списка: ревью Фазы 7 — старая версия теста сеяла as-* в фейк и
+    // маскировала дефект (guard отсутствовал → в рантайме плодились pgw-дубли).
     [Fact]
     public async Task EnsureDeclared_ExternalObjectContainerAlive_NodeNotRecreated()
     {
-        // Arrange — у всех нод object-адреса; docker-список содержит as-* и НЕ
-        // содержит pgw-*; Patroni жив (не влияет — сверка декларации раньше проб).
+        // Arrange — у всех нод object-адреса; docker-список НЕ содержит pgw-*
+        // (реальный драйвер as-* не отдаёт — фейк отфильтрует их так же);
+        // Patroni жив (не влияет — сверка декларации раньше проб).
         var rig = await NewRig(_ => Ok(),
             nodeObjects: ["as-shard1a", "as-shard1b", "as-shard1c"],
             addresses: AdoptedAddresses());
@@ -622,9 +627,34 @@ public class NodeSupervisorTests
         // Act
         var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
-        // Assert: дубль не создан, состояние нод не PROVISIONING.
+        // Assert: дубль не создан (guard self-healing off при пустом docker-списке),
+        // состояние нод не PROVISIONING, failover-ключи HA-контура не тронуты.
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
-        rig.Driver.EnsuredNodes.Should().BeEmpty("живой внешний контейнер = нода на месте");
+        rig.Driver.EnsuredNodes.Should().BeEmpty("guard: object-нода вне домена EnsureNode");
+        foreach (var node in new[] { "shard1a", "shard1b", "shard1c" })
+            rig.Etcd.Store[$"/clusters/shop/shards/shard1/nodes/{node}/state"].Value
+                .Should().NotBe("PROVISIONING");
+    }
+
+    // AAA (spec §3.4, R9): мёртвый object-контейнер тоже НЕ пересоздаётся —
+    // rebuild поднял бы второй Patroni на тот же scope; сверка декларации не
+    // применяется к усыновлённым ни в состоянии «жив», ни в состоянии «мёртв»
+    // (честный UNREACHABLE — домен SuperviseShardAsync, не EnsureNode).
+    [Fact]
+    public async Task EnsureDeclared_AdoptedNodeObjectMissing_StillNoEnsureNode()
+    {
+        // Arrange — docker-список пуст: object-контейнеров нет (как будто
+        // внешний контейнер умер); без guard это дало бы EnsureNode на каждый тик.
+        var rig = await NewRig(_ => Ok(),
+            nodeObjects: [],
+            addresses: AdoptedAddresses());
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: ни EnsureNode, ни PROVISIONING — self-healing off (R9).
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        rig.Driver.EnsuredNodes.Should().BeEmpty("мёртвый object не rebuild'ится (R9)");
         foreach (var node in new[] { "shard1a", "shard1b", "shard1c" })
             rig.Etcd.Store[$"/clusters/shop/shards/shard1/nodes/{node}/state"].Value
                 .Should().NotBe("PROVISIONING");
