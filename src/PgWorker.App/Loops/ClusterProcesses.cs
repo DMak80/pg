@@ -18,6 +18,9 @@ internal interface IClusterProcesses
     /// <summary>Надзор + список полностью мёртвых шардов (событие эвакуации).</summary>
     Task<Result<SuperviseOutcome>> SuperviseAsync(ClusterSnapshot snap, CancellationToken ct);
 
+    /// <summary>Усыновление: адреса внешних нод в portalloc (spec §3.2, arch/14 §5 J).</summary>
+    Task<Result<ProcessOutcome>> AdoptAsync(ClusterSnapshot snap, CancellationToken ct);
+
     /// <summary>Эвакуация конкретного мёртвого шарда (BucketEvacuator E0–E4).</summary>
     Task<Result<ProcessOutcome>> EvacuateAsync(ClusterSnapshot snap, string deadShard, CancellationToken ct);
 
@@ -38,6 +41,7 @@ internal sealed class ClusterProcesses(
     ProvisioningProcess provision,
     DeprovisioningProcess deprovision,
     NodeSupervisor supervisor,
+    AdoptionProcess adopt,
     BucketEvacuator evacuator,
     MoveProcess moves,
     AddShardProcess addShards,
@@ -55,6 +59,9 @@ internal sealed class ClusterProcesses(
     // (шаблонные имена shard1/shard2 совпадают между кластерами).
     public Task<Result<SuperviseOutcome>> SuperviseAsync(ClusterSnapshot snap, CancellationToken ct)
         => supervisor.TickAsync(snap, ct);
+
+    public Task<Result<ProcessOutcome>> AdoptAsync(ClusterSnapshot snap, CancellationToken ct)
+        => adopt.TickAsync(snap, ct);
 
     public Task<Result<ProcessOutcome>> EvacuateAsync(ClusterSnapshot snap, string deadShard, CancellationToken ct)
         => evacuator.TickAsync(snap, deadShard, ct);

@@ -169,6 +169,12 @@ internal sealed class ReconcileLoop(
                     if (supervised is null)
                         break;
 
+                    // Усыновление (spec §3.2, arch/14 §5 J): адреса dsn-шард без
+                    // portalloc — до scale (add смотрит pinned portalloc) и до
+                    // repair/moves (SQL нужен адрес).
+                    await RunClusterOpAsync(cluster, "adopt",
+                        () => processes.AdoptAsync(snap, ct), ct);
+
                     // Scale-проход (t06 spec §5.1): remove → add, после надзора, до
                     // эвакуаций/moves — демонтаж освобождает хосты/порты для подъёма (Д13).
                     await RunClusterOpAsync(cluster, "scale-shards",
