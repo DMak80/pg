@@ -41,6 +41,10 @@ public sealed class ApiOptions
 
     /// <summary>Демо-сид-эндпоинт POST /api/seed/demo (стенд; default false).</summary>
     public bool EnableSeedEndpoint { get; set; }
+
+    /// <summary>Секрет X-Api-Key для /api/* (env PGW_API_KEY); пусто — проверка
+    /// отключена (доверенная docker-сеть, arch/14 §1.1).</summary>
+    public string? ApiKey { get; set; }
 }
 
 /// <summary>etcd-кластер: HTTP JSON gateway endpoints (failover по списку).</summary>

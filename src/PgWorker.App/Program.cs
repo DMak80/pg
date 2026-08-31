@@ -2,6 +2,8 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using PgWorker.App;
+using PgWorker.App.Api;
+using PgWorker.App.Api.Operations;
 using PgWorker.App.HealthChecks;
 using PgWorker.App.Loops;
 using PgWorker.Core;
@@ -50,6 +52,15 @@ builder.Services.AddSingleton(sp => new ClaimStore(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Api.AdvertiseUrl));
 builder.Services.AddSingleton(sp => new WorkJournal(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
+
+// HTTP API воркера (arch/14 §1.1): мутации декларативного контракта — хендлеры-синглтоны.
+builder.Services.AddSingleton(sp => new CreateClusterHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton(sp => new DeleteClusterHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
 
@@ -257,7 +268,9 @@ builder.Services.AddHealthChecks()
     .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop");
 
 var app = builder.Build();
+app.UseMiddleware<ApiKeyMiddleware>();
 app.MapHealthChecks("/healthz");
+app.MapWorkerApi();
 
 await app.RunAsync();
 
@@ -279,3 +292,6 @@ static InstallSecrets SecretsFromEnv()
 // Делегат снапшота для процессов (P12 «до/после» в точках изменений).
 static Func<CancellationToken, Task<Result>> SnapshotDelegate(SnapshotJob job)
     => async ct => await job.TakeAsync(ct);
+
+// WAF-тесты (PgWorker.IntegrationTests/Api): точка входа как public partial.
+public partial class Program;
