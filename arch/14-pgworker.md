@@ -9,7 +9,7 @@ AdminPanel **заявляет** кластер (`config.state=NOT_INITIALIZED`, 
 в рабочее состояние; перевод панелью в `TO_REMOVE` — PgWorker аккуратно
 демонтирует кластер.
 
-Семь процессов:
+Девять процессов:
 1. **Provisioning** — от `NOT_INITIALIZED` до рабочего кластера (§6);
 2. **Deprovisioning** — от `TO_REMOVE` до чистого etcd и удалённых контейнеров;
 3. **Контроль нод** (надзор) — failover отслеживает Patroni, умершая нода
@@ -23,7 +23,16 @@ AdminPanel **заявляет** кластер (`config.state=NOT_INITIALIZED`, 
    Active-кластера по декларации/маркеру от панели (t06); без автоматической
    перебалансировки бакетов;
 7. **Ротация app-пароля** (AppPasswordRotator, §5 I) — смена per-cluster
-   app-пароля на всех нодах кластера по заявке из etcd (панель).
+   app-пароля на всех нодах кластера по заявке из etcd (панель);
+8. **Усыновление кластера** (AdoptionProcess, §5 J) — Active-кластер с
+   шардами без записей в portalloc («внешних» нод для воркера не существует):
+   адреса восстанавливаются из HA-контура + docker-инспекции и закрепляются
+   в portalloc; «не наших» объектов нет — воркер хозяин всего, что видит в
+   `/clusters/`;
+9. **Репарация брошенных переездов** (MoveRepairProcess, §5 K) —
+   статус-ключи `SYNCING/FROZEN/ABORTING` без живого владельца (нет заявки,
+   `updated_unix` постарел) воркер доводит до консистентного состояния
+   (уборка/доведение/откат) — панельные алерты гаснут реальным ремонтом.
 
 Свойства: несколько инстансов PgWorker работают одновременно (координация —
 lease-клэймы в etcd, §3); смерть контролирующего инстанса не роняет процессы —
@@ -164,6 +173,12 @@ data-каталог создаётся от root и недоступен patroni
    15000–15999: `pg=base+i`, `patroni=+3000`, `doorman=+1500`), с проверкой
    фактической занятости (`GET /containers/json` + свои записи). Закрепление —
    `/pgworker/portalloc/<C>` (переживает rebuild: та же нода = те же порты).
+   Запись ноды: `{"host","pg","patroni","doorman"}` + опциональное `"object"`
+   (§5 J): имя фактического docker-объекта **усыновлённой** ноды (контейнер
+   внешнего происхождения, не `pgw-<C>-<X>-<n>`); отсутствие `object` =
+   каноническая нода нашего провижининга. У усыновлённой ноды `patroni`/`doorman`
+   могут быть `0` (внешние ноды без Patroni-REST/doorman в этом контейнере —
+   Patroni-REST может жить сайдкаром, живость такой ноды — SQL-проба, §5 C).
 3. Итог — план размещения (node → host + порты); он же вход для генерации
    конфигов (DSN multi-host по нодам шарда; HAProxy-конфиг — генератор
    остаётся в Core, в контейнере не поднимается — см. §2.1).
@@ -257,7 +272,7 @@ success-ветке). **Poll, без watch** (аргументация — AdminP
 | `/pgworker/claims/<C>` | lease TTL 15 с | **пер-кластерный клэйм** работы: exclusivity обработки кластера одним инстансом. Value: `{"instance":"<id>","since_unix":…,"phase":…}`. Захват txn `version==0` + put-with-lease; держатель продлевает. Takeover: lease истёк → ключ исчез сам → txn другого инстанса succeeds. |
 | `/pgworker/work/<C>` | обычный | журнал текущего процесса кластера (journal-before-manipulations, по образцу P7): `{"op":"provision\|deprovision\|evacuate\|rebuild","phase":"…","updated_unix":…,"instance":"<id>","last_error"?}`. Крах оставляет самодокументирующийся след; следующий инстанс продолжает с записанной фазы. |
 | `/pgworker/evacuations/<C>/<X>` | обычный | журнал эвакуации шарда: `{"evacuated_unix","reason","buckets":{...старый→новый владелец...},"state":"DONE\|QUARANTINED"}` — истина для разбора после возврата шарда. |
-| `/pgworker/portalloc/<C>` | обычный | закрепление выделенных портов за нодами (§2.4): `{"<shard>/<node>":{"host":"h1","pg":15432,"patroni":18008,"doorman":16432}}` — переживает смерть инстанса, переиспользуется при rebuild. |
+| `/pgworker/portalloc/<C>` | обычный | закрепление выделенных портов за нодами (§2.4): `{"<shard>/<node>":{"host":"h1","pg":15432,"patroni":18008,"doorman":16432}}` (+опц. `"object"` для усыновлённых, §5 J) — переживает смерть инстанса, переиспользуется при rebuild; пишется также усыновлением (§5 J: read-modify-write merge под клэймом). |
 | `/pgworker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика; необязательно для работы) |
 | `/pgworker/moves/<C>/bucket_<i>` | обычный | заявка на плановый переезд/откат/уборку/отмену (t01): `{"op":"move\|rollback\|finalize\|abort","to":…,"old_shard":…,"skip_reverse":…,"resume":…,"force":…,"requested_unix":…,"requested_by":…}`. Успех или перманентный валидационный отказ → ключ удаляется; transient-сбой → остаётся, фазы — в статус-ключе бакета. Обрабатывается только держателем клэйма `<C>`; одновременно — старейшая заявка кластера. Deprovisioning D2 чистит `/pgworker/moves/<C>/` (префикс). |
 | `/pgworker/rotations/<C>` | обычный | заявка на ротацию app-пароля ВСЕГО кластера (панель, клэйм-txn `version==0` + put): `{"requested_unix":<unix>,"requested_by":"<username панели>"}`. Выполняет держатель клэйма `<C>` (§5 I): ALTER ROLE на мастере каждого поднятого шарда → атомарный txn-коммит (put `app_password` + del заявки). Уже стоит → панель получает 409 (идемпотентность повтора). Deprovisioning D2 удаляет ключ точечно. |
@@ -397,7 +412,20 @@ D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый �
 - **MasterKeyReconciler** (P11): у каждого шарда сверить master-ключ с
   фактом (`GET /primary` по нодам): расхождение или ключа нет при живом
   primary → lease-put коррекция `host:<doorman-port>` (пишет только при
-  рассинхроне — не второй регулярный писатель).
+  рассинхроне — не второй регулярный писатель). **Усыновлённые шарды
+  (записи portalloc с `object`, §5 J) сверки НЕ проходят**: их master-ключ
+  пишет внешний HA-контур (Patroni-callback/эмулятор) в своём формате
+  `node:port` — коррекция порождала бы войну писателей; резолв мастера (§5 F)
+  понимает оба формата.
+- **Усыновлённые ноды** (запись portalloc с `object`): живость — Patroni-REST,
+  а при `patroni=0` — SQL-проба мастера (`SELECT 1` по admin-DSN — положительное
+  свидетельство живости PG); сверка декларации матчит docker-объект по имени
+  `pgw-<C>-<X>-<n>` **или** по `object`-имени из portalloc. Self-healing
+  (пересоздание/rebuild/TO_RECREATE) для усыновлённых нод отключён: rebuild
+  поднял бы канонический `pgw-`-контейнер рядом с внешним orchestration-кругом
+  (например, вторым «Patroni» на тот же scope) — мёртвая усыновлённая нода
+  получает `UNREACHABLE` + journal (реальная проблема, разбор оператором).
+  Evacuation-кандидат — по общим правилам (allDead+master-ключ протух).
 - **Миграция app_params** (ленивый ensure): у нод шардов с dsn (любого
   state — мастером может стать любая нода) без `nodes/<n>/app_params`
   (кластеры, созданные до ключа) — put-if-absent значения по умолчанию
@@ -446,6 +474,18 @@ E4 journal state=DONE; снапшот P12 «после»
 в journal).
 
 ### F. MoveProcess (плановые переезды бакетов, M0–M6; t01)
+
+Резолв мастера шарда для SQL (общий сервис ShardEndpoints; один и тот же у
+всех SQL-путей — moves/эвакуация/ротация/репарация) — цепочка по убыванию
+доверия: (1) master-ключ — по имени ноды, затем `host:<doorman-port>`
+(усыновлённые: `node:<pg-port>`); (2) `/service/<scope>/leader` — имя лидера
+HA-контура → адрес ноды из portalloc (без Patroni-REST — работает при
+протухшем master-ключе в окне failover и на усыновлённых без REST);
+(3) Patroni-REST `/cluster` по нодам с `patroni≠0`. Advertised-хост издателя
+для `CREATE SUBSCRIPTION` применяется только когда приёмник — каноническая
+`pgw-`-нода (запись portalloc без `object`): внешний приёмник (например,
+контейнер стендового кластера) видит адреса dsn-ключа напрямую, подмена
+`AdvertisedPublisherHost` сломала бы подключение.
 
 Порт `move-bucket.sh`/`abort-move.sh` (runbook [11](11-bucket-sharding.md)
 §5–§7, ловушки P1–P8 — [12](12-bucket-pitfalls.md)) в тиковый процесс по
@@ -587,6 +627,83 @@ R4 снапшот P12 (точка изменения) + journal phase=done
 Заявка кластера в NOT_INITIALIZED/TO_REMOVE панелью не ставится
 (guard 409, контракт панели 02 §9.8); Deprovisioning D2 удаляет ключ точечно.
 
+### J. AdoptionProcess (усыновление кластера, AD0–AD4)
+
+«Внешних» кластеров для воркера не существует: Active-кластер с шардами
+(`dsn` есть), у которых в `/pgworker/portalloc/<C>` нет записей (portalloc
+потерян / кластер поднят вне провижининга — сид, стенд, восстановление etcd),
+воркер **усыновляет**: восстанавливает адреса и переводит в обычный домен
+(надзор §5 C с границами усыновлённых, moves §5 F). Кандидаты на усыновление
+определяются положительным свидетельством в docker: ни одного контейнера
+кластера не найдено → тихий skip (кластер живёт вне docker-хостов воркера —
+его резолв мастера остаётся HA-фоллбэком (2), SQL-пути — transient, панель
+алертит честную недоступность).
+
+```
+AD0 claim-гвард; journal op=adopt phase=started
+AD1 на каждый шард X с dsn без записей portalloc:
+    имена нод — /service/<C>-<X>/members/* (+role/state);
+    docker-инспекция по Docker:Hosts: контейнер = нода, если его hostname
+    ИЛИ сетевой алиас равен имени ноды; сайдкар Patroni-REST — env
+    NODE_NAME равен имени ноды; порты — public-биндинги: 5432→pg,
+    8008→patroni (в контейнере ноды или сайдкара), 6432→doorman (нет → 0);
+    нода без контейнера → пропущена (частичное усыновление допустимо)
+AD2 portalloc merge (read-modify-write под клэймом): только ОТСУТСТВУЮЩИЕ
+    записи "<X>/<n>" = {host=docker-хост находки, pg, patroni, doorman,
+    object=имя контейнера}; существующие записи не перезаписываются
+AD3 nodes-ключи: нодам кластера без /clusters/<C>/shards/<X>/nodes/<n>/state
+    — put RUNNING (декларация следует за фактом; dsn уже есть — шард
+    зарегистрирован); app-секрет ensure (P1.5); роли БД ensure на мастере
+    каждого шарда (app/bucket_admin/bucket_mover — идемпотентный P2.3);
+    app_params ensure (P2.5')
+AD4 снапшот P12 (точка изменения); journal phase=done — кластер в обычном
+    надзоре; повторные тики AD1–AD4 — no-op (все записи на месте)
+```
+
+Отказ docker-хоста/etcd на любом шаге — transient: journal last_error, тик
+повторит (идемпотентность merge/put-if-absent). Deprovisioning D2 сносит
+portalloc вместе с префиксом — усыновление повторяется при пересоздании.
+
+### K. MoveRepairProcess (репарация брошенных переездов, MR0–MR3)
+
+Статус-ключ `/clusters/<C>/buckets/status/bucket_<i>` без живого владельца
+воркер не бросает: живой владелец — заявка `/pgworker/moves/<C>/bucket_<i>`
+(домен MoveProcess §5 F; обновляет `updated_unix` каждый тик M3, Д12) или
+свежий статус. Брошенный = нет заявки И `now − updated_unix` превысил порог:
+`FROZEN` (заморозка режет запись — чиним быстрее) — `RepairFrozenSec`;
+`SYNCING`/`ABORTING` — `RepairStaleSec` (= StaleMoveSeconds панели: ремонт
+стартует, когда панель уже заалертила; алерт загорелся → ремонт пошёл →
+алерт погас реальным ремонтом). Кластеры — только Active.
+
+```
+MR0 claim-гвард; статусы — из снапшота (updated_unix — из статус-ключей)
+MR1 на каждый статус без заявки (кроме NOT_INITIALIZED — домен P3):
+    возраст > порога состояния → синтетическая заявка put-if-absent
+    (txn version==0 — не затирает операторскую):
+    - ABORTING/*                          → {"op":"abort"} (resuming-доводка)
+    - SYNCING/* при routing==owner        → {"op":"abort"} (свежесть пройдёт:
+                                            возраст > RepairStaleSec ≥ AbortMinAgeSec)
+    - SYNCING|FROZEN при routing==target  → {"op":"abort","force":true}
+                                            (flip прошёл, статус завис — доведение
+                                            перевода, без force это permanent-отказ)
+    - FROZEN/* при routing==owner         → {"op":"abort"} (уборка + re-GRANT =
+                                            разморозка владельца)
+    - phase=rollback-post-flip            → {"op":"rollback"} (доведение отката
+                                            по живой sub_<b>_rb, §5 F rollback)
+    все заявки: requested_by="pgworker-repair"
+MR2 дальше работает MoveProcess (старейшая заявка тика) — вся механика
+    доведения/журналов/идемпотентности переиспользуется 1:1
+MR3 journal op=repair (сколько/какие статусы диспатчены; повторный тик —
+    no-op: заявка уже стоит)
+```
+
+Недоступный шард → уборка честно висит (ABORTING/blocked, P7) — панель
+продолжает алертить реальную проблему; отдельного fail-state НЕ вводим
+(фазы/журнал уже несут семантику). Ручной скриптовый переезд без обновления
+статуса дольше `RepairStaleSec` будет репарирован — скриптовый путь
+однопроходный, окно переезда со скриптом и репарацией не смешивать (общее
+правило «не смешивать скрипты и заявки», §1).
+
 ---
 
 ## 6. Надёжность
@@ -644,7 +761,13 @@ PgWorker:Moves { PollIntervalSec=2, FreezeWaitSec=5, FreezeLockTimeoutSec=5,
                  FreezeLockTries=3, AbortMinAgeSec=120, FailoverSlots=true,
                  AdvertisedPublisherHost=null } # host издателя, как виден из
                  # контейнеров приёмников (single-docker-host стенды:
-                 # host.docker.internal; прод — null, адреса dsn достижимы)
+                 # host.docker.internal; прод — null, адреса dsn достижимы);
+                 # применяется только для канонических pgw-приёмников (§5 F)
+PgWorker:Moves { RepairStaleSec=600, RepairFrozenSec=120 } # репарация брошенных
+                 # статусов (§5 K): 600 = StaleMoveSeconds панели (ремонт
+                 # синхронизирован с алертом), 120 = AbortMinAgeSec (FROZEN
+                 # режет запись — чиним быстрее, живой cutover межтиков
+                 # невозможен: непрерывный блок одного тика)
 PgWorker:Parallelism { MaxClusters=4 }
 PgWorker:Snapshots { Dir="/snapshots", RetentionFiles=10 }
 PgWorker:AppParams { Default="sslmode=require" }  # per-node ключ
@@ -668,6 +791,9 @@ PgWorker:AppParams { Default="sslmode=require" }  # per-node ключ
 | R5 | Ноды одного шарда на одном хосте (hosts < replicas) — пониженная отказоустойчивость | требование «если топология позволяет»; факт отражается в плане и виден оператору |
 | R6 | Гонка «панель пишет TO_REMOVE посреди provisioning» | перечитывание config перед фазой; смена state → перепланирование, контейнеры подчистит deprovisioning |
 | R7 | Restore etcd из снапшота откатывает journal/клэймы | клэймы — lease (не восстанавливаются с живым lease); journal может откатиться — процессы идемпотентны, повторная фаза безопасна |
+| R8 | Усыновление: master-ключ внешнего формата `node:port` vs reconciler `host:doorman` — война писателей | MasterKeyReconciler пропускает усыновлённые шарды (§5 C); master-ключ пишет внешний HA-контур, резолв мастера понимает оба формата (§5 F) |
+| R9 | Rebuild усыновлённой ноды поднял бы дубль (второй Patroni на scope, конфликт портов) | self-healing для `object`-нод отключён (§5 C): UNREACHABLE + journal, разбор оператором |
+| R10 | Репарация прибивает живой скриптовый переезд (скрипт не тикает updated_unix в copy-wait) | порог RepairStaleSec = панельному stale (панель уже считает это аномалией); правило «не смешивать скрипты и заявки в одном окне» (§1); заявка репарации помечена requested_by=pgworker-repair |
 
 ---
 
