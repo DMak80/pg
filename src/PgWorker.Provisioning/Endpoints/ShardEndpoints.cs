@@ -1,3 +1,4 @@
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using PgWorker.Core;
 using PgWorker.Core.Model;
@@ -53,11 +54,13 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
         return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(last!.Error!);
     }
 
-    // Мастер шарда для SQL (перенос из BucketEvacuator без изменения поведения):
-    // master-ключ → поиск среди нод ЭТОГО шарда по имени, затем по host (host
-    // неуникален — на нём ноды разных шардов) → Patroni /cluster fallback.
+    // Мастер шарда для SQL (adopt-repair §3.3, arch/14 §5 F — цепочка):
+    // (1) master-ключ → ноды шарда по имени (byName, включая усыновлённый
+    // формат node:pg-port), затем по host:doorman (host неуникален) →
+    // (2) HA-лидер контура /service/<C>-<X>/leader → имя → portalloc →
+    // (3) Patroni /cluster fallback (по нодам с patroni≠0).
     public async Task<Result<NodeAddress?>> ResolveMasterAsync(
-        ShardSpec shard, IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
+        string cluster, ShardSpec shard, IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
     {
         var shardNodes = addresses
             .Where(p => p.Key.StartsWith($"{shard.Name}/", StringComparison.Ordinal))
@@ -81,6 +84,26 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
             }
         }
 
+        // Шаг 2 (spec §3.3): HA-лидер контура — имя из /service/<C>-<X>/leader,
+        // адрес ноды из portalloc; работает без Patroni-REST (усыновлённые шарды,
+        // окно failover с протухшим master-ключом).
+        var leader = await GetAsync($"/service/{cluster}-{shard.Name}/leader", ct);
+        if (leader.IsSuccess && leader.Value is { } leaderKv)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(leaderKv.Value);
+                if (doc.RootElement.TryGetProperty("name", out var name)
+                    && name.GetString() is { Length: > 0 } leaderName
+                    && shardNodes.TryGetValue(leaderName, out var leaderAddr))
+                    return Result<NodeAddress?>.Success(leaderAddr);
+            }
+            catch (JsonException)
+            {
+                // битый leader-ключ — просто идём дальше по цепочке
+            }
+        }
+
         foreach (var node in shardNodes)
         {
             var members = await probe.GetClusterAsync(node.Value, ct);
@@ -94,6 +117,25 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
         }
 
         return Result<NodeAddress?>.Success(null);
+    }
+
+    // Точечный GET с failover-обёрткой (паттерн ReadPortAllocAsync).
+    private async Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
+    {
+        Result<Kv?>? last = null;
+        foreach (var endpoint in endpoints)
+        {
+            var result = await etcd.GetAsync(endpoint, key, ct);
+            if (!result.IsSuccess)
+            {
+                last = result;
+                continue;
+            }
+
+            return result;
+        }
+
+        return last!;
     }
 
     // ── DSN-билдеры ──

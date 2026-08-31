@@ -119,7 +119,7 @@ public sealed class AdoptionProcess(
 
         foreach (var shard in snap.Shards.Where(s => missingByShard.ContainsKey(s.Name)))
         {
-            var master = await shards.ResolveMasterAsync(shard, merged, ct);
+            var master = await shards.ResolveMasterAsync(cluster, shard, merged, ct);
             if (!master.IsSuccess)
                 return await FailAsync(cluster, master.Error!, ct);
             if (master.Value is null)

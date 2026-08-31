@@ -399,7 +399,7 @@ public sealed class AbortSequence(
         var result = new Dictionary<string, string>();
         foreach (var shard in snap.Shards)
         {
-            var master = await shards.ResolveMasterAsync(shard, addresses.Value, ct);
+            var master = await shards.ResolveMasterAsync(snap.Config.Cluster, shard, addresses.Value, ct);
             if (!master.IsSuccess)
                 return Result<Dictionary<string, string>>.Failed(master.Error!);
             if (master.Value is null)

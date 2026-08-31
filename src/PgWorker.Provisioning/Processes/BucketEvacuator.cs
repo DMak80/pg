@@ -106,7 +106,7 @@ public sealed class BucketEvacuator(
         foreach (var target in plan.Value.GroupBy(a => a.ToShard))
         {
             var shardSpec = snap.Shards.Single(s => s.Name == target.Key);
-            var resolved = await shards.ResolveMasterAsync(shardSpec, addresses.Value, ct);
+            var resolved = await shards.ResolveMasterAsync(cluster, shardSpec, addresses.Value, ct);
             if (!resolved.IsSuccess)
                 return Result<ProcessOutcome>.Failed(resolved.Error!);
             if (resolved.Value is not { } master)

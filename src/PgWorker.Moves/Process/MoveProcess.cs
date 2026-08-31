@@ -360,7 +360,7 @@ public sealed class MoveProcess(
             var addresses = await shards.ReadPortAllocAsync(cluster, ct);
             if (!addresses.IsSuccess)
                 return await FailTransientAsync(cluster, addresses.Error!, ct);
-            var srcMaster = await shards.ResolveMasterAsync(srcShard, addresses.Value, ct);
+            var srcMaster = await shards.ResolveMasterAsync(cluster, srcShard, addresses.Value, ct);
             if (!srcMaster.IsSuccess)
                 return await FailTransientAsync(cluster, srcMaster.Error!, ct);
             if (srcMaster.Value is not { } master)
@@ -972,7 +972,7 @@ public sealed class MoveProcess(
         var result = new Dictionary<string, string>();
         foreach (var shard in snap.Shards)
         {
-            var master = await shards.ResolveMasterAsync(shard, addresses.Value, ct);
+            var master = await shards.ResolveMasterAsync(snap.Config.Cluster, shard, addresses.Value, ct);
             if (!master.IsSuccess)
                 return Result<Dictionary<string, string>>.Failed(master.Error!);
             if (master.Value is null)
@@ -1004,14 +1004,14 @@ public sealed class MoveProcess(
         if (!addresses.IsSuccess)
             return Result<(string, string)>.Failed(addresses.Error!);
 
-        var srcMaster = await shards.ResolveMasterAsync(srcShard, addresses.Value, ct);
+        var srcMaster = await shards.ResolveMasterAsync(snap.Config.Cluster, srcShard, addresses.Value, ct);
         if (!srcMaster.IsSuccess)
             return Result<(string, string)>.Failed(srcMaster.Error!);
         if (srcMaster.Value is null)
             return Result<(string, string)>.Failed(new ApplicationException(
                 $"мастер '{srcShard.Name}' не определён — ждём (Patroni-выборы?)"));
 
-        var dstMaster = await shards.ResolveMasterAsync(dstShard, addresses.Value, ct);
+        var dstMaster = await shards.ResolveMasterAsync(snap.Config.Cluster, dstShard, addresses.Value, ct);
         if (!dstMaster.IsSuccess)
             return Result<(string, string)>.Failed(dstMaster.Error!);
         if (dstMaster.Value is null)
