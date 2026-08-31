@@ -9,10 +9,13 @@ namespace PgWorker.Etcd.Coordination;
 // + глобальный лидер для singleton-задач. Захват — txn compare version==0 +
 // put-with-lease TTL 15с; держатель продлевает keepalive-тиком (5с); смерть
 // инстанса гасит lease ≤15с — ключ исчезает сам, другой инстанс захватывает (takeover).
-public sealed class ClaimStore(string[] endpoints, IEtcdGateway gateway, TimeProvider clock) : IAsyncDisposable
+public sealed class ClaimStore(string[] endpoints, IEtcdGateway gateway, TimeProvider clock, string? advertiseApiUrl = null)
+    : IAsyncDisposable
 {
     private const int ClaimTtlSec = 15;
     private static readonly TimeSpan KeepaliveInterval = TimeSpan.FromSeconds(5);
+
+    private readonly string? _advertiseApiUrl = advertiseApiUrl;
 
     private readonly object _sync = new();
     private readonly Dictionary<string, long> _clusterLeases = []; // cluster → lease (live)
@@ -237,6 +240,21 @@ public sealed class ClaimStore(string[] endpoints, IEtcdGateway gateway, TimePro
             return;
         }
 
+        // Ключ доступа API (arch/14 §1.1): тем же lease, что instances/<id>, —
+        // гаснут вместе; панель резолвит URL воркера только по этому ключу.
+        if (_advertiseApiUrl is { Length: > 0 } url)
+        {
+            var payload = JsonSerializer.Serialize(
+                new ApiDiscoveryPayload(url, InstanceId, Now()), PayloadJson.Json);
+            var apiPut = await WithFailoverAsync(endpoint => gateway.PutAsync(
+                endpoint, $"/pgworker/api/{InstanceId}", payload, grant.Value, ct));
+            if (!apiPut.IsSuccess)
+            {
+                await RevokeSilentlyAsync(grant.Value);
+                return; // оба ключа ставятся на одном lease: отказ = ни одного
+            }
+        }
+
         lock (_sync)
         {
             _instanceLease = grant.Value;
@@ -311,6 +329,15 @@ public sealed class ClaimStore(string[] endpoints, IEtcdGateway gateway, TimePro
         [property: JsonPropertyName("instance")] string Instance,
         [property: JsonPropertyName("since_unix")] long SinceUnix,
         [property: JsonPropertyName("phase")] string? Phase);
+
+    // Value ключа /pgworker/api/<id> (arch/14 §1.1): {"url","instance","since_unix"}.
+    // ВАЖНО: PayloadJson.Json НЕ задаёт PropertyNamingPolicy (дефолт PascalCase) —
+    // поля маппим атрибутами, как у ClaimPayload, иначе парсер панели (контракт
+    // arch/02 §2.3.1/§2.3.2 ждёт snake_case) не распарсит значение.
+    private sealed record ApiDiscoveryPayload(
+        [property: JsonPropertyName("url")] string Url,
+        [property: JsonPropertyName("instance")] string Instance,
+        [property: JsonPropertyName("since_unix")] long SinceUnix);
 }
 
 // Общие JSON-настройки payload координации (camelCase/snake_case по контракту §4.3).

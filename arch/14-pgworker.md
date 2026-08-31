@@ -3,11 +3,15 @@
 **PgWorker** — фоновый сервис (.NET 10), который по состоянию в etcd управляет
 жизненным циклом шардированных HA-кластеров PostgreSQL через docker (plain /
 docker swarm). Это исполнительная сторона декларативного контракта: панель
-AdminPanel **заявляет** кластер (`config.state=NOT_INITIALIZED`, контракт
-панели — `arch/adminpanel/02-etcd-contract.md` §9, перенесён из репозитория AdminPanel) — PgWorker
+AdminPanel **заявляет** кластер через **HTTP API воркера** (§1.1) — воркер
+записывает декларацию (`config.state=NOT_INITIALIZED`, контракт панели —
+`arch/adminpanel/02-etcd-contract.md` §9, перенесён из репозитория AdminPanel) — PgWorker
 **поднимает** ноды, инициализирует БД/роли/схемы бакетов и переводит кластер
-в рабочее состояние; перевод панелью в `TO_REMOVE` — PgWorker аккуратно
-демонтирует кластер.
+в рабочее состояние; перевод в `TO_REMOVE` — PgWorker аккуратно
+демонтирует кластер. **Ответственность изменений etcd**: префиксы
+`/clusters/`, `/pgworker/` и заявки `/service/<C>-<X>/request_*` пишет
+ТОЛЬКО PgWorker (панель и сиды ходят через его API, п.1.1); панель etcd
+только читает.
 
 Семь процессов:
 1. **Provisioning** — от `NOT_INITIALIZED` до рабочего кластера (§6);
@@ -46,31 +50,93 @@ per-cluster секреты, TLS к Docker API/SSH-туннели, Prometheus-м�
 ```
 AdminPanel (UI)          PgWorker (оркестратор)              docker-хосты
 ─────────────            ──────────────────────              ────────────
-создание кластера  ──►   /clusters/<C>/config.state=          контейнеры/
-(заявка структуры)       NOT_INITIALIZED          ──читает──► сервисы узлов
-удаление кластера  ──►   config.state=TO_REMOVE   ──создаёт/  pgworker-node
-                         ноды, БД, схемы бакетов    удаёт ──►  (Spilo+doorman
-инспекция (read-   ◄──   dsn, nodes/<n>/state,                +haproxy)
-only, всё видит)         снятие status-ключей,
-                         снятие state                Patroni-ноды
-                                                     пишут /service/<scope>/,
-                                                     callback пишет
-                                                     shards/X/master (P11)
+мутации (создание, ──►   HTTP API воркера (§1.1)              контейнеры/
+удаление, шарды,         ──пишет──► /clusters/…/config.state=  сервисы узлов
+переезды, ротация,       NOT_INITIALIZED/TO_REMOVE, …         pgworker-node
+recreate, сид)           ──читает──► декларации               (Spilo+doorman
+                         ──создаёт/удаёт──►                   +haproxy)
+                         dsn, nodes/<n>/state,
+                         снятие status-ключей,       Patroni-ноды
+                         снятие state                пишут /service/<scope>/,
+инспекция (read-   ◄──                                   callback пишет
+only, всё видит;         ключ /pgworker/api/<id> =            shards/X/master (P11)
+URL API — из etcd)       URL воркера (§1.1)
 ```
 
-- **Панель** — декларатор и наблюдатель: пишет ТОЛЬКО `state=NOT_INITIALIZED`
-  (создание, claim-txn — AdminPanel 02 §9.2), `state=TO_REMOVE` (удаление,
-  02 §9.4), декларацию add-shard (02 §9.5: replicas + nodes/NOT_INITIALIZED +
-  request_*) и маркер демонтажа шарда `shards/<X>/state=TO_REMOVE`
-  (02 §9.6; t06); читает всё. Контракт панели не меняется: её толерантность к
-  значениям `nodes/<n>/state` и отсутствию status-ключей уже описана (02 §2.1).
+- **Панель** — декларатор и наблюдатель: **etcd только читает** (снапшот-тик);
+  все мутации деклараций — создание кластера (claim-txn 02 §9.2), перевод в
+  `TO_REMOVE` (02 §9.4), декларация add-shard (02 §9.5), маркер демонтажа
+  шарда (02 §9.6), заявки переездов (02 §9.7), ротация app-пароля (02 §9.8),
+  recreate ноды — отправляет в HTTP API воркера (§1.1). Контракт панели не
+  меняется: её толерантность к значениям `nodes/<n>/state` и отсутствию
+  status-ключей уже описана (02 §2.1).
 - **PgWorker** — исполнитель: единственный, кто поднимает/удаляет ноды,
   пишет `dsn`, меняет `nodes/<n>/state`, снимает `status/bucket_*`
   (→ ACTIVE) и поле `state` у `config`, чистит префикс кластера при
-  TO_REMOVE.
+  TO_REMOVE — и единственный, кто **записывает декларации** в etcd (приёмник
+  мутаций панели и сида через свой API, §1.1).
 - **Patroni** (внутри нод) — единственный писатель `shards/X/master`
   (callback + lease TTL 5 с, P11); PgWorker только сверяет и корректирует по
   фактическому primary (P11 «сверяющий демон», §6 C).
+
+### 1.1. HTTP API воркера (мутации панели, сиды)
+
+Та же HTTP-грань, что `/healthz` (порт `:8080`, Kestrel воркера). Префикс
+`/api` — приёмник ВСЕХ мутаций декларативного контракта: панель (и только
+она, плюс стендовые сиды) не пишет в etcd ничего — она отправляет команды
+воркеру, воркер валидирует и записывает ключи в etcd сам (протоколы записи и
+форматы значений — adminpanel/02 §9, без изменений; меняется исполнитель:
+была панель напрямую, стал воркер). Воркер — «хозяин» префиксов `/clusters/`,
+`/pgworker/` и заявок `/service/<C>-<X>/request_*`.
+
+**Дискавери API**: ключ `/pgworker/api/<instanceId>` (lease TTL 15 с,
+паттерн `instances/<id>`; §3.3) — value
+`{"url":"http://<host>:<port>","instance":"<id>","since_unix":…}`. Воркер
+ставит ключ сам при старте (keepalive-контур, вместе с `instances/<id>`);
+URL — из `PgWorker:Api:AdvertiseUrl` (адрес, ДОСТИЖИМЫЙ клиентами API —
+прежде всего панелью; docker-сети стендов — `host.docker.internal:<8080>`).
+Ключ жив = инстанс жив и URL валиден (lease гасит мёртвые). Панель читает
+ключи refresher-тиком, кеширует в снапшоте и при мутации зовёт любой живой
+(при ошибке соединения — следующий; все умерли — 503 + critical-алерт
+`worker-api-unreachable`, arch/adminpanel/03 §4.1).
+
+**Аутентификация**: заголовок `X-Api-Key`, сверка с env-секуретом
+`PGW_API_KEY` (пуст/не задан — проверка отключена: доверенная закрытая
+docker-сеть; прод-профиль задаёт ключ). Ключи доступа в etcd секрета НЕ
+содержат. TLS — roadmap (t03-docker-tls-ssh).
+
+**Эндпоинты** (сигнатуры/коды — 1:1 UI-контракт панели 02 §9/03 §1; тело
+и ответы не менялись):
+
+| Метод+путь | Назначение | Протокол записи |
+|---|---|---|
+| `POST /api/clusters` | создание кластера (декларация) | 02 §9.1–§9.3: claim-txn + пакет PUT + компенсация |
+| `DELETE /api/clusters/{c}` | перевод в `TO_REMOVE` | 02 §9.4 |
+| `POST /api/clusters/{c}/shards` | декларация add-shard | 02 §9.5 |
+| `DELETE /api/clusters/{c}/shards/{x}` | маркер демонтажа шарда | 02 §9.6 |
+| `POST /api/clusters/{c}/moves` | заявки на переезды бакетов | 02 §9.7 |
+| `POST /api/clusters/{c}/app-password/rotate` | заявка ротации app-пароля | 02 §9.8 |
+| `POST /api/ha/{scope}/nodes/{node}/recreate` | маркеры `TO_RECREATE`+`recreate=soft\|hard` | как §9.6-подобный маркер (02 §9, 03 §2): guards по `/service/<scope>/members` |
+| `POST /api/seed/demo` | стендовый демо-сид pg-контура | §1.1.1 |
+
+Guard'ы и валидации переносятся из панельных команд как есть; источником
+данных вместо панельного снапшота — прямые чтения etcd воркером (config,
+routing, `/service/<scope>/members`, очереди заявок): это устраняет гонку
+«снапшок отстал» — воркер читает авторитетно перед записью.
+
+### 1.1.1. Сид-эндпоинт (стендовый, demo)
+
+`POST /api/seed/demo` — наливка ДЕМО-контроль-плейна pg-контура (кластер
+`demo`: config, 2 шарда dsn/replicas/master, routing 16 бакетов, статусы
+переездов bucket_3/7/11, heal, заявка move bucket_13, `/service/demo-s{1,2}/*`,
+`/cluster/nodes/*`; времена — динамические от now, набор — 1:1 сид-фикстуры
+интеграционных тестов панели). Пишет ключи, которые в живой системе пишут
+ДРУГИЕ субъекты (Patroni, эмуляторы, скрипты): это осознанная стендовая
+эмуляция, поэтому эндпоинт закрыт флагом `PgWorker:Api:EnableSeedEndpoint`
+(default `false`; включается только в dev-стенде env-ом). Идемпотентен:
+существующий `/clusters/demo/config` → 200 `{"seeded":false}` без записи.
+Служит «стендом части» для панели без живых PG-нод; полный стенд
+(00-up.sh) пользуется тем же эндпоинтом.
 
 Связь со скриптами: скрипты жизненного цикла [11](11-bucket-sharding.md) §4.5
 (`init-cluster.sh`, `add-shard.sh`, `remove-shard.sh`) остаются **ручным
@@ -259,6 +325,7 @@ success-ветке). **Poll, без watch** (аргументация — AdminP
 | `/pgworker/evacuations/<C>/<X>` | обычный | журнал эвакуации шарда: `{"evacuated_unix","reason","buckets":{...старый→новый владелец...},"state":"DONE\|QUARANTINED"}` — истина для разбора после возврата шарда. |
 | `/pgworker/portalloc/<C>` | обычный | закрепление выделенных портов за нодами (§2.4): `{"<shard>/<node>":{"host":"h1","pg":15432,"patroni":18008,"doorman":16432}}` — переживает смерть инстанса, переиспользуется при rebuild. |
 | `/pgworker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика; необязательно для работы) |
+| `/pgworker/api/<id>` | lease TTL 15 с | **дискавери API воркера** (§1.1): `{"url":"http://<host>:<port>","instance":"<id>","since_unix":…}` — ставит сам инстанс при старте; ключ жив = инстанс жив и его URL валиден. Читает панель (единственный способ найти API воркера) и оператор; в UI не отображается |
 | `/pgworker/moves/<C>/bucket_<i>` | обычный | заявка на плановый переезд/откат/уборку/отмену (t01): `{"op":"move\|rollback\|finalize\|abort","to":…,"old_shard":…,"skip_reverse":…,"resume":…,"force":…,"requested_unix":…,"requested_by":…}`. Успех или перманентный валидационный отказ → ключ удаляется; transient-сбой → остаётся, фазы — в статус-ключе бакета. Обрабатывается только держателем клэйма `<C>`; одновременно — старейшая заявка кластера. Deprovisioning D2 чистит `/pgworker/moves/<C>/` (префикс). |
 | `/pgworker/rotations/<C>` | обычный | заявка на ротацию app-пароля ВСЕГО кластера (панель, клэйм-txn `version==0` + put): `{"requested_unix":<unix>,"requested_by":"<username панели>"}`. Выполняет держатель клэйма `<C>` (§5 I): ALTER ROLE на мастере каждого поднятого шарда → атомарный txn-коммит (put `app_password` + del заявки). Уже стоит → панель получает 409 (идемпотентность повтора). Deprovisioning D2 удаляет ключ точечно. |
 
@@ -649,7 +716,9 @@ PgWorker:Parallelism { MaxClusters=4 }
 PgWorker:Snapshots { Dir="/snapshots", RetentionFiles=10 }
 PgWorker:AppParams { Default="sslmode=require" }  # per-node ключ
                   # shards/<X>/nodes/<n>/app_params (P2.5'/A5/C; P17)
-# секреты — env PGW_* (§4)
+PgWorker:Api { AdvertiseUrl, EnableSeedEndpoint=false }  # §1.1: URL API
+                  # (достижимый панелью) в /pgworker/api/<id>; демо-сид-эндпоинт
+# секреты — env PGW_* (§4) + PGW_API_KEY (§1.1, аутентификация API)
 ```
 
 Флаг `EnableDoorman=false` (риск R1): узел без пулера — компромисс для

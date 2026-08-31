@@ -107,6 +107,45 @@ public class EtcdCoordinationTests(EtcdFixture fixture)
         after.Value.Should().BeNull();
     }
 
+    // AAA: инстанс ClaimStore с advertiseApiUrl ставит два lease-ключа; api-ключ
+    // содержит url из аргумента; DisposeAsync гасит lease — ключи исчезают.
+    [Fact]
+    public async Task StartAsync_WithAdvertiseApiUrl_PutsApiDiscoveryKey()
+    {
+        // Arrange — собственный etcd: изоляция от коллекционной фикстуры гарантирует
+        // единственный ключ в префиксе /pgworker/api/; store без await using —
+        // DisposeAsync не идемпотентен, зовём один раз явно (Assert-секция ниже)
+        await using var fixture = new EtcdFixture();
+        await fixture.InitializeAsync();
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        var store = new ClaimStore(
+            [fixture.Endpoint], fixture.Gateway, TimeProvider.System,
+            advertiseApiUrl: "http://host.docker.internal:8080");
+
+        // Act — keepalive-цикл ставит ключи асинхронно
+        await store.StartAsync(cts.Token);
+        await Task.Delay(500, cts.Token);
+
+        // Assert — контракт snake_case (arch/02 §2.3.1): {"url","instance","since_unix"};
+        // атрибуты JsonPropertyName обязательны (PayloadJson без naming policy),
+        // NotContain-проверки ловят регрессию к PascalCase.
+        var api = await fixture.Gateway.RangeAsync(fixture.Endpoint, "/pgworker/api/", cts.Token);
+        api.IsSuccess.Should().BeTrue();
+        var kv = api.Value.Should().ContainSingle().Subject;
+        kv.Key.Should().Be($"/pgworker/api/{store.InstanceId}");
+        kv.Value.Should().Contain("\"url\":\"http://host.docker.internal:8080\"")
+            .And.Contain($"\"instance\":\"{store.InstanceId}\"")
+            .And.Contain("\"since_unix\":")
+            .And.NotContain("\"Url\"").And.NotContain("\"Instance\"").And.NotContain("\"SinceUnix\"");
+
+        // оба ключа на одном lease: DisposeAsync гасит lease — ключи исчезают
+        await store.DisposeAsync();
+        var goneApi = await fixture.Gateway.RangeAsync(fixture.Endpoint, "/pgworker/api/", cts.Token);
+        goneApi.Value.Should().BeEmpty();
+        var goneInstance = await fixture.Gateway.GetAsync(fixture.Endpoint, $"/pgworker/instances/{store.InstanceId}", cts.Token);
+        goneInstance.Value.Should().BeNull();
+    }
+
     [Fact]
     public async Task SnapshotSave_ReturnsNonEmptyBlob()
     {

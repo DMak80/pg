@@ -27,6 +27,11 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Конфигурация: appsettings.json + env-оверрайды PgWorker__* (пример — в корне проекта).
 builder.Services.Configure<PgWorkerOptions>(builder.Configuration.GetSection("PgWorker"));
+// Fail-fast: ключ доступа /pgworker/api/<id> без URL бессмысленен (arch/14 §1.1).
+builder.Services.AddOptions<PgWorkerOptions>()
+    .Validate(o => !string.IsNullOrWhiteSpace(o.Api.AdvertiseUrl),
+        "PgWorker:Api:AdvertiseUrl не задан (URL API, достижимый панелью; env PGW_API_ADVERTISE_URL)")
+    .ValidateOnStart();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<HealthState>();
 
@@ -42,7 +47,8 @@ builder.Services.AddSingleton<IEtcdGateway>(sp =>
 builder.Services.AddSingleton(sp => new ClaimStore(
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<IEtcdGateway>(),
-    sp.GetRequiredService<TimeProvider>()));
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Api.AdvertiseUrl));
 builder.Services.AddSingleton(sp => new WorkJournal(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
