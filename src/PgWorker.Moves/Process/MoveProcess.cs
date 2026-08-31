@@ -230,11 +230,13 @@ public sealed class MoveProcess(
                 $"warning: на '{owner}' {ToLong(lost.Value)} слотов(а) с wal_status='lost' (P4) — прибери: abort/finalize", ct);
 
         // Пробы mover-роли ПО MOVER-DSN источника (ревью №2): доступность + REPLICATION.
-        var moverDsn = ShardEndpoints.MoverNpgsqlDsn(srcShard.Dsn, secrets);
-        var probe = await sql.ScalarAsync(moverDsn, "SELECT 1", ct);
+        var moverDsn = await MoverProbeDsnAsync(snap, srcShard, ct);
+        if (!moverDsn.IsSuccess)
+            return await FailTransientAsync(cluster, moverDsn.Error!, ct);
+        var probe = await sql.ScalarAsync(moverDsn.Value, "SELECT 1", ct);
         if (!probe.IsSuccess)
             return await FailTransientAsync(cluster, probe.Error!, ct);
-        var roleOk = await sql.ScalarAsync(moverDsn, MoveSql.MoverRoleOk(), ct);
+        var roleOk = await sql.ScalarAsync(moverDsn.Value, MoveSql.MoverRoleOk(), ct);
         if (!roleOk.IsSuccess)
             return await FailTransientAsync(cluster, roleOk.Error!, ct);
         if (ToBool(roleOk.Value) != true)
@@ -1002,6 +1004,34 @@ public sealed class MoveProcess(
             await journal.WritePhaseAsync(cluster, "move", "post-flip", claims.InstanceId,
                 $"снапшот не снялся: {shot.Error!.Message} — сними вручную (P12)", ct);
         return shot;
+    }
+
+    // Mover-DSN префлайта (spec §3.3, усыновлённые кластеры): multi-host
+    // dsn-ключ несёт ВНУТРЕННИЕ имена нод — они резолвимы из нод-исполнителей
+    // подписок, но НЕ из контейнера воркера. Для шард с object-нодами пробуем
+    // по адресу мастера из portalloc (host:pg мастера + mover-креды,
+    // read-write как у подписки); канонические шард — по dsn-ключу (как раньше).
+    private async Task<Result<string>> MoverProbeDsnAsync(
+        ClusterSnapshot snap, ShardSpec srcShard, CancellationToken ct)
+    {
+        var addresses = await shards.ReadPortAllocAsync(snap.Config.Cluster, ct);
+        if (!addresses.IsSuccess)
+            return Result<string>.Failed(addresses.Error!);
+        if (!ShardEndpoints.HasAdoptedNodes(srcShard.Name, addresses.Value))
+            return Result<string>.Success(ShardEndpoints.MoverNpgsqlDsn(srcShard.Dsn!, secrets));
+
+        var master = await shards.ResolveMasterAsync(snap.Config.Cluster, srcShard, addresses.Value, ct);
+        if (!master.IsSuccess)
+            return Result<string>.Failed(master.Error!);
+        if (master.Value is not { } m)
+            return Result<string>.Failed(new ApplicationException(
+                $"мастер '{srcShard.Name}' не определён — mover-проба невозможна"));
+
+        // Single-host DSN: Npgsql допускает Target Session Attributes только
+        // с multi-host (e2e-факт стенда); адрес и так мастер — атрибут не нужен.
+        return Result<string>.Success(
+            $"Host={m.Host};Port={m.Ports.Pg};Database={snap.Config.DbName};Username={ShardEndpoints.MoverRole};" +
+            $"Password={secrets.MoverPassword};SSL Mode=Require;Trust Server Certificate=true");
     }
 
     // Подмена advertised-хоста только для канонических исполнителей подписок

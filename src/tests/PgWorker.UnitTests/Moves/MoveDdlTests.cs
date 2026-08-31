@@ -79,7 +79,7 @@ public class MoveDdlTests
         driver.ContainerExecs.Should().ContainSingle();
         driver.ContainerExecs[0].Container.Should().Be("as-s2a");
         driver.ContainerExecs[0].Cmd.Should().BeEquivalentTo(
-            ["su", "postgres", "-c", "pg_dump --schema-only --no-owner --no-privileges --schema=bucket_13 demo"]);
+            ["pg_dump", "--schema-only", "--no-owner", "--no-privileges", "--schema=bucket_13", "demo"]);
         driver.Executed.Should().BeEmpty("канонический ExecNodeAsync не звался");
     }
 

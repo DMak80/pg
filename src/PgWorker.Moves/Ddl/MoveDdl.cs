@@ -24,11 +24,20 @@ public sealed class MoveDdl(IClusterDriver driver, IMoveSqlExecutor sql)
         if (!MoveNames.ValidateIdentifier(bucket))
             throw new ArgumentException($"недопустимое имя бакета: '{bucket}' (шаблон ^[a-z][a-z0-9_]*)");
 
-        var cmd = new[]
-        {
-            "su", "postgres", "-c",
-            $"pg_dump --schema-only --no-owner --no-privileges --schema={bucket} {dbname}"
-        };
+        // Канонический pgw-контейнер (Spilo) — exec от root, утилиты под postgres
+        // → su postgres. Усыновлённый postgres:18-контейнер работает ОТ юзера
+        // postgres — su требует пароль (e2e-факт), зовём pg_dump напрямую.
+        var cmd = containerOverride is { Length: > 0 }
+            ? new[]
+            {
+                "pg_dump", "--schema-only", "--no-owner", "--no-privileges",
+                $"--schema={bucket}", dbname
+            }
+            : new[]
+            {
+                "su", "postgres", "-c",
+                $"pg_dump --schema-only --no-owner --no-privileges --schema={bucket} {dbname}"
+            };
 
         return containerOverride is { Length: > 0 }
             ? driver.ExecContainerAsync(containerOverride, cmd, ct)

@@ -164,6 +164,35 @@ public class MoveProcessPhasesTests
             "канонический приёмник — подмена advertised издателя работает");
     }
 
+    // AAA (adopt-repair §3.3): усыновлённый источник — mover-пробы M0 идут по
+    // адресу мастера из portalloc (внутренние имена dsn-ключа из воркера не
+    // резолвимы), а не по multi-host dsn-ключу.
+    [Fact]
+    public async Task M0_AdoptedSource_MoverProbeByMasterAddress()
+    {
+        // Arrange — источник shard1 = object-ноды, приёмник канонический.
+        var rig = await MoveRig.NewAsync(new MoveRig.PreflightSql(SubSyncReady: "1/3"), seededStatus: DdlStatus());
+        rig.Etcd.Seed("/pgworker/portalloc/shop", Portalloc.Serialize(new Dictionary<string, NodeAddress>
+        {
+            ["shard1/shard1a"] = new("h1", new NodePorts(15000, 0, 0), "as-shard1a"),
+            ["shard1/shard1b"] = new("h2", new NodePorts(15001, 0, 0), "as-shard1b"),
+            ["shard2/shard2a"] = new("h1", new NodePorts(15002, 18002, 16502)),
+            ["shard2/shard2b"] = new("h2", new NodePorts(15003, 18003, 16503)),
+        }));
+
+        // Act
+        var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
+
+        // Assert: проба SELECT 1 ушла по адресу мастера (Host=h1;Port=15000,
+        // bucket_mover), multi-host dsn-ключ не использовался.
+        tick.Value.Should().Be(ProcessOutcome.InProgress);
+        rig.Sql.Calls.Should().Contain(c => c.Sql == "SELECT 1" && c.Dsn ==
+            "Host=h1;Port=15000;Database=shop;Username=bucket_mover;Password=mov-pw;SSL Mode=Require;Trust Server Certificate=true",
+            "усыновлённый источник: mover-проба по адресу мастера из portalloc");
+        rig.Sql.Calls.Should().NotContain(c => c.Dsn == MoveRig.MoverDsn,
+            "multi-host dsn-ключ из воркера не резолвим для object-шардов");
+    }
+
     // AAA (adopt-repair §3.3, exec-fallback): мастер источника — object-нода:
     // pg_dump идёт в её фактический контейнер (ExecContainerAsync), не в pgw-имя
     [Fact]
@@ -188,7 +217,7 @@ public class MoveProcessPhasesTests
         rig.Driver.ContainerExecs.Should().ContainSingle();
         rig.Driver.ContainerExecs[0].Container.Should().Be("as-shard1a");
         rig.Driver.ContainerExecs[0].Cmd.Should().BeEquivalentTo(
-            ["su", "postgres", "-c", "pg_dump --schema-only --no-owner --no-privileges --schema=bucket_42 shop"]);
+            ["pg_dump", "--schema-only", "--no-owner", "--no-privileges", "--schema=bucket_42", "shop"]);
         rig.Driver.Executed.Should().BeEmpty("канонический ExecNodeAsync не зывается у object-ноды");
     }
 
