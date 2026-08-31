@@ -185,6 +185,11 @@ internal sealed class ReconcileLoop(
                     await RunClusterOpAsync(cluster, "rotate-app-password",
                         () => processes.RotateAppPasswordAsync(snap, ct), ct);
 
+                    // Репарация брошенных переездов (spec §3.5, arch/14 §5 K): синтетические
+                    // заявки до moves — этот же тик начнёт их обработку (старейшая заявка).
+                    await RunClusterOpAsync(cluster, "repair",
+                        () => processes.RepairAsync(snap, ct), ct);
+
                     // События эвакуации: полностью мёртвые шарды (spec §6.4 D/E).
                     foreach (var deadShard in supervised.DeadShards)
                         await RunClusterOpAsync(cluster, $"evacuate/{deadShard}",

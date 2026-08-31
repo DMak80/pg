@@ -283,8 +283,11 @@ public static class ClusterSnapshotParser
             BucketMoveState? status = null; // нет status-ключа = ACTIVE
             string? moveSource = null;
             string? moveTarget = null;
+            string? movePhase = null;
+            long? moveUpdatedUnix = null;
             if (acc.StatusRaw.TryGetValue(id, out var raw)
-                && !TryParseStatus(raw, out status, out moveSource, out moveTarget))
+                && !TryParseStatus(raw, out status, out moveSource, out moveTarget,
+                    out movePhase, out moveUpdatedUnix))
             {
                 errors.Add($"/clusters/{acc.Name}/buckets/status/bucket_{id}: битый JSON или неизвестное state");
                 status = null;
@@ -295,18 +298,22 @@ public static class ClusterSnapshotParser
                 string.IsNullOrWhiteSpace(owner) ? null : owner.Trim(),
                 status,
                 MoveTarget: moveTarget,
-                MoveSource: moveSource));
+                MoveSource: moveSource,
+                MovePhase: movePhase,
+                MoveUpdatedUnix: moveUpdatedUnix));
         }
 
         return result;
     }
 
     private static bool TryParseStatus(string raw, out BucketMoveState? state,
-        out string? source, out string? target)
+        out string? source, out string? target, out string? phase, out long? updatedUnix)
     {
         state = null;
         source = null;
         target = null;
+        phase = null;
+        updatedUnix = null;
         try
         {
             using var doc = JsonDocument.Parse(raw);
@@ -326,6 +333,9 @@ public static class ClusterSnapshotParser
             // отличается от routing-owner; у NOT_INITIALIZED — owner без target (02 §9).
             source = ReadString(root, "owner");
             target = state == BucketMoveState.NotInitialized ? null : ReadString(root, "target");
+            // phase/updated_unix — возраст и фаза доведения для репарации (§3.5).
+            phase = ReadString(root, "phase");
+            updatedUnix = ReadLong(root, "updated_unix");
             return true;
         }
         catch (JsonException)

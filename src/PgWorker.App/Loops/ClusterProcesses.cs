@@ -34,6 +34,10 @@ internal interface IClusterProcesses
     /// <summary>Ротация app-пароля по заявке /pgworker/rotations/&lt;C&gt; (spec §4.3,
     /// arch/14 §5 I); no-op без заявки.</summary>
     Task<Result<ProcessOutcome>> RotateAppPasswordAsync(ClusterSnapshot snap, CancellationToken ct);
+
+    /// <summary>Репарация брошенных переездов: синтетические заявки в MoveProcess
+    /// (adopt-repair spec §3.5, arch/14 §5 K).</summary>
+    Task<Result<ProcessOutcome>> RepairAsync(ClusterSnapshot snap, CancellationToken ct);
 }
 
 /// <summary>Реализация поверх процессов задач 19–22 + MoveProcess t01 (синглтоны DI).</summary>
@@ -44,6 +48,7 @@ internal sealed class ClusterProcesses(
     AdoptionProcess adopt,
     BucketEvacuator evacuator,
     MoveProcess moves,
+    MoveRepairProcess repair,
     AddShardProcess addShards,
     RemoveShardProcess removeShards,
     AppPasswordRotator rotator) : IClusterProcesses
@@ -99,4 +104,7 @@ internal sealed class ClusterProcesses(
 
     public Task<Result<ProcessOutcome>> RotateAppPasswordAsync(ClusterSnapshot snap, CancellationToken ct)
         => rotator.TickAsync(snap, ct);
+
+    public Task<Result<ProcessOutcome>> RepairAsync(ClusterSnapshot snap, CancellationToken ct)
+        => repair.TickAsync(snap, ct);
 }

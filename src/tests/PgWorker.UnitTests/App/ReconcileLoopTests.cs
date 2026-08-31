@@ -409,6 +409,13 @@ public class ReconcileLoopTests
             return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
         }
 
+        public Task<Result<ProcessOutcome>> RepairAsync(ClusterSnapshot snap, CancellationToken ct)
+        {
+            // Репарация (adopt-repair spec §3.5): порядок — после rotate, до moves.
+            using var _ = Track(snap.Config.Cluster, [], callName: "repair");
+            return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
+        }
+
         private TrackHandle Track(string cluster, List<string> sink, string? suffix = null, string? callName = null)
         {
             lock (_sync)

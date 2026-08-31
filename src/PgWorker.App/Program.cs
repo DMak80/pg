@@ -227,6 +227,18 @@ builder.Services.AddSingleton(sp =>
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
 });
 
+// Репарация брошенных переездов (adopt-repair spec §3.5): синтетические заявки
+// put-if-absent в существующий MoveProcess; пороги = панельные алерты.
+builder.Services.AddSingleton(sp => new MoveRepairProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Moves.ToRuntime(
+        sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<MoveRepairProcess>()));
+
 // Ротация app-пароля (spec §4.3, arch/14 §5 I): заявка /pgworker/rotations/<C>;
 // Active-ветка цикла зовёт через ClusterProcesses (scale → rotate → evacuate → moves).
 builder.Services.AddSingleton(sp => new AppPasswordRotator(

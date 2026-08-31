@@ -56,9 +56,11 @@ public sealed record ShardSpec(string Name, int Replicas, string? Dsn, string? M
 /// <summary>Маршрут бакета: Owner — владелец по ROUTING (единственный авторитет
 /// «где бакет»); Status — статус переезда (null → ACTIVE); MoveSource/MoveTarget —
 /// owner/target из СТАТУС-ключа (guard G4 t06: после flip статус-owner ≠ routing-owner;
-/// null без статуса; у NOT_INITIALIZED — owner без target).</summary>
+/// null без статуса; у NOT_INITIALIZED — owner без target); MovePhase/MoveUpdatedUnix —
+/// phase/updated_unix из статус-ключа (репарация §3.5); null без статуса.</summary>
 public sealed record BucketRoute(int Id, string? Owner, BucketMoveState? Status,
-    string? MoveTarget = null, string? MoveSource = null);
+    string? MoveTarget = null, string? MoveSource = null,
+    string? MovePhase = null, long? MoveUpdatedUnix = null);
 
 /// <summary>Полный снапшот кластера: config + шарды + все N маршрутов бакетов
 /// + per-cluster app-креды (null до первого ensure — spec §4.1).</summary>
