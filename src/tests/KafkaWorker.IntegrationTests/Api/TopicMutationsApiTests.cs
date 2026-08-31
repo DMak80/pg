@@ -101,12 +101,15 @@ public class TopicMutationsApiTests(KafkaApiFixture fixture)
 
     // AAA: POST topics — 201 (панель строит Location; воркер — без) и ключ
     // desired.create с каноническим JSON (дефолты config кластера развёрнуты);
-    // desired_by — заголовок X-Requested-By, fallback "api".
+    // desired_by — заголовок X-Requested-By, fallback "api". Топиковые префиксы
+    // чистим: сид (KafkaSeedApiTests) оставляет живую audit/desired.create.
     [Fact]
     public async Task PostTopic_201_ClaimsCreateTicket()
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
+        await Etcd.Gateway.DeleteAsync(Etcd.Endpoint, "/kafka/clusters/events/topics/", prefix: true, ct);
+        await Etcd.Gateway.DeleteAsync(Etcd.Endpoint, "/kafka/clusters/events2/topics/", prefix: true, ct);
         await KafkaApiTestSeed.SeedActiveClusterAsync(Etcd, "events");
 
         // Act
@@ -177,33 +180,36 @@ public class TopicMutationsApiTests(KafkaApiFixture fixture)
     // AAA: DELETE topic — 204 + идемпотентный повтор 204 (живая delete-заявка);
     // missing-топик — 404; живая desired — 409; живая create-заявка на НЕ-missing
     // топике — 409 (порядок панельных guard'ов: missing отсекается раньше) —
-    // чек 50 шаги 4–6 + панельные кейсы.
+    // чек 50 шаги 4–6 + панельные кейсы. Отдельный кластер: соседние кейсы/сид
+    // могут оставить живые lifecycle-заявки на orders — requested_by-ассерт
+    // требует чистого состояния.
     [Fact]
     public async Task DeleteTopic_204Idempotent_Missing404_DesiredPending409_CreatePending409()
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
-        await KafkaApiTestSeed.SeedActiveClusterAsync(Etcd, "events");
-        await KafkaApiTestSeed.SeedTopicKeyAsync(Etcd, "events", "orders", partitions: 12);
-        await KafkaApiTestSeed.SeedTopicKeyAsync(Etcd, "events", "ghost", partitions: 12,
+        await Etcd.Gateway.DeleteAsync(Etcd.Endpoint, "/kafka/clusters/dx/", prefix: true, ct);
+        await KafkaApiTestSeed.SeedActiveClusterAsync(Etcd, "dx");
+        await KafkaApiTestSeed.SeedTopicKeyAsync(Etcd, "dx", "orders", partitions: 12);
+        await KafkaApiTestSeed.SeedTopicKeyAsync(Etcd, "dx", "ghost", partitions: 12,
             missing: true);
-        await KafkaApiTestSeed.SeedTopicKeyAsync(Etcd, "events", "payments", partitions: 12,
+        await KafkaApiTestSeed.SeedTopicKeyAsync(Etcd, "dx", "payments", partitions: 12,
             "\"desired\":{\"partitions\":16}");
-        await KafkaApiTestSeed.SeedTopicKeyAsync(Etcd, "events", "audit", partitions: 12);
-        await KafkaApiTestSeed.SeedLifecycleTicketAsync(Etcd, "events", "audit", "create");
+        await KafkaApiTestSeed.SeedTopicKeyAsync(Etcd, "dx", "audit", partitions: 12);
+        await KafkaApiTestSeed.SeedLifecycleTicketAsync(Etcd, "dx", "audit", "create");
 
         // Act
-        var removed = await Client.DeleteAsync("/api/kafka/clusters/events/topics/orders", ct);
-        var repeat = await Client.DeleteAsync("/api/kafka/clusters/events/topics/orders", ct);
-        var missingTopic = await Client.DeleteAsync("/api/kafka/clusters/events/topics/ghost", ct);
-        var desiredPending = await Client.DeleteAsync("/api/kafka/clusters/events/topics/payments", ct);
-        var createPending = await Client.DeleteAsync("/api/kafka/clusters/events/topics/audit", ct);
+        var removed = await Client.DeleteAsync("/api/kafka/clusters/dx/topics/orders", ct);
+        var repeat = await Client.DeleteAsync("/api/kafka/clusters/dx/topics/orders", ct);
+        var missingTopic = await Client.DeleteAsync("/api/kafka/clusters/dx/topics/ghost", ct);
+        var desiredPending = await Client.DeleteAsync("/api/kafka/clusters/dx/topics/payments", ct);
+        var createPending = await Client.DeleteAsync("/api/kafka/clusters/dx/topics/audit", ct);
 
         // Assert
         removed.StatusCode.Should().Be(HttpStatusCode.NoContent);
         repeat.StatusCode.Should().Be(HttpStatusCode.NoContent); // идемпотентность
         var ticket = await Etcd.Gateway.GetAsync(Etcd.Endpoint,
-            "/kafka/clusters/events/topics/orders/desired.delete", ct);
+            "/kafka/clusters/dx/topics/orders/desired.delete", ct);
         ticket.Value!.Value.Should().Contain("\"requested_by\":\"api\""); // fallback без заголовка
         missingTopic.StatusCode.Should().Be(HttpStatusCode.NotFound);
         desiredPending.StatusCode.Should().Be(HttpStatusCode.Conflict);
@@ -211,28 +217,32 @@ public class TopicMutationsApiTests(KafkaApiFixture fixture)
     }
 
     // AAA: cancel create/delete — 204 со снятием ключа; без заявки — 404
-    // (чек 50 шаги 5–6 + панельные CancelTopicLifecycle).
+    // (чек 50 шаги 5–6 + панельные CancelTopicLifecycle). Отдельный кластер:
+    // события коллекции на общем etcd — соседние кейсы могли оставить живую
+    // orders/desired.delete (идемпотентность DELETE topic), 404-шаг не должен
+    // видеть чужое состояние.
     [Fact]
     public async Task CancelLifecycle_204RemovesTicket_NoTicket404()
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
-        await KafkaApiTestSeed.SeedActiveClusterAsync(Etcd, "events");
-        await KafkaApiTestSeed.SeedLifecycleTicketAsync(Etcd, "events", "audit", "create");
-        await KafkaApiTestSeed.SeedTopicKeyAsync(Etcd, "events", "orders", partitions: 12);
+        await Etcd.Gateway.DeleteAsync(Etcd.Endpoint, "/kafka/clusters/cx/", prefix: true, ct);
+        await KafkaApiTestSeed.SeedActiveClusterAsync(Etcd, "cx");
+        await KafkaApiTestSeed.SeedLifecycleTicketAsync(Etcd, "cx", "audit", "create");
+        await KafkaApiTestSeed.SeedTopicKeyAsync(Etcd, "cx", "orders", partitions: 12);
 
         // Act
         var cancelled = await Client.DeleteAsync(
-            "/api/kafka/clusters/events/topics/audit/desired.create", ct);
+            "/api/kafka/clusters/cx/topics/audit/desired.create", ct);
         var repeat = await Client.DeleteAsync(
-            "/api/kafka/clusters/events/topics/audit/desired.create", ct);
+            "/api/kafka/clusters/cx/topics/audit/desired.create", ct);
         var noDelete = await Client.DeleteAsync(
-            "/api/kafka/clusters/events/topics/orders/desired.delete", ct);
+            "/api/kafka/clusters/cx/topics/orders/desired.delete", ct);
 
         // Assert
         cancelled.StatusCode.Should().Be(HttpStatusCode.NoContent);
         var ticket = await Etcd.Gateway.GetAsync(Etcd.Endpoint,
-            "/kafka/clusters/events/topics/audit/desired.create", ct);
+            "/kafka/clusters/cx/topics/audit/desired.create", ct);
         ticket.Value.Should().BeNull(); // ключ снят
         repeat.StatusCode.Should().Be(HttpStatusCode.NotFound);
         noDelete.StatusCode.Should().Be(HttpStatusCode.NotFound);
