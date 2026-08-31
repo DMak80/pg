@@ -1,6 +1,8 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Options;
 using KafkaWorker.App;
+using KafkaWorker.App.Api;
+using KafkaWorker.App.Api.Operations;
 using KafkaWorker.App.HealthChecks;
 using KafkaWorker.App.Loops;
 using KafkaWorker.Core;
@@ -45,6 +47,33 @@ builder.Services.AddSingleton(sp => new ClaimStore(
 builder.Services.AddSingleton(sp => new WorkJournal(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
+
+// HTTP API воркера (arch/16 §1.1): мутации декларативного контракта kafka-домена —
+// хендлеры-синглтоны (task etcd-via-worker-api).
+builder.Services.AddSingleton(sp => new CreateClusterHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton(sp => new DeleteClusterHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
+builder.Services.AddSingleton(sp => new UpdateConfigHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
+builder.Services.AddSingleton(sp => new AddBrokerHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
+builder.Services.AddSingleton(sp => new DeleteBrokerHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
+builder.Services.AddSingleton(sp => new RotateAppPasswordHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton(sp => new RebalanceHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>()));
 
 // docker: драйвер по режиму (Plain: таблица Hosts; Swarm: manager endpoint).
 builder.Services.AddSingleton<DockerEngineFactory>();
@@ -198,7 +227,9 @@ builder.Services.AddHealthChecks()
     .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop");
 
 var app = builder.Build();
+app.UseMiddleware<ApiKeyMiddleware>();
 app.MapHealthChecks("/healthz");
+app.MapWorkerApi();
 
 await app.RunAsync();
 
@@ -214,3 +245,6 @@ static ProvisioningOptions ToProvisioningOptions(KafkaWorkerOptions opts) => new
 // Делегат снапшота для процессов (P12 «до/после» в точках изменений).
 static Func<CancellationToken, Task<Result>> SnapshotDelegate(SnapshotJob job)
     => async ct => await job.TakeAsync(ct);
+
+// WAF-тесты (KafkaWorker.IntegrationTests/Api): точка входа как public partial.
+public partial class Program;

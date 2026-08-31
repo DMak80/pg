@@ -37,6 +37,10 @@ public sealed class ApiOptions
     /// <summary>URL API, достижимый клиентами (панелью); пусто → fail-fast старта.</summary>
     public string AdvertiseUrl { get; set; } = "";
 
+    /// <summary>Секрет X-Api-Key (env KFW_API_KEY); пусто — проверка отключена
+    /// (доверленная docker-сеть, arch/16 §1.1).</summary>
+    public string? ApiKey { get; set; }
+
     /// <summary>Демо-сид-эндпоинт POST /api/seed/demo (стенд; default false).</summary>
     public bool EnableSeedEndpoint { get; set; }
 }
