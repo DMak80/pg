@@ -11,7 +11,9 @@ namespace PgWorker.IntegrationTests.Api;
 
 // WAF-хост PgWorker с настоящим etcd (fixture) и выключенными фоновыми циклами:
 // loops не нужны для API-мутаций, а их тики в тесте — шум.
-public sealed class PgWorkerApiFactory(Etcd.EtcdFixture etcd) : WebApplicationFactory<Program>
+// Не sealed: кейсы с оверрайдом конфигурации наследуются (напр., seed-эндпоинт
+// с EnableSeedEndpoint=false в SeedApiTests — последний источник конфига выигрывает).
+public class PgWorkerApiFactory(Etcd.EtcdFixture etcd) : WebApplicationFactory<Program>
 {
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
@@ -22,6 +24,9 @@ public sealed class PgWorkerApiFactory(Etcd.EtcdFixture etcd) : WebApplicationFa
             ["PgWorker:Docker:Hosts:0:Name"] = "local",
             ["PgWorker:Docker:Hosts:0:Endpoint"] = "unix:///var/run/does-not-exist.sock",
             ["PgWorker:Api:AdvertiseUrl"] = "http://localhost:9999",
+            // Seed-эндпоинт включён для кейсов наливки (SeedApiTests); выключенный
+            // флаг проверяется отдельной фабрикой-оверрайдом.
+            ["PgWorker:Api:EnableSeedEndpoint"] = "true",
         }));
         builder.ConfigureServices(services =>
             services.RemoveAll<IHostedService>()); // Reconcile/Keepalive/Snapshot не стартуют

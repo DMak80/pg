@@ -79,6 +79,12 @@ builder.Services.AddSingleton(sp => new RotateAppPasswordHandler(
 builder.Services.AddSingleton(sp => new RecreateNodeHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
+// Демо-сид (arch/14 §1.1.1): стендовый эндпоинт за флагом EnableSeedEndpoint.
+builder.Services.AddSingleton(sp => new SeedDemoHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Api.EnableSeedEndpoint));
 
 // docker: драйвер по режиму (Plain: таблица Hosts; Swarm: manager endpoint).
 builder.Services.AddSingleton<DockerEngineFactory>();

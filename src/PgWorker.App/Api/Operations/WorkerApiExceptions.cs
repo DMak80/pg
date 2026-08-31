@@ -131,3 +131,7 @@ public sealed class AllOthersRecreatingException(string scope, string node)
 {
     public string Node { get; } = node;
 }
+
+// Ресурс/эндпоинт воркера не найден или выключен — 404 (напр., seed-эндпоинт
+// за флагом EnableSeedEndpoint, arch/14 §1.1.1).
+public sealed class WorkerApiNotFoundException(string message) : Exception(message);

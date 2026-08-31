@@ -228,6 +228,26 @@ public static class ApiModule
             };
         });
 
+        // POST /api/seed/demo — демо-сид pg-контура (arch/14 §1.1.1, стенд):
+        // перенос seed.sh 1:1; идемпотентен по /clusters/demo/config.
+        // Флаг EnableSeedEndpoint проверяет хендлер (выключен → 404).
+        endpoints.MapPost("/api/seed/demo", async (SeedDemoHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleAsync(ct);
+            if (result.IsSuccess)
+                return Results.Ok(result.Value);
+
+            return result.Error switch
+            {
+                WorkerApiNotFoundException => Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound, title: "Not found", detail: result.Error.Message),
+                EtcdWriteUnavailableException => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable", detail: result.Error.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed", detail: result.Error!.Message),
+            };
+        });
+
         return endpoints;
     }
 }
