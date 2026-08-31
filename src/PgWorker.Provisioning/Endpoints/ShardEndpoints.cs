@@ -140,6 +140,11 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
 
     // ── DSN-билдеры ──
 
+    // Внешний ли шард-исполнитель подписок (spec §3.3): object-ноды живут вне
+    // pgw-net и видят адреса dsn-ключа напрямую — подмена advertised ломает подключение.
+    public static bool HasAdoptedNodes(string shard, IReadOnlyDictionary<string, NodeAddress> addresses)
+        => addresses.Any(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal) && p.Value.Object is not null);
+
     // Admin-DSN мастера (postgres): управляющий SQL переездов, как весь SQL-слой.
     public static string AdminDsn(NodeAddress master, string dbname, InstallSecrets secrets)
         => DatabaseProvisioner.BuildAdminDsn(master.Host, master.Ports.Pg, dbname, secrets);

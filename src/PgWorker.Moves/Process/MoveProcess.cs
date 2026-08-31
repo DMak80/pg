@@ -371,7 +371,8 @@ public sealed class MoveProcess(
             if (masterEntry.Key is not { Length: > 0 } entry)
                 return await FailTransientAsync(cluster, new ApplicationException(
                     $"мастер '{owner}' (pg:{master.Ports.Pg}) не найден среди нод шарда в portalloc"), ct);
-            var dump = await ddl.DumpAsync(cluster, owner, entry.Split('/')[1], snap.Config.DbName, bucket, ct);
+            var dump = await ddl.DumpAsync(cluster, owner, entry.Split('/')[1], snap.Config.DbName, bucket, ct,
+                containerOverride: master.Object); // усыновлённая нода: exec в object-контейнер (spec §3.3)
             if (!dump.IsSuccess)
                 return await FailTransientAsync(cluster, dump.Error!, ct);
             var applied = await ddl.ApplyAsync(dstDsn, dump.Value, ct);
@@ -408,9 +409,12 @@ public sealed class MoveProcess(
         {
             // copy_data=true (initial copy), failover-флаг конфигурируем (PG17+, R1),
             // synchronous_commit=remote_apply — P8; CONNECTION — mover-роль источника.
+            // Advertised-правило (spec §3.3): подмена только для канонических
+            // pgw-исполнителей — внешний приёмник видит адреса dsn напрямую.
+            var advertised = await AdvertisedForShardAsync(cluster, to, ct);
             var createSub = await sql.ExecuteAsync(dstDsn,
                 MoveSql.CreateSubscription(MoveNames.Sub(bucket),
-                    ShardEndpoints.MoverConninfo(srcShard.Dsn!, secrets, options.AdvertisedPublisherHost),
+                    ShardEndpoints.MoverConninfo(srcShard.Dsn!, secrets, advertised),
                     MoveNames.Pub(bucket), copyData: true, failover: options.FailoverSlots), ct);
             if (!createSub.IsSuccess)
                 return await FailTransientAsync(cluster, createSub.Error!, ct);
@@ -501,9 +505,12 @@ public sealed class MoveProcess(
                 dstDsn, MoveSql.CreatePublication(MoveNames.PubRb(bucket), bucket), ct);
             if (pubRb.IsSuccess)
             {
+                // Advertised-правило (spec §3.3): исполнитель sub_rb — бывший
+                // владелец (owner); подмена только для канонических pgw-нод.
+                var advertised = await AdvertisedForShardAsync(cluster, owner, ct);
                 var subRb = await sql.ExecuteAsync(srcDsn,
                     MoveSql.CreateSubscription(MoveNames.SubRb(bucket),
-                        ShardEndpoints.MoverConninfo(dstShard.Dsn!, secrets, options.AdvertisedPublisherHost),
+                        ShardEndpoints.MoverConninfo(dstShard.Dsn!, secrets, advertised),
                         MoveNames.PubRb(bucket), copyData: false, failover: options.FailoverSlots), ct);
                 if (!subRb.IsSuccess)
                     postFlipErrors.Add(
@@ -995,6 +1002,18 @@ public sealed class MoveProcess(
             await journal.WritePhaseAsync(cluster, "move", "post-flip", claims.InstanceId,
                 $"снапшот не снялся: {shot.Error!.Message} — сними вручную (P12)", ct);
         return shot;
+    }
+
+    // Подмена advertised-хоста только для канонических исполнителей подписок
+    // (spec §3.3): усыновлённый (object) исполнитель в compose-сети резолвит
+    // адреса dsn-ключа сам — host.docker.internal сломал бы подключение.
+    // Недоступность portalloc — не повод рвать переезд: без подмены (консервативно).
+    private async Task<string?> AdvertisedForShardAsync(string cluster, string shard, CancellationToken ct)
+    {
+        var addresses = await shards.ReadPortAllocAsync(cluster, ct);
+        return !addresses.IsSuccess || ShardEndpoints.HasAdoptedNodes(shard, addresses.Value)
+            ? null
+            : options.AdvertisedPublisherHost;
     }
 
     private async Task<Result<(string Src, string Dst)>> ResolveShardDsnsAsync(

@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using PgWorker.Core;
+using PgWorker.Core.Model;
 using PgWorker.Moves;
 using PgWorker.Provisioning.Processes;
 using Xunit;
@@ -111,6 +112,84 @@ public class MoveProcessPhasesTests
             "подписка существует — создание идемпотентно пропущено");
         var status = await rig.Status.GetAsync("shop", "bucket_42", CancellationToken.None);
         status.Value!.Phase.Should().Be(MovePhases.CopyWait);
+    }
+
+    // AAA (adopt-repair §3.3, advertised-правило): приёмник с object-нодами —
+    // внешний исполнитель compose-сети видит адреса dsn-ключа напрямую,
+    // подмена host.docker.internal НЕ применяется
+    [Fact]
+    public async Task M2_AdoptedReceiver_NoAdvertisedSubstitution()
+    {
+        // Arrange — приёмник shard2 = object-ноды (усыновленный кластер),
+        // конфиг содержит advertised-хост (для канонических он бы подменял).
+        var rig = await MoveRig.NewAsync(
+            new MoveRig.PreflightSql(SubSyncReady: "1/3"), seededStatus: DdlStatus(),
+            runtime: new MovesRuntimeOptions(AdvertisedPublisherHost: "host.docker.internal"));
+        rig.Etcd.Seed("/pgworker/portalloc/shop", Portalloc.Serialize(new Dictionary<string, NodeAddress>
+        {
+            ["shard1/shard1a"] = new("h1", new NodePorts(15000, 18000, 16500)),
+            ["shard1/shard1b"] = new("h2", new NodePorts(15001, 18001, 16501)),
+            ["shard2/shard2a"] = new("h1", new NodePorts(15002, 0, 0), "as-shard2a"),
+            ["shard2/shard2b"] = new("h2", new NodePorts(15003, 0, 0), "as-shard2b"),
+        }));
+
+        // Act
+        var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
+
+        // Assert: conninfo содержит хосты dsn-ключа источника как есть.
+        tick.Value.Should().Be(ProcessOutcome.InProgress);
+        rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.DstDsn && c.Sql ==
+            "CREATE SUBSCRIPTION sub_bucket_42 CONNECTION 'host=h1,h2 port=15000,15001 dbname=shop user=bucket_mover password=mov-pw sslmode=require target_session_attrs=read-write' PUBLICATION pub_bucket_42 " +
+            "WITH (copy_data = true, failover = true, synchronous_commit = remote_apply)",
+            "внешний приёмник получает адреса dsn-ключа без подмены advertised");
+    }
+
+    // AAA (adopt-repair §3.3): канонический приёмник — подмена advertised-хоста
+    // применяется как раньше (single-host стенды: подписка из контейнера)
+    [Fact]
+    public async Task M2_CanonicalReceiver_AdvertisedSubstituted()
+    {
+        // Arrange — обычная топология (без object), advertised задан конфигом.
+        var rig = await MoveRig.NewAsync(
+            new MoveRig.PreflightSql(SubSyncReady: "1/3"), seededStatus: DdlStatus(),
+            runtime: new MovesRuntimeOptions(AdvertisedPublisherHost: "host.docker.internal"));
+
+        // Act
+        var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
+
+        // Assert: hosts издателя заменены на advertised (поэлементно).
+        tick.Value.Should().Be(ProcessOutcome.InProgress);
+        rig.Sql.Calls.Should().Contain(c => c.Dsn == MoveRig.DstDsn && c.Sql.Contains(
+            "CONNECTION 'host=host.docker.internal,host.docker.internal port=15000,15001"),
+            "канонический приёмник — подмена advertised издателя работает");
+    }
+
+    // AAA (adopt-repair §3.3, exec-fallback): мастер источника — object-нода:
+    // pg_dump идёт в её фактический контейнер (ExecContainerAsync), не в pgw-имя
+    [Fact]
+    public async Task M1_AdoptedSourceMaster_DumpsInObjectContainer()
+    {
+        // Arrange — источник shard1 = object-ноды (усыновленный кластер).
+        var rig = await MoveRig.NewAsync(
+            new MoveRig.PreflightSql(SubSyncReady: "1/3"), seededStatus: DdlStatus());
+        rig.Etcd.Seed("/pgworker/portalloc/shop", Portalloc.Serialize(new Dictionary<string, NodeAddress>
+        {
+            ["shard1/shard1a"] = new("h1", new NodePorts(15000, 0, 0), "as-shard1a"),
+            ["shard1/shard1b"] = new("h2", new NodePorts(15001, 0, 0), "as-shard1b"),
+            ["shard2/shard2a"] = new("h1", new NodePorts(15002, 18002, 16502)),
+            ["shard2/shard2b"] = new("h2", new NodePorts(15003, 18003, 16503)),
+        }));
+
+        // Act
+        var tick = await rig.Process.TickAsync(MoveRig.Snap(), CancellationToken.None);
+
+        // Assert: exec ушёл в object-контейнер мастера, канонический exec не звался.
+        tick.Value.Should().Be(ProcessOutcome.InProgress);
+        rig.Driver.ContainerExecs.Should().ContainSingle();
+        rig.Driver.ContainerExecs[0].Container.Should().Be("as-shard1a");
+        rig.Driver.ContainerExecs[0].Cmd.Should().BeEquivalentTo(
+            ["su", "postgres", "-c", "pg_dump --schema-only --no-owner --no-privileges --schema=bucket_42 shop"]);
+        rig.Driver.Executed.Should().BeEmpty("канонический ExecNodeAsync не зывается у object-ноды");
     }
 
     // AAA: подписка не готова («1/3») — тик ждёт: InProgress, статус SYNCING/copy-wait
