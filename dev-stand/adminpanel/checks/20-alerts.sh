@@ -9,7 +9,7 @@ ect() { docker compose exec -T etcd etcdctl --endpoints=http://localhost:2379 "$
 
 curl -fsS -c "$JAR" -o /dev/null -X POST "$BASE/api/auth/login" \
   -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}' \
-  || { echo "❌ login (панель на $BASE? запусти dotnet run)"; exit 1; }
+  || { echo "❌ login (панель на $BASE? запусти docker compose up -d adminpanel)"; exit 1; }
 api() { curl -fsS -b "$JAR" "$BASE$1"; }
 
 has_alert() { # kind target [severity]

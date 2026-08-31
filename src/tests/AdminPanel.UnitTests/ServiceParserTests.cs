@@ -111,7 +111,8 @@ public class ServiceParserTests
         var members = result.Scopes.Single(s => s.Scope == "demo-s1").Members;
         var master = members.Should().ContainSingle(m => m.Name == "s1a").Subject;
         master.Host.Should().Be("s1a");
-        master.Port.Should().Be(5432);
+        // порт conn_url — PG, не REST: Port null → проба на стандарт :8008 (arch/02 §6.1)
+        master.Port.Should().BeNull();
         master.Role.Should().Be("master");
         master.State.Should().Be("running");
         // probe-поля — t06
@@ -133,11 +134,12 @@ public class ServiceParserTests
         // Act
         var result = ServiceParser.Parse(kvs, DemoClusters);
 
-        // Assert — из URI извлечены host и port (не сырая строка целиком)
+        // Assert — из URI извлечён host (port conn_url — порт PG, не REST:
+        // HaMember.Port остаётся null → проба идёт на стандарт :8008, arch/02 §6.1)
         var member = result.Scopes.Single(s => s.Scope == "demo-s1").Members
             .Should().ContainSingle(m => m.Name == "s1a").Subject;
         member.Host.Should().Be("172.20.0.7");
-        member.Port.Should().Be(5432);
+        member.Port.Should().BeNull();
     }
 
     [Fact]

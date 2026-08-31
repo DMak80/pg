@@ -48,9 +48,10 @@ public sealed class SqlProbe(IOptions<ProbesOptions> options, TimeProvider time)
             ApplicationName = "adminpanel",
             Timeout = TimeoutSeconds(options),
             CommandTimeout = TimeoutSeconds(options), // statement_timeout (arch/02 §6.2)
-            // Spilo включает SSL (self-signed сертификат); pg_hba требует
-            // hostssl — Require гарантирует шифрование, Reject на no-SSL.
-            SslMode = SslMode.Require,
+            // SSL Prefer: Spilo/hostssl шифруется, dev-стенд (postgres:18,
+            // ssl=off + trust) пускает plain — Require отваливал no-SSL-стенд
+            // целиком («Unable to connect to a suitable host»).
+            SslMode = SslMode.Prefer,
         };
         if (hosts.Count > 1)
             builder.TargetSessionAttributes = "read-write"; // multi-host ведёт на мастер

@@ -215,7 +215,6 @@ public static class ServiceParser
     private static HaMember ParseMember(string name, string raw)
     {
         var host = name;
-        int? port = null;
         string? role = null;
         string? state = null;
         try
@@ -229,22 +228,21 @@ public static class ServiceParser
             {
                 // Patroni пишет conn_url как URI (postgres://host:port/dbname);
                 // старый стенд — plain host:port (URI без authority туда не попадает).
+                // Порт conn_url — это порт PG, а НЕ Patroni REST (:8008, arch/02
+                // §6.1): в HaMember.Port (REST-порт пробы) его класть нельзя —
+                // без portalloc-переопределения проба уходила на PG-порт. Порт
+                // REST-пробы — стандарт :8008 либо portalloc (Patroni-порт).
                 if (Uri.TryCreate(connUrl, UriKind.Absolute, out var uri) && !string.IsNullOrEmpty(uri.Host))
                 {
                     host = uri.Host;
-                    port = uri.Port > 0 ? uri.Port : null;
                 }
                 else
                 {
                     var colon = connUrl.LastIndexOf(':');
-                    if (colon > 0
-                        && int.TryParse(connUrl[(colon + 1)..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var parsedPort))
-                    {
-                        host = connUrl[..colon];
-                        port = parsedPort;
-                    }
-                    else
-                        host = connUrl;
+                    host = colon > 0
+                        && int.TryParse(connUrl[(colon + 1)..], NumberStyles.Integer, CultureInfo.InvariantCulture, out _)
+                        ? connUrl[..colon]
+                        : connUrl;
                 }
             }
         }
@@ -253,7 +251,7 @@ public static class ServiceParser
             // толерантно: member без валидного JSON остаётся именем-хостом
         }
 
-        return new HaMember(name, host, port, role, state, null, null, null, null, null);
+        return new HaMember(name, host, null, role, state, null, null, null, null, null);
     }
 
     private static TValue GetOrAdd<TKey, TValue>(Dictionary<TKey, TValue> dictionary, TKey key, Func<TKey, TValue> factory)

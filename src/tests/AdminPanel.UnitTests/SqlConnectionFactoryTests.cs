@@ -64,8 +64,8 @@ public class SqlConnectionFactoryTests
         builder.ApplicationName.Should().Be("adminpanel");
         builder.Timeout.Should().Be(7);
         builder.CommandTimeout.Should().Be(7);
-        // Spilo включает SSL (self-signed); pg_hba требует hostssl — Require.
-        builder.SslMode.Should().Be(SslMode.Require);
+        // SSL Prefer: Spilo/hostssl шифруется, dev-стенд ssl=off пускает plain.
+        builder.SslMode.Should().Be(SslMode.Prefer);
     }
 
     [Fact]

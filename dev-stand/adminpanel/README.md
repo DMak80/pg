@@ -6,17 +6,17 @@
 ## Быстрый старт
 
 ```bash
-# терминал 1 — панель (localhost:5050, admin/admin)
-dotnet run --project src/AdminPanel.Api
-
-# терминал 2 — стенд
-cd dev-stand/adminpanel && checks/00-up.sh        # full: etcd+seed+2 PG-шарда+эмуляторы+kafkaworker
-# или: docker compose up -d            # quick: только etcd+сид (без PG/kafka)
+# всё — одним скриптом; панель в докере (AGENTS.md: всегда только докер),
+# localhost:5050, admin/admin
+cd dev-stand/adminpanel && checks/00-up.sh        # full: etcd+seed+2 PG-шарда+эмуляторы+kafkaworker+панель
+# или: docker compose up -d            # quick: etcd+сид+панель (без PG/kafka)
 
 open http://localhost:5050
 ```
 
-Порт панели/логин переопределяются: `ADMINPANEL_URL`, `AdminPanel:Auth`.
+Порт панели/логин переопределяются: `ADMINPANEL_URL` (чеки), env `AdminPanel__Auth__*`
+сервиса `adminpanel`. Панель живёт в сети стенда и резолвит ноды напрямую
+(`s1a:5432`, patroni `:8008`) — HostMap для adminpanel-стенда не нужен.
 
 ## Профили
 
@@ -51,20 +51,21 @@ supervisor-пересоздания, заявка ротации → journal-fai
 
 ## HostMap
 
-`appsettings.Development.json` мапит стендовые адреса на хост-порты
-(5433–5436 → PG-ноды, 8011/8012/8021/8022 → эмуляторы). Ключи записываются
-как `host__port` (двойное подчёркивание вместо двоеточия): конфиг-провайдеры
-.NET режут ключи секций по `:`, словарь с `host:port`-ключами биндится
-пустым; `HostMapResolver` принимает оба формата.
+Панель в докере резолвит стендовые адреса сетью compose — HostMap для
+adminpanel-стенда не нужен. `appsettings.Development.json` несёт HostMap для
+хостовых сценариев против PgWorker-стенда (portalloc 15000-18999, kafka
+160xx). Ключи записываются как `host__port` (двойное подчёркивание вместо
+двоеточия): конфиг-провайдеры .NET режут ключи секций по `:`, словарь с
+`host:port`-ключами биндится пустым; `HostMapResolver` принимает оба формата.
 
 ## E2E (полный прогон; с чистого состояния)
 
 ```bash
 checks/90-down.sh -v        # если стенд уже поднимался
-# панель: dotnet run --project src/AdminPanel.Api (отдельный терминал)
 checks/00-up.sh && checks/10-smoke-api.sh && checks/15-cluster-create.sh \
   && checks/20-alerts.sh && checks/30-failover.sh && checks/40-live-probes.sh
-# kafka: 50-й поднимает сид сам (профиль seed); e2e 55-й — отдельно с чистого состояния
+# панель уже в докере (шаг 8 подъёма); kafka: 50-й поднимает сид сам (профиль
+# seed); e2e 55-й — отдельно с чистого состояния
 ```
 
 Порядок важен: 30-й делает failover s1 (мастером остаётся s1b, s1a
@@ -83,5 +84,5 @@ Quick-режим: `checks/90-down.sh -v && docker compose up -d` → зелён�
   со стендом pg (этот монорепозиторий));
 - etcd: `docker compose exec etcd etcdctl --endpoints=http://localhost:2379 get / --prefix --keys-only`;
 - эмуляторы: `curl 127.0.0.1:8011/cluster | jq .` (8011/8012/8021/8022);
-- панель: логи запуска `/tmp/adminpanel.log` (если через nohup), API —
+- панель (докер): логи `docker compose logs adminpanel`, API —
   `curl -b jar $BASE/api/overview`.

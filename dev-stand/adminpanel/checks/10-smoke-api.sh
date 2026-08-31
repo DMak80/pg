@@ -9,7 +9,7 @@ JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
 # Arrange: панель поднята (до 60 c; запуск руками — arch/04 §5)
 for i in $(seq 1 60); do curl -fsS "$BASE/api/healthz" >/dev/null 2>&1 && break; sleep 1; done
 curl -fsS "$BASE/api/healthz" >/dev/null \
-  || { echo "❌ панель не отвечает: $BASE/api/healthz (dotnet run --project src/AdminPanel.Api)"; exit 1; }
+  || { echo "❌ панель не отвечает: $BASE/api/healthz (docker compose up -d adminpanel)"; exit 1; }
 curl -fsS "$BASE/api/healthz" | jq -e '.status == "ok"' >/dev/null \
   || { echo "❌ /api/healthz: тело не {\"status\":\"ok\"}"; exit 1; }
 echo "  панель жива ($BASE, status=ok)"

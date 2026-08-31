@@ -213,6 +213,35 @@ services:
       MEMBERS: s2a,s2b
     depends_on: [s2b]
 
+  # Панель — ВСЕГДА в докере (AGENTS.md): в сети стенда резолвит ноды напрямую
+  # (s1a:5432, patroni :8008, kafka host.docker.internal) — хостовая панель не
+  # достаёт до стендовых адресов, её live-пробы таймаутятся (критичный
+  # функционал). Без профиля: поднимается и в quick, и в full.
+  adminpanel:
+    build:
+      context: ../..
+      dockerfile: docker/AdminPanel.Dockerfile
+    image: adminpanel:dev
+    container_name: as-adminpanel
+    restart: unless-stopped
+    ports:
+      - "5050:8080"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Stand
+      AdminPanel__Etcd__Endpoints__0: http://etcd:2379
+      # cookie-логин по http (стенд без TLS)
+      AdminPanel__Auth__Username: admin
+      AdminPanel__Auth__Password: admin
+      AdminPanel__Auth__AllowHttp: "true"
+      # kafka-пробы: DescribeCluster/группы через host.docker.internal медленнее
+      # 3 c (прецедент хостового дев-конфига)
+      AdminPanel__Probes__Kafka__TimeoutSeconds: "10"
+    volumes:
+      # HostMap (s1a:8008 → hc1a:8008) — только JSON: env не собирает ключи
+      # словаря с "__" (см. комментарий в самом файле)
+      - ./adminpanel.appsettings.json:/app/appsettings.Stand.json:ro
+    depends_on: [etcd]
+
   # Kafka-сид (план B8): РОВНО 2 кластера /kafka/ (events Active + pending
   # NOT_INITIALIZED + заявка ротации events). Профиль seed — опционален:
   # дефолтный up и профиль kafka его НЕ поднимают (изоляция от живого воркера).

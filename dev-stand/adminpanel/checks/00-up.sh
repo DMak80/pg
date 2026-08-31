@@ -132,4 +132,11 @@ done
   || { echo "❌ kafkaworker не ожил за 60 c (docker compose logs kafkaworker)"; exit 1; }
 echo "  kafkaworker жив (heartbeat /kafkaworker/instances/*)"
 
-echo "✓ стенд поднят (PG + kafka)"
+# 8) панель жива: всегда в докере (AGENTS.md), сервис adminpanel сети стенда,
+#    /api/healthz опубликован на :5050.
+for i in $(seq 1 60); do curl -fsS http://localhost:5050/api/healthz >/dev/null 2>&1 && break; sleep 1; done
+curl -fsS http://localhost:5050/api/healthz >/dev/null 2>&1 \
+  || { echo "❌ панель не ожила за 60 c на :5050 (docker compose logs adminpanel)"; exit 1; }
+echo "  панель жива (http://localhost:5050, docker)"
+
+echo "✓ стенд поднят (PG + kafka + панель)"
