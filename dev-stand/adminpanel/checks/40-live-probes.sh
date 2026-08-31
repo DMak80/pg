@@ -27,26 +27,30 @@ for i in $(seq 1 40); do ha_ok demo-s2 && break; sleep 2; done
 ha_ok demo-s2 || { echo "❌ /api/ha/demo-s2: пробы не обогащены"; exit 1; }
 echo "  demo-s2: то же"
 
-# 2) SQL-пробы: runtime без ошибок, sync-standby, инвентарь 8+5, lease живы
+# 2) SQL-пробы: runtime без ошибок, sync-standby, инвентарь 10+6 (все
+#    ACTIVE — сид чистый, adopt-repair spec §3.6), lease живы
 cl_ok() {
   api /api/clusters/demo | jq -e '
     ([.shards[] | select(.name=="s1")][0] |
       .runtime.error == null and .runtime.standbiesSync >= 1
-      and (.runtime.bucketSchemas | length) == 8
+      and (.runtime.bucketSchemas | length) == 10
       and .masterAddress == "s1b:5432" and .masterLeaseAlive == true)
     and ([.shards[] | select(.name=="s2")][0] |
       .runtime.error == null and .runtime.standbiesSync >= 1
-      and (.runtime.bucketSchemas | length) == 5
+      and (.runtime.bucketSchemas | length) == 6
       and .masterLeaseAlive == true)' >/dev/null
 }
 for i in $(seq 1 40); do cl_ok && break; sleep 2; done
 cl_ok || { echo "❌ /api/clusters/demo: runtime/инвентарь/lease (SQL-проба на 127.0.0.1:5433-5436?)"; exit 1; }
-echo "  SQL-пробы: runtime шардов жив, sync-standby есть, инвентарь 8+5"
+echo "  SQL-пробы: runtime шардов жив, sync-standby есть, инвентарь 10+6"
 
 # 3) никаких ошибок проб и расхождений (spec §7.5 п.4)
+# probe-failed info неподнятых кластеров чека 15 (canon10/smoke/solo — никогда
+# не инициализировались) — не ошибка живого стенда; важное — warning/critical.
 api /api/alerts | jq -e \
-  'all(.[]; .kind != "probe-failed" and .kind != "inventory-mismatch" and .kind != "shard-no-master")' >/dev/null \
-  || { echo "❌ /api/alerts: есть probe-failed / inventory-mismatch / shard-no-master"; exit 1; }
+  'all(.[]; (.kind != "probe-failed" or .severity == "info")
+     and .kind != "inventory-mismatch" and .kind != "shard-no-master")' >/dev/null \
+  || { echo "❌ /api/alerts: есть probe-failed(≥warning) / inventory-mismatch / shard-no-master"; exit 1; }
 echo "  алертов проб/инвентаря/без-мастера нет"
 
 echo "✓ live-probes зелёный"

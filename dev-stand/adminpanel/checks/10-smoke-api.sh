@@ -54,15 +54,10 @@ for i in $(seq 1 25); do ha1_ok && break; sleep 1; done
 ha1_ok || { echo "❌ /api/ha/demo-s1: leader/members"; exit 1; }
 echo "  /api/ha/demo-s1: leader s1a, 2 члена"
 
-# Сид-аномалии видны в алертах (тик панели 3 c — ждём до 15 c)
-for i in $(seq 1 15); do
-  api /api/alerts | jq -e 'any(.[]; .kind=="move-stale" and .target=="demo/bucket_11")' >/dev/null && break
-  sleep 1
-done
-api /api/alerts | jq -e \
-  'any(.[]; .kind=="move-stale" and .target=="demo/bucket_11")
-   and any(.[]; .kind=="move-aborting" and .target=="demo/bucket_7")' >/dev/null \
-  || { echo "❌ /api/alerts: seeded move-stale/move-aborting не видны"; exit 1; }
-echo "  /api/alerts: move-stale bucket_11, move-aborting bucket_7"
+# Чистый подъём = согласованный кластер (adopt-repair spec §3.6): сид больше
+# не сеет аномалий — в алертах нет вечных move-* (нахерачивает и гасит чек 20).
+api /api/alerts | jq -e 'all(.[]; (.kind | startswith("move-")) | not)' >/dev/null \
+  || { echo "❌ /api/alerts: на чистом подъёме есть move-* алерты (сид сеет аномалии?)"; exit 1; }
+echo "  /api/alerts: move-* алертов нет (чистый подъём)"
 
 echo "✓ smoke API зелёный"

@@ -54,6 +54,13 @@ services:
       - -c
       - |
         set -e
+        # SSL (adopt-repair): воркер ходит на SQL SSL Mode=Require (контракт
+        # прод-Spilo); стендовая нода поднимает self-signed сертификат в /tmp —
+        # initdb-каталог не трогаем, флаги прокидываем во все exec postgres.
+        openssl req -new -x509 -days 3650 -nodes -subj /CN=pg \
+          -keyout /tmp/server.key -out /tmp/server.crt >/dev/null 2>&1
+        chmod 600 /tmp/server.key
+        PGSSL="-c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key"
         if [ ! -s "$$PGDATA/PG_VERSION" ]; then
           cloned=0
           for i in $$(seq 1 15); do
@@ -65,15 +72,15 @@ services:
               pg_basebackup -h s1b -U postgres -D "$$PGDATA" -X stream -R -C -S s1a_phys
               chmod 700 "$$PGDATA"
               sed -i "s|^primary_conninfo.*|primary_conninfo = 'host=s1b port=5432 user=postgres dbname=postgres application_name=s1a'|" "$$PGDATA/postgresql.auto.conf"
-              exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 \
-                   -c sync_replication_slots=on -c hot_standby_feedback=on
+              exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 $$PGSSL \
+                   -c sync_replication_slots=on -c hot_standby_feedback=on $$PGSSL
             fi
             sleep 1
           done
           echo "s1a: пир s1b не мастер — первый старт, initdb-мастер"
-          exec docker-entrypoint.sh postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16
+          exec docker-entrypoint.sh postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 $$PGSSL
         fi
-        exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16
+        exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 $$PGSSL
 
   s1b:
     image: postgres:18
@@ -90,6 +97,13 @@ services:
         # Реплика шарда 1: клон с retry (ждёт hba/готовность s1a — их патчит
         # 00-up.sh), failover-слоты + application_name для sync-standby.
         set -e
+        # SSL (adopt-repair): воркер ходит на SQL SSL Mode=Require (контракт
+        # прод-Spilo); стендовая нода поднимает self-signed сертификат в /tmp —
+        # initdb-каталог не трогаем, флаги прокидываем во все exec postgres.
+        openssl req -new -x509 -days 3650 -nodes -subj /CN=pg \
+          -keyout /tmp/server.key -out /tmp/server.crt >/dev/null 2>&1
+        chmod 600 /tmp/server.key
+        PGSSL="-c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key"
         if [ ! -s "$$PGDATA/PG_VERSION" ]; then
           while ! pg_basebackup -h s1a -U postgres -D "$$PGDATA" -X stream -R -C -S s1b_phys; do
             echo "s1b: жду s1a (инициализация/hba)..."; sleep 2; rm -rf "$$PGDATA"
@@ -97,8 +111,8 @@ services:
           chmod 700 "$$PGDATA"
           sed -i "s|^primary_conninfo.*|primary_conninfo = 'host=s1a port=5432 user=postgres dbname=postgres application_name=s1b'|" "$$PGDATA/postgresql.auto.conf"
         fi
-        exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 \
-             -c sync_replication_slots=on -c hot_standby_feedback=on
+        exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 $$PGSSL \
+             -c sync_replication_slots=on -c hot_standby_feedback=on $$PGSSL
     depends_on: [s1a]
 
   # Шард 2 — зеркально шарду 1 (s2a self-healing мастер, s2b реплика)
@@ -116,6 +130,13 @@ services:
       - -c
       - |
         set -e
+        # SSL (adopt-repair): воркер ходит на SQL SSL Mode=Require (контракт
+        # прод-Spilo); стендовая нода поднимает self-signed сертификат в /tmp —
+        # initdb-каталог не трогаем, флаги прокидываем во все exec postgres.
+        openssl req -new -x509 -days 3650 -nodes -subj /CN=pg \
+          -keyout /tmp/server.key -out /tmp/server.crt >/dev/null 2>&1
+        chmod 600 /tmp/server.key
+        PGSSL="-c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key"
         if [ ! -s "$$PGDATA/PG_VERSION" ]; then
           cloned=0
           for i in $$(seq 1 15); do
@@ -127,15 +148,15 @@ services:
               pg_basebackup -h s2b -U postgres -D "$$PGDATA" -X stream -R -C -S s2a_phys
               chmod 700 "$$PGDATA"
               sed -i "s|^primary_conninfo.*|primary_conninfo = 'host=s2b port=5432 user=postgres dbname=postgres application_name=s2a'|" "$$PGDATA/postgresql.auto.conf"
-              exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 \
-                   -c sync_replication_slots=on -c hot_standby_feedback=on
+              exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 $$PGSSL \
+                   -c sync_replication_slots=on -c hot_standby_feedback=on $$PGSSL
             fi
             sleep 1
           done
           echo "s2a: пир s2b не мастер — первый старт, initdb-мастер"
-          exec docker-entrypoint.sh postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16
+          exec docker-entrypoint.sh postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 $$PGSSL
         fi
-        exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16
+        exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 $$PGSSL
 
   s2b:
     image: postgres:18
@@ -150,6 +171,13 @@ services:
       - -c
       - |
         set -e
+        # SSL (adopt-repair): воркер ходит на SQL SSL Mode=Require (контракт
+        # прод-Spilo); стендовая нода поднимает self-signed сертификат в /tmp —
+        # initdb-каталог не трогаем, флаги прокидываем во все exec postgres.
+        openssl req -new -x509 -days 3650 -nodes -subj /CN=pg \
+          -keyout /tmp/server.key -out /tmp/server.crt >/dev/null 2>&1
+        chmod 600 /tmp/server.key
+        PGSSL="-c ssl=on -c ssl_cert_file=/tmp/server.crt -c ssl_key_file=/tmp/server.key"
         if [ ! -s "$$PGDATA/PG_VERSION" ]; then
           while ! pg_basebackup -h s2a -U postgres -D "$$PGDATA" -X stream -R -C -S s2b_phys; do
             echo "s2b: жду s2a (инициализация/hba)..."; sleep 2; rm -rf "$$PGDATA"
@@ -157,8 +185,8 @@ services:
           chmod 700 "$$PGDATA"
           sed -i "s|^primary_conninfo.*|primary_conninfo = 'host=s2a port=5432 user=postgres dbname=postgres application_name=s2b'|" "$$PGDATA/postgresql.auto.conf"
         fi
-        exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 \
-             -c sync_replication_slots=on -c hot_standby_feedback=on
+        exec postgres -c wal_level=logical -c max_wal_senders=16 -c max_replication_slots=16 $$PGSSL \
+             -c sync_replication_slots=on -c hot_standby_feedback=on $$PGSSL
     depends_on: [s2a]
 
   # Patroni-эмуляторы (spec t10 §5): отдельные контейнеры в общей сети,
