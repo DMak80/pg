@@ -40,6 +40,11 @@ live-пробы таймаутятся, критичный функционал 
 | `hc2b` (эмулятор s2b) | 8008 | 8022 | `s2b:8008` → `hc2b:8008` |
 | `adminpanel` | 8080 | 5050 | — |
 
+`as-etcd` — **единственный etcd полной системы** (источник правды, контур
+один): advertise `host.docker.internal:2379` потребляют Patroni-ноды,
+создаваемые PgWorker в своих сетях; PgWorker из `deploy/` подключается по
+`PGW_ETCD_ENDPOINT=http://host.docker.internal:2379` (шаг 9 `00-up.sh`).
+
 Адреса live-проб панель берёт из etcd (DSN `host=s1a,s1b port=5432`,
 Patroni `http://<host>:8008`). SQL-хосты compose-сети резолвятся панелью
 напрямую; но `:8008` слушают эмуляторы `hc*` — отдельные контейнеры с ДРУГИМ
@@ -164,7 +169,7 @@ member'ов scope'а).
 
 | Скрипт | Сценарий | Ожидание |
 |---|---|---|
-| `00-up.sh` | `docker compose --profile full --profile kafka up -d` + wait-on-healthy (etcd, PG-реплики, seed, heartbeat kafkaworker, healthz панели); затем БД `demo` + 13 схем `bucket_%` (§2.3) и `synchronous_standby_names` (ALTER SYSTEM — паттерн pg (этот монорепозиторий): не флагами `-c`) | стенд поднят (PG + kafka + панель), сид на месте, реплики streaming |
+| `00-up.sh` | `docker compose --profile full --profile kafka up -d` + wait-on-healthy (etcd, PG-реплики, seed, heartbeat kafkaworker, healthz панели); затем БД `demo` + 13 схем `bucket_%` (§2.3) и `synchronous_standby_names` (ALTER SYSTEM — паттерн pg (этот монорепозиторий): не флагами `-c`); шаг 9 — pg-контур полной системы: `pgw-stand-etcd` (`dev-stand/compose.yaml`, хост-2379) + PgWorker (`deploy/docker-compose.yml`, секреты `deploy/.env`) | стенд поднят (полная система: панель + PG + kafka + PgWorker), сид на месте, реплики streaming |
 | `10-smoke-api.sh` | панель против стенда: login → 401 без cookie, `/api/overview`, `/api/etcd/status`, `/api/clusters/demo`, `/api/ha/demo-s1`, `/api/alerts` | 200, структура, сидированные данные видны |
 | `20-alerts.sh` | seeded-аномалии: FROZEN-протухший → `move-stale`, `bucket_7` → `move-aborting`; затем `shard-no-master` (critical): в full перед `etcdctl del master`-ключа s2 остановить эмуляторы `hc2a`/`hc2b` (keepalive перепишет ключ), в конце вернуть и дождаться восстановления lease (в quick эмуляторов нет — просто del/put) | алерты появляются ≤ 2 тиков; после восстановления гаснут |
 | `30-failover.sh` | `docker stop s1a` → lease гаснет → `shard-no-master` + `shard-no-leader` (`leader`-ключ тоже под lease, §2.3); promote s1b руками (`pg_ctl promote`) → эмулятор s1b берёт lease, алерты гаснут, Patroni-REST показывает нового мастера; финал — rejoin: `docker compose rm -sf s1a && up -d s1a` (self-healing клон от s1b) + sync-names на s1b | цикл алерт→успокоение; стенд снова консистентен для 40 |

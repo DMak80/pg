@@ -6,10 +6,11 @@
 ## Быстрый старт
 
 ```bash
-# всё — одним скриптом; панель в докере (AGENTS.md: всегда только докер),
-# localhost:5050, admin/admin
-cd dev-stand/adminpanel && checks/00-up.sh        # full: etcd+seed+2 PG-шарда+эмуляторы+kafkaworker+панель
-# или: docker compose up -d            # quick: etcd+сид+панель (без PG/kafka)
+# всё — одним скриптом; стенд = локальный запуск ПОЛНОЙ системы (AGENTS.md):
+# панель (докер, localhost:5050, admin/admin), PG-шарды+эмуляторы, kafkaworker,
+# PgWorker (deploy/) — и ВСЕ на одном etcd (as-etcd, источник правды, контур один)
+cd dev-stand/adminpanel && checks/00-up.sh
+# или: docker compose up -d            # стенд части: etcd+сид+панель (без PG/kafka/PgWorker)
 
 open http://localhost:5050
 ```

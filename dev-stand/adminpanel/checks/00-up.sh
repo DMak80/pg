@@ -139,4 +139,18 @@ curl -fsS http://localhost:5050/api/healthz >/dev/null 2>&1 \
   || { echo "❌ панель не ожила за 60 c на :5050 (docker compose logs adminpanel)"; exit 1; }
 echo "  панель жива (http://localhost:5050, docker)"
 
-echo "✓ стенд поднят (PG + kafka + панель)"
+# 9) PgWorker (стенд = полная система; контур ВСЕГДА один — etcd стенда):
+#    воркер из deploy/docker-compose.yml ходит в as-etcd через хост-2379
+#    (PGW_ETCD_ENDPOINT=host.docker.internal:2379 — advertise as-etcd);
+#    Patroni-ноды, которые он создаёт, ходят в DCS по тому же advertise.
+#    Секреты per-install — deploy/.env (нет файла → dev-шаблон .env.example;
+#    deploy/.env в .gitignore).
+ROOT="$(cd ../.. && pwd)"
+[ -f "$ROOT/deploy/.env" ] || cp "$ROOT/deploy/.env.example" "$ROOT/deploy/.env"
+( cd "$ROOT/deploy" && docker compose up -d pgworker 2>&1 | tail -2 )
+for i in $(seq 1 60); do curl -fsS -m 3 http://localhost:8080/healthz >/dev/null 2>&1 && break; sleep 1; done
+curl -fsS -m 3 http://localhost:8080/healthz >/dev/null 2>&1 \
+  || { echo "❌ pgworker не ожил за 60 c (:8080/healthz; docker logs deploy-pgworker-1)"; exit 1; }
+echo "  pgworker жив (:8080/healthz, общий etcd-контур)"
+
+echo "✓ стенд поднят (полная система: панель + PG + kafka + PgWorker, контур один)"

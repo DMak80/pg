@@ -24,3 +24,6 @@ dist/
 src/AdminPanel.Api/wwwroot/
 
 .idea/
+
+# Секреты установки PgWorker (deploy/.env; шаблон — deploy/.env.example)
+deploy/.env

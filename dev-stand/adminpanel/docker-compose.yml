@@ -15,7 +15,11 @@ services:
       - etcd
       - --data-dir=/var/etcd/data
       - --listen-client-urls=http://0.0.0.0:2379
-      - --advertise-client-urls=http://etcd:2379
+      # ЕДИНЫЙ etcd полной системы (контур всегда один): advertise
+      # host.docker.internal потребляют Patroni-ноды, создаваемые PgWorker в
+      # своих сетях (паттерн dev-stand/compose.yaml), и он же работает из сети
+      # стенда — Docker Desktop проксирует обратно в публикацию 2379.
+      - --advertise-client-urls=http://host.docker.internal:2379
     volumes:
       - etcd-data:/var/etcd/data
 
