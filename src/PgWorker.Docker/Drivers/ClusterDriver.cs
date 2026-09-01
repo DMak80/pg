@@ -9,6 +9,10 @@ namespace PgWorker.Docker.Drivers;
 // Хост plain-режима: имя + endpoint Engine API (tcp://… | unix://…).
 public sealed record HostEndpoint(string Name, string Endpoint);
 
+/// <summary>Наличие данных PG у ноды (Д3, arch/14 R11): Present/Absent — доказано
+/// exec-пробой PG_VERSION; Unknown — транспорт недоступен (НЕ доказательство утраты).</summary>
+public enum DataPresence { Present, Absent, Unknown }
+
 // Унифицированное управление нодой кластера в обоих режимах (spec §5.2/§5.3).
 // Идемпотентность: существующий объект (контейнер/сервис) сверяется по имени и
 // не пересоздаётся; 404/409 на удалении/создании — успех (движок).
@@ -36,6 +40,10 @@ public interface IClusterDriver
     // Только остановить контейнер ноды (эвакуация E3: карантин вернувшегося
     // шарда — данные на месте, нода не удаляется). 404/304 = успех.
     Task<Result> StopNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct);
+
+    // Данные ноды (Д3, spec §3.7): docker-exec test -f PG_VERSION; контейнера
+    // нет/exec-сбой/нечитаемый stdout → Unknown (утрата не доказана).
+    Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct);
 
     // Выполнить команду в контейнере ноды (t01: pg_dump внутри мастер-контейнера
     // источника), вернуть stdout. Идемпотентности не требует (read-only утилита).
@@ -207,6 +215,25 @@ public sealed class PlainClusterDriver(
                 if (!stopped.IsSuccess)
                     throw stopped.Error!; // карантин E3: только stop, volume/данные на месте
             }
+        });
+    }
+
+    // Данные ноды (Д3): docker-exec test -f PG_VERSION; контейнера нет/exec-сбой/
+    // нечитаемый stdout → Unknown (утрата не доказана — arch/14 R11).
+    public async Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct)
+    {
+        // PGDATA Spilo (arch/14 §2.1): volume-корень /home/postgres/pgdata,
+        // данные — pgroot/data/PG_VERSION.
+        const string marker = "/home/postgres/pgdata/pgroot/data/PG_VERSION";
+        var exec = await ExecNodeAsync(cluster, shard, node,
+            ["sh", "-c", $"test -f {marker} && echo present || echo absent"], ct);
+        if (!exec.IsSuccess)
+            return Result<DataPresence>.Success(DataPresence.Unknown);
+        return Result<DataPresence>.Success(exec.Value.Trim() switch
+        {
+            "present" => DataPresence.Present,
+            "absent" => DataPresence.Absent,
+            _ => DataPresence.Unknown,
         });
     }
 
@@ -453,6 +480,23 @@ public sealed class SwarmClusterDriver(
         // volume ноды на месте); supervisor-перезапуск исключён.
         var stopped = await _engine.RemoveServiceAsync(PlainClusterDriver.NodeName(cluster, shard, nodeName), ct);
         return stopped;
+    }
+
+    // Данные ноды (Д3): через exec running-таска сервиса (свой ExecNodeAsync);
+    // утрата не доказана → Unknown (arch/14 R11).
+    public async Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct)
+    {
+        const string marker = "/home/postgres/pgdata/pgroot/data/PG_VERSION";
+        var exec = await ExecNodeAsync(cluster, shard, node,
+            ["sh", "-c", $"test -f {marker} && echo present || echo absent"], ct);
+        if (!exec.IsSuccess)
+            return Result<DataPresence>.Success(DataPresence.Unknown);
+        return Result<DataPresence>.Success(exec.Value.Trim() switch
+        {
+            "present" => DataPresence.Present,
+            "absent" => DataPresence.Absent,
+            _ => DataPresence.Unknown,
+        });
     }
 
     // Контейнер ноды — running-таск сервиса (ContainerID уже в ответе /tasks).

@@ -54,6 +54,10 @@ public sealed class ProvisioningProcess(
     // обрабатываются параллельно — обычный Dictionary не потокобезопасен.
     private readonly ConcurrentDictionary<string, long> _patroniWaitSince = new();
 
+    // Исход P2.2-ожидания: ждём / готово / починили HA-scope (Д3 — тик завершается
+    // фазой reset-scope, Patroni бутстрапится заново).
+    private enum WaitPatroniOutcome { Waiting, Ready, ResetScope }
+
     public async Task<Result<ProcessOutcome>> TickAsync(ClusterSnapshot snap, CancellationToken ct)
     {
         var cluster = snap.Config.Cluster;
@@ -132,6 +136,7 @@ public sealed class ProvisioningProcess(
 
         // P2.2–P2.5: по каждому шарду ПАРАЛЛЕЛЬНО — ожидание Patroni, master, БД/роли/схемы, dsn.
         var shardErrors = new ConcurrentQueue<Exception>();
+        var resetScopes = new ConcurrentQueue<string>();
         await Parallel.ForEachAsync(orderedShards, ct, async (shard, token) =>
         {
             // R6: перечитываем config перед фазами шарда.
@@ -145,7 +150,12 @@ public sealed class ProvisioningProcess(
                 shardErrors.Enqueue(booted.Error!);
                 return;
             }
-            if (!booted.Value)
+            if (booted.Value == WaitPatroniOutcome.ResetScope)
+            {
+                resetScopes.Enqueue(shard.Name); // Д3: тик завершится фазой reset-scope
+                return;
+            }
+            if (booted.Value == WaitPatroniOutcome.Waiting)
                 return; // InProgress — не ошибка, следующий тик
 
             var master = await ResolveMasterAsync(shard, topology, token);
@@ -159,6 +169,11 @@ public sealed class ProvisioningProcess(
 
         if (shardErrors.TryDequeue(out var firstError))
             return await FailAsync(cluster, firstError, "shard-provision", ct, series);
+
+        // Д3: чистка HA-scope выполнена — тик завершаем журналом reset-scope (одна
+        // фаза на тик; серию переносим — прогресс, не фейл).
+        if (resetScopes.TryDequeue(out _))
+            return await Finish(cluster, "reset-scope", ProcessOutcome.InProgress, ct, series);
 
         // Если хоть один шард не доведён (Patroni/master ещё не готовы) — InProgress.
         foreach (var shard in orderedShards)
@@ -416,14 +431,15 @@ public sealed class ProvisioningProcess(
 
     // P2.2: scope initialized + leader + Patroni REST всех нод отвечает →
     // nodes/<n>/state=RUNNING; иначе InProgress (бюджет PatroniBootSec, P7-толерантно).
-    private async Task<Result<bool>> WaitPatroniAsync(
+    // Д3: бюджет-ветка — трёхуровневая проба данных (Present/Absent/Unknown).
+    private async Task<Result<WaitPatroniOutcome>> WaitPatroniAsync(
         string cluster, ShardSpec shard, ShardTopology topology, CancellationToken ct)
     {
         var scope = $"{cluster}-{shard.Name}";
 
         var scopeKvs = await RangeAsync($"/service/{scope}/", ct);
         if (!scopeKvs.IsSuccess)
-            return Result<bool>.Failed(scopeKvs.Error!);
+            return Result<WaitPatroniOutcome>.Failed(scopeKvs.Error!);
         var scopeState = ClusterSnapshotParser.ParseService(scopeKvs.Value).FirstOrDefault();
         var scopeReady = scopeState is { Initialized: true, LeaderName: not null };
 
@@ -451,14 +467,36 @@ public sealed class ProvisioningProcess(
             var since = _patroniWaitSince.GetOrAdd(scope, now);
             if (now - since > placementOpts.PatroniBootSec)
             {
-                // Бюджет исчерпан: сброс трекера — новая попытка (после бэкоффа) получает
-                // полный бюджет заново; иначе каждый следующий тик фейлился мгновенно (E3).
+                // Бюджет исчерпан: сброс трекера — новая попытка получает полный бюджет
+                // заново (E3); далее — лечение HA-scope при доказанной утрате (Д3).
                 _patroniWaitSince.TryRemove(scope, out _);
-                return Result<bool>.Failed(new ApplicationException(
-                    $"Patroni шарда {scope} не поднялся за бюджет {placementOpts.PatroniBootSec} с"));
+
+                // Д3 (spec §3.7, arch/14 R11): трёхуровневая проба данных нод scope.
+                var presences = new List<DataPresence>();
+                foreach (var node in shard.Nodes)
+                {
+                    var presence = await driver.NodeDataPresenceAsync(cluster, shard.Name, node.Name, ct);
+                    presences.Add(presence.IsSuccess ? presence.Value : DataPresence.Unknown);
+                }
+
+                if (presences.All(p => p == DataPresence.Absent))
+                {
+                    var reset = await ResetScopeAsync(scope, ct);
+                    if (!reset.IsSuccess)
+                        return Result<WaitPatroniOutcome>.Failed(reset.Error!);
+                    return Result<WaitPatroniOutcome>.Success(WaitPatroniOutcome.ResetScope);
+                }
+
+                var alive = string.Join(",", shard.Nodes
+                    .Where((n, i) => presences[i] == DataPresence.Present).Select(n => n.Name));
+                if (alive.Length > 0)
+                    return Result<WaitPatroniOutcome>.Failed(new ApplicationException(
+                        $"{scope}: данные есть (ноды {alive}), лидера нет {placementOpts.PatroniBootSec} с — разбор оператора: чистка scope уничтожила бы данные"));
+
+                return Result<WaitPatroniOutcome>.Success(WaitPatroniOutcome.Waiting); // Unknown: утрата не доказана — новый бюджет
             }
 
-            return Result<bool>.Success(false);
+            return Result<WaitPatroniOutcome>.Success(WaitPatroniOutcome.Waiting);
         }
 
         _patroniWaitSince.TryRemove(scope, out _);
@@ -466,10 +504,33 @@ public sealed class ProvisioningProcess(
         {
             var running = await PutAsync(NodeStateKey(cluster, shard.Name, node.Name), "RUNNING", ct);
             if (!running.IsSuccess)
-                return Result<bool>.Failed(running.Error!);
+                return Result<WaitPatroniOutcome>.Failed(running.Error!);
         }
 
-        return Result<bool>.Success(true);
+        return Result<WaitPatroniOutcome>.Success(WaitPatroniOutcome.Ready);
+    }
+
+    // Д3: чистка HA-scope (Patroni бутстрапится заново): точечные initialize/leader/
+    // sync + префиксы optime//members/; request_* — декларации панели — НЕ трогаем
+    // (spec §3.7 Д3, arch/14 §5 A P2.2/R11). Одна чистка на scope за бюджет —
+    // трекер сброшен, следующая не раньше нового бюджета.
+    private async Task<Result> ResetScopeAsync(string scope, CancellationToken ct)
+    {
+        foreach (var key in new[] { "initialize", "leader", "sync" })
+        {
+            var del = await DeleteAsync($"/service/{scope}/{key}", prefix: false, ct);
+            if (!del.IsSuccess)
+                return del;
+        }
+
+        foreach (var prefix in new[] { $"/service/{scope}/optime/", $"/service/{scope}/members/" })
+        {
+            var del = await DeleteAsync(prefix, prefix: true, ct);
+            if (!del.IsSuccess)
+                return del;
+        }
+
+        return Result.Success();
     }
 
     // Адрес master-ноды шарда для SQL-фаз: master-ключ (host|имяНоды:clientPort —

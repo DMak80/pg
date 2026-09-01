@@ -55,6 +55,10 @@ public sealed class StubScaleDriver : IClusterDriver
                 .Where(p => nodeNames.Contains(p.Key))
                 .ToDictionary(p => p.Key, p => p.Value)));
 
+    // Д3 вне контрактных сценариев scale (t06 §8): утрата не доказана — не лечим.
+    public Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct)
+        => Task.FromResult(Result<DataPresence>.Success(DataPresence.Unknown));
+
     public Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct)
         => Task.FromResult(Result<string>.Success(string.Empty));
 

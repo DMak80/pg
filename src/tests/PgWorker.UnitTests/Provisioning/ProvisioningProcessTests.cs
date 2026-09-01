@@ -390,7 +390,7 @@ public class ProvisioningProcessTests
         // Assert: фейл с серией fail_count=1 и retry_not_before=now+5; ноды созданы (P2.1 успел).
         first.IsSuccess.Should().BeFalse();
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
-        work.Value!.LastError.Should().Contain("не поднялся");
+        work.Value!.LastError.Should().Contain("разбор оператора");
         work.Value.FailCount.Should().Be(1);
         work.Value.RetryNotBeforeUnix.Should().BeGreaterThan(work.Value.UpdatedUnix - 1);
         (work.Value.RetryNotBeforeUnix!.Value - work.Value.UpdatedUnix).Should().Be(5);
@@ -748,5 +748,79 @@ public class ProvisioningProcessTests
         outcome.IsSuccess.Should().BeTrue();
         outcome.Value.Should().Be(ProcessOutcome.InProgress);
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("PROVISIONING");
+    }
+
+    // AAA: Д3 — бюджет лидера исчерпан + ВСЕ ноды scope без данных (доказанная
+    // утрата): HA-scope чистится, request_* живы, фаза reset-scope, InProgress
+    [Fact]
+    public async Task Tick_BudgetDeadAllAbsent_ScopeResetInProgress()
+    {
+        // Arrange: лидеров нет (ключи удалены), Patroni-REST молчит, бюджет -1;
+        // все ноды обоих scope БЕЗ данных; заявка request_cpu — декларация панели.
+        // identityByEndpoint: [] — пустая карта /patroni (Task 2): probesOurs=false.
+        var rig = await NewRig(_ => DeadPatroni(), opts: new PlacementOptions(15000, 15100, PatroniBootSec: -1),
+            identityByEndpoint: EmptyIdentity);
+        rig.Etcd.Store.Remove("/service/shop-shard1/leader");
+        rig.Etcd.Store.Remove("/service/shop-shard2/leader");
+        rig.Etcd.Seed("/service/shop-shard1/request_cpu", "2");
+        rig.Driver.DataPresenceByNode = _ => DataPresence.Absent;
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: HA-scope очищен (initialize/optime/members), request_* живы,
+        // reset в журнале, исход InProgress (Patroni бутстрапится заново, бюджет новый).
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().Be(ProcessOutcome.InProgress);
+        rig.Etcd.Store.Keys.Should().NotContain("/service/shop-shard1/initialize");
+        rig.Etcd.Store.Keys.Should().NotContain("/service/shop-shard2/initialize");
+        rig.Etcd.Store.Keys.Should().NotContain(k => k.StartsWith("/service/shop-shard1/members/", StringComparison.Ordinal));
+        rig.Etcd.Store.Keys.Should().Contain("/service/shop-shard1/request_cpu");
+        var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        work.Value!.Phase.Should().Be("reset-scope");
+    }
+
+    // AAA: Д3 — данные есть хотя бы у одной ноды scope: чистки НЕТ, фейл оператору
+    // (чистка scope уничтожила бы данные, arch/14 R11)
+    [Fact]
+    public async Task Tick_BudgetDeadAnyNodePresent_NoResetOperatorFail()
+    {
+        // Arrange: как выше, но у shard1a данные ЕСТЬ (разбор оператора). Ключи
+        // scope shop-shard1 обязаны уцелеть; про shop-shard2 ассертов нет — его
+        // ноды Absent, чистка этого scope допустима по контракту.
+        var rig = await NewRig(_ => DeadPatroni(), opts: new PlacementOptions(15000, 15100, PatroniBootSec: -1),
+            identityByEndpoint: EmptyIdentity);
+        rig.Etcd.Store.Remove("/service/shop-shard1/leader");
+        rig.Etcd.Store.Remove("/service/shop-shard2/leader");
+        rig.Driver.DataPresenceByNode = node => node == "shard1a" ? DataPresence.Present : DataPresence.Absent;
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: фейл с текстом оператора; scope shard1 НЕ тронут (initialize цел).
+        outcome.IsSuccess.Should().BeFalse();
+        var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        work.Value!.LastError.Should().Contain("разбор оператора");
+        rig.Etcd.Store.Keys.Should().Contain("/service/shop-shard1/initialize");
+    }
+
+    // AAA: Д3 — docker недоступен (Unknown): утрата НЕ доказана — ждём, ключи целы
+    [Fact]
+    public async Task Tick_BudgetDeadUnknown_NoResetWait()
+    {
+        // Arrange: все пробы Unknown (транспорт docker).
+        var rig = await NewRig(_ => DeadPatroni(), opts: new PlacementOptions(15000, 15100, PatroniBootSec: -1),
+            identityByEndpoint: EmptyIdentity);
+        rig.Etcd.Store.Remove("/service/shop-shard1/leader");
+        rig.Etcd.Store.Remove("/service/shop-shard2/leader");
+        rig.Driver.DataPresenceByNode = _ => DataPresence.Unknown;
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: InProgress-ожидание, scope цел.
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().Be(ProcessOutcome.InProgress);
+        rig.Etcd.Store.Keys.Should().Contain("/service/shop-shard1/initialize");
     }
 }

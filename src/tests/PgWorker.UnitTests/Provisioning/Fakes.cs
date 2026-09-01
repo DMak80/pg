@@ -274,6 +274,12 @@ internal static class Fakes
                     .Where(p => nodeNames.Contains(p.Key))
                     .ToDictionary(p => p.Key, p => p.Value)));
 
+        // Д3: карта присутствия данных по имени ноды (default Present — чистка запрещена).
+        public Func<string, DataPresence> DataPresenceByNode { get; set; } = _ => DataPresence.Present;
+
+        public Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct)
+            => Task.FromResult(Result<DataPresence>.Success(DataPresenceByNode(node)));
+
         public Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct)
         {
             lock (_gate)
