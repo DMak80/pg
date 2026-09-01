@@ -15,7 +15,14 @@ public sealed record WorkState(
     [property: JsonPropertyName("instance")] string Instance,
     [property: JsonPropertyName("updated_unix")] long UpdatedUnix,
     [property: JsonPropertyName("last_error")] string? LastError,
-    [property: JsonPropertyName("unreachable")] IReadOnlyDictionary<string, long>? Unreachable = null);
+    [property: JsonPropertyName("unreachable")] IReadOnlyDictionary<string, long>? Unreachable = null,
+    [property: JsonPropertyName("fail_count")] int? FailCount = null,
+    [property: JsonPropertyName("fail_first_unix")] long? FailFirstUnix = null,
+    [property: JsonPropertyName("retry_not_before_unix")] long? RetryNotBeforeUnix = null);
+
+/// <summary>Серия подряд идущих фейлов процесса (бэкофф ретраев, arch/14 §3.3/§5 A):
+/// живёт в /pgworker/work/&lt;C&gt;, пишется фейлом, переносится фазами, сбрасывается Done.</summary>
+public sealed record RetrySeries(int FailCount, long FailFirstUnix, long RetryNotBeforeUnix);
 
 // Журнал эвакуации шарда: bucketId → новый владелец, состояние карантина (spec §4.3).
 public sealed record EvacuationJournal(
@@ -34,11 +41,14 @@ public sealed class WorkJournal(IEtcdGateway gateway, string[] endpoints)
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    // /pgworker/work/<C>: {"op","phase","instance","updated_unix","last_error"}.
+    // /pgworker/work/<C>: {"op","phase","instance","updated_unix","last_error"} + поля серии
+    // ретраев (fail_count/fail_first_unix/retry_not_before_unix — null опускается).
     public Task<Result> WritePhaseAsync(
-        string cluster, string op, string phase, string instance, string? lastError, CancellationToken ct)
+        string cluster, string op, string phase, string instance, string? lastError, CancellationToken ct,
+        RetrySeries? series = null)
     {
-        var payload = new WorkState(op, phase, instance, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), lastError);
+        var payload = new WorkState(op, phase, instance, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), lastError,
+            Unreachable: null, series?.FailCount, series?.FailFirstUnix, series?.RetryNotBeforeUnix);
         return WithFailoverAsync(endpoint => gateway.PutAsync(
             endpoint, WorkKey(cluster), JsonSerializer.Serialize(payload, Json), lease: null, ct));
     }
