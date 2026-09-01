@@ -190,8 +190,8 @@ FluentAssertions, Testcontainers, Npgsql, Microsoft.Extensions.*); новые
 | Часть endpoints etcd мертва | endpoint-таблица показывает их красными, KV-чтения идут на живой (sticky + failover) |
 | Нет кворума etcd | `/v3/maintenance/status` отвечает, но `header` без raft-данных/ошибки → алерт critical «no quorum» (по статусу leader/raftTerm и ошибкам `errors[]`) |
 | Протух master-lease шарда | ключа `/clusters/<C>/shards/X/master` нет при живом `dsn` → алерт critical (P11) |
-| Patroni REST недоступен | поля пробы `null`, `Probes[]` фиксирует ошибку, алерт warning «probe failed»; etcd-часть HA остаётся |
-| SQL-проба недоступна | аналогично; SQL-поля (слоты/лаги) скрыты в UI с пометкой |
+| Patroni REST недоступен | поля пробы `null`, `Probes[]` фиксирует ошибку, алерт `probe-failed` warning (все члены скопа недоступны — critical, [03](03-panels.md) §4); etcd-часть HA остаётся |
+| SQL-проба недоступна | аналогично; Active-шард — critical `probe-failed` (шард недоступен); SQL-поля (слоты/лаги) скрыты в UI с пометкой |
 
 ## 9. Что сознательно НЕ делаем (YAGNI)
 
