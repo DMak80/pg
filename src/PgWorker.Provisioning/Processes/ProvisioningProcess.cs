@@ -9,6 +9,7 @@ using PgWorker.Docker.Drivers;
 using PgWorker.Etcd.Client;
 using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
+using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Probes;
 using PgWorker.Provisioning.Sql;
 
@@ -36,6 +37,7 @@ public sealed class ProvisioningProcess(
     IAppSecretEnsurer appSecret,
     IAppParamsEnsurer appParams,
     EtcdEndpoints etcdEndpoints,
+    PortAllocIndex portAlloc,
     Func<CancellationToken, Task<Result>>? snapshot = null) : IClusterProcess
 {
     private const int TxnBatchSize = 128; // лимит ops в txn (P3)
@@ -202,8 +204,9 @@ public sealed class ProvisioningProcess(
         && snap.Routing.Count == snap.Config.Buckets
         && snap.Routing.All(r => !string.IsNullOrWhiteSpace(r.Owner));
 
-    // P1: placement → порт-аллокация → закрепление /pgworker/portalloc/<C>
-    // (txn compare version==0 — только создание; конкурент создал → берём его).
+    // P1: усыновление факта → busy (docker ∪ чужие portalloc) → аллокация недобора →
+    // закрепление /pgworker/portalloc/<C> (spec §3.1). Факт над записью: живой
+    // канонический контейнер — канон записи; нода без контейнера — обычная аллокация.
     private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> PlanPortsAsync(
         ClusterSnapshot snap, RetrySeries? series, CancellationToken ct)
     {
@@ -213,54 +216,138 @@ public sealed class ProvisioningProcess(
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(pinned.Error!);
         var existing = new Dictionary<string, NodeAddress>(pinned.Value);
 
-        // Всё закреплено — план переиспользуется (portalloc переживает rebuild).
         var wanted = snap.Shards.SelectMany(s => s.Nodes.Select(n => $"{s.Name}/{n.Name}")).ToList();
+
+        // Усыновление факта — КАЖДЫЙ тик provision (ревью Ф4-1, spec §3.1 шаг 3):
+        // расхождение нельзя узнать без инспекции, а ПОЛНЫЙ portalloc может быть
+        // расходящимся (потерян и выделен заново — состояние стенда canon10/smoke).
+        var adopted = await AdoptRunningContainersAsync(cluster, snap, existing, ct);
+        if (!adopted.IsSuccess)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(adopted.Error!);
+        var skipped = adopted.Value.Skipped;
+
+        // Ранний выход (идемпотентность, spec §3.1 шаг 4): всё закреплено и merge
+        // ничего не изменил — записи portalloc нет.
+        if (wanted.All(existing.ContainsKey) && !adopted.Value.Changed)
+            return await PlannedAsync(existing, cluster, ct, series, skipped);
+
         if (wanted.All(existing.ContainsKey))
-            return await PlannedAsync(existing, cluster, ct, series);
+        {
+            var commit = await CommitPortAllocAsync(cluster, existing, pinned.Value.Count > 0, ct);
+            if (!commit.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(commit.Error!);
+            return await PlannedAsync(existing, cluster, ct, series, skipped);
+        }
 
         var hosts = await driver.GetHostsAsync(ct);
         if (!hosts.IsSuccess)
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(hosts.Error!);
-        var busy = await driver.GetBusyPortsAsync(ct);
-        if (!busy.IsSuccess)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(busy.Error!);
+        var dockerBusy = await driver.GetBusyPortsAsync(ct);
+        if (!dockerBusy.IsSuccess)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(dockerBusy.Error!);
+        var foreignBusy = await portAlloc.ReadBusyAsync(cluster, ct);
+        if (!foreignBusy.IsSuccess)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(foreignBusy.Error!);
+        var busy = new HashSet<(string, int)>(foreignBusy.Value);
+        foreach (var p in dockerBusy.Value)
+            busy.Add(p);
 
         var plan = PlacementPlanner.Plan(snap.Shards, hosts.Value);
-        var allocated = PortAllocator.Allocate(plan, existing, busy.Value, placementOpts.PortFrom, placementOpts.PortTo);
+        var allocated = PortAllocator.Allocate(plan, existing, busy, placementOpts.PortFrom, placementOpts.PortTo);
         if (!allocated.IsSuccess)
             return allocated;
 
-        // Merge: закреплённое сохраняется, новые ноды добавляются.
         foreach (var (merged, addr) in allocated.Value)
             existing[merged] = addr;
 
-        // Создание ключа — только если его нет (compare version==0); проигрыш
-        // txn → перечитать актуальный (другой инстанс закрепил первым).
-        var portAllocKey = PortAllocKey(cluster);
-        var txn = await TxnAsync(
-            TxnRequest.Of(
-                [TxnCompare.NotExists(portAllocKey)],
-                [new TxnOp.Put(portAllocKey, SerializePortAlloc(existing), null)]),
-            ct);
-        if (!txn.IsSuccess)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(txn.Error!);
+        var commitAll = await CommitPortAllocAsync(cluster, existing, pinned.Value.Count > 0, ct);
+        if (!commitAll.IsSuccess)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(commitAll.Error!);
 
-        if (!txn.Value.Succeeded)
+        return await PlannedAsync(existing, cluster, ct, series, skipped);
+    }
+
+    // Результат усыновления: имена пропущенных находок (journal-заметка) и признак
+    // «merge изменил existing» (для раннего выхода без записи).
+    private sealed record Adoption(IReadOnlyList<string> Skipped, bool Changed);
+
+    // Инспекция живых канонических контейнеров: фактические public-порты становятся
+    // каноном записей — добавление отсутствующих, перезапись при расхождении
+    // (только записей без object), совпадение — не пишем (NodeAddress/NodePorts —
+    // record, Equals по значению).
+    private async Task<Result<Adoption>> AdoptRunningContainersAsync(
+        string cluster, ClusterSnapshot snap, Dictionary<string, NodeAddress> existing, CancellationToken ct)
+    {
+        var byNode = snap.Shards
+            .SelectMany(s => s.Nodes.Select(n => (Key: $"{s.Name}/{n.Name}", Name: n.Name)))
+            .ToList();
+        var discovered = await driver.InspectNodesAsync(byNode.Select(p => p.Name).Distinct().ToList(), ct);
+        if (!discovered.IsSuccess)
+            return Result<Adoption>.Failed(discovered.Error!);
+
+        var skipped = new List<string>();
+        var changed = false;
+        foreach (var (key, nodeName) in byNode)
         {
-            var reread = await ReadPortAllocAsync(cluster, ct);
-            if (!reread.IsSuccess)
-                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(reread.Error!);
-            existing = new Dictionary<string, NodeAddress>(reread.Value);
+            if (!discovered.Value.TryGetValue(nodeName, out var node))
+                continue; // контейнера нет — аллокация недобором
+            var canonicalObject = $"pgw-{cluster}-{key.Replace('/', '-')}";
+            if (node.Object != canonicalObject || node.Pg <= 0 || node.Patroni <= 0)
+            {
+                skipped.Add(key); // чужой/частичная публикация — не наша находка (spec §3.1 guard'ы)
+                continue;
+            }
+
+            var fact = new NodeAddress(node.Host, new NodePorts(node.Pg, node.Patroni, node.Doorman));
+            if (existing.TryGetValue(key, out var current))
+            {
+                if (current.Object is not null)
+                    continue; // object-запись (усыновлённая ранее) не перезаписываем
+                if (current.Equals(fact))
+                    continue; // совпадение записи с фактом — не пишем (идемпотентность)
+            }
+
+            existing[key] = fact;
+            changed = true;
         }
 
-        return await PlannedAsync(existing, cluster, ct, series);
+        return Result<Adoption>.Success(new Adoption(skipped, changed));
+    }
+
+    // Закрепление: первый ключ — txn NotExists (конкурент создал → берём его перезаписью
+    // merge под клэймом); существующий — put (read-modify-write, паттерн AddShard A2).
+    private async Task<Result> CommitPortAllocAsync(
+        string cluster, IReadOnlyDictionary<string, NodeAddress> addresses, bool keyExisted, CancellationToken ct)
+    {
+        var key = PortAllocKey(cluster);
+        var value = SerializePortAlloc(addresses);
+        if (keyExisted)
+            return await PutAsync(key, value, ct);
+
+        var txn = await TxnAsync(
+            TxnRequest.Of(
+                [TxnCompare.NotExists(key)],
+                [new TxnOp.Put(key, value, null)]),
+            ct);
+        if (!txn.IsSuccess)
+            return txn;
+        if (txn.Value.Succeeded)
+            return Result.Success();
+
+        // Проигрыш txn (ключ появился после чтения) — канон другой инстанс уже записал:
+        // под клэймом безопасно перезаписать нашим merge (факт свежего чтения).
+        return await PutAsync(key, value, ct);
     }
 
     private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> PlannedAsync(
         Dictionary<string, NodeAddress> addresses, string cluster, CancellationToken ct,
-        RetrySeries? series = null)
+        RetrySeries? series = null, IReadOnlyList<string>? skipped = null)
     {
-        var planned = await journal.WritePhaseAsync(cluster, Op, "planned", claims.InstanceId, null, ct, series);
+        // Пропуски усыновления — journal-заметка (эфемерна: журнал — одна фаза на тик).
+        var phase = skipped is { Count: > 0 } s
+            ? $"planned, adopt-skipped: {string.Join(", ", s)}"
+            : "planned";
+        var planned = await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, null, ct, series);
         return planned.IsSuccess
             ? Result<IReadOnlyDictionary<string, NodeAddress>>.Success(addresses)
             : Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(planned.Error!);

@@ -129,6 +129,11 @@ builder.Services.AddSingleton(sp => new EtcdEndpoints(
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.AdvertisedEndpoints is { Length: > 0 } advertised
         ? advertised
         : sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
+// Индекс занятости портов из portalloc всех кластеров (spec §3.3): busy = docker ∪ etcd-записи.
+builder.Services.AddSingleton(sp => new PortAllocIndex(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints.ToArray(),
+    sp.GetRequiredService<ILogger<PortAllocIndex>>()));
 builder.Services.AddSingleton(sp =>
 {
     var opts = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value;
@@ -145,6 +150,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<IAppSecretEnsurer>(),
         sp.GetRequiredService<IAppParamsEnsurer>(),
         sp.GetRequiredService<EtcdEndpoints>(),
+        sp.GetRequiredService<PortAllocIndex>(),
         SnapshotDelegate(job));
 });
 builder.Services.AddSingleton(sp => new DeprovisioningProcess(
