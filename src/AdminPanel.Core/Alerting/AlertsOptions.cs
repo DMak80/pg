@@ -20,4 +20,12 @@ public class AlertsOptions
     // slot-invalidation-risk: остаток safe_wal_size ниже порога — риск
     // среза слота (03 §4; отдельная семантика от лага, spec §3.8). <= 0 — дефолт 1 GiB.
     public long SlotSafeWalSizeBytes { get; set; } = 1024L * 1024 * 1024;
+
+    // cluster-not-initialized: эскалация info→warning, когда кластер висит в
+    // NOT_INITIALIZED дольше N секунд (arch/03 §4; 900 > PatroniBootSec=600 —
+    // здоровый провижининг не эскалируется).
+    public int NotInitializedWarnSec { get; set; } = 900;
+
+    // provision-stuck: серия фейлов provision (fail_first_unix) старше N секунд.
+    public int ProvisionStuckSec { get; set; } = 300;
 }
