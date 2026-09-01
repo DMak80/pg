@@ -621,4 +621,70 @@ public class ProvisioningProcessTests
         var raw = rig.Etcd.Store["/pgworker/portalloc/shop"].Value;
         raw.Should().Contain("\"shard1/shard1a\":{\"host\":\"h1\",\"pg\":15001");
     }
+
+    // AAA: Д1 — порт плана занят чужим docker-фактом: нода перепланирована и
+    // контейнер создаётся В ТОТ ЖЕ тик; остальные записи не тронуты
+    [Fact]
+    public async Task Tick_ForeignDockerBusyPort_ReplansNodeInSameTick()
+    {
+        // Arrange: ПОЛНЫЙ portalloc, контейнеров нет (InspectResult пуст — наследие
+        // инцидента); docker-факт: порт (h1, 15000) — нода shard1a — занял чужой.
+        var rig = await NewRig(_ => DeadPatroni());
+        rig.Etcd.Seed("/pgworker/portalloc/shop",
+            """
+            {"shard1/shard1a":{"host":"h1","pg":15000,"patroni":18000,"doorman":16500},
+            "shard1/shard1b":{"host":"h2","pg":15001,"patroni":18001,"doorman":16501},
+            "shard2/shard2a":{"host":"h1","pg":15002,"patroni":18002,"doorman":16502},
+            "shard2/shard2b":{"host":"h2","pg":15003,"patroni":18003,"doorman":16503}}
+            """);
+        rig.Driver.BusyPorts = new HashSet<(string, int)> { ("h1", 15000) };
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: ТОЛЬКО shard1a перепланирована (свободная тройка h1 = 15001/18001/16501),
+        // остальные записи переиспользованы; EnsureNode выполнен в том же тике
+        // (контейнер создаётся сразу — Д1 «сам починил» без оператора).
+        outcome.IsSuccess.Should().BeTrue();
+        var raw = rig.Etcd.Store["/pgworker/portalloc/shop"].Value;
+        raw.Should().Contain("\"shard1/shard1a\":{\"host\":\"h1\",\"pg\":15001");
+        raw.Should().Contain("\"shard1/shard1b\":{\"host\":\"h2\",\"pg\":15001");
+        raw.Should().Contain("\"shard2/shard2a\":{\"host\":\"h1\",\"pg\":15002");
+        rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
+        // Ключ существовал → перезапись put-ом (не txn), version вырос.
+        rig.Etcd.Store["/pgworker/portalloc/shop"].Version.Should().Be(2);
+    }
+
+    // AAA: Д1 — docker-busy СВОИХ живых контейнеров не «занимает» их же закрепления:
+    // записи подтверждены фактом (adoption-находки) → ничего не перепланируется
+    [Fact]
+    public async Task Tick_SelfContainerDockerBusy_NotReplanned()
+    {
+        // Arrange: полный portalloc == факт контейнеров (все 4 ноды с явными doorman!);
+        // docker-busy содержит ИХ ЖЕ порты (живые публикации своих контейнеров).
+        var rig = await NewRig(_ => DeadPatroni());
+        rig.Etcd.Seed("/pgworker/portalloc/shop",
+            """
+            {"shard1/shard1a":{"host":"h1","pg":15000,"patroni":18000,"doorman":16500},
+            "shard1/shard1b":{"host":"h2","pg":15001,"patroni":18001,"doorman":16501},
+            "shard2/shard2a":{"host":"h1","pg":15002,"patroni":18002,"doorman":16502},
+            "shard2/shard2b":{"host":"h2","pg":15003,"patroni":18003,"doorman":16503}}
+            """);
+        rig.Driver.InspectResult = new Dictionary<string, DiscoveredNode>
+        {
+            ["shard1a"] = Node("h1", "pgw-shop-shard1-shard1a", 15000, 18000, 16500),
+            ["shard1b"] = Node("h2", "pgw-shop-shard1-shard1b", 15001, 18001, 16501),
+            ["shard2a"] = Node("h1", "pgw-shop-shard2-shard2a", 15002, 18002, 16502),
+            ["shard2b"] = Node("h2", "pgw-shop-shard2-shard2b", 15003, 18003, 16503),
+        };
+        rig.Driver.BusyPorts = new HashSet<(string, int)> { ("h1", 15000), ("h1", 18000), ("h2", 15001) };
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: свои живые публикации — НЕ чужая занятость: записи не тронуты
+        // (version ключа не выросла — ранний выход без записи), перепланирования нет.
+        outcome.IsSuccess.Should().BeTrue();
+        rig.Etcd.Store["/pgworker/portalloc/shop"].Version.Should().Be(1);
+    }
 }

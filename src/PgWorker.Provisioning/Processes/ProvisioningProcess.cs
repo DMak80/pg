@@ -226,9 +226,25 @@ public sealed class ProvisioningProcess(
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(adopted.Error!);
         var skipped = adopted.Value.Skipped;
 
-        // Ранний выход (идемпотентность, spec §3.1 шаг 4): всё закреплено и merge
-        // ничего не изменил — записи portalloc нет.
-        if (wanted.All(existing.ContainsKey) && !adopted.Value.Changed)
+        // Д1 (spec §3.7): занятость ЧУЖИМ = docker-факт минус свои контейнеры ∪ portalloc
+        // соседей. Читается до проверки полноты: полный portalloc может нести коллизию
+        // (наследие инцидента canon10/smoke) — «закреплено и переиспользуется» не должно
+        // давать вечный фейл-цикл «port is already allocated».
+        var dockerBusy = await driver.GetBusyPortsAsync(ct);
+        if (!dockerBusy.IsSuccess)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(dockerBusy.Error!);
+        var foreignAlloc = await portAlloc.ReadBusyAsync(cluster, ct);
+        if (!foreignAlloc.IsSuccess)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(foreignAlloc.Error!);
+        var foreign = new HashSet<(string, int)>(foreignAlloc.Value);
+        foreach (var p in dockerBusy.Value)
+            if (!adopted.Value.SelfFact.Contains(p))
+                foreign.Add(p);
+        var detached = PortPlanConvergence.DetachColliding(existing, adopted.Value.SelfFact, foreign);
+
+        // Ранний выход (идемпотентность, spec §3.1 шаг 4 + §3.7 Д1): всё закреплено,
+        // merge и detach ничего не изменили — записи portalloc нет.
+        if (wanted.All(existing.ContainsKey) && !adopted.Value.Changed && !detached)
             return await PlannedAsync(existing, cluster, ct, series, skipped);
 
         if (wanted.All(existing.ContainsKey))
@@ -242,18 +258,12 @@ public sealed class ProvisioningProcess(
         var hosts = await driver.GetHostsAsync(ct);
         if (!hosts.IsSuccess)
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(hosts.Error!);
-        var dockerBusy = await driver.GetBusyPortsAsync(ct);
-        if (!dockerBusy.IsSuccess)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(dockerBusy.Error!);
-        var foreignBusy = await portAlloc.ReadBusyAsync(cluster, ct);
-        if (!foreignBusy.IsSuccess)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(foreignBusy.Error!);
-        var busy = new HashSet<(string, int)>(foreignBusy.Value);
-        foreach (var p in dockerBusy.Value)
-            busy.Add(p);
-
+        // Занятость для аллокации — foreign (docker-чужие ∪ соседи): docker-публикации
+        // СВОИХ живых контейнеров — это закрепления (existing), а не запреты; попади
+        // selfFact в busy, allocator не переиспользовал бы валидные записи → EnsureNode
+        // пересоздавал бы живые контейнеры (spec §8.10 — вычитание selfFact).
         var plan = PlacementPlanner.Plan(snap.Shards, hosts.Value);
-        var allocated = PortAllocator.Allocate(plan, existing, busy, placementOpts.PortFrom, placementOpts.PortTo);
+        var allocated = PortAllocator.Allocate(plan, existing, foreign, placementOpts.PortFrom, placementOpts.PortTo);
         if (!allocated.IsSuccess)
             return allocated;
 
@@ -267,9 +277,11 @@ public sealed class ProvisioningProcess(
         return await PlannedAsync(existing, cluster, ct, series, skipped);
     }
 
-    // Результат усыновления: имена пропущенных находок (journal-заметка) и признак
-    // «merge изменил existing» (для раннего выхода без записи).
-    private sealed record Adoption(IReadOnlyList<string> Skipped, bool Changed);
+    // Результат усыновления: имена пропущенных находок (journal-заметка), признак
+    // «merge изменил existing» (ранний выход без записи) и порты ФАКТА своих
+    // контейнеров (Д1: docker-занятость минус selfFact = чужая).
+    private sealed record Adoption(
+        IReadOnlyList<string> Skipped, bool Changed, IReadOnlySet<(string Host, int Port)> SelfFact);
 
     // Инспекция живых канонических контейнеров: фактические public-порты становятся
     // каноном записей — добавление отсутствующих, перезапись при расхождении
@@ -288,6 +300,7 @@ public sealed class ProvisioningProcess(
 
         var skipped = new List<string>();
         var changed = false;
+        var selfFact = new HashSet<(string, int)>();
         foreach (var (key, nodeName) in byNode)
         {
             if (!discovered.Value.TryGetValue(nodeName, out var node))
@@ -298,6 +311,12 @@ public sealed class ProvisioningProcess(
                 skipped.Add(key); // чужой/частичная публикация — не наша находка (spec §3.1 guard'ы)
                 continue;
             }
+
+            // Д1: порты факта своего живого контейнера — вычитаются из docker-busy
+            // (живая публикация своей ноды — не «чужая занятость», spec §8.10).
+            foreach (var p in new[] { node.Pg, node.Patroni, node.Doorman })
+                if (p > 0)
+                    selfFact.Add((node.Host, p));
 
             var fact = new NodeAddress(node.Host, new NodePorts(node.Pg, node.Patroni, node.Doorman));
             if (existing.TryGetValue(key, out var current))
@@ -312,7 +331,7 @@ public sealed class ProvisioningProcess(
             changed = true;
         }
 
-        return Result<Adoption>.Success(new Adoption(skipped, changed));
+        return Result<Adoption>.Success(new Adoption(skipped, changed, selfFact));
     }
 
     // Закрепление: первый ключ — txn NotExists (конкурент создал → берём его перезаписью
