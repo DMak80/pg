@@ -90,8 +90,9 @@ public class ProvisioningProcessTests
             }
 
             // Д1б: /patroni — только карта (host, port)→(scope, name); порта в карте
-            // нет → 404 (чужой Patroni по коллизионному порту). Прочие пути — прежний
-            // respondByPort (живые /cluster-тесты не меняются).
+            // нет → 404 (чужой Patroni по коллизионному порту). Ответ — ЖИВОЙ формат
+            // Patroni 4.x (identity во вложенном "patroni", без корневых scope/name —
+            // фейк с живого стенда, диагноз Ф7). Прочие пути — прежний respondByPort.
             if (r.RequestUri.AbsolutePath == "/patroni")
             {
                 var map = identityByEndpoint ?? DefaultIdentity;
@@ -99,7 +100,7 @@ public class ProvisioningProcessTests
                     ? new HttpResponseMessage(HttpStatusCode.OK)
                     {
                         Content = new StringContent(
-                            $$"""{"state":"running","role":"replica","scope":"{{id.Scope}}","name":"{{id.Name}}"}""",
+                            $$$"""{"state":"running","role":"primary","patroni":{"version":"4.1.0","scope":"{{{id.Scope}}}","name":"{{{id.Name}}}"}}""",
                             Encoding.UTF8, "application/json"),
                     }
                     : new HttpResponseMessage(HttpStatusCode.NotFound);

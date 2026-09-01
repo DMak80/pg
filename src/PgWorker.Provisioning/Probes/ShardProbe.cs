@@ -61,9 +61,10 @@ public sealed class ShardProbe(HttpClient http)
         return result.IsSuccess;
     }
 
-    // Идентификация ноды (Д1б, spec §3.7): GET /patroni несёт scope+name;
-    // транспорт/битый JSON/не-2xx/отсутствующие поля → Success(null) — «не
-    // опознана» (чужой ответ по коллизионному порту не является успехом ожидания).
+    // Идентификация ноды (Д1б, spec §3.7): GET /patroni несёт scope+name — в живом
+    // формате (Patroni 4.x, стенд) они ВО ВЛОЖЕННОМ объекте "patroni"; fallback —
+    // корневые поля. Транспорт/битый JSON/не-2xx/отсутствующие поля → Success(null) —
+    // «не опознана» (чужой ответ по коллизионному порту не является успехом ожидания).
     public async Task<Result<NodeIdentity?>> IdentifyAsync(NodeAddress node, CancellationToken ct)
     {
         try
@@ -76,8 +77,12 @@ public sealed class ShardProbe(HttpClient http)
 
             await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
             using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: timeout.Token);
-            var name = doc.RootElement.TryGetProperty("name", out var n) ? n.GetString() : null;
-            var scope = doc.RootElement.TryGetProperty("scope", out var s) ? s.GetString() : null;
+            var root = doc.RootElement;
+            var holder = root.TryGetProperty("patroni", out var nested) && nested.ValueKind == JsonValueKind.Object
+                ? nested
+                : root; // живой формат: {"state","role","patroni":{"version","scope","name"}}; fallback — корень
+            var name = holder.TryGetProperty("name", out var n) ? n.GetString() : null;
+            var scope = holder.TryGetProperty("scope", out var s) ? s.GetString() : null;
             return Result<NodeIdentity?>.Success(
                 name is { Length: > 0 } && scope is { Length: > 0 } ? new NodeIdentity(name, scope) : null);
         }
