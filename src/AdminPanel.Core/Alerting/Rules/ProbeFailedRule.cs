@@ -52,10 +52,19 @@ public sealed class ProbeFailedRule : IAlertRule
                 "проверьте контейнеры нод шарда и Patroni-скоп, достижимость хостов DSN из сети панели; панель ретраит пробу каждым тиком");
         }
 
-        // Patroni: matched-скоп Active-кластера. Результат есть по каждому
-        // члену и все упали → один critical на скоп; иначе per-member warning.
-        foreach (var scope in snapshot.HaScopes.Where(s => s.Matched && s.Cluster is not null
-                     && activeClusters.ContainsKey(s.Cluster)))
+        // Patroni: matched-скоп Active-кластера и Active-шарда (scope.Shard —
+        // remove-shard гасит ноды демонтажа: упавшие пробы членов TO_REMOVE-шарда
+        // не авария, критерий 4; шард не найден/не задан — обрабатывается, как
+        // матчит ScopeMatcher: по имени, состояние не смотрит). Результат есть
+        // по каждому члену и все упали → один critical на скоп; иначе per-member warning.
+        static bool ScopeTargetActive(HaScope s, IReadOnlyDictionary<string, ClusterInfo> active)
+            => s.Cluster is not null
+               && active.TryGetValue(s.Cluster, out var cluster)
+               && (s.Shard is null
+                   || cluster.Shards.FirstOrDefault(sh => sh.Name == s.Shard) is not { } shard
+                   || shard.State == ShardState.Active);
+
+        foreach (var scope in snapshot.HaScopes.Where(s => s.Matched && ScopeTargetActive(s, activeClusters)))
         {
             var results = scope.Members
                 .Select(m => Find(snapshot.Probes, "patroni", $"{scope.Scope}/{m.Name}"))

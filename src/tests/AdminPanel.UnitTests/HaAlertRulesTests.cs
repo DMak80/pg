@@ -350,6 +350,38 @@ public class HaAlertRulesTests
     }
 
     [Fact]
+    public void ProbeFailed_PatroniScopeOfToRemoveShard_Suppressed()
+    {
+        // Arrange: Active-кластер demo, но шард s1 — TO_REMOVE (remove-shard,
+        // arch/01 §9): демонтаж гасит ноды → patroni-пробы всех членов скопа
+        // падают; ScopeMatcher матчит скоп по имени шарда без учёта состояния.
+        var snapshot = TestSnapshots.Healthy(Now) with
+        {
+            Clusters =
+            [
+                TestSnapshots.FullCluster() with
+                {
+                    Shards = [TestSnapshots.FullCluster().Shards.Single() with { State = ShardState.ToRemove }],
+                },
+            ],
+            HaScopes = [TestSnapshots.HaScopeDemo(Now)],
+            Probes =
+            [
+                new ProbeResult("demo-s1/s1a", "patroni", false, 1.0, "refused", Now),
+                new ProbeResult("demo-s1/s1b", "patroni", false, 1.0, "timeout", Now),
+            ],
+        };
+
+        // Act
+        var alerts = new ProbeFailedRule().Evaluate(snapshot, Context()).ToList();
+
+        // Assert: демонтаж шарда — не авария: скоп TO_REMOVE-шарда подавляется
+        // как lifecycle-цель (критерий 4 spec, arch/03 §4) — ни scope-critical,
+        // ни per-member warning.
+        alerts.Should().BeEmpty();
+    }
+
+    [Fact]
     public void ProbeFailed_NoProbesOrDegenerateTargets_Silent()
     {
         // Arrange: проб нет вовсе; orphan-результат по несуществующему скопу;
