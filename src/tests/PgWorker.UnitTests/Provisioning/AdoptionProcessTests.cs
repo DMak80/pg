@@ -299,6 +299,44 @@ public class AdoptionProcessTests
         journal.Entries.Should().Contain(e => e.Phase == "recreated-node");
     }
 
+    // AAA: живой-Ф7/Д2 — ВНЕШНИЙ (object) шард: dsn — операторский факт (postgres-
+    // подписки сидом по именам as-нод; host «local» внутри postgres не резолвится) —
+    // НЕ пересобирается из portalloc (R9-симметрия); portalloc репарируется как обычно
+    [Fact]
+    public async Task TickAsync_ExternalObjectShard_DsnUntouched_PortallocRepaired()
+    {
+        // Arrange: шард s1: s1a — object-запись as-s1a (внешняя), s1b — каноническая
+        // запись РАСХОДИТСЯ с фактом (15014 — наследие коллизии); dsn сидовой,
+        // заведомо ≠ portalloc-производному.
+        var etcd = new Fakes.FakeEtcd();
+        var snap = await SnapshotActive(etcd, ["s1"], ["s1"]);
+        etcd.Seed("/pgworker/portalloc/demo",
+            """
+            {"s1/s1a":{"host":"h1","pg":15004,"patroni":18004,"doorman":16504,"object":"as-s1a"},
+            "s1/s1b":{"host":"h2","pg":15014,"patroni":18014,"doorman":16514}}
+            """);
+        var journal = new RecordingJournal();
+        journal.Attach(etcd);
+        var (process, _, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
+        {
+            ["s1b"] = new("s1b", "h2", "pgw-demo-s1-s1b", 15005, 18005, 16505),
+        });
+
+        // Act
+        var outcome = await process.TickAsync(snap, CancellationToken.None);
+
+        // Assert: каноническая запись переписана фактом (repaired-portalloc, version
+        // выросла); dsn НЕ тронут (version прежняя, repaired-dsn нет) — R9-граница.
+        outcome.IsSuccess.Should().BeTrue();
+        var raw = await GetValueAsync(etcd, "/pgworker/portalloc/demo");
+        raw.Should().Contain("\"pg\":15005");
+        raw.Should().Contain("\"object\":\"as-s1a\"");
+        etcd.Store["/pgworker/portalloc/demo"].Version.Should().Be(2);
+        etcd.Store["/clusters/demo/shards/s1/dsn"].Version.Should().Be(1);
+        journal.Entries.Should().Contain(e => e.Phase == "repaired-portalloc");
+        journal.Entries.Should().NotContain(e => e.Phase == "repaired-dsn");
+    }
+
     // AAA: Д2 — transport-провал инспекции = transient: тик не ронывается, мутаций адресов нет
     [Fact]
     public async Task TickAsync_InspectTransportFails_TickSurvives()

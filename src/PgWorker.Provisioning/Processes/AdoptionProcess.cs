@@ -298,6 +298,10 @@ public sealed class AdoptionProcess(
 
         // dsn-инвариант: пересборка multi-host dsn по кандидатам (nodes ∪ members) из
         // фактического portalloc (креды как P2.5: per-cluster override → глобальные).
+        // Граница (живой-Ф7, R9-симметрия «object-записи не перезаписываются»):
+        // шард с ХОТЬ ОДНОЙ object-нодой (внешний контур as-*/hc*) — его dsn
+        // ОПЕРАТОРСКИЙ факт (postgres-подписки сидом по именам as-нод; host записей
+        // «local» не резолвится внутри postgres приёмника) — НЕ пересобираем.
         foreach (var shard in dsnShards)
         {
             if (!candidatesByShard.TryGetValue(shard.Name, out var names) || names.Count == 0)
@@ -305,6 +309,8 @@ public sealed class AdoptionProcess(
             var ordered = names.OrderBy(n => n, StringComparer.Ordinal).ToList();
             if (ordered.Any(n => !merged.ContainsKey($"{shard.Name}/{n}")))
                 continue; // адресов не хватает — усыновление/следующий тик доведут
+            if (ordered.Any(n => merged[$"{shard.Name}/{n}"].Object is not null))
+                continue; // внешний (object) шард: dsn — операторский факт (R9)
             var hosts = string.Join(",", ordered.Select(n => merged[$"{shard.Name}/{n}"].Host));
             var ports = string.Join(",", ordered.Select(n => merged[$"{shard.Name}/{n}"].Ports.Pg));
             var user = snap.Config.BucketAdminUser ?? "bucket_admin";
