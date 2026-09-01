@@ -98,4 +98,20 @@ public class PortAllocatorTests
         addr.Ports.Doorman.Should().Be(16500);
         addr.Ports.Patroni.Should().Be(18000);
     }
+
+    // AAA: дубль-страховка контракта C (spec §3.3/§6): busy-union, переданный
+    // вызывателем, содержит закрепления соседей — аллокатор обязан их обходить
+    [Fact]
+    public void Allocate_PinnedPortInBusyWithoutExisting_AllocatesNext()
+    {
+        // Arrange: busy-union (docker ∪ portalloc соседей) занял 15000-тройку; existing пуст.
+        var plan = new PlacementPlan([new("shard1", "shard1a", "h1")]);
+        var busy = new HashSet<(string, int)> { ("h1", 15000), ("h1", 18000), ("h1", 16500) };
+
+        // Act
+        var result = PortAllocator.Allocate(plan, new Dictionary<string, NodeAddress>(), busy, 15000, 16000);
+
+        // Assert: база сдвинута — соседская тройка не переиспользуется.
+        result.Value["shard1/shard1a"].Ports.Pg.Should().Be(15001);
+    }
 }
