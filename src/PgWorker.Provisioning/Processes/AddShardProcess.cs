@@ -285,8 +285,13 @@ public sealed partial class AddShardProcess(
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var since = _patroniWaitSince.GetOrAdd(scope, now);
             if (now - since > placementOpts.PatroniBootSec)
+            {
+                // Бюджет исчерпан: сброс трекера — новая попытка получает полный
+                // бюджет заново (E3, симметрично ProvisioningProcess).
+                _patroniWaitSince.TryRemove(scope, out _);
                 return Result<bool>.Failed(new ApplicationException(
                     $"Patroni шарда {scope} не поднялся за бюджет {placementOpts.PatroniBootSec} с"));
+            }
 
             return Result<bool>.Success(false);
         }

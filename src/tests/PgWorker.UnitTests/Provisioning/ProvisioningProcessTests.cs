@@ -420,4 +420,24 @@ public class ProvisioningProcessTests
         workWrites.Should().NotBeEmpty();
         workWrites.Should().OnlyContain(v => v.Contains("\"fail_count\":"));
     }
+
+    // AAA: E3 — бюджет-фейл сбрасывает трекер ожидания: новая попытка (после
+    // бэкоффа) получает полный бюджет заново, а не мгновенный фейл от протухшего
+    // «первого наблюдения» (234 фейла/10 мин на живом стенде)
+    [Fact]
+    public async Task Tick_PatroniBudgetFail_ResetsWaitTrackerForNextAttempt()
+    {
+        // Arrange: мгновенный бюджет (-1) — первый же тик фейлит ожидание Patroni.
+        var rig = await NewRig(_ => DeadPatroni(), opts: new PlacementOptions(15000, 15100, PatroniBootSec: -1));
+
+        // Act
+        await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: трекер бюджета очищен — следующая попытка получит полный бюджет,
+        // а не мгновенный фейл от протухшего «первого наблюдения».
+        var field = typeof(ProvisioningProcess).GetField("_patroniWaitSince",
+            System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!;
+        var tracker = (System.Collections.Concurrent.ConcurrentDictionary<string, long>)field.GetValue(rig.Process)!;
+        tracker.Should().BeEmpty();
+    }
 }
