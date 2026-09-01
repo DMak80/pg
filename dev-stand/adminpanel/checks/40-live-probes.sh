@@ -44,13 +44,13 @@ for i in $(seq 1 40); do cl_ok && break; sleep 2; done
 cl_ok || { echo "❌ /api/clusters/demo: runtime/инвентарь/lease (SQL-проба на 127.0.0.1:5433-5436?)"; exit 1; }
 echo "  SQL-пробы: runtime шардов жив, sync-standby есть, инвентарь 10+6"
 
-# 3) никаких ошибок проб и расхождений (spec §7.5 п.4)
-# probe-failed info неподнятых кластеров чека 15 (canon10/smoke/solo — никогда
-# не инициализировались) — не ошибка живого стенда; важное — warning/critical.
+# 3) никаких ошибок проб и расхождений (spec §7.5 п.4): probe-failed быть не
+#    должно вовсе — неподнятые кластеры чека 15 (canon10/smoke/solo) подавлены
+#    lifecycle-правилом (NOT_INITIALIZED, arch/03 §4), живые цели — без ошибок.
 api /api/alerts | jq -e \
-  'all(.[]; (.kind != "probe-failed" or .severity == "info")
+  'all(.[]; .kind != "probe-failed"
      and .kind != "inventory-mismatch" and .kind != "shard-no-master")' >/dev/null \
-  || { echo "❌ /api/alerts: есть probe-failed(≥warning) / inventory-mismatch / shard-no-master"; exit 1; }
+  || { echo "❌ /api/alerts: есть probe-failed / inventory-mismatch / shard-no-master"; exit 1; }
 echo "  алертов проб/инвентаря/без-мастера нет"
 
 echo "✓ live-probes зелёный"

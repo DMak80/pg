@@ -127,6 +127,17 @@ public class AlertHintRemedyTests
                 ], null),
                 // matched-скоп без leader-ключа → shard-no-leader
                 new HaScope("moving-s2", "moving", "s2", true, null, null, true, null, null, null, [], null),
+                // matched-скоп Active-кластера: один член с упавшей patroni-пробой,
+                // у второго результата нет → per-member warning probe-failed
+                // (scope-critical не эмитится: не все члены упали). Cluster="demo" —
+                // имя кластера фикстуры MovingCluster (TestSnapshots: Name="demo";
+                // "moving" в снапшоте не существует, такой скоп был бы пропущен
+                // фильтром activeClusters.ContainsKey — повторное ревью Фазы 4)
+                new HaScope("moving-s1", "demo", "s1", true, "s1a", 738273634528L, true, null, null, null,
+                [
+                    new HaMember("s1a", "s1a", 5432, "master", "running", 1L, 0L, Now, null, null),
+                    new HaMember("s1b", "s1b", 5432, "replica", "streaming", 1L, 0L, Now, null, null),
+                ], null),
             ],
             Probes = [new ProbeResult("moving-s1/s1a", "patroni", false, 5.0, "connection refused", Now)],
             ParseErrors = [new KeyParseError("/clusters/demo/buckets/status/bucket_9", "битый JSON")],

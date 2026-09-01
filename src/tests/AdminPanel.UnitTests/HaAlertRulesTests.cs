@@ -215,30 +215,209 @@ public class HaAlertRulesTests
         alerts.Should().BeEmpty();
     }
 
+    // ==== probe-failed (spec 2026-09-01 §3.1) ====
+
     [Fact]
-    public void ProbeFailed_EachFailedResult_Info()
+    public void ProbeFailed_SqlFailed_Critical()
     {
-        // Arrange: одна patroni- и одна sql-проба упали.
+        // Arrange: Active-кластер, SQL-проба шарда упала (timeout).
+        var snapshot = TestSnapshots.Healthy(Now) with
+        {
+            Probes = [new ProbeResult("demo/s1", "sql", false, 4.0, "timeout", Now)],
+        };
+
+        // Act
+        var alerts = new ProbeFailedRule().Evaluate(snapshot, Context()).ToList();
+
+        // Assert: шард недоступен — critical; details несут ошибку и хосты DSN.
+        var alert = alerts.Should().ContainSingle().Subject;
+        alert.Id.Should().Be("probe-failed:sql:demo/s1");
+        alert.Severity.Should().Be(AlertSeverity.Critical);
+        alert.Details!["error"].Should().Be("timeout");
+        alert.Details["dsnHosts"].Should().Be("s1a,s1b");
+    }
+
+    [Fact]
+    public void ProbeFailed_SqlOk_NoAlert()
+    {
+        // Arrange: Active-кластер, SQL-проба шарда успешна (живой стенд).
         var snapshot = TestSnapshots.Healthy(Now) with
         {
             Probes =
             [
-                new ProbeResult("demo-s1/s1a", "patroni", false, 3.0, "connection refused", Now),
-                new ProbeResult("demo/s1", "sql", false, 4.0, "timeout", Now),
-                new ProbeResult("demo-s1/s1b", "patroni", true, 5.0, null, Now),
+                new ProbeResult("demo/s1", "sql", true, 5.0, null, Now),
+                new ProbeResult("demo-s1/s1a", "patroni", true, 1.0, null, Now),
             ],
         };
 
         // Act
         var alerts = new ProbeFailedRule().Evaluate(snapshot, Context()).ToList();
 
-        // Assert: id включает kind — уникальность при пересечении имён (spec §3.14).
-        alerts.Should().HaveCount(2);
-        alerts.Should().OnlyContain(a => a.Severity == AlertSeverity.Info);
-        alerts.Select(a => a.Id).Should().BeEquivalentTo(
-            ["probe-failed:patroni:demo-s1/s1a", "probe-failed:sql:demo/s1"]);
-        alerts.Single(a => a.Kind == "probe-failed" && a.Details!["kind"] == "sql")
-            .Details!["error"].Should().Be("timeout");
+        // Assert: найденный результат с Ok=true — не алерт (spec §3.1 п.1
+        // «найден и !Ok»; живой стенд выявил эмит по любому результату).
+        alerts.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ProbeFailed_PatroniOneMemberFailed_Warning()
+    {
+        // Arrange: один из двух членов matched-скопа упал, второй жив.
+        var snapshot = TestSnapshots.WithHaScopes(Now) with
+        {
+            Probes = [new ProbeResult("demo-s1/s1a", "patroni", false, 1.0, "connection refused", Now)],
+        };
+
+        // Act
+        var alerts = new ProbeFailedRule().Evaluate(snapshot, Context()).ToList();
+
+        // Assert: одиночный член — warning (одна нода ≠ весь кластер).
+        var alert = alerts.Should().ContainSingle().Subject;
+        alert.Id.Should().Be("probe-failed:patroni:demo-s1/s1a");
+        alert.Severity.Should().Be(AlertSeverity.Warning);
+        alert.Details!["error"].Should().Be("connection refused");
+    }
+
+    [Fact]
+    public void ProbeFailed_PatroniAllMembersFailed_SingleCriticalNoWarnings()
+    {
+        // Arrange: обе Patroni-пробы членов matched-скопа упали.
+        var snapshot = TestSnapshots.WithHaScopes(Now) with
+        {
+            Probes =
+            [
+                new ProbeResult("demo-s1/s1a", "patroni", false, 1.0, "refused", Now),
+                new ProbeResult("demo-s1/s1b", "patroni", false, 2.0, "timeout", Now),
+            ],
+        };
+
+        // Act
+        var alerts = new ProbeFailedRule().Evaluate(snapshot, Context()).ToList();
+
+        // Assert: один critical на скоп; per-member warning не эмитятся —
+        // один факт, один алерт (spec §1.3).
+        var alert = alerts.Should().ContainSingle().Subject;
+        alert.Id.Should().Be("probe-failed:patroni-scope:demo-s1");
+        alert.Severity.Should().Be(AlertSeverity.Critical);
+        alert.Details!["failed"].Should().Be("2");
+        alert.Details["total"].Should().Be("2");
+        alert.Details["cluster"].Should().Be("demo");
+    }
+
+    [Fact]
+    public void ProbeFailed_LifecycleTargets_Suppressed()
+    {
+        // Arrange: пробы падают по NOT_INITIALIZED/TO_REMOVE-кластерам,
+        // TO_REMOVE-шарду Active-кластера и их HA-скопам.
+        var fresh = TestSnapshots.FullCluster() with
+        {
+            Name = "fresh", DbName = "fresh", State = ClusterState.NotInitialized,
+        };
+        var dying = TestSnapshots.FullCluster() with
+        {
+            Name = "dying", DbName = "dying", State = ClusterState.ToRemove,
+        };
+        var shardRemoving = TestSnapshots.FullCluster() with
+        {
+            Shards = [TestSnapshots.FullCluster().Shards.Single() with { State = ShardState.ToRemove }],
+        };
+        var snapshot = TestSnapshots.Healthy(Now) with
+        {
+            Clusters = [fresh, dying, shardRemoving],
+            HaScopes =
+            [
+                TestSnapshots.HaScopeDemo(Now),
+                TestSnapshots.HaScopeDemo(Now) with { Scope = "fresh-s1", Cluster = "fresh" },
+                TestSnapshots.HaScopeDemo(Now) with { Scope = "dying-s1", Cluster = "dying" },
+            ],
+            Probes =
+            [
+                new ProbeResult("fresh/s1", "sql", false, 1.0, "refused", Now),
+                new ProbeResult("dying/s1", "sql", false, 1.0, "refused", Now),
+                new ProbeResult("demo/s1", "sql", false, 1.0, "refused", Now),
+                new ProbeResult("fresh-s1/s1a", "patroni", false, 1.0, "refused", Now),
+                new ProbeResult("fresh-s1/s1b", "patroni", false, 1.0, "refused", Now),
+                new ProbeResult("dying-s1/s1a", "patroni", false, 1.0, "refused", Now),
+                new ProbeResult("dying-s1/s1b", "patroni", false, 1.0, "refused", Now),
+            ],
+        };
+
+        // Act
+        var alerts = new ProbeFailedRule().Evaluate(snapshot, Context()).ToList();
+
+        // Assert: подъём/демонтаж — не авария, lifecycle-цели не алертятся
+        // (spec §1.4; прецедент — подавление shard-no-leader).
+        alerts.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ProbeFailed_PatroniScopeOfToRemoveShard_Suppressed()
+    {
+        // Arrange: Active-кластер demo, но шард s1 — TO_REMOVE (remove-shard,
+        // arch/01 §9): демонтаж гасит ноды → patroni-пробы всех членов скопа
+        // падают; ScopeMatcher матчит скоп по имени шарда без учёта состояния.
+        var snapshot = TestSnapshots.Healthy(Now) with
+        {
+            Clusters =
+            [
+                TestSnapshots.FullCluster() with
+                {
+                    Shards = [TestSnapshots.FullCluster().Shards.Single() with { State = ShardState.ToRemove }],
+                },
+            ],
+            HaScopes = [TestSnapshots.HaScopeDemo(Now)],
+            Probes =
+            [
+                new ProbeResult("demo-s1/s1a", "patroni", false, 1.0, "refused", Now),
+                new ProbeResult("demo-s1/s1b", "patroni", false, 1.0, "timeout", Now),
+            ],
+        };
+
+        // Act
+        var alerts = new ProbeFailedRule().Evaluate(snapshot, Context()).ToList();
+
+        // Assert: демонтаж шарда — не авария: скоп TO_REMOVE-шарда подавляется
+        // как lifecycle-цель (критерий 4 spec, arch/03 §4) — ни scope-critical,
+        // ни per-member warning.
+        alerts.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void ProbeFailed_NoProbesOrDegenerateTargets_Silent()
+    {
+        // Arrange: проб нет вовсе; orphan-результат по несуществующему скопу;
+        // вырожденные цели: Active-шард без DSN с упавшей sql-пробой и
+        // matched-скоп Active-кластера без членов (spec §3.3).
+        var degenerate = TestSnapshots.Healthy(Now) with
+        {
+            Clusters =
+            [
+                TestSnapshots.FullCluster() with
+                {
+                    Shards = [TestSnapshots.FullCluster().Shards.Single() with { DsnHosts = [] }],
+                },
+            ],
+            HaScopes = [TestSnapshots.HaScopeDemo(Now) with { Members = [] }],
+            Probes =
+            [
+                new ProbeResult("demo/s1", "sql", false, 1.0, "refused", Now),
+                new ProbeResult("demo-s1/s1a", "patroni", false, 1.0, "refused", Now),
+            ],
+        };
+
+        // Act
+        var empty = new ProbeFailedRule().Evaluate(TestSnapshots.WithHaScopes(Now), Context()).ToList();
+        var orphan = new ProbeFailedRule().Evaluate(TestSnapshots.WithHaScopes(Now) with
+        {
+            Probes = [new ProbeResult("ghost-s1/s1a", "patroni", false, 1.0, "refused", Now)],
+        }, Context()).ToList();
+        var degenerateAlerts = new ProbeFailedRule().Evaluate(degenerate, Context()).ToList();
+
+        // Assert: без результатов (пробы выключены), по исчезнувшей цели и по
+        // вырожденным целям (шард без DSN, скоп без членов) — тишина
+        // (spec §2, §3.3): правило идёт от целей снапшота.
+        empty.Should().BeEmpty();
+        orphan.Should().BeEmpty();
+        degenerateAlerts.Should().BeEmpty();
     }
 
     // ==== SQL-правила (spec §10.1 ч.2) ====
@@ -559,17 +738,18 @@ public class HaAlertRulesTests
         var alerts = engine.Evaluate(snapshot, null, Now, 3).ToList();
 
         // Assert: сортировка severity → kind (Ordinal): critical (shard-no-leader,
-        // slot-wal-lost) → warning (ha-member-not-streaming, slot-invalidation-risk,
-        // sync-standby-missing) → info (probe-failed). Слот фикстуры несёт
-        // safe_wal_size 512 МБ < 1 GiB — risk-алерт входит в сценарий законно (6-й).
-        // t04/t05-правила на этой фикстуре молчат.
+        // slot-wal-lost) → warning (ha-member-not-streaming, probe-failed,
+        // slot-invalidation-risk, sync-standby-missing). probe-failed теперь
+        // warning (spec 2026-09-01 §3.1) — стоит между ha-member и slot-риском.
+        // Слот фикстуры несёт safe_wal_size 512 МБ < 1 GiB — risk-алерт входит
+        // в сценарий законно (6-й). t04/t05-правила на этой фикстуре молчат.
         alerts.Select(a => a.Id).Should().ContainInOrder(
             "shard-no-leader:demo-s1",
             "slot-wal-lost:demo/s1/move_bucket_3",
             "ha-member-not-streaming:demo-s1/s1b",
+            "probe-failed:patroni:demo-s1/s1a",
             "slot-invalidation-risk:demo/s1/move_bucket_3",
-            "sync-standby-missing:demo/s1",
-            "probe-failed:patroni:demo-s1/s1a");
+            "sync-standby-missing:demo/s1");
         alerts.Select(a => a.Id).Should().HaveCount(6);
     }
 

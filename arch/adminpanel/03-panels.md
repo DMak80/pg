@@ -369,9 +369,15 @@ id». Клиентская валидация — зеркало 02 §9.7 (не�
 | `slot-invalidation-risk` | warning | `safe_wal_size` < порога (P4, ДО среза) | SQL-проба |
 | `sync-standby-missing` | warning | у мастера нет `sync_state IN ('sync','quorum')` (P8 — предусловие переездов) | SQL-проба |
 | `inventory-mismatch` | warning | фактические схемы `bucket_%` ≠ routing (P21/P23) | SQL-проба |
-| `probe-failed` | info | Patroni/SQL-проба ошибки (детали в probe) | пробы |
+| `probe-failed` | по цели (critical/warning) | ошибки проб **Active-целей**: SQL-проба шарда упала → **critical** («шард недоступен»: ни один хост DSN не принял подключение или writable-мастер не найден — 02 §6.2); Patroni-проба одного члена скопа упала → **warning**; Patroni-пробы **всех** членов matched-скопа упали → один **critical** на скоп (id `probe-failed:patroni-scope:<scope>`, per-member warning этого скопа не эмитятся — один факт, один алерт) | пробы |
 
 SQL-алерты вычисляются только при включённых пробах; etcd-алерты — всегда.
+`probe-failed` считается по целям текущего снапшота (исчезнувшая цель не
+алертится) и только для **Active**-целей: кластеры/шарды в `NOT_INITIALIZED`
+(подъём — ноды ещё не готовы) и `TO_REMOVE` (демонтаж — ноды снимаются)
+не алертятся — нормальный жизненный цикл, не авария (прецедент — подавление
+`shard-no-leader`); сами пробы по ним продолжают ходить, runtime-ошибки
+остаются в UI деталей.
 `NOT_INITIALIZED`-бакеты — не переезды: `move-*` правила их не алертят
 (`move-frozen-long`/`move-aborting` смотрят свои точные состояния,
 `move-flipped-status-stuck` — требует `target`, у NOT_INITIALIZED его нет);

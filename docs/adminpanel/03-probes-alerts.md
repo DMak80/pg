@@ -36,7 +36,7 @@
 | etcd-здоровье (5) | `etcd-unreachable`, `etcd-endpoint-down`, `etcd-no-quorum`, `etcd-alarm`, `snapshot-stale` |
 | шардирование/переезды (12) | `cluster-not-initialized`, `cluster-incomplete`, `key-malformed`, `shard-no-master`, `bucket-no-routing`, `bucket-lost`, `bucket-out-of-range`, `move-stale`, `move-frozen-long`, `move-aborting`, `move-flipped-status-stuck`, `inventory-mismatch` |
 | HA/слоты (7) | `shard-no-leader`, `ha-member-not-streaming`, `replica-lag-high`, `sync-standby-missing`, `slot-lag-high`, `slot-invalidation-risk`, `slot-wal-lost` |
-| пробы (1) | `probe-failed` |
+| пробы (1) | `probe-failed` (sql→critical, patroni→warning, весь скоп молчит→critical один на скоп; lifecycle-цели NOT_INITIALIZED/TO_REMOVE подавлены — arch/03 §4) |
 
 (`inventory-mismatch` сверяет инвентарь SQL-пробы с routing, только ACTIVE-бакеты.)
 
@@ -62,5 +62,10 @@
   алерты — ≤2 KV-тиков; «не дождались за 5 c» — не баг, а недостаток таймаута.
 - **`probe-failed` ≠ пустые данные**: отказ пробы оставляет etcd-часть (поля null),
   SQL-поля в UI скрываются с пометкой (arch/01 §8).
+- **`probe-failed` — severity по цели (2026-09-01)**: SQL-проба Active-шарда
+  упала = critical («кластер не работает»); Patroni одного члена — warning,
+  все члены скопа — один critical; NOT_INITIALIZED/TO_REMOVE не алертятся
+  (подъём/демонтаж — не авария), но пробы по ним ходят и runtime-ошибки
+  остаются в деталях.
 - **HostMap в тестах**: интеграционные проверки резолва — на обоих форматах ключа
   (`host:port` и `host__port`, `HostMapResolverTests`).

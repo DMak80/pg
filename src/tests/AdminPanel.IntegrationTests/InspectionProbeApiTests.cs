@@ -95,12 +95,37 @@ public class InspectionProbeApiTests(AuthWebFactory factory, EtcdContainerFixtur
         // Act
         using var response = await client.GetAsync("/api/alerts", TestContext.Current.CancellationToken);
 
-        // Assert: info-алерт probe-failed с kind в target; ha-member-not-streaming
+        // Assert: одиночная patroni-проба — warning (spec 2026-09-01 §3.1); ha-member-not-streaming
         // по упавшей пробе не вычисляется (spec §3.13/§3.14).
         var alerts = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         var probeAlert = alerts.EnumerateArray().Single(a =>
             a.GetProperty("id").GetString() == "probe-failed:patroni:demo-s1/s1a");
-        probeAlert.GetProperty("severity").GetString().Should().Be("info");
+        probeAlert.GetProperty("severity").GetString().Should().Be("warning");
         alerts.EnumerateArray().Should().NotContain(a => a.GetProperty("kind").GetString() == "ha-member-not-streaming");
+    }
+
+    [Fact]
+    public async Task LiveEtcd_FailedSqlProbe_CriticalAlert()
+    {
+        // Arrange: SQL-проба шарда Active-кластера demo упала — шард недоступен.
+        var at = DateTimeOffset.UtcNow;
+        var probes = new ProbeState(
+            at,
+            [new ProbeResult("demo/s1", "sql", false, 4.0, "timeout", at)],
+            new Dictionary<string, HaMemberProbe>(),
+            new Dictionary<string, ShardRuntime>());
+        _factory.Snapshot = await RefreshedAsync(probes);
+        using var client = await ApiTestLogin.LoginAsync(_factory);
+
+        // Act
+        using var response = await client.GetAsync("/api/alerts", TestContext.Current.CancellationToken);
+
+        // Assert: неработающий кластер — critical-алерт (spec 2026-09-01 §1.1);
+        // id и details стабильны для фильтров ?kind=.
+        var alerts = await response.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
+        var alert = alerts.EnumerateArray().Single(a =>
+            a.GetProperty("id").GetString() == "probe-failed:sql:demo/s1");
+        alert.GetProperty("severity").GetString().Should().Be("critical");
+        alert.GetProperty("details").GetProperty("error").GetString().Should().Be("timeout");
     }
 }
