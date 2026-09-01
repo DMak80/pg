@@ -21,6 +21,9 @@ public sealed class KeyMalformedRule : IAlertRule
                 error.Key,
                 $"ключ не разобран: {error.Key}",
                 new Dictionary<string, string> { ["reason"] = error.Reason },
-                null);
+                null,
+                "ключ etcd не разобран парсером панели: битое значение не попадает в модель — UI слеп к этому ключу; формат значения каждого ключа — канон arch/02 §2",
+                AlertRemedy.OperatorRunbook,
+                "устраните источник битой записи (внешний писатель) и приведите значение к канону arch/02; повторный тик распарсит ключ");
     }
 }

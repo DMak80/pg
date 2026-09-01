@@ -59,6 +59,8 @@ internal sealed class FakeEtcdGateway : IEtcdGateway
 
     public IReadOnlyList<Kv> MovesKv { get; set; } = [];
 
+    public IReadOnlyList<Kv> PgApiKv { get; set; } = [];
+
     public IReadOnlyList<EtcdMember> Members { get; init; } = [];
 
     public IReadOnlyList<EtcdAlarm> Alarms { get; init; } = [];
@@ -77,6 +79,7 @@ internal sealed class FakeEtcdGateway : IEtcdGateway
                 "/clusters/" => ClustersKv,
                 "/service/" => ServiceKv,
                 "/pgworker/moves/" => MovesKv,
+                "/pgworker/api/" => PgApiKv,
                 _ => NodesKv,
             }));
     }
@@ -270,9 +273,11 @@ public class SnapshotRefresherTests
         // Act
         await refresher.RefreshOnceAsync(CancellationToken.None);
 
-        // Assert: key-malformed от битого ключа + 5 move-алертов сида demo (spec §3.15, §10.4).
+        // Assert: key-malformed от битого ключа + 5 move-алертов сида demo (spec §3.15, §10.4)
+        // + worker-api-unreachable (живых ключей /pgworker/api/ в фикстуре нет, arch/03 §4.1).
         var alerts = store.Current!.Alerts;
-        alerts.Should().HaveCount(6);
+        alerts.Should().HaveCount(7);
+        alerts.Should().Contain(a => a.Id == "worker-api-unreachable:pgworker");
         alerts.Should().Contain(a => a.Id == "key-malformed:/clusters/demo/buckets/status/bucket_9");
         alerts.Should().Contain(a => a.Id == "move-stale:demo/bucket_3");
         alerts.Should().Contain(a => a.Id == "move-stale:demo/bucket_7");
@@ -395,6 +400,29 @@ public class SnapshotRefresherTests
         snapshot.MoveTickets.Should().Contain(t =>
             t.Cluster == "demo" && t.Bucket == "bucket_3" && t.Op == "move" && t.To == "shard2");
         snapshot.ParseErrors.Should().Contain(e => e.Key == "/pgworker/moves/demo/bucket_13");
+    }
+
+    [Fact]
+    public async Task Refresh_WithApiKeys_StoresWorkerEndpoints()
+    {
+        // Arrange: живой ключ доступа воркера + битый (arch/02 §2.3.1)
+        var gateway = DemoGateway();
+        gateway.PgApiKv =
+        [
+            new Kv("/pgworker/api/inst1", """{"url":"http://pgw:8080","instance":"inst1","since_unix":1756000000}""", 7),
+            new Kv("/pgworker/api/bad", "{oops", 8),
+        ];
+        var store = new SnapshotStore();
+
+        // Act
+        await RefresherTestHarness.New(gateway, store, "http://etcd1:2379")
+            .RefreshOnceAsync(CancellationToken.None);
+
+        // Assert: валидный ключ — в PgWorkerEndpoints, битый — parseError (тик жив)
+        var snapshot = store.Current!;
+        snapshot.PgWorkerEndpoints.Should().ContainSingle().Which
+            .Should().Be(new WorkerEndpoint("inst1", "http://pgw:8080", 1756000000));
+        snapshot.ParseErrors.Should().Contain(e => e.Key == "/pgworker/api/bad");
     }
 
     [Fact]

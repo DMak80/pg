@@ -22,6 +22,9 @@ public sealed class ClusterNotInitializedRule : IAlertRule
                 cluster.Name,
                 $"кластер {cluster.Name} заявлен (NOT_INITIALIZED): ноды не подняты, схемы не созданы",
                 new Dictionary<string, string> { ["dbname"] = cluster.DbName ?? "missing" },
-                null);
+                null,
+                "кластер заявлен (config.state=NOT_INITIALIZED), ноды не подняты: это нормальный жизненный цикл — provisioning воркера поднимает ноды и переведёт state в ACTIVE",
+                AlertRemedy.WorkerAuto,
+                "дождитесь provisioning (воркер пишет nodes state и снимет NOT_INITIALIZED); висит дольше обычного — смотрите journal воркера");
     }
 }

@@ -38,7 +38,10 @@ public sealed class SlotInvalidationRiskRule(IOptions<AlertsOptions> options) : 
                     ["safeWalSizeBytes"] = safe.Value.ToString(),
                     ["thresholdBytes"] = ThresholdBytes.ToString(),
                 },
-                null);
+                null,
+                "слоту до среза (max_slot_wal_keep_size) осталось меньше порога: срез сделает слот lost и реплику недогоняемой; слот обязан догонять с запасом",
+                AlertRemedy.WorkerAuto,
+                "надзор воркера rebuild’ит отстающую реплику; риск растёт — запустите recreate ноды через API панели");
         }
     }
 }

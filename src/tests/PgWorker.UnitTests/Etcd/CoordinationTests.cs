@@ -17,6 +17,7 @@ public class CoordinationTests
         public readonly List<TxnRequest> Txns = [];
         public readonly List<long> KeepaliveCalls = [];
         public Func<long, Result>? KeepaliveOverride;
+        public Func<Result<long>>? GrantOverride;
 
         private long _nextLease = 100;
 
@@ -94,6 +95,8 @@ public class CoordinationTests
 
         public Task<Result<long>> LeaseGrantAsync(string endpoint, int ttlSec, CancellationToken ct)
         {
+            if (GrantOverride is { } over)
+                return Task.FromResult(over());
             var id = ++_nextLease;
             LiveLeases.Add(id);
             return Task.FromResult(Result<long>.Success(id));
@@ -131,8 +134,8 @@ public class CoordinationTests
             => Task.FromResult(Result.Success());
     }
 
-    private static ClaimStore NewStore(FakeGateway gateway)
-        => new(["http://etcd:2379"], gateway, TimeProvider.System);
+    private static ClaimStore NewStore(FakeGateway gateway, string? advertiseApiUrl = null)
+        => new(["http://etcd:2379"], gateway, TimeProvider.System, advertiseApiUrl);
 
     private static WorkJournal NewJournal(FakeGateway gateway) => new(gateway, ["http://etcd:2379"]);
 
@@ -210,8 +213,9 @@ public class CoordinationTests
         // Act
         await store.KeepaliveTickAsync(CancellationToken.None);
 
-        // Assert: продлены все три lease
-        gateway.KeepaliveCalls.Should().HaveCount(3);
+        // Assert: продлены все четыре lease — 2 клэйма + лидерство + instance-ключ
+        // (тик не только продлевает, но и (пере)ставит instance-ключ — ревью Ф7)
+        gateway.KeepaliveCalls.Should().HaveCount(4);
     }
 
     [Fact]
@@ -260,6 +264,72 @@ public class CoordinationTests
         lostAfterTick.Should().BeFalse();
         reclaimed.Value.Should().BeTrue();
         store.IsMine("shop").Should().BeTrue();
+    }
+
+    // Ревью Ф7 [impl, major]: etcd недоступен в момент первого тика — grant падает,
+    // ключи instances/<id> и api/<id> не ставятся; после возвращения etcd следующий
+    // тик пере-ставит их сам (без фикса — только рестартом процесса).
+    [Fact]
+    public async Task ClaimStore_EtcdDownAtStart_InstanceAndApiKeysPlacedOnNextTick()
+    {
+        // Arrange — grant отвечает ошибкой («etcd недоступен»)
+        var gateway = new FakeGateway
+        {
+            GrantOverride = () => Result<long>.Failed(new ApplicationException("etcd недоступен")),
+        };
+        var store = NewStore(gateway, advertiseApiUrl: "http://worker:8080");
+
+        // Act — первый тик: постановка не удалась, ключей нет
+        await store.KeepaliveTickAsync(CancellationToken.None);
+        gateway.Store.Should().NotContainKey($"/pgworker/instances/{store.InstanceId}");
+        gateway.Store.Should().NotContainKey($"/pgworker/api/{store.InstanceId}");
+
+        // etcd вернулся — следующий тик ставит оба ключа сам
+        gateway.GrantOverride = null;
+        await store.KeepaliveTickAsync(CancellationToken.None);
+
+        // Assert
+        gateway.Store.Should().ContainKey($"/pgworker/instances/{store.InstanceId}");
+        gateway.Store.Should().ContainKey($"/pgworker/api/{store.InstanceId}");
+        await store.DisposeAsync();
+    }
+
+    // Ревью Ф7 [impl, major]: потеря instance-lease в рантайме (etcd недоступен
+    // дольше TTL) — тик фиксирует потерю; следующий тик пере-ставит ключи с новым
+    // lease и свежим since_unix (парсер панели важен факт наличия ключа).
+    [Fact]
+    public async Task ClaimStore_InstanceLeaseLostOnKeepalive_ApiKeyRestoredOnNextTick()
+    {
+        // Arrange — ключи поставлены первым тиком
+        var gateway = new FakeGateway();
+        var store = NewStore(gateway, advertiseApiUrl: "http://worker:8080");
+        await store.KeepaliveTickAsync(CancellationToken.None);
+        var firstLease = gateway.KeyLeases[$"/pgworker/instances/{store.InstanceId}"];
+
+        // Act — keepalive падает: etcd удалил ключи истёкшего lease (имитация в fake)
+        gateway.KeepaliveOverride = lease =>
+        {
+            foreach (var key in gateway.KeyLeases.Where(p => p.Value == lease).Select(p => p.Key).ToList())
+            {
+                gateway.Store.Remove(key);
+                gateway.KeyLeases.Remove(key);
+            }
+
+            gateway.LiveLeases.Remove(lease);
+            return Result.Failed(new ApplicationException("lease expired"));
+        };
+        await store.KeepaliveTickAsync(CancellationToken.None); // тик фиксирует потерю
+
+        // etcd снова доступен — следующий тик восстанавливает ключи
+        gateway.KeepaliveOverride = null;
+        await store.KeepaliveTickAsync(CancellationToken.None);
+
+        // Assert — оба ключа на месте под свежим lease
+        gateway.Store.Should().ContainKey($"/pgworker/instances/{store.InstanceId}");
+        gateway.Store.Should().ContainKey($"/pgworker/api/{store.InstanceId}");
+        var secondLease = gateway.KeyLeases[$"/pgworker/instances/{store.InstanceId}"];
+        secondLease.Should().BeGreaterThan(firstLease);
+        await store.DisposeAsync();
     }
 
     [Fact]

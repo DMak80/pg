@@ -31,7 +31,10 @@ public sealed class ShardNoMasterRule : IAlertRule
                     ["shard"] = shard.Name,
                     ["dsn"] = shard.Dsn,
                 },
-                null);
+                null,
+                "у шарда есть dsn, но нет master-ключа: master (leases) — текущая нода записи SQL-операций; каждый шард обязан иметь живой master-ключ, синхронный с /service/<scope>/leader",
+                AlertRemedy.WorkerAuto,
+                "сверка мастера PgWorker (feat-pgworker-adopt-repair) восстановит ключ; висит — дефект воркера");
         }
     }
 }

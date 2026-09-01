@@ -12,7 +12,9 @@
   (2026-08-28, feat-etcd-password-field).
 - **`t03-docker-tls-ssh`** — TLS к Docker Engine API и SSH-туннели к
   docker-хостам (сейчас plaintext TCP/unix-socket в доверенной сети),
-  RBAC/docker-группы.
+  RBAC/docker-группы; сюда же — транспортная безопасность HTTP API
+  PgWorker (arch/14 §1.1): mTLS/сертификаты вместо голого `X-Api-Key`
+  в закрытой сети, отдельные креды панели и сида.
 - **`t04-metrics`** — Prometheus-метрики PgWorker (фазы процессов, клэймы,
   лаги, возраст снапшотов) + алертинг во внешние системы.
 - **`t05-quarantine-merge`** — слияние/восстановление данных карантинного

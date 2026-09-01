@@ -21,6 +21,9 @@ public sealed class EtcdEndpointDownRule : IAlertRule
                 endpoint.Url,
                 $"endpoint etcd недоступен: {endpoint.Url}",
                 new Dictionary<string, string> { ["errors"] = string.Join("; ", endpoint.Errors) },
-                null);
+                null,
+                "endpoint etcd не отвечает: панель читает с failover по живым, но кворум и производительность зависят от всех участников; каждый endpoint из AdminPanel:Etcd:Endpoints обязан быть жив",
+                AlertRemedy.OperatorRunbook,
+                "проверьте контейнеры etcd стенда и сеть (arch/09); endpoint, выведенный из кластера, уберите из AdminPanel:Etcd:Endpoints");
     }
 }

@@ -1,5 +1,6 @@
 using System.Security.Claims;
-using AdminPanel.Etcd.Writing;
+using AdminPanel.Etcd.Workers;
+using AdminPanel.Infrastructure;
 using AdminPanel.Infrastructure.CQRS;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -7,8 +8,9 @@ using Microsoft.AspNetCore.Routing;
 
 namespace AdminPanel.Api.Operations.Kafka;
 
-// Модуль kafka-мутаций (arch/03 §7.1): 8 эндпоинтов (волна B + C2 desired-
-// мутации топиков PUT/DELETE topics/{t}[/desired]).
+// Модуль kafka-мутаций (arch/03 §7.1) — ПРОКСИ в API KafkaWorker (arch/16 §1.1):
+// панель не пишет в etcd; успех — DTO воркера, ошибки — ProblemDetails как есть,
+// недоступность API — собственный 503. UI-контракт §10.2 не меняется.
 public static class KafkaOperationsModule
 {
     public static IEndpointRouteBuilder MapKafkaOperationsApi(this IEndpointRouteBuilder endpoints)
@@ -22,29 +24,7 @@ public static class KafkaOperationsModule
             if (result.IsSuccess)
                 return Results.Created($"/api/kafka/clusters/{result.Value.Name}", result.Value);
 
-            return result.Error switch
-            {
-                KafkaValidationException validation => Results.Problem(
-                    statusCode: StatusCodes.Status400BadRequest,
-                    title: "Validation failed",
-                    detail: result.Error.Message,
-                    extensions: new Dictionary<string, object?>
-                    {
-                        ["errors"] = validation.Errors.ToDictionary(e => e.Field, e => new[] { e.Message }),
-                    }),
-                KafkaClusterAlreadyExistsException => Results.Problem(
-                    statusCode: StatusCodes.Status409Conflict,
-                    title: "Cluster already exists",
-                    detail: result.Error.Message),
-                EtcdWriteUnavailableException => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable,
-                    title: "Etcd write unavailable",
-                    detail: result.Error.Message),
-                _ => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable,
-                    title: "Etcd write failed",
-                    detail: result.Error!.Message),
-            };
+            return Error(result);
         });
 
         // DELETE /api/kafka/clusters/{cluster} — перевод в TO_REMOVE (02 §10.2-2).
@@ -56,18 +36,7 @@ public static class KafkaOperationsModule
             if (result.IsSuccess)
                 return Results.NoContent();
 
-            return result.Error switch
-            {
-                KafkaClusterNotFoundException => Results.Problem(
-                    statusCode: StatusCodes.Status404NotFound, title: "Cluster not found",
-                    detail: result.Error.Message),
-                EtcdWriteUnavailableException or InvalidKafkaConfigException => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
-                    detail: result.Error.Message),
-                _ => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
-                    detail: result.Error!.Message),
-            };
+            return Error(result);
         });
 
         // PUT /api/kafka/clusters/{cluster}/config — default-конфиги (02 §10.2-3).
@@ -79,32 +48,7 @@ public static class KafkaOperationsModule
             if (result.IsSuccess)
                 return Results.Ok(result.Value);
 
-            return result.Error switch
-            {
-                KafkaValidationException validation => Results.Problem(
-                    statusCode: StatusCodes.Status400BadRequest,
-                    title: "Validation failed",
-                    detail: result.Error.Message,
-                    extensions: new Dictionary<string, object?>
-                    {
-                        ["errors"] = validation.Errors.ToDictionary(e => e.Field, e => new[] { e.Message }),
-                    }),
-                KafkaClusterNotFoundException => Results.Problem(
-                    statusCode: StatusCodes.Status404NotFound, title: "Cluster not found",
-                    detail: result.Error.Message),
-                KafkaClusterNotActiveException => Results.Problem(
-                    statusCode: StatusCodes.Status409Conflict, title: "Cluster not active",
-                    detail: result.Error.Message),
-                KafkaConcurrentWriteException => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Concurrent write",
-                    detail: result.Error.Message),
-                EtcdWriteUnavailableException or InvalidKafkaConfigException => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
-                    detail: result.Error.Message),
-                _ => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
-                    detail: result.Error!.Message),
-            };
+            return Error(result);
         });
 
         // POST /api/kafka/clusters/{cluster}/brokers — добавление брокера (02 §10.2-4).
@@ -116,30 +60,7 @@ public static class KafkaOperationsModule
             if (result.IsSuccess)
                 return Results.Created($"/api/kafka/clusters/{cluster}/brokers/{result.Value.Name}", result.Value);
 
-            return result.Error switch
-            {
-                KafkaValidationException validation => Results.Problem(
-                    statusCode: StatusCodes.Status400BadRequest,
-                    title: "Validation failed",
-                    detail: result.Error.Message,
-                    extensions: new Dictionary<string, object?>
-                    {
-                        ["errors"] = validation.Errors.ToDictionary(e => e.Field, e => new[] { e.Message }),
-                    }),
-                KafkaClusterNotFoundException => Results.Problem(
-                    statusCode: StatusCodes.Status404NotFound, title: "Cluster not found",
-                    detail: result.Error.Message),
-                KafkaClusterNotActiveException or KafkaBrokerNameTakenException or KafkaBrokerLimitException
-                    => Results.Problem(
-                        statusCode: StatusCodes.Status409Conflict, title: "Broker add rejected",
-                        detail: result.Error.Message),
-                EtcdWriteUnavailableException or InvalidKafkaConfigException => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
-                    detail: result.Error.Message),
-                _ => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
-                    detail: result.Error!.Message),
-            };
+            return Error(result);
         });
 
         // DELETE /api/kafka/clusters/{cluster}/brokers/{broker} — маркер TO_REMOVE (02 §10.2-5).
@@ -151,25 +72,11 @@ public static class KafkaOperationsModule
             if (result.IsSuccess)
                 return Results.NoContent();
 
-            return result.Error switch
-            {
-                KafkaClusterNotFoundException or KafkaBrokerNotFoundException => Results.Problem(
-                    statusCode: StatusCodes.Status404NotFound, title: "Not found",
-                    detail: result.Error.Message),
-                KafkaClusterNotActiveException or KafkaBrokerIsControllerException or KafkaLastBrokerException
-                    => Results.Problem(
-                        statusCode: StatusCodes.Status409Conflict, title: "Broker remove rejected",
-                        detail: result.Error.Message),
-                EtcdWriteUnavailableException or InvalidKafkaConfigException => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
-                    detail: result.Error.Message),
-                _ => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
-                    detail: result.Error!.Message),
-            };
+            return Error(result);
         });
 
-        // POST /api/kafka/clusters/{cluster}/app-password/rotate — заявка ротации (02 §10.2-8).
+        // POST /api/kafka/clusters/{cluster}/app-password/rotate — заявка ротации (02 §10.2-8);
+        // оператор сессии уходит воркеру заголовком X-Requested-By (spec §3.7).
         endpoints.MapPost("/api/kafka/clusters/{cluster}/app-password/rotate", async (
             string cluster, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
         {
@@ -178,25 +85,11 @@ public static class KafkaOperationsModule
             if (result.IsSuccess)
                 return Results.Created($"/api/kafka/clusters/{cluster}", result.Value);
 
-            return result.Error switch
-            {
-                KafkaClusterNotFoundException => Results.Problem(
-                    statusCode: StatusCodes.Status404NotFound, title: "Cluster not found",
-                    detail: result.Error.Message),
-                KafkaClusterNotActiveException or KafkaRotationAlreadyRequestedException => Results.Problem(
-                    statusCode: StatusCodes.Status409Conflict, title: "Rotation rejected",
-                    detail: result.Error.Message),
-                EtcdWriteUnavailableException or InvalidKafkaConfigException => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
-                    detail: result.Error.Message),
-                _ => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
-                    detail: result.Error!.Message),
-            };
+            return Error(result);
         });
 
         // POST /api/kafka/clusters/{cluster}/rebalance — заявка ребалансировки
-        // партиций (t02, 02 §10.2-9): клэйм-txn по живой заявке.
+        // партиций (t02, 02 §10.2-13): клэйм по живой заявке — в воркере.
         endpoints.MapPost("/api/kafka/clusters/{cluster}/rebalance", async (
             string cluster, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
         {
@@ -205,25 +98,11 @@ public static class KafkaOperationsModule
             if (result.IsSuccess)
                 return Results.Created($"/api/kafka/clusters/{cluster}", result.Value);
 
-            return result.Error switch
-            {
-                KafkaClusterNotFoundException => Results.Problem(
-                    statusCode: StatusCodes.Status404NotFound, title: "Cluster not found",
-                    detail: result.Error.Message),
-                KafkaClusterNotActiveException or KafkaRebalanceAlreadyRequestedException => Results.Problem(
-                    statusCode: StatusCodes.Status409Conflict, title: "Rebalance rejected",
-                    detail: result.Error.Message),
-                EtcdWriteUnavailableException or InvalidKafkaConfigException => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
-                    detail: result.Error.Message),
-                _ => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
-                    detail: result.Error!.Message),
-            };
+            return Error(result);
         });
 
         // DELETE /api/kafka/clusters/{cluster}/rebalance — отмена ребалансировки
-        // (t02, 02 §10.2-10): новые батчи не подаются, поданные Kafka доиграет.
+        // (t02, 02 §10.2-14): новые батчи не подаются, поданные Kafka доиграет.
         endpoints.MapDelete("/api/kafka/clusters/{cluster}/rebalance", async (
             string cluster, IHandler handler, CancellationToken ct) =>
         {
@@ -232,18 +111,7 @@ public static class KafkaOperationsModule
             if (result.IsSuccess)
                 return Results.NoContent();
 
-            return result.Error switch
-            {
-                KafkaClusterNotFoundException or KafkaRebalanceNotFoundException => Results.Problem(
-                    statusCode: StatusCodes.Status404NotFound, title: "Not found",
-                    detail: result.Error.Message),
-                EtcdWriteUnavailableException or InvalidKafkaConfigException => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
-                    detail: result.Error.Message),
-                _ => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
-                    detail: result.Error!.Message),
-            };
+            return Error(result);
         });
 
         // PUT /api/kafka/clusters/{cluster}/topics/{topic} — конфиг-заявка (02 §10.2-7).
@@ -256,33 +124,7 @@ public static class KafkaOperationsModule
             if (result.IsSuccess)
                 return Results.Ok(result.Value);
 
-            return result.Error switch
-            {
-                KafkaValidationException validation => Results.Problem(
-                    statusCode: StatusCodes.Status400BadRequest,
-                    title: "Validation failed",
-                    detail: result.Error.Message,
-                    extensions: new Dictionary<string, object?>
-                    {
-                        ["errors"] = validation.Errors.ToDictionary(e => e.Field, e => new[] { e.Message }),
-                    }),
-                KafkaClusterNotFoundException or KafkaTopicNotFoundException => Results.Problem(
-                    statusCode: StatusCodes.Status404NotFound, title: "Not found",
-                    detail: result.Error.Message),
-                KafkaClusterNotActiveException => Results.Problem(
-                    statusCode: StatusCodes.Status409Conflict, title: "Cluster not active",
-                    detail: result.Error.Message),
-                KafkaConcurrentWriteException => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Concurrent write",
-                    detail: result.Error.Message),
-                EtcdWriteUnavailableException or InvalidKafkaConfigException or InvalidKafkaTopicKeyException
-                    => Results.Problem(
-                        statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
-                        detail: result.Error.Message),
-                _ => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
-                    detail: result.Error!.Message),
-            };
+            return Error(result);
         });
 
         // DELETE /api/kafka/clusters/{cluster}/topics/{topic}/desired — отмена заявки (02 §10.2-8).
@@ -294,26 +136,7 @@ public static class KafkaOperationsModule
             if (result.IsSuccess)
                 return Results.NoContent();
 
-            return result.Error switch
-            {
-                KafkaClusterNotFoundException or KafkaTopicNotFoundException
-                    or KafkaTopicDesiredNotFoundException => Results.Problem(
-                        statusCode: StatusCodes.Status404NotFound, title: "Not found",
-                        detail: result.Error.Message),
-                KafkaClusterNotActiveException => Results.Problem(
-                    statusCode: StatusCodes.Status409Conflict, title: "Cluster not active",
-                    detail: result.Error.Message),
-                KafkaConcurrentWriteException => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Concurrent write",
-                    detail: result.Error.Message),
-                EtcdWriteUnavailableException or InvalidKafkaConfigException or InvalidKafkaTopicKeyException
-                    => Results.Problem(
-                        statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
-                        detail: result.Error.Message),
-                _ => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
-                    detail: result.Error!.Message),
-            };
+            return Error(result);
         });
 
         // POST /api/kafka/clusters/{cluster}/topics — создание топика (02 §10.2-9).
@@ -326,31 +149,7 @@ public static class KafkaOperationsModule
             if (result.IsSuccess)
                 return Results.Created($"/api/kafka/clusters/{cluster}/topics/{request.Name}", result.Value);
 
-            return result.Error switch
-            {
-                KafkaValidationException validation => Results.Problem(
-                    statusCode: StatusCodes.Status400BadRequest,
-                    title: "Validation failed",
-                    detail: result.Error.Message,
-                    extensions: new Dictionary<string, object?>
-                    {
-                        ["errors"] = validation.Errors.ToDictionary(e => e.Field, e => new[] { e.Message }),
-                    }),
-                KafkaClusterNotFoundException or KafkaTopicNotFoundException => Results.Problem(
-                    statusCode: StatusCodes.Status404NotFound, title: "Not found",
-                    detail: result.Error.Message),
-                KafkaClusterNotActiveException or KafkaTopicExistsException
-                    or KafkaLifecyclePendingException or KafkaDesiredPendingException => Results.Problem(
-                        statusCode: StatusCodes.Status409Conflict, title: "Topic create rejected",
-                        detail: result.Error.Message),
-                EtcdWriteUnavailableException or InvalidKafkaConfigException or InvalidKafkaTopicKeyException
-                    => Results.Problem(
-                        statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
-                        detail: result.Error.Message),
-                _ => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
-                    detail: result.Error!.Message),
-            };
+            return Error(result);
         });
 
         // DELETE /api/kafka/clusters/{cluster}/topics/{topic} — удаление топика (02 §10.2-10).
@@ -362,27 +161,11 @@ public static class KafkaOperationsModule
             if (result.IsSuccess)
                 return Results.NoContent();
 
-            return result.Error switch
-            {
-                KafkaClusterNotFoundException or KafkaTopicNotFoundException => Results.Problem(
-                    statusCode: StatusCodes.Status404NotFound, title: "Not found",
-                    detail: result.Error.Message),
-                KafkaClusterNotActiveException or KafkaLifecyclePendingException
-                    or KafkaDesiredPendingException => Results.Problem(
-                        statusCode: StatusCodes.Status409Conflict, title: "Topic delete rejected",
-                        detail: result.Error.Message),
-                EtcdWriteUnavailableException or InvalidKafkaConfigException or InvalidKafkaTopicKeyException
-                    => Results.Problem(
-                        statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
-                        detail: result.Error.Message),
-                _ => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
-                    detail: result.Error!.Message),
-            };
+            return Error(result);
         });
 
-        // DELETE /api/kafka/clusters/{cluster}/topics/{topic}/desired.create — отмена (02 §10.2-11).
-        // DELETE /api/kafka/clusters/{cluster}/topics/{topic}/desired.delete — отмена (02 §10.2-12).
+        // DELETE .../desired.create и .../desired.delete — отмена lifecycle-заявок
+        // (02 §10.2-11/12): успех → 204.
         endpoints.MapDelete("/api/kafka/clusters/{cluster}/topics/{topic}/desired.create", async (
             string cluster, string topic, IHandler handler, CancellationToken ct) =>
             await CancelTopicLifecycleAsync(cluster, topic, "create", handler, ct));
@@ -402,22 +185,23 @@ public static class KafkaOperationsModule
         if (result.IsSuccess)
             return Results.NoContent();
 
-        return result.Error switch
-        {
-            KafkaClusterNotFoundException or KafkaTopicNotFoundException
-                or KafkaLifecycleNotFoundException => Results.Problem(
-                    statusCode: StatusCodes.Status404NotFound, title: "Not found",
-                    detail: result.Error.Message),
-            KafkaClusterNotActiveException => Results.Problem(
-                statusCode: StatusCodes.Status409Conflict, title: "Cluster not active",
-                detail: result.Error.Message),
-            EtcdWriteUnavailableException or InvalidKafkaConfigException or InvalidKafkaTopicKeyException
-                => Results.Problem(
-                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
-                    detail: result.Error.Message),
-            _ => Results.Problem(
-                statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
-                detail: result.Error!.Message),
-        };
+        return Error(result);
     }
+
+    // Error-ветка прокси (общая с pg-модулем): недоступность API воркера →
+    // собственный 503 панели; ProblemDetails воркера (400/404/409/503 + errors[])
+    // — телом как есть.
+    private static IResult Error(Result result) => result.Error switch
+    {
+        WorkerApiUnavailableException unavailable => Results.Problem(
+            statusCode: StatusCodes.Status503ServiceUnavailable,
+            title: "API воркера недоступен",
+            detail: unavailable.Message),
+        WorkerProblemDetails problem => Results.Text(
+            problem.Body, "application/problem+json", System.Text.Encoding.UTF8, problem.StatusCode),
+        _ => Results.Problem(
+            statusCode: StatusCodes.Status503ServiceUnavailable,
+            title: "Etcd write failed",
+            detail: result.Error!.Message),
+    };
 }

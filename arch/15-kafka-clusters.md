@@ -182,6 +182,7 @@ TopicDoesNotExist = исполнено; отказ между мутацией �
 | `/kafkaworker/work/<C>` | обычный | журнал фаз `{"op","phase","updated_unix","instance","last_error"?}` |
 | `/kafkaworker/portalloc/<C>` | обычный | `{"broker<k>":{"host":"h","client":16001}}` — закрепление клиентских портов (переживает rebuild) |
 | `/kafkaworker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика) |
+| `/kafkaworker/api/<id>` | lease TTL 15 с | **дискавери API воркера** (arch/16 §1.1): `{"url":"http://<host>:<port>","instance":"<id>","since_unix":…}` — ставит сам инстанс; ключ жив = инстанс жив и URL валиден. Читает панель; префикс `/kafka/` и этот координационный слой пишет только воркер (мутации панели — через его API) |
 | `/kafkaworker/rotations/<C>` | обычный | заявка ротации app-пароля `{"requested_unix","requested_by"}` (панель, клэйм-txn; формат и протокол — pg 02 §9.8) |
 | `/kafkaworker/rebalances/<C>` | обычный | заявка ребалансировки партиций `{"requested_unix","requested_by"}` (панель, клэйм-txn — протокол ротаций; del воркером по завершении или панелью — отмена) |
 | `/kafkaworker/reassignments/<C>` | обычный | прогресс текущего reassignment — пишет только воркер: `{"mode":"drain"\|"balance","drain_broker"?,"partitions_total","partitions_remaining","submitted_unix","updated_unix","instance","last_error"?}`; ключ живёт только во время операции (put при старте, del по завершении — пусто = операции нет) |

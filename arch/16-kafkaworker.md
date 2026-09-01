@@ -4,10 +4,13 @@
 управляет жизненным циклом Kafka-кластеров через docker (plain / docker
 swarm). Это исполнительная сторона декларативного контракта
 [15-kafka-clusters.md](15-kafka-clusters.md): панель AdminPanel **заявляет**
-кластер (`/kafka/clusters/<C>/config` c `state=NOT_INITIALIZED`) — воркер
-**поднимает** KRaft-кластер, обеспечивает per-cluster SASL-креды, пишет факт
-(`endpoints`, states, реестр топиков) и снимает `state`; перевод панелью в
-`TO_REMOVE` — воркер демонтирует кластер полностью.
+кластер через **HTTP API воркера** (§1.1; `state=NOT_INITIALIZED` в
+`/kafka/clusters/<C>/config`) — воркер **поднимает** KRaft-кластер,
+обеспечивает per-cluster SASL-креды, пишет факт (`endpoints`, states, реестр
+топиков) и снимает `state`; перевод в `TO_REMOVE` — воркер демонтирует
+кластер полностью. **Ответственность изменений etcd**: префиксы
+`/kafka/`, `/kafkaworker/` пишет ТОЛЬКО KafkaWorker (панель и сиды ходят
+через его API, §1.1); панель etcd только читает.
 
 Девять процессов:
 1. **Provisioning** (A, K0–K6) — от `NOT_INITIALIZED` до рабочего кластера;
@@ -45,26 +48,54 @@ lease-клэймы в etcd, `/kafkaworker/`); смерть контролиру�
 ```
 AdminPanel (UI)          KafkaWorker (исполнитель)             docker-хосты
 ─────────────            ──────────────────────               ────────────
-создание кластера  ──►   /kafka/clusters/<C>/config.state=      контейнеры/
-(заявка структуры)       NOT_INITIALIZED          ──читает──►   сервисы
-удаление кластера  ──►   config.state=TO_REMOVE   ──создаёт/    apache/kafka:4.0.0
-add/remove брокера ──►   brokers/<b>/state         удаёт ──►    (KRaft, SASL)
-ротация пароля     ──►   /kafkaworker/rotations/<C>
-конфиг-заявка      ──►   topics/<T>.desired
-создание/удаление  ──►   topics/<T>/desired.{create,delete}
-топика
-инспекция (read-   ◄──   endpoints, states, реестр
-only, всё видит)         топиков, снятие state
+мутации (создание/ ──►   HTTP API воркера (§1.1)                контейнеры/
+удаление/брокеры/        ──пишет──► /kafka/clusters/<C>/config  сервисы
+ротация/топики/          .state=NOT_INITIALIZED/TO_REMOVE,     apache/kafka:4.0.0
+ребалансировка;          brokers/<b>/state, topics/<T>.desired (KRaft, SASL)
+сид)                     ──читает──► декларации
+                         ──создаёт/удаёт──►
+                         endpoints, states, реестр
+                         топиков, снятие state
+инспекция (read-   ◄──                                           
+only, всё видит;         ключ /kafkaworker/api/<id> =
+URL API — из etcd)       URL воркера (§1.1)
 ```
 
-- **Панель** — декларатор и наблюдатель: пишет только `state`-ключи заявок
-  (`NOT_INITIALIZED`/`TO_REMOVE`), `resources`, `topics/<T>.desired`,
-  lifecycle-заявки топиков и заявку ротации; читает всё (контракт мутаций —
-  adminpanel/02 §Kafka).
+- **Панель** — декларатор и наблюдатель: **etcd только читает** (kafka-снапшот);
+  все мутации kafka-домена (контракт — adminpanel/02 §Kafka) отправляет в
+  HTTP API воркера (§1.1).
 - **KafkaWorker** — исполнитель: единственный, кто создаёт/удаляет контейнеры
   брокеров, пишет `endpoints`, `brokers/<b>/{state,role}`, `app_user`/
   `app_password`, факт `topics/<T>`, снимает `state` у config, чистит
-  префикс кластера при TO_REMOVE.
+  префикс кластера при TO_REMOVE — и единственный, кто **записывает
+  декларации/заявки** в etcd (приёмник мутаций панели и сида через свой
+  API, §1.1).
+
+### 1.1. HTTP API воркера (мутации панели, сиды)
+
+Та же HTTP-грань, что `/healthz` (порт `:8080`). Префикс `/api` — приёмник
+ВСЕХ мутаций kafka-домена (панель в etcd не пишет ничего): 14 мутаций
+контракта adminpanel/02 §10.2 — сигнатуры/валидации/протоколы записи 1:1
+(меняется исполнитель: была панель, стал воркер; guard'ы читают etcd
+напрямую, без панельного снапшота). Плюс стендовый сид — `POST
+/api/seed/demo` (2 кластера `events`/`pending`, топики-архетипы, заявка
+ротации, ребалансировка, drain-прогресс; набор — 1:1 сид-фикстуры
+интеграционных тестов; флаг `KafkaWorker:Api:EnableSeedEndpoint`, default
+`false`; идемпотентен: живой `/kafka/clusters/events/config` → 200
+`{"seeded":false}`).
+
+**Дискавери API**: ключ `/kafkaworker/api/<instanceId>` (lease TTL 15 с,
+паттерн `instances/<id>`; arch/15 §4) — value
+`{"url":"http://<host>:<port>","instance":"<id>","since_unix":…}`. Воркер
+ставит ключ сам при старте; URL — из `KafkaWorker:Api:AdvertiseUrl`
+(достижим панелью: compose-сеть стенда `http://kafkaworker:8080` или
+`host.docker.internal:<порт>`; в deploy — `http://host.docker.internal:8081`).
+Панель кеширует живые ключи в kafka-снапшоте и зовёт любой живой (failover
+на следующий; все умерли — 503 + critical-алерт `worker-api-unreachable`).
+
+**Аутентификация**: заголовок `X-Api-Key` против env-секрета `KFW_API_KEY`
+(пуст — проверка отключена: доверенная закрытая docker-сеть). TLS — roadmap
+(t03-kafka-security).
 - **Приложение** — читает только дискавери-ключи (15 §5): `endpoints`,
   `app_user`/`app_password`, реестр `topics/`. Напрямую в docker/Kafka не
   ходит.
@@ -452,6 +483,9 @@ KafkaWorker:Thresholds { BrokerBootSec=600, NodeDeadSec=90, ReassignExecSec=180,
 KafkaWorker:Parallelism { MaxClusters=4 }
 KafkaWorker:Snapshots { Dir="/snapshots", RetentionFiles=10 }
 KafkaWorker:AdvertisedClientHost=null   # null → адрес docker-хоста ноды (placement)
+KafkaWorker:Api { AdvertiseUrl, EnableSeedEndpoint=false }  # §1.1: URL API
+                                        # (достижим панелью) в /kafkaworker/api/<id>
+# env: KFW_API_KEY (§1.1, аутентификация API; пуст — отключена)
 ```
 
 `AdvertisedClientHost=null` допустим только когда имя docker-хоста

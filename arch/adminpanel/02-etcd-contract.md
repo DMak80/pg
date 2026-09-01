@@ -1,19 +1,28 @@
-# 02. Контракт etcd (чтение + записи панели)
+# 02. Контракт etcd (чтение панели + мутации через API воркеров)
 
 AdminPanel читает etcd для инспекции. Источник схемы — инспектируемая система
 (pg (этот монорепозиторий): `arch/11-bucket-sharding.md` §2, `arch/12-bucket-pitfalls.md` §3,
-скрипты `arch/scripts/`). Панель выполняет **мутации**: создание
-кластера (§9), перевод кластера в TO_REMOVE (§9.4), добавление шарда (§9.5),
-маркер демонтажа шарда (§9.6), заявки на переезды бакетов (§9.7), заявку
-ротации app-пароля (§9.8). Существует также мутация пересоздания ноды —
+скрипты `arch/scripts/`). **Панель в etcd не пишет ничего**: все мутации
+декларативного контракта отправляются в **HTTP API исполнителя** —
+PgWorker (arch/14 §1.1) для pg-домена и KafkaWorker (arch/16 §1.1) для
+kafka-домена — воркер сам валидирует и записывает ключи (протоколы записи
+ниже — канон поведения ИСПОЛНИТЕЛЯ; `claim-txn`/`PUT`/компенсации выполняет
+воркер, панель лишь передаёт команду). URL API каждого воркера панель
+берёт из etcd — lease-ключи дискавери `/pgworker/api/<id>` и
+`/kafkaworker/api/<id>` (§2.3.2), которые воркеры ставят сами. Прежняя
+модель «панель пишет декларации напрямую в etcd» упразднена (ответственность
+изменений — у воркеров).
+
+Мутации pg-домена (исполняет PgWorker API, arch/14 §1.1): создание кластера
+(§9), перевод кластера в TO_REMOVE (§9.4), добавление шарда (§9.5), маркер
+демонтажа шарда (§9.6), заявки на переезды бакетов (§9.7), заявка ротации
+app-пароля (§9.8). Существует также мутация пересоздания ноды —
 `POST /api/ha/{scope}/nodes/{node}/recreate` ставит маркеры
 `nodes/<n>/state=TO_RECREATE` + `nodes/<n>/recreate=soft|hard` (исполняет
 NodeSupervisor PgWorker); она зафиксирована кодом ранее и контрактно ведёт
 себя как §9.6-подобный маркер. Отдельный домен **Kafka** (§10): чтение
 `/kafka/clusters/` + `/kafkaworker/{rotations,rebalances,reassignments}/` и
-10 мутаций декларативной
-модели (исполняет KafkaWorker). Все остальные ключи панель не пишет и не
-удаляет никогда.
+14 мутаций декларативной модели (исполняет KafkaWorker API, arch/16 §1.1).
 
 ## 1. Транспорт: HTTP JSON gateway `/v3/*`
 
@@ -95,13 +104,21 @@ Scope = `<C>-<X>`, глобально уникален. Связь со шард
 ### 2.3.1. `/pgworker/…` — координация воркеров (читается избирательно)
 
 Префикс координации PgWorker (`arch/14` §3.3) панель читает точечно —
-два ключа-семейства, остальные ключи префикса (`leader`, `claims`, `work`,
+три ключа-семейства, остальные ключи префикса (`leader`, `claims`, `work`,
 `evacuations`, `instances`) панель НЕ читает и не пишет:
 
 | Ключ | Формат значения | В модель | Примечания |
 |---|---|---|---|
 | `/pgworker/portalloc/<C>` | JSON `{"<shard>/<node>":{"host":"h1","pg":15432,"patroni":18008,"doorman":16432}}` | адреса Patroni-проб (`arch/14` §2.4) | канонический `host:patroni-порт` члена HA (источник — DSN шарда); в UI не отображается |
-| `/pgworker/moves/<C>/<bucket>` | JSON-заявка `{"op":"move"\|"rollback"\|"finalize"\|"abort","to"?,"old_shard"?,"skip_reverse"?,"resume"?,"force"?,"requested_unix":<unix>,"requested_by"?}` | `MoveTicket` (§3) | очередь заявок на переезды: панель читает (вкладка «Переезды») и **пишет** (мутация §9.7); после успеха/перманентного отказа заявку УДАЛЯЕТ PgWorker — исчезновение из очереди без изменения routing/status = отвергнутая заявка |
+| `/pgworker/moves/<C>/<bucket>` | JSON-заявка `{"op":"move"\|"rollback"\|"finalize"\|"abort","to"?,"old_shard"?,"skip_reverse"?,"resume"?,"force"?,"requested_unix":<unix>,"requested_by"?}` | `MoveTicket` (§3) | очередь заявок на переезды: панель читает (вкладка «Переезды»); **пишет PgWorker** по команде мутации §9.7 (пришла через API воркера); после успеха/перманентного отказа заявку УДАЛЯЕТ PgWorker — исчезновение из очереди без изменения routing/status = отвергнутая заявка |
+| `/pgworker/api/<id>` | lease TTL 15 c, JSON `{"url":"http://<host>:<port>","instance":"<id>","since_unix":…}` | `WorkerEndpoint[]` (§3) | **дискавери API PgWorker** (arch/14 §1.1): ставит сам воркер; ключ жив = инстанс жив и URL валиден. Панель кеширует в снапшоте и зовёт любой живой при мутациях §9; в UI не отображается (только через алерт доступности `worker-api-unreachable`, 03 §4.1) |
+
+### 2.3.2. `/kafkaworker/api/…` — дискавери API KafkaWorker
+
+Симметрично §2.3.1: lease-ключи `/kafkaworker/api/<id>` (ставит сам воркер,
+arch/16 §1.1) читаются kafka-refresher'ом в `KafkaSnapshot.WorkerEndpoints`
+— источник URL для kafka-мутаций §10.2. Отсутствие живых ключей → 503
+мутаций + critical-алерт `worker-api-unreachable` (03 §4.1).
 
 ### 2.4. Кластерные метаданные etcd (не KV)
 
@@ -123,9 +140,14 @@ sealed record EtcdSnapshot(
     IReadOnlyList<HaScope> HaScopes,       // §2.2 (+ Patroni-обогащение §6)
     IReadOnlyList<StandNode> StandNodes,   // §2.3, обычно пусто
     IReadOnlyList<MoveTicket> MoveTickets, // §2.3.1: очередь заявок /pgworker/moves/
+    IReadOnlyList<WorkerEndpoint> PgWorkerEndpoints, // §2.3.1: живые /pgworker/api/<id>
     IReadOnlyList<ProbeResult> Probes,     // результаты live-проб §6
     IReadOnlyList<Alert> Alerts,           // вычислено AlertEngine (03-panels §4)
     int UnknownKeyCount);                  // диагностика «неизвестных» ключей
+
+// Живой инстанс API воркера (§2.3.1/§2.3.2; arch/14 §1.1, arch/16 §1.1):
+// lease-ключ дискавери; URL — куда панель отправляет мутации.
+sealed record WorkerEndpoint(string InstanceId, string Url, long SinceUnix);
 
 sealed record ClusterInfo(
     string Name, string? DbName, int BucketsCount, long? CreatedUnix,
@@ -191,9 +213,9 @@ sealed record MoveTicket(
      `alarm`. Плюс range `/cluster/nodes/` (терпим к отсутствию — но это
      лишний запрос в проде; проверяем `keys_only` один раз и кешируем
      «префикс существует» — упрощение: просто шлём range, пустой ответ
-     дешев) и range `/pgworker/portalloc/` + `/pgworker/moves/` (§2.3.1;
-     транспортный провал любого KV-чтения роняет тик — неполный снапшот
-     хуже прежнего).
+     дешев) и range `/pgworker/portalloc/` + `/pgworker/moves/` +
+     `/pgworker/api/` (§2.3.1; транспортный провал любого KV-чтения роняет
+     тик — неполный снапшот хуже прежнего).
   3. Парсеры (чистые функции `IReadOnlyList<Kv> → модель`) → сборка нового
      `EtcdSnapshot` (пробы вносятся из их последнего результата).
   4. `AlertEngine(snapshot)` → `Alerts`; атомарная замена в `SnapshotStore`.
@@ -290,12 +312,17 @@ pg (этот монорепозиторий) (скрипты `init-cluster.sh`, 
 
 ## 9. Запись: создание кластера (декларативный provisioning)
 
-Первая из двух мутаций панели (вторая — перевод в удаление, §9.4). По
+Первая из двух мутаций pg-домена (вторая — перевод в удаление, §9.4). По
 параметрам формы (POST `/api/clusters`,
-03 §1) панель пишет в etcd **заявленную структуру** кластера; поднятие нод PG,
-Patroni и инициализация схем — отдельная задача вне панели (будущий
-provisioning читает эти ключи). Паттерн — `arch/scripts/init-cluster.sh`
-(регистрация в etcd последним пакетом), но без PG-шагов.
+03 §1) панель отправляет команду в **API PgWorker** (arch/14 §1.1; URL —
+живой `/pgworker/api/<id>`, §2.3.1); **воркер** валидирует и пишет в etcd
+**заявленную структуру** кластера; поднятие нод PG,
+Patroni и инициализация схем — процессы самого PgWorker (arch/14 §5).
+Паттерн — `arch/scripts/init-cluster.sh`
+(регистрация в etcd последним пакетом), но без PG-шагов. Сигнатуры,
+валидации и протоколы записи ниже — канон ИСПОЛНИТЕЛЯ (воркера); панель
+передаёт тело команды и маппит коды ответов 1:1 (400/404/409/503; 503 —
+в т.ч. когда живых ключей `/pgworker/api/` нет).
 
 ### 9.1. Набор ключей одного создания
 
@@ -380,7 +407,8 @@ provisioning читает эти ключи). Паттерн — `arch/scripts/i
 
 ### 9.2. Протокол записи (атомарность и отказы)
 
-Тот же HTTP JSON gateway (`/v3/*`), активный endpoint из снапшота (§2.4):
+Исполняет PgWorker (API arch/14 §1.1) через тот же HTTP JSON gateway
+(`/v3/*`), endpoints из своего конфига `PgWorker:Etcd:Endpoints`:
 
 1. **Клэйм имени** — `POST /v3/kv/txn`: compare `version(/clusters/<C>/config)
    == 0` + success `[put config]`. Compare не сошёлся → имя занято (409).
@@ -597,11 +625,16 @@ read-only). Отдельный домен-снапшот `KafkaSnapshot` (не `
 Неизвестные ключи внутри `/kafka/` — лог + счётчик `unknownKeys`; битый JSON —
 parseError-запись + warning-алерт `kafka-key-malformed` (arch/15 §6).
 
-### 10.2. Мутации панели (14; протоколы — порты §9)
+### 10.2. Мутации панели (14; исполняет KafkaWorker API)
 
-Общие: активный endpoint из kafka-снапшота, имена канонические
+Все 14 мутаций панель отправляет в **API KafkaWorker** (arch/16 §1.1; URL —
+живой `/kafkaworker/api/<id>`, §2.3.2); воркер сам валидирует и пишет в etcd.
+Общие правила исполнителя: имена канонические
 (`^[a-z][a-z0-9_]{0,62}$` — иначе 404), чтение config **напрямую** у etcd
-(не из снапшота — он отстаёт до тика), ProblemDetails.
+(не из панельного снапшота — он отстаёт до тика), ProblemDetails; панель
+маппит коды ответов 1:1 (503 — в т.ч. когда живых ключей
+`/kafkaworker/api/` нет). Таблица — сигнатуры UI и канон записи исполнителя
+(протоколы — порты §9).
 
 | # | Мутация | Протокол записи | Отказы |
 |---|---|---|---|

@@ -27,6 +27,24 @@ public sealed class PgWorkerOptions
     /// <summary>Per-node серверные параметры подключения (app_params, spec §3.1;
     /// P17: doorman tls_mode=require → клиентский sslmode=require).</summary>
     public AppParamsOptions AppParams { get; set; } = new();
+
+    /// <summary>HTTP API воркера (arch/14 §1.1): advertise-URL + стендовый сид.</summary>
+    public ApiOptions Api { get; set; } = new();
+}
+
+/// <summary>HTTP API воркера (arch/14 §1.1): advertise-URL в /pgworker/api/&lt;id&gt;
+/// + стендовый сид-эндпоинт.</summary>
+public sealed class ApiOptions
+{
+    /// <summary>URL API, достижимый клиентами (панелью); пусто → fail-fast старта.</summary>
+    public string AdvertiseUrl { get; set; } = "";
+
+    /// <summary>Демо-сид-эндпоинт POST /api/seed/demo (стенд; default false).</summary>
+    public bool EnableSeedEndpoint { get; set; }
+
+    /// <summary>Секрет X-Api-Key для /api/* (env PGW_API_KEY); пусто — проверка
+    /// отключена (доверенная docker-сеть, arch/14 §1.1).</summary>
+    public string? ApiKey { get; set; }
 }
 
 /// <summary>etcd-кластер: HTTP JSON gateway endpoints (failover по списку).</summary>

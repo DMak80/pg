@@ -6,6 +6,7 @@ import { Group, SegmentedControl, Stack, Table, Text, Title, Tooltip } from '@ma
 import { useState } from 'react';
 import type { AlertDto, AlertSeverityName } from '../api/dto';
 import { fetchAlerts, queryKeys } from '../api/queries';
+import { AlertRemedyBadge } from '../components/AlertRemedyBadge';
 import { AlertSeverityBadge } from '../components/AlertSeverityBadge';
 import { ErrorSection, LoadingSection } from '../components/LoadState';
 import { usePollingIntervalMs } from '../polling/PollingContext';
@@ -92,12 +93,18 @@ export function AlertsPage() {
   );
 }
 
-// Строка алерта: severity-бейдж, kind с details в Tooltip, since-возраст (t09 spec §4.11).
+// Строка алерта: severity-бейдж + бейдж движителя, kind с details в Tooltip,
+// под сообщением — пояснение Hint, since-возраст (t09 spec §4.11; arch/03 §4.1).
 function AlertRow({ alert }: { alert: AlertDto }) {
   const details = alert.details === null ? [] : Object.entries(alert.details);
   return (
     <Table.Tr>
-      <Table.Td><AlertSeverityBadge severity={alert.severity} /></Table.Td>
+      <Table.Td>
+        <Stack gap={4} align="flex-start">
+          <AlertSeverityBadge severity={alert.severity} />
+          {alert.remedy !== null && <AlertRemedyBadge remedy={alert.remedy} />}
+        </Stack>
+      </Table.Td>
       <Table.Td>
         {details.length > 0 ? (
           <Tooltip multiline label={details.map(([k, v]) => `${k}: ${v}`).join('\n')}>
@@ -108,7 +115,17 @@ function AlertRow({ alert }: { alert: AlertDto }) {
         )}
       </Table.Td>
       <Table.Td><Text ff="monospace" size="sm" c="dimmed">{alert.target}</Text></Table.Td>
-      <Table.Td><Text size="sm">{alert.message}</Text></Table.Td>
+      <Table.Td>
+        <Stack gap={2}>
+          <Text size="sm">{alert.message}</Text>
+          {alert.hint !== null && (
+            <Text size="xs" c="dimmed">
+              {alert.hint}
+              {alert.remedyText !== null ? ` → ${alert.remedyText}` : null}
+            </Text>
+          )}
+        </Stack>
+      </Table.Td>
       <Table.Td>
         <Tooltip label={formatUnix(alert.sinceUnix)}>
           <span>

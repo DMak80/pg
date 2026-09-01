@@ -24,7 +24,8 @@ public class SnapshotBuilderTests
 
         // Act
         var snapshot = SnapshotBuilder.Build(
-            time, clusters, service, nodes, MovesQueueParser.Parse([]), members, alarms, etcd);
+            time, clusters, service, nodes, MovesQueueParser.Parse([]),
+            WorkerEndpointsParser.Parse([]), members, alarms, etcd);
 
         // Assert
         snapshot.BuiltAtUtc.Should().Be(time.Utc);
@@ -48,7 +49,9 @@ public class SnapshotBuilderTests
         var etcd = new EtcdStatus(true, [], [], [], null, false, time.GetUtcNow(), 0);
 
         // Act
-        var snapshot = SnapshotBuilder.Build(time, clusters, service, [], MovesQueueParser.Parse([]), [], [], etcd);
+        var snapshot = SnapshotBuilder.Build(
+            time, clusters, service, [], MovesQueueParser.Parse([]),
+            WorkerEndpointsParser.Parse([]), [], [], etcd);
 
         // Assert
         snapshot.UnknownKeyCount.Should().Be(2); // surprise (/clusters/) + stray (/service/)

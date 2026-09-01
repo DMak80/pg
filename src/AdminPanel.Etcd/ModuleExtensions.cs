@@ -1,5 +1,6 @@
 using System.Reflection;
 using AdminPanel.Etcd.Client;
+using AdminPanel.Etcd.Workers;
 using AdminPanel.Infrastructure.DI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -34,6 +35,12 @@ public static class ModuleExtensions
 
                 client.Timeout = TimeSpan.FromSeconds(seconds);
             });
+
+        // Шлюз в API воркеров (прокси мутаций, arch/01 §1): URL по живым ключам
+        // снапшотов; опции AdminPanel:Workers — [Config]-биндингом выше.
+        services.AddHttpClient(WorkerApiGateway.HttpClientName);
+        services.AddSingleton<WorkerApiGateway>();
+        services.AddSingleton<IWorkerApiGateway>(sp => sp.GetRequiredService<WorkerApiGateway>());
 
         return services;
     }

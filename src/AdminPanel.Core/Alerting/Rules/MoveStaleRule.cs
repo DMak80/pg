@@ -49,7 +49,10 @@ public sealed class MoveStaleRule(IOptions<AlertsOptions> options) : IAlertRule
                     ["thresholdSeconds"] = ThresholdSeconds.ToString(),
                     ["updatedUnix"] = stamp.Value.ToString(),
                 },
-                null);
+                null,
+                "статус переезда не-ACTIVE без прогресса дольше порога: каждый статус SYNCING/FROZEN/ABORTING обязан двигаться (updated) или сниматься; зависший статус блокирует переезды и демонтаж шарда",
+                AlertRemedy.WorkerAuto,
+                "репаратор переездов PgWorker (feat-pgworker-adopt-repair) закроет; висит — дефект воркера");
         }
     }
 

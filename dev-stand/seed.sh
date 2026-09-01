@@ -1,48 +1,36 @@
 #!/bin/sh
-# Сид кластера в стиле панели AdminPanel (02 §9.1; задача 26): config
-# NOT_INITIALIZED + S=2 шарда × replicas=2 + routing/status всех N=6 бакетов
-# + заявки request_* (Patroni DCS). После сида PgWorker поднимет кластер.
+# Декларативное создание кластера ЧЕРЕЗ API PgWorker (arch/14 §1.1; задача
+# etcd-via-worker-api): прежний etcdctl-сид стал тонкой curl-обёрткой над
+# POST /api/clusters — единственный писатель деклараций теперь воркер.
+# Создаёт: config NOT_INITIALIZED + S=2 шарда × replicas=2 + routing/status
+# всех N=6 бакетов + заявки request_* (Patroni DCS). После сида PgWorker
+# поднимет кластер. Креды bucket_admin воркер берёт из env-fallback
+# (PGW_BUCKET_ADMIN_PASSWORD, deploy/.env) — прежние аргументы 3/4 упразднены.
 #
-# Использование: ./seed.sh [endpoint] [кластер]
+# Использование: ./seed.sh [api-url] [кластер]
+#   ./seed.sh                                   # shop на localhost:8080
+#   ./seed.sh http://localhost:8080 shop2       # ещё один кластер
 set -e
 
-ETCD="${1:-http://localhost:2379}"
+API="${1:-http://localhost:8080}"
 C="${2:-shop}"
 N=6
-SHARDS="shard1 shard2"
+SHARDS=2
+REPLICAS=2
+CPU=2
+MEM=2    # Gi
+DISK=20  # Gi — в декларативном контракте обязателен (прежде не записывали)
 
-# Per-cluster credentials для bucket_admin (логин+пароль).
-BA_USER="${3:-bucket_admin}"
-BA_PASS="${4:-${BA_PASS:-bucket_admin_secret}}"
-
-put() {
-    key_b64=$(printf %s "$1" | base64 | tr -d '\n')
-    value_b64=$(printf %s "$2" | base64 | tr -d '\n')
-    curl -sf -X POST "$ETCD/v3/kv/put" \
-        -H 'Content-Type: application/json' \
-        -d "{\"key\":\"$key_b64\",\"value\":\"$value_b64\"}" >/dev/null
-}
-
-put "/clusters/$C/config" \
-    "{\"buckets\":$N,\"dbname\":\"$C\",\"created_unix\":$(date +%s),\"state\":\"NOT_INITIALIZED\",\"bucket_admin_user\":\"$BA_USER\",\"bucket_admin_password\":\"$BA_PASS\"}"
-
-i=0
-for shard in $SHARDS; do
-    put "/clusters/$C/shards/$shard/replicas" "2"
-    for node in "${shard}a" "${shard}b"; do
-        put "/clusters/$C/shards/$shard/nodes/$node/state" "NOT_INITIALIZED"
-    done
-    put "/service/$C-$shard/request_cpu" "2"
-    put "/service/$C-$shard/request_mem" "2G"
-    i=$((i + 1))
-done
-
-b=0
-while [ "$b" -lt "$N" ]; do
-    shard=$(printf 'shard%d' $((b % 2 + 1)))
-    put "/clusters/$C/buckets/routing/bucket_$b" "$shard"
-    put "/clusters/$C/buckets/status/bucket_$b" '{"state":"NOT_INITIALIZED"}'
-    b=$((b + 1))
-done
-
-echo "сид кластера $C записан ($N бакетов, шарды: $SHARDS)"
+body=$(printf '{"name":"%s","buckets":%d,"shards":%d,"replicas":%d,"requestCpu":%d,"requestMem":%d,"requestDisk":%d}' \
+  "$C" "$N" "$SHARDS" "$REPLICAS" "$CPU" "$MEM" "$DISK")
+out="$(mktemp)"; trap 'rm -f "$out"' EXIT
+code="$(curl -s -o "$out" -w '%{http_code}' -X POST "$API/api/clusters" \
+  -H 'Content-Type: application/json' -d "$body")"
+if [ "$code" = 201 ]; then
+  echo "кластер $C задекларирован через API ($N бакетов, $SHARDS шарда × $REPLICAS реплик)"
+elif [ "$code" = 409 ]; then
+  echo "кластер $C уже задекларирован (клэйм занят) — пропускаю"
+else
+  echo "❌ POST $API/api/clusters = $code: $(cat "$out")" >&2
+  exit 1
+fi

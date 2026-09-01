@@ -26,6 +26,9 @@ public sealed class EtcdNoQuorumRule : IAlertRule
             {
                 ["errors"] = string.Join("; ", snapshot.Etcd.Endpoints.SelectMany(e => e.Errors)),
             },
-            null);
+            null,
+            "raft-признаки отсутствия лидера: запись невозможна у всех участников — декларации воркеров и тики панели встанут; кластер etcd обязан держать большинство",
+            AlertRemedy.OperatorRunbook,
+            "восстановите кворум по arch/09 (перезапуск упавших членов, при потере большинства — восстановление из снапшота)");
     }
 }

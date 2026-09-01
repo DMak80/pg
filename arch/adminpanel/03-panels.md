@@ -378,6 +378,50 @@ SQL-алерты вычисляются только при включённых
 бейдж «не инициализирован» в UI + `cluster-not-initialized` (info) вместо
 critical-шума от ещё не поднятого кластера.
 
+### 4.1. Объяснения и движитель (Hint / Remedy)
+
+Каждый алерт несёт оператору не только факт, но и **что делать** — два
+обязательных поля у каждого kind (модель `Alert` расширена; пустых нет):
+
+- **`Hint`** (строка, русский): что именно не так, **как должно быть** и
+  **для чего** этот ключ/инвариант существует. Пример (bucket-lost):
+  «routing указывает на шард s3, которого нет в декларации кластера; routing —
+  единственный авторитет "где бакет", дыры и висячие ссылки ломают переезды и
+  SQL-сверку инвентаря; должен существовать ключ /clusters/<C>/shards/s3/replicas
+  либо routing переведён на живой шард».
+- **`Remedy`** (enum `AlertRemedy` + текст): **движитель** — кто закрывает
+  алерт:
+  - `WorkerAuto` — воркер сам репарирует/дожимает (алерт исчезнет сам;
+    прогресс/причина — в `/pgworker/work/<C>` или `/kafkaworker/work/<C>`);
+    принцип «PgWorker — хозяин кластера»: вечный алерт этого класса = дефект
+    воркера, а не норма;
+  - `OperatorApi` — оператор вызывает конкретную мутацию через API панели
+    (в тексте — какая; напр. «POST /api/clusters/{c}/moves — вернуть бакет
+    на живой шард»);
+  - `OperatorRunbook` — ручной разбор (etcdctl/скрипты; ссылка на arch-док).
+
+Маппинг движителей по каталогу: etcd-инфраструктурные (`etcd-*`,
+`snapshot-stale`) и доступность воркеров (`worker-api-unreachable` —
+`OperatorRunbook`/`OperatorApi`: «запустите воркер — ключи /pgworker/api/»),
+конфигурация контроль-плейна (`cluster-incomplete`, `key-malformed`,
+`bucket-*`, `shard-no-master`, `move-*`) — `WorkerAuto` либо `OperatorApi`;
+probe-алерты (`ha-member-not-streaming`, `replica-lag-high`, `slot-*`,
+`sync-standby-missing`, `inventory-mismatch`, `probe-failed`) — `WorkerAuto`
+(надзор/репаратор) или `OperatorRunbook`; lifecycle-заметки
+(`cluster-not-initialized`, `kafka-cluster-*`, `*-pending`) — `WorkerAuto`.
+Точный текст Hint/Remedy каждого kind — код правил (тест-фикстуры эталон).
+
+Новые kind доступности API исполнителей (в обоих снапшотах):
+
+| kind | severity | Условие | Источник |
+|---|---|---|---|
+| `worker-api-unreachable` | critical | нет живых ключей `/pgworker/api/<id>` (или `/kafkaworker/api/<id>`) — мутации домена из панели недоступны (503) | снапшот (lease-ключи дискавери) |
+
+UI: карточка алерта раскрывает Hint и Remedy (бейдж движителя); API
+`/api/alerts` отдаёт поля `hint`, `remedy` (строка `worker-auto` /
+`operator-api` /`operator-runbook`) и `remedyText` — расширение обратно
+совместимо.
+
 ## 5. SQL-каталог пробы (read-only, только `pg_catalog`/`pg_stat_*`)
 
 Выполняются на мастере каждого шарда (DSN из etcd + пароль панели;

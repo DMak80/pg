@@ -20,7 +20,7 @@ public class AlertEngineTests
 
     private static Alert Make(
         string id, AlertSeverity severity, string kind, string target, long? sinceUnix = null)
-        => new(id, severity, kind, target, "message", null, sinceUnix);
+        => new(id, severity, kind, target, "message", null, sinceUnix, "тестовый hint", AlertRemedy.WorkerAuto, "тестовое действие");
 
     [Fact]
     public void Evaluate_NoRules_EmptyList()
@@ -138,8 +138,9 @@ public class AlertEngineTests
         var kinds = AlertTestRules.All().Select(r => r.Kind).ToList();
 
         // Assert: защита каркаса от copy-paste новых правил t05/t06 (spec §10.1):
-        // 15 (t04+t05) + 9 HA-правил t06 — полный каталог 03 §4.
-        kinds.Should().HaveCount(24).And.OnlyHaveUniqueItems();
+        // 15 (t04+t05) + 9 HA-правил t06 + cluster-not-initialized +
+        // worker-api-unreachable (task etcd-via-worker-api, arch/03 §4.1) — каталог 03 §4.
+        kinds.Should().HaveCount(26).And.OnlyHaveUniqueItems();
     }
 
     [Fact]
@@ -304,7 +305,7 @@ public class AlertEngineTests
         {
             ParseErrors = [new KeyParseError("/clusters/demo/config", "битый JSON")],
             Alerts = [new Alert("key-malformed:/clusters/demo/config", AlertSeverity.Warning,
-                "key-malformed", "/clusters/demo/config", "ключ не разобран", null, 1000)],
+                "key-malformed", "/clusters/demo/config", "ключ не разобран", null, 1000, "тестовый hint", AlertRemedy.WorkerAuto, "тестовое действие")],
         };
 
         // Act

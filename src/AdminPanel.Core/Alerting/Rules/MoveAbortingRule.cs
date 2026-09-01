@@ -36,7 +36,10 @@ public sealed class MoveAbortingRule : IAlertRule
                 $"{cluster.Name}/bucket_{bucket.Id}",
                 $"бакет bucket_{bucket.Id} кластера {cluster.Name} в ABORTING — незавершённая уборка",
                 details,
-                null);
+                null,
+                "статус ABORTING висит: aborted-переезд обязан завершаться откатом/очисткой статуса перевозчиком; висящий статус держит бакет в лимбо переездов",
+                AlertRemedy.WorkerAuto,
+                "репаратор переездов PgWorker (feat-pgworker-adopt-repair) закроет; висит — дефект воркера");
         }
     }
 }

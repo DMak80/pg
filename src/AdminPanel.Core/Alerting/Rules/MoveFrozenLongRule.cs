@@ -41,7 +41,10 @@ public sealed class MoveFrozenLongRule(IOptions<AlertsOptions> options) : IAlert
                     ["thresholdSeconds"] = ThresholdSeconds.ToString(),
                     ["updatedUnix"] = stamp.Value.ToString(),
                 },
-                null);
+                null,
+                "бакет в FROZEN дольше окна: cutover обязан быть секундами (запись остановлена только на переключение), длительный FROZEN — зависание переезда на ровном месте",
+                AlertRemedy.WorkerAuto,
+                "репаратор переездов PgWorker (feat-pgworker-adopt-repair) закроет; висит — дефект воркера");
         }
     }
 }

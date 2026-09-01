@@ -1,23 +1,28 @@
 #!/usr/bin/env bash
-# Kafka-API на сиде (план B8): сид активируется первым шагом (профиль seed,
-# идемпотентен), панель — хост-процесс. Живой воркер НЕ запускается, контейнеров
-# не поднимается. Guard «на брокере есть партиции» панель не проверяет (факта
-# в etcd нет) — авторитетно его держит воркер (юнит-тесты B4); демонтаж
-# непустого брокера останется ждать roadmap t02-kafka-reassignment.
+# Kafka-API на сиде, налитом ЧЕРЕЗ API живого воркера (spec §3.5): 05-seed.sh
+# kafka поднимает kafkaworker и ждёт его живой ключ /kafkaworker/api/<id>;
+# все мутации шагов 1–13 идут панель → прокси (WorkerApiGateway) → API живого
+# воркера. Guard «на брокере есть партиции» панель не проверяет (факта в etcd
+# нет) — авторитетно его держит воркер (юнит-тесты B4); демонтаж непустого
+# брокера останется ждать roadmap t02-kafka-reassignment.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BASE="${ADMINPANEL_URL:-http://localhost:5050}"
 JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
 
-# Arrange: сид kafka-домена (идемпотентен; ошибки «профиль не поднимался» нет).
-# Живой воркер (поднимается 00-up.sh всегда) с сидом несовместим — seed/kafka
-# не смешивать (README): сид для воркера выглядит заявками. Останавливаем
-# поднятого; обратно — 90-down.sh -v && 00-up.sh (сид из etcd уходит с томом).
-docker compose --profile kafka stop kafkaworker >/dev/null 2>&1 || true
-echo "  kafkaworker остановлен (если был поднят: сид и живой воркер несовместимы)"
-echo ">>> активирую kafka-сид (docker compose --profile seed run --rm kafka-seed)"
-docker compose --profile seed run --rm kafka-seed
+# Arrange: наливка kafka-сида ЧЕРЕЗ API воркера (05-seed поднимает kafkaworker
+# и ждёт живой ключ /kafkaworker/api/). Сид без контейнеров брокеров: пробы
+# воркера слепые (arch/16 §5 C) → сидовые заявки не исполняются, ожидания
+# шагов мутаций ниже — прежние. Воркер остаётся поднятым до финала чека.
+"$PWD/checks/05-seed.sh" kafka
+
+# Готовность прокси: панель должна увидеть живой WorkerEndpoint в kafka-снапшоте
+# (тик 3 c) — без него kafka-мутации панели вернут 503.
+for i in $(seq 1 15); do
+  docker compose exec -T etcd etcdctl get /kafkaworker/api/ --prefix --keys-only 2>/dev/null | grep -q . && break
+  sleep 1
+done
 
 # Панель жива.
 for i in $(seq 1 60); do curl -fsS "$BASE/api/healthz" >/dev/null 2>&1 && break; sleep 1; done
@@ -171,5 +176,18 @@ done
 api /api/alerts | jq -e 'any(.[]; .kind=="kafka-rotation-pending" and .target=="events")' >/dev/null \
   || { echo "❌ /api/alerts: kafka-rotation-pending events не найден"; exit 1; }
 echo "  /api/alerts: kafka-rotation-pending events в общей ленте"
+
+# Финал: kafkaworker больше не нужен (end-state «после сида воркер остановлен»,
+# spec §3.5) — мутации прошли через живой API, останавливаем. Сразу проверяем
+# kafka-грань worker-api-unreachable (spec §9.5): lease-ключ гаснет ≤15 c,
+# тик kafka-снапшота ≤3 c → алерт target=kafkaworker появляется (jq, поллинг).
+docker compose --profile kafka stop kafkaworker >/dev/null 2>&1
+for i in $(seq 1 20); do
+  api /api/alerts 2>/dev/null | jq -e 'any(.[]; .kind=="worker-api-unreachable" and .target=="kafkaworker")' >/dev/null 2>&1 && break
+  sleep 2
+done
+api /api/alerts | jq -e 'any(.[]; .kind=="worker-api-unreachable" and .target=="kafkaworker")' >/dev/null \
+  || { echo "❌ worker-api-unreachable (kafkaworker) не появился после stop"; exit 1; }
+echo "  kafkaworker остановлен (мутации — через живой API; kafka-грань алерта видна)"
 
 echo "✓ 50-kafka-api: API kafka-домена на сиде — все шаги зелёные"

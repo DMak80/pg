@@ -9,6 +9,7 @@ public sealed record EtcdSnapshot(
     IReadOnlyList<HaScope> HaScopes,
     IReadOnlyList<StandNode> StandNodes,
     IReadOnlyList<MoveTicket> MoveTickets,         // очередь заявок /pgworker/moves/ (arch/02 §2.3.1)
+    IReadOnlyList<WorkerEndpoint> PgWorkerEndpoints, // живые ключи /pgworker/api/ (arch/02 §2.3.1)
     IReadOnlyList<ProbeResult> Probes,             // t03: всегда пусто (пробы — t06)
     IReadOnlyList<Alert> Alerts,                   // t03: всегда пусто (AlertEngine — t04)
     IReadOnlyList<KeyParseError> ParseErrors,      // расширение spec §3.4 (arch/02 §7)

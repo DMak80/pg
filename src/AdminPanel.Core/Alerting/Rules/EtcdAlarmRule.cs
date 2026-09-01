@@ -37,7 +37,10 @@ public sealed class EtcdAlarmRule : IAlertRule
                     ["memberId"] = alarm.MemberId.ToString(),
                     ["alarmType"] = type,
                 },
-                null);
+                null,
+                "активная тревога etcd (NOSPACE/CORRUPT и т.п.): etcd — единственное хранилище деклараций (панель читает, воркеры пишут), тревога означает нездоровье кластера хранилища; alarm обязан быть снят после устранения причины",
+                AlertRemedy.OperatorRunbook,
+                "проверьте members/диск etcd-контура по arch/09 (etcdctl alarm list; alarm disarm — только после устранения причины)");
         }
     }
 }

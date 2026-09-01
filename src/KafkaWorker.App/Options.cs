@@ -25,6 +25,24 @@ public sealed class KafkaWorkerOptions
     /// endpoints → bootstrap). Локальные стенды: host.docker.internal.
     /// </summary>
     public string? AdvertisedClientHost { get; set; }
+
+    /// <summary>HTTP API воркера (arch/16 §1.1): advertise-URL + стендовый сид.</summary>
+    public ApiOptions Api { get; set; } = new();
+}
+
+/// <summary>HTTP API воркера (arch/16 §1.1): advertise-URL в /kafkaworker/api/&lt;id&gt;
+/// + стендовый сид-эндпоинт.</summary>
+public sealed class ApiOptions
+{
+    /// <summary>URL API, достижимый клиентами (панелью); пусто → fail-fast старта.</summary>
+    public string AdvertiseUrl { get; set; } = "";
+
+    /// <summary>Секрет X-Api-Key (env KFW_API_KEY); пусто — проверка отключена
+    /// (доверленная docker-сеть, arch/16 §1.1).</summary>
+    public string? ApiKey { get; set; }
+
+    /// <summary>Демо-сид-эндпоинт POST /api/seed/demo (стенд; default false).</summary>
+    public bool EnableSeedEndpoint { get; set; }
 }
 
 /// <summary>etcd-кластер: HTTP JSON gateway endpoints (failover по списку).</summary>

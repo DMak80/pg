@@ -26,7 +26,10 @@ public sealed class SlotWalLostRule : IAlertRule
                 $"{cluster.Name}/{shard.Name}/{slot.SlotName}",
                 $"слот {slot.SlotName} шарда {cluster.Name}/{shard.Name}: wal_status=lost — WAL срезан, источник догонит только пересозданием (P4)",
                 new Dictionary<string, string> { ["walStatus"] = "lost" },
-                null);
+                null,
+                "wal_status=lost: WAL срезан — слот физически не догонит, реплика потеряла данные; слот обязан догонять до горизонта retention",
+                AlertRemedy.OperatorRunbook,
+                "запустите recreate ноды (API панели) — воркер пересоздаст реплику с basebackup; потерянный слот почистите по runbook");
         }
     }
 }

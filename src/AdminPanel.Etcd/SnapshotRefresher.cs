@@ -87,6 +87,7 @@ public sealed class SnapshotRefresher(
         var nodesTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Nodes, t), ct);
         var portAllocTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PortAlloc, t), ct);
         var movesTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Moves, t), ct);
+        var pgApiTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PgWorkerApi, t), ct);
         var membersTask = WithFailoverAsync(alive, active, (ep, t) => gateway.MemberListAsync(ep, t), ct);
         var alarmsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.AlarmAsync(ep, t), ct);
 
@@ -95,13 +96,14 @@ public sealed class SnapshotRefresher(
         var nodesKv = await nodesTask;
         var portAllocKv = await portAllocTask;
         var movesKv = await movesTask;
+        var pgApiKv = await pgApiTask;
         var members = await membersTask;
         var alarms = await alarmsTask;
 
         // Частичный KV-провал = неполный снапшот: консервативно отказ тика, данные прежние
         // (уточнение к spec §7.2 п.5: пустой префикс — валидные данные, транспортный отказ — нет).
         if (!clustersKv.IsSuccess || !serviceKv.IsSuccess || !nodesKv.IsSuccess
-            || !portAllocKv.IsSuccess || !movesKv.IsSuccess)
+            || !portAllocKv.IsSuccess || !movesKv.IsSuccess || !pgApiKv.IsSuccess)
             return FailTick(previous, statuses, now, "KV-чтения etcd не удались");
 
         // 4. Парсеры → модель (чистые функции, arch/02 §4 п.3).
@@ -110,6 +112,7 @@ public sealed class SnapshotRefresher(
             serviceKv.Value, clustersParsed.Clusters, ServiceParser.ParsePortAlloc(portAllocKv.Value));
         var nodes = StandNodesParser.Parse(nodesKv.Value);
         var movesParsed = MovesQueueParser.Parse(movesKv.Value);
+        var pgApiParsed = WorkerEndpointsParser.Parse(pgApiKv.Value);
 
         // 5. Кворум-эвристика (spec §3.11) + мягкие метаданные member/alarm (ошибка не роняет тик).
         var quorumSuspected = alive.All(a => a.LeaderMemberId is not > 0 || a.RaftTerm is not > 0)
@@ -142,7 +145,7 @@ public sealed class SnapshotRefresher(
         // (arch/02 §4 п.4–5; Alerts на обоих путях тика, spec §5; spec §3.1).
         var built = ProbeEnricher.Apply(
             SnapshotBuilder.Build(
-                time, clustersParsed, serviceParsed, nodes, movesParsed,
+                time, clustersParsed, serviceParsed, nodes, movesParsed, pgApiParsed,
                 etcd.Members, etcd.Alarms, etcd),
             probeStateStore.Current);
         store.Replace(built with
@@ -211,6 +214,7 @@ public sealed class SnapshotRefresher(
             previous?.HaScopes ?? [],
             previous?.StandNodes ?? [],
             previous?.MoveTickets ?? [],  // очередь заявок не теряется на отказном тике — как Clusters
+            previous?.PgWorkerEndpoints ?? [], // ключи доступа воркера переживают отказ etcd
             previous?.Probes ?? [],   // t06: пробы — часть снапшота, отказ etcd их не теряет (spec §4.3)
             [],
             previous?.ParseErrors ?? [],
@@ -258,5 +262,6 @@ public sealed class SnapshotRefresher(
         public const string Nodes = "/cluster/nodes/";
         public const string PortAlloc = "/pgworker/portalloc/";
         public const string Moves = "/pgworker/moves/";
+        public const string PgWorkerApi = "/pgworker/api/";
     }
 }

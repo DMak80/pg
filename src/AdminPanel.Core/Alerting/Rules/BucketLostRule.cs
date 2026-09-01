@@ -26,7 +26,10 @@ public sealed class BucketLostRule : IAlertRule
                 $"{cluster.Name}/bucket_{bucket.Id}",
                 $"routing бакета bucket_{bucket.Id} кластера {cluster.Name} указывает на несуществующий шард {owner}",
                 new Dictionary<string, string> { ["owner"] = owner },
-                null);
+                null,
+                "routing указывает на шард, отсутствующий в декларации; routing — единственный авторитет «где бакет», висячие ссылки ломают переезды и SQL-сверку; каждый routing должен указывать на шард с ключом shards/<X>/replicas",
+                AlertRemedy.OperatorApi,
+                "POST /api/clusters/{c}/moves — перевезти бакеты на живой шард или восстановить декларацию шарда");
         }
     }
 }

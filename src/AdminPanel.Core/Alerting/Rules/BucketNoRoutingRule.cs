@@ -31,7 +31,10 @@ public sealed class BucketNoRoutingRule : IAlertRule
                     ["bucketId"] = bucket.Id.ToString(),
                     ["bucketsCount"] = cluster.BucketsCount.ToString(),
                 },
-                null);
+                null,
+                "у бакета из диапазона 0..N-1 нет routing-ключа: routing — единственный авторитет «где бакет», дыра ломает SQL-сверку и переезды; ключ обязан быть у каждого бакета",
+                AlertRemedy.OperatorRunbook,
+                "routing-ключи пишет только PgWorker (инициализация/переезды): дыра — следствие внешнего вмешательства или сбоя; проверьте journal воркера (/pgworker/work) и журнал переездов, при необходимости пересоздайте кластер");
         }
     }
 }

@@ -18,8 +18,8 @@ public class InspectionMappersTests
         {
             Alerts =
             [
-                new Alert("a:etcd", AlertSeverity.Critical, "a", "etcd", "m", null, null),
-                new Alert("b:etcd", AlertSeverity.Warning, "b", "etcd", "m", null, null),
+                new Alert("a:etcd", AlertSeverity.Critical, "a", "etcd", "m", null, null, "тестовый hint", AlertRemedy.WorkerAuto, "тестовое действие"),
+                new Alert("b:etcd", AlertSeverity.Warning, "b", "etcd", "m", null, null, "тестовый hint", AlertRemedy.WorkerAuto, "тестовое действие"),
             ],
         };
 
@@ -279,9 +279,9 @@ public class InspectionMappersTests
         // Arrange
         var alerts = new List<Alert>
         {
-            new("a:1", AlertSeverity.Critical, "a", "1", "m", null, null),
-            new("b:1", AlertSeverity.Warning, "b", "1", "m", null, null),
-            new("c:1", AlertSeverity.Info, "c", "1", "m", null, null),
+            new("a:1", AlertSeverity.Critical, "a", "1", "m", null, null, "h", AlertRemedy.WorkerAuto, "r"),
+            new("b:1", AlertSeverity.Warning, "b", "1", "m", null, null, "h", AlertRemedy.WorkerAuto, "r"),
+            new("c:1", AlertSeverity.Info, "c", "1", "m", null, null, "h", AlertRemedy.WorkerAuto, "r"),
         };
 
         // Act
@@ -297,7 +297,7 @@ public class InspectionMappersTests
         // Arrange
         var alert = new Alert(
             "k:t", AlertSeverity.Warning, "k", "t", "msg",
-            new Dictionary<string, string> { ["reason"] = "битый JSON" }, 1755800000);
+            new Dictionary<string, string> { ["reason"] = "битый JSON" }, 1755800000, "тестовый hint", AlertRemedy.WorkerAuto, "тестовое действие");
 
         // Act
         var dto = AlertsMapper.Map([alert]).Single();
@@ -315,9 +315,9 @@ public class InspectionMappersTests
         // Arrange
         var alerts = new List<Alert>
         {
-            new("a:1", AlertSeverity.Critical, "a", "1", "m", null, null),
-            new("b:1", AlertSeverity.Warning, "b", "1", "m", null, null),
-            new("c:1", AlertSeverity.Warning, "c", "1", "m", null, null),
+            new("a:1", AlertSeverity.Critical, "a", "1", "m", null, null, "h", AlertRemedy.WorkerAuto, "r"),
+            new("b:1", AlertSeverity.Warning, "b", "1", "m", null, null, "h", AlertRemedy.WorkerAuto, "r"),
+            new("c:1", AlertSeverity.Warning, "c", "1", "m", null, null, "h", AlertRemedy.WorkerAuto, "r"),
         };
 
         // Act / Assert

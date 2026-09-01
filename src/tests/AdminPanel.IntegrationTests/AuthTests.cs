@@ -4,6 +4,9 @@ using System.Text;
 using System.Text.Json;
 using AdminPanel.Core;
 using AdminPanel.Etcd;
+using AdminPanel.Etcd.Client;
+using AdminPanel.Etcd.Workers;
+using AdminPanel.Infrastructure;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -21,6 +24,80 @@ public sealed class FixedTimeProvider : TimeProvider
     public DateTimeOffset Utc { get; set; } = new(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
 
     public override DateTimeOffset GetUtcNow() => Utc;
+}
+
+// Стаб API воркера (task etcd-via-worker-api): мутации панели уходят сюда.
+// Настраиваемый ответ/исключение + журнал вызовов (worker/method/path/body/оператор).
+public sealed class TestWorkerApi : IWorkerApiGateway
+{
+    public sealed record Call(string Worker, HttpMethod Method, string Path, object? Body, string? RequestedBy);
+
+    public List<Call> Calls { get; } = [];
+
+    public Func<Call, WorkerApiResult>? Respond { get; set; }
+
+    public Exception? Throw { get; set; }
+
+    public void Reset()
+    {
+        Calls.Clear();
+        Respond = null;
+        Throw = null;
+    }
+
+    public Task<WorkerApiResult> SendAsync(
+        string worker, HttpMethod method, string path, object? body, string? requestedBy, CancellationToken ct)
+    {
+        var call = new Call(worker, method, path, body, requestedBy);
+        Calls.Add(call);
+        if (Throw is not null)
+            throw Throw;
+        return Task.FromResult(Respond is not null
+            ? Respond(call)
+            : new WorkerApiResult(204, null));
+    }
+}
+
+// Стаб etcd-клиента панельного хоста: read-методы молчат (снапшот — TestSnapshotStore),
+// write-методы — заглушки со счётчиком: мутации панели обязны идти через воркер,
+// а не писать в etcd напрямую (критерий приёмки spec §9.1).
+public sealed class TestEtcdGateway : IEtcdGateway
+{
+    public int WriteCalls { get; private set; }
+
+    public Task<Result<IReadOnlyList<Kv>>> RangeAsync(string endpoint, string prefix, CancellationToken ct)
+        => Task.FromResult(Result<IReadOnlyList<Kv>>.Success([]));
+
+    public Task<Result<EtcdStatusPayload>> StatusAsync(string endpoint, CancellationToken ct)
+        => Task.FromResult(Result<EtcdStatusPayload>.Success(new EtcdStatusPayload("3.5.21", 1, 1, 1, 1)));
+
+    public Task<Result<IReadOnlyList<EtcdMember>>> MemberListAsync(string endpoint, CancellationToken ct)
+        => Task.FromResult(Result<IReadOnlyList<EtcdMember>>.Success([]));
+
+    public Task<Result<IReadOnlyList<EtcdAlarm>>> AlarmAsync(string endpoint, CancellationToken ct)
+        => Task.FromResult(Result<IReadOnlyList<EtcdAlarm>>.Success([]));
+
+    public Task<Result<TxnResult>> TxnAsync(
+        string endpoint, IReadOnlyList<TxnCompare> compares, IReadOnlyList<KvPut> puts, CancellationToken ct)
+        => FailWriteAsync<TxnResult>();
+
+    public Task<Result> PutAsync(string endpoint, string key, string value, CancellationToken ct)
+        => FailWriteAsync();
+
+    public Task<Result> DeleteAsync(string endpoint, string keyOrPrefix, bool prefix, CancellationToken ct)
+        => FailWriteAsync();
+
+    private Task<Result> FailWriteAsync()
+    {
+        WriteCalls++;
+        return Task.FromResult(Result.Failed(new EtcdUnreachableException("панель не пишет в etcd")));
+    }
+
+    private Task<Result<T>> FailWriteAsync<T>()
+    {
+        WriteCalls++;
+        return Task.FromResult(Result<T>.Failed(new EtcdUnreachableException("панель не пишет в etcd")));
+    }
 }
 
 // Единая на сборку фабрика (collection fixture "api"): статический кеш сборок
@@ -48,6 +125,11 @@ public sealed class AuthWebFactory : WebApplicationFactory<Program>
             // отключение только refresher'а (spec §16).
             services.RemoveAll<IHostedService>();
             services.Replace(new ServiceDescriptor(typeof(ISnapshotStore), new TestSnapshotStore()));
+
+            // Мутации — прокси в API воркеров: стаб с журналом вызовов; etcd-клиент
+            // хоста — заглушка (панель не пишет, счётчик WriteCalls — инвариант §9.1).
+            services.Replace(new ServiceDescriptor(typeof(IWorkerApiGateway), WorkerApi));
+            services.Replace(ServiceDescriptor.Singleton(typeof(IEtcdGateway), EtcdStub));
         });
     }
 
@@ -57,6 +139,10 @@ public sealed class AuthWebFactory : WebApplicationFactory<Program>
         get => Store.Current;
         set => Store.Current = value;
     }
+
+    public TestWorkerApi WorkerApi { get; } = new();
+
+    public TestEtcdGateway EtcdStub { get; } = new();
 
     private TestSnapshotStore Store => (TestSnapshotStore)Services.GetRequiredService<ISnapshotStore>();
 }

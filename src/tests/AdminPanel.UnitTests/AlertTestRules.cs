@@ -16,6 +16,7 @@ internal static class AlertTestRules
             new EtcdAlarmRule(),
             new SnapshotStaleRule(),
             new ClusterIncompleteRule(),
+            new ClusterNotInitializedRule(),
             new KeyMalformedRule(),
             new ShardNoMasterRule(),
             new MoveStaleRule(Options.Create(new AlertsOptions())),
@@ -35,5 +36,7 @@ internal static class AlertTestRules
             new SlotInvalidationRiskRule(Options.Create(new AlertsOptions())),
             new SyncStandbyMissingRule(),
             new InventoryMismatchRule(),
+            // task etcd-via-worker-api: доступность API воркера (arch/03 §4.1)
+            new WorkerApiUnreachableRule(),
         ];
 }

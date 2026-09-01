@@ -35,7 +35,10 @@ public sealed class MoveFlippedStatusStuckRule : IAlertRule
                     ["target"] = target,
                     ["state"] = state,
                 },
-                null);
+                null,
+                "routing уже указывает на приёмник, но статус переезда не снят: flip routing — последний шаг, после него статус-ключ обязан исчезнуть тем же тиком; висящий статус держит шард в блокировках демонтажа",
+                AlertRemedy.WorkerAuto,
+                "репаратор переездов PgWorker (feat-pgworker-adopt-repair) снимет зависший статус; висит — дефект воркера");
         }
     }
 }

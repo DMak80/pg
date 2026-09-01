@@ -31,7 +31,10 @@ public sealed class BucketOutOfRangeRule : IAlertRule
                     ["bucketId"] = bucket.Id.ToString(),
                     ["bucketsCount"] = cluster.BucketsCount.ToString(),
                 },
-                null);
+                null,
+                "routing-ключ с id за пределами 0..N-1 (config.buckets): парсер резервирует диапазон декларации, висячий id мусорит карту; каждый routing обязан попадать в диапазон config.buckets",
+                AlertRemedy.OperatorRunbook,
+                "удалите висячий routing-ключ (etcdctl) — воркер диапазон не расширяет; расширение бакетов возможно только пересозданием кластера (config пишет PgWorker через POST /api/clusters)");
         }
     }
 }

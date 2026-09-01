@@ -56,8 +56,12 @@ public sealed class E2eFixture : IAsyncLifetime
         // volume-ссылки демоном (гонка Docker Desktop: GC ссылки может идти
         // секундами) — ретраим с бюджетом ~20 с, иначе уборка остатков
         // прошлого прогона роняет инициализацию фикстуры целиком.
+        // Фильтр docker — SUBSTRING: ловит и чужой deploy_pgw-snapshots стенка
+        // (compose-префикс проекта deploy), который смонтирован живым контейнером
+        // и не удаляем в принципе; якорим префикс pgw- (артефакты e2e) в C#.
         foreach (var id in (await RunDockerAsync(["volume", "ls", "-q", "--filter", "name=pgw-"])).Split(
-                     ['\n', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                     ['\n', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                     .Where(v => v.StartsWith("pgw-", StringComparison.Ordinal)))
             for (var attempt = 0; ; attempt++)
             {
                 try
@@ -175,6 +179,10 @@ public sealed class E2eFixture : IAsyncLifetime
             ["PgWorker__Parallelism__MaxClusters"] = "2",
             ["PgWorker__Snapshots__Dir"] = snapshotsDir,
             ["PgWorker__Snapshots__RetentionFiles"] = "10",
+
+            // HTTP API воркера (arch/14 §1.1): advertise-URL той же Kestrel-грани
+            // (fail-fast при пустом — e2e-процесс обязан его задать).
+            ["PgWorker__Api__AdvertiseUrl"] = $"http://127.0.0.1:{port}",
 
             ["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}",
             ["DOTNET_ENVIRONMENT"] = "Production",

@@ -18,18 +18,40 @@ ect() { docker compose exec -T etcd etcdctl --endpoints=http://localhost:2379 "$
 # Запрос — только через -c: позиционный аргумент psql трактуется как DBNAME
 sq()   { docker compose exec -T "$1" psql -U postgres -d postgres -qAt -v ON_ERROR_STOP=1 -c "$2"; }
 
-# 1) etcd жив и сид на месте (спец: seed идемпотентен, ключи не портит)
+# 1) etcd жив
 for i in $(seq 1 60); do ect endpoint health >/dev/null 2>&1 && break; sleep 1; done
 ect endpoint health >/dev/null 2>&1 \
   || { echo "  ❌ etcd не стал здоровым за 60 c (docker compose logs etcd)"; exit 1; }
 echo "  etcd ready"
+
+# 1b) PgWorker (стенд = полная система; контур ВСЕГДА один — etcd стенда):
+#     воркер из deploy/docker-compose.yml ходит в as-etcd через хост-2379
+#     (PGW_ETCD_ENDPOINT=host.docker.internal:2379 — advertise as-etcd);
+#     Patroni-ноды, которые он создаёт, ходят в DCS по тому же advertise.
+#     Секреты per-install — deploy/.env (нет файла → dev-шаблон .env.example;
+#     deploy/.env в .gitignore). Поднимается ДО сида: pg-сид наливается его
+#     API POST /api/seed/demo (spec §3.5). force-recreate: контейнер deploy-
+#     проекта переживает 90-down (другой compose-проект), а его etcd-клиент
+#     держит кеш DNS/коннектов умершего etcd — свежий процесс надёжнее.
+ROOT="$(cd ../.. && pwd)"
+[ -f "$ROOT/deploy/.env" ] || cp "$ROOT/deploy/.env.example" "$ROOT/deploy/.env"
+( cd "$ROOT/deploy" && docker compose --env-file "$ROOT/deploy/.env" up -d --force-recreate pgworker 2>&1 | tail -2 )
+for i in $(seq 1 60); do curl -fsS -m 3 http://localhost:8080/healthz >/dev/null 2>&1 && break; sleep 1; done
+curl -fsS -m 3 http://localhost:8080/healthz >/dev/null \
+  || { echo "❌ pgworker не ожил за 60 c (:8080/healthz; docker logs deploy-pgworker-1)"; exit 1; }
+echo "  pgworker жив (:8080/healthz, общий etcd-контур)"
+
+# 1c) pg-сид — ЧЕРЕЗ API воркера (spec §3.5; прямой etcdctl-сид упразднён):
+#     05-seed.sh идемпотентно ждёт /healthz и зовёт POST /api/seed/demo,
+#     затем проверяем ключ контроль-плейна как раньше.
+"$PWD/checks/05-seed.sh" pg
 for i in $(seq 1 30); do
   [ -n "$(ect get /clusters/demo/config --print-value-only 2>/dev/null)" ] && break
   sleep 1
 done
 [ -n "$(ect get /clusters/demo/config --print-value-only 2>/dev/null)" ] \
-  || { echo "❌ сид не появился за 30 c (сервис seed: docker compose logs seed)"; exit 1; }
-echo "  сид контроль-плейна на месте"
+  || { echo "❌ сид не появился за 30 c (curl -X POST http://localhost:8080/api/seed/demo)"; exit 1; }
+echo "  сид контроль-плейна на месте (налит через API pgworker)"
 
 # 2) PG-ноды готовы; hba-replication (нужен basebackup/rejoin — паттерн ../pg).
 #    Порядок как в spec §7.1: сначала мастера *a -> patch_hba -> реплики *b
@@ -122,8 +144,8 @@ schemas "$master2" "1 5 7 9 13 15"
 echo "  инвентарь: 10 схем на $master1, 6 на $master2"
 
 # 7) kafkaworker жив: heartbeat /kafkaworker/instances/* (lease TTL — ключ
-#    исчезает со смертью воркера). Сид (чек 50) с живым воркером несовместим —
-#    прогон 50-го сам останавливает воркера перед наливкой сида.
+#    исчезает со смертью воркера). 50-й наливает kafka-сид ЧЕРЕЗ API живого
+#    воркера (05-seed.sh kafka) и останавливает его финальным шагом (spec §3.5).
 for i in $(seq 1 60); do
   [ -n "$(ect get /kafkaworker/instances/ --prefix --keys-only 2>/dev/null | head -1)" ] && break
   sleep 1
@@ -138,19 +160,5 @@ for i in $(seq 1 60); do curl -fsS http://localhost:5050/api/healthz >/dev/null 
 curl -fsS http://localhost:5050/api/healthz >/dev/null 2>&1 \
   || { echo "❌ панель не ожила за 60 c на :5050 (docker compose logs adminpanel)"; exit 1; }
 echo "  панель жива (http://localhost:5050, docker)"
-
-# 9) PgWorker (стенд = полная система; контур ВСЕГДА один — etcd стенда):
-#    воркер из deploy/docker-compose.yml ходит в as-etcd через хост-2379
-#    (PGW_ETCD_ENDPOINT=host.docker.internal:2379 — advertise as-etcd);
-#    Patroni-ноды, которые он создаёт, ходят в DCS по тому же advertise.
-#    Секреты per-install — deploy/.env (нет файла → dev-шаблон .env.example;
-#    deploy/.env в .gitignore).
-ROOT="$(cd ../.. && pwd)"
-[ -f "$ROOT/deploy/.env" ] || cp "$ROOT/deploy/.env.example" "$ROOT/deploy/.env"
-( cd "$ROOT/deploy" && docker compose up -d pgworker 2>&1 | tail -2 )
-for i in $(seq 1 60); do curl -fsS -m 3 http://localhost:8080/healthz >/dev/null 2>&1 && break; sleep 1; done
-curl -fsS -m 3 http://localhost:8080/healthz >/dev/null 2>&1 \
-  || { echo "❌ pgworker не ожил за 60 c (:8080/healthz; docker logs deploy-pgworker-1)"; exit 1; }
-echo "  pgworker жив (:8080/healthz, общий etcd-контур)"
 
 echo "✓ стенд поднят (полная система: панель + PG + kafka + PgWorker, контур один)"
