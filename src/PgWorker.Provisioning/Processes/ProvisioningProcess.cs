@@ -427,17 +427,24 @@ public sealed class ProvisioningProcess(
         var scopeState = ClusterSnapshotParser.ParseService(scopeKvs.Value).FirstOrDefault();
         var scopeReady = scopeState is { Initialized: true, LeaderName: not null };
 
-        var probesAlive = true;
+        // Д1б (spec §3.7): проба обязана подтвердить ИМЕННО нашу ноду — GET /patroni
+        // несёт scope+name; чужой ответ по коллизионному порту ≠ наша нода
+        // (фальш-RUNNING/фальш-dsn на чужие данные исключены).
+        var probesOurs = true;
         foreach (var node in topology.Nodes.Keys)
         {
-            if (!await probe.IsAliveAsync(topology.Nodes[node], ct))
+            var identity = await probe.IdentifyAsync(topology.Nodes[node], ct);
+            if (!identity.IsSuccess
+                || identity.Value is not { } id
+                || id.Scope != scope
+                || id.Name != node)
             {
-                probesAlive = false;
+                probesOurs = false;
                 break;
             }
         }
 
-        if (!scopeReady || !probesAlive)
+        if (!scopeReady || !probesOurs)
         {
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             // GetOrAdd — атомарно при параллельных тиках разных кластеров (rework №1).

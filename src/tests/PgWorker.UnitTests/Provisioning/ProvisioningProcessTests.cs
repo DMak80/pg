@@ -58,14 +58,51 @@ public class ProvisioningProcessTests
         return parsed.Value.Single(c => c.Config.Cluster == "shop");
     }
 
-    // Patroni-проба с управляемым ответом (живой шард или глухой); ответ по порту ноды.
-    private static ShardProbe Probe(Func<int, HttpResponseMessage> respondByPort, List<int>? trace = null)
+    // Дефолтная карта идентичностей стандартного сида (Д1б): patroni-порты нод
+    // после аллокации placement (shard1a h1:18000, shard1b h2:18000,
+    // shard2a h1:18001, shard2b h2:18001).
+    private static readonly IReadOnlyDictionary<(string Host, int Port), (string Scope, string Name)>
+        DefaultIdentity = new Dictionary<(string, int), (string, string)>
+        {
+            [("h1", 18000)] = ("shop-shard1", "shard1a"),
+            [("h2", 18000)] = ("shop-shard1", "shard1b"),
+            [("h1", 18001)] = ("shop-shard2", "shard2a"),
+            [("h2", 18001)] = ("shop-shard2", "shard2b"),
+        };
+
+    // Пустая карта /patroni (Д1б): каждый запрос → 404 (чужой Patroni) — DeadPatroni-риг.
+    private static readonly IReadOnlyDictionary<(string Host, int Port), (string Scope, string Name)> EmptyIdentity
+        = new Dictionary<(string, int), (string, string)>();
+
+    // Patroni-проба с управляемым ответом; Д1б: /patroni различается картой
+    // (host, port)→(scope, name), прочие пути — прежний respondByPort.
+    private static ShardProbe Probe(
+        Func<int, HttpResponseMessage> respondByPort,
+        List<int>? trace = null,
+        IReadOnlyDictionary<(string Host, int Port), (string Scope, string Name)>? identityByEndpoint = null)
         => new(new HttpClient(new FakeHandler(r =>
         {
+            var host = r.RequestUri!.Host;
             var port = r.RequestUri!.Port;
             lock (trace ?? new object())
             {
                 trace?.Add(port);
+            }
+
+            // Д1б: /patroni — только карта (host, port)→(scope, name); порта в карте
+            // нет → 404 (чужой Patroni по коллизионному порту). Прочие пути — прежний
+            // respondByPort (живые /cluster-тесты не меняются).
+            if (r.RequestUri.AbsolutePath == "/patroni")
+            {
+                var map = identityByEndpoint ?? DefaultIdentity;
+                return map.TryGetValue((host, port), out var id)
+                    ? new HttpResponseMessage(HttpStatusCode.OK)
+                    {
+                        Content = new StringContent(
+                            $$"""{"state":"running","role":"replica","scope":"{{id.Scope}}","name":"{{id.Name}}"}""",
+                            Encoding.UTF8, "application/json"),
+                    }
+                    : new HttpResponseMessage(HttpStatusCode.NotFound);
             }
 
             return respondByPort(port);
@@ -96,7 +133,8 @@ public class ProvisioningProcessTests
         ClaimStore Claims, WorkJournal Journal, ProvisioningProcess Process);
 
     private static async Task<Rig> NewRig(
-        Func<int, HttpResponseMessage> patroniResponse, List<int>? trace = null, PlacementOptions? opts = null)
+        Func<int, HttpResponseMessage> patroniResponse, List<int>? trace = null, PlacementOptions? opts = null,
+        IReadOnlyDictionary<(string Host, int Port), (string Scope, string Name)>? identityByEndpoint = null)
     {
         var etcd = new Fakes.FakeEtcd();
         SeedCluster(etcd);
@@ -108,7 +146,8 @@ public class ProvisioningProcessTests
         var appSecret = new AppSecretEnsurer(etcd, [Ep]);
         var portAlloc = new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance);
         var process = new ProvisioningProcess(
-            etcd, [Ep], driver, sql, Probe(patroniResponse, trace), claims, journal, opts ?? Opts, Secrets,
+            etcd, [Ep], driver, sql, Probe(patroniResponse, trace, identityByEndpoint), claims, journal,
+            opts ?? Opts, Secrets,
             appSecret, new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp, portAlloc, snapshot: null);
         return new Rig(etcd, driver, sql, claims, journal, process);
     }
@@ -117,7 +156,7 @@ public class ProvisioningProcessTests
     public async Task Tick_FreshCluster_EnsureNodesThenInProgressWaitingPatroni()
     {
         // Arrange — чистый NOT_INITIALIZED; Patroni молчит (500 на все пробы)
-        var rig = await NewRig(_ => DeadPatroni());
+        var rig = await NewRig(_ => DeadPatroni(), identityByEndpoint: EmptyIdentity);
 
         // Act
         var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
@@ -214,7 +253,7 @@ public class ProvisioningProcessTests
         // Arrange — панель заявила ресурсы только у shard1 (rework №5):
         // request_cpu=2 (ядра), request_mem=8Gi → лимиты нод shard1; ноды
         // shard2 без заявки — без лимита
-        var rig = await NewRig(_ => DeadPatroni());
+        var rig = await NewRig(_ => DeadPatroni(), identityByEndpoint: EmptyIdentity);
         rig.Etcd.Seed("/service/shop-shard1/request_cpu", "2");
         rig.Etcd.Seed("/service/shop-shard1/request_mem", "8Gi");
 
@@ -342,7 +381,8 @@ public class ProvisioningProcessTests
     {
         // Arrange: Patroni мёртв на все пробы, бюджет PatroniBootSec=-1 — первый же тик фейлит ожидание.
         var rig = await NewRig(_ => DeadPatroni(),
-            opts: new PlacementOptions(15000, 15100, PatroniBootSec: -1, ProvisionRetryBaseSec: 5, ProvisionRetryMaxSec: 60));
+            opts: new PlacementOptions(15000, 15100, PatroniBootSec: -1, ProvisionRetryBaseSec: 5, ProvisionRetryMaxSec: 60),
+            identityByEndpoint: EmptyIdentity);
 
         // Act: первый тик.
         var first = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
@@ -373,7 +413,8 @@ public class ProvisioningProcessTests
     {
         // Arrange: серия из одного фейла; retry_not_before уже в прошлом (подделано в etcd).
         var rig = await NewRig(_ => DeadPatroni(),
-            opts: new PlacementOptions(15000, 15100, PatroniBootSec: -1, ProvisionRetryBaseSec: 5, ProvisionRetryMaxSec: 60));
+            opts: new PlacementOptions(15000, 15100, PatroniBootSec: -1, ProvisionRetryBaseSec: 5, ProvisionRetryMaxSec: 60),
+            identityByEndpoint: EmptyIdentity);
         await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
         var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
         var prior = work.Value!;
@@ -397,7 +438,8 @@ public class ProvisioningProcessTests
     {
         // Arrange: серия fail_count=1 с истёкшим retry; Patroni мёртв (тик дойдёт до фейла P2.2).
         var rig = await NewRig(_ => DeadPatroni(),
-            opts: new PlacementOptions(15000, 15100, PatroniBootSec: -1, ProvisionRetryBaseSec: 5, ProvisionRetryMaxSec: 60));
+            opts: new PlacementOptions(15000, 15100, PatroniBootSec: -1, ProvisionRetryBaseSec: 5, ProvisionRetryMaxSec: 60),
+            identityByEndpoint: EmptyIdentity);
         await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
         var failed = await rig.Journal.ReadAsync("shop", CancellationToken.None);
         var f = failed.Value!;
@@ -437,7 +479,8 @@ public class ProvisioningProcessTests
     public async Task Tick_PatroniBudgetFail_ResetsWaitTrackerForNextAttempt()
     {
         // Arrange: мгновенный бюджет (-1) — первый же тик фейлит ожидание Patroni.
-        var rig = await NewRig(_ => DeadPatroni(), opts: new PlacementOptions(15000, 15100, PatroniBootSec: -1));
+        var rig = await NewRig(_ => DeadPatroni(), opts: new PlacementOptions(15000, 15100, PatroniBootSec: -1),
+            identityByEndpoint: EmptyIdentity);
 
         // Act
         await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
@@ -518,7 +561,7 @@ public class ProvisioningProcessTests
         // все 4 канонических контейнера. app-секрет уже обеспечен (P1.5 без txn);
         // Patroni мёртв — тик останавливается на waiting-patroni (P3/P4- txn не
         // достигаются — иначе дельта txn-ассерта ниже была бы не нулевой).
-        var rig = await NewRig(_ => DeadPatroni());
+        var rig = await NewRig(_ => DeadPatroni(), identityByEndpoint: EmptyIdentity);
         rig.Etcd.Seed("/clusters/shop/app_user", "app");
         rig.Etcd.Seed("/clusters/shop/app_password", "pw");
         rig.Etcd.Seed("/pgworker/portalloc/shop",
@@ -557,7 +600,7 @@ public class ProvisioningProcessTests
     public async Task Tick_ForeignObjectMatch_SkippedAndAllocatedNormally()
     {
         // Arrange: инспекция нашла контейнер с НЕканоническим именем объекта — не наша находка.
-        var rig = await NewRig(_ => DeadPatroni());
+        var rig = await NewRig(_ => DeadPatroni(), identityByEndpoint: EmptyIdentity);
         rig.Driver.InspectResult = new Dictionary<string, DiscoveredNode>
         {
             ["shard1a"] = Node("h1", "weird-container", 15004, 18004),
@@ -629,7 +672,7 @@ public class ProvisioningProcessTests
     {
         // Arrange: ПОЛНЫЙ portalloc, контейнеров нет (InspectResult пуст — наследие
         // инцидента); docker-факт: порт (h1, 15000) — нода shard1a — занял чужой.
-        var rig = await NewRig(_ => DeadPatroni());
+        var rig = await NewRig(_ => DeadPatroni(), identityByEndpoint: EmptyIdentity);
         rig.Etcd.Seed("/pgworker/portalloc/shop",
             """
             {"shard1/shard1a":{"host":"h1","pg":15000,"patroni":18000,"doorman":16500},
@@ -662,7 +705,7 @@ public class ProvisioningProcessTests
     {
         // Arrange: полный portalloc == факт контейнеров (все 4 ноды с явными doorman!);
         // docker-busy содержит ИХ ЖЕ порты (живые публикации своих контейнеров).
-        var rig = await NewRig(_ => DeadPatroni());
+        var rig = await NewRig(_ => DeadPatroni(), identityByEndpoint: EmptyIdentity);
         rig.Etcd.Seed("/pgworker/portalloc/shop",
             """
             {"shard1/shard1a":{"host":"h1","pg":15000,"patroni":18000,"doorman":16500},
@@ -686,5 +729,24 @@ public class ProvisioningProcessTests
         // (version ключа не выросла — ранний выход без записи), перепланирования нет.
         outcome.IsSuccess.Should().BeTrue();
         rig.Etcd.Store["/pgworker/portalloc/shop"].Version.Should().Be(1);
+    }
+
+    // AAA: Д1б — по план-порту отвечает ЧУЖОЙ Patroni: идентификация не прошла —
+    // RUNNING не выставляется, InProgress-ожидание (фальш-RUNNING исключён)
+    [Fact]
+    public async Task Tick_ForeignPatroniOnPlannedPort_NotRunning()
+    {
+        // Arrange: /cluster жив (respondByPort отвечает members), но /patroni по
+        // план-портам — пустая карта → все 404 = чужой scope (коллизия портов).
+        var rig = await NewRig(port => Patroni(port == 18000 ? "shard1a" : "shard2a"),
+            identityByEndpoint: EmptyIdentity);
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: ожидание, ноды не RUNNING (бюджет 600 c ещё не истёк).
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().Be(ProcessOutcome.InProgress);
+        rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("PROVISIONING");
     }
 }
