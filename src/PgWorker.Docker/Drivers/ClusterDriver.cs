@@ -121,12 +121,33 @@ public sealed class PlainClusterDriver(
             if (!network.IsSuccess)
                 throw network.Error!;
 
-            // Идемпотентность: существующий контейнер не пересоздаётся (P2.1).
-            var existing = await engine.ListContainersAsync(name, all: true, ct);
+            // Идемпотентность со сверкой портов (spec §3.2): существующий контейнер
+            // обязан нести план публичных биндингов; расхождение → пересоздание
+            // (фаза PROVISIONING — данных нет, volume сохраняется). Без сверки контейнер
+            // навсегда оставался на чужих портах: WaitPatroni бил в мёртвый порт.
+            // Усыновлённая нода (object) — чужой контейнер: сверка неприменима (R9).
+            var lookupName = addr.Object ?? name;
+            var existing = await engine.ListContainersAsync(lookupName, all: true, ct);
             if (!existing.IsSuccess)
                 throw existing.Error!;
-            if (existing.Value.Any(c => c.Names.Contains(name)))
-                return;
+            if (existing.Value.FirstOrDefault(c => c.Names.Contains(lookupName)) is { } container)
+            {
+                if (!string.IsNullOrEmpty(addr.Object))
+                    return; // усыновлённая (object) — чужой контейнер, не трогаем (R9)
+
+                var inspect = await engine.InspectContainerAsync(container.Id, ct);
+                if (!inspect.IsSuccess)
+                    throw inspect.Error!;
+                if (PortsMatchPlan(inspect.Value.Ports, addr))
+                    return; // контейнер на месте с планом — идемпотентность
+
+                var stopped = await engine.StopContainerAsync(name, timeoutSec: 10, ct);
+                if (!stopped.IsSuccess)
+                    throw stopped.Error!;
+                var removed = await engine.RemoveContainerAsync(name, force: true, ct);
+                if (!removed.IsSuccess)
+                    throw removed.Error!;
+            }
 
             var spec = BuildSpec(topology, nodeName, addr, secrets, etcd, resources);
             var created = await engine.CreateContainerAsync(spec, name, ct);
@@ -136,6 +157,16 @@ public sealed class PlainClusterDriver(
             if (!started.IsSuccess)
                 throw started.Error!;
         });
+    }
+
+    // Все ожидаемые public-биндинги контейнера совпадают с планом ноды
+    // (5432→pg, 8008→patroni, 6432→doorman при enableDoorman).
+    private bool PortsMatchPlan(IReadOnlyList<PortMap> actual, NodeAddress addr)
+    {
+        var expected = new List<PortMap> { new(5432, addr.Ports.Pg), new(8008, addr.Ports.Patroni) };
+        if (enableDoorman)
+            expected.Add(new PortMap(6432, addr.Ports.Doorman));
+        return expected.All(e => actual.Any(p => p.ContainerPort == e.ContainerPort && p.HostPort == e.HostPort));
     }
 
     public async Task<Result> RemoveNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct)
@@ -364,6 +395,10 @@ public sealed class SwarmClusterDriver(
     {
         return await Result.FromAsync(async () =>
         {
+            // swarm: сверка портов не реализована (MVP, стенд plain — spec §5):
+            // при необходимости — ListTasks(service) → ContainerId running-таска →
+            // InspectContainerAsync и тот же PortsMatchPlan-критерий.
+
             // constraint: node.id==<id>, id ищем по Hostname==addr.Host (spec §5.3).
             var nodes = await _engine.ListNodesAsync(ct);
             if (!nodes.IsSuccess)
