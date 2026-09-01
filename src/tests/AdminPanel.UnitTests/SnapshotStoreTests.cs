@@ -12,7 +12,7 @@ public class SnapshotStoreTests
         => new(
             new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
             new EtcdStatus(true, [], [], [], null, false, DateTimeOffset.UtcNow, 0),
-            [], [], [], [], [], [], [], [], [], 0);
+            [], [], [], [], [], [], [], [], [], [], 0);
 
     [Fact]
     public void Current_NullBeforeFirstReplace()

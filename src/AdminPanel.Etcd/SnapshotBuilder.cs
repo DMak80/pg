@@ -27,6 +27,7 @@ public static class SnapshotBuilder
             moves.Tickets,
             pgWorkerEndpoints.Endpoints,
             work.Items,
+            [], // WorkerHealth вносит SnapshotRefresher из IWorkerHealthStore (spec D4)
             [],
             [],
             [.. clusters.Errors, .. service.Errors, .. moves.Errors, .. pgWorkerEndpoints.Errors, .. work.Errors],

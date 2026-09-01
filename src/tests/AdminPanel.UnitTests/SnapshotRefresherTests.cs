@@ -2,6 +2,7 @@ using AdminPanel.Core;
 using AdminPanel.Core.Alerting;
 using AdminPanel.Etcd;
 using AdminPanel.Etcd.Client;
+using AdminPanel.Etcd.Workers;
 using AdminPanel.Infrastructure;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -29,6 +30,7 @@ internal static class RefresherTestHarness
             new AlertEngine(AlertTestRules.All()),
             store,
             probes ?? new SettableProbeStateStore(),
+            new WorkerHealthStore(),
             Options.Create(new EtcdOptions { Endpoints = endpoints }),
             new FixedTimeProvider(),
             NullLogger<SnapshotRefresher>.Instance);

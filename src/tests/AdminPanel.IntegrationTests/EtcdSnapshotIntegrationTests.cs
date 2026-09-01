@@ -3,6 +3,7 @@ using AdminPanel.Core.Alerting;
 using AdminPanel.Core.Alerting.Rules;
 using AdminPanel.Etcd;
 using AdminPanel.Etcd.Client;
+using AdminPanel.Etcd.Workers;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -63,6 +64,7 @@ public static class EtcdTestHarness
             ]),
             store,
             probes ?? new SettableProbeStateStore(),
+            new WorkerHealthStore(),
             Options.Create(new EtcdOptions { Endpoints = endpoints }),
             new RealTimeProvider(),
             NullLogger<SnapshotRefresher>.Instance);

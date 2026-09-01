@@ -39,5 +39,7 @@ internal static class AlertTestRules
             new InventoryMismatchRule(),
             // task etcd-via-worker-api: доступность API воркера (arch/03 §4.1)
             new WorkerApiUnreachableRule(),
+            // spec D4: /healthz живых инстансов при живом lease (arch/03 §4)
+            new WorkerUnhealthyRule(),
         ];
 }

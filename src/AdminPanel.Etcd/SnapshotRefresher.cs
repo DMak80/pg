@@ -20,6 +20,7 @@ public sealed class SnapshotRefresher(
     IAlertEngine alertEngine,
     ISnapshotStore store,
     IProbeStateStore probeStateStore,
+    IWorkerHealthStore workerHealthStore,
     IOptions<EtcdOptions> options,
     TimeProvider time,
     ILogger<SnapshotRefresher> logger) : BackgroundService, IHealthCheckService
@@ -144,13 +145,15 @@ public sealed class SnapshotRefresher(
             now,
             0);
 
-        // 6. Сборка + внесение проб (arch/02 §4 п.3) + алерты + атомарная замена
-        // (arch/02 §4 п.4–5; Alerts на обоих путях тика, spec §5; spec §3.1).
+        // 6. Сборка + внесение проб (arch/02 §4 п.3) + health воркеров (spec D4,
+        // образец ProbeEnricher.Apply — poller пишет независимо от KV-тика) +
+        // алерты + атомарная замена (arch/02 §4 п.4–5; Alerts на обоих путях тика, spec §5; spec §3.1).
         var built = ProbeEnricher.Apply(
             SnapshotBuilder.Build(
                 time, clustersParsed, serviceParsed, nodes, movesParsed, pgApiParsed, workParsed,
                 etcd.Members, etcd.Alarms, etcd),
-            probeStateStore.Current);
+            probeStateStore.Current)
+            with { WorkerHealth = workerHealthStore.Current ?? [] };
         store.Replace(built with
         {
             Alerts = alertEngine.Evaluate(built, previous, now, EffectiveIntervalSeconds()),
@@ -219,6 +222,7 @@ public sealed class SnapshotRefresher(
             previous?.MoveTickets ?? [],  // очередь заявок не теряется на отказном тике — как Clusters
             previous?.PgWorkerEndpoints ?? [], // ключи доступа воркера переживают отказ etcd
             previous?.PgWorkerWork ?? [], // журналы процессов воркера переживают отказ etcd (R4)
+            previous?.WorkerHealth ?? [], // health-пробы переживают отказ etcd (poller независим)
             previous?.Probes ?? [],   // t06: пробы — часть снапшота, отказ etcd их не теряет (spec §4.3)
             [],
             previous?.ParseErrors ?? [],
