@@ -146,6 +146,55 @@ public class EtcdCoordinationTests(EtcdFixture fixture)
         goneInstance.Value.Should().BeNull();
     }
 
+    // Ревью Ф7 [impl, major]: etcd недоступен в момент старта воркера — ключ api не
+    // ставится вовсе; после появления etcd keepalive-тик пере-ставит его сам (ретрай
+    // ~5с). Store стартует ДО контейнера etcd на фиксированном порту (Testcontainers
+    // стоп/старт не даёт: случайный порт docker выделяет заново). Store без await
+    // using: DisposeAsync не идемпотентен, зовём один раз явно.
+    [Fact]
+    public async Task StartAsync_EtcdDownAtStart_ApiKeyRecoveredAfterEtcdReturns()
+    {
+        // Arrange — свой etcd на зарезервированном порту; контейнер ещё НЕ запущен
+        await using var fixture = new EtcdFixture(EtcdFixture.ReserveHostPort());
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var store = new ClaimStore(
+            [fixture.Endpoint], fixture.Gateway, TimeProvider.System,
+            advertiseApiUrl: "http://host.docker.internal:8080");
+
+        // Act — старт при недоступном etcd: постановка молча падает (и чтение тоже)
+        await store.StartAsync(cts.Token);
+        await Task.Delay(1000, cts.Token);
+        var whileDown = await fixture.Gateway.RangeAsync(fixture.Endpoint, "/pgworker/api/", cts.Token);
+        whileDown.IsSuccess.Should().BeFalse("etcd не запущен — ключи не могли поставиться");
+
+        // etcd появился — ключ ставится ретраем тика (несколько циклов ~5с)
+        await fixture.InitializeAsync();
+        List<Kv> kvs = [];
+        for (var i = 0; i < 30; i++)
+        {
+            var api = await fixture.Gateway.RangeAsync(fixture.Endpoint, "/pgworker/api/", cts.Token);
+            if (api.IsSuccess && api.Value.Count > 0)
+            {
+                kvs = [.. api.Value];
+                break;
+            }
+
+            await Task.Delay(500, cts.Token);
+        }
+
+        // Assert — ключ api восстановлен, контракт snake_case (arch/02 §2.3.1)
+        var kv = kvs.Should().ContainSingle().Subject;
+        kv.Key.Should().Be($"/pgworker/api/{store.InstanceId}");
+        kv.Value.Should().Contain("\"url\":\"http://host.docker.internal:8080\"")
+            .And.Contain($"\"instance\":\"{store.InstanceId}\"")
+            .And.Contain("\"since_unix\":");
+
+        // DisposeAsync гасит lease — ключ исчезает
+        await store.DisposeAsync();
+        var gone = await fixture.Gateway.RangeAsync(fixture.Endpoint, "/pgworker/api/", cts.Token);
+        gone.Value.Should().BeEmpty();
+    }
+
     [Fact]
     public async Task SnapshotSave_ReturnsNonEmptyBlob()
     {

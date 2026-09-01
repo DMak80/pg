@@ -97,4 +97,53 @@ public class ClaimStoreTests(Kafka.KafkaClusterFixture fixture)
         var goneApi = await Gateway.RangeAsync(Endpoint, "/kafkaworker/api/", cts.Token);
         goneApi.Value.Should().BeEmpty();
     }
+
+    // Ревью Ф7 [impl, major] (зеркало EtcdCoordinationTests PgWorker): etcd
+    // недоступен в момент старта воркера — ключ api не ставится вовсе; после
+    // появления etcd keepalive-тик пере-ставит его сам (ретрай ~5с). Store
+    // стартует ДО контейнера etcd на фиксированном порту (случайный порт docker
+    // выделяет заново на каждый старт — стоп/старт Testcontainers не даёт).
+    [Fact]
+    public async Task StartAsync_EtcdDownAtStart_ApiKeyRecoveredAfterEtcdReturns()
+    {
+        // Arrange — свой etcd на зарезервированном порту; контейнер ещё НЕ запущен
+        await using var fixture = new EtcdFixture(EtcdFixture.ReserveHostPort());
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        var store = new ClaimStore(
+            [fixture.Endpoint], fixture.Gateway, TimeProvider.System,
+            advertiseApiUrl: "http://kafkaworker:8080");
+
+        // Act — старт при недоступном etcd: постановка молча падает (и чтение тоже)
+        await store.StartAsync(cts.Token);
+        await Task.Delay(1000, cts.Token);
+        var whileDown = await fixture.Gateway.RangeAsync(fixture.Endpoint, "/kafkaworker/api/", cts.Token);
+        whileDown.IsSuccess.Should().BeFalse("etcd не запущен — ключи не могли поставиться");
+
+        // etcd появился — ключ ставится ретраем тика (несколько циклов ~5с)
+        await fixture.InitializeAsync();
+        List<Kv> kvs = [];
+        for (var i = 0; i < 30; i++)
+        {
+            var api = await fixture.Gateway.RangeAsync(fixture.Endpoint, "/kafkaworker/api/", cts.Token);
+            if (api.IsSuccess && api.Value.Count > 0)
+            {
+                kvs = [.. api.Value];
+                break;
+            }
+
+            await Task.Delay(500, cts.Token);
+        }
+
+        // Assert — ключ api восстановлен, контракт snake_case (arch/02 §2.3.2)
+        var kv = kvs.Should().ContainSingle().Subject;
+        kv.Key.Should().Be($"/kafkaworker/api/{store.InstanceId}");
+        kv.Value.Should().Contain("\"url\":\"http://kafkaworker:8080\"")
+            .And.Contain($"\"instance\":\"{store.InstanceId}\"")
+            .And.Contain("\"since_unix\":");
+
+        // DisposeAsync гасит lease — ключ исчезает
+        await store.DisposeAsync();
+        var gone = await fixture.Gateway.RangeAsync(fixture.Endpoint, "/kafkaworker/api/", cts.Token);
+        gone.Value.Should().BeEmpty();
+    }
 }

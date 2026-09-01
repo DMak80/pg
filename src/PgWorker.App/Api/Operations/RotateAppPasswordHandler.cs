@@ -14,7 +14,7 @@ public sealed record AppPasswordRotatedDto(string Cluster, long RequestedUnix, s
 // панельного RotateAppPasswordCommandHandler; выполняет AppPasswordRotator
 // (ALTER ROLE на всех шардах + атомарная замена app_password). requested_by —
 // заголовок X-Requested-By, fallback "api" (у панели ClaimsPrincipal, spec §3.7).
-public sealed partial class RotateAppPasswordHandler(IEtcdGateway gateway, string[] endpoints)
+public sealed partial class RotateAppPasswordHandler(IEtcdGateway gateway, string[] endpoints, TimeProvider time)
 {
     // Канон тела заявки: snake_case (образец TicketBody MoveBucketsHandler).
     private static readonly JsonSerializerOptions TicketJson = new()
@@ -64,7 +64,7 @@ public sealed partial class RotateAppPasswordHandler(IEtcdGateway gateway, strin
 
         // 4) Клэйм-txn: compare NotExists + put (образец §9.7 п.5).
         //    Проигрыш → 409; транспортный сбой → 503.
-        var requestedUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var requestedUnix = time.GetUtcNow().ToUnixTimeSeconds();
         var payload = JsonSerializer.Serialize(
             new TicketBody(requestedUnix, requestedBy), TicketJson);
         var txn = await EtcdFailover.CallAsync(endpoints, endpoint => gateway.TxnAsync(

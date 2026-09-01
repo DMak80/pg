@@ -135,7 +135,8 @@ public sealed class ClaimStore(string[] endpoints, IEtcdGateway gateway, TimePro
         var token = _loopCts.Token;
         _loop = Task.Run(async () =>
         {
-            // Instance-ключ живости (диагностика): grant + put один раз при старте.
+            // Instance-ключ живости (диагностика): первая попытка сразу при старте;
+            // при отказе (etcd недоступен) ретрай каждым тиком — см. KeepaliveTickAsync.
             await EnsureInstanceKeyAsync(token);
             while (!token.IsCancellationRequested)
             {
@@ -157,6 +158,12 @@ public sealed class ClaimStore(string[] endpoints, IEtcdGateway gateway, TimePro
     // (следующий TryClaim пере-захватывает). Публичен для цикла App и тестов.
     public async Task KeepaliveTickAsync(CancellationToken ct)
     {
+        // Восстановление instance/api-ключей: могли не поставиться при старте (etcd
+        // был недоступен) или потерять lease в рантайме (недоступность дольше TTL) —
+        // ретрай каждым тиком ~5с; guard внутри делает успешный путь дешёвым. Без
+        // этого воркер жив, а панель не резолвит его API (worker-api-unreachable).
+        await EnsureInstanceKeyAsync(ct);
+
         List<long> toKeep;
         lock (_sync)
         {
