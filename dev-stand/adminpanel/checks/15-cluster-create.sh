@@ -153,14 +153,25 @@ code="$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -X POST "$BASE/api/clus
   -d '{"name":"delme","sharded":false,"replicas":1,"requestCpu":0.5,"requestMem":4,"requestDisk":10}')"
 [ "$code" = 409 ] || { echo "❌ создание поверх TO_REMOVE = $code, ожидался 409 (клэйм §9.2)"; exit 1; }
 
-# Панель видит TO_REMOVE (следующий тик ≤ 3 c + polling): детали + сводка toRemove
+# Панель отражает удаление (тик ≤ 3 c + polling). Мерж с worker-api: демонтаж
+# TO_REMOVE живым воркером может завершиться быстрее тика снапшота — тогда
+# панель видит уже 404 (кластер исчез). Оба исхода корректны; недопустим только
+# «живой» delme без TO_REMOVE.
+delme_seen=""
 for i in $(seq 1 15); do
-  curl -fsS -b "$JAR" "$BASE/api/clusters/delme" | jq -e '.state=="TO_REMOVE"' >/dev/null && break
+  code="$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$BASE/api/clusters/delme")"
+  if [ "$code" = 404 ]; then delme_seen="gone"; break; fi
+  curl -fsS -b "$JAR" "$BASE/api/clusters/delme" | jq -e '.state=="TO_REMOVE"' >/dev/null \
+    && { delme_seen="to_remove"; break; }
   sleep 1
 done
-curl -fsS -b "$JAR" "$BASE/api/clusters/delme" | jq -e '.state=="TO_REMOVE"' >/dev/null \
-  || { echo "❌ /api/clusters/delme: state != TO_REMOVE"; exit 1; }
-curl -fsS -b "$JAR" "$BASE/api/clusters" | jq -e 'any(.[]; .name=="delme" and .toRemove)' >/dev/null \
-  || { echo "❌ /api/clusters: delme не помечен toRemove"; exit 1; }
+[ -n "$delme_seen" ] || { echo "❌ /api/clusters/delme: не TO_REMOVE и не исчез после DELETE"; exit 1; }
+if [ "$delme_seen" = "to_remove" ]; then
+  curl -fsS -b "$JAR" "$BASE/api/clusters" | jq -e 'any(.[]; .name=="delme" and .toRemove)' >/dev/null \
+    || { echo "❌ /api/clusters: delme не помечен toRemove"; exit 1; }
+  echo "  delme: панель видит TO_REMOVE + сводку toRemove"
+else
+  echo "  delme: демонтаж завершился быстрее тика снапшота — панель видит чистое удаление (404)"
+fi
 echo "  delme: DELETE → TO_REMOVE (config сохранён, ключи на месте), 204/404/409 — контракт §9.4"
 echo "✓ 15-cluster-create: создание и удаление кластера e2e прошли"

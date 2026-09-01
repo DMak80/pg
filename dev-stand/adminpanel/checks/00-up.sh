@@ -30,12 +30,14 @@ echo "  etcd ready"
 #     Patroni-ноды, которые он создаёт, ходят в DCS по тому же advertise.
 #     Секреты per-install — deploy/.env (нет файла → dev-шаблон .env.example;
 #     deploy/.env в .gitignore). Поднимается ДО сида: pg-сид наливается его
-#     API POST /api/seed/demo (spec §3.5). force-recreate: контейнер deploy-
-#     проекта переживает 90-down (другой compose-проект), а его etcd-клиент
-#     держит кеш DNS/коннектов умершего etcd — свежий процесс надёжнее.
+#     API POST /api/seed/demo (spec §3.5). force-recreate + --build: контейнер
+#     deploy-проекта переживает 90-down (другой compose-проект) и поднимался бы
+#     из УСТАРЕВШЕГО образа pgworker:dev (например, сид сеял бы старые аномалии),
+#     а его etcd-клиент держит кеш DNS/коннектов умершего etcd — свежий процесс
+#     из свежего образа надёжнее.
 ROOT="$(cd ../.. && pwd)"
 [ -f "$ROOT/deploy/.env" ] || cp "$ROOT/deploy/.env.example" "$ROOT/deploy/.env"
-( cd "$ROOT/deploy" && docker compose --env-file "$ROOT/deploy/.env" up -d --force-recreate pgworker 2>&1 | tail -2 )
+( cd "$ROOT/deploy" && docker compose --env-file "$ROOT/deploy/.env" up -d --build --force-recreate pgworker 2>&1 | tail -2 )
 for i in $(seq 1 60); do curl -fsS -m 3 http://localhost:8080/healthz >/dev/null 2>&1 && break; sleep 1; done
 curl -fsS -m 3 http://localhost:8080/healthz >/dev/null \
   || { echo "❌ pgworker не ожил за 60 c (:8080/healthz; docker logs deploy-pgworker-1)"; exit 1; }
