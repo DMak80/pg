@@ -208,6 +208,35 @@ public class ShardEndpointsTests
         master.Value.Ports.Pg.Should().Be(15001);
     }
 
+    // AAA (advertised-режим): master-ключ формата host:doorman может нести хост
+    // ноды (env PGW_NODE_HOST контейнера, созданного до advertised-конфигурации),
+    // а portalloc — advertised-имя; резолв по doorman-порту (уникален per-node,
+    // e2e-факт t01): расхождение хост-части не роняет резолв и не провоцирует
+    // войну писателей мастер-ключа
+    [Fact]
+    public async Task ResolveMasterAsync_MasterKeyHostDiffersFromPortalloc_ResolvesByDoormanPort()
+    {
+        // Arrange: portalloc с advertised-хостами; мастер-ключ ноды shard1b
+        // несёт её docker-хост (писал lease-демон до advertised-конфигурации).
+        var etcd = new Fakes.FakeEtcd();
+        etcd.Seed("/pgworker/portalloc/shop", Portalloc.Serialize(new Dictionary<string, NodeAddress>
+        {
+            ["shard1/shard1a"] = new("host.docker.internal", new NodePorts(15000, 18000, 16500)),
+            ["shard1/shard1b"] = new("host.docker.internal", new NodePorts(15001, 18001, 16501)),
+        }));
+        var endpoints = EndpointsOf(etcd);
+        var addresses = await endpoints.ReadPortAllocAsync("shop", CancellationToken.None);
+
+        // Act
+        var master = await endpoints.ResolveMasterAsync(
+            "shop", Shard1("local:16501"), addresses.Value, CancellationToken.None);
+
+        // Assert: doorman-порт 16501 → shard1b (хост-часть ключа информативна).
+        master.Value.Should().NotBeNull();
+        master.Value!.Ports.Pg.Should().Be(15001);
+        master.Value.Host.Should().Be("host.docker.internal");
+    }
+
     // AAA: master-ключа нет и Patroni-фолбэк недоступен — null (ждём, e2e закрывает ветку)
     [Fact]
     public async Task ResolveMasterAsync_NoMasterNoPatroni_ReturnsNull()

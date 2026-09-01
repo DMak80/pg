@@ -1,5 +1,6 @@
 using System.Text.Json;
 using Microsoft.Extensions.Logging.Abstractions;
+using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Planning;
 using PgWorker.Core.Templates;
@@ -118,6 +119,64 @@ public class AdoptionProcessTests
         Assert.Contains(sql.EnsuredDatabases, e => e.DbName == "demo");
         Assert.Contains(sql.Scalars, s =>
             s.Sql.Contains("pg_roles", StringComparison.Ordinal) && s.Sql.Contains("rolname", StringComparison.Ordinal));
+    }
+
+    // AAA (живой-Ф7', «воркер — хозяин»): Active-кластер после утраты данных и
+    // re-bootstrap Patroni — артефакты etcd (dsn/portalloc/nodes) есть, БД
+    // кластера НЕТ (initdb создал только postgres): ensure-инвариант обязан
+    // поднять базу сам — создание через postgres-подключение (паттерн P2.x),
+    // а не через целевую БД (3D000 «database does not exist» вечно ронял adopt).
+    [Fact]
+    public async Task TickAsync_ClusterDatabaseMissing_EnsuredViaPostgresDatabase()
+    {
+        // Arrange: Active-кластер с dsn-шардом и полным portalloc (инвариантный
+        // путь каждого тика); SQL-стаб: целевая БД — 3D000, postgres — успех.
+        var etcd = new Fakes.FakeEtcd();
+        var snap = await SnapshotActive(etcd, ["s1"], []);
+        etcd.Seed("/pgworker/portalloc/demo",
+            """{"s1/s1a":{"host":"local","pg":15432,"patroni":18008,"doorman":16432}}""");
+        var (adoption, sql, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
+        sql.EnsureResultByDsn = (dsn, _) =>
+            dsn.Contains("Database=postgres", StringComparison.Ordinal)
+                ? Result.Success()
+                : Result.Failed(new ApplicationException("""3D000: database "demo" does not exist"""));
+
+        // Act
+        var outcome = await adoption.TickAsync(snap, CancellationToken.None);
+
+        // Assert: ensure БД шёл postgres-подключением; тик Done (не вечный 3D000).
+        Assert.True(outcome.IsSuccess);
+        Assert.Contains(sql.EnsuredDatabases,
+            e => e.DbName == "demo" && e.Dsn.Contains("Database=postgres", StringComparison.Ordinal));
+    }
+
+    // AAA (живой-Ф7', тот же инвариант): схемы бакетов владельца по routing —
+    // ensure-инвариант каждого тика; после утраты данных и re-bootstrap базы
+    // пустые (схемы создавал только путь provisioning) — панельный inventory
+    // (routing ↔ фактические схемы) сам не сойдётся никогда.
+    [Fact]
+    public async Task TickAsync_RoutingOwnerShard_SchemasEnsured()
+    {
+        // Arrange: Active-кластер с dsn-шардом s1 и полным portalloc; routing
+        // отдаёт бакеты 3 и 7 шарду s1 (снапшот пересобран после сида).
+        var etcd = new Fakes.FakeEtcd();
+        var snap = await SnapshotActive(etcd, ["s1"], []);
+        etcd.Seed("/pgworker/portalloc/demo",
+            """{"s1/s1a":{"host":"local","pg":15432,"patroni":18008,"doorman":16432}}""");
+        etcd.Seed("/clusters/demo/buckets/routing/bucket_3", "s1");
+        etcd.Seed("/clusters/demo/buckets/routing/bucket_7", "s1");
+        var range = await etcd.RangeAsync(Ep, "/clusters/", CancellationToken.None);
+        snap = ClusterSnapshotParser.ParseClusters(range.Value, out _).Value.Single(c => c.Config.Cluster == "demo");
+        var (adoption, sql, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
+
+        // Act
+        var outcome = await adoption.TickAsync(snap, CancellationToken.None);
+
+        // Assert: на мастере s1 исполнены CREATE SCHEMA IF NOT EXISTS обоих бакетов.
+        Assert.True(outcome.IsSuccess);
+        Assert.Contains(sql.Executed, e =>
+            e.Sql.Contains("CREATE SCHEMA IF NOT EXISTS bucket_3", StringComparison.Ordinal)
+            && e.Sql.Contains("CREATE SCHEMA IF NOT EXISTS bucket_7", StringComparison.Ordinal));
     }
 
     [Fact]

@@ -78,6 +78,18 @@ public sealed class DockerOptions
 
     /// <summary>R1: false → узел без pg_doorman (порт 6432 не публикуется).</summary>
     public bool EnableDoorman { get; set; } = true;
+
+    /// <summary>
+    /// Advertised-имя docker-хоста в записях etcd (portalloc/dsn): адреса нод
+    /// обязаны быть резолвимы КЛИЕНТАМИ записей — панелью (arch/16 advertised-
+    /// правило, прецедент KafkaWorker:AdvertisedClientHost). Внутреннее имя
+    /// docker-хоста (напр. "local") резолвится только контейнерами воркеров
+    /// (extra_hosts) — пробы панели уходили в DNS-таймаут. Single-host/tunnel-
+    /// развёртывания (стенд: host.docker.internal); null → имя docker-хоста как
+    /// есть (прод: имена хостов резолвимы клиентами сами). Требует Mode=Plain и
+    /// ровно один хост в Hosts (fail-fast старта).
+    /// </summary>
+    public string? AdvertisedHost { get; set; }
 }
 
 /// <summary>Хост plain-режима: {Name, Endpoint} (tcp://host:2375 | unix:///var/run/docker.sock).</summary>

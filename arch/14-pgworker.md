@@ -258,6 +258,23 @@ data-каталог создаётся от root и недоступен patroni
    swarm — `TaskTemplate.Resources.Limits` (те же поля). Нечитаемое значение —
    без лимита (заявка — не контракт). `request_disk` примитива лимита в docker
    не имеет — игнорируется (квоты volume — roadmap).
+5. **Advertised-имя хоста** (`PgWorker:Docker:AdvertisedHost`, advertised-правило
+   arch/16, прецедент KafkaWorker:AdvertisedClientHost): адреса нод в etcd
+   (portalloc/dsn) обязаны быть резолвимы КЛИЕНТАМИ записей — панелью. Внутреннее
+   имя docker-хоста (напр. `local`) резолвится только контейнерами воркеров
+   (`extra_hosts local:host-gateway`) — панельные пробы уходили в DNS-таймаут.
+   Когда задано (single-host/tunnel-развёртывания, стенд —
+   `host.docker.internal`; валидация старта: Plain + ровно один хост в Hosts),
+   всё, что драйвер отдаёт наружу — плановые хосты, busy-кортежи, факты
+   инспекции КАНОНИЧЕСКИХ нод (pgw-<C>-*) — несёт advertised-имя: один
+   namespace адресов с записями portalloc. Внешние находки усыновления
+   (object) advertised не получают (адресация операторская, R9-симметрия).
+   AD2'-инвариант сам мигрирует легаси-записи: факт инспекции (advertised) ≠
+   запись (внутреннее имя) → portalloc/dsn переписаны тиком. Мастер-ключ
+   `host:<doorman>` пишут lease-демоны нод с env-хостом КОНТЕЙНЕРА — хост-часть
+   может расходиться с portalloc (контейнеры, созданные до advertised-режима):
+   сверка P11 и резолв мастера (§5 F) считают ключ корректным по doorman-порту
+   (уникален per-node), хост-часть информативна — войны писателей нет.
 
 Сам PgWorker — контейнер с примонтированным `/var/run/docker.sock` (plain на
 одном хосте / swarm manager), volume под снапшоты etcd, env-секреты (§8).
@@ -820,6 +837,15 @@ AD4 снапшот P12 (точка изменения); journal phase=done — �
 Отказ docker-хоста/etcd на любом шаге — transient: journal last_error, тик
 повторит (идемпотентность merge/put-if-absent). Deprovisioning D2 сносит
 portalloc вместе с префиксом — усыновление повторяется при пересоздании.
+
+Ensure-инвариант каждого тика Active («воркер — хозяин», живой-Ф7'):
+для всех dsn-шардов ensure БД и ролей выполняется и когда усыновлять нечего.
+Ensure БД кластера идёт подключением к `postgres` (паттерн P2.x) + схемы
+бакетов-владельцев по routing (`CREATE SCHEMA IF NOT EXISTS`, P2.6): после
+утраты данных и re-bootstrap Patroni артефакты etdc (dsn/portalloc/nodes)
+есть, а базы/схем нет (initdb создал только postgres) — целевое подключение
+падало вечным 3D000, панели не сходился inventory (routing ↔ схемы).
+Гварды идемпотентны — здоровый кластер платит несколько дешёвых SELECT за тик.
 
 ### K. MoveRepairProcess (репарация брошенных переездов, MR0–MR3)
 

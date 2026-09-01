@@ -138,10 +138,17 @@ public class ClusterDriverTests
         }
     }
 
-    // Фабрика-заглушка: раздаёт преднастроенные движки (перехват Create).
+    // Фабрика-заглушка: раздаёт преднастроенные движки (перехват Create
+    // с фиксацией hostAlias — namespace busy-портов, advertised-режим).
     private sealed class FakeFactory(IDockerEngine engine) : DockerEngineFactory
     {
-        public override IDockerEngine Create(string endpoint, string? hostAlias = null) => engine;
+        public readonly List<(string Endpoint, string? HostAlias)> Engines = [];
+
+        public override IDockerEngine Create(string endpoint, string? hostAlias = null)
+        {
+            Engines.Add((endpoint, hostAlias));
+            return engine;
+        }
     }
 
     private static ShardTopology Topology(NodeAddress addr) => new(
@@ -154,8 +161,9 @@ public class ClusterDriverTests
 
     private static readonly EtcdEndpoints Etcd = new(["http://etcd:2379"]);
 
-    private static PlainClusterDriver NewPlainDriver(FakeEngine engine)
-        => new([new HostEndpoint("h1", "fake://h1")], new FakeFactory(engine), enableDoorman: true);
+    private static PlainClusterDriver NewPlainDriver(FakeEngine engine, string? advertisedHost = null)
+        => new([new HostEndpoint("h1", "fake://h1")], new FakeFactory(engine), enableDoorman: true,
+            advertisedHost: advertisedHost);
 
     // AAA: Ф7-live — имена нод НЕуникальны между кластерами одного docker-хоста
     // (pgw-canon-/pgw-canon10-/pgw-smoke- все с hostname/alias "shard1a"):
@@ -257,6 +265,105 @@ public class ClusterDriverTests
         var node = result.Value.Should().ContainSingle().Subject.Value;
         node.Object.Should().Be("as-s2a");
         node.Pg.Should().Be(15432);
+    }
+
+    // AAA: advertised-режим (arch/16 advertised-правило, прецедент KafkaWorker):
+    // факт КАНОНИЧЕСКОЙ ноды (pgw-<C>-*) несёт advertised-имя docker-хоста —
+    // записи portalloc/dsn резолвимы КЛИЕНТАМИ (панель), внутреннее имя хоста
+    // резолвится только контейнерами воркеров (extra_hosts) — пробы панели
+    // по внутреннему имени уходили в DNS-таймаут
+    [Fact]
+    public async Task InspectNodes_CanonicalNode_AdvertisedHostInFact()
+    {
+        // Arrange: живой канонический контейнер; драйвер с advertised-хостом.
+        var engine = new FakeEngine
+        {
+            Containers = [new DockerContainer("id1", ["pgw-canon10-shard1-shard1a"], "running", "img")],
+            Inspects = new Dictionary<string, DockerContainerInspect>
+            {
+                ["id1"] = new("id1", "shard1a", ["shard1a"], [],
+                    [new PortMap(5432, 15004), new PortMap(8008, 18004)]),
+            },
+        };
+        var driver = NewPlainDriver(engine, advertisedHost: "host.docker.internal");
+
+        // Act
+        var result = await driver.InspectNodesAsync("canon10", ["shard1a"], CancellationToken.None);
+
+        // Assert: находка несёт advertised-хост (факт пойдёт в portalloc).
+        result.IsSuccess.Should().BeTrue();
+        var node = result.Value.Should().ContainSingle().Subject.Value;
+        node.Host.Should().Be("host.docker.internal");
+        node.Pg.Should().Be(15004);
+        node.Patroni.Should().Be(18004);
+    }
+
+    // AAA: внешние находки усыновления (object) advertised-имя НЕ получают —
+    // их адресация операторская (R9-симметрия: HostMap/композ-имена внешнего контура)
+    [Fact]
+    public async Task InspectNodes_ExternalAdoptionNode_KeepsDockerHostName()
+    {
+        // Arrange: внешний контейнер as-s2a (усыпление demo) при advertised-драйвере.
+        var engine = new FakeEngine
+        {
+            Containers = [new DockerContainer("id-as", ["as-s2a"], "running", "img")],
+            Inspects = new Dictionary<string, DockerContainerInspect>
+            {
+                ["id-as"] = new("id-as", "s2a", ["s2a"], [], [new PortMap(5432, 15432)]),
+            },
+        };
+        var driver = NewPlainDriver(engine, advertisedHost: "host.docker.internal");
+
+        // Act
+        var result = await driver.InspectNodesAsync("demo", ["s2a"], CancellationToken.None);
+
+        // Assert: host находки — docker-имя хоста, advertised не подменяется.
+        var node = result.Value.Should().ContainSingle().Subject.Value;
+        node.Host.Should().Be("h1");
+        node.Object.Should().Be("as-s2a");
+    }
+
+    // AAA: advertised-адрес ноды (запись portalloc) резолвится в единственный
+    // движок таблицы Hosts; env НОВОГО контейнера несёт advertised-хост —
+    // lease-демон мастер-ключа согласован с portalloc по хост-части
+    [Fact]
+    public async Task EnsureNode_AdvertisedHostAddress_ResolvesEngineAndStampsEnv()
+    {
+        // Arrange: адрес ноды с advertised-хостом (как в portalloc advertised-режима).
+        var engine = new FakeEngine();
+        var driver = NewPlainDriver(engine, advertisedHost: "host.docker.internal");
+        var addr = new NodeAddress("host.docker.internal", new NodePorts(15432, 18008, 16432));
+
+        // Act
+        var result = await driver.EnsureNodeAsync(
+            Topology(addr), "shard1a", addr, Secrets, Etcd, resources: null, ct: CancellationToken.None);
+
+        // Assert: движок найден (create прошёл), PGW_NODE_HOST = advertised.
+        result.IsSuccess.Should().BeTrue();
+        engine.CreatedSpec.Should().NotBeNull();
+        engine.CreatedSpec!.Env["PGW_NODE_HOST"].Should().Be("host.docker.internal");
+    }
+
+    // AAA: advertised-режим — планировщик видит advertised-имя хоста (кандидаты
+    // аллокатора и busy-множество в одном namespace), hostAlias движка
+    // (BusyPorts-кортежи) — тоже advertised
+    [Fact]
+    public async Task GetHosts_AdvertisedHost_PlannerAndBusyNamespaceAdvertised()
+    {
+        // Arrange: драйвер с advertised-хостом; фабрика фиксирует hostAlias движков.
+        var engine = new FakeEngine();
+        var factory = new FakeFactory(engine);
+        var driver = new PlainClusterDriver(
+            [new HostEndpoint("h1", "fake://h1")], factory, enableDoorman: true,
+            advertisedHost: "host.docker.internal");
+
+        // Act
+        var hosts = await driver.GetHostsAsync(CancellationToken.None);
+
+        // Assert: HostInfo — advertised-имя; движок создан с hostAlias=advertised.
+        hosts.IsSuccess.Should().BeTrue();
+        hosts.Value.Should().ContainSingle().Which.Name.Should().Be("host.docker.internal");
+        factory.Engines.Should().ContainSingle().Which.HostAlias.Should().Be("host.docker.internal");
     }
 
     // AAA: Д3 — проба данных ноды: docker-exec test -f PG_VERSION → Present/Absent;

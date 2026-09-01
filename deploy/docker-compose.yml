@@ -18,6 +18,9 @@ services:
       # по этому имени; из контейнера резолвим его в docker-хост
       # (на Docker Desktop = host.docker.internal, на Linux — шлюз bridge).
       - "local:host-gateway"
+      # advertised-хост записей portalloc/dsn — резолвим и его (Linux-паритет;
+      # Docker Desktop резолвит сам, extra_hosts безвреден).
+      - "host.docker.internal:host-gateway"
     environment:
       # Обязательные секреты установки (Д7): не в git, не в etcd.
       PGW_PG_SUPERUSER_PASSWORD: ${PGW_PG_SUPERUSER_PASSWORD:?задайте секрет}
@@ -26,6 +29,13 @@ services:
       PGW_BUCKET_MOVER_PASSWORD: ${PGW_BUCKET_MOVER_PASSWORD:?задайте секрет}
       # Конфигурация — env-оверрайды appsettings (пример: endpoints etcd).
       PgWorker__Etcd__Endpoints__0: ${PGW_ETCD_ENDPOINT:-http://localhost:2379}
+      # Advertised-имя docker-хоста в portalloc/dsn (advertised-правило arch/16,
+      # симметрия KafkaWorker:AdvertisedClientHost): адреса нод в etcd обязаны
+      # быть резолвимы клиентами — панель пробирует host.docker.internal:15xxx/
+      # 18xxx; внутреннее имя "local" резолвится только контейнерами воркеров
+      # (extra_hosts), панель видела DNS-таймауты проб. Пусто (прод/мульти-хост)
+      # → имя docker-хоста как есть.
+      PgWorker__Docker__AdvertisedHost: ${PGW_ADVERTISED_HOST:-host.docker.internal}
       # HTTP API воркера (arch/14 §1.1): advertise-URL в /pgworker/api/<id>,
       # ключ X-Api-Key (пуст — проверка отключена, доверенная docker-сеть),
       # демо-сид POST /api/seed/demo за флагом (стенд; прод — false).

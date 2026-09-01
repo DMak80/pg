@@ -853,9 +853,12 @@ public class NodeSupervisorTests
     [Fact]
     public async Task MasterKeyReconciler_KeyPointsToReplica_RewrittenToPrimary()
     {
-        // Arrange — ключ указывает на реплику (h2); фактический primary — h1
+        // Arrange — ключ указывает на реплику shard1b (её хост И её doorman-порт:
+        // реальные писатели не смешивают хост одной ноды с портом другой;
+        // doorman-порты уникальны per-node — порт и есть идентификатор ноды);
+        // фактический primary — shard1a (h1)
         var etcd = new Fakes.FakeEtcd();
-        etcd.Seed("/clusters/shop/shards/shard1/master", "h2:16500");
+        etcd.Seed("/clusters/shop/shards/shard1/master", "h2:16501");
         var addresses = new Dictionary<string, NodeAddress>
         {
             ["shard1/shard1a"] = new("h1", new NodePorts(15000, 18000, 16500)),
@@ -863,7 +866,7 @@ public class NodeSupervisorTests
         };
         var snap = new ClusterSnapshot(
             new ClusterConfig("shop", 2, "shop", null, ClusterState.Active),
-            [new ShardSpec("shard1", 2, null, "h2:16500",
+            [new ShardSpec("shard1", 2, null, "h2:16501",
             [
                 new NodeSpec("shard1", "shard1a", NodeState.Running),
                 new NodeSpec("shard1", "shard1b", NodeState.Running),
@@ -876,7 +879,7 @@ public class NodeSupervisorTests
         // Act
         var result = await reconciler.ReconcileAsync(snap, addresses, CancellationToken.None);
 
-        // Assert: ключ переписан по факту primary (h1:doorman-порт) под lease TTL 5
+        // Assert: ключ переписан по факту primary (порт реплики ≠ порт праймери) под lease TTL 5
         result.IsSuccess.Should().BeTrue();
         etcd.Store["/clusters/shop/shards/shard1/master"].Value.Should().Be("h1:16500");
         etcd.Txns.Should().BeEmpty(); // коррекция — прямой put (не txn)
@@ -911,6 +914,43 @@ public class NodeSupervisorTests
         // Assert: синхрон — ноль мутаций (не второй регулярный писатель, P11)
         result.IsSuccess.Should().BeTrue();
         etcd.Store["/clusters/shop/shards/shard1/master"].ModRevision.Should().Be(before);
+    }
+
+    // AAA (advertised-режим): portalloc primary несёт advertised-хост, а ключ
+    // пишет lease-демон ноды с её env-хостом (контейнер создан до advertised-
+    // конфигурации) — хост-части расходятся, doorman-порт совпадает: писатели
+    // согласны, коррекция НЕ нужна (иначе война писателей каждый тик)
+    [Fact]
+    public async Task MasterKeyReconciler_KeyHostDiffers_PortMatches_NoMutation()
+    {
+        // Arrange — ключ "local:16500" (env-хост ноды), portalloc host=advertised.
+        var etcd = new Fakes.FakeEtcd();
+        etcd.Seed("/clusters/shop/shards/shard1/master", "local:16500");
+        var addresses = new Dictionary<string, NodeAddress>
+        {
+            ["shard1/shard1a"] = new("host.docker.internal", new NodePorts(15000, 18000, 16500)),
+            ["shard1/shard1b"] = new("host.docker.internal", new NodePorts(15001, 18001, 16501)),
+        };
+        var snap = new ClusterSnapshot(
+            new ClusterConfig("shop", 2, "shop", null, ClusterState.Active),
+            [new ShardSpec("shard1", 2, null, "local:16500",
+            [
+                new NodeSpec("shard1", "shard1a", NodeState.Running),
+                new NodeSpec("shard1", "shard1b", NodeState.Running),
+            ])],
+            []);
+        var probe = Probe(port => port == 18000 ? Ok() : Down());
+        var reconciler = new MasterKeyReconciler(etcd, [Ep], probe);
+        var before = etcd.Store["/clusters/shop/shards/shard1/master"].ModRevision;
+
+        // Act
+        var result = await reconciler.ReconcileAsync(snap, addresses, CancellationToken.None);
+
+        // Assert: синхрон по doorman-порту — ноль мутаций (P11 «только при
+        // рассинхроне»), значение ключа не переписано.
+        result.IsSuccess.Should().BeTrue();
+        etcd.Store["/clusters/shop/shards/shard1/master"].ModRevision.Should().Be(before);
+        etcd.Store["/clusters/shop/shards/shard1/master"].Value.Should().Be("local:16500");
     }
 
     [Fact]

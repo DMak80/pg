@@ -70,19 +70,29 @@ public interface IClusterDriver
 }
 
 // Plain-режим: контейнеры на перечисленных хостах, per-host Engine API.
+// advertisedHost (arch/16 advertised-правило): имя, под которым docker-хост
+// виден КЛИЕНТАМ записей etcd (portalloc/dsn — панель). Всё, что драйвер
+// отдаёт НАРУЖУ (плановые хосты, busy-кортежи, факты инспекции канонических
+// нод), несёт advertised-имя — единый namespace адресов с записями portalloc;
+// внутренние имена остаются ключами движков. Внешние находки усыновления
+// (object) advertised не получают — их адресация операторская (R9-симметрия).
 public sealed class PlainClusterDriver(
     IReadOnlyList<HostEndpoint> hosts,
     DockerEngineFactory factory,
     bool enableDoorman,
-    string nodeImage = "pgworker-node:dev") : IClusterDriver
+    string nodeImage = "pgworker-node:dev",
+    string? advertisedHost = null) : IClusterDriver
 {
     // Общая сеть нод кластера: Patroni-репликация по внутренним адресам
     // (alias = имя ноды); без user-defined сети hostname-резолва нет.
     public const string NodesNetwork = "pgw-net";
 
+    private static string Advertised(string host, string? advertised)
+        => advertised is { Length: > 0 } ? advertised : host;
+
     private readonly Dictionary<string, IDockerEngine> _engines = hosts.ToDictionary(
         h => h.Name,
-        h => factory.Create(h.Endpoint, hostAlias: h.Name));
+        h => factory.Create(h.Endpoint, hostAlias: Advertised(h.Name, advertisedHost)));
 
     public async Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct)
     {
@@ -94,7 +104,9 @@ public sealed class PlainClusterDriver(
                 var containers = await engine.ListContainersAsync("pgw-", all: true, ct);
                 if (!containers.IsSuccess)
                     throw containers.Error!; // один хост недоступен — не тихим список
-                result.Add(new HostInfo(name, containers.Value.Count));
+                // Плановое имя хоста — advertised: кандидаты аллокатора живут в одном
+                // namespace с записями portalloc и busy-кортежами (advertised-правило).
+                result.Add(new HostInfo(Advertised(name, advertisedHost), containers.Value.Count));
             }
 
             return (IReadOnlyList<HostInfo>)result;
@@ -123,8 +135,14 @@ public sealed class PlainClusterDriver(
         InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, CancellationToken ct)
     {
         if (!_engines.TryGetValue(addr.Host, out var engine))
-            return Result.Failed(new ApplicationException(
-                $"хост {addr.Host} не в таблице Docker:Hosts (кластер {topology.Cluster}/{nodeName})"));
+        {
+            // advertised-режим: адрес ноды (запись portalloc) несёт advertised-имя,
+            // а не ключ движка; валидация старта гарантирует единственный хост.
+            if (advertisedHost is not { Length: > 0 } || addr.Host != advertisedHost || _engines.Count != 1)
+                return Result.Failed(new ApplicationException(
+                    $"хост {addr.Host} не в таблице Docker:Hosts (кластер {topology.Cluster}/{nodeName})"));
+            engine = _engines.Values.Single();
+        }
 
         return await Result.FromAsync(async () =>
         {
@@ -299,9 +317,20 @@ public sealed class PlainClusterDriver(
                         pairs.Add((c, inspect.Value)); // контейнер исчез между list и inspect — не наша находка
                 }
 
+                // advertised-режим: факт КАНОНИЧЕСКОЙ ноды (pgw-<C>-*) несёт advertised-имя
+                // хоста — записи portalloc/dsn резолвимы клиентами (панелью); внешние
+                // находки усыновления — docker-имя хоста как есть (операторский контур,
+                // R9-симметрия).
+                var canonicalPrefix = $"pgw-{cluster}-";
                 foreach (var (name, node) in NodeMatcher.Match(host, pairs, nodeNames))
+                {
+                    var fact = advertisedHost is { Length: > 0 }
+                        && node.Object.StartsWith(canonicalPrefix, StringComparison.Ordinal)
+                        ? node with { Host = advertisedHost }
+                        : node;
                     if (!found.ContainsKey(name))
-                        found[name] = node;
+                        found[name] = fact;
+                }
             }
 
             return (IReadOnlyDictionary<string, DiscoveredNode>)found;

@@ -73,14 +73,15 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
             if (byName.Value is not null)
                 return Result<NodeAddress?>.Success(byName.Value);
             // Формат писателей ключа (Patroni-callback и reconciler): <host>:<doormanPort>.
-            // Host неуникален (single-docker-host стенды: все ноды localhost) —
-            // ноду различает doorman-порт (e2e-факт t01).
-            if (parts.Length == 2 && int.TryParse(parts[1], out var doorman))
+            // Ноду различает doorman-порт (уникален per-node, e2e-факт t01 — single-host
+            // стенды: все ноды на одном хосте). Хост-часть может расходиться с portalloc
+            // (advertised-режим, arch/16: ключ пишут ноды с env-хостом контейнера,
+            // portalloc — advertised-имя) — резолв по порту, хост информативен.
+            if (parts.Length == 2 && int.TryParse(parts[1], out var doorman) && doorman > 0)
             {
-                var byHostPort = shardNodes.FirstOrDefault(
-                    p => p.Value.Host == parts[0] && p.Value.Ports.Doorman == doorman);
-                if (byHostPort.Value is not null)
-                    return Result<NodeAddress?>.Success(byHostPort.Value);
+                var byDoormanPort = shardNodes.FirstOrDefault(p => p.Value.Ports.Doorman == doorman);
+                if (byDoormanPort.Value is not null)
+                    return Result<NodeAddress?>.Success(byDoormanPort.Value);
             }
         }
 

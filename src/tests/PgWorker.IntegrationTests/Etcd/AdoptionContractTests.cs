@@ -150,6 +150,65 @@ public class AdoptionContractTests(EtcdFixture fixture)
         entry.Message.Should().Contain("пропущено: 1");
     }
 
+    // AAA (advertised-правило, arch/16-симметрия): Active-кластер с ЛЕГАСИ-
+    // записями portalloc/dsn (host = внутреннее имя docker-хоста, нерезолвимое
+    // клиентами — панель: DNS-таймауты проб) + факт инспекции advertised-режима
+    // (host = host.docker.internal) → тик репарирует portalloc и dsn на
+    // advertised-хост («воркер — хозяин»: сам видит и чинит), контейнеры не трогает.
+    [Fact]
+    public async Task Adopt_LegacyDockerHostNameInPortalloc_RepairsToAdvertisedHost()
+    {
+        // Arrange: канонический кластер (pgw-контейнеры), portalloc/dsn с host=local.
+        const string cluster = "adoptadv";
+        var ct = TestContext.Current.CancellationToken;
+        await Gateway.PutAsync(Endpoint, $"/clusters/{cluster}/config",
+            $$"""{"buckets":12,"dbname":"{{cluster}}","created_unix":1755900000}""", null, ct);
+        await Gateway.PutAsync(Endpoint, $"/clusters/{cluster}/shards/shard1/replicas", "2", null, ct);
+        await Gateway.PutAsync(Endpoint, $"/clusters/{cluster}/shards/shard1/dsn",
+            $"host=local,local port=15700,15701 dbname={cluster} user=bucket_admin password=adm-pw", null, ct);
+        await Gateway.PutAsync(Endpoint, $"/clusters/{cluster}/shards/shard1/master", "shard1a:15700", null, ct);
+        await Gateway.PutAsync(Endpoint, "/service/adoptadv-shard1/members/shard1a",
+            """{"role":"replica","state":"running"}""", null, ct);
+        await Gateway.PutAsync(Endpoint, "/service/adoptadv-shard1/members/shard1b",
+            """{"role":"replica","state":"running"}""", null, ct);
+        await Gateway.PutAsync(Endpoint, "/clusters/adoptadv/shards/shard1/nodes/shard1a/state", "RUNNING", null, ct);
+        await Gateway.PutAsync(Endpoint, "/clusters/adoptadv/shards/shard1/nodes/shard1b/state", "RUNNING", null, ct);
+        await Gateway.PutAsync(Endpoint, "/pgworker/portalloc/adoptadv",
+            Portalloc.Serialize(new Dictionary<string, NodeAddress>
+            {
+                ["shard1/shard1a"] = new("local", new NodePorts(15700, 18700, 17200)),
+                ["shard1/shard1b"] = new("local", new NodePorts(15701, 18701, 17201)),
+            }), null, ct);
+        var driver = new StubScaleDriver
+        {
+            NodeObjects = ["pgw-adoptadv-shard1-shard1a", "pgw-adoptadv-shard1-shard1b"],
+            InspectResult = new Dictionary<string, DiscoveredNode>
+            {
+                ["shard1a"] = new("shard1a", "host.docker.internal", "pgw-adoptadv-shard1-shard1a", 15700, 18700, 17200),
+                ["shard1b"] = new("shard1b", "host.docker.internal", "pgw-adoptadv-shard1-shard1b", 15701, 18701, 17201),
+            },
+        };
+        var claims = new ClaimStore([Endpoint], Gateway, TimeProvider.System);
+        (await claims.TryClaimClusterAsync(cluster, ct)).IsSuccess.Should().BeTrue();
+        var adoption = NewAdoption(driver, claims);
+
+        // Act: тик репарации.
+        var outcome = await adoption.TickAsync(await SnapshotAsync(cluster), ct);
+
+        // Assert: portalloc и dsn несут advertised-хост; контейнеры не пересозданы.
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        var alloc = await Gateway.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
+        alloc.Value!.Value.Should().Contain("\"host\":\"host.docker.internal\"");
+        alloc.Value.Value.Should().NotContain("\"host\":\"local\"");
+        var dsn = await Gateway.GetAsync(Endpoint, $"/clusters/{cluster}/shards/shard1/dsn", ct);
+        dsn.Value!.Value.Should().Be(
+            $"host=host.docker.internal,host.docker.internal port=15700,15701 dbname={cluster} user=bucket_admin password=adm-pw");
+        driver.EnsuredNodes.Should().BeEmpty("живые контейнеры на месте — recreate не нужен");
+        var entry = await ReadJournalAsync(cluster);
+        entry.Op.Should().Be("adopt");
+        entry.Phase.Should().Be("repaired-dsn");
+    }
+
     // SQL-стаб: контракт усыновления — про etcd, SQL-механика покрыта unit P2.3.
     private sealed class StubSql : ISqlExecutor
     {

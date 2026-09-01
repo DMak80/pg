@@ -356,7 +356,11 @@ internal static class Fakes
                 EnsuredDatabases.Add((dsn, dbname));
             }
 
-            return Task.FromResult(Result.Success());
+            return Task.FromResult(EnsureResultByDsn is { } byDsn ? byDsn(dsn, dbname) : Result.Success());
         }
+
+        // ensure-инжекция по dsn (живой-Ф7': целевая БД отсутствует — 3D000,
+        // postgres-подключение — успех): проверяет, КАКОЙ dsn использует процесс.
+        public Func<string, string, Result>? EnsureResultByDsn { get; set; }
     }
 }

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Etcd.Client;
@@ -69,7 +70,7 @@ public sealed class MasterKeyReconciler(IEtcdGateway etcd, string[] endpoints, S
             }
 
             var expected = $"{primary.Host}:{primary.Ports.Doorman}";
-            if (shard.Master == expected)
+            if (IsCurrent(shard.Master, primary))
                 continue; // синхрон — мутаций нет (инвариант «только при рассинхроне»)
 
             // Коррекция: lease TTL 5 + put (ключ перепишет callback on_role_change).
@@ -87,6 +88,25 @@ public sealed class MasterKeyReconciler(IEtcdGateway etcd, string[] endpoints, S
         }
 
         return Result.Success();
+    }
+
+    /// <summary>
+    /// Ключ соответствует факту primary. Хост-часть может расходиться с portalloc
+    /// (advertised-режим, arch/16): ключ пишут lease-демоны нод с env-хостом
+    /// КОНТЕЙНЕРА (PGW_NODE_HOST), а portalloc несёт advertised-имя — писатели
+    /// согласны, когда совпадает doorman-порт (уникален per-node, arch/14 §2.4).
+    /// Без doorman (EnableDoorman=false) — точное сравнение (прежняя семантика).
+    /// </summary>
+    private static bool IsCurrent(string? masterKey, NodeAddress primary)
+    {
+        if (masterKey == $"{primary.Host}:{primary.Ports.Doorman}")
+            return true;
+        if (primary.Ports.Doorman <= 0 || string.IsNullOrEmpty(masterKey))
+            return false;
+        var colon = masterKey.LastIndexOf(':');
+        return colon > 0
+               && int.TryParse(masterKey[(colon + 1)..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var port)
+               && port == primary.Ports.Doorman;
     }
 
     /// <summary>

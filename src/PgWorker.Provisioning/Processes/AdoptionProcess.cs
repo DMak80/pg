@@ -92,8 +92,7 @@ public sealed class AdoptionProcess(
             if (master.Value is not { } invariantMaster)
                 continue; // мастер ещё не определён (portalloc пуст/выборы) — обеспечит путь усыновления ниже
 
-            var invariantDsn = ShardEndpoints.AdminDsn(invariantMaster, snap.Config.DbName, secrets);
-            var ensured = await EnsureShardDatabaseAsync(invariantDsn, snap, creds.Value, ct);
+            var ensured = await EnsureShardDatabaseAsync(invariantMaster, shard, snap, creds.Value, ct);
             if (!ensured.IsSuccess)
                 return await FailAsync(cluster, ensured.Error!, ct);
         }
@@ -163,8 +162,7 @@ public sealed class AdoptionProcess(
                 return await FailAsync(cluster, new ApplicationException(
                     $"{Op} {cluster}: мастер шарда '{shard.Name}' не определён — повтор следующим тиком"), ct);
 
-            var dsn = ShardEndpoints.AdminDsn(master.Value, snap.Config.DbName, secrets);
-            var provisioned = await EnsureShardDatabaseAsync(dsn, snap, creds.Value, ct);
+            var provisioned = await EnsureShardDatabaseAsync(master.Value, shard, snap, creds.Value, ct);
             if (!provisioned.IsSuccess)
                 return await FailAsync(cluster, provisioned.Error!, ct);
         }
@@ -362,14 +360,23 @@ public sealed class AdoptionProcess(
         return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(merged);
     }
 
-    // Ensure БД + ролей бакетного слоя на мастере усыновляемого шарда —
-    // идемпотентные тексты P2.3 (gexec-гварды → exec, ALTER app-пароля).
+    // Ensure БД + ролей бакетного слоя + схем владельца по routing на мастере
+    // шарда — идемпотентные тексты P2.3/P2.6 (gexec-гварды → exec, ALTER
+    // app-пароля, CREATE SCHEMA IF NOT EXISTS). БД кластера создаётся
+    // подключением к postgres (паттерн P2.x): после утраты данных и
+    // re-bootstrap Patroni артефакты etcd есть, а базы/схем нет (initdb создал
+    // только postgres; схемы поднимал лишь путь provisioning) — целевой dsn дал
+    // бы вечный 3D000, а панельный inventory (routing ↔ схемы) не сошёлся бы
+    // никогда («воркер — хозяин»: поднимает сам, живой-Ф7').
     private async Task<Result> EnsureShardDatabaseAsync(
-        string dsn, ClusterSnapshot snap, AppCredentials app, CancellationToken ct)
+        NodeAddress master, ShardSpec shard, ClusterSnapshot snap, AppCredentials app, CancellationToken ct)
     {
-        var db = await sql.EnsureDatabaseAsync(dsn, snap.Config.DbName, ct);
+        var adminDsn = ShardEndpoints.AdminDsn(master, "postgres", secrets);
+        var db = await sql.EnsureDatabaseAsync(adminDsn, snap.Config.DbName, ct);
         if (!db.IsSuccess)
             return db;
+
+        var dsn = ShardEndpoints.AdminDsn(master, snap.Config.DbName, secrets);
 
         foreach (var guard in DatabaseProvisioner.BuildRoleGuardsSql(
                      secrets, app, snap.Config.BucketAdminUser, snap.Config.BucketAdminPassword))
@@ -393,7 +400,27 @@ public sealed class AdoptionProcess(
         }
 
         var alter = await sql.ExecuteAsync(dsn, DatabaseProvisioner.BuildAlterAppPasswordSql(app), ct);
-        return alter;
+        if (!alter.IsSuccess)
+            return alter;
+
+        // Схемы бакетов-владельцев по routing (P2.6): идемпотентный IF NOT EXISTS —
+        // здоровый шард no-op, опустошённый (re-bootstrap) — поднимается инвариантом.
+        var bucketIds = snap.Routing
+            .Where(r => r.Owner == shard.Name)
+            .Select(r => r.Id)
+            .OrderBy(i => i)
+            .ToList();
+        if (bucketIds.Count > 0)
+        {
+            var schemas = await sql.ExecuteAsync(
+                dsn, DatabaseProvisioner.BuildSchemasSql(
+                    snap.Config.DbName, bucketIds,
+                    snap.Config.BucketAdminUser ?? "bucket_admin", app.User), ct);
+            if (!schemas.IsSuccess)
+                return schemas;
+        }
+
+        return Result.Success();
     }
 
     private async Task<Result<ProcessOutcome>> FailAsync(string cluster, Exception error, CancellationToken ct)

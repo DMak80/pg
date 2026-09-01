@@ -88,11 +88,25 @@ builder.Services.AddSingleton(sp => new SeedDemoHandler(
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Api.EnableSeedEndpoint));
 
 // docker: драйвер по режиму (Plain: таблица Hosts; Swarm: manager endpoint).
+// AdvertisedHost (advertised-правило arch/16): только Plain + ровно один хост —
+// advertised-имя одно на таблицу, при мульти-хосте порты разных хостов склеились
+// бы в один namespace адресов (fail-fast, а не молчаные коллизии).
 builder.Services.AddSingleton<DockerEngineFactory>();
 builder.Services.AddSingleton<IClusterDriver>(sp =>
 {
     var docker = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Docker;
     var factory = sp.GetRequiredService<DockerEngineFactory>();
+    var advertised = docker.AdvertisedHost;
+    if (!string.IsNullOrWhiteSpace(advertised))
+    {
+        if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
+            throw new ApplicationException(
+                "PgWorker:Docker:AdvertisedHost не поддерживается в Mode=Swarm (multi-host адресация)");
+        if (docker.Hosts.Length != 1)
+            throw new ApplicationException(
+                "PgWorker:Docker:AdvertisedHost требует ровно один хост в PgWorker:Docker:Hosts (single-host/tunnel)");
+    }
+
     if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
     {
         if (string.IsNullOrWhiteSpace(docker.SwarmManager))
@@ -105,7 +119,7 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
         .ToList();
     if (hosts.Count == 0)
         throw new ApplicationException("PgWorker:Docker:Mode=Plain требует непустую таблицу PgWorker:Docker:Hosts");
-    return new PlainClusterDriver(hosts, factory, docker.EnableDoorman, docker.Images.Node);
+    return new PlainClusterDriver(hosts, factory, docker.EnableDoorman, docker.Images.Node, docker.AdvertisedHost);
 });
 
 // Пробы Patroni REST и SQL-слой (Npgsql + Polly-ретраи).
