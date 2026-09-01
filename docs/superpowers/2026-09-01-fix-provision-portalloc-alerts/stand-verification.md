@@ -51,3 +51,17 @@ canon10: новый portalloc не пересекается с /pgworker/portall
 ## 4. Черепки pgw-solo-*
 
 Не трогать. Диагностика/процедура — arch/09 §11 (только по приказу).
+
+## 5. Автономный reconcile Д1–Д3 (после деплоя, read-only)
+
+- Д1 (коллизия портов): пересекающиеся portalloc canon10/smoke сходятся — каждый
+  кластер на своих свободных портах; в docker logs воркера исчезает цикл
+  «port is already allocated» за ≤ 2 тика; etcdctl get /pgworker/portalloc/<C> —
+  без чужих пересечений (сверка с docker ps).
+- Д2 (фальш-Active): журнал /pgworker/work/<C> (docker logs) показывает фазы
+  repaired-portalloc / repaired-dsn; unreachable-ноды Active уходят вместе с
+  репарацией адресов; dsn в etcd указывает на фактические порты контейнеров.
+- Д3 (мёртвый HA-scope): scope без лидера при пустых volume — фаза reset-scope
+  в журнале, ключи /service/<scope>/{initialize,leader,sync} исчезают, request_*
+  живы, Patroni бутстрапится (initialize появляется заново); при живых данных —
+  last_error «разбор оператора» (панель: provision-stuck с текстом).
