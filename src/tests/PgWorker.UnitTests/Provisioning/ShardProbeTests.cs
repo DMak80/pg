@@ -82,4 +82,58 @@ public class ShardProbeTests
         notOk.Should().BeFalse();
         unreachable.Should().BeFalse();
     }
+
+    // AAA: Д1б — GET /patroni несёт scope+name: идентичность ноды (глобально
+    // уникальна — scope <C>-<X>) для вывода «наша/чужая»
+    [Fact]
+    public async Task IdentifyAsync_LivePatroniJson_ParsesNestedNameAndScope()
+    {
+        // Arrange: ЖИВОЙ формат GET /patroni (Patroni 4.x, стенд): identity во
+        // ВЛОЖЕННОМ объекте "patroni", корневых scope/name НЕТ (диагноз Ф7).
+        var probe = new ShardProbe(new HttpClient(new FakeHandler(_ => Json(200,
+            """{"state":"running","role":"primary","patroni":{"version":"4.1.0","scope":"shop-shard1","name":"shard1a"}}"""))));
+
+        // Act
+        var identity = await probe.IdentifyAsync(Node, CancellationToken.None);
+
+        // Assert: пара (name, scope) из вложенного patroni-объекта.
+        identity.IsSuccess.Should().BeTrue();
+        identity.Value.Should().Be(new NodeIdentity("shard1a", "shop-shard1"));
+    }
+
+    // AAA: Д1б — fallback: корневые scope/name (старые/прокси-ответы) тоже читаются
+    [Fact]
+    public async Task IdentifyAsync_RootFields_FallbackParses()
+    {
+        // Arrange: корневые поля без вложенного patroni-объекта.
+        var probe = new ShardProbe(new HttpClient(new FakeHandler(_ => Json(200,
+            """{"state":"running","role":"replica","scope":"shop-shard1","name":"shard1a"}"""))));
+
+        // Act
+        var identity = await probe.IdentifyAsync(Node, CancellationToken.None);
+
+        // Assert: fallback на корень — безвреден и жив.
+        identity.Value.Should().Be(new NodeIdentity("shard1a", "shop-shard1"));
+    }
+
+    // AAA: Д1б — битый JSON/не-2xx/без полей → null «не опознана»: чужой ответ
+    // по коллизионному порту ≠ наша нода (не ошибка — не успех)
+    [Fact]
+    public async Task IdentifyAsync_BrokenOrForeignOrMissing_Null()
+    {
+        // Arrange: битый JSON, не-2xx и JSON без полей — «не опознана» (не ошибка).
+        var broken = new ShardProbe(new HttpClient(new FakeHandler(_ => Json(200, "not-json"))));
+        var notFound = new ShardProbe(new HttpClient(new FakeHandler(_ => Json(404, ""))));
+        var noFields = new ShardProbe(new HttpClient(new FakeHandler(_ => Json(200, """{"members":[]}"""))));
+
+        // Act
+        var a = await broken.IdentifyAsync(Node, CancellationToken.None);
+        var b = await notFound.IdentifyAsync(Node, CancellationToken.None);
+        var c = await noFields.IdentifyAsync(Node, CancellationToken.None);
+
+        // Assert: null — чужой ответ по коллизионному порту ≠ наша нода (фальш-RUNNING исключён).
+        a.Value.Should().BeNull();
+        b.Value.Should().BeNull();
+        c.Value.Should().BeNull();
+    }
 }

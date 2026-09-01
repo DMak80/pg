@@ -92,6 +92,29 @@ public class EtcdContractTests(EtcdFixture fixture)
     }
 
     [Fact]
+    public async Task WorkJournal_RetrySeries_RoundTrip_AgainstRealEtcd()
+    {
+        // Arrange — журнал с контекстом серии ретраев (arch/14 §3.3).
+        var ct = TestContext.Current.CancellationToken;
+        var journal = new WorkJournal(Gateway, [Endpoint]);
+        var series = new RetrySeries(FailCount: 3, FailFirstUnix: 1756005400, RetryNotBeforeUnix: 1756009215);
+
+        // Act — фейл с серией, затем фаза прогресса с переносом той же серии.
+        var fail = await journal.WritePhaseAsync("shop", "provision", "shard-provision", "inst-1",
+            "Patroni шарда shop-shard1 не поднялся за бюджет 600 с", ct, series);
+        var carried = await journal.WritePhaseAsync(
+            "shop", "provision", "waiting-patroni", "inst-1", null, ct, series);
+        var read = await journal.ReadAsync("shop", ct);
+
+        // Assert — поля серии переживают запись/чтение через реальный etcd.
+        fail.IsSuccess.Should().BeTrue();
+        carried.IsSuccess.Should().BeTrue();
+        read.Value!.FailCount.Should().Be(3);
+        read.Value.FailFirstUnix.Should().Be(1756005400);
+        read.Value.RetryNotBeforeUnix.Should().Be(1756009215);
+    }
+
+    [Fact]
     public async Task Portalloc_RoundTrip_StructureSurvivesRealEtcd()
     {
         // Arrange — закрепление портов нод (spec §4.3): {"<shard>/<node>":{host,pg,patroni,doorman}}

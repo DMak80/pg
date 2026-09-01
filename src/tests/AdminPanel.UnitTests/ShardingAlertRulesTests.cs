@@ -333,13 +333,122 @@ public class ShardingAlertRulesTests
         var cluster = new ClusterInfo("fresh", "fresh", 1, null, ClusterState.NotInitialized, [], [], []);
 
         // Act
-        var alerts = Evaluate(new ClusterNotInitializedRule(), Snapshot(cluster));
+        var alerts = Evaluate(new ClusterNotInitializedRule(DefaultOptions), Snapshot(cluster));
 
         // Assert
         var alert = alerts.Should().ContainSingle().Subject;
         alert.Severity.Should().Be(AlertSeverity.Info);
         alert.Kind.Should().Be("cluster-not-initialized");
         alert.Target.Should().Be("fresh");
+    }
+
+    // AAA: D2 — молодой NOT_INITIALIZED-кластер: info (нормальный жизненный цикл)
+    [Fact]
+    public void ClusterNotInitialized_YoungCluster_InfoAlert()
+    {
+        // Arrange: кластер заявлен 100 c назад (created_unix = NowUnix-100).
+        var rule = new ClusterNotInitializedRule(Options.Create(new AlertsOptions { NotInitializedWarnSec = 900 }));
+        var cluster = TestSnapshots.FullCluster() with
+        {
+            State = ClusterState.NotInitialized,
+            CreatedUnix = NowUnix - 100,
+        };
+
+        // Act
+        var alerts = Evaluate(rule, Snapshot(cluster));
+
+        // Assert: молодой — info (нормальный жизненный цикл).
+        var alert = alerts.Should().ContainSingle().Subject;
+        alert.Severity.Should().Be(AlertSeverity.Info);
+    }
+
+    // AAA: D2 — NOT_INITIALIZED дольше порога — эскалация до Warning
+    [Fact]
+    public void ClusterNotInitialized_StuckCluster_EscalatesToWarning()
+    {
+        // Arrange: NOT_INITIALIZED дольше порога 900 c (больше PatroniBootSec воркера 600).
+        var rule = new ClusterNotInitializedRule(Options.Create(new AlertsOptions { NotInitializedWarnSec = 900 }));
+        var cluster = TestSnapshots.FullCluster() with
+        {
+            State = ClusterState.NotInitialized,
+            CreatedUnix = NowUnix - 901,
+        };
+
+        // Act
+        var alerts = Evaluate(rule, Snapshot(cluster));
+
+        // Assert: эскалация по возрасту.
+        alerts.Single().Severity.Should().Be(AlertSeverity.Warning);
+    }
+
+    // AAA: D2 — created_unix отсутствует (старые init): fallback на возраст
+    // previous-алерта по sinceUnix
+    [Fact]
+    public void ClusterNotInitialized_NoCreatedUnix_FallsBackToAlertAge()
+    {
+        // Arrange: created_unix отсутствует (старые init) — возраст по sinceUnix previous-алерта.
+        var rule = new ClusterNotInitializedRule(Options.Create(new AlertsOptions { NotInitializedWarnSec = 900 }));
+        var cluster = TestSnapshots.FullCluster() with { State = ClusterState.NotInitialized, CreatedUnix = null };
+        var previous = Snapshot(cluster) with
+        {
+            Alerts = [new Alert("cluster-not-initialized:demo", AlertSeverity.Info, "cluster-not-initialized",
+                "demo", "…", null, NowUnix - 1000, "hint", AlertRemedy.WorkerAuto, "remedy")],
+        };
+        var context = new AlertContext(previous, Now, 3);
+
+        // Act
+        var alerts = rule.Evaluate(Snapshot(cluster), context).ToList();
+
+        // Assert: previous-алерт старше порога → Warning.
+        alerts.Single().Severity.Should().Be(AlertSeverity.Warning);
+    }
+
+    // AAA: D3 — живой last_error provision + серия фейлов старше порога:
+    // Warning с текстом ошибки воркера и деталями серии
+    [Fact]
+    public void ProvisionStuck_LiveErrorSeriesOldEnough_WarningWithLastErrorText()
+    {
+        // Arrange: журнал provision с серией фейлов старше порога 300 c.
+        var rule = new ProvisionStuckRule(Options.Create(new AlertsOptions { ProvisionStuckSec = 300 }));
+        var snapshot = Snapshot(TestSnapshots.FullCluster() with { State = ClusterState.NotInitialized }) with
+        {
+            PgWorkerWork = [new WorkJournalInfo("demo", "provision", "shard-provision", "w-1",
+                UpdatedUnix: NowUnix - 10, LastError: "Patroni шарда demo-s1 не поднялся за бюджет 600 с",
+                FailCount: 3, FailFirstUnix: NowUnix - 400, RetryNotBeforeUnix: NowUnix + 20)],
+        };
+
+        // Act
+        var alerts = Evaluate(rule, snapshot);
+
+        // Assert: warning с текстом ошибки воркера и деталями серии.
+        var alert = alerts.Should().ContainSingle().Subject;
+        alert.Kind.Should().Be("provision-stuck");
+        alert.Target.Should().Be("demo");
+        alert.Severity.Should().Be(AlertSeverity.Warning);
+        alert.Message.Should().Contain("не поднялся");
+        alert.Details!["fail_count"].Should().Be("3");
+    }
+
+    // AAA: D3 — свежая серия или живого last_error нет: алерта нет (не мигает)
+    [Fact]
+    public void ProvisionStuck_FreshSeriesOrNoError_NoAlert()
+    {
+        // Arrange: (а) серия моложе порога; (б) last_error нет.
+        var rule = new ProvisionStuckRule(Options.Create(new AlertsOptions { ProvisionStuckSec = 300 }));
+        var fresh = Snapshot(TestSnapshots.FullCluster()) with
+        {
+            PgWorkerWork = [new WorkJournalInfo("demo", "provision", "planned", "w-1",
+                NowUnix - 5, "boom", 1, NowUnix - 5, NowUnix)],
+        };
+        var healthy = Snapshot(TestSnapshots.FullCluster()) with
+        {
+            PgWorkerWork = [new WorkJournalInfo("demo", "provision", "waiting-patroni", "w-1",
+                NowUnix - 5, null, null, null, null)],
+        };
+
+        // Act + Assert
+        Evaluate(rule, fresh).Should().BeEmpty();
+        Evaluate(rule, healthy).Should().BeEmpty();
     }
 
     [Fact]

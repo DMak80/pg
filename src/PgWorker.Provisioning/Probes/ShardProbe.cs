@@ -10,6 +10,11 @@ namespace PgWorker.Provisioning.Probes;
 /// </summary>
 public sealed record PatroniMember(string Name, string Role, string State);
 
+/// <summary>Идентичность Patroni-ноды из GET /patroni (spec §3.7 Д1б): scope
+/// глобально уникален (&lt;C&gt;-&lt;X&gt;), name — имя ноды; пары достаточно для вывода
+/// «наша/чужая» (у /cluster поля scope нет — имена нод шаблонные между кластерами).</summary>
+public sealed record NodeIdentity(string Name, string Scope);
+
 /// <summary>
 /// Пробы Patroni REST нод шарда (arch/14 §5 A/C): GET /cluster по
 /// patroni-порту ноды с таймаутом 3 с. Ошибки сети/5xx/таймаут — Result.Failed
@@ -54,6 +59,37 @@ public sealed class ShardProbe(HttpClient http)
     {
         var result = await GetClusterAsync(node, ct);
         return result.IsSuccess;
+    }
+
+    // Идентификация ноды (Д1б, spec §3.7): GET /patroni несёт scope+name — в живом
+    // формате (Patroni 4.x, стенд) они ВО ВЛОЖЕННОМ объекте "patroni"; fallback —
+    // корневые поля. Транспорт/битый JSON/не-2xx/отсутствующие поля → Success(null) —
+    // «не опознана» (чужой ответ по коллизионному порту не является успехом ожидания).
+    public async Task<Result<NodeIdentity?>> IdentifyAsync(NodeAddress node, CancellationToken ct)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(ProbeTimeout);
+            using var response = await http.GetAsync(BuildUri(node, "patroni"), timeout.Token);
+            if (!response.IsSuccessStatusCode)
+                return Result<NodeIdentity?>.Success(null);
+
+            await using var stream = await response.Content.ReadAsStreamAsync(timeout.Token);
+            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: timeout.Token);
+            var root = doc.RootElement;
+            var holder = root.TryGetProperty("patroni", out var nested) && nested.ValueKind == JsonValueKind.Object
+                ? nested
+                : root; // живой формат: {"state","role","patroni":{"version","scope","name"}}; fallback — корень
+            var name = holder.TryGetProperty("name", out var n) ? n.GetString() : null;
+            var scope = holder.TryGetProperty("scope", out var s) ? s.GetString() : null;
+            return Result<NodeIdentity?>.Success(
+                name is { Length: > 0 } && scope is { Length: > 0 } ? new NodeIdentity(name, scope) : null);
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException or JsonException)
+        {
+            return Result<NodeIdentity?>.Success(null);
+        }
     }
 
     // Является ли нода текущим primary шарда: GET /primary → 200 (P11-сверка

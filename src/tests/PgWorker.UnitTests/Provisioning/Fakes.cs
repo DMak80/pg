@@ -265,14 +265,25 @@ internal static class Fakes
         public IReadOnlyDictionary<string, DiscoveredNode> InspectResult { get; set; }
             = new Dictionary<string, DiscoveredNode>();
 
+        // сбой-инъекция: docker-хост недоступен (Д2: transport-провал инспекции — transient).
+        public Exception? InspectFault { get; set; }
+
         public readonly List<(string Container, IReadOnlyList<string> Cmd)> ContainerExecs = [];
 
         public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
-            IReadOnlyCollection<string> nodeNames, CancellationToken ct)
-            => Task.FromResult(Result<IReadOnlyDictionary<string, DiscoveredNode>>.Success(
-                (IReadOnlyDictionary<string, DiscoveredNode>)InspectResult
-                    .Where(p => nodeNames.Contains(p.Key))
-                    .ToDictionary(p => p.Key, p => p.Value)));
+            string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct)
+            => InspectFault is { } fault
+                ? Task.FromResult(Result<IReadOnlyDictionary<string, DiscoveredNode>>.Failed(fault))
+                : Task.FromResult(Result<IReadOnlyDictionary<string, DiscoveredNode>>.Success(
+                    (IReadOnlyDictionary<string, DiscoveredNode>)InspectResult
+                        .Where(p => nodeNames.Contains(p.Key))
+                        .ToDictionary(p => p.Key, p => p.Value)));
+
+        // Д3: карта присутствия данных по имени ноды (default Present — чистка запрещена).
+        public Func<string, DataPresence> DataPresenceByNode { get; set; } = _ => DataPresence.Present;
+
+        public Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct)
+            => Task.FromResult(Result<DataPresence>.Success(DataPresenceByNode(node)));
 
         public Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct)
         {

@@ -1,5 +1,7 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging.Abstractions;
 using PgWorker.Core.Model;
+using PgWorker.Core.Planning;
 using PgWorker.Core.Templates;
 using PgWorker.Docker.Drivers;
 using PgWorker.Etcd.Coordination;
@@ -52,7 +54,7 @@ public class AdoptionProcessTests
 
     // Стенд процесса: фейковый etcd + фейковый драйвер с InspectResult + FakeSql;
     // ensurer'ы реальные (put-if-absent поверх FakeEtcd), Patroni-проба молчит.
-    private static async Task<(AdoptionProcess Process, Fakes.FakeSql Sql)> NewAdoption(
+    private static async Task<(AdoptionProcess Process, Fakes.FakeSql Sql, Fakes.FakeDriver Driver)> NewAdoption(
         Fakes.FakeEtcd etcd,
         IReadOnlyDictionary<string, DiscoveredNode> inspect)
     {
@@ -66,8 +68,12 @@ public class AdoptionProcessTests
             sql,
             new AppSecretEnsurer(etcd, [Ep]),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"),
-            Secrets, claims, new WorkJournal(etcd, [Ep]));
-        return (process, sql);
+            Secrets, claims, new WorkJournal(etcd, [Ep]),
+            new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
+            new PlacementOptions(15000, 15100, PatroniBootSec: 600),
+            new EtcdEndpoints([Ep]),
+            snapshot: null);
+        return (process, sql, driver);
     }
 
     // Журнал-записыватель: хук OnPut FakeEtcd разбирает WorkState /pgworker/work/*.
@@ -99,7 +105,7 @@ public class AdoptionProcessTests
         var snap = await SnapshotActive(etcd, ["s1", "s2"], []);
         etcd.Seed("/pgworker/portalloc/demo",
             """{"s1/s1a":{"host":"local","pg":15432,"patroni":18008,"doorman":16432}}""");
-        var (adoption, sql) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
+        var (adoption, sql, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
 
         // Act
         var outcome = await adoption.TickAsync(snap, CancellationToken.None);
@@ -121,7 +127,7 @@ public class AdoptionProcessTests
         // драйвер нашёл as-контейнеры (5433/8011 и 5434/8012).
         var etcd = new Fakes.FakeEtcd();
         var snap = await SnapshotActive(etcd, ["s1"], ["s1"]);
-        var (adoption, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
+        var (adoption, _, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
         {
             ["s1a"] = new("s1a", "local", "as-s1a", 5433, 8011, 0),
             ["s1b"] = new("s1b", "local", "as-s1b", 5434, 8012, 0),
@@ -147,7 +153,7 @@ public class AdoptionProcessTests
         // Arrange: members есть, docker находок 0 — не наш docker-домен (spec §2.5).
         var etcd = new Fakes.FakeEtcd();
         var snap = await SnapshotActive(etcd, ["s1"], ["s1"]);
-        var (adoption, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
+        var (adoption, _, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
 
         // Act
         var outcome = await adoption.TickAsync(snap, CancellationToken.None);
@@ -168,7 +174,7 @@ public class AdoptionProcessTests
         var snap = await SnapshotActive(etcd, ["s1"], ["s1"]);
         var journal = new RecordingJournal();
         journal.Attach(etcd);
-        var (adoption, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
+        var (adoption, _, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
         {
             ["s1a"] = new("s1a", "local", "as-s1a", 5433, 8011, 0),
         });
@@ -183,5 +189,179 @@ public class AdoptionProcessTests
         var skipped = journal.Entries.Single(e => e.Phase == "skipped");
         Assert.Equal("adopt", skipped.Op);
         Assert.Contains("s1b", skipped.Message);
+    }
+
+    // AAA: Д2 — фальш-Active (portalloc/dsn на чужие порты — наследие коллизии):
+    // первый тик с живой docker-картиной репарирует адреса фактом и пересобирает dsn
+    [Fact]
+    public async Task TickAsync_DivergedPortalloc_FactRepairsAddressesAndDsn()
+    {
+        // Arrange: Active demo, шард s1 с dsn; HA-members /service/demo-s1/members/{s1a,s1b}
+        // сеются SnapshotActive ДО парсинга — кандидаты репарации непусты БЕЗ nodes-ключей
+        // (Nodes строятся только из nodes/<n>/state, сид AFTER-парсинга парсер бы не увидел —
+        // ревью). Запись s1/s1a РАСХОДИТСЯ с фактом (15014 — наследие коллизии).
+        var etcd = new Fakes.FakeEtcd();
+        var snap = await SnapshotActive(etcd, ["s1"], ["s1"]);
+        etcd.Seed("/pgworker/portalloc/demo",
+            """
+            {"s1/s1a":{"host":"h1","pg":15014,"patroni":18014,"doorman":16514},
+            "s1/s1b":{"host":"h2","pg":15005,"patroni":18005,"doorman":16505}}
+            """);
+        var journal = new RecordingJournal();
+        journal.Attach(etcd);
+        var (process, _, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
+        {
+            ["s1a"] = new("s1a", "h1", "pgw-demo-s1-s1a", 15004, 18004, 16504),
+            ["s1b"] = new("s1b", "h2", "pgw-demo-s1-s1b", 15005, 18005, 16505),
+        });
+
+        // Act
+        var outcome = await process.TickAsync(snap, CancellationToken.None);
+
+        // Assert: запись перезаписана фактом; dsn пересобран из фактического portalloc
+        // (по кандидатам nodes ∪ members); обе репарации в журнале (Д2, AD2').
+        outcome.IsSuccess.Should().BeTrue();
+        (await GetValueAsync(etcd, "/pgworker/portalloc/demo")).Should().Contain("\"pg\":15004");
+        (await GetValueAsync(etcd, "/pgworker/portalloc/demo")).Should().NotContain("\"pg\":15014");
+        (await GetValueAsync(etcd, "/clusters/demo/shards/s1/dsn"))
+            .Should().Contain("port=15004,15005");
+        journal.Entries.Should().Contain(e => e.Phase == "repaired-portalloc");
+        journal.Entries.Should().Contain(e => e.Phase == "repaired-dsn");
+    }
+
+    // AAA: Д2 — сходящийся кластер: адреса/dsn соответствуют факту — мутаций нет
+    [Fact]
+    public async Task TickAsync_AddressesMatchFact_NoRepairMutations()
+    {
+        // Arrange: portalloc == факт контейнеров; dsn уже равен пересобранному из
+        // факта по кандидатам members (креды P2.5: bucket_admin + глобальный password).
+        var etcd = new Fakes.FakeEtcd();
+        var snap = await SnapshotActive(etcd, ["s1"], ["s1"]);
+        etcd.Seed("/clusters/demo/shards/s1/dsn",
+            "host=h1,h2 port=15004,15005 dbname=demo user=bucket_admin password=adm-pw");
+        // перечитываем снапшот: сид dsn обязан попасть в ClusterSnapshot.Dsn до тика
+        // (репарация сравнивает dsn снапшота с пересобранным из факта).
+        var range = await etcd.RangeAsync(Ep, "/clusters/", CancellationToken.None);
+        snap = ClusterSnapshotParser.ParseClusters(range.Value, out _).Value.Single(c => c.Config.Cluster == "demo");
+        etcd.Seed("/pgworker/portalloc/demo",
+            """
+            {"s1/s1a":{"host":"h1","pg":15004,"patroni":18004,"doorman":16504},
+            "s1/s1b":{"host":"h2","pg":15005,"patroni":18005,"doorman":16505}}
+            """);
+        var journal = new RecordingJournal();
+        journal.Attach(etcd);
+        var (process, _, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
+        {
+            ["s1a"] = new("s1a", "h1", "pgw-demo-s1-s1a", 15004, 18004, 16504),
+            ["s1b"] = new("s1b", "h2", "pgw-demo-s1-s1b", 15005, 18005, 16505),
+        });
+
+        // Act
+        var outcome = await process.TickAsync(snap, CancellationToken.None);
+
+        // Assert: никаких repaired-фаз, version portalloc-ключа не выросла (идемпотентность).
+        outcome.IsSuccess.Should().BeTrue();
+        journal.Entries.Should().NotContain(e => e.Phase.StartsWith("repaired"));
+        etcd.Store["/pgworker/portalloc/demo"].Version.Should().Be(1);
+    }
+
+    // AAA: живой-Ф7/Д2 — Running-нода с Created-черепком (create по битому плану
+    // прошёл, start упал): записи без ЖИВОГО контейнера чинятся EnsureNode НАПРЯМУЮ
+    // (мимо процессного скипа RUNNING и running-only инспекции) — recreated-node
+    [Fact]
+    public async Task TickAsync_RunningNodeWithDeadContainer_EnsureNodeRecreates()
+    {
+        // Arrange: portalloc полный; живой контейнер ТОЛЬКО s1b; s1a — Created-черепок
+        // (running-инспекцией невидим), node state=RUNNING (процессные пути скипают).
+        var etcd = new Fakes.FakeEtcd();
+        var snap = await SnapshotActive(etcd, ["s1"], ["s1"]);
+        etcd.Seed("/clusters/demo/shards/s1/nodes/s1a/state", "RUNNING");
+        etcd.Seed("/pgworker/portalloc/demo",
+            """
+            {"s1/s1a":{"host":"h1","pg":15004,"patroni":18004,"doorman":16504},
+            "s1/s1b":{"host":"h2","pg":15005,"patroni":18005,"doorman":16505}}
+            """);
+        var journal = new RecordingJournal();
+        journal.Attach(etcd);
+        var (process, _, driver) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
+        {
+            ["s1b"] = new("s1b", "h2", "pgw-demo-s1-s1b", 15005, 18005, 16505),
+        });
+
+        // Act
+        var outcome = await process.TickAsync(snap, CancellationToken.None);
+
+        // Assert: EnsureNode вызван для s1a (сверка портов → пересоздание черепка),
+        // фаза recreated-node; живая s1b не тронута.
+        outcome.IsSuccess.Should().BeTrue();
+        driver.EnsuredNodes.Should().Contain("s1/s1a");
+        driver.EnsuredNodes.Should().NotContain("s1/s1b");
+        journal.Entries.Should().Contain(e => e.Phase == "recreated-node");
+    }
+
+    // AAA: живой-Ф7/Д2 — ВНЕШНИЙ (object) шард: dsn — операторский факт (postgres-
+    // подписки сидом по именам as-нод; host «local» внутри postgres не резолвится) —
+    // НЕ пересобирается из portalloc (R9-симметрия); portalloc репарируется как обычно
+    [Fact]
+    public async Task TickAsync_ExternalObjectShard_DsnUntouched_PortallocRepaired()
+    {
+        // Arrange: шард s1: s1a — object-запись as-s1a (внешняя), s1b — каноническая
+        // запись РАСХОДИТСЯ с фактом (15014 — наследие коллизии); dsn сидовой,
+        // заведомо ≠ portalloc-производному.
+        var etcd = new Fakes.FakeEtcd();
+        var snap = await SnapshotActive(etcd, ["s1"], ["s1"]);
+        etcd.Seed("/pgworker/portalloc/demo",
+            """
+            {"s1/s1a":{"host":"h1","pg":15004,"patroni":18004,"doorman":16504,"object":"as-s1a"},
+            "s1/s1b":{"host":"h2","pg":15014,"patroni":18014,"doorman":16514}}
+            """);
+        var journal = new RecordingJournal();
+        journal.Attach(etcd);
+        var (process, _, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
+        {
+            ["s1b"] = new("s1b", "h2", "pgw-demo-s1-s1b", 15005, 18005, 16505),
+        });
+
+        // Act
+        var outcome = await process.TickAsync(snap, CancellationToken.None);
+
+        // Assert: каноническая запись переписана фактом (repaired-portalloc, version
+        // выросла); dsn НЕ тронут (version прежняя, repaired-dsn нет) — R9-граница.
+        outcome.IsSuccess.Should().BeTrue();
+        var raw = await GetValueAsync(etcd, "/pgworker/portalloc/demo");
+        raw.Should().Contain("\"pg\":15005");
+        raw.Should().Contain("\"object\":\"as-s1a\"");
+        etcd.Store["/pgworker/portalloc/demo"].Version.Should().Be(2);
+        etcd.Store["/clusters/demo/shards/s1/dsn"].Version.Should().Be(1);
+        journal.Entries.Should().Contain(e => e.Phase == "repaired-portalloc");
+        journal.Entries.Should().NotContain(e => e.Phase == "repaired-dsn");
+    }
+
+    // AAA: Д2 — transport-провал инспекции = transient: тик не ронывается, мутаций адресов нет
+    [Fact]
+    public async Task TickAsync_InspectTransportFails_TickSurvives()
+    {
+        // Arrange: portalloc полный по обоим HA-members → missing пуст (основной AD1-путь
+        // инспекцию НЕ зовёт) — docker-сбой ловит ТОЛЬКО AD2'-инспекция по кандидатам.
+        var etcd = new Fakes.FakeEtcd();
+        var snap = await SnapshotActive(etcd, ["s1"], ["s1"]);
+        etcd.Seed("/pgworker/portalloc/demo",
+            """
+            {"s1/s1a":{"host":"h1","pg":15004,"patroni":18004,"doorman":16504},
+            "s1/s1b":{"host":"h2","pg":15005,"patroni":18005,"doorman":16505}}
+            """);
+        var journal = new RecordingJournal();
+        journal.Attach(etcd);
+        var (process, _, driver) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
+        driver.InspectFault = new ApplicationException("docker: connection refused");
+
+        // Act
+        var outcome = await process.TickAsync(snap, CancellationToken.None);
+
+        // Assert: тик жив (Done по инварианту ролей), адреса не тронуты (version та же),
+        // repaired-фаз нет — следующий тик повторит сверку.
+        outcome.IsSuccess.Should().BeTrue();
+        journal.Entries.Should().NotContain(e => e.Phase.StartsWith("repaired"));
+        etcd.Store["/pgworker/portalloc/demo"].Version.Should().Be(1);
     }
 }

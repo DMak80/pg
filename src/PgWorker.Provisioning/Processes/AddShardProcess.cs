@@ -8,6 +8,7 @@ using PgWorker.Docker.Drivers;
 using PgWorker.Etcd.Client;
 using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
+using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Probes;
 using PgWorker.Provisioning.Sql;
 
@@ -34,6 +35,7 @@ public sealed partial class AddShardProcess(
     IAppSecretEnsurer appSecret,
     IAppParamsEnsurer appParams,
     EtcdEndpoints etcdEndpoints,
+    PortAllocIndex portAlloc,
     Func<CancellationToken, Task<Result>>? snapshot = null)
 {
     private const string Op = "add-shard";
@@ -182,15 +184,22 @@ public sealed partial class AddShardProcess(
         var hosts = await driver.GetHostsAsync(ct);
         if (!hosts.IsSuccess)
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(hosts.Error!);
-        var busy = await driver.GetBusyPortsAsync(ct);
-        if (!busy.IsSuccess)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(busy.Error!);
+        var dockerBusy = await driver.GetBusyPortsAsync(ct);
+        if (!dockerBusy.IsSuccess)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(dockerBusy.Error!);
+        // Занятость = docker ∪ portalloc соседей (spec §3.3): свой portalloc уже в existing.
+        var foreignBusy = await portAlloc.ReadBusyAsync(cluster, ct);
+        if (!foreignBusy.IsSuccess)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(foreignBusy.Error!);
+        var busy = new HashSet<(string, int)>(foreignBusy.Value);
+        foreach (var p in dockerBusy.Value)
+            busy.Add(p);
 
         // Список из ОДНОГО шарда: анти-аффинити внутри нового; занятость живыми
         // шардами уже учтена (UsedSlots хостов + фактические busy-порты драйвера).
         var plan = PlacementPlanner.Plan([shard], hosts.Value);
         var allocated = PortAllocator.Allocate(
-            plan, existing, busy.Value, placementOpts.PortFrom, placementOpts.PortTo);
+            plan, existing, busy, placementOpts.PortFrom, placementOpts.PortTo);
         if (!allocated.IsSuccess)
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new ApplicationException(
                 $"порт-диапазон исчерпан — расширьте PortRange (PgWorker:Docker:PortRange): {allocated.Error!.Message}"));
@@ -285,8 +294,13 @@ public sealed partial class AddShardProcess(
             var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             var since = _patroniWaitSince.GetOrAdd(scope, now);
             if (now - since > placementOpts.PatroniBootSec)
+            {
+                // Бюджет исчерпан: сброс трекера — новая попытка получает полный
+                // бюджет заново (E3, симметрично ProvisioningProcess).
+                _patroniWaitSince.TryRemove(scope, out _);
                 return Result<bool>.Failed(new ApplicationException(
                     $"Patroni шарда {scope} не поднялся за бюджет {placementOpts.PatroniBootSec} с"));
+            }
 
             return Result<bool>.Success(false);
         }

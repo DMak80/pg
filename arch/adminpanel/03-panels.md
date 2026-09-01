@@ -353,7 +353,7 @@ id». Клиентская валидация — зеркало 02 §9.7 (не�
 | `snapshot-stale` | warning | `BuiltAtUtc` старше `3×RefreshInterval` | refresher |
 | `shard-no-master` | critical | `dsn` есть, `master`-ключа нет (P11: протухший lease) | `/clusters/…/master` |
 | `shard-no-leader` | critical | HA-scope без `leader`-ключа, **кроме scope'ов кластера в NOT_INITIALIZED** (ноды ещё не подняты — 02 §9) | `/service/…/leader` |
-| `cluster-not-initialized` | info | кластер в `NOT_INITIALIZED` (заявлен, ноды не подняты) — заметка, пока provisioning не переведёт в ACTIVE | config.state |
+| `cluster-not-initialized` | info → warning | кластер в `NOT_INITIALIZED` (заявлен, ноды не подняты) — заметка; **эскалация** до warning, когда завис дольше нормы: возраст (с `created_unix`, fallback — возраст алерта) > `NotInitializedWarnSec` (900 c > бюджета PatroniBootSec воркера 600 c) | config.state |
 | `move-stale` | warning | status-ключ не-ACTIVE (кроме NOT_INITIALIZED) дольше `StaleMoveSeconds` (600 c) | `…/buckets/status/*` |
 | `move-frozen-long` | critical | `FROZEN` дольше `FrozenSeconds` (60 c) — cutover обязан быть секундами | `…/buckets/status/*` |
 | `move-aborting` | warning | `ABORTING` (незавершённая уборка, P7) | `…/buckets/status/*` |
@@ -416,6 +416,14 @@ probe-алерты (`ha-member-not-streaming`, `replica-lag-high`, `slot-*`,
 | kind | severity | Условие | Источник |
 |---|---|---|---|
 | `worker-api-unreachable` | critical | нет живых ключей `/pgworker/api/<id>` (или `/kafkaworker/api/<id>`) — мутации домена из панели недоступны (503) | снапшот (lease-ключи дискавери) |
+
+Kind наблюдаемости провижининга и здоровья воркера (2026-09-01; источники —
+02 §2.3.1 `work`-журналы и опрос `/healthz`):
+
+| kind | severity | Условие | Источник |
+|---|---|---|---|
+| `provision-stuck` | warning | `/pgworker/work/<C>`: `last_error` жив + возраст серии фейлов (`now − fail_first_unix`) > `ProvisionStuckSec` (300 c) — воркер сообщил причину (текст — в Message/details), но кластер не инициализируется | `/pgworker/work/<C>` |
+| `worker-unhealthy` | warning | живой lease-ключ `/pgworker/api/<id>`, но опрос `/healthz` ≠ 200 (503 degraded / сетевой сбой) — lease ещё не истёк, а процесс уже нездоров (docker-healthcheck гасит контейнер, ключи вот-вот исчезнут) | тик опроса /healthz |
 
 UI: карточка алерта раскрывает Hint и Remedy (бейдж движителя); API
 `/api/alerts` отдаёт поля `hint`, `remedy` (строка `worker-auto` /

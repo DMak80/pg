@@ -15,9 +15,12 @@ curl -fsS -c "$JAR" -o /dev/null -X POST "$BASE/api/auth/login" \
   -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}' \
   || { echo "❌ login admin/admin не прошёл"; exit 1; }
 
-# Чистка прошлых прогонов: только свои ключи (префикс кластера + request_*).
+# Чистка прошлых прогонов: только свои ключи (префикс кластера + request_* +
+# порт-закрепление — без него пересев оставлял portalloc прошлого прогона,
+# источник коллизий/усыхающих деклараций; диагностика 2026-09-01).
 ect() { docker compose exec -T etcd etcdctl --endpoints=http://localhost:2379 "$@"; }
 ect del --prefix /clusters/smoke >/dev/null
+ect del /pgworker/portalloc/smoke >/dev/null
 for k in request_cpu request_mem request_disk; do
   ect del "/service/smoke-shard1/$k" >/dev/null
   ect del "/service/smoke-shard2/$k" >/dev/null

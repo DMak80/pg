@@ -16,7 +16,8 @@ internal static class AlertTestRules
             new EtcdAlarmRule(),
             new SnapshotStaleRule(),
             new ClusterIncompleteRule(),
-            new ClusterNotInitializedRule(),
+            new ClusterNotInitializedRule(Options.Create(new AlertsOptions())),
+            new ProvisionStuckRule(Options.Create(new AlertsOptions())),
             new KeyMalformedRule(),
             new ShardNoMasterRule(),
             new MoveStaleRule(Options.Create(new AlertsOptions())),
@@ -38,5 +39,7 @@ internal static class AlertTestRules
             new InventoryMismatchRule(),
             // task etcd-via-worker-api: доступность API воркера (arch/03 §4.1)
             new WorkerApiUnreachableRule(),
+            // spec D4: /healthz живых инстансов при живом lease (arch/03 §4)
+            new WorkerUnhealthyRule(),
         ];
 }

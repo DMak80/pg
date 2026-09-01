@@ -3,6 +3,7 @@ using AdminPanel.Core.Alerting;
 using AdminPanel.Core.Alerting.Rules;
 using AdminPanel.Etcd;
 using AdminPanel.Etcd.Client;
+using AdminPanel.Etcd.Workers;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -41,7 +42,7 @@ public static class EtcdTestHarness
                 new SnapshotStaleRule(),
                 new ClusterIncompleteRule(),
                 new KeyMalformedRule(),
-                new ClusterNotInitializedRule(),
+                new ClusterNotInitializedRule(Options.Create(new AlertsOptions())),
                 new ShardNoMasterRule(),
                 new MoveStaleRule(Options.Create(new AlertsOptions())),
                 new MoveFrozenLongRule(Options.Create(new AlertsOptions())),
@@ -63,6 +64,7 @@ public static class EtcdTestHarness
             ]),
             store,
             probes ?? new SettableProbeStateStore(),
+            new WorkerHealthStore(),
             Options.Create(new EtcdOptions { Endpoints = endpoints }),
             new RealTimeProvider(),
             NullLogger<SnapshotRefresher>.Instance);
@@ -317,5 +319,37 @@ public class EtcdRoutingMutationTests(EtcdContainerFixture fixture) : IClassFixt
 
         // Assert
         store.Current!.Clusters.Single().Buckets.Single(b => b.Id == 0).Owner.Should().Be("s2");
+    }
+}
+
+// Work-журналы воркера — отдельный класс со СВОИМ контейнером (по образцу
+// EtcdRoutingMutationTests): сид /pgworker/work/bad даёт key-malformed и ломает
+// точный список алертов теста Refresher_RefreshOnce_BuildsExpectedSnapshot
+// общего класса (order-dependent флак).
+public class EtcdWorkJournalTests(EtcdContainerFixture fixture) : IClassFixture<EtcdContainerFixture>
+{
+    [Fact]
+    public async Task Refresher_WorkJournal_ParsedIntoSnapshot()
+    {
+        // Arrange — work-ключи в реальном etcd: валидный с серией + битый JSON.
+        var ct = TestContext.Current.CancellationToken;
+        var gateway = EtcdTestHarness.NewGateway();
+        await gateway.PutAsync(fixture.Endpoint, "/pgworker/work/shop",
+            """{"op":"provision","phase":"shard-provision","instance":"w-1","updated_unix":1756009200,"last_error":"boom","fail_count":2,"fail_first_unix":1756005400,"retry_not_before_unix":1756009210}""", ct);
+        await gateway.PutAsync(fixture.Endpoint, "/pgworker/work/bad", "{не-json", ct);
+        var store = new SnapshotStore();
+        var refresher = EtcdTestHarness.NewRefresher(store, fixture.Endpoint);
+
+        // Act
+        var tick = await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert — журнал целиком в снапшоте; битый ключ — ParseError (02 §2.3.1).
+        tick.IsSuccess.Should().BeTrue();
+        var work = store.Current!.PgWorkerWork.Should().ContainSingle(w => w.Cluster == "shop").Subject;
+        work.Op.Should().Be("provision");
+        work.LastError.Should().Be("boom");
+        work.FailCount.Should().Be(2);
+        work.RetryNotBeforeUnix.Should().Be(1756009210);
+        store.Current.ParseErrors.Should().Contain(e => e.Key == "/pgworker/work/bad");
     }
 }

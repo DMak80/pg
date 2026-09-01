@@ -1,0 +1,1 @@
+{"op":"provision","phase":"shard-provision","instance":"w-42","updated_unix":1756009200,"last_error":"Patroni шарда shop-shard1 не поднялся за бюджет 600 с","fail_count":3,"fail_first_unix":1756005400,"retry_not_before_unix":1756009215}

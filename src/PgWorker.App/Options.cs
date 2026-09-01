@@ -129,6 +129,12 @@ public sealed class ThresholdsOptions
 
     /// <summary>Бюджет недоступности шарда в ожиданиях переезда (t01, spec §9).</summary>
     public int ConnFailBudgetSec { get; set; } = 120;
+
+    /// <summary>Бэкофф ретраев provision (arch/14 §5 A): база задержки (n-й фейл подряд → Base·2^(n−1)).</summary>
+    public int ProvisionRetryBaseSec { get; set; } = 5;
+
+    /// <summary>Кап задержки бэкоффа provision (spec §3.5 E4).</summary>
+    public int ProvisionRetryMaxSec { get; set; } = 60;
 }
 
 /// <summary>Параметры процессов переезда бакетов (t01, spec §9; дефолты — из скриптов

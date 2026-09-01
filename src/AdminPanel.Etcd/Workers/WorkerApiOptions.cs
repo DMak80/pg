@@ -17,4 +17,10 @@ public sealed class WorkerApiOptions
 
     /// <summary>Таймаут одного HTTP-вызова (failover перебирает следующие ключи).</summary>
     public int TimeoutSec { get; set; } = 10;
+
+    /// <summary>Опрос /healthz живых инстансов PgWorker (spec D4): выключатель.</summary>
+    public bool HealthEnabled { get; set; } = true;
+
+    /// <summary>Интервал опроса /healthz, сек (spec D4; &lt;= 0 — дефолт 15).</summary>
+    public int HealthIntervalSec { get; set; } = 15;
 }

@@ -93,8 +93,11 @@ public class ClusterDriverTests
         public Task<Result<string>> ExecAsync(string containerId, IReadOnlyList<string> cmd, CancellationToken ct)
         {
             Calls.Add(("exec", containerId));
-            return Task.FromResult(Result<string>.Success(string.Empty));
+            return Task.FromResult(Result<string>.Success(ExecStdout));
         }
+
+        // stdout docker-exec (Д3: проба данных — present/absent по PG_VERSION).
+        public string ExecStdout { get; set; } = "";
 
         public Task<Result<IReadOnlyList<DockerSwarmNode>>> ListNodesAsync(CancellationToken ct)
         {
@@ -154,23 +157,258 @@ public class ClusterDriverTests
     private static PlainClusterDriver NewPlainDriver(FakeEngine engine)
         => new([new HostEndpoint("h1", "fake://h1")], new FakeFactory(engine), enableDoorman: true);
 
+    // AAA: Ф7-live — имена нод НЕуникальны между кластерами одного docker-хоста
+    // (pgw-canon-/pgw-canon10-/pgw-smoke- все с hostname/alias "shard1a"):
+    // InspectNodesAsync исключает контейнеры ЧУЖИХ pgw-кластеров ДО матчинга —
+    // иначе NodeMatcher видел чужие ноды как неоднозначность и пропускал ВСЁ
+    // (adoption 0 находок → portalloc не переписан фактом → recreate на битых записях)
     [Fact]
-    public async Task EnsureNode_ExistingContainer_DoesNotRecreate()
+    public async Task InspectNodes_SameNodeNamesAcrossClusters_FindsOnlyOwnCluster()
     {
-        // Arrange — контейнер ноды уже есть (повторный тик/пересоздание после сбоя)
+        // Arrange: три кластера, в каждом контейнер с hostname/alias "shard1a".
+        var engine = new FakeEngine
+        {
+            Containers =
+            [
+                new DockerContainer("id-canon", ["pgw-canon-shard1-shard1a"], "running", "img"),
+                new DockerContainer("id-canon10", ["pgw-canon10-shard1-shard1a"], "running", "img"),
+                new DockerContainer("id-smoke", ["pgw-smoke-shard1-shard1a"], "running", "img"),
+            ],
+            Inspects = new Dictionary<string, DockerContainerInspect>
+            {
+                ["id-canon"] = new("id-canon", "shard1a", ["shard1a"], [],
+                    [new PortMap(5432, 15000), new PortMap(8008, 18000)]),
+                ["id-canon10"] = new("id-canon10", "shard1a", ["shard1a"], [],
+                    [new PortMap(5432, 15004), new PortMap(8008, 18004)]),
+                ["id-smoke"] = new("id-smoke", "shard1a", ["shard1a"], [],
+                    [new PortMap(5432, 15002), new PortMap(8008, 18002)]),
+            },
+        };
+        var driver = NewPlainDriver(engine);
+
+        // Act
+        var result = await driver.InspectNodesAsync("canon10", ["shard1a"], CancellationToken.None);
+
+        // Assert: находка — ТОЛЬКО контейнер canon10 (факт 15004), чужие canon/smoke не мешают.
+        result.IsSuccess.Should().BeTrue();
+        var node = result.Value.Should().ContainSingle().Subject.Value;
+        node.NodeName.Should().Be("shard1a");
+        node.Object.Should().Be("pgw-canon10-shard1-shard1a");
+        node.Pg.Should().Be(15004);
+        node.Patroni.Should().Be(18004);
+    }
+
+    // AAA: Ф7-live — неоднозначность ВНУТРИ одного кластера по-прежнему → пропуск
+    // (фильтр чужих pgw-* не ослабляет guard неоднозначности, spec §3.1)
+    [Fact]
+    public async Task InspectNodes_AmbiguousWithinSameCluster_StillSkips()
+    {
+        // Arrange: два живых контейнера ОДНОГО кластера претендуют на имя ноды.
+        var engine = new FakeEngine
+        {
+            Containers =
+            [
+                new DockerContainer("id-a", ["pgw-canon10-shard1-shard1a"], "running", "img"),
+                new DockerContainer("id-b", ["pgw-canon10-shard1-shard1a-alt"], "running", "img"),
+            ],
+            Inspects = new Dictionary<string, DockerContainerInspect>
+            {
+                ["id-a"] = new("id-a", "shard1a", ["shard1a"], [], [new PortMap(5432, 15004)]),
+                ["id-b"] = new("id-b", "shard1a", ["shard1a"], [], [new PortMap(5432, 15005)]),
+            },
+        };
+        var driver = NewPlainDriver(engine);
+
+        // Act
+        var result = await driver.InspectNodesAsync("canon10", ["shard1a"], CancellationToken.None);
+
+        // Assert: оба контейнера свои (pgw-canon10-*) → неоднозначность → безопасный пропуск.
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().BeEmpty();
+    }
+
+    // AAA: Ф7-live — фильтр кластера НЕ прячет внешние контейнеры усыновления
+    // (AD1 ищет as-*/hc*, не pgw-*): исключаются только чужие pgw-<C'>-*
+    [Fact]
+    public async Task InspectNodes_ForeignNonPgwContainersOfOthers_RemainVisible()
+    {
+        // Arrange: внешний контейнер as-s2a (hostname s2a — усыновление AD1) +
+        // чужой pgw-кластер с той же нодой s2a.
+        var engine = new FakeEngine
+        {
+            Containers =
+            [
+                new DockerContainer("id-as", ["as-s2a"], "running", "img"),
+                new DockerContainer("id-foreign", ["pgw-other-s2-s2a"], "running", "img"),
+            ],
+            Inspects = new Dictionary<string, DockerContainerInspect>
+            {
+                ["id-as"] = new("id-as", "s2a", ["s2a"], [], [new PortMap(5432, 15432)]),
+                ["id-foreign"] = new("id-foreign", "s2a", ["s2a"], [], [new PortMap(5432, 15099)]),
+            },
+        };
+        var driver = NewPlainDriver(engine);
+
+        // Act
+        var result = await driver.InspectNodesAsync("demo", ["s2a"], CancellationToken.None);
+
+        // Assert: внешний as-s2a виден (усыпление кластера demo), чужой pgw-other-* исключён.
+        result.IsSuccess.Should().BeTrue();
+        var node = result.Value.Should().ContainSingle().Subject.Value;
+        node.Object.Should().Be("as-s2a");
+        node.Pg.Should().Be(15432);
+    }
+
+    // AAA: Д3 — проба данных ноды: docker-exec test -f PG_VERSION → Present/Absent;
+    // контейнера нет → Unknown (транспорт ≠ доказательство утраты, arch/14 R11)
+    [Fact]
+    public async Task NodeDataPresence_StdoutPresent_Present()
+    {
+        // Arrange: running-контейнер ноды; exec вернул "present" (PG_VERSION есть).
         var engine = new FakeEngine
         {
             Containers = [new DockerContainer("id1", ["pgw-shop-shard1-shard1a"], "running", "img")],
+            ExecStdout = "present",
+        };
+        var driver = NewPlainDriver(engine);
+
+        // Act
+        var result = await driver.NodeDataPresenceAsync("shop", "shard1", "shard1a", CancellationToken.None);
+
+        // Assert: данные доказанно есть.
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Be(DataPresence.Present);
+    }
+
+    [Fact]
+    public async Task NodeDataPresence_StdoutAbsent_Absent()
+    {
+        // Arrange: контейнер жив, PG_VERSION нет (volume пуст — доказанная утрата).
+        var engine = new FakeEngine
+        {
+            Containers = [new DockerContainer("id1", ["pgw-shop-shard1-shard1a"], "running", "img")],
+            ExecStdout = "absent",
+        };
+        var driver = NewPlainDriver(engine);
+
+        // Act
+        var result = await driver.NodeDataPresenceAsync("shop", "shard1", "shard1a", CancellationToken.None);
+
+        // Assert: данных доказанно нет.
+        result.Value.Should().Be(DataPresence.Absent);
+    }
+
+    [Fact]
+    public async Task NodeDataPresence_NoRunningContainer_Unknown()
+    {
+        // Arrange: контейнера нет — утрата НЕ доказана.
+        var engine = new FakeEngine { Containers = [] };
+        var driver = NewPlainDriver(engine);
+
+        // Act
+        var result = await driver.NodeDataPresenceAsync("shop", "shard1", "shard1a", CancellationToken.None);
+
+        // Assert: Unknown — чистка scope запрещена.
+        result.Value.Should().Be(DataPresence.Unknown);
+    }
+
+    [Fact]
+    public async Task EnsureNode_ExistingContainer_DoesNotRecreate()
+    {
+        // Arrange — контейнер ноды уже есть с ПЛАНОМ портов (повторный тик/пересоздание после сбоя)
+        var engine = new FakeEngine
+        {
+            Containers = [new DockerContainer("id1", ["pgw-shop-shard1-shard1a"], "running", "img")],
+            Inspects = new Dictionary<string, DockerContainerInspect>
+            {
+                ["id1"] = new("id1", "shard1a", [], [],
+                    [new PortMap(5432, 15432), new PortMap(8008, 18008), new PortMap(6432, 16432)]),
+            },
         };
         var driver = NewPlainDriver(engine);
 
         // Act
         var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, ct: CancellationToken.None);
 
-        // Assert: ни create, ни start — только сверка списком
+        // Assert: ни create, ни start — только сверка списком и инспектом
         result.IsSuccess.Should().BeTrue();
         engine.Calls.Should().NotContain(c => c.Call == "create");
         engine.Calls.Should().NotContain(c => c.Call == "start");
+    }
+
+    // AAA: B — контейнер на ЧУЖИХ портах (portalloc потерян и выделен заново):
+    // расхождение биндингов → stop+rm+create+start с планом (volume жив)
+    [Fact]
+    public async Task EnsureNode_PortDrift_RecreatesContainer()
+    {
+        // Arrange: контейнер на ЧУЖИХ портах (сценарий: portalloc потерян и выделен заново).
+        var engine = new FakeEngine
+        {
+            Containers = [new DockerContainer("id1", ["pgw-shop-shard1-shard1a"], "running", "img")],
+            Inspects = new Dictionary<string, DockerContainerInspect>
+            {
+                ["id1"] = new("id1", "shard1a", [], [],
+                    [new PortMap(5432, 15111), new PortMap(8008, 18111), new PortMap(6432, 16611)]),
+            },
+        };
+        var driver = NewPlainDriver(engine);
+
+        // Act
+        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, ct: CancellationToken.None);
+
+        // Assert: stop → create → start с планом портов (PROVISIONING-фаза, volume жив).
+        result.IsSuccess.Should().BeTrue();
+        var calls = engine.Calls.Select(c => c.Call).ToList();
+        calls.Should().ContainInOrder("stop", "create", "start");
+        engine.CreatedSpec!.Ports.Should().Contain(new PortMap(5432, 15432));
+    }
+
+    // AAA: B — отсутствие ожидаемого биндинга = расхождение → пересоздание
+    [Fact]
+    public async Task EnsureNode_MissingBinding_RecreatesContainer()
+    {
+        // Arrange: контейнер без 5432-биндинга — «бесполезный» контейнер.
+        var engine = new FakeEngine
+        {
+            Containers = [new DockerContainer("id1", ["pgw-shop-shard1-shard1a"], "running", "img")],
+            Inspects = new Dictionary<string, DockerContainerInspect>
+            {
+                ["id1"] = new("id1", "shard1a", [], [], [new PortMap(8008, 18008)]),
+            },
+        };
+        var driver = new PlainClusterDriver([new HostEndpoint("h1", "fake://h1")], new FakeFactory(engine), enableDoorman: false);
+
+        // Act
+        await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, ct: CancellationToken.None);
+
+        // Assert: пересоздание (отсутствие ожидаемого биндинга = расхождение).
+        engine.Calls.Select(c => c.Call).Should().Contain("create");
+    }
+
+    // AAA: B/R9 — усыновлённая нода (object) — чужой контейнер: сверка и
+    // пересоздание неприменимы
+    [Fact]
+    public async Task EnsureNode_AdoptedObjectNode_NeverTouched()
+    {
+        // Arrange: усыновлённая нода (object) — чужой контейнер, сверка неприменима (R9).
+        var engine = new FakeEngine
+        {
+            Containers = [new DockerContainer("id1", ["foreign-1"], "running", "img")],
+            Inspects = new Dictionary<string, DockerContainerInspect>
+            {
+                ["id1"] = new("id1", "shard1a", [], [], [new PortMap(5432, 15999)]),
+            },
+        };
+        var driver = NewPlainDriver(engine);
+        var addr = new NodeAddress("h1", new NodePorts(15432, 18008, 16432), Object: "foreign-1");
+
+        // Act
+        var result = await driver.EnsureNodeAsync(Topology(addr), "shard1a", addr, Secrets, Etcd, resources: null, ct: CancellationToken.None);
+
+        // Assert: никаких stop/remove/create.
+        result.IsSuccess.Should().BeTrue();
+        engine.Calls.Select(c => c.Call).Should().NotContain("stop");
+        engine.Calls.Select(c => c.Call).Should().NotContain("create");
     }
 
     [Fact]

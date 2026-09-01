@@ -2,6 +2,7 @@ using AdminPanel.Core;
 using AdminPanel.Core.Alerting;
 using AdminPanel.Etcd;
 using AdminPanel.Etcd.Client;
+using AdminPanel.Etcd.Workers;
 using AdminPanel.Infrastructure;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -29,6 +30,7 @@ internal static class RefresherTestHarness
             new AlertEngine(AlertTestRules.All()),
             store,
             probes ?? new SettableProbeStateStore(),
+            new WorkerHealthStore(),
             Options.Create(new EtcdOptions { Endpoints = endpoints }),
             new FixedTimeProvider(),
             NullLogger<SnapshotRefresher>.Instance);
@@ -61,6 +63,8 @@ internal sealed class FakeEtcdGateway : IEtcdGateway
 
     public IReadOnlyList<Kv> PgApiKv { get; set; } = [];
 
+    public IReadOnlyList<Kv> WorkKv { get; set; } = [];
+
     public IReadOnlyList<EtcdMember> Members { get; init; } = [];
 
     public IReadOnlyList<EtcdAlarm> Alarms { get; init; } = [];
@@ -80,6 +84,7 @@ internal sealed class FakeEtcdGateway : IEtcdGateway
                 "/service/" => ServiceKv,
                 "/pgworker/moves/" => MovesKv,
                 "/pgworker/api/" => PgApiKv,
+                "/pgworker/work/" => WorkKv,
                 _ => NodesKv,
             }));
     }
@@ -445,5 +450,36 @@ public class SnapshotRefresherTests
         result.IsSuccess.Should().BeFalse();
         store.Current!.BuiltAtUtc.Should().Be(before!.BuiltAtUtc);
         store.Current.MoveTickets.Should().BeSameAs(before.MoveTickets);
+    }
+
+    // AAA: R4 — транспортный провал range /pgworker/work/ роняет тик, но прежние
+    // work-записи переживают отказ (FailTick переносит, неполный снапшот хуже прежнего)
+    [Fact]
+    public async Task Refresh_WorkRangeTransportFails_PreviousPgWorkerWorkKept()
+    {
+        // Arrange: прежний снапшот несёт PgWorkerWork; gateway валит transport
+        // range /pgworker/work/ (FailTick: неполный снапшот хуже прежнего — spec R4).
+        var gateway = new FakeEtcdGateway
+        {
+            ClustersKv = EtcdFixtures.LoadKv("clusters-full.json"),
+            ServiceKv = EtcdFixtures.LoadKv("service-full.json"),
+            NodesKv = EtcdFixtures.LoadKv("stand-nodes.json"),
+        };
+        gateway.RangeFailPrefixes.Add("/pgworker/work/");
+        var store = new SnapshotStore();
+        var previous = TestSnapshots.Healthy(new DateTimeOffset(2026, 9, 1, 12, 0, 0, TimeSpan.Zero)) with
+        {
+            PgWorkerWork = [new WorkJournalInfo("demo", "provision", "planned", "w-1", 1756000000, null, null, null, null)],
+        };
+        store.Replace(previous);
+        var refresher = RefresherTestHarness.New(gateway, store, "http://e1");
+
+        // Act
+        var tick = await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert: тик отказной (FailTick: Reachable=false), прежние work-записи пережили отказ.
+        tick.IsSuccess.Should().BeFalse();
+        store.Current!.Etcd.Reachable.Should().BeFalse();
+        store.Current.PgWorkerWork.Should().ContainSingle().Which.Cluster.Should().Be("demo");
     }
 }

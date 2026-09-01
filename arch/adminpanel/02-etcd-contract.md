@@ -104,14 +104,15 @@ Scope = `<C>-<X>`, глобально уникален. Связь со шард
 ### 2.3.1. `/pgworker/…` — координация воркеров (читается избирательно)
 
 Префикс координации PgWorker (`arch/14` §3.3) панель читает точечно —
-три ключа-семейства, остальные ключи префикса (`leader`, `claims`, `work`,
+четыре ключа-семейства, остальные ключи префикса (`leader`, `claims`,
 `evacuations`, `instances`) панель НЕ читает и не пишет:
 
 | Ключ | Формат значения | В модель | Примечания |
 |---|---|---|---|
 | `/pgworker/portalloc/<C>` | JSON `{"<shard>/<node>":{"host":"h1","pg":15432,"patroni":18008,"doorman":16432}}` | адреса Patroni-проб (`arch/14` §2.4) | канонический `host:patroni-порт` члена HA (источник — DSN шарда); в UI не отображается |
+| `/pgworker/work/<C>` | JSON `{"op":"provision\|…","phase":"…","updated_unix":…,"instance":"…","last_error"?,"fail_count"?,"fail_first_unix"?,"retry_not_before_unix"?,"unreachable"?}` (канон — arch/14 §3.3) | `WorkJournalInfo` (§3) | журнал фаз процесса воркера; `last_error` + `fail_first_unix` кормят алерт `provision-stuck` (03 §4) — панель видит, ЧТО именно фейлится у неинициализирующегося кластера; битый JSON — parseError-запись, ключ не трогаем (домен воркера); в UI отображается через алерты |
 | `/pgworker/moves/<C>/<bucket>` | JSON-заявка `{"op":"move"\|"rollback"\|"finalize"\|"abort","to"?,"old_shard"?,"skip_reverse"?,"resume"?,"force"?,"requested_unix":<unix>,"requested_by"?}` | `MoveTicket` (§3) | очередь заявок на переезды: панель читает (вкладка «Переезды»); **пишет PgWorker** по команде мутации §9.7 (пришла через API воркера); после успеха/перманентного отказа заявку УДАЛЯЕТ PgWorker — исчезновение из очереди без изменения routing/status = отвергнутая заявка |
-| `/pgworker/api/<id>` | lease TTL 15 c, JSON `{"url":"http://<host>:<port>","instance":"<id>","since_unix":…}` | `WorkerEndpoint[]` (§3) | **дискавери API PgWorker** (arch/14 §1.1): ставит сам воркер; ключ жив = инстанс жив и URL валиден. Панель кеширует в снапшоте и зовёт любой живой при мутациях §9; в UI не отображается (только через алерт доступности `worker-api-unreachable`, 03 §4.1) |
+| `/pgworker/api/<id>` | lease TTL 15 c, JSON `{"url":"http://<host>:<port>","instance":"<id>","since_unix":…}` | `WorkerEndpoint[]` (§3) | **дискавери API PgWorker** (arch/14 §1.1): ставит сам воркер; ключ жив = инстанс жив и URL валиден. Панель кеширует в снапшоте и зовёт любой живой при мутациях §9; по этим же URL отдельный тик опрашивает `/healthz` (результат — `WorkerHealth[]`, алерт `worker-unhealthy` 03 §4); в UI не отображается (только через алерт доступности `worker-api-unreachable`, 03 §4.1) |
 
 ### 2.3.2. `/kafkaworker/api/…` — дискавери API KafkaWorker
 
@@ -141,6 +142,8 @@ sealed record EtcdSnapshot(
     IReadOnlyList<StandNode> StandNodes,   // §2.3, обычно пусто
     IReadOnlyList<MoveTicket> MoveTickets, // §2.3.1: очередь заявок /pgworker/moves/
     IReadOnlyList<WorkerEndpoint> PgWorkerEndpoints, // §2.3.1: живые /pgworker/api/<id>
+    IReadOnlyList<WorkJournalInfo> PgWorkerWork, // §2.3.1: журналы /pgworker/work/<C>
+    IReadOnlyList<WorkerHealth> WorkerHealth, // §2.3.1: опрос /healthz живых инстансов
     IReadOnlyList<ProbeResult> Probes,     // результаты live-проб §6
     IReadOnlyList<Alert> Alerts,           // вычислено AlertEngine (03-panels §4)
     int UnknownKeyCount);                  // диагностика «неизвестных» ключей
@@ -148,6 +151,23 @@ sealed record EtcdSnapshot(
 // Живой инстанс API воркера (§2.3.1/§2.3.2; arch/14 §1.1, arch/16 §1.1):
 // lease-ключ дискавери; URL — куда панель отправляет мутации.
 sealed record WorkerEndpoint(string InstanceId, string Url, long SinceUnix);
+
+// Запись журнала /pgworker/work/<C> (§2.3.1; формат — arch/14 §3.3):
+// живая фаза процесса воркера + серия фейлов (fail_count/fail_first_unix/
+// retry_not_before_unix — бэкофф ретраев provision, arch/14 §5 A).
+sealed record WorkJournalInfo(
+    string Cluster, string Op, string Phase, string Instance,
+    long UpdatedUnix, string? LastError,
+    int? FailCount, long? FailFirstUnix, long? RetryNotBeforeUnix);
+
+// Результат опроса /healthz инстанса PgWorker (§2.3.1): 200 → Healthy,
+// 503 → Degraded (детали секций health — у воркера), сетевой сбой/таймаут →
+// Unreachable (lease-ключ при этом жив — воркер недавно подавал признаки).
+sealed record WorkerHealth(
+    string InstanceId, string Url, WorkerHealthStatus Status,
+    DateTimeOffset CheckedAtUtc, string? Detail);
+
+enum WorkerHealthStatus { Healthy, Degraded, Unreachable }
 
 sealed record ClusterInfo(
     string Name, string? DbName, int BucketsCount, long? CreatedUnix,
@@ -214,8 +234,11 @@ sealed record MoveTicket(
      лишний запрос в проде; проверяем `keys_only` один раз и кешируем
      «префикс существует» — упрощение: просто шлём range, пустой ответ
      дешев) и range `/pgworker/portalloc/` + `/pgworker/moves/` +
-     `/pgworker/api/` (§2.3.1; транспортный провал любого KV-чтения роняет
-     тик — неполный снапшот хуже прежнего).
+     `/pgworker/api/` + `/pgworker/work/` (§2.3.1; транспортный провал
+     любого KV-чтения роняет тик — неполный снапшот хуже прежнего).
+     `WorkerHealth` в снапшот вносит отдельный тик опроса /healthz
+     (§2.3.1; интервал — `AdminPanel:Workers:HealthIntervalSec`, образец
+     проб §6: состояние готовым, KV-тик не блокируется).
   3. Парсеры (чистые функции `IReadOnlyList<Kv> → модель`) → сборка нового
      `EtcdSnapshot` (пробы вносятся из их последнего результата).
   4. `AlertEngine(snapshot)` → `Alerts`; атомарная замена в `SnapshotStore`.

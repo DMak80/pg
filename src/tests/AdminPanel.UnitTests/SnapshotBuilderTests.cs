@@ -25,7 +25,7 @@ public class SnapshotBuilderTests
         // Act
         var snapshot = SnapshotBuilder.Build(
             time, clusters, service, nodes, MovesQueueParser.Parse([]),
-            WorkerEndpointsParser.Parse([]), members, alarms, etcd);
+            WorkerEndpointsParser.Parse([]), WorkJournalParser.Parse([]), members, alarms, etcd);
 
         // Assert
         snapshot.BuiltAtUtc.Should().Be(time.Utc);
@@ -35,6 +35,7 @@ public class SnapshotBuilderTests
         snapshot.MoveTickets.Should().BeEmpty(); // очередь заявок — образец portalloc
         snapshot.Alerts.Should().BeEmpty();   // AlertEngine — t04
         snapshot.Probes.Should().BeEmpty();   // пробы — t06
+        snapshot.PgWorkerWork.Should().BeEmpty(); // журналы воркера — без сида
         snapshot.UnknownKeyCount.Should().Be(0);
         snapshot.ParseErrors.Should().BeEmpty();
     }
@@ -51,7 +52,7 @@ public class SnapshotBuilderTests
         // Act
         var snapshot = SnapshotBuilder.Build(
             time, clusters, service, [], MovesQueueParser.Parse([]),
-            WorkerEndpointsParser.Parse([]), [], [], etcd);
+            WorkerEndpointsParser.Parse([]), WorkJournalParser.Parse([]), [], [], etcd);
 
         // Assert
         snapshot.UnknownKeyCount.Should().Be(2); // surprise (/clusters/) + stray (/service/)

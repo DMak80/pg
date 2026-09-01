@@ -418,4 +418,60 @@ public class CoordinationTests
         journalRead.State.Should().Be("QUARANTINED");
         journalRead.ReturnedUnix.Should().Be(1755900600);
     }
+
+    [Fact]
+    public async Task WorkJournal_WritePhase_WithSeries_CarriesRetryFields()
+    {
+        // Arrange: журнал с контекстом серии ретраев.
+        var gateway = new FakeGateway();
+        var journal = NewJournal(gateway);
+        var series = new RetrySeries(FailCount: 3, FailFirstUnix: 1756000000, RetryNotBeforeUnix: 1756000035);
+
+        // Act: запись фазы с переносом серии.
+        var result = await journal.WritePhaseAsync(
+            "shop", "provision", "waiting-patroni", "inst-1", "boom", CancellationToken.None, series);
+
+        // Assert: round-trip сохраняет серию (фазы прогресса не стирают контекст неудачи).
+        result.IsSuccess.Should().BeTrue();
+        var state = await journal.ReadAsync("shop", CancellationToken.None);
+        state.Value!.FailCount.Should().Be(3);
+        state.Value.FailFirstUnix.Should().Be(1756000000);
+        state.Value.RetryNotBeforeUnix.Should().Be(1756000035);
+    }
+
+    [Fact]
+    public async Task WorkJournal_WritePhase_WithoutSeries_OmitsRetryFields()
+    {
+        // Arrange: серия была; успех пишет фазу без контекста (сброс).
+        var gateway = new FakeGateway();
+        var journal = NewJournal(gateway);
+        await journal.WritePhaseAsync("shop", "provision", "failed", "inst-1", "boom", CancellationToken.None,
+            new RetrySeries(2, 1756000000, 1756000010));
+
+        // Act: запись Done без серии.
+        await journal.WritePhaseAsync("shop", "provision", "done", "inst-1", null, CancellationToken.None);
+
+        // Assert: поля серии отсутствуют в JSON и в модели.
+        var raw = gateway.Store["/pgworker/work/shop"];
+        raw.Should().NotContain("fail_count");
+        var state = await journal.ReadAsync("shop", CancellationToken.None);
+        state.Value!.FailCount.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task WorkJournal_ReadLegacyFormat_RetryFieldsNull()
+    {
+        // Arrange: журнал старого формата (до полей серии) — честный JSON без них.
+        var gateway = new FakeGateway();
+        gateway.Store["/pgworker/work/old"] =
+            """{"op":"provision","phase":"planned","instance":"i","updated_unix":1756000000}""";
+        var journal = NewJournal(gateway);
+
+        // Act
+        var state = await journal.ReadAsync("old", CancellationToken.None);
+
+        // Assert: обратная совместимость — поля null, чтение не падает.
+        state.Value!.FailCount.Should().BeNull();
+        state.Value.RetryNotBeforeUnix.Should().BeNull();
+    }
 }

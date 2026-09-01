@@ -9,6 +9,10 @@ namespace PgWorker.Docker.Drivers;
 // Хост plain-режима: имя + endpoint Engine API (tcp://… | unix://…).
 public sealed record HostEndpoint(string Name, string Endpoint);
 
+/// <summary>Наличие данных PG у ноды (Д3, arch/14 R11): Present/Absent — доказано
+/// exec-пробой PG_VERSION; Unknown — транспорт недоступен (НЕ доказательство утраты).</summary>
+public enum DataPresence { Present, Absent, Unknown }
+
 // Унифицированное управление нодой кластера в обоих режимах (spec §5.2/§5.3).
 // Идемпотентность: существующий объект (контейнер/сервис) сверяется по имени и
 // не пересоздаётся; 404/409 на удалении/создании — успех (движок).
@@ -37,14 +41,24 @@ public interface IClusterDriver
     // шарда — данные на месте, нода не удаляется). 404/304 = успех.
     Task<Result> StopNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct);
 
+    // Данные ноды (Д3, spec §3.7): docker-exec test -f PG_VERSION; контейнера
+    // нет/exec-сбой/нечитаемый stdout → Unknown (утрата не доказана).
+    Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct);
+
     // Выполнить команду в контейнере ноды (t01: pg_dump внутри мастер-контейнера
     // источника), вернуть stdout. Идемпотентности не требует (read-only утилита).
     Task<Result<string>> ExecNodeAsync(
         string cluster, string shard, string node, IReadOnlyList<string> cmd, CancellationToken ct);
 
-    // Docker-инспекция нод усыновления (spec §3.1, arch/14 §5 J AD1): по именам
-    // нод вернуть DiscoveredNode (host/object/порты). 0 находок — пустой словарь.
+    // Docker-инспекция нод усыновления (spec §3.1, arch/14 §5 J AD1; live-Ф7
+    // 2026-09-01): по именам нод вернуть DiscoveredNode (host/object/порты).
+    // Контейнеры ЧУЖИХ pgw-кластеров исключаются ДО матчинга — имена нод
+    // неуникальны между кластерами одного docker-хоста (pgw-canon-*/pgw-canon10-*
+    // с одинаковым hostname "shard1a" без фильтра давали неоднозначность →
+    // пропуск ВСЕГО); внешние контейнеры усыновления (as-*/hc*) остаются видны.
+    // 0 находок — пустой словарь.
     Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
+        string cluster,
         IReadOnlyCollection<string> nodeNames, CancellationToken ct);
 
     // Exec в контейнер по имени (docker-exec fallback для pg_dump усыновлённых
@@ -121,12 +135,33 @@ public sealed class PlainClusterDriver(
             if (!network.IsSuccess)
                 throw network.Error!;
 
-            // Идемпотентность: существующий контейнер не пересоздаётся (P2.1).
-            var existing = await engine.ListContainersAsync(name, all: true, ct);
+            // Идемпотентность со сверкой портов (spec §3.2): существующий контейнер
+            // обязан нести план публичных биндингов; расхождение → пересоздание
+            // (фаза PROVISIONING — данных нет, volume сохраняется). Без сверки контейнер
+            // навсегда оставался на чужих портах: WaitPatroni бил в мёртвый порт.
+            // Усыновлённая нода (object) — чужой контейнер: сверка неприменима (R9).
+            var lookupName = addr.Object ?? name;
+            var existing = await engine.ListContainersAsync(lookupName, all: true, ct);
             if (!existing.IsSuccess)
                 throw existing.Error!;
-            if (existing.Value.Any(c => c.Names.Contains(name)))
-                return;
+            if (existing.Value.FirstOrDefault(c => c.Names.Contains(lookupName)) is { } container)
+            {
+                if (!string.IsNullOrEmpty(addr.Object))
+                    return; // усыновлённая (object) — чужой контейнер, не трогаем (R9)
+
+                var inspect = await engine.InspectContainerAsync(container.Id, ct);
+                if (!inspect.IsSuccess)
+                    throw inspect.Error!;
+                if (PortsMatchPlan(inspect.Value.Ports, addr))
+                    return; // контейнер на месте с планом — идемпотентность
+
+                var stopped = await engine.StopContainerAsync(name, timeoutSec: 10, ct);
+                if (!stopped.IsSuccess)
+                    throw stopped.Error!;
+                var removed = await engine.RemoveContainerAsync(name, force: true, ct);
+                if (!removed.IsSuccess)
+                    throw removed.Error!;
+            }
 
             var spec = BuildSpec(topology, nodeName, addr, secrets, etcd, resources);
             var created = await engine.CreateContainerAsync(spec, name, ct);
@@ -136,6 +171,16 @@ public sealed class PlainClusterDriver(
             if (!started.IsSuccess)
                 throw started.Error!;
         });
+    }
+
+    // Все ожидаемые public-биндинги контейнера совпадают с планом ноды
+    // (5432→pg, 8008→patroni, 6432→doorman при enableDoorman).
+    private bool PortsMatchPlan(IReadOnlyList<PortMap> actual, NodeAddress addr)
+    {
+        var expected = new List<PortMap> { new(5432, addr.Ports.Pg), new(8008, addr.Ports.Patroni) };
+        if (enableDoorman)
+            expected.Add(new PortMap(6432, addr.Ports.Doorman));
+        return expected.All(e => actual.Any(p => p.ContainerPort == e.ContainerPort && p.HostPort == e.HostPort));
     }
 
     public async Task<Result> RemoveNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct)
@@ -173,6 +218,25 @@ public sealed class PlainClusterDriver(
         });
     }
 
+    // Данные ноды (Д3): docker-exec test -f PG_VERSION; контейнера нет/exec-сбой/
+    // нечитаемый stdout → Unknown (утрата не доказана — arch/14 R11).
+    public async Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct)
+    {
+        // PGDATA Spilo (arch/14 §2.1): volume-корень /home/postgres/pgdata,
+        // данные — pgroot/data/PG_VERSION.
+        const string marker = "/home/postgres/pgdata/pgroot/data/PG_VERSION";
+        var exec = await ExecNodeAsync(cluster, shard, node,
+            ["sh", "-c", $"test -f {marker} && echo present || echo absent"], ct);
+        if (!exec.IsSuccess)
+            return Result<DataPresence>.Success(DataPresence.Unknown);
+        return Result<DataPresence>.Success(exec.Value.Trim() switch
+        {
+            "present" => DataPresence.Present,
+            "absent" => DataPresence.Absent,
+            _ => DataPresence.Unknown,
+        });
+    }
+
     // Контейнер ноды по имени pgw-<C>-<X>-<n>: перебор хостов (аналог StopNode),
     // на первом, где найден running-контейнер — exec (t01: pg_dump-транспорт).
     public async Task<Result<string>> ExecNodeAsync(
@@ -203,11 +267,11 @@ public sealed class PlainClusterDriver(
     }
 
     // Docker-инспекция нод усыновления (spec §3.1): по каждому хосту собираем
-    // ВСЕ пары (контейнер, инспект) и зовём NodeMatcher.Match один раз на хост —
-    // только так работают merge patroni-порта из сайдкара (env NODE_NAME) и
-    // skip-on-ambiguity «два контейнера на имя → пропуск» (юнит-тесты NodeMatcher).
+    // пары (контейнер, инспект) КЛАСТЕРА и зовём NodeMatcher.Match один раз на
+    // хост — только так работают merge patroni-порта из сайдкара (env NODE_NAME)
+    // и skip-on-ambiguity «два контейнера на имя → пропуск» (юнит-тесты NodeMatcher).
     public async Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
-        IReadOnlyCollection<string> nodeNames, CancellationToken ct)
+        string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct)
     {
         return await Result<IReadOnlyDictionary<string, DiscoveredNode>>.FromAsync(async () =>
         {
@@ -218,12 +282,18 @@ public sealed class PlainClusterDriver(
                 if (!list.IsSuccess)
                     throw list.Error!; // хост недоступен — не тихий список (паттерн GetHostsAsync)
 
-                // Собираем ВСЕ пары хоста: Match должен видеть и ноду, и её
-                // patroni-сайдкар (env NODE_NAME), и пары конкурирующих контейнеров
-                // (неоднозначность → пропуск имени) — один вызов на хост.
+                // Фильтр кластера (live-Ф7): имена нод неуникальны между кластерами
+                // одного docker-хоста — без фильтра NodeMatcher видел чужие pgw-ноды
+                // как неоднозначность на КАЖДОЕ имя и пропускал все находки.
+                // Чужие pgw-<C'>-* исключаем; Match должен видеть свои ноды, её
+                // patroni-сайдкар (env NODE_NAME) и внешние контейнеры усыновления
+                // (as-*/hc*, не pgw-*) — один вызов на хост.
+                var ownPrefix = $"pgw-{cluster}-";
                 var pairs = new List<(DockerContainer, DockerContainerInspect)>();
                 foreach (var c in list.Value)
                 {
+                    if (IsForeignPgw(c, ownPrefix))
+                        continue;
                     var inspect = await engine.InspectContainerAsync(c.Id, ct);
                     if (inspect.IsSuccess)
                         pairs.Add((c, inspect.Value)); // контейнер исчез между list и inspect — не наша находка
@@ -237,6 +307,12 @@ public sealed class PlainClusterDriver(
             return (IReadOnlyDictionary<string, DiscoveredNode>)found;
         });
     }
+
+    // Контейнер чужого pgw-кластера: зовётся pgw-*, но не pgw-<наш кластер>-*
+    // (Names движок отдаёт без ведущего «/»; внешние as-*/hc* — не pgw-* → false).
+    private static bool IsForeignPgw(DockerContainer c, string ownPrefix)
+        => c.Names.Any(n => n.StartsWith("pgw-", StringComparison.Ordinal))
+            && c.Names.All(n => !n.StartsWith(ownPrefix, StringComparison.Ordinal));
 
     // Exec в контейнер по имени (docker-exec fallback pg_dump усыновлённых нод,
     // spec §3.3): перебор хостов, первый running-контейнер с точным именем.
@@ -364,6 +440,10 @@ public sealed class SwarmClusterDriver(
     {
         return await Result.FromAsync(async () =>
         {
+            // swarm: сверка портов не реализована (MVP, стенд plain — spec §5):
+            // при необходимости — ListTasks(service) → ContainerId running-таска →
+            // InspectContainerAsync и тот же PortsMatchPlan-критерий.
+
             // constraint: node.id==<id>, id ищем по Hostname==addr.Host (spec §5.3).
             var nodes = await _engine.ListNodesAsync(ct);
             if (!nodes.IsSuccess)
@@ -402,6 +482,23 @@ public sealed class SwarmClusterDriver(
         return stopped;
     }
 
+    // Данные ноды (Д3): через exec running-таска сервиса (свой ExecNodeAsync);
+    // утрата не доказана → Unknown (arch/14 R11).
+    public async Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct)
+    {
+        const string marker = "/home/postgres/pgdata/pgroot/data/PG_VERSION";
+        var exec = await ExecNodeAsync(cluster, shard, node,
+            ["sh", "-c", $"test -f {marker} && echo present || echo absent"], ct);
+        if (!exec.IsSuccess)
+            return Result<DataPresence>.Success(DataPresence.Unknown);
+        return Result<DataPresence>.Success(exec.Value.Trim() switch
+        {
+            "present" => DataPresence.Present,
+            "absent" => DataPresence.Absent,
+            _ => DataPresence.Unknown,
+        });
+    }
+
     // Контейнер ноды — running-таск сервиса (ContainerID уже в ответе /tasks).
     public async Task<Result<string>> ExecNodeAsync(
         string cluster, string shard, string node, IReadOnlyList<string> cmd, CancellationToken ct)
@@ -428,7 +525,7 @@ public sealed class SwarmClusterDriver(
     // Усыновление swarm-кластеров: за пределами текущей задачи (стенд plain,
     // spec §3.1); при необходимости — инспект тасков сервисов.
     public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
-        IReadOnlyCollection<string> nodeNames, CancellationToken ct)
+        string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct)
         => Task.FromResult(Result<IReadOnlyDictionary<string, DiscoveredNode>>.Success(
             (IReadOnlyDictionary<string, DiscoveredNode>)new Dictionary<string, DiscoveredNode>()));
 

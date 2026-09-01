@@ -48,6 +48,9 @@ internal sealed class SnapshotLoop(
                     var shot = await snapshots.TakeAsync(stoppingToken);
                     if (shot.IsSuccess)
                     {
+                        // healthz = «последний тик» (живой-Ф7): успешный снимок гасит
+                        // ошибку прошлого — иначе единственный фейл = вечный unhealthy.
+                        StatusError = Result.Success();
                         health.MarkSnapshotTaken();
                         logger.LogInformation("снапшот etcd снят: {Path}", shot.Value);
                         // Обслуживание etcd: compact + defrag (не чаще раза в час).
