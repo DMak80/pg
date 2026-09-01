@@ -732,6 +732,51 @@ public class ProvisioningProcessTests
         rig.Etcd.Store["/pgworker/portalloc/shop"].Version.Should().Be(1);
     }
 
+    // AAA: живой-Ф7/Д1 — дубликат порта ВНУТРИ своего кластера: запись shard2a
+    // переставлена на порт ЖИВОЙ соседки shard1a (+ её контейнер Created — не виден
+    // running-инспекцией): неподтверждённый дубликат снимается, нода переаллоцируется
+    // на свободный порт и контейнер создаётся В ТОТ ЖЕ тик (SelfFact-агрегат
+    // маскировал бы конфликт своей соседкой → вечный «already allocated»)
+    [Fact]
+    public async Task Tick_DuplicatePortWithinCluster_ReplansNodeInSameTick()
+    {
+        // Arrange: portalloc: shard1a/shard1b/shard2b живы (факт), shard2a —
+        // ДУБЛИКАТ порта shard1a (h1:15000), контейнера нет (Created-черепок).
+        var rig = await NewRig(_ => DeadPatroni(), identityByEndpoint: EmptyIdentity);
+        rig.Etcd.Seed("/pgworker/portalloc/shop",
+            """
+            {"shard1/shard1a":{"host":"h1","pg":15000,"patroni":18000,"doorman":16500},
+            "shard1/shard1b":{"host":"h2","pg":15001,"patroni":18001,"doorman":16501},
+            "shard2/shard2a":{"host":"h1","pg":15000,"patroni":18000,"doorman":16500},
+            "shard2/shard2b":{"host":"h2","pg":15003,"patroni":18003,"doorman":16503}}
+            """);
+        rig.Driver.InspectResult = new Dictionary<string, DiscoveredNode>
+        {
+            ["shard1a"] = Node("h1", "pgw-shop-shard1-shard1a", 15000, 18000, 16500),
+            ["shard1b"] = Node("h2", "pgw-shop-shard1-shard1b", 15001, 18001, 16501),
+            ["shard2b"] = Node("h2", "pgw-shop-shard2-shard2b", 15003, 18003, 16503),
+        };
+        rig.Driver.BusyPorts = new HashSet<(string, int)>
+        {
+            ("h1", 15000), ("h1", 18000), ("h1", 16500),
+            ("h2", 15001), ("h2", 18001), ("h2", 16501),
+            ("h2", 15003), ("h2", 18003), ("h2", 16503),
+        };
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: shard2a ушла с занятого соседкой порта на свободный h1:15001
+        // (15000 переиспользован живой shard1a — MarkTaken Allocate); EnsureNode
+        // в том же тике; живые записи не тронуты.
+        outcome.IsSuccess.Should().BeTrue();
+        var raw = rig.Etcd.Store["/pgworker/portalloc/shop"].Value;
+        raw.Should().Contain("\"shard1/shard1a\":{\"host\":\"h1\",\"pg\":15000");
+        raw.Should().Contain("\"shard2/shard2a\":{\"host\":\"h1\",\"pg\":15001");
+        rig.Driver.EnsuredNodes.Should().Contain("shard2/shard2a");
+        rig.Etcd.Store["/pgworker/portalloc/shop"].Version.Should().Be(2);
+    }
+
     // AAA: Д1б — по план-порту отвечает ЧУЖОЙ Patroni: идентификация не прошла —
     // RUNNING не выставляется, InProgress-ожидание (фальш-RUNNING исключён)
     [Fact]

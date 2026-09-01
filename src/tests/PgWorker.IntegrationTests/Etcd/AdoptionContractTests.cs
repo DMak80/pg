@@ -62,7 +62,8 @@ public class AdoptionContractTests(EtcdFixture fixture)
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
             claims, new WorkJournal(Gateway, [Endpoint]),
             new PortAllocIndex(Gateway, [Endpoint], NullLogger<PortAllocIndex>.Instance),
-            new PlacementOptions(15000, 15100, PatroniBootSec: 600));
+            new PlacementOptions(15000, 15100, PatroniBootSec: 600),
+            new EtcdEndpoints([Endpoint]));
 
     // Запись журнала /pgworker/work/<C> (последняя фаза тика).
     private async Task<(string Op, string Phase, string Message)> ReadJournalAsync(string cluster)

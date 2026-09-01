@@ -204,6 +204,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<PortAllocIndex>(),
         new PlacementOptions(opts.Docker.PortRange.From, opts.Docker.PortRange.To, opts.Thresholds.PatroniBootSec,
             opts.Thresholds.ProvisionRetryBaseSec, opts.Thresholds.ProvisionRetryMaxSec),
+        sp.GetRequiredService<EtcdEndpoints>(),
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
 });
 

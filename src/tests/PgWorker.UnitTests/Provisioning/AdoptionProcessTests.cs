@@ -71,6 +71,7 @@ public class AdoptionProcessTests
             Secrets, claims, new WorkJournal(etcd, [Ep]),
             new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
             new PlacementOptions(15000, 15100, PatroniBootSec: 600),
+            new EtcdEndpoints([Ep]),
             snapshot: null);
         return (process, sql, driver);
     }
@@ -262,6 +263,40 @@ public class AdoptionProcessTests
         outcome.IsSuccess.Should().BeTrue();
         journal.Entries.Should().NotContain(e => e.Phase.StartsWith("repaired"));
         etcd.Store["/pgworker/portalloc/demo"].Version.Should().Be(1);
+    }
+
+    // AAA: живой-Ф7/Д2 — Running-нода с Created-черепком (create по битому плану
+    // прошёл, start упал): записи без ЖИВОГО контейнера чинятся EnsureNode НАПРЯМУЮ
+    // (мимо процессного скипа RUNNING и running-only инспекции) — recreated-node
+    [Fact]
+    public async Task TickAsync_RunningNodeWithDeadContainer_EnsureNodeRecreates()
+    {
+        // Arrange: portalloc полный; живой контейнер ТОЛЬКО s1b; s1a — Created-черепок
+        // (running-инспекцией невидим), node state=RUNNING (процессные пути скипают).
+        var etcd = new Fakes.FakeEtcd();
+        var snap = await SnapshotActive(etcd, ["s1"], ["s1"]);
+        etcd.Seed("/clusters/demo/shards/s1/nodes/s1a/state", "RUNNING");
+        etcd.Seed("/pgworker/portalloc/demo",
+            """
+            {"s1/s1a":{"host":"h1","pg":15004,"patroni":18004,"doorman":16504},
+            "s1/s1b":{"host":"h2","pg":15005,"patroni":18005,"doorman":16505}}
+            """);
+        var journal = new RecordingJournal();
+        journal.Attach(etcd);
+        var (process, _, driver) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
+        {
+            ["s1b"] = new("s1b", "h2", "pgw-demo-s1-s1b", 15005, 18005, 16505),
+        });
+
+        // Act
+        var outcome = await process.TickAsync(snap, CancellationToken.None);
+
+        // Assert: EnsureNode вызван для s1a (сверка портов → пересоздание черепка),
+        // фаза recreated-node; живая s1b не тронута.
+        outcome.IsSuccess.Should().BeTrue();
+        driver.EnsuredNodes.Should().Contain("s1/s1a");
+        driver.EnsuredNodes.Should().NotContain("s1/s1b");
+        journal.Entries.Should().Contain(e => e.Phase == "recreated-node");
     }
 
     // AAA: Д2 — transport-провал инспекции = transient: тик не ронывается, мутаций адресов нет

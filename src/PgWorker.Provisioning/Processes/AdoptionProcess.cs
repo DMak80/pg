@@ -30,6 +30,7 @@ public sealed class AdoptionProcess(
     WorkJournal journal,
     PortAllocIndex portAlloc,
     PlacementOptions placementOpts,
+    EtcdEndpoints etcdEndpoints,
     Func<CancellationToken, Task<Result>>? snapshot = null)
 {
     private const string Op = "adopt";
@@ -228,7 +229,7 @@ public sealed class AdoptionProcess(
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(existing); // тихий skip (вне docker-хостов)
 
         var merged = new Dictionary<string, NodeAddress>(existing);
-        var selfFact = new HashSet<(string, int)>();
+        var selfFactByNode = new Dictionary<string, IReadOnlySet<(string, int)>>();
         var changed = false;
         foreach (var (shardName, names) in candidatesByShard)
             foreach (var nodeName in names)
@@ -240,9 +241,11 @@ public sealed class AdoptionProcess(
                 if (node.Object != canonicalObject || node.Pg <= 0 || node.Patroni <= 0)
                     continue; // не наша находка — фильтр канонического имени (как P1)
                 var fact = node.ToAddress() with { Object = null };
+                var factPorts = new HashSet<(string, int)>();
                 foreach (var p in new[] { fact.Ports.Pg, fact.Ports.Patroni, fact.Ports.Doorman })
                     if (p > 0)
-                        selfFact.Add((fact.Host, p));
+                        factPorts.Add((fact.Host, p));
+                selfFactByNode[key] = factPorts; // подтверждение per-node (живой-Ф7)
                 if (merged.TryGetValue(key, out var current) && current.Object is not null)
                     continue; // object-записи не перезаписываем (R9)
                 if (!merged.TryGetValue(key, out var same) || !same.Equals(fact))
@@ -252,9 +255,10 @@ public sealed class AdoptionProcess(
                 }
             }
 
-        // Перепланирование занятых чужим (Д1-механика для Active; busy = docker минус
-        // свои ∪ portalloc соседей — как в P1, spec §8.10). Placement строится по
-        // nodes-ключам снапшота: у шарда без nodes-ключей detach-нутая нода
+        // Перепланирование занятых (Д1-механика для Active, живой-Ф7): занятость =
+        // docker-публикации (чужие И своих соседей — дубликат внутри кластера тоже
+        // конфликт) ∪ portalloc соседей; подтверждение per-node. Placement строится
+        // по dsn-шардам снапшота: у шарда без nodes-ключей detach-нутая нода
         // переаллоцируется следующим тиком (после того как AD3 доведёт nodes).
         var dockerBusy = await driver.GetBusyPortsAsync(ct);
         if (!dockerBusy.IsSuccess)
@@ -262,18 +266,21 @@ public sealed class AdoptionProcess(
         var foreignAlloc = await portAlloc.ReadBusyAsync(cluster, ct);
         if (!foreignAlloc.IsSuccess)
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(foreignAlloc.Error!);
-        var foreign = new HashSet<(string, int)>(foreignAlloc.Value);
+        var busy = new HashSet<(string, int)>(foreignAlloc.Value);
         foreach (var p in dockerBusy.Value)
-            if (!selfFact.Contains(p))
-                foreign.Add(p);
-        if (PortPlanConvergence.DetachColliding(merged, selfFact, foreign))
+            busy.Add(p);
+        if (PortPlanConvergence.DetachColliding(merged, selfFactByNode, busy))
         {
-            // Недобор адресов снятых нод: переаллокация (паттерн P1-недобора).
+            // Недобор адресов снятых нод: переаллокация (паттерн P1-недобора);
+            // taken = busy − факты подтверждённых записей (переиспользование валидных).
             var hosts = await driver.GetHostsAsync(ct);
             if (!hosts.IsSuccess)
                 return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(hosts.Error!);
+            var taken = new HashSet<(string, int)>(busy);
+            foreach (var p in PortPlanConvergence.ConfirmedFact(merged, selfFactByNode))
+                taken.Remove(p);
             var plan = PlacementPlanner.Plan(dsnShards, hosts.Value);
-            var allocated = PortAllocator.Allocate(plan, merged, foreign, placementOpts.PortFrom, placementOpts.PortTo);
+            var allocated = PortAllocator.Allocate(plan, merged, taken, placementOpts.PortFrom, placementOpts.PortTo);
             if (!allocated.IsSuccess)
                 return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(allocated.Error!);
             foreach (var (k, addr) in allocated.Value)
@@ -311,6 +318,40 @@ public sealed class AdoptionProcess(
                 await journal.WritePhaseAsync(cluster, Op, "repaired-dsn", claims.InstanceId, null, ct);
             }
         }
+
+        // Дефект-B фикс (живой-Ф7, дух AD2'): запись portalloc БЕЗ живого (running)
+        // контейнера — Created/exited-черепок или снесённый контейнер при
+        // node state=RUNNING (процессные пути скипают RUNNING, инспекция видит
+        // только running) — чинится EnsureNode НАПРЯМУЮ: сверка портов увидит
+        // расхождение Created-контейнера (или контейнер отсутствует) → stop+rm+
+        // create по плану (план уже без дубликатов — detach выше). «Воркер —
+        // хозяин»: сломали контейнер/план → тик сам чинит, без оператора.
+        var recreated = false;
+        foreach (var (shardName, names) in candidatesByShard)
+        {
+            var topology = new ShardTopology(
+                cluster, shardName, $"{cluster}-{shardName}",
+                merged
+                    .Where(p => p.Key.StartsWith($"{shardName}/", StringComparison.Ordinal))
+                    .ToDictionary(p => p.Key.Split('/')[1], p => p.Value));
+            foreach (var nodeName in names)
+            {
+                var key = $"{shardName}/{nodeName}";
+                if (!merged.TryGetValue(key, out var addr) || addr.Object is not null)
+                    continue; // записи нет / усыновлённая (object) — чужой контейнер, R9
+                if (discovered.Value.ContainsKey(nodeName))
+                    continue; // живой контейнер на месте — сверка EnsureNode-путей процессов
+
+                var ensured = await driver.EnsureNodeAsync(
+                    topology, nodeName, addr, secrets, etcdEndpoints, resources: null, ct);
+                if (!ensured.IsSuccess)
+                    return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(ensured.Error!);
+                recreated = true;
+            }
+        }
+
+        if (recreated)
+            await journal.WritePhaseAsync(cluster, Op, "recreated-node", claims.InstanceId, null, ct);
 
         return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(merged);
     }
