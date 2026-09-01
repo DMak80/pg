@@ -450,7 +450,9 @@ null). `WaitPatroniAsync` заменяет `IsAliveAsync` на идентифи�
 changed → put portalloc + journal phase="repaired-portalloc"
 dsn-инвариант: для каждого dsn-шарду пересобрать multi-host dsn из
   фактического portalloc (ноды по именам, креды как P2.5) → расхождение
-  с ключом → put + journal phase="repaired-dsn"
+  с ключом → put + journal phase="repaired-dsn"; dsn пересобирается только
+  для канонических (без object) нод — object-шарды: dsn операторский факт
+  (R9-симметрия), не трогаем
 0 находок → тихий skip; transport-провал инспекции → transient (не ронять тик)
 ```
 
