@@ -1,11 +1,13 @@
 using System.Net;
 using System.Text;
+using Microsoft.Extensions.Logging.Abstractions;
 using PgWorker.Core.Model;
 using PgWorker.Core.Planning;
 using PgWorker.Core.Templates;
 using PgWorker.Etcd.Client;
 using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
+using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Processes;
 using PgWorker.Provisioning.Probes;
 
@@ -111,7 +113,8 @@ public class AddShardProcessTests
             etcd, [Ep], driver, sql, Probe(patroniResponse), claims, journal,
             opts ?? new PlacementOptions(15000, 15100, PatroniBootSec: 600),
             Secrets, new AppSecretEnsurer(etcd, [Ep]),
-            new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp, snapshot: null);
+            new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp,
+            new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance), snapshot: null);
         return new Rig(etcd, driver, sql, claims, journal, process);
     }
 
@@ -136,7 +139,8 @@ public class AddShardProcessTests
             etcd, [Ep], driver, new Fakes.FakeSql(), Probe(_ => DeadPatroni()),
             claims, journal, new PlacementOptions(15000, 15100, 600), Secrets,
             new AppSecretEnsurer(etcd, [Ep]),
-            new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp, snapshot: null);
+            new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp,
+            new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance), snapshot: null);
 
         // Act
         var outcome = await process.TickAsync(await Snapshot(etcd), "shard3", CancellationToken.None);
@@ -319,7 +323,8 @@ public class AddShardProcessTests
             Probe(port => port == 18002 ? Patroni("shard3a") : DeadPatroni()),
             rig.Claims, rig.Journal, new PlacementOptions(15000, 15100, 600), Secrets,
             new AppSecretEnsurer(rig.Etcd, [Ep]),
-            new AppParamsEnsurer(rig.Etcd, [Ep], "sslmode=require"), EtcdEndp, snapshot: null);
+            new AppParamsEnsurer(rig.Etcd, [Ep], "sslmode=require"), EtcdEndp,
+            new PortAllocIndex(rig.Etcd, [Ep], NullLogger<PortAllocIndex>.Instance), snapshot: null);
         var outcome = await alive.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
 
         // Assert — детерминизм multi-host: dsn тот же; схем/routing-мутаций нет
@@ -385,5 +390,25 @@ public class AddShardProcessTests
             .Should().Be("sslmode=require");
         rig.Sql.Executed.Should().Contain(e =>
             e.Sql.Contains("ALTER ROLE") && e.Sql.Contains(newPassword));
+    }
+
+    // AAA: C — новый шард видит portalloc-закрепления СОСЕДЕЙ (других кластеров):
+    // busy = docker ∪ etcd-записи; без foreign-busy база 15000 занята только соседом
+    [Fact]
+    public async Task Tick_FreshShard_AvoidsForeignPortallocRecords()
+    {
+        // Arrange: сосед закрепил h1-тройку 15000/18000/16500; наш shard3 заявлен,
+        // контейнеров нет (docker-busy пуст) — без foreign-busy новый шард получил бы базу 15000.
+        var rig = await NewRig(_ => Patroni("shard3a"));
+        rig.Etcd.Seed("/pgworker/portalloc/neighbor",
+            """{"s1/n1":{"host":"h1","pg":15000,"patroni":18000,"doorman":16500}}""");
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
+
+        // Assert: нода h1 нового шарда обошла чужую тройку (база 15001); h2 не затронут соседом.
+        outcome.IsSuccess.Should().BeTrue();
+        var raw = rig.Etcd.Store["/pgworker/portalloc/shop"].Value;
+        raw.Should().Contain("\"shard3/shard3a\":{\"host\":\"h1\",\"pg\":15001");
     }
 }

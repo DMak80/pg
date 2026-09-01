@@ -233,11 +233,13 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<IClusterDriver>(), sp.GetRequiredService<ISqlExecutor>(),
         sp.GetRequiredService<ShardProbe>(), sp.GetRequiredService<ClaimStore>(),
         sp.GetRequiredService<WorkJournal>(),
-        new PlacementOptions(opts.Docker.PortRange.From, opts.Docker.PortRange.To, opts.Thresholds.PatroniBootSec),
+        new PlacementOptions(opts.Docker.PortRange.From, opts.Docker.PortRange.To, opts.Thresholds.PatroniBootSec,
+            opts.Thresholds.ProvisionRetryBaseSec, opts.Thresholds.ProvisionRetryMaxSec),
         sp.GetRequiredService<InstallSecrets>(),
         sp.GetRequiredService<IAppSecretEnsurer>(),
         sp.GetRequiredService<IAppParamsEnsurer>(),
         sp.GetRequiredService<EtcdEndpoints>(),
+        sp.GetRequiredService<PortAllocIndex>(),
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
 });
 builder.Services.AddSingleton(sp => new RemoveShardProcess(
