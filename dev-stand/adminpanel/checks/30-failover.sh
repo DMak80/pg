@@ -61,9 +61,18 @@ ect get /service/demo-s1/leader --print-value-only | jq -e '.name == "s1b"' >/de
 echo "  master-ключ и leader у s1b"
 curl -fsS -o /dev/null http://127.0.0.1:8012/primary \
   || { echo "❌ hc1b /primary != 200"; exit 1; }
-curl -fsS http://127.0.0.1:8011/cluster | jq -e \
-  'any(.members[]; .name=="s1b" and .role=="master")
-   and any(.members[]; .name=="s1a" and .state=="stopped")' >/dev/null \
+# Patroni-REST эмулятора обновляется с задержкой после promote (hc1a переписывает
+# members не мгновенно) — поллинг, как у остальных ассертов чека.
+patroni_ok=1
+for i in $(seq 1 15); do
+  if curl -fsS -m 3 http://127.0.0.1:8011/cluster | jq -e \
+    'any(.members[]; .name=="s1b" and .role=="master")
+     and any(.members[]; .name=="s1a" and .state=="stopped")' >/dev/null 2>&1; then
+    patroni_ok=0; break
+  fi
+  sleep 1
+done
+[ "$patroni_ok" = 0 ] \
   || { echo "❌ /cluster не показывает s1b-мастера / s1a-stopped"; exit 1; }
 echo "  Patroni-REST: s1b master, s1a stopped"
 wait_no_alert shard-no-master demo/s1; echo "  shard-no-master погас"

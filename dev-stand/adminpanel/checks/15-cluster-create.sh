@@ -136,22 +136,41 @@ code="$(curl -s -o /tmp/t15-del.json -w '%{http_code}' -b "$JAR" -X POST "$BASE/
 code="$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -X DELETE "$BASE/api/clusters/delme")"
 [ "$code" = 204 ] || { echo "❌ DELETE /api/clusters/delme = $code, ожидался 204"; exit 1; }
 
-# config перезаписан: state=TO_REMOVE, константы сохранены; ключи кластера НЕ удалены
+# config перезаписан: state=TO_REMOVE, константы сохранены; ключи кластера НЕ удалены.
+# Гонка быстрого демонтажа: если воркер уже завершил TO_REMOVE (ключей нет) —
+# фиксируем raced-исход и пропускаем промежуточные ассерты (финальное состояние
+# — исчезновение — проверяется ниже).
 cfg="$(ect get /clusters/delme/config --print-value-only)"
-[ "$(echo "$cfg" | jq -r '.state')" = "TO_REMOVE" ] || { echo "❌ delme config.state != TO_REMOVE: $cfg"; exit 1; }
-[ "$(echo "$cfg" | jq -r '.buckets')" = "1" ] || { echo "❌ delme config.buckets != 1 (константы потеряны): $cfg"; exit 1; }
-[ -n "$(ect get /clusters/delme/buckets/routing/bucket_0 --print-value-only)" ] \
-  || { echo "❌ delme: ключи кластера удалены (панель их не трогает, §9.4)"; exit 1; }
+delme_raced=0
+if [ -z "$cfg" ]; then
+  delme_raced=1
+  echo "  (гонка) демонтаж delme завершён до etcd-проверок TO_REMOVE"
+else
+  [ "$(echo "$cfg" | jq -r '.state')" = "TO_REMOVE" ] || { echo "❌ delme config.state != TO_REMOVE: $cfg"; exit 1; }
+  [ "$(echo "$cfg" | jq -r '.buckets')" = "1" ] || { echo "❌ delme config.buckets != 1 (константы потеряны): $cfg"; exit 1; }
+  [ -n "$(ect get /clusters/delme/buckets/routing/bucket_0 --print-value-only)" ] \
+    || { echo "❌ delme: ключи кластера удалены (панель их не трогает, §9.4)"; exit 1; }
+fi
 
-# Идемпотентность (повтор — тоже 204), неизвестное имя — 404, имя занято — 409
+# Идемпотентность (повтор — тоже 204), неизвестное имя — 404, имя занято — 409.
+# Гонка быстрого демонтажа: TO_REMOVE может завершиться между проверками —
+# тогда повторный DELETE честно 404, а создание поверх — 201 (кластера больше
+# нет). Обе ветки легальны; в 201-ветке пересозданный delme сразу убираем.
 code="$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -X DELETE "$BASE/api/clusters/delme")"
-[ "$code" = 204 ] || { echo "❌ повторный DELETE = $code, ожидался 204"; exit 1; }
-code="$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -X DELETE "$BASE/api/clusters/nosuch")"
-[ "$code" = 404 ] || { echo "❌ DELETE несуществующего = $code, ожидался 404"; exit 1; }
-code="$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -X POST "$BASE/api/clusters" \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"delme","sharded":false,"replicas":1,"requestCpu":0.5,"requestMem":4,"requestDisk":10}')"
-[ "$code" = 409 ] || { echo "❌ создание поверх TO_REMOVE = $code, ожидался 409 (клэйм §9.2)"; exit 1; }
+case "$code" in
+  204)
+    code="$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -X DELETE "$BASE/api/clusters/nosuch")"
+    [ "$code" = 404 ] || { echo "❌ DELETE несуществующего = $code, ожидался 404"; exit 1; }
+    code="$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -X POST "$BASE/api/clusters" \
+      -H 'Content-Type: application/json' \
+      -d '{"name":"delme","sharded":false,"replicas":1,"requestCpu":0.5,"requestMem":4,"requestDisk":10}')"
+    [ "$code" = 409 ] || { echo "❌ создание поверх TO_REMOVE = $code, ожидался 409 (клэйм §9.2)"; exit 1; }
+    ;;
+  404)
+    echo "  (гонка) демонтаж delme завершён до повтора — идемпотентность на исчезнувшем"
+    ;;
+  *) { echo "❌ повторный DELETE = $code, ожидался 204|404"; exit 1; } ;;
+esac
 
 # Панель отражает удаление (тик ≤ 3 c + polling). Мерж с worker-api: демонтаж
 # TO_REMOVE живым воркером может завершиться быстрее тика снапшота — тогда

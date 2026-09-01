@@ -52,21 +52,22 @@ public class AdoptionProcessTests
 
     // Стенд процесса: фейковый etcd + фейковый драйвер с InspectResult + FakeSql;
     // ensurer'ы реальные (put-if-absent поверх FakeEtcd), Patroni-проба молчит.
-    private static async Task<AdoptionProcess> NewAdoption(
+    private static async Task<(AdoptionProcess Process, Fakes.FakeSql Sql)> NewAdoption(
         Fakes.FakeEtcd etcd,
         IReadOnlyDictionary<string, DiscoveredNode> inspect)
     {
         var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("demo", CancellationToken.None);
         var driver = new Fakes.FakeDriver { InspectResult = inspect };
+        var sql = new Fakes.FakeSql();
         var process = new AdoptionProcess(
             etcd, [Ep], driver,
             new ShardEndpoints(etcd, [Ep], new ShardProbe(new HttpClient())),
-            new Fakes.FakeSql(),
+            sql,
             new AppSecretEnsurer(etcd, [Ep]),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"),
             Secrets, claims, new WorkJournal(etcd, [Ep]));
-        return process;
+        return (process, sql);
     }
 
     // Журнал-записыватель: хук OnPut FakeEtcd разбирает WorkState /pgworker/work/*.
@@ -89,22 +90,28 @@ public class AdoptionProcessTests
     }
 
     [Fact]
-    public async Task TickAsync_FullPortalloc_NoOpWithoutEnsures()
+    public async Task TickAsync_FullPortalloc_NoOpButRolesEnsured()
     {
-        // Arrange: кластер Active, у обоих шардов dsn, portalloc полон — усыновлять нечего.
+        // Arrange: кластер Active, у обоих шардов dsn, portalloc полон — усыновлять
+        // нечего; НО инвариант «воркер — хозяин» всё равно прогоняет ensure БД/ролей
+        // (падение ensure после записи portalloc больше не теряется навсегда).
         var etcd = new Fakes.FakeEtcd();
         var snap = await SnapshotActive(etcd, ["s1", "s2"], []);
         etcd.Seed("/pgworker/portalloc/demo",
             """{"s1/s1a":{"host":"local","pg":15432,"patroni":18008,"doorman":16432}}""");
-        var adoption = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
+        var (adoption, sql) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
 
         // Act
         var outcome = await adoption.TickAsync(snap, CancellationToken.None);
 
-        // Assert: Done, portalloc не перезаписан, nodes-ключи не тронуты.
+        // Assert: Done, portalloc не перезаписан, nodes-ключи не тронуты — но
+        // гварды ролей (app/bucket_admin/bucket_mover) и ensure БД исполнены.
         Assert.True(outcome.IsSuccess);
         Assert.Equal(ProcessOutcome.Done, outcome.Value);
         Assert.Null(await GetValueAsync(etcd, "/clusters/demo/shards/s1/nodes/s1a/state"));
+        Assert.Contains(sql.EnsuredDatabases, e => e.DbName == "demo");
+        Assert.Contains(sql.Scalars, s =>
+            s.Sql.Contains("pg_roles", StringComparison.Ordinal) && s.Sql.Contains("rolname", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -114,7 +121,7 @@ public class AdoptionProcessTests
         // драйвер нашёл as-контейнеры (5433/8011 и 5434/8012).
         var etcd = new Fakes.FakeEtcd();
         var snap = await SnapshotActive(etcd, ["s1"], ["s1"]);
-        var adoption = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
+        var (adoption, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
         {
             ["s1a"] = new("s1a", "local", "as-s1a", 5433, 8011, 0),
             ["s1b"] = new("s1b", "local", "as-s1b", 5434, 8012, 0),
@@ -140,7 +147,7 @@ public class AdoptionProcessTests
         // Arrange: members есть, docker находок 0 — не наш docker-домен (spec §2.5).
         var etcd = new Fakes.FakeEtcd();
         var snap = await SnapshotActive(etcd, ["s1"], ["s1"]);
-        var adoption = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
+        var (adoption, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
 
         // Act
         var outcome = await adoption.TickAsync(snap, CancellationToken.None);
@@ -161,7 +168,7 @@ public class AdoptionProcessTests
         var snap = await SnapshotActive(etcd, ["s1"], ["s1"]);
         var journal = new RecordingJournal();
         journal.Attach(etcd);
-        var adoption = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
+        var (adoption, _) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
         {
             ["s1a"] = new("s1a", "local", "as-s1a", 5433, 8011, 0),
         });

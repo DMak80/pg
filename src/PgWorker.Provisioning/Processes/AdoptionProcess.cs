@@ -60,8 +60,33 @@ public sealed class AdoptionProcess(
                 missingByShard[shard.Name] = missing;
         }
 
+        // Инвариант «воркер — хозяин» (arch/14 §3): ensure БД и ролей бакетного
+        // слоя выполняется КАЖДЫЙ тик для всех dsn-шардов, а не только при
+        // усыновлении нод. Иначе падение ensure ПОСЛЕ записи portalloc (AD2)
+        // терялось навсегда: missingByShard пуст → ранний выход → шарды
+        // оставались без app/bucket_mover (42704/28000 в move/repair), хотя
+        // adopt «Done». Гварды идемпотентны — на здоровом кластере это
+        // несколько дешёвых SELECT на тик.
+        var creds = await appSecret.EnsureAsync(cluster, ct);
+        if (!creds.IsSuccess)
+            return await FailAsync(cluster, creds.Error!, ct);
+
+        foreach (var shard in snap.Shards.Where(s => s.Dsn is not null && !s.ToRemove))
+        {
+            var master = await shards.ResolveMasterAsync(cluster, shard, existing.Value, ct);
+            if (!master.IsSuccess)
+                return await FailAsync(cluster, master.Error!, ct);
+            if (master.Value is not { } invariantMaster)
+                continue; // мастер ещё не определён (portalloc пуст/выборы) — обеспечит путь усыновления ниже
+
+            var invariantDsn = ShardEndpoints.AdminDsn(invariantMaster, snap.Config.DbName, secrets);
+            var ensured = await EnsureShardDatabaseAsync(invariantDsn, snap, creds.Value, ct);
+            if (!ensured.IsSuccess)
+                return await FailAsync(cluster, ensured.Error!, ct);
+        }
+
         if (missingByShard.Count == 0)
-            return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // всё на месте — no-op
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // всё на месте (роли обеспечены) — no-op
 
         var wanted = missingByShard.Values.SelectMany(v => v).Distinct().ToList();
         var discovered = await driver.InspectNodesAsync(wanted, ct);
@@ -112,11 +137,8 @@ public sealed class AdoptionProcess(
                 return await FailAsync(cluster, appParamsDone.Error!, ct);
         }
 
-        // AD3: app-секрет кластера + роли БД на мастерах (P1.5/P2.3-паттерн).
-        var creds = await appSecret.EnsureAsync(cluster, ct);
-        if (!creds.IsSuccess)
-            return await FailAsync(cluster, creds.Error!, ct);
-
+        // AD3 (продолжение): app-секрет обеспечен инвариантом выше; здесь —
+        // до-ensure шардов, чьи мастера резолвились только после merge portalloc.
         foreach (var shard in snap.Shards.Where(s => missingByShard.ContainsKey(s.Name)))
         {
             var master = await shards.ResolveMasterAsync(cluster, shard, merged, ct);
