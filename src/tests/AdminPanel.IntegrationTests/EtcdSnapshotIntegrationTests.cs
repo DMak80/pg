@@ -243,6 +243,31 @@ public class EtcdSnapshotIntegrationTests(EtcdContainerFixture fixture) : IClass
     }
 
     [Fact]
+    public async Task Refresher_WorkJournal_ParsedIntoSnapshot()
+    {
+        // Arrange — work-ключи в реальном etcd: валидный с серией + битый JSON.
+        var ct = TestContext.Current.CancellationToken;
+        var gateway = EtcdTestHarness.NewGateway();
+        await gateway.PutAsync(fixture.Endpoint, "/pgworker/work/shop",
+            """{"op":"provision","phase":"shard-provision","instance":"w-1","updated_unix":1756009200,"last_error":"boom","fail_count":2,"fail_first_unix":1756005400,"retry_not_before_unix":1756009210}""", ct);
+        await gateway.PutAsync(fixture.Endpoint, "/pgworker/work/bad", "{не-json", ct);
+        var store = new SnapshotStore();
+        var refresher = EtcdTestHarness.NewRefresher(store, fixture.Endpoint);
+
+        // Act
+        var tick = await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert — журнал целиком в снапшоте; битый ключ — ParseError (02 §2.3.1).
+        tick.IsSuccess.Should().BeTrue();
+        var work = store.Current!.PgWorkerWork.Should().ContainSingle(w => w.Cluster == "shop").Subject;
+        work.Op.Should().Be("provision");
+        work.LastError.Should().Be("boom");
+        work.FailCount.Should().Be(2);
+        work.RetryNotBeforeUnix.Should().Be(1756009210);
+        store.Current.ParseErrors.Should().Contain(e => e.Key == "/pgworker/work/bad");
+    }
+
+    [Fact]
     public async Task HealthCheck_ReflectsRefresherState()
     {
         // Arrange

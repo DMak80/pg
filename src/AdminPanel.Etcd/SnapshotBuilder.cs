@@ -14,6 +14,7 @@ public static class SnapshotBuilder
         IReadOnlyList<StandNode> standNodes,
         MovesParseResult moves,
         WorkerEndpointsParseResult pgWorkerEndpoints,
+        WorkJournalParseResult work,
         IReadOnlyList<EtcdMember> members,
         IReadOnlyList<EtcdAlarm> alarms,
         EtcdStatus etcd)
@@ -25,8 +26,9 @@ public static class SnapshotBuilder
             standNodes,
             moves.Tickets,
             pgWorkerEndpoints.Endpoints,
+            work.Items,
             [],
             [],
-            [.. clusters.Errors, .. service.Errors, .. moves.Errors, .. pgWorkerEndpoints.Errors],
+            [.. clusters.Errors, .. service.Errors, .. moves.Errors, .. pgWorkerEndpoints.Errors, .. work.Errors],
             clusters.UnknownKeyCount + service.UnknownKeyCount);
 }
