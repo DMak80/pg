@@ -82,6 +82,33 @@ public class PortPlanConvergenceTests
         existing.Should().NotContainKey("s1/n2");
     }
 
+    // AAA: ревью-Ф7 (R1) — EnableDoorman=false: запись и факт без пулера
+    // (Doorman=0; нулевой порт в факт не попадает) — запись ПОДТВЕРЖДЕНА,
+    // recreate нет (требование всех трёх портов давало вечный detach →
+    // бесконечный пересоздание контейнеров в режиме без пулера)
+    [Fact]
+    public void DetachColliding_DoormanDisabledZeroPort_RecordConfirmed()
+    {
+        // Arrange: режим R1 — без пулера: запись pg=15000/patroni=18000/doorman=0;
+        // факт контейнера — те же два порта (0 в факт не собирается).
+        var existing = new Dictionary<string, NodeAddress>
+        {
+            ["s1/n1"] = new("h1", new NodePorts(15000, 18000, 0)),
+        };
+        var selfFactByNode = new Dictionary<string, IReadOnlySet<(string, int)>>
+        {
+            ["s1/n1"] = new HashSet<(string, int)> { ("h1", 15000), ("h1", 18000) },
+        };
+        var busy = new HashSet<(string, int)> { ("h1", 15000), ("h1", 18000) };
+
+        // Act
+        var changed = PortPlanConvergence.DetachColliding(existing, selfFactByNode, busy);
+
+        // Assert: подтверждена фактом двух живых портов — detach нет.
+        changed.Should().BeFalse();
+        existing.Should().ContainKey("s1/n1");
+    }
+
     [Fact]
     public void DetachColliding_ObjectRecord_Untouched()
     {

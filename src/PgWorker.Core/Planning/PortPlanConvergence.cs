@@ -53,9 +53,13 @@ public static class PortPlanConvergence
         return confirmed;
     }
 
-    // Запись подтверждена фактом: все три её порта публикует контейнер самой ноды.
+    // Запись подтверждена фактом: все её НЕнулевые порты публикует контейнер
+    // самой ноды. Нулевые игнорируются: EnableDoorman=false (R1) — запись без
+    // пулера (Doorman=0), порт 0 в факт не попадает никогда (merge тем же тиком
+    // уже нормализовал запись к факту) — иначе режим без пулера дал бы вечный
+    // detach → бесконечный recreate контейнеров.
     private static bool MatchesFact(NodeAddress addr, IReadOnlySet<(string Host, int Port)> own)
-        => Ports(addr).All(p => own.Contains((addr.Host, p)));
+        => Ports(addr).Where(p => p > 0).All(p => own.Contains((addr.Host, p)));
 
     private static int[] Ports(NodeAddress addr)
         => [addr.Ports.Pg, addr.Ports.Patroni, addr.Ports.Doorman];
