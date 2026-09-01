@@ -49,7 +49,7 @@ public sealed class StubScaleDriver : IClusterDriver
         = new Dictionary<string, DiscoveredNode>();
 
     public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
-        IReadOnlyCollection<string> nodeNames, CancellationToken ct)
+        string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct)
         => Task.FromResult(Result<IReadOnlyDictionary<string, DiscoveredNode>>.Success(
             (IReadOnlyDictionary<string, DiscoveredNode>)InspectResult
                 .Where(p => nodeNames.Contains(p.Key))

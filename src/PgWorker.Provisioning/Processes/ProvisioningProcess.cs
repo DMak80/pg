@@ -281,7 +281,8 @@ public sealed class ProvisioningProcess(
         var byNode = snap.Shards
             .SelectMany(s => s.Nodes.Select(n => (Key: $"{s.Name}/{n.Name}", Name: n.Name)))
             .ToList();
-        var discovered = await driver.InspectNodesAsync(byNode.Select(p => p.Name).Distinct().ToList(), ct);
+        var discovered = await driver.InspectNodesAsync(
+            cluster, byNode.Select(p => p.Name).Distinct().ToList(), ct);
         if (!discovered.IsSuccess)
             return Result<Adoption>.Failed(discovered.Error!);
 

@@ -22,6 +22,23 @@
 Создать новый кластер через панель/UI (e2e чек 15 или вручную) при живом
 canon10: новый portalloc не пересекается с /pgworker/portalloc/* соседей.
 
+## 2a. Живое восстановление portalloc (фикс Ф7-adoption, по приказу)
+
+При живых контейнерах кластера удалить etcd-ключ закреплений — тик воркера
+должен восстановить записи ФАКТОМ контейнеров, не пересоздавая их:
+
+1. Зафиксировать фактические порты и uptime:
+   `docker ps --filter name=pgw-canon10 --format '{{.Names}} {{.Ports}} {{.Status}}'`.
+2. Удалить ключ: `docker compose exec etcd etcdctl del /pgworker/portalloc/canon10`.
+3. Ждать один-два тика воркера (секунды; смотреть `docker logs -f <pgworker>` —
+   фаза `planned` без `adopt-skipped`).
+4. Проверить: `docker compose exec etcd etcdctl get /pgworker/portalloc/canon10`
+   — записи восстановлены фактическими портами из п.1; в docker-сети кластеров
+   с одинаковыми именами нод (canon/canon10/smoke — все с hostname `shard1a`)
+   находка — только свой контейнер (фильтр чужих pgw-<C'>-* до матчинга).
+5. Контейнеры НЕ пересоздавались: uptime/CreatedAt из п.1 не сброшены
+   (adoption переписал записи, EnsureNode-сверка сошлась — recreate не нужен).
+
 ## 3. Алерты панели (UI :5050)
 
 - cluster-not-initialized: после 900 c зависания — Warning (если кластер

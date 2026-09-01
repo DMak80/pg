@@ -89,7 +89,9 @@ public sealed class AdoptionProcess(
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // всё на месте (роли обеспечены) — no-op
 
         var wanted = missingByShard.Values.SelectMany(v => v).Distinct().ToList();
-        var discovered = await driver.InspectNodesAsync(wanted, ct);
+        // Фильтр кластера (live-Ф7): чужие pgw-<C'>-* с теми же именами нод больше
+        // не создают ложную неоднозначность; внешние контейнеры кластера — видны.
+        var discovered = await driver.InspectNodesAsync(cluster, wanted, ct);
         if (!discovered.IsSuccess)
             return Result<ProcessOutcome>.Failed(discovered.Error!);
         if (discovered.Value.Count == 0)

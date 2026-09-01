@@ -268,7 +268,7 @@ internal static class Fakes
         public readonly List<(string Container, IReadOnlyList<string> Cmd)> ContainerExecs = [];
 
         public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
-            IReadOnlyCollection<string> nodeNames, CancellationToken ct)
+            string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyDictionary<string, DiscoveredNode>>.Success(
                 (IReadOnlyDictionary<string, DiscoveredNode>)InspectResult
                     .Where(p => nodeNames.Contains(p.Key))

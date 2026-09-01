@@ -42,9 +42,15 @@ public interface IClusterDriver
     Task<Result<string>> ExecNodeAsync(
         string cluster, string shard, string node, IReadOnlyList<string> cmd, CancellationToken ct);
 
-    // Docker-инспекция нод усыновления (spec §3.1, arch/14 §5 J AD1): по именам
-    // нод вернуть DiscoveredNode (host/object/порты). 0 находок — пустой словарь.
+    // Docker-инспекция нод усыновления (spec §3.1, arch/14 §5 J AD1; live-Ф7
+    // 2026-09-01): по именам нод вернуть DiscoveredNode (host/object/порты).
+    // Контейнеры ЧУЖИХ pgw-кластеров исключаются ДО матчинга — имена нод
+    // неуникальны между кластерами одного docker-хоста (pgw-canon-*/pgw-canon10-*
+    // с одинаковым hostname "shard1a" без фильтра давали неоднозначность →
+    // пропуск ВСЕГО); внешние контейнеры усыновления (as-*/hc*) остаются видны.
+    // 0 находок — пустой словарь.
     Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
+        string cluster,
         IReadOnlyCollection<string> nodeNames, CancellationToken ct);
 
     // Exec в контейнер по имени (docker-exec fallback для pg_dump усыновлённых
@@ -234,11 +240,11 @@ public sealed class PlainClusterDriver(
     }
 
     // Docker-инспекция нод усыновления (spec §3.1): по каждому хосту собираем
-    // ВСЕ пары (контейнер, инспект) и зовём NodeMatcher.Match один раз на хост —
-    // только так работают merge patroni-порта из сайдкара (env NODE_NAME) и
-    // skip-on-ambiguity «два контейнера на имя → пропуск» (юнит-тесты NodeMatcher).
+    // пары (контейнер, инспект) КЛАСТЕРА и зовём NodeMatcher.Match один раз на
+    // хост — только так работают merge patroni-порта из сайдкара (env NODE_NAME)
+    // и skip-on-ambiguity «два контейнера на имя → пропуск» (юнит-тесты NodeMatcher).
     public async Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
-        IReadOnlyCollection<string> nodeNames, CancellationToken ct)
+        string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct)
     {
         return await Result<IReadOnlyDictionary<string, DiscoveredNode>>.FromAsync(async () =>
         {
@@ -249,12 +255,18 @@ public sealed class PlainClusterDriver(
                 if (!list.IsSuccess)
                     throw list.Error!; // хост недоступен — не тихий список (паттерн GetHostsAsync)
 
-                // Собираем ВСЕ пары хоста: Match должен видеть и ноду, и её
-                // patroni-сайдкар (env NODE_NAME), и пары конкурирующих контейнеров
-                // (неоднозначность → пропуск имени) — один вызов на хост.
+                // Фильтр кластера (live-Ф7): имена нод неуникальны между кластерами
+                // одного docker-хоста — без фильтра NodeMatcher видел чужие pgw-ноды
+                // как неоднозначность на КАЖДОЕ имя и пропускал все находки.
+                // Чужие pgw-<C'>-* исключаем; Match должен видеть свои ноды, её
+                // patroni-сайдкар (env NODE_NAME) и внешние контейнеры усыновления
+                // (as-*/hc*, не pgw-*) — один вызов на хост.
+                var ownPrefix = $"pgw-{cluster}-";
                 var pairs = new List<(DockerContainer, DockerContainerInspect)>();
                 foreach (var c in list.Value)
                 {
+                    if (IsForeignPgw(c, ownPrefix))
+                        continue;
                     var inspect = await engine.InspectContainerAsync(c.Id, ct);
                     if (inspect.IsSuccess)
                         pairs.Add((c, inspect.Value)); // контейнер исчез между list и inspect — не наша находка
@@ -268,6 +280,12 @@ public sealed class PlainClusterDriver(
             return (IReadOnlyDictionary<string, DiscoveredNode>)found;
         });
     }
+
+    // Контейнер чужого pgw-кластера: зовётся pgw-*, но не pgw-<наш кластер>-*
+    // (Names движок отдаёт без ведущего «/»; внешние as-*/hc* — не pgw-* → false).
+    private static bool IsForeignPgw(DockerContainer c, string ownPrefix)
+        => c.Names.Any(n => n.StartsWith("pgw-", StringComparison.Ordinal))
+            && c.Names.All(n => !n.StartsWith(ownPrefix, StringComparison.Ordinal));
 
     // Exec в контейнер по имени (docker-exec fallback pg_dump усыновлённых нод,
     // spec §3.3): перебор хостов, первый running-контейнер с точным именем.
@@ -463,7 +481,7 @@ public sealed class SwarmClusterDriver(
     // Усыновление swarm-кластеров: за пределами текущей задачи (стенд plain,
     // spec §3.1); при необходимости — инспект тасков сервисов.
     public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
-        IReadOnlyCollection<string> nodeNames, CancellationToken ct)
+        string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct)
         => Task.FromResult(Result<IReadOnlyDictionary<string, DiscoveredNode>>.Success(
             (IReadOnlyDictionary<string, DiscoveredNode>)new Dictionary<string, DiscoveredNode>()));
 
