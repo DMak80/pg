@@ -1,5 +1,6 @@
 using PgWorker.Core;
 using PgWorker.Core.Model;
+using PgWorker.Core.Planning;
 using PgWorker.Core.Templates;
 using PgWorker.Docker.Drivers;
 using PgWorker.Etcd.Client;
@@ -27,6 +28,8 @@ public sealed class AdoptionProcess(
     InstallSecrets secrets,
     ClaimStore claims,
     WorkJournal journal,
+    PortAllocIndex portAlloc,
+    PlacementOptions placementOpts,
     Func<CancellationToken, Task<Result>>? snapshot = null)
 {
     private const string Op = "adopt";
@@ -46,6 +49,15 @@ public sealed class AdoptionProcess(
         var existing = await shards.ReadPortAllocAsync(cluster, ct);
         if (!existing.IsSuccess)
             return Result<ProcessOutcome>.Failed(existing.Error!);
+
+        // AD2' (Д2, arch/14 §5 J): инвариант адресов Active — portalloc/dsn = факт
+        // живых канонических контейнеров; расхождение репарируется под клэймом с
+        // журналом. Transport-провал инспекции — transient: тик продолжается
+        // без репарации (следующий тик повторит).
+        var reconciled = await ReconcileAddressesAsync(snap, existing.Value, ct);
+        if (!reconciled.IsSuccess)
+            return await FailAsync(cluster, reconciled.Error!, ct);
+        existing = Result<IReadOnlyDictionary<string, NodeAddress>>.Success(reconciled.Value);
 
         var missingByShard = new Dictionary<string, List<string>>();
         foreach (var shard in snap.Shards.Where(s => s.Dsn is not null && !s.ToRemove))
@@ -178,6 +190,129 @@ public sealed class AdoptionProcess(
                 .Select(kv => kv.Key.Split('/')[^1])
                 .Where(n => n.Length > 0)
                 .Distinct().OrderBy(n => n, StringComparer.Ordinal).ToList());
+    }
+
+    // AD2' (Д2, spec §3.7): кандидаты — nodes-ключи снапшота ∪ HA-members (как AD1:
+    // сценарий «Active + dsn, nodes-ключей нет» тоже репарируется); merge факта
+    // канонических контейнеров (тот же фильтр, что P1) + перепланирование занятых
+    // чужим (PortPlanConvergence) + пересборка dsn из фактического portalloc.
+    // 0 находок — тихий skip (кластер вне docker-хостов); transport-провал
+    // инспекции — transient (не роняем тик).
+    private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> ReconcileAddressesAsync(
+        ClusterSnapshot snap, IReadOnlyDictionary<string, NodeAddress> existing, CancellationToken ct)
+    {
+        var cluster = snap.Config.Cluster;
+        var dsnShards = snap.Shards.Where(s => s.Dsn is not null && !s.ToRemove).ToList();
+
+        // Кандидаты адресов по каждому dsn-шарду: nodes-ключи ∪ HA-members
+        // (members читаются и ниже в AD1 — дешёвый range, дублирование осознанное).
+        var candidatesByShard = new Dictionary<string, List<string>>();
+        foreach (var shard in dsnShards)
+        {
+            var members = await ReadMemberNamesAsync(cluster, shard.Name, ct);
+            if (!members.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(members.Error!); // etcd-транспорт — как AD1
+            var names = shard.Nodes.Select(n => n.Name).Concat(members.Value).Distinct().ToList();
+            if (names.Count > 0)
+                candidatesByShard[shard.Name] = names;
+        }
+
+        if (candidatesByShard.Count == 0)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(existing); // кандидатов нет — репарировать нечего
+
+        var discovered = await driver.InspectNodesAsync(
+            cluster, candidatesByShard.Values.SelectMany(v => v).Distinct().ToList(), ct);
+        if (!discovered.IsSuccess)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(existing); // transient
+        if (discovered.Value.Count == 0)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(existing); // тихий skip (вне docker-хостов)
+
+        var merged = new Dictionary<string, NodeAddress>(existing);
+        var selfFact = new HashSet<(string, int)>();
+        var changed = false;
+        foreach (var (shardName, names) in candidatesByShard)
+            foreach (var nodeName in names)
+            {
+                var key = $"{shardName}/{nodeName}";
+                if (!discovered.Value.TryGetValue(nodeName, out var node))
+                    continue;
+                var canonicalObject = $"pgw-{cluster}-{key.Replace('/', '-')}";
+                if (node.Object != canonicalObject || node.Pg <= 0 || node.Patroni <= 0)
+                    continue; // не наша находка — фильтр канонического имени (как P1)
+                var fact = node.ToAddress() with { Object = null };
+                foreach (var p in new[] { fact.Ports.Pg, fact.Ports.Patroni, fact.Ports.Doorman })
+                    if (p > 0)
+                        selfFact.Add((fact.Host, p));
+                if (merged.TryGetValue(key, out var current) && current.Object is not null)
+                    continue; // object-записи не перезаписываем (R9)
+                if (!merged.TryGetValue(key, out var same) || !same.Equals(fact))
+                {
+                    merged[key] = fact;
+                    changed = true;
+                }
+            }
+
+        // Перепланирование занятых чужим (Д1-механика для Active; busy = docker минус
+        // свои ∪ portalloc соседей — как в P1, spec §8.10). Placement строится по
+        // nodes-ключам снапшота: у шарда без nodes-ключей detach-нутая нода
+        // переаллоцируется следующим тиком (после того как AD3 доведёт nodes).
+        var dockerBusy = await driver.GetBusyPortsAsync(ct);
+        if (!dockerBusy.IsSuccess)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(dockerBusy.Error!);
+        var foreignAlloc = await portAlloc.ReadBusyAsync(cluster, ct);
+        if (!foreignAlloc.IsSuccess)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(foreignAlloc.Error!);
+        var foreign = new HashSet<(string, int)>(foreignAlloc.Value);
+        foreach (var p in dockerBusy.Value)
+            if (!selfFact.Contains(p))
+                foreign.Add(p);
+        if (PortPlanConvergence.DetachColliding(merged, selfFact, foreign))
+        {
+            // Недобор адресов снятых нод: переаллокация (паттерн P1-недобора).
+            var hosts = await driver.GetHostsAsync(ct);
+            if (!hosts.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(hosts.Error!);
+            var plan = PlacementPlanner.Plan(dsnShards, hosts.Value);
+            var allocated = PortAllocator.Allocate(plan, merged, foreign, placementOpts.PortFrom, placementOpts.PortTo);
+            if (!allocated.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(allocated.Error!);
+            foreach (var (k, addr) in allocated.Value)
+                merged[k] = addr;
+            changed = true;
+        }
+
+        if (changed)
+        {
+            var put = await PutAsync($"/pgworker/portalloc/{cluster}", Portalloc.Serialize(merged), ct);
+            if (!put.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(put.Error!);
+            await journal.WritePhaseAsync(cluster, Op, "repaired-portalloc", claims.InstanceId, null, ct);
+        }
+
+        // dsn-инвариант: пересборка multi-host dsn по кандидатам (nodes ∪ members) из
+        // фактического portalloc (креды как P2.5: per-cluster override → глобальные).
+        foreach (var shard in dsnShards)
+        {
+            if (!candidatesByShard.TryGetValue(shard.Name, out var names) || names.Count == 0)
+                continue;
+            var ordered = names.OrderBy(n => n, StringComparer.Ordinal).ToList();
+            if (ordered.Any(n => !merged.ContainsKey($"{shard.Name}/{n}")))
+                continue; // адресов не хватает — усыновление/следующий тик доведут
+            var hosts = string.Join(",", ordered.Select(n => merged[$"{shard.Name}/{n}"].Host));
+            var ports = string.Join(",", ordered.Select(n => merged[$"{shard.Name}/{n}"].Ports.Pg));
+            var user = snap.Config.BucketAdminUser ?? "bucket_admin";
+            var password = snap.Config.BucketAdminPassword ?? secrets.BucketAdminPassword;
+            var dsn = $"host={hosts} port={ports} dbname={snap.Config.DbName} user={user} password={password}";
+            if (shard.Dsn != dsn)
+            {
+                var put = await PutAsync($"/clusters/{cluster}/shards/{shard.Name}/dsn", dsn, ct);
+                if (!put.IsSuccess)
+                    return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(put.Error!);
+                await journal.WritePhaseAsync(cluster, Op, "repaired-dsn", claims.InstanceId, null, ct);
+            }
+        }
+
+        return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(merged);
     }
 
     // Ensure БД + ролей бакетного слоя на мастере усыновляемого шарда —

@@ -265,14 +265,19 @@ internal static class Fakes
         public IReadOnlyDictionary<string, DiscoveredNode> InspectResult { get; set; }
             = new Dictionary<string, DiscoveredNode>();
 
+        // сбой-инъекция: docker-хост недоступен (Д2: transport-провал инспекции — transient).
+        public Exception? InspectFault { get; set; }
+
         public readonly List<(string Container, IReadOnlyList<string> Cmd)> ContainerExecs = [];
 
         public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
             string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct)
-            => Task.FromResult(Result<IReadOnlyDictionary<string, DiscoveredNode>>.Success(
-                (IReadOnlyDictionary<string, DiscoveredNode>)InspectResult
-                    .Where(p => nodeNames.Contains(p.Key))
-                    .ToDictionary(p => p.Key, p => p.Value)));
+            => InspectFault is { } fault
+                ? Task.FromResult(Result<IReadOnlyDictionary<string, DiscoveredNode>>.Failed(fault))
+                : Task.FromResult(Result<IReadOnlyDictionary<string, DiscoveredNode>>.Success(
+                    (IReadOnlyDictionary<string, DiscoveredNode>)InspectResult
+                        .Where(p => nodeNames.Contains(p.Key))
+                        .ToDictionary(p => p.Key, p => p.Value)));
 
         // Д3: карта присутствия данных по имени ноды (default Present — чистка запрещена).
         public Func<string, DataPresence> DataPresenceByNode { get; set; } = _ => DataPresence.Present;

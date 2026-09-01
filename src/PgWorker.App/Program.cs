@@ -185,20 +185,27 @@ builder.Services.AddSingleton(sp => new ShardEndpoints(
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<ShardProbe>()));
 
-// Усыновление кластеров (adopt-repair spec §3.2): адреса из HA-контура+docker →
-// portalloc; ensure секретов/ролей — общие ensurer'ы выше.
-builder.Services.AddSingleton(sp => new AdoptionProcess(
-    sp.GetRequiredService<IEtcdGateway>(),
-    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
-    sp.GetRequiredService<IClusterDriver>(),
-    sp.GetRequiredService<ShardEndpoints>(),
-    sp.GetRequiredService<ISqlExecutor>(),
-    sp.GetRequiredService<IAppSecretEnsurer>(),
-    sp.GetRequiredService<IAppParamsEnsurer>(),
-    sp.GetRequiredService<InstallSecrets>(),
-    sp.GetRequiredService<ClaimStore>(),
-    sp.GetRequiredService<WorkJournal>(),
-    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+// Усыновление кластеров (adopt-repair spec §3.2 + §3.7 Д2): адреса из HA-контура+docker →
+// portalloc; инвариант адресов Active (AD2') + ensure секретов/ролей — общие ensurer'ы выше.
+builder.Services.AddSingleton(sp =>
+{
+    var opts = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value;
+    return new AdoptionProcess(
+        sp.GetRequiredService<IEtcdGateway>(),
+        opts.Etcd.Endpoints,
+        sp.GetRequiredService<IClusterDriver>(),
+        sp.GetRequiredService<ShardEndpoints>(),
+        sp.GetRequiredService<ISqlExecutor>(),
+        sp.GetRequiredService<IAppSecretEnsurer>(),
+        sp.GetRequiredService<IAppParamsEnsurer>(),
+        sp.GetRequiredService<InstallSecrets>(),
+        sp.GetRequiredService<ClaimStore>(),
+        sp.GetRequiredService<WorkJournal>(),
+        sp.GetRequiredService<PortAllocIndex>(),
+        new PlacementOptions(opts.Docker.PortRange.From, opts.Docker.PortRange.To, opts.Thresholds.PatroniBootSec,
+            opts.Thresholds.ProvisionRetryBaseSec, opts.Thresholds.ProvisionRetryMaxSec),
+        SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
+});
 
 // Ensure per-cluster app-секрета (spec §4.1): чтение/txn put-if-absent
 // /clusters/<C>/{app_user,app_password} — общий для Provisioning/AddShard.

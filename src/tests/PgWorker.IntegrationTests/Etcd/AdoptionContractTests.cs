@@ -1,6 +1,8 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging.Abstractions;
 using PgWorker.Core;
 using PgWorker.Core.Model;
+using PgWorker.Core.Planning;
 using PgWorker.Core.Templates;
 using PgWorker.Docker.Drivers;
 using PgWorker.Etcd.Client;
@@ -33,8 +35,10 @@ public class AdoptionContractTests(EtcdFixture fixture)
         await Gateway.PutAsync(Endpoint, $"/clusters/{cluster}/config",
             $$"""{"buckets":12,"dbname":"{{cluster}}","created_unix":1755900000}""", null, ct);
         await Gateway.PutAsync(Endpoint, $"/clusters/{cluster}/shards/s1/replicas", "2", null, ct);
+        // dsn консистентен факту находок (host=local, pg 5433/5434; креды P2.5):
+        // Д2-инвариант dsn = portalloc не должен репарировать консистентный сид.
         await Gateway.PutAsync(Endpoint, $"/clusters/{cluster}/shards/s1/dsn",
-            "host=local port=5433,5434 dbname=demo user=bucket_admin", null, ct);
+            $"host=local,local port=5433,5434 dbname={cluster} user=bucket_admin password=adm-pw", null, ct);
         await Gateway.PutAsync(Endpoint, $"/clusters/{cluster}/shards/s1/master", "s1a:5433", null, ct);
         await Gateway.PutAsync(Endpoint, $"/service/{cluster}-s1/members/s1a",
             """{"role":"replica","state":"running"}""", null, ct);
@@ -56,7 +60,9 @@ public class AdoptionContractTests(EtcdFixture fixture)
             new StubSql(), new StubAppSecret(),
             new AppParamsEnsurer(Gateway, [Endpoint], "sslmode=require"),
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
-            claims, new WorkJournal(Gateway, [Endpoint]));
+            claims, new WorkJournal(Gateway, [Endpoint]),
+            new PortAllocIndex(Gateway, [Endpoint], NullLogger<PortAllocIndex>.Instance),
+            new PlacementOptions(15000, 15100, PatroniBootSec: 600));
 
     // Запись журнала /pgworker/work/<C> (последняя фаза тика).
     private async Task<(string Op, string Phase, string Message)> ReadJournalAsync(string cluster)
