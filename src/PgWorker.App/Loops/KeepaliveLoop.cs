@@ -37,6 +37,9 @@ internal sealed class KeepaliveLoop(
 
             while (!stoppingToken.IsCancellationRequested)
             {
+                // healthz = «последний тик» (живой-Ф7, симметрия остальных циклов):
+                // проход контура жив — ошибка прошлого тика (если появится) гасится.
+                StatusError = Result.Success();
                 health.MarkKeepaliveTick();
                 await Task.Delay(
                     TimeSpan.FromSeconds(options.CurrentValue.Loops.KeepaliveSec), stoppingToken);

@@ -49,6 +49,48 @@ public class ReconcileLoopTests
             _etcd.Seed($"/clusters/{name}/buckets/routing/bucket_{i}", $"shard{i % 2 + 1}");
     }
 
+    // AAA: живой-Ф7 — StatusError = «последний тик»: провальный тик зажигает
+    // ошибку healthz, успешный — гасит (липкая ошибка = вечный 503 «ReconcileLoop
+    // service has error» при живых тиках — дефект наблюдаемости)
+    [Fact]
+    public async Task ExecuteAsync_StatusErrorStickyUntilNextSuccessfulTick()
+    {
+        // Arrange: цикл с нулевым интервалом тиков; etcd «падает» на range
+        // (RangeFault) → тик проваливается (ErrorDelayMs=200 — детерминированное
+        // окно ошибки для поллинга); затем etcd «оживает».
+        var etcd = new Fakes.FakeEtcd();
+        etcd.RangeFault = _ => new ApplicationException("etcd недоступен");
+        var options = new FixedOptionsMonitor(new PgWorkerOptions
+        {
+            Etcd = new EtcdOptions { Endpoints = ["http://etcd:2379"] },
+            Loops = new LoopsOptions { ScanIntervalSec = 0, ErrorDelayMs = 200 },
+            Parallelism = new ParallelismOptions { MaxClusters = 4 },
+        });
+        var loop = new ReconcileLoop(
+            options, etcd, new ClaimStore(options.CurrentValue.Etcd.Endpoints, etcd, TimeProvider.System),
+            new FakeProcesses(),
+            new WorkJournal(etcd, options.CurrentValue.Etcd.Endpoints),
+            NullLogger<ReconcileLoop>.Instance, new HealthState(TimeProvider.System));
+        using var cts = new CancellationTokenSource();
+        await loop.StartAsync(cts.Token);
+
+        // Act 1: ждём провального тика → StatusError failed.
+        for (var i = 0; i < 200 && loop.StatusError.IsSuccess; i++)
+            await Task.Delay(10, TestContext.Current.CancellationToken);
+
+        // Assert 1: ошибка последнего тика видна (unhealthy).
+        loop.StatusError.IsSuccess.Should().BeFalse();
+
+        // Act 2: etcd оживает → следующий тик успешен → ждём сброса ошибки.
+        etcd.RangeFault = null;
+        for (var i = 0; i < 200 && !loop.StatusError.IsSuccess; i++)
+            await Task.Delay(10, TestContext.Current.CancellationToken);
+
+        // Assert 2: успешный тик погасил ошибку (healthz = «последний тик»).
+        loop.StatusError.IsSuccess.Should().BeTrue(loop.StatusError.Error?.ToString());
+        await loop.StopAsync(CancellationToken.None);
+    }
+
     [Fact]
     public async Task Tick_NotInitializedCluster_CallsProvisioningProcess()
     {
