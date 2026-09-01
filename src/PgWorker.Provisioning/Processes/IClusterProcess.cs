@@ -37,9 +37,12 @@ public interface IClusterProcess
 
 /// <summary>
 /// Параметры размещения/бюджетов процессов (appsettings → задача 23):
-/// диапазон портов нод (arch/14 §2.4) и бюджет ожидания Patroni (P2.2, сек).
+/// диапазон портов нод (arch/14 §2.4), бюджет ожидания Patroni (P2.2, сек) и
+/// бэкофф ретраев provision (arch/14 §5 A: Base·2^(n−1) с капом Max).
 /// </summary>
-public sealed record PlacementOptions(int PortFrom, int PortTo, int PatroniBootSec);
+public sealed record PlacementOptions(
+    int PortFrom, int PortTo, int PatroniBootSec,
+    int ProvisionRetryBaseSec = 5, int ProvisionRetryMaxSec = 60);
 
 /// <summary>
 /// Пороги надзора (spec §10 Thresholds → задача 23): нода мертва дольше

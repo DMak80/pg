@@ -88,7 +88,8 @@ public class ProvisioningProcessTests
     private sealed record Rig(Fakes.FakeEtcd Etcd, Fakes.FakeDriver Driver, Fakes.FakeSql Sql,
         ClaimStore Claims, WorkJournal Journal, ProvisioningProcess Process);
 
-    private static async Task<Rig> NewRig(Func<int, HttpResponseMessage> patroniResponse, List<int>? trace = null)
+    private static async Task<Rig> NewRig(
+        Func<int, HttpResponseMessage> patroniResponse, List<int>? trace = null, PlacementOptions? opts = null)
     {
         var etcd = new Fakes.FakeEtcd();
         SeedCluster(etcd);
@@ -99,7 +100,7 @@ public class ProvisioningProcessTests
         var sql = new Fakes.FakeSql();
         var appSecret = new AppSecretEnsurer(etcd, [Ep]);
         var process = new ProvisioningProcess(
-            etcd, [Ep], driver, sql, Probe(patroniResponse, trace), claims, journal, Opts, Secrets,
+            etcd, [Ep], driver, sql, Probe(patroniResponse, trace), claims, journal, opts ?? Opts, Secrets,
             appSecret, new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp, snapshot: null);
         return new Rig(etcd, driver, sql, claims, journal, process);
     }
@@ -324,5 +325,99 @@ public class ProvisioningProcessTests
                  { ("shard1", "shard1a"), ("shard1", "shard1b"), ("shard2", "shard2a"), ("shard2", "shard2b") })
             rig.Etcd.Store[$"/clusters/shop/shards/{shard}/nodes/{node}/app_params"].Value
                 .Should().Be("sslmode=require");
+    }
+
+    // AAA: E2 — бюджет-фейл пишет серию ретраев; тики до retry_not_before скипаются
+    [Fact]
+    public async Task Tick_PatroniBudgetFail_WritesRetrySeriesAndBacksOff()
+    {
+        // Arrange: Patroni мёртв на все пробы, бюджет PatroniBootSec=-1 — первый же тик фейлит ожидание.
+        var rig = await NewRig(_ => DeadPatroni(),
+            opts: new PlacementOptions(15000, 15100, PatroniBootSec: -1, ProvisionRetryBaseSec: 5, ProvisionRetryMaxSec: 60));
+
+        // Act: первый тик.
+        var first = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: фейл с серией fail_count=1 и retry_not_before=now+5; ноды созданы (P2.1 успел).
+        first.IsSuccess.Should().BeFalse();
+        var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        work.Value!.LastError.Should().Contain("не поднялся");
+        work.Value.FailCount.Should().Be(1);
+        work.Value.RetryNotBeforeUnix.Should().BeGreaterThan(work.Value.UpdatedUnix - 1);
+        (work.Value.RetryNotBeforeUnix!.Value - work.Value.UpdatedUnix).Should().Be(5);
+
+        // Act: второй тик до истечения retry_not_before — skip (без новых EnsureNode и без перезаписи журнала).
+        var driverCalls = rig.Driver.EnsuredNodes.Count;
+        var second = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: InProgress без мутаций; журнал не тронут (фаза/updated_unix прежние).
+        second.IsSuccess.Should().BeTrue();
+        second.Value.Should().Be(ProcessOutcome.InProgress);
+        rig.Driver.EnsuredNodes.Count.Should().Be(driverCalls);
+        var after = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        after.Value!.UpdatedUnix.Should().Be(work.Value.UpdatedUnix);
+    }
+
+    // AAA: E2 — после истечения retry_not_before тик снова работает, серия нарастает
+    [Fact]
+    public async Task Tick_AfterRetryDeadline_FailsAgainWithIncrementedSeries()
+    {
+        // Arrange: серия из одного фейла; retry_not_before уже в прошлом (подделано в etcd).
+        var rig = await NewRig(_ => DeadPatroni(),
+            opts: new PlacementOptions(15000, 15100, PatroniBootSec: -1, ProvisionRetryBaseSec: 5, ProvisionRetryMaxSec: 60));
+        await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        var prior = work.Value!;
+        rig.Etcd.Store["/pgworker/work/shop"] = new Fakes.FakeEtcd.Entry(
+            $$"""{"op":"provision","phase":"planning","instance":"{{prior.Instance}}","updated_unix":{{prior.UpdatedUnix - 100}},"last_error":"boom","fail_count":1,"fail_first_unix":{{prior.FailFirstUnix}},"retry_not_before_unix":{{prior.UpdatedUnix - 50}}}""",
+            prior.UpdatedUnix - 100, 2);
+
+        // Act: тик после дедлайна ретрая.
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: снова фейл, серия наросла (fail_count=2, delay=base·2).
+        outcome.IsSuccess.Should().BeFalse();
+        var state = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        state.Value!.FailCount.Should().Be(2);
+        (state.Value.RetryNotBeforeUnix!.Value - state.Value.UpdatedUnix).Should().Be(10);
+    }
+
+    // AAA: E2/E1 — фазы прогресса тика переносят серию до следующего фейла (миганий нет)
+    [Fact]
+    public async Task Tick_InProgressPhasesAfterFail_CarrySeriesUntilNextFail()
+    {
+        // Arrange: серия fail_count=1 с истёкшим retry; Patroni мёртв (тик дойдёт до фейла P2.2).
+        var rig = await NewRig(_ => DeadPatroni(),
+            opts: new PlacementOptions(15000, 15100, PatroniBootSec: -1, ProvisionRetryBaseSec: 5, ProvisionRetryMaxSec: 60));
+        await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var failed = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        var f = failed.Value!;
+        rig.Etcd.Store["/pgworker/work/shop"] = new Fakes.FakeEtcd.Entry(
+            $$"""{"op":"provision","phase":"planning","instance":"{{f.Instance}}","updated_unix":{{f.UpdatedUnix - 100}},"last_error":"boom","fail_count":1,"fail_first_unix":{{f.FailFirstUnix}},"retry_not_before_unix":{{f.UpdatedUnix - 50}}}""",
+            f.UpdatedUnix - 100, 2);
+        // Сбор КАЖДОЙ записи work-ключа в тике (FakeEtcd.OnPut): фазы тика
+        // обязаны нести серию — включая P0 «started» (ревью Ф4-2: без `, series`
+        // optional-параметр молча стирает поля — provision-stuck мигает).
+        var workWrites = new List<string>();
+        rig.Etcd.OnPut = key =>
+        {
+            if (key == "/pgworker/work/shop")
+                lock (workWrites)
+                {
+                    workWrites.Add(rig.Etcd.Store[key].Value);
+                }
+        };
+
+        // Act: тик после дедлайна (FailAsync снова фейлит P2.2).
+        await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        rig.Etcd.OnPut = null;
+
+        // Assert: fail_first_unix ПЕРЕЖИЛ промежуточные фазы (started/planned) — серия та же, счётчик 2.
+        var state = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        state.Value!.FailFirstUnix.Should().Be(f.FailFirstUnix);
+        state.Value.FailCount.Should().Be(2);
+        // И каждая промежуточная запись тика несла поля серии (started не стирал).
+        workWrites.Should().NotBeEmpty();
+        workWrites.Should().OnlyContain(v => v.Contains("\"fail_count\":"));
     }
 }

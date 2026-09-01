@@ -66,15 +66,28 @@ public sealed class ProvisioningProcess(
         if (!HasFullDeclaration(snap))
             return await Finish(cluster, "waiting-keys", ProcessOutcome.InProgress, ct);
 
-        // P0: journal-before-manipulations (P7).
-        var started = await journal.WritePhaseAsync(cluster, Op, "started", claims.InstanceId, null, ct);
+        // Бэкофф ретраев (spec §3.5 E2): серия фейлов в журнале — до retry_not_before
+        // тик процесса пропускается (без записи: журнал несёт последний фейл).
+        var priorWork = await journal.ReadAsync(cluster, ct);
+        if (!priorWork.IsSuccess)
+            return Result<ProcessOutcome>.Failed(priorWork.Error!);
+        var series = priorWork.Value is { Op: Op, FailCount: > 0, FailFirstUnix: > 0 } pw
+            ? new RetrySeries(pw.FailCount!.Value, pw.FailFirstUnix!.Value, pw.RetryNotBeforeUnix ?? 0)
+            : null;
+        if (series is { RetryNotBeforeUnix: > 0 } s
+            && s.RetryNotBeforeUnix > DateTimeOffset.UtcNow.ToUnixTimeSeconds())
+            return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
+
+        // P0: journal-before-manipulations (P7); серия переносится фазами тика
+        // (ревью Ф4-2: пропуск series стирал бы поля — provision-stuck мигает).
+        var started = await journal.WritePhaseAsync(cluster, Op, "started", claims.InstanceId, null, ct, series);
         if (!started.IsSuccess)
             return Result<ProcessOutcome>.Failed(started.Error!);
 
         // P1: план placement + порты, закрепление portalloc.
-        var allocation = await PlanPortsAsync(snap, ct);
+        var allocation = await PlanPortsAsync(snap, series, ct);
         if (!allocation.IsSuccess)
-            return await FailAsync(cluster, allocation.Error!, "planning", ct);
+            return await FailAsync(cluster, allocation.Error!, "planning", ct, series);
         var addresses = allocation.Value;
 
         // Per-cluster credentials: переопределение bucket_admin user/password
@@ -89,7 +102,7 @@ public sealed class ProvisioningProcess(
         // приложение получает креды в etcd раньше, чем поднимутся ноды.
         var appCreds = await appSecret.EnsureAsync(cluster, ct);
         if (!appCreds.IsSuccess)
-            return await FailAsync(cluster, appCreds.Error!, "ensure-app-secret", ct);
+            return await FailAsync(cluster, appCreds.Error!, "ensure-app-secret", ct, series);
 
         // P2.1: EnsureNode всех нод ВСЕХ шардов ПАРАЛЛЕЛЬНО (контейнеры стартуют
         // одновременно, ожидание Patroni — следующим проходом) + nodes/<n>/state=PROVISIONING.
@@ -111,9 +124,9 @@ public sealed class ProvisioningProcess(
         });
 
         if (ensureErrors.TryDequeue(out var ensureError))
-            return await FailAsync(cluster, ensureError, "ensure-nodes", ct);
+            return await FailAsync(cluster, ensureError, "ensure-nodes", ct, series);
         if (await IsRemovedAsync(cluster, ct))
-            return await Finish(cluster, "aborted", ProcessOutcome.InProgress, ct);
+            return await Finish(cluster, "aborted", ProcessOutcome.InProgress, ct, series);
 
         // P2.2–P2.5: по каждому шарду ПАРАЛЛЕЛЬНО — ожидание Patroni, master, БД/роли/схемы, dsn.
         var shardErrors = new ConcurrentQueue<Exception>();
@@ -143,37 +156,37 @@ public sealed class ProvisioningProcess(
         });
 
         if (shardErrors.TryDequeue(out var firstError))
-            return await FailAsync(cluster, firstError, "shard-provision", ct);
+            return await FailAsync(cluster, firstError, "shard-provision", ct, series);
 
         // Если хоть один шард не доведён (Patroni/master ещё не готовы) — InProgress.
         foreach (var shard in orderedShards)
         {
             if (shard.Nodes.Any(n => n.State != NodeState.Running))
-                return await Finish(cluster, "waiting-patroni", ProcessOutcome.InProgress, ct);
+                return await Finish(cluster, "waiting-patroni", ProcessOutcome.InProgress, ct, series);
             if (string.IsNullOrEmpty(shard.Dsn))
-                return await Finish(cluster, "waiting-shard-sql", ProcessOutcome.InProgress, ct);
+                return await Finish(cluster, "waiting-shard-sql", ProcessOutcome.InProgress, ct, series);
         }
 
         // R6 перед финальными мутациями контрол-плейна.
         if (await IsRemovedAsync(cluster, ct))
-            return await Finish(cluster, "aborted", ProcessOutcome.InProgress, ct);
+            return await Finish(cluster, "aborted", ProcessOutcome.InProgress, ct, series);
 
         // P3: снять ВСЕ status-ключи (txn-пакетами ≤128) — бакеты ACTIVE.
         var cleared = await ClearStatusKeysAsync(snap, ct);
         if (!cleared.IsSuccess)
-            return await FailAsync(cluster, cleared.Error!, "clear-status", ct);
+            return await FailAsync(cluster, cleared.Error!, "clear-status", ct, series);
 
         // P4: config txn (compare mod_revision) → канонический JSON без state (Д1).
         var committed = await CommitConfigAsync(snap, ct);
         if (!committed.IsSuccess)
-            return await FailAsync(cluster, committed.Error!, "committing-config", ct);
+            return await FailAsync(cluster, committed.Error!, "committing-config", ct, series);
 
         // P5: снапшот P12 (делегат SnapshotJob, задача 22) + journal phase=done.
         if (snapshot is not null)
         {
             var shot = await snapshot(ct);
             if (!shot.IsSuccess)
-                return await FailAsync(cluster, shot.Error!, "snapshot", ct);
+                return await FailAsync(cluster, shot.Error!, "snapshot", ct, series);
         }
 
         return await Finish(cluster, "done", ProcessOutcome.Done, ct);
@@ -192,7 +205,7 @@ public sealed class ProvisioningProcess(
     // P1: placement → порт-аллокация → закрепление /pgworker/portalloc/<C>
     // (txn compare version==0 — только создание; конкурент создал → берём его).
     private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> PlanPortsAsync(
-        ClusterSnapshot snap, CancellationToken ct)
+        ClusterSnapshot snap, RetrySeries? series, CancellationToken ct)
     {
         var cluster = snap.Config.Cluster;
         var pinned = await ReadPortAllocAsync(cluster, ct);
@@ -203,7 +216,7 @@ public sealed class ProvisioningProcess(
         // Всё закреплено — план переиспользуется (portalloc переживает rebuild).
         var wanted = snap.Shards.SelectMany(s => s.Nodes.Select(n => $"{s.Name}/{n.Name}")).ToList();
         if (wanted.All(existing.ContainsKey))
-            return await PlannedAsync(existing, cluster, ct);
+            return await PlannedAsync(existing, cluster, ct, series);
 
         var hosts = await driver.GetHostsAsync(ct);
         if (!hosts.IsSuccess)
@@ -240,13 +253,14 @@ public sealed class ProvisioningProcess(
             existing = new Dictionary<string, NodeAddress>(reread.Value);
         }
 
-        return await PlannedAsync(existing, cluster, ct);
+        return await PlannedAsync(existing, cluster, ct, series);
     }
 
     private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> PlannedAsync(
-        Dictionary<string, NodeAddress> addresses, string cluster, CancellationToken ct)
+        Dictionary<string, NodeAddress> addresses, string cluster, CancellationToken ct,
+        RetrySeries? series = null)
     {
-        var planned = await journal.WritePhaseAsync(cluster, Op, "planned", claims.InstanceId, null, ct);
+        var planned = await journal.WritePhaseAsync(cluster, Op, "planned", claims.InstanceId, null, ct, series);
         return planned.IsSuccess
             ? Result<IReadOnlyDictionary<string, NodeAddress>>.Success(addresses)
             : Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(planned.Error!);
@@ -516,18 +530,26 @@ public sealed class ProvisioningProcess(
                 .ToDictionary(p => p.Key.Split('/')[1], p => p.Value));
 
     private async Task<Result<ProcessOutcome>> Finish(
-        string cluster, string phase, ProcessOutcome outcome, CancellationToken ct)
+        string cluster, string phase, ProcessOutcome outcome, CancellationToken ct, RetrySeries? series = null)
     {
-        var written = await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, null, ct);
+        // series = null (в т.ч. фаза done) — сброс контекста серии: успех чинит всё.
+        var written = await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, null, ct, series);
         return written.IsSuccess
             ? Result<ProcessOutcome>.Success(outcome)
             : Result<ProcessOutcome>.Failed(written.Error!);
     }
 
     private async Task<Result<ProcessOutcome>> FailAsync(
-        string cluster, Exception error, string phase, CancellationToken ct)
+        string cluster, Exception error, string phase, CancellationToken ct, RetrySeries? prior = null)
     {
-        await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, error.Message, ct);
+        // Серия подряд идущих фейлов (без разбора текста — простота; spec §8.8):
+        // новая ошибка после успеха начинает серию заново (series=null после Done).
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var n = prior is null ? 1 : prior.FailCount + 1;
+        var shift = Math.Min(n - 1, 20);
+        var delay = Math.Min(placementOpts.ProvisionRetryBaseSec * (1L << shift), placementOpts.ProvisionRetryMaxSec);
+        var next = new RetrySeries(n, prior?.FailFirstUnix ?? now, now + delay);
+        await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, error.Message, ct, next);
         return Result<ProcessOutcome>.Failed(error);
     }
 
