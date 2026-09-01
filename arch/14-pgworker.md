@@ -237,7 +237,11 @@ data-каталог создаётся от root и недоступен patroni
    Факт совпадений виден оператору (план в journal).
 2. Порт-аллокатор: каждой ноде — тройка портов из диапазона конфига (напр.
    15000–15999: `pg=base+i`, `patroni=+3000`, `doorman=+1500`), с проверкой
-   фактической занятости (`GET /containers/json` + свои записи). Закрепление —
+   фактической занятости: `GET /containers/json` (живые публикации docker) +
+   записи portalloc ВСЕХ кластеров (`/pgworker/portalloc/*`, кроме своего —
+   свой переиспользуется как закрепление; закрывает кросс-кластерную
+   коллизию: без этого второй кластер получает порты первого, чьи контейнеры
+   ещё не созданы, а portalloc уже записан). Закрепление —
    `/pgworker/portalloc/<C>` (переживает rebuild: та же нода = те же порты).
    Запись ноды: `{"host","pg","patroni","doorman"}` + опциональное `"object"`
    (§5 J): имя фактического docker-объекта **усыновлённой** ноды (контейнер
@@ -329,14 +333,15 @@ success-ветке). **Poll, без watch** (аргументация — AdminP
 
 ### 3.3. НОВЫЕ ключи координации воркеров (префикс `/pgworker/`)
 
-Панель этот префикс не читает (её снапшот ограничен `/clusters/`, `/service/`,
-`/cluster/nodes/`) — координация не видна UI и не мешает контракту.
+Панель читает префикс избирательно (`portalloc`, `moves`, `api`, `work` —
+arch/adminpanel/02 §2.3.1); координационные `leader`/`claims`/`instances` ей
+не видны и не мешают контракту.
 
 | Ключ | Тип | Назначение |
 |---|---|---|
 | `/pgworker/leader` | lease TTL 15 с | глобальный лидер для singleton-задач (регулярные снапшоты P12). Value: `{"instance":"<id>","since_unix":…}`. Захват: txn `version==0` + put-with-lease; продление keepalive раз в 5 с. Умер лидер → lease истёк → любой другой захватывает. |
 | `/pgworker/claims/<C>` | lease TTL 15 с | **пер-кластерный клэйм** работы: exclusivity обработки кластера одним инстансом. Value: `{"instance":"<id>","since_unix":…,"phase":…}`. Захват txn `version==0` + put-with-lease; держатель продлевает. Takeover: lease истёк → ключ исчез сам → txn другого инстанса succeeds. |
-| `/pgworker/work/<C>` | обычный | журнал текущего процесса кластера (journal-before-manipulations, по образцу P7): `{"op":"provision\|deprovision\|evacuate\|rebuild","phase":"…","updated_unix":…,"instance":"<id>","last_error"?}`. Крах оставляет самодокументирующийся след; следующий инстанс продолжает с записанной фазы. |
+| `/pgworker/work/<C>` | обычный | журнал текущего процесса кластера (journal-before-manipulations, по образцу P7): `{"op":"provision\|deprovision\|evacuate\|rebuild","phase":"…","updated_unix":…,"instance":"<id>","last_error"?,"fail_count"?,"fail_first_unix"?,"retry_not_before_unix"?,"unreachable"?}`. Крах оставляет самодокументирующийся след; следующий инстанс продолжает с записанной фазы. Поля ретраев (2026-09-01): `fail_count` — подряд идущие фейлы (сбрасывается при успехе/`done`), `fail_first_unix` — первый фейл серии (возраст проблемы; живёт до закрытия серии), `retry_not_before_unix` — до какого времени тики процесса — skip (бэкофф §5 A); переносятся записями фаз внутри серии. Читает панель (алерт `provision-stuck`, arch/adminpanel/02 §2.3.1) и оператор. |
 | `/pgworker/evacuations/<C>/<X>` | обычный | журнал эвакуации шарда: `{"evacuated_unix","reason","buckets":{...старый→новый владелец...},"state":"DONE\|QUARANTINED"}` — истина для разбора после возврата шарда. |
 | `/pgworker/portalloc/<C>` | обычный | закрепление выделенных портов за нодами (§2.4): `{"<shard>/<node>":{"host":"h1","pg":15432,"patroni":18008,"doorman":16432}}` (+опц. `"object"` для усыновлённых, §5 J) — переживает смерть инстанса, переиспользуется при rebuild; пишется также усыновлением (§5 J: read-modify-write merge под клэймом). |
 | `/pgworker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика; необязательно для работы) |
@@ -401,7 +406,20 @@ routing всех N) — иначе journal `phase=waiting-keys`, ожидани�
 
 ```
 P0 claim + journal(/pgworker/work/<C>, op=provision)
-P1 план: placement (§2.4) для всех шард/нод; порт-аллокация; journal phase=planned
+P1 план: placement (§2.4) для всех шард/нод; порт-аллокация; journal phase=planned.
+    Сначала — усыновление факта (2026-09-01): P1 КАЖДЫЙ тик provision
+    инспектирует живые контейнеры кластера (InspectNodesAsync, механика
+    §5 J AD1) — расхождение нельзя узнать без инспекции, а полный portalloc
+    может быть расходящимся (потерян и выделен заново): живой канонический
+    контейнер pgw-<C>-<X>-<n> (pg>0, patroni>0) = положительное
+    свидетельство — его фактические public-порты становятся каноном записи
+    "<X>/<n>" (факт над записью: контейнер уже жив, portalloc — лишь след
+    плана; совпадение записи с фактом — не пишем; перезапись только записей
+    без object; неканонический/неоднозначный контейнер — пропуск с
+    journal-заметкой). Ноды без находок — обычная аллокация §2.4. Запись
+    merge: ничего не изменилось — не пишем вовсе (идемпотентность); ключ
+    существовал — put (read-modify-write под клэймом), не существовал —
+    txn version==0 (как раньше)
 P1.5 ensure app-секрета: прочитать /clusters/<C>/{app_user,app_password};
     отсутствующие — сгенерировать (32 симв [A-Za-z0-9]) и положить ОДНОЙ txn
     (compare NotExists на отсутствующие + put); txn проигран (гонка/re-run) —
@@ -415,7 +433,12 @@ P2 на каждый шард X:
         lease-скрипт мастер-ключа; doorman: пул <dbname>, TLS require;
         haproxy: бэкенды всех Patroni-нод шарда), env-секреты (§4);
         nodes/<n>/state=PROVISIONING; при существовании (re-run) — сверить
-        и пропустить
+        имя И порты: фактические public-биндинги контейнера (inspect)
+        обязаны совпадать с планом (5432→pg, 8008→patroni, 6432→doorman);
+        расхождение → пересоздать контейнер (stop+rm, volume сохраняется —
+        фаза PROVISIONING, данных нет; идемпотентность по имени одному
+        оставляла контейнер навсегда на чужих портах: WaitPatroni бил в
+        мёртвый порт); совпадение — пропустить
    P2.2 ждать: /service/<C>-<X>/initialize есть + leader есть + у каждой
         ноды Patroni REST отвечает (бюджет 10 мин, транзиент-толерантно);
         nodes/<n>/state=RUNNING
@@ -433,8 +456,17 @@ P4 config: txn (compare mod_revision) → put канонического JSON б
 P5 снапшот P12; journal phase=done; кластер переходит в обычный надзор
 ```
 
-Отказ на шаге: journal `last_error` + фаза; ретрай следующим тиком (бэкофф).
-Гонка «панель пишет TO_REMOVE посреди provisioning»: перед фазой процесс
+Отказ на шаге: journal `last_error` + фаза; ретрай следующим тиком с
+**бэкоффом** (2026-09-01): подряд идущие фейлы provision наращивают
+`fail_count` в `/pgworker/work/<C>`, задержка ретрая —
+`min(ProvisionRetryBaseSec·2^(n−1), ProvisionRetryMaxSec)` (5 с → 60 с);
+до `retry_not_before_unix` тик процесса — skip без записи (самолечение не
+блокируется: серия сбрасывается успехом (`Done`); фазы прогресса серию
+переносят — §3.3). Исчерпание бюджета
+Patroni (P2.2) сбрасывает трекер бюджета: следующая попытка получает новый
+бюджет (иначе каждый тик после первого таймаута фейлил мгновенно — 234
+одинаковых отказа за 10 минут на живом стенде). Гонка «панель пишет
+TO_REMOVE посреди provisioning»: перед фазой процесс
 перечитывает config — смена state безопасно прекращает provisioning (контейнеры
 подчистит deprovisioning).
 
@@ -826,7 +858,10 @@ PgWorker:Docker { Mode: Plain|Swarm, Hosts[{Name,Endpoint}],
 PgWorker:Loops { ScanIntervalSec=5, KeepaliveSec=5, SnapshotIntervalMin=360,
                  ErrorDelayMs=2000 }
 PgWorker:Thresholds { NodeDeadSec=90, ShardDeadSec=300, PatroniBootSec=600,
-                     CutoverTimeoutSec=90, ConnFailBudgetSec=120 }
+                     CutoverTimeoutSec=90, ConnFailBudgetSec=120,
+                     ProvisionRetryBaseSec=5, ProvisionRetryMaxSec=60 }
+                     # бэкофф ретраев provision (§5 A): задержка
+                     # min(Base·2^(fail_count−1), Max) — 5,10,20,40,60,60…
 PgWorker:Moves { PollIntervalSec=2, FreezeWaitSec=5, FreezeLockTimeoutSec=5,
                  FreezeLockTries=3, AbortMinAgeSec=120, FailoverSlots=true,
                  AdvertisedPublisherHost=null } # host издателя, как виден из
