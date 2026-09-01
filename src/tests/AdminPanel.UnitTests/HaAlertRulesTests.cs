@@ -685,17 +685,18 @@ public class HaAlertRulesTests
         var alerts = engine.Evaluate(snapshot, null, Now, 3).ToList();
 
         // Assert: сортировка severity → kind (Ordinal): critical (shard-no-leader,
-        // slot-wal-lost) → warning (ha-member-not-streaming, slot-invalidation-risk,
-        // sync-standby-missing) → info (probe-failed). Слот фикстуры несёт
-        // safe_wal_size 512 МБ < 1 GiB — risk-алерт входит в сценарий законно (6-й).
-        // t04/t05-правила на этой фикстуре молчат.
+        // slot-wal-lost) → warning (ha-member-not-streaming, probe-failed,
+        // slot-invalidation-risk, sync-standby-missing). probe-failed теперь
+        // warning (spec 2026-09-01 §3.1) — стоит между ha-member и slot-риском.
+        // Слот фикстуры несёт safe_wal_size 512 МБ < 1 GiB — risk-алерт входит
+        // в сценарий законно (6-й). t04/t05-правила на этой фикстуре молчат.
         alerts.Select(a => a.Id).Should().ContainInOrder(
             "shard-no-leader:demo-s1",
             "slot-wal-lost:demo/s1/move_bucket_3",
             "ha-member-not-streaming:demo-s1/s1b",
+            "probe-failed:patroni:demo-s1/s1a",
             "slot-invalidation-risk:demo/s1/move_bucket_3",
-            "sync-standby-missing:demo/s1",
-            "probe-failed:patroni:demo-s1/s1a");
+            "sync-standby-missing:demo/s1");
         alerts.Select(a => a.Id).Should().HaveCount(6);
     }
 
