@@ -238,6 +238,27 @@ public class HaAlertRulesTests
     }
 
     [Fact]
+    public void ProbeFailed_SqlOk_NoAlert()
+    {
+        // Arrange: Active-кластер, SQL-проба шарда успешна (живой стенд).
+        var snapshot = TestSnapshots.Healthy(Now) with
+        {
+            Probes =
+            [
+                new ProbeResult("demo/s1", "sql", true, 5.0, null, Now),
+                new ProbeResult("demo-s1/s1a", "patroni", true, 1.0, null, Now),
+            ],
+        };
+
+        // Act
+        var alerts = new ProbeFailedRule().Evaluate(snapshot, Context()).ToList();
+
+        // Assert: найденный результат с Ok=true — не алерт (spec §3.1 п.1
+        // «найден и !Ok»; живой стенд выявил эмит по любому результату).
+        alerts.Should().BeEmpty();
+    }
+
+    [Fact]
     public void ProbeFailed_PatroniOneMemberFailed_Warning()
     {
         // Arrange: один из двух членов matched-скопа упал, второй жив.

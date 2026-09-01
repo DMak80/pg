@@ -30,8 +30,8 @@ public sealed class ProbeFailedRule : IAlertRule
         foreach (var shard in cluster.Shards.Where(s => s.DsnHosts.Count > 0 && s.State == ShardState.Active))
         {
             var failed = Find(snapshot.Probes, "sql", $"{cluster.Name}/{shard.Name}");
-            if (failed is null)
-                continue;
+            if (failed is not { Ok: false })
+                continue; // тика не было / проба успешна — не авария (spec §3.1 п.1)
 
             yield return new Alert(
                 $"{KindName}:sql:{cluster.Name}/{shard.Name}",
