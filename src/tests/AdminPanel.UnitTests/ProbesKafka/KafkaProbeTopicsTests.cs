@@ -79,7 +79,7 @@ public class KafkaProbeTopicsTests
                 "host.docker.internal:16001",
                 [new KafkaBrokerInfo("broker1", "RUNNING", "controller", 2m, 4, 40)],
                 [])],
-            Rotations: [], Rebalances: [], Reassignments: [],
+            Rotations: [], Rebalances: [], Reassignments: [], Regens: [],
             WorkerEndpoints: [], WorkerHealth: [], Probes: [], Alerts: [], ParseErrors: [], UnknownKeyCount: 0));
         var secrets = new KafkaSecretsStore();
         secrets.Replace(new Dictionary<string, KafkaClusterSecrets>

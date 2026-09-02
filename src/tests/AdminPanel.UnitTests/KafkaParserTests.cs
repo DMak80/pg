@@ -343,4 +343,49 @@ public class KafkaParserTests
         parsed.Progress.Should().BeEmpty();
         parsed.Errors.Should().ContainSingle().Which.Key.Should().Be("/kafkaworker/reassignments/x/y");
     }
+
+    [Fact]
+    public void ParseRegens_CanonicalKey_ParsesProgress()
+    {
+        // Arrange
+        var kvs = new List<Kv> { new("/kafkaworker/regens/events",
+            """{"brokers_total":3,"brokers_remaining":2,"current_broker":"broker2","updated_unix":1750000000,"instance":"kfw-1"}""", 1) };
+
+        // Act
+        var result = KafkaParser.ParseRegens(kvs);
+
+        // Assert
+        result.Errors.Should().BeEmpty();
+        result.Progress.Should().ContainSingle().Which.Should().Match<KafkaRegenProgress>(p =>
+            p.Cluster == "events" && p.BrokersTotal == 3 && p.BrokersRemaining == 2
+            && p.CurrentBroker == "broker2" && p.UpdatedUnix == 1750000000);
+    }
+
+    [Fact]
+    public void ParseRegens_BrokenJson_ErrorWithoutThrow()
+    {
+        // Arrange
+        var kvs = new List<Kv> { new("/kafkaworker/regens/events", "{oops", 1) };
+
+        // Act
+        var result = KafkaParser.ParseRegens(kvs);
+
+        // Assert — толерантность arch/15 §6: parseError, не исключение
+        result.Progress.Should().BeEmpty();
+        result.Errors.Should().ContainSingle();
+    }
+
+    [Fact]
+    public void ParseRegens_WrongShape_Error()
+    {
+        // Arrange — ключ без кластера
+        var kvs = new List<Kv> { new("/kafkaworker/regens/", "{}", 1) };
+
+        // Act
+        var result = KafkaParser.ParseRegens(kvs);
+
+        // Assert
+        result.Progress.Should().BeEmpty();
+        result.Errors.Should().ContainSingle();
+    }
 }

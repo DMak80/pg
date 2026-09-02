@@ -45,7 +45,7 @@ public class KafkaProbeClosedPortsTests : IDisposable
         [new KafkaClusterInfo(
             "churn", KafkaClusterState.Active, 3, 3, 2, 12, 604800000, 1756500000,
             endpoints, [], [])],
-        Rotations: [], Rebalances: [], Reassignments: [],
+        Rotations: [], Rebalances: [], Reassignments: [], Regens: [],
         WorkerEndpoints: [], WorkerHealth: [], Probes: [], Alerts: [], ParseErrors: [], UnknownKeyCount: 0);
 
     [Fact]
