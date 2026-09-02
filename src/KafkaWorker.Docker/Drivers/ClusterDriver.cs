@@ -189,23 +189,29 @@ public sealed class PlainClusterDriver(
             }
 
             // Последний брокер кластера демонтирован — удаляем per-cluster
-            // сеть (t09-фикс, arch/16 §2.5): пул subnet'ов docker-хоста конечен,
-            // сиротские сети копиться не должны. Ретрай: docker API доли секунды
-            // держит endpoint после force-remove контейнера («has active
-            // endpoints» — транзиентно). Старая единая kfw-net не матчится
-            // именем (kfw-net-<C>) — не трогаем.
+            // сеть (t09-фикс, arch/16 §2.5) на КАЖДОМ хосте таблицы:
+            // EnsureNodeAsync создаёт её на каждом хосте размещения нод —
+            // чистка не зависит от того, где был последний демонтируемый
+            // брокер (multi-host plain, анти-аффинити arch/16 §2.1); 404 =
+            // сети уже нет = успех. Пул subnet'ов хоста конечен — сирот не
+            // копим. Ретрай per-host: docker API доли секунды держит endpoint
+            // после force-remove («has active endpoints» — транзиентно).
+            // Старая единая kfw-net не матчится именем (kfw-net-<C>) — не трогаем.
             var objects = await ListNodeObjectsAsync(cluster, ct);
             if (objects.IsSuccess && objects.Value.Count == 0)
             {
-                for (var attempt = 0; ; attempt++)
+                foreach (var engine in _engines.Values)
                 {
-                    var network = await _engines.Values.First().DeleteNetworkAsync(NetworkName(cluster), ct);
-                    if (network.IsSuccess)
-                        break;
-                    if (attempt >= 3
-                        || !network.Error!.Message.Contains("active endpoints", StringComparison.Ordinal))
-                        throw network.Error!;
-                    await Task.Delay(1000, ct); // endpoint отцепится — повторяем
+                    for (var attempt = 0; ; attempt++)
+                    {
+                        var network = await engine.DeleteNetworkAsync(NetworkName(cluster), ct);
+                        if (network.IsSuccess)
+                            break;
+                        if (attempt >= 3
+                            || !network.Error!.Message.Contains("active endpoints", StringComparison.Ordinal))
+                            throw network.Error!;
+                        await Task.Delay(1000, ct); // endpoint отцепится — повторяем
+                    }
                 }
             }
         });
