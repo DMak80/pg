@@ -26,7 +26,12 @@ builder.Services.Configure<KafkaWorkerOptions>(builder.Configuration.GetSection(
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<HealthState>();
 
-builder.Services.AddHttpClient("etcd");
+// etcd-клиент: HTTP JSON gateway /v3/*; handler против DNS-флейпа Docker
+// embedded DNS (t09; arch/16 §7): PooledConnectionLifetime + IPv4-first резолв.
+// EtcdGateway-синглтон захвачен HttpClient навсегда — ротация handler'ов фабрики
+// на него не действует, поэтому явный SocketsHttpHandler.
+builder.Services.AddHttpClient("etcd")
+    .ConfigurePrimaryHttpMessageHandler(EtcdConnectCallback.CreateHandler);
 
 // Fail-fast при старте: без etcd-endpoints воркер бессмысленен (hosts — в DI-фабрике драйвера);
 // ключ доступа /kafkaworker/api/<id> без URL бессмысленен (arch/16 §1.1).
