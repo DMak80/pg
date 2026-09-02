@@ -429,7 +429,7 @@ Kind наблюдаемости провижининга и здоровья в�
 | kind | severity | Условие | Источник |
 |---|---|---|---|
 | `provision-stuck` | warning | `/pgworker/work/<C>`: `last_error` жив + возраст серии фейлов (`now − fail_first_unix`) > `ProvisionStuckSec` (300 c) — воркер сообщил причину (текст — в Message/details), но кластер не инициализируется | `/pgworker/work/<C>` |
-| `worker-unhealthy` | warning | живой lease-ключ `/pgworker/api/<id>`, но опрос `/healthz` ≠ 200 (503 degraded / сетевой сбой) — lease ещё не истёк, а процесс уже нездоров (docker-healthcheck гасит контейнер, ключи вот-вот исчезнут) | тик опроса /healthz |
+| `worker-unhealthy` | warning | живой lease-ключ `/pgworker/api/<id>` (или `/kafkaworker/api/<id>`, t09), но опрос `/healthz` ≠ 200 (503 degraded / сетевой сбой) — lease ещё не истёк, а процесс уже нездоров (docker-healthcheck гасит контейнер, ключи вот-вот исчезнут) | тик опроса /healthz |
 
 UI: карточка алерта раскрывает Hint и Remedy (бейдж движителя); API
 `/api/alerts` отдаёт поля `hint`, `remedy` (строка `worker-auto` /
