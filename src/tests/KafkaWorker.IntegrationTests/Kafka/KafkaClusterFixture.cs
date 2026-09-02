@@ -50,8 +50,41 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
     // стенд волн B/C использует host.docker.internal (compose B8).
     public const string AdvertisedClientHost = "localhost";
 
+    // Окно хост-портов публикации брокеров — динамическое (AGENTS.md «порты
+    // docker-контейнеров в тестах — динамические»): свободное окно зондится на
+    // рантайме ВНЕ порт-зоны dev-станда (стендовые kfw-брокеры 16xxx) — тесты
+    // не конфликтуют с поднятым стендом и параллельными прогонами.
+    private static readonly (int From, int To) HostPorts = FreePortWindow.Find();
+
+    // Фактически выбранное окно — для ассертов тестов (литералов «:16000» нет).
+    public int PortFrom => HostPorts.From;
+
+    public int PortTo => HostPorts.To;
+
+    // Уникальный тег прогона: имена кластеров (и контейнеров kfw-<C>-broker<N>)
+    // уникальны на каждый запуск — осиротевшие контейнеры прошлых прогонов (упавший
+    // teardown) не пересекаются с новым по имени; креды нового etcd фикстуры не
+    // конфликтуют со старыми (SASL «Invalid username or password» у живого старого
+    // брокера с паролем прошлого прогона).
+    public string RunTag { get; } = Guid.NewGuid().ToString("N")[..8];
+
+    // Кластеры, созданные тестами этого прогона (регистрирует Cluster) —
+    // DisposeAsync демонтирует их целиком: per-cluster сети не копятся,
+    // пул subnet'ов docker-хоста конечен (t09-фикс).
+    private readonly List<string> _clusters = [];
+
+    // Имя кластера с тегом прогона: fixture.Cluster("re1") → "re1a1b2c3d4".
+    public string Cluster(string name)
+    {
+        var cluster = $"{name}{RunTag}";
+        _clusters.Add(cluster);
+        return cluster;
+    }
+
+    // BrokerBootSec <= 100 (AGENTS.md): тестовый бюджет загрузки брокеров короткий —
+    // зависание кластера фейлится быстро, а не мучается минутами.
     public ProvisioningOptions Options { get; } =
-        new(16000, 16999, BrokerBootSec: 300, NodeDeadSec: 90, AdvertisedClientHost, "apache/kafka:4.0.0");
+        new(HostPorts.From, HostPorts.To, BrokerBootSec: 100, NodeDeadSec: 90, AdvertisedClientHost, "apache/kafka:4.0.0");
 
     public async ValueTask InitializeAsync()
     {
@@ -88,6 +121,30 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
+        // Демонтаж кластеров прогона (вкл. тесты без собственного teardown):
+        // контейнеры/тома — силами драйвера, per-cluster сеть удалит сам драйвер
+        // после последнего брокера; 404/ошибки — лучшее усилие (прогон завершён).
+        var ct = CancellationToken.None;
+        foreach (var cluster in _clusters)
+        {
+            try
+            {
+                var objects = await Driver.ListNodeObjectsAsync(cluster, ct);
+                if (!objects.IsSuccess)
+                    continue;
+                foreach (var name in objects.Value)
+                {
+                    // kfw-<C>-<broker> → имя узла после префикса кластера.
+                    var node = name[($"kfw-{cluster}-").Length..];
+                    await Driver.RemoveNodeAsync(cluster, node, removeVolume: true, ct);
+                }
+            }
+            catch
+            {
+                // чистка на выходе — ошибки не всплывают (прогон уже завершён)
+            }
+        }
+
         _http.Dispose();
         await _etcd.DisposeAsync();
     }
