@@ -67,6 +67,12 @@ public class KafkaRefresherTests
 
     private static KafkaSnapshotRefresher New(
         KafkaFakeGateway gateway, IKafkaSnapshotStore store, params string[] endpoints)
+        => New(gateway, store, new AdminPanel.Etcd.Workers.KafkaWorkerHealthStore(), endpoints);
+
+    // Перегрузка New (рядом с существующей): refresher со стором health-проб.
+    private static KafkaSnapshotRefresher New(
+        KafkaFakeGateway gateway, IKafkaSnapshotStore store,
+        AdminPanel.Etcd.Workers.KafkaWorkerHealthStore healthStore, params string[] endpoints)
         => new(
             gateway,
             new KafkaAlertEngine(Options.Create(new KafkaAlertsOptions())),
@@ -75,7 +81,8 @@ public class KafkaRefresherTests
             Options.Create(new EtcdOptions { Endpoints = endpoints }),
             Options.Create(new KafkaPanelOptions()),
             new FixedTimeProvider(),
-            NullLogger<KafkaSnapshotRefresher>.Instance);
+            NullLogger<KafkaSnapshotRefresher>.Instance,
+            healthStore);
 
     private static KafkaFakeGateway DemoGateway() => new()
     {
@@ -221,6 +228,59 @@ public class KafkaRefresherTests
         store.Current.Clusters.Should().BeEmpty();
         store.Current.ConsecutiveFailures.Should().Be(1);
     }
+
+    private static readonly DateTimeOffset HealthAt =
+        new(2026, 9, 2, 12, 0, 0, TimeSpan.Zero);
+
+    [Fact]
+    public async Task Refresh_HealthStore_MergedIntoSnapshot()
+    {
+        // Arrange: стор поллера содержит Degraded-результат опроса /healthz воркера.
+        var gateway = DemoGateway();
+        var store = new KafkaSnapshotStore();
+        var healthStore = new AdminPanel.Etcd.Workers.KafkaWorkerHealthStore();
+        healthStore.Replace([new WorkerHealth("kw1", "http://kafkaworker:8080",
+            WorkerHealthStatus.Degraded, HealthAt, "HTTP 503")]);
+
+        // Act
+        var result = await New(gateway, store, healthStore, "http://e1")
+            .RefreshOnceAsync(CancellationToken.None);
+
+        // Assert: успешный тик вносит свежее состояние поллера (arch/02 §2.3.2;
+        // симметрия pg SnapshotRefresher.cs:156).
+        result.IsSuccess.Should().BeTrue();
+        store.Current!.WorkerHealth.Should().ContainSingle()
+            .Which.Status.Should().Be(WorkerHealthStatus.Degraded);
+    }
+
+    [Fact]
+    public async Task Refresh_EtcdFail_PreservesPreviousWorkerHealth()
+    {
+        // Arrange: успешный тик внёс Degraded из стора; затем все endpoints умирают
+        // (FailEndpoints — механика соседних FailTick-тестов), а поллер записывает
+        // в стор Healthy (воркер восстановился).
+        var gateway = DemoGateway();
+        var store = new KafkaSnapshotStore();
+        var healthStore = new AdminPanel.Etcd.Workers.KafkaWorkerHealthStore();
+        healthStore.Replace([new WorkerHealth("kw1", "http://kafkaworker:8080",
+            WorkerHealthStatus.Degraded, HealthAt, "HTTP 503")]);
+        var refresher = New(gateway, store, healthStore, "http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        gateway.FailEndpoints.Add("http://e1");
+        healthStore.Replace([new WorkerHealth("kw1", "http://kafkaworker:8080",
+            WorkerHealthStatus.Healthy, HealthAt.AddSeconds(5), null)]);
+
+        // Act: отказный тик.
+        var result = await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert: прежний WorkerHealth перенесён из previous (Degraded), свежий стор
+        // НЕ мерджится на отказном тике (симметрия pg SnapshotRefresher.cs:225,
+        // spec §3.4) — алерт worker-unhealthy загорается только первым УСПЕШНЫМ
+        // тиком refresher'а после восстановления etcd.
+        result.IsSuccess.Should().BeFalse();
+        store.Current!.WorkerHealth.Should().ContainSingle()
+            .Which.Status.Should().Be(WorkerHealthStatus.Degraded);
+    }
 }
 
 // Хранилище kafka-снапшота (порт SnapshotStore): volatile-ссылка.
@@ -242,7 +302,7 @@ public class KafkaSnapshotStoreTests
         // Arrange
         var store = new KafkaSnapshotStore();
         var first = new KafkaSnapshot(
-            new DateTimeOffset(2026, 8, 30, 0, 0, 0, TimeSpan.Zero), true, 0, [], [], [], [], [], [], [], [], 0);
+            new DateTimeOffset(2026, 8, 30, 0, 0, 0, TimeSpan.Zero), true, 0, [], [], [], [], [], [], [], [], [], 0);
         var second = first with { BuiltAtUtc = first.BuiltAtUtc.AddSeconds(3) };
 
         // Act

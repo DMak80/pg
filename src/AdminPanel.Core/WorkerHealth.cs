@@ -35,3 +35,15 @@ public interface IWorkerHealthStore
 
     void Replace(IReadOnlyList<WorkerHealth> health);
 }
+
+/// <summary>
+/// Стор результатов опроса /healthz инстансов KafkaWorker (t09; arch/adminpanel/02
+/// §2.3.2): poller пишет, kafka-refresher вносит готовым в снапшот — KV-тик
+/// не блокируется (симметрия IWorkerHealthStore).
+/// </summary>
+public interface IKafkaWorkerHealthStore
+{
+    IReadOnlyList<WorkerHealth>? Current { get; }
+
+    void Replace(IReadOnlyList<WorkerHealth> health);
+}

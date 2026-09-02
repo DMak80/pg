@@ -80,7 +80,7 @@ public class KafkaProbeTopicsTests
                 [new KafkaBrokerInfo("broker1", "RUNNING", "controller", 2m, 4, 40)],
                 [])],
             Rotations: [], Rebalances: [], Reassignments: [],
-            WorkerEndpoints: [], Probes: [], Alerts: [], ParseErrors: [], UnknownKeyCount: 0));
+            WorkerEndpoints: [], WorkerHealth: [], Probes: [], Alerts: [], ParseErrors: [], UnknownKeyCount: 0));
         var secrets = new KafkaSecretsStore();
         secrets.Replace(new Dictionary<string, KafkaClusterSecrets>
         {

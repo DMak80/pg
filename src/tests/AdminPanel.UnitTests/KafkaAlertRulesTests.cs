@@ -25,7 +25,7 @@ public class KafkaAlertRulesTests
         Now, EtcdReachable: true, ConsecutiveFailures: 0,
         [.. clusters], Rotations: [], Rebalances: [], Reassignments: [],
         WorkerEndpoints: [new WorkerEndpoint("kw1", "http://kafkaworker:8080", 1)],
-        Probes: [], Alerts: [], ParseErrors: [], UnknownKeyCount: 0);
+        WorkerHealth: [], Probes: [], Alerts: [], ParseErrors: [], UnknownKeyCount: 0);
 
     // Active-кластер с брокерами (по умолчанию один RUNNING broker1).
     private static KafkaClusterInfo ActiveCluster(
