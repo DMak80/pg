@@ -43,6 +43,9 @@ internal sealed class ReconcileLoop(
                 var tick = await TickSafelyAsync(stoppingToken);
                 if (tick.IsSuccess)
                 {
+                    // healthz = «последний тик» (живой-Ф7, порт PgWorker ReconcileLoop): успешный
+                    // тик гасит ошибку прошлого — иначе единственный упавший тик = вечный unhealthy.
+                    StatusError = Result.Success();
                     await Task.Delay(
                         TimeSpan.FromSeconds(options.CurrentValue.Loops.ScanIntervalSec), stoppingToken);
                 }

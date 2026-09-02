@@ -19,6 +19,12 @@ internal static class Fakes
         public readonly List<TxnRequest> Txns = [];
         public Action<string>? OnPut { get; set; }
 
+        // Транспортный отказ range (живой-Ф7-тесты, t09): префикс → исключение (обёрнуто в Failed).
+        public Func<string, Exception?>? RangeFault { get; set; }
+
+        // Отказ снятия снапшота (SnapshotLoop-тесты, t09).
+        public Func<Exception?>? SnapshotFault { get; set; }
+
         // Гонка «панель пишет между read и txn»: вызывается ДО compare —
         // тест успевает переписать ключ и сломать ModRevisionEqual.
         public Action<TxnRequest>? OnTxnBeforeCompare { get; set; }
@@ -29,6 +35,9 @@ internal static class Fakes
 
         public Task<Result<IReadOnlyList<Kv>>> RangeAsync(string endpoint, string prefix, CancellationToken ct)
         {
+            if (RangeFault is { } fault && fault(prefix) is { } ex)
+                return Task.FromResult(Result<IReadOnlyList<Kv>>.Failed(ex));
+
             List<Kv> kvs;
             lock (_gate)
             {
@@ -128,7 +137,12 @@ internal static class Fakes
             => Task.FromResult(Result.Success());
 
         public Task<Result<byte[]>> SnapshotSaveAsync(string endpoint, CancellationToken ct)
-            => Task.FromResult(Result<byte[]>.Success([1, 2, 3]));
+        {
+            if (SnapshotFault is { } fault && fault() is { } ex)
+                return Task.FromResult(Result<byte[]>.Failed(ex));
+
+            return Task.FromResult(Result<byte[]>.Success([1, 2, 3]));
+        }
 
         public Task<Result<long>> StatusAsync(string endpoint, CancellationToken ct)
             => Task.FromResult(Result<long>.Success(42));
