@@ -75,6 +75,20 @@ public static class KafkaOperationsModule
             return Error(result);
         });
 
+        // PUT /api/kafka/clusters/{cluster}/brokers/{broker}/resources — мутация
+        // №15 (t06, 02 §10.2-15): прокси в API воркера; применяет NodeRegenerator.
+        endpoints.MapPut("/api/kafka/clusters/{cluster}/brokers/{broker}/resources", async (
+            string cluster, string broker, KafkaBrokerResourcesRequestDto request,
+            IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<UpdateKafkaBrokerResourcesCommand, KafkaBrokerResourcesUpdatedDto>(
+                new UpdateKafkaBrokerResourcesCommand(cluster, broker, request), ct);
+            if (result.IsSuccess)
+                return Results.Ok(result.Value);
+
+            return Error(result);
+        });
+
         // POST /api/kafka/clusters/{cluster}/app-password/rotate — заявка ротации (02 §10.2-8);
         // оператор сессии уходит воркеру заголовком X-Requested-By (spec §3.7).
         endpoints.MapPost("/api/kafka/clusters/{cluster}/app-password/rotate", async (

@@ -1,5 +1,6 @@
 using System.Text.Json;
 using AdminPanel.Api.Operations;
+using AdminPanel.Api.Operations.Kafka;
 using AdminPanel.Etcd.Workers;
 using AdminPanel.Infrastructure;
 using FluentAssertions;
@@ -214,5 +215,53 @@ public class WorkerProxyCommandTests
             c => (c.Path, c.Method, c.RequestedBy).Should().Be(("/api/clusters/demo/shards", HttpMethod.Post, (string?)null)),
             c => (c.Path, c.Method, c.RequestedBy).Should().Be(("/api/clusters/demo/shards/shard3", HttpMethod.Delete, (string?)null)),
             c => (c.Path, c.Method, c.RequestedBy).Should().Be(("/api/ha/demo-s1/nodes/s1a/recreate", HttpMethod.Post, (string?)null)));
+    }
+
+    [Fact]
+    public async Task UpdateKafkaBrokerResources_PutsBodyToWorkerApi()
+    {
+        // Arrange — мутация №15 не заявка: оператор не шлётся (нет requested_by)
+        var api = new StubWorkerApi
+        {
+            Respond = _ => new WorkerApiResult(200,
+                """{"cluster":"events","broker":"broker1","cpu":"4","memGi":"4Gi","diskGi":"40Gi"}"""),
+        };
+        var handler = new UpdateKafkaBrokerResourcesCommandHandler(api);
+        var command = new UpdateKafkaBrokerResourcesCommand(
+            "events", "broker1", new KafkaBrokerResourcesRequestDto(4m, null, null));
+
+        // Act
+        var result = await handler.Handle(command, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Cpu.Should().Be("4");
+        api.Calls.Should().ContainSingle().Which.Should().Match<StubWorkerApi.Call>(c =>
+            c.Worker == "kafkaworker" && c.Method == HttpMethod.Put
+            && c.Path == "/api/kafka/clusters/events/brokers/broker1/resources"
+            && c.RequestedBy == null);
+    }
+
+    [Fact]
+    public async Task UpdateKafkaBrokerResources_409ProblemDetails_Failed()
+    {
+        // Arrange — гварды воркера проксируются 1:1
+        var api = new StubWorkerApi
+        {
+            Respond = _ => new WorkerApiResult(409,
+                """{"title":"Broker resources update rejected","status":409,"detail":"брокер заявлен к удалению"}"""),
+        };
+        var handler = new UpdateKafkaBrokerResourcesCommandHandler(api);
+
+        // Act
+        var result = await handler.Handle(
+            new UpdateKafkaBrokerResourcesCommand("events", "broker3",
+                new KafkaBrokerResourcesRequestDto(4m, null, null)),
+            CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().BeOfType<WorkerProblemDetails>()
+            .Which.StatusCode.Should().Be(409);
     }
 }
