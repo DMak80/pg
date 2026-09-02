@@ -116,7 +116,7 @@ git commit -m "docs(kafka): t06 — контракты arch (15/16/02), spec и 
   - `static long ExpectedMemoryBytes(int memGi)`
   - `static bool NeedsRegen(BrokerResources decl, NodeLimits actual)`
 
-- [ ] **Шаг 1. Пишет failing-тест** (файл
+- [x] **Шаг 1. Пишет failing-тест** (файл
   `src/tests/KafkaWorker.UnitTests/Planning/NodeRegenPlannerTests.cs`):
 
 ```csharp
@@ -205,12 +205,12 @@ public class NodeRegenPlannerTests
 }
 ```
 
-- [ ] **Шаг 2. Прогон — убедиться, что падает**
+- [x] **Шаг 2. Прогон — убедиться, что падает**
 
 Run: `dotnet test src/tests/KafkaWorker.UnitTests --filter NodeRegenPlanner`
 Ожидание: FAIL — тип `NodeRegenPlanner` не существует (CS0103).
 
-- [ ] **Шаг 3. Минимальная реализация**
+- [x] **Шаг 3. Минимальная реализация**
   (`src/KafkaWorker.Core/Planning/NodeRegenPlanner.cs`):
 
 ```csharp
@@ -249,12 +249,12 @@ public static class NodeRegenPlanner
 }
 ```
 
-- [ ] **Шаг 4. Прогон — зелёный**
+- [x] **Шаг 4. Прогон — зелёный**
 
 Run: `dotnet test src/tests/KafkaWorker.UnitTests --filter NodeRegenPlanner`
 Ожидание: PASS (все кейсы, включая 1.15).
 
-- [ ] **Шаг 5. Коммит**
+- [x] **Шаг 5. Коммит**
 
 ```bash
 git add src/KafkaWorker.Core/Planning/NodeRegenPlanner.cs src/tests/KafkaWorker.UnitTests/Planning/NodeRegenPlannerTests.cs
@@ -291,7 +291,7 @@ unit-тестов; сборка 0 warnings.
   `kfw-<C>-<b>`; EnsureNodeAsync поддерживает актуальность),
   `FakeKafkaDriver.ResourcesFaultByNode` (`Func<string, Result<NodeLimits?>>?`).
 
-- [ ] **Шаг 1. Реализация в `IDockerEngine.cs`** — добавить в интерфейс после
+- [x] **Шаг 1. Реализация в `IDockerEngine.cs`** — добавить в интерфейс после
   `BusyPortsAsync`:
 
 ```csharp
@@ -304,7 +304,7 @@ unit-тестов; сборка 0 warnings.
 
 Добавить `using KafkaWorker.Core.Planning;` в шапку файла.
 
-- [ ] **Шаг 2. Реализации в `DockerEngine.cs`** — после `VolumeExistsAsync`
+- [x] **Шаг 2. Реализации в `DockerEngine.cs`** — после `VolumeExistsAsync`
   (~строка 175); паттерн 404 → null — как в `VolumeExistsAsync`; чтение JSON —
   через существующий `GetAsync<T>`, который возвращает `Task<T?>`
   (`private async Task<T?> GetAsync<T>(...)`, DockerEngine.cs:616) — поэтому
@@ -368,7 +368,7 @@ unit-тестов; сборка 0 warnings.
 (если `JsonValueKind` не в scope — полностью квалифицировать
 `System.Text.Json.JsonValueKind`; стиль файла — минимальные using).
 
-- [ ] **Шаг 3. Метод интерфейса `IClusterDriver`** (`ClusterDriver.cs`, после
+- [x] **Шаг 3. Метод интерфейса `IClusterDriver`** (`ClusterDriver.cs`, после
   `NodeVolumeExistsAsync`):
 
 ```csharp
@@ -377,7 +377,7 @@ unit-тестов; сборка 0 warnings.
     Task<Result<NodeLimits?>> NodeResourcesAsync(string cluster, string nodeName, CancellationToken ct);
 ```
 
-- [ ] **Шаг 4. `PlainClusterDriver.NodeResourcesAsync`** (после
+- [x] **Шаг 4. `PlainClusterDriver.NodeResourcesAsync`** (после
   `NodeVolumeExistsAsync`):
 
 ```csharp
@@ -398,7 +398,7 @@ unit-тестов; сборка 0 warnings.
     }
 ```
 
-- [ ] **Шаг 5. `SwarmClusterDriver.NodeResourcesAsync`** (после его
+- [x] **Шаг 5. `SwarmClusterDriver.NodeResourcesAsync`** (после его
   `NodeVolumeExistsAsync`; `NodeName` — internal-статик ПЛЕЙН-драйвера, в
   swarm-драйвере всегда вызывается с квалификацией `PlainClusterDriver.`
   — ревью Фазы 4, замечание 7):
@@ -408,7 +408,7 @@ unit-тестов; сборка 0 warnings.
         => _engine.InspectServiceResourcesAsync(PlainClusterDriver.NodeName(cluster, nodeName), ct);
 ```
 
-- [ ] **Шаг 6. Фейк** (`Fakes.cs`): в `FakeKafkaDriver` добавить поля и метод;
+- [x] **Шаг 6. Фейк** (`Fakes.cs`): в `FakeKafkaDriver` добавить поля и метод;
 
 ```csharp
         // Фактические лимиты kfw-<C>-<b> (t06): EnsureNodeAsync обновляет,
@@ -452,19 +452,19 @@ unit-тестов; сборка 0 warnings.
 
 Добавить `using KafkaWorker.Core.Planning;` в шапку `Fakes.cs`.
 
-- [ ] **Шаг 7. Сборка**
+- [x] **Шаг 7. Сборка**
 
 Run: `dotnet build src/PgWorker.slnx`
 Ожидание: 0 errors, 0 warnings (реализации интерфейса во всех
 реализациях/фейках: `PlainClusterDriver`, `SwarmClusterDriver`,
 `FakeKafkaDriver`).
 
-- [ ] **Шаг 8. Прогон существующих unit-тестов (регресс фейка)**
+- [x] **Шаг 8. Прогон существующих unit-тестов (регресс фейка)**
 
 Run: `dotnet test src/tests/KafkaWorker.UnitTests`
 Ожидание: PASS (все; фейк обратно совместим).
 
-- [ ] **Шаг 9. Коммит**
+- [x] **Шаг 9. Коммит**
 
 ```bash
 git add src/KafkaWorker.Docker src/tests/KafkaWorker.UnitTests/Provisioning/Fakes.cs
@@ -506,7 +506,7 @@ Note: канонизация decimal — СУЩЕСТВУЮЩИЙ метод `Ka
 (KafkaWriting.cs:199; публичного `KafkaLimits.Canonical` нет — ревью Фазы 4,
 замечание 8).
 
-- [ ] **Шаг 1. Failing-тест валидатора**
+- [x] **Шаг 1. Failing-тест валидатора**
   (`src/tests/KafkaWorker.UnitTests/Writing/KafkaResourcesUpdateValidatorTests.cs`):
 
 ```csharp
@@ -590,12 +590,12 @@ public class KafkaResourcesUpdateValidatorTests
 }
 ```
 
-- [ ] **Шаг 2. Прогон — failing**
+- [x] **Шаг 2. Прогон — failing**
 
 Run: `dotnet test src/tests/KafkaWorker.UnitTests --filter KafkaResourcesUpdateValidator`
 Ожидание: FAIL (типы не существуют).
 
-- [ ] **Шаг 3. Реализация в `KafkaWriting.cs`** (в конец файла; рядом уже есть
+- [x] **Шаг 3. Реализация в `KafkaWriting.cs`** (в конец файла; рядом уже есть
   `ResourcesJson` и `KafkaClusterCreatePlan.Canonical`):
 
 ```csharp
@@ -661,12 +661,12 @@ public static class BrokerResourcesJson
 }
 ```
 
-- [ ] **Шаг 4. Прогон валидатора — зелёный**
+- [x] **Шаг 4. Прогон валидатора — зелёный**
 
 Run: `dotnet test src/tests/KafkaWorker.UnitTests --filter KafkaResourcesUpdateValidator`
 Ожидание: PASS.
 
-- [ ] **Шаг 5. Исключение** (`KafkaExceptions.cs`, рядом с
+- [x] **Шаг 5. Исключение** (`KafkaExceptions.cs`, рядом с
    `KafkaBrokerIsControllerException`):
 
 ```csharp
@@ -675,7 +675,7 @@ public sealed class KafkaBrokerRemovalInProgressException(string cluster, string
     : Exception($"брокер {cluster}/{broker} заявлен к удалению (TO_REMOVE/REMOVING) — изменение ресурсов отклонено");
 ```
 
-- [ ] **Шаг 6. Хендлер** (`src/KafkaWorker.App/Api/Operations/UpdateBrokerResourcesHandler.cs`):
+- [x] **Шаг 6. Хендлер** (`src/KafkaWorker.App/Api/Operations/UpdateBrokerResourcesHandler.cs`):
 
 ```csharp
 using System.Text.RegularExpressions;
@@ -758,7 +758,7 @@ public sealed partial class UpdateBrokerResourcesHandler(IEtcdGateway gateway, s
 }
 ```
 
-- [ ] **Шаг 7. Маршрут** (`ApiModule.cs`, после DELETE-брокера; маппинг —
+- [x] **Шаг 7. Маршрут** (`ApiModule.cs`, после DELETE-брокера; маппинг —
   порт существующих веток; `UpdateBrokerResourcesHandler` добавить в параметры
   lambda как остальные хендлеры):
 
@@ -809,7 +809,7 @@ builder.Services.AddSingleton(sp => new UpdateBrokerResourcesHandler(
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
 ```
 
-- [ ] **Шаг 8. Failing-интеграционные тесты**
+- [x] **Шаг 8. Failing-интеграционные тесты**
   (`src/tests/KafkaWorker.IntegrationTests/Api/UpdateBrokerResourcesApiTests.cs`;
   фикстура `KafkaApiCollection`/`KafkaApiTestSeed.SeedActiveClusterAsync`):
 
@@ -990,18 +990,18 @@ public class UpdateBrokerResourcesApiTests(KafkaApiFixture fixture)
 }
 ```
 
-- [ ] **Шаг 9. Прогон — сначала failing, затем реализация уже из шагов выше**
+- [x] **Шаг 9. Прогон — сначала failing, затем реализация уже из шагов выше**
 
 Run: `dotnet test src/tests/KafkaWorker.IntegrationTests --filter UpdateBrokerResources`
 Ожидание: до шагов 5–7 — FAIL (404 маршрута); после — PASS (8 кейсов).
 Требуется Docker (только etcd-контейнер фикстуры).
 
-- [ ] **Шаг 10. Полная сборка + unit-прогон**
+- [x] **Шаг 10. Полная сборка + unit-прогон**
 
 Run: `dotnet build src/PgWorker.slnx && dotnet test src/tests/KafkaWorker.UnitTests`
 Ожидание: 0 warnings; unit PASS.
 
-- [ ] **Шаг 11. Коммит**
+- [x] **Шаг 11. Коммит**
 
 ```bash
 git add src/KafkaWorker.Core/Writing/KafkaWriting.cs src/KafkaWorker.App/Api src/tests/KafkaWorker.UnitTests/Writing src/tests/KafkaWorker.IntegrationTests/Api/UpdateBrokerResourcesApiTests.cs src/KafkaWorker.App/Program.cs
@@ -1039,7 +1039,7 @@ arch/16 §5 J; §10.5 (X2).
   (между ротацией и TopicSync) — реализация `KafkaClusterProcesses` принимает
   `NodeRegenerator regenerator` в конструкторе.
 
-- [ ] **Шаг 1. Failing-тесты процесса**
+- [x] **Шаг 1. Failing-тесты процесса**
   (`src/tests/KafkaWorker.UnitTests/Provisioning/NodeRegeneratorTests.cs`;
   фейки `Fakes.FakeEtcd`/`Fakes.FakeKafkaDriver`, снапшот-сид как в
   `NodeSupervisorTests`; `FixedTimeProvider` инициализируется свойством
@@ -1316,12 +1316,12 @@ public class NodeRegeneratorTests : IAsyncLifetime
 }
 ```
 
-- [ ] **Шаг 2. Прогон — failing**
+- [x] **Шаг 2. Прогон — failing**
 
 Run: `dotnet test src/tests/KafkaWorker.UnitTests --filter NodeRegenerator`
 Ожидание: FAIL — класс `NodeRegenerator` не существует.
 
-- [ ] **Шаг 3. Реализация процесса**
+- [x] **Шаг 3. Реализация процесса**
   (`src/KafkaWorker.Provisioning/Processes/NodeRegenerator.cs`):
 
 ```csharp
@@ -1613,7 +1613,7 @@ public sealed class NodeRegenerator(
 }
 ```
 
-- [ ] **Шаг 4. Прогон unit — зелёный**
+- [x] **Шаг 4. Прогон unit — зелёный**
 
 Run: `dotnet test src/tests/KafkaWorker.UnitTests --filter NodeRegenerator`
 Ожидание: PASS (10 кейсов, включая запрет фантомного прогресса). Если
@@ -1621,7 +1621,7 @@ Run: `dotnet test src/tests/KafkaWorker.UnitTests --filter NodeRegenerator`
 `KafkaClusterFixture.Options` (позиционные параметры `From, To,
 BrokerBootSec, NodeDeadSec, AdvertisedClientHost, NodeImage`).
 
-- [ ] **Шаг 5. Конвейер** (`src/KafkaWorker.App/Loops/KafkaClusterProcesses.cs`):
+- [x] **Шаг 5. Конвейер** (`src/KafkaWorker.App/Loops/KafkaClusterProcesses.cs`):
   в интерфейс `IKafkaClusterProcesses` (doc-коммент ActiveAsync дополнить
   «→ регенерация (J)»), в класс `KafkaClusterProcesses` — параметр
   `NodeRegenerator regenerator` (после `AppPasswordRotator rotator`) и вызов
@@ -1635,7 +1635,7 @@ BrokerBootSec, NodeDeadSec, AdvertisedClientHost, NodeImage`).
             return regenerated;
 ```
 
-- [ ] **Шаг 6. X2-очистка + тест** (ревью Фазы 4, замечание 5):
+- [x] **Шаг 6. X2-очистка + тест** (ревью Фазы 4, замечание 5):
 
   6a. `DeprovisioningProcess.cs`: найти фазу X2 (del координационных ключей —
   рядом del `/kafkaworker/rotations/...` и rebalances/reassignments) и
@@ -1657,7 +1657,7 @@ BrokerBootSec, NodeDeadSec, AdvertisedClientHost, NodeImage`).
         rig.Etcd.Store.Should().NotContainKey("/kafkaworker/regens/events");
 ```
 
-- [ ] **Шаг 7. DI** (`Program.cs`, после регистрации `AppPasswordRotator`):
+- [x] **Шаг 7. DI** (`Program.cs`, после регистрации `AppPasswordRotator`):
 
 ```csharp
 builder.Services.AddSingleton(sp => new NodeRegenerator(
@@ -1669,12 +1669,12 @@ builder.Services.AddSingleton(sp => new NodeRegenerator(
     ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value)));
 ```
 
-- [ ] **Шаг 8. Сборка + весь unit-прогон**
+- [x] **Шаг 8. Сборка + весь unit-прогон**
 
 Run: `dotnet build src/PgWorker.slnx && dotnet test src/tests/KafkaWorker.UnitTests`
 Ожидание: 0 warnings; PASS (включая расширенный X2-кейс и анти-фантом).
 
-- [ ] **Шаг 9. Коммит**
+- [x] **Шаг 9. Коммит**
 
 ```bash
 git add src/KafkaWorker.Provisioning src/KafkaWorker.App src/tests/KafkaWorker.UnitTests/Provisioning
@@ -1711,7 +1711,7 @@ Produce/consume-цикл сообщения не добавляем: сохра�
 `ReassignmentTests.NewRigAsync`; доведение — порт `UpAsync`
 `ReassignmentTests.cs:76–93`).
 
-- [ ] **Шаг 1. Тест** (`src/tests/KafkaWorker.IntegrationTests/Kafka/NodeRegenTests.cs`):
+- [x] **Шаг 1. Тест** (`src/tests/KafkaWorker.IntegrationTests/Kafka/NodeRegenTests.cs`):
 
 ```csharp
 using Confluent.Kafka.Admin;
@@ -1898,18 +1898,18 @@ provisioning'а требует живого ensurer'а. Порядок тико�
 (сверка/шаг) — как конвейер Active-ветки без надзора (контейнер жив — надзор
 no-op).
 
-- [ ] **Шаг 2. Прогон (Docker требуется; ~2–5 мин)**
+- [x] **Шаг 2. Прогон (Docker требуется; ~2–5 мин)**
 
 Run: `dotnet test src/tests/KafkaWorker.IntegrationTests --filter NodeRegenTests`
 Ожидание: PASS (2 кейса). Падение с бюджетом — проверить руками
 `docker ps | grep kfw-rg` (осиротевшие контейнеры — teardown фикстуры чистит).
 
-- [ ] **Шаг 3. Полный прогон интеграционных воркера (регресс конвейера)**
+- [x] **Шаг 3. Полный прогон интеграционных воркера (регресс конвейера)**
 
 Run: `dotnet test src/tests/KafkaWorker.IntegrationTests`
 Ожидание: PASS (существующие + новые; J не ломает чужие процессы).
 
-- [ ] **Шаг 4. Коммит**
+- [x] **Шаг 4. Коммит**
 
 ```bash
 git add src/tests/KafkaWorker.IntegrationTests/Kafka/NodeRegenTests.cs
@@ -1945,7 +1945,7 @@ git commit -m "test(kafka): t06 — интеграционный цикл рег
   + поле `KafkaRegenDto? Regen = null` в `KafkaClusterDto` (последним);
   `KafkaMappers.MapDetails(..., IReadOnlyList<KafkaRegenProgress> regens, ...)`.
 
-- [ ] **Шаг 1. Failing-тесты парсера** (в `KafkaParserTests.cs`, по образцу
+- [x] **Шаг 1. Failing-тесты парсера** (в `KafkaParserTests.cs`, по образцу
   существующих ParseRebalances-кейсов; AAA; тип `Kv` — `AdminPanel.Etcd.Client`):
 
 ```csharp
@@ -1995,12 +1995,12 @@ git commit -m "test(kafka): t06 — интеграционный цикл рег
     }
 ```
 
-- [ ] **Шаг 2. Прогон — failing**
+- [x] **Шаг 2. Прогон — failing**
 
 Run: `dotnet test src/tests/AdminPanel.UnitTests --filter ParseRegens`
 Ожидание: FAIL — метод не существует.
 
-- [ ] **Шаг 3. Реализация парсера** (`KafkaParser.cs`, после
+- [x] **Шаг 3. Реализация парсера** (`KafkaParser.cs`, после
   `ParseReassignments`; `KafkaRegensParseResult` — рядом с
   `KafkaRebalancesParseResult`):
 
@@ -2056,7 +2056,7 @@ public sealed record KafkaRegensParseResult(
 
 (если `JsonValues.ReadInt` нет — добавить по образцу `ReadLong` рядом.)
 
-- [ ] **Шаг 4. Модель+refresher:** `KafkaSnapshot.cs` — record
+- [x] **Шаг 4. Модель+refresher:** `KafkaSnapshot.cs` — record
   `KafkaRegenProgress` (после `KafkaReassignmentProgress`) + поле
   `IReadOnlyList<KafkaRegenProgress> Regens` в `KafkaSnapshot` (после
   `Reassignments`); `KafkaSnapshotRefresher.cs` — префикс
@@ -2068,7 +2068,7 @@ public sealed record KafkaRegensParseResult(
   `.. regens.Errors` в общий список; в `FailTick`-заготовке — `[]` для нового
   поля (позиционно после Reassignments-`[]`).
 
-- [ ] **Шаг 5. DTO** (`KafkaQuery.cs`): record `KafkaRegenDto` (после
+- [x] **Шаг 5. DTO** (`KafkaQuery.cs`): record `KafkaRegenDto` (после
   `KafkaReassignmentDto`), поле `KafkaRegenDto? Regen = null` последним в
   `KafkaClusterDto`; в `KafkaMappers.MapDetails` — параметр
   `IReadOnlyList<KafkaRegenProgress> regens` (после `reassignments`),
@@ -2077,12 +2077,12 @@ public sealed record KafkaRegensParseResult(
   `Regen: regen is null ? null : new KafkaRegenDto(regen.BrokersTotal, regen.BrokersRemaining, regen.CurrentBroker, regen.UpdatedUnix)`;
   обновить вызов `MapDetails` (передать `snapshot.Regens`).
 
-- [ ] **Шаг 6. Сборка + тесты панели**
+- [x] **Шаг 6. Сборка + тесты панели**
 
 Run: `dotnet build src/PgWorker.slnx && dotnet test src/tests/AdminPanel.UnitTests`
 Ожидание: 0 warnings; PASS.
 
-- [ ] **Шаг 7. Коммит**
+- [x] **Шаг 7. Коммит**
 
 ```bash
 git add src/AdminPanel.Core src/AdminPanel.Etcd src/AdminPanel.Api src/tests/AdminPanel.UnitTests
@@ -2109,7 +2109,7 @@ git commit -m "feat(adminpanel): t06 — чтение прогресса рег�
 - `public sealed record KafkaBrokerResourcesRequestDto(decimal? Cpu, int? MemGi, int? DiskGi)`
 - `public sealed record KafkaBrokerResourcesUpdatedDto(string Cluster, string Broker, string Cpu, string MemGi, string DiskGi)`
 
-- [ ] **Шаг 1. Failing-тест** (в `WorkerProxyCommandTests.cs`):
+- [x] **Шаг 1. Failing-тест** (в `WorkerProxyCommandTests.cs`):
 
 ```csharp
     [Fact]
@@ -2161,12 +2161,12 @@ git commit -m "feat(adminpanel): t06 — чтение прогресса рег�
     }
 ```
 
-- [ ] **Шаг 2. Прогон — failing**
+- [x] **Шаг 2. Прогон — failing**
 
 Run: `dotnet test src/tests/AdminPanel.UnitTests --filter UpdateKafkaBrokerResources`
 Ожидание: FAIL.
 
-- [ ] **Шаг 3. Реализация**
+- [x] **Шаг 3. Реализация**
   (`src/AdminPanel.Api/Operations/Kafka/BrokerResourcesCommands.cs`):
 
 ```csharp
@@ -2202,7 +2202,7 @@ public sealed class UpdateKafkaBrokerResourcesCommandHandler(IWorkerApiGateway a
 }
 ```
 
-- [ ] **Шаг 4. Маршрут** (`KafkaOperationsModule.cs`, после MapDelete
+- [x] **Шаг 4. Маршрут** (`KafkaOperationsModule.cs`, после MapDelete
   брокеров):
 
 ```csharp
@@ -2221,12 +2221,12 @@ public sealed class UpdateKafkaBrokerResourcesCommandHandler(IWorkerApiGateway a
         });
 ```
 
-- [ ] **Шаг 5. Прогон + сборка**
+- [x] **Шаг 5. Прогон + сборка**
 
 Run: `dotnet build src/PgWorker.slnx && dotnet test src/tests/AdminPanel.UnitTests --filter WorkerProxyCommandTests`
 Ожидание: 0 warnings; PASS (включая 2 новых кейса).
 
-- [ ] **Шаг 6. Коммит**
+- [x] **Шаг 6. Коммит**
 
 ```bash
 git add src/AdminPanel.Api/Operations/Kafka src/tests/AdminPanel.UnitTests/Operations
@@ -2254,7 +2254,7 @@ git commit -m "feat(adminpanel): t06 — прокси мутации №15 (PUT 
 `{cpu?, memGi?, diskGi?}`); образцы: `AddBrokerModal.tsx` (форма+валидация),
 `EditClusterConfigModal.tsx` (частичное обновление), `RemoveBrokerButton.tsx`.
 
-- [ ] **Шаг 1. DTO** (`dto.ts`): после `KafkaReassignmentDto` —
+- [x] **Шаг 1. DTO** (`dto.ts`): после `KafkaReassignmentDto` —
 
 ```ts
 // Прогресс rolling-регенерации брокеров (t06, arch/15 §4); null = операции нет.
@@ -2269,7 +2269,7 @@ export interface KafkaRegenDto {
 и в `KafkaClusterDto` — поле `regen: KafkaRegenDto | null;` после
 `reassignment`.
 
-- [ ] **Шаг 2. API-функция** (`queries.ts`, после `removeKafkaBroker`):
+- [x] **Шаг 2. API-функция** (`queries.ts`, после `removeKafkaBroker`):
 
 ```ts
 // PUT /api/kafka/clusters/{cluster}/brokers/{broker}/resources — мутация №15
@@ -2289,7 +2289,7 @@ export function updateKafkaBrokerResources(
 (+ `KafkaBrokerResourcesUpdatedDto` interface в `dto.ts`:
 `{ cluster: string; broker: string; cpu: string; memGi: string; diskGi: string }`.)
 
-- [ ] **Шаг 3. Модалка** (`EditBrokerResourcesModal.tsx` — по каркасу
+- [x] **Шаг 3. Модалка** (`EditBrokerResourcesModal.tsx` — по каркасу
   `AddBrokerModal.tsx`: Mantine `Modal`+`NumberInput` cpu/memGi/diskGi с
   предзаполнением текущих значений брокера; submit →
   `updateKafkaBrokerResources` → инвалидация квери кластера
@@ -2300,7 +2300,7 @@ export function updateKafkaBrokerResources(
   по одному за тик; данные сохраняются.»; кнопка дизейблена, если все поля
   пусты/не менялись). Props: `{ cluster: string; broker: KafkaBrokerDto; opened: boolean; onClose: () => void }`.
 
-- [ ] **Шаг 4. BrokersTab**: в `BrokerRow` — иконка-кнопка «Изменить ресурсы»
+- [x] **Шаг 4. BrokersTab**: в `BrokerRow` — иконка-кнопка «Изменить ресурсы»
   (`<Button size="compact-xs" variant="light">Ресурсы</Button>`) рядом с
   «Убрать»; дизейбл: `!canScale || broker.state === 'TO_REMOVE' ||
   broker.state === 'REMOVING' || broker.state === 'NOT_INITIALIZED'`;
@@ -2317,7 +2317,7 @@ export function updateKafkaBrokerResources(
 (прокинуть `regen: KafkaRegenDto | null` пропсом из страницы, как
 `reassignment`).
 
-- [ ] **Шаг 5. Прогресс в деталях** (`KafkaClusterDetailsPage.tsx`): рядом с
+- [x] **Шаг 5. Прогресс в деталях** (`KafkaClusterDetailsPage.tsx`): рядом с
   местом вывода `reassignment`-информации — блок при `cluster.regen !== null`:
 
 ```tsx
@@ -2330,12 +2330,12 @@ export function updateKafkaBrokerResources(
 ) : null}
 ```
 
-- [ ] **Шаг 6. Проверки фронтенда**
+- [x] **Шаг 6. Проверки фронтенда**
 
 Run: `cd frontend && npm run typecheck && npm run build`
 Ожидание: обе команды — 0 errors.
 
-- [ ] **Шаг 7. Коммит**
+- [x] **Шаг 7. Коммит**
 
 ```bash
 git add frontend/src
@@ -2355,7 +2355,7 @@ git commit -m "feat(adminpanel): t06 — UI ресурсов брокера (м�
 **Files:**
 - Create: `dev-stand/adminpanel/checks/59-kafka-regen.sh`
 
-- [ ] **Шаг 1. Чек-скрипт** (по каркасу `55-kafka-e2e.sh`: `set -euo pipefail`,
+- [x] **Шаг 1. Чек-скрипт** (по каркасу `55-kafka-e2e.sh`: `set -euo pipefail`,
   `BASE="${ADMINPANEL_URL:-http://localhost:5050}"`, cookie-JAR; воркер —
   `docker compose --profile kafka` как в 55; кластер `e2e6`; шаги):
   1) чистый kafka-префикс стенда (`etcd_kafka_keys` пуст для `/kafka/`);
@@ -2376,20 +2376,28 @@ git commit -m "feat(adminpanel): t06 — UI ресурсов брокера (м�
   8) TO_REMOVE кластера → `/kafka/` пуст (как в 55, финал).
   Каждое утверждение — `echo "✅/❌"` и `exit 1` при провале (стиль 55).
 
-- [ ] **Шаг 2. Прогон чека на стенде**
+- [x] **Шаг 2. Прогон чека на стенде**
 
 Run: `bash dev-stand/adminpanel/checks/59-kafka-regen.sh` (стенд поднят
 `00-up.sh`; при недоступности — поднять по `55`-паттерну).
 Ожидание: все шаги ✅, exit 0.
 
-- [ ] **Шаг 3. Финальный полный прогон**
+- [x] **Шаг 3. Финальный полный прогон**
 
 Run: `dotnet build src/PgWorker.slnx && dotnet test` и
 `cd frontend && npm run typecheck`
 Ожидание: 0 warnings; все тесты зелёные (unit без Docker; integration с
 Docker); typecheck 0 errors.
 
-- [ ] **Шаг 4. Коммит**
+Факт (2026-09-03): build 0 warnings/0 errors; typecheck 0 errors; зелёные —
+все unit (AdminPanel 402, KafkaWorker 209, PgWorker 531), AdminPanel и
+KafkaWorker integration (110 и 47, в т.ч. Docker). 4 падения PgWorker E2e
+(Scale_TakeoverMidAdd, Scale_AddEmptyShard, Acceptance_Ac2, Move_Chain) —
+pre-existing на main: воспроизведены на чистом main со свежесобранным
+Release-бинаром PgWorker.App (старый Release от 29 авг зелёный) — вне зоны
+t06 (ветка PgWorker.*/PgWorker.IntegrationTests не трогала).
+
+- [x] **Шаг 4. Коммит**
 
 ```bash
 git add dev-stand/adminpanel/checks/59-kafka-regen.sh
