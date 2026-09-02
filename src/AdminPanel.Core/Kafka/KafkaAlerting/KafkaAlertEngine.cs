@@ -52,6 +52,32 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 Remedy: AlertRemedy.OperatorRunbook,
                 RemedyText: "запустите контейнер воркера (профиль kafka стендовой compose), проверьте /healthz и KafkaWorker:Api:AdvertiseUrl");
 
+        // worker-unhealthy (warning, t09; arch/03 §4, arch/adminpanel/02 §2.3.2): живой
+        // ключ /kafkaworker/api/<id>, но опрос /healthz ≠ 200 — процесс нездоров ДО
+        // истечения lease (порт WorkerUnhealthyRule pg-грани; docker-health и панель
+        // видят одно и то же — расхождений больше нет).
+        foreach (var w in next.WorkerHealth.Where(w => w.Status != WorkerHealthStatus.Healthy))
+        {
+            var what = w.Status == WorkerHealthStatus.Degraded
+                ? $"/healthz отвечает не-200 ({w.Detail ?? "degraded"})"
+                : $"недостижим по URL lease-ключа ({w.Detail ?? "network error"})";
+            yield return new Alert(
+                $"worker-unhealthy:kafkaworker/{w.InstanceId}",
+                AlertSeverity.Warning,
+                "worker-unhealthy",
+                $"kafkaworker/{w.InstanceId}",
+                $"инстанс KafkaWorker {w.InstanceId} нездоров: {what}",
+                new Dictionary<string, string>
+                {
+                    ["url"] = w.Url,
+                    ["checked_unix"] = w.CheckedAtUtc.ToUnixTimeSeconds().ToString(),
+                },
+                null,
+                "lease-ключ жив, но health-проба процесса плохая: секции /healthz (etcd/docker-хосты/циклы/снапшот) деградированы; docker-healthcheck гасит контейнер — за этим последует исчезновение lease и critical worker-api-unreachable",
+                AlertRemedy.OperatorRunbook,
+                "смотрите docker logs kafkaworker и /healthz напрямую (секции etcd-reachable/docker-hosts/loops-alive/snapshot); поднимите зависимость (etcd/docker) или перезапустите контейнер воркера");
+        }
+
         foreach (var cluster in next.Clusters)
         {
             switch (cluster.State)
