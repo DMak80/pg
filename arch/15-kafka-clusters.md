@@ -29,7 +29,7 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
 |---|---|---|---|
 | `config` | JSON `{"brokers":B,"replication_factor":R,"min_insync_replicas":M,"default_partitions":P,"default_retention_ms":X,"created_unix":T,"state"?:"NOT_INITIALIZED"\|"TO_REMOVE"}` | панель (создание, TO_REMOVE, конфиг-мутации), воркер (снимает `state` после инициализации, txn по `mod_revision`) | `state` — только у невыполненных заявок: отсутствие = Active (семантика pg 02 §2.1); поля 2–5 — mutable-конфиги кластера (converge воркером, без рестартов) |
 | `brokers/broker<k>/state` | строка `NOT_INITIALIZED`\|`PROVISIONING`\|`RUNNING`\|`UNREACHABLE`\|`REMOVING`\|`TO_REMOVE` | `NOT_INITIALIZED` и `TO_REMOVE` — **только панель** (заявка создания/маркер демонтажа, one-way); остальные — воркер | `TO_REMOVE` — маркер демонтажа (аналог pg §9.6): до разбора виден в UI с бейджем |
-| `brokers/broker<k>/resources` | JSON `{"cpu":"2","mem":"4Gi","disk":"40Gi"}` | панель | заявка ресурсов ноды (лимиты контейнера; форматы как pg §9.3) |
+| `brokers/broker<k>/resources` | JSON `{"cpu":"2","mem":"4Gi","disk":"40Gi"}` | панель | заявка ресурсов ноды (лимиты контейнера; форматы как pg §9.3); изменение существующих — мутация №15 (adminpanel/02 §10.2, через API воркера): лимиты cpu/mem сводит к декларации NodeRegenerator (16 §5 J) — rolling-пересоздание контейнера; `disk` — инфо-поле, действий не вызывает |
 | `brokers/broker<k>/role` | `"controller"\|"broker"` | воркер (план provisioning) | `controller` — combined-нода (участник KRaft-кворума); `broker` — broker-only; фиксируется при создании ноды навсегда |
 | `endpoints` | строка `"h1:p1,h2:p2,..."` | воркер (после подъёма; при add/remove брокера — RMW) | клиентские bootstrap-адреса (advertised host + клиентский порт из portalloc) — **точка дискавери клиентов** |
 | `app_user` | `"app"` | воркер (ensure, txn put-if-absent) | per-cluster SASL-пользователь |
@@ -186,10 +186,11 @@ TopicDoesNotExist = исполнено; отказ между мутацией �
 | `/kafkaworker/rotations/<C>` | обычный | заявка ротации app-пароля `{"requested_unix","requested_by"}` (панель, клэйм-txn; формат и протокол — pg 02 §9.8) |
 | `/kafkaworker/rebalances/<C>` | обычный | заявка ребалансировки партиций `{"requested_unix","requested_by"}` (панель, клэйм-txn — протокол ротаций; del воркером по завершении или панелью — отмена) |
 | `/kafkaworker/reassignments/<C>` | обычный | прогресс текущего reassignment — пишет только воркер: `{"mode":"drain"\|"balance","drain_broker"?,"partitions_total","partitions_remaining","submitted_unix","updated_unix","instance","last_error"?}`; ключ живёт только во время операции (put при старте, del по завершении — пусто = операции нет) |
+| `/kafkaworker/regens/<C>` | обычный | прогресс rolling-регенерации брокеров (16 §5 J) — пишет только воркер: `{"brokers_total","brokers_remaining","current_broker"?,"updated_unix","instance","last_error"?}`; ключ живёт только во время операции (put при старте первого пересоздания, del по сходимости всех лимитов — пусто = операции нет) |
 
 Панель читает из `/kafkaworker/` только `rotations/`, `rebalances/`,
-`reassignments/` (очередь ротаций и ребалансировок + прогресс reassignment
-в UI); остальные ключи не читает и не пишет.
+`reassignments/`, `regens/` (очередь ротаций и ребалансировок + прогресс
+reassignment и регенерации в UI); остальные ключи не читает и не пишет.
 
 ## 5. Клиентский дискавери (приложения)
 
@@ -212,7 +213,7 @@ Puzzle); контракт etcd выше уже содержит всё необ�
 
 | Случай | Поведение |
 |---|---|
-| Битый JSON в значении ключа (`config`, `resources`, `topics/<T>`, `topics/<T>/desired.create`/`desired.delete`, заявка ротации/ребалансировки, прогресс reassignment) | ключ пропускается, в снапшот попадает parseError-запись (без исключения), warning-алерт `kafka-key-malformed`; заявка/прогресс с битым JSON для воркера — мусор: reassignment-оператор разбирается по факту Kafka, битый прогресс перезаписывается |
+| Битый JSON в значении ключа (`config`, `resources`, `topics/<T>`, `topics/<T>/desired.create`/`desired.delete`, заявка ротации/ребалансировки, прогресс reassignment/regens) | ключ пропускается, в снапшот попадает parseError-запись (без исключения), warning-алерт `kafka-key-malformed`; заявка/прогресс с битым JSON для воркера — мусор: reassignment-оператор разбирается по факту Kafka, битый прогресс перезаписывается |
 | Неизвестный ключ внутри `/kafka/` | лог-строка + счётчик `unknownKeys`; парсер не падает. В т.ч. неизвестный leaf под `topics/<T>/` |
 | Active-кластер без `endpoints` | критический алерт `kafka-endpoints-missing` (воркер ещё не дописал / потеря ключа) |
 | `config.state` — незнакомое значение | толерантно: трактуется как Active-ветка с raw-строкой state (state-значения строкой — система развивается) |
