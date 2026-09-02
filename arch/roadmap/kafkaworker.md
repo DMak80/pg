@@ -14,9 +14,6 @@
   mTLS вместо голого `X-Api-Key` в закрытой сети.
 - **`t04-kafka-metrics`** — Prometheus-метрики воркера и панели (лаги, USR,
   фазы процессов, клэймы).
-- **`t05-kafka-discovery-lib`** — клиентская библиотека дискавери kafka из
-  etcd (в репозиторий Puzzle, по образцу ha-db: watch-long-poll/poll, кэш,
-  событие); контракт — 15 §5.
 - **`t06-kafka-node-regen`** — rolling-перегенерация существующих брокеров
   с новыми ресурсами (лимиты cpu/mem) и новыми server-props.
 - **`t09-kafka-worker-health`** — честная наблюдаемость здоровья воркера:
@@ -71,4 +68,4 @@
   arch/16 §5 H); Aspire-ветка без etcd (локальная разработка — источник
   топологии из ConnectionStrings, по образцу переключателя `Database:Source`
   у HA.Db). Канон-контракт — [../15-kafka-clusters.md](../15-kafka-clusters.md)
-  §5–§6. Зависимость: ← `t05-kafka-discovery-lib`.
+  §5–§6.
