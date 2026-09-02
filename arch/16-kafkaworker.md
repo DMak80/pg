@@ -118,8 +118,11 @@ URL API — из etcd)       URL воркера (§1.1)
 - **Listeners**: `CONTROLLER :9093` (PLAINTEXT, внутренняя docker-сеть),
   `INTERNAL :9092` (межброкерный, SASL_PLAINTEXT, advertised = docker-DNS
   имя ноды), `CLIENT :9094` (SASL_PLAINTEXT, опубликован на хост портом из
-  portalloc, advertised — по правилу ниже). Сеть `kfw-net` (alias = имя
-  ноды) — как `pgw-net`.
+  portalloc, advertised — по правилу ниже). Сеть `kfw-net-<C>` — per-cluster,
+  attachable (alias = имя ноды, уникален в пределах сети своего кластера;
+  t09-фикс: единая сеть с общими короткими алиасами `broker<N>` ломала
+  Raft-голоса через docker-DNS round-robin — на одном docker-хосте собирался
+  максимум один кластер; несколько кластеров обязаны быть изолированы сетями).
 - **Advertised-правило CLIENT-listener (канон)**: advertised-хост ноды =
   `KafkaWorker:AdvertisedClientHost`, если задан; иначе — имя docker-хоста
   размещения (Name из `Hosts[]` / swarm-ноды). Требование: значение обязано
@@ -161,7 +164,7 @@ URL API — из etcd)       URL воркера (§1.1)
 | `CLUSTER_ID` | детерминированный KRaft cluster-id из имени кластера (22 симв base64url от SHA-256) — одинаков у всех нод `<C>`, переживает пересоздание контейнера |
 | `KAFKA_NODE_ID` | числовой id ноды (k из `broker<k>`) |
 | `KAFKA_PROCESS_ROLES` | `broker,controller` (k ≤ m) или `broker` |
-| `KAFKA_CONTROLLER_QUORUM_VOTERS` | `1@host:9093,2@host:9093,…` — только controller-ноды (внутренние адреса сети `kfw-net`) |
+| `KAFKA_CONTROLLER_QUORUM_VOTERS` | `1@host:9093,2@host:9093,…` — только controller-ноды (внутренние адреса сети `kfw-net-<C>` кластера) |
 | `KAFKA_LISTENERS` | `CONTROLLER://:9093,INTERNAL://:9092,CLIENT://:9094` |
 | `KAFKA_ADVERTISED_LISTENERS` | `INTERNAL://<docker-DNS имя ноды>:9092,CLIENT://<AdvertisedClient>:<клиентский порт>` (AdvertisedClient — правило §2.1; CONTROLLER не advertised) |
 | `KAFKA_LISTENER_SECURITY_PROTOCOL_MAP` | `CONTROLLER:PLAINTEXT,INTERNAL:SASL_PLAINTEXT,CLIENT:SASL_PLAINTEXT` |
@@ -189,7 +192,8 @@ ISR проседает до лидера → NOT_ENOUGH_REPLICAS при minISR�
 e2e волны C). Пользователь `inter` с детерминированным per-cluster паролем
 (`InterBrokerPassword` NodeEnvBuilder: SHA-256 имени кластера → 32 симв
 [A-Za-z0-9]); НЕ ротируется (ротация app не должна ломать репликацию), в etcd
-не хранится — listener доступен только внутри закрытой сети `kfw-net`.
+не хранится — listener доступен только внутри закрытой сети `kfw-net-<C>`
+кластера.
 
 ### 2.4. Kafka-CLI в контейнере брокера (транспорт процессов)
 
@@ -198,7 +202,7 @@ e2e волны C). Пользователь `inter` с детерминиров�
 их **docker exec в контейнере живого брокера** (порт PgWorker `ExecNodeAsync`:
 plain — running-контейнер по имени `kfw-<C>-<b>`, swarm — running-таск
 сервиса). Транспорт подключения CLI — **INTERNAL-listener `broker<k>:9092`**
-(закрытая сеть `kfw-net`, SASL/PLAIN per-cluster креды; advertised INTERNAL =
+(закрытая сеть `kfw-net-<C>` кластера, SASL/PLAIN per-cluster креды; advertised INTERNAL =
 docker-DNS имена — резолвятся внутри сети; от клиентского advertised-правила
 §2.1 и host-портов не зависит). Ограничение JVM CLI: env
 `KAFKA_HEAP_OPTS=-Xmx256m` — не конкурировать с брокером за memory-лимит
@@ -210,8 +214,13 @@ docker-DNS имена — резолвятся внутри сети; от кл�
 per-host клиент Engine API, контейнеры `kfw-<C>-<b>`, restart-политика
 `unless-stopped`; swarm — `SwarmManager`, нода = сервис `replicas=1`,
 placement constraint, `publish mode=host`. Объекты для сверок — префикс
-`kfw-<C>-`. Сеть `kfw-net` — attachable, создаётся воркером при
-provisioning (аналог `pgw-net`).
+  `kfw-<C>-`. Сеть `kfw-net-<C>` — attachable, per-cluster, создаётся
+  воркером при provisioning кластера и удаляется при полном демонтаже
+  (последний брокер; пул subnet'ов docker-хоста конечен — сиротские сети
+  не копим); короткие алиасы `broker<N>` уникальны
+  в своей сети — несколько кластеров на одном docker-хосте изолированы
+  (t09-фикс; бэквард-совместимость: существующие контейнеры в старой единой
+  `kfw-net` продолжают работать — кластер самодостаточен внутри своей сети).
 
 ## 3. Контракт etcd
 
@@ -278,7 +287,7 @@ K1 план: placement + порт-аллокация (закрепление por
 K2 ensure app-секрета: app_user/app_password txn put-if-absent
    (проигрыш → re-read существующих)
 K3 на каждую ноду: volume + контейнер (env §2.2, лимиты resources,
-   сеть kfw-net, клиентский host-порт) + state=PROVISIONING;
+   сеть kfw-net-<C>, клиентский host-порт) + state=PROVISIONING;
    существующие (re-run) — сверка и пропуск
 K4 ждать готовности: DescribeCluster отвечает, контроллер избран,
    брокеров = B (бюджет BrokerBootSec=600 с, транзиент-толерантно);
@@ -464,10 +473,30 @@ describe-all (метаданные всех топиков **включая `__`
 
 Health `/healthz`: `etcd-reachable` (все endpoints), `docker-hosts`
 (per-host ping), `loops-alive` (последний тик каждого цикла), `claims`
-(сколько держим), `snapshot-freshness`. Логи: claim/takeover, фазы
-процессов (journal-фаза), rebuild ноды, converge-изменения.
-Diag-ключи: `/kafkaworker/work/<C>`, `brokers/<b>/state`. Prometheus —
-roadmap (t04).
+(сколько держим), `snapshot-freshness`. Канон честного health (t09):
+
+- **healthz = последнее состояние цикла, а не первый сбой**: успешный тик
+  гасит `StatusError` прошлого тика (живой-Ф7, порт циклов PgWorker) —
+  transient-сбой (пересоздание etcd-контейнера и т.п.) ≠ вечный 503 до
+  рестарта воркера;
+- **чек всегда отдаёт структуру**: активные пробы (etcd/docker-hosts)
+  оборачиваются catch-all — сетевое исключение пробы становится
+  `Result.Failed` → `Degraded` с данными секций, а не исключением чека;
+- **etcd-клиент — SocketsHttpHandler** с `PooledConnectionLifetime`
+  (периодический пере-резолв DNS; лечит застарелый пул коннектов после
+  пересоздания etcd-контейнера) и последовательным IPv4-first-резолвом в
+  `ConnectCallback` — параллельные A/AAAA-запросы .NET против Docker
+  embedded DNS (127.0.0.11) флейпят «Name or service not known».
+
+**Единая правда для панели** (t09): панель опрашивает `/healthz` живых
+инстансов по URL из `/kafkaworker/api/<id>` (порт паттерна PgWorker,
+arch/adminpanel/02 §2.3.2) — docker-health и панель видят одно и то же
+здоровье, degraded/unhealthy виден алертом `worker-unhealthy` ≤ 2 тиков
+поллера и гаснет после восстановления.
+
+Логи: claim/takeover, фазы процессов (journal-фаза), rebuild ноды,
+converge-изменения. Diag-ключи: `/kafkaworker/work/<C>`,
+`brokers/<b>/state`. Prometheus — roadmap (t04).
 
 ## 8. Конфигурация (appsettings + env-оверрайды)
 

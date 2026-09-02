@@ -188,6 +188,21 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             }
         });
 
+    // DELETE /networks/<name>; 404 = успех (идемпотентность). «Has active
+    // endpoints» уходит наверх Failed — вызывающий решает (т09-фикс).
+    public async Task<Result> DeleteNetworkAsync(string name, CancellationToken ct)
+        => await Result.FromAsync(async () =>
+        {
+            try
+            {
+                await SendAsync(HttpMethod.Delete, $"/networks/{Uri.EscapeDataString(name)}", ct: ct);
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                // сети уже нет — идемпотентность
+            }
+        });
+
     // Exec в контейнере (t01): create → start (raw-stream) → inspect ExitCode.
     public async Task<Result<string>> ExecAsync(string containerId, IReadOnlyList<string> cmd, CancellationToken ct)
         => await Result<string>.FromAsync(async () =>

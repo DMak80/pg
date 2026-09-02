@@ -21,11 +21,77 @@ public class KafkaAlertRulesTests
     private IReadOnlyList<Alert> Evaluate(KafkaSnapshot next, KafkaSnapshot? prev = null)
         => [.. _engine.Evaluate(next, prev)];
 
-    private static KafkaSnapshot Snapshot(params KafkaClusterInfo[] clusters) => new(
+    private static KafkaSnapshot Snapshot(params KafkaClusterInfo[] clusters)
+        => Snapshot([], clusters);
+
+    // Перегрузка со здоровьем воркера (t09): params остаётся последним.
+    private static KafkaSnapshot Snapshot(
+        IReadOnlyList<WorkerHealth> workerHealth, params KafkaClusterInfo[] clusters) => new(
         Now, EtcdReachable: true, ConsecutiveFailures: 0,
         [.. clusters], Rotations: [], Rebalances: [], Reassignments: [],
         WorkerEndpoints: [new WorkerEndpoint("kw1", "http://kafkaworker:8080", 1)],
-        Probes: [], Alerts: [], ParseErrors: [], UnknownKeyCount: 0);
+        WorkerHealth: workerHealth, Probes: [], Alerts: [], ParseErrors: [], UnknownKeyCount: 0);
+
+    // ===== worker-unhealthy (t09, arch/03 §4; arch/adminpanel/02 §2.3.2) =====
+
+    [Fact]
+    public void WorkerUnhealthy_Degraded_WarningKafkaworkerTarget()
+    {
+        // Arrange: живой ключ /kafkaworker/api/kw1, опрос /healthz → 503.
+        var next = Snapshot(
+            [new WorkerHealth("kw1", "http://kafkaworker:8080", WorkerHealthStatus.Degraded, Now, "HTTP 503")]);
+
+        // Act
+        var alerts = Evaluate(next);
+
+        // Assert: warning worker-unhealthy на kafka-таргет (arch/03 §4).
+        var a = alerts.Should().ContainSingle(
+            x => x.Kind == "worker-unhealthy" && x.Target == "kafkaworker/kw1").Subject;
+        a.Severity.Should().Be(AlertSeverity.Warning);
+        a.Message.Should().Contain("не-200");
+    }
+
+    [Fact]
+    public void WorkerUnhealthy_Unreachable_NetworkErrorText()
+    {
+        // Arrange: lease жив, сетевой сбой опроса.
+        var next = Snapshot(
+            [new WorkerHealth("kw1", "http://kafkaworker:8080", WorkerHealthStatus.Unreachable, Now, "timeout")]);
+
+        // Act/Assert: «недостижим по URL lease-ключа».
+        Evaluate(next).Should().ContainSingle(
+            x => x.Kind == "worker-unhealthy" && x.Message.Contains("недостижим"));
+    }
+
+    [Fact]
+    public void WorkerUnhealthy_Healthy_NoAlert()
+    {
+        // Arrange: все инстансы здоровы.
+        var next = Snapshot(
+            [new WorkerHealth("kw1", "http://kafkaworker:8080", WorkerHealthStatus.Healthy, Now, null)]);
+
+        // Act/Assert
+        Evaluate(next).Should().NotContain(x => x.Kind == "worker-unhealthy");
+    }
+
+    [Fact]
+    public void WorkerUnhealthy_SinceUnix_CarriedFromPrevious()
+    {
+        // Arrange: алерт уже горел в prev с sinceUnix=100 — Alerts вкладываются
+        // в PREVIOUS (ResolveSince ищет в previous.Alerts, KafkaAlertEngine;
+        // прецедент ExistingAlert_SinceUnixCarried), next — свежий снапшот.
+        var health = new WorkerHealth("kw1", "http://kafkaworker:8080", WorkerHealthStatus.Degraded, Now, "HTTP 503");
+        var baseSnap = Snapshot([health]);
+        var first = Evaluate(baseSnap).Single(x => x.Kind == "worker-unhealthy");
+        var prev = baseSnap with { Alerts = [first with { SinceUnix = 100 }] };
+        var next = Snapshot([health]);
+
+        // Act
+        var again = Evaluate(next, prev);
+
+        // Assert: sinceUnix перенесён из prev (механика движка, стабильный id).
+        again.Single(x => x.Kind == "worker-unhealthy").SinceUnix.Should().Be(100);
+    }
 
     // Active-кластер с брокерами (по умолчанию один RUNNING broker1).
     private static KafkaClusterInfo ActiveCluster(

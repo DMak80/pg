@@ -14,6 +14,7 @@ public sealed record KafkaSnapshot(
     IReadOnlyList<KafkaRebalanceTicket> Rebalances, // /kafkaworker/rebalances/ (t02, arch/15 §4)
     IReadOnlyList<KafkaReassignmentProgress> Reassignments, // /kafkaworker/reassignments/ (t02)
     IReadOnlyList<WorkerEndpoint> WorkerEndpoints,  // живые ключи /kafkaworker/api/ (arch/02 §2.3.2)
+    IReadOnlyList<WorkerHealth> WorkerHealth,        // опрос /healthz живых инстансов (t09, arch/02 §2.3.2)
     IReadOnlyList<ProbeResult> Probes,              // live-проба DescribeCluster (B6+)
     IReadOnlyList<Alert> Alerts,                    // KafkaAlertEngine (arch/03 §7.4)
     IReadOnlyList<KeyParseError> ParseErrors,       // битые JSON kafka-ключей (arch/15 §6)

@@ -35,12 +35,17 @@ public class WorkerHealthPollerTests
     }
 
     private static (WorkerHealthPoller Poller, WorkerHealthStore Store) Poller(
-        Func<HttpRequestMessage, HttpResponseMessage> respond, EtcdSnapshot? snapshot = null)
+        Func<HttpRequestMessage, HttpResponseMessage> respond,
+        EtcdSnapshot? snapshot = null,
+        AdminPanel.Etcd.IKafkaSnapshotReader? kafkaReader = null,
+        AdminPanel.Etcd.Workers.KafkaWorkerHealthStore? kafkaStore = null)
     {
         var store = new WorkerHealthStore();
         var time = new FixedTimeProvider { Utc = Now };
         var poller = new WorkerHealthPoller(
-            new StubReader(snapshot ?? TestSnapshots.Healthy(Now)), store, new StubFactory(new FakeHandler(respond)),
+            new StubReader(snapshot ?? TestSnapshots.Healthy(Now)), store,
+            kafkaReader ?? new StubKafkaReader(null), kafkaStore ?? new KafkaWorkerHealthStore(),
+            new StubFactory(new FakeHandler(respond)),
             Options.Create(new WorkerApiOptions { HealthIntervalSec = 15, TimeoutSec = 3 }),
             time, NullLogger<WorkerHealthPoller>.Instance);
         return (poller, store);
@@ -100,5 +105,52 @@ public class WorkerHealthPollerTests
 
         // Assert: пустой список (НЕ null) — правило worker-unhealthy молчит.
         store.Current.Should().NotBeNull().And.BeEmpty();
+    }
+
+    // IKafkaSnapshotReader-дабл: kafka-снапшот домена (null — домен не тикал).
+    private sealed class StubKafkaReader(AdminPanel.Core.Kafka.KafkaSnapshot? snapshot)
+        : AdminPanel.Etcd.IKafkaSnapshotReader
+    {
+        public AdminPanel.Core.Kafka.KafkaSnapshot? Current { get; } = snapshot;
+    }
+
+    private static AdminPanel.Core.Kafka.KafkaSnapshot KafkaSnapshotWith(
+        params WorkerEndpoint[] endpoints) => new(
+        Now, EtcdReachable: true, ConsecutiveFailures: 0,
+        [], [], [], [], [.. endpoints], WorkerHealth: [], Probes: [], Alerts: [],
+        ParseErrors: [], UnknownKeyCount: 0);
+
+    [Fact]
+    public async Task RunOnce_KafkaHealthz503_MarkedDegradedInKafkaStore()
+    {
+        // Arrange: kafka-снапшот с живым ключом /kafkaworker/api/kw1; /healthz → 503.
+        var kafkaStore = new KafkaWorkerHealthStore();
+        var kafka = new StubKafkaReader(KafkaSnapshotWith(new WorkerEndpoint("kw1", "http://kafkaworker:8080", 1)));
+        var (poller, _) = Poller(
+            _ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable),
+            kafkaReader: kafka, kafkaStore: kafkaStore);
+
+        // Act
+        await poller.RunOnceAsync(CancellationToken.None);
+
+        // Assert: kafka-стор получил Degraded (тот же тик/клиент/семантика, что pg).
+        kafkaStore.Current!.Should().ContainSingle()
+            .Which.Status.Should().Be(WorkerHealthStatus.Degraded);
+    }
+
+    [Fact]
+    public async Task RunOnce_NoKafkaSnapshot_KafkaStoreEmpty()
+    {
+        // Arrange: kafka-домен ещё не тикал (нет снапшота — нет ключей).
+        var kafkaStore = new KafkaWorkerHealthStore();
+        var (poller, _) = Poller(
+            _ => new HttpResponseMessage(HttpStatusCode.OK),
+            kafkaReader: new StubKafkaReader(null), kafkaStore: kafkaStore);
+
+        // Act
+        await poller.RunOnceAsync(CancellationToken.None);
+
+        // Assert: пустой список (правило worker-unhealthy молчит).
+        kafkaStore.Current.Should().BeEmpty();
     }
 }

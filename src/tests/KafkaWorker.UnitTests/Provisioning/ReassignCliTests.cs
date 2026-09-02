@@ -13,7 +13,7 @@ public sealed class ReassignCliTests
     [Fact]
     public void Bootstrap_внутренний_listener()
     {
-        // Arrange: имена живых брокеров (docker-DNS alias в kfw-net).
+        // Arrange: имена живых брокеров (docker-DNS alias в kfw-net-<C>).
 
         // Act
         var bootstrap = ReassignCli.Bootstrap(["broker1", "broker2"]);

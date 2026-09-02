@@ -1,3 +1,4 @@
+using System.Globalization;
 using Confluent.Kafka.Admin;
 using FluentAssertions;
 using KafkaWorker.Core;
@@ -17,7 +18,7 @@ public class ProvisioningTests(KafkaClusterFixture fixture)
     [Fact]
     public async Task FullLifecycle_ProvisionDiscoveryDeprovision()
     {
-        const string cluster = "it1";
+        var cluster = fixture.Cluster("it1");
         var ct = TestContext.Current.CancellationToken;
 
         // Arrange: заявка 1-брокерного кластера (config NOT_INITIALIZED + broker1).
@@ -33,8 +34,9 @@ public class ProvisioningTests(KafkaClusterFixture fixture)
         var deprovision = new DeprovisioningProcess(
             fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal, snapshot: null);
 
-        // Act 1: provisioning до готовности (поллинг-ретраи ≤ 120 с).
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(120);
+        // Act 1: provisioning до готовности (поллинг-ретраи; потолок 200 с —
+        // с запасом над воркерным BrokerBootSec=100, зелёный прогон не замедляет).
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(200);
         while (DateTimeOffset.UtcNow < deadline)
         {
             var snap = await fixture.SnapshotAsync(cluster);
@@ -51,7 +53,13 @@ public class ProvisioningTests(KafkaClusterFixture fixture)
         var config = await fixture.GetAsync($"/kafka/clusters/{cluster}/config");
         config.Should().NotContain("state", "provisioning снимает state у config");
         var endpoints = await fixture.GetAsync($"/kafka/clusters/{cluster}/endpoints");
-        endpoints.Should().StartWith("localhost:").And.Contain(":16000");
+        // Порты — из динамического окна фикстуры (литералов «:16000» больше нет:
+        // выдача сквозная по кластерам коллекции, it1 не обязательно первый).
+        // Проверяем принадлежность фактическому окну [PortFrom, PortTo].
+        endpoints.Should().StartWith("localhost:");
+        var clientPorts = endpoints!.Split(',')
+            .Select(e => int.Parse(e[(e.LastIndexOf(':') + 1)..], CultureInfo.InvariantCulture));
+        clientPorts.Should().OnlyContain(p => p >= fixture.PortFrom && p <= fixture.PortTo);
         var password = await fixture.GetAsync($"/kafka/clusters/{cluster}/app_password");
         password.Should().HaveLength(32).And.MatchRegex("^[A-Za-z0-9]{32}$");
         (await fixture.GetAsync($"/kafka/clusters/{cluster}/brokers/broker1/state")).Should().Be("RUNNING");
@@ -79,7 +87,7 @@ public class ProvisioningTests(KafkaClusterFixture fixture)
         var removed = await deprovision.RunAsync(cluster, dying!.Brokers.Select(b => b.Name).ToList(), ct);
 
         // Assert 3: контейнер/том удалены, префикс пуст, rotations-заявка очищена.
-        removed.IsSuccess.Should().BeTrue();
+        removed.IsSuccess.Should().BeTrue($"демонтаж не должен падать: {removed.Error?.Message}");
         (await fixture.Driver.ListNodeObjectsAsync(cluster, ct)).Value.Should().BeEmpty();
         var rest = await fixture.Gateway.RangeAsync(fixture.Endpoint, $"/kafka/clusters/{cluster}/", ct);
         rest.Value.Should().BeEmpty("префикс /kafka/clusters/<C>/ пуст после демонтажа");

@@ -87,6 +87,7 @@ public class KafkaModelTests
         Rebalances: [],
         Reassignments: [],
         WorkerEndpoints: [],
+        WorkerHealth: [],
         Probes: [],
         Alerts: [],
         ParseErrors: [new KeyParseError("/kafka/clusters/x/config", "bad json")],

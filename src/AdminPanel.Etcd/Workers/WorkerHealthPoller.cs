@@ -13,6 +13,8 @@ namespace AdminPanel.Etcd.Workers;
 public sealed class WorkerHealthPoller(
     ISnapshotReader snapshotReader,
     IWorkerHealthStore store,
+    IKafkaSnapshotReader kafkaSnapshotReader,
+    IKafkaWorkerHealthStore kafkaStore,
     IHttpClientFactory factory,
     IOptions<WorkerApiOptions> options,
     TimeProvider time,
@@ -43,6 +45,14 @@ public sealed class WorkerHealthPoller(
         var at = time.GetUtcNow();
         var results = await Task.WhenAll(endpoints.Select(e => ProbeAsync(e, at, ct)));
         store.Replace([.. results.OrderBy(r => r.InstanceId, StringComparer.Ordinal)]);
+
+        // KafkaWorker-инстансы (t09; arch/adminpanel/02 §2.3.2): тот же тик/клиент/
+        // семантика — 200 → Healthy, 503 → Degraded, сетевой сбой → Unreachable;
+        // /healthz не под X-Api-Key (ApiKeyMiddleware проверяет только /api).
+        var kafkaEndpoints = kafkaSnapshotReader.Current?.WorkerEndpoints ?? [];
+        var kafkaAt = time.GetUtcNow();
+        var kafkaResults = await Task.WhenAll(kafkaEndpoints.Select(e => ProbeAsync(e, kafkaAt, ct)));
+        kafkaStore.Replace([.. kafkaResults.OrderBy(r => r.InstanceId, StringComparer.Ordinal)]);
     }
 
     private async Task<WorkerHealth> ProbeAsync(WorkerEndpoint endpoint, DateTimeOffset at, CancellationToken ct)

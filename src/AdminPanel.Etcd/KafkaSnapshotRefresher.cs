@@ -24,6 +24,7 @@ public sealed class KafkaSnapshotRefresher(
     IOptions<KafkaPanelOptions> kafkaOptions,
     TimeProvider time,
     ILogger<KafkaSnapshotRefresher> logger,
+    IKafkaWorkerHealthStore workerHealthStore,
     IKafkaProbeReader? probeReader = null) : BackgroundService
 {
     private string? _activeEndpoint;
@@ -106,6 +107,7 @@ public sealed class KafkaSnapshotRefresher(
             rebalances.Tickets,
             reassignments.Progress,
             workerApi.Endpoints,
+            workerHealthStore.Current ?? [], // health-проб воркера вносит успешный тик (t09; arch/02 §2.3.2)
             previous?.Probes ?? [],       // пробы переживают отказ etcd (симметрия pg spec §4.3)
             Alerts: [],
             [.. clusters.Errors, .. rotations.Errors, .. rebalances.Errors, .. reassignments.Errors,
@@ -174,11 +176,15 @@ public sealed class KafkaSnapshotRefresher(
         var error = Result.Failed(new EtcdUnreachableException(reason));
         var failed = previous
             ?? new KafkaSnapshot(now, EtcdReachable: false, ConsecutiveFailures: 0,
-                [], [], [], [], [], [], [], [], 0);
+                [], [], [], [], [], [], [], [], [], 0);
         failed = failed with
         {
             EtcdReachable = false,
             ConsecutiveFailures = failed.ConsecutiveFailures + 1,
+            // WorkerHealth НЕ мерджится из стора на отказном тике (t09; spec §3.4,
+            // симметрия pg): переносится из previous автоматически — свежие пробы
+            // вносит только успешный тик; алерт worker-unhealthy загорается первым
+            // успешным тиком refresher'а после возвращения etcd.
         };
 
         // Алерты пересчитываются и на отказном тике (pg-семантика §4).

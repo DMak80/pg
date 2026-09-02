@@ -119,7 +119,14 @@ Scope = `<C>-<X>`, глобально уникален. Связь со шард
 Симметрично §2.3.1: lease-ключи `/kafkaworker/api/<id>` (ставит сам воркер,
 arch/16 §1.1) читаются kafka-refresher'ом в `KafkaSnapshot.WorkerEndpoints`
 — источник URL для kafka-мутаций §10.2. Отсутствие живых ключей → 503
-мутаций + critical-алерт `worker-api-unreachable` (03 §4.1).
+мутаций + critical-алерт `worker-api-unreachable` (03 §4.1). По этим же
+URL тик опроса `/healthz` (t09; тот же поллер и интервал, что у
+PgWorker-инстансов §2.3.1, — `AdminPanel:Workers:HealthIntervalSec`)
+пробит живые инстансы KafkaWorker: результат — `WorkerHealth[]` в
+`KafkaSnapshot.WorkerHealth` (модель §3), warning-алерт `worker-unhealthy`
+(03 §4); `/healthz` не под `X-Api-Key`. Degraded/unhealthy воркер виден
+панели ≤ 2 тиков поллера, после восстановления алерт гаснет — панель и
+docker-health больше не расходятся.
 
 ### 2.4. Кластерные метаданные etcd (не KV)
 

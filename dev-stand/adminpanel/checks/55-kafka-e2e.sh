@@ -73,7 +73,7 @@ docker compose --profile kafka down -v --remove-orphans >/dev/null 2>&1 || true
 # kfw-объекты живут вне compose-проекта — чистим вручную (handoff-рецепт B9).
 docker rm -f $(docker ps -aq --filter 'name=kfw-') >/dev/null 2>&1 || true
 docker volume rm $(docker volume ls -q --filter 'name=kfw-') >/dev/null 2>&1 || true
-docker network rm kfw-net >/dev/null 2>&1 || true
+docker network rm $(docker network ls -q --filter 'name=kfw-net') >/dev/null 2>&1 || true
 docker compose --profile kafka build kafkaworker >/dev/null \
   || { echo "❌ сборка образа kafkaworker не удалась"; exit 1; }
 docker compose --profile kafka up -d >/dev/null

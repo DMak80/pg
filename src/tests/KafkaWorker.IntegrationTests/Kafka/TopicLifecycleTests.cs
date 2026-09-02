@@ -34,7 +34,9 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
             fixture.Gateway, [fixture.Endpoint], claims, journal,
             fixture.AdminFactory, TimeProvider.System, intervalSec: 0);
 
-        var deadline = DateTimeOffset.UtcNow.AddSeconds(120);
+        // Бюджет 200 с — потолок с запасом над воркерным BrokerBootSec=100
+        // (AGENTS.md: тестовый BrokerBootSec <= 100; стенд на этом же хосте).
+        var deadline = DateTimeOffset.UtcNow.AddSeconds(200);
         while (DateTimeOffset.UtcNow < deadline)
         {
             var snap = await fixture.SnapshotAsync(cluster);
@@ -93,7 +95,7 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
     public async Task CreateTicket_ExecutesAgainstRealKafka()
     {
         // Arrange: create-заявка (2 партиции, RF 1, retention 1д) сидом, как панель.
-        const string cluster = "itlifecycle1";
+        var cluster = fixture.Cluster("itlifecycle1");
         const string topic = "lc-create";
         var ct = TestContext.Current.CancellationToken;
         var sync = await UpAsync(fixture, cluster, ct);
@@ -137,7 +139,7 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
     public async Task DeleteTicket_RemovesTopicAndKeys()
     {
         // Arrange: живой топик (создан CLI) + факт-ключ + delete-заявка сидом.
-        const string cluster = "itlifecycle2";
+        var cluster = fixture.Cluster("itlifecycle2");
         const string topic = "lc-delete";
         var ct = TestContext.Current.CancellationToken;
         var sync = await UpAsync(fixture, cluster, ct);
@@ -185,7 +187,7 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
         // Arrange: топик создан AdminClient напрямую (3 партиции), затем
         // create-заявка с ДРУГИМИ параметрами — имитация «create прошёл, del
         // заявки не успел» (сходимость create-ветки, spec §4.2).
-        const string cluster = "itlifecycle3";
+        var cluster = fixture.Cluster("itlifecycle3");
         const string topic = "lc-race-create";
         var ct = TestContext.Current.CancellationToken;
         var sync = await UpAsync(fixture, cluster, ct);
@@ -229,7 +231,7 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
         // Arrange: факт-ключ + delete-заявка; топик удаляем напрямую
         // AdminClient'ом — имитация «DeleteTopics прошёл, del заявки не успел»
         // (сходимость delete-ветки, spec §4.2).
-        const string cluster = "itlifecycle4";
+        var cluster = fixture.Cluster("itlifecycle4");
         const string topic = "lc-race-delete";
         var ct = TestContext.Current.CancellationToken;
         var sync = await UpAsync(fixture, cluster, ct);

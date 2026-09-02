@@ -151,6 +151,7 @@ public class WorkerApiGatewayTests
                 DateTimeOffset.UtcNow, EtcdReachable: true, ConsecutiveFailures: 0,
                 [], Rotations: [], Rebalances: [], Reassignments: [],
                 WorkerEndpoints: [.. endpoints],
+                WorkerHealth: [],
                 Probes: [], Alerts: [], ParseErrors: [], UnknownKeyCount: 0),
         };
 

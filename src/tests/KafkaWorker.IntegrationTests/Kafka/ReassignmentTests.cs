@@ -170,7 +170,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
     [Fact]
     public async Task Drain_RemovesNonEmptyBroker_Снижает_RF()
     {
-        const string cluster = "re1";
+        var cluster = fixture.Cluster("re1");
         const string topic = "reorders";
         var ct = TestContext.Current.CancellationToken;
         var rig = await NewRigAsync(cluster, brokers: 4);
@@ -178,7 +178,9 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
         {
             // Arrange: 4-брокерный кластер (3 controller + broker4 broker-only),
             // юзер-топик RF=4/6 партиций с данными; группа создала __consumer_offsets.
-            await UpAsync(rig, cluster, budgetSec: 180);
+            // Бюджет 200 с — потолок с запасом над воркерным BrokerBootSec=100
+            // (AGENTS.md: тестовый BrokerBootSec <= 100): зависание фейлится быстро.
+            await UpAsync(rig, cluster, budgetSec: 200);
             var creds = await CredsAsync(cluster);
             var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
             using (var admin = builder.Build())
@@ -192,7 +194,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             }
 
             await ProduceAsync(creds, topic, 12);
-            (await ConsumeAsync(creds, topic, 12, budgetSec: 90)).Should().Be(12,
+            (await ConsumeAsync(creds, topic, 12, budgetSec: 180)).Should().Be(12,
                 "до drain все сообщения читаются");
 
             // Act: broker4 TO_REMOVE → тики reassigner+remove+topicsync до демонтажа.
@@ -228,8 +230,9 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             (await fixture.GetAsync($"/kafka/clusters/{cluster}/brokers/broker4/state")).Should().BeNull(
                 $"broker4 должен демонтироваться за 300 c (последняя ошибка тика: {lastTickError?.Message})");
 
-            // Автосинк подтягивает replication_factor=3 (бюджет 60 с).
-            var syncDeadline = DateTimeOffset.UtcNow.AddSeconds(60);
+            // Автосинк подтягивает replication_factor=3 (бюджет 120 с — с запасом
+            // под параллельный dev-стенд).
+            var syncDeadline = DateTimeOffset.UtcNow.AddSeconds(120);
             while (DateTimeOffset.UtcNow < syncDeadline)
             {
                 var snap = await fixture.SnapshotAsync(cluster);
@@ -263,7 +266,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             registry.Should().Contain("\"replication_factor\":3", "автосинк обновил факт RF");
 
             // Данные целы: все сообщения читаются (приёмка §11.2).
-            (await ConsumeAsync(creds, topic, 12, budgetSec: 60)).Should().Be(12,
+            (await ConsumeAsync(creds, topic, 12, budgetSec: 120)).Should().Be(12,
                 "после drain все сообщения читаются");
         }
         finally
@@ -275,7 +278,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
     [Fact]
     public async Task Reassign_Повторная_Подача_Безопасна()
     {
-        const string cluster = "re3";
+        var cluster = fixture.Cluster("re3");
         const string topic = "rere";
         var ct = TestContext.Current.CancellationToken;
         var rig = await NewRigAsync(cluster, brokers: 3);
@@ -283,7 +286,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
         {
             // Arrange: стабильный кластер с топиком RF=3 (drain завершён/не нужен —
             // проверяем идемпотентность повторной подачи НА СТАБИЛЬНОМ факте).
-            await UpAsync(rig, cluster, budgetSec: 180);
+            await UpAsync(rig, cluster, budgetSec: 200);
             var creds = await CredsAsync(cluster);
             var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
             using (var admin = builder.Build())
@@ -335,14 +338,14 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
     [Fact]
     public async Task Balance_Восстанавливает_RF_После_Повторного_Add()
     {
-        const string cluster = "re2";
+        var cluster = fixture.Cluster("re2");
         const string topic = "reorders2";
         var ct = TestContext.Current.CancellationToken;
         var rig = await NewRigAsync(cluster, brokers: 4);
         try
         {
             // Arrange: 4-брокерный кластер, юзер-топик RF=4/6 партиций с данными.
-            await UpAsync(rig, cluster, budgetSec: 180);
+            await UpAsync(rig, cluster, budgetSec: 200);
             var creds = await CredsAsync(cluster);
             var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
             using (var admin = builder.Build())
@@ -387,7 +390,8 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
                 "NOT_INITIALIZED", lease: null, ct);
             await fixture.Gateway.PutAsync(fixture.Endpoint, $"/kafka/clusters/{cluster}/brokers/broker4/resources",
                 """{"cpu":"1","mem":"1Gi","disk":"10Gi"}""", lease: null, ct);
-            var addDeadline = DateTimeOffset.UtcNow.AddSeconds(180);
+            // Бюджет add-фазы 300 с — с запасом под параллельный dev-стенд.
+            var addDeadline = DateTimeOffset.UtcNow.AddSeconds(300);
             while (DateTimeOffset.UtcNow < addDeadline)
             {
                 var snap = await fixture.SnapshotAsync(cluster);

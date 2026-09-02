@@ -36,7 +36,7 @@ public sealed record NodeEnvSpec(
 /// <summary>
 /// Генератор env брокера apache/kafka:4.0.0 (arch/16 §2.2, канон таблицы).
 /// KRaft без ZooKeeper, SASL_PLAINTEXT на INTERNAL/CLIENT, PLAINTEXT CONTROLLER
-/// внутри сети kfw-net; служебные топики — RF min(3,B)/minISR min(2,B), чтобы
+/// внутри сети kfw-net-<C> кластера; служебные топики — RF min(3,B)/minISR min(2,B), чтобы
 /// 1-брокерный стенд стартовал.
 /// </summary>
 public static class NodeEnvBuilder
@@ -50,7 +50,7 @@ public static class NodeEnvBuilder
         // (вскрыто 3-брокерным e2e волны C). Креды inter НЕ ротируются
         // (ротация app не должна ломать репликацию) — детерминированный
         // per-cluster пароль, живёт пересоздания контейнеров; listener доступен
-        // только внутри закрытой сети kfw-net (arch/16 §2.1).
+        // только внутри закрытой сети kfw-net-<C> кластера (arch/16 §2.1).
         var interPassword = InterBrokerPassword(spec.Cluster);
         var env = new Dictionary<string, string>
         {
@@ -101,7 +101,7 @@ public static class NodeEnvBuilder
 
     // Детерминированный inter-broker-пароль: 32 симв [A-Za-z0-9] из SHA-256
     // имени кластера (не хранится в etcd: не ротируется, нужен только нодам
-    // кластера внутри kfw-net).
+    // кластера внутри kfw-net-<C>).
     public static string InterBrokerPassword(string cluster)
     {
         var hash = SHA256.HashData(Encoding.UTF8.GetBytes("kafka-inter:" + cluster));

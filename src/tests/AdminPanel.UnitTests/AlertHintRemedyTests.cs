@@ -223,6 +223,7 @@ public class AlertHintRemedyTests
             Rebalances: [new KafkaRebalanceTicket("events", NowUnix - 10, "ops")],
             Reassignments: [new KafkaReassignmentProgress("events", "drain", "broker1", 10, 10, NowUnix - 1000, null)],
             WorkerEndpoints: [], // worker-api-unreachable (kafka-грань)
+            WorkerHealth: [],
             Probes: [], Alerts: [],
             ParseErrors: [new KeyParseError("/kafka/clusters/x/config", "bad")],
             UnknownKeyCount: 0);

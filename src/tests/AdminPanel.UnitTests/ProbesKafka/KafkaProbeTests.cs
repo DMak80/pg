@@ -36,7 +36,7 @@ public class KafkaProbeTests
         new DateTimeOffset(2026, 8, 30, 12, 0, 0, TimeSpan.Zero),
         EtcdReachable: true, ConsecutiveFailures: 0,
         [.. clusters], Rotations: [], Rebalances: [], Reassignments: [],
-        WorkerEndpoints: [], Probes: [], Alerts: [], ParseErrors: [], UnknownKeyCount: 0);
+        WorkerEndpoints: [], WorkerHealth: [], Probes: [], Alerts: [], ParseErrors: [], UnknownKeyCount: 0);
 
     private static KafkaClusterInfo ActiveCluster(
         string name = "events", string endpoints = "host.docker.internal:16001")
