@@ -21,6 +21,26 @@ public sealed class KafkaWorkerHealth(
 {
     public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken ct = default)
     {
+        try
+        {
+            return await CheckCoreAsync(ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            // Catch-all (t09, arch/16 §7): чек ВСЕГДА отдаёт структуру — неожиданный
+            // отказ тела превращается в Degraded с данными, а не исключение чека.
+            return HealthCheckResult.Degraded(
+                $"health-чек выполнился с ошибкой: {ex.Message}",
+                data: new Dictionary<string, object> { ["error"] = ex.Message });
+        }
+    }
+
+    private async Task<HealthCheckResult> CheckCoreAsync(CancellationToken ct)
+    {
         var data = new Dictionary<string, object>();
         var degraded = new List<string>();
 
