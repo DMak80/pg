@@ -179,6 +179,29 @@ internal static class Fakes
         public IReadOnlyList<HostInfo> Hosts = [new HostInfo("h1", 0)];
         public IReadOnlySet<(string Host, int Port)> BusyPorts = new HashSet<(string, int)>();
 
+        // Фактические лимиты kfw-<C>-<b> (t06): EnsureNodeAsync обновляет,
+        // тесты сеют расхождение вручную (регенератор обязан сходиться).
+        // Арифметика — как в записи: decimal→double→(long)(cores*1e9).
+        public readonly Dictionary<string, NodeLimits> Limits = [];
+
+        // Отказ инспекта конкретной ноды (ошибка тика — никаких действий).
+        public Func<string, Result<NodeLimits?>>? ResourcesFaultByNode { get; set; }
+
+        public Task<Result<NodeLimits?>> NodeResourcesAsync(string cluster, string nodeName, CancellationToken ct)
+        {
+            if (ResourcesFaultByNode is { } fault)
+            {
+                var result = fault(nodeName);
+                if (!result.IsSuccess)
+                    return Task.FromResult(result);
+            }
+
+            var name = $"kfw-{cluster}-{nodeName}";
+            return Task.FromResult(NodeObjects.Contains(name)
+                ? Result<NodeLimits?>.Success(Limits.GetValueOrDefault(name, new NodeLimits(0, 0)))
+                : Result<NodeLimits?>.Success(null));
+        }
+
         public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<HostInfo>>.Success(Hosts));
 
@@ -202,6 +225,10 @@ internal static class Fakes
                 var name = $"kfw-{spec.Cluster}-{spec.NodeName}";
                 if (!NodeObjects.Contains(name))
                     NodeObjects.Add(name); // docker теперь видит объект
+                // Факт лимитов — как в записи: decimal→double→(long)(cores*1e9).
+                Limits[name] = new NodeLimits(
+                    (long?)((double?)spec.CpuCores * 1_000_000_000) ?? 0,
+                    spec.MemoryBytes ?? 0);
             }
 
             return Task.FromResult(Result.Success());
@@ -219,6 +246,7 @@ internal static class Fakes
             {
                 Removed.Add((nodeName, removeVolume));
                 NodeObjects.Remove($"kfw-{cluster}-{nodeName}");
+                Limits.Remove($"kfw-{cluster}-{nodeName}");
             }
 
             return Task.FromResult(Result.Success());

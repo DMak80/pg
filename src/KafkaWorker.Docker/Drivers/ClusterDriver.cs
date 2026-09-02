@@ -51,6 +51,10 @@ public interface IClusterDriver
     // недопустимы).
     Task<Result<bool>> NodeVolumeExistsAsync(string cluster, string nodeName, CancellationToken ct);
 
+    // Фактические лимиты контейнера/сервиса брокера (t06, spec §5.3): null =
+    // объекта нет; ошибка инспекта → Failed (регенератор не решает вслепую).
+    Task<Result<NodeLimits?>> NodeResourcesAsync(string cluster, string nodeName, CancellationToken ct);
+
     // Выполнить команду в контейнере живого брокера (arch/16 §2.4; t02:
     // kafka-reassign-partitions CLI): plain — running-контейнер по имени
     // kfw-<C>-<b> перебором хостов; swarm — running-таск сервиса →
@@ -252,6 +256,22 @@ public sealed class PlainClusterDriver(
         return Result<bool>.Success(false);
     }
 
+    // Перебор хостов: первый хост с контейнером отдаёт факт (симметрия Exec).
+    public async Task<Result<NodeLimits?>> NodeResourcesAsync(string cluster, string nodeName, CancellationToken ct)
+    {
+        var name = NodeName(cluster, nodeName);
+        foreach (var engine in _engines.Values)
+        {
+            var limits = await engine.InspectContainerResourcesAsync(name, ct);
+            if (!limits.IsSuccess)
+                return limits;
+            if (limits.Value is not null)
+                return limits;
+        }
+
+        return Result<NodeLimits?>.Success(null);
+    }
+
     // Контейнер брокера по имени kfw-<C>-<b>: перебор хостов (аналог Remove),
     // на первом, где найден running-контейнер — exec (порт PgWorker t01).
     public async Task<Result<string>> ExecNodeAsync(
@@ -362,6 +382,9 @@ public sealed class SwarmClusterDriver(
     // удаляет то, чем не управляет (потери данных недопустимы).
     public Task<Result<bool>> NodeVolumeExistsAsync(string cluster, string nodeName, CancellationToken ct)
         => Task.FromResult(Result<bool>.Success(true));
+
+    public Task<Result<NodeLimits?>> NodeResourcesAsync(string cluster, string nodeName, CancellationToken ct)
+        => _engine.InspectServiceResourcesAsync(PlainClusterDriver.NodeName(cluster, nodeName), ct);
 
     // Объекты брокеров кластера в swarm — СЕРВИСЫ: GET /services с префиксом
     // kfw-<C>-. Существование сервиса ≠ живой таск: живость — AdminClient-пробы.
