@@ -305,7 +305,7 @@ public sealed class PartitionReassignerProcess(
         }
 
         // Bootstrap: INTERNAL-имена живых брокеров (RUNNING + drain при drain:
-        // его контейнер ещё жив и резолвится в kfw-net).
+        // его контейнер ещё жив и резолвится в kfw-net-<C>).
         var liveBrokerNames = snap.Brokers
             .Where(b => b.State == "RUNNING" || (mode == "drain" && b.Name == drainBroker))
             .OrderBy(b => b.Name, StringComparer.Ordinal)

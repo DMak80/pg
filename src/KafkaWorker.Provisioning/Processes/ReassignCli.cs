@@ -7,13 +7,13 @@ namespace KafkaWorker.Provisioning.Processes;
 /// Сборка CLI-вызова kafka-reassign-partitions (arch/16 §2.4; spec t02 §6):
 /// файлы плана и SASL-конфига передаются в контейнер брокера однострочной
 /// sh -c 'printf …' обёрткой (без новых docker-объектов, без host-портов —
-/// bootstrap через INTERNAL-listener сети kfw-net). Содержимое данных не
+/// bootstrap через INTERNAL-listener сети kfw-net-<C>). Содержимое данных не
 /// содержит апострофов (топики ^[a-zA-Z0-9._-]+$, креды [A-Za-z0-9]) —
 /// printf-обёртка безопасна; CLI JVM ограничен KAFKA_HEAP_OPTS=-Xmx256m.
 /// </summary>
 public static class ReassignCli
 {
-    // Внутренний порт брокера: INTERNAL-listener (docker-DNS alias kfw-net).
+    // Внутренний порт брокера: INTERNAL-listener (docker-DNS alias сети kfw-net-<C>).
     private const int InternalPort = 9092;
 
     // Имена файлов внутри контейнера брокера (одноразовые, префикс kfw-).

@@ -10,7 +10,7 @@ public sealed record HostEndpoint(string Name, string Endpoint);
 /// <summary>
 /// Спецификация брокера для docker-драйвера: env целиком готовит NodeEnvBuilder
 /// (Core/Templates — детерминирован от заявки/portalloc/кредов); драйвер только
-/// размещает (хост, host-порт CLIENT 9094, лимиты, volume, сеть kfw-net).
+/// размещает (хост, host-порт CLIENT 9094, лимиты, volume, сеть kfw-net-<C>).
 /// </summary>
 public sealed record KafkaNodeSpec(
     string Cluster,
@@ -24,7 +24,8 @@ public sealed record KafkaNodeSpec(
 
 // Унифицированное управление брокером в обоих режимах (arch/16 §2.3). Порт
 // драйверов PgWorker с заменой pgw-→kfw- и выносом env-генерации в NodeEnvBuilder:
-// объекты — контейнер/сервис kfw-<C>-<b>, volume kfw-<C>-<b>-data, сеть kfw-net.
+// объекты — контейнер/сервис kfw-<C>-<b>, volume kfw-<C>-<b>-data, сеть
+// kfw-net-<C> (per-cluster, t09-фикс).
 // Идемпотентность: существующий объект сверяется по имени и не пересоздаётся;
 // 404 на удалении / 409 на создании — успех (движок).
 public interface IClusterDriver
@@ -65,9 +66,15 @@ public sealed class PlainClusterDriver(
     IReadOnlyList<HostEndpoint> hosts,
     DockerEngineFactory factory) : IClusterDriver
 {
-    // Общая сеть брокеров кластера: KRaft-кворум и межброкерный трафик по
-    // внутренним адресам (alias = имя ноды); порт pgw-net.
-    public const string NodesNetwork = "kfw-net";
+    // Сеть брокеров кластера: KRaft-кворум и межброкерный трафик по
+    // внутренним адресам (alias = имя ноды). Per-cluster (t09-фикс, arch/16
+    // §2.1): короткие алиасы broker<N> уникальны в своей сети — единая сеть
+    // с общими алиасами ломала Raft-голоса через docker-DNS round-robin
+    // (INCONSISTENT_CLUSTER_ID), на docker-хосте собирался максимум один
+    // кластер. Существующие контейнеры в старой kfw-net продолжают работать.
+    public const string NodesNetworkPrefix = "kfw-net-";
+
+    public static string NetworkName(string cluster) => $"{NodesNetworkPrefix}{cluster}";
 
     // Контейнерный порт CLIENT-listener → выделенный host-порт.
     public const int ClientContainerPort = 9094;
@@ -124,8 +131,9 @@ public sealed class PlainClusterDriver(
         {
             var name = NodeName(spec.Cluster, spec.NodeName);
 
-            // Сеть брокеров (идемпотентно; 409 already exists = успех).
-            var network = await engine.EnsureNetworkAsync(NodesNetwork, ct);
+            // Сеть брокеров кластера — per-cluster (t09-фикс, arch/16 §2.1);
+            // идемпотентно; 409 already exists = успех.
+            var network = await engine.EnsureNetworkAsync(NetworkName(spec.Cluster), ct);
             if (!network.IsSuccess)
                 throw network.Error!;
 
@@ -146,7 +154,7 @@ public sealed class PlainClusterDriver(
                 CpuCores: (double?)spec.CpuCores,
                 MemoryBytes: spec.MemoryBytes,
                 Label: spec.Cluster,
-                Network: NodesNetwork,
+                Network: NetworkName(spec.Cluster),
                 NetworkAliases: [spec.NodeName, name]);
 
             var created = await engine.CreateContainerAsync(containerSpec, name, ct);
@@ -177,6 +185,27 @@ public sealed class PlainClusterDriver(
                     var volume = await engine.RemoveVolumeAsync(VolumeName(cluster, nodeName), ct);
                     if (!volume.IsSuccess)
                         throw volume.Error!;
+                }
+            }
+
+            // Последний брокер кластера демонтирован — удаляем per-cluster
+            // сеть (t09-фикс, arch/16 §2.5): пул subnet'ов docker-хоста конечен,
+            // сиротские сети копиться не должны. Ретрай: docker API доли секунды
+            // держит endpoint после force-remove контейнера («has active
+            // endpoints» — транзиентно). Старая единая kfw-net не матчится
+            // именем (kfw-net-<C>) — не трогаем.
+            var objects = await ListNodeObjectsAsync(cluster, ct);
+            if (objects.IsSuccess && objects.Value.Count == 0)
+            {
+                for (var attempt = 0; ; attempt++)
+                {
+                    var network = await _engines.Values.First().DeleteNetworkAsync(NetworkName(cluster), ct);
+                    if (network.IsSuccess)
+                        break;
+                    if (attempt >= 3
+                        || !network.Error!.Message.Contains("active endpoints", StringComparison.Ordinal))
+                        throw network.Error!;
+                    await Task.Delay(1000, ct); // endpoint отцепится — повторяем
                 }
             }
         });
@@ -302,7 +331,7 @@ public sealed class SwarmClusterDriver(
                 CpuCores: (double?)spec.CpuCores,
                 MemoryBytes: spec.MemoryBytes,
                 Label: spec.Cluster,
-                Network: PlainClusterDriver.NodesNetwork,
+                Network: PlainClusterDriver.NetworkName(spec.Cluster),
                 NetworkAliases: [spec.NodeName, PlainClusterDriver.NodeName(spec.Cluster, spec.NodeName)]);
             var serviceSpec = new ServiceSpec(
                 PlainClusterDriver.NodeName(spec.Cluster, spec.NodeName),

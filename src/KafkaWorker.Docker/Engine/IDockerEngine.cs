@@ -41,6 +41,10 @@ public interface IDockerEngine : IAsyncDisposable
     // POST /networks/create (409 already exists = успех) — сеть нод кластера.
     Task<Result> EnsureNetworkAsync(string name, CancellationToken ct);
 
+    // DELETE /networks/<name> (404 = успех) — демонтаж сети кластера; пул
+    // subnet'ов docker-хоста конечен — per-cluster сети не копим (t09-фикс).
+    Task<Result> DeleteNetworkAsync(string name, CancellationToken ct);
+
     // swarm: GET /nodes (+ счётчик running-тасков по нодам).
     Task<Result<IReadOnlyList<DockerSwarmNode>>> ListNodesAsync(CancellationToken ct);
 
