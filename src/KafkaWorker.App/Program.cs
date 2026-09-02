@@ -65,6 +65,9 @@ builder.Services.AddSingleton(sp => new DeleteClusterHandler(
 builder.Services.AddSingleton(sp => new UpdateConfigHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
+builder.Services.AddSingleton(sp => new UpdateBrokerResourcesHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
 builder.Services.AddSingleton(sp => new AddBrokerHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));

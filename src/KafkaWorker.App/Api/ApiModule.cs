@@ -171,6 +171,42 @@ public static class ApiModule
             };
         });
 
+        // PUT /api/kafka/clusters/{cluster}/brokers/{broker}/resources — мутация
+        // №15 (t06, 02 §10.2-15): декларация ресурсов; применяет NodeRegenerator
+        // воркера rolling-пересозданием (автоконверге, без заявки). Идемпотентен.
+        endpoints.MapPut("/api/kafka/clusters/{cluster}/brokers/{broker}/resources", async (
+            string cluster, string broker, KafkaResourcesUpdateRequest request,
+            UpdateBrokerResourcesHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleAsync(cluster, broker, request, ct);
+            if (result.IsSuccess)
+                return Results.Ok(result.Value);
+
+            return result.Error switch
+            {
+                KafkaValidationException validation => Results.Problem(
+                    statusCode: StatusCodes.Status400BadRequest,
+                    title: "Validation failed",
+                    detail: result.Error.Message,
+                    extensions: new Dictionary<string, object?>
+                    {
+                        ["errors"] = validation.Errors.ToDictionary(e => e.Field, e => new[] { e.Message }),
+                    }),
+                KafkaClusterNotFoundException or KafkaBrokerNotFoundException => Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound, title: "Not found",
+                    detail: result.Error.Message),
+                KafkaClusterNotActiveException or KafkaBrokerRemovalInProgressException => Results.Problem(
+                    statusCode: StatusCodes.Status409Conflict, title: "Broker resources update rejected",
+                    detail: result.Error.Message),
+                EtcdWriteUnavailableException or InvalidKafkaConfigException => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
+                    detail: result.Error.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
+                    detail: result.Error!.Message),
+            };
+        });
+
         // POST /api/kafka/clusters/{cluster}/app-password/rotate — заявка ротации
         // (§10.2-8); исполнение — AppPasswordRotator воркера.
         // requested_by — заголовок X-Requested-By (панель шлёт оператора), fallback "api".

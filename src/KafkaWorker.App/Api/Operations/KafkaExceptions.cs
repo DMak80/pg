@@ -52,6 +52,10 @@ public sealed class KafkaBrokerNotFoundException(string cluster, string broker)
 public sealed class KafkaBrokerIsControllerException(string cluster, string broker)
     : Exception($"брокер {broker} — controller-нода кластера {cluster}, демонтаж запрещён (роль фиксируется навсегда)");
 
+// Мутация №15: брокер в демонтаже — ресурсы менять незачем — 409 (t06, 02 §10.2-15).
+public sealed class KafkaBrokerRemovalInProgressException(string cluster, string broker)
+    : Exception($"брокер {cluster}/{broker} заявлен к удалению (TO_REMOVE/REMOVING) — изменение ресурсов отклонено");
+
 // Нельзя снять последний брокер — 409 (мутация 5).
 public sealed class KafkaLastBrokerException(string cluster)
     : Exception($"нельзя снять последний брокер кластера {cluster}");
