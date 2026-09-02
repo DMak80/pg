@@ -14,9 +14,6 @@
   mTLS вместо голого `X-Api-Key` в закрытой сети.
 - **`t04-kafka-metrics`** — Prometheus-метрики воркера и панели (лаги, USR,
   фазы процессов, клэймы).
-- **`t05-kafka-discovery-lib`** — клиентская библиотека дискавери kafka из
-  etcd (в репозиторий Puzzle, по образцу ha-db: watch-long-poll/poll, кэш,
-  событие); контракт — 15 §5.
 - **`t06-kafka-node-regen`** — rolling-перегенерация существующих брокеров
   с новыми ресурсами (лимиты cpu/mem) и новыми server-props.
 - **`t09-kafka-worker-health`** — честная наблюдаемость здоровья воркера:
@@ -63,3 +60,12 @@
   (живой прогон 2026-08-31, `docs/superpowers/2026-08-31-pgworker-adopt-repair/`).
   Зависимостей нет; e2e — стенд `dev-stand/adminpanel/checks/` (failover
   etcd-контейнера как transient-стимул).
+- **`t10-kafka-discovery-integration`** — интеграция Kafka-клиента Puzzle
+  (`Infrastructure.App.Kafka`, Confluent) с библиотекой дискавери HA.Kafka
+  (t05): BootstrapServers/SASL-креды из etcd-снапшота вместо
+  `ConnectionStrings:Kafka`; реакция на событие Updated — переподключение
+  продюсеров/консюмеров при смене endpoints/кредов (вкл. ротацию app_password,
+  arch/16 §5 H); Aspire-ветка без etcd (локальная разработка — источник
+  топологии из ConnectionStrings, по образцу переключателя `Database:Source`
+  у HA.Db). Канон-контракт — [../15-kafka-clusters.md](../15-kafka-clusters.md)
+  §5–§6.
