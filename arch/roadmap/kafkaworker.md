@@ -63,3 +63,12 @@
   (живой прогон 2026-08-31, `docs/superpowers/2026-08-31-pgworker-adopt-repair/`).
   Зависимостей нет; e2e — стенд `dev-stand/adminpanel/checks/` (failover
   etcd-контейнера как transient-стимул).
+- **`t10-kafka-discovery-integration`** — интеграция Kafka-клиента Puzzle
+  (`Infrastructure.App.Kafka`, Confluent) с библиотекой дискавери HA.Kafka
+  (t05): BootstrapServers/SASL-креды из etcd-снапшота вместо
+  `ConnectionStrings:Kafka`; реакция на событие Updated — переподключение
+  продюсеров/консюмеров при смене endpoints/кредов (вкл. ротацию app_password,
+  arch/16 §5 H); Aspire-ветка без etcd (локальная разработка — источник
+  топологии из ConnectionStrings, по образцу переключателя `Database:Source`
+  у HA.Db). Канон-контракт — [../15-kafka-clusters.md](../15-kafka-clusters.md)
+  §5–§6. Зависимость: ← `t05-kafka-discovery-lib`.
