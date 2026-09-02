@@ -87,6 +87,8 @@ public class DeprovisioningProcessTests
             etcd.Seed("/kafkaworker/rebalances/events", """{"requested_unix":1756500123,"requested_by":"ops"}""");
             etcd.Seed("/kafkaworker/reassignments/events",
                 """{"mode":"drain","drain_broker":"broker2","partitions_total":6,"partitions_remaining":3,"submitted_unix":1756500130,"updated_unix":1756500135,"instance":"x"}""");
+            etcd.Seed("/kafkaworker/regens/events",
+                """{"brokers_total":1,"brokers_remaining":1,"current_broker":"broker1","updated_unix":1756500140,"instance":"x"}""");
         });
 
         // Act
@@ -96,6 +98,8 @@ public class DeprovisioningProcessTests
         result.IsSuccess.Should().BeTrue();
         rig.Etcd.Store.Should().NotContainKey("/kafkaworker/rebalances/events");
         rig.Etcd.Store.Should().NotContainKey("/kafkaworker/reassignments/events");
+        // t06: live-прогресс регенерации тоже не переживает демонтаж (X2)
+        rig.Etcd.Store.Should().NotContainKey("/kafkaworker/regens/events");
     }
 
     [Fact]

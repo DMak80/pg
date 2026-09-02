@@ -125,6 +125,7 @@ public sealed class DeprovisioningProcess(
             ($"/kafkaworker/rotations/{cluster}", false), // заявка ротации не переживает кластер
             ($"/kafkaworker/rebalances/{cluster}", false), // заявка ребалансировки не переживает кластер (t02 §11.9)
             ($"/kafkaworker/reassignments/{cluster}", false), // прогресс reassignment не переживает кластер
+            ($"/kafkaworker/regens/{cluster}", false), // regens — live-прогресс регенерации, не переживает демонтаж (t06, spec §10.5)
         };
 
         foreach (var (key, prefix) in deletions)

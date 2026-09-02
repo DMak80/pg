@@ -226,6 +226,13 @@ builder.Services.AddSingleton(sp => new AppPasswordRotator(
     sp.GetRequiredService<IKafkaAdminClientFactory>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+builder.Services.AddSingleton(sp => new NodeRegenerator(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value)));
 
 // Автосинк топиков (arch/16 §5 D): троттлинг TopicSyncIntervalSec внутри.
 builder.Services.AddSingleton(sp => new TopicSyncProcess(
