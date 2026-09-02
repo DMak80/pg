@@ -13,6 +13,7 @@ import type {
   EtcdStatusDto,
   HaScopeDto,
   KafkaBrokerAddedDto,
+  KafkaBrokerResourcesUpdatedDto,
   KafkaClusterCreatedDto,
   KafkaClusterDto,
   KafkaClusterSummaryDto,
@@ -201,6 +202,19 @@ export function removeKafkaBroker(cluster: string, broker: string): Promise<void
   return apiFetch<void>(
     `/api/kafka/clusters/${encodeURIComponent(cluster)}/brokers/${encodeURIComponent(broker)}`,
     { method: 'DELETE' });
+}
+
+// PUT /api/kafka/clusters/{cluster}/brokers/{broker}/resources — мутация №15
+// (t06, arch/02 §10.2-15): применяется автоматически rolling-регенерацией.
+export function updateKafkaBrokerResources(
+  cluster: string,
+  broker: string,
+  request: { cpu?: number; memGi?: number; diskGi?: number },
+): Promise<KafkaBrokerResourcesUpdatedDto> {
+  return apiFetch<KafkaBrokerResourcesUpdatedDto>(
+    `/api/kafka/clusters/${encodeURIComponent(cluster)}/brokers/${encodeURIComponent(broker)}/resources`,
+    { method: 'PUT', body: request },
+  );
 }
 
 // POST /api/kafka/clusters/{cluster}/app-password/rotate — заявка ротации

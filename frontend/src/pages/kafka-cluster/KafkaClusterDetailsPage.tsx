@@ -61,6 +61,13 @@ export function KafkaClusterDetailsPage() {
               </Badge>
             </Tooltip>
           ) : null}
+          {c.regen !== null ? (
+            <Tooltip label="rolling-пересоздание брокеров выполняется воркером (тома сохраняются)">
+              <Badge color="indigo" variant="light">
+                регенерация {c.regen.brokersTotal - c.regen.brokersRemaining}/{c.regen.brokersTotal}
+              </Badge>
+            </Tooltip>
+          ) : null}
         </Group>
         {active ? (
           <Group gap="sm">
@@ -95,7 +102,16 @@ export function KafkaClusterDetailsPage() {
         </SimpleGrid>
       </Card>
 
-      <BrokersTab cluster={c.name} brokers={c.brokersList} canScale={active} reassignment={c.reassignment} />
+      {c.regen !== null ? (
+        <Text size="sm" c="indigo">
+          Регенерация брокеров: осталось {c.regen.brokersRemaining} из{' '}
+          {c.regen.brokersTotal}
+          {c.regen.currentBroker !== null ? ` (текущий ${c.regen.currentBroker})` : ''}
+        </Text>
+      ) : null}
+
+      <BrokersTab cluster={c.name} brokers={c.brokersList} canScale={active}
+        reassignment={c.reassignment} regen={c.regen} />
       <TopicsTab
         cluster={c.name}
         topics={c.topics}

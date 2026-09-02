@@ -376,6 +376,8 @@ export interface KafkaClusterDto {
   // Ребалансировка партиций (t02): null = заявки/операции нет.
   rebalance: KafkaRebalanceTicketDto | null;
   reassignment: KafkaReassignmentDto | null;
+  // Live-прогресс rolling-регенерации брокеров (t06): null = операции нет.
+  regen: KafkaRegenDto | null;
   // Live-группы из пробы (волна C): null — проба молчит о кластере.
   groups: KafkaGroupDto[] | null;
   probeOk: boolean | null;
@@ -470,6 +472,24 @@ export interface KafkaReassignmentDto {
   partitionsTotal: number;
   partitionsRemaining: number;
   updatedUnix: number;
+}
+
+// Прогресс rolling-регенерации брокеров (t06, arch/15 §4); null = операции нет.
+export interface KafkaRegenDto {
+  brokersTotal: number;
+  brokersRemaining: number;
+  currentBroker: string | null;
+  updatedUnix: number;
+}
+
+// PUT /api/kafka/clusters/{c}/brokers/{b}/resources — мутация №15 (t06):
+// эффективные ресурсы после применения (cpu/memGi/diskGi — канон-строки).
+export interface KafkaBrokerResourcesUpdatedDto {
+  cluster: string;
+  broker: string;
+  cpu: string;
+  memGi: string;
+  diskGi: string;
 }
 
 // POST /api/kafka/clusters — тело и ответ (arch/02 §10.3).
