@@ -8,7 +8,10 @@ namespace AdminPanel.Probes.Kafka;
 // DescribeCluster с RequestTimeout на вызов (прецедент KafkaAdminClient воркера);
 // исключения → Result.Failed (проба не роняет панель). Единственное место
 // Probes-сборки с Confluent-типами.
-public sealed class ConfluentKafkaProbeClient : IKafkaProbeClient
+// Клиенты — из KafkaClientCache (t11): «один на вызов» с using-Dispose плодил
+// rd_kafka-инстансы и жёг ядро на недоступных брокерах; Dispose — только при
+// замене/выключении, фейл → Invalidate (пересоздание на следующей пробе).
+public sealed class ConfluentKafkaProbeClient(KafkaClientCache cache) : IKafkaProbeClient
 {
     public async Task<Result<KafkaProbeView>> DescribeClusterAsync(
         string bootstrap, string user, string password, TimeSpan timeout, CancellationToken ct)
@@ -16,15 +19,7 @@ public sealed class ConfluentKafkaProbeClient : IKafkaProbeClient
         try
         {
             ct.ThrowIfCancellationRequested();
-            var config = new AdminClientConfig
-            {
-                BootstrapServers = bootstrap,
-                SecurityProtocol = SecurityProtocol.SaslPlaintext,
-                SaslMechanism = SaslMechanism.Plain,
-                SaslUsername = user,
-                SaslPassword = password,
-            };
-            using var admin = new AdminClientBuilder(config).Build();
+            var admin = cache.GetAdmin(bootstrap, user, password);
             var cluster = await admin.DescribeClusterAsync(
                 new DescribeClusterOptions { RequestTimeout = timeout });
             return Result<KafkaProbeView>.Success(new KafkaProbeView(
@@ -33,6 +28,7 @@ public sealed class ConfluentKafkaProbeClient : IKafkaProbeClient
         }
         catch (Exception e)
         {
+            cache.Invalidate(bootstrap, user, password);
             return Result<KafkaProbeView>.Failed(new InvalidOperationException(
                 $"DescribeCluster ({bootstrap}): {e.Message}", e));
         }
@@ -43,7 +39,9 @@ public sealed class ConfluentKafkaProbeClient : IKafkaProbeClient
 // Отдельный адаптер — DescribeCluster-путь пробы не меняется; исключения →
 // Result.Failed. End-оффсеты — через IConsumer.GetWatermarkOffsets (у
 // AdminClient в 2.14 нет ListOffsets); committed — ListConsumerGroupOffsets.
-public sealed class ConfluentKafkaRuntimeProbeClient : IKafkaProbeRuntimeClient
+// Все операции — на кэшированных клиентах (t11): один AdminClient/Consumer
+// на кластер на тик вместо отдельного инстанса на каждый вызов.
+public sealed class ConfluentKafkaRuntimeProbeClient(KafkaClientCache cache) : IKafkaProbeRuntimeClient
 {
     public async Task<Result<IReadOnlyList<KafkaProbeTopic>>> DescribeTopicsAsync(
         string bootstrap, string user, string password, TimeSpan timeout, CancellationToken ct)
@@ -51,7 +49,7 @@ public sealed class ConfluentKafkaRuntimeProbeClient : IKafkaProbeRuntimeClient
         try
         {
             ct.ThrowIfCancellationRequested();
-            using var admin = BuildAdmin(bootstrap, user, password);
+            var admin = cache.GetAdmin(bootstrap, user, password);
             var metadata = admin.GetMetadata(timeout);
             var topics = metadata.Topics
                 .Where(t => !t.Topic.StartsWith("__", StringComparison.Ordinal))
@@ -66,6 +64,7 @@ public sealed class ConfluentKafkaRuntimeProbeClient : IKafkaProbeRuntimeClient
         }
         catch (Exception e)
         {
+            cache.Invalidate(bootstrap, user, password);
             return Result<IReadOnlyList<KafkaProbeTopic>>.Failed(new InvalidOperationException(
                 $"DescribeTopics ({bootstrap}): {e.Message}", e));
         }
@@ -77,7 +76,7 @@ public sealed class ConfluentKafkaRuntimeProbeClient : IKafkaProbeRuntimeClient
         try
         {
             ct.ThrowIfCancellationRequested();
-            using var admin = BuildAdmin(bootstrap, user, password);
+            var admin = cache.GetAdmin(bootstrap, user, password);
             var groups = await admin.ListConsumerGroupsAsync(
                 new ListConsumerGroupsOptions { RequestTimeout = timeout });
             return Result<IReadOnlyList<string>>.Success(
@@ -85,6 +84,7 @@ public sealed class ConfluentKafkaRuntimeProbeClient : IKafkaProbeRuntimeClient
         }
         catch (Exception e)
         {
+            cache.Invalidate(bootstrap, user, password);
             return Result<IReadOnlyList<string>>.Failed(new InvalidOperationException(
                 $"ListGroups ({bootstrap}): {e.Message}", e));
         }
@@ -97,7 +97,7 @@ public sealed class ConfluentKafkaRuntimeProbeClient : IKafkaProbeRuntimeClient
         try
         {
             ct.ThrowIfCancellationRequested();
-            using var admin = BuildAdmin(bootstrap, user, password);
+            var admin = cache.GetAdmin(bootstrap, user, password);
             var described = await admin.DescribeConsumerGroupsAsync(
                 groups.ToList(),
                 new DescribeConsumerGroupsOptions { RequestTimeout = timeout });
@@ -118,6 +118,7 @@ public sealed class ConfluentKafkaRuntimeProbeClient : IKafkaProbeRuntimeClient
         }
         catch (Exception e)
         {
+            cache.Invalidate(bootstrap, user, password);
             return Result<IReadOnlyList<KafkaProbeGroupDetail>>.Failed(new InvalidOperationException(
                 $"DescribeGroups ({bootstrap}): {e.Message}", e));
         }
@@ -131,19 +132,9 @@ public sealed class ConfluentKafkaRuntimeProbeClient : IKafkaProbeRuntimeClient
         {
             ct.ThrowIfCancellationRequested();
 
-            // group.id обязательна для QueryWatermarkOffsets (librdkafka):
-            // техническая группа, оффсеты не коммитятся и не читаются.
-            using var consumer = new ConsumerBuilder<Ignore, Ignore>(new ConsumerConfig
-            {
-                BootstrapServers = bootstrap,
-                SecurityProtocol = SecurityProtocol.SaslPlaintext,
-                SaslMechanism = SaslMechanism.Plain,
-                SaslUsername = user,
-                SaslPassword = password,
-                GroupId = "adminpanel-probe",
-            })
-                .SetErrorHandler((_, _) => { }) // ошибки партиции — ниже по исключению вызова
-                .Build();
+            // group.id у консьюмера кэша — техническая (adminpanel-probe):
+            // оффсеты не коммитятся и не читаются.
+            var consumer = cache.GetConsumer(bootstrap, user, password);
             var result = new Dictionary<(string Topic, int Partition), long>();
             foreach (var (topic, partition) in partitions.Distinct().OrderBy(p => p.Topic).ThenBy(p => p.Partition))
             {
@@ -156,6 +147,7 @@ public sealed class ConfluentKafkaRuntimeProbeClient : IKafkaProbeRuntimeClient
         }
         catch (Exception e)
         {
+            cache.Invalidate(bootstrap, user, password);
             return Result<IReadOnlyDictionary<(string Topic, int Partition), long>>.Failed(
                 new InvalidOperationException($"EndOffsets ({bootstrap}): {e.Message}", e));
         }
@@ -168,7 +160,7 @@ public sealed class ConfluentKafkaRuntimeProbeClient : IKafkaProbeRuntimeClient
         try
         {
             ct.ThrowIfCancellationRequested();
-            using var admin = BuildAdmin(bootstrap, user, password);
+            var admin = cache.GetAdmin(bootstrap, user, password);
 
             // Пустой набор партиций = ВСЕ закоммиченные оффсеты группы (lag
             // мониторинга живёт и после смерти консьюмера: группа Empty с
@@ -193,20 +185,9 @@ public sealed class ConfluentKafkaRuntimeProbeClient : IKafkaProbeRuntimeClient
         }
         catch (Exception e)
         {
+            cache.Invalidate(bootstrap, user, password);
             return Result<IReadOnlyDictionary<(string Topic, int Partition), long>>.Failed(
                 new InvalidOperationException($"Committed ({bootstrap}, group {group}): {e.Message}", e));
         }
     }
-
-    private static AdminClientConfig BaseConfig(string bootstrap, string user, string password) => new()
-    {
-        BootstrapServers = bootstrap,
-        SecurityProtocol = SecurityProtocol.SaslPlaintext,
-        SaslMechanism = SaslMechanism.Plain,
-        SaslUsername = user,
-        SaslPassword = password,
-    };
-
-    private static IAdminClient BuildAdmin(string bootstrap, string user, string password)
-        => new AdminClientBuilder(BaseConfig(bootstrap, user, password)).Build();
 }

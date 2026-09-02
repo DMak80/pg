@@ -28,6 +28,13 @@ public sealed class KafkaProbeStore : IKafkaProbeStore
 // Результат пробы одного кластера: live-данные + ProbeResult (kind "kafka").
 internal sealed record KafkaProbeOutcome(KafkaClusterLive? Live, ProbeResult Result);
 
+// Backoff недоступного кластера (t11): сколько проб подряд упало, когда
+// разрешена следующая и текст последней ошибки (живёт в ProbeResult.skip-тика).
+internal sealed record ClusterBackoffState(
+    int ConsecutiveFailures,
+    DateTimeOffset NextAttemptUtc,
+    string LastError);
+
 /// <summary>
 /// Фоновый тик kafka-пробы (план B6): per-кластерный DescribeCluster по
 /// endpoints из etcd (через HostMap) с SASL из internal-стора кредов; пароль
@@ -44,6 +51,9 @@ public sealed class KafkaProbeLoop(
     ILogger<KafkaProbeLoop> logger,
     IKafkaProbeRuntimeClient? runtimeClient = null) : BackgroundService
 {
+    // Backoff per-кластер (t11): писатель один — тик loop; success сбрасывает.
+    private readonly Dictionary<string, ClusterBackoffState> _backoff = [];
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         if (!kafkaOptions.Value.Enabled)
@@ -86,14 +96,34 @@ public sealed class KafkaProbeLoop(
         var live = new Dictionary<string, KafkaClusterLive>();
 
         // Цели: Active-кластеры с endpoints (поднятые); без кредов — ошибка пробы.
-        foreach (var cluster in snapshot.Clusters.Where(c =>
-                     c.State == KafkaClusterState.Active && !string.IsNullOrEmpty(c.Endpoints)))
+        var targets = snapshot.Clusters.Where(c =>
+            c.State == KafkaClusterState.Active && !string.IsNullOrEmpty(c.Endpoints)).ToList();
+
+        foreach (var cluster in targets)
         {
+            // Backoff недоступного кластера (t11): окно не истекло — тик
+            // пропускается, последняя ошибка остаётся в состоянии с пометкой
+            // (кластер не мерцает, мёртвые endpoints не штурмуются каждые 15 c).
+            if (_backoff.TryGetValue(cluster.Name, out var backoff)
+                && at < backoff.NextAttemptUtc)
+            {
+                results.Add(new ProbeResult(
+                    cluster.Name, "kafka", false, null,
+                    $"{backoff.LastError}; backoff {backoff.ConsecutiveFailures} неудач подряд, следующая проба ~{backoff.NextAttemptUtc:HH:mm:ss}Z",
+                    at));
+                continue;
+            }
+
             var outcome = await ProbeAsync(cluster, at, ct);
             results.Add(outcome.Result);
             if (outcome.Live is not null)
                 live[cluster.Name] = outcome.Live;
         }
+
+        // Кластеры исчезли из etcd — backoff-состояние не копится.
+        var targetNames = targets.Select(c => c.Name).ToHashSet();
+        foreach (var gone in _backoff.Keys.Where(name => !targetNames.Contains(name)).ToList())
+            _backoff.Remove(gone);
 
         results.Sort((a, b) => string.CompareOrdinal(a.Target, b.Target));
         store.Replace(new KafkaProbeState(at, results, live));
@@ -126,9 +156,13 @@ public sealed class KafkaProbeLoop(
         if (!view.IsSuccess)
         {
             // Пароль (creds) в ошибку не попадает — только bootstrap-адрес.
+            TrackFailure(cluster.Name, view.Error!.Message, at);
             return new KafkaProbeOutcome(null, new ProbeResult(
                 cluster.Name, "kafka", false, null, view.Error!.Message, at));
         }
+
+        // Живой брокер — backoff снят (t11), runtime-уровень можно звать.
+        _backoff.Remove(cluster.Name);
 
         var brokers = view.Value.Brokers
             .Select(b => new KafkaBrokerLive(b.Id, b.Host, b.Id == view.Value.ControllerId))
@@ -150,6 +184,31 @@ public sealed class KafkaProbeLoop(
             new KafkaClusterLive(cluster.Name, at, brokers, topics, groups),
             new ProbeResult(cluster.Name, "kafka", true, null, null, at));
     }
+
+    // Неудачная проба брокеров: растит счётчик и раздвигает окно повтора
+    // (15 c → 60 c → 300 c) — мёртвый кластер не штурмуется каждый тик (t11).
+    private void TrackFailure(string cluster, string error, DateTimeOffset at)
+    {
+        var failures = (_backoff.TryGetValue(cluster, out var state)
+            ? state.ConsecutiveFailures : 0) + 1;
+        var interval = TimeSpan.FromSeconds(
+            kafkaOptions.Value.IntervalSeconds > 0 ? kafkaOptions.Value.IntervalSeconds : 15);
+        var delay = BackoffAfter(failures, interval);
+        _backoff[cluster] = new ClusterBackoffState(failures, at + delay, error);
+        logger.LogDebug(
+            "AdminPanel:Probes:Kafka: {Cluster} — {Failures} неудач подряд, следующая проба через {Delay}",
+            cluster, failures, delay);
+    }
+
+    // Окно после N-й подряд неудачной пробы: первая — обычный тик (интервал),
+    // вторая → 60 c, дальше 300 c (t11: 15 → 60 → 300, сброс при успехе).
+    internal static TimeSpan BackoffAfter(int consecutiveFailures, TimeSpan interval)
+        => consecutiveFailures switch
+        {
+            <= 1 => interval,
+            2 => TimeSpan.FromSeconds(60),
+            _ => TimeSpan.FromSeconds(300),
+        };
 
     // Топики и группы с лагами (план C3): describe→чистый расчёт KafkaGroupLag;
     // частичный отказ — недостающие данные опускаются (null).

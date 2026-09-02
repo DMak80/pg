@@ -55,6 +55,7 @@ public class KafkaProbeTests
 
     private static Rig NewRig(
         Dictionary<string, string>? hostMap = null,
+        TimeProvider? time = null,
         params KafkaClusterInfo[] clusters)
     {
         var client = new FakeProbeClient
@@ -72,7 +73,7 @@ public class KafkaProbeTests
             snapshotStore, secrets, client, probeStore,
             Options.Create(new KafkaProbeOptions()),
             Options.Create(new ProbesOptions { HostMap = hostMap ?? [] }),
-            TimeProvider.System,
+            time ?? TimeProvider.System,
             NullLogger<KafkaProbeLoop>.Instance);
         return new Rig(client, snapshotStore, secrets, probeStore, loop);
 
@@ -196,5 +197,98 @@ public class KafkaProbeTests
         // Assert
         rig.Client.Calls.Should().BeEmpty();
         rig.ProbeStore.Current!.Results.Should().BeEmpty();
+    }
+
+    // Backoff недоступного кластера (t11): окно повтора 15 c → 60 c → 300 c —
+    // мёртвые endpoints не штурмуются каждый тик (churn-инцидент 2026-09-02).
+    [Fact]
+    public async Task RunOnce_FailingCluster_BackoffSkipsTicksAndGrowsWindow()
+    {
+        // Arrange: кластер мёртв (клиент падает), время управляемое.
+        var clock = new FixedTimeProvider();
+        var rig = NewRig(time: clock, clusters: ActiveCluster());
+        rig.Client.Error = new InvalidOperationException("connection refused");
+
+        // Act/Assert: тик 1 (t0) — первая неудача, окно = обычный интервал 15 c.
+        await rig.Loop.RunOnceAsync(CancellationToken.None);
+        rig.Client.Calls.Should().HaveCount(1);
+
+        // Тик 2 (t0+15) — вторая неудача, окно растёт до 60 c (след. t0+75).
+        clock.Utc = clock.Utc.AddSeconds(15);
+        await rig.Loop.RunOnceAsync(CancellationToken.None);
+        rig.Client.Calls.Should().HaveCount(2);
+
+        // Тик 3 (t0+30) — внутри окна: проба пропущена, состояние несёт ошибку
+        // с пометкой backoff (кластер не мерцает, клиент не дёргается).
+        clock.Utc = clock.Utc.AddSeconds(15);
+        await rig.Loop.RunOnceAsync(CancellationToken.None);
+        rig.Client.Calls.Should().HaveCount(2);
+        var skipped = rig.ProbeStore.Current!.Results.Single();
+        skipped.Ok.Should().BeFalse();
+        skipped.Error.Should().Contain("connection refused").And.Contain("backoff");
+        rig.ProbeStore.Current!.Clusters.Should().BeEmpty();
+
+        // Тик 4 (t0+60) — всё ещё внутри 60-секундного окна.
+        clock.Utc = clock.Utc.AddSeconds(30);
+        await rig.Loop.RunOnceAsync(CancellationToken.None);
+        rig.Client.Calls.Should().HaveCount(2);
+
+        // Тик 5 (t0+75) — окно истекло, третья неудача растит его до 300 c.
+        clock.Utc = clock.Utc.AddSeconds(15);
+        await rig.Loop.RunOnceAsync(CancellationToken.None);
+        rig.Client.Calls.Should().HaveCount(3);
+
+        // Тик 6 (t0+200) — внутри 300-секундного окна: снова пропуск.
+        clock.Utc = clock.Utc.AddSeconds(125);
+        await rig.Loop.RunOnceAsync(CancellationToken.None);
+        rig.Client.Calls.Should().HaveCount(3);
+    }
+
+    [Fact]
+    public async Task RunOnce_BackoffResetOnSuccess()
+    {
+        // Arrange: две неудачи (окно 60 c), затем брокеры поднялись.
+        var clock = new FixedTimeProvider();
+        var rig = NewRig(time: clock, clusters: ActiveCluster());
+        rig.Client.Error = new InvalidOperationException("connection refused");
+        await rig.Loop.RunOnceAsync(CancellationToken.None);
+        clock.Utc = clock.Utc.AddSeconds(15);
+        await rig.Loop.RunOnceAsync(CancellationToken.None);
+        rig.Client.Calls.Should().HaveCount(2);
+        rig.Client.Error = null;
+
+        // Act: окно истекло — проба успешна, backoff сброшен.
+        clock.Utc = clock.Utc.AddSeconds(60);
+        await rig.Loop.RunOnceAsync(CancellationToken.None);
+
+        // Assert: кластер жив; следующий тик через обычные 15 c (не через 300 c).
+        rig.Client.Calls.Should().HaveCount(3);
+        rig.ProbeStore.Current!.Results.Single().Ok.Should().BeTrue();
+        clock.Utc = clock.Utc.AddSeconds(15);
+        await rig.Loop.RunOnceAsync(CancellationToken.None);
+        rig.Client.Calls.Should().HaveCount(4);
+        rig.ProbeStore.Current!.Clusters.Should().ContainKey("events");
+    }
+
+    [Fact]
+    public async Task RunOnce_BackoffDroppedWhenClusterLeavesEtcd()
+    {
+        // Arrange: неудачная проба завела кластер в backoff.
+        var clock = new FixedTimeProvider();
+        var rig = NewRig(time: clock, clusters: ActiveCluster());
+        rig.Client.Error = new InvalidOperationException("connection refused");
+        await rig.Loop.RunOnceAsync(CancellationToken.None);
+        clock.Utc = clock.Utc.AddSeconds(15);
+        await rig.Loop.RunOnceAsync(CancellationToken.None);
+
+        // Act: кластер удалён из etcd (снапшот пустеет), затем вернулся.
+        rig.SnapshotStore.Replace(Snapshot());
+        await rig.Loop.RunOnceAsync(CancellationToken.None);
+        rig.SnapshotStore.Replace(Snapshot(ActiveCluster()));
+        clock.Utc = clock.Utc.AddSeconds(5); // раньше любого backoff-окна
+        await rig.Loop.RunOnceAsync(CancellationToken.None);
+
+        // Assert: вернувшийся кластер пробуется сразу, без хвостового backoff.
+        rig.Client.Calls.Should().HaveCount(3);
     }
 }

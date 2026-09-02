@@ -40,8 +40,14 @@ public static class ModuleExtensions
         // Live-состояние проб — читатель снапшот-цикла (USR/группы, волна C).
         services.AddSingleton<AdminPanel.Etcd.IKafkaProbeReader>(sp =>
             new ProbeReaderAdapter(sp.GetRequiredService<Kafka.IKafkaProbeStore>()));
-        services.AddSingleton<Kafka.IKafkaProbeClient, Kafka.ConfluentKafkaProbeClient>();
-        services.AddSingleton<Kafka.IKafkaProbeRuntimeClient, Kafka.ConfluentKafkaRuntimeProbeClient>();
+        // Кэш нативных клиентов пробы (t11): один AdminClient/Consumer на
+        // (bootstrap, креды) — без churn'а rd_kafka-инстансов; Disposable-
+        // синглтон закрывается контейнером при выключении.
+        services.AddSingleton<Kafka.KafkaClientCache>();
+        services.AddSingleton<Kafka.IKafkaProbeClient>(sp =>
+            new Kafka.ConfluentKafkaProbeClient(sp.GetRequiredService<Kafka.KafkaClientCache>()));
+        services.AddSingleton<Kafka.IKafkaProbeRuntimeClient>(sp =>
+            new Kafka.ConfluentKafkaRuntimeProbeClient(sp.GetRequiredService<Kafka.KafkaClientCache>()));
         services.AddSingleton<Kafka.KafkaProbeLoop>();
         services.AddHostedService(sp => sp.GetRequiredService<Kafka.KafkaProbeLoop>());
 
