@@ -136,7 +136,7 @@ public class InspectionMappersTests
         };
 
         // Act
-        var dto = ClusterDetailsMapper.Map(cluster, nowUnix: 100, null, null, [], scopes, []);
+        var dto = ClusterDetailsMapper.Map(cluster, nowUnix: 100, null, null, [], scopes, [], null);
 
         // Assert
         dto.State.Should().Be("NOT_INITIALIZED");
@@ -345,7 +345,7 @@ public class InspectionMappersTests
         };
 
         // Act
-        var dto = ClusterDetailsMapper.Map(cluster, 0, null, null, [], [], tickets);
+        var dto = ClusterDetailsMapper.Map(cluster, 0, null, null, [], [], tickets, null);
 
         // Assert: только demo, по requestedUnix затем bucket (ordinal)
         dto.PendingMoves.Should().BeEquivalentTo(
