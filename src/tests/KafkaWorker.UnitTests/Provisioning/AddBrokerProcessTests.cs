@@ -5,6 +5,7 @@ using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
@@ -57,10 +58,13 @@ public class AddBrokerProcessTests
         var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("events", CancellationToken.None);
         var journal = new WorkJournal(etcd, [Ep]);
+        var portLock = new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId);
+        var portAllocIndex = new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance);
         var driver = new Fakes.FakeKafkaDriver();
         var admin = new FakeKafkaAdminClient();
         var process = new AddBrokerProcess(
-            etcd, [Ep], driver, claims, journal, new FakeAdminFactory(admin),
+            etcd, [Ep], driver, claims, journal, portLock, portAllocIndex,
+            new FakeAdminFactory(admin),
             new ProvisioningOptions(16000, 16999, 600, 90, null, "apache/kafka:4.0.0"));
         return new Rig(etcd, driver, admin, claims, journal, process);
     }
@@ -186,8 +190,11 @@ public class AddBrokerProcessTests
         SeedActive(etcd);
         SeedPendingBroker(etcd);
         var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var portLock = new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId);
+        var portAllocIndex = new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance);
         var process = new AddBrokerProcess(
             etcd, [Ep], new Fakes.FakeKafkaDriver(), claims, new WorkJournal(etcd, [Ep]),
+            portLock, portAllocIndex,
             new FakeAdminFactory(new FakeKafkaAdminClient()), ProvisioningOptions.Default);
 
         // Act
@@ -196,5 +203,52 @@ public class AddBrokerProcessTests
         // Assert
         result.IsSuccess.Should().BeFalse();
         result.Error!.Message.Should().Contain("клэйм не наш");
+    }
+
+    // AAA (t91): клэйм занят чужим инстансом при недоборе портов broker4 →
+    // журнальная фаза waiting-portalloc-lock, успех тика, без мутаций.
+    [Fact]
+    public async Task Run_PortLockBusy_WaitingPhase_NoMutations()
+    {
+        // Arrange: Active-кластер + заявка broker4; клэйм держит «другой инстанс».
+        var rig = await NewRig();
+        SeedPendingBroker(rig.Etcd);
+        ReadyCluster(rig.Admin, 4);
+        rig.Etcd.Seed("/kafkaworker/locks/portalloc", """{"instance":"inst-2","since_unix":1}""");
+
+        // Act
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: InProgress — успех без мутаций portalloc/docker/endpoints.
+        result.IsSuccess.Should().BeTrue();
+        var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
+        state.Value!.Phase.Should().Be("waiting-portalloc-lock");
+        rig.Etcd.Store["/kafkaworker/portalloc/events"].Value.Should().NotContain("broker4");
+        rig.Driver.Ensured.Should().BeEmpty();
+        rig.Etcd.Store["/kafka/clusters/events/endpoints"].Value
+            .Should().Be("h1:16000,h1:16001,h1:16002");
+    }
+
+    // AAA (t91): чужая portalloc-запись — занятость добора: broker4 не получает
+    // порт, закреплённый соседом (окно «сосед записал, контейнеров нет»).
+    [Fact]
+    public async Task Run_ForeignPortAllocRecord_PortIsNotReused()
+    {
+        // Arrange: сосед shop1 закрепил h1:16003; docker-busy пуст.
+        var rig = await NewRig();
+        SeedPendingBroker(rig.Etcd);
+        ReadyCluster(rig.Admin, 4);
+        rig.Etcd.Seed("/kafkaworker/portalloc/shop1",
+            """{"broker1":{"host":"h1","client":16003}}""");
+
+        // Act
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: broker4 — следующий свободный после своих и соседа (16004).
+        result.IsSuccess.Should().BeTrue();
+        var spec = rig.Driver.Ensured.Single(s => s.NodeName == "broker4");
+        spec.ClientHostPort.Should().Be(16004);
+        rig.Etcd.Store["/kafkaworker/portalloc/events"].Value
+            .Should().Contain("\"broker4\":{\"host\":\"h1\",\"client\":16004}");
     }
 }

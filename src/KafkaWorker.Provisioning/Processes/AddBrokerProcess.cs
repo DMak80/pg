@@ -23,6 +23,8 @@ public sealed class AddBrokerProcess(
     IClusterDriver driver,
     ClaimStore claims,
     WorkJournal journal,
+    PortAllocLock portLock,
+    PortAllocIndex portAlloc,
     IKafkaAdminClientFactory adminFactory,
     ProvisioningOptions options)
 {
@@ -57,7 +59,16 @@ public sealed class AddBrokerProcess(
         // План: адреса из portalloc + добор портов для новых брокеров (RMW).
         var ports = await EnsurePortsAsync(snap, pending, ct);
         if (!ports.IsSuccess)
+        {
+            // t91: клэйм занят — не фейл, InProgress (следующий тик ~5 с).
+            if (ports.Error is PortLockBusyException)
+            {
+                await journal.WriteAsync(cluster, Op, "waiting-portalloc-lock", claims.InstanceId, null, ct);
+                return Result.Success();
+            }
+
             return Fail(cluster, ports.Error!, "planning");
+        }
         var addresses = ports.Value;
 
         // Контейнеры broker-only + state=PROVISIONING (существующие — сверка).
@@ -101,40 +112,62 @@ public sealed class AddBrokerProcess(
         var missing = pending.Select(b => b.Name).Where(n => !addresses.ContainsKey(n)).ToList();
         if (missing.Count > 0)
         {
-            var hosts = await driver.GetHostsAsync(ct);
-            if (!hosts.IsSuccess)
-                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(hosts.Error!);
-            var busy = await driver.GetBusyPortsAsync(ct);
-            if (!busy.IsSuccess)
-                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(busy.Error!);
+            // t91 (arch/16 §2.1): добор портов — под глобальным клэймом
+            // /kafkaworker/locks/portalloc; сбой — обычный фейл, занят —
+            // PortLockBusyException → тик-ретрай.
+            var acquired = await portLock.TryAcquireAsync(ct);
+            if (!acquired.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(acquired.Error!);
+            if (!acquired.Value)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new PortLockBusyException());
+            try
+            {
+                var hosts = await driver.GetHostsAsync(ct);
+                if (!hosts.IsSuccess)
+                    return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(hosts.Error!);
+                var dockerBusy = await driver.GetBusyPortsAsync(ct);
+                if (!dockerBusy.IsSuccess)
+                    return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(dockerBusy.Error!);
+                var foreign = await portAlloc.ReadBusyAsync(cluster, ct);
+                if (!foreign.IsSuccess)
+                    return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(foreign.Error!);
 
-            // План — ТОЛЬКО новые ноды (порт PgWorker AddShard): собственные порты
-            // живых контейнеров числятся в busy и при полном плане аллокатор счёл бы
-            // их «занятыми» и перевыделил (рассинхрон portalloc/endpoints/контейнера).
-            // Закреплённые адреса при этом исключаются из кандидатов явно.
-            var plan = PlacementPlanner.Plan(missing, hosts.Value);
-            var taken = new HashSet<(string Host, int Port)>(busy.Value);
-            foreach (var addr in addresses.Values)
-                taken.Add((addr.Host, addr.ClientPort));
-            var allocated = PortAllocator.Allocate(
-                plan, addresses, taken, options.PortFrom, options.PortTo);
-            if (!allocated.IsSuccess)
-                return allocated;
-            foreach (var (node, addr) in allocated.Value)
-                addresses[node] = addr;
+                // План — ТОЛЬКО новые ноды (порт PgWorker AddShard): собственные порты
+                // живых контейнеров числятся в busy и при полном плане аллокатор счёл бы
+                // их «занятыми» и перевыделил (рассинхрон portalloc/endpoints/контейнера).
+                // Закреплённые адреса исключаются из кандидатов явно; t91: плюс
+                // занятость portalloc ЧУЖИХ кластеров (окно «сосед записал,
+                // контейнеров ещё нет»).
+                var plan = PlacementPlanner.Plan(missing, hosts.Value);
+                var taken = new HashSet<(string Host, int Port)>(dockerBusy.Value);
+                foreach (var p in foreign.Value)
+                    taken.Add(p);
+                foreach (var addr in addresses.Values)
+                    taken.Add((addr.Host, addr.ClientPort));
+                var allocated = PortAllocator.Allocate(
+                    plan, addresses, taken, options.PortFrom, options.PortTo);
+                if (!allocated.IsSuccess)
+                    return allocated;
+                foreach (var (node, addr) in allocated.Value)
+                    addresses[node] = addr;
 
-            var serialized = SerializePortAlloc(addresses);
-            var key = PortAllocKey(cluster);
-            var txn = await TxnAsync(
-                TxnRequest.Of(
-                    [TxnCompare.ModRevisionEqual(key, current.Value.Revision ?? 0)],
-                    [new TxnOp.Put(key, serialized, null)]),
-                ct);
-            if (!txn.IsSuccess)
-                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(txn.Error!);
-            if (!txn.Value.Succeeded)
-                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new ApplicationException(
-                    $"portalloc {key} изменился с момента чтения — ретрай тиком"));
+                var serialized = SerializePortAlloc(addresses);
+                var key = PortAllocKey(cluster);
+                var txn = await TxnAsync(
+                    TxnRequest.Of(
+                        [TxnCompare.ModRevisionEqual(key, current.Value.Revision ?? 0)],
+                        [new TxnOp.Put(key, serialized, null)]),
+                    ct);
+                if (!txn.IsSuccess)
+                    return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(txn.Error!);
+                if (!txn.Value.Succeeded)
+                    return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new ApplicationException(
+                        $"portalloc {key} изменился с момента чтения — ретрай тиком"));
+            }
+            finally
+            {
+                await portLock.ReleaseAsync();
+            }
         }
 
         // Роль новых брокеров: broker-only, фиксируется навсегда (arch/15 §2).

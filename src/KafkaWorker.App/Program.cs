@@ -230,6 +230,8 @@ builder.Services.AddSingleton(sp => new AddBrokerProcess(
     sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<PortAllocLock>(),
+    sp.GetRequiredService<PortAllocIndex>(),
     sp.GetRequiredService<IKafkaAdminClientFactory>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value)));
 builder.Services.AddSingleton(sp => new AppPasswordRotator(

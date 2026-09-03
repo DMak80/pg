@@ -58,6 +58,8 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
                 fixture.AdminFactory, fixture.Options),
             new AddBrokerProcess(
                 fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal,
+                new PortAllocLock([fixture.Endpoint], fixture.Gateway, TimeProvider.System, claims.InstanceId),
+                new PortAllocIndex(fixture.Gateway, [fixture.Endpoint], NullLogger<PortAllocIndex>.Instance),
                 fixture.AdminFactory, fixture.Options),
             new TopicSyncProcess(
                 fixture.Gateway, [fixture.Endpoint], claims, journal,
