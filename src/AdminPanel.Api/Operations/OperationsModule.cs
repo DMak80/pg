@@ -85,6 +85,57 @@ public static class OperationsModule
             return Error(result);
         });
 
+        // POST /api/clusters/{cluster}/moves/rollback — заявки на откат (t07, 02 §9.7.2).
+        endpoints.MapPost("/api/clusters/{cluster}/moves/rollback", async (
+            string cluster, RollbackBucketsRequest request, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<RollbackBucketsCommand, RollbackQueuedDto>(
+                new RollbackBucketsCommand(cluster, request.Buckets ?? [], user.Identity?.Name ?? "adminpanel"), ct);
+            if (result.IsSuccess)
+                return Results.Created($"/api/clusters/{cluster}", result.Value);
+
+            return Error(result);
+        });
+
+        // POST /api/clusters/{cluster}/moves/finalize — заявка уборки старого шарда
+        // (t07, 02 §9.7.3): DROP SCHEMA СО ДАННЫМИ — необратимо (UI предупреждает).
+        endpoints.MapPost("/api/clusters/{cluster}/moves/finalize", async (
+            string cluster, FinalizeBucketRequest request, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<FinalizeBucketCommand, BucketFinalizeQueuedDto>(
+                new FinalizeBucketCommand(cluster, request.Bucket, request.OldShard, user.Identity?.Name ?? "adminpanel"), ct);
+            if (result.IsSuccess)
+                return Results.Created($"/api/clusters/{cluster}", result.Value);
+
+            return Error(result);
+        });
+
+        // POST /api/clusters/{cluster}/moves/abort — заявка отмены переезда (t07,
+        // 02 §9.7.4): force ломает защиты свежести/routing==target.
+        endpoints.MapPost("/api/clusters/{cluster}/moves/abort", async (
+            string cluster, AbortBucketRequest request, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<AbortBucketCommand, BucketAbortQueuedDto>(
+                new AbortBucketCommand(cluster, request.Bucket, request.Force == true, user.Identity?.Name ?? "adminpanel"), ct);
+            if (result.IsSuccess)
+                return Results.Created($"/api/clusters/{cluster}", result.Value);
+
+            return Error(result);
+        });
+
+        // DELETE /api/clusters/{cluster}/moves/{bucket} — отмена стоящей заявки (t07,
+        // 02 §9.7.5): не останавливает взятую в работу; повтор не идемпотентен (404).
+        endpoints.MapDelete("/api/clusters/{cluster}/moves/{bucket}", async (
+            string cluster, string bucket, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<CancelMoveTicketCommand, MoveTicketCancelledDto>(
+                new CancelMoveTicketCommand(cluster, bucket, user.Identity?.Name ?? "adminpanel"), ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return Error(result);
+        });
+
         // POST /api/clusters/{cluster}/app-password/rotate — заявка ротации app-пароля
         // (02 §9.8): клэймит заявку воркер; выполнение — AppPasswordRotator PgWorker.
         endpoints.MapPost("/api/clusters/{cluster}/app-password/rotate", async (
