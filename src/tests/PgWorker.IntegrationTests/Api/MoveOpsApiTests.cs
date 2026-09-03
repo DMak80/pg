@@ -326,4 +326,49 @@ public class MoveOpsApiTests(PgApiFixture fixture)
         var problem = await resp.Content.ReadFromJsonAsync<JsonElement>(ct);
         problem.GetProperty("detail").GetString().Should().Contain("не переезд");
     }
+
+    // ===== отмена заявки (§9.7.5) =====
+
+    // AAA: отмена удаляет ключ заявки (204); повтор → 404 (не идемпотентна).
+    [Fact]
+    public async Task Cancel_DeletesTicket_204Then404()
+    {
+        // Arrange — живая move-заявка на bucket_0
+        await ApiTestSeed.SeedActiveClusterAsync(Etcd, "cn", buckets: 4, shards: 2);
+        var ct = TestContext.Current.CancellationToken;
+        await ApiTestSeed.SeedTicketAsync(Etcd, "cn", 0, "move", to: "shard2");
+
+        // Act
+        var resp = await Client.DeleteAsync("/api/clusters/cn/moves/bucket_0", ct);
+
+        // Assert — 204, ключ исчез
+        resp.StatusCode.Should().Be(HttpStatusCode.NoContent);
+        var ticket = await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/pgworker/moves/cn/bucket_0", ct);
+        ticket.Value.Should().BeNull();
+
+        // Act — повтор
+        var again = await Client.DeleteAsync("/api/clusters/cn/moves/bucket_0", ct);
+
+        // Assert — 404 «заявки нет»
+        again.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        var problem = await again.Content.ReadFromJsonAsync<JsonElement>(ct);
+        problem.GetProperty("detail").GetString().Should().Contain("заявки");
+    }
+
+    // AAA: чужой кластер и битый leaf → 404.
+    [Fact]
+    public async Task Cancel_UnknownClusterOrBadLeaf_404()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act / Assert — каноничное имя, ключа нет
+        var other = await Client.DeleteAsync("/api/clusters/nowhere/moves/bucket_0", ct);
+        other.StatusCode.Should().Be(HttpStatusCode.NotFound);
+
+        // Act / Assert — неканонический leaf
+        await ApiTestSeed.SeedActiveClusterAsync(Etcd, "cnbad", buckets: 4, shards: 2);
+        var badLeaf = await Client.DeleteAsync("/api/clusters/cnbad/moves/not-a-bucket", ct);
+        badLeaf.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
 }

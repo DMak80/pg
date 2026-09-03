@@ -259,6 +259,24 @@ public static class ApiModule
             };
         });
 
+        // DELETE /api/clusters/{cluster}/moves/{bucket} — отмена стоящей заявки (t07,
+        // 02 §9.7.5): 204; ключа нет/имена неканонические → 404; сбой etcd → 503.
+        endpoints.MapDelete("/api/clusters/{cluster}/moves/{bucket}", async (
+            string cluster, string bucket, CancelMoveHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleAsync(cluster, bucket, ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return result.Error switch
+            {
+                ClusterNotFoundException or MoveTicketNotFoundException => Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound, title: "Not found", detail: result.Error.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed", detail: result.Error!.Message),
+            };
+        });
+
         // POST /api/clusters/{cluster}/app-password/rotate — заявка ротации app-пароля
         // (02 §9.8): здесь только клэйм заявки; выполнение — AppPasswordRotator.
         endpoints.MapPost("/api/clusters/{cluster}/app-password/rotate", async (

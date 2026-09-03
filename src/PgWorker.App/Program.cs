@@ -87,6 +87,9 @@ builder.Services.AddSingleton(sp => new AbortBucketHandler(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Moves.ToRuntime(
         sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds)));
+builder.Services.AddSingleton(sp => new CancelMoveHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
 builder.Services.AddSingleton(sp => new RotateAppPasswordHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
