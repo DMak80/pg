@@ -123,7 +123,11 @@ docker-сеть; прод-профиль задаёт ключ). Ключи до
 | `DELETE /api/clusters/{c}` | перевод в `TO_REMOVE` | 02 §9.4 |
 | `POST /api/clusters/{c}/shards` | декларация add-shard | 02 §9.5 |
 | `DELETE /api/clusters/{c}/shards/{x}` | маркер демонтажа шарда | 02 §9.6 |
-| `POST /api/clusters/{c}/moves` | заявки на переезды бакетов | 02 §9.7 |
+| `POST /api/clusters/{c}/moves` | заявки на переезды бакетов | 02 §9.7.1 |
+| `POST /api/clusters/{c}/moves/rollback` | заявки на откат бакетов | 02 §9.7.2 |
+| `POST /api/clusters/{c}/moves/finalize` | заявка уборки старого шарда | 02 §9.7.3 |
+| `POST /api/clusters/{c}/moves/abort` | заявка отмены переезда | 02 §9.7.4 |
+| `DELETE /api/clusters/{c}/moves/{bucket}` | отмена стоящей заявки (del ключа) | 02 §9.7.5 |
 | `POST /api/clusters/{c}/app-password/rotate` | заявка ротации app-пароля | 02 §9.8 |
 | `POST /api/ha/{scope}/nodes/{node}/recreate` | маркеры `TO_RECREATE`+`recreate=soft\|hard` | как §9.6-подобный маркер (02 §9, 03 §2): guards по `/service/<scope>/members` |
 | `POST /api/seed/demo` | стендовый демо-сид pg-контура | §1.1.1 |

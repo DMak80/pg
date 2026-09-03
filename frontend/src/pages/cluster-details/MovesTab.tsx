@@ -1,20 +1,56 @@
 // Вкладка «Переезды»: только не-ACTIVE бакеты — фаза, штампы, lastError (t08 spec §4.11)
 // + очередь заявок /pgworker/moves/ (arch/02 §2.3.1): что стоит, куда, кем, возраст.
-import { Badge, Group, Table, Text, Tooltip } from '@mantine/core';
-import type { BucketDto, MoveTicketDto } from '../../api/dto';
+// t07: per-row «Отменить переезд» (abort, arch/03 §3.6), «Снять заявку» в очереди
+// (§9.7.5) и блок «Журнал воркера» — последний процесс /pgworker/work/<C>.
+import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { Badge, Button, Group, Modal, Stack, Table, Text, Tooltip } from '@mantine/core';
+import { useState } from 'react';
+import { ApiError } from '../../api/client';
+import { cancelMoveTicket, queryKeys } from '../../api/queries';
+import type { BucketDto, ClusterWorkDto, MoveTicketDto } from '../../api/dto';
 import { BucketStateBadge } from '../../components/BucketStateBadge';
 import { formatAge, formatUnix, formatUnixAge } from '../../utils/format';
+import { AbortMoveModal } from './AbortMoveModal';
 
 // Усечение длинной ошибки: до limit символов + «…»; полный текст — в Tooltip (t08 spec §4.11).
 function truncateText(text: string, limit: number): string {
   return text.length > limit ? `${text.slice(0, limit)}…` : text;
 }
 
-export function MovesTab({ buckets, pendingMoves }: {
-  buckets: BucketDto[]; pendingMoves: MoveTicketDto[];
+export function MovesTab({ cluster, canScale, buckets, pendingMoves, work }: {
+  cluster: string; canScale: boolean; buckets: BucketDto[];
+  pendingMoves: MoveTicketDto[]; work?: ClusterWorkDto | null;
 }) {
+  const queryClient = useQueryClient();
   // Только реальные переезды: NOT_INITIALIZED — начальное состояние, не перемещение (spec t12 §3.8).
   const moves = buckets.filter((b) => b.state === 'SYNCING' || b.state === 'FROZEN' || b.state === 'ABORTING');
+  const [abortId, setAbortId] = useState<number | null>(null);
+  const [confirmTicket, setConfirmTicket] = useState<MoveTicketDto | null>(null);
+  const abortBucket = buckets.find((b) => b.id === abortId) ?? null;
+
+  // Снятие заявки: подтверждение «начатый доедет»; 404 «заявки нет» — тихо
+  // инвалидировать (оператора опередил тик воркера, arch/03 §3.6).
+  const cancel = useMutation({
+    mutationFn: (bucket: string) => cancelMoveTicket(cluster, bucket),
+    onSuccess: async () => {
+      setConfirmTicket(null);
+      await queryClient.invalidateQueries({ queryKey: ['clusters'] });
+      await queryClient.invalidateQueries({ queryKey: queryKeys.cluster(cluster) });
+    },
+    onError: async (error) => {
+      if (error instanceof ApiError && error.status === 404) {
+        setConfirmTicket(null);
+        await queryClient.invalidateQueries({ queryKey: ['clusters'] });
+        await queryClient.invalidateQueries({ queryKey: queryKeys.cluster(cluster) });
+        return;
+      }
+      // прочие (503) — текстом в подтверждении
+    },
+  });
+  const cancelError = cancel.error instanceof ApiError && cancel.error.status !== 404
+    ? cancel.error
+    : null;
+
   return (
     <>
       {moves.length === 0 ? (
@@ -32,6 +68,7 @@ export function MovesTab({ buckets, pendingMoves }: {
                 <Table.Th>Обновлён</Table.Th>
                 <Table.Th>Возраст</Table.Th>
                 <Table.Th>Ошибка</Table.Th>
+                {canScale ? <Table.Th>Действия</Table.Th> : null}
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
@@ -59,12 +96,23 @@ export function MovesTab({ buckets, pendingMoves }: {
                       </Tooltip>
                     )}
                   </Table.Td>
+                  {canScale ? (
+                    <Table.Td>
+                      <Button color="red" variant="light" size="xs" onClick={() => setAbortId(b.id)}>
+                        Отменить переезд
+                      </Button>
+                    </Table.Td>
+                  ) : null}
                 </Table.Tr>
               ))}
             </Table.Tbody>
           </Table>
         </Table.ScrollContainer>
       )}
+      {abortBucket !== null ? (
+        <AbortMoveModal cluster={cluster} bucket={abortBucket}
+          opened={abortId !== null} onClose={() => setAbortId(null)} />
+      ) : null}
       <Group justify="space-between" mt="md">
         <Text fw={500}>Очередь заявок</Text>
       </Group>
@@ -81,6 +129,7 @@ export function MovesTab({ buckets, pendingMoves }: {
                   <Table.Th>Куда</Table.Th>
                   <Table.Th>Возраст заявки</Table.Th>
                   <Table.Th>Кем</Table.Th>
+                  {canScale ? <Table.Th>Снять заявку</Table.Th> : null}
                 </Table.Tr>
               </Table.Thead>
               <Table.Tbody>
@@ -93,6 +142,14 @@ export function MovesTab({ buckets, pendingMoves }: {
                     <Table.Td>{t.to ?? '—'}</Table.Td>
                     <Table.Td>{formatUnixAge(t.requestedUnix)}</Table.Td>
                     <Table.Td>{t.requestedBy ?? '—'}</Table.Td>
+                    {canScale ? (
+                      <Table.Td>
+                        <Button color="red" variant="light" size="xs"
+                          onClick={() => setConfirmTicket(t)}>
+                          Снять
+                        </Button>
+                      </Table.Td>
+                    ) : null}
                   </Table.Tr>
                 ))}
               </Table.Tbody>
@@ -103,6 +160,46 @@ export function MovesTab({ buckets, pendingMoves }: {
           </Text>
         </>
       )}
+      <Modal opened={confirmTicket !== null} onClose={() => setConfirmTicket(null)}
+        title="Снять заявку" centered>
+        <Stack gap="sm">
+          <Text>
+            Заявка <b>{`${confirmTicket?.op ?? ''} ${confirmTicket?.bucket ?? ''}`}</b> будет
+            удалена из очереди. Если переезд уже начат — он доедет до конца; остановка
+            начатого переезда — только «Отменить переезд» (abort).
+          </Text>
+          {cancelError !== null ? (
+            <Text size="sm" c="red">{cancelError.detail ?? cancelError.message}</Text>
+          ) : null}
+          <Group justify="flex-end">
+            <Button variant="default" onClick={() => setConfirmTicket(null)}>Отмена</Button>
+            <Button color="red" loading={cancel.isPending}
+              onClick={() => confirmTicket !== null && cancel.mutate(confirmTicket.bucket)}>
+              Снять заявку
+            </Button>
+          </Group>
+        </Stack>
+      </Modal>
+      {work != null ? (
+        <>
+          <Group justify="space-between" mt="md">
+            <Text fw={500}>Журнал воркера</Text>
+          </Group>
+          <Group gap="sm">
+            <Badge color="blue" variant="light">{work.op}</Badge>
+            <Text size="sm">{work.phase}</Text>
+            <Text size="sm" c="dimmed">обновлён {formatUnixAge(work.updatedUnix)}</Text>
+            {work.lastError !== null ? (
+              <Tooltip label={work.lastError}>
+                <Text size="sm" c="red">{truncateText(work.lastError, 40)}</Text>
+              </Tooltip>
+            ) : null}
+          </Group>
+          <Text size="sm" c="dimmed">
+            Последний процесс воркера кластера; отвергнутые заявки — с причиной.
+          </Text>
+        </>
+      ) : null}
     </>
   );
 }

@@ -1,5 +1,4 @@
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using PgWorker.Core;
 using PgWorker.Core.Writing;
@@ -49,18 +48,6 @@ public sealed partial class MoveBucketsHandler(IEtcdGateway gateway, string[] en
     // Паттерн имени шарда (как DeleteShardHandler: без дефиса).
     [GeneratedRegex("^[a-z][a-z0-9_]{0,30}$")]
     private static partial Regex ShardNamePattern();
-
-    // Канон тела заявки PgWorker: только нужные поля, snake_case (spec §4.3 шаг 6).
-    private static readonly JsonSerializerOptions TicketJson = new()
-    {
-        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
-    };
-
-    private sealed record TicketBody(
-        [property: JsonPropertyName("op")] string Op,
-        [property: JsonPropertyName("to")] string To,
-        [property: JsonPropertyName("requested_unix")] long RequestedUnix,
-        [property: JsonPropertyName("requested_by")] string RequestedBy);
 
     public async Task<Result<MovesQueuedDto>> HandleAsync(
         string cluster, MoveBucketsRequest command, string requestedBy, CancellationToken ct)
@@ -124,18 +111,15 @@ public sealed partial class MoveBucketsHandler(IEtcdGateway gateway, string[] en
 
         // 4) Очередь напрямую, один range по всему префиксу (arch/02 §9.7 п.3):
         //    идентичная заявка → skipped; иная → 409 до записей; база — глобальный max.
-        var movesRange = await EtcdFailover.CallAsync(endpoints,
-            endpoint => gateway.RangeAsync(endpoint, "/pgworker/moves/", ct));
-        if (!movesRange.IsSuccess)
-            return Result<MovesQueuedDto>.Failed(movesRange.Error!);
-        var mine = ParseTickets(movesRange.Value, cluster);
-        var maxUnix = movesRange.Value.Count == 0 ? 0 : AllTicketsMaxUnix(movesRange.Value);
+        var queue = await MoveTickets.ReadQueueAsync(gateway, endpoints, cluster, ct);
+        if (!queue.IsSuccess)
+            return Result<MovesQueuedDto>.Failed(queue.Error!);
 
         var skipped = new List<int>();
         var toQueue = new List<int>();
         foreach (var id in ordered)
         {
-            if (mine.TryGetValue($"bucket_{id}", out var existing))
+            if (queue.Value.Mine.TryGetValue($"bucket_{id}", out var existing))
             {
                 if (existing.Op == "move" && existing.To == to)
                     skipped.Add(id);
@@ -152,17 +136,15 @@ public sealed partial class MoveBucketsHandler(IEtcdGateway gateway, string[] en
         // 5) base = max(now, maxUnix+1), заявка k-я по порядку — base+k (§9.7 п.4);
         //    txn-клэйм per key: compare NotExists + put (защита от перезаписи чужой).
         var now = time.GetUtcNow().ToUnixTimeSeconds();
-        var unixBase = Math.Max(now, maxUnix + 1);
+        var unixBase = Math.Max(now, queue.Value.MaxUnix + 1);
         var queued = new List<int>();
         foreach (var (id, k) in toQueue.Select((b, i) => (b, i)))
         {
             var key = $"/pgworker/moves/{cluster}/bucket_{id}";
             var body = JsonSerializer.Serialize(
-                new TicketBody("move", to, unixBase + k, requestedBy), TicketJson);
-            var claim = await EtcdFailover.CallAsync(endpoints, endpoint => gateway.TxnAsync(
-                endpoint,
-                TxnRequest.Of([TxnCompare.NotExists(key)], [new TxnOp.Put(key, body, null)]),
-                ct));
+                new MoveTickets.TicketBody("move", to, null, null, unixBase + k, requestedBy),
+                MoveTickets.TicketJson);
+            var claim = await MoveTickets.ClaimAsync(gateway, endpoints, key, body, ct);
             if (!claim.IsSuccess)
                 return Result<MovesQueuedDto>.Failed(claim.Error!); // 503, без компенсации (Д5)
             if (!claim.Value.Succeeded)
@@ -171,60 +153,6 @@ public sealed partial class MoveBucketsHandler(IEtcdGateway gateway, string[] en
         }
 
         return Result<MovesQueuedDto>.Success(new MovesQueuedDto(cluster, from, to, queued, skipped));
-    }
-
-    // Заявки одного кластера из префикса /pgworker/moves/ (упрощённый порт
-    // MovesQueueParser: guard'ам нужны op/to/requested_unix; битый JSON скипаем —
-    // его отвергнет и удалит процесс переездов, arch/02 §7).
-    private static Dictionary<string, (string Op, string? To)> ParseTickets(
-        IReadOnlyList<Kv> kvs, string cluster)
-    {
-        var result = new Dictionary<string, (string, string?)>();
-        foreach (var kv in kvs)
-        {
-            var segments = kv.Key.Split('/');
-            if (segments.Length != 5 || segments[3] != cluster || segments[4].Length == 0)
-                continue;
-            try
-            {
-                using var doc = JsonDocument.Parse(kv.Value);
-                var root = doc.RootElement;
-                if (!root.TryGetProperty("op", out var op) || op.ValueKind != JsonValueKind.String)
-                    continue;
-                string? to = root.TryGetProperty("to", out var t) && t.ValueKind == JsonValueKind.String
-                    ? t.GetString()
-                    : null;
-                result[segments[4]] = (op.GetString()!, to);
-            }
-            catch (JsonException)
-            {
-                // битая заявка — не наша: не блокирует постановку новых
-            }
-        }
-
-        return result;
-    }
-
-    // Глобальный max requested_unix очереди (база упорядочивания, §9.7 п.4).
-    private static long AllTicketsMaxUnix(IReadOnlyList<Kv> kvs)
-    {
-        long max = 0;
-        foreach (var kv in kvs)
-        {
-            try
-            {
-                using var doc = JsonDocument.Parse(kv.Value);
-                if (doc.RootElement.TryGetProperty("requested_unix", out var unix)
-                    && unix.ValueKind == JsonValueKind.Number)
-                    max = Math.Max(max, unix.GetInt64());
-            }
-            catch (JsonException)
-            {
-                // битая заявка не участвует в базе упорядочивания
-            }
-        }
-
-        return max;
     }
 
     private static string? ReadState(string raw)

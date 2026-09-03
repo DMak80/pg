@@ -80,6 +80,51 @@ export interface MoveTicketDto {
   requestedBy: string | null;
 }
 
+// POST /api/clusters/{cluster}/moves/rollback — тело и ответ (t07, arch/03 §1.7).
+export interface RollbackBucketsRequestDto {
+  buckets: number[];
+}
+
+export interface RollbackQueuedDto {
+  cluster: string;
+  queued: number[];
+  skipped: number[];
+}
+
+// POST /api/clusters/{cluster}/moves/finalize — тело и ответ (arch/03 §1.8).
+export interface FinalizeBucketRequestDto {
+  bucket: number;
+  oldShard: string;
+}
+
+export interface BucketFinalizeQueuedDto {
+  cluster: string;
+  bucket: number;
+  oldShard: string;
+}
+
+// POST /api/clusters/{cluster}/moves/abort — тело и ответ (arch/03 §1.9);
+// force?: true — только когда включён (false не шлём).
+export interface AbortBucketRequestDto {
+  bucket: number;
+  force?: boolean;
+}
+
+export interface BucketAbortQueuedDto {
+  cluster: string;
+  bucket: number;
+  force: boolean;
+}
+
+// Журнал последнего процесса воркера кластера /pgworker/work/<C>
+// (arch/03 §2): результат исполненной/отвергнутой заявки переездов.
+export interface ClusterWorkDto {
+  op: string;
+  phase: string;
+  updatedUnix: number;
+  lastError: string | null;
+}
+
 // Строковый канон severity алертов (arch/03 §1).
 export type AlertSeverityName = 'critical' | 'warning' | 'info';
 
@@ -197,6 +242,8 @@ export interface ClusterDto {
   pendingMoves: MoveTicketDto[]; // очередь заявок переездов (arch/02 §2.3.1)
   heals: HealDto[];
   standNodes: StandNodeDto[];
+  // Журнал последнего процесса воркера (t07, arch/03 §2); null — журнала нет.
+  work?: ClusterWorkDto | null;
 }
 
 export interface ShardDto {

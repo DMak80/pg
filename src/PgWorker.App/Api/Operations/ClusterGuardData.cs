@@ -13,7 +13,7 @@ internal sealed record ClusterGuardData(
     IReadOnlyDictionary<string, string> ShardStates, // shard → state-маркер (TO_REMOVE)
     IReadOnlyDictionary<string, string> NodeStates,  // "<shard>/<node>" → state (QUARANTINED/…)
     IReadOnlyDictionary<int, string> Routing,        // bucket → owner
-    IReadOnlyDictionary<int, (string? State, string? Owner, string? Target)> Status)
+    IReadOnlyDictionary<int, (string? State, string? Owner, string? Target, long? UpdatedUnix)> Status)
 {
     // Канон статусов бакета (arch/02 §2.1): отсутствие status-ключа/поля state = ACTIVE.
     public const string ActiveState = "ACTIVE";
@@ -32,7 +32,7 @@ internal sealed record ClusterGuardData(
         var shardStates = new Dictionary<string, string>();
         var nodeStates = new Dictionary<string, string>();
         var routing = new Dictionary<int, string>();
-        var status = new Dictionary<int, (string?, string?, string?)>();
+        var status = new Dictionary<int, (string?, string?, string?, long?)>();
 
         foreach (var kv in range.Value)
         {
@@ -84,9 +84,11 @@ internal sealed record ClusterGuardData(
             config, shards, shardStates, nodeStates, routing, status));
     }
 
-    // Статус бакета (arch/02 §2.1): state + owner/target переезда; битый JSON —
+    // Статус бакета (arch/02 §2.1): state + owner/target переезда + updated_unix
+    // (возраст для пред-проверки свежести abort, t07 §5.3: поле отсутствует/битое →
+    // null — проверка пропускается, авторитетно решит процесс); битый JSON —
     // как у панели: поля отсутствуют → guard'ы трактуют бакет консервативно.
-    private static (string? State, string? Owner, string? Target) ParseStatus(string raw)
+    private static (string? State, string? Owner, string? Target, long? UpdatedUnix) ParseStatus(string raw)
     {
         try
         {
@@ -96,11 +98,15 @@ internal sealed record ClusterGuardData(
                 && el.ValueKind == JsonValueKind.String
                 ? el.GetString()
                 : null;
-            return (ReadString("state") ?? ActiveState, ReadString("owner"), ReadString("target"));
+            var updated = root.TryGetProperty("updated_unix", out var unix)
+                && unix.ValueKind == JsonValueKind.Number
+                ? (long?)unix.GetInt64()
+                : null;
+            return (ReadString("state") ?? ActiveState, ReadString("owner"), ReadString("target"), updated);
         }
         catch (JsonException)
         {
-            return (ActiveState, null, null);
+            return (ActiveState, null, null, null);
         }
     }
 }

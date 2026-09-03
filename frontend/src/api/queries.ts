@@ -31,6 +31,12 @@ import type {
   NodeRecreatedDto,
   OverviewDto,
   RecreateMode,
+  RollbackBucketsRequestDto,
+  RollbackQueuedDto,
+  FinalizeBucketRequestDto,
+  BucketFinalizeQueuedDto,
+  AbortBucketRequestDto,
+  BucketAbortQueuedDto,
   SessionDto,
   ShardAddedDto,
 } from './dto';
@@ -125,6 +131,44 @@ export function removeShard(cluster: string, shard: string): Promise<void> {
 export function moveBuckets(cluster: string, request: MoveBucketsRequestDto): Promise<MovesQueuedDto> {
   return apiFetch<MovesQueuedDto>(`/api/clusters/${encodeURIComponent(cluster)}/moves`,
     { method: 'POST', body: request });
+}
+
+// POST /api/clusters/{cluster}/moves/rollback — заявки на откат (t07, 02 §9.7.2):
+// направление определяет воркер по обратной подписке.
+export function rollbackBuckets(
+  cluster: string, request: RollbackBucketsRequestDto,
+): Promise<RollbackQueuedDto> {
+  return apiFetch<RollbackQueuedDto>(
+    `/api/clusters/${encodeURIComponent(cluster)}/moves/rollback`,
+    { method: 'POST', body: request });
+}
+
+// POST /api/clusters/{cluster}/moves/finalize — заявка уборки старого шарда
+// (t07, 02 §9.7.3): DROP SCHEMA СО ДАННЫМИ — необратимо.
+export function finalizeBucket(
+  cluster: string, request: FinalizeBucketRequestDto,
+): Promise<BucketFinalizeQueuedDto> {
+  return apiFetch<BucketFinalizeQueuedDto>(
+    `/api/clusters/${encodeURIComponent(cluster)}/moves/finalize`,
+    { method: 'POST', body: request });
+}
+
+// POST /api/clusters/{cluster}/moves/abort — заявка отмены переезда
+// (t07, 02 §9.7.4): force ломает защиты свежести/routing==target.
+export function abortMove(
+  cluster: string, request: AbortBucketRequestDto,
+): Promise<BucketAbortQueuedDto> {
+  return apiFetch<BucketAbortQueuedDto>(
+    `/api/clusters/${encodeURIComponent(cluster)}/moves/abort`,
+    { method: 'POST', body: request });
+}
+
+// DELETE /api/clusters/{cluster}/moves/{bucket} — отмена стоящей заявки
+// (t07, 02 §9.7.5): начатый переезд доедет; остановка начатого — только abort.
+export function cancelMoveTicket(cluster: string, bucket: string): Promise<void> {
+  return apiFetch<void>(
+    `/api/clusters/${encodeURIComponent(cluster)}/moves/${encodeURIComponent(bucket)}`,
+    { method: 'DELETE' });
 }
 
 export function logoutRequest(): Promise<void> {

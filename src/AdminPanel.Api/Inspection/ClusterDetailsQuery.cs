@@ -23,7 +23,12 @@ public sealed record ClusterDto(
     IReadOnlyList<BucketDto> Buckets,
     IReadOnlyList<MoveTicketDto> PendingMoves,   // очередь заявок переездов кластера (arch/03 §2)
     IReadOnlyList<HealDto> Heals,
-    IReadOnlyList<StandNodeDto> StandNodes);
+    IReadOnlyList<StandNodeDto> StandNodes,
+    WorkDto? Work);
+
+// Журнал последнего процесса воркера кластера /pgworker/work/<C> (t07, arch/03 §2):
+// op/phase/возраст/lastError — результат исполненной/отвергнутой заявки переездов.
+public sealed record WorkDto(string Op, string Phase, long UpdatedUnix, string? LastError);
 
 // arch/03 §2: masterLeaseAlive — семантика lease (arch/02 §1); hosts — multi-host из DsnParser t03.
 public sealed record ShardDto(
@@ -130,7 +135,7 @@ public static class ClusterDetailsMapper
     public static ClusterDto Map(
         ClusterInfo cluster, long nowUnix, string? owner, BucketState? state,
         IReadOnlyList<StandNode> standNodes, IReadOnlyList<HaScope> haScopes,
-        IReadOnlyList<MoveTicket> moveTickets)
+        IReadOnlyList<MoveTicket> moveTickets, WorkJournalInfo? work)
     {
         var buckets = cluster.Buckets
             .Where(b => owner is null || b.Owner == owner)
@@ -176,7 +181,8 @@ public static class ClusterDetailsMapper
             [.. cluster.Heals
                 .OrderByDescending(h => h.TsUnix) // журнал: новые сверху; null — в конец (spec §3.3)
                 .Select(h => new HealDto(h.Bucket, h.Was, h.Now, h.Reason, h.TsUnix))],
-            [.. standNodes.Select(n => new StandNodeDto(n.Name, n.Address))]);
+            [.. standNodes.Select(n => new StandNodeDto(n.Name, n.Address))],
+            work is null ? null : new WorkDto(work.Op, work.Phase, work.UpdatedUnix, work.LastError));
     }
 
     // Маппинг runtime — по стабильной модели t03; поля arch/03 §2 (spec §3.14).
@@ -203,10 +209,11 @@ public sealed class ClusterDetailsQueryHandler(ISnapshotStore store, TimeProvide
                 new InspectionModule.SnapshotNotReadyException()));
 
         var cluster = snapshot.Clusters.FirstOrDefault(c => c.Name == query.Cluster);
+        var work = snapshot.PgWorkerWork.FirstOrDefault(w => w.Cluster == query.Cluster);
         return ValueTask.FromResult(cluster is null
             ? Result<ClusterDto>.Failed(new InspectionModule.ClusterNotFoundException(query.Cluster))
             : Result<ClusterDto>.Success(ClusterDetailsMapper.Map(
                 cluster, time.GetUtcNow().ToUnixTimeSeconds(), query.Owner, query.State, snapshot.StandNodes,
-                snapshot.HaScopes, snapshot.MoveTickets)));
+                snapshot.HaScopes, snapshot.MoveTickets, work)));
     }
 }
