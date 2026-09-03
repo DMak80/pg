@@ -115,3 +115,88 @@ public class PortAllocatorTests
         result.Value["shard1/shard1a"].Ports.Pg.Should().Be(15001);
     }
 }
+
+// t90: быстрый пред-выход до portalloc-клэйма — всё закреплено и detach ничего
+// бы не снял (object не трогается R9; прочее подтверждено фактом своей ноды).
+public class PortPlanConvergenceAllConfirmedTests
+{
+    private static NodeAddress Addr(string host = "h1", int pg = 15000)
+        => new(host, new NodePorts(pg, pg + 3000, pg + 1500));
+
+    private static IReadOnlySet<(string, int)> Fact(NodeAddress a) => new HashSet<(string, int)>
+    {
+        (a.Host, a.Ports.Pg), (a.Host, a.Ports.Patroni), (a.Host, a.Ports.Doorman),
+    };
+
+    [Fact]
+    public void AllConfirmed_AllMatchedFact_True()
+    {
+        // Arrange
+        var addr = Addr();
+        var existing = new Dictionary<string, NodeAddress> { ["s1/n1"] = addr };
+        var facts = new Dictionary<string, IReadOnlySet<(string, int)>> { ["s1/n1"] = Fact(addr) };
+
+        // Act
+        var confirmed = PortPlanConvergence.AllConfirmed(existing, facts, ["s1/n1"]);
+
+        // Assert
+        confirmed.Should().BeTrue();
+    }
+
+    [Fact]
+    public void AllConfirmed_NodeWithoutFact_False()
+    {
+        // Arrange — контейнер ноды не найден инспекцией: detach мог бы снять коллизию
+        var existing = new Dictionary<string, NodeAddress> { ["s1/n1"] = Addr() };
+
+        // Act
+        var confirmed = PortPlanConvergence.AllConfirmed(
+            existing, new Dictionary<string, IReadOnlySet<(string, int)>>(), ["s1/n1"]);
+
+        // Assert
+        confirmed.Should().BeFalse();
+    }
+
+    [Fact]
+    public void AllConfirmed_MissingRecord_False()
+    {
+        // Arrange — недобор: записи нет вовсе — нужна секция под клэймом
+        // Act
+        var confirmed = PortPlanConvergence.AllConfirmed(
+            new Dictionary<string, NodeAddress>(),
+            new Dictionary<string, IReadOnlySet<(string, int)>>(), ["s1/n1"]);
+
+        // Assert
+        confirmed.Should().BeFalse();
+    }
+
+    [Fact]
+    public void AllConfirmed_ObjectRecord_TrueWithoutFact()
+    {
+        // Arrange — object-запись (усыновлённая): detach не трогает (R9)
+        var existing = new Dictionary<string, NodeAddress>
+            { ["s1/n1"] = Addr() with { Object = "foreign-container" } };
+
+        // Act
+        var confirmed = PortPlanConvergence.AllConfirmed(
+            existing, new Dictionary<string, IReadOnlySet<(string, int)>>(), ["s1/n1"]);
+
+        // Assert
+        confirmed.Should().BeTrue();
+    }
+
+    [Fact]
+    public void AllConfirmed_FactDiverges_False()
+    {
+        // Arrange — факт контейнера на других портах: запись не подтверждена
+        var existing = new Dictionary<string, NodeAddress> { ["s1/n1"] = Addr() };
+        var facts = new Dictionary<string, IReadOnlySet<(string, int)>>
+            { ["s1/n1"] = Fact(Addr(pg: 15005)) };
+
+        // Act
+        var confirmed = PortPlanConvergence.AllConfirmed(existing, facts, ["s1/n1"]);
+
+        // Assert
+        confirmed.Should().BeFalse();
+    }
+}

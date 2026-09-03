@@ -53,6 +53,20 @@ public static class PortPlanConvergence
         return confirmed;
     }
 
+    /// <summary>Быстрый пред-выход (t90): все wanted-записи закреплены и detach
+    /// их снять не может — object-записи не трогаются (R9), прочие подтверждены
+    /// фактом своего живого контейнера (MatchesFact). Чтение busy под глобальным
+    /// portalloc-клэймом ничего бы не изменило — лок можно не брать (тики
+    /// waiting-patroni не соперничают за клэйм, arch/14 §2.4).</summary>
+    public static bool AllConfirmed(
+        IReadOnlyDictionary<string, NodeAddress> existing,
+        IReadOnlyDictionary<string, IReadOnlySet<(string Host, int Port)>> selfFactByNode,
+        IReadOnlyCollection<string> wanted)
+        => wanted.All(key =>
+            existing.TryGetValue(key, out var addr)
+            && (addr.Object is not null
+                || (selfFactByNode.TryGetValue(key, out var own) && MatchesFact(addr, own))));
+
     // Запись подтверждена фактом: все её НЕнулевые порты публикует контейнер
     // самой ноды. Нулевые игнорируются: EnableDoorman=false (R1) — запись без
     // пулера (Doorman=0), порт 0 в факт не попадает никогда (merge тем же тиком
