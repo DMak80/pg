@@ -14,3 +14,12 @@
   mTLS вместо голого `X-Api-Key` в закрытой сети.
 - **`t04-kafka-metrics`** — Prometheus-метрики воркера и панели (лаги, USR,
   фазы процессов, клэймы).
+- **`t91-kafka-portalloc-race`** — тот же класс гонки параллельного
+  выделения портов, что t90 PgWorker: два кластера KafkaWorker на одном
+  docker-хосте, засеянные одновременно (provisioning/add-broker), читают
+  занятость (docker-биндинги ∪ `/kafkaworker/portalloc/*`) ДО первой записи
+  друг друга → одинаковые порты, контейнеры второго кластера падают с
+  «port is already allocated». Решение — глобальный клэйм-лока секции
+  довыделения по паттерну t90 (txn `version==0` + put-with-lease,
+  `/pgworker/locks/portalloc` в arch/14 §3.3); контракты arch/15/16
+  обновить по образцу t90. ← `t90-portalloc-parallel-race`.
