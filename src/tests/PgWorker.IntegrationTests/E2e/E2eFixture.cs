@@ -43,10 +43,10 @@ public sealed class E2eFixture : IAsyncLifetime
 
         // Корень репозитория и артефакты: от каталога тестовой сборки вверх.
         Root = FindRoot(AppContext.BaseDirectory);
+        // Автосборка Release до docker-очистки (быстрый fail); NOBUILD — лазейка t09.
+        await EnsureAppDllAsync(
+            Root, Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") == "1");
         AppDll = Path.Combine(Root, "src", "PgWorker.App", "bin", "Release", "net10.0", "PgWorker.App.dll");
-        if (!File.Exists(AppDll))
-            throw new ApplicationException(
-                $"нет {AppDll} — соберите решение: dotnet build src/PgWorker.slnx -c Release");
 
         // Чистим контейнеры/volume прошлых прогонов (порты должны быть свободны).
         foreach (var id in (await RunDockerAsync(["ps", "-aq", "--filter", "name=pgw-"])).Split(
@@ -302,6 +302,59 @@ public sealed class E2eFixture : IAsyncLifetime
         if (process.ExitCode != 0)
             throw new ApplicationException($"{file} {string.Join(' ', args)} → {process.ExitCode}: {error.Trim()}");
         return output.Trim();
+    }
+
+    /// <summary>
+    /// Правило пересборки Release (t09, spec «фаза Г»): автосборка при каждом
+    /// прогоне E2E — устаревший зелёный бинарь маскировал регрессию 29.08–02.09.
+    /// PGW_TEST_E2E_NOBUILD=1 — обход для бисекта/отладки конкретного бинаря.
+    /// </summary>
+    internal static async Task EnsureAppDllAsync(string root, bool noBuild)
+    {
+        var appDll = Path.Combine(
+            root, "src", "PgWorker.App", "bin", "Release", "net10.0", "PgWorker.App.dll");
+        if (noBuild)
+        {
+            if (!File.Exists(appDll))
+                throw new ApplicationException(
+                    $"нет {appDll} — соберите решение: dotnet build src/PgWorker.slnx -c Release"
+                    + " (или снимите PGW_TEST_E2E_NOBUILD для автосборки)");
+            return;
+        }
+
+        // Инкрементальный msbuild: no-op при актуальном бинаре (секунды).
+        // Не RunProcessAsync: ошибки msbuild идут в stdout, а он включает в
+        // исключение только stderr — здесь нужен хвост полного вывода в
+        // сообщении (spec «фаза Г»), а не молчаливый запуск старого бинаря.
+        var psi = new ProcessStartInfo(
+            "dotnet", ["build", Path.Combine(root, "src", "PgWorker.slnx"), "-c", "Release"])
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        using var build = Process.Start(psi)
+            ?? throw new ApplicationException("не удалось запустить dotnet build");
+        var stdoutTask = build.StandardOutput.ReadToEndAsync();
+        var stderrTask = build.StandardError.ReadToEndAsync();
+        await build.WaitForExitAsync();
+        var output = await stdoutTask + await stderrTask;
+        if (build.ExitCode != 0)
+            throw new ApplicationException(
+                $"сборка Release не удалась (exit {build.ExitCode}):\n{OutputTail(output)}");
+        if (!File.Exists(appDll))
+            throw new ApplicationException(
+                $"после автосборки нет {appDll} — проверьте сборку решения\n{OutputTail(output)}");
+    }
+
+    // Последние строки вывода — для диагностики в исключении (полный лог сборки
+    // в исключение не влезает, ошибки msbuild обычно в конце).
+    private static string OutputTail(string text, int lines = 30)
+    {
+        var all = text.Split(
+            ['\r', '\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return string.Join("\n", all.TakeLast(lines));
     }
 
     private static int FreePort()
