@@ -102,6 +102,47 @@ public sealed class MoveRequestConflictException(string bucket, string op, strin
 public sealed class MoveClaimLostException(int bucket)
     : Exception($"конкурентная заявка заняла bucket_{bucket} между чтением и записью — повторите запрос");
 
+// Валидация тел move-ops (rollback/finalize/abort) не прошла: 400 с errors
+// по полям (arch/02 §9.7.2–§9.7.4) — тот же маппинг, что у MoveBucketsValidationException.
+public sealed class MoveOpValidationException(IReadOnlyList<PgWorker.Core.Writing.ValidationError> errors)
+    : Exception("параметры операции переездов некорректны")
+{
+    public IReadOnlyList<PgWorker.Core.Writing.ValidationError> Errors { get; } = errors;
+}
+
+// Бакет не в состоянии, требуемом операцией (02 §9.7.2–§9.7.4): тексты по op —
+// как у процесса (rollback/finalize «только из ACTIVE»; abort — см. фабрики).
+public sealed class BucketNotActiveForMoveOpException(string message) : Exception(message)
+{
+    public static BucketNotActiveForMoveOpException RollbackOrFinalize(string op, int bucket, string? owner, string state)
+        => new($"{op} bucket_{bucket} возможен только из ACTIVE (владелец: {owner ?? "—"}, состояние: {state})");
+
+    public static BucketNotActiveForMoveOpException AbortActive(int bucket)
+        => new($"бакет bucket_{bucket} ACTIVE — отменять нечего; пост-flip артефакты убирает finalize");
+
+    public static BucketNotActiveForMoveOpException AbortNotInitialized(int bucket)
+        => new($"бакет bucket_{bucket} NOT_INITIALIZED — начальное состояние создаваемого кластера, не переезд");
+
+    public static BucketNotActiveForMoveOpException OutOfRange(string op, int bucket)
+        => new($"бакет {bucket} вне диапазона или без routing — операция {op} невозможна");
+}
+
+// Finalize: выбранный шард — текущий владелец, убирать нечего (02 §9.7.3) — 409.
+public sealed class FinalizeTargetIsOwnerException(string cluster, int bucket, string shard)
+    : Exception($"шард {cluster}/{shard} — текущий владелец bucket_{bucket}, убирать нечего");
+
+// Abort: статус-ключ свежий, mover возможно жив (02 §9.7.4; порт текста AbortSequence) — 409.
+public sealed class MoveStatusFreshException(long ageSec, long thresholdSec)
+    : Exception($"статус обновлён {ageSec}с назад (< AbortMinAgeSec={thresholdSec}с) — переезд, возможно, ещё жив; если mover точно мёртв — force");
+
+// Abort: routing уже указывает на target — доведение осознанно (02 §9.7.4) — 409.
+public sealed class MoveAlreadyFlippedException(string target)
+    : Exception($"routing уже указывает на target '{target}' — похоже, flip прошёл, а статус-ключ остался; такой abort станет уборкой СТАРОГО шарда (как finalize) — осознанно: force");
+
+// Отмена заявки: ключа /pgworker/moves/<C>/<bucket> нет (02 §9.7.5) — 404.
+public sealed class MoveTicketNotFoundException(string cluster, string bucket)
+    : Exception($"заявки /pgworker/moves/{cluster}/{bucket} нет");
+
 // Живая заявка ротации уже стоит: не перезаписываем (отмена — runbook/etcdctl).
 public sealed class RotationAlreadyRequestedException(string cluster)
     : Exception($"ротация app-пароля {cluster} уже запрошена — дождитесь исполнения (ключ /pgworker/rotations/{cluster})");
