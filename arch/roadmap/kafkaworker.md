@@ -14,8 +14,6 @@
   mTLS вместо голого `X-Api-Key` в закрытой сети.
 - **`t04-kafka-metrics`** — Prometheus-метрики воркера и панели (лаги, USR,
   фазы процессов, клэймы).
-- **`t06-kafka-node-regen`** — rolling-перегенерация существующих брокеров
-  с новыми ресурсами (лимиты cpu/mem) и новыми server-props.
 - **`t10-kafka-discovery-integration`** — интеграция Kafka-клиента Puzzle
   (`Infrastructure.App.Kafka`, Confluent) с библиотекой дискавери HA.Kafka
   (t05): BootstrapServers/SASL-креды из etcd-снапшота вместо
