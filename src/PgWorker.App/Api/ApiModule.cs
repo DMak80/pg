@@ -192,6 +192,39 @@ public static class ApiModule
             };
         });
 
+        // POST /api/clusters/{cluster}/moves/finalize — заявка уборки артефактов
+        // (t07, 02 §9.7.3): DROP SCHEMA СО ДАННЫМИ на oldShard — необратимо.
+        endpoints.MapPost("/api/clusters/{cluster}/moves/finalize", async (
+            string cluster, FinalizeBucketRequest request, HttpRequest http, FinalizeBucketHandler handler, CancellationToken ct) =>
+        {
+            var requestedBy = http.Headers.TryGetValue("X-Requested-By", out var by)
+                && !string.IsNullOrWhiteSpace(by)
+                ? by.ToString()
+                : "api";
+            var result = await handler.HandleAsync(cluster, request, requestedBy, ct);
+            if (result.IsSuccess)
+                return Results.Created((string?)null, result.Value);
+
+            return result.Error switch
+            {
+                MoveOpValidationException validation => Results.Problem(
+                    statusCode: StatusCodes.Status400BadRequest,
+                    title: "Validation failed",
+                    detail: result.Error.Message,
+                    extensions: new Dictionary<string, object?>
+                    {
+                        ["errors"] = validation.Errors.ToDictionary(e => e.Field, e => new[] { e.Message }),
+                    }),
+                ClusterNotFoundException or ShardNotFoundException => Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound, title: "Not found", detail: result.Error.Message),
+                ClusterNotActiveException or NonShardedClusterException or BucketNotActiveForMoveOpException
+                    or FinalizeTargetIsOwnerException or MoveRequestConflictException or MoveClaimLostException => Results.Problem(
+                    statusCode: StatusCodes.Status409Conflict, title: "Move ops rejected", detail: result.Error.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed", detail: result.Error!.Message),
+            };
+        });
+
         // POST /api/clusters/{cluster}/app-password/rotate — заявка ротации app-пароля
         // (02 §9.8): здесь только клэйм заявки; выполнение — AppPasswordRotator.
         endpoints.MapPost("/api/clusters/{cluster}/app-password/rotate", async (

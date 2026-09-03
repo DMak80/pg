@@ -135,4 +135,78 @@ public class MoveOpsApiTests(PgApiFixture fixture)
         // Assert
         resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
     }
+
+    // ===== finalize (§9.7.3) =====
+
+    // AAA: finalize-заявка ставится с old_shard; ключ каноничен.
+    [Fact]
+    public async Task Finalize_QueuesTicket_WithOldShard()
+    {
+        // Arrange — 4×2, bucket_0 на shard1; убираем артефакты на shard2
+        await ApiTestSeed.SeedActiveClusterAsync(Etcd, "fin", buckets: 4, shards: 2);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        var resp = await Client.PostAsJsonAsync("/api/clusters/fin/moves/finalize",
+            new { bucket = 0, oldShard = "shard2" }, ct);
+
+        // Assert
+        resp.StatusCode.Should().Be(HttpStatusCode.Created);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>(ct);
+        body.GetProperty("oldShard").GetString().Should().Be("shard2");
+        var ticket = await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/pgworker/moves/fin/bucket_0", ct);
+        ticket.Value!.Value.Should().Contain("\"op\":\"finalize\"")
+            .And.Contain("\"old_shard\":\"shard2\"");
+    }
+
+    // AAA: oldShard = текущему владельцу → 409 «убирать нечего».
+    [Fact]
+    public async Task Finalize_OldShardIsOwner_409()
+    {
+        // Arrange — bucket_0 на shard1
+        await ApiTestSeed.SeedActiveClusterAsync(Etcd, "finown", buckets: 4, shards: 2);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        var resp = await Client.PostAsJsonAsync("/api/clusters/finown/moves/finalize",
+            new { bucket = 0, oldShard = "shard1" }, ct);
+
+        // Assert
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var problem = await resp.Content.ReadFromJsonAsync<JsonElement>(ct);
+        problem.GetProperty("detail").GetString().Should().Contain("убирать нечего");
+    }
+
+    // AAA: oldShard не существует → 404; TO_REMOVE-приёмник допустим → 201.
+    [Fact]
+    public async Task Finalize_UnknownShard_404()
+    {
+        // Arrange
+        await ApiTestSeed.SeedActiveClusterAsync(Etcd, "fin404", buckets: 4, shards: 2);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        var resp = await Client.PostAsJsonAsync("/api/clusters/fin404/moves/finalize",
+            new { bucket = 0, oldShard = "shard9" }, ct);
+
+        // Assert
+        resp.StatusCode.Should().Be(HttpStatusCode.NotFound);
+    }
+
+    [Fact]
+    public async Task Finalize_OldShardToRemove_201()
+    {
+        // Arrange — shard2 в демонтаже: финализация перед удалением допустима
+        await ApiTestSeed.SeedActiveClusterAsync(Etcd, "finrm", buckets: 4, shards: 2);
+        var ct = TestContext.Current.CancellationToken;
+        await Etcd.Gateway.PutAsync(Etcd.Endpoint, "/clusters/finrm/shards/shard2/state",
+            "TO_REMOVE", null, ct);
+
+        // Act
+        var resp = await Client.PostAsJsonAsync("/api/clusters/finrm/moves/finalize",
+            new { bucket = 0, oldShard = "shard2" }, ct);
+
+        // Assert
+        resp.StatusCode.Should().Be(HttpStatusCode.Created);
+    }
 }
