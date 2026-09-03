@@ -95,6 +95,19 @@ public class E2eMoveScenarios(E2eFixture fixture, ITestOutputHelper output)
         moved.Should().BeTrue($"move должен завершиться; routing={await RoutingAsync("bucket_0", ct)}, " +
                               $"status={await StatusAsync("bucket_0", ct) ?? "нет"}, work={await WorkDumpAsync(ct)}");
 
+        // Детерминизация (t09, гонка E2-kill ↔ M6-REPLACE): routing+статус
+        // сменяются РАНЬШЕ, чем воркер допишет REPLACE на finalize — между ними
+        // секунды post-flip SQL (pub_rb/sub_rb). Kill до REPLACE оставлял заявку
+        // op=move, m2 отклонял её «бакет уже на shard2», и finalize не начинался
+        // (E3: artifacts не вычищены). Ждём op=finalize — свидетельство M6.
+        var replacedOnFinalize = await E2eFixture.WaitForAsync(async () =>
+        {
+            var req = await GetOrNullAsync(MoveNames.MoveKey(Cluster, "bucket_0"));
+            return req?.Value.Contains("\"op\":\"finalize\"", StringComparison.Ordinal) == true;
+        }, TimeSpan.FromSeconds(15), ct);
+        replacedOnFinalize.Should().BeTrue($"перед kill заявка должна стать finalize (M6 REPLACE); " +
+                                           $"заявка={await MovesDumpAsync(ct)}, work={await WorkDumpAsync(ct)}");
+
         // НEMЕДЛЕННО убиваем контроллер: auto-finalize не должен удалить схему на shard1
         // до завершения проверок FROZEN/counts/sequence/ghost.
         Host!.Kill();

@@ -374,6 +374,16 @@ public sealed class AdoptionProcess(
         // (E0–E4 после NodeDeadSec+ShardDeadSec), а не recreate-гонка: мгновенное
         // пересоздание стопнутых нод не давало supervise досчитать до порога и
         // эвакуация не стартовала вовсе.
+        // Гонка с эвакуацией (t09, AC6 фикс-гейта): гвард «весь шард без живых»
+        // недостаточен — при поочерёдной остановке нод кворового шарда каждая
+        // следующая нода пересоздавалась здесь, пока предыдущая жива, и шард
+        // никогда не оставался мёртвым на ShardDeadSec. Нода в unreachable-треке
+        // надзора (supervise в тике строго раньше adopt и пишет трек в etcd) —
+        // домен supervise: rebuild после NodeDeadSec при кворуме, эвакуация после
+        // ShardDeadSec без него; adopt перезапись порогов не сбрасывает.
+        var unreachableTrack = await journal.ReadUnreachableAsync(cluster, ct);
+        if (!unreachableTrack.IsSuccess)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(unreachableTrack.Error!);
         var recreated = false;
         foreach (var (shardName, names) in candidatesByShard)
         {
@@ -387,6 +397,8 @@ public sealed class AdoptionProcess(
             foreach (var nodeName in names)
             {
                 var key = $"{shardName}/{nodeName}";
+                if (unreachableTrack.Value.ContainsKey(key))
+                    continue; // нода под надзором — rebuild/эвакуация решат её судьбу
                 if (!merged.TryGetValue(key, out var addr) || addr.Object is not null)
                     continue; // записи нет / усыновлённая (object) — чужой контейнер, R9
                 if (discovered.Value.ContainsKey(nodeName))
@@ -401,7 +413,9 @@ public sealed class AdoptionProcess(
         }
 
         if (recreated)
-            await journal.WritePhaseAsync(cluster, Op, "recreated-node", claims.InstanceId, null, ct);
+            await journal.WritePhaseAsync(
+                cluster, Op, "recreated-node", claims.InstanceId, null, ct,
+                unreachable: unreachableTrack.Value); // трек не стираем — домен supervise продолжается
 
         return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(merged);
     }

@@ -396,6 +396,48 @@ public class AdoptionProcessTests
         driver.EnsuredNodes.Should().BeEmpty();
     }
 
+    // AAA (t09, гонка adoption/эвакуации, AC6 фикс-гейта): гвард «весь шард без
+    // живых» не спасает при ПООЧЕРЁДНОЙ остановке нод кворового шарда — сосед
+    // жив, шардовский скип не срабатывает, и adopt мгновенно пересоздавал
+    // стопнутую ноду, не давая supervise досчитать до NodeDeadSec/ShardDeadSec.
+    // Нода в unreachable-треке надзора (/pgworker/work, supervise в тике строго
+    // раньше adopt и пишет трек) — домен supervise: adopt не вмешивается.
+    [Fact]
+    public async Task Regression_T09_TrackedNodeNotRecreatedByAdoption()
+    {
+        // Arrange: portalloc полный; живой контейнер ТОЛЬКО s1b; s1a — черепок,
+        // НО s1a уже в unreachable-треке supervise (стопнут, supervise это видел).
+        var etcd = new Fakes.FakeEtcd();
+        var snap = await SnapshotActive(etcd, ["s1"], ["s1"]);
+        etcd.Seed("/clusters/demo/shards/s1/nodes/s1a/state", "UNREACHABLE");
+        etcd.Seed("/clusters/demo/shards/s1/nodes/s1b/state", "RUNNING");
+        etcd.Seed("/pgworker/portalloc/demo",
+            """
+            {"s1/s1a":{"host":"h1","pg":15004,"patroni":18004,"doorman":16504},
+            "s1/s1b":{"host":"h2","pg":15005,"patroni":18005,"doorman":16505}}
+            """);
+        etcd.Seed("/pgworker/work/demo",
+            """{"op":"supervise","phase":"supervising","instance":"i1","updated_unix":1,"unreachable":{"s1/s1a":100}}""");
+        var (process, _, driver) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>
+        {
+            ["s1b"] = new("s1b", "h2", "pgw-demo-s1-s1b", 15005, 18005, 16505),
+        });
+
+        // Arrange-контроль: сид трека реально читается WorkJournal (иначе гвард
+        // мёртвым кодом не отличить от нечитаемого фейка).
+        (await new WorkJournal(etcd, [Ep]).ReadUnreachableAsync("demo", CancellationToken.None))
+            .Value.Should().ContainKey("s1/s1a");
+
+        // Act
+        var outcome = await process.TickAsync(snap, CancellationToken.None);
+
+        // Assert: EnsureNode для трекнутой s1a НЕ вызван (rebuild/эвакуация —
+        // домен supervise), живая s1b не тронута, recreate-фазы нет.
+        outcome.IsSuccess.Should().BeTrue();
+        driver.EnsuredNodes.Should().NotContain("s1/s1a");
+        driver.EnsuredNodes.Should().NotContain("s1/s1b");
+    }
+
     // AAA: живой-Ф7/Д2 — ВНЕШНИЙ (object) шард: dsn — операторский факт (postgres-
     // подписки сидом по именам as-нод; host «local» внутри postgres не резолвится) —
     // НЕ пересобирается из portalloc (R9-симметрия); portalloc репарируется как обычно

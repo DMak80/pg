@@ -12,7 +12,7 @@ namespace PgWorker.IntegrationTests.E2e;
 // (AC2→AC7 на общих стенде/кластере): provisioning + O2 → takeover →
 // deprovisioning → failover/rebuild → эвакуация → клэймы/снапшоты-лидер.
 [Collection(E2eCollection.Name)]
-public class E2eScenarios(E2eFixture fixture)
+public class E2eScenarios(E2eFixture fixture, ITestOutputHelper output)
 {
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
 
@@ -263,6 +263,9 @@ public class E2eScenarios(E2eFixture fixture)
         }, TimeSpan.FromSeconds(10), ct);
         sw.Stop();
         flipped.Should().BeTrue("master-ключ жив, а фактический primary шарда сменился после failover (P11: callback + reconciler)");
+        // Фактическое время смены лидера — в вывод теста (t09: журнал фикс-гейта
+        // обязан содержать измеренное значение, а не только факт ассерта ≤5с).
+        output.WriteLine($"AC5 {cluster}/{shard}: leader failover took {sw.ElapsedMilliseconds} ms");
         sw.Elapsed.Should().BeLessThanOrEqualTo(TimeSpan.FromSeconds(5),
             "бюджет смены лидера ≤5с (t09: graceful demote/ускорение failover воркером, канон ttl=20/loop_wait=1)");
 

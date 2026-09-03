@@ -334,10 +334,27 @@ public class E2eScaleScenarios(E2eFixture fixture)
             GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA {bucket} TO app;
             GRANT SELECT ON ALL TABLES IN SCHEMA {bucket} TO bucket_mover;
             """;
-        await using var con = new NpgsqlConnection($"{adminDsn};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
-        await con.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(ddl, con);
-        await cmd.ExecuteNonQueryAsync(ct);
+        // Детерминизация (t09, тот же дефект-класс, что E1-seed в Move): fresh-
+        // проброс порта Docker Desktop даёт разовый RST на SSL-рукопожатии
+        // (TCP принят docker-proxy, PG-контейнер ещё не готов) — ждём готовность
+        // ретраем, SQL-ошибки (PostgresException) не ретраим — валидный провал.
+        (await E2eFixture.WaitForAsync(async () =>
+        {
+            try
+            {
+                await using var con = new NpgsqlConnection(
+                    $"{adminDsn};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
+                await con.OpenAsync(ct);
+                await using var cmd = new NpgsqlCommand(ddl, con);
+                await cmd.ExecuteNonQueryAsync(ct);
+                return true;
+            }
+            catch (NpgsqlException e) when (e is not PostgresException)
+            {
+                return false; // PG ещё не готов / разовый сброс транспорта — повторим
+            }
+        }, TimeSpan.FromSeconds(60), ct))
+            .Should().BeTrue($"сид {bucket} должен примениться к мастеру ({adminDsn})");
     }
 
     private sealed record NodeAddr(string Host, int Pg, int Patroni, int Doorman);
