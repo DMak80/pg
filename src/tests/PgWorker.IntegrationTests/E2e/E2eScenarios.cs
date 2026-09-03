@@ -230,8 +230,9 @@ public class E2eScenarios(E2eFixture fixture)
         }
     }
 
-    // AC5: docker stop лидера → master-ключ обновлён; остановленный пересоздан
-    // (REBUILDING→RUNNING); pg_is_in_recovery расходится по нодам шарда.
+    // AC5: docker stop лидера → фактический primary шарда сменился; ключ
+    // шарда жив (lease P11); остановленный пересоздан (REBUILDING→RUNNING);
+    // pg_is_in_recovery расходится по нодам шарда.
     private async Task AssertFailoverRebuildAsync(string cluster, string shard, CancellationToken ct)
     {
         var masterBefore = await WaitForMasterAsync(cluster, shard, ct);
@@ -242,14 +243,28 @@ public class E2eScenarios(E2eFixture fixture)
         await fixture.RunDockerAsync(["stop", container], ct);
 
         // Master-ключ обновляется (Patroni failover, P11: callback + reconciler).
+        // При EnableDoorman=false (e2e) portalloc-записи несут doorman:0 (миграция
+        // факта инспекции, arch/14 §2.4 п.5) → ключ вырождается в host:0 и
+        // НЕдискриминантен по ноде; сравнивать «до/после» нельзя. Факт смены
+        // мастера читаем из проб Patroni /primary (контракт §5 C); сам ключ
+        // обязан оставаться живым — lease-ключ гаснет только вместе с шарда.
+        // Бюджет смены лидера ≤5с (t09, arch/14 §5 C — критическое требование):
+        // graceful demote при stop ИЛИ ускорение failover воркером (не-running
+        // контейнер лидера → снятие лидер-лока) + промоушен в пределах
+        // loop_wait. Окно ожидания 10с — чтобы поймать факт; жёсткий ассерт
+        // ниже — ≤5с. Опрос WaitForAsync — 0.5с.
         var flipped = await E2eFixture.WaitForAsync(async () =>
         {
             var key = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/master");
-            return key?.Value != $"{masterBefore.Host}:{masterBefore.Doorman}" && key is not null;
-        }, TimeSpan.FromSeconds(30), ct);
+            if (key is not { Value.Length: > 0 })
+                return false;
+            var primary = await PrimaryNodeAsync(cluster, shard, ct);
+            return primary is not null && primary != masterBefore.Node;
+        }, TimeSpan.FromSeconds(10), ct);
         sw.Stop();
-        flipped.Should().BeTrue("master-ключ должен обновиться после failover (P11: callback + reconciler)");
-        sw.Elapsed.Should().BeLessThan(TimeSpan.FromSeconds(30), "failover-окно Patroni ttl=5/loop_wait=2 + сверка");
+        flipped.Should().BeTrue("master-ключ жив, а фактический primary шарда сменился после failover (P11: callback + reconciler)");
+        sw.Elapsed.Should().BeLessThanOrEqualTo(TimeSpan.FromSeconds(5),
+            "бюджет смены лидера ≤5с (t09: graceful demote/ускорение failover воркером, канон ttl=20/loop_wait=1)");
 
         // Rebuild: остановленный контейнер пересоздаётся, нода RUNNING.
         var rebuilt = await E2eFixture.WaitForAsync(async () =>
@@ -427,19 +442,52 @@ public class E2eScenarios(E2eFixture fixture)
     // Master-ключ шарда → адрес ноды из portalloc (host:doorman → шард/нода).
     private sealed record MasterAddr(string Node, string Host, int Pg, int Doorman);
 
+    // Пробы Patroni из теста (семантика /primary, arch/14 §5 C).
+    private static readonly HttpClient PatroniHttp = new() { Timeout = TimeSpan.FromSeconds(3) };
+
+    // Фактический primary шарда по пробам Patroni: нода, отвечающая 200 на
+    // GET /primary. Null — primary недоступен (failover-окно/шард мёртв).
+    private async Task<string?> PrimaryNodeAsync(string cluster, string shard, CancellationToken ct)
+    {
+        var addresses = await PortallocAsync(cluster);
+        foreach (var (key, addr) in addresses
+                     .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
+                     .OrderBy(p => p.Key, StringComparer.Ordinal))
+        {
+            try
+            {
+                using var response = await PatroniHttp.GetAsync(
+                    $"http://localhost:{addr.Patroni}/primary", ct);
+                if (response.IsSuccessStatusCode)
+                    return key.Split('/')[1];
+            }
+            catch (Exception)
+            {
+                // сетевой сбой пробы (рестарт/ещё не готова) — не primary, пробуем следующую
+            }
+        }
+
+        return null;
+    }
+
     private async Task<MasterAddr> WaitForMasterAsync(string cluster, string shard, CancellationToken ct)
     {
+        // Резолв мастера по контракту §5 C: проба /primary по patroni-портам
+        // portalloc. Матч master-ключа по doorman-порту при EnableDoorman=false
+        // недискриминантен (ключ host:0 у всех нод, arch/14 §2.4 п.5 — t09):
+        // FirstOrDefault по такому матчу возвращал произвольную ноду шарда.
         for (var i = 0; i < 60; i++)
         {
             var key = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/master");
             if (key is { Value.Length: > 0 })
             {
-                var parts = key.Value.Split(':');
-                var addresses = await PortallocAsync(cluster);
-                var match = addresses.FirstOrDefault(p =>
-                    p.Key.StartsWith($"{shard}/") && p.Value.Doorman.ToString() == parts[^1]);
-                if (match.Key is { Length: > 0 })
-                    return new MasterAddr(match.Key.Split('/')[1], match.Value.Host, match.Value.Pg, match.Value.Doorman);
+                var primary = await PrimaryNodeAsync(cluster, shard, ct);
+                if (primary is not null)
+                {
+                    var addresses = await PortallocAsync(cluster);
+                    var addr = addresses[$"{shard}/{primary}"];
+                    return new MasterAddr(primary, addr.Host, addr.Pg, addr.Doorman);
+                }
             }
 
             await Task.Delay(1000, ct);

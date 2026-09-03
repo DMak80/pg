@@ -364,6 +364,38 @@ public class AdoptionProcessTests
         journal.Entries.Should().Contain(e => e.Phase == "recreated-node");
     }
 
+    // AAA (t09, arch/14 §5 D граница ensure-инварианта): шард, в котором НЕ жив
+    // ни один контейнер (обе ноды стопнуты оператором/эмуляция смерти шарда),
+    // — сценарий всего-шарда-мёртв: домен BucketEvacuator (E0–E4 после
+    // NodeDeadSec+ShardDeadSec). Черепок-EnsureNode обязан МОЛЧАТЬ: мгновенный
+    // recreate стопнутых нод не давал supervise досчитать до порога — эвакуация
+    // не стартовала никогда (e2e AC6 красный). Одиночный черепок при живом
+    // соседе — продолжает чиниться (см. TickAsync_RunningNodeWithDeadContainer).
+    [Fact]
+    public async Task Regression_T09_DeadShardNotRecreatedByAdoption()
+    {
+        // Arrange: portalloc полный, state обеих нод RUNNING (эвакуация не начиналась);
+        // running-инспекция ПУСТА по s1 — обе ноды стопнуты, живых контейнеров нет.
+        var etcd = new Fakes.FakeEtcd();
+        var snap = await SnapshotActive(etcd, ["s1"], ["s1"]);
+        etcd.Seed("/clusters/demo/shards/s1/nodes/s1a/state", "RUNNING");
+        etcd.Seed("/clusters/demo/shards/s1/nodes/s1b/state", "RUNNING");
+        etcd.Seed("/pgworker/portalloc/demo",
+            """
+            {"s1/s1a":{"host":"h1","pg":15004,"patroni":18004,"doorman":16504},
+            "s1/s1b":{"host":"h2","pg":15005,"patroni":18005,"doorman":16505}}
+            """);
+        var (process, _, driver) = await NewAdoption(etcd, new Dictionary<string, DiscoveredNode>());
+
+        // Act
+        var outcome = await process.TickAsync(snap, CancellationToken.None);
+
+        // Assert: EnsureNode не вызван ни для одной ноды мёртвого шарда —
+        // пересоздание остановит ShardDeadSec-отсчёт и заблокирует эвакуацию.
+        outcome.IsSuccess.Should().BeTrue();
+        driver.EnsuredNodes.Should().BeEmpty();
+    }
+
     // AAA: живой-Ф7/Д2 — ВНЕШНИЙ (object) шард: dsn — операторский факт (postgres-
     // подписки сидом по именам as-нод; host «local» внутри postgres не резолвится) —
     // НЕ пересобирается из portalloc (R9-симметрия); portalloc репарируется как обычно

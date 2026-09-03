@@ -369,9 +369,16 @@ public sealed class AdoptionProcess(
         // расхождение Created-контейнера (или контейнер отсутствует) → stop+rm+
         // create по плану (план уже без дубликатов — detach выше). «Воркер —
         // хозяин»: сломали контейнер/план → тик сам чинит, без оператора.
+        // Граница с эвакуацией (arch/14 §5 D, t09): шард, в котором НЕ жив ни
+        // один контейнер, — сценарий всего-шарда-мёртв: его судьба — BucketEvacuator
+        // (E0–E4 после NodeDeadSec+ShardDeadSec), а не recreate-гонка: мгновенное
+        // пересоздание стопнутых нод не давало supervise досчитать до порога и
+        // эвакуация не стартовала вовсе.
         var recreated = false;
         foreach (var (shardName, names) in candidatesByShard)
         {
+            if (names.All(n => !discovered.Value.ContainsKey(n)))
+                continue; // весь шард без живых контейнеров — домен эвакуатора
             var topology = new ShardTopology(
                 cluster, shardName, $"{cluster}-{shardName}",
                 merged
