@@ -209,4 +209,121 @@ public class MoveOpsApiTests(PgApiFixture fixture)
         // Assert
         resp.StatusCode.Should().Be(HttpStatusCode.Created);
     }
+
+    // ===== abort (§9.7.4) =====
+
+    // AAA: abort ставит заявку с force:true только при force; иначе force в JSON нет.
+    [Fact]
+    public async Task Abort_QueuesTicket_ForceOnlyWhenTrue()
+    {
+        // Arrange — зависший SYNCING-статус (несвежий: updated_unix = now-300)
+        await ApiTestSeed.SeedActiveClusterAsync(Etcd, "ab", buckets: 4, shards: 2);
+        var ct = TestContext.Current.CancellationToken;
+        await ApiTestSeed.SeedBucketStatusAsync(Etcd, "ab", 0, "SYNCING", "shard1", "shard2",
+            DateTimeOffset.UtcNow.AddSeconds(-300).ToUnixTimeSeconds());
+
+        // Act
+        var resp = await Client.PostAsJsonAsync("/api/clusters/ab/moves/abort",
+            new { bucket = 0 }, ct);
+
+        // Assert — force не пишется (null-поле опускается, канон §4.2)
+        resp.StatusCode.Should().Be(HttpStatusCode.Created);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>(ct);
+        body.GetProperty("force").GetBoolean().Should().BeFalse();
+        var ticket = await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/pgworker/moves/ab/bucket_0", ct);
+        ticket.Value!.Value.Should().Contain("\"op\":\"abort\"").And.NotContain("\"force\"");
+    }
+
+    // AAA: свежий статус без force → 409 (текст AbortMinAgeSec); с force → 201.
+    [Fact]
+    public async Task Abort_FreshStatus_409ThenForce_201()
+    {
+        // Arrange — SYNCING, updated_unix = now (свежий)
+        await ApiTestSeed.SeedActiveClusterAsync(Etcd, "abfr", buckets: 4, shards: 2);
+        var ct = TestContext.Current.CancellationToken;
+        await ApiTestSeed.SeedBucketStatusAsync(Etcd, "abfr", 0, "SYNCING", "shard1", "shard2",
+            DateTimeOffset.UtcNow.ToUnixTimeSeconds());
+
+        // Act
+        var noForce = await Client.PostAsJsonAsync("/api/clusters/abfr/moves/abort",
+            new { bucket = 0 }, ct);
+
+        // Assert — 409, текст — порт процесса
+        noForce.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var problem = await noForce.Content.ReadFromJsonAsync<JsonElement>(ct);
+        problem.GetProperty("detail").GetString().Should().Contain("AbortMinAgeSec").And.Contain("force");
+
+        // Act — с force
+        var forced = await Client.PostAsJsonAsync("/api/clusters/abfr/moves/abort",
+            new { bucket = 0, force = true }, ct);
+
+        // Assert — 201, в ключе force:true
+        forced.StatusCode.Should().Be(HttpStatusCode.Created);
+        var ticket = await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/pgworker/moves/abfr/bucket_0", ct);
+        ticket.Value!.Value.Should().Contain("\"force\":true");
+    }
+
+    // AAA: routing==target без force → 409 «осознанно: force»; с force → 201.
+    [Fact]
+    public async Task Abort_RoutingEqualsTarget_409ThenForce_201()
+    {
+        // Arrange — SYNCING, владелец shard1 == target (flip прошёл, статус завис)
+        await ApiTestSeed.SeedActiveClusterAsync(Etcd, "abfl", buckets: 4, shards: 2);
+        var ct = TestContext.Current.CancellationToken;
+        await ApiTestSeed.SeedBucketStatusAsync(Etcd, "abfl", 0, "SYNCING", "shard1", "shard1",
+            DateTimeOffset.UtcNow.AddSeconds(-300).ToUnixTimeSeconds());
+
+        // Act
+        var noForce = await Client.PostAsJsonAsync("/api/clusters/abfl/moves/abort",
+            new { bucket = 0 }, ct);
+
+        // Assert
+        noForce.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var problem = await noForce.Content.ReadFromJsonAsync<JsonElement>(ct);
+        problem.GetProperty("detail").GetString().Should().Contain("осознанно");
+
+        // Act / Assert — с force
+        var forced = await Client.PostAsJsonAsync("/api/clusters/abfl/moves/abort",
+            new { bucket = 0, force = true }, ct);
+        forced.StatusCode.Should().Be(HttpStatusCode.Created);
+    }
+
+    // AAA: ACTIVE-бакет (нет статуса) → 409 «пост-flip артефакты убирает finalize»;
+    // NOT_INITIALIZED → 409 «не переезд».
+    [Fact]
+    public async Task Abort_ActiveBucket_409FinalizeHint()
+    {
+        // Arrange — bucket_0 без статус-ключа = ACTIVE
+        await ApiTestSeed.SeedActiveClusterAsync(Etcd, "abact", buckets: 4, shards: 2);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        var resp = await Client.PostAsJsonAsync("/api/clusters/abact/moves/abort",
+            new { bucket = 0 }, ct);
+
+        // Assert
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var problem = await resp.Content.ReadFromJsonAsync<JsonElement>(ct);
+        problem.GetProperty("detail").GetString().Should().Contain("finalize");
+    }
+
+    [Fact]
+    public async Task Abort_NotInitializedBucket_409NotAMove()
+    {
+        // Arrange
+        await ApiTestSeed.SeedActiveClusterAsync(Etcd, "abni", buckets: 4, shards: 2);
+        var ct = TestContext.Current.CancellationToken;
+        // target для NOT_INITIALIZED не важен — ветка «не переезд» раньше проверок target
+        await ApiTestSeed.SeedBucketStatusAsync(Etcd, "abni", 0, "NOT_INITIALIZED", "shard1", "",
+            DateTimeOffset.UtcNow.AddSeconds(-300).ToUnixTimeSeconds());
+
+        // Act
+        var resp = await Client.PostAsJsonAsync("/api/clusters/abni/moves/abort",
+            new { bucket = 0 }, ct);
+
+        // Assert
+        resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
+        var problem = await resp.Content.ReadFromJsonAsync<JsonElement>(ct);
+        problem.GetProperty("detail").GetString().Should().Contain("не переезд");
+    }
 }
