@@ -57,10 +57,15 @@ public class AdoptionProcessTests
     // ensurer'ы реальные (put-if-absent поверх FakeEtcd), Patroni-проба молчит.
     private static async Task<(AdoptionProcess Process, Fakes.FakeSql Sql, Fakes.FakeDriver Driver)> NewAdoption(
         Fakes.FakeEtcd etcd,
-        IReadOnlyDictionary<string, DiscoveredNode> inspect)
+        IReadOnlyDictionary<string, DiscoveredNode> inspect,
+        PortAllocLock? portLock = null)
     {
         var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("demo", CancellationToken.None);
+        // t90: по умолчанию — свежий свободный лок (все существующие тесты
+        // исполняются в одиночном режиме, лок всегда берётся); занятый лок
+        // передаёт только новый тест Tick_PortAllocLockBusy_WaitsWithoutPortallocWrite.
+        portLock ??= new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId);
         var driver = new Fakes.FakeDriver { InspectResult = inspect };
         var sql = new Fakes.FakeSql();
         var process = new AdoptionProcess(
@@ -71,6 +76,7 @@ public class AdoptionProcessTests
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"),
             Secrets, claims, new WorkJournal(etcd, [Ep]),
             new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
+            portLock,
             new PlacementOptions(15000, 15100, PatroniBootSec: 600),
             new EtcdEndpoints([Ep]),
             snapshot: null);
@@ -422,5 +428,39 @@ public class AdoptionProcessTests
         outcome.IsSuccess.Should().BeTrue();
         journal.Entries.Should().NotContain(e => e.Phase.StartsWith("repaired"));
         etcd.Store["/pgworker/portalloc/demo"].Version.Should().Be(1);
+    }
+
+    // AAA (t90): репарация адресов с недобором требует глобальный portalloc-клэйм;
+    // занят — усыновление ждёт тик (waiting-portalloc-lock) без записи portalloc.
+    // Кандидаты = {s1/s1a, s1/s1b} (HA-members), инспекция видит только s1a:
+    // merge кладёт факт s1/s1a (changed=true), s1/s1b остаётся недобором —
+    // пред-выход AllConfirmed обязан дать false → лок берётся → «не взял» →
+    // InProgress БЕЗ каких-либо мутаций portalloc (в т.ч. merge-факта s1a).
+    [Fact]
+    public async Task Tick_PortAllocLockBusy_WaitsWithoutPortallocWrite()
+    {
+        // Arrange — Active-кластер demo: dsn-шард s1 с members {s1a, s1b},
+        // записи portalloc нет (недобор); инспекция видит канонический контейнер
+        // только s1a; глобальный portalloc-клэйм держит «другой инстанс»
+        var etcd = new Fakes.FakeEtcd();
+        var snap = await SnapshotActive(etcd, ["s1"], ["s1"]);
+        var holder = new PortAllocLock([Ep], etcd, TimeProvider.System, "other");
+        (await holder.TryAcquireAsync(CancellationToken.None)).Value.Should().BeTrue();
+        var (adoption, _, _) = await NewAdoption(
+            etcd,
+            new Dictionary<string, DiscoveredNode>
+            {
+                ["s1a"] = new("s1a", "local", "pgw-demo-s1-s1a", 15432, 18008, 16432),
+            },
+            new PortAllocLock([Ep], etcd, TimeProvider.System, "inst"));
+
+        // Act
+        var outcome = await adoption.TickAsync(snap, CancellationToken.None);
+
+        // Assert: не фейл — ждём; portalloc не записан вовсе (недобор не доведён,
+        // merge-факт s1a тоже не опубликован — любая запись только под локом)
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().Be(ProcessOutcome.InProgress);
+        (await GetValueAsync(etcd, "/pgworker/portalloc/demo")).Should().BeNull();
     }
 }

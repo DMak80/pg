@@ -29,6 +29,7 @@ public sealed class AdoptionProcess(
     ClaimStore claims,
     WorkJournal journal,
     PortAllocIndex portAlloc,
+    PortAllocLock portLock,
     PlacementOptions placementOpts,
     EtcdEndpoints etcdEndpoints,
     Func<CancellationToken, Task<Result>>? snapshot = null)
@@ -56,6 +57,11 @@ public sealed class AdoptionProcess(
         // журналом. Transport-провал инспекции — transient: тик продолжается
         // без репарации (следующий тик повторит).
         var reconciled = await ReconcileAddressesAsync(snap, existing.Value, ct);
+        if (reconciled.Error is PortLockBusyException)
+        {
+            await journal.WritePhaseAsync(cluster, Op, "waiting-portalloc-lock", claims.InstanceId, null, ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
+        }
         if (!reconciled.IsSuccess)
             return await FailAsync(cluster, reconciled.Error!, ct);
         existing = Result<IReadOnlyDictionary<string, NodeAddress>>.Success(reconciled.Value);
@@ -253,45 +259,78 @@ public sealed class AdoptionProcess(
                 }
             }
 
-        // Перепланирование занятых (Д1-механика для Active, живой-Ф7): занятость =
-        // docker-публикации (чужие И своих соседей — дубликат внутри кластера тоже
-        // конфликт) ∪ portalloc соседей; подтверждение per-node. Placement строится
-        // по dsn-шардам снапшота: у шарда без nodes-ключей detach-нутая нода
-        // переаллоцируется следующим тиком (после того как AD3 доведёт nodes).
-        var dockerBusy = await driver.GetBusyPortsAsync(ct);
-        if (!dockerBusy.IsSuccess)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(dockerBusy.Error!);
-        var foreignAlloc = await portAlloc.ReadBusyAsync(cluster, ct);
-        if (!foreignAlloc.IsSuccess)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(foreignAlloc.Error!);
-        var busy = new HashSet<(string, int)>(foreignAlloc.Value);
-        foreach (var p in dockerBusy.Value)
-            busy.Add(p);
-        if (PortPlanConvergence.DetachColliding(merged, selfFactByNode, busy))
+        // t90: пред-выход ДО глобального portalloc-клэйма (spec §3.2 п.3 «без
+        // изменений (changed=false) — до лока»): merge ничего не изменил И каждый
+        // ключ-кандидат "{shard}/{name}" (candidatesByShard: nodes ∪ members) имеет
+        // запись, подтверждённую фактом своей ноды либо object (AllConfirmed).
+        // Недобор кандидата без записи даёт false — лок обязателен; расхождение
+        // записи с фактом (changed=true) — тоже. Все подтверждено → detach пуст,
+        // allocate не сработает, changed останется false — секция была бы no-op,
+        // лок не берём (симметрия пред-выхода P1: тики здорового Active-кластера
+        // не соперничают за глобальный клэйм, arch/14 §2.4).
+        var allWanted = candidatesByShard
+            .SelectMany(kv => kv.Value.Select(name => $"{kv.Key}/{name}"))
+            .ToList();
+        if (changed || !PortPlanConvergence.AllConfirmed(merged, selfFactByNode, allWanted))
         {
-            // Недобор адресов снятых нод: переаллокация (паттерн P1-недобора);
-            // taken = busy − факты подтверждённых записей (переиспользование валидных).
-            var hosts = await driver.GetHostsAsync(ct);
-            if (!hosts.IsSuccess)
-                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(hosts.Error!);
-            var taken = new HashSet<(string, int)>(busy);
-            foreach (var p in PortPlanConvergence.ConfirmedFact(merged, selfFactByNode))
-                taken.Remove(p);
-            var plan = PlacementPlanner.Plan(dsnShards, hosts.Value);
-            var allocated = PortAllocator.Allocate(plan, merged, taken, placementOpts.PortFrom, placementOpts.PortTo);
-            if (!allocated.IsSuccess)
-                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(allocated.Error!);
-            foreach (var (k, addr) in allocated.Value)
-                merged[k] = addr;
-            changed = true;
-        }
+            // t90: глобальный portalloc-клэйм — чтение кросс-картины занятости,
+            // пере-allocate и ЗАПИСЬ portalloc взаимоисключающи между кластерами/
+            // инстансами (инвариант arch/14 §2.4: порты выбираются под локом —
+            // публикация до release, иначе конкурент успевает выбрать те же порты).
+            // Сбой захвата — обычный фейл (бэкофф); занят — PortLockBusyException
+            // → waiting-portalloc-lock, следующий тик повторяет.
+            var acquired = await portLock.TryAcquireAsync(ct);
+            if (!acquired.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(acquired.Error!);
+            if (!acquired.Value)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new PortLockBusyException());
+            try
+            {
+                // Перепланирование занятых (Д1-механика для Active, живой-Ф7): занятость =
+                // docker-публикации (чужие И своих соседей — дубликат внутри кластера тоже
+                // конфликт) ∪ portalloc соседей; подтверждение per-node. Placement строится
+                // по dsn-шардам снапшота: у шарда без nodes-ключей detach-нутая нода
+                // переаллоцируется следующим тиком (после того как AD3 доведёт nodes).
+                var dockerBusy = await driver.GetBusyPortsAsync(ct);
+            if (!dockerBusy.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(dockerBusy.Error!);
+            var foreignAlloc = await portAlloc.ReadBusyAsync(cluster, ct);
+            if (!foreignAlloc.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(foreignAlloc.Error!);
+            var busy = new HashSet<(string, int)>(foreignAlloc.Value);
+            foreach (var p in dockerBusy.Value)
+                busy.Add(p);
+            if (PortPlanConvergence.DetachColliding(merged, selfFactByNode, busy))
+            {
+                // Недобор адресов снятых нод: переаллокация (паттерн P1-недобора);
+                // taken = busy − факты подтверждённых записей (переиспользование валидных).
+                var hosts = await driver.GetHostsAsync(ct);
+                if (!hosts.IsSuccess)
+                    return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(hosts.Error!);
+                var taken = new HashSet<(string, int)>(busy);
+                foreach (var p in PortPlanConvergence.ConfirmedFact(merged, selfFactByNode))
+                    taken.Remove(p);
+                var plan = PlacementPlanner.Plan(dsnShards, hosts.Value);
+                var allocated = PortAllocator.Allocate(plan, merged, taken, placementOpts.PortFrom, placementOpts.PortTo);
+                if (!allocated.IsSuccess)
+                    return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(allocated.Error!);
+                foreach (var (k, addr) in allocated.Value)
+                    merged[k] = addr;
+                changed = true;
+            }
 
-        if (changed)
-        {
-            var put = await PutAsync($"/pgworker/portalloc/{cluster}", Portalloc.Serialize(merged), ct);
-            if (!put.IsSuccess)
-                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(put.Error!);
-            await journal.WritePhaseAsync(cluster, Op, "repaired-portalloc", claims.InstanceId, null, ct);
+            if (changed)
+            {
+                var put = await PutAsync($"/pgworker/portalloc/{cluster}", Portalloc.Serialize(merged), ct);
+                if (!put.IsSuccess)
+                    return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(put.Error!);
+                await journal.WritePhaseAsync(cluster, Op, "repaired-portalloc", claims.InstanceId, null, ct);
+            }
+            }
+            finally
+            {
+                await portLock.ReleaseAsync();
+            }
         }
 
         // dsn-инвариант: пересборка multi-host dsn по кандидатам (nodes ∪ members) из
