@@ -33,9 +33,28 @@ internal sealed class FakeEtcdGateway : IEtcdGateway
     }
 
     public Task<Result<TxnResult>> TxnAsync(string endpoint, TxnRequest req, CancellationToken ct)
-        => Task.FromResult(Result<TxnResult>.Success(new TxnResult(
-            req.Compare.All(c => c.Target == TxnTarget.Version
-                && (!Store.ContainsKey(c.Key) && c.Num == 0 || Store.ContainsKey(c.Key) && c.Num != 0)))));
+    {
+        // compare version==0/!=0; сошёлся — применяем success-ветку (как etcd).
+        var succeeded = req.Compare.All(c => c.Target == TxnTarget.Version
+            && (!Store.ContainsKey(c.Key) && c.Num == 0 || Store.ContainsKey(c.Key) && c.Num != 0));
+        if (succeeded)
+            foreach (var op in req.Success)
+                ApplyTxnOp(op);
+        return Task.FromResult(Result<TxnResult>.Success(new TxnResult(succeeded)));
+    }
+
+    private void ApplyTxnOp(TxnOp op)
+    {
+        switch (op)
+        {
+            case TxnOp.Put put:
+                Store[put.Key] = put.Value;
+                break;
+            case TxnOp.Delete delete:
+                Store.Remove(delete.Key);
+                break;
+        }
+    }
 
     // Не нужно юнит-тестам API-хендлеров (только чтение/txn выше); реализация
     // возвращает успех, чтобы fake удовлетворял интерфейсу.
