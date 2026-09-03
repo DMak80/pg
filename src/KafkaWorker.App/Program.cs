@@ -49,6 +49,13 @@ builder.Services.AddSingleton(sp => new ClaimStore(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Api.AdvertiseUrl));
+// t91: глобальный portalloc-клэйм (arch/15 §4 / arch/16 §2.1) — DI-синглтон,
+// InstanceId единый с ClaimStore (сквозная диагностика держателя).
+builder.Services.AddSingleton(sp => new PortAllocLock(
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ClaimStore>().InstanceId));
 builder.Services.AddSingleton(sp => new WorkJournal(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));

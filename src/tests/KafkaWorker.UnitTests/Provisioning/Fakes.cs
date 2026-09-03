@@ -29,6 +29,10 @@ internal static class Fakes
         // тест успевает переписать ключ и сломать ModRevisionEqual.
         public Action<TxnRequest>? OnTxnBeforeCompare { get; set; }
 
+        // Сбой-инъекция txn (t91: ошибка захвата PortAllocLock → Result.Failed;
+        // порт TxnFault PgWorker): запрос → готовый Failed ДО compare.
+        public Func<TxnRequest, Result<TxnResult>>? TxnFault { get; set; }
+
         private long _rev;
         private long _lease;
         private readonly object _gate = new();
@@ -89,6 +93,9 @@ internal static class Fakes
 
         public Task<Result<TxnResult>> TxnAsync(string endpoint, TxnRequest req, CancellationToken ct)
         {
+            if (TxnFault?.Invoke(req) is { } failed)
+                return Task.FromResult(failed);
+
             bool succeeded;
             lock (_gate)
             {
