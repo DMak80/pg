@@ -148,6 +148,13 @@ builder.Services.AddSingleton(sp => new PortAllocIndex(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints.ToArray(),
     sp.GetRequiredService<ILogger<PortAllocIndex>>()));
+// Глобальный portalloc-клэйм (t90, arch/14 §2.4/§3.3): взаимоисключение секции
+// довыделения портов между кластерами/инстансами; instance = InstanceId ClaimStore.
+builder.Services.AddSingleton(sp => new PortAllocLock(
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints.ToArray(),
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ClaimStore>().InstanceId));
 builder.Services.AddSingleton(sp =>
 {
     var opts = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value;
@@ -165,6 +172,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<IAppParamsEnsurer>(),
         sp.GetRequiredService<EtcdEndpoints>(),
         sp.GetRequiredService<PortAllocIndex>(),
+        sp.GetRequiredService<PortAllocLock>(),
         SnapshotDelegate(job));
 });
 builder.Services.AddSingleton(sp => new DeprovisioningProcess(

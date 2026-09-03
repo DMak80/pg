@@ -38,6 +38,7 @@ public sealed class ProvisioningProcess(
     IAppParamsEnsurer appParams,
     EtcdEndpoints etcdEndpoints,
     PortAllocIndex portAlloc,
+    PortAllocLock portLock,
     Func<CancellationToken, Task<Result>>? snapshot = null) : IClusterProcess
 {
     private const int TxnBatchSize = 128; // лимит ops в txn (P3)
@@ -92,6 +93,8 @@ public sealed class ProvisioningProcess(
 
         // P1: план placement + порты, закрепление portalloc.
         var allocation = await PlanPortsAsync(snap, series, ct);
+        if (allocation.Error is PortLockBusyException)
+            return await Finish(cluster, "waiting-portalloc-lock", ProcessOutcome.InProgress, ct, series);
         if (!allocation.IsSuccess)
             return await FailAsync(cluster, allocation.Error!, "planning", ct, series);
         var addresses = allocation.Value;
@@ -241,58 +244,83 @@ public sealed class ProvisioningProcess(
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(adopted.Error!);
         var skipped = adopted.Value.Skipped;
 
-        // Д1 (spec §3.7, живой-Ф7): занятость = ВСЯ фактическая — docker-публикации
-        // (чужие И своих соседей по кластеру: дубликат внутри кластера — такой же
-        // конфликт) ∪ portalloc соседей. Читается до проверки полноты: полный
-        // portalloc может нести коллизию — «закреплено и переиспользуется» не должно
-        // давать вечный фейл-цикл «port is already allocated».
-        var dockerBusy = await driver.GetBusyPortsAsync(ct);
-        if (!dockerBusy.IsSuccess)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(dockerBusy.Error!);
-        var foreignAlloc = await portAlloc.ReadBusyAsync(cluster, ct);
-        if (!foreignAlloc.IsSuccess)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(foreignAlloc.Error!);
-        var busy = new HashSet<(string, int)>(foreignAlloc.Value);
-        foreach (var p in dockerBusy.Value)
-            busy.Add(p);
-        var detached = PortPlanConvergence.DetachColliding(existing, adopted.Value.SelfFactByNode, busy);
-
-        // Ранний выход (идемпотентность, spec §3.1 шаг 4 + §3.7 Д1): всё закреплено,
-        // merge и detach ничего не изменили — записи portalloc нет.
-        if (wanted.All(existing.ContainsKey) && !adopted.Value.Changed && !detached)
+        // t90: быстрый пред-выход ДО глобального portalloc-клэйма — всё
+        // закреплено, adoption не изменил и detach ничего бы не снял
+        // (AllConfirmed: object не трогается R9, прочее подтверждено фактом):
+        // тики waiting-patroni не соперничают за глобальный клэйм (§2.4).
+        if (wanted.All(existing.ContainsKey)
+            && !adopted.Value.Changed
+            && PortPlanConvergence.AllConfirmed(existing, adopted.Value.SelfFactByNode, wanted))
             return await PlannedAsync(existing, cluster, ct, series, skipped);
 
-        if (wanted.All(existing.ContainsKey))
+        // t90: глобальный portalloc-клэйм — секция «busy → detach → allocate →
+        // commit portalloc» взаимоисключающа между кластерами/инстансами
+        // (гонка параллельного посева, arch/14 §2.4/§3.3). Сбой захвата —
+        // обычный фейл (бэкофф); занят — PortLockBusyException → тик-ретрай.
+        var acquired = await portLock.TryAcquireAsync(ct);
+        if (!acquired.IsSuccess)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(acquired.Error!);
+        if (!acquired.Value)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new PortLockBusyException());
+        try
         {
-            var commit = await CommitPortAllocAsync(cluster, existing, pinned.Value.Count > 0, ct);
-            if (!commit.IsSuccess)
-                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(commit.Error!);
+            // Д1 (spec §3.7, живой-Ф7): занятость = ВСЯ фактическая — docker-публикации
+            // (чужие И своих соседей по кластеру: дубликат внутри кластера — такой же
+            // конфликт) ∪ portalloc соседей. Читается до проверки полноты: полный
+            // portalloc может нести коллизию — «закреплено и переиспользуется» не должно
+            // давать вечный фейл-цикл «port is already allocated».
+            var dockerBusy = await driver.GetBusyPortsAsync(ct);
+            if (!dockerBusy.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(dockerBusy.Error!);
+            var foreignAlloc = await portAlloc.ReadBusyAsync(cluster, ct);
+            if (!foreignAlloc.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(foreignAlloc.Error!);
+            var busy = new HashSet<(string, int)>(foreignAlloc.Value);
+            foreach (var p in dockerBusy.Value)
+                busy.Add(p);
+            var detached = PortPlanConvergence.DetachColliding(existing, adopted.Value.SelfFactByNode, busy);
+
+            // Ранний выход (идемпотентность, spec §3.1 шаг 4 + §3.7 Д1): всё закреплено,
+            // merge и detach ничего не изменили — записи portalloc нет.
+            if (wanted.All(existing.ContainsKey) && !adopted.Value.Changed && !detached)
+                return await PlannedAsync(existing, cluster, ct, series, skipped);
+
+            if (wanted.All(existing.ContainsKey))
+            {
+                var commit = await CommitPortAllocAsync(cluster, existing, pinned.Value.Count > 0, ct);
+                if (!commit.IsSuccess)
+                    return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(commit.Error!);
+                return await PlannedAsync(existing, cluster, ct, series, skipped);
+            }
+
+            var hosts = await driver.GetHostsAsync(ct);
+            if (!hosts.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(hosts.Error!);
+            // Занятость для аллокации — busy минус факты ПОДТВЕРЖДЁННЫХ записей (запись,
+            // совпадающая с живым контейнером своей ноды, — закрепление, не запрет:
+            // попади её факт в taken, allocator не переиспользовал бы валидную запись →
+            // EnsureNode пересоздавал бы живые контейнеры, spec §8.10).
+            var taken = new HashSet<(string, int)>(busy);
+            foreach (var p in PortPlanConvergence.ConfirmedFact(existing, adopted.Value.SelfFactByNode))
+                taken.Remove(p);
+            var plan = PlacementPlanner.Plan(snap.Shards, hosts.Value);
+            var allocated = PortAllocator.Allocate(plan, existing, taken, placementOpts.PortFrom, placementOpts.PortTo);
+            if (!allocated.IsSuccess)
+                return allocated;
+
+            foreach (var (merged, addr) in allocated.Value)
+                existing[merged] = addr;
+
+            var commitAll = await CommitPortAllocAsync(cluster, existing, pinned.Value.Count > 0, ct);
+            if (!commitAll.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(commitAll.Error!);
+
             return await PlannedAsync(existing, cluster, ct, series, skipped);
         }
-
-        var hosts = await driver.GetHostsAsync(ct);
-        if (!hosts.IsSuccess)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(hosts.Error!);
-        // Занятость для аллокации — busy минус факты ПОДТВЕРЖДЁННЫХ записей (запись,
-        // совпадающая с живым контейнером своей ноды, — закрепление, не запрет:
-        // попади её факт в taken, allocator не переиспользовал бы валидную запись →
-        // EnsureNode пересоздавал бы живые контейнеры, spec §8.10).
-        var taken = new HashSet<(string, int)>(busy);
-        foreach (var p in PortPlanConvergence.ConfirmedFact(existing, adopted.Value.SelfFactByNode))
-            taken.Remove(p);
-        var plan = PlacementPlanner.Plan(snap.Shards, hosts.Value);
-        var allocated = PortAllocator.Allocate(plan, existing, taken, placementOpts.PortFrom, placementOpts.PortTo);
-        if (!allocated.IsSuccess)
-            return allocated;
-
-        foreach (var (merged, addr) in allocated.Value)
-            existing[merged] = addr;
-
-        var commitAll = await CommitPortAllocAsync(cluster, existing, pinned.Value.Count > 0, ct);
-        if (!commitAll.IsSuccess)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(commitAll.Error!);
-
-        return await PlannedAsync(existing, cluster, ct, series, skipped);
+        finally
+        {
+            await portLock.ReleaseAsync();
+        }
     }
 
     // Результат усыновления: имена пропущенных находок (journal-заметка), признак

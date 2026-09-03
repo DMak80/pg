@@ -149,7 +149,8 @@ public class ProvisioningProcessTests
         var process = new ProvisioningProcess(
             etcd, [Ep], driver, sql, Probe(patroniResponse, trace, identityByEndpoint), claims, journal,
             opts ?? Opts, Secrets,
-            appSecret, new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp, portAlloc, snapshot: null);
+            appSecret, new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp, portAlloc,
+            new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId), snapshot: null);
         return new Rig(etcd, driver, sql, claims, journal, process);
     }
 
@@ -288,7 +289,8 @@ public class ProvisioningProcessTests
             etcd, [Ep], driver, new Fakes.FakeSql(), Probe(_ => Patroni("shard1a")),
             claims, journal, Opts, Secrets, new AppSecretEnsurer(etcd, [Ep]),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp,
-            new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance), snapshot: null);
+            new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
+            new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId), snapshot: null);
 
         // Act
         var outcome = await process.TickAsync(await Snapshot(etcd), CancellationToken.None);
@@ -577,7 +579,6 @@ public class ProvisioningProcessTests
             ["shard2a"] = Node("h1", "pgw-shop-shard2-shard2a", 15006, 18006),
             ["shard2b"] = Node("h2", "pgw-shop-shard2-shard2b", 15007, 18007),
         };
-        var txnsBefore = rig.Etcd.Txns.Count; // клэйм NewRig уже записал свои txn
 
         // Act
         var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
@@ -591,8 +592,11 @@ public class ProvisioningProcessTests
         raw.Should().Contain("\"object\":\"external-1\"");
         raw.Should().Contain("\"shard2/shard2a\":{\"host\":\"h1\",\"pg\":15006");
         raw.Should().Contain("\"shard2/shard2b\":{\"host\":\"h2\",\"pg\":15007");
-        // Ключ существовал → запись put'ом, НЕ txn (ревью Ф4-1): новых txn в тике нет.
-        rig.Etcd.Txns.Count.Should().Be(txnsBefore);
+        // Ключ существовал → запись put'ом, НЕ txn (ревью Ф4-1): в тике нет txn
+        // по ключу portalloc (txn захвата/освобождения portalloc-клэйма t90 —
+        // чужой ключ /pgworker/locks/portalloc, не запись portalloc).
+        rig.Etcd.Txns.Count(t => t.Success.Concat(t.Failure).OfType<TxnOp.Put>()
+            .Any(put => put.Key == "/pgworker/portalloc/shop")).Should().Be(0);
     }
 
     // AAA: A/R1 — контейнер с НЕканоническим именем объекта не усыновляется:
@@ -868,5 +872,63 @@ public class ProvisioningProcessTests
         outcome.IsSuccess.Should().BeTrue();
         outcome.Value.Should().Be(ProcessOutcome.InProgress);
         rig.Etcd.Store.Keys.Should().Contain("/service/shop-shard1/initialize");
+    }
+
+    // AAA (t90): глобальный portalloc-клэйм занят чужим инстансом — тик
+    // возвращает InProgress (waiting-portalloc-lock), portalloc НЕ пишется,
+    // контейнеры не создаются; после освобождения следующий тик проходит.
+    [Fact]
+    public async Task Tick_PortAllocLockBusy_WaitsWithoutMutations()
+    {
+        // Arrange — свежий кластер (порт-недобор), лок держит «другой инстанс»
+        var rig = await NewRig(_ => DeadPatroni(), identityByEndpoint: EmptyIdentity);
+        var holder = new PortAllocLock([Ep], rig.Etcd, TimeProvider.System, "other");
+        (await holder.TryAcquireAsync(CancellationToken.None)).Value.Should().BeTrue();
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: не фейл, не мутации — ждём лок следующим тиком
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().Be(ProcessOutcome.InProgress);
+        rig.Etcd.Store.Should().NotContainKey("/pgworker/portalloc/shop");
+        rig.Driver.EnsuredNodes.Should().BeEmpty();
+        var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        work.Value!.Phase.Should().Be("waiting-portalloc-lock");
+
+        // Act-2: держатель освободил — тик доводит планирование
+        await holder.ReleaseAsync();
+        var second = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert-2: порты закреплены, контейнеры создаются
+        second.Value.Should().Be(ProcessOutcome.InProgress);
+        rig.Etcd.Store.Should().ContainKey("/pgworker/portalloc/shop");
+        rig.Driver.EnsuredNodes.Should().NotBeEmpty();
+    }
+
+    // AAA (t90): всё закреплено и каждая запись подтверждена живым фактом своей
+    // ноды — быстрый пред-выход ДО лока: занятый чужим лок не мешает тику.
+    [Fact]
+    public async Task Tick_AllConfirmedByFact_SkipsLock()
+    {
+        // Arrange — первый тик аллоцировал порты; подкладываем факты контейнеров
+        var rig = await NewRig(_ => DeadPatroni(), identityByEndpoint: EmptyIdentity);
+        await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var alloc = Portalloc.Parse("shop", rig.Etcd.Store["/pgworker/portalloc/shop"].Value);
+        rig.Driver.InspectResult = alloc.Value.ToDictionary(
+            p => p.Key.Split('/')[1],
+            p => new DiscoveredNode(
+                p.Key.Split('/')[1], p.Value.Host, $"pgw-shop-{p.Key.Replace('/', '-')}",
+                p.Value.Ports.Pg, p.Value.Ports.Patroni, p.Value.Ports.Doorman));
+        var holder = new PortAllocLock([Ep], rig.Etcd, TimeProvider.System, "other");
+        (await holder.TryAcquireAsync(CancellationToken.None)).Value.Should().BeTrue();
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: не застряли на локе — тик идёт дальше штатного цикла
+        outcome.Value.Should().Be(ProcessOutcome.InProgress);
+        var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        work.Value!.Phase.Should().Be("waiting-patroni");
     }
 }
