@@ -43,12 +43,15 @@ public sealed class WorkJournal(IEtcdGateway gateway, string[] endpoints)
 
     // /pgworker/work/<C>: {"op","phase","instance","updated_unix","last_error"} + поля серии
     // ретраев (fail_count/fail_first_unix/retry_not_before_unix — null опускается).
+    // unreachable — трек недоступности надзора (t09: фазовые записи в тике
+    // надзора — конвергенция DCS-конфига — обязаны его сохранять, иначе
+    // пороги NodeDead/ShardDead сбрасываются каждой фазовой записью).
     public Task<Result> WritePhaseAsync(
         string cluster, string op, string phase, string instance, string? lastError, CancellationToken ct,
-        RetrySeries? series = null)
+        RetrySeries? series = null, IReadOnlyDictionary<string, long>? unreachable = null)
     {
         var payload = new WorkState(op, phase, instance, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), lastError,
-            Unreachable: null, series?.FailCount, series?.FailFirstUnix, series?.RetryNotBeforeUnix);
+            unreachable, series?.FailCount, series?.FailFirstUnix, series?.RetryNotBeforeUnix);
         return WithFailoverAsync(endpoint => gateway.PutAsync(
             endpoint, WorkKey(cluster), JsonSerializer.Serialize(payload, Json), lease: null, ct));
     }

@@ -109,6 +109,53 @@ public sealed class ShardProbe(HttpClient http)
         }
     }
 
+    // Динамический DCS-конфиг кластера (GET /config, arch/14 §5 C конвергенция,
+    // t09): сырой JSON-документ. Транспорт/не-2xx → Failed (вызывающий код
+    // treat'ит как транзиент — конвергенция повторится следующим тиком).
+    public async Task<Result<string?>> GetConfigAsync(NodeAddress node, CancellationToken ct)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(ProbeTimeout);
+            using var response = await http.GetAsync(BuildUri(node, "config"), timeout.Token);
+            if (!response.IsSuccessStatusCode)
+                return Result<string?>.Failed(new ApplicationException(
+                    $"Patroni {node.Host}:{node.Ports.Patroni} /config → HTTP {(int)response.StatusCode}"));
+
+            return Result<string?>.Success(await response.Content.ReadAsStringAsync(timeout.Token));
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
+        {
+            return Result<string?>.Failed(new ApplicationException(
+                $"Patroni {node.Host}:{node.Ports.Patroni} /config недоступен: {e.Message}", e));
+        }
+    }
+
+    // Частичный патч динамического DCS-конфига (PATCH /config, arch/14 §5 C,
+    // t09): Patroni мержит документ в DCS-конфиг и раздаёт нодам в пределах
+    // loop_wait. Не-2xx/транспорт → Failed (ретрай следующим тиком).
+    public async Task<Result> PatchConfigAsync(NodeAddress node, string patchJson, CancellationToken ct)
+    {
+        try
+        {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(ProbeTimeout);
+            using var content = new StringContent(patchJson, System.Text.Encoding.UTF8, "application/json");
+            using var response = await http.PatchAsync(BuildUri(node, "config"), content, timeout.Token);
+            if (!response.IsSuccessStatusCode)
+                return Result.Failed(new ApplicationException(
+                    $"Patroni {node.Host}:{node.Ports.Patroni} PATCH /config → HTTP {(int)response.StatusCode}"));
+
+            return Result.Success();
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
+        {
+            return Result.Failed(new ApplicationException(
+                $"Patroni {node.Host}:{node.Ports.Patroni} PATCH /config недоступен: {e.Message}", e));
+        }
+    }
+
     // Graceful-переезд лидерства (пересоздание «мягко», режим soft): POST
     // /switchover на Patroni-порт ЛИДЕРА с телом {"leader": имя} — Patroni
     // переведёт лидерство на лучшую реплику (sync-standby) без паузы записи.

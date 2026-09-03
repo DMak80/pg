@@ -3,6 +3,7 @@ using System.Text;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
+using PgWorker.Docker.Drivers;
 using PgWorker.Etcd.Client;
 using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
@@ -356,25 +357,139 @@ public class NodeSupervisorTests
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("REBUILDING");
     }
 
+    // AAA (t09, arch/14 §5 C): проба лидера глухая, НО контейнер running
+    // (инспекция видит) — свидетельства смерти процесса нет (рестарт Patroni/
+    // транспортный флап): ускорение failover НЕ запускается, только честный
+    // UNREACHABLE; docker и HA-ключи не тронуты.
     [Fact]
-    public async Task Tick_DeadLeaderNode_NoRebuild()
+    public async Task Tick_DeadLeaderNode_RunningContainer_NoAcceleration()
     {
-        // Arrange — мертва ЛИДЕР-нода shard1a: failover делает Patroni (P11), не мы
+        // Arrange — лидер shard1a не отвечает, контейнер на месте и running;
+        // инспекция (running-only) ноду ВИДИТ
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         var rig = await NewRig(
             port => port == 18000 ? Down() : Ok(),
             staleUnreachableForShard1A: now - 200);
         rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a"}""");
+        rig.Driver.InspectResult = new Dictionary<string, DiscoveredNode>
+        {
+            ["shard1a"] = new("shard1a", "h1", "", 15000, 18000, 16500),
+        };
 
         // Act
         var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
-        // Assert: никаких docker-мутаций, нода отмечена UNREACHABLE
+        // Assert: никаких HA-мутаций и docker-мутаций, нода отмечена UNREACHABLE
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        rig.Etcd.Store.Should().NotContainKey("/service/shop-shard1/failover",
+            "контейнер running — смерти процесса нет, ускорять нечего");
+        rig.Etcd.Store.Should().ContainKey("/service/shop-shard1/leader");
         rig.Driver.RemovedNodes.Should().BeEmpty();
         rig.Driver.EnsuredNodes.Should().BeEmpty();
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("UNREACHABLE");
     }
+
+    // AAA (t09, arch/14 §5 C): лидер не отвечает И контейнер не running
+    // (инспекция running-only его не видит — docker stop/жёсткая смерть) —
+    // положительное свидетельство смерти: ускорение failover (маркер+снятие
+    // лидер-лока) БЕЗ ожидания NodeDeadSec и БЕЗ docker-мутаций; rebuild
+    // мёртвого лидера невозможен (он же лидер), нода — UNREACHABLE до смены
+    // лидерства, потом обработается общим путём.
+    [Fact]
+    public async Task Tick_DeadLeaderNode_ContainerNotRunning_FailoverAccelerated()
+    {
+        // Arrange — лидер shard1a не отвечает, инспекция ноду НЕ видит (stop)
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var rig = await NewRig(
+            port => port == 18000 ? Down() : Ok(),
+            staleUnreachableForShard1A: now - 200);
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a"}""");
+        rig.Driver.InspectResult = new Dictionary<string, DiscoveredNode>(); // не running
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: failover ускорен (ключ+маркер), docker не тронут, UNREACHABLE
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        var failover = rig.Etcd.Store.Should().ContainKey("/service/shop-shard1/failover").WhoseValue.Value;
+        failover.Should().Contain("\"leader\":\"shard1a\"").And.Contain("\"member\":");
+        rig.Etcd.Store.Should().NotContainKey("/service/shop-shard1/leader",
+            "мёртвый лидер-лок снят — кандидат промоутится в пределах loop_wait, не ttl (бюджет ≤5с)");
+        rig.Driver.RemovedNodes.Should().BeEmpty("rebuild лидера — не наш путь, только ускорение выборов");
+        rig.Driver.EnsuredNodes.Should().BeEmpty();
+        rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("UNREACHABLE");
+    }
+
+    // AAA (t09, arch/14 §5 C конвергенция): DCS-конфиг кластера на дефолтах
+    // Patroni (нода подтянулась к чужому/пустому конфигу) — воркер патчит
+    // активный конфиг до канона (GET /config → PATCH /config).
+    [Fact]
+    public async Task Regression_T09_DcsConfigConvergence_DefaultConfig_PatchedToCanonical()
+    {
+        // Arrange — GET /config отдаёт Patroni-дефолты (ttl=30/loop_wait=10/
+        // retry_timeout=10, без synchronous_mode), PATCH ловим в список
+        var patches = new List<string>();
+        var rig = await NewRig(_ => Ok(), respondRaw: r =>
+        {
+            if (r.Method.Method == "PATCH" && r.RequestUri!.AbsolutePath == "/config")
+            {
+                patches.Add(new StreamReader(r.Content!.ReadAsStream()).ReadToEnd());
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }
+
+            if (r.Method.Method == "GET" && r.RequestUri!.AbsolutePath == "/config")
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        """{"ttl":30,"loop_wait":10,"retry_timeout":10}""", Encoding.UTF8, "application/json"),
+                };
+
+            return Ok();
+        });
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — патч каноном отправлен ровно один (конфиг кластерный)
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        patches.Should().ContainSingle().Which.Should().Contain("\"ttl\":20")
+            .And.Contain("\"loop_wait\":1").And.Contain("\"retry_timeout\":3")
+            .And.Contain("\"synchronous_mode\":true");
+    }
+
+    // AAA (t09): конвергентный конфиг — ноль мутаций (не второй регулярный писатель).
+    [Fact]
+    public async Task Regression_T09_DcsConfigConvergence_CanonicalConfig_NoPatch()
+    {
+        // Arrange — GET /config уже канонический
+        var patches = new List<string>();
+        var rig = await NewRig(_ => Ok(), respondRaw: r =>
+        {
+            if (r.Method.Method == "PATCH" && r.RequestUri!.AbsolutePath == "/config")
+            {
+                patches.Add(new StreamReader(r.Content!.ReadAsStream()).ReadToEnd());
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }
+
+            if (r.Method.Method == "GET" && r.RequestUri!.AbsolutePath == "/config")
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"postgresql":{"use_pg_rewind":true}}""",
+                        Encoding.UTF8, "application/json"),
+                };
+
+            return Ok();
+        });
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — PATCH не звался вовсе
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        patches.Should().BeEmpty("конфиг уже канонический — мутаций нет");
+    }
+
 
     [Fact]
     public async Task Tick_WholeShardDead_MasterExpired_DeadShards()

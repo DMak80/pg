@@ -29,11 +29,13 @@ public class NodeConfigBuildersTests
         // Act: генерируем env контейнера ноды.
         var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets);
 
-        // Assert: SPILO_CONFIGURATION несёт P11 (ttl/loop_wait), P3 (wal_level),
+        // Assert: SPILO_CONFIGURATION несёт канон таймингов (t09: полы Patroni
+        // 4.x — ttl=20/loop_wait=1/retry_timeout=3), P3 (wal_level),
         // P15 (max_connections) и callback мастер-ключа.
         var spilo = env["SPILO_CONFIGURATION"];
-        spilo.Should().Contain("ttl: 5");
-        spilo.Should().Contain("loop_wait: 2");
+        spilo.Should().Contain("ttl: 20");
+        spilo.Should().Contain("loop_wait: 1");
+        spilo.Should().Contain("retry_timeout: 3");
         spilo.Should().Contain("wal_level: logical");
         spilo.Should().Contain("max_connections: \"60\"");
         spilo.Should().Contain("sync_replication_slots: \"on\"");
