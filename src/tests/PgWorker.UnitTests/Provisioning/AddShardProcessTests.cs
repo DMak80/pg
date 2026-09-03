@@ -114,7 +114,8 @@ public class AddShardProcessTests
             opts ?? new PlacementOptions(15000, 15100, PatroniBootSec: 600),
             Secrets, new AppSecretEnsurer(etcd, [Ep]),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp,
-            new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance), snapshot: null);
+            new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
+            new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId), snapshot: null);
         return new Rig(etcd, driver, sql, claims, journal, process);
     }
 
@@ -140,7 +141,8 @@ public class AddShardProcessTests
             claims, journal, new PlacementOptions(15000, 15100, 600), Secrets,
             new AppSecretEnsurer(etcd, [Ep]),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp,
-            new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance), snapshot: null);
+            new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
+            new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId), snapshot: null);
 
         // Act
         var outcome = await process.TickAsync(await Snapshot(etcd), "shard3", CancellationToken.None);
@@ -324,7 +326,8 @@ public class AddShardProcessTests
             rig.Claims, rig.Journal, new PlacementOptions(15000, 15100, 600), Secrets,
             new AppSecretEnsurer(rig.Etcd, [Ep]),
             new AppParamsEnsurer(rig.Etcd, [Ep], "sslmode=require"), EtcdEndp,
-            new PortAllocIndex(rig.Etcd, [Ep], NullLogger<PortAllocIndex>.Instance), snapshot: null);
+            new PortAllocIndex(rig.Etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
+            new PortAllocLock([Ep], rig.Etcd, TimeProvider.System, rig.Claims.InstanceId), snapshot: null);
         var outcome = await alive.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
 
         // Assert — детерминизм multi-host: dsn тот же; схем/routing-мутаций нет
@@ -410,5 +413,34 @@ public class AddShardProcessTests
         outcome.IsSuccess.Should().BeTrue();
         var raw = rig.Etcd.Store["/pgworker/portalloc/shop"].Value;
         raw.Should().Contain("\"shard3/shard3a\":{\"host\":\"h1\",\"pg\":15001");
+    }
+
+    // AAA (t90): глобальный portalloc-клэйм занят — add-shard ждёт
+    // (waiting-portalloc-lock) без мутаций portalloc; после release — доводит.
+    // Сид: SeedActiveCluster уже записал /pgworker/portalloc/shop (шарды 1–2),
+    // новый шард — shard3 (недобор записей shard3/*).
+    [Fact]
+    public async Task Tick_PortAllocLockBusy_WaitsWithoutMutations()
+    {
+        // Arrange — полная декларация нового шарда, лок держит «другой инстанс»
+        var rig = await NewRig(_ => DeadPatroni());
+        var holder = new PortAllocLock([Ep], rig.Etcd, TimeProvider.System, "other");
+        (await holder.TryAcquireAsync(CancellationToken.None)).Value.Should().BeTrue();
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
+
+        // Assert: не фейл — ждём; portalloc НЕ дописан нодами shard3
+        outcome.Value.Should().Be(ProcessOutcome.InProgress);
+        rig.Etcd.Store["/pgworker/portalloc/shop"].Value.Should().NotContain("shard3/");
+        rig.Driver.EnsuredNodes.Should().BeEmpty();
+        var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        work.Value!.Phase.Should().Be("waiting-portalloc-lock");
+
+        // Act-2 / Assert-2: освобождение — планирование проходит
+        await holder.ReleaseAsync();
+        var second = await rig.Process.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
+        second.Value.Should().Be(ProcessOutcome.InProgress);
+        rig.Etcd.Store["/pgworker/portalloc/shop"].Value.Should().Contain("shard3/");
     }
 }
