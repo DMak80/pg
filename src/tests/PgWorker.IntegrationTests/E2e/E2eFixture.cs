@@ -39,6 +39,14 @@ public sealed class E2eFixture : IAsyncLifetime
 
     public async ValueTask InitializeAsync()
     {
+        // Гейт выключен — НЕ поднимаем стенд и НЕ бросаем skip отсюда: исключение
+        // из InitializeAsync коллекционной фикстуры xunit v3 отражается на всех
+        // тестах коллекции как Failed, а не Skipped. Стенд не строится, а сами
+        // тесты скипаются первой строкой (DockerTrait.SkipIfUnavailable) — до
+        // любого обращения к пустым Gateway/EtcdEndpoint.
+        if (Environment.GetEnvironmentVariable(DockerTrait.EnvVar) != "1")
+            return;
+
         DockerTrait.SkipIfUnavailable();
 
         // Корень репозитория и артефакты: от каталога тестовой сборки вверх.
