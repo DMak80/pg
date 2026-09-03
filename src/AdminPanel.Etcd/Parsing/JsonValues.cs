@@ -24,4 +24,11 @@ internal static class JsonValues
             _ => null,
         };
     }
+
+    // int-поля ключей (t06: brokers_total/brokers_remaining): вне int → null.
+    public static int? ReadInt(JsonElement root, string name)
+    {
+        var value = ReadLong(root, name);
+        return value is null or > int.MaxValue or < int.MinValue ? null : (int?)value.Value;
+    }
 }

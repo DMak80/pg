@@ -12,7 +12,7 @@ swarm). Это исполнительная сторона декларатив�
 `/kafka/`, `/kafkaworker/` пишет ТОЛЬКО KafkaWorker (панель и сиды ходят
 через его API, §1.1); панель etcd только читает.
 
-Девять процессов:
+Десять процессов:
 1. **Provisioning** (A, K0–K6) — от `NOT_INITIALIZED` до рабочего кластера;
 2. **Deprovisioning** (B, X0–X3) — от `TO_REMOVE` до чистого etcd и удалённых
    контейнеров/томов;
@@ -29,7 +29,11 @@ swarm). Это исполнительная сторона декларатив�
 9. **PartitionReassigner** (I) — reassignment партиций: drain брокера с
    репликами (разблокирует G) и ребалансировка по заявке панели (через
    kafka-reassign CLI в контейнере брокера — AdminClient API reassignment
-   в Confluent.Kafka нет).
+   в Confluent.Kafka нет);
+10. **NodeRegenerator** (J) — rolling-перегенерация брокеров: автоконверге
+    лимитов контейнера (cpu/mem) к `brokers/<b>/resources` — пересоздание
+    контейнера по одному за тик (том сохраняется), env пересобирается из
+    текущей декларации (новые server-props применяются тем же рестартом).
 
 Свойства: несколько инстансов работают одновременно (координация —
 lease-клэймы в etcd, `/kafkaworker/`); смерть контролирующего инстанса не
@@ -38,8 +42,7 @@ lease-клэймы в etcd, `/kafkaworker/`); смерть контролиру�
 
 Границы (что НЕ входит): bandwidth-throttle reassignment (лимит нагрузки —
 батчами партиций), preferred leader election, TLS/ACL, Prometheus-метрики,
-клиентская библиотека дискавери, rolling-перегенерация нод с новыми
-ресурсами — [roadmap/kafkaworker.md](roadmap/kafkaworker.md).
+клиентская библиотека дискавери — [roadmap/kafkaworker.md](roadmap/kafkaworker.md).
 
 ---
 
@@ -74,7 +77,7 @@ URL API — из etcd)       URL воркера (§1.1)
 ### 1.1. HTTP API воркера (мутации панели, сиды)
 
 Та же HTTP-грань, что `/healthz` (порт `:8080`). Префикс `/api` — приёмник
-ВСЕХ мутаций kafka-домена (панель в etcd не пишет ничего): 14 мутаций
+ВСЕХ мутаций kafka-домена (панель в etcd не пишет ничего): 15 мутаций
 контракта adminpanel/02 §10.2 — сигнатуры/валидации/протоколы записи 1:1
 (меняется исполнитель: была панель, стал воркер; guard'ы читают etcd
 напрямую, без панельного снапшота). Плюс стендовый сид — `POST
@@ -250,8 +253,9 @@ placement constraint, `publish mode=host`. Объекты для сверок �
 | `/kafka/clusters/<C>/config` | txn по завершении provisioning | пере-put канонического JSON **без** `state` (compare mod_revision) |
 | `/kafka/clusters/<C>/` (префикс) | TO_REMOVE, финал X2 | `del --prefix` |
 | `/kafkaworker/reassignments/<C>` | процесс I: put при работе, del по завершении | `{"mode","drain_broker"?,"partitions_total","partitions_remaining","submitted_unix","updated_unix","instance","last_error"?}` (15 §4) |
+| `/kafkaworker/regens/<C>` | процесс J: put при старте первого пересоздания, del по сходимости | `{"brokers_total","brokers_remaining","current_broker"?,"updated_unix","instance","last_error"?}` (15 §4) — прогресс rolling-регенерации |
 | `/kafkaworker/rebalances/<C>` | процесс I: del по завершении ребалансировки | заявка панели, дожившая до факта == план (порядок «сначала факт, потом del заявки» — повтор тика после сбоя del безвреден) |
-| `/kafkaworker/{claims,work,portalloc}/<C>*` + `/kafkaworker/{rotations,rebalances,reassignments}/<C>` | TO_REMOVE, финал X2 | del — **очистка координации включает заявки и прогресс**: остаточные заявки/прогресс не переживают удаление кластера (иначе вечные алерты `kafka-rotation-pending`/`kafka-rebalance-pending`) |
+| `/kafkaworker/{claims,work,portalloc}/<C>*` + `/kafkaworker/{rotations,rebalances,reassignments,regens}/<C>` | TO_REMOVE, финал X2 | del — **очистка координации включает заявки и прогресс**: остаточные заявки/прогресс не переживают удаление кластера (иначе вечные алерты `kafka-rotation-pending`/`kafka-rebalance-pending`) |
 
 ## 4. Секреты
 
@@ -272,9 +276,10 @@ Env-секретов per-install нет.
 `TO_REMOVE` → Deprovisioning (B); иначе Active-ветка: надзор (C) →
 converger (E) → reassignment (I, тик `ReassignIntervalSec` — drain
 TO_REMOVE-брокеров с репликами и заявка ребалансировки) → scale-проход
-remove (G) → add (F) → ротация (H, по одному за тик) → TopicSync (D, тик
-`TopicSyncIntervalSec`). Reassignment стоит перед remove — к моменту G
-дренируемый брокер уже пуст. Все операции — только под живым клэймом `<C>`;
+remove (G) → add (F) → ротация (H, по одному за тик) → регенерация (J,
+одно пересоздание за тик) → TopicSync (D, тик `TopicSyncIntervalSec`).
+Reassignment стоит перед remove — к моменту G дренируемый брокер уже пуст.
+Все операции — только под живым клэймом `<C>`;
 journal-before-manipulations.
 
 ### A. ProvisioningProcess (K0–K6)
@@ -448,6 +453,45 @@ describe-all (метаданные всех топиков **включая `__`
   (bandwidth-throttle — roadmap); новый батч — только после завершения
   предыдущего (по критерию выше).
 
+### J. NodeRegenerator (rolling-перегенерация брокеров)
+
+Автоконверге лимитов контейнера к декларации `brokers/<b>/resources`
+(изменение — мутация №15 панели через API, adminpanel/02 §10.2). Docker не
+меняет лимиты живого контейнера — сходимость только пересозданием; триггер —
+**только расхождение cpu/mem** (сверка inspect контейнера: NanoCpus/Memory
+vs декларация; `resources=null` или `disk` — не сверяются: disk — инфо,
+квоты томов — roadmap). Env пересобирается из текущей декларации тем же
+пересозданием (NodeEnvBuilder — детерминизм R3): новые server-props
+применяются попутно, но **env-дрейф триггером НЕ является** — иначе
+конфиг-мутации, уже применённые converger'ом E без рестартов, требовали бы
+лишних рестартов.
+
+- **Один брокер за тик**: снять контейнер (том сохраняется всегда) →
+  пересоздать (EnsureNode с лимитами из декларации) → `state=PROVISIONING`;
+  в `RUNNING` доводит AddBrokerProcess (F) следующими тиками по факту
+  DescribeCluster; следующий брокер регенерируется только после `RUNNING`
+  предыдущего. Прецедент темпа — надзор C («одно пересоздание по молчанию
+  за тик»).
+- **Прогресс-ключ** `/kafkaworker/regens/<C>` (15 §4): put при старте
+  первого пересоздания (`brokers_total`/`brokers_remaining`/`current_broker`),
+  обновление на каждом шаге, del по сходимости (все стабильные брокеры
+  `RUNNING` и лимиты == декларации). Ключ жив = операция идёт (панель
+  показывает в деталях кластера).
+- **Guard'ы**: только `RUNNING`-брокеры (TO_REMOVE/REMOVING/PROVISIONING/
+  NOT_INITIALIZED/UNREACHABLE — чужие процессы, их владельцы доведут);
+  живая заявка ротации (`rotations/<C>` или journal-фаза ротации) или живой
+  reassignment (`reassignments/<C>`) — передержка (journal waiting,
+  без действий: пересоздания не смешиваются с чужими rolling/переездами).
+  Inspect недоступен (docker-хост молчит) — ошибка тика, никаких пересозданий
+  вслепую (порт слепоты надзора C).
+- **Идемпотентность/takeover**: состояние = факт docker + декларация +
+  прогресс-ключ (перестраиваем от факта; потеря ключа — следующий тик
+  пересчитает расхождения). PUT ресурсов посреди регенерации безопасен:
+  если новый контейнер собрался по старой декларации — следующий тик увидит
+  расхождение снова и перегенерирует (сходимость к последней декларации).
+- Регенерация — без снапшотов P12 (etcd-декларацию воркер не меняет; как
+  add/remove брокеров, §6).
+
 ## 6. Надёжность
 
 - **Идемпотентность**: каждый шаг перепроверяет факт (контейнер есть?
@@ -461,8 +505,8 @@ describe-all (метаданные всех топиков **включая `__`
   `version==0` клэймы, RMW topics/endpoints).
 - **Снапшоты P12**: лидер регулярно (раз в 6 ч) + **«до/после» в точках
   изменений** — provisioning (K0/K6), deprovisioning (X0/X3), ротация
-  (старт/финал). Add/remove брокеров — без снапшотов (точки изменений —
-  только три перечисленных). Retention `/snapshots`.
+  (старт/финал). Add/remove брокеров и регенерация (J) — без снапшотов
+  (точки изменений — только три перечисленных). Retention `/snapshots`.
 - **Ретраи**: короткие сетевые — Polly jitter; ожидание подъёма брокера —
   транзиент-толерантный цикл с бюджетом `BrokerBootSec`.
 - **Отказ etcd**: контрол-плейн заморожен; живые брокеры от него не
@@ -531,6 +575,7 @@ KafkaWorker:Api { AdvertiseUrl, EnableSeedEndpoint=false }  # §1.1: URL API
 | R4 | RF=1: потеря тома = потеря данных | warning-журнал (документированное поведение); RF>1 — self-healing репликацией |
 | R5 | JVM CLI в контейнере брокера конкурирует с брокером за memory-лимит (OOM-kill) | `KAFKA_HEAP_OPTS=-Xmx256m` (§2.4); exec одноразовый, не параллелится |
 | R6 | Долгий drain на больших объёмах данных (минуты–часы) | батчи партиций + прогресс-ключ (UI видит остаток); bandwidth-throttle — roadmap |
+| R7 | Уменьшение mem/cpu в мутации №15 ниже рабочего набора брокера → OOM-килл / деградация (валидация §10.3 границы не отсекает) | ответственность оператора (UI-предупреждение в модалке); OOM-рестарт подхватит надзор C (том жив — данные не теряются) |
 
 ---
 

@@ -27,6 +27,11 @@ public sealed record KafkaReassignmentsParseResult(
     IReadOnlyList<KafkaReassignmentProgress> Progress,
     IReadOnlyList<KeyParseError> Errors);
 
+// Результат разбора live-прогресса регенерации /kafkaworker/regens/ (t06).
+public sealed record KafkaRegensParseResult(
+    IReadOnlyList<KafkaRegenProgress> Progress,
+    IReadOnlyList<KeyParseError> Errors);
+
 // Парсер kafka-домена: чистые функции Kv[] → модель, битые значения не бросают
 // исключений — порождают KeyParseError (порт стиля ClustersParser; arch/15 §6).
 public static class KafkaParser
@@ -239,6 +244,48 @@ public static class KafkaParser
                     AsInt(JsonValues.ReadLong(root, "partitions_total")),
                     (int)remaining.Value,
                     updated.Value,
+                    JsonValues.ReadString(root, "last_error")));
+            }
+            catch (JsonException e)
+            {
+                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+            }
+        }
+
+        return new(progress, errors);
+    }
+
+    // /kafkaworker/regens/<C> (t06, arch/15 §4): live-прогресс регенерации.
+    public static KafkaRegensParseResult ParseRegens(IReadOnlyList<Kv> kvs)
+    {
+        var progress = new List<KafkaRegenProgress>();
+        var errors = new List<KeyParseError>();
+        foreach (var kv in kvs)
+        {
+            // "/kafkaworker/regens/<C>" → ["", "kafkaworker", "regens", <C>]
+            var segments = kv.Key.Split('/');
+            if (segments.Length != 4 || segments[3].Length == 0)
+            {
+                errors.Add(new(kv.Key, "ожидается /kafkaworker/regens/<cluster>"));
+                continue;
+            }
+
+            try
+            {
+                using var doc = JsonDocument.Parse(kv.Value);
+                var root = doc.RootElement;
+                var total = JsonValues.ReadInt(root, "brokers_total");
+                var remaining = JsonValues.ReadInt(root, "brokers_remaining");
+                if (total is null || remaining is null)
+                {
+                    errors.Add(new(kv.Key, "нет полей brokers_total/brokers_remaining"));
+                    continue;
+                }
+
+                progress.Add(new KafkaRegenProgress(
+                    segments[3], total.Value, remaining.Value,
+                    JsonValues.ReadString(root, "current_broker"),
+                    JsonValues.ReadLong(root, "updated_unix") ?? 0,
                     JsonValues.ReadString(root, "last_error")));
             }
             catch (JsonException e)

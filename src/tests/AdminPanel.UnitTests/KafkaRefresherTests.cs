@@ -302,7 +302,7 @@ public class KafkaSnapshotStoreTests
         // Arrange
         var store = new KafkaSnapshotStore();
         var first = new KafkaSnapshot(
-            new DateTimeOffset(2026, 8, 30, 0, 0, 0, TimeSpan.Zero), true, 0, [], [], [], [], [], [], [], [], [], 0);
+            new DateTimeOffset(2026, 8, 30, 0, 0, 0, TimeSpan.Zero), true, 0, [], [], [], [], [], [], [], [], [], [], 0);
         var second = first with { BuiltAtUtc = first.BuiltAtUtc.AddSeconds(3) };
 
         // Act

@@ -5,6 +5,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using KafkaWorker.Core;
+using KafkaWorker.Core.Planning;
 
 namespace KafkaWorker.Docker.Engine;
 
@@ -173,6 +174,69 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
                 return false; // volume не существует — физически утрачен
             }
         });
+
+    // Лимиты контейнера брокера (t06, spec §5.3): те же поля, что пишет
+    // CreateContainerAsync; 404 → null. Несимметричность тегов Docker:
+    // create принимает «NanoCPUs», inspect отдаёт HostConfig.«NanoCpus» —
+    // читаем оба варианта (факт: docker inspect возвращает NanoCpus).
+    public async Task<Result<NodeLimits?>> InspectContainerResourcesAsync(string name, CancellationToken ct)
+        => await Result<NodeLimits?>.FromAsync(async () =>
+        {
+            try
+            {
+                var body = await GetAsync<JsonElement>(
+                    $"/containers/{Uri.EscapeDataString(name)}/json", ct);
+                if (body.ValueKind == JsonValueKind.Undefined)
+                    return null; // пустое тело — факта для сверки нет
+                var host = body.GetProperty("HostConfig");
+                return new NodeLimits(
+                    TryReadNumber(host, "NanoCpus", "NanoCPUs"),
+                    TryReadNumber(host, "Memory"));
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                return null; // контейнера нет — факта для сверки нет
+            }
+        });
+
+    // Лимиты swarm-сервиса ноды (t06, spec §5.3): TaskTemplate.Resources.
+    // Limits.{NanoCPUs, MemoryBytes}; 404 → null. Swarm-теги — «NanoCPUs»
+    // (верхний регистр, api/types/swarm), но на асимметрию Docker не
+    // полагаемся — читаем оба варианта.
+    public async Task<Result<NodeLimits?>> InspectServiceResourcesAsync(string name, CancellationToken ct)
+        => await Result<NodeLimits?>.FromAsync(async () =>
+        {
+            try
+            {
+                var body = await GetAsync<JsonElement>(
+                    $"/services/{Uri.EscapeDataString(name)}", ct);
+                if (body.ValueKind == JsonValueKind.Undefined)
+                    return null; // пустое тело — факта для сверки нет
+                var limits = body.GetProperty("Spec").GetProperty("TaskTemplate")
+                    .GetProperty("Resources").GetProperty("Limits");
+                return new NodeLimits(
+                    TryReadNumber(limits, "NanoCPUs", "NanoCpus"),
+                    TryReadNumber(limits, "MemoryBytes", "Memory"));
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                return null; // сервиса нет — факта для сверки нет
+            }
+        });
+
+    // Числовое поле по первому существующему имени (0 — нет/не число).
+    private static long TryReadNumber(JsonElement parent, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (parent.ValueKind == JsonValueKind.Object
+                && parent.TryGetProperty(name, out var value)
+                && value.ValueKind == JsonValueKind.Number)
+                return value.GetInt64();
+        }
+
+        return 0;
+    }
 
     public async Task<Result> EnsureNetworkAsync(string name, CancellationToken ct)
         => await Result.FromAsync(async () =>

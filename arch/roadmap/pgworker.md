@@ -42,3 +42,15 @@
   `AdminPanel.Infrastructure` (attribute-DI, CQRS, `Result`, Traces) → перевод
   на `PgWorker.Core`. Механика: панель получает ProjectReference на общие
   сборки, дубли удаляются; поведение обеих систем не меняется (тесты зелёные).
+- **`t09-e2e-release-regression`** — регрессия E2E-тестов PgWorker на свежем
+  Release-бинаре (найдена 2026-09-02 при финальном прогоне
+  t06-kafka-node-regen): стабильно падают 4 кейса E2eFixture —
+  `Scale_TakeoverMidAdd`, `Scale_AddEmptyShard`, `Acceptance_Ac2_To_Ac7`,
+  `Move_Lifecycle_Chain` — в т.ч. изолированно. A/B-эксперимент: Release от
+  29.08 зелёный, после пересборки на чистом main — те же падения (ветка t06
+  код PgWorker не трогала) → регрессия PgWorker.App между 29.08 и 02.09.
+  Маскировка: E2eFixture запускает готовый `bin/Release` PgWorker.App и не
+  пересобирает — устаревший зелёный бинарь скрывал проблему. Нужно: бисект до
+  коммита-виновника, фикс логики (или фикстуры, если дефект теста) и правило
+  пересборки Release в E2eFixture при устаревании вместо молчаливого запуска
+  старого. Обход до фикса: прогон E2E только после явной пересборки Release.

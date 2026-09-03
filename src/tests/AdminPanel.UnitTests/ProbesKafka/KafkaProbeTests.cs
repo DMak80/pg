@@ -35,7 +35,7 @@ public class KafkaProbeTests
     private static KafkaSnapshot Snapshot(params KafkaClusterInfo[] clusters) => new(
         new DateTimeOffset(2026, 8, 30, 12, 0, 0, TimeSpan.Zero),
         EtcdReachable: true, ConsecutiveFailures: 0,
-        [.. clusters], Rotations: [], Rebalances: [], Reassignments: [],
+        [.. clusters], Rotations: [], Rebalances: [], Reassignments: [], Regens: [],
         WorkerEndpoints: [], WorkerHealth: [], Probes: [], Alerts: [], ParseErrors: [], UnknownKeyCount: 0);
 
     private static KafkaClusterInfo ActiveCluster(

@@ -28,7 +28,7 @@ public class KafkaAlertRulesTests
     private static KafkaSnapshot Snapshot(
         IReadOnlyList<WorkerHealth> workerHealth, params KafkaClusterInfo[] clusters) => new(
         Now, EtcdReachable: true, ConsecutiveFailures: 0,
-        [.. clusters], Rotations: [], Rebalances: [], Reassignments: [],
+        [.. clusters], Rotations: [], Rebalances: [], Reassignments: [], Regens: [],
         WorkerEndpoints: [new WorkerEndpoint("kw1", "http://kafkaworker:8080", 1)],
         WorkerHealth: workerHealth, Probes: [], Alerts: [], ParseErrors: [], UnknownKeyCount: 0);
 

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using KafkaWorker.Core.Model;
 
 namespace KafkaWorker.Core.Writing;
 
@@ -260,4 +261,65 @@ public sealed record KafkaRotationTicketJson(
         {
             DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
         });
+}
+
+// Запрос мутации №15 — изменение ресурсов существующего брокера (t06,
+// adminpanel/02 §10.2-15): null = не менять; хотя бы одно поле обязательно.
+public sealed record KafkaResourcesUpdateRequest(decimal? Cpu, int? MemGi, int? DiskGi);
+
+// Эффективные ресурсы после применения частичного обновления + канонический
+// JSON ключа brokers/<b>/resources (формат 1:1 — arch/15 §2). Канонизация —
+// существующий KafkaClusterCreatePlan.Canonical (decimal → "0.#########").
+public sealed record KafkaResourcesUpdatePlan(decimal Cpu, int MemGi, int DiskGi)
+{
+    public string CanonicalJson
+        => $$"""{"cpu":"{{KafkaClusterCreatePlan.Canonical(Cpu)}}","mem":"{{MemGi}}Gi","disk":"{{DiskGi}}Gi"}""";
+}
+
+// Чистая функция валидации мутации №15: границы §10.3 на ЭФФЕКТИВНЫХ
+// значениях (new ?? current) — уменьшение разрешено (spec §3.5).
+public static class KafkaResourcesUpdateValidator
+{
+    public static IReadOnlyList<ValidationError> Validate(
+        KafkaResourcesUpdateRequest request, BrokerResources current)
+    {
+        var errors = new List<ValidationError>();
+        if (request.Cpu is null && request.MemGi is null && request.DiskGi is null)
+            errors.Add(new("", "хотя бы одно поле обновления обязательно"));
+
+        var cpu = request.Cpu ?? current.Cpu;
+        if (cpu < KafkaLimits.MinCpu || cpu > KafkaLimits.MaxCpu)
+            errors.Add(new("cpu", $"cpu: {KafkaLimits.MinCpu}..{KafkaLimits.MaxCpu} ядер"));
+        var memGi = request.MemGi ?? current.MemGi;
+        if (memGi is < KafkaLimits.MinGiB or > KafkaLimits.MaxGiB)
+            errors.Add(new("memGi", $"memGi: целое {KafkaLimits.MinGiB}..{KafkaLimits.MaxGiB} GiB"));
+        var diskGi = request.DiskGi ?? current.DiskGi;
+        if (diskGi is < KafkaLimits.MinGiB or > KafkaLimits.MaxGiB)
+            errors.Add(new("diskGi", $"diskGi: целое {KafkaLimits.MinGiB}..{KafkaLimits.MaxGiB} GiB"));
+        return errors;
+    }
+}
+
+// Чтение ключа resources (мутация №15): {"cpu":"2","mem":"4Gi","disk":"40Gi"}.
+public static class BrokerResourcesJson
+{
+    public static BrokerResources? TryParse(string json)
+    {
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            var root = doc.RootElement;
+            var cpu = root.GetProperty("cpu").GetString()!;
+            var mem = root.GetProperty("mem").GetString()!;
+            var disk = root.GetProperty("disk").GetString()!;
+            return new BrokerResources(
+                decimal.Parse(cpu.TrimEnd('G', 'i'), System.Globalization.CultureInfo.InvariantCulture),
+                int.Parse(mem.TrimEnd('G', 'i'), System.Globalization.CultureInfo.InvariantCulture),
+                int.Parse(disk.TrimEnd('G', 'i'), System.Globalization.CultureInfo.InvariantCulture));
+        }
+        catch (Exception e) when (e is System.Text.Json.JsonException or FormatException or KeyNotFoundException)
+        {
+            return null; // битый JSON — мутация невозможна, 503 (InvalidKafkaConfigException-ветка)
+        }
+    }
 }

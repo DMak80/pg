@@ -13,6 +13,7 @@ public sealed record KafkaSnapshot(
     IReadOnlyList<KafkaRotationTicket> Rotations,   // /kafkaworker/rotations/ (arch/15 §4)
     IReadOnlyList<KafkaRebalanceTicket> Rebalances, // /kafkaworker/rebalances/ (t02, arch/15 §4)
     IReadOnlyList<KafkaReassignmentProgress> Reassignments, // /kafkaworker/reassignments/ (t02)
+    IReadOnlyList<KafkaRegenProgress> Regens,        // /kafkaworker/regens/ (t06, arch/15 §4)
     IReadOnlyList<WorkerEndpoint> WorkerEndpoints,  // живые ключи /kafkaworker/api/ (arch/02 §2.3.2)
     IReadOnlyList<WorkerHealth> WorkerHealth,        // опрос /healthz живых инстансов (t09, arch/02 §2.3.2)
     IReadOnlyList<ProbeResult> Probes,              // live-проба DescribeCluster (B6+)
@@ -122,5 +123,17 @@ public sealed record KafkaReassignmentProgress(
     string? DrainBroker,
     int PartitionsTotal,
     int PartitionsRemaining,
+    long UpdatedUnix,
+    string? LastError);
+
+/// <summary>
+/// Live-прогресс rolling-регенерации брокеров /kafkaworker/regens/&lt;C&gt;
+/// (t06, arch/15 §4); отсутствие ключа = операции нет.
+/// </summary>
+public sealed record KafkaRegenProgress(
+    string Cluster,
+    int BrokersTotal,
+    int BrokersRemaining,
+    string? CurrentBroker,
     long UpdatedUnix,
     string? LastError);

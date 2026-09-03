@@ -117,7 +117,7 @@ public class WorkerHealthPollerTests
     private static AdminPanel.Core.Kafka.KafkaSnapshot KafkaSnapshotWith(
         params WorkerEndpoint[] endpoints) => new(
         Now, EtcdReachable: true, ConsecutiveFailures: 0,
-        [], [], [], [], [.. endpoints], WorkerHealth: [], Probes: [], Alerts: [],
+        [], [], [], [], [], [.. endpoints], WorkerHealth: [], Probes: [], Alerts: [],
         ParseErrors: [], UnknownKeyCount: 0);
 
     [Fact]

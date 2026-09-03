@@ -22,7 +22,7 @@ app-пароля (§9.8). Существует также мутация пер�
 NodeSupervisor PgWorker); она зафиксирована кодом ранее и контрактно ведёт
 себя как §9.6-подобный маркер. Отдельный домен **Kafka** (§10): чтение
 `/kafka/clusters/` + `/kafkaworker/{rotations,rebalances,reassignments}/` и
-14 мутаций декларативной модели (исполняет KafkaWorker API, arch/16 §1.1).
+14 мутаций декларативной модели (исполняет KafkaWorker API, arch/16 §1.1) + мутация №15 ресурсов брокера (t06).
 
 ## 1. Транспорт: HTTP JSON gateway `/v3/*`
 
@@ -651,13 +651,14 @@ read-only). Отдельный домен-снапшот `KafkaSnapshot` (не `
 | `/kafkaworker/rotations/<C>` | `KafkaRotationTicket` | читаемые из `/kafkaworker/` — только `rotations/`, `rebalances/`, `reassignments/` (arch/15 §4); остальные ключи префикса панель не читает и не пишет |
 | `/kafkaworker/rebalances/<C>` | `KafkaRebalanceTicket` | заявка ребалансировки партиций (жива = очередь в UI) |
 | `/kafkaworker/reassignments/<C>` | `KafkaReassignmentProgress` | прогресс текущего reassignment воркера (drain/balance: остаток партиций, режим); отсутствие ключа = операции нет |
+| `/kafkaworker/regens/<C>` | `KafkaRegenProgress` | прогресс rolling-регенерации брокеров воркером (t06, arch/15 §4): `brokers_total`/`brokers_remaining`/`current_broker`; отсутствие ключа = операции нет |
 
 Неизвестные ключи внутри `/kafka/` — лог + счётчик `unknownKeys`; битый JSON —
 parseError-запись + warning-алерт `kafka-key-malformed` (arch/15 §6).
 
-### 10.2. Мутации панели (14; исполняет KafkaWorker API)
+### 10.2. Мутации панели (15; исполняет KafkaWorker API)
 
-Все 14 мутаций панель отправляет в **API KafkaWorker** (arch/16 §1.1; URL —
+Все 15 мутаций панель отправляет в **API KafkaWorker** (arch/16 §1.1; URL —
 живой `/kafkaworker/api/<id>`, §2.3.2); воркер сам валидирует и пишет в etcd.
 Общие правила исполнителя: имена канонические
 (`^[a-z][a-z0-9_]{0,62}$` — иначе 404), чтение config **напрямую** у etcd
@@ -682,6 +683,7 @@ parseError-запись + warning-алерт `kafka-key-malformed` (arch/15 §6)
 | 12 | **Отмена заявки удаления** `DELETE /api/kafka/clusters/{c}/topics/{t}/desired.delete` | del ключа заявки; 404 если заявки нет. **Окно деструктивности**: снимает удаление до тика воркера | 404, 409, 503 |
 | 13 | **Ребалансировка партиций** `POST /api/kafka/clusters/{c}/rebalance` | клэйм-txn `/kafkaworker/rebalances/<C>` `version==0` + put `{"requested_unix","requested_by"}` — протокол ротаций §9.8 один в один; исполнение — PartitionReassigner KafkaWorker (арх/16 §5 I; converge RF к `config.replication_factor`, лидеры сохраняются); UI-модалка предупреждает о переносе данных между брокерами | 404, 409 (не Active / уже запрошена), 503 |
 | 14 | **Отмена ребалансировки** `DELETE /api/kafka/clusters/{c}/rebalance` | del заявки: новые батчи не подаются, уже поданные reassignment-бакеты Kafka доигрывает сама (безопасно — данные не теряются, converge просто останавливается на полпути); 404 если заявки нет | 404, 503 |
+| 15 | **Изменение ресурсов брокера** `PUT /api/kafka/clusters/{c}/brokers/{b}/resources` | тело `{cpu?, memGi?, diskGi?}` (null = не менять; хотя бы одно — обязательно; границы §10.3, уменьшение разрешено — риск OOM на операторе, arch/16 R7); put ключа `brokers/<b>/resources` каноническим JSON (перезапись целиком). Применение — автоматическое: NodeRegenerator воркера (arch/16 §5 J) сверяет лимиты живого контейнера и rolling-ит по одному за тик; `disk` меняет только декларацию (действий нет). Идемпотентен (повтор — та же запись) | 400 (§10.3 / пустое тело), 404 (кластер/брокер), 409 (не Active / state `TO_REMOVE`/`REMOVING`), 503 |
 
 ### 10.3. Валидация создания/конфиг-мутации (сервер — источник истины)
 
@@ -693,8 +695,8 @@ parseError-запись + warning-алерт `kafka-key-malformed` (arch/15 §6)
 | `minInSyncReplicas` | целое 1..RF, def 2 |
 | `defaultPartitions` | целое 1..1000, def 12 |
 | `defaultRetentionMs` | целое 1..2147483647, def 604800000 (7 дней) |
-| `cpu` | десятичные ядра 0.01..64, def 2 (на брокера) |
-| `mem`/`disk` | целые GiB 1..65536, def 2/20 (на брокера; в etcd `"<n>Gi"`) |
+| `cpu` | десятичные ядра 0.01..64, def 2 (на брокера; мутации 1/4/15) |
+| `mem`/`disk` | целые GiB 1..65536, def 2/20 (на брокера; в etcd `"<n>Gi"`; мутации 1/4/15) |
 
 Топик `<t>` (мутации 6–7): Kafka-паттерн `^[a-zA-Z0-9._-]{1,249}$`, без `__`-префикса.
 

@@ -24,7 +24,7 @@ public sealed record KafkaClusterSummaryDto(
     bool RebalancePending);
 
 // Детали кластера: config, брокеры, топики, группы пробы (волна C), ротация,
-// ребалансировка (t02).
+// ребалансировка (t02), прогресс регенерации (t06).
 public sealed record KafkaClusterDto(
     string Name,
     string State,
@@ -42,7 +42,8 @@ public sealed record KafkaClusterDto(
     KafkaReassignmentDto? Reassignment,
     IReadOnlyList<KafkaGroupDto>? Groups = null, // null — проба молчит о кластере
     bool? ProbeOk = null,
-    string? ProbeError = null);
+    string? ProbeError = null,
+    KafkaRegenDto? Regen = null);
 
 public sealed record KafkaBrokerDto(
     string Name,
@@ -99,6 +100,13 @@ public sealed record KafkaReassignmentDto(
     int PartitionsRemaining,
     long UpdatedUnix);
 
+// Live-прогресс rolling-регенерации брокеров (t06, 03 §7.2); null = операции нет.
+public sealed record KafkaRegenDto(
+    int BrokersTotal,
+    int BrokersRemaining,
+    string? CurrentBroker,
+    long UpdatedUnix);
+
 // Core → DTO: чистые функции (arch/03 §7.2; camelCase-зеркало модели B2).
 public static class KafkaMappers
 {
@@ -127,13 +135,16 @@ public static class KafkaMappers
         IReadOnlyList<KafkaRotationTicket> rotations,
         IReadOnlyList<KafkaRebalanceTicket> rebalances,
         IReadOnlyList<KafkaReassignmentProgress> reassignments,
+        IReadOnlyList<KafkaRegenProgress>? regens = null,
         IReadOnlyDictionary<string, KafkaClusterLive>? live = null,
         ProbeResult? probe = null)
     {
         live ??= new Dictionary<string, KafkaClusterLive>();
+        regens ??= [];
         var rotation = rotations.FirstOrDefault(r => r.Cluster == cluster.Name);
         var rebalance = rebalances.FirstOrDefault(r => r.Cluster == cluster.Name);
         var reassignment = reassignments.FirstOrDefault(r => r.Cluster == cluster.Name);
+        var regen = regens.FirstOrDefault(r => r.Cluster == cluster.Name);
         var clusterLive = live.GetValueOrDefault(cluster.Name);
 
         // Мерж lifecycle-тикетов (t01): delete/create — к существующей строке;
@@ -187,7 +198,9 @@ public static class KafkaMappers
             Groups: cluster.Groups is null ? null :
                 [.. cluster.Groups.Select(g => new KafkaGroupDto(g.Group, g.State, g.Members, g.TotalLag))],
             ProbeOk: probe?.Ok,
-            ProbeError: probe?.Error);
+            ProbeError: probe?.Error,
+            Regen: regen is null ? null : new KafkaRegenDto(
+                regen.BrokersTotal, regen.BrokersRemaining, regen.CurrentBroker, regen.UpdatedUnix));
     }
 
     private static TopicLifecycleDto? LifecycleDto(KafkaTopicLifecycleTicket? ticket)
@@ -248,7 +261,7 @@ public sealed class KafkaClusterDetailsQueryHandler(
         return ValueTask.FromResult(Result<KafkaClusterDto>.Success(
             KafkaMappers.MapDetails(
                 cluster, snapshot.Rotations, snapshot.Rebalances, snapshot.Reassignments,
-                readOnlyLive, probe)));
+                snapshot.Regens, readOnlyLive, probe)));
     }
 }
 

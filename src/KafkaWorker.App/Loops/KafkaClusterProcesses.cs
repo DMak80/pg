@@ -18,8 +18,9 @@ internal interface IKafkaClusterProcesses
     /// <summary>
     /// Active-ветка (порядок — arch/16 §5): надзор (C) → converge (E) →
     /// reassignment (I, t02: drain TO_REMOVE + заявки balance) → scale-проход
-    /// remove (G) → add (F) → ротация (H) → автосинк топиков (D, тик
-    /// TopicSyncIntervalSec — троттлится внутри процесса).
+    /// remove (G) → add (F) → ротация (H) → регенерация (J, t06: автоконверге
+    /// лимитов) → автосинк топиков (D, тик TopicSyncIntervalSec —
+    /// троттлится внутри процесса).
     /// </summary>
     Task<Result> ActiveAsync(KafkaClusterSnapshot snap, CancellationToken ct);
 }
@@ -34,6 +35,7 @@ internal sealed class KafkaClusterProcesses(
     RemoveBrokerProcess removeBroker,
     AddBrokerProcess addBroker,
     AppPasswordRotator rotator,
+    NodeRegenerator regenerator,
     TopicSyncProcess topicSync) : IKafkaClusterProcesses
 {
     public Task<Result> ProvisionAsync(KafkaClusterSnapshot snap, CancellationToken ct)
@@ -79,6 +81,12 @@ internal sealed class KafkaClusterProcesses(
         var rotated = await rotator.RunAsync(snap, ct);
         if (!rotated.IsSuccess)
             return rotated;
+
+        // Регенерация (J, t06): автоконверге лимитов — после ротации (не
+        // смешиваем rolling-ы) и перед TopicSync (реестр — к итогу).
+        var regenerated = await regenerator.RunAsync(snap, ct);
+        if (!regenerated.IsSuccess)
+            return regenerated;
 
         // Автосинк топиков (D) — последним: реестр сходится к итоговому факту
         // кластера (в т.ч. после изменения состава брокеров).

@@ -149,7 +149,7 @@ public class WorkerApiGatewayTests
         {
             Current = new KafkaSnapshot(
                 DateTimeOffset.UtcNow, EtcdReachable: true, ConsecutiveFailures: 0,
-                [], Rotations: [], Rebalances: [], Reassignments: [],
+                [], Rotations: [], Rebalances: [], Reassignments: [], Regens: [],
                 WorkerEndpoints: [.. endpoints],
                 WorkerHealth: [],
                 Probes: [], Alerts: [], ParseErrors: [], UnknownKeyCount: 0),

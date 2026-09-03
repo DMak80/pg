@@ -1,9 +1,11 @@
 // Вкладка Брокеры деталей kafka-кластера (arch/03 §7.3): name/state/role/
-// resources/live + «Убрать брокера» (guard-дизейблы) и «Добавить брокера».
+// resources/live + «Убрать брокера» (guard-дизейблы), «Добавить брокера» и
+// «Ресурсы» (мутация №15, t06) + подписи drain/регенерации.
 import { useState } from 'react';
 import { Badge, Button, Card, Group, Table, Text, Title, Tooltip } from '@mantine/core';
-import type { KafkaBrokerDto, KafkaReassignmentDto } from '../../api/dto';
+import type { KafkaBrokerDto, KafkaReassignmentDto, KafkaRegenDto } from '../../api/dto';
 import { AddBrokerModal } from './AddBrokerModal';
+import { EditBrokerResourcesModal } from './EditBrokerResourcesModal';
 import { RemoveBrokerButton } from './RemoveBrokerButton';
 
 export function BrokersTab({
@@ -11,13 +13,16 @@ export function BrokersTab({
   brokers,
   canScale,
   reassignment,
+  regen,
 }: {
   cluster: string;
   brokers: KafkaBrokerDto[];
   canScale: boolean;
   reassignment: KafkaReassignmentDto | null;
+  regen: KafkaRegenDto | null;
 }) {
   const [addOpened, setAddOpened] = useState(false);
+  const [resourcesBroker, setResourcesBroker] = useState<KafkaBrokerDto | null>(null);
   const lastBroker = brokers.length <= 1;
 
   return (
@@ -27,6 +32,14 @@ export function BrokersTab({
         {canScale ? <Button size="xs" onClick={() => setAddOpened(true)}>Добавить брокера</Button> : null}
       </Group>
       <AddBrokerModal cluster={cluster} opened={addOpened} onClose={() => setAddOpened(false)} />
+      {resourcesBroker !== null ? (
+        <EditBrokerResourcesModal
+          cluster={cluster}
+          broker={resourcesBroker}
+          opened
+          onClose={() => setResourcesBroker(null)}
+        />
+      ) : null}
       {brokers.length === 0 ? (
         <Text c="dimmed">Брокеры не заявлены</Text>
       ) : (
@@ -47,7 +60,8 @@ export function BrokersTab({
             <Table.Tbody>
               {brokers.map((b) => (
                 <BrokerRow key={b.name} cluster={cluster} broker={b} canScale={canScale}
-                  lastBroker={lastBroker} reassignment={reassignment} />
+                  lastBroker={lastBroker} reassignment={reassignment} regen={regen}
+                  onEditResources={setResourcesBroker} />
               ))}
             </Table.Tbody>
           </Table>
@@ -63,12 +77,16 @@ function BrokerRow({
   canScale,
   lastBroker,
   reassignment,
+  regen,
+  onEditResources,
 }: {
   cluster: string;
   broker: KafkaBrokerDto;
   canScale: boolean;
   lastBroker: boolean;
   reassignment: KafkaReassignmentDto | null;
+  regen: KafkaRegenDto | null;
+  onEditResources: (broker: KafkaBrokerDto) => void;
 }) {
   const isController = broker.role === 'controller';
   // Подпись drain: живой reassignment в режиме drain указывает на этот брокер.
@@ -83,6 +101,18 @@ function BrokerRow({
       : broker.state === 'TO_REMOVE' || broker.state === 'REMOVING'
         ? 'демонтаж уже заявлен'
         : null;
+  // Ресурсы не менять у демонтажа/нестабильных нод (t06, 02 §10.2-15).
+  const resourcesBlocked = !canScale
+    || broker.state === 'TO_REMOVE'
+    || broker.state === 'REMOVING'
+    || broker.state === 'NOT_INITIALIZED';
+  const resourcesReason = !canScale
+    ? 'кластер не Active — мутации недоступны'
+    : broker.state === 'TO_REMOVE' || broker.state === 'REMOVING'
+      ? 'демонтаж уже заявлен'
+      : broker.state === 'NOT_INITIALIZED'
+        ? 'брокер ещё не инициализирован'
+        : null;
 
   return (
     <Table.Tr>
@@ -91,6 +121,11 @@ function BrokerRow({
         {draining ? (
           <Text size="xs" c="violet" display="block">
             drain: осталось {reassignment!.partitionsRemaining} партиций
+          </Text>
+        ) : null}
+        {regen !== null && regen.currentBroker === broker.name ? (
+          <Text size="xs" c="indigo" display="block">
+            регенерация (осталось {regen!.brokersRemaining})
           </Text>
         ) : null}
       </Table.Td>
@@ -121,16 +156,27 @@ function BrokerRow({
         )}
       </Table.Td>
       <Table.Td>
-        {!canScale ? (
-          // Не-Active кластер: мутации недоступны (симметрия с pg-шапкой деталей).
-          <Button size="compact-xs" variant="light" color="red" disabled>Убрать</Button>
-        ) : reason !== null ? (
-          <Tooltip label={reason}>
+        <Group gap="xs" wrap="nowrap" justify="flex-end">
+          {resourcesBlocked ? (
+            <Tooltip label={resourcesReason}>
+              <Button size="compact-xs" variant="light" disabled>Ресурсы</Button>
+            </Tooltip>
+          ) : (
+            <Button size="compact-xs" variant="light" onClick={() => onEditResources(broker)}>
+              Ресурсы
+            </Button>
+          )}
+          {!canScale ? (
+            // Не-Active кластер: мутации недоступны (симметрия с pg-шапкой деталей).
             <Button size="compact-xs" variant="light" color="red" disabled>Убрать</Button>
-          </Tooltip>
-        ) : (
-          <RemoveBrokerButton cluster={cluster} broker={broker.name} />
-        )}
+          ) : reason !== null ? (
+            <Tooltip label={reason}>
+              <Button size="compact-xs" variant="light" color="red" disabled>Убрать</Button>
+            </Tooltip>
+          ) : (
+            <RemoveBrokerButton cluster={cluster} broker={broker.name} />
+          )}
+        </Group>
       </Table.Td>
     </Table.Tr>
   );

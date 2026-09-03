@@ -1,4 +1,5 @@
 using KafkaWorker.Core;
+using KafkaWorker.Core.Planning;
 
 namespace KafkaWorker.Docker.Engine;
 
@@ -63,6 +64,12 @@ public interface IDockerEngine : IAsyncDisposable
 
     // Занятые host:port publish-порты: контейнеры движка (plain) + таски на swarm-нодах.
     Task<Result<IReadOnlySet<(string Host, int Port)>>> BusyPortsAsync(CancellationToken ct);
+
+    // Лимиты контейнера (HostConfig.NanoCPUs/Memory; 0 = без лимита); 404 → null.
+    Task<Result<NodeLimits?>> InspectContainerResourcesAsync(string name, CancellationToken ct);
+
+    // Лимиты swarm-сервиса (TaskTemplate.Resources.Limits); 404 → null.
+    Task<Result<NodeLimits?>> InspectServiceResourcesAsync(string name, CancellationToken ct);
 }
 
 // Контейнер из /containers/json (Names — с ведущим "/").
