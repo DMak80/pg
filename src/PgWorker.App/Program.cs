@@ -270,6 +270,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<IAppParamsEnsurer>(),
         sp.GetRequiredService<EtcdEndpoints>(),
         sp.GetRequiredService<PortAllocIndex>(),
+        sp.GetRequiredService<PortAllocLock>(),
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
 });
 builder.Services.AddSingleton(sp => new RemoveShardProcess(

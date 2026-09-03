@@ -36,6 +36,7 @@ public sealed partial class AddShardProcess(
     IAppParamsEnsurer appParams,
     EtcdEndpoints etcdEndpoints,
     PortAllocIndex portAlloc,
+    PortAllocLock portLock,
     Func<CancellationToken, Task<Result>>? snapshot = null)
 {
     private const string Op = "add-shard";
@@ -97,6 +98,8 @@ public sealed partial class AddShardProcess(
         // UsedSlots хостов + busy-порты драйвера) + порт-аллокация; merge в
         // существующий /pgworker/portalloc/<C> (read-modify-write под клэймом).
         var planned = await PlanShardPortsAsync(cluster, shard, ct);
+        if (planned.Error is PortLockBusyException)
+            return await Finish(cluster, "waiting-portalloc-lock", ProcessOutcome.InProgress, ct);
         if (!planned.IsSuccess)
             return await FailAsync(cluster, planned.Error!, "planning", ct);
         var topology = Topology(cluster, shardName, planned.Value);
@@ -181,35 +184,50 @@ public sealed partial class AddShardProcess(
         if (wanted.All(existing.ContainsKey))
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(existing);
 
-        var hosts = await driver.GetHostsAsync(ct);
-        if (!hosts.IsSuccess)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(hosts.Error!);
-        var dockerBusy = await driver.GetBusyPortsAsync(ct);
-        if (!dockerBusy.IsSuccess)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(dockerBusy.Error!);
-        // Занятость = docker ∪ portalloc соседей (spec §3.3): свой portalloc уже в existing.
-        var foreignBusy = await portAlloc.ReadBusyAsync(cluster, ct);
-        if (!foreignBusy.IsSuccess)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(foreignBusy.Error!);
-        var busy = new HashSet<(string, int)>(foreignBusy.Value);
-        foreach (var p in dockerBusy.Value)
-            busy.Add(p);
+        // t90: глобальный portalloc-клэйм — секция «hosts → busy → allocate →
+        // put» взаимоисключающа между кластерами/инстансами (arch/14 §2.4).
+        var acquired = await portLock.TryAcquireAsync(ct);
+        if (!acquired.IsSuccess)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(acquired.Error!);
+        if (!acquired.Value)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new PortLockBusyException());
+        try
+        {
+            var hosts = await driver.GetHostsAsync(ct);
+            if (!hosts.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(hosts.Error!);
+            var dockerBusy = await driver.GetBusyPortsAsync(ct);
+            if (!dockerBusy.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(dockerBusy.Error!);
+            // Занятость = docker ∪ portalloc соседей (spec §3.3): свой portalloc уже в existing.
+            var foreignBusy = await portAlloc.ReadBusyAsync(cluster, ct);
+            if (!foreignBusy.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(foreignBusy.Error!);
+            var busy = new HashSet<(string, int)>(foreignBusy.Value);
+            foreach (var p in dockerBusy.Value)
+                busy.Add(p);
 
-        // Список из ОДНОГО шарда: анти-аффинити внутри нового; занятость живыми
-        // шардами уже учтена (UsedSlots хостов + фактические busy-порты драйвера).
-        var plan = PlacementPlanner.Plan([shard], hosts.Value);
-        var allocated = PortAllocator.Allocate(
-            plan, existing, busy, placementOpts.PortFrom, placementOpts.PortTo);
-        if (!allocated.IsSuccess)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new ApplicationException(
-                $"порт-диапазон исчерпан — расширьте PortRange (PgWorker:Docker:PortRange): {allocated.Error!.Message}"));
+            // Список из ОДНОГО шарда: анти-аффинити внутри нового; занятость живыми
+            // шардами уже учтена (UsedSlots хостов + фактические busy-порты драйвера).
+            var plan = PlacementPlanner.Plan([shard], hosts.Value);
+            var allocated = PortAllocator.Allocate(
+                plan, existing, busy, placementOpts.PortFrom, placementOpts.PortTo);
+            if (!allocated.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new ApplicationException(
+                    $"порт-диапазон исчерпан — расширьте PortRange (PgWorker:Docker:PortRange): {allocated.Error!.Message}"));
 
-        foreach (var (merged, addr) in allocated.Value)
-            existing[merged] = addr;
+            foreach (var (merged, addr) in allocated.Value)
+                existing[merged] = addr;
 
-        var put = await PutAsync(PortAllocKey(cluster), Portalloc.Serialize(existing), ct);
-        if (!put.IsSuccess)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(put.Error!);
+            var put = await PutAsync(PortAllocKey(cluster), Portalloc.Serialize(existing), ct);
+            if (!put.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(put.Error!);
+
+        }
+        finally
+        {
+            await portLock.ReleaseAsync();
+        }
 
         var plannedPhase = await journal.WritePhaseAsync(cluster, Op, "planned", claims.InstanceId, null, ct);
         return plannedPhase.IsSuccess
