@@ -4,6 +4,7 @@ using FluentAssertions;
 using KafkaWorker.Core;
 using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Provisioning.Processes;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace KafkaWorker.IntegrationTests.Kafka;
@@ -28,6 +29,8 @@ public class ProvisioningTests(KafkaClusterFixture fixture)
         var journal = new WorkJournal(fixture.Gateway, [fixture.Endpoint]);
         var provision = new ProvisioningProcess(
             fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal,
+            new PortAllocLock([fixture.Endpoint], fixture.Gateway, TimeProvider.System, claims.InstanceId),
+            new PortAllocIndex(fixture.Gateway, [fixture.Endpoint], NullLogger<PortAllocIndex>.Instance),
             new AppSecretEnsurer(fixture.Gateway, [fixture.Endpoint]),
             fixture.AdminFactory, new ClusterConfigConverger(fixture.AdminFactory),
             fixture.Options, snapshot: null);

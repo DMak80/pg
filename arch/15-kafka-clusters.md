@@ -181,6 +181,7 @@ TopicDoesNotExist = исполнено; отказ между мутацией �
 | `/kafkaworker/claims/<C>` | lease TTL 15 с | пер-кластерный клэйм (exclusivity обработки одним инстансом) |
 | `/kafkaworker/work/<C>` | обычный | журнал фаз `{"op","phase","updated_unix","instance","last_error"?}` |
 | `/kafkaworker/portalloc/<C>` | обычный | `{"broker<k>":{"host":"h","client":16001}}` — закрепление клиентских портов (переживает rebuild) |
+| `/kafkaworker/locks/portalloc` | lease TTL 15 с | **глобальный portalloc-клэйм** (t91, arch/16 §2.1): взаимоисключение секции довыделения клиентских портов «чтение занятости → выбор портов → запись `/kafkaworker/portalloc/<C>`» (provision K1 / add-broker) — пер-кластерные клэймы кросс-кластерную гонку не закрывают. Value: `{"instance":"<id>","since_unix":…}`. Захват txn `version==0` + put-with-lease; освобождение по завершении секции (del + revoke lease), смерть держателя — TTL. Не взял → InProgress (следующий тик). Без keepalive: секция короткая (единицы секунд ≪ TTL). |
 | `/kafkaworker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика) |
 | `/kafkaworker/api/<id>` | lease TTL 15 с | **дискавери API воркера** (arch/16 §1.1): `{"url":"http://<host>:<port>","instance":"<id>","since_unix":…}` — ставит сам инстанс; ключ жив = инстанс жив и URL валиден. Читает панель; префикс `/kafka/` и этот координационный слой пишет только воркер (мутации панели — через его API) |
 | `/kafkaworker/rotations/<C>` | обычный | заявка ротации app-пароля `{"requested_unix","requested_by"}` (панель, клэйм-txn; формат и протокол — pg 02 §9.8) |

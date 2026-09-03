@@ -28,6 +28,8 @@ public sealed class ProvisioningProcess(
     IClusterDriver driver,
     ClaimStore claims,
     WorkJournal journal,
+    PortAllocLock portLock,
+    PortAllocIndex portAlloc,
     IAppSecretEnsurer appSecret,
     IKafkaAdminClientFactory adminFactory,
     IClusterConfigConverger converger,
@@ -72,7 +74,13 @@ public sealed class ProvisioningProcess(
         // K1: план placement + порты, закрепление portalloc, фиксация ролей.
         var planned = await PlanAsync(snap, ct);
         if (!planned.IsSuccess)
+        {
+            // t91: клэйм занят — не фейл, InProgress (следующий тик ~5 с);
+            // сбой захвата — обычный фейл (бэкофф).
+            if (planned.Error is PortLockBusyException)
+                return await FinishAsync(cluster, "waiting-portalloc-lock", ct);
             return Fail(cluster, planned.Error!, "planning");
+        }
         var addresses = planned.Value;
         var roles = RolesFor(snap.Config.Brokers);
 
@@ -136,6 +144,12 @@ public sealed class ProvisioningProcess(
 
     // K1: placement → порт-аллокация → закрепление /kafkaworker/portalloc/<C>
     // (txn compare version==0; конкурент закрепил первым → берём его) + роли.
+    // t91 (arch/16 §2.1): довыделение портов — под глобальным клэймом
+    // /kafkaworker/locks/portalloc: без него два параллельно сеемых кластера
+    // читают занятость до первой записи соседа и выбирают одинаковые порты.
+    // Занятость = docker-публикации ∪ portalloc ЧУЖИХ кластеров (свой —
+    // закрепление, переиспользуется аллокатором); «не взял» — не ошибка:
+    // waiting-portalloc-lock, следующий тик повторяет.
     private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> PlanAsync(
         KafkaClusterSnapshot snap, CancellationToken ct)
     {
@@ -146,47 +160,84 @@ public sealed class ProvisioningProcess(
         var existing = new Dictionary<string, NodeAddress>(pinned.Value);
 
         var wanted = snap.Brokers.Select(b => b.Name).ToList();
-        var hosts = await driver.GetHostsAsync(ct);
-        if (!hosts.IsSuccess)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(hosts.Error!);
-        var busy = await driver.GetBusyPortsAsync(ct);
-        if (!busy.IsSuccess)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(busy.Error!);
 
-        var plan = PlacementPlanner.Plan(wanted, hosts.Value);
-        var allocated = PortAllocator.Allocate(plan, existing, busy.Value, options.PortFrom, options.PortTo);
-        if (!allocated.IsSuccess)
-            return allocated;
+        // Ранний пред-выход ДО клэйма (порт t90): всё закреплено —
+        // переиспользование без записи; тики waiting-brokers (K4) не
+        // соперничают за глобальный клэйм.
+        if (wanted.All(existing.ContainsKey))
+            return await PlannedAsync(existing, cluster, ct);
 
-        foreach (var (node, addr) in allocated.Value)
-            existing[node] = addr;
-
-        // Создание ключа — только если нет (compare version==0); проигрыш → re-read.
-        var key = PortAllocKey(cluster);
-        var serialized = SerializePortAlloc(existing);
-        var txn = await TxnAsync(
-            TxnRequest.Of([TxnCompare.NotExists(key)], [new TxnOp.Put(key, serialized, null)]), ct);
-        if (!txn.IsSuccess)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(txn.Error!);
-        if (!txn.Value.Succeeded)
+        // t91: захват глобального клэйма; сбой — обычный фейл (бэкофф),
+        // занят — PortLockBusyException → тик-ретрай.
+        var acquired = await portLock.TryAcquireAsync(ct);
+        if (!acquired.IsSuccess)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(acquired.Error!);
+        if (!acquired.Value)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new PortLockBusyException());
+        try
         {
-            var reread = await ReadPortAllocAsync(cluster, ct);
-            if (!reread.IsSuccess)
-                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(reread.Error!);
-            existing = new Dictionary<string, NodeAddress>(reread.Value);
-        }
+            var hosts = await driver.GetHostsAsync(ct);
+            if (!hosts.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(hosts.Error!);
+            var dockerBusy = await driver.GetBusyPortsAsync(ct);
+            if (!dockerBusy.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(dockerBusy.Error!);
+            var foreign = await portAlloc.ReadBusyAsync(cluster, ct);
+            if (!foreign.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(foreign.Error!);
+            var busy = new HashSet<(string Host, int Port)>(foreign.Value);
+            foreach (var p in dockerBusy.Value)
+                busy.Add(p);
 
-        // Фиксация ролей (put только при отличии; роль навсегда, arch/15 §2).
-        foreach (var broker in snap.Brokers)
-        {
-            if (RolesFor(snap.Config.Brokers).GetValueOrDefault(broker.Name) is { } role && broker.Role != role)
+            var plan = PlacementPlanner.Plan(wanted, hosts.Value);
+            var allocated = PortAllocator.Allocate(plan, existing, busy, options.PortFrom, options.PortTo);
+            if (!allocated.IsSuccess)
+                return allocated;
+
+            foreach (var (node, addr) in allocated.Value)
+                existing[node] = addr;
+
+            // Создание ключа — только если нет (compare version==0); проигрыш → re-read.
+            var key = PortAllocKey(cluster);
+            var serialized = SerializePortAlloc(existing);
+            var txn = await TxnAsync(
+                TxnRequest.Of([TxnCompare.NotExists(key)], [new TxnOp.Put(key, serialized, null)]), ct);
+            if (!txn.IsSuccess)
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(txn.Error!);
+            if (!txn.Value.Succeeded)
             {
-                var put = await PutAsync(RoleKey(cluster, broker.Name), role, ct);
-                if (!put.IsSuccess)
-                    return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(put.Error!);
+                var reread = await ReadPortAllocAsync(cluster, ct);
+                if (!reread.IsSuccess)
+                    return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(reread.Error!);
+                existing = new Dictionary<string, NodeAddress>(reread.Value);
             }
-        }
 
+            // Фиксация ролей (put только при отличии; роль навсегда, arch/15 §2) —
+            // ВСЕГДА, независимо от исхода txn (порт семантики исходного кода:
+            // ключ мог быть записан до t91 без ролей). Внутри секции, до release.
+            foreach (var broker in snap.Brokers)
+            {
+                if (RolesFor(snap.Config.Brokers).GetValueOrDefault(broker.Name) is { } role && broker.Role != role)
+                {
+                    var put = await PutAsync(RoleKey(cluster, broker.Name), role, ct);
+                    if (!put.IsSuccess)
+                        return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(put.Error!);
+                }
+            }
+
+            return await PlannedAsync(existing, cluster, ct);
+        }
+        finally
+        {
+            await portLock.ReleaseAsync();
+        }
+    }
+
+    // Журнал planned + результат секции (порт PlannedAsync t90 — внутри try,
+    // до release; клэйм короткий).
+    private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> PlannedAsync(
+        Dictionary<string, NodeAddress> existing, string cluster, CancellationToken ct)
+    {
         var planned = await journal.WriteAsync(cluster, Op, "planned", claims.InstanceId, null, ct);
         return planned.IsSuccess
             ? Result<IReadOnlyDictionary<string, NodeAddress>>.Success(existing)

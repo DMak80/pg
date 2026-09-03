@@ -98,3 +98,11 @@ public sealed class EtcdFixture : IAsyncLifetime
         throw new InvalidOperationException($"etcd в {Endpoint} не поднялся за 30 c");
     }
 }
+
+// Один etcd-контейнер на etcd-only тест-классы сборки (t91; порт EtcdCollection
+// PgWorker): ключи тестов не пересекаются, контейнер поднимается один.
+[CollectionDefinition(Name)]
+public sealed class EtcdCollection : ICollectionFixture<EtcdFixture>
+{
+    public const string Name = "kafka-etcd";
+}

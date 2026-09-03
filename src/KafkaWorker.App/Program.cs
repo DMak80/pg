@@ -1,4 +1,5 @@
 using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using KafkaWorker.App;
 using KafkaWorker.App.Api;
@@ -49,6 +50,13 @@ builder.Services.AddSingleton(sp => new ClaimStore(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Api.AdvertiseUrl));
+// t91: глобальный portalloc-клэйм (arch/15 §4 / arch/16 §2.1) — DI-синглтон,
+// InstanceId единый с ClaimStore (сквозная диагностика держателя).
+builder.Services.AddSingleton(sp => new PortAllocLock(
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ClaimStore>().InstanceId));
 builder.Services.AddSingleton(sp => new WorkJournal(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
@@ -162,12 +170,19 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<IClusterDriver>(),
         sp.GetRequiredService<ClaimStore>(),
         sp.GetRequiredService<WorkJournal>(),
+        sp.GetRequiredService<PortAllocLock>(),
+        sp.GetRequiredService<PortAllocIndex>(),
         sp.GetRequiredService<IAppSecretEnsurer>(),
         sp.GetRequiredService<IKafkaAdminClientFactory>(),
         sp.GetRequiredService<IClusterConfigConverger>(),
         ToProvisioningOptions(opts),
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
 });
+// t91: индекс занятости portalloc чужих кластеров (arch/16 §2.1) — DI-синглтон.
+builder.Services.AddSingleton(sp => new PortAllocIndex(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<ILogger<PortAllocIndex>>()));
 builder.Services.AddSingleton(sp => new DeprovisioningProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
@@ -215,6 +230,8 @@ builder.Services.AddSingleton(sp => new AddBrokerProcess(
     sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<PortAllocLock>(),
+    sp.GetRequiredService<PortAllocIndex>(),
     sp.GetRequiredService<IKafkaAdminClientFactory>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value)));
 builder.Services.AddSingleton(sp => new AppPasswordRotator(

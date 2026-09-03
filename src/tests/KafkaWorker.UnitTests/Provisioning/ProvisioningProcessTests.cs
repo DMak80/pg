@@ -5,6 +5,7 @@ using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
@@ -22,6 +23,8 @@ public class ProvisioningProcessTests
         FakeKafkaAdminClient Admin,
         ClaimStore Claims,
         WorkJournal Journal,
+        PortAllocLock PortLock,
+        PortAllocIndex PortAlloc,
         ProvisioningProcess Process,
         FakeConverger Converger,
         List<string> SnapshotPoints);
@@ -68,12 +71,14 @@ public class ProvisioningProcessTests
         var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("events", CancellationToken.None);
         var journal = new WorkJournal(etcd, [Ep]);
+        var portLock = new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId);
+        var portAllocIndex = new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance);
         var driver = new Fakes.FakeKafkaDriver();
         var admin = new FakeKafkaAdminClient();
         var converger = new FakeConverger();
         var snapshotPoints = new List<string>();
         var process = new ProvisioningProcess(
-            etcd, [Ep], driver, claims, journal,
+            etcd, [Ep], driver, claims, journal, portLock, portAllocIndex,
             new AppSecretEnsurer(etcd, [Ep]),
             new FakeAdminFactory(admin),
             converger,
@@ -84,7 +89,7 @@ public class ProvisioningProcessTests
                 return ValueTask.FromResult(Result.Success()).AsTask();
             });
         setup?.Invoke(etcd, driver, admin);
-        return new Rig(etcd, driver, admin, claims, journal, process, converger, snapshotPoints);
+        return new Rig(etcd, driver, admin, claims, journal, portLock, portAllocIndex, process, converger, snapshotPoints);
     }
 
     private sealed class FakeAdminFactory(FakeKafkaAdminClient client) : IKafkaAdminClientFactory
@@ -228,8 +233,11 @@ public class ProvisioningProcessTests
         var etcd = new Fakes.FakeEtcd();
         SeedCluster(etcd);
         var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var portLock = new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId);
+        var portAllocIndex = new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance);
         var process = new ProvisioningProcess(
             etcd, [Ep], new Fakes.FakeKafkaDriver(), claims, new WorkJournal(etcd, [Ep]),
+            portLock, portAllocIndex,
             new AppSecretEnsurer(etcd, [Ep]), new FakeAdminFactory(new FakeKafkaAdminClient()),
             new FakeConverger(), ProvisioningOptions.Default, snapshot: null);
 
@@ -259,5 +267,77 @@ public class ProvisioningProcessTests
         broker4.Env["KAFKA_PROCESS_ROLES"].Should().Be("broker");
         broker4.Env["KAFKA_CONTROLLER_QUORUM_VOTERS"].Should().NotContain("4@");
         broker4.Env["KAFKA_LISTENERS"].Should().NotContain("CONTROLLER");
+    }
+
+    // AAA (t91): клэйм занят чужим инстансом при НЕДОБОРЕ портов → журнальная
+    // фаза waiting-portalloc-lock, успех тика (InProgress), никаких мутаций
+    // portalloc и docker.
+    [Fact]
+    public async Task Run_PortLockBusy_WaitingPhase_NoMutations()
+    {
+        // Arrange: клэйм /kafkaworker/locks/portalloc держит «другой инстанс».
+        var rig = await NewRig();
+        ReadyCluster(rig.Admin, 3);
+        rig.Etcd.Seed("/kafkaworker/locks/portalloc", """{"instance":"inst-2","since_unix":1}""");
+
+        // Act
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: InProgress-семантика — успех без мутаций (следующий тик повторит).
+        result.IsSuccess.Should().BeTrue();
+        var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
+        state.Value!.Phase.Should().Be("waiting-portalloc-lock");
+        rig.Etcd.Store.Should().NotContainKey("/kafkaworker/portalloc/events");
+        rig.Driver.Ensured.Should().BeEmpty();
+    }
+
+    // AAA (t91): чужая portalloc-запись — занятость (окно «сосед записал,
+    // контейнеры ещё не созданы» закрыто): выделенные порты обходят соседские.
+    [Fact]
+    public async Task Run_ForeignPortAllocRecord_PortIsNotReused()
+    {
+        // Arrange: сосед shop1 закрепил h1:16000, его контейнеров ещё нет
+        // (docker-busy пуст — окно K1→K3 гонки t91).
+        var rig = await NewRig();
+        ReadyCluster(rig.Admin, 3);
+        rig.Etcd.Seed("/kafkaworker/portalloc/shop1",
+            """{"broker1":{"host":"h1","client":16000}}""");
+
+        // Act
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: полный прогон; порты events начинаются с 16001 — 16000 занят соседом.
+        result.IsSuccess.Should().BeTrue();
+        var portAlloc = rig.Etcd.Store["/kafkaworker/portalloc/events"].Value;
+        portAlloc.Should().NotContain("\"client\":16000");
+        portAlloc.Should().Contain("\"client\":16001").And.Contain("\"client\":16002").And.Contain("\"client\":16003");
+        rig.Etcd.Store["/kafka/clusters/events/endpoints"].Value
+            .Should().Be("h1:16001,h1:16002,h1:16003");
+    }
+
+    // AAA (t91): всё закреплено (rebuild) — пред-выход ДО клэйма: занятый чужим
+    // клэйм не мешает довести provisioning до done, portalloc не перезаписывается.
+    [Fact]
+    public async Task Run_AllPinnedEarlyExit_IgnoresPortLock()
+    {
+        // Arrange: portalloc полный (3/3), клэйм занят чужим инстансом.
+        var rig = await NewRig();
+        ReadyCluster(rig.Admin, 3);
+        rig.Etcd.Seed("/kafkaworker/portalloc/events",
+            """{"broker1":{"host":"h1","client":16000},"broker2":{"host":"h1","client":16001},"broker3":{"host":"h1","client":16002}}""");
+        rig.Etcd.Seed("/kafkaworker/locks/portalloc", """{"instance":"inst-2","since_unix":1}""");
+
+        // Act
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: полный прогон до done (не waiting-portalloc-lock) — клэйм не брался,
+        // закрепления переиспользованы как есть.
+        result.IsSuccess.Should().BeTrue();
+        var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
+        state.Value!.Phase.Should().Be("done");
+        rig.Etcd.Store["/kafkaworker/portalloc/events"].Value
+            .Should().Contain("\"client\":16000"); // закрепление не тронуто
+        rig.Etcd.Store["/kafka/clusters/events/endpoints"].Value
+            .Should().Be("h1:16000,h1:16001,h1:16002");
     }
 }

@@ -153,7 +153,19 @@ URL API — из etcd)       URL воркера (§1.1)
   PlacementPlanner PgWorker); порт-аллокатор из диапазона `16000–16999`
   (**1 клиентский порт на ноду**), закрепление в
   `/kafkaworker/portalloc/<C>`; лимиты контейнера из `resources` (cpu/mem;
-  disk-заявка — инфо, квоты томов — roadmap).
+  disk-заявка — инфо, квоты томов — roadmap). Занятость для довыделения =
+  docker-публикации ∪ записи portalloc ВСЕХ чужих кластеров
+  (`/kafkaworker/portalloc/*`, кроме своего — свой переиспользуется как
+  закрепление; закрывает кросс-кластерную коллизию, включая окно «portalloc
+  записан, контейнеры ещё не созданы»). **Глобальный portalloc-клэйм** (t91):
+  довыделение новых портов (недобор нод, не переиспользование закреплений) —
+  глобально взаимоисключающая секция «чтение занятости → выбор портов →
+  запись», выполняется только держателем `/kafkaworker/locks/portalloc`
+  (arch/15 §4; txn `version==0` + put-with-lease TTL 15 с). Не взял →
+  InProgress (следующий тик ~5 с); смерть держателя гасит lease ≤ 15 с —
+  takeover без оператора. Полностью закреплённый portalloc (rebuild, ранний
+  выход без записи) клэйма не требует. Касается всех точек довыделения:
+  provision K1, add-broker (§5 A/F).
 - Сам воркер — контейнер с `docker.sock` (или swarm-manager), volume
   снапшотов (`kfw-snapshots`), поставляется через `deploy/docker-compose.yml`
   (`docker/KafkaWorker.Dockerfile`). **Env-секретов per-install нет**
@@ -254,6 +266,7 @@ placement constraint, `publish mode=host`. Объекты для сверок �
 | `/kafka/clusters/<C>/` (префикс) | TO_REMOVE, финал X2 | `del --prefix` |
 | `/kafkaworker/reassignments/<C>` | процесс I: put при работе, del по завершении | `{"mode","drain_broker"?,"partitions_total","partitions_remaining","submitted_unix","updated_unix","instance","last_error"?}` (15 §4) |
 | `/kafkaworker/regens/<C>` | процесс J: put при старте первого пересоздания, del по сходимости | `{"brokers_total","brokers_remaining","current_broker"?,"updated_unix","instance","last_error"?}` (15 §4) — прогресс rolling-регенерации |
+| `/kafkaworker/locks/portalloc` | захват секции довыделения портов (t91, §2.1) | `{"instance":"<id>","since_unix":…}` — lease TTL 15 с, txn `version==0` + put-with-lease; del + revoke lease по завершении секции (arch/15 §4) |
 | `/kafkaworker/rebalances/<C>` | процесс I: del по завершении ребалансировки | заявка панели, дожившая до факта == план (порядок «сначала факт, потом del заявки» — повтор тика после сбоя del безвреден) |
 | `/kafkaworker/{claims,work,portalloc}/<C>*` + `/kafkaworker/{rotations,rebalances,reassignments,regens}/<C>` | TO_REMOVE, финал X2 | del — **очистка координации включает заявки и прогресс**: остаточные заявки/прогресс не переживают удаление кластера (иначе вечные алерты `kafka-rotation-pending`/`kafka-rebalance-pending`) |
 
@@ -286,7 +299,10 @@ journal-before-manipulations.
 
 ```
 K0 claim + journal(op=provision); снапшот P12 «до»
-K1 план: placement + порт-аллокация (закрепление portalloc);
+K1 план: placement + порт-аллокация (закрепление portalloc) — под
+   глобальным portalloc-клэймом /kafkaworker/locks/portalloc (§2.1):
+   занят = docker ∪ portalloc чужих кластеров; не взял клэйм → journal
+   waiting-portalloc-lock (InProgress, следующий тик);
    роли: broker1..m — controller (m=min(3,B)); фиксация brokers/<k>/role;
    journal phase=planned
 K2 ensure app-секрета: app_user/app_password txn put-if-absent
@@ -376,7 +392,9 @@ Kafka-конфиги: `default_retention_ms`→`log.retention.ms`,
 ### F. AddBrokerProcess
 
 `brokers/<b>/state=NOT_INITIALIZED` у Active-кластера: план (host/порт;
-`role=broker`) → контейнер (env: `QUORUM_VOTERS` уже зафиксирован — нода
+`role=broker`) (добор портов — под глобальным portalloc-клэймом §2.1;
+не взял → journal waiting-portalloc-lock) → контейнер (env:
+`QUORUM_VOTERS` уже зафиксирован — нода
 подключается к кворуму) → ждать появления в DescribeCluster → RMW
 `endpoints` (добавить адрес) → `state=RUNNING`. Уже RUNNING → no-op.
 

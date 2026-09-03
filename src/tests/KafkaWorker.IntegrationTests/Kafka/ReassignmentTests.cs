@@ -6,6 +6,7 @@ using KafkaWorker.Core;
 using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 
 namespace KafkaWorker.IntegrationTests.Kafka;
@@ -41,6 +42,8 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             journal,
             new ProvisioningProcess(
                 fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal,
+                new PortAllocLock([fixture.Endpoint], fixture.Gateway, TimeProvider.System, claims.InstanceId),
+                new PortAllocIndex(fixture.Gateway, [fixture.Endpoint], NullLogger<PortAllocIndex>.Instance),
                 new AppSecretEnsurer(fixture.Gateway, [fixture.Endpoint]),
                 fixture.AdminFactory, new ClusterConfigConverger(fixture.AdminFactory),
                 fixture.Options, snapshot: null),
@@ -55,6 +58,8 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
                 fixture.AdminFactory, fixture.Options),
             new AddBrokerProcess(
                 fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal,
+                new PortAllocLock([fixture.Endpoint], fixture.Gateway, TimeProvider.System, claims.InstanceId),
+                new PortAllocIndex(fixture.Gateway, [fixture.Endpoint], NullLogger<PortAllocIndex>.Instance),
                 fixture.AdminFactory, fixture.Options),
             new TopicSyncProcess(
                 fixture.Gateway, [fixture.Endpoint], claims, journal,
