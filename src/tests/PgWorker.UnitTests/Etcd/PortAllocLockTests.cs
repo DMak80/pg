@@ -55,22 +55,49 @@ public class PortAllocLockTests
         etcd.Store[PortAllocLock.Key].Value.Should().Contain("inst-2");
     }
 
-    // AAA: повторный TryAcquire тем же объектом при живом захвате — true без нового txn.
+    // AAA (ревью-блокер t90): повторный TryAcquire тем же объектом при живом
+    // захвате — false, НЕ true: клэйм-объект DI-синглтон, параллельные тики
+    // разных кластеров одного инстанса обязаны взаимоисключаться (reentrant-true
+    // пускал обе секции concurrently — гонка t90 воспроизводилась в дефолтной
+    // конфигурации). «Занят» — не ошибка: waiting-portalloc-lock, следующий тик.
     [Fact]
-    public async Task TryAcquire_AlreadyHeld_ReturnsTrue()
+    public async Task TryAcquire_AlreadyHeldBySameObject_ReturnsFalse()
     {
         // Arrange
         var etcd = new Fakes.FakeEtcd();
         var locks = new PortAllocLock([Ep], etcd, TimeProvider.System, "inst-1");
         (await locks.TryAcquireAsync(CancellationToken.None)).Value.Should().BeTrue();
-        var txnsBefore = etcd.Txns.Count;
 
         // Act
         var again = await locks.TryAcquireAsync(CancellationToken.None);
 
         // Assert
-        again.Value.Should().BeTrue();
-        etcd.Txns.Count.Should().Be(txnsBefore); // без нового txn — захват уже наш
+        again.IsSuccess.Should().BeTrue();
+        again.Value.Should().BeFalse(); // держит параллельный тик этого же инстанса
+        etcd.Store[PortAllocLock.Key].Value.Should().Contain("inst-1"); // ключ держателя не тронут
+    }
+
+    // AAA (регрессия ревью-блокера t90): два TryAcquireAsync на ОДНОМ объекте
+    // (один инстанс, параллельные тики двух кластеров) — первый true, второй
+    // false; после ReleaseAsync первого — захват снова проходит (следующий тик).
+    [Fact]
+    public async Task SameObject_SecondTickBlockedUntilRelease()
+    {
+        // Arrange
+        var etcd = new Fakes.FakeEtcd();
+        var portLock = new PortAllocLock([Ep], etcd, TimeProvider.System, "inst-1");
+
+        // Act
+        var first = await portLock.TryAcquireAsync(CancellationToken.None);
+        var second = await portLock.TryAcquireAsync(CancellationToken.None);
+        await portLock.ReleaseAsync();
+        var reclaimed = await portLock.TryAcquireAsync(CancellationToken.None);
+        await portLock.ReleaseAsync();
+
+        // Assert
+        first.Value.Should().BeTrue();
+        second.Value.Should().BeFalse();
+        reclaimed.Value.Should().BeTrue();
     }
 
     // AAA: лок перехвачен (lease истёк, ключ перезаписан чужим value) —

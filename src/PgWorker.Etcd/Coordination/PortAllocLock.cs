@@ -14,7 +14,8 @@ namespace PgWorker.Etcd.Coordination;
 /// (паттерн /pgworker/leader); keepalive не нужен — секция короткая (единицы
 /// секунд ≪ TTL). Освобождение — явное: del под compare ValueEqual(наш value;
 /// lease истёк и лок перехвачен — чужой ключ не трогаем) + revoke lease.
-/// «Занят другим» — не ошибка: вызывающий возвращает InProgress, следующий тик
+/// «Занят» (чужим инстансом или параллельным тиком этого же — объект в DI один
+/// на процесс) — не ошибка: вызывающий возвращает InProgress, следующий тик
 /// (~5 с) повторяет; смерть держателя гасит TTL ≤ 15 с — takeover без оператора.
 /// </summary>
 public sealed class PortAllocLock(
@@ -27,13 +28,26 @@ public sealed class PortAllocLock(
     private long? _lease;
     private string? _payload; // наш value — compare «чужой-не-трогаем» при release
 
-    /// <summary>Захват: true — держим; false — занят другим инстансом (НЕ ошибка).</summary>
+    /// <summary>Захват: true — держим; false — занят (другим инстансом либо
+    /// параллельным тиком ЭТОГО инстанса — клэйм-объект DI-синглтон; НЕ ошибка).</summary>
     public async Task<Result<bool>> TryAcquireAsync(CancellationToken ct)
     {
+        // t90 (ревью-блокер): объект — DI-синглтон, ReconcileLoop тикает кластеры
+        // ПАРАЛЛЕЛЬНО (MaxClusters) — для второго тика того же инстанса клэйм
+        // «занят» так же, как для чужого: пока тик A держит секцию (поля
+        // _lease/_payload гасятся только в ReleaseAsync), тик B получает false →
+        // PortLockBusyException → waiting-portalloc-lock → следующий тик
+        // (тиковая модель spec §2/§3.2). Локальная проверка ДО etcd-раунда, а не
+        // reentrant-true: (1) второй конкурент НЕ входит в секцию concurrently —
+        // иначе обе секции читают busy и пишут portalloc (сама гонка t90);
+        // (2) не тратим grant+txn на заведомо занятый клэйм; (3) _lease/_payload
+        // пишет ровно один держатель инстанса — перехват по истёкшему TTL не
+        // перезапишет поля, и release зависшего тика не удалит чужой живой ключ
+        // под ValueEqual с перезаписанным payload.
         lock (_sync)
         {
             if (_lease is not null)
-                return Result<bool>.Success(true); // уже наш — секция ещё не отпущена
+                return Result<bool>.Success(false); // держит параллельный тик — ждём следующим тиком
         }
 
         var grant = await WithFailoverAsync(endpoint => gateway.LeaseGrantAsync(endpoint, TtlSec, ct));

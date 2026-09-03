@@ -292,40 +292,40 @@ public sealed class AdoptionProcess(
                 // по dsn-шардам снапшота: у шарда без nodes-ключей detach-нутая нода
                 // переаллоцируется следующим тиком (после того как AD3 доведёт nodes).
                 var dockerBusy = await driver.GetBusyPortsAsync(ct);
-            if (!dockerBusy.IsSuccess)
-                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(dockerBusy.Error!);
-            var foreignAlloc = await portAlloc.ReadBusyAsync(cluster, ct);
-            if (!foreignAlloc.IsSuccess)
-                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(foreignAlloc.Error!);
-            var busy = new HashSet<(string, int)>(foreignAlloc.Value);
-            foreach (var p in dockerBusy.Value)
-                busy.Add(p);
-            if (PortPlanConvergence.DetachColliding(merged, selfFactByNode, busy))
-            {
-                // Недобор адресов снятых нод: переаллокация (паттерн P1-недобора);
-                // taken = busy − факты подтверждённых записей (переиспользование валидных).
-                var hosts = await driver.GetHostsAsync(ct);
-                if (!hosts.IsSuccess)
-                    return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(hosts.Error!);
-                var taken = new HashSet<(string, int)>(busy);
-                foreach (var p in PortPlanConvergence.ConfirmedFact(merged, selfFactByNode))
-                    taken.Remove(p);
-                var plan = PlacementPlanner.Plan(dsnShards, hosts.Value);
-                var allocated = PortAllocator.Allocate(plan, merged, taken, placementOpts.PortFrom, placementOpts.PortTo);
-                if (!allocated.IsSuccess)
-                    return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(allocated.Error!);
-                foreach (var (k, addr) in allocated.Value)
-                    merged[k] = addr;
-                changed = true;
-            }
+                if (!dockerBusy.IsSuccess)
+                    return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(dockerBusy.Error!);
+                var foreignAlloc = await portAlloc.ReadBusyAsync(cluster, ct);
+                if (!foreignAlloc.IsSuccess)
+                    return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(foreignAlloc.Error!);
+                var busy = new HashSet<(string, int)>(foreignAlloc.Value);
+                foreach (var p in dockerBusy.Value)
+                    busy.Add(p);
+                if (PortPlanConvergence.DetachColliding(merged, selfFactByNode, busy))
+                {
+                    // Недобор адресов снятых нод: переаллокация (паттерн P1-недобора);
+                    // taken = busy − факты подтверждённых записей (переиспользование валидных).
+                    var hosts = await driver.GetHostsAsync(ct);
+                    if (!hosts.IsSuccess)
+                        return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(hosts.Error!);
+                    var taken = new HashSet<(string, int)>(busy);
+                    foreach (var p in PortPlanConvergence.ConfirmedFact(merged, selfFactByNode))
+                        taken.Remove(p);
+                    var plan = PlacementPlanner.Plan(dsnShards, hosts.Value);
+                    var allocated = PortAllocator.Allocate(plan, merged, taken, placementOpts.PortFrom, placementOpts.PortTo);
+                    if (!allocated.IsSuccess)
+                        return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(allocated.Error!);
+                    foreach (var (k, addr) in allocated.Value)
+                        merged[k] = addr;
+                    changed = true;
+                }
 
-            if (changed)
-            {
-                var put = await PutAsync($"/pgworker/portalloc/{cluster}", Portalloc.Serialize(merged), ct);
-                if (!put.IsSuccess)
-                    return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(put.Error!);
-                await journal.WritePhaseAsync(cluster, Op, "repaired-portalloc", claims.InstanceId, null, ct);
-            }
+                if (changed)
+                {
+                    var put = await PutAsync($"/pgworker/portalloc/{cluster}", Portalloc.Serialize(merged), ct);
+                    if (!put.IsSuccess)
+                        return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(put.Error!);
+                    await journal.WritePhaseAsync(cluster, Op, "repaired-portalloc", claims.InstanceId, null, ct);
+                }
             }
             finally
             {
