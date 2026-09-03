@@ -11,6 +11,8 @@
     </ItemGroup>
 
     <ItemGroup>
+        <!-- t91: для ILogger<PortAllocIndex> (порт PgWorker.Provisioning). -->
+        <PackageReference Include="Microsoft.Extensions.Logging.Abstractions"/>
         <PackageReference Include="Confluent.Kafka"/>
     </ItemGroup>
 
