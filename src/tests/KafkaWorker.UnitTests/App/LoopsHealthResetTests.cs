@@ -46,7 +46,9 @@ public class LoopsHealthResetTests
             new ClaimStore(["http://etcd:2379"], etcd, TimeProvider.System),
             new FakeProcesses(),
             new WorkJournal(etcd, ["http://etcd:2379"]),
-            NullLogger<ReconcileLoop>.Instance, new HealthState(TimeProvider.System));
+            NullLogger<ReconcileLoop>.Instance, new HealthState(TimeProvider.System),
+            new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
+                new System.Diagnostics.Metrics.Meter("TestLoops"), TimeProvider.System));
         using var cts = new CancellationTokenSource();
         await loop.StartAsync(cts.Token);
 
@@ -78,7 +80,9 @@ public class LoopsHealthResetTests
             Path.Combine(Path.GetTempPath(), $"kfw-health-{Guid.NewGuid():N}"), 10, 60);
         var loop = new SnapshotLoop(
             options, new ClaimStore(["http://etcd:2379"], etcd, TimeProvider.System), job,
-            NullLogger<SnapshotLoop>.Instance, new HealthState(TimeProvider.System));
+            NullLogger<SnapshotLoop>.Instance, new HealthState(TimeProvider.System), TimeProvider.System,
+            new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
+                new System.Diagnostics.Metrics.Meter("TestLoops"), TimeProvider.System));
         using var cts = new CancellationTokenSource();
         await loop.StartAsync(cts.Token);
 
@@ -108,7 +112,9 @@ public class LoopsHealthResetTests
             Path.Combine(Path.GetTempPath(), $"kfw-health-{Guid.NewGuid():N}"), 10, 60);
         var loop = new SnapshotLoop(
             Options(), new ClaimStore(["http://etcd:2379"], etcd, TimeProvider.System), job,
-            NullLogger<SnapshotLoop>.Instance, new HealthState(TimeProvider.System));
+            NullLogger<SnapshotLoop>.Instance, new HealthState(TimeProvider.System), TimeProvider.System,
+            new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
+                new System.Diagnostics.Metrics.Meter("TestLoops"), TimeProvider.System));
         using var cts = new CancellationTokenSource();
         await loop.StartAsync(cts.Token);
 
@@ -130,7 +136,9 @@ public class LoopsHealthResetTests
         var etcd = new Fakes.FakeEtcd();
         var loop = new KeepaliveLoop(
             Options(keepaliveSec: 0), new ClaimStore(["http://etcd:2379"], etcd, TimeProvider.System),
-            NullLogger<KeepaliveLoop>.Instance, new HealthState(TimeProvider.System));
+            NullLogger<KeepaliveLoop>.Instance, new HealthState(TimeProvider.System),
+            new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
+                new System.Diagnostics.Metrics.Meter("TestLoops"), TimeProvider.System));
         using var cts = new CancellationTokenSource();
 
         // Act: цикл жив несколько проходов.

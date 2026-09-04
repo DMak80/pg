@@ -295,6 +295,52 @@ services:
       KafkaWorker__Api__EnableSeedEndpoint: "true"
     depends_on: [etcd]
 
+  # Стек мониторинга (arch/18 §5; профиль metrics — входит в полный подъём
+  # 00-up.sh, quick без него). Порты — env-override при коллизиях на хосте (M4).
+  prometheus:
+    image: prom/prometheus:v3.14.0
+    container_name: as-prometheus
+    profiles: ["metrics"]
+    ports: ["${METRICS_PROMETHEUS_PORT:-9090}:9090"]
+    extra_hosts: ["host.docker.internal:host-gateway"]  # scrape pgworker (deploy-проект)
+    volumes:
+      - ./metrics/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./metrics/prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+      - prometheus-data:/prometheus
+    command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=7d"]
+
+  grafana:
+    image: grafana/grafana:13.0.8
+    container_name: as-grafana
+    profiles: ["metrics"]
+    ports: ["${METRICS_GRAFANA_PORT:-3000}:3000"]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin   # стенд: cookie-логин локального мониторинга
+    volumes:
+      - ./metrics/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./metrics/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+
+  # Webhook-ресивер: URL — env METRICS_ALERT_WEBHOOK_URL (пусто — только UI
+  # Prometheus/Alertmanager; спека §3.7 Д4). Выбор конфига — entrypoint.
+  # alertmanager-data (ревью Ф7-6): nflog/silences переживают рестарт
+  # (repeat_interval 4h — без тома рестарт сбрасывает историю отправок).
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    container_name: as-alertmanager
+    profiles: ["metrics"]
+    ports: ["${METRICS_ALERTMANAGER_PORT:-9093}:9093"]
+    volumes:
+      - ./metrics/alertmanager:/etc/alertmanager:ro
+      - alertmanager-data:/alertmanager
+    entrypoint: ["/bin/sh", "/etc/alertmanager/entrypoint.sh"]
+    environment:
+      METRICS_ALERT_WEBHOOK_URL: ${METRICS_ALERT_WEBHOOK_URL:-}
+
 volumes:
   etcd-data:
   kfw-snapshots:
+  prometheus-data:
+  grafana-data:
+  alertmanager-data:

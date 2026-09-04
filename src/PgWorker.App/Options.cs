@@ -30,6 +30,9 @@ public sealed class PgWorkerOptions
 
     /// <summary>HTTP API воркера (arch/14 §1.1): advertise-URL + стендовый сид.</summary>
     public ApiOptions Api { get; set; } = new();
+
+    /// <summary>Экспозиция метрик (arch/18 §3): /metrics на том же порту, что /healthz.</summary>
+    public Shared.Metrics.MetricsOptions Metrics { get; set; } = new();
 }
 
 /// <summary>HTTP API воркера (arch/14 §1.1): advertise-URL в /pgworker/api/&lt;id&gt;

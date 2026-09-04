@@ -30,7 +30,9 @@ public class ReconcileLoopTests
         return new ReconcileLoop(
             _options, _etcd, claims, processes,
             new WorkJournal(_etcd, _options.CurrentValue.Etcd.Endpoints),
-            NullLogger<ReconcileLoop>.Instance, new HealthState(TimeProvider.System));
+            NullLogger<ReconcileLoop>.Instance, new HealthState(TimeProvider.System),
+            new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
+                new System.Diagnostics.Metrics.Meter("TestReconcile"), TimeProvider.System));
     }
 
     private void SeedCluster(string name, string? state)
@@ -70,7 +72,9 @@ public class ReconcileLoopTests
             options, etcd, new ClaimStore(options.CurrentValue.Etcd.Endpoints, etcd, TimeProvider.System),
             new FakeProcesses(),
             new WorkJournal(etcd, options.CurrentValue.Etcd.Endpoints),
-            NullLogger<ReconcileLoop>.Instance, new HealthState(TimeProvider.System));
+            NullLogger<ReconcileLoop>.Instance, new HealthState(TimeProvider.System),
+            new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
+                new System.Diagnostics.Metrics.Meter("TestReconcile"), TimeProvider.System));
         using var cts = new CancellationTokenSource();
         await loop.StartAsync(cts.Token);
 
@@ -295,7 +299,9 @@ public class ReconcileLoopTests
         var loop = new ReconcileLoop(
             _options, deadEtcd, claims, processes,
             new WorkJournal(deadEtcd, ["http://dead:2379"]),
-            NullLogger<ReconcileLoop>.Instance, new HealthState(TimeProvider.System));
+            NullLogger<ReconcileLoop>.Instance, new HealthState(TimeProvider.System),
+            new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
+                new System.Diagnostics.Metrics.Meter("TestReconcile"), TimeProvider.System));
 
         // Act
         var tick = await loop.TickAsync(TestContext.Current.CancellationToken);

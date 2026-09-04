@@ -13,6 +13,7 @@
         <ProjectReference Include="..\KafkaWorker.Etcd\KafkaWorker.Etcd.csproj"/>
         <ProjectReference Include="..\KafkaWorker.Docker\KafkaWorker.Docker.csproj"/>
         <ProjectReference Include="..\KafkaWorker.Provisioning\KafkaWorker.Provisioning.csproj"/>
+        <ProjectReference Include="..\Shared.Metrics\Shared.Metrics.csproj"/>
     </ItemGroup>
 
 </Project>

@@ -25,13 +25,41 @@ public sealed class WorkJournal(IEtcdGateway gateway, string[] endpoints)
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
+    // Наблюдатели метрик подписываются на событие (WorkerMetricsInstrumentation,
+    // arch/18 §2.2 — seam S2). Наблюдатели — пассивные: NotifyPhase глотает
+    // исключения подписчиков, журнал от метрик не зависит.
+    public sealed record WorkPhaseEntry(string Cluster, string Op, string Phase);
+
+    private event Action<WorkPhaseEntry>? _phaseWritten;
+
+    public event Action<WorkPhaseEntry>? PhaseWritten
+    {
+        add => _phaseWritten += value;
+        remove => _phaseWritten -= value;
+    }
+
+    private void NotifyPhase(WorkPhaseEntry entry)
+    {
+        try
+        {
+            _phaseWritten?.Invoke(entry); // наблюдатель не влияет на журнал
+        }
+        catch
+        {
+            // Метрики — пассивные наблюдатели: исключение подписчика глотается.
+        }
+    }
+
     // /kafkaworker/work/<C>: {"op","phase","instance","updated_unix","last_error"}.
-    public Task<Result> WriteAsync(
+    public async Task<Result> WriteAsync(
         string cluster, string op, string phase, string instance, string? lastError, CancellationToken ct)
     {
         var payload = new WorkState(op, phase, instance, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), lastError);
-        return WithFailoverAsync(endpoint => gateway.PutAsync(
+        var put = await WithFailoverAsync(endpoint => gateway.PutAsync(
             endpoint, WorkKey(cluster), JsonSerializer.Serialize(payload, Json), lease: null, ct));
+        if (put.IsSuccess)
+            NotifyPhase(new WorkPhaseEntry(cluster, op, phase)); // только ПОСЛЕ успешного Put
+        return put;
     }
 
     public async Task<Result<WorkState?>> ReadAsync(string cluster, CancellationToken ct)
@@ -56,6 +84,8 @@ public sealed class WorkJournal(IEtcdGateway gateway, string[] endpoints)
 
     // Тик надзора: op=supervise + трек недоступности (порог NodeDeadSec);
     // lastError — накопленные warning-ы тика (RF=1-пересоздания и т.п.).
+    // ВНИМАНИЕ: стационарная запись надзора событие PhaseWritten НЕ эмитит —
+    // supervise подавлен в фазовых сериях (arch/18 §2.2, решение ревью Ф4-2).
     public Task<Result> WriteSupervisionAsync(
         string cluster, string instance, IReadOnlyDictionary<string, long> unreachable,
         string? lastError, CancellationToken ct)

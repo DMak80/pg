@@ -41,7 +41,8 @@ lease-клэймы в etcd, `/kafkaworker/`); смерть контролиру�
 состояние переживает смерть контроллера (etcd + тома брокеров).
 
 Границы (что НЕ входит): bandwidth-throttle reassignment (лимит нагрузки —
-батчами партиций), preferred leader election, TLS/ACL, Prometheus-метрики,
+батчами партиций), preferred leader election, TLS/ACL, метрики самих
+Kafka-брокеров (JMX-exporter; лаги/USR снимает коллектор — arch/18 §4),
 клиентская библиотека дискавери — [roadmap/kafkaworker.md](roadmap/kafkaworker.md).
 
 ---
@@ -558,7 +559,9 @@ arch/adminpanel/02 §2.3.2) — docker-health и панель видят одн�
 
 Логи: claim/takeover, фазы процессов (journal-фаза), rebuild ноды,
 converge-изменения. Diag-ключи: `/kafkaworker/work/<C>`,
-`brokers/<b>/state`. Prometheus — roadmap (t04).
+`brokers/<b>/state`. Prometheus-метрики — единый каркас [18-metrics.md](18-metrics.md):
+`/metrics` на том же порту `:8080` (словарь §2.2 воркер-паттерн + §2.3
+коллектор лагов/USR).
 
 ## 8. Конфигурация (appsettings + env-оверрайды)
 

@@ -1,0 +1,63 @@
+groups:
+  - name: workers
+    rules:
+      - alert: ServiceDown
+        expr: up{job=~"pgworker|kafkaworker|adminpanel"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations:
+          summary: "сервис {{ $labels.job }} недоступен ({{ $labels.instance }})"
+          description: "scrape падает 2 мин; runbook — arch/18-metrics.md §5.2"
+      - alert: WorkerLoopStalled
+        expr: time() - worker_loop_last_success_timestamp_seconds{loop=~"reconcile|keepalive"} > 60
+        for: 0m
+        labels: {severity: critical}
+        annotations:
+          summary: "цикл {{ $labels.job }}/{{ $labels.loop }} не тикает >60с"
+          description: "только быстрые циклы (reconcile/keepalive); живость снапшота закрывает SnapshotStale; циклы 5с, запас на ErrorDelay-бэкофф; runbook — arch/18 §2.2"
+      - alert: SnapshotStale
+        expr: worker_snapshot_age_seconds > 28800
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "снапшот P12 старше 8ч ({{ $labels.job }})"
+          description: "снапшоты раз в 6ч; runbook — arch/18 §2.2"
+      - alert: ProcessPhaseStuck
+        expr: worker_process_phase_duration_seconds > 1800
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "кластер {{ $labels.cluster }} в фазе {{ $labels.process }}/{{ $labels.phase }} >30мин"
+          description: "provision-фазы допускают до 1ч; runbook — arch/18 §2.2"
+  - name: kafka
+    rules:
+      - alert: KafkaUnderReplicated
+        expr: sum by (cluster) (kafka_under_replicated_partitions) > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "кластер {{ $labels.cluster }}: недореплицированные партиции"
+          description: "ISR ⊂ assignment 5мин; runbook — arch/18 §2.3"
+      - alert: KafkaConsumerLagHigh
+        expr: kafka_consumer_lag > 1000000
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "лаг {{ $labels.group }}@{{ $labels.topic }} > 1e6 ({{ $labels.cluster }})"
+          description: "порог стартовый, тюнинг по истории; runbook — arch/18 §2.3"
+      - alert: KafkaCollectorStalled
+        expr: time() - kafka_collector_last_success_timestamp_seconds > 300
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "коллектор kafka-метрик не собирает >5мин"
+          description: "фиксированный порог ≥3×CollectIntervalSec(30с); runbook — arch/18 §4"
+  - name: pg
+    rules:
+      - alert: PgReplicaLagHigh
+        expr: pg_replica_lag_seconds > 30
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "реплика {{ $labels.node }} ({{ $labels.scope }}) отстаёт >30с"
+          description: "scrape Patroni-эмуляторов; runbook — arch/18 §2.5"

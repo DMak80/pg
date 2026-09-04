@@ -28,6 +28,17 @@ public sealed class KafkaWorkerOptions
 
     /// <summary>HTTP API воркера (arch/16 §1.1): advertise-URL + стендовый сид.</summary>
     public ApiOptions Api { get; set; } = new();
+
+    /// <summary>Метрики воркера (arch/18 §3–§4): экспозиция + тик коллектора лагов.</summary>
+    public KafkaWorkerMetricsOptions Metrics { get; set; } = new();
+}
+
+/// <summary>Метрики KafkaWorker (arch/18 §3–§4): базовая экспозиция + интервал
+/// тика коллектора лагов/USR.</summary>
+public sealed class KafkaWorkerMetricsOptions : Shared.Metrics.MetricsOptions
+{
+    /// <summary>Тик коллектора лагов/USR, сек (default 30; arch/18 §4).</summary>
+    public int CollectIntervalSec { get; set; } = 30;
 }
 
 /// <summary>HTTP API воркера (arch/16 §1.1): advertise-URL в /kafkaworker/api/&lt;id&gt;

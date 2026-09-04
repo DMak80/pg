@@ -2,15 +2,18 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using KafkaWorker.App;
+using Shared.Metrics;
 using KafkaWorker.App.Api;
 using KafkaWorker.App.Api.Operations;
 using KafkaWorker.App.HealthChecks;
 using KafkaWorker.App.Loops;
 using KafkaWorker.Core;
+using KafkaWorker.Core.Model;
 using KafkaWorker.Docker.Drivers;
 using KafkaWorker.Docker.Engine;
 using KafkaWorker.Etcd;
 using KafkaWorker.Etcd.Client;
+using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
@@ -26,6 +29,21 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<KafkaWorkerOptions>(builder.Configuration.GetSection("KafkaWorker"));
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<HealthState>();
+
+// Метрики (arch/18 §3): /metrics на том же Kestrel-порту, что /healthz;
+// ApiKeyMiddleware защищает только /api — scrape-грань открыта (доверенная сеть).
+builder.Services.AddAppMetrics("KafkaWorker", builder.Configuration.GetSection("KafkaWorker:Metrics"));
+builder.Services.AddSingleton(sp =>
+{
+    var m = new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
+        sp.GetRequiredService<System.Diagnostics.Metrics.Meter>(),
+        sp.GetRequiredService<TimeProvider>());
+    // Единый seam фаз/операций (S2, зеркало PgWorker): терминальные фазы/
+    // first-seen/подавление supervise и evacuate — внутри OnJournalPhase.
+    sp.GetRequiredService<KafkaWorker.Etcd.Coordination.WorkJournal>().PhaseWritten
+        += e => m.OnJournalPhase(e.Cluster, e.Op, e.Phase);
+    return m;
+});
 
 // etcd-клиент: HTTP JSON gateway /v3/*; handler против DNS-флейпа Docker
 // embedded DNS (t09; arch/16 §7): PooledConnectionLifetime + IPv4-first резолв.
@@ -270,6 +288,19 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<KeepaliveLoop>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SnapshotLoop>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ReconcileLoop>());
 
+// Коллектор лагов/USR (arch/18 §4): read-only сбор вне клэймов; источник кластеров —
+// тот же снапшот /kafka/clusters/, что у ReconcileLoop (парсер KafkaSnapshotParser);
+// только Active (Config.State == null — arch/15 §2.1, ревью Ф4-6).
+builder.Services.AddSingleton(sp => new KafkaMetricsState(
+    sp.GetRequiredService<System.Diagnostics.Metrics.Meter>()));
+builder.Services.AddHostedService(sp => new KafkaMetricsCollector(
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Metrics.CollectIntervalSec,
+    ct => SnapshotClustersAsync(sp, ct),
+    sp.GetRequiredService<IKafkaAdminClientFactory>(),
+    sp.GetRequiredService<KafkaMetricsState>(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILogger<KafkaMetricsCollector>>()));
+
 // Наблюдаемость (arch/16 §7): агрегированный health + per-loop обёртки.
 builder.Services.AddSingleton<ServiceProbes>();
 builder.Services.AddSingleton<KafkaWorkerHealth>();
@@ -287,6 +318,7 @@ builder.Services.AddHealthChecks()
 
 var app = builder.Build();
 app.UseMiddleware<ApiKeyMiddleware>();
+app.MapAppMetrics();
 app.MapHealthChecks("/healthz");
 app.MapWorkerApi();
 
@@ -304,6 +336,30 @@ static ProvisioningOptions ToProvisioningOptions(KafkaWorkerOptions opts) => new
 // Делегат снапшота для процессов (P12 «до/после» в точках изменений).
 static Func<CancellationToken, Task<Result>> SnapshotDelegate(SnapshotJob job)
     => async ct => await job.TakeAsync(ct);
+
+// Источник кластеров для коллектора метрик (arch/18 §4): RangeAsync по
+// /kafka/clusters/ c failover по endpoints (паттерн ReconcileLoop воркера)
+// → KafkaSnapshotParser; ошибки чтения → Result.Failed (коллектор пропустит тик).
+static async Task<Result<IReadOnlyList<KafkaClusterSnapshot>>> SnapshotClustersAsync(
+    IServiceProvider sp, CancellationToken ct)
+{
+    var gateway = sp.GetRequiredService<IEtcdGateway>();
+    var endpoints = sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints;
+    Result<IReadOnlyList<Kv>>? last = null;
+    foreach (var endpoint in endpoints)
+    {
+        var range = await gateway.RangeAsync(endpoint, "/kafka/clusters/", ct);
+        if (!range.IsSuccess)
+        {
+            last = range;
+            continue;
+        }
+
+        return KafkaSnapshotParser.Parse(range.Value);
+    }
+
+    return Result<IReadOnlyList<KafkaClusterSnapshot>>.Failed(last!.Error!);
+}
 
 // WAF-тесты (KafkaWorker.IntegrationTests/Api): точка входа как public partial.
 public partial class Program;

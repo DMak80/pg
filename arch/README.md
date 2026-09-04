@@ -103,6 +103,9 @@ arch/
 │                                  (provisioning/deprovisioning/надзор/автосинк топиков/converge)
 ├── 17-synchronization-principles.md ← ★ принципы синхронизации распределённого состояния
 │                                  (единый etcd, конвергенция DCS, детерминизм, реестр ошибок)
+├── 18-metrics.md               ← ★ единая телеметрия: Prometheus-метрики всех сервисов
+│                                  (каркас Shared.Metrics / Puzzle-модуль, словарь имён,
+│                                   коллектор Kafka, стек Prometheus+Grafana+Alertmanager)
 ├── configs/
 │   ├── etcd/
 │   │   ├── docker-compose.yml

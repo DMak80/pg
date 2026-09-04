@@ -163,6 +163,21 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, json.dumps({"members": members}).encode(),
                        content_type="application/json")
             return
+        if self.path == "/metrics":
+            # §2.5 + ревью Ф4-7: ТОЛЬКО своя нода (NODE_NAME) — экспорт всех членов
+            # scope с каждого инстанса дублировал бы серии при scrape всех hc*.
+            # Мастер: lag=0 (running); реплика: receive-replay diff (state c lock, S6).
+            with state_lock:
+                own = state.get(NODE)
+            lines = [
+                "# HELP pg_replica_lag_seconds replication lag of the node (emulator)",
+                "# TYPE pg_replica_lag_seconds gauge",
+            ]
+            if own is not None and own["alive"]:
+                lag = 0 if own["role"] == "master" else (own["lag"] or 0)
+                lines.append(f'pg_replica_lag_seconds{{scope="{SCOPE}",node="{NODE}"}} {int(lag)}')
+            self._send(200, ("\n".join(lines) + "\n").encode())
+            return
         with state_lock:
             own = state.get(NODE)
         if own is None or not own["alive"]:

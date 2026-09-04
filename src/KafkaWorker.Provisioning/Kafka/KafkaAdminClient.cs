@@ -155,6 +155,55 @@ public sealed class KafkaAdminClient(
             return TopicDeleteOutcome.Deleted;
         }, ct);
 
+    public Task<Result<IReadOnlyList<KafkaGroupView>>> ListGroupsAsync(CancellationToken ct)
+        => RunAsync<IReadOnlyList<KafkaGroupView>>(async client =>
+        {
+            var groups = await client.ListConsumerGroupsAsync(new ListConsumerGroupsOptions
+            {
+                RequestTimeout = requestTimeout,
+            });
+            return (IReadOnlyList<KafkaGroupView>)groups.Valid
+                .Select(g => new KafkaGroupView(g.GroupId, g.State.ToString()))
+                .ToList();
+        }, ct);
+
+    public Task<Result<IReadOnlyList<KafkaTopicPartitionOffset>>> ListConsumerGroupOffsetsAsync(
+        string group, CancellationToken ct)
+        => RunAsync<IReadOnlyList<KafkaTopicPartitionOffset>>(async client =>
+        {
+            var committed = await client.ListConsumerGroupOffsetsAsync(
+                // TopicPartitions = null → committed ВСЕХ партиций группы (контракт Confluent).
+                [new ConsumerGroupTopicPartitions(group, null!)],
+                new ListConsumerGroupOffsetsOptions { RequestTimeout = requestTimeout });
+            return (IReadOnlyList<KafkaTopicPartitionOffset>)committed
+                .SelectMany(c => c.Partitions)
+                // Offset.Unset (−1001, OFFSET_INVALID) — committed'а нет: пропускаем
+                // (лаг по партиции без committed не определён, консервативно не считаем).
+                .Where(tpo => tpo.Offset.Value != Offset.Unset.Value)
+                .Select(tpo => new KafkaTopicPartitionOffset(tpo.Topic, tpo.Partition.Value, tpo.Offset.Value))
+                .ToList();
+        }, ct);
+
+    public Task<Result<IReadOnlyList<KafkaTopicPartitionOffset>>> ListOffsetsAsync(
+        IReadOnlyList<KafkaTopicPartition> partitions, CancellationToken ct)
+        => RunAsync<IReadOnlyList<KafkaTopicPartitionOffset>>(async client =>
+        {
+            var watermarks = await client.ListOffsetsAsync(
+                partitions.Select(p => new TopicPartitionOffsetSpec
+                {
+                    TopicPartition = new TopicPartition(p.Topic, p.Partition),
+                    OffsetSpec = OffsetSpec.Latest(),
+                }),
+                new ListOffsetsOptions { RequestTimeout = requestTimeout });
+            return (IReadOnlyList<KafkaTopicPartitionOffset>)watermarks.ResultInfos
+                .Select(info =>
+                {
+                    var tpo = info.TopicPartitionOffsetError;
+                    return new KafkaTopicPartitionOffset(tpo.Topic, tpo.Partition.Value, tpo.Offset.Value);
+                })
+                .ToList();
+        }, ct);
+
     // Полный список топиков + реплики/ISR партиций — через метаданные
     // (DescribeTopicsAsync требует имена заранее). Internal-топики __* — только
     // при includeInternal (drain/guard G по describe-all, arch/16 §5 I/G);
