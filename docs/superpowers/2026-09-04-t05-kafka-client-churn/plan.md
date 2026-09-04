@@ -2128,6 +2128,441 @@ git commit -m 't05: arch/16 — backoff кластера + лестница E9 �
 
 ---
 
+---
+
+### Task 9: фиксы code-review Фазы 7 (5 findings — точечные правки поверх реализованного кода)
+
+Код Task 1–8 уже в worktree (коммиты 591248f..04c88b2); шаги ниже —
+минимальные фиксы найденного ревью + юниты. Спец-уточнения контракта
+(третий факт перевода RUNNING, сходимость endpoints) уже внесены в spec
+§3.3/§7 тем же изменением.
+
+**Files (сводно):**
+- Modify: `src/KafkaWorker.Provisioning/Processes/NodeSupervisor.cs`
+  (Ф7-1 третий факт; Ф7-4 сходимость endpoints)
+- Modify: `src/KafkaWorker.Provisioning/Kafka/KafkaAdminClient.cs` (Ф7-2)
+- Modify: `src/KafkaWorker.Docker/Engine/IDockerEngine.cs`,
+  `src/KafkaWorker.Docker/Engine/DockerEngine.cs`,
+  `src/KafkaWorker.Docker/Drivers/ClusterDriver.cs` (Ф7-3 один ListTasks)
+- Modify: `src/tests/KafkaWorker.UnitTests/Provisioning/NodeSupervisorTests.cs`
+  (Ф7-1 гонка; Ф7-4 сходимость)
+- Modify: `src/tests/KafkaWorker.UnitTests/App/KafkaMetricsCollectorTests.cs`
+  (Ф7-5 writer-путь)
+- Modify: `arch/16-kafkaworker.md` §5 C (ревью Ф4-3-4: два новых контракта
+  надзора — перевод по трём фактам + сходимость endpoints — шаг 9.6)
+
+#### 9.1. Ф7-1 [major]: перевод PROVISIONING→RUNNING — третий факт (адрес в endpoints)
+
+**Вход:** `NodeSupervisor.RunAsync`, блок перевода ~строки 140–155
+(фактический код): контейнер жив + зрячая проба → RUNNING — гонка с
+`AddBrokerProcess` (pending фильтруется по `NOT_INITIALIZED|PROVISIONING`,
+`AddBrokerProcess.cs:46`; его `AddEndpointsAsync` — после WaitReady,
+`:87`): supervise переводит RUNNING до endpoints-RMW → add-broker no-op →
+адрес навсегда вне endpoints.
+
+**Действие:** в блок перевода добавить третий факт — advertised-адрес
+брокера из слитого `addresses` уже в `snap.Endpoints`:
+
+```csharp
+// Перевод PROVISIONING → RUNNING — по ТРЁМ фактам (ревью Ф7-1): контейнер
+// жив, зрячая проба видит брокера, И advertised-адрес уже в endpoints —
+// владелец процесса (add-broker F) пишет endpoints ДО RUNNING; без адреса
+// чужой процесс не закончен, RUNNING не наш (иначе add-broker-брокер
+// выпадает из bootstrap-списка навсегда — pending пуст, RMW не исполнится).
+foreach (var broker in snap.Brokers.Where(b => b.State == "PROVISIONING"))
+{
+    if (!alive.Contains($"kfw-{cluster}-{broker.Name}")
+        || !inCluster.Contains(NodeId(broker.Name)))
+        continue; // ещё грузится либо контейнера нет — не готов
+
+    if (!addresses.TryGetValue(broker.Name, out var addr)
+        || !AdvertisedInEndpoints(snap.Endpoints,
+            $"{options.AdvertisedClientHost ?? addr.Host}:{addr.ClientPort}"))
+        continue; // endpoints-RMW владельца не дошёл — не переводим
+
+    var running = await PutAsync(BrokerStateKey(cluster, broker.Name), "RUNNING", ct);
+    if (!running.IsSuccess)
+        return Fail(cluster, running.Error!, "mark-running");
+}
+```
+
+Хелпер (рядом с `Supervisable`): `private static bool
+AdvertisedInEndpoints(string? endpoints, string advertised) =>
+endpoints?.Split(',', StringSplitOptions.TrimEntries)
+    .Contains(advertised) == true;` (формат канона — запятая без пробелов,
+`BuildEndpoints` ProvisioningProcess / `UpdateEndpointsAsync` healer'а).
+
+**Выход:** supervise не забирает у add-broker финализацию; RUNNING — только
+после endpoints (инвариант arch/16 §5 F сохранён для всех писателей).
+
+**Проверка:** юнит-тест гонки в `NodeSupervisorTests.cs` (риг существующий):
+
+```csharp
+// AAA (Ф7-1): PROVISIONING-брокер add-broker'а — контейнер жив, проба
+// видит, но endpoints ещё БЕЗ его адреса → остаётся PROVISIONING; после
+// endpoints-RMW владельца → следующий тик переводит RUNNING.
+[Fact]
+public async Task Run_ProvisioningWithoutEndpoints_KeepsProvisioning()
+{
+    // Риг дефолтный (фактический NewRig, NodeSupervisorTests.cs:33–38:
+    // int nodeDeadSec, int rf, Action setup, KafkaClusterBackoff?, bool
+    // healer — параметра-admin НЕТ): 3 брокера RUNNING/controller, portalloc
+    // 16000/16001/16002 (полный — healer не нужен), endpoints
+    // «h1:16000,h1:16001,h1:16002», NodeObjects — все три контейнера.
+    var rig = await NewRig();
+
+    // Зрячая проба видит broker1+broker2 (паттерн rig.Admin.ClusterView,
+    // :135): broker3 «молчит» — трек стартует, NodeDeadSec=90 — пересозданий
+    // в тесте нет. Admin меняется через риг, не через параметр NewRig.
+    rig.Admin.ClusterView = new KafkaClusterView(
+        [new KafkaBrokerView(1, "b1"), new KafkaBrokerView(2, "b2")], ControllerId: 1);
+
+    // Брокер add-broker'а: state=PROVISIONING; portalloc рига НЕ трогаем
+    // (закрепления всех трёх на месте — healer-гейт не срабатывает).
+    await rig.Etcd.PutAsync(Ep, "/kafka/clusters/events/brokers/broker2/state",
+        "PROVISIONING", null, CancellationToken.None);
+
+    // Фаза 1: endpoints БЕЗ адреса broker2 (RMW add-broker'а «ещё не дошёл»;
+    // дефолтные endpoints содержат 16001 — перезаписываем).
+    await rig.Etcd.PutAsync(Ep, "/kafka/clusters/events/endpoints",
+        "h1:16000", null, CancellationToken.None);
+
+    var result = await rig.Supervisor.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+    result.IsSuccess.Should().BeTrue();
+    (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/brokers/broker2/state",
+        CancellationToken.None)).Value!.Value.Should().Be("PROVISIONING",
+        "адреса broker2 (h1:16001) нет в endpoints — add-broker не дошёл до RMW, RUNNING не наш");
+
+    // Фаза 2: владелец доделал endpoints-RMW (адрес broker2 появился — дефолт
+    // рига) → следующий тик переводит (перевод читает снапшот начала тика).
+    await rig.Etcd.PutAsync(Ep, "/kafka/clusters/events/endpoints",
+        "h1:16000,h1:16001,h1:16002", null, CancellationToken.None);
+
+    (await rig.Supervisor.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None))
+        .IsSuccess.Should().BeTrue();
+    (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/brokers/broker2/state",
+        CancellationToken.None)).Value!.Value.Should().Be("RUNNING");
+}
+```
+
+(значения 16000–16002 — константы ДЕФОЛТНОГО сида фактического `NewRig`, не
+хост-порты теста: FakeEtcd/FakeKafkaDriver — чистая память, сетевых
+литералов нет; two-фазный дизайн корректен: перевод читает immutable
+`snap.Endpoints` начала тика).
+
+**Связь со spec:** §3.3 инвариант «перевод по трём фактам», §7.3 юнит гонки.
+
+#### 9.2. Ф7-2 [minor]: EnsureClient — потокобезопасная ленивая инициализация
+
+**Вход:** `KafkaAdminClient.EnsureClient()` (~строки 391–402): `if (_client
+is not null) return _client; _client = Build();` — два параллельных первых
+вызова (supervise-тик + коллектор на одном ключе кэша) оба видят null →
+два нативных AdminClient, проигравший — сирота до финализатора.
+
+**Действие:** double-checked lock (гонка редкая, lock в горячем пути только
+при null — стоимость нулевая после инициализации):
+
+```csharp
+private readonly object _clientGate = new();
+
+private IAdminClient EnsureClient()
+{
+    if (_client is not null)
+        return _client;
+
+    lock (_clientGate)
+    {
+        if (_client is not null)
+            return _client;
+
+        // Пины backoff + rdkafka-лог на Debug (профиль фабрики, t05 spec §3.1):
+        // дефолтные 100 мс давали reconnect-шторм на лежащем кластере.
+        _client = new AdminClientBuilder(KafkaAdminClientFactory.BaseAdminConfig(bootstrap, user, password))
+            .SetLogHandler((_, m) => log?.LogDebug("rdkafka: {Message}", m.Message))
+            .Build();
+        return _client;
+    }
+}
+```
+
+`DisposeNative()` — под тем же `_clientGate` (взаимоисключение с
+инициализацией: Dispose кэша при shutdown vs параллельный первый вызов).
+
+**Выход:** максимум один нативный клиент на адаптер при любом числе
+параллельных первых вызовов; Dispose/инициализация взаимоисключены.
+
+**Проверка:** юнит не добавляем — нативный инстанс не наблюдаем без сети,
+механика double-checked lock тривиальна; регрессия закрыта существующими
+`KafkaAdminClientFactoryTests` (шаринг по ключу) + чеком 66 (потоки
+стабильны). Прогон: `dotnet test src/tests/KafkaWorker.UnitTests -c Debug`.
+
+**Связь со spec:** §3.1 «один адаптер per ключ, владение у кэша».
+
+#### 9.3. Ф7-3 [minor]: swarm-инспекция — один ListTasksAsync (источник истины — движок)
+
+**Вход:** `DockerEngine.InspectNodeEndpointAsync` при plain-404 на
+swarm-движке зовёт `InspectSwarmTaskEndpointAsync` → `ListTasksAsync` (№1,
+отдаёт порт); затем `SwarmClusterDriver.InspectNodeEndpointAsync`
+(ClusterDriver.cs ~422–440) листает таски ЕЩЁ РАЗ для хоста — план Task 4
+Шаг 2 требовал один источник.
+
+**Действие:** host таска возвращает движок (тот же вызов):
+
+1. `IDockerEngine.cs` — record: `public sealed record DockerNodeEndpoint(
+    int ClientHostPort, string? AdvertisedClient, string? TaskHost = null);`
+2. `DockerEngine.InspectSwarmTaskEndpointAsync`:
+   `new DockerNodeEndpoint(running.PublishedPort!.Value, null, running.Host)`.
+3. `SwarmClusterDriver.InspectNodeEndpointAsync` — ВТОРОЙ `ListTasksAsync`
+   удалить, host из `endpoint.Value.TaskHost`:
+
+```csharp
+public async Task<Result<NodeEndpointInspection?>> InspectNodeEndpointAsync(
+    string cluster, string nodeName, CancellationToken ct)
+{
+    var name = PlainClusterDriver.NodeName(cluster, nodeName);
+    var endpoint = await _engine.InspectNodeEndpointAsync(name, ct);
+    if (!endpoint.IsSuccess)
+        return Result<NodeEndpointInspection?>.Failed(endpoint.Error!);
+    if (endpoint.Value is not { } found)
+        return Result<NodeEndpointInspection?>.Success(null);
+
+    return found.TaskHost is { } host
+        ? Result<NodeEndpointInspection?>.Success(
+            new NodeEndpointInspection(host, found.ClientHostPort, found.AdvertisedClient))
+        : Result<NodeEndpointInspection?>.Success(null); // хоста таска нет — факта нет
+}
+```
+
+PlainClusterDriver не меняется (host — из перебора движков, TaskHost там
+null и не читается).
+
+**Выход:** один HTTP-раунд ListTasks на инспекцию; host/порт всегда из
+одного снимка таска (нет расхождения при редкой смене ноды между вызовами).
+
+**Проверка:** сборка + юниты (`FakeKafkaDriver` не трогаем — он выше
+драйверов); swarm-покрытие — компиляцией (как до фикса, swarm-интеграции в
+проекте нет): `dotnet build src/PgWorker.slnx -c Debug && dotnet test
+src/tests/KafkaWorker.UnitTests -c Debug`.
+
+**Связь со spec:** §3.4 «published-порт и хост — running-таск» (один
+источник истины).
+
+#### 9.4. Ф7-4 [minor]: сходимость endpoints в надзоре (недоехавший RMW ветки 3)
+
+**Вход:** `PortAllocHealer` ветка 3: portalloc-txn закоммичен → сбой
+`EnsureNodeAsync`/`UpdateEndpointsAsync` → следующий тик `ResolveAsync`
+возвращает pinned (ветка 1, ранний выход) — «ретрай тиком» не исполняется:
+endpoints навсегда без адреса.
+
+**Действие:** шаг сходимости в `NodeSupervisor.RunAsync` — ПОСЛЕ лестницы и
+ДО блока перевода PROVISIONING→RUNNING (ревью Ф4-3-3: перевод читает
+immutable `snap.Endpoints` НАЧАЛА тика — адрес, дописанный сходимостью в
+этом же тике, перевод увидит только СЛЕДУЮЩИМ тиком; порядок
+«сходимость до перевода» сохраняет etcd-видимый инвариант
+endpoints-до-RUNNING в рамках тика: к моменту, когда следующий тик
+переведёт RUNNING, адрес уже в endpoints — поведение корректно и
+консервативно, именно его ассертит тест §7.3):
+
+```csharp
+// Сходимость endpoints (ревью Ф7-4): закоммиченный portalloc — истина
+// адресов; фактический endpoints сверяется с каноном «адреса всех брокеров
+// с закреплением и state не TO_REMOVE/REMOVING»; расхождение → RMW. Закрывает
+// недоехавший RMW ветки 3 healer'а (следующий тик — ветка 1, без сходимости
+// ретрай не случился бы); add-broker в полёте безопасен: адрес каноничен,
+// RMW владельца идемпотентен, «endpoints до RUNNING» сохраняется.
+var converged = await EnsureEndpointsConvergedAsync(snap, addresses, ct);
+if (!converged.IsSuccess)
+    return Fail(cluster, converged.Error!, "endpoints-converge");
+```
+
+Реализация (private, ниже по классу):
+
+```csharp
+// Канон: адреса брокеров с закреплением (PROVISIONING включён — ветка 3
+// healer'а и add-broker F пишут портalloc до контейнера), кроме чужих
+// демонтажей (TO_REMOVE/REMOVING — их адрес убирает G). Порядок адресов —
+// по имени брокера (детерминизм, порт BuildEndpoints).
+private async Task<Result> EnsureEndpointsConvergedAsync(
+    KafkaClusterSnapshot snap, IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
+{
+    var cluster = snap.Cluster;
+    var canonical = string.Join(",", snap.Brokers
+        .OrderBy(b => b.Name, StringComparer.Ordinal)
+        .Where(b => b.State is not ("TO_REMOVE" or "REMOVING"))
+        .Where(b => addresses.TryGetValue(b.Name, out _))
+        .Select(b =>
+        {
+            var addr = addresses[b.Name];
+            return $"{options.AdvertisedClientHost ?? addr.Host}:{addr.ClientPort}";
+        }));
+
+    var key = EndpointsKey(cluster);
+    var current = await GetAsync(key, ct);
+    if (!current.IsSuccess)
+        return current;
+    if (current.Value is { } kv && kv.Value == canonical)
+        return Result.Success(); // сходимость — норма: ноль записей
+
+    if (current.Value is null && canonical.Length == 0)
+        return Result.Success(); // ключа нет и писать нечего
+
+    // RMW: нет ключа → put; есть → txn compare mod_revision (проигрыш —
+    // ретрай тиком, канон тот же у всех писателей).
+    if (current.Value is null)
+    {
+        var put = await PutAsync(key, canonical, ct);
+        return put.IsSuccess ? Result.Success() : put;
+    }
+
+    var txn = await TxnAsync(TxnRequest.Of(
+        [TxnCompare.ModRevisionEqual(key, (long)current.Value.ModRevision)],
+        [new TxnOp.Put(key, canonical, null)]), ct);
+    if (!txn.IsSuccess)
+        return txn;
+    if (!txn.Value.Succeeded)
+        return Result.Failed(new ApplicationException(
+            $"endpoints {cluster} изменился с момента чтения — ретрай тиком"));
+    return Result.Success();
+}
+
+private static string EndpointsKey(string cluster) => $"/kafka/clusters/{cluster}/endpoints";
+```
+
+(`GetAsync`/`PutAsync`/`TxnAsync`/failover-обёртки уже есть в
+NodeSupervisor — PutAsync/GetAsync есть; `TxnAsync` добавить по паттерну
+ProvisioningProcess.TxnAsync, `TxnCompare.ModRevisionEqual` — как в
+AddBrokerProcess.EnsurePortsAsync. При расхождении — journal-фаза не
+пишется: запись редкая сходимость, диагностика — само значение endpoints;
+по решению исполнителя допустим `journal.WriteAsync(cluster, Op,
+"endpoints-converged", ...)` единожды при расхождении.)
+
+**Выход:** endpoints монотонно сходится к portalloc-истине любым тиком
+надзора; сбой ветки 3 после portalloc-txn самолечится следующим тиком.
+
+**Проверка:** юнит в `NodeSupervisorTests.cs`:
+
+```csharp
+// AAA (Ф7-4): portalloc закреплён, endpoints отстал (сбой RMW ветки 3) —
+// тик надзора сходит endpoints к канону; повторный тик — без записей
+// (значение стабильно; проверяем по итоговому значению ключа).
+[Fact]
+public async Task Run_EndpointsLagPortalloc_Converges()
+{
+    var rig = await NewRig(); // portalloc: broker1 h1:16000, broker2 h1:16001, broker3 h1:16002 (дефолт сида)
+    await rig.Etcd.PutAsync(Ep, "/kafka/clusters/events/endpoints",
+        "h1:21099", null, CancellationToken.None); // «недоехавший» RMW
+
+    var result = await rig.Supervisor.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+    result.IsSuccess.Should().BeTrue();
+    var endpoints = (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/endpoints",
+        CancellationToken.None)).Value!.Value;
+    endpoints.Should().Be(string.Join(",", rig.PortAllocAddresses()
+        .OrderBy(a => a.Key, StringComparer.Ordinal)
+        .Select(a => $"h1:{a.Value.ClientPort}")),
+        "канон = advertise-адреса всех закреплённых брокеров (AdvertisedClientHost=null в риге)");
+}
+```
+
+(хелпер `rig.PortAllocAddresses()` — чтение siда portalloc рига; при
+отсутствии — прямой parse ключа `/kafkaworker/portalloc/events`. Если в
+риге AdvertisedClientHost задан — подставить его в ожидание.)
+
+**Связь со spec:** §3.3 инвариант «сходимость endpoints (шаг надзора)».
+
+#### 9.5. Ф7-5 [plan/minor]: юнит writer-пути коллектора (RecordFailure/RecordSuccess)
+
+**Вход:** после замены vehicle churn-теста (коллектор в churn-интеграции —
+read-side) прямой тест writer-пути `TryCollectClusterAsync` отсутствует.
+
+**Действие:** добавить в существующий класс
+`src/tests/KafkaWorker.UnitTests/App/KafkaMetricsCollectorTests.cs`
+(переиспользуя `FakeFactory { Next }`, `FakeAdmin { FailDescribe }`,
+`Snapshot(name)` — все уже в файле):
+
+```csharp
+// AAA (Ф7-5): writer-путь коллектора — фейл сбора растит backoff-окно
+// (IsBlocked true), успех сбрасывает (false). Clock — SETTABLE
+// FixedTimeProvider (TestTime — immutable FakeClock: окно 15 c после фейла
+// не истекло бы никогда, гейт CollectOnceAsync:76–77 съел бы второй тик):
+// один инстанс и для backoff, и для коллектора; между тиками двигаем
+// clock.Utc += 15 c (ревью Ф4-3-1).
+[Fact]
+public async Task Collect_FailThenSuccess_BackoffWindowFollows()
+{
+    var clock = new Provisioning.FixedTimeProvider(); // settable (уже юзается :285)
+    var backoff = new KafkaClusterBackoff(clock);
+    var factory = new FakeFactory
+    {
+        Next = new FakeAdmin { FailDescribe = new ApplicationException("down") },
+    };
+    var state = new KafkaMetricsState(new Meter("TestKafkaWorker"));
+    var collector = new KafkaMetricsCollector(30,
+        ct => Task.FromResult(Result<IReadOnlyList<KafkaClusterSnapshot>>.Success([Snapshot("c1")])),
+        factory, state, clock, NullLogger<KafkaMetricsCollector>.Instance, backoff);
+
+    await collector.CollectOnceAsync(TestContext.Current.CancellationToken);
+    backoff.IsBlocked("c1").Should().BeTrue("фейл сбора — RecordFailure, окно 15 c активно");
+
+    // Окно должно истечь, иначе гейт (IsBlocked → continue) съест второй тик
+    // ДО writer-пути — RecordSuccess недостижим.
+    clock.Utc += TimeSpan.FromSeconds(15);
+
+    factory.Next = new FakeAdmin(); // DescribeCluster ок (пустой кластер), Groups/Topics пустые
+    await collector.CollectOnceAsync(TestContext.Current.CancellationToken);
+    backoff.IsBlocked("c1").Should().BeFalse("успех сбора — RecordSuccess, окно снято");
+}
+```
+
+(`FakeAdmin.DescribeClusterAsync` при `FailDescribe == null` уже отдаёт
+успех с пустым `KafkaClusterView` — фактический код тестов, строки ~27–34;
+`Provisioning.FixedTimeProvider` — settable `Utc { get; set; }`, уже
+используется в `CollectOnce_BackoffCluster_SkippedWithoutClient`; время
+коллектора и backoff — один инстанс: `MarkSuccess` и окна читают общую
+ось.)
+
+**Выход:** writer-путь коллектора покрыт прямым юнитом (гейт Ф7-теста
+`CollectOnce_BackoffCluster_SkippedWithoutClient` — read-side).
+
+**Проверка:** `dotnet test src/tests/KafkaWorker.UnitTests -c Debug
+--filter 'FullyQualifiedName~KafkaMetricsCollectorTests'`.
+
+**Связь со spec:** §7.2 «writer-путь коллектора — фейл → IsBlocked true,
+успех → false».
+
+#### 9.6. arch/16 §5 C, прогоны и коммит
+
+- [ ] **arch/16 §5 C (ревью Ф4-3-4 — Task 8 уже закрыл backoff/лестницу, но
+  два контракта фиксов 9.1/9.4 в каноне отсутствуют):** дополнить раздел
+  надзора одной строкой (после абзаца о слепой пробе, рядом с правками t05
+  из Task 8):
+
+> Перевод `PROVISIONING`→`RUNNING` — по трём фактам: контейнер жив, зрячая
+> проба видит брокера, advertised-адрес уже в `endpoints` (владелец
+> процесса — add-broker F — пишет endpoints ДО RUNNING; иначе чужой процесс
+> «догоняется» и адрес выпадает из bootstrap-списка). `endpoints` сходится
+> к portalloc-канону тиком надзора (расхождение → RMW; закрывает недоехавший
+> RMW лестницы E9).
+
+- [ ] Прогнать серии: `dotnet test src/tests/KafkaWorker.UnitTests -c Debug` →
+  PASS (новые: гонка 9.1, сходимость 9.4, writer 9.5);
+  `dotnet test src/tests/KafkaWorker.IntegrationTests -c Debug` → PASS
+  (фиксы 9.1/9.4 меняют supervise — churn/healing/ActiveGate не должны
+  регресснуть: ActiveGate-сид без brokers — блоки не исполняются).
+- [ ] Release-серия + мерж-гейт не меняются (Task 8 Шаг 3–4 уже исполнены;
+  после фиксов — повторить минимум: юниты+интеграция Release и E2E-маркер
+  `Scale_AddEmptyShard`, полный E2eFixture — по гейту AGENTS.md, т.к.
+  provisioning-код менялся).
+- [ ] Коммит:
+
+```bash
+git add -A src/KafkaWorker.Provisioning src/KafkaWorker.Docker src/tests/KafkaWorker.UnitTests arch/16-kafkaworker.md
+git commit -m 't05-ревью Ф7: третий факт перевода PROVISIONING→RUNNING (адрес в endpoints — гонка с add-broker), сходимость endpoints в надзоре (недоехавший RMW ветки 3), EnsureClient double-checked lock, swarm-инспекция — один ListTasks (TaskHost из движка), юнит writer-пути коллектора; arch/16 §5 C — оба контракта надзора (spec §3.3, §4, §7)'
+```
+
+---
+
 ## Соответствие план ↔ спека (самопроверка)
 
 | Спека | Задача |
@@ -2141,5 +2576,6 @@ git commit -m 't05: arch/16 — backoff кластера + лестница E9 �
 | §7.5–7.6 интеграционные | Task 6 (churn + ActiveGate-§7.5 + healing) |
 | §6 стенд + чек по образцу 58 (roadmap 6) | Task 7 |
 | §4 arch-правки, §7.7–7.8 приёмка/мерж-гейт | Task 8 |
+| ревью Ф7-1..Ф7-5 (третий факт RUNNING, сходимость endpoints, lock, один ListTasks, writer-юнит) | Task 9 |
 
 Границы по назначению: §8 спеки (вне scope) в план не попали сознательно.

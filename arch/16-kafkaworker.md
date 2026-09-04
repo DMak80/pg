@@ -377,6 +377,12 @@ X3 снапшот P12 «после»; клэйм снят явно
   аллокация (S7-свидетельство смерти) + RMW endpoints; тупик «не закреплён
   в portalloc» устранён; клэйм занят → journal waiting-portalloc-lock
   (InProgress, следующий тик).
+- Перевод `PROVISIONING`→`RUNNING` — по трём фактам: контейнер жив, зрячая
+  проба видит брокера, advertised-адрес уже в `endpoints` (владелец
+  процесса — add-broker F — пишет endpoints ДО RUNNING; иначе чужой процесс
+  «догоняется» и адрес выпадает из bootstrap-списка). `endpoints` сходится
+  к portalloc-канону тиком надзора (расхождение → RMW; закрывает недоехавший
+  RMW лестницы E9).
 - Ноды `TO_REMOVE`/`REMOVING`/`PROVISIONING` чужих процессов надзор не трогает.
 
 ### D. TopicSyncProcess (автосинк + desired-converge)

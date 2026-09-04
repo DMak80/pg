@@ -214,6 +214,24 @@ journal/лог.
 страховкой (недостижим при корректном потоке). Канон — arch/17 E9 (ссылка;
 здесь — привязка к исполнению) + arch/16 §5 C (обновляет execute).
 
+Два инварианта надзора поверх лестницы (ревью Ф7):
+
+- **Перевод PROVISIONING→RUNNING — по трём фактам**: контейнер жив, зрячая
+  проба видит брокера в кластере, И advertised-адрес брокера
+  (`AdvertisedClientHost ?? host:port` из portalloc) уже присутствует в
+  `/kafka/clusters/<C>/endpoints` — владелец процесса (add-broker F)
+  пишет endpoints ДО RUNNING; без третьего факта supervise чужой процесс
+  не «догоняет» (иначе add-broker-брокер получает RUNNING до своего
+  endpoints-RMW → pending пуст → адрес навсегда вне bootstrap-списка).
+- **Сходимость endpoints (шаг надзора, после лестницы)**: фактический
+  `endpoints` сверяется с каноном «адреса всех брокеров, у которых есть
+  закрепление в portalloc и state не TO_REMOVE/REMOVING»; расхождение →
+  RMW (txn mod_revision; put если ключа нет). Закрывает недоехавший
+  RMW ветки 3 после сбоя EnsureNode/endpoints (следующий тик — ветка 1,
+  «ретрай тиком» без сходимости не исполнялся бы); для add-broker в
+  полёте безопасен: адрес канонический, RMW владельца идемпотентен
+  («добавить если нет»), порядок «endpoints до RUNNING» сохраняется.
+
 Три ветки, по одной на брокера:
 
 1. **Адрес есть в portalloc** → используется (нынешний путь; advertise
@@ -314,6 +332,10 @@ public sealed record NodeEndpointInspection(
 - **arch/16 §5 C (надзор)**: ссылка на E9-лестницу (портalloc → реконструкция
   из inspect → новая аллокация + RMW endpoints); kafka-проба гейтится
   backoff'ом недоступного кластера (окно активно → слепая проба без сети).
+- **arch/16 §5 C (надзор, дополнение ревью Ф7)**: два контракта фиксов —
+  «перевод PROVISIONING→RUNNING — по трём фактам (контейнер жив, проба
+  видит, advertised-адрес в endpoints); endpoints сходится к
+  portalloc-канону тиком» (вносится Task 9 плана вместе с кодом фиксов).
 - **arch/16 §5 (введение Active-ветки)**: kafka-шаги Active (E–J) пропускаются
   на время backoff недоступного кластера (15→60→300 с, сброс при успехе);
   docker-надзор и provisioning не гейтятся.
@@ -374,7 +396,8 @@ public sealed record NodeEndpointInspection(
    `RecordSuccess` сбрасывает; `ForgetMissing` чистит исчезнувшие И сбрасывает
    счётчик (новая неудача после чистки — снова 15-с окно, не 60/300); гейт
    supervise — окно активно → проба не зовётся (фейк-фабрика фиксирует ноль
-   вызовов) → probeBlind; гейт ActiveAsync (skip E–J) и коллектор —
+   вызовов) → probeBlind; writer-путь коллектора — фейл сбора → `IsBlocked`
+  true, успех → false; гейт ActiveAsync (skip E–J) и коллектор —
    интеграционно в §7.5 (ActiveAsync — internal-агрегатор без швов: все
    зависимости, кроме converger'а, — конкретные классы; делать 9 интерфейсов
    ради одного if — отказ, churn-интеграция исполняет ActiveAsync
@@ -389,7 +412,13 @@ public sealed record NodeEndpointInspection(
      свободный), recreate, endpoints RMW = пересобранный список; клэйм занят
      → `waiting-portalloc-lock` (InProgress, без мутаций);
    - S7-инверсия: ошибка инспекции (docker молчит) → никаких мутаций, фейл
-     тика.
+     тика;
+   - гонка add-broker (ревью Ф7-1): PROVISIONING-брокер с живым контейнером
+     и зрячей пробой, но БЕЗ адреса в endpoints → остаётся PROVISIONING;
+     адрес появился (endpoints-RMW владельца) → следующий тик переводит
+     RUNNING;
+   - сходимость endpoints (ревью Ф7-4): расхождение endpoints с
+     portalloc-адресами → RMW повторяется тиком; совпадение → ноль записей.
 4. **Конфиг клиентов**: пины backoff присутствуют в AdminClientConfig
    (строится фабрикой; assert по свойствам конфига — без сети).
 
