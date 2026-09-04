@@ -320,6 +320,45 @@ public sealed class KafkaMetricsCollectorTests
         state.DebugSnapshot().LastSuccess.Should().BeNull();
     }
 
+    // AAA (Ф7-5): writer-путь коллектора — фейл сбора растит backoff-окно
+    // (IsBlocked true), успех сбрасывает (false). Clock — SETTABLE
+    // FixedTimeProvider (TestTime — immutable FakeClock: окно 15 c после фейла
+    // не истекло бы никогда, гейт CollectOnceAsync съел бы второй тик): один
+    // инстанс и для backoff, и для коллектора; между тиками двигаем clock.Utc += 15 c.
+    [Fact]
+    public async Task Collect_FailThenSuccess_BackoffWindowFollows()
+    {
+        // Arrange: коллектор + backoff на общей settable оси; первый admin —
+        // DescribeCluster падает.
+        var clock = new Provisioning.FixedTimeProvider();
+        var backoff = new KafkaClusterBackoff(clock);
+        var factory = new FakeFactory
+        {
+            Next = new FakeAdmin { FailDescribe = new ApplicationException("down") },
+        };
+        var state = new KafkaMetricsState(new Meter("TestKafkaWorker"));
+        var collector = new KafkaMetricsCollector(30,
+            ct => Task.FromResult(Result<IReadOnlyList<KafkaClusterSnapshot>>.Success([Snapshot("c1")])),
+            factory, state, clock, NullLogger<KafkaMetricsCollector>.Instance, backoff);
+
+        // Act: тик сбора с падающим DescribeCluster.
+        await collector.CollectOnceAsync(TestContext.Current.CancellationToken);
+
+        // Assert: фейл сбора — RecordFailure, окно 15 c активно.
+        backoff.IsBlocked("c1").Should().BeTrue("фейл сбора — RecordFailure, окно 15 c активно");
+
+        // Arrange 2: окно должно истечь, иначе гейт (IsBlocked → continue) съест
+        // второй тик ДО writer-пути — RecordSuccess недостижим.
+        clock.Utc += TimeSpan.FromSeconds(15);
+        factory.Next = new FakeAdmin(); // DescribeCluster ок (пустой кластер), Groups/Topics пустые
+
+        // Act 2: тик сбора со здоровым admin.
+        await collector.CollectOnceAsync(TestContext.Current.CancellationToken);
+
+        // Assert 2: успех сбора — RecordSuccess, окно снято.
+        backoff.IsBlocked("c1").Should().BeFalse("успех сбора — RecordSuccess, окно снято");
+    }
+
     private sealed class CountingAdminFactory : IKafkaAdminClientFactory
     {
         public int CreateCalls { get; private set; }
