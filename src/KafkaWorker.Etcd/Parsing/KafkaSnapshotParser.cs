@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
+using KafkaWorker.Core.Templates;
 using KafkaWorker.Etcd.Client;
 
 namespace KafkaWorker.Etcd.Parsing;
@@ -27,6 +28,10 @@ public static class KafkaSnapshotParser
         public string? Endpoints;
         public string? AppUser;
         public string? AppPassword;
+        public string? AdminUser;
+        public string? AdminPassword;
+        public string? CaPem;
+        public string? CaKey;
         public readonly Dictionary<string, BrokerAcc> Brokers = [];
         public readonly List<(string Topic, string Raw)> TopicRaw = [];
         public readonly List<(string Topic, string Op, string Raw)> LifecycleRaw = [];
@@ -67,6 +72,49 @@ public static class KafkaSnapshotParser
                 case "app_password" when segments.Length == 5:
                     acc.AppPassword = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
                     break;
+
+                // Поля безопасности t03 (arch/15 §2): admin-креды + per-cluster CA.
+                case "admin_user" when segments.Length == 5:
+                    acc.AdminUser = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
+                    break;
+
+                case "admin_password" when segments.Length == 5:
+                    acc.AdminPassword = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
+                    break;
+
+                case "ca_pem" when segments.Length == 5:
+                {
+                    var value = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
+                    // Битый PEM — не исключение: parseError + поле null (arch/15 §6).
+                    if (value is null || !ClusterPki.TryParseCertificate(value, out _))
+                    {
+                        acc.Errors.Add($"/kafka/clusters/{acc.Name}/ca_pem: битый PEM сертификата");
+                        acc.CaPem = null;
+                    }
+                    else
+                    {
+                        acc.CaPem = value;
+                    }
+
+                    break;
+                }
+
+                case "ca_key" when segments.Length == 5:
+                {
+                    var value = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
+                    // Битый PEM-ключ — не исключение: parseError + поле null (arch/15 §6).
+                    if (value is null || !ClusterPki.TryParseRsaKey(value, out _))
+                    {
+                        acc.Errors.Add($"/kafka/clusters/{acc.Name}/ca_key: битый PEM ключа");
+                        acc.CaKey = null;
+                    }
+                    else
+                    {
+                        acc.CaKey = value;
+                    }
+
+                    break;
+                }
 
                 case "brokers" when segments.Length == 7
                     && segments[5].Length > 0
@@ -131,6 +179,10 @@ public static class KafkaSnapshotParser
             acc.Endpoints,
             acc.AppUser,
             acc.AppPassword,
+            acc.AdminUser,
+            acc.AdminPassword,
+            acc.CaPem,
+            acc.CaKey,
             acc.LifecycleRaw
                 .OrderBy(t => t.Topic, StringComparer.Ordinal)
                 .Select(t => BuildLifecycleTicket(acc.Name, t.Topic, t.Op, t.Raw, acc.Errors))
