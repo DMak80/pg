@@ -12,5 +12,3 @@
   для всех ролей, CONTROLLER-listener PLAINTEXT внутри закрытой сети);
   сюда же — транспортная безопасность HTTP API KafkaWorker (arch/16 §1.1):
   mTLS вместо голого `X-Api-Key` в закрытой сети.
-- **`t04-kafka-metrics`** — Prometheus-метрики воркера и панели (лаги, USR,
-  фазы процессов, клэймы).
