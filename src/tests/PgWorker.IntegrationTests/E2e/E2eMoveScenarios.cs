@@ -95,6 +95,19 @@ public class E2eMoveScenarios(E2eFixture fixture, ITestOutputHelper output)
         moved.Should().BeTrue($"move должен завершиться; routing={await RoutingAsync("bucket_0", ct)}, " +
                               $"status={await StatusAsync("bucket_0", ct) ?? "нет"}, work={await WorkDumpAsync(ct)}");
 
+        // Детерминизация (t09, гонка E2-kill ↔ M6-REPLACE): routing+статус
+        // сменяются РАНЬШЕ, чем воркер допишет REPLACE на finalize — между ними
+        // секунды post-flip SQL (pub_rb/sub_rb). Kill до REPLACE оставлял заявку
+        // op=move, m2 отклонял её «бакет уже на shard2», и finalize не начинался
+        // (E3: artifacts не вычищены). Ждём op=finalize — свидетельство M6.
+        var replacedOnFinalize = await E2eFixture.WaitForAsync(async () =>
+        {
+            var req = await GetOrNullAsync(MoveNames.MoveKey(Cluster, "bucket_0"));
+            return req?.Value.Contains("\"op\":\"finalize\"", StringComparison.Ordinal) == true;
+        }, TimeSpan.FromSeconds(15), ct);
+        replacedOnFinalize.Should().BeTrue($"перед kill заявка должна стать finalize (M6 REPLACE); " +
+                                           $"заявка={await MovesDumpAsync(ct)}, work={await WorkDumpAsync(ct)}");
+
         // НEMЕДЛЕННО убиваем контроллер: auto-finalize не должен удалить схему на shard1
         // до завершения проверок FROZEN/counts/sequence/ghost.
         Host!.Kill();
@@ -300,10 +313,28 @@ public class E2eMoveScenarios(E2eFixture fixture, ITestOutputHelper output)
             GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA {bucket} TO app;
             GRANT SELECT ON ALL TABLES IN SCHEMA {bucket} TO bucket_mover;
             """;
-        await using var con = new NpgsqlConnection($"{adminDsn};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
-        await con.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(ddl, con);
-        await cmd.ExecuteNonQueryAsync(ct);
+        // Сид идёт сразу после provision DONE: fresh-проброс порта Docker Desktop
+        // может дать разовый RST на SSL-рукопожатии (TCP принимает docker-proxy,
+        // PG-контейнер ещё не готов) — детерминизация t09: ждём готовность, а не
+        // полагаемся на мгновенный коннект (паттерн O2-probe в E2eScenarios).
+        // SQL-ошибки (PostgresException) НЕ ретраим — это валидный провал.
+        (await E2eFixture.WaitForAsync(async () =>
+        {
+            try
+            {
+                await using var con = new NpgsqlConnection(
+                    $"{adminDsn};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
+                await con.OpenAsync(ct);
+                await using var cmd = new NpgsqlCommand(ddl, con);
+                await cmd.ExecuteNonQueryAsync(ct);
+                return true;
+            }
+            catch (NpgsqlException e) when (e is not PostgresException)
+            {
+                return false; // PG ещё не готов/разовый сброс транспорта — повторим
+            }
+        }, TimeSpan.FromSeconds(60), ct))
+            .Should().BeTrue($"сид {bucket} должен примениться к мастеру ({adminDsn})");
     }
 
     private async Task SetToRemoveAsync()
@@ -362,23 +393,43 @@ public class E2eMoveScenarios(E2eFixture fixture, ITestOutputHelper output)
 
     private sealed record MasterInfo(string Node, int Port, int PatroniPort, string Dsn);
 
+    // Пробы Patroni из теста (семантика /primary, arch/14 §5 C).
+    private static readonly HttpClient PatroniHttp = new() { Timeout = TimeSpan.FromSeconds(3) };
+
     private async Task<MasterInfo> MasterInfoAsync(string shard, CancellationToken ct)
     {
+        // Резолв мастера по контракту §5 C: проба /primary по patroni-портам
+        // portalloc. Матч master-ключа по doorman-порту при EnableDoorman=false
+        // недискриминантен (ключ host:0 у всех нод, arch/14 §2.4 п.5 — t09):
+        // FirstOrDefault по такому матчу отдавал произвольную ноду шарда —
+        // seed уходил на реплику (25006 read-only).
         for (var i = 0; i < 60; i++)
         {
             var key = await GetOrNullAsync($"/clusters/{Cluster}/shards/{shard}/master");
             if (key is { Value.Length: > 0 })
             {
-                var doorman = key.Value.Split(':')[^1];
-                var match = (await PortallocAsync())
-                    .FirstOrDefault(p => p.Key.StartsWith($"{shard}/") && p.Value.Doorman.ToString() == doorman);
-                if (match.Key is { Length: > 0 })
+                var addresses = await PortallocAsync();
+                foreach (var (nodeKey, addr) in addresses
+                             .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
+                             .OrderBy(p => p.Key, StringComparer.Ordinal))
                 {
-                    var node = match.Key.Split('/')[1];
-                    return new MasterInfo(node, match.Value.Pg, match.Value.Patroni,
-                        $"Host=localhost;Port={match.Value.Pg};Database={Cluster};Username=postgres;Password={E2eFixture.SuPassword}");
+                    try
+                    {
+                        using var response = await PatroniHttp.GetAsync(
+                            $"http://localhost:{addr.Patroni}/primary", ct);
+                        if (!response.IsSuccessStatusCode)
+                            continue;
+                        var node = nodeKey.Split('/')[1];
+                        return new MasterInfo(node, addr.Pg, addr.Patroni,
+                            $"Host=localhost;Port={addr.Pg};Database={Cluster};Username=postgres;Password={E2eFixture.SuPassword}");
+                    }
+                    catch (Exception)
+                    {
+                        // сетевой сбой пробы (рестарт/ещё не готова) — не primary
+                    }
                 }
             }
+
             await Task.Delay(1000, ct);
         }
         throw new ApplicationException($"мастер {Cluster}/{shard} не найден за 60 с");

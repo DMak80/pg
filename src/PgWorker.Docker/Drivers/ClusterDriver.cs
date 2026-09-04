@@ -67,6 +67,12 @@ public interface IClusterDriver
 
     // Имена объектов нод кластера (pgw-<C>-*): сверка декларации + сироты (D1).
     Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct);
+
+    // Честная running-инспекция нод (arch/14 §5 C): InspectNodesAsync отражает
+    // ФАКТ running-процесса, пустой результат = ноды нет. Plain — да; Swarm —
+    // нет (инспект — заглушка): ветки надзора, трактующие «нет в инспекте» как
+    // смерть процесса (ускорение failover, t09), для таких драйверов выключены.
+    bool SupportsRunningInspection { get; }
 }
 
 // Plain-режим: контейнеры на перечисленных хостах, per-host Engine API.
@@ -83,6 +89,8 @@ public sealed class PlainClusterDriver(
     string nodeImage = "pgworker-node:dev",
     string? advertisedHost = null) : IClusterDriver
 {
+    // Plain: инспект контейнера — факт running-процесса (arch/14 §5 C).
+    public bool SupportsRunningInspection => true;
     // Общая сеть нод кластера: Patroni-репликация по внутренним адресам
     // (alias = имя ноды); без user-defined сети hostname-резолва нет.
     public const string NodesNetwork = "pgw-net";
@@ -443,6 +451,12 @@ public sealed class SwarmClusterDriver(
     string nodeImage = "pgworker-node:dev") : IClusterDriver
 {
     private readonly IDockerEngine _engine = factory.Create(managerEndpoint, hostAlias: null);
+
+    // Swarm: InspectNodesAsync — заглушка (пустой результат), «нет в инспекте»
+    // НЕ свидетельство смерти → inspect-ускорение failover выключено
+    // (arch/14 §5 C, t09-review: иначе любой транспортный флап пробы лидера
+    // давал ложный failover живого лидера).
+    public bool SupportsRunningInspection => false;
 
     // Менеджер не управляет volume нод: volume создаётся/живёт на ноде таска;
     // при RemoveNode сервис удаляется, volume остаётся (данные; осознанный MVP).

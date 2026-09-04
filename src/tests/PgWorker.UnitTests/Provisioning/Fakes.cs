@@ -193,6 +193,10 @@ internal static class Fakes
     {
         private readonly object _gate = new();
 
+        // Plain-семантика по умолчанию; тесты swarm-поведения ставят false
+        // (InspectNodesAsync при этом возвращает пусто — «нода не видна»).
+        public bool SupportsRunningInspection { get; set; } = true;
+
         public readonly List<string> EnsuredNodes = [];
         public readonly List<(string Node, NodeResources? Resources)> EnsuredDetails = [];
         public readonly List<string> RemovedNodes = [];

@@ -43,13 +43,32 @@ public sealed class WorkJournal(IEtcdGateway gateway, string[] endpoints)
 
     // /pgworker/work/<C>: {"op","phase","instance","updated_unix","last_error"} + поля серии
     // ретраев (fail_count/fail_first_unix/retry_not_before_unix — null опускается).
-    public Task<Result> WritePhaseAsync(
+    // unreachable — трек недоступности надзора (t09: фазовые записи в тике
+    // надзора — конвергенция DCS-конфига — обязаны его сохранять, иначе
+    // пороги NodeDead/ShardDead сбрасываются каждой фазовой записью).
+    public async Task<Result> WritePhaseAsync(
         string cluster, string op, string phase, string instance, string? lastError, CancellationToken ct,
-        RetrySeries? series = null)
+        RetrySeries? series = null, IReadOnlyDictionary<string, long>? unreachable = null)
     {
+        // t09 (AC6 фикс-гейта): фазовая запись БЕЗ явного трека сохраняет
+        // существующий. Владелец unreachable-трека — supervise (полная
+        // перезапись актуальным множеством — только WriteSupervisionAsync);
+        // прочие процессы (adopt/rotate/moves/...) пишут фазы в тот же ключ
+        // /pgworker/work/<C> каждый тик и раньше стирали трек → supervise
+        // перечитывал пустоту и пороги NodeDead/ShardDead не истекали никогда
+        // (эвакуация не стартовала вовсе).
+        IReadOnlyDictionary<string, long>? track = unreachable;
+        if (track is null)
+        {
+            var current = await ReadAsync(cluster, ct);
+            if (!current.IsSuccess)
+                return current;
+            track = current.Value?.Unreachable;
+        }
+
         var payload = new WorkState(op, phase, instance, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), lastError,
-            Unreachable: null, series?.FailCount, series?.FailFirstUnix, series?.RetryNotBeforeUnix);
-        return WithFailoverAsync(endpoint => gateway.PutAsync(
+            track, series?.FailCount, series?.FailFirstUnix, series?.RetryNotBeforeUnix);
+        return await WithFailoverAsync(endpoint => gateway.PutAsync(
             endpoint, WorkKey(cluster), JsonSerializer.Serialize(payload, Json), lease: null, ct));
     }
 

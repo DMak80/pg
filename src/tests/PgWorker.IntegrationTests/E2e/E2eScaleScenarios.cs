@@ -334,10 +334,27 @@ public class E2eScaleScenarios(E2eFixture fixture)
             GRANT USAGE, UPDATE ON ALL SEQUENCES IN SCHEMA {bucket} TO app;
             GRANT SELECT ON ALL TABLES IN SCHEMA {bucket} TO bucket_mover;
             """;
-        await using var con = new NpgsqlConnection($"{adminDsn};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
-        await con.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(ddl, con);
-        await cmd.ExecuteNonQueryAsync(ct);
+        // Детерминизация (t09, тот же дефект-класс, что E1-seed в Move): fresh-
+        // проброс порта Docker Desktop даёт разовый RST на SSL-рукопожатии
+        // (TCP принят docker-proxy, PG-контейнер ещё не готов) — ждём готовность
+        // ретраем, SQL-ошибки (PostgresException) не ретраим — валидный провал.
+        (await E2eFixture.WaitForAsync(async () =>
+        {
+            try
+            {
+                await using var con = new NpgsqlConnection(
+                    $"{adminDsn};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
+                await con.OpenAsync(ct);
+                await using var cmd = new NpgsqlCommand(ddl, con);
+                await cmd.ExecuteNonQueryAsync(ct);
+                return true;
+            }
+            catch (NpgsqlException e) when (e is not PostgresException)
+            {
+                return false; // PG ещё не готов / разовый сброс транспорта — повторим
+            }
+        }, TimeSpan.FromSeconds(60), ct))
+            .Should().BeTrue($"сид {bucket} должен примениться к мастеру ({adminDsn})");
     }
 
     private sealed record NodeAddr(string Host, int Pg, int Patroni, int Doorman);
@@ -352,7 +369,13 @@ public class E2eScaleScenarios(E2eFixture fixture)
 
     private sealed record MasterInfo(string Node, int Port, int PatroniPort, string Dsn);
 
-    // Мастер шарда: master-ключ host:doorman → порты из portalloc (приём E2eMoveScenarios).
+    private static readonly HttpClient PatroniHttp = new() { Timeout = TimeSpan.FromSeconds(3) };
+
+    // Мастер шарда: резолв по контракту §5 C — проба /primary по patroni-портам
+    // portalloc. Матч master-ключа по doorman-порту при EnableDoorman=false
+    // недискриминантен (ключ host:0 у всех нод, arch/14 §2.4 п.5 — t09):
+    // FirstOrDefault по такому матчу отдавал произвольную ноду шарда — seed
+    // уходил на реплику (25006 read-only). Приём E2eMoveScenarios.
     private async Task<MasterInfo> MasterInfoAsync(string cluster, string shard, CancellationToken ct)
     {
         for (var i = 0; i < 60; i++)
@@ -360,14 +383,25 @@ public class E2eScaleScenarios(E2eFixture fixture)
             var key = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/master");
             if (key is { Value.Length: > 0 })
             {
-                var doorman = key.Value.Split(':')[^1];
-                var match = (await PortallocAsync(cluster))
-                    .FirstOrDefault(p => p.Key.StartsWith($"{shard}/") && p.Value.Doorman.ToString() == doorman);
-                if (match.Key is { Length: > 0 })
+                var addresses = await PortallocAsync(cluster);
+                foreach (var (nodeKey, addr) in addresses
+                             .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
+                             .OrderBy(p => p.Key, StringComparer.Ordinal))
                 {
-                    var node = match.Key.Split('/')[1];
-                    return new MasterInfo(node, match.Value.Pg, match.Value.Patroni,
-                        $"Host=localhost;Port={match.Value.Pg};Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}");
+                    try
+                    {
+                        using var response = await PatroniHttp.GetAsync(
+                            $"http://localhost:{addr.Patroni}/primary", ct);
+                        if (!response.IsSuccessStatusCode)
+                            continue;
+                        var node = nodeKey.Split('/')[1];
+                        return new MasterInfo(node, addr.Pg, addr.Patroni,
+                            $"Host=localhost;Port={addr.Pg};Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}");
+                    }
+                    catch (Exception)
+                    {
+                        // сетевой сбой пробы (рестарт/ещё не готова) — не primary
+                    }
                 }
             }
 

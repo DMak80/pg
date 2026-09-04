@@ -147,6 +147,22 @@ public sealed class NodeSupervisor(
                 return Fail(keys.Error!);
         }
 
+        // 4) Конвергенция DCS-конфига (arch/14 §5 C, t09): активный динамический
+        // конфиг кластера сверяется с каноном PatroniTimings, расхождение
+        // патчится до канона — нода, подтянувшаяся к кластеру с отсутствующим/
+        // чужим/дефолтным конфигом, приводится к канону без пересоздания
+        // («старое с плохими параметрами» не живёт параллельно канону). Шаг —
+        // в КОНЦЕ тика: фазовая запись журнала при патче несёт текущий трек
+        // недоступности (пороги NodeDead/ShardDead не сбрасываются).
+        foreach (var shard in snap.Shards)
+        {
+            if (shard.Dsn is null)
+                continue;
+            var converged = await ConvergeDcsConfigAsync(cluster, shard, addresses.Value, track, ct);
+            if (!converged.IsSuccess)
+                return Fail(converged.Error!);
+        }
+
         // Надзор не имеет терминальной фазы: успешный тик = Done (цикл повторит);
         // мёртвые шарды — значением (изоляция параллельных тиков, rework №1).
         return Result<SuperviseOutcome>.Success(new SuperviseOutcome(ProcessOutcome.Done, deadShards));
@@ -238,12 +254,50 @@ public sealed class NodeSupervisor(
         return Result.Success();
     }
 
-    // Ускорение failover при доказанно мёртвом лидере (docker-объект отсутствует
-    // — в отличие от пробы, это положительное свидетельство, флапа нет):
-    // 1) DCS-ключ /service/<scope>/failover {"leader","member","scheduled_at"}
-    //    (Patroni-формат: поле кандидата — member, см. Failover.from_node);
-    // 2) удаление лидер-ключа — его lease протух бы только через ttl (~20с),
-    //    кандидат без этого ждёт истечения и промоушен не ускоряется.
+    // Конвергенция динамического DCS-конфига (arch/14 §5 C, t09): GET /config
+    // первого канонического Patroni-узла шарда, расхождение с каноном
+    // PatroniTimings → PATCH до канона. Конфиг кластерный — один узел на шард
+    // и один патч на тик. Транзиент-толерантно: недоступность узла (рестарт/
+    // мёртвый шард) пропускает конвергенцию этого тика (общие контуры проб/
+    // rebuild/эвакуации займутся шардом сами), патч повторится следующим.
+    // Фазовая запись журнала при патче несёт трек недоступности текущего тика.
+    private async Task<Result> ConvergeDcsConfigAsync(
+        string cluster, ShardSpec shard, IReadOnlyDictionary<string, NodeAddress> addresses,
+        Dictionary<string, long> track, CancellationToken ct)
+    {
+        var probeNode = addresses
+            .Where(p => p.Key.StartsWith($"{shard.Name}/", StringComparison.Ordinal))
+            .OrderBy(p => p.Key, StringComparer.Ordinal)
+            .Select(p => p.Value)
+            .FirstOrDefault(a => a.Ports.Patroni != 0 && a.Object is null);
+        if (probeNode is null)
+            return Result.Success(); // канонического Patroni-узла нет — не наш домен
+
+        var config = await probe.GetConfigAsync(probeNode, ct);
+        if (!config.IsSuccess)
+            return Result.Success(); // транзиент — сверка следующим тиком
+
+        var patch = PatroniTimings.DivergencePatch(config.Value);
+        if (patch is null)
+            return Result.Success(); // конвергентно — мутаций нет
+
+        var applied = await probe.PatchConfigAsync(probeNode, patch, ct);
+        if (!applied.IsSuccess)
+            return Result.Success(); // транзиент — патч следующим тиком
+
+        await journal.WritePhaseAsync(cluster, "supervise", "dcs-converge", claims.InstanceId,
+            $"{shard.Name}: DCS-конфиг сконвергирован к канону ({patch})", ct, unreachable: track);
+        return Result.Success();
+    }
+
+    // Ускорение failover при доказанно мёртвом лидере (t09, arch/14 §5 C —
+    // положительное свидетельство смерти процесса, флапа нет: docker-объект
+    // ОТсутствует, ИЛИ контейнер есть, но не running — оба варианта означают,
+    // что лидер не обслуживает, а его лидер-ключ держал бы lease до истечения
+    // ttl): 1) DCS-ключ /service/<scope>/failover
+    // {"leader","member","scheduled_at"} (Patroni-формат: поле кандидата —
+    // member, см. Failover.from_node); 2) удаление лидер-ключа — кандидат
+    // без этого ждёт истечения lease и промоушен не ускоряется.
     // Кандидат — живая нода с ролью sync_standby (по GET /cluster), иначе
     // первая живая. Нет живых — не ускоряем: некому промоутиться, лидер
     // вернётся рестартом контейнера.
@@ -471,8 +525,13 @@ public sealed class NodeSupervisor(
             var trackKey = $"{shard.Name}/{name}";
             track.TryAdd(trackKey, Now());
 
-            // Лидер недоступен → НИЧЕГО: failover делает Patroni (P11); лидер-призрак
-            // станет репликой/умершей и обработается общим путём (arch/14 §5 C).
+            // Лидер недоступен → ускоряем failover (t09, arch/14 §5 C): если
+            // его контейнер не running (положительное свидетельство смерти —
+            // транспортный флап контейнер не останавливает), удаляем
+            // лидер-ключ (lease держал бы до ttl≥20 — мимо бюджета ≤5с) и
+            // выставляем failover-маркер с кандидатом. Лидер-призрак станет
+            // репликой и обработается общим путём. TO_RECREATE-лидер — домен
+            // RecreateMarkedNodes (soft/hard), сюда не вмешиваемся.
             var isLeader = leader == name;
             // Guard кворума (spec §6.4 C «живых ≥2») для 2-нодовых шардов
             // обобщён: rebuild одиночной смерти допустим, пока жив кластер —
@@ -484,6 +543,26 @@ public sealed class NodeSupervisor(
             // поднял бы второй Patroni на тот же scope — мёртвая усыновлённая
             // получает честный UNREACHABLE ниже (реальная проблема, разбор оператором).
             var adopted = addresses.TryGetValue(trackKey, out var addr) && addr.Object is not null;
+
+            // «Нет в running-инспекте» — свидетельство смерти ТОЛЬКО у драйверов
+            // с честной инспекцией (SupportsRunningInspection, arch/14 §5 C):
+            // Swarm-инспект — заглушка (всегда пуст), и без гварда любой
+            // транспортный флап пробы лидера давал ложный failover живого
+            // лидера (удаление leader-ключа + failover-маркер).
+            if (isLeader && !adopted && node.State != NodeState.ToRecreate
+                && alive.Count > 0 && driver.SupportsRunningInspection)
+            {
+                var running = await driver.InspectNodesAsync(cluster, [name], ct);
+                if (!running.IsSuccess)
+                    return running.Error!;
+                if (!running.Value.ContainsKey(name))
+                {
+                    var accelerated = await AccelerateDeadLeaderFailoverAsync(
+                        cluster, shard, name, addresses, ct);
+                    if (!accelerated.IsSuccess)
+                        return accelerated;
+                }
+            }
 
             if (!isLeader && quorum && expired && !adopted)
             {

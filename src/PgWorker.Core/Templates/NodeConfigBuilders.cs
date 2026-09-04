@@ -19,8 +19,11 @@ public sealed record InstallSecrets(string SuPassword, string StandbyPassword,
 /// <summary>
 /// ENV контейнера pgworker-node для Spilo/Patroni. SPILO_CONFIGURATION —
 /// YAML-строка по эталону arch/configs/postgres/pg.env с правками PgWorker:
-/// P11 (ttl=5/loop_wait=2/retry_timeout=3 + callback on_role_change →
-/// lease-скрипт мастер-ключа /clusters/&lt;C&gt;/shards/&lt;X&gt;/master),
+/// P11 (канонические тайминги PatroniTimings: ttl=20/loop_wait=1/
+/// retry_timeout=3 — полы Patroni 4.x, t09; применяется при первой
+/// инициализации DCS-кластера, далее гарантируется конвергенцией §5 C) +
+/// callback on_role_change → lease-скрипт мастер-ключа
+/// /clusters/&lt;C&gt;/shards/&lt;X&gt;/master,
 /// P3 (wal_level=logical, sync_replication_slots, max_slot_wal_keep_size),
 /// P15 (max_connections=60, walsenders/slots=10).
 /// Per-нода PGW_NODE_HOST добавляет драйвер при создании контейнера.
@@ -67,14 +70,15 @@ public static class SpiloEnvBuilder
             // монтируется volume, ClusterDriver).
             ["USE_DATA_DIR_FOR_WAL"] = "true",
 
-            // Patroni-конфигурация: эталон pg.env с wal_level: logical (P3).
-            ["SPILO_CONFIGURATION"] = """
+            // Patroni-конфигурация: эталон pg.env с wal_level: logical (P3);
+            // тайминги — из канона PatroniTimings (полы Patroni 4.x, t09).
+            ["SPILO_CONFIGURATION"] = $$"""
                 ---
                 bootstrap:
                   dcs:
-                    ttl: 5
-                    loop_wait: 2
-                    retry_timeout: 3
+                    ttl: {{PatroniTimings.Ttl}}
+                    loop_wait: {{PatroniTimings.LoopWait}}
+                    retry_timeout: {{PatroniTimings.RetryTimeout}}
                     synchronous_mode: true
                     synchronous_mode_strict: false
                     postgresql:

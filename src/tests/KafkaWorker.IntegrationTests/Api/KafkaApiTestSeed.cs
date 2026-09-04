@@ -14,6 +14,10 @@ internal static class KafkaApiTestSeed
     {
         var ct = TestContext.Current.CancellationToken;
         var gw = etcd.Gateway;
+        // Чистый кластер на каждый сид: etcd общий на класс, ключи прошлых
+        // тестов (например broker4 от DELETE-сценария) ломали следующий сид
+        // «N брокеров» — POST нового брокера отвечал конфликтом имени.
+        await gw.DeleteAsync(etcd.Endpoint, $"/kafka/clusters/{cluster}/", prefix: true, ct);
         await gw.PutAsync(etcd.Endpoint, $"/kafka/clusters/{cluster}/config",
             $$"""{"brokers":{{brokers}},"replication_factor":3,"min_insync_replicas":2,"default_partitions":12,"default_retention_ms":604800000,"created_unix":1756500000}""",
             null, ct);
