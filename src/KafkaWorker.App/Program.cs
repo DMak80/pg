@@ -45,13 +45,6 @@ builder.Services.AddSingleton(sp =>
     return m;
 });
 
-// Метрики (arch/18 §3): /metrics на том же Kestrel-порту, что /healthz;
-// ApiKeyMiddleware защищает только /api — scrape-грань открыта (доверенная сеть).
-builder.Services.AddAppMetrics("KafkaWorker", builder.Configuration.GetSection("KafkaWorker:Metrics"));
-builder.Services.AddSingleton(sp => new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
-    sp.GetRequiredService<System.Diagnostics.Metrics.Meter>(),
-    sp.GetRequiredService<TimeProvider>()));
-
 // etcd-клиент: HTTP JSON gateway /v3/*; handler против DNS-флейпа Docker
 // embedded DNS (t09; arch/16 §7): PooledConnectionLifetime + IPv4-first резолв.
 // EtcdGateway-синглтон захвачен HttpClient навсегда — ротация handler'ов фабрики

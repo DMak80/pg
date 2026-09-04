@@ -114,13 +114,16 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     private readonly Action<string, string> OperationMark;
 
     // Колбэк ObservableGauge: чтение стейта под lock; после Dispose — серии пустые.
+    // Материализация (.ToArray) ОБЯЗАТЕЛЬНА под lock: OTel перечисляет результат
+    // вне колбэка, а ленивый Select-read по словарям даст InvalidOperationException
+    // при конкурентной мутации (ProcessFinished/смена фазы) — серия пропадёт со scrape.
     private IEnumerable<Measurement<T>> Measure<T>(Func<IEnumerable<Measurement<T>>> read) where T : struct
     {
         lock (_lock)
         {
             if (_disposed)
                 return [];
-            return read();
+            return read().ToArray();
         }
     }
 

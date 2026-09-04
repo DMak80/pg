@@ -62,14 +62,21 @@ public sealed class KafkaMetricsState
             _lastSuccess = at;
     }
 
-    private Measurement<long>? ReadLastSuccess() => _lastSuccess is { } at
-        ? new Measurement<long>(at.ToUnixTimeSeconds())
-        : null;
+    // Чтение стейта ТОЛЬКО под lock: конкурентный UpdateCluster (тик коллектора)
+    // мутирует _lastSuccess — чтение вне lock даёт порванное значение.
+    private Measurement<long>? ReadLastSuccess()
+    {
+        lock (_lock)
+            return _lastSuccess is { } at ? new Measurement<long>(at.ToUnixTimeSeconds()) : null;
+    }
 
+    // Материализация (.ToArray) ОБЯЗАТЕЛЬНА под lock: OTel перечисляет результат
+    // вне колбэка, а ленивый Select-read по словарям даст InvalidOperationException
+    // при конкурентном UpdateCluster — серия пропадёт со scrape (ревью Ф7-4).
     private IEnumerable<Measurement<T>> Measure<T>(IEnumerable<Measurement<T>> read) where T : struct
     {
         lock (_lock)
-            return read;
+            return read.ToArray();
     }
 
     /// <summary>Internal-снимок стейта для юнит-проверок (InternalsVisibleTo).</summary>
