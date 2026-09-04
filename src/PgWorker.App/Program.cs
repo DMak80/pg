@@ -19,6 +19,7 @@ using PgWorker.Provisioning.Probes;
 using PgWorker.Provisioning.Processes;
 using PgWorker.Provisioning.Snapshots;
 using PgWorker.Provisioning.Sql;
+using Shared.Metrics;
 using ProcessThresholds = PgWorker.Provisioning.Processes.ThresholdsOptions;
 
 // Точка входа PgWorker (задача 23–24): host-builder с HTTP-granью /healthz,
@@ -36,6 +37,13 @@ builder.Services.AddOptions<PgWorkerOptions>()
     .ValidateOnStart();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<HealthState>();
+
+// Метрики (arch/18 §3): /metrics на том же Kestrel-порту, что /healthz;
+// ApiKeyMiddleware защищает только /api — scrape-грань открыта (доверенная сеть).
+builder.Services.AddAppMetrics("PgWorker", builder.Configuration.GetSection("PgWorker:Metrics"));
+builder.Services.AddSingleton(sp => new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
+    sp.GetRequiredService<System.Diagnostics.Metrics.Meter>(),
+    sp.GetRequiredService<TimeProvider>()));
 
 // Секреты per-install (Д7, spec §10): не в git, не в etcd — только env процесса.
 builder.Services.AddSingleton(_ => SecretsFromEnv());
@@ -378,6 +386,7 @@ builder.Services.AddHealthChecks()
 
 var app = builder.Build();
 app.UseMiddleware<ApiKeyMiddleware>();
+app.MapAppMetrics();
 app.MapHealthChecks("/healthz");
 app.MapWorkerApi();
 
