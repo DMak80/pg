@@ -17,7 +17,8 @@ internal sealed class KeepaliveLoop(
     IOptionsMonitor<KafkaWorkerOptions> options,
     ClaimStore claims,
     ILogger<KeepaliveLoop> logger,
-    HealthState health) : BackgroundService, IHealthCheckService
+    HealthState health,
+    Shared.Metrics.Worker.WorkerMetricsInstrumentation metrics) : BackgroundService, IHealthCheckService
 {
     public bool Inited { get; private set; }
 
@@ -41,6 +42,7 @@ internal sealed class KeepaliveLoop(
                 // проход контура жив — ошибка прошлого тика (если появится) гасится.
                 StatusError = Result.Success();
                 health.MarkKeepaliveTick();
+                metrics.LoopTick("keepalive", ok: true);
                 await Task.Delay(
                     TimeSpan.FromSeconds(options.CurrentValue.Loops.KeepaliveSec), stoppingToken);
             }

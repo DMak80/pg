@@ -2,6 +2,7 @@
 
     <ItemGroup>
         <Using Include="Xunit"/>
+        <Using Include="FluentAssertions"/>
     </ItemGroup>
 
     <ItemGroup>
