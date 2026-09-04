@@ -105,6 +105,19 @@ public sealed class KafkaMetricsCollector(
         {
             await using var admin = adminFactory.Create(snap.Endpoints!, snap.AppUser!, snap.AppPassword!);
 
+            // Проба живости ДО ListGroups (t05, инцидент-репро 2026-09-04):
+            // ListConsumerGroups на недоступном bootstrap роняет процесс нативно
+            // (double-free rd_kafka_ListConsumerGroupsResult_free на error-path
+            // librdkafka 2.14.2); DescribeCluster безопасен и дёшев (клиент
+            // кэширован). Лежащий кластер → фейл сбора без ListGroups.
+            var alive = await admin.DescribeClusterAsync(ct);
+            if (!alive.IsSuccess)
+            {
+                logger.LogWarning("кластер {Cluster}: DescribeCluster не удался: {Message}",
+                    cluster, alive.Error!.Message);
+                return false;
+            }
+
             var lag = new List<((string, string, string), long)>();
             var groups = await admin.ListGroupsAsync(ct);
             if (!groups.IsSuccess)

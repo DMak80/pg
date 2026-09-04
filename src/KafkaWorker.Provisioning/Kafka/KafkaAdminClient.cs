@@ -68,6 +68,8 @@ public sealed class KafkaAdminClientFactory(
                 LastUsedUtc = now,
             };
             marked = entry;
+            if (_entries.Remove(key, out var replaced))
+                Task.Run(replaced.Client.DisposeNative); // заменяемый — фон (Dispose ждёт poll-поток)
             _entries[key] = entry;
         }
 

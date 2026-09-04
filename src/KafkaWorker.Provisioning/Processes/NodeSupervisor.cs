@@ -137,6 +137,23 @@ public sealed class NodeSupervisor(
         // Warning-ы тика (RF=1-пересоздания) — в финальную supervision-запись.
         var warnings = new List<string>();
 
+        // Перевод PROVISIONING → RUNNING по факту готовности (arch/16 §5 C: «в
+        // RUNNING переводит следующий цикл по факту готовности»): контейнер жив
+        // и зрячая проба видит брокера в кластере — PROVISIONING исчерпан.
+        if (!probeBlind)
+        {
+            foreach (var broker in snap.Brokers.Where(b => b.State == "PROVISIONING"))
+            {
+                if (!alive.Contains($"kfw-{cluster}-{broker.Name}")
+                    || !inCluster.Contains(NodeId(broker.Name)))
+                    continue; // ещё грузится либо контейнера нет — не готов
+
+                var running = await PutAsync(BrokerStateKey(cluster, broker.Name), "RUNNING", ct);
+                if (!running.IsSuccess)
+                    return Fail(cluster, running.Error!, "mark-running");
+            }
+        }
+
         // 1) Снесённые контейнеры → пересоздать (тот же volume/env).
         foreach (var broker in Supervisable(snap))
         {

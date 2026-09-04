@@ -20,9 +20,17 @@ public sealed class KafkaMetricsCollectorTests
         public Dictionary<string, List<KafkaTopicPartitionOffset>> Committed = [];
         public List<KafkaTopicView> Topics = [];
         public Exception? FailAll;
+        public Exception? FailDescribe; // отдельный фейл пробы живости (t05 pre-gate)
+        public int DescribeCalls;
+        public int ListGroupsCalls;
 
         public Task<Result<KafkaClusterView>> DescribeClusterAsync(CancellationToken ct)
-            => Fail<KafkaClusterView>();
+        {
+            DescribeCalls++;
+            return Task.FromResult(FailDescribe is not null
+                ? Result<KafkaClusterView>.Failed(FailDescribe)
+                : Result<KafkaClusterView>.Success(new KafkaClusterView([], null)));
+        }
 
         public Task<Result<IReadOnlyList<KafkaTopicView>>> DescribeTopicsAsync(bool includeInternal, CancellationToken ct)
         {
@@ -55,6 +63,7 @@ public sealed class KafkaMetricsCollectorTests
 
         public Task<Result<IReadOnlyList<KafkaGroupView>>> ListGroupsAsync(CancellationToken ct)
         {
+            ListGroupsCalls++;
             if (FailAll is not null)
                 return Task.FromResult(Result<IReadOnlyList<KafkaGroupView>>.Failed(FailAll));
             return Task.FromResult(Result<IReadOnlyList<KafkaGroupView>>.Success(Groups));
@@ -86,9 +95,6 @@ public sealed class KafkaMetricsCollectorTests
         }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-
-        private static Task<Result<T>> Fail<T>() where T : class
-            => Task.FromResult(Result<T>.Failed(new ApplicationException("n/a")));
 
         private static Task<Result<IReadOnlyDictionary<string, string>>> FailDict()
             => Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Failed(
@@ -289,6 +295,29 @@ public sealed class KafkaMetricsCollectorTests
         // Assert: kafka-контакта не было; skip — не фейл тика.
         factory.CreateCalls.Should().Be(0);
         state.DebugSnapshot().LastSuccess.Should().NotBeNull("skip — не фейл тика");
+    }
+
+    // AAA: недоступный кластер — ListGroups не зовётся вовсе (t05 pre-gate:
+    // ListConsumerGroups на лежащем bootstrap роняет процесс нативно —
+    // double-free librdkafka на error-path; DescribeCluster — безопасен).
+    [Fact]
+    public async Task Collect_ClusterUnreachable_SkipsListGroups()
+    {
+        // Arrange: проба живости фейлится; ListGroups-фейк запишет вызов.
+        var admin = new FakeAdmin { FailDescribe = new ApplicationException("connection refused") };
+        var factory = new FakeFactory { Next = admin };
+        var state = new KafkaMetricsState(new Meter("TestKafkaWorker"));
+        var collector = new KafkaMetricsCollector(30,
+            ct => Task.FromResult(Result<IReadOnlyList<KafkaClusterSnapshot>>.Success([Snapshot("c1")])),
+            factory, state, TestTime, NullLogger<KafkaMetricsCollector>.Instance);
+
+        // Act
+        await collector.CollectOnceAsync(TestContext.Current.CancellationToken);
+
+        // Assert: ListGroups не вызывался; тик неуспешен (LastSuccess не тронут).
+        admin.DescribeCalls.Should().Be(1);
+        admin.ListGroupsCalls.Should().Be(0);
+        state.DebugSnapshot().LastSuccess.Should().BeNull();
     }
 
     private sealed class CountingAdminFactory : IKafkaAdminClientFactory

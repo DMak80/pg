@@ -220,9 +220,10 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             }
             catch (DockerHttpException e) when (e.StatusCode == 404)
             {
-                // Контейнера нет на этом движке — пробуем swarm-фолбэк: движок один
-                // на endpoint, swarm-ветка выполняется только после plain-404.
-                return await InspectSwarmTaskEndpointAsync(name, ct);
+                // Контейнера нет: swarm-фолбэк — только на swarm-движке (hostAlias
+                // null; на plain-хосте /tasks даёт 503 not-a-swarm-manager).
+                // Движок один на endpoint — фолбэк выполняется лишь после plain-404.
+                return hostAlias is null ? await InspectSwarmTaskEndpointAsync(name, ct) : null;
             }
         });
 

@@ -2,6 +2,7 @@
 
     <ItemGroup>
         <InternalsVisibleTo Include="KafkaWorker.UnitTests"/>
+        <InternalsVisibleTo Include="KafkaWorker.IntegrationTests"/>
     </ItemGroup>
 
     <ItemGroup>
