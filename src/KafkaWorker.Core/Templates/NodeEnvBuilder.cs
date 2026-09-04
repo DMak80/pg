@@ -89,16 +89,22 @@ public static class NodeEnvBuilder
             ["KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL"] = "PLAIN", // требует Kafka при SASL на INTERNAL
 
             // TLS: PEM-пара серта ноды + доверие per-cluster CA (arch/16 §2.2/§2.3).
+            // Переносы PEM экранированы \n: env → properties образ apache/kafka
+            // пишет как есть, а Java Properties разворачивает \n обратно в
+            // переносы значения (реальный перенос сломал бы файл properties).
             ["KAFKA_SSL_KEYSTORE_TYPE"] = "PEM",
-            ["KAFKA_SSL_KEYSTORE_CERTIFICATE_CHAIN"] = spec.BrokerCertPem,
-            ["KAFKA_SSL_KEYSTORE_KEY"] = spec.BrokerKeyPem,
+            ["KAFKA_SSL_KEYSTORE_CERTIFICATE_CHAIN"] = EscapePem(spec.BrokerCertPem),
+            ["KAFKA_SSL_KEYSTORE_KEY"] = EscapePem(spec.BrokerKeyPem),
             ["KAFKA_SSL_TRUSTSTORE_TYPE"] = "PEM",
-            ["KAFKA_SSL_TRUSTSTORE_CERTIFICATES"] = spec.CaPem,
+            ["KAFKA_SSL_TRUSTSTORE_CERTIFICATES"] = EscapePem(spec.CaPem),
 
-            // Authorization: StandardAuthorizer (KRaft), deny-by-default,
-            // super.users — принципалы SASL-имён admin/inter (arch/16 §2.3).
+            // Authorization: StandardAuthorizer (KRaft), deny-by-default;
+            // super.users — SASL-имена admin/inter + User:ANONYMOUS: CONTROLLER-
+            // листенер кворума PLAINTEXT (закрытая сеть kfw-net-<C>), без
+            // super.user у ANONYMOUS контроллер-регистрация получает
+            // CLUSTER_AUTHORIZATION_FAILED и кворум не собирается (16 §2.3).
             ["KAFKA_AUTHORIZER_CLASS_NAME"] = "org.apache.kafka.metadata.authorizer.StandardAuthorizer",
-            ["KAFKA_SUPER_USERS"] = "User:admin;User:inter",
+            ["KAFKA_SUPER_USERS"] = "User:admin;User:inter;User:ANONYMOUS",
             ["KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND"] = "false",
 
             // INTERNAL-JAAS: inter-креды брокера-клиента + пользователи ролей
@@ -167,6 +173,10 @@ public static class NodeEnvBuilder
         => passwords.Count > 1
             ? $@"user_{user}=""{passwords[0]}"" user_{user}2=""{passwords[1]}"""
             : $@"user_{user}=""{passwords[0]}""";
+
+    // PEM в env-значении одной строкой: переносы — литеральные \n
+    // ( Properties-экранирование; см. комментарий в таблице TLS-ключей).
+    private static string EscapePem(string pem) => pem.Replace("\n", "\\n");
 
     private static int Min(int a, int b) => a < b ? a : b;
 

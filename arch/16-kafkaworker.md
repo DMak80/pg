@@ -211,7 +211,7 @@ in-memory WAF-тестов; в deploy/стенде всегда mTLS.
 | `KAFKA_SSL_TRUSTSTORE_TYPE` | `PEM` |
 | `KAFKA_SSL_TRUSTSTORE_CERTIFICATES` | PEM per-cluster CA (`ca_pem`) — доверие всем слушателям SASL_SSL |
 | `KAFKA_AUTHORIZER_CLASS_NAME` | `org.apache.kafka.metadata.authorizer.StandardAuthorizer` (KRaft-ACL, §2.3) |
-| `KAFKA_SUPER_USERS` | `User:admin;User:inter` — принципалы SASL-имён; воркер/панель/CLI и inter-broker не ограничены ACL |
+| `KAFKA_SUPER_USERS` | `User:admin;User:inter;User:ANONYMOUS` — принципалы SASL-имён (воркер/панель/CLI и inter-broker не ограничены ACL) + `User:ANONYMOUS`: principal PLAINTEXT-CONTROLLER-кворума, без super.user контроллер-регистрация получает CLUSTER_AUTHORIZATION_FAILED |
 | `KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND` | `false` (deny по умолчанию; ACL роли app — converge E, §2.3) |
 | `KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG` | JAAS: `username="inter" password="<inter-pwd>" user_inter="<inter-pwd>" user_admin=<pwd>[ user_admin2=<new>] user_app=<pwd>[ user_app2=<new>]`; inter-креды — inter-broker-клиент (§2.2) |
 | `KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG` | только список пользователей (без username/password — клиенты внешние): `user_admin`[+2] `user_app`[+2] |

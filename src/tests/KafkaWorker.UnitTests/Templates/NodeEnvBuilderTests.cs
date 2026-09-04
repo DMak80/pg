@@ -198,10 +198,11 @@ public class NodeEnvBuilderTests
         // Arrange / Act: штатный env.
         var env = NodeEnvBuilder.Build(Spec());
 
-        // Assert: StandardAuthorizer + super.users + deny-by-default (16 §2.3).
+        // Assert: StandardAuthorizer + super.users + deny-by-default (16 §2.3);
+        // User:ANONYMOUS — principal CONTROLLER-кворума (PLAINTEXT в закрытой сети).
         env["KAFKA_AUTHORIZER_CLASS_NAME"]
             .Should().Be("org.apache.kafka.metadata.authorizer.StandardAuthorizer");
-        env["KAFKA_SUPER_USERS"].Should().Be("User:admin;User:inter");
+        env["KAFKA_SUPER_USERS"].Should().Be("User:admin;User:inter;User:ANONYMOUS");
         env["KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND"].Should().Be("false");
     }
 
