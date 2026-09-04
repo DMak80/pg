@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using System.Diagnostics;
 using Microsoft.Extensions.Options;
 using PgWorker.App.HealthChecks;
 using PgWorker.Core;
@@ -19,7 +20,9 @@ internal sealed class SnapshotLoop(
     ClaimStore claims,
     SnapshotJob snapshots,
     ILogger<SnapshotLoop> logger,
-    HealthState health) : BackgroundService, IHealthCheckService
+    HealthState health,
+    TimeProvider clock,
+    Shared.Metrics.Worker.WorkerMetricsInstrumentation metrics) : BackgroundService, IHealthCheckService
 {
     public bool Inited { get; private set; }
 
@@ -45,13 +48,16 @@ internal sealed class SnapshotLoop(
 
                 if (claims.IsLeader)
                 {
+                    var started = Stopwatch.GetTimestamp();
                     var shot = await snapshots.TakeAsync(stoppingToken);
+                    metrics.LoopDuration("snapshot", Stopwatch.GetElapsedTime(started).TotalSeconds);
                     if (shot.IsSuccess)
                     {
                         // healthz = «последний тик» (живой-Ф7): успешный снимок гасит
                         // ошибку прошлого — иначе единственный фейл = вечный unhealthy.
                         StatusError = Result.Success();
                         health.MarkSnapshotTaken();
+                        metrics.SnapshotTaken(clock.GetUtcNow());
                         logger.LogInformation("снапшот etcd снят: {Path}", shot.Value);
                         // Обслуживание etcd: compact + defrag (не чаще раза в час).
                         var maintenance = await snapshots.MaintainAsync(stoppingToken);
@@ -65,6 +71,7 @@ internal sealed class SnapshotLoop(
                     }
 
                     health.MarkSnapshotTick();
+                    metrics.LoopTick("snapshot", ok: true);
                     await Task.Delay(
                         TimeSpan.FromMinutes(options.CurrentValue.Loops.SnapshotIntervalMin), stoppingToken);
                 }
@@ -72,6 +79,7 @@ internal sealed class SnapshotLoop(
                 {
                     // Не лидер: ждём до следующей попытки захвата (интервал сканирования).
                     health.MarkSnapshotTick();
+                    metrics.LoopTick("snapshot", ok: true);
                     await Task.Delay(
                         TimeSpan.FromSeconds(options.CurrentValue.Loops.ScanIntervalSec), stoppingToken);
                 }

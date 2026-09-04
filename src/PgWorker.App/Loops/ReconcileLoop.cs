@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using System.Diagnostics;
 using Microsoft.Extensions.Options;
 using PgWorker.App.HealthChecks;
 using PgWorker.Core;
@@ -27,7 +28,8 @@ internal sealed class ReconcileLoop(
     IClusterProcesses processes,
     WorkJournal journal,
     ILogger<ReconcileLoop> logger,
-    HealthState health) : BackgroundService, IHealthCheckService
+    HealthState health,
+    Shared.Metrics.Worker.WorkerMetricsInstrumentation metrics) : BackgroundService, IHealthCheckService
 {
     public bool Inited { get; private set; }
 
@@ -43,7 +45,9 @@ internal sealed class ReconcileLoop(
             Working = true;
             while (!stoppingToken.IsCancellationRequested)
             {
+                var started = Stopwatch.GetTimestamp();
                 var tick = await TickSafelyAsync(stoppingToken);
+                metrics.LoopDuration("reconcile", Stopwatch.GetElapsedTime(started).TotalSeconds);
                 if (tick.IsSuccess)
                 {
                     // healthz = «последний тик» (живой-Ф7): успешный тик гасит ошибку
@@ -54,6 +58,7 @@ internal sealed class ReconcileLoop(
                 }
                 else
                 {
+                    metrics.LoopTick("reconcile", ok: false);
                     // Тик не прошёл (etcd недоступен и т.п.): лог + короткая задержка.
                     StatusError = tick;
                     logger.LogError(tick.Error, "тик ReconcileLoop не прошёл: {Message}", tick.Error!.Message);
@@ -130,6 +135,8 @@ internal sealed class ReconcileLoop(
         }
 
         health.MarkReconcileTick(ok: true, claimsHeld: parsed.Value.Count(c => claims.IsMine(c.Config.Cluster)));
+        metrics.LoopTick("reconcile", ok: true);
+        metrics.ClaimsHeld(parsed.Value.Count(c => claims.IsMine(c.Config.Cluster)));
         return Result.Success();
     }
 

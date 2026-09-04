@@ -53,4 +53,27 @@ public sealed class MetricsTests(PgMetricsFixture fx)
         // Assert: 401 — ApiKeyMiddleware не сломан подключением метрик
         response.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
     }
+
+    [Fact]
+    public async Task Metrics_WorkerSeries_AfterFirstTick()
+    {
+        // Arrange: фабрика с живыми циклами (hosted-сервисы не выключены);
+        // первый тик ReconcileLoop на пустом etcd успешен ≤15 с (тик быстрее
+        // ScanIntervalSec=5)
+        using var client = fx.Factory.CreateClient();
+
+        // Act: ждём появления серий в экспорте (retry-цикл до 15 с)
+        string body = "";
+        for (var i = 0; i < 30; i++)
+        {
+            body = await client.GetStringAsync("/metrics", TestContext.Current.CancellationToken);
+            if (body.Contains("worker_loop_ticks_total") && body.Contains("worker_claims_held"))
+                break;
+            await Task.Delay(500, TestContext.Current.CancellationToken);
+        }
+
+        // Assert: серии циклов/клэймов §2.2 эмитятся живыми циклами
+        body.Should().Contain("""worker_loop_ticks_total{otel_scope_name="PgWorker",loop="reconcile",ok="true"}""");
+        body.Should().Contain("worker_claims_held");
+    }
 }
