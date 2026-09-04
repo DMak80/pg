@@ -217,6 +217,17 @@ builder.Services.AddSingleton(sp => new DeprovisioningProcess(
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+// Лестница E9 самолечения portalloc (t05, arch/17): supervise вызывает её для
+// безадресных брокеров ДО любых деструктивных действий.
+builder.Services.AddSingleton(sp => new PortAllocHealer(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<PortAllocLock>(),
+    sp.GetRequiredService<PortAllocIndex>(),
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value)));
 builder.Services.AddSingleton(sp => new NodeSupervisor(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
@@ -225,7 +236,8 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IKafkaAdminClientFactory>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value),
-    backoff: sp.GetRequiredService<KafkaClusterBackoff>()));
+    backoff: sp.GetRequiredService<KafkaClusterBackoff>(),
+    healer: sp.GetRequiredService<PortAllocHealer>()));
 
 // Scale-проход и ротация (arch/16 §5 F/G/H): ротатор — со снапшот-делегатом P12.
 // Reassignment (I, t02) — перед G: drain TO_REMOVE-брокеров + заявки balance.

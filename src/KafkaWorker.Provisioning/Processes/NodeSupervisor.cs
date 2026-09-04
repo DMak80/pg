@@ -34,11 +34,13 @@ public sealed class NodeSupervisor(
     WorkJournal journal,
     IKafkaAdminClientFactory adminFactory,
     ProvisioningOptions options,
-    KafkaClusterBackoff? backoff = null)
+    KafkaClusterBackoff? backoff = null,
+    PortAllocHealer? healer = null)
 {
     private const string Op = "supervise";
 
     private readonly KafkaClusterBackoff _backoff = backoff ?? new KafkaClusterBackoff(TimeProvider.System);
+    private readonly PortAllocHealer? _healer = healer;
 
     public async Task<Result> RunAsync(KafkaClusterSnapshot snap, CancellationToken ct)
     {
@@ -49,9 +51,38 @@ public sealed class NodeSupervisor(
             return Result.Failed(new ApplicationException(
                 $"supervise {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
 
-        var addresses = await ReadPortAllocAsync(cluster, ct);
-        if (!addresses.IsSuccess)
-            return Result.Failed(addresses.Error!);
+        var pinned = await ReadPortAllocAsync(cluster, ct);
+        if (!pinned.IsSuccess)
+            return Result.Failed(pinned.Error!);
+
+        // Лестница E9 (t05, spec §3.3): безадресные Supervisable-брокеры — до любых
+        // деструктивных действий (RecreateAsync сносит контейнер ДО EnsureNode —
+        // ветка «контейнер жив» из EnsureNode недостижима). Клэйм занят —
+        // waiting-portalloc-lock (InProgress), следующий тик.
+        var addresses = new Dictionary<string, NodeAddress>(pinned.Value);
+        foreach (var broker in Supervisable(snap).Where(b => !addresses.ContainsKey(b.Name)).ToList())
+        {
+            if (_healer is null)
+                return Fail(cluster, new ApplicationException(
+                    $"supervise {cluster}: broker {broker.Name} не закреплён в portalloc (healer не сконфигурирован)"),
+                    "healing-portalloc");
+
+            var healed = await _healer.ResolveAsync(snap, broker.Name, addresses, ct);
+            if (!healed.IsSuccess)
+            {
+                if (healed.Error is PortLockBusyException)
+                    return await FinishWaitingPortLockAsync(cluster, ct);
+                return Fail(cluster, healed.Error!, "healing-portalloc");
+            }
+
+            addresses[broker.Name] = healed.Value.Address;
+            if (healed.Value.Recreated) // пересоздан в ветке 3 — state=PROVISIONING
+            {
+                var marked = await PutAsync(BrokerStateKey(cluster, broker.Name), "PROVISIONING", ct);
+                if (!marked.IsSuccess)
+                    return Fail(cluster, marked.Error!, "mark-provisioning");
+            }
+        }
 
         // Факт docker: имена живых объектов kfw-<C>-*.
         var objects = await driver.ListNodeObjectsAsync(cluster, ct);
@@ -113,7 +144,7 @@ public sealed class NodeSupervisor(
             if (alive.Contains(containerName))
                 continue;
 
-            var recreated = await RecreateAsync(snap, broker, addresses.Value, removeVolume: false, ct);
+            var recreated = await RecreateAsync(snap, broker, addresses, removeVolume: false, ct);
             if (!recreated.IsSuccess)
                 return Fail(cluster, recreated.Error!, "recreate-container");
         }
@@ -154,7 +185,7 @@ public sealed class NodeSupervisor(
                     ? $"брокер {brokerName}: том данных утрачен, RF=1 — единственная копия данных кластера потеряна"
                     : null;
 
-                var recreated = await RecreateAsync(snap, broker, addresses.Value, removeVolume, ct);
+                var recreated = await RecreateAsync(snap, broker, addresses, removeVolume, ct);
                 if (!recreated.IsSuccess)
                     return Fail(cluster, recreated.Error!, "recreate-unreachable");
 
@@ -285,6 +316,12 @@ public sealed class NodeSupervisor(
             .GetAwaiter().GetResult();
         return Result.Failed(error);
     }
+
+    // Клэйм portalloc занят другим — InProgress-семантика supervise: тик без
+    // ошибки (фаза waiting-portalloc-lock в журнале), следующий тик повторит
+    // (порт ProvisioningProcess K1 / AddBrokerProcess).
+    private async Task<Result> FinishWaitingPortLockAsync(string cluster, CancellationToken ct)
+        => await journal.WriteAsync(cluster, Op, "waiting-portalloc-lock", claims.InstanceId, null, ct);
 
     private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> ReadPortAllocAsync(
         string cluster, CancellationToken ct)

@@ -1,9 +1,11 @@
+using System.Text.Json;
 using FluentAssertions;
 using KafkaWorker.Core.Model;
 using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
@@ -32,7 +34,8 @@ public class NodeSupervisorTests
         int nodeDeadSec = 90,
         int rf = 3,
         Action<Fakes.FakeEtcd, Fakes.FakeKafkaDriver, FakeKafkaAdminClient>? setup = null,
-        KafkaClusterBackoff? backoff = null)
+        KafkaClusterBackoff? backoff = null,
+        bool healer = false)
     {
         var etcd = new Fakes.FakeEtcd();
         etcd.Seed("/kafka/clusters/events/config",
@@ -62,10 +65,16 @@ public class NodeSupervisorTests
                 ControllerId: 1),
         };
         var adminFactory = new FakeAdminFactory(admin);
+        var options = new ProvisioningOptions(16000, 16999, 600, nodeDeadSec, null, "apache/kafka:4.0.0");
         var supervisor = new NodeSupervisor(
-            etcd, [Ep], driver, claims, journal, adminFactory,
-            new ProvisioningOptions(16000, 16999, 600, nodeDeadSec, null, "apache/kafka:4.0.0"),
-            backoff: backoff);
+            etcd, [Ep], driver, claims, journal, adminFactory, options,
+            backoff: backoff,
+            healer: healer
+                ? new PortAllocHealer(
+                    etcd, [Ep], driver, claims, journal,
+                    new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId),
+                    new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance), options)
+                : null);
         setup?.Invoke(etcd, driver, admin);
         return new Rig(etcd, driver, admin, adminFactory, claims, journal, supervisor);
     }
@@ -347,5 +356,71 @@ public class NodeSupervisorTests
         // Assert: тик успешен, клиент не создавался.
         result.IsSuccess.Should().BeTrue();
         rig.AdminFactory.CreateCalls.Should().Be(0);
+    }
+
+    // Фаза последней записи журнала работ (waiting-portalloc-lock и др.).
+    private static async Task<string?> JournalPhaseAsync(Rig rig)
+    {
+        var kv = (await rig.Etcd.GetAsync(Ep, "/kafkaworker/work/events", CancellationToken.None)).Value;
+        if (kv is null)
+            return null;
+        using var doc = JsonDocument.Parse(kv.Value);
+        return doc.RootElement.GetProperty("phase").GetString();
+    }
+
+    // Декларация до одного брокера: ladder-сценарии гоняют broker1 одного.
+    private static void KeepSingleBroker(Rig rig)
+    {
+        foreach (var k in new[] { "broker2", "broker3" })
+        {
+            rig.Etcd.Store.Remove($"/kafka/clusters/events/brokers/{k}/state");
+            rig.Etcd.Store.Remove($"/kafka/clusters/events/brokers/{k}/role");
+        }
+    }
+
+    // AAA: клэйм занят — тик надзора УСПЕШЕН (InProgress), journal-фаза
+    // waiting-portalloc-lock, никаких мутаций — следующий тик повторит.
+    [Fact]
+    public async Task Run_PortLockBusy_WaitsWithoutError()
+    {
+        // Arrange: один брокер, portalloc утерян, контейнер снесён, клэйм у соседа.
+        var rig = await NewRig(healer: true);
+        KeepSingleBroker(rig);
+        rig.Etcd.Store.Remove("/kafkaworker/portalloc/events");
+        rig.Driver.NodeObjects.Remove("kfw-events-broker1");
+        var foreign = new PortAllocLock([Ep], rig.Etcd, TimeProvider.System, "other-instance");
+        (await foreign.TryAcquireAsync(CancellationToken.None)).Value.Should().BeTrue();
+
+        // Act: тик надзора.
+        var result = await rig.Supervisor.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: waiting-portalloc-lock — не ошибка тика; действий не было.
+        result.IsSuccess.Should().BeTrue("waiting-portalloc-lock — InProgress, не ошибка тика");
+        (await JournalPhaseAsync(rig)).Should().Be("waiting-portalloc-lock");
+        rig.Driver.Ensured.Should().BeEmpty("под чужим клэймом — никаких действий");
+    }
+
+    // AAA: portalloc утерян при объявленных брокерах (инцидент 2026-09-04) —
+    // надзор самолечится (E9): контейнер снесен + portalloc пуст → новая
+    // аллокация + пересоздание + PROVISIONING (вечного «не закреплён» нет).
+    [Fact]
+    public async Task Run_LostPortAlloc_HealsInsteadOfDeadlock()
+    {
+        // Arrange: один брокер, portalloc утерян, контейнер снесён, инспекции
+        // нет (S7-ветка).
+        var rig = await NewRig(healer: true);
+        KeepSingleBroker(rig);
+        rig.Etcd.Store.Remove("/kafkaworker/portalloc/events");
+        rig.Driver.NodeObjects.Remove("kfw-events-broker1");
+        rig.Driver.Endpoints.Clear();
+
+        // Act: тик надзора.
+        var result = await rig.Supervisor.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: брокер аллоцирован заново и пересоздан, state=PROVISIONING.
+        result.IsSuccess.Should().BeTrue();
+        rig.Driver.Ensured.Should().ContainSingle(s => s.NodeName == "broker1");
+        (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/brokers/broker1/state", CancellationToken.None))
+            .Value!.Value.Should().Be("PROVISIONING");
     }
 }
