@@ -2,6 +2,7 @@
     <Folder Name="/common/">
         <File Path="Directory.Build.props" />
         <File Path="Directory.Packages.props" />
+        <Project Path="Shared.Metrics/Shared.Metrics.csproj" />
     </Folder>
     <Folder Name="/core/">
         <Project Path="PgWorker.Core/PgWorker.Core.csproj" />
