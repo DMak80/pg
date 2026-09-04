@@ -197,7 +197,7 @@ compose-профили quick/full/kafka).
 | Алерт | Выражение (суть) | Порог |
 |---|---|---|
 | `ServiceDown` | `up{job=~"pgworker\|kafkaworker\|adminpanel"} == 0` | 2 мин |
-| `WorkerLoopStalled` | `time() − worker_loop_last_success_timestamp_seconds > 60` | 60 с (циклы 5 с; запас на ErrorDelay-бэкофф) |
+| `WorkerLoopStalled` | `time() − worker_loop_last_success_timestamp_seconds{loop=~"reconcile\|keepalive"} > 60` | 60 с (только быстрые циклы 5 с; запас на ErrorDelay-бэкофф. Фильтр по `loop` обязателен: snapshot-цикл тикает раз в SnapshotIntervalMin=6 ч — без фильтра вечный ложный critical; живость снапшотов закрыта `SnapshotStale` по возрасту) |
 | `SnapshotStale` | `worker_snapshot_age_seconds > X` | 8 ч (снапшоты раз в 6 ч) |
 | `ProcessPhaseStuck` | `worker_process_phase_duration_seconds > X` | 30 мин (provision-фазы — 1 ч) |
 | `KafkaUnderReplicated` | `sum by (cluster) (kafka_under_replicated_partitions) > 0` | 5 мин |

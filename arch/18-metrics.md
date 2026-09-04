@@ -85,7 +85,7 @@ Infrastructure.App.Metrics   ──порт──► src/Shared.Metrics
 | Имя | Тип | Лейблы | Смысл |
 |---|---|---|---|
 | `worker_loop_ticks_total` | counter | `loop`, `ok` | тики циклов (Reconcile/Keepalive/Snapshot); `ok` ∈ {true,false} |
-| `worker_loop_last_success_timestamp_seconds` | gauge | `loop` | unix-время последнего успешного тика (алерт «цикл умер»: `time() − значение > порога`) |
+| `worker_loop_last_success_timestamp_seconds` | gauge | `loop` | unix-время последнего успешного тика (алерт «цикл умер» WorkerLoopStalled — только быстрые циклы `{loop=~"reconcile\|keepalive"}`, порог 60 с: reconcile/keepalive тикают каждые 5 с; snapshot-цикл тикает раз в SnapshotIntervalMin (6 ч) и под порог не попадает — его живость закрывает SnapshotStale по `worker_snapshot_age_seconds`) |
 | `worker_loop_duration_seconds` | gauge | `loop` | длительность последнего тика |
 | `worker_claims_held` | gauge | — | сколько кластеров держим под клэймом |
 | `worker_process_phase_duration_seconds` | gauge | `cluster`, `process`, `phase` | сколько секунд кластер в текущей фазе процесса (source: марк-методы фаз; смена фазы/завершение процесса сбрасывает серию) |

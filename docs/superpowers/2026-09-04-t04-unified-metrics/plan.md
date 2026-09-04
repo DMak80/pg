@@ -1458,12 +1458,12 @@ groups:
           summary: "сервис {{ $labels.job }} недоступен ({{ $labels.instance }})"
           description: "scrape падает 2 мин; runbook — arch/18-metrics.md §5.2"
       - alert: WorkerLoopStalled
-        expr: time() - worker_loop_last_success_timestamp_seconds > 60
+        expr: time() - worker_loop_last_success_timestamp_seconds{loop=~"reconcile|keepalive"} > 60
         for: 0m
         labels: {severity: critical}
         annotations:
           summary: "цикл {{ $labels.job }}/{{ $labels.loop }} не тикает >60с"
-          description: "циклы 5с; запас на ErrorDelay-бэкофф; runbook — arch/18 §2.2"
+          description: "только быстрые циклы (reconcile/keepalive, 5с; запас на ErrorDelay-бэкофф); snapshot-цикл (тик раз в 6ч) живость — SnapshotStale; runbook — arch/18 §2.2"
       - alert: SnapshotStale
         expr: worker_snapshot_age_seconds > 28800
         for: 0m
