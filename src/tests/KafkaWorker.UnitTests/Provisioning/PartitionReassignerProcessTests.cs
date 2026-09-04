@@ -42,6 +42,7 @@ public class PartitionReassignerProcessTests
         etcd.Seed("/kafka/clusters/events/endpoints", "h1:16000,h1:16001,h1:16002,h1:16003");
         etcd.Seed("/kafka/clusters/events/app_user", "app");
         etcd.Seed("/kafka/clusters/events/app_password", "OldPassword0123456789abcdef");
+        etcd.SeedSecurity("events");
     }
 
     private static async Task<KafkaClusterSnapshot> Snapshot(Fakes.FakeEtcd etcd)

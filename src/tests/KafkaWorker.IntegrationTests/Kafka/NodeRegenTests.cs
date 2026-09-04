@@ -36,14 +36,15 @@ public class NodeRegenTests(KafkaClusterFixture fixture)
                 new PortAllocIndex(fixture.Gateway, [fixture.Endpoint], NullLogger<PortAllocIndex>.Instance),
                 new ClusterSecretEnsurer(fixture.Gateway, [fixture.Endpoint]),
                 fixture.AdminFactory, new ClusterConfigConverger(fixture.AdminFactory),
-                fixture.Options, snapshot: null),
+                fixture.Options, fixture.Certificates,
+            snapshot: null),
             new AddBrokerProcess(
                 fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal,
                 new PortAllocLock([fixture.Endpoint], fixture.Gateway, TimeProvider.System, claims.InstanceId),
                 new PortAllocIndex(fixture.Gateway, [fixture.Endpoint], NullLogger<PortAllocIndex>.Instance),
-                fixture.AdminFactory, fixture.Options),
+                fixture.AdminFactory, fixture.Options, fixture.Certificates),
             new NodeRegenerator(
-                fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal, fixture.Options));
+                fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal, fixture.Options, fixture.Certificates));
     }
 
     // Порт UpAsync (ReassignmentTests): цикл Provision-тиков до Active

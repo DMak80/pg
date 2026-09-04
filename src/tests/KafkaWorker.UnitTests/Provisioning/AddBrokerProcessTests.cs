@@ -6,6 +6,7 @@ using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
 using Microsoft.Extensions.Logging.Abstractions;
+using KafkaWorker.Core.Templates;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
@@ -41,6 +42,7 @@ public class AddBrokerProcessTests
         etcd.Seed("/kafka/clusters/events/endpoints", "h1:16000,h1:16001,h1:16002");
         etcd.Seed("/kafka/clusters/events/app_user", "app");
         etcd.Seed("/kafka/clusters/events/app_password", "OldPassword0123456789abcdef");
+        etcd.SeedSecurity("events");
         etcd.Seed("/kafkaworker/portalloc/events",
             """{"broker1":{"host":"h1","client":16000},"broker2":{"host":"h1","client":16001},"broker3":{"host":"h1","client":16002}}""");
     }
@@ -65,7 +67,8 @@ public class AddBrokerProcessTests
         var process = new AddBrokerProcess(
             etcd, [Ep], driver, claims, journal, portLock, portAllocIndex,
             new FakeAdminFactory(admin),
-            new ProvisioningOptions(16000, 16999, 600, 90, null, "apache/kafka:4.0.0"));
+            new ProvisioningOptions(16000, 16999, 600, 90, null, "apache/kafka:4.0.0"),
+            new BrokerCertificateCache());
         return new Rig(etcd, driver, admin, claims, journal, process);
     }
 
@@ -195,7 +198,8 @@ public class AddBrokerProcessTests
         var process = new AddBrokerProcess(
             etcd, [Ep], new Fakes.FakeKafkaDriver(), claims, new WorkJournal(etcd, [Ep]),
             portLock, portAllocIndex,
-            new FakeAdminFactory(new FakeKafkaAdminClient()), ProvisioningOptions.Default);
+            new FakeAdminFactory(new FakeKafkaAdminClient()), ProvisioningOptions.Default,
+            new BrokerCertificateCache());
 
         // Act
         var result = await process.RunAsync(await Snapshot(etcd), CancellationToken.None);

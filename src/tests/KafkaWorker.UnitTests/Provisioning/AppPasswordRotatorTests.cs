@@ -5,6 +5,7 @@ using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
+using KafkaWorker.Core.Templates;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
@@ -38,6 +39,7 @@ public class AppPasswordRotatorTests
         etcd.Seed("/kafka/clusters/events/endpoints", "h1:16000,h1:16001");
         etcd.Seed("/kafka/clusters/events/app_user", "app");
         etcd.Seed("/kafka/clusters/events/app_password", OldPassword);
+        etcd.SeedSecurity("events");
         etcd.Seed("/kafkaworker/portalloc/events",
             """{"broker1":{"host":"h1","client":16000},"broker2":{"host":"h1","client":16001}}""");
     }
@@ -61,7 +63,7 @@ public class AppPasswordRotatorTests
         var snapshotPoints = new List<string>();
         var process = new AppPasswordRotator(
             etcd, [Ep], driver, claims, journal, new FakeAdminFactory(admin),
-            ProvisioningOptions.Default,
+            ProvisioningOptions.Default, new BrokerCertificateCache(),
             snapshot: ct =>
             {
                 snapshotPoints.Add($"n{snapshotPoints.Count}");
@@ -253,7 +255,7 @@ public class AppPasswordRotatorTests
         var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
         var process = new AppPasswordRotator(
             etcd, [Ep], new Fakes.FakeKafkaDriver(), claims, new WorkJournal(etcd, [Ep]),
-            new FakeAdminFactory(new FakeKafkaAdminClient()), ProvisioningOptions.Default);
+            new FakeAdminFactory(new FakeKafkaAdminClient()), ProvisioningOptions.Default, new BrokerCertificateCache());
 
         // Act
         var result = await process.RunAsync(await Snapshot(etcd), CancellationToken.None);

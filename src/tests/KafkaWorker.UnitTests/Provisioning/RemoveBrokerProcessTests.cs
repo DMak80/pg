@@ -37,6 +37,7 @@ public class RemoveBrokerProcessTests
 
         etcd.Seed("/kafka/clusters/events/endpoints", "h1:16000,h1:16001,h1:16002,h1:16003");
         etcd.Seed("/kafka/clusters/events/app_user", "app");
+        etcd.SeedSecurity("events");
         etcd.Seed("/kafka/clusters/events/app_password", "OldPassword0123456789abcdef");
         etcd.Seed("/kafkaworker/portalloc/events",
             """{"broker1":{"host":"h1","client":16000},"broker2":{"host":"h1","client":16001},"broker3":{"host":"h1","client":16002},"broker4":{"host":"h1","client":16003}}""");

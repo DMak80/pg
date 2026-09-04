@@ -33,7 +33,8 @@ public sealed class NodeSupervisor(
     ClaimStore claims,
     WorkJournal journal,
     IKafkaAdminClientFactory adminFactory,
-    ProvisioningOptions options)
+    ProvisioningOptions options,
+    BrokerCertificateCache certificates)
 {
     private const string Op = "supervise";
 
@@ -220,32 +221,8 @@ public sealed class NodeSupervisor(
             return Result.Failed(new ApplicationException(
                 $"supervise {cluster}: нет app-кредов (ensure не выполнен)"));
 
-        var controllers = snap.Brokers
-            .Where(b => b.Role == "controller")
-            .OrderBy(b => b.Name, StringComparer.Ordinal)
-            .Select(b => $"{NodeId(b.Name)}@{b.Name}:9093")
-            .ToList();
-        var advertisedClient = $"{options.AdvertisedClientHost ?? addr.Host}:{addr.ClientPort}";
-
-        var env = NodeEnvBuilder.Build(new NodeEnvSpec(
-            cluster,
-            NodeId(broker.Name),
-            broker.Name,
-            advertisedClient,
-            broker.Role == "controller",
-            controllers,
-            snap.AppUser,
-            [snap.AppPassword],
-            // Переходное состояние t03 (полный контур admin/CA — Task 8 плана):
-            // снапшот ещё не несёт полей безопасности — placeholder до Task 4/8.
-            "admin",
-            ["AdminPlaceholder0123456789AAAAAAAAA"],
-            "-----BEGIN CERTIFICATE-----\nPLACEHOLDER\n-----END CERTIFICATE-----",
-            "-----BEGIN CERTIFICATE-----\nPLACEHOLDER\n-----END CERTIFICATE-----",
-            "-----BEGIN PRIVATE KEY-----\nPLACEHOLDER\n-----END PRIVATE KEY-----",
-            snap.Config,
-            snap.Config.Brokers,
-            "/var/lib/kafka/data"));
+        var env = BrokerEnvBuilder.Build(
+            snap, broker.Name, addr, [snap.AppPassword!], [snap.AdminPassword!], options, certificates);
 
         return await driver.EnsureNodeAsync(new KafkaNodeSpec(
             cluster, broker.Name, addr.Host, addr.ClientPort, options.NodeImage, env,
@@ -256,10 +233,10 @@ public sealed class NodeSupervisor(
     // Живые брокеры кластера по NodeId (AdminClient-проба).
     private async Task<Result<HashSet<int>?>> DescribeAliveAsync(KafkaClusterSnapshot snap, CancellationToken ct)
     {
-        if (snap.Endpoints is null || snap.AppUser is null || snap.AppPassword is null)
-            return Result<HashSet<int>?>.Success(null); // кластер ещё не поднят — проб невозможен
+        if (snap.Endpoints is null || snap.AdminPassword is null || snap.CaPem is null)
+            return Result<HashSet<int>?>.Success(null); // кластер ещё не поднят/премиграционный — проб невозможен
 
-        await using var admin = adminFactory.Create(snap.Endpoints, snap.AppUser, snap.AppPassword, null); // переходно: admin+caPem — Task 8
+        await using var admin = adminFactory.Create(snap.Endpoints, snap.AdminUser ?? "admin", snap.AdminPassword, snap.CaPem);
         var view = await admin.DescribeClusterAsync(ct);
         if (!view.IsSuccess)
             return Result<HashSet<int>?>.Success(null); // кластер целиком недоступен — молчание трекается по всем

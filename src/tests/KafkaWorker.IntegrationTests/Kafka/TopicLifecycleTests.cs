@@ -32,7 +32,8 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
             new PortAllocIndex(fixture.Gateway, [fixture.Endpoint], NullLogger<PortAllocIndex>.Instance),
             new ClusterSecretEnsurer(fixture.Gateway, [fixture.Endpoint]),
             fixture.AdminFactory, new ClusterConfigConverger(fixture.AdminFactory),
-            fixture.Options, snapshot: null);
+            fixture.Options, fixture.Certificates,
+            snapshot: null);
         var sync = new TopicSyncProcess(
             fixture.Gateway, [fixture.Endpoint], claims, journal,
             fixture.AdminFactory, TimeProvider.System, intervalSec: 0);

@@ -7,6 +7,7 @@ using KafkaWorker.App.Api.Operations;
 using KafkaWorker.App.HealthChecks;
 using KafkaWorker.App.Loops;
 using KafkaWorker.Core;
+using KafkaWorker.Core.Templates;
 using KafkaWorker.Docker.Drivers;
 using KafkaWorker.Docker.Engine;
 using KafkaWorker.Etcd;
@@ -153,6 +154,9 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<IKafkaAdminClientFactory>(_ =>
     new KafkaAdminClientFactory(TimeSpan.FromSeconds(10)));
 
+// Кеш серверных сертов нод (R3, arch/16 §2.3): DI-синглтом.
+builder.Services.AddSingleton(new BrokerCertificateCache());
+
 // Ensure per-cluster секретов: CA + креды admin/app (arch/16 §4, t03).
 builder.Services.AddSingleton<IClusterSecretEnsurer>(sp => new ClusterSecretEnsurer(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -176,6 +180,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<IKafkaAdminClientFactory>(),
         sp.GetRequiredService<IClusterConfigConverger>(),
         ToProvisioningOptions(opts),
+        sp.GetRequiredService<BrokerCertificateCache>(),
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
 });
 // t91: индекс занятости portalloc чужих кластеров (arch/16 §2.1) — DI-синглтон.
@@ -197,7 +202,8 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IKafkaAdminClientFactory>(),
-    ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value)));
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value),
+    sp.GetRequiredService<BrokerCertificateCache>()));
 
 // Scale-проход и ротация (arch/16 §5 F/G/H): ротатор — со снапшот-делегатом P12.
 // Reassignment (I, t02) — перед G: drain TO_REMOVE-брокеров + заявки balance.
@@ -233,7 +239,8 @@ builder.Services.AddSingleton(sp => new AddBrokerProcess(
     sp.GetRequiredService<PortAllocLock>(),
     sp.GetRequiredService<PortAllocIndex>(),
     sp.GetRequiredService<IKafkaAdminClientFactory>(),
-    ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value)));
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value),
+    sp.GetRequiredService<BrokerCertificateCache>()));
 builder.Services.AddSingleton(sp => new AppPasswordRotator(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
@@ -242,6 +249,7 @@ builder.Services.AddSingleton(sp => new AppPasswordRotator(
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IKafkaAdminClientFactory>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value),
+    sp.GetRequiredService<BrokerCertificateCache>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 builder.Services.AddSingleton(sp => new NodeRegenerator(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -249,7 +257,8 @@ builder.Services.AddSingleton(sp => new NodeRegenerator(
     sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
-    ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value)));
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value),
+    sp.GetRequiredService<BrokerCertificateCache>()));
 
 // Автосинк топиков (arch/16 §5 D): троттлинг TopicSyncIntervalSec внутри.
 builder.Services.AddSingleton(sp => new TopicSyncProcess(

@@ -3,6 +3,7 @@ using System.Text.Json;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
 using KafkaWorker.Core.Planning;
+using KafkaWorker.Core.Templates;
 using KafkaWorker.Docker.Drivers;
 using KafkaWorker.Etcd.Client;
 using KafkaWorker.Etcd.Coordination;
@@ -30,6 +31,7 @@ public sealed class AppPasswordRotator(
     WorkJournal journal,
     IKafkaAdminClientFactory adminFactory,
     ProvisioningOptions options,
+    BrokerCertificateCache certificates,
     Func<CancellationToken, Task<Result>>? snapshot = null)
 {
     private const string Op = "rotate";
@@ -193,7 +195,7 @@ public sealed class AppPasswordRotator(
             if (!removed.IsSuccess)
                 return removed;
 
-            var env = BrokerEnvBuilder.Build(snap, broker.Name, addr, passwords, options);
+            var env = BrokerEnvBuilder.Build(snap, broker.Name, addr, passwords, [snap.AdminPassword!], options, certificates);
             var spec = new KafkaNodeSpec(
                 cluster, broker.Name, addr.Host, addr.ClientPort, options.NodeImage, env,
                 broker.Resources?.Cpu,
@@ -212,7 +214,7 @@ public sealed class AppPasswordRotator(
     private async Task<Result<bool>> WaitForBrokersAsync(
         KafkaClusterSnapshot snap, int expected, CancellationToken ct)
     {
-        await using var admin = adminFactory.Create(snap.Endpoints!, snap.AppUser!, snap.AppPassword!, null); // переходно: admin+caPem — Task 8
+        await using var admin = adminFactory.Create(snap.Endpoints!, snap.AdminUser ?? "admin", snap.AdminPassword!, snap.CaPem);
         var view = await admin.DescribeClusterAsync(ct);
         return Result<bool>.Success(view.IsSuccess && view.Value.Brokers.Count >= expected);
     }

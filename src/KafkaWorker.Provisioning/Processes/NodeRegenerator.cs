@@ -3,6 +3,7 @@ using System.Text.Json.Serialization;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
 using KafkaWorker.Core.Planning;
+using KafkaWorker.Core.Templates;
 using KafkaWorker.Docker.Drivers;
 using KafkaWorker.Etcd.Client;
 using KafkaWorker.Etcd.Coordination;
@@ -42,7 +43,8 @@ public sealed class NodeRegenerator(
     IClusterDriver driver,
     ClaimStore claims,
     WorkJournal journal,
-    ProvisioningOptions options)
+    ProvisioningOptions options,
+    BrokerCertificateCache certificates)
 {
     private const string Op = "regen";
 
@@ -162,7 +164,7 @@ public sealed class NodeRegenerator(
 
         // Env пересобирается из текущей декларации (новые server-props
         // применяются тем же рестартом — детерминизм NodeEnvBuilder, R3).
-        var env = BrokerEnvBuilder.Build(snap, target.Name, addr, [snap.AppPassword], options);
+        var env = BrokerEnvBuilder.Build(snap, target.Name, addr, [snap.AppPassword!], [snap.AdminPassword!], options, certificates);
         var ensured = await driver.EnsureNodeAsync(new KafkaNodeSpec(
             cluster, target.Name, addr.Host, addr.ClientPort, options.NodeImage, env,
             target.Resources!.Cpu,

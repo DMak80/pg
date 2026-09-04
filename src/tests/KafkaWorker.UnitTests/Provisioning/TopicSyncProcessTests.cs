@@ -43,6 +43,7 @@ public class TopicSyncProcessTests
         etcd.Seed("/kafka/clusters/events/endpoints", "h1:16000,h1:16001");
         etcd.Seed("/kafka/clusters/events/app_user", "app");
         etcd.Seed("/kafka/clusters/events/app_password", "p");
+        etcd.SeedSecurity("events");
         var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("events", CancellationToken.None);
         var journal = new WorkJournal(etcd, [Ep]);

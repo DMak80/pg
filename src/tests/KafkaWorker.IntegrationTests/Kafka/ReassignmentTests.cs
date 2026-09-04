@@ -46,7 +46,8 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
                 new PortAllocIndex(fixture.Gateway, [fixture.Endpoint], NullLogger<PortAllocIndex>.Instance),
                 new ClusterSecretEnsurer(fixture.Gateway, [fixture.Endpoint]),
                 fixture.AdminFactory, new ClusterConfigConverger(fixture.AdminFactory),
-                fixture.Options, snapshot: null),
+                fixture.Options, fixture.Certificates,
+            snapshot: null),
             new DeprovisioningProcess(
                 fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal, snapshot: null),
             new PartitionReassignerProcess(
@@ -60,7 +61,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
                 fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal,
                 new PortAllocLock([fixture.Endpoint], fixture.Gateway, TimeProvider.System, claims.InstanceId),
                 new PortAllocIndex(fixture.Gateway, [fixture.Endpoint], NullLogger<PortAllocIndex>.Instance),
-                fixture.AdminFactory, fixture.Options),
+                fixture.AdminFactory, fixture.Options, fixture.Certificates),
             new TopicSyncProcess(
                 fixture.Gateway, [fixture.Endpoint], claims, journal,
                 fixture.AdminFactory, TimeProvider.System, intervalSec: 0));
@@ -318,7 +319,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
                 .SelectMany(t => t.ReplicasPerPartition.Select((_, p) => new ReassignMove(t.Topic, p, [.. t.ReplicasPerPartition[p]])))
                 .ToList();
             var bootstrap = ReassignCli.Bootstrap(["broker1", "broker2", "broker3"]);
-            var cmd = ReassignCli.BuildExecCommand(moves, bootstrap, creds.User, creds.Password);
+            var cmd = ReassignCli.BuildExecCommand(moves, bootstrap, "admin", "adminpw", "CAPEM");
             for (var i = 0; i < 2; i++)
             {
                 var exec = await fixture.Driver.ExecNodeAsync(cluster, "broker1", cmd, ct);

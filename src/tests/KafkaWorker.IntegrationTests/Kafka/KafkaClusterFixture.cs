@@ -12,6 +12,7 @@ using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
 using Xunit;
+using KafkaWorker.Core.Templates;
 
 namespace KafkaWorker.IntegrationTests.Kafka;
 
@@ -43,6 +44,9 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
 
     public IKafkaAdminClientFactory AdminFactory { get; } =
         new KafkaAdminClientFactory(TimeSpan.FromSeconds(10));
+
+    // Кеш сертов нод (R3): для процессов, конструируемых в тестах (t03).
+    public BrokerCertificateCache Certificates { get; } = new();
 
     // Advertised-хост CLIENT-listener для ХОСТ-процесса теста: localhost
     // (host.docker.internal с macOS-хоста не резолвится; воркер и клиенты

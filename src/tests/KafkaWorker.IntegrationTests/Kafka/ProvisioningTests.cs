@@ -33,7 +33,8 @@ public class ProvisioningTests(KafkaClusterFixture fixture)
             new PortAllocIndex(fixture.Gateway, [fixture.Endpoint], NullLogger<PortAllocIndex>.Instance),
             new ClusterSecretEnsurer(fixture.Gateway, [fixture.Endpoint]),
             fixture.AdminFactory, new ClusterConfigConverger(fixture.AdminFactory),
-            fixture.Options, snapshot: null);
+            fixture.Options, fixture.Certificates,
+            snapshot: null);
         var deprovision = new DeprovisioningProcess(
             fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal, snapshot: null);
 

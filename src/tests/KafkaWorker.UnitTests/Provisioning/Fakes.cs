@@ -1,5 +1,6 @@
 using KafkaWorker.Core;
 using KafkaWorker.Core.Planning;
+using KafkaWorker.Core.Templates;
 using KafkaWorker.Docker.Drivers;
 using KafkaWorker.Etcd.Client;
 
@@ -9,10 +10,23 @@ namespace KafkaWorker.UnitTests.Provisioning;
 // честными mod_revision/version и записывающий мок драйвера брокеров.
 internal static class Fakes
 {
+    // Валидный per-cluster CA для юнит-фикстур (t03): генерируется один раз.
+    public static readonly (string CaPem, string CaKey) UnitCa = ClusterPki.GenerateCa("unit");
+
     // etcd в памяти: Put инкрементирует mod_revision; txn-compare честно
     // сверяет Version/Value/ModRevision (нужно portalloc и config-K5).
     internal sealed class FakeEtcd : IEtcdGateway
     {
+        // Сеет ключи безопасности канонического (пост-M) кластера (t03): admin-
+        // креды + per-cluster CA (валидный PEM, генерируется один раз на прогон).
+        public void SeedSecurity(string cluster)
+        {
+            Seed($"/kafka/clusters/{cluster}/admin_user", "admin");
+            Seed($"/kafka/clusters/{cluster}/admin_password", "AdminPassword0123456789abcdef");
+            Seed($"/kafka/clusters/{cluster}/ca_pem", Fakes.UnitCa.CaPem);
+            Seed($"/kafka/clusters/{cluster}/ca_key", Fakes.UnitCa.CaKey);
+        }
+
         internal sealed record Entry(string Value, long ModRevision, long Version);
 
         public readonly Dictionary<string, Entry> Store = [];

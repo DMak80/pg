@@ -9,6 +9,7 @@ using KafkaWorker.Provisioning;
 using KafkaWorker.Provisioning.Processes;
 using Xunit;
 using static KafkaWorker.UnitTests.Provisioning.Fakes;
+using KafkaWorker.Core.Templates;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
@@ -41,6 +42,7 @@ public class NodeRegeneratorTests : IAsyncLifetime
 
         _etcd.Seed($"/kafka/clusters/{Cluster}/app_user", "app");
         _etcd.Seed($"/kafka/clusters/{Cluster}/app_password", "p1");
+        _etcd.SeedSecurity(Cluster);
         _etcd.Seed($"/kafkaworker/portalloc/{Cluster}",
             """{"broker1":{"host":"h1","client":16001},"broker2":{"host":"h1","client":16002}}""");
         _driver.NodeObjects.AddRange(["kfw-events-broker1", "kfw-events-broker2"]);
@@ -53,7 +55,8 @@ public class NodeRegeneratorTests : IAsyncLifetime
         _claims = new ClaimStore(endpoints, _etcd, _time);
         _journal = new WorkJournal(_etcd, endpoints);
         _regen = new NodeRegenerator(_etcd, endpoints, _driver, _claims, _journal,
-            new ProvisioningOptions(16000, 16999, BrokerBootSec: 100, NodeDeadSec: 90, null, "apache/kafka:4.0.0"));
+            new ProvisioningOptions(16000, 16999, BrokerBootSec: 100, NodeDeadSec: 90, null, "apache/kafka:4.0.0"),
+            new BrokerCertificateCache());
     }
 
     // Клэйм держит _claims (владелец _regen); «чужие» инстансы строятся
@@ -78,7 +81,8 @@ public class NodeRegeneratorTests : IAsyncLifetime
     private NodeRegenerator Stranger()
         => new(_etcd, ["http://etcd"], _driver,
             new ClaimStore(["http://etcd"], _etcd, _time), _journal,
-            new ProvisioningOptions(16000, 16999, BrokerBootSec: 100, NodeDeadSec: 90, null, "apache/kafka:4.0.0"));
+            new ProvisioningOptions(16000, 16999, BrokerBootSec: 100, NodeDeadSec: 90, null, "apache/kafka:4.0.0"),
+            new BrokerCertificateCache());
 
     [Fact]
     public async Task RunAsync_LimitsDiverged_RecreatesOneBrokerPerTick()

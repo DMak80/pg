@@ -92,7 +92,7 @@ public sealed class PartitionReassignerProcess(
 
         // D1: describe-all (включая __) — слепая проба: никаких подач,
         // прогресс-ключ НЕ трогается (spec §11.7: прошлый прогресс сохраняется).
-        await using var admin = adminFactory.Create(snap.Endpoints, snap.AppUser, snap.AppPassword, null); // переходно: admin+caPem — Task 8
+        await using var admin = adminFactory.Create(snap.Endpoints, snap.AdminUser ?? "admin", snap.AdminPassword!, snap.CaPem);
         var described = await admin.DescribeTopicsAsync(includeInternal: true, ct);
         if (!described.IsSuccess)
         {
@@ -322,8 +322,9 @@ public sealed class PartitionReassignerProcess(
 
         using var execCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         execCts.CancelAfter(TimeSpan.FromSeconds(options.ExecSec));
+        // CLI — admin по INTERNAL (docker exec в контейнере брокера, arch/16 §2.4).
         var cmd = ReassignCli.BuildExecCommand(
-            batch, ReassignCli.Bootstrap(liveBrokerNames), snap.AppUser!, snap.AppPassword!);
+            batch, ReassignCli.Bootstrap(liveBrokerNames), snap.AdminUser ?? "admin", snap.AdminPassword!, snap.CaPem!);
         var exec = await driver.ExecNodeAsync(cluster, execNode!, cmd, execCts.Token);
 
         // Fallback (spec §5.4 «выберет другой живой контейнер»; code-review

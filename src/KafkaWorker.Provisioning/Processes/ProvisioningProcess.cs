@@ -34,6 +34,7 @@ public sealed class ProvisioningProcess(
     IKafkaAdminClientFactory adminFactory,
     IClusterConfigConverger converger,
     ProvisioningOptions options,
+    BrokerCertificateCache certificates,
     Func<CancellationToken, Task<Result>>? snapshot = null)
 {
     private const string Op = "provision";
@@ -109,8 +110,8 @@ public sealed class ProvisioningProcess(
         if (await IsRemovedAsync(cluster, ct))
             return await FinishAsync(cluster, "aborted", ct);
 
-        // Переходно: caPem=null — реальный контур admin/CA подключает Task 8 плана.
-        var converged = await converger.ApplyAsync(cluster, endpoints, secret.Value.AdminUser, secret.Value.AdminPassword, null, snap.Config, ct);
+        var converged = await converger.ApplyAsync(
+            cluster, endpoints, secret.Value.AdminUser, secret.Value.AdminPassword, secret.Value.CaPem, snap.Config, ct);
         if (!converged.IsSuccess)
             return Fail(cluster, converged.Error!, "converge-configs");
 
@@ -274,6 +275,9 @@ public sealed class ProvisioningProcess(
 
             var addr = addresses[broker.Name];
             var advertisedClient = $"{options.AdvertisedClientHost ?? addr.Host}:{addr.ClientPort}";
+            // Серт ноды — один раз на (кластер, нода, CA) (R3, arch/16 §2.3).
+            var (certPem, keyPem) = certificates.GetOrCreate(
+                cluster, broker.Name, secret.CaPem, secret.CaKey, advertisedClient);
             var env = NodeEnvBuilder.Build(new NodeEnvSpec(
                 cluster,
                 NodeId(broker.Name),
@@ -283,13 +287,11 @@ public sealed class ProvisioningProcess(
                 controllers,
                 secret.AppUser,
                 [secret.AppPassword],
-                // Переходное состояние t03 (полный контур admin/CA — Task 8 плана):
-                // снапшот ещё не несёт полей безопасности — placeholder до Task 4/8.
-                "admin",
-                ["AdminPlaceholder0123456789AAAAAAAAA"],
-                "-----BEGIN CERTIFICATE-----\nPLACEHOLDER\n-----END CERTIFICATE-----",
-                "-----BEGIN CERTIFICATE-----\nPLACEHOLDER\n-----END CERTIFICATE-----",
-                "-----BEGIN PRIVATE KEY-----\nPLACEHOLDER\n-----END PRIVATE KEY-----",
+                secret.AdminUser,
+                [secret.AdminPassword],
+                secret.CaPem,
+                certPem,
+                keyPem,
                 snap.Config,
                 snap.Config.Brokers,
                 "/var/lib/kafka/data"));
@@ -310,7 +312,7 @@ public sealed class ProvisioningProcess(
         KafkaClusterSnapshot snap, string endpoints, ClusterSecrets secret, CancellationToken ct)
     {
         var cluster = snap.Cluster;
-        await using var admin = adminFactory.Create(endpoints, secret.AdminUser, secret.AdminPassword, null); // переходно: caPem — Task 8
+        await using var admin = adminFactory.Create(endpoints, secret.AdminUser, secret.AdminPassword, secret.CaPem);
         var view = await admin.DescribeClusterAsync(ct);
         var ready = view.IsSuccess
             && view.Value.ControllerId is not null

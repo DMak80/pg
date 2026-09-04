@@ -1,5 +1,6 @@
 using FluentAssertions;
 using KafkaWorker.Core;
+using KafkaWorker.Core.Templates;
 using KafkaWorker.Core.Model;
 using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Etcd.Parsing;
@@ -83,6 +84,7 @@ public class ProvisioningProcessTests
             new FakeAdminFactory(admin),
             converger,
             new ProvisioningOptions(16000, 16999, brokerBootSec, 90, null, "apache/kafka:4.0.0"),
+            new BrokerCertificateCache(),
             snapshot: ct =>
             {
                 snapshotPoints.Add($"n{snapshotPoints.Count}");
@@ -239,7 +241,7 @@ public class ProvisioningProcessTests
             etcd, [Ep], new Fakes.FakeKafkaDriver(), claims, new WorkJournal(etcd, [Ep]),
             portLock, portAllocIndex,
             new ClusterSecretEnsurer(etcd, [Ep]), new FakeAdminFactory(new FakeKafkaAdminClient()),
-            new FakeConverger(), ProvisioningOptions.Default, snapshot: null);
+            new FakeConverger(), ProvisioningOptions.Default, new BrokerCertificateCache(), snapshot: null);
 
         // Act: прогон без клэйма.
         var result = await process.RunAsync(await Snapshot(etcd), CancellationToken.None);

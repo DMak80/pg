@@ -4,6 +4,7 @@ using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
+using KafkaWorker.Core.Templates;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
@@ -43,6 +44,7 @@ public class NodeSupervisorTests
         etcd.Seed("/kafka/clusters/events/endpoints", "h1:16000,h1:16001,h1:16002");
         etcd.Seed("/kafka/clusters/events/app_user", "app");
         etcd.Seed("/kafka/clusters/events/app_password", "AbCdEf0123456789AbCdEf0123456789");
+        etcd.SeedSecurity("events");
         etcd.Seed("/kafkaworker/portalloc/events",
             """{"broker1":{"host":"h1","client":16000},"broker2":{"host":"h1","client":16001},"broker3":{"host":"h1","client":16002}}""");
 
@@ -61,7 +63,8 @@ public class NodeSupervisorTests
         };
         var supervisor = new NodeSupervisor(
             etcd, [Ep], driver, claims, journal, new FakeAdminFactory(admin),
-            new ProvisioningOptions(16000, 16999, 600, nodeDeadSec, null, "apache/kafka:4.0.0"));
+            new ProvisioningOptions(16000, 16999, 600, nodeDeadSec, null, "apache/kafka:4.0.0"),
+            new BrokerCertificateCache());
         setup?.Invoke(etcd, driver, admin);
         return new Rig(etcd, driver, admin, claims, journal, supervisor);
     }
