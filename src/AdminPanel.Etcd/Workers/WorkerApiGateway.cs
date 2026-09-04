@@ -82,10 +82,11 @@ public sealed class WorkerApiGateway(
         _ => throw new ArgumentOutOfRangeException(nameof(worker), worker, "ожидался pgworker|kafkaworker"),
     };
 
+    // X-Api-Key для KafkaWorker удалён (t03): аутентификация — mTLS клиентским
+    // сертом HttpClient (WorkerTlsHandler.Build).
     private string? ApiKeyOf(string worker) => worker switch
     {
         "pgworker" => options.Value.PgApiKey,
-        "kafkaworker" => options.Value.KafkaApiKey,
         _ => null,
     };
 }
