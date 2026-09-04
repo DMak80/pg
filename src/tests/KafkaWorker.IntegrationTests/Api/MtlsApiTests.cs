@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Security;
+using System.Net.Sockets;
 using System.Security.Cryptography.X509Certificates;
 using KafkaWorker.App.Api;
 using KafkaWorker.Core.Templates;
@@ -70,6 +71,23 @@ public class MtlsApiTests
         var host = StartTlsHost(port);
         using var _ = host.ClientCert; // серт нужен хендшейкам до конца теста
         using var app = host.App;
+        // Готовность листенера: Start() вернулся, но под параллельным
+        // docker-нагрузом прогона первый хендшейк изредка ловил «refused» —
+        // ждём фактического приёма TCP, чтобы не маскировать это под TLS-отказ.
+        var readyDeadline = DateTimeOffset.UtcNow.AddSeconds(15);
+        while (true)
+        {
+            try
+            {
+                using var probe = new TcpClient();
+                await probe.ConnectAsync(IPAddress.Loopback, port, TestContext.Current.CancellationToken);
+                break; // порт принимает — Kestrel слушает
+            }
+            catch (SocketException) when (DateTimeOffset.UtcNow < readyDeadline)
+            {
+                await Task.Delay(200, TestContext.Current.CancellationToken);
+            }
+        }
         using var badClient = new HttpClient(new SocketsHttpHandler
         {
             SslOptions = new()
