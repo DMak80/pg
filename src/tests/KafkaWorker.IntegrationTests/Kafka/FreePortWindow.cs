@@ -30,15 +30,47 @@ internal static class FreePortWindow
 
     private const int StandZoneTo = 17000;
 
-    public static (int From, int To) Find()
+    // Шлюз выдачи окон: Find() может зваться параллельно (фикстуры кластеров +
+    // MtlsApiTests), а зонд «bind→release» порт не резервирует — без шлюза два
+    // потребителя получали одно окно (гонка TOCTOU: docker-publish упирался в
+    // Kestrel того же порта). Кандидаты считаются один раз, курсор выдаёт их
+    // без повторов в рамках процесса.
+    private static readonly object Gate = new();
+
+    private static readonly int[] Candidates = BuildCandidates();
+
+    private static int _cursor;
+
+    private static int[] BuildCandidates()
     {
+        var list = new List<int>();
         for (var start = SearchFrom; start + Size <= SearchTo; start += Step)
         {
             if (start < StandZoneTo && start + Size > StandZoneFrom)
                 continue; // кандидат пересекает зону стенда — дальше
+            list.Add(start);
+        }
 
-            if (IsFree(start))
+        return [.. list];
+    }
+
+    public static (int From, int To) Find()
+    {
+        lock (Gate)
+        {
+            for (var attempt = 0; attempt < Candidates.Length; attempt++)
+            {
+                // Курсор: окна выдаются непересекающимися; зонд ниже остаётся
+                // защитой от внешних занятий (стенд, другие процессы) и окон,
+                // освободившихся после обхода всего диапазона.
+                var index = (_cursor + attempt) % Candidates.Length;
+                var start = Candidates[index];
+                if (!IsFree(start))
+                    continue;
+
+                _cursor = (index + 1) % Candidates.Length;
                 return (start, start + Size - 1);
+            }
         }
 
         throw new InvalidOperationException(
