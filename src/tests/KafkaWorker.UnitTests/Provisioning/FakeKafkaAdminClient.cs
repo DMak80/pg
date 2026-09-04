@@ -154,5 +154,21 @@ public sealed class FakeKafkaAdminClient : IKafkaAdminClient
         return Task.FromResult(Result<TopicDeleteOutcome>.Success(TopicDeleteOutcome.NotFound));
     }
 
+    // Коллектор лагов (t04, arch/18 §4): процессы seam-методы не используют —
+    // заглушки-провалы по умолчанию; настраиваемые данные добавит фейк коллектора.
+    public Task<Result<IReadOnlyList<KafkaGroupView>>> ListGroupsAsync(CancellationToken ct)
+        => Task.FromResult(Result<IReadOnlyList<KafkaGroupView>>.Failed(
+            new ApplicationException("not configured in this fake")));
+
+    public Task<Result<IReadOnlyList<KafkaTopicPartitionOffset>>> ListConsumerGroupOffsetsAsync(
+        string group, CancellationToken ct)
+        => Task.FromResult(Result<IReadOnlyList<KafkaTopicPartitionOffset>>.Failed(
+            new ApplicationException("not configured in this fake")));
+
+    public Task<Result<IReadOnlyList<KafkaTopicPartitionOffset>>> ListOffsetsAsync(
+        IReadOnlyList<KafkaTopicPartition> partitions, CancellationToken ct)
+        => Task.FromResult(Result<IReadOnlyList<KafkaTopicPartitionOffset>>.Failed(
+            new ApplicationException("not configured in this fake")));
+
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 }

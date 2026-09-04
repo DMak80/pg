@@ -32,6 +32,13 @@ public sealed record KafkaTopicView(
     IReadOnlyList<IReadOnlyList<int>> ReplicasPerPartition,
     IReadOnlyList<IReadOnlyList<int>>? IsrPerPartition = null);
 
+// Группа консьюмеров (ListGroups): id + состояние (коллектор лагов, arch/18 §4).
+public sealed record KafkaGroupView(string Group, string State);
+
+// Оффсет на партиции: committed группы либо watermark (Latest).
+public sealed record KafkaTopicPartition(string Topic, int Partition);
+public sealed record KafkaTopicPartitionOffset(string Topic, int Partition, long Offset);
+
 /// <summary>
 /// Seam-интерфейс Kafka-доступа воркера (паттерн Puzzle §7: без Confluent-типов
 /// в сигнатурах — юнит-тесты процессов работают на fake, единственное место с
@@ -73,6 +80,17 @@ public interface IKafkaAdminClient : IAsyncDisposable
     // Удаление топика (lifecycle delete, t01): NotFound = исполнено ранее
     // (идемпотентность, arch/15 §3.1).
     Task<Result<TopicDeleteOutcome>> DeleteTopicAsync(string topic, CancellationToken ct);
+
+    // Группы консьюмеров кластера (коллектор лагов, arch/18 §4).
+    Task<Result<IReadOnlyList<KafkaGroupView>>> ListGroupsAsync(CancellationToken ct);
+
+    // Committed-оффсеты группы по партициям.
+    Task<Result<IReadOnlyList<KafkaTopicPartitionOffset>>> ListConsumerGroupOffsetsAsync(
+        string group, CancellationToken ct);
+
+    // Watermark-оффсеты (Latest) набора партиций.
+    Task<Result<IReadOnlyList<KafkaTopicPartitionOffset>>> ListOffsetsAsync(
+        IReadOnlyList<KafkaTopicPartition> partitions, CancellationToken ct);
 }
 
 /// <summary>Фабрика клиентов по bootstrap+кредам кластера (SASL/PLAIN, arch/15 §5).</summary>
