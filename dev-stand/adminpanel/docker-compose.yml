@@ -324,6 +324,8 @@ services:
 
   # Webhook-ресивер: URL — env METRICS_ALERT_WEBHOOK_URL (пусто — только UI
   # Prometheus/Alertmanager; спека §3.7 Д4). Выбор конфига — entrypoint.
+  # alertmanager-data (ревью Ф7-6): nflog/silences переживают рестарт
+  # (repeat_interval 4h — без тома рестарт сбрасывает историю отправок).
   alertmanager:
     image: prom/alertmanager:v0.28.1
     container_name: as-alertmanager
@@ -331,6 +333,7 @@ services:
     ports: ["${METRICS_ALERTMANAGER_PORT:-9093}:9093"]
     volumes:
       - ./metrics/alertmanager:/etc/alertmanager:ro
+      - alertmanager-data:/alertmanager
     entrypoint: ["/bin/sh", "/etc/alertmanager/entrypoint.sh"]
     environment:
       METRICS_ALERT_WEBHOOK_URL: ${METRICS_ALERT_WEBHOOK_URL:-}
@@ -340,3 +343,4 @@ volumes:
   kfw-snapshots:
   prometheus-data:
   grafana-data:
+  alertmanager-data:

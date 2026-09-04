@@ -78,16 +78,22 @@ curl -fsS "$AM/api/v2/status" | jq -e '.versionInfo.version' >/dev/null || { ech
 echo "  Alertmanager жив"
 
 # 7) алерт-симуляция (spec §6.5): stop kafkaworker → up==0 + for:2m → ServiceDown
-#    firing → восстановление. Бюджет: scrape 15с + for 2м — ранний выход циклами.
+#    firing → доставлен в Alertmanager → восстановление. Бюджет: scrape 15с +
+#    for 2м + group_wait 30с — ранний выход циклами.
 docker stop as-kafkaworker >/dev/null
 firing=""
+am_alert=""
 for i in $(seq 1 30); do
   firing=$(curl -fsS "$PROM/api/v1/alerts" | jq -r '[.data.alerts[] | select(.labels.alertname=="ServiceDown" and .state=="firing")] | length')
-  [ "${firing:-0}" -gt 0 ] && break
+  # Доставка (ревью Ф7-2): alerting-секция Prometheus → Alertmanager — алерт
+  # обязан появиться и в его API, а не только в Prometheus.
+  am_alert=$(curl -fsS -m 5 "$AM/api/v2/alerts" | jq -r '[.[] | select(.labels.alertname=="ServiceDown")] | length' 2>/dev/null || echo 0)
+  [ "${firing:-0}" -gt 0 ] && [ "${am_alert:-0}" -gt 0 ] && break
   sleep 10
 done
 docker start as-kafkaworker >/dev/null
 [ "${firing:-0}" -gt 0 ] || { echo "  ❌ ServiceDown не перешёл в firing ≤~2.5мин после остановки kafkaworker"; exit 1; }
-echo "  алерт-симуляция: ServiceDown firing после остановки kafkaworker (восстановлен)"
+[ "${am_alert:-0}" -gt 0 ] || { echo "  ❌ ServiceDown не доставлен в Alertmanager (alerting-секция/группа)"; exit 1; }
+echo "  алерт-симуляция: ServiceDown firing + доставлен в Alertmanager (kafkaworker восстановлен)"
 
 echo "✓ чек 65: мониторинг жив (prometheus/grafana/alertmanager/rules/серии)"
