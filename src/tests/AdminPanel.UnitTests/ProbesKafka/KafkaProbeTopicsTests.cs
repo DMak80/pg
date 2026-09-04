@@ -19,7 +19,7 @@ public class KafkaProbeTopicsTests
     private sealed class FakeProbeClient : IKafkaProbeClient
     {
         public Task<Result<KafkaProbeView>> DescribeClusterAsync(
-            string bootstrap, string user, string password, TimeSpan timeout, CancellationToken ct)
+            string bootstrap, string user, string password, string? caPem, TimeSpan timeout, CancellationToken ct)
             => Task.FromResult(Result<KafkaProbeView>.Success(new KafkaProbeView(
                 [new KafkaProbeBroker(1, "broker1")], ControllerId: 1)));
     }
@@ -34,28 +34,28 @@ public class KafkaProbeTopicsTests
         public IReadOnlyDictionary<string, IReadOnlyDictionary<(string Topic, int Partition), long>> CommittedByGroup = new Dictionary<string, IReadOnlyDictionary<(string Topic, int Partition), long>>();
 
         public Task<Result<IReadOnlyList<KafkaProbeTopic>>> DescribeTopicsAsync(
-            string bootstrap, string user, string password, TimeSpan timeout, CancellationToken ct)
+            string bootstrap, string user, string password, string? caPem, TimeSpan timeout, CancellationToken ct)
             => Task.FromResult(TopicsError is not null
                 ? Result<IReadOnlyList<KafkaProbeTopic>>.Failed(TopicsError)
                 : Result<IReadOnlyList<KafkaProbeTopic>>.Success(Topics ?? []));
 
         public Task<Result<IReadOnlyList<string>>> ListGroupsAsync(
-            string bootstrap, string user, string password, TimeSpan timeout, CancellationToken ct)
+            string bootstrap, string user, string password, string? caPem, TimeSpan timeout, CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<string>>.Success(Groups));
 
         public Task<Result<IReadOnlyList<KafkaProbeGroupDetail>>> DescribeGroupsAsync(
-            string bootstrap, string user, string password, IReadOnlyList<string> groups,
+            string bootstrap, string user, string password, string? caPem, IReadOnlyList<string> groups,
             TimeSpan timeout, CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<KafkaProbeGroupDetail>>.Success(GroupDetails ?? []));
 
         public Task<Result<IReadOnlyDictionary<(string Topic, int Partition), long>>> EndOffsetsAsync(
-            string bootstrap, string user, string password,
+            string bootstrap, string user, string password, string? caPem,
             IReadOnlyList<(string Topic, int Partition)> partitions, TimeSpan timeout, CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyDictionary<(string Topic, int Partition), long>>.Success(
                 End.Where(p => partitions.Contains(p.Key)).ToDictionary(p => p.Key, p => p.Value)));
 
         public Task<Result<IReadOnlyDictionary<(string Topic, int Partition), long>>> CommittedAsync(
-            string bootstrap, string user, string password, string group,
+            string bootstrap, string user, string password, string? caPem, string group,
             IReadOnlyList<(string Topic, int Partition)> partitions, TimeSpan timeout, CancellationToken ct)
         {
             // Пустой набор партиций = все закоммиченные группы (Burrow-семантика).
@@ -84,7 +84,7 @@ public class KafkaProbeTopicsTests
         var secrets = new KafkaSecretsStore();
         secrets.Replace(new Dictionary<string, KafkaClusterSecrets>
         {
-            ["events"] = new("events", "app", "SecretPassword0123456789"),
+            ["events"] = new("events", "admin", "SecretPassword0123456789", "CAPEM"),
         });
         var probeStore = new KafkaProbeStore();
         var loop = new KafkaProbeLoop(

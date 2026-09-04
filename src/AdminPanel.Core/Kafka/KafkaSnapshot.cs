@@ -19,7 +19,8 @@ public sealed record KafkaSnapshot(
     IReadOnlyList<ProbeResult> Probes,              // live-проба DescribeCluster (B6+)
     IReadOnlyList<Alert> Alerts,                    // KafkaAlertEngine (arch/03 §7.4)
     IReadOnlyList<KeyParseError> ParseErrors,       // битые JSON kafka-ключей (arch/15 §6)
-    int UnknownKeyCount);
+    int UnknownKeyCount,
+    IReadOnlyList<KafkaRotationTicket>? AdminRotations = null); // /kafkaworker/admin_rotations/ (t03, arch/15 §4)
 
 // Кластер /kafka/clusters/<C>/ (arch/15 §2): config + state + факт (brokers/topics/endpoints).
 public sealed record KafkaClusterInfo(

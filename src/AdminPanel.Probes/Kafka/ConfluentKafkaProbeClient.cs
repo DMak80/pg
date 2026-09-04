@@ -4,7 +4,7 @@ using Confluent.Kafka.Admin;
 
 namespace AdminPanel.Probes.Kafka;
 
-// Адаптер Confluent.Kafka для kafka-пробы: SASL/PLAIN + SASL_PLAINTEXT (arch/15 §5);
+// Адаптер Confluent.Kafka для kafka-пробы: SASL/PLAIN поверх SASL_SSL (t03, arch/15 §5);
 // DescribeCluster с RequestTimeout на вызов (прецедент KafkaAdminClient воркера);
 // исключения → Result.Failed (проба не роняет панель). Единственное место
 // Probes-сборки с Confluent-типами.
@@ -14,12 +14,12 @@ namespace AdminPanel.Probes.Kafka;
 public sealed class ConfluentKafkaProbeClient(KafkaClientCache cache) : IKafkaProbeClient
 {
     public async Task<Result<KafkaProbeView>> DescribeClusterAsync(
-        string bootstrap, string user, string password, TimeSpan timeout, CancellationToken ct)
+        string bootstrap, string user, string password, string? caPem, TimeSpan timeout, CancellationToken ct)
     {
         try
         {
             ct.ThrowIfCancellationRequested();
-            var admin = cache.GetAdmin(bootstrap, user, password);
+            var admin = cache.GetAdmin(bootstrap, user, password, caPem);
             var cluster = await admin.DescribeClusterAsync(
                 new DescribeClusterOptions { RequestTimeout = timeout });
             return Result<KafkaProbeView>.Success(new KafkaProbeView(
@@ -28,7 +28,7 @@ public sealed class ConfluentKafkaProbeClient(KafkaClientCache cache) : IKafkaPr
         }
         catch (Exception e)
         {
-            cache.Invalidate(bootstrap, user, password);
+            cache.Invalidate(bootstrap, user, password, caPem);
             return Result<KafkaProbeView>.Failed(new InvalidOperationException(
                 $"DescribeCluster ({bootstrap}): {e.Message}", e));
         }
@@ -44,12 +44,12 @@ public sealed class ConfluentKafkaProbeClient(KafkaClientCache cache) : IKafkaPr
 public sealed class ConfluentKafkaRuntimeProbeClient(KafkaClientCache cache) : IKafkaProbeRuntimeClient
 {
     public async Task<Result<IReadOnlyList<KafkaProbeTopic>>> DescribeTopicsAsync(
-        string bootstrap, string user, string password, TimeSpan timeout, CancellationToken ct)
+        string bootstrap, string user, string password, string? caPem, TimeSpan timeout, CancellationToken ct)
     {
         try
         {
             ct.ThrowIfCancellationRequested();
-            var admin = cache.GetAdmin(bootstrap, user, password);
+            var admin = cache.GetAdmin(bootstrap, user, password, caPem);
             var metadata = admin.GetMetadata(timeout);
             var topics = metadata.Topics
                 .Where(t => !t.Topic.StartsWith("__", StringComparison.Ordinal))
@@ -64,19 +64,19 @@ public sealed class ConfluentKafkaRuntimeProbeClient(KafkaClientCache cache) : I
         }
         catch (Exception e)
         {
-            cache.Invalidate(bootstrap, user, password);
+            cache.Invalidate(bootstrap, user, password, caPem);
             return Result<IReadOnlyList<KafkaProbeTopic>>.Failed(new InvalidOperationException(
                 $"DescribeTopics ({bootstrap}): {e.Message}", e));
         }
     }
 
     public async Task<Result<IReadOnlyList<string>>> ListGroupsAsync(
-        string bootstrap, string user, string password, TimeSpan timeout, CancellationToken ct)
+        string bootstrap, string user, string password, string? caPem, TimeSpan timeout, CancellationToken ct)
     {
         try
         {
             ct.ThrowIfCancellationRequested();
-            var admin = cache.GetAdmin(bootstrap, user, password);
+            var admin = cache.GetAdmin(bootstrap, user, password, caPem);
             var groups = await admin.ListConsumerGroupsAsync(
                 new ListConsumerGroupsOptions { RequestTimeout = timeout });
             return Result<IReadOnlyList<string>>.Success(
@@ -84,20 +84,20 @@ public sealed class ConfluentKafkaRuntimeProbeClient(KafkaClientCache cache) : I
         }
         catch (Exception e)
         {
-            cache.Invalidate(bootstrap, user, password);
+            cache.Invalidate(bootstrap, user, password, caPem);
             return Result<IReadOnlyList<string>>.Failed(new InvalidOperationException(
                 $"ListGroups ({bootstrap}): {e.Message}", e));
         }
     }
 
     public async Task<Result<IReadOnlyList<KafkaProbeGroupDetail>>> DescribeGroupsAsync(
-        string bootstrap, string user, string password, IReadOnlyList<string> groups,
+        string bootstrap, string user, string password, string? caPem, IReadOnlyList<string> groups,
         TimeSpan timeout, CancellationToken ct)
     {
         try
         {
             ct.ThrowIfCancellationRequested();
-            var admin = cache.GetAdmin(bootstrap, user, password);
+            var admin = cache.GetAdmin(bootstrap, user, password, caPem);
             var described = await admin.DescribeConsumerGroupsAsync(
                 groups.ToList(),
                 new DescribeConsumerGroupsOptions { RequestTimeout = timeout });
@@ -118,14 +118,14 @@ public sealed class ConfluentKafkaRuntimeProbeClient(KafkaClientCache cache) : I
         }
         catch (Exception e)
         {
-            cache.Invalidate(bootstrap, user, password);
+            cache.Invalidate(bootstrap, user, password, caPem);
             return Result<IReadOnlyList<KafkaProbeGroupDetail>>.Failed(new InvalidOperationException(
                 $"DescribeGroups ({bootstrap}): {e.Message}", e));
         }
     }
 
     public async Task<Result<IReadOnlyDictionary<(string Topic, int Partition), long>>> EndOffsetsAsync(
-        string bootstrap, string user, string password,
+        string bootstrap, string user, string password, string? caPem,
         IReadOnlyList<(string Topic, int Partition)> partitions, TimeSpan timeout, CancellationToken ct)
     {
         try
@@ -134,7 +134,7 @@ public sealed class ConfluentKafkaRuntimeProbeClient(KafkaClientCache cache) : I
 
             // group.id у консьюмера кэша — техническая (adminpanel-probe):
             // оффсеты не коммитятся и не читаются.
-            var consumer = cache.GetConsumer(bootstrap, user, password);
+            var consumer = cache.GetConsumer(bootstrap, user, password, caPem);
             var result = new Dictionary<(string Topic, int Partition), long>();
             foreach (var (topic, partition) in partitions.Distinct().OrderBy(p => p.Topic).ThenBy(p => p.Partition))
             {
@@ -147,20 +147,20 @@ public sealed class ConfluentKafkaRuntimeProbeClient(KafkaClientCache cache) : I
         }
         catch (Exception e)
         {
-            cache.Invalidate(bootstrap, user, password);
+            cache.Invalidate(bootstrap, user, password, caPem);
             return Result<IReadOnlyDictionary<(string Topic, int Partition), long>>.Failed(
                 new InvalidOperationException($"EndOffsets ({bootstrap}): {e.Message}", e));
         }
     }
 
     public async Task<Result<IReadOnlyDictionary<(string Topic, int Partition), long>>> CommittedAsync(
-        string bootstrap, string user, string password, string group,
+        string bootstrap, string user, string password, string? caPem, string group,
         IReadOnlyList<(string Topic, int Partition)> partitions, TimeSpan timeout, CancellationToken ct)
     {
         try
         {
             ct.ThrowIfCancellationRequested();
-            var admin = cache.GetAdmin(bootstrap, user, password);
+            var admin = cache.GetAdmin(bootstrap, user, password, caPem);
 
             // Пустой набор партиций = ВСЕ закоммиченные оффсеты группы (lag
             // мониторинга живёт и после смерти консьюмера: группа Empty с
@@ -185,7 +185,7 @@ public sealed class ConfluentKafkaRuntimeProbeClient(KafkaClientCache cache) : I
         }
         catch (Exception e)
         {
-            cache.Invalidate(bootstrap, user, password);
+            cache.Invalidate(bootstrap, user, password, caPem);
             return Result<IReadOnlyDictionary<(string Topic, int Partition), long>>.Failed(
                 new InvalidOperationException($"Committed ({bootstrap}, group {group}): {e.Message}", e));
         }

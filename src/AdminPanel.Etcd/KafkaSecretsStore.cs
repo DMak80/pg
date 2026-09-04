@@ -1,8 +1,10 @@
 namespace AdminPanel.Etcd;
 
-// Per-cluster SASL-креды (arch/02 §10.1): панель читает app_user/app_password
-// ТОЛЬКО для проб; в модель KafkaClusterInfo/UI/API не выносит никогда.
-public sealed record KafkaClusterSecrets(string Cluster, string User, string Password);
+// Per-cluster admin-креды + CA (arch/02 §10.1, t03): панель читает
+// admin_user/admin_password/ca_pem ТОЛЬКО для SASL_SSL-проб; в модель
+// KafkaClusterInfo/UI/API не выносит никогда. ca_key и app-креды панель
+// не читает (app — роль приложений).
+public sealed record KafkaClusterSecrets(string Cluster, string AdminUser, string AdminPassword, string CaPem);
 
 // Внутренний стор кредов: заполняет KafkaSnapshotRefresher при тике, читает
 // kafka-проба (B6). Значение пароля не покидает этот контур.

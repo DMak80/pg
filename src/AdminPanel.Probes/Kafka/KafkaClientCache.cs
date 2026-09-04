@@ -25,22 +25,22 @@ public sealed class KafkaClientCache(ILogger<KafkaClientCache>? logger = null) :
     private const string WatermarkGroup = "adminpanel-probe";
 
     private readonly object _gate = new();
-    private readonly Dictionary<(string Bootstrap, string User, string Password), Entry> _entries = [];
+    private readonly Dictionary<(string Bootstrap, string User, string Password, string? CaPem), Entry> _entries = [];
 
     // Сколько нативных клиентов создано за жизнь кэша — метрика churn'а
     // (интеграционный тест t11 строит на ней границы).
     public int CreatedClients { get; private set; }
 
-    public IAdminClient GetAdmin(string bootstrap, string user, string password)
+    public IAdminClient GetAdmin(string bootstrap, string user, string password, string? caPem)
     {
         lock (_gate)
         {
-            var entry = GetOrCreateEntry(bootstrap, user, password);
+            var entry = GetOrCreateEntry(bootstrap, user, password, caPem);
             if (entry.Admin is not null)
                 return entry.Admin;
 
             CreatedClients++;
-            return entry.Admin = new AdminClientBuilder(BaseAdminConfig(bootstrap, user, password))
+            return entry.Admin = new AdminClientBuilder(BaseAdminConfig(bootstrap, user, password, caPem))
                 // Лог librdkafka — на Debug панели: в инциденте FAIL/ERROR-строки
                 // «5/5 brokers are down» сыпались в stdout каждую секунду.
                 .SetLogHandler((_, message) => logger?.LogDebug("rdkafka: {Message}", message.Message))
@@ -48,17 +48,17 @@ public sealed class KafkaClientCache(ILogger<KafkaClientCache>? logger = null) :
         }
     }
 
-    public IConsumer<Ignore, Ignore> GetConsumer(string bootstrap, string user, string password)
+    public IConsumer<Ignore, Ignore> GetConsumer(string bootstrap, string user, string password, string? caPem)
     {
         lock (_gate)
         {
-            var entry = GetOrCreateEntry(bootstrap, user, password);
+            var entry = GetOrCreateEntry(bootstrap, user, password, caPem);
             if (entry.Consumer is not null)
                 return entry.Consumer;
 
             CreatedClients++;
             return entry.Consumer = new ConsumerBuilder<Ignore, Ignore>(
-                    new ConsumerConfig(BaseAdminConfig(bootstrap, user, password))
+                    new ConsumerConfig(BaseAdminConfig(bootstrap, user, password, caPem))
                     {
                         GroupId = WatermarkGroup,
                     })
@@ -70,12 +70,12 @@ public sealed class KafkaClientCache(ILogger<KafkaClientCache>? logger = null) :
 
     // Фейл пробы — клиент не переиспользуется: следующая попытка получит свежий
     // (вызов не в горячем пути — окно повтора держит backoff KafkaProbeLoop).
-    public void Invalidate(string bootstrap, string user, string password)
+    public void Invalidate(string bootstrap, string user, string password, string? caPem)
     {
         Entry? removed;
         lock (_gate)
         {
-            var key = (bootstrap, user, password);
+            var key = (bootstrap, user, password, caPem);
             if (!_entries.Remove(key, out removed))
                 return;
         }
@@ -98,9 +98,9 @@ public sealed class KafkaClientCache(ILogger<KafkaClientCache>? logger = null) :
             DisposeEntry(entry);
     }
 
-    private Entry GetOrCreateEntry(string bootstrap, string user, string password)
+    private Entry GetOrCreateEntry(string bootstrap, string user, string password, string? caPem)
     {
-        var key = (bootstrap, user, password);
+        var key = (bootstrap, user, password, caPem);
         if (!_entries.TryGetValue(key, out var entry))
             _entries[key] = entry = new Entry();
         return entry;
@@ -124,17 +124,23 @@ public sealed class KafkaClientCache(ILogger<KafkaClientCache>? logger = null) :
         }
     }
 
-    private static AdminClientConfig BaseAdminConfig(string bootstrap, string user, string password) => new()
+    private static AdminClientConfig BaseAdminConfig(string bootstrap, string user, string password, string? caPem)
     {
-        BootstrapServers = bootstrap,
-        SecurityProtocol = SecurityProtocol.SaslPlaintext,
-        SaslMechanism = SaslMechanism.Plain,
-        SaslUsername = user,
-        SaslPassword = password,
-        RetryBackoffMs = BackoffMs,
-        ReconnectBackoffMs = BackoffMs,
-        ReconnectBackoffMaxMs = BackoffMaxMs,
-    };
+        var config = new AdminClientConfig
+        {
+            BootstrapServers = bootstrap,
+            SecurityProtocol = SecurityProtocol.SaslSsl, // t03: дискавери-канон arch/15 §5
+            SaslMechanism = SaslMechanism.Plain,
+            SaslUsername = user,
+            SaslPassword = password,
+            RetryBackoffMs = BackoffMs,
+            ReconnectBackoffMs = BackoffMs,
+            ReconnectBackoffMaxMs = BackoffMaxMs,
+        };
+        if (caPem is not null)
+            config.Set("ssl.ca.pem", caPem); // доверие per-cluster CA (librdkafka >= 1.5)
+        return config;
+    }
 
     private sealed class Entry
     {

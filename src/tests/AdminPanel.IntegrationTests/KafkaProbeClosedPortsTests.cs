@@ -1,5 +1,7 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using AdminPanel.Core;
 using AdminPanel.Core.Kafka;
 using AdminPanel.Etcd;
@@ -33,6 +35,19 @@ public class KafkaProbeClosedPortsTests : IDisposable
 
     private readonly KafkaClientCache _cache = new();
 
+    // Валидный PEM CA (t03): librdkafka парсит ssl.ca.pem при Build() — строка-
+    // заглушка роняла бы создание клиента до сетевого отказа (в тесте нужен
+    // честный connection refused).
+    private static string CaPem()
+    {
+        using var rsa = RSA.Create(2048);
+        var request = new CertificateRequest(
+            "CN=probe-test-ca", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+        using var cert = request.CreateSelfSigned(
+            DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1));
+        return cert.ExportCertificatePem();
+    }
+
     // Репро-расклад инцидента: три брокера на закрытых портах (16003–16005).
     private static string DeadBootstrap()
         => string.Join(",", Enumerable.Range(0, 3).Select(_ => $"127.0.0.1:{ClosedPort()}"));
@@ -59,7 +74,7 @@ public class KafkaProbeClosedPortsTests : IDisposable
         var secrets = new KafkaSecretsStore();
         secrets.Replace(new Dictionary<string, KafkaClusterSecrets>
         {
-            ["churn"] = new("churn", "app", "SecretPassword0123456789"),
+            ["churn"] = new("churn", "admin", "SecretPassword0123456789", CaPem()),
         });
         var probeStore = new KafkaProbeStore();
         var clock = new FixedTimeProvider();

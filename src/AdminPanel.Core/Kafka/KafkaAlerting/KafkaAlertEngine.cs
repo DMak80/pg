@@ -10,7 +10,8 @@ namespace AdminPanel.Core.Kafka.KafkaAlerting;
 // severity → kind → target.
 public interface IKafkaAlertEngine
 {
-    IReadOnlyList<Alert> Evaluate(KafkaSnapshot next, KafkaSnapshot? previous);
+    IReadOnlyList<Alert> Evaluate(
+        KafkaSnapshot next, KafkaSnapshot? previous, IReadOnlyCollection<string>? securityReady = null);
 }
 
 [InjectAsSingleton(typeof(IKafkaAlertEngine))]
@@ -21,12 +22,17 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
 
     private readonly KafkaAlertsOptions _options = options.Value;
 
-    public IReadOnlyList<Alert> Evaluate(KafkaSnapshot next, KafkaSnapshot? previous)
+    // securityReady (t03): имена кластеров с полным набором admin_user+admin_password+
+    // валидного ca_pem в internal-сторе (считает KafkaSnapshotRefresher из ReadSecrets);
+    // null — стор недоступен (прямые вызовы Evaluate без данных стора) — правило
+    // безопасности не оценивается.
+    public IReadOnlyList<Alert> Evaluate(
+        KafkaSnapshot next, KafkaSnapshot? previous, IReadOnlyCollection<string>? securityReady = null)
     {
         var nowUnix = next.BuiltAtUtc.ToUnixTimeSeconds();
         return
         [
-            .. Enumerate(next, previous)
+            .. Enumerate(next, previous, securityReady)
                .Select(a => a with { SinceUnix = ResolveSince(a, previous, nowUnix) })
                .OrderBy(a => a.Severity, SeverityDescending)
                .ThenBy(a => a.Kind, StringComparer.Ordinal)
@@ -34,8 +40,30 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
         ];
     }
 
-    private IEnumerable<Alert> Enumerate(KafkaSnapshot next, KafkaSnapshot? previous)
+    private IEnumerable<Alert> Enumerate(
+        KafkaSnapshot next, KafkaSnapshot? previous, IReadOnlyCollection<string>? securityReady)
     {
+        // kafka-security-missing (critical, t03, arch/15 §6): Active-кластер без
+        // полного набора admin-кредов/CA в сторе — пробы SASL_SSL не исполнимы
+        // (премиграционный кластер ждёт SecurityMigrator).
+        if (securityReady is not null)
+        {
+            var ready = securityReady.ToHashSet(StringComparer.Ordinal);
+            foreach (var cluster in next.Clusters.Where(
+                c => c.State == KafkaClusterState.Active && !ready.Contains(c.Name)))
+                yield return new Alert(
+                    $"kafka-security-missing:{cluster.Name}",
+                    AlertSeverity.Critical,
+                    "kafka-security-missing",
+                    cluster.Name,
+                    $"Active-кластер {cluster.Name} без admin-кредов/CA в etcd — пробы и дискавери TLS-клиентов не работают",
+                    null,
+                    null,
+                    "Active-кластер без admin_user/admin_password/ca_pem: ensure воркера обязан дописать секреты (или кластер премиграционный — SecurityMigrator выполнит миграцию)",
+                    AlertRemedy.WorkerAuto,
+                    "ensure/миграция воркера дополнят секреты (t03); висит — проверьте journal воркера");
+        }
+
         // worker-api-unreachable (critical, task etcd-via-worker-api): нет живых
         // ключей /kafkaworker/api/ (arch/02 §2.3.2) — kafka-мутации панели 503;
         // чтение данных не страдает. Pg-грань — WorkerApiUnreachableRule.
@@ -138,6 +166,25 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 },
                 null,
                 "ротация app-пароля заявлена (ключ /kafkaworker/rotations/<C>): воркер исполняет фазы A/B/C и снимет ключ; каждая заявка обязана сниматься исполнителем",
+                AlertRemedy.WorkerAuto,
+                "ротацию исполняет воркер (фазы A/B/C), ключ исчезнет; висит — воркер буксует, проверьте journal");
+
+        // Ротации admin-пароля (t03, arch/15 §4): порт kafka-rotation-pending —
+        // только заявки живых кластеров.
+        foreach (var rotation in (next.AdminRotations ?? []).Where(r => alive.Contains(r.Cluster)))
+            yield return new Alert(
+                $"kafka-admin-rotation-pending:{rotation.Cluster}",
+                AlertSeverity.Warning,
+                "kafka-admin-rotation-pending",
+                rotation.Cluster,
+                $"ротация admin-пароля кластера {rotation.Cluster} заявлена, исполняется воркером (фазы A/B/C с rolling-рестартами брокеров)",
+                new Dictionary<string, string>
+                {
+                    ["requestedBy"] = rotation.RequestedBy ?? "unknown",
+                    ["requestedUnix"] = rotation.RequestedUnix.ToString(),
+                },
+                null,
+                "ротация admin-пароля заявлена (ключ /kafkaworker/admin_rotations/<C>): воркер исполняет фазы A/B/C и снимет ключ; приложения (роль app) не затрагиваются",
                 AlertRemedy.WorkerAuto,
                 "ротацию исполняет воркер (фазы A/B/C), ключ исчезнет; висит — воркер буксует, проверьте journal");
 

@@ -84,7 +84,11 @@ public static class KafkaParser
 
                 // Креды SASL: панель читает их для проб через refresher (B6), в модель
                 // кластера не выносит (arch/02 §10.1) — expected-skip без счётчика.
-                case "app_user" or "app_password" when segments.Length == 5:
+                // t03: admin-креды и per-cluster CA читаются internal-стором, ca_key
+                // панель не читает вовсе (arch/02 §10.1).
+                case "app_user" or "app_password"
+                    or "admin_user" or "admin_password" or "ca_pem" or "ca_key"
+                    when segments.Length == 5:
                     break;
 
                 case "brokers" when segments.Length == 7
@@ -144,6 +148,45 @@ public static class KafkaParser
             if (segments.Length != 4 || segments[3].Length == 0)
             {
                 errors.Add(new(kv.Key, "ожидается /kafkaworker/rotations/<cluster>"));
+                continue;
+            }
+
+            try
+            {
+                using var doc = JsonDocument.Parse(kv.Value);
+                var root = doc.RootElement;
+                var requested = JsonValues.ReadLong(root, "requested_unix");
+                if (requested is null)
+                {
+                    errors.Add(new(kv.Key, "нет поля requested_unix"));
+                    continue;
+                }
+
+                tickets.Add(new KafkaRotationTicket(
+                    segments[3], requested.Value, JsonValues.ReadString(root, "requested_by")));
+            }
+            catch (JsonException e)
+            {
+                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+            }
+        }
+
+        return new(tickets, errors);
+    }
+
+    // Заявка ротации admin-пароля /kafkaworker/admin_rotations/<C> (arch/15 §4, t03):
+    // формат заявки идентичен ротациям app — requested_unix обязателен.
+    public static KafkaRotationsParseResult ParseAdminRotations(IReadOnlyList<Kv> kvs)
+    {
+        var tickets = new List<KafkaRotationTicket>();
+        var errors = new List<KeyParseError>();
+        foreach (var kv in kvs)
+        {
+            // "/kafkaworker/admin_rotations/<C>" → ["", "kafkaworker", "admin_rotations", <C>]
+            var segments = kv.Key.Split('/');
+            if (segments.Length != 4 || segments[3].Length == 0)
+            {
+                errors.Add(new(kv.Key, "ожидается /kafkaworker/admin_rotations/<cluster>"));
                 continue;
             }
 

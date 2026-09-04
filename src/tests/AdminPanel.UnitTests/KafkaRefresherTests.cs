@@ -66,18 +66,25 @@ public class KafkaRefresherTests
     }
 
     private static KafkaSnapshotRefresher New(
-        KafkaFakeGateway gateway, IKafkaSnapshotStore store, params string[] endpoints)
+        IEtcdGateway gateway, IKafkaSnapshotStore store, params string[] endpoints)
         => New(gateway, store, new AdminPanel.Etcd.Workers.KafkaWorkerHealthStore(), endpoints);
 
     // Перегрузка New (рядом с существующей): refresher со стором health-проб.
     private static KafkaSnapshotRefresher New(
-        KafkaFakeGateway gateway, IKafkaSnapshotStore store,
+        IEtcdGateway gateway, IKafkaSnapshotStore store,
         AdminPanel.Etcd.Workers.KafkaWorkerHealthStore healthStore, params string[] endpoints)
+        => New(gateway, store, healthStore, new KafkaSecretsStore(), endpoints);
+
+    // Перегрузка New (t03): refresher с внешним стором кредов (проверка наполнения).
+    private static KafkaSnapshotRefresher New(
+        IEtcdGateway gateway, IKafkaSnapshotStore store,
+        AdminPanel.Etcd.Workers.KafkaWorkerHealthStore healthStore,
+        IKafkaSecretsStore secretsStore, params string[] endpoints)
         => new(
             gateway,
             new KafkaAlertEngine(Options.Create(new KafkaAlertsOptions())),
             store,
-            new KafkaSecretsStore(),
+            secretsStore,
             Options.Create(new EtcdOptions { Endpoints = endpoints }),
             Options.Create(new KafkaPanelOptions()),
             new FixedTimeProvider(),
@@ -227,6 +234,113 @@ public class KafkaRefresherTests
         store.Current!.EtcdReachable.Should().BeFalse();
         store.Current.Clusters.Should().BeEmpty();
         store.Current.ConsecutiveFailures.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Refresh_AdminAndCaKeys_SecretsStoreCarriesAdminCreds()
+    {
+        // Arrange: кластерные kvs с admin_user/admin_password/ca_pem (t03, arch/15 §2).
+        var gateway = DemoGateway();
+        gateway.ClustersKv =
+        [
+            new Kv("/kafka/clusters/events/config", """{"brokers":1,"replication_factor":1,"min_insync_replicas":1,"default_partitions":1,"default_retention_ms":1}""", 1),
+            new Kv("/kafka/clusters/events/admin_user", "admin", 2),
+            new Kv("/kafka/clusters/events/admin_password", "AdminSecret0123456789AAAAAAA", 3),
+            new Kv("/kafka/clusters/events/ca_pem", "-----BEGIN CERTIFICATE-----\nZmFrZQ==\n-----END CERTIFICATE-----", 4),
+        ];
+        var store = new KafkaSnapshotStore();
+        var secrets = new KafkaSecretsStore();
+
+        // Act
+        var result = await New(gateway, store, new AdminPanel.Etcd.Workers.KafkaWorkerHealthStore(),
+            secrets, "http://e1").RefreshOnceAsync(CancellationToken.None);
+
+        // Assert: стор несёт admin-креды и CA (пробы SASL_SSL); app-креды панель не читает.
+        result.IsSuccess.Should().BeTrue();
+        var creds = secrets.Current["events"];
+        creds.AdminUser.Should().Be("admin");
+        creds.AdminPassword.Should().Be("AdminSecret0123456789AAAAAAA");
+        creds.CaPem.Should().Contain("BEGIN CERTIFICATE");
+    }
+
+    [Fact]
+    public async Task Refresh_BrokenCaPem_NotInStore_ParseErrorRecorded()
+    {
+        // Arrange: ca_pem — мусор (arch/15 §6: битый PEM → parseError, ключ пропускается).
+        var gateway = DemoGateway();
+        gateway.ClustersKv =
+        [
+            new Kv("/kafka/clusters/events/config", """{"brokers":1,"replication_factor":1,"min_insync_replicas":1,"default_partitions":1,"default_retention_ms":1}""", 1),
+            new Kv("/kafka/clusters/events/admin_user", "admin", 2),
+            new Kv("/kafka/clusters/events/admin_password", "AdminSecret0123456789AAAAAAA", 3),
+            new Kv("/kafka/clusters/events/ca_pem", "garbage", 4),
+        ];
+        var store = new KafkaSnapshotStore();
+        var secrets = new KafkaSecretsStore();
+
+        // Act
+        var result = await New(gateway, store, new AdminPanel.Etcd.Workers.KafkaWorkerHealthStore(),
+            secrets, "http://e1").RefreshOnceAsync(CancellationToken.None);
+
+        // Assert: в стор не попал + parseErrors содержит запись (тик не падает).
+        result.IsSuccess.Should().BeTrue();
+        secrets.Current.Should().NotContainKey("events");
+        store.Current!.ParseErrors.Should().Contain(e => e.Key.Contains("ca_pem", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Refresh_AdminRotationTicket_InSnapshot()
+    {
+        // Arrange: заявка ротации admin-пароля (t03, arch/15 §4).
+        var gateway = DemoGateway();
+        gateway.RotationsKv = EtcdFixtures.LoadKv("Kafka/kafka-rotations.json");
+        gateway.WorkerApiKv = [];
+        var store = new KafkaSnapshotStore();
+
+        // Act: тик с заявкой в /kafkaworker/admin_rotations/.
+        var adminRotations = new List<Kv>
+        {
+            new("/kafkaworker/admin_rotations/events", """{"requested_unix":1756500900,"requested_by":"admin"}""", 5),
+        };
+        var fakeWithAdmin = new RefresherGatewayWithAdminRotations(gateway, adminRotations);
+        var refresher = New(fakeWithAdmin, store, "http://e1");
+
+        // Act
+        var result = await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert: заявка — в AdminRotations снапшота.
+        result.IsSuccess.Should().BeTrue();
+        store.Current!.AdminRotations.Should().ContainSingle()
+            .Which.Should().Be(new KafkaRotationTicket("events", 1756500900, "admin"));
+    }
+
+    // Обёртка fake-gateway: добавляет чтение префикса /kafkaworker/admin_rotations/.
+    private sealed class RefresherGatewayWithAdminRotations(KafkaFakeGateway inner, IReadOnlyList<Kv> adminRotations)
+        : IEtcdGateway
+    {
+        public Task<Result<IReadOnlyList<Kv>>> RangeAsync(string endpoint, string prefix, CancellationToken ct)
+            => prefix == "/kafkaworker/admin_rotations/"
+                ? Task.FromResult(Result<IReadOnlyList<Kv>>.Success(adminRotations))
+                : inner.RangeAsync(endpoint, prefix, ct);
+
+        public Task<Result<EtcdStatusPayload>> StatusAsync(string endpoint, CancellationToken ct)
+            => inner.StatusAsync(endpoint, ct);
+
+        public Task<Result<IReadOnlyList<EtcdMember>>> MemberListAsync(string endpoint, CancellationToken ct)
+            => inner.MemberListAsync(endpoint, ct);
+
+        public Task<Result<IReadOnlyList<EtcdAlarm>>> AlarmAsync(string endpoint, CancellationToken ct)
+            => inner.AlarmAsync(endpoint, ct);
+
+        public Task<Result<TxnResult>> TxnAsync(
+            string endpoint, IReadOnlyList<TxnCompare> compares, IReadOnlyList<KvPut> puts, CancellationToken ct)
+            => inner.TxnAsync(endpoint, compares, puts, ct);
+
+        public Task<Result> PutAsync(string endpoint, string key, string value, CancellationToken ct)
+            => inner.PutAsync(endpoint, key, value, ct);
+
+        public Task<Result> DeleteAsync(string endpoint, string keyOrPrefix, bool prefix, CancellationToken ct)
+            => inner.DeleteAsync(endpoint, keyOrPrefix, prefix, ct);
     }
 
     private static readonly DateTimeOffset HealthAt =
