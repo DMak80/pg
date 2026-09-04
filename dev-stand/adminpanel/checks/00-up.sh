@@ -11,8 +11,8 @@ for bin in docker jq curl; do
   command -v "$bin" >/dev/null || { echo "❌ нет $bin в PATH"; exit 1; }
 done
 
-echo ">>> поднимаю стенд (docker compose --profile full --profile kafka up -d --build)"
-docker compose --profile full --profile kafka up -d --build 2>&1 | tail -5
+echo ">>> поднимаю стенд (docker compose --profile full --profile kafka --profile metrics up -d --build)"
+docker compose --profile full --profile kafka --profile metrics up -d --build 2>&1 | tail -5
 
 ect() { docker compose exec -T etcd etcdctl --endpoints=http://localhost:2379 "$@"; }
 # Запрос — только через -c: позиционный аргумент psql трактуется как DBNAME
@@ -163,4 +163,11 @@ curl -fsS http://localhost:5050/api/healthz >/dev/null 2>&1 \
   || { echo "❌ панель не ожила за 60 c на :5050 (docker compose logs adminpanel)"; exit 1; }
 echo "  панель жива (http://localhost:5050, docker)"
 
-echo "✓ стенд поднят (полная система: панель + PG + kafka + PgWorker, контур один)"
+# 9) мониторинг (профиль metrics): Prometheus/Grafana/Alertmanager живы; таргеты
+#    прогреваются scrape-интервалом — готовность проверяет 65-metrics.sh.
+for i in $(seq 1 60); do curl -fsS -m 3 "http://localhost:${METRICS_PROMETHEUS_PORT:-9090}/-/ready" >/dev/null 2>&1 && break; sleep 1; done
+curl -fsS -m 3 "http://localhost:${METRICS_PROMETHEUS_PORT:-9090}/-/ready" >/dev/null \
+  || { echo "❌ prometheus не готов за 60 c (docker compose logs prometheus)"; exit 1; }
+echo "  prometheus готов (:${METRICS_PROMETHEUS_PORT:-9090})"
+
+echo "✓ стенд поднят (полная система: панель + PG + kafka + PgWorker + мониторинг, контур один)"

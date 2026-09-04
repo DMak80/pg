@@ -27,6 +27,25 @@ open http://localhost:5050
 | quick (по умолчанию) | etcd + панель | цикл бэкенд-разработки: сиды — через `checks/05-seed.sh` (поднимает воркеров); Patroni/SQL-пробы закономерно падают (нод нет) |
 | full | + s1a/s1b, s2a/s2b, hc1a/hc1b, hc2a/hc2b | live-пробы, failover, e2e |
 | kafka | + kafkaworker | живой воркер: управление кафкой; входит в полный подъём `00-up.sh` (full+kafka) всегда; e2e — чек `55-kafka-e2e.sh` (волна C) |
+| metrics | + prometheus (:9090), grafana (:3000, admin/admin), alertmanager (:9093) | мониторинг полной системы: дашборды, алерты §3.7; входит в 00-up.sh (arch/18 §5) |
+
+## Мониторинг (профиль metrics)
+
+- Сервисы: `prometheus` (:9090), `grafana` (:3000, admin/admin),
+  `alertmanager` (:9093) — конфиги в `metrics/` (scrape-джобы, 8
+  алерт-рулов §3.7, provisioning Grafana, JSON-дашборды workers/kafka/pg).
+- Env-переменные (дефолты в `.env.example`): `METRICS_PROMETHEUS_PORT`,
+  `METRICS_GRAFANA_PORT`, `METRICS_ALERTMANAGER_PORT` (коллизии хост-портов),
+  `METRICS_ALERT_WEBHOOK_URL` (URL webhook-ресивера Alertmanager; пусто —
+  алерты только в UI Prometheus/Alertmanager, Д4).
+- Scrape: pgworker — `host.docker.internal:8080` (deploy-проект), kafkaworker/
+  adminpanel — DNS сети стенда (`kafkaworker:8080`, `adminpanel:8080`),
+  patroni — `hc1a..hc2b:8008` (эмуляторы отдают `/metrics`, arch/18 §2.5).
+- Проверка: `checks/65-metrics.sh` — /metrics трёх сервисов, все scrape-джобы
+  up, серии словаря arch/18 §2 в TSDB, rules, дашборды Grafana, живость
+  Alertmanager и симуляция алерта ServiceDown (stop/start kafkaworker). Чек
+  запускается и после серии чеков — сам поднимает остановленного kafkaworker'а.
+- Канон мониторинга — `../../arch/18-metrics.md` §5.
 
 ## Сиды через API воркеров
 
