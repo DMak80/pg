@@ -11,6 +11,14 @@ for bin in docker jq curl; do
   command -v "$bin" >/dev/null || { echo "❌ нет $bin в PATH"; exit 1; }
 done
 
+# mTLS API kafkaworker (t03, arch/16 §1.1): per-install TLS-пакет — генерируем
+# идемпотентно (только если ca.pem отсутствует); panel.crt/ca.pem уходят панели,
+# server.* + ca.pem — воркеру (bind ../../deploy/tls в стендовом compose).
+if [ ! -f "$ROOT/deploy/tls/ca.pem" ]; then
+  echo ">>> генерирую per-install TLS-пакет (deploy/tls/gen.sh)"
+  bash "$ROOT/deploy/tls/gen.sh"
+fi
+
 echo ">>> поднимаю стенд (docker compose --profile full --profile kafka up -d --build)"
 docker compose --profile full --profile kafka up -d --build 2>&1 | tail -5
 

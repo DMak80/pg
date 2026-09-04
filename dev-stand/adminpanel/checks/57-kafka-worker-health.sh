@@ -14,7 +14,10 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BASE="${ADMINPANEL_URL:-http://localhost:5050}"
-WORKER_HEALTHZ="${KAFKAWORKER_HEALTHZ:-http://localhost:8082/healthz}"
+# mTLS (t03): /healthz воркера — только по https с клиентским сертом healthcheck.
+ROOT="$(cd ../.. && pwd)"
+TLS_DIR="$ROOT/deploy/tls"
+WORKER_HEALTHZ="${KAFKAWORKER_HEALTHZ:-https://localhost:8082/healthz}"
 JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
 
 curl -fsS -c "$JAR" -o /dev/null -X POST "$BASE/api/auth/login" \
@@ -38,13 +41,13 @@ wait_state() {
   done
   echo "❌ $label не достигнуто за 120 c ($fn/$want)"; return 1
 }
-wait_healthz() { for i in $(seq 1 30); do curl -fsS -o /dev/null "$WORKER_HEALTHZ" && return 0; sleep 1; done; echo "❌ $WORKER_HEALTHZ не вернулся в 200 за 30 c"; return 1; }
+wait_healthz() { for i in $(seq 1 30); do curl -fsS -o /dev/null --cacert "$TLS_DIR/ca.pem" --cert "$TLS_DIR/healthcheck.crt" --key "$TLS_DIR/healthcheck.key" "$WORKER_HEALTHZ" && return 0; sleep 1; done; echo "❌ $WORKER_HEALTHZ не вернулся в 200 за 30 c"; return 1; }
 ect() { docker compose exec -T etcd etcdctl --endpoints=http://localhost:2379 "$@"; }
 
 # Preconditions: lease-ключи живы, воркер здоров, worker-* алертов нет.
 [ -n "$(ect get /kafkaworker/api/ --prefix --keys-only </dev/null 2>/dev/null)" ] \
   || { echo "❌ нет живых /kafkaworker/api/ — поднимите стенд (00-up.sh, full+kafka)"; exit 1; }
-curl -fsS -o /dev/null "$WORKER_HEALTHZ" || { echo "❌ /healthz воркера не 200 до стимула"; exit 1; }
+curl -fsS -o /dev/null --cacert "$TLS_DIR/ca.pem" --cert "$TLS_DIR/healthcheck.crt" --key "$TLS_DIR/healthcheck.key" "$WORKER_HEALTHZ" || { echo "❌ /healthz воркера не 200 до стимула"; exit 1; }
 ! has_unhealthy || { echo "❌ уже есть worker-unhealthy — прогоните после чистого 00-up.sh"; exit 1; }
 ! has_api_down  || { echo "❌ уже есть worker-api-unreachable — стенд не согласован"; exit 1; }
 started_before="$(docker inspect -f '{{.State.StartedAt}}' as-kafkaworker)"
