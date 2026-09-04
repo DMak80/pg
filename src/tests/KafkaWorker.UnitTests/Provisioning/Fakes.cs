@@ -229,6 +229,18 @@ internal static class Fakes
         public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct)
             => Task.FromResult(Result<IReadOnlySet<(string Host, int Port)>>.Success(BusyPorts));
 
+        // Env живых нод (t03 SecurityMigrator): по умолчанию — новый канон
+        // (SSL); тесты-миграции подменяют словарём LegacyPlainEnv.
+        public IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>> NodeEnvs { get; set; } =
+            new Dictionary<string, IReadOnlyDictionary<string, string>>();
+
+        public Task<Result<IReadOnlyDictionary<string, string>?>> NodeEnvAsync(
+            string cluster, string nodeName, CancellationToken ct)
+        {
+            NodeEnvs.TryGetValue(nodeName, out var env);
+            return Task.FromResult(Result<IReadOnlyDictionary<string, string>?>.Success(env));
+        }
+
         public Task<Result> EnsureNodeAsync(KafkaNodeSpec spec, CancellationToken ct)
         {
             if (EnsureResultByNode is { } f)

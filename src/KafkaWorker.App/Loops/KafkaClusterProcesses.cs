@@ -36,7 +36,8 @@ internal sealed class KafkaClusterProcesses(
     AddBrokerProcess addBroker,
     PasswordRotator rotator,
     NodeRegenerator regenerator,
-    TopicSyncProcess topicSync) : IKafkaClusterProcesses
+    TopicSyncProcess topicSync,
+    SecurityMigrator migrator) : IKafkaClusterProcesses
 {
     public Task<Result> ProvisionAsync(KafkaClusterSnapshot snap, CancellationToken ct)
         => provision.RunAsync(snap, ct);
@@ -46,6 +47,14 @@ internal sealed class KafkaClusterProcesses(
 
     public async Task<Result> ActiveAsync(KafkaClusterSnapshot snap, CancellationToken ct)
     {
+        // Премиграционный кластер (SASL_PLAINTEXT) — SecurityMigrator ДО всего
+        // Active (arch/16 §5 M): converge/пробы старого кластера бессмысленны.
+        var migrated = await migrator.RunAsync(snap, ct);
+        if (!migrated.IsSuccess)
+            return migrated;
+        if (migrated.Value == SecurityMigrator.MigrationOutcome.InProgress)
+            return Result.Success(); // M отработал/ждёт — остальное следующим тиком
+
         // Надзор (C) — самовосстановление нод; конвейер Active-ветки останавливать
         // не должен: ошибка надзора — ошибка тика кластера (следующий тик повторит).
         var supervised = await supervisor.RunAsync(snap, ct);

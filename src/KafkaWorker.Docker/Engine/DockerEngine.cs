@@ -199,6 +199,73 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             }
         });
 
+    // Env живого контейнера (t03): GET /containers/{id}/json → Config.Env[];
+    // 404 → null (объекта нет).
+    public async Task<Result<IReadOnlyDictionary<string, string>?>> InspectContainerEnvAsync(
+        string idOrName, CancellationToken ct)
+        => await Result<IReadOnlyDictionary<string, string>?>.FromAsync(async () =>
+        {
+            try
+            {
+                var body = await GetAsync<JsonElement>(
+                    $"/containers/{Uri.EscapeDataString(idOrName)}/json", ct);
+                if (body.ValueKind == JsonValueKind.Undefined)
+                    return null;
+                var env = body.GetProperty("Config").GetProperty("Env");
+                var result = new Dictionary<string, string>();
+                foreach (var entry in env.EnumerateArray())
+                {
+                    var pair = entry.GetString();
+                    if (pair is null)
+                        continue;
+                    var sep = pair.IndexOf('=');
+                    if (sep <= 0)
+                        continue;
+                    result[pair[..sep]] = pair[(sep + 1)..];
+                }
+
+                return result;
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                return null; // контейнера нет — факта нет
+            }
+        });
+
+    // Env swarm-сервиса ноды (t03): GET /services/{name} → Spec.TaskTemplate.
+    // ContainerSpec.Env[] (KEY=VALUE); 404 → null.
+    public async Task<Result<IReadOnlyDictionary<string, string>?>> InspectServiceEnvAsync(
+        string name, CancellationToken ct)
+        => await Result<IReadOnlyDictionary<string, string>?>.FromAsync(async () =>
+        {
+            try
+            {
+                var body = await GetAsync<JsonElement>(
+                    $"/services/{Uri.EscapeDataString(name)}", ct);
+                if (body.ValueKind == JsonValueKind.Undefined)
+                    return null;
+                var env = body.GetProperty("Spec").GetProperty("TaskTemplate")
+                    .GetProperty("ContainerSpec").GetProperty("Env");
+                var result = new Dictionary<string, string>();
+                foreach (var entry in env.EnumerateArray())
+                {
+                    var pair = entry.GetString();
+                    if (pair is null)
+                        continue;
+                    var sep = pair.IndexOf('=');
+                    if (sep <= 0)
+                        continue;
+                    result[pair[..sep]] = pair[(sep + 1)..];
+                }
+
+                return result;
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                return null; // сервиса нет — факта нет
+            }
+        });
+
     // Лимиты swarm-сервиса ноды (t06, spec §5.3): TaskTemplate.Resources.
     // Limits.{NanoCPUs, MemoryBytes}; 404 → null. Swarm-теги — «NanoCPUs»
     // (верхний регистр, api/types/swarm), но на асимметрию Docker не

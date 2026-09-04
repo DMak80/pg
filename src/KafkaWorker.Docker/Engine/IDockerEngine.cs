@@ -68,6 +68,13 @@ public interface IDockerEngine : IAsyncDisposable
     // Лимиты контейнера (HostConfig.NanoCPUs/Memory; 0 = без лимита); 404 → null.
     Task<Result<NodeLimits?>> InspectContainerResourcesAsync(string name, CancellationToken ct);
 
+    // Env живого контейнера (t03, SecurityMigrator): Config.Env[] → словарь
+    // KEY=VALUE; null = контейнера нет (детект премиграционного env).
+    Task<Result<IReadOnlyDictionary<string, string>?>> InspectContainerEnvAsync(string idOrName, CancellationToken ct);
+
+    // Env swarm-сервиса ноды (t03): Spec.TaskTemplate.ContainerSpec.Env; null = нет.
+    Task<Result<IReadOnlyDictionary<string, string>?>> InspectServiceEnvAsync(string name, CancellationToken ct);
+
     // Лимиты swarm-сервиса (TaskTemplate.Resources.Limits); 404 → null.
     Task<Result<NodeLimits?>> InspectServiceResourcesAsync(string name, CancellationToken ct);
 }

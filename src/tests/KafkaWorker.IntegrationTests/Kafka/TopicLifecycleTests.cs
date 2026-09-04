@@ -76,7 +76,7 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
     private static async Task<bool> TopicExistsAsync(
         KafkaClusterFixture fixture, string cluster, string topic, CancellationToken ct)
     {
-        var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
+        var builder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
         using var admin = builder.Build();
         var metadata = admin.GetMetadata(TimeSpan.FromSeconds(15));
         return metadata.Topics.Any(t => t.Topic == topic);
@@ -85,7 +85,7 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
     private static async Task<(int Partitions, string? Retention)> DescribeTopicAsync(
         KafkaClusterFixture fixture, string cluster, string topic, CancellationToken ct)
     {
-        var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
+        var builder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
         using var admin = builder.Build();
         var metadata = admin.GetMetadata(TimeSpan.FromSeconds(15));
         var partitions = metadata.Topics.Single(t => t.Topic == topic).Partitions.Count;
@@ -149,7 +149,7 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
         var sync = await UpAsync(fixture, cluster, ct);
         try
         {
-            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
+            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
             using (var admin = builder.Build())
             {
                 await admin.CreateTopicsAsync([new TopicSpecification
@@ -197,7 +197,7 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
         var sync = await UpAsync(fixture, cluster, ct);
         try
         {
-            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
+            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
             using (var admin = builder.Build())
             {
                 await admin.CreateTopicsAsync([new TopicSpecification
@@ -241,7 +241,7 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
         var sync = await UpAsync(fixture, cluster, ct);
         try
         {
-            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
+            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
             using (var admin = builder.Build())
             {
                 await admin.CreateTopicsAsync([new TopicSpecification

@@ -103,7 +103,7 @@ public class NodeRegenTests(KafkaClusterFixture fixture)
         await UpAsync(rig, cluster, budgetSec: 120);
         await BringToRunningAsync(rig, cluster, budgetSec: 60);
 
-        var topicBuilder = await fixture.DiscoveryAdminBuilderAsync(cluster);
+        var topicBuilder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
         using (var admin = topicBuilder.Build())
             await admin.CreateTopicsAsync([new TopicSpecification { Name = "keep", NumPartitions = 1 }]);
 
@@ -142,7 +142,7 @@ public class NodeRegenTests(KafkaClusterFixture fixture)
 
         // Том пережил пересоздание: топик жив в метаданных кластера
         // (производственный produce/consume-цикл — вне объёма; spec §7).
-        var metaBuilder = await fixture.DiscoveryAdminBuilderAsync(cluster);
+        var metaBuilder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
         using (var admin = metaBuilder.Build())
         {
             var metadata = admin.GetMetadata(TimeSpan.FromSeconds(10));

@@ -60,6 +60,12 @@ public sealed class PasswordRotator(
     // Снапшот «до» уже сделан для этой ротации (старт A; повторные тики A — нет).
     private readonly ConcurrentDictionary<(string Cluster, string Role), string> _snapshotBeforeDone = new();
 
+    // NEW-пароль текущей попытки фазы A: фиксируется на ЖИЗНЬ заявки (первые
+    // тики после recreate брокер ещё не готов — регенерация пароля и сброс
+    // rolling-трека каждый тик перезкатывали бы брокера вечно, так и не дав
+    // ему собраться; B обязана закоммитить пароль, разосланный НА ВСЕХ брокерах).
+    private readonly ConcurrentDictionary<(string Cluster, string Role), string> _newPasswords = new();
+
     public async Task<Result> RunAsync(KafkaClusterSnapshot snap, CancellationToken ct)
     {
         var cluster = snap.Cluster;
@@ -144,14 +150,17 @@ public sealed class PasswordRotator(
 
             // Фаза A: rolling с JAAS OLD+NEW (том сохраняется — данные и метаданные).
             var oldPassword = role == RotationRole.Admin ? snap.AdminPassword! : snap.AppPassword!;
-            var newPassword = KafkaPasswordGenerator.Generate();
 
-            // Новая генерация = новая попытка фазы A: трек прошлой попытки
-            // недействителен (брокеры с [OLD, NEW_прошлый] обязаны пересоздаться
-            // с [OLD, NEW_текущий]) — иначе B закоммитит пароль, которого нет
-            // на части брокеров: SASL-отказ NEW-клиентам до конца C (окно
-            // недоступности, невозможное по построению — spec §4.2 H).
-            _rolled.TryRemove((cluster, role.Name, "phase-a"), out _);
+            // NEW-пароль стабилен на жизнь заявки: сброс rolling-трека — ТОЛЬКО
+            // при регенерации (первый тик; рестарт процесса теряет пароль —
+            // брокеры с [OLD, NEW_прошлый] обязаны пересоздаться с [OLD, NEW_текущий],
+            // иначе B закоммитил бы пароль, которого нет на части брокеров).
+            if (!_newPasswords.TryGetValue((cluster, role.Name), out var newPassword))
+            {
+                newPassword = KafkaPasswordGenerator.Generate();
+                _newPasswords[(cluster, role.Name)] = newPassword;
+                _rolled.TryRemove((cluster, role.Name, "phase-a"), out _);
+            }
 
             var rolledA = await RollingRecreateAsync(snap, brokers, role, [oldPassword, newPassword], "phase-a", ct);
             if (!rolledA.IsSuccess)
@@ -203,6 +212,7 @@ public sealed class PasswordRotator(
         _rolled.TryRemove((cluster, role.Name, "phase-a"), out _);
         _rolled.TryRemove((cluster, role.Name, "phase-c"), out _);
         _snapshotBeforeDone.TryRemove((cluster, role.Name), out _);
+        _newPasswords.TryRemove((cluster, role.Name), out _);
         var done = await journal.WriteAsync(cluster, Op, role.Phase(PhaseDone), claims.InstanceId, null, ct);
         return Result<bool>.Success(done.IsSuccess);
     }

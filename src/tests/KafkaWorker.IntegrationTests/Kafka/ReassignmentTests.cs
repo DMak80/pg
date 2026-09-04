@@ -188,7 +188,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             // (AGENTS.md: тестовый BrokerBootSec <= 100): зависание фейлится быстро.
             await UpAsync(rig, cluster, budgetSec: 200);
             var creds = await CredsAsync(cluster);
-            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
+            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
             using (var admin = builder.Build())
             {
                 await admin.CreateTopicsAsync([new TopicSpecification
@@ -294,7 +294,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             // проверяем идемпотентность повторной подачи НА СТАБИЛЬНОМ факте).
             await UpAsync(rig, cluster, budgetSec: 200);
             var creds = await CredsAsync(cluster);
-            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
+            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
             using (var admin = builder.Build())
             {
                 await admin.CreateTopicsAsync([new TopicSpecification
@@ -353,7 +353,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             // Arrange: 4-брокерный кластер, юзер-топик RF=4/6 партиций с данными.
             await UpAsync(rig, cluster, budgetSec: 200);
             var creds = await CredsAsync(cluster);
-            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
+            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
             using (var admin = builder.Build())
             {
                 await admin.CreateTopicsAsync([new TopicSpecification

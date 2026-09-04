@@ -283,6 +283,19 @@ builder.Services.AddSingleton(sp => new TopicSyncProcess(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Loops.TopicSyncIntervalSec));
 
+// Converge-миграция премиграционных кластеров в канон t03 (arch/16 §5 M).
+builder.Services.AddSingleton(sp => new SecurityMigrator(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<IClusterSecretEnsurer>(),
+    sp.GetRequiredService<IKafkaAdminClientFactory>(),
+    sp.GetRequiredService<IClusterConfigConverger>(),
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value),
+    sp.GetRequiredService<BrokerCertificateCache>()));
+
 // Циклы: keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
 builder.Services.AddSingleton<IKafkaClusterProcesses, KafkaClusterProcesses>();
 builder.Services.AddSingleton<KeepaliveLoop>();

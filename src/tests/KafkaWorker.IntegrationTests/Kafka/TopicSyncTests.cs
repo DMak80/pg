@@ -57,7 +57,7 @@ public class TopicSyncTests(KafkaClusterFixture fixture)
             "кластер поднялся — фаза проверки ниже бессмысленна без него");
 
         // Act 1: топик создан CLI/клиентом (3 партиции) → автосинк кладёт ключ.
-        var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
+        var builder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
         using (var admin = builder.Build())
         {
             await admin.CreateTopicsAsync([new TopicSpecification
