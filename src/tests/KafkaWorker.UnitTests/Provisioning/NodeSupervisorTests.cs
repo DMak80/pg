@@ -470,4 +470,39 @@ public class NodeSupervisorTests
         (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/brokers/broker2/state",
             CancellationToken.None)).Value!.Value.Should().Be("RUNNING");
     }
+
+    // AAA (Ф7-4): portalloc закреплён, endpoints отстал (сбой RMW ветки 3) —
+    // тик надзора сходит endpoints к канону; повторный тик — значение стабильно.
+    [Fact]
+    public async Task Run_EndpointsLagPortalloc_Converges()
+    {
+        // Arrange: дефолтный риг (portalloc: broker1 h1:16000, broker2 h1:16001,
+        // broker3 h1:16002 — дефолт сида), endpoints «недоехавший» — старое значение.
+        var rig = await NewRig();
+        await rig.Etcd.PutAsync(Ep, "/kafka/clusters/events/endpoints",
+            "h1:21099", null, CancellationToken.None);
+
+        // Act: тик надзора — сходимость.
+        var result = await rig.Supervisor.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: endpoints = advertise-адреса всех закреплённых брокеров
+        // (AdvertisedClientHost=null в риге → host:port из portalloc; ожидание —
+        // парс сида portalloc, порядок по имени брокера — канон).
+        result.IsSuccess.Should().BeTrue();
+        var portAlloc = (await rig.Etcd.GetAsync(Ep, "/kafkaworker/portalloc/events",
+            CancellationToken.None)).Value!.Value;
+        using var doc = JsonDocument.Parse(portAlloc);
+        var expected = string.Join(",", doc.RootElement.EnumerateObject()
+            .OrderBy(p => p.Name, StringComparer.Ordinal)
+            .Select(p => $"h1:{p.Value.GetProperty("client").GetInt32()}"));
+        (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/endpoints", CancellationToken.None))
+            .Value!.Value.Should().Be(expected,
+                "канон = advertise-адреса всех закреплённых брокеров (сходится за один тик)");
+
+        // Повторный тик: значение уже канонично — стабильно (ноль записей).
+        (await rig.Supervisor.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None))
+            .IsSuccess.Should().BeTrue();
+        (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/endpoints", CancellationToken.None))
+            .Value!.Value.Should().Be(expected, "повторный тик ничего не меняет");
+    }
 }

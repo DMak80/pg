@@ -84,6 +84,16 @@ public sealed class NodeSupervisor(
             }
         }
 
+        // Сходимость endpoints (ревью Ф7-4): закоммиченный portalloc — истина
+        // адресов; фактический endpoints сверяется с каноном «адреса всех брокеров
+        // с закреплением и state не TO_REMOVE/REMOVING»; расхождение → RMW. Закрывает
+        // недоехавший RMW ветки 3 healer'а (следующий тик — ветка 1, без сходимости
+        // ретрай не случился бы); add-broker в полёте безопасен: адрес каноничен,
+        // RMW владельца идемпотентен, «endpoints до RUNNING» сохраняется.
+        var converged = await EnsureEndpointsConvergedAsync(snap, addresses, ct);
+        if (!converged.IsSuccess)
+            return Fail(cluster, converged.Error!, "endpoints-converge");
+
         // Факт docker: имена живых объектов kfw-<C>-*.
         var objects = await driver.ListNodeObjectsAsync(cluster, ct);
         if (!objects.IsSuccess)
@@ -238,6 +248,55 @@ public sealed class NodeSupervisor(
     // ProvisioningProcess / UpdateEndpointsAsync healer'а).
     private static bool AdvertisedInEndpoints(string? endpoints, string advertised)
         => endpoints?.Split(',', StringSplitOptions.TrimEntries).Contains(advertised) == true;
+
+    // Канон: адреса брокеров с закреплением (PROVISIONING включён — ветка 3
+    // healer'а и add-broker F пишут portalloc до контейнера), кроме чужих
+    // демонтажей (TO_REMOVE/REMOVING — их адрес убирает G). Порядок адресов —
+    // по имени брокера (детерминизм, порт BuildEndpoints).
+    private async Task<Result> EnsureEndpointsConvergedAsync(
+        KafkaClusterSnapshot snap, IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
+    {
+        var cluster = snap.Cluster;
+        var canonical = string.Join(",", snap.Brokers
+            .OrderBy(b => b.Name, StringComparer.Ordinal)
+            .Where(b => b.State is not ("TO_REMOVE" or "REMOVING"))
+            .Where(b => addresses.TryGetValue(b.Name, out _))
+            .Select(b =>
+            {
+                var addr = addresses[b.Name];
+                return $"{options.AdvertisedClientHost ?? addr.Host}:{addr.ClientPort}";
+            }));
+
+        var key = EndpointsKey(cluster);
+        var current = await GetAsync(key, ct);
+        if (!current.IsSuccess)
+            return current;
+        if (current.Value is { } kv && kv.Value == canonical)
+            return Result.Success(); // сходимость — норма: ноль записей
+
+        if (current.Value is null && canonical.Length == 0)
+            return Result.Success(); // ключа нет и писать нечего
+
+        // RMW: нет ключа → put; есть → txn compare mod_revision (проигрыш —
+        // ретрай тиком, канон тот же у всех писателей).
+        if (current.Value is null)
+        {
+            var put = await PutAsync(key, canonical, ct);
+            return put.IsSuccess ? Result.Success() : put;
+        }
+
+        var txn = await TxnAsync(TxnRequest.Of(
+            [TxnCompare.ModRevisionEqual(key, (long)current.Value.ModRevision)],
+            [new TxnOp.Put(key, canonical, null)]), ct);
+        if (!txn.IsSuccess)
+            return txn;
+        if (!txn.Value.Succeeded)
+            return Result.Failed(new ApplicationException(
+                $"endpoints {cluster} изменился с момента чтения — ретрай тиком"));
+        return Result.Success();
+    }
+
+    private static string EndpointsKey(string cluster) => $"/kafka/clusters/{cluster}/endpoints";
 
     private async Task<Result> RecreateAsync(
         KafkaClusterSnapshot snap,
@@ -395,6 +454,25 @@ public sealed class NodeSupervisor(
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.PutAsync(endpoint, key, value, null, ct);
+            if (result.IsSuccess)
+                return result;
+            last = result;
+        }
+
+        return last!;
+    }
+
+    // Txn через failover (порт ProvisioningProcess.TxnAsync — RMW-сравнения
+    // mod_revision: сходимость endpoints).
+    private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
+        => await WithFailoverAsync(endpoint => etcd.TxnAsync(endpoint, req, ct));
+
+    private async Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
+    {
+        Result<T>? last = null;
+        foreach (var endpoint in endpoints)
+        {
+            var result = await call(endpoint);
             if (result.IsSuccess)
                 return result;
             last = result;
