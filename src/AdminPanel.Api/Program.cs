@@ -10,6 +10,8 @@ using AdminPanel.Infrastructure.DI;
 using AdminPanel.Infrastructure.Traces;
 using AdminPanel.Probes;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
+using Shared.Metrics;
+using System.Diagnostics.Metrics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
@@ -36,7 +38,28 @@ builder
 // t02: cookie-схема аутентификации (настройки — AdminPanel:Auth).
 builder.Services.AddCookieAuth();
 
+// Метрики (arch/18 §2.4/§3): /metrics без cookie-авторизации (guard — только
+// /api/*); refresher-гейдж — пассивное чтение BuiltAtUtc снапшота (обновляется
+// только успешным тиком сборки — отказ тика честно стареет, FailTick хранит
+// прежний; ревью Ф4-8: pull эквивалентен марк-методу, второго писателя нет).
+builder.Services.AddAppMetrics("AdminPanel", builder.Configuration.GetSection("AdminPanel:Metrics"));
+builder.Services.AddSingleton(sp =>
+{
+    var meter = sp.GetRequiredService<System.Diagnostics.Metrics.Meter>();
+    var store = sp.GetRequiredService<AdminPanel.Etcd.ISnapshotStore>();
+    return meter.CreateObservableGauge(
+        "panel.refresher.last_success_timestamp_seconds",
+        () => new Measurement<double>(
+            store.Current?.BuiltAtUtc.ToUnixTimeSeconds() ?? 0),
+        unit: "s",
+        description: "Unix-время последнего успешного тика etcd-refresher (arch/18 §2.4)");
+});
+
 var app = builder.Build();
+
+// Прогрев DI-синглтона гейджа: Observable-инструмент обязан быть создан при
+// старте (ленивый синглтон без потребителей иначе не создаётся никогда).
+_ = app.Services.GetRequiredService<System.Diagnostics.Metrics.ObservableGauge<double>>();
 
 // t02: fail-closed — без пароля в конфиге логин невозможен, предупреждаем на старте.
 var auth = app.Services.GetRequiredService<IOptions<AuthOptions>>().Value;
@@ -69,6 +92,7 @@ app.UseStaticFiles();
 // t02: аутентификация + default-deny guard — всё /api/*, кроме login и healthz, → 401.
 app.UseAuthentication();
 app.UseApiAuthorization();
+app.MapAppMetrics(); // /metrics мимо guard'а (guard матчит только /api/*) — arch/18 §3
 app.MapAuthApi();
 app.MapInspectionApi(); // [t04] эндпоинты инспекции etcd из снапшота (arch/03 §1)
 app.MapKafkaInspectionApi(); // [B5] инспекция kafka-домена (arch/03 §7.1)

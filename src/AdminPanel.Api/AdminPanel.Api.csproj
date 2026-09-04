@@ -9,6 +9,7 @@
         <ProjectReference Include="..\AdminPanel.Etcd\AdminPanel.Etcd.csproj"/>
         <ProjectReference Include="..\AdminPanel.Infrastructure\AdminPanel.Infrastructure.csproj"/>
         <ProjectReference Include="..\AdminPanel.Probes\AdminPanel.Probes.csproj"/>
+        <ProjectReference Include="..\Shared.Metrics\Shared.Metrics.csproj"/>
     </ItemGroup>
 
 </Project>
