@@ -30,7 +30,7 @@ public sealed class ProvisioningProcess(
     WorkJournal journal,
     PortAllocLock portLock,
     PortAllocIndex portAlloc,
-    IAppSecretEnsurer appSecret,
+    IClusterSecretEnsurer secrets,
     IKafkaAdminClientFactory adminFactory,
     IClusterConfigConverger converger,
     ProvisioningOptions options,
@@ -84,9 +84,9 @@ public sealed class ProvisioningProcess(
         var addresses = planned.Value;
         var roles = RolesFor(snap.Config.Brokers);
 
-        var secret = await appSecret.EnsureAsync(cluster, ct);
+        var secret = await secrets.EnsureAsync(cluster, ct);
         if (!secret.IsSuccess)
-            return Fail(cluster, secret.Error!, "ensure-app-secret");
+            return Fail(cluster, secret.Error!, "ensure-cluster-secrets");
 
         // K3: создать контейнеры брокеров (state=PROVISIONING; существующие — сверка).
         var ensured = await EnsureNodesAsync(snap, addresses, roles, secret.Value, ct);
@@ -109,7 +109,7 @@ public sealed class ProvisioningProcess(
         if (await IsRemovedAsync(cluster, ct))
             return await FinishAsync(cluster, "aborted", ct);
 
-        var converged = await converger.ApplyAsync(cluster, endpoints, secret.Value.User, secret.Value.Password, snap.Config, ct);
+        var converged = await converger.ApplyAsync(cluster, endpoints, secret.Value.AdminUser, secret.Value.AdminPassword, snap.Config, ct);
         if (!converged.IsSuccess)
             return Fail(cluster, converged.Error!, "converge-configs");
 
@@ -249,7 +249,7 @@ public sealed class ProvisioningProcess(
         KafkaClusterSnapshot snap,
         IReadOnlyDictionary<string, NodeAddress> addresses,
         IReadOnlyDictionary<string, string> roles,
-        KafkaSecrets secret,
+        ClusterSecrets secret,
         CancellationToken ct)
     {
         var cluster = snap.Cluster;
@@ -280,8 +280,8 @@ public sealed class ProvisioningProcess(
                 advertisedClient,
                 roles.GetValueOrDefault(broker.Name) == "controller",
                 controllers,
-                secret.User,
-                [secret.Password],
+                secret.AppUser,
+                [secret.AppPassword],
                 // Переходное состояние t03 (полный контур admin/CA — Task 8 плана):
                 // снапшот ещё не несёт полей безопасности — placeholder до Task 4/8.
                 "admin",
@@ -306,10 +306,10 @@ public sealed class ProvisioningProcess(
     // K4: DescribeCluster отвечает, контроллер избран, брокеров = B → RUNNING;
     // не готово — InProgress до бюджета BrokerBootSec (транзиент-толерантно).
     private async Task<Result<bool>> WaitReadyAsync(
-        KafkaClusterSnapshot snap, string endpoints, KafkaSecrets secret, CancellationToken ct)
+        KafkaClusterSnapshot snap, string endpoints, ClusterSecrets secret, CancellationToken ct)
     {
         var cluster = snap.Cluster;
-        await using var admin = adminFactory.Create(endpoints, secret.User, secret.Password);
+        await using var admin = adminFactory.Create(endpoints, secret.AdminUser, secret.AdminPassword);
         var view = await admin.DescribeClusterAsync(ct);
         var ready = view.IsSuccess
             && view.Value.ControllerId is not null

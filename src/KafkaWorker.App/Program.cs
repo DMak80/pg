@@ -153,8 +153,8 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<IKafkaAdminClientFactory>(_ =>
     new KafkaAdminClientFactory(TimeSpan.FromSeconds(10)));
 
-// Ensure per-cluster SASL-секрета (arch/16 §4): чтение/txn put-if-absent.
-builder.Services.AddSingleton<IAppSecretEnsurer>(sp => new AppSecretEnsurer(
+// Ensure per-cluster секретов: CA + креды admin/app (arch/16 §4, t03).
+builder.Services.AddSingleton<IClusterSecretEnsurer>(sp => new ClusterSecretEnsurer(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
 
@@ -172,7 +172,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<WorkJournal>(),
         sp.GetRequiredService<PortAllocLock>(),
         sp.GetRequiredService<PortAllocIndex>(),
-        sp.GetRequiredService<IAppSecretEnsurer>(),
+        sp.GetRequiredService<IClusterSecretEnsurer>(),
         sp.GetRequiredService<IKafkaAdminClientFactory>(),
         sp.GetRequiredService<IClusterConfigConverger>(),
         ToProvisioningOptions(opts),

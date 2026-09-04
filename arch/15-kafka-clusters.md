@@ -32,8 +32,12 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
 | `brokers/broker<k>/resources` | JSON `{"cpu":"2","mem":"4Gi","disk":"40Gi"}` | панель | заявка ресурсов ноды (лимиты контейнера; форматы как pg §9.3); изменение существующих — мутация №15 (adminpanel/02 §10.2, через API воркера): лимиты cpu/mem сводит к декларации NodeRegenerator (16 §5 J) — rolling-пересоздание контейнера; `disk` — инфо-поле, действий не вызывает |
 | `brokers/broker<k>/role` | `"controller"\|"broker"` | воркер (план provisioning) | `controller` — combined-нода (участник KRaft-кворума); `broker` — broker-only; фиксируется при создании ноды навсегда |
 | `endpoints` | строка `"h1:p1,h2:p2,..."` | воркер (после подъёма; при add/remove брокера — RMW) | клиентские bootstrap-адреса (advertised host + клиентский порт из portalloc) — **точка дискавери клиентов** |
-| `app_user` | `"app"` | воркер (ensure, txn put-if-absent) | per-cluster SASL-пользователь |
-| `app_password` | 32 симв `[A-Za-z0-9]` | воркер (ensure + ротация) | per-cluster SASL-пароль; панель читает для проб, в UI/API не отдаёт (как dsn-пароль pg) |
+| `app_user` | `"app"` | воркер (ensure, txn put-if-absent) | per-cluster SASL-пользователь **приложений** (ACL-роль app, 16 §2.3: READ/WRITE/DESCRIBE топиков + группы) |
+| `app_password` | 32 симв `[A-Za-z0-9]` | воркер (ensure + ротация) | per-cluster SASL-пароль приложений; в UI/API панели не отдаётся (как dsn-пароль pg) |
+| `admin_user` | `"admin"` | воркер (ensure, txn put-if-absent) | per-cluster SASL-пользователь **администратора** (воркер AdminClient/CLI, пробы панели; super.user, 16 §2.3) |
+| `admin_password` | 32 симв `[A-Za-z0-9]` | воркер (ensure + ротация) | per-cluster SASL-пароль администратора; панель читает для проб, в UI/API не отдаёт |
+| `ca_pem` | PEM-сертификат self-signed per-cluster CA | воркер (provisioning K2, txn put-if-absent) | публичный CA-серт кластера (CN=`kfw-<C>-ca`, 10 лет): доверие клиентов TLS (SASL_SSL INTERNAL/CLIENT, 16 §2.1) — **точка дискавери приложений и панели** (§5) |
+| `ca_key` | PEM PKCS#8 приватный ключ CA | воркер (provisioning K2, txn put-if-absent) | секрет кластера: подпись брокерных сертификатов (provisioning/add-broker/rebuild, 16 §2.3); панель НЕ читает, в UI/API не отдаётся; ротация — roadmap |
 | `topics/<T>` | JSON — гибрид автосинка и конфиг-заявки, см. §3 | воркер (автосинк факта), панель (только `desired`-часть, RMW) | реестр топиков для дискавери |
 | `topics/<T>/desired.create` | JSON `{"partitions":P,"replication_factor":R,"configs"?:{...},"requested_unix":T,"requested_by":"u"}` | панель (клэйм-txn `version==0`), воркер — только del | заявка создания (t01); `configs` — только управляемые (`retention.ms`, `min.insync.replicas`); отсутствие = брокерные дефолты |
 | `topics/<T>/desired.delete` | JSON `{"requested_unix":T,"requested_by":"u"}` | панель (клэйм-txn `version==0`), воркер — только del | заявка удаления (деструктивная; t01) |
@@ -105,6 +109,11 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
 ```json
 {"requested_unix":1750000100,"requested_by":"admin"}
 ```
+
+`admin_user`: `"admin"`; `admin_password`: 32 симв `[A-Za-z0-9]` (генератор
+как app_password). `ca_pem`/`ca_key` — PEM одной строкой с `\n`-переносами:
+`-----BEGIN CERTIFICATE-----\n…\n-----END CERTIFICATE-----` (ca_key —
+`BEGIN PRIVATE KEY`, PKCS#8).
 
 ## 3. Ключ топика: автосинк + конфиг-заявка
 
@@ -185,13 +194,15 @@ TopicDoesNotExist = исполнено; отказ между мутацией �
 | `/kafkaworker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика) |
 | `/kafkaworker/api/<id>` | lease TTL 15 с | **дискавери API воркера** (arch/16 §1.1): `{"url":"http://<host>:<port>","instance":"<id>","since_unix":…}` — ставит сам инстанс; ключ жив = инстанс жив и URL валиден. Читает панель; префикс `/kafka/` и этот координационный слой пишет только воркер (мутации панели — через его API) |
 | `/kafkaworker/rotations/<C>` | обычный | заявка ротации app-пароля `{"requested_unix","requested_by"}` (панель, клэйм-txn; формат и протокол — pg 02 §9.8) |
+| `/kafkaworker/admin_rotations/<C>` | обычный | заявка ротации admin-пароля `{"requested_unix","requested_by"}` (панель, клэйм-txn `version==0` — протокол ротаций; исполнение — фазы A/B/C с окном двух кредов `user_admin`/`user_admin2`, 16 §5 H; del воркером по завершении или панелью — отмена) |
 | `/kafkaworker/rebalances/<C>` | обычный | заявка ребалансировки партиций `{"requested_unix","requested_by"}` (панель, клэйм-txn — протокол ротаций; del воркером по завершении или панелью — отмена) |
 | `/kafkaworker/reassignments/<C>` | обычный | прогресс текущего reassignment — пишет только воркер: `{"mode":"drain"\|"balance","drain_broker"?,"partitions_total","partitions_remaining","submitted_unix","updated_unix","instance","last_error"?}`; ключ живёт только во время операции (put при старте, del по завершении — пусто = операции нет) |
 | `/kafkaworker/regens/<C>` | обычный | прогресс rolling-регенерации брокеров (16 §5 J) — пишет только воркер: `{"brokers_total","brokers_remaining","current_broker"?,"updated_unix","instance","last_error"?}`; ключ живёт только во время операции (put при старте первого пересоздания, del по сходимости всех лимитов — пусто = операции нет) |
 
-Панель читает из `/kafkaworker/` только `rotations/`, `rebalances/`,
-`reassignments/`, `regens/` (очередь ротаций и ребалансировок + прогресс
-reassignment и регенерации в UI); остальные ключи не читает и не пишет.
+Панель читает из `/kafkaworker/` только `rotations/`, `admin_rotations/`,
+`rebalances/`, `reassignments/`, `regens/` (очередь ротаций app/admin и
+ребалансировок + прогресс reassignment и регенерации в UI); остальные
+ключи не читает и не пишет.
 
 ## 5. Клиентский дискавери (приложения)
 
@@ -199,9 +210,12 @@ reassignment и регенерации в UI); остальные ключи н�
 dsn/app_password/routing):
 
 1. `/kafka/clusters/<C>/endpoints` → `bootstrap.servers`;
-2. `/kafka/clusters/<C>/app_user` + `app_password` → SASL/PLAIN креды
-   (`security.protocol=SASL_PLAINTEXT`, `sasl.mechanisms=PLAIN`);
-3. `/kafka/clusters/<C>/topics/` (префикс) → реестр топиков: имена +
+2. `/kafka/clusters/<C>/ca_pem` → доверие брокерам: TLS-транспорт
+   (`security.protocol=SASL_SSL`, `sasl.mechanisms=PLAIN`; CA-серт —
+   truststore / `ssl.ca.pem`);
+3. `/kafka/clusters/<C>/app_user` + `app_password` → SASL/PLAIN креды
+   (роль app — ACL на READ/WRITE/DESCRIBE топиков + группы, 16 §2.3);
+4. `/kafka/clusters/<C>/topics/` (префикс) → реестр топиков: имена +
    partitions + RF + конфиги (по нему выбирается топик и ожидаемая
    параллельность). Читатель реестра фильтрует leaf-ключи заявок
    `desired.{create,delete}` по числу сегментов (факт-ключи — 6 сегментов).
@@ -217,6 +231,8 @@ Puzzle); контракт etcd выше уже содержит всё необ�
 | Битый JSON в значении ключа (`config`, `resources`, `topics/<T>`, `topics/<T>/desired.create`/`desired.delete`, заявка ротации/ребалансировки, прогресс reassignment/regens) | ключ пропускается, в снапшот попадает parseError-запись (без исключения), warning-алерт `kafka-key-malformed`; заявка/прогресс с битым JSON для воркера — мусор: reassignment-оператор разбирается по факту Kafka, битый прогресс перезаписывается |
 | Неизвестный ключ внутри `/kafka/` | лог-строка + счётчик `unknownKeys`; парсер не падает. В т.ч. неизвестный leaf под `topics/<T>/` |
 | Active-кластер без `endpoints` | критический алерт `kafka-endpoints-missing` (воркер ещё не дописал / потеря ключа) |
+| Active-кластер без `ca_pem`/`admin_password` (или `ca_key` для воркера) | критический алерт `kafka-security-missing`: премиграционный кластер (SASL_PLAINTEXT — миграция 16 §5 M доведёт) либо потеря ключа; пробы панели таким кластером деградируют (TLS-доверие/кред недоступны) |
+| Битый PEM в `ca_pem`/`ca_key` | ключ пропускается, parseError-запись снапшота + warning `kafka-key-malformed`; воркер при provisioning перегенерирует ensure'ом только по NotExists — битое значение чистит миграция M |
 | `config.state` — незнакомое значение | толерантно: трактуется как Active-ветка с raw-строкой state (state-значения строкой — система развивается) |
 | Топик без части факт-полей | читается с null-полями (desired/missing — главные для UI) |
 
