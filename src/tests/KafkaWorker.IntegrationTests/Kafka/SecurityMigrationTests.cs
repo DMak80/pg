@@ -38,25 +38,31 @@ public class SecurityMigrationTests(KafkaClusterFixture fixture)
         await claims.TryClaimClusterAsync(cluster, ct);
         var journal = new WorkJournal(fixture.Gateway, [fixture.Endpoint]);
 
+        // Отдельное окно для legacy-брокера: PortFrom — база portalloc-зоны
+        // provisioned-кластеров этого же прогона, публикация на ней гонялась
+        // с broker1 чужого кластера (интермитент «port is already allocated»).
+        // Курсор FreePortWindow выдаёт окно, не пересекающееся с окном фикстуры.
+        var legacyPort = FreePortWindow.Find().From;
+
         // host — ИМЯ docker-хоста из таблицы драйвера ("local"), не адрес.
-        var portAlloc = """{"broker1":{"host":"local","client":PORT}}""".Replace("PORT", fixture.PortFrom.ToString());
+        var portAlloc = """{"broker1":{"host":"local","client":PORT}}""".Replace("PORT", legacyPort.ToString());
         await fixture.Gateway.PutAsync(fixture.Endpoint, $"/kafkaworker/portalloc/{cluster}",
             portAlloc, null, ct);
         // Дискавери-факт legacy-кластера (писался воркером по факту DescribeCluster).
         await fixture.Gateway.PutAsync(fixture.Endpoint, $"/kafka/clusters/{cluster}/endpoints",
-            $"localhost:{fixture.PortFrom}", null, ct);
+            $"localhost:{legacyPort}", null, ct);
 
         // Старый env (SASL_PLAINTEXT-канон, до t03) + локальный порт публикации.
-        var plainEnv = LegacyPlainEnv(cluster, "broker1", fixture.PortFrom);
+        var plainEnv = LegacyPlainEnv(cluster, "broker1", legacyPort);
         var spec = new KafkaNodeSpec(
-            cluster, "broker1", "local", fixture.PortFrom, fixture.Options.NodeImage, plainEnv,
+            cluster, "broker1", "local", legacyPort, fixture.Options.NodeImage, plainEnv,
             CpuCores: 1, MemoryBytes: 512L * 1024 * 1024);
         var ensuredNode = await fixture.Driver.EnsureNodeAsync(spec, ct);
         ensuredNode.IsSuccess.Should().BeTrue(
             "контейнер legacy-брокера обязан подняться: {0}", ensuredNode.Error?.Message);
 
         // Arrange 2: готовность PLAINTEXT-кластера + сообщение в топике legacy.
-        var legacyBootstrap = $"localhost:{fixture.PortFrom}";
+        var legacyBootstrap = $"localhost:{legacyPort}";
         var plainConfig = new AdminClientConfig
         {
             BootstrapServers = legacyBootstrap,
