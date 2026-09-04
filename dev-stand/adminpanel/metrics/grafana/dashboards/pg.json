@@ -1,0 +1,12 @@
+{
+  "uid": "pg", "title": "PG replication (Patroni)", "schemaVersion": 41,
+  "refresh": "30s", "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {"type": "timeseries", "title": "Replica lag, s (by scope/node)", "gridPos": {"x":0,"y":0,"w":16,"h":9},
+     "targets": [{"expr": "pg_replica_lag_seconds", "legendFormat": "{{scope}}/{{node}}", "refId": "A"}]},
+    {"type": "stat", "title": "Patroni nodes up", "gridPos": {"x":16,"y":0,"w":8,"h":4},
+     "targets": [{"expr": "up{job=\"patroni\"}", "legendFormat": "{{instance}}", "refId": "A"}]},
+    {"type": "stat", "title": "Control plane up", "gridPos": {"x":16,"y":4,"w":8,"h":5},
+     "targets": [{"expr": "up{job=~\"pgworker|adminpanel\"}", "legendFormat": "{{job}}", "refId": "A"}]}
+  ]
+}

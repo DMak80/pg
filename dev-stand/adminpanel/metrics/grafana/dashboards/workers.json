@@ -1,0 +1,18 @@
+{
+  "uid": "workers", "title": "Workers (PgWorker/KafkaWorker)", "schemaVersion": 41,
+  "refresh": "30s", "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {"type": "stat", "title": "Services up", "gridPos": {"x":0,"y":0,"w":8,"h":4},
+     "targets": [{"expr": "up{job=~\"pgworker|kafkaworker|adminpanel\"}", "refId": "A"}]},
+    {"type": "timeseries", "title": "Loop staleness (time() - last success)", "gridPos": {"x":0,"y":4,"w":12,"h":8},
+     "targets": [{"expr": "time() - worker_loop_last_success_timestamp_seconds", "legendFormat": "{{job}}/{{loop}}", "refId": "A"}]},
+    {"type": "stat", "title": "Claims held", "gridPos": {"x":12,"y":4,"w":6,"h":4},
+     "targets": [{"expr": "worker_claims_held", "refId": "A"}]},
+    {"type": "stat", "title": "Snapshot age, s", "gridPos": {"x":18,"y":4,"w":6,"h":4},
+     "targets": [{"expr": "worker_snapshot_age_seconds", "refId": "A"}]},
+    {"type": "timeseries", "title": "Process phases (age, s)", "gridPos": {"x":0,"y":12,"w":12,"h":8},
+     "targets": [{"expr": "worker_process_phase_duration_seconds", "legendFormat": "{{cluster}} {{process}}/{{phase}}", "refId": "A"}]},
+    {"type": "timeseries", "title": "Operations (increase 15m)", "gridPos": {"x":12,"y":12,"w":12,"h":8},
+     "targets": [{"expr": "increase(worker_operation_total[15m])", "legendFormat": "{{operation}} {{result}}", "refId": "A"}]}
+  ]
+}

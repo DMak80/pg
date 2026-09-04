@@ -1,0 +1,12 @@
+{
+  "uid": "kafka", "title": "Kafka (USR / consumer-lag / collector)", "schemaVersion": 41,
+  "refresh": "30s", "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {"type": "timeseries", "title": "Consumer lag (by group/topic)", "gridPos": {"x":0,"y":0,"w":16,"h":9},
+     "targets": [{"expr": "kafka_consumer_lag", "legendFormat": "{{cluster}} {{group}}@{{topic}}", "refId": "A"}]},
+    {"type": "stat", "title": "Under-replicated partitions", "gridPos": {"x":16,"y":0,"w":8,"h":4},
+     "targets": [{"expr": "sum by (cluster) (kafka_under_replicated_partitions)", "refId": "A"}]},
+    {"type": "stat", "title": "Collector staleness, s (alert > 300)", "gridPos": {"x":16,"y":4,"w":8,"h":5},
+     "targets": [{"expr": "time() - kafka_collector_last_success_timestamp_seconds", "refId": "A"}]}
+  ]
+}
