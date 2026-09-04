@@ -3,7 +3,9 @@
 namespace Shared.Metrics;
 
 // [Config]-опции модуля метрик: секция "<Service>:Metrics".
-public sealed class MetricsOptions
+// Не sealed: сервисы расширяют опции (напр., KafkaWorkerMetricsOptions —
+// CollectIntervalSec, arch/18 §4).
+public class MetricsOptions
 {
     /// <summary>false — модуль полностью выключен: ни MeterProvider, ни эндпоинта.</summary>
     public bool Enabled { get; set; } = true;

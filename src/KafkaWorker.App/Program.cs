@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using KafkaWorker.App;
+using Shared.Metrics;
 using KafkaWorker.App.Api;
 using KafkaWorker.App.Api.Operations;
 using KafkaWorker.App.HealthChecks;
@@ -26,6 +27,13 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<KafkaWorkerOptions>(builder.Configuration.GetSection("KafkaWorker"));
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<HealthState>();
+
+// Метрики (arch/18 §3): /metrics на том же Kestrel-порту, что /healthz;
+// ApiKeyMiddleware защищает только /api — scrape-грань открыта (доверенная сеть).
+builder.Services.AddAppMetrics("KafkaWorker", builder.Configuration.GetSection("KafkaWorker:Metrics"));
+builder.Services.AddSingleton(sp => new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
+    sp.GetRequiredService<System.Diagnostics.Metrics.Meter>(),
+    sp.GetRequiredService<TimeProvider>()));
 
 // etcd-клиент: HTTP JSON gateway /v3/*; handler против DNS-флейпа Docker
 // embedded DNS (t09; arch/16 §7): PooledConnectionLifetime + IPv4-first резолв.
@@ -287,6 +295,7 @@ builder.Services.AddHealthChecks()
 
 var app = builder.Build();
 app.UseMiddleware<ApiKeyMiddleware>();
+app.MapAppMetrics();
 app.MapHealthChecks("/healthz");
 app.MapWorkerApi();
 
