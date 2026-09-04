@@ -6,6 +6,7 @@ using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
 using KafkaWorker.Etcd;
 using KafkaWorker.Etcd.Coordination;
+using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.UnitTests.Provisioning;
 using Xunit;
 
@@ -48,7 +49,8 @@ public class LoopsHealthResetTests
             new WorkJournal(etcd, ["http://etcd:2379"]),
             NullLogger<ReconcileLoop>.Instance, new HealthState(TimeProvider.System),
             new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
-                new System.Diagnostics.Metrics.Meter("TestLoops"), TimeProvider.System));
+                new System.Diagnostics.Metrics.Meter("TestLoops"), TimeProvider.System),
+            new KafkaClusterBackoff(TimeProvider.System));
         using var cts = new CancellationTokenSource();
         await loop.StartAsync(cts.Token);
 

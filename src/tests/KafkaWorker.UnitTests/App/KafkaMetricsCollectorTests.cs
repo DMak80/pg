@@ -269,6 +269,39 @@ public sealed class KafkaMetricsCollectorTests
         factory.Created.Should().ContainSingle();
     }
 
+    // AAA: skip кластера в backoff — фабрика не зовётся, тик успешен
+    // (MarkSuccess жив: skip ≠ фейл).
+    [Fact]
+    public async Task CollectOnce_BackoffCluster_SkippedWithoutClient()
+    {
+        // Arrange: Active-кластер events в активном backoff-окне (неудача «сейчас»).
+        var factory = new CountingAdminFactory();
+        var backoff = new KafkaClusterBackoff(new Provisioning.FixedTimeProvider());
+        backoff.RecordFailure("events", "down");
+        var state = new KafkaMetricsState(new Meter("TestKafkaWorker"));
+        var collector = new KafkaMetricsCollector(
+            30, _ => Task.FromResult(Result<IReadOnlyList<KafkaClusterSnapshot>>.Success([Snapshot("events")])),
+            factory, state, TimeProvider.System, NullLogger<KafkaMetricsCollector>.Instance, backoff);
+
+        // Act: один тик сбора.
+        await collector.CollectOnceAsync(TestContext.Current.CancellationToken);
+
+        // Assert: kafka-контакта не было; skip — не фейл тика.
+        factory.CreateCalls.Should().Be(0);
+        state.DebugSnapshot().LastSuccess.Should().NotBeNull("skip — не фейл тика");
+    }
+
+    private sealed class CountingAdminFactory : IKafkaAdminClientFactory
+    {
+        public int CreateCalls { get; private set; }
+
+        public IKafkaAdminClient Create(string bootstrap, string user, string password)
+        {
+            CreateCalls++;
+            throw new ApplicationException("клиент не должен создаваться: кластер в backoff");
+        }
+    }
+
     private static readonly TimeProvider TestTime = new FakeClock(DateTimeOffset.UnixEpoch);
 
     // FakeTimeProvider (новый пакет НЕ тащим, CPM чистый).

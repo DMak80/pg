@@ -23,6 +23,7 @@ public class NodeSupervisorTests
         Fakes.FakeEtcd Etcd,
         Fakes.FakeKafkaDriver Driver,
         FakeKafkaAdminClient Admin,
+        FakeAdminFactory AdminFactory,
         ClaimStore Claims,
         WorkJournal Journal,
         NodeSupervisor Supervisor);
@@ -30,7 +31,8 @@ public class NodeSupervisorTests
     private static async Task<Rig> NewRig(
         int nodeDeadSec = 90,
         int rf = 3,
-        Action<Fakes.FakeEtcd, Fakes.FakeKafkaDriver, FakeKafkaAdminClient>? setup = null)
+        Action<Fakes.FakeEtcd, Fakes.FakeKafkaDriver, FakeKafkaAdminClient>? setup = null,
+        KafkaClusterBackoff? backoff = null)
     {
         var etcd = new Fakes.FakeEtcd();
         etcd.Seed("/kafka/clusters/events/config",
@@ -59,11 +61,13 @@ public class NodeSupervisorTests
                 [new KafkaBrokerView(1, "b1"), new KafkaBrokerView(2, "b2"), new KafkaBrokerView(3, "b3")],
                 ControllerId: 1),
         };
+        var adminFactory = new FakeAdminFactory(admin);
         var supervisor = new NodeSupervisor(
-            etcd, [Ep], driver, claims, journal, new FakeAdminFactory(admin),
-            new ProvisioningOptions(16000, 16999, 600, nodeDeadSec, null, "apache/kafka:4.0.0"));
+            etcd, [Ep], driver, claims, journal, adminFactory,
+            new ProvisioningOptions(16000, 16999, 600, nodeDeadSec, null, "apache/kafka:4.0.0"),
+            backoff: backoff);
         setup?.Invoke(etcd, driver, admin);
-        return new Rig(etcd, driver, admin, claims, journal, supervisor);
+        return new Rig(etcd, driver, admin, adminFactory, claims, journal, supervisor);
     }
 
     private static async Task<KafkaClusterSnapshot> Snapshot(Fakes.FakeEtcd etcd)
@@ -74,7 +78,13 @@ public class NodeSupervisorTests
 
     private sealed class FakeAdminFactory(FakeKafkaAdminClient client) : IKafkaAdminClientFactory
     {
-        public IKafkaAdminClient Create(string bootstrap, string user, string password) => client;
+        public int CreateCalls { get; private set; }
+
+        public IKafkaAdminClient Create(string bootstrap, string user, string password)
+        {
+            CreateCalls++;
+            return client;
+        }
     }
 
     [Fact]
@@ -318,5 +328,24 @@ public class NodeSupervisorTests
 
         // Assert: проба невозможна — не ошибка; пересоздание снесённых живо.
         result.IsSuccess.Should().BeTrue();
+    }
+
+    // AAA: backoff-окно активно → проба не ходит в сеть (0 Create), кластер
+    // трактуется как слепая проба (probeBlind) — надзор не падает, docker-часть
+    // работает (spec §3.2).
+    [Fact]
+    public async Task Run_BackoffWindow_ProbeSkippedWithoutClient()
+    {
+        // Arrange: окно блокировки events активно (неудача записана «сейчас»).
+        var backoff = new KafkaClusterBackoff(new FixedTimeProvider());
+        backoff.RecordFailure("events", "connection refused");
+        var rig = await NewRig(backoff: backoff);
+
+        // Act: тик надзора в окне.
+        var result = await rig.Supervisor.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: тик успешен, клиент не создавался.
+        result.IsSuccess.Should().BeTrue();
+        rig.AdminFactory.CreateCalls.Should().Be(0);
     }
 }

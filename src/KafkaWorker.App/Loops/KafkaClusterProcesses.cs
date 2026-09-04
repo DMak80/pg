@@ -1,5 +1,6 @@
 using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
+using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
 
 namespace KafkaWorker.App.Loops;// Агрегатор процессов для ReconcileLoop (порт ClusterProcesses PgWorker):
@@ -36,8 +37,11 @@ internal sealed class KafkaClusterProcesses(
     AddBrokerProcess addBroker,
     AppPasswordRotator rotator,
     NodeRegenerator regenerator,
-    TopicSyncProcess topicSync) : IKafkaClusterProcesses
+    TopicSyncProcess topicSync,
+    KafkaClusterBackoff backoff) : IKafkaClusterProcesses
 {
+    private readonly KafkaClusterBackoff _backoff = backoff;
+
     public Task<Result> ProvisionAsync(KafkaClusterSnapshot snap, CancellationToken ct)
         => provision.RunAsync(snap, ct);
 
@@ -51,6 +55,12 @@ internal sealed class KafkaClusterProcesses(
         var supervised = await supervisor.RunAsync(snap, ct);
         if (!supervised.IsSuccess)
             return supervised;
+
+        // Backoff недоступного кластера (t05, spec §3.2): docker-часть надзора
+        // отработала; kafka-шаги E–J/D пропускаются до истечения окна — лежащий
+        // кластер не долбится каждые 5–15 с. Тик — успех (не ошибка).
+        if (_backoff.IsBlocked(snap.Cluster))
+            return Result.Success();
 
         // Converge (E) — только для поднявшегося кластера (endpoints есть).
         if (snap.Endpoints is not null && snap.AppUser is not null && snap.AppPassword is not null)

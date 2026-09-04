@@ -33,9 +33,12 @@ public sealed class NodeSupervisor(
     ClaimStore claims,
     WorkJournal journal,
     IKafkaAdminClientFactory adminFactory,
-    ProvisioningOptions options)
+    ProvisioningOptions options,
+    KafkaClusterBackoff? backoff = null)
 {
     private const string Op = "supervise";
+
+    private readonly KafkaClusterBackoff _backoff = backoff ?? new KafkaClusterBackoff(TimeProvider.System);
 
     public async Task<Result> RunAsync(KafkaClusterSnapshot snap, CancellationToken ct)
     {
@@ -252,11 +255,22 @@ public sealed class NodeSupervisor(
         if (snap.Endpoints is null || snap.AppUser is null || snap.AppPassword is null)
             return Result<HashSet<int>?>.Success(null); // кластер ещё не поднят — проб невозможен
 
+        // Backoff недоступного кластера (t05, spec §3.2): окно активно — проба не
+        // ходит в сеть (слепая проба без клиента; бюджет молчания не стартует,
+        // unreachable-трек заморожен — флап ≠ смерть). Фейл — растит окно, успех —
+        // сбрасывает (надзор — первый kafka-контакт конвейера).
+        if (_backoff.IsBlocked(snap.Cluster))
+            return Result<HashSet<int>?>.Success(null);
+
         await using var admin = adminFactory.Create(snap.Endpoints, snap.AppUser, snap.AppPassword);
         var view = await admin.DescribeClusterAsync(ct);
         if (!view.IsSuccess)
+        {
+            _backoff.RecordFailure(snap.Cluster, view.Error!.Message);
             return Result<HashSet<int>?>.Success(null); // кластер целиком недоступен — молчание трекается по всем
+        }
 
+        _backoff.RecordSuccess(snap.Cluster);
         return Result<HashSet<int>?>.Success(view.Value.Brokers.Select(b => b.Id).ToHashSet());
     }
 

@@ -175,6 +175,11 @@ builder.Services.AddSingleton<IKafkaAdminClientFactory>(sp =>
         sp.GetRequiredService<ILogger<KafkaAdminClientFactory>>(),
         TimeProvider.System));
 
+// Backoff недоступного кластера (t05): DI-синглтон; писатели — supervise-проба
+// и коллектор (первые kafka-контакты), читатели — гейты Active-ветки/коллектора.
+builder.Services.AddSingleton(sp =>
+    new KafkaClusterBackoff(sp.GetRequiredService<TimeProvider>()));
+
 // Ensure per-cluster SASL-секрета (arch/16 §4): чтение/txn put-if-absent.
 builder.Services.AddSingleton<IAppSecretEnsurer>(sp => new AppSecretEnsurer(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -219,7 +224,8 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IKafkaAdminClientFactory>(),
-    ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value)));
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value),
+    backoff: sp.GetRequiredService<KafkaClusterBackoff>()));
 
 // Scale-проход и ротация (arch/16 §5 F/G/H): ротатор — со снапшот-делегатом P12.
 // Reassignment (I, t02) — перед G: drain TO_REMOVE-брокеров + заявки balance.
@@ -303,7 +309,8 @@ builder.Services.AddHostedService(sp => new KafkaMetricsCollector(
     sp.GetRequiredService<IKafkaAdminClientFactory>(),
     sp.GetRequiredService<KafkaMetricsState>(),
     sp.GetRequiredService<TimeProvider>(),
-    sp.GetRequiredService<ILogger<KafkaMetricsCollector>>()));
+    sp.GetRequiredService<ILogger<KafkaMetricsCollector>>(),
+    sp.GetRequiredService<KafkaClusterBackoff>()));
 
 // Наблюдаемость (arch/16 §7): агрегированный health + per-loop обёртки.
 builder.Services.AddSingleton<ServiceProbes>();

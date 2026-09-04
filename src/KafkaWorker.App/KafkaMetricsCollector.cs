@@ -18,8 +18,11 @@ public sealed class KafkaMetricsCollector(
     IKafkaAdminClientFactory adminFactory,
     KafkaMetricsState state,
     TimeProvider clock,
-    ILogger<KafkaMetricsCollector> logger) : BackgroundService
+    ILogger<KafkaMetricsCollector> logger,
+    KafkaClusterBackoff? backoff = null) : BackgroundService
 {
+    private readonly KafkaClusterBackoff _backoff = backoff ?? new KafkaClusterBackoff(TimeProvider.System);
+
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
         // <=0 → 30 с лог-предупреждением (паттерн SnapshotRefresher).
@@ -68,6 +71,11 @@ public sealed class KafkaMetricsCollector(
             if (snap.Config.State is not null || snap.Endpoints is null || snap.AppUser is null || snap.AppPassword is null)
                 continue;
 
+            // Кластер в backoff-окне — сбор пропускается без kafka-контакта (skip ≠
+            // фейл тика); окно пишет supervise-проба, сюда приходит уже готовым.
+            if (_backoff.IsBlocked(snap.Cluster))
+                continue;
+
             if (!await TryCollectClusterAsync(snap, ct))
                 allOk = false;
         }
@@ -77,8 +85,20 @@ public sealed class KafkaMetricsCollector(
     }
 
     // Сбор одного кластера: один AdminClient-коннект за тик, без ретраев (M2/S4).
-    // false — ошибка сбора (тик жив, LastSuccess не обновляется).
+    // false — ошибка сбора (тик жив, LastSuccess не обновляется). Обёртка над
+    // ядром: фейл сбора → RecordFailure, полный успех → RecordSuccess (t05:
+    // коллектор — второй kafka-контакт конвейера, окно backoff пишет он тоже).
     private async Task<bool> TryCollectClusterAsync(KafkaClusterSnapshot snap, CancellationToken ct)
+    {
+        var ok = await CollectClusterCoreAsync(snap, ct);
+        if (ok)
+            _backoff.RecordSuccess(snap.Cluster);
+        else
+            _backoff.RecordFailure(snap.Cluster, "сбор метрик не удался");
+        return ok;
+    }
+
+    private async Task<bool> CollectClusterCoreAsync(KafkaClusterSnapshot snap, CancellationToken ct)
     {
         var cluster = snap.Cluster;
         try
