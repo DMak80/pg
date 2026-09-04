@@ -41,9 +41,17 @@ builder.Services.AddSingleton<HealthState>();
 // Метрики (arch/18 §3): /metrics на том же Kestrel-порту, что /healthz;
 // ApiKeyMiddleware защищает только /api — scrape-грань открыта (доверенная сеть).
 builder.Services.AddAppMetrics("PgWorker", builder.Configuration.GetSection("PgWorker:Metrics"));
-builder.Services.AddSingleton(sp => new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
-    sp.GetRequiredService<System.Diagnostics.Metrics.Meter>(),
-    sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton(sp =>
+{
+    var m = new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
+        sp.GetRequiredService<System.Diagnostics.Metrics.Meter>(),
+        sp.GetRequiredService<TimeProvider>());
+    // Единый seam фаз/операций (S2): метрики — наблюдатель журнала, точки вызова
+    // процессов не трогаем. Терминальные фазы/first-seen/подавление supervise и
+    // evacuate — внутри OnJournalPhase (arch/18 §2.2).
+    sp.GetRequiredService<WorkJournal>().PhaseWritten += e => m.OnJournalPhase(e.Cluster, e.Op, e.Phase);
+    return m;
+});
 
 // Секреты per-install (Д7, spec §10): не в git, не в etcd — только env процесса.
 builder.Services.AddSingleton(_ => SecretsFromEnv());

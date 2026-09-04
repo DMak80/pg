@@ -41,6 +41,31 @@ public sealed class WorkJournal(IEtcdGateway gateway, string[] endpoints)
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
+    // Наблюдатели метрик подписываются на событие (WorkerMetricsInstrumentation,
+    // arch/18 §2.2 — seam S2). Наблюдатели — пассивные: NotifyPhase глотает
+    // исключения подписчиков, журнал от метрик не зависит.
+    public sealed record WorkPhaseEntry(string Cluster, string Op, string Phase);
+
+    private event Action<WorkPhaseEntry>? _phaseWritten;
+
+    public event Action<WorkPhaseEntry>? PhaseWritten
+    {
+        add => _phaseWritten += value;
+        remove => _phaseWritten -= value;
+    }
+
+    private void NotifyPhase(WorkPhaseEntry entry)
+    {
+        try
+        {
+            _phaseWritten?.Invoke(entry); // наблюдатель не влияет на журнал
+        }
+        catch
+        {
+            // Метрики — пассивные наблюдатели: исключение подписчика глотается.
+        }
+    }
+
     // /pgworker/work/<C>: {"op","phase","instance","updated_unix","last_error"} + поля серии
     // ретраев (fail_count/fail_first_unix/retry_not_before_unix — null опускается).
     // unreachable — трек недоступности надзора (t09: фазовые записи в тике
@@ -68,8 +93,11 @@ public sealed class WorkJournal(IEtcdGateway gateway, string[] endpoints)
 
         var payload = new WorkState(op, phase, instance, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), lastError,
             track, series?.FailCount, series?.FailFirstUnix, series?.RetryNotBeforeUnix);
-        return await WithFailoverAsync(endpoint => gateway.PutAsync(
+        var put = await WithFailoverAsync(endpoint => gateway.PutAsync(
             endpoint, WorkKey(cluster), JsonSerializer.Serialize(payload, Json), lease: null, ct));
+        if (put.IsSuccess)
+            NotifyPhase(new WorkPhaseEntry(cluster, op, phase)); // только ПОСЛЕ успешного Put
+        return put;
     }
 
     public async Task<Result<WorkState?>> ReadAsync(string cluster, CancellationToken ct)
@@ -97,6 +125,8 @@ public sealed class WorkJournal(IEtcdGateway gateway, string[] endpoints)
             endpoint, EvacuationKey(cluster, shard), JsonSerializer.Serialize(j, Json), lease: null, ct));
 
     // Тик надзора: op=supervise + трек недоступности (пороги NodeDead/ShardDead).
+    // ВНИМАНИЕ: стационарная запись надзора событие PhaseWritten НЕ эмитит —
+    // supervise подавлен в фазовых сериях (arch/18 §2.2, решение ревью Ф4-2).
     public Task<Result> WriteSupervisionAsync(
         string cluster, string instance, IReadOnlyDictionary<string, long> unreachable, CancellationToken ct)
         => WithFailoverAsync(endpoint => gateway.PutAsync(
