@@ -423,4 +423,51 @@ public class NodeSupervisorTests
         (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/brokers/broker1/state", CancellationToken.None))
             .Value!.Value.Should().Be("PROVISIONING");
     }
+
+    // AAA (Ф7-1): PROVISIONING-брокер add-broker'а — контейнер жив, проба
+    // видит, но endpoints ещё БЕЗ его адреса → остаётся PROVISIONING; после
+    // endpoints-RMW владельца → следующий тик переводит RUNNING (литералы
+    // 16000–16002 — константы сида рига, FakeEtcd — чистая память).
+    [Fact]
+    public async Task Run_ProvisioningWithoutEndpoints_KeepsProvisioning()
+    {
+        // Arrange: дефолтный риг (3 брокера, portalloc/контейнеры на месте);
+        // зрячая проба видит broker1+broker2 (broker3 «молчит» — трек стартует,
+        // NodeDeadSec=90 — пересозданий в тесте нет).
+        var rig = await NewRig();
+        rig.Admin.ClusterView = new KafkaClusterView(
+            [new KafkaBrokerView(1, "b1"), new KafkaBrokerView(2, "b2")], ControllerId: 1);
+
+        // Брокер add-broker'а: state=PROVISIONING; portalloc рига НЕ трогаем
+        // (закрепления всех трёх на месте — healer-гейт не срабатывает).
+        await rig.Etcd.PutAsync(Ep, "/kafka/clusters/events/brokers/broker2/state",
+            "PROVISIONING", null, CancellationToken.None);
+
+        // Фаза 1: endpoints БЕЗ адреса broker2 (RMW add-broker'а «ещё не дошёл»;
+        // дефолтные endpoints содержат 16001 — перезаписываем).
+        await rig.Etcd.PutAsync(Ep, "/kafka/clusters/events/endpoints",
+            "h1:16000", null, CancellationToken.None);
+
+        // Act: тик надзора.
+        var result = await rig.Supervisor.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: перевода нет — advertised-адреса broker2 нет в endpoints,
+        // значит чужой процесс (add-broker) не закончен, RUNNING не наш.
+        result.IsSuccess.Should().BeTrue();
+        (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/brokers/broker2/state",
+            CancellationToken.None)).Value!.Value.Should().Be("PROVISIONING",
+            "адреса broker2 (h1:16001) нет в endpoints — RUNNING не наш");
+
+        // Act 2: владелец доделал endpoints-RMW (адрес broker2 появился) →
+        // следующий тик переводит (перевод читает снапшот начала тика).
+        await rig.Etcd.PutAsync(Ep, "/kafka/clusters/events/endpoints",
+            "h1:16000,h1:16001,h1:16002", null, CancellationToken.None);
+
+        (await rig.Supervisor.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2: третий факт сошёлся — broker2 RUNNING.
+        (await rig.Etcd.GetAsync(Ep, "/kafka/clusters/events/brokers/broker2/state",
+            CancellationToken.None)).Value!.Value.Should().Be("RUNNING");
+    }
 }

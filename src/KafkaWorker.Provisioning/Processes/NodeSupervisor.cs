@@ -137,9 +137,11 @@ public sealed class NodeSupervisor(
         // Warning-ы тика (RF=1-пересоздания) — в финальную supervision-запись.
         var warnings = new List<string>();
 
-        // Перевод PROVISIONING → RUNNING по факту готовности (arch/16 §5 C: «в
-        // RUNNING переводит следующий цикл по факту готовности»): контейнер жив
-        // и зрячая проба видит брокера в кластере — PROVISIONING исчерпан.
+        // Перевод PROVISIONING → RUNNING — по ТРЁМ фактам (ревью Ф7-1): контейнер
+        // жив, зрячая проба видит брокера, И advertised-адрес уже в endpoints —
+        // владелец процесса (add-broker F) пишет endpoints ДО RUNNING; без адреса
+        // чужой процесс не закончен, RUNNING не наш (иначе add-broker-брокер
+        // выпадает из bootstrap-списка навсегда — pending пуст, RMW не исполнится).
         if (!probeBlind)
         {
             foreach (var broker in snap.Brokers.Where(b => b.State == "PROVISIONING"))
@@ -147,6 +149,11 @@ public sealed class NodeSupervisor(
                 if (!alive.Contains($"kfw-{cluster}-{broker.Name}")
                     || !inCluster.Contains(NodeId(broker.Name)))
                     continue; // ещё грузится либо контейнера нет — не готов
+
+                if (!addresses.TryGetValue(broker.Name, out var addr)
+                    || !AdvertisedInEndpoints(snap.Endpoints,
+                        $"{options.AdvertisedClientHost ?? addr.Host}:{addr.ClientPort}"))
+                    continue; // endpoints-RMW владельца не дошёл — не переводим
 
                 var running = await PutAsync(BrokerStateKey(cluster, broker.Name), "RUNNING", ct);
                 if (!running.IsSuccess)
@@ -225,6 +232,12 @@ public sealed class NodeSupervisor(
         => snap.Brokers
             .Where(b => b.State is null or "RUNNING" or "UNREACHABLE")
             .ToList();
+
+    // Третий факт перевода RUNNING (ревью Ф7-1): advertised-адрес уже в
+    // endpoints (формат канона — запятая без пробелов: BuildEndpoints
+    // ProvisioningProcess / UpdateEndpointsAsync healer'а).
+    private static bool AdvertisedInEndpoints(string? endpoints, string advertised)
+        => endpoints?.Split(',', StringSplitOptions.TrimEntries).Contains(advertised) == true;
 
     private async Task<Result> RecreateAsync(
         KafkaClusterSnapshot snap,
