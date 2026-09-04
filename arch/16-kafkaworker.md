@@ -382,7 +382,10 @@ remove (G) → add (F) → ротация (H, по одному за тик — 
 `TopicSyncIntervalSec`).
 Reassignment стоит перед remove — к моменту G дренируемый брокер уже пуст.
 Все операции — только под живым клэймом `<C>`;
-journal-before-manipulations.
+journal-before-manipulations. Kafka-шаги Active (E–J, D) пропускаются на
+время backoff недоступного кластера (15→60→300 с, сброс при успехе, t05) —
+тик успех; docker-надзор и provisioning не гейтятся (self-healing
+не зависит от kafka).
 
 ### A. ProvisioningProcess (K0–K6)
 
@@ -450,6 +453,24 @@ X3 снапшот P12 «после»; клэйм снят явно
   только по исчезновению из декларации); пересоздания по молчанию запрещены —
   собственная слепота воркера не повод трогать брокеров. Слепота пробы ≠
   молчание брокеров.
+- **Backoff недоступного кластера** (t05): окно 15→60→300 с (сброс при
+  успехе; писатели — проба надзора и коллектор метрик — первые kafka-контакты
+  конвейера) гейтит kafka-пробу (окно активно → слепая проба без сети и без
+  клиента; unreachable-трек заморожен — флап ≠ смерть, S7) и kafka-шаги
+  Active-ветки; docker-часть надзора и provisioning не гейтятся. В etcd
+  backoff ничего не пишет. **Лестница E9** (arch/17): безадресные
+  Supervisable-брокеры — до любых деструктивных действий — portalloc →
+  реконструкция из inspect живого контейнера (published-порт CLIENT + host,
+  put-if-absent под `locks/portalloc`, проигрыш txn → re-read) → новая
+  аллокация (S7-свидетельство смерти) + RMW endpoints; тупик «не закреплён
+  в portalloc» устранён; клэйм занят → journal waiting-portalloc-lock
+  (InProgress, следующий тик).
+- Перевод `PROVISIONING`→`RUNNING` — по трём фактам: контейнер жив, зрячая
+  проба видит брокера, advertised-адрес уже в `endpoints` (владелец
+  процесса — add-broker F — пишет endpoints ДО RUNNING; иначе чужой процесс
+  «догоняется» и адрес выпадает из bootstrap-списка). `endpoints` сходится
+  к portalloc-канону тиком надзора (расхождение → RMW; закрывает недоехавший
+  RMW лестницы E9).
 - Ноды `TO_REMOVE`/`REMOVING`/`PROVISIONING` чужих процессов надзор не трогает.
 
 ### D. TopicSyncProcess (автосинк + desired-converge)
@@ -654,6 +675,13 @@ t03; панель обновляется тем же релизом). После
   Двойной контроллер невозможен: операции — только под живым клэймом.
 - **Атомарность etcd**: переходы — txn с compare (`mod_revision` config,
   `version==0` клэймы, RMW topics/endpoints).
+- **AdminClient-кэш (t05)**: фабрика — sharable-кэш per
+  (bootstrap, user, password); Create — «получить клиент ключа», DisposeAsync
+  адаптера — no-op (владение у кэша); пины librdkafka
+  `reconnect/retry.backoff.ms ≥ 1000` (+ rdkafka-лог на Debug); Failed
+  операции → unhealthy-инвалидация → пересоздание (Dispose заменяемого —
+  в фоне); неактивные ключи вытесняются; остановка — детерминированный
+  Dispose (кэш = IDisposable DI-синглтон). Инцидент-класс: t11 (панель).
 - **Снапшоты P12**: лидер регулярно (раз в 6 ч) + **«до/после» в точках
   изменений** — provisioning (K0/K6), deprovisioning (X0/X3), ротация
   (старт/финал). Add/remove брокеров и регенерация (J) — без снапшотов

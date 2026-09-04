@@ -34,9 +34,14 @@ public sealed class NodeSupervisor(
     WorkJournal journal,
     IKafkaAdminClientFactory adminFactory,
     ProvisioningOptions options,
-    BrokerCertificateCache certificates)
+    BrokerCertificateCache certificates,
+    KafkaClusterBackoff? backoff = null,
+    PortAllocHealer? healer = null)
 {
     private const string Op = "supervise";
+
+    private readonly KafkaClusterBackoff _backoff = backoff ?? new KafkaClusterBackoff(TimeProvider.System);
+    private readonly PortAllocHealer? _healer = healer;
 
     public async Task<Result> RunAsync(KafkaClusterSnapshot snap, CancellationToken ct)
     {
@@ -47,9 +52,48 @@ public sealed class NodeSupervisor(
             return Result.Failed(new ApplicationException(
                 $"supervise {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
 
-        var addresses = await ReadPortAllocAsync(cluster, ct);
-        if (!addresses.IsSuccess)
-            return Result.Failed(addresses.Error!);
+        var pinned = await ReadPortAllocAsync(cluster, ct);
+        if (!pinned.IsSuccess)
+            return Result.Failed(pinned.Error!);
+
+        // Лестница E9 (t05, spec §3.3): безадресные Supervisable-брокеры — до любых
+        // деструктивных действий (RecreateAsync сносит контейнер ДО EnsureNode —
+        // ветка «контейнер жив» из EnsureNode недостижима). Клэйм занят —
+        // waiting-portalloc-lock (InProgress), следующий тик.
+        var addresses = new Dictionary<string, NodeAddress>(pinned.Value);
+        foreach (var broker in Supervisable(snap).Where(b => !addresses.ContainsKey(b.Name)).ToList())
+        {
+            if (_healer is null)
+                return Fail(cluster, new ApplicationException(
+                    $"supervise {cluster}: broker {broker.Name} не закреплён в portalloc (healer не сконфигурирован)"),
+                    "healing-portalloc");
+
+            var healed = await _healer.ResolveAsync(snap, broker.Name, addresses, ct);
+            if (!healed.IsSuccess)
+            {
+                if (healed.Error is PortLockBusyException)
+                    return await FinishWaitingPortLockAsync(cluster, ct);
+                return Fail(cluster, healed.Error!, "healing-portalloc");
+            }
+
+            addresses[broker.Name] = healed.Value.Address;
+            if (healed.Value.Recreated) // пересоздан в ветке 3 — state=PROVISIONING
+            {
+                var marked = await PutAsync(BrokerStateKey(cluster, broker.Name), "PROVISIONING", ct);
+                if (!marked.IsSuccess)
+                    return Fail(cluster, marked.Error!, "mark-provisioning");
+            }
+        }
+
+        // Сходимость endpoints (ревью Ф7-4): закоммиченный portalloc — истина
+        // адресов; фактический endpoints сверяется с каноном «адреса всех брокеров
+        // с закреплением и state не TO_REMOVE/REMOVING»; расхождение → RMW. Закрывает
+        // недоехавший RMW ветки 3 healer'а (следующий тик — ветка 1, без сходимости
+        // ретрай не случился бы); add-broker в полёте безопасен: адрес каноничен,
+        // RMW владельца идемпотентен, «endpoints до RUNNING» сохраняется.
+        var converged = await EnsureEndpointsConvergedAsync(snap, addresses, ct);
+        if (!converged.IsSuccess)
+            return Fail(cluster, converged.Error!, "endpoints-converge");
 
         // Факт docker: имена живых объектов kfw-<C>-*.
         var objects = await driver.ListNodeObjectsAsync(cluster, ct);
@@ -104,6 +148,30 @@ public sealed class NodeSupervisor(
         // Warning-ы тика (RF=1-пересоздания) — в финальную supervision-запись.
         var warnings = new List<string>();
 
+        // Перевод PROVISIONING → RUNNING — по ТРЁМ фактам (ревью Ф7-1): контейнер
+        // жив, зрячая проба видит брокера, И advertised-адрес уже в endpoints —
+        // владелец процесса (add-broker F) пишет endpoints ДО RUNNING; без адреса
+        // чужой процесс не закончен, RUNNING не наш (иначе add-broker-брокер
+        // выпадает из bootstrap-списка навсегда — pending пуст, RMW не исполнится).
+        if (!probeBlind)
+        {
+            foreach (var broker in snap.Brokers.Where(b => b.State == "PROVISIONING"))
+            {
+                if (!alive.Contains($"kfw-{cluster}-{broker.Name}")
+                    || !inCluster.Contains(NodeId(broker.Name)))
+                    continue; // ещё грузится либо контейнера нет — не готов
+
+                if (!addresses.TryGetValue(broker.Name, out var addr)
+                    || !AdvertisedInEndpoints(snap.Endpoints,
+                        $"{options.AdvertisedClientHost ?? addr.Host}:{addr.ClientPort}"))
+                    continue; // endpoints-RMW владельца не дошёл — не переводим
+
+                var running = await PutAsync(BrokerStateKey(cluster, broker.Name), "RUNNING", ct);
+                if (!running.IsSuccess)
+                    return Fail(cluster, running.Error!, "mark-running");
+            }
+        }
+
         // 1) Снесённые контейнеры → пересоздать (тот же volume/env).
         foreach (var broker in Supervisable(snap))
         {
@@ -111,7 +179,7 @@ public sealed class NodeSupervisor(
             if (alive.Contains(containerName))
                 continue;
 
-            var recreated = await RecreateAsync(snap, broker, addresses.Value, removeVolume: false, ct);
+            var recreated = await RecreateAsync(snap, broker, addresses, removeVolume: false, ct);
             if (!recreated.IsSuccess)
                 return Fail(cluster, recreated.Error!, "recreate-container");
         }
@@ -152,7 +220,7 @@ public sealed class NodeSupervisor(
                     ? $"брокер {brokerName}: том данных утрачен, RF=1 — единственная копия данных кластера потеряна"
                     : null;
 
-                var recreated = await RecreateAsync(snap, broker, addresses.Value, removeVolume, ct);
+                var recreated = await RecreateAsync(snap, broker, addresses, removeVolume, ct);
                 if (!recreated.IsSuccess)
                     return Fail(cluster, recreated.Error!, "recreate-unreachable");
 
@@ -175,6 +243,61 @@ public sealed class NodeSupervisor(
         => snap.Brokers
             .Where(b => b.State is null or "RUNNING" or "UNREACHABLE")
             .ToList();
+
+    // Третий факт перевода RUNNING (ревью Ф7-1): advertised-адрес уже в
+    // endpoints (формат канона — запятая без пробелов: BuildEndpoints
+    // ProvisioningProcess / UpdateEndpointsAsync healer'а).
+    private static bool AdvertisedInEndpoints(string? endpoints, string advertised)
+        => endpoints?.Split(',', StringSplitOptions.TrimEntries).Contains(advertised) == true;
+
+    // Канон: адреса брокеров с закреплением (PROVISIONING включён — ветка 3
+    // healer'а и add-broker F пишут portalloc до контейнера), кроме чужих
+    // демонтажей (TO_REMOVE/REMOVING — их адрес убирает G). Порядок адресов —
+    // по имени брокера (детерминизм, порт BuildEndpoints).
+    private async Task<Result> EnsureEndpointsConvergedAsync(
+        KafkaClusterSnapshot snap, IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
+    {
+        var cluster = snap.Cluster;
+        var canonical = string.Join(",", snap.Brokers
+            .OrderBy(b => b.Name, StringComparer.Ordinal)
+            .Where(b => b.State is not ("TO_REMOVE" or "REMOVING"))
+            .Where(b => addresses.TryGetValue(b.Name, out _))
+            .Select(b =>
+            {
+                var addr = addresses[b.Name];
+                return $"{options.AdvertisedClientHost ?? addr.Host}:{addr.ClientPort}";
+            }));
+
+        var key = EndpointsKey(cluster);
+        var current = await GetAsync(key, ct);
+        if (!current.IsSuccess)
+            return current;
+        if (current.Value is { } kv && kv.Value == canonical)
+            return Result.Success(); // сходимость — норма: ноль записей
+
+        if (current.Value is null && canonical.Length == 0)
+            return Result.Success(); // ключа нет и писать нечего
+
+        // RMW: нет ключа → put; есть → txn compare mod_revision (проигрыш —
+        // ретрай тиком, канон тот же у всех писателей).
+        if (current.Value is null)
+        {
+            var put = await PutAsync(key, canonical, ct);
+            return put.IsSuccess ? Result.Success() : put;
+        }
+
+        var txn = await TxnAsync(TxnRequest.Of(
+            [TxnCompare.ModRevisionEqual(key, (long)current.Value.ModRevision)],
+            [new TxnOp.Put(key, canonical, null)]), ct);
+        if (!txn.IsSuccess)
+            return txn;
+        if (!txn.Value.Succeeded)
+            return Result.Failed(new ApplicationException(
+                $"endpoints {cluster} изменился с момента чтения — ретрай тиком"));
+        return Result.Success();
+    }
+
+    private static string EndpointsKey(string cluster) => $"/kafka/clusters/{cluster}/endpoints";
 
     private async Task<Result> RecreateAsync(
         KafkaClusterSnapshot snap,
@@ -236,11 +359,22 @@ public sealed class NodeSupervisor(
         if (snap.Endpoints is null || snap.AdminPassword is null || snap.CaPem is null)
             return Result<HashSet<int>?>.Success(null); // кластер ещё не поднят/премиграционный — проб невозможен
 
+        // Backoff недоступного кластера (t05, spec §3.2): окно активно — проба не
+        // ходит в сеть (слепая проба без клиента; бюджет молчания не стартует,
+        // unreachable-трек заморожен — флап ≠ смерть). Фейл — растит окно, успех —
+        // сбрасывает (надзор — первый kafka-контакт конвейера).
+        if (_backoff.IsBlocked(snap.Cluster))
+            return Result<HashSet<int>?>.Success(null);
+
         await using var admin = adminFactory.Create(snap.Endpoints, snap.AdminUser ?? "admin", snap.AdminPassword, snap.CaPem);
         var view = await admin.DescribeClusterAsync(ct);
         if (!view.IsSuccess)
+        {
+            _backoff.RecordFailure(snap.Cluster, view.Error!.Message);
             return Result<HashSet<int>?>.Success(null); // кластер целиком недоступен — молчание трекается по всем
+        }
 
+        _backoff.RecordSuccess(snap.Cluster);
         return Result<HashSet<int>?>.Success(view.Value.Brokers.Select(b => b.Id).ToHashSet());
     }
 
@@ -255,6 +389,12 @@ public sealed class NodeSupervisor(
             .GetAwaiter().GetResult();
         return Result.Failed(error);
     }
+
+    // Клэйм portalloc занят другим — InProgress-семантика supervise: тик без
+    // ошибки (фаза waiting-portalloc-lock в журнале), следующий тик повторит
+    // (порт ProvisioningProcess K1 / AddBrokerProcess).
+    private async Task<Result> FinishWaitingPortLockAsync(string cluster, CancellationToken ct)
+        => await journal.WriteAsync(cluster, Op, "waiting-portalloc-lock", claims.InstanceId, null, ct);
 
     private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> ReadPortAllocAsync(
         string cluster, CancellationToken ct)
@@ -298,6 +438,25 @@ public sealed class NodeSupervisor(
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.PutAsync(endpoint, key, value, null, ct);
+            if (result.IsSuccess)
+                return result;
+            last = result;
+        }
+
+        return last!;
+    }
+
+    // Txn через failover (порт ProvisioningProcess.TxnAsync — RMW-сравнения
+    // mod_revision: сходимость endpoints).
+    private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
+        => await WithFailoverAsync(endpoint => etcd.TxnAsync(endpoint, req, ct));
+
+    private async Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
+    {
+        Result<T>? last = null;
+        foreach (var endpoint in endpoints)
+        {
+            var result = await call(endpoint);
             if (result.IsSuccess)
                 return result;
             last = result;

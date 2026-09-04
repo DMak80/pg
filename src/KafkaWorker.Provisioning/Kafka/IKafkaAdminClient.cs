@@ -122,6 +122,12 @@ public sealed record KafkaAclBinding(
 /// <summary>
 /// Фабрика клиентов по bootstrap+кредам кластера (t03: SASL_SSL/PLAIN + доверие
 /// per-cluster CA arch/15 §5; caPem null — без TLS-доверия, тесты/fake).
+/// t05: ШАРЕНАЯ — возвращает кэшированный адаптер per
+/// (bootstrap, user, password, caPem); Create — не «новый клиент», а «получить
+/// клиент ключа». DisposeAsync возвращённого адаптера — no-op (владение у
+/// фабрики-кэша); реальный Dispose — вытеснение из кэша (фон) и остановка
+/// host'а. Смена endpoints/кредов/TLS-доверия — другой ключ → другой клиент
+/// (инвалидация по построению; клиенты кластеров с разным CA не шарятся).
 /// </summary>
 public interface IKafkaAdminClientFactory
 {

@@ -11,6 +11,7 @@ using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
+using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
 using KafkaWorker.Core.Templates;
 
@@ -180,6 +181,89 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
     {
         var kv = await Gateway.GetAsync(Endpoint, key, TestContext.Current.CancellationToken);
         return kv.Value?.Value;
+    }
+
+    // Put-хелпер тестов (ключ → значение, без lease).
+    public Task PutAsync(string key, string value)
+        => Gateway.PutAsync(Endpoint, key, value, null, TestContext.Current.CancellationToken);
+
+    // Вероятно-свободный закрытый порт (зонд: слушаем 0 → отдаём и закрываем) —
+    // endpoints репро-кластеров без литералов портов (t05 churn/gate).
+    public static int ReserveClosedPort()
+    {
+        var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        probe.Start();
+        var port = ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+        return port;
+    }
+
+    // Del-хелпер тестов (точечное удаление, t05 healing: утеря portalloc).
+    public Task DelAsync(string key)
+        => Gateway.DeleteAsync(Endpoint, key, prefix: false, TestContext.Current.CancellationToken);
+
+    // Снос контейнеров брокеров кластера БЕЗ томов (t05 healing ветка 3:
+    // S7-свидетельство смерти при живых данных).
+    public async Task RemoveBrokerContainersAsync(string cluster)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var objects = await Driver.ListNodeObjectsAsync(cluster, ct);
+        foreach (var name in objects.Value)
+        {
+            // kfw-<C>-<broker> → имя ноды; том не трогаем — данные неприкосновенны.
+            var node = name[$"kfw-{cluster}-".Length..];
+            await Driver.RemoveNodeAsync(cluster, node, removeVolume: false, ct);
+        }
+    }
+
+    // Клэйм-сторы по кластерам (общие для ригов фикстуры: supervise/provision —
+    // один держатель на кластер, иначе «клэйм не наш»).
+    private readonly Dictionary<string, ClaimStore> _claims = [];
+
+    private async Task<ClaimStore> ClaimsAsync(string cluster)
+    {
+        if (_claims.TryGetValue(cluster, out var store))
+            return store;
+        store = new ClaimStore([Endpoint], Gateway, TimeProvider.System);
+        await store.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
+        _claims[cluster] = store;
+        return store;
+    }
+
+    // Риг надзора для healing-тестов (t05): клэйм + NodeSupervisor со всеми
+    // зависимостями (construction-сайт Program.cs; healer/backoff — новые;
+    // certificates — t03 per-cluster PKI).
+    public async Task<NodeSupervisor> SupervisorRigAsync(string cluster)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var claims = await ClaimsAsync(cluster);
+        var journal = new WorkJournal(Gateway, [Endpoint]);
+        var healer = new PortAllocHealer(
+            Gateway, [Endpoint], Driver, claims, journal,
+            new PortAllocLock([Endpoint], Gateway, TimeProvider.System, claims.InstanceId),
+            new PortAllocIndex(Gateway, [Endpoint], NullLogger<PortAllocIndex>.Instance),
+            Options, Certificates);
+        return new NodeSupervisor(
+            Gateway, [Endpoint], Driver, claims, journal, AdminFactory, Options,
+            Certificates,
+            backoff: new KafkaClusterBackoff(TimeProvider.System),
+            healer: healer);
+    }
+
+    // Риг provisioning для подъёма кластера в healing-тесте (конструкция —
+    // как в ProvisioningTests; клэйм — общий store фикстуры; секреты/серты —
+    // t03: ClusterSecretEnsurer + BrokerCertificateCache).
+    public async Task<ProvisioningProcess> ProvisionRigAsync(string cluster)
+    {
+        var claims = await ClaimsAsync(cluster);
+        var journal = new WorkJournal(Gateway, [Endpoint]);
+        return new ProvisioningProcess(
+            Gateway, [Endpoint], Driver, claims, journal,
+            new PortAllocLock([Endpoint], Gateway, TimeProvider.System, claims.InstanceId),
+            new PortAllocIndex(Gateway, [Endpoint], NullLogger<PortAllocIndex>.Instance),
+            new ClusterSecretEnsurer(Gateway, [Endpoint]),
+            AdminFactory, new ClusterConfigConverger(AdminFactory),
+            Options, Certificates, snapshot: null);
     }
 
     // Дискавери-клиент (spec §9.2, t03): bootstrap/endpoints, креды по роли

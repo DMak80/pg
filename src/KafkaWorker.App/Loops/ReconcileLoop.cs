@@ -8,6 +8,7 @@ using KafkaWorker.Core.Model;
 using KafkaWorker.Etcd.Client;
 using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Etcd.Parsing;
+using KafkaWorker.Provisioning.Kafka;
 
 namespace KafkaWorker.App.Loops;
 
@@ -26,7 +27,8 @@ internal sealed class ReconcileLoop(
     WorkJournal journal,
     ILogger<ReconcileLoop> logger,
     HealthState health,
-    Shared.Metrics.Worker.WorkerMetricsInstrumentation metrics) : BackgroundService, IHealthCheckService
+    Shared.Metrics.Worker.WorkerMetricsInstrumentation metrics,
+    KafkaClusterBackoff backoff) : BackgroundService, IHealthCheckService
 {
     public bool Inited { get; private set; }
 
@@ -112,6 +114,9 @@ internal sealed class ReconcileLoop(
         foreach (var cluster in parsed.Value)
         foreach (var error in cluster.ParseErrors)
             logger.LogWarning("пропущен битый ключ: {Error}", error);
+
+        // Кластеры исчезли из снапшота — backoff-состояние не копится (t11).
+        backoff.ForgetMissing(parsed.Value.Select(c => c.Cluster).ToHashSet());
 
         // Параллельная обработка кластеров с лимитом; ошибка кластера не роняет тик
         // (journal процесса уже несёт last_error — следующий тик продолжит).

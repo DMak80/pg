@@ -208,6 +208,26 @@ internal static class Fakes
         // Отказ инспекта конкретной ноды (ошибка тика — никаких действий).
         public Func<string, Result<NodeLimits?>>? ResourcesFaultByNode { get; set; }
 
+        // E9-инспекция (t05): сеется тестами; null по умолчанию — «контейнера нет»
+        // (положительное свидетельство смерти, S7). Инспекция broker<k> с контейнером
+        // отдаёт host "h1" и порт — сид реконструкции portalloc.
+        public readonly Dictionary<string, NodeEndpointInspection> Endpoints = [];
+        public Func<string, Result<NodeEndpointInspection?>>? EndpointFaultByNode { get; set; }
+
+        public Task<Result<NodeEndpointInspection?>> InspectNodeEndpointAsync(
+            string cluster, string nodeName, CancellationToken ct)
+        {
+            if (EndpointFaultByNode is { } fault)
+            {
+                var failed = fault(nodeName);
+                if (!failed.IsSuccess)
+                    return Task.FromResult(failed);
+            }
+
+            return Task.FromResult(Result<NodeEndpointInspection?>.Success(
+                Endpoints.TryGetValue(nodeName, out var endpoint) ? endpoint : null));
+        }
+
         public Task<Result<NodeLimits?>> NodeResourcesAsync(string cluster, string nodeName, CancellationToken ct)
         {
             if (ResourcesFaultByNode is { } fault)

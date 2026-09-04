@@ -181,9 +181,18 @@ builder.Services.AddSingleton(sp =>
 });
 
 // Kafka AdminClient (seam + Confluent-адаптер): RequestTimeout короткий —
-// это пробы/конфиги, длинные ожидания — циклы процессов.
-builder.Services.AddSingleton<IKafkaAdminClientFactory>(_ =>
-    new KafkaAdminClientFactory(TimeSpan.FromSeconds(10)));
+// это пробы/конфиги, длинные ожидания — циклы процессов. Фабрика — sharable
+// кэш (t05): клиент per (bootstrap,user,password), не «клиент на тик».
+builder.Services.AddSingleton<IKafkaAdminClientFactory>(sp =>
+    new KafkaAdminClientFactory(
+        TimeSpan.FromSeconds(10),
+        sp.GetRequiredService<ILogger<KafkaAdminClientFactory>>(),
+        TimeProvider.System));
+
+// Backoff недоступного кластера (t05): DI-синглтон; писатели — supervise-проба
+// и коллектор (первые kafka-контакты), читатели — гейты Active-ветки/коллектора.
+builder.Services.AddSingleton(sp =>
+    new KafkaClusterBackoff(sp.GetRequiredService<TimeProvider>()));
 
 // Кеш серверных сертов нод (R3, arch/16 §2.3): DI-синглтом.
 builder.Services.AddSingleton(new BrokerCertificateCache());
@@ -226,6 +235,18 @@ builder.Services.AddSingleton(sp => new DeprovisioningProcess(
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+// Лестница E9 самолечения portalloc (t05, arch/17): supervise вызывает её для
+// безадресных брокеров ДО любых деструктивных действий.
+builder.Services.AddSingleton(sp => new PortAllocHealer(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<PortAllocLock>(),
+    sp.GetRequiredService<PortAllocIndex>(),
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value),
+    sp.GetRequiredService<BrokerCertificateCache>()));
 builder.Services.AddSingleton(sp => new NodeSupervisor(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
@@ -234,7 +255,9 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IKafkaAdminClientFactory>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value),
-    sp.GetRequiredService<BrokerCertificateCache>()));
+    sp.GetRequiredService<BrokerCertificateCache>(),
+    backoff: sp.GetRequiredService<KafkaClusterBackoff>(),
+    healer: sp.GetRequiredService<PortAllocHealer>()));
 
 // Scale-проход и ротация (arch/16 §5 F/G/H): ротатор — со снапшот-делегатом P12.
 // Reassignment (I, t02) — перед G: drain TO_REMOVE-брокеров + заявки balance.
@@ -334,7 +357,8 @@ builder.Services.AddHostedService(sp => new KafkaMetricsCollector(
     sp.GetRequiredService<IKafkaAdminClientFactory>(),
     sp.GetRequiredService<KafkaMetricsState>(),
     sp.GetRequiredService<TimeProvider>(),
-    sp.GetRequiredService<ILogger<KafkaMetricsCollector>>()));
+    sp.GetRequiredService<ILogger<KafkaMetricsCollector>>(),
+    sp.GetRequiredService<KafkaClusterBackoff>()));
 
 // Наблюдаемость (arch/16 §7): агрегированный health + per-loop обёртки.
 builder.Services.AddSingleton<ServiceProbes>();

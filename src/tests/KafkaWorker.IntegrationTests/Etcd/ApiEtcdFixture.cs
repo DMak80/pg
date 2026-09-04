@@ -3,7 +3,10 @@ using System.Net.Sockets;
 using System.Text;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
+using KafkaWorker.Core;
+using KafkaWorker.Core.Model;
 using KafkaWorker.Etcd.Client;
+using KafkaWorker.Etcd.Parsing;
 using Xunit;
 
 namespace KafkaWorker.IntegrationTests.Etcd;
@@ -72,6 +75,24 @@ public sealed class EtcdFixture : IAsyncLifetime
         listener.Stop();
         return port;
     }
+
+    // Put-хелпер etcd-only тестов (t05 churn): ключ → значение.
+    public Task PutAsync(string key, string value)
+        => Gateway.PutAsync(Endpoint, key, value, null, TestContext.Current.CancellationToken);
+
+    // Снапшот кластеров из etcd (тот же парсер, что у ReconcileLoop) —
+    // источник снапшотов коллектора в churn-тесте.
+    public async Task<Result<IReadOnlyList<KafkaClusterSnapshot>>> SnapshotClustersAsync(CancellationToken ct)
+    {
+        var range = await Gateway.RangeAsync(Endpoint, "/kafka/clusters/", ct);
+        if (!range.IsSuccess)
+            return Result<IReadOnlyList<KafkaClusterSnapshot>>.Failed(range.Error!);
+        return KafkaSnapshotParser.Parse(range.Value);
+    }
+
+    // Делегат для ctor KafkaMetricsCollector (clustersSnapshot).
+    public Func<CancellationToken, Task<Result<IReadOnlyList<KafkaClusterSnapshot>>>> SnapshotClusters
+        => SnapshotClustersAsync;
 
     private async Task WaitReadyAsync(CancellationToken ct)
     {
