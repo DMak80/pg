@@ -70,14 +70,35 @@ public sealed class ClusterConfigConverger(IKafkaAdminClientFactory adminFactory
             return Result.Failed(current.Error!);
 
         var changes = ConvergeDecider.Decide(config, current.Value);
-        if (changes.Count == 0)
-            return Result.Success(); // уже сошлось — no-op (не дёргаем alter)
 
-        foreach (var broker in view.Value.Brokers)
+        // Раннего выхода при no-op НЕТ: после конфиг-шага всегда выполняется
+        // ACL-converge (t03).
+        if (changes.Count > 0)
         {
-            var altered = await admin.AlterBrokerConfigsAsync(broker.Id, changes, ct);
-            if (!altered.IsSuccess)
-                return altered;
+            foreach (var broker in view.Value.Brokers)
+            {
+                var altered = await admin.AlterBrokerConfigsAsync(broker.Id, changes, ct);
+                if (!altered.IsSuccess)
+                    return altered;
+            }
+        }
+
+        // ACL-converge (arch/16 §5 E, t03): идемпотентная сходимость роли app.
+        var acls = await admin.DescribeAclsAsync(ct);
+        if (!acls.IsSuccess)
+            return Result.Failed(acls.Error!);
+        var (create, delete) = AclPlan.Diff(acls.Value);
+        if (create.Count > 0)
+        {
+            var created = await admin.CreateAclsAsync(create, ct);
+            if (!created.IsSuccess)
+                return created;
+        }
+        if (delete.Count > 0)
+        {
+            var deleted = await admin.DeleteAclsAsync(delete, ct);
+            if (!deleted.IsSuccess)
+                return deleted;
         }
 
         return Result.Success();

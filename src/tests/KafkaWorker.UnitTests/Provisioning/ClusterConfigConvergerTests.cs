@@ -158,4 +158,60 @@ public class ClusterConfigConvergerTests
         result.IsSuccess.Should().BeFalse();
         admin.AlterCalls.Should().BeEmpty();
     }
+
+    [Fact]
+    public async Task Apply_ConfigsConverged_EmptyAcls_CreatesTargetAcls()
+    {
+        // Arrange: конфиги сошлись (alter не нужен), но ACL в кластере нет —
+        // раннего выхода НЕТ: ACL-шаг создаёт канонические 7 (t03, arch/16 §5 E).
+        var admin = new FakeKafkaAdminClient
+        {
+            ClusterView = new KafkaClusterView([new KafkaBrokerView(1, "b1")], ControllerId: 1),
+            BrokerConfigs = new Dictionary<string, string>
+            {
+                ["log.retention.ms"] = "604800000",
+                ["num.partitions"] = "12",
+                ["default.replication.factor"] = "3",
+                ["min.insync.replicas"] = "2",
+            },
+        };
+        var converger = new ClusterConfigConverger(new Factory(admin));
+
+        // Act: converge.
+        var result = await converger.ApplyAsync("events", "h:9094", "admin", "pw", null, Config(), CancellationToken.None);
+
+        // Assert: CreateAcls вызван с каноническим планом роли app.
+        result.IsSuccess.Should().BeTrue();
+        admin.AlterCalls.Should().BeEmpty();
+        admin.CreatedAcls.Should().ContainSingle().Which.Should().HaveCount(AclPlan.Target().Count);
+        admin.DeletedAcls.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Apply_AclsConverged_NoAclMutations()
+    {
+        // Arrange: конфиги и ACL уже сошлись — полный no-op (идемпотентность).
+        var admin = new FakeKafkaAdminClient
+        {
+            ClusterView = new KafkaClusterView([new KafkaBrokerView(1, "b1")], ControllerId: 1),
+            BrokerConfigs = new Dictionary<string, string>
+            {
+                ["log.retention.ms"] = "604800000",
+                ["num.partitions"] = "12",
+                ["default.replication.factor"] = "3",
+                ["min.insync.replicas"] = "2",
+            },
+            Acls = [.. AclPlan.Target()],
+        };
+        var converger = new ClusterConfigConverger(new Factory(admin));
+
+        // Act: converge.
+        var result = await converger.ApplyAsync("events", "h:9094", "admin", "pw", null, Config(), CancellationToken.None);
+
+        // Assert: ни alter, ни ACL-мутаций.
+        result.IsSuccess.Should().BeTrue();
+        admin.AlterCalls.Should().BeEmpty();
+        admin.CreatedAcls.Should().BeEmpty();
+        admin.DeletedAcls.Should().BeEmpty();
+    }
 }
