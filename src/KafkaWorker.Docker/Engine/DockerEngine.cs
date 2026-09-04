@@ -227,8 +227,9 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             }
         });
 
-    // swarm-фолбэк: published-порт running-таска сервиса (env шаблона не читаем —
-    // сверка advertised — plain-only). Сервиса/таска нет → null (факта нет).
+    // swarm-фолбэк: published-порт и хост running-таска сервиса (env шаблона не
+    // читаем — сверка advertised — plain-only). Один ListTasks — порт и TaskHost
+    // из одного снимка таска (ревью Ф7-3). Сервиса/таска нет → null (факта нет).
     private async Task<DockerNodeEndpoint?> InspectSwarmTaskEndpointAsync(string name, CancellationToken ct)
     {
         var tasks = await ListTasksAsync(name, ct);
@@ -237,7 +238,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         var running = tasks.Value.FirstOrDefault(t => t.State == "running" && t.PublishedPort > 0);
         return running is null
             ? null
-            : new DockerNodeEndpoint(running.PublishedPort!.Value, null);
+            : new DockerNodeEndpoint(running.PublishedPort!.Value, null, running.Host);
     }
 
     // "9094/tcp" → первый HostPort (int).

@@ -78,7 +78,10 @@ public interface IDockerEngine : IAsyncDisposable
 
 // Факт endpoint'а из docker inspect (t05 E9): published-порт контейнера на хосте
 // и клиентская пара из env (контрольная сверка; null — источник недоступен, swarm).
-public sealed record DockerNodeEndpoint(int ClientHostPort, string? AdvertisedClient);
+// TaskHost — хост running-таска (swarm-фолбэк; ревью Ф7-3: порт и хост — из ОДНОГО
+// вызова ListTasks движка, снимок таска один — нет расхождения при смене ноды);
+// null в plain-ветке (host даёт перебор движков).
+public sealed record DockerNodeEndpoint(int ClientHostPort, string? AdvertisedClient, string? TaskHost = null);
 
 // Контейнер из /containers/json (Names — с ведущим "/").
 public sealed record DockerContainer(string Id, string[] Names, string State, string Image);

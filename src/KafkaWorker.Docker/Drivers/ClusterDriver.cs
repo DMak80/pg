@@ -417,8 +417,9 @@ public sealed class SwarmClusterDriver(
     public Task<Result<NodeLimits?>> NodeResourcesAsync(string cluster, string nodeName, CancellationToken ct)
         => _engine.InspectServiceResourcesAsync(PlainClusterDriver.NodeName(cluster, nodeName), ct);
 
-    // E9-реконструкция (t05): published-порт даёт инспекция движка (swarm-фолбэк
-    // по running-таску), хост таска — тем же ListTasks (источник истины — движок).
+    // E9-реконструкция (t05): published-порт, advertised и хост таска отдаёт
+    // одна инспекция движка (swarm-фолбэк по running-таску; ревью Ф7-3 — один
+    // HTTP-раунд ListTasks, второй вызов драйвера удалён).
     public async Task<Result<NodeEndpointInspection?>> InspectNodeEndpointAsync(
         string cluster, string nodeName, CancellationToken ct)
     {
@@ -426,17 +427,13 @@ public sealed class SwarmClusterDriver(
         var endpoint = await _engine.InspectNodeEndpointAsync(name, ct);
         if (!endpoint.IsSuccess)
             return Result<NodeEndpointInspection?>.Failed(endpoint.Error!);
-        if (endpoint.Value is null)
+        if (endpoint.Value is not { } found)
             return Result<NodeEndpointInspection?>.Success(null);
 
-        var tasks = await _engine.ListTasksAsync(name, ct);
-        if (!tasks.IsSuccess)
-            return Result<NodeEndpointInspection?>.Failed(tasks.Error!);
-        var host = tasks.Value.FirstOrDefault(t => t.State == "running")?.Host;
-        return host is null
-            ? Result<NodeEndpointInspection?>.Success(null)
-            : Result<NodeEndpointInspection?>.Success(
-                new NodeEndpointInspection(host, endpoint.Value.ClientHostPort, endpoint.Value.AdvertisedClient));
+        return found.TaskHost is { } host
+            ? Result<NodeEndpointInspection?>.Success(
+                new NodeEndpointInspection(host, found.ClientHostPort, found.AdvertisedClient))
+            : Result<NodeEndpointInspection?>.Success(null); // хоста таска нет — факта нет
     }
 
     // Объекты брокеров кластера в swarm — СЕРВИСЫ: GET /services с префиксом
