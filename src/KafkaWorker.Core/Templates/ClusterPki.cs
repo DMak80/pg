@@ -13,6 +13,7 @@ namespace KafkaWorker.Core.Templates;
 public static class ClusterPki
 {
     private static readonly Oid ServerAuthOid = new("1.3.6.1.5.5.7.3.1");
+    private static readonly Oid ClientAuthOid = new("1.3.6.1.5.5.7.3.2");
 
     public static (string CaPem, string CaKeyPem) GenerateCa(string cluster)
     {
@@ -42,8 +43,10 @@ public static class ClusterPki
         if (ip is not null)
             san.AddIpAddress(ip);
         request.CertificateExtensions.Add(san.Build());
+        // EKU: ServerAuth (серти нод Kafka) + ClientAuth (клиентские серты
+        // панели/healthcheck из той же per-cluster CA — один выпускающий helper).
         request.CertificateExtensions.Add(
-            new X509EnhancedKeyUsageExtension([ServerAuthOid], critical: false));
+            new X509EnhancedKeyUsageExtension([ServerAuthOid, ClientAuthOid], critical: false));
         // Окно серта ноды не может выходить за границы CA (валидация issuer):
         // NotAfter зажимаем в NotAfter CA (CA создан моментом ранее).
         var notAfter = DateTimeOffset.UtcNow.AddYears(10);
