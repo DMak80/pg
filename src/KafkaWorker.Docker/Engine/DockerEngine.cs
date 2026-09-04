@@ -199,6 +199,79 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             }
         });
 
+    // Инспекция endpoint'а контейнера (t05 E9): published host-порт CLIENT-порта
+    // 9094 из HostConfig.PortBindings + клиентская пара из env
+    // KAFKA_ADVERTISED_LISTENERS (контроль). 404 → null (объекта нет).
+    public async Task<Result<DockerNodeEndpoint?>> InspectNodeEndpointAsync(string name, CancellationToken ct)
+        => await Result<DockerNodeEndpoint?>.FromAsync(async () =>
+        {
+            try
+            {
+                var body = await GetAsync<JsonElement>(
+                    $"/containers/{Uri.EscapeDataString(name)}/json", ct);
+                if (body.ValueKind == JsonValueKind.Undefined)
+                    return null;
+
+                var clientPort = ReadClientHostPort(body.GetProperty("HostConfig"));
+                var advertised = ReadAdvertisedClient(body.GetProperty("Config"));
+                return clientPort is { } port
+                    ? new DockerNodeEndpoint(port, advertised)
+                    : null; // привязки 9094 нет — endpoint-факта нет
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                // Контейнера нет на этом движке — пробуем swarm-фолбэк: движок один
+                // на endpoint, swarm-ветка выполняется только после plain-404.
+                return await InspectSwarmTaskEndpointAsync(name, ct);
+            }
+        });
+
+    // swarm-фолбэк: published-порт running-таска сервиса (env шаблона не читаем —
+    // сверка advertised — plain-only). Сервиса/таска нет → null (факта нет).
+    private async Task<DockerNodeEndpoint?> InspectSwarmTaskEndpointAsync(string name, CancellationToken ct)
+    {
+        var tasks = await ListTasksAsync(name, ct);
+        if (!tasks.IsSuccess)
+            throw tasks.Error!;
+        var running = tasks.Value.FirstOrDefault(t => t.State == "running" && t.PublishedPort > 0);
+        return running is null
+            ? null
+            : new DockerNodeEndpoint(running.PublishedPort!.Value, null);
+    }
+
+    // "9094/tcp" → первый HostPort (int).
+    private static int? ReadClientHostPort(JsonElement hostConfig)
+    {
+        if (!hostConfig.TryGetProperty("PortBindings", out var bindings)
+            || bindings.ValueKind != JsonValueKind.Object
+            || !bindings.TryGetProperty("9094/tcp", out var slot)
+            || slot.ValueKind != JsonValueKind.Array
+            || slot.GetArrayLength() == 0)
+            return null;
+
+        var first = slot[0];
+        return first.TryGetProperty("HostPort", out var hp)
+            && int.TryParse(hp.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var port)
+                ? port
+                : null;
+    }
+
+    // env KAFKA_ADVERTISED_LISTENERS=... → сегмент CLIENT://host:port.
+    private static string? ReadAdvertisedClient(JsonElement config)
+    {
+        if (!config.TryGetProperty("Env", out var env) || env.ValueKind != JsonValueKind.Array)
+            return null;
+        var line = env.EnumerateArray()
+            .Select(e => e.GetString())
+            .FirstOrDefault(s => s?.StartsWith("KAFKA_ADVERTISED_LISTENERS=", StringComparison.Ordinal) == true);
+        if (line is null)
+            return null;
+        var value = line["KAFKA_ADVERTISED_LISTENERS=".Length..];
+        var segment = value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault(p => p.StartsWith("CLIENT://", StringComparison.Ordinal));
+        return segment; // "CLIENT://host:port" либо null
+    }
+
     // Лимиты swarm-сервиса ноды (t06, spec §5.3): TaskTemplate.Resources.
     // Limits.{NanoCPUs, MemoryBytes}; 404 → null. Swarm-теги — «NanoCPUs»
     // (верхний регистр, api/types/swarm), но на асимметрию Docker не

@@ -70,7 +70,15 @@ public interface IDockerEngine : IAsyncDisposable
 
     // Лимиты swarm-сервиса (TaskTemplate.Resources.Limits); 404 → null.
     Task<Result<NodeLimits?>> InspectServiceResourcesAsync(string name, CancellationToken ct);
+
+    // Инспекция endpoint'а контейнера (t05 E9): published host-порт CLIENT (9094)
+    // + клиентская пара из env KAFKA_ADVERTISED_LISTENERS; null = объекта нет.
+    Task<Result<DockerNodeEndpoint?>> InspectNodeEndpointAsync(string name, CancellationToken ct);
 }
+
+// Факт endpoint'а из docker inspect (t05 E9): published-порт контейнера на хосте
+// и клиентская пара из env (контрольная сверка; null — источник недоступен, swarm).
+public sealed record DockerNodeEndpoint(int ClientHostPort, string? AdvertisedClient);
 
 // Контейнер из /containers/json (Names — с ведущим "/").
 public sealed record DockerContainer(string Id, string[] Names, string State, string Image);

@@ -22,6 +22,12 @@ public sealed record KafkaNodeSpec(
     decimal? CpuCores,
     long? MemoryBytes);
 
+// Инспекция размещения брокера (E9-реконструкция portalloc, t05): Host — хост
+// размещения, ClientHostPort — published host-порт CLIENT (9094),
+// AdvertisedClient — клиентская пара из env KAFKA_ADVERTISED_LISTENERS
+// (контрольная сверка; null — источник недоступен, swarm).
+public sealed record NodeEndpointInspection(string Host, int ClientHostPort, string? AdvertisedClient);
+
 // Унифицированное управление брокером в обоих режимах (arch/16 §2.3). Порт
 // драйверов PgWorker с заменой pgw-→kfw- и выносом env-генерации в NodeEnvBuilder:
 // объекты — контейнер/сервис kfw-<C>-<b>, volume kfw-<C>-<b>-data, сеть
@@ -54,6 +60,12 @@ public interface IClusterDriver
     // Фактические лимиты контейнера/сервиса брокера (t06, spec §5.3): null =
     // объекта нет; ошибка инспекта → Failed (регенератор не решает вслепую).
     Task<Result<NodeLimits?>> NodeResourcesAsync(string cluster, string nodeName, CancellationToken ct);
+
+    // Инспекция размещения брокера для E9-реконструкции portalloc (t05):
+    // null = docker-объекта нет — положительное свидетельство смерти, arch/17 S7;
+    // ошибка инспекта → Failed — надзор не решает вслепую.
+    Task<Result<NodeEndpointInspection?>> InspectNodeEndpointAsync(
+        string cluster, string nodeName, CancellationToken ct);
 
     // Выполнить команду в контейнере живого брокера (arch/16 §2.4; t02:
     // kafka-reassign-partitions CLI): plain — running-контейнер по имени
@@ -272,6 +284,25 @@ public sealed class PlainClusterDriver(
         return Result<NodeLimits?>.Success(null);
     }
 
+    // E9-реконструкция (t05): перебор хостов — первый, где контейнер есть,
+    // отдаёт host-порт + host-алиас этого движка.
+    public async Task<Result<NodeEndpointInspection?>> InspectNodeEndpointAsync(
+        string cluster, string nodeName, CancellationToken ct)
+    {
+        var name = NodeName(cluster, nodeName);
+        foreach (var (host, engine) in _engines)
+        {
+            var endpoint = await engine.InspectNodeEndpointAsync(name, ct);
+            if (!endpoint.IsSuccess)
+                return Result<NodeEndpointInspection?>.Failed(endpoint.Error!);
+            if (endpoint.Value is { } found)
+                return Result<NodeEndpointInspection?>.Success(
+                    new NodeEndpointInspection(host, found.ClientHostPort, found.AdvertisedClient));
+        }
+
+        return Result<NodeEndpointInspection?>.Success(null);
+    }
+
     // Контейнер брокера по имени kfw-<C>-<b>: перебор хостов (аналог Remove),
     // на первом, где найден running-контейнер — exec (порт PgWorker t01).
     public async Task<Result<string>> ExecNodeAsync(
@@ -385,6 +416,28 @@ public sealed class SwarmClusterDriver(
 
     public Task<Result<NodeLimits?>> NodeResourcesAsync(string cluster, string nodeName, CancellationToken ct)
         => _engine.InspectServiceResourcesAsync(PlainClusterDriver.NodeName(cluster, nodeName), ct);
+
+    // E9-реконструкция (t05): published-порт даёт инспекция движка (swarm-фолбэк
+    // по running-таску), хост таска — тем же ListTasks (источник истины — движок).
+    public async Task<Result<NodeEndpointInspection?>> InspectNodeEndpointAsync(
+        string cluster, string nodeName, CancellationToken ct)
+    {
+        var name = PlainClusterDriver.NodeName(cluster, nodeName);
+        var endpoint = await _engine.InspectNodeEndpointAsync(name, ct);
+        if (!endpoint.IsSuccess)
+            return Result<NodeEndpointInspection?>.Failed(endpoint.Error!);
+        if (endpoint.Value is null)
+            return Result<NodeEndpointInspection?>.Success(null);
+
+        var tasks = await _engine.ListTasksAsync(name, ct);
+        if (!tasks.IsSuccess)
+            return Result<NodeEndpointInspection?>.Failed(tasks.Error!);
+        var host = tasks.Value.FirstOrDefault(t => t.State == "running")?.Host;
+        return host is null
+            ? Result<NodeEndpointInspection?>.Success(null)
+            : Result<NodeEndpointInspection?>.Success(
+                new NodeEndpointInspection(host, endpoint.Value.ClientHostPort, endpoint.Value.AdvertisedClient));
+    }
 
     // Объекты брокеров кластера в swarm — СЕРВИСЫ: GET /services с префиксом
     // kfw-<C>-. Существование сервиса ≠ живой таск: живость — AdminClient-пробы.
