@@ -36,6 +36,9 @@ public class MtlsApiTests
         builder.Configuration["KafkaWorker:Api:Tls:ServerCertPem"] = serverCertPem;
         builder.Configuration["KafkaWorker:Api:Tls:ServerKeyPem"] = serverKeyPem;
         builder.Configuration["KafkaWorker:Api:Tls:ClientCaPem"] = ApiCa.CaPem;
+        // Изоляция от чужих env (KafkaApiFactory ставит AllowInsecureHttp=true
+        // переменной процесса): явный in-memory оверрайд сильнее env-провайдера.
+        builder.Configuration["KafkaWorker:Api:Tls:AllowInsecureHttp"] = "false";
         TlsEndpoints.ConfigureMtls(builder, port); // ДО Build — ConfigureKestrel этап хоста
         var app = builder.Build();
         app.MapGet("/api/ping", () => Results.Ok("pong"));

@@ -24,6 +24,9 @@ public class MetricsApiFactory(Etcd.EtcdFixture etcd) : WebApplicationFactory<Pr
             ["KafkaWorker:Docker:Hosts:0:Endpoint"] = "unix:///var/run/does-not-exist.sock",
             ["KafkaWorker:Api:AdvertiseUrl"] = "http://localhost:9996",
             ["KafkaWorker:Api:EnableSeedEndpoint"] = "false",
+            // WAF-транспорт in-memory — только без TLS (arch/16 §1.1); явный
+            // ключ вместо зависимости от env-переменной чужих фабрик.
+            ["KafkaWorker:Api:Tls:AllowInsecureHttp"] = "true",
         }));
     }
 }
@@ -49,4 +52,15 @@ public sealed class KafkaMetricsFixture : IAsyncLifetime
 public sealed class KafkaMetricsCollection : ICollectionFixture<KafkaMetricsFixture>
 {
     public const string Name = "kafka-metrics";
+}
+
+// Гарантированный env WAF-хостов сборки (arch/16 §1.1): in-memory конфиг из
+// ConfigureWebHost применяется при Build(), а fail-fast ConfigureMtls в
+// Program.Main исполняется раньше — env процесса должен быть выставлен до
+// первого CreateClient. ModuleInitializer исполняется до любого кода сборки.
+internal static class TestAssemblyTlsEnv
+{
+    [System.Runtime.CompilerServices.ModuleInitializer]
+    internal static void Set()
+        => Environment.SetEnvironmentVariable("KafkaWorker__Api__Tls__AllowInsecureHttp", "true");
 }
