@@ -17,6 +17,11 @@ namespace KafkaWorker.Core.Templates;
 /// <param name="QuorumVoters">Кворум "id@host:9093" (только controller-ноды).</param>
 /// <param name="AppUser">SASL-пользователь приложений (обычно "app").</param>
 /// <param name="AppPasswords">1 пароль (штатно) или 2 (окно ротации: OLD + NEW).</param>
+/// <param name="AdminUser">SASL-пользователь администрирования ("admin", ensure t03).</param>
+/// <param name="AdminPasswords">1 пароль admin (штатно) или 2 (окно ротации admin).</param>
+/// <param name="CaPem">PEM публичного серта per-cluster CA (truststore брокера).</param>
+/// <param name="BrokerCertPem">PEM серверного серта ноды (keystore, SAN 16 §2.3).</param>
+/// <param name="BrokerKeyPem">PEM приватного ключа ноды PKCS#8 (keystore).</param>
 /// <param name="Config">Заявка-конфиг кластера (default-конфиги → env).</param>
 /// <param name="BrokerCount">Фактическое B — формулы RF служебных топиков min(3,B).</param>
 /// <param name="DataDir">Точка монтирования тома данных (KAFKA_LOG_DIRS).</param>
@@ -29,21 +34,29 @@ public sealed record NodeEnvSpec(
     IReadOnlyList<string> QuorumVoters,
     string AppUser,
     IReadOnlyList<string> AppPasswords,
+    string AdminUser,
+    IReadOnlyList<string> AdminPasswords,
+    string CaPem,
+    string BrokerCertPem,
+    string BrokerKeyPem,
     KafkaClusterConfig Config,
     int BrokerCount,
     string DataDir);
 
 /// <summary>
 /// Генератор env брокера apache/kafka:4.0.0 (arch/16 §2.2, канон таблицы).
-/// KRaft без ZooKeeper, SASL_PLAINTEXT на INTERNAL/CLIENT, PLAINTEXT CONTROLLER
-/// внутри сети kfw-net-<C> кластера; служебные топики — RF min(3,B)/minISR min(2,B), чтобы
-/// 1-брокерный стенд стартовал.
+/// KRaft без ZooKeeper, SASL_SSL на INTERNAL/CLIENT, PLAINTEXT CONTROLLER
+/// внутри сети kfw-net-<C> кластера; StandardAuthorizer deny-by-default;
+/// служебные топики — RF min(3,B)/minISR min(2,B), чтобы 1-брокерный стенд
+/// стартовал.
 /// </summary>
 public static class NodeEnvBuilder
 {
     public static IReadOnlyDictionary<string, string> Build(NodeEnvSpec spec)
     {
-        var users = BuildJaasUsers(spec.AppUser, spec.AppPasswords);
+        // Пользователи обеих ролей одним списком: admin первым, app вторым
+        // (канон 16 §2.2).
+        var users = BuildRoleUsers(spec.AppUser, spec.AppPasswords, spec.AdminUser, spec.AdminPasswords);
 
         // Inter-broker: INTERNAL требует SASL и у БРОКЕРА-КЛИЕНТА должны быть
         // креды — иначе фолловеры не подключаются и ISR проседает до лидера
@@ -69,16 +82,33 @@ public static class NodeEnvBuilder
             ["KAFKA_ADVERTISED_LISTENERS"] =
                 $"INTERNAL://{spec.NodeName}:9092,CLIENT://{spec.AdvertisedClient}",
             ["KAFKA_LISTENER_SECURITY_PROTOCOL_MAP"] =
-                "CONTROLLER:PLAINTEXT,INTERNAL:SASL_PLAINTEXT,CLIENT:SASL_PLAINTEXT",
+                "CONTROLLER:PLAINTEXT,INTERNAL:SASL_SSL,CLIENT:SASL_SSL",
             ["KAFKA_CONTROLLER_LISTENER_NAMES"] = "CONTROLLER",
             ["KAFKA_INTER_BROKER_LISTENER_NAME"] = "INTERNAL",
             ["KAFKA_SASL_ENABLED_MECHANISMS"] = "PLAIN",
             ["KAFKA_SASL_MECHANISM_INTER_BROKER_PROTOCOL"] = "PLAIN", // требует Kafka при SASL на INTERNAL
-            // INTERNAL-JAAS: username/password (клиент inter-broker) + серверные
-            // пользователи (inter и app-креды с окном ротации).
+
+            // TLS: PEM-пара серта ноды + доверие per-cluster CA (arch/16 §2.2/§2.3).
+            ["KAFKA_SSL_KEYSTORE_TYPE"] = "PEM",
+            ["KAFKA_SSL_KEYSTORE_CERTIFICATE_CHAIN"] = spec.BrokerCertPem,
+            ["KAFKA_SSL_KEYSTORE_KEY"] = spec.BrokerKeyPem,
+            ["KAFKA_SSL_TRUSTSTORE_TYPE"] = "PEM",
+            ["KAFKA_SSL_TRUSTSTORE_CERTIFICATES"] = spec.CaPem,
+
+            // Authorization: StandardAuthorizer (KRaft), deny-by-default,
+            // super.users — принципалы SASL-имён admin/inter (arch/16 §2.3).
+            ["KAFKA_AUTHORIZER_CLASS_NAME"] = "org.apache.kafka.metadata.authorizer.StandardAuthorizer",
+            ["KAFKA_SUPER_USERS"] = "User:admin;User:inter",
+            ["KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND"] = "false",
+
+            // INTERNAL-JAAS: inter-креды брокера-клиента + пользователи ролей
+            // admin/app с окнами ротации user_<name>2 (arch/16 §2.2).
             ["KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG"] =
-                $"org.apache.kafka.common.security.plain.PlainLoginModule required username=\"inter\" password=\"{interPassword}\" user_inter=\"{interPassword}\" {users};",
-            ["KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG"] = Jaas(users),
+                "org.apache.kafka.common.security.plain.PlainLoginModule required "
+                + $@"username=""inter"" password=""{interPassword}"" user_inter=""{interPassword}"" {users};",
+            ["KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG"] =
+                "org.apache.kafka.common.security.plain.PlainLoginModule required "
+                + $"{users};",
 
             // Служебные топики: формулы от фактического B (1-брокерный стенд стартует).
             ["KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR"] = Min(spec.BrokerCount, 3).ToString(CultureInfoInvariant),
@@ -123,21 +153,20 @@ public static class NodeEnvBuilder
             .Replace('/', '_');
     }
 
-    // user_<name>="<password>" через пробел; в окне ротации второй кред —
-    // user_<name>2. Пароли ТОЛЬКО в двойных кавычках: Java JAAS-парсер не
-    // принимает незакавыченное значение, начинающееся с цифры («Value not
-    // specified for key …» — брокер падает на старте; алфавит генератора
-    // [A-Za-z0-9] даёт ~16% таких паролей).
-    private static string BuildJaasUsers(string appUser, IReadOnlyList<string> passwords)
-    {
-        var users = $"user_{appUser}=\"{passwords[0]}\"";
-        if (passwords.Count > 1)
-            users += $" user_{appUser}2=\"{passwords[1]}\"";
-        return users;
-    }
+    // Пользователи обеих ролей одним списком: admin первым, app вторым; у роли
+    // user_<name> + опционально user_<name>2 (окно ротации); пароли ТОЛЬКО в
+    // двойных кавычках: Java JAAS-парсер не принимает незакавыченное значение,
+    // начинающееся с цифры («Value not specified for key …» — брокер падает на
+    // старте; алфавит генератора [A-Za-z0-9] даёт ~16% таких паролей).
+    private static string BuildRoleUsers(
+        string appUser, IReadOnlyList<string> appPasswords,
+        string adminUser, IReadOnlyList<string> adminPasswords)
+        => UsersOf(adminUser, adminPasswords) + " " + UsersOf(appUser, appPasswords);
 
-    private static string Jaas(string users)
-        => $"org.apache.kafka.common.security.plain.PlainLoginModule required {users};";
+    private static string UsersOf(string user, IReadOnlyList<string> passwords)
+        => passwords.Count > 1
+            ? $@"user_{user}=""{passwords[0]}"" user_{user}2=""{passwords[1]}"""
+            : $@"user_{user}=""{passwords[0]}""";
 
     private static int Min(int a, int b) => a < b ? a : b;
 

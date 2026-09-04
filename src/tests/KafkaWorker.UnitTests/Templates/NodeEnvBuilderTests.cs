@@ -20,10 +20,16 @@ public class NodeEnvBuilderTests
         int brokerCount = 3,
         string advertisedClient = "host.docker.internal:16001",
         string[]? voters = null,
-        string[]? passwords = null) => new(
+        string[]? passwords = null,
+        string[]? adminPasswords = null) => new(
         "events", nodeId, nodeName, advertisedClient, isController,
         voters ?? ["1@broker1:9093", "2@broker2:9093", "3@broker3:9093"],
         "app", passwords ?? ["OldPassword0123456789AbCdEf01"],
+        // PEM-строки-заглушки: билдер серты НЕ валидирует (это делает ClusterPki/парсер).
+        "admin", adminPasswords ?? ["AdminPassword0123456789AbCdEf01"],
+        "-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----",
+        "-----BEGIN CERTIFICATE-----\nLEAF\n-----END CERTIFICATE-----",
+        "-----BEGIN PRIVATE KEY-----\nKEY\n-----END PRIVATE KEY-----",
         Config(brokerCount), brokerCount, "/var/lib/kafka/data");
 
     [Fact]
@@ -41,7 +47,7 @@ public class NodeEnvBuilderTests
         env["KAFKA_CONTROLLER_QUORUM_VOTERS"].Should().Be("1@broker1:9093,2@broker2:9093,3@broker3:9093");
         env["KAFKA_LISTENERS"].Should().Be("CONTROLLER://:9093,INTERNAL://:9092,CLIENT://:9094");
         env["KAFKA_LISTENER_SECURITY_PROTOCOL_MAP"]
-            .Should().Be("CONTROLLER:PLAINTEXT,INTERNAL:SASL_PLAINTEXT,CLIENT:SASL_PLAINTEXT");
+            .Should().Be("CONTROLLER:PLAINTEXT,INTERNAL:SASL_SSL,CLIENT:SASL_SSL");
         env["KAFKA_CONTROLLER_LISTENER_NAMES"].Should().Be("CONTROLLER");
         env["KAFKA_INTER_BROKER_LISTENER_NAME"].Should().Be("INTERNAL");
         env["KAFKA_SASL_ENABLED_MECHANISMS"].Should().Be("PLAIN");
@@ -151,6 +157,84 @@ public class NodeEnvBuilderTests
             .Should().Contain("user_app=\"0epSfWoy7q5SJu9RhhK8F8eHxzHuvx1A\"");
         env.Values.OfType<string>().Where(v => v.Contains("user_app"))
             .Should().NotContain(v => v.Contains("user_app=0epSfWoy"));
+    }
+
+    [Fact]
+    public void Build_SecurityProtocolMap_SslOnInternalClient_PlaintextController()
+    {
+        // Arrange: штатный спек.
+        // Act: генерация env.
+        var env = NodeEnvBuilder.Build(Spec());
+
+        // Assert: канон t03 (16 §2.2) — SASL_SSL на INTERNAL/CLIENT.
+        env["KAFKA_LISTENER_SECURITY_PROTOCOL_MAP"]
+            .Should().Be("CONTROLLER:PLAINTEXT,INTERNAL:SASL_SSL,CLIENT:SASL_SSL");
+    }
+
+    [Fact]
+    public void Build_SslPemKeystoreAndTruststore()
+    {
+        // Arrange: спек с PEM-строками CA/серта/ключа.
+        var spec = Spec();
+
+        // Act: генерация env.
+        var env = NodeEnvBuilder.Build(spec);
+
+        // Assert: PEM-пара в keystore, CA в truststore (16 §2.2).
+        env["KAFKA_SSL_KEYSTORE_TYPE"].Should().Be("PEM");
+        env["KAFKA_SSL_KEYSTORE_CERTIFICATE_CHAIN"].Should().Be(spec.BrokerCertPem);
+        env["KAFKA_SSL_KEYSTORE_KEY"].Should().Be(spec.BrokerKeyPem);
+        env["KAFKA_SSL_TRUSTSTORE_TYPE"].Should().Be("PEM");
+        env["KAFKA_SSL_TRUSTSTORE_CERTIFICATES"].Should().Be(spec.CaPem);
+    }
+
+    [Fact]
+    public void Build_AuthorizerSuperUsersAndDenyByDefault()
+    {
+        // Arrange / Act: штатный env.
+        var env = NodeEnvBuilder.Build(Spec());
+
+        // Assert: StandardAuthorizer + super.users + deny-by-default (16 §2.3).
+        env["KAFKA_AUTHORIZER_CLASS_NAME"]
+            .Should().Be("org.apache.kafka.metadata.authorizer.StandardAuthorizer");
+        env["KAFKA_SUPER_USERS"].Should().Be("User:admin;User:inter");
+        env["KAFKA_ALLOW_EVERYONE_IF_NO_ACL_FOUND"].Should().Be("false");
+    }
+
+    [Fact]
+    public void Build_JaasRoles_AdminAndAppOnBothListeners_RotationWindows()
+    {
+        // Arrange: окно ротации ОБЕИХ ролей (app: old+new; admin: old+new).
+        var spec = Spec(
+            passwords: ["AppOld0123456789AAAAAAAAAAAAAAAA", "AppNew0123456789AAAAAAAAAAAAAAAA"],
+            adminPasswords: ["AdmOld0123456789AAAAAAAAAAAAAAAA", "AdmNew0123456789AAAAAAAAAAAAAAAA"]);
+
+        // Act: генерация env.
+        var env = NodeEnvBuilder.Build(spec);
+
+        // Assert: INTERNAL несёт inter-креды клиента + пользователей обеих ролей
+        // с окнами user_<name>2 (16 §2.2); CLIENT — только пользователей.
+        env["KAFKA_LISTENER_NAME_INTERNAL_PLAIN_SASL_JAAS_CONFIG"].Should().ContainAll(
+            @"username=""inter""", @"user_inter=""", @"user_admin=""AdmOld", @"user_admin2=""AdmNew",
+            @"user_app=""AppOld", @"user_app2=""AppNew");
+        env["KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG"].Should().ContainAll(
+            @"user_admin=""AdmOld", @"user_admin2=""AdmNew", @"user_app=""AppOld", @"user_app2=""AppNew");
+        env["KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG"].Should().NotContain(@"username=");
+    }
+
+    [Fact]
+    public void Build_Jaas_SingleAdminPassword_NoRotationSuffix()
+    {
+        // Arrange: у обеих ролей по одному паролю (вне окон ротации).
+        var env = NodeEnvBuilder.Build(Spec());
+
+        // Assert: user_admin/user_app без 2-суффикса (каноническая позиция —
+        // admin первым, app вторым).
+        var clientJaas = env["KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG"];
+        clientJaas.Should().Contain(@"user_admin=""AdminPassword0123456789AbCdEf01""")
+            .And.Contain(@"user_app=""OldPassword0123456789AbCdEf01""")
+            .And.NotContain("user_admin2").And.NotContain("user_app2");
+        clientJaas.Should().MatchRegex(@"user_admin=""AdminPassword[^ ]* user_app=""OldPassword");
     }
 
     [Fact]

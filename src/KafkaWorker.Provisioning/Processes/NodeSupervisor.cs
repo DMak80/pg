@@ -236,6 +236,13 @@ public sealed class NodeSupervisor(
             controllers,
             snap.AppUser,
             [snap.AppPassword],
+            // Переходное состояние t03 (полный контур admin/CA — Task 8 плана):
+            // снапшот ещё не несёт полей безопасности — placeholder до Task 4/8.
+            "admin",
+            ["AdminPlaceholder0123456789AAAAAAAAA"],
+            "-----BEGIN CERTIFICATE-----\nPLACEHOLDER\n-----END CERTIFICATE-----",
+            "-----BEGIN CERTIFICATE-----\nPLACEHOLDER\n-----END CERTIFICATE-----",
+            "-----BEGIN PRIVATE KEY-----\nPLACEHOLDER\n-----END PRIVATE KEY-----",
             snap.Config,
             snap.Config.Brokers,
             "/var/lib/kafka/data"));
