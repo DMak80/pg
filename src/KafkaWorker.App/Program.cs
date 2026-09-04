@@ -16,10 +16,11 @@ using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
 
-// Точка входа KafkaWorker (arch/16 §8): host-builder с HTTP-гранью /healthz,
-// конфигурация appsettings+env, DI всех слоёв (etcd → координация → docker →
-// процессы → циклы). Env-секретов per-install НЕТ (единственный секрет —
-// per-cluster app_password в etcd). Fail-fast: пустые Etcd:Endpoints/Hosts.
+// Точка входа KafkaWorker (arch/16 §8): host-builder с mTLS-гранью HTTP API
+// (вкл. /healthz), конфигурация appsettings+env, DI всех слоёв (etcd →
+// координация → docker → процессы → циклы). Per-install env-секреты — только
+// TLS HTTP API (arch/16 §4); per-cluster секреты (app/admin/CA) — в etcd.
+// Fail-fast: пустые Etcd:Endpoints/Hosts, не-https AdvertiseUrl.
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -41,7 +42,15 @@ builder.Services.AddOptions<KafkaWorkerOptions>()
     .Validate(o => o.Etcd.Endpoints is { Length: > 0 }, "KafkaWorker:Etcd:Endpoints не заданы")
     .Validate(o => !string.IsNullOrWhiteSpace(o.Api.AdvertiseUrl),
         "KafkaWorker:Api:AdvertiseUrl не задан (env KFW_API_ADVERTISE_URL)")
+    .Validate(o => o.Api.Tls.AllowInsecureHttp
+        || o.Api.AdvertiseUrl.StartsWith("https://", StringComparison.Ordinal),
+        "AdvertiseUrl обязан быть https:// (mTLS-only API, arch/16 §1.1)")
     .ValidateOnStart();
+
+// mTLS HTTP API (arch/16 §1.1, t03): env-секреты TLS → конфиг, Kestrel c
+// серверным сертом и требованием клиентского серта per-install API-CA.
+TlsEndpoints.ApplyEnvOverrides(builder.Configuration);
+TlsEndpoints.ConfigureMtls(builder, port: 8080);
 
 // etcd-клиент (HTTP JSON gateway /v3/*) + координация (клэймы/лидерство, журнал).
 builder.Services.AddSingleton<IEtcdGateway>(sp =>
@@ -295,7 +304,9 @@ builder.Services.AddHealthChecks()
     .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop");
 
 var app = builder.Build();
-app.UseMiddleware<ApiKeyMiddleware>();
+if (app.Services.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)
+    app.Logger.LogWarning(
+        "KafkaWorker:Api:Tls:AllowInsecureHttp=true — HTTP без TLS (ТОЛЬКО WAF-тесты, arch/16 §1.1)");
 app.MapHealthChecks("/healthz");
 app.MapWorkerApi();
 

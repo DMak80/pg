@@ -3,6 +3,13 @@ using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using KafkaWorker.App.Api;
 using KafkaWorker.Core.Templates;
+using KafkaWorker.IntegrationTests.Kafka;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using Xunit;
 
 namespace KafkaWorker.IntegrationTests.Api;
@@ -36,11 +43,18 @@ public class MtlsApiTests
 
         var (clientCertPem, clientKeyPem) = ClusterPki.IssueBrokerCertificate(
             ApiCa.CaPem, ApiCa.CaKeyPem, "panel", ["panel"], ip: null);
-        var clientCert = X509Certificate2.CreateFromPem(clientCertPem, clientKeyPem);
+        // PFX round-trip: эфемерный ключ CreateFromPem не годится для SslStream
+        // на macOS (ре-импорт делает ключ экспортируемым).
+        var pemCert = X509Certificate2.CreateFromPem(clientCertPem, clientKeyPem);
+        var clientCert = X509CertificateLoader.LoadPkcs12(pemCert.Export(X509ContentType.Pkcs12), null);
+        // TLS 1.2: macOS SslStream не отправляет клиентские серты в TLS 1.3
+        // (dotnet/runtime#37961); прод-контур — Linux-контейнеры, ограничение
+        // касается только host-прогона теста.
         var handler = new SocketsHttpHandler
         {
             SslOptions = new()
             {
+                EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12,
                 ClientCertificates = [clientCert],
                 RemoteCertificateValidationCallback = (_, _, _, _) => true, // тест доверяет всё
             },
@@ -58,18 +72,23 @@ public class MtlsApiTests
         using var app = host.App;
         using var badClient = new HttpClient(new SocketsHttpHandler
         {
-            SslOptions = new() { RemoteCertificateValidationCallback = (_, _, _, _) => true },
+            SslOptions = new()
+            {
+                EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12,
+                RemoteCertificateValidationCallback = (_, _, _, _) => true,
+            },
         }) { BaseAddress = new Uri($"https://localhost:{port}") };
 
         // Act 1: запрос без клиентского серта.
+        var ct = TestContext.Current.CancellationToken;
         var refused = await Assert.ThrowsAnyAsync<HttpRequestException>(
-            () => badClient.GetAsync("/api/ping"));
+            () => badClient.GetAsync("/api/ping", ct));
 
         // Assert 1: TLS-отказ (хендшейк не прошёл — ClientCertificateMode.Required).
         refused.Should().NotBeNull();
 
         // Act 2 / Assert 2: с сертом API-CA — 200; /healthz — тоже за TLS.
-        (await host.Client.GetAsync("/api/ping")).StatusCode.Should().Be(HttpStatusCode.OK);
-        (await host.Client.GetAsync("/healthz")).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await host.Client.GetAsync("/api/ping", ct)).StatusCode.Should().Be(HttpStatusCode.OK);
+        (await host.Client.GetAsync("/healthz", ct)).StatusCode.Should().Be(HttpStatusCode.OK);
     }
 }

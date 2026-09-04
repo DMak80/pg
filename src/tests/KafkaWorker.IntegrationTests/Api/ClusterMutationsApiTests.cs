@@ -319,28 +319,6 @@ public class ClusterMutationsApiTests(KafkaApiFixture fixture)
         noCluster.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
-    // AAA: с заданным ApiKey все /api/* требуют X-Api-Key: без заголовка — 401,
-    // с корректным — мутация проходит (201).
-    [Fact]
-    public async Task ApiKey_WithoutHeader_401_WithHeader_201()
-    {
-        // Arrange — отдельный хост с KafkaWorker:Api:ApiKey=test
-        using var factory = fixture.Factory.WithWebHostBuilder(b =>
-            b.ConfigureAppConfiguration((_, cfg) => cfg.AddInMemoryCollection(
-                new Dictionary<string, string?> { ["KafkaWorker:Api:ApiKey"] = "test" })));
-        var client = factory.CreateClient();
-        var payload = new { name = "authdemo" };
-        var ct = TestContext.Current.CancellationToken;
-
-        // Act
-        var rejected = await client.PostAsJsonAsync("/api/kafka/clusters", payload, ct);
-        client.DefaultRequestHeaders.Add("X-Api-Key", "test");
-        var accepted = await client.PostAsJsonAsync("/api/kafka/clusters", payload, ct);
-
-        // Assert
-        rejected.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
-        var problem = await rejected.Content.ReadFromJsonAsync<JsonElement>(ct);
-        problem.GetProperty("title").GetString().Should().Be("Unauthorized");
-        accepted.StatusCode.Should().Be(HttpStatusCode.Created);
-    }
+    // t03: X-Api-Key/KFW_API_KEY удалены — грань API mTLS-only (arch/16 §1.1);
+    // транспортный отказ/успех проверяет MtlsApiTests на реальном Kestrel-сокете.
 }
