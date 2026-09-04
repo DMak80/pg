@@ -48,7 +48,8 @@ lease-клэймы в etcd, §3); смерть контролирующего и
 `t07-move-bucket-ui`; в t06 переезды инициируются только etcdctl'ом (заявки
 `/pgworker/moves/`, t01); ручной скриптовый путь остаётся для стендов без PgWorker — не
 смешивать с заявками в одном окне переезда; балансировка по метрикам,
-per-cluster секреты, TLS к Docker API/SSH-туннели, Prometheus-метрики,
+per-cluster секреты, TLS к Docker API/SSH-туннели, метрики PG-репликации
+у прод-нод (scrape Patroni — arch/18 §5.4),
 управление etcd-слоем, слияние данных карантинного шарда —
 [roadmap/pgworker.md](roadmap/pgworker.md).
 
@@ -1012,7 +1013,9 @@ MR3 journal op=repair (сколько/какие статусы диспатче
   мастер-ключа с коррекцией.
 - **Diag-ключи etcd** несут наблюдаемость для панели/оператора:
   `/pgworker/work/<C>` (живая фаза), `nodes/<n>/state`, journal эвакуаций.
-- Prometheus-метрики — roadmap; MVP — health + логи.
+- Prometheus-метрики — единый каркас [18-metrics.md](18-metrics.md):
+  `/metrics` на том же порту `:8080` (словарь §2.2 — циклы/клэймы/фазы/
+  операции/снапшоты), репликация PG — scrape Patroni `:8008` напрямую.
 
 ---
 
