@@ -71,13 +71,16 @@ Infrastructure.App.Metrics   ──порт──► src/Shared.Metrics
 | Имя | Тип | Источник |
 |---|---|---|
 | `dotnet_*` (gc, threadpool, allocations, process) | разные | OTel `System.Runtime`-метры |
-| `http_server_request_duration_seconds` | histogram | OTel ASP.NET-метр (панель; у воркеров — при наличии HTTP-грани) |
+| `http_server_request_duration_seconds` | histogram | OTel ASP.NET-метр (панель; у воркеров — при наличии HTTP-грани). Факт пинов 1.16.0-beta.1 (фиксирует тест `Shared.Metrics.UnitTests`): на минимальном slim-хосте гистограмма не эмитится; фактически присутствуют `http_server_active_requests`, `kestrel_*`, `aspnetcore_memory_pool_*` — на реальных сервисах сверяют интеграционные тесты Ф3–Ф5 |
 
 ### 2.2. Воркер-паттерн (`Shared.Metrics` WorkerMetrics; PgWorker + KafkaWorker)
 
 Имена инструментов глобальны (имя Meter в метрику не входит) — оба воркера
 пишут в одни серии; различение сервисов/инстансов — лейблы `job`/`instance`,
-которые назначает Prometheus по scrape-джобе (§5.2).
+которые назначает Prometheus по scrape-джобе (§5.2). Факт экспортёра
+1.16.0-beta.1 (фиксирует интеграционный тест §6): к каждой серии добавляется
+системный лейбл `otel_scope_name` = имя Meter (`PgWorker`/`KafkaWorker`) —
+ PromQL-запросы словаря от него не зависят, но факт зафиксирован для инспекции.
 
 | Имя | Тип | Лейблы | Смысл |
 |---|---|---|---|
