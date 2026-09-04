@@ -37,6 +37,7 @@
         <Project Path="AdminPanel.Probes/AdminPanel.Probes.csproj" />
     </Folder>
     <Folder Name="/tests/">
+        <Project Path="tests/Shared.Metrics.UnitTests/Shared.Metrics.UnitTests.csproj" />
         <Project Path="tests/PgWorker.UnitTests/PgWorker.UnitTests.csproj" />
         <Project Path="tests/PgWorker.IntegrationTests/PgWorker.IntegrationTests.csproj" />
         <Project Path="tests/AdminPanel.UnitTests/AdminPanel.UnitTests.csproj" />
