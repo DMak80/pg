@@ -217,6 +217,38 @@ public class NodeSupervisorTests
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("PROVISIONING");
     }
 
+    // AAA (t09-review, arch/14 §5 C): драйвер БЕЗ честной running-инспекции
+    // (Swarm-семантика: InspectNodesAsync — заглушка, всегда пуст). «Ноды нет
+    // в инспекте» неотличимо от «инспект-заглушка» → inspect-ускорение
+    // failover ДОЛЖНО молчать: иначе любой транспортный флап пробы лидера
+    // (probe Down) давал бы удаление leader-ключа + failover-маркер на
+    // ЖИВОМ лидере — ложный failover.
+    [Fact]
+    public async Task Tick_NoRunningInspection_DeadLeaderProbe_NoAcceleration()
+    {
+        // Arrange — лидер shard1a молчит по пробе (18000 Down), реплики живы,
+        // трек недоступности устарел (expired); все объекты нод на месте.
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var rig = await NewRig(
+            port => port == 18000 ? Down() : Ok(),
+            staleUnreachableForShard1A: now - 200);
+        rig.Driver.SupportsRunningInspection = false;
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a"}""");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: без capability ускорение не стреляет — failover-маркера нет,
+        // leader-ключ не тронут (промоушен по lease/loop_wait Patroni); нода
+        // получает честный UNREACHABLE без пересозданий.
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        rig.Etcd.Store.Should().NotContainKey("/service/shop-shard1/failover");
+        rig.Etcd.Store.Should().ContainKey("/service/shop-shard1/leader");
+        rig.Driver.RemovedNodes.Should().NotContain("shard1/shard1a");
+        rig.Driver.EnsuredNodes.Should().NotContain("shard1/shard1a");
+        rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("UNREACHABLE");
+    }
+
     [Fact]
     public async Task Tick_DeletedReplicaContainer_NoFailoverAcceleration()
     {

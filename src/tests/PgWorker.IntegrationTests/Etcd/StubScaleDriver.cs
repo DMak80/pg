@@ -10,6 +10,9 @@ namespace PgWorker.IntegrationTests.Etcd;
 // удаления/создания, отдаёт фиксированные хосты/объекты — etcd-сторона реальна.
 public sealed class StubScaleDriver : IClusterDriver
 {
+    // Plain-семантика: инспект отражает факт running-процесса (arch/14 §5 C).
+    public bool SupportsRunningInspection { get; init; } = true;
+
     public readonly List<string> EnsuredNodes = [];
     public readonly List<string> RemovedNodes = [];
     public List<string> NodeObjects = [];

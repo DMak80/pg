@@ -544,7 +544,13 @@ public sealed class NodeSupervisor(
             // получает честный UNREACHABLE ниже (реальная проблема, разбор оператором).
             var adopted = addresses.TryGetValue(trackKey, out var addr) && addr.Object is not null;
 
-            if (isLeader && !adopted && node.State != NodeState.ToRecreate && alive.Count > 0)
+            // «Нет в running-инспекте» — свидетельство смерти ТОЛЬКО у драйверов
+            // с честной инспекцией (SupportsRunningInspection, arch/14 §5 C):
+            // Swarm-инспект — заглушка (всегда пуст), и без гварда любой
+            // транспортный флап пробы лидера давал ложный failover живого
+            // лидера (удаление leader-ключа + failover-маркер).
+            if (isLeader && !adopted && node.State != NodeState.ToRecreate
+                && alive.Count > 0 && driver.SupportsRunningInspection)
             {
                 var running = await driver.InspectNodesAsync(cluster, [name], ct);
                 if (!running.IsSuccess)
