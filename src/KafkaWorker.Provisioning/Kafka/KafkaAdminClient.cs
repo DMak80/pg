@@ -143,6 +143,12 @@ public sealed class KafkaAdminClient(
     // Ленивый клиент: создаётся при первом вызове (пустые операции не ходят в сеть).
     private IAdminClient? _client;
 
+    // Инициализация/Dispose нативного клиента взаимоисключены (ревью Ф7-2):
+    // два параллельных первых вызова (supervise-тик + коллектор на одном ключе
+    // кэша) без lock'а строили бы два rd_kafka-инстанса — проигравший сирота
+    // до финализатора; Dispose кэша при shutdown vs параллельный первый вызов.
+    private readonly object _clientGate = new();
+
     // Ошибка операции → unhealthy-инвалидация записи кэша (следующий Create
     // пересоздаёт клиент); отмена host'а — не фейл (см. IsHostCancellation).
     internal void NotifyFailed() => onFailed?.Invoke();
@@ -200,11 +206,15 @@ public sealed class KafkaAdminClient(
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
     // Реальный Dispose нативного клиента (кэш фабрики; может ждать poll-поток —
-    // зовётся только в фоне или при shutdown).
+    // зовётся только в фоне или при shutdown). Под _clientGate: Dispose vs
+    // параллельная первая инициализация взаимоисключены (ревью Ф7-2).
     internal void DisposeNative()
     {
-        _client?.Dispose();
-        _client = null;
+        lock (_clientGate)
+        {
+            _client?.Dispose();
+            _client = null;
+        }
     }
 
     public Task<Result<IReadOnlyDictionary<string, string>>> DescribeTopicConfigsAsync(string topic, CancellationToken ct)
@@ -388,16 +398,25 @@ public sealed class KafkaAdminClient(
         }
     }
 
+    // Double-checked lock (ревью Ф7-2): быстрый путь без lock'а (после
+    // инициализации стоимость нулевая); гонка первых вызовов строит ровно
+    // один нативный клиент.
     private IAdminClient EnsureClient()
     {
         if (_client is not null)
             return _client;
 
-        // Пины backoff + rdkafka-лог на Debug (профиль фабрики, t05 spec §3.1):
-        // дефолтные 100 мс давали reconnect-шторм на лежащем кластере.
-        _client = new AdminClientBuilder(KafkaAdminClientFactory.BaseAdminConfig(bootstrap, user, password))
-            .SetLogHandler((_, m) => log?.LogDebug("rdkafka: {Message}", m.Message))
-            .Build();
-        return _client;
+        lock (_clientGate)
+        {
+            if (_client is not null)
+                return _client;
+
+            // Пины backoff + rdkafka-лог на Debug (профиль фабрики, t05 spec §3.1):
+            // дефолтные 100 мс давали reconnect-шторм на лежащем кластере.
+            _client = new AdminClientBuilder(KafkaAdminClientFactory.BaseAdminConfig(bootstrap, user, password))
+                .SetLogHandler((_, m) => log?.LogDebug("rdkafka: {Message}", m.Message))
+                .Build();
+            return _client;
+        }
     }
 }
