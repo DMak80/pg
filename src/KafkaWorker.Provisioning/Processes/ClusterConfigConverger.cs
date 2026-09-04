@@ -53,9 +53,9 @@ public static class ConvergeDecider
 public sealed class ClusterConfigConverger(IKafkaAdminClientFactory adminFactory) : IClusterConfigConverger
 {
     public async Task<Result> ApplyAsync(
-        string cluster, string bootstrap, string user, string password, KafkaClusterConfig config, CancellationToken ct)
+        string cluster, string bootstrap, string user, string password, string? caPem, KafkaClusterConfig config, CancellationToken ct)
     {
-        await using var admin = adminFactory.Create(bootstrap, user, password);
+        await using var admin = adminFactory.Create(bootstrap, user, password, caPem);
 
         // Describe: перечень брокеров + текущие dynamic-конфиги первого
         // (dynamic broker configs кластер-уровня: default.*, применяем на всех).

@@ -217,7 +217,7 @@ public sealed class AddBrokerProcess(
     private async Task<Result<bool>> WaitReadyAsync(KafkaClusterSnapshot snap, CancellationToken ct)
     {
         var cluster = snap.Cluster;
-        await using var admin = adminFactory.Create(snap.Endpoints!, snap.AppUser!, snap.AppPassword!);
+        await using var admin = adminFactory.Create(snap.Endpoints!, snap.AppUser!, snap.AppPassword!, null); // переходно: admin+caPem — Task 8
         var view = await admin.DescribeClusterAsync(ct);
         var ready = view.IsSuccess && view.Value.Brokers.Count >= snap.Brokers.Count;
 

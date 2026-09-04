@@ -42,6 +42,11 @@ public sealed class FakeKafkaAdminClient : IKafkaAdminClient
     public int DeleteTopicFailCount { get; set; }
     private int _createFails, _deleteFails;
 
+    // ACL (t03): факт-список (describe), журнал мутаций для assert'ов converge.
+    public List<KafkaAclBinding> Acls = [];
+    public List<IReadOnlyList<KafkaAclBinding>> CreatedAcls = [];
+    public List<IReadOnlyList<KafkaAclBinding>> DeletedAcls = [];
+
     public Task<Result<KafkaClusterView>> DescribeClusterAsync(CancellationToken ct)
         => ClusterError is not null
             ? Task.FromResult(Result<KafkaClusterView>.Failed(ClusterError))
@@ -152,6 +157,23 @@ public sealed class FakeKafkaAdminClient : IKafkaAdminClient
         }
 
         return Task.FromResult(Result<TopicDeleteOutcome>.Success(TopicDeleteOutcome.NotFound));
+    }
+
+    public Task<Result<IReadOnlyList<KafkaAclBinding>>> DescribeAclsAsync(CancellationToken ct)
+        => Task.FromResult(Result<IReadOnlyList<KafkaAclBinding>>.Success([.. Acls]));
+
+    public Task<Result> CreateAclsAsync(IReadOnlyList<KafkaAclBinding> acls, CancellationToken ct)
+    {
+        CreatedAcls.Add(acls);
+        Acls.AddRange(acls);
+        return Task.FromResult(Result.Success());
+    }
+
+    public Task<Result> DeleteAclsAsync(IReadOnlyList<KafkaAclBinding> acls, CancellationToken ct)
+    {
+        DeletedAcls.Add(acls);
+        Acls = Acls.Where(a => !acls.Contains(a)).ToList();
+        return Task.FromResult(Result.Success());
     }
 
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;

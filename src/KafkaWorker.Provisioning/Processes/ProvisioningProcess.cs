@@ -109,7 +109,8 @@ public sealed class ProvisioningProcess(
         if (await IsRemovedAsync(cluster, ct))
             return await FinishAsync(cluster, "aborted", ct);
 
-        var converged = await converger.ApplyAsync(cluster, endpoints, secret.Value.AdminUser, secret.Value.AdminPassword, snap.Config, ct);
+        // Переходно: caPem=null — реальный контур admin/CA подключает Task 8 плана.
+        var converged = await converger.ApplyAsync(cluster, endpoints, secret.Value.AdminUser, secret.Value.AdminPassword, null, snap.Config, ct);
         if (!converged.IsSuccess)
             return Fail(cluster, converged.Error!, "converge-configs");
 
@@ -309,7 +310,7 @@ public sealed class ProvisioningProcess(
         KafkaClusterSnapshot snap, string endpoints, ClusterSecrets secret, CancellationToken ct)
     {
         var cluster = snap.Cluster;
-        await using var admin = adminFactory.Create(endpoints, secret.AdminUser, secret.AdminPassword);
+        await using var admin = adminFactory.Create(endpoints, secret.AdminUser, secret.AdminPassword, null); // переходно: caPem — Task 8
         var view = await admin.DescribeClusterAsync(ct);
         var ready = view.IsSuccess
             && view.Value.ControllerId is not null

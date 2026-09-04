@@ -53,10 +53,11 @@ internal sealed class KafkaClusterProcesses(
             return supervised;
 
         // Converge (E) — только для поднявшегося кластера (endpoints есть).
+        // Переходно t03: admin/CA-поля снапшота подключает Task 8 (там же — caPem).
         if (snap.Endpoints is not null && snap.AppUser is not null && snap.AppPassword is not null)
         {
             var converged = await converger.ApplyAsync(
-                snap.Cluster, snap.Endpoints, snap.AppUser, snap.AppPassword, snap.Config, ct);
+                snap.Cluster, snap.Endpoints, snap.AppUser, snap.AppPassword, null, snap.Config, ct);
             if (!converged.IsSuccess)
                 return converged;
         }

@@ -35,7 +35,7 @@ public class ProvisioningProcessTests
         public int Calls;
 
         public Task<Result> ApplyAsync(
-            string cluster, string bootstrap, string user, string password, KafkaClusterConfig config, CancellationToken ct)
+            string cluster, string bootstrap, string user, string password, string? caPem, KafkaClusterConfig config, CancellationToken ct)
         {
             Calls++;
             return Task.FromResult(Result.Success());
@@ -94,7 +94,7 @@ public class ProvisioningProcessTests
 
     private sealed class FakeAdminFactory(FakeKafkaAdminClient client) : IKafkaAdminClientFactory
     {
-        public IKafkaAdminClient Create(string bootstrap, string user, string password) => client;
+        public IKafkaAdminClient Create(string bootstrap, string user, string password, string? caPem) => client;
     }
 
     private void ReadyCluster(FakeKafkaAdminClient admin, int brokers)

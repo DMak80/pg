@@ -74,7 +74,7 @@ public class NodeSupervisorTests
 
     private sealed class FakeAdminFactory(FakeKafkaAdminClient client) : IKafkaAdminClientFactory
     {
-        public IKafkaAdminClient Create(string bootstrap, string user, string password) => client;
+        public IKafkaAdminClient Create(string bootstrap, string user, string password, string? caPem) => client;
     }
 
     [Fact]

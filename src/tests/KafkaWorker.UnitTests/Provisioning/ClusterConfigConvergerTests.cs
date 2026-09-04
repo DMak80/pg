@@ -92,7 +92,7 @@ public class ClusterConfigConvergerTests
 
     private sealed class Factory(FakeKafkaAdminClient client) : IKafkaAdminClientFactory
     {
-        public IKafkaAdminClient Create(string bootstrap, string user, string password) => client;
+        public IKafkaAdminClient Create(string bootstrap, string user, string password, string? caPem) => client;
     }
 
     [Fact]
@@ -108,7 +108,7 @@ public class ClusterConfigConvergerTests
         var converger = new ClusterConfigConverger(new Factory(admin));
 
         // Act: converge.
-        var result = await converger.ApplyAsync("events", "h:9094", "app", "pw", Config(), CancellationToken.None);
+        var result = await converger.ApplyAsync("events", "h:9094", "app", "pw", null, Config(), CancellationToken.None);
 
         // Assert: alter на каждом брокере с полным diff; после apply факт сходится.
         result.IsSuccess.Should().BeTrue();
@@ -137,7 +137,7 @@ public class ClusterConfigConvergerTests
         var converger = new ClusterConfigConverger(new Factory(admin));
 
         // Act: converge.
-        var result = await converger.ApplyAsync("events", "h:9094", "app", "pw", Config(), CancellationToken.None);
+        var result = await converger.ApplyAsync("events", "h:9094", "app", "pw", null, Config(), CancellationToken.None);
 
         // Assert: no-op — alter не вызывался.
         result.IsSuccess.Should().BeTrue();
@@ -152,7 +152,7 @@ public class ClusterConfigConvergerTests
         var converger = new ClusterConfigConverger(new Factory(admin));
 
         // Act: converge.
-        var result = await converger.ApplyAsync("events", "h:9094", "app", "pw", Config(), CancellationToken.None);
+        var result = await converger.ApplyAsync("events", "h:9094", "app", "pw", null, Config(), CancellationToken.None);
 
         // Assert: Failed (transient — следующий тик повторит).
         result.IsSuccess.Should().BeFalse();

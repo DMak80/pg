@@ -212,7 +212,7 @@ public sealed class AppPasswordRotator(
     private async Task<Result<bool>> WaitForBrokersAsync(
         KafkaClusterSnapshot snap, int expected, CancellationToken ct)
     {
-        await using var admin = adminFactory.Create(snap.Endpoints!, snap.AppUser!, snap.AppPassword!);
+        await using var admin = adminFactory.Create(snap.Endpoints!, snap.AppUser!, snap.AppPassword!, null); // переходно: admin+caPem — Task 8
         var view = await admin.DescribeClusterAsync(ct);
         return Result<bool>.Success(view.IsSuccess && view.Value.Brokers.Count >= expected);
     }

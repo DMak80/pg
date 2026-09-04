@@ -114,7 +114,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
     // describe-all через адаптер воркера (включая __-топики, t02).
     private async Task<IReadOnlyList<KafkaTopicView>> DescribeAllAsync(Creds creds)
     {
-        await using var admin = fixture.AdminFactory.Create(creds.Bootstrap, creds.User, creds.Password);
+        await using var admin = fixture.AdminFactory.Create(creds.Bootstrap, creds.User, creds.Password, null);
         var described = await admin.DescribeTopicsAsync(
             includeInternal: true, TestContext.Current.CancellationToken);
         described.IsSuccess.Should().BeTrue($"describe-all должен работать: {described.Error?.Message}");
@@ -411,7 +411,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
                 "broker4 повторно поднят за 180 c (NodeId=4 детерминирован именем)");
             var endpointsAfterAdd = await fixture.GetAsync($"/kafka/clusters/{cluster}/endpoints");
             endpointsAfterAdd!.Split(',').Should().HaveCount(4, "endpoints содержит адрес broker4");
-            await using (var clusterAdmin = fixture.AdminFactory.Create(creds.Bootstrap, creds.User, creds.Password))
+            await using (var clusterAdmin = fixture.AdminFactory.Create(creds.Bootstrap, creds.User, creds.Password, null))
             {
                 var view = await clusterAdmin.DescribeClusterAsync(ct);
                 view.IsSuccess.Should().BeTrue();

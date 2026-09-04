@@ -259,7 +259,7 @@ public sealed class NodeSupervisor(
         if (snap.Endpoints is null || snap.AppUser is null || snap.AppPassword is null)
             return Result<HashSet<int>?>.Success(null); // кластер ещё не поднят — проб невозможен
 
-        await using var admin = adminFactory.Create(snap.Endpoints, snap.AppUser, snap.AppPassword);
+        await using var admin = adminFactory.Create(snap.Endpoints, snap.AppUser, snap.AppPassword, null); // переходно: admin+caPem — Task 8
         var view = await admin.DescribeClusterAsync(ct);
         if (!view.IsSuccess)
             return Result<HashSet<int>?>.Success(null); // кластер целиком недоступен — молчание трекается по всем

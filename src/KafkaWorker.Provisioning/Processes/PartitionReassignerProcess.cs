@@ -92,7 +92,7 @@ public sealed class PartitionReassignerProcess(
 
         // D1: describe-all (включая __) — слепая проба: никаких подач,
         // прогресс-ключ НЕ трогается (spec §11.7: прошлый прогресс сохраняется).
-        await using var admin = adminFactory.Create(snap.Endpoints, snap.AppUser, snap.AppPassword);
+        await using var admin = adminFactory.Create(snap.Endpoints, snap.AppUser, snap.AppPassword, null); // переходно: admin+caPem — Task 8
         var described = await admin.DescribeTopicsAsync(includeInternal: true, ct);
         if (!described.IsSuccess)
         {

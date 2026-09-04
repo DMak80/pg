@@ -71,7 +71,7 @@ public class AddBrokerProcessTests
 
     private sealed class FakeAdminFactory(FakeKafkaAdminClient client) : IKafkaAdminClientFactory
     {
-        public IKafkaAdminClient Create(string bootstrap, string user, string password) => client;
+        public IKafkaAdminClient Create(string bootstrap, string user, string password, string? caPem) => client;
     }
 
     private static void ReadyCluster(FakeKafkaAdminClient admin, int brokers)
