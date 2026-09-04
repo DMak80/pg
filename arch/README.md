@@ -101,6 +101,8 @@ arch/
 │                                  + клиентский дискавери (endpoints/app-креды/реестр топиков)
 ├── 16-kafkaworker.md          ← ★ KafkaWorker: оркестратор Kafka-кластеров
 │                                  (provisioning/deprovisioning/надзор/автосинк топиков/converge)
+├── 17-synchronization-principles.md ← ★ принципы синхронизации распределённого состояния
+│                                  (единый etcd, конвергенция DCS, детерминизм, реестр ошибок)
 ├── configs/
 │   ├── etcd/
 │   │   ├── docker-compose.yml
@@ -191,3 +193,8 @@ arch/
 14. [16-kafkaworker.md](16-kafkaworker.md) — оркестратор KafkaWorker:
     декларативный жизненный цикл Kafka-кластеров (KRaft, docker plain/swarm),
     автосинк топиков, converge конфигов.
+15. [17-synchronization-principles.md](17-synchronization-principles.md) —
+    принципы синхронизации распределённого состояния (единый etcd-контур,
+    конвергенция динамического DCS-конфига, инварианты внешних систем,
+    недискриминантные ключи, детерминизм мутаций, флап≠смерть, реестр
+    ошибок использования).
