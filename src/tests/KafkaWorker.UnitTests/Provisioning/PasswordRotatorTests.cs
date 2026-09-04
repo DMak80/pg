@@ -9,10 +9,10 @@ using KafkaWorker.Core.Templates;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
-// AppPasswordRotator (arch/16 §5 H): фазы A/B/C без окна недоступности, отказ
+// PasswordRotator (arch/16 §5 H): фазы A/B/C без окна недоступности, отказ
 // между фазами продолжает повтор, снапшоты P12 «до/после», нет заявки → no-op.
 
-public class AppPasswordRotatorTests
+public class PasswordRotatorTests
 {
     private const string Ep = "http://etcd:2379";
     private const string OldPassword = "OldPassword0123456789abcdef";
@@ -23,7 +23,7 @@ public class AppPasswordRotatorTests
         FakeKafkaAdminClient Admin,
         ClaimStore Claims,
         WorkJournal Journal,
-        AppPasswordRotator Process,
+        PasswordRotator Process,
         List<string> SnapshotPoints);
 
     private static void SeedActive(Fakes.FakeEtcd etcd, int brokers = 2)
@@ -61,7 +61,7 @@ public class AppPasswordRotatorTests
         driver.NodeObjects.AddRange(Enumerable.Range(1, brokers).Select(k => $"kfw-events-broker{k}"));
         var admin = new FakeKafkaAdminClient();
         var snapshotPoints = new List<string>();
-        var process = new AppPasswordRotator(
+        var process = new PasswordRotator(
             etcd, [Ep], driver, claims, journal, new FakeAdminFactory(admin),
             ProvisioningOptions.Default, new BrokerCertificateCache(),
             snapshot: ct =>
@@ -253,7 +253,7 @@ public class AppPasswordRotatorTests
         SeedActive(etcd);
         SeedRotation(etcd);
         var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
-        var process = new AppPasswordRotator(
+        var process = new PasswordRotator(
             etcd, [Ep], new Fakes.FakeKafkaDriver(), claims, new WorkJournal(etcd, [Ep]),
             new FakeAdminFactory(new FakeKafkaAdminClient()), ProvisioningOptions.Default, new BrokerCertificateCache());
 
@@ -263,5 +263,61 @@ public class AppPasswordRotatorTests
         // Assert
         result.IsSuccess.Should().BeFalse();
         result.Error!.Message.Should().Contain("клэйм не наш");
+    }
+
+    // ===== t03 Ф4: роль admin (заявка /kafkaworker/admin_rotations/<C>) =====
+
+    [Fact]
+    public async Task RunAsync_AdminTicket_RotatesAdminPasswordKeepsApp()
+    {
+        // Arrange: заявка /kafkaworker/admin_rotations/events; Active-кластер.
+        var rig = await NewRig();
+        rig.Etcd.Seed("/kafkaworker/admin_rotations/events",
+            """{"requested_unix":1756500900,"requested_by":"test"}""");
+        ReadyCluster(rig.Admin, 2);
+
+        // Act: тик ротации.
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: admin_password заменён (фазы A/B/C), app_password не тронут;
+        // env пересозданий несёт user_admin+user_admin2 и одиночный user_app.
+        result.IsSuccess.Should().BeTrue();
+        var newAdmin = rig.Etcd.Store["/kafka/clusters/events/admin_password"].Value;
+        newAdmin.Should().HaveLength(32).And.NotBe("AdminPassword0123456789abcdef");
+        rig.Etcd.Store["/kafka/clusters/events/app_password"].Value.Should().Be(OldPassword);
+        rig.Etcd.Store.Should().NotContainKey("/kafkaworker/admin_rotations/events");
+        var jaas = rig.Driver.AllEnsured
+            .Select(e => e.Env["KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG"])
+            .ToList();
+        // Фаза A: окно user_admin=OLD + user_admin2=NEW; фаза C: только NEW.
+        jaas.Take(2).Should().OnlyContain(j =>
+            j.Contains(@"user_admin=""AdminPassword0123456789abcdef""")
+            && j.Contains($@"user_admin2=""{newAdmin}""")
+            && j.Contains($@"user_app=""{OldPassword}"""));
+        jaas.Skip(2).Should().OnlyContain(j =>
+            j.Contains($@"user_admin=""{newAdmin}""")
+            && !j.Contains("user_admin2"));
+        var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
+        state.Value!.Phase.Should().Be("admin:done");
+    }
+
+    [Fact]
+    public async Task RunAsync_AppTicketFirst_AdminTicketWaitsNextTick()
+    {
+        // Arrange: живы ОБЕ заявки.
+        var rig = await NewRig();
+        SeedRotation(rig.Etcd);
+        rig.Etcd.Seed("/kafkaworker/admin_rotations/events",
+            """{"requested_unix":1756500950,"requested_by":"test"}""");
+        ReadyCluster(rig.Admin, 2);
+
+        // Act: один тик.
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: исполнена ТОЛЬКО app (детерминированный порядок spec §5.2),
+        // admin-заявка жива и ждёт следующего тика.
+        result.IsSuccess.Should().BeTrue();
+        rig.Etcd.Store.Should().NotContainKey("/kafkaworker/rotations/events");
+        rig.Etcd.Store.Should().ContainKey("/kafkaworker/admin_rotations/events");
     }
 }

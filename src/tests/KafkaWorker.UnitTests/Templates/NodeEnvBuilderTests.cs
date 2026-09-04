@@ -159,6 +159,9 @@ public class NodeEnvBuilderTests
             .Should().NotContain(v => v.Contains("user_app=0epSfWoy"));
     }
 
+    // Экранирование переносов, как в env-каноне билдера.
+    private static string Escape(string pem) => pem.Replace("\n", "\\n");
+
     [Fact]
     public void Build_SecurityProtocolMap_SslOnInternalClient_PlaintextController()
     {
@@ -180,12 +183,13 @@ public class NodeEnvBuilderTests
         // Act: генерация env.
         var env = NodeEnvBuilder.Build(spec);
 
-        // Assert: PEM-пара в keystore, CA в truststore (16 §2.2).
+        // Assert: PEM-пара в keystore, CA в truststore (16 §2.2); переносы PEM
+        // экранированы \n (env → properties: Java Properties разворачивает обратно).
         env["KAFKA_SSL_KEYSTORE_TYPE"].Should().Be("PEM");
-        env["KAFKA_SSL_KEYSTORE_CERTIFICATE_CHAIN"].Should().Be(spec.BrokerCertPem);
-        env["KAFKA_SSL_KEYSTORE_KEY"].Should().Be(spec.BrokerKeyPem);
+        env["KAFKA_SSL_KEYSTORE_CERTIFICATE_CHAIN"].Should().Be(Escape(spec.BrokerCertPem));
+        env["KAFKA_SSL_KEYSTORE_KEY"].Should().Be(Escape(spec.BrokerKeyPem));
         env["KAFKA_SSL_TRUSTSTORE_TYPE"].Should().Be("PEM");
-        env["KAFKA_SSL_TRUSTSTORE_CERTIFICATES"].Should().Be(spec.CaPem);
+        env["KAFKA_SSL_TRUSTSTORE_CERTIFICATES"].Should().Be(Escape(spec.CaPem));
     }
 
     [Fact]

@@ -241,7 +241,7 @@ builder.Services.AddSingleton(sp => new AddBrokerProcess(
     sp.GetRequiredService<IKafkaAdminClientFactory>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value),
     sp.GetRequiredService<BrokerCertificateCache>()));
-builder.Services.AddSingleton(sp => new AppPasswordRotator(
+builder.Services.AddSingleton(sp => new PasswordRotator(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<IClusterDriver>(),

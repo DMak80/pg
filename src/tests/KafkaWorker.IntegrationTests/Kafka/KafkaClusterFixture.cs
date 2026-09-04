@@ -182,20 +182,39 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
         return kv.Value?.Value;
     }
 
-    // Дискавери-клиент (spec §9.2): bootstrap/endpoints и креды — ТОЛЬКО из ключей etcd.
-    public async Task<AdminClientBuilder> DiscoveryAdminBuilderAsync(string cluster)
+    // Дискавери-клиент (spec §9.2, t03): bootstrap/endpoints, креды по роли
+    // (app|admin) и ca_pem — ТОЛЬКО из ключей etcd; SASL_SSL + ssl.ca.pem.
+    public async Task<AdminClientBuilder> DiscoveryAdminBuilderAsync(string cluster, string role = "app")
     {
+        var (userKey, passwordKey) = role == "admin"
+            ? ("admin_user", "admin_password")
+            : ("app_user", "app_password");
         var endpoints = await GetAsync($"/kafka/clusters/{cluster}/endpoints");
-        var user = await GetAsync($"/kafka/clusters/{cluster}/app_user");
-        var password = await GetAsync($"/kafka/clusters/{cluster}/app_password");
-        return new AdminClientBuilder(new AdminClientConfig
+        var user = await GetAsync($"/kafka/clusters/{cluster}/{userKey}");
+        var password = await GetAsync($"/kafka/clusters/{cluster}/{passwordKey}");
+        var caPem = await GetAsync($"/kafka/clusters/{cluster}/ca_pem");
+        var config = new AdminClientConfig
         {
             BootstrapServers = endpoints!.Replace("host.docker.internal", "localhost", StringComparison.Ordinal),
-            SecurityProtocol = SecurityProtocol.SaslPlaintext,
+            SecurityProtocol = SecurityProtocol.SaslSsl,
             SaslMechanism = SaslMechanism.Plain,
             SaslUsername = user,
             SaslPassword = password,
-        });
+        };
+        config.Set("ssl.ca.pem", caPem!);
+        return new AdminClientBuilder(config);
+    }
+
+    // Дискавери-части для клиентских сценариев теста (t03): bootstrap (localhost-
+    // замена advertised), ca_pem и app-креды — всё из etcd.
+    public async Task<(string Bootstrap, string CaPem, string AppUser, string AppPassword)> DiscoveryPartsAsync(string cluster)
+    {
+        var endpoints = await GetAsync($"/kafka/clusters/{cluster}/endpoints");
+        var caPem = await GetAsync($"/kafka/clusters/{cluster}/ca_pem");
+        var appUser = await GetAsync($"/kafka/clusters/{cluster}/app_user");
+        var appPassword = await GetAsync($"/kafka/clusters/{cluster}/app_password");
+        return (endpoints!.Replace("host.docker.internal", "localhost", StringComparison.Ordinal),
+            caPem!, appUser!, appPassword!);
     }
 }
 

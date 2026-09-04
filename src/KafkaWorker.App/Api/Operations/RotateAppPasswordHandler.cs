@@ -8,7 +8,7 @@ namespace KafkaWorker.App.Api.Operations;
 public sealed record KafkaPasswordRotatedDto(string Cluster, long RequestedUnix, string RequestedBy);
 
 // Заявка ротации app-пароля через API воркера (arch/02 §10.2-8): клэйм-txn
-// /kafkaworker/rotations/<C>; исполнение — AppPasswordRotator воркера (фазы
+// /kafkaworker/rotations/<C>; исполнение — PasswordRotator (роль app) воркера (фазы
 // A/B/C, arch/16 §5 H). Порт панельного RotateKafkaPasswordCommandHandler.
 // requested_by — заголовок X-Requested-By (панель шлёт оператора), fallback
 // "api" (у панели ClaimsPrincipal; значения etcd не меняются, spec §3.7).

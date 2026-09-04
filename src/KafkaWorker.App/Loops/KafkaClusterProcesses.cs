@@ -34,7 +34,7 @@ internal sealed class KafkaClusterProcesses(
     PartitionReassignerProcess reassigner,
     RemoveBrokerProcess removeBroker,
     AddBrokerProcess addBroker,
-    AppPasswordRotator rotator,
+    PasswordRotator rotator,
     NodeRegenerator regenerator,
     TopicSyncProcess topicSync) : IKafkaClusterProcesses
 {
