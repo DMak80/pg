@@ -167,9 +167,13 @@ builder.Services.AddSingleton(sp =>
 });
 
 // Kafka AdminClient (seam + Confluent-адаптер): RequestTimeout короткий —
-// это пробы/конфиги, длинные ожидания — циклы процессов.
-builder.Services.AddSingleton<IKafkaAdminClientFactory>(_ =>
-    new KafkaAdminClientFactory(TimeSpan.FromSeconds(10)));
+// это пробы/конфиги, длинные ожидания — циклы процессов. Фабрика — sharable
+// кэш (t05): клиент per (bootstrap,user,password), не «клиент на тик».
+builder.Services.AddSingleton<IKafkaAdminClientFactory>(sp =>
+    new KafkaAdminClientFactory(
+        TimeSpan.FromSeconds(10),
+        sp.GetRequiredService<ILogger<KafkaAdminClientFactory>>(),
+        TimeProvider.System));
 
 // Ensure per-cluster SASL-секрета (arch/16 §4): чтение/txn put-if-absent.
 builder.Services.AddSingleton<IAppSecretEnsurer>(sp => new AppSecretEnsurer(

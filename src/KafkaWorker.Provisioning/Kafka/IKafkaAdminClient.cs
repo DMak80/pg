@@ -93,7 +93,12 @@ public interface IKafkaAdminClient : IAsyncDisposable
         IReadOnlyList<KafkaTopicPartition> partitions, CancellationToken ct);
 }
 
-/// <summary>Фабрика клиентов по bootstrap+кредам кластера (SASL/PLAIN, arch/15 §5).</summary>
+/// <summary>Фабрика клиентов по bootstrap+кредам (SASL/PLAIN, arch/15 §5).
+/// t05: ШАРЕНАЯ — возвращает кэшированный адаптер per (bootstrap,user,password);
+/// Create — не «новый клиент», а «получить клиент ключа». DisposeAsync
+/// возвращённого адаптера — no-op (владение у фабрики-кэша); реальный Dispose —
+/// вытеснение из кэша (фон) и остановка host'а. Смена endpoints/кредов — другой
+/// ключ → другой клиент (инвалидация по построению).</summary>
 public interface IKafkaAdminClientFactory
 {
     IKafkaAdminClient Create(string bootstrap, string user, string password);

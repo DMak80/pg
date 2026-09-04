@@ -1,6 +1,7 @@
 using Confluent.Kafka;
 using Confluent.Kafka.Admin;
 using KafkaWorker.Core;
+using Microsoft.Extensions.Logging;
 
 namespace KafkaWorker.Provisioning.Kafka;
 
@@ -9,21 +10,145 @@ namespace KafkaWorker.Provisioning.Kafka;
 // дискавери arch/15 §5; RequestTimeout — из опций воркера (на вызов); любые
 // исключения Kafka-клиента → Result.Failed (процессы решают, транзиент или нет).
 
-/// <summary>Фабрика AdminClient-адаптеров; RequestTimeout из конфигурации.</summary>
-public sealed class KafkaAdminClientFactory(TimeSpan requestTimeout) : IKafkaAdminClientFactory
+/// <summary>
+/// Кэширующая фабрика AdminClient-адаптеров (t05, spec §3.1): один адаптер
+/// per (bootstrap, user, password) вместо «клиент на тик» — churn
+/// rd_kafka-инстансов и LongRunning-потоков на недоступном кластере съедал
+/// ~100% ядра (инцидент as-kafkaworker 2026-09-04). Sharable: DisposeAsync
+/// адаптера — no-op, владение у кэша; смена endpoints/кредов — другой ключ
+/// (инвалидация по построению); Failed операции помечает запись Unhealthy —
+/// следующий Create пересоздаёт, заменяемый Disposeится в фоне (Dispose
+/// недоступного клиента может ждать poll-поток — не в горячем пути тика);
+/// неактивные &gt; IdleEvictAfter вытесняются при Create; остановка host'а —
+/// детерминированный Dispose всех (IDisposable через DI).
+/// </summary>
+public sealed class KafkaAdminClientFactory(
+    TimeSpan requestTimeout,
+    ILogger<KafkaAdminClientFactory>? logger = null,
+    TimeProvider? clock = null) : IKafkaAdminClientFactory, IDisposable
 {
+    // Профиль librdkafka (t05, паттерн t11): дефолтные 100 мс backoff при
+    // мгновенном connection-refusal дают reconnect-шторм («3/3 brokers are
+    // down» каждую секунду) — затыкаем до ≥1 c.
+    internal const int BackoffMs = 1000;
+    internal const int BackoffMaxMs = 10000;
+
+    // Вытеснение неактивных ключей (кластер удалён / креды сменены) —
+    // нативные потоки не копятся; без таймеров: чистка с каждым Create.
+    internal static readonly TimeSpan IdleEvictAfter = TimeSpan.FromMinutes(10);
+
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    private readonly object _gate = new();
+    private readonly Dictionary<(string Bootstrap, string User, string Password), Entry> _entries = [];
+
+    // Сколько адаптеров создано за жизнь фабрики — метрика churn'а
+    // (public: интеграционные тесты строят на ней границы).
+    public int CreatedClients { get; private set; }
+
     public IKafkaAdminClient Create(string bootstrap, string user, string password)
-        => new KafkaAdminClient(bootstrap, user, password, requestTimeout);
+    {
+        Entry entry;
+        lock (_gate)
+        {
+            var now = _clock.GetUtcNow();
+            EvictIdle(now);
+            var key = (bootstrap, user, password);
+            if (_entries.TryGetValue(key, out var current) && !current.Unhealthy)
+            {
+                current.LastUsedUtc = now;
+                return current.Client;
+            }
+
+            CreatedClients++;
+            Entry? marked = null;
+            entry = new Entry(new KafkaAdminClient(
+                bootstrap, user, password, requestTimeout, logger,
+                onFailed: () => { if (marked is { } m) lock (_gate) m.Unhealthy = true; }))
+            {
+                LastUsedUtc = now,
+            };
+            marked = entry;
+            _entries[key] = entry;
+        }
+
+        return entry.Client;
+    }
+
+    // Вытеснение неактивных: заменяемые Disposeятся в фоне (Dispose ждёт
+    // poll-поток; не блокирует тик). Вызывается под _gate.
+    private void EvictIdle(DateTimeOffset now)
+    {
+        List<Entry>? evicted = null;
+        foreach (var (key, entry) in _entries)
+        {
+            if (now - entry.LastUsedUtc <= IdleEvictAfter)
+                continue;
+            evicted ??= [];
+            evicted.Add(entry);
+            _entries.Remove(key);
+        }
+
+        if (evicted is null)
+            return;
+        foreach (var entry in evicted)
+            Task.Run(entry.Client.DisposeNative);
+    }
+
+    // Остановка host'а — детерминированно: клиенты с backoff-пинами не
+    // штормуют, poll-потоки выходят быстро (паттерн t11).
+    public void Dispose()
+    {
+        List<Entry> removed;
+        lock (_gate)
+        {
+            removed = [.. _entries.Values];
+            _entries.Clear();
+        }
+
+        foreach (var entry in removed)
+            entry.Client.DisposeNative();
+    }
+
+    // Профиль конфига всех клиентов фабрики (internal — юнит-проверки пинов).
+    internal static AdminClientConfig BaseAdminConfig(string bootstrap, string user, string password) => new()
+    {
+        BootstrapServers = bootstrap,
+        SecurityProtocol = SecurityProtocol.SaslPlaintext,
+        SaslMechanism = SaslMechanism.Plain,
+        SaslUsername = user,
+        SaslPassword = password,
+        RetryBackoffMs = BackoffMs,
+        ReconnectBackoffMs = BackoffMs,
+        ReconnectBackoffMaxMs = BackoffMaxMs,
+    };
+
+    private sealed class Entry(KafkaAdminClient client)
+    {
+        public readonly KafkaAdminClient Client = client;
+        public DateTimeOffset LastUsedUtc;
+        public bool Unhealthy;
+    }
 }
 
 public sealed class KafkaAdminClient(
     string bootstrap,
     string user,
     string password,
-    TimeSpan requestTimeout) : IKafkaAdminClient
+    TimeSpan requestTimeout,
+    ILogger? log = null,
+    Action? onFailed = null) : IKafkaAdminClient
 {
     // Ленивый клиент: создаётся при первом вызове (пустые операции не ходят в сеть).
     private IAdminClient? _client;
+
+    // Ошибка операции → unhealthy-инвалидация записи кэша (следующий Create
+    // пересоздаёт клиент); отмена host'а — не фейл (см. IsHostCancellation).
+    internal void NotifyFailed() => onFailed?.Invoke();
+
+    // Отмена host'а (OCE при отменённом токене) не инвалидирует клиента:
+    // остановка приложения — не проблема клиента.
+    internal static bool IsHostCancellation(Exception e, CancellationToken ct)
+        => e is OperationCanceledException && ct.IsCancellationRequested;
 
     public Task<Result<KafkaClusterView>> DescribeClusterAsync(CancellationToken ct)
         => RunAsync(async client =>
@@ -67,10 +192,17 @@ public sealed class KafkaAdminClient(
             return Result.Success();
         }, ct);
 
-    public ValueTask DisposeAsync()
+    // DisposeAsync — no-op (t05, spec §3.1): владение у кэша фабрики,
+    // «клиент на тик» не уничтожает нативные потоки; реальный Dispose —
+    // вытеснение/вытеснение-по-неактивности/остановка host'а (DisposeNative).
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+
+    // Реальный Dispose нативного клиента (кэш фабрики; может ждать poll-поток —
+    // зовётся только в фоне или при shutdown).
+    internal void DisposeNative()
     {
         _client?.Dispose();
-        return ValueTask.CompletedTask;
+        _client = null;
     }
 
     public Task<Result<IReadOnlyDictionary<string, string>>> DescribeTopicConfigsAsync(string topic, CancellationToken ct)
@@ -222,7 +354,8 @@ public sealed class KafkaAdminClient(
             .ToList();
     }
 
-    // Общий каркас: клиент создаётся один раз; исключения → Result.Failed.
+    // Общий каркас: клиент создаётся один раз; исключения → Result.Failed
+    // (+ unhealthy-пометка записи кэша, кроме отмены host'а).
     private async Task<Result> RunAsync(Func<IAdminClient, Task<Result>> action, CancellationToken ct)
     {
         try
@@ -232,6 +365,8 @@ public sealed class KafkaAdminClient(
         }
         catch (Exception e)
         {
+            if (!IsHostCancellation(e, ct))
+                NotifyFailed();
             return Result.Failed(new ApplicationException($"Kafka AdminClient ({bootstrap}): {e.Message}", e));
         }
     }
@@ -245,6 +380,8 @@ public sealed class KafkaAdminClient(
         }
         catch (Exception e)
         {
+            if (!IsHostCancellation(e, ct))
+                NotifyFailed();
             return Result<T>.Failed(new ApplicationException($"Kafka AdminClient ({bootstrap}): {e.Message}", e));
         }
     }
@@ -254,14 +391,11 @@ public sealed class KafkaAdminClient(
         if (_client is not null)
             return _client;
 
-        _client = new AdminClientBuilder(new AdminClientConfig
-        {
-            BootstrapServers = bootstrap,
-            SecurityProtocol = SecurityProtocol.SaslPlaintext,
-            SaslMechanism = SaslMechanism.Plain,
-            SaslUsername = user,
-            SaslPassword = password,
-        }).Build();
+        // Пины backoff + rdkafka-лог на Debug (профиль фабрики, t05 spec §3.1):
+        // дефолтные 100 мс давали reconnect-шторм на лежащем кластере.
+        _client = new AdminClientBuilder(KafkaAdminClientFactory.BaseAdminConfig(bootstrap, user, password))
+            .SetLogHandler((_, m) => log?.LogDebug("rdkafka: {Message}", m.Message))
+            .Build();
         return _client;
     }
 }
