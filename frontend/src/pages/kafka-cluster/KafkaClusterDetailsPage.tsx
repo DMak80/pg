@@ -12,6 +12,7 @@ import { EditClusterConfigModal } from './EditClusterConfigModal';
 import { GroupsTab } from './GroupsTab';
 import { RebalanceButton } from './RebalanceButton';
 import { RotatePasswordButton } from './RotatePasswordButton';
+import { RotateAdminPasswordButton } from './RotateAdminPasswordButton';
 import { TopicsTab } from './TopicsTab';
 
 const DAY_MS = 86_400_000;
@@ -73,6 +74,7 @@ export function KafkaClusterDetailsPage() {
           <Group gap="sm">
             <EditClusterConfigModal cluster={c} />
             <RotatePasswordButton cluster={c.name} disabled={c.rotation !== null} />
+            <RotateAdminPasswordButton cluster={c.name} disabled={!active} />
             <RebalanceButton cluster={c.name} rebalance={c.rebalance} disabled={!active} />
             <DeleteKafkaClusterButton cluster={c.name} />
           </Group>

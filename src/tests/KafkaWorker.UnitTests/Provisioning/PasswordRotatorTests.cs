@@ -154,7 +154,9 @@ public class PasswordRotatorTests
                 : Result.Success();
 
         // Act: первый прогон падает посреди фазы A (broker1 уже пересоздан
-        // с [OLD, NEW1]; NEW1 нигде не зафиксирован — генерация в памяти).
+        // с [OLD, NEW1]; NEW1 стабилен на жизнь заявки — фиксирован в памяти
+        // ротатора, t03-фикс: регенерация NEW каждым тиком перезкатывала бы
+        // брокеров вечно, не давая кластеру собраться).
         var first = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
         first.IsSuccess.Should().BeFalse();
         rig.Etcd.Store["/kafka/clusters/events/app_password"].Value.Should().Be(OldPassword);
@@ -171,21 +173,21 @@ public class PasswordRotatorTests
         finalPassword.Should().HaveLength(32);
         rig.Etcd.Store.Should().NotContainKey("/kafkaworker/rotations/events");
 
-        // Assert-2 (специфика повторного прогона): ЕДИНЫЙ новый пароль на ВСЕХ
-        // брокерах к моменту B. Повтор фазы A генерирует NEW2 и обязан
-        // пересоздать ВСЕХ с [OLD, NEW2] (трек _rolled прошлой попытки
-        // сбрасывается): иначе broker1 остался бы с [OLD, NEW1] и после
-        // коммита NEW2 отбрасывал SASL-логины NEW2 до конца фазы C — окно
-        // недоступности, невозможное по построению (spec §4.2 H, §9.4).
+        // Assert-2 (специфика повторного прогона, t03-фикс): NEW пароль
+        // СТАБИЛЕН на жизнь заявки — повтор фазы A НЕ пересоздаёт уже
+        // перекатившегося broker1 (трек жив), а только добирает оставшихся;
+        // после коммита B фаза C перекатывает всех с одиночным NEW — окно
+        // «брокер не принимает закоммиченный пароль» невозможно (spec §4.2 H).
         var secondRunJaas = rig.Driver.AllEnsured
             .Skip(firstRunEnsured)
-            .Select(e => e.Env["KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG"])
+            .Select(e => (e.NodeName, Jaas: e.Env["KAFKA_LISTENER_NAME_CLIENT_PLAIN_SASL_JAAS_CONFIG"]))
             .ToList();
-        secondRunJaas.Where(j => j.Contains("user_app2="))
-            .Should().HaveCount(2, "повтор фазы A пересоздаёт ВСЕХ брокеров (трек сброшен)");
-        secondRunJaas.Should().OnlyContain(
-            j => !j.Contains("user_app2=") || j.Contains($"user_app2=\"{finalPassword}\""),
-            "все пересоздания фазы A повтора несут закоммиченный в B пароль");
+        // broker2 добран в фазе A с тем же NEW1 (user_app2 = финальный пароль),
+        // broker1 в повторе не трогался.
+        secondRunJaas.Should().ContainSingle(e => e.NodeName == "broker2"
+            && e.Jaas.Contains($"user_app2=\"{finalPassword}\""));
+        secondRunJaas.Where(e => e.NodeName == "broker1")
+            .Should().OnlyContain(e => !e.Jaas.Contains("user_app2="));
     }
 
     [Fact]
