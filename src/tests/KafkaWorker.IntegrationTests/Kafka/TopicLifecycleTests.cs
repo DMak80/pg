@@ -30,9 +30,10 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
             fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal,
             new PortAllocLock([fixture.Endpoint], fixture.Gateway, TimeProvider.System, claims.InstanceId),
             new PortAllocIndex(fixture.Gateway, [fixture.Endpoint], NullLogger<PortAllocIndex>.Instance),
-            new AppSecretEnsurer(fixture.Gateway, [fixture.Endpoint]),
+            new ClusterSecretEnsurer(fixture.Gateway, [fixture.Endpoint]),
             fixture.AdminFactory, new ClusterConfigConverger(fixture.AdminFactory),
-            fixture.Options, snapshot: null);
+            fixture.Options, fixture.Certificates,
+            snapshot: null);
         var sync = new TopicSyncProcess(
             fixture.Gateway, [fixture.Endpoint], claims, journal,
             fixture.AdminFactory, TimeProvider.System, intervalSec: 0);
@@ -75,7 +76,7 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
     private static async Task<bool> TopicExistsAsync(
         KafkaClusterFixture fixture, string cluster, string topic, CancellationToken ct)
     {
-        var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
+        var builder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
         using var admin = builder.Build();
         var metadata = admin.GetMetadata(TimeSpan.FromSeconds(15));
         return metadata.Topics.Any(t => t.Topic == topic);
@@ -84,7 +85,7 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
     private static async Task<(int Partitions, string? Retention)> DescribeTopicAsync(
         KafkaClusterFixture fixture, string cluster, string topic, CancellationToken ct)
     {
-        var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
+        var builder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
         using var admin = builder.Build();
         var metadata = admin.GetMetadata(TimeSpan.FromSeconds(15));
         var partitions = metadata.Topics.Single(t => t.Topic == topic).Partitions.Count;
@@ -148,7 +149,7 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
         var sync = await UpAsync(fixture, cluster, ct);
         try
         {
-            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
+            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
             using (var admin = builder.Build())
             {
                 await admin.CreateTopicsAsync([new TopicSpecification
@@ -196,7 +197,7 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
         var sync = await UpAsync(fixture, cluster, ct);
         try
         {
-            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
+            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
             using (var admin = builder.Build())
             {
                 await admin.CreateTopicsAsync([new TopicSpecification
@@ -240,7 +241,7 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
         var sync = await UpAsync(fixture, cluster, ct);
         try
         {
-            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
+            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
             using (var admin = builder.Build())
             {
                 await admin.CreateTopicsAsync([new TopicSpecification

@@ -37,8 +37,9 @@ internal sealed record ClusterBackoffState(
 
 /// <summary>
 /// Фоновый тик kafka-пробы (план B6): per-кластерный DescribeCluster по
-/// endpoints из etcd (через HostMap) с SASL из internal-стора кредов; пароль
-/// в результаты не попадает. Ошибка пробы не роняет etcd-часть панели.
+/// endpoints из etcd (через HostMap) с admin-кредами/CA из internal-стора
+/// (t03: SASL_SSL/PLAIN, arch/15 §5); пароль в результаты не попадает.
+/// Ошибка пробы не роняет etcd-часть панели.
 /// </summary>
 public sealed class KafkaProbeLoop(
     IKafkaSnapshotReader snapshotReader,
@@ -150,9 +151,10 @@ public sealed class KafkaProbeLoop(
         if (!secrets.Current.TryGetValue(cluster.Name, out var creds))
             return new KafkaProbeOutcome(null, new ProbeResult(
                 cluster.Name, "kafka", false, null,
-                "нет app-кредов в etcd (кластер не поднят или ensure не выполнен)", at));
+                "нет admin-кредов/CA кластера в etcd (премиграционный кластер или ensure не выполнен)", at));
 
-        var view = await client.DescribeClusterAsync(bootstrap, creds.User, creds.Password, timeout, ct);
+        var view = await client.DescribeClusterAsync(
+            bootstrap, creds.AdminUser, creds.AdminPassword, creds.CaPem, timeout, ct);
         if (!view.IsSuccess)
         {
             // Пароль (creds) в ошибку не попадает — только bootstrap-адрес.
@@ -219,16 +221,16 @@ public sealed class KafkaProbeLoop(
         IReadOnlyList<KafkaTopicRuntime>? topics = null;
         IReadOnlyList<KafkaGroupInfo>? groups = null;
 
-        var topicsView = await runtimeClient!.DescribeTopicsAsync(bootstrap, creds.User, creds.Password, timeout, ct);
+        var topicsView = await runtimeClient!.DescribeTopicsAsync(bootstrap, creds.AdminUser, creds.AdminPassword, creds.CaPem, timeout, ct);
         if (topicsView.IsSuccess)
             topics = [.. topicsView.Value.Select(t => new KafkaTopicRuntime(
                 t.Topic, t.Partitions, (short?)t.ReplicationFactor, t.UnderReplicatedPartitions))];
 
-        var groupIds = await runtimeClient.ListGroupsAsync(bootstrap, creds.User, creds.Password, timeout, ct);
+        var groupIds = await runtimeClient.ListGroupsAsync(bootstrap, creds.AdminUser, creds.AdminPassword, creds.CaPem, timeout, ct);
         if (groupIds.IsSuccess && groupIds.Value.Count > 0)
         {
             var details = await runtimeClient.DescribeGroupsAsync(
-                bootstrap, creds.User, creds.Password, groupIds.Value, timeout, ct);
+                bootstrap, creds.AdminUser, creds.AdminPassword, creds.CaPem, groupIds.Value, timeout, ct);
             if (details.IsSuccess)
             {
                 var end = new Dictionary<(string Topic, int Partition), long>();
@@ -239,7 +241,7 @@ public sealed class KafkaProbeLoop(
                     // умерший консьюмер оставляет committed и отставание — это
                     // ровно то, что должен подсветить мониторинг/алерт).
                     var committed = await runtimeClient.CommittedAsync(
-                        bootstrap, creds.User, creds.Password, detail.Group, [], timeout, ct);
+                        bootstrap, creds.AdminUser, creds.AdminPassword, creds.CaPem, detail.Group, [], timeout, ct);
                     if (!committed.IsSuccess)
                         continue; // оффсеты недоступны — группа не показана в этом тике
 
@@ -253,7 +255,7 @@ public sealed class KafkaProbeLoop(
                     if (missing.Count > 0)
                     {
                         var fetched = await runtimeClient.EndOffsetsAsync(
-                            bootstrap, creds.User, creds.Password, missing, timeout, ct);
+                            bootstrap, creds.AdminUser, creds.AdminPassword, creds.CaPem, missing, timeout, ct);
                         if (!fetched.IsSuccess)
                             continue;
 

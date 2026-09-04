@@ -83,7 +83,7 @@ public sealed class KafkaMetricsCollector(
         var cluster = snap.Cluster;
         try
         {
-            await using var admin = adminFactory.Create(snap.Endpoints!, snap.AppUser!, snap.AppPassword!);
+            await using var admin = adminFactory.Create(snap.Endpoints!, snap.AppUser!, snap.AppPassword!, snap.CaPem);
 
             var lag = new List<((string, string, string), long)>();
             var groups = await admin.ListGroupsAsync(ct);

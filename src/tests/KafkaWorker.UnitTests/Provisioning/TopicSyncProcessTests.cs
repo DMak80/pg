@@ -31,7 +31,7 @@ public class TopicSyncProcessTests
 
     private sealed class FakeAdminFactory(FakeKafkaAdminClient client) : IKafkaAdminClientFactory
     {
-        public IKafkaAdminClient Create(string bootstrap, string user, string password) => client;
+        public IKafkaAdminClient Create(string bootstrap, string user, string password, string? caPem) => client;
     }
 
     private static async Task<Rig> NewRigAsync(int intervalSec = 0)
@@ -43,6 +43,7 @@ public class TopicSyncProcessTests
         etcd.Seed("/kafka/clusters/events/endpoints", "h1:16000,h1:16001");
         etcd.Seed("/kafka/clusters/events/app_user", "app");
         etcd.Seed("/kafka/clusters/events/app_password", "p");
+        etcd.SeedSecurity("events");
         var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("events", CancellationToken.None);
         var journal = new WorkJournal(etcd, [Ep]);

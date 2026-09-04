@@ -57,6 +57,9 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - kfw-snapshots:/snapshots
+      # mTLS HTTP API (t03, arch/16 §1.1): per-install TLS-пакет из deploy/tls
+      # (генерация — bash deploy/tls/gen.sh; наполнение volume — 00-up.sh стенда).
+      - kfw-api-tls:/tls:ro
     extra_hosts:
       # docker-хост "local" (appsettings Docker:Hosts) — из контейнера резолвим
       # его в шлюз docker-хоста (прецедент pgworker выше).
@@ -67,12 +70,16 @@ services:
       # (arch/16 advertised-правило; null допустим только когда имя docker-хоста
       # резолвимо клиентами само по себе).
       KafkaWorker__AdvertisedClientHost: ${KFW_ADVERTISED_CLIENT_HOST:-host.docker.internal}
-      # HTTP API воркера (arch/16 §1.1): advertise-URL в /kafkaworker/api/<id>,
-      # ключ X-Api-Key, демо-сид за флагом (стенд; прод — false).
-      KafkaWorker__Api__AdvertiseUrl: ${KFW_API_ADVERTISE_URL:-http://host.docker.internal:8081}
-      KafkaWorker__Api__ApiKey: ${KFW_API_KEY:-}
+      # HTTP API воркера (arch/16 §1.1): advertise-URL https:// в /kafkaworker/api/<id>,
+      # mTLS-серты из /tls, демо-сид за флагом (стенд; прод — false). KFW_API_KEY
+      # удалён (t03) — грань mTLS-only.
+      KafkaWorker__Api__AdvertiseUrl: ${KFW_API_ADVERTISE_URL:-https://host.docker.internal:8081}
+      KFW_API_TLS_CERT_PATH: /tls/server.crt
+      KFW_API_TLS_KEY_PATH: /tls/server.key
+      KFW_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
       KafkaWorker__Api__EnableSeedEndpoint: ${KFW_API_ENABLE_SEED:-false}
 
 volumes:
   pgw-snapshots:
   kfw-snapshots:
+  kfw-api-tls:

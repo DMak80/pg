@@ -258,11 +258,16 @@ services:
       # kafka-пробы: DescribeCluster/группы через host.docker.internal медленнее
       # 3 c (прецедент хостового дев-конфига)
       AdminPanel__Probes__Kafka__TimeoutSeconds: "10"
+      # mTLS kafkaworker (t03, arch/02 §2.3.2): клиентский серт панели + ServerCA
+      ADMINPANEL__WORKERS__KAFKATLS__CLIENTCERT_PATH: /tls-workers/panel.crt
+      ADMINPANEL__WORKERS__KAFKATLS__CLIENTKEY_PATH: /tls-workers/panel.key
+      ADMINPANEL__WORKERS__KAFKATLS__SERVERCA_PATH: /tls-workers/ca.pem
     volumes:
       # HostMap (s1a:8008 → hc1a:8008) — только JSON: env не собирает ключи
       # словаря с "__" (см. комментарий в самом файле)
       - ./adminpanel.appsettings.json:/app/appsettings.Stand.json:ro
-    depends_on: [etcd]
+      # mTLS kafkaworker (t03): клиентский серт панели + ServerCA
+      - ../../deploy/tls:/tls-workers:ro
 
   # Живой KafkaWorker (план B8): профиль kafka — только явно. Управляет docker-
   # хостом через сокет; advertised host.docker.internal делает endpoints в etcd
@@ -282,6 +287,9 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - kfw-snapshots:/snapshots
+      # mTLS HTTP API (t03, arch/16 §1.1): per-install пакет генерирует
+      # 00-up.sh (bash deploy/tls/gen.sh, идемпотентно).
+      - ../../deploy/tls:/tls:ro
     extra_hosts:
       # docker-хост "local" (appsettings KafkaWorker:Docker:Hosts) — резолвим
       # в шлюз docker-хоста (прецедент pgworker, deploy/docker-compose.yml)
@@ -289,9 +297,13 @@ services:
     environment:
       KafkaWorker__Etcd__Endpoints__0: http://etcd:2379
       KafkaWorker__AdvertisedClientHost: host.docker.internal
-      # HTTP API воркера (arch/16 §1.1): панель ходит по compose-DNS
-      # (lease-ключ /kafkaworker/api/<id>), демо-сид включён (стенд).
-      KafkaWorker__Api__AdvertiseUrl: http://kafkaworker:8080
+      # HTTP API воркера (arch/16 §1.1, t03): mTLS-only, панель ходит по
+      # compose-DNS с клиентским сертом (lease-ключ /kafkaworker/api/<id> —
+      # AdvertiseUrl https://), демо-сид включён (стенд).
+      KafkaWorker__Api__AdvertiseUrl: https://kafkaworker:8080
+      KFW_API_TLS_CERT_PATH: /tls/server.crt
+      KFW_API_TLS_KEY_PATH: /tls/server.key
+      KFW_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
       KafkaWorker__Api__EnableSeedEndpoint: "true"
     depends_on: [etcd]
 

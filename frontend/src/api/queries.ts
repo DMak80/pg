@@ -269,6 +269,15 @@ export function rotateKafkaPassword(cluster: string): Promise<KafkaPasswordRotat
     { method: 'POST' });
 }
 
+// POST /api/kafka/clusters/{cluster}/admin-password/rotate — мутация №16
+// (t03, arch/02 §10.2-16): rolling-рестарт брокеров фазами A/B/C; приложения
+// (роль app) не затрагиваются.
+export function rotateKafkaAdminPassword(cluster: string): Promise<KafkaAdminPasswordRotatedDto> {
+  return apiFetch<KafkaAdminPasswordRotatedDto>(
+    `/api/kafka/clusters/${encodeURIComponent(cluster)}/admin-password/rotate`,
+    { method: 'POST' });
+}
+
 // POST /api/kafka/clusters/{cluster}/rebalance — заявка ребалансировки
 // партиций (t02, arch/02 §10.2-9): перенос реплик выполняет KafkaWorker.
 export function requestKafkaRebalance(cluster: string): Promise<KafkaRebalanceRequestedDto> {

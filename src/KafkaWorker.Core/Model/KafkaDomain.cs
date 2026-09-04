@@ -69,7 +69,9 @@ public sealed record TopicLifecycleTicket(
 /// <summary>
 /// Снимок кластера после разбора префикса: config + брокеры + топики;
 /// Endpoints/AppUser/AppPassword — дискавери-поля (arch/15 §2/§5), читаются
-/// процессами для AdminClient-доступа и RMW endpoints.
+/// процессами для AdminClient-доступа и RMW endpoints. Поля безопасности t03
+/// (arch/15 §2): AdminUser/AdminPassword/CaPem/CaKey; null — премиграционный
+/// кластер, мигрирует M (SecurityMigrator).
 /// </summary>
 public sealed record KafkaClusterSnapshot(
     string Cluster,
@@ -81,4 +83,8 @@ public sealed record KafkaClusterSnapshot(
     string? Endpoints = null,
     string? AppUser = null,
     string? AppPassword = null,
+    string? AdminUser = null,
+    string? AdminPassword = null,
+    string? CaPem = null,
+    string? CaKey = null,
     IReadOnlyList<TopicLifecycleTicket>? LifecycleTickets = null);

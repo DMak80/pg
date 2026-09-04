@@ -31,9 +31,10 @@ public class ProvisioningTests(KafkaClusterFixture fixture)
             fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal,
             new PortAllocLock([fixture.Endpoint], fixture.Gateway, TimeProvider.System, claims.InstanceId),
             new PortAllocIndex(fixture.Gateway, [fixture.Endpoint], NullLogger<PortAllocIndex>.Instance),
-            new AppSecretEnsurer(fixture.Gateway, [fixture.Endpoint]),
+            new ClusterSecretEnsurer(fixture.Gateway, [fixture.Endpoint]),
             fixture.AdminFactory, new ClusterConfigConverger(fixture.AdminFactory),
-            fixture.Options, snapshot: null);
+            fixture.Options, fixture.Certificates,
+            snapshot: null);
         var deprovision = new DeprovisioningProcess(
             fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal, snapshot: null);
 
@@ -65,18 +66,33 @@ public class ProvisioningTests(KafkaClusterFixture fixture)
         clientPorts.Should().OnlyContain(p => p >= fixture.PortFrom && p <= fixture.PortTo);
         var password = await fixture.GetAsync($"/kafka/clusters/{cluster}/app_password");
         password.Should().HaveLength(32).And.MatchRegex("^[A-Za-z0-9]{32}$");
+        // t03: admin-креды + per-cluster PKI (arch/15 §2).
+        (await fixture.GetAsync($"/kafka/clusters/{cluster}/admin_user")).Should().Be("admin");
+        (await fixture.GetAsync($"/kafka/clusters/{cluster}/admin_password"))
+            .Should().HaveLength(32).And.MatchRegex("^[A-Za-z0-9]{32}$");
+        (await fixture.GetAsync($"/kafka/clusters/{cluster}/ca_pem"))
+            .Should().StartWith("-----BEGIN CERTIFICATE-----");
+        (await fixture.GetAsync($"/kafka/clusters/{cluster}/ca_key"))
+            .Should().StartWith("-----BEGIN PRIVATE KEY-----");
         (await fixture.GetAsync($"/kafka/clusters/{cluster}/brokers/broker1/state")).Should().Be("RUNNING");
         (await fixture.GetAsync($"/kafka/clusters/{cluster}/brokers/broker1/role")).Should().Be("controller");
         var objects = await fixture.Driver.ListNodeObjectsAsync(cluster, ct);
         objects.Value.Should().Contain($"kfw-{cluster}-broker1");
 
-        // Assert 2 (дискавери, spec §9.2): AdminClient с bootstrap из endpoints-ключа
-        // и SASL из app_*-ключей успешно DescribeCluster.
-        var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
-        using (var admin = builder.Build())
+        // Assert 2 (дискавери, spec §9.2 + t03 §8.3): AdminClient с bootstrap из
+        // endpoints-ключа, SASL_SSL и ролью admin И app успешно DescribeCluster.
+        var adminBuilder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
+        using (var admin = adminBuilder.Build())
         {
             var metadata = admin.GetMetadata(TimeSpan.FromSeconds(15));
             metadata.Brokers.Should().HaveCount(1, "1-брокерный кластер заявлен");
+        }
+
+        var appBuilder = await fixture.DiscoveryAdminBuilderAsync(cluster, "app");
+        using (var appAdmin = appBuilder.Build())
+        {
+            var metadata = appAdmin.GetMetadata(TimeSpan.FromSeconds(15));
+            metadata.Brokers.Should().HaveCount(1, "app-роль тоже подключается по SASL_SSL");
         }
 
         // Act 2: заявка ротации (остаточная — её должна подчистить очистка X2)

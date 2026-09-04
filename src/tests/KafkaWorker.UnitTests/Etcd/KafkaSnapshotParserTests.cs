@@ -1,6 +1,7 @@
 using System.Text.Json;
 using FluentAssertions;
 using KafkaWorker.Core.Model;
+using KafkaWorker.Core.Templates;
 using KafkaWorker.Etcd.Client;
 using KafkaWorker.Etcd.Parsing;
 
@@ -12,6 +13,11 @@ namespace KafkaWorker.UnitTests.Etcd;
 
 public class KafkaSnapshotParserTests
 {
+    // Валидные PEM-ключи CA для кейсов безопасности t03 (генерация один раз).
+    private static readonly (string CaPem, string CaKeyPem) ValidCa = ClusterPki.GenerateCa("test");
+    private static string ValidCaPem => ValidCa.CaPem;
+    private static string ValidCaKeyPem => ValidCa.CaKeyPem;
+
     private static IReadOnlyList<Kv> LoadFixture(string name)
     {
         var path = Path.Combine(AppContext.BaseDirectory, "EtcdFixtures", "Kafka", name);
@@ -253,5 +259,73 @@ public class KafkaSnapshotParserTests
 
         // Assert
         result.Value.Single().UnknownKeys.Should().Be(1);
+    }
+
+    // Канонический минимальный набор ключей кластера (config + хвост — extra).
+    private static List<Kv> ClusterKvs(string cluster, List<Kv>? extra = null)
+    {
+        var kvs = new List<Kv>
+        {
+            Kv($"/kafka/clusters/{cluster}/config", """{"brokers":1,"replication_factor":1,"min_insync_replicas":1,"default_partitions":1,"default_retention_ms":1}"""),
+        };
+        if (extra is not null)
+            kvs.AddRange(extra);
+        return kvs;
+    }
+
+    [Fact]
+    public void Parse_AdminAndCaKeys_FilledIntoSnapshot()
+    {
+        // Arrange: полный набор ключей кластера (вкл. admin_user/admin_password/ca_pem/ca_key).
+        var kvs = ClusterKvs("events", extra:
+        [
+            Kv("/kafka/clusters/events/admin_user", "admin"),
+            Kv("/kafka/clusters/events/admin_password", "AdminSecret0123456789AAAAAAA"),
+            Kv("/kafka/clusters/events/ca_pem", ValidCaPem),
+            Kv("/kafka/clusters/events/ca_key", ValidCaKeyPem),
+        ]);
+
+        // Act: разбор.
+        var snap = KafkaSnapshotParser.Parse(kvs).Value.Single();
+
+        // Assert: поля дискавери/секретов заполнены, unknownKeys их не считает.
+        snap.AdminUser.Should().Be("admin");
+        snap.AdminPassword.Should().Be("AdminSecret0123456789AAAAAAA");
+        snap.CaPem.Should().Be(ValidCaPem);
+        snap.CaKey.Should().Be(ValidCaKeyPem);
+        snap.UnknownKeys.Should().Be(0);
+    }
+
+    [Fact]
+    public void Parse_MalformedCaPem_ParseErrorAndNullField()
+    {
+        // Arrange: ca_pem — мусор (15 §6: битый PEM → parseError, ключ пропускается).
+        var kvs = ClusterKvs("events", extra: [Kv("/kafka/clusters/events/ca_pem", "garbage")]);
+
+        // Act: разбор.
+        var snap = KafkaSnapshotParser.Parse(kvs).Value.Single();
+
+        // Assert: поле null + запись parseErrors (не исключение).
+        snap.CaPem.Should().BeNull();
+        snap.ParseErrors.Should().Contain(e => e.Contains("ca_pem", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Parse_MissingSecurityKeys_NullFields_NoErrors()
+    {
+        // Arrange: премиграционный кластер — только app-креды.
+        var kvs = ClusterKvs("old", extra:
+        [
+            Kv("/kafka/clusters/old/app_user", "app"),
+            Kv("/kafka/clusters/old/app_password", "AppSecret0123456789AAAAAAAA"),
+        ]);
+
+        // Act: разбор.
+        var snap = KafkaSnapshotParser.Parse(kvs).Value.Single();
+
+        // Assert: admin/CA null, ошибок нет — детект премиграционного кластера (M).
+        snap.AdminUser.Should().BeNull();
+        snap.CaPem.Should().BeNull();
+        snap.ParseErrors.Should().BeEmpty();
     }
 }

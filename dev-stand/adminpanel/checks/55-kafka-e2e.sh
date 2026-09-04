@@ -33,16 +33,23 @@ etcd_kafka_keys() {
 }
 
 kafka_cli() { # kafka_cli <tool> <args…>: креды/адрес — только чтением etcd.
-  local endpoints user password
+  local endpoints user password ca_pem
   endpoints="$(etcd_key "/kafka/clusters/$CLUSTER/endpoints")"
   user="$(etcd_key "/kafka/clusters/$CLUSTER/app_user")"
   password="$(etcd_key "/kafka/clusters/$CLUSTER/app_password")"
-  [ -n "$endpoints" ] && [ -n "$user" ] && [ -n "$password" ] \
+  ca_pem="$(etcd_key "/kafka/clusters/$CLUSTER/ca_pem")"
+  [ -n "$endpoints" ] && [ -n "$user" ] && [ -n "$password" ] && [ -n "$ca_pem" ] \
     || { echo "❌ ключи дискавери etcd неполны"; exit 1; }
+  # t03: кластеры только SASL_SSL — доверие per-cluster CA из etcd. Однострочник
+  # ca_pem (\n-эскейпы; base64 символа '\' не содержит) → файл PEM; канон CLI —
+  # как ReassignCli (ssl.truststore.type=PEM + location), путь внутри контейнера.
+  printf '%b' "$ca_pem" > "$WORK/ca.pem"
   cat > "$WORK/client.properties" <<EOF
-security.protocol=SASL_PLAINTEXT
+security.protocol=SASL_SSL
 sasl.mechanism=PLAIN
 sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required username="$user" password="$password";
+ssl.truststore.type=PEM
+ssl.truststore.location=/conf/ca.pem
 EOF
   # CLI-инструменты образа лежат в /opt/kafka/bin/*.sh (PATH их не включает);
   # у консольных producer/consumer флаг конфига называется иначе (не command-config).

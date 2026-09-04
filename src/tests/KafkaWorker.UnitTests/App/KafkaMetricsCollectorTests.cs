@@ -85,6 +85,16 @@ public sealed class KafkaMetricsCollectorTests
                     watermarks.GetValueOrDefault((p.Topic, p.Partition), 0))).ToList()));
         }
 
+        // ACL (t03): коллектору не нужны — заглушки-успехи без действия.
+        public Task<Result<IReadOnlyList<KafkaAclBinding>>> DescribeAclsAsync(CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlyList<KafkaAclBinding>>.Success([]));
+
+        public Task<Result> CreateAclsAsync(IReadOnlyList<KafkaAclBinding> acls, CancellationToken ct)
+            => Task.FromResult(Result.Success());
+
+        public Task<Result> DeleteAclsAsync(IReadOnlyList<KafkaAclBinding> acls, CancellationToken ct)
+            => Task.FromResult(Result.Success());
+
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
         private static Task<Result<T>> Fail<T>() where T : class
@@ -101,11 +111,11 @@ public sealed class KafkaMetricsCollectorTests
         public FakeAdmin? Next;
         public Dictionary<string, FakeAdmin> ByBootstrap = [];
         public List<FakeAdmin> Created = [];
-        public List<(string Bootstrap, string User, string Password)> CreateArgs = [];
+        public List<(string Bootstrap, string User, string Password, string? CaPem)> CreateArgs = [];
 
-        public IKafkaAdminClient Create(string bootstrap, string user, string password)
+        public IKafkaAdminClient Create(string bootstrap, string user, string password, string? caPem)
         {
-            CreateArgs.Add((bootstrap, user, password));
+            CreateArgs.Add((bootstrap, user, password, caPem));
             var admin = ByBootstrap.GetValueOrDefault(bootstrap) ?? Next ?? new FakeAdmin();
             Created.Add(admin);
             return admin;

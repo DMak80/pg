@@ -34,9 +34,10 @@ internal sealed class KafkaClusterProcesses(
     PartitionReassignerProcess reassigner,
     RemoveBrokerProcess removeBroker,
     AddBrokerProcess addBroker,
-    AppPasswordRotator rotator,
+    PasswordRotator rotator,
     NodeRegenerator regenerator,
-    TopicSyncProcess topicSync) : IKafkaClusterProcesses
+    TopicSyncProcess topicSync,
+    SecurityMigrator migrator) : IKafkaClusterProcesses
 {
     public Task<Result> ProvisionAsync(KafkaClusterSnapshot snap, CancellationToken ct)
         => provision.RunAsync(snap, ct);
@@ -46,17 +47,27 @@ internal sealed class KafkaClusterProcesses(
 
     public async Task<Result> ActiveAsync(KafkaClusterSnapshot snap, CancellationToken ct)
     {
+        // Премиграционный кластер (SASL_PLAINTEXT) — SecurityMigrator ДО всего
+        // Active (arch/16 §5 M): converge/пробы старого кластера бессмысленны.
+        var migrated = await migrator.RunAsync(snap, ct);
+        if (!migrated.IsSuccess)
+            return migrated;
+        if (migrated.Value == SecurityMigrator.MigrationOutcome.InProgress)
+            return Result.Success(); // M отработал/ждёт — остальное следующим тиком
+
         // Надзор (C) — самовосстановление нод; конвейер Active-ветки останавливать
         // не должен: ошибка надзора — ошибка тика кластера (следующий тик повторит).
         var supervised = await supervisor.RunAsync(snap, ct);
         if (!supervised.IsSuccess)
             return supervised;
 
-        // Converge (E) — только для поднявшегося кластера (endpoints есть).
-        if (snap.Endpoints is not null && snap.AppUser is not null && snap.AppPassword is not null)
+        // Converge (E) — только для канонического кластера (endpoints + admin/CA
+        // есть; премиграционный кластер мигрирует M, arch/16 §5 классификация).
+        if (snap.Endpoints is not null && snap.AdminUser is not null
+            && snap.AdminPassword is not null && snap.CaPem is not null)
         {
             var converged = await converger.ApplyAsync(
-                snap.Cluster, snap.Endpoints, snap.AppUser, snap.AppPassword, snap.Config, ct);
+                snap.Cluster, snap.Endpoints, snap.AdminUser, snap.AdminPassword, snap.CaPem, snap.Config, ct);
             if (!converged.IsSuccess)
                 return converged;
         }

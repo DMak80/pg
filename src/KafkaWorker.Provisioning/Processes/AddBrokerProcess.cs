@@ -3,6 +3,7 @@ using System.Text.Json;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
 using KafkaWorker.Core.Planning;
+using KafkaWorker.Core.Templates;
 using KafkaWorker.Docker.Drivers;
 using KafkaWorker.Etcd.Client;
 using KafkaWorker.Etcd.Coordination;
@@ -26,7 +27,8 @@ public sealed class AddBrokerProcess(
     PortAllocLock portLock,
     PortAllocIndex portAlloc,
     IKafkaAdminClientFactory adminFactory,
-    ProvisioningOptions options)
+    ProvisioningOptions options,
+    BrokerCertificateCache certificates)
 {
     private const string Op = "add-broker";
 
@@ -200,7 +202,7 @@ public sealed class AddBrokerProcess(
             if (!marked.IsSuccess)
                 return marked;
 
-            var env = BrokerEnvBuilder.Build(snap, broker.Name, addr, [snap.AppPassword!], options);
+            var env = BrokerEnvBuilder.Build(snap, broker.Name, addr, [snap.AppPassword!], [snap.AdminPassword!], options, certificates);
             var spec = new KafkaNodeSpec(
                 cluster, broker.Name, addr.Host, addr.ClientPort, options.NodeImage, env,
                 broker.Resources?.Cpu,
@@ -217,7 +219,7 @@ public sealed class AddBrokerProcess(
     private async Task<Result<bool>> WaitReadyAsync(KafkaClusterSnapshot snap, CancellationToken ct)
     {
         var cluster = snap.Cluster;
-        await using var admin = adminFactory.Create(snap.Endpoints!, snap.AppUser!, snap.AppPassword!);
+        await using var admin = adminFactory.Create(snap.Endpoints!, snap.AdminUser ?? "admin", snap.AdminPassword!, snap.CaPem);
         var view = await admin.DescribeClusterAsync(ct);
         var ready = view.IsSuccess && view.Value.Brokers.Count >= snap.Brokers.Count;
 

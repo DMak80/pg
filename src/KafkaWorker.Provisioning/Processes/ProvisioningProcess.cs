@@ -30,10 +30,11 @@ public sealed class ProvisioningProcess(
     WorkJournal journal,
     PortAllocLock portLock,
     PortAllocIndex portAlloc,
-    IAppSecretEnsurer appSecret,
+    IClusterSecretEnsurer secrets,
     IKafkaAdminClientFactory adminFactory,
     IClusterConfigConverger converger,
     ProvisioningOptions options,
+    BrokerCertificateCache certificates,
     Func<CancellationToken, Task<Result>>? snapshot = null)
 {
     private const string Op = "provision";
@@ -84,9 +85,9 @@ public sealed class ProvisioningProcess(
         var addresses = planned.Value;
         var roles = RolesFor(snap.Config.Brokers);
 
-        var secret = await appSecret.EnsureAsync(cluster, ct);
+        var secret = await secrets.EnsureAsync(cluster, ct);
         if (!secret.IsSuccess)
-            return Fail(cluster, secret.Error!, "ensure-app-secret");
+            return Fail(cluster, secret.Error!, "ensure-cluster-secrets");
 
         // K3: создать контейнеры брокеров (state=PROVISIONING; существующие — сверка).
         var ensured = await EnsureNodesAsync(snap, addresses, roles, secret.Value, ct);
@@ -109,7 +110,8 @@ public sealed class ProvisioningProcess(
         if (await IsRemovedAsync(cluster, ct))
             return await FinishAsync(cluster, "aborted", ct);
 
-        var converged = await converger.ApplyAsync(cluster, endpoints, secret.Value.User, secret.Value.Password, snap.Config, ct);
+        var converged = await converger.ApplyAsync(
+            cluster, endpoints, secret.Value.AdminUser, secret.Value.AdminPassword, secret.Value.CaPem, snap.Config, ct);
         if (!converged.IsSuccess)
             return Fail(cluster, converged.Error!, "converge-configs");
 
@@ -249,7 +251,7 @@ public sealed class ProvisioningProcess(
         KafkaClusterSnapshot snap,
         IReadOnlyDictionary<string, NodeAddress> addresses,
         IReadOnlyDictionary<string, string> roles,
-        KafkaSecrets secret,
+        ClusterSecrets secret,
         CancellationToken ct)
     {
         var cluster = snap.Cluster;
@@ -273,6 +275,9 @@ public sealed class ProvisioningProcess(
 
             var addr = addresses[broker.Name];
             var advertisedClient = $"{options.AdvertisedClientHost ?? addr.Host}:{addr.ClientPort}";
+            // Серт ноды — один раз на (кластер, нода, CA) (R3, arch/16 §2.3).
+            var (certPem, keyPem) = certificates.GetOrCreate(
+                cluster, broker.Name, secret.CaPem, secret.CaKey, advertisedClient);
             var env = NodeEnvBuilder.Build(new NodeEnvSpec(
                 cluster,
                 NodeId(broker.Name),
@@ -280,8 +285,13 @@ public sealed class ProvisioningProcess(
                 advertisedClient,
                 roles.GetValueOrDefault(broker.Name) == "controller",
                 controllers,
-                secret.User,
-                [secret.Password],
+                secret.AppUser,
+                [secret.AppPassword],
+                secret.AdminUser,
+                [secret.AdminPassword],
+                secret.CaPem,
+                certPem,
+                keyPem,
                 snap.Config,
                 snap.Config.Brokers,
                 "/var/lib/kafka/data"));
@@ -299,10 +309,10 @@ public sealed class ProvisioningProcess(
     // K4: DescribeCluster отвечает, контроллер избран, брокеров = B → RUNNING;
     // не готово — InProgress до бюджета BrokerBootSec (транзиент-толерантно).
     private async Task<Result<bool>> WaitReadyAsync(
-        KafkaClusterSnapshot snap, string endpoints, KafkaSecrets secret, CancellationToken ct)
+        KafkaClusterSnapshot snap, string endpoints, ClusterSecrets secret, CancellationToken ct)
     {
         var cluster = snap.Cluster;
-        await using var admin = adminFactory.Create(endpoints, secret.User, secret.Password);
+        await using var admin = adminFactory.Create(endpoints, secret.AdminUser, secret.AdminPassword, secret.CaPem);
         var view = await admin.DescribeClusterAsync(ct);
         var ready = view.IsSuccess
             && view.Value.ControllerId is not null

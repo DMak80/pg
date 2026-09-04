@@ -38,7 +38,12 @@ public static class ModuleExtensions
 
         // Шлюз в API воркеров (прокси мутаций, arch/01 §1): URL по живым ключам
         // снапшотов; опции AdminPanel:Workers — [Config]-биндингом выше.
-        services.AddHttpClient(WorkerApiGateway.HttpClientName);
+        // mTLS kafkaworker (t03, arch/02 §2.3.2): клиентский серт + доверие
+        // ServerCA в primary handler'е; для http://-запросов (PgWorker) TLS-опции
+        // не применяются — один HttpClient на оба воркера.
+        services.AddHttpClient(WorkerApiGateway.HttpClientName)
+            .ConfigurePrimaryHttpMessageHandler(sp => Workers.WorkerTlsHandler.Build(
+                sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<WorkerApiOptions>>().Value.KafkaTls));
         services.AddSingleton<WorkerApiGateway>();
         services.AddSingleton<IWorkerApiGateway>(sp => sp.GetRequiredService<WorkerApiGateway>());
 

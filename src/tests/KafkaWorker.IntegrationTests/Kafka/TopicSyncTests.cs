@@ -34,9 +34,10 @@ public class TopicSyncTests(KafkaClusterFixture fixture)
             fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal,
             new PortAllocLock([fixture.Endpoint], fixture.Gateway, TimeProvider.System, claims.InstanceId),
             new PortAllocIndex(fixture.Gateway, [fixture.Endpoint], NullLogger<PortAllocIndex>.Instance),
-            new AppSecretEnsurer(fixture.Gateway, [fixture.Endpoint]),
+            new ClusterSecretEnsurer(fixture.Gateway, [fixture.Endpoint]),
             fixture.AdminFactory, new ClusterConfigConverger(fixture.AdminFactory),
-            fixture.Options, snapshot: null);
+            fixture.Options, fixture.Certificates,
+            snapshot: null);
         var sync = new TopicSyncProcess(
             fixture.Gateway, [fixture.Endpoint], claims, journal,
             fixture.AdminFactory, TimeProvider.System, intervalSec: 0);
@@ -56,7 +57,7 @@ public class TopicSyncTests(KafkaClusterFixture fixture)
             "кластер поднялся — фаза проверки ниже бессмысленна без него");
 
         // Act 1: топик создан CLI/клиентом (3 партиции) → автосинк кладёт ключ.
-        var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
+        var builder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
         using (var admin = builder.Build())
         {
             await admin.CreateTopicsAsync([new TopicSpecification

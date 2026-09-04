@@ -20,12 +20,12 @@ public class KafkaProbeTests
     {
         public KafkaProbeView? View;
         public Exception? Error;
-        public List<(string Bootstrap, string User, string Password)> Calls = [];
+        public List<(string Bootstrap, string User, string Password, string? CaPem)> Calls = [];
 
         public Task<Result<KafkaProbeView>> DescribeClusterAsync(
-            string bootstrap, string user, string password, TimeSpan timeout, CancellationToken ct)
+            string bootstrap, string user, string password, string? caPem, TimeSpan timeout, CancellationToken ct)
         {
-            Calls.Add((bootstrap, user, password));
+            Calls.Add((bootstrap, user, password, caPem));
             return Task.FromResult(Error is not null
                 ? Result<KafkaProbeView>.Failed(Error)
                 : Result<KafkaProbeView>.Success(View!));
@@ -80,7 +80,7 @@ public class KafkaProbeTests
         static void secretsStoreReplace(KafkaSecretsStore store)
             => store.Replace(new Dictionary<string, KafkaClusterSecrets>
             {
-                ["events"] = new("events", "app", "SecretPassword0123456789"),
+                ["events"] = new("events", "admin", "SecretPassword0123456789", "CAPEM"),
             });
     }
 
@@ -97,7 +97,9 @@ public class KafkaProbeTests
         // live-данные (brokers + controller) в сторе проб; ProbeResult ok.
         rig.Client.Calls.Should().ContainSingle().Which
             .Bootstrap.Should().Be("host.docker.internal:16001");
-        rig.Client.Calls.Single().User.Should().Be("app");
+        rig.Client.Calls.Single().User.Should().Be("admin");
+        // CA из стора передан наружу (SASL_SSL-доверие per-cluster CA, t03).
+        rig.Client.Calls.Single().CaPem.Should().Be("CAPEM");
         var state = rig.ProbeStore.Current!;
         state.Results.Should().ContainSingle().Which.Ok.Should().BeTrue();
         var live = state.Clusters["events"];
@@ -180,7 +182,7 @@ public class KafkaProbeTests
         // Assert: клиент не дёргался; результат с пояснением.
         client.Calls.Should().BeEmpty();
         probeStore.Current!.Results.Should().ContainSingle()
-            .Which.Error.Should().Contain("app-кредов");
+            .Which.Error.Should().Contain("admin-кредов");
     }
 
     [Fact]

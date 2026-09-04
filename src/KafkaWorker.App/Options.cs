@@ -1,8 +1,9 @@
 namespace KafkaWorker.App;
 
 // Конфигурация KafkaWorker (arch/16 §8): секция "KafkaWorker" в appsettings.json +
-// env-оверрайды (KafkaWorker__Etcd__Endpoints__0=http://…). Env-секретов per-install
-// НЕТ (единственный секрет — per-cluster app_password в etcd, arch/16 §4).
+// env-оверрайды (KafkaWorker__Etcd__Endpoints__0=http://…). Per-install env-секреты —
+// только TLS HTTP API (KFW_API_TLS_*, arch/16 §4); per-cluster секреты (app/admin/CA) —
+// в etcd.
 
 /// <summary>Корневые настройки сервиса.</summary>
 public sealed class KafkaWorkerOptions
@@ -45,15 +46,41 @@ public sealed class KafkaWorkerMetricsOptions : Shared.Metrics.MetricsOptions
 /// + стендовый сид-эндпоинт.</summary>
 public sealed class ApiOptions
 {
-    /// <summary>URL API, достижимый клиентами (панелью); пусто → fail-fast старта.</summary>
+    /// <summary>URL API, достижимый клиентами (панелью); пусто → fail-fast старта.
+    /// t03: обязан начинаться с https:// (mTLS-only грань).</summary>
     public string AdvertiseUrl { get; set; } = "";
 
-    /// <summary>Секрет X-Api-Key (env KFW_API_KEY); пусто — проверка отключена
-    /// (доверленная docker-сеть, arch/16 §1.1).</summary>
-    public string? ApiKey { get; set; }
+    /// <summary>mTLS-конфигурация HTTP API (arch/16 §1.1, t03).</summary>
+    public TlsOptions Tls { get; set; } = new();
 
     /// <summary>Демо-сид-эндпоинт POST /api/seed/demo (стенд; default false).</summary>
     public bool EnableSeedEndpoint { get; set; }
+}
+
+/// <summary>
+/// mTLS HTTP API воркера (arch/16 §1.1, t03): серверный серт+ключ и CA клиентских
+/// сертов per-install API-PKI; env KFW_API_TLS_{CERT,KEY,CLIENT_CA}[_PATH]
+/// (таблица TlsEndpoints.EnvBindings). AllowInsecureHttp — ТОЛЬКО WAF-тесты.
+/// </summary>
+public sealed class TlsOptions
+{
+    /// <summary>PEM серверного серта (или *_PATH файл).</summary>
+    public string? ServerCertPem { get; set; }
+
+    public string? ServerCertPath { get; set; }
+
+    /// <summary>PEM приватного ключа сервера PKCS#8 (или *_PATH файл).</summary>
+    public string? ServerKeyPem { get; set; }
+
+    public string? ServerKeyPath { get; set; }
+
+    /// <summary>PEM CA клиентских сертов (per-install API-CA).</summary>
+    public string? ClientCaPem { get; set; }
+
+    public string? ClientCaPath { get; set; }
+
+    /// <summary>true — HTTP без TLS; ТОЛЬКО WAF-фикстуры тестов (arch/16 §1.1).</summary>
+    public bool AllowInsecureHttp { get; set; }
 }
 
 /// <summary>etcd-кластер: HTTP JSON gateway endpoints (failover по списку).</summary>

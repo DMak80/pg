@@ -125,3 +125,21 @@ Quick-режим: `checks/90-down.sh -v && checks/05-seed.sh` → зелёные
 - эмуляторы: `curl 127.0.0.1:8011/cluster | jq .` (8011/8012/8021/8022);
 - панель (докер): логи `docker compose logs adminpanel`, API —
   `curl -b jar $BASE/api/overview`.
+
+## mTLS API KafkaWorker (t03)
+
+HTTP API kafkaworker (вкл. `/healthz`) — **только mTLS** (arch/16 §1.1):
+`X-Api-Key`/`KFW_API_KEY` удалены, грань защищена per-install API-PKI.
+
+- **Генерация пакета**: `bash deploy/tls/gen.sh` — создаёт в `deploy/tls/`
+  `ca.pem`, `server.crt/key` (SAN: localhost, host.docker.internal,
+  kafkaworker), `panel.crt/key`, `healthcheck.crt/key` (каталог gitignored).
+  `00-up.sh` делает это идемпотентно (только если `ca.pem` нет).
+- **kafkaworker**: bind `../../deploy/tls:/tls:ro` + env `KFW_API_TLS_*_PATH`
+  (compose); панель: `../../deploy/tls:/tls-workers:ro` + env
+  `ADMINPANEL__WORKERS__KAFKATLS__*_PATH` (клиентский серт panel.crt/key и
+  доверие ca.pem).
+- **Чеки**: прямые вызовы API воркера (05-seed, 57) ходят по
+  `https://localhost:8082` с `--cacert ca.pem --cert healthcheck.crt --key
+  healthcheck.key`; остальные — через панель, чей `IWorkerApiGateway`
+  сам подписывает запросы клиентским сертом (mTLS-проксирование).

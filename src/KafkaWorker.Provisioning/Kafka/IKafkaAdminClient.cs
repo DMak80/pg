@@ -91,10 +91,39 @@ public interface IKafkaAdminClient : IAsyncDisposable
     // Watermark-оффсеты (Latest) набора партиций.
     Task<Result<IReadOnlyList<KafkaTopicPartitionOffset>>> ListOffsetsAsync(
         IReadOnlyList<KafkaTopicPartition> partitions, CancellationToken ct);
+
+    // Все ACL кластера (ACL-converge E, t03): фильтрацию делает AclPlan.Diff.
+    Task<Result<IReadOnlyList<KafkaAclBinding>>> DescribeAclsAsync(CancellationToken ct);
+
+    // Создание недостающих ACL плана (CreateAcls, t03).
+    Task<Result> CreateAclsAsync(IReadOnlyList<KafkaAclBinding> acls, CancellationToken ct);
+
+    // Удаление лишних ACL роли app (DeleteAcls exact-match, t03).
+    Task<Result> DeleteAclsAsync(IReadOnlyList<KafkaAclBinding> acls, CancellationToken ct);
 }
 
-/// <summary>Фабрика клиентов по bootstrap+кредам кластера (SASL/PLAIN, arch/15 §5).</summary>
+// Свои ACL-типы (seam: без Confluent-типов в сигнатурах, arch/16 §2.3/E).
+public enum KafkaAclResourceType { Unknown, Any, Topic, Group, Cluster, TransactionalId, DelegationToken, User }
+
+public enum KafkaAclPatternType { Unknown, Any, Match, Literal, Prefixed }
+
+public enum KafkaAclOperation { Unknown, Any, All, Read, Write, Create, Delete, Alter, Describe, IdempotentWrite, ClusterAction, DescribeConfigs, AlterConfigs }
+
+public enum KafkaAclPermission { Unknown, Any, Allow, Deny }
+
+public sealed record KafkaAclBinding(
+    KafkaAclResourceType ResourceType,
+    string ResourceName,
+    KafkaAclPatternType PatternType,
+    string Principal,
+    KafkaAclOperation Operation,
+    KafkaAclPermission Permission);
+
+/// <summary>
+/// Фабрика клиентов по bootstrap+кредам кластера (t03: SASL_SSL/PLAIN + доверие
+/// per-cluster CA arch/15 §5; caPem null — без TLS-доверия, тесты/fake).
+/// </summary>
 public interface IKafkaAdminClientFactory
 {
-    IKafkaAdminClient Create(string bootstrap, string user, string password);
+    IKafkaAdminClient Create(string bootstrap, string user, string password, string? caPem);
 }

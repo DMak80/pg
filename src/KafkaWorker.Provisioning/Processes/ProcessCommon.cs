@@ -49,5 +49,5 @@ public sealed record ReassignOptions(
 /// </summary>
 public interface IClusterConfigConverger
 {
-    Task<Result> ApplyAsync(string cluster, string bootstrap, string user, string password, KafkaClusterConfig config, CancellationToken ct);
+    Task<Result> ApplyAsync(string cluster, string bootstrap, string user, string password, string? caPem, KafkaClusterConfig config, CancellationToken ct);
 }

@@ -25,9 +25,11 @@ seed_pg() {
 }
 seed_kafka() {
   docker compose --profile kafka up -d kafkaworker >/dev/null 2>&1
-  for i in $(seq 1 60); do curl -fsS -m 3 http://localhost:8082/healthz >/dev/null 2>&1 && break; sleep 1; done
-  curl -fsS -m 3 http://localhost:8082/healthz >/dev/null || { echo "❌ kafkaworker не ожил (:8082/healthz)"; exit 1; }
-  echo "  kafka-сид: $(curl -fsS -X POST http://localhost:8082/api/seed/demo)"
+  # mTLS (t03): /healthz и сид — только с клиентской парой healthcheck + ca.pem
+  MTLS="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem --cert $ROOT/deploy/tls/healthcheck.crt --key $ROOT/deploy/tls/healthcheck.key"
+  for i in $(seq 1 60); do $MTLS https://localhost:8082/healthz >/dev/null 2>&1 && break; sleep 1; done
+  $MTLS https://localhost:8082/healthz >/dev/null || { echo "❌ kafkaworker не ожил (:8082/healthz по mTLS)"; exit 1; }
+  echo "  kafka-сид: $($MTLS -X POST https://localhost:8082/api/seed/demo)"
   # живой ключ доступа — его ждут и панель (WorkerEndpoints), и последующие
   # мутации чека 50; воркер остаётся Поднятым (безопасно: контейнеров брокеров
   # нет → пробы слепые → сидовые заявки не исполняются, arch/16 §5 C).

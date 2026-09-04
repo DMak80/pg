@@ -96,7 +96,7 @@ public sealed class TopicSyncProcess(
     private async Task<Result<IReadOnlyList<TopicFact>>> DescribeFactsAsync(
         KafkaClusterSnapshot snap, CancellationToken ct)
     {
-        await using var admin = adminFactory.Create(snap.Endpoints!, snap.AppUser!, snap.AppPassword!);
+        await using var admin = adminFactory.Create(snap.Endpoints!, snap.AdminUser ?? "admin", snap.AdminPassword!, snap.CaPem);
 
         var topics = await WithJitterRetryAsync(() => admin.DescribeTopicsAsync(includeInternal: false, ct));
         if (!topics.IsSuccess)
@@ -133,7 +133,7 @@ public sealed class TopicSyncProcess(
             case TopicSyncAction.LifecycleDelete del:
             {
                 var ticketKey = LifecycleKey(cluster, del.Topic, TopicLifecycleOps.Delete);
-                await using var admin = adminFactory.Create(snap.Endpoints!, snap.AppUser!, snap.AppPassword!);
+                await using var admin = adminFactory.Create(snap.Endpoints!, snap.AdminUser ?? "admin", snap.AdminPassword!, snap.CaPem);
                 var journaled = await journal.WriteAsync(cluster, Op, $"deleting-topic:{del.Topic}", claims.InstanceId, null, ct);
                 if (!journaled.IsSuccess)
                     return journaled;
@@ -149,7 +149,7 @@ public sealed class TopicSyncProcess(
             case TopicSyncAction.LifecycleCreate create:
             {
                 var ticketKey = LifecycleKey(cluster, create.Topic, TopicLifecycleOps.Create);
-                await using var admin = adminFactory.Create(snap.Endpoints!, snap.AppUser!, snap.AppPassword!);
+                await using var admin = adminFactory.Create(snap.Endpoints!, snap.AdminUser ?? "admin", snap.AdminPassword!, snap.CaPem);
                 var journaled = await journal.WriteAsync(cluster, Op, $"creating-topic:{create.Topic}", claims.InstanceId, null, ct);
                 if (!journaled.IsSuccess)
                     return journaled;
@@ -244,7 +244,7 @@ public sealed class TopicSyncProcess(
             case TopicSyncAction.Apply apply:
             {
                 var key = TopicKey(cluster, apply.Topic);
-                await using var admin = adminFactory.Create(snap.Endpoints!, snap.AppUser!, snap.AppPassword!);
+                await using var admin = adminFactory.Create(snap.Endpoints!, snap.AdminUser ?? "admin", snap.AdminPassword!, snap.CaPem);
 
                 // Конфиги ДО partitions (план C1: apply-порядок).
                 if (apply.Configs.Count > 0)

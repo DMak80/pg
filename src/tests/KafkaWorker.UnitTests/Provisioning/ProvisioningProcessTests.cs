@@ -1,5 +1,6 @@
 using FluentAssertions;
 using KafkaWorker.Core;
+using KafkaWorker.Core.Templates;
 using KafkaWorker.Core.Model;
 using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Etcd.Parsing;
@@ -35,7 +36,7 @@ public class ProvisioningProcessTests
         public int Calls;
 
         public Task<Result> ApplyAsync(
-            string cluster, string bootstrap, string user, string password, KafkaClusterConfig config, CancellationToken ct)
+            string cluster, string bootstrap, string user, string password, string? caPem, KafkaClusterConfig config, CancellationToken ct)
         {
             Calls++;
             return Task.FromResult(Result.Success());
@@ -79,10 +80,11 @@ public class ProvisioningProcessTests
         var snapshotPoints = new List<string>();
         var process = new ProvisioningProcess(
             etcd, [Ep], driver, claims, journal, portLock, portAllocIndex,
-            new AppSecretEnsurer(etcd, [Ep]),
+            new ClusterSecretEnsurer(etcd, [Ep]),
             new FakeAdminFactory(admin),
             converger,
             new ProvisioningOptions(16000, 16999, brokerBootSec, 90, null, "apache/kafka:4.0.0"),
+            new BrokerCertificateCache(),
             snapshot: ct =>
             {
                 snapshotPoints.Add($"n{snapshotPoints.Count}");
@@ -94,7 +96,7 @@ public class ProvisioningProcessTests
 
     private sealed class FakeAdminFactory(FakeKafkaAdminClient client) : IKafkaAdminClientFactory
     {
-        public IKafkaAdminClient Create(string bootstrap, string user, string password) => client;
+        public IKafkaAdminClient Create(string bootstrap, string user, string password, string? caPem) => client;
     }
 
     private void ReadyCluster(FakeKafkaAdminClient admin, int brokers)
@@ -238,8 +240,8 @@ public class ProvisioningProcessTests
         var process = new ProvisioningProcess(
             etcd, [Ep], new Fakes.FakeKafkaDriver(), claims, new WorkJournal(etcd, [Ep]),
             portLock, portAllocIndex,
-            new AppSecretEnsurer(etcd, [Ep]), new FakeAdminFactory(new FakeKafkaAdminClient()),
-            new FakeConverger(), ProvisioningOptions.Default, snapshot: null);
+            new ClusterSecretEnsurer(etcd, [Ep]), new FakeAdminFactory(new FakeKafkaAdminClient()),
+            new FakeConverger(), ProvisioningOptions.Default, new BrokerCertificateCache(), snapshot: null);
 
         // Act: прогон без клэйма.
         var result = await process.RunAsync(await Snapshot(etcd), CancellationToken.None);

@@ -19,6 +19,7 @@ public static class ReassignCli
     // Имена файлов внутри контейнера брокера (одноразовые, префикс kfw-).
     private const string PropertiesPath = "/tmp/kfw-cmd.properties";
     private const string AssignmentPath = "/tmp/kfw-reassign.json";
+    private const string CaPath = "/tmp/kfw-ca.pem";
 
     /// <summary>bootstrap INTERNAL-listener живых брокеров: "broker1:9092,broker2:9092".</summary>
     public static string Bootstrap(IReadOnlyList<string> brokerNames)
@@ -41,30 +42,42 @@ public static class ReassignCli
         return JsonSerializer.Serialize(payload);
     }
 
-    /// <summary>SASL/PLAIN properties для --command-config (креды app из etcd).</summary>
-    public static string BuildAdminProperties(string user, string password)
-        => "security.protocol=SASL_PLAINTEXT\n"
+    /// <summary>SASL_SSL/PLAIN properties для --command-config (креды admin из etcd,
+    /// доверие per-cluster CA PEM-файлом, arch/16 §2.4).</summary>
+    public static string BuildAdminProperties(string user, string password, string caPem)
+        => "security.protocol=SASL_SSL\n"
             + "sasl.mechanism=PLAIN\n"
             + """sasl.jaas.config=org.apache.kafka.common.security.plain.PlainLoginModule required """
-            + $"""username="{user}" password="{password}";""";
+            + $"""username="{user}" password="{password}";""" + "\n"
+            + "ssl.truststore.type=PEM\n"
+            + $"ssl.truststore.location={CaPath}";
 
     /// <summary>
     /// sh -c команда: printf файлов (префикс kfw-) + CLI c
     /// KAFKA_HEAP_OPTS=-Xmx256m. Одна строка, без литеральных переносов:
     /// переносы строк properties-файла кодируются форматом printf '%s\n'
-    /// (эскейп формата), JSON пишется одним %s (spec §6).
+    /// (эскейп формата), JSON пишется одним %s (spec §6). Первым блоком —
+    /// PEM-файл per-cluster CA (caPem.Split('\n') → printf по строкам);
+    /// base64-алфавит CA не содержит ' и \ — printf-обёртка безопасна.
     /// </summary>
     public static IReadOnlyList<string> BuildExecCommand(
-        IReadOnlyList<ReassignMove> moves, string bootstrap, string user, string password)
+        IReadOnlyList<ReassignMove> moves, string bootstrap, string user, string password, string caPem)
     {
-        // printf '%s\n%s\n%s\n' — каждый property на своей строке файла;
+        // Файл CA: каждая строка PEM — аргумент printf '%s\n...' (литеральных
+        // переносов в exec-строке нет).
+        var caLines = caPem.Split('\n');
+        var caFormat = string.Join("", caLines.Select(_ => "%s\\n"));
+        var caArgs = string.Join(" ", caLines.Select(l => $"'{l}'"));
+
+        // printf '%s\n%s\n' — каждый property на своей строке файла;
         // литеральных переносов в exec-строке нет.
-        var lines = BuildAdminProperties(user, password).Split('\n');
+        var lines = BuildAdminProperties(user, password, caPem).Split('\n');
         var format = string.Join("", lines.Select(_ => "%s\\n"));
         var args = string.Join(" ", lines.Select(l => $"'{l}'"));
         var json = BuildAssignmentJson(moves);
         var line =
-            $"printf '{format}' {args} > {PropertiesPath} && "
+            $"printf '{caFormat}' {caArgs} > {CaPath} && "
+            + $"printf '{format}' {args} > {PropertiesPath} && "
             + $"printf %s '{json}' > {AssignmentPath} && "
             + $"KAFKA_HEAP_OPTS=-Xmx256m /opt/kafka/bin/kafka-reassign-partitions.sh"
             + $" --bootstrap-server {bootstrap} --command-config {PropertiesPath}"

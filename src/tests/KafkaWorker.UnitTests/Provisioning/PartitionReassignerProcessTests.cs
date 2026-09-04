@@ -42,6 +42,7 @@ public class PartitionReassignerProcessTests
         etcd.Seed("/kafka/clusters/events/endpoints", "h1:16000,h1:16001,h1:16002,h1:16003");
         etcd.Seed("/kafka/clusters/events/app_user", "app");
         etcd.Seed("/kafka/clusters/events/app_password", "OldPassword0123456789abcdef");
+        etcd.SeedSecurity("events");
     }
 
     private static async Task<KafkaClusterSnapshot> Snapshot(Fakes.FakeEtcd etcd)
@@ -72,7 +73,7 @@ public class PartitionReassignerProcessTests
 
     private sealed class FakeAdminFactory(FakeKafkaAdminClient client) : IKafkaAdminClientFactory
     {
-        public IKafkaAdminClient Create(string bootstrap, string user, string password) => client;
+        public IKafkaAdminClient Create(string bootstrap, string user, string password, string? caPem) => client;
     }
 
     private static ReassignProgress ReadProgress(Fakes.FakeEtcd etcd)

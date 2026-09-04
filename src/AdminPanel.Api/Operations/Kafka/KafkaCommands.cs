@@ -134,6 +134,25 @@ public sealed class RotateKafkaPasswordCommandHandler(IWorkerApiGateway api)
             body: null, command.RequestedBy, ct);
 }
 
+// ===== 16. Ротация admin-пароля (adminpanel/02 §10.2-16, t03) =====
+
+public sealed record RotateKafkaAdminPasswordCommand(string Cluster, string RequestedBy)
+    : ICommand<KafkaAdminPasswordRotatedDto>;
+
+public sealed record KafkaAdminPasswordRotatedDto(string Cluster, long RequestedUnix, string RequestedBy);
+
+[InjectAsScoped]
+public sealed class RotateKafkaAdminPasswordCommandHandler(IWorkerApiGateway api)
+    : ICommandHandler<RotateKafkaAdminPasswordCommand, KafkaAdminPasswordRotatedDto>
+{
+    public async ValueTask<Result<KafkaAdminPasswordRotatedDto>> Handle(
+        RotateKafkaAdminPasswordCommand command, CancellationToken ct)
+        => await WorkerProxy.SendAsync<KafkaAdminPasswordRotatedDto>(
+            api, "kafkaworker", HttpMethod.Post,
+            $"/api/kafka/clusters/{command.Cluster}/admin-password/rotate",
+            body: null, command.RequestedBy, ct);
+}
+
 // ===== 7. Конфиг-заявка топика — desired (arch/02 §10.2-7; arch/15 §3) =====
 
 public sealed record UpsertTopicDesiredCommand(

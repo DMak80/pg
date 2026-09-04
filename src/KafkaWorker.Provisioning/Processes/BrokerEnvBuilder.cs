@@ -6,10 +6,12 @@ using KafkaWorker.Core.Templates;
 namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
-/// Сборка env брокера для процессов B-волны (add-broker, ротация): кворум —
-/// ТОЛЬКО из существующих controller-нод (роль фиксируется при создании,
-/// arch/15 §2), advertised — по правилу arch/16 §2.1. Дублирование с
-/// ProvisioningProcess/NodeSupervisor осознанное (прецедент надзора).
+/// Сборка env брокера для процессов B-волны (add-broker, ротация, надзор):
+/// кворум — ТОЛЬКО из существующих controller-нод (роль фиксируется при
+/// создании, arch/15 §2), advertised — по правилу arch/16 §2.1; креды
+/// admin/app и per-cluster PKI — из снапшота + кеша сертов (t03, arch/16
+/// §2.2/§2.3). Дублирование с ProvisioningProcess осознанное (прецедент
+/// надзора).
 /// </summary>
 internal static class BrokerEnvBuilder
 {
@@ -32,16 +34,26 @@ internal static class BrokerEnvBuilder
             .Select(b => $"{NodeId(b.Name)}@{b.Name}:9093")
             .ToList();
 
-    // Env одного брокера: advertised/кворум/креды (1 пароль штатно, 2 — окно ротации).
+    // Env одного брокера: guard премиграционного кластера (нет CA/admin-ключей —
+    // сначала M), креды (1 пароль штатно, 2 — окно ротации), серт ноды — один
+    // раз на (кластер, нода, CA) через кеш R3.
     internal static IReadOnlyDictionary<string, string> Build(
         KafkaClusterSnapshot snap,
         string broker,
         NodeAddress addr,
-        IReadOnlyList<string> passwords,
-        ProvisioningOptions options)
+        IReadOnlyList<string> appPasswords,
+        IReadOnlyList<string> adminPasswords,
+        ProvisioningOptions options,
+        BrokerCertificateCache certificates)
     {
+        if (snap.CaPem is null || snap.CaKey is null || snap.AdminPassword is null)
+            throw new ApplicationException(
+                $"env {snap.Cluster}/{broker}: премиграционный кластер (нет CA/admin-ключей) — сначала SecurityMigrator M");
+
         var decl = snap.Brokers.Single(b => b.Name == broker);
         var advertisedClient = AdvertisedClient(snap, broker, addr, options);
+        var (certPem, keyPem) = certificates.GetOrCreate(
+            snap.Cluster, broker, snap.CaPem, snap.CaKey, advertisedClient);
         return NodeEnvBuilder.Build(new NodeEnvSpec(
             snap.Cluster,
             NodeId(broker),
@@ -50,7 +62,12 @@ internal static class BrokerEnvBuilder
             decl.Role == "controller",
             QuorumVoters(snap),
             snap.AppUser ?? "app",
-            passwords,
+            appPasswords,
+            snap.AdminUser ?? "admin",
+            adminPasswords,
+            snap.CaPem,
+            certPem,
+            keyPem,
             snap.Config,
             snap.Config.Brokers,
             "/var/lib/kafka/data"));

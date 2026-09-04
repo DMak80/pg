@@ -319,28 +319,32 @@ public class ClusterMutationsApiTests(KafkaApiFixture fixture)
         noCluster.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 
-    // AAA: с заданным ApiKey все /api/* требуют X-Api-Key: без заголовка — 401,
-    // с корректным — мутация проходит (201).
+    // t03: X-Api-Key/KFW_API_KEY удалены — грань API mTLS-only (arch/16 §1.1);
+    // транспортный отказ/успех проверяет MtlsApiTests на реальном Kestrel-сокете.
+
+    // Мутация №16 (adminpanel/02 §10.2-16, t03): заявка ротации admin-пароля —
+    // клэйм-txn /kafkaworker/admin_rotations/<C>; повтор — 409 «уже запрошена».
     [Fact]
-    public async Task ApiKey_WithoutHeader_401_WithHeader_201()
+    public async Task RotateAdminPassword_ClaimsTicket_409OnRepeat()
     {
-        // Arrange — отдельный хост с KafkaWorker:Api:ApiKey=test
-        using var factory = fixture.Factory.WithWebHostBuilder(b =>
-            b.ConfigureAppConfiguration((_, cfg) => cfg.AddInMemoryCollection(
-                new Dictionary<string, string?> { ["KafkaWorker:Api:ApiKey"] = "test" })));
-        var client = factory.CreateClient();
-        var payload = new { name = "authdemo" };
+        // Arrange: Active-кластер events (сид-хелпер класса).
         var ct = TestContext.Current.CancellationToken;
+        await KafkaApiTestSeed.SeedActiveClusterAsync(Etcd, "events");
 
-        // Act
-        var rejected = await client.PostAsJsonAsync("/api/kafka/clusters", payload, ct);
-        client.DefaultRequestHeaders.Add("X-Api-Key", "test");
-        var accepted = await client.PostAsJsonAsync("/api/kafka/clusters", payload, ct);
+        // Act 1: POST admin-password/rotate.
+        var first = await Client.PostAsync("/api/kafka/clusters/events/admin-password/rotate", null, ct);
 
-        // Assert
-        rejected.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
-        var problem = await rejected.Content.ReadFromJsonAsync<JsonElement>(ct);
-        problem.GetProperty("title").GetString().Should().Be("Unauthorized");
-        accepted.StatusCode.Should().Be(HttpStatusCode.Created);
+        // Assert 1: 201 + DTO.
+        first.StatusCode.Should().Be(HttpStatusCode.Created);
+        var dto = await first.Content.ReadFromJsonAsync<JsonElement>(ct);
+        dto.GetProperty("cluster").GetString().Should().Be("events");
+        (await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/kafkaworker/admin_rotations/events", ct))
+            .Value?.Value.Should().NotBeNull("заявка положена клэйм-txn-ом");
+
+        // Act 2: повтор.
+        var second = await Client.PostAsync("/api/kafka/clusters/events/admin-password/rotate", null, ct);
+
+        // Assert 2: 409 «уже запрошена» (клэйм-txn version==0).
+        second.StatusCode.Should().Be(HttpStatusCode.Conflict);
     }
 }

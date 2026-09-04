@@ -107,7 +107,7 @@ public sealed class RemoveBrokerProcess(
             return true; // кластер не поднят — факт неизвестен, ждём
 
         var brokerId = BrokerEnvBuilder.NodeId(broker);
-        await using var admin = adminFactory.Create(snap.Endpoints, snap.AppUser, snap.AppPassword);
+        await using var admin = adminFactory.Create(snap.Endpoints, snap.AdminUser ?? "admin", snap.AdminPassword!, snap.CaPem);
         // Describe-all: guard видит и internal-реплики (__consumer_offsets) —
         // раньше фильтр __ прятал их и «пустой» брокер демонтировался с
         // потерей этих реплик (t02 §1, arch/16 §5 I/G).

@@ -15,6 +15,12 @@ namespace KafkaWorker.IntegrationTests.Api;
 // Не sealed: кейсы с оверрайдом конфигурации наследуются (ApiKey-кейс).
 public class KafkaApiFactory(Etcd.EtcdFixture etcd) : WebApplicationFactory<Program>
 {
+    // AllowInsecureHttp — env-ом процесса: WAF-конфиг применяется при Build(),
+    // а mTLS-конфигурация Kestrel исполняется раньше (TlsEndpoints.ConfigureMtls,
+    // до builder.Build() — этап хоста). mTLS — MtlsApiTests на реальном сокете.
+    static KafkaApiFactory()
+        => Environment.SetEnvironmentVariable("KafkaWorker__Api__Tls__AllowInsecureHttp", "true");
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Development");
@@ -23,7 +29,9 @@ public class KafkaApiFactory(Etcd.EtcdFixture etcd) : WebApplicationFactory<Prog
             ["KafkaWorker:Etcd:Endpoints:0"] = etcd.Endpoint,
             ["KafkaWorker:Docker:Hosts:0:Name"] = "local",
             ["KafkaWorker:Docker:Hosts:0:Endpoint"] = "unix:///var/run/does-not-exist.sock",
-            ["KafkaWorker:Api:AdvertiseUrl"] = "http://localhost:9998",
+            ["KafkaWorker:Api:AdvertiseUrl"] = "https://localhost:9998",
+            // mTLS — MtlsApiTests на реальном сокете; WAF-фабрика — insecure HTTP.
+            ["KafkaWorker:Api:Tls:AllowInsecureHttp"] = "true",
             // Seed-эндпоинт включён для кейсов наливки (Task 10); выключенный
             // флаг проверяется отдельной фабрикой-оверрайдом.
             ["KafkaWorker:Api:EnableSeedEndpoint"] = "true",

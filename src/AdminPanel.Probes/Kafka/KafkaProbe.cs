@@ -28,11 +28,12 @@ public sealed record KafkaProbeBroker(int Id, string Host);
 /// <summary>
 /// Seam-интерфейс kafka-пробы (план B6): единственное место с Confluent.Kafka —
 /// адаптер; юнит-тесты работают на fake. Считает кластер по bootstrap+SASL.
+/// t03: SASL_SSL/PLAIN + доверие ca_pem (arch/15 §5); креда — роль admin.
 /// </summary>
 public interface IKafkaProbeClient
 {
     Task<Result<KafkaProbeView>> DescribeClusterAsync(
-        string bootstrap, string user, string password, TimeSpan timeout, CancellationToken ct);
+        string bootstrap, string user, string password, string? caPem, TimeSpan timeout, CancellationToken ct);
 }
 
 // Live-факт топика из метаданных (волна C): ISR < replicas по партициям.
@@ -54,26 +55,27 @@ public sealed record KafkaProbeGroupDetail(
 /// Seam kafka-пробы (B6 + волна C): DescribeCluster — брокеры; DescribeTopics —
 /// топики с USR; группы: ListGroups → DescribeGroups; лаги: EndOffsets +
 /// Committed по партициям назначения (totalLag — чистая KafkaGroupLag).
+/// t03: во всех методах доверие ca_pem после password (SASL_SSL, arch/15 §5).
 /// </summary>
 public interface IKafkaProbeRuntimeClient
 {
     Task<Result<IReadOnlyList<KafkaProbeTopic>>> DescribeTopicsAsync(
-        string bootstrap, string user, string password, TimeSpan timeout, CancellationToken ct);
+        string bootstrap, string user, string password, string? caPem, TimeSpan timeout, CancellationToken ct);
 
     Task<Result<IReadOnlyList<string>>> ListGroupsAsync(
-        string bootstrap, string user, string password, TimeSpan timeout, CancellationToken ct);
+        string bootstrap, string user, string password, string? caPem, TimeSpan timeout, CancellationToken ct);
 
     Task<Result<IReadOnlyList<KafkaProbeGroupDetail>>> DescribeGroupsAsync(
-        string bootstrap, string user, string password, IReadOnlyList<string> groups,
+        string bootstrap, string user, string password, string? caPem, IReadOnlyList<string> groups,
         TimeSpan timeout, CancellationToken ct);
 
     // end-оффсеты (latest) набора партиций.
     Task<Result<IReadOnlyDictionary<(string Topic, int Partition), long>>> EndOffsetsAsync(
-        string bootstrap, string user, string password,
+        string bootstrap, string user, string password, string? caPem,
         IReadOnlyList<(string Topic, int Partition)> partitions, TimeSpan timeout, CancellationToken ct);
 
     // закоммиченные оффсеты группы (отсутствие партиции = нет коммита).
     Task<Result<IReadOnlyDictionary<(string Topic, int Partition), long>>> CommittedAsync(
-        string bootstrap, string user, string password, string group,
+        string bootstrap, string user, string password, string? caPem, string group,
         IReadOnlyList<(string Topic, int Partition)> partitions, TimeSpan timeout, CancellationToken ct);
 }

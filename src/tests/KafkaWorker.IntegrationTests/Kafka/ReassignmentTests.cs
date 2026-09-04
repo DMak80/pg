@@ -44,9 +44,10 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
                 fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal,
                 new PortAllocLock([fixture.Endpoint], fixture.Gateway, TimeProvider.System, claims.InstanceId),
                 new PortAllocIndex(fixture.Gateway, [fixture.Endpoint], NullLogger<PortAllocIndex>.Instance),
-                new AppSecretEnsurer(fixture.Gateway, [fixture.Endpoint]),
+                new ClusterSecretEnsurer(fixture.Gateway, [fixture.Endpoint]),
                 fixture.AdminFactory, new ClusterConfigConverger(fixture.AdminFactory),
-                fixture.Options, snapshot: null),
+                fixture.Options, fixture.Certificates,
+            snapshot: null),
             new DeprovisioningProcess(
                 fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal, snapshot: null),
             new PartitionReassignerProcess(
@@ -60,21 +61,23 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
                 fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal,
                 new PortAllocLock([fixture.Endpoint], fixture.Gateway, TimeProvider.System, claims.InstanceId),
                 new PortAllocIndex(fixture.Gateway, [fixture.Endpoint], NullLogger<PortAllocIndex>.Instance),
-                fixture.AdminFactory, fixture.Options),
+                fixture.AdminFactory, fixture.Options, fixture.Certificates),
             new TopicSyncProcess(
                 fixture.Gateway, [fixture.Endpoint], claims, journal,
                 fixture.AdminFactory, TimeProvider.System, intervalSec: 0));
     }
 
-    // Дискавери-креды (endpoints + app_*) из etcd — bootstrap хост-процесса.
-    private sealed record Creds(string Bootstrap, string User, string Password);
+    // Дискавери-креды (endpoints + app_* + ca_pem) из etcd — bootstrap хост-процесса.
+    private sealed record Creds(string Bootstrap, string User, string Password, string CaPem);
 
     private async Task<Creds> CredsAsync(string cluster)
     {
         var endpoints = await fixture.GetAsync($"/kafka/clusters/{cluster}/endpoints");
         var user = await fixture.GetAsync($"/kafka/clusters/{cluster}/app_user");
         var password = await fixture.GetAsync($"/kafka/clusters/{cluster}/app_password");
-        return new Creds(endpoints!.Replace("host.docker.internal", "localhost", StringComparison.Ordinal), user!, password!);
+        var caPem = await fixture.GetAsync($"/kafka/clusters/{cluster}/ca_pem");
+        return new Creds(endpoints!.Replace("host.docker.internal", "localhost", StringComparison.Ordinal),
+            user!, password!, caPem!);
     }
 
     // Provisioning-цикл до готовности (config без state).
@@ -114,24 +117,28 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
     // describe-all через адаптер воркера (включая __-топики, t02).
     private async Task<IReadOnlyList<KafkaTopicView>> DescribeAllAsync(Creds creds)
     {
-        await using var admin = fixture.AdminFactory.Create(creds.Bootstrap, creds.User, creds.Password);
+        await using var admin = fixture.AdminFactory.Create(
+            creds.Bootstrap, creds.User, creds.Password, creds.CaPem);
         var described = await admin.DescribeTopicsAsync(
             includeInternal: true, TestContext.Current.CancellationToken);
         described.IsSuccess.Should().BeTrue($"describe-all должен работать: {described.Error?.Message}");
         return described.Value;
     }
 
-    // Produce коротких сообщений (ключи → разные партиции).
+    // Produce коротких сообщений (ключи → разные партиции). Канон клиента
+    // t03: SASL_SSL + доверие per-cluster CA (ca_pem из etcd, arch/15 §5).
     private static async Task ProduceAsync(Creds creds, string topic, int count)
     {
-        using var producer = new ProducerBuilder<string, string>(new ProducerConfig
+        var config = new ProducerConfig
         {
             BootstrapServers = creds.Bootstrap,
-            SecurityProtocol = SecurityProtocol.SaslPlaintext,
+            SecurityProtocol = SecurityProtocol.SaslSsl,
             SaslMechanism = SaslMechanism.Plain,
             SaslUsername = creds.User,
             SaslPassword = creds.Password,
-        }).Build();
+        };
+        config.Set("ssl.ca.pem", creds.CaPem);
+        using var producer = new ProducerBuilder<string, string>(config).Build();
         for (var i = 0; i < count; i++)
         {
             await producer.ProduceAsync(topic, new Message<string, string>
@@ -143,20 +150,22 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
     }
 
     // Consume всех сообщений топика с earliest (свежая группа; коммит оффсетов
-    // создаёт __consumer_offsets при первом прогоне — до drain).
+    // создаёт __consumer_offsets при первом прогоне — до drain). SASL_SSL + ca_pem.
     private static async Task<int> ConsumeAsync(Creds creds, string topic, int expected, int budgetSec)
     {
-        using var consumer = new ConsumerBuilder<string, string>(new ConsumerConfig
+        var config = new ConsumerConfig
         {
             BootstrapServers = creds.Bootstrap,
-            SecurityProtocol = SecurityProtocol.SaslPlaintext,
+            SecurityProtocol = SecurityProtocol.SaslSsl,
             SaslMechanism = SaslMechanism.Plain,
             SaslUsername = creds.User,
             SaslPassword = creds.Password,
             GroupId = $"it-{Guid.NewGuid():N}",
             AutoOffsetReset = AutoOffsetReset.Earliest,
             EnableAutoCommit = true,
-        }).Build();
+        };
+        config.Set("ssl.ca.pem", creds.CaPem);
+        using var consumer = new ConsumerBuilder<string, string>(config).Build();
         consumer.Subscribe(topic);
 
         var deadline = DateTimeOffset.UtcNow.AddSeconds(budgetSec);
@@ -187,7 +196,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             // (AGENTS.md: тестовый BrokerBootSec <= 100): зависание фейлится быстро.
             await UpAsync(rig, cluster, budgetSec: 200);
             var creds = await CredsAsync(cluster);
-            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
+            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
             using (var admin = builder.Build())
             {
                 await admin.CreateTopicsAsync([new TopicSpecification
@@ -293,7 +302,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             // проверяем идемпотентность повторной подачи НА СТАБИЛЬНОМ факте).
             await UpAsync(rig, cluster, budgetSec: 200);
             var creds = await CredsAsync(cluster);
-            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
+            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
             using (var admin = builder.Build())
             {
                 await admin.CreateTopicsAsync([new TopicSpecification
@@ -318,7 +327,11 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
                 .SelectMany(t => t.ReplicasPerPartition.Select((_, p) => new ReassignMove(t.Topic, p, [.. t.ReplicasPerPartition[p]])))
                 .ToList();
             var bootstrap = ReassignCli.Bootstrap(["broker1", "broker2", "broker3"]);
-            var cmd = ReassignCli.BuildExecCommand(moves, bootstrap, creds.User, creds.Password);
+            // CLI-канон t03: SASL_SSL command-config с admin-кредами и per-cluster
+            // CA из etcd (литералы "adminpw"/"CAPEM" — легаси PLAINTEXT-эпохи).
+            var adminUser = await fixture.GetAsync($"/kafka/clusters/{cluster}/admin_user");
+            var adminPassword = await fixture.GetAsync($"/kafka/clusters/{cluster}/admin_password");
+            var cmd = ReassignCli.BuildExecCommand(moves, bootstrap, adminUser!, adminPassword!, creds.CaPem);
             for (var i = 0; i < 2; i++)
             {
                 var exec = await fixture.Driver.ExecNodeAsync(cluster, "broker1", cmd, ct);
@@ -352,7 +365,7 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
             // Arrange: 4-брокерный кластер, юзер-топик RF=4/6 партиций с данными.
             await UpAsync(rig, cluster, budgetSec: 200);
             var creds = await CredsAsync(cluster);
-            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster);
+            var builder = await fixture.DiscoveryAdminBuilderAsync(cluster, "admin");
             using (var admin = builder.Build())
             {
                 await admin.CreateTopicsAsync([new TopicSpecification
@@ -411,7 +424,8 @@ public class ReassignmentTests(KafkaClusterFixture fixture)
                 "broker4 повторно поднят за 180 c (NodeId=4 детерминирован именем)");
             var endpointsAfterAdd = await fixture.GetAsync($"/kafka/clusters/{cluster}/endpoints");
             endpointsAfterAdd!.Split(',').Should().HaveCount(4, "endpoints содержит адрес broker4");
-            await using (var clusterAdmin = fixture.AdminFactory.Create(creds.Bootstrap, creds.User, creds.Password))
+            await using (var clusterAdmin = fixture.AdminFactory.Create(
+                creds.Bootstrap, creds.User, creds.Password, creds.CaPem))
             {
                 var view = await clusterAdmin.DescribeClusterAsync(ct);
                 view.IsSuccess.Should().BeTrue();

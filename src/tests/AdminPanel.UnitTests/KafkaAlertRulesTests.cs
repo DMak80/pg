@@ -652,4 +652,55 @@ public class KafkaAlertRulesTests
         // Assert: свежий прогресс — не алерт.
         alerts.Should().NotContain(a => a.Kind == "kafka-reassignment-stale");
     }
+
+    // ===== t03 (arch/15 §6): kafka-security-missing / kafka-admin-rotation-pending =====
+
+    [Fact]
+    public void Evaluate_ActiveClusterWithoutSecurity_CriticalKafkaSecurityMissing()
+    {
+        // Arrange: снапшот Active-кластера; securityReady пуст (нет admin/CA в сторе).
+        var snapshot = Snapshot(ActiveCluster());
+        var alerts = _engine.Evaluate(snapshot, previous: null, securityReady: []);
+
+        // Assert: critical-алерт канона 15 §6.
+        alerts.Should().ContainSingle(a => a.Id == "kafka-security-missing:events"
+            && a.Severity == AlertSeverity.Critical);
+    }
+
+    [Fact]
+    public void Evaluate_ClusterWithAdminAndCa_NoSecurityAlert()
+    {
+        // Arrange: тот же кластер, securityReady содержит его.
+        var snapshot = Snapshot(ActiveCluster());
+
+        // Act / Assert: алерта нет.
+        var alerts = _engine.Evaluate(snapshot, null, securityReady: ["events"]);
+        alerts.Should().NotContain(a => a.Kind == "kafka-security-missing");
+    }
+
+    [Fact]
+    public void Evaluate_AdminRotationTicket_PendingWarning()
+    {
+        // Arrange: AdminRotations содержит заявку events (порт kafka-rotation-pending).
+        var snapshot = Snapshot(ActiveCluster()) with
+        {
+            AdminRotations = [new KafkaRotationTicket("events", NowUnix, "admin")],
+        };
+
+        // Act / Assert: warning kafka-admin-rotation-pending:events.
+        var alerts = _engine.Evaluate(snapshot, null, securityReady: ["events"]);
+        alerts.Should().ContainSingle(a => a.Id == "kafka-admin-rotation-pending:events"
+            && a.Severity == AlertSeverity.Warning);
+    }
+
+    [Fact]
+    public void Evaluate_SecurityReadyNull_RuleNotEvaluated()
+    {
+        // Arrange: прямой вызов Evaluate без стора (securityReady=null) — правило
+        // безопасности не оценивается (компиляционная совместимость прежних вызовов).
+        var snapshot = Snapshot(ActiveCluster());
+
+        // Act / Assert
+        Evaluate(snapshot).Should().NotContain(a => a.Kind == "kafka-security-missing");
+    }
 }

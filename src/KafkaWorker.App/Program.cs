@@ -9,6 +9,7 @@ using KafkaWorker.App.HealthChecks;
 using KafkaWorker.App.Loops;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
+using KafkaWorker.Core.Templates;
 using KafkaWorker.Docker.Drivers;
 using KafkaWorker.Docker.Engine;
 using KafkaWorker.Etcd;
@@ -18,10 +19,11 @@ using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
 
-// Точка входа KafkaWorker (arch/16 §8): host-builder с HTTP-гранью /healthz,
-// конфигурация appsettings+env, DI всех слоёв (etcd → координация → docker →
-// процессы → циклы). Env-секретов per-install НЕТ (единственный секрет —
-// per-cluster app_password в etcd). Fail-fast: пустые Etcd:Endpoints/Hosts.
+// Точка входа KafkaWorker (arch/16 §8): host-builder с mTLS-гранью HTTP API
+// (вкл. /healthz), конфигурация appsettings+env, DI всех слоёв (etcd →
+// координация → docker → процессы → циклы). Per-install env-секреты — только
+// TLS HTTP API (arch/16 §4); per-cluster секреты (app/admin/CA) — в etcd.
+// Fail-fast: пустые Etcd:Endpoints/Hosts, не-https AdvertiseUrl.
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -58,7 +60,15 @@ builder.Services.AddOptions<KafkaWorkerOptions>()
     .Validate(o => o.Etcd.Endpoints is { Length: > 0 }, "KafkaWorker:Etcd:Endpoints не заданы")
     .Validate(o => !string.IsNullOrWhiteSpace(o.Api.AdvertiseUrl),
         "KafkaWorker:Api:AdvertiseUrl не задан (env KFW_API_ADVERTISE_URL)")
+    .Validate(o => o.Api.Tls.AllowInsecureHttp
+        || o.Api.AdvertiseUrl.StartsWith("https://", StringComparison.Ordinal),
+        "AdvertiseUrl обязан быть https:// (mTLS-only API, arch/16 §1.1)")
     .ValidateOnStart();
+
+// mTLS HTTP API (arch/16 §1.1, t03): env-секреты TLS → конфиг, Kestrel c
+// серверным сертом и требованием клиентского серта per-install API-CA.
+TlsEndpoints.ApplyEnvOverrides(builder.Configuration);
+TlsEndpoints.ConfigureMtls(builder, port: 8080);
 
 // etcd-клиент (HTTP JSON gateway /v3/*) + координация (клэймы/лидерство, журнал).
 builder.Services.AddSingleton<IEtcdGateway>(sp =>
@@ -101,6 +111,10 @@ builder.Services.AddSingleton(sp => new DeleteBrokerHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
 builder.Services.AddSingleton(sp => new RotateAppPasswordHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton(sp => new RotateAdminPasswordHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<TimeProvider>()));
@@ -171,8 +185,11 @@ builder.Services.AddSingleton(sp =>
 builder.Services.AddSingleton<IKafkaAdminClientFactory>(_ =>
     new KafkaAdminClientFactory(TimeSpan.FromSeconds(10)));
 
-// Ensure per-cluster SASL-секрета (arch/16 §4): чтение/txn put-if-absent.
-builder.Services.AddSingleton<IAppSecretEnsurer>(sp => new AppSecretEnsurer(
+// Кеш серверных сертов нод (R3, arch/16 §2.3): DI-синглтом.
+builder.Services.AddSingleton(new BrokerCertificateCache());
+
+// Ensure per-cluster секретов: CA + креды admin/app (arch/16 §4, t03).
+builder.Services.AddSingleton<IClusterSecretEnsurer>(sp => new ClusterSecretEnsurer(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
 
@@ -190,10 +207,11 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<WorkJournal>(),
         sp.GetRequiredService<PortAllocLock>(),
         sp.GetRequiredService<PortAllocIndex>(),
-        sp.GetRequiredService<IAppSecretEnsurer>(),
+        sp.GetRequiredService<IClusterSecretEnsurer>(),
         sp.GetRequiredService<IKafkaAdminClientFactory>(),
         sp.GetRequiredService<IClusterConfigConverger>(),
         ToProvisioningOptions(opts),
+        sp.GetRequiredService<BrokerCertificateCache>(),
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
 });
 // t91: индекс занятости portalloc чужих кластеров (arch/16 §2.1) — DI-синглтон.
@@ -215,7 +233,8 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IKafkaAdminClientFactory>(),
-    ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value)));
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value),
+    sp.GetRequiredService<BrokerCertificateCache>()));
 
 // Scale-проход и ротация (arch/16 §5 F/G/H): ротатор — со снапшот-делегатом P12.
 // Reassignment (I, t02) — перед G: drain TO_REMOVE-брокеров + заявки balance.
@@ -251,8 +270,9 @@ builder.Services.AddSingleton(sp => new AddBrokerProcess(
     sp.GetRequiredService<PortAllocLock>(),
     sp.GetRequiredService<PortAllocIndex>(),
     sp.GetRequiredService<IKafkaAdminClientFactory>(),
-    ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value)));
-builder.Services.AddSingleton(sp => new AppPasswordRotator(
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value),
+    sp.GetRequiredService<BrokerCertificateCache>()));
+builder.Services.AddSingleton(sp => new PasswordRotator(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<IClusterDriver>(),
@@ -260,6 +280,7 @@ builder.Services.AddSingleton(sp => new AppPasswordRotator(
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IKafkaAdminClientFactory>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value),
+    sp.GetRequiredService<BrokerCertificateCache>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 builder.Services.AddSingleton(sp => new NodeRegenerator(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -267,7 +288,8 @@ builder.Services.AddSingleton(sp => new NodeRegenerator(
     sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
-    ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value)));
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value),
+    sp.GetRequiredService<BrokerCertificateCache>()));
 
 // Автосинк топиков (arch/16 §5 D): троттлинг TopicSyncIntervalSec внутри.
 builder.Services.AddSingleton(sp => new TopicSyncProcess(
@@ -278,6 +300,19 @@ builder.Services.AddSingleton(sp => new TopicSyncProcess(
     sp.GetRequiredService<IKafkaAdminClientFactory>(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Loops.TopicSyncIntervalSec));
+
+// Converge-миграция премиграционных кластеров в канон t03 (arch/16 §5 M).
+builder.Services.AddSingleton(sp => new SecurityMigrator(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<IClusterSecretEnsurer>(),
+    sp.GetRequiredService<IKafkaAdminClientFactory>(),
+    sp.GetRequiredService<IClusterConfigConverger>(),
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value),
+    sp.GetRequiredService<BrokerCertificateCache>()));
 
 // Циклы: keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
 builder.Services.AddSingleton<IKafkaClusterProcesses, KafkaClusterProcesses>();
@@ -317,7 +352,9 @@ builder.Services.AddHealthChecks()
     .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop");
 
 var app = builder.Build();
-app.UseMiddleware<ApiKeyMiddleware>();
+if (app.Services.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)
+    app.Logger.LogWarning(
+        "KafkaWorker:Api:Tls:AllowInsecureHttp=true — HTTP без TLS (ТОЛЬКО WAF-тесты, arch/16 §1.1)");
 app.MapAppMetrics();
 app.MapHealthChecks("/healthz");
 app.MapWorkerApi();

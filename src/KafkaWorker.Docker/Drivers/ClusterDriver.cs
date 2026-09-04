@@ -63,6 +63,10 @@ public interface IClusterDriver
 
     // Имена объектов брокеров кластера (kfw-<C>-*): сверка декларации + сироты (X1).
     Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct);
+
+    // Env живого контейнера ноды (t03, SecurityMigrator): plain — перебор хостов
+    // InspectContainerEnvAsync(kfw-<C>-<b>), swarm — env сервиса; null = объекта нет.
+    Task<Result<IReadOnlyDictionary<string, string>?>> NodeEnvAsync(string cluster, string nodeName, CancellationToken ct);
 }
 
 // Plain-режим: контейнеры на перечисленных хостах, per-host Engine API.
@@ -272,6 +276,23 @@ public sealed class PlainClusterDriver(
         return Result<NodeLimits?>.Success(null);
     }
 
+    // Env живого контейнера ноды (t03): перебор хостов, первый найденный.
+    public async Task<Result<IReadOnlyDictionary<string, string>?>> NodeEnvAsync(
+        string cluster, string nodeName, CancellationToken ct)
+    {
+        var name = NodeName(cluster, nodeName);
+        foreach (var engine in _engines.Values)
+        {
+            var env = await engine.InspectContainerEnvAsync(name, ct);
+            if (!env.IsSuccess)
+                return env;
+            if (env.Value is not null)
+                return env;
+        }
+
+        return Result<IReadOnlyDictionary<string, string>?>.Success(null);
+    }
+
     // Контейнер брокера по имени kfw-<C>-<b>: перебор хостов (аналог Remove),
     // на первом, где найден running-контейнер — exec (порт PgWorker t01).
     public async Task<Result<string>> ExecNodeAsync(
@@ -385,6 +406,11 @@ public sealed class SwarmClusterDriver(
 
     public Task<Result<NodeLimits?>> NodeResourcesAsync(string cluster, string nodeName, CancellationToken ct)
         => _engine.InspectServiceResourcesAsync(PlainClusterDriver.NodeName(cluster, nodeName), ct);
+
+    // Env сервиса ноды (t03): Spec.TaskTemplate.ContainerSpec.Env (KEY=VALUE).
+    public Task<Result<IReadOnlyDictionary<string, string>?>> NodeEnvAsync(
+        string cluster, string nodeName, CancellationToken ct)
+        => _engine.InspectServiceEnvAsync(PlainClusterDriver.NodeName(cluster, nodeName), ct);
 
     // Объекты брокеров кластера в swarm — СЕРВИСЫ: GET /services с префиксом
     // kfw-<C>-. Существование сервиса ≠ живой таск: живость — AdminClient-пробы.

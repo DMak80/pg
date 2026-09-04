@@ -78,11 +78,12 @@ public sealed class KafkaSnapshotRefresher(
 
         var clustersKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Clusters, ct);
         var rotationsKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Rotations, ct);
+        var adminRotationsKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.AdminRotations, ct);
         var rebalancesKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Rebalances, ct);
         var reassignmentsKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Reassignments, ct);
         var regensKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Regens, ct);
         var workerApiKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApi, ct);
-        if (!clustersKv.IsSuccess || !rotationsKv.IsSuccess
+        if (!clustersKv.IsSuccess || !rotationsKv.IsSuccess || !adminRotationsKv.IsSuccess
             || !rebalancesKv.IsSuccess || !reassignmentsKv.IsSuccess || !regensKv.IsSuccess
             || !workerApiKv.IsSuccess)
             return FailTick(previous, now, "KV-чтения etcd не удались");
@@ -92,14 +93,17 @@ public sealed class KafkaSnapshotRefresher(
         // Парсеры → модель → алерты → атомарная замена (механика pg-цикла §4).
         var clusters = KafkaParser.ParseClusters(clustersKv.Value);
         var rotations = KafkaParser.ParseRotations(rotationsKv.Value);
+        var adminRotations = KafkaParser.ParseAdminRotations(adminRotationsKv.Value);
         var rebalances = KafkaParser.ParseRebalances(rebalancesKv.Value);
         var reassignments = KafkaParser.ParseReassignments(reassignmentsKv.Value);
         var regens = KafkaParser.ParseRegens(regensKv.Value);
         var workerApi = WorkerEndpointsParser.Parse(workerApiKv.Value);
 
-        // SASL-креды для проб (B6): в модель кластера НЕ попадают (arch/02 §10.1) —
-        // отдельный internal-словарь стора.
-        secretsStore.Replace(ReadSecrets(clustersKv.Value));
+        // SASL/TLS-креды проб (B6 + t03): в модель кластера НЕ попадают
+        // (arch/02 §10.1) — отдельный internal-словарь стора; securityReady —
+        // кластеры с полным набором admin-кредов/CA (правило kafka-security-missing).
+        var (secrets, securityReady, secretsErrors) = ReadSecrets(clustersKv.Value);
+        secretsStore.Replace(secrets);
 
         var built = new KafkaSnapshot(
             now,
@@ -114,11 +118,12 @@ public sealed class KafkaSnapshotRefresher(
             workerHealthStore.Current ?? [], // health-проб воркера вносит успешный тик (t09; arch/02 §2.3.2)
             previous?.Probes ?? [],       // пробы переживают отказ etcd (симметрия pg spec §4.3)
             Alerts: [],
-            [.. clusters.Errors, .. rotations.Errors, .. rebalances.Errors, .. reassignments.Errors,
-                .. regens.Errors, .. workerApi.Errors],
-            clusters.UnknownKeyCount);
+            [.. clusters.Errors, .. rotations.Errors, .. adminRotations.Errors, .. rebalances.Errors,
+                .. reassignments.Errors, .. regens.Errors, .. workerApi.Errors, .. secretsErrors],
+            clusters.UnknownKeyCount,
+            AdminRotations: adminRotations.Tickets);
 
-        store.Replace(built with { Alerts = alertEngine.Evaluate(built, previous) });
+        store.Replace(built with { Alerts = alertEngine.Evaluate(built, previous, securityReady) });
         return Result.Success();
     }
 
@@ -196,33 +201,65 @@ public sealed class KafkaSnapshotRefresher(
         return error;
     }
 
-    // Креды /kafka/clusters/<C>/{app_user,app_password} (expected-skip парсера).
-    private static IReadOnlyDictionary<string, KafkaClusterSecrets> ReadSecrets(IReadOnlyList<Kv> kvs)
+    // Креды/CA проб (t03, arch/02 §10.1): панель читает admin_user/admin_password/ca_pem
+    // (пробы ходят как admin по SASL_SSL); app-креды и ca_key панель не читает.
+    // securityReady — кластеры с полным набором (admin+пароль+валидные PEM-маркеры
+    // ca_pem; панель не ссылается на KafkaWorker.Core); битый ca_pem → parseError
+    // и кластер исключается из стора. Частичный набор — не ошибка (премиграционный
+    // кластер или ensure в процессе).
+    private static (
+        IReadOnlyDictionary<string, KafkaClusterSecrets> Secrets,
+        IReadOnlyCollection<string> SecurityReady,
+        IReadOnlyList<KeyParseError> Errors)
+        ReadSecrets(IReadOnlyList<Kv> kvs)
     {
         var users = new Dictionary<string, string>();
         var passwords = new Dictionary<string, string>();
+        var cas = new Dictionary<string, string>();
         foreach (var kv in kvs)
         {
-            // "/kafka/clusters/<C>/app_user" → ["", "kafka", "clusters", <C>, "app_user"]
+            // "/kafka/clusters/<C>/admin_user" → ["", "kafka", "clusters", <C>, "admin_user"]
             var segments = kv.Key.Split('/');
             if (segments.Length != 5)
                 continue;
             switch (segments[4])
             {
-                case "app_user":
+                case "admin_user":
                     users[segments[3]] = kv.Value;
                     break;
-                case "app_password":
+                case "admin_password":
                     passwords[segments[3]] = kv.Value;
+                    break;
+                case "ca_pem":
+                    cas[segments[3]] = kv.Value;
                     break;
             }
         }
 
         var secrets = new Dictionary<string, KafkaClusterSecrets>();
-        foreach (var (cluster, password) in passwords)
-            if (users.TryGetValue(cluster, out var user))
-                secrets[cluster] = new KafkaClusterSecrets(cluster, user, password);
-        return secrets;
+        var ready = new List<string>();
+        var errors = new List<KeyParseError>();
+        foreach (var cluster in users.Keys.Union(passwords.Keys).Union(cas.Keys).OrderBy(n => n, StringComparer.Ordinal))
+        {
+            var user = users.GetValueOrDefault(cluster) ?? string.Empty;
+            var password = passwords.GetValueOrDefault(cluster) ?? string.Empty;
+            var caPem = cas.GetValueOrDefault(cluster) ?? string.Empty;
+            if (user.Length == 0 || password.Length == 0 || caPem.Length == 0)
+                continue;
+
+            if (!caPem.Contains("BEGIN CERTIFICATE", StringComparison.Ordinal)
+                || !caPem.Contains("END CERTIFICATE", StringComparison.Ordinal))
+            {
+                errors.Add(new KeyParseError(
+                    $"/kafka/clusters/{cluster}/ca_pem", "битый PEM сертификата"));
+                continue;
+            }
+
+            secrets[cluster] = new KafkaClusterSecrets(cluster, user, password, caPem);
+            ready.Add(cluster);
+        }
+
+        return (secrets, ready, errors);
     }
 
     private static bool IsValidEndpoint(string endpoint)
@@ -234,6 +271,7 @@ public sealed class KafkaSnapshotRefresher(
     {
         public const string Clusters = "/kafka/clusters/";
         public const string Rotations = "/kafkaworker/rotations/";
+        public const string AdminRotations = "/kafkaworker/admin_rotations/";
         public const string Rebalances = "/kafkaworker/rebalances/";
         public const string Reassignments = "/kafkaworker/reassignments/";
         public const string Regens = "/kafkaworker/regens/";
