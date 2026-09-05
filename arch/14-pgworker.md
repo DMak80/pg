@@ -48,10 +48,13 @@ lease-клэймы в etcd, §3); смерть контролирующего и
 `t07-move-bucket-ui`; в t06 переезды инициируются только etcdctl'ом (заявки
 `/pgworker/moves/`, t01); ручной скриптовый путь остаётся для стендов без PgWorker — не
 смешивать с заявками в одном окне переезда; балансировка по метрикам,
-per-cluster секреты, TLS к Docker API/SSH-туннели, метрики PG-репликации
+per-cluster секреты, метрики PG-репликации
 у прод-нод (scrape Patroni — arch/18 §5.4),
-управление etcd-слоем, слияние данных карантинного шарда —
-[roadmap/pgworker.md](roadmap/pgworker.md).
+управление etcd-слоем, слияние данных карантинного шарда, тонкий RBAC Engine API
+(authz-плагины Docker CE) —
+[roadmap/pgworker.md](roadmap/pgworker.md). Транспортная безопасность (TLS к
+Docker Engine API, SSH-туннели, RBAC/docker-группы, mTLS HTTP API) —
+t03-docker-tls-ssh (§1.1, §2.2–2.3).
 
 ---
 
@@ -101,19 +104,32 @@ URL API — из etcd)       URL воркера (§1.1)
 
 **Дискавери API**: ключ `/pgworker/api/<instanceId>` (lease TTL 15 с,
 паттерн `instances/<id>`; §3.3) — value
-`{"url":"http://<host>:<port>","instance":"<id>","since_unix":…}`. Воркер
+`{"url":"https://<host>:<port>","instance":"<id>","since_unix":…}`. Воркер
 ставит ключ сам при старте (keepalive-контур, вместе с `instances/<id>`);
 URL — из `PgWorker:Api:AdvertiseUrl` (адрес, ДОСТИЖИМЫЙ клиентами API —
-прежде всего панелью; docker-сети стендов — `host.docker.internal:<8080>`).
+прежде всего панелью; docker-сети стендов — `https://host.docker.internal:<8080>`).
 Ключ жив = инстанс жив и URL валиден (lease гасит мёртвые). Панель читает
 ключи refresher-тиком, кеширует в снапшоте и при мутации зовёт любой живой
 (при ошибке соединения — следующий; все умерли — 503 + critical-алерт
 `worker-api-unreachable`, arch/adminpanel/03 §4.1).
 
-**Аутентификация**: заголовок `X-Api-Key`, сверка с env-секуретом
-`PGW_API_KEY` (пуст/не задан — проверка отключена: доверенная закрытая
-docker-сеть; прод-профиль задаёт ключ). Ключи доступа в etcd секрета НЕ
-содержат. TLS — roadmap (t03-docker-tls-ssh).
+**Аутентификация — mTLS (t03)**: вся HTTP-грань воркера (вкл. `/healthz` и
+`/metrics`) обслуживается только по TLS; клиенты (панель, стендовый сид,
+скрейп Prometheus, docker-HEALTHCHECK) аутентифицируются клиентским
+сертификатом, подписанным per-install API-CA (единая пакета с KafkaWorker —
+arch/16 §1.1: CA `kfw-install-ca`, отдельные клиентские серты панели
+`panel.crt` и сида `seed.crt`). Серверный сертификат (`pgserver.crt`, SAN:
+`pgworker`, `localhost`, `host.docker.internal`, `127.0.0.1`) и доверие
+клиентским — env-секреты `PGW_API_TLS_{CERT,KEY,CLIENT_CA}` (PEM; или пути
+`…_PATH` из volume `/tls:ro`) — per-install секреты воркера (осознанное
+исключение из §4: транспортная граница API не может жить в etcd — etcd-клиент
+сам ходит по HTTP). Клиент без валидного серта — 401 (TLS-хендшейк-отказ).
+`X-Api-Key`/`PGW_API_KEY` удалён; отдельные креды панели и сида — разные
+клиентские серты одной клиентской CA (различимы в журналах сервера,
+отзываются независимо). Отключение TLS
+(`PgWorker:Api:Tls:AllowInsecureHttp`, default `false`) — только для
+in-memory WAF-тестов; в deploy/стенде всегда mTLS. Скрейп Prometheus —
+по mTLS (tls_config, arch/18 §5.2).
 
 **Эндпоинты** (сигнатуры/коды — 1:1 UI-контракт панели 02 §9/03 §1; тело
 и ответы не менялись):
@@ -147,7 +163,10 @@ routing, `/service/<scope>/members`, очереди заявок): это уст
 интеграционных тестов панели). Пишет ключи, которые в живой системе пишут
 ДРУГИЕ субъекты (Patroni, эмуляторы, скрипты): это осознанная стендовая
 эмуляция, поэтому эндпоинт закрыт флагом `PgWorker:Api:EnableSeedEndpoint`
-(default `false`; включается только в dev-стенде env-ом). Идемпотентен:
+(default `false`; включается только в dev-стенде env-ом). Транспорт — общий
+mTLS-канал API (§1.1); вызовы сида аутентифицируются ОТДЕЛЬНЫМ клиентским
+сертификатом `seed.crt` (не сертом панели — различимость в журналах/независимый
+отзыв). Идемпотентен:
 существующий `/clusters/demo/config` → 200 `{"seeded":false}` без записи.
 Служит «стендом части» для панели без живых PG-нод; полный стенд
 (00-up.sh) пользуется тем же эндпоинтом.
@@ -229,8 +248,11 @@ data-каталог создаётся от root и недоступен patroni
 
 ### 2.2. Режим Plain (docker на выделенных хостах)
 
-- Конфиг `PgWorker:Docker:Hosts[]` — таблица хостов `{Name, Endpoint}`
-  (`tcp://10.0.1.11:2375` или `unix:///var/run/docker.sock` для локального).
+- Конфиг `PgWorker:Docker:Hosts[]` — таблица хостов `{Name, Endpoint}`.
+  Endpoint — одна из схем (транспорт к Engine API — §2.2.1):
+  `unix:///var/run/docker.sock` (локальный хост),
+  `tcp://10.0.1.11:2376` (+TLS-конфиг `PgWorker:Docker:Tls`),
+  `ssh://user@10.0.1.11[:22]` (SSH-туннель `PgWorker:Docker:Ssh`).
   Каждый хост — свой клиент Docker Engine API (per-host connection).
 - PgWorker сам вычисляет placement (§2.4) и создаёт контейнеры на выбранных
   хостах: `POST /containers/create?name=pgw-<C>-<X>-<n>` → `start`.
@@ -238,12 +260,53 @@ data-каталог создаётся от root и недоступен patroni
 - Анти-аффинити: ноды одного HA-кластера (шарда) — на разных хостах, если
   `hosts >= replicas`; иначе — равномерно по least-loaded (число занятых
   слотов из `/pgworker/portalloc` + `GET /containers/json`).
-- Ограничение: хост открывает Engine API по TCP в сети PgWorker
-  (home-окружение; TLS/RBAC — roadmap).
+- Ограничение: хост открывает Engine API только по защищённому транспорту
+  (§2.2.1); plaintext `tcp://…:2375` — не канон (допустим в dev/тестах,
+  warning-лог воркера).
+
+#### 2.2.1. Транспорт к Engine API: TLS, SSH-туннели, RBAC (t03)
+
+Engine API = root на docker-хосте: транспорт и доступ к нему защищаются
+per-install docker-PKI и каноном хостов (Docker CE тонкого RBAC не имеет —
+authz-плагины вне скоупа, граница зафиксирована выше).
+
+- **TLS (tcp://)**: docker-демон удалённого хоста слушает
+  `tcp://127.0.0.1:2376` (loopback) или выделенный интерфейс — ТОЛЬКО с
+  `--tlsverify` (systemd drop-in: `-H tcp://0.0.0.0:2376 --tlsverify
+  --tlscacert=ca.pem --tlscert=<host>.crt --tlskey=<host>.key`); серверный
+  серт хоста подписан per-install docker-CA (генерация —
+  `deploy/tls/gen-docker.sh <host>`, SAN = имя/IP хоста), клиентский серт
+  воркера (`pgworker-docker.crt`, CN=`pgworker-docker`) — из той же CA.
+  Конфиг клиента — `PgWorker:Docker:Tls {CaPem|CaPath,
+  ClientCertPem|ClientCertPath, ClientKeyPem|ClientKeyPath}` (env
+  `PGW_DOCKER_TLS_{CA,CERT,KEY}[_PATH]`); применяется к tcp://-эндпоинтам
+  (fail-fast при частичной конфигурации); unix:// — TLS игнорирует.
+- **SSH-туннель (ssh://)**: воркер держит SSH-сессию к хосту
+  (key-аутентификация, `PgWorker:Docker:Ssh {KeyPem|KeyPath,
+  RemoteDaemonHost=127.0.0.1, RemoteDaemonPort=2376, FingerprintSha256?}`;
+  env-секрет `PGW_DOCKER_SSH_KEY[_PATH]`) и локальный форвардинг
+  (ForwardedPortLocal `127.0.0.1:0 → <RemoteDaemonHost>:<RemoteDaemonPort>`);
+  Engine-клиент хоста ходит по выделенному локальному порту как обычный
+  tcp:// (+TLS, если демон на daemon-порту с tlsverify — канон). Fingerprint
+  хоста не задан → accept + warning (TOFU-примитив); задан — строго.
+  Отказ туннеля = transient (healthz-пинг хоста честно красный, тики
+  повторяют); keepalive SSH-сессии + reconnect. Позволяет демону НЕ слушать
+  TCP вовсе? Нет — daemon-порт на loopback всё же нужен (SSH-канал —
+  прямое TCP-соединение к daemon-порту через сервер); канон daemon'а:
+  `-H tcp://127.0.0.1:2376 --tlsverify` (loopback + mTLS, наружу не слушает).
+- **RBAC/docker-группы (канон хостов)**: локальный доступ — unix-socket
+  группы `docker`; контейнер PgWorker примонтированный socket = root-эквивалент
+  хоста — запуск с `group_add: [<gid docker>]` и выделенным пользователем
+  (compose deploy — комментарий/пример); firewall: 2375 НЕ слушается никогда,
+  2376 — только с mTLS и только из сети воркеров/админки (матрица arch/13 §2);
+  каждый хост — свой серверный серт; компрометация клиентского серта
+  воркера = root всех docker-хостов установки → серт в env-секрете, ротация —
+  перегенерация пакета.
 
 ### 2.3. Режим Swarm
 
-- Конфиг `PgWorker:Docker:SwarmManager` — endpoint любого manager-узла.
+- Конфиг `PgWorker:Docker:SwarmManager` — endpoint любого manager-узла
+  (те же схемы транспорта, что §2.2.1: unix / tcp+TLS / ssh).
   Одна нода шарда = один сервис `pgw-<C>-<X>-<n>` с `replicas=1`
   (гранулярность = нода: точечный rebuild без `--force-update` всего шарда).
 - Анти-аффинити: PgWorker назначает placement через constraint на конкретную
@@ -413,7 +476,7 @@ arch/adminpanel/02 §2.3.1); координационные `leader`/`claims`/`i
 | `/pgworker/evacuations/<C>/<X>` | обычный | журнал эвакуации шарда: `{"evacuated_unix","reason","buckets":{...старый→новый владелец...},"state":"DONE\|QUARANTINED"}` — истина для разбора после возврата шарда. |
 | `/pgworker/portalloc/<C>` | обычный | закрепление выделенных портов за нодами (§2.4): `{"<shard>/<node>":{"host":"h1","pg":15432,"patroni":18008,"doorman":16432}}` (+опц. `"object"` для усыновлённых, §5 J) — переживает смерть инстанса, переиспользуется при rebuild; пишется также усыновлением (§5 J: read-modify-write merge под клэймом). |
 | `/pgworker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика; необязательно для работы) |
-| `/pgworker/api/<id>` | lease TTL 15 с | **дискавери API воркера** (§1.1): `{"url":"http://<host>:<port>","instance":"<id>","since_unix":…}` — ставит сам инстанс при старте; ключ жив = инстанс жив и его URL валиден. Читает панель (единственный способ найти API воркера) и оператор; в UI не отображается |
+| `/pgworker/api/<id>` | lease TTL 15 с | **дискавери API воркера** (§1.1): `{"url":"https://<host>:<port>","instance":"<id>","since_unix":…}` — ставит сам инстанс при старте; ключ жив = инстанс жив и его URL валиден. Читает панель (единственный способ найти API воркера) и оператор; в UI не отображается |
 | `/pgworker/moves/<C>/bucket_<i>` | обычный | заявка на плановый переезд/откат/уборку/отмену (t01): `{"op":"move\|rollback\|finalize\|abort","to":…,"old_shard":…,"skip_reverse":…,"resume":…,"force":…,"requested_unix":…,"requested_by":…}`. Успех или перманентный валидационный отказ → ключ удаляется; transient-сбой → остаётся, фазы — в статус-ключе бакета. Обрабатывается только держателем клэйма `<C>`; одновременно — старейшая заявка кластера. Deprovisioning D2 чистит `/pgworker/moves/<C>/` (префикс). |
 | `/pgworker/rotations/<C>` | обычный | заявка на ротацию app-пароля ВСЕГО кластера (панель, клэйм-txn `version==0` + put): `{"requested_unix":<unix>,"requested_by":"<username панели>"}`. Выполняет держатель клэйма `<C>` (§5 I): ALTER ROLE на мастере каждого поднятого шарда → атомарный txn-коммит (put `app_password` + del заявки). Уже стоит → панель получает 409 (идемпотентность повтора). Deprovisioning D2 удаляет ключ точечно. |
 
@@ -439,6 +502,13 @@ compare (routing=старое значение, config.mod_revision) — «пр�
    `PGW_PG_SUPERUSER_PASSWORD`, `PGW_PG_STANDBY_PASSWORD`,
    `PGW_BUCKET_ADMIN_PASSWORD` (fallback группы 2), `PGW_BUCKET_MOVER_PASSWORD`.
    `PGW_APP_ROLE_PASSWORD` исключён (app-секрет — только группа 1).
+4. **per-install TLS/транспорт (t03, §1.1/§2.2.1)** — env-секреты процесса,
+   не в git, не в etcd: `PGW_API_TLS_{CERT,KEY,CLIENT_CA}` (mTLS API;
+   `…_PATH` из volume), `PGW_DOCKER_TLS_{CA,CERT,KEY}` (клиентский транспорт
+   Engine API), `PGW_DOCKER_SSH_KEY[_PATH]` (key SSH-туннелей),
+   `PGW_DOCKER_SSH_FINGERPRINT` (опц. pin host-key). Транспортная граница API
+   не может жить в etcd (etcd-клиент сам ходит по HTTP — бутстрап-парадокс,
+   прецедент arch/16 §4); `PGW_API_KEY` исключён (заменён mTLS).
 
 ---
 
@@ -1024,7 +1094,10 @@ MR3 journal op=repair (сколько/какие статусы диспатче
 ```
 PgWorker:Etcd:Endpoints[]                          # http://host:2379
 PgWorker:Docker { Mode: Plain|Swarm, Hosts[{Name,Endpoint}],
-                  SwarmManager, PortRange{From,To}, Images{Node}, EnableDoorman }
+                  SwarmManager, PortRange{From,To}, Images{Node}, EnableDoorman,
+                  Tls {CaPem|CaPath, ClientCertPem|Path, ClientKeyPem|Path},   # §2.2.1
+                  Ssh {KeyPem|KeyPath, RemoteDaemonHost=127.0.0.1,
+                       RemoteDaemonPort=2376, FingerprintSha256?} }            # §2.2.1
 PgWorker:Loops { ScanIntervalSec=5, KeepaliveSec=5, SnapshotIntervalMin=360,
                  ErrorDelayMs=2000 }
 PgWorker:Thresholds { NodeDeadSec=90, ShardDeadSec=300, PatroniBootSec=600,
@@ -1049,9 +1122,13 @@ PgWorker:Parallelism { MaxClusters=4 }
 PgWorker:Snapshots { Dir="/snapshots", RetentionFiles=10 }
 PgWorker:AppParams { Default="sslmode=require" }  # per-node ключ
                   # shards/<X>/nodes/<n>/app_params (P2.5'/A5/C; P17)
-PgWorker:Api { AdvertiseUrl, EnableSeedEndpoint=false }  # §1.1: URL API
-                  # (достижимый панелью) в /pgworker/api/<id>; демо-сид-эндпоинт
-# секреты — env PGW_* (§4) + PGW_API_KEY (§1.1, аутентификация API)
+PgWorker:Api { AdvertiseUrl, EnableSeedEndpoint=false,
+               Tls {ServerCertPem|Path, ServerKeyPem|Path, ClientCaPem|Path,
+                    AllowInsecureHttp=false} } # §1.1: mTLS-only грань (t03);
+                  # URL API (достижимый панелью) в /pgworker/api/<id> — https://;
+                  # демо-сид-эндпоинт за флагом; AllowInsecureHttp — только WAF-тесты
+# секреты — env PGW_* (§4): per-install пароли + PGW_API_TLS_* / PGW_DOCKER_TLS_* /
+#   PGW_DOCKER_SSH_* (t03); PGW_API_KEY исключён (§1.1 — mTLS вместо X-Api-Key)
 ```
 
 Флаг `EnableDoorman=false` (риск R1): узел без пулера — компромисс для
@@ -1075,6 +1152,9 @@ PgWorker:Api { AdvertiseUrl, EnableSeedEndpoint=false }  # §1.1: URL API
 | R10 | Репарация прибивает живой скриптовый переезд (скрипт не тикает updated_unix в copy-wait) | порог RepairStaleSec = панельному stale (панель уже считает это аномалией); правило «не смешивать скрипты и заявки в одном окне» (§1); заявка репарации помечена requested_by=pgworker-repair |
 | R11 | Чистка HA-scope (Д3) при живых данных = потеря кластера | трёхуровневая проба данных (Present/Absent/Unknown через docker-exec `test -f PG_VERSION`): чистка ТОЛЬКО при Absent у ВСЕХ нод scope; Unknown (транспорт docker) и хоть одна Present — не лечить (Present → журнал-фейл «разбор оператора»); одна чистка на scope за бюджет (новый бюджет после чистки); journal phase=reset-scope — оператор видит каждую чистку |
 | R12 | Перепланирование портов (Д1/Д2) меняет dsn — клиенты держат старые адреса | dsn-ключ — единственная точка входа (клиенты перечитывают etcd, паттерн app_password-ротации §5 I); репарация только при расхождении с фактом (стабильный кластер не трогается); journal repaired-dsn — событие видно |
+| R13 | SAN серверного серта API не покрывает фактический advertise-хост → строгие клиенты (curl, Prometheus server_name) получают TLS-отказ | канон SAN-набора пакета: `pgworker`, `localhost`, `host.docker.internal`, `127.0.0.1` (§1.1); генерация — `deploy/tls/gen.sh` с полным SAN; панель валидирует цепочку (CustomRootTrust) — hostname-check не ломает её даже при расхождении, строгие клиенты защищены каноном SAN |
+| R14 | SSH-туннель без pinned host-key — MITM на первичном подключении (TOFU) | `PgWorker:Docker:Ssh:FingerprintSha256` — pin строго; не задан → accept + warning-лог при старте хоста (диагностируемое ослабление); канон прода — pin задан |
+| R15 | Plaintext `tcp://:2375` к Engine API остаётся технически возможным (dev/тесты) | канон §2.2.1: прод — только 2376+mTLS или ssh; plaintext → warning-лог воркера на каждом старте хоста; 2375 в firewall-матрице arch/13 §2 отсутствует (default deny) |
 
 ---
 
