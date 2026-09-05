@@ -64,10 +64,12 @@ public sealed class SshHostConnection : IAsyncDisposable
 
         var (targetHost, targetPort) = options.TunnelTarget(); // target — валидированная чистая функция (юнит-тест)
         _port = new ForwardedPortLocal("127.0.0.1", 0, targetHost, checked((uint)targetPort));
+        // Порядок важен: сессия (host-key → fingerprint) — затем регистрация и
+        // старт форварда (SSH.NET 2026: AddForwardedPort требует открытой сессии).
+        Connect();
         _client.AddForwardedPort(_port);
         _port.Start(); // bound-порт выделяется здесь (порт 0 → фактический)
         BoundPort = (int)_port.BoundPort;
-        Connect();
     }
 
     // Connect/reconnect с бэкоффом: подряд идущие попытки не чаще
