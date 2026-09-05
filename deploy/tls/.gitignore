@@ -1,2 +1,4 @@
 *
 !.gitignore
+!gen.sh
+!gen-docker.sh
