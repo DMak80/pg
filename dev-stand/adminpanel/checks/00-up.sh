@@ -35,7 +35,18 @@ docker run --rm \
   sh -c "cp /src/ca.pem /src/pgserver.crt /src/pgserver.key /src/healthcheck.crt /src/healthcheck.key /tls/"
 
 echo ">>> поднимаю стенд (docker compose --profile full --profile kafka --profile metrics up -d --build)"
-docker compose --profile full --profile kafka --profile metrics up -d --build 2>&1 | tail -5
+# Docker Desktop отдаёт хост-порт recreated-контейнера с задержкой (com.docke
+# держит публикацию после удаления старого контейнера; при пересборке образа
+# recreate стабилен — ID меняется метаданными даже на кэшированных слоях) —
+# ретрай compose up, иначе подъём падает на «port is already allocated».
+compose_up_ok=0
+for _ in 1 2 3; do
+  if docker compose --profile full --profile kafka --profile metrics up -d --build 2>&1 | tail -5; then
+    compose_up_ok=1; break
+  fi
+  echo "  compose up не удался (порт не отдан после recreate) — пауза 10 c"; sleep 10
+done
+[ "$compose_up_ok" = 1 ] || { echo "❌ стенд не поднялся за 3 попытки (docker compose logs kafkaworker)"; exit 1; }
 
 ect() { docker compose exec -T etcd etcdctl --endpoints=http://localhost:2379 "$@"; }
 # Запрос — только через -c: позиционный аргумент psql трактуется как DBNAME
@@ -67,7 +78,15 @@ if grep -q '^PGW_API_HOST_PORT=' "$ROOT/deploy/.env"; then
 else
   printf 'PGW_API_HOST_PORT=%s\n' "$PGW_API_HOST_PORT" >> "$ROOT/deploy/.env"
 fi
-( cd "$ROOT/deploy" && docker compose --env-file "$ROOT/deploy/.env" up -d --build --force-recreate pgworker 2>&1 | tail -2 )
+# тот же race порта (Docker Desktop отдаёт публикацию с задержкой) — ретрай.
+pg_up_ok=0
+for _ in 1 2 3; do
+  if ( cd "$ROOT/deploy" && docker compose --env-file "$ROOT/deploy/.env" up -d --build --force-recreate pgworker 2>&1 | tail -2 ); then
+    pg_up_ok=1; break
+  fi
+  echo "  pgworker up не удался (порт не отдан после recreate) — пауза 15 c"; sleep 15
+done
+[ "$pg_up_ok" = 1 ] || { echo "❌ pgworker не поднялся за 3 попытки (docker logs deploy-pgworker-1)"; exit 1; }
 MTLS="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem --cert $ROOT/deploy/tls/healthcheck.crt --key $ROOT/deploy/tls/healthcheck.key"
 for i in $(seq 1 60); do $MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
 $MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null \
