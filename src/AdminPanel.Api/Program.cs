@@ -19,8 +19,8 @@ using Microsoft.Extensions.Options;
 // Точка входа панели: сборка хоста и модульная композиция сервисов.
 var builder = WebApplication.CreateBuilder(args);
 
-// mTLS kafkaworker (t03, arch/02 §2.3.2): env KFW_PANEL_TLS_* → конфиг-дерево
-// до Build() (ApplyEnvOverrides — часть имени-источника соответствий).
+// mTLS ОБОИХ воркеров (t03-pg, arch/02 §2.3.2): env WORKERS_PANEL_TLS_* →
+// конфиг-дерево до Build() (ApplyEnvOverrides — единый серт панели на оба API).
 AdminPanel.Etcd.Workers.WorkerTlsHandler.ApplyEnvOverrides(builder.Configuration);
 
 // Инициализация ActivitySource каркаса до первого HandleQuery (по образцу референса).

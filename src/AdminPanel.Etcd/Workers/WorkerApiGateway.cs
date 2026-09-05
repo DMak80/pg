@@ -12,6 +12,8 @@ namespace AdminPanel.Etcd.Workers;
 /// arch/02 §2.3.1/§2.3.2). Сетевой сбой/таймаут одного URL → следующий ключ
 /// (failover); ответ получен (любой статус) → результат с телом как есть;
 /// живых нет/все молчат → WorkerApiUnavailableException (503 панели).
+/// Аутентификация — mTLS клиентским сертом (WorkerTlsHandler); X-Api-Key
+/// удалён для ОБОИХ воркеров (t03).
 /// </summary>
 public sealed class WorkerApiGateway(
     IOptions<WorkerApiOptions> options,
@@ -36,7 +38,6 @@ public sealed class WorkerApiGateway(
         if (ordered.Length == 0)
             throw new WorkerApiUnavailableException(worker);
 
-        var apiKey = ApiKeyOf(worker);
         using var client = factory.CreateClient(HttpClientName);
         var seconds = options.Value.TimeoutSec;
         if (seconds > 0)
@@ -45,8 +46,6 @@ public sealed class WorkerApiGateway(
         foreach (var endpoint in ordered)
         {
             using var request = new HttpRequestMessage(method, new Uri(new Uri(endpoint.Url), path));
-            if (!string.IsNullOrEmpty(apiKey))
-                request.Headers.Add("X-Api-Key", apiKey);
             if (requestedBy is not null)
                 request.Headers.Add("X-Requested-By", requestedBy);
             if (body is not null)
@@ -80,13 +79,5 @@ public sealed class WorkerApiGateway(
         "pgworker" => pgStore.Current?.PgWorkerEndpoints,
         "kafkaworker" => kafkaStore.Current?.WorkerEndpoints,
         _ => throw new ArgumentOutOfRangeException(nameof(worker), worker, "ожидался pgworker|kafkaworker"),
-    };
-
-    // X-Api-Key для KafkaWorker удалён (t03): аутентификация — mTLS клиентским
-    // сертом HttpClient (WorkerTlsHandler.Build).
-    private string? ApiKeyOf(string worker) => worker switch
-    {
-        "pgworker" => options.Value.PgApiKey,
-        _ => null,
     };
 }

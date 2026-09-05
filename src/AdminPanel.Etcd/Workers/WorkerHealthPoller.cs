@@ -8,7 +8,7 @@ namespace AdminPanel.Etcd.Workers;
 
 // Тик опроса /healthz живых инстансов PgWorker (spec §3.4 D4; arch/adminpanel/02
 // §2.3.1): 200 → Healthy, 503 → Degraded, сетевой сбой/таймаут → Unreachable
-// (lease жив — панель «недавно видела» воркера). /healthz не под X-Api-Key.
+// (lease жив — панель «недавно видела» воркера). /healthz — за mTLS, без X-Api-Key (t03).
 [InjectAsSingleton(typeof(IHostedService))]
 public sealed class WorkerHealthPoller(
     ISnapshotReader snapshotReader,
@@ -48,7 +48,7 @@ public sealed class WorkerHealthPoller(
 
         // KafkaWorker-инстансы (t09; arch/adminpanel/02 §2.3.2): тот же тик/клиент/
         // семантика — 200 → Healthy, 503 → Degraded, сетевой сбой → Unreachable;
-        // /healthz не под X-Api-Key (ApiKeyMiddleware проверяет только /api).
+        // /healthz за mTLS тем же клиентским сертом (t03: X-Api-Key удалён).
         var kafkaEndpoints = kafkaSnapshotReader.Current?.WorkerEndpoints ?? [];
         var kafkaAt = time.GetUtcNow();
         var kafkaResults = await Task.WhenAll(kafkaEndpoints.Select(e => ProbeAsync(e, kafkaAt, ct)));
