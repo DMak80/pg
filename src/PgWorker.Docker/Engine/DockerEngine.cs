@@ -19,15 +19,20 @@ public class DockerEngineFactory : IAsyncDisposable
     private readonly DockerTlsMaterial? _tls;
     private readonly SshTunnelOptions? _ssh;
     private readonly ILogger<DockerEngineFactory>? _logger;
+    private readonly ILoggerFactory? _loggerFactory;
+    private readonly Dictionary<string, SshHostConnection> _tunnels = new();
+    private readonly object _tunnelsLock = new();
 
     // Fail-fast здесь (а не в тике): частичная TLS-конфигурация — ошибка старта.
     public DockerEngineFactory(
         DockerTlsOptions? tls = null,
         SshTunnelOptions? ssh = null,
-        ILogger<DockerEngineFactory>? logger = null)
+        ILogger<DockerEngineFactory>? logger = null,
+        ILoggerFactory? loggerFactory = null)
     {
         _ssh = ssh;
-        _logger = logger;
+        _logger = logger ?? loggerFactory?.CreateLogger<DockerEngineFactory>();
+        _loggerFactory = loggerFactory;
         _tls = tls is null ? null : DockerTlsMaterial.Load(tls);
     }
 
@@ -96,15 +101,38 @@ public class DockerEngineFactory : IAsyncDisposable
         return new DockerEngine(httpClient, hostAlias);
     }
 
-    // SSH-туннели (Task 3): кэш по endpoint + reconnect-семантика.
-    private SshHostConnection TunnelFor(string endpoint, EndpointScheme scheme) => throw new NotSupportedException("реализован в Task 3");
+    // кэш туннелей по endpoint: подключённый — переиспользуем; разорванный —
+    // reconnect с бэкоффом (EnsureConnected бросает transient-ошибку на тик).
+    private SshHostConnection TunnelFor(string endpoint, EndpointScheme scheme)
+    {
+        lock (_tunnelsLock)
+        {
+            if (_tunnels.TryGetValue(endpoint, out var existing))
+            {
+                existing.EnsureConnected();
+                return existing;
+            }
 
-    public ValueTask DisposeAsync() => ValueTask.CompletedTask; // наполняется в Task 3
+            var tunnel = new SshHostConnection(scheme, _ssh ?? new SshTunnelOptions(),
+                _loggerFactory?.CreateLogger<SshHostConnection>());
+            _tunnels[endpoint] = tunnel;
+            return tunnel;
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        SshHostConnection[] tunnels;
+        lock (_tunnelsLock)
+        {
+            tunnels = [.. _tunnels.Values];
+            _tunnels.Clear();
+        }
+
+        foreach (var tunnel in tunnels)
+            await tunnel.DisposeAsync();
+    }
 }
-
-// ВРЕМЕННАЯ заглушка до Task 3 (удалить при реализации SshTunnelOptions/SshHostConnection).
-public sealed class SshTunnelOptions;
-internal sealed class SshHostConnection { public int BoundPort => throw new NotSupportedException(); }
 
 // Загруженный TLS-материал фабрики: живёт время жизни фабрики (валидация цепочки
 // вызывается на КАЖДОМ хендшейке — без using; паттерн WorkerTlsHandler.Build).
