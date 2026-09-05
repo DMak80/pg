@@ -16,6 +16,9 @@ RUN apt-get update \
 COPY --from=publish /app ./
 ENV ASPNETCORE_HTTP_PORTS=8080
 EXPOSE 8080
+# /healthz за mTLS (t03, arch/14 §1.1): клиентская пара healthcheck из
+# per-install TLS-пакета (deploy/tls/gen.sh; volume /tls:ro в compose).
 HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 \
-    CMD curl -sf http://localhost:8080/healthz || exit 1
+    CMD curl -sf --cacert /tls/ca.pem --cert /tls/healthcheck.crt --key /tls/healthcheck.key \
+    https://localhost:8080/healthz || exit 1
 ENTRYPOINT ["dotnet", "PgWorker.App.dll"]

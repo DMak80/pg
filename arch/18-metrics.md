@@ -176,6 +176,13 @@ ObservableGauge-стейт; ошибка сбора не валит тик (об
 | `adminpanel` | имя сети стенда `adminpanel:8080` (хост-публикация 5050 — только для браузера/чеков) | §2.4 |
 | `patroni` | static: `hc1a:8008, hc1b:8008, hc2a:8008, hc2b:8008` | §2.5 |
 
+Джобы воркеров — `scheme: https` + `tls_config {ca_file: /tls/ca.pem,
+cert_file: /tls/prometheus.crt, key_file: /tls/prometheus.key}` (t03: /metrics
+обоих воркеров — за mTLS, arch/14 §1.1/arch/16 §1.1; клиентский серт
+скрейпера `prometheus.crt` — из той же per-install API-CA; контейнер
+прометеуса монтирует TLS-пакет стенда ro). Джоба `adminpanel` — http (панель
+без TLS на стенде, вне скоупа t03).
+
 ### 5.3. Дашборды (Grafana provisioning, JSON в репо)
 
 `dashboards/workers.json` (циклы/клэймы/фазы/операции/снапшоты обоих

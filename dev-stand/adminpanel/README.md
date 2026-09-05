@@ -126,20 +126,27 @@ Quick-режим: `checks/90-down.sh -v && checks/05-seed.sh` → зелёные
 - панель (докер): логи `docker compose logs adminpanel`, API —
   `curl -b jar $BASE/api/overview`.
 
-## mTLS API KafkaWorker (t03)
+## mTLS API воркеров (t03, оба: pgworker + kafkaworker)
 
-HTTP API kafkaworker (вкл. `/healthz`) — **только mTLS** (arch/16 §1.1):
-`X-Api-Key`/`KFW_API_KEY` удалены, грань защищена per-install API-PKI.
+HTTP API обоих воркеров (вкл. `/healthz` и `/metrics`) — **только mTLS**
+(arch/14 §1.1 / arch/16 §1.1): ключевая аутентификация X-Api-Key удалена у
+обоих воркеров, грань защищена ЕДИНОЙ per-install API-PKI `kfw-install-ca`.
 
 - **Генерация пакета**: `bash deploy/tls/gen.sh` — создаёт в `deploy/tls/`
-  `ca.pem`, `server.crt/key` (SAN: localhost, host.docker.internal,
-  kafkaworker), `panel.crt/key`, `healthcheck.crt/key` (каталог gitignored).
-  `00-up.sh` делает это идемпотентно (только если `ca.pem` нет).
+  `ca.pem`, серверные `server.crt/key` (kafkaworker) и `pgserver.crt/key`
+  (pgworker; SAN: pgworker, localhost, host.docker.internal, 127.0.0.1),
+  клиентские `panel.crt/key`, `seed.crt/key`, `prometheus.crt/key`,
+  `healthcheck.crt/key` (каталог gitignored). `00-up.sh` делает это
+  идемпотентно (только если `ca.pem` нет).
+- **pgworker**: volume `pgw-api-tls:/tls:ro` (наполняет `00-up.sh`) + env
+  `PGW_API_TLS_{CERT,KEY,CLIENT_CA}_PATH` (deploy/docker-compose.yml).
 - **kafkaworker**: bind `../../deploy/tls:/tls:ro` + env `KFW_API_TLS_*_PATH`
   (compose); панель: `../../deploy/tls:/tls-workers:ro` + env
-  `ADMINPANEL__WORKERS__KAFKATLS__*_PATH` (клиентский серт panel.crt/key и
-  доверие ca.pem).
-- **Чеки**: прямые вызовы API воркера (05-seed, 57) ходят по
-  `https://localhost:8082` с `--cacert ca.pem --cert healthcheck.crt --key
-  healthcheck.key`; остальные — через панель, чей `IWorkerApiGateway`
-  сам подписывает запросы клиентским сертом (mTLS-проксирование).
+  `ADMINPANEL__WORKERS__WORKERTLS__*_PATH` (единый клиентский серт panel
+  на оба API и доверие ca.pem).
+- **Prometheus**: mount `../../deploy/tls:/tls:ro` + `tls_config`
+  (`prometheus.crt` — отдельный клиентский серт скрейпа, arch/18 §5.2).
+- **Чеки**: прямые вызовы API воркера (05-seed pg, 20, 65) ходят по
+  `https://localhost:8080|8082` с `--cacert ca.pem --cert seed|healthcheck.crt
+  --key ...`; остальные — через панель, чей `IWorkerApiGateway` сам
+  подписывает запросы клиентским сертом (mTLS-проксирование).

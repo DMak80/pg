@@ -7,9 +7,22 @@ alerting:
     - static_configs:
         - targets: ["alertmanager:9093"]
 scrape_configs:
-  - job_name: pgworker            # deploy-compose, публикация хоста :8080
-    static_configs: [{targets: ["host.docker.internal:8080"]}]
-  - job_name: kafkaworker         # сеть стенда (профиль kafka)
+  # Host-публикация pgworker параметризуется (PGW_API_HOST_PORT, коллизии
+  # на хосте) — target держится в file_sd-файле (переписывает 00-up.sh).
+  - job_name: pgworker            # deploy-compose (mTLS, t03)
+    scheme: https
+    tls_config:
+      ca_file: /tls/ca.pem
+      cert_file: /tls/prometheus.crt
+      key_file: /tls/prometheus.key
+    file_sd_configs:
+      - files: ["/etc/prometheus/pgworker-targets.json"]
+  - job_name: kafkaworker         # сеть стенда (профиль kafka; mTLS — чинит t03-gap)
+    scheme: https
+    tls_config:
+      ca_file: /tls/ca.pem
+      cert_file: /tls/prometheus.crt
+      key_file: /tls/prometheus.key
     static_configs: [{targets: ["kafkaworker:8080"]}]
   - job_name: adminpanel          # сеть стенда
     static_configs: [{targets: ["adminpanel:8080"]}]

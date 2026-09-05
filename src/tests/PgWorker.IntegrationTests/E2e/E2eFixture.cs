@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Net;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
@@ -35,7 +36,18 @@ public sealed class E2eFixture : IAsyncLifetime
 
     public string AppDll { get; private set; } = "";
 
-    private readonly HttpClient _healthHttp = new() { Timeout = TimeSpan.FromSeconds(3) };
+    // mTLS HTTP API (t03, arch/14 §1.1): фикстурный per-install пакет pgw-e2e-ca.
+    // CA выпускается в InitializeAsync (после гейта, до старта хостов); X509-серты
+    // держатся БЕЗ using — живут время жизни фикстуры (паттерн MtlsApiTests).
+    public static (string CaPem, string CaKeyPem) InstallCa { get; private set; }
+
+    public static string ServerCertPem { get; private set; } = "";
+
+    public static string ServerKeyPem { get; private set; } = "";
+
+    public static X509Certificate2 E2eClientCert { get; private set; } = null!;
+
+    private HttpClient? _healthHttp;
 
     public async ValueTask InitializeAsync()
     {
@@ -48,6 +60,29 @@ public sealed class E2eFixture : IAsyncLifetime
             return;
 
         DockerTrait.SkipIfUnavailable();
+
+        // mTLS-пакет фикстуры: CA + серверный серт инстансов (SAN 127.0.0.1/localhost
+        // — ASPNETCORE_URLS https://127.0.0.1) + клиентская пара health-клиента.
+        // PFX round-trip клиентского серта: эфемерный ключ CreateFromPem не годится
+        // для SslStream (паттерн MtlsApiTests).
+        InstallCa = E2eTestPki.GenerateCa("e2e");
+        (ServerCertPem, ServerKeyPem) = E2eTestPki.Issue(
+            InstallCa.CaPem, InstallCa.CaKeyPem, "pgworker", ["localhost", "127.0.0.1"], ip: null);
+        var (clientPem, clientKeyPem) = E2eTestPki.Issue(
+            InstallCa.CaPem, InstallCa.CaKeyPem, "e2e-healthcheck", ["e2e-healthcheck"], ip: null);
+        var pemPair = X509Certificate2.CreateFromPem(clientPem, clientKeyPem);
+        E2eClientCert = X509CertificateLoader.LoadPkcs12(pemPair.Export(X509ContentType.Pkcs12), null);
+        _healthHttp = new HttpClient(new SocketsHttpHandler
+        {
+            SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+            {
+                // TLS 1.2: macOS SslStream не шлёт клиентские серты в TLS 1.3 (runtime#37961).
+                EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12,
+                ClientCertificates = [E2eClientCert],
+                RemoteCertificateValidationCallback = (_, _, _, _) => true, // тест доверяет фикстурной CA
+            },
+        })
+        { Timeout = TimeSpan.FromSeconds(3) };
 
         // Корень репозитория и артефакты: от каталога тестовой сборки вверх.
         Root = FindRoot(AppContext.BaseDirectory);
@@ -127,7 +162,8 @@ public sealed class E2eFixture : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        _healthHttp.Dispose();
+        // null при выключенном гейте (InitializeAsync вышел до создания клиента).
+        _healthHttp?.Dispose();
         if (_etcd is not null)
             await _etcd.DisposeAsync();
     }
@@ -188,11 +224,14 @@ public sealed class E2eFixture : IAsyncLifetime
             ["PgWorker__Snapshots__Dir"] = snapshotsDir,
             ["PgWorker__Snapshots__RetentionFiles"] = "10",
 
-            // HTTP API воркера (arch/14 §1.1): advertise-URL той же Kestrel-грани
-            // (fail-fast при пустом — e2e-процесс обязан его задать).
-            ["PgWorker__Api__AdvertiseUrl"] = $"http://127.0.0.1:{port}",
+            // mTLS HTTP API (t03, arch/14 §1.1): фикстурный per-install пакет —
+            // PEM-дуализм env освобождает от файлов; порт — свободный зонд.
+            ["PGW_API_TLS_CERT"] = ServerCertPem,
+            ["PGW_API_TLS_KEY"] = ServerKeyPem,
+            ["PGW_API_TLS_CLIENT_CA"] = InstallCa.CaPem,
+            ["PgWorker__Api__AdvertiseUrl"] = $"https://127.0.0.1:{port}",
 
-            ["ASPNETCORE_URLS"] = $"http://127.0.0.1:{port}",
+            ["ASPNETCORE_URLS"] = $"https://127.0.0.1:{port}",
             ["DOTNET_ENVIRONMENT"] = "Production",
         };
 
@@ -224,7 +263,9 @@ public sealed class E2eFixture : IAsyncLifetime
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
-        var instance = new HostInstance(name, process, snapshotsDir, _healthHttp, logWriter);
+        // non-null: StartHostAsync вызывается только при включённом гейте —
+        // InitializeAsync к этому моменту создал mTLS-клиент готовности.
+        var instance = new HostInstance(name, process, snapshotsDir, _healthHttp!, logWriter);
 
         // Готовность: /healthz отвечает (любой статус, кроме 404 = маршрут жив).
         var ready = await WaitForAsync(async () =>
@@ -234,12 +275,19 @@ public sealed class E2eFixture : IAsyncLifetime
                     $"инстанс {name} упал при старте (exit {process.ExitCode}):\n{string.Join("\n", tail)}");
             try
             {
-                using var response = await _healthHttp.GetAsync(
-                    $"http://127.0.0.1:{port}/healthz", CancellationToken.None);
+                using var response = await _healthHttp!.GetAsync(
+                    $"https://127.0.0.1:{port}/healthz", CancellationToken.None);
                 return response.StatusCode != HttpStatusCode.NotFound;
             }
             catch (HttpRequestException)
             {
+                return false;
+            }
+            catch (OperationCanceledException)
+            {
+                // 3-с таймаут клиента: mTLS-хендшейк при буте инстанса под нагрузкой
+                // дольше plain-http до t03 — проба честно повторится в следующем
+                // такте WaitForAsync, нода ещё не готова.
                 return false;
             }
         }, TimeSpan.FromSeconds(30), ct);

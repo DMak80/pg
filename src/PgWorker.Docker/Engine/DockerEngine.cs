@@ -1,35 +1,63 @@
 using System.Buffers.Binary;
 using System.Globalization;
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.Logging;
 using PgWorker.Core;
 
 namespace PgWorker.Docker.Engine;
 
-// Фабрика движков: endpoint "unix:///var/run/docker.sock" | "tcp://host:2375".
-// API-версия закреплена v1.44 (решение фазы plan №2; docker >= 23).
-public class DockerEngineFactory
+// Фабрика движков (arch/14 §2.2/§2.2.1, t03): endpoint "unix:///var/run/docker.sock"
+// | "tcp://host[:2375]" (+TLS при заданном DockerTlsOptions) | "ssh://[user@]host[:22]"
+// (туннель — SshTunnelOptions). API-версия закреплена v1.44 (docker >= 23).
+public class DockerEngineFactory : IAsyncDisposable
 {
-    // Транспортный handler: unix → ConnectCallback с UnixDomainSocketEndPoint.
+    private readonly DockerTlsMaterial? _tls;
+    private readonly SshTunnelOptions? _ssh;
+    private readonly ILogger<DockerEngineFactory>? _logger;
+    private readonly ILoggerFactory? _loggerFactory;
+    private readonly Dictionary<string, SshHostConnection> _tunnels = new();
+    private readonly object _tunnelsLock = new();
+
+    // Fail-fast здесь (а не в тике): частичная TLS-конфигурация — ошибка старта.
+    public DockerEngineFactory(
+        DockerTlsOptions? tls = null,
+        SshTunnelOptions? ssh = null,
+        ILogger<DockerEngineFactory>? logger = null,
+        ILoggerFactory? loggerFactory = null)
+    {
+        _ssh = ssh;
+        _logger = logger ?? loggerFactory?.CreateLogger<DockerEngineFactory>();
+        _loggerFactory = loggerFactory;
+        _tls = tls is null ? null : DockerTlsMaterial.Load(tls);
+    }
+
+    // Транспортный handler: unix → ConnectCallback с UnixDomainSocketEndPoint;
+    // tcp → TLS (клиентский серт + цепочка против docker-CA), если сконфигурирован.
     internal HttpMessageHandler CreateHandler(string endpoint)
     {
+        var scheme = EndpointScheme.Parse(endpoint);
         var sockets = new SocketsHttpHandler
         {
             // docker-прокси держит соединения — не рвём их агрессивно
             PooledConnectionLifetime = TimeSpan.FromMinutes(5),
         };
-        if (endpoint.StartsWith("unix://", StringComparison.Ordinal))
+        if (scheme.Scheme == EndpointScheme.Unix)
         {
-            var socketPath = endpoint["unix://".Length..];
+            var socketPath = scheme.Host;
             sockets.ConnectCallback = async (context, ct) =>
             {
-                var socket = new Socket(AddressFamily.Unix, SocketType.Stream, ProtocolType.Unspecified);
+                var socket = new System.Net.Sockets.Socket(
+                    System.Net.Sockets.AddressFamily.Unix, System.Net.Sockets.SocketType.Stream,
+                    System.Net.Sockets.ProtocolType.Unspecified);
                 try
                 {
-                    await socket.ConnectAsync(new UnixDomainSocketEndPoint(socketPath), ct);
-                    return new NetworkStream(socket, ownsSocket: true);
+                    await socket.ConnectAsync(new System.Net.Sockets.UnixDomainSocketEndPoint(socketPath), ct);
+                    return new System.Net.Sockets.NetworkStream(socket, ownsSocket: true);
                 }
                 catch
                 {
@@ -38,6 +66,21 @@ public class DockerEngineFactory
                 }
             };
         }
+        else if (_tls is not null)
+        {
+            // tcp (+TLS поверх ssh-туннеля — endpoint уже tcp://127.0.0.1:<bound>)
+            sockets.SslOptions.ClientCertificates = new X509CertificateCollection { _tls.ClientCert };
+            sockets.SslOptions.RemoteCertificateValidationCallback =
+                (_, certificate, _, _) => DockerTlsMaterial.ValidateChain(certificate, _tls.Ca);
+        }
+        else if (scheme.Scheme == EndpointScheme.Tcp)
+        {
+            // R15: plaintext tcp — только dev/тесты/локальные стенды; канон прода —
+            // 2376+mTLS или ssh (arch/14 §2.2.1).
+            _logger?.LogWarning(
+                "Engine API {Endpoint} без TLS (plaintext tcp; канон прода — tcp://:2376 mTLS или ssh://, arch/14 §2.2.1)",
+                endpoint);
+        }
 
         return sockets;
     }
@@ -45,12 +88,103 @@ public class DockerEngineFactory
     // hostAlias — имя docker-хоста для BusyPorts plain-режима (swarm: null).
     public virtual IDockerEngine Create(string endpoint, string? hostAlias = null)
     {
-        var baseAddress = endpoint.StartsWith("unix://", StringComparison.Ordinal)
+        var scheme = EndpointScheme.Parse(endpoint);
+        if (scheme.Scheme == EndpointScheme.Ssh)
+            endpoint = $"tcp://127.0.0.1:{TunnelFor(endpoint, scheme).BoundPort}";
+
+        var parsedEndpoint = EndpointScheme.Parse(endpoint);
+        var baseAddress = scheme.Scheme == EndpointScheme.Unix
             ? "http://localhost" // фиктивный хост: соединение уходит в unix-сокет через ConnectCallback
-            : endpoint;
+            : (_tls is not null
+                ? $"https://{parsedEndpoint.Host}:{parsedEndpoint.Port}"
+                : $"http://{parsedEndpoint.Host}:{parsedEndpoint.Port}"); // HttpClient не понимает tcp://
         var httpClient = new HttpClient(CreateHandler(endpoint)) { BaseAddress = new Uri(baseAddress) };
         return new DockerEngine(httpClient, hostAlias);
     }
+
+    // кэш туннелей по endpoint: подключённый — переиспользуем; разорванный —
+    // reconnect с бэкоффом (EnsureConnected бросает transient-ошибку на тик).
+    private SshHostConnection TunnelFor(string endpoint, EndpointScheme scheme)
+    {
+        lock (_tunnelsLock)
+        {
+            if (_tunnels.TryGetValue(endpoint, out var existing))
+            {
+                existing.EnsureConnected();
+                return existing;
+            }
+
+            var tunnel = new SshHostConnection(scheme, _ssh ?? new SshTunnelOptions(),
+                _loggerFactory?.CreateLogger<SshHostConnection>());
+            _tunnels[endpoint] = tunnel;
+            return tunnel;
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        SshHostConnection[] tunnels;
+        lock (_tunnelsLock)
+        {
+            tunnels = [.. _tunnels.Values];
+            _tunnels.Clear();
+        }
+
+        foreach (var tunnel in tunnels)
+            await tunnel.DisposeAsync();
+    }
+}
+
+// Загруженный TLS-материал фабрики: живёт время жизни фабрики (валидация цепочки
+// вызывается на КАЖДОМ хендшейке — без using; паттерн WorkerTlsHandler.Build).
+internal sealed class DockerTlsMaterial
+{
+    public required X509Certificate2 ClientCert { get; init; }
+
+    public required X509Certificate2 Ca { get; init; }
+
+    // PEM с файловым fallback; частичная конфигурация → ApplicationException.
+    public static DockerTlsMaterial Load(DockerTlsOptions tls)
+    {
+        var caPem = tls.CaPem ?? ReadFile(tls.CaPath);
+        var certPem = tls.ClientCertPem ?? ReadFile(tls.ClientCertPath);
+        var keyPem = tls.ClientKeyPem ?? ReadFile(tls.ClientKeyPath);
+        if (caPem is null || certPem is null || keyPem is null)
+            throw new ApplicationException(
+                "PgWorker:Docker:Tls: частичная TLS-конфигурация — нужны CA+CERT+KEY "
+                + "(env PGW_DOCKER_TLS_{CA,CERT,KEY}[_PATH], arch/14 §2.2.1)");
+
+        // PFX round-trip: ключ CreateFromPem эфемерный — macOS SslStream требует
+        // ре-импорт (паттерн WorkerTlsHandler.Build).
+        var pem = X509Certificate2.CreateFromPem(certPem, keyPem);
+        var clientCert = X509CertificateLoader.LoadPkcs12(pem.Export(X509ContentType.Pkcs12), null);
+        var ca = X509Certificate2.CreateFromPem(caPem);
+        return new DockerTlsMaterial
+        {
+            ClientCert = clientCert,
+            Ca = OperatingSystem.IsMacOS()
+                ? X509CertificateLoader.LoadPkcs12(ca.Export(X509ContentType.Pkcs12), null)
+                : ca,
+        };
+    }
+
+    // Цепочка серверного серта демона против per-install docker-CA (паттерн
+    // WorkerTlsHandler.ValidateChain: CustomRootTrust + NoCheck — приватная CA без CRL).
+    public static bool ValidateChain(X509Certificate? certificate, X509Certificate2 ca)
+    {
+        var cert2 = certificate as X509Certificate2
+            ?? (certificate is null ? null : new X509Certificate2(certificate));
+        if (cert2 is null)
+            return false;
+        using var chain = new X509Chain();
+        chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
+        chain.ChainPolicy.CustomTrustStore.Add(ca);
+        chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+        return chain.Build(cert2);
+    }
+
+    private static string? ReadFile(string? path)
+        => path is null || !File.Exists(path) ? null : File.ReadAllText(path).Trim();
 }
 
 // HTTP-ошибка Engine API: не-2xx (кроме идемпотентных 404/409).

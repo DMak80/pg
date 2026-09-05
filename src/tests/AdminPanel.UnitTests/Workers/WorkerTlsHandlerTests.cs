@@ -9,9 +9,10 @@ using Microsoft.Extensions.Configuration;
 
 namespace AdminPanel.UnitTests.Workers;
 
-// WorkerTlsHandler (t03, arch/02 §2.3.2): клиентский серт + доверие ServerCA в
-// SocketsHttpHandler; env-маппинг KFW_PANEL_TLS_*; пустые опции — plain handler
-// (http:// к PgWorker не затронут).
+// WorkerTlsHandler (t03, arch/02 §2.3.2): клиентский серт панели — ЕДИНЫЙ на оба
+// воркера (pgworker и kafkaworker — одна per-install API-CA, t03-pg); доверие
+// ServerCA в SocketsHttpHandler; env-маппинг WORKERS_PANEL_TLS_*; пустые опции —
+// plain handler (dev/локальные http://-вызовы).
 public class WorkerTlsHandlerTests
 {
     [Fact]
@@ -21,7 +22,7 @@ public class WorkerTlsHandlerTests
         // тесты не тянут зависимость от KafkaWorker.Core) + опции.
         var (caPem, caKeyPem) = TestPki.GenerateCa();
         var (certPem, keyPem) = TestPki.Issue(caPem, caKeyPem, "panel");
-        var tls = new KafkaTlsOptions { ClientCertPem = certPem, ClientKeyPem = keyPem, ServerCaPem = caPem };
+        var tls = new WorkerTlsOptions { ClientCertPem = certPem, ClientKeyPem = keyPem, ServerCaPem = caPem };
 
         // Act: сборка handler'а.
         var handler = WorkerTlsHandler.Build(tls) as SocketsHttpHandler;
@@ -35,9 +36,9 @@ public class WorkerTlsHandlerTests
     [Fact]
     public void Build_NoTls_PlainSocketsHandler()
     {
-        // Arrange: пустые опции (pg-only конфигурация).
-        // Act / Assert: handler без TLS-настроек (http к pgworker работает).
-        (WorkerTlsHandler.Build(new KafkaTlsOptions()) as SocketsHttpHandler)!
+        // Arrange: пустые опции (dev/локальные вызовы без сертов).
+        // Act / Assert: handler без TLS-настроек (http://-вызовы работают).
+        (WorkerTlsHandler.Build(new WorkerTlsOptions()) as SocketsHttpHandler)!
             .SslOptions.ClientCertificates.Should().BeNull();
     }
 
@@ -47,17 +48,17 @@ public class WorkerTlsHandlerTests
         // Arrange: env-словарь (inject, без окружения).
         var env = new Dictionary<string, string>
         {
-            ["KFW_PANEL_TLS_CERT_PATH"] = "/tls/panel.crt",
-            ["KFW_PANEL_TLS_SERVER_CA_PATH"] = "/tls/ca.pem",
+            ["WORKERS_PANEL_TLS_CERT_PATH"] = "/tls-workers/panel.crt",
+            ["WORKERS_PANEL_TLS_SERVER_CA_PATH"] = "/tls-workers/ca.pem",
         };
         var config = new ConfigurationManager();
 
         // Act.
         WorkerTlsHandler.ApplyEnvOverrides(config, key => env.GetValueOrDefault(key));
 
-        // Assert: ключи легли в AdminPanel:Workers:KafkaTls:*; таблица — 6 записей.
-        config["AdminPanel:Workers:KafkaTls:ClientCertPath"].Should().Be("/tls/panel.crt");
-        config["AdminPanel:Workers:KafkaTls:ServerCaPath"].Should().Be("/tls/ca.pem");
+        // Assert: ключи легли в AdminPanel:Workers:WorkerTls:*; таблица — 6 записей.
+        config["AdminPanel:Workers:WorkerTls:ClientCertPath"].Should().Be("/tls-workers/panel.crt");
+        config["AdminPanel:Workers:WorkerTls:ServerCaPath"].Should().Be("/tls-workers/ca.pem");
         WorkerTlsHandler.EnvBindings.Should().HaveCount(6);
     }
 

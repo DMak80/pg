@@ -113,7 +113,7 @@ Scope = `<C>-<X>`, глобально уникален. Связь со шард
 | `/pgworker/portalloc/<C>` | JSON `{"<shard>/<node>":{"host":"h1","pg":15432,"patroni":18008,"doorman":16432}}` | адреса Patroni-проб (`arch/14` §2.4) | канонический `host:patroni-порт` члена HA (источник — DSN шарда); в UI не отображается |
 | `/pgworker/work/<C>` | JSON `{"op":"provision\|…","phase":"…","updated_unix":…,"instance":"…","last_error"?,"fail_count"?,"fail_first_unix"?,"retry_not_before_unix"?,"unreachable"?}` (канон — arch/14 §3.3) | `WorkJournalInfo` (§3) | журнал фаз процесса воркера; `last_error` + `fail_first_unix` кормят алерт `provision-stuck` (03 §4) — панель видит, ЧТО именно фейлится у неинициализирующегося кластера; битый JSON — parseError-запись, ключ не трогаем (домен воркера); в UI отображается через алерты |
 | `/pgworker/moves/<C>/<bucket>` | JSON-заявка `{"op":"move"\|"rollback"\|"finalize"\|"abort","to"?,"old_shard"?,"skip_reverse"?,"resume"?,"force"?,"requested_unix":<unix>,"requested_by"?}` | `MoveTicket` (§3) | очередь заявок на переезды: панель читает (вкладка «Переезды»); **пишет PgWorker** по команде мутации §9.7 (пришла через API воркера); после успеха/перманентного отказа заявку УДАЛЯЕТ PgWorker — исчезновение из очереди без изменения routing/status = отвергнутая заявка |
-| `/pgworker/api/<id>` | lease TTL 15 c, JSON `{"url":"http://<host>:<port>","instance":"<id>","since_unix":…}` | `WorkerEndpoint[]` (§3) | **дискавери API PgWorker** (arch/14 §1.1): ставит сам воркер; ключ жив = инстанс жив и URL валиден. Панель кеширует в снапшоте и зовёт любой живой при мутациях §9; по этим же URL отдельный тик опрашивает `/healthz` (результат — `WorkerHealth[]`, алерт `worker-unhealthy` 03 §4); в UI не отображается (только через алерт доступности `worker-api-unreachable`, 03 §4.1) |
+| `/pgworker/api/<id>` | lease TTL 15 c, JSON `{"url":"https://<host>:<port>","instance":"<id>","since_unix":…}` | `WorkerEndpoint[]` (§3) | **дискавери API PgWorker** (arch/14 §1.1): ставит сам воркер; ключ жив = инстанс жив и URL валиден. URL — `https://` (t03): API PgWorker обслуживается только по mTLS — панель аутентифицируется клиентским сертификатом per-install API-CA (единая пакета с KafkaWorker, §2.3.2: `AdminPanel:Workers:WorkerTls`, env `WORKERS_PANEL_TLS_*`); `X-Api-Key`/`PGW_API_KEY` удалён (t03). Панель кеширует в снапшоте и зовёт любой живой при мутациях §9; по этим же URL отдельный тик опрашивает `/healthz` (результат — `WorkerHealth[]`, алерт `worker-unhealthy` 03 §4); в UI не отображается (только через алерт доступности `worker-api-unreachable`, 03 §4.1) |
 
 ### 2.3.2. `/kafkaworker/api/…` — дискавери API KafkaWorker
 
@@ -121,11 +121,14 @@ Scope = `<C>-<X>`, глобально уникален. Связь со шард
 arch/16 §1.1) читаются kafka-refresher'ом в `KafkaSnapshot.WorkerEndpoints`
 — источник URL для kafka-мутаций §10.2. URL — `https://` (t03): API
 KafkaWorker обслуживается только по mTLS — панель аутентифицируется
-клиентским сертификатом per-install API-CA (настройки
-`AdminPanel:Workers:KafkaTls { ClientCertPem|ClientCertPath,
+клиентским сертификатом per-install API-CA (t03-pg: ЕДИНАЯ пакета на оба
+воркера — один CA `kfw-install-ca` подписывает серверные серты обоих API и
+клиентские серты клиентов; настройки
+`AdminPanel:Workers:WorkerTls { ClientCertPem|ClientCertPath,
 ClientKeyPem|ClientKeyPath, ServerCaPem|ServerCaPath }`; env
-`KFW_PANEL_TLS_*`), `X-Api-Key` для KafkaWorker удалён (PgWorker-ключ
-§2.3.1 не трогается). Отсутствие живых ключей → 503
+`WORKERS_PANEL_TLS_*` — переименованы из `KFW_PANEL_TLS_*` тем же релизом),
+`X-Api-Key` удалён для ОБОИХ воркеров (t03-pg: PgWorker — mTLS, §2.3.1).
+Отсутствие живых ключей → 503
 мутаций + critical-алерт `worker-api-unreachable` (03 §4.1). По этим же
 URL тик опроса `/healthz` (t09; тот же поллер и интервал, что у
 PgWorker-инстансов §2.3.1, — `AdminPanel:Workers:HealthIntervalSec`)

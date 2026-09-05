@@ -21,6 +21,7 @@ import type {
   KafkaConfigUpdateRequestDto,
   KafkaTopicCreatedDto,
   CreateTopicRequestDto,
+  KafkaAdminPasswordRotatedDto,
   KafkaPasswordRotatedDto,
   KafkaRebalanceRequestedDto,
   TopicDesiredDto,

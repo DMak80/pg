@@ -53,6 +53,27 @@ arch/                  ← вся документация (рецепты де�
                            init-cluster, add/remove-shard, move-bucket и др.)
 ```
 
+## Защищённый транспорт к Docker Engine API (t03, arch/14 §2.2.1)
+
+Воркеры (PgWorker/KafkaWorker) ходят в docker-хосты по endpoint-схемам
+`PgWorker:Docker:Hosts[*].Endpoint`; канон прода — **без plaintext**:
+
+- **tcp:// + mTLS** (канон: порт 2376). Демон: `dockerd --tlsverify
+  --tlscacert=docker-ca.pem --tlscert=docker-server.crt --tlskey=docker-server.key`;
+  пакет выпускает `bash deploy/tls/gen-docker.sh <host-dns|ip>` (docker-CA,
+  клиентская пара воркера, серверный серт с SAN по хосту). Воркер:
+  `PGW_DOCKER_TLS_CA_PATH` + `PGW_DOCKER_TLS_CERT_PATH`/`PGW_DOCKER_TLS_KEY_PATH`
+  (или PEM-значения без `_PATH`).
+- **ssh://** (`ssh://[user@]host[:22]`) — worker-managed туннель (SSH.NET,
+  ForwardedPortLocal → daemon `127.0.0.1:2376` с `--tlsverify`; TLS поверх
+  туннеля переиспользует tcp-путь). Ключ: `PGW_DOCKER_SSH_KEY[_PATH]`;
+  хост-ключ — `PGW_DOCKER_SSH_FINGERPRINT` (SHA-256, `ssh-keygen -lf`), без
+  pin — TOFU-accept с warning.
+- **unix://** — локальный сокет (стенды/dev), TLS не применяется.
+- **RBAC** вместо наружённого сокета: выделенный пользователь контейнера +
+  `group_add: [<gid docker>]` (шаблон — комментарий в `deploy/docker-compose.yml`);
+  демоны под `--tlsverify`, `:2375` наружу не слушать (firewall).
+
 ## Дальше
 
 Подробности, пошаговый деплой, команды быстрого старта и решение типовых проблем —

@@ -10,11 +10,6 @@
   остановки записи), генерация per-cluster `bucket_mover`, интеграция с
   secret-manager. Генерация per-cluster app-секрета в etcd сделана
   (2026-08-28, feat-etcd-password-field).
-- **`t03-docker-tls-ssh`** — TLS к Docker Engine API и SSH-туннели к
-  docker-хостам (сейчас plaintext TCP/unix-socket в доверенной сети),
-  RBAC/docker-группы; сюда же — транспортная безопасность HTTP API
-  PgWorker (arch/14 §1.1): mTLS/сертификаты вместо голого `X-Api-Key`
-  в закрытой сети, отдельные креды панели и сида.
 - **`t05-quarantine-merge`** — слияние/восстановление данных карантинного
   шарда после его возврата (runbook-операция после аварийной эвакуации E0–E4:
   сверка записей «осиротевших» схем с новыми, разрешение конфликтов).
@@ -25,3 +20,7 @@
   `AdminPanel.Infrastructure` (attribute-DI, CQRS, `Result`, Traces) → перевод
   на `PgWorker.Core`. Механика: панель получает ProjectReference на общие
   сборки, дубли удаляются; поведение обеих систем не меняется (тесты зелёные).
+  Третья группа (t03, 2026-09-05): TLS-инфраструктура mTLS-граней —
+  `ApiTlsEndpoints` (PgWorker.App) ↔ `TlsEndpoints` (KafkaWorker.App) ↔
+  TLS-хелперы (`DockerTlsMaterial.ValidateChain`, `WorkerTlsHandler`,
+  env-биндинги/PEM-дуализм) — унифицировать тем же проходом.

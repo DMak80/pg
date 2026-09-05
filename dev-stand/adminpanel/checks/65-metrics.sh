@@ -4,6 +4,13 @@
 # ServiceDown (down kafkaworker → up==0 ≤2мин → ServiceDown firing → восстановление).
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# t03: воркеры живут за mTLS — healthz/metrics только с клиентской парой
+# healthcheck (dev-конвенция чеков; панель/прометеус — свои серты).
+ROOT="$(cd ../.. && pwd)"
+# Хост-порт публикации pgworker: env-оверрайд → .env (пишет 00-up.sh) → 8080.
+PGW_API_HOST_PORT="${PGW_API_HOST_PORT:-$(awk -F= '$1=="PGW_API_HOST_PORT"{print $2}' "$ROOT/deploy/.env" 2>/dev/null)}"
+PGW_API_HOST_PORT="${PGW_API_HOST_PORT:-8080}"
+MTLS="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem --cert $ROOT/deploy/tls/healthcheck.crt --key $ROOT/deploy/tls/healthcheck.key"
 PROM="http://localhost:${METRICS_PROMETHEUS_PORT:-9090}"
 GRAFANA="http://localhost:${METRICS_GRAFANA_PORT:-3000}"
 AM="http://localhost:${METRICS_ALERTMANAGER_PORT:-9093}"
@@ -13,19 +20,20 @@ echo ">>> чек 65: мониторинг (профиль metrics)"
 #    as-kafkaworker финальным шагом; deploy-pgworker переживает серию чеков, но
 #    проверяем оба — чек обязан проходить после ЛЮБОЙ предыстории серии.
 docker start as-kafkaworker >/dev/null 2>&1 || true
-for i in $(seq 1 60); do curl -fsS -m 3 http://localhost:8082/healthz >/dev/null 2>&1 && break; sleep 1; done
-curl -fsS -m 3 http://localhost:8082/healthz >/dev/null \
-  || { echo "❌ kafkaworker не ожил за 60 c на :8082 (docker compose logs kafkaworker)"; exit 1; }
-for i in $(seq 1 60); do curl -fsS -m 3 http://localhost:8080/healthz >/dev/null 2>&1 && break; sleep 1; done
-curl -fsS -m 3 http://localhost:8080/healthz >/dev/null \
-  || { echo "❌ pgworker не жив на :8080 — поднимите стенд: checks/00-up.sh (deploy-pgworker-1, docker logs deploy-pgworker-1)"; exit 1; }
+for i in $(seq 1 60); do $MTLS https://localhost:8082/healthz >/dev/null 2>&1 && break; sleep 1; done
+$MTLS https://localhost:8082/healthz >/dev/null \
+  || { echo "❌ kafkaworker не ожил за 60 c на :8082 (mTLS; docker compose logs kafkaworker)"; exit 1; }
+for i in $(seq 1 60); do $MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
+$MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null \
+  || { echo "❌ pgworker не жив на :8080 (mTLS) — поднимите стенд: checks/00-up.sh (deploy-pgworker-1, docker logs deploy-pgworker-1)"; exit 1; }
 echo "  воркеры живы (pgworker :8080, kafkaworker :8082)"
 
 # 1) /metrics трёх сервисов (хост-публикации: deploy 8080, стенд 8082/5050).
 #    Подстрока вместо «echo | grep -q»: под pipefail большой экспорт панели
 #    (>64КБ буфера pipe) убивает echo SIGPIPE'ом раньше выхода grep — ложный ❌.
-for u in http://localhost:8080/metrics http://localhost:8082/metrics http://localhost:5050/metrics; do
-  body="$(curl -fsS -m 10 "$u")" || { echo "  ❌ $u недоступен"; exit 1; }
+# t03: /metrics воркеров — только за mTLS (клиентская пара healthcheck); панель — http.
+for u in "$MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/metrics" "$MTLS https://localhost:8082/metrics" "curl -fsS -m 10 http://localhost:5050/metrics"; do
+  body="$($u)" || { echo "  ❌ $u недоступен"; exit 1; }
   [[ "$body" == *"# HELP"* ]] || { echo "  ❌ $u не отдал text-format"; exit 1; }
 done
 echo "  /metrics трёх сервисов: 200 text-format"

@@ -171,6 +171,25 @@ public class WorkerApiGatewayTests
         result.StatusCode.Should().Be(201);
         result.Body.Should().Contain("\"name\":\"smoke\"");
         stub.LastRequestedBy.Should().Be("opsuser"); // идентичность оператора (spec §3.7)
+        stub.LastApiKey.Should().BeNull(); // t03-pg: X-Api-Key удалён — только mTLS
+    }
+
+    [Fact]
+    public async Task SendAsync_PgMutation_NoApiKeyHeader_Sent()
+    {
+        // Arrange: живой pgworker-эндпоинт (стаб) в снапшоте; дефолтные опции.
+        using var stub = new WorkerStub();
+        var gateway = NewGateway(PgStore(new WorkerEndpoint("i1", stub.Url, 1)));
+
+        // Act: мутация через шлюз (контракт t03-pg: mTLS-only у обоих воркеров).
+        var result = await gateway.SendAsync(
+            "pgworker", HttpMethod.Post, "/api/clusters",
+            new { name = "smoke" }, requestedBy: "opsuser", CancellationToken.None);
+
+        // Assert: X-Api-Key в исходящем запросе НЕТ; X-Requested-By сохранён.
+        result.StatusCode.Should().Be(201);
+        stub.LastApiKey.Should().BeNull();
+        stub.LastRequestedBy.Should().Be("opsuser");
     }
 
     [Fact]
@@ -256,22 +275,5 @@ public class WorkerApiGatewayTests
 
         // Assert
         result.StatusCode.Should().Be(201);
-    }
-
-    [Fact]
-    public async Task SendAsync_ApiKeyConfigured_SentAsHeader()
-    {
-        // Arrange
-        using var stub = new WorkerStub();
-        var gateway = NewGateway(
-            PgStore(new WorkerEndpoint("i1", stub.Url, 1)),
-            options: new WorkerApiOptions { PgApiKey = "secret-1" });
-
-        // Act
-        await gateway.SendAsync(
-            "pgworker", HttpMethod.Post, "/api/clusters", null, null, CancellationToken.None);
-
-        // Assert
-        stub.LastApiKey.Should().Be("secret-1");
     }
 }

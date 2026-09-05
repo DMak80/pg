@@ -9,10 +9,21 @@ services:
     image: pgworker:dev
     restart: unless-stopped
     ports:
-      - "8080:8080" # /healthz
+      # Хост-публикация API параметризуется (коллизии на хосте, прецедент
+      # METRICS_*_PORT стенда); внутри контейнера канонический 8080.
+      - "${PGW_API_HOST_PORT:-8080}:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - pgw-snapshots:/snapshots
+      # mTLS HTTP API (t03, arch/14 §1.1): per-install пакет kfw-install-ca
+      # (bash deploy/tls/gen.sh; наполнение volume — dev-stand 00-up.sh).
+      - pgw-api-tls:/tls:ro
+      # RBAC вместо сокета наружу (arch/14 §2.2.1, НЕ включено: текущие стенды
+      # работают root'ом контейнера): выделенный пользователь + группа docker
+      # host-машины — раскомментировать и указать gid (getent group docker):
+      #   user: "10001:10001"
+      #   group_add: ["<gid docker>"]
+      # и заменить bind сокета на tcp://…:2376 (mTLS, deploy/tls/gen-docker.sh).
     extra_hosts:
       # Ноды несут docker-хост "local" (appsettings Docker:Hosts) и пробируются
       # по этому имени; из контейнера резолвим его в docker-хост
@@ -36,11 +47,14 @@ services:
       # (extra_hosts), панель видела DNS-таймауты проб. Пусто (прод/мульти-хост)
       # → имя docker-хоста как есть.
       PgWorker__Docker__AdvertisedHost: ${PGW_ADVERTISED_HOST:-host.docker.internal}
-      # HTTP API воркера (arch/14 §1.1): advertise-URL в /pgworker/api/<id>,
-      # ключ X-Api-Key (пуст — проверка отключена, доверенная docker-сеть),
+      # HTTP API воркера (arch/14 §1.1, t03): mTLS-only грань — advertise
+      # https://, ключи-серты из /tls (per-install пакет kfw-install-ca);
       # демо-сид POST /api/seed/demo за флагом (стенд; прод — false).
-      PgWorker__Api__AdvertiseUrl: ${PGW_API_ADVERTISE_URL:-http://host.docker.internal:8080}
-      PgWorker__Api__ApiKey: ${PGW_API_KEY:-}
+      # X-Api-Key удалён (t03) — аутентификация транспортная (mTLS).
+      PgWorker__Api__AdvertiseUrl: ${PGW_API_ADVERTISE_URL:-https://host.docker.internal:${PGW_API_HOST_PORT:-8080}}
+      PGW_API_TLS_CERT_PATH: /tls/pgserver.crt
+      PGW_API_TLS_KEY_PATH: /tls/pgserver.key
+      PGW_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
       PgWorker__Api__EnableSeedEndpoint: ${PGW_API_ENABLE_SEED:-false}
 
   # KafkaWorker (arch/16 §2.1/§8): docker.sock, том снапшотов P12.
@@ -81,5 +95,6 @@ services:
 
 volumes:
   pgw-snapshots:
+  pgw-api-tls:
   kfw-snapshots:
   kfw-api-tls:

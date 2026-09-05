@@ -23,7 +23,9 @@ public class PgWorkerApiFactory(Etcd.EtcdFixture etcd) : WebApplicationFactory<P
             ["PgWorker:Etcd:Endpoints:0"] = etcd.Endpoint,
             ["PgWorker:Docker:Hosts:0:Name"] = "local",
             ["PgWorker:Docker:Hosts:0:Endpoint"] = "unix:///var/run/does-not-exist.sock",
-            ["PgWorker:Api:AdvertiseUrl"] = "http://localhost:9999",
+            // WAF-хост без сертов: mTLS выключен (прод-канон — false, arch/14 §1.1).
+            ["PgWorker:Api:Tls:AllowInsecureHttp"] = "true",
+            ["PgWorker:Api:AdvertiseUrl"] = "https://localhost:9999",
             // Seed-эндпоинт включён для кейсов наливки (SeedApiTests); выключенный
             // флаг проверяется отдельной фабрикой-оверрайдом.
             ["PgWorker:Api:EnableSeedEndpoint"] = "true",
