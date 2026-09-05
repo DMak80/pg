@@ -129,8 +129,8 @@ Quick-режим: `checks/90-down.sh -v && checks/05-seed.sh` → зелёные
 ## mTLS API воркеров (t03, оба: pgworker + kafkaworker)
 
 HTTP API обоих воркеров (вкл. `/healthz` и `/metrics`) — **только mTLS**
-(arch/14 §1.1 / arch/16 §1.1): `X-Api-Key` (`PGW_API_KEY`/`KFW_API_KEY`)
-удалены, грань защищена ЕДИНОЙ per-install API-PKI `kfw-install-ca`.
+(arch/14 §1.1 / arch/16 §1.1): ключевая аутентификация X-Api-Key удалена у
+обоих воркеров, грань защищена ЕДИНОЙ per-install API-PKI `kfw-install-ca`.
 
 - **Генерация пакета**: `bash deploy/tls/gen.sh` — создаёт в `deploy/tls/`
   `ca.pem`, серверные `server.crt/key` (kafkaworker) и `pgserver.crt/key`

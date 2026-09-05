@@ -32,8 +32,8 @@ builder.Services.Configure<KafkaWorkerOptions>(builder.Configuration.GetSection(
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<HealthState>();
 
-// Метрики (arch/18 §3): /metrics на том же Kestrel-порту, что /healthz;
-// ApiKeyMiddleware защищает только /api — scrape-грань открыта (доверенная сеть).
+// Метрики (arch/18 §3): /metrics на том же mTLS-Kestrel-порту, что /healthz
+// (t03) — scrape ходит клиентским сертом per-install пакета.
 builder.Services.AddAppMetrics("KafkaWorker", builder.Configuration.GetSection("KafkaWorker:Metrics"));
 builder.Services.AddSingleton(sp =>
 {
