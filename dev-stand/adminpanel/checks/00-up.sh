@@ -5,6 +5,14 @@
 # без воркера kafka-домен панели глух — отсюда «глупые» алерты и разборы.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+ROOT="$(cd ../.. && pwd)"
+# Хост-публикация API pgworker параметризуется (коллизии портов на хосте;
+# канон 8080). Advertise обязан совпадать с фактической публикацией (панель
+# и чеки стучатся по advertise), prometheus-target — файл file_sd.
+export PGW_API_HOST_PORT="${PGW_API_HOST_PORT:-8080}"
+[ "${PGW_API_ADVERTISE_URL:-}" ] || export PGW_API_ADVERTISE_URL="https://host.docker.internal:${PGW_API_HOST_PORT}"
+printf '[{"targets": ["host.docker.internal:%s"]}]\n' "$PGW_API_HOST_PORT" \
+  > metrics/prometheus/pgworker-targets.json
 
 # Arrange: инструменты хоста
 for bin in docker jq curl; do
@@ -18,6 +26,13 @@ if [ ! -f "$ROOT/deploy/tls/ca.pem" ]; then
   echo ">>> генерирую per-install TLS-пакет (deploy/tls/gen.sh)"
   bash "$ROOT/deploy/tls/gen.sh"
 fi
+
+# Наполнение deploy-volume pgw-api-tls пакетом (ro-монтирование воркером);
+# имя volume — с префиксом compose-проекта deploy (как его создаёт compose).
+docker volume create deploy_pgw-api-tls >/dev/null
+docker run --rm \
+  -v "$ROOT/deploy/tls:/src:ro" -v deploy_pgw-api-tls:/tls alpine:3.20 \
+  sh -c "cp /src/ca.pem /src/pgserver.crt /src/pgserver.key /src/healthcheck.crt /src/healthcheck.key /tls/"
 
 echo ">>> поднимаю стенд (docker compose --profile full --profile kafka --profile metrics up -d --build)"
 docker compose --profile full --profile kafka --profile metrics up -d --build 2>&1 | tail -5
@@ -43,13 +58,21 @@ echo "  etcd ready"
 #     из УСТАРЕВШЕГО образа pgworker:dev (например, сид сеял бы старые аномалии),
 #     а его etcd-клиент держит кеш DNS/коннектов умершего etcd — свежий процесс
 #     из свежего образа надёжнее.
-ROOT="$(cd ../.. && pwd)"
 [ -f "$ROOT/deploy/.env" ] || cp "$ROOT/deploy/.env.example" "$ROOT/deploy/.env"
+# Синхронизация хост-порта API в .env: пересоздания pgworker из чеков
+# (05-seed force-recreate) в свежих оболочках интерполируют compose из .env —
+# bind обязан совпасть с уже занятой публикацией (чеки порт читают из .env).
+if grep -q '^PGW_API_HOST_PORT=' "$ROOT/deploy/.env"; then
+  sed -i.bak "s/^PGW_API_HOST_PORT=.*/PGW_API_HOST_PORT=$PGW_API_HOST_PORT/" "$ROOT/deploy/.env" && rm -f "$ROOT/deploy/.env.bak"
+else
+  printf 'PGW_API_HOST_PORT=%s\n' "$PGW_API_HOST_PORT" >> "$ROOT/deploy/.env"
+fi
 ( cd "$ROOT/deploy" && docker compose --env-file "$ROOT/deploy/.env" up -d --build --force-recreate pgworker 2>&1 | tail -2 )
-for i in $(seq 1 60); do curl -fsS -m 3 http://localhost:8080/healthz >/dev/null 2>&1 && break; sleep 1; done
-curl -fsS -m 3 http://localhost:8080/healthz >/dev/null \
-  || { echo "❌ pgworker не ожил за 60 c (:8080/healthz; docker logs deploy-pgworker-1)"; exit 1; }
-echo "  pgworker жив (:8080/healthz, общий etcd-контур)"
+MTLS="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem --cert $ROOT/deploy/tls/healthcheck.crt --key $ROOT/deploy/tls/healthcheck.key"
+for i in $(seq 1 60); do $MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
+$MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null \
+  || { echo "❌ pgworker не ожил за 60 c (https :${PGW_API_HOST_PORT:-8080}/healthz по mTLS; docker logs deploy-pgworker-1)"; exit 1; }
+echo "  pgworker жив (https :${PGW_API_HOST_PORT:-8080}/healthz, mTLS, общий etcd-контур)"
 
 # 1c) pg-сид — ЧЕРЕЗ API воркера (spec §3.5; прямой etcdctl-сид упразднён):
 #     05-seed.sh идемпотентно ждёт /healthz и зовёт POST /api/seed/demo,
@@ -60,7 +83,7 @@ for i in $(seq 1 30); do
   sleep 1
 done
 [ -n "$(ect get /clusters/demo/config --print-value-only 2>/dev/null)" ] \
-  || { echo "❌ сид не появился за 30 c (curl -X POST http://localhost:8080/api/seed/demo)"; exit 1; }
+  || { echo "❌ сид не появился за 30 c (curl -X POST https://localhost:${PGW_API_HOST_PORT:-8080}/api/seed/demo)"; exit 1; }
 echo "  сид контроль-плейна на месте (налит через API pgworker)"
 
 # 2) PG-ноды готовы; hba-replication (нужен basebackup/rejoin — паттерн ../pg).

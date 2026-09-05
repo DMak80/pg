@@ -1,0 +1,3 @@
+# file_sd-таргет pgworker — артефакт окружения: генерирует checks/00-up.sh
+# под фактический PGW_API_HOST_PORT хоста (prometheus перечитывает сам).
+pgworker-targets.json

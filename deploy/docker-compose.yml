@@ -9,7 +9,9 @@ services:
     image: pgworker:dev
     restart: unless-stopped
     ports:
-      - "8080:8080" # /healthz
+      # Хост-публикация API параметризуется (коллизии на хосте, прецедент
+      # METRICS_*_PORT стенда); внутри контейнера канонический 8080.
+      - "${PGW_API_HOST_PORT:-8080}:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - pgw-snapshots:/snapshots
@@ -49,7 +51,7 @@ services:
       # https://, ключи-серты из /tls (per-install пакет kfw-install-ca);
       # демо-сид POST /api/seed/demo за флагом (стенд; прод — false).
       # X-Api-Key удалён (t03) — аутентификация транспортная (mTLS).
-      PgWorker__Api__AdvertiseUrl: ${PGW_API_ADVERTISE_URL:-https://host.docker.internal:8080}
+      PgWorker__Api__AdvertiseUrl: ${PGW_API_ADVERTISE_URL:-https://host.docker.internal:${PGW_API_HOST_PORT:-8080}}
       PGW_API_TLS_CERT_PATH: /tls/pgserver.crt
       PGW_API_TLS_KEY_PATH: /tls/pgserver.key
       PGW_API_TLS_CLIENT_CA_PATH: /tls/ca.pem

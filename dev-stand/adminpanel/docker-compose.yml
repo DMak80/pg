@@ -258,10 +258,16 @@ services:
       # kafka-пробы: DescribeCluster/группы через host.docker.internal медленнее
       # 3 c (прецедент хостового дев-конфига)
       AdminPanel__Probes__Kafka__TimeoutSeconds: "10"
-      # mTLS kafkaworker (t03, arch/02 §2.3.2): клиентский серт панели + ServerCA
-      ADMINPANEL__WORKERS__KAFKATLS__CLIENTCERT_PATH: /tls-workers/panel.crt
-      ADMINPANEL__WORKERS__KAFKATLS__CLIENTKEY_PATH: /tls-workers/panel.key
-      ADMINPANEL__WORKERS__KAFKATLS__SERVERCA_PATH: /tls-workers/ca.pem
+      # mTLS API воркеров (t03, arch/02 §2.3.2): ЕДИНЫЙ клиентский серт панели
+      # + ServerCA на оба воркера (pgworker и kafkaworker — одна kfw-install-ca).
+      # Env-имена — из таблицы WorkerTlsHandler.EnvBindings: Program.cs
+      # (ApplyEnvOverrides) перекладывает их в AdminPanel:Workers:WorkerTls:*
+      # с точным регистром. Прямые ADMINPANEL__WORKERS__WORKERTLS__* НЕ биндятся:
+      # env-провайдер хранит листья верхним регистром, а binder .NET 10 матчит
+      # свойства строго (репро 2026-09-05: Get<WorkerApiOptions> с env пуст).
+      WORKERS_PANEL_TLS_CERT_PATH: /tls-workers/panel.crt
+      WORKERS_PANEL_TLS_KEY_PATH: /tls-workers/panel.key
+      WORKERS_PANEL_TLS_SERVER_CA_PATH: /tls-workers/ca.pem
     volumes:
       # HostMap (s1a:8008 → hc1a:8008) — только JSON: env не собирает ключи
       # словаря с "__" (см. комментарий в самом файле)
@@ -318,7 +324,12 @@ services:
     volumes:
       - ./metrics/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./metrics/prometheus/rules.yml:/etc/prometheus/rules.yml:ro
+      # file_sd-таргет pgworker (host-порт параметризуется PGW_API_HOST_PORT;
+      # файл перезаписывается 00-up.sh in place, prometheus перечитывает сам).
+      - ./metrics/prometheus/pgworker-targets.json:/etc/prometheus/pgworker-targets.json:ro
       - prometheus-data:/prometheus
+      # Скрейп воркеров за mTLS (t03, О4): TLS-пакет ro (tls_config prometheus.yml).
+      - ../../deploy/tls:/tls:ro
     command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=7d"]
 
   grafana:
