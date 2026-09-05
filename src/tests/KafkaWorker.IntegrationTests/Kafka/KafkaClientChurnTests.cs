@@ -27,7 +27,10 @@ public class KafkaClientChurnTests(EtcdFixture etcd)
     {
         // Arrange: Active-кластер, endpoints на закрытый порт + креды, БЕЗ
         // brokers-ключей (лестница/пересоздания вне сценария — гейт пробы
-        // изолирован, паттерн KafkaActiveGateTests).
+        // изолирован, паттерн KafkaActiveGateTests). t03-шов (arch/15 §2):
+        // проба надзора (DescribeAliveAsync) зряча только при admin-кредах и
+        // ВАЛИДНОМ ca_pem — без них она слепая (success, без клиента), клиент
+        // не создаётся вовсе и churn-граница теста не исполняется.
         var port = EtcdFixture.ReserveHostPort();
         var cluster = $"churn{Guid.NewGuid().ToString("N")[..8]}"; // уникально в etcd фикстуры
         await etcd.PutAsync($"/kafka/clusters/{cluster}/config",
@@ -35,6 +38,10 @@ public class KafkaClientChurnTests(EtcdFixture etcd)
         await etcd.PutAsync($"/kafka/clusters/{cluster}/endpoints", $"127.0.0.1:{port}");
         await etcd.PutAsync($"/kafka/clusters/{cluster}/app_user", "app");
         await etcd.PutAsync($"/kafka/clusters/{cluster}/app_password", "deadbeefdeadbeefdeadbeefdeadbeef");
+        await etcd.PutAsync($"/kafka/clusters/{cluster}/admin_user", "admin");
+        await etcd.PutAsync($"/kafka/clusters/{cluster}/admin_password", "deadbeefdeadbeefdeadbeefdeadbeef");
+        var (caPem, _) = ClusterPki.GenerateCa(cluster);
+        await etcd.PutAsync($"/kafka/clusters/{cluster}/ca_pem", caPem);
 
         var ep = new[] { etcd.Endpoint };
         var claims = new ClaimStore(ep, etcd.Gateway, TimeProvider.System);
@@ -53,6 +60,9 @@ public class KafkaClientChurnTests(EtcdFixture etcd)
 
         var range = await etcd.Gateway.RangeAsync(
             etcd.Endpoint, "/kafka/clusters/", TestContext.Current.CancellationToken);
+        if (!range.IsSuccess)
+            throw new InvalidOperationException(
+                $"range /kafka/clusters/ не удался (etcd фикстуры недоступен?): {range.Error?.Message}");
         var snapshot = KafkaSnapshotParser.Parse(range.Value).Value.Single(c => c.Cluster == cluster);
 
         var threadsBefore = Process.GetCurrentProcess().Threads.Count;

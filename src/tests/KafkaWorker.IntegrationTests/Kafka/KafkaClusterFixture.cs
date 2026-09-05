@@ -170,10 +170,15 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
         }
     }
 
-    // Снапшот кластера из etcd (как ReconcileLoop).
+    // Снапшот кластера из etcd (как ReconcileLoop). Ошибка range — не NRE,
+    // а явный фейл с причиной (Parse(null) маскировал реальную ошибку etcd).
     public async Task<KafkaClusterSnapshot?> SnapshotAsync(string cluster)
     {
         var range = await Gateway.RangeAsync(Endpoint, "/kafka/clusters/", TestContext.Current.CancellationToken);
+        if (!range.IsSuccess)
+            throw new InvalidOperationException(
+                $"range /kafka/clusters/ не удался (etcd фикстуры недоступен?): {range.Error?.Message}");
+
         return KafkaSnapshotParser.Parse(range.Value).Value.FirstOrDefault(c => c.Cluster == cluster);
     }
 
