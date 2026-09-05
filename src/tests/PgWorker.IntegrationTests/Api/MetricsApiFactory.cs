@@ -9,7 +9,7 @@ namespace PgWorker.IntegrationTests.Api;
 // WAF-хост PgWorker для метрик: копия PgWorkerApiFactory БЕЗ RemoveAll<IHostedService>
 // (OTel-MeterProvider — hosted-сервис; циклы оставляем живыми — etcd-фикстура
 // настоящая, тики по пустому etcd успешны и бесшумны).
-// Не sealed: кейсы с оверрайдом конфигурации наследуются (ApiKey в MetricsTests).
+// Не sealed: кейсы с оверрайдом конфигурации наследуются (MtlsApiTests).
 public class MetricsApiFactory(Etcd.EtcdFixture etcd) : WebApplicationFactory<Program>
 {
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -20,7 +20,9 @@ public class MetricsApiFactory(Etcd.EtcdFixture etcd) : WebApplicationFactory<Pr
             ["PgWorker:Etcd:Endpoints:0"] = etcd.Endpoint,
             ["PgWorker:Docker:Hosts:0:Name"] = "local",
             ["PgWorker:Docker:Hosts:0:Endpoint"] = "unix:///var/run/does-not-exist.sock",
-            ["PgWorker:Api:AdvertiseUrl"] = "http://localhost:9997",
+            // WAF-хост без сертов: mTLS выключен (прод-канон — false, arch/14 §1.1).
+            ["PgWorker:Api:Tls:AllowInsecureHttp"] = "true",
+            ["PgWorker:Api:AdvertiseUrl"] = "https://localhost:9997",
             ["PgWorker:Api:EnableSeedEndpoint"] = "false",
         }));
         // hosted-сервисы НЕ выключаем: MeterProvider обязан жить для /metrics,
@@ -63,4 +65,12 @@ public sealed class PgMetricsFixture : IAsyncLifetime
 public sealed class PgMetricsCollection : ICollectionFixture<PgMetricsFixture>
 {
     public const string Name = "pg-metrics";
+}
+
+// Env-флаг до первого Program.Main процесса тестов (WAF-хосты не задают серты).
+internal static class TestEnv
+{
+    [System.Runtime.CompilerServices.ModuleInitializer]
+    internal static void SetInsecureEnv()
+        => Environment.SetEnvironmentVariable("PgWorker__Api__Tls__AllowInsecureHttp", "true");
 }

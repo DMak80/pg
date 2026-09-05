@@ -145,30 +145,4 @@ public class CreateClusterApiTests(PgApiFixture fixture)
         var problem = await resp.Content.ReadFromJsonAsync<JsonElement>(TestContext.Current.CancellationToken);
         problem.GetProperty("title").GetString().Should().Be("Cluster not found");
     }
-
-    // AAA: с заданным ApiKey все /api/* требуют X-Api-Key: без заголовка — 401,
-    // с корректным — мутация проходит (201).
-    [Fact]
-    public async Task ApiKey_WithoutHeader_401_WithHeader_201()
-    {
-        // Arrange — отдельный хост с PgWorker:Api:ApiKey=test
-        using var factory = fixture.Factory.WithWebHostBuilder(b =>
-            b.ConfigureAppConfiguration((_, cfg) => cfg.AddInMemoryCollection(
-                new Dictionary<string, string?> { ["PgWorker:Api:ApiKey"] = "test" })));
-        var client = factory.CreateClient();
-        var payload = new { name = "authdemo", buckets = 2, shards = 1, replicas = 1,
-                            requestCpu = 1, requestMem = 1, requestDisk = 1 };
-        var ct = TestContext.Current.CancellationToken;
-
-        // Act
-        var rejected = await client.PostAsJsonAsync("/api/clusters", payload, ct);
-        client.DefaultRequestHeaders.Add("X-Api-Key", "test");
-        var accepted = await client.PostAsJsonAsync("/api/clusters", payload, ct);
-
-        // Assert
-        rejected.StatusCode.Should().Be(HttpStatusCode.Unauthorized);
-        var problem = await rejected.Content.ReadFromJsonAsync<JsonElement>(ct);
-        problem.GetProperty("title").GetString().Should().Be("Unauthorized");
-        accepted.StatusCode.Should().Be(HttpStatusCode.Created);
-    }
 }

@@ -1,3 +1,4 @@
+using PgWorker.Docker.Engine;
 using PgWorker.Moves;
 
 namespace PgWorker.App;
@@ -45,9 +46,32 @@ public sealed class ApiOptions
     /// <summary>Демо-сид-эндпоинт POST /api/seed/demo (стенд; default false).</summary>
     public bool EnableSeedEndpoint { get; set; }
 
-    /// <summary>Секрет X-Api-Key для /api/* (env PGW_API_KEY); пусто — проверка
-    /// отключена (доверенная docker-сеть, arch/14 §1.1).</summary>
-    public string? ApiKey { get; set; }
+    /// <summary>mTLS-грань API (arch/14 §1.1, t03): серверный серт + ClientCA;
+    /// AllowInsecureHttp — ТОЛЬКО WAF-тесты (warning при старте).</summary>
+    public TlsOptions Tls { get; set; } = new();
+}
+
+/// <summary>mTLS HTTP API (arch/14 §1.1, t03): PEM/PATH-дуализм env-секретов
+/// PGW_API_TLS_{CERT,KEY,CLIENT_CA}[_PATH] (env → конфиг — ApiTlsEndpoints).</summary>
+public sealed class TlsOptions
+{
+    /// <summary>PEM серверного серта (или CERT_PATH файл).</summary>
+    public string? ServerCertPem { get; set; }
+
+    public string? ServerCertPath { get; set; }
+
+    /// <summary>PEM приватного ключа PKCS#8 (или KEY_PATH файл).</summary>
+    public string? ServerKeyPem { get; set; }
+
+    public string? ServerKeyPath { get; set; }
+
+    /// <summary>PEM per-install API-CA клиентских сертов (или CA_PATH файл).</summary>
+    public string? ClientCaPem { get; set; }
+
+    public string? ClientCaPath { get; set; }
+
+    /// <summary>Отключить mTLS (HTTP без TLS) — ТОЛЬКО WAF-тесты (default false).</summary>
+    public bool AllowInsecureHttp { get; set; }
 }
 
 /// <summary>etcd-кластер: HTTP JSON gateway endpoints (failover по списку).</summary>
@@ -93,6 +117,12 @@ public sealed class DockerOptions
     /// ровно один хост в Hosts (fail-fast старта).
     /// </summary>
     public string? AdvertisedHost { get; set; }
+
+    /// <summary>TLS к Engine API (arch/14 §2.2.1, t03); null — без TLS (unix/dev).</summary>
+    public DockerTlsOptions? Tls { get; set; }
+
+    /// <summary>SSH-туннели ssh://-хостов (arch/14 §2.2.1, t03); null — дефолты.</summary>
+    public SshTunnelOptions? Ssh { get; set; }
 }
 
 /// <summary>Хост plain-режима: {Name, Endpoint} (tcp://host:2375 | unix:///var/run/docker.sock).</summary>

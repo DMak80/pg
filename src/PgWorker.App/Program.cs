@@ -28,18 +28,30 @@ using ProcessThresholds = PgWorker.Provisioning.Processes.ThresholdsOptions;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// t03: env-секреты TLS (API / Docker / SSH) → конфиг-дерево до всего остального.
+ApiTlsEndpoints.ApplyEnvOverrides(builder.Configuration);
+DockerTlsOptions.ApplyEnvOverrides(builder.Configuration);
+SshTunnelOptions.ApplyEnvOverrides(builder.Configuration);
+
 // Конфигурация: appsettings.json + env-оверрайды PgWorker__* (пример — в корне проекта).
 builder.Services.Configure<PgWorkerOptions>(builder.Configuration.GetSection("PgWorker"));
-// Fail-fast: ключ доступа /pgworker/api/<id> без URL бессмысленен (arch/14 §1.1).
+// Fail-fast: advertise без URL бессмысленен; http-advertise запрещён при mTLS-каноне (arch/14 §1.1).
 builder.Services.AddOptions<PgWorkerOptions>()
     .Validate(o => !string.IsNullOrWhiteSpace(o.Api.AdvertiseUrl),
         "PgWorker:Api:AdvertiseUrl не задан (URL API, достижимый панелью; env PGW_API_ADVERTISE_URL)")
+    .Validate(o => o.Api.Tls.AllowInsecureHttp
+        || o.Api.AdvertiseUrl.StartsWith("https://", StringComparison.Ordinal),
+        "PgWorker:Api:AdvertiseUrl обязан быть https:// (mTLS-only API, arch/14 §1.1)")
     .ValidateOnStart();
+
+// mTLS HTTP API (arch/14 §1.1, t03): Kestrel с серверным сертом и требованием
+// клиентского серта per-install API-CA (порт — из ASPNETCORE_URLS/urls, иначе 8080).
+ApiTlsEndpoints.ConfigureMtls(builder);
+
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<HealthState>();
 
-// Метрики (arch/18 §3): /metrics на том же Kestrel-порту, что /healthz;
-// ApiKeyMiddleware защищает только /api — scrape-грань открыта (доверенная сеть).
+// Метрики (arch/18 §3): /metrics на том же mTLS-Kestrel-порту, что /healthz (t03).
 builder.Services.AddAppMetrics("PgWorker", builder.Configuration.GetSection("PgWorker:Metrics"));
 builder.Services.AddSingleton(sp =>
 {
@@ -124,7 +136,14 @@ builder.Services.AddSingleton(sp => new SeedDemoHandler(
 // AdvertisedHost (advertised-правило arch/16): только Plain + ровно один хост —
 // advertised-имя одно на таблицу, при мульти-хосте порты разных хостов склеились
 // бы в один namespace адресов (fail-fast, а не молчаные коллизии).
-builder.Services.AddSingleton<DockerEngineFactory>();
+builder.Services.AddSingleton(sp =>
+{
+    var docker = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Docker;
+    return new DockerEngineFactory(
+        docker.Tls, docker.Ssh,
+        sp.GetRequiredService<ILoggerFactory>().CreateLogger<DockerEngineFactory>(),
+        sp.GetRequiredService<ILoggerFactory>());
+});
 builder.Services.AddSingleton<IClusterDriver>(sp =>
 {
     var docker = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Docker;
@@ -393,7 +412,9 @@ builder.Services.AddHealthChecks()
     .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop");
 
 var app = builder.Build();
-app.UseMiddleware<ApiKeyMiddleware>();
+if (app.Services.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)
+    app.Logger.LogWarning(
+        "PgWorker:Api:Tls:AllowInsecureHttp=true — HTTP без TLS (ТОЛЬКО WAF-тесты, arch/14 §1.1)");
 app.MapAppMetrics();
 app.MapHealthChecks("/healthz");
 app.MapWorkerApi();
