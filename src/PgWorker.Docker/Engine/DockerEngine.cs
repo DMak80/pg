@@ -92,11 +92,12 @@ public class DockerEngineFactory : IAsyncDisposable
         if (scheme.Scheme == EndpointScheme.Ssh)
             endpoint = $"tcp://127.0.0.1:{TunnelFor(endpoint, scheme).BoundPort}";
 
+        var parsedEndpoint = EndpointScheme.Parse(endpoint);
         var baseAddress = scheme.Scheme == EndpointScheme.Unix
             ? "http://localhost" // фиктивный хост: соединение уходит в unix-сокет через ConnectCallback
             : (_tls is not null
-                ? $"https://{EndpointScheme.Parse(endpoint).Host}:{EndpointScheme.Parse(endpoint).Port}"
-                : endpoint);
+                ? $"https://{parsedEndpoint.Host}:{parsedEndpoint.Port}"
+                : $"http://{parsedEndpoint.Host}:{parsedEndpoint.Port}"); // HttpClient не понимает tcp://
         var httpClient = new HttpClient(CreateHandler(endpoint)) { BaseAddress = new Uri(baseAddress) };
         return new DockerEngine(httpClient, hostAlias);
     }
