@@ -47,6 +47,8 @@ public class KafkaAdminClientFactoryTests
 
     // AAA: пины librdkafka в конфиге (reconnect-шторм дефолтных 100 мс)
     // + t03-канон соединения: SASL_SSL, per-cluster CA — только при caPem.
+    // t07: доверие ФАЙЛОМ ssl.ca.location (inline ssl.ca.pem у librdkafka
+    // читает один серт — bundle окна ротации CA требует файла).
     [Fact]
     public void BaseAdminConfig_PinsLibrdkafkaBackoffs()
     {
@@ -55,14 +57,17 @@ public class KafkaAdminClientFactoryTests
         var withCa = KafkaAdminClientFactory.BaseAdminConfig("h:9092", "app", "pw", "-----BEGIN CERTIFICATE-----");
 
         // Assert: bootstrap + пины backoff ≥1000 мс; SASL_SSL всегда;
-        // ssl.ca.pem ставится ровно при заданном caPem.
+        // ssl.ca.location ставится ровно при заданном caPem (файловый кеш).
         config.BootstrapServers.Should().Be("h:9092");
         config.RetryBackoffMs.Should().Be(1000);
         config.ReconnectBackoffMs.Should().Be(1000);
         config.ReconnectBackoffMaxMs.Should().Be(10000);
         config.SecurityProtocol.Should().Be(SecurityProtocol.SaslSsl);
-        config.Get("ssl.ca.pem").Should().BeNull();
-        withCa.Get("ssl.ca.pem").Should().Be("-----BEGIN CERTIFICATE-----");
+        config.Get("ssl.ca.location").Should().BeNull();
+        var location = withCa.Get("ssl.ca.location");
+        location.Should().NotBeNull().And.StartWith(Path.GetTempPath());
+        File.Exists(location).Should().BeTrue("файл truststore создаётся при построении конфига");
+        File.ReadAllText(location!).Should().Contain("-----BEGIN CERTIFICATE-----");
     }
 
     // AAA: caPem — часть ключа кэша (t03×t05): клиенты кластеров с разным

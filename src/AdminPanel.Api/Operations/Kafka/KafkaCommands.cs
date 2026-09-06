@@ -153,6 +153,25 @@ public sealed class RotateKafkaAdminPasswordCommandHandler(IWorkerApiGateway api
             body: null, command.RequestedBy, ct);
 }
 
+// ===== 17. Ротация per-cluster CA/сертов (arch/02 §10.2-17, t07) =====
+
+public sealed record RotateCaCommand(string Cluster, string RequestedBy)
+    : ICommand<KafkaCaRotatedDto>;
+
+public sealed record KafkaCaRotatedDto(string Cluster, long RequestedUnix, string RequestedBy);
+
+[InjectAsScoped]
+public sealed class RotateCaCommandHandler(IWorkerApiGateway api)
+    : ICommandHandler<RotateCaCommand, KafkaCaRotatedDto>
+{
+    public async ValueTask<Result<KafkaCaRotatedDto>> Handle(
+        RotateCaCommand command, CancellationToken ct)
+        => await WorkerProxy.SendAsync<KafkaCaRotatedDto>(
+            api, "kafkaworker", HttpMethod.Post,
+            $"/api/kafka/clusters/{command.Cluster}/ca/rotate",
+            body: null, command.RequestedBy, ct);
+}
+
 // ===== 7. Конфиг-заявка топика — desired (arch/02 §10.2-7; arch/15 §3) =====
 
 public sealed record UpsertTopicDesiredCommand(

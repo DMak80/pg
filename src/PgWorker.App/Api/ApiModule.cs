@@ -277,10 +277,11 @@ public static class ApiModule
             };
         });
 
-        // POST /api/clusters/{cluster}/app-password/rotate — заявка ротации app-пароля
-        // (02 §9.8): здесь только клэйм заявки; выполнение — AppPasswordRotator.
-        endpoints.MapPost("/api/clusters/{cluster}/app-password/rotate", async (
-            string cluster, HttpRequest http, RotateAppPasswordHandler handler, CancellationToken ct) =>
+        // POST /api/clusters/{cluster}/secrets/rotate — заявка ротации per-cluster
+        // секретов (02 §9.8, t02): здесь только клэйм заявки; выполнение —
+        // ClusterSecretRotator.
+        endpoints.MapPost("/api/clusters/{cluster}/secrets/rotate", async (
+            string cluster, HttpRequest http, RotateClusterSecretsHandler handler, CancellationToken ct) =>
         {
             var requestedBy = http.Headers.TryGetValue("X-Requested-By", out var by)
                 && !string.IsNullOrWhiteSpace(by)

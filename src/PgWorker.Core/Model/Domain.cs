@@ -63,9 +63,12 @@ public sealed record BucketRoute(int Id, string? Owner, BucketMoveState? Status,
     string? MovePhase = null, long? MoveUpdatedUnix = null);
 
 /// <summary>Полный снапшот кластера: config + шарды + все N маршрутов бакетов
-/// + per-cluster app-креды (null до первого ensure — spec §4.1).</summary>
+/// + per-cluster креды (app — spec §4.1; mover/bucket_admin — t02, arch/14
+/// §3.3; null до первого ensure — потребители применяют env-fallback).</summary>
 public sealed record ClusterSnapshot(ClusterConfig Config, IReadOnlyList<ShardSpec> Shards,
-    IReadOnlyList<BucketRoute> Routing, AppCredentials? App = null);
+    IReadOnlyList<BucketRoute> Routing, AppCredentials? App = null,
+    string? MoverPassword = null, string? BucketAdminUser = null,
+    string? BucketAdminPassword = null);
 
 /// <summary>Тройка портов ноды, выделенная аллокатором (pg/patroni/doorman).</summary>
 public sealed record NodePorts(int Pg, int Patroni, int Doorman);

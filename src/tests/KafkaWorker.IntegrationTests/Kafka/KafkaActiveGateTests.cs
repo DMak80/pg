@@ -58,6 +58,8 @@ public class KafkaActiveGateTests(KafkaClusterFixture fixture)
                 factory, fixture.Options, fixture.Certificates),
             new PasswordRotator(fixture.Gateway, ep, fixture.Driver, claims, journal,
                 factory, fixture.Options, fixture.Certificates, snapshot: null),
+            new CaRotator(fixture.Gateway, ep, fixture.Driver, claims, journal,
+                factory, fixture.Options, fixture.Certificates, snapshot: null),
             new NodeRegenerator(fixture.Gateway, ep, fixture.Driver, claims, journal,
                 fixture.Options, fixture.Certificates),
             new TopicSyncProcess(fixture.Gateway, ep, claims, journal,

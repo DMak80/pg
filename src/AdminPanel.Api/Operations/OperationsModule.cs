@@ -136,13 +136,14 @@ public static class OperationsModule
             return Error(result);
         });
 
-        // POST /api/clusters/{cluster}/app-password/rotate — заявка ротации app-пароля
-        // (02 §9.8): клэймит заявку воркер; выполнение — AppPasswordRotator PgWorker.
-        endpoints.MapPost("/api/clusters/{cluster}/app-password/rotate", async (
+        // POST /api/clusters/{cluster}/secrets/rotate — заявка ротации per-cluster
+        // секретов (02 §9.8, t02): клэймит заявку воркер; выполнение —
+        // ClusterSecretRotator PgWorker.
+        endpoints.MapPost("/api/clusters/{cluster}/secrets/rotate", async (
             string cluster, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
         {
-            var result = await handler.HandleCommand<RotateAppPasswordCommand, AppPasswordRotatedDto>(
-                new RotateAppPasswordCommand(cluster, user.Identity?.Name ?? "adminpanel"), ct);
+            var result = await handler.HandleCommand<RotateClusterSecretsCommand, ClusterSecretsRotatedDto>(
+                new RotateClusterSecretsCommand(cluster, user.Identity?.Name ?? "adminpanel"), ct);
             if (result.IsSuccess)
                 return Results.Created($"/api/clusters/{cluster}", result.Value);
 

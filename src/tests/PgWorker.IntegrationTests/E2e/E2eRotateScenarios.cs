@@ -6,8 +6,9 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E ротации app-пароля (spec §7.5): заявка etcdctl-формой → заявка исчезла,
-// app_password изменился, новый пароль подключается, старый отвергается.
+// E2E ротации per-cluster секретов (t02, spec §7.5): заявка etcdctl-формой →
+// заявка исчезла, app/mover/bucket_admin изменились, dsn перезаписан, новый
+// пароль подключается, старый отвергается, пишущая нагрузка переживает ротацию.
 [Collection(E2eCollection.Name)]
 public class E2eRotateScenarios(E2eFixture fixture)
 {
@@ -18,9 +19,9 @@ public class E2eRotateScenarios(E2eFixture fixture)
     private EtcdGateway G => fixture.Gateway;
 
     [Fact]
-    public async Task Rotate_TicketRotatesPasswordOnAllShards()
+    public async Task Rotate_TicketRotatesPerClusterSecretsOnAllShards()
     {
-        // Arrange — рабочий кластер (provisioning завершён), известен старый пароль
+        // Arrange — рабочий кластер (provisioning завершён), известны старые креды
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await SeedClusterAsync(Cluster);
@@ -31,6 +32,28 @@ public class E2eRotateScenarios(E2eFixture fixture)
             TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("кластер поднялся");
         var oldPassword = await fixture.GetAppPasswordAsync(Cluster, ct);
+        var oldMover = (await GetOrNullAsync($"/clusters/{Cluster}/mover_password"))!.Value;
+        var oldAdmin = (await GetOrNullAsync($"/clusters/{Cluster}/bucket_admin_password"))!.Value;
+
+        // Адреса shard1 из dsn (multi-host, пары host:port) + мульти-хост строка
+        // (Npgsql принимает Target Session Attributes только списком хостов).
+        var dsn0 = (await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn"))!.Value;
+        var hosts = Regex.Match(dsn0, "host=([^ ]+)").Groups[1].Value.Split(',');
+        var ports = Regex.Match(dsn0, "port=([^ ]+)").Groups[1].Value.Split(',');
+        var multiHost = string.Join(",", hosts.Zip(ports, (h, p) => $"{h}:{p}"));
+
+        // Таблица writer-пробы: суперюзер (гранты provisioning покрывают только
+        // существующие таблицы) + явный INSERT-грант роли DSN-точки входа.
+        await using (var su = new NpgsqlConnection(
+            $"Host={multiHost};Database={Cluster};Username=postgres;Password={E2eFixture.SuPassword};" +
+            "Timeout=10;SSL Mode=Require;Trust Server Certificate=true;Target Session Attributes=read-write"))
+        {
+            await su.OpenAsync(ct);
+            await using var cmd = new NpgsqlCommand(
+                "CREATE TABLE IF NOT EXISTS bucket_0.e2e_rotate_writer(i int); " +
+                "GRANT INSERT ON bucket_0.e2e_rotate_writer TO \"bucket_admin\"", su);
+            await cmd.ExecuteNonQueryAsync(ct);
+        }
 
         // Act — заявка ротации (формат панели §9.8)
         await G.PutAsync(Endpoint, $"/pgworker/rotations/{Cluster}",
@@ -48,11 +71,45 @@ public class E2eRotateScenarios(E2eFixture fixture)
         var newPassword = await fixture.GetAppPasswordAsync(Cluster, ct);
         Regex.IsMatch(newPassword, "^[A-Za-z0-9]{32}$").Should().BeTrue();
 
-        // Assert 2 (критерий 5в/5г): новый пароль подключается, старый отвергается
-        // (проба по фрагментам multi-host dsn — образец E2eAppSecretScenarios).
-        var dsn = (await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn"))!.Value;
-        var hosts = Regex.Match(dsn, "host=([^ ]+)").Groups[1].Value.Split(',');
-        var ports = Regex.Match(dsn, "port=([^ ]+)").Groups[1].Value.Split(',');
+        // Assert 1b (t02): mover/bucket_admin тоже сменились (32 симв [A-Za-z0-9]);
+        // dsn-ключи шардов перезаписаны новым bucket_admin-паролем.
+        var newMover = (await GetOrNullAsync($"/clusters/{Cluster}/mover_password"))!.Value;
+        var newAdmin = (await GetOrNullAsync($"/clusters/{Cluster}/bucket_admin_password"))!.Value;
+        newMover.Should().NotBe(oldMover).And.MatchRegex("^[A-Za-z0-9]{32}$");
+        newAdmin.Should().NotBe(oldAdmin).And.MatchRegex("^[A-Za-z0-9]{32}$");
+        var newDsn = (await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn"))!.Value;
+        newDsn.Should().Contain($"password={newAdmin}").And.NotContain(oldAdmin);
+
+        // Assert 2b (t02, критерий «без остановки записи»): writer — DSN-точка
+        // входа bucket_admin — перечитывает креды из etcd на каждую попытку
+        // (поведение клиента по arch/14) и продолжает писать после ротации.
+        var inserts = 0;
+        string? lastError = null;
+        var wrote = await E2eFixture.WaitForAsync(async () =>
+        {
+            var current = (await GetOrNullAsync($"/clusters/{Cluster}/bucket_admin_password"))!.Value;
+            try
+            {
+                await using var con = new NpgsqlConnection(
+                    $"Host={multiHost};Database={Cluster};Username=bucket_admin;" +
+                    $"Password={current};Timeout=5;SSL Mode=Require;Trust Server Certificate=true;" +
+                    "Target Session Attributes=read-write");
+                await con.OpenAsync(ct);
+                await using var cmd = new NpgsqlCommand(
+                    "INSERT INTO bucket_0.e2e_rotate_writer VALUES (1)", con);
+                await cmd.ExecuteNonQueryAsync(ct);
+                inserts++;
+            }
+            catch (Exception e)
+            {
+                lastError = e.Message; // диагностика провала writer-проб
+            }
+
+            return inserts >= 5;
+        }, TimeSpan.FromSeconds(90), ct);
+        wrote.Should().BeTrue($"письменная нагрузка продолжается после ротации (inserts={inserts}, lastError={lastError})");
+
+        // Assert 2 (критерий 5в/5г): новый app-пароль подключается, старый отвергается
         var newWorks = false;
         foreach (var (host, port) in hosts.Zip(ports))
             newWorks |= await E2eFixture.WaitForAsync(async () =>

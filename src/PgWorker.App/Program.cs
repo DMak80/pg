@@ -118,7 +118,7 @@ builder.Services.AddSingleton(sp => new AbortBucketHandler(
 builder.Services.AddSingleton(sp => new CancelMoveHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
-builder.Services.AddSingleton(sp => new RotateAppPasswordHandler(
+builder.Services.AddSingleton(sp => new RotateClusterSecretsHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<TimeProvider>()));
@@ -220,7 +220,7 @@ builder.Services.AddSingleton(sp =>
         new PlacementOptions(opts.Docker.PortRange.From, opts.Docker.PortRange.To, opts.Thresholds.PatroniBootSec,
             opts.Thresholds.ProvisionRetryBaseSec, opts.Thresholds.ProvisionRetryMaxSec),
         sp.GetRequiredService<InstallSecrets>(),
-        sp.GetRequiredService<IAppSecretEnsurer>(),
+        sp.GetRequiredService<IClusterSecretEnsurer>(),
         sp.GetRequiredService<IAppParamsEnsurer>(),
         sp.GetRequiredService<EtcdEndpoints>(),
         sp.GetRequiredService<PortAllocIndex>(),
@@ -270,7 +270,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<IClusterDriver>(),
         sp.GetRequiredService<ShardEndpoints>(),
         sp.GetRequiredService<ISqlExecutor>(),
-        sp.GetRequiredService<IAppSecretEnsurer>(),
+        sp.GetRequiredService<IClusterSecretEnsurer>(),
         sp.GetRequiredService<IAppParamsEnsurer>(),
         sp.GetRequiredService<InstallSecrets>(),
         sp.GetRequiredService<ClaimStore>(),
@@ -285,7 +285,7 @@ builder.Services.AddSingleton(sp =>
 
 // Ensure per-cluster app-секрета (spec §4.1): чтение/txn put-if-absent
 // /clusters/<C>/{app_user,app_password} — общий для Provisioning/AddShard.
-builder.Services.AddSingleton<IAppSecretEnsurer>(sp => new AppSecretEnsurer(
+builder.Services.AddSingleton<IClusterSecretEnsurer>(sp => new ClusterSecretEnsurer(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
 
@@ -319,7 +319,7 @@ builder.Services.AddSingleton(sp =>
         new PlacementOptions(opts.Docker.PortRange.From, opts.Docker.PortRange.To, opts.Thresholds.PatroniBootSec,
             opts.Thresholds.ProvisionRetryBaseSec, opts.Thresholds.ProvisionRetryMaxSec),
         sp.GetRequiredService<InstallSecrets>(),
-        sp.GetRequiredService<IAppSecretEnsurer>(),
+        sp.GetRequiredService<IClusterSecretEnsurer>(),
         sp.GetRequiredService<IAppParamsEnsurer>(),
         sp.GetRequiredService<EtcdEndpoints>(),
         sp.GetRequiredService<PortAllocIndex>(),
@@ -372,9 +372,9 @@ builder.Services.AddSingleton(sp => new MoveRepairProcess(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<MoveRepairProcess>()));
 
-// Ротация app-пароля (spec §4.3, arch/14 §5 I): заявка /pgworker/rotations/<C>;
+// Ротация per-cluster секретов (t02, arch/14 §5 I): заявка /pgworker/rotations/<C>;
 // Active-ветка цикла зовёт через ClusterProcesses (scale → rotate → evacuate → moves).
-builder.Services.AddSingleton(sp => new AppPasswordRotator(
+builder.Services.AddSingleton(sp => new ClusterSecretRotator(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<ISqlExecutor>(),
@@ -382,7 +382,7 @@ builder.Services.AddSingleton(sp => new AppPasswordRotator(
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<InstallSecrets>(),
-    sp.GetRequiredService<IAppSecretEnsurer>(),
+    sp.GetRequiredService<IClusterSecretEnsurer>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 
 // Циклы (§6.2): keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.

@@ -45,11 +45,10 @@ lease-клэймы в etcd, `/kafkaworker/`); смерть контролиру�
 состояние переживает смерть контроллера (etcd + тома брокеров).
 
 Границы (что НЕ входит): bandwidth-throttle reassignment (лимит нагрузки —
-батчами партиций), preferred leader election, TLS/ACL, ротация CA и серверных
-сертификатов (t03 закладывает долгоживущие серты; смена — roadmap),
-метрики самих Kafka-брокеров (JMX-exporter; лаги/USR снимает коллектор —
-arch/18 §4), клиентская библиотека дискавери —
-[roadmap/kafkaworker.md](roadmap/kafkaworker.md).
+батчами партиций), preferred leader election, метрики самих Kafka-брокеров
+(JMX-exporter; лаги/USR снимает коллектор — arch/18 §4), клиентская
+библиотека дискавери — [roadmap/kafkaworker.md](roadmap/kafkaworker.md).
+Ротация CA/сертов — входит (CaRotator, §5 K, t07).
 
 ---
 
@@ -243,12 +242,28 @@ e2e волны C). Пользователь `inter` с детерминиров�
 **Per-cluster CA** (генерирует воркер, provisioning K2 / миграция M1; ensure
 txn put-if-absent — единый механизм с кредами):
 
-- `ca_key` — self-signed CA (RSA-2048, CN=`kfw-<C>-ca`, срок 10 лет),
+- `ca_key` — self-signed CA (RSA-2048, CN=`kfw-<C>-ca-<отпечаток>`, срок
+  10 лет; subject уникален на генерацию — в бандле OLD+NEW openssl-клиенты
+  берут первый якорь по subject без перебора кандидатов, одинаковые CN
+  поколений ломали верификацию сертов второй генерации),
   приватный ключ PEM PKCS#8; секрет etcd: подпись сертификатов нод
-  (provisioning/add-broker/rebuild/NodeRegenerator). Панель не читает.
+  (provisioning/add-broker/rebuild/NodeRegenerator/ротация). Панель не читает.
 - `ca_pem` — публичный сертификат того же CA; точка дискавери (приложения и
-  панель строят truststore из него — 15 §5). Ротация CA/сертов — roadmap
-  (серты нод долгоживущие, 10 лет).
+  панель строят truststore из него — 15 §5). Ротация CA/сертов — процесс
+  CaRotator (§5 K, t07): в окне ротации `ca_pem` — bundle OLD+NEW
+  (PEM-конкатенация, 15 §4/§5), после коммита — только NEW.
+
+**Ротация CA/сертов (t07, §5 K) — окно двойного доверия**: порядок фаз
+P→D→R→C гарантирует, что клиенты не видят недоверенного серта: (P) staging
+`ca_next_{key,pem}` put-if-absent; (D) `ca_pem` ← bundle OLD+NEW — клиенты,
+перечитав точку дискавери, доверяют сертам обоих поколений; (R) rolling-
+пересоздание брокеров по одному (механика H: RemoveNode том жив + EnsureNode
+с env от `BrokerEnvBuilder` — подпись серта NEW-CA, truststore bundle) с
+ожиданием сходимости после каждого; (C) атомарная txn: `ca_pem` ← NEW,
+`ca_key` ← NEW, del `ca_next_*` + del заявки — OLD-ключ уничтожается
+перезаписью. Truststore брокеров остаётся bundle до следующего пересоздания
+(безвредно; env выравнивается надзором C). SASL-роли, ACL и inter-креды
+ротацией CA не затрагиваются.
 
 **Сертификаты нод**: генерирует воркер при сборке env (KafkaWorker.Core,
 `CertificateRequest` .NET — без внешних инструментов), подпись `ca_key`;
@@ -324,6 +339,8 @@ placement constraint, `publish mode=host`. Объекты для сверок �
 | `/kafka/clusters/<C>/topics/<T>` | реестр топиков (факт + desired-заявки) |
 | `/kafkaworker/rotations/<C>` | заявка ротации app-пароля |
 | `/kafkaworker/admin_rotations/<C>` | заявка ротации admin-пароля (H) |
+| `/kafkaworker/ca_rotations/<C>` | заявка ротации per-cluster CA/сертов (K, t07) |
+| `/kafka/clusters/<C>/ca_next_key` + `ca_next_pem` | staging НОВОЙ CA в окне ротации (K): подпись сертов фазы R, источник bundle `ca_pem`; вне ротации ключей нет |
 | `/kafkaworker/rebalances/<C>` | заявка ребалансировки партиций (I) |
 
 ### 3.2. Пишемые ключи
@@ -631,6 +648,44 @@ vs декларация; `resources=null` или `disk` — не сверяют�
 - Регенерация — без снапшотов P12 (etcd-декларацию воркер не меняет; как
   add/remove брокеров, §6).
 
+### K. CaRotator (ротация per-cluster CA и сертов — окно двойного доверия, t07)
+
+Исполнение заявки `/kafkaworker/ca_rotations/<C>` (панель, клэйм-txn; формат
+§9.8 один в один с ротациями H). Исполнитель — держатель клэйма `<C>`; фазы —
+по канону §2.3:
+
+```
+P journal op=rotate-ca phase=phase-p → генерация НОВОЙ CA
+  (ClusterPki.GenerateCa, случайно — не из сида) → txn put-if-absent
+  ca_next_key/ca_next_pem. Staging живёт в etcd — переживает рестарт
+  воркера (в отличие от in-memory NEW-паролей H); повторный тик re-read
+D phase-d → txn put ca_pem = OLD+NEW bundle (конкатенация PEM; повторный
+  тик распознаёт готовность по вхождению nextPem в ca_pem — идемпотентно).
+  После фазы клиенты, перечитавшие точку дискавери (15 §5), доверяют
+  сертам обоих поколений
+R phase-r/<broker> → rolling по одному брокеру за тик (порядок Ordinal по
+  имени, как A в H): RemoveNode(том жив) → EnsureNode с env от
+  BrokerEnvBuilder (подпись серта — NEW CA через кеш R3, truststore —
+  bundle); ожидание сходимости DescribeCluster после каждого брокера;
+  трек пересозданных — как в H
+C committed → все брокеры на NEW: ОДНА txn [compare
+  value(ca_next_key)==staging] [put ca_pem=NEW; put ca_key=NEW; del
+  ca_next_pem; del ca_next_key; del заявку] — OLD-ключ уничтожается
+  перезаписью (после окна он никем не доверяется)
+финал: снапшот P12 «после» + journal phase=done
+```
+
+Guard'ы и отказоустойчивость — образец H: клэйм-гвард; кластер не поднят
+(нет endpoints/кредов/CA) → journal waiting-cluster (премиграционный
+кластер — waiting до миграции M); живой reassignment (`reassignments/<C>`)
+или regen (`regens/<C>`) → waiting без действий (rolling не смешивается
+с чужими); отказ между фазами безопасен — повтор продолжает по journal-фазе
+(re-entry идемпотентен: staging в etcd стабилен, bundle-проверка, трек
+rolling). Truststore брокеров остаётся bundle после коммита до следующего
+пересоздания (безвредно — доверие OLD не возвращает утраченную силу сертов;
+env выравнивается надзором C). Endpoint API —
+`POST /api/kafka/clusters/{c}/ca/rotate` (§1.1); заявка уже стоит → 409.
+
 ### M. SecurityMigrator (премиграционные кластеры → канон t03)
 
 Детект (Active-ветка, до всех остальных шагов): у кластера нет
@@ -763,9 +818,9 @@ KafkaWorker:Api { AdvertiseUrl (https://…), EnableSeedEndpoint=false,
 | R5 | JVM CLI в контейнере брокера конкурирует с брокером за memory-лимит (OOM-kill) | `KAFKA_HEAP_OPTS=-Xmx256m` (§2.4); exec одноразовый, не параллелится |
 | R6 | Долгий drain на больших объёмах данных (минуты–часы) | батчи партиций + прогресс-ключ (UI видит остаток); bandwidth-throttle — roadmap |
 | R7 | Уменьшение mem/cpu в мутации №15 ниже рабочего набора брокера → OOM-килл / деградация (валидация §10.3 границы не отсекает) | ответственность оператора (UI-предупреждение в модалке); OOM-рестарт подхватит надзор C (том жив — данные не теряются) |
-| R8 | SAN сертификата ноды не покрывает фактический advertised-хост (смена `AdvertisedClientHost` после подъёма) → TLS-отказ клиентов на CLIENT | SAN строится по тому же advertised-правилу §2.1 при каждой пересборке env; смена host-настройки требует пересоздания брокеров (NodeRegenerator-событие или пере-ensure: снапшот-детект env vs декларация — M-механика) |
+| R8 | SAN сертификата ноды не покрывает фактический advertised-хост (смена `AdvertisedClientHost` после подъёма) → TLS-отказ клиентов на CLIENT | SAN строится по тому же advertised-правилу §2.1 при каждой пересборке env; смена host-настройки требует пересоздания брокеров (NodeRegenerator-событие или пере-ensure: снапшот-детект env vs декларация — M-механика); ротация CA (§5 K) пересобирает серты с тем же SAN-правилом |
 | R9 | Окно миграции M: клиенты без TLS-поддержки получают отказ после M2 (breaking change дискавери) | заявляется релизом (панель обновляется тем же релизом; приложения — библиотекой дискавери); окно ~1–3 мин, тома живы, повтор тика доводит |
-| R10 | Приватный ключ CA (`ca_key`) в etcd — компрометация etcd = подделка сертов кластера | etcd — уже хранилище per-cluster-секретов (паролей); зона доверия контроль-плейна; ротация CA — roadmap; доступ к etcd только из закрытой сети установки |
+| R10 | Приватный ключ CA (`ca_key`) в etcd — компрометация etcd = подделка сертов кластера | etcd — уже хранилище per-cluster-секретов (паролей); зона доверия контроль-плейна; ротация CA — процесс CaRotator (§5 K, t07): компрометированный OLD-ключ уничтожается перезаписью в фазе C, серты нод перевыпускаются; доступ к etcd только из закрытой сети установки |
 
 ---
 

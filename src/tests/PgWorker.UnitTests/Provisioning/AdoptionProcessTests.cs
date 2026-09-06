@@ -28,6 +28,9 @@ public class AdoptionProcessTests
     {
         etcd.Seed("/clusters/demo/config",
             """{"buckets":12,"dbname":"demo","created_unix":1755900000}""");
+        // Per-cluster креды (t02): ensure принимает существующие — dsn тестов стабилен
+        etcd.Seed("/clusters/demo/bucket_admin_user", "bucket_admin");
+        etcd.Seed("/clusters/demo/bucket_admin_password", "adm-pw");
         foreach (var shard in shards)
         {
             etcd.Seed($"/clusters/demo/shards/{shard}/replicas", "2");
@@ -72,7 +75,7 @@ public class AdoptionProcessTests
             etcd, [Ep], driver,
             new ShardEndpoints(etcd, [Ep], new ShardProbe(new HttpClient())),
             sql,
-            new AppSecretEnsurer(etcd, [Ep]),
+            new ClusterSecretEnsurer(etcd, [Ep]),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"),
             Secrets, claims, new WorkJournal(etcd, [Ep]),
             new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),

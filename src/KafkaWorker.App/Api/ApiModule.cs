@@ -261,6 +261,33 @@ public static class ApiModule
             };
         });
 
+        // POST /api/kafka/clusters/{cluster}/ca/rotate — мутация №17 (t07,
+        // adminpanel/02 §10.2); исполнение — CaRotator (фазы P/D/R/C, arch/16 §5 K).
+        // requested_by — заголовок X-Requested-By (панель шлёт оператора), fallback "api".
+        endpoints.MapPost("/api/kafka/clusters/{cluster}/ca/rotate", async (
+            string cluster, HttpRequest http, RotateCaHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleAsync(cluster, RequestedBy(http), ct);
+            if (result.IsSuccess)
+                return Results.Created((string?)null, result.Value);
+
+            return result.Error switch
+            {
+                KafkaClusterNotFoundException => Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound, title: "Cluster not found",
+                    detail: result.Error.Message),
+                KafkaClusterNotActiveException or KafkaRotationAlreadyRequestedException => Results.Problem(
+                    statusCode: StatusCodes.Status409Conflict, title: "Rotation rejected",
+                    detail: result.Error.Message),
+                EtcdWriteUnavailableException or InvalidKafkaConfigException => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
+                    detail: result.Error.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
+                    detail: result.Error!.Message),
+            };
+        });
+
         // POST /api/kafka/clusters/{cluster}/rebalance — заявка ребалансировки
         // партиций (§10.2-13); исполнение — PartitionReassigner воркера.
         // requested_by — заголовок X-Requested-By, fallback "api".

@@ -203,7 +203,8 @@ public class AdoptionContractTests(EtcdFixture fixture)
         alloc.Value.Value.Should().NotContain("\"host\":\"local\"");
         var dsn = await Gateway.GetAsync(Endpoint, $"/clusters/{cluster}/shards/shard1/dsn", ct);
         dsn.Value!.Value.Should().Be(
-            $"host=host.docker.internal,host.docker.internal port=15700,15701 dbname={cluster} user=bucket_admin password=adm-pw");
+            $"host=host.docker.internal,host.docker.internal port=15700,15701 dbname={cluster} " +
+            "user=bucket_admin password=bapw"); // t02: dsn несёт ensure-кред, не legacy config-пароль
         driver.EnsuredNodes.Should().BeEmpty("живые контейнеры на месте — recreate не нужен");
         var entry = await ReadJournalAsync(cluster);
         entry.Op.Should().Be("adopt");
@@ -223,10 +224,13 @@ public class AdoptionContractTests(EtcdFixture fixture)
             => Task.FromResult(Result.Success());
     }
 
-    // Секрет-стаб: пер-кластерный app-секрет «уже есть».
-    private sealed class StubAppSecret : IAppSecretEnsurer
+    // Секрет-стаб: пер-кластерная тройка кредов «уже есть» (t02).
+    private sealed class StubAppSecret : IClusterSecretEnsurer
     {
-        public Task<Result<AppCredentials>> EnsureAsync(string cluster, CancellationToken ct)
-            => Task.FromResult(Result<AppCredentials>.Success(new AppCredentials("app", "pw")));
+        public Task<Result<ClusterCredentials>> EnsureAsync(
+            string cluster, ClusterConfig config, CancellationToken ct)
+            => Task.FromResult(Result<ClusterCredentials>.Success(new ClusterCredentials(
+                new AppCredentials("app", "pw"), "moverpw000000000000000000000000A",
+                new AppCredentials("bucket_admin", "bapw"))));
     }
 }

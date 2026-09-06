@@ -1,12 +1,14 @@
 using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Linq;
 
 namespace KafkaWorker.Core.Templates;
 
 /// <summary>
-/// Per-cluster PKI (arch/16 §2.3): self-signed CA (RSA-2048, CN=kfw-&lt;C&gt;-ca,
-/// 10 лет) и серверные серты нод (CN=broker&lt;k&gt;, SAN docker-DNS + advertised,
+/// Per-cluster PKI (arch/16 §2.3): self-signed CA (RSA-2048,
+/// CN=kfw-&lt;C&gt;-ca-&lt;отпечаток&gt; — subject уникален на генерацию, 10 лет)
+/// и серверные серты нод (CN=broker&lt;k&gt;, SAN docker-DNS + advertised,
 /// EKU ServerAuth, 10 лет) — CertificateRequest .NET, без внешних инструментов.
 /// PEM — одной строкой с \n (канон значений etcd, arch/15 §2.1).
 /// </summary>
@@ -18,8 +20,14 @@ public static class ClusterPki
     public static (string CaPem, string CaKeyPem) GenerateCa(string cluster)
     {
         using var rsa = RSA.Create(2048);
+        // Subject уникален на генерацию (отпечаток ключа): в бандле двойного
+        // доверия OLD+NEW openssl/librdkafka проверяет подпись серта против
+        // ПЕРВОГО якоря по subject без перебора кандидатов — одинаковые CN
+        // поколений ломали верификацию сертов второй генерации (t07).
+        var fingerprint = Convert.ToHexString(
+            SHA256.HashData(rsa.ExportSubjectPublicKeyInfo()), 0, 4).ToLowerInvariant();
         var request = new CertificateRequest(
-            $"CN=kfw-{cluster}-ca", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            $"CN=kfw-{cluster}-ca-{fingerprint}", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         request.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
         using var ca = request.CreateSelfSigned(
             DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(10));
@@ -56,6 +64,18 @@ public static class ClusterPki
             caWithKey, DateTimeOffset.UtcNow.AddDays(-1), notAfter,
             RandomNumberGenerator.GetBytes(16));
         return (certificate.ExportCertificatePem(), rsa.ExportPkcs8PrivateKeyPem());
+    }
+
+    // Bundle-валидация (t07, arch/15 §4): ca_pem в окне ротации — конкатенация
+    // PEM-сертов (OLD+NEW); валидно, если КАЖДЫй кусок — валидный сертификат.
+    public static bool TryParseCertificateBundle(string pem)
+    {
+        var parts = pem.Split("-----END CERTIFICATE-----",
+            StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (parts.Length == 0)
+            return false;
+        return parts.All(part =>
+            TryParseCertificate(part + "\n-----END CERTIFICATE-----", out _));
     }
 
     public static bool TryParseCertificate(string pem, out X509Certificate2? certificate)

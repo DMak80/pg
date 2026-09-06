@@ -2,6 +2,7 @@ using Confluent.Kafka;
 using Confluent.Kafka.Admin;
 using KafkaWorker.Core;
 using Microsoft.Extensions.Logging;
+using System.IO;
 
 namespace KafkaWorker.Provisioning.Kafka;
 
@@ -130,8 +131,21 @@ public sealed class KafkaAdminClientFactory(
             ReconnectBackoffMaxMs = BackoffMaxMs,
         };
         if (caPem is not null)
-            config.Set("ssl.ca.pem", caPem); // доверие per-cluster CA (librdkafka >= 1.5)
+            config.Set("ssl.ca.location", CaPemFile(caPem)); // файл: bundle окна ротации (t07)
         return config;
+    }
+
+    // Truststore ФАЙЛОМ, а не inline ssl.ca.pem: librdkafka инлайн-PEM читает
+    // ОДИН серт — bundle OLD+NEW окна ротации CA (t07) инлайн не работает.
+    // Файл кешируется по содержимому (SHA-256) — инвалидируется сменой CA.
+    internal static string CaPemFile(string caPem)
+    {
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(caPem)));
+        var path = Path.Combine(Path.GetTempPath(), $"kfw-ca-{hash[..16].ToLowerInvariant()}.pem");
+        if (!File.Exists(path))
+            File.WriteAllText(path, caPem);
+        return path;
     }
 
     private sealed class Entry(KafkaAdminClient client)

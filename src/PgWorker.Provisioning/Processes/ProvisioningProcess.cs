@@ -34,7 +34,7 @@ public sealed class ProvisioningProcess(
     WorkJournal journal,
     PlacementOptions placementOpts,
     InstallSecrets secrets,
-    IAppSecretEnsurer appSecret,
+    IClusterSecretEnsurer appSecret,
     IAppParamsEnsurer appParams,
     EtcdEndpoints etcdEndpoints,
     PortAllocIndex portAlloc,
@@ -99,19 +99,21 @@ public sealed class ProvisioningProcess(
             return await FailAsync(cluster, allocation.Error!, "planning", ct, series);
         var addresses = allocation.Value;
 
-        // Per-cluster credentials: переопределение bucket_admin user/password
-        // из config кластера (fallback на глобальные InstallSecrets).
+        // P1.5 (spec §3.3): ensure per-cluster тройки кредов (t02) — до любых
+        // контейнеров/ролей: приложение получает креды в etcd раньше, чем
+        // поднимутся ноды; mover/bucket_admin — канонические ключи etcd.
+        var creds = await appSecret.EnsureAsync(cluster, snap.Config, ct);
+        if (!creds.IsSuccess)
+            return await FailAsync(cluster, creds.Error!, "ensure-app-secret", ct, series);
+
+        // Per-cluster credentials (t02): ensured-значения из etcd — env-fallback
+        // исчезает после ensure (arch/14 §4: порядок чтения ключи → config → env).
         var clusterSecrets = secrets with
         {
-            BucketAdminUser = snap.Config.BucketAdminUser ?? secrets.BucketAdminUser,
-            BucketAdminPassword = snap.Config.BucketAdminPassword ?? secrets.BucketAdminPassword,
+            BucketAdminUser = creds.Value.BucketAdmin.User,
+            BucketAdminPassword = creds.Value.BucketAdmin.Password,
+            MoverPassword = creds.Value.MoverPassword,
         };
-
-        // P1.5 (spec §3.3): ensure per-cluster app-секрета — до любых контейнеров/ролей:
-        // приложение получает креды в etcd раньше, чем поднимутся ноды.
-        var appCreds = await appSecret.EnsureAsync(cluster, ct);
-        if (!appCreds.IsSuccess)
-            return await FailAsync(cluster, appCreds.Error!, "ensure-app-secret", ct, series);
 
         // P2.1: EnsureNode всех нод ВСЕХ шардов ПАРАЛЛЕЛЬНО (контейнеры стартуют
         // одновременно, ожидание Patroni — следующим проходом) + nodes/<n>/state=PROVISIONING.
@@ -165,7 +167,7 @@ public sealed class ProvisioningProcess(
             if (master is null)
                 return; // waiting-master — InProgress
 
-            var sqlDone = await ProvisionShardSqlAsync(snap, shard, topology, master, appCreds.Value, token);
+            var sqlDone = await ProvisionShardSqlAsync(snap, shard, topology, master, creds.Value, token);
             if (!sqlDone.IsSuccess)
                 shardErrors.Enqueue(sqlDone.Error!);
         });
@@ -599,12 +601,12 @@ public sealed class ProvisioningProcess(
     // P2.3–P2.5: БД/роли на мастере, схемы по routing шарда, dsn (multi-host).
     private async Task<Result> ProvisionShardSqlAsync(
         ClusterSnapshot snap, ShardSpec shard, ShardTopology topology, NodeAddress master,
-        AppCredentials app, CancellationToken ct)
+        ClusterCredentials creds, CancellationToken ct)
     {
         var cluster = snap.Config.Cluster;
         var dbname = snap.Config.DbName;
-        var bucketAdminUser = snap.Config.BucketAdminUser ?? "bucket_admin";
-        var bucketAdminPassword = snap.Config.BucketAdminPassword ?? secrets.BucketAdminPassword;
+        var bucketAdminUser = creds.BucketAdmin.User;
+        var bucketAdminPassword = creds.BucketAdmin.Password;
 
         var adminDsn = DatabaseProvisioner.BuildAdminDsn(master.Host, master.Ports.Pg, "postgres", secrets);
         var ensured = await db.EnsureDatabaseAsync(adminDsn, dbname, ct);
@@ -613,7 +615,8 @@ public sealed class ProvisioningProcess(
 
         var dbDsn = DatabaseProvisioner.BuildAdminDsn(master.Host, master.Ports.Pg, dbname, secrets);
         // Роли — guard-SELECT → CREATE отдельной командой (gexec-паттерн).
-        foreach (var guard in DatabaseProvisioner.BuildRoleGuardsSql(secrets, app, bucketAdminUser, bucketAdminPassword))
+        foreach (var guard in DatabaseProvisioner.BuildRoleGuardsSql(
+                     secrets, creds.App, bucketAdminUser, bucketAdminPassword, creds.MoverPassword))
         {
             var probe = await db.ExecuteScalarAsync(dbDsn, guard, ct);
             if (!probe.IsSuccess)
@@ -636,7 +639,7 @@ public sealed class ProvisioningProcess(
 
         // Выравнивание app-роли паролю из etcd-ключа (идемпотентно; spec §4.1):
         // кластеры, созданные до app-секрета, и rebuild нод получают актуальный пароль.
-        var alterApp = await db.ExecuteAsync(dbDsn, DatabaseProvisioner.BuildAlterAppPasswordSql(app), ct);
+        var alterApp = await db.ExecuteAsync(dbDsn, DatabaseProvisioner.BuildAlterRolePasswordSql(creds.App.User, creds.App.Password), ct);
         if (!alterApp.IsSuccess)
             return alterApp;
 
@@ -646,7 +649,7 @@ public sealed class ProvisioningProcess(
             .OrderBy(i => i)
             .ToList();
         var schemas = await db.ExecuteAsync(
-            dbDsn, DatabaseProvisioner.BuildSchemasSql(dbname, bucketIds, bucketAdminUser, app.User), ct);
+            dbDsn, DatabaseProvisioner.BuildSchemasSql(dbname, bucketIds, bucketAdminUser, creds.App.User), ct);
         if (!schemas.IsSuccess)
             return schemas;
 

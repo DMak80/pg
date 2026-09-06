@@ -5,7 +5,7 @@ import type {
   AddShardRequestDto,
   CreateKafkaClusterRequestDto,
   AlertDto,
-  AppPasswordRotatedDto,
+  ClusterSecretsRotatedDto,
   ClusterCreatedDto,
   ClusterDto,
   ClusterSummaryDto,
@@ -22,6 +22,7 @@ import type {
   KafkaTopicCreatedDto,
   CreateTopicRequestDto,
   KafkaAdminPasswordRotatedDto,
+  KafkaCaRotatedDto,
   KafkaPasswordRotatedDto,
   KafkaRebalanceRequestedDto,
   TopicDesiredDto,
@@ -185,11 +186,12 @@ export function recreateNode(scope: string, node: string, mode: RecreateMode): P
     { method: 'POST', body: { mode } });
 }
 
-// POST /api/clusters/{cluster}/app-password/rotate — заявка ротации app-пароля
-// (arch/02 §9.8): ставит /pgworker/rotations/<C>; выполняет PgWorker (AppPasswordRotator).
-export function rotateAppPassword(cluster: string): Promise<AppPasswordRotatedDto> {
-  return apiFetch<AppPasswordRotatedDto>(
-    `/api/clusters/${encodeURIComponent(cluster)}/app-password/rotate`,
+// POST /api/clusters/{cluster}/secrets/rotate — заявка ротации per-cluster
+// секретов (arch/02 §9.8, t02): ставит /pgworker/rotations/<C>; выполняет
+// PgWorker (ClusterSecretRotator — app, bucket_admin, bucket_mover).
+export function rotateClusterSecrets(cluster: string): Promise<ClusterSecretsRotatedDto> {
+  return apiFetch<ClusterSecretsRotatedDto>(
+    `/api/clusters/${encodeURIComponent(cluster)}/secrets/rotate`,
     { method: 'POST' });
 }
 
@@ -276,6 +278,15 @@ export function rotateKafkaPassword(cluster: string): Promise<KafkaPasswordRotat
 export function rotateKafkaAdminPassword(cluster: string): Promise<KafkaAdminPasswordRotatedDto> {
   return apiFetch<KafkaAdminPasswordRotatedDto>(
     `/api/kafka/clusters/${encodeURIComponent(cluster)}/admin-password/rotate`,
+    { method: 'POST' });
+}
+
+// POST /api/kafka/clusters/{cluster}/ca/rotate — мутация №17 (t07, arch/02
+// §10.2-17): заявка ротации per-cluster CA/сертов; исполняет CaRotator воркера
+// (окно двойного доверия P/D/R/C, arch/16 §5 K).
+export function rotateKafkaCa(cluster: string): Promise<KafkaCaRotatedDto> {
+  return apiFetch<KafkaCaRotatedDto>(
+    `/api/kafka/clusters/${encodeURIComponent(cluster)}/ca/rotate`,
     { method: 'POST' });
 }
 

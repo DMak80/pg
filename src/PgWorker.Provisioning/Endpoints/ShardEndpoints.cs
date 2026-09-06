@@ -162,7 +162,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
     // the standby», 08P01); read-write и есть эквивалент HAProxy-входа, и
     // переподключение apply-worker'а после failover источника заново выбирает
     // писателя.
-    public static string MoverConninfo(string shardDsn, InstallSecrets secrets, string? advertisedHost = null)
+    public static string MoverConninfo(string shardDsn, string moverPassword, string? advertisedHost = null)
     {
         var dsn = UserRegex().Replace(shardDsn, "$1user=" + MoverRole);
         if (!UserRegex().IsMatch(dsn))
@@ -171,7 +171,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
             dsn = HostRegex().Replace(dsn, m =>
                 (m.Value.StartsWith(' ') ? " " : "") + "host=" +
                 string.Join(",", m.Value[(m.Value.IndexOf('=') + 1)..].Split(',').Select(_ => advertisedHost)));
-        return dsn + " password=" + secrets.MoverPassword + " sslmode=require target_session_attrs=read-write";
+        return dsn + " password=" + moverPassword + " sslmode=require target_session_attrs=read-write";
     }
 
     // host=… пары key=value conninfo (замена хостов издателя на advertised).
@@ -188,7 +188,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
     // (wal_level/слоты/walsender'ы), первый хост может быть стендбаем. Значение
     // строго libpq-формой через дефис («ReadWrite» Npgsql отвергает — e2e-факт
     // add-кластера: «Couldn't set target session attributes»).
-    public static string MoverNpgsqlDsn(string shardDsn, InstallSecrets secrets)
+    public static string MoverNpgsqlDsn(string shardDsn, string moverPassword)
     {
         string? host = null, port = null, dbname = null;
         foreach (var token in shardDsn.Split(' ', StringSplitOptions.RemoveEmptyEntries))
@@ -227,7 +227,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
         if (dbname is not null)
             parts.Add("Database=" + dbname);
         parts.Add("Username=" + MoverRole);
-        parts.Add("Password=" + secrets.MoverPassword);
+        parts.Add("Password=" + moverPassword);
         parts.Add("SSL Mode=Require");
         parts.Add("Trust Server Certificate=true");
         parts.Add("Target Session Attributes=read-write");

@@ -36,6 +36,7 @@ internal sealed class KafkaClusterProcesses(
     RemoveBrokerProcess removeBroker,
     AddBrokerProcess addBroker,
     PasswordRotator rotator,
+    CaRotator caRotator,
     NodeRegenerator regenerator,
     TopicSyncProcess topicSync,
     SecurityMigrator migrator,
@@ -102,6 +103,12 @@ internal sealed class KafkaClusterProcesses(
         var rotated = await rotator.RunAsync(snap, ct);
         if (!rotated.IsSuccess)
             return rotated;
+
+        // Ротация CA/сертов (K, t07) — по заявке /kafkaworker/ca_rotations/<C>;
+        // после H и до J (rolling-ы не смешиваются, arch/16 §5).
+        var caRotated = await caRotator.RunAsync(snap, ct);
+        if (!caRotated.IsSuccess)
+            return caRotated;
 
         // Регенерация (J, t06): автоконверге лимитов — после ротации (не
         // смешиваем rolling-ы) и перед TopicSync (реестр — к итогу).

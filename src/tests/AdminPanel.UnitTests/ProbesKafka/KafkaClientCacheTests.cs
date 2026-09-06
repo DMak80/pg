@@ -132,4 +132,24 @@ public class KafkaClientCacheTests : IDisposable
         // (метрика churn'а CreatedClients — без сетевых подключений).
         _cache.CreatedClients.Should().Be(2);
     }
+
+    [Fact]
+    public void GetAdmin_BundleCaPem_BuildsClientAndRecreatesOnBundleChange()
+    {
+        // Arrange: CA старой генерации и бандл OLD+NEW окна ротации CA (t07):
+        // доверие у пробы ФАЙЛОМ ssl.ca.location — inline ssl.ca.pem у librdkafka
+        // читает один серт; бандл обязан строить клиент без исключений.
+        var caOld = CaPem();
+        var caNew = CaPem();
+        var bundle = caOld + "\n" + caNew;
+
+        // Act: клиент под одиночным CA, затем под бандлом окна ротации.
+        var single = _cache.GetAdmin(_bootstrap, "admin", "p1", caOld);
+        var windowed = _cache.GetAdmin(_bootstrap, "admin", "p1", bundle);
+
+        // Assert: бандл — другой ключ кеша (пересоздание), клиент собран
+        // (Build парсит файловый truststore — битый бандл падал бы здесь).
+        windowed.Should().NotBeSameAs(single);
+        _cache.CreatedClients.Should().Be(2);
+    }
 }

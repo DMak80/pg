@@ -23,7 +23,7 @@ public sealed class AdoptionProcess(
     IClusterDriver driver,
     ShardEndpoints shards,
     ISqlExecutor sql,
-    IAppSecretEnsurer appSecret,
+    IClusterSecretEnsurer appSecret,
     IAppParamsEnsurer appParams,
     InstallSecrets secrets,
     ClaimStore claims,
@@ -52,11 +52,17 @@ public sealed class AdoptionProcess(
         if (!existing.IsSuccess)
             return Result<ProcessOutcome>.Failed(existing.Error!);
 
+        // Ensure per-cluster тройки кредов (t02) — ДО репарации dsn: dsn-rewrite
+        // ниже использует ensured-значения (ключи etcd), а не env-fallback.
+        var creds = await appSecret.EnsureAsync(cluster, snap.Config, ct);
+        if (!creds.IsSuccess)
+            return await FailAsync(cluster, creds.Error!, ct);
+
         // AD2' (Д2, arch/14 §5 J): инвариант адресов Active — portalloc/dsn = факт
         // живых канонических контейнеров; расхождение репарируется под клэймом с
         // журналом. Transport-провал инспекции — transient: тик продолжается
         // без репарации (следующий тик повторит).
-        var reconciled = await ReconcileAddressesAsync(snap, existing.Value, ct);
+        var reconciled = await ReconcileAddressesAsync(snap, existing.Value, creds.Value, ct);
         if (reconciled.Error is PortLockBusyException)
         {
             await journal.WritePhaseAsync(cluster, Op, "waiting-portalloc-lock", claims.InstanceId, null, ct);
@@ -79,16 +85,13 @@ public sealed class AdoptionProcess(
                 missingByShard[shard.Name] = missing;
         }
 
-        // Инвариант «воркер — хозяин» (arch/14 §3): ensure БД и ролей бакетного
-        // слоя выполняется КАЖДЫЙ тик для всех dsn-шардов, а не только при
-        // усыновлении нод. Иначе падение ensure ПОСЛЕ записи portalloc (AD2)
-        // терялось навсегда: missingByShard пуст → ранний выход → шарды
-        // оставались без app/bucket_mover (42704/28000 в move/repair), хотя
-        // adopt «Done». Гварды идемпотентны — на здоровом кластере это
-        // несколько дешёвых SELECT на тик.
-        var creds = await appSecret.EnsureAsync(cluster, ct);
-        if (!creds.IsSuccess)
-            return await FailAsync(cluster, creds.Error!, ct);
+        // Инвариант «воркер — хозяин» (arch/14 §3): ensure кредов (выше, до
+        // репарации dsn) и гварды БД/ролей выполняются КАЖДЫЙ тик для всех
+        // dsn-шардов, а не только при усыновлении нод. Иначе падение ensure
+        // ПОСЛЕ записи portalloc (AD2) терялось навсегда: missingByShard пуст →
+        // ранний выход → шарды оставались без app/bucket_mover (42704/28000 в
+        // move/repair), хотя adopt «Done». Гварды идемпотентны — на здоровом
+        // кластере это несколько дешёвых SELECT на тик.
 
         foreach (var shard in snap.Shards.Where(s => s.Dsn is not null && !s.ToRemove))
         {
@@ -204,7 +207,8 @@ public sealed class AdoptionProcess(
     // 0 находок — тихий skip (кластер вне docker-хостов); transport-провал
     // инспекции — transient (не роняем тик).
     private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> ReconcileAddressesAsync(
-        ClusterSnapshot snap, IReadOnlyDictionary<string, NodeAddress> existing, CancellationToken ct)
+        ClusterSnapshot snap, IReadOnlyDictionary<string, NodeAddress> existing,
+        ClusterCredentials creds, CancellationToken ct)
     {
         var cluster = snap.Config.Cluster;
         var dsnShards = snap.Shards.Where(s => s.Dsn is not null && !s.ToRemove).ToList();
@@ -350,8 +354,8 @@ public sealed class AdoptionProcess(
                 continue; // внешний (object) шард: dsn — операторский факт (R9)
             var hosts = string.Join(",", ordered.Select(n => merged[$"{shard.Name}/{n}"].Host));
             var ports = string.Join(",", ordered.Select(n => merged[$"{shard.Name}/{n}"].Ports.Pg));
-            var user = snap.Config.BucketAdminUser ?? "bucket_admin";
-            var password = snap.Config.BucketAdminPassword ?? secrets.BucketAdminPassword;
+            var user = creds.BucketAdmin.User;
+            var password = creds.BucketAdmin.Password;
             var dsn = $"host={hosts} port={ports} dbname={snap.Config.DbName} user={user} password={password}";
             if (shard.Dsn != dsn)
             {
@@ -429,7 +433,8 @@ public sealed class AdoptionProcess(
     // бы вечный 3D000, а панельный inventory (routing ↔ схемы) не сошёлся бы
     // никогда («воркер — хозяин»: поднимает сам, живой-Ф7').
     private async Task<Result> EnsureShardDatabaseAsync(
-        NodeAddress master, ShardSpec shard, ClusterSnapshot snap, AppCredentials app, CancellationToken ct)
+        NodeAddress master, ShardSpec shard, ClusterSnapshot snap, ClusterCredentials creds,
+        CancellationToken ct)
     {
         var adminDsn = ShardEndpoints.AdminDsn(master, "postgres", secrets);
         var db = await sql.EnsureDatabaseAsync(adminDsn, snap.Config.DbName, ct);
@@ -439,7 +444,8 @@ public sealed class AdoptionProcess(
         var dsn = ShardEndpoints.AdminDsn(master, snap.Config.DbName, secrets);
 
         foreach (var guard in DatabaseProvisioner.BuildRoleGuardsSql(
-                     secrets, app, snap.Config.BucketAdminUser, snap.Config.BucketAdminPassword))
+                     secrets, creds.App, creds.BucketAdmin.User, creds.BucketAdmin.Password,
+                     creds.MoverPassword))
         {
             var role = await sql.ExecuteScalarAsync(dsn, guard, ct);
             if (!role.IsSuccess)
@@ -452,14 +458,15 @@ public sealed class AdoptionProcess(
             }
         }
 
-        foreach (var execSql in DatabaseProvisioner.BuildRoleExecSql(snap.Config.BucketAdminUser))
+        foreach (var execSql in DatabaseProvisioner.BuildRoleExecSql(creds.BucketAdmin.User))
         {
             var exec = await sql.ExecuteAsync(dsn, execSql, ct);
             if (!exec.IsSuccess)
                 return exec;
         }
 
-        var alter = await sql.ExecuteAsync(dsn, DatabaseProvisioner.BuildAlterAppPasswordSql(app), ct);
+        var alter = await sql.ExecuteAsync(
+            dsn, DatabaseProvisioner.BuildAlterRolePasswordSql(creds.App.User, creds.App.Password), ct);
         if (!alter.IsSuccess)
             return alter;
 
@@ -475,7 +482,7 @@ public sealed class AdoptionProcess(
             var schemas = await sql.ExecuteAsync(
                 dsn, DatabaseProvisioner.BuildSchemasSql(
                     snap.Config.DbName, bucketIds,
-                    snap.Config.BucketAdminUser ?? "bucket_admin", app.User), ct);
+                    creds.BucketAdmin.User, creds.App.User), ct);
             if (!schemas.IsSuccess)
                 return schemas;
         }

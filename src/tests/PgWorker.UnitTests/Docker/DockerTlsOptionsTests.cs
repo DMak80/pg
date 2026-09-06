@@ -120,8 +120,11 @@ public class DockerTlsOptionsTests
                 $"CN={commonName}", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
             request.CertificateExtensions.Add(new X509EnhancedKeyUsageExtension(
                 [new Oid("1.3.6.1.5.5.7.3.1"), new Oid("1.3.6.1.5.5.7.3.2")], critical: false));
+            var notAfter = DateTimeOffset.UtcNow.AddYears(1);
+            if (notAfter > caWithKey.NotAfter)
+                notAfter = caWithKey.NotAfter; // кламп к CA: UtcNow+1y мог уйти за срок CA
             using var cert = request.Create(
-                caWithKey, DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddYears(1),
+                caWithKey, DateTimeOffset.UtcNow.AddDays(-1), notAfter,
                 RandomNumberGenerator.GetBytes(16));
             return (cert.ExportCertificatePem(), rsa.ExportPkcs8PrivateKeyPem());
         }

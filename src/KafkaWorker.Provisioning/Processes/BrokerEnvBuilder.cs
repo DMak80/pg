@@ -36,7 +36,9 @@ internal static class BrokerEnvBuilder
 
     // Env одного брокера: guard премиграционного кластера (нет CA/admin-ключей —
     // сначала M), креды (1 пароль штатно, 2 — окно ротации), серт ноды — один
-    // раз на (кластер, нода, CA) через кеш R3.
+    // раз на (кластер, нода, CA) через кеш R3. Окно ротации CA (t07, arch/16
+    // §2.3): подпись серта — NEW CA (signingCa*), truststore — bundle OLD+NEW
+    // (trustCaPem); вне ротации все три параметра null → snap-значения.
     internal static IReadOnlyDictionary<string, string> Build(
         KafkaClusterSnapshot snap,
         string broker,
@@ -44,16 +46,22 @@ internal static class BrokerEnvBuilder
         IReadOnlyList<string> appPasswords,
         IReadOnlyList<string> adminPasswords,
         ProvisioningOptions options,
-        BrokerCertificateCache certificates)
+        BrokerCertificateCache certificates,
+        string? signingCaPem = null,
+        string? signingCaKey = null,
+        string? trustCaPem = null)
     {
-        if (snap.CaPem is null || snap.CaKey is null || snap.AdminPassword is null)
+        var signingPem = signingCaPem ?? snap.CaPem;
+        var signingKey = signingCaKey ?? snap.CaKey;
+        var trust = trustCaPem ?? snap.CaPem;
+        if (signingPem is null || signingKey is null || snap.AdminPassword is null)
             throw new ApplicationException(
                 $"env {snap.Cluster}/{broker}: премиграционный кластер (нет CA/admin-ключей) — сначала SecurityMigrator M");
 
         var decl = snap.Brokers.Single(b => b.Name == broker);
         var advertisedClient = AdvertisedClient(snap, broker, addr, options);
         var (certPem, keyPem) = certificates.GetOrCreate(
-            snap.Cluster, broker, snap.CaPem, snap.CaKey, advertisedClient);
+            snap.Cluster, broker, signingPem, signingKey, advertisedClient);
         return NodeEnvBuilder.Build(new NodeEnvSpec(
             snap.Cluster,
             NodeId(broker),
@@ -65,7 +73,7 @@ internal static class BrokerEnvBuilder
             appPasswords,
             snap.AdminUser ?? "admin",
             adminPasswords,
-            snap.CaPem,
+            trust!,
             certPem,
             keyPem,
             snap.Config,
