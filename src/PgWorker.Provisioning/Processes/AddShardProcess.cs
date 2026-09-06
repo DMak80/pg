@@ -104,19 +104,20 @@ public sealed partial class AddShardProcess(
             return await FailAsync(cluster, planned.Error!, "planning", ct);
         var topology = Topology(cluster, shardName, planned.Value);
 
+        // Ensure per-cluster тройки кредов (spec §3.3, образец P1.5, t02): у живого
+        // кластера ключи уже есть — читаем; отсутствующие — создаём.
+        var creds = await appSecret.EnsureAsync(cluster, snap.Config, ct);
+        if (!creds.IsSuccess)
+            return await FailAsync(cluster, creds.Error!, "ensure-app-secret", ct);
+
         // A3: EnsureNode каждой ноды + state=PROVISIONING (идемпотентно).
         var resources = await ReadShardResourcesAsync(cluster, shardName, ct);
         var clusterSecrets = secrets with
         {
-            BucketAdminUser = snap.Config.BucketAdminUser ?? secrets.BucketAdminUser,
-            BucketAdminPassword = snap.Config.BucketAdminPassword ?? secrets.BucketAdminPassword,
+            BucketAdminUser = creds.Value.BucketAdmin.User,
+            BucketAdminPassword = creds.Value.BucketAdmin.Password,
+            MoverPassword = creds.Value.MoverPassword,
         };
-
-        // Ensure app-секрета кластера (spec §3.3, образец P1.5): у живого кластера
-        // ключи уже есть — читаем; отсутствующие (кластер до app-секрета) — создаём.
-        var appCreds = await appSecret.EnsureAsync(cluster, snap.Config, ct);
-        if (!appCreds.IsSuccess)
-            return await FailAsync(cluster, appCreds.Error!, "ensure-app-secret", ct);
         var ensured = await EnsureNodesAsync(cluster, shard, topology, resources, clusterSecrets, ct);
         if (!ensured.IsSuccess)
             return await FailAsync(cluster, ensured.Error!, "ensure-nodes", ct);
@@ -367,15 +368,14 @@ public sealed partial class AddShardProcess(
     {
         var cluster = snap.Config.Cluster;
         var dbname = snap.Config.DbName;
-        var bucketAdminUser = snap.Config.BucketAdminUser ?? "bucket_admin";
-        var bucketAdminPassword = snap.Config.BucketAdminPassword ?? secrets.BucketAdminPassword;
-
-        // Свежий re-read app-кредов в SQL-фазе (spec §4.4): пока шард поднимался
-        // (минуты ожидания Patroni), ротация §5 I могла сменить app_password.
+        // Свежий re-read кредов в SQL-фазе (spec §4.4): пока шард поднимался
+        // (минуты ожидания Patroni), ротация §5 I могла сменить пароли.
         var freshCreds = await appSecret.EnsureAsync(cluster, snap.Config, ct);
         if (!freshCreds.IsSuccess)
             return freshCreds;
         var app = freshCreds.Value.App;
+        var bucketAdminUser = freshCreds.Value.BucketAdmin.User;
+        var bucketAdminPassword = freshCreds.Value.BucketAdmin.Password;
 
         var adminDsn = DatabaseProvisioner.BuildAdminDsn(master.Host, master.Ports.Pg, "postgres", secrets);
         var ensured = await db.EnsureDatabaseAsync(adminDsn, dbname, ct);
@@ -383,7 +383,8 @@ public sealed partial class AddShardProcess(
             return ensured;
 
         var dbDsn = DatabaseProvisioner.BuildAdminDsn(master.Host, master.Ports.Pg, dbname, secrets);
-        foreach (var guard in DatabaseProvisioner.BuildRoleGuardsSql(secrets, app, bucketAdminUser, bucketAdminPassword))
+        foreach (var guard in DatabaseProvisioner.BuildRoleGuardsSql(
+                     secrets, app, bucketAdminUser, bucketAdminPassword, freshCreds.Value.MoverPassword))
         {
             var probeResult = await db.ExecuteScalarAsync(dbDsn, guard, ct);
             if (!probeResult.IsSuccess)

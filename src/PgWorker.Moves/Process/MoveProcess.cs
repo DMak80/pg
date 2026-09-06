@@ -416,7 +416,7 @@ public sealed class MoveProcess(
             var advertised = await AdvertisedForShardAsync(cluster, to, ct);
             var createSub = await sql.ExecuteAsync(dstDsn,
                 MoveSql.CreateSubscription(MoveNames.Sub(bucket),
-                    ShardEndpoints.MoverConninfo(srcShard.Dsn!, secrets, advertised),
+                    ShardEndpoints.MoverConninfo(srcShard.Dsn!, MoverPassword(snap), advertised),
                     MoveNames.Pub(bucket), copyData: true, failover: options.FailoverSlots), ct);
             if (!createSub.IsSuccess)
                 return await FailTransientAsync(cluster, createSub.Error!, ct);
@@ -512,7 +512,7 @@ public sealed class MoveProcess(
                 var advertised = await AdvertisedForShardAsync(cluster, owner, ct);
                 var subRb = await sql.ExecuteAsync(srcDsn,
                     MoveSql.CreateSubscription(MoveNames.SubRb(bucket),
-                        ShardEndpoints.MoverConninfo(dstShard.Dsn!, secrets, advertised),
+                        ShardEndpoints.MoverConninfo(dstShard.Dsn!, MoverPassword(snap), advertised),
                         MoveNames.PubRb(bucket), copyData: false, failover: options.FailoverSlots), ct);
                 if (!subRb.IsSuccess)
                     postFlipErrors.Add(
@@ -1007,6 +1007,12 @@ public sealed class MoveProcess(
     }
 
     // Mover-DSN префлайта (spec §3.3, усыновлённые кластеры): multi-host
+    // Per-cluster mover-пароль (t02, arch/14 §4): ключ etcd; env — fallback до
+    // первого ensure (переезд на кластере до t02-ensure). Свежий снапшот на тик —
+    // ротация mover не ломает следующий тик переезда.
+    private string MoverPassword(ClusterSnapshot snap)
+        => snap.MoverPassword ?? secrets.MoverPassword;
+
     // dsn-ключ несёт ВНУТРЕННИЕ имена нод — они резолвимы из нод-исполнителей
     // подписок, но НЕ из контейнера воркера. Для шард с object-нодами пробуем
     // по адресу мастера из portalloc (host:pg мастера + mover-креды,
@@ -1018,7 +1024,7 @@ public sealed class MoveProcess(
         if (!addresses.IsSuccess)
             return Result<string>.Failed(addresses.Error!);
         if (!ShardEndpoints.HasAdoptedNodes(srcShard.Name, addresses.Value))
-            return Result<string>.Success(ShardEndpoints.MoverNpgsqlDsn(srcShard.Dsn!, secrets));
+            return Result<string>.Success(ShardEndpoints.MoverNpgsqlDsn(srcShard.Dsn!, MoverPassword(snap)));
 
         var master = await shards.ResolveMasterAsync(snap.Config.Cluster, srcShard, addresses.Value, ct);
         if (!master.IsSuccess)
@@ -1031,7 +1037,7 @@ public sealed class MoveProcess(
         // с multi-host (e2e-факт стенда); адрес и так мастер — атрибут не нужен.
         return Result<string>.Success(
             $"Host={m.Host};Port={m.Ports.Pg};Database={snap.Config.DbName};Username={ShardEndpoints.MoverRole};" +
-            $"Password={secrets.MoverPassword};SSL Mode=Require;Trust Server Certificate=true");
+            $"Password={MoverPassword(snap)};SSL Mode=Require;Trust Server Certificate=true");
     }
 
     // Подмена advertised-хоста только для канонических исполнителей подписок

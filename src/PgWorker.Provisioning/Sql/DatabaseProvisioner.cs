@@ -55,10 +55,11 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
     // ВОЗВРАЩАЕТ текст CREATE ROLE, если её нет — исполнитель запускает его
     // отдельной командой (Npgsql ExecuteNonQuery батчем gexec-SELECT не исполняет).
     public static IReadOnlyList<string> BuildRoleGuardsSql(InstallSecrets s,
-        AppCredentials app, string? bucketAdminUser = null, string? bucketAdminPassword = null)
+        AppCredentials app, string? bucketAdminUser = null, string? bucketAdminPassword = null,
+        string? moverPassword = null)
         => [Role(app.User, app.Password),
             Role(bucketAdminUser ?? "bucket_admin", bucketAdminPassword ?? s.BucketAdminPassword),
-            Role("bucket_mover", s.MoverPassword, replication: true)];
+            Role("bucket_mover", moverPassword ?? s.MoverPassword, replication: true)];
 
     // SQL-команды после guard-SELECT (исполняются через ExecuteAsync, не scalar).
     // pg_monitor: SQL-проба панели читает pg_stat_replication/pg_replication_slots
@@ -78,9 +79,13 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
     // Гарантирует «роль ↔ ключ» на любом шарде, включая кластеры, созданные
     // до появления app-секрета (миграция) и rebuild нод.
     public static string BuildAlterAppPasswordSql(AppCredentials app)
+        => BuildAlterRolePasswordSql(app.User, app.Password);
+
+    // Обобщённый ALTER (t02 §5 I): ротатор меняет пароли app/bucket_admin/bucket_mover.
+    public static string BuildAlterRolePasswordSql(string role, string password)
     {
-        ValidateIdentifier(app.User);
-        return $"ALTER ROLE \"{app.User}\" PASSWORD '{Escape(app.Password)}';";
+        ValidateIdentifier(role);
+        return $"ALTER ROLE \"{role}\" PASSWORD '{Escape(password)}';";
     }
 
     private static string Role(string name, string password, bool replication = false)

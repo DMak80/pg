@@ -29,6 +29,9 @@ public class ProvisioningProcessTests
     {
         etcd.Seed("/clusters/shop/config",
             """{"buckets":4,"dbname":"shop","created_unix":1755900000,"state":"NOT_INITIALIZED"}""");
+        // Per-cluster креды (t02): ensure принимает существующие — dsn с adm-pw
+        etcd.Seed("/clusters/shop/bucket_admin_user", "bucket_admin");
+        etcd.Seed("/clusters/shop/bucket_admin_password", "adm-pw");
         etcd.Seed("/clusters/shop/shards/shard1/replicas", "2");
         etcd.Seed("/clusters/shop/shards/shard2/replicas", "2");
         etcd.Seed("/clusters/shop/buckets/routing/bucket_0", "shard1");

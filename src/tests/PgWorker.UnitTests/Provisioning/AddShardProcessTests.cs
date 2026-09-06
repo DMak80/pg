@@ -28,6 +28,9 @@ public class AddShardProcessTests
     {
         etcd.Seed("/clusters/shop/config",
             """{"buckets":6,"dbname":"shop","created_unix":1755900000}""");
+        // Per-cluster креды (t02): ensure принимает существующие — dsn с adm-pw
+        etcd.Seed("/clusters/shop/bucket_admin_user", "bucket_admin");
+        etcd.Seed("/clusters/shop/bucket_admin_password", "adm-pw");
         etcd.Seed("/clusters/shop/shards/shard1/replicas", "2");
         etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1a/state", "RUNNING");
         etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1b/state", "RUNNING");

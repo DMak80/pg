@@ -85,9 +85,13 @@ public class WorkerTlsHandlerTests
             using var leafKey = RSA.Create(2048);
             var request = new CertificateRequest(
                 $"CN={commonName}", leafKey, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            using var caWithKey = ca.CopyWithPrivateKey(caKey);
+            var notAfter = DateTimeOffset.UtcNow.AddDays(30);
+            if (notAfter > caWithKey.NotAfter)
+                notAfter = caWithKey.NotAfter; // кламп к CA: UtcNow+30d мог уйти за срок CA
             using var cert = request.Create(
-                ca.CopyWithPrivateKey(caKey), DateTimeOffset.UtcNow.AddDays(-1),
-                DateTimeOffset.UtcNow.AddDays(30), RandomNumberGenerator.GetBytes(8));
+                caWithKey, DateTimeOffset.UtcNow.AddDays(-1), notAfter,
+                RandomNumberGenerator.GetBytes(8));
             return (cert.ExportCertificatePem(), leafKey.ExportPkcs8PrivateKeyPem());
         }
 
