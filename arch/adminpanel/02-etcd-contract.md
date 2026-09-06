@@ -22,8 +22,8 @@ kafka-домена — воркер сам валидирует и записы�
 `nodes/<n>/state=TO_RECREATE` + `nodes/<n>/recreate=soft|hard` (исполняет
 NodeSupervisor PgWorker); она зафиксирована кодом ранее и контрактно ведёт
 себя как §9.6-подобный маркер. Отдельный домен **Kafka** (§10): чтение
-`/kafka/clusters/` + `/kafkaworker/{rotations,admin_rotations,rebalances,reassignments}/` и
-14 мутаций декларативной модели (исполняет KafkaWorker API, arch/16 §1.1) + мутация №15 ресурсов брокера (t06) + мутация №16 ротации admin-пароля (t03).
+`/kafka/clusters/` + `/kafkaworker/{rotations,admin_rotations,ca_rotations,rebalances,reassignments}/` и
+14 мутаций декларативной модели (исполняет KafkaWorker API, arch/16 §1.1) + мутация №15 ресурсов брокера (t06) + мутация №16 ротации admin-пароля (t03) + мутация №17 ротации CA/сертов (t07).
 
 ## 1. Транспорт: HTTP JSON gateway `/v3/*`
 
@@ -684,16 +684,19 @@ status.target` и `!force` → 409
 детерминированно отличить её от стоящих по одним ключам etcd нельзя
 (процесс не помечает взятую заявку).
 
-### 9.8. Заявка ротации app-пароля кластера
+### 9.8. Заявка ротации per-cluster секретов кластера
 
-Мутация смены per-cluster app-пароля: `POST /api/clusters/{cluster}/app-password/rotate`
-(03 §1.6) ставит в etcd **заявку** `/pgworker/rotations/<C>` — ключ
-координации PgWorker (арх-канон `arch/14` §3.3/§5 I). Панель сама НЕ ходит
-в SQL нод (панель read-only к БД; SQL-мутации — только PgWorker) и НЕ пишет
-`app_password`. Выполнение — AppPasswordRotator PgWorker под клэймом `<C>`:
-ALTER ROLE на мастере каждого поднятого шарда, затем атомарный txn-коммит
-(put `app_password` + del заявки одной транзакцией). Исчезновение заявки
-после успеха — как у §9.7; фазы/ошибки — `/pgworker/work/<C>`.
+Мутация смены per-cluster секретов (app + bucket_admin + bucket_mover, t02):
+`POST /api/clusters/{cluster}/secrets/rotate` (03 §1.6) ставит в etcd
+**заявку** `/pgworker/rotations/<C>` — ключ координации PgWorker (арх-канон
+`arch/14` §3.3/§5 I). Панель сама НЕ ходит в SQL нод (панель read-only к БД;
+SQL-мутации — только PgWorker) и НЕ пишет/не читает креды. Выполнение —
+ClusterSecretRotator PgWorker под клэймом `<C>`: ALTER ROLE app/bucket_admin/
+bucket_mover на мастере каждого поднятого шарда, затем атомарный txn-коммит
+(put `app_password`+`mover_password`+`bucket_admin_password`, перезапись
+dsn-ключей шардов с новым bucket_admin-паролем, del заявки одной транзакцией).
+Исчезновение заявки после успеха — как у §9.7; фазы/ошибки —
+`/pgworker/work/<C>`.
 
 Значение ключа (формат PgWorker, аудполя — как §9.7):
 
@@ -716,8 +719,9 @@ ALTER ROLE на мастере каждого поднятого шарда, з�
    повтор POST идемпотентен (живая заявка → шаг 2 → 409).
 5. Ответ 201 `{cluster, requestedUnix, requestedBy}`; выполнение асинхронно
    (тики PgWorker, секунды при живых шардах). UI-модалка предупреждает:
-   после применения подключения со старым паролем отвергаются до
-   перечитывания `app_password` клиентами — выполнять в тихое окно.
+   после применения подключения со старыми паролями отвергаются до
+   перечитывания кредов клиентами (app-ключи, dsn для bucket_admin) —
+   выполнять в тихое окно.
 
 ## 10. Kafka (чтение + записи панели)
 
@@ -740,7 +744,7 @@ read-only). Отдельный домен-снапшот `KafkaSnapshot` (не `
 | `/kafka/clusters/<C>/app_user`, `app_password` | internal-словарь стора (не в `KafkaClusterInfo`, не в UI/API) | значение пароля наружу не отдаётся; панель не подключается к Kafka с app-кредом (роль приложений, ACL — arch/16 §2.3) |
 | `/kafka/clusters/<C>/admin_user`, `admin_password`, `ca_pem` | internal-словарь стора (не в `KafkaClusterInfo`, не в UI/API) | читаются ТОЛЬКО для SASL_SSL-проб (t03: admin-кред + truststore из CA-серта кластера, arch/16 §2.3); значение пароля наружу не отдаётся |
 | `/kafka/clusters/<C>/topics/<T>` | `KafkaTopicInfo` | гибрид автосинк+desired, формат arch/15 §3; `__`-топиков в etcd не бывает. + leaf-ключи заявок `topics/<T>/desired.{create,delete}` (arch/15 §3.1) → `KafkaTopicLifecycleTicket` |
-| `/kafkaworker/rotations/<C>`, `/kafkaworker/admin_rotations/<C>` | `KafkaRotationTicket` | читаемые из `/kafkaworker/` — только `rotations/`, `admin_rotations/`, `rebalances/`, `reassignments/`, `regens/` (arch/15 §4); остальные ключи префикса панель не читает и не пишет |
+| `/kafkaworker/rotations/<C>`, `/kafkaworker/admin_rotations/<C>`, `/kafkaworker/ca_rotations/<C>` | `KafkaRotationTicket` | читаемые из `/kafkaworker/` — только `rotations/`, `admin_rotations/`, `ca_rotations/`, `rebalances/`, `reassignments/`, `regens/` (arch/15 §4); остальные ключи префикса панель не читает и не пишет |
 | `/kafkaworker/rebalances/<C>` | `KafkaRebalanceTicket` | заявка ребалансировки партиций (жива = очередь в UI) |
 | `/kafkaworker/reassignments/<C>` | `KafkaReassignmentProgress` | прогресс текущего reassignment воркера (drain/balance: остаток партиций, режим); отсутствие ключа = операции нет |
 | `/kafkaworker/regens/<C>` | `KafkaRegenProgress` | прогресс rolling-регенерации брокеров воркером (t06, arch/15 §4): `brokers_total`/`brokers_remaining`/`current_broker`; отсутствие ключа = операции нет |
@@ -777,6 +781,7 @@ parseError-запись + warning-алерт `kafka-key-malformed` (arch/15 §6)
 | 14 | **Отмена ребалансировки** `DELETE /api/kafka/clusters/{c}/rebalance` | del заявки: новые батчи не подаются, уже поданные reassignment-бакеты Kafka доигрывает сама (безопасно — данные не теряются, converge просто останавливается на полпути); 404 если заявки нет | 404, 503 |
 | 15 | **Изменение ресурсов брокера** `PUT /api/kafka/clusters/{c}/brokers/{b}/resources` | тело `{cpu?, memGi?, diskGi?}` (null = не менять; хотя бы одно — обязательно; границы §10.3, уменьшение разрешено — риск OOM на операторе, arch/16 R7); put ключа `brokers/<b>/resources` каноническим JSON (перезапись целиком). Применение — автоматическое: NodeRegenerator воркера (arch/16 §5 J) сверяет лимиты живого контейнера и rolling-ит по одному за тик; `disk` меняет только декларацию (действий нет). Идемпотентен (повтор — та же запись) | 400 (§10.3 / пустое тело), 404 (кластер/брокер), 409 (не Active / state `TO_REMOVE`/`REMOVING`), 503 |
 | 16 | **Ротация admin-пароля** `POST /api/kafka/clusters/{c}/admin-password/rotate` (t03) | клэйм-txn `/kafkaworker/admin_rotations/<C>` `version==0` + put `{"requested_unix","requested_by"}` — протокол ротаций §9.8 один в один; исполнение — PasswordRotator KafkaWorker (фазы A/B/C, роль admin, arch/16 §5 H); UI-модалка предупреждает о rolling-перезапуске брокеров | 404, 409 (не Active / уже запрошена), 503 |
+| 17 | **Ротация CA/сертов** `POST /api/kafka/clusters/{c}/ca/rotate` (t07) | клэйм-txn `/kafkaworker/ca_rotations/<C>` `version==0` + put `{"requested_unix","requested_by"}` — протокол ротаций §9.8 один в один; исполнение — CaRotator KafkaWorker (фазы P/D/R/C, arch/16 §5 K: staging `ca_next_*` → bundle `ca_pem` → rolling-пересоздание брокеров с сертами NEW CA → атомарный коммит); UI-модалка предупреждает о rolling-пересоздании брокеров и окне двойного доверия (клиенты перечитывают `ca_pem` из etcd) | 404, 409 (не Active / уже запрошена), 503 |
 
 ### 10.3. Валидация создания/конфиг-мутации (сервер — источник истины)
 
