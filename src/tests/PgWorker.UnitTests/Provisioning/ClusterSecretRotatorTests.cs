@@ -11,9 +11,10 @@ using Xunit;
 
 namespace PgWorker.UnitTests.Provisioning;
 
-// Ротация app-пароля по заявке /pgworker/rotations/<C> (spec §4.3, arch/14 §5 I):
-// ALTER на мастерах всех шардов с dsn → атомарный txn-коммит put+del; transient-отказы.
-public class AppPasswordRotatorTests
+// Ротация per-cluster секретов по заявке /pgworker/rotations/<C> (t02, arch/14
+// §5 I): ALTER трёх ролей на мастерах всех шардов с dsn → атомарный txn-коммит
+// (новые креды + перезапись dsn + del заявки); transient-отказы.
+public class ClusterSecretRotatorTests
 {
     private const string Ep = "http://etcd:2379";
     private static readonly InstallSecrets Secrets = new("su-pw", "sb-pw", "adm-pw", "mov-pw");
@@ -26,13 +27,17 @@ public class AppPasswordRotatorTests
     }
 
     // Сид: Active-кластер, 2 шарда с dsn + master-ключи (мастера по host из portalloc),
-    // app-секрет, portalloc (мастера — первые ноды, host h1/pg 15000 и h2/pg 15001).
+    // тройка per-cluster кредов (t02 — ensure читает, txn не ставит), portalloc
+    // (мастера — первые ноды, host h1/pg 15000 и h2/pg 15001).
     private static void SeedCluster(Fakes.FakeEtcd etcd, string cluster = "shop")
     {
         etcd.Seed($"/clusters/{cluster}/config",
             $$"""{"buckets":2,"dbname":"{{cluster}}","created_unix":1755900000}""");
         etcd.Seed("/clusters/shop/app_user", "app");
         etcd.Seed("/clusters/shop/app_password", "OldPassword000000000000000000A");
+        etcd.Seed("/clusters/shop/mover_password", "OldMoverPass0000000000000000000A");
+        etcd.Seed("/clusters/shop/bucket_admin_user", "bucket_admin");
+        etcd.Seed("/clusters/shop/bucket_admin_password", "OldAdminPass000000000000000A");
         foreach (var (shard, host, pg) in new[] { ("shard1", "h1", 15000), ("shard2", "h2", 15001) })
         {
             etcd.Seed($"/clusters/shop/shards/{shard}/replicas", "2");
@@ -65,7 +70,7 @@ public class AppPasswordRotatorTests
     }
 
     private sealed record Rig(Fakes.FakeEtcd Etcd, Fakes.FakeSql Sql, ClaimStore Claims,
-        WorkJournal Journal, AppPasswordRotator Rotator);
+        WorkJournal Journal, ClusterSecretRotator Rotator);
 
     private static async Task<Rig> NewRig(Fakes.FakeEtcd? etcd = null, Fakes.FakeSql? sql = null)
     {
@@ -78,7 +83,7 @@ public class AppPasswordRotatorTests
         store.Txns.Clear(); // отсечь claim-txn: ассерты — только про txn ротации
         var journal = new WorkJournal(store, [Ep]);
         var probe = new ShardProbe(new HttpClient(new DeadHandler()));
-        var rotator = new AppPasswordRotator(
+        var rotator = new ClusterSecretRotator(
             store, [Ep], usedSql, probe, claims, journal, Secrets,
             new ClusterSecretEnsurer(store, [Ep]), snapshot: null);
         return new Rig(store, usedSql, claims, journal, rotator);
@@ -97,13 +102,11 @@ public class AppPasswordRotatorTests
         // Act
         var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
-        // Assert — no-op: пароль нетронут, SQL/txn не было
+        // Assert — Done без мутаций: ensure не вызван (нет txn), SQL не выполнялся
         outcome.IsSuccess.Should().BeTrue();
         outcome.Value.Should().Be(ProcessOutcome.Done);
-        rig.Etcd.Store["/clusters/shop/app_password"].Value
-            .Should().Be("OldPassword000000000000000000A");
-        rig.Sql.Executed.Should().BeEmpty();
         rig.Etcd.Txns.Should().BeEmpty();
+        rig.Sql.Executed.Should().BeEmpty();
     }
 
     [Fact]
@@ -116,20 +119,42 @@ public class AppPasswordRotatorTests
         // Act
         var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
-        // Assert — ALTER на мастерах ОБЕИХ шардов; одна txn: compare OLD + put NEW + del заявки
+        // Assert — ALTER ТРЁХ ролей на мастерах ОБЕИХ шардов (6 SQL); одна txn:
+        // compare OLD (3 креда + 2 dsn) + put новых кредов + перезапись dsn + del заявки
         outcome.IsSuccess.Should().BeTrue();
         var sqlTexts = rig.Sql.Executed.Select(e => e.Sql).ToList();
-        sqlTexts.Should().HaveCount(2).And.OnlyContain(s => s.Contains("ALTER ROLE \"app\" PASSWORD"));
-        rig.Etcd.Store["/clusters/shop/app_password"].Value
-            .Should().MatchRegex("^[A-Za-z0-9]{32}$").And.NotBe("OldPassword000000000000000000A");
+        sqlTexts.Should().HaveCount(6);
+        sqlTexts.Count(s => s.Contains("ALTER ROLE \"app\" PASSWORD")).Should().Be(2);
+        sqlTexts.Count(s => s.Contains("ALTER ROLE \"bucket_admin\" PASSWORD")).Should().Be(2);
+        sqlTexts.Count(s => s.Contains("ALTER ROLE \"bucket_mover\" PASSWORD")).Should().Be(2);
+
+        var newApp = rig.Etcd.Store["/clusters/shop/app_password"].Value;
+        var newMover = rig.Etcd.Store["/clusters/shop/mover_password"].Value;
+        var newAdmin = rig.Etcd.Store["/clusters/shop/bucket_admin_password"].Value;
+        newApp.Should().MatchRegex("^[A-Za-z0-9]{32}$").And.NotBe("OldPassword000000000000000000A");
+        newMover.Should().MatchRegex("^[A-Za-z0-9]{32}$").And.NotBe("OldMoverPass0000000000000000000A");
+        newAdmin.Should().MatchRegex("^[A-Za-z0-9]{32}$").And.NotBe("OldAdminPass000000000000000A");
         rig.Etcd.Store.Should().NotContainKey("/pgworker/rotations/shop");
-        // Коммит-тxn ротации узнаём по del заявки (ensure-txn R1 тоже ставит puts — t02)
+
+        // Коммит-txn узнаём по del заявки (ensure-txn R1 тоже ставит puts — t02)
         var commit = rig.Etcd.Txns.Single(t =>
             t.Success.OfType<TxnOp.Delete>().Any(d => d.Key == "/pgworker/rotations/shop"));
         commit.Compare.Should().Contain(c =>
             c.Key == "/clusters/shop/app_password" && c.Arg == "OldPassword000000000000000000A");
+        commit.Compare.Should().Contain(c =>
+            c.Key == "/clusters/shop/mover_password" && c.Arg == "OldMoverPass0000000000000000000A");
+        commit.Compare.Should().Contain(c =>
+            c.Key == "/clusters/shop/bucket_admin_password" && c.Arg == "OldAdminPass000000000000000A");
+        // dsn-сравнение — по прочитанным значениям (гонка репарации → ретрай тиком)
+        commit.Compare.Where(c => c.Key.EndsWith("/dsn")).Should().HaveCount(2);
         commit.Success.OfType<TxnOp.Delete>()
             .Should().ContainSingle(d => d.Key == "/pgworker/rotations/shop");
+        // dsn перезаписаны: пароль bucket_admin = новый, остальное байт-в-байт
+        var dsnPuts = commit.Success.OfType<TxnOp.Put>().Where(p => p.Key.EndsWith("/dsn")).ToList();
+        dsnPuts.Should().HaveCount(2);
+        dsnPuts.Should().OnlyContain(p =>
+            p.Value.EndsWith($"user=bucket_admin password={newAdmin}")
+            && p.Value.StartsWith("host="));
         (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.Op
             .Should().Be("rotate-app-password");
     }
@@ -145,10 +170,12 @@ public class AppPasswordRotatorTests
         // Act
         var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
-        // Assert — Failed: app_password прежний, заявка жива (ретрай тиком с начала)
+        // Assert — Failed: креды прежние, заявка жива (ретрай тиком с начала)
         outcome.IsSuccess.Should().BeFalse();
         rig.Etcd.Store["/clusters/shop/app_password"].Value
             .Should().Be("OldPassword000000000000000000A");
+        rig.Etcd.Store["/clusters/shop/mover_password"].Value
+            .Should().Be("OldMoverPass0000000000000000000A");
         rig.Etcd.Store.Should().ContainKey("/pgworker/rotations/shop");
     }
 
@@ -173,6 +200,33 @@ public class AppPasswordRotatorTests
         outcome.IsSuccess.Should().BeFalse();
         rig.Etcd.Store["/clusters/shop/app_password"].Value
             .Should().Be("External0000000000000000000000X");
+        rig.Etcd.Store.Should().ContainKey("/pgworker/rotations/shop");
+    }
+
+    [Fact]
+    public async Task Tick_ExternalDsnChange_CompareLostRetriable()
+    {
+        // Arrange — внешняя запись dsn (репарация/оператор) между чтением и txn:
+        // инъекция при ПЕРВОМ ALTER (t02 §5 I R3: compare по dsn закрывает гонку)
+        var rig = await NewRig();
+        SeedTicket(rig.Etcd);
+        var alters = 0;
+        rig.Sql.OnExecute = _ =>
+        {
+            if (++alters == 1)
+                rig.Etcd.Seed("/clusters/shop/shards/shard1/dsn",
+                    "host=h9 port=19999 dbname=shop user=bucket_admin password=changed");
+        };
+
+        // Act
+        var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — compare dsn проигран: заявка жива, креды не перезаписаны
+        outcome.IsSuccess.Should().BeFalse();
+        rig.Etcd.Store["/clusters/shop/app_password"].Value
+            .Should().Be("OldPassword000000000000000000A");
+        rig.Etcd.Store["/clusters/shop/bucket_admin_password"].Value
+            .Should().Be("OldAdminPass000000000000000A");
         rig.Etcd.Store.Should().ContainKey("/pgworker/rotations/shop");
     }
 
@@ -203,7 +257,7 @@ public class AppPasswordRotatorTests
         SeedTicket(etcd);
         var journal = new WorkJournal(etcd, [Ep]);
         var probe = new ShardProbe(new HttpClient(new DeadHandler()));
-        var rotator = new AppPasswordRotator(
+        var rotator = new ClusterSecretRotator(
             etcd, [Ep], new Fakes.FakeSql(), probe,
             new ClaimStore([Ep], etcd, TimeProvider.System), journal, Secrets,
             new ClusterSecretEnsurer(etcd, [Ep]), snapshot: null);

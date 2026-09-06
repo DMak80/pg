@@ -11,7 +11,7 @@ namespace PgWorker.App.Api.Operations;
 public sealed record AppPasswordRotatedDto(string Cluster, long RequestedUnix, string RequestedBy);
 
 // Заявка ротации app-пароля через API воркера (task etcd-via-worker-api): порт
-// панельного RotateAppPasswordCommandHandler; выполняет AppPasswordRotator
+// панельного RotateAppPasswordCommandHandler; выполняет ClusterSecretRotator
 // (ALTER ROLE на всех шардах + атомарная замена app_password). requested_by —
 // заголовок X-Requested-By, fallback "api" (у панели ClaimsPrincipal, spec §3.7).
 public sealed partial class RotateAppPasswordHandler(IEtcdGateway gateway, string[] endpoints, TimeProvider time)

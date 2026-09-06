@@ -51,7 +51,7 @@ internal sealed class ClusterProcesses(
     MoveRepairProcess repair,
     AddShardProcess addShards,
     RemoveShardProcess removeShards,
-    AppPasswordRotator rotator) : IClusterProcesses
+    ClusterSecretRotator rotator) : IClusterProcesses
 {
     public Task<Result<ProcessOutcome>> ProvisionAsync(ClusterSnapshot snap, CancellationToken ct)
         => provision.TickAsync(snap, ct);

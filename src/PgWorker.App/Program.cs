@@ -372,9 +372,9 @@ builder.Services.AddSingleton(sp => new MoveRepairProcess(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<MoveRepairProcess>()));
 
-// Ротация app-пароля (spec §4.3, arch/14 §5 I): заявка /pgworker/rotations/<C>;
+// Ротация per-cluster секретов (t02, arch/14 §5 I): заявка /pgworker/rotations/<C>;
 // Active-ветка цикла зовёт через ClusterProcesses (scale → rotate → evacuate → moves).
-builder.Services.AddSingleton(sp => new AppPasswordRotator(
+builder.Services.AddSingleton(sp => new ClusterSecretRotator(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<ISqlExecutor>(),

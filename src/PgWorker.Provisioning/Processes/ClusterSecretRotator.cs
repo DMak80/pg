@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
@@ -10,15 +11,20 @@ using PgWorker.Provisioning.Sql;
 namespace PgWorker.Provisioning.Processes;
 
 /// <summary>
-/// Ротация per-cluster app-пароля по заявке /pgworker/rotations/&lt;C&gt;
-/// (arch/14 §5 I, spec §4.3): R1 ensure app-секрета → R2 ALTER ROLE на мастере
-/// каждого шарда с dsn (реплики получают pg_authid физической репликацией) →
-/// R3 атомарный txn [compare value==OLD][put app_password=NEW; del заявки] →
-/// R4 снапшот P12. transient-сбой → заявка жива, пароль в etcd НЕ меняется,
-/// следующий тик повторяет с начала со свежим NEW (ALTER идемпотентен
-/// перезаписью). Вызывается только держателем клэйма &lt;C&gt;.
+/// Ротация per-cluster секретов по заявке /pgworker/rotations/&lt;C&gt; (t02,
+/// arch/14 §5 I): app + bucket_admin + bucket_mover. R1 ensure тройки кредов →
+/// R2 ALTER ROLE трёх ролей на мастере каждого шарда с dsn (реплики получают
+/// pg_authid физической репликацией) → R3 атомарный txn [compare value==OLD по
+/// кредам и ВСЕМ dsn-ключам][put новые креды; перезапись dsn; del заявки] →
+/// R4 снапшот P12. transient-сбой → заявка жива, креды в etcd НЕ меняются,
+/// следующий тик повторяет с начала со свежими NEW (ALTER идемпотентен
+/// перезаписью). Имя journal-op сохранено (rotate-app-password) — совместимость
+/// журналов (образец RotationRole.Phase, arch/16 §5 H). Вызывается только
+/// держателем клэйма &lt;C&gt;. Ротация при активном переезде: mover-DSN
+/// строится из свежего снапшота на тик — оборванная ротацией фаза переезда
+/// возобновляется с journal-фазы уже с новыми кредами.
 /// </summary>
-public sealed class AppPasswordRotator(
+public sealed partial class ClusterSecretRotator(
     IEtcdGateway etcd,
     string[] endpoints,
     ISqlExecutor db,
@@ -30,6 +36,9 @@ public sealed class AppPasswordRotator(
     Func<CancellationToken, Task<Result>>? snapshot = null)
 {
     private const string Op = "rotate-app-password";
+
+    // Имя mover-роли фиксировано (arch/14 §4); user-ключа mover нет.
+    private const string MoverRole = "bucket_mover";
 
     public async Task<Result<ProcessOutcome>> TickAsync(ClusterSnapshot snap, CancellationToken ct)
     {
@@ -62,15 +71,19 @@ public sealed class AppPasswordRotator(
         if (!started.IsSuccess)
             return Result<ProcessOutcome>.Failed(started.Error!);
 
-        // R1: ensure app-секрета (P1.5) — OLD после этого существует.
-        var creds = await appSecret.EnsureAsync(cluster, snap.Config, ct);
-        if (!creds.IsSuccess)
-            return await FailAsync(cluster, creds.Error!, "ensure-app-secret", ct);
+        // R1: ensure тройки кредов (t02) — OLD-значения после этого существуют.
+        var credsResult = await appSecret.EnsureAsync(cluster, snap.Config, ct);
+        if (!credsResult.IsSuccess)
+            return await FailAsync(cluster, credsResult.Error!, "ensure-app-secret", ct);
+        var creds = credsResult.Value;
 
-        // R2: ALTER ROLE на мастере каждого ПОДНЯТОГО шарда (dsn есть; шард без
-        // dsn — домен AddShardProcess: роль создастся/выравнивается по свежему
-        // app_password, spec §4.3 R2).
-        var newSecret = AppSecretGenerator.Generate();
+        // R2: ALTER ROLE трёх ролей на мастере каждого ПОДНЯТОГО шарда (dsn есть;
+        // шард без dsn — домен AddShardProcess: роли создадутся/выровняются по
+        // свежим кредам, §5 I R2). NEW-пароли генерируются на попытку — ALTER
+        // идемпотентен перезаписью, регенерация между тиками безопасна.
+        var newAppPassword = AppSecretGenerator.Generate();
+        var newMoverPassword = AppSecretGenerator.Generate();
+        var newBucketAdminPassword = AppSecretGenerator.Generate();
         var addresses = await ReadPortAllocAsync(cluster, ct);
         if (!addresses.IsSuccess)
             return await FailAsync(cluster, addresses.Error!, "portalloc", ct);
@@ -85,31 +98,55 @@ public sealed class AppPasswordRotator(
                     $"waiting-master/{shard.Name}", ct);
 
             var dsn = DatabaseProvisioner.BuildAdminDsn(master.Host, master.Ports.Pg, snap.Config.DbName, secrets);
-            var altered = await db.ExecuteAsync(
-                dsn,
-                DatabaseProvisioner.BuildAlterAppPasswordSql(new AppCredentials(creds.Value.App.User, newSecret)),
-                ct);
-            if (!altered.IsSuccess)
-                return await FailAsync(cluster, altered.Error!, $"alter/{shard.Name}", ct);
+            foreach (var (role, password) in new[]
+                     {
+                         (creds.App.User, newAppPassword),
+                         (creds.BucketAdmin.User, newBucketAdminPassword),
+                         (MoverRole, newMoverPassword),
+                     })
+            {
+                var altered = await db.ExecuteAsync(
+                    dsn,
+                    DatabaseProvisioner.BuildAlterRolePasswordSql(role, password),
+                    ct);
+                if (!altered.IsSuccess)
+                    return await FailAsync(cluster, altered.Error!, $"alter/{shard.Name}", ct);
+            }
         }
 
-        // R3: атомарный коммит — put нового пароля + снятие заявки ОДНОЙ txn
-        // (нет двойной ротации из-за сбоя между put и del); compare по OLD —
-        // внешняя запись etcdctl между R1 и R3 → ретрай тиком со свежим OLD.
-        var commit = await TxnAsync(
-            TxnRequest.Of(
-                [TxnCompare.ValueEqual(PasswordKey(cluster), creds.Value.App.Password)],
-                [
-                    new TxnOp.Put(PasswordKey(cluster), newSecret, null),
-                    new TxnOp.Delete(TicketKey(cluster), Prefix: false),
-                ]),
-            ct);
+        // R3: атомарный коммит — новые креды + перезапись dsn + снятие заявки
+        // ОДНОЙ txn (нет двойной ротации из-за сбоя между put и del). Compare по
+        // OLD-кредам и по прочитанным dsn: внешняя запись etcdctl между R1 и R3
+        // (или гонка репарации dsn) → ретрай тиком со свежими OLD.
+        var compares = new List<TxnCompare>
+        {
+            TxnCompare.ValueEqual(PasswordKey(cluster), creds.App.Password),
+            TxnCompare.ValueEqual(MoverKey(cluster), creds.MoverPassword),
+            TxnCompare.ValueEqual(BucketAdminPasswordKey(cluster), creds.BucketAdmin.Password),
+        };
+        var ops = new List<TxnOp>
+        {
+            new TxnOp.Put(PasswordKey(cluster), newAppPassword, null),
+            new TxnOp.Put(MoverKey(cluster), newMoverPassword, null),
+            new TxnOp.Put(BucketAdminPasswordKey(cluster), newBucketAdminPassword, null),
+            new TxnOp.Delete(TicketKey(cluster), Prefix: false),
+        };
+        foreach (var shard in snap.Shards.Where(s => s.Dsn is not null))
+        {
+            compares.Add(TxnCompare.ValueEqual(DsnKey(cluster, shard.Name), shard.Dsn!));
+            ops.Add(new TxnOp.Put(DsnKey(cluster, shard.Name),
+                PasswordRegex().Replace(shard.Dsn!,
+                    m => (m.Value.StartsWith(' ') ? " " : "") + "password=" + newBucketAdminPassword),
+                null));
+        }
+
+        var commit = await TxnAsync(TxnRequest.Of([.. compares], [.. ops]), ct);
         if (!commit.IsSuccess)
             return await FailAsync(cluster, commit.Error!, "committing", ct);
         if (!commit.Value.Succeeded)
             return await FailAsync(cluster,
                 new ApplicationException(
-                    "app_password изменился с момента чтения (внешняя запись?) — ретрай тиком"),
+                    "креды/dsn изменились с момента чтения (внешняя запись?) — ретрай тиком"),
                 "commit-conflict", ct);
 
         // R4: снапшот P12 (точка изменения, best-effort делегат) + journal done.
@@ -123,9 +160,20 @@ public sealed class AppPasswordRotator(
         return await Finish(cluster, "done", ProcessOutcome.Done, ct);
     }
 
+    // Замена password= в conninfo dsn-ключа (пароль bucket_admin внутри dsn).
+    // Пароли AppSecretGenerator — [A-Za-z0-9], экранирования в conninfo не требуют.
+    [GeneratedRegex(@"(^| )password=[^ ]*", RegexOptions.CultureInvariant)]
+    private static partial Regex PasswordRegex();
+
     private static string TicketKey(string cluster) => $"/pgworker/rotations/{cluster}";
 
     private static string PasswordKey(string cluster) => $"/clusters/{cluster}/app_password";
+
+    private static string MoverKey(string cluster) => $"/clusters/{cluster}/mover_password";
+
+    private static string BucketAdminPasswordKey(string cluster) => $"/clusters/{cluster}/bucket_admin_password";
+
+    private static string DsnKey(string cluster, string shard) => $"/clusters/{cluster}/shards/{shard}/dsn";
 
     // Валидная заявка: JSON с числовым requested_unix (панель §9.8 п.3).
     private static bool IsWellFormed(string raw)
