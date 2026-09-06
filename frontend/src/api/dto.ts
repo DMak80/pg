@@ -381,9 +381,10 @@ export interface AlertDto {
   remedyText: string | null;
 }
 
-// POST /api/clusters/{cluster}/app-password/rotate — заявка ротации app-пароля
-// (arch/03 §1.6, протокол arch/02 §9.8): панель пароль не знает — только факт заявки.
-export interface AppPasswordRotatedDto {
+// POST /api/clusters/{cluster}/secrets/rotate — заявка ротации per-cluster
+// секретов (arch/03 §1.6, протокол arch/02 §9.8, t02): панель креды не знает —
+// только факт заявки.
+export interface ClusterSecretsRotatedDto {
   cluster: string;
   requestedUnix: number;
   requestedBy: string;

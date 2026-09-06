@@ -5,7 +5,7 @@ import type {
   AddShardRequestDto,
   CreateKafkaClusterRequestDto,
   AlertDto,
-  AppPasswordRotatedDto,
+  ClusterSecretsRotatedDto,
   ClusterCreatedDto,
   ClusterDto,
   ClusterSummaryDto,
@@ -185,11 +185,12 @@ export function recreateNode(scope: string, node: string, mode: RecreateMode): P
     { method: 'POST', body: { mode } });
 }
 
-// POST /api/clusters/{cluster}/app-password/rotate — заявка ротации app-пароля
-// (arch/02 §9.8): ставит /pgworker/rotations/<C>; выполняет PgWorker (AppPasswordRotator).
-export function rotateAppPassword(cluster: string): Promise<AppPasswordRotatedDto> {
-  return apiFetch<AppPasswordRotatedDto>(
-    `/api/clusters/${encodeURIComponent(cluster)}/app-password/rotate`,
+// POST /api/clusters/{cluster}/secrets/rotate — заявка ротации per-cluster
+// секретов (arch/02 §9.8, t02): ставит /pgworker/rotations/<C>; выполняет
+// PgWorker (ClusterSecretRotator — app, bucket_admin, bucket_mover).
+export function rotateClusterSecrets(cluster: string): Promise<ClusterSecretsRotatedDto> {
+  return apiFetch<ClusterSecretsRotatedDto>(
+    `/api/clusters/${encodeURIComponent(cluster)}/secrets/rotate`,
     { method: 'POST' });
 }
 

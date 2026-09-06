@@ -7,11 +7,11 @@ using Xunit;
 
 namespace AdminPanel.IntegrationTests;
 
-// POST /api/clusters/{c}/app-password/rotate — прокси в API PgWorker (task
+// POST /api/clusters/{c}/secrets/rotate (t02) — прокси в API PgWorker (task
 // etcd-via-worker-api): стаб-воркер; 201/409/404/503 прежние тела, оператор
 // сессии уходит заголовком X-Requested-By (spec §3.7).
 [Collection("api")]
-public class RotateAppPasswordApiTests(AuthWebFactory factory)
+public class RotateClusterSecretsApiTests(AuthWebFactory factory)
 {
     private readonly AuthWebFactory _factory = factory;
 
@@ -32,7 +32,7 @@ public class RotateAppPasswordApiTests(AuthWebFactory factory)
 
         // Act
         using var response = await client.PostAsync(
-            "/api/clusters/rot1/app-password/rotate", null, TestContext.Current.CancellationToken);
+            "/api/clusters/rot1/secrets/rotate", null, TestContext.Current.CancellationToken);
 
         // Assert — 201 с телом прежнего формата
         response.StatusCode.Should().Be(HttpStatusCode.Created);
@@ -43,7 +43,7 @@ public class RotateAppPasswordApiTests(AuthWebFactory factory)
         // Прокси-вызов: оператор сессии «admin» уходит воркеру (X-Requested-By)
         _factory.WorkerApi.Calls.Should().ContainSingle().Which.Should().Match<TestWorkerApi.Call>(c =>
             c.Worker == "pgworker" && c.Method == HttpMethod.Post
-            && c.Path == "/api/clusters/rot1/app-password/rotate"
+            && c.Path == "/api/clusters/rot1/secrets/rotate"
             && c.RequestedBy == "admin");
         _factory.EtcdStub.WriteCalls.Should().Be(0); // панель не пишет в etcd
     }
@@ -60,7 +60,7 @@ public class RotateAppPasswordApiTests(AuthWebFactory factory)
 
         // Act
         using var response = await client.PostAsync(
-            "/api/clusters/rot2/app-password/rotate", null, TestContext.Current.CancellationToken);
+            "/api/clusters/rot2/secrets/rotate", null, TestContext.Current.CancellationToken);
 
         // Assert — 409 прежним телом
         response.StatusCode.Should().Be(HttpStatusCode.Conflict);
@@ -80,7 +80,7 @@ public class RotateAppPasswordApiTests(AuthWebFactory factory)
 
         // Act
         using var response = await client.PostAsync(
-            "/api/clusters/nosuch/app-password/rotate", null, TestContext.Current.CancellationToken);
+            "/api/clusters/nosuch/secrets/rotate", null, TestContext.Current.CancellationToken);
 
         // Assert — 404
         response.StatusCode.Should().Be(HttpStatusCode.NotFound);
@@ -97,7 +97,7 @@ public class RotateAppPasswordApiTests(AuthWebFactory factory)
 
         // Act
         using var response = await client.PostAsync(
-            "/api/clusters/rot5/app-password/rotate", null, TestContext.Current.CancellationToken);
+            "/api/clusters/rot5/secrets/rotate", null, TestContext.Current.CancellationToken);
 
         // Assert — 503
         response.StatusCode.Should().Be(HttpStatusCode.ServiceUnavailable);

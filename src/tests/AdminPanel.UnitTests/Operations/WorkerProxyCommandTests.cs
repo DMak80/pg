@@ -157,17 +157,17 @@ public class WorkerProxyCommandTests
             Respond = _ => new WorkerApiResult(201,
                 """{"cluster":"demo","requestedUnix":1756000000,"requestedBy":"opsuser"}"""),
         };
-        var handler = new RotateAppPasswordCommandHandler(api);
+        var handler = new RotateClusterSecretsCommandHandler(api);
 
         // Act
         var result = await handler.Handle(
-            new RotateAppPasswordCommand("demo", "opsuser"), CancellationToken.None);
+            new RotateClusterSecretsCommand("demo", "opsuser"), CancellationToken.None);
 
         // Assert
         result.IsSuccess.Should().BeTrue();
         result.Value.RequestedBy.Should().Be("opsuser");
         api.Calls.Should().ContainSingle().Which.Should().Match<StubWorkerApi.Call>(c =>
-            c.Path == "/api/clusters/demo/app-password/rotate" && c.RequestedBy == "opsuser");
+            c.Path == "/api/clusters/demo/secrets/rotate" && c.RequestedBy == "opsuser");
     }
 
     [Fact]

@@ -12,7 +12,7 @@ import { BucketsTab } from './cluster-details/BucketsTab';
 import { DeleteClusterButton } from './cluster-details/DeleteClusterButton';
 import { HealsTab } from './cluster-details/HealsTab';
 import { MovesTab } from './cluster-details/MovesTab';
-import { RotateAppPasswordButton } from './cluster-details/RotateAppPasswordButton';
+import { RotateClusterSecretsButton } from './cluster-details/RotateClusterSecretsButton';
 import { ShardsTab } from './cluster-details/ShardsTab';
 import { StandNodesBlock } from './cluster-details/StandNodesBlock';
 
@@ -66,7 +66,7 @@ export function ClusterDetailsPage() {
               у TO_REMOVE обе кнопки скрыты (обратного перехода нет, arch/02 §9.4). */}
           {toRemove ? null : (
             <Group gap="sm">
-              {data.state === 'ACTIVE' ? <RotateAppPasswordButton name={data.name} /> : null}
+              {data.state === 'ACTIVE' ? <RotateClusterSecretsButton name={data.name} /> : null}
               <DeleteClusterButton name={data.name} />
             </Group>
           )}
