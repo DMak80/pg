@@ -103,8 +103,8 @@ public class CaRotatorTests
     [Fact]
     public async Task Tick_StagingStableAcrossTicks_NoCaRegeneration()
     {
-        // Arrange — docker-remove падает один раз: тик прервётся внутри R (после P/D);
-        // клэйм общий для обоих тиков (один держатель)
+        // Arrange — docker-remove падает один раз: первый тик прервётся внутри R
+        // (P/D пройдены, staging в etcd); клэйм общий для обоих тиков
         var etcd = SeedEtcd();
         var driver = new FakeKafkaDriver { RemoveFailsOnce = true };
         var admin = ReadyAdmin();
@@ -113,20 +113,29 @@ public class CaRotatorTests
         var sut = new CaRotator(etcd, [Ep], driver, claims, new WorkJournal(etcd, [Ep]),
             new FakeAdminFactory(admin), Options, new BrokerCertificateCache(), snapshot: null);
 
-        // Act 1 — сбойный тик (P/D пройдены, R упал)
+        // Act 1 — сбойный тик (P/D пройдены, R упал на первом RemoveNode)
         var first = await sut.RunAsync(Snapshot(etcd, oldPem,
             etcd.Store[$"/kafka/clusters/{Cluster}/ca_key"].Value), CancellationToken.None);
-        first.IsSuccess.Should().BeFalse();
-        var stagingKey = etcd.Store[$"/kafka/clusters/{Cluster}/ca_next_key"].Value;
+        first.IsSuccess.Should().BeFalse($"err={first.Error?.Message}");
+        etcd.Store.TryGetValue($"/kafka/clusters/{Cluster}/ca_next_key", out var stagingEntry);
+        stagingEntry.Should().NotBeNull($"staging создан в P (err={first.Error?.Message})");
+        var stagingKey = stagingEntry!.Value;
 
-        // Act 2 — повторный тик (снапшот перечитан: ca_pem уже bundle после фазы D)
-        var second = await sut.RunAsync(Snapshot(etcd,
+        // Act 2 — повторный тик на несошедшемся кластере (view: 1 брокер): R ждёт,
+        // коммита нет — staging обязан остаться ТЕМ ЖЕ (не перегенерирован)
+        var converging = new CaRotator(etcd, [Ep], driver, claims, new WorkJournal(etcd, [Ep]),
+            new FakeAdminFactory(ReadyAdmin(1)), Options, new BrokerCertificateCache(), snapshot: null);
+        var second = await converging.RunAsync(Snapshot(etcd,
             etcd.Store[$"/kafka/clusters/{Cluster}/ca_pem"].Value,
             etcd.Store[$"/kafka/clusters/{Cluster}/ca_key"].Value), CancellationToken.None);
 
-        // Assert — staging тот же (в etcd, не перегенерирован после сбоя)
-        second.IsSuccess.Should().BeTrue();
-        etcd.Store[$"/kafka/clusters/{Cluster}/ca_next_key"].Value.Should().Be(stagingKey);
+        // Assert — тик успешен (waiting-режим), staging стабилен, заявка жива
+        second.IsSuccess.Should().BeTrue($"err={second.Error?.Message}");
+        etcd.Store.TryGetValue($"/kafka/clusters/{Cluster}/ca_next_key", out var afterSecond);
+        afterSecond.Should().NotBeNull("ротация не завершена — staging жив");
+        afterSecond!.Value.Should().Be(stagingKey, "стейджинг в etcd переживает тики");
+        etcd.Store.Should().ContainKey($"/kafka/clusters/{Cluster}/ca_next_pem");
+        etcd.Store.Should().ContainKey($"/kafkaworker/ca_rotations/{Cluster}");
     }
 
     [Fact]
