@@ -86,7 +86,8 @@ public static class KafkaSnapshotParser
                 {
                     var value = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
                     // Битый PEM — не исключение: parseError + поле null (arch/15 §6).
-                    if (value is null || !ClusterPki.TryParseCertificate(value, out _))
+                    // Окно ротации CA (t07): ca_pem — bundle OLD+NEW — валидное значение.
+                    if (value is null || !ClusterPki.TryParseCertificateBundle(value))
                     {
                         acc.Errors.Add($"/kafka/clusters/{acc.Name}/ca_pem: битый PEM сертификата");
                         acc.CaPem = null;

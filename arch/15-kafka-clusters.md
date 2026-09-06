@@ -36,7 +36,7 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
 | `app_password` | 32 симв `[A-Za-z0-9]` | воркер (ensure + ротация) | per-cluster SASL-пароль приложений; в UI/API панели не отдаётся (как dsn-пароль pg) |
 | `admin_user` | `"admin"` | воркер (ensure, txn put-if-absent) | per-cluster SASL-пользователь **администратора** (воркер AdminClient/CLI, пробы панели; super.user, 16 §2.3) |
 | `admin_password` | 32 симв `[A-Za-z0-9]` | воркер (ensure + ротация) | per-cluster SASL-пароль администратора; панель читает для проб, в UI/API не отдаёт |
-| `ca_pem` | PEM-сертификат self-signed per-cluster CA; **в окне ротации (t07) — bundle: конкатенация PEM OLD+NEW** (фаза D CaRotator, 16 §2.3), после коммита — только NEW | воркер (provisioning K2, txn put-if-absent; ротация — CaRotator) | публичный CA-серт кластера (CN=`kfw-<C>-ca`, 10 лет): доверие клиентов TLS (SASL_SSL INTERNAL/CLIENT, 16 §2.1) — **точка дискавери приложений и панели** (§5); PEM-конкатенация стандартна для truststore (`ssl.ca.pem`/`ssl.ca.location`) — читатели используют значение как есть |
+| `ca_pem` | PEM-сертификат self-signed per-cluster CA; **в окне ротации (t07) — bundle: конкатенация PEM OLD+NEW** (фаза D CaRotator, 16 §2.3), после коммита — только NEW | воркер (provisioning K2, txn put-if-absent; ротация — CaRotator) | публичный CA-серт кластера (CN=`kfw-<C>-ca-<отпечаток>` — subject уникален на генерацию, 10 лет; см. 16 §2.3): доверие клиентов TLS (SASL_SSL INTERNAL/CLIENT, 16 §2.1) — **точка дискавери приложений и панели** (§5); PEM-конкатенация стандартна для truststore (`ssl.ca.pem`/`ssl.ca.location`) — читатели используют значение как есть |
 | `ca_key` | PEM PKCS#8 приватный ключ CA; при ротации перезаписывается ключом NEW CA (фаза C, 16 §2.3) — OLD-ключ уничтожается перезаписью | воркер (provisioning K2, txn put-if-absent; ротация — CaRotator) | секрет кластера: подпись брокерных сертификатов (provisioning/add-broker/rebuild/ротация, 16 §2.3); панель НЕ читает, в UI/API не отдаётся |
 | `ca_next_key` | PEM PKCS#8 приватный ключ НОВОЙ CA; staging — живут только в окне ротации (фазы P→C, 16 §2.3) | воркер (CaRotator, фаза P, txn put-if-absent; фаза C — del) | подпись брокерных сертов в rolling-фазе R до коммита; отсутствует вне ротации — ensure не создаёт |
 | `ca_next_pem` | PEM-сертификат НОВОЙ CA; staging, аналогично `ca_next_key` | воркер (CaRotator) | источник bundle для `ca_pem` (фаза D) и подписи в фазе R; в UI/API панели не отдаётся |
@@ -213,11 +213,13 @@ dsn/app_password/routing):
 
 1. `/kafka/clusters/<C>/endpoints` → `bootstrap.servers`;
 2. `/kafka/clusters/<C>/ca_pem` → доверие брокерам: TLS-транспорт
-   (`security.protocol=SASL_SSL`, `sasl.mechanisms=PLAIN`; CA-серт —
-   truststore / `ssl.ca.pem`). В окне ротации CA (t07, 16 §2.3) значение —
-   bundle OLD+NEW: читатель использует его как есть (конкатенация PEM
-   валидна для truststore); клиент, перечитавший bundle до пересоздания
-   брокеров, переживает замену сертов без реконфигурации;
+   (`security.protocol=SASL_SSL`, `sasl.mechanisms=PLAIN`; CA-серт(ы) —
+   truststore). Truststore подаётся ФАЙЛОМ (`ssl.ca.location`): inline
+   `ssl.ca.pem` librdkafka читает ОДИН серт — bundle окна ротации требует
+   файла. В окне ротации CA (t07, 16 §2.3) значение — bundle OLD+NEW:
+   читатель пишет его в файл как есть (конкатенация PEM валидна для
+   truststore); клиент, перечитавший bundle до пересоздания брокеров,
+   переживает замену сертов без реконфигурации;
 3. `/kafka/clusters/<C>/app_user` + `app_password` → SASL/PLAIN креды
    (роль app — ACL на READ/WRITE/DESCRIBE топиков + группы, 16 §2.3);
 4. `/kafka/clusters/<C>/topics/` (префикс) → реестр топиков: имена +

@@ -628,6 +628,13 @@ export interface KafkaAdminPasswordRotatedDto {
   requestedBy: string;
 }
 
+// POST /api/kafka/clusters/{cluster}/ca/rotate — ответ (мутация №17, t07).
+export interface KafkaCaRotatedDto {
+  cluster: string;
+  requestedUnix: number;
+  requestedBy: string;
+}
+
 // POST /api/kafka/clusters/{cluster}/rebalance — ответ (t02).
 export interface KafkaRebalanceRequestedDto {
   cluster: string;

@@ -110,6 +110,10 @@ builder.Services.AddSingleton(sp => new AddBrokerHandler(
 builder.Services.AddSingleton(sp => new DeleteBrokerHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
+builder.Services.AddSingleton(sp => new RotateCaHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>()));
 builder.Services.AddSingleton(sp => new RotateAppPasswordHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,

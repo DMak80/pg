@@ -128,6 +128,20 @@ public static class KafkaOperationsModule
             return Error(result);
         });
 
+        // POST /api/kafka/clusters/{cluster}/ca/rotate — заявка ротации CA/сертов
+        // (t07, 02 §10.2-17); исполнение — CaRotator воркера (окно двойного
+        // доверия P/D/R/C, 16 §5 K). Оператор сессии — X-Requested-By (spec §3.7).
+        endpoints.MapPost("/api/kafka/clusters/{cluster}/ca/rotate", async (
+            string cluster, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<RotateCaCommand, KafkaCaRotatedDto>(
+                new RotateCaCommand(cluster, user.Identity?.Name ?? "adminpanel"), ct);
+            if (result.IsSuccess)
+                return Results.Created($"/api/kafka/clusters/{cluster}", result.Value);
+
+            return Error(result);
+        });
+
         // PUT /api/kafka/clusters/{cluster}/topics/{topic} — конфиг-заявка (02 §10.2-7).
         endpoints.MapPut("/api/kafka/clusters/{cluster}/topics/{topic}", async (
             string cluster, string topic, TopicDesiredRequest request, ClaimsPrincipal user,

@@ -242,7 +242,10 @@ e2e волны C). Пользователь `inter` с детерминиров�
 **Per-cluster CA** (генерирует воркер, provisioning K2 / миграция M1; ensure
 txn put-if-absent — единый механизм с кредами):
 
-- `ca_key` — self-signed CA (RSA-2048, CN=`kfw-<C>-ca`, срок 10 лет),
+- `ca_key` — self-signed CA (RSA-2048, CN=`kfw-<C>-ca-<отпечаток>`, срок
+  10 лет; subject уникален на генерацию — в бандле OLD+NEW openssl-клиенты
+  берут первый якорь по subject без перебора кандидатов, одинаковые CN
+  поколений ломали верификацию сертов второй генерации),
   приватный ключ PEM PKCS#8; секрет etcd: подпись сертификатов нод
   (provisioning/add-broker/rebuild/NodeRegenerator/ротация). Панель не читает.
 - `ca_pem` — публичный сертификат того же CA; точка дискавери (приложения и

@@ -120,6 +120,29 @@ public class KafkaWorkerProxyTests
     }
 
     [Fact]
+    public async Task RotateCa_SendsOperatorIdentity()
+    {
+        // Arrange — заявка ротации CA уходит воркеру с оператором сессии (t07)
+        var api = new StubWorkerApi
+        {
+            Respond = _ => new WorkerApiResult(201,
+                """{"cluster":"events","requestedUnix":1756000000,"requestedBy":"opsuser"}"""),
+        };
+        var handler = new RotateCaCommandHandler(api);
+
+        // Act
+        var result = await handler.Handle(
+            new RotateCaCommand("events", "opsuser"), CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value.RequestedBy.Should().Be("opsuser");
+        api.Calls.Should().ContainSingle().Which.Should().Match<StubWorkerApi.Call>(c =>
+            c.Method == HttpMethod.Post && c.Path == "/api/kafka/clusters/events/ca/rotate"
+            && c.RequestedBy == "opsuser");
+    }
+
+    [Fact]
     public async Task UpsertTopicDesired_SendsOperatorIdentity()
     {
         // Arrange

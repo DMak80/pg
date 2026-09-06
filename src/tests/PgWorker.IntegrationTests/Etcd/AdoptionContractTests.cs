@@ -203,7 +203,8 @@ public class AdoptionContractTests(EtcdFixture fixture)
         alloc.Value.Value.Should().NotContain("\"host\":\"local\"");
         var dsn = await Gateway.GetAsync(Endpoint, $"/clusters/{cluster}/shards/shard1/dsn", ct);
         dsn.Value!.Value.Should().Be(
-            $"host=host.docker.internal,host.docker.internal port=15700,15701 dbname={cluster} user=bucket_admin password=adm-pw");
+            $"host=host.docker.internal,host.docker.internal port=15700,15701 dbname={cluster} " +
+            "user=bucket_admin password=bapw"); // t02: dsn несёт ensure-кред, не legacy config-пароль
         driver.EnsuredNodes.Should().BeEmpty("живые контейнеры на месте — recreate не нужен");
         var entry = await ReadJournalAsync(cluster);
         entry.Op.Should().Be("adopt");

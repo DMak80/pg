@@ -74,6 +74,28 @@ arch/                  ← вся документация (рецепты де�
   `group_add: [<gid docker>]` (шаблон — комментарий в `deploy/docker-compose.yml`);
   демоны под `--tlsverify`, `:2375` наружу не слушать (firewall).
 
+## Per-cluster секреты и их ротация (t02/t07, arch/14 §5 I / arch/16 §5 K)
+
+etcd — единственное хранилище per-cluster секретов; воркер генерирует их при
+provisioning (ensure put-if-absent) и ротирует по заявке без остановки записи.
+Панель дублирует обе ротации кнопками на странице кластера.
+
+- **PgWorker (t02)**: per-cluster креды `/clusters/<C>/{app_password, mover_password,
+  bucket_admin_user, bucket_admin_password}`. Ротация — `POST /api/clusters/{C}/secrets/rotate`
+  (панель: «Ротация секретов»): ClusterSecretRotator меняет пароли трёх ролей
+  (app, mover, bucket_admin) ALTER ROLE на мастерах шардов, затем атомарная
+  txn перезаписывает ключи и dsn-строки; подключение с новым паролем работает
+  сразу после коммита, старый отвергается (§9.8-протокол, journal rotate-app-password).
+- **KafkaWorker (t07)**: per-cluster CA `/kafka/clusters/<C>/{ca_key, ca_pem}`
+  (subject уникален на генерацию — openssl-клиенты в бандле доверяют обоим
+  поколениям). Ротация — `POST /api/kafka/clusters/{C}/ca/rotate` (панель:
+  «Ротация CA»): CaRotator ведёт окно двойного доверия P/D/R/C — staging
+  `ca_next_*`, bundle OLD+NEW в точке дискавери, rolling-пересоздание брокеров
+  с сертами от новой CA (тома живы), атомарный коммит. Приложения, читающие
+  ca_pem из etcd, работают непрерывно; клиенты с закешированным старым CA
+  после коммита отваливаются — перечитайте ca_pem. Truststore клиентов —
+  ФАЙЛОМ (`ssl.ca.location`): inline ssl.ca.pem у librdkafka читает один серт.
+
 ## Дальше
 
 Подробности, пошаговый деплой, команды быстрого старта и решение типовых проблем —

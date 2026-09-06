@@ -22,6 +22,7 @@ import type {
   KafkaTopicCreatedDto,
   CreateTopicRequestDto,
   KafkaAdminPasswordRotatedDto,
+  KafkaCaRotatedDto,
   KafkaPasswordRotatedDto,
   KafkaRebalanceRequestedDto,
   TopicDesiredDto,
@@ -277,6 +278,15 @@ export function rotateKafkaPassword(cluster: string): Promise<KafkaPasswordRotat
 export function rotateKafkaAdminPassword(cluster: string): Promise<KafkaAdminPasswordRotatedDto> {
   return apiFetch<KafkaAdminPasswordRotatedDto>(
     `/api/kafka/clusters/${encodeURIComponent(cluster)}/admin-password/rotate`,
+    { method: 'POST' });
+}
+
+// POST /api/kafka/clusters/{cluster}/ca/rotate — мутация №17 (t07, arch/02
+// §10.2-17): заявка ротации per-cluster CA/сертов; исполняет CaRotator воркера
+// (окно двойного доверия P/D/R/C, arch/16 §5 K).
+export function rotateKafkaCa(cluster: string): Promise<KafkaCaRotatedDto> {
+  return apiFetch<KafkaCaRotatedDto>(
+    `/api/kafka/clusters/${encodeURIComponent(cluster)}/ca/rotate`,
     { method: 'POST' });
 }
 

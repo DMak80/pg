@@ -9,19 +9,36 @@ namespace KafkaWorker.UnitTests.Templates;
 public class ClusterPkiTests
 {
     [Fact]
-    public void GenerateCa_SelfSignedCaWithCanonicalCnAndLongValidity()
+    public void GenerateCa_SelfSignedCaWithCanonicalCnPrefixAndLongValidity()
     {
         // Arrange: кластер "events".
         // Act: генерация CA.
         var (caPem, caKeyPem) = ClusterPki.GenerateCa("events");
 
-        // Assert: PEM-маркеры, канонический CN, срок ~10 лет, публичный серт без ключа.
+        // Assert: PEM-маркеры, канонический префикс CN + уникальный суффикс,
+        // срок ~10 лет, публичный серт без ключа.
         caPem.Should().StartWith("-----BEGIN CERTIFICATE-----").And.Contain("\n-----END CERTIFICATE-----");
         caKeyPem.Should().StartWith("-----BEGIN PRIVATE KEY-----"); // PKCS#8 (15 §2.1)
         using var cert = X509Certificate2.CreateFromPem(caPem);
-        cert.Subject.Should().Be("CN=kfw-events-ca");
+        cert.Subject.Should().StartWith("CN=kfw-events-ca-");
+        cert.Subject.Should().NotBe("CN=kfw-events-ca", "subject дополняется уникальным отпечатком");
         cert.HasPrivateKey.Should().BeFalse("публичный серт не несёт ключа");
         (cert.NotAfter - cert.NotBefore).TotalDays.Should().BeInRange(3600, 3700);
+    }
+
+    [Fact]
+    public void GenerateCa_SubjectUniqueAcrossGenerations()
+    {
+        // Arrange/Act: две генерации CA одного кластера (provisioning + ротация).
+        var (ca1, _) = ClusterPki.GenerateCa("events");
+        var (ca2, _) = ClusterPki.GenerateCa("events");
+
+        // Assert: subjects различны — в бандле двойного доверия (OLD+NEW)
+        // openssl берёт ПЕРВЫЙ якорь по subject без перебора; одинаковые CN
+        // ломали верификацию сертов второй генерации (t07, инцидент интеграции).
+        using var cert1 = X509Certificate2.CreateFromPem(ca1);
+        using var cert2 = X509Certificate2.CreateFromPem(ca2);
+        cert1.Subject.Should().NotBe(cert2.Subject);
     }
 
     [Fact]
@@ -107,5 +124,40 @@ public class BrokerCertificateCacheTests
         // Assert: серт подписан вторым CA (кеш не вернул протухший).
         using var ca2Cert = X509Certificate2.CreateFromPem(ca2);
         X509Certificate2.CreateFromPem(cert2.CertPem).Issuer.Should().Be(ca2Cert.Subject);
+    }
+}
+
+// Bundle (t07): конкатенация OLD+NEW — валидное значение ca_pem в окне ротации;
+// одиночный серт и битый PEM — прежняя семантика.
+public class ClusterPkiBundleTests
+{
+    [Fact]
+    public void TryParseCertificateBundle_TwoCerts_Valid()
+    {
+        // Arrange — два self-signed серта конкатенацией (окно ротации)
+        var (a, _) = ClusterPki.GenerateCa("b1");
+        var (b, _) = ClusterPki.GenerateCa("b2");
+        var bundle = a + "\n" + b;
+
+        // Act + Assert
+        ClusterPki.TryParseCertificateBundle(bundle).Should().BeTrue();
+    }
+
+    [Fact]
+    public void TryParseCertificateBundle_SingleCert_Valid()
+    {
+        // Arrange — обычный (вне ротации) одиночный серт
+        var (pem, _) = ClusterPki.GenerateCa("s1");
+
+        // Act + Assert
+        ClusterPki.TryParseCertificateBundle(pem).Should().BeTrue();
+    }
+
+    [Fact]
+    public void TryParseCertificateBundle_Garbage_Invalid()
+    {
+        // Arrange — не PEM
+        // Act + Assert
+        ClusterPki.TryParseCertificateBundle("not-a-pem").Should().BeFalse();
     }
 }

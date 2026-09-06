@@ -1,5 +1,6 @@
 using Confluent.Kafka;
 using Microsoft.Extensions.Logging;
+using System.IO;
 
 namespace AdminPanel.Probes.Kafka;
 
@@ -138,8 +139,20 @@ public sealed class KafkaClientCache(ILogger<KafkaClientCache>? logger = null) :
             ReconnectBackoffMaxMs = BackoffMaxMs,
         };
         if (caPem is not null)
-            config.Set("ssl.ca.pem", caPem); // доверие per-cluster CA (librdkafka >= 1.5)
+            config.Set("ssl.ca.location", CaPemFile(caPem)); // файл: bundle окна ротации (t07)
         return config;
+    }
+
+    // Truststore ФАЙЛОМ (t07): inline ssl.ca.pem у librdkafka — один серт,
+    // bundle OLD+NEW окна ротации CA требует файла. Кеш по SHA-256 содержимого.
+    private static string CaPemFile(string caPem)
+    {
+        var hash = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+            System.Text.Encoding.UTF8.GetBytes(caPem)));
+        var path = Path.Combine(Path.GetTempPath(), $"panel-ca-{hash[..16].ToLowerInvariant()}.pem");
+        if (!File.Exists(path))
+            File.WriteAllText(path, caPem);
+        return path;
     }
 
     private sealed class Entry
