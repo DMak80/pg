@@ -61,11 +61,16 @@ public sealed class NodeRegenerator(
         var rotation = await GetAsync($"/kafkaworker/rotations/{cluster}", ct);
         if (!rotation.IsSuccess)
             return Fail(cluster, rotation.Error!, "reading-rotation");
+        // J0a' (t07): живая CA-ротация (K) — rolling-ы не смешиваются.
+        var caRotation = await GetAsync($"/kafkaworker/ca_rotations/{cluster}", ct);
+        if (!caRotation.IsSuccess)
+            return Fail(cluster, caRotation.Error!, "reading-ca-rotation");
         var rotateJournal = await journal.ReadAsync(cluster, ct);
         if (!rotateJournal.IsSuccess)
             return Fail(cluster, rotateJournal.Error!, "reading-journal");
-        if (rotation.Value is not null
-            || rotateJournal.Value is { Op: "rotate" } r && r.Phase != "done")
+        if (rotation.Value is not null || caRotation.Value is not null
+            || rotateJournal.Value is { Op: "rotate" } r && r.Phase != "done"
+            || rotateJournal.Value is { Op: "rotate-ca" } rc && rc.Phase != "done")
             return await journal.WriteAsync(cluster, Op, "waiting-rotation", claims.InstanceId, null, ct);
 
         // J0b: живой reassignment — пересоздания не смешиваются с переездами реплик.

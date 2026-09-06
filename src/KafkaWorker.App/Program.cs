@@ -305,6 +305,16 @@ builder.Services.AddSingleton(sp => new PasswordRotator(
     ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value),
     sp.GetRequiredService<BrokerCertificateCache>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+builder.Services.AddSingleton(sp => new CaRotator(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<IKafkaAdminClientFactory>(),
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value),
+    sp.GetRequiredService<BrokerCertificateCache>(),
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 builder.Services.AddSingleton(sp => new NodeRegenerator(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,

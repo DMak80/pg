@@ -108,6 +108,18 @@ public sealed class PasswordRotator(
         if (ticket.Value is null && !afterCommit)
             return Result<bool>.Success(false); // заявки нет, фазы C не висит — no-op
 
+        // Guard: живая CA-ротация (K, t07) — rolling-ы не смешиваются (журнал
+        // кластера один; env-пересборки K и H на одном брокере конфликтуют).
+        var caTicket = await GetAsync($"/kafkaworker/ca_rotations/{cluster}", ct);
+        if (!caTicket.IsSuccess)
+            return Result<bool>.Failed(caTicket.Error!);
+        if (caTicket.Value is not null)
+        {
+            var waitingCa = await journal.WriteAsync(
+                cluster, Op, role.Phase("waiting-ca-rotation"), claims.InstanceId, null, ct);
+            return waitingCa.IsSuccess ? Result<bool>.Success(true) : Result<bool>.Failed(waitingCa.Error!);
+        }
+
         if (snap.Endpoints is null || snap.AppPassword is null || snap.AdminPassword is null)
         {
             // Кластер не поднят: ждём (заявка жива — ротация не теряется).
