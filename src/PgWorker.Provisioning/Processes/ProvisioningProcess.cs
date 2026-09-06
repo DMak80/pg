@@ -34,7 +34,7 @@ public sealed class ProvisioningProcess(
     WorkJournal journal,
     PlacementOptions placementOpts,
     InstallSecrets secrets,
-    IAppSecretEnsurer appSecret,
+    IClusterSecretEnsurer appSecret,
     IAppParamsEnsurer appParams,
     EtcdEndpoints etcdEndpoints,
     PortAllocIndex portAlloc,
@@ -109,7 +109,7 @@ public sealed class ProvisioningProcess(
 
         // P1.5 (spec §3.3): ensure per-cluster app-секрета — до любых контейнеров/ролей:
         // приложение получает креды в etcd раньше, чем поднимутся ноды.
-        var appCreds = await appSecret.EnsureAsync(cluster, ct);
+        var appCreds = await appSecret.EnsureAsync(cluster, snap.Config, ct);
         if (!appCreds.IsSuccess)
             return await FailAsync(cluster, appCreds.Error!, "ensure-app-secret", ct, series);
 
@@ -165,7 +165,7 @@ public sealed class ProvisioningProcess(
             if (master is null)
                 return; // waiting-master — InProgress
 
-            var sqlDone = await ProvisionShardSqlAsync(snap, shard, topology, master, appCreds.Value, token);
+            var sqlDone = await ProvisionShardSqlAsync(snap, shard, topology, master, appCreds.Value.App, token);
             if (!sqlDone.IsSuccess)
                 shardErrors.Enqueue(sqlDone.Error!);
         });

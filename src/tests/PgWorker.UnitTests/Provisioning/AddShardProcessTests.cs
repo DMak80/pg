@@ -112,7 +112,7 @@ public class AddShardProcessTests
         var process = new AddShardProcess(
             etcd, [Ep], driver, sql, Probe(patroniResponse), claims, journal,
             opts ?? new PlacementOptions(15000, 15100, PatroniBootSec: 600),
-            Secrets, new AppSecretEnsurer(etcd, [Ep]),
+            Secrets, new ClusterSecretEnsurer(etcd, [Ep]),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp,
             new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
             new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId), snapshot: null);
@@ -139,7 +139,7 @@ public class AddShardProcessTests
         var process = new AddShardProcess(
             etcd, [Ep], driver, new Fakes.FakeSql(), Probe(_ => DeadPatroni()),
             claims, journal, new PlacementOptions(15000, 15100, 600), Secrets,
-            new AppSecretEnsurer(etcd, [Ep]),
+            new ClusterSecretEnsurer(etcd, [Ep]),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp,
             new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
             new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId), snapshot: null);
@@ -324,7 +324,7 @@ public class AddShardProcessTests
             rig.Etcd, [Ep], rig.Driver, rig.Sql,
             Probe(port => port == 18002 ? Patroni("shard3a") : DeadPatroni()),
             rig.Claims, rig.Journal, new PlacementOptions(15000, 15100, 600), Secrets,
-            new AppSecretEnsurer(rig.Etcd, [Ep]),
+            new ClusterSecretEnsurer(rig.Etcd, [Ep]),
             new AppParamsEnsurer(rig.Etcd, [Ep], "sslmode=require"), EtcdEndp,
             new PortAllocIndex(rig.Etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
             new PortAllocLock([Ep], rig.Etcd, TimeProvider.System, rig.Claims.InstanceId), snapshot: null);
@@ -377,7 +377,7 @@ public class AddShardProcessTests
             busyPorts: LiveNodePorts());
         rig.Etcd.Seed("/service/shop-shard3/initialize", "7403705125687833998");
         rig.Etcd.Seed("/service/shop-shard3/leader", """{"name":"shard3a","poll_queued_commands":0}""");
-        await new AppSecretEnsurer(rig.Etcd, [Ep]).EnsureAsync("shop", CancellationToken.None);
+        await new ClusterSecretEnsurer(rig.Etcd, [Ep]).EnsureAsync("shop", (await Snapshot(rig.Etcd)).Config, CancellationToken.None);
         var newPassword = "Rotated00000000000000000000000Z";
         await rig.Etcd.PutAsync(Ep, "/clusters/shop/app_password", newPassword, null, CancellationToken.None);
 

@@ -23,7 +23,7 @@ public sealed class AdoptionProcess(
     IClusterDriver driver,
     ShardEndpoints shards,
     ISqlExecutor sql,
-    IAppSecretEnsurer appSecret,
+    IClusterSecretEnsurer appSecret,
     IAppParamsEnsurer appParams,
     InstallSecrets secrets,
     ClaimStore claims,
@@ -86,7 +86,7 @@ public sealed class AdoptionProcess(
         // оставались без app/bucket_mover (42704/28000 в move/repair), хотя
         // adopt «Done». Гварды идемпотентны — на здоровом кластере это
         // несколько дешёвых SELECT на тик.
-        var creds = await appSecret.EnsureAsync(cluster, ct);
+        var creds = await appSecret.EnsureAsync(cluster, snap.Config, ct);
         if (!creds.IsSuccess)
             return await FailAsync(cluster, creds.Error!, ct);
 
@@ -98,7 +98,7 @@ public sealed class AdoptionProcess(
             if (master.Value is not { } invariantMaster)
                 continue; // мастер ещё не определён (portalloc пуст/выборы) — обеспечит путь усыновления ниже
 
-            var ensured = await EnsureShardDatabaseAsync(invariantMaster, shard, snap, creds.Value, ct);
+            var ensured = await EnsureShardDatabaseAsync(invariantMaster, shard, snap, creds.Value.App, ct);
             if (!ensured.IsSuccess)
                 return await FailAsync(cluster, ensured.Error!, ct);
         }
@@ -168,7 +168,7 @@ public sealed class AdoptionProcess(
                 return await FailAsync(cluster, new ApplicationException(
                     $"{Op} {cluster}: мастер шарда '{shard.Name}' не определён — повтор следующим тиком"), ct);
 
-            var provisioned = await EnsureShardDatabaseAsync(master.Value, shard, snap, creds.Value, ct);
+            var provisioned = await EnsureShardDatabaseAsync(master.Value, shard, snap, creds.Value.App, ct);
             if (!provisioned.IsSuccess)
                 return await FailAsync(cluster, provisioned.Error!, ct);
         }

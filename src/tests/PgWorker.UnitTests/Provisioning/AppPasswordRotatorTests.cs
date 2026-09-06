@@ -80,7 +80,7 @@ public class AppPasswordRotatorTests
         var probe = new ShardProbe(new HttpClient(new DeadHandler()));
         var rotator = new AppPasswordRotator(
             store, [Ep], usedSql, probe, claims, journal, Secrets,
-            new AppSecretEnsurer(store, [Ep]), snapshot: null);
+            new ClusterSecretEnsurer(store, [Ep]), snapshot: null);
         return new Rig(store, usedSql, claims, journal, rotator);
     }
 
@@ -123,7 +123,9 @@ public class AppPasswordRotatorTests
         rig.Etcd.Store["/clusters/shop/app_password"].Value
             .Should().MatchRegex("^[A-Za-z0-9]{32}$").And.NotBe("OldPassword000000000000000000A");
         rig.Etcd.Store.Should().NotContainKey("/pgworker/rotations/shop");
-        var commit = rig.Etcd.Txns.Single(t => t.Success.Any(op => op is TxnOp.Put));
+        // Коммит-тxn ротации узнаём по del заявки (ensure-txn R1 тоже ставит puts — t02)
+        var commit = rig.Etcd.Txns.Single(t =>
+            t.Success.OfType<TxnOp.Delete>().Any(d => d.Key == "/pgworker/rotations/shop"));
         commit.Compare.Should().Contain(c =>
             c.Key == "/clusters/shop/app_password" && c.Arg == "OldPassword000000000000000000A");
         commit.Success.OfType<TxnOp.Delete>()
@@ -204,7 +206,7 @@ public class AppPasswordRotatorTests
         var rotator = new AppPasswordRotator(
             etcd, [Ep], new Fakes.FakeSql(), probe,
             new ClaimStore([Ep], etcd, TimeProvider.System), journal, Secrets,
-            new AppSecretEnsurer(etcd, [Ep]), snapshot: null);
+            new ClusterSecretEnsurer(etcd, [Ep]), snapshot: null);
 
         // Act
         var outcome = await rotator.TickAsync(await Snapshot(etcd), CancellationToken.None);

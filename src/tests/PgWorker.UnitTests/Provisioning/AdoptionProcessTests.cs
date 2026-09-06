@@ -72,7 +72,7 @@ public class AdoptionProcessTests
             etcd, [Ep], driver,
             new ShardEndpoints(etcd, [Ep], new ShardProbe(new HttpClient())),
             sql,
-            new AppSecretEnsurer(etcd, [Ep]),
+            new ClusterSecretEnsurer(etcd, [Ep]),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"),
             Secrets, claims, new WorkJournal(etcd, [Ep]),
             new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),

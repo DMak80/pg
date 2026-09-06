@@ -144,7 +144,7 @@ public class ProvisioningProcessTests
         var journal = new WorkJournal(etcd, [Ep]);
         var driver = new Fakes.FakeDriver();
         var sql = new Fakes.FakeSql();
-        var appSecret = new AppSecretEnsurer(etcd, [Ep]);
+        var appSecret = new ClusterSecretEnsurer(etcd, [Ep]);
         var portAlloc = new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance);
         var process = new ProvisioningProcess(
             etcd, [Ep], driver, sql, Probe(patroniResponse, trace, identityByEndpoint), claims, journal,
@@ -287,7 +287,7 @@ public class ProvisioningProcessTests
         var driver = new Fakes.FakeDriver();
         var process = new ProvisioningProcess(
             etcd, [Ep], driver, new Fakes.FakeSql(), Probe(_ => Patroni("shard1a")),
-            claims, journal, Opts, Secrets, new AppSecretEnsurer(etcd, [Ep]),
+            claims, journal, Opts, Secrets, new ClusterSecretEnsurer(etcd, [Ep]),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp,
             new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
             new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId), snapshot: null);

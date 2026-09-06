@@ -32,7 +32,7 @@ public sealed partial class AddShardProcess(
     WorkJournal journal,
     PlacementOptions placementOpts,
     InstallSecrets secrets,
-    IAppSecretEnsurer appSecret,
+    IClusterSecretEnsurer appSecret,
     IAppParamsEnsurer appParams,
     EtcdEndpoints etcdEndpoints,
     PortAllocIndex portAlloc,
@@ -114,7 +114,7 @@ public sealed partial class AddShardProcess(
 
         // Ensure app-секрета кластера (spec §3.3, образец P1.5): у живого кластера
         // ключи уже есть — читаем; отсутствующие (кластер до app-секрета) — создаём.
-        var appCreds = await appSecret.EnsureAsync(cluster, ct);
+        var appCreds = await appSecret.EnsureAsync(cluster, snap.Config, ct);
         if (!appCreds.IsSuccess)
             return await FailAsync(cluster, appCreds.Error!, "ensure-app-secret", ct);
         var ensured = await EnsureNodesAsync(cluster, shard, topology, resources, clusterSecrets, ct);
@@ -372,10 +372,10 @@ public sealed partial class AddShardProcess(
 
         // Свежий re-read app-кредов в SQL-фазе (spec §4.4): пока шард поднимался
         // (минуты ожидания Patroni), ротация §5 I могла сменить app_password.
-        var freshCreds = await appSecret.EnsureAsync(cluster, ct);
+        var freshCreds = await appSecret.EnsureAsync(cluster, snap.Config, ct);
         if (!freshCreds.IsSuccess)
             return freshCreds;
-        var app = freshCreds.Value;
+        var app = freshCreds.Value.App;
 
         var adminDsn = DatabaseProvisioner.BuildAdminDsn(master.Host, master.Ports.Pg, "postgres", secrets);
         var ensured = await db.EnsureDatabaseAsync(adminDsn, dbname, ct);

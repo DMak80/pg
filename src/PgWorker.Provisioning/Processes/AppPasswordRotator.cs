@@ -26,7 +26,7 @@ public sealed class AppPasswordRotator(
     ClaimStore claims,
     WorkJournal journal,
     InstallSecrets secrets,
-    IAppSecretEnsurer appSecret,
+    IClusterSecretEnsurer appSecret,
     Func<CancellationToken, Task<Result>>? snapshot = null)
 {
     private const string Op = "rotate-app-password";
@@ -63,7 +63,7 @@ public sealed class AppPasswordRotator(
             return Result<ProcessOutcome>.Failed(started.Error!);
 
         // R1: ensure app-секрета (P1.5) — OLD после этого существует.
-        var creds = await appSecret.EnsureAsync(cluster, ct);
+        var creds = await appSecret.EnsureAsync(cluster, snap.Config, ct);
         if (!creds.IsSuccess)
             return await FailAsync(cluster, creds.Error!, "ensure-app-secret", ct);
 
@@ -87,7 +87,7 @@ public sealed class AppPasswordRotator(
             var dsn = DatabaseProvisioner.BuildAdminDsn(master.Host, master.Ports.Pg, snap.Config.DbName, secrets);
             var altered = await db.ExecuteAsync(
                 dsn,
-                DatabaseProvisioner.BuildAlterAppPasswordSql(new AppCredentials(creds.Value.User, newSecret)),
+                DatabaseProvisioner.BuildAlterAppPasswordSql(new AppCredentials(creds.Value.App.User, newSecret)),
                 ct);
             if (!altered.IsSuccess)
                 return await FailAsync(cluster, altered.Error!, $"alter/{shard.Name}", ct);
@@ -98,7 +98,7 @@ public sealed class AppPasswordRotator(
         // внешняя запись etcdctl между R1 и R3 → ретрай тиком со свежим OLD.
         var commit = await TxnAsync(
             TxnRequest.Of(
-                [TxnCompare.ValueEqual(PasswordKey(cluster), creds.Value.Password)],
+                [TxnCompare.ValueEqual(PasswordKey(cluster), creds.Value.App.Password)],
                 [
                     new TxnOp.Put(PasswordKey(cluster), newSecret, null),
                     new TxnOp.Delete(TicketKey(cluster), Prefix: false),
