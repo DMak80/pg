@@ -256,6 +256,45 @@ public class ClusterSnapshotParserTests
     }
 
     [Fact]
+    public void ParseClusters_PerClusterSecretKeys_FilledIntoSnapshot()
+    {
+        // Arrange — per-cluster креды mover/bucket_admin (t02 §3.1, arch/14 §3.3)
+        var kvs = new List<Kv>
+        {
+            new("/clusters/shop/mover_password", "Mv1password32charsaaaaaaaaaaaaa", 1),
+            new("/clusters/shop/bucket_admin_user", "ba_user", 2),
+            new("/clusters/shop/bucket_admin_password", "Ba1password32charsaaaaaaaaaaaa", 3),
+        };
+
+        // Act
+        var result = ClusterSnapshotParser.ParseClusters(kvs, out var errors);
+
+        // Assert — значения попали в снапшот (потребители mover-DSN/гвардов)
+        result.IsSuccess.Should().BeTrue();
+        errors.Should().BeEmpty();
+        var snap = result.Value.Should().ContainSingle().Subject;
+        snap.MoverPassword.Should().Be("Mv1password32charsaaaaaaaaaaaaa");
+        snap.BucketAdminUser.Should().Be("ba_user");
+        snap.BucketAdminPassword.Should().Be("Ba1password32charsaaaaaaaaaaaa");
+    }
+
+    [Fact]
+    public void ParseClusters_NoPerClusterSecretKeys_FieldsAreNull()
+    {
+        // Arrange — кластер без новых ключей (до первого ensure t02)
+        var kvs = EtcdFixtures.LoadKv("clusters-provisioning.json");
+
+        // Act
+        var result = ClusterSnapshotParser.ParseClusters(kvs, out _);
+
+        // Assert — толерантно null (env-fallback на потребителях)
+        var snap = result.Value.Single();
+        snap.MoverPassword.Should().BeNull();
+        snap.BucketAdminUser.Should().BeNull();
+        snap.BucketAdminPassword.Should().BeNull();
+    }
+
+    [Fact]
     public void ParseService_ScopesWithLeaderAndInitialize()
     {
         // Arrange

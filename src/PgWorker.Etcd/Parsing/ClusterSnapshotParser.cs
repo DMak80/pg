@@ -30,6 +30,10 @@ public static class ClusterSnapshotParser
         public string? ConfigRaw;
         public string? AppUser;
         public string? AppPassword;
+        // Per-cluster креды mover/bucket_admin (t02, arch/14 §3.3)
+        public string? MoverPassword;
+        public string? BucketAdminUser;
+        public string? BucketAdminPassword;
         public readonly Dictionary<string, ShardAcc> Shards = [];
         public readonly Dictionary<int, string> Routing = [];
         public readonly Dictionary<int, string> StatusRaw = [];
@@ -144,6 +148,18 @@ public static class ClusterSnapshotParser
                     acc.AppPassword = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
                     break;
 
+                case "mover_password" when segments.Length == 4:
+                    acc.MoverPassword = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
+                    break;
+
+                case "bucket_admin_user" when segments.Length == 4:
+                    acc.BucketAdminUser = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
+                    break;
+
+                case "bucket_admin_password" when segments.Length == 4:
+                    acc.BucketAdminPassword = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
+                    break;
+
                 default:
                     // система развивается — неизвестный ключ не ошибка, просто игнор
                     break;
@@ -206,7 +222,8 @@ public static class ClusterSnapshotParser
         AppCredentials? app = acc.AppUser is { Length: > 0 } u && acc.AppPassword is { Length: > 0 } p
             ? new AppCredentials(u, p)
             : null;
-        return new ClusterSnapshot(config, shards, routing, app);
+        return new ClusterSnapshot(config, shards, routing, app,
+            acc.MoverPassword, acc.BucketAdminUser, acc.BucketAdminPassword);
     }
 
     private static ClusterConfig ParseConfig(string cluster, string? raw, List<string> errors)
