@@ -6,7 +6,7 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Api;
 
-// POST /api/clusters/{c}/app-password/rotate + POST /api/ha/{scope}/nodes/{node}/recreate
+// POST /api/clusters/{c}/secrets/rotate (t02) + POST /api/ha/{scope}/nodes/{node}/recreate
 // (task etcd-via-worker-api): порт панельных RotateAppPasswordApiTests/RecreateNodeApiTests.
 [Collection(PgApiCollection.Name)]
 public class RecreateRotateApiTests(PgApiFixture fixture)
@@ -26,7 +26,7 @@ public class RecreateRotateApiTests(PgApiFixture fixture)
         client.DefaultRequestHeaders.Add("X-Requested-By", "opsuser");
 
         // Act
-        var resp = await client.PostAsync("/api/clusters/rot/app-password/rotate", null, ct);
+        var resp = await client.PostAsync("/api/clusters/rot/secrets/rotate", null, ct);
 
         // Assert
         resp.StatusCode.Should().Be(HttpStatusCode.Created);
@@ -47,7 +47,7 @@ public class RecreateRotateApiTests(PgApiFixture fixture)
         var ct = TestContext.Current.CancellationToken;
 
         // Act
-        var resp = await Client.PostAsync("/api/clusters/rotnh/app-password/rotate", null, ct);
+        var resp = await Client.PostAsync("/api/clusters/rotnh/secrets/rotate", null, ct);
 
         // Assert
         resp.StatusCode.Should().Be(HttpStatusCode.Created);
@@ -66,7 +66,7 @@ public class RecreateRotateApiTests(PgApiFixture fixture)
             """{"requested_unix":100,"requested_by":"seed"}""", null, ct);
 
         // Act
-        var resp = await Client.PostAsync("/api/clusters/rot2/app-password/rotate", null, ct);
+        var resp = await Client.PostAsync("/api/clusters/rot2/secrets/rotate", null, ct);
 
         // Assert
         resp.StatusCode.Should().Be(HttpStatusCode.Conflict);
