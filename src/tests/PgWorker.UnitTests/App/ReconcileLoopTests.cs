@@ -5,6 +5,7 @@ using PgWorker.App.Loops;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Etcd.Coordination;
+using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Processes;
 using PgWorker.UnitTests.Provisioning;
 
@@ -203,10 +204,13 @@ public class ReconcileLoopTests
         // Act
         var tick = await loop.TickAsync(TestContext.Current.CancellationToken);
 
-        // Assert — ротация вызвана между scale и moves (порядок §4.3)
+        // Assert — ротация вызвана между scale и moves (порядок §4.3); WAL-архивация
+        // (t03) — после ротации, до repair/moves
         tick.IsSuccess.Should().BeTrue();
         processes.Rotated.Should().Equal("shop");
-        processes.Calls.Should().ContainInOrder("supervise/shop", "rotate-app-password/shop", "moves/shop");
+        processes.WalStreamed.Should().Equal("shop");
+        processes.Calls.Should().ContainInOrder(
+            "supervise/shop", "rotate-app-password/shop", "backup-wal/shop", "moves/shop");
     }
 
     [Fact]
@@ -389,6 +393,8 @@ public class ReconcileLoopTests
 
         public List<string> Rotated { get; } = [];
 
+        public List<string> WalStreamed { get; } = [];
+
         // Порядок вызовов процессов кластера ("supervise/shop", "moves/shop", …).
         public List<string> Calls { get; } = [];
 
@@ -454,6 +460,13 @@ public class ReconcileLoopTests
         public Task<Result<ProcessOutcome>> RotateAppPasswordAsync(ClusterSnapshot snap, CancellationToken ct)
         {
             using var _ = Track(snap.Config.Cluster, Rotated, callName: "rotate-app-password");
+            return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
+        }
+
+        public Task<Result<ProcessOutcome>> WalStreamAsync(
+            ClusterSnapshot snap, ClusterBackups? backups, CancellationToken ct)
+        {
+            using var _ = Track(snap.Config.Cluster, WalStreamed, callName: "backup-wal");
             return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
         }
 

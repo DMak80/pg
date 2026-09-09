@@ -171,6 +171,23 @@ public sealed class WorkerMetricsInstrumentationTests
     }
 
     [Fact]
+    public void BackupWalLag_Серии_по_шардам_null_удаляет()
+    {
+        // Arrange — два шарда под наблюдением контрольного прохода WalStreamProcess
+        using var meter = new Meter("TestWorker");
+        using var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
+
+        // Act — два наблюдения, затем снятие серии одного шарда
+        sut.BackupWalLag("c1", "s1", 5);
+        sut.BackupWalLag("c1", "s2", 0);
+        sut.BackupWalLag("c1", "s1", null);
+
+        // Assert — серия s1 исчезла, s2 осталась
+        sut.DebugSnapshot().WalLag.Keys.Should().ContainSingle(k => k.Cluster == "c1" && k.Shard == "s2");
+        sut.DebugSnapshot().WalLag[("c1", "s2")].Should().Be(0);
+    }
+
+    [Fact]
     public void ClaimsHeld_LastValueWins()
     {
         // Arrange

@@ -6,6 +6,8 @@ using PgWorker.App.Api;
 using PgWorker.App.Api.Operations;
 using PgWorker.App.HealthChecks;
 using PgWorker.App.Loops;
+using PgWorker.Backups;
+using PgWorker.Backups.Sql;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
@@ -389,6 +391,36 @@ builder.Services.AddSingleton(sp => new ClusterSecretRotator(
     sp.GetRequiredService<IClusterSecretEnsurer>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 
+// WAL-архивация (t03, arch/19 §3): слот/агент/контроль цепочки; runtime()==null
+// (Backups:Enabled=false) — процесс выполняет стоп-семантику и не активен.
+builder.Services.AddSingleton(sp =>
+{
+    var opts = sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue;
+    return new WalStreamProcess(
+        sp.GetRequiredService<IEtcdGateway>(),
+        opts.Etcd.Endpoints,
+        sp.GetRequiredService<IClusterDriver>(),
+        sp.GetRequiredService<ShardEndpoints>(),
+        sp.GetRequiredService<IWalSqlExecutor>(),
+        sp.GetRequiredService<IBackupS3>(),
+        new WalStatusWriter(sp.GetRequiredService<IEtcdGateway>(), opts.Etcd.Endpoints),
+        sp.GetRequiredService<ClaimStore>(),
+        sp.GetRequiredService<WorkJournal>(),
+        () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.Enabled
+            ? sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.ToRuntime()
+            : null,
+        sp.GetRequiredService<InstallSecrets>(),
+        sp.GetRequiredService<TimeProvider>(),
+        sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupWalLag,
+        sp.GetRequiredService<ILoggerFactory>().CreateLogger("WalStreamProcess"));
+});
+builder.Services.AddSingleton<IWalSqlExecutor, NpgsqlWalSqlExecutor>();
+builder.Services.AddSingleton<IBackupS3>(sp =>
+{
+    var backups = sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups;
+    return backups.Enabled ? new BackupS3(backups.ToRuntime()) : NullBackupS3.Instance;
+});
+
 // Циклы (§6.2): keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
 // Регистрируются синглтонами — health-обёртки читают их состояние напрямую.
 builder.Services.AddSingleton<IClusterProcesses, ClusterProcesses>();
@@ -443,6 +475,22 @@ static InstallSecrets SecretsFromEnv()
 // Делегат снапшота для процессов (P12 «до/после» в точках изменений).
 static Func<CancellationToken, Task<Result>> SnapshotDelegate(SnapshotJob job)
     => async ct => await job.TakeAsync(ct);
+
+// Заглушка S3 при Backups:Enabled=false: подсистема выключена, list не зовётся
+// (WalStreamProcess при runtime()==null идёт в стоп-семантику, не доходя до S3).
+file sealed class NullBackupS3 : IBackupS3
+{
+    public static readonly NullBackupS3 Instance = new();
+
+    public Task<PgWorker.Core.Result<bool>> BucketExistsAsync(CancellationToken ct)
+        => Task.FromResult(PgWorker.Core.Result<bool>.Failed(
+            new ApplicationException("Backups:Enabled=false")));
+
+    public Task<PgWorker.Core.Result<IReadOnlyList<PgWorker.Backups.WalObject>>> ListWalAsync(
+        string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
+        => Task.FromResult(PgWorker.Core.Result<IReadOnlyList<PgWorker.Backups.WalObject>>.Failed(
+            new ApplicationException("Backups:Enabled=false")));
+}
 
 // WAF-тесты (PgWorker.IntegrationTests/Api): точка входа как public partial.
 public partial class Program;

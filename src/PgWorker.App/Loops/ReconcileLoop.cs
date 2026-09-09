@@ -113,6 +113,15 @@ internal sealed class ReconcileLoop(
         if (!serviceKvs.IsSuccess)
             return Result.Failed(serviceKvs.Error!);
 
+        // t03 (arch/19 §4): статусы бэкапов — префикс читаем всегда (стоп-семантика
+        // Enabled=false обязана видеть живые ключи); пустой префикс — дёшево.
+        var backupsKvs = await RangeWithFailoverAsync(endpoints, "/pgworker/backups/", ct);
+        if (!backupsKvs.IsSuccess)
+            return Result.Failed(backupsKvs.Error!);
+        var backupsParsed = BackupsParser.Parse(backupsKvs.Value, out var backupsErrors);
+        foreach (var error in backupsErrors)
+            logger.LogWarning("пропущен битый ключ бэкапов: {Error}", error);
+
         health.MarkEtcdOk();
 
         var parsed = ClusterSnapshotParser.ParseClusters(clustersKvs.Value, out var parseErrors);
@@ -124,8 +133,9 @@ internal sealed class ReconcileLoop(
         var gate = new SemaphoreSlim(Math.Max(1, options.CurrentValue.Parallelism.MaxClusters));
         try
         {
+            var backupsList = backupsParsed.Value;
             var tasks = parsed.Value
-                .Select(snap => ProcessClusterAsync(snap, gate, ct))
+                .Select(snap => ProcessClusterAsync(snap, gate, backupsList, ct))
                 .ToArray();
             await Task.WhenAll(tasks);
         }
@@ -143,7 +153,8 @@ internal sealed class ReconcileLoop(
     // Обработка одного кластера под семафором: клэйм → процесс → эвакуация.
     // Исключение ЛЮБОГО кластера не роняет тик и сервис (rework №3): catch-all
     // → лог + journal.last_error, следующий тик продолжит этот кластер.
-    private async Task ProcessClusterAsync(ClusterSnapshot snap, SemaphoreSlim gate, CancellationToken ct)
+    private async Task ProcessClusterAsync(
+        ClusterSnapshot snap, SemaphoreSlim gate, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
     {
         await gate.WaitAsync(ct);
         try
@@ -194,6 +205,12 @@ internal sealed class ReconcileLoop(
                     // операция — до эвакуаций/переездов, не ждёт длинных moves.
                     await RunClusterOpAsync(cluster, "rotate-app-password",
                         () => processes.RotateAppPasswordAsync(snap, ct), ct);
+
+                    // WAL-архивация (t03, arch/19 §3): после ротации (креды агента —
+                    // свежий пароль в пересоздании) и до repair/moves (короткая).
+                    var clusterBackups = backups.FirstOrDefault(b => b.Cluster == cluster);
+                    await RunClusterOpAsync(cluster, "backup-wal",
+                        () => processes.WalStreamAsync(snap, clusterBackups, ct), ct);
 
                     // Репарация брошенных переездов (spec §3.5, arch/14 §5 K): синтетические
                     // заявки до moves — этот же тик начнёт их обработку (старейшая заявка).
