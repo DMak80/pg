@@ -1,0 +1,13 @@
+[
+  {"key":"/pgworker/backups/demo/policy","value":"{\"retention\":{\"days\":14,\"weeks\":8,\"months\":12},\"full_max_age_sec\":43200,\"verify\":{\"on_create\":false}}","modRevision":10},
+  {"key":"/pgworker/backups/demo/s1/full/20260908030000Z","value":"{\"state\":\"COMPLETED\",\"node\":\"pgw-demo-s1-2\",\"role\":\"replica\",\"started_unix\":1757290800,\"finished_unix\":1757294400,\"wal_start_segment\":\"000000010000000000000042\",\"size_bytes\":104857600,\"verify\":{\"state\":\"OK\",\"checked_unix\":1757294500}}","modRevision":50},
+  {"key":"/pgworker/backups/demo/s1/full/20260909030000Z","value":"{\"state\":\"FAILED\",\"node\":\"pgw-demo-s1-2\",\"role\":\"replica\",\"started_unix\":1757377200,\"wal_start_segment\":\"0000000100000000000000AA\",\"error\":\"staging: no space left on device\"}","modRevision":70},
+  {"key":"/pgworker/backups/demo/s1/wal","value":"{\"state\":\"ACTIVE\",\"slot\":\"pgw_bkp_demo_s1\",\"master_node\":\"pgw-demo-s1-1\",\"chain_start_segment\":\"000000010000000000000042\",\"last_received_segment\":\"0000000100000000000000C3\",\"last_uploaded_segment\":\"0000000100000000000000C2\",\"last_uploaded_unix\":1757377213,\"lag_segments\":1}","modRevision":80},
+  {"key":"/pgworker/backups/demo/s2/full/20260908030000Z","value":"{\"state\":\"UPLOADING\",\"node\":\"pgw-demo-s2-2\",\"role\":\"replica\",\"started_unix\":1757290800,\"wal_start_segment\":\"0000000100000000000000010\"}","modRevision":60},
+  {"key":"/pgworker/backups/shop/policy","value":"{\"retention\":","modRevision":90},
+  {"key":"/pgworker/backups/shop/s1/full/20260907030000Z-2","value":"{\"state\":\"DELETING\",\"node\":\"pgw-shop-s1-1\",\"role\":\"master\",\"started_unix\":1757118000,\"wal_start_segment\":\"000000010000000000000001\"}","modRevision":100},
+  {"key":"/pgworker/backups/shop/s1/wal","value":"{\"state\":\"DEGRADED\",\"slot\":\"pgw_bkp_shop_s1\",\"master_node\":\"pgw-shop-s1-1\",\"chain_start_segment\":\"000000010000000000000001\",\"last_received_segment\":\"000000010000000000000005\",\"last_uploaded_segment\":\"000000010000000000000003\",\"last_uploaded_unix\":1757119000,\"lag_segments\":2,\"error\":\"upload: connection reset\"}","modRevision":110},
+  {"key":"/pgworker/backups/shop/s1/unknown-leaf","value":"x","modRevision":120},
+  {"key":"/pgworker/backups/shop/s1/full/broken-json","value":"{\"state\":","modRevision":130},
+  {"key":"/clusters/demo/config","value":"{}","modRevision":1}
+]
