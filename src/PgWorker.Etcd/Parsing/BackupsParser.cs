@@ -110,6 +110,14 @@ public static class BackupsParser
         {
             using var doc = JsonDocument.Parse(raw);
             var root = doc.RootElement;
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                // валидный JSON-не-объект (число/строка/массив) — не исключение,
+                // а толерантный пропуск записи (TryGetProperty вне объекта бросает)
+                errors.Add($"/pgworker/backups/{cluster}/policy: значение не JSON-объект");
+                return null;
+            }
+
             var days = 7;
             var weeks = 4;
             var months = 6;

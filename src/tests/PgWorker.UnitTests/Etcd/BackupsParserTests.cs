@@ -138,4 +138,27 @@ public class BackupsParserTests
         errors.Should().Contain(e => e.Contains("state"));
         result.Value.Should().ContainSingle().Which.Shards["x1"].Full.Should().BeEmpty();
     }
+
+    [Fact]
+    public void Parse_PolicyValidJsonNotObject_SkippedWithErrorNoThrow()
+    {
+        // Arrange — валидный JSON, но не объект (число, строка): без guard
+        // TryGetProperty бросил бы InvalidOperationException вне JsonException.
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/n1/policy", "123", 1),
+            new("/pgworker/backups/s1/policy", "\"x\"", 2),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs, out var errors);
+
+        // Assert — обе записи в parseErrors и пропущены (Policy = null),
+        // никакого исключения наружу (толерантность парсера).
+        result.IsSuccess.Should().BeTrue();
+        errors.Should().Contain(e => e.Contains("/pgworker/backups/n1/policy"));
+        errors.Should().Contain(e => e.Contains("/pgworker/backups/s1/policy"));
+        result.Value.Should().Contain(c => c.Cluster == "n1").Which.Policy.Should().BeNull();
+        result.Value.Should().Contain(c => c.Cluster == "s1").Which.Policy.Should().BeNull();
+    }
 }
