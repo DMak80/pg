@@ -25,8 +25,19 @@ public sealed class E2eFixture : IAsyncLifetime
     public const string MoverPassword = "pgw-e2e-mover";
 
     private IContainer? _etcd;
+    private IContainer? _minio;
 
     public EtcdGateway Gateway { get; private set; } = null!;
+
+    // t03: S3 бэкапов — endpoints для хоста-клиента (воркер/тест) и для
+    // контейнеров агентов (advertised-паттерн Etcd:AdvertisedEndpoints).
+    public string MinioHostEndpoint { get; private set; } = "";
+
+    public string MinioAgentEndpoint { get; private set; } = "";
+
+    // t03: образ агента из docker/pgworker-backup.Dockerfile (файл t02);
+    // до мержа t02 null → сценарий скипается с внятным сообщением.
+    public string? BackupAgentImage { get; private set; }
 
     public string EtcdEndpoint { get; private set; } = "";
 
@@ -138,6 +149,28 @@ public sealed class E2eFixture : IAsyncLifetime
         EtcdEndpoint = $"http://localhost:{_etcd.GetMappedPublicPort(2379)}";
         Gateway = new EtcdGateway(new HttpClient());
 
+        // t03: MinIO (S3 бэкапов) — динамический хост-порт; bucket создаёт сценарий
+        // прямым AWSSDK-клиентом (создание bucket — не операция подсистемы, spec §3.1).
+        var minioPort = FreePort();
+        _minio = new ContainerBuilder("minio/minio:RELEASE.2025-09-07T16-13-09Z")
+            .WithCommand("server", "/data", "--console-address", ":9001")
+            .WithEnvironment("MINIO_ROOT_USER", "minioadmin")
+            .WithEnvironment("MINIO_ROOT_PASSWORD", "minioadmin")
+            .WithPortBinding(minioPort, 9000)
+            .Build();
+        await _minio.StartAsync(ct);
+        MinioHostEndpoint = $"http://localhost:{_minio.GetMappedPublicPort(9000)}";
+        MinioAgentEndpoint = MinioHostEndpoint.Replace(
+            "localhost:", "host.docker.internal:", StringComparison.Ordinal);
+
+        // t03: образ агента из docker/pgworker-backup.Dockerfile (файл t02): до мержа
+        // t02 файла нет — сценарий скипается с внятным сообщением (мерж-порядок t03←t02).
+        var agentDockerfile = Path.Combine(Root, "docker", "pgworker-backup.Dockerfile");
+        BackupAgentImage = File.Exists(agentDockerfile) ? "pgworker-backup:e2e" : null;
+        if (BackupAgentImage is not null)
+            await RunProcessAsync("docker",
+                ["build", "-q", "-f", agentDockerfile, "-t", BackupAgentImage, Root]);
+
         using var probeClient = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
         for (var i = 0; i < 30; i++)
         {
@@ -166,11 +199,13 @@ public sealed class E2eFixture : IAsyncLifetime
         _healthHttp?.Dispose();
         if (_etcd is not null)
             await _etcd.DisposeAsync();
+        if (_minio is not null)
+            await _minio.DisposeAsync();
     }
 
     /// <summary>Запуск инстанса PgWorker.App с e2e-конфигурацией (быстрые тики).</summary>
     public async Task<HostInstance> StartHostAsync(
-        string name, int snapshotIntervalMin = 360, CancellationToken ct = default)
+        string name, int snapshotIntervalMin = 360, CancellationToken ct = default, bool backups = false)
     {
         var port = FreePort();
         var snapshotsDir = Path.Combine(Path.GetTempPath(), $"pgw-e2e-{name}-{port}");
@@ -234,6 +269,22 @@ public sealed class E2eFixture : IAsyncLifetime
             ["ASPNETCORE_URLS"] = $"https://127.0.0.1:{port}",
             ["DOTNET_ENVIRONMENT"] = "Production",
         };
+
+        if (backups)
+        {
+            // Подсистема бэкапов (t03): S3 для воркера — localhost, для агентов —
+            // advertised (паттерн Etcd:AdvertisedEndpoints); короткие пороги контроля.
+            env["PgWorker__Backups__Enabled"] = "true";
+            env["PgWorker__Backups__AgentImage"] = BackupAgentImage ?? "pgworker-backup:e2e";
+            env["PgWorker__Backups__S3__Endpoint"] = MinioHostEndpoint;
+            env["PgWorker__Backups__S3__AdvertisedEndpoint"] = MinioAgentEndpoint;
+            env["PgWorker__Backups__S3__Bucket"] = "pgworker-backups-e2e";
+            env["PgWorker__Backups__S3__AccessKey"] = "minioadmin";
+            env["PgWorker__Backups__S3__SecretKey"] = "minioadmin";
+            env["PgWorker__Backups__Wal__VerifyIntervalSec"] = "2";
+            env["PgWorker__Backups__Wal__StaleSec"] = "600";
+            env["PgWorker__Backups__Wal__LagMaxSegments"] = "100000";
+        }
 
         var process = new Process
         {
