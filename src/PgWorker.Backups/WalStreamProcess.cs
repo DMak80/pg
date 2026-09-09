@@ -303,20 +303,131 @@ public sealed class WalStreamProcess(
         return null;
     }
 
-    // (6–7) Контроль по расписанию — ТЕЛО В TASK 10 (здесь временная заглушка,
-    // тесты этой задачи контроль не требуют): возврат — ControlOutcome
-    // (заглушка консервативна: состояния нет, цепочка не рвётся — агент работает).
-    // s3/clock/lagObserver — параметры тела контроля (Task 10), здесь не задействованы.
-    private Task<ControlOutcome> ControlDueAsync(
+    // (6–7) Контроль по расписанию VerifyIntervalSec (spec §3.2 п.6–8): list S3 →
+    // chain_start (min COMPLETED-полного ?? закреплённый ?? min-объект) → CheckChain →
+    // дыра: chain-broken DEGRADED + ОСТАНОВ агента (в т.ч. без прошлого ключа —
+    // AC4-тотальность); факты прогресса — ТОЛЬКО из наблюдений: last_uploaded из
+    // S3-объектов либо прошлого ключа, никогда от now() («факт над записью»,
+    // ревью Ф4-2 №2); lag-зонд; transient-деградации (lag/тишина) агент не
+    // останавливают и супервиз не блокируют (ChainBroken=false).
+    private async Task<ControlOutcome> ControlDueAsync(
         string cluster, string shard, WalStreamState? wal, ShardBackups? shardBackups,
         BackupsRuntimeOptions options, string masterRef, string slot, string adminDsn,
         CancellationToken ct)
     {
-        _ = s3;
-        _ = clock;
-        _ = lagObserver;
-        return Task.FromResult(new ControlOutcome(wal, ChainBroken: false));
+        var key = $"{cluster}/{shard}";
+        var now = clock.GetUtcNow().ToUnixTimeSeconds();
+        if (wal is not null && _lastVerifyUnix.TryGetValue(key, out var last)
+            && now - last < options.WalVerifyIntervalSec)
+            return new ControlOutcome(wal, ChainBrokenOf(key));
+        // (листим S3 и до создания ключа каждый тик — скорость первого наблюдения,
+        // пустой префикс дёшев; подтверждено ревью Ф4-2 как допустимое)
+
+        _lastVerifyUnix[key] = now;
+
+        // Истина прогресса — объекты S3 (arch/19 §3): list префикса wal/.
+        var listed = await s3.ListWalAsync(cluster, shard, ct: ct);
+        if (!listed.IsSuccess)
+            throw new ApplicationException($"list S3 {cluster}/{shard}/wal: {listed.Error!.Message}");
+        var objects = listed.Value;
+
+        // chain_start (п.8): min wal_start_segment COMPLETED-полных ?? закреплённое
+        // из текущего ключа ?? min-объект (первый сегмент потока агента).
+        WalFileName? fromFull = shardBackups?.Full
+            .Where(f => f.State == FullBackupStatus.Completed && !string.IsNullOrEmpty(f.WalStartSegment))
+            .Select(f => WalFileName.TryParse(f.WalStartSegment))
+            .Where(s => s is not null)
+            .Select(s => s!.Value)
+            .OrderBy(s => s.Name, StringComparer.Ordinal)
+            .Cast<WalFileName?>()
+            .FirstOrDefault();
+        WalFileName? minObject = objects
+            .Select(o => WalFileName.TryParse(o.Name))
+            .Where(s => s is not null)
+            .Select(s => s!.Value)
+            .OrderBy(s => s.Name, StringComparer.Ordinal)
+            .Cast<WalFileName?>()
+            .FirstOrDefault();
+        var chainStart = fromFull
+                         ?? (wal is not null ? WalFileName.TryParse(wal.ChainStartSegment) : null)
+                         ?? minObject;
+
+        // Нет полных, нет объектов, нет прошлого ключа — писать нечего (п.8):
+        // ключ не пишется до первого наблюдения; агент работает (объекты появятся).
+        if (chainStart is not { } start)
+            return new ControlOutcome(wal, ChainBrokenOf(key));
+
+        var chain = WalChain.Check(start, objects.Select(o => o.Name));
+        if (!chain.IsContinuous)
+        {
+            // Дыра: DEGRADED даже без прошлого ключа (AC4-тотальность) — DegradeAsync
+            // строит запись с наблюдаемыми фактами и маркирует _chainBroken.
+            var lastForBase = chain.LastSegment?.Name ?? start.Name;
+            var lastModifiedForBase = objects
+                .Where(o => o.Name == lastForBase)
+                .Select(o => o.LastModified)
+                .Select(m => (DateTimeOffset?)m)
+                .FirstOrDefault() ?? DateTimeOffset.FromUnixTimeSeconds(wal?.LastUploadedUnix ?? now);
+            var degraded = await DegradeAsync(cluster, shard, wal, slot, masterRef, ct,
+                baseStart: start.Name, baseLast: lastForBase,
+                baseUnix: lastModifiedForBase.ToUnixTimeSeconds(),
+                error: chain.GapError!);
+            return new ControlOutcome(degraded, ChainBroken: true);
+        }
+
+        // Факты прогресса — только из наблюдений: наблюдаемый последний сегмент
+        // цепочки; если цепочка не наблюдалась вовсе (объектов нет / все ниже
+        // chain_start) — прошлый ключ, НИКОГДА не now() (ревью Ф4-2 №2).
+        var observedLast = chain.LastSegment;
+        var lastUploadedName = observedLast?.Name ?? wal?.LastUploadedSegment;
+        var lastUploadedUnix = observedLast is { } seen
+            ? objects.Where(o => o.Name == seen.Name).Select(o => o.LastModified).Max().ToUnixTimeSeconds()
+            : wal?.LastUploadedUnix;
+
+        // Прогресс не наблюдался и прошлого наблюдения нет — ключ не пишем
+        // (spec п.8: «ключ не пишется до первого наблюдения»; писать
+        // last_uploaded = chain_start, который не загружался, — подмена факта).
+        if (lastUploadedName is null || lastUploadedUnix is null)
+            return new ControlOutcome(null, ChainBrokenOf(key));
+
+        // (7) Lag-зонд: pg_current_wal_lsn() мастера → сегмент → дистанция.
+        long? lag = null;
+        var current = await sql.CurrentWalAsync(adminDsn, ct);
+        if (current.IsSuccess && WalFileName.TryParse(lastUploadedName) is { } lastSegment)
+        {
+            var masterSegment = WalFileName.FromLsn((uint)current.Value.Tli, current.Value.Lsn);
+            lag = Math.Max(0, lastSegment.DistanceTo(masterSegment));
+        }
+
+        lagObserver?.Invoke(cluster, shard, lag);
+
+        // Деградации transient-природы (lag/тишина): агент НЕ останавливаем и
+        // супервиз НЕ блокируем (ChainBroken=false — ретраи тиками; exited-агент
+        // пересоздаётся со свежими env, spec §3.2 п.5/п.7; ревью Ф4-2 №1).
+        string? error = null;
+        var state = WalStreamStatus.Active;
+        if (lag > options.WalLagMaxSegments) // null → сравнение false (зонд не удался — не деградация)
+        {
+            state = WalStreamStatus.Degraded;
+            error = $"отставание WAL-потока {lag} сегментов (порог {options.WalLagMaxSegments})";
+        }
+        else if (now - lastUploadedUnix > options.WalStaleSec)
+        {
+            state = WalStreamStatus.Degraded;
+            error = $"тишина загрузок {now - lastUploadedUnix} c (порог {options.WalStaleSec})";
+        }
+
+        var next = new WalStreamState(
+            state, slot, masterRef, start.Name, lastUploadedName, lastUploadedName,
+            lastUploadedUnix, lag, error);
+        await status.WriteIfChangedAsync(cluster, shard, next, ct);
+        _chainBroken[key] = false; // цепочка цела — супервиз разрешён
+        return new ControlOutcome(next, ChainBroken: false);
     }
+
+    // Текущий вердикт разрыва для «не время»-веток (грязное чтение словаря — ок:
+    // пишет только этот же процесс под клэймом).
+    private bool ChainBrokenOf(string key) => _chainBroken.TryGetValue(key, out var broken) && broken;
 
     // Стоп-семантика Enabled=false (spec §3.2 «Стоп-семантика»): агенты кластера
     // вниз (идемпотентно); при живом ключе шарда — финальный STOPPED (последнее
