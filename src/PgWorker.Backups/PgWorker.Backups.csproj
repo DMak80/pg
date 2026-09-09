@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <!-- Подсистема бэкапов (arch/19): t03 — WAL-агент pg_receivewal + контроль цепочки.
+         Зависимость от Provisioning — ShardEndpoints (резолв мастера) и ProcessOutcome. -->
+    <ItemGroup>
+        <ProjectReference Include="..\PgWorker.Core\PgWorker.Core.csproj"/>
+        <ProjectReference Include="..\PgWorker.Etcd\PgWorker.Etcd.csproj"/>
+        <ProjectReference Include="..\PgWorker.Docker\PgWorker.Docker.csproj"/>
+        <ProjectReference Include="..\PgWorker.Provisioning\PgWorker.Provisioning.csproj"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="AWSSDK.S3"/>
+        <PackageReference Include="Npgsql"/>
+    </ItemGroup>
+
+</Project>

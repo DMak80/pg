@@ -1,3 +1,4 @@
+using PgWorker.Backups;
 using PgWorker.Docker.Engine;
 using PgWorker.Moves;
 
@@ -269,6 +270,22 @@ public sealed class BackupsOptions
 
     public BackupsAgentOptions Agent { get; set; } = new();
 
+    /// <summary>Образ джобов/агентов бэкапов (контракт arch/19 §2: только инструменты,
+    /// команда inline от воркера; сборка образа — t02).</summary>
+    public string AgentImage { get; set; } = "pgworker-backup:latest";
+
+    /// <summary>WAL-поток (t03, arch/19 §3/§9): расписание контроля, пороги.</summary>
+    public BackupsWalOptions Wal { get; set; } = new();
+
+    /// <summary>Runtime-склейка для WalStreamProcess (t03).</summary>
+    public BackupsRuntimeOptions ToRuntime() => new(
+        AgentImage,
+        S3.Endpoint, S3.AdvertisedEndpoint, S3.Region, S3.Bucket,
+        S3.AccessKey, S3.SecretKey, S3.PathStyle,
+        Staging.Dir, Staging.QuotaBytes,
+        Agent.Cpu, Agent.Mem,
+        Wal.VerifyIntervalSec, Wal.LagMaxSegments, Wal.StaleSec);
+
     /// <summary>Fail-fast старта (образец TLS arch/14 §2.2.1): Enabled=true
     /// обязан иметь полный S3-комплект; false — подсистема не активна.</summary>
     public bool IsValid()
@@ -296,6 +313,12 @@ public sealed class BackupsS3Options
     public string SecretKey { get; set; } = "";
 
     public bool PathStyle { get; set; } = true;
+
+    /// <summary>Endpoint, как S3 виден ИЗ контейнеров агентов/джобов (single-host:
+    /// host.docker.internal; null → Endpoint как есть — паттерн Etcd:AdvertisedEndpoints,
+    /// Moves:AdvertisedPublisherHost). Реализация-деталь t03 (env-адресация агента,
+    /// arch/19 §7); стенд-включение подсистемы — t02.</summary>
+    public string? AdvertisedEndpoint { get; set; }
 }
 
 /// <summary>Дефолт per-cluster политики: ключ
@@ -336,4 +359,15 @@ public sealed class BackupsAgentOptions
     public double? Cpu { get; set; }
 
     public long? Mem { get; set; }
+}
+
+/// <summary>WAL-поток шарда (t03, arch/19 §3/§9): период list/контроля цепочки,
+/// порог отставания в сегментах, порог тишины загрузок.</summary>
+public sealed class BackupsWalOptions
+{
+    public int VerifyIntervalSec { get; set; } = 30;
+
+    public int LagMaxSegments { get; set; } = 1024;
+
+    public int StaleSec { get; set; } = 300;
 }
