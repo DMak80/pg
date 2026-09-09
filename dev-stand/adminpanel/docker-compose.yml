@@ -29,7 +29,7 @@ services:
   # стендовые дефолты (ТОЛЬКО локальный стенд; прод — per-install S3, arch/19
   # §7). Bucket pgworker-backups создаёт 00-up.sh (mc mb, идемпотентно).
   minio:
-    image: minio/minio:latest
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: as-minio
     profiles: ["full"]
     ports:
@@ -42,7 +42,8 @@ services:
     volumes:
       - as-minio-data:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      # mc входит в образ (curl из UBI micro убран) — ready-проба канона MinIO
+      test: ["CMD", "mc", "ready", "local"]
       interval: 10s
       timeout: 5s
       retries: 5
