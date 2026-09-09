@@ -53,6 +53,8 @@ per-cluster секреты, метрики PG-репликации
 у прод-нод (scrape Patroni — arch/18 §5.4),
 управление etcd-слоем, слияние данных карантинного шарда, тонкий RBAC Engine API
 (authz-плагины Docker CE) —
+подсистема бэкапов шардов (хозяин — PgWorker, механика и хранилище —
+отдельный канон [19-backups.md](19-backups.md)) —
 [roadmap/pgworker.md](roadmap/pgworker.md). Транспортная безопасность (TLS к
 Docker Engine API, SSH-туннели, RBAC/docker-группы, mTLS HTTP API) —
 t03-docker-tls-ssh (§1.1, §2.2–2.3).

@@ -105,7 +105,7 @@ Scope = `<C>-<X>`, глобально уникален. Связь со шард
 ### 2.3.1. `/pgworker/…` — координация воркеров (читается избирательно)
 
 Префикс координации PgWorker (`arch/14` §3.3) панель читает точечно —
-четыре ключа-семейства, остальные ключи префикса (`leader`, `claims`,
+пять ключа-семейства, остальные ключи префикса (`leader`, `claims`,
 `evacuations`, `instances`) панель НЕ читает и не пишет:
 
 | Ключ | Формат значения | В модель | Примечания |
@@ -114,6 +114,7 @@ Scope = `<C>-<X>`, глобально уникален. Связь со шард
 | `/pgworker/work/<C>` | JSON `{"op":"provision\|…","phase":"…","updated_unix":…,"instance":"…","last_error"?,"fail_count"?,"fail_first_unix"?,"retry_not_before_unix"?,"unreachable"?}` (канон — arch/14 §3.3) | `WorkJournalInfo` (§3) | журнал фаз процесса воркера; `last_error` + `fail_first_unix` кормят алерт `provision-stuck` (03 §4) — панель видит, ЧТО именно фейлится у неинициализирующегося кластера; битый JSON — parseError-запись, ключ не трогаем (домен воркера); в UI отображается через алерты |
 | `/pgworker/moves/<C>/<bucket>` | JSON-заявка `{"op":"move"\|"rollback"\|"finalize"\|"abort","to"?,"old_shard"?,"skip_reverse"?,"resume"?,"force"?,"requested_unix":<unix>,"requested_by"?}` | `MoveTicket` (§3) | очередь заявок на переезды: панель читает (вкладка «Переезды»); **пишет PgWorker** по команде мутации §9.7 (пришла через API воркера); после успеха/перманентного отказа заявку УДАЛЯЕТ PgWorker — исчезновение из очереди без изменения routing/status = отвергнутая заявка |
 | `/pgworker/api/<id>` | lease TTL 15 c, JSON `{"url":"https://<host>:<port>","instance":"<id>","since_unix":…}` | `WorkerEndpoint[]` (§3) | **дискавери API PgWorker** (arch/14 §1.1): ставит сам воркер; ключ жив = инстанс жив и URL валиден. URL — `https://` (t03): API PgWorker обслуживается только по mTLS — панель аутентифицируется клиентским сертификатом per-install API-CA (единая пакета с KafkaWorker, §2.3.2: `AdminPanel:Workers:WorkerTls`, env `WORKERS_PANEL_TLS_*`); `X-Api-Key`/`PGW_API_KEY` удалён (t03). Панель кеширует в снапшоте и зовёт любой живой при мутациях §9; по этим же URL отдельный тик опрашивает `/healthz` (результат — `WorkerHealth[]`, алерт `worker-unhealthy` 03 §4); в UI не отображается (только через алерт доступности `worker-api-unreachable`, 03 §4.1) |
+| `/pgworker/backups/<C>/…` | JSON-статусы полных/WAL (канон — [19-backups.md](../19-backups.md) §4) | — (t01: только контракт) | подсистема бэкапов (arch/19): панель ЧИТАЕТ статусы полных и WAL-цепочек; UI и алерты («нет валидного полного за окно суток», «разрыв/отставание WAL-цепочки») — t02/t03; пишет префикс ТОЛЬКО PgWorker |
 
 ### 2.3.2. `/kafkaworker/api/…` — дискавери API KafkaWorker
 

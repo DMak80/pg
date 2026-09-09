@@ -106,6 +106,9 @@ arch/
 ├── 18-metrics.md               ← ★ единая телеметрия: Prometheus-метрики всех сервисов
 │                                  (каркас Shared.Metrics / Puzzle-модуль, словарь имён,
 │                                   коллектор Kafka, стек Prometheus+Grafana+Alertmanager)
+├── 19-backups.md               ← ★ подсистема бэкапов шардов: PgWorker-оркестрация
+│                                  (pg_basebackup + pg_receivewal-агент, S3/MinIO,
+│                                   контракт /pgworker/backups/*, t02–t07)
 ├── configs/
 │   ├── etcd/
 │   │   ├── docker-compose.yml
@@ -201,3 +204,6 @@ arch/
     конвергенция динамического DCS-конфига, инварианты внешних систем,
     недискриминантные ключи, детерминизм мутаций, флап≠смерть, реестр
     ошибок использования).
+16. [19-backups.md](19-backups.md) — подсистема бэкапов шардов: механика
+    (полные `pg_basebackup`, online-WAL `pg_receivewal`-агент), layout S3,
+    контракт `/pgworker/backups/*` (задачи t02–t07 — [roadmap/backup.md](roadmap/backup.md)).

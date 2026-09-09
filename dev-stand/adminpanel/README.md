@@ -25,7 +25,7 @@ open http://localhost:5050
 | Профиль | Состав | Для чего |
 |---|---|---|
 | quick (по умолчанию) | etcd + панель | цикл бэкенд-разработки: сиды — через `checks/05-seed.sh` (поднимает воркеров); Patroni/SQL-пробы закономерно падают (нод нет) |
-| full | + s1a/s1b, s2a/s2b, hc1a/hc1b, hc2a/hc2b | live-пробы, failover, e2e |
+| full | + s1a/s1b, s2a/s2b, hc1a/hc1b, hc2a/hc2b, minio (бэкапы, :9000/:9001) | live-пробы, failover, e2e |
 | kafka | + kafkaworker | живой воркер: управление кафкой; входит в полный подъём `00-up.sh` (full+kafka) всегда; e2e — чек `55-kafka-e2e.sh` (волна C) |
 | metrics | + prometheus (:9090), grafana (:3000, admin/admin), alertmanager (:9093) | мониторинг полной системы: дашборды, алерты §3.7; входит в 00-up.sh (arch/18 §5) |
 
@@ -46,6 +46,14 @@ open http://localhost:5050
   Alertmanager и симуляция алерта ServiceDown (stop/start kafkaworker). Чек
   запускается и после серии чеков — сам поднимает остановленного kafkaworker'а.
 - Канон мониторинга — `../../arch/18-metrics.md` §5.
+
+## MinIO (подсистема бэкапов, arch/19)
+
+Профиль `full`: `as-minio` — S3 API `:9000`, консоль `:9001` (стендовые креды
+`minioadmin`/`minioadmin`, только локальный стенд); bucket `pgworker-backups`
+создаёт `00-up.sh` (`mc mb --ignore-existing`, идемпотентно). Воркер
+(deploy-проект) ходит публикацией `host.docker.internal:9000`; включение
+подсистемы — с t02 (env-блок `PGW_BACKUP_S3_*` в `deploy/.env.example`).
 
 ## Сиды через API воркеров
 

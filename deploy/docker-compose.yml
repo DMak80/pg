@@ -56,6 +56,15 @@ services:
       PGW_API_TLS_KEY_PATH: /tls/pgserver.key
       PGW_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
       PgWorker__Api__EnableSeedEndpoint: ${PGW_API_ENABLE_SEED:-false}
+      # Подсистема бэкапов (arch/19, t01): каркас — Enabled=false default;
+      # S3-креды per-install только env (PGW_BACKUP_S3_*, deploy/.env.example).
+      # Пустые значения валидны при Enabled=false (валидация старта воркера).
+      PgWorker__Backups__Enabled: ${PGW_BACKUPS_ENABLED:-false}
+      PgWorker__Backups__S3__Endpoint: ${PGW_BACKUP_S3_ENDPOINT:-}
+      PgWorker__Backups__S3__Region: ${PGW_BACKUP_S3_REGION:-}
+      PgWorker__Backups__S3__Bucket: ${PGW_BACKUP_S3_BUCKET:-}
+      PgWorker__Backups__S3__AccessKey: ${PGW_BACKUP_S3_ACCESS_KEY:-}
+      PgWorker__Backups__S3__SecretKey: ${PGW_BACKUP_S3_SECRET_KEY:-}
 
   # KafkaWorker (arch/16 §2.1/§8): docker.sock, том снапшотов P12.
   # Env-секретов per-install нет (единственный секрет — per-cluster
