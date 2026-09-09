@@ -71,6 +71,13 @@ public sealed class RemoveShardProcess(
             return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
         }
 
+        // S1.5 (t03, arch/19 §3 «Стоп-семантика»): агент WAL шарда — вниз ДО нод
+        // (идемпотентно по имени); ключ wal /pgworker/backups/<C>/<X>/ удаляет
+        // CleanKeysAsync (шаг 4) вместе с демонтажом etcd-ключей шарда.
+        var agent = await driver.RemoveBackupAgentsAsync(cluster, shardName, ct);
+        if (!agent.IsSuccess)
+            return await FailAsync(cluster, agent.Error!, "removing-agent", ct);
+
         // S2: REMOVING → RemoveNode каждой ноды (404 = ок) + сироты шарда.
         var removed = await RemoveNodesAsync(cluster, shard, ct);
         if (!removed.IsSuccess)
@@ -222,6 +229,12 @@ public sealed class RemoveShardProcess(
         var delScope = await DeleteAsync($"/service/{scope}/", prefix: true, ct);
         if (!delScope.IsSuccess)
             return delScope;
+
+        // t03 (arch/19 §4): ключи бэкапов шарда (wal-статус; full-ключи — t02)
+        // не переживают демонтаж — S-аналог D2-чистки deprovisioning.
+        var delBackups = await DeleteAsync($"/pgworker/backups/{cluster}/{shardName}/", prefix: true, ct);
+        if (!delBackups.IsSuccess)
+            return delBackups;
 
         // portalloc: точечная фильтрация записей "<X>/<n>" из JSON (Д10 — ключ общий
         // на кластер, read-modify-write под клэймом безопасен). Сбой чтения ≠

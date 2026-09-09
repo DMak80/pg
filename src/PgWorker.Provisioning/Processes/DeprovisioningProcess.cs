@@ -37,6 +37,12 @@ public sealed class DeprovisioningProcess(
         if (!started.IsSuccess)
             return Result<ProcessOutcome>.Failed(started.Error!);
 
+        // D1' (t03, arch/19 §3): WAL-агенты бэкапов кластера — вниз ДО нод (idempotent
+        // по префиксу pgw-backup-wal-<C>-); etcd-ключи чистит D2 ниже.
+        var agents = await driver.RemoveBackupAgentsAsync(cluster, shard: null, ct);
+        if (!agents.IsSuccess)
+            return await FailAsync(cluster, agents.Error!, "removing-agents", ct);
+
         // D1: остановить и удалить все ноды + сироты; nodes/<n>/state=REMOVING.
         var removed = await RemoveNodesAsync(cluster, snap, ct);
         if (!removed.IsSuccess)
@@ -168,6 +174,11 @@ public sealed class DeprovisioningProcess(
         var delRotation = await DeleteAsync($"/pgworker/rotations/{cluster}", prefix: false, ct);
         if (!delRotation.IsSuccess)
             return delRotation;
+
+        // t03 (arch/19 §4): статусы бэкапов кластера (S3-объекты НЕ трогаем — R4).
+        var delBackups = await DeleteAsync($"/pgworker/backups/{cluster}/", prefix: true, ct);
+        if (!delBackups.IsSuccess)
+            return delBackups;
 
         // Заявки переездов (t01, spec §5.3 D2): префикс /pgworker/moves/<C>/ целиком.
         return await DeleteAsync($"/pgworker/moves/{cluster}/", prefix: true, ct);
