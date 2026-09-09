@@ -223,8 +223,8 @@ internal static class Fakes
             {
                 var name = BackupAgentNames.Container(cluster, shard);
                 EnsuredBackupAgents.Add(name);
-                if (BackupAgentObjects.All(c => !c.Names.Contains(name)))
-                    BackupAgentObjects.Add(new DockerContainer($"id-{name}", [name], "running", spec.Image));
+                if (BackupAgentObjects.All(c => !c.Names.Contains("/" + name)))
+                    BackupAgentObjects.Add(new DockerContainer($"id-{name}", ["/" + name], "running", spec.Image));
             }
 
             return Task.FromResult(Result.Success());
@@ -245,7 +245,7 @@ internal static class Fakes
                 foreach (var name in names)
                 {
                     RemovedBackupAgents.Add(name);
-                    BackupAgentObjects.RemoveAll(c => c.Names.Contains(name));
+                    BackupAgentObjects.RemoveAll(c => c.Names.Any(n => n.TrimStart('/') == name));
                 }
             }
 
@@ -259,7 +259,7 @@ internal static class Fakes
             {
                 var prefix = BackupAgentNames.Prefix(cluster);
                 IReadOnlyList<DockerContainer> result = BackupAgentObjects
-                    .Where(c => c.Names.Any(n => n.StartsWith(prefix, StringComparison.Ordinal)))
+                    .Where(c => c.Names.Any(n => n.TrimStart('/').StartsWith(prefix, StringComparison.Ordinal)))
                     .ToList();
                 return Task.FromResult(Result<IReadOnlyList<DockerContainer>>.Success(result));
             }

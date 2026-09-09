@@ -30,8 +30,8 @@ public sealed class StubScaleDriver : IClusterDriver
     {
         var name = BackupAgentNames.Container(cluster, shard);
         EnsuredBackupAgents.Add(name);
-        if (BackupAgentObjects.All(c => !c.Names.Contains(name)))
-            BackupAgentObjects.Add(new DockerContainer($"id-{name}", [name], "running", spec.Image));
+        if (BackupAgentObjects.All(c => !c.Names.Contains("/" + name)))
+            BackupAgentObjects.Add(new DockerContainer($"id-{name}", ["/" + name], "running", spec.Image));
         return Task.FromResult(Result.Success());
     }
 
@@ -40,7 +40,7 @@ public sealed class StubScaleDriver : IClusterDriver
         foreach (var name in BackupAgentNamesOf(cluster, shard))
         {
             RemovedBackupAgents.Add(name);
-            BackupAgentObjects.RemoveAll(c => c.Names.Contains(name));
+            BackupAgentObjects.RemoveAll(c => c.Names.Any(n => n.TrimStart('/') == name));
         }
 
         return Task.FromResult(Result.Success());
@@ -50,7 +50,8 @@ public sealed class StubScaleDriver : IClusterDriver
         string cluster, CancellationToken ct)
         => Task.FromResult(Result<IReadOnlyList<DockerContainer>>.Success(
             (IReadOnlyList<DockerContainer>)BackupAgentObjects
-                .Where(c => c.Names.Any(n => n.StartsWith(BackupAgentNames.Prefix(cluster), StringComparison.Ordinal)))
+                .Where(c => c.Names.Any(n => n.TrimStart('/').StartsWith(
+                    BackupAgentNames.Prefix(cluster), StringComparison.Ordinal)))
                 .ToList()));
 
     // Живые агенты кластера (shard=null → все): имена без ведущего "/".
