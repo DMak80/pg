@@ -24,6 +24,29 @@ services:
     volumes:
       - etcd-data:/var/etcd/data
 
+  # MinIO — S3-хранилище бэкапов (arch/19 §5, t01): каркас подсистемы в
+  # стенде; PgWorker (deploy-проект) ходит публикацией host:9000. Креды —
+  # стендовые дефолты (ТОЛЬКО локальный стенд; прод — per-install S3, arch/19
+  # §7). Bucket pgworker-backups создаёт 00-up.sh (mc mb, идемпотентно).
+  minio:
+    image: minio/minio:latest
+    container_name: as-minio
+    profiles: ["full"]
+    ports:
+      - "9000:9000"  # S3 API
+      - "9001:9001"  # консоль
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+    command: ["server", "/data", "--console-address", ":9001"]
+    volumes:
+      - as-minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   # Шард 1: s1a (мастер; self-healing — при пустом PGDATA и живом мастере-пире
   # клонируется репликой: повторные прогоны после failover, spec t10 §3) + s1b
   # (физическая реплика через pg_basebackup -R; паттерн arch/stand).
@@ -363,6 +386,7 @@ services:
 
 volumes:
   etcd-data:
+  as-minio-data:
   kfw-snapshots:
   prometheus-data:
   grafana-data:
