@@ -34,6 +34,10 @@ public sealed class PgWorkerOptions
 
     /// <summary>Экспозиция метрик (arch/18 §3): /metrics на том же порту, что /healthz.</summary>
     public Shared.Metrics.MetricsOptions Metrics { get; set; } = new();
+
+    /// <summary>Подсистема бэкапов шардов (arch/19, t01): каркас конфигурации;
+    /// процессная логика — t02–t07. Default Enabled=false.</summary>
+    public BackupsOptions Backups { get; set; } = new();
 }
 
 /// <summary>HTTP API воркера (arch/14 §1.1): advertise-URL в /pgworker/api/&lt;id&gt;
@@ -247,4 +251,89 @@ public sealed class SnapshotOptions
 public sealed class AppParamsOptions
 {
     public string Default { get; set; } = "sslmode=require";
+}
+
+/// <summary>Подсистема бэкапов шардов (arch/19, t01): каркас без процессной
+/// логики (джобы/агенты — t02–t07); Enabled=false — поведение воркера не
+/// меняется.</summary>
+public sealed class BackupsOptions
+{
+    /// <summary>Вкл/выкл подсистемы (t01: только каркас; потребители — t02+).</summary>
+    public bool Enabled { get; set; }
+
+    public BackupsS3Options S3 { get; set; } = new();
+
+    public BackupsPolicyOptions Policy { get; set; } = new();
+
+    public BackupsStagingOptions Staging { get; set; } = new();
+
+    public BackupsAgentOptions Agent { get; set; } = new();
+
+    /// <summary>Fail-fast старта (образец TLS arch/14 §2.2.1): Enabled=true
+    /// обязан иметь полный S3-комплект; false — подсистема не активна.</summary>
+    public bool IsValid()
+        => !Enabled
+           || (!string.IsNullOrWhiteSpace(S3.Endpoint)
+               && !string.IsNullOrWhiteSpace(S3.Bucket)
+               && !string.IsNullOrWhiteSpace(S3.AccessKey)
+               && !string.IsNullOrWhiteSpace(S3.SecretKey));
+}
+
+/// <summary>S3-хранилище бэкапов (arch/19 §5/§7): per-install креды — ТОЛЬКО
+/// env воркера (PGW_BACKUP_S3_*), не etcd/не git; PathStyle=true — клиент
+/// MinIO-режима.</summary>
+public sealed class BackupsS3Options
+{
+    public string Endpoint { get; set; } = "";
+
+    /// <summary>Регион (опц.; MinIO не требует — null).</summary>
+    public string? Region { get; set; }
+
+    public string Bucket { get; set; } = "";
+
+    public string AccessKey { get; set; } = "";
+
+    public string SecretKey { get; set; } = "";
+
+    public bool PathStyle { get; set; } = true;
+}
+
+/// <summary>Дефолт per-cluster политики: ключ
+/// /pgworker/backups/&lt;C&gt;/policy отсутствует → эти значения (arch/19 §4).</summary>
+public sealed class BackupsPolicyOptions
+{
+    public BackupsRetentionOptions Retention { get; set; } = new();
+
+    public long FullMaxAgeSec { get; set; } = 86400;
+
+    public bool VerifyOnCreate { get; set; } = true;
+}
+
+/// <summary>GFS-ретенция полных бэкапов (дни/недели/месяцы, t06).</summary>
+public sealed class BackupsRetentionOptions
+{
+    public int Days { get; set; } = 7;
+
+    public int Weeks { get; set; } = 4;
+
+    public int Months { get; set; } = 6;
+}
+
+/// <summary>Staging джобов/агентов бэкапов (arch/19 §6): ephemeral volume с
+/// квотой (guard «нет места» → FAILED, реализация t02; null — без квоты).</summary>
+public sealed class BackupsStagingOptions
+{
+    public string Dir { get; set; } = "/backup-staging";
+
+    public long? QuotaBytes { get; set; }
+}
+
+/// <summary>Ресурсные лимиты джоба/агента бэкапов (arch/19 §6) →
+/// HostConfig.NanoCPUs/Memory; null — без лимита (образец request_* нод,
+/// arch/14 §2.4 п.4). Cpu — ядра, Mem — байты.</summary>
+public sealed class BackupsAgentOptions
+{
+    public double? Cpu { get; set; }
+
+    public long? Mem { get; set; }
 }
