@@ -15,6 +15,7 @@ public static class SnapshotBuilder
         MovesParseResult moves,
         WorkerEndpointsParseResult pgWorkerEndpoints,
         WorkJournalParseResult work,
+        BackupsParseResult backups,
         IReadOnlyList<EtcdMember> members,
         IReadOnlyList<EtcdAlarm> alarms,
         EtcdStatus etcd)
@@ -27,9 +28,10 @@ public static class SnapshotBuilder
             moves.Tickets,
             pgWorkerEndpoints.Endpoints,
             work.Items,
+            backups.Clusters,
             [], // WorkerHealth вносит SnapshotRefresher из IWorkerHealthStore (spec D4)
             [],
             [],
-            [.. clusters.Errors, .. service.Errors, .. moves.Errors, .. pgWorkerEndpoints.Errors, .. work.Errors],
+            [.. clusters.Errors, .. service.Errors, .. moves.Errors, .. pgWorkerEndpoints.Errors, .. work.Errors, .. backups.Errors],
             clusters.UnknownKeyCount + service.UnknownKeyCount);
 }

@@ -28,4 +28,10 @@ public class AlertsOptions
 
     // provision-stuck: серия фейлов provision (fail_first_unix) старше N секунд.
     public int ProvisionStuckSec { get; set; } = 300;
+
+    // wal-stream-lag: порог лага в сегментах и порог тишины загрузок (arch/19 §3;
+    // синхронизированы с воркерными Wal:LagMaxSegments/StaleSec — дефолты 1024/300).
+    public int WalLagMaxSegments { get; set; } = 1024;
+
+    public int WalStaleSec { get; set; } = 300;
 }
