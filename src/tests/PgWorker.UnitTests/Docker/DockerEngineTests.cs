@@ -135,6 +135,30 @@ public class DockerEngineTests
         hostConfig.TryGetProperty("Resources", out _).Should().BeFalse();
     }
 
+    // t03-ревью Ф7 №1: сеть спеки обязана дойти до NetworkMode/NetworkingConfig —
+    // иначе контейнер создаётся в default bridge и не резолвит alias нод (pgw-net).
+    [Fact]
+    public async Task CreateContainer_WithNetwork_SetsNetworkModeAndEndpointsConfig()
+    {
+        // Arrange
+        var handler = new FakeHandler(_ => Json("""{"Id":"abc","Warnings":[]}""", HttpStatusCode.Created));
+        var engine = NewEngine(handler);
+        var spec = new ContainerSpec(
+            "pgworker-backup:test", new Dictionary<string, string>(), "pgw-backup-wal-shop-shard1-staging",
+            "/backup-staging", [], "pgw-backup-wal-shop-shard1", null, null, "shop",
+            Network: "pgw-net");
+
+        // Act
+        var result = await engine.CreateContainerAsync(spec, "pgw-backup-wal-shop-shard1", CancellationToken.None);
+
+        // Assert — NetworkMode + NetworkingConfig с сетью нод (DNS-резолв alias мастера)
+        result.IsSuccess.Should().BeTrue();
+        var body = JsonDocument.Parse(handler.Requests.Single().Body).RootElement;
+        body.GetProperty("HostConfig").GetProperty("NetworkMode").GetString().Should().Be("pgw-net");
+        body.GetProperty("NetworkingConfig").GetProperty("EndpointsConfig")
+            .EnumerateObject().Should().ContainSingle(p => p.Name == "pgw-net");
+    }
+
     [Fact]
     public async Task CreateContainer_409AlreadyExists_ReturnsSuccess()
     {

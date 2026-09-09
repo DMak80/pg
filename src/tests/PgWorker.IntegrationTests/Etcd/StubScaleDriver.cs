@@ -25,11 +25,16 @@ public sealed class StubScaleDriver : IClusterDriver
     public readonly List<string> RemovedBackupAgents = [];
     public List<DockerContainer> BackupAgentObjects = [];
 
+    // Спеки агентов, отданные драйверу (контракт WalStreamProcess: Network=null —
+    // сеть нод проставляет реальный драйвер; ревью Ф7 №1).
+    public List<ContainerSpec> EnsuredAgentSpecs = [];
+
     public Task<Result> EnsureBackupAgentAsync(
         string cluster, string shard, ContainerSpec spec, string host, CancellationToken ct)
     {
         var name = BackupAgentNames.Container(cluster, shard);
         EnsuredBackupAgents.Add(name);
+        EnsuredAgentSpecs.Add(spec);
         if (BackupAgentObjects.All(c => !c.Names.Contains("/" + name)))
             BackupAgentObjects.Add(new DockerContainer($"id-{name}", ["/" + name], "running", spec.Image));
         return Task.FromResult(Result.Success());

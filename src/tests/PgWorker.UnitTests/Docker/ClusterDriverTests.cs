@@ -761,10 +761,12 @@ public class ClusterDriverTests
         var ensured = await driver.EnsureBackupAgentAsync(
             "shop", "shard1", spec, "host.docker.internal", ct: CancellationToken.None);
 
-        // Assert
+        // Assert — драйвер владеет сетью нод: NetworkMode=pgw-net в созданной спеке
+        // (ревью Ф7 №1: без сети агент в default bridge не резолвит alias мастера)
         ensured.IsSuccess.Should().BeTrue();
         engine.CreatedName.Should().Be("pgw-backup-wal-shop-shard1");
         engine.Calls.Should().Contain(c => c.Call == "create").And.Contain(c => c.Call == "start");
+        engine.CreatedSpec!.Network.Should().Be(PlainClusterDriver.NodesNetwork);
     }
 
     [Fact]

@@ -5,9 +5,11 @@ using Amazon.S3.Model;
 using FluentAssertions;
 using Npgsql;
 using PgWorker.Backups;
+using PgWorker.Core.Templates;
 using PgWorker.Etcd.Client;
 using PgWorker.Etcd.Parsing;
 using PgWorker.IntegrationTests.Docker;
+using PgWorker.Provisioning.Sql;
 using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
@@ -49,10 +51,14 @@ public class E2eBackupScenarios(E2eFixture fixture)
         var (host, port) = await MasterAsync("shopb", "shard1", ct);
         var appPassword = await fixture.GetAppPasswordAsync("shopb", ct);
         var dsn = $"Host={host};Port={port};Database=shopb;Username=app_user;Password={appPassword}";
+        // pg_switch_wal по умолчанию superuser-only (ревью Ф7 №2) — admin-DSN
+        // собирается тем же билдером, что и прод-путь воркера.
+        var adminDsn = DatabaseProvisioner.BuildAdminDsn(host, port, "postgres",
+            new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
 
         // Act — INSERT-нагрузка: большие строки + pg_switch_wal форсируют закрытие
-        // сегментов (без таймаутов, spec §5)
-        await GenerateWalAsync(dsn, ct);
+        // сегментов (без таймаутов, spec §5); switch — через admin-соединение
+        await GenerateWalAsync(dsn, adminDsn, ct);
 
         // Assert 1 — бюджет 120 с: сегменты в MinIO, все без .partial (AC1)
         var backupS3 = new BackupS3(new BackupsRuntimeOptions(
@@ -163,21 +169,24 @@ public class E2eBackupScenarios(E2eFixture fixture)
         return (entry.GetProperty("host").GetString()!, entry.GetProperty("pg").GetInt32());
     }
 
-    // Нагрузка: CREATE TABLE + 30 циклов INSERT больших строк + pg_switch_wal —
-    // форсированное закрытие сегментов 16 МБ.
-    private static async Task GenerateWalAsync(string dsn, CancellationToken ct)
+    // Нагрузка: CREATE TABLE + 30 циклов INSERT больших строк (app_user) +
+    // pg_switch_wal через admin/superuser-соединение (ревью Ф7 №2: app_user без
+    // GRANT вызовет permission denied) — форсированное закрытие сегментов 16 МБ.
+    private static async Task GenerateWalAsync(string dsn, string adminDsn, CancellationToken ct)
     {
         await using var conn = new NpgsqlConnection(dsn);
         await conn.OpenAsync(ct);
         await using (var create = new NpgsqlCommand(
             "CREATE TABLE IF NOT EXISTS wal_load(id bigserial, payload text)", conn))
             await create.ExecuteNonQueryAsync(ct);
+        await using var admin = new NpgsqlConnection(adminDsn);
+        await admin.OpenAsync(ct);
         for (var i = 0; i < 30; i++)
         {
             await using var insert = new NpgsqlCommand(
                 "INSERT INTO wal_load(payload) SELECT repeat('x', 1048576) FROM generate_series(1, 8)", conn);
             await insert.ExecuteNonQueryAsync(ct);
-            await using var switchWal = new NpgsqlCommand("SELECT pg_switch_wal()", conn);
+            await using var switchWal = new NpgsqlCommand("SELECT pg_switch_wal()", admin);
             await switchWal.ExecuteScalarAsync(ct);
         }
     }

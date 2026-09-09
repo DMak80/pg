@@ -291,6 +291,13 @@ public sealed class PlainClusterDriver(
             if (!network.IsSuccess)
                 throw network.Error!;
 
+            // Драйвер владеет сетью нод (ревью Ф7 №1, arch/19 §3): агент резолвит
+            // мастера по alias ноды :5432 — в default bridge DNS user-defined сети
+            // недоступен, pg_receivewal не подключился бы (рестарт-луп). Проставляем
+            // при create независимо от спеки (WalStreamProcess передаёт Network: null;
+            // alias не нужны — hostname контейнера = имя агента).
+            var agentSpec = spec with { Network = NodesNetwork };
+
             var name = BackupAgentNames.Container(cluster, shard);
             var existing = await engine.ListContainersAsync(name, all: true, ct);
             if (!existing.IsSuccess)
@@ -303,7 +310,7 @@ public sealed class PlainClusterDriver(
                 return; // контейнер есть — идемпотентность (супервиз процесса решает про пересоздание)
             }
 
-            var created = await engine.CreateContainerAsync(spec, name, ct);
+            var created = await engine.CreateContainerAsync(agentSpec, name, ct);
             if (!created.IsSuccess)
                 throw created.Error!;
             var up = await engine.StartContainerAsync(name, ct);

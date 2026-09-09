@@ -94,6 +94,9 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // Assert
         result.IsSuccess.Should().BeTrue();
         driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-c1-shard1");
+        // Контракт (ревью Ф7 №1): процесс НЕ назначает сеть — драйвер владеет
+        // pgw-net и проставляет её при create (юнит-тест ClusterDriverTests).
+        driver.EnsuredAgentSpecs.Should().ContainSingle().Which.Network.Should().BeNull();
         sql.Slots.Should().ContainKey("pgw_bkp_c1_shard1");
         var wal = await fixture.Gateway.GetAsync(
             fixture.Endpoint, "/pgworker/backups/c1/shard1/wal", ct);
