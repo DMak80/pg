@@ -743,4 +743,52 @@ public class ClusterDriverTests
         result.Value.Should().Equal("pgw-shop-shard1-shard1a", "pgw-shop-shard2-shard2a");
         engine.Calls.Should().Contain(c => c.Call == "list-services" && c.Arg!.Equals("pgw-shop-"));
     }
+
+    [Fact]
+    public async Task EnsureBackupAgent_advertised_хост_резолвится_в_единственный_движок()
+    {
+        // Arrange — advertised-режим dev-стенда: portalloc несёт advertised-имя,
+        // движок один (ревью Ф4-2 №3: без fallback подъём агента в стенде падал бы
+        // «хост не в таблице»)
+        var engine = new FakeEngine();
+        var driver = NewPlainDriver(engine, advertisedHost: "host.docker.internal");
+        var spec = new ContainerSpec(
+            "pgworker-backup:test", new Dictionary<string, string>(),
+            BackupAgentNames.Volume("shop", "shard1"), "/backup-staging",
+            [], "pgw-backup-wal-shop-shard1", null, null, "shop");
+
+        // Act
+        var ensured = await driver.EnsureBackupAgentAsync(
+            "shop", "shard1", spec, "host.docker.internal", ct: CancellationToken.None);
+
+        // Assert
+        ensured.IsSuccess.Should().BeTrue();
+        engine.CreatedName.Should().Be("pgw-backup-wal-shop-shard1");
+        engine.Calls.Should().Contain(c => c.Call == "create").And.Contain(c => c.Call == "start");
+    }
+
+    [Fact]
+    public async Task ListBackupAgents_и_фильтр_ListNodeObjects_агенты_не_ноды()
+    {
+        // Arrange — живой агент + нода кластера: ListNodeObjectsAsync обязан
+        // вернуть ТОЛЬКО ноду (агенты — не ноды, их жизнью управляет WalStreamProcess).
+        var engine = new FakeEngine
+        {
+            Containers =
+            [
+                new DockerContainer("id-node", ["pgw-shop-shard1-shard1a"], "running", "img"),
+                new DockerContainer("id-agent", ["pgw-backup-wal-shop-shard1"], "running", "bkp-img"),
+            ],
+        };
+        var driver = NewPlainDriver(engine);
+
+        // Act
+        var listed = await driver.ListNodeObjectsAsync("shop", CancellationToken.None);
+        var agents = await driver.ListBackupAgentsAsync("shop", CancellationToken.None);
+
+        // Assert
+        listed.Value.Should().ContainSingle(n => n == "pgw-shop-shard1-shard1a")
+            .And.NotContain(n => n.StartsWith("pgw-backup-wal-", StringComparison.Ordinal));
+        agents.Value.Should().ContainSingle(c => c.Names.Contains("pgw-backup-wal-shop-shard1"));
+    }
 }
