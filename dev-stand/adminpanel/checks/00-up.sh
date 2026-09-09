@@ -59,13 +59,14 @@ ect endpoint health >/dev/null 2>&1 \
 echo "  etcd ready"
 
 # 1a) MinIO (S3 бэкапов, arch/19): healthy + стендовый bucket pgworker-backups
-#      (идемпотентный сид mc mb --ignore-existing; креды — стендовые дефолты).
+#      (идемпотентный сид mc mb --ignore-existing; креды — стендовые дефолты;
+#       entrypoint образа mc = mc, shell зовём через --entrypoint /bin/sh).
 for i in $(seq 1 60); do curl -fsS http://localhost:9000/minio/health/live >/dev/null 2>&1 && break; sleep 1; done
 curl -fsS http://localhost:9000/minio/health/live >/dev/null 2>&1 \
   || { echo "  ❌ as-minio не стал здоровым за 60 c (docker compose logs minio)"; exit 1; }
 minio_net="$(docker inspect as-minio -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}')"
-docker run --rm --network "$minio_net" minio/mc:latest \
-  sh -c "mc alias set standup http://as-minio:9000 minioadmin minioadmin >/dev/null && mc mb --ignore-existing standup/pgworker-backups >/dev/null" \
+docker run --rm --entrypoint /bin/sh --network "$minio_net" minio/mc:latest \
+  -c "mc alias set standup http://as-minio:9000 minioadmin minioadmin >/dev/null && mc mb --ignore-existing standup/pgworker-backups >/dev/null" \
   || { echo "  ❌ bucket pgworker-backups не создан (mc против as-minio)"; exit 1; }
 echo "  as-minio жив, bucket pgworker-backups готов (:9000 API / :9001 консоль)"
 
