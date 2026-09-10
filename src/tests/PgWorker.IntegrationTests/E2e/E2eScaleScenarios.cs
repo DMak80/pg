@@ -9,17 +9,20 @@ using Xunit;
 namespace PgWorker.IntegrationTests.E2e;
 
 // E2E-сценарии масштабирования шардов (t06 spec §8-1..5, критерии §9.2–9.4) на
-// живом стенде E2eFixture: add ПУСТОГО шарда в Active-кластер (routing/schema-мир
-// не тронут — главная граница §2.1), G3-блокировка remove с бакетами, авто-демонтаж
-// после явных переездов, освобождение имени, takeover посреди A3.
-[Collection(E2eCollection.Name)]
-public class E2eScaleScenarios(E2eFixture fixture)
+// живом стенде (изолированное окружение E2eEnvironment — своя сеть/etcd на Fact):
+// add ПУСТОГО шарда в Active-кластер (routing/schema-мир не тронут — главная
+// граница §2.1), G3-блокировка remove с бакетами, авто-демонтаж после явных
+// переездов, освобождение имени, takeover посреди A3.
+public class E2eScaleScenarios
 {
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
 
-    private string Endpoint => fixture.EtcdEndpoint;
+    // Окружение Fact'а (своя сеть/etcd); создаётся в начале каждого сценария.
+    private E2eEnvironment Fx = null!;
 
-    private EtcdGateway G => fixture.Gateway;
+    private string Endpoint => Fx.EtcdEndpoint;
+
+    private EtcdGateway G => Fx.Gateway;
 
     [Fact]
     public async Task Scale_AddEmptyShard_BlockedRemoveThenAutoDismantle_NameReused()
@@ -28,10 +31,13 @@ public class E2eScaleScenarios(E2eFixture fixture)
         var ct = TestContext.Current.CancellationToken;
         const string cluster = "sshop";
 
+        await using var fx = await E2eEnvironment.StartAsync("scale-add", ct: ct);
+        Fx = fx;
+
         // ---------- §8-1: add-shard в живой кластер — шард поднят и ПУСТ ----------
         // Arrange: сид sshop (NOT_INITIALIZED) → контроллер → provisioning до Active.
         await SeedClusterAsync(cluster);
-        await using var p1 = await fixture.StartHostAsync("s1", ct: ct);
+        await using var p1 = await Fx.StartHostAsync("s1", ct: ct);
 
         var provisioned = await E2eFixture.WaitForAsync(
             () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
@@ -172,11 +178,14 @@ public class E2eScaleScenarios(E2eFixture fixture)
         var ct = TestContext.Current.CancellationToken;
         const string cluster = "stshop";
 
+        await using var fx = await E2eEnvironment.StartAsync("scale-takeover", ct: ct);
+        Fx = fx;
+
         // ---------- §8-4: takeover посреди A3 ----------
         // Arrange: живой кластер stshop (provisioned первым инстансом), затем
         // add-декларация shard3; ждём ПЕРВЫЙ контейнер нового шарда (A3 начался).
         await SeedClusterAsync(cluster);
-        await using var s2 = await fixture.StartHostAsync("s2", ct: ct);
+        await using var s2 = await Fx.StartHostAsync("s2", ct: ct);
 
         var provisioned = await E2eFixture.WaitForAsync(
             () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
@@ -190,7 +199,7 @@ public class E2eScaleScenarios(E2eFixture fixture)
         // Act: docker-kill PgWorker посреди A3 → второй инстанс доносит шард.
         s2.Kill();
         await s2.DisposeAsync();
-        await using var s3 = await fixture.StartHostAsync("s3", ct: ct);
+        await using var s3 = await Fx.StartHostAsync("s3", ct: ct);
 
         // Assert: шард донесён (клэйм истёк ≤15 с), дублей контейнеров нет.
         var finished = await E2eFixture.WaitForAsync(() => ShardRegisteredAsync(cluster, "shard3"),
@@ -278,7 +287,7 @@ public class E2eScaleScenarios(E2eFixture fixture)
     {
         if ((await ListContainerNamesAsync($"pgw-{cluster}-{shard}-", all: true)).Count > 0)
             return false;
-        var volumes = await fixture.RunDockerAsync(
+        var volumes = await Fx.RunDockerAsync(
             ["volume", "ls", "-q", "--filter", $"name=pgw-{cluster}-{shard}-"], ct);
         if (volumes.Length > 0)
             return false;
@@ -450,7 +459,7 @@ public class E2eScaleScenarios(E2eFixture fixture)
             var master = await MasterInfoAsync(cluster, shard, ct);
             await using var con = new NpgsqlConnection(
                 $"Host=localhost;Port={master.Port};Database={cluster};Username=app;" +
-                $"Password={await fixture.GetAppPasswordAsync(cluster, ct)};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
+                $"Password={await Fx.GetAppPasswordAsync(cluster, ct)};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
             await con.OpenAsync(ct);
             await using var cmd = new NpgsqlCommand($"INSERT INTO {bucket}.items(note) VALUES ('scale-probe')", con);
             await cmd.ExecuteNonQueryAsync(ct);
@@ -472,7 +481,7 @@ public class E2eScaleScenarios(E2eFixture fixture)
         if (all)
             args.Add("-a");
         args.AddRange(["--filter", $"name={prefix}"]);
-        var output = await fixture.RunDockerAsync([.. args], ct);
+        var output = await Fx.RunDockerAsync([.. args], ct);
         return output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(n => n.StartsWith(prefix, StringComparison.Ordinal))
             .ToList();

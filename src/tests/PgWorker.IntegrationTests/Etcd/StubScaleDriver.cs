@@ -14,6 +14,12 @@ public sealed class StubScaleDriver : IClusterDriver
     // Plain-семантика: инспект отражает факт running-процесса (arch/14 §5 C).
     public bool SupportsRunningInspection { get; init; } = true;
 
+    // t02: стабы джобов бэкапов — контрактным тестам scale движки не нужны.
+    public IDockerEngine? EngineFor(string host) => null;
+
+    public Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct)
+        => Task.FromResult(Result.Success());
+
     public readonly List<string> EnsuredNodes = [];
     public readonly List<string> RemovedNodes = [];
     public List<string> NodeObjects = [];

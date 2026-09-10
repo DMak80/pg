@@ -43,6 +43,12 @@ public sealed class DeprovisioningProcess(
         if (!agents.IsSuccess)
             return await FailAsync(cluster, agents.Error!, "removing-agents", ct);
 
+        // Джобы полных бэкапов (t02, arch/19 §4): вниз рядом с агентами —
+        // «мёртвые» ключи при сбое безвредны (кластер в TO_REMOVE, тик продолжит).
+        var jobs = await driver.RemoveBackupJobsAsync(cluster, ct);
+        if (!jobs.IsSuccess)
+            return await FailAsync(cluster, jobs.Error!, "removing-jobs", ct);
+
         // D1: остановить и удалить все ноды + сироты; nodes/<n>/state=REMOVING.
         var removed = await RemoveNodesAsync(cluster, snap, ct);
         if (!removed.IsSuccess)
@@ -130,6 +136,12 @@ public sealed class DeprovisioningProcess(
                 return removed;
         }
 
+        // Джобы бэкапов кластера (t02, arch/19 §4): убиваем до чистки etcd —
+        // «мёртвые» ключи при сбое безвредны (кластер в TO_REMOVE, тик продолжит).
+        var jobs = await driver.RemoveBackupJobsAsync(cluster, ct);
+        if (!jobs.IsSuccess)
+            return jobs;
+
         return Result.Success();
     }
 
@@ -175,7 +187,8 @@ public sealed class DeprovisioningProcess(
         if (!delRotation.IsSuccess)
             return delRotation;
 
-        // t03 (arch/19 §4): статусы бэкапов кластера (S3-объекты НЕ трогаем — R4).
+        // Статусы бэкапов не переживают кластер (t02 D2 + t03 wal-ключи; объекты
+        // S3 НЕ трогаем — R4/orphan t07).
         var delBackups = await DeleteAsync($"/pgworker/backups/{cluster}/", prefix: true, ct);
         if (!delBackups.IsSuccess)
             return delBackups;

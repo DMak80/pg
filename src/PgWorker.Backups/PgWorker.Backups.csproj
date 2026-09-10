@@ -1,7 +1,8 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-    <!-- Подсистема бэкапов (arch/19): t03 — WAL-агент pg_receivewal + контроль цепочки.
-         Зависимость от Provisioning — ShardEndpoints (резолв мастера) и ProcessOutcome. -->
+    <!-- Зависимости как у PgWorker.Moves: ProcessOutcome/ISqlExecutor — в
+         Provisioning; etcd-модель бэкапов — в Etcd; docker-спека — в Docker.
+         t03: AWSSDK.S3 — S3-листер wal-префикса; Npgsql — слот/LSN-SQL. -->
     <ItemGroup>
         <ProjectReference Include="..\PgWorker.Core\PgWorker.Core.csproj"/>
         <ProjectReference Include="..\PgWorker.Etcd\PgWorker.Etcd.csproj"/>

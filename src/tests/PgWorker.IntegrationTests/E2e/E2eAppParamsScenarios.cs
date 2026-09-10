@@ -7,14 +7,16 @@ namespace PgWorker.IntegrationTests.E2e;
 // E2E per-node app_params (spec §7.2/§7.3): provisioning обеспечивает ключ
 // каждой ноды дефолтом; значение стабильно между тиками; ручная правка не
 // перезаписывается (put-if-absent, миграция надзора).
-[Collection(E2eCollection.Name)]
-public class E2eAppParamsScenarios(E2eFixture fixture)
+public class E2eAppParamsScenarios
 {
     private const string Cluster = "appparams";
 
-    private string Endpoint => fixture.EtcdEndpoint;
+    // Окружение Fact'а (своя сеть/etcd); создаётся в начале сценария.
+    private E2eEnvironment Fx = null!;
 
-    private EtcdGateway G => fixture.Gateway;
+    private string Endpoint => Fx.EtcdEndpoint;
+
+    private EtcdGateway G => Fx.Gateway;
 
     [Fact]
     public async Task AppParams_Provisioning_AllNodesGetDefaultAndStable()
@@ -22,8 +24,10 @@ public class E2eAppParamsScenarios(E2eFixture fixture)
         // Arrange — сид NOT_INITIALIZED без app_params-ключей (генерирует PgWorker)
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await E2eEnvironment.StartAsync("app-params", ct: ct);
+        Fx = fx;
         await SeedClusterAsync(Cluster);
-        await using var app = await fixture.StartHostAsync("appparams", ct: ct);
+        await using var app = await Fx.StartHostAsync("appparams", ct: ct);
 
         // Act — ждать SQL-фазы обоих шардов (dsn записан)
         var provisioned = await E2eFixture.WaitForAsync(async () =>

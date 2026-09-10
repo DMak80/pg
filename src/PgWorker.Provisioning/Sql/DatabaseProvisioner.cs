@@ -88,6 +88,15 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
         return $"ALTER ROLE \"{role}\" PASSWORD '{Escape(password)}';";
     }
 
+    /// <summary>Роль полного бэкапа (arch/19 §7): LOGIN + REPLICATION,
+    /// per-cluster пароль /clusters/&lt;C&gt;/backup_password (ensure t02).</summary>
+    public const string BackupExecRole = "backup_exec";
+
+    // gexec-guard роли backup_exec (t02 G2): SELECT возвращает CREATE ROLE,
+    /// если её нет; пароль выравнивается при создании/ротации.
+    public static string BuildBackupExecRoleGuardSql(string password)
+        => Role(BackupExecRole, password, replication: true);
+
     private static string Role(string name, string password, bool replication = false)
     {
         var attr = replication ? " REPLICATION" : string.Empty;

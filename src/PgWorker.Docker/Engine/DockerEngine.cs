@@ -254,7 +254,29 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             var aliases = (dto.NetworkSettings?.Networks ?? new Dictionary<string, NetworkDto>())
                 .Values.SelectMany(n => n.Aliases ?? []).Distinct().ToArray();
             return new DockerContainerInspect(dto.Id, dto.Config?.Hostname ?? "", aliases, dto.Config?.Env ?? [],
-                ports.Distinct().ToArray());
+                ports.Distinct().ToArray(),
+                dto.State?.Running, dto.State?.ExitCode);
+        });
+
+    // GET /containers/<id>/logs — тело raw-stream (мультиплексировано), demux
+    // как у exec; не-TTY контейнеры docker всегда шлют фреймами.
+    public async Task<Result<string>> GetContainerLogsAsync(string idOrName, int tail, CancellationToken ct)
+        => await Result<string>.FromAsync(async () =>
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get,
+                Api + $"/containers/{Uri.EscapeDataString(idOrName)}/logs?stdout=1&stderr=1&tail={tail}");
+            using var response = await httpClient.SendAsync(request, ct);
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorBody = response.Content is null
+                    ? string.Empty
+                    : await response.Content.ReadAsStringAsync(ct);
+                throw new DockerHttpException("GET", $"/containers/{idOrName}/logs", (int)response.StatusCode, errorBody);
+            }
+
+            var payload = response.Content is null ? [] : await response.Content.ReadAsByteArrayAsync(ct);
+            var (stdout, stderr) = Demux(payload);
+            return stderr.Length == 0 ? stdout : stdout + "\n" + stderr;
         });
 
     public async Task<Result> CreateContainerAsync(ContainerSpec spec, string name, CancellationToken ct)
@@ -272,7 +294,17 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
 
     public async Task<Result> StartContainerAsync(string idOrName, CancellationToken ct)
         => await Result.FromAsync(async () =>
-            await SendAsync(HttpMethod.Post, $"/containers/{Uri.EscapeDataString(idOrName)}/start", ct: ct));
+        {
+            try
+            {
+                await SendAsync(HttpMethod.Post, $"/containers/{Uri.EscapeDataString(idOrName)}/start", ct: ct);
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 304)
+            {
+                // 304 — контейнер уже запущен (идемпотентность супервиза, t03:
+                // контракт интерфейса «304 already-started = успех»)
+            }
+        });
 
     public async Task<Result> StopContainerAsync(string idOrName, int timeoutSec, CancellationToken ct)
         => await Result.FromAsync(async () =>
@@ -605,7 +637,11 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
     {
         var hostConfig = new Dictionary<string, object?>
         {
-            ["RestartPolicy"] = new { Name = "unless-stopped" }, // docker сам поднимает после ребута хоста
+            // RestartPolicy: узлы — unless-stopped (docker сам поднимает после
+            // ребута хоста); ephemeral-джобы бэкапов (t02) — "no": перезапуск
+            // джоба docker'ом в обход супервизии воркера запрещён (exit-код —
+            // истина итога, повтор — только новым id через планировщик).
+            ["RestartPolicy"] = new { Name = spec.RestartPolicy ?? "unless-stopped" },
         };
         if (spec.VolumeName.Length > 0)
             hostConfig["Binds"] = new[] { $"{spec.VolumeName}:{spec.VolumeDest}" };
@@ -623,6 +659,13 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             hostConfig["NanoCPUs"] = (long)(cores * 1_000_000_000);
         if (spec.MemoryBytes is { } memory)
             hostConfig["Memory"] = memory;
+
+        // Джобы бэкапов (t02): tmpfs-квота staging (arch/19 §6) + extra_hosts
+        // host.docker.internal:host-gateway (advertised-адресация).
+        if (spec.Tmpfs is { Count: > 0 })
+            hostConfig["Tmpfs"] = spec.Tmpfs;
+        if (spec.ExtraHosts is { Count: > 0 })
+            hostConfig["ExtraHosts"] = spec.ExtraHosts;
 
         var body = new Dictionary<string, object?>
         {
@@ -645,7 +688,13 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             };
         }
         if (spec.Cmd is { Count: > 0 } cmd)
+        {
+            // t03: сброс ENTRYPOINT образа — inline-команда агента/тест-контейнера
+            // заменяет его целиком (образ pgworker-backup несёт ENTRYPOINT джоба
+            // t02; без сброса Cmd ушёл бы ему аргументами, агент не стартовал бы).
+            body["Entrypoint"] = Array.Empty<string>();
             body["Cmd"] = cmd;
+        }
         if (spec.Label is { Length: > 0 } label)
             body["Labels"] = new Dictionary<string, string> { ["pgworker"] = label };
         return body;
@@ -807,14 +856,24 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         [JsonPropertyName("PublicPort")] public int PublicPort { get; set; }
     }
 
-    // GET /containers/<id>/json — только поля матчинга усыновления (spec §3.1).
+    // GET /containers/<id>/json — только поля матчинга усыновления (spec §3.1)
+    // + State (runtime-факт джоба бэкапа, t02).
     private sealed class ContainerInspectDto
     {
         [JsonPropertyName("Id")] public string Id { get; set; } = "";
 
         [JsonPropertyName("Config")] public ContainerConfigDto? Config { get; set; }
 
+        [JsonPropertyName("State")] public ContainerStateDto? State { get; set; }
+
         [JsonPropertyName("NetworkSettings")] public NetworkSettingsDto? NetworkSettings { get; set; }
+    }
+
+    private sealed class ContainerStateDto
+    {
+        [JsonPropertyName("Running")] public bool? Running { get; set; }
+
+        [JsonPropertyName("ExitCode")] public int? ExitCode { get; set; }
     }
 
     private sealed class ContainerConfigDto

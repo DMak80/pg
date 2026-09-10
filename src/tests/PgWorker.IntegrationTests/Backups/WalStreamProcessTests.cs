@@ -64,10 +64,18 @@ public class WalStreamProcessTests(EtcdFixture fixture)
 
     // Тест-опции: VerifyIntervalSec=0 — контроль выполняется КАЖДЫМ тиком (AAA).
     private static BackupsRuntimeOptions Options(int verify = 0, int lag = 1024, int stale = 300) => new(
-        "pgworker-backup:test", "http://minio", "http://minio-agent", null,
-        "bkt", "ak", "sk", true,
-        "/backup-staging", null, null, null,
-        verify, lag, stale);
+        Enabled: true,
+        S3Endpoint: "http://minio",
+        S3AdvertisedEndpoint: "http://minio-agent",
+        S3Bucket: "bkt",
+        S3AccessKey: "ak",
+        S3SecretKey: "sk",
+        S3PathStyle: true,
+        JobImage: "pgworker-backup:test",
+        StagingDir: "/backup-staging",
+        WalVerifyIntervalSec: verify,
+        WalLagMaxSegments: lag,
+        WalStaleSec: stale);
 
     // Полный COMPLETED с wal_start_segment (для chain_start от полного).
     private static ShardBackups FullShard(string walStart, WalStreamState? wal = null) => new(

@@ -16,7 +16,7 @@ public sealed class WalStreamStoppedRule : IAlertRule
     public IEnumerable<Alert> Evaluate(EtcdSnapshot snapshot, AlertContext context)
     {
         foreach (var backups in snapshot.Backups)
-        foreach (var (shard, wal) in backups.Shards)
+        foreach (var (shard, wal) in backups.Shards ?? new Dictionary<string, WalStreamInfo?>())
         {
             if (wal is not { State: WalStreamInfoState.Stopped })
                 continue;

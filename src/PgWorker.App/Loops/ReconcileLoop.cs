@@ -113,14 +113,16 @@ internal sealed class ReconcileLoop(
         if (!serviceKvs.IsSuccess)
             return Result.Failed(serviceKvs.Error!);
 
-        // t03 (arch/19 §4): статусы бэкапов — префикс читаем всегда (стоп-семантика
-        // Enabled=false обязана видеть живые ключи); пустой префикс — дёшево.
+        // Бэкапы (t02/t03, arch/19 §4): префикс читаем ВСЕГДА — стоп-семантика t03
+        // (Enabled=false → финальный STOPPED) обязана видеть живые ключи; пустой
+        // префикс дёшев. Потребители фильтруются по Enabled сами (t02-процесс).
         var backupsKvs = await RangeWithFailoverAsync(endpoints, "/pgworker/backups/", ct);
         if (!backupsKvs.IsSuccess)
             return Result.Failed(backupsKvs.Error!);
         var backupsParsed = BackupsParser.Parse(backupsKvs.Value, out var backupsErrors);
         foreach (var error in backupsErrors)
             logger.LogWarning("пропущен битый ключ бэкапов: {Error}", error);
+        IReadOnlyList<ClusterBackups> backups = backupsParsed.Value;
 
         health.MarkEtcdOk();
 
@@ -135,7 +137,7 @@ internal sealed class ReconcileLoop(
         {
             var backupsList = backupsParsed.Value;
             var tasks = parsed.Value
-                .Select(snap => ProcessClusterAsync(snap, gate, backupsList, ct))
+                .Select(snap => ProcessClusterAsync(snap, gate, backups, ct))
                 .ToArray();
             await Task.WhenAll(tasks);
         }
@@ -206,11 +208,19 @@ internal sealed class ReconcileLoop(
                     await RunClusterOpAsync(cluster, "rotate-app-password",
                         () => processes.RotateAppPasswordAsync(snap, ct), ct);
 
+                    // Полные бэкапы (t02, arch/19 §2): после коротких плановых
+                    // операций, до репарации; тик запускает/поллит джобы, не ждёт их.
+                    // Выключенная подсистема не зовётся вовсе (поведение без t02).
+                    if (options.CurrentValue.Backups.Enabled)
+                        await RunClusterOpAsync(cluster, "backups",
+                            () => processes.BackupsAsync(snap, backups, ct), ct);
+
                     // WAL-архивация (t03, arch/19 §3): после ротации (креды агента —
                     // свежий пароль в пересоздании) и до repair/moves (короткая).
-                    var clusterBackups = backups.FirstOrDefault(b => b.Cluster == cluster);
+                    // Зовётся ВСЕГДА: при Enabled=false это стоп-семантика
+                    // (агенты вниз + финальный STOPPED в живых ключах).
                     await RunClusterOpAsync(cluster, "backup-wal",
-                        () => processes.WalStreamAsync(snap, clusterBackups, ct), ct);
+                        () => processes.WalStreamAsync(snap, backups, ct), ct);
 
                     // Репарация брошенных переездов (spec §3.5, arch/14 §5 K): синтетические
                     // заявки до moves — этот же тик начнёт их обработку (старейшая заявка).

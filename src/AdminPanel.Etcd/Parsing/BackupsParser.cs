@@ -4,79 +4,155 @@ using AdminPanel.Etcd.Client;
 
 namespace AdminPanel.Etcd.Parsing;
 
-/// <summary>
-/// Результат разбора префикса бэкапов: кластеры + ошибки (кормят key-malformed,
-/// тик не роняют) — толерантный парсер по образцу WorkJournalParser.
-/// </summary>
 public sealed record BackupsParseResult(
     IReadOnlyList<ClusterBackupsInfo> Clusters,
     IReadOnlyList<KeyParseError> Errors);
 
-/// <summary>
-/// Чистая функция: KV префикса /pgworker/backups/ → статусы WAL-потоков шардов
-/// (arch/19 §4, adminpanel/02 §2.3.1). Разбираются ТОЛЬКО ключи
-/// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/wal; формат value — snake_case JSON воркера
-/// (t01/t03): state/slot/master_node/last_uploaded_unix обязательны,
-/// lag_segments/error опциональны. Битые значения → errors, не исключение.
-/// </summary>
+// Чистая функция: KV префикса /pgworker/backups/ (arch/19 §4, t02+t03):
+// policy full_max_age_sec + per-shard последний COMPLETED finished_unix
+// (правило backup-full-stale, t02) + WAL-статусы шардов (правила
+// wal-chain-broken/wal-stream-lag/wal-stream-stopped, t03). Битые значения —
+// KeyParseError + пропуск записи (паттерн панели). Шард с любыми ключами
+// бэкапов попадает в словари: null = COMPLETED не было («полного никогда
+// не было», spec §3.5); шарда нет в словаре = ключей нет вообще (правила
+// молчат — подсистема не включена).
 public static class BackupsParser
 {
+    public const string Prefix = "/pgworker/backups/";
+
     public static BackupsParseResult Parse(IReadOnlyList<Kv> kvs)
     {
-        var shards = new Dictionary<string, Dictionary<string, WalStreamInfo?>>();
+        // "/pgworker/backups/<C>/policy" | "/pgworker/backups/<C>/<X>/full/<id>"
+        // | "/pgworker/backups/<C>/<X>/wal" (t03)
+        var policies = new Dictionary<string, long?>();
+        var shards = new Dictionary<string, Dictionary<string, long?>>();
+        var wal = new Dictionary<string, Dictionary<string, WalStreamInfo?>>();
         var errors = new List<KeyParseError>();
         foreach (var kv in kvs)
         {
             var segments = kv.Key.Split('/');
-            // /pgworker/backups/<C>/<X>/wal — только wal-статусы (full/policy — t02+)
-            if (segments.Length != 6 || segments[5] != "wal")
-                continue;
+            if (segments.Length < 5 || segments[1] != "pgworker" || segments[2] != "backups")
+                continue; // чужой префикс
+
             var cluster = segments[3];
-            var shard = segments[4];
-            if (cluster.Length == 0 || shard.Length == 0)
+            if (cluster.Length == 0)
+                continue;
+
+            if (segments.Length == 5 && segments[4] == "policy")
             {
-                errors.Add(new(kv.Key, "пустое имя кластера/шарда в ключе"));
+                try
+                {
+                    using var doc = JsonDocument.Parse(kv.Value);
+                    policies[cluster] = doc.RootElement.ValueKind == JsonValueKind.Object
+                        && doc.RootElement.TryGetProperty("full_max_age_sec", out var age)
+                        && age.ValueKind == JsonValueKind.Number
+                        && age.TryGetInt64(out var value)
+                        ? value
+                        : null;
+                }
+                catch (JsonException e)
+                {
+                    errors.Add(new(kv.Key, $"битый JSON policy: {e.Message}"));
+                }
+
                 continue;
             }
 
-            try
+            if (segments.Length == 6 && segments[5] == "wal" && segments[4].Length > 0)
             {
-                using var doc = JsonDocument.Parse(kv.Value);
-                var root = doc.RootElement;
-                if (root.ValueKind != JsonValueKind.Object)
+                // t03: WAL-статус шарда — state/slot/master_node/last_uploaded_unix
+                // обязательны (формат воркера arch/19 §4), lag_segments/error опциональны;
+                // незнакомое state / нет обязательных — KeyParseError + пропуск.
+                try
                 {
-                    errors.Add(new(kv.Key, "значение не JSON-объект"));
-                    continue;
+                    using var doc = JsonDocument.Parse(kv.Value);
+                    var root = doc.RootElement;
+                    if (root.ValueKind != JsonValueKind.Object)
+                    {
+                        errors.Add(new(kv.Key, "wal-статус не JSON-объект"));
+                        continue;
+                    }
+
+                    var state = StateOf(String(root, "state"));
+                    var unix = Long(root, "last_uploaded_unix");
+                    if (state is null || unix is null)
+                    {
+                        errors.Add(new(kv.Key, "битый wal-статус (state/last_uploaded_unix)"));
+                        continue;
+                    }
+
+                    if (!wal.TryGetValue(cluster, out var perShardWal))
+                        wal[cluster] = perShardWal = [];
+                    perShardWal[segments[4]] = new WalStreamInfo(
+                        cluster, segments[4], state.Value,
+                        String(root, "slot") ?? "",
+                        String(root, "master_node") ?? "",
+                        unix.Value,
+                        Long(root, "lag_segments"),
+                        String(root, "error"));
+                }
+                catch (JsonException e)
+                {
+                    errors.Add(new(kv.Key, $"битый JSON wal: {e.Message}"));
                 }
 
-                var state = StateOf(String(root, "state"));
-                var unix = Long(root, "last_uploaded_unix");
-                if (state is null || unix is null)
-                {
-                    // незнакомое state/нет обязательного поля — запись не разбирается
-                    errors.Add(new(kv.Key, "битый wal-статус (state/last_uploaded_unix)"));
-                    continue;
-                }
-
-                if (!shards.TryGetValue(cluster, out var byShard))
-                    shards[cluster] = byShard = [];
-                byShard[shard] = new WalStreamInfo(
-                    cluster, shard, state.Value,
-                    String(root, "slot") ?? "",
-                    String(root, "master_node") ?? "",
-                    unix.Value,
-                    Long(root, "lag_segments"),
-                    String(root, "error"));
+                continue;
             }
-            catch (JsonException e)
+
+            if (segments.Length == 7 && segments[5] == "full" && segments[4].Length > 0 && segments[6].Length > 0)
             {
-                errors.Add(new(kv.Key, "битый JSON: " + e.Message));
+                try
+                {
+                    using var doc = JsonDocument.Parse(kv.Value);
+                    var root = doc.RootElement;
+                    if (root.ValueKind == JsonValueKind.Object
+                        && root.TryGetProperty("state", out var state)
+                        && state.ValueKind == JsonValueKind.String)
+                    {
+                        // Ключи бэкапов есть → шард В СЛОВАРЕ даже без COMPLETED:
+                        // null = «полного никогда не было» (spec §3.5/§9.6);
+                        // молчание правила — только для ПУСТОГО префикса (шарда
+                        // нет в словаре вовсе).
+                        var perShard = GetOrAdd(shards, cluster);
+                        perShard.TryAdd(segments[4], null);
+
+                        if (state.GetString() == "COMPLETED"
+                            && root.TryGetProperty("finished_unix", out var finished)
+                            && finished.ValueKind == JsonValueKind.Number
+                            && finished.TryGetInt64(out var value))
+                        {
+                            var current = perShard[segments[4]];
+                            perShard[segments[4]] = current is null || value > current ? value : current;
+                        }
+                    }
+                }
+                catch (JsonException e)
+                {
+                    errors.Add(new(kv.Key, $"битый JSON full: {e.Message}"));
+                }
             }
         }
 
-        return new BackupsParseResult(
-            shards.Select(p => new ClusterBackupsInfo(p.Key, p.Value)).ToList(),
-            errors);
+        // Кластер с policy, но без шардов — в списке с пустым словарём
+        // (правило по пустому словарю молчит).
+        var clusters = shards.Keys
+            .Concat(policies.Keys.Where(p => !shards.ContainsKey(p)))
+            .Concat(wal.Keys.Where(w => !shards.ContainsKey(w) && !policies.ContainsKey(w)))
+            .Distinct()
+            .OrderBy(c => c, StringComparer.Ordinal)
+            .Select(c => new ClusterBackupsInfo(
+                c,
+                policies.TryGetValue(c, out var age) ? age : null,
+                (shards.TryGetValue(c, out var perShard)
+                    ? perShard
+                    : new Dictionary<string, long?>())
+                .ToDictionary(p => p.Key, p => p.Value),
+                (wal.TryGetValue(c, out var perShardWal)
+                    ? perShardWal
+                    : new Dictionary<string, WalStreamInfo?>())
+                .ToDictionary(p => p.Key, p => p.Value)))
+            .ToList();
+        return new(clusters, errors);
     }
 
     private static WalStreamInfoState? StateOf(string? raw) => raw switch
@@ -94,8 +170,18 @@ public static class BackupsParser
 
     private static long? Long(JsonElement root, string name)
         => root.TryGetProperty(name, out var v)
-           && (v.ValueKind == JsonValueKind.Number)
+           && v.ValueKind == JsonValueKind.Number
            && v.TryGetInt64(out var parsed)
             ? parsed
             : null;
+
+    private static Dictionary<string, long?> GetOrAdd(
+        Dictionary<string, Dictionary<string, long?>> source, string cluster)
+    {
+        if (source.TryGetValue(cluster, out var perShard))
+            return perShard;
+        var created = new Dictionary<string, long?>();
+        source[cluster] = created;
+        return created;
+    }
 }

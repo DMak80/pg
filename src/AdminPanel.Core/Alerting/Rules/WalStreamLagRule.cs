@@ -18,7 +18,7 @@ public sealed class WalStreamLagRule(IOptions<AlertsOptions> options) : IAlertRu
     {
         var nowUnix = context.NowUtc.ToUnixTimeSeconds();
         foreach (var backups in snapshot.Backups)
-        foreach (var (shard, wal) in backups.Shards)
+        foreach (var (shard, wal) in backups.Shards ?? new Dictionary<string, WalStreamInfo?>())
         {
             if (wal is not { State: WalStreamInfoState.Active })
                 continue;

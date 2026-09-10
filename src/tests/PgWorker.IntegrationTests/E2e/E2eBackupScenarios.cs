@@ -1,10 +1,5 @@
 using System.Text.Json;
-using Amazon.Runtime;
-using Amazon.S3;
-using Amazon.S3.Model;
-using FluentAssertions;
 using Npgsql;
-using PgWorker.Backups;
 using PgWorker.Core.Templates;
 using PgWorker.Etcd.Client;
 using PgWorker.Etcd.Parsing;
@@ -14,80 +9,309 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E t03 (AC1/AC2/AC7): кластер provisioned + MinIO → INSERT-нагрузка с
-// pg_switch_wal → сегменты в MinIO, ключ wal ACTIVE, цепочка непрерывна.
-[Collection(E2eCollection.Name)]
-public class E2eBackupScenarios(E2eFixture fixture)
+// E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
+// (своя docker-сеть, свой etcd, СВОЙ MinIO — withMinio:true; порт динамический)
+// + образ pgworker-backup:e2e + живой кластер воркером с Backups:Enabled=true.
+// COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
+// переснятием новым id; deprovisioning чистит джобы и префикс; ротация
+// backup_password включает backup_exec. Каждый Fact — своё окружение: методы
+// оставляют после себя Active-кластеры, и без per-method изоляции воркер
+// следующего Fact'а подхватывал бы чужие джобы (инцидент Release).
+public class E2eBackupScenarios
 {
-    private string Endpoint => fixture.EtcdEndpoint;
+    private const string Bucket = "pgworker-backups";
 
-    private EtcdGateway G => fixture.Gateway;
+    // Окружение Fact'а (своя сеть/etcd/MinIO); создаётся в начале каждого сценария.
+    private E2eEnvironment Fx = null!;
 
+    private string Endpoint => Fx.EtcdEndpoint;
+
+    private EtcdGateway G => Fx.Gateway;
+
+    // AAA: полный суточный цикл — PLANNED→RUNNING→UPLOADING→COMPLETED,
+    // поля канона, объекты full/<id>/ + wal/ в S3, чистка контейнера/volume
+    [Fact]
+    public async Task Backup_FullDaily_Completes()
+    {
+        // Arrange — кластер bkshop + policy (verify on_create) + воркер с бэкап-комплектом
+        DockerTrait.SkipIfUnavailable();
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await E2eEnvironment.StartAsync("bk-full", withMinio: true, ct: ct);
+        Fx = fx;
+        const string cluster = "bkshop";
+        await SeedClusterAsync(cluster);
+        await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
+            """{"full_max_age_sec":3600,"verify":{"on_create":true}}""", null, ct);
+        await using var app = await StartBackupHostAsync("bkfull", ct);
+
+        // Act/Assert 1 — COMPLETED на shard1 за ≤ 300 c
+        var completed = await E2eFixture.WaitForAsync(
+            async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
+            TimeSpan.FromSeconds(300), ct);
+        completed.Should().BeTrue("полный бэкап должен дойти до COMPLETED");
+
+        var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
+        var status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(done.Value)!;
+        status["state"].GetString().Should().Be("COMPLETED");
+        var walSeg = status["wal_start_segment"].GetString();
+        walSeg.Should().NotBeNullOrEmpty("wal_start_segment заполняется с UPLOADING");
+        status["node"].GetString().Should().NotBeNullOrEmpty();
+        status["role"].GetString().Should().BeOneOf("replica", "master");
+        status["started_unix"].GetInt64().Should().BeGreaterThan(0);
+        status["finished_unix"].GetInt64().Should().BeGreaterThanOrEqualTo(status["started_unix"].GetInt64());
+        status["size_bytes"].GetInt64().Should().BeGreaterThan(0);
+        status["verify"].GetProperty("state").GetString().Should().Be("PENDING");
+
+        // Assert 2 — объекты в S3: full/<id>/ с manifest и pg_wal/ + wal/<seg>
+        var id = done.Key.Split('/').Last();
+        var listing = await McLsAsync($"{cluster}/shard1/");
+        listing.Should().Contain($"full/{id}/backup_manifest");
+        listing.Should().Contain($"full/{id}/PG_VERSION");
+        listing.Should().Contain($"full/{id}/pg_wal/");
+        listing.Should().Contain($"wal/{walSeg}", "закрытый сегмент набора -X stream дублируется в wal/-префикс");
+
+        // Assert 3 — чистка: контейнера и staging volume нет. COMPLETED пишется
+        // в etcd ДО CleanupJobAsync (BackupProcess.PutAsync → CleanupJobAsync) —
+        // между итогом и удалением джоба/volume есть окно, поэтому чистка ждётся
+        // ограниченно (паттерн Backup_Deprovision_CleansPrefix), а не мгновенно.
+        var cleaned = await E2eFixture.WaitForAsync(async () =>
+        {
+            var jobContainers = await Fx.RunDockerAsync(
+            ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-full-{cluster}-"], ct);
+            if (jobContainers.Length > 0)
+                return false;
+            var stagingVolumes = await Fx.RunDockerAsync(
+            ["volume", "ls", "-q", "--filter", $"name=pgw-backup-{cluster}-"], ct);
+            return stagingVolumes.Length == 0;
+        }, TimeSpan.FromSeconds(60), ct);
+        cleaned.Should().BeTrue("ephemeral-джоб и staging volume удаляются после итога");
+    }
+
+    // AAA: недоступный S3 → FAILED с error; переснятие НОВЫМ id после бэкоффа
+    [Fact]
+    public async Task Backup_FailsOnBadS3_RetriesWithNewId()
+    {
+        // Arrange — S3-endpoint на заведомо закрытом порт 1 (tcpmux; НЕ тестовый
+        // хардкод: фиксированный протокольный «всегда закрыт»)
+        DockerTrait.SkipIfUnavailable();
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await E2eEnvironment.StartAsync("bk-bads3", withMinio: true, ct: ct);
+        Fx = fx;
+        const string cluster = "bkbads3";
+        await SeedClusterAsync(cluster);
+        await using var app = await StartBackupHostAsync(
+            "bkbads3", ct, s3EndpointOverride: "http://host.docker.internal:1");
+
+        // Act/Assert 1 — первая попытка FAILED с error ≤ 300 c
+        var failed = await E2eFixture.WaitForAsync(
+            async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("FAILED")),
+            TimeSpan.FromSeconds(300), ct);
+        failed.Should().BeTrue("попытка с недоступным S3 должна упасть в FAILED");
+        var failedKv = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("FAILED"));
+        var status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(failedKv.Value)!;
+        status["error"].GetString().Should().NotBeNullOrEmpty("причина фиксируется в статусе");
+
+        // Assert 2 — переснятие: вторая попытка с ДРУГИМ id (Retry BaseSec=2)
+        var retried = await E2eFixture.WaitForAsync(
+            async () => (await FullKeysAsync(cluster, "shard1")).Count >= 2,
+            TimeSpan.FromSeconds(120), ct);
+        retried.Should().BeTrue("бэкофф 2 c должен запустить переснятие новым id");
+    }
+
+    // AAA: deprovisioning не переживают джобы и префикс /pgworker/backups/<C>/
+    [Fact]
+    public async Task Backup_Deprovision_CleansPrefix()
+    {
+        // Arrange — кластер bkclean; ждём появления первой попытки (джоб жив)
+        DockerTrait.SkipIfUnavailable();
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await E2eEnvironment.StartAsync("bk-clean", withMinio: true, ct: ct);
+        Fx = fx;
+        const string cluster = "bkclean";
+        await SeedClusterAsync(cluster);
+        await using var app = await StartBackupHostAsync("bkclean", ct);
+        var started = await E2eFixture.WaitForAsync(
+            async () => (await FullKeysAsync(cluster, "shard1")).Count > 0,
+            TimeSpan.FromSeconds(300), ct);
+        started.Should().BeTrue("подсистема должна начать первую попытку");
+
+        // Act — state=TO_REMOVE (панель-семантика §4.2)
+        var config = await G.GetAsync(Endpoint, $"/clusters/{cluster}/config", ct);
+        config.Value.Should().NotBeNull();
+        var doc = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(config.Value!.Value)!;
+        doc["state"] = JsonSerializer.SerializeToElement("TO_REMOVE");
+        await G.PutAsync(Endpoint, $"/clusters/{cluster}/config",
+            JsonSerializer.Serialize(doc), null, ct);
+
+        // Assert — префикс бэкапов пуст; джобов и staging volume нет
+        var cleaned = await E2eFixture.WaitForAsync(async () =>
+        {
+            if ((await FullKeysAsync(cluster, "shard1")).Count > 0
+                || (await FullKeysAsync(cluster, "shard2")).Count > 0)
+                return false;
+            var containers = await Fx.RunDockerAsync(
+            ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-full-{cluster}-"], ct);
+            if (containers.Length > 0)
+                return false;
+            var volumes = await Fx.RunDockerAsync(
+            ["volume", "ls", "-q", "--filter", $"name=pgw-backup-{cluster}-"], ct);
+            return volumes.Length == 0;
+        }, TimeSpan.FromSeconds(180), ct);
+        cleaned.Should().BeTrue("deprovisioning должен убрать джобы, volume и префикс бэкапов");
+    }
+
+    // AAA: ротация per-cluster секретов включает backup_exec: NEW-пароль
+    // подключается к мастеру ролью backup_exec (R2-гвард, spec §7.4)
+    [Fact]
+    public async Task Backup_Rotator_IncludesBackupExec()
+    {
+        // Arrange — кластер bkrot с завершённым полным; OLD backup_password
+        DockerTrait.SkipIfUnavailable();
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await E2eEnvironment.StartAsync("bk-rot", withMinio: true, ct: ct);
+        Fx = fx;
+        const string cluster = "bkrot";
+        await SeedClusterAsync(cluster);
+        await using var app = await StartBackupHostAsync("bkrot", ct);
+        var completed = await E2eFixture.WaitForAsync(
+            async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
+            TimeSpan.FromSeconds(300), ct);
+        completed.Should().BeTrue("до ротации должен быть завершённый полный (G2 жил каждый тик)");
+
+        var oldPassword = (await G.GetAsync(Endpoint, $"/clusters/{cluster}/backup_password", ct)).Value!.Value;
+
+        // Act — заявка ротации (формат панели §9.8)
+        await G.PutAsync(Endpoint, $"/pgworker/rotations/{cluster}",
+            $$"""{"requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}},"requested_by":"e2e"}""",
+            null, ct);
+
+        // Assert 1 — backup_password сменился, заявка удалена
+        var rotated = await E2eFixture.WaitForAsync(async () =>
+        {
+            var current = await G.GetAsync(Endpoint, $"/clusters/{cluster}/backup_password", ct);
+            return current.Value is { } kv && kv.Value != oldPassword
+                && await GetOrNullAsync($"/pgworker/rotations/{cluster}") is null;
+        }, TimeSpan.FromSeconds(120), ct);
+        rotated.Should().BeTrue("ротация должна перезаписать backup_password и закрыть заявку");
+        var newPassword = (await G.GetAsync(Endpoint, $"/clusters/{cluster}/backup_password", ct)).Value!.Value;
+
+        // Assert 2 — NEW-пароль подключается user=backup_exec к мастеру shard1:
+        // DSN-ключ — multi-host с чужими кредами (bucket_admin), дубликаты
+        // User/Password в строке недопустимы — собираем параметры явно
+        // (пары host:port из ключа, Target Session Attributes=read-write).
+        var dsn = (await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/dsn"))!.Value;
+        dsn.Should().Contain(",", "multi-host DSN");
+        var hosts = System.Text.RegularExpressions.Regex.Match(dsn, "host=([^ ]+)").Groups[1].Value.Split(',');
+        var ports = System.Text.RegularExpressions.Regex.Match(dsn, "port=([^ ]+)").Groups[1].Value.Split(',');
+        var multiHost = string.Join(",", hosts.Zip(ports, (h, p) => $"{h}:{p}"));
+        var connected = await E2eFixture.WaitForAsync(async () =>
+        {
+            try
+            {
+                await using var con = new NpgsqlConnection(
+                    $"Host={multiHost};Database={cluster};Username=backup_exec;Password={newPassword};" +
+                    "Timeout=5;SSL Mode=Require;Trust Server Certificate=true;Target Session Attributes=read-write");
+                await con.OpenAsync(ct);
+                await using var cmd = new NpgsqlCommand("SELECT 1", con);
+                return await cmd.ExecuteScalarAsync(ct) is 1;
+            }
+            catch (NpgsqlException)
+            {
+                return false; // failover-окно/рестарт — повторим
+            }
+        }, TimeSpan.FromSeconds(60), ct);
+        connected.Should().BeTrue("роль backup_exec принимает новый пароль (гвард R2)");
+    }
+
+
+    // AAA: WAL-поток (t03, AC1/AC2/AC3): provisioned кластер + INSERT/pg_switch_wal
+    // → сегменты в MinIO, ключ wal ACTIVE с chain_start/last_uploaded, цепочка
+    // непрерывна, агент running, слот pgw_bkp_<C>_<X> на мастере.
     [Fact]
     public async Task WalStream_UploadsSegmentsContinuously()
     {
-        // Arrange — гейты: docker + образ t02 (до мержа t02 — явный skip)
+        // Arrange — гейт docker; skip-защита: общий образ t02/t03 обязан быть в дереве
         DockerTrait.SkipIfUnavailable();
-        if (fixture.BackupAgentImage is null)
-            Assert.Skip("docker/pgworker-backup.Dockerfile отсутствует — образ агента приходит из t02 (мерж-порядок t03 ← t02)");
+        if (!File.Exists(Path.Combine(
+                E2eFixture.FindRoot(AppContext.BaseDirectory), "docker", "PgWorker.Backup.Dockerfile")))
+            Assert.Skip("docker/PgWorker.Backup.Dockerfile отсутствует — общий образ джобов/агентов приходит из t02");
         var ct = TestContext.Current.CancellationToken;
-
-        // bucket per-install — ПРЯМЫМ AWSSDK-клиентом (создание bucket — не операция
-        // подсистемы, spec §3.1)
-        using var s3client = new AmazonS3Client(
-            new BasicAWSCredentials("minioadmin", "minioadmin"),
-            new AmazonS3Config { ServiceURL = fixture.MinioHostEndpoint, ForcePathStyle = true });
-        await s3client.PutBucketAsync(new PutBucketRequest { BucketName = "pgworker-backups-e2e" }, ct);
-
-        // сид кластера "shopb" (как SeedClusterAsync E2eScenarios) → StartHostAsync
-        await SeedClusterAsync("shopb");
-        await using var p1 = await fixture.StartHostAsync("p1b", ct: ct, backups: true);
+        await using var fx = await E2eEnvironment.StartAsync("wal-stream", withMinio: true, ct: ct);
+        Fx = fx;
+        const string cluster = "shopb";
+        await SeedClusterAsync(cluster);
+        await using var app = await StartWalHostAsync("walstream", ct);
 
         var provisioned = await E2eFixture.WaitForAsync(
-            () => ProvisionedAsync("shopb"), TimeSpan.FromSeconds(360), ct);
+            () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning должен дойти до DONE до WAL-нагрузки");
 
-        // Мастер shard1 из portalloc (host-порт) + app-пароль из etcd
-        var (host, port) = await MasterAsync("shopb", "shard1", ct);
-        var appPassword = await fixture.GetAppPasswordAsync("shopb", ct);
-        var dsn = $"Host={host};Port={port};Database=shopb;Username=app_user;Password={appPassword}";
-        // pg_switch_wal по умолчанию superuser-only (ревью Ф7 №2) — admin-DSN
-        // собирается тем же билдером, что и прод-путь воркера.
-        var adminDsn = DatabaseProvisioner.BuildAdminDsn(host, port, "postgres",
+        // Мастер shard1 (published pg-порт) + admin/superuser-DSN: нагрузка и
+        // pg_switch_wal (superuser-only) выполняются одним соединением — как
+        // t02 SqlListAsync (dsn-креды app_user недоступны тесту напрямую).
+        var (pgHost, pgPort) = await MasterPgAsync(cluster, "shard1", ct);
+        var adminDsn = DatabaseProvisioner.BuildAdminDsn("localhost", pgPort, cluster,
             new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
 
         // Act — INSERT-нагрузка: большие строки + pg_switch_wal форсируют закрытие
-        // сегментов (без таймаутов, spec §5); switch — через admin-соединение
-        await GenerateWalAsync(dsn, adminDsn, ct);
+        // сегментов 16 МБ (без таймаутов, spec §5).
+        await GenerateWalAsync(adminDsn, ct);
 
-        // Assert 1 — бюджет 120 с: сегменты в MinIO, все без .partial (AC1)
-        var backupS3 = new BackupS3(new BackupsRuntimeOptions(
-            fixture.BackupAgentImage!, fixture.MinioHostEndpoint, fixture.MinioAgentEndpoint, null,
-            "pgworker-backups-e2e", "minioadmin", "minioadmin", true,
-            "/backup-staging", null, null, null,
-            WalVerifyIntervalSec: 2, WalLagMaxSegments: 100000, WalStaleSec: 600));
-        List<WalObject> listed = [];
+        // BackupS3 host-клиент: воркер ходит на localhost (published порт MinIO),
+        // агентам отдаётся advertised (Fx.S3Endpoint = host.docker.internal:<порт>).
+        var hostEndpoint = Fx.S3Endpoint.Replace(
+            "host.docker.internal:", "localhost:", StringComparison.Ordinal);
+        var backupS3 = new PgWorker.Backups.BackupS3(new PgWorker.Backups.BackupsRuntimeOptions
+        {
+            Enabled = true,
+            S3Endpoint = hostEndpoint,
+            S3AdvertisedEndpoint = Fx.S3Endpoint,
+            S3Bucket = Bucket,
+            S3AccessKey = "minioadmin",
+            S3SecretKey = "minioadmin",
+            S3PathStyle = true,
+            JobImage = E2eEnvironment.JobImage,
+        });
+
+        // Assert 1 — бюджет 120 c: сегменты в MinIO, все без .partial (AC1)
+        List<PgWorker.Backups.WalObject> listed = [];
         var uploaded = await E2eFixture.WaitForAsync(async () =>
         {
-            var list = await backupS3.ListWalAsync("shopb", "shard1", ct: ct);
+            var list = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
             if (!list.IsSuccess)
                 return false;
             listed = [.. list.Value];
             return listed.Count >= 2;
         }, TimeSpan.FromSeconds(120), ct);
+        if (!uploaded)
+        {
+            // диагностика провала доставки: журнал воркера, ключ wal, агенты, креды
+            var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
+            var walKv = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal");
+            var pwKv = await GetOrNullAsync($"/clusters/{cluster}/backup_password");
+            var agentsPs = await Fx.RunDockerAsync(
+                ["ps", "-a", "--format", "{{.Names}} {{.State}}", "--filter", $"name=pgw-backup-wal-{cluster}-"], ct);
+            var jobLogs = agentsPs.Length > 0
+                ? await Fx.RunDockerAsync(["logs", "--tail", "15", agentsPs.Split('\n')[0].Split(' ')[0]], ct)
+                : "(агентов нет)";
+            throw new ApplicationException(
+                $"сегменты не доставлены: journal=[{workKv?.Value[..Math.Min(400, workKv.Value.Length)]}] " +
+                $"wal=[{walKv?.Value ?? "-"}] backup_password={(pwKv is null ? "-" : "есть")} " +
+                $"agents=[{agentsPs.Replace('\n', ';')}] agentLog=[{jobLogs[..Math.Min(600, jobLogs.Length)]}]");
+        }
         uploaded.Should().BeTrue("сегменты обязаны появиться в MinIO за бюджет (AC1)");
         listed.Select(o => o.Name).Should().OnlyContain(n => !n.EndsWith(".partial"));
 
-        // Assert 2 — etcd-ключ wal: ACTIVE, slot/master, last_uploaded свежий (AC2)
-        var writer = new WalStatusWriter(G, [Endpoint]);
-        var walRead = await E2eFixture.WaitForAsync(async () =>
+        // Assert 2 — ключ wal ACTIVE, slot/master, last_uploaded свежий (AC2)
+        var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
+        var walActive = await E2eFixture.WaitForAsync(async () =>
         {
-            var read = await writer.ReadAsync("shopb", "shard1", ct);
-            return read.IsSuccess && read.Value is { State: WalStreamStatus.Active };
+            var read = await writer.ReadAsync(cluster, "shard1", ct);
+            return read.IsSuccess && read.Value is { State: PgWorker.Etcd.Parsing.WalStreamStatus.Active };
         }, TimeSpan.FromSeconds(120), ct);
-        walRead.Should().BeTrue("ключ wal обязан перейти в ACTIVE (AC2)");
-        var wal = (await writer.ReadAsync("shopb", "shard1", ct)).Value!;
-        wal.Slot.Should().Be("pgw_bkp_shopb_shard1");
+        walActive.Should().BeTrue("ключ wal обязан перейти в ACTIVE (AC2)");
+        var wal = (await writer.ReadAsync(cluster, "shard1", ct)).Value!;
+        wal.Slot.Should().Be($"pgw_bkp_{cluster}_shard1");
         wal.MasterNode.Should().NotBeEmpty();
         wal.ChainStartSegment.Should().NotBeEmpty();
         listed.Select(o => o.Name).Should().Contain(wal.LastUploadedSegment,
@@ -95,99 +319,188 @@ public class E2eBackupScenarios(E2eFixture fixture)
         (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - wal.LastUploadedUnix!.Value)
             .Should().BeLessThan(120, "last_uploaded_unix свежий (поток жив)");
 
-        // Assert 3 — цепочка непрерывна (AC3-факт)
-        var chainStart = WalFileName.TryParse(wal.ChainStartSegment)!.Value;
-        var chain = WalChain.Check(chainStart, listed.Select(o => o.Name));
-        chain.IsContinuous.Should().BeTrue($"дыр быть не должно: {chain.GapError}");
+        // Assert 3 — цепочка непрерывна от chain_start (AC3-факт): поллинг —
+        // одиночный list ловит момент частичной доставки (сегменты грузятся
+        // последовательно, list между ними видит временную «дыру»).
+        var chainStart = PgWorker.Backups.WalFileName.TryParse(wal.ChainStartSegment)!.Value;
+        var continuous = await E2eFixture.WaitForAsync(async () =>
+        {
+            var list = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
+            if (!list.IsSuccess)
+                return false;
+            listed = [.. list.Value];
+            var check = PgWorker.Backups.WalChain.Check(chainStart, listed.Select(o => o.Name));
+            return check.IsContinuous;
+        }, TimeSpan.FromSeconds(120), ct);
+        continuous.Should().BeTrue("цепочка от chain_start обязана стать непрерывной");
 
-        // Assert 4 — контейнер агента running (docker ps) + слот на мастере (AC1)
-        var agents = await fixture.RunDockerAsync(
-            ["ps", "--filter", "name=pgw-backup-wal-shopb-shard1", "--format", "{{.Names}} {{.State}}"], ct);
-        agents.Should().Contain("pgw-backup-wal-shopb-shard1");
-        await using var conn = new NpgsqlConnection(dsn);
-        await conn.OpenAsync(ct);
-        await using var cmd = new NpgsqlCommand(
-            "SELECT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = 'pgw_bkp_shopb_shard1')", conn);
-        ((bool)(await cmd.ExecuteScalarAsync(ct))!).Should().BeTrue("слот создан воркером на мастере (AC1)");
+        // Assert 4 — агент running (docker ps) + слот на мастере (AC1)
+        var agents = await Fx.RunDockerAsync(
+            ["ps", "--filter", $"name=pgw-backup-wal-{cluster}-shard1", "--format", "{{.Names}} {{.State}}"], ct);
+        agents.Should().Contain($"pgw-backup-wal-{cluster}-shard1 running");
+        await using var adminConn = new NpgsqlConnection(adminDsn);
+        await adminConn.OpenAsync(ct);
+        await using var slotCmd = new NpgsqlCommand(
+            "SELECT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = @slot)",
+            adminConn) { Parameters = { new() { ParameterName = "slot", Value = $"pgw_bkp_{cluster}_shard1" } } };
+        ((bool)(await slotCmd.ExecuteScalarAsync(ct))!).Should().BeTrue("слот создан воркером на мастере (AC1)");
 
-        // Assert 5 — каркасный парсер t01 читает ключ без parseErrors (AC2)
-        var kvs = (await G.RangeAsync(Endpoint, "/pgworker/backups/shopb/", ct)).Value;
+        // Assert 5 — каркасный парсер t01/t02 читает wal-ключ без parseErrors (AC2)
+        var kvs = (await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/", ct)).Value;
         var parsed = BackupsParser.Parse(kvs, out var parseErrors);
         parseErrors.Should().BeEmpty();
-        parsed.Value.Should().Contain(b => b.Cluster == "shopb");
+        parsed.Value.Should().Contain(b => b.Cluster == cluster);
     }
 
-    // ===== Хелперы (по образцу E2eScenarios) =====
+    // ===== Хелперы =====
 
-    // Сид кластера в стиле панели: config NOT_INITIALIZED, 1 шард × replicas=1,
-    // routing/status всех N, заявки request_*.
+    // Воркер с включённой подсистемой бэкапов: S3 на локальный MinIO,
+    // образ pgworker-backup:e2e, ускоренный бэкофф.
+    private Task<HostInstance> StartBackupHostAsync(
+        string name, CancellationToken ct, string? s3EndpointOverride = null)
+        => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
+        {
+            ["PgWorker__Backups__Enabled"] = "true",
+            ["PgWorker__Backups__S3__Endpoint"] = s3EndpointOverride ?? Fx.S3Endpoint,
+            ["PgWorker__Backups__S3__Bucket"] = Bucket,
+            ["PgWorker__Backups__S3__AccessKey"] = "minioadmin",
+            ["PgWorker__Backups__S3__SecretKey"] = "minioadmin",
+            ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
+            ["PgWorker__Backups__Retry__BaseSec"] = "2",
+            ["PgWorker__Backups__Retry__MaxSec"] = "4",
+        }, ct: ct);
+
+    private async Task<IReadOnlyList<Kv>> FullKeysAsync(string cluster, string shard)
+        => (await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/{shard}/full/",
+            TestContext.Current.CancellationToken)).Value;
+
+    private async Task<Kv?> GetOrNullAsync(string key)
+        => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
+
+    // mc ls --recursive s3-пути кластера (mc в сети MinIO окружения — по алиасу).
+    private async Task<string> McLsAsync(string path)
+        => await Fx.RunDockerAsync(
+        [
+            "run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
+            "-c", $"mc alias set t http://e2e-minio:9000 minioadmin minioadmin >/dev/null && mc ls --recursive t/{Bucket}/{path}",
+        ], TestContext.Current.CancellationToken);
+
+    // Сид кластера в стиле панели (копия E2eRotateScenarios.SeedClusterAsync).
     private async Task SeedClusterAsync(string cluster)
     {
         var ct = TestContext.Current.CancellationToken;
         var config = $$"""
-            {"buckets":4,"dbname":"{{cluster}}","created_unix":1755800000,"state":"NOT_INITIALIZED","bucket_admin_password":"{{E2eFixture.BucketAdminPassword}}"}
+            {"buckets":2,"dbname":"{{cluster}}","created_unix":1755800000,"state":"NOT_INITIALIZED","bucket_admin_password":"{{E2eFixture.BucketAdminPassword}}"}
             """;
         await G.PutAsync(Endpoint, $"/clusters/{cluster}/config", config, null, ct);
-        await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/shard1/replicas", "1", null, ct);
-        await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/shard1/nodes/shard1a/state", "NOT_INITIALIZED", null, ct);
-        await G.PutAsync(Endpoint, $"/service/{cluster}-shard1/request_cpu", "1", null, ct);
-        await G.PutAsync(Endpoint, $"/service/{cluster}-shard1/request_mem", "2Gi", null, ct);
-        for (var i = 0; i < 4; i++)
+        foreach (var shard in new[] { "shard1", "shard2" })
         {
-            await G.PutAsync(Endpoint, $"/clusters/{cluster}/buckets/routing/bucket_{i}", "shard1", null, ct);
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/replicas", "2", null, ct);
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}a/state", "NOT_INITIALIZED", null, ct);
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}b/state", "NOT_INITIALIZED", null, ct);
+            await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_cpu", "2", null, ct);
+            await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_mem", "8Gi", null, ct);
+        }
+
+        for (var i = 0; i < 2; i++)
+        {
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/buckets/routing/bucket_{i}", $"shard{i + 1}", null, ct);
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/buckets/status/bucket_{i}",
                 """{"state":"NOT_INITIALIZED"}""", null, ct);
         }
     }
+    // Воркер с ВКЛЮЧЁННОЙ подсистемой бэкапов: t02-комплект джобов + t03 Wal-поток.
+    // S3 для воркера — published порт (localhost), для агентов/джобов — advertised
+    // (host.docker.internal); пороги WAL-контроля — короткие.
+    private Task<HostInstance> StartWalHostAsync(string name, CancellationToken ct)
+        => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
+        {
+            ["PgWorker__Backups__Enabled"] = "true",
+            ["PgWorker__Backups__S3__Endpoint"] = Fx.S3Endpoint.Replace(
+                "host.docker.internal:", "localhost:", StringComparison.Ordinal),
+            ["PgWorker__Backups__S3__AdvertisedEndpoint"] = Fx.S3Endpoint,
+            ["PgWorker__Backups__S3__Bucket"] = Bucket,
+            ["PgWorker__Backups__S3__AccessKey"] = "minioadmin",
+            ["PgWorker__Backups__S3__SecretKey"] = "minioadmin",
+            ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
+            ["PgWorker__Backups__Retry__BaseSec"] = "2",
+            ["PgWorker__Backups__Retry__MaxSec"] = "4",
+            ["PgWorker__Backups__Wal__VerifyIntervalSec"] = "2",
+            ["PgWorker__Backups__Wal__StaleSec"] = "600",
+            ["PgWorker__Backups__Wal__LagMaxSegments"] = "100000",
+        }, ct: ct);
 
-    private async Task<bool> ProvisionedAsync(string cluster)
-    {
-        var config = await G.GetAsync(Endpoint, $"/clusters/{cluster}/config",
-            TestContext.Current.CancellationToken);
-        if (config.Value is null)
-            return false;
-        var doc = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(config.Value.Value);
-        if (doc is null || doc.ContainsKey("state"))
-            return false;
-        var dsn = await G.GetAsync(Endpoint, $"/clusters/{cluster}/shards/shard1/dsn",
-            TestContext.Current.CancellationToken);
-        var node = await G.GetAsync(Endpoint,
-            $"/clusters/{cluster}/shards/shard1/nodes/shard1a/state", TestContext.Current.CancellationToken);
-        return dsn.Value is not null && node.Value is { Value: "RUNNING" };
-    }
+    // Published pg-порт мастера шарда из portalloc (host-клиент: localhost).
+    // Резолв фактического primary — по пробам Patroni /primary (t02-подход
+    // WaitForMasterAsync: master-ключ host:0 при EnableDoorman=false
+    // недискриминантен); primary появляется после dsn/RUNNING — ждём.
+    private static readonly HttpClient PatroniHttp = new() { Timeout = TimeSpan.FromSeconds(3) };
 
-    // Мастер шарда: host-порт pg из portalloc (Npgsql с хоста).
-    private async Task<(string Host, int Port)> MasterAsync(string cluster, string shard, CancellationToken ct)
+    private async Task<(string Host, int Port)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
         kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
-        var master = await G.GetAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/master", ct);
-        master.Value.Should().NotBeNull("master-ключ пишется при provisioning");
-        var masterName = JsonSerializer.Deserialize<JsonElement>(master.Value!.Value).GetString()!.Split(':')[0];
-        var entry = entries[$"{shard}/{masterName}"];
+        string? primary = null;
+        var resolved = await E2eFixture.WaitForAsync(async () =>
+        {
+            foreach (var (key, addr) in entries
+                         .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
+                         .OrderBy(p => p.Key, StringComparer.Ordinal))
+            {
+                try
+                {
+                    using var response = await PatroniHttp.GetAsync(
+                        $"http://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
+                    if (response.IsSuccessStatusCode)
+                    {
+                        primary = key.Split('/')[1];
+                        return true;
+                    }
+                }
+                catch (Exception)
+                {
+                    // проба (рестарт/ещё не готова) — следующая нода
+                }
+            }
+
+            return false;
+        }, TimeSpan.FromSeconds(120), ct);
+        resolved.Should().BeTrue("primary шарда обязан определиться пробами Patroni");
+        var entry = entries[$"{shard}/{primary}"];
         return (entry.GetProperty("host").GetString()!, entry.GetProperty("pg").GetInt32());
     }
 
-    // Нагрузка: CREATE TABLE + 30 циклов INSERT больших строк (app_user) +
-    // pg_switch_wal через admin/superuser-соединение (ревью Ф7 №2: app_user без
-    // GRANT вызовет permission denied) — форсированное закрытие сегментов 16 МБ.
-    private static async Task GenerateWalAsync(string dsn, string adminDsn, CancellationToken ct)
+    // Нагрузка под admin/superuser: CREATE TABLE + 30 циклов INSERT больших строк
+    // + pg_switch_wal (superuser-only) — форсированное закрытие сегментов 16 МБ.
+    private static async Task GenerateWalAsync(string adminDsn, CancellationToken ct)
     {
-        await using var conn = new NpgsqlConnection(dsn);
+        await using var conn = new NpgsqlConnection(adminDsn);
         await conn.OpenAsync(ct);
         await using (var create = new NpgsqlCommand(
             "CREATE TABLE IF NOT EXISTS wal_load(id bigserial, payload text)", conn))
             await create.ExecuteNonQueryAsync(ct);
-        await using var admin = new NpgsqlConnection(adminDsn);
-        await admin.OpenAsync(ct);
         for (var i = 0; i < 30; i++)
         {
             await using var insert = new NpgsqlCommand(
                 "INSERT INTO wal_load(payload) SELECT repeat('x', 1048576) FROM generate_series(1, 8)", conn);
             await insert.ExecuteNonQueryAsync(ct);
-            await using var switchWal = new NpgsqlCommand("SELECT pg_switch_wal()", admin);
+            await using var switchWal = new NpgsqlCommand("SELECT pg_switch_wal()", conn);
             await switchWal.ExecuteScalarAsync(ct);
         }
     }
+
+    // Условие готовности provisioning: config без state + dsn + нода RUNNING.
+    private async Task<bool> ProvisionedAsync(string cluster)
+    {
+        var config = await GetOrNullAsync($"/clusters/{cluster}/config");
+        if (config is null)
+            return false;
+        if (JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(config.Value)!.ContainsKey("state"))
+            return false;
+        var dsn = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/dsn");
+        var node = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/nodes/shard1a/state");
+        return dsn is not null && node is { Value: "RUNNING" };
+    }
+
 }

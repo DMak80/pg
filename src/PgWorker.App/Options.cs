@@ -270,21 +270,37 @@ public sealed class BackupsOptions
 
     public BackupsAgentOptions Agent { get; set; } = new();
 
-    /// <summary>Образ джобов/агентов бэкапов (контракт arch/19 §2: только инструменты,
-    /// команда inline от воркера; сборка образа — t02).</summary>
-    public string AgentImage { get; set; } = "pgworker-backup:latest";
+    public BackupsJobOptions Job { get; set; } = new();
+
+    public BackupsRetryOptions Retry { get; set; } = new();
 
     /// <summary>WAL-поток (t03, arch/19 §3/§9): расписание контроля, пороги.</summary>
     public BackupsWalOptions Wal { get; set; } = new();
 
-    /// <summary>Runtime-склейка для WalStreamProcess (t03).</summary>
+    /// <summary>Runtime-опции подсистемы бэкапов: склейка Backups-секции
+    /// (t02: джобы/ретраи; t03: advertised-S3/Wal-пороги) — именованными
+    /// аргументами: record расширялся с обеих сторон.</summary>
     public BackupsRuntimeOptions ToRuntime() => new(
-        AgentImage,
-        S3.Endpoint, S3.AdvertisedEndpoint, S3.Region, S3.Bucket,
-        S3.AccessKey, S3.SecretKey, S3.PathStyle,
-        Staging.Dir, Staging.QuotaBytes,
-        Agent.Cpu, Agent.Mem,
-        Wal.VerifyIntervalSec, Wal.LagMaxSegments, Wal.StaleSec);
+        Enabled: Enabled,
+        FullMaxAgeSec: Policy.FullMaxAgeSec,
+        VerifyOnCreate: Policy.VerifyOnCreate,
+        S3Endpoint: S3.Endpoint,
+        S3AdvertisedEndpoint: S3.AdvertisedEndpoint,
+        S3Region: S3.Region,
+        S3Bucket: S3.Bucket,
+        S3AccessKey: S3.AccessKey,
+        S3SecretKey: S3.SecretKey,
+        S3PathStyle: S3.PathStyle,
+        JobImage: Job.Image,
+        RetryBaseSec: Retry.BaseSec,
+        RetryMaxSec: Retry.MaxSec,
+        StagingDir: Staging.Dir,
+        StagingQuotaBytes: Staging.QuotaBytes,
+        AgentCpu: Agent.Cpu,
+        AgentMem: Agent.Mem,
+        WalVerifyIntervalSec: Wal.VerifyIntervalSec,
+        WalLagMaxSegments: Wal.LagMaxSegments,
+        WalStaleSec: Wal.StaleSec);
 
     /// <summary>Fail-fast старта (образец TLS arch/14 §2.2.1): Enabled=true
     /// обязан иметь полный S3-комплект; false — подсистема не активна.</summary>
@@ -293,7 +309,25 @@ public sealed class BackupsOptions
            || (!string.IsNullOrWhiteSpace(S3.Endpoint)
                && !string.IsNullOrWhiteSpace(S3.Bucket)
                && !string.IsNullOrWhiteSpace(S3.AccessKey)
-               && !string.IsNullOrWhiteSpace(S3.SecretKey));
+               && !string.IsNullOrWhiteSpace(S3.SecretKey)
+               && !string.IsNullOrWhiteSpace(Job.Image));
+}
+
+/// <summary>Образ джоба полного бэкапа (arch/19 §2/§9, t02): собирается из
+/// docker/PgWorker.Backup.Dockerfile; запуск — воркер, содержимое — без .NET.</summary>
+public sealed class BackupsJobOptions
+{
+    public string Image { get; set; } = "pgworker-backup:dev";
+}
+
+/// <summary>Бэкофф переснятия FAILED-полного (arch/19 §2, t02):
+/// задержка n-й попытки после последнего COMPLETED =
+/// min(BaseSec·2^(n−1), MaxSec), без лимита попыток.</summary>
+public sealed class BackupsRetryOptions
+{
+    public int BaseSec { get; set; } = 300;
+
+    public int MaxSec { get; set; } = 3600;
 }
 
 /// <summary>S3-хранилище бэкапов (arch/19 §5/§7): per-install креды — ТОЛЬКО

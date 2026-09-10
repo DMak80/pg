@@ -90,6 +90,13 @@ public class ClusterDriverTests
             return Task.FromResult(Result.Success());
         }
 
+        // t02: логи джобов бэкапов — стаб не нужен драйверным тестам, трекаем вызов.
+        public Task<Result<string>> GetContainerLogsAsync(string idOrName, int tail, CancellationToken ct)
+        {
+            Calls.Add(("logs", idOrName));
+            return Task.FromResult(Result<string>.Success(""));
+        }
+
         public Task<Result<string>> ExecAsync(string containerId, IReadOnlyList<string> cmd, CancellationToken ct)
         {
             Calls.Add(("exec", containerId));

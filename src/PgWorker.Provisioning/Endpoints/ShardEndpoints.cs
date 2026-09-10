@@ -120,6 +120,32 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
         return Result<NodeAddress?>.Success(null);
     }
 
+    // Источник полного бэкапа (t02, arch/19 §2/§6): штатно sync-standby
+    // (Patroni GET /cluster: role=replica, state=running, sync-статус) —
+    // мастер не трогаем; нет sync-реплики/недоступна → fallback мастер
+    // (ResolveMasterAsync, журнал-факт role=master).
+    public async Task<Result<NodeAddress?>> ResolveBackupSourceAsync(
+        string cluster, ShardSpec shard, IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
+    {
+        var shardNodes = addresses
+            .Where(p => p.Key.StartsWith($"{shard.Name}/", StringComparison.Ordinal))
+            .ToDictionary(p => p.Key.Split('/')[1], p => p.Value);
+
+        foreach (var node in shardNodes)
+        {
+            var members = await probe.GetClusterAsync(node.Value, ct);
+            if (!members.IsSuccess)
+                continue; // нода недоступна — пробуем следующую
+            var sync = members.Value.FirstOrDefault(m =>
+                m.Role == "replica" && m.State == "running" && m.Sync == true
+                && shardNodes.ContainsKey(m.Name));
+            if (sync is not null)
+                return Result<NodeAddress?>.Success(shardNodes[sync.Name]);
+        }
+
+        return await ResolveMasterAsync(cluster, shard, addresses, ct);
+    }
+
     // Точечный GET с failover-обёрткой (паттерн ReadPortAllocAsync).
     private async Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
     {

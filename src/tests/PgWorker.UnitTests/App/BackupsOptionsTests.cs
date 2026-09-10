@@ -70,6 +70,39 @@ public class BackupsOptionsTests
     }
 
     [Fact]
+    public void Defaults_JobRetry_CanonValues()
+    {
+        // Arrange / Act — дефолты t02 (arch/19 §9): образ джоба + бэкофф 300/3600.
+        var options = new BackupsOptions();
+
+        // Assert
+        options.Job.Image.Should().Be("pgworker-backup:dev");
+        options.Retry.BaseSec.Should().Be(300);
+        options.Retry.MaxSec.Should().Be(3600);
+    }
+
+    [Fact]
+    public void Enabled_EmptyJobImage_Invalid()
+    {
+        // Arrange — включили с S3-комплектом, но образ джоба не задан.
+        var options = new BackupsOptions
+        {
+            Enabled = true,
+            S3 = new BackupsS3Options
+            {
+                Endpoint = "http://host.docker.internal:9000",
+                Bucket = "pgworker-backups",
+                AccessKey = "minioadmin",
+                SecretKey = "minioadmin",
+            },
+            Job = new BackupsJobOptions { Image = "" },
+        };
+
+        // Act / Assert — fail-fast старта (Program.cs ValidateOnStart).
+        options.IsValid().Should().BeFalse();
+    }
+
+    [Fact]
     public void Defaults_PolicyStagingAgent_CanonValues()
     {
         // Arrange / Act — дефолты каркаса (арх/19 §4/§6/§9).
@@ -96,7 +129,7 @@ public class BackupsOptionsTests
         // Arrange
         var options = new BackupsOptions
         {
-            AgentImage = "pgworker-backup:test",
+            Job = new BackupsJobOptions { Image = "pgworker-backup:test" },
             S3 = new BackupsS3Options
             {
                 Endpoint = "http://localhost:9000",
@@ -112,7 +145,7 @@ public class BackupsOptionsTests
         var runtime = options.ToRuntime();
 
         // Assert
-        runtime.AgentImage.Should().Be("pgworker-backup:test");
+        runtime.JobImage.Should().Be("pgworker-backup:test");
         runtime.AgentS3Endpoint.Should().Be("http://host.docker.internal:9000");
         runtime.WalVerifyIntervalSec.Should().Be(5);
         runtime.WalLagMaxSegments.Should().Be(10);

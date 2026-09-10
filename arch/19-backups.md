@@ -60,28 +60,63 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   `--checkpoint=spread`, `--manifest-checksums=SHA256`).
 - **Исполнитель**: ephemeral docker-контейнер джоба
   `pgw-backup-full-<C>-<X>-<id>`, запускает PgWorker; образ — лёгкий
-  `pgworker-backup` (отдельный Dockerfile в `docker/`, сборка — t02).
-  **Контракт образа** (общий для джобов t02 и агентов t03): образ содержит
-  ТОЛЬКО инструменты — postgres-клиентские утилиты (`pg_basebackup`,
-  `pg_receivewal`, libpq), `mc` (MinIO/S3-клиент) и `bash`; S3-шиппер НЕ
-  встраивается в образ — команду запуска (bash-скрипт: pg_*-утилита + цикл
-  доставки в S3 через `mc`) воркер передаёт inline при создании контейнера
-  (механика — §3): поведение агента/джоба версионируется кодом воркера,
-  смена механики не требует пересборки образа.
-- **Источник**: реплика шарда (sync-standby из Patroni `GET /cluster`);
+  `pgworker-backup` (отдельный Dockerfile в `docker/` —
+  `PgWorker.Backup.Dockerfile` + `docker/backup/entrypoint.sh`, сборка —
+  t02). **Контракт образа** (общий для джобов t02 и агентов t03): образ
+  содержит ТОЛЬКО инструменты — postgres-клиентские утилиты (`pg_basebackup`,
+  `pg_receivewal`, libpq), `mc` (MinIO/S3-клиент; работает с любым S3) и
+  `bash`; S3-шиппер НЕ встраивается в образ — механику запуска (bash-скрипт:
+  pg_*-утилита + цикл доставки в S3 через `mc`) воркер версионирует кодом:
+  джоб полного — ENTRYPOINT-скрипт образа с env-параметрами (t02), WAL-агент —
+  inline-команда при создании контейнера (t03, §3). Джоб не публикует портов
+  (клиент) и запускается на docker-хосте источника (адрес ноды достижим по
+  advertised-правилу ниже; оттуда же достижим S3-endpoint — он per-install,
+  см. §7).
+- **Источник**: реплика шарда (sync-standby из Patroni `GET /cluster`:
+  member с `state=running`, `role=replica`, sync-статусом);
   реплика недоступна/отстала → fallback на мастер (резолв мастера —
   существующий `ShardEndpoints`, [14-pgworker.md](14-pgworker.md) §5 F).
   Источник фиксируется в etcd-статусе (`node`, `role`).
 - **Пайплайн джоба**: staging-каталог (ephemeral volume) →
-  `pg_basebackup -D <staging>` → потокная загрузка в S3 файлами 1:1
-  объектами (включая `backup_manifest`), WAL-сегменты набора `-X stream` —
-  в общий WAL-префикс шарда → атомарная фиксация статуса в etcd (§4).
+  `pg_basebackup -D <staging>` → загрузка в S3 (`mc cp` файлами 1:1
+  объектами, включая `backup_manifest` и `pg_wal/`) → результат в stdout.
+  Прогресс и результат джоб публикует структурированными JSON-строками в
+  stdout (`{"phase":"basebackup"}`, `{"phase":"uploading"}`, финальный
+  result `{"ok":true,"wal_start_segment":…,"size_bytes":…}` или
+  `{"ok":false,"error":…}`); воркер поллит логи контейнера тиками
+  (`GET /containers/<id>/logs`), отражает фазы в etcd-статусе и по exit-коду
+  + result-JSON фиксирует итог — **etcd пишет ТОЛЬКО воркер** (§4), джоб
+  контракта etcd не знает. `wal_start_segment` — из `backup_label`
+  (START WAL LOCATION). После фиксации итога воркер удаляет контейнер и
+  staging-volume джоба. Конфигурация джоба — только env контейнера от
+  воркера: подключение к источнику, S3-комплект (§7), префикс `<C>/<X>`,
+  путь staging `PGW_BK_STAGING_DIR` (опция `Staging.Dir`, дефолт
+  `/backup-staging` — точка монтирования staging-volume в джобе).
+- **WAL набора `-X stream` (t02)**: файлы бэкапа грузятся строго 1:1 в
+  `full/<id>/` ВКЛЮЧАЯ `pg_wal/` (база `pg_verifybackup`, t04 — manifest
+  перечисляет и WAL-файлы); ЗАТЕМ закрытые сегменты этого набора
+  дублируются в общий WAL-префикс `wal/` шарда (стартовая точка цепочки
+  для t03; дублирование осознанное — снимает конфликт «layout vs общий
+  префикс», закрытый сегмент = один объект, перезапись идемпотентна).
 - **Идентификатор**: `id = YYYYMMDDHHMMSSZ` (UTC старта, сортируемый);
   коллизия в пределах шарда — суффикс `-2`, `-3`…; детерминизм имён — как у
   `pgw-<C>-<X>-<n>` ([14-pgworker.md](14-pgworker.md) §6).
 - **Подключение**: адресация из portalloc (pg-порты нод) в том же namespace
   адресов, что панель (advertised-правило
   [14-pgworker.md](14-pgworker.md) §2.4 п.5); БД-роль — §7.
+- **Планировщик (rolling, t02)**: воркер тиками под клэймом `<C>` для
+  каждого шарда Active-кластера с `dsn`: возраст последнего COMPLETED
+  полного > `full_max_age_sec` → создать `full/<id>` (PLANNED → запуск
+  джоба → RUNNING); инвариант — максимум один активный
+  (PLANNED/RUNNING/UPLOADING) полный на шард одновременно. FAILED →
+  переснятие НОВЫМ id (`pg_basebackup` не резюмится; FAILED-записи —
+  история) с бэкоффом `min(Retry.BaseSec·2^(n−1), Retry.MaxSec)`, где n —
+  число FAILED с момента последнего COMPLETED шарда (вычислимо из истории
+  ключей — дополнительных полей контракта не требуется). Лимита попыток
+  нет: порог «долго без валидного» — суточный алерт панели (§4). Takeover:
+  статус в etcd + детерминированное имя контейнера — новый инстанс
+  продолжает супервизить; RUNNING-статус без контейнера/логов → FAILED
+  (переснятие по общему правилу).
 
 ## 3. Online-WAL: pg_receivewal-агент (реализация — t03)
 
@@ -156,15 +191,24 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
 
 | Ключ | Значение |
 |---|---|
-| `/pgworker/backups/<C>/policy` | per-cluster политика: `{"retention":{"days":7,"weeks":4,"months":6},"full_max_age_sec":86400,"verify":{"on_create":true}}`; пишет воркер (приём через API — t02/t06); отсутствует → дефолт `PgWorker:Backups:Policy` |
-| `/pgworker/backups/<C>/<X>/full/<id>` | статус полного: `{"state":"PLANNED\|RUNNING\|UPLOADING\|COMPLETED\|FAILED\|DELETING","node":"<n>","role":"replica\|master","started_unix","finished_unix"?,"wal_start_segment","size_bytes"?,"error"?,"verify":{"state":"PENDING\|OK\|FAILED","checked_unix"?}}` |
+| `/pgworker/backups/<C>/policy` | per-cluster политика: `{"retention":{"days":7,"weeks":4,"months":6},"full_max_age_sec":86400,"verify":{"on_create":true}}`; пишет воркер (приём через API — t06; до того — ручная запись ключа); отсутствует → дефолт `PgWorker:Backups:Policy` |
+| `/pgworker/backups/<C>/<X>/full/<id>` | статус полного: `{"state":"PLANNED\|RUNNING\|UPLOADING\|COMPLETED\|FAILED\|DELETING","node":"<n>","role":"replica\|master","started_unix","finished_unix"?,"wal_start_segment"?,"size_bytes"?,"error"?,"verify":{"state":"PENDING\|OK\|FAILED","checked_unix"?}}`; `wal_start_segment` заполняется с фазы UPLOADING (из `backup_label` джоба; для рано упавших FAILED может отсутствовать — до этого неизвестен) |
 | `/pgworker/backups/<C>/<X>/wal` | состояние WAL-потока шарда: `{"state":"ACTIVE\|DEGRADED\|STOPPED","slot":"<slot>","master_node","chain_start_segment","last_received_segment","last_uploaded_segment","last_uploaded_unix","lag_segments"?,"error"?}` |
 
 - **Правила**: transient-сбой → статус с `error` + ретраи тиками (t02/t03);
   permanent-отказ → фиксация причины + алерт. `DELETING` — транзитная фаза
   ретенции (t06; запрет удалять последний валидный полный — guard t06).
+- **Суточный алерт (t02)**: панель вычисляет по снапшоту префикса —
+  правило `backup-full-stale` per-shard: возраст последнего COMPLETED
+  полного шарда > `full_max_age_sec` политики кластера (policy-ключ
+  отсутствует → панельный дефолт 86400). Пустой префикс кластера (ни
+  одного ключа бэкапов — подсистема не включена) — правило молчит, ложных
+  алертов на выключенной подсистеме нет. Воркер алертов не пишет — только
+  статусы (все алерты панели — вычисления над снапшотом, как остальные
+  правила AlertEngine).
 - **Deprovisioning кластера** (D2, [14-pgworker.md](14-pgworker.md) §5 B)
-  чистит etcd-префикс `/pgworker/backups/<C>/` тем же `del --prefix`; объекты
+  чистит etcd-префикс `/pgworker/backups/<C>/` тем же `del --prefix` (и
+  убивает бегущие джоб-контейнеры `pgw-backup-full-<C>-*`); объекты
   S3 НЕ удаляются автоматически (данные дороже места): префикс S3 без
   etcd-владельца = orphan, его видит супервизор (t07: алерт + политика
   возраста/ручной разбор); восстановление удалённого кластера из S3 —
@@ -188,6 +232,10 @@ s3://<bucket>/<C>/<X>/
   `pg_verifybackup` (t04: скачивание в staging → verify). Никаких
   tar-обёрток; WAL-сегмент = один объект. Layout одинаков для MinIO и
   облака; регион/endpoint — конфиг.
+- **Дублирование WAL (t02, §2)**: закрытые сегменты набора `-X stream`
+  полного бэкапа лежат и в `full/<id>/pg_wal/` (1:1 с manifest — база
+  verify t04), и копией в `wal/` (общий префикс — стартовая точка цепочки
+  t03); перезапись одного и того же сегмента идемпотентна.
 
 ## 6. Источник, HA-контур и ресурсные лимиты
 
@@ -203,7 +251,11 @@ s3://<bucket>/<C>/<X>/
 - **Лимиты джоба/агента**: `PgWorker:Backups:Agent { Cpu, Mem }` →
   `HostConfig.NanoCPUs/Memory` (образец: request_* нод,
   [14-pgworker.md](14-pgworker.md) §2.4 п.4); staging volume — ephemeral с
-  квотой `Staging:QuotaBytes` (guard «нет места» → FAILED + алерт, t02).
+  квотой `Staging:QuotaBytes` (guard «нет места» → FAILED + алерт, t02):
+  квота задана → tmpfs `size=` (жёсткий предел от ядра, ENOSPC
+  гарантирован; память хоста — осознанная плата, для больших баз квоту не
+  задавать); не задана → named volume на диске docker-хоста (ENOSPC
+  ловится реактивно по падению `pg_basebackup`/`mc` → FAILED).
 - **Patroni/HA не затрагивается**: бэкапы — сторонние клиенты нод; изменений
   в конфиги нод/HA-контура подсистема не вносит.
 
@@ -220,6 +272,12 @@ s3://<bucket>/<C>/<X>/
   (ensure put-if-absent, ротация в общем тикете §9.8, 32 симв
   `[A-Za-z0-9]`); реализация ensure/ротации — t02. Отдельная от
   bucket_mover (иная зона доверия/ротации).
+- **pg_hba-гвард** (t02): дефолтный Spilo-pg_hba разрешает replication-соединения
+  только роли `standby` — физический WAL-стриминг `pg_basebackup` под
+  `backup_exec` отсекается. Гвард G2 (каждый тик) дополняет `pg_hba.conf`
+  нод шарда идемпотентной строкой `hostssl replication backup_exec all
+  scram-sha-256` (docker-exec; прецедент — patch_hba стенда) + `pg_reload_conf()`;
+  строка живёт в PGDATA-volume и переживает рестарты нод.
 
 ## 8. Карта задач (Дальше)
 
@@ -238,11 +296,13 @@ s3://<bucket>/<C>/<X>/
   `S3 { Endpoint, Region, Bucket, AccessKey, SecretKey, PathStyle=true }`,
   `Policy { Retention { Days=7, Weeks=4, Months=6 }, FullMaxAgeSec=86400,
   VerifyOnCreate=true }`, `Staging { Dir=/backup-staging, QuotaBytes }`,
-  `Agent { Cpu, Mem }`, `AgentImage="pgworker-backup:latest"` (образ §2,
-  сборка t02), `Wal { VerifyIntervalSec=30, LagMaxSegments=1024,
-  StaleSec=300 }` (t03: период list/контроля цепочки, порог отставания
-  в сегментах, порог тишины загрузок). Валидация старта: `Enabled=true`
-  при пустых S3-полях — fail-fast.
+  `Agent { Cpu, Mem }`, `Job { Image="pgworker-backup:dev" }` (общий образ
+  джобов t02 и WAL-агентов t03, §2), `Retry { BaseSec=300, MaxSec=3600 }`
+  (бэкофф переснятия FAILED, t02), `S3 { AdvertisedEndpoint }` (t03: адрес
+  S3 из контейнеров агентов), `Wal { VerifyIntervalSec=30,
+  LagMaxSegments=1024, StaleSec=300 }` (t03: период list/контроля цепочки,
+  порог отставания в сегментах, порог тишины загрузок). Валидация старта:
+  `Enabled=true` при пустых S3-полях — fail-fast.
 
 ## 10. Риски
 
@@ -253,5 +313,7 @@ s3://<bucket>/<C>/<X>/
 | Компрометация S3-кредов per-install = доступ ко ВСЕМ бэкапам установки | env-секреты вне git/etcd (контур §4 arch/14); отдельный bucket/креды per-install; ротация — перегенерация пакета (как TLS) |
 | Слот `pg_receivewal` при смерти агента копит WAL на мастере | потолок `max_slot_wal_keep_size` уже в каноне нод (§2.1 P3/P4) — диск не переполнится; инвалидация слота → алерт t03 → переснятие (t07) |
 | Длинные имена `<C>-<X>` ломают имена слота/контейнера | слот — sha1-усечение (§3); имена контейнеров — те же ограничения, что у pgw-нод (существующая практика) |
-| Превышение staging-квоты джоба («нет места» — частый сбой бэкапов) | `Staging:QuotaBytes` + guard до старта джоба (реализация t02; параметр — в каркасе t01, §9) |
+| Превышение staging-квоты джоба («нет места» — частый сбой бэкапов) | `Staging:QuotaBytes` → tmpfs `size=` (жёсткая квота, ENOSPC от ядра); null → disk-volume с реактивным ENOSPC; оба пути → FAILED + суточный алерт (§6, t02) |
+| Протокол джоба (stdout-маркеры фаз/result-JSON) — неявный контракт воркера и образа | маркеры зафиксированы §2 (фазы + result с wal_start_segment/size_bytes); воркер толерантен к незнакомым строкам лога (парсит только свои JSON); смена формата — правкой канона |
+| S3-endpoint недостижим с docker-хоста источника (джоб грузит из `mc`) | endpoint per-install обязан быть достижим отовсюду (объектное хранилище); стенд — `host.docker.internal:9000` (extra_hosts host-gateway в джобе) |
 | Расхождение spec↔arch при будущих правках | arch-правки — всегда первой фазой; ревью plan↔spec по чек-листам dev-flow |

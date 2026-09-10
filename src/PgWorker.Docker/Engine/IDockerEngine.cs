@@ -17,6 +17,10 @@ public interface IDockerEngine : IAsyncDisposable
     // GET /containers/<id>/json — инспект для матчинга нод усыновления.
     Task<Result<DockerContainerInspect>> InspectContainerAsync(string id, CancellationToken ct);
 
+    // GET /containers/<id>/logs?stdout=1&stderr=1&tail=N — супервизия джобов
+    // бэкапов (t02): stdout-маркеры фаз/result; ответ — raw-stream (demux).
+    Task<Result<string>> GetContainerLogsAsync(string idOrName, int tail, CancellationToken ct);
+
     // POST /containers/create?name=<name> — env/порты/volume в HostConfig.
     Task<Result> CreateContainerAsync(ContainerSpec spec, string name, CancellationToken ct);
 
@@ -64,9 +68,11 @@ public interface IDockerEngine : IAsyncDisposable
 public sealed record DockerContainer(string Id, string[] Names, string State, string Image);
 
 // Инспект контейнера GET /containers/<id>/json: hostname, сетевые алиасы, env
-// и host-биндинги — вход матчинга усыновления (spec §3.1).
+// и host-биндинги — вход матчинга усыновления (spec §3.1); Running/ExitCode —
+// runtime-факт джоба бэкапа (t02: exit-код — истина итога, arch/19 §2).
 public sealed record DockerContainerInspect(
-    string Id, string Hostname, string[] Aliases, string[] Env, PortMap[] Ports);
+    string Id, string Hostname, string[] Aliases, string[] Env, PortMap[] Ports,
+    bool? Running = null, int? ExitCode = null);
 
 // Swarm-нода из /nodes + число работающих тасков.
 public sealed record DockerSwarmNode(string Id, string Hostname, string State, int RunningTasks);
@@ -97,7 +103,10 @@ public sealed record ContainerSpec(
     string? Label,
     IReadOnlyList<string>? Cmd = null,
     string? Network = null,
-    IReadOnlyList<string>? NetworkAliases = null);
+    IReadOnlyList<string>? NetworkAliases = null,
+    IReadOnlyDictionary<string, string>? Tmpfs = null,
+    IReadOnlyList<string>? ExtraHosts = null,
+    string? RestartPolicy = null);
 
 // Спецификация swarm-сервиса ноды: constraint на конкретную ноду (node.id==<id>).
 public sealed record ServiceSpec(string Name, ContainerSpec Template, string NodeConstraint);

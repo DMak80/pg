@@ -140,6 +140,29 @@ public class BackupsParserTests
     }
 
     [Fact]
+    public void Parse_FullWithoutWalStart_ParsedWithNull()
+    {
+        // Arrange — записи до фазы UPLOADING не знают wal_start_segment
+        // (arch/19 §4: заполняется с UPLOADING, у рано упавших может отсутствовать).
+        var kvs = EtcdFixtures.LoadKv("backups-full.json");
+
+        // Act
+        var result = BackupsParser.Parse(kvs, out var errors);
+
+        // Assert — null без ошибки; обязательны только state/node/role/started_unix.
+        result.IsSuccess.Should().BeTrue();
+        errors.Should().NotContain(e => e.Contains("20260910030000Z"));
+        var planned = result.Value.First(c => c.Cluster == "demo").Shards["s2"].Full
+            .Single(f => f.Id == "20260910030000Z");
+        planned.State.Should().Be(FullBackupStatus.Planned);
+        planned.WalStartSegment.Should().BeNull();
+        var running = result.Value.First(c => c.Cluster == "shop").Shards["s2"].Full
+            .Single(f => f.Id == "20260910030000Z");
+        running.State.Should().Be(FullBackupStatus.Running);
+        running.WalStartSegment.Should().BeNull();
+    }
+
+    [Fact]
     public void Parse_PolicyValidJsonNotObject_SkippedWithErrorNoThrow()
     {
         // Arrange — валидный JSON, но не объект (число, строка): без guard

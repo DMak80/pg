@@ -216,7 +216,7 @@ public sealed class WalStreamProcess(
         }
 
         var spec = new ContainerSpec(
-            Image: options.AgentImage,
+            Image: options.JobImage, // общий образ джобов t02 и агентов t03 (arch/19 §2)
             Env: (IReadOnlyDictionary<string, string>)AgentEnv(options, cluster, shard, slot, pgHost, pgPort, password),
             VolumeName: BackupAgentNames.Volume(cluster, shard),
             VolumeDest: options.StagingDir,
@@ -335,7 +335,7 @@ public sealed class WalStreamProcess(
         // из текущего ключа ?? min-объект (первый сегмент потока агента).
         WalFileName? fromFull = shardBackups?.Full
             .Where(f => f.State == FullBackupStatus.Completed && !string.IsNullOrEmpty(f.WalStartSegment))
-            .Select(f => WalFileName.TryParse(f.WalStartSegment))
+            .Select(f => WalFileName.TryParse(f.WalStartSegment ?? ""))
             .Where(s => s is not null)
             .Select(s => s!.Value)
             .OrderBy(s => s.Name, StringComparer.Ordinal)

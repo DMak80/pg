@@ -58,7 +58,7 @@ internal static class InspectionSnapshots
             [],
             [],
             [],
-            [],
+            [], // Backups (t02/t03)
             [],
             [],
             [],

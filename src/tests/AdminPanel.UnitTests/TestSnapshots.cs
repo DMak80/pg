@@ -16,8 +16,8 @@ internal static class TestSnapshots
         [],
         [],
         [],
+        [],             // Backups (t02)
         [new WorkerEndpoint("w1", "http://pgworker:8080", builtAt.ToUnixTimeSeconds())],
-        [],
         [],
         [],
         [],

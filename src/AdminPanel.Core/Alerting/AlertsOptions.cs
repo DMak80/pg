@@ -29,9 +29,13 @@ public class AlertsOptions
     // provision-stuck: серия фейлов provision (fail_first_unix) старше N секунд.
     public int ProvisionStuckSec { get; set; } = 300;
 
-    // wal-stream-lag: порог лага в сегментах и порог тишины загрузок (arch/19 §3;
-    // синхронизированы с воркерными Wal:LagMaxSegments/StaleSec — дефолты 1024/300).
+    // wal-stream-lag (t03): порог лага в сегментах и порог тишины загрузок
+    // (arch/19 §3; синхронизированы с воркерными Wal:LagMaxSegments/StaleSec).
     public int WalLagMaxSegments { get; set; } = 1024;
 
     public int WalStaleSec { get; set; } = 300;
+
+    // backup-full-stale (t02): панельный дефолт окна суточного алерта при
+    // отсутствии policy-ключа кластера (arch/19 §4). <= 0 — дефолт каталога 86400.
+    public long BackupFullMaxAgeSec { get; set; } = 86400;
 }

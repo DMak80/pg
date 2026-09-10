@@ -70,6 +70,13 @@ docker run --rm --entrypoint /bin/sh --network "$minio_net" minio/mc:latest \
   || { echo "  ❌ bucket pgworker-backups не создан (mc против as-minio)"; exit 1; }
 echo "  as-minio жив, bucket pgworker-backups готов (:9000 API / :9001 консоль)"
 
+# 1a-2) Образ джоба бэкапов (t02): собирается рядом с pgworker:dev — тег
+#       PgWorker:Backups:Job:Image (дефолт pgworker-backup:dev). Прямой docker
+#       build (а не compose build) — без env-зависимостей deploy/.env.
+docker build -q -f "$ROOT/docker/PgWorker.Backup.Dockerfile" -t pgworker-backup:dev "$ROOT" \
+  || { echo "❌ образ pgworker-backup не собрался (docker/PgWorker.Backup.Dockerfile)"; exit 1; }
+echo "  образ pgworker-backup:dev готов"
+
 # 1b) PgWorker (стенд = полная система; контур ВСЕГДА один — etcd стенда):
 #     воркер из deploy/docker-compose.yml ходит в as-etcd через хост-2379
 #     (PGW_ETCD_ENDPOINT=host.docker.internal:2379 — advertise as-etcd);

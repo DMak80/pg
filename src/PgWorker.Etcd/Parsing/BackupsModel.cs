@@ -56,7 +56,8 @@ public sealed record BackupVerify(BackupVerifyStatus State, long? CheckedUnix);
 
 /// <summary>Один полный бэкап шарда (ключ
 /// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/full/&lt;id&gt;, id=YYYYMMDDHHMMSSZ
-/// сортируемый, коллизия — суффикс -2/-3, arch/19 §2).</summary>
+/// сортируемый, коллизия — суффикс -2/-3, arch/19 §2); WalStartSegment —
+/// опционален до фазы UPLOADING (t02: заполняется с UPLOADING, §4).</summary>
 public sealed record FullBackupState(
     string Id,
     FullBackupStatus State,
@@ -64,7 +65,7 @@ public sealed record FullBackupState(
     BackupSourceRole Role,
     long StartedUnix,
     long? FinishedUnix,
-    string WalStartSegment,
+    string? WalStartSegment,
     long? SizeBytes,
     string? Error,
     BackupVerify? Verify);

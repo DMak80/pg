@@ -12,15 +12,16 @@ namespace PgWorker.Provisioning.Processes;
 
 /// <summary>
 /// Ротация per-cluster секретов по заявке /pgworker/rotations/&lt;C&gt; (t02,
-/// arch/14 §5 I): app + bucket_admin + bucket_mover. R1 ensure тройки кредов →
-/// R2 ALTER ROLE трёх ролей на мастере каждого шарда с dsn (реплики получают
-/// pg_authid физической репликацией) → R3 атомарный txn [compare value==OLD по
-/// кредам и ВСЕМ dsn-ключам][put новые креды; перезапись dsn; del заявки] →
-/// R4 снапшот P12. transient-сбой → заявка жива, креды в etcd НЕ меняются,
-/// следующий тик повторяет с начала со свежими NEW (ALTER идемпотентен
-/// перезаписью). Имя journal-op сохранено (rotate-app-password) — совместимость
-/// журналов (образец RotationRole.Phase, arch/16 §5 H). Вызывается только
-/// держателем клэйма &lt;C&gt;. Ротация при активном переезде: mover-DSN
+/// arch/14 §5 I / arch/19 §7): app + bucket_admin + bucket_mover + backup_exec.
+/// R1 ensure кредов → R2 ALTER ROLE ролей на мастере каждого шарда с dsn
+/// (backup_exec — через gexec-гвард: роли может не быть при выключенных бэкапах;
+/// реплики получают pg_authid физической репликацией) → R3 атомарный txn
+/// [compare value==OLD по кредам и ВСЕМ dsn-ключам][put новые креды; перезапись
+/// dsn; del заявки] → R4 снапшот P12. transient-сбой → заявка жива, креды в
+/// etcd НЕ меняются, следующий тик повторяет с начала со свежими NEW (ALTER
+/// идемпотентен перезаписью). Имя journal-op сохранено (rotate-app-password) —
+/// совместимость журналов (образец RotationRole.Phase, arch/16 §5 H). Вызывается
+/// только держателем клэйма &lt;C&gt;. Ротация при активном переезде: mover-DSN
 /// строится из свежего снапшота на тик — оборванная ротацией фаза переезда
 /// возобновляется с journal-фазы уже с новыми кредами.
 /// </summary>
@@ -77,13 +78,15 @@ public sealed partial class ClusterSecretRotator(
             return await FailAsync(cluster, credsResult.Error!, "ensure-app-secret", ct);
         var creds = credsResult.Value;
 
-        // R2: ALTER ROLE трёх ролей на мастере каждого ПОДНЯТОГО шарда (dsn есть;
-        // шард без dsn — домен AddShardProcess: роли создадутся/выровняются по
-        // свежим кредам, §5 I R2). NEW-пароли генерируются на попытку — ALTER
-        // идемпотентен перезаписью, регенерация между тиками безопасна.
+        // R2: ALTER ROLE трёх ролей + гвард backup_exec на мастере каждого
+        // ПОДНЯТОГО шарда (dsn есть; шард без dsn — домен AddShardProcess: роли
+        // создадутся/выровняются по свежим кредам, §5 I R2). NEW-пароли
+        // генерируются на попытку — ALTER идемпотентен перезаписью, регенерация
+        // между тиками безопасна.
         var newAppPassword = AppSecretGenerator.Generate();
         var newMoverPassword = AppSecretGenerator.Generate();
         var newBucketAdminPassword = AppSecretGenerator.Generate();
+        var newBackupPassword = AppSecretGenerator.Generate();
         var addresses = await ReadPortAllocAsync(cluster, ct);
         if (!addresses.IsSuccess)
             return await FailAsync(cluster, addresses.Error!, "portalloc", ct);
@@ -112,6 +115,30 @@ public sealed partial class ClusterSecretRotator(
                 if (!altered.IsSuccess)
                     return await FailAsync(cluster, altered.Error!, $"alter/{shard.Name}", ct);
             }
+
+            // backup_exec (t02, arch/19 §7): роли может не быть (подсистема
+            // бэкапов выключена — G2 не выполнялся) → gexec-гвард вместо голого
+            // ALTER: нет роли — CREATE с NEW-паролем; есть — ALTER (идемпотентная
+            // перезапись, семантика «четвёртого ALTER» сохранена, spec §3.4).
+            var backupGuard = await db.ExecuteScalarAsync(
+                dsn, DatabaseProvisioner.BuildBackupExecRoleGuardSql(newBackupPassword), ct);
+            if (!backupGuard.IsSuccess)
+                return await FailAsync(cluster, backupGuard.Error!, $"alter/{shard.Name}", ct);
+            if (backupGuard.Value is string createBackupRole)
+            {
+                var created = await db.ExecuteAsync(dsn, createBackupRole, ct);
+                if (!created.IsSuccess)
+                    return await FailAsync(cluster, created.Error!, $"alter/{shard.Name}", ct);
+            }
+            else
+            {
+                var alteredBackup = await db.ExecuteAsync(
+                    dsn,
+                    DatabaseProvisioner.BuildAlterRolePasswordSql(DatabaseProvisioner.BackupExecRole, newBackupPassword),
+                    ct);
+                if (!alteredBackup.IsSuccess)
+                    return await FailAsync(cluster, alteredBackup.Error!, $"alter/{shard.Name}", ct);
+            }
         }
 
         // R3: атомарный коммит — новые креды + перезапись dsn + снятие заявки
@@ -123,12 +150,14 @@ public sealed partial class ClusterSecretRotator(
             TxnCompare.ValueEqual(PasswordKey(cluster), creds.App.Password),
             TxnCompare.ValueEqual(MoverKey(cluster), creds.MoverPassword),
             TxnCompare.ValueEqual(BucketAdminPasswordKey(cluster), creds.BucketAdmin.Password),
+            TxnCompare.ValueEqual(BackupKey(cluster), creds.BackupPassword),
         };
         var ops = new List<TxnOp>
         {
             new TxnOp.Put(PasswordKey(cluster), newAppPassword, null),
             new TxnOp.Put(MoverKey(cluster), newMoverPassword, null),
             new TxnOp.Put(BucketAdminPasswordKey(cluster), newBucketAdminPassword, null),
+            new TxnOp.Put(BackupKey(cluster), newBackupPassword, null),
             new TxnOp.Delete(TicketKey(cluster), Prefix: false),
         };
         foreach (var shard in snap.Shards.Where(s => s.Dsn is not null))
@@ -172,6 +201,8 @@ public sealed partial class ClusterSecretRotator(
     private static string MoverKey(string cluster) => $"/clusters/{cluster}/mover_password";
 
     private static string BucketAdminPasswordKey(string cluster) => $"/clusters/{cluster}/bucket_admin_password";
+
+    private static string BackupKey(string cluster) => $"/clusters/{cluster}/backup_password";
 
     private static string DsnKey(string cluster, string shard) => $"/clusters/{cluster}/shards/{shard}/dsn";
 

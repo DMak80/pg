@@ -6,9 +6,11 @@ namespace PgWorker.Provisioning.Probes;
 
 /// <summary>
 /// Член Patroni-кластера из GET /cluster: role — master|replica, state —
-/// running|streaming|stopped|creating (P2.2 ожидание поднятия, надзор C).
+/// running|streaming|stopped|creating (P2.2 ожидание поднятия, надзор C);
+/// Sync — sync-статус члена (t02: выбор реплики-источника полного бэкапа,
+/// arch/19 §2): true/false от Patroni 3.x+, null — поле отсутствует.
 /// </summary>
-public sealed record PatroniMember(string Name, string Role, string State);
+public sealed record PatroniMember(string Name, string Role, string State, bool? Sync = null);
 
 /// <summary>Идентичность Patroni-ноды из GET /patroni (spec §3.7 Д1б): scope
 /// глобально уникален (&lt;C&gt;-&lt;X&gt;), name — имя ноды; пары достаточно для вывода
@@ -42,7 +44,8 @@ public sealed class ShardProbe(HttpClient http)
                 .Select(m => new PatroniMember(
                     m.GetProperty("name").GetString() ?? string.Empty,
                     m.GetProperty("role").GetString() ?? string.Empty,
-                    m.GetProperty("state").GetString() ?? string.Empty))
+                    m.GetProperty("state").GetString() ?? string.Empty,
+                    ReadSync(m)))
                 .ToList();
 
             return Result<IReadOnlyList<PatroniMember>>.Success(members);
@@ -52,6 +55,20 @@ public sealed class ShardProbe(HttpClient http)
             return Result<IReadOnlyList<PatroniMember>>.Failed(new ApplicationException(
                 $"Patroni {node.Host}:{node.Ports.Patroni} /cluster недоступен: {e.Message}", e));
         }
+    }
+
+    // sync-статус члена: bool (Patroni 3.x+) либо строка sync/quorum; нет поля — null.
+    private static bool? ReadSync(JsonElement member)
+    {
+        if (!member.TryGetProperty("sync", out var sync))
+            return null;
+        return sync.ValueKind switch
+        {
+            JsonValueKind.True => true,
+            JsonValueKind.False => false,
+            JsonValueKind.String when sync.GetString() is "sync" or "quorum" => true,
+            _ => null,
+        };
     }
 
     // Живость конкретной ноды: GET /cluster отвечает 200 (надзор C, IsAlive).

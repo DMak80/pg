@@ -53,10 +53,18 @@ public sealed class MinioFixture : IAsyncLifetime
     }
 
     public BackupsRuntimeOptions Runtime() => new(
-        "pgworker-backup:test", HostEndpoint, ContainerEndpoint, null,
-        Bucket, AccessKey, SecretKey, S3PathStyle: true,
-        "/backup-staging", null, null, null,
-        WalVerifyIntervalSec: 30, WalLagMaxSegments: 1024, WalStaleSec: 300);
+        Enabled: true,
+        S3Endpoint: HostEndpoint,
+        S3AdvertisedEndpoint: ContainerEndpoint,
+        S3Bucket: Bucket,
+        S3AccessKey: AccessKey,
+        S3SecretKey: SecretKey,
+        S3PathStyle: true,
+        JobImage: "pgworker-backup:test",
+        StagingDir: "/backup-staging",
+        WalVerifyIntervalSec: 30,
+        WalLagMaxSegments: 1024,
+        WalStaleSec: 300);
 
     public async ValueTask DisposeAsync()
     {
