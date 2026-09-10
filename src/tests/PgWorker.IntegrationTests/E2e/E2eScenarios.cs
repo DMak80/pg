@@ -7,28 +7,33 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E-сценарии приёмки spec §11 (задача 26) на живом стенде: etcd (Testcontainers)
-// + pgworker-node (docker) + PgWorker.App хост-процессами. Сценарий последователен
-// (AC2→AC7 на общих стенде/кластере): provisioning + O2 → takeover →
-// deprovisioning → failover/rebuild → эвакуация → клэймы/снапшоты-лидер.
-[Collection(E2eCollection.Name)]
-public class E2eScenarios(E2eFixture fixture, ITestOutputHelper output)
+// E2E-сценарии приёмки spec §11 (задача 26) на живом стенде: изолированное
+// окружение E2eEnvironment (своя docker-сеть, свой etcd — см. каркас) + образ
+// pgworker-node + PgWorker.App хост-процессами. Сценарий последователен
+// (AC2→AC7 на своём кластере): provisioning + O2 → takeover → deprovisioning →
+// failover/rebuild → эвакуация → клэймы/снапшоты-лидер.
+public class E2eScenarios(ITestOutputHelper output)
 {
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
 
-    private string Endpoint => fixture.EtcdEndpoint;
+    // Окружение Fact'а (своя сеть/etcd); создаётся в начале каждого сценария.
+    private E2eEnvironment Fx = null!;
 
-    private EtcdGateway G => fixture.Gateway;
+    private string Endpoint => Fx.EtcdEndpoint;
+
+    private EtcdGateway G => Fx.Gateway;
 
     [Fact]
     public async Task Acceptance_Scenario_Ac2_To_Ac7()
     {
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await E2eEnvironment.StartAsync("ac2-ac7", ct: ct);
+        Fx = fx;
 
         // ---------- AC2: provisioning e2e + O2 ----------
         await SeedClusterAsync("shop");
-        await using var p1 = await fixture.StartHostAsync("p1", ct: ct);
+        await using var p1 = await Fx.StartHostAsync("p1", ct: ct);
 
         var provisioned = await E2eFixture.WaitForAsync(
             () => ProvisionedAsync("shop"), TimeSpan.FromSeconds(360), ct);
@@ -43,7 +48,7 @@ public class E2eScenarios(E2eFixture fixture, ITestOutputHelper output)
         started.Should().BeTrue("первый инстанс должен начать provisioning shop2");
 
         p1.Kill(); // смерть контроллера посреди работы (клэйм истечёт ≤15 с)
-        await using var p2 = await fixture.StartHostAsync("p2", ct: ct);
+        await using var p2 = await Fx.StartHostAsync("p2", ct: ct);
 
         var taken = await E2eFixture.WaitForAsync(
             () => ProvisionedAsync("shop2"), TimeSpan.FromSeconds(360), ct);
@@ -162,7 +167,7 @@ public class E2eScenarios(E2eFixture fixture, ITestOutputHelper output)
         // анти-аффинити на одном docker-хосте вырождается в «порты разные»).
         var names = await ListContainerNamesAsync($"pgw-{cluster}-");
         names.Should().HaveCount(4);
-        var ports = await fixture.RunDockerAsync(
+        var ports = await Fx.RunDockerAsync(
         ["ps", "--filter", $"name=pgw-{cluster}-", "--format", "{{.Ports}}"], ct);
         // IPv4/IPv6-байндинги дублируют порт — извлекаем host-порты регуляркой.
         var published = System.Text.RegularExpressions.Regex.Matches(ports, @":(\d+)->")
@@ -240,7 +245,7 @@ public class E2eScenarios(E2eFixture fixture, ITestOutputHelper output)
         (await ContainerStatusAsync(container, ct)).Should().Be("running", "лидер до failover работает");
 
         var sw = Stopwatch.StartNew();
-        await fixture.RunDockerAsync(["stop", container], ct);
+        await Fx.RunDockerAsync(["stop", container], ct);
 
         // Master-ключ обновляется (Patroni failover, P11: callback + reconciler).
         // При EnableDoorman=false (e2e) portalloc-записи несут doorman:0 (миграция
@@ -311,7 +316,7 @@ public class E2eScenarios(E2eFixture fixture, ITestOutputHelper output)
         string cluster, string deadShard, string aliveShard, string snapshotsDir, CancellationToken ct)
     {
         foreach (var container in await ListContainerNamesAsync($"pgw-{cluster}-{deadShard}-"))
-            await fixture.RunDockerAsync(["stop", container], ct);
+            await Fx.RunDockerAsync(["stop", container], ct);
 
         // Эвакуация: journal DONE (E4) после ShardDeadSec.
         var evacuated = await E2eFixture.WaitForAsync(async () =>
@@ -349,7 +354,7 @@ public class E2eScenarios(E2eFixture fixture, ITestOutputHelper output)
 
         // Возврат шарда: docker start вручную → PgWorker останавливает (P1-призраки).
         foreach (var container in await ListContainerNamesAsync($"pgw-{cluster}-{deadShard}-", all: true))
-            await fixture.RunDockerAsync(["start", container], ct);
+            await Fx.RunDockerAsync(["start", container], ct);
 
         var quarantined = await E2eFixture.WaitForAsync(async () =>
         {
@@ -376,7 +381,7 @@ public class E2eScenarios(E2eFixture fixture, ITestOutputHelper output)
         }
 
         // Данные на месте: volume мёртвого шарда живы (E3 — ничего не удаляем).
-        var volumes = await fixture.RunDockerAsync(
+        var volumes = await Fx.RunDockerAsync(
         ["volume", "ls", "-q", "--filter", $"name=pgw-{cluster}-{deadShard}-"], ct);
         volumes.Split('\n', StringSplitOptions.RemoveEmptyEntries).Should().HaveCount(2);
     }
@@ -386,8 +391,8 @@ public class E2eScenarios(E2eFixture fixture, ITestOutputHelper output)
     {
         previous.Kill(); // предыдущий держатель уходит — лидерство и клэймы переизберутся
 
-        await using var p3 = await fixture.StartHostAsync("p3", snapshotIntervalMin: 1, ct: ct);
-        await using var p4 = await fixture.StartHostAsync("p4", snapshotIntervalMin: 1, ct: ct);
+        await using var p3 = await Fx.StartHostAsync("p3", snapshotIntervalMin: 1, ct: ct);
+        await using var p4 = await Fx.StartHostAsync("p4", snapshotIntervalMin: 1, ct: ct);
 
         // Лидер выбран ровно один (Д2: снапшоты — singleton-работа).
         var hasLeader = await E2eFixture.WaitForAsync(
@@ -433,14 +438,14 @@ public class E2eScenarios(E2eFixture fixture, ITestOutputHelper output)
         if (all)
             args.Add("-a");
         args.AddRange(["--filter", $"name={prefix}"]);
-        var output = await fixture.RunDockerAsync([.. args], ct);
+        var output = await Fx.RunDockerAsync([.. args], ct);
         return output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(n => n.StartsWith(prefix, StringComparison.Ordinal))
             .ToList();
     }
 
     private async Task<string> ContainerStatusAsync(string name, CancellationToken ct)
-        => await fixture.RunDockerAsync(["inspect", "-f", "{{.State.Status}}", name], ct);
+        => await Fx.RunDockerAsync(["inspect", "-f", "{{.State.Status}}", name], ct);
 
     // Master-ключ шарда → адрес ноды из portalloc (host:doorman → шард/нода).
     private sealed record MasterAddr(string Node, string Host, int Pg, int Doorman);
@@ -527,7 +532,7 @@ public class E2eScenarios(E2eFixture fixture, ITestOutputHelper output)
         if ((await ListContainerNamesAsync($"pgw-{cluster}-", all: true)).Count > 0)
             return false;
 
-        var volumes = await fixture.RunDockerAsync(
+        var volumes = await Fx.RunDockerAsync(
         ["volume", "ls", "-q", "--filter", $"name=pgw-{cluster}-"], ct);
         if (volumes.Length > 0)
             return false;
@@ -541,11 +546,4 @@ public class E2eScenarios(E2eFixture fixture, ITestOutputHelper output)
 
         return true;
     }
-}
-
-// Один e2e-стенд на все сценарии (последовательность AC2→AC7).
-[CollectionDefinition(Name)]
-public sealed class E2eCollection : ICollectionFixture<E2eFixture>
-{
-    public const string Name = "e2e";
 }

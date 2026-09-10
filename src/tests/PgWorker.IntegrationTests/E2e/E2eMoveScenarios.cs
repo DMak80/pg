@@ -8,25 +8,30 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E-сценарий переезда бакета (t01 задача 19, spec §10 e2e / §11 AC3–AC6+AC8).
+// E2E-сценарий переезда бакета (t01 задача 19, spec §10 e2e / §11 AC3–AC6+AC8)
+// на изолированном окружении E2eEnvironment (своя сеть/etcd на Fact).
 // Один [Fact], 5 этапов вызывают друг друга по цепочке:
 //   E1 → E2 → E3 → E4 → E5
 // Каждый этап — приватный метод, output.WriteLine показывает прогресс.
-[Collection(E2eCollection.Name)]
-public class E2eMoveScenarios(E2eFixture fixture, ITestOutputHelper output)
+public class E2eMoveScenarios(ITestOutputHelper output)
 {
     private const string Cluster = "mshop";
 
-    private string Endpoint => fixture.EtcdEndpoint;
-    private EtcdGateway G => fixture.Gateway;
+    // Окружение Fact'а (своя сеть/etcd); создаётся в начале сценария.
+    private E2eEnvironment Fx = null!;
 
-    private static HostInstance? Host { get; set; }
+    private string Endpoint => Fx.EtcdEndpoint;
+    private EtcdGateway G => Fx.Gateway;
+
+    private HostInstance? Host { get; set; }
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
 
     [Fact]
     public async Task Move_Lifecycle_Chain()
     {
         DockerTrait.SkipIfUnavailable();
+        await using var fx = await E2eEnvironment.StartAsync("move-chain", ct: TestContext.Current.CancellationToken);
+        Fx = fx;
         await E1_Provisioning();
         output.WriteLine("=== E1 done, calling E2 ===");
 
@@ -51,7 +56,7 @@ public class E2eMoveScenarios(E2eFixture fixture, ITestOutputHelper output)
         output.WriteLine("E1: seeding cluster + starting host...");
 
         await SeedClusterAsync();
-        Host = await fixture.StartHostAsync("m1", ct: ct);
+        Host = await Fx.StartHostAsync("m1", ct: ct);
 
         var provisioned = await E2eFixture.WaitForAsync(
             () => ProvisionedAsync(), TimeSpan.FromSeconds(360), ct);
@@ -173,7 +178,7 @@ public class E2eMoveScenarios(E2eFixture fixture, ITestOutputHelper output)
 
         (await RoutingAsync("bucket_0", ct)).Should().Be("shard2", "E2 переехал bucket_0 на shard2");
 
-        Host = await fixture.StartHostAsync("m2", ct: ct);
+        Host = await Fx.StartHostAsync("m2", ct: ct);
 
         var autoFin = await E2eFixture.WaitForAsync(
             () => ArtifactsCleanAsync("shard1", "bucket_0", schemaMustBeAbsent: true, ct),
@@ -204,7 +209,7 @@ public class E2eMoveScenarios(E2eFixture fixture, ITestOutputHelper output)
             $$"""{"op":"abort","force":true,"requested_unix":{{NowUnix()}}}""", ct);
         Host!.Kill();
         await Host.DisposeAsync();
-        Host = await fixture.StartHostAsync("m3", ct: ct);
+        Host = await Fx.StartHostAsync("m3", ct: ct);
 
         var aborted = await E2eFixture.WaitForAsync(
             async () => await StatusAsync("bucket_1", ct) is null, TimeSpan.FromSeconds(180), ct);
@@ -368,10 +373,10 @@ public class E2eMoveScenarios(E2eFixture fixture, ITestOutputHelper output)
     private async Task<bool> DeprovisionedAsync()
     {
         var ct = TestContext.Current.CancellationToken;
-        var containers = await fixture.RunDockerAsync(
+        var containers = await Fx.RunDockerAsync(
             ["ps", "-aq", "--filter", $"name=pgw-{Cluster}-"], ct);
         if (containers.Length > 0) return false;
-        var volumes = await fixture.RunDockerAsync(
+        var volumes = await Fx.RunDockerAsync(
             ["volume", "ls", "-q", "--filter", $"name=pgw-{Cluster}-"], ct);
         if (volumes.Length > 0) return false;
         if ((await RangeAsync($"/clusters/{Cluster}/")).Count > 0) return false;
@@ -460,7 +465,7 @@ public class E2eMoveScenarios(E2eFixture fixture, ITestOutputHelper output)
     // (тот же путь, что и приложение — spec §4.3), не из env фикстуры.
     private async Task<string> AppDsnAsync(int port, CancellationToken ct)
         => $"Host=localhost;Port={port};Database={Cluster};Username=app;" +
-           $"Password={await fixture.GetAppPasswordAsync(Cluster, ct)};SSL Mode=Require;Trust Server Certificate=true";
+           $"Password={await Fx.GetAppPasswordAsync(Cluster, ct)};SSL Mode=Require;Trust Server Certificate=true";
 
     private static async Task<string> SqlScalarAsync(string dsn, string sql, CancellationToken ct)
     {

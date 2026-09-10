@@ -24,7 +24,7 @@ public class SnapshotBuilderTests
 
         // Act
         var snapshot = SnapshotBuilder.Build(
-            time, clusters, service, nodes, MovesQueueParser.Parse([]),
+            time, clusters, service, nodes, MovesQueueParser.Parse([]), BackupsParser.Parse([]),
             WorkerEndpointsParser.Parse([]), WorkJournalParser.Parse([]), members, alarms, etcd);
 
         // Assert
@@ -51,7 +51,7 @@ public class SnapshotBuilderTests
 
         // Act
         var snapshot = SnapshotBuilder.Build(
-            time, clusters, service, [], MovesQueueParser.Parse([]),
+            time, clusters, service, [], MovesQueueParser.Parse([]), BackupsParser.Parse([]),
             WorkerEndpointsParser.Parse([]), WorkJournalParser.Parse([]), [], [], etcd);
 
         // Assert

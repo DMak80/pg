@@ -45,7 +45,7 @@ builder.Services.AddOptions<PgWorkerOptions>()
     // Подсистема бэкапов (arch/19, t01): fail-fast включения без S3-комплекта;
     // default Enabled=false — подсистема не активна, поведение не меняется.
     .Validate(o => o.Backups.IsValid(),
-        "PgWorker:Backups: Enabled=true требует непустые PgWorker:Backups:S3:Endpoint/Bucket/AccessKey/SecretKey (env PGW_BACKUP_S3_*, arch/19 §7)")
+        "PgWorker:Backups: Enabled=true требует непустые PgWorker:Backups:S3:Endpoint/Bucket/AccessKey/SecretKey (env PGW_BACKUP_S3_*) и Backups:Job:Image (arch/19 §7/§9)")
     .ValidateOnStart();
 
 // mTLS HTTP API (arch/14 §1.1, t03): Kestrel с серверным сертом и требованием
@@ -387,6 +387,23 @@ builder.Services.AddSingleton(sp => new ClusterSecretRotator(
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<InstallSecrets>(),
     sp.GetRequiredService<IClusterSecretEnsurer>(),
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+
+// Полные бэкапы шардов (t02, arch/19): планировщик + супервизия джобов;
+// runtime-опции — склейка секции PgWorker:Backups; процесс — no-op при Enabled=false.
+builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<ShardEndpoints>(),
+    sp.GetRequiredService<ISqlExecutor>(),
+    sp.GetRequiredService<IClusterSecretEnsurer>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<InstallSecrets>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Backups.ToRuntime(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.BackupProcess>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 
 // Циклы (§6.2): keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.

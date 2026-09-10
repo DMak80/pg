@@ -224,13 +224,14 @@ public class AdoptionContractTests(EtcdFixture fixture)
             => Task.FromResult(Result.Success());
     }
 
-    // Секрет-стаб: пер-кластерная тройка кредов «уже есть» (t02).
+    // Секрет-стаб: пер-кластерные креды «уже есть» (t02: тройка + backup_exec).
     private sealed class StubAppSecret : IClusterSecretEnsurer
     {
         public Task<Result<ClusterCredentials>> EnsureAsync(
             string cluster, ClusterConfig config, CancellationToken ct)
             => Task.FromResult(Result<ClusterCredentials>.Success(new ClusterCredentials(
                 new AppCredentials("app", "pw"), "moverpw000000000000000000000000A",
-                new AppCredentials("bucket_admin", "bapw"))));
+                new AppCredentials("bucket_admin", "bapw"),
+                "backuppw00000000000000000000000A")));
     }
 }

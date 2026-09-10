@@ -19,6 +19,9 @@
     <Folder Name="/moves/">
         <Project Path="PgWorker.Moves/PgWorker.Moves.csproj" />
     </Folder>
+    <Folder Name="/backups/">
+        <Project Path="PgWorker.Backups/PgWorker.Backups.csproj" />
+    </Folder>
     <Folder Name="/app/">
         <Project Path="PgWorker.App/PgWorker.App.csproj" />
     </Folder>

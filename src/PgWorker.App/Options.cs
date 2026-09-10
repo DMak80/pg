@@ -1,3 +1,4 @@
+using PgWorker.Backups;
 using PgWorker.Docker.Engine;
 using PgWorker.Moves;
 
@@ -269,6 +270,17 @@ public sealed class BackupsOptions
 
     public BackupsAgentOptions Agent { get; set; } = new();
 
+    public BackupsJobOptions Job { get; set; } = new();
+
+    public BackupsRetryOptions Retry { get; set; } = new();
+
+    /// <summary>Runtime-опции подсистемы бэкапов: склейка Backups-секции (t02).</summary>
+    public BackupsRuntimeOptions ToRuntime() => new(
+        Enabled, Policy.FullMaxAgeSec, Policy.VerifyOnCreate,
+        S3.Endpoint, S3.Region, S3.Bucket, S3.AccessKey, S3.SecretKey,
+        Job.Image, Retry.BaseSec, Retry.MaxSec,
+        Staging.Dir, Staging.QuotaBytes, Agent.Cpu, Agent.Mem);
+
     /// <summary>Fail-fast старта (образец TLS arch/14 §2.2.1): Enabled=true
     /// обязан иметь полный S3-комплект; false — подсистема не активна.</summary>
     public bool IsValid()
@@ -276,7 +288,25 @@ public sealed class BackupsOptions
            || (!string.IsNullOrWhiteSpace(S3.Endpoint)
                && !string.IsNullOrWhiteSpace(S3.Bucket)
                && !string.IsNullOrWhiteSpace(S3.AccessKey)
-               && !string.IsNullOrWhiteSpace(S3.SecretKey));
+               && !string.IsNullOrWhiteSpace(S3.SecretKey)
+               && !string.IsNullOrWhiteSpace(Job.Image));
+}
+
+/// <summary>Образ джоба полного бэкапа (arch/19 §2/§9, t02): собирается из
+/// docker/PgWorker.Backup.Dockerfile; запуск — воркер, содержимое — без .NET.</summary>
+public sealed class BackupsJobOptions
+{
+    public string Image { get; set; } = "pgworker-backup:dev";
+}
+
+/// <summary>Бэкофф переснятия FAILED-полного (arch/19 §2, t02):
+/// задержка n-й попытки после последнего COMPLETED =
+/// min(BaseSec·2^(n−1), MaxSec), без лимита попыток.</summary>
+public sealed class BackupsRetryOptions
+{
+    public int BaseSec { get; set; } = 300;
+
+    public int MaxSec { get; set; } = 3600;
 }
 
 /// <summary>S3-хранилище бэкапов (arch/19 §5/§7): per-install креды — ТОЛЬКО

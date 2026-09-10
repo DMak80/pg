@@ -73,6 +73,16 @@ public interface IClusterDriver
     // нет (инспект — заглушка): ветки надзора, трактующие «нет в инспекте» как
     // смерть процесса (ускорение failover, t09), для таких драйверов выключены.
     bool SupportsRunningInspection { get; }
+
+    // Docker-движок хоста по имени (plain-таблица/advertised; swarm — manager):
+    // джобы бэкапов создаются/супервизируются на docker-хосте источника (t02).
+    // null — хост не известен (вызывающий трактует как transient).
+    IDockerEngine? EngineFor(string host);
+
+    // Чистка джоб-контейнеров pgw-backup-full-<C>-* и их staging volumes
+    // (Deprovisioning D2, t02): идемпотентно, 404 = успех; объекты S3 НЕ трогаем
+    // (arch/19 §4 — orphan t07).
+    Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct);
 }
 
 // Plain-режим: контейнеры на перечисленных хостах, per-host Engine API.
@@ -393,6 +403,18 @@ public sealed class PlainClusterDriver(
         });
     }
 
+    public IDockerEngine? EngineFor(string host)
+    {
+        if (_engines.TryGetValue(host, out var engine))
+            return engine;
+        return advertisedHost is { Length: > 0 } && host == advertisedHost && _engines.Count == 1
+            ? _engines.Values.Single()
+            : null;
+    }
+
+    public Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct)
+        => BackupJobsCleaner.RemoveAsync(_engines.Values, cluster, ct);
+
     // Сборка ContainerSpec: env Spilo + PGW_NODE_HOST + конфиги doorman/haproxy (Д4).
     internal ContainerSpec BuildSpec(ShardTopology topology, string nodeName, NodeAddress addr,
         InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources)
@@ -441,6 +463,43 @@ public sealed class PlainClusterDriver(
 
     internal static string VolumeName(string cluster, string shard, string nodeName)
         => $"{NodeName(cluster, shard, nodeName)}-data";
+}
+
+// Общая чистка джобов бэкапов (t02, Plain и Swarm): контейнеры по префиксу +
+// volume, выводимый из имени контейнера (pgw-backup-full-<C>-<X>-<id> →
+// pgw-backup-<C>-<X>-<id>; tmpfs-джобы без volume — 404=ок). Имена — локальные
+// константы канона BackupNames (PgWorker.Backups) — дубль без ссылки (цикл
+// зависимостей; прецедент — MoverRole в ShardEndpoints).
+internal static class BackupJobsCleaner
+{
+    public const string JobContainerPrefix = "pgw-backup-full-";
+    public const string JobVolumePrefix = "pgw-backup-";
+
+    public static async Task<Result> RemoveAsync(
+        IEnumerable<IDockerEngine> engines, string cluster, CancellationToken ct)
+    {
+        var prefix = $"{JobContainerPrefix}{cluster}-";
+        var volumePrefix = $"{JobVolumePrefix}{cluster}-";
+        foreach (var engine in engines)
+        {
+            var list = await engine.ListContainersAsync(prefix, all: true, ct);
+            if (!list.IsSuccess)
+                return list;
+            foreach (var container in list.Value.Where(c => c.Names.Any(n => n.StartsWith(prefix, StringComparison.Ordinal))))
+            {
+                var name = container.Names.First(n => n.StartsWith(prefix, StringComparison.Ordinal));
+                var removed = await engine.RemoveContainerAsync(name, force: true, ct);
+                if (!removed.IsSuccess)
+                    return removed;
+                var volume = volumePrefix + name[prefix.Length..];
+                var volumeRemoved = await engine.RemoveVolumeAsync(volume, ct);
+                if (!volumeRemoved.IsSuccess)
+                    return volumeRemoved;
+            }
+        }
+
+        return Result.Success();
+    }
 }
 
 // Swarm-режим: сервисы через manager endpoint, replicas=1, constraint node.id==<id>.
@@ -602,4 +661,11 @@ public sealed class SwarmClusterDriver(
     // таск: сверка декларации проверяет объект, живость — Patroni-пробы.
     public async Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
         => await _engine.ListServicesAsync($"pgw-{cluster}-", ct);
+
+    // swarm: джобы создаются движком manager'а (constraint-планировщик не
+    // используется для ephemeral-джобов — источниковые хосты известны).
+    public IDockerEngine? EngineFor(string host) => _engine;
+
+    public Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct)
+        => BackupJobsCleaner.RemoveAsync([_engine], cluster, ct);
 }

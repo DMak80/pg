@@ -113,6 +113,20 @@ internal sealed class ReconcileLoop(
         if (!serviceKvs.IsSuccess)
             return Result.Failed(serviceKvs.Error!);
 
+        // Бэкапы (t02, arch/19): префикс читаем только при Enabled — выключенная
+        // подсистема не меняет поведение (лишних чтений/алертов нет).
+        IReadOnlyList<ClusterBackups> backups = [];
+        if (options.CurrentValue.Backups.Enabled)
+        {
+            var backupsKvs = await RangeWithFailoverAsync(endpoints, "/pgworker/backups/", ct);
+            if (!backupsKvs.IsSuccess)
+                return Result.Failed(backupsKvs.Error!);
+            var parsedBackups = BackupsParser.Parse(backupsKvs.Value, out var backupsParseErrors);
+            foreach (var error in backupsParseErrors)
+                logger.LogWarning("пропущен битый ключ: {Error}", error);
+            backups = parsedBackups.Value;
+        }
+
         health.MarkEtcdOk();
 
         var parsed = ClusterSnapshotParser.ParseClusters(clustersKvs.Value, out var parseErrors);
@@ -125,7 +139,7 @@ internal sealed class ReconcileLoop(
         try
         {
             var tasks = parsed.Value
-                .Select(snap => ProcessClusterAsync(snap, gate, ct))
+                .Select(snap => ProcessClusterAsync(snap, gate, backups, ct))
                 .ToArray();
             await Task.WhenAll(tasks);
         }
@@ -143,7 +157,8 @@ internal sealed class ReconcileLoop(
     // Обработка одного кластера под семафором: клэйм → процесс → эвакуация.
     // Исключение ЛЮБОГО кластера не роняет тик и сервис (rework №3): catch-all
     // → лог + journal.last_error, следующий тик продолжит этот кластер.
-    private async Task ProcessClusterAsync(ClusterSnapshot snap, SemaphoreSlim gate, CancellationToken ct)
+    private async Task ProcessClusterAsync(
+        ClusterSnapshot snap, SemaphoreSlim gate, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
     {
         await gate.WaitAsync(ct);
         try
@@ -194,6 +209,13 @@ internal sealed class ReconcileLoop(
                     // операция — до эвакуаций/переездов, не ждёт длинных moves.
                     await RunClusterOpAsync(cluster, "rotate-app-password",
                         () => processes.RotateAppPasswordAsync(snap, ct), ct);
+
+                    // Полные бэкапы (t02, arch/19 §2): после коротких плановых
+                    // операций, до репарации; тик запускает/поллит джобы, не ждёт их.
+                    // Выключенная подсистема не зовётся вовсе (поведение без t02).
+                    if (options.CurrentValue.Backups.Enabled)
+                        await RunClusterOpAsync(cluster, "backups",
+                            () => processes.BackupsAsync(snap, backups, ct), ct);
 
                     // Репарация брошенных переездов (spec §3.5, arch/14 §5 K): синтетические
                     // заявки до moves — этот же тик начнёт их обработку (старейшая заявка).

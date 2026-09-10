@@ -28,4 +28,8 @@ public class AlertsOptions
 
     // provision-stuck: серия фейлов provision (fail_first_unix) старше N секунд.
     public int ProvisionStuckSec { get; set; } = 300;
+
+    // backup-full-stale (t02): панельный дефолт окна суточного алерта при
+    // отсутствии policy-ключа кластера (arch/19 §4). <= 0 — дефолт каталога 86400.
+    public long BackupFullMaxAgeSec { get; set; } = 86400;
 }
