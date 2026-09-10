@@ -27,6 +27,27 @@ public class ShardProbeTests
     private static string PatroniClusterJson()
         => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "ProbesFixtures", "patroni-cluster.json"));
 
+    private static string PatroniClusterSyncJson()
+        => File.ReadAllText(Path.Combine(AppContext.BaseDirectory, "ProbesFixtures", "patroni-cluster-sync.json"));
+
+    // AAA: sync-статус члена (t02: выбор реплики-источника полного бэкапа)
+    [Fact]
+    public async Task GetCluster_SyncStandby_Parsed()
+    {
+        // Arrange — Patroni 3.x+ помечает sync-standby "sync": true
+        var probe = new ShardProbe(new HttpClient(new FakeHandler(_ => Json(200, PatroniClusterSyncJson()))));
+
+        // Act
+        var result = await probe.GetClusterAsync(Node, CancellationToken.None);
+
+        // Assert — bool true/false различены; отсутствие поля (старый Patroni) — null
+        result.IsSuccess.Should().BeTrue();
+        var sync = result.Value.Should().ContainSingle(m => m.Name == "s1b").Subject;
+        sync.Sync.Should().BeTrue();
+        result.Value.Single(m => m.Name == "s1c").Sync.Should().BeFalse();
+        result.Value.Single(m => m.Name == "s1a").Sync.Should().BeNull();
+    }
+
     [Fact]
     public async Task GetCluster_PatroniFixture_ParsesMembers()
     {
