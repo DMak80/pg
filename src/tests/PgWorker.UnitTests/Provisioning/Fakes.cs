@@ -2,6 +2,7 @@ using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Planning;
 using PgWorker.Docker.Drivers;
+using PgWorker.Docker.Engine;
 using PgWorker.Core.Templates;
 using PgWorker.Etcd.Client;
 using PgWorker.Provisioning.Sql;
@@ -318,6 +319,17 @@ internal static class Fakes
             }
 
             return Task.FromResult(Result<IReadOnlyList<string>>.Success(objects));
+        }
+
+        // t02: чистка джобов бэкапов (D2) — фейк помнит вызов, движки не нужны.
+        public bool RemoveBackupJobsCalled { get; private set; }
+
+        public IDockerEngine? EngineFor(string host) => null;
+
+        public Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct)
+        {
+            RemoveBackupJobsCalled = true;
+            return Task.FromResult(Result.Success());
         }
     }
 

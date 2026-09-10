@@ -166,6 +166,26 @@ public class DeprovisioningProcessTests
             "журналы эвакуаций не переживают удаление кластера");
     }
 
+    // AAA: D2 t02 — deprovisioning убивает джобы бэкапов и чистит их префикс etcd
+    [Fact]
+    public async Task Tick_RemovesBackupJobsAndPrefix()
+    {
+        // Arrange — кластер в TO_REMOVE + живые ключи бэкапов; фейк-драйвер помнит
+        // вызов RemoveBackupJobsAsync; фейк-etcd содержит /pgworker/backups/shop/s1/full/x.
+        var rig = await NewRig();
+        rig.Etcd.Seed("/pgworker/backups/shop/s1/full/20260910030000Z",
+            "{\"state\":\"RUNNING\",\"node\":\"n\",\"role\":\"replica\",\"started_unix\":1,\"wal_start_segment\":\"s\"}");
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — джобы убиты, префикс бэкапов не переживает кластер
+        outcome.IsSuccess.Should().BeTrue();
+        rig.Driver.RemoveBackupJobsCalled.Should().BeTrue();
+        rig.Etcd.Store.Should().NotContainKey("/pgworker/backups/shop/s1/full/20260910030000Z",
+            "префикс бэкапов не переживает кластер");
+    }
+
     [Fact]
     public async Task Tick_AfterDone_ClaimReleasedImmediately()
     {
