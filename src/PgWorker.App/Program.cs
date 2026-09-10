@@ -389,6 +389,23 @@ builder.Services.AddSingleton(sp => new ClusterSecretRotator(
     sp.GetRequiredService<IClusterSecretEnsurer>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 
+// Полные бэкапы шардов (t02, arch/19): планировщик + супервизия джобов;
+// runtime-опции — склейка секции PgWorker:Backups; процесс — no-op при Enabled=false.
+builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<ShardEndpoints>(),
+    sp.GetRequiredService<ISqlExecutor>(),
+    sp.GetRequiredService<IClusterSecretEnsurer>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<InstallSecrets>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Backups.ToRuntime(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.BackupProcess>(),
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+
 // Циклы (§6.2): keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
 // Регистрируются синглтонами — health-обёртки читают их состояние напрямую.
 builder.Services.AddSingleton<IClusterProcesses, ClusterProcesses>();

@@ -5,6 +5,7 @@ using PgWorker.App.Loops;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Etcd.Coordination;
+using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Processes;
 using PgWorker.UnitTests.Provisioning;
 
@@ -24,11 +25,12 @@ public class ReconcileLoopTests
         Parallelism = new ParallelismOptions { MaxClusters = 4 },
     });
 
-    private ReconcileLoop CreateLoop(FakeProcesses processes, ClaimStore? claims = null)
+    private ReconcileLoop CreateLoop(FakeProcesses processes, ClaimStore? claims = null, PgWorkerOptions? options = null)
     {
         claims ??= new ClaimStore(_options.CurrentValue.Etcd.Endpoints, _etcd, TimeProvider.System);
         return new ReconcileLoop(
-            _options, _etcd, claims, processes,
+            options is null ? _options : new FixedOptionsMonitor(options),
+            _etcd, claims, processes,
             new WorkJournal(_etcd, _options.CurrentValue.Etcd.Endpoints),
             NullLogger<ReconcileLoop>.Instance, new HealthState(TimeProvider.System),
             new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
@@ -207,6 +209,50 @@ public class ReconcileLoopTests
         tick.IsSuccess.Should().BeTrue();
         processes.Rotated.Should().Equal("shop");
         processes.Calls.Should().ContainInOrder("supervise/shop", "rotate-app-password/shop", "moves/shop");
+    }
+
+    // AAA: бэкапы — в Active-ветке после rotate-app-password и до repair
+    // (короткие плановые операции раньше; планировщик non-blocking, spec §3.1)
+    [Fact]
+    public async Task Tick_ActiveClusterWithBackupsEnabled_CalledBetweenRotateAndRepair()
+    {
+        // Arrange — кластер + Backups.Enabled=true; FakeProcesses пишет порядок Calls.
+        SeedCluster("shop", null);
+        var processes = new FakeProcesses();
+        var loop = CreateLoop(processes, options: new PgWorkerOptions
+        {
+            Etcd = new EtcdOptions { Endpoints = ["http://etcd:2379"] },
+            Loops = new LoopsOptions { ScanIntervalSec = 5, ErrorDelayMs = 10 },
+            Parallelism = new ParallelismOptions { MaxClusters = 4 },
+            Backups = new BackupsOptions { Enabled = true },
+        });
+
+        // Act
+        await loop.TickSafelyAsync(TestContext.Current.CancellationToken);
+
+        // Assert — порядок вызовов: ...rotate-app-password → backups → repair...
+        var calls = processes.Calls;
+        calls.Should().Contain("rotate-app-password/shop");
+        calls.Should().Contain("backups/shop");
+        calls.Should().Contain("repair/shop");
+        calls.IndexOf("rotate-app-password/shop").Should().BeLessThan(calls.IndexOf("backups/shop"));
+        calls.IndexOf("backups/shop").Should().BeLessThan(calls.IndexOf("repair/shop"));
+    }
+
+    // AAA: Enabled=false (дефолт) — процесс не вызывается, поведение не меняется
+    [Fact]
+    public async Task Tick_BackupsDisabled_ProcessNotCalled()
+    {
+        // Arrange — дефолтный конфиг (Backups.Enabled=false)
+        SeedCluster("shop", null);
+        var processes = new FakeProcesses();
+        var loop = CreateLoop(processes);
+
+        // Act
+        await loop.TickSafelyAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        processes.Calls.Should().NotContain(c => c.StartsWith("backups/"));
     }
 
     [Fact]
@@ -389,6 +435,8 @@ public class ReconcileLoopTests
 
         public List<string> Rotated { get; } = [];
 
+        public List<string> Backed { get; } = [];
+
         // Порядок вызовов процессов кластера ("supervise/shop", "moves/shop", …).
         public List<string> Calls { get; } = [];
 
@@ -454,6 +502,13 @@ public class ReconcileLoopTests
         public Task<Result<ProcessOutcome>> RotateAppPasswordAsync(ClusterSnapshot snap, CancellationToken ct)
         {
             using var _ = Track(snap.Config.Cluster, Rotated, callName: "rotate-app-password");
+            return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
+        }
+
+        public Task<Result<ProcessOutcome>> BackupsAsync(
+            ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
+        {
+            using var _ = Track(snap.Config.Cluster, Backed, callName: "backups");
             return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
         }
 
