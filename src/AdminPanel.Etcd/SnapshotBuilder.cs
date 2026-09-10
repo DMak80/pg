@@ -13,6 +13,7 @@ public static class SnapshotBuilder
         ServiceParseResult service,
         IReadOnlyList<StandNode> standNodes,
         MovesParseResult moves,
+        BackupsParseResult backups,
         WorkerEndpointsParseResult pgWorkerEndpoints,
         WorkJournalParseResult work,
         IReadOnlyList<EtcdMember> members,
@@ -25,11 +26,12 @@ public static class SnapshotBuilder
             service.Scopes,
             standNodes,
             moves.Tickets,
+            backups.Clusters,
             pgWorkerEndpoints.Endpoints,
             work.Items,
             [], // WorkerHealth вносит SnapshotRefresher из IWorkerHealthStore (spec D4)
             [],
             [],
-            [.. clusters.Errors, .. service.Errors, .. moves.Errors, .. pgWorkerEndpoints.Errors, .. work.Errors],
+            [.. clusters.Errors, .. service.Errors, .. moves.Errors, .. backups.Errors, .. pgWorkerEndpoints.Errors, .. work.Errors],
             clusters.UnknownKeyCount + service.UnknownKeyCount);
 }
