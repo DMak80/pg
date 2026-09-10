@@ -191,7 +191,7 @@ public class E2eBackupScenarios
             var current = await G.GetAsync(Endpoint, $"/clusters/{cluster}/backup_password", ct);
             return current.Value is { } kv && kv.Value != oldPassword
                 && await GetOrNullAsync($"/pgworker/rotations/{cluster}") is null;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(240), ct); // t03: фон тяжелее (WAL-агенты) — 120 c тесно
         rotated.Should().BeTrue("ротация должна перезаписать backup_password и закрыть заявку");
         var newPassword = (await G.GetAsync(Endpoint, $"/clusters/{cluster}/backup_password", ct)).Value!.Value;
 
@@ -291,31 +291,44 @@ public class E2eBackupScenarios
             var pwKv = await GetOrNullAsync($"/clusters/{cluster}/backup_password");
             var agentsPs = await Fx.RunDockerAsync(
                 ["ps", "-a", "--format", "{{.Names}} {{.State}}", "--filter", $"name=pgw-backup-wal-{cluster}-"], ct);
-            var jobLogs = agentsPs.Length > 0
-                ? await Fx.RunDockerAsync(["logs", "--tail", "15", agentsPs.Split('\n')[0].Split(' ')[0]], ct)
-                : "(агентов нет)";
+            var jobLogs = "(агентов нет)";
+            foreach (var line in agentsPs.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var name = line.Split(' ')[0];
+                var logs = await Fx.RunDockerAsync(["logs", "--tail", "12", name], ct);
+                jobLogs += $"\n== {name}: {logs[..Math.Min(700, logs.Length)]}";
+            }
+
             throw new ApplicationException(
                 $"сегменты не доставлены: journal=[{workKv?.Value[..Math.Min(400, workKv.Value.Length)]}] " +
                 $"wal=[{walKv?.Value ?? "-"}] backup_password={(pwKv is null ? "-" : "есть")} " +
-                $"agents=[{agentsPs.Replace('\n', ';')}] agentLog=[{jobLogs[..Math.Min(600, jobLogs.Length)]}]");
+                $"agents=[{agentsPs.Replace('\n', ';')}] {jobLogs}");
         }
         uploaded.Should().BeTrue("сегменты обязаны появиться в MinIO за бюджет (AC1)");
         listed.Select(o => o.Name).Should().OnlyContain(n => !n.EndsWith(".partial"));
 
-        // Assert 2 — ключ wal ACTIVE, slot/master, last_uploaded свежий (AC2)
+        // Assert 2 — ключ wal ACTIVE и СОГЛАСОВАННЫЙ снапшот «ключ × list»: воркер
+        // и агент живут, пары (wal, listed) берутся поллингом до совпадения
+        // last_uploaded из ключа с содержимым свежего листа (иначе ассерт сравнивает
+        // разные моменты времени живого потока).
         var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
-        var walActive = await E2eFixture.WaitForAsync(async () =>
+        PgWorker.Etcd.Parsing.WalStreamState wal = null!;
+        var consistent = await E2eFixture.WaitForAsync(async () =>
         {
             var read = await writer.ReadAsync(cluster, "shard1", ct);
-            return read.IsSuccess && read.Value is { State: PgWorker.Etcd.Parsing.WalStreamStatus.Active };
+            if (!read.IsSuccess || read.Value is not { State: PgWorker.Etcd.Parsing.WalStreamStatus.Active })
+                return false;
+            wal = read.Value;
+            var list = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
+            if (!list.IsSuccess)
+                return false;
+            listed = [.. list.Value];
+            return listed.Select(o => o.Name).Contains(wal.LastUploadedSegment);
         }, TimeSpan.FromSeconds(120), ct);
-        walActive.Should().BeTrue("ключ wal обязан перейти в ACTIVE (AC2)");
-        var wal = (await writer.ReadAsync(cluster, "shard1", ct)).Value!;
+        consistent.Should().BeTrue("ключ wal обязан перейти в ACTIVE (AC2) и совпасть с S3-фактом");
         wal.Slot.Should().Be($"pgw_bkp_{cluster}_shard1");
         wal.MasterNode.Should().NotBeEmpty();
         wal.ChainStartSegment.Should().NotBeEmpty();
-        listed.Select(o => o.Name).Should().Contain(wal.LastUploadedSegment,
-            "last_uploaded_segment — наблюдаемый факт S3");
         (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - wal.LastUploadedUnix!.Value)
             .Should().BeLessThan(120, "last_uploaded_unix свежий (поток жив)");
 
