@@ -1,3 +1,4 @@
+using PgWorker.Backups;
 using PgWorker.Docker.Engine;
 using PgWorker.Moves;
 
@@ -272,6 +273,13 @@ public sealed class BackupsOptions
     public BackupsJobOptions Job { get; set; } = new();
 
     public BackupsRetryOptions Retry { get; set; } = new();
+
+    /// <summary>Runtime-опции подсистемы бэкапов: склейка Backups-секции (t02).</summary>
+    public BackupsRuntimeOptions ToRuntime() => new(
+        Enabled, Policy.FullMaxAgeSec, Policy.VerifyOnCreate,
+        S3.Endpoint, S3.Region, S3.Bucket, S3.AccessKey, S3.SecretKey,
+        Job.Image, Retry.BaseSec, Retry.MaxSec,
+        Staging.Dir, Staging.QuotaBytes, Agent.Cpu, Agent.Mem);
 
     /// <summary>Fail-fast старта (образец TLS arch/14 §2.2.1): Enabled=true
     /// обязан иметь полный S3-комплект; false — подсистема не активна.</summary>
