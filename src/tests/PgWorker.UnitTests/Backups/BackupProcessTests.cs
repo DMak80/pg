@@ -196,10 +196,19 @@ public class BackupProcessTests
         // pg_hba-гвард (t02 G2): exec-патч по нодам шарда — помним вызовы.
         public readonly List<(string Shard, string Node, IReadOnlyList<string> Cmd)> ExecNodeCalls = [];
 
+        // pg_hba-гвард усвоенных нод: exec по имени чужого контейнера (object).
+        public readonly List<(string Container, IReadOnlyList<string> Cmd)> ContainerExecCalls = [];
+
         public Task<Result<string>> ExecNodeAsync(string cluster, string shard, string node,
             IReadOnlyList<string> cmd, CancellationToken ct)
         {
             ExecNodeCalls.Add((shard, node, cmd));
+            return Task.FromResult(Result<string>.Success(string.Empty));
+        }
+
+        public Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct)
+        {
+            ContainerExecCalls.Add((containerName, cmd));
             return Task.FromResult(Result<string>.Success(string.Empty));
         }
 
@@ -217,7 +226,7 @@ public class BackupProcessTests
         public Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct) => throw NotSupported();
         public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
             string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct) => throw NotSupported();
-        public Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct) => throw NotSupported();
+        // ExecContainerAsync — реализован выше (pg_hba-гвард object-нод)
         public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct) => throw NotSupported();
     }
 
@@ -262,9 +271,10 @@ public class BackupProcessTests
         WorkJournal Journal, BackupProcess Process);
 
     private static async Task<Rig> NewRig(
-        bool claim = true, bool seedPortalloc = true, BackupsRuntimeOptions? options = null)
+        bool claim = true, bool seedPortalloc = true, BackupsRuntimeOptions? options = null,
+        Fakes.FakeEtcd? etcdOverride = null)
     {
-        var store = new Fakes.FakeEtcd();
+        var store = etcdOverride ?? new Fakes.FakeEtcd();
         SeedCluster(store);
         if (!seedPortalloc)
             store.Store.Remove("/pgworker/portalloc/shop");
@@ -340,6 +350,36 @@ public class BackupProcessTests
         // journal-before-manipulations: phase started/shard1/<id>
         (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.Phase
             .Should().Be($"started/shard1/{id}");
+    }
+
+    // AAA: pg_hba-гвард на усвоенной ноде (object) — exec в её контейнер,
+    // а не по pgw-имени (у стендовых/усвоенных нод pgw-контейнера нет)
+    [Fact]
+    public async Task AdoptedNodes_HbaGuard_ExecsObjectContainer()
+    {
+        // Arrange — portalloc с object-именами (усвоенные ноды, arch/14 §5 J);
+        // сид поверх NewRig (иначе SeedCluster перезапишет portalloc/master)
+        var etcd = new Fakes.FakeEtcd();
+        var rig = await NewRig(etcdOverride: etcd);
+        var alloc = new Dictionary<string, NodeAddress>
+        {
+            ["shard1/shard1a"] = new("local", new NodePorts(15433, 18011, 0), Object: "as-shard1a"),
+            ["shard1/shard1b"] = new("local", new NodePorts(15434, 18012, 0), Object: "as-shard1b"),
+        };
+        etcd.Seed("/pgworker/portalloc/shop", Portalloc.Serialize(alloc));
+        // master-ключ усвоенного стенда: <имя ноды>:<порт> (doorman=0 — ключ
+        // резолвится byName; E2eScenarios, arch/14 §2.4 п.5)
+        etcd.Seed("/clusters/shop/shards/shard1/master", "shard1a:0");
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(etcd), [], CancellationToken.None);
+
+        // Assert — exec ушёл в object-контейнеры, pgw-путь не звался
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        outcome.Value.Should().Be(ProcessOutcome.Done);
+        rig.Sql.Scalars.Should().NotBeEmpty("гвард G2 исполнен (мастер резолвится по byName)");
+        rig.Driver.ContainerExecCalls.Select(c => c.Container).Should().BeEquivalentTo(["as-shard1a", "as-shard1b"]);
+        rig.Driver.ExecNodeCalls.Should().BeEmpty();
     }
 
     // AAA: инвариант одного активного — при RUNNING (живой джоб) новую попытку

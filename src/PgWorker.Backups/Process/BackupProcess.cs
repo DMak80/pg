@@ -111,18 +111,24 @@ public sealed class BackupProcess(
             // 00-up.sh): строка живёт в PGDATA-volume — переживает рестарты;
             // reload — локальным psql (unix-socket, trust). Отказ — transient:
             // шард skip, следующий тик дообеспечит (запуск на непатченной ноде
-            // карался бы FAILED-циклом с бэкоффом).
+            // карался бы FAILED-циклом с бэкоффом). Усвоенные ноды (object) —
+            // exec в их контейнер (pgw-имени у них нет).
             var hbaPatched = true;
             foreach (var nodeKey in addresses.Value.Keys
                          .Where(k => k.StartsWith($"{shard.Name}/", StringComparison.Ordinal)))
             {
-                var patched = await driver.ExecNodeAsync(cluster, shard.Name, nodeKey.Split('/')[1],
+                var addr = addresses.Value[nodeKey];
+                var nodeName = nodeKey.Split('/')[1];
+                string[] hbaCmd =
                 [
                     "sh", "-c",
                     "grep -q 'replication backup_exec' \"$PGDATA/pg_hba.conf\" 2>/dev/null"
                     + " || echo 'hostssl replication backup_exec all scram-sha-256' >> \"$PGDATA/pg_hba.conf\"; "
                     + "psql -U postgres -tAc 'SELECT pg_reload_conf()' >/dev/null",
-                ], ct);
+                ];
+                var patched = addr.Object is { Length: > 0 } objectContainer
+                    ? await driver.ExecContainerAsync(objectContainer, hbaCmd, ct)
+                    : await driver.ExecNodeAsync(cluster, shard.Name, nodeName, hbaCmd, ct);
                 if (!patched.IsSuccess)
                 {
                     hbaPatched = false;

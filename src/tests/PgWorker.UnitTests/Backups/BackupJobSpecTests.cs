@@ -55,7 +55,8 @@ public class BackupJobSpecTests
         spec.Env["PGW_BK_S3_SECRET_KEY"].Should().Be("sk");
         spec.Env["PGW_BK_PREFIX"].Should().Be("demo/s1");
         spec.Env["PGW_BK_STAGING_DIR"].Should().Be("/backup-staging");
-        spec.ExtraHosts.Should().Contain("host.docker.internal:host-gateway");
+        spec.ExtraHosts.Should().Contain("host.docker.internal:host-gateway")
+            .And.Contain("local:host-gateway", "зарезервированное имя docker-хоста стенда");
         spec.Label.Should().Be("demo");
     }
 

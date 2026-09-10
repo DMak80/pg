@@ -42,7 +42,10 @@ public static class BackupJobSpec
             Tmpfs: opts.StagingQuotaBytes is { } quota
                 ? new Dictionary<string, string> { [opts.StagingDir] = $"size={quota}" }
                 : null,
-            ExtraHosts: ["host.docker.internal:host-gateway"],
+            // advertised-хосты источника (arch/19 §2/§6): host.docker.internal —
+            // general-правило; "local" — зарезервированное имя docker-хоста стенда
+            // (deploy-compose extra_hosts воркера; portalloc усвоенного demo).
+            ExtraHosts: ["host.docker.internal:host-gateway", "local:host-gateway"],
             RestartPolicy: "no");
     }
 }
