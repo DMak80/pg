@@ -168,12 +168,176 @@ public sealed class BackupProcess(
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
     }
 
-    // S-ветка супервизии — реализуется Task 12 этого плана.
-    private Task<Result> SuperviseActiveAsync(
+    // S: супервизия активного по детерминированному имени контейнера на
+    // docker-хосте его источника (arch/19 §2). Ветвление по active.State
+    // (spec §2.4, ревью Ф4 finding 2):
+    //   PLANNED + нет контейнера → идемпотентный запуск (сбой create/start
+    //     прошлого тика НЕ превращается в FAILED/vanished и НЕ карается бэкоффом);
+    //   PLANNED/другой + created → довыгоняем StartContainerAsync (304=успех);
+    //   running → поллинг логов → UPLOADING;
+    //   exited + result → COMPLETED/FAILED; RUNNING/UPLOADING без контейнера →
+    //     FAILED container-vanished; transport-отказ docker (list/logs/inspect)
+    //     — transient: статус не меняем, следующий тик повторит (spec §3.1 S).
+    private async Task<Result> SuperviseActiveAsync(
         string cluster, ShardSpec shard, IReadOnlyList<FullBackupState> fulls,
         IReadOnlyDictionary<string, NodeAddress> addresses, string backupPassword,
         bool verifyOnCreate, CancellationToken ct)
-        => Task.FromResult(Result.Success());    // Failover-обёртка put: первый успешный endpoint выигрывает (образец DeprovisioningProcess).
+    {
+        foreach (var active in fulls.Where(f => f.State
+                     is FullBackupStatus.Planned or FullBackupStatus.Running or FullBackupStatus.Uploading))
+        {
+            // хост джоба — хост ноды-источника из portalloc (node-факт статуса);
+            // нода исчезла из portalloc → transient: следующий тик.
+            var source = addresses.FirstOrDefault(p => p.Key == $"{shard.Name}/{active.Node}").Value;
+            if (source is null)
+                continue;
+            var engine = driver.EngineFor(source.Host);
+            if (engine is null)
+                continue;
+
+            var name = BackupNames.ContainerName(cluster, shard.Name, active.Id);
+            var list = await engine.ListContainersAsync(name, all: true, ct);
+            if (!list.IsSuccess)
+                continue; // transient transport-отказ: статус не меняем (arch/19 §2)
+
+            var found = list.Value.FirstOrDefault(c => c.Names.Contains(name));
+
+            // PLANNED: джоб ещё не стартовал — идемпотентный запуск (spec §2.4):
+            // нет контейнера → create; старт — в обоих случаях (created прошлом
+            // тике / только что созданный; 304 already-started = успех движка).
+            if (active.State == FullBackupStatus.Planned && found is not { State: "running" or "exited" })
+            {
+                if (found is null)
+                {
+                    var spec = BackupJobSpec.Build(options, cluster, shard.Name, active.Id, source, backupPassword);
+                    var created = await engine.CreateContainerAsync(spec, name, ct);
+                    if (!created.IsSuccess)
+                        continue; // transient — следующий тик повторит запуск
+                }
+
+                var started = await engine.StartContainerAsync(name, ct);
+                if (!started.IsSuccess)
+                    continue;
+
+                var running = active with { State = FullBackupStatus.Running };
+                var putRunning = await PutAsync(
+                    BackupNames.FullKey(cluster, shard.Name, active.Id), BackupStatusJson.Serialize(running), ct);
+                if (!putRunning.IsSuccess)
+                    return putRunning;
+                await journal.WritePhaseAsync(cluster, Op, $"started/{shard.Name}/{active.Id}", claims.InstanceId, null, ct);
+                continue;
+            }
+
+            // RUNNING/UPLOADING + created — аномалия (start потерялся между тиками):
+            // довыгоняем (304 = успех), статус не трогаем — следующий тик увидит running.
+            if (found is { State: "created" })
+            {
+                await engine.StartContainerAsync(name, ct);
+                continue;
+            }
+
+            if (found is null)
+            {
+                // контейнера нет вовсе (включая exited) — сюда попадают только
+                // RUNNING/UPLOADING (PLANNED разобран выше): рестарт docker-хоста
+                // и пр.; осиротевший staging volume удаляем (404 = ок), переснятие по G3.
+                var vanished = active with
+                {
+                    State = FullBackupStatus.Failed,
+                    FinishedUnix = time.GetUtcNow().ToUnixTimeSeconds(),
+                    Error = "container-vanished",
+                };
+                var putVanished = await PutAsync(
+                    BackupNames.FullKey(cluster, shard.Name, active.Id), BackupStatusJson.Serialize(vanished), ct);
+                if (!putVanished.IsSuccess)
+                    return putVanished;
+                await CleanupJobAsync(engine, cluster, shard.Name, active.Id, ct);
+                await journal.WritePhaseAsync(cluster, Op, $"vanished/{shard.Name}/{active.Id}",
+                    claims.InstanceId, "container-vanished", ct);
+                continue;
+            }
+
+            // Логи — транспорт guarded (spec §3.1 S: logs недоступны → transient,
+            // статус не меняем, следующий тик повторит супервизию; ревью Ф4-3).
+            var logs = await engine.GetContainerLogsAsync(name, tail: 200, ct);
+            if (!logs.IsSuccess)
+                continue;
+            var markers = BackupJobLog.Parse(logs.Value);
+
+            if (found is { State: "running" or "restarting" })
+            {
+                if (markers is { Phase: "uploading", WalStartSegment: { } wal }
+                    && active.State != FullBackupStatus.Uploading)
+                {
+                    var uploading = active with { State = FullBackupStatus.Uploading, WalStartSegment = wal };
+                    var put = await PutAsync(
+                        BackupNames.FullKey(cluster, shard.Name, active.Id), BackupStatusJson.Serialize(uploading), ct);
+                    if (!put.IsSuccess)
+                        return put;
+                }
+
+                continue; // жив — ждём следующие тики
+            }
+
+            if (found is { State: "exited" })
+            {
+                // exit-код — только при успешном инспекте (spec §3.1 S: inspect
+                // недоступен → transient, статус не меняем). Без гварда успешный
+                // бэкап (exit 0 + ok:true, но логи/инспект не прочитаны из-за
+                // transport-отказа) ушёл бы в ЛОЖНЫЙ FAILED («exit 0»/«exit -1»),
+                // CleanupJobAsync удалил бы контейнер — попытка потеряна, воркер
+                // переснимает полный лишний раз (ложный критичный алерт панели).
+                var inspect = await engine.InspectContainerAsync(found.Id, ct);
+                if (!inspect.IsSuccess)
+                    continue;
+                var exitCode = inspect.Value.ExitCode ?? -1;
+                FullBackupState outcome;
+                if (exitCode == 0 && markers.Result is { Ok: true } result)
+                {
+                    outcome = active with
+                    {
+                        State = FullBackupStatus.Completed,
+                        FinishedUnix = time.GetUtcNow().ToUnixTimeSeconds(),
+                        WalStartSegment = result.WalStartSegment ?? active.WalStartSegment,
+                        SizeBytes = result.SizeBytes,
+                        Verify = verifyOnCreate ? new BackupVerify(BackupVerifyStatus.Pending, null) : null,
+                    };
+                }
+                else
+                {
+                    // exit-код — истина итога; result-JSON — метаданные (arch/19 §10).
+                    var error = markers.Result is { Ok: false, Error: { } reason }
+                        ? reason
+                        : $"exit {exitCode}";
+                    outcome = active with
+                    {
+                        State = FullBackupStatus.Failed,
+                        FinishedUnix = time.GetUtcNow().ToUnixTimeSeconds(),
+                        Error = error,
+                    };
+                }
+
+                var putOutcome = await PutAsync(
+                    BackupNames.FullKey(cluster, shard.Name, active.Id), BackupStatusJson.Serialize(outcome), ct);
+                if (!putOutcome.IsSuccess)
+                    return putOutcome;
+                await CleanupJobAsync(engine, cluster, shard.Name, active.Id, ct);
+                await journal.WritePhaseAsync(cluster, Op,
+                    $"{(outcome.State == FullBackupStatus.Completed ? "completed" : "failed")}/{shard.Name}/{active.Id}",
+                    claims.InstanceId, outcome.Error, ct);
+            }
+        }
+
+        return Result.Success();
+    }
+
+    // Итог зафиксирован — контейнер и staging volume джоба не нужны (arch/19 §2);
+    // квота-tmpfs-джоб volume не имеет — RemoveVolumeAsync 404 = успех.
+    private async Task CleanupJobAsync(IDockerEngine engine, string cluster, string shard, string id, CancellationToken ct)
+    {
+        await engine.RemoveContainerAsync(BackupNames.ContainerName(cluster, shard, id), force: true, ct);
+        await engine.RemoveVolumeAsync(BackupNames.VolumeName(cluster, shard, id), ct);
+    }    // Failover-обёртка put: первый успешный endpoint выигрывает (образец DeprovisioningProcess).
     private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
     {
         Result? last = null;

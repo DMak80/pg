@@ -83,8 +83,10 @@ public class BackupProcessTests
         public readonly List<string> Removed = [];
         public readonly List<string> RemovedVolumes = [];
 
-        // transport-отказ листинга (S-ветки, Task 12): статус не меняется.
+        // transport-отказы docker (S-ветки): список/логи/инспект — статус не меняем.
         public bool ListFails { get; set; }
+        public bool LogsFails { get; set; }
+        public bool InspectFails { get; set; }
 
         public Task<Result> PingAsync(CancellationToken ct) => Task.FromResult(Result.Success());
 
@@ -94,9 +96,10 @@ public class BackupProcessTests
             if (ListFails)
                 return Task.FromResult(Result<IReadOnlyList<DockerContainer>>.Failed(
                     new ApplicationException("docker: list failed")));
+            // Names — БЕЗ ведущего "/" (реальный движок триммит, матчинг по имени)
             var list = Containers
                 .Where(p => p.Key.Contains(namePrefix, StringComparison.Ordinal))
-                .Select(p => new DockerContainer(p.Value.Id, ["/" + p.Key], p.Value.State, "img"))
+                .Select(p => new DockerContainer(p.Value.Id, [p.Key], p.Value.State, "img"))
                 .ToList();
             return Task.FromResult(Result<IReadOnlyList<DockerContainer>>.Success(
                 (IReadOnlyList<DockerContainer>)list));
@@ -104,6 +107,9 @@ public class BackupProcessTests
 
         public Task<Result<DockerContainerInspect>> InspectContainerAsync(string id, CancellationToken ct)
         {
+            if (InspectFails)
+                return Task.FromResult(Result<DockerContainerInspect>.Failed(
+                    new ApplicationException("docker: inspect failed")));
             var found = Containers.FirstOrDefault(p => p.Value.Id == id);
             return Task.FromResult(found.Key is null
                 ? Result<DockerContainerInspect>.Failed(new KeyNotFoundException(id))
@@ -113,9 +119,13 @@ public class BackupProcessTests
         }
 
         public Task<Result<string>> GetContainerLogsAsync(string idOrName, int tail, CancellationToken ct)
-            => Task.FromResult(Containers.TryGetValue(idOrName, out var rec)
+        {
+            if (LogsFails)
+                return Task.FromResult(Result<string>.Failed(new ApplicationException("docker: logs failed")));
+            return Task.FromResult(Containers.TryGetValue(idOrName, out var rec)
                 ? Result<string>.Success(rec.Logs)
                 : Result<string>.Failed(new KeyNotFoundException(idOrName)));
+        }
 
         public Task<Result> CreateContainerAsync(ContainerSpec spec, string name, CancellationToken ct)
         {
@@ -319,20 +329,23 @@ public class BackupProcessTests
             .Should().Be($"started/shard1/{id}");
     }
 
-    // AAA: инвариант одного активного — при RUNNING новую попытку не создаём
+    // AAA: инвариант одного активного — при RUNNING (живой джоб) новую попытку
+    // не создаём: супервизия поллит, G3 молчит
     [Fact]
     public async Task ActiveExists_DoesNotPlanSecond()
     {
-        // Arrange — активная RUNNING-попытка (сид в аргументе тика)
+        // Arrange — активная RUNNING-попытка + живой контейнер (поллинг без мутаций)
         var rig = await NewRig();
         var now = TimeProvider.System.GetUtcNow();
         var active = new FullBackupState("20260908030000Z", FullBackupStatus.Running,
             "shard1a", BackupSourceRole.Master, Unix(now.AddMinutes(-2)), null, null, null, null, null);
+        var name = BackupNames.ContainerName("shop", "shard1", "20260908030000Z");
+        rig.Engine.Containers[name] = new("cnt1", "running", -1, "{\"phase\":\"basebackup\"}");
 
         // Act
         var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), BackupsOf(active), CancellationToken.None);
 
-        // Assert — ни нового ключа, ни контейнера
+        // Assert — ни нового ключа, ни (пере)создания контейнера
         outcome.IsSuccess.Should().BeTrue();
         rig.Etcd.Store.Keys.Should().NotContain(k => k.StartsWith("/pgworker/backups/shop/shard1/full/"));
         rig.Engine.Created.Should().BeEmpty();
@@ -412,5 +425,253 @@ public class BackupProcessTests
         // Assert — Failed; txn нет
         outcome.IsSuccess.Should().BeFalse();
         rig.Etcd.Txns.Should().BeEmpty();
+    }
+
+    // ─── S-ветки супервизии (Task 12) ───
+
+    private const string WalSeg = "000000010000000000000042";
+
+    // Хелпер: активная запись шарда (источник — мастер shard1a, как в сидах G).
+    private static FullBackupState Active(string id, FullBackupStatus state, string? wal = null,
+        string? error = null, long? finished = null, long? size = null, BackupVerify? verify = null)
+        => new(id, state, "shard1a", BackupSourceRole.Master,
+            TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60, finished, wal, size, error, verify);
+
+    // Хелпер: активная запись шарда как аргумент тика (как после прошлого тика).
+    private static IReadOnlyList<ClusterBackups> Seeded(string id,
+        FullBackupStatus state, string? wal = null, string? error = null, long? finished = null,
+        long? size = null, BackupVerify? verify = null)
+        => BackupsOf(Active(id, state, wal, error, finished, size, verify));
+
+    private static string FullKey(string id) => BackupNames.FullKey("shop", "shard1", id);
+
+    // AAA: PLANNED без контейнера (сбой create прошлого тика) → create+start,
+    // state=RUNNING, тот же id; бэкофф-штрафа нет — новых ключей не появилось
+    [Fact]
+    public async Task PlannedWithoutContainer_Relaunches()
+    {
+        // Arrange — PLANNED-запись, движок пуст
+        var rig = await NewRig();
+        var backups = Seeded("20260908030000Z", FullBackupStatus.Planned);
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
+
+        // Assert — тот же id стал RUNNING; джоб создан и запущен
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        rig.Etcd.Store.Keys.Should().ContainSingle(k => k.StartsWith("/pgworker/backups/shop/shard1/full/"))
+            .Which.Should().Be(FullKey("20260908030000Z"));
+        var parsed = BackupsParser.Parse(
+            (IReadOnlyList<Kv>)[new Kv(FullKey("20260908030000Z"), rig.Etcd.Store[FullKey("20260908030000Z")].Value, 1)],
+            out var errors);
+        errors.Should().BeEmpty();
+        parsed.Value[0].Shards["shard1"].Full.Single().State.Should().Be(FullBackupStatus.Running);
+        rig.Engine.Created.Should().ContainSingle();
+        rig.Engine.Started.Should().Contain(BackupNames.ContainerName("shop", "shard1", "20260908030000Z"));
+        (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.Phase
+            .Should().Be("started/shard1/20260908030000Z");
+    }
+
+    // AAA: PLANNED + контейнер created (сбой start прошлого тика) → start,
+    // state=RUNNING — wedge исключён
+    [Fact]
+    public async Task PlannedWithCreatedContainer_GetsStarted()
+    {
+        // Arrange — PLANNED + контейнер в created
+        var rig = await NewRig();
+        var backups = Seeded("20260908030000Z", FullBackupStatus.Planned);
+        var name = BackupNames.ContainerName("shop", "shard1", "20260908030000Z");
+        rig.Engine.Containers[name] = new("cnt1", "created", -1, "");
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
+
+        // Assert — стартован, статус RUNNING (не «жив» в created)
+        outcome.IsSuccess.Should().BeTrue();
+        rig.Engine.Started.Should().Contain(name);
+        rig.Engine.Containers[name].State.Should().Be("running");
+        var parsed = BackupsParser.Parse(
+            (IReadOnlyList<Kv>)[new Kv(FullKey("20260908030000Z"), rig.Etcd.Store[FullKey("20260908030000Z")].Value, 1)],
+            out _);
+        parsed.Value[0].Shards["shard1"].Full.Single().State.Should().Be(FullBackupStatus.Running);
+        rig.Engine.Created.Should().BeEmpty("повторного create быть не должно");
+    }
+
+    // AAA: running-джоб напечатал uploading-маркер → state=UPLOADING +
+    // wal_start_segment (node/role/started сохранены)
+    [Fact]
+    public async Task RunningJob_UploadingMarker_MovesToUploading()
+    {
+        // Arrange — RUNNING + контейнер running с uploading-маркером
+        var rig = await NewRig();
+        var backups = Seeded("20260908030000Z", FullBackupStatus.Running);
+        var name = BackupNames.ContainerName("shop", "shard1", "20260908030000Z");
+        rig.Engine.Containers[name] = new("cnt1", "running", -1,
+            $"{{\"phase\":\"uploading\",\"wal_start_segment\":\"{WalSeg}\"}}");
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
+
+        // Assert
+        outcome.IsSuccess.Should().BeTrue();
+        var parsed = BackupsParser.Parse(
+            (IReadOnlyList<Kv>)[new Kv(FullKey("20260908030000Z"), rig.Etcd.Store[FullKey("20260908030000Z")].Value, 1)],
+            out _);
+        var full = parsed.Value[0].Shards["shard1"].Full.Single();
+        full.State.Should().Be(FullBackupStatus.Uploading);
+        full.WalStartSegment.Should().Be(WalSeg);
+        full.Node.Should().Be("shard1a");
+        full.Role.Should().Be(BackupSourceRole.Master);
+    }
+
+    // AAA: exited 0 + ok:true → COMPLETED (finished/wal/size, verify PENDING),
+    // контейнер и staging volume удалены
+    [Fact]
+    public async Task ExitedZero_OkResult_CompletesAndCleans()
+    {
+        // Arrange — RUNNING + exited 0 + result ok
+        var rig = await NewRig();
+        var backups = Seeded("20260908030000Z", FullBackupStatus.Running);
+        var name = BackupNames.ContainerName("shop", "shard1", "20260908030000Z");
+        rig.Engine.Containers[name] = new("cnt1", "exited", 0,
+            $"{{\"ok\":true,\"wal_start_segment\":\"{WalSeg}\",\"size_bytes\":1048576}}");
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
+
+        // Assert
+        outcome.IsSuccess.Should().BeTrue();
+        var parsed = BackupsParser.Parse(
+            (IReadOnlyList<Kv>)[new Kv(FullKey("20260908030000Z"), rig.Etcd.Store[FullKey("20260908030000Z")].Value, 1)],
+            out _);
+        var full = parsed.Value[0].Shards["shard1"].Full.Single();
+        full.State.Should().Be(FullBackupStatus.Completed);
+        full.FinishedUnix.Should().NotBeNull();
+        full.WalStartSegment.Should().Be(WalSeg);
+        full.SizeBytes.Should().Be(1048576);
+        full.Verify!.State.Should().Be(BackupVerifyStatus.Pending);
+        rig.Engine.Removed.Should().Contain(name);
+        rig.Engine.RemovedVolumes.Should().Contain(BackupNames.VolumeName("shop", "shard1", "20260908030000Z"));
+    }
+
+    // AAA: exit 1 + ok:false с ошибкой → FAILED с error; контейнер/volume удалены
+    [Fact]
+    public async Task ExitedNonZero_FailsWithError()
+    {
+        // Arrange — RUNNING + exited 1 + result ok:false
+        var rig = await NewRig();
+        var backups = Seeded("20260908030000Z", FullBackupStatus.Running);
+        var name = BackupNames.ContainerName("shop", "shard1", "20260908030000Z");
+        rig.Engine.Containers[name] = new("cnt1", "exited", 1,
+            "{\"ok\":false,\"error\":\"upload: connection refused\"}");
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
+
+        // Assert
+        outcome.IsSuccess.Should().BeTrue();
+        var parsed = BackupsParser.Parse(
+            (IReadOnlyList<Kv>)[new Kv(FullKey("20260908030000Z"), rig.Etcd.Store[FullKey("20260908030000Z")].Value, 1)],
+            out _);
+        var full = parsed.Value[0].Shards["shard1"].Full.Single();
+        full.State.Should().Be(FullBackupStatus.Failed);
+        full.Error.Should().Be("upload: connection refused");
+        full.FinishedUnix.Should().NotBeNull();
+        rig.Engine.Removed.Should().Contain(name);
+        rig.Engine.RemovedVolumes.Should().Contain(BackupNames.VolumeName("shop", "shard1", "20260908030000Z"));
+    }
+
+    // AAA: exit 2 без result-JSON → FAILED с error «exit 2» (exit-код — истина)
+    [Fact]
+    public async Task ExitedWithoutResult_FailsWithExitCode()
+    {
+        // Arrange — RUNNING + exited 2, логи без result
+        var rig = await NewRig();
+        var backups = Seeded("20260908030000Z", FullBackupStatus.Running);
+        var name = BackupNames.ContainerName("shop", "shard1", "20260908030000Z");
+        rig.Engine.Containers[name] = new("cnt1", "exited", 2, "sh: pg_basebackup: not found\n");
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
+
+        // Assert
+        outcome.IsSuccess.Should().BeTrue();
+        var parsed = BackupsParser.Parse(
+            (IReadOnlyList<Kv>)[new Kv(FullKey("20260908030000Z"), rig.Etcd.Store[FullKey("20260908030000Z")].Value, 1)],
+            out _);
+        var full = parsed.Value[0].Shards["shard1"].Full.Single();
+        full.State.Should().Be(FullBackupStatus.Failed);
+        full.Error.Should().Be("exit 2");
+    }
+
+    // AAA: RUNNING без контейнера (рестарт docker-хоста) → FAILED
+    // container-vanished; осиротевший staging volume удалён
+    [Fact]
+    public async Task RunningWithoutContainer_MarksFailedContainerVanished()
+    {
+        // Arrange — RUNNING, ListContainers пуст (all=true)
+        var rig = await NewRig();
+        var backups = Seeded("20260908030000Z", FullBackupStatus.Running);
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
+
+        // Assert
+        outcome.IsSuccess.Should().BeTrue();
+        var parsed = BackupsParser.Parse(
+            (IReadOnlyList<Kv>)[new Kv(FullKey("20260908030000Z"), rig.Etcd.Store[FullKey("20260908030000Z")].Value, 1)],
+            out _);
+        var full = parsed.Value[0].Shards["shard1"].Full.Single();
+        full.State.Should().Be(FullBackupStatus.Failed);
+        full.Error.Should().Be("container-vanished");
+        full.FinishedUnix.Should().NotBeNull();
+        rig.Engine.RemovedVolumes.Should().Contain(BackupNames.VolumeName("shop", "shard1", "20260908030000Z"));
+        (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.Phase
+            .Should().Be("vanished/shard1/20260908030000Z");
+    }
+
+    // AAA: transport-отказ docker (list) — статус в etcd НЕ изменён
+    [Fact]
+    public async Task TransportError_KeepsStatus()
+    {
+        // Arrange — RUNNING + ListContainers падает
+        var rig = await NewRig();
+        var backups = Seeded("20260908030000Z", FullBackupStatus.Running);
+        rig.Engine.ListFails = true;
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
+
+        // Assert — попытка не потеряна: статус и ключи нетронуты
+        outcome.IsSuccess.Should().BeTrue();
+        rig.Etcd.Store.Should().NotContainKey(FullKey("20260908030000Z"),
+            "статус живёт в аргументе тика; в etcd его пишет только успешная супервизия");
+        rig.Engine.Removed.Should().BeEmpty();
+        rig.Engine.RemovedVolumes.Should().BeEmpty();
+    }
+
+    // AAA: exited, но logs/inspect transport-отказ → статус не изменён, чистки нет
+    [Theory]
+    [InlineData(true, false)]  // logs недоступен
+    [InlineData(false, true)]  // inspect недоступен
+    public async Task Exited_InspectOrLogsTransportError_KeepsStatus(bool logsFails, bool inspectFails)
+    {
+        // Arrange — RUNNING + exited 0 + ok:true, но транспорт логов/инспекта упал
+        var rig = await NewRig();
+        var backups = Seeded("20260908030000Z", FullBackupStatus.Running);
+        var name = BackupNames.ContainerName("shop", "shard1", "20260908030000Z");
+        rig.Engine.Containers[name] = new("cnt1", "exited", 0,
+            $"{{\"ok\":true,\"wal_start_segment\":\"{WalSeg}\",\"size_bytes\":1}}");
+        rig.Engine.LogsFails = logsFails;
+        rig.Engine.InspectFails = inspectFails;
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
+
+        // Assert — статус не тронут, CleanupJobAsync не зван: следующий тик повторит
+        outcome.IsSuccess.Should().BeTrue();
+        rig.Etcd.Store.Should().NotContainKey(FullKey("20260908030000Z"));
+        rig.Engine.Removed.Should().BeEmpty();
+        rig.Engine.RemovedVolumes.Should().BeEmpty();
     }
 }
