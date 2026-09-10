@@ -45,7 +45,7 @@ builder.Services.AddOptions<PgWorkerOptions>()
     // Подсистема бэкапов (arch/19, t01): fail-fast включения без S3-комплекта;
     // default Enabled=false — подсистема не активна, поведение не меняется.
     .Validate(o => o.Backups.IsValid(),
-        "PgWorker:Backups: Enabled=true требует непустые PgWorker:Backups:S3:Endpoint/Bucket/AccessKey/SecretKey (env PGW_BACKUP_S3_*, arch/19 §7)")
+        "PgWorker:Backups: Enabled=true требует непустые PgWorker:Backups:S3:Endpoint/Bucket/AccessKey/SecretKey (env PGW_BACKUP_S3_*) и Backups:Job:Image (arch/19 §7/§9)")
     .ValidateOnStart();
 
 // mTLS HTTP API (arch/14 §1.1, t03): Kestrel с серверным сертом и требованием
