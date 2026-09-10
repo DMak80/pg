@@ -9,14 +9,16 @@ namespace PgWorker.IntegrationTests.E2e;
 // E2E ротации per-cluster секретов (t02, spec §7.5): заявка etcdctl-формой →
 // заявка исчезла, app/mover/bucket_admin изменились, dsn перезаписан, новый
 // пароль подключается, старый отвергается, пишущая нагрузка переживает ротацию.
-[Collection(E2eCollection.Name)]
-public class E2eRotateScenarios(E2eFixture fixture)
+public class E2eRotateScenarios
 {
     private const string Cluster = "rotate";
 
-    private string Endpoint => fixture.EtcdEndpoint;
+    // Окружение Fact'а (своя сеть/etcd); создаётся в начале каждого сценария.
+    private E2eEnvironment Fx = null!;
 
-    private EtcdGateway G => fixture.Gateway;
+    private string Endpoint => Fx.EtcdEndpoint;
+
+    private EtcdGateway G => Fx.Gateway;
 
     [Fact]
     public async Task Rotate_TicketRotatesPerClusterSecretsOnAllShards()
@@ -24,14 +26,16 @@ public class E2eRotateScenarios(E2eFixture fixture)
         // Arrange — рабочий кластер (provisioning завершён), известны старые креды
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await E2eEnvironment.StartAsync("rotate", ct: ct);
+        Fx = fx;
         await SeedClusterAsync(Cluster);
-        await using var app = await fixture.StartHostAsync("rotate", ct: ct);
+        await using var app = await Fx.StartHostAsync("rotate", ct: ct);
         var provisioned = await E2eFixture.WaitForAsync(async () =>
             await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn") is not null
             && await GetOrNullAsync($"/clusters/{Cluster}/shards/shard2/dsn") is not null,
             TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("кластер поднялся");
-        var oldPassword = await fixture.GetAppPasswordAsync(Cluster, ct);
+        var oldPassword = await Fx.GetAppPasswordAsync(Cluster, ct);
         var oldMover = (await GetOrNullAsync($"/clusters/{Cluster}/mover_password"))!.Value;
         var oldAdmin = (await GetOrNullAsync($"/clusters/{Cluster}/bucket_admin_password"))!.Value;
 
@@ -63,12 +67,12 @@ public class E2eRotateScenarios(E2eFixture fixture)
         // Assert 1 (критерий 5а/5б): заявка исполнена и удалена; пароль сменился
         var rotated = await E2eFixture.WaitForAsync(async () =>
         {
-            var password = await fixture.GetAppPasswordAsync(Cluster, ct);
+            var password = await Fx.GetAppPasswordAsync(Cluster, ct);
             return password != oldPassword
                 && await GetOrNullAsync($"/pgworker/rotations/{Cluster}") is null;
         }, TimeSpan.FromSeconds(120), ct);
         rotated.Should().BeTrue("заявка исполнена: пароль изменён, ключ заявки удалён");
-        var newPassword = await fixture.GetAppPasswordAsync(Cluster, ct);
+        var newPassword = await Fx.GetAppPasswordAsync(Cluster, ct);
         Regex.IsMatch(newPassword, "^[A-Za-z0-9]{32}$").Should().BeTrue();
 
         // Assert 1b (t02): mover/bucket_admin тоже сменились (32 симв [A-Za-z0-9]);

@@ -11,14 +11,16 @@ namespace PgWorker.IntegrationTests.E2e;
 // app_user/app_password, креды user=app работают против БД шарда (прямой
 // pg-порт ноды — стенд без doorman, spec §7.2), значение пароля стабильно
 // между тиками (идемпотентность).
-[Collection(E2eCollection.Name)]
-public class E2eAppSecretScenarios(E2eFixture fixture)
+public class E2eAppSecretScenarios
 {
     private const string Cluster = "appsecret";
 
-    private string Endpoint => fixture.EtcdEndpoint;
+    // Окружение Fact'а (своя сеть/etcd); создаётся в начале сценария.
+    private E2eEnvironment Fx = null!;
 
-    private EtcdGateway G => fixture.Gateway;
+    private string Endpoint => Fx.EtcdEndpoint;
+
+    private EtcdGateway G => Fx.Gateway;
 
     [Fact]
     public async Task AppSecret_Provisioning_KeysRoleAndStability()
@@ -27,8 +29,10 @@ public class E2eAppSecretScenarios(E2eFixture fixture)
         // bucket_admin-кредами фикстуры; app-ключи НЕ сеём — генерирует PgWorker)
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await E2eEnvironment.StartAsync("app-secret", ct: ct);
+        Fx = fx;
         await SeedClusterAsync(Cluster);
-        await using var app = await fixture.StartHostAsync("appsecret", ct: ct);
+        await using var app = await Fx.StartHostAsync("appsecret", ct: ct);
 
         // Act — ждать provisioning до dsn-ключа шарда (SQL-фаза прошла)
         var provisioned = await E2eFixture.WaitForAsync(
@@ -42,7 +46,7 @@ public class E2eAppSecretScenarios(E2eFixture fixture)
         var userKv = await GetOrNullAsync($"/clusters/{Cluster}/app_user");
         userKv.Should().NotBeNull();
         userKv!.Value.Should().Be("app");
-        var password = await fixture.GetAppPasswordAsync(Cluster, ct);
+        var password = await Fx.GetAppPasswordAsync(Cluster, ct);
         Regex.IsMatch(password, "^[A-Za-z0-9]{32}$").Should().BeTrue(
             "app_password — 32 символа [A-Za-z0-9] (spec §4.1)");
         var dsnKv = await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn");
@@ -88,7 +92,7 @@ public class E2eAppSecretScenarios(E2eFixture fixture)
         // Assert 3 (критерий 3): пауза ≥2 тиков scan (1 с) — app_password не меняется
         // (идемпотентность ensure: put-if-absent не перегенерирует существующее).
         await Task.Delay(TimeSpan.FromSeconds(5), ct);
-        var passwordAgain = await fixture.GetAppPasswordAsync(Cluster, ct);
+        var passwordAgain = await Fx.GetAppPasswordAsync(Cluster, ct);
         passwordAgain.Should().Be(password, "повторные тики не перегенерируют app-пароль (spec §2.5)");
     }
 

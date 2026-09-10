@@ -1,7 +1,4 @@
 using System.Text.Json;
-using DotNet.Testcontainers.Builders;
-using DotNet.Testcontainers.Containers;
-using DotNet.Testcontainers.Networks;
 using Npgsql;
 using PgWorker.Etcd.Client;
 using PgWorker.IntegrationTests.Docker;
@@ -9,103 +6,24 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// E2E полных бэкапов (t02, spec §7.1–7.4): MinIO testcontainer (порт динамический)
+// E2E полных бэкапов (t02, spec §7.1–7.4): изолированное окружение E2eEnvironment
+// (своя docker-сеть, свой etcd, СВОЙ MinIO — withMinio:true; порт динамический)
 // + образ pgworker-backup:e2e + живой кластер воркером с Backups:Enabled=true.
 // COMPLETED с полными полями и объектами в S3; FAILED по недоступному S3 с
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
-// backup_password включает backup_exec.
-[Collection(E2eCollection.Name)]
-public class E2eBackupScenarios(E2eFixture fixture) : IAsyncLifetime
+// backup_password включает backup_exec. Каждый Fact — своё окружение: методы
+// оставляют после себя Active-кластеры, и без per-method изоляции воркер
+// следующего Fact'а подхватывал бы чужие джобы (инцидент Release).
+public class E2eBackupScenarios
 {
-    private const string MinioImage = "minio/minio:RELEASE.2025-09-07T16-13-09Z";
-
-    // mc запинен существующим docker-тегом (ближайший к MC_VERSION образа
-    // pgworker-backup, arch/19 §10; у docker-тегов и архивных тегов dl.min.io
-    // метки времени расходятся).
-    private const string McImage = "minio/mc:RELEASE.2025-08-13T08-35-41Z";
-
-    private const string JobImage = "pgworker-backup:e2e";
     private const string Bucket = "pgworker-backups";
 
-    private INetwork? _net;
+    // Окружение Fact'а (своя сеть/etcd/MinIO); создаётся в начале каждого сценария.
+    private E2eEnvironment Fx = null!;
 
-    private IContainer? _minio;
+    private string Endpoint => Fx.EtcdEndpoint;
 
-    private string Endpoint => fixture.EtcdEndpoint;
-
-    private EtcdGateway G => fixture.Gateway;
-
-    // S3-endpoint для джобов/воркера: published порт MinIO на хосте, из
-    // docker-контейнеров — host.docker.internal (Docker Desktop/host-gateway).
-    private string S3Endpoint => _minio is null
-        ? ""
-        : $"http://host.docker.internal:{_minio.GetMappedPublicPort(9000)}";
-
-    public async ValueTask InitializeAsync()
-    {
-        // Гейт выключен — стенд не строим (паттерн E2eFixture: тесты скипаются
-        // первой строкой, InitializeAsync не бросает).
-        if (Environment.GetEnvironmentVariable(DockerTrait.EnvVar) != "1")
-            return;
-
-        DockerTrait.SkipIfUnavailable();
-        var ct = TestContext.Current.CancellationToken;
-
-        // Сеть для mc-настройки bucket (MinIO по алиасу; джобы ходят через
-        // published порт — сеть им не нужна).
-        _net = new NetworkBuilder().Build();
-        await _net.CreateAsync(ct);
-
-        _minio = new ContainerBuilder(MinioImage)
-            .WithCommand("server", "/data")
-            .WithEnvironment("MINIO_ROOT_USER", "minioadmin")
-            .WithEnvironment("MINIO_ROOT_PASSWORD", "minioadmin")
-            .WithNetwork(_net)
-            .WithNetworkAliases("e2e-minio")
-            .WithPortBinding(9000, assignRandomHostPort: true) // AGENTS.md: порты динамические
-            .Build();
-        await _minio.StartAsync(ct);
-
-        // Готовность MinIO: health/live с ретраями ≤ 60 c.
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-        var ready = await E2eFixture.WaitForAsync(async () =>
-        {
-            try
-            {
-                using var response = await http.GetAsync(
-                    $"http://localhost:{_minio.GetMappedPublicPort(9000)}/minio/health/live", ct);
-                return response.IsSuccessStatusCode;
-            }
-            catch (Exception)
-            {
-                return false; // ещё поднимается
-            }
-        }, TimeSpan.FromSeconds(60), ct);
-        if (!ready)
-            throw new ApplicationException("MinIO не поднялся за 60 с");
-
-        // Bucket pgworker-backups (mc из той же сети — по алиасу).
-        await fixture.RunDockerAsync(
-        [
-            "run", "--rm", "--network", _net.Name, "--entrypoint", "/bin/sh", McImage,
-            "-c", $"mc alias set t http://e2e-minio:9000 minioadmin minioadmin >/dev/null && mc mb --ignore-existing t/{Bucket}",
-        ], ct);
-
-        // Образ джоба: сборка из корня репо (контекст — корень: COPY docker/backup/…).
-        await fixture.RunDockerAsync(
-        [
-            "build", "-q", "-f", $"{fixture.Root}/docker/PgWorker.Backup.Dockerfile",
-            "-t", JobImage, fixture.Root,
-        ], ct);
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        if (_minio is not null)
-            await _minio.DisposeAsync();
-        if (_net is not null)
-            await _net.DeleteAsync();
-    }
+    private EtcdGateway G => Fx.Gateway;
 
     // AAA: полный суточный цикл — PLANNED→RUNNING→UPLOADING→COMPLETED,
     // поля канона, объекты full/<id>/ + wal/ в S3, чистка контейнера/volume
@@ -115,6 +33,8 @@ public class E2eBackupScenarios(E2eFixture fixture) : IAsyncLifetime
         // Arrange — кластер bkshop + policy (verify on_create) + воркер с бэкап-комплектом
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await E2eEnvironment.StartAsync("bk-full", withMinio: true, ct: ct);
+        Fx = fx;
         const string cluster = "bkshop";
         await SeedClusterAsync(cluster);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
@@ -147,13 +67,21 @@ public class E2eBackupScenarios(E2eFixture fixture) : IAsyncLifetime
         listing.Should().Contain($"full/{id}/pg_wal/");
         listing.Should().Contain($"wal/{walSeg}", "закрытый сегмент набора -X stream дублируется в wal/-префикс");
 
-        // Assert 3 — чистка: контейнера и staging volume нет
-        var containers = await fixture.RunDockerAsync(
-        ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-full-{cluster}-"], ct);
-        containers.Should().BeEmpty("ephemeral-джоб удаляется после итога");
-        var volumes = await fixture.RunDockerAsync(
-        ["volume", "ls", "-q", "--filter", $"name=pgw-backup-{cluster}-"], ct);
-        volumes.Should().BeEmpty("staging volume удаляется после итога");
+        // Assert 3 — чистка: контейнера и staging volume нет. COMPLETED пишется
+        // в etcd ДО CleanupJobAsync (BackupProcess.PutAsync → CleanupJobAsync) —
+        // между итогом и удалением джоба/volume есть окно, поэтому чистка ждётся
+        // ограниченно (паттерн Backup_Deprovision_CleansPrefix), а не мгновенно.
+        var cleaned = await E2eFixture.WaitForAsync(async () =>
+        {
+            var jobContainers = await Fx.RunDockerAsync(
+            ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-full-{cluster}-"], ct);
+            if (jobContainers.Length > 0)
+                return false;
+            var stagingVolumes = await Fx.RunDockerAsync(
+            ["volume", "ls", "-q", "--filter", $"name=pgw-backup-{cluster}-"], ct);
+            return stagingVolumes.Length == 0;
+        }, TimeSpan.FromSeconds(60), ct);
+        cleaned.Should().BeTrue("ephemeral-джоб и staging volume удаляются после итога");
     }
 
     // AAA: недоступный S3 → FAILED с error; переснятие НОВЫМ id после бэкоффа
@@ -164,6 +92,8 @@ public class E2eBackupScenarios(E2eFixture fixture) : IAsyncLifetime
         // хардкод: фиксированный протокольный «всегда закрыт»)
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await E2eEnvironment.StartAsync("bk-bads3", withMinio: true, ct: ct);
+        Fx = fx;
         const string cluster = "bkbads3";
         await SeedClusterAsync(cluster);
         await using var app = await StartBackupHostAsync(
@@ -192,6 +122,8 @@ public class E2eBackupScenarios(E2eFixture fixture) : IAsyncLifetime
         // Arrange — кластер bkclean; ждём появления первой попытки (джоб жив)
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await E2eEnvironment.StartAsync("bk-clean", withMinio: true, ct: ct);
+        Fx = fx;
         const string cluster = "bkclean";
         await SeedClusterAsync(cluster);
         await using var app = await StartBackupHostAsync("bkclean", ct);
@@ -214,11 +146,11 @@ public class E2eBackupScenarios(E2eFixture fixture) : IAsyncLifetime
             if ((await FullKeysAsync(cluster, "shard1")).Count > 0
                 || (await FullKeysAsync(cluster, "shard2")).Count > 0)
                 return false;
-            var containers = await fixture.RunDockerAsync(
+            var containers = await Fx.RunDockerAsync(
             ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-full-{cluster}-"], ct);
             if (containers.Length > 0)
                 return false;
-            var volumes = await fixture.RunDockerAsync(
+            var volumes = await Fx.RunDockerAsync(
             ["volume", "ls", "-q", "--filter", $"name=pgw-backup-{cluster}-"], ct);
             return volumes.Length == 0;
         }, TimeSpan.FromSeconds(180), ct);
@@ -233,6 +165,8 @@ public class E2eBackupScenarios(E2eFixture fixture) : IAsyncLifetime
         // Arrange — кластер bkrot с завершённым полным; OLD backup_password
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await E2eEnvironment.StartAsync("bk-rot", withMinio: true, ct: ct);
+        Fx = fx;
         const string cluster = "bkrot";
         await SeedClusterAsync(cluster);
         await using var app = await StartBackupHostAsync("bkrot", ct);
@@ -292,14 +226,14 @@ public class E2eBackupScenarios(E2eFixture fixture) : IAsyncLifetime
     // образ pgworker-backup:e2e, ускоренный бэкофф.
     private Task<HostInstance> StartBackupHostAsync(
         string name, CancellationToken ct, string? s3EndpointOverride = null)
-        => fixture.StartHostAsync(name, extraEnv: new Dictionary<string, string>
+        => Fx.StartHostAsync(name, extraEnv: new Dictionary<string, string>
         {
             ["PgWorker__Backups__Enabled"] = "true",
-            ["PgWorker__Backups__S3__Endpoint"] = s3EndpointOverride ?? S3Endpoint,
+            ["PgWorker__Backups__S3__Endpoint"] = s3EndpointOverride ?? Fx.S3Endpoint,
             ["PgWorker__Backups__S3__Bucket"] = Bucket,
             ["PgWorker__Backups__S3__AccessKey"] = "minioadmin",
             ["PgWorker__Backups__S3__SecretKey"] = "minioadmin",
-            ["PgWorker__Backups__Job__Image"] = JobImage,
+            ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
         }, ct: ct);
@@ -311,11 +245,11 @@ public class E2eBackupScenarios(E2eFixture fixture) : IAsyncLifetime
     private async Task<Kv?> GetOrNullAsync(string key)
         => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
 
-    // mc ls --recursive s3-пути кластера (mc в сети MinIO — по алиасу).
+    // mc ls --recursive s3-пути кластера (mc в сети MinIO окружения — по алиасу).
     private async Task<string> McLsAsync(string path)
-        => await fixture.RunDockerAsync(
+        => await Fx.RunDockerAsync(
         [
-            "run", "--rm", "--network", _net!.Name, "--entrypoint", "/bin/sh", McImage,
+            "run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
             "-c", $"mc alias set t http://e2e-minio:9000 minioadmin minioadmin >/dev/null && mc ls --recursive t/{Bucket}/{path}",
         ], TestContext.Current.CancellationToken);
 
