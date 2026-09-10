@@ -1,0 +1,5 @@
+{"members":[
+  {"name":"s1a","role":"master","state":"running","timeline":1},
+  {"name":"s1b","role":"replica","state":"running","timeline":1,"lag":0,"sync":true},
+  {"name":"s1c","role":"replica","state":"streaming","timeline":1,"lag":10,"sync":false}
+]}
