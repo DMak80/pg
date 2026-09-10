@@ -333,6 +333,10 @@ internal static class Fakes
         public Func<Result>? ExecuteResult { get; set; }
         public Func<string, Result>? ExecuteResultByDsn { get; set; }
         public Func<string, Result<object?>>? ScalarResultByDsn { get; set; }
+
+        // t02: ответ гварда роли зависит от SQL (роль есть → null, нет → CREATE-текст)
+        public Func<string, string, Result<object?>>? ScalarResultBySql { get; set; }
+
         public Action<string>? OnExecute { get; set; }
 
         public Task<Result> ExecuteAsync(string dsn, string sql, CancellationToken ct)
@@ -354,7 +358,8 @@ internal static class Fakes
                 Scalars.Add((dsn, sql)); // t06: гварды ролей идут скалярами — трекаем их
             }
 
-            return Task.FromResult(ScalarResultByDsn is { } byDsn ? byDsn(dsn)
+            return Task.FromResult(ScalarResultBySql is { } bySql ? bySql(dsn, sql)
+                : ScalarResultByDsn is { } byDsn ? byDsn(dsn)
                 : Result<object?>.Success(null));
         }
 

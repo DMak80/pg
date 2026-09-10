@@ -38,6 +38,7 @@ public class ClusterSecretRotatorTests
         etcd.Seed("/clusters/shop/mover_password", "OldMoverPass0000000000000000000A");
         etcd.Seed("/clusters/shop/bucket_admin_user", "bucket_admin");
         etcd.Seed("/clusters/shop/bucket_admin_password", "OldAdminPass000000000000000A");
+        etcd.Seed("/clusters/shop/backup_password", "OldBackupPass0000000000000000000A");
         foreach (var (shard, host, pg) in new[] { ("shard1", "h1", 15000), ("shard2", "h2", 15001) })
         {
             etcd.Seed($"/clusters/shop/shards/{shard}/replicas", "2");
@@ -119,14 +120,17 @@ public class ClusterSecretRotatorTests
         // Act
         var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
-        // Assert — ALTER ТРЁХ ролей на мастерах ОБЕИХ шардов (6 SQL); одна txn:
-        // compare OLD (3 креда + 2 dsn) + put новых кредов + перезапись dsn + del заявки
+        // Assert — ALTER трёх ролей + гвард→ALTER backup_exec на мастерах ОБЕИХ
+        // шардов (8 SQL + 2 скаляра-гварда); одна txn: compare OLD (4 креда + 2 dsn)
+        // + put новых кредов + перезапись dsn + del заявки
         outcome.IsSuccess.Should().BeTrue();
         var sqlTexts = rig.Sql.Executed.Select(e => e.Sql).ToList();
-        sqlTexts.Should().HaveCount(6);
+        sqlTexts.Should().HaveCount(8);
         sqlTexts.Count(s => s.Contains("ALTER ROLE \"app\" PASSWORD")).Should().Be(2);
         sqlTexts.Count(s => s.Contains("ALTER ROLE \"bucket_admin\" PASSWORD")).Should().Be(2);
         sqlTexts.Count(s => s.Contains("ALTER ROLE \"bucket_mover\" PASSWORD")).Should().Be(2);
+        sqlTexts.Count(s => s.Contains("ALTER ROLE \"backup_exec\" PASSWORD")).Should().Be(2);
+        rig.Sql.Scalars.Count(s => s.Sql.Contains("backup_exec")).Should().Be(2); // гварды
 
         var newApp = rig.Etcd.Store["/clusters/shop/app_password"].Value;
         var newMover = rig.Etcd.Store["/clusters/shop/mover_password"].Value;
@@ -134,6 +138,8 @@ public class ClusterSecretRotatorTests
         newApp.Should().MatchRegex("^[A-Za-z0-9]{32}$").And.NotBe("OldPassword000000000000000000A");
         newMover.Should().MatchRegex("^[A-Za-z0-9]{32}$").And.NotBe("OldMoverPass0000000000000000000A");
         newAdmin.Should().MatchRegex("^[A-Za-z0-9]{32}$").And.NotBe("OldAdminPass000000000000000A");
+        var newBackup = rig.Etcd.Store["/clusters/shop/backup_password"].Value;
+        newBackup.Should().MatchRegex("^[A-Za-z0-9]{32}$").And.NotBe("OldBackupPass0000000000000000000A");
         rig.Etcd.Store.Should().NotContainKey("/pgworker/rotations/shop");
 
         // Коммит-txn узнаём по del заявки (ensure-txn R1 тоже ставит puts — t02)
@@ -145,6 +151,8 @@ public class ClusterSecretRotatorTests
             c.Key == "/clusters/shop/mover_password" && c.Arg == "OldMoverPass0000000000000000000A");
         commit.Compare.Should().Contain(c =>
             c.Key == "/clusters/shop/bucket_admin_password" && c.Arg == "OldAdminPass000000000000000A");
+        commit.Compare.Should().Contain(c =>
+            c.Key == "/clusters/shop/backup_password" && c.Arg == "OldBackupPass0000000000000000000A");
         // dsn-сравнение — по прочитанным значениям (гонка репарации → ретрай тиком)
         commit.Compare.Where(c => c.Key.EndsWith("/dsn")).Should().HaveCount(2);
         commit.Success.OfType<TxnOp.Delete>()
@@ -157,6 +165,33 @@ public class ClusterSecretRotatorTests
             && p.Value.StartsWith("host="));
         (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.Op
             .Should().Be("rotate-app-password");
+    }
+
+    // AAA: R2 backup_exec при отсутствующей роли — гвард создаёт её с NEW-паролем,
+    // ротация НЕ падает (регресс-гвард finding 1: Enabled=false, G2 не выполнялся)
+    [Fact]
+    public async Task Tick_Ticket_BackupExecRoleAbsent_CreatedByGuard()
+    {
+        // Arrange — заявка; скаляр-гвард backup_exec возвращает CREATE-текст (роли нет)
+        var rig = await NewRig();
+        SeedTicket(rig.Etcd);
+        rig.Sql.ScalarResultBySql = (_, sql) =>
+            sql.Contains("\"backup_exec\"")
+                ? Result<object?>.Success("SELECT 'CREATE ROLE \"backup_exec\" LOGIN REPLICATION PASSWORD ''x'''")
+                : Result<object?>.Success(null);
+
+        // Act
+        var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — роль создана (CREATE ×2 шарда), ALTER backup_exec не было;
+        // ротация успешна: заявка закрыта, backup_password перезаписан.
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        var executed = rig.Sql.Executed.Select(e => e.Sql).ToList();
+        executed.Count(s => s.Contains("CREATE ROLE \"backup_exec\"")).Should().Be(2);
+        executed.Should().NotContain(s => s.Contains("ALTER ROLE \"backup_exec\""));
+        rig.Etcd.Store.Should().NotContainKey("/pgworker/rotations/shop");
+        rig.Etcd.Store["/clusters/shop/backup_password"].Value
+            .Should().MatchRegex("^[A-Za-z0-9]{32}$");
     }
 
     [Fact]
