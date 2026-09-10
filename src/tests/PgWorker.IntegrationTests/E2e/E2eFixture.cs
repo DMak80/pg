@@ -168,9 +168,12 @@ public sealed class E2eFixture : IAsyncLifetime
             await _etcd.DisposeAsync();
     }
 
-    /// <summary>Запуск инстанса PgWorker.App с e2e-конфигурацией (быстрые тики).</summary>
+    /// <summary>Запуск инстанса PgWorker.App с e2e-конфигурацией (быстрые тики).
+    /// extraEnv — дополнительные env-пары поверх базовых (t02: Backups-комплект).
+    /// </summary>
     public async Task<HostInstance> StartHostAsync(
-        string name, int snapshotIntervalMin = 360, CancellationToken ct = default)
+        string name, int snapshotIntervalMin = 360,
+        IReadOnlyDictionary<string, string>? extraEnv = null, CancellationToken ct = default)
     {
         var port = FreePort();
         var snapshotsDir = Path.Combine(Path.GetTempPath(), $"pgw-e2e-{name}-{port}");
@@ -191,7 +194,11 @@ public sealed class E2eFixture : IAsyncLifetime
             ["PgWorker__Etcd__AdvertisedEndpoints__0"] = EtcdEndpoint.Replace(
                 "localhost:", "host.docker.internal:", StringComparison.Ordinal),
             ["PgWorker__Docker__Mode"] = "Plain",
-            ["PgWorker__Docker__Hosts__0__Name"] = "localhost",
+            // Имя docker-хоста = advertised-имя для КОНТЕЙНЕРОВ (portalloc host,
+            // DSN бэкап-джобов arch/19 §2/§6): джобы ходят к нодам через
+            // host.docker.internal:<published pg-порт> (extra_hosts host-gateway),
+            // как контейнеры нод — к etcd (AdvertisedEndpoints ниже).
+            ["PgWorker__Docker__Hosts__0__Name"] = "host.docker.internal",
             ["PgWorker__Docker__Hosts__0__Endpoint"] = "unix:///var/run/docker.sock",
             ["PgWorker__Docker__PortRange__From"] = "15100",
             ["PgWorker__Docker__PortRange__To"] = "15200",
@@ -247,6 +254,9 @@ public sealed class E2eFixture : IAsyncLifetime
             },
         };
         foreach (var (key, value) in env)
+            process.StartInfo.Environment[key] = value;
+
+        foreach (var (key, value) in extraEnv ?? new Dictionary<string, string>())
             process.StartInfo.Environment[key] = value;
 
         if (!process.Start())
