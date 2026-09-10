@@ -148,9 +148,10 @@ public static class BackupsParser
         }
     }
 
-    // full/<id>: обязательны state/node/role/started_unix/wal_start_segment;
-    // неизвестное state/role — пропуск записи с диагностикой; verify —
-    // опциональный (битный verify.state → Verify=null, запись жива).
+    // full/<id>: обязательны state/node/role/started_unix; wal_start_segment —
+    // с фазы UPLOADING (§4, t02), до этого null; неизвестное state/role —
+    // пропуск записи с диагностикой; verify — опциональный (битный
+    // verify.state → Verify=null, запись жива).
     private static FullBackupState? TryParseFull(
         string cluster, string shard, string id, string raw, List<string> errors)
     {
@@ -177,9 +178,7 @@ public static class BackupsParser
             };
             var startedUnix = ReadLong(root, "started_unix");
             var node = ReadString(root, "node");
-            var walStart = ReadString(root, "wal_start_segment");
-            if (state is null || role is null || startedUnix is null
-                || string.IsNullOrEmpty(node) || string.IsNullOrEmpty(walStart))
+            if (state is null || role is null || startedUnix is null || string.IsNullOrEmpty(node))
             {
                 errors.Add($"{key}: битый JSON или неизвестное state/role, обязательное поле отсутствует");
                 return null;
@@ -204,7 +203,7 @@ public static class BackupsParser
 
             return new FullBackupState(
                 id, state.Value, node, role.Value, startedUnix.Value,
-                ReadLong(root, "finished_unix"), walStart,
+                ReadLong(root, "finished_unix"), ReadString(root, "wal_start_segment"),
                 ReadLong(root, "size_bytes"), ReadString(root, "error"), verify);
         }
         catch (JsonException)
