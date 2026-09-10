@@ -220,6 +220,12 @@ s3://<bucket>/<C>/<X>/
   (ensure put-if-absent, ротация в общем тикете §9.8, 32 симв
   `[A-Za-z0-9]`); реализация ensure/ротации — t02. Отдельная от
   bucket_mover (иная зона доверия/ротации).
+- **pg_hba-гвард** (t02): дефолтный Spilo-pg_hba разрешает replication-соединения
+  только роли `standby` — физический WAL-стриминг `pg_basebackup` под
+  `backup_exec` отсекается. Гвард G2 (каждый тик) дополняет `pg_hba.conf`
+  нод шарда идемпотентной строкой `hostssl replication backup_exec all
+  scram-sha-256` (docker-exec; прецедент — patch_hba стенда) + `pg_reload_conf()`;
+  строка живёт в PGDATA-volume и переживает рестарты нод.
 
 ## 8. Карта задач (Дальше)
 

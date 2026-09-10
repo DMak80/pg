@@ -193,6 +193,16 @@ public class BackupProcessTests
 
         public IDockerEngine? EngineFor(string host) => engine;
 
+        // pg_hba-гвард (t02 G2): exec-патч по нодам шарда — помним вызовы.
+        public readonly List<(string Shard, string Node, IReadOnlyList<string> Cmd)> ExecNodeCalls = [];
+
+        public Task<Result<string>> ExecNodeAsync(string cluster, string shard, string node,
+            IReadOnlyList<string> cmd, CancellationToken ct)
+        {
+            ExecNodeCalls.Add((shard, node, cmd));
+            return Task.FromResult(Result<string>.Success(string.Empty));
+        }
+
         public Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct)
             => Task.FromResult(Result.Success());
 
@@ -205,8 +215,6 @@ public class BackupProcessTests
         public Task<Result> RemoveNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct) => throw NotSupported();
         public Task<Result> StopNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct) => throw NotSupported();
         public Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct) => throw NotSupported();
-        public Task<Result<string>> ExecNodeAsync(string cluster, string shard, string node,
-            IReadOnlyList<string> cmd, CancellationToken ct) => throw NotSupported();
         public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
             string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct) => throw NotSupported();
         public Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct) => throw NotSupported();
@@ -250,7 +258,8 @@ public class BackupProcessTests
     }
 
     private sealed record Rig(Fakes.FakeEtcd Etcd, FakeSql Sql, FakeBackupEngine Engine,
-        FakeSecretEnsurer Ensurer, ClaimStore Claims, WorkJournal Journal, BackupProcess Process);
+        FakeBackupDriver Driver, FakeSecretEnsurer Ensurer, ClaimStore Claims,
+        WorkJournal Journal, BackupProcess Process);
 
     private static async Task<Rig> NewRig(
         bool claim = true, bool seedPortalloc = true, BackupsRuntimeOptions? options = null)
@@ -262,6 +271,7 @@ public class BackupProcessTests
         var sql = new FakeSql();
         var engine = new FakeBackupEngine();
         var ensurer = new FakeSecretEnsurer();
+        var driver = new FakeBackupDriver(engine);
         var claims = new ClaimStore([Ep], store, TimeProvider.System);
         if (claim)
             await claims.TryClaimClusterAsync("shop", CancellationToken.None);
@@ -269,11 +279,11 @@ public class BackupProcessTests
         var journal = new WorkJournal(store, [Ep]);
         var probe = new ShardProbe(new HttpClient(new DeadHandler()));
         var process = new BackupProcess(
-            store, [Ep], new FakeBackupDriver(engine),
+            store, [Ep], driver,
             new ShardEndpoints(store, [Ep], probe), sql, ensurer,
             claims, journal, Secrets, options ?? new BackupsRuntimeOptions { Enabled = true },
             TimeProvider.System, NullLogger<BackupProcess>.Instance, snapshot: null);
-        return new Rig(store, sql, engine, ensurer, claims, journal, process);
+        return new Rig(store, sql, engine, driver, ensurer, claims, journal, process);
     }
 
     // AAA: G0 — подсистема выключена: тик Done без ensure и мутаций префикса
@@ -323,6 +333,9 @@ public class BackupProcessTests
         spec.Env["PGW_BK_DSN"].Should().Contain("user=backup_exec password=pw0000000000000000000000000000A");
         spec.ExtraHosts.Should().Contain("host.docker.internal:host-gateway");
         rig.Engine.Started.Should().Contain(name);
+
+        // pg_hba-гвард прошёл по обеим нодам шарда (G2 каждый тик)
+        rig.Driver.ExecNodeCalls.Select(c => c.Node).Should().BeEquivalentTo(["shard1a", "shard1b"]);
 
         // journal-before-manipulations: phase started/shard1/<id>
         (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.Phase

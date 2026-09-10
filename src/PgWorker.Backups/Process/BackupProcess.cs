@@ -104,6 +104,35 @@ public sealed class BackupProcess(
                     continue;
             }
 
+            // pg_hba (arch/19 §7): Spilo разрешает replication-соединения только
+            // роли standby — физический WAL-стриминг pg_basebackup для backup_exec
+            // отсекается («no pg_hba.conf entry for replication»). Гвард дополняет
+            // pg_hba.conf идемпотентно на всех нодах шарда (прецедент patch_hba,
+            // 00-up.sh): строка живёт в PGDATA-volume — переживает рестарты;
+            // reload — локальным psql (unix-socket, trust). Отказ — transient:
+            // шард skip, следующий тик дообеспечит (запуск на непатченной ноде
+            // карался бы FAILED-циклом с бэкоффом).
+            var hbaPatched = true;
+            foreach (var nodeKey in addresses.Value.Keys
+                         .Where(k => k.StartsWith($"{shard.Name}/", StringComparison.Ordinal)))
+            {
+                var patched = await driver.ExecNodeAsync(cluster, shard.Name, nodeKey.Split('/')[1],
+                [
+                    "sh", "-c",
+                    "grep -q 'replication backup_exec' \"$PGDATA/pg_hba.conf\" 2>/dev/null"
+                    + " || echo 'hostssl replication backup_exec all scram-sha-256' >> \"$PGDATA/pg_hba.conf\"; "
+                    + "psql -U postgres -tAc 'SELECT pg_reload_conf()' >/dev/null",
+                ], ct);
+                if (!patched.IsSuccess)
+                {
+                    hbaPatched = false;
+                    break;
+                }
+            }
+
+            if (!hbaPatched)
+                continue;
+
             // G3: новый полный — только без активного, при due и после бэкоффа.
             if (BackupPlanner.HasActive(fulls))
                 continue; // инвариант одного активного — новый не создаём
