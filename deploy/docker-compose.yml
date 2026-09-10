@@ -65,6 +65,9 @@ services:
       PgWorker__Backups__S3__Bucket: ${PGW_BACKUP_S3_BUCKET:-}
       PgWorker__Backups__S3__AccessKey: ${PGW_BACKUP_S3_ACCESS_KEY:-}
       PgWorker__Backups__S3__SecretKey: ${PGW_BACKUP_S3_SECRET_KEY:-}
+      # Образ джоба полного бэкапа (t02): тег = дефолт Job.Image; сборка —
+      # build-сервис pgworker-backup ниже (compose build) или 00-up.sh.
+      PgWorker__Backups__Job__Image: ${PGW_BACKUP_JOB_IMAGE:-pgworker-backup:dev}
 
   # KafkaWorker (arch/16 §2.1/§8): docker.sock, том снапшотов P12.
   # Env-секретов per-install нет (единственный секрет — per-cluster
@@ -101,6 +104,17 @@ services:
       KFW_API_TLS_KEY_PATH: /tls/server.key
       KFW_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
       KafkaWorker__Api__EnableSeedEndpoint: ${KFW_API_ENABLE_SEED:-false}
+
+  # Образ джоба полного бэкапа (t02, arch/19 §2): только сборка — сервиса нет,
+  # джобы запускает PgWorker как ephemeral-контейнеры. Профиль build не даёт
+  # подняться в up; entrypoint-заглушка — защита от случайного run.
+  pgworker-backup:
+    build:
+      context: ..
+      dockerfile: docker/PgWorker.Backup.Dockerfile
+    image: pgworker-backup:dev
+    profiles: ["build"]
+    entrypoint: ["true"]
 
 volumes:
   pgw-snapshots:
