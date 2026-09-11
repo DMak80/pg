@@ -432,6 +432,17 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<ILoggerFactory>().CreateLogger("WalStreamProcess"));
 });
 builder.Services.AddSingleton<IWalSqlExecutor, NpgsqlWalSqlExecutor>();
+// Ретенция (t06, arch/19 §4): GFS/WAL-чистка/гигиена + монитор хранилища;
+// Enabled=false — no-op (гвард в процессе дублирует guard цикла).
+builder.Services.AddSingleton(sp => new PgWorker.Backups.RetentionProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IBackupS3>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Backups.ToRuntime(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.RetentionProcess>()));
 // S3-клиент с горячей конфигурацией (ревью Ф7 №3): включение/смена секции
 // Backups без рестарта воркера пересоздаёт клиента при первом же вызове
 // (асимметрия «выключение работает, включение нет» устранена).

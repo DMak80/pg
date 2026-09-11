@@ -222,6 +222,14 @@ internal sealed class ReconcileLoop(
                     await RunClusterOpAsync(cluster, "backup-wal",
                         () => processes.WalStreamAsync(snap, backups, ct), ct);
 
+                    // Ретенция (t06, arch/19 §4): после backup-wal (чистит только
+                    // то, что не нужно оставляемым полным), до repair; тик короткий
+                    // (один кандидат/проход, batch-чанки). Выключенная подсистема
+                    // не зовётся вовсе (AC8).
+                    if (options.CurrentValue.Backups.Enabled)
+                        await RunClusterOpAsync(cluster, "backups-retention",
+                            () => processes.RetentionAsync(snap, backups, ct), ct);
+
                     // Репарация брошенных переездов (spec §3.5, arch/14 §5 K): синтетические
                     // заявки до moves — этот же тик начнёт их обработку (старейшая заявка).
                     await RunClusterOpAsync(cluster, "repair",
