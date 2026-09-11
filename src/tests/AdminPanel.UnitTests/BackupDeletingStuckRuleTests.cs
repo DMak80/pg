@@ -92,24 +92,26 @@ public class BackupDeletingStuckRuleTests
         alerts[0].Message.Should().Contain("20260909050000Z");
     }
 
-    // AAA: несколько DELETING — алерт ОДИН, по старейшему
+    // AAA: несколько DELETING — алерт ОДИН, именно по старейшему (оба старше
+    // порога: выбор определяется порядком, а не фильтром порога)
     [Fact]
     public void SeveralDeleting_OldestAlerted()
     {
-        // Arrange — свежий (1 ч) и застарелый (7 ч)
+        // Arrange — два застарелых: 7 ч и 20 ч (оба > порога 6 ч)
         var snapshot = TestSnapshots.Healthy(Now) with
         {
             Backups = [Cluster("demo", "s1",
-                new DeletingFullInfo("fresh", Now.ToUnixTimeSeconds() - 7200, null),
-                new DeletingFullInfo("stale", Now.ToUnixTimeSeconds() - 25200, null))],
+                new DeletingFullInfo("old7h", Now.ToUnixTimeSeconds() - 25200, null),
+                new DeletingFullInfo("oldest20h", Now.ToUnixTimeSeconds() - 72000, null))],
         };
 
         // Act
         var alerts = Evaluate(snapshot);
 
-        // Assert
+        // Assert — в алерт попал старейший (наибольший возраст)
         alerts.Should().ContainSingle();
-        alerts[0].Message.Should().Contain("stale");
+        alerts[0].Message.Should().Contain("oldest20h")
+            .And.NotContain("old7h");
     }
 
     // AAA: DELETING нет вовсе — пусто

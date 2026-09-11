@@ -29,7 +29,7 @@ public sealed class BackupDeletingStuckRule(IOptions<AlertsOptions> options) : I
             var stuck = fulls
                 .Select(f => (Full: f, Age: nowUnix - (f.FinishedUnix ?? f.StartedUnix)))
                 .Where(p => p.Age > staleSec)
-                .OrderBy(p => p.Age)
+                .OrderByDescending(p => p.Age)
                 .FirstOrDefault();
             if (stuck.Full is null)
                 continue;
