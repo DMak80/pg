@@ -33,17 +33,19 @@ public class E2eRetentionScenarios
     [Fact]
     public async Task Retention_TrimsToGfs()
     {
-        // Arrange 1 — окружение + кластер bkret + policy 1/0/0 + воркер
+        // Arrange 1 — окружение + кластер bkret<тег прогона> + policy 1/0/0 + воркер
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await E2eEnvironment.StartAsync("bk-ret", withMinio: true, ct: ct);
         Fx = fx;
-        const string cluster = "bkret";
+        // Уникальное имя кластера на прогон: движковые контейнеры/тома (pgw-<C>-*,
+        // pgw-backup-*-<C>-*) опознаются teardown'ом окружения по своему тегу.
+        var cluster = $"bkret{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
             """{"retention":{"days":1,"weeks":0,"months":0},"full_max_age_sec":600,"verify":{"on_create":false}}""",
             null, ct);
-        await using var app = await StartRetentionHostAsync("bkret", ct);
+        await using var app = await StartRetentionHostAsync(cluster, ct);
 
         // Arrange 2 — provisioning DONE
         var provisioned = await E2eFixture.WaitForAsync(
