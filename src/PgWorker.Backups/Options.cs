@@ -40,7 +40,10 @@ public sealed record BackupsRuntimeOptions(
     int QuotaCritPercent = 90,
     // t04 (arch/19 §4/§8): период перепроверки оставшихся полных; policy-ключ
     // verify.interval_sec перекрывает; <= 0 — периодика выключена.
-    long VerifyIntervalSec = 604800)
+    long VerifyIntervalSec = 604800,
+    // t05 (arch/19 §9): бюджет локального наката WAL restore-джобом
+    // (фаза recovering; исчерпание → FAILED «recovery-бюджет исчерпан»).
+    int RestoreRecoveryTimeoutSec = 1800)
 {
     /// <summary>Endpoint S3 для env контейнера агента/джоба (t03, §7: адресация
     /// env, не строка команды; advertised-fallback).</summary>

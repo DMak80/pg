@@ -283,6 +283,9 @@ public sealed class BackupsOptions
     /// <summary>Квота bucket установки (t06, arch/19 §9).</summary>
     public BackupsQuotaOptions Quota { get; set; } = new();
 
+    /// <summary>Восстановление шарда (t05, arch/19 §3.5/§9): бюджеты.</summary>
+    public BackupsRestoreOptions Restore { get; set; } = new();
+
     /// <summary>Runtime-опции подсистемы бэкапов: склейка Backups-секции
     /// (t02: джобы/ретраи; t03: advertised-S3/Wal-пороги; t06: ретенция/квота)
     /// — именованными аргументами: record расширялся с обеих сторон.</summary>
@@ -315,7 +318,8 @@ public sealed class BackupsOptions
         RetentionKeepFailed: Retention.KeepFailed,
         QuotaBytes: Quota.Bytes,
         QuotaWarnPercent: Quota.WarnPercent,
-        QuotaCritPercent: Quota.CritPercent);
+        QuotaCritPercent: Quota.CritPercent,
+        RestoreRecoveryTimeoutSec: Restore.RecoveryTimeoutSec);
 
     /// <summary>Fail-fast старта (образец TLS arch/14 §2.2.1): Enabled=true
     /// обязан иметь полный S3-комплект; false — подсистема не активна.
@@ -351,6 +355,13 @@ public sealed class BackupsQuotaOptions
     public int WarnPercent { get; set; } = 80;
 
     public int CritPercent { get; set; } = 90;
+}
+
+/// <summary>Restore-подсистема (t05, arch/19 §9): бюджет локального наката
+/// WAL restore-джобом (фаза recovering); env-переменная не нужна — не секрет.</summary>
+public sealed class BackupsRestoreOptions
+{
+    public int RecoveryTimeoutSec { get; set; } = 1800;
 }
 
 /// <summary>Образ джоба полного бэкапа (arch/19 §2/§9, t02): собирается из
