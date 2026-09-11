@@ -262,13 +262,16 @@ public static class BackupsParser
                 "FAILED" => RestoreStatus.Failed,
                 _ => (RestoreStatus?)null,
             };
-            var backupId = ReadString(root, "backup_id");
+            // backup_id опционален (t05 §3.5): PLANNED-заявка API/E2E может не
+            // указывать полный — воркер-исполнитель резолвит новейший COMPLETED
+            // (etcd → S3-list); RUNNING/финальные статусы пишут его всегда.
+            var backupId = ReadString(root, "backup_id") ?? "";
             var source = ReadString(root, "source");
             var target = ReadString(root, "target");
             var node = ReadString(root, "node");
             var requestedUnix = ReadLong(root, "requested_unix");
             var requestedBy = ReadString(root, "requested_by");
-            if (state is null || string.IsNullOrEmpty(backupId) || string.IsNullOrEmpty(source)
+            if (state is null || string.IsNullOrEmpty(source)
                 || string.IsNullOrEmpty(target) || string.IsNullOrEmpty(node)
                 || requestedUnix is null || string.IsNullOrEmpty(requestedBy))
             {
