@@ -16,7 +16,8 @@ public sealed record EtcdSnapshot(
     IReadOnlyList<ProbeResult> Probes,             // t03: всегда пусто (пробы — t06)
     IReadOnlyList<Alert> Alerts,                   // t03: всегда пусто (AlertEngine — t04)
     IReadOnlyList<KeyParseError> ParseErrors,      // расширение spec §3.4 (arch/02 §7)
-    int UnknownKeyCount);
+    int UnknownKeyCount,
+    BackupStorageInfo? BackupStorage = null);      // ключ /pgworker/backups/storage (t06)
 
 // Ключ, значение которого не удалось разобрать: виден в UI-details, кормит алерт key-malformed (t04).
 public sealed record KeyParseError(string Key, string Reason);

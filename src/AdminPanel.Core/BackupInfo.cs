@@ -13,4 +13,9 @@ public sealed record ClusterBackupsInfo(
     // t03: WAL-статусы шардов (ключи /pgworker/backups/<C>/<X>/wal) — вход
     // правил wal-chain-broken/wal-stream-lag/wal-stream-stopped; null = ключей
     // wal нет (агент не поднимался).
-    IReadOnlyDictionary<string, WalStreamInfo?>? Shards = null);
+    IReadOnlyDictionary<string, WalStreamInfo?>? Shards = null,
+    // t06: DELETING-полные per-shard (застарелые → алерт backup-deleting-stuck).
+    IReadOnlyDictionary<string, IReadOnlyList<DeletingFullInfo>>? DeletingFulls = null);
+
+/// <summary>DELETING-полный (t06): возраст для backup-deleting-stuck.</summary>
+public sealed record DeletingFullInfo(string Id, long StartedUnix, long? FinishedUnix);

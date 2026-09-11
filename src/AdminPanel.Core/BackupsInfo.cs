@@ -11,3 +11,13 @@ public sealed record WalStreamInfo(
     string Cluster, string Shard, WalStreamInfoState State,
     string Slot, string MasterNode, long LastUploadedUnix,
     long? LagSegments, string? Error);
+
+/// <summary>Вердикт занятости bucket бэкапов (t06): OK/WARN/CRIT.</summary>
+public enum BackupStorageState { Ok, Warn, Crit }
+
+/// <summary>Занятость bucket бэкапов из глобального ключа
+/// /pgworker/backups/storage (t06; дубль воркерной модели — осознанный,
+/// унификация t08-unify-adminpanel-duplicates).</summary>
+public sealed record BackupStorageInfo(
+    long UsedBytes, long? QuotaBytes, double? UsedPercent,
+    BackupStorageState State, long UpdatedUnix);
