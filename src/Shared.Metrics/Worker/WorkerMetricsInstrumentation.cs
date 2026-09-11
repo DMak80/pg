@@ -30,6 +30,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     private readonly Dictionary<(string Operation, string Result), long> _operations = new();
     private DateTimeOffset? _lastSnapshotTaken;
     private readonly Dictionary<(string Cluster, string Shard), long> _walLag = new();
+    private readonly Dictionary<string, long> _backupVerify = new();
     private int _claimsHeld;
 
     private bool _disposed;
@@ -43,6 +44,8 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
             "worker.loop.ticks", description: "Тики циклов воркера (arch/18 §2.2)");
         var operations = meter.CreateCounter<long>(
             "worker.operation.total", description: "Завершённые операции (result: ok/error)");
+        var backupVerify = meter.CreateCounter<long>(
+            "pgworker_backup_verify_total", description: "Результаты verify полных бэкапов (arch/19 §5, t04)");
 
         // Gauge-серии: по одному ObservableGauge на серию; колбэки читают стейт;
         // длительность фазы вычисляется в колбэке как clock.GetUtcNow() - startedAt.
@@ -117,10 +120,22 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 // Пассивный наблюдатель.
             }
         };
+        BackupVerifyMark = result =>
+        {
+            try
+            {
+                backupVerify.Add(1, new KeyValuePair<string, object?>("result", result));
+            }
+            catch
+            {
+                // Пассивный наблюдатель.
+            }
+        };
     }
 
     private readonly Action<string, bool> LoopTickMark;
     private readonly Action<string, string> OperationMark;
+    private readonly Action<string> BackupVerifyMark;
 
     // Колбэк ObservableGauge: чтение стейта под lock; после Dispose — серии пустые.
     // Материализация (.ToArray) ОБЯЗАТЕЛЬНА под lock: OTel перечисляет результат
@@ -183,6 +198,24 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                     _walLag[(cluster, shard)] = value;
                 else
                     _walLag.Remove((cluster, shard));
+            }
+        }
+        catch
+        {
+            // Пассивный наблюдатель.
+        }
+    }
+
+    /// <summary>Counter pgworker_backup_verify_total{result=ok|failed|transient}: итог
+    /// проверки полного (BackupVerifyProcess; кластер/шард — только трассировка вызова).</summary>
+    public void BackupVerify(string cluster, string shard, string result)
+    {
+        try
+        {
+            BackupVerifyMark(result);
+            lock (_lock)
+            {
+                _backupVerify[result] = _backupVerify.TryGetValue(result, out var n) ? n + 1 : 1;
             }
         }
         catch
@@ -326,6 +359,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 _operations.ToFrozenDictionary(),
                 _claimsHeld,
                 _walLag.ToFrozenDictionary(),
+                _backupVerify.ToFrozenDictionary(),
                 age);
         }
     }
@@ -338,6 +372,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         IReadOnlyDictionary<(string Operation, string Result), long> Operations,
         int ClaimsHeld,
         IReadOnlyDictionary<(string Cluster, string Shard), long> WalLag,
+        IReadOnlyDictionary<string, long> BackupVerifyTotals,
         double? SnapshotAgeSeconds);
 
     internal sealed record DebugPhase(string Phase, DateTimeOffset StartedAt);
