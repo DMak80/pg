@@ -8,12 +8,14 @@ public sealed record BackupsParseResult(
     IReadOnlyList<ClusterBackupsInfo> Clusters,
     IReadOnlyList<KeyParseError> Errors);
 
-// Чистая функция: KV префикса /pgworker/backups/ (arch/19 §4, t02): policy
-// full_max_age_sec + per-shard последний COMPLETED finished_unix. Битые
-// значения — KeyParseError + пропуск записи (паттерн панели). Шард с любыми
-// ключами полных попадает в словарь: null = COMPLETED не было («полного
-// никогда не было», spec §3.5); шарды без ключей ВООБЩЕ в словарь не
-// попадают (правило молчит — подсистема не включена).
+// Чистая функция: KV префикса /pgworker/backups/ (arch/19 §4, t02+t03):
+// policy full_max_age_sec + per-shard последний COMPLETED finished_unix
+// (правило backup-full-stale, t02) + WAL-статусы шардов (правила
+// wal-chain-broken/wal-stream-lag/wal-stream-stopped, t03). Битые значения —
+// KeyParseError + пропуск записи (паттерн панели). Шард с любыми ключами
+// бэкапов попадает в словари: null = COMPLETED не было («полного никогда
+// не было», spec §3.5); шарда нет в словаре = ключей нет вообще (правила
+// молчат — подсистема не включена).
 public static class BackupsParser
 {
     public const string Prefix = "/pgworker/backups/";
@@ -21,8 +23,10 @@ public static class BackupsParser
     public static BackupsParseResult Parse(IReadOnlyList<Kv> kvs)
     {
         // "/pgworker/backups/<C>/policy" | "/pgworker/backups/<C>/<X>/full/<id>"
+        // | "/pgworker/backups/<C>/<X>/wal" (t03)
         var policies = new Dictionary<string, long?>();
         var shards = new Dictionary<string, Dictionary<string, long?>>();
+        var wal = new Dictionary<string, Dictionary<string, WalStreamInfo?>>();
         var errors = new List<KeyParseError>();
         foreach (var kv in kvs)
         {
@@ -49,6 +53,47 @@ public static class BackupsParser
                 catch (JsonException e)
                 {
                     errors.Add(new(kv.Key, $"битый JSON policy: {e.Message}"));
+                }
+
+                continue;
+            }
+
+            if (segments.Length == 6 && segments[5] == "wal" && segments[4].Length > 0)
+            {
+                // t03: WAL-статус шарда — state/slot/master_node/last_uploaded_unix
+                // обязательны (формат воркера arch/19 §4), lag_segments/error опциональны;
+                // незнакомое state / нет обязательных — KeyParseError + пропуск.
+                try
+                {
+                    using var doc = JsonDocument.Parse(kv.Value);
+                    var root = doc.RootElement;
+                    if (root.ValueKind != JsonValueKind.Object)
+                    {
+                        errors.Add(new(kv.Key, "wal-статус не JSON-объект"));
+                        continue;
+                    }
+
+                    var state = StateOf(String(root, "state"));
+                    var unix = Long(root, "last_uploaded_unix");
+                    if (state is null || unix is null)
+                    {
+                        errors.Add(new(kv.Key, "битый wal-статус (state/last_uploaded_unix)"));
+                        continue;
+                    }
+
+                    if (!wal.TryGetValue(cluster, out var perShardWal))
+                        wal[cluster] = perShardWal = [];
+                    perShardWal[segments[4]] = new WalStreamInfo(
+                        cluster, segments[4], state.Value,
+                        String(root, "slot") ?? "",
+                        String(root, "master_node") ?? "",
+                        unix.Value,
+                        Long(root, "lag_segments"),
+                        String(root, "error"));
+                }
+                catch (JsonException e)
+                {
+                    errors.Add(new(kv.Key, $"битый JSON wal: {e.Message}"));
                 }
 
                 continue;
@@ -92,6 +137,7 @@ public static class BackupsParser
         // (правило по пустому словарю молчит).
         var clusters = shards.Keys
             .Concat(policies.Keys.Where(p => !shards.ContainsKey(p)))
+            .Concat(wal.Keys.Where(w => !shards.ContainsKey(w) && !policies.ContainsKey(w)))
             .Distinct()
             .OrderBy(c => c, StringComparer.Ordinal)
             .Select(c => new ClusterBackupsInfo(
@@ -100,10 +146,34 @@ public static class BackupsParser
                 (shards.TryGetValue(c, out var perShard)
                     ? perShard
                     : new Dictionary<string, long?>())
+                .ToDictionary(p => p.Key, p => p.Value),
+                (wal.TryGetValue(c, out var perShardWal)
+                    ? perShardWal
+                    : new Dictionary<string, WalStreamInfo?>())
                 .ToDictionary(p => p.Key, p => p.Value)))
             .ToList();
         return new(clusters, errors);
     }
+
+    private static WalStreamInfoState? StateOf(string? raw) => raw switch
+    {
+        "ACTIVE" => WalStreamInfoState.Active,
+        "DEGRADED" => WalStreamInfoState.Degraded,
+        "STOPPED" => WalStreamInfoState.Stopped,
+        _ => null,
+    };
+
+    private static string? String(JsonElement root, string name)
+        => root.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String
+            ? v.GetString()
+            : null;
+
+    private static long? Long(JsonElement root, string name)
+        => root.TryGetProperty(name, out var v)
+           && v.ValueKind == JsonValueKind.Number
+           && v.TryGetInt64(out var parsed)
+            ? parsed
+            : null;
 
     private static Dictionary<string, long?> GetOrAdd(
         Dictionary<string, Dictionary<string, long?>> source, string cluster)

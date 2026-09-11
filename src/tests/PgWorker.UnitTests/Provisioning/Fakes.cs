@@ -211,6 +211,60 @@ internal static class Fakes
         public IReadOnlyList<HostInfo> Hosts = [new HostInfo("h1", 0), new HostInfo("h2", 0)];
         public IReadOnlySet<(string Host, int Port)> BusyPorts = new HashSet<(string, int)>();
 
+        // t03: контейнеры WAL-агентов — фиксация ensure/remove + мутабельная карта.
+        public readonly List<string> EnsuredBackupAgents = [];
+        public readonly List<string> RemovedBackupAgents = [];
+        public List<DockerContainer> BackupAgentObjects = [];
+
+        public Task<Result> EnsureBackupAgentAsync(
+            string cluster, string shard, ContainerSpec spec, string host, CancellationToken ct)
+        {
+            lock (_gate)
+            {
+                var name = BackupAgentNames.Container(cluster, shard);
+                EnsuredBackupAgents.Add(name);
+                if (BackupAgentObjects.All(c => !c.Names.Contains("/" + name)))
+                    BackupAgentObjects.Add(new DockerContainer($"id-{name}", ["/" + name], "running", spec.Image));
+            }
+
+            return Task.FromResult(Result.Success());
+        }
+
+        public Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct)
+        {
+            lock (_gate)
+            {
+                var prefix = BackupAgentNames.Prefix(cluster);
+                var names = BackupAgentObjects
+                    .SelectMany(c => c.Names)
+                    .Select(n => n.TrimStart('/'))
+                    .Where(n => n.StartsWith(prefix, StringComparison.Ordinal))
+                    .Where(n => shard is null || n == BackupAgentNames.Container(cluster, shard))
+                    .Distinct()
+                    .ToList();
+                foreach (var name in names)
+                {
+                    RemovedBackupAgents.Add(name);
+                    BackupAgentObjects.RemoveAll(c => c.Names.Any(n => n.TrimStart('/') == name));
+                }
+            }
+
+            return Task.FromResult(Result.Success());
+        }
+
+        public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(
+            string cluster, CancellationToken ct)
+        {
+            lock (_gate)
+            {
+                var prefix = BackupAgentNames.Prefix(cluster);
+                IReadOnlyList<DockerContainer> result = BackupAgentObjects
+                    .Where(c => c.Names.Any(n => n.TrimStart('/').StartsWith(prefix, StringComparison.Ordinal)))
+                    .ToList();
+                return Task.FromResult(Result<IReadOnlyList<DockerContainer>>.Success(result));
+            }
+        }
+
         public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<HostInfo>>.Success(Hosts));
 

@@ -274,12 +274,33 @@ public sealed class BackupsOptions
 
     public BackupsRetryOptions Retry { get; set; } = new();
 
-    /// <summary>Runtime-опции подсистемы бэкапов: склейка Backups-секции (t02).</summary>
+    /// <summary>WAL-поток (t03, arch/19 §3/§9): расписание контроля, пороги.</summary>
+    public BackupsWalOptions Wal { get; set; } = new();
+
+    /// <summary>Runtime-опции подсистемы бэкапов: склейка Backups-секции
+    /// (t02: джобы/ретраи; t03: advertised-S3/Wal-пороги) — именованными
+    /// аргументами: record расширялся с обеих сторон.</summary>
     public BackupsRuntimeOptions ToRuntime() => new(
-        Enabled, Policy.FullMaxAgeSec, Policy.VerifyOnCreate,
-        S3.Endpoint, S3.Region, S3.Bucket, S3.AccessKey, S3.SecretKey,
-        Job.Image, Retry.BaseSec, Retry.MaxSec,
-        Staging.Dir, Staging.QuotaBytes, Agent.Cpu, Agent.Mem);
+        Enabled: Enabled,
+        FullMaxAgeSec: Policy.FullMaxAgeSec,
+        VerifyOnCreate: Policy.VerifyOnCreate,
+        S3Endpoint: S3.Endpoint,
+        S3AdvertisedEndpoint: S3.AdvertisedEndpoint,
+        S3Region: S3.Region,
+        S3Bucket: S3.Bucket,
+        S3AccessKey: S3.AccessKey,
+        S3SecretKey: S3.SecretKey,
+        S3PathStyle: S3.PathStyle,
+        JobImage: Job.Image,
+        RetryBaseSec: Retry.BaseSec,
+        RetryMaxSec: Retry.MaxSec,
+        StagingDir: Staging.Dir,
+        StagingQuotaBytes: Staging.QuotaBytes,
+        AgentCpu: Agent.Cpu,
+        AgentMem: Agent.Mem,
+        WalVerifyIntervalSec: Wal.VerifyIntervalSec,
+        WalLagMaxSegments: Wal.LagMaxSegments,
+        WalStaleSec: Wal.StaleSec);
 
     /// <summary>Fail-fast старта (образец TLS arch/14 §2.2.1): Enabled=true
     /// обязан иметь полный S3-комплект; false — подсистема не активна.</summary>
@@ -326,6 +347,12 @@ public sealed class BackupsS3Options
     public string SecretKey { get; set; } = "";
 
     public bool PathStyle { get; set; } = true;
+
+    /// <summary>Endpoint, как S3 виден ИЗ контейнеров агентов/джобов (single-host:
+    /// host.docker.internal; null → Endpoint как есть — паттерн Etcd:AdvertisedEndpoints,
+    /// Moves:AdvertisedPublisherHost). Реализация-деталь t03 (env-адресация агента,
+    /// arch/19 §7); стенд-включение подсистемы — t02.</summary>
+    public string? AdvertisedEndpoint { get; set; }
 }
 
 /// <summary>Дефолт per-cluster политики: ключ
@@ -366,4 +393,15 @@ public sealed class BackupsAgentOptions
     public double? Cpu { get; set; }
 
     public long? Mem { get; set; }
+}
+
+/// <summary>WAL-поток шарда (t03, arch/19 §3/§9): период list/контроля цепочки,
+/// порог отставания в сегментах, порог тишины загрузок.</summary>
+public sealed class BackupsWalOptions
+{
+    public int VerifyIntervalSec { get; set; } = 30;
+
+    public int LagMaxSegments { get; set; } = 1024;
+
+    public int StaleSec { get; set; } = 300;
 }

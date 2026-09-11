@@ -65,6 +65,9 @@ services:
       PgWorker__Backups__S3__Bucket: ${PGW_BACKUP_S3_BUCKET:-}
       PgWorker__Backups__S3__AccessKey: ${PGW_BACKUP_S3_ACCESS_KEY:-}
       PgWorker__Backups__S3__SecretKey: ${PGW_BACKUP_S3_SECRET_KEY:-}
+      # S3 из контейнеров агентов/джобов (single-host: host.docker.internal; пусто
+      # → ENDPOINT как есть — паттерн Etcd:AdvertisedEndpoints, t03).
+      PgWorker__Backups__S3__AdvertisedEndpoint: ${PGW_BACKUP_S3_ADVERTISED_ENDPOINT:-}
       # Образ джоба полного бэкапа (t02): тег = дефолт Job.Image; сборка —
       # build-сервис pgworker-backup ниже (compose build) или 00-up.sh.
       PgWorker__Backups__Job__Image: ${PGW_BACKUP_JOB_IMAGE:-pgworker-backup:dev}

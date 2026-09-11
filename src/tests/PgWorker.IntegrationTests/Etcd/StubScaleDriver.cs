@@ -25,6 +25,59 @@ public sealed class StubScaleDriver : IClusterDriver
     public List<string> NodeObjects = [];
     public IReadOnlySet<(string Host, int Port)> BusyPorts = new HashSet<(string, int)>();
 
+    // t03: контейнеры WAL-агентов бэкапов — фиксация ensure/remove + мутабельная
+    // карта живых объектов (супервиз-тесты WalStreamProcess подменяют State).
+    public readonly List<string> EnsuredBackupAgents = [];
+    public readonly List<string> RemovedBackupAgents = [];
+    public List<DockerContainer> BackupAgentObjects = [];
+
+    // Спеки агентов, отданные драйверу (контракт WalStreamProcess: Network=null —
+    // сеть нод проставляет реальный драйвер; ревью Ф7 №1).
+    public List<ContainerSpec> EnsuredAgentSpecs = [];
+
+    public Task<Result> EnsureBackupAgentAsync(
+        string cluster, string shard, ContainerSpec spec, string host, CancellationToken ct)
+    {
+        var name = BackupAgentNames.Container(cluster, shard);
+        EnsuredBackupAgents.Add(name);
+        EnsuredAgentSpecs.Add(spec);
+        if (BackupAgentObjects.All(c => !c.Names.Contains("/" + name)))
+            BackupAgentObjects.Add(new DockerContainer($"id-{name}", ["/" + name], "running", spec.Image));
+        return Task.FromResult(Result.Success());
+    }
+
+    public Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct)
+    {
+        foreach (var name in BackupAgentNamesOf(cluster, shard))
+        {
+            RemovedBackupAgents.Add(name);
+            BackupAgentObjects.RemoveAll(c => c.Names.Any(n => n.TrimStart('/') == name));
+        }
+
+        return Task.FromResult(Result.Success());
+    }
+
+    public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(
+        string cluster, CancellationToken ct)
+        => Task.FromResult(Result<IReadOnlyList<DockerContainer>>.Success(
+            (IReadOnlyList<DockerContainer>)BackupAgentObjects
+                .Where(c => c.Names.Any(n => n.TrimStart('/').StartsWith(
+                    BackupAgentNames.Prefix(cluster), StringComparison.Ordinal)))
+                .ToList()));
+
+    // Живые агенты кластера (shard=null → все): имена без ведущего "/".
+    private List<string> BackupAgentNamesOf(string cluster, string? shard)
+    {
+        var prefix = BackupAgentNames.Prefix(cluster);
+        return BackupAgentObjects
+            .SelectMany(c => c.Names)
+            .Select(n => n.TrimStart('/'))
+            .Where(n => n.StartsWith(prefix, StringComparison.Ordinal))
+            .Where(n => shard is null || n == BackupAgentNames.Container(cluster, shard))
+            .Distinct()
+            .ToList();
+    }
+
     public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct)
         => Task.FromResult(Result<IReadOnlyList<HostInfo>>.Success(
             (IReadOnlyList<HostInfo>)[new HostInfo("h1", 0), new HostInfo("h2", 0)]));

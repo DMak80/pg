@@ -9,7 +9,7 @@ public sealed record EtcdSnapshot(
     IReadOnlyList<HaScope> HaScopes,
     IReadOnlyList<StandNode> StandNodes,
     IReadOnlyList<MoveTicket> MoveTickets,         // очередь заявок /pgworker/moves/ (arch/02 §2.3.1)
-    IReadOnlyList<ClusterBackupsInfo> Backups,     // префикс /pgworker/backups/ (arch/19 §4, t02)
+    IReadOnlyList<ClusterBackupsInfo> Backups,     // префикс /pgworker/backups/ (arch/19 §4, t02+t03)
     IReadOnlyList<WorkerEndpoint> PgWorkerEndpoints, // живые ключи /pgworker/api/ (arch/02 §2.3.1)
     IReadOnlyList<WorkJournalInfo> PgWorkerWork,   // журналы /pgworker/work/ (arch/02 §2.3.1, arch/14 §3.3)
     IReadOnlyList<WorkerHealth> WorkerHealth,      // результаты опроса /healthz (arch/02 §3, spec D4)

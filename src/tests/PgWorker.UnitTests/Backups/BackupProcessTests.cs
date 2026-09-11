@@ -228,6 +228,12 @@ public class BackupProcessTests
             string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct) => throw NotSupported();
         // ExecContainerAsync — реализован выше (pg_hba-гвард object-нод)
         public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct) => throw NotSupported();
+
+        // WAL-агенты (t03): в тестах джобов не используются.
+        public Task<Result> EnsureBackupAgentAsync(
+            string cluster, string shard, ContainerSpec spec, string host, CancellationToken ct) => throw NotSupported();
+        public Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct) => throw NotSupported();
+        public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(string cluster, CancellationToken ct) => throw NotSupported();
     }
 
     // G1-двойник: пароль backup_exec фиксированный, вызовы считаются (G0-кейс).

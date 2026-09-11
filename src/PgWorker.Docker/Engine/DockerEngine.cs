@@ -294,7 +294,17 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
 
     public async Task<Result> StartContainerAsync(string idOrName, CancellationToken ct)
         => await Result.FromAsync(async () =>
-            await SendAsync(HttpMethod.Post, $"/containers/{Uri.EscapeDataString(idOrName)}/start", ct: ct));
+        {
+            try
+            {
+                await SendAsync(HttpMethod.Post, $"/containers/{Uri.EscapeDataString(idOrName)}/start", ct: ct);
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 304)
+            {
+                // 304 — контейнер уже запущен (идемпотентность супервиза, t03:
+                // контракт интерфейса «304 already-started = успех»)
+            }
+        });
 
     public async Task<Result> StopContainerAsync(string idOrName, int timeoutSec, CancellationToken ct)
         => await Result.FromAsync(async () =>
@@ -678,7 +688,13 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             };
         }
         if (spec.Cmd is { Count: > 0 } cmd)
+        {
+            // t03: сброс ENTRYPOINT образа — inline-команда агента/тест-контейнера
+            // заменяет его целиком (образ pgworker-backup несёт ENTRYPOINT джоба
+            // t02; без сброса Cmd ушёл бы ему аргументами, агент не стартовал бы).
+            body["Entrypoint"] = Array.Empty<string>();
             body["Cmd"] = cmd;
+        }
         if (spec.Label is { Length: > 0 } label)
             body["Labels"] = new Dictionary<string, string> { ["pgworker"] = label };
         return body;

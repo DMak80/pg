@@ -144,6 +144,52 @@ public class ShardScaleContractTests(EtcdFixture fixture)
     }
 
     [Fact]
+    public async Task RemoveShard_останавливает_агента_WAL_и_чистит_ключ_бэкапов_AC6()
+    {
+        // Arrange — кластер Active, shard1 с TO_REMOVE-маркером; StubScaleDriver
+        // видит объекты нод + живой агент (BackupAgentObjects); etcd-ключ
+        // /pgworker/backups/<C>/shard1/wal посажен напрямую
+        var ct = TestContext.Current.CancellationToken;
+        await SeedActiveClusterAsync("sc6", 3);
+        await Gateway.PutAsync(Endpoint, "/clusters/sc6/shards/shard1/state", "TO_REMOVE", null, ct);
+        await Gateway.PutAsync(Endpoint, "/pgworker/portalloc/sc6", Portalloc.Serialize(
+            new Dictionary<string, NodeAddress>
+            {
+                ["shard1/shard1a"] = new("h1", new NodePorts(15000, 18000, 16500)),
+                ["shard1/shard1b"] = new("h2", new NodePorts(15000, 18000, 16500)),
+                ["shard2/shard2a"] = new("h1", new NodePorts(15001, 18001, 16501)),
+                ["shard2/shard2b"] = new("h2", new NodePorts(15001, 18001, 16501)),
+            }), null, ct);
+        await Gateway.PutAsync(Endpoint, "/pgworker/backups/sc6/shard1/wal",
+            """{"state":"ACTIVE","slot":"pgw_bkp_sc6_shard1","master_node":"shard1a","chain_start_segment":"000000010000000000000001","last_received_segment":"000000010000000000000002","last_uploaded_segment":"000000010000000000000002","last_uploaded_unix":1757500000,"lag_segments":1}""",
+            null, ct);
+        var driver = new StubScaleDriver
+        {
+            NodeObjects = ["pgw-sc6-shard1-shard1a", "pgw-sc6-shard1-shard1b", "pgw-sc6-shard2-shard2a"],
+            BackupAgentObjects =
+            [
+                new PgWorker.Docker.Engine.DockerContainer(
+                    "id-agent", ["/pgw-backup-wal-sc6-shard1"], "running", "bkp-img"),
+            ],
+        };
+        var claims = new ClaimStore([Endpoint], Gateway, TimeProvider.System);
+        (await claims.TryClaimClusterAsync("sc6", ct)).Value.Should().BeTrue();
+        var process = new RemoveShardProcess(
+            Gateway, [Endpoint], driver, claims, new WorkJournal(Gateway, [Endpoint]), snapshot: null);
+
+        // Act — тик RemoveShardProcess
+        var outcome = await process.TickAsync(await SnapshotAsync("sc6"), "shard1", ct);
+
+        // Assert — агент остановлен; docker-объектов шарда нет; ключ wal УДАЛЁН
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().Be(ProcessOutcome.Done);
+        driver.RemovedBackupAgents.Should().Contain("pgw-backup-wal-sc6-shard1");
+        driver.BackupAgentObjects.Should().NotContain(c => c.Names.Any(n => n.Contains("sc6")));
+        var backupsPrefix = await Gateway.RangeAsync(Endpoint, "/pgworker/backups/sc6/shard1/", ct);
+        backupsPrefix.Value.Should().BeEmpty("ключ wal не переживает демонтаж (CleanKeysAsync)");
+    }
+
+    [Fact]
     public async Task ConcurrentMarkerPuts_ConvergeToSameValue()
     {
         // Arrange — конкурентные PUT одного маркера (идемпотентность §4.2)

@@ -9,4 +9,8 @@ namespace AdminPanel.Core;
 public sealed record ClusterBackupsInfo(
     string Cluster,
     long? FullMaxAgeSec,
-    IReadOnlyDictionary<string, long?> ShardLastCompletedUnix);
+    IReadOnlyDictionary<string, long?> ShardLastCompletedUnix,
+    // t03: WAL-статусы шардов (ключи /pgworker/backups/<C>/<X>/wal) — вход
+    // правил wal-chain-broken/wal-stream-lag/wal-stream-stopped; null = ключей
+    // wal нет (агент не поднимался).
+    IReadOnlyDictionary<string, WalStreamInfo?>? Shards = null);

@@ -6,6 +6,8 @@ using PgWorker.App.Api;
 using PgWorker.App.Api.Operations;
 using PgWorker.App.HealthChecks;
 using PgWorker.App.Loops;
+using PgWorker.Backups;
+using PgWorker.Backups.Sql;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
@@ -406,6 +408,35 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupProcess(
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.BackupProcess>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 
+// WAL-архивация (t03, arch/19 §3): слот/агент/контроль цепочки; runtime()==null
+// (Backups:Enabled=false) — процесс выполняет стоп-семантику и не активен.
+builder.Services.AddSingleton(sp =>
+{
+    var opts = sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue;
+    return new WalStreamProcess(
+        sp.GetRequiredService<IEtcdGateway>(),
+        opts.Etcd.Endpoints,
+        sp.GetRequiredService<IClusterDriver>(),
+        sp.GetRequiredService<ShardEndpoints>(),
+        sp.GetRequiredService<IWalSqlExecutor>(),
+        sp.GetRequiredService<IBackupS3>(),
+        new WalStatusWriter(sp.GetRequiredService<IEtcdGateway>(), opts.Etcd.Endpoints),
+        sp.GetRequiredService<ClaimStore>(),
+        sp.GetRequiredService<WorkJournal>(),
+        () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.Enabled
+            ? sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.ToRuntime()
+            : null,
+        sp.GetRequiredService<InstallSecrets>(),
+        sp.GetRequiredService<TimeProvider>(),
+        sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupWalLag,
+        sp.GetRequiredService<ILoggerFactory>().CreateLogger("WalStreamProcess"));
+});
+builder.Services.AddSingleton<IWalSqlExecutor, NpgsqlWalSqlExecutor>();
+// S3-клиент с горячей конфигурацией (ревью Ф7 №3): включение/смена секции
+// Backups без рестарта воркера пересоздаёт клиента при первом же вызове
+// (асимметрия «выключение работает, включение нет» устранена).
+builder.Services.AddSingleton<IBackupS3, ReloadableBackupS3>();
+
 // Циклы (§6.2): keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
 // Регистрируются синглтонами — health-обёртки читают их состояние напрямую.
 builder.Services.AddSingleton<IClusterProcesses, ClusterProcesses>();
@@ -460,6 +491,89 @@ static InstallSecrets SecretsFromEnv()
 // Делегат снапшота для процессов (P12 «до/после» в точках изменений).
 static Func<CancellationToken, Task<Result>> SnapshotDelegate(SnapshotJob job)
     => async ct => await job.TakeAsync(ct);
+
+// S3-клиент подсистемы бэкапов с горячей конфигурацией (ревью Ф7 №3): секция
+// PgWorker:Backups читается CurrentValue при КАЖДОМ вызове; смена опций (record-
+// равенство) пересоздаёт клиента (креды/endpoint актуальны сразу после reload).
+// Enabled=false → отказ "Backups:Enabled=false" (семантика заглушки: WalStreamProcess
+// при runtime()==null уходит в стоп-семантику, не доходя до S3; ошибки list —
+// консервативный сигнал, если зовут мимо процесса).
+file sealed class ReloadableBackupS3(IOptionsMonitor<PgWorkerOptions> options) : IBackupS3, IAsyncDisposable
+{
+    private readonly object _gate = new();
+    private (BackupsRuntimeOptions Config, BackupS3 Client)? _current;
+    private bool _disposed;
+
+    // Клиент под ТЕКУЩУЮ конфигурацию (ленивая инициализация + пересоздание);
+    // устаревший клиент диспозится ВНЕ lock (IAsyncDisposable).
+    private async ValueTask<IBackupS3> CurrentAsync()
+    {
+        BackupS3? stale = null;
+        IBackupS3 current;
+        lock (_gate)
+        {
+            if (_disposed)
+                throw new ObjectDisposedException(nameof(ReloadableBackupS3));
+            var runtime = options.CurrentValue.Backups.Enabled
+                ? options.CurrentValue.Backups.ToRuntime()
+                : null;
+
+            if (_current is { } pair && (runtime is null || pair.Config != runtime))
+            {
+                stale = pair.Client; // старый конфиг (креды/endpoint) неактуален
+                _current = null;
+            }
+
+            if (runtime is null)
+                current = DisabledBackupS3.Instance;
+            else
+            {
+                _current ??= (runtime, new BackupS3(runtime));
+                current = _current.Value.Client;
+            }
+        }
+
+        if (stale is not null)
+            await stale.DisposeAsync();
+        return current;
+    }
+
+    public async Task<PgWorker.Core.Result<bool>> BucketExistsAsync(CancellationToken ct)
+        => await (await CurrentAsync()).BucketExistsAsync(ct);
+
+    public async Task<PgWorker.Core.Result<IReadOnlyList<PgWorker.Backups.WalObject>>> ListWalAsync(
+        string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
+        => await (await CurrentAsync()).ListWalAsync(cluster, shard, maxKeysPerTest, ct);
+
+    public async ValueTask DisposeAsync()
+    {
+        BackupS3? client;
+        lock (_gate)
+        {
+            _disposed = true;
+            client = _current?.Client;
+            _current = null;
+        }
+
+        if (client is not null)
+            await client.DisposeAsync();
+    }
+
+    // Заглушка выключенной подсистемы: list не зовётся штатным путём (стоп-семантика).
+    private sealed class DisabledBackupS3 : IBackupS3
+    {
+        public static readonly DisabledBackupS3 Instance = new();
+
+        public Task<PgWorker.Core.Result<bool>> BucketExistsAsync(CancellationToken ct)
+            => Task.FromResult(PgWorker.Core.Result<bool>.Failed(
+                new ApplicationException("Backups:Enabled=false")));
+
+        public Task<PgWorker.Core.Result<IReadOnlyList<PgWorker.Backups.WalObject>>> ListWalAsync(
+            string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
+            => Task.FromResult(PgWorker.Core.Result<IReadOnlyList<PgWorker.Backups.WalObject>>.Failed(
+                new ApplicationException("Backups:Enabled=false")));
+    }
+}
 
 // WAF-тесты (PgWorker.IntegrationTests/Api): точка входа как public partial.
 public partial class Program;

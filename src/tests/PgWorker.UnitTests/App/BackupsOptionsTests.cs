@@ -122,4 +122,53 @@ public class BackupsOptionsTests
         options.Agent.Mem.Should().BeNull();
         options.S3.Endpoint.Should().BeEmpty();
     }
+
+    [Fact]
+    public void ToRuntime_склеивает_все_секции_и_advertised_fallback()
+    {
+        // Arrange
+        var options = new BackupsOptions
+        {
+            Job = new BackupsJobOptions { Image = "pgworker-backup:test" },
+            S3 = new BackupsS3Options
+            {
+                Endpoint = "http://localhost:9000",
+                AdvertisedEndpoint = "http://host.docker.internal:9000",
+                Bucket = "b", AccessKey = "a", SecretKey = "s",
+            },
+            Staging = new BackupsStagingOptions { Dir = "/st", QuotaBytes = 1024 },
+            Agent = new BackupsAgentOptions { Cpu = 0.5, Mem = 512 },
+            Wal = new BackupsWalOptions { VerifyIntervalSec = 5, LagMaxSegments = 10, StaleSec = 60 },
+        };
+
+        // Act
+        var runtime = options.ToRuntime();
+
+        // Assert
+        runtime.JobImage.Should().Be("pgworker-backup:test");
+        runtime.AgentS3Endpoint.Should().Be("http://host.docker.internal:9000");
+        runtime.WalVerifyIntervalSec.Should().Be(5);
+        runtime.WalLagMaxSegments.Should().Be(10);
+        runtime.WalStaleSec.Should().Be(60);
+        runtime.StagingQuotaBytes.Should().Be(1024);
+    }
+
+    [Fact]
+    public void ToRuntime_без_advertised_берет_endpoint_как_есть()
+    {
+        // Arrange
+        var options = new BackupsOptions
+        {
+            S3 = new BackupsS3Options { Endpoint = "http://minio:9000", Bucket = "b", AccessKey = "a", SecretKey = "s" },
+        };
+
+        // Act
+        var runtime = options.ToRuntime();
+
+        // Assert
+        runtime.AgentS3Endpoint.Should().Be("http://minio:9000");
+        runtime.WalVerifyIntervalSec.Should().Be(30); // дефолты канона §9
+        runtime.WalLagMaxSegments.Should().Be(1024);
+        runtime.WalStaleSec.Should().Be(300);
+    }
 }

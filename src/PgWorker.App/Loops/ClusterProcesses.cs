@@ -1,3 +1,4 @@
+using PgWorker.Backups;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Etcd.Parsing;
@@ -41,6 +42,12 @@ internal interface IClusterProcesses
     Task<Result<ProcessOutcome>> BackupsAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
 
+    /// <summary>WAL-архивация шардов (t03, arch/19 §3): ensure слота/агента,
+    /// контроль цепочки по расписанию, статус /pgworker/backups/&lt;C&gt;/&lt;X&gt;/wal.
+    /// backups — парс префикса /pgworker/backups/ этим же тиком.</summary>
+    Task<Result<ProcessOutcome>> WalStreamAsync(
+        ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
+
     /// <summary>Репарация брошенных переездов: синтетические заявки в MoveProcess
     /// (adopt-repair spec §3.5, arch/14 §5 K).</summary>
     Task<Result<ProcessOutcome>> RepairAsync(ClusterSnapshot snap, CancellationToken ct);
@@ -58,7 +65,8 @@ internal sealed class ClusterProcesses(
     AddShardProcess addShards,
     RemoveShardProcess removeShards,
     ClusterSecretRotator rotator,
-    PgWorker.Backups.BackupProcess backupsProcess) : IClusterProcesses
+    PgWorker.Backups.BackupProcess backupsProcess,
+    WalStreamProcess walStream) : IClusterProcesses
 {
     public Task<Result<ProcessOutcome>> ProvisionAsync(ClusterSnapshot snap, CancellationToken ct)
         => provision.TickAsync(snap, ct);
@@ -115,6 +123,10 @@ internal sealed class ClusterProcesses(
     public Task<Result<ProcessOutcome>> BackupsAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
         => backupsProcess.TickAsync(snap, backups, ct);
+
+    public Task<Result<ProcessOutcome>> WalStreamAsync(
+        ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
+        => walStream.TickAsync(snap, backups.FirstOrDefault(b => b.Cluster == snap.Config.Cluster), ct);
 
     public Task<Result<ProcessOutcome>> RepairAsync(ClusterSnapshot snap, CancellationToken ct)
         => repair.TickAsync(snap, ct);

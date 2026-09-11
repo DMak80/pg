@@ -187,6 +187,25 @@ public sealed class E2eEnvironment : IAsyncDisposable
         string name, int snapshotIntervalMin = 360,
         IReadOnlyDictionary<string, string>? extraEnv = null, CancellationToken ct = default)
     {
+        // Ретрай выбора порта: зонд FreePort закрывает листенер до старта процесса —
+        // в окне эфемерный порт может занять исходящее соединение (AddressInUse,
+        // инцидент гейта t03-merge). Повторяем зонд, максимум 3 попытки.
+        for (var attempt = 1; ; attempt++)
+            try
+            {
+                return await StartHostOnPortAsync(name, snapshotIntervalMin, extraEnv, ct);
+            }
+            catch (ApplicationException e) when (attempt < 3
+                && e.Message.Contains("address already in use", StringComparison.OrdinalIgnoreCase))
+            {
+                // следующий заход возьмёт новый зонд
+            }
+    }
+
+    private async Task<HostInstance> StartHostOnPortAsync(
+        string name, int snapshotIntervalMin,
+        IReadOnlyDictionary<string, string>? extraEnv, CancellationToken ct)
+    {
         var port = E2eFixture.FreePort();
         var snapshotsDir = Path.Combine(Path.GetTempPath(), $"pgw-e2e-{name}-{port}");
         Directory.CreateDirectory(snapshotsDir);

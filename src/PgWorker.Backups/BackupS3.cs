@@ -1,0 +1,104 @@
+using Amazon.Runtime;
+using Amazon.S3;
+using Amazon.S3.Model;
+using PgWorker.Core;
+
+namespace PgWorker.Backups;
+
+/// <summary>Объект WAL-префикса: имя (последний компонент ключа) + факт времени
+/// последней модификации (для last_uploaded_unix — S3 истина, arch/19 §3).</summary>
+public sealed record WalObject(string Name, DateTimeOffset LastModified);
+
+/// <summary>Тонкая обёртка S3-клиента (t03): list-objects-v2 с пагинацией по
+/// префиксу `<C>/<X>/wal/` + диагностика старта (BucketExists). Загрузку делает
+/// mc внутри агента — других операций t03 не требует (spec §3.1). PathStyle —
+/// MinIO и облако одним клиентом (ForcePathStyle). Создание bucket — забота
+/// стенда/фикстур (прямой AWSSDK-клиент), НЕ интерфейс подсистемы.</summary>
+public interface IBackupS3
+{
+    Task<Result<bool>> BucketExistsAsync(CancellationToken ct);
+
+    /// <summary>maxKeysPerTest — инъекция размера страницы (тест пагинации); null — максимум.</summary>
+    Task<Result<IReadOnlyList<WalObject>>> ListWalAsync(
+        string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default);
+}
+
+public sealed class BackupS3 : IBackupS3, IAsyncDisposable
+{
+    private readonly AmazonS3Client _client;
+    private readonly string _bucket;
+
+    public BackupS3(BackupsRuntimeOptions options)
+    {
+        _bucket = options.S3Bucket;
+        var config = new AmazonS3Config
+        {
+            ServiceURL = options.S3Endpoint,
+            ForcePathStyle = options.S3PathStyle,
+            AuthenticationRegion = options.S3Region,
+        };
+        _client = new AmazonS3Client(
+            new BasicAWSCredentials(options.S3AccessKey, options.S3SecretKey), config);
+    }
+
+    public async Task<Result<bool>> BucketExistsAsync(CancellationToken ct)
+    {
+        try
+        {
+            await _client.ListBucketsAsync(ct);
+            return Result<bool>.Success(true);
+        }
+        catch (AmazonS3Exception e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            return Result<bool>.Success(false);
+        }
+        catch (Exception e)
+        {
+            return Result<bool>.Failed(new ApplicationException($"S3 list-buckets: {e.Message}", e));
+        }
+    }
+
+    public async Task<Result<IReadOnlyList<WalObject>>> ListWalAsync(
+        string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
+    {
+        try
+        {
+            var result = new List<WalObject>();
+            string? token = null;
+            do
+            {
+                var request = new ListObjectsV2Request
+                {
+                    BucketName = _bucket,
+                    Prefix = $"{cluster}/{shard}/wal/",
+                    ContinuationToken = token,
+                };
+                if (maxKeysPerTest is { } maxKeys)
+                    request.MaxKeys = maxKeys;
+                var page = await _client.ListObjectsV2Async(request, ct);
+                foreach (var obj in page.S3Objects)
+                {
+                    var name = obj.Key[(obj.Key.LastIndexOf('/') + 1)..];
+                    if (name.Length > 0)
+                        result.Add(new WalObject(name, obj.LastModified));
+                }
+
+                token = page.IsTruncated is true ? page.NextContinuationToken : null;
+            }
+            while (token is not null);
+
+            return Result<IReadOnlyList<WalObject>>.Success(result);
+        }
+        catch (Exception e)
+        {
+            return Result<IReadOnlyList<WalObject>>.Failed(new ApplicationException(
+                $"S3 list {cluster}/{shard}/wal/: {e.Message}", e));
+        }
+    }
+
+    public ValueTask DisposeAsync()
+    {
+        _client.Dispose();
+        return ValueTask.CompletedTask;
+    }
+}

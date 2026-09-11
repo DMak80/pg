@@ -1,12 +1,18 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <!-- Зависимости как у PgWorker.Moves: ProcessOutcome/ISqlExecutor — в
-         Provisioning; etcd-модель бэкапов — в Etcd; docker-спека — в Docker. -->
+         Provisioning; etcd-модель бэкапов — в Etcd; docker-спека — в Docker.
+         t03: AWSSDK.S3 — S3-листер wal-префикса; Npgsql — слот/LSN-SQL. -->
     <ItemGroup>
         <ProjectReference Include="..\PgWorker.Core\PgWorker.Core.csproj"/>
         <ProjectReference Include="..\PgWorker.Etcd\PgWorker.Etcd.csproj"/>
         <ProjectReference Include="..\PgWorker.Docker\PgWorker.Docker.csproj"/>
         <ProjectReference Include="..\PgWorker.Provisioning\PgWorker.Provisioning.csproj"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="AWSSDK.S3"/>
+        <PackageReference Include="Npgsql"/>
     </ItemGroup>
 
 </Project>

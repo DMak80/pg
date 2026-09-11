@@ -29,6 +29,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     private readonly Dictionary<(string Cluster, string Process), (string Phase, DateTimeOffset StartedAt)> _phases = new();
     private readonly Dictionary<(string Operation, string Result), long> _operations = new();
     private DateTimeOffset? _lastSnapshotTaken;
+    private readonly Dictionary<(string Cluster, string Shard), long> _walLag = new();
     private int _claimsHeld;
 
     private bool _disposed;
@@ -61,6 +62,14 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
             "worker.claims_held",
             () => Measure(() => new[] { new Measurement<int>(_claimsHeld) }),
             description: "Число кластеров под клэймом");
+
+        meter.CreateObservableGauge(
+            "pgworker_backup_wal_lag_segments",
+            () => Measure(() => _walLag.Select(kv =>
+                new Measurement<long>(kv.Value,
+                    new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
+                    new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
+            unit: "{segment}", description: "Отставание WAL-потока бэкапов, сегментов (arch/19 §3)");
 
         meter.CreateObservableGauge(
             "worker.process.phase.duration_seconds",
@@ -155,6 +164,26 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         {
             lock (_lock)
                 _lastDuration[loop] = seconds;
+        }
+        catch
+        {
+            // Пассивный наблюдатель.
+        }
+    }
+
+    // Gauge pgworker_backup_wal_lag_segments{cluster,shard}: лаг WAL-потока шарда
+    // (наблюдение контрольного прохода WalStreamProcess; null — серия исчезает).
+    public void BackupWalLag(string cluster, string shard, long? segments)
+    {
+        try
+        {
+            lock (_lock)
+            {
+                if (segments is { } value)
+                    _walLag[(cluster, shard)] = value;
+                else
+                    _walLag.Remove((cluster, shard));
+            }
         }
         catch
         {
@@ -296,6 +325,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 _phases.ToFrozenDictionary(kv => kv.Key, kv => new DebugPhase(kv.Value.Phase, kv.Value.StartedAt)),
                 _operations.ToFrozenDictionary(),
                 _claimsHeld,
+                _walLag.ToFrozenDictionary(),
                 age);
         }
     }
@@ -307,6 +337,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         IReadOnlyDictionary<(string Cluster, string Process), DebugPhase> Phases,
         IReadOnlyDictionary<(string Operation, string Result), long> Operations,
         int ClaimsHeld,
+        IReadOnlyDictionary<(string Cluster, string Shard), long> WalLag,
         double? SnapshotAgeSeconds);
 
     internal sealed record DebugPhase(string Phase, DateTimeOffset StartedAt);

@@ -113,19 +113,16 @@ internal sealed class ReconcileLoop(
         if (!serviceKvs.IsSuccess)
             return Result.Failed(serviceKvs.Error!);
 
-        // Бэкапы (t02, arch/19): префикс читаем только при Enabled — выключенная
-        // подсистема не меняет поведение (лишних чтений/алертов нет).
-        IReadOnlyList<ClusterBackups> backups = [];
-        if (options.CurrentValue.Backups.Enabled)
-        {
-            var backupsKvs = await RangeWithFailoverAsync(endpoints, "/pgworker/backups/", ct);
-            if (!backupsKvs.IsSuccess)
-                return Result.Failed(backupsKvs.Error!);
-            var parsedBackups = BackupsParser.Parse(backupsKvs.Value, out var backupsParseErrors);
-            foreach (var error in backupsParseErrors)
-                logger.LogWarning("пропущен битый ключ: {Error}", error);
-            backups = parsedBackups.Value;
-        }
+        // Бэкапы (t02/t03, arch/19 §4): префикс читаем ВСЕГДА — стоп-семантика t03
+        // (Enabled=false → финальный STOPPED) обязана видеть живые ключи; пустой
+        // префикс дёшев. Потребители фильтруются по Enabled сами (t02-процесс).
+        var backupsKvs = await RangeWithFailoverAsync(endpoints, "/pgworker/backups/", ct);
+        if (!backupsKvs.IsSuccess)
+            return Result.Failed(backupsKvs.Error!);
+        var backupsParsed = BackupsParser.Parse(backupsKvs.Value, out var backupsErrors);
+        foreach (var error in backupsErrors)
+            logger.LogWarning("пропущен битый ключ бэкапов: {Error}", error);
+        IReadOnlyList<ClusterBackups> backups = backupsParsed.Value;
 
         health.MarkEtcdOk();
 
@@ -138,6 +135,7 @@ internal sealed class ReconcileLoop(
         var gate = new SemaphoreSlim(Math.Max(1, options.CurrentValue.Parallelism.MaxClusters));
         try
         {
+            var backupsList = backupsParsed.Value;
             var tasks = parsed.Value
                 .Select(snap => ProcessClusterAsync(snap, gate, backups, ct))
                 .ToArray();
@@ -216,6 +214,13 @@ internal sealed class ReconcileLoop(
                     if (options.CurrentValue.Backups.Enabled)
                         await RunClusterOpAsync(cluster, "backups",
                             () => processes.BackupsAsync(snap, backups, ct), ct);
+
+                    // WAL-архивация (t03, arch/19 §3): после ротации (креды агента —
+                    // свежий пароль в пересоздании) и до repair/moves (короткая).
+                    // Зовётся ВСЕГДА: при Enabled=false это стоп-семантика
+                    // (агенты вниз + финальный STOPPED в живых ключах).
+                    await RunClusterOpAsync(cluster, "backup-wal",
+                        () => processes.WalStreamAsync(snap, backups, ct), ct);
 
                     // Репарация брошенных переездов (spec §3.5, arch/14 §5 K): синтетические
                     // заявки до moves — этот же тик начнёт их обработку (старейшая заявка).

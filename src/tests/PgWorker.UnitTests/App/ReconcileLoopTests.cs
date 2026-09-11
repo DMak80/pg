@@ -205,10 +205,13 @@ public class ReconcileLoopTests
         // Act
         var tick = await loop.TickAsync(TestContext.Current.CancellationToken);
 
-        // Assert — ротация вызвана между scale и moves (порядок §4.3)
+        // Assert — ротация вызвана между scale и moves (порядок §4.3); WAL-архивация
+        // (t03) — после ротации, до repair/moves
         tick.IsSuccess.Should().BeTrue();
         processes.Rotated.Should().Equal("shop");
-        processes.Calls.Should().ContainInOrder("supervise/shop", "rotate-app-password/shop", "moves/shop");
+        processes.WalStreamed.Should().Equal("shop");
+        processes.Calls.Should().ContainInOrder(
+            "supervise/shop", "rotate-app-password/shop", "backup-wal/shop", "moves/shop");
     }
 
     // AAA: бэкапы — в Active-ветке после rotate-app-password и до repair
@@ -437,6 +440,8 @@ public class ReconcileLoopTests
 
         public List<string> Backed { get; } = [];
 
+        public List<string> WalStreamed { get; } = [];
+
         // Порядок вызовов процессов кластера ("supervise/shop", "moves/shop", …).
         public List<string> Calls { get; } = [];
 
@@ -509,6 +514,13 @@ public class ReconcileLoopTests
             ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
         {
             using var _ = Track(snap.Config.Cluster, Backed, callName: "backups");
+            return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
+        }
+
+        public Task<Result<ProcessOutcome>> WalStreamAsync(
+            ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
+        {
+            using var _ = Track(snap.Config.Cluster, WalStreamed, callName: "backup-wal");
             return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
         }
 
