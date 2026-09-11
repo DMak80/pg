@@ -99,10 +99,10 @@ public sealed class BackupVerifyProcess(
     {
         var fulls = shardBackups.Full;
 
-        // (1) Супервиз живого verify-контейнера шарда: есть → инвариант одного
-        //     джоба на шард — новых не стартуем (итог exited — супервиз задачи 9).
-        //     Лист — движок первого хоста таблицы Docker:Hosts (супервиз видит
-        //     контейнеры своего docker-хоста); сбой → transient (тик повторит).
+        // (1) Супервиз verify-контейнеров шарда: есть хоть один (running/exited) —
+        //     обрабатываем и ЗАВЕРШАЕМ тик шарда — новых не стартуем (инвариант
+        //     одного джоба, spec §3.3 п.1). Лист — движок первого хоста таблицы
+        //     Docker:Hosts; сбой → transient (тик повторит).
         var shardPrefix = BackupNames.VerifyContainerName(cluster, shard, string.Empty);
         var hostsForList = await driver.GetHostsAsync(ct);
         IDockerEngine? listEngine = hostsForList.IsSuccess && hostsForList.Value.Count > 0
@@ -114,7 +114,19 @@ public sealed class BackupVerifyProcess(
         if (!alive.IsSuccess)
             return; // transport-сбой list → transient (тик повторит)
         if (alive.Value.Count > 0)
-            return; // живой джоб — супервиз (задача 9), новых не стартуем
+        {
+            foreach (var container in alive.Value)
+            {
+                var name = container.Names
+                    .Select(n => n.TrimStart('/'))
+                    .FirstOrDefault(n => n.StartsWith(shardPrefix, StringComparison.Ordinal));
+                if (name is not null)
+                    await SuperviseAsync(
+                        listEngine, cluster, shard, name, shardPrefix, container.State, shardBackups, nowUnix, ct);
+            }
+
+            return; // супервиз-тик: новых джобов не стартуем
+        }
 
         // (2) due-резолв: PENDING-очередь раньше периодики; по одному за тик.
         //     verify FAILED — терминален: не попадает ни в один список.
@@ -244,6 +256,93 @@ public sealed class BackupVerifyProcess(
                 claims.InstanceId, fallbackHost, ct);
         logger.LogInformation("{Op} {cluster}/{shard}: verify-джоб {job} запущен (id {id})",
             Op, cluster, shard, jobName, id);
+    }
+
+    // Супервиз одного verify-контейнера шарда (spec §3.2): orphan/stale → снос
+    // без итога; running → ждать; created → старт; exited → итог по exit-коду и
+    // result-JSON (фаза verify/нет результата с ok:false+phase=verify → permanent;
+    // download/мусор → transient: снос, статус не трогаем); итог OK/FAILED —
+    // полная перезапись ключа + журнал + снос джоба.
+    private async Task SuperviseAsync(
+        IDockerEngine engine, string cluster, string shard, string containerName, string shardPrefix,
+        string state, ShardBackups shardBackups, long nowUnix, CancellationToken ct)
+    {
+        var id = containerName[shardPrefix.Length..];
+        var full = shardBackups.Full.FirstOrDefault(f => f.Id == id);
+
+        // orphan/stale (ключ ушёл — deprovisioning-гонка; внешний FAILED): итог НЕ
+        // пишем, объект сносим. verify null|PENDING|OK — легитимный кандидат джоба.
+        if (full is null
+            || full.State != FullBackupStatus.Completed
+            || full.Verify is { State: BackupVerifyStatus.Failed })
+        {
+            await CleanupJobAsync(engine, containerName, ct);
+            return;
+        }
+
+        if (state is "running" or "restarting")
+            return; // ждём — проверка в работе
+        if (state == "created")
+        {
+            await engine.StartContainerAsync(containerName, ct); // создан, но не стартован
+            return;
+        }
+
+        if (state != "exited")
+            return; // прочие состояния — вне протокола супервиза
+
+        var inspect = await engine.InspectContainerAsync(containerName, ct);
+        if (!inspect.IsSuccess)
+            return; // transient — итог недоступен
+        var exitCode = inspect.Value.ExitCode ?? -1;
+        var logs = await engine.GetContainerLogsAsync(containerName, 200, ct);
+        if (!logs.IsSuccess)
+            return; // transient — итог недоступен
+        var result = VerifyLog.Parse(logs.Value);
+
+        if (exitCode == 0 && result is { Ok: true })
+        {
+            // exit 0 + ok:true → verify OK: проверка прошла (SHA256 + manifest)
+            var updated = full with { Verify = new BackupVerify(BackupVerifyStatus.Ok, nowUnix) };
+            var put = await PutAsync(BackupNames.FullKey(cluster, shard, full.Id),
+                BackupStatusJson.Serialize(updated), ct);
+            if (!put.IsSuccess)
+                return; // transient — статус не сменился, снесём джоб следующим тиком
+            await journal.WritePhaseAsync(cluster, Op, $"verified-ok/{shard}/{id}",
+                claims.InstanceId, null, ct);
+            observe(cluster, shard, "ok");
+            await CleanupJobAsync(engine, containerName, ct);
+            return;
+        }
+
+        if (result is { Ok: false, Phase: "verify" or null, Error: { } err })
+        {
+            // ненулевой pg_verifybackup (phase=verify) → permanent FAILED: данные плохие
+            var failed = full with { Verify = new BackupVerify(BackupVerifyStatus.Failed, nowUnix, err) };
+            var put = await PutAsync(BackupNames.FullKey(cluster, shard, full.Id),
+                BackupStatusJson.Serialize(failed), ct);
+            if (!put.IsSuccess)
+                return;
+            await journal.WritePhaseAsync(cluster, Op, $"verify-failed/{shard}/{id}",
+                claims.InstanceId, err, ct);
+            observe(cluster, shard, "failed");
+            await CleanupJobAsync(engine, containerName, ct);
+            return;
+        }
+
+        // иначе (phase=download / exit без результата) → transient: снос, статус
+        // НЕ меняем (PENDING остаётся — ретрай следующим тиком, spec §3.1)
+        await journal.WritePhaseAsync(cluster, Op, $"download-retry/{shard}/{id}",
+            claims.InstanceId, result is { Error: { } transientError } ? transientError : "download failed", ct);
+        observe(cluster, shard, "transient");
+        await CleanupJobAsync(engine, containerName, ct);
+    }
+
+    // Снос ephemeral verify-джоба: контейнер + volume (имена совпадают; 404 = успех).
+    private async Task CleanupJobAsync(IDockerEngine engine, string containerName, CancellationToken ct)
+    {
+        await engine.RemoveContainerAsync(containerName, force: true, ct);
+        await engine.RemoveVolumeAsync(containerName, ct);
     }
 
     // Хост джоба (spec §3.2): хост ноды-источника полного (node-факт) из

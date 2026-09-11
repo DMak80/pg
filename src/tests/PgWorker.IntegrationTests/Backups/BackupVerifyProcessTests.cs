@@ -415,6 +415,311 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
         after.Should().Be(before, "статус PENDING не трогаем — ретрай следующим тиком");
     }
 
+    // Локальный хелпер: PENDING-кандидат + непрерывная цепочка 1..3 + джоб запущен первым тиком.
+    private async Task<FakeVerifyEngine> StartJobAsync(
+        string cluster, FakeBackupS3 s3, string id = "20260911120000Z")
+    {
+        var engine = new FakeVerifyEngine();
+        var driver = new FakeVerifyDriver(engine);
+        s3.Objects.Add((cluster, "shard1", "000000010000000000000001"));
+        s3.Objects.Add((cluster, "shard1", "000000010000000000000002"));
+        s3.Objects.Add((cluster, "shard1", "000000010000000000000003"));
+        s3.PrefixedObjects.Add((cluster, "shard1", $"full/{id}/pg_wal/000000010000000000000003"));
+        var process = BuildProcess(cluster, driver, s3);
+        var backups = BackupsOf(cluster, Completed(id, "000000010000000000000001",
+            new BackupVerify(BackupVerifyStatus.Pending, null)));
+        (await process.TickAsync(BuildSnap(cluster), backups, TestContext.Current.CancellationToken))
+            .IsSuccess.Should().BeTrue();
+        engine.Created.Should().NotBeEmpty("джоб запущен первым тиком (предусловие)");
+        return engine;
+    }
+
+    // AAA: exited exit=0 + ok:true → verify OK + checked_unix; контейнер и volume снесены (AC1)
+    [Fact]
+    public async Task Супервиз_Exit0_Ok_чисткаДжоба()
+    {
+        // Arrange — джоб exited с ok:true
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("sv1");
+        var s3 = new FakeBackupS3();
+        var engine = await StartJobAsync("sv1", s3);
+        var name = "pgw-backup-verify-sv1-shard1-20260911120000Z";
+        engine.Containers[name] = engine.Containers[name] with { State = "exited", ExitCode = 0, Logs = "{\"ok\":true}" };
+
+        // Act — второй тик (супервиз итога)
+        var process = BuildProcess("sv1", new FakeVerifyDriver(engine), s3);
+        (await process.TickAsync(BuildSnap("sv1"), BackupsOf("sv1",
+            Completed("20260911120000Z", "000000010000000000000001",
+                new BackupVerify(BackupVerifyStatus.Pending, null))), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert
+        var verify = await ReadVerifyAsync("sv1", "20260911120000Z");
+        verify.GetProperty("state").GetString().Should().Be("OK");
+        verify.GetProperty("checked_unix").GetInt64().Should().BeGreaterThan(0);
+        engine.Removed.Should().Contain(name);
+        engine.RemovedVolumes.Should().Contain(name); // volume имя == имени контейнера
+        var journal = await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/sv1", ct);
+        journal.Value!.Value.Should().Contain("verified-ok/shard1/20260911120000Z");
+    }
+
+    // AAA: exited + phase=verify → permanent FAILED с error от pg_verifybackup (AC2)
+    [Fact]
+    public async Task Супервиз_VerifyPhaseFailed_FAILED()
+    {
+        // Arrange — джоб exited с result-JSON phase=verify
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("sv2");
+        var s3 = new FakeBackupS3();
+        var engine = await StartJobAsync("sv2", s3);
+        var name = "pgw-backup-verify-sv2-shard1-20260911120000Z";
+        engine.Containers[name] = engine.Containers[name] with { State = "exited", ExitCode = 1,
+            Logs = "{\"ok\":false,\"phase\":\"verify\",\"error\":\"checksum mismatch failed\"}" };
+
+        // Act
+        var process = BuildProcess("sv2", new FakeVerifyDriver(engine), s3);
+        (await process.TickAsync(BuildSnap("sv2"), BackupsOf("sv2",
+            Completed("20260911120000Z", "000000010000000000000001",
+                new BackupVerify(BackupVerifyStatus.Pending, null))), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert
+        var verify = await ReadVerifyAsync("sv2", "20260911120000Z");
+        verify.GetProperty("state").GetString().Should().Be("FAILED");
+        verify.GetProperty("error").GetString().Should().Contain("checksum mismatch");
+        verify.GetProperty("checked_unix").GetInt64().Should().BeGreaterThan(0);
+    }
+
+    // AAA: exited + phase=download → transient: контейнер снесён, статус ОСТАЛСЯ PENDING (AC2)
+    [Fact]
+    public async Task Супервиз_DownloadPhase_Transient_ОстаетсяPending()
+    {
+        // Arrange — джоб exited с result-JSON phase=download (mc/staging ENOSPC);
+        // ключ кандидата в etcd записан руками (transient итог НЕ пишет — паттерн vc6/vc7)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("sv3");
+        var s3 = new FakeBackupS3();
+        var engine = await StartJobAsync("sv3", s3);
+        var name = "pgw-backup-verify-sv3-shard1-20260911120000Z";
+        engine.Containers[name] = engine.Containers[name] with { State = "exited", ExitCode = 1,
+            Logs = "{\"ok\":false,\"phase\":\"download\",\"error\":\"mc cp failed\"}" };
+        var key = "/pgworker/backups/sv3/shard1/full/20260911120000Z";
+        var before = BackupStatusJson.Serialize(Completed("20260911120000Z", "000000010000000000000001",
+            new BackupVerify(BackupVerifyStatus.Pending, null)));
+        await fixture.Gateway.PutAsync(fixture.Endpoint, key, before, null, ct);
+
+        // Act — супервиз
+        var process = BuildProcess("sv3", new FakeVerifyDriver(engine), s3);
+        (await process.TickAsync(BuildSnap("sv3"), BackupsOf("sv3",
+            Completed("20260911120000Z", "000000010000000000000001",
+                new BackupVerify(BackupVerifyStatus.Pending, null))), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — статус НЕ изменён (остался PENDING), контейнер/volume снесены
+        var after = (await fixture.Gateway.GetAsync(fixture.Endpoint, key, ct)).Value!.Value;
+        after.Should().Be(before, "download-phase transient: статус PENDING не трогаем");
+        engine.Removed.Should().Contain(name);
+
+        // Act 2 — следующий тик: PENDING снова due → джоб перезапущен (ретрай тиками)
+        (await process.TickAsync(BuildSnap("sv3"), BackupsOf("sv3",
+            Completed("20260911120000Z", "000000010000000000000001",
+                new BackupVerify(BackupVerifyStatus.Pending, null))), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert 2
+        engine.Created.Should().HaveCount(2, "transient ретраится следующим тиком (spec §3.1)");
+    }
+
+    // AAA: vanished-джоб (контейнера нет при PENDING) → перезапуск со шага цепочки (AC8)
+    [Fact]
+    public async Task Супервиз_Vanished_Перезапуск()
+    {
+        // Arrange — PENDING-кандидат, движок ПУСТ (контейнер исчез после рестарта docker-хоста)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("sv4");
+        var s3 = new FakeBackupS3();
+        s3.Objects.Add(("sv4", "shard1", "000000010000000000000001"));
+        s3.PrefixedObjects.Add(("sv4", "shard1", "full/20260911120000Z/pg_wal/000000010000000000000001"));
+        var engine = new FakeVerifyEngine();
+        var process = BuildProcess("sv4", new FakeVerifyDriver(engine), s3);
+
+        // Act — тик без контейнера
+        (await process.TickAsync(BuildSnap("sv4"), BackupsOf("sv4",
+            Completed("20260911120000Z", "000000010000000000000001",
+                new BackupVerify(BackupVerifyStatus.Pending, null))), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — идемпотентный запуск заново (цепочка → create+start), не FAILED
+        engine.Created.Should().ContainSingle(c => c.Name == "pgw-backup-verify-sv4-shard1-20260911120000Z");
+    }
+
+    // AAA: два due-кандидата — по одному за тик; PENDING раньше периодики (AC8)
+    [Fact]
+    public async Task ДваDue_ПоОдномуЗаТик_PendingРаньше()
+    {
+        // Arrange — full A (старее): verify=OK, CheckedUnix=now-7200 (периодика due при
+        // interval 3600); full B (свежее): verify=PENDING (on_create)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("sv5");
+        var s3 = new FakeBackupS3();
+        s3.Objects.Add(("sv5", "shard1", "000000010000000000000001"));
+        s3.PrefixedObjects.Add(("sv5", "shard1", "full/20260911090000Z/pg_wal/000000010000000000000001"));
+        s3.PrefixedObjects.Add(("sv5", "shard1", "full/20260911120000Z/pg_wal/000000010000000000000001"));
+        var engine = new FakeVerifyEngine();
+        var process = BuildProcess("sv5", new FakeVerifyDriver(engine), s3);
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var backups = new ClusterBackups("sv5",
+            new BackupPolicy(7, 4, 6, 86400, true, VerifyIntervalSec: 3600),
+            new Dictionary<string, ShardBackups>
+            {
+                ["shard1"] = new(
+                [
+                    Completed("20260911090000Z", "000000010000000000000001",
+                        new BackupVerify(BackupVerifyStatus.Ok, now - 7200)),
+                    Completed("20260911120000Z", "000000010000000000000001",
+                        new BackupVerify(BackupVerifyStatus.Pending, null)),
+                ], null),
+            });
+
+        // Act — тик 1: только B (PENDING-очередь раньше периодики)
+        (await process.TickAsync(BuildSnap("sv5"), [backups], ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — один джоб, и это B
+        engine.Created.Should().ContainSingle()
+            .Which.Name.Should().Be("pgw-backup-verify-sv5-shard1-20260911120000Z");
+    }
+
+    // AAA: периодика (AC5): OK-полный перепроверяется по interval_sec — цикл
+    // ДОКАНЦА: exited ok → checked_unix РАСТЁТ; interval_sec<=0 — только
+    // on_create; verify=null («никогда не проверялся») — периодика due;
+    // FAILED не перепроверяется (терминален)
+    [Fact]
+    public async Task Периодика_ПоInterval_Отключение_и_ТерминальностьFAILED()
+    {
+        // Arrange — OK-полный CheckedUnix=now-7200; policy interval_sec=3600 → due
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("sv6");
+        var s3 = new FakeBackupS3();
+        s3.Objects.Add(("sv6", "shard1", "000000010000000000000001"));
+        s3.PrefixedObjects.Add(("sv6", "shard1", "full/20260911120000Z/pg_wal/000000010000000000000001"));
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var okBackup = Completed("20260911120000Z", "000000010000000000000001",
+            new BackupVerify(BackupVerifyStatus.Ok, now - 7200));
+        ClusterBackups WithInterval(long? interval, FullBackupState? full = null) => new("sv6",
+            new BackupPolicy(7, 4, 6, 86400, true, interval),
+            new Dictionary<string, ShardBackups> { ["shard1"] = new([full ?? okBackup], null) });
+
+        // Act 1 — interval=3600: джоб запущен (перепроверка due)
+        var engine = new FakeVerifyEngine();
+        var process = BuildProcess("sv6", new FakeVerifyDriver(engine), s3);
+        (await process.TickAsync(BuildSnap("sv6"), [WithInterval(3600)], ct)).IsSuccess.Should().BeTrue();
+        engine.Created.Should().ContainSingle("OK-полный старше interval — перепроверка (AC5)");
+
+        // Act 1b — джоб завершился ok:true → супервиз пишет итог
+        var name = "pgw-backup-verify-sv6-shard1-20260911120000Z";
+        engine.Containers[name] = engine.Containers[name] with { State = "exited", ExitCode = 0, Logs = "{\"ok\":true}" };
+        (await process.TickAsync(BuildSnap("sv6"), [WithInterval(3600)], ct)).IsSuccess.Should().BeTrue();
+
+        // Assert 1b — verify OK и checked_unix РАСТЁТ (было now-7200, стало ~now)
+        var verify = await ReadVerifyAsync("sv6", "20260911120000Z");
+        verify.GetProperty("state").GetString().Should().Be("OK");
+        verify.GetProperty("checked_unix").GetInt64().Should().BeGreaterThan(now - 7200,
+            "периодическая перепроверка обновляет checked_unix (AC5)");
+
+        // Act 2 / Assert 2 — interval=0: не due (только on_create)
+        var engineOff = new FakeVerifyEngine();
+        var processOff = BuildProcess("sv6", new FakeVerifyDriver(engineOff), s3);
+        (await processOff.TickAsync(BuildSnap("sv6"), [WithInterval(0)], ct)).IsSuccess.Should().BeTrue();
+        engineOff.Created.Should().BeEmpty("interval_sec<=0 — периодика выключена (AC5)");
+
+        // Act 2b / Assert 2b — verify=null («никогда не проверялся», spec §3.1
+        // due-periodic): ловится ТОЛЬКО периодикой (не on_create — verify нет)
+        var engineNull = new FakeVerifyEngine();
+        var processNull = BuildProcess("sv6", new FakeVerifyDriver(engineNull), s3);
+        var neverVerified = Completed("20260911120000Z", "000000010000000000000001", verify: null);
+        (await processNull.TickAsync(BuildSnap("sv6"), [WithInterval(3600, neverVerified)], ct))
+            .IsSuccess.Should().BeTrue();
+        engineNull.Created.Should().ContainSingle("непроверенный полный (verify=null) due по периодике (§3.1)");
+
+        // Act 3 / Assert 3 — FAILED не перепроверяется ни при каком interval
+        var failed = new ClusterBackups("sv6",
+            new BackupPolicy(7, 4, 6, 86400, true, 1),
+            new Dictionary<string, ShardBackups>
+            {
+                ["shard1"] = new([Completed("20260911120000Z", "000000010000000000000001",
+                    new BackupVerify(BackupVerifyStatus.Failed, now, "bad"))], null),
+            });
+        var engineFailed = new FakeVerifyEngine();
+        var processFailed = BuildProcess("sv6", new FakeVerifyDriver(engineFailed), s3);
+        (await processFailed.TickAsync(BuildSnap("sv6"), [failed], ct)).IsSuccess.Should().BeTrue();
+        engineFailed.Created.Should().BeEmpty("FAILED терминален (spec §3.1)");
+    }
+
+    // AAA: транспорт-отказ docker (list) — статус не меняем (transient, spec §3.2)
+    [Fact]
+    public async Task Супервиз_TransportОтказ_СтатусНеТрогаем()
+    {
+        // Arrange — джоб exited с ok:true, но list падает; ключ кандидата в etcd
+        // записан руками (никто другой его не пишет до итога — паттерн vc6/vc7)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("sv7");
+        var s3 = new FakeBackupS3();
+        var engine = await StartJobAsync("sv7", s3);
+        var name = "pgw-backup-verify-sv7-shard1-20260911120000Z";
+        engine.Containers[name] = engine.Containers[name] with { State = "exited", ExitCode = 0, Logs = "{\"ok\":true}" };
+        engine.ListFails = true;
+        var key = "/pgworker/backups/sv7/shard1/full/20260911120000Z";
+        await fixture.Gateway.PutAsync(fixture.Endpoint, key, BackupStatusJson.Serialize(
+            Completed("20260911120000Z", "000000010000000000000001",
+                new BackupVerify(BackupVerifyStatus.Pending, null))), null, ct);
+        var before = (await fixture.Gateway.GetAsync(fixture.Endpoint, key, ct)).Value!.Value;
+
+        // Act
+        var process = BuildProcess("sv7", new FakeVerifyDriver(engine), s3);
+        (await process.TickAsync(BuildSnap("sv7"), BackupsOf("sv7",
+            Completed("20260911120000Z", "000000010000000000000001",
+                new BackupVerify(BackupVerifyStatus.Pending, null))), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — ключ не изменён, контейнер не тронут (следующий тик повторит супервиз)
+        var after = (await fixture.Gateway.GetAsync(
+            fixture.Endpoint, "/pgworker/backups/sv7/shard1/full/20260911120000Z", ct)).Value!.Value;
+        after.Should().Be(before);
+        engine.Removed.Should().NotContain(name);
+    }
+
+    // AAA: инвариант «максимум один verify-джоб на шард» (AC8): running-джоб
+    // кандидата A жив + кандидат B due (PENDING) → новый джоб НЕ стартуется,
+    // статус B не тронут (spec §3.3 п.1)
+    [Fact]
+    public async Task ЖивойДжобШарда_БлокируетНовый_СтатусBTакойЖе()
+    {
+        // Arrange — в движке уже running-контейнер джоба кандидата A; B — PENDING;
+        // ключи обоих кандидатов записаны в etcd руками (ассерт «не тронут»)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("sv8");
+        var s3 = new FakeBackupS3();
+        s3.Objects.Add(("sv8", "shard1", "000000010000000000000001"));
+        s3.PrefixedObjects.Add(("sv8", "shard1", "full/20260911090000Z/pg_wal/000000010000000000000001"));
+        var engine = new FakeVerifyEngine();
+        var nameA = "pgw-backup-verify-sv8-shard1-20260911090000Z";
+        engine.Containers[nameA] = new(
+            Guid.NewGuid().ToString("N"), "running", -1, ""); // ContainerRec: Id, State, ExitCode, Logs
+        var a = Completed("20260911090000Z", "000000010000000000000001",
+            new BackupVerify(BackupVerifyStatus.Pending, null));
+        var b = Completed("20260911120000Z", "000000010000000000000001",
+            new BackupVerify(BackupVerifyStatus.Pending, null));
+        var keyB = "/pgworker/backups/sv8/shard1/full/20260911120000Z";
+        var beforeB = BackupStatusJson.Serialize(b);
+        await fixture.Gateway.PutAsync(fixture.Endpoint,
+            "/pgworker/backups/sv8/shard1/full/20260911090000Z", BackupStatusJson.Serialize(a), null, ct);
+        await fixture.Gateway.PutAsync(fixture.Endpoint, keyB, beforeB, null, ct);
+        var process = BuildProcess("sv8", new FakeVerifyDriver(engine), s3);
+
+        // Act — тик: супервиз видит живой джоб A (running → ждать), B due
+        (await process.TickAsync(BuildSnap("sv8"), BackupsOf("sv8", a, b), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — новый джоб не создан; ключ B не изменён
+        engine.Created.Should().BeEmpty("живой verify-джоб шарда блокирует запуск нового (инвариант §3.3)");
+        var afterB = (await fixture.Gateway.GetAsync(fixture.Endpoint, keyB, ct)).Value!.Value;
+        afterB.Should().Be(beforeB, "статус due-кандидата не трогаем, пока жив чужой джоб шарда");
+    }
+
     // AAA: нода-источник исчезла из portalloc → джоб стартует на ПЕРВОМ хосте
     // таблицы Docker:Hosts (GetHostsAsync) + journal-факт engine-fallback (spec §3.2)
     [Fact]
