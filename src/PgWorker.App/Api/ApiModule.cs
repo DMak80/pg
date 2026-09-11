@@ -305,6 +305,41 @@ public static class ApiModule
             };
         });
 
+        // POST /api/clusters/{cluster}/backups/policy — per-cluster политика
+        // ретенции/бэкапов (t06, arch/19 §4): валидация + put policy-ключа;
+        // применяется следующим тиком планировщика/ретенции. Мусорный JSON — 400.
+        endpoints.MapPost("/api/clusters/{cluster}/backups/policy", async (
+            string cluster, HttpRequest http, BackupsPolicyHandler handler, CancellationToken ct) =>
+        {
+            string rawBody;
+            using (var reader = new StreamReader(http.Body))
+                rawBody = await reader.ReadToEndAsync(ct);
+            var result = await handler.HandleAsync(cluster, rawBody, ct);
+            if (result.IsSuccess)
+                return Results.Ok(result.Value);
+
+            return result.Error switch
+            {
+                BackupsPolicyValidationException validation => Results.Problem(
+                    statusCode: StatusCodes.Status400BadRequest,
+                    title: "Validation failed",
+                    detail: result.Error.Message,
+                    extensions: new Dictionary<string, object?>
+                    {
+                        ["errors"] = validation.Errors.ToDictionary(e => e.Field, e => new[] { e.Message }),
+                    }),
+                ClusterNotFoundException => Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound, title: "Cluster not found",
+                    detail: result.Error.Message),
+                EtcdWriteUnavailableException => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
+                    detail: result.Error.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
+                    detail: result.Error!.Message),
+            };
+        });
+
         // POST /api/ha/{scope}/nodes/{node}/recreate — маркер пересоздания ноды
         // (TO_RECREATE) с режимом soft|hard (нет тела — soft); rebuild выполнит
         // NodeSupervisor. Битый JSON — 400, а не 500.

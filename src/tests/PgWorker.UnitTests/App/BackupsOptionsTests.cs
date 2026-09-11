@@ -171,4 +171,103 @@ public class BackupsOptionsTests
         runtime.WalLagMaxSegments.Should().Be(1024);
         runtime.WalStaleSec.Should().Be(300);
     }
+
+    // ---- t06: ретенция/квота ----
+
+    [Fact]
+    public void Quota_WarnAboveCrit_Invalid()
+    {
+        // Arrange — Warn >= Crit (90/80) — мусорные пороги.
+        var options = new BackupsOptions
+        {
+            Quota = new BackupsQuotaOptions { Bytes = 1000, WarnPercent = 90, CritPercent = 80 },
+        };
+
+        // Act / Assert — fail-fast старта.
+        options.IsValid().Should().BeFalse();
+    }
+
+    [Fact]
+    public void Quota_CritAbove100_Invalid()
+    {
+        // Arrange — Crit > 100 вне допустимого диапазона.
+        var options = new BackupsOptions
+        {
+            Quota = new BackupsQuotaOptions { Bytes = 1000, WarnPercent = 80, CritPercent = 101 },
+        };
+
+        // Act / Assert
+        options.IsValid().Should().BeFalse();
+    }
+
+    [Fact]
+    public void Retention_IntervalBelow60_Invalid()
+    {
+        // Arrange — период ретенционного прохода короче минуты.
+        var options = new BackupsOptions
+        {
+            Retention = new BackupsRetentionPassOptions { IntervalSec = 59, KeepFailed = 20 },
+        };
+
+        // Act / Assert
+        options.IsValid().Should().BeFalse();
+    }
+
+    [Fact]
+    public void KeepFailedBelow5_Invalid()
+    {
+        // Arrange — слишком мелкая FAILED-глубина (риск бэкофф-сдвига t02).
+        var options = new BackupsOptions
+        {
+            Retention = new BackupsRetentionPassOptions { IntervalSec = 600, KeepFailed = 4 },
+        };
+
+        // Act / Assert
+        options.IsValid().Should().BeFalse();
+    }
+
+    [Fact]
+    public void Дефолты_валиды_и_каноничны()
+    {
+        // Arrange — дефолтная секция (appsettings без ретенции/квоты).
+        var options = new BackupsOptions();
+
+        // Act / Assert — дефолты t06 (arch/19 §9) валидны и соответствуют канону.
+        options.IsValid().Should().BeTrue();
+        options.Retention.IntervalSec.Should().Be(600);
+        options.Retention.KeepFailed.Should().Be(20);
+        options.Quota.Bytes.Should().Be(0);
+        options.Quota.WarnPercent.Should().Be(80);
+        options.Quota.CritPercent.Should().Be(90);
+    }
+
+    [Fact]
+    public void ToRuntime_несёт_ретенцию_и_квоту()
+    {
+        // Arrange — экзотические значения всех новых полей.
+        var options = new BackupsOptions
+        {
+            Policy = new BackupsPolicyOptions
+            {
+                Retention = new BackupsRetentionOptions { Days = 3, Weeks = 2, Months = 1 },
+                FullMaxAgeSec = 7200,
+                VerifyOnCreate = false,
+            },
+            Retention = new BackupsRetentionPassOptions { IntervalSec = 3600, KeepFailed = 7 },
+            Quota = new BackupsQuotaOptions { Bytes = 1_000_000, WarnPercent = 70, CritPercent = 95 },
+        };
+
+        // Act
+        var runtime = options.ToRuntime();
+
+        // Assert — все 8 новых полей runtime проксированы
+        runtime.PolicyRetentionDays.Should().Be(3);
+        runtime.PolicyRetentionWeeks.Should().Be(2);
+        runtime.PolicyRetentionMonths.Should().Be(1);
+        runtime.RetentionIntervalSec.Should().Be(3600);
+        runtime.RetentionKeepFailed.Should().Be(7);
+        runtime.QuotaBytes.Should().Be(1_000_000);
+        runtime.QuotaWarnPercent.Should().Be(70);
+        runtime.QuotaCritPercent.Should().Be(95);
+    }
 }

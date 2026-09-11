@@ -6,7 +6,9 @@ namespace AdminPanel.Etcd.Parsing;
 
 public sealed record BackupsParseResult(
     IReadOnlyList<ClusterBackupsInfo> Clusters,
-    IReadOnlyList<KeyParseError> Errors);
+    IReadOnlyList<KeyParseError> Errors,
+    // t06: глобальный ключ /pgworker/backups/storage (null — ключа нет/битый).
+    BackupStorageInfo? Storage = null);
 
 // Чистая функция: KV префикса /pgworker/backups/ (arch/19 §4, t02+t03):
 // policy full_max_age_sec + per-shard последний COMPLETED finished_unix
@@ -27,10 +29,45 @@ public static class BackupsParser
         var policies = new Dictionary<string, long?>();
         var shards = new Dictionary<string, Dictionary<string, long?>>();
         var wal = new Dictionary<string, Dictionary<string, WalStreamInfo?>>();
+        var deleting = new Dictionary<string, Dictionary<string, List<DeletingFullInfo>>>();
+        BackupStorageInfo? storage = null;
         var errors = new List<KeyParseError>();
         foreach (var kv in kvs)
         {
             var segments = kv.Key.Split('/');
+
+            // Глобальный ключ /pgworker/backups/storage (t06): ДО гварда длины —
+            // у него 4 сегмента, гвард "< 5 → continue" его не пропускает.
+            if (segments.Length == 4 && segments[3] == "storage")
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(kv.Value);
+                    var root = doc.RootElement;
+                    var used = Long(root, "used_bytes");
+                    var updated = Long(root, "updated_unix");
+                    var state = String(root, "state") switch
+                    {
+                        "OK" => BackupStorageState.Ok,
+                        "WARN" => BackupStorageState.Warn,
+                        "CRIT" => BackupStorageState.Crit,
+                        _ => (BackupStorageState?)null,
+                    };
+                    if (used is null || updated is null || state is null)
+                        errors.Add(new(kv.Key, "битый storage-статус (used_bytes/updated_unix/state)"));
+                    else
+                        storage = new BackupStorageInfo(
+                            used.Value, Long(root, "quota_bytes"), Double(root, "used_percent"),
+                            state.Value, updated.Value);
+                }
+                catch (JsonException e)
+                {
+                    errors.Add(new(kv.Key, $"битый JSON storage: {e.Message}"));
+                }
+
+                continue;
+            }
+
             if (segments.Length < 5 || segments[1] != "pgworker" || segments[2] != "backups")
                 continue; // чужой префикс
 
@@ -124,6 +161,28 @@ public static class BackupsParser
                             var current = perShard[segments[4]];
                             perShard[segments[4]] = current is null || value > current ? value : current;
                         }
+
+                        // t06: DELETING-полные — вход правила backup-deleting-stuck.
+                        // started_unix обязателен по НОВОМУ правилу ретенции
+                        // (возраст считается по finished_unix, иначе по нему);
+                        // нет/битый → KeyParseError + пропуск записи.
+                        if (state.GetString() == "DELETING")
+                        {
+                            var started = Long(root, "started_unix");
+                            if (started is null)
+                            {
+                                errors.Add(new(kv.Key, "битый DELETING-полный (started_unix обязателен)"));
+                            }
+                            else
+                            {
+                                if (!deleting.TryGetValue(cluster, out var perShardDeleting))
+                                    deleting[cluster] = perShardDeleting = [];
+                                if (!perShardDeleting.TryGetValue(segments[4], out var list))
+                                    perShardDeleting[segments[4]] = list = [];
+                                list.Add(new DeletingFullInfo(
+                                    segments[6], started.Value, Long(root, "finished_unix")));
+                            }
+                        }
                     }
                 }
                 catch (JsonException e)
@@ -150,9 +209,13 @@ public static class BackupsParser
                 (wal.TryGetValue(c, out var perShardWal)
                     ? perShardWal
                     : new Dictionary<string, WalStreamInfo?>())
-                .ToDictionary(p => p.Key, p => p.Value)))
+                .ToDictionary(p => p.Key, p => p.Value),
+                (deleting.TryGetValue(c, out var perShardDeleting)
+                    ? perShardDeleting
+                    : new Dictionary<string, List<DeletingFullInfo>>())
+                .ToDictionary(p => p.Key, p => (IReadOnlyList<DeletingFullInfo>)p.Value)))
             .ToList();
-        return new(clusters, errors);
+        return new(clusters, errors, storage);
     }
 
     private static WalStreamInfoState? StateOf(string? raw) => raw switch
@@ -172,6 +235,13 @@ public static class BackupsParser
         => root.TryGetProperty(name, out var v)
            && v.ValueKind == JsonValueKind.Number
            && v.TryGetInt64(out var parsed)
+            ? parsed
+            : null;
+
+    private static double? Double(JsonElement root, string name)
+        => root.TryGetProperty(name, out var v)
+           && v.ValueKind == JsonValueKind.Number
+           && v.TryGetDouble(out var parsed)
             ? parsed
             : null;
 

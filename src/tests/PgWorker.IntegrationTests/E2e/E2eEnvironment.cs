@@ -4,6 +4,7 @@ using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
 using FluentAssertions;
+using PgWorker.Docker.Drivers;
 using PgWorker.Etcd.Client;
 using Xunit;
 
@@ -19,8 +20,9 @@ namespace PgWorker.IntegrationTests.E2e;
 /// падали от чужих джобов в общем etcd). Смерть etcd-контейнера снимает и
 /// проблему чистки ключей: контейнер удалён — ключи удалены.
 /// DisposeAsync при ЛЮБОМ исходе (await using в теле Fact): kill воркеров →
-/// stop/rm контейнеров окружения → rm томов → rm сети → ассерт чистоты (ни
-/// одного pgw-* артефакта окружения не осталось).
+/// stop/rm контейнеров окружения → rm томов → rm сети → ассерт чистоты (не
+/// осталось ни одного артефакта СВОЕГО окружения — опознание по идентификатору
+/// прогона). Чужие pgw-* объекты параллельных прогонов не трогаются.
 /// Статические ассеты (PKI-пакет, образы pgworker-node/pgworker-backup,
 /// Release-бинарь PgWorker.App) собираются один раз на процесс — это не
 /// мутабельный рантайм-стейт; всё, что сценарий меняет в рантайме, живёт и
@@ -56,8 +58,25 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private readonly INetwork _net;
     private readonly IContainer? _minio;
 
+    // Идентификатор прогона: полный guid — в именах сети/etcd/MinIO; тег (8 hex)
+    // — в имени кластера сценария. Имена ВСЕХ движковых контейнеров/томов
+    // содержат имя кластера (pgw-<C>-*, pgw-backup-*-<C>-*, pgw-backup-wal-<C>-*),
+    // поэтому всё окружение опознаётся по своему идентификатору: чистка и ассерт
+    // чистоты — СТРОГО по нему, чужие pgw-* параллельных прогонов не трогаем.
+    private readonly string _runId;
+
+    /// <summary>Тег прогона для имени кластера сценария (8 hex гуида): regex
+    /// имени кластера [a-z][a-z0-9_]{0,62} допускает суффикс из hex-цифр.</summary>
+    public string ClusterTag => _runId[..8];
+
+    // Свой ли объект по имени (контейнер/том/сеть).
+    private bool OwnName(string name)
+        => name.Contains(_runId, StringComparison.Ordinal)
+           || name.Contains(ClusterTag, StringComparison.Ordinal);
+
     private E2eEnvironment(
         string slug,
+        string runId,
         string netName,
         string etcdEndpoint,
         IContainer etcd,
@@ -65,6 +84,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         IContainer? minio)
     {
         Slug = slug;
+        _runId = runId;
         NetName = netName;
         EtcdEndpoint = etcdEndpoint;
         _etcd = etcd;
@@ -115,69 +135,133 @@ public sealed class E2eEnvironment : IAsyncDisposable
     {
         await EnsureStaticAsync(ct);
 
-        // Сеть окружения: уникальное имя на прогон (случайный суффикс) —
-        // создайте/удалите сами, ryuk не гарант; отсутствие после teardown — ассерт.
-        var netName = $"pgw-e2e-net-{Slugify(slug)}-{Guid.NewGuid():N}"[..20];
+        // Транзиентная защита от ЧУЖОГО глобального prune на общем демоне (старые
+        // фикстуры параллельных задач): только что созданная сеть без контейнеров
+        // может быть снесена до старта etcd — пересоздаём окружение целиком.
+        for (var attempt = 1; ; attempt++)
+            try
+            {
+                return await StartOnceAsync(slug, withMinio, ct);
+            }
+            catch (Exception e) when (attempt < 3 && IsForeignPruneRace(e))
+            {
+                Console.Error.WriteLine(
+                    $"e2e[{slug}]: окружение сорвано чужим prune — пересоздаём (попытка {attempt + 1}): {e.Message.Split('\n')[0]}");
+                await Task.Delay(2000, ct);
+            }
+    }
+
+    private static bool IsForeignPruneRace(Exception e)
+        => e.Message.Contains("network", StringComparison.OrdinalIgnoreCase)
+           && e.Message.Contains("not found", StringComparison.OrdinalIgnoreCase);
+
+    private static async Task<E2eEnvironment> StartOnceAsync(
+        string slug, bool withMinio, CancellationToken ct)
+    {
+        // Сеть окружения: имя = короткий префикс + полный guid прогона (уникален),
+        // создаём/удаляем сами, ryuk не гарант; отсутствие после teardown — ассерт.
+        var runId = Guid.NewGuid().ToString("N");
+        var netName = $"pgw-en-{runId}";
         var net = new NetworkBuilder().WithName(netName).Build();
-        await net.CreateAsync(ct);
-
-        // etcd (внешний слой стенда). Хост-порт — зонд свободного порта (правило
-        // динамических портов); advertise host.docker.internal:<порт>: Patroni-ноды
-        // узнают адреса членов из advertise-client-urls — обязаны быть достижимы
-        // ИЗ контейнеров. Готовность — wait-стратегия etcd /health (блокирующий
-        // StartAsync, без sleep-поллинга), бюджет ≤ 100 с.
-        var etcdPort = E2eFixture.FreePort();
-        var etcd = new ContainerBuilder(EtcdImage)
-            .WithName($"pgw-e2e-etcd-{Slugify(slug)}-{Guid.NewGuid():N}"[..30])
-            .WithCommand(
-                "etcd", "--name=e2e", "--data-dir=/etcd-data",
-                "--listen-client-urls=http://0.0.0.0:2379",
-                $"--advertise-client-urls=http://host.docker.internal:{etcdPort}")
-            .WithPortBinding(etcdPort, 2379) // (hostPort, containerPort)
-            .WithNetwork(net)
-            .WithWaitStrategy(Wait.ForUnixContainer()
-                .UntilHttpRequestIsSucceeded(
-                    request => request.ForPort(2379).ForPath("/health"),
-                    wait => wait.WithTimeout(TimeSpan.FromSeconds(100))))
-            .Build();
-        await etcd.StartAsync(ct);
-        var etcdEndpoint = $"http://localhost:{etcd.GetMappedPublicPort(2379)}";
-
+        IContainer? etcd = null;
         IContainer? minio = null;
-        if (withMinio)
+        try
         {
-            // MinIO в сети окружения (mc ходит по алиасу; джобы — через published
-            // порт, сеть им не нужна). Готовность — wait-стратегия health/live.
-            minio = new ContainerBuilder(MinioImage)
-                .WithName($"pgw-e2e-minio-{Slugify(slug)}-{Guid.NewGuid():N}"[..30])
-                .WithCommand("server", "/data")
-                .WithEnvironment("MINIO_ROOT_USER", MinioUser)
-                .WithEnvironment("MINIO_ROOT_PASSWORD", MinioPassword)
+            await net.CreateAsync(ct);
+
+            // etcd (внешний слой стенда). Хост-порт — зонд свободного порта (правило
+            // динамических портов); advertise host.docker.internal:<порт>: Patroni-ноды
+            // узнают адреса членов из advertise-client-urls — обязаны быть достижимы
+            // ИЗ контейнеров. Готовность — wait-стратегия etcd /health (блокирующий
+            // StartAsync, без sleep-поллинга), бюджет ≤ 100 с.
+            var etcdPort = E2eFixture.FreePort();
+            etcd = new ContainerBuilder(EtcdImage)
+                .WithName($"pgw-ee-{runId}")
+                .WithCommand(
+                    "etcd", "--name=e2e", "--data-dir=/etcd-data",
+                    "--listen-client-urls=http://0.0.0.0:2379",
+                    $"--advertise-client-urls=http://host.docker.internal:{etcdPort}")
+                .WithPortBinding(etcdPort, 2379) // (hostPort, containerPort)
                 .WithNetwork(net)
-                .WithNetworkAliases("e2e-minio")
-                .WithPortBinding(9000, assignRandomHostPort: true) // AGENTS.md: порты динамические
                 .WithWaitStrategy(Wait.ForUnixContainer()
                     .UntilHttpRequestIsSucceeded(
-                        request => request.ForPort(9000).ForPath("/minio/health/live"),
+                        request => request.ForPort(2379).ForPath("/health"),
                         wait => wait.WithTimeout(TimeSpan.FromSeconds(100))))
                 .Build();
-            await minio.StartAsync(ct);
+            await etcd.StartAsync(ct);
+            var etcdEndpoint = $"http://localhost:{etcd.GetMappedPublicPort(2379)}";
 
-            // Bucket pgworker-backups (mc из той же сети — по алиасу): блокирующий
-            // docker run, без поллинга.
-            await E2eFixture.RunProcessAsync("docker",
-            [
-                "run", "--rm", "--network", netName, "--entrypoint", "/bin/sh", McImage,
-                "-c", $"mc alias set t http://e2e-minio:9000 {MinioUser} {MinioPassword} >/dev/null"
-                      + $" && mc mb --ignore-existing t/{BucketName}",
-            ], ct);
+            if (withMinio)
+            {
+                // MinIO в сети окружения (mc ходит по алиасу; джобы — через published
+                // порт, сеть им не нужна). Готовность — wait-стратегия health/live.
+                minio = new ContainerBuilder(MinioImage)
+                    .WithName($"pgw-em-{runId}")
+                    .WithCommand("server", "/data")
+                    .WithEnvironment("MINIO_ROOT_USER", MinioUser)
+                    .WithEnvironment("MINIO_ROOT_PASSWORD", MinioPassword)
+                    .WithNetwork(net)
+                    .WithNetworkAliases("e2e-minio")
+                    .WithPortBinding(9000, assignRandomHostPort: true) // AGENTS.md: порты динамические
+                    .WithWaitStrategy(Wait.ForUnixContainer()
+                        .UntilHttpRequestIsSucceeded(
+                            request => request.ForPort(9000).ForPath("/minio/health/live"),
+                            wait => wait.WithTimeout(TimeSpan.FromSeconds(100))))
+                    .Build();
+                await minio.StartAsync(ct);
 
-            // Образ джоба: сборка из корня репо (контекст — корень: COPY docker/backup/…),
-            // один раз на процесс (статический ассет, docker-cache инкрементален).
-            await EnsureJobImageAsync(ct);
+                // Bucket pgworker-backups (mc из той же сети — по алиасу): блокирующий
+                // docker run, без поллинга.
+                await E2eFixture.RunProcessAsync("docker",
+                [
+                    "run", "--rm", "--network", netName, "--entrypoint", "/bin/sh", McImage,
+                    "-c", $"mc alias set t http://e2e-minio:9000 {MinioUser} {MinioPassword} >/dev/null"
+                          + $" && mc mb --ignore-existing t/{BucketName}",
+                ], ct);
+
+                // Образ джоба: сборка из корня репо (контекст — корень: COPY docker/backup/…),
+                // один раз на процесс (статический ассет, docker-cache инкрементален).
+                await EnsureJobImageAsync(ct);
+            }
+
+            return new E2eEnvironment(slug, runId, netName, etcdEndpoint, etcd, net, minio);
         }
+        catch
+        {
+            // частично поднятое окружение не оставляем (лучшими усилиями):
+            // контейнер, чей StartAsync упал, чистит сам testcontainers; живые
+            // etcd/MinIO — здесь; сеть (без endpoints) — здесь.
+            if (minio is not null)
+                try
+                {
+                    await minio.DisposeAsync();
+                }
+                catch
+                {
+                    // guid-имя, чужие прогоны не заденем; добьёт ассерт/ryuk
+                }
 
-        return new E2eEnvironment(slug, netName, etcdEndpoint, etcd, net, minio);
+            if (etcd is not null)
+                try
+                {
+                    await etcd.DisposeAsync();
+                }
+                catch
+                {
+                    // аналогично
+                }
+
+            try
+            {
+                await net.DeleteAsync();
+            }
+            catch
+            {
+                // аналогично
+            }
+
+            throw;
+        }
     }
 
     /// <summary>Запуск инстанса PgWorker.App с e2e-конфигурацией (быстрые тики),
@@ -356,8 +440,11 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     /// <summary>
     /// Полный teardown при ЛЮБОМ исходе: kill воркеров → stop/rm контейнеров
-    /// → rm томов → rm сети окружения → prune осиротевших сетей (pgw-net движка)
-    /// → АССЕРТ ЧИСТОТЫ: не осталось ни одного контейнера/тома/сети окружения.
+    /// → rm томов → rm сети окружения → rm сети движка pgw-net (попытка, она
+    /// общесистемная) → АССЕРТ ЧИСТОТЫ: не осталось ни одного КОНТЕЙНЕРА/ТОМА/
+    /// СЕТИ СВОЕГО окружения (опознание по идентификатору прогона: guid в именах
+    /// инфраструктуры, тег кластера — в движковых именах). Чужие pgw-* объекты
+    /// параллельных прогонов не трогаем и в ассерт не включаем.
     /// </summary>
     public async ValueTask DisposeAsync()
     {
@@ -396,49 +483,43 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
         _gatewayHttp.Dispose();
 
-        // 3) Контейнеры, созданные воркерами окружения (pg-ноды pgw-<C>-*,
-        // backup-джобы pgw-backup-*): прогон последовательный, в этот момент всё
-        // pgw-* — артефакты ТОЛЬКО этого окружения (контейнеры dev-стенда
-        // as-*/deploy-* фильтр не задевает).
-        try
-        {
-            var ids = (await E2eFixture.RunProcessAsync("docker", ["ps", "-aq", "--filter", "name=pgw-"]))
-                .Split(['\n', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-            if (ids.Length > 0)
-                await E2eFixture.RunProcessAsync("docker", ["rm", "-f", .. ids]);
-        }
-        catch (Exception e)
-        {
-            problems.Add($"rm контейнеров pgw-*: {e.Message}");
-        }
+        // 3) Контейнеры окружения: ТОЛЬКО содержащие свой идентификатор прогона
+        // (guid инфраструктуры или тег кластера в движковых именах). Широкий
+        // фильтр pgw-* запрещён: на общем демоне живут чужие прогоны.
+        // «Removal ... is already in progress» — контейнер уже удаляется
+        // (например, testcontainers в шаге 2): исход тот же, не ошибка.
+        foreach (var id in await OwnContainersAsync())
+            try
+            {
+                await E2eFixture.RunProcessAsync("docker", ["rm", "-f", id]);
+            }
+            catch (ApplicationException e) when (e.Message.Contains("already in progress", StringComparison.OrdinalIgnoreCase))
+            {
+                Console.Error.WriteLine($"e2e[{Slug}]: контейнер {id} уже удаляется демоном — пропускаем");
+            }
+            catch (Exception e)
+            {
+                problems.Add($"rm контейнера {id}: {e.Message}");
+            }
 
-        // 4) Тома окружения: pg-данные pgw-<C>-* и staging pgw-backup-*.
-        // docker rm -f возвращает управление до фактического освобождения
-        // volume-ссылки демоном (гонка Docker Desktop) — ретраим с бюджетом ~20 с.
-        // Фильтр docker — SUBSTRING: чужой deploy_pgw-snapshots стенда не удаляем
-        // (якорим префикс pgw- в C#).
-        try
+        // 4) Тома окружения: тоже только свои. docker rm -f возвращает управление
+        // до фактического освобождения volume-ссылки демоном (гонка Docker
+        // Desktop) — ретраим, бюджет ≤ 30 с.
+        foreach (var volume in await OwnVolumesAsync())
         {
-            foreach (var id in (await E2eFixture.RunProcessAsync(
-                         "docker", ["volume", "ls", "-q", "--filter", "name=pgw-"]))
-                     .Split(['\n', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                     .Where(v => v.StartsWith("pgw-", StringComparison.Ordinal)))
-                for (var attempt = 0; ; attempt++)
+            for (var attempt = 0; ; attempt++)
+            {
+                try
                 {
-                    try
-                    {
-                        await E2eFixture.RunProcessAsync("docker", ["volume", "rm", "-f", id]);
-                        break;
-                    }
-                    catch (ApplicationException) when (attempt < 10)
-                    {
-                        await Task.Delay(2000, TestContext.Current.CancellationToken);
-                    }
+                    await E2eFixture.RunProcessAsync("docker", ["volume", "rm", "-f", volume]);
+                    break;
                 }
-        }
-        catch (Exception e)
-        {
-            problems.Add($"rm томов pgw-*: {e.Message}");
+                catch (ApplicationException) when (attempt < 14)
+                {
+                    // «in use / in progress»: незакрытая ссылка — повтор
+                    await Task.Delay(2000, TestContext.Current.CancellationToken);
+                }
+            }
         }
 
         // 5) Сеть окружения (контейнеры уже отвязаны).
@@ -451,30 +532,27 @@ public sealed class E2eEnvironment : IAsyncDisposable
             problems.Add($"сеть {NetName}: {e.Message}");
         }
 
-        // 6) Осиротевшие сети движка (pgw-net, ryuk их не подбирает): prune
-        // трогает только свободные сети — живые сети dev-стенда не пострадают.
+        // 6) Сеть нод движка pgw-net (ryuk её не подбирает): попытка удаления —
+        // сеть общесистемная, имя фиксированное, «своё/чужое» не различить. Если
+        // в ней живы endpoints чужого прогона — docker сам откажет, это не ошибка.
         try
         {
-            await E2eFixture.RunProcessAsync("docker", ["network", "prune", "-f"]);
+            await E2eFixture.RunProcessAsync("docker", ["network", "rm", PlainClusterDriver.NodesNetwork]);
         }
         catch (Exception e)
         {
-            problems.Add($"network prune: {e.Message}");
+            Console.Error.WriteLine($"e2e[{Slug}]: сеть {PlainClusterDriver.NodesNetwork} не удалена (живы endpoints или уже нет): {e.Message}");
         }
 
-        // 7) АССЕРТ ЧИСТОТЫ: окружение не оставляет следов.
-        var leftContainers = await E2eFixture.RunProcessAsync("docker", ["ps", "-aq", "--filter", "name=pgw-"]);
-        if (leftContainers.Length > 0)
-            problems.Add($"остались контейнеры pgw-*: {leftContainers.Replace('\n', ' ')}");
-        var leftVolumes = (await E2eFixture.RunProcessAsync(
-                "docker", ["volume", "ls", "-q", "--filter", "name=pgw-"]))
-            .Split(['\n', ' '], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Where(v => v.StartsWith("pgw-", StringComparison.Ordinal))
-            .ToList();
+        // 7) АССЕРТ ЧИСТОТЫ: от своего окружения не осталось следов.
+        var leftContainers = await OwnContainersAsync();
+        if (leftContainers.Count > 0)
+            problems.Add($"остались контейнеры окружения: {string.Join(' ', leftContainers)}");
+        var leftVolumes = await OwnVolumesAsync();
         if (leftVolumes.Count > 0)
-            problems.Add($"остались тома pgw-*: {string.Join(' ', leftVolumes)}");
+            problems.Add($"остались тома окружения: {string.Join(' ', leftVolumes)}");
         var leftNet = await E2eFixture.RunProcessAsync(
-            "docker", ["network", "ls", "-q", "--filter", $"name={NetName}"]);
+            "docker", ["network", "ls", "--format", "{{.Name}}", "--filter", $"name={NetName}"]);
         if (leftNet.Length > 0)
             problems.Add($"осталась сеть окружения {NetName}");
 
@@ -482,6 +560,21 @@ public sealed class E2eEnvironment : IAsyncDisposable
             throw new ApplicationException(
                 $"{Slug}: teardown окружения неполный:\n- " + string.Join("\n- ", problems));
     }
+
+    // Контейнеры СВОЕГО окружения (id по имени с идентификатором прогона).
+    private async Task<List<string>> OwnContainersAsync()
+        => (await E2eFixture.RunProcessAsync("docker", ["ps", "-a", "--format", "{{.ID}} {{.Names}}"]))
+            .Split(['\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(row => OwnName(row.Split(' ', 2, StringSplitOptions.TrimEntries)[1]))
+            .Select(row => row.Split(' ', 2)[0])
+            .ToList();
+
+    // Тома СВОЕГО окружения.
+    private async Task<List<string>> OwnVolumesAsync()
+        => (await E2eFixture.RunProcessAsync("docker", ["volume", "ls", "--format", "{{.Name}}"]))
+            .Split(['\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(OwnName)
+            .ToList();
 
     // ===== Статические ассеты: PKI, бинарь, образы =====
 
@@ -571,11 +664,5 @@ public sealed class E2eEnvironment : IAsyncDisposable
             while (tail.Count > 200)
                 tail.Dequeue();
         }
-    }
-
-    private static string Slugify(string slug)
-    {
-        var chars = slug.ToLowerInvariant().Select(c => char.IsAsciiLetterOrDigit(c) ? c : '-').ToArray();
-        return new string(chars);
     }
 }

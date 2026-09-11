@@ -125,4 +125,154 @@ public class BackupsParserTests
         result.Clusters.Should().BeEmpty();
         result.Errors.Should().BeEmpty();
     }
+
+    // ---- t06: ключ storage + DELETING-полные ----
+
+    // AAA: валидный storage-ключ → Storage со всеми полями, state=WARN
+    [Fact]
+    public void Parse_StorageKey_StorageInfo()
+    {
+        // Arrange — глобальный ключ 4 сегментов с квотой
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/storage",
+                """{"used_bytes":300,"quota_bytes":1000,"used_percent":30,"state":"WARN","updated_unix":1760000000}""", 1),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs);
+
+        // Assert
+        result.Errors.Should().BeEmpty();
+        result.Storage.Should().NotBeNull();
+        result.Storage!.UsedBytes.Should().Be(300);
+        result.Storage.QuotaBytes.Should().Be(1000);
+        result.Storage.UsedPercent.Should().Be(30);
+        result.Storage.State.Should().Be(BackupStorageState.Warn);
+        result.Storage.UpdatedUnix.Should().Be(1760000000);
+    }
+
+    // AAA: storage без квоты — QuotaBytes/UsedPercent null
+    [Fact]
+    public void Parse_StorageWithoutQuota_Nulls()
+    {
+        // Arrange
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/storage",
+                """{"used_bytes":123,"state":"OK","updated_unix":1760000000}""", 1),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs);
+
+        // Assert
+        result.Storage.Should().NotBeNull();
+        result.Storage!.QuotaBytes.Should().BeNull();
+        result.Storage.UsedPercent.Should().BeNull();
+        result.Storage.State.Should().Be(BackupStorageState.Ok);
+    }
+
+    // AAA: битый JSON storage → KeyParseError, Storage null
+    [Fact]
+    public void Parse_StorageMalformedJson_KeyParseError()
+    {
+        // Arrange
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/storage", "not-json", 1),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs);
+
+        // Assert
+        result.Storage.Should().BeNull();
+        result.Errors.Should().ContainSingle().Which.Key.Should().Be("/pgworker/backups/storage");
+    }
+
+    // AAA: неизвестное state → KeyParseError
+    [Fact]
+    public void Parse_StorageBrokenState_KeyParseError()
+    {
+        // Arrange
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/storage",
+                """{"used_bytes":1,"state":"BROKEN","updated_unix":1760000000}""", 1),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs);
+
+        // Assert
+        result.Storage.Should().BeNull();
+        result.Errors.Should().ContainSingle();
+    }
+
+    // AAA: DELETING-полный попадает в DeletingFulls[shard]; finished опционален
+    [Fact]
+    public void Parse_DeletingFull_GoesToDeletingFulls()
+    {
+        // Arrange — DELETING с finished_unix и без
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/demo/s1/full/20260901030000Z",
+                """{"state":"DELETING","node":"n","role":"replica","started_unix":1757290800,"finished_unix":1757294400}""", 1),
+            new("/pgworker/backups/demo/s1/full/20260902030000Z",
+                """{"state":"DELETING","node":"n","role":"replica","started_unix":1757377200}""", 2),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs);
+
+        // Assert
+        result.Errors.Should().BeEmpty();
+        var cluster = result.Clusters.Single();
+        cluster.DeletingFulls.Should().ContainKey("s1");
+        cluster.DeletingFulls!["s1"].Should().HaveCount(2);
+        cluster.DeletingFulls["s1"][0].Id.Should().Be("20260901030000Z");
+        cluster.DeletingFulls["s1"][0].FinishedUnix.Should().Be(1757294400);
+        cluster.DeletingFulls["s1"][1].FinishedUnix.Should().BeNull();
+    }
+
+    // AAA: DELETING без started_unix — KeyParseError + пропуск записи (новое
+    // правило ретенции: возраст не посчитать)
+    [Fact]
+    public void Parse_DeletingWithoutStarted_KeyParseError()
+    {
+        // Arrange
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/demo/s1/full/20260901030000Z",
+                """{"state":"DELETING","node":"n","role":"replica"}""", 1),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs);
+
+        // Assert
+        result.Errors.Should().ContainSingle().Which.Reason.Should().Contain("started_unix");
+        result.Clusters.Single().DeletingFulls.Should().BeNullOrEmpty();
+    }
+
+    // AAA: storage-ключ не создаёт псевдо-кластер (ветка ДО гварда длины —
+    // 4-сегментный ключ обрабатывается и пропускается, не попадая в Clusters)
+    [Fact]
+    public void Parse_StorageKey_NoPseudoCluster()
+    {
+        // Arrange — только storage-ключ
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/storage",
+                """{"used_bytes":1,"state":"OK","updated_unix":1760000000}""", 1),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs);
+
+        // Assert
+        result.Clusters.Should().BeEmpty();
+        result.Storage.Should().NotBeNull();
+    }
 }

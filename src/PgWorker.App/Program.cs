@@ -128,6 +128,9 @@ builder.Services.AddSingleton(sp => new RotateClusterSecretsHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton(sp => new BackupsPolicyHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
 builder.Services.AddSingleton(sp => new RecreateNodeHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
@@ -432,6 +435,17 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<ILoggerFactory>().CreateLogger("WalStreamProcess"));
 });
 builder.Services.AddSingleton<IWalSqlExecutor, NpgsqlWalSqlExecutor>();
+// Ретенция (t06, arch/19 §4): GFS/WAL-чистка/гигиена + монитор хранилища;
+// Enabled=false — no-op (гвард в процессе дублирует guard цикла).
+builder.Services.AddSingleton(sp => new PgWorker.Backups.RetentionProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IBackupS3>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Backups.ToRuntime(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.RetentionProcess>()));
 // S3-клиент с горячей конфигурацией (ревью Ф7 №3): включение/смена секции
 // Backups без рестарта воркера пересоздаёт клиента при первом же вызове
 // (асимметрия «выключение работает, включение нет» устранена).
@@ -545,6 +559,14 @@ file sealed class ReloadableBackupS3(IOptionsMonitor<PgWorkerOptions> options) :
         string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
         => await (await CurrentAsync()).ListWalAsync(cluster, shard, maxKeysPerTest, ct);
 
+    public async Task<PgWorker.Core.Result<IReadOnlyList<PgWorker.Backups.S3ObjectInfo>>> ListPrefixAsync(
+        string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
+        => await (await CurrentAsync()).ListPrefixAsync(prefix, maxKeysPerTest, ct);
+
+    public async Task<PgWorker.Core.Result> DeleteKeysAsync(
+        IReadOnlyList<string> keys, CancellationToken ct = default)
+        => await (await CurrentAsync()).DeleteKeysAsync(keys, ct);
+
     public async ValueTask DisposeAsync()
     {
         BackupS3? client;
@@ -571,6 +593,16 @@ file sealed class ReloadableBackupS3(IOptionsMonitor<PgWorkerOptions> options) :
         public Task<PgWorker.Core.Result<IReadOnlyList<PgWorker.Backups.WalObject>>> ListWalAsync(
             string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
             => Task.FromResult(PgWorker.Core.Result<IReadOnlyList<PgWorker.Backups.WalObject>>.Failed(
+                new ApplicationException("Backups:Enabled=false")));
+
+        public Task<PgWorker.Core.Result<IReadOnlyList<PgWorker.Backups.S3ObjectInfo>>> ListPrefixAsync(
+            string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
+            => Task.FromResult(PgWorker.Core.Result<IReadOnlyList<PgWorker.Backups.S3ObjectInfo>>.Failed(
+                new ApplicationException("Backups:Enabled=false")));
+
+        public Task<PgWorker.Core.Result> DeleteKeysAsync(
+            IReadOnlyList<string> keys, CancellationToken ct = default)
+            => Task.FromResult(PgWorker.Core.Result.Failed(
                 new ApplicationException("Backups:Enabled=false")));
     }
 }

@@ -231,7 +231,8 @@ public sealed class SnapshotRefresher(
             previous?.Probes ?? [],   // t06: пробы — часть снапшота, отказ etcd их не теряет (spec §4.3)
             [],
             previous?.ParseErrors ?? [],
-            previous?.UnknownKeyCount ?? 0);
+            previous?.UnknownKeyCount ?? 0,
+            previous?.BackupStorage); // ключ storage переживает отказный тик — как Backups (t06)
 
         // Алерты вычисляются и на отказном тике: etcd-unreachable/snapshot-stale
         // живут именно здесь (spec §3.5); data-алерты пересчитываются по прежним данным.

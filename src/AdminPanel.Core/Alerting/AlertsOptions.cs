@@ -38,4 +38,14 @@ public class AlertsOptions
     // backup-full-stale (t02): панельный дефолт окна суточного алерта при
     // отсутствии policy-ключа кластера (arch/19 §4). <= 0 — дефолт каталога 86400.
     public long BackupFullMaxAgeSec { get; set; } = 86400;
+
+    // backup-deleting-stuck (t06): возраст DELETING-полного без завершения
+    // (ретенция не может довести удаление — S3-отказ и т.п.).
+    public BackupsAlertsOptions Backups { get; set; } = new();
+
+    /// <summary>Пороги алертов бэкапов (t06, arch/19 §4).</summary>
+    public sealed class BackupsAlertsOptions
+    {
+        public int DeletingStaleSec { get; set; } = 21600; // 6 ч
+    }
 }

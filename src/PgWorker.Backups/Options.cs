@@ -28,7 +28,16 @@ public sealed record BackupsRuntimeOptions(
     // t03 (arch/19 §3/§9): расписание контроля цепочки и пороги деградаций.
     int WalVerifyIntervalSec = 30,
     int WalLagMaxSegments = 1024,
-    int WalStaleSec = 300)
+    int WalStaleSec = 300,
+    // t06 (arch/19 §9): ретенция и квота; дефолт-политика GFS для кластеров без policy-ключа.
+    int PolicyRetentionDays = 7,
+    int PolicyRetentionWeeks = 4,
+    int PolicyRetentionMonths = 6,
+    int RetentionIntervalSec = 600,
+    int RetentionKeepFailed = 20,
+    long QuotaBytes = 0,
+    int QuotaWarnPercent = 80,
+    int QuotaCritPercent = 90)
 {
     /// <summary>Endpoint S3 для env контейнера агента/джоба (t03, §7: адресация
     /// env, не строка команды; advertised-fallback).</summary>

@@ -258,6 +258,50 @@ public class ReconcileLoopTests
         processes.Calls.Should().NotContain(c => c.StartsWith("backups/"));
     }
 
+    // AAA: ретенция (t06) — при Backups.Enabled=true вызывается после backup-wal,
+    // до repair (spec §3.3)
+    [Fact]
+    public async Task Tick_ActiveClusterWithBackupsEnabled_RetentionCalledAfterWalStreamBeforeRepair()
+    {
+        // Arrange — кластер + Backups.Enabled=true; FakeProcesses пишет порядок Calls.
+        SeedCluster("shop", null);
+        var processes = new FakeProcesses();
+        var loop = CreateLoop(processes, options: new PgWorkerOptions
+        {
+            Etcd = new EtcdOptions { Endpoints = ["http://etcd:2379"] },
+            Loops = new LoopsOptions { ScanIntervalSec = 5, ErrorDelayMs = 10 },
+            Parallelism = new ParallelismOptions { MaxClusters = 4 },
+            Backups = new BackupsOptions { Enabled = true },
+        });
+
+        // Act
+        await loop.TickSafelyAsync(TestContext.Current.CancellationToken);
+
+        // Assert — порядок: backup-wal → backups-retention → repair
+        var calls = processes.Calls;
+        calls.Should().Contain("backup-wal/shop");
+        calls.Should().Contain("backups-retention/shop");
+        calls.Should().Contain("repair/shop");
+        calls.IndexOf("backup-wal/shop").Should().BeLessThan(calls.IndexOf("backups-retention/shop"));
+        calls.IndexOf("backups-retention/shop").Should().BeLessThan(calls.IndexOf("repair/shop"));
+    }
+
+    // AAA: Backups.Enabled=false (дефолт) — ретенция не зовётся вовсе (AC8)
+    [Fact]
+    public async Task Tick_RetentionDisabled_NotCalled()
+    {
+        // Arrange — дефолтный конфиг
+        SeedCluster("shop", null);
+        var processes = new FakeProcesses();
+        var loop = CreateLoop(processes);
+
+        // Act
+        await loop.TickSafelyAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        processes.Calls.Should().NotContain(c => c.StartsWith("backups-retention/"));
+    }
+
     [Fact]
     public async Task Tick_ClusterClaimedByOtherInstance_SkipsProcessing()
     {
@@ -521,6 +565,13 @@ public class ReconcileLoopTests
             ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
         {
             using var _ = Track(snap.Config.Cluster, WalStreamed, callName: "backup-wal");
+            return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
+        }
+
+        public Task<Result<ProcessOutcome>> RetentionAsync(
+            ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
+        {
+            using var _ = Track(snap.Config.Cluster, [], callName: "backups-retention");
             return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
         }
 
