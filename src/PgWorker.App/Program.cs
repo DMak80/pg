@@ -433,6 +433,13 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreProcess(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Process.RestoreProcess>()));
 
+// Заявка restore через API (t05 §3.2): гварды + txn put-if-not-exists
+// PLANNED-ключа; исполнение — RestoreProcess (держатель клэйма).
+builder.Services.AddSingleton(sp => new PgWorker.App.Api.Operations.RestoreShardHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>()));
+
 // WAL-архивация (t03, arch/19 §3): слот/агент/контроль цепочки; runtime()==null
 // (Backups:Enabled=false) — процесс выполняет стоп-семантику и не активен.
 builder.Services.AddSingleton(sp =>

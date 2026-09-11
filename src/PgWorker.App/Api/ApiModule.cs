@@ -382,6 +382,43 @@ public static class ApiModule
             };
         });
 
+        // POST /api/clusters/{cluster}/shards/{shard}/restore — заявка восстановления
+        // шарда из бэкапа (t05, arch/19 §3.5/§4): 202 Accepted (не 201 — операция
+        // разрушающая, долгая; воркер пишет PLANNED-ключ сам, исполняет держатель
+        // клэйма). Гварды: confirm/активная заявка/RFC3339/Active/шард заявлен.
+        endpoints.MapPost("/api/clusters/{cluster}/shards/{shard}/restore", async (
+            string cluster, string shard, RestoreShardRequest? body, HttpRequest http,
+            RestoreShardHandler handler, CancellationToken ct) =>
+        {
+            if (body is null)
+                return Results.Problem(statusCode: StatusCodes.Status400BadRequest,
+                    title: "Invalid body", detail: "тело запроса обязательно: {\"confirm\":\"<shard>\", …}");
+            var requestedBy = !string.IsNullOrWhiteSpace(body.RequestedBy)
+                ? body.RequestedBy
+                : http.Headers.TryGetValue("X-Requested-By", out var by) && !string.IsNullOrWhiteSpace(by)
+                    ? by.ToString()
+                    : "api";
+            var result = await handler.HandleAsync(cluster, shard, body, requestedBy, ct);
+            if (result.IsSuccess)
+                return Results.Accepted((string?)null, result.Value); // 202
+
+            return result.Error switch
+            {
+                RestoreValidationException validation => Results.Problem(statusCode: 400, title: "Validation failed",
+                    detail: result.Error.Message, extensions: new Dictionary<string, object?>
+                    { ["errors"] = validation.Errors.ToDictionary(e => e.Field, e => new[] { e.Message }) }),
+                ConfirmMismatchException or InvalidTargetTimeException => Results.Problem(statusCode: 400,
+                    title: "Restore rejected", detail: result.Error.Message),
+                ClusterNotFoundException or ShardNotFoundException => Results.Problem(statusCode: 404,
+                    title: "Not found", detail: result.Error.Message),
+                ClusterNotActiveException or RestoreAlreadyActiveException => Results.Problem(statusCode: 409,
+                    title: "Restore rejected", detail: result.Error.Message),
+                EtcdWriteUnavailableException => Results.Problem(statusCode: 503,
+                    title: "Etcd write unavailable", detail: result.Error.Message),
+                _ => Results.Problem(statusCode: 503, title: "Etcd write failed", detail: result.Error!.Message),
+            };
+        });
+
         // POST /api/seed/demo — демо-сид pg-контура (arch/14 §1.1.1, стенд):
         // перенос seed.sh 1:1; идемпотентен по /clusters/demo/config.
         // Флаг EnableSeedEndpoint проверяет хендлер (выключен → 404).

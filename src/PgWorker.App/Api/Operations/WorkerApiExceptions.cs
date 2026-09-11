@@ -1,3 +1,5 @@
+using PgWorker.Core.Writing;
+
 namespace PgWorker.App.Api.Operations;
 
 // Исключения API воркера (task etcd-via-worker-api): перенос панельных
@@ -184,3 +186,25 @@ public sealed class AllOthersRecreatingException(string scope, string node)
 // Ресурс/эндпоинт воркера не найден или выключен — 404 (напр., seed-эндпоинт
 // за флагом EnableSeedEndpoint, arch/14 §1.1.1).
 public sealed class WorkerApiNotFoundException(string message) : Exception(message);
+
+// ── Restore (t05, arch/19 §3.5) ──
+
+// confirm != имя шарда — 400 (необратимая операция: защита от ошибки оператора).
+public sealed class ConfirmMismatchException(string expected, string got)
+    : Exception($"confirm обязан совпадать с именем шарда: ожидался '{expected}', получен '{got}'");
+
+// target_time не RFC3339 — 400.
+public sealed class InvalidTargetTimeException(string raw)
+    : Exception($"target_time не RFC3339: '{raw}'");
+
+// Активный (PLANNED/RUNNING/REJOINING) restore шарда уже есть — 409 (§3.1:
+// максимум один активный restore на шард).
+public sealed class RestoreAlreadyActiveException(string cluster, string shard)
+    : Exception($"restore шарда {cluster}/{shard} уже активен — дождитесь завершения (ключ restore/<id>)");
+
+// Поля тела — 400 с errors по полям (паттерн CreateClusterValidationException).
+public sealed class RestoreValidationException(IReadOnlyList<ValidationError> errors)
+    : Exception("тело заявки restore не прошло валидацию")
+{
+    public IReadOnlyList<ValidationError> Errors { get; } = errors;
+}
