@@ -39,14 +39,19 @@ public class ClusterSecretRotatorTests
         etcd.Seed("/clusters/shop/bucket_admin_user", "bucket_admin");
         etcd.Seed("/clusters/shop/bucket_admin_password", "OldAdminPass000000000000000A");
         etcd.Seed("/clusters/shop/backup_password", "OldBackupPass0000000000000000000A");
-        foreach (var (shard, host, pg) in new[] { ("shard1", "h1", 15000), ("shard2", "h2", 15001) })
+        foreach (var (shard, host, pg, doorman) in new[]
+                 {
+                     ("shard1", "h1", 15000, 16500), ("shard2", "h2", 15001, 16501),
+                 })
         {
             etcd.Seed($"/clusters/shop/shards/{shard}/replicas", "2");
             etcd.Seed($"/clusters/shop/shards/{shard}/nodes/{shard}a/state", "RUNNING");
             etcd.Seed($"/clusters/shop/shards/{shard}/nodes/{shard}b/state", "RUNNING");
             etcd.Seed($"/clusters/shop/shards/{shard}/dsn",
                 $"host={host} port={pg} dbname=shop user=bucket_admin password=x");
-            etcd.Seed($"/clusters/shop/shards/{shard}/master", $"{host}:16500");
+            // Формат писателя ключа (Patroni-callback): <host>:<doormanPort> ФАКТИЧЕСКОЙ
+            // ноды-мастера (shard{N}a) — резолв по уникальному doorman-порту.
+            etcd.Seed($"/clusters/shop/shards/{shard}/master", $"{host}:{doorman}");
             etcd.Seed($"/clusters/shop/shards/{shard}/nodes/{shard}a/app_params", "sslmode=require");
             etcd.Seed($"/clusters/shop/shards/{shard}/nodes/{shard}b/app_params", "sslmode=require");
         }
