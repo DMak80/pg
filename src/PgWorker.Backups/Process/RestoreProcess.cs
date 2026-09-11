@@ -231,11 +231,196 @@ public sealed class RestoreProcess(
         return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
     }
 
-    // ── RUNNING (Task 9) / REJOINING (Task 10) — стабы до соседних задач ──
+    // ── RUNNING: демонтаж шарда + ephemeral restore-джоб (§3.4) ──
 
-    private Task<Result<ProcessOutcome>> RunAsync(
+    private async Task<Result<ProcessOutcome>> RunAsync(
         ClusterSnapshot snap, ShardSpec shard, RestoreOperationState op, CancellationToken ct)
-        => Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.InProgress));
+    {
+        var cluster = snap.Config.Cluster;
+        var demolished = await DemolishAsync(cluster, shard, op, ct);
+        if (!demolished.IsSuccess)
+            return Result<ProcessOutcome>.Failed(demolished.Error!);
+
+        // Первая нода (джоб пишет восстановленный PGDATA в её data-volume);
+        // адрес из portalloc, движок — по хосту (null → transient).
+        var addresses = await ReadPortAllocAsync(cluster, ct);
+        if (!addresses.IsSuccess)
+            return await TransientAsync(cluster, $"portalloc-unavailable/{shard.Name}/{op.Id}",
+                addresses.Error!.Message, ct);
+        var first = shard.Nodes.Count > 0 ? shard.Nodes.Min(n => n.Name) : null;
+        if (first is null
+            || !addresses.Value.TryGetValue($"{shard.Name}/{first}", out var addr))
+        {
+            // portalloc рассинхронизирован с декларацией — заявка не исполнима
+            await FailPermanentAsync(cluster, shard.Name, op,
+                $"нода {first ?? "?"} шарда {shard.Name} не найдена в portalloc", ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
+        var engine = driver.EngineFor(addr.Host);
+        if (engine is null)
+            return await TransientAsync(cluster, $"engine-unavailable/{shard.Name}/{op.Id}",
+                $"docker-хост {addr.Host} не известен", ct);
+
+        // Цель: "time:<RFC3339>" → строка конфига recovery_target_time; latest → "".
+        var targetTime = op.Target.StartsWith("time:", StringComparison.Ordinal)
+            ? op.Target["time:".Length..] : "";
+
+        var name = BackupNames.RestoreContainerName(cluster, shard.Name, op.Id);
+        var list = await engine.ListContainersAsync(name, all: true, ct);
+        if (!list.IsSuccess)
+            return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
+                list.Error!.Message, ct);
+        var found = list.Value.FirstOrDefault(c => c.Names.Contains(name));
+
+        // Идемпотентный запуск: нет контейнера → create; старт — в обоих
+        // случаях (created прошлым тиком / только что созданный); отказ
+        // create/start → transient, следующий тик повторит.
+        if (found is not { State: "running" or "exited" })
+        {
+            if (found is null)
+            {
+                var spec = Restore.RestoreJobSpec.Build(options, cluster, shard.Name, op.Id,
+                    $"pgw-{cluster}-{shard.Name}-{first}-data", targetTime,
+                    SrcCluster(op), SrcShard(op));
+                var created = await engine.CreateContainerAsync(spec, name, ct);
+                if (!created.IsSuccess)
+                    return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
+                        created.Error!.Message, ct);
+            }
+
+            var started = await engine.StartContainerAsync(name, ct);
+            if (!started.IsSuccess)
+                return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
+                    started.Error!.Message, ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
+        }
+
+        // created — аномалия (start потерялся между тиками): довыгоняем (304 = ок).
+        if (found is { State: "created" })
+        {
+            await engine.StartContainerAsync(name, ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
+        }
+
+        // Логи — транспорт guarded: недоступны → transient (статус не меняем).
+        var logs = await engine.GetContainerLogsAsync(name, tail: 200, ct);
+        if (!logs.IsSuccess)
+            return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
+                logs.Error!.Message, ct);
+        var markers = Restore.RestoreJobLog.Parse(logs.Value);
+
+        if (found is { State: "running" or "restarting" })
+        {
+            // фаза джоба → Phase статуса (пишем только при изменении —
+            // панель видит downloading/recovering, arch/19 §4)
+            if (markers.Phase is { Length: > 0 } phase && phase != op.Phase)
+            {
+                var putPhase = await PutStatusAsync(cluster, shard.Name,
+                    op with { Phase = phase }, ct);
+                if (!putPhase.IsSuccess)
+                    return Result<ProcessOutcome>.Failed(putPhase.Error!);
+            }
+
+            // бюджет наката (§3.5): started_unix + RecoveryTimeoutSec + 60 (запас
+            // на download) — докилл и permanent-FAILED (Phase не меняем).
+            var startedUnix = op.StartedUnix ?? NowUnix();
+            var budgetSec = options.RestoreRecoveryTimeoutSec + 60;
+            if (NowUnix() - startedUnix > budgetSec)
+            {
+                await engine.RemoveContainerAsync(name, force: true, ct);
+                await FailPermanentAsync(cluster, shard.Name, op,
+                    $"recovery-бюджет исчерпан ({budgetSec} c)", ct);
+                return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+            }
+
+            return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress); // жив — ждём
+        }
+
+        // exited: exit-код — истина итога (инспект недоступен → transient —
+        // без гварда успешный restore ушёл бы в ЛОЖНЫЙ FAILED, прецедент t02).
+        var inspect = await engine.InspectContainerAsync(found.Id, ct);
+        if (!inspect.IsSuccess)
+            return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
+                inspect.Error!.Message, ct);
+        var exitCode = inspect.Value.ExitCode ?? -1;
+        if (exitCode == 0 && markers.Result is { Ok: true } ok)
+        {
+            // SUCCESS: REJOINING (Task 10 поднимет ноды); RestoredToLsn — из result
+            var rejoining = op with { State = RestoreStatus.Rejoining, RestoredToLsn = ok.RestoredToLsn };
+            var put = await PutStatusAsync(cluster, shard.Name, rejoining, ct);
+            if (!put.IsSuccess)
+                return Result<ProcessOutcome>.Failed(put.Error!);
+            await journal.WritePhaseAsync(cluster, Op, $"restored/{shard.Name}/{op.Id}",
+                claims.InstanceId, null, ct);
+            await engine.RemoveContainerAsync(name, force: true, ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
+        }
+
+        // FAIL: причина из result-JSON или exit-код; чистим контейнер; volume
+        // первой ноды удаляем (мог остаться битым — restoration = конец, шард
+        // остаётся разобранным, разбор по runbook).
+        var error = markers.Result is { Ok: false, Error: { } reason } ? reason : $"exit {exitCode}";
+        await engine.RemoveContainerAsync(name, force: true, ct);
+        await engine.RemoveVolumeAsync($"pgw-{cluster}-{shard.Name}-{first}-data", ct);
+        await FailPermanentAsync(cluster, shard.Name, op, error, ct);
+        return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+    }
+
+    // Демонтаж шарда под restore (§3.4, идемпотентно — каждый шаг 404 = ок):
+    // агенты бэкапов сносятся первыми (WAL-агент на снесённом мастере не живёт),
+    // ноды удаляются с data-volume («погиб диск»), HA-scope Patroni чистится
+    // (Д3-образец ProvisioningProcess.ResetScopeAsync; дубль осознан — прецедент
+    // кодовой базы); request_* НЕ трогаем (заявка ресурсов — декларация).
+    private async Task<Result> DemolishAsync(
+        string cluster, ShardSpec shard, RestoreOperationState op, CancellationToken ct)
+    {
+        var agents = await driver.RemoveBackupAgentsAsync(cluster, shard.Name, ct);
+        if (!agents.IsSuccess)
+            return agents;
+
+        foreach (var node in shard.Nodes)
+        {
+            // REBUILDING — видимый статус демонтажа (панель/гварды), Removing не трогаем.
+            if (node.State != NodeState.Removing)
+            {
+                var put = await etcd.PutAsync(endpoints[0],
+                    $"/clusters/{cluster}/shards/{shard.Name}/nodes/{node.Name}/state",
+                    "REBUILDING", null, ct);
+                if (!put.IsSuccess)
+                    return put;
+            }
+            var removed = await driver.RemoveNodeAsync(cluster, shard.Name, node.Name, ct);
+            if (!removed.IsSuccess)
+                return removed;
+        }
+
+        var scope = $"{cluster}-{shard.Name}";
+        foreach (var key in new[] { "initialize", "leader", "sync" })
+        {
+            var del = await etcd.DeleteAsync(endpoints[0], $"/service/{scope}/{key}", prefix: false, ct);
+            if (!del.IsSuccess)
+                return del;
+        }
+        foreach (var prefix in new[] { $"/service/{scope}/optime/", $"/service/{scope}/members/" })
+        {
+            var del = await etcd.DeleteAsync(endpoints[0], prefix, prefix: true, ct);
+            if (!del.IsSuccess)
+                return del;
+        }
+
+        return await journal.WritePhaseAsync(cluster, Op, $"demolished/{shard.Name}/{op.Id}",
+            claims.InstanceId, null, ct);
+    }
+
+    // Source «<srcC>/<srcX>»: компоненты для env спеки (валидация PLANNED уже
+    // проверила формат).
+    private static string SrcCluster(RestoreOperationState op)
+        => op.Source.Split('/', 2)[0];
+
+    private static string SrcShard(RestoreOperationState op)
+        => op.Source.Split('/', 2)[1];
+
+    // ── REJOINING (Task 10) — стаб до соседней задачи ──
 
     private Task<Result<ProcessOutcome>> RejoinAsync(
         ClusterSnapshot snap, ShardSpec shard, RestoreOperationState op, CancellationToken ct)
