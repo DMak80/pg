@@ -10,8 +10,18 @@ public static class BackupNames
     public static string FullKey(string cluster, string shard, string id)
         => $"/pgworker/backups/{cluster}/{shard}/full/{id}";
 
+    /// <summary>Ключ заявки восстановления шарда (t05, arch/19 §4):
+    /// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/restore/&lt;id&gt;.</summary>
+    public static string RestoreKey(string cluster, string shard, string id)
+        => $"/pgworker/backups/{cluster}/{shard}/restore/{id}";
+
     public static string ContainerName(string cluster, string shard, string id)
         => $"pgw-backup-full-{cluster}-{shard}-{id}";
+
+    /// <summary>Имя restore-джоба (t05): pgw-backup-restore-&lt;C&gt;-&lt;X&gt;-&lt;id&gt; —
+    /// попадает в D1-префикс чистки pgw-backup-*.</summary>
+    public static string RestoreContainerName(string cluster, string shard, string id)
+        => $"pgw-backup-restore-{cluster}-{shard}-{id}";
 
     public static string VolumeName(string cluster, string shard, string id)
         => $"pgw-backup-{cluster}-{shard}-{id}";
