@@ -29,19 +29,21 @@ public class E2eScaleScenarios
     {
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
-        const string cluster = "sshop";
 
         await using var fx = await E2eEnvironment.StartAsync("scale-add", ct: ct);
         Fx = fx;
+        // Уникальное имя кластера на прогон: движковые контейнеры/тома (pgw-<C>-*)
+        // опознаются teardown'ом окружения по своему тегу (OwnName) и снимаются им.
+        var cluster = $"sshop{Fx.ClusterTag}";
 
         // ---------- §8-1: add-shard в живой кластер — шард поднят и ПУСТ ----------
-        // Arrange: сид sshop (NOT_INITIALIZED) → контроллер → provisioning до Active.
+        // Arrange: сид (NOT_INITIALIZED) → контроллер → provisioning до Active.
         await SeedClusterAsync(cluster);
         await using var p1 = await Fx.StartHostAsync("s1", ct: ct);
 
         var provisioned = await E2eFixture.WaitForAsync(
             () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
-        provisioned.Should().BeTrue("provisioning sshop должен дойти до Active (dsn/RUNNING/без status)");
+        provisioned.Should().BeTrue("provisioning кластера должен дойти до Active (dsn/RUNNING/без status)");
 
         // DDL-сид: bucket_0 у shard1 и bucket_1/bucket_3 у shard2 (INSERT-пробы
         // живости записи до/после scale-операций; гранты app выдаёт сид).
@@ -176,20 +178,21 @@ public class E2eScaleScenarios
     {
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
-        const string cluster = "stshop";
 
         await using var fx = await E2eEnvironment.StartAsync("scale-takeover", ct: ct);
         Fx = fx;
+        // Уникальное имя кластера на прогон (см. scale-add).
+        var cluster = $"stshop{Fx.ClusterTag}";
 
         // ---------- §8-4: takeover посреди A3 ----------
-        // Arrange: живой кластер stshop (provisioned первым инстансом), затем
+        // Arrange: живой кластер (provisioned первым инстансом), затем
         // add-декларация shard3; ждём ПЕРВЫЙ контейнер нового шарда (A3 начался).
         await SeedClusterAsync(cluster);
         await using var s2 = await Fx.StartHostAsync("s2", ct: ct);
 
         var provisioned = await E2eFixture.WaitForAsync(
             () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
-        provisioned.Should().BeTrue("provisioning stshop должен дойти до Active до старта add");
+        provisioned.Should().BeTrue("provisioning кластера должен дойти до Active до старта add");
 
         await SeedAddDeclarationAsync(cluster, "shard3", ct);
         var a3Started = await E2eFixture.WaitForAsync(
