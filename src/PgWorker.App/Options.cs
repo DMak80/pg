@@ -277,9 +277,15 @@ public sealed class BackupsOptions
     /// <summary>WAL-поток (t03, arch/19 §3/§9): расписание контроля, пороги.</summary>
     public BackupsWalOptions Wal { get; set; } = new();
 
+    /// <summary>Ретенционный проход (t06, arch/19 §9): период и FAILED-глубина.</summary>
+    public BackupsRetentionPassOptions Retention { get; set; } = new();
+
+    /// <summary>Квота bucket установки (t06, arch/19 §9).</summary>
+    public BackupsQuotaOptions Quota { get; set; } = new();
+
     /// <summary>Runtime-опции подсистемы бэкапов: склейка Backups-секции
-    /// (t02: джобы/ретраи; t03: advertised-S3/Wal-пороги) — именованными
-    /// аргументами: record расширялся с обеих сторон.</summary>
+    /// (t02: джобы/ретраи; t03: advertised-S3/Wal-пороги; t06: ретенция/квота)
+    /// — именованными аргументами: record расширялся с обеих сторон.</summary>
     public BackupsRuntimeOptions ToRuntime() => new(
         Enabled: Enabled,
         FullMaxAgeSec: Policy.FullMaxAgeSec,
@@ -300,17 +306,50 @@ public sealed class BackupsOptions
         AgentMem: Agent.Mem,
         WalVerifyIntervalSec: Wal.VerifyIntervalSec,
         WalLagMaxSegments: Wal.LagMaxSegments,
-        WalStaleSec: Wal.StaleSec);
+        WalStaleSec: Wal.StaleSec,
+        PolicyRetentionDays: Policy.Retention.Days,
+        PolicyRetentionWeeks: Policy.Retention.Weeks,
+        PolicyRetentionMonths: Policy.Retention.Months,
+        RetentionIntervalSec: Retention.IntervalSec,
+        RetentionKeepFailed: Retention.KeepFailed,
+        QuotaBytes: Quota.Bytes,
+        QuotaWarnPercent: Quota.WarnPercent,
+        QuotaCritPercent: Quota.CritPercent);
 
     /// <summary>Fail-fast старта (образец TLS arch/14 §2.2.1): Enabled=true
-    /// обязан иметь полный S3-комплект; false — подсистема не активна.</summary>
+    /// обязан иметь полный S3-комплект; false — подсистема не активна.
+    /// Диапазоны ретенции/квоты (t06) — всегда: мусорный конфиг виден на старте.</summary>
     public bool IsValid()
-        => !Enabled
-           || (!string.IsNullOrWhiteSpace(S3.Endpoint)
-               && !string.IsNullOrWhiteSpace(S3.Bucket)
-               && !string.IsNullOrWhiteSpace(S3.AccessKey)
-               && !string.IsNullOrWhiteSpace(S3.SecretKey)
-               && !string.IsNullOrWhiteSpace(Job.Image));
+        => (!Enabled
+            || (!string.IsNullOrWhiteSpace(S3.Endpoint)
+                && !string.IsNullOrWhiteSpace(S3.Bucket)
+                && !string.IsNullOrWhiteSpace(S3.AccessKey)
+                && !string.IsNullOrWhiteSpace(S3.SecretKey)
+                && !string.IsNullOrWhiteSpace(Job.Image)))
+           && Quota.WarnPercent < Quota.CritPercent
+           && Quota.CritPercent <= 100
+           && Retention.IntervalSec >= 60
+           && Retention.KeepFailed >= 5;
+}
+
+/// <summary>Параметры ретенционного прохода (t06, arch/19 §9): период и
+/// FAILED-глубина. Имя НЕ BackupsRetentionOptions — то занято GFS-гранулами
+/// политики (BackupsPolicyOptions.Retention).</summary>
+public sealed class BackupsRetentionPassOptions
+{
+    public int IntervalSec { get; set; } = 600;
+
+    public int KeepFailed { get; set; } = 20;
+}
+
+/// <summary>Квота bucket установки (t06, arch/19 §9): Bytes=0 — квота не задана.</summary>
+public sealed class BackupsQuotaOptions
+{
+    public long Bytes { get; set; }
+
+    public int WarnPercent { get; set; } = 80;
+
+    public int CritPercent { get; set; } = 90;
 }
 
 /// <summary>Образ джоба полного бэкапа (arch/19 §2/§9, t02): собирается из
