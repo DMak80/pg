@@ -31,6 +31,7 @@ public static class BackupsParser
         var wal = new Dictionary<string, Dictionary<string, WalStreamInfo?>>();
         var deleting = new Dictionary<string, Dictionary<string, List<DeletingFullInfo>>>();
         BackupStorageInfo? storage = null;
+        var verifyFailures = new Dictionary<string, Dictionary<string, ShardVerifyFailure>>();
         var errors = new List<KeyParseError>();
         foreach (var kv in kvs)
         {
@@ -153,13 +154,47 @@ public static class BackupsParser
                         var perShard = GetOrAdd(shards, cluster);
                         perShard.TryAdd(segments[4], null);
 
+                        // t04: verify-вердикт COMPLETED-полного. FAILED → свежесть
+                        // не даёт и попадает в ShardVerifyFailures (последний по
+                        // checked_unix); битое verify.state → диагностика + запись
+                        // считается непроверенной (валидной); PENDING/OK → валиден.
+                        long? checkedUnix = null;
+                        string? verifyError = null;
+                        var verifyFailed = false;
+                        if (root.TryGetProperty("verify", out var verifyEl)
+                            && verifyEl.ValueKind == JsonValueKind.Object
+                            && verifyEl.TryGetProperty("state", out var verifyStateEl))
+                        {
+                            checkedUnix = Long(verifyEl, "checked_unix");
+                            verifyError = String(verifyEl, "error");
+                            verifyFailed = verifyStateEl.ValueKind == JsonValueKind.String
+                                           && verifyStateEl.GetString() == "FAILED";
+                            if (!verifyFailed && verifyStateEl.ValueKind == JsonValueKind.String
+                                && verifyStateEl.GetString() is not ("OK" or "PENDING"))
+                                errors.Add(new(kv.Key, "неизвестное verify.state — verify игнор"));
+                        }
+
                         if (state.GetString() == "COMPLETED"
                             && root.TryGetProperty("finished_unix", out var finished)
                             && finished.ValueKind == JsonValueKind.Number
                             && finished.TryGetInt64(out var value))
                         {
-                            var current = perShard[segments[4]];
-                            perShard[segments[4]] = current is null || value > current ? value : current;
+                            if (verifyFailed)
+                            {
+                                // проваленный verify НЕ повышает свежесть (AC6-панель)
+                                if (!verifyFailures.TryGetValue(cluster, out var perShardFailures))
+                                    verifyFailures[cluster] = perShardFailures = [];
+                                var candidate = new ShardVerifyFailure(
+                                    segments[4], segments[6], verifyError ?? "verify FAILED", checkedUnix);
+                                if (!perShardFailures.TryGetValue(segments[4], out var existing)
+                                    || (checkedUnix ?? 0) >= (existing.CheckedUnix ?? 0))
+                                    perShardFailures[segments[4]] = candidate;
+                            }
+                            else
+                            {
+                                var current = perShard[segments[4]];
+                                perShard[segments[4]] = current is null || value > current ? value : current;
+                            }
                         }
 
                         // t06: DELETING-полные — вход правила backup-deleting-stuck.
@@ -213,7 +248,11 @@ public static class BackupsParser
                 (deleting.TryGetValue(c, out var perShardDeleting)
                     ? perShardDeleting
                     : new Dictionary<string, List<DeletingFullInfo>>())
-                .ToDictionary(p => p.Key, p => (IReadOnlyList<DeletingFullInfo>)p.Value)))
+                .ToDictionary(p => p.Key, p => (IReadOnlyList<DeletingFullInfo>)p.Value),
+                (verifyFailures.TryGetValue(c, out var perShardFailures)
+                    ? perShardFailures
+                    : new Dictionary<string, ShardVerifyFailure>())
+                .ToDictionary(p => p.Key, p => p.Value)))
             .ToList();
         return new(clusters, errors, storage);
     }

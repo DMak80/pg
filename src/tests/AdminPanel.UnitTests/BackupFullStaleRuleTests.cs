@@ -112,4 +112,22 @@ public class BackupFullStaleRuleTests
         var alert = alerts.Should().ContainSingle().Subject;
         alert.Details!["maxAgeSeconds"].Should().Be("60");
     }
+
+    // AAA: единственный COMPLETED — с FAILED-verify: парсер отдаёт null (валидных
+    // нет) → «никогда не завершался» (свежий-но-битый не гасит stale, t04/AC6)
+    [Fact]
+    public void OnlyFailedVerified_NeverCompleted()
+    {
+        // Arrange — битый полный завершён час назад, но ShardLastCompletedUnix=null
+        var rule = new BackupFullStaleRule(DefaultOptions);
+        var snapshot = Snapshot(ClusterInfo("demo", null, ("s1", null)));
+
+        // Act
+        var alerts = Evaluate(rule, snapshot);
+
+        // Assert
+        var alert = alerts.Should().ContainSingle().Subject;
+        alert.Severity.Should().Be(AlertSeverity.Critical);
+        alert.Message.Should().Contain("никогда не завершался");
+    }
 }
