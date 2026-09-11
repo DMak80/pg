@@ -11,19 +11,26 @@ using PgWorker.Docker.Engine;
 using PgWorker.Etcd.Client;
 using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
-using PgWorker.IntegrationTests.Etcd;
 using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Probes;
 using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// Интеграции BackupVerifyProcess (t04 spec Ф3): реальный etcd (статусы/журнал)
+// Интеграции BackupVerifyProcess (t04 spec Ф3): у КАЖДОГО Fact своё etcd-
+// окружение OwnEtcd (guid-имя pgw-ee-*, динамический порт, own-only teardown
+// с ассертом чистоты — docs/e2e-isolation.md §1/§3; ключи умирают с контейнером)
 // + фейки docker-движка и S3 (паттерны FakeBackupDeps/FakeBackupEngine).
-[Collection(EtcdCollection.Name)]
-public class BackupVerifyProcessTests(EtcdFixture fixture)
+public class BackupVerifyProcessTests
 {
-    private readonly ClaimStore _claims = new([fixture.Endpoint], fixture.Gateway, TimeProvider.System);
+    // Окружение Fact'а (свой etcd); создаётся в начале каждого сценария.
+    private OwnEtcd Fx = null!;
+
+    // ClaimStore ОДИН на окружение: InstanceId фиксируется клэймом SeedAsync —
+    // новый экземпляр на вызов давал бы чужой InstanceId в тике (guard «клэйм не наш»).
+    private ClaimStore? _claimsStore;
+
+    private ClaimStore Claims => _claimsStore ??= new([Fx.Endpoint], Fx.Gateway, TimeProvider.System);
 
     // ── Фейк docker-движка (по образцу BackupProcessTests.FakeBackupEngine;
     //    тест управляет State/ExitCode/Logs — супервиз-ветки задачи 9) ──
@@ -171,22 +178,22 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
     private async Task SeedAsync(string cluster)
     {
         var ct = TestContext.Current.CancellationToken;
-        await fixture.Gateway.DeleteAsync(fixture.Endpoint, $"/pgworker/backups/{cluster}/", prefix: true, ct);
-        await fixture.Gateway.DeleteAsync(fixture.Endpoint, $"/pgworker/claims/{cluster}", prefix: false, ct);
-        await fixture.Gateway.PutAsync(fixture.Endpoint, $"/pgworker/portalloc/{cluster}",
+        await Fx.Gateway.DeleteAsync(Fx.Endpoint, $"/pgworker/backups/{cluster}/", prefix: true, ct);
+        await Fx.Gateway.DeleteAsync(Fx.Endpoint, $"/pgworker/claims/{cluster}", prefix: false, ct);
+        await Fx.Gateway.PutAsync(Fx.Endpoint, $"/pgworker/portalloc/{cluster}",
             Portalloc.Serialize(new Dictionary<string, NodeAddress>
             {
                 ["shard1/shard1a"] = new("h1", new NodePorts(16001, 18001, 17001)),
             }), null, ct);
-        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue("клэйм — предусловие тика");
+        (await Claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue("клэйм — предусловие тика");
     }
 
     private BackupVerifyProcess BuildProcess(
         string cluster, FakeVerifyDriver driver, IBackupS3 s3, BackupsRuntimeOptions? options = null)
         => new(
-            fixture.Gateway, [fixture.Endpoint], driver,
-            new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
-            s3, _claims, new WorkJournal(fixture.Gateway, [fixture.Endpoint]),
+            Fx.Gateway, [Fx.Endpoint], driver,
+            new ShardEndpoints(Fx.Gateway, [Fx.Endpoint], new ShardProbe(new HttpClient())),
+            s3, Claims, new WorkJournal(Fx.Gateway, [Fx.Endpoint]),
             options ?? new BackupsRuntimeOptions(
                 Enabled: true, S3Endpoint: "http://minio", S3Bucket: "bkt",
                 S3AccessKey: "ak", S3SecretKey: "sk", JobImage: "pgworker-backup:test",
@@ -204,8 +211,8 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
 
     private async Task<JsonElement> ReadVerifyAsync(string cluster, string id)
     {
-        var kv = await fixture.Gateway.GetAsync(
-            fixture.Endpoint, $"/pgworker/backups/{cluster}/shard1/full/{id}",
+        var kv = await Fx.Gateway.GetAsync(
+            Fx.Endpoint, $"/pgworker/backups/{cluster}/shard1/full/{id}",
             TestContext.Current.CancellationToken);
         kv.Value.Should().NotBeNull("итог verify пишется в ключ полного");
         return JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!["verify"];
@@ -219,6 +226,8 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
         // Arrange — full COMPLETED verify=PENDING; wal/: сегменты 1..3 + history нет;
         // pg_wal набора: сегмент 3 (end)
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
         await SeedAsync("vc1");
         var engine = new FakeVerifyEngine();
         var driver = new FakeVerifyDriver(engine);
@@ -248,6 +257,8 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
     {
         // Arrange — wal/: 1,3 (нет 2); набор: pg_wal/3 → end=3
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
         await SeedAsync("vc2");
         var engine = new FakeVerifyEngine();
         var driver = new FakeVerifyDriver(engine);
@@ -277,6 +288,8 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
         // Arrange — wal_start_segment = null (ранний упавший UPLOADING не бывает
         // COMPLETED — аномалия; но guard обязателен, spec §3.7)
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
         await SeedAsync("vc3");
         var engine = new FakeVerifyEngine();
         var driver = new FakeVerifyDriver(engine);
@@ -301,6 +314,8 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
     {
         // Arrange — wal/: tli1/seg1, history, tli2/seg2; набор: pg_wal/tli2/seg2
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
         await SeedAsync("vc4");
         var engine = new FakeVerifyEngine();
         var driver = new FakeVerifyDriver(engine);
@@ -328,6 +343,8 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
     {
         // Arrange — как vc4, но history говорит parent=1, lsn=0/5000000 (сегмент 5)
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
         await SeedAsync("vc5");
         var engine = new FakeVerifyEngine();
         var driver = new FakeVerifyDriver(engine);
@@ -359,6 +376,8 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
         // Arrange — PENDING-ключ в etcd (записан руками — ассерт «не изменён»);
         // S3 «лежит» (FakeBackupS3.Fails)
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
         await SeedAsync("vc6");
         var engine = new FakeVerifyEngine();
         var driver = new FakeVerifyDriver(engine);
@@ -367,7 +386,7 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
             new BackupVerify(BackupVerifyStatus.Pending, null));
         var key = $"/pgworker/backups/vc6/shard1/full/20260911120000Z";
         var before = BackupStatusJson.Serialize(candidate);
-        await fixture.Gateway.PutAsync(fixture.Endpoint, key, before, null, ct);
+        await Fx.Gateway.PutAsync(Fx.Endpoint, key, before, null, ct);
         var process = BuildProcess("vc6", driver, s3);
         var backups = BackupsOf("vc6", candidate);
 
@@ -377,7 +396,7 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
         // Assert — transient: тик без ошибки (шард-skip), ничего не создано/не записано
         result.IsSuccess.Should().BeTrue("transient S3 — не ошибка тика (spec §3.1)");
         engine.Created.Should().BeEmpty("джоб без цепочки не стартует");
-        var after = (await fixture.Gateway.GetAsync(fixture.Endpoint, key, ct)).Value!.Value;
+        var after = (await Fx.Gateway.GetAsync(Fx.Endpoint, key, ct)).Value!.Value;
         after.Should().Be(before, "статус PENDING не трогаем — ретрай следующим тиком");
     }
 
@@ -389,6 +408,8 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
         // Arrange — сид как в vc4 (TLI-переход в диапазоне), но GET падает;
         // PENDING-ключ в etcd для ассерта «не изменён»
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
         await SeedAsync("vc7");
         var engine = new FakeVerifyEngine();
         var driver = new FakeVerifyDriver(engine);
@@ -402,7 +423,7 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
             new BackupVerify(BackupVerifyStatus.Pending, null));
         var key = "/pgworker/backups/vc7/shard1/full/20260911120000Z";
         var before = BackupStatusJson.Serialize(candidate);
-        await fixture.Gateway.PutAsync(fixture.Endpoint, key, before, null, ct);
+        await Fx.Gateway.PutAsync(Fx.Endpoint, key, before, null, ct);
         var process = BuildProcess("vc7", driver, s3);
 
         // Act
@@ -411,7 +432,7 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
         // Assert — list прошёл (переход в диапазоне найден), GET упал → transient
         result.IsSuccess.Should().BeTrue("transient GET — не ошибка тика (spec §3.1)");
         engine.Created.Should().BeEmpty("без содержимого history строгий разбор невозможен — джоб не стартует");
-        var after = (await fixture.Gateway.GetAsync(fixture.Endpoint, key, ct)).Value!.Value;
+        var after = (await Fx.Gateway.GetAsync(Fx.Endpoint, key, ct)).Value!.Value;
         after.Should().Be(before, "статус PENDING не трогаем — ретрай следующим тиком");
     }
 
@@ -440,6 +461,8 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
     {
         // Arrange — джоб exited с ok:true
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
         await SeedAsync("sv1");
         var s3 = new FakeBackupS3();
         var engine = await StartJobAsync("sv1", s3);
@@ -458,7 +481,7 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
         verify.GetProperty("checked_unix").GetInt64().Should().BeGreaterThan(0);
         engine.Removed.Should().Contain(name);
         engine.RemovedVolumes.Should().Contain(name); // volume имя == имени контейнера
-        var journal = await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/sv1", ct);
+        var journal = await Fx.Gateway.GetAsync(Fx.Endpoint, "/pgworker/work/sv1", ct);
         journal.Value!.Value.Should().Contain("verified-ok/shard1/20260911120000Z");
     }
 
@@ -468,6 +491,8 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
     {
         // Arrange — джоб exited с result-JSON phase=verify
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
         await SeedAsync("sv2");
         var s3 = new FakeBackupS3();
         var engine = await StartJobAsync("sv2", s3);
@@ -495,6 +520,8 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
         // Arrange — джоб exited с result-JSON phase=download (mc/staging ENOSPC);
         // ключ кандидата в etcd записан руками (transient итог НЕ пишет — паттерн vc6/vc7)
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
         await SeedAsync("sv3");
         var s3 = new FakeBackupS3();
         var engine = await StartJobAsync("sv3", s3);
@@ -504,7 +531,7 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
         var key = "/pgworker/backups/sv3/shard1/full/20260911120000Z";
         var before = BackupStatusJson.Serialize(Completed("20260911120000Z", "000000010000000000000001",
             new BackupVerify(BackupVerifyStatus.Pending, null)));
-        await fixture.Gateway.PutAsync(fixture.Endpoint, key, before, null, ct);
+        await Fx.Gateway.PutAsync(Fx.Endpoint, key, before, null, ct);
 
         // Act — супервиз
         var process = BuildProcess("sv3", new FakeVerifyDriver(engine), s3);
@@ -513,7 +540,7 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
                 new BackupVerify(BackupVerifyStatus.Pending, null))), ct)).IsSuccess.Should().BeTrue();
 
         // Assert — статус НЕ изменён (остался PENDING), контейнер/volume снесены
-        var after = (await fixture.Gateway.GetAsync(fixture.Endpoint, key, ct)).Value!.Value;
+        var after = (await Fx.Gateway.GetAsync(Fx.Endpoint, key, ct)).Value!.Value;
         after.Should().Be(before, "download-phase transient: статус PENDING не трогаем");
         engine.Removed.Should().Contain(name);
 
@@ -532,6 +559,8 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
     {
         // Arrange — PENDING-кандидат, движок ПУСТ (контейнер исчез после рестарта docker-хоста)
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
         await SeedAsync("sv4");
         var s3 = new FakeBackupS3();
         s3.Objects.Add(("sv4", "shard1", "000000010000000000000001"));
@@ -555,6 +584,8 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
         // Arrange — full A (старее): verify=OK, CheckedUnix=now-7200 (периодика due при
         // interval 3600); full B (свежее): verify=PENDING (on_create)
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
         await SeedAsync("sv5");
         var s3 = new FakeBackupS3();
         s3.Objects.Add(("sv5", "shard1", "000000010000000000000001"));
@@ -593,6 +624,8 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
     {
         // Arrange — OK-полный CheckedUnix=now-7200; policy interval_sec=3600 → due
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
         await SeedAsync("sv6");
         var s3 = new FakeBackupS3();
         s3.Objects.Add(("sv6", "shard1", "000000010000000000000001"));
@@ -657,6 +690,8 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
         // Arrange — джоб exited с ok:true, но list падает; ключ кандидата в etcd
         // записан руками (никто другой его не пишет до итога — паттерн vc6/vc7)
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
         await SeedAsync("sv7");
         var s3 = new FakeBackupS3();
         var engine = await StartJobAsync("sv7", s3);
@@ -664,10 +699,10 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
         engine.Containers[name] = engine.Containers[name] with { State = "exited", ExitCode = 0, Logs = "{\"ok\":true}" };
         engine.ListFails = true;
         var key = "/pgworker/backups/sv7/shard1/full/20260911120000Z";
-        await fixture.Gateway.PutAsync(fixture.Endpoint, key, BackupStatusJson.Serialize(
+        await Fx.Gateway.PutAsync(Fx.Endpoint, key, BackupStatusJson.Serialize(
             Completed("20260911120000Z", "000000010000000000000001",
                 new BackupVerify(BackupVerifyStatus.Pending, null))), null, ct);
-        var before = (await fixture.Gateway.GetAsync(fixture.Endpoint, key, ct)).Value!.Value;
+        var before = (await Fx.Gateway.GetAsync(Fx.Endpoint, key, ct)).Value!.Value;
 
         // Act
         var process = BuildProcess("sv7", new FakeVerifyDriver(engine), s3);
@@ -676,8 +711,8 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
                 new BackupVerify(BackupVerifyStatus.Pending, null))), ct)).IsSuccess.Should().BeTrue();
 
         // Assert — ключ не изменён, контейнер не тронут (следующий тик повторит супервиз)
-        var after = (await fixture.Gateway.GetAsync(
-            fixture.Endpoint, "/pgworker/backups/sv7/shard1/full/20260911120000Z", ct)).Value!.Value;
+        var after = (await Fx.Gateway.GetAsync(
+            Fx.Endpoint, "/pgworker/backups/sv7/shard1/full/20260911120000Z", ct)).Value!.Value;
         after.Should().Be(before);
         engine.Removed.Should().NotContain(name);
     }
@@ -691,6 +726,8 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
         // Arrange — в движке уже running-контейнер джоба кандидата A; B — PENDING;
         // ключи обоих кандидатов записаны в etcd руками (ассерт «не тронут»)
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
         await SeedAsync("sv8");
         var s3 = new FakeBackupS3();
         s3.Objects.Add(("sv8", "shard1", "000000010000000000000001"));
@@ -705,9 +742,9 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
             new BackupVerify(BackupVerifyStatus.Pending, null));
         var keyB = "/pgworker/backups/sv8/shard1/full/20260911120000Z";
         var beforeB = BackupStatusJson.Serialize(b);
-        await fixture.Gateway.PutAsync(fixture.Endpoint,
+        await Fx.Gateway.PutAsync(Fx.Endpoint,
             "/pgworker/backups/sv8/shard1/full/20260911090000Z", BackupStatusJson.Serialize(a), null, ct);
-        await fixture.Gateway.PutAsync(fixture.Endpoint, keyB, beforeB, null, ct);
+        await Fx.Gateway.PutAsync(Fx.Endpoint, keyB, beforeB, null, ct);
         var process = BuildProcess("sv8", new FakeVerifyDriver(engine), s3);
 
         // Act — тик: супервиз видит живой джоб A (running → ждать), B due
@@ -716,7 +753,7 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
 
         // Assert — новый джоб не создан; ключ B не изменён
         engine.Created.Should().BeEmpty("живой verify-джоб шарда блокирует запуск нового (инвариант §3.3)");
-        var afterB = (await fixture.Gateway.GetAsync(fixture.Endpoint, keyB, ct)).Value!.Value;
+        var afterB = (await Fx.Gateway.GetAsync(Fx.Endpoint, keyB, ct)).Value!.Value;
         afterB.Should().Be(beforeB, "статус due-кандидата не трогаем, пока жив чужой джоб шарда");
     }
 
@@ -727,8 +764,10 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
     {
         // Arrange — portalloc ПУСТ (узел shard1a исчез); PENDING-кандидат с node=shard1a
         var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
         await SeedAsync("vc8");
-        await fixture.Gateway.PutAsync(fixture.Endpoint, "/pgworker/portalloc/vc8",
+        await Fx.Gateway.PutAsync(Fx.Endpoint, "/pgworker/portalloc/vc8",
             Portalloc.Serialize(new Dictionary<string, NodeAddress>()), null, ct);
         var engine = new FakeVerifyEngine();
         var driver = new FakeVerifyDriver(engine); // GetHostsAsync → [h1]
@@ -745,7 +784,7 @@ public class BackupVerifyProcessTests(EtcdFixture fixture)
         // Assert — джоб создан fallback-движком; выбор хоста зафиксирован журналом
         result.IsSuccess.Should().BeTrue();
         engine.Created.Should().ContainSingle(c => c.Name == "pgw-backup-verify-vc8-shard1-20260911120000Z");
-        var journal = await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/vc8", ct);
+        var journal = await Fx.Gateway.GetAsync(Fx.Endpoint, "/pgworker/work/vc8", ct);
         journal.Value!.Value.Should().Contain("engine-fallback/shard1");
     }
 }

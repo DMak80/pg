@@ -16,7 +16,9 @@ namespace PgWorker.IntegrationTests.E2e;
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
 // backup_password включает backup_exec. Каждый Fact — своё окружение: методы
 // оставляют после себя Active-кластеры, и без per-method изоляции воркер
-// следующего Fact'а подхватывал бы чужие джобы (инцидент Release).
+// следующего Fact'а подхватывал бы чужие джобы (инцидент Release). Имя кластера сценария —
+// {slug}{Fx.ClusterTag} (уникально на прогон, docs/e2e-isolation.md §1):
+// движковые контейнеры/тома pgw-*-<C>-* опознаются teardown'ом окружения.
 public class E2eBackupScenarios
 {
     private const string Bucket = "pgworker-backups";
@@ -33,12 +35,12 @@ public class E2eBackupScenarios
     [Fact]
     public async Task Backup_FullDaily_Completes()
     {
-        // Arrange — кластер bkshop + policy (verify on_create) + воркер с бэкап-комплектом
+        // Arrange — кластер bkshop<тег прогона> + policy (verify on_create) + воркер
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await E2eEnvironment.StartAsync("bk-full", withMinio: true, ct: ct);
         Fx = fx;
-        const string cluster = "bkshop";
+        var cluster = $"bkshop{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
             """{"full_max_age_sec":3600,"verify":{"on_create":true}}""", null, ct);
@@ -97,7 +99,7 @@ public class E2eBackupScenarios
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await E2eEnvironment.StartAsync("bk-bads3", withMinio: true, ct: ct);
         Fx = fx;
-        const string cluster = "bkbads3";
+        var cluster = $"bkbads3{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         await using var app = await StartBackupHostAsync(
             "bkbads3", ct, s3EndpointOverride: "http://host.docker.internal:1");
@@ -127,7 +129,7 @@ public class E2eBackupScenarios
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await E2eEnvironment.StartAsync("bk-clean", withMinio: true, ct: ct);
         Fx = fx;
-        const string cluster = "bkclean";
+        var cluster = $"bkclean{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         await using var app = await StartBackupHostAsync("bkclean", ct);
         var started = await E2eFixture.WaitForAsync(
@@ -170,7 +172,7 @@ public class E2eBackupScenarios
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await E2eEnvironment.StartAsync("bk-rot", withMinio: true, ct: ct);
         Fx = fx;
-        const string cluster = "bkrot";
+        var cluster = $"bkrot{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         await using var app = await StartBackupHostAsync("bkrot", ct);
         var completed = await E2eFixture.WaitForAsync(
@@ -248,7 +250,7 @@ public class E2eBackupScenarios
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await E2eEnvironment.StartAsync("wal-stream", withMinio: true, ct: ct);
         Fx = fx;
-        const string cluster = "shopb";
+        var cluster = $"shopb{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         await using var app = await StartWalHostAsync("walstream", ct);
 
@@ -380,12 +382,12 @@ public class E2eBackupScenarios
     [Fact]
     public async Task Backup_Verify_Ok_OnCreate()
     {
-        // Arrange — окружение с MinIO; кластер bkvrfy; policy on_create=true
+        // Arrange — окружение с MinIO; кластер bkvrfy<тег прогона>; policy on_create=true
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await E2eEnvironment.StartAsync("bk-verify", withMinio: true, ct: ct);
         Fx = fx;
-        const string cluster = "bkvrfy";
+        var cluster = $"bkvrfy{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
             """{"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":0}}""", null, ct);
@@ -450,7 +452,7 @@ public class E2eBackupScenarios
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await E2eEnvironment.StartAsync("bk-corrupt", withMinio: true, ct: ct);
         Fx = fx;
-        const string cluster = "bkcrpt";
+        var cluster = $"bkcrpt{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
             """{"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":5}}""", null, ct);
