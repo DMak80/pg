@@ -63,7 +63,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
 
         var provisioned = await E2eFixture.WaitForAsync(
             () => ProvisionedAsync(), TimeSpan.FromSeconds(360), ct);
-        provisioned.Should().BeTrue("provisioning mshop должен дойти до DONE");
+        provisioned.Should().BeTrue($"provisioning {Cluster} должен дойти до DONE");
 
         var shard1 = await MasterInfoAsync("shard1", ct);
         var shard2 = await MasterInfoAsync("shard2", ct);

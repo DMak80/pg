@@ -59,7 +59,7 @@ public class E2eScenarios(ITestOutputHelper output)
 
         var taken = await E2eFixture.WaitForAsync(
             () => ProvisionedAsync(Cluster2), TimeSpan.FromSeconds(360), ct);
-        taken.Should().BeTrue("второй инстанс должен донести shop2 до DONE (takeover)");
+        taken.Should().BeTrue($"второй инстанс должен донести {Cluster2} до DONE (takeover)");
 
         var shop2Containers = await ListContainerNamesAsync($"pgw-{Cluster2}-");
         shop2Containers.Should().HaveCount(4, "дублей контейнеров после takeover быть не должно");

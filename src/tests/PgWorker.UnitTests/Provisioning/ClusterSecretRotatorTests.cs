@@ -26,9 +26,10 @@ public class ClusterSecretRotatorTests
             => Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable));
     }
 
-    // Сид: Active-кластер, 2 шарда с dsn + master-ключи (мастера по host из portalloc),
-    // тройка per-cluster кредов (t02 — ensure читает, txn не ставит), portalloc
-    // (мастера — первые ноды, host h1/pg 15000 и h2/pg 15001).
+    // Сид: Active-кластер, 2 шарда с dsn + master-ключи (формат писателя —
+    // <host>:<doormanPort> фактической ноды-мастера), тройка per-cluster кредов
+    // (t02 — ensure читает, txn не ставит), portalloc (мастера — первые ноды,
+    // host h1/pg 15000 и h2/pg 15001).
     private static void SeedCluster(Fakes.FakeEtcd etcd, string cluster = "shop")
     {
         etcd.Seed($"/clusters/{cluster}/config",
@@ -197,6 +198,45 @@ public class ClusterSecretRotatorTests
         rig.Etcd.Store.Should().NotContainKey("/pgworker/rotations/shop");
         rig.Etcd.Store["/clusters/shop/backup_password"].Value
             .Should().MatchRegex("^[A-Za-z0-9]{32}$");
+    }
+
+    // Деградировавший кейс бага t04-гейта (finding P1): при EnableDoorman=false
+    // master-ключ вырождается в <host>:0 — оба ноды шарда на одном хосте равнозначны,
+    // и старый host-match возвращал ПРОИЗВОЛЬНУЮ ноду (ALTER ROLE на реплике →
+    // 25006 read-only, ротация зацикливалась). Резолв обязан идти по уникальному
+    // doorman-порту из ключа.
+    [Fact]
+    public async Task Tick_SharedHostMasterKey_ResolvesByDoormanPort()
+    {
+        // Arrange — заявка; shard1: обе ноды на хосте h1, фактический мастер —
+        // shard1b (doorman 16502); ключ «host:0-вырожденный» не используем, но и
+        // host-матч тут тоже промахнулся бы (h1 == Host обеих нод шарда)
+        var etcd = new Fakes.FakeEtcd();
+        SeedCluster(etcd);
+        etcd.Seed("/pgworker/portalloc/shop", Portalloc.Serialize(new Dictionary<string, NodeAddress>
+        {
+            ["shard1/shard1a"] = new("h1", new NodePorts(15000, 18000, 16500)),
+            ["shard1/shard1b"] = new("h1", new NodePorts(15002, 18002, 16502)),
+            ["shard2/shard2a"] = new("h2", new NodePorts(15001, 18001, 16501)),
+            ["shard2/shard2b"] = new("h2", new NodePorts(15003, 18003, 16503)),
+        }));
+        etcd.Seed("/clusters/shop/shards/shard1/master", "h1:16502");
+        etcd.Seed("/clusters/shop/shards/shard2/master", "h2:16501");
+        var rig = await NewRig(etcd);
+        SeedTicket(rig.Etcd);
+
+        // Act
+        var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — ALTER уходит на фактическую ноду-мастера (Port=15002/pg shard1b),
+        // а не на первую по порядку portalloc ноду шарда (Port=15000, shard1a)
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        var alterDsns = rig.Sql.Executed
+            .Where(e => e.Sql.Contains("ALTER ROLE \"app\" PASSWORD"))
+            .Select(e => e.Dsn).ToList();
+        alterDsns.Should().HaveCount(2);
+        alterDsns.Should().Contain(dsn => dsn.Contains("Port=15002"), "мастер shard1 — shard1b (doorman 16502)");
+        alterDsns.Should().NotContain(dsn => dsn.Contains("Port=15000"), "shard1a — реплика, ALTER на ней невозможен");
     }
 
     [Fact]

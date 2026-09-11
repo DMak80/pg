@@ -378,6 +378,9 @@ public sealed class WalStreamProcess(
         // Факты прогресса — только из наблюдений: наблюдаемый последний сегмент
         // цепочки; если цепочка не наблюдалась вовсе (объекты/LastModified недоступны,
         // всё ниже chain_start) — прошлый ключ, НИКОГДА не now() (ревью Ф4-2 №2).
+        // Инвариант WalChain: LastSegment всегда из списка объектов; выборка ниже —
+        // защитная (ревью t04 P2): при его поломке смешения фактов не будет —
+        // невычисленный unix падает на прошлый ключ (transient-DEGRADED, не крах тика).
         var observedLast = chain.LastSegment;
         var lastUploadedName = observedLast?.Name ?? wal?.LastUploadedSegment;
         var observedLastUnix = observedLast is { } seen
