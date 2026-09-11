@@ -17,9 +17,12 @@ using Xunit;
 namespace PgWorker.IntegrationTests.Backups;
 
 // Интеграции RetentionProcess (t06 spec Ф3): реальный etcd (статусы/журнал/ключ
-// storage) + FakeBackupS3. Часы заморожены (детерминированные now/updated_unix),
-// RetentionIntervalSec=0 — ретенция выполняется КАЖДЫМ тиком (валидация >=60 —
-// только на старте App, runtime-опции тест строит напрямую).
+// storage) + FakeBackupS3. Часы по умолчанию заморожены (детерминированные
+// now/started_unix); MutableClock — для семантики put ключа storage «при
+// изменении» (наблюдаемые поля сравниваются БЕЗ updated_unix — идущие часы
+// дискриминируют лишний put). RetentionIntervalSec=0 — ретенция выполняется
+// КАЖДЫМ тиком (валидация >=60 — только на старте App, runtime-опции тест
+// строит напрямую).
 [Collection(EtcdCollection.Name)]
 public class RetentionProcessTests(EtcdFixture fixture)
 {
@@ -32,6 +35,16 @@ public class RetentionProcessTests(EtcdFixture fixture)
     private sealed class FrozenClock : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    // Идущие часы (двигаются только вручную — детерминированно).
+    private sealed class MutableClock(DateTimeOffset start) : TimeProvider
+    {
+        private DateTimeOffset _now = start;
+
+        public void AdvanceMinutes(int minutes) => _now = _now.AddMinutes(minutes);
+
+        public override DateTimeOffset GetUtcNow() => _now;
     }
 
     // ── Хелперы Arrange ──
@@ -53,10 +66,11 @@ public class RetentionProcessTests(EtcdFixture fixture)
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, "/pgworker/backups/storage", prefix: false, ct);
     }
 
-    private RetentionProcess BuildProcess(BackupsRuntimeOptions options, FakeBackupS3 s3) => new(
+    private RetentionProcess BuildProcess(
+        BackupsRuntimeOptions options, FakeBackupS3 s3, TimeProvider? clock = null) => new(
         fixture.Gateway, [fixture.Endpoint], s3,
         _claims, new WorkJournal(fixture.Gateway, [fixture.Endpoint]),
-        options, new FrozenClock(),
+        options, clock ?? new FrozenClock(),
         NullLogger<RetentionProcess>.Instance);
 
     // Тест-опции: ретенция каждым тиком; дефолт-политика — параметризуется.
@@ -421,7 +435,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
     }
 
     // AC6: ключ storage пишется с суммой размеров и вердиктом; повторный тик
-    // без изменений НЕ переписывает значение (идемпотентность put).
+    // без изменений НЕ переписывает значение (сравнение наблюдаемых полей).
     [Fact]
     public async Task Ключ_storage_пишется_при_изменении()
     {
@@ -434,7 +448,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
         s3.PrefixObjects.AddRange(new[] { ("a/obj1", 10L), ("b/obj2", 20L) });
         var process = BuildProcess(Options(quotaBytes: 100, quotaWarn: 80, quotaCrit: 90), s3);
 
-        // Act — два тика подряд (замороженные часы → payload идентичен)
+        // Act — два тика подряд (данные не менялись → наблюдаемые поля те же)
         (await process.TickAsync(BuildSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
         var first = await GetKvAsync("/pgworker/backups/storage");
         (await process.TickAsync(BuildSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
@@ -446,7 +460,68 @@ public class RetentionProcessTests(EtcdFixture fixture)
             .And.Contain("\"quota_bytes\":100")
             .And.Contain("\"used_percent\":30")
             .And.Contain("\"state\":\"OK\"");
-        second!.Value.Should().Be(first.Value, "put при неизменном payload не выполняется");
+        second!.Value.Should().Be(first.Value, "put при неизменных наблюдаемых полях не выполняется");
+    }
+
+    // AC6-семантика «при изменении» (arch/19 §4): два прохода с неизменными
+    // данными при ИДУЩИХ часах — второй put НЕ выполняется: updated_unix не
+    // участвует в сравнении, свежесть прохода видна по возрасту updated_unix.
+    [Fact]
+    public async Task Storage_без_изменений_второй_put_не_выполняется()
+    {
+        // Arrange — 2 объекта (10+20); часы идут вперёд между тиками
+        var ct = TestContext.Current.CancellationToken;
+        const string cluster = "rt14";
+        await SeedAsync(cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var clock = new MutableClock(Now);
+        var s3 = new FakeBackupS3();
+        s3.PrefixObjects.AddRange(new[] { ("a/obj1", 10L), ("b/obj2", 20L) });
+        var process = BuildProcess(Options(quotaBytes: 100), s3, clock);
+
+        // Act — тик, минута, второй тик (данные не менялись)
+        (await process.TickAsync(BuildSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
+        var first = await GetKvAsync("/pgworker/backups/storage");
+        clock.AdvanceMinutes(1);
+        (await process.TickAsync(BuildSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
+        var second = await GetKvAsync("/pgworker/backups/storage");
+
+        // Assert — ключ не переписан: updated_unix остался от первого прохода
+        first.Should().NotBeNull();
+        first!.Value.Should().Contain($"\"updated_unix\":{Unix(Now)}");
+        second!.Value.Should().Be(first.Value,
+            "меняющийся updated_unix не должен превращать каждый проход в put");
+    }
+
+    // AC6: изменился used_bytes — put выполняется с новым значением и свежим
+    // updated_unix (наблюдаемые поля разошлись → запись обязательна).
+    [Fact]
+    public async Task Storage_при_изменении_put_с_новым_значением_и_свежим_updated()
+    {
+        // Arrange — 1 объект (10); часы идут
+        var ct = TestContext.Current.CancellationToken;
+        const string cluster = "rt15";
+        await SeedAsync(cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var clock = new MutableClock(Now);
+        var s3 = new FakeBackupS3();
+        s3.PrefixObjects.Add(("a/obj1", 10L));
+        var process = BuildProcess(Options(quotaBytes: 100), s3, clock);
+
+        // Act — тик, рост занятости (+20), минута, второй тик
+        (await process.TickAsync(BuildSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
+        var first = await GetKvAsync("/pgworker/backups/storage");
+        s3.PrefixObjects.Add(("a/obj2", 20L));
+        clock.AdvanceMinutes(1);
+        (await process.TickAsync(BuildSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
+        var second = await GetKvAsync("/pgworker/backups/storage");
+
+        // Assert — новое used_bytes и updated_unix второго момента
+        first.Should().NotBeNull();
+        first!.Value.Should().Contain("\"used_bytes\":10");
+        second!.Value.Should().Contain("\"used_bytes\":30")
+            .And.Contain($"\"updated_unix\":{Unix(Now.AddMinutes(1))}",
+                "изменение наблюдаемых полей → put со свежим updated_unix");
     }
 
     // AC6: квота 0 → только used/state/updated, полей квоты нет.

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using PgWorker.Backups.Job;
 using PgWorker.Core;
@@ -199,11 +200,14 @@ public sealed class RetentionProcess(
     }
 
     // Монитор занятости (spec §3.4): list ВЕСЬ bucket (вкл. чужие/осиротевшие
-    // префиксы) → used → EvaluateStorage → ключ при изменении (строковое
-    // сравнение — образец WalStatusWriter.WriteIfChangedAsync). Отдельное
-    // поле-расписание, не словарь кластеров (коллизия "storage" — см. поле);
-    // параллельные тики разных кластеров могут гоняться за поле — двойной list
-    // безвреден (put при изменении идемпотентен; тики одного кластера
+    // префиксы) → used → EvaluateStorage → put ТОЛЬКО при изменении наблюдаемых
+    // полей (used_bytes/quota_bytes/used_percent/state). updated_unix в
+    // сравнение не входит: меняющийся now делал бы put каждым проходом, а
+    // свежесть прохода видна по возрасту updated_unix (arch/19 §4 «при
+    // изменении»; строковое сравнение — образец WalStatusWriter.WriteIfChangedAsync).
+    // Отдельное поле-расписание, не словарь кластеров (коллизия "storage" — см.
+    // поле); параллельные тики разных кластеров могут гоняться за поле — двойной
+    // list безвреден (put при изменении идемпотентен; тики одного кластера
     // последовательны — ReconcileLoop).
     private async Task<Result> MonitorStorageAsync(long nowUnix, CancellationToken ct)
     {
@@ -218,22 +222,51 @@ public sealed class RetentionProcess(
         var used = listed.Value.Sum(o => o.SizeBytes);
         var verdict = RetentionPlanner.EvaluateStorage(
             used, options.QuotaBytes, options.QuotaWarnPercent, options.QuotaCritPercent);
-        var payload = StorageStatusJson.Serialize(new StorageStatus(
-            verdict.UsedBytes, verdict.QuotaBytes, verdict.UsedPercent, verdict.State, nowUnix));
+        var status = new StorageStatus(
+            verdict.UsedBytes, verdict.QuotaBytes, verdict.UsedPercent, verdict.State, nowUnix);
 
         foreach (var endpoint in endpoints)
         {
             var current = await etcd.GetAsync(endpoint, "/pgworker/backups/storage", ct);
             if (!current.IsSuccess)
                 continue; // failover
-            if (current.Value is { } kv && kv.Value == payload)
-                return Result.Success(); // без изменений — не пишем
-            var put = await etcd.PutAsync(endpoint, "/pgworker/backups/storage", payload, null, ct);
+            if (current.Value is { } kv && SameObservable(kv.Value, status))
+                return Result.Success(); // без изменений — не пишем (arch/19 §4)
+            var put = await etcd.PutAsync(endpoint, "/pgworker/backups/storage",
+                StorageStatusJson.Serialize(status), null, ct);
             if (put.IsSuccess)
                 return Result.Success();
         }
 
         return Result.Failed(new ApplicationException("запись /pgworker/backups/storage не удалась"));
+    }
+
+    // Совпадает ли записанное значение ключа storage с наблюдаемой частью
+    // нового статуса (всё, кроме updated_unix)? Битое/чужое значение —
+    // не совпало: перезапишем каноническим payload.
+    private static bool SameObservable(string stored, StorageStatus status)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(stored);
+            var root = doc.RootElement;
+            if (!root.TryGetProperty("used_bytes", out var used) || used.GetInt64() != status.UsedBytes)
+                return false;
+            if (!root.TryGetProperty("state", out var state)
+                || state.GetString() != StorageStatusJson.StateName(status.State))
+                return false;
+            if (status.QuotaBytes > 0)
+                return root.TryGetProperty("quota_bytes", out var quota)
+                       && quota.GetInt64() == status.QuotaBytes
+                       && root.TryGetProperty("used_percent", out var percent)
+                       && percent.ValueKind == JsonValueKind.Number
+                       && percent.GetDouble() == status.UsedPercent;
+            return !root.TryGetProperty("quota_bytes", out _);
+        }
+        catch (JsonException)
+        {
+            return false;
+        }
     }
 
     // Failover-обёртки (образец BackupProcess.PutAsync / WalStreamProcess.GetAsync).
