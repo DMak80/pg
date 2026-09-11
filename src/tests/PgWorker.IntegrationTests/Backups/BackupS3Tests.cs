@@ -380,4 +380,82 @@ public class BackupS3Tests
         // Assert
         got.IsSuccess.Should().BeFalse();
     }
+
+    // ---- t05: ListFullsAsync / DownloadTextAsync ----
+
+    // ListFulls (t05): id полных по CommonPrefixes, сортировка, чужие шарды не попадают.
+    [Fact]
+    public async Task ListFulls_возвращает_id_полных()
+    {
+        // Arrange — два полных в разных full/<id>/ (сид прямым клиентом)
+        var ct = TestContext.Current.CancellationToken;
+        using var client = SeedClient(fixture);
+        foreach (var id in new[] { "20260911120000Z", "20260911090000Z" })
+            await client.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = MinioFixture.Bucket,
+                Key = "c15/shard1/full/" + id + "/backup_manifest",
+            }, ct);
+        await client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = MinioFixture.Bucket,
+            Key = "c15/shard2/full/20260911000000Z/backup_manifest", // чужой шард
+        }, ct);
+        await using var s3 = new BackupS3(fixture.Runtime());
+
+        // Act
+        var listed = await s3.ListFullsAsync("c15", "shard1", ct: ct);
+
+        // Assert — сортировка ключей, чужой шард не попал
+        listed.IsSuccess.Should().BeTrue();
+        listed.Value.Should().Equal("20260911090000Z", "20260911120000Z");
+    }
+
+    // ListFulls — пагинация по страницам (maxKeys=1, 3 полных).
+    [Fact]
+    public async Task ListFulls_пагинация_maxKeys_1_собирает_все()
+    {
+        // Arrange — 3 полных, страница по 1
+        var ct = TestContext.Current.CancellationToken;
+        using var client = SeedClient(fixture);
+        for (var i = 1; i <= 3; i++)
+            await client.PutObjectAsync(new PutObjectRequest
+            {
+                BucketName = MinioFixture.Bucket,
+                Key = $"c16/shard1/full/2026091100000{i}Z/backup_manifest",
+            }, ct);
+        await using var s3 = new BackupS3(fixture.Runtime());
+
+        // Act
+        var listed = await s3.ListFullsAsync("c16", "shard1", maxKeysPerTest: 1, ct: ct);
+
+        // Assert
+        listed.IsSuccess.Should().BeTrue();
+        listed.Value.Should().HaveCount(3);
+    }
+
+    // DownloadText (t05): маленький текстовый объект; отсутствующий — Failed (не исключение).
+    [Fact]
+    public async Task DownloadText_backup_label_и_notfound()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        using var client = SeedClient(fixture);
+        await client.PutObjectAsync(new PutObjectRequest
+        {
+            BucketName = MinioFixture.Bucket,
+            Key = "c17/shard1/full/b1/backup_label",
+            ContentBody = "START WAL LOCATION: 0/2000028 (file 000000010000000000000002)\n",
+        }, ct);
+        await using var s3 = new BackupS3(fixture.Runtime());
+
+        // Act
+        var text = await s3.DownloadTextAsync("c17", "shard1", "full/b1/backup_label", ct);
+        var missing = await s3.DownloadTextAsync("c17", "shard1", "full/nope/backup_label", ct);
+
+        // Assert
+        text.IsSuccess.Should().BeTrue();
+        text.Value.Should().Contain("START WAL LOCATION");
+        missing.IsSuccess.Should().BeFalse();
+    }
 }

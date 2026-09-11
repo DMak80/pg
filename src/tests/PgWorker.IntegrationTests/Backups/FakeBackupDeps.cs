@@ -53,6 +53,16 @@ public sealed class FakeBackupS3 : IBackupS3
     public bool Fails { get; set; }           // транспорт-сбой чтений S3 (transient-тест list)
     public bool FailsGetObject { get; set; }  // падает только GET (transient-тест GET history)
 
+    // t05: полные шарда (id) — DR-поиск ListFullsAsync по fake-S3.
+    public List<(string Cluster, string Shard, string Id)> Fulls { get; } = [];
+
+    // t05: тексты маленьких объектов по objectKey внутри префикса шарда
+    // ("full/<id>/backup_label", "full/<id>/backup_manifest").
+    public Dictionary<string, string> Texts { get; } = new(StringComparer.Ordinal);
+
+    // Один сбой list (transient-сценарий «S3 недоступен»): list не падает в статус.
+    public bool FailList { get; set; }
+
     public DateTimeOffset LastModified { get; set; } = DateTimeOffset.UtcNow;
 
     public Task<Result<bool>> BucketExistsAsync(CancellationToken ct)
@@ -103,6 +113,39 @@ public sealed class FakeBackupS3 : IBackupS3
             .ToList();
         return Task.FromResult(Result<IReadOnlyList<S3ObjectInfo>>.Success(
             (IReadOnlyList<S3ObjectInfo>)all));
+    }
+
+    public Task<Result<IReadOnlyList<string>>> ListFullsAsync(
+        string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
+    {
+        // Transient-сбой по требованию теста («S3 недоступен» — статус не меняем).
+        if (FailList)
+            return Task.FromResult(Result<IReadOnlyList<string>>.Failed(
+                new ApplicationException("fake S3 list failure (FailList)")));
+
+        var fromFulls = Fulls.Where(f => f.Cluster == cluster && f.Shard == shard)
+            .Select(f => f.Id);
+        var fromPrefixObjects = PrefixObjects
+            .Select(o => o.Key)
+            .Select(key => key.StartsWith($"{cluster}/{shard}/full/", StringComparison.Ordinal)
+                ? key[$"{cluster}/{shard}/full/".Length..].Split('/')[0]
+                : "")
+            .Where(id => id.Length > 0);
+        var ids = fromFulls.Concat(fromPrefixObjects)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(id => id, StringComparer.Ordinal)
+            .ToList();
+        return Task.FromResult(Result<IReadOnlyList<string>>.Success(
+            (IReadOnlyList<string>)ids));
+    }
+
+    public Task<Result<string>> DownloadTextAsync(
+        string cluster, string shard, string objectKey, CancellationToken ct = default)
+    {
+        var key = $"{cluster}/{shard}/{objectKey}";
+        return Task.FromResult(Texts.TryGetValue(key, out var text)
+            ? Result<string>.Success(text)
+            : Result<string>.Failed(new ApplicationException($"fake S3 get {key}: not found")));
     }
 
     public Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default)
