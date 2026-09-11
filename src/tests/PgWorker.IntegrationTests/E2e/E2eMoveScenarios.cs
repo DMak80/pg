@@ -15,7 +15,10 @@ namespace PgWorker.IntegrationTests.E2e;
 // Каждый этап — приватный метод, output.WriteLine показывает прогресс.
 public class E2eMoveScenarios(ITestOutputHelper output)
 {
-    private const string Cluster = "mshop";
+    // Уникальное имя кластера на прогон ({slug}{тег прогона}, docs/e2e-isolation.md
+    // §1): движковые контейнеры/тома pgw-<C>-* опознаются teardown'ом окружения
+    // по своему тегу (OwnName) и снимаются им; константное имя запрещено.
+    private string Cluster => $"mshop{Fx.ClusterTag}";
 
     // Окружение Fact'а (своя сеть/etcd); создаётся в начале сценария.
     private E2eEnvironment Fx = null!;
@@ -244,7 +247,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
         deprovisioned.Should().BeTrue("deprovisioning должен убрать кластер целиком");
 
         (await RangeAsync(MoveNames.MovesPrefix(Cluster)))
-            .Should().BeEmpty("заявки /pgworker/moves/mshop/ не переживают кластер (D2, AC8)");
+            .Should().BeEmpty($"заявки {MoveNames.MovesPrefix(Cluster)} не переживают кластер (D2, AC8)");
 
         if (Host is not null)
             await Host.DisposeAsync();

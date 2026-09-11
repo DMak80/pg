@@ -104,10 +104,13 @@ public class E2eBackupScenarios
         await using var app = await StartBackupHostAsync(
             "bkbads3", ct, s3EndpointOverride: "http://host.docker.internal:1");
 
-        // Act/Assert 1 — первая попытка FAILED с error ≤ 300 c
+        // Act/Assert 1 — первая попытка FAILED с error ≤ 480 c: окно включает
+        // provisioning (4 ноды, минуты) + джоб (pg_basebackup со spread-чекпоинтом
+        // может ждать ближайший чекпоинт) + мгновенный mc-отказ (connection refused
+        // mc не ретраит). 300 c на загруженном хосте не хватает (факт t04-гейта).
         var failed = await E2eFixture.WaitForAsync(
             async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("FAILED")),
-            TimeSpan.FromSeconds(300), ct);
+            TimeSpan.FromSeconds(480), ct);
         failed.Should().BeTrue("попытка с недоступным S3 должна упасть в FAILED");
         var failedKv = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("FAILED"));
         var status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(failedKv.Value)!;
@@ -116,7 +119,7 @@ public class E2eBackupScenarios
         // Assert 2 — переснятие: вторая попытка с ДРУГИМ id (Retry BaseSec=2)
         var retried = await E2eFixture.WaitForAsync(
             async () => (await FullKeysAsync(cluster, "shard1")).Count >= 2,
-            TimeSpan.FromSeconds(120), ct);
+            TimeSpan.FromSeconds(240), ct);
         retried.Should().BeTrue("бэкофф 2 c должен запустить переснятие новым id");
     }
 

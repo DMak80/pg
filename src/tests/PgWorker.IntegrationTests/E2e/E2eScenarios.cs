@@ -23,6 +23,13 @@ public class E2eScenarios(ITestOutputHelper output)
 
     private EtcdGateway G => Fx.Gateway;
 
+    // Уникальные имена кластеров на прогон ({slug}{тег прогона}, docs/e2e-isolation.md
+    // §1): движковые контейнеры/тома pgw-<C>-* опознаются teardown'ом окружения
+    // по своему тегу (OwnName) и снимаются им; константные имена запрещены.
+    private string Cluster => $"shop{Fx.ClusterTag}";
+
+    private string Cluster2 => $"shop2{Fx.ClusterTag}";
+
     [Fact]
     public async Task Acceptance_Scenario_Ac2_To_Ac7()
     {
@@ -32,46 +39,46 @@ public class E2eScenarios(ITestOutputHelper output)
         Fx = fx;
 
         // ---------- AC2: provisioning e2e + O2 ----------
-        await SeedClusterAsync("shop");
+        await SeedClusterAsync(Cluster);
         await using var p1 = await Fx.StartHostAsync("p1", ct: ct);
 
         var provisioned = await E2eFixture.WaitForAsync(
-            () => ProvisionedAsync("shop"), TimeSpan.FromSeconds(360), ct);
+            () => ProvisionedAsync(Cluster), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning должен дойти до DONE (dsn/RUNNING/без status/state)");
 
-        await AssertProvisioningResultAsync("shop", ct);
+        await AssertProvisioningResultAsync(Cluster, ct);
 
         // ---------- AC3: takeover (kill посреди provisioning) ----------
-        await SeedClusterAsync("shop2");
+        await SeedClusterAsync(Cluster2);
         var started = await E2eFixture.WaitForAsync(
-            () => DockerHasAsync("pgw-shop2-"), TimeSpan.FromSeconds(120), ct);
-        started.Should().BeTrue("первый инстанс должен начать provisioning shop2");
+            () => DockerHasAsync($"pgw-{Cluster2}-"), TimeSpan.FromSeconds(120), ct);
+        started.Should().BeTrue($"первый инстанс должен начать provisioning {Cluster2}");
 
         p1.Kill(); // смерть контроллера посреди работы (клэйм истечёт ≤15 с)
         await using var p2 = await Fx.StartHostAsync("p2", ct: ct);
 
         var taken = await E2eFixture.WaitForAsync(
-            () => ProvisionedAsync("shop2"), TimeSpan.FromSeconds(360), ct);
+            () => ProvisionedAsync(Cluster2), TimeSpan.FromSeconds(360), ct);
         taken.Should().BeTrue("второй инстанс должен донести shop2 до DONE (takeover)");
 
-        var shop2Containers = await ListContainerNamesAsync("pgw-shop2-");
+        var shop2Containers = await ListContainerNamesAsync($"pgw-{Cluster2}-");
         shop2Containers.Should().HaveCount(4, "дублей контейнеров после takeover быть не должно");
 
         // ---------- AC4: deprovisioning ----------
-        await SetToRemoveAsync("shop2");
+        await SetToRemoveAsync(Cluster2);
 
         var deprovisioned = await E2eFixture.WaitForAsync(
-            () => DeprovisionedAsync("shop2"), TimeSpan.FromSeconds(180), ct);
+            () => DeprovisionedAsync(Cluster2), TimeSpan.FromSeconds(180), ct);
         deprovisioned.Should().BeTrue("deprovisioning должен удалить контейнеры/volume/ключи и снять клэйм");
 
         // ---------- AC5: failover/rebuild ----------
-        await AssertFailoverRebuildAsync("shop", "shard1", ct);
+        await AssertFailoverRebuildAsync(Cluster, "shard1", ct);
 
         // ---------- AC6: эвакуация ----------
-        await AssertEvacuationAsync("shop", "shard2", "shard1", p2.SnapshotsDir, ct);
+        await AssertEvacuationAsync(Cluster, "shard2", "shard1", p2.SnapshotsDir, ct);
 
         // ---------- AC7: клэймы + снапшоты только лидером ----------
-        await AssertClaimsAndLeaderSnapshotsAsync(p2, ct);
+        await AssertClaimsAndLeaderSnapshotsAsync(Cluster, p2, ct);
     }
 
     // ===== Хелперы сида/чтения etcd =====
@@ -203,7 +210,7 @@ public class E2eScenarios(ITestOutputHelper output)
                 try
                 {
                     await using var con = new NpgsqlConnection(
-                        $"Host={host};Port={port};Database=shop;Username=bucket_admin;Password={E2eFixture.BucketAdminPassword};SSL Mode=Require;Trust Server Certificate=true;Timeout=5");
+                        $"Host={host};Port={port};Database={cluster};Username=bucket_admin;Password={E2eFixture.BucketAdminPassword};SSL Mode=Require;Trust Server Certificate=true;Timeout=5");
                     await con.OpenAsync(ct);
                     await using var cmd = new NpgsqlCommand("SELECT 1", con);
                     return await cmd.ExecuteScalarAsync(ct) is 1;
@@ -387,7 +394,7 @@ public class E2eScenarios(ITestOutputHelper output)
     }
 
     // AC7: два инстанса — кластер обрабатывает один; снапшоты снимает только лидер.
-    private async Task AssertClaimsAndLeaderSnapshotsAsync(HostInstance previous, CancellationToken ct)
+    private async Task AssertClaimsAndLeaderSnapshotsAsync(string cluster, HostInstance previous, CancellationToken ct)
     {
         previous.Kill(); // предыдущий держатель уходит — лидерство и клэймы переизберутся
 
@@ -416,14 +423,14 @@ public class E2eScenarios(ITestOutputHelper output)
         var seen = new HashSet<string>();
         for (var i = 0; i < 3; i++)
         {
-            var work = await GetOrNullAsync("/pgworker/work/shop");
+            var work = await GetOrNullAsync($"/pgworker/work/{cluster}");
             work.Should().NotBeNull();
             seen.Add(JsonSerializer
                 .Deserialize<Dictionary<string, JsonElement>>(work!.Value)!["instance"].GetString()!);
             await Task.Delay(TimeSpan.FromSeconds(3), ct);
         }
 
-        seen.Should().HaveCount(1, "кластер shop обрабатывает только один инстанс (клэймы Д2)");
+        seen.Should().HaveCount(1, $"кластер {cluster} обрабатывает только один инстанс (клэймы Д2)");
     }
 
     // ===== Хелперы docker/sql =====

@@ -9,7 +9,10 @@ namespace PgWorker.IntegrationTests.E2e;
 // перезаписывается (put-if-absent, миграция надзора).
 public class E2eAppParamsScenarios
 {
-    private const string Cluster = "appparams";
+    // Уникальное имя кластера на прогон ({slug}{тег прогона}, docs/e2e-isolation.md
+    // §1): движковые контейнеры/тома pgw-<C>-* опознаются teardown'ом окружения
+    // по своему тегу (OwnName) и снимаются им; константное имя запрещено.
+    private string Cluster => $"appparams{Fx.ClusterTag}";
 
     // Окружение Fact'а (своя сеть/etcd); создаётся в начале сценария.
     private E2eEnvironment Fx = null!;
