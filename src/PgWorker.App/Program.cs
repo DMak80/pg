@@ -128,6 +128,9 @@ builder.Services.AddSingleton(sp => new RotateClusterSecretsHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton(sp => new BackupsPolicyHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
 builder.Services.AddSingleton(sp => new RecreateNodeHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));

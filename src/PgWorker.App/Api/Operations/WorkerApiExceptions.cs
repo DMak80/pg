@@ -4,6 +4,14 @@ namespace PgWorker.App.Api.Operations;
 // (src/AdminPanel.Api/Operations/CreateClusterCommand.cs/DeleteClusterCommand.cs),
 // тексты 1:1 — фронт-контракт панели не меняется.
 
+// Валидация policy бэкапов не прошла: 400 с errors по полям (t06, arch/19 §4).
+public sealed class BackupsPolicyValidationException(
+    IReadOnlyList<PgWorker.Core.Writing.ValidationError> errors)
+    : Exception("политика бэкапов некорректна")
+{
+    public IReadOnlyList<PgWorker.Core.Writing.ValidationError> Errors { get; } = errors;
+}
+
 // Валидация не прошла: 400 с errors по полям (arch/02 §9.3).
 public sealed class CreateClusterValidationException(IReadOnlyList<PgWorker.Core.Writing.ValidationError> errors)
     : Exception("параметры создания кластера некорректны")
