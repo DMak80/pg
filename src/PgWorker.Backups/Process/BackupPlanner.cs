@@ -11,33 +11,41 @@ public static class BackupPlanner
         => fulls.Any(f => f.State
             is FullBackupStatus.Planned or FullBackupStatus.Running or FullBackupStatus.Uploading);
 
-    // Rolling-правило (t02): нет COMPLETED ИЛИ возраст последнего COMPLETED
-    // (finished_unix; толерантно started_unix) больше full_max_age_sec.
+    // Валидный полный (t04, arch/19 §2): COMPLETED и verify ≠ FAILED
+    // (null — не проверялся; PENDING — идёт; OK — проверен).
+    private static bool IsValid(FullBackupState f)
+        => f.State == FullBackupStatus.Completed
+           && f.Verify is not { State: BackupVerifyStatus.Failed };
+
+    // Rolling-правило (t02 + t04): нет ВАЛИДНОГО COMPLETED ИЛИ возраст последнего
+    // валидного (finished_unix; толерантно started_unix) больше full_max_age_sec.
+    // Проваленный verify свежестью не считается → воркер переснимает (AC6).
     public static bool IsDue(IReadOnlyList<FullBackupState> fulls, long fullMaxAgeSec, long nowUnix)
     {
-        var lastCompleted = fulls
-            .Where(f => f.State == FullBackupStatus.Completed)
-            .OrderByDescending(f => f.StartedUnix)
+        var lastValid = fulls
+            .Where(IsValid)
+            .OrderByDescending(f => f.FinishedUnix ?? f.StartedUnix)
             .FirstOrDefault();
-        if (lastCompleted is null)
+        if (lastValid is null)
             return true;
 
-        var finished = lastCompleted.FinishedUnix ?? lastCompleted.StartedUnix;
+        var finished = lastValid.FinishedUnix ?? lastValid.StartedUnix;
         return nowUnix - finished > fullMaxAgeSec;
     }
 
-    // Бэкофф переснятия FAILED: n = FAILED с последнего COMPLETED; окно =
-    // min(BaseSec·2^(n−1), MaxSec) от последней попытки (max started_unix
-    // после последнего COMPLETED); n = 0 → без задержки.
+    // Бэкофф переснятия: n = попытки после последнего ВАЛИДНОГО — FAILED-джобы +
+    // COMPLETED с verify=FAILED; окно = min(BaseSec·2^(n−1), MaxSec) от последней
+    // попытки (max started_unix после последнего валидного); n = 0 → без задержки.
     public static bool BackoffPassed(
         IReadOnlyList<FullBackupState> fulls, int baseSec, int maxSec, long nowUnix)
     {
-        var lastCompletedStarted = fulls
-            .Where(f => f.State == FullBackupStatus.Completed)
+        var lastValidStarted = fulls
+            .Where(IsValid)
             .Select(f => (long?)f.StartedUnix)
             .Max() ?? long.MinValue;
-        var tail = fulls.Where(f => f.StartedUnix > lastCompletedStarted).ToList();
-        var failures = tail.Count(f => f.State == FullBackupStatus.Failed);
+        var tail = fulls.Where(f => f.StartedUnix > lastValidStarted).ToList();
+        var failures = tail.Count(f =>
+            f.State == FullBackupStatus.Failed || f.Verify is { State: BackupVerifyStatus.Failed });
         if (failures == 0)
             return true;
 
