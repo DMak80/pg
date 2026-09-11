@@ -74,9 +74,14 @@ public sealed class BackupProcess(
 
         foreach (var shard in snap.Shards.Where(s => s.Dsn is not null && !s.ToRemove))
         {
-            var fulls = mine.Shards.TryGetValue(shard.Name, out var shardBackups)
-                ? shardBackups.Full
-                : (IReadOnlyList<FullBackupState>)[];
+            mine.Shards.TryGetValue(shard.Name, out var shardBackups);
+            var fulls = shardBackups?.Full ?? (IReadOnlyList<FullBackupState>)[];
+
+            // restore-гвард (t05 §3.4): шард в restore (PLANNED/RUNNING/REJOINING)
+            // демонтируется restore-процессом — контуры бэкапов его не трогают.
+            if (shardBackups?.Restores.Any(r => r.State
+                    is RestoreStatus.Planned or RestoreStatus.Running or RestoreStatus.Rejoining) == true)
+                continue;
 
             // S: супервизия активного (PLANNED — запуск/достарт; Running/Uploading —
             // поллинг UPLOADING/итог/vanished).
@@ -139,10 +144,12 @@ public sealed class BackupProcess(
             if (!hbaPatched)
                 continue;
 
-            // G3: новый полный — только без активного, при due и после бэкоффа.
+            // G3: новый полный — только без активного, при due (возраст ИЛИ
+            // отсутствие wal-ключа после restore, t05 §3.5) и после бэкоффа.
             if (BackupPlanner.HasActive(fulls))
                 continue; // инвариант одного активного — новый не создаём
-            if (!BackupPlanner.IsDue(fulls, fullMaxAgeSec, nowUnix))
+            if (!BackupPlanner.IsDue(fulls, walKeyExists: shardBackups?.Wal is not null,
+                    fullMaxAgeSec, nowUnix))
                 continue;
             if (!BackupPlanner.BackoffPassed(fulls, options.RetryBaseSec, options.RetryMaxSec, nowUnix))
                 continue; // бэкофф переснятия FAILED — следующий тик
