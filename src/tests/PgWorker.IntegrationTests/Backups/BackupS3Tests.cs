@@ -287,4 +287,81 @@ public class BackupS3Tests(MinioFixture fixture) : IAsyncLifetime
         deleted.IsSuccess.Should().BeTrue();
         listed.Value.Should().BeEmpty();
     }
+
+    // ---- t04: ListAsync / GetObjectAsync (verify) ----
+
+    // AAA: ListAsync произвольного префикса full/<id>/pg_wal/ — только объекты префикса
+    [Fact]
+    public async Task ListAsync_ПрефиксНабора_ВозвращаетТолькоЕгоОбъекты()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        using var client = SeedClient(fixture);
+        await client.PutObjectAsync(new PutObjectRequest
+        { BucketName = MinioFixture.Bucket, Key = "v1/shard1/full/20260911120000Z/pg_wal/000000010000000000000001", ContentBody = "x" }, ct);
+        await client.PutObjectAsync(new PutObjectRequest
+        { BucketName = MinioFixture.Bucket, Key = "v1/shard1/wal/000000010000000000000001", ContentBody = "x" }, ct);
+        await client.PutObjectAsync(new PutObjectRequest
+        { BucketName = MinioFixture.Bucket, Key = "v1/shard1/full/20260911120000Z/PG_VERSION", ContentBody = "x" }, ct);
+        await using var s3 = new BackupS3(fixture.Runtime());
+
+        // Act
+        var listed = await s3.ListAsync("v1", "shard1", "full/20260911120000Z/pg_wal/", ct: ct);
+
+        // Assert
+        listed.IsSuccess.Should().BeTrue();
+        listed.Value.Select(o => o.Name).Should().BeEquivalentTo(["000000010000000000000001"]);
+    }
+
+    // AAA: ListAsync пагинация на произвольном префиксе (maxKeys=2, 5 объектов)
+    [Fact]
+    public async Task ListAsync_Пагинация_СобираетВсе()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        using var client = SeedClient(fixture);
+        for (var i = 1; i <= 5; i++)
+            await client.PutObjectAsync(new PutObjectRequest
+            { BucketName = MinioFixture.Bucket, Key = $"v2/shard1/wal/0000000100000000000000{i:x2}", ContentBody = "x" }, ct);
+        await using var s3 = new BackupS3(fixture.Runtime());
+
+        // Act
+        var listed = await s3.ListAsync("v2", "shard1", "wal/", maxKeysPerTest: 2, ct: ct);
+
+        // Assert
+        listed.Value.Should().HaveCount(5);
+    }
+
+    // AAA: GetObjectAsync — содержимое history-объекта (крошечный GET)
+    [Fact]
+    public async Task GetObject_ОтдаетСодержимое()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        using var client = SeedClient(fixture);
+        await client.PutObjectAsync(new PutObjectRequest
+        { BucketName = MinioFixture.Bucket, Key = "v3/shard1/wal/00000002.history", ContentBody = "1\t0/2000000\n" }, ct);
+        await using var s3 = new BackupS3(fixture.Runtime());
+
+        // Act
+        var got = await s3.GetObjectAsync("v3", "shard1", "wal/00000002.history", ct);
+
+        // Assert
+        got.IsSuccess.Should().BeTrue();
+        got.Value.Should().Be("1\t0/2000000\n");
+    }
+
+    // AAA: GetObjectAsync несуществующего — Failed (не исключение мимо Result)
+    [Fact]
+    public async Task GetObject_Отсутствует_Failed()
+    {
+        // Arrange
+        await using var s3 = new BackupS3(fixture.Runtime());
+
+        // Act
+        var got = await s3.GetObjectAsync("v4", "shard1", "wal/00000009.history", TestContext.Current.CancellationToken);
+
+        // Assert
+        got.IsSuccess.Should().BeFalse();
+    }
 }

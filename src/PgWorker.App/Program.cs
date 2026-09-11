@@ -567,6 +567,14 @@ file sealed class ReloadableBackupS3(IOptionsMonitor<PgWorkerOptions> options) :
         IReadOnlyList<string> keys, CancellationToken ct = default)
         => await (await CurrentAsync()).DeleteKeysAsync(keys, ct);
 
+    public async Task<PgWorker.Core.Result<IReadOnlyList<PgWorker.Backups.WalObject>>> ListAsync(
+        string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
+        => await (await CurrentAsync()).ListAsync(cluster, shard, prefix, maxKeysPerTest, ct);
+
+    public async Task<PgWorker.Core.Result<string>> GetObjectAsync(
+        string cluster, string shard, string key, CancellationToken ct = default)
+        => await (await CurrentAsync()).GetObjectAsync(cluster, shard, key, ct);
+
     public async ValueTask DisposeAsync()
     {
         BackupS3? client;
@@ -603,6 +611,16 @@ file sealed class ReloadableBackupS3(IOptionsMonitor<PgWorkerOptions> options) :
         public Task<PgWorker.Core.Result> DeleteKeysAsync(
             IReadOnlyList<string> keys, CancellationToken ct = default)
             => Task.FromResult(PgWorker.Core.Result.Failed(
+                new ApplicationException("Backups:Enabled=false")));
+
+        public Task<PgWorker.Core.Result<IReadOnlyList<PgWorker.Backups.WalObject>>> ListAsync(
+            string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
+            => Task.FromResult(PgWorker.Core.Result<IReadOnlyList<PgWorker.Backups.WalObject>>.Failed(
+                new ApplicationException("Backups:Enabled=false")));
+
+        public Task<PgWorker.Core.Result<string>> GetObjectAsync(
+            string cluster, string shard, string key, CancellationToken ct = default)
+            => Task.FromResult(PgWorker.Core.Result<string>.Failed(
                 new ApplicationException("Backups:Enabled=false")));
     }
 }
