@@ -192,6 +192,16 @@ public class E2eBackupScenarios
             return current.Value is { } kv && kv.Value != oldPassword
                 && await GetOrNullAsync($"/pgworker/rotations/{cluster}") is null;
         }, TimeSpan.FromSeconds(240), ct); // t03: фон тяжелее (WAL-агенты) — 120 c тесно
+        if (!rotated)
+        {
+            // диагностика: журнал ротации (last_error) + живая заявка + пароль
+            var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
+            var ticketKv = await GetOrNullAsync($"/pgworker/rotations/{cluster}");
+            var pwKv = await GetOrNullAsync($"/clusters/{cluster}/backup_password");
+            throw new ApplicationException(
+                $"ротация не завершилась: journal=[{workKv?.Value[..Math.Min(400, workKv.Value.Length)]}] " +
+                $"ticket=[{ticketKv?.Value ?? "-"}] password_changed={(pwKv!.Value != oldPassword)}");
+        }
         rotated.Should().BeTrue("ротация должна перезаписать backup_password и закрыть заявку");
         var newPassword = (await G.GetAsync(Endpoint, $"/clusters/{cluster}/backup_password", ct)).Value!.Value;
 
