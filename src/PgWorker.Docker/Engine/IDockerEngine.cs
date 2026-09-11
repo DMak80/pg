@@ -86,8 +86,11 @@ public sealed record DockerTask(string Id, string NodeId, string State, string? 
 public sealed record PortMap(int ContainerPort, int HostPort);
 
 // Спецификация контейнера ноды (env из NodeConfigBuilders, volume данных, publish-порты).
-// Cmd — опциональная команда (не задаётся драйвером: у образа pgworker-node свой
-// entrypoint; используется интеграционными тестами для alpine-контейнеров).
+// Cmd — опциональная ПОЛНАЯ замена команды контейнера: BuildContainerBody при
+// заданном Cmd сбрасывает ENTRYPOINT образа (Entrypoint=[]), т.е. Cmd выполняется
+// как есть, а не аргументами образного entrypoint. Прод-пользователь — WAL-агент
+// бэкапов (t03: inline bash pg_receivewal+mc поверх образа pgworker-backup с
+// ENTRYPOINT-джобом t02); тесты — alpine-контейнеры интеграций.
 // Network/NetworkAliases — общая docker-сеть нод кластера (внутренние адреса
 // Patroni-репликации; alias = имя ноды): вне user-defined сети контейнеры друг
 // друга по hostname не резолвят.
