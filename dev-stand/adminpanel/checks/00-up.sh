@@ -65,7 +65,8 @@ for i in $(seq 1 60); do curl -fsS http://localhost:9000/minio/health/live >/dev
 curl -fsS http://localhost:9000/minio/health/live >/dev/null 2>&1 \
   || { echo "  ❌ as-minio не стал здоровым за 60 c (docker compose logs minio)"; exit 1; }
 minio_net="$(docker inspect as-minio -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}}{{end}}')"
-docker run --rm --entrypoint /bin/sh --network "$minio_net" minio/mc:latest \
+#      (mc запинен — как и WAL-агенты E2E; зеркало в локальном registry, см. docs/runbook.md)
+docker run --rm --entrypoint /bin/sh --network "$minio_net" minio/mc:RELEASE.2025-08-13T08-35-41Z \
   -c "mc alias set standup http://as-minio:9000 minioadmin minioadmin >/dev/null && mc mb --ignore-existing standup/pgworker-backups >/dev/null" \
   || { echo "  ❌ bucket pgworker-backups не создан (mc против as-minio)"; exit 1; }
 echo "  as-minio жив, bucket pgworker-backups готов (:9000 API / :9001 консоль)"
