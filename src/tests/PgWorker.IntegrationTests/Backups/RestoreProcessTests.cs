@@ -61,13 +61,49 @@ public class RestoreProcessTests(EtcdFixture fixture)
             }), null, ct);
     }
 
-    private RestoreProcess BuildProcess(FakeBackupS3 s3, IClusterDriver driver, TimeProvider? clock = null)
+    private RestoreProcess BuildProcess(FakeBackupS3 s3, IClusterDriver driver,
+        TimeProvider? clock = null, HttpMessageHandler? patroni = null)
         => new(fixture.Gateway, [fixture.Endpoint], driver, s3, _claims,
             new WorkJournal(fixture.Gateway, [fixture.Endpoint]), Options(),
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
             new EtcdEndpoints([fixture.Endpoint]), new StubAppSecret(),
-            new ShardProbe(new HttpClient()), new ThresholdsOptions(600, 1800),
+            new ShardProbe(new HttpClient(patroni ?? new DeadHandler())),
+            new ThresholdsOptions(600, 1800, PatroniBootSec: 600),
             clock ?? TimeProvider.System);
+
+    // Patroni-фейк: /cluster отвечает членами шарда (Ready — running/старт).
+    private sealed class PatroniHandler : HttpMessageHandler
+    {
+        public bool Ready { get; set; }
+
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken ct)
+        {
+            var json = Ready
+                ? """{"members":[{"name":"shard1a","state":"running","role":"leader"},{"name":"shard1b","state":"running","role":"replica"}]}"""
+                : """{"members":[{"name":"shard1a","state":"start","role":"leader"}]}""";
+            return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
+            {
+                Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json"),
+            });
+        }
+    }
+
+    // Мёртвый обработчик (плейсхолдер пробы там, где Patroni не зовётся).
+    private sealed class DeadHandler : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(
+            HttpRequestMessage request, CancellationToken ct)
+            => Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.ServiceUnavailable));
+    }
+
+    // Фиксированные часы: управление бюджетом rejoin-ожидания (AAA).
+    private sealed class MutableClock : TimeProvider
+    {
+        public DateTimeOffset Now { get; set; } = new(2026, 9, 11, 12, 0, 0, TimeSpan.Zero);
+
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
 
     // Заявка restore: PUT PLANNED-ключа в etcd + тождественный объект в
     // backsupply-параметре тика (ReconcileLoop парсит префикс один раз).
@@ -543,6 +579,133 @@ public class RestoreProcessTests(EtcdFixture fixture)
             .State.Should().Be(RestoreStatus.Running);
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/c1", ct)).Value!.Value
             .Should().Contain("docker-unavailable");
+    }
+
+    // ── REJOINING: ensure нод + пробы + COMPLETED ──
+
+    [Fact]
+    public async Task Rejoin_ensure_первой_ноды_и_ожидание_пробы()
+    {
+        // Arrange — REJOINING после успешного джоба; Patroni отвечает «start»
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
+        var patroni = new PatroniHandler { Ready = false };
+        var process = BuildProcess(new FakeBackupS3(), driver, patroni: patroni);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911122000Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Rejoining);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        var result = await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct);
+
+        // Assert — первая нода ensured, статус REJOINING (InProgress), реплика ещё не поднималась
+        result.IsSuccess.Should().BeTrue(result.Error?.ToString());
+        result.Value.Should().Be(ProcessOutcome.InProgress);
+        inner.EnsuredNodes.Should().Contain("shard1/shard1a");
+        inner.EnsuredNodes.Should().NotContain("shard1/shard1b");
+        (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
+            .State.Should().Be(RestoreStatus.Rejoining);
+    }
+
+    [Fact]
+    public async Task Rejoin_все_ноды_running_статусы_RUNNING_и_COMPLETED_wal_удалён()
+    {
+        // Arrange — REJOINING; Patroni: обе ноды running; wal-ключ и scope живы
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        await SeedTwoNodeAllocAsync();
+        await fixture.Gateway.PutAsync(fixture.Endpoint, "/pgworker/backups/c1/shard1/wal",
+            """{"state":"ACTIVE","slot":"s","master_node":"shard1a","chain_start_segment":"000000010000000000000002","last_received_segment":"000000010000000000000004","last_uploaded_segment":"000000010000000000000004","last_uploaded_unix":1}""",
+            null, ct);
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver,
+            patroni: new PatroniHandler { Ready = true });
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911122001Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Rejoining);
+        op = op with { RestoredToLsn = "0/42" };
+        await fixture.Gateway.PutAsync(fixture.Endpoint,
+            BackupNames.RestoreKey("c1", "shard1", op.Id), RestoreStatusJson.Serialize(op), null, ct);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        (await process.TickAsync(BuildTwoNodeSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — ноды RUNNING, заявка COMPLETED (finished+lsn), wal-ключ удалён (AC4)
+        inner.EnsuredNodes.Should().BeEquivalentTo(["shard1/shard1a", "shard1/shard1b"]);
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/clusters/c1/shards/shard1/nodes/shard1a/state", ct))
+            .Value!.Value.Should().Be("RUNNING");
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/clusters/c1/shards/shard1/nodes/shard1b/state", ct))
+            .Value!.Value.Should().Be("RUNNING");
+        var completed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        completed.State.Should().Be(RestoreStatus.Completed);
+        completed.FinishedUnix.Should().BeGreaterThan(0);
+        completed.RestoredToLsn.Should().Be("0/42");
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/backups/c1/shard1/wal", ct))
+            .Value.Should().BeNull("сброс цепочки — переснятие полного планировщиком (AC4)");
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/c1", ct)).Value!.Value
+            .Should().Contain("done/shard1/");
+    }
+
+    [Fact]
+    public async Task Rejoin_сверх_PatroniBootSec_permanent_FAILED()
+    {
+        // Arrange — часы фиксированные: первый тик фиксирует since, второй
+        // (после +700 c > 600 бюджет) — бюджет исчерпан
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var clock = new MutableClock();
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver, clock: clock,
+            patroni: new PatroniHandler { Ready = false });
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911122002Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Rejoining);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act — тик 1: ожидание (since зафиксирован); тик 2 после бюджета
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .Value.Should().Be(ProcessOutcome.InProgress);
+        clock.Now = clock.Now.AddSeconds(700);
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — permanent FAILED «Patroni не поднялся»
+        var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        failed.State.Should().Be(RestoreStatus.Failed);
+        failed.Error.Should().Contain("Patroni не поднялся");
+    }
+
+    [Fact]
+    public async Task Takeover_новый_инстанс_продолжает_по_статусу()
+    {
+        // Arrange — инстанс A начинает rejoin (probe не готов), «умирает»;
+        // инстанс B (свежий, без in-memory) видит REJOINING в etcd
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        await SeedTwoNodeAllocAsync();
+        var innerA = new StubScaleDriver();
+        var processA = BuildProcess(new FakeBackupS3(), new TestDriver(innerA, new FakeBackupEngine()),
+            patroni: new PatroniHandler { Ready = false });
+        await SeedRestoreAsync("c1", "shard1", "20260911122003Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Rejoining);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+        (await processA.TickAsync(BuildTwoNodeSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .Value.Should().Be(ProcessOutcome.InProgress);
+
+        // Act — инстанс B продолжает: probe готов → доводит до COMPLETED
+        var innerB = new StubScaleDriver();
+        var processB = BuildProcess(new FakeBackupS3(), new TestDriver(innerB, new FakeBackupEngine()),
+            patroni: new PatroniHandler { Ready = true });
+        (await processB.TickAsync(BuildTwoNodeSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — продолжение с REJOINING (ensure-вызовы были, статус финальный)
+        innerB.EnsuredNodes.Should().NotBeEmpty("инстанс B продолжает ensure по etcd-статусу");
+        (await ReadRestoresAsync("c1", "shard1")).Single()
+            .State.Should().Be(RestoreStatus.Completed);
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/backups/c1/shard1/wal", ct))
+            .Value.Should().BeNull();
     }
 
     // ── Каркас тика ──

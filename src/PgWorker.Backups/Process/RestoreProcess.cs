@@ -420,11 +420,152 @@ public sealed class RestoreProcess(
     private static string SrcShard(RestoreOperationState op)
         => op.Source.Split('/', 2)[1];
 
-    // ── REJOINING (Task 10) — стаб до соседней задачи ──
+    // ── REJOINING: ensure нод + Patroni-пробы + COMPLETED (§3.4, AC4) ──
 
-    private Task<Result<ProcessOutcome>> RejoinAsync(
+    // Трекер ожидания Patroni (диагностика takeover: состояние в etcd-статусе
+    // заявки, трекер — только бюджет ожидания; прецедент _patroniWaitSince).
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, long> _rejoinWaitSince = new();
+
+    private async Task<Result<ProcessOutcome>> RejoinAsync(
         ClusterSnapshot snap, ShardSpec shard, RestoreOperationState op, CancellationToken ct)
-        => Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.InProgress));
+    {
+        var cluster = snap.Config.Cluster;
+        var waitKey = $"{cluster}/{shard.Name}/{op.Id}";
+
+        // Креды (P1.5-копия): ensured тройка — env нод (mover/bucket_admin —
+        // канонические ключи etcd).
+        var creds = await appSecret.EnsureAsync(cluster, snap.Config, ct);
+        if (!creds.IsSuccess)
+            return Result<ProcessOutcome>.Failed(creds.Error!);
+        var clusterSecrets = secrets with
+        {
+            BucketAdminUser = creds.Value.BucketAdmin.User,
+            BucketAdminPassword = creds.Value.BucketAdmin.Password,
+            MoverPassword = creds.Value.MoverPassword,
+        };
+
+        // Адреса/топология/заявка ресурсов (portalloc жив — restore его не трогал).
+        var addresses = await ReadPortAllocAsync(cluster, ct);
+        if (!addresses.IsSuccess)
+            return await TransientAsync(cluster, $"portalloc-unavailable/{shard.Name}/{op.Id}",
+                addresses.Error!.Message, ct);
+        var topology = Topology(cluster, shard.Name, addresses.Value);
+        var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
+
+        // Первая нода — на volume с восстановленным PGDATA (джоб t05 уже
+        // записал его в pgw-<C>-<X>-<n>-data; docker смонтирует существующий).
+        var ordered = shard.Nodes.Select(n => n.Name).OrderBy(n => n, StringComparer.Ordinal).ToList();
+        var first = ordered[0];
+        if (!addresses.Value.TryGetValue($"{shard.Name}/{first}", out var firstAddr))
+        {
+            await FailPermanentAsync(cluster, shard.Name, op,
+                $"нода {first} шарда {shard.Name} не найдена в portalloc", ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
+        var firstEnsure = await driver.EnsureNodeAsync(
+            topology, first, firstAddr, clusterSecrets, etcdEndpoints, resources, ct);
+        if (!firstEnsure.IsSuccess)
+            return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
+                firstEnsure.Error!.Message, ct);
+
+        // Идентифицирующая Patroni-проба (P2.2-образец): лидер восстановленного
+        // шарда должен отвечать running до подъёма реплик.
+        var members = await probe.GetClusterAsync(firstAddr, ct);
+        var firstReady = members.IsSuccess
+                         && members.Value.Any(m => m.Name == first && m.State == "running");
+        if (!firstReady)
+            return await RejoinWaitAsync(cluster, shard.Name, op, waitKey, ct);
+
+        // Остальные ноды — чистыми (драйвер создаст volume, реплики догоняются
+        // pg_basebackup от лидера).
+        foreach (var node in ordered.Skip(1))
+        {
+            if (!addresses.Value.TryGetValue($"{shard.Name}/{node}", out var addr))
+            {
+                await FailPermanentAsync(cluster, shard.Name, op,
+                    $"нода {node} шарда {shard.Name} не найдена в portalloc", ct);
+                return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+            }
+            var ensured = await driver.EnsureNodeAsync(
+                topology, node, addr, clusterSecrets, etcdEndpoints, resources, ct);
+            if (!ensured.IsSuccess)
+                return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
+                    ensured.Error!.Message, ct);
+        }
+
+        // Пробы всех нод running (тот же трекер-бюджет).
+        var clusterState = await probe.GetClusterAsync(firstAddr, ct);
+        var allReady = clusterState.IsSuccess
+                       && ordered.All(n => clusterState.Value.Any(m => m.Name == n && m.State == "running"));
+        if (!allReady)
+            return await RejoinWaitAsync(cluster, shard.Name, op, waitKey, ct);
+
+        // COMPLETED (AC4): ноды RUNNING; wal-ключ шарда удаляется — сброс цепочки,
+        // планировщик t02 немедленно переснимает полный; мастер-ключ обновит сам
+        // лидер (lease-скрипт P11) — RestoreProcess его не пишет.
+        foreach (var node in ordered)
+        {
+            var put = await etcd.PutAsync(endpoints[0],
+                $"/clusters/{cluster}/shards/{shard.Name}/nodes/{node}/state", "RUNNING", null, ct);
+            if (!put.IsSuccess)
+                return Result<ProcessOutcome>.Failed(put.Error!);
+        }
+
+        var completed = op with
+        {
+            State = RestoreStatus.Completed,
+            FinishedUnix = NowUnix(),
+        };
+        var putDone = await PutStatusAsync(cluster, shard.Name, completed, ct);
+        if (!putDone.IsSuccess)
+            return Result<ProcessOutcome>.Failed(putDone.Error!);
+        var delWal = await etcd.DeleteAsync(endpoints[0],
+            $"/pgworker/backups/{cluster}/{shard.Name}/wal", prefix: false, ct);
+        if (!delWal.IsSuccess)
+            return Result<ProcessOutcome>.Failed(delWal.Error!);
+        await journal.WritePhaseAsync(cluster, Op, $"done/{shard.Name}/{op.Id}", claims.InstanceId, null, ct);
+        _rejoinWaitSince.TryRemove(waitKey, out _);
+        return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+    }
+
+    // Бюджет ожидания Patroni (PatroniBootSec): не готово → InProgress; исчерпан
+    // → permanent-FAILED (трекер снять — новая заявка получает полный бюджет).
+    private async Task<Result<ProcessOutcome>> RejoinWaitAsync(
+        string cluster, string shard, RestoreOperationState op, string waitKey, CancellationToken ct)
+    {
+        var now = NowUnix();
+        var since = _rejoinWaitSince.GetOrAdd(waitKey, now);
+        if (now - since > thresholds.PatroniBootSec)
+        {
+            _rejoinWaitSince.TryRemove(waitKey, out _);
+            await FailPermanentAsync(cluster, shard, op,
+                $"Patroni не поднялся за {thresholds.PatroniBootSec} с", ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
+
+        return await TransientAsync(cluster, $"rejoin-wait/{shard}/{op.Id}", null, ct);
+    }
+
+    // Приватная копия ProvisioningProcess.Topology (прецедент кодовой базы).
+    private static ShardTopology Topology(
+        string cluster, string shard, IReadOnlyDictionary<string, NodeAddress> addresses)
+        => new(cluster, shard, $"{cluster}-{shard}",
+            addresses
+                .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
+                .ToDictionary(p => p.Key.Split('/')[1], p => p.Value));
+
+    // Упрощённая копия ProvisioningProcess.ReadShardResourcesAsync: заявка
+    // request_cpu/request_mem scope; нет/битые → null (лимиты не заданы).
+    private async Task<NodeResources?> ReadShardResourcesAsync(
+        string cluster, string shard, CancellationToken ct)
+    {
+        var scope = $"{cluster}-{shard}";
+        var cpu = await etcd.GetAsync(endpoints[0], $"/service/{scope}/request_cpu", ct);
+        if (!cpu.IsSuccess)
+            return null;
+        var mem = await etcd.GetAsync(endpoints[0], $"/service/{scope}/request_mem", ct);
+        return mem.IsSuccess ? NodeResourcesParser.Parse(cpu.Value?.Value, mem.Value?.Value) : null;
+    }
 
     // ── Хелперы etcd/журнала ──
 
