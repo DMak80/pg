@@ -162,6 +162,54 @@ public class BackupsParserTests
         running.WalStartSegment.Should().BeNull();
     }
 
+    // AAA: verify.error читается из full-ключа; interval_sec — из policy-ключа
+    [Fact]
+    public void Parse_VerifyErrorИIntervalSec_Читаются()
+    {
+        // Arrange
+        var kvs = new[]
+        {
+            new Kv("/pgworker/backups/c1/policy",
+                """{"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":3600}}""", 1),
+            new Kv("/pgworker/backups/c1/shard1/full/20260911120000Z",
+                """{"state":"COMPLETED","node":"n1","role":"replica","started_unix":1757500000,"finished_unix":1757500300,"verify":{"state":"FAILED","checked_unix":1757500600,"error":"pg_verifybackup failed"}}""", 2),
+        };
+
+        // Act
+        var parsed = BackupsParser.Parse(kvs, out var errors);
+
+        // Assert
+        errors.Should().BeEmpty();
+        var full = parsed.Value.Single(c => c.Cluster == "c1").Shards["shard1"].Full.Single();
+        full.Verify!.Error.Should().Be("pg_verifybackup failed");
+        full.Verify.State.Should().Be(BackupVerifyStatus.Failed);
+        parsed.Value.Single(c => c.Cluster == "c1").Policy!.VerifyIntervalSec.Should().Be(3600);
+    }
+
+    // AAA: старые записи (verify без error, policy без interval_sec) парсятся — обратная совместимость
+    [Fact]
+    public void Parse_СтарыеЗаписи_БезНовыхПолей_Ок()
+    {
+        // Arrange
+        var kvs = new[]
+        {
+            new Kv("/pgworker/backups/c2/policy",
+                """{"full_max_age_sec":86400,"verify":{"on_create":false}}""", 1),
+            new Kv("/pgworker/backups/c2/shard1/full/20260911120000Z",
+                """{"state":"COMPLETED","node":"n1","role":"replica","started_unix":1757500000,"verify":{"state":"OK","checked_unix":1757500600}}""", 2),
+        };
+
+        // Act
+        var parsed = BackupsParser.Parse(kvs, out var errors);
+
+        // Assert — null, а не null-политика: дефолт подставляет потребитель
+        errors.Should().BeEmpty();
+        var cluster = parsed.Value.Single(c => c.Cluster == "c2");
+        cluster.Policy.Should().NotBeNull();
+        cluster.Policy!.VerifyIntervalSec.Should().BeNull();
+        cluster.Shards["shard1"].Full.Single().Verify!.Error.Should().BeNull();
+    }
+
     [Fact]
     public void Parse_PolicyValidJsonNotObject_SkippedWithErrorNoThrow()
     {

@@ -37,7 +37,10 @@ public sealed record BackupsRuntimeOptions(
     int RetentionKeepFailed = 20,
     long QuotaBytes = 0,
     int QuotaWarnPercent = 80,
-    int QuotaCritPercent = 90)
+    int QuotaCritPercent = 90,
+    // t04 (arch/19 §4/§8): период перепроверки оставшихся полных; policy-ключ
+    // verify.interval_sec перекрывает; <= 0 — периодика выключена.
+    long VerifyIntervalSec = 604800)
 {
     /// <summary>Endpoint S3 для env контейнера агента/джоба (t03, §7: адресация
     /// env, не строка команды; advertised-fallback).</summary>

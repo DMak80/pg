@@ -32,6 +32,8 @@ public static class BackupStatusJson
             var v = new Dictionary<string, object?> { ["state"] = VerifyName(verify.State) };
             if (verify.CheckedUnix is { } checkedUnix)
                 v["checked_unix"] = checkedUnix;
+            if (verify.Error is { } verifyError)
+                v["error"] = verifyError;
             o["verify"] = v;
         }
 
