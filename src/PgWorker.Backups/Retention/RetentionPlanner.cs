@@ -10,6 +10,19 @@ public sealed record RetentionSelection(
     IReadOnlySet<string> Keep,
     IReadOnlyList<string> Delete);
 
+/// <summary>Вердикт занятости хранилища: OK/WARN/CRIT относительно квоты (t06).</summary>
+public enum StorageState
+{
+    Ok,
+    Warn,
+    Crit,
+}
+
+/// <summary>Результат EvaluateStorage: state + фактические числа; UsedPercent —
+/// null при незаданной квоте.</summary>
+public sealed record StorageVerdict(
+    StorageState State, long UsedBytes, long QuotaBytes, double? UsedPercent);
+
 /// <summary>Чистые функции ретенции (t06, arch/19 §4/§5): без I/O, момент —
 /// аргументом (TimeProvider не нужен). Полное юнит-покрытие — риск «удалили
 /// нужное» закрывается тестами детерминированности (spec §2 п.5).</summary>
@@ -72,6 +85,62 @@ public static partial class RetentionPlanner
 
         return new RetentionSelection(keep, delete);
     }
+
+    /// <summary>План чистки WAL (spec §3.1): сегменты строго ниже cutoff (TLI
+    /// ниже ИЛИ тот же TLI с позицией log·256+seg ниже cutoff) и `.history`
+    /// TLI ниже стартового — на удаление. Сам cutoff, сегменты выше/новее,
+    /// `.history` cutoff-TLI и новее, `.partial` и нераспознаваемые имена —
+    /// НЕ входят (консервативно: объект TLI&gt;cutoff позицией ниже cutoff не
+    /// трогаем — контроль t03 его игнорирует, удалять незачем).</summary>
+    public static IReadOnlyList<string> SelectWalForDeletion(
+        IReadOnlyList<string> objectNames, WalFileName cutoff)
+    {
+        var result = new List<string>();
+        foreach (var name in objectNames)
+        {
+            if (WalFileName.TryParse(name) is { } segment)
+            {
+                var below = segment.Tli < cutoff.Tli
+                    || (segment.Tli == cutoff.Tli
+                        && (long)(segment.Log * WalFileName.SegsPerLog + segment.Seg)
+                           < (long)(cutoff.Log * WalFileName.SegsPerLog + cutoff.Seg));
+                if (below)
+                    result.Add(name);
+            }
+            else if (WalFileName.TryParseHistory(name) is { } tli && tli < cutoff.Tli)
+                result.Add(name); // .history старых TLI — сегменты их диапазонов удалены
+        }
+
+        return result;
+    }
+
+    /// <summary>Вердикт занятости (spec §3.1): квота 0/не задана → OK без
+    /// процентов; иначе usedPercent &gt;= crit → CRIT, &gt;= warn → WARN, иначе OK.</summary>
+    public static StorageVerdict EvaluateStorage(long usedBytes, long quotaBytes, int warnPercent, int critPercent)
+    {
+        if (quotaBytes <= 0)
+            return new StorageVerdict(StorageState.Ok, usedBytes, 0, null);
+
+        var percent = Math.Round(usedBytes * 100.0 / quotaBytes, 2);
+        var state = percent >= critPercent ? StorageState.Crit
+            : percent >= warnPercent ? StorageState.Warn
+            : StorageState.Ok;
+        return new StorageVerdict(state, usedBytes, quotaBytes, percent);
+    }
+
+    /// <summary>Гигиена FAILED-истории (spec §3.3 п.5): держать последние
+    /// keepFailed по started_unix, старше — del. Бэкофф t02 не ломается: n
+    /// остаётся ≤ keepFailed, а BaseSec·2^(n−1) упирается в MaxSec раньше
+    /// границы (AC5).</summary>
+    public static IReadOnlyList<string> SelectFailedForPrune(
+        IReadOnlyList<FullBackupState> fulls, int keepFailed)
+        => fulls
+            .Where(f => f.State == FullBackupStatus.Failed)
+            .OrderByDescending(f => f.StartedUnix)
+            .Skip(Math.Max(0, keepFailed))
+            .OrderBy(f => f.StartedUnix) // старейшие вперёд (порядок исполнения)
+            .Select(f => f.Id)
+            .ToList();
 
     // Группа ISO-недели: (ISO-week-year, номер недели). Год — ОБЯЗАТЕЛЬНО
     // ISOWeek.GetYear, НЕ календарный d.Year: дни на стыке календарных годов

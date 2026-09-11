@@ -374,4 +374,169 @@ public class RetentionPlannerTests
         keep.Should().BeEquivalentTo(["feb28", "feb01"]);
         delete.Should().BeEmpty();
     }
+
+    // ---- SelectWalForDeletion (AC4, юнит-часть) ----
+
+    // Строго ниже cutoff — на удаление; сам cutoff/выше/дальше — не входят.
+    [Fact]
+    public void Сегменты_ниже_cutoff_удалены()
+    {
+        // Arrange — cutoff = tli1/log0/seg5; объекты seg3, seg4 (ниже), seg5
+        // (сам cutoff), seg6, segFF (выше)
+        var cutoff = new WalFileName(1, 0, 5);
+        var names = new[]
+        {
+            "000000010000000000000003",
+            "000000010000000000000004",
+            "000000010000000000000005",
+            "000000010000000000000006",
+            "0000000100000000000000FF",
+        };
+
+        // Act — план чистки
+        var doomed = RetentionPlanner.SelectWalForDeletion(names, cutoff);
+
+        // Assert — только строго нижние
+        doomed.Should().BeEquivalentTo([
+            "000000010000000000000003",
+            "000000010000000000000004",
+        ]);
+    }
+
+    // Переход log-границы: позиция сравнивается как log·256+seg, а не посегментно.
+    [Fact]
+    public void Граница_log_сег_FF()
+    {
+        // Arrange — cutoff = tli1/log1/seg0; FF (log0/seg255) — позиция 255 < 256
+        var cutoff = new WalFileName(1, 1, 0);
+        var names = new[] { "0000000100000000000000FF", "000000010000000100000000" };
+
+        // Act — план чистки
+        var doomed = RetentionPlanner.SelectWalForDeletion(names, cutoff);
+
+        // Assert — FF ниже cutoff, сам cutoff (log1/seg0) — нет
+        doomed.Should().BeEquivalentTo(["0000000100000000000000FF"]);
+    }
+
+    // TLI ниже — удаляются; TLI выше позицией ниже cutoff — НЕ трогаются
+    // (консервативность: контроль t03 объекты чужого TLI игнорирует).
+    [Fact]
+    public void TLI_ниже_удалены_выше_не_тронуты()
+    {
+        // Arrange — cutoff = tli2/log0/seg3; tli1 ниже, tli3 выше (позиция ниже)
+        var cutoff = new WalFileName(2, 0, 3);
+        var names = new[]
+        {
+            "0000000100000000000000AA",
+            "000000030000000000000001",
+        };
+
+        // Act — план чистки
+        var doomed = RetentionPlanner.SelectWalForDeletion(names, cutoff);
+
+        // Assert — удалён только tli1
+        doomed.Should().BeEquivalentTo(["0000000100000000000000AA"]);
+    }
+
+    // .history старых TLI — на удаление; cutoff-TLI и новее, .partial, мусор — живы.
+    [Fact]
+    public void History_старых_TLI_удалены()
+    {
+        // Arrange — cutoff tli=2: history1 (ниже) удалён, history2/history3 живы;
+        // .partial и нераспознаваемое имя не трогаются
+        var cutoff = new WalFileName(2, 0, 0);
+        var names = new[]
+        {
+            "00000001.history",
+            "00000002.history",
+            "00000003.history",
+            "000000010000000000000005.partial",
+            "not-a-wal-name",
+        };
+
+        // Act — план чистки
+        var doomed = RetentionPlanner.SelectWalForDeletion(names, cutoff);
+
+        // Assert — только .history tli1
+        doomed.Should().BeEquivalentTo(["00000001.history"]);
+    }
+
+    // ---- EvaluateStorage (AC6, юнит-часть) ----
+
+    // Квота 0/не задана → OK без процентов.
+    [Fact]
+    public void Квота_0_без_процентов()
+    {
+        // Arrange — used=123, квота не задана
+
+        // Act — вердикт
+        var verdict = RetentionPlanner.EvaluateStorage(123, 0, 80, 90);
+
+        // Assert — Ok, квота 0, проценты отсутствуют
+        verdict.State.Should().Be(StorageState.Ok);
+        verdict.QuotaBytes.Should().Be(0);
+        verdict.UsedPercent.Should().BeNull();
+        verdict.UsedBytes.Should().Be(123);
+    }
+
+    // Пороги: >= warn → WARN, >= crit → CRIT, ниже — OK (границы включительно).
+    [Theory]
+    [InlineData(799, StorageState.Ok)]   // 79.9%
+    [InlineData(800, StorageState.Warn)] // ровно 80%
+    [InlineData(900, StorageState.Crit)] // ровно 90%
+    [InlineData(990, StorageState.Crit)] // 99%
+    public void Пороги_Warn_Crit(long used, StorageState expected)
+    {
+        // Arrange — квота 1000, пороги 80/90
+
+        // Act — вердикт
+        var verdict = RetentionPlanner.EvaluateStorage(used, 1000, 80, 90);
+
+        // Assert — состояние по порогу
+        verdict.State.Should().Be(expected);
+        verdict.UsedPercent.Should().NotBeNull();
+        verdict.QuotaBytes.Should().Be(1000);
+    }
+
+    // ---- SelectFailedForPrune (AC5) ----
+
+    // Держим последние keepFailed, старейшие — на удаление.
+    [Fact]
+    public void Prune_держит_последние_KeepFailed()
+    {
+        // Arrange — 30 FAILED с нарастающим started_unix, keepFailed=20
+        var fulls = new List<FullBackupState>();
+        for (var i = 0; i < 30; i++)
+            fulls.Add(Full($"f{i:00}", Now.AddMinutes(-60 + i)) with { State = FullBackupStatus.Failed });
+
+        // Act — план чистки
+        var pruned = RetentionPlanner.SelectFailedForPrune(fulls, keepFailed: 20);
+
+        // Assert — ровно 10 старейших, по возрастанию started_unix
+        pruned.Should().HaveCount(10);
+        pruned.Should().BeInAscendingOrder(x => x, because: "порядок исполнения — старейшие вперёд");
+        pruned[0].Should().Be("f00");
+        pruned[^1].Should().Be("f09");
+    }
+
+    // AAA: чистка FAILED до KeepFailed не сбрасывает бэкофф t02 — окно попытки
+    // остаётся MaxSec-capped и на полной, и на почищенной истории (AC5).
+    [Fact]
+    public void Prune_до_KeepFailed_не_меняет_BackoffPassed()
+    {
+        // Arrange — 30 FAILED после последнего COMPLETED (BaseSec=300, MaxSec=3600)
+        var fulls = new List<FullBackupState> { Full("done", Now.AddDays(-3)) };
+        for (var i = 0; i < 30; i++)
+            fulls.Add(Full($"f{i:00}", Now.AddMinutes(-60 + i)) with { State = FullBackupStatus.Failed });
+        var prunedIds = RetentionPlanner.SelectFailedForPrune(fulls, keepFailed: 20).ToHashSet();
+        var pruned = fulls.Where(f => !prunedIds.Contains(f.Id)).ToList();
+        var nowUnix = Unix(Now.AddMinutes(10));
+
+        // Act — бэкофф на истории до/после чистки
+        var before = BackupPlanner.BackoffPassed(fulls, 300, 3600, nowUnix);
+        var after = BackupPlanner.BackoffPassed(pruned, 300, 3600, nowUnix);
+
+        // Assert — вердикт одинаков (n=30 и n=20 дают одинаково capped-окно)
+        before.Should().Be(after);
+    }
 }
