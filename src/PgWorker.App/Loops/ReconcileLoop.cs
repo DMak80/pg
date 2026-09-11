@@ -188,7 +188,7 @@ internal sealed class ReconcileLoop(
                     break;
 
                 default:
-                    var supervised = await RunSuperviseAsync(cluster, snap, ct);
+                    var supervised = await RunSuperviseAsync(cluster, snap, backups, ct);
                     if (supervised is null)
                         break;
 
@@ -254,7 +254,7 @@ internal sealed class ReconcileLoop(
                     // События эвакуации: полностью мёртвые шарды (spec §6.4 D/E).
                     foreach (var deadShard in supervised.DeadShards)
                         await RunClusterOpAsync(cluster, $"evacuate/{deadShard}",
-                            () => processes.EvacuateAsync(snap, deadShard, ct), ct);
+                            () => processes.EvacuateAsync(snap, deadShard, backups, ct), ct);
 
                     // Заявки переездов бакетов (t01, spec §5.3): после надзора и
                     // эвакуаций; MoveProcess сам держит клэйм-гвард (инвариант §4.3).
@@ -301,11 +301,12 @@ internal sealed class ReconcileLoop(
 
     // Надзор: результат — SuperviseOutcome (мёртвые шарды); null = не прошёл
     // (ошибка Result залогирована) либо упал исключением (журнал записан).
-    private async Task<SuperviseOutcome?> RunSuperviseAsync(string cluster, ClusterSnapshot snap, CancellationToken ct)
+    private async Task<SuperviseOutcome?> RunSuperviseAsync(
+        string cluster, ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
     {
         try
         {
-            var supervised = await processes.SuperviseAsync(snap, ct);
+            var supervised = await processes.SuperviseAsync(snap, backups, ct);
             if (!supervised.IsSuccess)
             {
                 logger.LogError(supervised.Error, "supervise {Cluster} не прошёл: {Message}",

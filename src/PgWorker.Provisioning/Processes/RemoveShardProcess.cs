@@ -4,6 +4,7 @@ using PgWorker.Core.Model;
 using PgWorker.Docker.Drivers;
 using PgWorker.Etcd.Client;
 using PgWorker.Etcd.Coordination;
+using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.Provisioning.Processes;
 
@@ -71,6 +72,13 @@ public sealed class RemoveShardProcess(
             return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
         }
 
+        // S1.55 (t05 §3.4): активные restore-заявки шарда — permanent-FAILED
+        // «cancelled-by-remove» (finished_unix + причина), restore-джоб-контейнеры
+        // шарда — вниз (volume НЕ трогаем — data-volume ноды, снесёт RemoveNodeAsync).
+        var cancelled = await CancelRestoresAsync(cluster, shardName, ct);
+        if (!cancelled.IsSuccess)
+            return await FailAsync(cluster, cancelled.Error!, "cancelling-restore", ct);
+
         // S1.5 (t03, arch/19 §3 «Стоп-семантика»): агент WAL шарда — вниз ДО нод
         // (идемпотентно по имени); ключ wal /pgworker/backups/<C>/<X>/ удаляет
         // CleanKeysAsync (шаг 4) вместе с демонтажом etcd-ключей шарда.
@@ -103,6 +111,60 @@ public sealed class RemoveShardProcess(
         }
 
         return await Finish(cluster, "done", ProcessOutcome.Done, ct);
+    }
+
+    // Отмена активных restore-заявок шарда (t05 §3.4): FAILED «cancelled-by-remove»
+    // + чистка джобов. Идемпотентно: пустой префикс/нет активных — no-op.
+    private async Task<Result> CancelRestoresAsync(string cluster, string shard, CancellationToken ct)
+    {
+        var range = await etcd.RangeAsync(endpoints[0],
+            $"/pgworker/backups/{cluster}/{shard}/restore/", ct);
+        if (!range.IsSuccess)
+            return range;
+        var parsed = BackupsParser.Parse(range.Value, out _);
+        if (parsed.IsSuccess && parsed.Value.FirstOrDefault() is { } shardBackups
+            && shardBackups.Shards.TryGetValue(shard, out var sb))
+        {
+            foreach (var op in sb.Restores.Where(r => r.State
+                         is RestoreStatus.Planned or RestoreStatus.Running or RestoreStatus.Rejoining))
+            {
+                var cancelledJson = SerializeCancelled(op);
+                var put = await etcd.PutAsync(endpoints[0],
+                    $"/pgworker/backups/{cluster}/{shard}/restore/{op.Id}", cancelledJson, null, ct);
+                if (!put.IsSuccess)
+                    return put;
+            }
+        }
+
+        return await driver.RemoveRestoreJobsAsync(cluster, shard, ct);
+    }
+
+    // Сериализация FAILED-статуса (канон arch/19 §4). Локальная копия структуры
+    // RestoreStatusJson (PgWorker.Backups): обратная ссылка Provisioning→Backups
+    // невозможна (Backups ссылается на Provisioning); прецедент — имена
+    // BackupNames в ClusterDriver.BackupJobsCleaner. Roundtrip с парсером t01
+    // покрыт юнит-тестами RestoreStatusJsonTests (тот же набор полей).
+    private static string SerializeCancelled(RestoreOperationState op)
+    {
+        var o = new Dictionary<string, object?>
+        {
+            ["state"] = "FAILED",
+            ["backup_id"] = op.BackupId,
+            ["source"] = op.Source,
+            ["target"] = op.Target,
+            ["node"] = op.Node,
+            ["requested_unix"] = op.RequestedUnix,
+            ["requested_by"] = op.RequestedBy,
+        };
+        if (op.StartedUnix is { } started)
+            o["started_unix"] = started;
+        o["finished_unix"] = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        if (op.Phase is { } phase)
+            o["phase"] = phase;
+        if (op.RestoredToLsn is { } lsn)
+            o["restored_to_lsn"] = lsn;
+        o["error"] = "cancelled-by-remove";
+        return JsonSerializer.Serialize(o);
     }
 
     // Guard'ы G2–G4/G6/G7 — чистые функции над снапшотом тика; null = прошли.

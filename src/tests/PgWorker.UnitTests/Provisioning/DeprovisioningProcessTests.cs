@@ -186,6 +186,27 @@ public class DeprovisioningProcessTests
             "префикс бэкапов не переживает кластер");
     }
 
+    // AAA: D1/D2 t05 — restore-джобы убиты тем же RemoveBackupJobsAsync-путём,
+    // restore-ключи префикса /pgworker/backups/<C>/ не переживают кластер
+    [Fact]
+    public async Task Tick_RemovesRestoreJobsAndRestoreKeys()
+    {
+        // Arrange — кластер в TO_REMOVE + restore-ключ шарда (RUNNING)
+        var rig = await NewRig();
+        rig.Etcd.Seed("/pgworker/backups/shop/s1/restore/20260911120000Z",
+            "{\"state\":\"RUNNING\",\"backup_id\":\"b\",\"source\":\"shop/s1\",\"target\":\"latest\",\"node\":\"n\",\"requested_unix\":1,\"requested_by\":\"api\"}");
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert — D1 вызван (чистит и restore-префикс), ключей restore нет (D2)
+        outcome.IsSuccess.Should().BeTrue();
+        rig.Driver.RemoveBackupJobsCalled.Should().BeTrue();
+        rig.Etcd.Store.Keys.Should().NotContain(k =>
+            k.StartsWith("/pgworker/backups/shop/", StringComparison.Ordinal),
+            "весь префикс бэкапов, включая restore/<id>, не переживает кластер");
+    }
+
     [Fact]
     public async Task Tick_AfterDone_ClaimReleasedImmediately()
     {

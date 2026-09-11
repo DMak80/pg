@@ -600,7 +600,8 @@ public class ReconcileLoopTests
             return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
         }
 
-        public async Task<Result<SuperviseOutcome>> SuperviseAsync(ClusterSnapshot snap, CancellationToken ct)
+        public async Task<Result<SuperviseOutcome>> SuperviseAsync(
+            ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
         {
             using var _ = Track(snap.Config.Cluster, Supervised, callName: "supervise");
             await Task.Yield(); // расшиваем параллелизм: оба кластера стартуют
@@ -608,7 +609,8 @@ public class ReconcileLoopTests
                 SuperviseResult?.Invoke(snap.Config.Cluster) ?? new SuperviseOutcome(ProcessOutcome.Done, []));
         }
 
-        public Task<Result<ProcessOutcome>> EvacuateAsync(ClusterSnapshot snap, string deadShard, CancellationToken ct)
+        public Task<Result<ProcessOutcome>> EvacuateAsync(
+            ClusterSnapshot snap, string deadShard, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
         {
             using var _ = Track(snap.Config.Cluster, Evacuated, deadShard);
             return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));

@@ -215,6 +215,9 @@ public class BackupProcessTests
         public Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct)
             => Task.FromResult(Result.Success());
 
+        public Task<Result> RemoveRestoreJobsAsync(string cluster, string shard, CancellationToken ct)
+            => Task.FromResult(Result.Success());
+
         private static NotSupportedException NotSupported() => new("не используется в тестах бэкапов");
 
         public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct) => throw NotSupported();

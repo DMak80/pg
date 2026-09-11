@@ -66,6 +66,32 @@ public class RemoveShardProcessTests
         return new Rig(usedEtcd, usedDriver, claims, journal, process, puts);
     }
 
+    // AAA (t05 §3.4): активная restore-заявка снимаемого шарда — permanent-FAILED
+    // «cancelled-by-remove», restore-джобы шарда — вниз (RemoveRestoreJobsAsync).
+    [Fact]
+    public async Task Tick_ActiveRestore_FailedCancelledByRemove_JobsRemoved()
+    {
+        // Arrange — базовый сид + RUNNING restore-заявка shard1
+        var etcd = SeedBase();
+        var opId = "20260911120000Z";
+        etcd.Seed($"/pgworker/backups/shop/shard1/restore/{opId}",
+            """{"state":"RUNNING","backup_id":"20260910120000Z","source":"shop/shard1","target":"latest","node":"shard1a","requested_unix":1760000000,"requested_by":"operator","started_unix":1760000005}""");
+        var rig = await NewRig(etcd);
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), "shard1", CancellationToken.None);
+
+        // Assert — FAILED-put выполнен (cancelled-by-remove); сам ключ после
+        // успешного демонтажа не переживает (шаг 4 чистит весь префикс шарда);
+        // драйвер чистил restore-джобы шарда
+        outcome.IsSuccess.Should().BeTrue();
+        rig.Puts.Should().Contain($"/pgworker/backups/shop/shard1/restore/{opId}",
+            "отмена: put FAILED-статуса до чистки ключей");
+        rig.Etcd.Store.Should().NotContainKey($"/pgworker/backups/shop/shard1/restore/{opId}",
+            "демонтаж завершён — ключ не переживает (шаг 4)");
+        rig.Driver.RemovedRestoreJobs.Should().Contain(("shop", "shard1"));
+    }
+
     [Theory]
     [InlineData("G2")] [InlineData("G3")] [InlineData("G5")]
     [InlineData("G6")] [InlineData("G7")]
