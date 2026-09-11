@@ -327,6 +327,50 @@ public class ReconcileLoopTests
         processes.Calls.Should().NotContain(c => c.StartsWith("backups-retention/"));
     }
 
+    // AAA: restore (t05) — при Backups.Enabled=true вызывается после backup-wal,
+    // до repair (§3.4: агент снесён демонтажём — процесс сам стопает)
+    [Fact]
+    public async Task Tick_ActiveClusterWithBackupsEnabled_RestoreCalledAfterWalStreamBeforeRepair()
+    {
+        // Arrange — кластер + Backups.Enabled=true; FakeProcesses пишет порядок Calls.
+        SeedCluster("shop", null);
+        var processes = new FakeProcesses();
+        var loop = CreateLoop(processes, options: new PgWorkerOptions
+        {
+            Etcd = new EtcdOptions { Endpoints = ["http://etcd:2379"] },
+            Loops = new LoopsOptions { ScanIntervalSec = 5, ErrorDelayMs = 10 },
+            Parallelism = new ParallelismOptions { MaxClusters = 4 },
+            Backups = new BackupsOptions { Enabled = true },
+        });
+
+        // Act
+        await loop.TickSafelyAsync(TestContext.Current.CancellationToken);
+
+        // Assert — порядок: backup-wal → backup-restore → repair
+        var calls = processes.Calls;
+        calls.Should().Contain("backup-wal/shop");
+        calls.Should().Contain("backup-restore/shop");
+        calls.Should().Contain("repair/shop");
+        calls.IndexOf("backup-wal/shop").Should().BeLessThan(calls.IndexOf("backup-restore/shop"));
+        calls.IndexOf("backup-restore/shop").Should().BeLessThan(calls.IndexOf("repair/shop"));
+    }
+
+    // AAA: Backups.Enabled=false (дефолт) — restore не зовётся вовсе
+    [Fact]
+    public async Task Tick_RestoreDisabled_NotCalled()
+    {
+        // Arrange — дефолтный конфиг
+        SeedCluster("shop", null);
+        var processes = new FakeProcesses();
+        var loop = CreateLoop(processes);
+
+        // Act
+        await loop.TickSafelyAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        processes.Calls.Should().NotContain(c => c.StartsWith("backup-restore/"));
+    }
+
     // AAA: Backups.Enabled=false — backup-verify не вызывается (как backups)
     [Fact]
     public async Task Tick_BackupsDisabled_VerifyNotCalled()
@@ -620,6 +664,13 @@ public class ReconcileLoopTests
             ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
         {
             using var _ = Track(snap.Config.Cluster, [], callName: "backups-retention");
+            return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
+        }
+
+        public Task<Result<ProcessOutcome>> RestoreAsync(
+            ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
+        {
+            using var _ = Track(snap.Config.Cluster, [], callName: "backup-restore");
             return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
         }
 

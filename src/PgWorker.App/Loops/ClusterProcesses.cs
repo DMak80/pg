@@ -61,6 +61,12 @@ internal interface IClusterProcesses
     Task<Result<ProcessOutcome>> RetentionAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
 
+    /// <summary>Восстановление шарда из бэкапа (t05, arch/19 §3.5): после
+    /// backup-wal (агент снесён демонтажём — процесс сам стопает), до repair;
+    /// guard Enabled — выключенная подсистема не зовётся.</summary>
+    Task<Result<ProcessOutcome>> RestoreAsync(
+        ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
+
     /// <summary>Репарация брошенных переездов: синтетические заявки в MoveProcess
     /// (adopt-repair spec §3.5, arch/14 §5 K).</summary>
     Task<Result<ProcessOutcome>> RepairAsync(ClusterSnapshot snap, CancellationToken ct);
@@ -81,7 +87,8 @@ internal sealed class ClusterProcesses(
     PgWorker.Backups.BackupProcess backupsProcess,
     WalStreamProcess walStream,
     PgWorker.Backups.BackupVerifyProcess verifyProcess,
-    PgWorker.Backups.RetentionProcess retention) : IClusterProcesses
+    PgWorker.Backups.RetentionProcess retention,
+    PgWorker.Backups.Process.RestoreProcess restore) : IClusterProcesses
 {
     public Task<Result<ProcessOutcome>> ProvisionAsync(ClusterSnapshot snap, CancellationToken ct)
         => provision.TickAsync(snap, ct);
@@ -150,6 +157,10 @@ internal sealed class ClusterProcesses(
     public Task<Result<ProcessOutcome>> RetentionAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
         => retention.TickAsync(snap, backups.FirstOrDefault(b => b.Cluster == snap.Config.Cluster), ct);
+
+    public Task<Result<ProcessOutcome>> RestoreAsync(
+        ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
+        => restore.TickAsync(snap, backups, ct);
 
     public Task<Result<ProcessOutcome>> RepairAsync(ClusterSnapshot snap, CancellationToken ct)
         => repair.TickAsync(snap, ct);

@@ -216,6 +216,47 @@ public class WalStreamProcessTests(EtcdFixture fixture)
             s3.Objects.Add((cluster, "shard1", $"0000000100000000000000{i:x2}"));
     }
 
+    // t05 §3.4 гвард: шард с активной restore-заявкой — агент не ensure,
+    // wal-статус не пишется (контуры не трогают шард во время restore).
+    [Fact]
+    public async Task Тик_скипает_шард_с_активным_restore()
+    {
+        // Arrange — full COMPLETED + цепочка (due-условия есть) + PLANNED restore
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("cr9");
+        (await _claims.TryClaimClusterAsync("cr9", ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor { Current = ("0/3000000", 1) };
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, "cr9", 1, 3);
+        var driver = new StubScaleDriver();
+        var lags = new List<(string Cluster, string Shard, long? Lag)>();
+        var process = new WalStreamProcess(
+            fixture.Gateway, [fixture.Endpoint], driver,
+            new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
+            sql, s3, new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]),
+            _claims, new WorkJournal(fixture.Gateway, [fixture.Endpoint]),
+            () => Options(), new InstallSecrets("su", "sb", "adm", "mv"),
+            TimeProvider.System, (c, s, l) => lags.Add((c, s, l)));
+        var restoring = FullShard("000000010000000000000001") with
+        {
+            Restores = [new RestoreOperationState("20260911120000Z", RestoreStatus.Planned,
+                "", "cr9/shard1", "latest", "shard1a", 1760000000, "operator")],
+        };
+        var backups = new ClusterBackups("cr9", null,
+            new Dictionary<string, ShardBackups> { ["shard1"] = restoring });
+
+        // Act
+        var result = await process.TickAsync(BuildSnap("cr9"), backups, ct);
+
+        // Assert — агент не поднят, wal-ключа нет, слот не создавался
+        result.IsSuccess.Should().BeTrue();
+        driver.EnsuredBackupAgents.Should().BeEmpty();
+        sql.Slots.Should().BeEmpty();
+        var wal = await fixture.Gateway.GetAsync(
+            fixture.Endpoint, "/pgworker/backups/cr9/shard1/wal", ct);
+        wal.Value.Should().BeNull("шард в restore — контуры бэкапов молчат");
+    }
+
     [Fact]
     public async Task Контроль_сплошная_цепочка_пишет_ACTIVE_и_chain_start_от_полного()
     {

@@ -238,6 +238,14 @@ internal sealed class ReconcileLoop(
                         await RunClusterOpAsync(cluster, "backups-retention",
                             () => processes.RetentionAsync(snap, backups, ct), ct);
 
+                    // Restore шардов из бэкапов (t05, arch/19 §3.5): после wal-потока
+                    // (агент снесён демонтажём — процесс сам стопает), до repair/moves.
+                    // Выключенная подсистема не зовётся; одна активная заявка за тик —
+                    // машина состояний процесса (старейшая по Id).
+                    if (options.CurrentValue.Backups.Enabled)
+                        await RunClusterOpAsync(cluster, "backup-restore",
+                            () => processes.RestoreAsync(snap, backups, ct), ct);
+
                     // Репарация брошенных переездов (spec §3.5, arch/14 §5 K): синтетические
                     // заявки до moves — этот же тик начнёт их обработку (старейшая заявка).
                     await RunClusterOpAsync(cluster, "repair",

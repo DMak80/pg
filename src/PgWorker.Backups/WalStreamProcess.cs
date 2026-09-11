@@ -108,6 +108,13 @@ public sealed class WalStreamProcess(
         string cluster, ClusterSnapshot snap, ShardSpec shard, ShardBackups? shardBackups,
         BackupsRuntimeOptions options, CancellationToken ct)
     {
+        // t05 §3.4 гвард: шард с активной restore-заявкой (PLANNED/RUNNING/
+        // REJOINING) — WAL-агент не обеспечивается: демонтаж restore его снёс,
+        // а поднимать агент на снесённом мастере нельзя (контуры не трогают шард).
+        if (shardBackups?.Restores.Any(r => r.State
+                is RestoreStatus.Planned or RestoreStatus.Running or RestoreStatus.Rejoining) == true)
+            return;
+
         // (1) Креды: /clusters/<C>/backup_password (t02): отсутствует → transient-пропуск
         //     шарда с journal-заметкой — агент не поднимается, ретраи тиками.
         var passwordKv = await GetAsync($"/clusters/{cluster}/backup_password", ct);

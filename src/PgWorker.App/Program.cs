@@ -412,6 +412,27 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupProcess(
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.BackupProcess>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 
+// Восстановление шарда из бэкапа (t05, arch/19 §3.5): PLANNED→RUNNING→
+// REJOINING→COMPLETED; plain-only, Exec в объёме джоба. Runtime-опции —
+// статичный срез (врезка цикла и процесс гвардят Enabled).
+builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<IBackupS3>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Backups.ToRuntime(),
+    sp.GetRequiredService<InstallSecrets>(),
+    sp.GetRequiredService<EtcdEndpoints>(),
+    sp.GetRequiredService<IClusterSecretEnsurer>(),
+    sp.GetRequiredService<ShardProbe>(),
+    new ProcessThresholds(sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.NodeDeadSec,
+        sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.ShardDeadSec,
+        sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.PatroniBootSec),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Process.RestoreProcess>()));
+
 // WAL-архивация (t03, arch/19 §3): слот/агент/контроль цепочки; runtime()==null
 // (Backups:Enabled=false) — процесс выполняет стоп-семантику и не активен.
 builder.Services.AddSingleton(sp =>
