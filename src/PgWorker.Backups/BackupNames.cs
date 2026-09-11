@@ -21,6 +21,16 @@ public static class BackupNames
 
     public static string JobVolumePrefix(string cluster) => $"pgw-backup-{cluster}-";
 
+    // t04: имена verify-джоба — детерминированы (супервиз takeover-инвариантен);
+    // контейнер и volume — одно имя (volume ephemeral, чистится после итога).
+    public static string VerifyContainerName(string cluster, string shard, string id)
+        => $"pgw-backup-verify-{cluster}-{shard}-{id}";
+
+    public static string VerifyVolumeName(string cluster, string shard, string id)
+        => $"pgw-backup-verify-{cluster}-{shard}-{id}";
+
+    public static string VerifyJobContainerPrefix(string cluster) => $"pgw-backup-verify-{cluster}-";
+
     /// <summary>Слот WAL-агента шарда (t03, arch/19 §3): pgw_bkp_&lt;C&gt;_&lt;X&gt;;
     /// длиннее NAMEDATALEN(63) → pgw_bkp_ + sha1("&lt;C&gt;/&lt;X&gt;")[:16] (усечение без
     /// коллизий на практике; имена контейнера/volume агента — BackupAgentNames).</summary>
