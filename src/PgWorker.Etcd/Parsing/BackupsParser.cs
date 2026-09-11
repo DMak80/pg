@@ -45,6 +45,14 @@ public static class BackupsParser
                         .Fulls.Add((segments[6], kv.Value));
                     break;
 
+                // "/pgworker/backups/<C>/<X>/restore/<id>" (t05)
+                case 7 when segments[4].Length > 0
+                    && segments[5] == "restore"
+                    && segments[6].Length > 0:
+                    GetOrAdd(acc.Shards, segments[4], static _ => new ShardAcc())
+                        .Restores.Add((segments[6], kv.Value));
+                    break;
+
                 // "/pgworker/backups/<C>/<X>/wal"
                 case 6 when segments[4].Length > 0 && segments[5] == "wal":
                     GetOrAdd(acc.Shards, segments[4], static _ => new ShardAcc()).WalRaw = kv.Value;
@@ -68,6 +76,8 @@ public static class BackupsParser
     private sealed class ShardAcc
     {
         public readonly List<(string Id, string Raw)> Fulls = [];
+
+        public readonly List<(string Id, string Raw)> Restores = [];
 
         public string? WalRaw;
     }
@@ -95,7 +105,13 @@ public static class BackupsParser
                         .Select(f => f!)
                         .OrderBy(f => f.Id, StringComparer.Ordinal)
                         .ToList(),
-                    TryParseWal(acc.Name, pair.Key, pair.Value.WalRaw, errors)));
+                    TryParseWal(acc.Name, pair.Key, pair.Value.WalRaw, errors),
+                    pair.Value.Restores
+                        .Select(r => TryParseRestore(acc.Name, pair.Key, r.Id, r.Raw, errors))
+                        .Where(r => r is not null)
+                        .Select(r => r!)
+                        .OrderBy(r => r.Id, StringComparer.Ordinal)
+                        .ToList()));
         return new ClusterBackups(acc.Name, policy, shards);
     }
 
@@ -217,6 +233,55 @@ public static class BackupsParser
                 id, state.Value, node, role.Value, startedUnix.Value,
                 ReadLong(root, "finished_unix"), ReadString(root, "wal_start_segment"),
                 ReadLong(root, "size_bytes"), ReadString(root, "error"), verify);
+        }
+        catch (JsonException)
+        {
+            errors.Add($"{key}: битый JSON");
+            return null;
+        }
+    }
+
+    // restore/<id> (t05): обязательны state (PLANNED|RUNNING|REJOINING|COMPLETED|
+    // FAILED)/backup_id/source/target/node/requested_unix/requested_by;
+    // опциональны started_unix/finished_unix/phase/restored_to_lsn/error;
+    // битое/неизвестное state — пропуск записи с диагностикой.
+    private static RestoreOperationState? TryParseRestore(
+        string cluster, string shard, string id, string raw, List<string> errors)
+    {
+        var key = $"/pgworker/backups/{cluster}/{shard}/restore/{id}";
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            var root = doc.RootElement;
+            var state = ReadString(root, "state") switch
+            {
+                "PLANNED" => RestoreStatus.Planned,
+                "RUNNING" => RestoreStatus.Running,
+                "REJOINING" => RestoreStatus.Rejoining,
+                "COMPLETED" => RestoreStatus.Completed,
+                "FAILED" => RestoreStatus.Failed,
+                _ => (RestoreStatus?)null,
+            };
+            var backupId = ReadString(root, "backup_id");
+            var source = ReadString(root, "source");
+            var target = ReadString(root, "target");
+            var node = ReadString(root, "node");
+            var requestedUnix = ReadLong(root, "requested_unix");
+            var requestedBy = ReadString(root, "requested_by");
+            if (state is null || string.IsNullOrEmpty(backupId) || string.IsNullOrEmpty(source)
+                || string.IsNullOrEmpty(target) || string.IsNullOrEmpty(node)
+                || requestedUnix is null || string.IsNullOrEmpty(requestedBy))
+            {
+                errors.Add($"{key}: битый JSON или неизвестное state, обязательное поле отсутствует");
+                return null;
+            }
+
+            return new RestoreOperationState(
+                id, state.Value, backupId, source, target, node,
+                requestedUnix.Value, requestedBy,
+                ReadLong(root, "started_unix"), ReadLong(root, "finished_unix"),
+                ReadString(root, "phase"), ReadString(root, "restored_to_lsn"),
+                ReadString(root, "error"));
         }
         catch (JsonException)
         {
