@@ -10,6 +10,28 @@
 - **Тесты**: `dotnet test src/PgWorker.slnx`; docker-E2E — `PGW_TEST_DOCKER=1`
   (обязателен в мерж-гейте задач воркеров — см. AGENTS.md).
 
+## PGTune-параметры PG-нод (`PgWorker:Pgtune`)
+
+`postgresql.conf` нод рассчитывается алгоритмом PGTune (`PgTune.Calculate`,
+норматив [`pgtune-calculation-spec.md`](pgtune-calculation-spec.md)) при
+создании контейнера ноды: память/CPU — из заявок `request_*` шарда, остальные
+входы — константы конфигурации `PgWorker:Pgtune` (канон — arch/14 §2.1/§8).
+Канон PgWorker (P3: `wal_level=logical`, walsenders/slots) перекрывает расчёт;
+бюджет doorman синхронизирован: `max(10, max_connections − 5)` (P15).
+
+- **Настройка в деплое** — `PGW_PGTUNE_*` в `deploy/.env` (полный список и
+  семантика — `deploy/.env.example`; закомментировано = дефолты appsettings).
+  `DbType=desktop` запрещён (fail-fast старта воркера).
+- **Пересчёт без фиксации**: параметры НЕ хранятся в etcd — рассчитываются
+  заново при каждом создании контейнера от актуальных `request_*`. Смена заявок
+  или опций подхватывается только новыми нодами; живые ноды продолжают работать
+  на прежнем конфиге (осознанный дрейф; автоматическое выравнивание —
+  `t11-pgtune-params-convergence`, roadmap). Консистентность при смене заявок
+  живого шарда — на операторе (пересоздать все ноды шарда или не менять заявки).
+- **io_method/io_workers** по умолчанию исключены из применения
+  (`ExcludeParams`): `io_uring` требует сборки PG с liburing (Spilo-18 не
+  проверен). После проверки сборки — убрать из exclude в `deploy/.env`.
+
 ## Внешние docker-образы — локальный registry `192.168.0.1:5000`
 
 Все **внешние** образы (dev-стенд, тесты, деплой) берутся из приватного registry
