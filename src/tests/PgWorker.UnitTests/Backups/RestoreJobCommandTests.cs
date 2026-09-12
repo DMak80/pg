@@ -20,6 +20,14 @@ public class RestoreJobCommandTests
         cmd[2].Should().Contain("""{"phase":"recovering"}""");
         cmd[2].Should().Contain(@"mc cp --recursive ""pgwbkp/$S3_BUCKET/$SRC_PREFIX/full/$BACKUP_ID/"" ""$PGDATA/""");
         cmd[2].Should().Contain("chown -R 101:101");
+        // владелец/права — после всех модификаций: PGDATA 0700 (проверка pg_ctl),
+        // mc не сохраняет unix-права (S3 их не хранит) — регрессия E2E-гейта t05
+        cmd[2].Should().Contain("chmod 700 \"$PGDATA\"");
+        // chown — ПОСЛЕ trust-строки pg_hba (sed -i пересоздаёт файл под root)
+        cmd[2].IndexOf("chown -R 101:101", StringComparison.Ordinal)
+            .Should().BeGreaterThan(
+                cmd[2].IndexOf("local all all trust", StringComparison.Ordinal),
+                "все созданные под root файлы обязаны получить владельца 101");
     }
 
     // AAA: цель latest — без recovery_target_time; восстановление auto.conf после stop.

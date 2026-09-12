@@ -36,7 +36,6 @@ public static class RestoreJobCommand
         mc cp --recursive "pgwbkp/$S3_BUCKET/$SRC_PREFIX/full/$BACKUP_ID/" "$PGDATA/" \
           || FAIL "download full/$BACKUP_ID failed"
         [ -f "$PGDATA/backup_label" ] || FAIL "full/$BACKUP_ID: no backup_label"
-        chown -R 101:101 "${PGDATA%%/pgdata/pgroot/data}" || FAIL "chown 101:101 failed"
 
         # restore_command: mc качает сегмент/.history из wal/-префикса прямо в %p;
         # объекта нет → mc exit != 0 → конец WAL (канон §3.5)
@@ -57,6 +56,14 @@ public static class RestoreJobCommand
         # временный локальный trust для поллинга (сокет-only; после rejoin Patroni
         # перепишет pg_hba своим конфигом)
         sed -i '1i local all all trust' "$PGDATA/pg_hba.conf"
+
+        # Владелец и права — ПОСЛЕ всех модификаций: mc/sed/printf создают файлы
+        # под root, а postgres (101) обязан владеть PGDATA и переписывать
+        # auto.conf на promote. chmod 700 обязателен: mc не сохраняет unix-права
+        # (S3 их не хранит) — PGDATA приходил 0755 → FATAL «invalid permissions»
+        # на pg_ctl start (инцидент E2E-гейта t05).
+        chown -R 101:101 "${PGDATA%%/pgdata/pgroot/data}" || FAIL "chown 101:101 failed"
+        chmod 700 "$PGDATA" || FAIL "chmod 700 PGDATA failed"
 
         LOG '{"phase":"recovering"}'
         PGCTL() { setpriv --reuid=101 --regid=101 --clear-groups pg_ctl "$@"; }
