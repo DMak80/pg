@@ -425,7 +425,7 @@ public class RestoreProcessTests(EtcdFixture fixture)
         var driver = new TestDriver(inner, engine);
         var process = BuildProcess(new FakeBackupS3(), driver);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121000Z",
-            state: RestoreStatus.Running, startedUnix: 1);
+            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: 1);
         (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
 
         // Act
@@ -588,6 +588,9 @@ public class RestoreProcessTests(EtcdFixture fixture)
         spec.Env["SRC_PREFIX"].Should().Be("c1/shard1");
         spec.Env["TARGET_TIME"].Should().Be("");
         spec.VolumeName.Should().Be("pgw-c1-shard1-shard1a-data");
+        // BACKUP_ID — резолвнутый полный (op.BackupId), не id заявки:
+        // джоб качает full/<backup_id>/ (регрессия E2E-гейта t05)
+        spec.Env["BACKUP_ID"].Should().Be("20260910120000Z").And.NotBe(op.Id);
     }
 
     [Fact]

@@ -283,7 +283,17 @@ public sealed class RestoreProcess(
             if (!demolished.IsSuccess)
                 return Result<ProcessOutcome>.Failed(demolished.Error!);
 
-            var spec = Restore.RestoreJobSpec.Build(options, cluster, shard.Name, op.Id,
+            // BACKUP_ID — резолвнутый валидацией полный (op.BackupId), НЕ id
+            // заявки: джоб качает full/<backup_id>/ (инцидент E2E: в спеку
+            // уходил op.Id — mc «Object does not exist»).
+            if (op.BackupId.Length == 0)
+            {
+                await FailPermanentAsync(cluster, shard.Name, op,
+                    "backup_id не зафиксирован в заявке (ожидается после валидации)", ct);
+                return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+            }
+
+            var spec = Restore.RestoreJobSpec.Build(options, cluster, shard.Name, op.BackupId,
                 $"pgw-{cluster}-{shard.Name}-{first}-data", targetTime,
                 SrcCluster(op), SrcShard(op));
             var created = await engine.CreateContainerAsync(spec, name, ct);
