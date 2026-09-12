@@ -42,6 +42,10 @@ public class RestoreJobCommandTests
         script.Should().Contain("recovery_target_time = '%s'");
         script.Should().Contain("$TARGET_TIME");
         script.Should().Contain("""if [ -n "$TARGET_TIME" ]; then""");
+        // Spilo-наследие копии конфигурации ноды отключается для ephemeral-старта
+        // (bg_mon и preload-библиотеки в образе джоба postgres:18 отсутствуют)
+        script.Should().Contain("""shared_preload_libraries = ''""");
+        script.Should().Contain("ssl = off");
         script.Should().Contain("recovery_target_action = 'promote'");
         script.Should().Contain("recovery.signal");
         script.Should().Contain("sed -i -e '/restore-wal\\.sh/d' -e '/recovery_target/d'");

@@ -1,3 +1,4 @@
+using System.Globalization;
 using Microsoft.Extensions.Logging;
 using PgWorker.Core;
 using PgWorker.Core.Model;
@@ -259,8 +260,25 @@ public sealed class RestoreProcess(
                 $"docker-хост {addr.Host} не известен", ct);
 
         // Цель: "time:<RFC3339>" → строка конфига recovery_target_time; latest → "".
-        var targetTime = op.Target.StartsWith("time:", StringComparison.Ordinal)
-            ? op.Target["time:".Length..] : "";
+        // RFC3339 нормализуем к PG-формату: парсер recovery_target_time не
+        // принимает ни «T»-сепаратор ISO-8601, ни суффикс «Z» (инцидент E2E:
+        // FATAL invalid value) — приняты «пробел» и «+00:00». Битое время
+        // (ручная запись мимо API) — permanent FAILED.
+        string targetTime = "";
+        if (op.Target.StartsWith("time:", StringComparison.Ordinal))
+        {
+            if (!DateTimeOffset.TryParse(op.Target["time:".Length..],
+                    CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal,
+                    out var targetTs))
+            {
+                await FailPermanentAsync(cluster, shard.Name, op,
+                    $"target_time не RFC3339: {op.Target["time:".Length..]}", ct);
+                return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+            }
+
+            targetTime = targetTs.ToUniversalTime().ToString(
+                "yyyy-MM-dd HH:mm:sszzz", CultureInfo.InvariantCulture);
+        }
 
         var name = BackupNames.RestoreContainerName(cluster, shard.Name, op.Id);
         var list = await engine.ListContainersAsync(name, all: true, ct);

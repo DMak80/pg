@@ -52,6 +52,12 @@ public static class RestoreJobCommand
         if [ -n "$TARGET_TIME" ]; then
           printf "recovery_target_time = '%s'\n" "$TARGET_TIME" >> "$AUTO"
         fi
+        # Spilo-наследие исходной ноды (pg_basebackup копирует её конфигурацию):
+        # preload-библиотек (bg_mon, …) в образе джоба postgres:18 нет, ssl-сертификаты
+        # лежат вне PGDATA — для ephemeral-старта recovery отключаем (инцидент E2E:
+        # FATAL could not access file bg_mon). Patroni на rejoin перепишет конфиг ноды.
+        printf "shared_preload_libraries = ''\n" >> "$AUTO"
+        printf "ssl = off\n" >> "$AUTO"
         : > "$PGDATA/recovery.signal"
         # временный локальный trust для поллинга (сокет-only; после rejoin Patroni
         # перепишет pg_hba своим конфигом)

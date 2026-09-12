@@ -594,6 +594,54 @@ public class RestoreProcessTests(EtcdFixture fixture)
     }
 
     [Fact]
+    public async Task Target_time_нормализуется_к_формату_PG()
+    {
+        // Arrange — RUNNING с target time:<RFC3339>: парсер recovery_target_time
+        // PG не принимает «T»-сепаратор и суффикс «Z» (инцидент E2E-гейта t05),
+        // в env джоба уходит PG-формат «+00:00»
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var engine = new FakeBackupEngine();
+        var driver = new TestDriver(new StubScaleDriver(), engine);
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121005Z",
+            backupId: "20260910120000Z", target: "time:2026-09-11T10:00:00Z",
+            state: RestoreStatus.Running, startedUnix: 1);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert
+        engine.Created.Should().ContainSingle().Subject.Spec.Env["TARGET_TIME"]
+            .Should().Be("2026-09-11 10:00:00+00:00");
+    }
+
+    [Fact]
+    public async Task Target_time_битое_permanent_FAILED()
+    {
+        // Arrange — RUNNING с time:не-RFC3339 (ручная запись мимо API)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var engine = new FakeBackupEngine();
+        var driver = new TestDriver(new StubScaleDriver(), engine);
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121006Z",
+            backupId: "20260910120000Z", target: "time:завтра-утром",
+            state: RestoreStatus.Running, startedUnix: 1);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — permanent FAILED, джоб не создаётся
+        var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        failed.State.Should().Be(RestoreStatus.Failed);
+        failed.Error.Should().Contain("не RFC3339");
+        engine.Created.Should().BeEmpty();
+    }
+
+    [Fact]
     public async Task Transient_docker_отказ_статус_не_меняется()
     {
         // Arrange — RUNNING, list docker падает
