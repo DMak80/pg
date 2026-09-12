@@ -20,6 +20,10 @@ public class RestoreJobCommandTests
         cmd[2].Should().Contain("""{"phase":"recovering"}""");
         cmd[2].Should().Contain(@"mc cp --recursive ""pgwbkp/$S3_BUCKET/$SRC_PREFIX/full/$BACKUP_ID/"" ""$PGDATA/""");
         cmd[2].Should().Contain("chown -R 101:101");
+        // пустые runtime-каталоги PGDATA восстанавливаются (S3 не хранит пустые
+        // каталоги — pg_notify отсутствовал после download)
+        cmd[2].Should().Contain("pg_notify");
+        cmd[2].Should().Contain("pg_wal/archive_status");
         // владелец/права — после всех модификаций: PGDATA 0700 (проверка pg_ctl),
         // mc не сохраняет unix-права (S3 их не хранит) — регрессия E2E-гейта t05
         cmd[2].Should().Contain("chmod 700 \"$PGDATA\"");

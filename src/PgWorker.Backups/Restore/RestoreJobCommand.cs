@@ -36,6 +36,13 @@ public static class RestoreJobCommand
         mc cp --recursive "pgwbkp/$S3_BUCKET/$SRC_PREFIX/full/$BACKUP_ID/" "$PGDATA/" \
           || FAIL "download full/$BACKUP_ID failed"
         [ -f "$PGDATA/backup_label" ] || FAIL "full/$BACKUP_ID: no backup_label"
+        # Пустые runtime-каталоги PGDATA не переживают S3 (mc не хранит пустые
+        # каталоги, pg_basebackup их не архивирует) — восстанавливаем канонический
+        # набор initdb (инцидент E2E: FATAL could not open directory pg_notify).
+        mkdir -p "$PGDATA"/pg_tblspc "$PGDATA"/pg_replslot "$PGDATA"/pg_commit_ts \
+                 "$PGDATA"/pg_snapshots "$PGDATA"/pg_serial "$PGDATA"/pg_twophase \
+                 "$PGDATA"/pg_notify "$PGDATA"/pg_stat "$PGDATA"/pg_stat_tmp \
+                 "$PGDATA"/pg_wal/archive_status
 
         # restore_command: mc качает сегмент/.history из wal/-префикса прямо в %p;
         # объекта нет → mc exit != 0 → конец WAL (канон §3.5)
