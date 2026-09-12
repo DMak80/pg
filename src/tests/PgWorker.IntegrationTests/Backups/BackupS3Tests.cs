@@ -387,21 +387,22 @@ public class BackupS3Tests
     [Fact]
     public async Task ListFulls_возвращает_id_полных()
     {
-        // Arrange — два полных в разных full/<id>/ (сид прямым клиентом)
+        // Arrange — своё окружение + два полных в разных full/<id>/
         var ct = TestContext.Current.CancellationToken;
-        using var client = SeedClient(fixture);
+        await using var minio = await OwnMinio.StartAsync("s3", ct);
+        using var client = SeedClient(minio);
         foreach (var id in new[] { "20260911120000Z", "20260911090000Z" })
             await client.PutObjectAsync(new PutObjectRequest
             {
-                BucketName = MinioFixture.Bucket,
+                BucketName = OwnMinio.Bucket,
                 Key = "c15/shard1/full/" + id + "/backup_manifest",
             }, ct);
         await client.PutObjectAsync(new PutObjectRequest
         {
-            BucketName = MinioFixture.Bucket,
+            BucketName = OwnMinio.Bucket,
             Key = "c15/shard2/full/20260911000000Z/backup_manifest", // чужой шард
         }, ct);
-        await using var s3 = new BackupS3(fixture.Runtime());
+        await using var s3 = new BackupS3(minio.Runtime());
 
         // Act
         var listed = await s3.ListFullsAsync("c15", "shard1", ct: ct);
@@ -415,16 +416,17 @@ public class BackupS3Tests
     [Fact]
     public async Task ListFulls_пагинация_maxKeys_1_собирает_все()
     {
-        // Arrange — 3 полных, страница по 1
+        // Arrange — своё окружение + 3 полных, страница по 1
         var ct = TestContext.Current.CancellationToken;
-        using var client = SeedClient(fixture);
+        await using var minio = await OwnMinio.StartAsync("s3", ct);
+        using var client = SeedClient(minio);
         for (var i = 1; i <= 3; i++)
             await client.PutObjectAsync(new PutObjectRequest
             {
-                BucketName = MinioFixture.Bucket,
+                BucketName = OwnMinio.Bucket,
                 Key = $"c16/shard1/full/2026091100000{i}Z/backup_manifest",
             }, ct);
-        await using var s3 = new BackupS3(fixture.Runtime());
+        await using var s3 = new BackupS3(minio.Runtime());
 
         // Act
         var listed = await s3.ListFullsAsync("c16", "shard1", maxKeysPerTest: 1, ct: ct);
@@ -438,16 +440,17 @@ public class BackupS3Tests
     [Fact]
     public async Task DownloadText_backup_label_и_notfound()
     {
-        // Arrange
+        // Arrange — своё окружение + backup_label-объект
         var ct = TestContext.Current.CancellationToken;
-        using var client = SeedClient(fixture);
+        await using var minio = await OwnMinio.StartAsync("s3", ct);
+        using var client = SeedClient(minio);
         await client.PutObjectAsync(new PutObjectRequest
         {
-            BucketName = MinioFixture.Bucket,
+            BucketName = OwnMinio.Bucket,
             Key = "c17/shard1/full/b1/backup_label",
             ContentBody = "START WAL LOCATION: 0/2000028 (file 000000010000000000000002)\n",
         }, ct);
-        await using var s3 = new BackupS3(fixture.Runtime());
+        await using var s3 = new BackupS3(minio.Runtime());
 
         // Act
         var text = await s3.DownloadTextAsync("c17", "shard1", "full/b1/backup_label", ct);

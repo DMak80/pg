@@ -30,7 +30,8 @@ public class BackupPlannerTests
         };
 
         // Act / Assert
-        BackupPlanner.IsDue(fulls, 86400, Unix(Now)).Should().BeTrue("проваленный verify свежестью не считается");
+        BackupPlanner.IsDue(fulls, walKeyExists: true, fullMaxAgeSec: 86400, nowUnix: Unix(Now))
+            .Should().BeTrue("проваленный verify свежестью не считается");
     }
 
     // AAA: валидный = verify null | PENDING | OK — все три дают свежесть
@@ -47,9 +48,9 @@ public class BackupPlannerTests
             verify: new BackupVerify(BackupVerifyStatus.Ok, finished)) };
 
         // Act / Assert — каждая конфигурация сама по себе гасит due (в окне)
-        BackupPlanner.IsDue(noVerify, 86400, Unix(Now)).Should().BeFalse();
-        BackupPlanner.IsDue(pending, 86400, Unix(Now)).Should().BeFalse();
-        BackupPlanner.IsDue(ok, 86400, Unix(Now)).Should().BeFalse();
+        BackupPlanner.IsDue(noVerify, walKeyExists: true, 86400, Unix(Now)).Should().BeFalse();
+        BackupPlanner.IsDue(pending, walKeyExists: true, 86400, Unix(Now)).Should().BeFalse();
+        BackupPlanner.IsDue(ok, walKeyExists: true, 86400, Unix(Now)).Should().BeFalse();
     }
 
     // AAA: бэкофф n считает и verify-фейлы: COMPLETED+FAILED-verify после последнего
