@@ -168,7 +168,7 @@
 - Consumes: `PgtuneSettings` (Задача 2), `PgTune`/`PgTuneResult` (Задача 1), `NodeResources(double? CpuCores, long? MemoryBytes)` (`PgWorker.Core/Model/Domain.cs`).
 - Produces (для Задачи 6): `sealed class PgtuneInputsFactory(PgtuneSettings settings, ILogger<PgtuneInputsFactory> log)` с `public PgTuneResult Create(NodeResources? resources)` — синхронный, без side-effect'ов кроме warning-лога; вызывается держателем клэйма `<C>` (контекст процессов).
 
-- [ ] **Шаг 1: юнит-тесты фабрики (AAA)**
+- [x] **Шаг 1: юнит-тесты фабрики (AAA)**
 
   - Вход: Задача 2 завершена (`PgtuneSettings` существует).
   - Действие: создать `PgtuneInputsFactoryTests.cs` (фабрика без etcd, логгер — `NullLogger<PgtuneInputsFactory>.Instance`, дефолтные `PgtuneSettings`):
@@ -182,7 +182,7 @@
   - Проверка: `dotnet test ... --filter FullyQualifiedName~PgtuneInputsFactoryTests` — компиляция ок, тесты падают (типа нет).
   - Spec: §4.3, §4.6 (PgtuneInputsFactoryTests).
 
-- [ ] **Шаг 2: реализация фабрики**
+- [x] **Шаг 2: реализация фабрики**
 
   - Вход: шаг 1 выполнен.
   - Действие: реализовать `Create(NodeResources? resources)`:
