@@ -37,6 +37,57 @@ public class BackupsParserTests
     }
 
     // AAA: несколько COMPLETED — в словаре максимум finished_unix
+    // AAA: FAILED-verify полный не считается «последним COMPLETED» (свежесть — валидные);
+    // фиксируется в ShardVerifyFailures с error/checked_unix
+    [Fact]
+    public void Parse_FailedVerify_НеДаетСвежести_иПопадаетВFailures()
+    {
+        // Arrange — битый полный СВЕЖЕЕ валидного
+        var kvs = new[]
+        {
+            new Kv("/pgworker/backups/p1/shard1/full/20260910120000Z",
+                """{"state":"COMPLETED","node":"n1","role":"replica","started_unix":100,"finished_unix":200,"verify":{"state":"OK","checked_unix":300}}""", 1),
+            new Kv("/pgworker/backups/p1/shard1/full/20260911120000Z",
+                """{"state":"COMPLETED","node":"n1","role":"replica","started_unix":1000,"finished_unix":1100,"verify":{"state":"FAILED","checked_unix":1200,"error":"дыра WAL-цепочки: ожидался A, найден B"}}""", 2),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs);
+
+        // Assert — свежесть = валидный (200), failure = битый с его текстом
+        var cluster = result.Clusters.Single(c => c.Cluster == "p1");
+        cluster.ShardLastCompletedUnix["shard1"].Should().Be(200);
+        cluster.ShardVerifyFailures!["shard1"].Should().Be(
+            new ShardVerifyFailure("shard1", "20260911120000Z", "дыра WAL-цепочки: ожидался A, найден B", 1200));
+    }
+
+    // AAA: несколько FAILED — последний по checked_unix; битый verify.state →
+    // KeyParseError + verify игнор (полный валиден, непроверен)
+    [Fact]
+    public void Parse_НесколькоБитых_иТолерантность()
+    {
+        // Arrange — два FAILED-полных (checked_unix 100 и 200) + битый verify.state
+        var kvs = new[]
+        {
+            new Kv("/pgworker/backups/p2/shard1/full/20260910120000Z",
+                """{"state":"COMPLETED","node":"n1","role":"replica","started_unix":1,"finished_unix":2,"verify":{"state":"FAILED","checked_unix":100,"error":"первый фейл"}}""", 1),
+            new Kv("/pgworker/backups/p2/shard1/full/20260910130000Z",
+                """{"state":"COMPLETED","node":"n1","role":"replica","started_unix":3,"finished_unix":4,"verify":{"state":"FAILED","checked_unix":200,"error":"второй фейл"}}""", 2),
+            new Kv("/pgworker/backups/p2/shard1/full/20260910140000Z",
+                """{"state":"COMPLETED","node":"n1","role":"replica","started_unix":5,"finished_unix":6,"verify":{"state":"BROKEN"}}""", 3),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs);
+
+        // Assert — failure = последний по checked_unix; битый verify — диагностика,
+        // запись жива и непроверена (валидна); парсер не падает
+        var cluster = result.Clusters.Single(c => c.Cluster == "p2");
+        cluster.ShardVerifyFailures!["shard1"].Error.Should().Be("второй фейл");
+        cluster.ShardVerifyFailures["shard1"].CheckedUnix.Should().Be(200);
+        result.Errors.Should().ContainSingle(e => e.Key.EndsWith("20260910140000Z"));
+    }
+
     [Fact]
     public void Parse_MultipleCompleted_LatestFinishedUnix()
     {

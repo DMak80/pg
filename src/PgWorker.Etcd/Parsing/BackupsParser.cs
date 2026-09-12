@@ -136,10 +136,22 @@ public static class BackupsParser
                 verifyOnCreate = flag.ValueKind is JsonValueKind.True or JsonValueKind.String
                     && flag.ToString() is "true" or "True";
 
+            // t04: период перепроверки — verify.interval_sec policy-ключа
+            // (перекрывает дефолт конфига); отсутствие → null (дефолт — потребитель).
+            long? verifyIntervalSec = null;
+            if (root.TryGetProperty("verify", out var verifyObj)
+                && verifyObj.ValueKind == JsonValueKind.Object
+                && verifyObj.TryGetProperty("interval_sec", out var interval))
+                verifyIntervalSec = interval.ValueKind is JsonValueKind.Number && interval.TryGetInt64(out var sec)
+                    ? sec
+                    : interval.ValueKind == JsonValueKind.String && long.TryParse(interval.GetString(), out var parsed)
+                        ? parsed
+                        : null;
+
             return new BackupPolicy(
                 days, weeks, months,
                 ReadLong(root, "full_max_age_sec") ?? 86400,
-                verifyOnCreate);
+                verifyOnCreate, verifyIntervalSec);
         }
         catch (JsonException)
         {
@@ -198,7 +210,7 @@ public static class BackupsParser
                 if (verifyState is null)
                     errors.Add($"{key}: неизвестное verify.state — verify пропущен");
                 else
-                    verify = new BackupVerify(verifyState.Value, ReadLong(verifyEl, "checked_unix"));
+                    verify = new BackupVerify(verifyState.Value, ReadLong(verifyEl, "checked_unix"), ReadString(verifyEl, "error"));
             }
 
             return new FullBackupState(

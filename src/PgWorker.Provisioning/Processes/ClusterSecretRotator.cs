@@ -93,7 +93,7 @@ public sealed partial class ClusterSecretRotator(
 
         foreach (var shard in snap.Shards.Where(s => s.Dsn is not null))
         {
-            var master = await ResolveMasterAsync(shard, addresses.Value, ct);
+            var master = await ResolveMasterAsync(cluster, shard, addresses.Value, ct);
             if (master is null)
                 return await FailAsync(cluster,
                     new ApplicationException(
@@ -221,29 +221,60 @@ public sealed partial class ClusterSecretRotator(
         }
     }
 
-    // Мастер шарда: host из master-ключа (по portalloc) → fallback Patroni REST
-    // (паттерн ProvisioningProcess.ResolveMasterAsync, упрощённо для чтения).
+    // Мастер шарда: точное имя ноды из master-ключа → doorman-порт (уникален
+    // per-node) → HA-лидер контура /service/<C>-<X>/leader → Patroni REST
+    // (паттерн ShardEndpoints.ResolveMasterAsync). Совпадение master-ключа ПО
+    // ХОСТУ недопустимо: при EnableDoorman=false ключ вырождается в host:0,
+    // и все ноды одного хоста равнозначны — резолв вернул бы произвольную
+    // (первую/случайный порядок portalloc) ноду, ALTER ROLE на реплике падает
+    // 25006 (read-only) — ротация зацикливалась в фазе started (e2e-факт t04).
     private async Task<NodeAddress?> ResolveMasterAsync(
-        ShardSpec shard, IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
+        string cluster, ShardSpec shard, IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
     {
-        var byKey = shard.Master?.Split(':')[0];
-        foreach (var (key, addr) in addresses.Where(p =>
-                     p.Key.StartsWith($"{shard.Name}/", StringComparison.Ordinal)))
+        var shardNodes = addresses
+            .Where(p => p.Key.StartsWith($"{shard.Name}/", StringComparison.Ordinal))
+            .ToDictionary(p => p.Key.Split('/')[1], p => p.Value);
+
+        if (!string.IsNullOrWhiteSpace(shard.Master))
         {
-            var node = key.Split('/')[1];
-            if (byKey is { Length: > 0 } && (byKey == addr.Host || byKey == node))
-                return addr;
+            var parts = shard.Master.Split(':');
+            if (shardNodes.TryGetValue(parts[0], out var byName))
+                return byName;
+            if (parts.Length == 2 && int.TryParse(parts[1], out var doorman) && doorman > 0)
+            {
+                var byDoormanPort = shardNodes.FirstOrDefault(p => p.Value.Ports.Doorman == doorman);
+                if (byDoormanPort.Value is not null)
+                    return byDoormanPort.Value;
+            }
         }
 
-        foreach (var pair in addresses.Where(p =>
-                     p.Key.StartsWith($"{shard.Name}/", StringComparison.Ordinal)))
+        // HA-лидер контура (окно failover с протухшим master-ключом).
+        var leader = await GetAsync($"/service/{cluster}-{shard.Name}/leader", ct);
+        if (leader.IsSuccess && leader.Value is { } leaderKv)
         {
-            var members = await probe.GetClusterAsync(pair.Value, ct);
+            try
+            {
+                using var doc = JsonDocument.Parse(leaderKv.Value);
+                if (doc.RootElement.TryGetProperty("name", out var name)
+                    && name.GetString() is { Length: > 0 } leaderName
+                    && shardNodes.TryGetValue(leaderName, out var leaderAddr))
+                    return leaderAddr;
+            }
+            catch (JsonException)
+            {
+                // битый leader-ключ — просто идём дальше по цепочке
+            }
+        }
+
+        foreach (var node in shardNodes)
+        {
+            var members = await probe.GetClusterAsync(node.Value, ct);
             if (!members.IsSuccess)
                 continue;
+            // Patroni 3.x в /cluster называет мастера "leader" (legacy: "master").
             var master = members.Value.FirstOrDefault(m =>
                 m.Role is "master" or "leader" or "primary" && m.State == "running");
-            if (master is not null && addresses.TryGetValue($"{shard.Name}/{master.Name}", out var addr))
+            if (master is not null && shardNodes.TryGetValue(master.Name, out var addr))
                 return addr;
         }
 

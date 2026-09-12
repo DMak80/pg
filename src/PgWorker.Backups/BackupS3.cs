@@ -18,7 +18,9 @@ public sealed record S3ObjectInfo(string Key, long SizeBytes, DateTimeOffset Las
 /// MinIO и облако одним клиентом (ForcePathStyle). Создание bucket — забота
 /// стенда/фикстур (прямой AWSSDK-клиент), НЕ интерфейс подсистемы.
 /// t06: ListPrefixAsync/DeleteKeysAsync — ретенционные list с размерами и
-/// batch-delete (S3-удаления ТОЛЬКО в ретенционных путях, R4).</summary>
+/// batch-delete (S3-удаления ТОЛЬКО в ретенционных путях, R4).
+/// t04: ListAsync/GetObjectAsync — verify-листинг относительно &lt;C&gt;/&lt;X&gt;/
+/// и GET history; общий кор пагинации с t06-листом.</summary>
 public interface IBackupS3
 {
     Task<Result<bool>> BucketExistsAsync(CancellationToken ct);
@@ -28,13 +30,24 @@ public interface IBackupS3
         string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default);
 
     /// <summary>list-objects-v2 с пагинацией по произвольному префиксу (full/&lt;id&gt;/,
-    /// wal/, "" — весь bucket) с размерами; maxKeysPerTest — инъекция страницы.</summary>
+    /// wal/, "" — весь bucket) с размерами; maxKeysPerTest — инъекция страницы.
+    /// Реализация — общий кор листинга с t04 ListAsync (без дублирования пагинации).</summary>
     Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(
         string prefix, int? maxKeysPerTest = null, CancellationToken ct = default);
 
     /// <summary>batch-delete (DeleteObjects, чанки ≤1000); идемпотентно —
     /// отсутствие ключа в ответе не ошибка (повтор прохода безопасен).</summary>
     Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default);
+
+    /// <summary>Листинг произвольного префикса (t04, verify): prefix — относительно
+    /// &lt;C&gt;/&lt;X&gt;/, напр. "wal/" | "full/&lt;id&gt;/pg_wal/"; та же пагинация list-v2
+    /// через общий кор с t06 ListPrefixAsync.</summary>
+    Task<Result<IReadOnlyList<WalObject>>> ListAsync(
+        string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default);
+
+    /// <summary>Содержимое маленького объекта (t04: .history для строгих TLI-переходов);
+    /// key — относительно &lt;C&gt;/&lt;X&gt;/, напр. "wal/00000002.history".</summary>
+    Task<Result<string>> GetObjectAsync(string cluster, string shard, string key, CancellationToken ct = default);
 }
 
 public sealed class BackupS3 : IBackupS3, IAsyncDisposable
@@ -72,50 +85,64 @@ public sealed class BackupS3 : IBackupS3, IAsyncDisposable
         }
     }
 
-    public async Task<Result<IReadOnlyList<WalObject>>> ListWalAsync(
+    public Task<Result<IReadOnlyList<WalObject>>> ListWalAsync(
         string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
+        => ListAsync(cluster, shard, "wal/", maxKeysPerTest, ct);
+
+    public async Task<Result<IReadOnlyList<WalObject>>> ListAsync(
+        string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
+    {
+        var fullPrefix = $"{cluster}/{shard}/{prefix}";
+        var listed = await ListPrefixCoreAsync(fullPrefix, maxKeysPerTest, ct);
+        if (!listed.IsSuccess)
+            return Result<IReadOnlyList<WalObject>>.Failed(listed.Error!);
+        var result = new List<WalObject>();
+        foreach (var obj in listed.Value)
+        {
+            var name = obj.Key[(obj.Key.LastIndexOf('/') + 1)..];
+            if (name.Length > 0)
+                result.Add(new WalObject(name, obj.LastModified));
+        }
+
+        return Result<IReadOnlyList<WalObject>>.Success(result);
+    }
+
+    public async Task<Result<string>> GetObjectAsync(
+        string cluster, string shard, string key, CancellationToken ct = default)
     {
         try
         {
-            var result = new List<WalObject>();
-            string? token = null;
-            do
-            {
-                var request = new ListObjectsV2Request
-                {
-                    BucketName = _bucket,
-                    Prefix = $"{cluster}/{shard}/wal/",
-                    ContinuationToken = token,
-                };
-                if (maxKeysPerTest is { } maxKeys)
-                    request.MaxKeys = maxKeys;
-                var page = await _client.ListObjectsV2Async(request, ct);
-                foreach (var obj in page.S3Objects)
-                {
-                    var name = obj.Key[(obj.Key.LastIndexOf('/') + 1)..];
-                    if (name.Length > 0)
-                        result.Add(new WalObject(name, obj.LastModified));
-                }
-
-                token = page.IsTruncated is true ? page.NextContinuationToken : null;
-            }
-            while (token is not null);
-
-            return Result<IReadOnlyList<WalObject>>.Success(result);
+            var response = await _client.GetObjectAsync(
+                new GetObjectRequest { BucketName = _bucket, Key = $"{cluster}/{shard}/{key}" }, ct);
+            using var reader = new StreamReader(response.ResponseStream, System.Text.Encoding.UTF8);
+            return Result<string>.Success(await reader.ReadToEndAsync(ct));
         }
         catch (Exception e)
         {
-            return Result<IReadOnlyList<WalObject>>.Failed(new ApplicationException(
-                $"S3 list {cluster}/{shard}/wal/: {e.Message}", e));
+            return Result<string>.Failed(new ApplicationException($"S3 get {key}: {e.Message}", e));
         }
     }
 
     public async Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(
         string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
     {
+        var listed = await ListPrefixCoreAsync(prefix, maxKeysPerTest, ct);
+        if (!listed.IsSuccess)
+            return Result<IReadOnlyList<S3ObjectInfo>>.Failed(listed.Error!);
+        return Result<IReadOnlyList<S3ObjectInfo>>.Success(listed.Value
+            .Select(o => new S3ObjectInfo(o.Key, o.Size, o.LastModified))
+            .ToList());
+    }
+
+    /// <summary>Общий кор листинга (t06 ListPrefixAsync / t04 ListAsync): постраничный
+    /// list-objects-v2 по абсолютному префиксу bucket'а — сырые S3-объекты,
+    /// маппинг в контракт каждого метода — снаружи (без дублирования пагинации).</summary>
+    private async Task<Result<IReadOnlyList<S3Object>>> ListPrefixCoreAsync(
+        string prefix, int? maxKeysPerTest, CancellationToken ct)
+    {
         try
         {
-            var result = new List<S3ObjectInfo>();
+            var result = new List<S3Object>();
             string? token = null;
             do
             {
@@ -128,17 +155,16 @@ public sealed class BackupS3 : IBackupS3, IAsyncDisposable
                 if (maxKeysPerTest is { } maxKeys)
                     request.MaxKeys = maxKeys;
                 var page = await _client.ListObjectsV2Async(request, ct);
-                foreach (var obj in page.S3Objects)
-                    result.Add(new S3ObjectInfo(obj.Key, obj.Size, obj.LastModified));
+                result.AddRange(page.S3Objects);
                 token = page.IsTruncated is true ? page.NextContinuationToken : null;
             }
             while (token is not null);
 
-            return Result<IReadOnlyList<S3ObjectInfo>>.Success(result);
+            return Result<IReadOnlyList<S3Object>>.Success(result);
         }
         catch (Exception e)
         {
-            return Result<IReadOnlyList<S3ObjectInfo>>.Failed(new ApplicationException(
+            return Result<IReadOnlyList<S3Object>>.Failed(new ApplicationException(
                 $"S3 list {prefix}: {e.Message}", e));
         }
     }

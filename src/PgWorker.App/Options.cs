@@ -290,6 +290,7 @@ public sealed class BackupsOptions
         Enabled: Enabled,
         FullMaxAgeSec: Policy.FullMaxAgeSec,
         VerifyOnCreate: Policy.VerifyOnCreate,
+        VerifyIntervalSec: Policy.VerifyIntervalSec,
         S3Endpoint: S3.Endpoint,
         S3AdvertisedEndpoint: S3.AdvertisedEndpoint,
         S3Region: S3.Region,
@@ -403,6 +404,10 @@ public sealed class BackupsPolicyOptions
     public long FullMaxAgeSec { get; set; } = 86400;
 
     public bool VerifyOnCreate { get; set; } = true;
+
+    /// <summary>Период перепроверки оставшихся полных, c (t04, arch/19 §4):
+    /// verify.interval_sec policy-ключа перекрывает; &lt;= 0 — периодика выключена.</summary>
+    public long VerifyIntervalSec { get; set; } = 604800;
 }
 
 /// <summary>GFS-ретенция полных бэкапов (дни/недели/месяцы, t06).</summary>

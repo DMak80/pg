@@ -61,6 +61,43 @@ public class BackupStatusJsonTests
         json.Should().Contain("\"state\":\"COMPLETED\"").And.Contain("\"role\":\"master\"");
     }
 
+    // AAA: FAILED-verify сериализуется с error и checked_unix (канон arch/19 §4)
+    [Fact]
+    public void Serialize_VerifyFailed_ErrorИCheckedUnix()
+    {
+        // Arrange
+        var full = new FullBackupState("20260911120000Z", FullBackupStatus.Completed, "n1",
+            BackupSourceRole.Replica, 1757500000, 1757500300, "000000010000000000000001",
+            1024, null, new BackupVerify(BackupVerifyStatus.Failed, 1757500600, "дыра WAL-цепочки: ожидался X, найден Y"));
+
+        // Act
+        var json = BackupStatusJson.Serialize(full);
+
+        // Assert — verify.error присутствует, checked_unix пишется и при FAILED
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        var verify = doc.RootElement.GetProperty("verify");
+        verify.GetProperty("state").GetString().Should().Be("FAILED");
+        verify.GetProperty("checked_unix").GetInt64().Should().Be(1757500600);
+        verify.GetProperty("error").GetString().Should().Contain("дыра WAL-цепочки");
+    }
+
+    // AAA: verify без error — поля error в JSON нет (опционально, как остальные nullable)
+    [Fact]
+    public void Serialize_VerifyБезError_ПоляНет()
+    {
+        // Arrange
+        var full = new FullBackupState("20260911120000Z", FullBackupStatus.Completed, "n1",
+            BackupSourceRole.Replica, 1757500000, 1757500300, null, null, null,
+            new BackupVerify(BackupVerifyStatus.Ok, 1757500600));
+
+        // Act
+        var json = BackupStatusJson.Serialize(full);
+
+        // Assert
+        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        doc.RootElement.GetProperty("verify").TryGetProperty("error", out _).Should().BeFalse();
+    }
+
     // AAA: FAILED — error, без wal/size
     [Fact]
     public void Serialize_FailedWithError_RoundTrip()

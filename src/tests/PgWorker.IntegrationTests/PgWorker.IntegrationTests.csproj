@@ -30,6 +30,8 @@
         <ProjectReference Include="..\..\PgWorker.Moves\PgWorker.Moves.csproj"/>
         <ProjectReference Include="..\..\PgWorker.Backups\PgWorker.Backups.csproj"/>
         <ProjectReference Include="..\..\PgWorker.App\PgWorker.App.csproj"/>
+        <!-- t04: E2E-ассерт «панельный парсер читает без parseErrors» (Assert 3 маркера). -->
+        <ProjectReference Include="..\..\AdminPanel.Etcd\AdminPanel.Etcd.csproj"/>
     </ItemGroup>
 
 </Project>

@@ -187,6 +187,25 @@ public sealed class WorkerMetricsInstrumentationTests
         sut.DebugSnapshot().WalLag[("c1", "s2")].Should().Be(0);
     }
 
+    // AAA: counter pgworker_backup_verify_total{result} — инкременты по result
+    [Fact]
+    public void BackupVerify_ИнкрементыПоРезультату()
+    {
+        // Arrange
+        using var meter = new Meter("TestWorker");
+        using var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
+
+        // Act — три ok + один failed
+        sut.BackupVerify("c1", "s1", "ok");
+        sut.BackupVerify("c1", "s1", "ok");
+        sut.BackupVerify("c1", "s2", "ok");
+        sut.BackupVerify("c1", "s2", "failed");
+
+        // Assert
+        sut.DebugSnapshot().BackupVerifyTotals["ok"].Should().Be(3);
+        sut.DebugSnapshot().BackupVerifyTotals["failed"].Should().Be(1);
+    }
+
     [Fact]
     public void ClaimsHeld_LastValueWins()
     {

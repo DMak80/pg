@@ -11,7 +11,10 @@ namespace PgWorker.IntegrationTests.E2e;
 // пароль подключается, старый отвергается, пишущая нагрузка переживает ротацию.
 public class E2eRotateScenarios
 {
-    private const string Cluster = "rotate";
+    // Уникальное имя кластера на прогон ({slug}{тег прогона}, docs/e2e-isolation.md
+    // §1): движковые контейнеры/тома pgw-<C>-* опознаются teardown'ом окружения
+    // по своему тегу (OwnName) и снимаются им; константное имя запрещено.
+    private string Cluster => $"rotate{Fx.ClusterTag}";
 
     // Окружение Fact'а (своя сеть/etcd); создаётся в начале каждого сценария.
     private E2eEnvironment Fx = null!;

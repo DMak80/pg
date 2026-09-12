@@ -48,7 +48,15 @@ internal interface IClusterProcesses
     Task<Result<ProcessOutcome>> WalStreamAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
 
-    /// <summary>Ретенция бэкапов (t06, arch/19 §4): после backup-wal, до repair;
+    /// <summary>Проверки полных бэкапов (t04, arch/19 §5): цепочка + pg_verifybackup,
+    /// супервиз verify-джобов; backups — парс префикса /pgworker/backups/ этим же тиком.
+    /// Порядок тика — после backup-wal, до ретенции (verify раньше retention:
+    /// канон arch/19 порядок не фиксирует; проверка валидирует то, что ретенция
+    /// только собирается удалять).</summary>
+    Task<Result<ProcessOutcome>> VerifyBackupsAsync(
+        ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
+
+    /// <summary>Ретенция бэкапов (t06, arch/19 §4): после backup-wal/verify, до repair;
     /// guard Enabled — выключенная подсистема no-op.</summary>
     Task<Result<ProcessOutcome>> RetentionAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
@@ -72,6 +80,7 @@ internal sealed class ClusterProcesses(
     ClusterSecretRotator rotator,
     PgWorker.Backups.BackupProcess backupsProcess,
     WalStreamProcess walStream,
+    PgWorker.Backups.BackupVerifyProcess verifyProcess,
     PgWorker.Backups.RetentionProcess retention) : IClusterProcesses
 {
     public Task<Result<ProcessOutcome>> ProvisionAsync(ClusterSnapshot snap, CancellationToken ct)
@@ -133,6 +142,10 @@ internal sealed class ClusterProcesses(
     public Task<Result<ProcessOutcome>> WalStreamAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
         => walStream.TickAsync(snap, backups.FirstOrDefault(b => b.Cluster == snap.Config.Cluster), ct);
+
+    public Task<Result<ProcessOutcome>> VerifyBackupsAsync(
+        ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
+        => verifyProcess.TickAsync(snap, backups, ct);
 
     public Task<Result<ProcessOutcome>> RetentionAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)

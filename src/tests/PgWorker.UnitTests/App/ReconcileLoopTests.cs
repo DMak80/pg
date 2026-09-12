@@ -258,7 +258,32 @@ public class ReconcileLoopTests
         processes.Calls.Should().NotContain(c => c.StartsWith("backups/"));
     }
 
-    // AAA: ретенция (t06) — при Backups.Enabled=true вызывается после backup-wal,
+    // AAA: verify-бэкапов (t04) — после backup-wal, до ретенции и repair (spec §3.3)
+    [Fact]
+    public async Task Tick_ActiveClusterWithBackupsEnabled_VerifyBetweenWalAndRepair()
+    {
+        // Arrange — кластер + Backups.Enabled=true; FakeProcesses пишет порядок Calls.
+        SeedCluster("shop", null);
+        var processes = new FakeProcesses();
+        var loop = CreateLoop(processes, options: new PgWorkerOptions
+        {
+            Etcd = new EtcdOptions { Endpoints = ["http://etcd:2379"] },
+            Loops = new LoopsOptions { ScanIntervalSec = 5, ErrorDelayMs = 10 },
+            Parallelism = new ParallelismOptions { MaxClusters = 4 },
+            Backups = new BackupsOptions { Enabled = true },
+        });
+
+        // Act
+        await loop.TickSafelyAsync(TestContext.Current.CancellationToken);
+
+        // Assert — порядок: backup-wal → backup-verify → backups-retention → repair
+        var calls = processes.Calls;
+        calls.Should().ContainInOrder(
+            "backup-wal/shop", "backup-verify/shop", "backups-retention/shop", "repair/shop");
+        calls.IndexOf("backup-wal/shop").Should().Be(calls.IndexOf("backup-verify/shop") - 1);
+    }
+
+    // AAA: ретенция (t06) — при Backups.Enabled=true вызывается после backup-wal/verify,
     // до repair (spec §3.3)
     [Fact]
     public async Task Tick_ActiveClusterWithBackupsEnabled_RetentionCalledAfterWalStreamBeforeRepair()
@@ -300,6 +325,22 @@ public class ReconcileLoopTests
 
         // Assert
         processes.Calls.Should().NotContain(c => c.StartsWith("backups-retention/"));
+    }
+
+    // AAA: Backups.Enabled=false — backup-verify не вызывается (как backups)
+    [Fact]
+    public async Task Tick_BackupsDisabled_VerifyNotCalled()
+    {
+        // Arrange — дефолтный конфиг (Backups.Enabled=false)
+        SeedCluster("shop", null);
+        var processes = new FakeProcesses();
+        var loop = CreateLoop(processes);
+
+        // Act
+        await loop.TickSafelyAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        processes.Calls.Should().NotContain(c => c.StartsWith("backup-verify/"));
     }
 
     [Fact]
@@ -565,6 +606,13 @@ public class ReconcileLoopTests
             ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
         {
             using var _ = Track(snap.Config.Cluster, WalStreamed, callName: "backup-wal");
+            return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
+        }
+
+        public Task<Result<ProcessOutcome>> VerifyBackupsAsync(
+            ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
+        {
+            using var _ = Track(snap.Config.Cluster, [], callName: "backup-verify");
             return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
         }
 

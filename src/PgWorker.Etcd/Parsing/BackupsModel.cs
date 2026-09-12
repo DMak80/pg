@@ -47,12 +47,15 @@ public enum BackupVerifyStatus
 /// <param name="RetentionMonths">GFS: N месячных.</param>
 /// <param name="FullMaxAgeSec">Окно суточного алерта «нет валидного полного» (t02).</param>
 /// <param name="VerifyOnCreate">Проверять полный сразу после создания (t04).</param>
+/// <param name="VerifyIntervalSec">Период перепроверки оставшихся полных, c
+/// (t04); null — не задан в policy-ключе → дефолт подставляет потребитель.</param>
 public sealed record BackupPolicy(
     int RetentionDays, int RetentionWeeks, int RetentionMonths,
-    long FullMaxAgeSec, bool VerifyOnCreate);
+    long FullMaxAgeSec, bool VerifyOnCreate, long? VerifyIntervalSec = null);
 
-/// <summary>Результат проверки полного: состояние + время последней проверки.</summary>
-public sealed record BackupVerify(BackupVerifyStatus State, long? CheckedUnix);
+/// <summary>Результат проверки полного: состояние + время последней проверки;
+/// Error — причина провала (t04, только для FAILED).</summary>
+public sealed record BackupVerify(BackupVerifyStatus State, long? CheckedUnix, string? Error = null);
 
 /// <summary>Один полный бэкап шарда (ключ
 /// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/full/&lt;id&gt;, id=YYYYMMDDHHMMSSZ

@@ -16,7 +16,9 @@ namespace PgWorker.IntegrationTests.E2e;
 // переснятием новым id; deprovisioning чистит джобы и префикс; ротация
 // backup_password включает backup_exec. Каждый Fact — своё окружение: методы
 // оставляют после себя Active-кластеры, и без per-method изоляции воркер
-// следующего Fact'а подхватывал бы чужие джобы (инцидент Release).
+// следующего Fact'а подхватывал бы чужие джобы (инцидент Release). Имя кластера сценария —
+// {slug}{Fx.ClusterTag} (уникально на прогон, docs/e2e-isolation.md §1):
+// движковые контейнеры/тома pgw-*-<C>-* опознаются teardown'ом окружения.
 public class E2eBackupScenarios
 {
     private const string Bucket = "pgworker-backups";
@@ -33,12 +35,12 @@ public class E2eBackupScenarios
     [Fact]
     public async Task Backup_FullDaily_Completes()
     {
-        // Arrange — кластер bkshop + policy (verify on_create) + воркер с бэкап-комплектом
+        // Arrange — кластер bkshop<тег прогона> + policy (verify on_create) + воркер
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await E2eEnvironment.StartAsync("bk-full", withMinio: true, ct: ct);
         Fx = fx;
-        const string cluster = "bkshop";
+        var cluster = $"bkshop{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
             """{"full_max_age_sec":3600,"verify":{"on_create":true}}""", null, ct);
@@ -97,15 +99,18 @@ public class E2eBackupScenarios
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await E2eEnvironment.StartAsync("bk-bads3", withMinio: true, ct: ct);
         Fx = fx;
-        const string cluster = "bkbads3";
+        var cluster = $"bkbads3{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         await using var app = await StartBackupHostAsync(
             "bkbads3", ct, s3EndpointOverride: "http://host.docker.internal:1");
 
-        // Act/Assert 1 — первая попытка FAILED с error ≤ 300 c
+        // Act/Assert 1 — первая попытка FAILED с error ≤ 480 c: окно включает
+        // provisioning (4 ноды, минуты) + джоб (pg_basebackup со spread-чекпоинтом
+        // может ждать ближайший чекпоинт) + мгновенный mc-отказ (connection refused
+        // mc не ретраит). 300 c на загруженном хосте не хватает (факт t04-гейта).
         var failed = await E2eFixture.WaitForAsync(
             async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("FAILED")),
-            TimeSpan.FromSeconds(300), ct);
+            TimeSpan.FromSeconds(480), ct);
         failed.Should().BeTrue("попытка с недоступным S3 должна упасть в FAILED");
         var failedKv = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("FAILED"));
         var status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(failedKv.Value)!;
@@ -114,7 +119,7 @@ public class E2eBackupScenarios
         // Assert 2 — переснятие: вторая попытка с ДРУГИМ id (Retry BaseSec=2)
         var retried = await E2eFixture.WaitForAsync(
             async () => (await FullKeysAsync(cluster, "shard1")).Count >= 2,
-            TimeSpan.FromSeconds(120), ct);
+            TimeSpan.FromSeconds(240), ct);
         retried.Should().BeTrue("бэкофф 2 c должен запустить переснятие новым id");
     }
 
@@ -127,7 +132,7 @@ public class E2eBackupScenarios
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await E2eEnvironment.StartAsync("bk-clean", withMinio: true, ct: ct);
         Fx = fx;
-        const string cluster = "bkclean";
+        var cluster = $"bkclean{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         await using var app = await StartBackupHostAsync("bkclean", ct);
         var started = await E2eFixture.WaitForAsync(
@@ -170,7 +175,7 @@ public class E2eBackupScenarios
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await E2eEnvironment.StartAsync("bk-rot", withMinio: true, ct: ct);
         Fx = fx;
-        const string cluster = "bkrot";
+        var cluster = $"bkrot{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         await using var app = await StartBackupHostAsync("bkrot", ct);
         var completed = await E2eFixture.WaitForAsync(
@@ -248,7 +253,7 @@ public class E2eBackupScenarios
         var ct = TestContext.Current.CancellationToken;
         await using var fx = await E2eEnvironment.StartAsync("wal-stream", withMinio: true, ct: ct);
         Fx = fx;
-        const string cluster = "shopb";
+        var cluster = $"shopb{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         await using var app = await StartWalHostAsync("walstream", ct);
 
@@ -373,6 +378,121 @@ public class E2eBackupScenarios
         var parsed = BackupsParser.Parse(kvs, out var parseErrors);
         parseErrors.Should().BeEmpty();
         parsed.Value.Should().Contain(b => b.Cluster == cluster);
+    }
+
+    // AAA: on_create-verify (AC1): COMPLETED → verify PENDING → verify-джоб
+    // pgw-backup-verify-* → verify.state=OK + checked_unix; парсеры без parseErrors
+    [Fact]
+    public async Task Backup_Verify_Ok_OnCreate()
+    {
+        // Arrange — окружение с MinIO; кластер bkvrfy<тег прогона>; policy on_create=true
+        DockerTrait.SkipIfUnavailable();
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await E2eEnvironment.StartAsync("bk-verify", withMinio: true, ct: ct);
+        Fx = fx;
+        var cluster = $"bkvrfy{Fx.ClusterTag}";
+        await SeedClusterAsync(cluster);
+        await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
+            """{"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":0}}""", null, ct);
+        await using var app = await StartBackupHostAsync("bkverify", ct);
+
+        // Act 1 — фаза PENDING пройдена: в ключе PENDING (t02 пишет при COMPLETED)
+        // и/или жив контейнер pgw-backup-verify-<C>-* (PENDING держится в ключе
+        // до итога — стабильное условие; контейнер — свидетельство джоба)
+        var sawPending = await E2eFixture.WaitForAsync(async () =>
+        {
+            if ((await FullKeysAsync(cluster, "shard1"))
+                .Any(f => f.Value.Contains(""""verify":{"state":"PENDING"""")))
+                return true;
+            var containers = await Fx.RunDockerAsync(
+                ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-verify-{cluster}-"], ct);
+            return containers.Length > 0;
+        }, TimeSpan.FromSeconds(180), ct);
+        sawPending.Should().BeTrue("on_create: verify обязан стартовать (PENDING в ключе / контейнер pgw-backup-verify-*)");
+
+        // Act 2 — ждём verify.state=OK (бюджет 300 c: полный ~минуты + verify-скачивание)
+        var verified = await E2eFixture.WaitForAsync(async () =>
+            (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains(""""verify":{"state":"OK"""")),
+            TimeSpan.FromSeconds(300), ct);
+
+        // Assert 1 — OK + checked_unix (фаза PENDING зафиксирована Act 1)
+        verified.Should().BeTrue("on_create: verify должен дойти до OK (AC1)");
+        var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
+        var status = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(done.Value)!;
+        status["verify"].GetProperty("state").GetString().Should().Be("OK");
+        status["verify"].GetProperty("checked_unix").GetInt64().Should().BeGreaterThan(0);
+
+        // Assert 2 — verify-джоб отработал и снесён (контейнер/volume-префиксы чисты)
+        var cleaned = await E2eFixture.WaitForAsync(async () =>
+        {
+            var containers = await Fx.RunDockerAsync(
+                ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-verify-{cluster}-"], ct);
+            var volumes = await Fx.RunDockerAsync(
+                ["volume", "ls", "-q", "--filter", $"name=pgw-backup-verify-{cluster}-"], ct);
+            return containers.Length == 0 && volumes.Length == 0;
+        }, TimeSpan.FromSeconds(60), ct);
+        cleaned.Should().BeTrue("verify-джоб и volume сносятся после итога (AC8)");
+
+        // Assert 3 — воркерный и панельный парсеры читают без parseErrors (AC1);
+        // панельный Kv — отдельный тип (AdminPanel.Etcd.Client.Kv), маппинг 1:1
+        var kvs = (await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/", ct)).Value;
+        var parsed = BackupsParser.Parse(kvs, out var parseErrors);
+        parseErrors.Should().BeEmpty();
+        var panelKvs = kvs.Select(kv => new AdminPanel.Etcd.Client.Kv(kv.Key, kv.Value, kv.ModRevision)).ToList();
+        var panel = AdminPanel.Etcd.Parsing.BackupsParser.Parse(panelKvs);
+        panel.Errors.Should().BeEmpty();
+        panel.Clusters.Single(c => c.Cluster == cluster).ShardVerifyFailures.Should().BeEmpty();
+    }
+
+    // AAA: порча набора (AC2): удалить объект из full/<id>/ в MinIO → policy
+    // interval_sec мал → перепроверка → verify.state=FAILED + error; переснятия
+    // в окне теста нет (full_max_age_sec велик)
+    [Fact]
+    public async Task Backup_Verify_Corruption_Fails()
+    {
+        // Arrange — окружение + кластер; interval_sec=5 форсирует перепроверку
+        DockerTrait.SkipIfUnavailable();
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await E2eEnvironment.StartAsync("bk-corrupt", withMinio: true, ct: ct);
+        Fx = fx;
+        var cluster = $"bkcrpt{Fx.ClusterTag}";
+        await SeedClusterAsync(cluster);
+        await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
+            """{"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":5}}""", null, ct);
+        await using var app = await StartBackupHostAsync("bkcorrupt", ct);
+
+        // Assert 1 — первый verify OK (как в маркере)
+        var firstOk = await E2eFixture.WaitForAsync(async () =>
+            (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains(""""verify":{"state":"OK"""")),
+            TimeSpan.FromSeconds(300), ct);
+        firstOk.Should().BeTrue("исходный набор валиден");
+        var done = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("COMPLETED"));
+        var id = done.Key.Split('/').Last();
+
+        // Act — портим: mc rm один объект из full/<id>/ (PG_VERSION из листинга набора)
+        await Fx.RunDockerAsync(
+            ["run", "--rm", "--network", Fx.NetName, "--entrypoint", "/bin/sh", E2eEnvironment.McImage,
+                "-c", $"mc alias set t http://e2e-minio:9000 minioadmin minioadmin >/dev/null"
+                      + $" && mc rm t/{Bucket}/{cluster}/shard1/full/{id}/PG_VERSION"], ct);
+
+        // Assert 2 — перепроверка по interval → FAILED + error (бюджет 180 c:
+        // interval 5 c + тик + джоб со скачиванием)
+        var failed = await E2eFixture.WaitForAsync(async () =>
+            (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains(""""verify":{"state":"FAILED"""")),
+            TimeSpan.FromSeconds(180), ct);
+        failed.Should().BeTrue("порча набора обязана дать verify FAILED (AC2)");
+        var corrupted = (await FullKeysAsync(cluster, "shard1")).Single(f => f.Value.Contains("FAILED"));
+        var corruptedStatus = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(corrupted.Value)!;
+        corruptedStatus["verify"].GetProperty("error").GetString().Should().NotBeNullOrEmpty("причина pg_verifybackup — в verify.error");
+
+        // Assert 3 — в момент провала verify переснятие не УСПЕЛО завершиться.
+        // Точная механика (задача 11): после verify FAILED валидных полных нет →
+        // IsDue=true СРАЗУ; переснятие сдерживает только BackoffPassed (n растёт
+        // и от verify-фейлов; окно Retry.BaseSec=2 c из StartBackupHostAsync) —
+        // новая ПОПЫТКА (PLANNED/RUNNING-ключ) допустима, но полный снимается
+        // минуты → COMPLETED в момент этого ассерта обязан быть один.
+        (await FullKeysAsync(cluster, "shard1")).Count(f => f.Value.Contains("COMPLETED"))
+            .Should().Be(1, "новый COMPLETED-полный не успевает появиться в момент провала verify");
     }
 
     // ===== Хелперы =====

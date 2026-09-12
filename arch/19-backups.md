@@ -105,14 +105,17 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   адресов, что панель (advertised-правило
   [14-pgworker.md](14-pgworker.md) §2.4 п.5); БД-роль — §7.
 - **Планировщик (rolling, t02)**: воркер тиками под клэймом `<C>` для
-  каждого шарда Active-кластера с `dsn`: возраст последнего COMPLETED
-  полного > `full_max_age_sec` → создать `full/<id>` (PLANNED → запуск
+  каждого шарда Active-кластера с `dsn`: возраст последнего ВАЛИДНОГО
+  COMPLETED-полного (t04: `verify.state ≠ FAILED` — OK, PENDING «идёт»
+  или verify отсутствует; полный с проваленным verify свежестью НЕ
+  считается) > `full_max_age_sec` → создать `full/<id>` (PLANNED → запуск
   джоба → RUNNING); инвариант — максимум один активный
   (PLANNED/RUNNING/UPLOADING) полный на шард одновременно. FAILED →
   переснятие НОВЫМ id (`pg_basebackup` не резюмится; FAILED-записи —
   история) с бэкоффом `min(Retry.BaseSec·2^(n−1), Retry.MaxSec)`, где n —
-  число FAILED с момента последнего COMPLETED шарда (вычислимо из истории
-  ключей — дополнительных полей контракта не требуется). Лимита попыток
+  число неудач с момента последнего валидного COMPLETED шарда: FAILED
+  джоба + verify-FAILED (t04) — вычислимо из истории ключей, дополнительных
+  полей контракта не требуется. Лимита попыток
   нет: порог «долго без валидного» — суточный алерт панели (§4). Takeover:
   статус в etcd + детерминированное имя контейнера — новый инстанс
   продолжает супервизить; RUNNING-статус без контейнера/логов → FAILED
@@ -158,7 +161,10 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   `<newTLI>.history` и первом сегменте нового TLI, равном последнему
   сегменту старого TLI ИЛИ следующему за ним (точка переключения внутри
   сегмента — PG перезаписывает сегмент с нового TLI); полный LSN-разбор
-  history — t04. Цепочка проверяется от `chain_start_segment`: стартовая
+  history — verify t04 (§5): воркер скачивает `.history`-объекты из
+  `wal/` и валидирует TLI-переходы по точке переключения из файла
+  (`switchWALLSN` в границах сегмента первого сегмента нового TLI);
+  runtime-контроль потока (этот §) остаётся на эвристике номеров. Цепочка проверяется от `chain_start_segment`: стартовая
   точка = `wal_start_segment` старейшего COMPLETED полного бэкапа; полных
   нет → первый сегмент потока агента (закрепляется в статусе при первом
   upload). Ретенция (t06) чистит сегменты ниже стартовой точки старейшего
@@ -194,8 +200,8 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
 
 | Ключ | Значение |
 |---|---|
-| `/pgworker/backups/<C>/policy` | per-cluster политика: `{"retention":{"days":7,"weeks":4,"months":6},"full_max_age_sec":86400,"verify":{"on_create":true}}`; пишет воркер; приём — `POST /api/clusters/<C>/backups/policy` (t06: валидация + put; до того — ручная запись ключа); отсутствует → дефолт `PgWorker:Backups:Policy` |
-| `/pgworker/backups/<C>/<X>/full/<id>` | статус полного: `{"state":"PLANNED\|RUNNING\|UPLOADING\|COMPLETED\|FAILED\|DELETING","node":"<n>","role":"replica\|master","started_unix","finished_unix"?,"wal_start_segment"?,"size_bytes"?,"error"?,"verify":{"state":"PENDING\|OK\|FAILED","checked_unix"?}}`; `wal_start_segment` заполняется с фазы UPLOADING (из `backup_label` джоба; для рано упавших FAILED может отсутствовать — до этого неизвестен) |
+| `/pgworker/backups/<C>/policy` | per-cluster политика: `{"retention":{"days":7,"weeks":4,"months":6},"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":604800}}`; пишет воркер (приём через API — t06; до того — ручная запись ключа); отсутствует → дефолт `PgWorker:Backups:Policy` |
+| `/pgworker/backups/<C>/<X>/full/<id>` | статус полного: `{"state":"PLANNED\|RUNNING\|UPLOADING\|COMPLETED\|FAILED\|DELETING","node":"<n>","role":"replica\|master","started_unix","finished_unix"?,"wal_start_segment"?,"size_bytes"?,"error"?,"verify":{"state":"PENDING\|OK\|FAILED","checked_unix"?,"error"?}}`; `wal_start_segment` заполняется с фазы UPLOADING (из `backup_label` джоба; для рано упавших FAILED может отсутствовать — до этого неизвестен); `verify` — результат проверки t04 (§5): PENDING в т.ч. «идёт», `error` — причина невалидности (checksums/цепочка с границами) |
 | `/pgworker/backups/<C>/<X>/wal` | состояние WAL-потока шарда: `{"state":"ACTIVE\|DEGRADED\|STOPPED","slot":"<slot>","master_node","chain_start_segment","last_received_segment","last_uploaded_segment","last_uploaded_unix","lag_segments"?,"error"?}` |
 | `/pgworker/backups/storage` | занятость хранилища установки (t06): `{"used_bytes":…,"quota_bytes"?,"used_percent"?,"state":"OK\|WARN\|CRIT","updated_unix":…}`; ключ ГЛОБАЛЬНЫЙ (вне per-cluster префиксов, D2-чистки не касается); пишет ретенционный проход (см. «Ретенция» ниже) — любой живой клэйм пишет одно и то же свежее значение (идемпотентно); `quota_bytes` не задан (0) → пишется только `used_bytes`, `state=OK` |
 
@@ -251,13 +257,24 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   новых полных): WARN/CRIT → панельный алерт `backup-storage-quota`,
   действует оператор (расширить квоту / ужать policy).
 - **Суточный алерт (t02)**: панель вычисляет по снапшоту префикса —
-  правило `backup-full-stale` per-shard: возраст последнего COMPLETED
-  полного шарда > `full_max_age_sec` политики кластера (policy-ключ
+  правило `backup-full-stale` per-shard: возраст последнего ВАЛИДНОГО
+  COMPLETED-полного шарда (t04: `verify.state ≠ FAILED` — OK/PENDING/
+  отсутствует; проваленный verify свежестью не считается) >
+  `full_max_age_sec` политики кластера (policy-ключ
   отсутствует → панельный дефолт 86400). Пустой префикс кластера (ни
   одного ключа бэкапов — подсистема не включена) — правило молчит, ложных
   алертов на выключенной подсистеме нет. Воркер алертов не пишет — только
   статусы (все алерты панели — вычисления над снапшотом, как остальные
   правила AlertEngine).
+- **Алерт невалидного (t04)**: правило `backup-verify-failed` (critical)
+  per-shard — в статусе любого COMPLETED-полного `verify.state=FAILED`
+  (описание — `verify.error`: провал checksums / дыра цепочки с
+  границами); воркер реагирует переснятием (планировщик §2 не считает
+  проваленный verify свежестью), действие оператора — разбор по runbook
+  (t05). Проверки по политике: `verify.on_create` — сразу после
+  COMPLETED, `verify.interval_sec` — периодическая перепроверка каждого
+  оставшегося COMPLETED-полного по возрасту `verify.checked_unix`
+  (тихая порча/утеря объектов S3).
 - **Deprovisioning кластера** (D2, [14-pgworker.md](14-pgworker.md) §5 B)
   чистит etcd-префикс `/pgworker/backups/<C>/` тем же `del --prefix` (и
   убивает бегущие джоб-контейнеры `pgw-backup-full-<C>-*`); объекты
@@ -297,6 +314,28 @@ s3://<bucket>/<C>/<X>/
   стартового — включая `.history` тех TLI (сегменты их диапазонов
   удалены); стартовый сегмент, `.history` стартового и более новых TLI,
   всё выше/новее — НЕ трогаются.
+- **Verify полного (t04, §4)**: две независимые проверки, итог —
+  verify-статус полного:
+  1. **Checksums** — ephemeral джоб-контейнер
+     `pgw-backup-verify-<C>-<X>-<id>` (образ `pgworker-backup`, контракт
+     §2, inline-команда от воркера): `mc cp` `full/<id>/` 1:1 в staging →
+     `pg_verifybackup` (manifest SHA256, вкл. `pg_wal/` набора) →
+     результат stdout result-JSON + exit-код (протокол джоба t02); воркер
+     супервизит по детерминированному имени, staging-volume удаляет после
+     итога (как t02). Сбой скачивания (S3/сеть/staging) — transient:
+     статус остаётся PENDING, ретраи тиками; `pg_verifybackup` ≠ 0 —
+     permanent (данные плохие).
+  2. **Полнота WAL-цепочки до точки бэкапа** — воркер без скачивания
+     сегментов и до запуска джоба: list `wal/` + list `full/<id>/pg_wal/`
+     (последний сегмент набора `-X stream` = точка бэкапа) →
+     непрерывность от `wal_start_segment` до точки бэкапа (подмножество
+     общего gap-детектора §3) + строгий LSN-разбор `.history` при
+     TLI-переходах в диапазоне (§3; GET history-объектов — они
+     крошечные). Дыра → permanent FAILED c границами, джоб checksums не
+     запускается (вердикт уже определён).
+  Обе зелёные → `verify.state=OK` + `checked_unix`; любая красная →
+  `FAILED` + `error`; verify идемпотентен — vanished-джоб перезапускается
+  (PENDING), переснятие полного не требуется.
 
 ## 6. Источник, HA-контур и ресурсные лимиты
 
@@ -346,7 +385,7 @@ s3://<bucket>/<C>/<X>/
 |---|---|
 | t02-backup-full-daily | джоб полного бэкапа, планировщик, статусы/ретраи, суточный алерт, роль/ensure `backup_exec` (§2, §7) |
 | t03-backup-wal-stream | WAL-агент, слот, загрузка сегментов, контроль непрерывности, алерты — статус воркера в etcd + панельные правила разрыва/отставания цепочки (§3, §4) |
-| t04-backup-verify | `pg_verifybackup` + полнота WAL-цепочки, статусы verify (§5, §3) |
+| t04-backup-verify | `pg_verifybackup` + полнота WAL-цепочки до точки бэкапа, статусы/периодическая перепроверка verify, алерт `backup-verify-failed`, валидность в планировщике/stale (§3–§5) |
 | t05-backup-restore | восстановление полного+WAL (PITR), runbook (§5, §4) |
 | t06-backup-retention | GFS-ретенция (календарь UTC), чистка WAL ниже стартовой точки оставляемых, гигиена FAILED, ключ хранилища/квоты + панельные алерты, guard последнего валидного, API приёма policy (§4, §5, §9) |
 | t07-backup-supervisor | reconcile S3↔etcd, сироты, reconnect агента, рестарт-устойчивость (§4, §6) |
@@ -356,7 +395,9 @@ s3://<bucket>/<C>/<X>/
 - Секция `PgWorker:Backups` (каркас t01): `Enabled=false`,
   `S3 { Endpoint, Region, Bucket, AccessKey, SecretKey, PathStyle=true }`,
   `Policy { Retention { Days=7, Weeks=4, Months=6 }, FullMaxAgeSec=86400,
-  VerifyOnCreate=true }`, `Staging { Dir=/backup-staging, QuotaBytes }`,
+  VerifyOnCreate=true, VerifyIntervalSec=604800 }` (t04: период
+  перепроверки оставшихся полных — `verify.interval_sec` policy-ключа
+  кластера перекрывает), `Staging { Dir=/backup-staging, QuotaBytes }`,
   `Agent { Cpu, Mem }`, `Job { Image="pgworker-backup:dev" }` (общий образ
   джобов t02 и WAL-агентов t03, §2), `Retry { BaseSec=300, MaxSec=3600 }`
   (бэкофф переснятия FAILED, t02), `S3 { AdvertisedEndpoint }` (t03: адрес
@@ -384,4 +425,6 @@ s3://<bucket>/<C>/<X>/
 | S3-endpoint недостижим с docker-хоста источника (джоб грузит из `mc`) | endpoint per-install обязан быть достижим отовсюду (объектное хранилище); стенд — `host.docker.internal:9000` (extra_hosts host-gateway в джобе) |
 | Ошибка ретенции удаляет нужный бэкап (баг отбора/чистки) | guard «последний COMPLETED не удаляется никогда»; удаление только через транзитную DELETING-фазу с идемпотентными повторами; отбор/чистка — чистые функции под полным юнит-покрытием; WAL-чистка — строго ниже стартовой точки оставляемых (§4/§5, t06) |
 | list всего bucket для `used_bytes` дорог на больших установках | по расписанию `Retention:IntervalSec` per-instance (не каждый тик), list-v2 пагинация; квота 0 → ключ пишется без вердикта; degradation — только свежесть числа (t06) |
+| Стоимость verify: скачивание полного из S3 (трафик + staging размером бэкапа) на каждый verify | `interval_sec` по умолчанию 7 дней (не каждый день все полные); staging-квота/лимиты — общие §6; verify-джоб ephemeral — ресурс занят на время проверки |
+| Тихая порча/утеря объектов S3 после снятия бэкапа (bit rot, ручное удаление) | периодическая перепроверка `verify.interval_sec` (t04) + алерт `backup-verify-failed`; планировщик не считает проваленный verify свежестью → переснятие |
 | Расхождение spec↔arch при будущих правках | arch-правки — всегда первой фазой; ревью plan↔spec по чек-листам dev-flow |

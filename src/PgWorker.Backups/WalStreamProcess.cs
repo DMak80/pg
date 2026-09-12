@@ -376,13 +376,18 @@ public sealed class WalStreamProcess(
         }
 
         // Факты прогресса — только из наблюдений: наблюдаемый последний сегмент
-        // цепочки; если цепочка не наблюдалась вовсе (объектов нет / все ниже
-        // chain_start) — прошлый ключ, НИКОГДА не now() (ревью Ф4-2 №2).
+        // цепочки; если цепочка не наблюдалась вовсе (объекты/LastModified недоступны,
+        // всё ниже chain_start) — прошлый ключ, НИКОГДА не now() (ревью Ф4-2 №2).
+        // Инвариант WalChain: LastSegment всегда из списка объектов; выборка ниже —
+        // защитная (ревью t04 P2): при его поломке смешения фактов не будет —
+        // невычисленный unix падает на прошлый ключ (transient-DEGRADED, не крах тика).
         var observedLast = chain.LastSegment;
         var lastUploadedName = observedLast?.Name ?? wal?.LastUploadedSegment;
-        var lastUploadedUnix = observedLast is { } seen
-            ? objects.Where(o => o.Name == seen.Name).Select(o => o.LastModified).Max().ToUnixTimeSeconds()
-            : wal?.LastUploadedUnix;
+        var observedLastUnix = observedLast is { } seen
+            ? objects.Where(o => o.Name == seen.Name).Select(o => o.LastModified)
+                .Cast<DateTimeOffset?>().FirstOrDefault()?.ToUnixTimeSeconds()
+            : null;
+        var lastUploadedUnix = observedLastUnix ?? wal?.LastUploadedUnix;
 
         // Прогресс не наблюдался и прошлого наблюдения нет — ключ не пишем
         // (spec п.8: «ключ не пишется до первого наблюдения»; писать

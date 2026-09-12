@@ -13,7 +13,10 @@ namespace PgWorker.IntegrationTests.E2e;
 // между тиками (идемпотентность).
 public class E2eAppSecretScenarios
 {
-    private const string Cluster = "appsecret";
+    // Уникальное имя кластера на прогон ({slug}{тег прогона}, docs/e2e-isolation.md
+    // §1): движковые контейнеры/тома pgw-<C>-* опознаются teardown'ом окружения
+    // по своему тегу (OwnName) и снимаются им; константное имя запрещено.
+    private string Cluster => $"appsecret{Fx.ClusterTag}";
 
     // Окружение Fact'а (своя сеть/etcd); создаётся в начале сценария.
     private E2eEnvironment Fx = null!;

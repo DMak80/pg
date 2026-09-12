@@ -620,26 +620,37 @@ internal static class BackupJobsCleaner
     public const string JobContainerPrefix = "pgw-backup-full-";
     public const string JobVolumePrefix = "pgw-backup-";
 
+    // t04: verify-джобы — второй класс чистки D1 (имя-канон BackupNames — дубль без ссылки).
+    public const string VerifyContainerPrefix = "pgw-backup-verify-";
+
     public static async Task<Result> RemoveAsync(
         IEnumerable<IDockerEngine> engines, string cluster, CancellationToken ct)
     {
-        var prefix = $"{JobContainerPrefix}{cluster}-";
-        var volumePrefix = $"{JobVolumePrefix}{cluster}-";
-        foreach (var engine in engines)
+        // t04: verify-джобы — контейнер и volume НОСЯТ ОДНО ИМЯ (в отличие от full:
+        // pgw-backup-full-<C>-<X>-<id> → volume pgw-backup-<C>-<X>-<id>).
+        // volumePrefix ОБЯЗАН содержать кластер (pgw-backup-<C>-) — имя контейнера
+        // без префикса даёт только <X>-<id>.
+        foreach (var (prefix, sameVolumeName) in new[]
+                 { (JobContainerPrefix, false), (VerifyContainerPrefix, true) })
         {
-            var list = await engine.ListContainersAsync(prefix, all: true, ct);
-            if (!list.IsSuccess)
-                return list;
-            foreach (var container in list.Value.Where(c => c.Names.Any(n => n.StartsWith(prefix, StringComparison.Ordinal))))
+            var containerPrefix = $"{prefix}{cluster}-";
+            var volumePrefix = $"{JobVolumePrefix}{cluster}-"; // pgw-backup-<C>-
+            foreach (var engine in engines)
             {
-                var name = container.Names.First(n => n.StartsWith(prefix, StringComparison.Ordinal));
-                var removed = await engine.RemoveContainerAsync(name, force: true, ct);
-                if (!removed.IsSuccess)
-                    return removed;
-                var volume = volumePrefix + name[prefix.Length..];
-                var volumeRemoved = await engine.RemoveVolumeAsync(volume, ct);
-                if (!volumeRemoved.IsSuccess)
-                    return volumeRemoved;
+                var list = await engine.ListContainersAsync(containerPrefix, all: true, ct);
+                if (!list.IsSuccess)
+                    return list;
+                foreach (var container in list.Value.Where(c => c.Names.Any(n => n.StartsWith(containerPrefix, StringComparison.Ordinal))))
+                {
+                    var name = container.Names.First(n => n.StartsWith(containerPrefix, StringComparison.Ordinal));
+                    var removed = await engine.RemoveContainerAsync(name, force: true, ct);
+                    if (!removed.IsSuccess)
+                        return removed;
+                    var volume = sameVolumeName ? name : volumePrefix + name[containerPrefix.Length..];
+                    var volumeRemoved = await engine.RemoveVolumeAsync(volume, ct);
+                    if (!volumeRemoved.IsSuccess)
+                        return volumeRemoved;
+                }
             }
         }
 

@@ -14,8 +14,62 @@ public class BackupPlannerTests
     private static long Unix(DateTime t)
         => new DateTimeOffset(t).ToUnixTimeSeconds();
 
-    private static FullBackupState Full(string id, FullBackupStatus state, long started, long? finished = null)
-        => new(id, state, "n1", BackupSourceRole.Replica, started, finished, null, null, null, null);
+    private static FullBackupState Full(string id, FullBackupStatus state, long started, long? finished = null,
+        BackupVerify? verify = null)
+        => new(id, state, "n1", BackupSourceRole.Replica, started, finished, null, null, null, verify);
+
+    // AAA: COMPLETED+verify FAILED не даёт свежести → IsDue=true (AC6)
+    [Fact]
+    public void IsDue_СвежийНоБитыйПолный_Due()
+    {
+        // Arrange — COMPLETED час назад (в окне), но verify FAILED
+        var fulls = new[]
+        {
+            Full("20260911110000Z", FullBackupStatus.Completed, Unix(Now.AddHours(-1).AddMinutes(-5)),
+                Unix(Now.AddHours(-1)), verify: new BackupVerify(BackupVerifyStatus.Failed, Unix(Now.AddHours(-1)), "bad")),
+        };
+
+        // Act / Assert
+        BackupPlanner.IsDue(fulls, 86400, Unix(Now)).Should().BeTrue("проваленный verify свежестью не считается");
+    }
+
+    // AAA: валидный = verify null | PENDING | OK — все три дают свежесть
+    [Fact]
+    public void IsDue_ВсеВидыВалидных_ГасятDue()
+    {
+        // Arrange — три конфигурации свежего COMPLETED (час назад, окно 86400)
+        var fresh = Unix(Now.AddHours(-1).AddMinutes(-5));
+        var finished = Unix(Now.AddHours(-1));
+        var noVerify = new[] { Full("20260911110000Z", FullBackupStatus.Completed, fresh, finished) };
+        var pending = new[] { Full("20260911110001Z", FullBackupStatus.Completed, fresh, finished,
+            verify: new BackupVerify(BackupVerifyStatus.Pending, null)) };
+        var ok = new[] { Full("20260911110002Z", FullBackupStatus.Completed, fresh, finished,
+            verify: new BackupVerify(BackupVerifyStatus.Ok, finished)) };
+
+        // Act / Assert — каждая конфигурация сама по себе гасит due (в окне)
+        BackupPlanner.IsDue(noVerify, 86400, Unix(Now)).Should().BeFalse();
+        BackupPlanner.IsDue(pending, 86400, Unix(Now)).Should().BeFalse();
+        BackupPlanner.IsDue(ok, 86400, Unix(Now)).Should().BeFalse();
+    }
+
+    // AAA: бэкофф n считает и verify-фейлы: COMPLETED+FAILED-verify после последнего
+    // валидного — попытка, окно растёт (AC6)
+    [Fact]
+    public void BackoffPassed_VerifyФейлУвеличиваетN()
+    {
+        // Arrange — старый валидный COMPLETED (2 дня назад) + свежий COMPLETED с
+        // verify FAILED (100 c назад), Base=300
+        var fulls = new[]
+        {
+            Full("20260909030000Z", FullBackupStatus.Completed, Unix(Now.AddDays(-2)), Unix(Now.AddDays(-2).AddMinutes(5))),
+            Full("20260911025840Z", FullBackupStatus.Completed, Unix(Now) - 100, Unix(Now) - 100,
+                verify: new BackupVerify(BackupVerifyStatus.Failed, Unix(Now), "bad")),
+        };
+
+        // Act / Assert — n=1: окно Base=300 c от последней попытки (verify-фейл считается)
+        BackupPlanner.BackoffPassed(fulls, 300, 3600, Unix(Now)).Should().BeFalse();
+        BackupPlanner.BackoffPassed(fulls, 300, 3600, Unix(Now) + 301).Should().BeTrue();
+    }
 
     // AAA: due — нет COMPLETED (первое включение/все FAILED)
     [Fact]
