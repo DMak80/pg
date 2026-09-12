@@ -14,13 +14,18 @@
 
 `postgresql.conf` нод рассчитывается алгоритмом PGTune (`PgTune.Calculate`,
 норматив [`pgtune-calculation-spec.md`](pgtune-calculation-spec.md)) при
-создании контейнера ноды: память/CPU — из заявок `request_*` шарда, остальные
+создании контейнера ноды: **память/CPU — из etcd-заявок
+`/service/<scope>/request_{cpu,mem}` на ноду** (панель пишет их при создании
+шарда; arch/14 §2.1 п.4 — они же лимиты контейнера; заявки ОБЯЗАТЕЛЬНЫ:
+отсутствие/нечитаемость — фейл фазы provisioning с journal-ошибкой и ретраем),
+остальные
 входы — константы конфигурации `PgWorker:Pgtune` (канон — arch/14 §2.1/§8).
 Канон PgWorker (P3: `wal_level=logical`, walsenders/slots) перекрывает расчёт;
 бюджет doorman синхронизирован: `max(10, max_connections − 5)` (P15).
 
 - **Настройка в деплое** — `PGW_PGTUNE_*` в `deploy/.env` (полный список и
   семантика — `deploy/.env.example`; закомментировано = дефолты appsettings).
+  Память/CPU через env НЕ задаются — только etcd-заявками `request_*`.
   `DbType=desktop` запрещён (fail-fast старта воркера).
 - **Пересчёт без фиксации**: параметры НЕ хранятся в etcd — рассчитываются
   заново при каждом создании контейнера от актуальных `request_*`. Смена заявок

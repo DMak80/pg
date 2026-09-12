@@ -383,12 +383,15 @@ authz-плагины вне скоупа, граница зафиксирова�
 3. Итог — план размещения (node → host + порты); он же вход для генерации
    конфигов (DSN multi-host по нодам шарда; HAProxy-конфиг — генератор
    остаётся в Core, в контейнере не поднимается — см. §2.1).
-4. Заявки ресурсов `/service/<scope>/request_{cpu,mem}` — лимиты ноды:
-   plain — `HostConfig.NanoCPUs` (cores × 10⁹) / `HostConfig.Memory` (байты;
-   суффиксы панели: `K/M/G/T` десятичные, `Ki/Mi/Gi/Ti` двоичные);
-   swarm — `TaskTemplate.Resources.Limits` (те же поля). Нечитаемое значение —
-   без лимита (заявка — не контракт). `request_disk` примитива лимита в docker
-   не имеет — игнорируется (квоты volume — roadmap).
+4. Заявки ресурсов `/service/<scope>/request_{cpu,mem}` — ОБЯЗАТЕЛЬНАЯ
+   информация о ноде (панель пишет при создании шарда, arch/adminpanel/02
+   §9.5). Лимиты контейнера: plain — `HostConfig.NanoCPUs` (cores × 10⁹) /
+   `HostConfig.Memory` (байты; суффиксы панели: `K/M/G/T` десятичные,
+   `Ki/Mi/Gi/Ti` двоичные); swarm — `TaskTemplate.Resources.Limits` (те же
+   поля) — И входы PGTune-расчёта параметров ноды. Отсутствие/нечитаемость
+   заявки — фейл фазы тика (journal-ошибка + транзиент-ретрай): без заявки
+   воркер НЕ знает размера ноды и НЕ выдумывает дефолтов. `request_disk`
+   примитива лимита в docker не имеет — игнорируется (квоты volume — roadmap).
 5. **Advertised-имя хоста** (`PgWorker:Docker:AdvertisedHost`, advertised-правило
    arch/16, прецедент KafkaWorker:AdvertisedClientHost): адреса нод в etcd
    (portalloc/dsn) обязаны быть резолвимы КЛИЕНТАМИ записей — панелью. Внутреннее
@@ -1040,8 +1043,10 @@ AD2' инвариант адресов Active (каждый тик, Д2): portal
     exited-черепок или снесённый контейнер при state=RUNNING (процессные
     пути скипают RUNNING, инспекция running-only) → EnsureNode напрямую
     (сверка портов → stop+rm+create по плану), journal phase=recreated-node;
-    тюнинг репарируемой ноды — от дефолтов опций (resources = null — заявки
-    не читаются на этом пути; PgtuneInputsFactory.Create(null), §2.1).
+    тюнинг репарируемой ноды — от ОБЯЗАТЕЛЬНЫХ заявок ресурсов шарда, как
+    и в остальных EnsureNode-путях (ReadShardResourcesAsync →
+    PgtuneInputsFactory.Create(resources), §2.1 п.4); заявки нет — фейл
+    тика (транзиент-ретрай), дефолтов нет.
     Граница с эвакуацией (§5 D, t09): когда В ШАРДЕ не жив ни один контейнер
     (все ноды шарда отсутствуют в running-инспекции), черепок-пересоздание НЕ
     применяется — сценарий всего-шарда-мёртв решает BucketEvacuator: мгновенный
@@ -1190,14 +1195,16 @@ PgWorker:Snapshots { Dir="/snapshots", RetentionFiles=10 }
 PgWorker:AppParams { Default="sslmode=require" }  # per-node ключ
                   # shards/<X>/nodes/<n>/app_params (P2.5'/A5/C; P17)
 PgWorker:Pgtune { DbVersion=18, DbType="oltp", HdType="ssd", DbSize="mid_ram",
-                  Connections=60, DefaultTotalMemoryBytes=8589934592,
-                  ExcludeParams=["io_method","io_workers"] } # входы PGTune (§2.1):
-                  # DbVersion 10..18; DbType web|oltp|dw|mixed — desktop ЗАПРЕЩЁН
-                  # (wal_level=minimal несовместим с P3) — fail-fast валидация
-                  # старта; Connections 20..999999 = вход connectionNum (P15:
-                  # doorman = Connections − 5); DefaultTotalMemoryBytes — fallback
-                  # при отсутствии request_mem (8GiB, ≥ 512MiB); ExcludeParams —
-                  # имена PGTune-параметров, не применяемые при сборке YAML
+                  Connections=60, ExcludeParams=["io_method","io_workers"] }
+                  # входы PGTune (§2.1): DbVersion 10..18; DbType web|oltp|dw|mixed —
+                  # desktop ЗАПРЕЩЁН (wal_level=minimal несовместим с P3) — fail-fast
+                  # валидация старта; Connections 20..999999 = вход connectionNum (P15:
+                  # doorman = Connections − 5); ExcludeParams — имена PGTune-параметров,
+                  # не применяемые при сборке YAML (io_method=io_uring требует
+                  # --with-liburing — не проверено для образа; после проверки оператор
+                  # убирает из exclude). Память/CPU — НЕ конфигурация: etcd-заявки
+                  # /service/<scope>/request_{cpu,mem} на ноду — ОБЯЗАТЕЛЬНЫ (§2.1 п.4);
+                  # заявки нет — фейл фазы, дефолтов нет.
                   # (io_method=io_uring требует --with-liburing — не проверено
                   # для образа; после проверки оператор убирает из exclude).
                   # Переопределение параметров — ТОЛЬКО через эти опции:

@@ -45,6 +45,11 @@ public class AddShardProcessTests
         etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a","poll_queued_commands":0}""");
         etcd.Seed("/service/shop-shard2/initialize", "7403705125687833962");
         etcd.Seed("/service/shop-shard2/leader", """{"name":"shard2a","poll_queued_commands":0}""");
+        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4) — сидим как панель.
+        etcd.Seed("/service/shop-shard1/request_cpu", "2");
+        etcd.Seed("/service/shop-shard1/request_mem", "8Gi");
+        etcd.Seed("/service/shop-shard2/request_cpu", "2");
+        etcd.Seed("/service/shop-shard2/request_mem", "8Gi");
 
         var existing = new Dictionary<string, NodeAddress>
         {

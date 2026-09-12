@@ -6,20 +6,21 @@ using PgWorker.Provisioning.Processes;
 
 namespace PgWorker.UnitTests.Provisioning;
 
-// PgtuneInputsFactory: канал «заявки ресурсов + PgWorker:Pgtune → вход ядра →
-// вывод» (spec.md §4.3): floor-преобразования, fallback-память, детерминизм,
-// warning-лог; etcd не используется (вызывается держателем клэйма <C>).
+// PgtuneInputsFactory: канал «ОБЯЗАТЕЛЬНЫЕ заявки ресурсов etcd
+// (request_{cpu,mem}) + PgWorker:Pgtune → вход ядра → вывод» (spec.md §4.3):
+// floor-преобразования, fail-fast без заявки, детерминизм, warning-лог;
+// etcd не используется (вызывается держателем клэйма <C>).
 
 public class PgtuneInputsFactoryTests
 {
-    // Дефолтные настройки PGTune (эквивалент секции PgWorker:Pgtune appsettings).
+    // Дефолтные настройки PGTune (эквивалент секции PgWorker:Pgtune appsettings);
+    // память/CPU — только заявки, в настройках их НЕТ (arch/14 §2.1 п.4).
     private static PgtuneSettings DefaultSettings() => new(
         DbVersion: 18,
         DbType: "oltp",
         HdType: "ssd",
         DbSize: "mid_ram",
         Connections: 60,
-        DefaultTotalMemoryBytes: 8589934592,
         ExcludeParams: new HashSet<string>(StringComparer.Ordinal));
 
     [Fact]
@@ -37,29 +38,48 @@ public class PgtuneInputsFactoryTests
     }
 
     [Fact]
-    public void Create_FallsBackToDefaultMemoryWhenResourcesMissing()
+    public void Create_FailsFastWhenMemoryClaimMissing()
     {
-        // Arrange: фабрика с дефолтными настройками (fallback 8 GiB).
-
-        // Act: расчёт без заявки и с «пустой» заявкой (нечитаемые request_*).
+        // Arrange: фабрика с дефолтными настройками; заявка памяти
+        // отсутствует/нечитаема (null / пустая / MemoryBytes = null).
         var factory = new PgtuneInputsFactory(DefaultSettings(), NullLogger<PgtuneInputsFactory>.Instance);
-        var noResources = factory.Create(null);
-        var emptyResources = factory.Create(new NodeResources(null, null));
 
-        // Assert: DefaultTotalMemoryBytes/1024 = 8388608 KB → shared_buffers 2GB,
-        // effective_cache_size 6GB.
-        noResources["shared_buffers"].Should().Be("2GB");
-        noResources["effective_cache_size"].Should().Be("6GB");
-        emptyResources["shared_buffers"].Should().Be("2GB");
+        // Act: расчёты без заявки памяти.
+        var noResources = () => factory.Create(null);
+        var emptyResources = () => factory.Create(new NodeResources(null, null));
+        var noMem = () => factory.Create(new NodeResources(4, null));
+
+        // Assert: обязательная информация — фейл расчёта с внятной ошибкой,
+        // никаких дефолтов и выдуманных размеров ноды (arch/14 §2.1 п.4).
+        noResources.Should().Throw<InvalidOperationException>()
+            .Where(e => e.Message.Contains("request_mem", StringComparison.Ordinal));
+        emptyResources.Should().Throw<InvalidOperationException>()
+            .Where(e => e.Message.Contains("request_mem", StringComparison.Ordinal));
+        noMem.Should().Throw<InvalidOperationException>()
+            .Where(e => e.Message.Contains("request_mem", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Create_FailsFastWhenCpuClaimMissing()
+    {
+        // Arrange: заявка памяти есть, заявки CPU нет — информация обязательна.
+        var factory = new PgtuneInputsFactory(DefaultSettings(), NullLogger<PgtuneInputsFactory>.Instance);
+
+        // Act: расчёт без заявки CPU.
+        var act = () => factory.Create(new NodeResources(null, 8589934592));
+
+        // Assert: фейл расчёта с внятной ошибкой (не «cpuNum не задан»).
+        act.Should().Throw<InvalidOperationException>()
+            .Where(e => e.Message.Contains("request_cpu", StringComparison.Ordinal));
     }
 
     [Fact]
     public void Create_FloorsCpuCores()
     {
-        // Arrange: фабрика с дефолтными настройками.
+        // Arrange: фабрика с дефолтными настройками; заявка памяти 8 GiB.
         var factory = new PgtuneInputsFactory(DefaultSettings(), NullLogger<PgtuneInputsFactory>.Instance);
 
-        // Act: расчёты от заявок 4.7 / 2.7 / 0.5 ядер (память — дефолт 8 GiB).
+        // Act: расчёты от заявок 4.7 / 2.7 / 0.5 ядер.
         var fourCores = factory.Create(new NodeResources(4.7, 8589934592));
         var twoCores = factory.Create(new NodeResources(2.7, 8589934592));
         var subCore = factory.Create(new NodeResources(0.5, 8589934592));
@@ -103,8 +123,8 @@ public class PgtuneInputsFactoryTests
         var logger = new CapturingLogger();
         var factory = new PgtuneInputsFactory(DefaultSettings(), logger);
 
-        // Act: расчёт от маленькой заявки.
-        var result = factory.Create(new NodeResources(null, 104857600));
+        // Act: расчёт от маленькой заявки (полная: cpu 2, память 100MB).
+        var result = factory.Create(new NodeResources(2, 104857600));
 
         // Assert: расчёт не блокирован (max_connections выведен), предупреждения
         // попали в warning-лог.
@@ -122,8 +142,8 @@ public class PgtuneInputsFactoryTests
         var settings = DefaultSettings() with { Connections = 40, DbType = "dw" };
         var factory = new PgtuneInputsFactory(settings, NullLogger<PgtuneInputsFactory>.Instance);
 
-        // Act: расчёт от дефолтной памяти.
-        var result = factory.Create(null);
+        // Act: расчёт от полной заявки (память 8 GiB, CPU 4).
+        var result = factory.Create(new NodeResources(4, 8589934592));
 
         // Assert: Connections=40 → max_connections 40 (комплементарно doorman
         // 35 через DoormanConfigBuilder.ServerConnections — Задача 4); DbType=dw
@@ -141,8 +161,8 @@ public class PgtuneInputsFactoryTests
         var settings = DefaultSettings() with { DbType = "nosql" };
         var factory = new PgtuneInputsFactory(settings, NullLogger<PgtuneInputsFactory>.Instance);
 
-        // Act: расчёт с мусорной строкой.
-        var act = () => factory.Create(null);
+        // Act: расчёт с мусорной строкой (заявка полная — падает именно маппинг).
+        var act = () => factory.Create(new NodeResources(4, 8589934592));
 
         // Assert: fail-fast расчёта (InvalidOperationException), не тихий дефолт.
         act.Should().Throw<InvalidOperationException>();

@@ -390,14 +390,15 @@ public sealed class AdoptionProcess(
         if (!unreachableTrack.IsSuccess)
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(unreachableTrack.Error!);
         var recreated = false;
-        // Тюнинг репарации — от дефолтов опций (resources = null: заявки на этом
-        // пути не читаются; результат константен — один расчёт до цикла шардов,
-        // arch/14 §5 J).
-        var tuning = pgtune.Create(null);
         foreach (var (shardName, names) in candidatesByShard)
         {
             if (names.All(n => !discovered.Value.ContainsKey(n)))
                 continue; // весь шард без живых контейнеров — домен эвакуатора
+            // Тюнинг репарации — от ОБЯЗАТЕЛЬНЫХ заявок ресурсов шарда, как и в
+            // остальных EnsureNode-путях (arch/14 §5 J, §2.1 п.4): дефолтов нет,
+            // заявки нет → исключение = фейл тика (транзиент-ретрай).
+            var resources = await ReadShardResourcesAsync(cluster, shardName, ct);
+            var tuning = pgtune.Create(resources);
             var topology = new ShardTopology(
                 cluster, shardName, $"{cluster}-{shardName}",
                 merged
@@ -414,7 +415,7 @@ public sealed class AdoptionProcess(
                     continue; // живой контейнер на месте — сверка EnsureNode-путей процессов
 
                 var ensured = await driver.EnsureNodeAsync(
-                    topology, nodeName, addr, secrets, etcdEndpoints, resources: null, tuning, ct);
+                    topology, nodeName, addr, secrets, etcdEndpoints, resources, tuning, ct);
                 if (!ensured.IsSuccess)
                     return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(ensured.Error!);
                 recreated = true;
@@ -526,6 +527,34 @@ public sealed class AdoptionProcess(
             var result = await etcd.TxnAsync(endpoint, TxnRequest.Of(
                 [TxnCompare.NotExists(key)],
                 [new TxnOp.Put(key, value, null)]), ct);
+            if (result.IsSuccess)
+                return result;
+            last = result;
+        }
+
+        return last!;
+    }
+
+    // Заявки ресурсов шарда (arch/14 §2.1 п.4): ОБЯЗАТЕЛЬНЫ — и лимиты ноды,
+    // и вход PGTune-расчёта; чтение не удалось → null (фабрика честно фейлит
+    // фазу с внятной ошибкой — транзиент-ретрай).
+    private async Task<NodeResources?> ReadShardResourcesAsync(
+        string cluster, string shard, CancellationToken ct)
+    {
+        var scope = $"{cluster}-{shard}";
+        var cpu = await GetAsync($"/service/{scope}/request_cpu", ct);
+        if (!cpu.IsSuccess)
+            return null;
+        var mem = await GetAsync($"/service/{scope}/request_mem", ct);
+        return mem.IsSuccess ? NodeResourcesParser.Parse(cpu.Value?.Value, mem.Value?.Value) : null;
+    }
+
+    private async Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
+    {
+        Result<Kv?>? last = null;
+        foreach (var endpoint in endpoints)
+        {
+            var result = await etcd.GetAsync(endpoint, key, ct);
             if (result.IsSuccess)
                 return result;
             last = result;

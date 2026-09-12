@@ -66,7 +66,7 @@ public class AdoptionContractTests(EtcdFixture fixture)
             new PlacementOptions(15000, 15100, PatroniBootSec: 600),
             new EtcdEndpoints([Endpoint]),
             new PgtuneInputsFactory(
-                new PgtuneSettings(18, "oltp", "ssd", "mid_ram", 60, 8589934592,
+                new PgtuneSettings(18, "oltp", "ssd", "mid_ram", 60,
                     new HashSet<string>(StringComparer.Ordinal)),
                 NullLogger<PgtuneInputsFactory>.Instance));
 

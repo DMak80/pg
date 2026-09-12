@@ -49,6 +49,9 @@ public class NodeSupervisorTests
         etcd.Seed("/clusters/shop/shards/shard1/dsn", "host=h1,h2 port=15000,15000 dbname=shop user=bucket_admin");
         etcd.Seed("/clusters/shop/buckets/routing/bucket_0", "shard1");
         etcd.Seed("/clusters/shop/buckets/routing/bucket_1", "shard1");
+        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4) — сидим как панель.
+        etcd.Seed("/service/shop-shard1/request_cpu", "2");
+        etcd.Seed("/service/shop-shard1/request_mem", "8Gi");
         // portalloc: ноды h1/h2 чередуются, порты уникальны per-нода (18000/18001/18002)
         var alloc = new Dictionary<string, NodeAddress>();
         for (var i = 0; i < nodes; i++)
@@ -567,6 +570,9 @@ public class NodeSupervisorTests
             etcd.Seed("/clusters/shop/shards/shard2/dsn", "host=h1,h2 port=15010,15011 dbname=shop user=bucket_admin");
         if (markedToRemove)
             etcd.Seed("/clusters/shop/shards/shard2/state", "TO_REMOVE");
+        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4) — сидим как панель.
+        etcd.Seed("/service/shop-shard2/request_cpu", "2");
+        etcd.Seed("/service/shop-shard2/request_mem", "8Gi");
         // portalloc: объединённый (shard1 из SeedCluster + новый shard2)
         var alloc = new Dictionary<string, NodeAddress>();
         for (var i = 0; i < 3; i++)
@@ -941,6 +947,9 @@ public class NodeSupervisorTests
         etcd.Seed($"/clusters/{cluster}/shards/shard1/dsn", "host=h1,h2 port=15000,15001 dbname=x user=bucket_admin");
         etcd.Seed($"/clusters/{cluster}/buckets/routing/bucket_0", "shard1");
         etcd.Seed($"/clusters/{cluster}/buckets/routing/bucket_1", "shard1");
+        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4) — сидим как панель.
+        etcd.Seed($"/service/{cluster}-shard1/request_cpu", "2");
+        etcd.Seed($"/service/{cluster}-shard1/request_mem", "8Gi");
         var alloc = new Dictionary<string, NodeAddress>();
         for (var i = 0; i < 3; i++)
             alloc[$"shard1/shard1{(char)('a' + i)}"] = new NodeAddress(

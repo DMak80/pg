@@ -72,16 +72,15 @@ services:
       # build-сервис pgworker-backup ниже (compose build) или 00-up.sh.
       PgWorker__Backups__Job__Image: ${PGW_BACKUP_JOB_IMAGE:-pgworker-backup:dev}
       # PGTune-параметры PG-нод (arch/14 §2.1/§8): postgresql.conf ноды
-      # рассчитывается при СОЗДАНИИ контейнера (память/CPU — из заявок
-      # request_* шарда, остальное — эти константы); канон P3 (wal_level=
-      # logical, walsenders) перекрывает расчёт; doorman = Connections − 5
-      # (P15). DbType=desktop запрещён (fail-fast старта).
+      # рассчитывается при СОЗДАНИИ контейнера; память/CPU — из etcd-заявок
+      # request_{cpu,mem} ноды (НЕ env), остальное — эти константы; канон P3
+      # (wal_level=logical, walsenders) перекрывает расчёт; doorman =
+      # Connections − 5 (P15). DbType=desktop запрещён (fail-fast старта).
       PgWorker__Pgtune__DbVersion: ${PGW_PGTUNE_DB_VERSION:-18}
       PgWorker__Pgtune__DbType: ${PGW_PGTUNE_DB_TYPE:-oltp}
       PgWorker__Pgtune__HdType: ${PGW_PGTUNE_HD_TYPE:-ssd}
       PgWorker__Pgtune__DbSize: ${PGW_PGTUNE_DB_SIZE:-mid_ram}
       PgWorker__Pgtune__Connections: ${PGW_PGTUNE_CONNECTIONS:-60}
-      PgWorker__Pgtune__DefaultTotalMemoryBytes: ${PGW_PGTUNE_DEFAULT_TOTAL_MEMORY_BYTES:-8589934592}
       # ExcludeParams — env-массив задаётся ЦЕЛИКОМ (__0/__1 заменяют appsettings);
       # io_method/io_workers выключены, пока Spilo-18 не проверен на liburing.
       PgWorker__Pgtune__ExcludeParams__0: ${PGW_PGTUNE_EXCLUDE_0:-io_method}

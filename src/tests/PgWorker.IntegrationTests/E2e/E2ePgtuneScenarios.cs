@@ -152,28 +152,50 @@ public class E2ePgtuneScenarios
     }
 
     [Fact]
-    public async Task Pgtune_NoRequests_EnvFromOptionDefaults()
+    public async Task Pgtune_ClaimsRequired_ProvisioningFailsUntilClaimSeeded()
     {
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
 
-        await using var fx = await E2eEnvironment.StartAsync("pgtune-defaults", ct: ct);
+        await using var fx = await E2eEnvironment.StartAsync("pgtune-claims", ct: ct);
         Fx = fx;
         var cluster = $"dshop{Fx.ClusterTag}";
 
-        // Arrange: сид БЕЗ request_mem/request_cpu (нечитаемая заявка → null).
+        // Arrange: сид БЕЗ заявок request_* (SeedClusterAsync сеет их только при
+        // requestMem != null) — заявки ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4).
         await SeedClusterAsync(cluster, requestMem: null, ct);
         await using var host = await Fx.StartHostAsync("s1", ct: ct);
 
-        // Act: provisioning до Active.
+        // Act: подождать фейл фазы provisioning без заявки (journal-ошибка
+        // содержит request_mem; FailAsync пишет error.Message в /pgworker/work).
+        var journaled = await E2eFixture.WaitForAsync(async () =>
+            (await WorkDumpAsync(cluster, ct)).Contains("request_mem", StringComparison.Ordinal),
+            TimeSpan.FromSeconds(180), ct);
+
+        // Assert: без обязательной заявки кластер НЕ поднялся — конфиг всё ещё
+        // со state=NOT_INITIALIZED (Active снимает state-ключ).
+        journaled.Should().BeTrue("без обязательной заявки request_mem provisioning обязан падать с journal-ошибкой; " +
+                                  $"work={await WorkDumpAsync(cluster, ct)}");
+        (await GetOrNullAsync($"/clusters/{cluster}/config"))!.Value
+            .Should().Contain("NOT_INITIALIZED", "кластер без обязательных заявок не может стать Active");
+
+        // Act: посеять ОБЯЗАТЕЛЬНЫЕ заявки → транзиент-ретрай подхватывает их
+        // следующим тиком provisioning.
+        foreach (var shard in new[] { "shard1", "shard2" })
+        {
+            (await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_cpu", "2", null, ct))
+                .IsSuccess.Should().BeTrue("заявка request_cpu должна записаться");
+            (await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_mem", "8Gi", null, ct))
+                .IsSuccess.Should().BeTrue("заявка request_mem должна записаться");
+        }
+
         var provisioned = await E2eFixture.WaitForAsync(
             () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
-        provisioned.Should().BeTrue("provisioning кластера должен дойти до Active; " +
+        provisioned.Should().BeTrue("после посева обязательных заявок provisioning должен дойти до Active; " +
                                     $"work={await WorkDumpAsync(cluster, ct)}");
 
-        // Assert: env нод рассчитан от DefaultTotalMemoryBytes (8GiB): 2GB/6GB/60;
-        // request_cpu нет → cpuNum не задан → параллельные параметры отсутствуют
-        // вовсе (никаких суррогатных дефолтов).
+        // Assert: env нод рассчитан от заявки 8Gi: 2GB/6GB/60; заявка cpu 2 < 4 →
+        // параллельные параметры отсутствуют (никаких суррогатных дефолтов).
         foreach (var shard in new[] { "shard1", "shard2" })
         foreach (var node in new[] { $"{shard}a", $"{shard}b" })
         {

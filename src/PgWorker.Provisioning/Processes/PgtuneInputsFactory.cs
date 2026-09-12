@@ -5,27 +5,39 @@ using PgWorker.Core.Tuning;
 namespace PgWorker.Provisioning.Processes;
 
 /// <summary>
-/// Фабрика входов PGTune (spec.md §4.3): расчёт тюнинга шарда от АКТУАЛЬНЫХ
-/// заявок ресурсов (/service/&lt;scope&gt;/request_{mem,cpu}) и констант
-/// PgWorker:Pgtune. Пересчёт на каждый EnsureNode-путь (решение пользователя:
-/// параметры НЕ фиксируются в etcd — никакого состояния). Синхронный, без
-/// side-effect'ов кроме warning-лога; вызывается только держателем клэйма
-/// &lt;C&gt; (контекст процессов). Сбой расчёта (исключение) — фейл фазы тика
-/// (транзиент-ретрай с бэкоффом), не тихий пропуск.
+/// Фабрика входов PGTune (spec.md §4.3): расчёт тюнинга шарда от ОБЯЗАТЕЛЬНЫХ
+/// заявок ресурсов (/service/&lt;scope&gt;/request_{cpu,mem} на ноду — arch/14
+/// §2.1 п.4, панель пишет при создании шарда) и констант PgWorker:Pgtune.
+/// Пересчёт на каждый EnsureNode-путь (решение пользователя: параметры НЕ
+/// фиксируются в etcd — никакого состояния). Отсутствие/нечитаемость заявки —
+/// исключение = фейл фазы тика (транзиент-ретрай с бэкоффом): воркер НЕ
+/// выдумывает размер ноды, никаких дефолтов. Вызывается только держателем
+/// клэйма &lt;C&gt; (контекст процессов).
 /// </summary>
 public sealed class PgtuneInputsFactory(PgtuneSettings settings, ILogger<PgtuneInputsFactory> log)
 {
-    /// <summary>Расчёт тюнинга шарда от заявки ресурсов (или дефолтов опций).</summary>
+    /// <summary>Расчёт тюнинга шарда от обязательной заявки ресурсов;
+    /// заявки нет — InvalidOperationException (фейл фазы, не тихий дефолт).</summary>
     public PgTuneResult Create(NodeResources? resources)
     {
-        // Память: floor(MemoryBytes/1024) от заявки; отсутствует/нечитаемо
-        // (NodeResourcesParser даёт null) → дефолт опций (spec.md §4.3).
-        var memoryBytes = resources?.MemoryBytes ?? settings.DefaultTotalMemoryBytes;
+        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4): размер ноды знает
+        // только etcd-заявка — выдумывать его нельзя ни при каких условиях.
+        if (resources?.MemoryBytes is not { } memoryBytes)
+            throw new InvalidOperationException(
+                "pgtune: обязательная заявка request_mem отсутствует/нечитаема — расчёт PGTune невозможен " +
+                "(заявку пишет панель при создании шарда; arch/14 §2.1)");
+        if (resources.CpuCores is null)
+            throw new InvalidOperationException(
+                "pgtune: обязательная заявка request_cpu отсутствует/нечитаема — расчёт PGTune невозможен " +
+                "(заявку пишет панель при создании шарда; arch/14 §2.1)");
+
+        // Память: floor(MemoryBytes/1024) от etcd-заявки request_mem.
         var totalMemoryKb = memoryBytes / 1024;
 
-        // CPU: floor(CpuCores); отсутствует или floor < 1 → cpuNum не задан —
-        // алгоритм честно пропускает параллельные/autovacuum/io_workers (§4.0/§4.12).
-        int? cpuNum = resources?.CpuCores is { } cores ? (int?)Math.Floor(cores) : null;
+        // CPU: floor(CpuCores); floor < 1 (субъядерная заявка "0.5") → cpuNum
+        // не задан — алгоритм честно пропускает параллельные/autovacuum/io_workers
+        // (§4.0/§4.12 спецификации алгоритма).
+        int? cpuNum = (int)Math.Floor(resources.CpuCores.Value);
         if (cpuNum is < 1)
             cpuNum = null;
 

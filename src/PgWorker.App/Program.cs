@@ -54,7 +54,7 @@ builder.Services.AddOptions<PgWorkerOptions>()
     .Validate(o => o.Pgtune.IsValid(),
         "PgWorker:Pgtune: DbVersion 10..18; DbType web|oltp|dw|mixed (desktop запрещён — несовместим с P3); " +
         "HdType ssd|san|hdd|nvme; DbSize less_ram|mid_ram|greater_ram; Connections 20..999999; " +
-        "DefaultTotalMemoryBytes >= 536870912 (512MiB); ExcludeParams — только имена вывода PGTune (§5.2)")
+        "ExcludeParams — только имена вывода PGTune (§5.2). Память/CPU — не здесь: заявки etcd request_{cpu,mem}")
     .ValidateOnStart();
 
 // mTLS HTTP API (arch/14 §1.1, t03): Kestrel с серверным сертом и требованием

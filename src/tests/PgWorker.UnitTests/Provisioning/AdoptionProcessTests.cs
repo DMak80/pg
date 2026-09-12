@@ -37,6 +37,10 @@ public class AdoptionProcessTests
             etcd.Seed($"/clusters/demo/shards/{shard}/dsn",
                 $"host=local port=5433 dbname=demo user=bucket_admin");
             etcd.Seed($"/clusters/demo/shards/{shard}/master", $"{shard}a:5433");
+            // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4): репарация нод —
+            // EnsureNode-путь, PGTune-тюнинг считается от заявок; сидим как панель.
+            etcd.Seed($"/service/demo-{shard}/request_cpu", "2");
+            etcd.Seed($"/service/demo-{shard}/request_mem", "8Gi");
             if (membersShards.Contains(shard))
             {
                 etcd.Seed($"/service/demo-{shard}/members/{shard}a", """{"role":"replica","state":"running"}""");

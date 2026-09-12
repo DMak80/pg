@@ -43,16 +43,17 @@ public sealed class PgWorkerOptions
     public BackupsOptions Backups { get; set; } = new();
 
     /// <summary>Входы PGTune-расчёта параметров PG (spec.md §4.2): константы
-    /// воркера + fallback-память + exclude-параметры. Fail-fast валидация старта.</summary>
+    /// воркера + exclude-параметры. Fail-fast валидация старта.</summary>
     public PgtuneOptions Pgtune { get; set; } = new();
 }
 
 /// <summary>
 /// Входы расчёта PGTune (spec.md §4.2, алгоритм — docs/pgtune-calculation-spec.md):
 /// параметры postgresql.conf нод рассчитываются ядром PgTune.Calculate от
-/// характеристик ноды (request_mem/request_cpu) и этих констант, вместо
-/// сегодняшнего хардкода SPILO_CONFIGURATION. Память/CPU — единственные входы
-/// от заявок; всё остальное — константы этого узла конфигурации.
+/// характеристик ноды и этих констант, вместо сегодняшнего хардкода
+/// SPILO_CONFIGURATION. Память/CPU — НЕ конфигурация: их источник — etcd-заявки
+/// /service/&lt;scope&gt;/request_{cpu,mem} на ноду (arch/14 §2.1 п.4, панель
+/// пишет при создании шарда); всё остальное — константы этого узла.
 /// </summary>
 public sealed class PgtuneOptions
 {
@@ -76,11 +77,6 @@ public sealed class PgtuneOptions
     /// floor 10). 60 = 55 + 2 админ/mover + 3 reserved.</summary>
     public int Connections { get; set; } = 60;
 
-    /// <summary>Fallback памяти при отсутствии/нечитаемости request_mem
-    /// (spec.md §4.3): дефолт 8 GiB. Граница снизу — 512MiB (граница §2
-    /// спецификации алгоритма: вход MB ≥ 512).</summary>
-    public long DefaultTotalMemoryBytes { get; set; } = 8589934592;
-
     /// <summary>Имена PGTune-параметров, НЕ применяемые при сборке YAML
     /// (SpiloEnvBuilder; ядро всегда даёт полный вывод). Дефолт
     /// [io_method, io_workers]: io_method=io_uring требует сборки PG с
@@ -95,7 +91,6 @@ public sealed class PgtuneOptions
     public bool IsValid() =>
         DbVersion is >= 10 and <= 18
         && Connections is >= 20 and <= 999999
-        && DefaultTotalMemoryBytes >= 536870912
         && InDomain(DbType, "web", "oltp", "dw", "mixed")
         && InDomain(HdType, "ssd", "san", "hdd", "nvme")
         && InDomain(DbSize, "less_ram", "mid_ram", "greater_ram")
@@ -106,7 +101,7 @@ public sealed class PgtuneOptions
     /// не зависит от PgWorker.App — строки домена передаются как есть,
     /// маппинг в enum ядра — фабрика входов (PgtuneInputsFactory).</summary>
     public PgtuneSettings ToRuntime() => new(
-        DbVersion, DbType, HdType, DbSize, Connections, DefaultTotalMemoryBytes,
+        DbVersion, DbType, HdType, DbSize, Connections,
         new HashSet<string>(ExcludeParams, StringComparer.Ordinal));
 
     // Регистронезависимая принадлежность домену строк (маппинг фабрики — тоже

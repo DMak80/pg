@@ -98,7 +98,8 @@ public sealed record NodeResources(double? CpuCores, long? MemoryBytes);
 /// </summary>
 public static class NodeResourcesParser
 {
-    // Оба значения нечитаемы/отсутствуют → null (заявки нет — без лимита).
+    // Оба значения нечитаемы/отсутствуют → null (заявки нет; обязательность решает
+    // потребитель — EnsureNode-пути фейлятся без заявки, arch/14 §2.1 п.4).
     public static NodeResources? Parse(string? requestCpu, string? requestMem)
     {
         var cpu = ParseCpu(requestCpu);

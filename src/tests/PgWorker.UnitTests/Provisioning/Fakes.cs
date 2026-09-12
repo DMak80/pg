@@ -19,7 +19,7 @@ internal static class Fakes
     // Фабрика PGTune-входов по умолчанию (дефолты PgWorker:Pgtune) — стаб
     // для конструкторов процессов в тестах (spec.md §4.3).
     internal static PgtuneInputsFactory PgtuneFactory() => new(
-        new PgtuneSettings(18, "oltp", "ssd", "mid_ram", 60, 8589934592,
+        new PgtuneSettings(18, "oltp", "ssd", "mid_ram", 60,
             new HashSet<string>(StringComparer.Ordinal)),
         NullLogger<PgtuneInputsFactory>.Instance);
 

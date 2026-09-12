@@ -7,7 +7,9 @@ namespace PgWorker.Provisioning.Processes;
 /// (DbType/HdType/DbSize) передаются как есть — маппинг в enum ядра PgTune
 /// выполняет фабрика входов (PgtuneInputsFactory). ExcludeParams — имена
 /// PGTune-параметров, вырезаемые при сборке YAML (SpiloEnvBuilder), не в ядре:
-/// Calculate всегда даёт полный вывод.
+/// Calculate всегда даёт полный вывод. Память/CPU — НЕ конфигурация и НЕ
+/// дефолты: их единственный источник — ОБЯЗАТЕЛЬНЫЕ etcd-заявки
+/// /service/&lt;scope&gt;/request_{cpu,mem} на ноду (arch/14 §2.1 п.4).
 /// </summary>
 public sealed record PgtuneSettings(
     int DbVersion,
@@ -15,5 +17,4 @@ public sealed record PgtuneSettings(
     string HdType,
     string DbSize,
     int Connections,
-    long DefaultTotalMemoryBytes,
     IReadOnlySet<string> ExcludeParams);

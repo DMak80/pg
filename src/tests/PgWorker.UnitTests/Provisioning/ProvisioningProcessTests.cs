@@ -51,6 +51,12 @@ public class ProvisioningProcessTests
         etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a","poll_queued_commands":0}""");
         etcd.Seed("/service/shop-shard2/initialize", "7403705125687833962");
         etcd.Seed("/service/shop-shard2/leader", """{"name":"shard2a","poll_queued_commands":0}""");
+        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4): PGTune-тюнинг нод
+        // считается от них; сидим как панель (§9.5 контракта панели).
+        etcd.Seed("/service/shop-shard1/request_cpu", "2");
+        etcd.Seed("/service/shop-shard1/request_mem", "8Gi");
+        etcd.Seed("/service/shop-shard2/request_cpu", "2");
+        etcd.Seed("/service/shop-shard2/request_mem", "8Gi");
     }
 
     // Снапшот кластера из имитации etcd (как это сделает цикл задачи 23).
@@ -256,23 +262,28 @@ public class ProvisioningProcessTests
     [Fact]
     public async Task Tick_RequestResources_PassedToEnsureNodePerShard()
     {
-        // Arrange — панель заявила ресурсы только у shard1 (rework №5):
-        // request_cpu=2 (ядра), request_mem=8Gi → лимиты нод shard1; ноды
-        // shard2 без заявки — без лимита
+        // Arrange — каждый шард несёт СВОЮ обязательную заявку ресурсов
+        // (arch/14 §2.1 п.4; SeedCluster сеет 2cpu/8Gi обоим) — переопределим
+        // shard2 другой заявкой: заявка доходит до драйвера per-shard.
         var rig = await NewRig(_ => DeadPatroni(), identityByEndpoint: EmptyIdentity);
         rig.Etcd.Seed("/service/shop-shard1/request_cpu", "2");
         rig.Etcd.Seed("/service/shop-shard1/request_mem", "8Gi");
+        rig.Etcd.Seed("/service/shop-shard2/request_cpu", "4");
+        rig.Etcd.Seed("/service/shop-shard2/request_mem", "4Gi");
 
         // Act
         var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
-        // Assert — заявка дошла до драйвера только для своего шарда
+        // Assert — заявка каждого шарда дошла до драйвера только своими нодами
         outcome.IsSuccess.Should().BeTrue();
         rig.Driver.EnsuredDetails.Should().Contain(d =>
             d.Node == "shard1a" && d.Resources == new NodeResources(2, 8L << 30));
         rig.Driver.EnsuredDetails.Should().Contain(d =>
             d.Node == "shard1b" && d.Resources == new NodeResources(2, 8L << 30));
-        rig.Driver.EnsuredDetails.Should().Contain(d => d.Node == "shard2a" && d.Resources == null);
+        rig.Driver.EnsuredDetails.Should().Contain(d =>
+            d.Node == "shard2a" && d.Resources == new NodeResources(4, 4L << 30));
+        rig.Driver.EnsuredDetails.Should().Contain(d =>
+            d.Node == "shard2b" && d.Resources == new NodeResources(4, 4L << 30));
     }
 
     [Fact]

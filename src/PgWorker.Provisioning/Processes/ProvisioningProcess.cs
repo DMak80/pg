@@ -132,9 +132,19 @@ public sealed class ProvisioningProcess(
             topologies[shard.Name] = topology;
             var resources = await ReadShardResourcesAsync(cluster, shard, token);
             // P2.0 (arch/14 §5 A): тюнинг per-shard — ОДИН расчёт на шард до
-            // цикла нод, от уже прочитанных заявок; сбой расчёта — фейл фазы
-            // тика (исключение уходит в существующий контур Result/бэкофф).
-            var tuning = pgtune.Create(resources);
+            // цикла нод, от уже прочитанных заявок. Заявки ОБЯЗАТЕЛЬНЫ: их
+            // отсутствие — фейл ЭТОГО кластера (ensureErrors → FailAsync:
+            // journal-ошибка + транзиент-ретрай), а не всего тика.
+            PgTuneResult tuning;
+            try
+            {
+                tuning = pgtune.Create(resources);
+            }
+            catch (Exception e)
+            {
+                ensureErrors.Enqueue(e);
+                return;
+            }
             var ensured = await EnsureNodesAsync(cluster, shard, topology, resources, tuning, clusterSecrets, token);
             if (!ensured.IsSuccess)
                 ensureErrors.Enqueue(ensured.Error!);
