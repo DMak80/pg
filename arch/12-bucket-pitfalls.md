@@ -664,13 +664,19 @@ application_name). (в) Pause пула бакета недоступен — о�
 `max_connections`/`max_wal_senders` PG. Параллельные переезды умножают потребление.
 **Решение (2026-08-22): `max_db_connections = 55`, `max_connections = 60`,
 `max_wal_senders = max_replication_slots = 10`.**
+Синхронизация с PGTune (2026-09-12): параметры PG ноды рассчитываются PGTune
+(14 §2.1), поэтому бюджет doorman — **вычисляемый**:
+`serverConnections = max(10, max_connections − 5)` (синхронизирован от
+рассчитанного результата, а не константа). `max_connections` — вход PGTune
+(константа опции `PgWorker:Pgtune:Connections`, default 60), не хардкод;
+при дефолте 60 инвариант прежний: 60 = 55 + 2 админ/mover + 3 reserved.
 Стороны пулера раздельно. Серверная (doorman → `127.0.0.1:5432`):
-`max_db_connections = 55` — весь app-трафик ноды; рост числа бакетов бюджет
+`max_db_connections` = бюджет — весь app-трафик ноды; рост числа бакетов бюджет
 не меняет: cap общий на ноду, пулы не-владельцев пусты. Клиентская (приложения →
 :6432) бюджетом PG не является: лимит 1000, если такой параметр в конфиге есть,
-иначе без ограничений — клиентские соединения схлопываются пулом в 55 серверных.
-`max_connections = 60` = 55 (doorman) + 2 (mover/админка, единовременно — впритык)
-+ 3 (`superuser_reserved_connections`); walsender'ы с PG 13 НЕ занимают слоты
+иначе без ограничений — клиентские соединения схлопываются пулом в бюджет
+серверных. `max_connections` = doorman-бюджет + 2 (mover/админка, единовременно —
+впритык) + 3 (`superuser_reserved_connections`); walsender'ы с PG 13 НЕ занимают слоты
 соединений — у них свои пулы. `max_wal_senders = max_replication_slots = 10`:
 на переезд — 1 основной walsender + 2 tablesync (`max_sync_workers_per_subscription
 = 2`, default) и столько же слотов, плюс 1 на реплику (физрепликация); запас — на

@@ -2,6 +2,7 @@ using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Planning;
 using PgWorker.Core.Templates;
+using PgWorker.Core.Tuning;
 using PgWorker.Docker.Engine;
 
 namespace PgWorker.Docker.Drivers;
@@ -30,8 +31,13 @@ public interface IClusterDriver
     // mode=host). env/конфиги — из NodeConfigBuilders; существующий объект
     // сверяется по имени и не пересоздаётся. resources — заявка request_*
     // (лимиты NanoCPUs/Memory; request_disk лимита в docker не имеет — игнор).
+    // tuning — рассчитанный per-shard PGTune-вывод (PgtuneInputsFactory, arch/14
+    // §2.1: пересчёт на каждый EnsureNode-путь, без фиксации в etcd); несётся в
+    // SPILO_CONFIGURATION (merge(PGTune ∪ канон)) и doorman-бюджет; null →
+    // прежний хардкод-набор (изолированные пути).
     Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
-        InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, CancellationToken ct);
+        InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources,
+        PgTuneResult? tuning, CancellationToken ct);
 
     // Остановить и удалить ноду + volume (404 = успех). swarm: service rm
     // (volume остаётся на ноде таска — manager не управляет volume нод).
@@ -114,7 +120,8 @@ public sealed class PlainClusterDriver(
     DockerEngineFactory factory,
     bool enableDoorman,
     string nodeImage = "pgworker-node:dev",
-    string? advertisedHost = null) : IClusterDriver
+    string? advertisedHost = null,
+    IReadOnlySet<string>? pgtuneExclude = null) : IClusterDriver
 {
     // Plain: инспект контейнера — факт running-процесса (arch/14 §5 C).
     public bool SupportsRunningInspection => true;
@@ -170,7 +177,8 @@ public sealed class PlainClusterDriver(
     }
 
     public async Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
-        InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, CancellationToken ct)
+        InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources,
+        PgTuneResult? tuning, CancellationToken ct)
     {
         if (!_engines.TryGetValue(addr.Host, out var engine))
         {
@@ -219,7 +227,7 @@ public sealed class PlainClusterDriver(
                     throw removed.Error!;
             }
 
-            var spec = BuildSpec(topology, nodeName, addr, secrets, etcd, resources);
+            var spec = BuildSpec(topology, nodeName, addr, secrets, etcd, resources, tuning);
             var created = await engine.CreateContainerAsync(spec, name, ct);
             if (!created.IsSuccess)
                 throw created.Error!;
@@ -561,10 +569,14 @@ public sealed class PlainClusterDriver(
         => BackupJobsCleaner.RemoveAsync(_engines.Values, cluster, ct);
 
     // Сборка ContainerSpec: env Spilo + PGW_NODE_HOST + конфиги doorman/haproxy (Д4).
+    // tuning — рассчитанный per-shard PGTune-вывод: env — merge(PGTune ∪ канон,
+    // минус pgtuneExclude), doorman-бюджет — от рассчитанного max_connections
+    // (P15); tuning == null → прежний хардкод-набор и бюджет 55.
     internal ContainerSpec BuildSpec(ShardTopology topology, string nodeName, NodeAddress addr,
-        InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources)
+        InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning)
     {
-        var env = new Dictionary<string, string>(SpiloEnvBuilder.Build(topology, etcd, secrets))
+        var env = new Dictionary<string, string>(
+            SpiloEnvBuilder.Build(topology, etcd, secrets, tuning, pgtuneExclude))
         {
             // Адрес этой ноды для lease-скрипта мастер-ключа (P11) и сверок.
             ["PGW_NODE_HOST"] = addr.Host,
@@ -572,9 +584,11 @@ public sealed class PlainClusterDriver(
         };
         if (enableDoorman)
         {
-            // Временный литерал 55 — текущее поведение (Задача 4); в Задаче 6
-            // заменяется вычислением от tuning (DoormanConfigBuilder.ServerConnections).
-            env["DOORMAN_CONFIG"] = DoormanConfigBuilder.Build(topology.Cluster, 55);
+            // P15 (решение 2026-09-12): бюджет вычисляемый —
+            // max(10, max_connections − 5); tuning null (изолированные пути) —
+            // прежний литерал 55.
+            var serverConnections = tuning is null ? 55 : DoormanConfigBuilder.ServerConnections(tuning);
+            env["DOORMAN_CONFIG"] = DoormanConfigBuilder.Build(topology.Cluster, serverConnections);
             env["PGW_DOORMAN_PORT"] = addr.Ports.Doorman.ToString();
         }
 
@@ -665,7 +679,8 @@ public sealed class SwarmClusterDriver(
     string managerEndpoint,
     DockerEngineFactory factory,
     bool enableDoorman,
-    string nodeImage = "pgworker-node:dev") : IClusterDriver
+    string nodeImage = "pgworker-node:dev",
+    IReadOnlySet<string>? pgtuneExclude = null) : IClusterDriver
 {
     private readonly IDockerEngine _engine = factory.Create(managerEndpoint, hostAlias: null);
 
@@ -696,7 +711,8 @@ public sealed class SwarmClusterDriver(
         => _engine.BusyPortsAsync(ct);
 
     public async Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
-        InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, CancellationToken ct)
+        InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources,
+        PgTuneResult? tuning, CancellationToken ct)
     {
         return await Result.FromAsync(async () =>
         {
@@ -712,8 +728,8 @@ public sealed class SwarmClusterDriver(
             if (target is null)
                 throw new ApplicationException($"swarm-нода с Hostname={addr.Host} не найдена");
 
-            var plain = new PlainClusterDriver([], new DockerEngineFactory(), enableDoorman, nodeImage);
-            var template = plain.BuildSpec(topology, nodeName, addr, secrets, etcd, resources);
+            var plain = new PlainClusterDriver([], new DockerEngineFactory(), enableDoorman, nodeImage, pgtuneExclude: pgtuneExclude);
+            var template = plain.BuildSpec(topology, nodeName, addr, secrets, etcd, resources, tuning);
             var spec = new ServiceSpec(
                 PlainClusterDriver.NodeName(topology.Cluster, topology.Shard, nodeName),
                 template,

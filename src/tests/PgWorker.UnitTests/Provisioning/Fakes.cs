@@ -1,11 +1,14 @@
+using Microsoft.Extensions.Logging.Abstractions;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Planning;
+using PgWorker.Core.Tuning;
 using PgWorker.Docker.Drivers;
 using PgWorker.Docker.Engine;
 using PgWorker.Core.Templates;
 using PgWorker.Etcd.Client;
 using PgWorker.Provisioning.Sql;
+using PgWorker.Provisioning.Processes;
 
 namespace PgWorker.UnitTests.Provisioning;
 
@@ -13,6 +16,13 @@ namespace PgWorker.UnitTests.Provisioning;
 // mod_revision/version, записывающий мок драйвера и мок SQL-исполнителя.
 internal static class Fakes
 {
+    // Фабрика PGTune-входов по умолчанию (дефолты PgWorker:Pgtune) — стаб
+    // для конструкторов процессов в тестах (spec.md §4.3).
+    internal static PgtuneInputsFactory PgtuneFactory() => new(
+        new PgtuneSettings(18, "oltp", "ssd", "mid_ram", 60, 8589934592,
+            new HashSet<string>(StringComparer.Ordinal)),
+        NullLogger<PgtuneInputsFactory>.Instance);
+
     // etcd в памяти: Put инкрементирует mod_revision; txn-compare честно
     // сверяет Version/Value/ModRevision (нужно P1-portalloc и P4-config).
     // Потокобезопасен: процессы реально параллелят шарды/ноды
@@ -272,7 +282,7 @@ internal static class Fakes
             => Task.FromResult(Result<IReadOnlySet<(string Host, int Port)>>.Success(BusyPorts));
 
         public Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
-            InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, CancellationToken ct)
+            InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning, CancellationToken ct)
         {
             lock (_gate)
             {

@@ -32,6 +32,7 @@ public sealed class AdoptionProcess(
     PortAllocLock portLock,
     PlacementOptions placementOpts,
     EtcdEndpoints etcdEndpoints,
+    PgtuneInputsFactory pgtune,
     Func<CancellationToken, Task<Result>>? snapshot = null)
 {
     private const string Op = "adopt";
@@ -389,6 +390,10 @@ public sealed class AdoptionProcess(
         if (!unreachableTrack.IsSuccess)
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(unreachableTrack.Error!);
         var recreated = false;
+        // Тюнинг репарации — от дефолтов опций (resources = null: заявки на этом
+        // пути не читаются; результат константен — один расчёт до цикла шардов,
+        // arch/14 §5 J).
+        var tuning = pgtune.Create(null);
         foreach (var (shardName, names) in candidatesByShard)
         {
             if (names.All(n => !discovered.Value.ContainsKey(n)))
@@ -409,7 +414,7 @@ public sealed class AdoptionProcess(
                     continue; // живой контейнер на месте — сверка EnsureNode-путей процессов
 
                 var ensured = await driver.EnsureNodeAsync(
-                    topology, nodeName, addr, secrets, etcdEndpoints, resources: null, ct);
+                    topology, nodeName, addr, secrets, etcdEndpoints, resources: null, tuning, ct);
                 if (!ensured.IsSuccess)
                     return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(ensured.Error!);
                 recreated = true;

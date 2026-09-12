@@ -108,6 +108,7 @@ public class NodeSupervisorTests
             etcd, [Ep], driver, probe, sql ?? new Fakes.FakeSql(), claims, journal,
             Thresholds, TimeProvider.System, Secrets,
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"),
+            Fakes.PgtuneFactory(),
             new MasterKeyReconciler(etcd, [Ep], probe));
         return new Rig(etcd, driver, claims, journal, supervisor);
     }
@@ -982,7 +983,8 @@ public class NodeSupervisorTests
         var supervisor = new NodeSupervisor(
             etcd, [Ep], driver, Probe(port => port >= 18100 ? Ok() : Down()), new Fakes.FakeSql(),
             claims, journal, Thresholds, TimeProvider.System, Secrets,
-            new AppParamsEnsurer(etcd, [Ep], "sslmode=require"));
+            new AppParamsEnsurer(etcd, [Ep], "sslmode=require"),
+            Fakes.PgtuneFactory());
 
         // Act — параллельные тики двух кластеров одним синглтоном
         var results = await Task.WhenAll(

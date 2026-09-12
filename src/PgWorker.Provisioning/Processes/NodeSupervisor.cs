@@ -2,6 +2,7 @@ using System.Text.Json;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
+using PgWorker.Core.Tuning;
 using PgWorker.Docker.Drivers;
 using PgWorker.Etcd.Client;
 using PgWorker.Etcd.Coordination;
@@ -31,6 +32,7 @@ public sealed class NodeSupervisor(
     TimeProvider clock,
     InstallSecrets secrets,
     IAppParamsEnsurer appParams,
+    PgtuneInputsFactory pgtune,
     MasterKeyReconciler? masterKeys = null,
     EtcdEndpoints? etcdForNodes = null)
 {
@@ -192,8 +194,11 @@ public sealed class NodeSupervisor(
             if (topology.Nodes.Count == 0)
                 continue; // нет закреплённых адресов (внешний кластер) — не наш объект
 
-            // Заявка ресурсов читается лениво: только если ноду правда recreate'им.
+            // Заявка ресурсов читается лениво: только если ноду правда recreate'им;
+            // тюнинг — один расчёт на шард, сразу после загрузки заявки
+            // (пересчёт на каждый EnsureNode-путь, arch/14 §2.1/§5 C).
             NodeResources? resources = null;
+            PgTuneResult? tuning = null;
             var resourcesLoaded = false;
 
             foreach (var node in shard.Nodes)
@@ -218,6 +223,7 @@ public sealed class NodeSupervisor(
                 if (!resourcesLoaded)
                 {
                     resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
+                    tuning = pgtune.Create(resources);
                     resourcesLoaded = true;
                 }
 
@@ -245,7 +251,7 @@ public sealed class NodeSupervisor(
 
                 var ensured = await driver.EnsureNodeAsync(
                     topology, node.Name, topology.Nodes[node.Name], secrets,
-                    etcdForNodes ?? new EtcdEndpoints(endpoints), resources, ct);
+                    etcdForNodes ?? new EtcdEndpoints(endpoints), resources, tuning, ct);
                 if (!ensured.IsSuccess)
                     return ensured;
             }
@@ -424,10 +430,13 @@ public sealed class NodeSupervisor(
                 return removed;
 
             var topology = TopologyOf(cluster, snap, shard.Name, addresses);
+            // Лимиты/параметры пересозданной ноды — от заявки request_* на момент
+            // пересоздания (rework №5 + pgtune: пересчёт, arch/14 §5 C).
             var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
+            var tuning = pgtune.Create(resources);
             var ensured = await driver.EnsureNodeAsync(
                 topology, node.Name, addr, secrets,
-                etcdForNodes ?? new EtcdEndpoints(endpoints), resources, ct);
+                etcdForNodes ?? new EtcdEndpoints(endpoints), resources, tuning, ct);
             if (!ensured.IsSuccess)
                 return ensured;
 
@@ -574,11 +583,13 @@ public sealed class NodeSupervisor(
                 if (!removed.IsSuccess)
                     return removed;
                 var topology = TopologyOf(cluster, snap, shard.Name, addresses);
-                // Лимиты пересозданной ноды — из той же заявки request_* (rework №5).
+                // Лимиты пересозданной ноды — из той же заявки request_* (rework №5);
+                // параметры PG — тюнинг от актуальных заявок (arch/14 §2.1/§5 C).
                 var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
+                var tuning = pgtune.Create(resources);
                 var ensured = await driver.EnsureNodeAsync(
                     topology, name, addr, secrets,
-                    etcdForNodes ?? new EtcdEndpoints(endpoints), resources, ct);
+                    etcdForNodes ?? new EtcdEndpoints(endpoints), resources, tuning, ct);
                 if (!ensured.IsSuccess)
                     return ensured;
                 var rebuilding = await PutAsync(
