@@ -572,7 +572,9 @@ public sealed class PlainClusterDriver(
         };
         if (enableDoorman)
         {
-            env["DOORMAN_CONFIG"] = DoormanConfigBuilder.Build(topology.Cluster);
+            // Временный литерал 55 — текущее поведение (Задача 4); в Задаче 6
+            // заменяется вычислением от tuning (DoormanConfigBuilder.ServerConnections).
+            env["DOORMAN_CONFIG"] = DoormanConfigBuilder.Build(topology.Cluster, 55);
             env["PGW_DOORMAN_PORT"] = addr.Ports.Doorman.ToString();
         }
 
