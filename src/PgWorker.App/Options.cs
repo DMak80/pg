@@ -1,6 +1,8 @@
 using PgWorker.Backups;
+using PgWorker.Core.Tuning;
 using PgWorker.Docker.Engine;
 using PgWorker.Moves;
+using PgWorker.Provisioning.Processes;
 
 namespace PgWorker.App;
 
@@ -39,6 +41,79 @@ public sealed class PgWorkerOptions
     /// <summary>Подсистема бэкапов шардов (arch/19, t01): каркас конфигурации;
     /// процессная логика — t02–t07. Default Enabled=false.</summary>
     public BackupsOptions Backups { get; set; } = new();
+
+    /// <summary>Входы PGTune-расчёта параметров PG (spec.md §4.2): константы
+    /// воркера + fallback-память + exclude-параметры. Fail-fast валидация старта.</summary>
+    public PgtuneOptions Pgtune { get; set; } = new();
+}
+
+/// <summary>
+/// Входы расчёта PGTune (spec.md §4.2, алгоритм — docs/pgtune-calculation-spec.md):
+/// параметры postgresql.conf нод рассчитываются ядром PgTune.Calculate от
+/// характеристик ноды (request_mem/request_cpu) и этих констант, вместо
+/// сегодняшнего хардкода SPILO_CONFIGURATION. Память/CPU — единственные входы
+/// от заявок; всё остальное — константы этого узла конфигурации.
+/// </summary>
+public sealed class PgtuneOptions
+{
+    /// <summary>Версия PostgreSQL образа pgworker-node (Spilo-18) — вход dbVersion.</summary>
+    public int DbVersion { get; set; } = 18;
+
+    /// <summary>Тип нагрузки: web|oltp|dw|mixed (desktop запрещён — его
+    /// wal_level=minimal/max_wal_senders=0 несовместимы с P3: логическое
+    /// декодирование и переезды бакетов).</summary>
+    public string DbType { get; set; } = "oltp";
+
+    /// <summary>Тип дисковой подсистемы: ssd|san|hdd|nvme (влияет на
+    /// effective_io_concurrency/random_page_cost).</summary>
+    public string HdType { get; set; } = "ssd";
+
+    /// <summary>Ожидаемый размер базы относительно RAM: less_ram|mid_ram|greater_ram
+    /// (коррекция work_mem/random_page_cost).</summary>
+    public string DbSize { get; set; } = "mid_ram";
+
+    /// <summary>Вход connectionNum PGTune (P15: doorman-бюджет = Connections − 5,
+    /// floor 10). 60 = 55 + 2 админ/mover + 3 reserved.</summary>
+    public int Connections { get; set; } = 60;
+
+    /// <summary>Fallback памяти при отсутствии/нечитаемости request_mem
+    /// (spec.md §4.3): дефолт 8 GiB. Граница снизу — 512MiB (граница §2
+    /// спецификации алгоритма: вход MB ≥ 512).</summary>
+    public long DefaultTotalMemoryBytes { get; set; } = 8589934592;
+
+    /// <summary>Имена PGTune-параметров, НЕ применяемые при сборке YAML
+    /// (SpiloEnvBuilder; ядро всегда даёт полный вывод). Дефолт
+    /// [io_method, io_workers]: io_method=io_uring требует сборки PG с
+    /// --with-liburing — для образа pgworker-node/Spilo-18 не проверено;
+    /// отсутствие параметра → PG18 default io_method=worker — безопасно.
+    /// После проверки сборки оператор убирает из exclude.</summary>
+    public string[] ExcludeParams { get; set; } = ["io_method", "io_workers"];
+
+    /// <summary>Fail-fast старта (образец BackupsOptions.IsValid): границы §2
+    /// спецификации алгоритма + домены строк. DbType=desktop запрещён (P3).
+    /// ExcludeParams — только известные имена вывода ядра (25 имён §5.2).</summary>
+    public bool IsValid() =>
+        DbVersion is >= 10 and <= 18
+        && Connections is >= 20 and <= 999999
+        && DefaultTotalMemoryBytes >= 536870912
+        && InDomain(DbType, "web", "oltp", "dw", "mixed")
+        && InDomain(HdType, "ssd", "san", "hdd", "nvme")
+        && InDomain(DbSize, "less_ram", "mid_ram", "greater_ram")
+        && ExcludeParams is not null
+        && ExcludeParams.All(PgTune.KnownParameterNames.Contains);
+
+    /// <summary>Runtime-склейка (паттерн MovesOptions.ToRuntime): Provisioning
+    /// не зависит от PgWorker.App — строки домена передаются как есть,
+    /// маппинг в enum ядра — фабрика входов (PgtuneInputsFactory).</summary>
+    public PgtuneSettings ToRuntime() => new(
+        DbVersion, DbType, HdType, DbSize, Connections, DefaultTotalMemoryBytes,
+        new HashSet<string>(ExcludeParams, StringComparer.Ordinal));
+
+    // Регистронезависимая принадлежность домену строк (маппинг фабрики — тоже
+    // case-insensitive; десктоп в домен не входит — запрещён целиком).
+    private static bool InDomain(string value, params string[] domain) =>
+        !string.IsNullOrWhiteSpace(value)
+        && domain.Contains(value, StringComparer.OrdinalIgnoreCase);
 }
 
 /// <summary>HTTP API воркера (arch/14 §1.1): advertise-URL в /pgworker/api/&lt;id&gt;

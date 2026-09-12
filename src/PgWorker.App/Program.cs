@@ -48,6 +48,13 @@ builder.Services.AddOptions<PgWorkerOptions>()
     // default Enabled=false — подсистема не активна, поведение не меняется.
     .Validate(o => o.Backups.IsValid(),
         "PgWorker:Backups: Enabled=true требует непустые PgWorker:Backups:S3:Endpoint/Bucket/AccessKey/SecretKey (env PGW_BACKUP_S3_*) и Backups:Job:Image (arch/19 §7/§9)")
+    // Расчёт PGTune (spec.md §4.2): мусорный конфиг виден на старте, а не на
+    // первом provision'е. desktop запрещён — его wal_level=minimal/max_wal_senders=0
+    // несовместимы с P3 (логическое декодирование, переезды бакетов).
+    .Validate(o => o.Pgtune.IsValid(),
+        "PgWorker:Pgtune: DbVersion 10..18; DbType web|oltp|dw|mixed (desktop запрещён — несовместим с P3); " +
+        "HdType ssd|san|hdd|nvme; DbSize less_ram|mid_ram|greater_ram; Connections 20..999999; " +
+        "DefaultTotalMemoryBytes >= 536870912 (512MiB); ExcludeParams — только имена вывода PGTune (§5.2)")
     .ValidateOnStart();
 
 // mTLS HTTP API (arch/14 §1.1, t03): Kestrel с серверным сертом и требованием
