@@ -503,6 +503,39 @@ public class RestoreProcessTests(EtcdFixture fixture)
     }
 
     [Fact]
+    public async Task Тик_с_существующим_джобом_не_повторяет_демонтаж_и_доносит_итог()
+    {
+        // Arrange — RUNNING + exited-1 джоб: контейнер существует и держит
+        // data-volume первой ноды (реальный docker — 409 «volume is in use»).
+        // Регрессия Release-гейта t05: повторный демонтаж при живом джобе
+        // падал 409 и зацикливал статус в RUNNING, итог джоба не доносился.
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var inner = new StubScaleDriver();
+        var engine = new FakeBackupEngine();
+        var driver = new TestDriver(inner, engine);
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        var name = BackupNames.RestoreContainerName("c1", "shard1", "20260911121002Z");
+        engine.Containers[name] = new FakeBackupEngine.ContainerRec(
+            "cnt-restore", "exited", 1, "{\"ok\":false,\"error\":\"boom\"}\n");
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121002Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: 1);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — демонтаж НЕ повторялся (контейнер существует ⇒ уже разобран),
+        // итог джоба доведён до статуса, контейнер и volume прибраны
+        inner.RemovedNodes.Should().BeEmpty("демонтаж не повторяется при существующем джобе");
+        var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        failed.State.Should().Be(RestoreStatus.Failed);
+        failed.Error.Should().Be("boom");
+        engine.Removed.Should().Contain(name);
+        engine.RemovedVolumes.Should().Contain("pgw-c1-shard1-shard1a-data");
+    }
+
+    [Fact]
     public async Task Джоб_сверх_бюджета_докилл_и_FAILED()
     {
         // Arrange — running-контейнер; started_unix глубже бюджета (1800+60)

@@ -237,9 +237,6 @@ public sealed class RestoreProcess(
         ClusterSnapshot snap, ShardSpec shard, RestoreOperationState op, CancellationToken ct)
     {
         var cluster = snap.Config.Cluster;
-        var demolished = await DemolishAsync(cluster, shard, op, ct);
-        if (!demolished.IsSuccess)
-            return Result<ProcessOutcome>.Failed(demolished.Error!);
 
         // Первая нода (джоб пишет восстановленный PGDATA в её data-volume);
         // адрес из portalloc, движок — по хосту (null → transient).
@@ -272,22 +269,31 @@ public sealed class RestoreProcess(
                 list.Error!.Message, ct);
         var found = list.Value.FirstOrDefault(c => c.Names.Contains(name));
 
-        // Идемпотентный запуск: нет контейнера → create; старт — в обоих
-        // случаях (created прошлым тиком / только что созданный); отказ
+        // Идемпотентный запуск: джоба нет → демонтаж + create + start; старт —
+        // в обоих случаях (created прошлым тиком / только что созданный); отказ
         // create/start → transient, следующий тик повторит.
+        if (found is null)
+        {
+            // Демонтаж — ТОЛЬКО до первого запуска джоба: повтор при живом/
+            // завершённом джобе упирается 409 «volume is in use» (джоб держит
+            // data-volume первой ноды) и блокирует обработку его итога — статус
+            // замирал в RUNNING навсегда (инцидент E2E-гейта t05). Контейнер
+            // существует ⇒ демонтаж уже выполнен тиком запуска.
+            var demolished = await DemolishAsync(cluster, shard, op, ct);
+            if (!demolished.IsSuccess)
+                return Result<ProcessOutcome>.Failed(demolished.Error!);
+
+            var spec = Restore.RestoreJobSpec.Build(options, cluster, shard.Name, op.Id,
+                $"pgw-{cluster}-{shard.Name}-{first}-data", targetTime,
+                SrcCluster(op), SrcShard(op));
+            var created = await engine.CreateContainerAsync(spec, name, ct);
+            if (!created.IsSuccess)
+                return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
+                    created.Error!.Message, ct);
+        }
+
         if (found is not { State: "running" or "exited" })
         {
-            if (found is null)
-            {
-                var spec = Restore.RestoreJobSpec.Build(options, cluster, shard.Name, op.Id,
-                    $"pgw-{cluster}-{shard.Name}-{first}-data", targetTime,
-                    SrcCluster(op), SrcShard(op));
-                var created = await engine.CreateContainerAsync(spec, name, ct);
-                if (!created.IsSuccess)
-                    return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
-                        created.Error!.Message, ct);
-            }
-
             var started = await engine.StartContainerAsync(name, ct);
             if (!started.IsSuccess)
                 return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
