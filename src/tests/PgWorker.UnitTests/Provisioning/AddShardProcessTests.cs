@@ -118,7 +118,8 @@ public class AddShardProcessTests
             Secrets, new ClusterSecretEnsurer(etcd, [Ep]),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp,
             new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
-            new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId), snapshot: null);
+            new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId),
+            Fakes.PgtuneFactory(), snapshot: null);
         return new Rig(etcd, driver, sql, claims, journal, process);
     }
 
@@ -145,7 +146,8 @@ public class AddShardProcessTests
             new ClusterSecretEnsurer(etcd, [Ep]),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp,
             new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
-            new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId), snapshot: null);
+            new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId),
+            Fakes.PgtuneFactory(), snapshot: null);
 
         // Act
         var outcome = await process.TickAsync(await Snapshot(etcd), "shard3", CancellationToken.None);
@@ -330,7 +332,8 @@ public class AddShardProcessTests
             new ClusterSecretEnsurer(rig.Etcd, [Ep]),
             new AppParamsEnsurer(rig.Etcd, [Ep], "sslmode=require"), EtcdEndp,
             new PortAllocIndex(rig.Etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
-            new PortAllocLock([Ep], rig.Etcd, TimeProvider.System, rig.Claims.InstanceId), snapshot: null);
+            new PortAllocLock([Ep], rig.Etcd, TimeProvider.System, rig.Claims.InstanceId),
+            Fakes.PgtuneFactory(), snapshot: null);
         var outcome = await alive.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
 
         // Assert — детерминизм multi-host: dsn тот же; схем/routing-мутаций нет

@@ -153,7 +153,8 @@ public class ProvisioningProcessTests
             etcd, [Ep], driver, sql, Probe(patroniResponse, trace, identityByEndpoint), claims, journal,
             opts ?? Opts, Secrets,
             appSecret, new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp, portAlloc,
-            new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId), snapshot: null);
+            new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId),
+            Fakes.PgtuneFactory(), snapshot: null);
         return new Rig(etcd, driver, sql, claims, journal, process);
     }
 
@@ -293,7 +294,8 @@ public class ProvisioningProcessTests
             claims, journal, Opts, Secrets, new ClusterSecretEnsurer(etcd, [Ep]),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp,
             new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
-            new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId), snapshot: null);
+            new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId),
+            Fakes.PgtuneFactory(), snapshot: null);
 
         // Act
         var outcome = await process.TickAsync(await Snapshot(etcd), CancellationToken.None);

@@ -5,6 +5,7 @@ using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Planning;
 using PgWorker.Core.Templates;
+using PgWorker.Core.Tuning;
 using PgWorker.Docker.Drivers;
 using PgWorker.Etcd.Client;
 using PgWorker.Etcd.Coordination;
@@ -39,6 +40,7 @@ public sealed class ProvisioningProcess(
     EtcdEndpoints etcdEndpoints,
     PortAllocIndex portAlloc,
     PortAllocLock portLock,
+    PgtuneInputsFactory pgtune,
     Func<CancellationToken, Task<Result>>? snapshot = null) : IClusterProcess
 {
     private const int TxnBatchSize = 128; // лимит ops в txn (P3)
@@ -129,7 +131,11 @@ public sealed class ProvisioningProcess(
             var topology = Topology(cluster, shard.Name, addresses);
             topologies[shard.Name] = topology;
             var resources = await ReadShardResourcesAsync(cluster, shard, token);
-            var ensured = await EnsureNodesAsync(cluster, shard, topology, resources, clusterSecrets, token);
+            // P2.0 (arch/14 §5 A): тюнинг per-shard — ОДИН расчёт на шард до
+            // цикла нод, от уже прочитанных заявок; сбой расчёта — фейл фазы
+            // тика (исключение уходит в существующий контур Result/бэкофф).
+            var tuning = pgtune.Create(resources);
+            var ensured = await EnsureNodesAsync(cluster, shard, topology, resources, tuning, clusterSecrets, token);
             if (!ensured.IsSuccess)
                 ensureErrors.Enqueue(ensured.Error!);
         });
@@ -429,7 +435,7 @@ public sealed class ProvisioningProcess(
     // P2.1: EnsureNode всех нод шарда (state != RUNNING) + nodes/<n>/state=PROVISIONING.
     private async Task<Result> EnsureNodesAsync(
         string cluster, ShardSpec shard, ShardTopology topology, NodeResources? resources,
-        InstallSecrets clusterSecrets, CancellationToken ct)
+        PgTuneResult tuning, InstallSecrets clusterSecrets, CancellationToken ct)
     {
         foreach (var node in shard.Nodes)
         {
@@ -444,7 +450,7 @@ public sealed class ProvisioningProcess(
             }
 
             var ensured = await driver.EnsureNodeAsync(
-                topology, node.Name, topology.Nodes[node.Name], clusterSecrets, etcdEndpoints, resources, ct);
+                topology, node.Name, topology.Nodes[node.Name], clusterSecrets, etcdEndpoints, resources, tuning, ct);
             if (!ensured.IsSuccess)
                 return ensured;
         }

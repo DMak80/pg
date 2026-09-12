@@ -82,6 +82,7 @@ public class AdoptionProcessTests
             portLock,
             new PlacementOptions(15000, 15100, PatroniBootSec: 600),
             new EtcdEndpoints([Ep]),
+            Fakes.PgtuneFactory(),
             snapshot: null);
         return (process, sql, driver);
     }

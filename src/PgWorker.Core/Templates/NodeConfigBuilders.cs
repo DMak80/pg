@@ -1,5 +1,7 @@
+using System.Globalization;
 using System.Text;
 using PgWorker.Core.Model;
+using PgWorker.Core.Tuning;
 
 namespace PgWorker.Core.Templates;
 
@@ -25,13 +27,18 @@ public sealed record InstallSecrets(string SuPassword, string StandbyPassword,
 /// callback on_role_change → lease-скрипт мастер-ключа
 /// /clusters/&lt;C&gt;/shards/&lt;X&gt;/master,
 /// P3 (wal_level=logical, sync_replication_slots, max_slot_wal_keep_size),
-/// P15 (max_connections=60, walsenders/slots=10).
-/// Per-нода PGW_NODE_HOST добавляет драйвер при создании контейнера.
+/// P15 (максимальные соединения и бюджет doorman — синхронизированы).
+/// При tuning != null параметры PG — merge(PGTune ∪ канон): сначала вывод
+/// PgTune.Calculate в порядке §5.2 (минус ExcludeParams), затем PgWorker-канон
+/// поверх (перезапись по имени без дубликатов, новые ключи — в конец; spec.md
+/// §4.4). tuning == null — прежний хардкод-набор (тесты драйвера, изолированные
+/// пути). Per-нода PGW_NODE_HOST добавляет драйвер при создании контейнера.
 /// </summary>
 public static class SpiloEnvBuilder
 {
     public static IReadOnlyDictionary<string, string> Build(
-        ShardTopology topology, EtcdEndpoints etcd, InstallSecrets secrets)
+        ShardTopology topology, EtcdEndpoints etcd, InstallSecrets secrets,
+        PgTuneResult? tuning = null, IReadOnlySet<string>? excludeParams = null)
     {
         // Patroni DCS: Spilo строит его из env ETCD3_HOSTS (etcd v3 API; наш etcd
         // 3.5 без v2). Формат — "host:port" БЕЗ scheme (полный URL Patroni
@@ -70,8 +77,9 @@ public static class SpiloEnvBuilder
             // монтируется volume, ClusterDriver).
             ["USE_DATA_DIR_FOR_WAL"] = "true",
 
-            // Patroni-конфигурация: эталон pg.env с wal_level: logical (P3);
-            // тайминги — из канона PatroniTimings (полы Patroni 4.x, t09).
+            // Patroni-конфигурация: эталон pg.env; параметры PG — merge(PGTune ∪
+            // канон) при tuning != null, иначе прежний хардкод-набор; тайминги —
+            // из канона PatroniTimings (полы Patroni 4.x, t09).
             ["SPILO_CONFIGURATION"] = $$"""
                 ---
                 bootstrap:
@@ -90,28 +98,94 @@ public static class SpiloEnvBuilder
                         on_start: /home/postgres/master-lease.py
                         on_role_change: /home/postgres/master-lease.py
                       parameters:
-                        # P15: 55 pg_doorman + 2 админ/mover + 3 reserved
-                        max_connections: "60"
-                        shared_buffers: "2GB"
-                        effective_cache_size: "6GB"
-                        # P3: логическое декодирование + failover slots
-                        wal_level: logical
-                        hot_standby: "on"
-                        sync_replication_slots: "on"
-                        max_slot_wal_keep_size: "16GB"
-                        max_wal_senders: "10"
-                        max_replication_slots: "10"
-                        wal_keep_size: "2048MB"
-                        checkpoint_timeout: "15min"
-                        checkpoint_completion_target: "0.9"
-                        random_page_cost: "1.1"
-                        logging_collector: "on"
-                        log_directory: "log"
-                        log_filename: "postgresql-%Y-%m-%d.log"
-                        log_rotation_age: "1d"
-                        log_rotation_size: "100MB"
+                {{ParametersBlock(tuning, excludeParams)}}
                 """,
         };
+    }
+
+    // Блок parameters YAML (отступ 8): tuning == null → прежний хардкод-набор
+    // (тесты драйвера, изолированные пути); иначе merge(PGTune ∪ канон).
+    private static string ParametersBlock(PgTuneResult? tuning, IReadOnlySet<string>? excludeParams) =>
+        tuning is null ? CanonicalParametersBlock() : TunedParametersBlock(tuning, excludeParams);
+
+    // Прежний хардкод-набор (без PGTune): значения и комментарии — 1:1 как до
+    // внедрения PGTune (справка: это поведение изолированных путей/старых тестов).
+    private static string CanonicalParametersBlock() => string.Join("\n",
+    [
+        "        # P15: 55 pg_doorman + 2 админ/mover + 3 reserved",
+        "        max_connections: \"60\"",
+        "        shared_buffers: \"2GB\"",
+        "        effective_cache_size: \"6GB\"",
+        "        # P3: логическое декодирование + failover slots",
+        "        wal_level: logical",
+        "        hot_standby: \"on\"",
+        "        sync_replication_slots: \"on\"",
+        "        max_slot_wal_keep_size: \"16GB\"",
+        "        max_wal_senders: \"10\"",
+        "        max_replication_slots: \"10\"",
+        "        wal_keep_size: \"2048MB\"",
+        "        checkpoint_timeout: \"15min\"",
+        "        checkpoint_completion_target: \"0.9\"",
+        "        random_page_cost: \"1.1\"",
+        "        logging_collector: \"on\"",
+        "        log_directory: \"log\"",
+        "        log_filename: \"postgresql-%Y-%m-%d.log\"",
+        "        log_rotation_age: \"1d\"",
+        "        log_rotation_size: \"100MB\"",
+    ]);
+
+    // Канон PgWorker поверх PGTune (spec.md §4.4): P3 + лог-блок. Значения и
+    // кавычки — точно как в прежнем raw string (wal_level — без кавычек).
+    // Константы max_connections/shared_buffers/effective_cache_size/
+    // checkpoint_completion_target/random_page_cost из канона УБРАНЫ — их несёт PGTune.
+    private static readonly (string Name, string Value)[] CanonParameters =
+    [
+        ("wal_level", "logical"), // P3: логическое декодирование + failover slots
+        ("hot_standby", "\"on\""),
+        ("sync_replication_slots", "\"on\""),
+        ("max_slot_wal_keep_size", "\"16GB\""),
+        ("max_wal_senders", "\"10\""),
+        ("max_replication_slots", "\"10\""),
+        ("wal_keep_size", "\"2048MB\""),
+        ("checkpoint_timeout", "\"15min\""),
+        ("logging_collector", "\"on\""),
+        ("log_directory", "\"log\""),
+        ("log_filename", "\"postgresql-%Y-%m-%d.log\""),
+        ("log_rotation_age", "\"1d\""),
+        ("log_rotation_size", "\"100MB\""),
+    ];
+
+    // Merge PGTune ∪ канон (spec.md §4.4): сначала PGTune-параметры в порядке
+    // §5.2 (минус ExcludeParams — параметр не пишется вовсе, никаких пустых
+    // значений; exclude применяется ЗДЕСЬ, ядро всегда даёт полный вывод),
+    // затем канон «поверх» с перезаписью по имени без дубликатов: позиция
+    // первого вхождения сохраняется, новые ключи — в конец. PGTune-значения —
+    // YAML-строками в кавычках (текущий стиль max_connections: "60").
+    private static string TunedParametersBlock(PgTuneResult tuning, IReadOnlySet<string>? excludeParams)
+    {
+        var exclude = excludeParams ?? new HashSet<string>(StringComparer.Ordinal);
+        var lines = new List<(string Name, string Value)>();
+        var positions = new Dictionary<string, int>(StringComparer.Ordinal);
+
+        void Upsert(string name, string value)
+        {
+            if (positions.TryGetValue(name, out var position))
+            {
+                lines[position] = (name, value);
+                return;
+            }
+
+            positions[name] = lines.Count;
+            lines.Add((name, value));
+        }
+
+        foreach (var parameter in tuning.Parameters)
+            if (!exclude.Contains(parameter.Name))
+                Upsert(parameter.Name, $"\"{parameter.Value}\"");
+        foreach (var (name, value) in CanonParameters)
+            Upsert(name, value);
+
+        return string.Join("\n", lines.Select(p => $"        {p.Name}: {p.Value}"));
     }
 
     // Примечание: секию postgresql (bin_dir/use_unix_socket) НЕ задаём —
@@ -129,14 +203,17 @@ public static class SpiloEnvBuilder
 
 /// <summary>
 /// Конфиг pg_doorman ноды (arch/11 §4): ЕДИНСТВЕННЫЙ пул &lt;dbname&gt; (P14) с
-/// бэкендом 127.0.0.1:5432 этой ноды, transaction-режим (P13), бюджет 55
-/// серверных соединений (P15). Клиентский вход — :6432 c TLS (sslmode=require,
-/// P17 — требование на стороне клиентских DSN); SCRAM passthrough к PG.
-/// Финальная сверка полей с релизом doorman — при сборке образа (задача 25).
+/// бэкендом 127.0.0.1:5432 этой ноды, transaction-режим (P13), бюджет
+/// серверных соединений — синхронизирован от рассчитанного PGTune
+/// max_connections (P15: serverConnections = max(10, max_connections − 5);
+/// 60 = 55 + 2 админ/mover + 3 reserved). Клиентский вход — :6432 c TLS
+/// (sslmode=require, P17 — требование на стороне клиентских DSN); SCRAM
+/// passthrough к PG. Финальная сверка полей с релизом doorman — при сборке
+/// образа (задача 25).
 /// </summary>
 public static class DoormanConfigBuilder
 {
-    public static string Build(string dbname) =>
+    public static string Build(string dbname, int serverConnections) =>
         $"""
         # pg_doorman: единственный пул {dbname} на ноду (P13/P14/P15/P17).
         # Клиенты подключаются на :6432 с sslmode=require (P17).
@@ -145,14 +222,30 @@ public static class DoormanConfigBuilder
         listen = "0.0.0.0:6432"
         pool_mode = "transaction"
         max_client_connections = 1000
-        max_db_connections = 55
-        default_pool_size = 55
+        max_db_connections = {serverConnections}
+        default_pool_size = {serverConnections}
         tls_mode = "require"
 
         [databases]
         # P14: dbname = имя кластера, бакеты — схемы; один пул на всю БД ноды.
         {dbname} = host=127.0.0.1 port=5432 dbname={dbname}
         """;
+
+    /// <summary>
+    /// Бюджет серверных соединений doorman от рассчитанного тюнинга (P15,
+    /// решение пользователя): max(10, max_connections − 5). Параметр
+    /// max_connections выводится всегда (§4.0 спецификации алгоритма), поэтому
+    /// отсутствие значения — фейл сборки спеки, не тихий дефолт.
+    /// </summary>
+    public static int ServerConnections(PgTuneResult tuning)
+    {
+        var raw = tuning["max_connections"];
+        if (raw is null || !int.TryParse(raw, CultureInfo.InvariantCulture, out var maxConnections))
+            throw new ApplicationException(
+                "pgtune: рассчитанный тюнинг не содержит числового max_connections " +
+                "(параметр выводится всегда — §4.0 спецификации алгоритма)");
+        return Math.Max(10, maxConnections - 5);
+    }
 }
 
 /// <summary>

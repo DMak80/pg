@@ -4,6 +4,7 @@ using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Planning;
 using PgWorker.Core.Templates;
+using PgWorker.Core.Tuning;
 using PgWorker.Docker.Drivers;
 using PgWorker.Etcd.Client;
 using PgWorker.Etcd.Coordination;
@@ -37,6 +38,7 @@ public sealed partial class AddShardProcess(
     EtcdEndpoints etcdEndpoints,
     PortAllocIndex portAlloc,
     PortAllocLock portLock,
+    PgtuneInputsFactory pgtune,
     Func<CancellationToken, Task<Result>>? snapshot = null)
 {
     private const string Op = "add-shard";
@@ -110,15 +112,17 @@ public sealed partial class AddShardProcess(
         if (!creds.IsSuccess)
             return await FailAsync(cluster, creds.Error!, "ensure-app-secret", ct);
 
-        // A3: EnsureNode каждой ноды + state=PROVISIONING (идемпотентно).
+        // A3: EnsureNode каждой ноды + state=PROVISIONING (идемпотентно); тюнинг
+        // per-shard — ОДИН расчёт до цикла нод от заявки request_* (arch/14 §5 G).
         var resources = await ReadShardResourcesAsync(cluster, shardName, ct);
+        var tuning = pgtune.Create(resources);
         var clusterSecrets = secrets with
         {
             BucketAdminUser = creds.Value.BucketAdmin.User,
             BucketAdminPassword = creds.Value.BucketAdmin.Password,
             MoverPassword = creds.Value.MoverPassword,
         };
-        var ensured = await EnsureNodesAsync(cluster, shard, topology, resources, clusterSecrets, ct);
+        var ensured = await EnsureNodesAsync(cluster, shard, topology, resources, tuning, clusterSecrets, ct);
         if (!ensured.IsSuccess)
             return await FailAsync(cluster, ensured.Error!, "ensure-nodes", ct);
 
@@ -250,7 +254,7 @@ public sealed partial class AddShardProcess(
     // A3: EnsureNode всех нод шарда (state != RUNNING) + state=PROVISIONING.
     private async Task<Result> EnsureNodesAsync(
         string cluster, ShardSpec shard, ShardTopology topology, NodeResources? resources,
-        InstallSecrets clusterSecrets, CancellationToken ct)
+        PgTuneResult tuning, InstallSecrets clusterSecrets, CancellationToken ct)
     {
         foreach (var node in shard.Nodes)
         {
@@ -265,7 +269,7 @@ public sealed partial class AddShardProcess(
             }
 
             var ensured = await driver.EnsureNodeAsync(
-                topology, node.Name, topology.Nodes[node.Name], clusterSecrets, etcdEndpoints, resources, ct);
+                topology, node.Name, topology.Nodes[node.Name], clusterSecrets, etcdEndpoints, resources, tuning, ct);
             if (!ensured.IsSuccess)
                 return ensured;
         }

@@ -64,7 +64,11 @@ public class AdoptionContractTests(EtcdFixture fixture)
             new PortAllocIndex(Gateway, [Endpoint], NullLogger<PortAllocIndex>.Instance),
             new PortAllocLock([Endpoint], Gateway, TimeProvider.System, claims.InstanceId),
             new PlacementOptions(15000, 15100, PatroniBootSec: 600),
-            new EtcdEndpoints([Endpoint]));
+            new EtcdEndpoints([Endpoint]),
+            new PgtuneInputsFactory(
+                new PgtuneSettings(18, "oltp", "ssd", "mid_ram", 60, 8589934592,
+                    new HashSet<string>(StringComparer.Ordinal)),
+                NullLogger<PgtuneInputsFactory>.Instance));
 
     // Запись журнала /pgworker/work/<C> (последняя фаза тика).
     private async Task<(string Op, string Phase, string Message)> ReadJournalAsync(string cluster)

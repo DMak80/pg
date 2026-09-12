@@ -48,6 +48,13 @@ builder.Services.AddOptions<PgWorkerOptions>()
     // default Enabled=false — подсистема не активна, поведение не меняется.
     .Validate(o => o.Backups.IsValid(),
         "PgWorker:Backups: Enabled=true требует непустые PgWorker:Backups:S3:Endpoint/Bucket/AccessKey/SecretKey (env PGW_BACKUP_S3_*) и Backups:Job:Image (arch/19 §7/§9)")
+    // Расчёт PGTune (spec.md §4.2): мусорный конфиг виден на старте, а не на
+    // первом provision'е. desktop запрещён — его wal_level=minimal/max_wal_senders=0
+    // несовместимы с P3 (логическое декодирование, переезды бакетов).
+    .Validate(o => o.Pgtune.IsValid(),
+        "PgWorker:Pgtune: DbVersion 10..18; DbType web|oltp|dw|mixed (desktop запрещён — несовместим с P3); " +
+        "HdType ssd|san|hdd|nvme; DbSize less_ram|mid_ram|greater_ram; Connections 20..999999; " +
+        "DefaultTotalMemoryBytes >= 536870912 (512MiB); ExcludeParams — только имена вывода PGTune (§5.2)")
     .ValidateOnStart();
 
 // mTLS HTTP API (arch/14 §1.1, t03): Kestrel с серверным сертом и требованием
@@ -155,9 +162,14 @@ builder.Services.AddSingleton(sp =>
 });
 builder.Services.AddSingleton<IClusterDriver>(sp =>
 {
-    var docker = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Docker;
+    var opts = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value;
+    var docker = opts.Docker;
     var factory = sp.GetRequiredService<DockerEngineFactory>();
     var advertised = docker.AdvertisedHost;
+    // ExcludeParams PGTune — параметр конструктора драйвера (spec.md §4.4):
+    // per-call канала для exclude нет (EnsureNodeAsync несёт только tuning),
+    // SpiloEnvBuilder вырезает их при сборке YAML.
+    var pgtuneExclude = new HashSet<string>(opts.Pgtune.ExcludeParams, StringComparer.Ordinal);
     if (!string.IsNullOrWhiteSpace(advertised))
     {
         if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
@@ -172,7 +184,8 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
     {
         if (string.IsNullOrWhiteSpace(docker.SwarmManager))
             throw new ApplicationException("PgWorker:Docker:Mode=Swarm требует PgWorker:Docker:SwarmManager");
-        return new SwarmClusterDriver(docker.SwarmManager, factory, docker.EnableDoorman, docker.Images.Node);
+        return new SwarmClusterDriver(docker.SwarmManager, factory, docker.EnableDoorman, docker.Images.Node,
+            pgtuneExclude: pgtuneExclude);
     }
 
     var hosts = docker.Hosts
@@ -180,8 +193,15 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
         .ToList();
     if (hosts.Count == 0)
         throw new ApplicationException("PgWorker:Docker:Mode=Plain требует непустую таблицу PgWorker:Docker:Hosts");
-    return new PlainClusterDriver(hosts, factory, docker.EnableDoorman, docker.Images.Node, docker.AdvertisedHost);
+    return new PlainClusterDriver(hosts, factory, docker.EnableDoorman, docker.Images.Node, docker.AdvertisedHost,
+        pgtuneExclude: pgtuneExclude);
 });
+
+// Фабрика входов PGTune (spec.md §4.3): runtime-склейка PgWorker:Pgtune
+// (валидированы fail-fast'ом старта); расчёт — per-shard на EnsureNode-путях.
+builder.Services.AddSingleton(sp => new PgtuneInputsFactory(
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Pgtune.ToRuntime(),
+    sp.GetRequiredService<ILogger<PgtuneInputsFactory>>()));
 
 // Пробы Patroni REST и SQL-слой (Npgsql + Polly-ретраи).
 builder.Services.AddSingleton(sp =>
@@ -234,6 +254,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<EtcdEndpoints>(),
         sp.GetRequiredService<PortAllocIndex>(),
         sp.GetRequiredService<PortAllocLock>(),
+        sp.GetRequiredService<PgtuneInputsFactory>(),
         SnapshotDelegate(job));
 });
 builder.Services.AddSingleton(sp => new DeprovisioningProcess(
@@ -256,6 +277,7 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<InstallSecrets>(),
     sp.GetRequiredService<IAppParamsEnsurer>(),
+    sp.GetRequiredService<PgtuneInputsFactory>(),
     new MasterKeyReconciler(
         sp.GetRequiredService<IEtcdGateway>(),
         sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
@@ -289,6 +311,7 @@ builder.Services.AddSingleton(sp =>
         new PlacementOptions(opts.Docker.PortRange.From, opts.Docker.PortRange.To, opts.Thresholds.PatroniBootSec,
             opts.Thresholds.ProvisionRetryBaseSec, opts.Thresholds.ProvisionRetryMaxSec),
         sp.GetRequiredService<EtcdEndpoints>(),
+        sp.GetRequiredService<PgtuneInputsFactory>(),
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
 });
 
@@ -333,6 +356,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<EtcdEndpoints>(),
         sp.GetRequiredService<PortAllocIndex>(),
         sp.GetRequiredService<PortAllocLock>(),
+        sp.GetRequiredService<PgtuneInputsFactory>(),
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
 });
 builder.Services.AddSingleton(sp => new RemoveShardProcess(

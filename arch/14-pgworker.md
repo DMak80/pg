@@ -217,6 +217,30 @@ etcd, конвергенция DCS, инварианты внешних сист
 флап≠смерть, порядок расследования) —
 [17-synchronization-principles.md](17-synchronization-principles.md).
 
+**Параметры PG в `bootstrap.dcs` — PGTune**: `postgresql.parameters` ноды
+рассчитываются ядром `PgTune.Calculate` (чистая функция по нормативу
+`docs/pgtune-calculation-spec.md`: формулы §4, порядок вывода §5, псевдокод §6)
+от характеристик ноды — память/CPU из заявок `/service/<scope>/request_{mem,cpu}`,
+остальные входы — опции `PgWorker:Pgtune` (§8). Применение — merge(PGTune ∪
+канон PgWorker) в `SpiloEnvBuilder`: сначала вывод PGTune в порядке §5.2
+(минус `ExcludeParams`), затем канон «поверх» с перезаписью по имени —
+`wal_level=logical`, `hot_standby`, `sync_replication_slots`,
+`max_slot_wal_keep_size`, `max_wal_senders=max_replication_slots=10`,
+`wal_keep_size`, `checkpoint_timeout` и лог-блок (P3/P4). Константы
+`max_connections`/`shared_buffers`/`effective_cache_size`/
+`random_page_cost`/`checkpoint_completion_target` из канона **убраны** — их
+несёт PGTune. Параметры пересчитываются при КАЖДОМ EnsureNode-пути (provision/
+add-shard/пересоздание/rebuild) от актуальных заявок — **БЕЗ фиксации в etcd**
+(осознанное решение 2026-09-12: никакого состояния, etcd-контракт не меняется;
+следствие — дрейф pg-конфига между нодами шарда при изменении заявок
+работающего кластера: ноды, поднятые ранее, продолжают работать на прежнем
+конфиге — консистентность на операторе). Конвергенция pg-параметров
+работающих нод — out of scope (отдельная задача roadmap; в отличие от
+таймингов Patroni, конвергенция DCS на pg-параметры не распространяется —
+`max_connections`/`shared_buffers` требуют рестарта PG). Ветвь PGTune
+`dbType=desktop` (`wal_level=minimal`, `max_wal_senders=0`) не применяется
+никогда — отвергается валидацией старта (несовместима с P3).
+
 Решения фазы исполнения (дока синхронизирована с кодом):
 
 - **HAProxy в образе не поднимается**: его write-фронтенд `:5432` конфликтует
@@ -605,13 +629,20 @@ P1.5 ensure app-секрета: прочитать /clusters/<C>/{app_user,app_p
     re-read и использовать существующие; роль app на каждом шарде создаётся
     с этим паролем и выравнивается ALTER ROLE (идемпотентно)
 P2 на каждый шард X:
+   P2.0 вычислить тюнинг шарда: PgtuneInputsFactory.Create(resources) от уже
+        прочитанных заявок request_* (Pgtune.Calculate по нормативу
+        docs/pgtune-calculation-spec.md) — ОДИН результат на все ноды
+        прохода; сбой расчёта — фейл фазы тика (транзиент-ретрай)
    P2.1 для каждой ноды n: создать volume + контейнер/сервис с конфигом
        (Spilo env: SCOPE=<C>-<X>, ETCD3_HOSTS=host:port (etcd v3),
         канонические тайминги ttl=20/loop_wait=1/retry_timeout=3 в
         bootstrap.dcs (§2.1, t09: полы Patroni 4.x; гарантируются
         конвергенцией §5 C),
-        wal_level=logical + sync_replication_slots + max_slot_wal_keep_size
-        (P3/P4), max_connections=60 и бюджет P15, callback on_role_change →
+        параметры PG — merge(PGTune ∪ канон): PGTune-вывод P2.0 в порядке
+        §5.2, канон P3/P4 поверх (wal_level=logical +
+        sync_replication_slots + max_slot_wal_keep_size, walsenders/slots=10);
+        doorman-бюджет P15 от рассчитанного max_connections —
+        max(10, max_connections − 5) (§2.1, §8), callback on_role_change →
         lease-скрипт мастер-ключа; doorman: пул <dbname>, TLS require;
         haproxy: бэкенды всех Patroni-нод шарда), env-секреты (§4);
         nodes/<n>/state=PROVISIONING; при существовании (re-run) — сверить
@@ -689,13 +720,17 @@ D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый �
 
 - Сверка декларации с фактом: каждой плановой ноде — контейнер/сервис (по
   имени); снесённый руками пересоздаётся (декларативное самовосстановление),
-  state=PROVISIONING→RUNNING.
+  state=PROVISIONING→RUNNING; как и rebuild ниже — с тюнингом от АКТУАЛЬНЫХ
+  `request_*` на момент пересоздания (PgtuneInputsFactory.Create, §2.1:
+  пересчёт на каждый EnsureNode-путь).
 - Patroni-REST каждой ноды (`GET /cluster`, timeout 3 с). Нода недоступна
   дольше `NodeDeadSec` (90 с, конфиг) и **не лидер** и кворум шарда жив
   (мертва максимум одна нода: живых ≥ max(1, nodes−1) — обобщение «≥2»
   фазы исполнения для 2-нодовых шардов) → **rebuild**: удалить контейнер + volume, создать
   заново (Patroni сделает pg_basebackup с лидера — эталон
-  `rebuild-node.sh`), state=REBUILDING→RUNNING. Лидер недоступен → ускорение
+  `rebuild-node.sh`), state=REBUILDING→RUNNING; параметры PG пересозданной
+  ноды — тюнинг от актуальных `request_*` на момент пересоздания (§2.1).
+  Лидер недоступен → ускорение
   failover (ниже) + ожидание: выборы делает Patroni; лидер-призрак станет
   репликой и обработается общим путём.
 - **Бюджет смены лидера (t09, критическое требование ≤5 с)**: канал
@@ -880,7 +915,10 @@ bucket_<i>` в **формате скриптов 1:1** (`SYNCING|FROZEN|ABORTING
 §9.5 контракта панели: replicas + nodes/NOT_INITIALIZED + request_*).
 Машина состояний одного тика, идемпотентна (механика ProvisioningProcess
 в scoped-to-shard виде: EnsureNode, WaitPatroni, portalloc-merge,
-DatabaseProvisioner). Guard A1: кластер Active; полное объявление (replicas>0,
+DatabaseProvisioner). A3: перед EnsureNode нод шарда — вычисление тюнинга
+per-shard (`PgtuneInputsFactory.Create` от уже прочитанной заявки request_*
+шарда, §2.1) — один результат на все ноды прохода; doorman-бюджет P15 —
+от рассчитанного max_connections. Guard A1: кластер Active; полное объявление (replicas>0,
 nodes.Count==replicas, ноды NOT_INITIALIZED/PROVISIONING — иначе
 phase=waiting-keys); `dsn` нет (есть → Done); scope `/service/<C>-<X>/initialize`
 отсутствует — либо есть, но лидер совпадает с именем нод НАШЕГО шарда (наш же
@@ -1001,7 +1039,9 @@ AD2' инвариант адресов Active (каждый тик, Д2): portal
     запись канонической ноды (без object) без ЖИВОГО контейнера — Created/
     exited-черепок или снесённый контейнер при state=RUNNING (процессные
     пути скипают RUNNING, инспекция running-only) → EnsureNode напрямую
-    (сверка портов → stop+rm+create по плану), journal phase=recreated-node.
+    (сверка портов → stop+rm+create по плану), journal phase=recreated-node;
+    тюнинг репарируемой ноды — от дефолтов опций (resources = null — заявки
+    не читаются на этом пути; PgtuneInputsFactory.Create(null), §2.1).
     Граница с эвакуацией (§5 D, t09): когда В ШАРДЕ не жив ни один контейнер
     (все ноды шарда отсутствуют в running-инспекции), черепок-пересоздание НЕ
     применяется — сценарий всего-шарда-мёртв решает BucketEvacuator: мгновенный
@@ -1149,6 +1189,19 @@ PgWorker:Parallelism { MaxClusters=4 }
 PgWorker:Snapshots { Dir="/snapshots", RetentionFiles=10 }
 PgWorker:AppParams { Default="sslmode=require" }  # per-node ключ
                   # shards/<X>/nodes/<n>/app_params (P2.5'/A5/C; P17)
+PgWorker:Pgtune { DbVersion=18, DbType="oltp", HdType="ssd", DbSize="mid_ram",
+                  Connections=60, DefaultTotalMemoryBytes=8589934592,
+                  ExcludeParams=["io_method","io_workers"] } # входы PGTune (§2.1):
+                  # DbVersion 10..18; DbType web|oltp|dw|mixed — desktop ЗАПРЕЩЁН
+                  # (wal_level=minimal несовместим с P3) — fail-fast валидация
+                  # старта; Connections 20..999999 = вход connectionNum (P15:
+                  # doorman = Connections − 5); DefaultTotalMemoryBytes — fallback
+                  # при отсутствии request_mem (8GiB, ≥ 512MiB); ExcludeParams —
+                  # имена PGTune-параметров, не применяемые при сборке YAML
+                  # (io_method=io_uring требует --with-liburing — не проверено
+                  # для образа; после проверки оператор убирает из exclude).
+                  # Переопределение параметров — ТОЛЬКО через эти опции:
+                  # etcd-канала переопределения нет, параметры не фиксируются
 PgWorker:Api { AdvertiseUrl, EnableSeedEndpoint=false,
                Tls {ServerCertPem|Path, ServerKeyPem|Path, ClientCaPem|Path,
                     AllowInsecureHttp=false} } # §1.1: mTLS-only грань (t03);
