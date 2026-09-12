@@ -355,7 +355,7 @@
 - Consumes: паттерн `E2eEnvironment.StartAsync("tag")` / `E2eFixture.WaitForAsync` / `DockerTrait.SkipIfUnavailable()` (как `E2eScaleScenarios`); guid-тег окружения во всех именах; динамические хост-порты; собственные etcd-префиксы/бакеты сценария.
 - Produces: 3 сценария spec §4.6.
 
-- [ ] **Шаг 1: сценарий provision → env нод**
+- [x] **Шаг 1: сценарий provision → env нод**
 
   - Вход: Задача 6 завершена (код проводки зелёный); docker доступен.
   - Действие: класс `E2ePgtuneScenarios` (по образцу `E2eScaleScenarios`; teardown окружения при любом исходе — `await using var fx`; ассерт чистоты после teardown по docs/e2e-isolation.md):
@@ -365,14 +365,14 @@
   - Проверка: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/PgWorker.IntegrationTests/PgWorker.IntegrationTests.csproj -c Release --filter FullyQualifiedName~E2ePgtuneScenarios` — сценарий зелёный; после прогона — зачистка (см. Глобальные ограничения) и `docker network prune -f`.
   - Spec: §4.6 (интеграционные), AC §7 п.2.
 
-- [ ] **Шаг 2: сценарий пересчёта от актуальных request_***
+- [x] **Шаг 2: сценарий пересчёта от актуальных request_***
 
   - Действие: provision кластера с `request_mem = 4Gi` → env нод: `shared_buffers: "1GB"`; удалить контейнер ноды; перезаписать `/service/<scope>/request_mem` на 8Gi; дождаться пересоздания надзором (бюджеты — из конфигурации окружения сценария, как в соседних E2E; итерации ожидания ≤ 30 c); AAA Assert: env пересозданного контейнера рассчитан от НОВОЙ заявки (`shared_buffers: "2GB"`) — env отличается от прежнего; никаких новых ключей в etcd не появилось (etcd-контракт неизменен).
   - Выход: AC §7 п.3 (пересчёт от актуальных заявок).
   - Проверка: как шаг 1 (оба сценария в фильтре зелёные); зачистка после серии.
   - Spec: §4.6, §6 (осознанный пересчёт), AC §7 п.3.
 
-- [ ] **Шаг 3: сценарий отсутствия request_mem → дефолты**
+- [x] **Шаг 3: сценарий отсутствия request_mem → дефолты**
 
   - Действие: provision кластера БЕЗ `request_mem` → AAA Assert: env нод рассчитан от `DefaultTotalMemoryBytes` (8GiB → `shared_buffers: "2GB"`, `effective_cache_size: "6GB"`, `max_connections: "60"`); при `request_cpu < 1` (или отсутствии) — параллельные параметры в YAML отсутствуют.
   - Выход: AC §7 п.4.
