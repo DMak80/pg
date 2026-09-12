@@ -220,7 +220,7 @@
 
 **Решение по доставке ExcludeParams (выводится из spec):** spec §4.2 фиксирует применение exclude на этапе сборки YAML (SpiloEnvBuilder), а §4.5 фиксирует сигнатуру `EnsureNodeAsync` только аргументом `tuning` — per-call канала для exclude нет. Поэтому exclude доставляется параметром конструктора драйвера (как `enableDoorman`): опциональный параметр `IReadOnlySet<string>? pgtuneExclude = null` у `PlainClusterDriver`/`SwarmClusterDriver` (Задача 6), `BuildSpec` передаёт его пятым аргументом `SpiloEnvBuilder.Build`. Опциональные параметры сохраняют shape вызова §4.4 (`Build(topology, etcd, secrets, tuning)`).
 
-- [ ] **Шаг 1: merge в SpiloEnvBuilder + doorman-сигнатура**
+- [x] **Шаг 1: merge в SpiloEnvBuilder + doorman-сигнатура**
 
   - Вход: Задачи 1–3 завершены.
   - Действие:
@@ -234,7 +234,7 @@
   - Проверка: `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release` — 0 ошибок/предупреждений; существующие тесты `NodeConfigBuildersTests` зелёные.
   - Spec: §4.4, §2 принцип 3.
 
-- [ ] **Шаг 2: юнит-кейсы NodeConfigBuildersTests (AAA)**
+- [x] **Шаг 2: юнит-кейсы NodeConfigBuildersTests (AAA)**
 
   - Вход: шаг 1 выполнен.
   - Действие: дополнить `NodeConfigBuildersTests.cs`:
@@ -246,7 +246,7 @@
   - Проверка: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests/PgWorker.UnitTests.csproj -c Release --filter FullyQualifiedName~NodeConfigBuildersTests` — зелёный; полный юнит-набор зелёный.
   - Spec: §4.4, §4.6 (NodeConfigBuildersTests), AC §7 п.2.
 
-- [ ] **Шаг 3: коммит**
+- [x] **Шаг 3: коммит**
 
   - Действие: `git add src/PgWorker.Core/Templates/NodeConfigBuilders.cs src/PgWorker.Docker/Drivers/ClusterDriver.cs src/tests/PgWorker.UnitTests/Templates/NodeConfigBuildersTests.cs && git commit -m "feat(core): pgtune — merge PGTune+канон в SpiloEnvBuilder, doorman-бюджет от рассчитанного max_connections"`.
   - Проверка: `git log --oneline -1` содержит новый коммит.
