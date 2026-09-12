@@ -306,7 +306,7 @@
   - `BuildSpec(..., NodeResources? resources, PgTuneResult? tuning)` (internal): env из `SpiloEnvBuilder.Build(topology, etcd, secrets, tuning, pgtuneExclude)`; при `enableDoorman`: `serverConnections = tuning is null ? 55 : DoormanConfigBuilder.ServerConnections(tuning)`;
   - процессы: ctor += `PgtuneInputsFactory pgtune`; `EnsureNodesAsync` (Provisioning/AddShard) += `PgTuneResult tuning`.
 
-- [ ] **Шаг 1: драйвер — интерфейс и обе реализации**
+- [x] **Шаг 1: драйвер — интерфейс и обе реализации**
 
   - Вход: Задачи 1–5 завершены; arch-дифф в рабочем дереве.
   - Действие:
@@ -317,7 +317,7 @@
   - Проверка: `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release` — остаётся красным ТОЛЬКО из-за вызовов/стабов `EnsureNodeAsync` (фиксируются шагом 3); ошибки в самих драйверах отсутствуют.
   - Spec: §4.4, §4.5, §2 принцип 4.
 
-- [ ] **Шаг 2: 4 процесса — расчёт тюнинга per-shard до цикла нод**
+- [x] **Шаг 2: 4 процесса — расчёт тюнинга per-shard до цикла нод**
 
   - Действие (ctor каждого += `PgtuneInputsFactory pgtune`):
     - `ProvisioningProcess` P2.1: в per-shard лямбде `Parallel.ForEachAsync` после `ReadShardResourcesAsync` (~строка 131) — `var tuning = pgtune.Create(resources);` один раз на шард; `EnsureNodesAsync(..., resources, tuning, ...)` → `EnsureNodeAsync(..., resources, tuning, ct)`;
@@ -328,7 +328,7 @@
   - Проверка: build (после шага 3) зелёный.
   - Spec: §4.5, §2 принцип 4/5.
 
-- [ ] **Шаг 3: DI (Program.cs) + стабы и колл-сайты тестов**
+- [x] **Шаг 3: DI (Program.cs) + стабы и колл-сайты тестов**
 
   - Действие:
     - `Program.cs`: `.Validate` уже стоит (З.2); добавить singleton `PgtuneInputsFactory` (`PgtuneSettings` = `opts.Pgtune.ToRuntime()`, логгер из DI); в фабрики драйверов (~175/~183) передать `pgtuneExclude: new HashSet<string>(docker.Pgtune.ExcludeParams, StringComparer.Ordinal)`; в регистрации `ProvisioningProcess` (~224), `NodeSupervisor` (~246), `AdoptionProcess` (~276), `AddShardProcess` (~323) добавить аргумент-фабрику;
@@ -338,7 +338,7 @@
   - Проверка: `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release` — 0 ошибок/предупреждений; `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests/PgWorker.UnitTests.csproj -c Release` — зелёный.
   - Spec: §4.5 (проводка + список стабов).
 
-- [ ] **Шаг 4: коммит (arch + проводка одним коммитом)**
+- [x] **Шаг 4: коммит (arch + проводка одним коммитом)**
 
   - Действие: `git add arch/14-pgworker.md arch/12-bucket-pitfalls.md src/PgWorker.Docker/Drivers/ClusterDriver.cs src/PgWorker.Provisioning/Processes/ src/PgWorker.App/Program.cs src/tests/ && git commit -m "feat(provisioning): pgtune — проводка EnsureNodeAsync/процессов + канон arch (14 §2.1/§5/§8, 12 P15)"`.
   - Проверка: `git status` — arch-файлы закоммичены вместе с кодом проводки.
