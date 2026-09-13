@@ -238,6 +238,14 @@ internal sealed class ReconcileLoop(
                         await RunClusterOpAsync(cluster, "backups-retention",
                             () => processes.RetentionAsync(snap, backups, ct), ct);
 
+                    // Сверка S3↔etcd (t07, arch/19 §4): мусор full/<id>/ живого шарда
+                    // без etcd-ключа; после ретенции (гигиена FAILED может оставить
+                    // объекты), до restore (гвард владельца). Выключенная подсистема
+                    // не зовётся.
+                    if (options.CurrentValue.Backups.Enabled)
+                        await RunClusterOpAsync(cluster, "backup-supervisor",
+                            () => processes.SuperviseBackupsAsync(snap, backups, ct), ct);
+
                     // Restore шардов из бэкапов (t05, arch/19 §3.5): после wal-потока
                     // (агент снесён демонтажём — процесс сам стопает), до repair/moves.
                     // Выключенная подсистема не зовётся; одна активная заявка за тик —
