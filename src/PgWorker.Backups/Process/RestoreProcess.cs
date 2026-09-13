@@ -725,6 +725,22 @@ public sealed class RestoreProcess(
         string cluster, string shard, RestoreOperationState op, string error, CancellationToken ct)
     {
         logger?.LogWarning("backup-restore {Cluster}/{Shard}/{Id}: FAILED — {Error}", cluster, shard, op.Id, error);
+        // Щит демонтажа снимается при permanent-FAILED ДО rejoin: шард разобран,
+        // заполненный «restore-in-progress» навсегда запер бы bootstrap пустых
+        // нод при пересоздании шарда. В REJOINING+ там уже настоящий system_id
+        // восстановленного volume — не трогаем (ноды поднимет rejoin-путь).
+        if (op.State is RestoreStatus.Planned or RestoreStatus.Running)
+        {
+            var initKey = $"/service/{cluster}-{shard}/initialize";
+            var init = await etcd.GetAsync(endpoints[0], initKey, ct);
+            if (init.IsSuccess && init.Value?.Value == "restore-in-progress")
+            {
+                var del = await etcd.DeleteAsync(endpoints[0], initKey, prefix: false, ct);
+                if (!del.IsSuccess)
+                    logger?.LogError("backup-restore {Cluster}/{Shard}/{Id}: заполнитель initialize не удалён — {Error}",
+                        cluster, shard, op.Id, del.Error?.Message);
+            }
+        }
         var put = await PutStatusAsync(cluster, shard, op with
         {
             State = RestoreStatus.Failed,

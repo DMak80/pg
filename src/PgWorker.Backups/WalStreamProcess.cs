@@ -240,9 +240,10 @@ public sealed class WalStreamProcess(
             Cmd: WalAgentCommand.Build(),
             Network: null, // сеть назначает драйвер (pgw-net)
             NetworkAliases: null,
-            // Без рестарт-политики: смерть pg_receivewal = exited-контейнер, лупа
-            // docker нет (на снесённом мастере он молотил впустую); супервиз тика
-            // пересоздаёт агента со свежими env за ScanIntervalSec
+            // Без рестарт-политики: обрыв pg_receivewal внутри контейнера
+            // переживается скриптом (loop-переподключение, arch/19 §3); exited —
+            // только неисправимое (квота staging) — супервиз тика пересоздаёт
+            // агента со свежими env за ScanIntervalSec
             RestartPolicy: "no");
 
         // Хост агента = docker-хост мастера (per-cluster сеть живёт на нём).

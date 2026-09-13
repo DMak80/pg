@@ -517,6 +517,67 @@ public class RestoreProcessTests(EtcdFixture fixture)
     }
 
     [Fact]
+    public async Task Джоб_exit1_FAILED_до_rejoin_снимает_щит_initialize()
+    {
+        // Arrange — демонтаж уже прошёл (щит «restore-in-progress» стоит);
+        // джоба фейлится: permanent-FAILED обязан снять заполнитель, иначе он
+        // навсегда запрёт bootstrap пустых нод при пересоздании шарда
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        await fixture.Gateway.PutAsync(fixture.Endpoint,
+            "/service/c1-shard1/initialize", "restore-in-progress", null, ct);
+        var engine = new FakeBackupEngine();
+        var driver = new TestDriver(new StubScaleDriver(), engine);
+        var process = BuildProcess(new FakeBackupS3(), driver);
+        var name = BackupNames.RestoreContainerName("c1", "shard1", "20260911121005Z");
+        engine.Containers[name] = new FakeBackupEngine.ContainerRec(
+            "cnt-restore", "exited", 1, "{\"ok\":false,\"error\":\"boom\"}\n");
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121005Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: 1);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — FAILED, заполнителя initialize больше нет
+        (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
+            .State.Should().Be(RestoreStatus.Failed);
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/initialize", ct))
+            .Value.Should().BeNull("щит без system_id не переживает permanent-FAILED");
+    }
+
+    [Fact]
+    public async Task Rejoin_FAILED_не_трогает_initialize_с_system_id()
+    {
+        // Arrange — REJOINING: initialize уже настоящий system_id восстановленного
+        // volume; сверх бюджета PatroniBoot → permanent-FAILED. system_id чистить
+        // НЕЛЬЗЯ: он указывает на поднятые ноды rejoin-пути
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        await fixture.Gateway.PutAsync(fixture.Endpoint,
+            "/service/c1-shard1/initialize", "pg 42", null, ct);
+        var clock = new MutableClock();
+        var driver = new TestDriver(new StubScaleDriver(), new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver, clock: clock,
+            patroni: new PatroniHandler { Ready = false });
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121006Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Rejoining);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act — тик 1 фиксирует since, тик 2 (после бюджета) фейлит
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .Value.Should().Be(ProcessOutcome.InProgress);
+        clock.Now = clock.Now.AddSeconds(700);
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — FAILED, system_id жив
+        (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
+            .State.Should().Be(RestoreStatus.Failed);
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/initialize", ct))
+            .Value!.Value.Should().Be("pg 42");
+    }
+
+    [Fact]
     public async Task Тик_с_существующим_джобом_не_повторяет_демонтаж_и_доносит_итог()
     {
         // Arrange — RUNNING + exited-1 джоб: контейнер существует и держит
