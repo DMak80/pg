@@ -19,9 +19,13 @@ public sealed record MinioHealth(
 public sealed record MinioFullNode(
     string Id, long SizeBytes, long ObjectCount, long LastModifiedUnix);
 
-/// <summary>WAL-часть шарда в S3: сегменты wal/&lt;segment&gt; и истории wal/&lt;TLI&gt;.history.</summary>
+/// <summary>WAL-часть шарда в S3: сегменты wal/&lt;segment&gt; и истории wal/&lt;TLI&gt;.history;
+/// LastSegment — старейший→новейший максимум имени по Ordinal среди СЕГМЕНТОВ
+/// (истории в «последний» не идут; 24-hex имена при равном TLI лексикографически
+/// упорядочены, cross-TLI — факт без вердикта); null — сегментов не было.</summary>
 public sealed record MinioWalNode(
-    long SegmentCount, long HistoryCount, long SizeBytes, long LastModifiedUnix);
+    long SegmentCount, long HistoryCount, long SizeBytes, long LastModifiedUnix,
+    string? LastSegment = null);
 
 public sealed record MinioShardNode(
     string Cluster, string Shard, long SizeBytes,

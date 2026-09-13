@@ -51,9 +51,16 @@ public sealed partial record MinioInventory
                 acc.WalSizeBytes += obj.SizeBytes;
                 acc.WalLastModifiedUnix = Math.Max(acc.WalLastModifiedUnix, obj.LastModifiedUnix);
                 if (parts[3].EndsWith(".history", StringComparison.Ordinal))
+                {
                     acc.WalHistoryCount++;
+                }
                 else
+                {
                     acc.WalSegmentCount++;
+                    // «последний сегмент» — max имени по Ordinal (факт для wal-сверки)
+                    if (acc.WalLastSegment is null || string.CompareOrdinal(parts[3], acc.WalLastSegment) > 0)
+                        acc.WalLastSegment = parts[3];
+                }
             }
             // прочее внутри шарда — учтено только в ShardAcc.SizeBytes
         }
@@ -100,6 +107,7 @@ public sealed partial record MinioInventory
         public long WalHistoryCount;
         public long WalSizeBytes;
         public long WalLastModifiedUnix;
+        public string? WalLastSegment;
 
         public MinioShardNode ToNode(string cluster, string shard) => new(
             cluster,
@@ -110,7 +118,8 @@ public sealed partial record MinioInventory
                     kv.Key, kv.Value.SizeBytes, kv.Value.ObjectCount, kv.Value.LastModifiedUnix))
                 .ToList(),
             HasWal
-                ? new MinioWalNode(WalSegmentCount, WalHistoryCount, WalSizeBytes, WalLastModifiedUnix)
+                ? new MinioWalNode(WalSegmentCount, WalHistoryCount, WalSizeBytes,
+                    WalLastModifiedUnix, WalLastSegment)
                 : null);
     }
 }
