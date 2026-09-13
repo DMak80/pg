@@ -66,11 +66,11 @@ public class E2eSupervisorScenarios
                 ?.Value.Contains("ACTIVE") == true,
             TimeSpan.FromSeconds(120), ct);
         walActive.Should().BeTrue("wal-ключ обязан перейти в ACTIVE после первого полного");
-        // Догон цепи за старт первого полного: пустая база после SwitchWals молчит —
-        // кончик цепи (last_uploaded) замирает на chain_start (инцидент прогона
-        // 2026-09-13: окно [chain_start..last_uploaded] не растёт). Дыра по плану —
-        // СЕРЕДИНА цепи, поэтому генерируем WAL ПОСЛЕ полного: агент унесёт
-        // last_uploaded на 6 сегментов выше chain_start.
+        // Догон цепи за старт первого полного (инцидент прогона 2026-09-13:
+        // окно [chain_start..last_uploaded] не росло — причина найдена: голый
+        // pg_switch_wal на пустой базе no-op, см. SwitchWalsAsync). Дыра по
+        // плану — СЕРЕДИНА цепи: генерируем WAL ПОСЛЕ полного, агент унесёт
+        // last_uploaded выше chain_start на реальное число сегментов.
         var (tipHost, tipPort) = await MasterPgAsync(cluster, "shard1", ct);
         await SwitchWalsAsync(DatabaseProvisioner.BuildAdminDsn(tipHost, tipPort, cluster,
             new InstallSecrets(E2eFixture.SuPassword, "", "", "")), 6, ct);
@@ -514,13 +514,25 @@ public class E2eSupervisorScenarios
         return (entry.GetProperty("host").GetString()!, entry.GetProperty("pg").GetInt32());
     }
 
-    // pg_switch_wal × n (superuser-only): форсированное закрытие пустых сегментов.
+    // Закрытие count сегментов WAL. ВАЖНО (инцидент прогона 2026-09-13):
+    // голый pg_switch_wal на пустой базе — NO-OP (PostgreSQL не создаёт пустые
+    // сегменты: «has no effect if there has been no WAL traffic since the last
+    // WAL switch»), 22 вызова дали ~5 сегментов, кончик цепи замер, гейт
+    // глубины цепи честно истёк. Поэтому перед каждым переключением пишем
+    // РЕАЛЬНЫЙ WAL — pg_logical_emit_message (wal_level=logical в кластере,
+    // таблиц не требует): ~17 МБ на сегмент гарантированно закрывает его.
     private static async Task SwitchWalsAsync(string adminDsn, int count, CancellationToken ct)
     {
         await using var conn = new NpgsqlConnection(adminDsn);
         await conn.OpenAsync(ct);
         for (var i = 0; i < count; i++)
         {
+            for (var j = 0; j < 17; j++)
+            {
+                await using var message = new NpgsqlCommand(
+                    "SELECT pg_logical_emit_message(false, 'e2e', repeat('w', 1048576))", conn);
+                await message.ExecuteScalarAsync(ct);
+            }
             await using var switchWal = new NpgsqlCommand("SELECT pg_switch_wal()", conn);
             await switchWal.ExecuteScalarAsync(ct);
         }
