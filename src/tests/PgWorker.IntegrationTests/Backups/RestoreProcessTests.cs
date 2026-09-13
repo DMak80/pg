@@ -63,9 +63,10 @@ public class RestoreProcessTests(EtcdFixture fixture)
     }
 
     private RestoreProcess BuildProcess(FakeBackupS3 s3, IClusterDriver driver,
-        TimeProvider? clock = null, HttpMessageHandler? patroni = null)
+        TimeProvider? clock = null, HttpMessageHandler? patroni = null,
+        BackupsRuntimeOptions? options = null)
         => new(fixture.Gateway, [fixture.Endpoint], driver, s3, _claims,
-            new WorkJournal(fixture.Gateway, [fixture.Endpoint]), Options(),
+            new WorkJournal(fixture.Gateway, [fixture.Endpoint]), options ?? Options(),
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
             new EtcdEndpoints([fixture.Endpoint]), new StubAppSecret(),
             new ShardProbe(new HttpClient(patroni ?? new DeadHandler())),
@@ -435,7 +436,7 @@ public class RestoreProcessTests(EtcdFixture fixture)
         var driver = new TestDriver(inner, engine);
         var process = BuildProcess(new FakeBackupS3(), driver);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121000Z",
-            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: 1);
+            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
         (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
 
         // Act
@@ -476,7 +477,7 @@ public class RestoreProcessTests(EtcdFixture fixture)
         engine.Containers[name] = new FakeBackupEngine.ContainerRec(
             "cnt-restore", "exited", 0, "{\"ok\":true,\"restored_to_lsn\":\"0/42\"}\n");
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121001Z",
-            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: 1);
+            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
         (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
 
         // Act
@@ -503,7 +504,7 @@ public class RestoreProcessTests(EtcdFixture fixture)
         engine.Containers[name] = new FakeBackupEngine.ContainerRec(
             "cnt-restore", "exited", 1, "{\"ok\":false,\"error\":\"boom\"}\n");
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121002Z",
-            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: 1);
+            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
         (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
 
         // Act
@@ -534,7 +535,7 @@ public class RestoreProcessTests(EtcdFixture fixture)
         engine.Containers[name] = new FakeBackupEngine.ContainerRec(
             "cnt-restore", "exited", 1, "{\"ok\":false,\"error\":\"boom\"}\n");
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121005Z",
-            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: 1);
+            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
         (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
 
         // Act
@@ -595,7 +596,7 @@ public class RestoreProcessTests(EtcdFixture fixture)
         engine.Containers[name] = new FakeBackupEngine.ContainerRec(
             "cnt-restore", "exited", 1, "{\"ok\":false,\"error\":\"boom\"}\n");
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121002Z",
-            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: 1);
+            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
         (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
 
         // Act
@@ -638,6 +639,43 @@ public class RestoreProcessTests(EtcdFixture fixture)
         failed.Error.Should().Contain("бюджет");
     }
 
+    // AAA (AC5, t07): RUNNING-restore старше статусного бюджета (сжат до 60 c в
+    // опциях теста) → restore-джоб kill+rm, заявка FAILED "restore-job-timeout",
+    // щит initialize снят, volume первой ноды удалён
+    [Fact]
+    public async Task Running_старше_бюджета_FAILED_jobtimeout_щит_снят()
+    {
+        // Arrange — заявка RUNNING started_unix = now - 2h; FakeBackupEngine держит
+        // running-контейнер restore-джоба без маркеров; сид щита initialize
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var engine = new FakeBackupEngine();
+        var driver = new TestDriver(new StubScaleDriver(), engine);
+        var name = BackupNames.RestoreContainerName("c1", "shard1", "20260911121005Z");
+        engine.Containers[name] = new FakeBackupEngine.ContainerRec(
+            "cnt-restore", "running", -1, "{\"phase\":\"downloading\"}\n");
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911121005Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Running,
+            startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 7200);
+        await fixture.Gateway.PutAsync(fixture.Endpoint, "/service/c1-shard1/initialize",
+            "restore-in-progress", null, ct);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+        var process = BuildProcess(new FakeBackupS3(), driver,
+            options: Options() with { JobRestoreTimeoutSec = 60 });
+
+        // Act — тик
+        (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — контейнер и volume удалены; FAILED restore-job-timeout; щит снят
+        engine.Removed.Should().Contain(name);
+        engine.RemovedVolumes.Should().Contain("pgw-c1-shard1-shard1a-data");
+        var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        failed.State.Should().Be(RestoreStatus.Failed);
+        failed.Error.Should().Contain("restore-job-timeout");
+        var init = await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/initialize", ct);
+        init.Value.Should().BeNull("щит initialize снят FailPermanentAsync (fd5342e-механика)");
+    }
+
     [Fact]
     public async Task RUNNING_без_контейнера_перезапуск_идемпотентен()
     {
@@ -648,7 +686,7 @@ public class RestoreProcessTests(EtcdFixture fixture)
         var driver = new TestDriver(new StubScaleDriver(), engine);
         var process = BuildProcess(new FakeBackupS3(), driver);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121004Z",
-            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: 1);
+            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
         (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
 
         // Act — два тика подряд
@@ -682,7 +720,7 @@ public class RestoreProcessTests(EtcdFixture fixture)
         var process = BuildProcess(new FakeBackupS3(), driver);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121005Z",
             backupId: "20260910120000Z", target: "time:2026-09-11T10:00:00Z",
-            state: RestoreStatus.Running, startedUnix: 1);
+            state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
         (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
 
         // Act
@@ -704,7 +742,7 @@ public class RestoreProcessTests(EtcdFixture fixture)
         var process = BuildProcess(new FakeBackupS3(), driver);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121006Z",
             backupId: "20260910120000Z", target: "time:завтра-утром",
-            state: RestoreStatus.Running, startedUnix: 1);
+            state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
         (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
 
         // Act
@@ -727,7 +765,7 @@ public class RestoreProcessTests(EtcdFixture fixture)
         var driver = new TestDriver(new StubScaleDriver(), engine);
         var process = BuildProcess(new FakeBackupS3(), driver);
         var op = await SeedRestoreAsync("c1", "shard1", "20260911121005Z",
-            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: 1);
+            backupId: "20260910120000Z", state: RestoreStatus.Running, startedUnix: TimeProvider.System.GetUtcNow().ToUnixTimeSeconds() - 60);
         (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
 
         // Act

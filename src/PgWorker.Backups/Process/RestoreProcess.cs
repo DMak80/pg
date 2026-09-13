@@ -255,6 +255,29 @@ public sealed class RestoreProcess(
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
         var engine = driver.EngineFor(addr.Host);
+
+        // t07 (arch/19 §6): статусный бюджет заявки (downloading/демонтаж могут
+        // transient-циклиться без контейнера — возраст считаем от started_unix).
+        // Канон допускает «restore-джоб часами»; сутки — явный завис. REJOINING
+        // не таймаутим (бюджеты Patroni-проб — свои); RecoveryTimeoutSec внутри
+        // джоба закрывает recovering раньше. Удаление джоба/volume — best-effort
+        // (transient docker): статус FAILED важнее.
+        var opStarted = op.StartedUnix ?? NowUnix();
+        if (SupervisionTimeouts.IsTimedOut(opStarted, NowUnix(), options.JobRestoreTimeoutSec))
+        {
+            var jobName = BackupNames.RestoreContainerName(cluster, shard.Name, op.Id);
+            if (engine is not null)
+            {
+                var listed = await engine.ListContainersAsync(jobName, all: true, ct);
+                if (listed.IsSuccess && listed.Value.Any(c => c.Names.Contains(jobName)))
+                    await engine.RemoveContainerAsync(jobName, force: true, ct);
+                await engine.RemoveVolumeAsync($"pgw-{cluster}-{shard.Name}-{first}-data", ct);
+            }
+            await FailPermanentAsync(cluster, shard.Name, op,
+                $"restore-job-timeout: {NowUnix() - opStarted} с > {options.JobRestoreTimeoutSec}", ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
+
         if (engine is null)
             return await TransientAsync(cluster, $"engine-unavailable/{shard.Name}/{op.Id}",
                 $"docker-хост {addr.Host} не известен", ct);
