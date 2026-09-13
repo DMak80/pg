@@ -54,6 +54,10 @@ open http://localhost:5050
 создаёт `00-up.sh` (`mc mb --ignore-existing`, идемпотентно). Воркер
 (deploy-проект) ходит публикацией `host.docker.internal:9000`; включение
 подсистемы — с t02 (env-блок `PGW_BACKUP_S3_*` в `deploy/.env.example`).
+Панель читает bucket read-only (t08, грань «Хранилище бэкапов»): env
+`AdminPanel__Backups__S3__*` сервиса `adminpanel`; проверка —
+`checks/45-backups-storage.sh` (mc-налив тестовых объектов → configured/
+health/дерево/objects/без секретов).
 
 ## Сиды через API воркеров
 

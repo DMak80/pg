@@ -479,4 +479,118 @@ public void Parse_OrphansMalformedJson_KeyParseError()
     result.Orphans.Should().BeNull();
     result.Errors.Should().ContainSingle().Which.Key.Should().Be("/pgworker/backups/orphans");
 }
+
+// AAA: full-ключ собирает полный факт per-full для сверки (t08): state/verify/size
+[Fact]
+public void Parse_FullKey_CollectsFullInfo()
+{
+    // Arrange — COMPLETED-полный с verify OK и size_bytes
+    var kvs = new List<Kv>
+    {
+        new("/pgworker/backups/demo/s1/full/20260913a",
+            """{"state":"COMPLETED","node":"s1a","role":"replica","started_unix":100,"finished_unix":200,"wal_start_segment":"000000010000000000000001","size_bytes":123,"verify":{"state":"OK","checked_unix":201}}""", 1),
+    };
+
+    // Act
+    var result = BackupsParser.Parse(kvs);
+
+    // Assert — ShardsFulls["s1"] несёт полный факт (t08)
+    result.Errors.Should().BeEmpty();
+    var cluster = result.Clusters.Single(c => c.Cluster == "demo");
+    cluster.ShardsFulls.Should().NotBeNull();
+    var full = cluster.ShardsFulls!["s1"].Should().ContainSingle().Subject;
+    full.Id.Should().Be("20260913a");
+    full.State.Should().Be("COMPLETED");
+    full.SizeBytes.Should().Be(123);
+    full.VerifyState.Should().Be("OK");
+    full.VerifyCheckedUnix.Should().Be(201);
+}
+
+// AAA: FAILED-ключ без size/verify → факт с null-полями и error из ключа
+[Fact]
+public void Parse_FullKey_MinimalFailed()
+{
+    // Arrange — ранний FAILED: ни size_bytes, ни verify
+    var kvs = new List<Kv>
+    {
+        new("/pgworker/backups/demo/s1/full/broke",
+            """{"state":"FAILED","node":"s1a","role":"replica","started_unix":100,"error":"pg_basebackup exit 1"}""", 1),
+    };
+
+    // Act
+    var result = BackupsParser.Parse(kvs);
+
+    // Assert — SizeBytes/VerifyState null, Error из ключа
+    var cluster = result.Clusters.Single(c => c.Cluster == "demo");
+    var full = cluster.ShardsFulls!["s1"].Should().ContainSingle().Subject;
+    full.State.Should().Be("FAILED");
+    full.SizeBytes.Should().BeNull();
+    full.VerifyState.Should().BeNull();
+    full.Error.Should().Be("pg_basebackup exit 1");
+}
+
+// AAA: wal-ключ с last_uploaded_segment → в WalStreamInfo; без поля → null (толерантно)
+[Fact]
+public void Parse_Wal_LastUploadedSegment()
+{
+    // Arrange — ключ с полем и ключ без него (старый формат)
+    var kvs = new List<Kv>
+    {
+        new("/pgworker/backups/demo/s1/wal",
+            """{"state":"ACTIVE","slot":"sub","master_node":"s1a","last_uploaded_unix":500,"last_uploaded_segment":"00000001000000000000000A"}""", 1),
+        new("/pgworker/backups/demo/s2/wal",
+            """{"state":"ACTIVE","slot":"sub2","master_node":"s2a","last_uploaded_unix":600}""", 2),
+    };
+
+    // Act
+    var result = BackupsParser.Parse(kvs);
+
+    // Assert — факт прочитан там, где есть; отсутствие поля — не ошибка
+    result.Errors.Should().BeEmpty();
+    var demo = result.Clusters.Single(c => c.Cluster == "demo");
+    demo.Shards!["s1"]!.LastUploadedSegment.Should().Be("00000001000000000000000A");
+    demo.Shards!["s2"]!.LastUploadedSegment.Should().BeNull();
+}
+
+// AAA: два full-ключа одного шарда → оба в списке, сортировка по Id Ordinal
+[Fact]
+public void Parse_MultipleFulls_SameShard()
+{
+    // Arrange — вставка в порядке, обратном алфавитному
+    var kvs = new List<Kv>
+    {
+        new("/pgworker/backups/demo/s1/full/20260913b",
+            """{"state":"COMPLETED","node":"n","role":"replica","started_unix":200,"finished_unix":300}""", 1),
+        new("/pgworker/backups/demo/s1/full/20260913a",
+            """{"state":"COMPLETED","node":"n","role":"replica","started_unix":100,"finished_unix":150}""", 2),
+    };
+
+    // Act
+    var result = BackupsParser.Parse(kvs);
+
+    // Assert — оба собраны, порядок Id Ordinal
+    var fulls = result.Clusters.Single(c => c.Cluster == "demo").ShardsFulls!["s1"];
+    fulls.Select(f => f.Id).Should().Equal("20260913a", "20260913b");
+}
+
+// AAA: незнакомое state полного читается КАК ЕСТЬ (панель — толерантный читатель,
+// писатель — воркер); нового пути отказа не вводим
+[Fact]
+public void Parse_FullKey_UnknownState_Tolerated()
+{
+    // Arrange — state вне известного набора (воркер новее панели)
+    var kvs = new List<Kv>
+    {
+        new("/pgworker/backups/demo/s1/full/weird1",
+            """{"state":"WEIRD","node":"n","role":"replica","started_unix":100}""", 1),
+    };
+
+    // Act
+    var result = BackupsParser.Parse(kvs);
+
+    // Assert — факт собран, state без изменений, ошибок нет
+    result.Errors.Should().BeEmpty();
+    var full = result.Clusters.Single(c => c.Cluster == "demo").ShardsFulls!["s1"].Single();
+    full.State.Should().Be("WEIRD");
+}
 }

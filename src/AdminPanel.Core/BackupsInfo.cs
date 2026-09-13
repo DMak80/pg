@@ -11,7 +11,10 @@ public enum WalStreamInfoState { Active, Degraded, Stopped, Broken }
 public sealed record WalStreamInfo(
     string Cluster, string Shard, WalStreamInfoState State,
     string Slot, string MasterNode, long LastUploadedUnix,
-    long? LagSegments, string? Error);
+    long? LagSegments, string? Error,
+    // t08: etcd-факт wal-сверки (строка сегмента из ключа; опционально —
+    // старые/битые ключи поля не несут).
+    string? LastUploadedSegment = null);
 
 /// <summary>Одна запись реестра сирот из глобального ключа
 /// /pgworker/backups/orphans (t07; дубль воркерной модели — осознанный,

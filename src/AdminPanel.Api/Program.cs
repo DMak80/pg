@@ -70,6 +70,11 @@ var auth = app.Services.GetRequiredService<IOptions<AuthOptions>>().Value;
 if (string.IsNullOrEmpty(auth.Password) && string.IsNullOrEmpty(auth.PasswordHash))
     app.Logger.LogWarning("AdminPanel:Auth: не задан ни Password, ни PasswordHash — логин отключён");
 
+// t08: fail-fast конфига MinIO-грани (пустой Endpoint — грань выключена, не ошибка).
+var minio = app.Services.GetRequiredService<IOptions<AdminPanel.Probes.S3.MinioOptions>>().Value;
+if (minio.IsConfigured)
+    minio.EnsureValid();
+
 // OpenAPI-схема — только в dev-окружении.
 if (app.Environment.IsDevelopment())
 {
@@ -99,6 +104,7 @@ app.UseApiAuthorization();
 app.MapAppMetrics(); // /metrics мимо guard'а (guard матчит только /api/*) — arch/18 §3
 app.MapAuthApi();
 app.MapInspectionApi(); // [t04] эндпоинты инспекции etcd из снапшота (arch/03 §1)
+app.MapBackupsInspectionApi(); // [t08] грань «Хранилище бэкапов» (arch/03 §1)
 app.MapKafkaInspectionApi(); // [B5] инспекция kafka-домена (arch/03 §7.1)
 app.MapOperationsApi(); // [t12] единственная мутация: POST /api/clusters (arch/02 §9)
 app.MapKafkaOperationsApi(); // [B5] kafka-мутации (arch/02 §10.2, arch/03 §7.1)

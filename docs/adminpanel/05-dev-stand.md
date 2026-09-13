@@ -20,7 +20,7 @@ compose-адреса проб маппятся `HostMap` на хост-порт�
   `EtcdFixtures/*.json`), времена статусов динамические от `now`.
 - `checks/`: `00-up.sh` (full-up + wait-healthy + БД demo + 13 схем + sync-names),
   `10-smoke-api.sh`, `20-alerts.sh`, `30-failover.sh`, `40-live-probes.sh`,
-  `90-down.sh [-v]`.
+  `45-backups-storage.sh`, `90-down.sh [-v]`.
 
 ## E2E-прогон (порядок важен)
 

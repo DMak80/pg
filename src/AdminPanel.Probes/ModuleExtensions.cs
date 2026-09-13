@@ -51,6 +51,26 @@ public static class ModuleExtensions
         services.AddSingleton<Kafka.KafkaProbeLoop>();
         services.AddHostedService(sp => sp.GetRequiredService<Kafka.KafkaProbeLoop>());
 
+        // MinIO-грань «Хранилище бэкапов» (t08, adminpanel/02 §2.5): read-only
+        // S3-клиент (создаётся всегда — ходит только при конфигурации) + именованный
+        // health-HttpClient без SigV4 с таймаутом из настроек.
+        services
+           .AddHttpClient(S3.MinioS3Client.HealthHttpClientName)
+           .ConfigureHttpClient((sp, client) =>
+            {
+                var seconds = sp.GetRequiredService<IOptions<S3.MinioOptions>>().Value.TimeoutSec;
+                client.Timeout = TimeSpan.FromSeconds(seconds > 0 ? seconds : 5);
+            });
+        services.AddSingleton<S3.MinioS3Client>();
+        services.AddSingleton<S3.IMinioS3>(sp => sp.GetRequiredService<S3.MinioS3Client>());
+        // Стор инвентаря + фоновый тик (паттерн KafkaProbeLoop): Core-интерфейс
+        // регистрируется реализацией из Probes — Etcd (refresher) не знает Probes.
+        services.AddSingleton<S3.MinioInventoryStore>();
+        services.AddSingleton<AdminPanel.Core.IMinioInventoryStore>(sp =>
+            sp.GetRequiredService<S3.MinioInventoryStore>());
+        services.AddSingleton<S3.MinioInventoryLoop>();
+        services.AddHostedService(sp => sp.GetRequiredService<S3.MinioInventoryLoop>());
+
         return services;
     }
 }

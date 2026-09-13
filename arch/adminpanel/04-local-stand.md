@@ -40,6 +40,12 @@ live-пробы таймаутятся, критичный функционал 
 | `hc2b` (эмулятор s2b) | 8008 | 8022 | `s2b:8008` → `hc2b:8008` |
 | `adminpanel` | 8080 | 5050 | — |
 
+Панель (t08) получает env грани «Хранилище бэкапов»:
+`AdminPanel__Backups__S3__Endpoint=http://minio:9000`,
+`...__Bucket=pgworker-backups`, `...__AccessKey/SecretKey=minioadmin`
+(стендовые дефолты as-minio; прод — per-install env) — панель и as-minio
+в одной compose-сети, `minio` резолвится напрямую (docker-only панели).
+
 `as-etcd` — **единственный etcd полной системы** (источник правды, контур
 один): advertise `host.docker.internal:2379` потребляют Patroni-ноды,
 создаваемые PgWorker в своих сетях; PgWorker из `deploy/` подключается по
@@ -197,6 +203,7 @@ member'ов scope'а).
 | `20-alerts.sh` | seeded-аномалии: FROZEN-протухший → `move-stale`, `bucket_7` → `move-aborting`; затем `shard-no-master` (critical): в full перед `etcdctl del master`-ключа s2 остановить эмуляторы `hc2a`/`hc2b` (keepalive перепишет ключ), в конце вернуть и дождаться восстановления lease (в quick эмуляторов нет — просто del/put) | алерты появляются ≤ 2 тиков; после восстановления гаснут |
 | `30-failover.sh` | `docker stop s1a` → lease гаснет → `shard-no-master` + `shard-no-leader` (`leader`-ключ тоже под lease, §2.3); promote s1b руками (`pg_ctl promote`) → эмулятор s1b берёт lease, алерты гаснут, Patroni-REST показывает нового мастера; финал — rejoin: `docker compose rm -sf s1a && up -d s1a` (self-healing клон от s1b) + sync-names на s1b | цикл алерт→успокоение; стенд снова консистентен для 40 |
 | `40-live-probes.sh` | панель (в докере, сеть стенда): `/api/ha/demo-s1` содержит lag/state от Patroni-REST (пробы идут на `hc1a:8008`/`hc1b:8008` через `HostMap` §2.3); `/api/clusters/demo` shards[].runtime заполнен (sync-standby, инвентарь 8+5 ACTIVE-схем — `inventory-mismatch` нет; SQL-пробы напрямую на `s1a:5432`/`s1b:5432`) | поля не null, probe-ошибок нет |
+| `45-backups-storage.sh` | налив mc-контейнером тестовых объектов в bucket бэкапов → `curl /api/backups/storage`: configured/health/дерево (t08, 02 §2.5) | `configured=true`, health ok, дерево содержит налитый префикс |
 | `90-down.sh` | разбор (с опцией `-v` — стереть данные) | — |
 
 Скрипты — bash+jq (как в pg (этот монорепозиторий)), гоняются вручную и в рамках задачи

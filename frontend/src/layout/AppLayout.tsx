@@ -13,6 +13,7 @@ const NAV_ITEMS = [
   { to: '/', label: 'Обзор' },
   { to: '/etcd', label: 'etcd' },
   { to: '/clusters', label: 'Кластеры' },
+  { to: '/backups-storage', label: 'Хранилище бэкапов' },
   { to: '/kafka', label: 'Kafka' },
   { to: '/ha', label: 'HA' },
   { to: '/alerts', label: 'Алерты' },

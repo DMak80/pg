@@ -159,6 +159,85 @@ public static class InspectionModule
         return endpoints;
     }
 
+    // GET /api/backups/* — грань «Хранилище бэкапов» (t08, arch/03 §1): сводка/
+    // детали — из снапшота; objects — on-demand list-v2 (единственный выход в MinIO).
+    public static IEndpointRouteBuilder MapBackupsInspectionApi(this IEndpointRouteBuilder endpoints)
+    {
+        // GET /api/backups/storage — сводка (configured=false → 200 с одним полем+причиной).
+        endpoints.MapGet("/api/backups/storage", async (IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleQuery<BackupStorageQuery, BackupStorageDto>(
+                new BackupStorageQuery(), ct);
+            return ResultToHttp(result);
+        });
+
+        // GET /api/backups/storage/{cluster}/{shard} — детали шарда; BackupShardNotFound
+        // → 404, прочий отказ → 503 (маппинг как у /api/clusters/{cluster}).
+        endpoints.MapGet("/api/backups/storage/{cluster}/{shard}", async (
+            string cluster, string shard, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleQuery<BackupShardStorageQuery, BackupShardStorageDto>(
+                new BackupShardStorageQuery(cluster, shard), ct);
+            if (result.IsSuccess)
+                return Results.Ok(result.Value);
+            return result.Error is BackupShardNotFound
+                ? Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound,
+                    title: "Backup shard not found",
+                    detail: result.Error.Message)
+                : Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable,
+                    title: "Snapshot not ready",
+                    detail: result.Error!.Message);
+        });
+
+        // GET /api/backups/objects?prefix=&maxKeys=&continuationToken= — on-demand
+        // list-v2: ступень 1 гварда (форма prefix + диапазон maxKeys) inline до query —
+        // 400; ступень 2 (принадлежность кластерам/дереву) и сбой MinIO — в handler'е
+        // (InvalidBackupPrefixException → 400, BackupsS3UnavailableException → 502).
+        endpoints.MapGet("/api/backups/objects", async (
+            string? prefix, int? maxKeys, string? continuationToken,
+            IHandler handler, CancellationToken ct) =>
+        {
+            if (!BackupObjectsQuery.IsValidPrefixForm(prefix))
+                return Results.Problem(
+                    statusCode: StatusCodes.Status400BadRequest,
+                    title: "Invalid prefix",
+                    detail: $"prefix пуст или первый сегмент не матчит ^[a-z][a-z0-9_]{{0,62}}$: {prefix}");
+            if (!BackupObjectsQuery.IsValidMaxKeys(maxKeys))
+                return Results.Problem(
+                    statusCode: StatusCodes.Status400BadRequest,
+                    title: "Invalid maxKeys",
+                    detail: $"maxKeys должен быть 1..{BackupObjectsQuery.MaxKeysLimit}, получено: {maxKeys?.ToString() ?? "null"}");
+
+            var result = await handler.HandleQuery<BackupObjectsQuery, BackupObjectsPageDto>(
+                new BackupObjectsQuery(prefix, maxKeys, continuationToken), ct);
+            if (result.IsSuccess)
+                return Results.Ok(result.Value);
+            return result.Error switch
+            {
+                InvalidBackupPrefixException or InvalidBackupMaxKeysException => Results.Problem(
+                    statusCode: StatusCodes.Status400BadRequest,
+                    title: "Invalid prefix",
+                    detail: result.Error.Message),
+                BackupsStorageNotConfiguredException => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable,
+                    title: "Backups storage not configured",
+                    detail: result.Error.Message),
+                BackupsS3UnavailableException => Results.Problem(
+                    statusCode: StatusCodes.Status502BadGateway,
+                    title: "MinIO unavailable",
+                    detail: result.Error.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable,
+                    title: "Snapshot not ready",
+                    detail: result.Error!.Message),
+            };
+        });
+
+        return endpoints;
+    }
+
     // Допустимые значения ?severity= — строчный канон arch/03 §1.
     private static readonly Dictionary<string, AlertSeverity> SeverityNames = new()
     {

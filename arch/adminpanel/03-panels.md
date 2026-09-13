@@ -43,6 +43,9 @@ clusters/{cluster}/moves/{bucket}` (отмена стоящей заявки, 02
 | `POST /api/clusters/{cluster}/app-password/rotate` | заявка ротации app-пароля кластера (02 §9.8): без тела → 201+`AppPasswordRotatedDto` \| 404 \| 409 \| 503 |
 | `GET /api/ha` | список HA-scope'ов (сводный) |
 | `GET /api/ha/{scope}` | детали scope: leader, members+runtime, optime, raw config, request_* |
+| `GET /api/backups/storage` | грань «Хранилище бэкапов»: `configured` (false → только это поле+причина), endpoint/bucket (без ключей), health, место (etcd-ключ `storage` + live-инвентарь), дерево кластеров/шардов, сироты (реестр воркера + сверка панели), `inventoryUpdatedUnix`/`inventoryError` (t08, 02 §2.5) |
+| `GET /api/backups/storage/{cluster}/{shard}` | детали шарда: полные (id/size/objectCount/lastModified + etcd state/verify/size + статус сверки), WAL (S3-факт + etcd-статус), активный restore (бейдж), 404 — нет ни в etcd, ни в S3-дереве |
+| `GET /api/backups/objects?prefix=&maxKeys=200&continuationToken=` | on-demand list-v2 (единственный выход в MinIO на запрос): `prefix` пуст или `<кластерный паттерн>/…` **и** первый сегмент — кластер снапшота или S3-дерева инвентаря (иначе 400 — защита от произвольного листинга), `maxKeys` 1..1000 (иначе 400), `nextContinuationToken` |
 | `GET /api/alerts` | все алерты; query `?severity=critical|warning|info`, `?kind=` |
 
 Дополнительно к квери-параметрам: `?owner=&state=` на `/api/clusters/{c}`
@@ -361,6 +364,11 @@ MoveTicketDto: bucketId(int? — null у неканонического leaf'а)
 `SYNCING|FROZEN|ABORTING`: `NOT_INITIALIZED` — не переезд, а начальное
 состояние бакета (02 §9).
 
+Грань «Хранилище бэкапов» (t08): `BackupStorageDto`,
+`BackupShardStorageDto`, `BackupObjectsPageDto` (+ вложенные `BackupFullDto`,
+`BackupWalDto`, `BackupOrphanDto`, `MinioHealthDto`); camelCase; S3-ключи
+(AccessKey/SecretKey) НЕ отдаются никогда.
+
 ## 3. Панели UI
 
 | Панель | Что показывает |
@@ -373,6 +381,7 @@ MoveTicketDto: bucketId(int? — null у неканонического leaf'а)
 | **HA** | список scope'ов: scope, cluster/shard, лидер, члены (роль/состояние), лаг max, пометка unmatched |
 | **HA details** | leader, optime, таблица members: name/role/state/timeline/lag/probe-статус; блок «Заявленные ресурсы нод» (request_*, при наличии); raw config (свернуто) |
 | **Alerts** | таблица всех алертов: severity-цвет, kind, target, message, since; фильтр по severity |
+| **Хранилище бэкапов** | `/backups-storage` (t08, read-only): карточки Health (api/live/cluster + drives), Место (used/quota, прогресс-бар, state-бейдж OK/WARN/CRIT — вердикт воркера + штамп live), Buckets; таблица «Кластеры → шарды» (размер, полные шт., WAL-сегменты шт., пометки сверки); клик → детали шарда `/backups-storage/:cluster/:shard`: таблица полных (id/размер/дата/etcd state+verify/сверка), блок WAL (etcd-статус + S3-факт), бейдж активного restore, «Объекты» с on-demand пагинацией («Загрузить ещё»); блок «Осиротевшие префиксы» (реестр воркера OBSERVED/DELETING+TTL или «панель видит, в реестре нет»); `configured=false` — заглушка «не настроено (AdminPanel:Backups:S3)». Без форм ввода |
 
 ### 3.1. Форма «Создать кластер» (формы данных: эта + добавление шарда §3.2 + перенос бакетов §3.3)
 
@@ -518,6 +527,7 @@ Active-кластер). Показывает маршрут owner→target, фа
 | `sync-standby-missing` | warning | у мастера нет `sync_state IN ('sync','quorum')` (P8 — предусловие переездов) | SQL-проба |
 | `inventory-mismatch` | warning | фактические схемы `bucket_%` ≠ routing (P21/P23) | SQL-проба |
 | `probe-failed` | по цели (critical/warning) | ошибки проб **Active-целей**: SQL-проба шарда упала → **critical** («шард недоступен»: ни один хост DSN не принял подключение или writable-мастер не найден — 02 §6.2); Patroni-проба одного члена скопа упала → **warning**; Patroni-пробы **всех** членов matched-скопа упали → один **critical** на скоп (id `probe-failed:patroni-scope:<scope>`, per-member warning этого скопа не эмитятся — один факт, один алерт) | пробы |
+| `backup-s3-unreachable` | warning | грань настроена && инвентарь-тик MinIO падал ≥ 2 подряд (configured && consecutiveFailures ≥ 2); снимается первым успешным тиком | MinIO live-тик (02 §2.5) |
 
 SQL-алерты вычисляются только при включённых пробах; etcd-алерты — всегда.
 `probe-failed` считается по целям текущего снапшота (исчезнувшая цель не

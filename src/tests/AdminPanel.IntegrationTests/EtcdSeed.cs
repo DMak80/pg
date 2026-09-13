@@ -76,4 +76,44 @@ public static class EtcdSeed
         foreach (var (key, value) in Demo)
             await PutAsync(endpoint, key, value, ct);
     }
+
+    // Ключи грани «Хранилище бэкапов» (t08, arch/19 §4; план Task 9 Step 2):
+    // ОТДЕЛЬНЫЙ список, Demo НЕ расширяется (Решение 6 плана: существующие серии
+    // с ассертами по снапшоту не должны видеть бэкап-ключи). Времена
+    // now-относительные — параметр now (сек. Unix). Владельца /clusters/demo
+    // наливает SeedAsync (тест зовёт оба сида). Кластер ghost_shard в /clusters/
+    // ОТСУТСТВУЕТ — его wal-ключ делает его сиротой для сверки панели, при этом
+    // запись в реестре /pgworker/backups/orphans — факт реестра воркера (t07).
+    public static IReadOnlyList<(string Key, string Value)> Backups(long now) =>
+    [
+        ("/pgworker/backups/demo/policy", "{\"full_max_age_sec\":86400}"),
+        ("/pgworker/backups/demo/s1/full/b1",
+            $"{{\"state\":\"COMPLETED\",\"node\":\"s1a\",\"role\":\"replica\",\"started_unix\":{now - 3600},\"finished_unix\":{now - 1800},\"size_bytes\":100,\"wal_start_segment\":\"000000010000000000000001\",\"verify\":{{\"state\":\"OK\",\"checked_unix\":{now - 1700}}}}}"),
+        ("/pgworker/backups/demo/s1/full/b2",
+            $"{{\"state\":\"PLANNED\",\"node\":\"s1a\",\"role\":\"replica\",\"started_unix\":{now - 60}}}"),
+        ("/pgworker/backups/demo/s1/wal",
+            $"{{\"state\":\"ACTIVE\",\"slot\":\"wal_demo_s1\",\"master_node\":\"s1a\",\"last_uploaded_unix\":{now - 30},\"last_uploaded_segment\":\"000000010000000000000001\"}}"),
+        // Активная restore-заявка (t05-формат): бейдж деталей шарда (AC9).
+        ("/pgworker/backups/demo/s1/restore/r1",
+            $"{{\"state\":\"PLANNED\",\"backup_id\":\"b1\",\"source\":\"demo/s1\",\"target\":\"latest\",\"requested_unix\":{now - 10},\"phase\":\"downloading\"}}"),
+        ("/pgworker/backups/demo/s2/full/b1",
+            $"{{\"state\":\"COMPLETED\",\"node\":\"s2a\",\"role\":\"replica\",\"started_unix\":{now - 3600},\"finished_unix\":{now - 1800},\"size_bytes\":200}}"),
+        ("/pgworker/backups/ghost_shard/s9/wal",
+            $"{{\"state\":\"ACTIVE\",\"slot\":\"wal_ghost_s9\",\"master_node\":\"g9\",\"last_uploaded_unix\":{now - 30},\"last_uploaded_segment\":\"000000010000000000000009\"}}"),
+        // Квота/место — вердикт воркера (t06): WARN рядом с live-инвентарём (AC6).
+        ("/pgworker/backups/storage",
+            $"{{\"used_bytes\":1000,\"quota_bytes\":10000,\"used_percent\":10.0,\"state\":\"WARN\",\"updated_unix\":{now}}}"),
+        // Реестр сирот (t07): ghost_shard/s9 под наблюдением супервизора.
+        ("/pgworker/backups/orphans",
+            $"{{\"updated_unix\":{now},\"orphans\":[{{\"prefix\":\"ghost_shard/s9\",\"kind\":\"shard\",\"size_bytes\":50,\"first_seen_unix\":{now - 100},\"state\":\"OBSERVED\"}}]}}"),
+    ];
+
+    // Налив бэкап-ключей поверх владельцев из SeedAsync (поверх Demo-сида
+    // EtcdContainerFixture): теперь-относительные времена считаются на месте.
+    public static async Task SeedBackupsAsync(string endpoint, CancellationToken ct)
+    {
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        foreach (var (key, value) in Backups(now))
+            await PutAsync(endpoint, key, value, ct);
+    }
 }

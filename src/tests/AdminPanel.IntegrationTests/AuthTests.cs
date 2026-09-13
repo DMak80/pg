@@ -106,6 +106,12 @@ public sealed class AuthWebFactory : WebApplicationFactory<Program>
 {
     public FixedTimeProvider Time { get; } = new();
 
+    // t08: build хоста под замком с очисткой статического кеша сборок attribute-DI —
+    // в процессе теперь ДВА Program-хоста (появилась BackupsWebFactory), кеш
+    // сканирования процессный, без очистки второй хост терял бы [Config]/[InjectAs*]
+    // регистрации (см. PanelHostBuilder).
+    public AuthWebFactory() => PanelHostBuilder.BuildExclusive(this);
+
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         // http-стенд: без AllowHttp Secure-cookie не вернётся по http (spec t02 §10, §14).
