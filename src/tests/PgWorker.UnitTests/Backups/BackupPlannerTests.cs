@@ -30,7 +30,8 @@ public class BackupPlannerTests
         };
 
         // Act / Assert
-        BackupPlanner.IsDue(fulls, 86400, Unix(Now)).Should().BeTrue("проваленный verify свежестью не считается");
+        BackupPlanner.IsDue(fulls, walKeyExists: true, fullMaxAgeSec: 86400, nowUnix: Unix(Now))
+            .Should().BeTrue("проваленный verify свежестью не считается");
     }
 
     // AAA: валидный = verify null | PENDING | OK — все три дают свежесть
@@ -47,9 +48,9 @@ public class BackupPlannerTests
             verify: new BackupVerify(BackupVerifyStatus.Ok, finished)) };
 
         // Act / Assert — каждая конфигурация сама по себе гасит due (в окне)
-        BackupPlanner.IsDue(noVerify, 86400, Unix(Now)).Should().BeFalse();
-        BackupPlanner.IsDue(pending, 86400, Unix(Now)).Should().BeFalse();
-        BackupPlanner.IsDue(ok, 86400, Unix(Now)).Should().BeFalse();
+        BackupPlanner.IsDue(noVerify, walKeyExists: true, 86400, Unix(Now)).Should().BeFalse();
+        BackupPlanner.IsDue(pending, walKeyExists: true, 86400, Unix(Now)).Should().BeFalse();
+        BackupPlanner.IsDue(ok, walKeyExists: true, 86400, Unix(Now)).Should().BeFalse();
     }
 
     // AAA: бэкофф n считает и verify-фейлы: COMPLETED+FAILED-verify после последнего
@@ -79,7 +80,46 @@ public class BackupPlannerTests
         var fulls = new[] { Full("20260909030000Z", FullBackupStatus.Failed, Unix(Now.AddDays(-1))) };
 
         // Act / Assert
-        BackupPlanner.IsDue(fulls, 86400, Unix(Now)).Should().BeTrue();
+        BackupPlanner.IsDue(fulls, walKeyExists: true, fullMaxAgeSec: 86400, nowUnix: Unix(Now)).Should().BeTrue();
+    }
+
+    // AAA: после COMPLETED-restore полный старее restore → due даже при живом
+    // wal-ключе (WalStream восстанавливает ключ быстрее тика — инцидент гейта);
+    // полный НОВЕЕ restore — НЕ due.
+    [Fact]
+    public void IsDue_ПолныйСтарееRestore_Due_НезависимоОтWalКлюча()
+    {
+        // Arrange — валидный COMPLETED за час до restore; restore завершён 5 мин назад
+        var fulls = new[]
+        {
+            Full("20260911100000Z", FullBackupStatus.Completed, Unix(Now.AddHours(-1).AddMinutes(-5)),
+                Unix(Now.AddHours(-1))),
+        };
+        var restoreFinished = Unix(Now.AddMinutes(-5));
+
+        // Act / Assert — живой wal-ключ больше не гасит due: факт restore сильнее
+        BackupPlanner.IsDue(fulls, walKeyExists: true, 86400, Unix(Now), restoreFinished)
+            .Should().BeTrue("полный описывает прежнюю жизнь шарда — переснимается");
+        BackupPlanner.IsDue(fulls, walKeyExists: false, 86400, Unix(Now), restoreFinished)
+            .Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsDue_ПолныйНовееRestore_НеDue()
+    {
+        // Arrange — restore час назад, свежий переснятый полный 5 минут назад
+        var restoreFinished = Unix(Now.AddHours(-1));
+        var fulls = new[]
+        {
+            Full("20260911100000Z", FullBackupStatus.Completed, Unix(Now.AddMinutes(-10)),
+                Unix(Now.AddMinutes(-5))),
+        };
+
+        // Act / Assert — переснятый после restore полный валиден; null-параметр
+        // (restore без finished/старый формат) — прежнее rolling-правило
+        BackupPlanner.IsDue(fulls, walKeyExists: true, 86400, Unix(Now), restoreFinished)
+            .Should().BeFalse();
+        BackupPlanner.IsDue(fulls, walKeyExists: true, 86400, Unix(Now), null).Should().BeFalse();
     }
 
     // AAA: due — последний COMPLETED старше full_max_age_sec
@@ -90,7 +130,7 @@ public class BackupPlannerTests
         var fulls = new[] { Full("20260909025500Z", FullBackupStatus.Completed, Unix(Now.AddDays(-1).AddMinutes(-5)), Unix(Now.AddDays(-1).AddMinutes(-1))) };
 
         // Act / Assert
-        BackupPlanner.IsDue(fulls, 86400, Unix(Now)).Should().BeTrue();
+        BackupPlanner.IsDue(fulls, walKeyExists: true, fullMaxAgeSec: 86400, nowUnix: Unix(Now)).Should().BeTrue();
     }
 
     // AAA: не due — свежий COMPLETED (finished_unix внутри окна)
@@ -101,7 +141,35 @@ public class BackupPlannerTests
         var fulls = new[] { Full("20260910020000Z", FullBackupStatus.Completed, Unix(Now.AddHours(-1).AddMinutes(-5)), Unix(Now.AddHours(-1))) };
 
         // Act / Assert
-        BackupPlanner.IsDue(fulls, 86400, Unix(Now)).Should().BeFalse();
+        BackupPlanner.IsDue(fulls, walKeyExists: true, fullMaxAgeSec: 86400, nowUnix: Unix(Now)).Should().BeFalse();
+    }
+
+    // AAA: wal-ключа нет (цепочка сброшена restore'ом, t05 §3.5) → due
+    // НЕЗАВИСИМО от возраста полного — инвариант «поднятый шард имеет валидную
+    // цепочку или активный полный».
+    [Fact]
+    public void IsDue_NoWalKey_Due_EvenWithFreshCompleted()
+    {
+        // Arrange — COMPLETED только что
+        var fulls = new[] { Full("20260910025900Z", FullBackupStatus.Completed, Unix(Now.AddMinutes(-5)), Unix(Now.AddMinutes(-1))) };
+
+        // Act / Assert
+        BackupPlanner.IsDue(fulls, walKeyExists: false, fullMaxAgeSec: 86400, nowUnix: Unix(Now))
+            .Should().BeTrue("цепочка не заведена — нужен новый полный (инвариант §3.5)");
+        BackupPlanner.IsDue(fulls, walKeyExists: true, fullMaxAgeSec: 86400, nowUnix: Unix(Now))
+            .Should().BeFalse("живой wal-ключ + свежий полный — not due");
+    }
+
+    // AAA: живой wal-ключ — прежнее rolling-правило по возрасту
+    [Fact]
+    public void IsDue_WalKeyAlive_DueByAge()
+    {
+        // Arrange — COMPLETED старше порога, ключ жив
+        var fulls = new[] { Full("20260909030000Z", FullBackupStatus.Completed, Unix(Now.AddDays(-1)), Unix(Now.AddDays(-1).AddMinutes(5))) };
+
+        // Act / Assert
+        BackupPlanner.IsDue(fulls, walKeyExists: true, fullMaxAgeSec: 100, nowUnix: Unix(Now))
+            .Should().BeTrue();
     }
 
     // AAA: бэкофф — первая неудача ждёт BaseSec с последней попытки

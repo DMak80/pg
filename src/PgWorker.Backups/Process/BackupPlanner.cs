@@ -17,10 +17,19 @@ public static class BackupPlanner
         => f.State == FullBackupStatus.Completed
            && f.Verify is not { State: BackupVerifyStatus.Failed };
 
-    // Rolling-правило (t02 + t04): нет ВАЛИДНОГО COMPLETED ИЛИ возраст последнего
-    // валидного (finished_unix; толерантно started_unix) больше full_max_age_sec.
-    // Проваленный verify свежестью не считается → воркер переснимает (AC6).
-    public static bool IsDue(IReadOnlyList<FullBackupState> fulls, long fullMaxAgeSec, long nowUnix)
+    // Rolling-правило (t02 + t04 + t05 §3.5): нет ВАЛИДНОГО COMPLETED — true;
+    // иначе возраст последнего валидного (finished_unix; толерантно
+    // started_unix) больше full_max_age_sec ИЛИ wal-ключа нет (t05: цепочка
+    // сброшена restore'ом — полный переснимается немедленно, инвариант
+    // «поднятый шард всегда имеет валидную цепочку или активный полный»).
+    // Полный также обязан быть НОВЕЕ последней COMPLETED-restore шарда:
+    // restore перестраивает шард из бэкапа — до пересъёма «валидный» полный
+    // описывает прежнюю жизнь шарда. WalStream восстанавливает wal-ключ
+    // немедленно (упреждая гвард !walKeyExists — инцидент E2E-гейта t05,
+    // 2026-09-13), поэтому сигнал — не ключ, а факт restore.
+    public static bool IsDue(
+        IReadOnlyList<FullBackupState> fulls, bool walKeyExists, long fullMaxAgeSec, long nowUnix,
+        long? lastRestoreFinishedUnix = null)
     {
         var lastValid = fulls
             .Where(IsValid)
@@ -30,7 +39,10 @@ public static class BackupPlanner
             return true;
 
         var finished = lastValid.FinishedUnix ?? lastValid.StartedUnix;
-        return nowUnix - finished > fullMaxAgeSec;
+        if (lastRestoreFinishedUnix is { } restored && finished <= restored)
+            return true;
+
+        return nowUnix - finished > fullMaxAgeSec || !walKeyExists;
     }
 
     // Бэкофф переснятия: n = попытки после последнего ВАЛИДНОГО — FAILED-джобы +

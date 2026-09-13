@@ -21,6 +21,9 @@ public sealed class StubScaleDriver : IClusterDriver
     public Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct)
         => Task.FromResult(Result.Success());
 
+    public Task<Result> RemoveRestoreJobsAsync(string cluster, string shard, CancellationToken ct)
+        => Task.FromResult(Result.Success());
+
     public readonly List<string> EnsuredNodes = [];
     public readonly List<string> RemovedNodes = [];
     public List<string> NodeObjects = [];

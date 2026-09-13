@@ -102,10 +102,17 @@ public interface IClusterDriver
     // null — хост не известен (вызывающий трактует как transient).
     IDockerEngine? EngineFor(string host);
 
-    // Чистка джоб-контейнеров pgw-backup-full-<C>-* и их staging volumes
-    // (Deprovisioning D2, t02): идемпотентно, 404 = успех; объекты S3 НЕ трогаем
+    // Чистка джоб-контейнеров pgw-backup-full-<C>-* (и их staging volumes) +
+    // restore-джобов pgw-backup-restore-<C>-* (t05; БЕЗ volume — он является
+    // data-volume ноды, его снесёт RemoveNodeAsync) (Deprovisioning D1/D2,
+    // remove-shard): идемпотентно, 404 = успех; объекты S3 НЕ трогаем
     // (arch/19 §4 — orphan t07).
     Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct);
+
+    // Точечная чистка restore-джобов шарда pgw-backup-restore-<C>-<X>-* (t05
+    // §3.4, remove-shard): remove force, volume НЕ трогаем (data-volume ноды —
+    // его снесёт RemoveNodeAsync). Идемпотентно, 404 = успех.
+    Task<Result> RemoveRestoreJobsAsync(string cluster, string shard, CancellationToken ct);
 }
 
 // Plain-режим: контейнеры на перечисленных хостах, per-host Engine API.
@@ -568,6 +575,9 @@ public sealed class PlainClusterDriver(
     public Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct)
         => BackupJobsCleaner.RemoveAsync(_engines.Values, cluster, ct);
 
+    public Task<Result> RemoveRestoreJobsAsync(string cluster, string shard, CancellationToken ct)
+        => BackupJobsCleaner.RemoveRestoreAsync(_engines.Values, cluster, shard, ct);
+
     // Сборка ContainerSpec: env Spilo + PGW_NODE_HOST + конфиги doorman/haproxy (Д4).
     // tuning — рассчитанный per-shard PGTune-вывод: env — merge(PGTune ∪ канон,
     // минус pgtuneExclude), doorman-бюджет — от рассчитанного max_connections
@@ -626,14 +636,17 @@ public sealed class PlainClusterDriver(
         => $"{NodeName(cluster, shard, nodeName)}-data";
 }
 
-// Общая чистка джобов бэкапов (t02, Plain и Swarm): контейнеры по префиксу +
-// volume, выводимый из имени контейнера (pgw-backup-full-<C>-<X>-<id> →
-// pgw-backup-<C>-<X>-<id>; tmpfs-джобы без volume — 404=ок). Имена — локальные
-// константы канона BackupNames (PgWorker.Backups) — дубль без ссылки (цикл
-// зависимостей; прецедент — MoverRole в ShardEndpoints).
+// Общая чистка джобов бэкапов (t02/t05, Plain и Swarm): контейнеры по префиксам
+// (full: pgw-backup-full-<C>-*, restore: pgw-backup-restore-<C>-*) + volume,
+// выводимый из имени full-контейнера (pgw-backup-full-<C>-<X>-<id> →
+// pgw-backup-<C>-<X>-<id>; tmpfs-джобы без volume — 404=ок). Restore-джобы
+// СВОЕГО volume не имеют: их точка монтирования — data-volume ноды (не удалять).
+// Имена — локальные константы канона BackupNames (PgWorker.Backups) — дубль без
+// ссылки (цикл зависимостей; прецедент — MoverRole в ShardEndpoints).
 internal static class BackupJobsCleaner
 {
     public const string JobContainerPrefix = "pgw-backup-full-";
+    public const string RestoreJobContainerPrefix = "pgw-backup-restore-";
     public const string JobVolumePrefix = "pgw-backup-";
 
     // t04: verify-джобы — второй класс чистки D1 (имя-канон BackupNames — дубль без ссылки).
@@ -667,6 +680,44 @@ internal static class BackupJobsCleaner
                     if (!volumeRemoved.IsSuccess)
                         return volumeRemoved;
                 }
+            }
+        }
+
+        // restore-джобы (t05): контейнер только — volume общий с нодой.
+        var restorePrefix = $"{RestoreJobContainerPrefix}{cluster}-";
+        foreach (var engine in engines)
+        {
+            var restores = await engine.ListContainersAsync(restorePrefix, all: true, ct);
+            if (!restores.IsSuccess)
+                return restores;
+            foreach (var container in restores.Value.Where(c => c.Names.Any(n => n.StartsWith(restorePrefix, StringComparison.Ordinal))))
+            {
+                var name = container.Names.First(n => n.StartsWith(restorePrefix, StringComparison.Ordinal));
+                var removed = await engine.RemoveContainerAsync(name, force: true, ct);
+                if (!removed.IsSuccess)
+                    return removed;
+            }
+        }
+
+        return Result.Success();
+    }
+
+    // Точечно: restore-джобы ОДНОГО шарда (remove-shard, t05 §3.4).
+    public static async Task<Result> RemoveRestoreAsync(
+        IEnumerable<IDockerEngine> engines, string cluster, string shard, CancellationToken ct)
+    {
+        var prefix = $"{RestoreJobContainerPrefix}{cluster}-{shard}-";
+        foreach (var engine in engines)
+        {
+            var list = await engine.ListContainersAsync(prefix, all: true, ct);
+            if (!list.IsSuccess)
+                return list;
+            foreach (var container in list.Value.Where(c => c.Names.Any(n => n.StartsWith(prefix, StringComparison.Ordinal))))
+            {
+                var name = container.Names.First(n => n.StartsWith(prefix, StringComparison.Ordinal));
+                var removed = await engine.RemoveContainerAsync(name, force: true, ct);
+                if (!removed.IsSuccess)
+                    return removed;
             }
         }
 
@@ -875,4 +926,7 @@ public sealed class SwarmClusterDriver(
 
     public Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct)
         => BackupJobsCleaner.RemoveAsync([_engine], cluster, ct);
+
+    public Task<Result> RemoveRestoreJobsAsync(string cluster, string shard, CancellationToken ct)
+        => BackupJobsCleaner.RemoveRestoreAsync([_engine], cluster, shard, ct);
 }

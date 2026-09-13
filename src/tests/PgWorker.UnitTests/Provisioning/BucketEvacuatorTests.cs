@@ -100,6 +100,40 @@ public class BucketEvacuatorTests
         return new Rig(etcd, driver, sql, claims, journal, evacuator, events, snapshots);
     }
 
+    // AAA (t05 §3.4): шард с активной restore-заявкой эвакуации НЕ подлежит —
+    // InProgress, ключа /pgworker/evacuations нет, схемы на целевых шардах не
+    // создавались, журнал-факт skipped-restore (второй рубеж: надзор не отдаёт
+    // таких кандидатов, но гонка снапшота/DONE-журнал не должны протащить).
+    [Fact]
+    public async Task Tick_DeadShardWithActiveRestore_Skipped()
+    {
+        // Arrange — штатный риг (shard1 «мёртв», shard2 жив) + PLANNED restore shard1
+        var rig = await NewRig(port => port >= 18002 ? PatroniOk() : Down());
+        IReadOnlyList<ClusterBackups> backups =
+        [
+            new ClusterBackups("shop", null, new Dictionary<string, ShardBackups>
+            {
+                ["shard1"] = new([], null,
+                [
+                    new RestoreOperationState("20260911120000Z", RestoreStatus.Planned,
+                        "", "shop/shard1", "latest", "shard1a", 1760000000, "operator"),
+                ]),
+            }),
+        ];
+
+        // Act
+        var outcome = await rig.Evacuator.TickAsync(
+            await Snapshot(rig.Etcd), "shard1", backups, CancellationToken.None);
+
+        // Assert — эвакуации не было вовсе
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Should().Be(ProcessOutcome.InProgress);
+        rig.Etcd.Store.Keys.Should().NotContain(k => k.StartsWith("/pgworker/evacuations/shop/"),
+            "вход общий: ни плана эвакуации, ни E3-карантина быть не должно");
+        rig.Sql.Executed.Should().BeEmpty("схемы бакетов на целевых шардах не создавались");
+        rig.Etcd.Store["/pgworker/work/shop"].Value.Should().Contain("skipped-restore");
+    }
+
     [Fact]
     public async Task Tick_DeadShard_JournalBeforeSql_FlipsRouting_SchemasOnTarget()
     {
@@ -107,7 +141,7 @@ public class BucketEvacuatorTests
         var rig = await NewRig(port => port >= 18002 ? PatroniOk() : Down());
 
         // Act
-        var outcome = await rig.Evacuator.TickAsync(await Snapshot(rig.Etcd), "shard1", CancellationToken.None);
+        var outcome = await rig.Evacuator.TickAsync(await Snapshot(rig.Etcd), "shard1", null, CancellationToken.None);
 
         // Assert: Done; журнал эвакуации записан ДО первого SQL (P7)
         outcome.IsSuccess.Should().BeTrue();
@@ -160,7 +194,7 @@ public class BucketEvacuatorTests
         };
 
         // Act
-        var outcome = await rig.Evacuator.TickAsync(await Snapshot(rig.Etcd), "shard1", CancellationToken.None);
+        var outcome = await rig.Evacuator.TickAsync(await Snapshot(rig.Etcd), "shard1", null, CancellationToken.None);
 
         // Assert: эвакуация остановлена, конфликт зафиксирован в журнале
         outcome.IsSuccess.Should().BeFalse();
@@ -178,7 +212,7 @@ public class BucketEvacuatorTests
         rig.Etcd.Seed("/clusters/shop/buckets/status/bucket_1", """{"state":"SYNCING"}""");
 
         // Act
-        var outcome = await rig.Evacuator.TickAsync(await Snapshot(rig.Etcd), "shard1", CancellationToken.None);
+        var outcome = await rig.Evacuator.TickAsync(await Snapshot(rig.Etcd), "shard1", null, CancellationToken.None);
 
         // Assert: блокировка до разбора оператором — ничего не изменено
         outcome.IsSuccess.Should().BeFalse();
@@ -198,7 +232,7 @@ public class BucketEvacuatorTests
         rig.Etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1a/state", "RUNNING");
 
         // Act
-        var outcome = await rig.Evacuator.TickAsync(await Snapshot(rig.Etcd), "shard1", CancellationToken.None);
+        var outcome = await rig.Evacuator.TickAsync(await Snapshot(rig.Etcd), "shard1", null, CancellationToken.None);
 
         // Assert: карантин — docker stop БЕЗ удаления (данные на месте), state
         // QUARANTINED, journal фиксирует возврат (P1-логика «призраков»)

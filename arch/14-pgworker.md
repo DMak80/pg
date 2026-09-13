@@ -149,6 +149,7 @@ in-memory WAF-тестов; в deploy/стенде всегда mTLS. Скрей
 | `POST /api/clusters/{c}/moves/abort` | заявка отмены переезда | 02 §9.7.4 |
 | `DELETE /api/clusters/{c}/moves/{bucket}` | отмена стоящей заявки (del ключа) | 02 §9.7.5 |
 | `POST /api/clusters/{c}/secrets/rotate` | заявка ротации per-cluster секретов (app + bucket_admin + mover) | 02 §9.8 |
+| `POST /api/clusters/{c}/shards/{x}/restore` | заявка восстановления шарда из бэкапа (PITR latest/target_time, source-override; `confirm` = имя шарда) | пишет статус `/pgworker/backups/<C>/<X>/restore/<id>` сам (клэйм `<C>`; arch/19 §3.5): гварды — кластер Active, шард заявлен, максимум один активный restore на шард |
 | `POST /api/ha/{scope}/nodes/{node}/recreate` | маркеры `TO_RECREATE`+`recreate=soft\|hard` | как §9.6-подобный маркер (02 §9, 03 §2): guards по `/service/<scope>/members` |
 | `POST /api/seed/demo` | стендовый демо-сид pg-контура | §1.1.1 |
 

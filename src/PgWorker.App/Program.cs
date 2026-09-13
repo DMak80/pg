@@ -273,7 +273,8 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     new ProcessThresholds(sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.NodeDeadSec,
-        sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.ShardDeadSec),
+        sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.ShardDeadSec,
+        sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.PatroniBootSec),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<InstallSecrets>(),
     sp.GetRequiredService<IAppParamsEnsurer>(),
@@ -434,6 +435,34 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupProcess(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.BackupProcess>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+
+// Восстановление шарда из бэкапа (t05, arch/19 §3.5): PLANNED→RUNNING→
+// REJOINING→COMPLETED; plain-only, Exec в объёме джоба. Runtime-опции —
+// статичный срез (врезка цикла и процесс гвардят Enabled).
+builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<IBackupS3>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Backups.ToRuntime(),
+    sp.GetRequiredService<InstallSecrets>(),
+    sp.GetRequiredService<EtcdEndpoints>(),
+    sp.GetRequiredService<IClusterSecretEnsurer>(),
+    sp.GetRequiredService<ShardProbe>(),
+    new ProcessThresholds(sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.NodeDeadSec,
+        sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.ShardDeadSec,
+        sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.PatroniBootSec),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Process.RestoreProcess>()));
+
+// Заявка restore через API (t05 §3.2): гварды + txn put-if-not-exists
+// PLANNED-ключа; исполнение — RestoreProcess (держатель клэйма).
+builder.Services.AddSingleton(sp => new PgWorker.App.Api.Operations.RestoreShardHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>()));
 
 // WAL-архивация (t03, arch/19 §3): слот/агент/контроль цепочки; runtime()==null
 // (Backups:Enabled=false) — процесс выполняет стоп-семантику и не активен.
@@ -614,6 +643,14 @@ file sealed class ReloadableBackupS3(IOptionsMonitor<PgWorkerOptions> options) :
         string cluster, string shard, string key, CancellationToken ct = default)
         => await (await CurrentAsync()).GetObjectAsync(cluster, shard, key, ct);
 
+    public async Task<PgWorker.Core.Result<IReadOnlyList<string>>> ListFullsAsync(
+        string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
+        => await (await CurrentAsync()).ListFullsAsync(cluster, shard, maxKeysPerTest, ct);
+
+    public async Task<PgWorker.Core.Result<string>> DownloadTextAsync(
+        string cluster, string shard, string objectKey, CancellationToken ct = default)
+        => await (await CurrentAsync()).DownloadTextAsync(cluster, shard, objectKey, ct);
+
     public async ValueTask DisposeAsync()
     {
         BackupS3? client;
@@ -659,6 +696,16 @@ file sealed class ReloadableBackupS3(IOptionsMonitor<PgWorkerOptions> options) :
 
         public Task<PgWorker.Core.Result<string>> GetObjectAsync(
             string cluster, string shard, string key, CancellationToken ct = default)
+            => Task.FromResult(PgWorker.Core.Result<string>.Failed(
+                new ApplicationException("Backups:Enabled=false")));
+
+        public Task<PgWorker.Core.Result<IReadOnlyList<string>>> ListFullsAsync(
+            string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
+            => Task.FromResult(PgWorker.Core.Result<IReadOnlyList<string>>.Failed(
+                new ApplicationException("Backups:Enabled=false")));
+
+        public Task<PgWorker.Core.Result<string>> DownloadTextAsync(
+            string cluster, string shard, string objectKey, CancellationToken ct = default)
             => Task.FromResult(PgWorker.Core.Result<string>.Failed(
                 new ApplicationException("Backups:Enabled=false")));
     }

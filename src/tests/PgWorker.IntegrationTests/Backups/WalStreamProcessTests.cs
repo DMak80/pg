@@ -105,6 +105,9 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // Контракт (ревью Ф7 №1): процесс НЕ назначает сеть — драйвер владеет
         // pgw-net и проставляет её при create (юнит-тест ClusterDriverTests).
         driver.EnsuredAgentSpecs.Should().ContainSingle().Which.Network.Should().BeNull();
+        // Рестарт-политики у агента нет: docker не лупит — супервиз тика
+        // пересоздаёт exited-агента (иначе луп молотит на снесённом мастере)
+        driver.EnsuredAgentSpecs.Should().ContainSingle().Which.RestartPolicy.Should().Be("no");
         sql.Slots.Should().ContainKey("pgw_bkp_c1_shard1");
         var wal = await fixture.Gateway.GetAsync(
             fixture.Endpoint, "/pgworker/backups/c1/shard1/wal", ct);
@@ -214,6 +217,47 @@ public class WalStreamProcessTests(EtcdFixture fixture)
     {
         for (var i = from; i <= to; i++)
             s3.Objects.Add((cluster, "shard1", $"0000000100000000000000{i:x2}"));
+    }
+
+    // t05 §3.4 гвард: шард с активной restore-заявкой — агент не ensure,
+    // wal-статус не пишется (контуры не трогают шард во время restore).
+    [Fact]
+    public async Task Тик_скипает_шард_с_активным_restore()
+    {
+        // Arrange — full COMPLETED + цепочка (due-условия есть) + PLANNED restore
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("cr9");
+        (await _claims.TryClaimClusterAsync("cr9", ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor { Current = ("0/3000000", 1) };
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, "cr9", 1, 3);
+        var driver = new StubScaleDriver();
+        var lags = new List<(string Cluster, string Shard, long? Lag)>();
+        var process = new WalStreamProcess(
+            fixture.Gateway, [fixture.Endpoint], driver,
+            new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
+            sql, s3, new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]),
+            _claims, new WorkJournal(fixture.Gateway, [fixture.Endpoint]),
+            () => Options(), new InstallSecrets("su", "sb", "adm", "mv"),
+            TimeProvider.System, (c, s, l) => lags.Add((c, s, l)));
+        var restoring = FullShard("000000010000000000000001") with
+        {
+            Restores = [new RestoreOperationState("20260911120000Z", RestoreStatus.Planned,
+                "", "cr9/shard1", "latest", "shard1a", 1760000000, "operator")],
+        };
+        var backups = new ClusterBackups("cr9", null,
+            new Dictionary<string, ShardBackups> { ["shard1"] = restoring });
+
+        // Act
+        var result = await process.TickAsync(BuildSnap("cr9"), backups, ct);
+
+        // Assert — агент не поднят, wal-ключа нет, слот не создавался
+        result.IsSuccess.Should().BeTrue();
+        driver.EnsuredBackupAgents.Should().BeEmpty();
+        sql.Slots.Should().BeEmpty();
+        var wal = await fixture.Gateway.GetAsync(
+            fixture.Endpoint, "/pgworker/backups/cr9/shard1/wal", ct);
+        wal.Value.Should().BeNull("шард в restore — контуры бэкапов молчат");
     }
 
     [Fact]
@@ -371,6 +415,34 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         wal.Error.Should().Contain("тишина");
         driver.RemovedBackupAgents.Should().Contain("pgw-backup-wal-cc5-shard1");
         driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-cc5-shard1");
+    }
+
+    [Fact]
+    public async Task Супервиз_running_агент_канон_имён_без_слеша_не_трогается()
+    {
+        // Arrange — живой агент в списке движка: канон ListContainersAsync — имена
+        // БЕЗ ведущего "/"; раньше матч "/"+name всегда промахивался (t05-регресс
+        // 2026-09-13) — супервиз трактовал живого агента отсутствующим и тикал
+        // ensure каждый проход
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("cc8");
+        (await _claims.TryClaimClusterAsync("cc8", ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, "cc8", 1, 2);
+        var driver = new StubScaleDriver();
+        driver.BackupAgentObjects.Add(new PgWorker.Docker.Engine.DockerContainer(
+            "id-agent-cc8", ["pgw-backup-wal-cc8-shard1"], "running", "img"));
+        var process = BuildProcess(Options(), sql, s3, driver);
+        var backups = new ClusterBackups("cc8", null,
+            new Dictionary<string, ShardBackups> { ["shard1"] = FullShard("000000010000000000000001") });
+
+        // Act
+        (await process.TickAsync(BuildSnap("cc8"), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — живой агент найден и не пересоздаётся (ни remove, ни ensure)
+        driver.RemovedBackupAgents.Should().BeEmpty();
+        driver.EnsuredBackupAgents.Should().BeEmpty();
     }
 
     [Fact]

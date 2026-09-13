@@ -116,6 +116,37 @@ public class NodeSupervisorTests
         return new Rig(etcd, driver, claims, journal, supervisor);
     }
 
+    // AAA (t05 §3.4): шард с активной restore-заявкой надзор НЕ трогает:
+    // EnsureDeclared не пересоздаёт снесённые ноды, пробы не зовутся,
+    // deadShards пуст даже при «мёртвых» нодах (ShardDead не тикает).
+    [Fact]
+    public async Task Tick_ShardWithActiveRestore_Skipped()
+    {
+        // Arrange — ноды a/b снесены (иначе EnsureDeclared восстановил бы),
+        // весь шард с «протухшим» unreachable-треком (иначе deadShards-кандидат)
+        var rig = await NewRig(_ => Ok(), nodeObjects: [], staleUnreachableAll: 1);
+        IReadOnlyList<ClusterBackups> backups =
+        [
+            new ClusterBackups("shop", null, new Dictionary<string, ShardBackups>
+            {
+                ["shard1"] = new([], null,
+                [
+                    new RestoreOperationState("20260911120000Z", RestoreStatus.Planned,
+                        "", "shop/shard1", "latest", "shard1a", 1760000000, "operator"),
+                ]),
+            }),
+        ];
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
+
+        // Assert — декларация/пробы/эвакуационный рубикон прошли мимо шарда
+        outcome.IsSuccess.Should().BeTrue();
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        rig.Driver.EnsuredNodes.Should().BeEmpty("шард в restore — декларацию не восстанавливаем");
+        outcome.Value.DeadShards.Should().BeEmpty("шард в restore — не кандидат эвакуации");
+    }
+
     [Fact]
     public async Task Tick_ManuallyRemovedContainer_EnsureNodeRestores()
     {
@@ -126,7 +157,7 @@ public class NodeSupervisorTests
         ]);
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert: декларативное самовосстановление — нода пересоздана, state PROVISIONING
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -147,7 +178,7 @@ public class NodeSupervisorTests
         rig.Etcd.Seed("/clusters/shop/shards/shard1/master", "h1:16500"); // устаревший (shard1a была)
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert: rebuild — RemoveNode + EnsureNode того же addr, state REBUILDING
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -168,7 +199,7 @@ public class NodeSupervisorTests
             """{"leader":"shard1a","member":"shard1b","scheduled_at":"2026-08-26T19:00:00Z"}""");
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert — устаревший ключ удалён надзором
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -187,7 +218,7 @@ public class NodeSupervisorTests
             """{"leader":"shard1a","member":"shard1b","scheduled_at":"2030-01-01T00:00:00Z"}""");
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert — заявка оператора сохранена
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -208,7 +239,7 @@ public class NodeSupervisorTests
         rig.Etcd.Seed("/service/shop-shard1/leader", "shard1a");
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert — failover-first: ключ написан (кандидат — живая нода), мёртвый
         // лидер-ключ удалён, контейнер лидера пересоздаётся параллельно
@@ -240,7 +271,7 @@ public class NodeSupervisorTests
         rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a"}""");
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert: без capability ускорение не стреляет — failover-маркера нет,
         // leader-ключ не тронут (промоушен по lease/loop_wait Patroni); нода
@@ -265,7 +296,7 @@ public class NodeSupervisorTests
         rig.Etcd.Seed("/service/shop-shard1/leader", "shard1a");
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert — никаких ключей failover/удалений лидера, реплика пересоздана
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -286,7 +317,7 @@ public class NodeSupervisorTests
         rig.Etcd.Seed("/service/shop-shard1/leader", "shard1a");
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert — ключей не писали, лидер-ключ не трогали, контейнер поднят
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -307,7 +338,7 @@ public class NodeSupervisorTests
         rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a"}""");
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert — контейнер+volume снесены и пересозданы, финальный state REBUILDING
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -333,7 +364,7 @@ public class NodeSupervisorTests
         rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a"}""");
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert — switchover отправлен лидеру, docker не тронут, маркер ждёт
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -361,7 +392,7 @@ public class NodeSupervisorTests
         rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a"}""");
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert — грубо: немедленное удаление+пересоздание, switchover не звался
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -384,7 +415,7 @@ public class NodeSupervisorTests
         rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a"}""");
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert — авто-грубо: мёртвый лидер удалён и пересоздан несмотря на soft
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -413,7 +444,7 @@ public class NodeSupervisorTests
         };
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert: никаких HA-мутаций и docker-мутаций, нода отмечена UNREACHABLE
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -443,7 +474,7 @@ public class NodeSupervisorTests
         rig.Driver.InspectResult = new Dictionary<string, DiscoveredNode>(); // не running
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert: failover ускорен (ключ+маркер), docker не тронут, UNREACHABLE
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -484,7 +515,7 @@ public class NodeSupervisorTests
         });
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert — патч каноном отправлен ровно один (конфиг кластерный)
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -519,7 +550,7 @@ public class NodeSupervisorTests
         });
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert — PATCH не звался вовсе
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -535,7 +566,7 @@ public class NodeSupervisorTests
         var rig = await NewRig(_ => Down(), staleUnreachableAll: now - 400);
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert: шард попал в DeadShards (триггер эвакуации для цикла, задачи 22/23)
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -551,7 +582,7 @@ public class NodeSupervisorTests
         rig.Etcd.Seed("/clusters/shop/shards/shard1/master", "h1:16500");
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert: эвакуация не запускается (arch/14 §5 C: master протух — обязательное условие)
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -607,7 +638,7 @@ public class NodeSupervisorTests
         SeedShard2(rig.Etcd, withDsn: false, markedToRemove: false);
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert — надзор не пересоздаёт ноды недоднятого шарда
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -630,7 +661,7 @@ public class NodeSupervisorTests
             rig.Etcd.Seed($"/clusters/shop/shards/shard2/nodes/{node}/state", "NOT_INITIALIZED");
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert — ноды недоднятого шарда надзору не принадлежат: state не тронут
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -653,7 +684,7 @@ public class NodeSupervisorTests
             """{"evacuated_unix":1755900000,"reason":"shard-dead","buckets":{},"state":"DONE"}""");
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert — тик надзора прошёл, state карантинных нод не тронут
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -673,7 +704,7 @@ public class NodeSupervisorTests
         SeedShard2(rig.Etcd, withDsn: true, markedToRemove: true);
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert — самовосстановление отключено для помеченного шарда
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -694,7 +725,7 @@ public class NodeSupervisorTests
         await SeedShard2DeadTrackAsync(rig.Journal);
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert — пустой мёртвый шард не попадает в DeadShards (t06 §5.4)
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -716,7 +747,7 @@ public class NodeSupervisorTests
         await SeedShard2DeadTrackAsync(rig.Journal);
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert — незарегистрированный шард не эвакуируется
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -738,7 +769,7 @@ public class NodeSupervisorTests
         await SeedShard2DeadTrackAsync(rig.Journal);
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert — TO_REMOVE-маркер НЕ отключает аварийную эвакуацию (Д6)
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -779,7 +810,7 @@ public class NodeSupervisorTests
             addresses: AdoptedAddresses());
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert: дубль не создан (guard self-healing off при пустом docker-списке),
         // состояние нод не PROVISIONING, failover-ключи HA-контура не тронуты.
@@ -804,7 +835,7 @@ public class NodeSupervisorTests
             addresses: AdoptedAddresses());
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert: ни EnsureNode, ни PROVISIONING — self-healing off (R9).
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -827,7 +858,7 @@ public class NodeSupervisorTests
             addresses: AdoptedAddresses(), sql: sql);
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert: state остаётся RUNNING (не UNREACHABLE), трек недоступности пуст.
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -865,7 +896,7 @@ public class NodeSupervisorTests
         rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1b"}""");
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert: state=UNREACHABLE, docker не тронут (rebuild поднял бы второй Patroni).
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -892,7 +923,7 @@ public class NodeSupervisorTests
         rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a"}""");
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert: контейнер не пересоздан; журнал содержит recreate-external (оператору).
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
@@ -997,8 +1028,8 @@ public class NodeSupervisorTests
 
         // Act — параллельные тики двух кластеров одним синглтоном
         var results = await Task.WhenAll(
-            supervisor.TickAsync(await Snapshot(etcd, "shopA"), CancellationToken.None),
-            supervisor.TickAsync(await Snapshot(etcd, "shopB"), CancellationToken.None));
+            supervisor.TickAsync(await Snapshot(etcd, "shopA"), null, CancellationToken.None),
+            supervisor.TickAsync(await Snapshot(etcd, "shopB"), null, CancellationToken.None));
 
         // Assert — мёртвые шарды изолированы ЗНАЧЕНИЕМ тика: событие эвакуации
         // получил только свой кластер, живой shopB не «унаследовал» shopA.
@@ -1188,7 +1219,7 @@ public class NodeSupervisorTests
         rig.Etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1b/app_params", "sslmode=verify-full");
 
         // Act
-        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
         // Assert — отсутствующие дописаны дефолтом, ручное значение живо (put-if-absent)
         outcome.IsSuccess.Should().BeTrue();

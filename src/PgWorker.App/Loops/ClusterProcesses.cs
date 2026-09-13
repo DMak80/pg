@@ -17,14 +17,18 @@ internal interface IClusterProcesses
 
     Task<Result<ProcessOutcome>> DeprovisionAsync(ClusterSnapshot snap, CancellationToken ct);
 
-    /// <summary>Надзор + список полностью мёртвых шардов (событие эвакуации).</summary>
-    Task<Result<SuperviseOutcome>> SuperviseAsync(ClusterSnapshot snap, CancellationToken ct);
+    /// <summary>Надзор + список полностью мёртвых шардов (событие эвакуации);
+    /// backups — парс /pgworker/backups/ этим же тиком (t05: гварды restore).</summary>
+    Task<Result<SuperviseOutcome>> SuperviseAsync(
+        ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
 
     /// <summary>Усыновление: адреса внешних нод в portalloc (spec §3.2, arch/14 §5 J).</summary>
     Task<Result<ProcessOutcome>> AdoptAsync(ClusterSnapshot snap, CancellationToken ct);
 
-    /// <summary>Эвакуация конкретного мёртвого шарда (BucketEvacuator E0–E4).</summary>
-    Task<Result<ProcessOutcome>> EvacuateAsync(ClusterSnapshot snap, string deadShard, CancellationToken ct);
+    /// <summary>Эвакуация конкретного мёртвого шарда (BucketEvacuator E0–E4);
+    /// backups — гвард restore (t05 §3.4).</summary>
+    Task<Result<ProcessOutcome>> EvacuateAsync(
+        ClusterSnapshot snap, string deadShard, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
 
     /// <summary>Обработка заявок переездов бакетов /pgworker/moves/&lt;C&gt;/ (t01, spec §5.3).</summary>
     Task<Result<ProcessOutcome>> ProcessMovesAsync(ClusterSnapshot snap, CancellationToken ct);
@@ -61,6 +65,12 @@ internal interface IClusterProcesses
     Task<Result<ProcessOutcome>> RetentionAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
 
+    /// <summary>Восстановление шарда из бэкапа (t05, arch/19 §3.5): после
+    /// backup-wal (агент снесён демонтажём — процесс сам стопает), до repair;
+    /// guard Enabled — выключенная подсистема не зовётся.</summary>
+    Task<Result<ProcessOutcome>> RestoreAsync(
+        ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
+
     /// <summary>Репарация брошенных переездов: синтетические заявки в MoveProcess
     /// (adopt-repair spec §3.5, arch/14 §5 K).</summary>
     Task<Result<ProcessOutcome>> RepairAsync(ClusterSnapshot snap, CancellationToken ct);
@@ -81,7 +91,8 @@ internal sealed class ClusterProcesses(
     PgWorker.Backups.BackupProcess backupsProcess,
     WalStreamProcess walStream,
     PgWorker.Backups.BackupVerifyProcess verifyProcess,
-    PgWorker.Backups.RetentionProcess retention) : IClusterProcesses
+    PgWorker.Backups.RetentionProcess retention,
+    PgWorker.Backups.Process.RestoreProcess restore) : IClusterProcesses
 {
     public Task<Result<ProcessOutcome>> ProvisionAsync(ClusterSnapshot snap, CancellationToken ct)
         => provision.TickAsync(snap, ct);
@@ -92,14 +103,16 @@ internal sealed class ClusterProcesses(
     // Мёртвые шарды — значением из тика надзора (rework №1): свойство
     // синглтона перезаписывалось параллельными тиками чужих кластеров
     // (шаблонные имена shard1/shard2 совпадают между кластерами).
-    public Task<Result<SuperviseOutcome>> SuperviseAsync(ClusterSnapshot snap, CancellationToken ct)
-        => supervisor.TickAsync(snap, ct);
+    public Task<Result<SuperviseOutcome>> SuperviseAsync(
+        ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
+        => supervisor.TickAsync(snap, backups, ct);
 
     public Task<Result<ProcessOutcome>> AdoptAsync(ClusterSnapshot snap, CancellationToken ct)
         => adopt.TickAsync(snap, ct);
 
-    public Task<Result<ProcessOutcome>> EvacuateAsync(ClusterSnapshot snap, string deadShard, CancellationToken ct)
-        => evacuator.TickAsync(snap, deadShard, ct);
+    public Task<Result<ProcessOutcome>> EvacuateAsync(
+        ClusterSnapshot snap, string deadShard, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
+        => evacuator.TickAsync(snap, deadShard, backups, ct);
 
     public Task<Result<ProcessOutcome>> ProcessMovesAsync(ClusterSnapshot snap, CancellationToken ct)
         => moves.TickAsync(snap, ct);
@@ -150,6 +163,10 @@ internal sealed class ClusterProcesses(
     public Task<Result<ProcessOutcome>> RetentionAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
         => retention.TickAsync(snap, backups.FirstOrDefault(b => b.Cluster == snap.Config.Cluster), ct);
+
+    public Task<Result<ProcessOutcome>> RestoreAsync(
+        ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
+        => restore.TickAsync(snap, backups, ct);
 
     public Task<Result<ProcessOutcome>> RepairAsync(ClusterSnapshot snap, CancellationToken ct)
         => repair.TickAsync(snap, ct);

@@ -326,4 +326,73 @@ public class BackupsParserTests
         result.Clusters.Should().BeEmpty();
         result.Storage.Should().NotBeNull();
     }
+
+    // AAA (t05): restore-ключ → RestoreOperationInfo; сортировка по Id
+    [Fact]
+    public void Parse_RestoreKey_GoesToShardsRestores()
+    {
+        // Arrange — три ключа (id не по порядку) с полным набором полей
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/demo/s1/restore/20260911120000Z",
+                "{\"state\":\"PLANNED\",\"backup_id\":\"b\",\"source\":\"demo/s1\",\"target\":\"latest\",\"node\":\"s1a\",\"requested_unix\":1760000000,\"requested_by\":\"api\"}", 1),
+            new("/pgworker/backups/demo/s1/restore/20260911090000Z",
+                "{\"state\":\"COMPLETED\",\"backup_id\":\"b\",\"source\":\"demo/s1\",\"target\":\"latest\",\"node\":\"s1a\",\"requested_unix\":1759998000,\"requested_by\":\"api\",\"started_unix\":1759998005,\"finished_unix\":1759999000,\"phase\":\"recovering\",\"restored_to_lsn\":\"0/42\"}", 2),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs);
+
+        // Assert — сортировка Id (Ordinal), поля по факту
+        result.Errors.Should().BeEmpty();
+        var cluster = result.Clusters.Single();
+        cluster.ShardsRestores.Should().ContainKey("s1");
+        var restores = cluster.ShardsRestores!["s1"];
+        restores.Select(r => r.Id).Should().Equal("20260911090000Z", "20260911120000Z");
+        restores[0].State.Should().Be("COMPLETED");
+        restores[0].StartedUnix.Should().Be(1759998005);
+        restores[0].FinishedUnix.Should().Be(1759999000);
+        restores[1].State.Should().Be("PLANNED");
+        restores[1].StartedUnix.Should().BeNull();
+    }
+
+    // AAA (t05): битый restore (незнакомое state) — KeyParseError, записи нет
+    [Fact]
+    public void Parse_RestoreBrokenState_KeyParseError()
+    {
+        // Arrange — state вне словаря канона
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/demo/s1/restore/x1",
+                "{\"state\":\"WAT\",\"requested_unix\":1}", 1),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs);
+
+        // Assert
+        result.Errors.Should().ContainSingle(e => e.Key.Contains("restore/x1"));
+        result.Clusters.Where(c => c.ShardsRestores is { Count: > 0 }).Should().BeEmpty();
+    }
+
+    // AAA (t05): шард без restore-ключей — ShardsRestores не содержит его
+    [Fact]
+    public void Parse_ShardWithoutRestore_NoRestoresEntry()
+    {
+        // Arrange — только full-ключ шарда
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/demo/s1/full/20260910030000Z",
+                "{\"state\":\"COMPLETED\",\"node\":\"n\",\"role\":\"replica\",\"started_unix\":1757290800,\"finished_unix\":1757294400}", 1),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs);
+
+        // Assert
+        result.Errors.Should().BeEmpty();
+        var cluster = result.Clusters.Single();
+        cluster.ShardLastCompletedUnix.Should().ContainKey("s1");
+        cluster.ShardsRestores.Should().BeEmpty("restore-ключей нет — правила молчат");
+    }
 }

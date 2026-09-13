@@ -6,6 +6,7 @@ using PgWorker.Core.Templates;
 using PgWorker.Docker.Drivers;
 using PgWorker.Etcd.Client;
 using PgWorker.Etcd.Coordination;
+using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Probes;
 using PgWorker.Provisioning.Sql;
@@ -38,7 +39,7 @@ public sealed class BucketEvacuator(
     private const string Reason = "shard-dead";
 
     public async Task<Result<ProcessOutcome>> TickAsync(
-        ClusterSnapshot snap, string deadShard, CancellationToken ct)
+        ClusterSnapshot snap, string deadShard, IReadOnlyList<ClusterBackups>? backups, CancellationToken ct)
     {
         var cluster = snap.Config.Cluster;
 
@@ -47,13 +48,27 @@ public sealed class BucketEvacuator(
             return Result<ProcessOutcome>.Failed(new ApplicationException(
                 $"evacuate {cluster}/{deadShard}: клэйм не наш (или потерян) — мутации запрещены"));
 
+        // t05 §3.4 второй рубеж: надзор не отдаёт шардов в restore, но DONE-журнал
+        // прошлой эвакуации / гонка снапшота не должны привести к эвакуации или
+        // E3-карантину восстанавливаемого шарда (риск «ложная эвакуация» §7).
+        // Возврат БЕЗ записи /pgworker/evacuations/<C>/<X> и БЕЗ HandleReturnedShard.
+        if (backups?.FirstOrDefault(b => b.Cluster == cluster)
+                ?.Shards.TryGetValue(deadShard, out var deadShardBackups) == true
+            && deadShardBackups.Restores.Any(r => r.State
+                is RestoreStatus.Planned or RestoreStatus.Running or RestoreStatus.Rejoining))
+        {
+            await journal.WritePhaseAsync(cluster, "evacuate", "skipped-restore", claims.InstanceId,
+                $"шард {deadShard} в restore — эвакуация не выполняется", ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
+        }
+
         var existing = await journal.ReadEvacuationAsync(cluster, deadShard, ct);
         if (!existing.IsSuccess)
             return Result<ProcessOutcome>.Failed(existing.Error!);
 
         // Уже эвакуирован: обработка возврата шарда (E3-карантин) или hold.
         if (existing.Value is { } done)
-            return await HandleReturnedShardAsync(snap, deadShard, done, ct);
+            return await HandleReturnedShardAsync(snap, deadShard, done, backups, ct);
 
         // Guard: незавершённый переезд любого бакета кластера — блокируем
         // эвакуацию (alert в work-журнале, разбор оператором; arch/14 §5 D).
@@ -181,7 +196,8 @@ public sealed class BucketEvacuator(
     // (P1-логика «призраков»: не пишут в осиротевшие схемы); QUARANTINED —
     // держим (идемпотентно повторяем stop при повторном оживании).
     private async Task<Result<ProcessOutcome>> HandleReturnedShardAsync(
-        ClusterSnapshot snap, string deadShard, EvacuationJournal journalState, CancellationToken ct)
+        ClusterSnapshot snap, string deadShard, EvacuationJournal journalState,
+        IReadOnlyList<ClusterBackups>? backups, CancellationToken ct)
     {
         var cluster = snap.Config.Cluster;
         if (journalState.State is "PLANNED")
@@ -189,7 +205,7 @@ public sealed class BucketEvacuator(
             // Прерванный тик: план был записан, но манипуляции не дошли —
             // безопасный перезапуск с чистого плана (идемпотентность E2).
             await DeleteEvacuationAsync(cluster, deadShard, ct);
-            return await TickAsync(snap, deadShard, ct);
+            return await TickAsync(snap, deadShard, backups, ct);
         }
 
         var shard = snap.Shards.SingleOrDefault(s => s.Name == deadShard);

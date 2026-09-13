@@ -30,6 +30,7 @@ public static class BackupsParser
         var shards = new Dictionary<string, Dictionary<string, long?>>();
         var wal = new Dictionary<string, Dictionary<string, WalStreamInfo?>>();
         var deleting = new Dictionary<string, Dictionary<string, List<DeletingFullInfo>>>();
+        var restores = new Dictionary<string, Dictionary<string, List<RestoreOperationInfo>>>();
         BackupStorageInfo? storage = null;
         var verifyFailures = new Dictionary<string, Dictionary<string, ShardVerifyFailure>>();
         var errors = new List<KeyParseError>();
@@ -137,6 +138,52 @@ public static class BackupsParser
                 continue;
             }
 
+            // t05: restore/<id> — заявки восстановления (вход правила restore-failed);
+            // state/requested_unix обязательны, error/started/finished/phase — по факту;
+            // незнакомое state / нет обязательных — KeyParseError + пропуск.
+            if (segments.Length == 7 && segments[5] == "restore" && segments[4].Length > 0 && segments[6].Length > 0)
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(kv.Value);
+                    var root = doc.RootElement;
+                    if (root.ValueKind != JsonValueKind.Object)
+                    {
+                        errors.Add(new(kv.Key, "restore-статус не JSON-объект"));
+                        continue;
+                    }
+
+                    var state = String(root, "state") switch
+                    {
+                        "PLANNED" or "RUNNING" or "REJOINING" or "COMPLETED" or "FAILED"
+                            => String(root, "state"),
+                        _ => null,
+                    };
+                    var requested = Long(root, "requested_unix");
+                    if (state is null || requested is null)
+                    {
+                        errors.Add(new(kv.Key, "битый restore-статус (state/requested_unix)"));
+                        continue;
+                    }
+
+                    if (!restores.TryGetValue(cluster, out var perShardRestores))
+                        restores[cluster] = perShardRestores = [];
+                    if (!perShardRestores.TryGetValue(segments[4], out var list))
+                        perShardRestores[segments[4]] = list = [];
+                    list.Add(new RestoreOperationInfo(
+                        cluster, segments[4], segments[6], state,
+                        String(root, "error"), requested.Value,
+                        Long(root, "started_unix"), Long(root, "finished_unix"),
+                        String(root, "phase")));
+                }
+                catch (JsonException e)
+                {
+                    errors.Add(new(kv.Key, $"битый JSON restore: {e.Message}"));
+                }
+
+                continue;
+            }
+
             if (segments.Length == 7 && segments[5] == "full" && segments[4].Length > 0 && segments[6].Length > 0)
             {
                 try
@@ -232,6 +279,8 @@ public static class BackupsParser
         var clusters = shards.Keys
             .Concat(policies.Keys.Where(p => !shards.ContainsKey(p)))
             .Concat(wal.Keys.Where(w => !shards.ContainsKey(w) && !policies.ContainsKey(w)))
+            .Concat(restores.Keys.Where(r => !shards.ContainsKey(r) && !policies.ContainsKey(r)
+                && !wal.ContainsKey(r)))
             .Distinct()
             .OrderBy(c => c, StringComparer.Ordinal)
             .Select(c => new ClusterBackupsInfo(
@@ -252,7 +301,13 @@ public static class BackupsParser
                 (verifyFailures.TryGetValue(c, out var perShardFailures)
                     ? perShardFailures
                     : new Dictionary<string, ShardVerifyFailure>())
-                .ToDictionary(p => p.Key, p => p.Value)))
+                .ToDictionary(p => p.Key, p => p.Value),
+                (restores.TryGetValue(c, out var perShardRestores)
+                    ? perShardRestores.ToDictionary(
+                        p => p.Key,
+                        p => (IReadOnlyList<RestoreOperationInfo>)p.Value
+                            .OrderBy(r => r.Id, StringComparer.Ordinal).ToList())
+                    : new Dictionary<string, IReadOnlyList<RestoreOperationInfo>>())))
             .ToList();
         return new(clusters, errors, storage);
     }

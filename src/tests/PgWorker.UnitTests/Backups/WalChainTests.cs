@@ -340,4 +340,82 @@ public class WalChainTests
         result.IsContinuous.Should().BeFalse();
         result.GapError.Should().Contain("000000020000000000000003");
     }
+
+    // ── CheckWithRestart (t05 AC4): promote восстановленного шарда легитимно
+    // обрезает старый TLI в архиве — дыра на TLI-границе не деградация ──
+
+    // AAA: restore-профиль — старый поток tl1 оборван на 0A, новый tl3 начат
+    // с 0D (промежуточных 0B/0C не существует): перезапуск от первого сегмента
+    // нового TLI делает цепь целой
+    [Fact]
+    public void CheckWithRestart_ОбрезкаСтарогоTLI_ЦепьНепрерывна()
+    {
+        // Arrange — chain_start от старого полного (tl1/09)
+        var objects = new[]
+        {
+            "000000010000000000000009", "00000001000000000000000a",
+            "00000003.history", "00000003000000000000000d",
+        };
+
+        // Act
+        var result = WalChain.CheckWithRestart(Seg(1, 0, 9), objects);
+
+        // Assert
+        result.IsContinuous.Should().BeTrue();
+        result.LastSegment!.Value.Name.Should().Be("00000003000000000000000d");
+    }
+
+    // AAA: настоящая дыра внутри одного TLI перезапуском не маскируется —
+    // другой истории нет
+    [Fact]
+    public void CheckWithRestart_ДыраВнутриTLI_Деградация()
+    {
+        // Arrange — сегменты tl1: 09, 0B (0A пропущен)
+        var objects = new[] { "000000010000000000000009", "00000001000000000000000b" };
+
+        // Act
+        var result = WalChain.CheckWithRestart(Seg(1, 0, 9), objects);
+
+        // Assert
+        result.IsContinuous.Should().BeFalse();
+        result.GapError.Should().NotBeNullOrEmpty();
+    }
+
+    // AAA: непрерывная цепь без TLI-переходов ведёт себя как обычный Check
+    [Fact]
+    public void CheckWithRestart_НепрерывнаяЦепь_БезИзменений()
+    {
+        // Arrange
+        var objects = new[]
+        {
+            "000000010000000000000009", "00000001000000000000000a",
+            "00000001000000000000000b",
+        };
+
+        // Act
+        var result = WalChain.CheckWithRestart(Seg(1, 0, 9), objects);
+
+        // Assert
+        result.IsContinuous.Should().BeTrue();
+        result.LastSegment!.Value.Name.Should().Be("00000001000000000000000b");
+    }
+
+    // AAA: дыра в самом новом TLI — деградация (обрезка оправдывает только
+    // границу таймлайнов, не пропуск внутри нового потока)
+    [Fact]
+    public void CheckWithRestart_ДыраВНовомTLI_Деградация()
+    {
+        // Arrange — tl3: 0D, 0F (0E пропущен уже в новом потоке)
+        var objects = new[]
+        {
+            "000000010000000000000009", "00000003.history",
+            "00000003000000000000000d", "00000003000000000000000f",
+        };
+
+        // Act
+        var result = WalChain.CheckWithRestart(Seg(1, 0, 9), objects);
+
+        // Assert
+        result.IsContinuous.Should().BeFalse();
+    }
 }

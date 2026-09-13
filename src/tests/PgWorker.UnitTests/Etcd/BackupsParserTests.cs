@@ -232,4 +232,133 @@ public class BackupsParserTests
         result.Value.Should().Contain(c => c.Cluster == "n1").Which.Policy.Should().BeNull();
         result.Value.Should().Contain(c => c.Cluster == "s1").Which.Policy.Should().BeNull();
     }
+
+    // restore/<id> (t05, arch/19 §4): полный статус разбирается во все поля.
+    [Fact]
+    public void Parse_RestoreKey_FullStatusParsed()
+    {
+        // Arrange — KV полного restore-статуса канона arch/19 §4.
+        var kv = new Kv("/pgworker/backups/shop/shard1/restore/20260911120000Z", """
+            {"state":"RUNNING","backup_id":"20260911090000Z","source":"shop/shard1",
+             "target":"latest","node":"shard1a","requested_unix":1760000000,
+             "requested_by":"operator","started_unix":1760000005,"phase":"recovering"}
+            """, 1);
+
+        // Act
+        var result = BackupsParser.Parse([kv], out var errors);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        errors.Should().BeEmpty();
+        var restore = result.Value.Single().Shards["shard1"].Restores.Single();
+        restore.Id.Should().Be("20260911120000Z");
+        restore.State.Should().Be(RestoreStatus.Running);
+        restore.BackupId.Should().Be("20260911090000Z");
+        restore.Source.Should().Be("shop/shard1");
+        restore.Target.Should().Be("latest");
+        restore.Node.Should().Be("shard1a");
+        restore.RequestedUnix.Should().Be(1760000000);
+        restore.RequestedBy.Should().Be("operator");
+        restore.StartedUnix.Should().Be(1760000005);
+        restore.Phase.Should().Be("recovering");
+        restore.FinishedUnix.Should().BeNull();
+        restore.RestoredToLsn.Should().BeNull();
+        restore.Error.Should().BeNull();
+    }
+
+    // Битый/неизвестный state — parseErrors, запись пропущена, шард жив.
+    [Fact]
+    public void Parse_RestoreBrokenStatus_TolerantSkip()
+    {
+        // Arrange — неизвестное state; отдельный битый JSON вторым ключом.
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/shop/shard1/restore/x1", """{"state":"WAT"}""", 1),
+            new("/pgworker/backups/shop/shard1/restore/x2", "not-json", 2),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs, out var errors);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        errors.Should().Contain(e => e.Contains("restore/x1"));
+        errors.Should().Contain(e => e.Contains("restore/x2"));
+        result.Value.Single().Shards["shard1"].Restores.Should().BeEmpty();
+    }
+
+    // Все пять статусов restore мапятся (PLANNED|RUNNING|REJOINING|COMPLETED|FAILED).
+    [Fact]
+    public void Parse_RestoreAllStates_Mapped()
+    {
+        // Arrange — по одному ключу на статус.
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/c/x/restore/r1", """{"state":"PLANNED","backup_id":"b","source":"c/x","target":"latest","node":"n","requested_unix":1,"requested_by":"api"}""", 1),
+            new("/pgworker/backups/c/x/restore/r2", """{"state":"RUNNING","backup_id":"b","source":"c/x","target":"latest","node":"n","requested_unix":1,"requested_by":"api"}""", 2),
+            new("/pgworker/backups/c/x/restore/r3", """{"state":"REJOINING","backup_id":"b","source":"c/x","target":"latest","node":"n","requested_unix":1,"requested_by":"api"}""", 3),
+            new("/pgworker/backups/c/x/restore/r4", """{"state":"COMPLETED","backup_id":"b","source":"c/x","target":"latest","node":"n","requested_unix":1,"requested_by":"api","finished_unix":9,"restored_to_lsn":"0/42"}""", 4),
+            new("/pgworker/backups/c/x/restore/r5", """{"state":"FAILED","backup_id":"b","source":"c/x","target":"latest","node":"n","requested_unix":1,"requested_by":"api","error":"boom"}""", 5),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs, out var errors);
+
+        // Assert
+        errors.Should().BeEmpty();
+        var restores = result.Value.Single().Shards["x"].Restores;
+        restores.Select(r => r.State).Should().Equal(
+            RestoreStatus.Planned, RestoreStatus.Running,
+            RestoreStatus.Rejoining, RestoreStatus.Completed, RestoreStatus.Failed);
+        restores[3].FinishedUnix.Should().Be(9);
+        restores[3].RestoredToLsn.Should().Be("0/42");
+        restores[4].Error.Should().Be("boom");
+    }
+
+    // Шард с full + wal + restore собирает всё в один ShardBackups.
+    [Fact]
+    public void Parse_ShardWithFullWalRestore_AllCollected()
+    {
+        // Arrange — три типа ключей одного шарда.
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/c1/x1/full/20260911090000Z",
+                "{\"state\":\"COMPLETED\",\"node\":\"n1\",\"role\":\"replica\",\"started_unix\":1,\"wal_start_segment\":\"000000010000000000000001\"}", 1),
+            new("/pgworker/backups/c1/x1/wal",
+                "{\"state\":\"ACTIVE\",\"slot\":\"s\",\"master_node\":\"n1\",\"chain_start_segment\":\"000000010000000000000001\",\"last_received_segment\":\"000000010000000000000002\",\"last_uploaded_segment\":\"000000010000000000000002\",\"last_uploaded_unix\":5}", 2),
+            new("/pgworker/backups/c1/x1/restore/20260911120000Z",
+                "{\"state\":\"PLANNED\",\"backup_id\":\"b\",\"source\":\"c1/x1\",\"target\":\"latest\",\"node\":\"n1\",\"requested_unix\":7,\"requested_by\":\"operator\"}", 3),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs, out var errors);
+
+        // Assert
+        errors.Should().BeEmpty();
+        var shard = result.Value.Single().Shards["x1"];
+        shard.Full.Should().ContainSingle();
+        shard.Wal.Should().NotBeNull();
+        shard.Restores.Should().ContainSingle().Which.State.Should().Be(RestoreStatus.Planned);
+    }
+
+    // Restore-ключи шарда сортированы по Id (Ordinal), как полные.
+    [Fact]
+    public void Parse_RestoresSortedById()
+    {
+        // Arrange — ключи в etcd в произвольном порядке.
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/c/x/restore/20260911120000Z", """{"state":"PLANNED","backup_id":"b","source":"c/x","target":"latest","node":"n","requested_unix":2,"requested_by":"api"}""", 3),
+            new("/pgworker/backups/c/x/restore/20260911090000Z", """{"state":"COMPLETED","backup_id":"b","source":"c/x","target":"latest","node":"n","requested_unix":1,"requested_by":"api"}""", 1),
+            new("/pgworker/backups/c/x/restore/20260911150000Z-2", """{"state":"FAILED","backup_id":"b","source":"c/x","target":"latest","node":"n","requested_unix":3,"requested_by":"api"}""", 2),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs, out var errors);
+
+        // Assert
+        errors.Should().BeEmpty();
+        result.Value.Single().Shards["x"].Restores.Select(r => r.Id).Should().Equal(
+            "20260911090000Z", "20260911120000Z", "20260911150000Z-2");
+    }
 }

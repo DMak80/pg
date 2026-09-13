@@ -23,7 +23,22 @@ public sealed record ClusterBackupsInfo(
     IReadOnlyDictionary<string, IReadOnlyList<DeletingFullInfo>>? DeletingFulls = null,
     // t04: последний verify-FAILED по шарду (по checked_unix); пустой словарь =
     // невалидных полных нет.
-    IReadOnlyDictionary<string, ShardVerifyFailure>? ShardVerifyFailures = null);
+    IReadOnlyDictionary<string, ShardVerifyFailure>? ShardVerifyFailures = null,
+    // t05: restore-заявки per-shard (вход правила restore-failed).
+    IReadOnlyDictionary<string, IReadOnlyList<RestoreOperationInfo>>? ShardsRestores = null);
 
 /// <summary>DELETING-полный (t06): возраст для backup-deleting-stuck.</summary>
 public sealed record DeletingFullInfo(string Id, long StartedUnix, long? FinishedUnix);
+
+/// <summary>Операция восстановления шарда (t05, arch/19 §4): только поля статусов
+/// — UI restore-операций t08; RequestedUnix обязателен, остальное — по факту.</summary>
+public sealed record RestoreOperationInfo(
+    string Cluster,
+    string Shard,
+    string Id,
+    string State,
+    string? Error,
+    long RequestedUnix,
+    long? StartedUnix,
+    long? FinishedUnix,
+    string? Phase);

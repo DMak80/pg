@@ -20,7 +20,10 @@ public sealed record S3ObjectInfo(string Key, long SizeBytes, DateTimeOffset Las
 /// t06: ListPrefixAsync/DeleteKeysAsync — ретенционные list с размерами и
 /// batch-delete (S3-удаления ТОЛЬКО в ретенционных путях, R4).
 /// t04: ListAsync/GetObjectAsync — verify-листинг относительно &lt;C&gt;/&lt;X&gt;/
-/// и GET history; общий кор пагинации с t06-листом.</summary>
+/// и GET history; общий кор пагинации с t06-листом.
+/// t05: ListFullsAsync/DownloadTextAsync — DR-поиск полных по CommonPrefixes и
+/// чтение маленьких текстовых объектов (backup_label/backup_manifest);
+/// restore S3 ТОЛЬКО читает — удаляющих операций тут нет (arch/19 §3.5).</summary>
 public interface IBackupS3
 {
     Task<Result<bool>> BucketExistsAsync(CancellationToken ct);
@@ -48,6 +51,18 @@ public interface IBackupS3
     /// <summary>Содержимое маленького объекта (t04: .history для строгих TLI-переходов);
     /// key — относительно &lt;C&gt;/&lt;X&gt;/, напр. "wal/00000002.history".</summary>
     Task<Result<string>> GetObjectAsync(string cluster, string shard, string key, CancellationToken ct = default);
+
+    /// <summary>t05: id полных шарда по префиксу `<C>/<X>/full/` с Delimiter="/"
+    /// (CommonPrefixes — каталоги `full/<id>/`), сортировка Ordinal; пагинация по
+    /// IsTruncated/NextContinuationToken. DR-путь: etcd-статусов может не быть.</summary>
+    Task<Result<IReadOnlyList<string>>> ListFullsAsync(
+        string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default);
+
+    /// <summary>t05: маленький текстовый объект (`objectKey` — путь внутри
+    /// префикса шарда, напр. `full/&lt;id&gt;/backup_label`); отсутствующий —
+    /// Failed (не исключение наружу — валидация restore разведает transien/permanent).</summary>
+    Task<Result<string>> DownloadTextAsync(
+        string cluster, string shard, string objectKey, CancellationToken ct = default);
 }
 
 public sealed class BackupS3 : IBackupS3, IAsyncDisposable
@@ -194,6 +209,74 @@ public sealed class BackupS3 : IBackupS3, IAsyncDisposable
         catch (Exception e)
         {
             return Result.Failed(new ApplicationException($"S3 batch-delete: {e.Message}", e));
+        }
+    }
+
+    public async Task<Result<IReadOnlyList<string>>> ListFullsAsync(
+        string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
+    {
+        try
+        {
+            var ids = new SortedSet<string>(StringComparer.Ordinal);
+            string? token = null;
+            do
+            {
+                var request = new ListObjectsV2Request
+                {
+                    BucketName = _bucket,
+                    Prefix = $"{cluster}/{shard}/full/",
+                    Delimiter = "/",
+                    ContinuationToken = token,
+                };
+                if (maxKeysPerTest is { } maxKeys)
+                    request.MaxKeys = maxKeys;
+                var page = await _client.ListObjectsV2Async(request, ct);
+                foreach (var common in page.CommonPrefixes)
+                {
+                    // common — каталог "…/full/<id>/": id = последний компонент без хвостового '/'
+                    var id = common.TrimEnd('/');
+                    id = id[(id.LastIndexOf('/') + 1)..];
+                    if (id.Length > 0)
+                        ids.Add(id);
+                }
+
+                token = page.IsTruncated is true ? page.NextContinuationToken : null;
+            }
+            while (token is not null);
+
+            return Result<IReadOnlyList<string>>.Success([.. ids]);
+        }
+        catch (Exception e)
+        {
+            return Result<IReadOnlyList<string>>.Failed(new ApplicationException(
+                $"S3 list {cluster}/{shard}/full/: {e.Message}", e));
+        }
+    }
+
+    public async Task<Result<string>> DownloadTextAsync(
+        string cluster, string shard, string objectKey, CancellationToken ct = default)
+    {
+        try
+        {
+            var response = await _client.GetObjectAsync(new GetObjectRequest
+            {
+                BucketName = _bucket,
+                Key = $"{cluster}/{shard}/{objectKey}",
+            }, ct);
+            using var reader = new StreamReader(response.ResponseStream);
+            return Result<string>.Success(await reader.ReadToEndAsync(ct));
+        }
+        catch (AmazonS3Exception e) when (e.StatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            // Отсутствующий объект — валидный «нет» (проверка факта manifest/label),
+            // а не транспортный сбой: наружу — Failed без исключения.
+            return Result<string>.Failed(new ApplicationException(
+                $"S3 get {cluster}/{shard}/{objectKey}: not found"));
+        }
+        catch (Exception e)
+        {
+            return Result<string>.Failed(new ApplicationException(
+                $"S3 get {cluster}/{shard}/{objectKey}: {e.Message}", e));
         }
     }
 

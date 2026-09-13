@@ -143,6 +143,8 @@ public class BackupVerifyProcessTests
         public IDockerEngine? EngineFor(string host) => engine;
         public Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct)
             => Task.FromResult(Result.Success());
+        public Task<Result> RemoveRestoreJobsAsync(string cluster, string shard, CancellationToken ct)
+            => Task.FromResult(Result.Success());
         public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<HostInfo>>.Success(
                 (IReadOnlyList<HostInfo>)[new HostInfo("h1", 0)]));

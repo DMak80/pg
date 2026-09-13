@@ -388,11 +388,20 @@ internal static class Fakes
         // t02: чистка джобов бэкапов (D2) — фейк помнит вызов, движки не нужны.
         public bool RemoveBackupJobsCalled { get; private set; }
 
+        // t05: чистка restore-джобов шарда (remove-shard) — помним вызовы.
+        public List<(string Cluster, string Shard)> RemovedRestoreJobs { get; } = [];
+
         public IDockerEngine? EngineFor(string host) => null;
 
         public Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct)
         {
             RemoveBackupJobsCalled = true;
+            return Task.FromResult(Result.Success());
+        }
+
+        public Task<Result> RemoveRestoreJobsAsync(string cluster, string shard, CancellationToken ct)
+        {
+            RemovedRestoreJobs.Add((cluster, shard));
             return Task.FromResult(Result.Success());
         }
     }

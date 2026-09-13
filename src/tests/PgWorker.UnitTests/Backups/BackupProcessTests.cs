@@ -216,6 +216,9 @@ public class BackupProcessTests
         public Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct)
             => Task.FromResult(Result.Success());
 
+        public Task<Result> RemoveRestoreJobsAsync(string cluster, string shard, CancellationToken ct)
+            => Task.FromResult(Result.Success());
+
         private static NotSupportedException NotSupported() => new("не используется в тестах бэкапов");
 
         public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct) => throw NotSupported();
@@ -411,20 +414,60 @@ public class BackupProcessTests
         rig.Engine.Created.Should().BeEmpty();
     }
 
-    // AAA: свежий COMPLETED — не due, новых записей нет, но гвард backup_exec
-    // исполнен (G2 — каждый тик, до due-гвардов; spec §3.1, ревью Ф4 finding 1)
+    // AAA: restore-гвард (t05 §3.4) — шард с активной restore-заявкой при due-
+    // условиях новый полный НЕ планирует (шард демонтируется restore-процессом,
+    // контуры бэкапов его не трогают)
+    [Fact]
+    public async Task ActiveRestore_SkipsShard_NoNewFull()
+    {
+        // Arrange — COMPLETED давно (due по возрасту) + PLANNED restore шарда
+        var rig = await NewRig();
+        var now = TimeProvider.System.GetUtcNow();
+        var old = new FullBackupState("20260908030000Z", FullBackupStatus.Completed,
+            "shard1a", BackupSourceRole.Master, Unix(now.AddDays(-2)),
+            Unix(now.AddDays(-2).AddMinutes(5)), null, null, null, null);
+        var restoring = new ShardBackups([old], null,
+            [new RestoreOperationState("20260910025900Z", RestoreStatus.Planned,
+                "", "shop/shard1", "latest", "shard1a", Unix(now), "operator")]);
+        IReadOnlyList<ClusterBackups> backups =
+            [new ClusterBackups("shop", null,
+                new Dictionary<string, ShardBackups> { ["shard1"] = restoring })];
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
+
+        // Assert — тик Done, новых полных и джобов нет (гвард сработал до due)
+        outcome.IsSuccess.Should().BeTrue();
+        rig.Etcd.Store.Keys.Should().NotContain(k => k.StartsWith("/pgworker/backups/shop/shard1/full/"));
+        rig.Engine.Created.Should().BeEmpty();
+    }
+
+    // AAA: свежий COMPLETED + живой wal-ключ — не due, новых записей нет, но
+    // гвард backup_exec исполнен (G2 — каждый тик, до due-гвардов; spec §3.1,
+    // ревью Ф4 finding 1). t05 §3.5: без wal-ключа свежий полный — уже due
+    // (инвариант цепочки), поэтому «не due» обязан включать живой ключ.
     [Fact]
     public async Task FreshCompleted_NotDue_RoleStillEnsured()
     {
-        // Arrange — COMPLETED час назад при пороге 86400
+        // Arrange — COMPLETED час назад + активный wal-поток (цепочка жива)
         var rig = await NewRig();
         var now = TimeProvider.System.GetUtcNow();
         var completed = new FullBackupState("20260908030000Z", FullBackupStatus.Completed,
             "shard1a", BackupSourceRole.Master, Unix(now.AddHours(-1).AddMinutes(-5)),
             Unix(now.AddHours(-1)), "000000010000000000000042", 1048576, null, null);
+        var wal = new WalStreamState(WalStreamStatus.Active, "slot_shop_shard1", "shard1a",
+            "000000010000000000000042", "000000010000000000000043", "000000010000000000000043",
+            Unix(now), null, null);
+        var backups = new IReadOnlyList<ClusterBackups>[]
+        {
+            [new ClusterBackups("shop", null, new Dictionary<string, ShardBackups>
+            {
+                ["shard1"] = new([completed], wal),
+            })],
+        }[0];
 
         // Act
-        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), BackupsOf(completed), CancellationToken.None);
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
 
         // Assert — новых записей НЕТ; гвард исполнен; тик Done
         outcome.IsSuccess.Should().BeTrue();

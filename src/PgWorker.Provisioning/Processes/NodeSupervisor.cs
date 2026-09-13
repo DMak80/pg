@@ -42,9 +42,20 @@ public sealed class NodeSupervisor(
     /// процессы — синглтоны DI, кластеры обрабатываются параллельно, и общее
     /// mutable-свойство перезаписывалось бы тиками чужих кластеров (rework №1).
     /// </summary>
-    public async Task<Result<SuperviseOutcome>> TickAsync(ClusterSnapshot snap, CancellationToken ct)
+    public async Task<Result<SuperviseOutcome>> TickAsync(
+        ClusterSnapshot snap, IReadOnlyList<ClusterBackups>? backups, CancellationToken ct)
     {
         var cluster = snap.Config.Cluster;
+
+        // t05 §3.4 гвард-множество: шарды с активной restore-заявкой
+        // (PLANNED/RUNNING/REJOINING) — надзор их НЕ трогает (шард демонтируется
+        // restore-процессом; пробы/rebuild/TO_RECREATE/deadShards-кандидат — мимо).
+        var restoring = new HashSet<string>();
+        if (backups?.FirstOrDefault(b => b.Cluster == cluster) is { } mineBackups)
+            foreach (var (restoreShard, sb) in mineBackups.Shards)
+                if (sb.Restores.Any(r => r.State
+                        is RestoreStatus.Planned or RestoreStatus.Running or RestoreStatus.Rejoining))
+                    restoring.Add(restoreShard);
 
         // Мутации — только держателем живого клэйма (инвариант spec §4.3).
         if (!claims.IsMine(cluster))
@@ -57,7 +68,11 @@ public sealed class NodeSupervisor(
 
         // 1) Сверка декларации: каждой плановой ноде — контейнер/сервис по имени;
         //    снесённый руками пересоздаётся (декларативное самовосстановление).
-        var declared = await EnsureDeclaredNodesAsync(cluster, snap, addresses.Value, ct);
+        //    t05: шарды в restore исключены (EnsureNode поднял бы снесённое обратно).
+        var declaredSnap = restoring.Count == 0
+            ? snap
+            : snap with { Shards = snap.Shards.Where(s => !restoring.Contains(s.Name)).ToList() };
+        var declared = await EnsureDeclaredNodesAsync(cluster, declaredSnap, addresses.Value, ct);
         if (!declared.IsSuccess)
             return Fail(declared.Error!);
 
@@ -90,6 +105,11 @@ public sealed class NodeSupervisor(
             // пробы/UNREACHABLE-переходы не трогаем (state нод — вход A1-гварда
             // add: ожидаемы только NOT_INITIALIZED/PROVISIONING).
             if (shard.Dsn is null)
+                continue;
+
+            // t05 §3.4: шард в restore — не пробы/не rebuild/не deadShards-кандидат
+            // (не «считает ShardDeadSec» — демонтажём владеет restore-процесс).
+            if (restoring.Contains(shard.Name))
                 continue;
 
             // Operator-triggered recreate (TO_RECREATE): оператор панелью просит
@@ -160,6 +180,8 @@ public sealed class NodeSupervisor(
         {
             if (shard.Dsn is null)
                 continue;
+            if (restoring.Contains(shard.Name))
+                continue; // t05 §3.4: конфиг DCS восстановит свежеподнятая нода
             var converged = await ConvergeDcsConfigAsync(cluster, shard, addresses.Value, track, ct);
             if (!converged.IsSuccess)
                 return Fail(converged.Error!);

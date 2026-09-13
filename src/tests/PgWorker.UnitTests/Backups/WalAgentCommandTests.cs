@@ -64,14 +64,20 @@ public class WalAgentCommandTests
     }
 
     [Fact]
-    public void Build_умирает_при_смерти_pg_receivewal()
+    public void Build_переживает_смерть_pg_receivewal_переподключением()
     {
-        // Arrange / Act — смерть приёмника обязана гасить контейнер (restart-контур
-        // супервиза: exited/restarting → пересоздание воркером)
+        // Arrange / Act — обрыв приёмника (рестарт PG мастера при смене
+        // sync-standby, сеть) — штатное событие (t05-регресс 2026-09-13: смерть
+        // pg_receivewal на незакрытом сегменте оставляла его .partial в staging
+        // навсегда — невосстановимая дыра): контейнер переподключает приёмник,
+        // слот продолжает с restart_lsn, хвост staging доставляется
         var script = WalAgentCommand.Build()[2];
 
-        // Assert
-        script.Should().Contain("kill -0").And.Contain("wait");
+        // Assert — внешний цикл + stderr-строка о смерти + доставка хвоста;
+        // гашение контейнера — только переполнение staging (exit 4)
+        script.Should().Contain("pg_receivewal exited (rc=$RC)").And.Contain("переподключение");
+        script.Should().Contain("deliver");
+        script.Should().Contain("exit 4");
     }
 
     [Fact]
