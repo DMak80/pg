@@ -170,6 +170,11 @@ public sealed class BackupProcess(
             // последней restore — WalStream восстанавливает ключ быстрее тика,
             // инцидент E2E-гейта t05; t07: BROKEN wal-ключа — пересъём безусловно)
             // и после бэкоффа.
+            // t07 (прогон 2026-09-13, arch/19 §2): BROKEN-пересъём — только пока
+            // разрыв НЕ покрыт: COMPLETED-полный с wal_start ≥ границы разрыва
+            // (chain_start BROKEN-записи) уже ждёт заживления контролем (§3),
+            // повторный пересъём поверх — шторм (12 полных за 2 мин) без пользы.
+            // Не покрывший (FAILED/ниже границы) — due, общий бэкофф как раньше.
             if (BackupPlanner.HasActive(fulls))
                 continue; // инвариант одного активного — новый не создаём
             var lastRestoreFinished = shardBackups?.Restores
@@ -178,9 +183,16 @@ public sealed class BackupProcess(
                 .OrderByDescending(f => f)
                 .Cast<long?>()
                 .FirstOrDefault();
+            var brokenBoundary = shardBackups?.Wal is { State: WalStreamStatus.Broken } brokenWal
+                ? brokenWal.ChainStartSegment
+                : null;
+            var breakCovered = brokenBoundary is { Length: > 0 } boundary
+                && fulls.Any(f => f.State == FullBackupStatus.Completed
+                    && f.WalStartSegment is { Length: > 0 } walStart
+                    && string.CompareOrdinal(walStart, boundary) >= 0);
             if (!BackupPlanner.IsDue(fulls, walKeyExists: shardBackups?.Wal is not null,
                     fullMaxAgeSec, nowUnix, lastRestoreFinished,
-                    walChainBroken: shardBackups?.Wal is { State: WalStreamStatus.Broken }))
+                    walChainBroken: brokenBoundary is not null && !breakCovered))
                 continue;
             if (!BackupPlanner.BackoffPassed(fulls, options.RetryBaseSec, options.RetryMaxSec, nowUnix))
                 continue; // бэкофф переснятия FAILED — следующий тик
