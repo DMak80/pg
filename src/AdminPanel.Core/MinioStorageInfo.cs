@@ -31,7 +31,7 @@ public sealed record MinioClusterNode(
     string Cluster, long SizeBytes, IReadOnlyList<MinioShardNode> Shards);
 
 /// <summary>Агрегат одного прогона list-v2 всего bucket (MinioInventory.Build).</summary>
-public sealed record MinioInventory(
+public sealed partial record MinioInventory(
     IReadOnlyList<MinioClusterNode> Clusters, long UsedBytes, long ObjectCount,
     IReadOnlyList<string> Buckets, IReadOnlyList<string> ForeignPrefixes);
 
