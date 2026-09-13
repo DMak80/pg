@@ -25,7 +25,17 @@ public sealed record ClusterBackupsInfo(
     // невалидных полных нет.
     IReadOnlyDictionary<string, ShardVerifyFailure>? ShardVerifyFailures = null,
     // t05: restore-заявки per-shard (вход правила restore-failed).
-    IReadOnlyDictionary<string, IReadOnlyList<RestoreOperationInfo>>? ShardsRestores = null);
+    IReadOnlyDictionary<string, IReadOnlyList<RestoreOperationInfo>>? ShardsRestores = null,
+    // t08: все etcd-полные per-shard — вход MinioReconciler; null = парсер t08
+    // их не собрал.
+    IReadOnlyDictionary<string, IReadOnlyList<BackupFullInfo>>? ShardsFulls = null);
+
+/// <summary>Один etcd-ключ полного /pgworker/backups/&lt;C&gt;/&lt;X&gt;/full/&lt;id&gt; (t08):
+/// полный факт state/verify/size для сверки с S3 и деталей шарда.</summary>
+public sealed record BackupFullInfo(
+    string Id, string State, string? Error,
+    long StartedUnix, long? FinishedUnix, long? SizeBytes,
+    string? VerifyState, long? VerifyCheckedUnix, string? VerifyError);
 
 /// <summary>DELETING-полный (t06): возраст для backup-deleting-stuck.</summary>
 public sealed record DeletingFullInfo(string Id, long StartedUnix, long? FinishedUnix);
@@ -42,3 +52,33 @@ public sealed record RestoreOperationInfo(
     long? StartedUnix,
     long? FinishedUnix,
     string? Phase);
+
+/// <summary>Статус одного полного в сверке S3↔etcd (t08, arch/02 §2.5):
+/// Ok — объекты+ключ; S3Only — объекты без ключа; EtcdOnly — ключ без объектов
+/// (COMPLETED/FAILED); InProgress — активный PLANNED/RUNNING/UPLOADING без
+/// объектов (ожидаемо); Deleting — DELETING-ключ + остатки объектов.</summary>
+public enum BackupFullReconcileStatus { Ok, S3Only, EtcdOnly, InProgress, Deleting }
+
+public sealed record BackupFullReconcile(
+    string Cluster, string Shard, string Id,
+    BackupFullReconcileStatus Status,
+    long? SizeBytes, long? ObjectCount, long? LastModifiedUnix, // S3-факт (null — объектов нет)
+    string? EtcdState, string? VerifyState, long? EtcdSizeBytes); // etcd-факт (null — ключа нет)
+
+/// <summary>Сирота по сверке ПАНЕЛИ (префикс &lt;C&gt;/&lt;X&gt; без владельца в /clusters/):
+/// рядом — факт реестра воркера (InWorkerRegistry/RegistryState/FirstSeenUnix).</summary>
+public sealed record BackupOrphanPrefix(
+    string Prefix, string Kind, long SizeBytes,
+    bool InWorkerRegistry, string? RegistryState, long? FirstSeenUnix);
+
+/// <summary>WAL-сверка — только факты, без вердикта (spec §4.4).</summary>
+public sealed record BackupWalReconcile(
+    string Cluster, string Shard,
+    string? EtcdLastSegment, long? EtcdLastUnix,
+    string? S3LastObject, long? S3LastModifiedUnix);
+
+/// <summary>Итог MinioReconciler.Reconcile — чистая функция над снапшотом.</summary>
+public sealed record BackupReconcileInfo(
+    IReadOnlyList<BackupFullReconcile> Fulls,
+    IReadOnlyList<BackupOrphanPrefix> OrphanPrefixes,
+    IReadOnlyList<BackupWalReconcile> Wal);
