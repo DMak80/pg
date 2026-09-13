@@ -8,7 +8,9 @@ public sealed record BackupsParseResult(
     IReadOnlyList<ClusterBackupsInfo> Clusters,
     IReadOnlyList<KeyParseError> Errors,
     // t06: глобальный ключ /pgworker/backups/storage (null — ключа нет/битый).
-    BackupStorageInfo? Storage = null);
+    BackupStorageInfo? Storage = null,
+    // t07: глобальный ключ /pgworker/backups/orphans (null — ключа нет/битый).
+    BackupOrphansInfo? Orphans = null);
 
 // Чистая функция: KV префикса /pgworker/backups/ (arch/19 §4, t02+t03):
 // policy full_max_age_sec + per-shard последний COMPLETED finished_unix
@@ -32,6 +34,7 @@ public static class BackupsParser
         var deleting = new Dictionary<string, Dictionary<string, List<DeletingFullInfo>>>();
         var restores = new Dictionary<string, Dictionary<string, List<RestoreOperationInfo>>>();
         BackupStorageInfo? storage = null;
+        BackupOrphansInfo? orphans = null;
         var verifyFailures = new Dictionary<string, Dictionary<string, ShardVerifyFailure>>();
         var errors = new List<KeyParseError>();
         foreach (var kv in kvs)
@@ -65,6 +68,60 @@ public static class BackupsParser
                 catch (JsonException e)
                 {
                     errors.Add(new(kv.Key, $"битый JSON storage: {e.Message}"));
+                }
+
+                continue;
+            }
+
+            // Глобальный ключ /pgworker/backups/orphans (t07): реестр сирот S3 —
+            // 4 сегмента; формат arch/19 §4 (записи prefix/kind/size_bytes/
+            // first_seen_unix/state OBSERVED|DELETING). Битая запись → KeyParseError
+            // на весь ключ (частичный реестр — ложные алерты).
+            if (segments.Length == 4 && segments[3] == "orphans")
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(kv.Value);
+                    var root = doc.RootElement;
+                    var updated = root.ValueKind == JsonValueKind.Object
+                        ? Long(root, "updated_unix") : null;
+                    if (updated is null
+                        || !root.TryGetProperty("orphans", out var list)
+                        || list.ValueKind != JsonValueKind.Array)
+                    {
+                        errors.Add(new(kv.Key, "битый ключ orphans (orphans/updated_unix)"));
+                    }
+                    else
+                    {
+                        var entries = new List<BackupOrphanInfo>();
+                        var malformed = false;
+                        foreach (var item in list.EnumerateArray())
+                        {
+                            var prefix = String(item, "prefix");
+                            var kind = String(item, "kind");
+                            var size = Long(item, "size_bytes");
+                            var seen = Long(item, "first_seen_unix");
+                            var state = String(item, "state");
+                            if (prefix is null || kind is null || size is null || seen is null
+                                || state is not ("OBSERVED" or "DELETING"))
+                            {
+                                malformed = true;
+                                break;
+                            }
+
+                            entries.Add(new BackupOrphanInfo(prefix, kind, size.Value, seen.Value, state));
+                        }
+
+                        if (malformed)
+                            errors.Add(new(kv.Key,
+                                "битая запись сироты (prefix/kind/size_bytes/first_seen_unix/state)"));
+                        else
+                            orphans = new BackupOrphansInfo(entries, updated.Value);
+                    }
+                }
+                catch (JsonException e)
+                {
+                    errors.Add(new(kv.Key, $"битый JSON orphans: {e.Message}"));
                 }
 
                 continue;
@@ -309,7 +366,7 @@ public static class BackupsParser
                             .OrderBy(r => r.Id, StringComparer.Ordinal).ToList())
                     : new Dictionary<string, IReadOnlyList<RestoreOperationInfo>>())))
             .ToList();
-        return new(clusters, errors, storage);
+        return new(clusters, errors, storage, orphans);
     }
 
     private static WalStreamInfoState? StateOf(string? raw) => raw switch
@@ -317,6 +374,7 @@ public static class BackupsParser
         "ACTIVE" => WalStreamInfoState.Active,
         "DEGRADED" => WalStreamInfoState.Degraded,
         "STOPPED" => WalStreamInfoState.Stopped,
+        "BROKEN" => WalStreamInfoState.Broken,
         _ => null,
     };
 

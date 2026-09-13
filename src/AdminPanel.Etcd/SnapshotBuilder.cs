@@ -34,5 +34,6 @@ public static class SnapshotBuilder
             [],
             [.. clusters.Errors, .. service.Errors, .. moves.Errors, .. backups.Errors, .. pgWorkerEndpoints.Errors, .. work.Errors],
             clusters.UnknownKeyCount + service.UnknownKeyCount,
-            backups.Storage); // /pgworker/backups/storage (t06)
+            backups.Storage, // /pgworker/backups/storage (t06)
+            backups.Orphans); // /pgworker/backups/orphans (t07)
 }

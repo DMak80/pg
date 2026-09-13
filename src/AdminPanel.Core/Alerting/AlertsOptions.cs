@@ -47,5 +47,10 @@ public class AlertsOptions
     public sealed class BackupsAlertsOptions
     {
         public int DeletingStaleSec { get; set; } = 21600; // 6 ч
+
+        // backup-orphan (t07): TTL сирот S3 — синхронизирован с воркерным
+        // Supervisor:OrphanTtlSec (паттерн WalLagMaxSegments); 0 — в панели
+        // «удаление вручную» (воркер авто-удаление не выполняет).
+        public long OrphanTtlSec { get; set; } = 604800; // 7 сут
     }
 }

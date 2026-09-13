@@ -232,7 +232,8 @@ public sealed class SnapshotRefresher(
             [],
             previous?.ParseErrors ?? [],
             previous?.UnknownKeyCount ?? 0,
-            previous?.BackupStorage); // ключ storage переживает отказный тик — как Backups (t06)
+            previous?.BackupStorage, // ключ storage переживает отказный тик — как Backups (t06)
+            previous?.BackupOrphans); // реестр сирот переживает отказный тик — как storage (t07)
 
         // Алерты вычисляются и на отказном тике: etcd-unreachable/snapshot-stale
         // живут именно здесь (spec §3.5); data-алерты пересчитываются по прежним данным.
