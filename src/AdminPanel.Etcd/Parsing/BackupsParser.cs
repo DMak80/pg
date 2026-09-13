@@ -33,6 +33,8 @@ public static class BackupsParser
         var wal = new Dictionary<string, Dictionary<string, WalStreamInfo?>>();
         var deleting = new Dictionary<string, Dictionary<string, List<DeletingFullInfo>>>();
         var restores = new Dictionary<string, Dictionary<string, List<RestoreOperationInfo>>>();
+        // t08: все etcd-полные per-shard (вход MinioReconciler и деталей шарда).
+        var fulls = new Dictionary<string, Dictionary<string, List<BackupFullInfo>>>();
         BackupStorageInfo? storage = null;
         BackupOrphansInfo? orphans = null;
         var verifyFailures = new Dictionary<string, Dictionary<string, ShardVerifyFailure>>();
@@ -185,7 +187,8 @@ public static class BackupsParser
                         String(root, "master_node") ?? "",
                         unix.Value,
                         Long(root, "lag_segments"),
-                        String(root, "error"));
+                        String(root, "error"),
+                        String(root, "last_uploaded_segment"));
                 }
                 catch (JsonException e)
                 {
@@ -264,6 +267,7 @@ public static class BackupsParser
                         // считается непроверенной (валидной); PENDING/OK → валиден.
                         long? checkedUnix = null;
                         string? verifyError = null;
+                        string? verifyState = null;
                         var verifyFailed = false;
                         if (root.TryGetProperty("verify", out var verifyEl)
                             && verifyEl.ValueKind == JsonValueKind.Object
@@ -271,12 +275,33 @@ public static class BackupsParser
                         {
                             checkedUnix = Long(verifyEl, "checked_unix");
                             verifyError = String(verifyEl, "error");
+                            verifyState = verifyStateEl.ValueKind == JsonValueKind.String
+                                ? verifyStateEl.GetString()
+                                : null;
                             verifyFailed = verifyStateEl.ValueKind == JsonValueKind.String
                                            && verifyStateEl.GetString() == "FAILED";
                             if (!verifyFailed && verifyStateEl.ValueKind == JsonValueKind.String
                                 && verifyStateEl.GetString() is not ("OK" or "PENDING"))
                                 errors.Add(new(kv.Key, "неизвестное verify.state — verify игнор"));
                         }
+
+                        // t08: полный факт per-full (BackupFullInfo) — state читается
+                        // КАК ЕСТЬ (панель — толерантный читатель, писатель — воркер,
+                        // незнакомые state'ы терпимы); новой валидации/пути отказа нет.
+                        if (!fulls.TryGetValue(cluster, out var perShardFulls))
+                            fulls[cluster] = perShardFulls = [];
+                        if (!perShardFulls.TryGetValue(segments[4], out var fullList))
+                            perShardFulls[segments[4]] = fullList = [];
+                        fullList.Add(new BackupFullInfo(
+                            segments[6],
+                            state.GetString()!,
+                            String(root, "error"),
+                            Long(root, "started_unix") ?? 0,
+                            Long(root, "finished_unix"),
+                            Long(root, "size_bytes"),
+                            verifyState,
+                            checkedUnix,
+                            verifyError));
 
                         if (state.GetString() == "COMPLETED"
                             && root.TryGetProperty("finished_unix", out var finished)
@@ -364,7 +389,14 @@ public static class BackupsParser
                         p => p.Key,
                         p => (IReadOnlyList<RestoreOperationInfo>)p.Value
                             .OrderBy(r => r.Id, StringComparer.Ordinal).ToList())
-                    : new Dictionary<string, IReadOnlyList<RestoreOperationInfo>>())))
+                    : new Dictionary<string, IReadOnlyList<RestoreOperationInfo>>()),
+                // t08: etcd-полные per-shard (пусто → null — парсер их не собрал)
+                fulls.TryGetValue(c, out var perShardFulls) && perShardFulls.Count > 0
+                    ? perShardFulls.ToDictionary(
+                        p => p.Key,
+                        p => (IReadOnlyList<BackupFullInfo>)p.Value
+                            .OrderBy(f => f.Id, StringComparer.Ordinal).ToList())
+                    : null))
             .ToList();
         return new(clusters, errors, storage, orphans);
     }
