@@ -147,7 +147,8 @@ public sealed class BackupProcess(
             // G3: новый полный — только без активного, при due (возраст ИЛИ
             // отсутствие wal-ключа после restore, t05 §3.5, ИЛИ полный старее
             // последней restore — WalStream восстанавливает ключ быстрее тика,
-            // инцидент E2E-гейта t05) и после бэкоффа.
+            // инцидент E2E-гейта t05; t07: BROKEN wal-ключа — пересъём безусловно)
+            // и после бэкоффа.
             if (BackupPlanner.HasActive(fulls))
                 continue; // инвариант одного активного — новый не создаём
             var lastRestoreFinished = shardBackups?.Restores
@@ -157,7 +158,8 @@ public sealed class BackupProcess(
                 .Cast<long?>()
                 .FirstOrDefault();
             if (!BackupPlanner.IsDue(fulls, walKeyExists: shardBackups?.Wal is not null,
-                    fullMaxAgeSec, nowUnix, lastRestoreFinished))
+                    fullMaxAgeSec, nowUnix, lastRestoreFinished,
+                    walChainBroken: shardBackups?.Wal is { State: WalStreamStatus.Broken }))
                 continue;
             if (!BackupPlanner.BackoffPassed(fulls, options.RetryBaseSec, options.RetryMaxSec, nowUnix))
                 continue; // бэкофф переснятия FAILED — следующий тик

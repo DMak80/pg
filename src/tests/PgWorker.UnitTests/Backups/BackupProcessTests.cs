@@ -477,6 +477,41 @@ public class BackupProcessTests
         guard.Sql.Should().Contain("backup_exec");
     }
 
+    // AAA (AC1): wal-ключ BROKEN → планировщик создаёт новый полный, даже если
+    // последний COMPLETED свежий (инвариант одного активного/бэкофф — как всегда)
+    [Fact]
+    public async Task Тик_при_BROKEN_wal_планирует_пересъём()
+    {
+        // Arrange — свежий COMPLETED (5 мин назад) + wal-ключ BROKEN; джобов нет
+        var rig = await NewRig();
+        var now = TimeProvider.System.GetUtcNow();
+        var completed = new FullBackupState("20260908030000Z", FullBackupStatus.Completed,
+            "shard1a", BackupSourceRole.Master, Unix(now.AddMinutes(-6)),
+            Unix(now.AddMinutes(-5)), "000000010000000000000042", 1048576, null, null);
+        var brokenWal = new WalStreamState(WalStreamStatus.Broken, "slot_shop_shard1", "shard1a",
+            "000000010000000000000042", "000000010000000000000042", "000000010000000000000042",
+            Unix(now.AddMinutes(-30)), null, "дыра WAL-цепочки");
+        var backups = new IReadOnlyList<ClusterBackups>[]
+        {
+            [new ClusterBackups("shop", null, new Dictionary<string, ShardBackups>
+            {
+                ["shard1"] = new([completed], brokenWal),
+            })],
+        }[0];
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
+
+        // Assert — появился новый полный (PLANNED/RUNNING) с ДРУГИМ id:
+        // BROKEN лечится пересъёмом независимо от свежести полного (spec §3.2)
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        var fullKeys = rig.Etcd.Store.Keys
+            .Where(k => k.StartsWith("/pgworker/backups/shop/shard1/full/")).ToList();
+        fullKeys.Should().ContainSingle("новый полный запланирован");
+        fullKeys.Single().Should().NotContain("20260908030000Z", "id новый — не переснятый старый");
+        rig.Engine.Created.Should().NotBeEmpty("джоб пересъёма запущен");
+    }
+
     // AAA: недавний FAILED — бэкофф (Base=300 > 100 c) держит, новой попытки нет
     [Fact]
     public async Task FailedRecent_BackoffBlocks()
