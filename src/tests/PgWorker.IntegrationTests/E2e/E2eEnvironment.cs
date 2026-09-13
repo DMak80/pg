@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Security.Cryptography.X509Certificates;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
@@ -58,6 +59,12 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private readonly INetwork _net;
     private readonly IContainer? _minio;
 
+    // Политика телеметрии E2E (docs/e2e-launch.md): упавший сценарий помечается
+    // MarkFailed() — teardown тогда НЕ удаляет docker-объекты окружения, а
+    // ОСТАНАВЛИВАЕТ контейнеры (тома/сети/etcd остаются): логи «что произошло»
+    // доступны до зачистки. Перезапуск теста для выяснения причин запрещён.
+    private bool _failed;
+
     // Идентификатор прогона: полный guid — в именах сети/etcd/MinIO; тег (8 hex)
     // — в имени кластера сценария. Имена ВСЕХ движковых контейнеров/томов
     // содержат имя кластера (pgw-<C>-*, pgw-backup-*-<C>-*, pgw-backup-wal-<C>-*),
@@ -94,9 +101,22 @@ public sealed class E2eEnvironment : IAsyncDisposable
         S3Endpoint = minio is null
             ? ""
             : $"http://host.docker.internal:{minio.GetMappedPublicPort(9000)}";
+        ArtifactsDir = Path.Combine(Path.GetTempPath(), $"pgw-e2e-artifacts-{runId}");
+        Directory.CreateDirectory(ArtifactsDir);
     }
 
     public string Slug { get; }
+
+    /// <summary>Каталог телеметрии прогона (docs/e2e-launch.md): docker-логи
+    /// контейнеров (снимаются ПЕРЕД любым удалением), inspect'ы, host.log'ы
+    /// воркеров, отметки медленных фаз. Живёт в tmp после прогона — данные для
+    /// отчёта «что произошло»; чистится пользователем, не тестом.</summary>
+    public string ArtifactsDir { get; }
+
+    /// <summary>Пометка упавшего сценария: teardown остановит контейнеры, но не
+    /// удалит их/тома/сети/etcd — разбор по живым объектам, зачистка вручную
+    /// командами из artifacts/README-cleanup.txt. Вызывается в catch сценария.</summary>
+    public void MarkFailed() => _failed = true;
 
     /// <summary>etcd окружения: published порт на хосте (зонд свободного порта),
     /// advertise для контейнеров — host.docker.internal на тот же порт.</summary>
@@ -327,7 +347,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             ["PgWorker__Loops__SnapshotIntervalMin"] = snapshotIntervalMin.ToString(),
             ["PgWorker__Thresholds__NodeDeadSec"] = "6",
             ["PgWorker__Thresholds__ShardDeadSec"] = "5",
-            ["PgWorker__Thresholds__PatroniBootSec"] = "600",
+            ["PgWorker__Thresholds__PatroniBootSec"] = "300",
 
             // Переезды (t01): spilo-18 → FailoverSlots=true (штатный путь PG17+,
             // R1/Д11); короткие паузы заморозки/поллинга — окно FROZEN в e2e
@@ -439,16 +459,24 @@ public sealed class E2eEnvironment : IAsyncDisposable
         => E2eFixture.RunProcessAsync("docker", args, ct);
 
     /// <summary>
-    /// Полный teardown при ЛЮБОМ исходе: kill воркеров → stop/rm контейнеров
-    /// → rm томов → rm сети окружения → rm сети движка pgw-net (попытка, она
-    /// общесистемная) → АССЕРТ ЧИСТОТЫ: не осталось ни одного КОНТЕЙНЕРА/ТОМА/
-    /// СЕТИ СВОЕГО окружения (опознание по идентификатору прогона: guid в именах
-    /// инфраструктуры, тег кластера — в движковых именах). Чужие pgw-* объекты
-    /// параллельных прогонов не трогаем и в ассерт не включаем.
+    /// Полный teardown при ЛЮБОМ исходе. Политика телеметрии (docs/e2e-launch.md):
+    /// 0) ДО любых удалений — docker-логи/inspect всех своих контейнеров и
+    /// host.log'ы воркеров копируются в ArtifactsDir («что произошло» отвечает
+    /// по логам, без перезапуска теста). 1) kill воркеров. 2) Упавший сценарий
+    /// (_failed): контейнеры (вкл. etcd/MinIO) ОСТАНАВЛИВАЮТСЯ, тома/сети/etcd
+    /// остаются до ручной зачистки (README-cleanup.txt) — перезапуск теста ради
+    /// логов запрещён. Успешный сценарий: 3) stop/rm контейнеров → 4) rm томов
+    /// → 5) rm сети окружения → 6) rm сети движка pgw-net (попытка) → 7) АССЕРТ
+    /// ЧИСТОТЫ: не осталось ни одного КОНТЕЙНЕРА/ТОМА/СЕТИ СВОЕГО окружения
+    /// (опознание по идентификатору прогона). Чужие pgw-* не трогаются.
     /// </summary>
     public async ValueTask DisposeAsync()
     {
         var problems = new List<string>();
+
+        // 0) Телеметрия прежде удалений — снимается при ЛЮБОМ исходе: полные
+        // логи обязаны быть и на зелёном прогоне (отчёт по фазам > 60 с).
+        await CollectDiagnosticsAsync(_failed ? "failed" : "teardown");
 
         // 1) Воркеры окружения (идемпотентно: сценарий мог уже disposed-ить).
         foreach (var host in _hosts)
@@ -460,6 +488,13 @@ public sealed class E2eEnvironment : IAsyncDisposable
             {
                 problems.Add($"воркер {host.Name}: {e.Message}");
             }
+
+        // 2) Упавший сценарий: стоп, не удаление (данные для отчёта живы).
+        if (_failed)
+        {
+            await FailedTearDownAsync(problems);
+            return;
+        }
 
         // 2) etcd и MinIO (testcontainers: stop + rm; ключи умирают вместе с etcd).
         try
@@ -575,6 +610,126 @@ public sealed class E2eEnvironment : IAsyncDisposable
             .Split(['\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(OwnName)
             .ToList();
+
+    // ===== Телеметрия (docs/e2e-launch.md) =====
+
+    /// <summary>Сбор состояния окружения в ArtifactsDir: docker logs+inspect
+    /// каждого СВОЕГО контейнера, host.log'ы воркеров. Вызывается при каждом
+    /// teardown'е (логи живут дольше контейнеров) и на медленных фазах &gt; 60 с.
+    /// Ошибки сбора не роняют teardown — логи «лучшими усилиями».</summary>
+    public async Task CollectDiagnosticsAsync(string reason)
+    {
+        try
+        {
+            Directory.CreateDirectory(ArtifactsDir);
+            var stamp = DateTime.UtcNow.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+            await File.WriteAllTextAsync(
+                Path.Combine(ArtifactsDir, $"{stamp}-{reason}.txt"),
+                $"reason={reason}\nslug={Slug}\nrun={_runId}\nutc={DateTime.UtcNow:O}\n"
+                + $"failed={_failed}\n");
+
+            foreach (var row in (await E2eFixture.RunProcessAsync(
+                         "docker", ["ps", "-a", "--format", "{{.ID}}\t{{.Names}}"]))
+                     .Split(['\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                var parts = row.Split('\t', 2);
+                if (parts.Length < 2 || !OwnName(parts[1]))
+                    continue;
+                var (id, name) = (parts[0], parts[1]);
+                try
+                {
+                    await File.WriteAllTextAsync(
+                        Path.Combine(ArtifactsDir, $"container-{name}.log"),
+                        await E2eFixture.RunProcessAsync("docker", ["logs", "--timestamps", id]));
+                }
+                catch (Exception e)
+                {
+                    await File.WriteAllTextAsync(
+                        Path.Combine(ArtifactsDir, $"container-{name}.log"),
+                        $"logs unavailable: {e.Message}\n");
+                }
+
+                try
+                {
+                    await File.WriteAllTextAsync(
+                        Path.Combine(ArtifactsDir, $"container-{name}.json"),
+                        await E2eFixture.RunProcessAsync("docker", ["inspect", id]));
+                }
+                catch
+                {
+                    // inspect вторичен к логам — отсутствие не критично
+                }
+            }
+
+            foreach (var host in _hosts)
+                try
+                {
+                    File.Copy(
+                        Path.Combine(host.SnapshotsDir, "host.log"),
+                        Path.Combine(ArtifactsDir, $"host-{host.Name}.log"), overwrite: true);
+                }
+                catch
+                {
+                    // host.log мог не создаться (воркер не стартовал)
+                }
+
+            Console.Error.WriteLine($"e2e[{Slug}]: телеметрия «{reason}» → {ArtifactsDir}");
+        }
+        catch (Exception e)
+        {
+            Console.Error.WriteLine($"e2e[{Slug}]: сбор телеметрии «{reason}» не удался: {e.Message}");
+        }
+    }
+
+    // Teardown упавшего сценария: контейнеры (вкл. etcd/MinIO) останавливаются,
+    // тома/сети остаются — разбор по живым объектам и снятым логам; зачистка
+    // вручную по README-cleanup.txt (own-only, по идентификатору прогона).
+    private async Task FailedTearDownAsync(List<string> problems)
+    {
+        foreach (var id in await OwnContainersAsync())
+            try
+            {
+                await E2eFixture.RunProcessAsync("docker", ["stop", id]);
+            }
+            catch (Exception e)
+            {
+                problems.Add($"stop контейнера {id}: {e.Message}");
+            }
+
+        foreach (var container in new[] { _etcd, _minio })
+            try
+            {
+                if (container is not null)
+                    await container.StopAsync();
+            }
+            catch (Exception e)
+            {
+                problems.Add($"stop инфраструктуры: {e.Message}");
+            }
+
+        _gatewayHttp.Dispose();
+
+        var cleanup = """
+            Упавший E2E-сценарий — окружение ОСТАНОВЛЕНО, но НЕ удалено (разбор по месту).
+            Логи всех контейнеров сняты в этот каталог (container-*.log, host-*.log).
+            Перезапуск теста ради логов запрещён (docs/e2e-launch.md).
+            Зачистить, когда данные для отчёта больше не нужны:
+              docker rm -f $(docker ps -aq --filter name=__RUN__)
+              docker rm -f $(docker ps -aq --filter name=__TAG__)
+              docker volume rm -f $(docker volume ls -q --filter name=__TAG__)
+              docker network rm __NET__
+            """;
+        await File.WriteAllTextAsync(
+            Path.Combine(ArtifactsDir, "README-cleanup.txt"),
+            cleanup.Replace("__RUN__", _runId).Replace("__TAG__", ClusterTag).Replace("__NET__", NetName));
+
+        if (problems.Count > 0)
+            throw new ApplicationException(
+                $"{Slug}: stop-teardown упавшего сценария неполный:\n- " + string.Join("\n- ", problems));
+
+        Console.Error.WriteLine(
+            $"e2e[{Slug}]: FAILED — окружение остановлено и оставлено для разбора: {ArtifactsDir}");
+    }
 
     // ===== Статические ассеты: PKI, бинарь, образы =====
 
