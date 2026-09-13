@@ -161,9 +161,12 @@ public class E2eSupervisorScenarios
                         DatabaseProvisioner.BuildAdminDsn("localhost", port, cluster,
                             new InstallSecrets(E2eFixture.SuPassword, "", "", "")));
                     await conn.OpenAsync(ct);
+                    // ВАЖНО (прогон 2026-09-13, c344501d): параметр-строка без каста
+                    // даёт pg_wal_lsn_diff(pg_lsn, text) → 42883 на каждом опросе,
+                    // catch глотал — гейт «ждал» 300 с, не проверив ничего.
                     await using var cmd = new NpgsqlCommand(
                         "SELECT NOT pg_is_in_recovery() OR " +
-                        "pg_wal_lsn_diff(pg_last_wal_replay_lsn(), @lsn) >= 0", conn);
+                        "pg_wal_lsn_diff(pg_last_wal_replay_lsn(), @lsn::pg_lsn) >= 0", conn);
                     cmd.Parameters.AddWithValue("lsn", replayTarget);
                     if ((await cmd.ExecuteScalarAsync(ct)) is not true)
                         return false;
