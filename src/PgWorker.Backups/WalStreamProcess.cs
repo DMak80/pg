@@ -193,8 +193,8 @@ public sealed class WalStreamProcess(
     }
 
     // (4–5) Контейнер агента: создание идемпотентно (по образцу EnsureNode, без
-    // портов); супервиз: running → пропуск; exited/restarting → пересоздание
-    // (restart-луп: устаревшие креды/staging переполнен — включая transient-DEGRADED
+    // портов); супервиз: running → пропуск; exited → пересоздание (цикл
+    // пересоздания: устаревшие креды/staging переполнен — включая transient-DEGRADED
     // статуса: деградация тишины НЕ запирает restart-контур, ревью Ф4-2 №1);
     // смена мастера (резолв ≠ master_node статуса) → пересоздание с нового мастера.
     private async Task EnsureAgentAsync(
@@ -206,7 +206,12 @@ public sealed class WalStreamProcess(
         if (!listed.IsSuccess)
             throw new ApplicationException($"лист агентов: {listed.Error!.Message}");
         var agentName = BackupAgentNames.Container(cluster, shard);
-        var existing = listed.Value.FirstOrDefault(c => c.Names.Contains("/" + agentName));
+        // Канон движка — имена контейнеров БЕЗ ведущего "/" (ListContainersAsync
+        // trimит); матч обоих форматов: «/»-литерал — устаревший StubDriver-формат
+        // (t05-регресс 2026-09-13: существующий агент не находился — супервиз
+        // трактовал exited-агента как отсутствующий и не пересоздавал его).
+        var existing = listed.Value.FirstOrDefault(c =>
+            c.Names.Contains(agentName) || c.Names.Contains("/" + agentName));
 
         // Смена мастера: резолв разошёлся со статусом → пересоздание с нового мастера.
         var masterChanged = wal is not null && wal.MasterNode != masterRef;
@@ -234,7 +239,11 @@ public sealed class WalStreamProcess(
             Label: cluster,
             Cmd: WalAgentCommand.Build(),
             Network: null, // сеть назначает драйвер (pgw-net)
-            NetworkAliases: null);
+            NetworkAliases: null,
+            // Без рестарт-политики: смерть pg_receivewal = exited-контейнер, лупа
+            // docker нет (на снесённом мастере он молотил впустую); супервиз тика
+            // пересоздаёт агента со свежими env за ScanIntervalSec
+            RestartPolicy: "no");
 
         // Хост агента = docker-хост мастера (per-cluster сеть живёт на нём).
         var ensured = await driver.EnsureBackupAgentAsync(cluster, shard, spec, agentHost, ct);
@@ -364,7 +373,9 @@ public sealed class WalStreamProcess(
         if (chainStart is not { } start)
             return new ControlOutcome(wal, ChainBrokenOf(key));
 
-        var chain = WalChain.Check(start, objects.Select(o => o.Name));
+        // CheckWithRestart: после restore promote открывает новый TLI, старые
+        // сегменты обрезаны легитимно (AC4) — дыра на TLI-границе не деградация
+        var chain = WalChain.CheckWithRestart(start, objects.Select(o => o.Name));
         if (!chain.IsContinuous)
         {
             // Дыра: DEGRADED даже без прошлого ключа (AC4-тотальность) — DegradeAsync
