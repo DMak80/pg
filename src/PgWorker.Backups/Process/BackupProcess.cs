@@ -111,13 +111,27 @@ public sealed class BackupProcess(
 
             // pg_hba (arch/19 §7): Spilo разрешает replication-соединения только
             // роли standby — физический WAL-стриминг pg_basebackup для backup_exec
-            // отсекается («no pg_hba.conf entry for replication»). Гвард дополняет
-            // pg_hba.conf идемпотентно на всех нодах шарда (прецедент patch_hba,
-            // 00-up.sh): строка живёт в PGDATA-volume — переживает рестарты;
-            // reload — локальным psql (unix-socket, trust). Отказ — transient:
-            // шард skip, следующий тик дообеспечит (запуск на непатченной ноде
-            // карался бы FAILED-циклом с бэкоффом). Усвоенные ноды (object) —
-            // exec в их контейнер (pgw-имени у них нет).
+            // отсекается («no pg_hba.conf entry for replication»).
+            // Инцидент 2026-09-13: прежний гвард дописывал строку прямо в
+            // $PGDATA/pg_hba.conf (docker exec под root) — это ДВЕ дефекта:
+            // (1) exec под root в ноду, чей PGDATA pg_basebackup ещё копирует
+            //     (Patroni REST отвечает уже в фазе «creating replica», нода
+            //     получает state=RUNNING до конца bootstrap), создавал root-овый
+            //     pg_hba.conf → «could not create file pg_hba.conf: Permission
+            //     denied» и цикл переснятий bootstrap;
+            // (2) pg_hba.conf управляется Patroni (секция postgresql.pg_hba
+            //     локального конфига): при КАЖДОМ старте postgres Patroni
+            //     перегенерирует файл и дописанная строка молча исчезала
+            //     («no pg_hba.conf entry» у wal-агентов после любого рестарта).
+            // Гвард теперь добавляет строку в ИСТОЧНИК — /run/postgres.yml
+            // (postgresql.pg_hba, симлинк /home/postgres/postgres.yml) — и будит
+            // Patroni SIGHUP'ом: тот сам перегенерирует pg_hba.conf при каждом
+            // старте postgres УЖЕ С нашей строкой. Ожидание применения — опрос
+            // $PGDATA/pg_hba.conf (нода без PG_VERSION ещё бутстрапится — ждать
+            // нечего, применится при первом старте). Отказ — transient: шард
+            // skip, следующий тик дообеспечит (запуск на непатченной ноде карался
+            // бы FAILED-циклом с бэкоффом). Усвоенные ноды (object) — exec в их
+            // контейнер (pgw-имени у них нет).
             var hbaPatched = true;
             foreach (var nodeKey in addresses.Value.Keys
                          .Where(k => k.StartsWith($"{shard.Name}/", StringComparison.Ordinal)))
@@ -127,9 +141,16 @@ public sealed class BackupProcess(
                 string[] hbaCmd =
                 [
                     "sh", "-c",
-                    "grep -q 'replication backup_exec' \"$PGDATA/pg_hba.conf\" 2>/dev/null"
-                    + " || echo 'hostssl replication backup_exec all scram-sha-256' >> \"$PGDATA/pg_hba.conf\"; "
-                    + "psql -U postgres -tAc 'SELECT pg_reload_conf()' >/dev/null",
+                    """
+                    F=/run/postgres.yml; S='replication backup_exec'
+                    grep -q "$S" "$PGDATA/pg_hba.conf" 2>/dev/null && grep -q "$S" "$F" 2>/dev/null && exit 0
+                    grep -q "$S" "$F" 2>/dev/null || { sed -i 's/^  pg_hba:$/  pg_hba:\n  - hostssl replication backup_exec all scram-sha-256/' "$F" && chown postgres:root "$F" && chmod 644 "$F"; }
+                    pkill -HUP -f 'local/bin/patroni' 2>/dev/null
+                    [ -f "$PGDATA/PG_VERSION" ] || exit 0
+                    grep -q "$S" "$PGDATA/pg_hba.conf" 2>/dev/null && exit 0
+                    i=0; while [ $i -lt 10 ]; do grep -q "$S" "$PGDATA/pg_hba.conf" 2>/dev/null && exit 0; i=$((i+1)); sleep 1; done
+                    exit 1
+                    """,
                 ];
                 var patched = addr.Object is { Length: > 0 } objectContainer
                     ? await driver.ExecContainerAsync(objectContainer, hbaCmd, ct)
@@ -147,7 +168,13 @@ public sealed class BackupProcess(
             // G3: новый полный — только без активного, при due (возраст ИЛИ
             // отсутствие wal-ключа после restore, t05 §3.5, ИЛИ полный старее
             // последней restore — WalStream восстанавливает ключ быстрее тика,
-            // инцидент E2E-гейта t05) и после бэкоффа.
+            // инцидент E2E-гейта t05; t07: BROKEN wal-ключа — пересъём безусловно)
+            // и после бэкоффа.
+            // t07 (прогон 2026-09-13, arch/19 §2): BROKEN-пересъём — только пока
+            // разрыв НЕ покрыт: COMPLETED-полный с wal_start ≥ границы разрыва
+            // (chain_start BROKEN-записи) уже ждёт заживления контролем (§3),
+            // повторный пересъём поверх — шторм (12 полных за 2 мин) без пользы.
+            // Не покрывший (FAILED/ниже границы) — due, общий бэкофф как раньше.
             if (BackupPlanner.HasActive(fulls))
                 continue; // инвариант одного активного — новый не создаём
             var lastRestoreFinished = shardBackups?.Restores
@@ -156,8 +183,16 @@ public sealed class BackupProcess(
                 .OrderByDescending(f => f)
                 .Cast<long?>()
                 .FirstOrDefault();
+            var brokenBoundary = shardBackups?.Wal is { State: WalStreamStatus.Broken } brokenWal
+                ? brokenWal.ChainStartSegment
+                : null;
+            var breakCovered = brokenBoundary is { Length: > 0 } boundary
+                && fulls.Any(f => f.State == FullBackupStatus.Completed
+                    && f.WalStartSegment is { Length: > 0 } walStart
+                    && string.CompareOrdinal(walStart, boundary) >= 0);
             if (!BackupPlanner.IsDue(fulls, walKeyExists: shardBackups?.Wal is not null,
-                    fullMaxAgeSec, nowUnix, lastRestoreFinished))
+                    fullMaxAgeSec, nowUnix, lastRestoreFinished,
+                    walChainBroken: brokenBoundary is not null && !breakCovered))
                 continue;
             if (!BackupPlanner.BackoffPassed(fulls, options.RetryBaseSec, options.RetryMaxSec, nowUnix))
                 continue; // бэкофф переснятия FAILED — следующий тик
@@ -251,6 +286,31 @@ public sealed class BackupProcess(
                 continue; // transient transport-отказ: статус не меняем (arch/19 §2)
 
             var found = list.Value.FirstOrDefault(c => c.Names.Contains(name));
+
+            // t07 (arch/19 §6): возрастной бюджет зависшего джоба — kill+rm
+            // контейнера и staging-volume → FAILED → переснятие по общему бэкоффу.
+            // PLANNED без контейнера — FAILED без kill; transport-отказ list —
+            // transient выше по коду (статус не меняем). journal-before-
+            // manipulations: статус FAILED пишется ДО cleanup.
+            var nowUnix = time.GetUtcNow().ToUnixTimeSeconds();
+            if (SupervisionTimeouts.IsTimedOut(active.StartedUnix, nowUnix, options.JobFullTimeoutSec))
+            {
+                var timedOut = active with
+                {
+                    State = FullBackupStatus.Failed,
+                    FinishedUnix = nowUnix,
+                    Error = $"job-timeout: {nowUnix - active.StartedUnix} с > {options.JobFullTimeoutSec}",
+                };
+                var putTimeout = await PutAsync(
+                    BackupNames.FullKey(cluster, shard.Name, active.Id), BackupStatusJson.Serialize(timedOut), ct);
+                if (!putTimeout.IsSuccess)
+                    return putTimeout;
+                if (found is not null)
+                    await CleanupJobAsync(engine, cluster, shard.Name, active.Id, ct); // kill+rm контейнера и volume
+                await journal.WritePhaseAsync(cluster, Op, $"job-timeout/{shard.Name}/{active.Id}",
+                    claims.InstanceId, timedOut.Error, ct);
+                continue;
+            }
 
             // PLANNED: джоб ещё не стартовал — идемпотентный запуск (spec §2.4):
             // нет контейнера → create; старт — в обоих случаях (created прошлом

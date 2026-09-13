@@ -117,11 +117,21 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   или verify отсутствует; полный с проваленным verify свежестью НЕ
   считается) > `full_max_age_sec` **или ключ `wal` шарда отсутствует** (t05:
   цепочка не заведена — новый шард либо сброшена restore'ом; инвариант
-  «поднятый шард всегда имеет валидную цепочку или активный полный») →
+  «поднятый шард всегда имеет валидную цепочку или активный полный»)
+  **или wal-ключ шарда в `BROKEN`** (t07: разрыв цепочки — пересъём
+  безусловно, инвариант «у живого шарда валидная цепочка или активный
+  полный»; бэкофф серии FAILED работает как всегда — шторм пересъёмов
+  исключён; прогон 2026-09-13: исключение не работает для УСПЕШНЫХ
+  пересъёмов — COMPLETED не включает бэкофф, и при живом BROKEN-ключе
+  полный планировался заново каждый тик (12 пересъёмов за 2 мин), отодвигая
+  заживление. Правило покрытия: BROKEN-пересъём планируется только пока
+  НЕТ COMPLETED-полного с `wal_start_segment` ≥ границы разрыва
+  (`chain_start_segment` BROKEN-записи) — такой полный уже покрывает разрыв,
+  контроль (§3) заживит им очередным тиком; не покрывший полный
+  (FAILED, либо старт ниже границы) — пересъём снова, по общим правилам) →
   создать `full/<id>` (PLANNED → запуск джоба → RUNNING); инвариант —
   максимум один активный (PLANNED/RUNNING/UPLOADING) полный на шард
   одновременно. FAILED →
->>>>>>> f6d0ec4 (docs(arch): t05-backup-restore — канон восстановления (arch/19 §2/§3.5/§4/§8/§9/§10, arch/14 §1.1) + spec)
   переснятие НОВЫМ id (`pg_basebackup` не резюмится; FAILED-записи —
   история) с бэкоффом `min(Retry.BaseSec·2^(n−1), Retry.MaxSec)`, где n —
   число неудач с момента последнего валидного COMPLETED шарда: FAILED
@@ -189,9 +199,27 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   upload). Ретенция (t06) чистит сегменты ниже стартовой точки старейшего
   ОСТАВЛЯЕМОГО полного (§4) — `chain_start` поднимается автоматически при
   следующем контроле (list S3 — истина), list-префикс укорачивается.
-  Дыра (нет next-сегмента / TLI-переход без history) → `DEGRADED` +
-  `error` c границами дыры; лечение — переснятие полного (t07/t02),
-  t03 сигнализирует. `wal/<segment>` после дыры до переснятия НЕ
+  Дыра (нет next-сегмента / TLI-переход без history) и исчезновение слота
+  при живой цепочке → `BROKEN` (t07): permanent-деградация разрыва, агент
+  остановлен, лечение — НОВЫЙ полный бэкап (планировщик §2 реагирует на
+  BROKEN пересъёмом); `error` несёт границы разрыва. `DEGRADED` — только
+  transient-деградации (lag/тишина): агент жив, ретраи тиками, пересъём НЕ
+  триггерит. Слот при BROKEN: жив — не трогаем (копит WAL в пределах
+  `max_slot_wal_keep_size`), исчез — пересоздаётся immediate+reserved сразу
+  же (к старту пересъёма полного слот держит позицию ≤ wal_start нового
+  полного; механика первого старта). Ratchet `chain_start_segment`:
+  записанное значение НИКОГДА не понижается; в BROKEN-записи — граница
+  разрыва (последний непрерывный сегмент контроля; для «слот исчез» —
+  `last_uploaded_segment` на момент обнаружения). При контроле цепочки
+  стартовая точка = min(wal_start_segment COMPLETED-полных с wal_start ≥
+  записанного chain_start) — полные со стартом ниже границы разрыва
+  игнорируются для контроля (их цепь до их точки может быть цела; дыра
+  выше). Контроль при BROKEN — каждый тик (без VerifyIntervalSec-расчёта:
+  скорость заживления; list дырного префикса дёшев); появился COMPLETED-
+  полный со стартом ≥ границы и цепь от него непрерывна → `ACTIVE`, агент
+  поднимается этим же тиком. Restore COMPLETED удаляет wal-ключ целиком
+  (t05 AC4) — ratchet сбрасывается вместе с ключом, противоречий нет.
+  `wal/<segment>` после дыры до переснятия НЕ
   загружаются агентом заново (слот держит позицию; цепь восстанавливает
   новый полный + новый поток).
 - **Отставание**: `lag_segments` = сегмент текущей позиции записи мастера
@@ -301,13 +329,18 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
 |---|---|
 | `/pgworker/backups/<C>/policy` | per-cluster политика: `{"retention":{"days":7,"weeks":4,"months":6},"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":604800}}`; пишет воркер (приём через API — t06; до того — ручная запись ключа); отсутствует → дефолт `PgWorker:Backups:Policy` |
 | `/pgworker/backups/<C>/<X>/full/<id>` | статус полного: `{"state":"PLANNED\|RUNNING\|UPLOADING\|COMPLETED\|FAILED\|DELETING","node":"<n>","role":"replica\|master","started_unix","finished_unix"?,"wal_start_segment"?,"size_bytes"?,"error"?,"verify":{"state":"PENDING\|OK\|FAILED","checked_unix"?,"error"?}}`; `wal_start_segment` заполняется с фазы UPLOADING (из `backup_label` джоба; для рано упавших FAILED может отсутствовать — до этого неизвестен); `verify` — результат проверки t04 (§5): PENDING в т.ч. «идёт», `error` — причина невалидности (checksums/цепочка с границами) |
-| `/pgworker/backups/<C>/<X>/wal` | состояние WAL-потока шарда: `{"state":"ACTIVE\|DEGRADED\|STOPPED","slot":"<slot>","master_node","chain_start_segment","last_received_segment","last_uploaded_segment","last_uploaded_unix","lag_segments"?,"error"?}` |
+| `/pgworker/backups/<C>/<X>/wal` | состояние WAL-потока шарда: `{"state":"ACTIVE\|DEGRADED\|STOPPED\|BROKEN","slot":"<slot>","master_node","chain_start_segment","last_received_segment","last_uploaded_segment","last_uploaded_unix","lag_segments"?,"error"?}` |
 | `/pgworker/backups/storage` | занятость хранилища установки (t06): `{"used_bytes":…,"quota_bytes"?,"used_percent"?,"state":"OK\|WARN\|CRIT","updated_unix":…}`; ключ ГЛОБАЛЬНЫЙ (вне per-cluster префиксов, D2-чистки не касается); пишет ретенционный проход (см. «Ретенция» ниже) — любой живой клэйм пишет одно и то же свежее значение (идемпотентно); `quota_bytes` не задан (0) → пишется только `used_bytes`, `state=OK` |
+| `/pgworker/backups/orphans` | реестр осиротевших S3-префиксов (t07): `{"orphans":[{"prefix":"<C>/<X>","kind":"shard\|cluster","size_bytes":N,"first_seen_unix":T,"state":"OBSERVED\|DELETING"}],"updated_unix":T}`; ключ ГЛОБАЛЬНЫЙ (вне per-cluster префиксов, D2-чистки не касается); пишет ТОЛЬКО глобальный лидер-проход `/pgworker/leader` (паттерн storage/supervisor). `first_seen_unix` переносится из предыдущей записи (merge — TTL от первого наблюдения); владелец воскрес (кластер/шард появился в `/clusters/`) → запись удаляется, идущая DELETING-доводка отменяется; OBSERVED старше `Supervisor:OrphanTtlSec` → DELETING (journal) → batch-delete префикса → list-подтверждение → del записи; один префикс за проход; `OrphanTtlSec=0` — авто-удаление выключено, только алерт панели |
 | `/pgworker/backups/<C>/<X>/restore/<id>` | операция восстановления шарда (t05, §3.5): `{"state":"PLANNED\|RUNNING\|REJOINING\|COMPLETED\|FAILED","backup_id","source":"<srcC>/<srcX>","target":"latest"\|"time:<RFC3339>","node","requested_unix","requested_by","started_unix"?,"finished_unix"?,"phase"?,"restored_to_lsn"?,"error"?}`; `id` — как у полных (§2); максимум один активный (не COMPLETED/FAILED) restore на шард; `phase` — фаза джоба/процесса (`downloading\|recovering`); по COMPLETED ключ `wal` шарда удаляется (переснятие полного планировщиком §2) |
 
 - **Правила**: transient-сбой → статус с `error` + ретраи тиками (t02/t03);
   permanent-отказ → фиксация причины + алерт. `DELETING` — транзитная фаза
   ретенции (t06; запрет удалять последний валидный полный — guard t06).
+  `BROKEN` — разрыв цепочки (дыра WalChain / исчезновение слота при живой
+  цепочке): агент остановлен, лечение — пересъём полного (§2/§3, t07).
+  `chain_start_segment` в BROKEN-записи — граница разрыва; ratchet —
+  значение никогда не понижается (§3).
 
 - **Ретенция (t06)**: rolling-проход воркера под клэймом `<C>` по расписанию
   `Retention:IntervalSec`, для каждого шарда Active-кластера:
@@ -345,10 +378,12 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
      оставшихся полных автоматически при следующем контроле (list S3 —
      истина): list-префикс укорачивается, старые дыры ниже cutoff
      исчезают.
-  Ретенция — ЕДИНСТВЕННЫЙ осознанный удаляющий S3-объектов воркера:
-  стоп-семантика/deprovisioning объекты не трогают (R4, §3/§4), reconcile
-  сирот — t07. `Backups:Enabled=false` → ретенция no-op (чистки нет,
-  копится до включения; зависшие DELETING видит панельный алерт).
+  Ретенция и супервизор t07 — осознанные удаляющие S3-объектов воркера
+  (ретенция — по политике GFS/cutoff; супервизор — только мусор `full/<id>/`
+  живого шарда без etcd-ключа и сироты по TTL): стоп-семантика/deprovisioning
+  объекты по-прежнему не трогают (R4, §3/§4). `Backups:Enabled=false` →
+  ретенция no-op (чистки нет, копится до включения; зависшие DELETING видит
+  панельный алерт).
 - **Хранилище/квота (t06)**: ретенционный проход (расписание то же,
   per-instance) list-ит ВЕСЬ bucket (пагинация; включая чужие/осиротевшие
   префиксы — занятость bucket, не только свои) → `used_bytes` = сумма
@@ -380,10 +415,13 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   убивает бегущие джоб-контейнеры `pgw-backup-full-<C>-*`); объекты
   S3 этим путём НЕ удаляются (данные дороже места; осознанное удаление —
   только ретенция t06 по политике): префикс S3 без
-  etcd-владельца = orphan, его видит супервизор (t07: алерт + политика
-  возраста/ручной разбор); восстановление удалённого кластера из S3 —
-  runbook t05 (симметрия R4 arch/14: воркер не уничтожает потенциально
-  ценные данные автоматикой).
+  etcd-владельца попадает в реестр сирот `/pgworker/backups/orphans`
+  супервизора t07: алерт панели +
+  удаление по `Supervisor:OrphanTtlSec` (гибрид: мусор живого шарда —
+  `full/<id>/` без ключа — удаляется немедленно per-cluster-проходом;
+  исчезнувшие владельцы — реестр+TTL); восстановление удалённого кластера
+  из S3 — runbook t05 (симметрия R4 arch/14: воркер не уничтожает
+  потенциально ценные данные автоматикой).
 
 ## 5. Хранилище S3: layout
 
@@ -456,6 +494,19 @@ s3://<bucket>/<C>/<X>/
   гарантирован; память хоста — осознанная плата, для больших баз квоту не
   задавать); не задана → named volume на диске docker-хоста (ENOSPC
   ловится реактивно по падению `pg_basebackup`/`mc` → FAILED).
+- **Бюджеты зависших джобов (t07)**: активный полный (PLANNED/RUNNING/
+  UPLOADING) с возрастом (`now − started_unix`) > `Job:FullTimeoutSec`
+  (default 6 ч) → docker kill+rm контейнера и staging-volume → `FAILED`
+  `error="job-timeout: <age> с > FullTimeoutSec"` → переснятие по общему
+  бэкоффу. Verify-джоб running дольше `Job:VerifyTimeoutSec` (default 6 ч;
+  возраст — docker-факт StartedAt инспекта: в etcd-статусе кандидата
+  времени запуска нет) → kill+rm, кандидат остаётся PENDING с
+  `checked_unix = now` (попытка зачтена, лив-лок немедленных перезапусков
+  исключён; вердикт FAILED по таймауту НЕ ставится — данные не виноваты).
+  Restore-джоб (фаза RUNNING заявки) старше `Job:RestoreTimeoutSec`
+  (default 24 ч — канон §10 допускает «часами», сутки — явный завис) →
+  kill+rm + `FAILED` `restore-job-timeout` с чисткой щита initialize;
+  REJOINING не таймаутится (бюджеты Patroni-проб — свои, arch/14).
 - **Patroni/HA не затрагивается**: бэкапы — сторонние клиенты нод; изменений
   в конфиги нод/HA-контура подсистема не вносит.
 
@@ -488,7 +539,7 @@ s3://<bucket>/<C>/<X>/
 | t04-backup-verify | `pg_verifybackup` + полнота WAL-цепочки до точки бэкапа, статусы/периодическая перепроверка verify, алерт `backup-verify-failed`, валидность в планировщике/stale (§3–§5) |
 | t05-backup-restore | восстановление полного+WAL (PITR latest/target_time, source-override для DR), restore-джоб/процесс, runbook (§3.5, §4, §5) |
 | t06-backup-retention | GFS-ретенция (календарь UTC), чистка WAL ниже стартовой точки оставляемых, гигиена FAILED, ключ хранилища/квоты + панельные алерты, guard последнего валидного, API приёма policy (§4, §5, §9) |
-| t07-backup-supervisor | reconcile S3↔etcd, сироты, reconnect агента, рестарт-устойчивость (§4, §6) |
+| t07-backup-supervisor | reconcile S3↔etcd, сироты (реестр+TTL), BROKEN-самолечение цепочки, бюджеты зависших джобов, рестарт-устойчивость (§4, §6) |
 
 ## 9. Конфигурация
 
@@ -498,8 +549,10 @@ s3://<bucket>/<C>/<X>/
   VerifyOnCreate=true, VerifyIntervalSec=604800 }` (t04: период
   перепроверки оставшихся полных — `verify.interval_sec` policy-ключа
   кластера перекрывает), `Staging { Dir=/backup-staging, QuotaBytes }`,
-  `Agent { Cpu, Mem }`, `Job { Image="pgworker-backup:dev" }` (общий образ
-  джобов t02 и WAL-агентов t03, §2), `Retry { BaseSec=300, MaxSec=3600 }`
+  `Agent { Cpu, Mem }`, `Job { Image="pgworker-backup:dev",
+  FullTimeoutSec=21600, VerifyTimeoutSec=21600, RestoreTimeoutSec=86400 }`
+  (общий образ джобов t02 и WAL-агентов t03, §2; t07: бюджеты зависших
+  джобов), `Retry { BaseSec=300, MaxSec=3600 }`
   (бэкофф переснятия FAILED, t02), `S3 { AdvertisedEndpoint }` (t03: адрес
   S3 из контейнеров агентов), `Wal { VerifyIntervalSec=30,
   LagMaxSegments=1024, StaleSec=300 }` (t03: период list/контроля цепочки,
@@ -510,8 +563,11 @@ s3://<bucket>/<C>/<X>/
   ключа/алертов хранилища; `Bytes=0` — квота не задана, пишется только
   `used_bytes`), `Restore { RecoveryTimeoutSec=1800 }` (t05: бюджет
   локального наката WAL restore-джобом — фаза recovering; исчерпание →
-  FAILED «target не достигнут»). Валидация старта:
-  `Enabled=true` при пустых S3-полях — fail-fast.
+  FAILED «target не достигнут»), `Supervisor { IntervalSec=600,
+  OrphanTtlSec=604800 }` (t07: период сверок per-cluster и глобального
+  лидер-прохода; TTL сирот, `0` — только алерт). Валидация старта:
+  `Enabled=true` при пустых S3-полях — fail-fast; отрицательные
+  таймауты/TTL супервизора — fail-fast.
 
 ## 10. Риски
 
@@ -534,3 +590,6 @@ s3://<bucket>/<C>/<X>/
 | Стоимость verify: скачивание полного из S3 (трафик + staging размером бэкапа) на каждый verify | `interval_sec` по умолчанию 7 дней (не каждый день все полные); staging-квота/лимиты — общие §6; verify-джоб ephemeral — ресурс занят на время проверки |
 | Тихая порча/утеря объектов S3 после снятия бэкапа (bit rot, ручное удаление) | периодическая перепроверка `verify.interval_sec` (t04) + алерт `backup-verify-failed`; планировщик не считает проваленный verify свежестью → переснятие |
 | Расхождение spec↔arch при будущих правках | arch-правки — всегда первой фазой; ревью plan↔spec по чек-листам dev-flow |
+| Таймаут зависшего джоба ложноположителен на очень медленном валидном бэкапе (большая база/медленный S3) | дефолт 6 ч с запасом поверх «часовых» бэкапов; конфиг Job:FullTimeoutSec; FAILED по таймауту проходит общий бэкофф — шторм пересъёмов исключён |
+| DELETING-сирота vs воскресший владелец (DR-restore в окне удаления) | TTL-окно 7 сут покрывает разбор; гвард: владелец появился в etcd → доводка отменяется, запись гаснет; остаточный риск (частично удалённое при самом старте DR) зафиксирован |
+| Ratchet chain_start vs restore/PITR-назад | restore COMPLETED удаляет wal-ключ целиком (t05 AC4) — ratchet уходит вместе с ключом; новая цепочка строится планировщиком с нуля |

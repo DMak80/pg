@@ -253,9 +253,16 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
 
             var aliases = (dto.NetworkSettings?.Networks ?? new Dictionary<string, NetworkDto>())
                 .Values.SelectMany(n => n.Aliases ?? []).Distinct().ToArray();
+            // t07: StartedAt (RFC3339) → unix; отсутствие/битая строка → null
+            // (бюджет verify-джоба не применяется).
+            long? startedAtUnix = DateTimeOffset.TryParse(dto.State?.StartedAt,
+                CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal
+                | DateTimeStyles.AdjustToUniversal, out var startedAt)
+                ? startedAt.ToUnixTimeSeconds()
+                : null;
             return new DockerContainerInspect(dto.Id, dto.Config?.Hostname ?? "", aliases, dto.Config?.Env ?? [],
                 ports.Distinct().ToArray(),
-                dto.State?.Running, dto.State?.ExitCode);
+                dto.State?.Running, dto.State?.ExitCode, StartedAtUnix: startedAtUnix);
         });
 
     // GET /containers/<id>/logs — тело raw-stream (мультиплексировано), demux
@@ -874,6 +881,9 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         [JsonPropertyName("Running")] public bool? Running { get; set; }
 
         [JsonPropertyName("ExitCode")] public int? ExitCode { get; set; }
+
+        // t07: RFC3339-момент старта контейнера — бюджет running-джоба.
+        [JsonPropertyName("StartedAt")] public string? StartedAt { get; set; }
     }
 
     private sealed class ContainerConfigDto

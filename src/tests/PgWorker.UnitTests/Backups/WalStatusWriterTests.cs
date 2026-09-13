@@ -53,6 +53,45 @@ public class WalStatusWriterTests
         degradedJson.Should().Contain("\"error\":\"дыра WAL-цепочки: ожидался X\"");
     }
 
+    // AAA: BROKEN пишется как "BROKEN" и читается обратно (контракт arch/19 §4, t07)
+    [Fact]
+    public void ToJson_StateBroken_ПишетBROKEN()
+    {
+        // Arrange — состояние разрыва цепочки с границей в chain_start
+        var state = new WalStreamState(
+            WalStreamStatus.Broken, "pgw_bkp_c1_shard1", "shard1a",
+            "000000010000000000000005", "000000010000000000000005",
+            "000000010000000000000005", 1757500000, null, "дыра WAL-цепочки: ожидался 000000010000000000000006");
+
+        // Act
+        var json = WalStatusWriter.ToJson(state);
+
+        // Assert — машиночитаемое поле state=BROKEN (spec §3.1)
+        json.Should().Contain("\"state\":\"BROKEN\"");
+    }
+
+    // AAA: ключ с state=BROKEN читается парсером обратно в Broken (roundtrip
+    // через публичный путь записи/чтения — по образцу тестов файла)
+    [Fact]
+    public async Task Parse_БрокенКлюч_ЧитаетBroken()
+    {
+        // Arrange
+        var gateway = new FakeEtcdGateway();
+        var writer = new WalStatusWriter(gateway, ["http://test"]);
+        var broken = new WalStreamState(
+            WalStreamStatus.Broken, "pgw_bkp_c1_shard1", "shard1a",
+            "000000010000000000000005", "000000010000000000000005",
+            "000000010000000000000005", 1757500000, null, "дыра WAL-цепочки");
+        await writer.WriteIfChangedAsync("c1", "shard1", broken, ct: TestContext.Current.CancellationToken);
+
+        // Act
+        var read = await writer.ReadAsync("c1", "shard1", ct: TestContext.Current.CancellationToken);
+
+        // Assert — сериализованное BROKEN парсится в WalStreamStatus.Broken
+        read.IsSuccess.Should().BeTrue();
+        read.Value.Should().BeEquivalentTo(broken);
+    }
+
     [Fact]
     public async Task WriteIfChanged_новый_ключ_пишется_и_читается_парсером_t01()
     {

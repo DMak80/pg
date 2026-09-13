@@ -676,6 +676,14 @@ public class ReconcileLoopTests
             return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
         }
 
+        // t07 (arch/19 §4): per-cluster сверка S3↔etcd — между retention и restore.
+        public Task<Result<ProcessOutcome>> SuperviseBackupsAsync(
+            ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
+        {
+            using var _ = Track(snap.Config.Cluster, [], callName: "backup-supervisor");
+            return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
+        }
+
         public Task<Result<ProcessOutcome>> RepairAsync(ClusterSnapshot snap, CancellationToken ct)
         {
             // Репарация (adopt-repair spec §3.5): порядок — после rotate, до moves.

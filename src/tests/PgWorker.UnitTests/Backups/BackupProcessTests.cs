@@ -392,6 +392,52 @@ public class BackupProcessTests
         rig.Driver.ExecNodeCalls.Should().BeEmpty();
     }
 
+    // AAA (AC5): RUNNING-полный с «вечным» контейнером старше 6 ч → контейнер/volume
+    // удалены, статус FAILED "job-timeout…", переснятие по бэкоффу
+    [Fact]
+    public async Task Супервиз_полный_старше_бюджета_FAILED_jobtimeout_и_переснятие()
+    {
+        // Arrange — активный RUNNING started = now-7h (бюджет 6 ч дефолт);
+        // FakeBackupEngine держит running-контейнер без result-логов («вечный»)
+        var rig = await NewRig();
+        var now = TimeProvider.System.GetUtcNow();
+        var staleStarted = Unix(now.AddHours(-7));
+        var active = new FullBackupState("20260908030000Z", FullBackupStatus.Running,
+            "shard1a", BackupSourceRole.Master, staleStarted, null, null, null, null, null);
+        var name = BackupNames.ContainerName("shop", "shard1", "20260908030000Z");
+        rig.Engine.Containers[name] = new("cnt-timeout", "running", -1, "{\"phase\":\"basebackup\"}");
+
+        // Act 1 — тик супервиза
+        var outcome = await rig.Process.TickAsync(
+            await Snapshot(rig.Etcd), BackupsOf(active), CancellationToken.None);
+
+        // Assert 1 — статус FAILED с error "job-timeout"; контейнер и volume
+        // удалены; journal содержит phase job-timeout/<shard>/<id>
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        var fullKey = FullKey("20260908030000Z");
+        var parsed = BackupsParser.Parse(
+            (IReadOnlyList<Kv>)[new Kv(fullKey, rig.Etcd.Store[fullKey].Value, 1)], out var errors);
+        errors.Should().BeEmpty();
+        var failed = parsed.Value[0].Shards["shard1"].Full.Single();
+        failed.State.Should().Be(FullBackupStatus.Failed);
+        failed.Error.Should().Contain("job-timeout");
+        rig.Engine.Removed.Should().Contain(name);
+        rig.Engine.RemovedVolumes.Should().Contain(BackupNames.VolumeName("shop", "shard1", "20260908030000Z"));
+        (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.Phase
+            .Should().Be("job-timeout/shard1/20260908030000Z");
+
+        // Act 2 — повторный тик: FAILED-попытка 7-часовой давности — бэкофф
+        // (Base·2^0 от started) давно прошёл → переснятие НОВЫМ id
+        var outcome2 = await rig.Process.TickAsync(
+            await Snapshot(rig.Etcd), BackupsOf(failed), CancellationToken.None);
+
+        // Assert 2 — новый PLANNED/RUNNING с другим id (переснятие по общему правилу)
+        outcome2.IsSuccess.Should().BeTrue();
+        rig.Etcd.Store.Keys
+            .Where(k => k.StartsWith("/pgworker/backups/shop/shard1/full/"))
+            .Should().HaveCount(2, "переснятие — НОВЫЙ id, старая FAILED-запись — история");
+    }
+
     // AAA: инвариант одного активного — при RUNNING (живой джоб) новую попытку
     // не создаём: супервизия поллит, G3 молчит
     [Fact]
@@ -475,6 +521,75 @@ public class BackupProcessTests
         rig.Engine.Created.Should().BeEmpty();
         var guard = rig.Sql.Scalars.Should().ContainSingle().Subject;
         guard.Sql.Should().Contain("backup_exec");
+    }
+
+    // AAA (AC1): wal-ключ BROKEN → планировщик создаёт новый полный, даже если
+    // последний COMPLETED свежий (инвариант одного активного/бэкофф — как всегда)
+    [Fact]
+    public async Task Тик_при_BROKEN_wal_планирует_пересъём()
+    {
+        // Arrange — COMPLETED ..42 (5 мин назад) + BROKEN с границей ..44 ВЫШЕ
+        // старого полного (дыра выше ..44): ..42 разрыв НЕ покрывает — пересъём нужен
+        var rig = await NewRig();
+        var now = TimeProvider.System.GetUtcNow();
+        var completed = new FullBackupState("20260908030000Z", FullBackupStatus.Completed,
+            "shard1a", BackupSourceRole.Master, Unix(now.AddMinutes(-6)),
+            Unix(now.AddMinutes(-5)), "000000010000000000000042", 1048576, null, null);
+        var brokenWal = new WalStreamState(WalStreamStatus.Broken, "slot_shop_shard1", "shard1a",
+            "000000010000000000000044", "000000010000000000000044", "000000010000000000000044",
+            Unix(now.AddMinutes(-30)), null, "дыра WAL-цепочки");
+        var backups = new IReadOnlyList<ClusterBackups>[]
+        {
+            [new ClusterBackups("shop", null, new Dictionary<string, ShardBackups>
+            {
+                ["shard1"] = new([completed], brokenWal),
+            })],
+        }[0];
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
+
+        // Assert — появился новый полный (PLANNED/RUNNING) с ДРУГИМ id:
+        // BROKEN лечится пересъёмом независимо от свежести полного (spec §3.2)
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        var fullKeys = rig.Etcd.Store.Keys
+            .Where(k => k.StartsWith("/pgworker/backups/shop/shard1/full/")).ToList();
+        fullKeys.Should().ContainSingle("новый полный запланирован");
+        fullKeys.Single().Should().NotContain("20260908030000Z", "id новый — не переснятый старый");
+        rig.Engine.Created.Should().NotBeEmpty("джоб пересъёма запущен");
+    }
+
+    // AAA (t07, arch/19 §2 — прогон 2026-09-13): COMPLETED-полный с wal_start ≥
+    // границы разрыва УЖЕ покрывает BROKEN — повторный пересъём не планируется
+    // (иначе шторм пересъёмов каждый тик, контроль не успевает заживить)
+    [Fact]
+    public async Task Тик_при_BROKEN_покрытом_полным_пересъёма_нет()
+    {
+        // Arrange — COMPLETED ..46 (старт выше границы разрыва ..42) + BROKEN ..42
+        var rig = await NewRig();
+        var now = TimeProvider.System.GetUtcNow();
+        var reshot = new FullBackupState("20260908030500Z", FullBackupStatus.Completed,
+            "shard1a", BackupSourceRole.Master, Unix(now.AddMinutes(-6)),
+            Unix(now.AddMinutes(-5)), "000000010000000000000046", 1048576, null, null);
+        var brokenWal = new WalStreamState(WalStreamStatus.Broken, "slot_shop_shard1", "shard1a",
+            "000000010000000000000042", "000000010000000000000042", "000000010000000000000042",
+            Unix(now.AddMinutes(-30)), null, "дыра WAL-цепочки");
+        var backups = new IReadOnlyList<ClusterBackups>[]
+        {
+            [new ClusterBackups("shop", null, new Dictionary<string, ShardBackups>
+            {
+                ["shard1"] = new([reshot], brokenWal),
+            })],
+        }[0];
+
+        // Act
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), backups, CancellationToken.None);
+
+        // Assert — нового полного нет: разрыв покрыт, заживление — за контролем (§3)
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        rig.Etcd.Store.Keys.Should().NotContain(k => k.StartsWith("/pgworker/backups/shop/shard1/full/"),
+            "пересъём поверх покрывающего полного — шторм");
+        rig.Engine.Created.Should().BeEmpty();
     }
 
     // AAA: недавний FAILED — бэкофф (Base=300 > 100 c) держит, новой попытки нет

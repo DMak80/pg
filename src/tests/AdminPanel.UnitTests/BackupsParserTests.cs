@@ -395,4 +395,88 @@ public class BackupsParserTests
         cluster.ShardLastCompletedUnix.Should().ContainKey("s1");
         cluster.ShardsRestores.Should().BeEmpty("restore-ключей нет — правила молчат");
     }
+
+// ---- t07: BROKEN wal + ключ реестра сирот ----
+
+// AAA (AC8): state=BROKEN читается; незнакомое state — KeyParseError (как прежде)
+[Fact]
+public void Parse_WalBroken_Читается()
+{
+    // Arrange — wal-ключ с state=BROKEN (граница разрыва в chain_start_segment)
+    var kvs = new List<Kv>
+    {
+        new("/pgworker/backups/c1/s1/wal",
+            """{"state":"BROKEN","slot":"pgw_bkp_c1_s1","master_node":"s1a","chain_start_segment":"000000010000000000000005","last_received_segment":"000000010000000000000005","last_uploaded_segment":"000000010000000000000005","last_uploaded_unix":1760000000,"error":"дыра WAL-цепочки: ожидался 000000010000000000000006"}""", 1),
+    };
+
+    // Act
+    var result = BackupsParser.Parse(kvs);
+
+    // Assert — Broken прочитан; error доступен правилу
+    result.Errors.Should().BeEmpty();
+    var wal = result.Clusters.Single().Shards!["s1"];
+    wal.Should().NotBeNull();
+    wal!.State.Should().Be(WalStreamInfoState.Broken);
+    wal.Error.Should().Contain("дыра");
+}
+
+// AAA (AC8): незнакомое state wal-ключа → KeyParseError (поведение сохранено)
+[Fact]
+public void Parse_WalUnknownState_KeyParseError()
+{
+    // Arrange
+    var kvs = new List<Kv>
+    {
+        new("/pgworker/backups/c1/s1/wal",
+            """{"state":"???","slot":"x","master_node":"s1a","last_uploaded_unix":1}""", 1),
+    };
+
+    // Act
+    var result = BackupsParser.Parse(kvs);
+
+    // Assert
+    result.Errors.Should().ContainSingle().Which.Key.Should().Be("/pgworker/backups/c1/s1/wal");
+}
+
+// AAA (AC7/AC8): глобальный ключ orphans парсится; битая запись — ошибка ключа
+[Fact]
+public void Parse_Orphans_Ключ_Читается()
+{
+    // Arrange
+    var kvs = new List<Kv>
+    {
+        new("/pgworker/backups/orphans",
+            """{"orphans":[{"prefix":"ghost1/s1","kind":"cluster","size_bytes":123,"first_seen_unix":1757100000,"state":"OBSERVED"},{"prefix":"live1/s2","kind":"shard","size_bytes":456,"first_seen_unix":1757000000,"state":"DELETING"}],"updated_unix":1760000000}""", 1),
+    };
+
+    // Act
+    var result = BackupsParser.Parse(kvs);
+
+    // Assert — обе записи; kind/state сохранены
+    result.Errors.Should().BeEmpty();
+    result.Orphans.Should().NotBeNull();
+    result.Orphans!.Orphans.Should().HaveCount(2);
+    result.Orphans.Orphans[0].Prefix.Should().Be("ghost1/s1");
+    result.Orphans.Orphans[0].State.Should().Be("OBSERVED");
+    result.Orphans.Orphans[1].Kind.Should().Be("shard");
+    result.Orphans.UpdatedUnix.Should().Be(1760000000);
+}
+
+// AAA: битый JSON orphans → KeyParseError, Orphans null
+[Fact]
+public void Parse_OrphansMalformedJson_KeyParseError()
+{
+    // Arrange
+    var kvs = new List<Kv>
+    {
+        new("/pgworker/backups/orphans", "not-json", 1),
+    };
+
+    // Act
+    var result = BackupsParser.Parse(kvs);
+
+    // Assert
+    result.Orphans.Should().BeNull();
+    result.Errors.Should().ContainSingle().Which.Key.Should().Be("/pgworker/backups/orphans");
+}
 }

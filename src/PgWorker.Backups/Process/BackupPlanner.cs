@@ -17,8 +17,8 @@ public static class BackupPlanner
         => f.State == FullBackupStatus.Completed
            && f.Verify is not { State: BackupVerifyStatus.Failed };
 
-    // Rolling-правило (t02 + t04 + t05 §3.5): нет ВАЛИДНОГО COMPLETED — true;
-    // иначе возраст последнего валидного (finished_unix; толерантно
+    // Rolling-правило (t02 + t04 + t05 §3.5 + t07 §3.2): нет ВАЛИДНОГО COMPLETED —
+    // true; иначе возраст последнего валидного (finished_unix; толерантно
     // started_unix) больше full_max_age_sec ИЛИ wal-ключа нет (t05: цепочка
     // сброшена restore'ом — полный переснимается немедленно, инвариант
     // «поднятый шард всегда имеет валидную цепочку или активный полный»).
@@ -29,8 +29,14 @@ public static class BackupPlanner
     // 2026-09-13), поэтому сигнал — не ключ, а факт restore.
     public static bool IsDue(
         IReadOnlyList<FullBackupState> fulls, bool walKeyExists, long fullMaxAgeSec, long nowUnix,
-        long? lastRestoreFinishedUnix = null)
+        long? lastRestoreFinishedUnix = null, bool walChainBroken = false)
     {
+        // t07 (arch/19 §2): BROKEN wal-ключа — пересъём безусловно (разрыв лечит
+        // только новый полный); бэкофф серии FAILED применяется вызывающим как
+        // всегда — шторм пересъёмов исключён.
+        if (walChainBroken)
+            return true;
+
         var lastValid = fulls
             .Where(IsValid)
             .OrderByDescending(f => f.FinishedUnix ?? f.StartedUnix)

@@ -356,6 +356,10 @@ public sealed class BackupsOptions
     /// <summary>Восстановление шарда (t05, arch/19 §3.5/§9): бюджеты.</summary>
     public BackupsRestoreOptions Restore { get; set; } = new();
 
+    /// <summary>Супервизор бэкапов (t07, arch/19 §4/§9): период сверок S3↔etcd
+    /// per-cluster и глобального лидер-прохода; TTL сирот S3.</summary>
+    public BackupsSupervisorOptions Supervisor { get; set; } = new();
+
     /// <summary>Runtime-опции подсистемы бэкапов: склейка Backups-секции
     /// (t02: джобы/ретраи; t03: advertised-S3/Wal-пороги; t06: ретенция/квота)
     /// — именованными аргументами: record расширялся с обеих сторон.</summary>
@@ -389,7 +393,12 @@ public sealed class BackupsOptions
         QuotaBytes: Quota.Bytes,
         QuotaWarnPercent: Quota.WarnPercent,
         QuotaCritPercent: Quota.CritPercent,
-        RestoreRecoveryTimeoutSec: Restore.RecoveryTimeoutSec);
+        RestoreRecoveryTimeoutSec: Restore.RecoveryTimeoutSec,
+        SupervisorIntervalSec: Supervisor.IntervalSec,
+        SupervisorOrphanTtlSec: Supervisor.OrphanTtlSec,
+        JobFullTimeoutSec: Job.FullTimeoutSec,
+        JobVerifyTimeoutSec: Job.VerifyTimeoutSec,
+        JobRestoreTimeoutSec: Job.RestoreTimeoutSec);
 
     /// <summary>Fail-fast старта (образец TLS arch/14 §2.2.1): Enabled=true
     /// обязан иметь полный S3-комплект; false — подсистема не активна.
@@ -404,7 +413,12 @@ public sealed class BackupsOptions
            && Quota.WarnPercent < Quota.CritPercent
            && Quota.CritPercent <= 100
            && Retention.IntervalSec >= 60
-           && Retention.KeepFailed >= 5;
+           && Retention.KeepFailed >= 5
+           && Supervisor.IntervalSec >= 60          // как Retention.IntervalSec — тик не молотит
+           && Supervisor.OrphanTtlSec >= 0          // 0 — авто-удаление выключено (только алерт)
+           && Job.FullTimeoutSec > 0
+           && Job.VerifyTimeoutSec > 0
+           && Job.RestoreTimeoutSec > 0;
 }
 
 /// <summary>Параметры ретенционного прохода (t06, arch/19 §9): период и
@@ -434,11 +448,35 @@ public sealed class BackupsRestoreOptions
     public int RecoveryTimeoutSec { get; set; } = 1800;
 }
 
+/// <summary>Супервизор бэкапов (t07, arch/19 §4/§9): период сверок S3↔etcd
+/// per-cluster и глобального лидер-прохода (реестр сирот
+/// /pgworker/backups/orphans); OrphanTtlSec=0 — авто-удаление выключено,
+/// только алерт панели.</summary>
+public sealed class BackupsSupervisorOptions
+{
+    public int IntervalSec { get; set; } = 600;
+
+    public long OrphanTtlSec { get; set; } = 604800;
+}
+
 /// <summary>Образ джоба полного бэкапа (arch/19 §2/§9, t02): собирается из
-/// docker/PgWorker.Backup.Dockerfile; запуск — воркер, содержимое — без .NET.</summary>
+/// docker/PgWorker.Backup.Dockerfile; запуск — воркер, содержимое — без .NET.
+/// Таймауты (t07, arch/19 §6/§9) — бюджеты зависших джобов: полный/verify/restore.</summary>
 public sealed class BackupsJobOptions
 {
     public string Image { get; set; } = "pgworker-backup:dev";
+
+    /// <summary>Бюджет активного полного (PLANNED/RUNNING/UPLOADING), c (t07):
+    /// возраст > лимита → kill+rm + FAILED job-timeout → переснятие по бэкоффу.</summary>
+    public int FullTimeoutSec { get; set; } = 21600;
+
+    /// <summary>Бюджет running verify-джоба по docker-факту StartedAt, c (t07):
+    /// kill+rm, кандидат остаётся PENDING с checked_unix = now (попытка зачтена).</summary>
+    public int VerifyTimeoutSec { get; set; } = 21600;
+
+    /// <summary>Бюджет RUNNING-фазы restore-заявки, c (t07): kill+rm + FAILED
+    /// restore-job-timeout с чисткой щита initialize; REJOINING не таймаутится.</summary>
+    public int RestoreTimeoutSec { get; set; } = 86400;
 }
 
 /// <summary>Бэкофф переснятия FAILED-полного (arch/19 §2, t02):

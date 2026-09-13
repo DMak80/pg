@@ -72,7 +72,10 @@ public sealed record DockerContainer(string Id, string[] Names, string State, st
 // runtime-факт джоба бэкапа (t02: exit-код — истина итога, arch/19 §2).
 public sealed record DockerContainerInspect(
     string Id, string Hostname, string[] Aliases, string[] Env, PortMap[] Ports,
-    bool? Running = null, int? ExitCode = null);
+    bool? Running = null, int? ExitCode = null,
+    // t07 (arch/19 §6): docker-факт возраста running-джоба (StartedAt, RFC3339 →
+    // unix) — бюджет verify-джоба; null при отсутствии/битой строке инспекта.
+    long? StartedAtUnix = null);
 
 // Swarm-нода из /nodes + число работающих тасков.
 public sealed record DockerSwarmNode(string Id, string Hostname, string State, int RunningTasks);

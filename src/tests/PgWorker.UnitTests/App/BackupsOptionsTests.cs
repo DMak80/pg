@@ -270,4 +270,74 @@ public class BackupsOptionsTests
         runtime.QuotaWarnPercent.Should().Be(70);
         runtime.QuotaCritPercent.Should().Be(95);
     }
+
+    // ---- t07: супервизор и бюджеты зависших джобов ----
+
+    // AAA (spec §3.6): отрицательные таймауты/TTL супервизора — fail-fast старта
+    [Theory]
+    [InlineData(-1, 604800, 21600, 21600, 86400)]  // IntervalSec < 0
+    [InlineData(600, -1, 21600, 21600, 86400)]     // OrphanTtlSec < 0
+    [InlineData(600, 604800, 0, 21600, 86400)]     // FullTimeoutSec = 0
+    [InlineData(600, 604800, 21600, -5, 86400)]    // VerifyTimeoutSec < 0
+    [InlineData(600, 604800, 21600, 21600, 0)]     // RestoreTimeoutSec = 0
+    public void IsValid_ОтрицательныеБюджеты_FailFast(
+        int interval, long ttl, int full, int verify, int restore)
+    {
+        // Arrange
+        var options = new BackupsOptions
+        {
+            Enabled = true,
+            S3 = new BackupsS3Options
+            {
+                Endpoint = "http://host.docker.internal:9000",
+                Bucket = "pgworker-backups",
+                AccessKey = "minioadmin",
+                SecretKey = "minioadmin",
+            },
+            Supervisor = new BackupsSupervisorOptions { IntervalSec = interval, OrphanTtlSec = ttl },
+        };
+        options.Job.FullTimeoutSec = full;
+        options.Job.VerifyTimeoutSec = verify;
+        options.Job.RestoreTimeoutSec = restore;
+
+        // Act / Assert
+        options.IsValid().Should().BeFalse("отрицательные/нулевые бюджеты — мусорный конфиг");
+    }
+
+    // AAA: OrphanTtlSec=0 — валиден (только алерт, без авто-удаления)
+    [Fact]
+    public void IsValid_TtlZero_Валиден()
+    {
+        // Arrange — дефолты + TTL сирот 0 (авто-удаление выключено)
+        var options = new BackupsOptions
+        {
+            Supervisor = new BackupsSupervisorOptions { IntervalSec = 600, OrphanTtlSec = 0 },
+        };
+
+        // Act / Assert
+        options.IsValid().Should().BeTrue("OrphanTtlSec=0 — режим «только алерт», конфиг валиден");
+    }
+
+    // AAA: дефолты t07 каноничны (arch/19 §9) и ToRuntime их проксирует
+    [Fact]
+    public void Дефолты_супервизора_и_бюджетов_каноничны()
+    {
+        // Arrange
+        var options = new BackupsOptions();
+
+        // Act
+        var runtime = options.ToRuntime();
+
+        // Assert — Supervisor {600, 7 сут} + Job {6 ч / 6 ч / 24 ч}
+        options.Supervisor.IntervalSec.Should().Be(600);
+        options.Supervisor.OrphanTtlSec.Should().Be(604800);
+        options.Job.FullTimeoutSec.Should().Be(21600);
+        options.Job.VerifyTimeoutSec.Should().Be(21600);
+        options.Job.RestoreTimeoutSec.Should().Be(86400);
+        runtime.SupervisorIntervalSec.Should().Be(600);
+        runtime.SupervisorOrphanTtlSec.Should().Be(604800);
+        runtime.JobFullTimeoutSec.Should().Be(21600);
+        runtime.JobVerifyTimeoutSec.Should().Be(21600);
+        runtime.JobRestoreTimeoutSec.Should().Be(86400);
+    }
 }

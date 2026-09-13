@@ -37,7 +37,8 @@ public class BackupVerifyProcessTests
     //    тест управляет State/ExitCode/Logs — супервиз-ветки задачи 9) ──
     internal sealed class FakeVerifyEngine : IDockerEngine
     {
-        internal sealed record ContainerRec(string Id, string State, int ExitCode, string Logs);
+        internal sealed record ContainerRec(string Id, string State, int ExitCode, string Logs,
+            long? StartedUnix = null);
 
         public readonly Dictionary<string, ContainerRec> Containers = [];
         public readonly List<(string Name, ContainerSpec Spec)> Created = [];
@@ -74,7 +75,8 @@ public class BackupVerifyProcessTests
                 ? Result<DockerContainerInspect>.Failed(new KeyNotFoundException(id))
                 : Result<DockerContainerInspect>.Success(new DockerContainerInspect(
                     found.Value.Id, found.Key, [], [], [],
-                    found.Value.State == "running", found.Value.ExitCode)));
+                    found.Value.State == "running", found.Value.ExitCode,
+                    StartedAtUnix: found.Value.StartedUnix)));
         }
 
         public Task<Result<string>> GetContainerLogsAsync(string idOrName, int tail, CancellationToken ct)
@@ -758,6 +760,52 @@ public class BackupVerifyProcessTests
         engine.Created.Should().BeEmpty("живой verify-джоб шарда блокирует запуск нового (инвариант §3.3)");
         var afterB = (await Fx.Gateway.GetAsync(Fx.Endpoint, keyB, ct)).Value!.Value;
         afterB.Should().Be(beforeB, "статус due-кандидата не трогаем, пока жив чужой джоб шарда");
+    }
+
+    // AAA (AC5): verify-джоб running дольше бюджета → kill+rm, кандидат PENDING с
+    // checked_unix=now; лив-лок исключён — следующий due только через interval
+    [Fact]
+    public async Task Супервиз_verify_старше_бюджета_kill_и_квота_попытки()
+    {
+        // Arrange — COMPLETED-полный с Verify=PENDING; FakeVerifyEngine держит
+        // running-контейнер verify-джоба с StartedUnix = now-7h (бюджет 6 ч дефолт)
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify", ct);
+        Fx = fx;
+        await SeedAsync("sv9");
+        var now = TimeProvider.System.GetUtcNow().ToUnixTimeSeconds();
+        var s3 = new FakeBackupS3();
+        var engine = new FakeVerifyEngine();
+        var name = "pgw-backup-verify-sv9-shard1-20260911090000Z";
+        engine.Containers[name] = new(
+            Guid.NewGuid().ToString("N"), "running", -1, "", StartedUnix: now - 7 * 3600);
+        var a = Completed("20260911090000Z", "000000010000000000000001",
+            new BackupVerify(BackupVerifyStatus.Pending, null));
+        await Fx.Gateway.PutAsync(Fx.Endpoint,
+            "/pgworker/backups/sv9/shard1/full/20260911090000Z", BackupStatusJson.Serialize(a), null, ct);
+        var process = BuildProcess("sv9", new FakeVerifyDriver(engine), s3);
+
+        // Act — тик: супервиз видит running-джоб старше бюджета
+        (await process.TickAsync(BuildSnap("sv9"), BackupsOf("sv9", a), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 1 — контейнер и volume удалены; ключ полного: verify.state=PENDING,
+        // checked_unix ≈ now (попытка зачтена, вердикта FAILED нет)
+        engine.Removed.Should().Contain(name);
+        engine.RemovedVolumes.Should().Contain(name);
+        var verify = await ReadVerifyAsync("sv9", "20260911090000Z");
+        ((string?)verify.GetProperty("state").GetString()).Should().Be("PENDING");
+        var checkedUnix = verify.GetProperty("checked_unix").GetInt64();
+        checkedUnix.Should().BeGreaterOrEqualTo(now - 60, "квота попытки — время супервиза");
+        verify.TryGetProperty("error", out _).Should().BeFalse("данные не виноваты — FAILED не ставится");
+
+        // Act 2 — повторный тик немедленно (джобов живых больше нет)
+        var b = a with { Verify = new BackupVerify(BackupVerifyStatus.Pending, checkedUnix) };
+        (await process.TickAsync(BuildSnap("sv9"), BackupsOf("sv9", b), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 3 — НОВЫЙ джоб НЕ создан (checked только что; pending due — по interval)
+        engine.Created.Should().BeEmpty("лив-лок немедленных перезапусков исключён (t07)");
     }
 
     // AAA: нода-источник исчезла из portalloc → джоб стартует на ПЕРВОМ хосте

@@ -232,6 +232,42 @@ public class BackupPlannerTests
         BackupPlanner.HasActive([Full("id", state, Unix(Now))]).Should().Be(expected);
     }
 
+    // AAA: BROKEN-цепочка → due безусловно, даже при свежем валидном полном (AC1)
+    [Fact]
+    public void IsDue_WalChainBroken_DueБезусловно()
+    {
+        // Arrange — свежий валидный COMPLETED (час назад, окно 86400), но wal=BROKEN
+        var fresh = Unix(Now.AddHours(-1).AddMinutes(-5));
+        var fulls = new[]
+        {
+            Full("20260911110000Z", FullBackupStatus.Completed, fresh, Unix(Now.AddHours(-1)),
+                verify: new BackupVerify(BackupVerifyStatus.Ok, Unix(Now.AddHours(-1)))),
+        };
+
+        // Act / Assert
+        BackupPlanner.IsDue(fulls, walKeyExists: true, 86400, Unix(Now),
+                walChainBroken: true)
+            .Should().BeTrue("разрыв цепочки лечится только пересъёмом полного");
+    }
+
+    // AAA: transient-деградация НЕ триггерит пересъём (AC3): walChainBroken=false
+    // при несвежем полном — due по возрасту, при свежем — не due
+    [Fact]
+    public void IsDue_WalChainBrokenFalse_СвежийПолный_НеDue()
+    {
+        // Arrange — свежий валидный COMPLETED, wal жив (ACTIVE/DEGRADED — не важно)
+        var fresh = Unix(Now.AddHours(-1).AddMinutes(-5));
+        var fulls = new[]
+        {
+            Full("20260911110100Z", FullBackupStatus.Completed, fresh, Unix(Now.AddHours(-1))),
+        };
+
+        // Act / Assert
+        BackupPlanner.IsDue(fulls, walKeyExists: true, 86400, Unix(Now),
+                walChainBroken: false)
+            .Should().BeFalse("DEGRADED по lag/тишине — transient, пересъём не триггерит");
+    }
+
     // AAA: id — YYYYMMDDHHMMSSZ UTC; коллизия в пределах шарда → суффикс
     [Fact]
     public void NextId_Collision_SuffixIncrement()

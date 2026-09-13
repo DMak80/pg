@@ -71,6 +71,12 @@ internal interface IClusterProcesses
     Task<Result<ProcessOutcome>> RestoreAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
 
+    /// <summary>Per-cluster сверка S3↔etcd (t07, arch/19 §4): мусор full/&lt;id&gt;/
+    /// живого шарда без etcd-ключа удаляется; после backups-retention (гигиена
+    /// FAILED может оставить объекты), до backup-restore (гвард владельца).</summary>
+    Task<Result<ProcessOutcome>> SuperviseBackupsAsync(
+        ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
+
     /// <summary>Репарация брошенных переездов: синтетические заявки в MoveProcess
     /// (adopt-repair spec §3.5, arch/14 §5 K).</summary>
     Task<Result<ProcessOutcome>> RepairAsync(ClusterSnapshot snap, CancellationToken ct);
@@ -92,6 +98,7 @@ internal sealed class ClusterProcesses(
     WalStreamProcess walStream,
     PgWorker.Backups.BackupVerifyProcess verifyProcess,
     PgWorker.Backups.RetentionProcess retention,
+    PgWorker.Backups.Supervisor.BackupSupervisorProcess backupsSupervisor,
     PgWorker.Backups.Process.RestoreProcess restore) : IClusterProcesses
 {
     public Task<Result<ProcessOutcome>> ProvisionAsync(ClusterSnapshot snap, CancellationToken ct)
@@ -167,6 +174,12 @@ internal sealed class ClusterProcesses(
     public Task<Result<ProcessOutcome>> RestoreAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
         => restore.TickAsync(snap, backups, ct);
+
+    // t07 (arch/19 §4): бэкапы своего кластера — из аргумента тика (парс
+    // префикса /pgworker/backups/ этим же тиком), как ретенция/restore.
+    public Task<Result<ProcessOutcome>> SuperviseBackupsAsync(
+        ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
+        => backupsSupervisor.TickAsync(snap, backups.FirstOrDefault(b => b.Cluster == snap.Config.Cluster), ct);
 
     public Task<Result<ProcessOutcome>> RepairAsync(ClusterSnapshot snap, CancellationToken ct)
         => repair.TickAsync(snap, ct);

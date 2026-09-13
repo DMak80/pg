@@ -4,13 +4,26 @@ namespace AdminPanel.Core;
 // arch/19 §4; adminpanel/02 §2.3.1; t03). Дубли воркерной модели — осознанные
 // (unify — t08-unify-adminpanel-duplicates); агрегат по кластерам —
 // ClusterBackupsInfo (BackupInfo.cs, t02-модель + Wal-словарь t03).
-public enum WalStreamInfoState { Active, Degraded, Stopped }
+// t07: Broken — разрыв цепочки (permanent; воркер переснимает полный).
+public enum WalStreamInfoState { Active, Degraded, Stopped, Broken }
 
 /// <summary>WAL-поток шарда из ключа /pgworker/backups/&lt;C&gt;/&lt;X&gt;/wal.</summary>
 public sealed record WalStreamInfo(
     string Cluster, string Shard, WalStreamInfoState State,
     string Slot, string MasterNode, long LastUploadedUnix,
     long? LagSegments, string? Error);
+
+/// <summary>Одна запись реестра сирот из глобального ключа
+/// /pgworker/backups/orphans (t07; дубль воркерной модели — осознанный,
+/// унификация t08-unify-adminpanel-duplicates): префикс «&lt;C&gt;/&lt;X&gt;»,
+/// kind shard|cluster, размер, первое наблюдение, состояние OBSERVED|DELETING.</summary>
+public sealed record BackupOrphanInfo(
+    string Prefix, string Kind, long SizeBytes, long FirstSeenUnix, string State);
+
+/// <summary>Реестр сирот установки из глобального ключа
+/// /pgworker/backups/orphans (t07; пишет только лидер-проход воркера).</summary>
+public sealed record BackupOrphansInfo(
+    IReadOnlyList<BackupOrphanInfo> Orphans, long UpdatedUnix);
 
 /// <summary>Вердикт занятости bucket бэкапов (t06): OK/WARN/CRIT.</summary>
 public enum BackupStorageState { Ok, Warn, Crit }
