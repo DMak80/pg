@@ -20,15 +20,21 @@ public sealed partial record MinioInventory
 
         foreach (var obj in objects)
         {
+            var parts = obj.Key.Split('/');
+            // S3-«directory marker» (консоль/mc создают нулевые ключи с пустыми
+            // сегментами: «demo/», «demo/s1/full/») — пропуск ДО агрегации:
+            // иначе ложный foreign-корень «demo» для реального кластера или
+            // полный с пустым Id.
+            if (parts.Any(p => p.Length == 0))
+                continue;
+
             usedBytes += obj.SizeBytes;
             objectCount++;
 
-            var parts = obj.Key.Split('/');
             if (parts.Length < 3)
             {
                 // корень вне формы <C>/<X>/… — foreign-факт (первый сегмент)
-                if (parts.Length > 0 && parts[0].Length > 0)
-                    foreign.Add(parts[0]);
+                foreign.Add(parts[0]);
                 continue;
             }
 

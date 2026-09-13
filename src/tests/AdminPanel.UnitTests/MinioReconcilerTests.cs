@@ -228,6 +228,48 @@ public class MinioReconcilerTests
         result.OrphanPrefixes.Should().BeEmpty();
     }
 
+    // AAA (ревью Fix 1): кластер есть только в etcd, в S3 пусто (bucket/префикс
+    // стёрт, свежий кластер до первой загрузки) → полные EtcdOnly и wal-факты
+    // etcd попадают в сверку («etcd-ключи без объектов» — ядро цели грани)
+    [Fact]
+    public void Reconcile_EtcdOnlyCluster_NoS3Objects()
+    {
+        // Arrange — дерево MinIO пустое; etcd знает demo/s1: полный b1 + wal-цепочка
+        var minio = Minio();
+        var backups = new[]
+        {
+            Backups("demo",
+                fulls: Fulls("s1", new BackupFullInfo(
+                    "b1", "COMPLETED", null, 100, 200, 116, "OK", 201, null)),
+                wal: ("s1", new WalStreamInfo(
+                    "demo", "s1", WalStreamInfoState.Active, "sub", "s1a", 900, null, null,
+                    "000000010000000000000001"))),
+        };
+        var clusters = new[] { Cluster("demo", "s1") };
+
+        // Act
+        var result = MinioReconciler.Reconcile(minio, backups, clusters, null);
+
+        // Assert — EtcdOnly (ключ без объектов) + wal с etcd-фактом, S3-факт пуст;
+        // владельец в /clusters/ есть — сироты нет
+        var full = result.Fulls.Should().ContainSingle().Subject;
+        full.Cluster.Should().Be("demo");
+        full.Shard.Should().Be("s1");
+        full.Id.Should().Be("b1");
+        full.Status.Should().Be(BackupFullReconcileStatus.EtcdOnly);
+        full.SizeBytes.Should().BeNull();
+        full.ObjectCount.Should().BeNull();
+        full.EtcdState.Should().Be("COMPLETED");
+        full.VerifyState.Should().Be("OK");
+        full.EtcdSizeBytes.Should().Be(116);
+        var wal = result.Wal.Should().ContainSingle().Subject;
+        wal.EtcdLastSegment.Should().Be("000000010000000000000001");
+        wal.EtcdLastUnix.Should().Be(900);
+        wal.S3LastObject.Should().BeNull();
+        wal.S3LastModifiedUnix.Should().BeNull();
+        result.OrphanPrefixes.Should().BeEmpty();
+    }
+
     // ——— фикстуры ———
 
     private static MinioStorageInfo Minio(params MinioClusterNode[] clusters) => new(

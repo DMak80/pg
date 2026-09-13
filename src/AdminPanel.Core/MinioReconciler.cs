@@ -34,22 +34,38 @@ public static class MinioReconciler
         var wal = new List<BackupWalReconcile>();
         var orphans = new List<BackupOrphanPrefix>();
 
+        // Объединение кластеров: S3-дерево ∪ etcd-Backups. Кластер, известный
+        // только etcd (bucket/префикс стёрт, свежий кластер до первой загрузки),
+        // обязан попасть в сверку: его полные — EtcdOnly/InProgress, wal — etcd-
+        // факты («etcd-ключи без объектов» — ядро сверки, spec §1/§4.4).
+        var treeByCluster = minio.Clusters.ToDictionary(c => c.Cluster, StringComparer.Ordinal);
+        var clusterNames = new SortedSet<string>(StringComparer.Ordinal);
         foreach (var clusterNode in minio.Clusters)
+            clusterNames.Add(clusterNode.Cluster);
+        foreach (var etcdCluster in backups)
+            clusterNames.Add(etcdCluster.Cluster);
+
+        foreach (var clusterName in clusterNames)
         {
-            backupsByCluster.TryGetValue(clusterNode.Cluster, out var etcdCluster);
+            treeByCluster.TryGetValue(clusterName, out var clusterNode);
+            backupsByCluster.TryGetValue(clusterName, out var etcdCluster);
             var shardNames = new SortedSet<string>(StringComparer.Ordinal);
             var anyOwnedTreeShard = false;
 
-            // Обход S3-дерева: сироты-шарды + сбор имён шардов для объединения.
-            foreach (var shardNode in clusterNode.Shards)
+            // Обход S3-дерева: сироты-шарды + сбор имён шардов для объединения
+            // (у etcd-only кластера дерева нет — сирот по определению нет).
+            if (clusterNode is not null)
             {
-                shardNames.Add(shardNode.Shard);
-                var owned = owners.Contains($"{clusterNode.Cluster}/{shardNode.Shard}");
-                anyOwnedTreeShard |= owned;
-                if (!owned)
-                    orphans.Add(MakeOrphan(
-                        $"{clusterNode.Cluster}/{shardNode.Shard}", "shard",
-                        shardNode.SizeBytes, registry));
+                foreach (var shardNode in clusterNode.Shards)
+                {
+                    shardNames.Add(shardNode.Shard);
+                    var owned = owners.Contains($"{clusterName}/{shardNode.Shard}");
+                    anyOwnedTreeShard |= owned;
+                    if (!owned)
+                        orphans.Add(MakeOrphan(
+                            $"{clusterName}/{shardNode.Shard}", "shard",
+                            shardNode.SizeBytes, registry));
+                }
             }
 
             // Объединение с etcd-шардами: полные и wal могут существовать без S3-узла.
@@ -62,17 +78,17 @@ public static class MinioReconciler
 
             foreach (var shardName in shardNames)
             {
-                var s3Shard = clusterNode.Shards.FirstOrDefault(s => s.Shard == shardName);
-                ReconcileFulls(clusterNode.Cluster, shardName, s3Shard, etcdCluster, fulls);
-                ReconcileWal(clusterNode.Cluster, shardName, s3Shard, etcdCluster, wal);
+                var s3Shard = clusterNode?.Shards.FirstOrDefault(s => s.Shard == shardName);
+                ReconcileFulls(clusterName, shardName, s3Shard, etcdCluster, fulls);
+                ReconcileWal(clusterName, shardName, s3Shard, etcdCluster, wal);
             }
 
             // Кластер дерева целиком без владельца → дополнительно префикс <C>
             // (кластеровая запись — только если в дереве нет ни одного шарда-
             // владельца; шардовые префиксы уже выше).
-            if (!anyOwnedTreeShard && !owners.Contains(clusterNode.Cluster))
+            if (clusterNode is not null && !anyOwnedTreeShard && !owners.Contains(clusterName))
                 orphans.Add(MakeOrphan(
-                    clusterNode.Cluster, "cluster", clusterNode.SizeBytes, registry));
+                    clusterName, "cluster", clusterNode.SizeBytes, registry));
         }
 
         return new BackupReconcileInfo(

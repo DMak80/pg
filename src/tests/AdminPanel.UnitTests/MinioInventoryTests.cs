@@ -129,4 +129,31 @@ public class MinioInventoryTests
         shard.Fulls.Should().ContainSingle().Which.SizeBytes.Should().Be(10);
         shard.Wal.Should().BeNull();
     }
+
+    // AAA (ревью Fix 2): S3-«directory marker»-ключи (пустые сегменты, завершающий
+    // '/') — не агрегируются: без ложного foreign «demo» и полного с пустым Id
+    [Fact]
+    public void Build_DirectoryMarkers_Skipped()
+    {
+        // Arrange — маркеры «папок» MinIO (консоль/mc) + один реальный объект
+        var objects = new List<MinioObject>
+        {
+            new("demo/", 0, 1),
+            new("demo/s1/full/", 0, 1),
+            new("demo/s1/full/b1/base.tar", 10, 2),
+            new("loose/", 0, 1),
+        };
+
+        // Act
+        var inv = MinioInventory.Build(objects);
+
+        // Assert — маркеры не считаются ни объектами, ни foreign-корнями;
+        // full ровно один, с Id «b1»
+        inv.ForeignPrefixes.Should().BeEmpty();
+        var shard = inv.Clusters.Should().ContainSingle().Subject
+            .Shards.Should().ContainSingle().Subject;
+        shard.Fulls.Select(f => f.Id).Should().Equal("b1");
+        inv.UsedBytes.Should().Be(10);
+        inv.ObjectCount.Should().Be(1);
+    }
 }
