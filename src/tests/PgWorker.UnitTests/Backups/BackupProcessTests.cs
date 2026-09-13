@@ -392,6 +392,52 @@ public class BackupProcessTests
         rig.Driver.ExecNodeCalls.Should().BeEmpty();
     }
 
+    // AAA (AC5): RUNNING-полный с «вечным» контейнером старше 6 ч → контейнер/volume
+    // удалены, статус FAILED "job-timeout…", переснятие по бэкоффу
+    [Fact]
+    public async Task Супервиз_полный_старше_бюджета_FAILED_jobtimeout_и_переснятие()
+    {
+        // Arrange — активный RUNNING started = now-7h (бюджет 6 ч дефолт);
+        // FakeBackupEngine держит running-контейнер без result-логов («вечный»)
+        var rig = await NewRig();
+        var now = TimeProvider.System.GetUtcNow();
+        var staleStarted = Unix(now.AddHours(-7));
+        var active = new FullBackupState("20260908030000Z", FullBackupStatus.Running,
+            "shard1a", BackupSourceRole.Master, staleStarted, null, null, null, null, null);
+        var name = BackupNames.ContainerName("shop", "shard1", "20260908030000Z");
+        rig.Engine.Containers[name] = new("cnt-timeout", "running", -1, "{\"phase\":\"basebackup\"}");
+
+        // Act 1 — тик супервиза
+        var outcome = await rig.Process.TickAsync(
+            await Snapshot(rig.Etcd), BackupsOf(active), CancellationToken.None);
+
+        // Assert 1 — статус FAILED с error "job-timeout"; контейнер и volume
+        // удалены; journal содержит phase job-timeout/<shard>/<id>
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        var fullKey = FullKey("20260908030000Z");
+        var parsed = BackupsParser.Parse(
+            (IReadOnlyList<Kv>)[new Kv(fullKey, rig.Etcd.Store[fullKey].Value, 1)], out var errors);
+        errors.Should().BeEmpty();
+        var failed = parsed.Value[0].Shards["shard1"].Full.Single();
+        failed.State.Should().Be(FullBackupStatus.Failed);
+        failed.Error.Should().Contain("job-timeout");
+        rig.Engine.Removed.Should().Contain(name);
+        rig.Engine.RemovedVolumes.Should().Contain(BackupNames.VolumeName("shop", "shard1", "20260908030000Z"));
+        (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.Phase
+            .Should().Be("job-timeout/shard1/20260908030000Z");
+
+        // Act 2 — повторный тик: FAILED-попытка 7-часовой давности — бэкофф
+        // (Base·2^0 от started) давно прошёл → переснятие НОВЫМ id
+        var outcome2 = await rig.Process.TickAsync(
+            await Snapshot(rig.Etcd), BackupsOf(failed), CancellationToken.None);
+
+        // Assert 2 — новый PLANNED/RUNNING с другим id (переснятие по общему правилу)
+        outcome2.IsSuccess.Should().BeTrue();
+        rig.Etcd.Store.Keys
+            .Where(k => k.StartsWith("/pgworker/backups/shop/shard1/full/"))
+            .Should().HaveCount(2, "переснятие — НОВЫЙ id, старая FAILED-запись — история");
+    }
+
     // AAA: инвариант одного активного — при RUNNING (живой джоб) новую попытку
     // не создаём: супервизия поллит, G3 молчит
     [Fact]

@@ -254,6 +254,31 @@ public sealed class BackupProcess(
 
             var found = list.Value.FirstOrDefault(c => c.Names.Contains(name));
 
+            // t07 (arch/19 §6): возрастной бюджет зависшего джоба — kill+rm
+            // контейнера и staging-volume → FAILED → переснятие по общему бэкоффу.
+            // PLANNED без контейнера — FAILED без kill; transport-отказ list —
+            // transient выше по коду (статус не меняем). journal-before-
+            // manipulations: статус FAILED пишется ДО cleanup.
+            var nowUnix = time.GetUtcNow().ToUnixTimeSeconds();
+            if (SupervisionTimeouts.IsTimedOut(active.StartedUnix, nowUnix, options.JobFullTimeoutSec))
+            {
+                var timedOut = active with
+                {
+                    State = FullBackupStatus.Failed,
+                    FinishedUnix = nowUnix,
+                    Error = $"job-timeout: {nowUnix - active.StartedUnix} с > {options.JobFullTimeoutSec}",
+                };
+                var putTimeout = await PutAsync(
+                    BackupNames.FullKey(cluster, shard.Name, active.Id), BackupStatusJson.Serialize(timedOut), ct);
+                if (!putTimeout.IsSuccess)
+                    return putTimeout;
+                if (found is not null)
+                    await CleanupJobAsync(engine, cluster, shard.Name, active.Id, ct); // kill+rm контейнера и volume
+                await journal.WritePhaseAsync(cluster, Op, $"job-timeout/{shard.Name}/{active.Id}",
+                    claims.InstanceId, timedOut.Error, ct);
+                continue;
+            }
+
             // PLANNED: джоб ещё не стартовал — идемпотентный запуск (spec §2.4):
             // нет контейнера → create; старт — в обоих случаях (created прошлом
             // тике / только что созданный; 304 already-started = успех движка).
