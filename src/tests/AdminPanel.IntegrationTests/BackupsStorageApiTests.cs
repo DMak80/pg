@@ -46,6 +46,8 @@ public class BackupsStorageDisabledApiTests(EtcdContainerFixture etcd)
     [Fact]
     public async Task Storage_Disabled_WhenEndpointEmpty()
     {
+        // хост строится под замком до любого Services (см. EnsureBuilt)
+        _factory.EnsureBuilt();
         // Arrange: хост без секции AdminPanel:Backups; один etcd-тик — снапшот
         // собран, MinioStorage нет (тик loop ещё не двигали); тик loop — no-op.
         var refresher = _factory.Services.GetRequiredService<SnapshotRefresher>();
@@ -104,6 +106,7 @@ public class BackupsStorageInventoryApiTests(
     [Fact]
     public async Task Storage_Summary_Tree_Health_And_Quota()
     {
+        _factory.EnsureBuilt(); // до любого Services — иначе ленивый build без очистки кеша
         // Arrange: бэкап-ключи в etcd + сеяные объекты в своём MinIO; тики
         // двигает тест: инвентарь (loop) → снапшот с MinioStorage (refresher).
         await EtcdSeed.SeedBackupsAsync(
@@ -114,7 +117,7 @@ public class BackupsStorageInventoryApiTests(
             ("demo/s1/full/b1/pg_wal/000000010000000000000001", new string('a', 16)),
             ("demo/s1/wal/000000010000000000000002", new string('a', 16)),
             ("demo/s1/wal/00000002.history", new string('a', 4)),
-            ("ghost-shard/s9/full/b9/base.tar", new string('a', 50)),
+            ("ghost_shard/s9/full/b9/base.tar", new string('a', 50)),
             ("loose/file.bin", new string('a', 10)),
         ], TestContext.Current.CancellationToken);
         var loop = _factory.Services.GetRequiredService<MinioInventoryLoop>();
@@ -142,7 +145,7 @@ public class BackupsStorageInventoryApiTests(
             .Should().Contain(minio.Bucket);
 
         // Assert: дерево <C>/<X> — demo/s1 (136 = full 116 + wal 16 + history 4,
-        // 1 сегмент WAL), сирота ghost-shard/s9 не скрыта; foreign-префикс loose.
+        // 1 сегмент WAL), сирота ghost_shard/s9 не скрыта; foreign-префикс loose.
         var clusters = dto.GetProperty("clusters").EnumerateArray().ToList();
         var demo = clusters.Single(c => c.GetProperty("cluster").GetString() == "demo");
         var s1 = demo.GetProperty("shards").EnumerateArray()
@@ -151,7 +154,7 @@ public class BackupsStorageInventoryApiTests(
         s1.GetProperty("walSegmentCount").GetInt64().Should().Be(1);
         s1.GetProperty("fullsCount").GetInt32().Should().Be(1);
         s1.GetProperty("orphan").GetBoolean().Should().BeFalse();
-        var ghost = clusters.Single(c => c.GetProperty("cluster").GetString() == "ghost-shard");
+        var ghost = clusters.Single(c => c.GetProperty("cluster").GetString() == "ghost_shard");
         var s9 = ghost.GetProperty("shards").EnumerateArray()
             .Single(s => s.GetProperty("shard").GetString() == "s9");
         s9.GetProperty("orphan").GetBoolean().Should().BeTrue();
@@ -193,6 +196,7 @@ public class BackupsStorageMinioDownApiTests(
     [Fact]
     public async Task Storage_StopMinio_ApiDown_Alert_AfterTwoTicks()
     {
+        _factory.EnsureBuilt(); // до любого Services — иначе ленивый build без очистки кеша
         // Arrange: как AC2 — успешный первый тик (инвентарь + снапшот).
         await EtcdSeed.SeedBackupsAsync(
             etcd.Endpoint, TestContext.Current.CancellationToken);

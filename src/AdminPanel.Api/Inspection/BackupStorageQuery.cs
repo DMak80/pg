@@ -339,7 +339,19 @@ public sealed class BackupShardStorageQueryHandler(ISnapshotReader reader)
         var etcdCluster = snapshot.Backups.FirstOrDefault(c => c.Cluster == query.Cluster);
         var s3Shard = minio?.Clusters.FirstOrDefault(c => c.Cluster == query.Cluster)
             ?.Shards.FirstOrDefault(s => s.Shard == query.Shard);
-        if (etcdCluster is null && s3Shard is null)
+
+        // 404 — ШАРДА нет ни в etcd, ни в S3-дереве (spec §4.6): шард считается
+        // известным, если он есть хотя бы в одном etcd-словаре кластера
+        // (полные/wal/restore/verify/deleting/последний COMPLETED); существование
+        // самого кластера недостаточно (фикс интеграции AC9: demo/nope → 404).
+        var etcdShardKnown = etcdCluster is not null && (
+            etcdCluster.ShardLastCompletedUnix.ContainsKey(query.Shard)
+            || etcdCluster.Shards?.ContainsKey(query.Shard) == true
+            || etcdCluster.DeletingFulls?.ContainsKey(query.Shard) == true
+            || etcdCluster.ShardVerifyFailures?.ContainsKey(query.Shard) == true
+            || etcdCluster.ShardsRestores?.ContainsKey(query.Shard) == true
+            || etcdCluster.ShardsFulls?.ContainsKey(query.Shard) == true);
+        if (!etcdShardKnown && s3Shard is null)
             return ValueTask.FromResult(Result<BackupShardStorageDto>.Failed(
                 new BackupShardNotFound(query.Cluster, query.Shard)));
 

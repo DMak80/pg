@@ -74,9 +74,20 @@ public sealed class BackupsWebFactory : WebApplicationFactory<Program>
         EtcdEndpoint = etcdEndpoint,
     };
 
+    private bool _built;
+
     /// <summary>Строит хост под замком с очисткой кеша сканирования (см.
-    /// PanelHostBuilder) — вызывать ПОСЛЕ установки Endpoint'ов сценария.</summary>
-    public void EnsureBuilt() => PanelHostBuilder.BuildExclusive(this);
+    /// PanelHostBuilder) — вызывать ПОСЛЕ установки Endpoint'ов сценария и
+    /// ОБЯЗАТЕЛЬНО до первого обращения к Services/CreateClient: ленивый
+    /// build мимо хелпера пропустил бы скан сборок и терял [Config]/[InjectAs*]
+    /// регистрации (фикс полной серии t08).</summary>
+    public void EnsureBuilt()
+    {
+        if (_built)
+            return;
+        PanelHostBuilder.BuildExclusive(this);
+        _built = true;
+    }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
