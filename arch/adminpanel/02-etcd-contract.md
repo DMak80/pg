@@ -114,8 +114,8 @@ Scope = `<C>-<X>`, глобально уникален. Связь со шард
 | `/pgworker/work/<C>` | JSON `{"op":"provision\|…","phase":"…","updated_unix":…,"instance":"…","last_error"?,"fail_count"?,"fail_first_unix"?,"retry_not_before_unix"?,"unreachable"?}` (канон — arch/14 §3.3) | `WorkJournalInfo` (§3) | журнал фаз процесса воркера; `last_error` + `fail_first_unix` кормят алерт `provision-stuck` (03 §4) — панель видит, ЧТО именно фейлится у неинициализирующегося кластера; битый JSON — parseError-запись, ключ не трогаем (домен воркера); в UI отображается через алерты |
 | `/pgworker/moves/<C>/<bucket>` | JSON-заявка `{"op":"move"\|"rollback"\|"finalize"\|"abort","to"?,"old_shard"?,"skip_reverse"?,"resume"?,"force"?,"requested_unix":<unix>,"requested_by"?}` | `MoveTicket` (§3) | очередь заявок на переезды: панель читает (вкладка «Переезды»); **пишет PgWorker** по команде мутации §9.7 (пришла через API воркера); после успеха/перманентного отказа заявку УДАЛЯЕТ PgWorker — исчезновение из очереди без изменения routing/status = отвергнутая заявка |
 | `/pgworker/api/<id>` | lease TTL 15 c, JSON `{"url":"https://<host>:<port>","instance":"<id>","since_unix":…}` | `WorkerEndpoint[]` (§3) | **дискавери API PgWorker** (arch/14 §1.1): ставит сам воркер; ключ жив = инстанс жив и URL валиден. URL — `https://` (t03): API PgWorker обслуживается только по mTLS — панель аутентифицируется клиентским сертификатом per-install API-CA (единая пакета с KafkaWorker, §2.3.2: `AdminPanel:Workers:WorkerTls`, env `WORKERS_PANEL_TLS_*`); `X-Api-Key`/`PGW_API_KEY` удалён (t03). Панель кеширует в снапшоте и зовёт любой живой при мутациях §9; по этим же URL отдельный тик опрашивает `/healthz` (результат — `WorkerHealth[]`, алерт `worker-unhealthy` 03 §4); в UI не отображается (только через алерт доступности `worker-api-unreachable`, 03 §4.1) |
-| `/pgworker/backups/<C>/…` | JSON-статусы полных/WAL (канон — [19-backups.md](../19-backups.md) §4) | `BackupsInfo` (§3, t02) | подсистема бэкапов (arch/19): панель ЧИТАЕТ статусы полных и WAL-цепочек; суточный алерт `backup-full-stale` per-shard (возраст последнего ВАЛИДНОГО COMPLETED-полного — `verify ≠ FAILED`, t04 — > `full_max_age_sec` политики кластера, дефолт 86400) — t02, WAL-алерты («разрыв/отставание цепочки») — t03, ретенционные алерты `backup-storage-quota` (WARN/CRIT по `state` ключа `/pgworker/backups/storage`) и `backup-deleting-stuck` (warning: `DELETING` старше порога `Alerts:Backups:DeletingStaleSec`, дефолт 21600) — t06, алерт `backup-verify-failed` (critical, провал verify полного — `verify.error`) — t04; UI-грань бэкапов — t08; пишет префикс ТОЛЬКО PgWorker |
-| `/pgworker/backups/storage` | JSON `{"used_bytes":<n>,"quota_bytes"?<n>,"used_percent"?<n>,"state":"OK"\|"WARN"\|"CRIT","updated_unix":<unix>}` (канон — arch/19 §4) | `BackupsInfo.Storage` (t06) | занятость bucket бэкапов установки: пишет ретенционный проход PgWorker (t06; ключ глобальный — вне per-cluster префиксов); панель читает в снапшот префикса `/pgworker/backups/` и зажигает `backup-storage-quota` по `state` (алерт уровня каталога 03 §4); в UI не отображается (t08 — грань MinIO) |
+| `/pgworker/backups/<C>/…` | JSON-статусы полных/WAL (канон — [19-backups.md](../19-backups.md) §4) | `BackupsInfo` (§3, t02) | подсистема бэкапов (arch/19): панель ЧИТАЕТ статусы полных и WAL-цепочек; суточный алерт `backup-full-stale` per-shard (возраст последнего ВАЛИДНОГО COMPLETED-полного — `verify ≠ FAILED`, t04 — > `full_max_age_sec` политики кластера, дефолт 86400) — t02, WAL-алерты («разрыв/отставание цепочки») — t03, ретенционные алерты `backup-storage-quota` (WARN/CRIT по `state` ключа `/pgworker/backups/storage`) и `backup-deleting-stuck` (warning: `DELETING` старше порога `Alerts:Backups:DeletingStaleSec`, дефолт 21600) — t06, алерт `backup-verify-failed` (critical, провал verify полного — `verify.error`) — t04; UI-грань бэкапов — t08 (статусы полных/WAL/restore джойнятся с S3-инвентарём в сверке грани); пишет префикс ТОЛЬКО PgWorker |
+| `/pgworker/backups/storage` | JSON `{"used_bytes":<n>,"quota_bytes"?<n>,"used_percent"?<n>,"state":"OK"\|"WARN"\|"CRIT","updated_unix":<unix>}` (канон — arch/19 §4) | `BackupsInfo.Storage` (t06) | занятость bucket бэкапов установки: пишет ретенционный проход PgWorker (t06; ключ глобальный — вне per-cluster префиксов); панель читает в снапшот префикса `/pgworker/backups/` и зажигает `backup-storage-quota` по `state` (алерт уровня каталога 03 §4); отображается в грани "Хранилище бэкапов" (t08: карточка «Место» — used/quota/вердикт воркера + штамп live-инвентаря) |
 
 ### 2.3.2. `/kafkaworker/api/…` — дискавери API KafkaWorker
 
@@ -149,6 +149,22 @@ docker-health больше не расходятся.
 | `POST /v3/cluster/member/list` | активный endpoint | `EtcdMember[]`: id, name, peerUrls, clientUrls; `IsLeader` по совпадению id со статусом leader |
 | `POST /v3/maintenance/alarm` | активный endpoint | `Alarm[]`: memberId, type (NOSPACE, CORRUPT, NOSPACE-потомки) |
 
+### 2.5. MinIO/S3 бэкапов — live-чтение панели (t08)
+
+Грань «Хранилище бэкапов» читает объектное хранилище бэкапов НАПРЯМУЮ (не через
+etcd): per-install креды — env `AdminPanel:Backups:S3:*` (arch/19 §7, в git их
+нет; DTO несёт только endpoint/bucket). Панель в S3 ТОЛЬКО ЧИТАЕТ — контракт
+уровня кода: интерфейс клиента содержит лишь ListBuckets/ListObjectsV2 и
+публичные health-эндпоинты `/minio/health/live`|`/minio/health/cluster` (200/503;
+drives-поля тела при наличии — толерантный парс); пишущие/удаляющие операции —
+только воркер (arch/19 §4/§5). Инвентарь-тик 60 c (`IntervalSec`): ListBuckets +
+health + ОДИН полный list-v2 bucket → агрегаты дерева `<C>/<X>` в стор →
+снапшот `EtcdSnapshot.MinioStorage` (§3); построчные объекты — on-demand
+`GET /api/backups/objects` (пагинация, единственный прямой выход на запрос).
+Сверка S3↔etcd — отображение (полные без ключа / ключи без объектов / сироты с
+джойном на реестр /pgworker/backups/orphans): находит и удаляет сироты
+супервизор воркера (arch/19 §4) — панель ничего не удаляет.
+
 ## 3. Модель снапшота (С#-типы, проект `Core`)
 
 Immutable records; enum'ы — английские идентификаторы.
@@ -164,6 +180,7 @@ sealed record EtcdSnapshot(
     IReadOnlyList<WorkerEndpoint> PgWorkerEndpoints, // §2.3.1: живые /pgworker/api/<id>
     IReadOnlyList<WorkJournalInfo> PgWorkerWork, // §2.3.1: журналы /pgworker/work/<C>
     IReadOnlyList<WorkerHealth> WorkerHealth, // §2.3.1: опрос /healthz живых инстансов
+    MinioStorageInfo? MinioStorage,   // §2.5: live-инвентарь MinIO (t08), null — грань не настроена
     IReadOnlyList<ProbeResult> Probes,     // результаты live-проб §6
     IReadOnlyList<Alert> Alerts,           // вычислено AlertEngine (03-panels §4)
     int UnknownKeyCount);                  // диагностика «неизвестных» ключей
@@ -188,6 +205,14 @@ sealed record WorkerHealth(
     DateTimeOffset CheckedAtUtc, string? Detail);
 
 enum WorkerHealthStatus { Healthy, Degraded, Unreachable }
+
+// Live-инвентарь MinIO-грани «Хранилище бэкапов» (§2.5, t08): пишется
+// инвентарь-тиком в стор, вносится refresher'ом; null — грань не настроена.
+sealed record MinioStorageInfo(bool Configured, string Endpoint, string Bucket,
+    MinioHealth? Health, IReadOnlyList<string> Buckets, long UsedBytes,
+    long ObjectCount, IReadOnlyList<MinioClusterNode> Clusters,
+    IReadOnlyList<string> ForeignPrefixes, long UpdatedAtUnix,
+    int ConsecutiveFailures, string? LastError);
 
 sealed record ClusterInfo(
     string Name, string? DbName, int BucketsCount, long? CreatedUnix,

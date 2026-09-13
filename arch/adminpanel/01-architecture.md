@@ -31,10 +31,17 @@
         │  5) AlertEngine(Snapshot) → Alert[]    │
         └────────────────────────┬───────────────┘
                                  │ опционально, отдельный тик ~15 c
-        ┌────────────────────────┴───────────────┐
-        │ Probes (Patroni REST :8008, Npgsql)    │──► PG-ноды и HAProxy
-        │  обогащают снапшот полями runtime      │    шардов
-        └────────────────────────────────────────┘
+                 ┌────────────────────────┴───────────────┐
+                 │ Probes (Patroni REST :8008, Npgsql)    │──► PG-ноды и HAProxy
+                 │  обогащают снапшот полями runtime      │    шардов
+                 └────────────────────────────────────────┘
+
+                 ┌────────────────────────┴───────────────┐
+                 │ MinIO live-тик (AdminPanel.Probes/S3,  │  тик 60 c
+                 │  AdminPanel:Backups)                   │──► MinIO/S3 bucket
+                 │  ListBuckets + health + list-v2 bucket │    бэкапов установки
+                 │  → MinioInventoryStore → снапшот       │    (read-only!)
+                 └────────────────────────────────────────┘
 
                  ┌──────────────────────────────────────────────────────┐
                  │ POST /api/clusters|shards|moves|… — мутации панели: │
@@ -63,6 +70,13 @@
 - **Refresher — единственный писатель снапшота**; пробы пишут в него же
   (отдельным тиком, реже). Всё, что видит пользователь, — производные от
   снапшота: DTO для API, алерты, badge «stale».
+- **MinIO live-тик панели** (t08): отдельный `BackgroundService`
+  `MinioInventoryLoop` пишет инвентарь bucket'а бэкапов в
+  `MinioInventoryStore`; `SnapshotRefresher` вносит готовое состояние в
+  `EtcdSnapshot.MinioStorage` (по образцу `WorkerHealth`) — KV-тик не
+  блокируется; API не ходит в MinIO на запрос, КРОМЕ on-demand
+  `GET /api/backups/objects` (постраничный list-v2 — большой объём, тиком
+  не тянется).
 - **Направление зависимостей**: `Api → (Core, Etcd, Probes, Infrastructure)`;
   `Etcd → Core`; `Probes → Core`; `Core → Infrastructure`. Домен снапшота
   (`Core`) не знает про HTTP и etcd-клиента.
@@ -74,7 +88,7 @@
 | `AdminPanel.Infrastructure` | Каркас, скопированный из референса `Puzzle` и обрезанный под панель: `Result`-монада, attribute-DI (`[InjectAs*]`, `[Config]`, `AutoRegistration`), CQRS (`IQuery<T>`/`IQueryHandler`, `ICommand<T>`/`ICommandHandler` — команды мутаций: создание/удаление кластера, добавление/демонтаж шарда, заявки на переезды бакетов; `IHandler`-диспетчер), health-check базис. Без Bus/Outbox/Kafka/миграций — панели не нужны |
 | `AdminPanel.Core` | Домен снапшота: `EtcdSnapshot` и его модели (`ClusterInfo`, `ShardInfo`, `NodeInfo`, `BucketInfo`, `HaScope`, `Alert`, …), `AlertEngine` (чистая функция `Snapshot → Alert[]`), парсинг scope `<C>-<X>` |
 | `AdminPanel.Etcd` | Клиент etcd через HTTP JSON gateway (`IEtcdGateway`): чтение (range/status/member/alarm) + минимальная запись для мутаций панели (txn/put/delete, 02 §9–§9.7); парсеры ключей `/clusters/`, `/service/`, `/cluster/nodes/`, `/pgworker/` (portalloc — адреса проб, moves — очередь заявок) в модель Core, `SnapshotRefresher`, `SnapshotStore` |
-| `AdminPanel.Probes` | Опциональные live-пробы: Patroni REST `:8008` (`/cluster`), SQL через Npgsql (read-only к `pg_catalog`/`pg_stat_*`). Обогащение снапшота полями runtime |
+| `AdminPanel.Probes` | Опциональные live-пробы: Patroni REST `:8008` (`/cluster`), SQL через Npgsql (read-only к `pg_catalog`/`pg_stat_*`), S3/MinIO-инвентарь бэкапов (t08: read-only обёртка AWSSDK.S3 + health-эндпоинты). Обогащение снапшота полями runtime |
 | `AdminPanel.Api` | Host: `Program.cs` (модульная композиция ~50 строк), auth-модуль, REST-эндпоинты (GET-инспекция + мутации `POST/DELETE /api/clusters…`, 03 §1), раздача SPA из `wwwroot`, `/api/healthz` |
 | `frontend/` | React+Vite+TS (не dotnet-проект); `npm run build` кладёт бандл в `src/AdminPanel.Api/wwwroot` |
 | `tests/AdminPanel.UnitTests` | xunit v3 + FluentAssertions: парсеры etcd-ключей, `AlertEngine`, auth-логика, DTO-мапперы |
@@ -158,6 +172,7 @@ FluentAssertions, Testcontainers, Npgsql, Microsoft.Extensions.*); новые
 | `AdminPanel:Probes` | `PatroniEnabled` (true), `SqlEnabled` (true), `Interval` (15 c), `Timeout` (3 c), `Password` (для SQL; DSN берётся из etcd), `HostMap` (пусто; словарь «etcd-адрес ноды `host:port`» → «адрес, достижимый с хоста панели») | live-пробы; отключаются целиком; `HostMap` — override адресов проб для локальных стендов ([02](02-etcd-contract.md) §6, [04](04-local-stand.md) §2.3) |
 | `AdminPanel:Auth` | `Username`, `Password`, `PasswordHash`, `SessionHours` (8), `AllowHttp` (false) | аутентификация |
 | `AdminPanel:Alerts` | `StaleMoveSeconds` (600), `FrozenSeconds` (60), `ReplicaLagBytes` (16 МБ) | пороги алертов |
+| `AdminPanel:Backups` | `S3 {Endpoint, Region?, Bucket, AccessKey, SecretKey, PathStyle=true}`, `IntervalSec` (60), `TimeoutSec` (5) | грань «Хранилище бэкапов» (t08); пустой `Endpoint` — грань выключена (тик не стартует, API `configured=false`); креды только env (arch/19 §7) |
 
 Секреты (SQL-пароль, пароль админа) — env-переменными поверх `appsettings.json`
 (`AdminPanel__Probes__Password` и т.п.), в git их нет.
@@ -192,6 +207,7 @@ FluentAssertions, Testcontainers, Npgsql, Microsoft.Extensions.*); новые
 | Протух master-lease шарда | ключа `/clusters/<C>/shards/X/master` нет при живом `dsn` → алерт critical (P11) |
 | Patroni REST недоступен | поля пробы `null`, `Probes[]` фиксирует ошибку, алерт `probe-failed` warning (все члены скопа недоступны — critical, [03](03-panels.md) §4); etcd-часть HA остаётся |
 | SQL-проба недоступна | аналогично; Active-шард — critical `probe-failed` (шард недоступен); SQL-поля (слоты/лаги) скрыты в UI с пометкой |
+| MinIO недоступен | инвентарь устаревает (`inventoryUpdatedUnix` не растёт), алерт warning `backup-s3-unreachable` после 2 неудачных тиков; etcd-часть грани (статусы/квота/сироты) продолжает работать |
 
 ## 9. Что сознательно НЕ делаем (YAGNI)
 
