@@ -40,18 +40,21 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
     public const string HealthHttpClientName = "minio-health";
 
     private readonly AmazonS3Client? _client;
-    private readonly IHttpClientFactory? _httpClientFactory;
+    private readonly IHttpClientFactory _httpClientFactory;
     private readonly string _endpoint;
     private readonly string _bucket;
 
-    public MinioS3Client(IOptions<MinioOptions> options)
-        : this(options.Value, null)
+    // Единственный ctor (DI): health-пробы идут через именованный HttpClient
+    // "minio-health" — фикс интеграции AC2/AC3 (t08): DI выбирал 1-арговый ctor
+    // (MinioOptions не резолвится) и клиент жил с _httpClientFactory = null,
+    // health-пробы молча не выполнялись (LiveOk всегда false).
+    public MinioS3Client(IOptions<MinioOptions> options, IHttpClientFactory httpClientFactory)
+        : this(options.Value, httpClientFactory)
     {
     }
 
-    // httpClientFactory — именованный HttpClient "minio-health" (без SigV4);
-    // null допустим только в тестах, вызывающих ListBucketsAsync/ListPageAsync.
-    public MinioS3Client(MinioOptions options, IHttpClientFactory? httpClientFactory)
+    // httpClientFactory — именованный HttpClient "minio-health" (без SigV4).
+    public MinioS3Client(MinioOptions options, IHttpClientFactory httpClientFactory)
     {
         _endpoint = options.S3.Endpoint.TrimEnd('/');
         _bucket = options.S3.Bucket;
@@ -63,11 +66,19 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
         if (string.IsNullOrWhiteSpace(options.S3.Endpoint))
             return;
 
+        // Таймауты HTTP-вызовов S3 — из настроек (<= 0 — дефолт 5 c, образец
+        // именованного HttpClient в ModuleExtensions).
+        var timeoutSeconds = options.TimeoutSec > 0 ? options.TimeoutSec : 5;
         var config = new AmazonS3Config
         {
             ServiceURL = options.S3.Endpoint,
             ForcePathStyle = options.S3.PathStyle,
             AuthenticationRegion = options.S3.Region,
+
+            // Тик — свой retry-механизм (ConsecutiveFailures, период 60 c):
+            // SDK-ретраи с бэкоффом только растягивали сбойный тик на минуты.
+            MaxErrorRetry = 0,
+            Timeout = TimeSpan.FromSeconds(timeoutSeconds),
         };
         _client = new AmazonS3Client(
             new BasicAWSCredentials(options.S3.AccessKey, options.S3.SecretKey), config);
@@ -148,8 +159,6 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
     private async Task<(int? StatusCode, MinioDrives? Drives)> ProbeHealthAsync(
         string path, bool withDrives, CancellationToken ct)
     {
-        if (_httpClientFactory is null)
-            return (null, null);
         try
         {
             var client = _httpClientFactory.CreateClient(HealthHttpClientName);

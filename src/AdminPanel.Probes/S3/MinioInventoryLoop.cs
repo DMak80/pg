@@ -68,10 +68,25 @@ public sealed class MinioInventoryLoop(
         }
 
         var at = time.GetUtcNow().ToUnixTimeSeconds();
+
+        // (1) health — факт доступности на ЭТОТ тик: реальный клиент не бросает
+        // (пробы гасят исключения в MinioHealth); AC3: Health в сторе обновляется
+        // КАЖДЫМ тиком — у остановленного MinIO apiOk/liveOk=false, при этом
+        // инвентарь остаётся прежним (устаревающим, штамп не растёт).
+        MinioHealth health;
         try
         {
-            // (1) health (2) buckets (3) полный list-v2 постранично (4) агрегация.
-            var health = await client.GetHealthAsync(ct);
+            health = await client.GetHealthAsync(ct);
+        }
+        catch (Exception e) when (e is not OperationCanceledException)
+        {
+            FailTick(e.Message, health: null);
+            return;
+        }
+
+        try
+        {
+            // (2) buckets (3) полный list-v2 постранично (4) агрегация.
             var buckets = await client.ListBucketsAsync(ct);
             if (!buckets.IsSuccess)
                 throw new ApplicationException(buckets.Error!.Message, buckets.Error);
@@ -102,22 +117,31 @@ public sealed class MinioInventoryLoop(
         }
         catch (Exception e) when (e is not OperationCanceledException)
         {
-            // Сбой тика: счётчик +1, прежние данные/штамп живут (аналог FailTick
-            // refresher'а); маркер Решения 4 (стор был пуст) остаётся с UpdatedAtUnix=0.
-            var previous = store.Current;
-            logger.LogWarning(e, "AdminPanel:Backups: инвентарь-тик MinIO не удался ({Failures} подряд)",
-                (previous?.ConsecutiveFailures ?? 0) + 1);
-            store.Replace(previous is null
+            FailTick(e.Message, health);
+        }
+    }
+
+    // Сбойный тик: счётчик +1, Health — факт текущей пробы (AC3; null — проба
+    // сама бросила), данные/штамп прежние (аналог FailTick refresher'а); маркер
+    // Решения 4 (стор был пуст) остаётся с UpdatedAtUnix=0.
+    private void FailTick(string message, MinioHealth? health)
+    {
+        var previous = store.Current;
+        logger.LogWarning(
+            "AdminPanel:Backups: инвентарь-тик MinIO не удался ({Failures} подряд): {Error}",
+            (previous?.ConsecutiveFailures ?? 0) + 1, message);
+        store.Replace(
+            previous is null
                 ? new MinioStorageInfo(
-                    Configured: true, config.S3.Endpoint, config.S3.Bucket,
-                    Health: null, Buckets: [], UsedBytes: 0, ObjectCount: 0,
+                    Configured: true, options.Value.S3.Endpoint, options.Value.S3.Bucket,
+                    Health: health, Buckets: [], UsedBytes: 0, ObjectCount: 0,
                     Clusters: [], ForeignPrefixes: [], UpdatedAtUnix: 0,
-                    ConsecutiveFailures: 1, LastError: e.Message)
+                    ConsecutiveFailures: 1, LastError: message)
                 : previous with
                 {
+                    Health = health ?? previous.Health,
                     ConsecutiveFailures = previous.ConsecutiveFailures + 1,
-                    LastError = e.Message,
+                    LastError = message,
                 });
-        }
     }
 }

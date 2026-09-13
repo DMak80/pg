@@ -73,9 +73,11 @@ public sealed record BackupStorageEtcdDto(
 public sealed record BackupStorageDto(
     bool Configured, string? NotConfiguredReason, string? Endpoint, string? Bucket,
     MinioHealthDto? Health,
+    IReadOnlyList<string> Buckets, // бакеты установки (live-инвентарь, arch/03 §3)
     BackupStorageEtcdDto? Etcd, // ключ /pgworker/backups/storage (вердикт воркера)
     long? LiveUsedBytes,        // live-инвентарь (снапшот MinioStorage)
     IReadOnlyList<BackupClusterStorageDto> Clusters,
+    IReadOnlyList<string> ForeignPrefixes, // корневые префиксы вне <C>/<X> — без вердикта
     IReadOnlyList<BackupOrphanDto> Orphans, // реестр воркера + сверка панели, слитые
     long InventoryUpdatedUnix, string? InventoryError);
 
@@ -148,8 +150,8 @@ public static class BackupStorageMappers
             return new BackupStorageDto(
                 Configured: false,
                 NotConfiguredReason: "AdminPanel:Backups:S3:Endpoint не задан",
-                Endpoint: null, Bucket: null, Health: null, Etcd: null,
-                LiveUsedBytes: null, Clusters: [], Orphans: [],
+                Endpoint: null, Bucket: null, Health: null, Buckets: [], Etcd: null,
+                LiveUsedBytes: null, Clusters: [], ForeignPrefixes: [], Orphans: [],
                 InventoryUpdatedUnix: 0, InventoryError: null);
         }
 
@@ -162,9 +164,11 @@ public static class BackupStorageMappers
             Endpoint: minio.Endpoint,
             Bucket: minio.Bucket,
             Health: MapHealth(minio.Health),
+            Buckets: minio.Buckets,
             Etcd: MapEtcdStorage(snapshot.BackupStorage),
             LiveUsedBytes: minio.UsedBytes,
             Clusters: MapClusters(minio.Clusters, reconcile),
+            ForeignPrefixes: minio.ForeignPrefixes,
             Orphans: MergeOrphans(reconcile.OrphanPrefixes, snapshot.BackupOrphans, orphanTtlSec, nowUnix),
             InventoryUpdatedUnix: minio.UpdatedAtUnix,
             InventoryError: minio.LastError);
