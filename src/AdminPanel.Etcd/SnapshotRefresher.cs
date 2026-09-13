@@ -21,6 +21,7 @@ public sealed class SnapshotRefresher(
     ISnapshotStore store,
     IProbeStateStore probeStateStore,
     IWorkerHealthStore workerHealthStore,
+    IMinioInventoryStore minioStore,
     IOptions<EtcdOptions> options,
     TimeProvider time,
     ILogger<SnapshotRefresher> logger) : BackgroundService, IHealthCheckService
@@ -157,7 +158,13 @@ public sealed class SnapshotRefresher(
                 time, clustersParsed, serviceParsed, nodes, movesParsed, backupsParsed, pgApiParsed, workParsed,
                 etcd.Members, etcd.Alarms, etcd),
             probeStateStore.Current)
-            with { WorkerHealth = workerHealthStore.Current ?? [] };
+            with
+        {
+            WorkerHealth = workerHealthStore.Current ?? [],
+            // t08: live-инвентарь MinIO — готовым состоянием из стора (по образцу
+            // WorkerHealth: poller пишет независимо, KV-тик не блокируется).
+            MinioStorage = minioStore.Current,
+        };
         store.Replace(built with
         {
             Alerts = alertEngine.Evaluate(built, previous, now, EffectiveIntervalSeconds()),
@@ -233,7 +240,8 @@ public sealed class SnapshotRefresher(
             previous?.ParseErrors ?? [],
             previous?.UnknownKeyCount ?? 0,
             previous?.BackupStorage, // ключ storage переживает отказный тик — как Backups (t06)
-            previous?.BackupOrphans); // реестр сирот переживает отказный тик — как storage (t07)
+            previous?.BackupOrphans, // реестр сирот переживает отказный тик — как storage (t07)
+            previous?.MinioStorage); // инвентарь MinIO переживает отказ etcd (t08, как WorkerHealth)
 
         // Алерты вычисляются и на отказном тике: etcd-unreachable/snapshot-stale
         // живут именно здесь (spec §3.5); data-алерты пересчитываются по прежним данным.

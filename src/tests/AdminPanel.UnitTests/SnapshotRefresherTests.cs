@@ -4,6 +4,7 @@ using AdminPanel.Etcd;
 using AdminPanel.Etcd.Client;
 using AdminPanel.Etcd.Workers;
 using AdminPanel.Infrastructure;
+using AdminPanel.Probes.S3;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -25,12 +26,22 @@ internal static class RefresherTestHarness
         ISnapshotStore store,
         SettableProbeStateStore? probes,
         params string[] endpoints)
+        => New(gateway, store, probes, null, endpoints);
+
+    // С стором MinIO-инвентаря (t08 — конструктор refresher'а): null → пустой стор.
+    public static SnapshotRefresher New(
+        FakeEtcdGateway gateway,
+        ISnapshotStore store,
+        SettableProbeStateStore? probes,
+        MinioInventoryStore? minio,
+        params string[] endpoints)
         => new(
             gateway,
             new AlertEngine(AlertTestRules.All()),
             store,
             probes ?? new SettableProbeStateStore(),
             new WorkerHealthStore(),
+            minio ?? new MinioInventoryStore(),
             Options.Create(new EtcdOptions { Endpoints = endpoints }),
             new FixedTimeProvider(),
             NullLogger<SnapshotRefresher>.Instance);
@@ -481,5 +492,55 @@ public class SnapshotRefresherTests
         tick.IsSuccess.Should().BeFalse();
         store.Current!.Etcd.Reachable.Should().BeFalse();
         store.Current.PgWorkerWork.Should().ContainSingle().Which.Cluster.Should().Be("demo");
+    }
+
+    // AAA (t08): успешный RefreshOnceAsync переносит store.Current в snapshot.MinioStorage
+    // (по образцу WorkerHealth — готовым состоянием из стора).
+    [Fact]
+    public async Task Refresh_Success_CarriesMinioInventoryIntoSnapshot()
+    {
+        // Arrange — стор MinIO с готовым инвентарём (кластер demo, 152 байта)
+        var minio = new MinioInventoryStore();
+        minio.Replace(new MinioStorageInfo(
+            Configured: true, "http://minio:9000", "pgworker-backups", Health: null,
+            Buckets: ["pgworker-backups"], UsedBytes: 152, ObjectCount: 5,
+            Clusters: [], ForeignPrefixes: [], UpdatedAtUnix: 42,
+            ConsecutiveFailures: 0, LastError: null));
+        var store = new SnapshotStore();
+        var refresher = RefresherTestHarness.New(DemoGateway(), store, null, minio, "http://e1");
+
+        // Act
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert — инвентарь в снапшоте
+        store.Current!.MinioStorage.Should().NotBeNull();
+        store.Current.MinioStorage!.UsedBytes.Should().Be(152);
+        store.Current.MinioStorage.UpdatedAtUnix.Should().Be(42);
+    }
+
+    // AAA (t08): FailTick сохраняет прежний MinioStorage (инвентарь переживает отказ etcd).
+    [Fact]
+    public async Task Refresh_FailTick_PreservesMinioInventory()
+    {
+        // Arrange — успешный тик с инвентарём, затем endpoints умирают
+        var minio = new MinioInventoryStore();
+        minio.Replace(new MinioStorageInfo(
+            Configured: true, "http://minio:9000", "pgworker-backups", Health: null,
+            Buckets: ["pgworker-backups"], UsedBytes: 152, ObjectCount: 5,
+            Clusters: [], ForeignPrefixes: [], UpdatedAtUnix: 42,
+            ConsecutiveFailures: 0, LastError: null));
+        var store = new SnapshotStore();
+        var gateway = DemoGateway();
+        var refresher = RefresherTestHarness.New(gateway, store, null, minio, "http://e1");
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+        gateway.StatusFailEndpoints.Add("http://e1");
+
+        // Act — отказный тик
+        await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert — инвентарь жив в снапшоте (Reachable=false)
+        store.Current!.Etcd.Reachable.Should().BeFalse();
+        store.Current.MinioStorage.Should().NotBeNull();
+        store.Current.MinioStorage!.UsedBytes.Should().Be(152);
     }
 }

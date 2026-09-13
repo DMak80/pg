@@ -63,6 +63,13 @@ public static class ModuleExtensions
             });
         services.AddSingleton<S3.MinioS3Client>();
         services.AddSingleton<S3.IMinioS3>(sp => sp.GetRequiredService<S3.MinioS3Client>());
+        // Стор инвентаря + фоновый тик (паттерн KafkaProbeLoop): Core-интерфейс
+        // регистрируется реализацией из Probes — Etcd (refresher) не знает Probes.
+        services.AddSingleton<S3.MinioInventoryStore>();
+        services.AddSingleton<AdminPanel.Core.IMinioInventoryStore>(sp =>
+            sp.GetRequiredService<S3.MinioInventoryStore>());
+        services.AddSingleton<S3.MinioInventoryLoop>();
+        services.AddHostedService(sp => sp.GetRequiredService<S3.MinioInventoryLoop>());
 
         return services;
     }
