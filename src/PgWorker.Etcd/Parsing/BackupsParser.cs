@@ -314,6 +314,14 @@ public static class BackupsParser
                 "ACTIVE" => WalStreamStatus.Active,
                 "DEGRADED" => WalStreamStatus.Degraded,
                 "STOPPED" => WalStreamStatus.Stopped,
+                // t07 (arch/19 §4): BROKEN обязан читаться СНАПШОТНЫМ парсером.
+                // Прогон 2026-09-13: неизвестное BROKEN давало Wal=null → контроль
+                // шёл от ratchet=null (min COMPLETED, ниже границы разрыва), дыра
+                // «вечно свежая», ключ замерал в BROKEN, планировщик штормовал
+                // пересъёмами (walKeyExists=false). Интеграционные тесты t07 это
+                // пропустили: они читают ключ через WalStatusWriter.ReadAsync
+                // (там BROKEN добавлен), а не через снапшотный BackupsParser.
+                "BROKEN" => WalStreamStatus.Broken,
                 _ => (WalStreamStatus?)null,
             };
             var slot = ReadString(root, "slot");

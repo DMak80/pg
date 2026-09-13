@@ -120,6 +120,39 @@ public class BackupsParserTests
             .Which.State.Should().Be(FullBackupStatus.Planned);
     }
 
+    // AAA (t07, arch/19 §4 — прогон 2026-09-13): BROKEN обязан читаться
+    // СНАПШОТНЫМ парсером: неизвестное state давало Wal=null → контроль шёл от
+    // min COMPLETED (ниже границы разрыва), ключ замерал в BROKEN, планировщик
+    // штормовал пересъёмами (walKeyExists=false при живом ключе).
+    [Fact]
+    public void Parse_WalBroken_StateBroken_ПоляЦелы()
+    {
+        // Arrange — живой BROKEN-ключ шарда (граница разрыва в chain_start).
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/demo/s1/wal",
+                "{\"state\":\"BROKEN\",\"slot\":\"pgw_bkp_demo_s1\",\"master_node\":\"pgw-demo-s1-1\"," +
+                "\"chain_start_segment\":\"000000010000000000000029\",\"last_received_segment\":\"000000010000000000000029\"," +
+                "\"last_uploaded_segment\":\"000000010000000000000029\",\"last_uploaded_unix\":1789324156," +
+                "\"error\":\"дыра WAL-цепочки: ожидался 00000001000000000000002a, найден 00000001000000000000002b\"}", 1),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs, out var errors);
+
+        // Assert — состояние Broken разобрано, поля не потеряны, ошибок нет.
+        result.IsSuccess.Should().BeTrue();
+        errors.Should().BeEmpty();
+        var s1 = result.Value.Should().ContainSingle().Subject.Shards["s1"];
+        s1.Wal.Should().NotBeNull("BROKEN — валидное состояние, ключ не отбрасывается");
+        s1.Wal!.State.Should().Be(WalStreamStatus.Broken);
+        s1.Wal.Slot.Should().Be("pgw_bkp_demo_s1");
+        s1.Wal.ChainStartSegment.Should().Be("000000010000000000000029");
+        s1.Wal.LastUploadedSegment.Should().Be("000000010000000000000029");
+        s1.Wal.LastUploadedUnix.Should().Be(1789324156);
+        s1.Wal.Error.Should().Contain("00000001000000000000002a");
+    }
+
     [Fact]
     public void Parse_UnknownState_RecordSkippedWithError()
     {
