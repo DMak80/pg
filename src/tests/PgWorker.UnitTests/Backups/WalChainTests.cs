@@ -418,4 +418,46 @@ public class WalChainTests
         // Assert
         result.IsContinuous.Should().BeFalse();
     }
+
+    // AAA: ratchet — полные со стартом НИЖЕ границы игнорируются (AC1: контроль не
+    // видит дыру снова от старого полного)
+    [Fact]
+    public void RatchetedStart_ПолныеНижеГраницы_Игнорируются()
+    {
+        // Arrange — записанная граница ..05; полные ..01 (старый дырный) и ..09
+        var recorded = WalFileName.TryParse("000000010000000000000005");
+
+        // Act
+        var start = WalChain.RatchetedStart(recorded,
+            ["000000010000000000000001", "000000010000000000000009"]);
+
+        // Assert — контроль от ..09 (min кандидатов ≥ границы), не от ..01
+        start!.Value.Name.Should().Be("000000010000000000000009");
+    }
+
+    // AAA: ratchet — кандидатов выше границы нет → записанная точка держится
+    [Fact]
+    public void RatchetedStart_НетКандидатов_ВозвращаетЗаписанную()
+    {
+        // Arrange
+        var recorded = WalFileName.TryParse("000000010000000000000005");
+
+        // Act
+        var start = WalChain.RatchetedStart(recorded, ["000000010000000000000001"]);
+
+        // Assert
+        start.Should().Be(recorded);
+    }
+
+    // AAA: записи нет — min всех COMPLETED-стартов (поведение t03 сохранено)
+    [Fact]
+    public void RatchetedStart_БезЗаписи_MinПолных()
+    {
+        // Act
+        var start = WalChain.RatchetedStart(null,
+            ["000000010000000000000003", "000000010000000000000001", null]);
+
+        // Assert — null-старты (ранние FAILED без wal_start) отфильтрованы
+        start!.Value.Name.Should().Be("000000010000000000000001");
+    }
 }

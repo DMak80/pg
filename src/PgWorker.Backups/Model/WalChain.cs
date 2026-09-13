@@ -14,6 +14,22 @@ public static class WalChain
     public static ChainResult Check(WalFileName chainStart, IEnumerable<string> objectNames)
         => Walk(chainStart, null, objectNames, null);
 
+    /// <summary>Стартовая точка контроля цепочки с ratchet (t07, arch/19 §3):
+    /// min(wal_start COMPLETED-полных со стартом ≥ записанной границы); полные
+    /// ниже границы разрыва для контроля игнорируются (их цепь может быть цела —
+    /// дыра выше). Кандидатов нет → записанная точка (ratchet не понижается);
+    /// записи нет → min всех валидных стартов. Чистая функция.</summary>
+    public static WalFileName? RatchetedStart(
+        WalFileName? recorded, IEnumerable<string?> completedWalStarts)
+        => completedWalStarts
+            .Select(s => WalFileName.TryParse(s ?? ""))
+            .OfType<WalFileName>()
+            .Where(s => recorded is null || string.CompareOrdinal(s.Name, recorded.Value.Name) >= 0)
+            .OrderBy(s => s.Name, StringComparer.Ordinal)
+            .Cast<WalFileName?>()
+            .FirstOrDefault()
+           ?? recorded;
+
     /// <summary>Check с перезапуском от нового TLI (t05 AC4): promote восстановленного
     /// шарда открывает новый timeline, а сегменты старого TLI легитимно обрезаны
     /// (restore откатил LSN назад — старый хвост не дописывается). Дыра на
