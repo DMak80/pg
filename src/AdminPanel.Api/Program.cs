@@ -70,6 +70,11 @@ var auth = app.Services.GetRequiredService<IOptions<AuthOptions>>().Value;
 if (string.IsNullOrEmpty(auth.Password) && string.IsNullOrEmpty(auth.PasswordHash))
     app.Logger.LogWarning("AdminPanel:Auth: не задан ни Password, ни PasswordHash — логин отключён");
 
+// t08: fail-fast конфига MinIO-грани (пустой Endpoint — грань выключена, не ошибка).
+var minio = app.Services.GetRequiredService<IOptions<AdminPanel.Probes.S3.MinioOptions>>().Value;
+if (minio.IsConfigured)
+    minio.EnsureValid();
+
 // OpenAPI-схема — только в dev-окружении.
 if (app.Environment.IsDevelopment())
 {

@@ -7,6 +7,7 @@
         <ProjectReference Include="..\AdminPanel.Core\AdminPanel.Core.csproj"/>
         <ProjectReference Include="..\AdminPanel.Etcd\AdminPanel.Etcd.csproj"/>
         <PackageReference Include="Confluent.Kafka"/>
+        <PackageReference Include="AWSSDK.S3"/>
     </ItemGroup>
 
 </Project>
