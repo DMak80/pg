@@ -131,7 +131,15 @@ public sealed class BackupVerifyProcess(
         // (2) due-резолв: PENDING-очередь раньше периодики; по одному за тик.
         //     verify FAILED — терминален: не попадает ни в один список.
         var pending = fulls
-            .Where(f => f.State == FullBackupStatus.Completed && f.Verify is { State: BackupVerifyStatus.Pending })
+            .Where(f => f.State == FullBackupStatus.Completed
+                        && f.Verify is { State: BackupVerifyStatus.Pending }
+                        // t07: checked_unix после verify-таймаута — квота попытки:
+                        // повторный due через verify.interval_sec (лив-лок немедленных
+                        // перезапусков исключён); null — on_create, due сразу;
+                        // interval <= 0 — таймаутнувшийся кандидат не перезапускается
+                        // автоматически (периодика выключена).
+                        && (f.Verify.CheckedUnix is null
+                            || intervalSec > 0 && nowUnix - f.Verify.CheckedUnix.Value > intervalSec))
             .OrderBy(f => f.StartedUnix)
             .ToList();
         var periodic = intervalSec > 0
@@ -281,7 +289,31 @@ public sealed class BackupVerifyProcess(
         }
 
         if (state is "running" or "restarting")
+        {
+            // t07 (arch/19 §6): возраст running-джоба — docker-факт StartedAt
+            // (в etcd-статусе кандидата времени запуска нет). Бюджет исчерпан →
+            // kill+rm; вердикт FAILED НЕ ставим (данные не виноваты) — попытка
+            // зачитывается checked_unix=now: следующий due через verify.interval_sec,
+            // лив-лок немедленных перезапусков исключён.
+            var inspectForAge = await engine.InspectContainerAsync(containerName, ct);
+            if (inspectForAge.IsSuccess
+                && inspectForAge.Value.StartedAtUnix is { } started
+                && SupervisionTimeouts.IsTimedOut(started, nowUnix, options.JobVerifyTimeoutSec))
+            {
+                var quota = full.Verify is null
+                    ? new BackupVerify(BackupVerifyStatus.Pending, nowUnix)
+                    : full.Verify with { CheckedUnix = nowUnix };
+                var putQuota = await PutAsync(BackupNames.FullKey(cluster, shard, full.Id),
+                    BackupStatusJson.Serialize(full with { Verify = quota }), ct);
+                if (!putQuota.IsSuccess)
+                    return; // transient — статус не сменился, снесём следующим тиком
+                await journal.WritePhaseAsync(cluster, Op, $"verify-timeout/{shard}/{id}",
+                    claims.InstanceId, $"verify-джоб старше {options.JobVerifyTimeoutSec} с — kill, попытка зачтена", ct);
+                await CleanupJobAsync(engine, containerName, ct);
+            }
+
             return; // ждём — проверка в работе
+        }
         if (state == "created")
         {
             await engine.StartContainerAsync(containerName, ct); // создан, но не стартован
