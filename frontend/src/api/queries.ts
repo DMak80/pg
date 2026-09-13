@@ -41,6 +41,9 @@ import type {
   BucketAbortQueuedDto,
   SessionDto,
   ShardAddedDto,
+  BackupObjectsPageDto,
+  BackupShardStorageDto,
+  BackupStorageDto,
 } from './dto';
 
 export const queryKeys = {
@@ -355,4 +358,35 @@ export function cancelTopicLifecycle(
   return apiFetch<void>(
     `/api/kafka/clusters/${encodeURIComponent(cluster)}/topics/${encodeURIComponent(topic)}/desired.${op}`,
     { method: 'DELETE' });
+}
+
+// ===== Грань «Хранилище бэкапов» (t08, arch/03 §1) =====
+
+export const backupsQueryKeys = {
+  storage: ['backups-storage'] as const,
+  shard: (cluster: string, shard: string) => ['backups-storage', cluster, shard] as const,
+  objects: (prefix: string, token: string | null) => ['backups-storage', 'objects', prefix, token] as const,
+};
+
+export function fetchBackupsStorage(): Promise<BackupStorageDto> {
+  return apiFetch<BackupStorageDto>('/api/backups/storage');
+}
+
+export function fetchBackupShardStorage(cluster: string, shard: string): Promise<BackupShardStorageDto> {
+  return apiFetch<BackupShardStorageDto>(
+    `/api/backups/storage/${encodeURIComponent(cluster)}/${encodeURIComponent(shard)}`);
+}
+
+// On-demand постраничный list-v2 (единственный выход панели в MinIO на запрос):
+// пустой prefix — весь bucket; continuationToken — следующая страница.
+export function fetchBackupObjectsPage(
+  prefix: string,
+  maxKeys: number,
+  continuationToken?: string | null,
+): Promise<BackupObjectsPageDto> {
+  const params = new URLSearchParams();
+  if (prefix !== '') params.set('prefix', prefix);
+  params.set('maxKeys', String(maxKeys));
+  if (continuationToken) params.set('continuationToken', continuationToken);
+  return apiFetch<BackupObjectsPageDto>(`/api/backups/objects?${params.toString()}`);
 }

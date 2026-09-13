@@ -641,3 +641,120 @@ export interface KafkaRebalanceRequestedDto {
   requestedUnix: number;
   requestedBy: string;
 }
+
+// ===== Грань «Хранилище бэкапов» (t08, arch/03 §2; зеркало C#-DTO BackupStorageQuery.cs) =====
+
+// Статус сверки одного полного (C# BackupFullReconcileStatus).
+export type BackupReconcileStatusName = 'Ok' | 'S3Only' | 'EtcdOnly' | 'InProgress' | 'Deleting';
+
+// GET /api/backups/storage — сводка (без S3-ключей никогда — AC8).
+export interface MinioHealthDto {
+  apiOk: boolean;
+  apiError: string | null;
+  liveOk: boolean;
+  clusterOk: boolean | null;
+  healthyDrives: number | null;
+  offlineDrives: number | null;
+  healingDrives: number | null;
+  totalDrives: number | null;
+}
+
+export interface BackupStorageEtcdDto {
+  usedBytes: number;
+  quotaBytes: number | null;
+  usedPercent: number | null;
+  state: string; // OK | WARN | CRIT (вердикт воркера)
+  updatedUnix: number;
+}
+
+export interface BackupShardSummaryDto {
+  cluster: string;
+  shard: string;
+  sizeBytes: number;
+  fullsCount: number;
+  walSegmentCount: number;
+  hasS3Only: boolean; // есть объекты без ключа
+  orphan: boolean; // префикс без владельца
+}
+
+export interface BackupClusterStorageDto {
+  cluster: string;
+  sizeBytes: number;
+  shards: BackupShardSummaryDto[];
+}
+
+export interface BackupOrphanDto {
+  prefix: string;
+  kind: string; // shard | cluster
+  sizeBytes: number;
+  inWorkerRegistry: boolean;
+  registryState: string | null;
+  firstSeenUnix: number | null;
+  ttlLeftSec: number | null;
+}
+
+export interface BackupStorageDto {
+  configured: boolean;
+  notConfiguredReason: string | null;
+  endpoint: string | null;
+  bucket: string | null;
+  health: MinioHealthDto | null;
+  buckets: string[];
+  etcd: BackupStorageEtcdDto | null;
+  liveUsedBytes: number | null;
+  clusters: BackupClusterStorageDto[];
+  foreignPrefixes: string[];
+  orphans: BackupOrphanDto[];
+  inventoryUpdatedUnix: number;
+  inventoryError: string | null;
+}
+
+// GET /api/backups/storage/{cluster}/{shard} — детали шарда.
+export interface BackupFullDto {
+  id: string;
+  sizeBytes: number | null;
+  objectCount: number | null;
+  lastModifiedUnix: number | null;
+  etcdState: string | null;
+  verifyState: string | null;
+  etcdSizeBytes: number | null;
+  reconcile: BackupReconcileStatusName;
+}
+
+export interface BackupWalDto {
+  etcdState: string | null;
+  etcdLastSegment: string | null;
+  etcdLastUnix: number | null;
+  s3SegmentCount: number;
+  s3HistoryCount: number;
+  s3SizeBytes: number;
+  s3LastModifiedUnix: number;
+  s3LastObject: string | null;
+}
+
+export interface BackupRestoreBadgeDto {
+  state: string;
+  phase: string | null;
+  error: string | null;
+}
+
+export interface BackupShardStorageDto {
+  cluster: string;
+  shard: string;
+  fulls: BackupFullDto[];
+  wal: BackupWalDto | null;
+  activeRestore: BackupRestoreBadgeDto | null;
+  reconcileNote: string | null;
+}
+
+// GET /api/backups/objects — on-demand постраничный list-v2.
+export interface BackupObjectDto {
+  key: string;
+  sizeBytes: number;
+  lastModifiedUnix: number;
+}
+
+export interface BackupObjectsPageDto {
+  items: BackupObjectDto[];
+  nextContinuationToken: string | null;
+}
