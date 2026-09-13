@@ -83,6 +83,45 @@ public class BackupPlannerTests
         BackupPlanner.IsDue(fulls, walKeyExists: true, fullMaxAgeSec: 86400, nowUnix: Unix(Now)).Should().BeTrue();
     }
 
+    // AAA: после COMPLETED-restore полный старее restore → due даже при живом
+    // wal-ключе (WalStream восстанавливает ключ быстрее тика — инцидент гейта);
+    // полный НОВЕЕ restore — НЕ due.
+    [Fact]
+    public void IsDue_ПолныйСтарееRestore_Due_НезависимоОтWalКлюча()
+    {
+        // Arrange — валидный COMPLETED за час до restore; restore завершён 5 мин назад
+        var fulls = new[]
+        {
+            Full("20260911100000Z", FullBackupStatus.Completed, Unix(Now.AddHours(-1).AddMinutes(-5)),
+                Unix(Now.AddHours(-1))),
+        };
+        var restoreFinished = Unix(Now.AddMinutes(-5));
+
+        // Act / Assert — живой wal-ключ больше не гасит due: факт restore сильнее
+        BackupPlanner.IsDue(fulls, walKeyExists: true, 86400, Unix(Now), restoreFinished)
+            .Should().BeTrue("полный описывает прежнюю жизнь шарда — переснимается");
+        BackupPlanner.IsDue(fulls, walKeyExists: false, 86400, Unix(Now), restoreFinished)
+            .Should().BeTrue();
+    }
+
+    [Fact]
+    public void IsDue_ПолныйНовееRestore_НеDue()
+    {
+        // Arrange — restore час назад, свежий переснятый полный 5 минут назад
+        var restoreFinished = Unix(Now.AddHours(-1));
+        var fulls = new[]
+        {
+            Full("20260911100000Z", FullBackupStatus.Completed, Unix(Now.AddMinutes(-10)),
+                Unix(Now.AddMinutes(-5))),
+        };
+
+        // Act / Assert — переснятый после restore полный валиден; null-параметр
+        // (restore без finished/старый формат) — прежнее rolling-правило
+        BackupPlanner.IsDue(fulls, walKeyExists: true, 86400, Unix(Now), restoreFinished)
+            .Should().BeFalse();
+        BackupPlanner.IsDue(fulls, walKeyExists: true, 86400, Unix(Now), null).Should().BeFalse();
+    }
+
     // AAA: due — последний COMPLETED старше full_max_age_sec
     [Fact]
     public void IsDue_LastCompletedOlderThanMaxAge_True()

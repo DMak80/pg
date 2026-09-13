@@ -22,8 +22,14 @@ public static class BackupPlanner
     // started_unix) больше full_max_age_sec ИЛИ wal-ключа нет (t05: цепочка
     // сброшена restore'ом — полный переснимается немедленно, инвариант
     // «поднятый шард всегда имеет валидную цепочку или активный полный»).
+    // Полный также обязан быть НОВЕЕ последней COMPLETED-restore шарда:
+    // restore перестраивает шард из бэкапа — до пересъёма «валидный» полный
+    // описывает прежнюю жизнь шарда. WalStream восстанавливает wal-ключ
+    // немедленно (упреждая гвард !walKeyExists — инцидент E2E-гейта t05,
+    // 2026-09-13), поэтому сигнал — не ключ, а факт restore.
     public static bool IsDue(
-        IReadOnlyList<FullBackupState> fulls, bool walKeyExists, long fullMaxAgeSec, long nowUnix)
+        IReadOnlyList<FullBackupState> fulls, bool walKeyExists, long fullMaxAgeSec, long nowUnix,
+        long? lastRestoreFinishedUnix = null)
     {
         var lastValid = fulls
             .Where(IsValid)
@@ -33,6 +39,9 @@ public static class BackupPlanner
             return true;
 
         var finished = lastValid.FinishedUnix ?? lastValid.StartedUnix;
+        if (lastRestoreFinishedUnix is { } restored && finished <= restored)
+            return true;
+
         return nowUnix - finished > fullMaxAgeSec || !walKeyExists;
     }
 
