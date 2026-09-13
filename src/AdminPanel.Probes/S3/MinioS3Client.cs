@@ -39,7 +39,7 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
 {
     public const string HealthHttpClientName = "minio-health";
 
-    private readonly AmazonS3Client _client;
+    private readonly AmazonS3Client? _client;
     private readonly IHttpClientFactory? _httpClientFactory;
     private readonly string _endpoint;
     private readonly string _bucket;
@@ -56,6 +56,13 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
         _endpoint = options.S3.Endpoint.TrimEnd('/');
         _bucket = options.S3.Bucket;
         _httpClientFactory = httpClientFactory;
+
+        // AC1: пустой Endpoint — грань выключена, панель обязана стартовать;
+        // AWSSDK-клиент без ServiceURL не конструируется — строим его ТОЛЬКО
+        // при конфигурации (все вызовы гвардятся IsConfigured в loop/handler'е).
+        if (string.IsNullOrWhiteSpace(options.S3.Endpoint))
+            return;
+
         var config = new AmazonS3Config
         {
             ServiceURL = options.S3.Endpoint,
@@ -66,8 +73,15 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
             new BasicAWSCredentials(options.S3.AccessKey, options.S3.SecretKey), config);
     }
 
+    // Вызов при выключенной грани — ошибка вызова, не транспорта (callers guard
+    // IsConfigured; сюда можно попасть только в обход гварда).
+    private static Result<T> NotConfigured<T>() => Result<T>.Failed(
+        new InvalidOperationException("S3 endpoint не задан — грань «Хранилище бэкапов» выключена"));
+
     public async Task<Result<IReadOnlyList<string>>> ListBucketsAsync(CancellationToken ct)
     {
+        if (_client is null)
+            return NotConfigured<IReadOnlyList<string>>();
         try
         {
             var response = await _client.ListBucketsAsync(ct);
@@ -84,6 +98,8 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
     public async Task<Result<S3Page>> ListPageAsync(
         string? prefix, string? continuationToken, int maxKeys, CancellationToken ct)
     {
+        if (_client is null)
+            return NotConfigured<S3Page>();
         try
         {
             var response = await _client.ListObjectsV2Async(new ListObjectsV2Request
@@ -186,7 +202,7 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
 
     public ValueTask DisposeAsync()
     {
-        _client.Dispose();
+        _client?.Dispose();
         return ValueTask.CompletedTask;
     }
 }
