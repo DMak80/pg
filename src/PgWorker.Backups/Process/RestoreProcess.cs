@@ -379,8 +379,14 @@ public sealed class RestoreProcess(
         var exitCode = inspect.Value.ExitCode ?? -1;
         if (exitCode == 0 && markers.Result is { Ok: true } ok)
         {
-            // SUCCESS: REJOINING (Task 10 поднимет ноды); RestoredToLsn — из result
-            var rejoining = op with { State = RestoreStatus.Rejoining, RestoredToLsn = ok.RestoredToLsn };
+            // SUCCESS: REJOINING (Task 10 поднимет ноды); RestoredToLsn/SystemId
+            // — из result (system_id старым образам джоба не знаком — null)
+            var rejoining = op with
+            {
+                State = RestoreStatus.Rejoining,
+                RestoredToLsn = ok.RestoredToLsn,
+                SystemId = ok.SystemId,
+            };
             var put = await PutStatusAsync(cluster, shard.Name, rejoining, ct);
             if (!put.IsSuccess)
                 return Result<ProcessOutcome>.Failed(put.Error!);
@@ -429,7 +435,10 @@ public sealed class RestoreProcess(
         }
 
         var scope = $"{cluster}-{shard.Name}";
-        foreach (var key in new[] { "initialize", "leader", "sync" })
+        // status чистим ОБЯЗАТЕЛЬНО: в нём optime прошлой жизни лидера; без чистки
+        // восстановленная нода (LSN = точке restore, ниже старого optime при PITR-откате)
+        // «отстаёт» больше maximum_lag_on_failover и навечно отказывается избираться
+        foreach (var key in new[] { "initialize", "leader", "sync", "status" })
         {
             var del = await etcd.DeleteAsync(endpoints[0], $"/service/{scope}/{key}", prefix: false, ct);
             if (!del.IsSuccess)
@@ -441,6 +450,17 @@ public sealed class RestoreProcess(
             if (!del.IsSuccess)
                 return del;
         }
+
+        // Щит против re-bootstrap (инцидент E2E-гейта t05, 2026-09-13): в окне
+        // демонтаж→джоба→rejoin (~15–30 c) пустая нода, поднятая кем-то параллельно
+        // (супервиз/гонка тиков), без initialize успевает initdb'нуться и стать
+        // лидером НОВОГО пустого кластера — восстановленная навечно получает
+        // «system ID mismatch». Заполнитель закрывает бутстрап; в rejoin'е его
+        // перезапишет настоящий system_id восстановленного PGDATA.
+        var shield = await etcd.PutAsync(
+            endpoints[0], $"/service/{scope}/initialize", "restore-in-progress", null, ct);
+        if (!shield.IsSuccess)
+            return shield;
 
         return await journal.WritePhaseAsync(cluster, Op, $"demolished/{shard.Name}/{op.Id}",
             claims.InstanceId, null, ct);
@@ -496,6 +516,26 @@ public sealed class RestoreProcess(
                 $"нода {first} шарда {shard.Name} не найдена в portalloc", ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
+        // Щит initialize (см. DemolishAsync): заполнитель «restore-in-progress»
+        // перезаписывается system_id восстановленного PGDATA ДО ensure первой
+        // ноды — patroni восстановленной ноды видит совпадение и лидерится, а
+        // пустые ноды в гонке initdb'нуться не могут. Старый образ джоба не
+        // присылает system_id — щит остаётся заполнителем (только warn).
+        if (op.SystemId is { Length: > 0 } sysid)
+        {
+            var putShield = await etcd.PutAsync(
+                endpoints[0], $"/service/{cluster}-{shard.Name}/initialize", sysid, null, ct);
+            if (!putShield.IsSuccess)
+                return await TransientAsync(cluster, $"etcd-unavailable/{shard.Name}/{op.Id}",
+                    putShield.Error!.Message, ct);
+        }
+        else
+        {
+            logger?.LogWarning(
+                "backup-restore {Cluster}/{Shard}/{Op}: system_id не получен от джобы — initialize остаётся заполнителем",
+                cluster, shard.Name, op.Id);
+        }
+
         var firstEnsure = await driver.EnsureNodeAsync(
             topology, first, firstAddr, clusterSecrets, etcdEndpoints, resources, ct);
         if (!firstEnsure.IsSuccess)
@@ -503,12 +543,17 @@ public sealed class RestoreProcess(
                 firstEnsure.Error!.Message, ct);
 
         // Идентифицирующая Patroni-проба (P2.2-образец): лидер восстановленного
-        // шарда должен отвечать running до подъёма реплик.
+        // шарда должен быть ВЫБРАН (role primary) до подъёма реплик. state=running
+        // недостаточно: джоба промоутила PG до Patroni, «running» бывает мгновенно,
+        // до победы в выборах — ранний подъём реплик ломает выборы навечно
+        // (не-избранный лидер уходит в following, «not the healthiest»).
         var members = await probe.GetClusterAsync(firstAddr, ct);
         var firstReady = members.IsSuccess
-                         && members.Value.Any(m => m.Name == first && m.State == "running");
+                         && members.Value.Any(m => m.Name == first
+                             && m.Role is "leader" or "primary" or "standby_leader"
+                             && m.State is "running" or "streaming");
         if (!firstReady)
-            return await RejoinWaitAsync(cluster, shard.Name, op, waitKey, ct);
+            return await RejoinWaitAsync(cluster, shard.Name, op, waitKey, firstAddr, ct);
 
         // Остальные ноды — чистыми (драйвер создаст volume, реплики догоняются
         // pg_basebackup от лидера).
@@ -527,12 +572,19 @@ public sealed class RestoreProcess(
                     ensured.Error!.Message, ct);
         }
 
-        // Пробы всех нод running (тот же трекер-бюджет).
+        // Пробы всех нод (тот же трекер-бюджет). Контракт (решение t05, 2026-09-12):
+        // COMPLETED ждёт ЛИДЕР running/streaming + реплики, УСПЕШНО СТАРТОВАВШИЕ
+        // синхронизацию — "creating replica" (pg_basebackup от лидера пошёл) или
+        // уже готовые ("running"/"streaming"). Полного окончания basebackup ждёт
+        // не заявка, а Patroni (свой retry) — rejoin на нём не висит. Patroni 4.x
+        // у healthy-реплики отдаёт state "streaming" (инцидент E2E-гейта t05).
         var clusterState = await probe.GetClusterAsync(firstAddr, ct);
-        var allReady = clusterState.IsSuccess
-                       && ordered.All(n => clusterState.Value.Any(m => m.Name == n && m.State == "running"));
-        if (!allReady)
-            return await RejoinWaitAsync(cluster, shard.Name, op, waitKey, ct);
+        var allStarted = clusterState.IsSuccess
+                         && ordered.All(n => clusterState.Value.Any(
+                             m => m.Name == n
+                                  && m.State is "running" or "streaming" or "creating replica"));
+        if (!allStarted)
+            return await RejoinWaitAsync(cluster, shard.Name, op, waitKey, firstAddr, ct);
 
         // COMPLETED (AC4): ноды RUNNING; wal-ключ шарда удаляется — сброс цепочки,
         // планировщик t02 немедленно переснимает полный; мастер-ключ обновит сам
@@ -564,17 +616,50 @@ public sealed class RestoreProcess(
 
     // Бюджет ожидания Patroni (PatroniBootSec): не готово → InProgress; исчерпан
     // → permanent-FAILED (трекер снять — новая заявка получает полный бюджет).
+    // Телеметрия (t05, гейт 2026-09-13): каждый 10-й тик пишет warn с живым
+    // снимком пробы — журнал воркера обязан объяснять «почему так долго» без
+    // перезапуска теста (в терминальном FAILED он приходит слишком поздно).
     private async Task<Result<ProcessOutcome>> RejoinWaitAsync(
-        string cluster, string shard, RestoreOperationState op, string waitKey, CancellationToken ct)
+        string cluster, string shard, RestoreOperationState op, string waitKey,
+        NodeAddress? firstAddr, CancellationToken ct)
     {
         var now = NowUnix();
         var since = _rejoinWaitSince.GetOrAdd(waitKey, now);
-        if (now - since > thresholds.PatroniBootSec)
+        var waited = now - since;
+        if (waited > thresholds.PatroniBootSec)
         {
             _rejoinWaitSince.TryRemove(waitKey, out _);
+            // Диагностика в причине: снимок Patroni-модели на момент фейла —
+            // кто лидер, в каком состоянии ноды (иначе фейл нем и флейки нечему учить)
+            var snapshot = "";
+            if (firstAddr is { } addr)
+            {
+                var diag = await probe.GetClusterAsync(addr, ct);
+                snapshot = diag.IsSuccess
+                    ? "; members=" + string.Join(",",
+                        diag.Value.Select(m => $"{m.Name}:{m.Role}:{m.State}"))
+                    : "; probe=" + diag.Error!.Message;
+            }
             await FailPermanentAsync(cluster, shard, op,
-                $"Patroni не поднялся за {thresholds.PatroniBootSec} с", ct);
+                $"Patroni не поднялся за {thresholds.PatroniBootSec} с{snapshot}", ct);
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
+
+        // Каждый 10-й тик (тик ≈ 1 c): живой снимок пробы в журнал воркера.
+        if (waited > 0 && waited % 10 == 0)
+        {
+            var progress = "";
+            if (firstAddr is { } addr)
+            {
+                var diag = await probe.GetClusterAsync(addr, ct);
+                progress = diag.IsSuccess
+                    ? "members=" + string.Join(",", diag.Value.Select(m => $"{m.Name}:{m.Role}:{m.State}"))
+                    : "probe=" + diag.Error!.Message;
+            }
+
+            logger?.LogWarning(
+                "backup-restore {Cluster}/{Shard}/{Op}: rejoin-wait {Waited}s/{Budget}s, probe {Addr}: {Progress}",
+                cluster, shard, op.Id, waited, thresholds.PatroniBootSec, firstAddr?.ToString() ?? "-", progress);
         }
 
         return await TransientAsync(cluster, $"rejoin-wait/{shard}/{op.Id}", null, ct);

@@ -28,7 +28,9 @@ public static class RestoreJobCommand
     private const string Script = """
         set -euo pipefail
         DATA_DIR="${PGW_RESTORE_DATA_DIR:-/restore}"
-        PGDATA="${PGW_RESTORE_PGDATA:-$DATA_DIR/pgdata/pgroot/data}"
+        # Дефолт Spilo-layout: volume-корень узла /home/postgres/pgdata, данные
+        # узла — pgroot/data (arch/14 §2.1)
+        PGDATA="${PGW_RESTORE_PGDATA:-$DATA_DIR/pgroot/data}"
         LOG() { printf '%s\n' "$1"; }
         FAIL() { LOG "{\"ok\":false,\"error\":\"$(printf '%s' "$1" | tr '\n' ' ' | tr -d '"')\"}"; exit 1; }
 
@@ -36,13 +38,19 @@ public static class RestoreJobCommand
         mc cp --recursive "pgwbkp/$S3_BUCKET/$SRC_PREFIX/full/$BACKUP_ID/" "$PGDATA/" \
           || FAIL "download full/$BACKUP_ID failed"
         [ -f "$PGDATA/backup_label" ] || FAIL "full/$BACKUP_ID: no backup_label"
-        # Пустые runtime-каталоги PGDATA не переживают S3 (mc не хранит пустые
-        # каталоги, pg_basebackup их не архивирует) — восстанавливаем канонический
-        # набор initdb (инцидент E2E: FATAL could not open directory pg_notify).
+        # Пустые/транзиентные каталоги PGDATA не переживают S3: mc не хранит пустые
+        # каталоги, а pg_basebackup ИСКЛЮЧАЕТ транзиентные SLRU-каталоги (pg_subtrans,
+        # pg_serial, pg_snapshots, pg_notify, pg_stat_tmp, pg_dynshmem, pg_replslot).
+        # Восстанавливаем канонический набор initdb — без них падает старт/чекпойнт:
+        # pg_notify (FATAL could not open directory), pg_subtrans (end-of-recovery
+        # checkpoint: ERROR could not access status of transaction 0 — DETAIL Could
+        # not open file "pg_subtrans/0000"; инциденты E2E-гейта t05).
         mkdir -p "$PGDATA"/pg_tblspc "$PGDATA"/pg_replslot "$PGDATA"/pg_commit_ts \
                  "$PGDATA"/pg_snapshots "$PGDATA"/pg_serial "$PGDATA"/pg_twophase \
+                 "$PGDATA"/pg_subtrans "$PGDATA"/pg_dynshmem \
                  "$PGDATA"/pg_notify "$PGDATA"/pg_stat "$PGDATA"/pg_stat_tmp \
-                 "$PGDATA"/pg_wal/archive_status
+                 "$PGDATA"/pg_wal/archive_status \
+                 "$PGDATA"/pg_logical/snapshots "$PGDATA"/pg_logical/mappings
 
         # restore_command: mc качает сегмент/.history из wal/-префикса прямо в %p;
         # объекта нет → mc exit != 0 → конец WAL (канон §3.5)
@@ -54,6 +62,29 @@ public static class RestoreJobCommand
         chmod 755 "$PGDATA/restore-wal.sh"
 
         AUTO="$PGDATA/postgresql.auto.conf"
+        # Прибережём pristine auto.conf: наши recovery-override'ы пишем только в
+        # auto.conf, а после promote возвращаем исходный — на rejoin Patroni/PG
+        # обязаны видеть нодовые пути (data_directory/hba_file), а не /restore
+        # (инцидент E2E-гейта t05: нода не поднималась после restore).
+        cp "$AUTO" "$AUTO.orig" || FAIL "cp auto.conf failed"
+        # Patroni в postgresql.conf ноды пишет АБСОЛЮТНЫЕ пути нодового layout —
+        # data_directory/hba_file/ident_file (/home/postgres/pgdata/pgroot/data/…).
+        # В джобе volume смонтирован в dataDir: postmaster, послушавшись их, ищет
+        # pg_hba.conf не там (ENOENT, инцидент E2E-гейта t05). auto.conf читается
+        # последним и возвращает пути на фактический PGDATA джоба.
+        printf "data_directory = '%s'\n" "$PGDATA" >> "$AUTO"
+        printf "hba_file = '%s/pg_hba.conf'\n" "$PGDATA" >> "$AUTO"
+        printf "ident_file = '%s/pg_ident.conf'\n" "$PGDATA" >> "$AUTO"
+        # wal_level=logical ноды тянет на ephemeral-старте logical-механику
+        # (standby-снапшоты, rebuild логических слотов) — end-of-recovery
+        # checkpoint падал: ERROR could not access status of transaction 0
+        # (инцидент E2E-гейта t05). Для restore логический уровень не нужен:
+        # Patroni на rejoin перепишет конфиг ноды.
+        printf "wal_level = 'replica'\n" >> "$AUTO"
+        # PG17+: WAL-суммаризация на ephemeral-старте не нужна, а end-of-recovery
+        # checkpoint с ней падал (ERROR could not access status of transaction 0,
+        # инцидент E2E-гейта t05); Patroni на rejoin перепишет конфиг ноды.
+        printf "summarize_wal = 'off'\n" >> "$AUTO"
         printf "restore_command = '/bin/bash %s/restore-wal.sh %%f %%p'\n" "$PGDATA" >> "$AUTO"
         printf "recovery_target_action = 'promote'\n" >> "$AUTO"
         if [ -n "$TARGET_TIME" ]; then
@@ -61,10 +92,12 @@ public static class RestoreJobCommand
         fi
         # Spilo-наследие исходной ноды (pg_basebackup копирует её конфигурацию):
         # preload-библиотек (bg_mon, …) в образе джоба postgres:18 нет, ssl-сертификаты
-        # лежат вне PGDATA — для ephemeral-старта recovery отключаем (инцидент E2E:
-        # FATAL could not access file bg_mon). Patroni на rejoin перепишет конфиг ноды.
+        # лежат вне PGDATA, logging_collector пишет в ../pg_log — каталог вне PGDATA,
+        # которого в ephemeral-окружении джобы нет (FATAL could not open log file,
+        # инцидент E2E-гейта t05). Patroni на rejoin перепишет конфиг ноды.
         printf "shared_preload_libraries = ''\n" >> "$AUTO"
         printf "ssl = off\n" >> "$AUTO"
+        printf "logging_collector = off\n" >> "$AUTO"
         : > "$PGDATA/recovery.signal"
         # временный локальный trust для поллинга (сокет-only; после rejoin Patroni
         # перепишет pg_hba своим конфигом)
@@ -75,10 +108,14 @@ public static class RestoreJobCommand
         # auto.conf на promote. chmod 700 обязателен: mc не сохраняет unix-права
         # (S3 их не хранит) — PGDATA приходил 0755 → FATAL «invalid permissions»
         # на pg_ctl start (инцидент E2E-гейта t05).
-        chown -R 101:101 "${PGDATA%%/pgdata/pgroot/data}" || FAIL "chown 101:101 failed"
+        chown -R 101:101 "${PGDATA%%/pgroot/data}" || FAIL "chown 101:101 failed"
         chmod 700 "$PGDATA" || FAIL "chmod 700 PGDATA failed"
 
         LOG '{"phase":"recovering"}'
+        # HOME рута под uid 101 недоступен: mc из restore_command обязан писать
+        # ~/.mc, иначе каждый вызов падает (mkdir /root/.mc: permission denied)
+        # и конец WAL наступает раньше цели (инцидент E2E-гейта t05).
+        export HOME=/tmp
         PGCTL() { setpriv --reuid=101 --regid=101 --clear-groups pg_ctl "$@"; }
         PGCTL -D "$PGDATA" -l /tmp/restore-pg.log -w -t 60 \
           -o "-c listen_addresses='' -c unix_socket_directories='/tmp'" start \
@@ -86,20 +123,33 @@ public static class RestoreJobCommand
 
         DEADLINE=$(( $(date +%s) + PGW_RECOVERY_TIMEOUT_SEC ))
         while :; do
-          IN_REC=$(psql -h /tmp -U postgres -tAc "SELECT pg_is_in_recovery()" 2>/dev/null || echo err)
-          [ "$IN_REC" = "f" ] && break
-          [ "$IN_REC" = "t" ] || FAIL "psql probe failed: $IN_REC"
-          [ "$(date +%s)" -lt "$DEADLINE" ] || { PGCTL -D "$PGDATA" -m fast stop || true; FAIL "recovery budget exceeded ($PGW_RECOVERY_TIMEOUT_SEC s)"; }
-          sleep 5
+          # promote после конца WAL перезапускает postmaster: соединение
+          # временно недоступно — err ретраится до бюджета, это нормальный
+          # переход (инцидент E2E-гейта t05: немедленный FAIL на окне рестарта)
+          if IN_REC=$(psql -h /tmp -U postgres -tAc "SELECT pg_is_in_recovery()" 2>/dev/null); then
+            if [ "$IN_REC" = "f" ]; then break; fi
+          fi
+          [ "$(date +%s)" -lt "$DEADLINE" ] || { PGCTL -D "$PGDATA" -m fast stop || true; FAIL "recovery budget exceeded ($PGW_RECOVERY_TIMEOUT_SEC s): $(tail -n 10 /tmp/restore-pg.log | tr '\n' ' ')"; }
+          sleep 2
         done
         LSN=$(psql -h /tmp -U postgres -tAc "SELECT pg_current_wal_lsn()" | tr -d ' ')
         PGCTL -D "$PGDATA" -m fast stop || FAIL "pg_ctl stop failed"
 
-        # убрать recovery-остатки: сигнал, restore/recovery-строки, trust-строку
+        # убрать recovery-остатки: сигнал, вернуть pristine auto.conf (без
+        # /restore-путей и recovery-строк), убрать trust-строку
         rm -f "$PGDATA/recovery.signal"
-        sed -i -e '/restore-wal\.sh/d' -e '/recovery_target/d' "$AUTO"
+        mv "$AUTO.orig" "$AUTO"
         sed -i '/^local all all trust$/d' "$PGDATA/pg_hba.conf"
 
-        LOG "{\"ok\":true,\"restored_to_lsn\":\"$LSN\"}"
+        # System id восстановленного PGDATA (pg_controldata работает по
+        # остановленному кластеру): воркер ставит его в initialize HA-scope ДО
+        # подъёма нод — без щита любая пустая нода, поднятая параллельно с
+        # rejoin'ом (супервиз/гонка), успевает initdb'нуться и стать лидером
+        # НОВОГО пустого кластера, а восстановленная навечно получает
+        # «system ID mismatch» (инцидент E2E-гейта t05, 2026-09-13).
+        SYSID=$(pg_controldata "$PGDATA" | sed -n 's/^Database system identifier: *//p' | tr -d ' ')
+        [ -n "$SYSID" ] || FAIL "pg_controldata: system identifier not found"
+
+        LOG "{\"ok\":true,\"restored_to_lsn\":\"$LSN\",\"system_id\":\"$SYSID\"}"
         """;
 }

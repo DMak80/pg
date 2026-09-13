@@ -2,9 +2,11 @@ using System.Text.Json;
 
 namespace PgWorker.Backups.Restore;
 
-/// <summary>Result-JSON restore-джоба: {"ok":true,"restored_to_lsn":"0/…"}
-/// либо {"ok":false,"error":"…"} (arch/19 §3.5, t05).</summary>
-public sealed record RestoreJobResult(bool Ok, string? RestoredToLsn, string? Error);
+/// <summary>Result-JSON restore-джоба: {"ok":true,"restored_to_lsn":"0/…",
+/// "system_id":"…"} либо {"ok":false,"error":"…"} (arch/19 §3.5, t05);
+/// system_id — с фикса гонки re-bootstrap (2026-09-13); старый образ джоба
+/// поле не пишет — null.</summary>
+public sealed record RestoreJobResult(bool Ok, string? RestoredToLsn, string? Error, string? SystemId = null);
 
 /// <summary>Маркеры stdout restore-джоба на момент поллинга: последняя фаза
 /// (downloading|recovering) и финальный result (null — ещё не напечатан).</summary>
@@ -38,7 +40,8 @@ public static class RestoreJobLog
                     result = new RestoreJobResult(
                         okEl.ValueKind == JsonValueKind.True,
                         GetString(root, "restored_to_lsn"),
-                        GetString(root, "error"));
+                        GetString(root, "error"),
+                        GetString(root, "system_id"));
             }
             catch (JsonException)
             {

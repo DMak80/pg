@@ -31,6 +31,8 @@ public static class RestoreStatusJson
             o["phase"] = phase;
         if (state.RestoredToLsn is { } lsn)
             o["restored_to_lsn"] = lsn;
+        if (state.SystemId is { } sysid)
+            o["system_id"] = sysid;
         if (state.Error is { } error)
             o["error"] = error;
 

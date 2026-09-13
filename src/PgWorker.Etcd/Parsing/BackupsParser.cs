@@ -284,7 +284,10 @@ public static class BackupsParser
                 requestedUnix.Value, requestedBy,
                 ReadLong(root, "started_unix"), ReadLong(root, "finished_unix"),
                 ReadString(root, "phase"), ReadString(root, "restored_to_lsn"),
-                ReadString(root, "error"));
+                ReadString(root, "error"))
+            {
+                SystemId = ReadString(root, "system_id"),
+            };
         }
         catch (JsonException)
         {

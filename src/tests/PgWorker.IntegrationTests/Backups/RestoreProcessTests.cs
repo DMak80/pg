@@ -71,17 +71,22 @@ public class RestoreProcessTests(EtcdFixture fixture)
             new ThresholdsOptions(600, 1800, PatroniBootSec: 600),
             clock ?? TimeProvider.System);
 
-    // Patroni-фейк: /cluster отвечает членами шарда (Ready — running/старт).
+    // Patroni-фейк: /cluster отвечает членами шарда (Ready — running/старт;
+    // FirstRole — роль первой ноды в Ready-ответе: «replica» моделирует
+    // незавершённые выборы — state=running при отсутствии лидера).
     private sealed class PatroniHandler : HttpMessageHandler
     {
         public bool Ready { get; set; }
+        public string FirstRole { get; set; } = "leader";
 
         protected override Task<HttpResponseMessage> SendAsync(
             HttpRequestMessage request, CancellationToken ct)
         {
-            var json = Ready
-                ? """{"members":[{"name":"shard1a","state":"running","role":"leader"},{"name":"shard1b","state":"running","role":"replica"}]}"""
-                : """{"members":[{"name":"shard1a","state":"start","role":"leader"}]}""";
+            var json = !Ready
+                ? """{"members":[{"name":"shard1a","state":"start","role":"leader"}]}"""
+                : FirstRole == "replica"
+                    ? """{"members":[{"name":"shard1a","state":"running","role":"replica"}]}"""
+                    : """{"members":[{"name":"shard1a","state":"running","role":"leader"},{"name":"shard1b","state":"creating replica","role":"replica"}]}""";
             return Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK)
             {
                 Content = new StringContent(json, System.Text.Encoding.UTF8, "application/json"),
@@ -418,6 +423,10 @@ public class RestoreProcessTests(EtcdFixture fixture)
         await fixture.Gateway.PutAsync(fixture.Endpoint, "/service/c1-shard1/sync", "shard1a", null, ct);
         await fixture.Gateway.PutAsync(fixture.Endpoint, "/service/c1-shard1/optime/shard1a", "1", null, ct);
         await fixture.Gateway.PutAsync(fixture.Endpoint, "/service/c1-shard1/members/shard1a", "x", null, ct);
+        // status с optime прошлой жизни: без чистки восстановленная нода (LSN ниже)
+        // не избирается лидером — «отстаёт» от рудимента больше max_lag_on_failover
+        await fixture.Gateway.PutAsync(fixture.Endpoint,
+            "/service/c1-shard1/status", """{"optime":67115208}""", null, ct);
         await fixture.Gateway.PutAsync(fixture.Endpoint, "/service/c1-shard1/request_cpu", "2", null, ct);
         var inner = new StubScaleDriver();
         inner.BackupAgentObjects.Add(new DockerContainer("id-agent", ["/pgw-backup-wal-c1-shard1"], "running", "img"));
@@ -442,6 +451,11 @@ public class RestoreProcessTests(EtcdFixture fixture)
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/leader", ct)).Value.Should().BeNull();
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/optime/shard1a", ct)).Value.Should().BeNull();
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/members/shard1a", ct)).Value.Should().BeNull();
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/status", ct)).Value.Should().BeNull("optime-рудимент запирает выборы восстановленной ноды");
+        // Щит re-bootstrap: initialize ставится заново заполнителем — пустая нода
+        // в окне демонтаж→джоба→rejoin initdb'нуться в чужой кластер не может
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/initialize", ct))
+            .Value!.Value.Should().Be("restore-in-progress");
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/request_cpu", ct))
             .Value!.Value.Should().Be("2");
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/c1", ct)).Value!.Value
@@ -695,9 +709,11 @@ public class RestoreProcessTests(EtcdFixture fixture)
     }
 
     [Fact]
-    public async Task Rejoin_все_ноды_running_статусы_RUNNING_и_COMPLETED_wal_удалён()
+    public async Task Rejoin_лидер_избран_реплика_стартовала_basebackup_COMPLETED_wal_удалён()
     {
-        // Arrange — REJOINING; Patroni: обе ноды running; wal-ключ и scope живы
+        // Arrange — REJOINING; Patroni: лидер running, реплика в basebackup
+        // ("creating replica") — контракт rejoin 2026-09-12: ожидания полного
+        // basebackup нет; wal-ключ и scope живы
         var ct = TestContext.Current.CancellationToken;
         await SeedAsync("c1");
         await SeedTwoNodeAllocAsync();
@@ -732,6 +748,38 @@ public class RestoreProcessTests(EtcdFixture fixture)
             .Value.Should().BeNull("сброс цепочки — переснятие полного планировщиком (AC4)");
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/c1", ct)).Value!.Value
             .Should().Contain("done/shard1/");
+    }
+
+    [Fact]
+    public async Task Rejoin_ставит_щит_initialize_systemid_до_ensure_нод()
+    {
+        // Arrange — REJOINING с system_id от джобы; в scope — заполнитель демонтажа.
+        // Щит перезаписывается ДО ensure первой ноды: параллельно поднятая пустая
+        // нода initdb'нуться в чужой кластер не может (гонка 2026-09-13)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        await SeedTwoNodeAllocAsync();
+        await fixture.Gateway.PutAsync(fixture.Endpoint,
+            "/service/c1-shard1/initialize", "restore-in-progress", null, ct);
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver,
+            patroni: new PatroniHandler { Ready = true });
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911122004Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Rejoining);
+        op = op with { RestoredToLsn = "0/42", SystemId = "7684914368175407176" };
+        await fixture.Gateway.PutAsync(fixture.Endpoint,
+            BackupNames.RestoreKey("c1", "shard1", op.Id), RestoreStatusJson.Serialize(op), null, ct);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        (await process.TickAsync(BuildTwoNodeSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — щит = system id восстановленного PGDATA (не заполнитель)
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/service/c1-shard1/initialize", ct))
+            .Value!.Value.Should().Be("7684914368175407176");
+        inner.EnsuredNodes.Should().NotBeEmpty("rejoin дошёл до ensure нод");
     }
 
     [Fact]
@@ -791,6 +839,33 @@ public class RestoreProcessTests(EtcdFixture fixture)
             .State.Should().Be(RestoreStatus.Completed);
         (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/backups/c1/shard1/wal", ct))
             .Value.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Rejoin_проба_ждёт_лидера_running_реплика_не_считается_готовой()
+    {
+        // Arrange — REJOINING; Patroni отвечает, но первая нода — running-реплика:
+        // выборы не завершены (гонка после restore), доводить до реплик нельзя
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        await SeedTwoNodeAllocAsync();
+        await SeedRestoreAsync("c1", "shard1", "20260911122003Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Rejoining);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+        var inner = new StubScaleDriver();
+        var process = BuildProcess(new FakeBackupS3(), new TestDriver(inner, new FakeBackupEngine()),
+            patroni: new PatroniHandler { Ready = true, FirstRole = "replica" });
+
+        // Act
+        var outcome = await process.TickAsync(BuildTwoNodeSnap(), await BackupsFromEtcdAsync("c1"), ct);
+
+        // Assert — первая нода не лидер → ожидание (InProgress, REJOINING);
+        // остальные ноды не поднимаются до избранного лидера
+        outcome.Value.Should().Be(ProcessOutcome.InProgress);
+        (await ReadRestoresAsync("c1", "shard1")).Single()
+            .State.Should().Be(RestoreStatus.Rejoining);
+        inner.EnsuredNodes.Should().NotContain(n => n.Contains("shard1b"),
+            "реплики поднимаются только после избранного лидера");
     }
 
     // ── Каркас тика ──

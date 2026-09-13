@@ -116,7 +116,13 @@ public sealed record RestoreOperationState(
     long? FinishedUnix = null,
     string? Phase = null,
     string? RestoredToLsn = null,
-    string? Error = null);
+    string? Error = null)
+{
+    /// <summary>System id восстановленного PGDATA (из result-джоба): щит
+    /// /service/&lt;scope&gt;/initialize в rejoin'е — пустые ноды в гонке не
+    /// могут initdb'нуться в чужой кластер. null — старый образ джоба.</summary>
+    public string? SystemId { get; init; }
+}
 
 /// <summary>Бэкапы одного шарда: полные (сортированы по Id) + WAL-поток
 /// (null — ключа нет: агент не поднимался, t03) + restore-операции (t05,

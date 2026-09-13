@@ -20,9 +20,12 @@ public class RestoreJobCommandTests
         cmd[2].Should().Contain("""{"phase":"recovering"}""");
         cmd[2].Should().Contain(@"mc cp --recursive ""pgwbkp/$S3_BUCKET/$SRC_PREFIX/full/$BACKUP_ID/"" ""$PGDATA/""");
         cmd[2].Should().Contain("chown -R 101:101");
-        // пустые runtime-каталоги PGDATA восстанавливаются (S3 не хранит пустые
-        // каталоги — pg_notify отсутствовал после download)
+        // пустые/транзиентные каталоги PGDATA восстанавливаются (S3 не хранит
+        // пустые каталоги, pg_basebackup исключает SLRU-каталоги — pg_notify,
+        // pg_subtrans, pg_dynshmem; регрессии E2E-гейта t05)
         cmd[2].Should().Contain("pg_notify");
+        cmd[2].Should().Contain("pg_subtrans");
+        cmd[2].Should().Contain("pg_dynshmem");
         cmd[2].Should().Contain("pg_wal/archive_status");
         // владелец/права — после всех модификаций: PGDATA 0700 (проверка pg_ctl),
         // mc не сохраняет unix-права (S3 их не хранит) — регрессия E2E-гейта t05
@@ -50,12 +53,25 @@ public class RestoreJobCommandTests
         // (bg_mon и preload-библиотеки в образе джоба postgres:18 отсутствуют)
         script.Should().Contain("""shared_preload_libraries = ''""");
         script.Should().Contain("ssl = off");
+        // logging_collector Spilo пишет в ../pg_log — каталога вне PGDATA джобы нет
+        script.Should().Contain("logging_collector = off");
+        // data_directory/hba_file/ident_file Patroni зашит абсолютными нодовыми
+        // путями — возвращаем на фактический PGDATA джоба (иначе postmaster
+        // ищет pg_hba.conf не там)
+        script.Should().Contain("data_directory = '%s'");
+        script.Should().Contain("hba_file = '%s/pg_hba.conf'");
+        script.Should().Contain("ident_file = '%s/pg_ident.conf'");
         script.Should().Contain("recovery_target_action = 'promote'");
         script.Should().Contain("recovery.signal");
-        script.Should().Contain("sed -i -e '/restore-wal\\.sh/d' -e '/recovery_target/d'");
+        // pristine auto.conf возвращается после promote — на rejoin нода обязана
+        // видеть свои нодовые пути, а не /restore (регрессия E2E-гейта t05)
+        script.Should().Contain("cp \"$AUTO\" \"$AUTO.orig\"");
+        script.Should().Contain("mv \"$AUTO.orig\" \"$AUTO\"");
         script.Should().Contain("setpriv --reuid=101 --regid=101");
         // result-строка в скрипте — внутри bash double-quotes: кавычки экранированы
         script.Should().Contain("{\\\"ok\\\":true,\\\"restored_to_lsn\\\":\\\"");
+        // system_id в result (pg_controldata) — щит re-bootstrap в rejoin'е
+        script.Should().Contain("\\\"system_id\\\":\\\"$SYSID\\\"");
     }
 
     // AAA: пути каталогов — из env-контракта джоба с дефолтами Spilo-layout (§3.3).
@@ -65,9 +81,9 @@ public class RestoreJobCommandTests
         // Arrange / Act
         var script = RestoreJobCommand.Build()[2];
 
-        // Assert
+        // Assert — внутри тома pgroot/data (volume-корень узла /home/postgres/pgdata)
         script.Should().Contain("DATA_DIR=\"${PGW_RESTORE_DATA_DIR:-/restore}\"");
-        script.Should().Contain("PGDATA=\"${PGW_RESTORE_PGDATA:-$DATA_DIR/pgdata/pgroot/data}\"");
+        script.Should().Contain("PGDATA=\"${PGW_RESTORE_PGDATA:-$DATA_DIR/pgroot/data}\"");
     }
 
     // AAA: restore_command — mc-скрипт, качающий сегмент в %p (конец WAL = exit != 0).

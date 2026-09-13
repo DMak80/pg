@@ -43,6 +43,25 @@ public class RestoreJobLogTests
         markers.Result.Error.Should().Be("recovery budget exceeded (60 s)");
     }
 
+    // AAA: system_id (щит re-bootstrap) читается из result; старый формат без
+    // поля — SystemId null.
+    [Fact]
+    public void Parse_SystemId_Optional()
+    {
+        // Arrange — новый формат джоба со system_id.
+        var withSysId = RestoreJobLog.Parse(
+            "{\"ok\":true,\"restored_to_lsn\":\"0/9\",\"system_id\":\"7684914368175407176\"}\n");
+
+        // Act / Assert
+        withSysId.Result!.SystemId.Should().Be("7684914368175407176");
+
+        // Arrange — старый формат (образ до 2026-09-13).
+        var legacy = RestoreJobLog.Parse("{\"ok\":true,\"restored_to_lsn\":\"0/9\"}\n");
+
+        // Act / Assert
+        legacy.Result!.SystemId.Should().BeNull();
+    }
+
     // AAA: битый JSON-шум игнорируется, маркеров нет.
     [Fact]
     public void Parse_OnlyNoise_NoMarkers()
