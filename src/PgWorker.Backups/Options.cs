@@ -43,7 +43,15 @@ public sealed record BackupsRuntimeOptions(
     long VerifyIntervalSec = 604800,
     // t05 (arch/19 §9): бюджет локального наката WAL restore-джобом
     // (фаза recovering; исчерпание → FAILED «recovery-бюджет исчерпан»).
-    int RestoreRecoveryTimeoutSec = 1800)
+    int RestoreRecoveryTimeoutSec = 1800,
+    // t07 (arch/19 §9): супервизор бэкапов (период сверок per-cluster и
+    // глобального лидер-прохода; TTL сирот, 0 — только алерт) и бюджеты
+    // зависших джобов (arch/19 §6).
+    int SupervisorIntervalSec = 600,
+    long SupervisorOrphanTtlSec = 604800,
+    int JobFullTimeoutSec = 21600,
+    int JobVerifyTimeoutSec = 21600,
+    int JobRestoreTimeoutSec = 86400)
 {
     /// <summary>Endpoint S3 для env контейнера агента/джоба (t03, §7: адресация
     /// env, не строка команды; advertised-fallback).</summary>
