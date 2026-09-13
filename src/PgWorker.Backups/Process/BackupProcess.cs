@@ -271,28 +271,17 @@ public sealed class BackupProcess(
         foreach (var active in fulls.Where(f => f.State
                      is FullBackupStatus.Planned or FullBackupStatus.Running or FullBackupStatus.Uploading))
         {
-            // хост джоба — хост ноды-источника из portalloc (node-факт статуса);
-            // нода исчезла из portalloc → transient: следующий тик.
-            var source = addresses.FirstOrDefault(p => p.Key == $"{shard.Name}/{active.Node}").Value;
-            if (source is null)
-                continue;
-            var engine = driver.EngineFor(source.Host);
-            if (engine is null)
-                continue;
-
-            var name = BackupNames.ContainerName(cluster, shard.Name, active.Id);
-            var list = await engine.ListContainersAsync(name, all: true, ct);
-            if (!list.IsSuccess)
-                continue; // transient transport-отказ: статус не меняем (arch/19 §2)
-
-            var found = list.Value.FirstOrDefault(c => c.Names.Contains(name));
-
-            // t07 (arch/19 §6): возрастной бюджет зависшего джоба — kill+rm
-            // контейнера и staging-volume → FAILED → переснятие по общему бэкоффу.
-            // PLANNED без контейнера — FAILED без kill; transport-отказ list —
-            // transient выше по коду (статус не меняем). journal-before-
-            // manipulations: статус FAILED пишется ДО cleanup.
+            // t13 (arch/19 §6): возрастной бюджет — ПЕРВЫЙ гвард: вердикт FAILED
+            // по возрасту — самостоятельный факт etcd (started_unix + часы
+            // воркера), docker-доступ не нужен; transient-пропуск источника
+            // (portalloc/engine/list) бюджет НЕ откладывает (джобу с возрастом >
+            // 6 ч нечем оправдаться). journal-before-manipulations: FAILED
+            // пишется ДО cleanup.
             var nowUnix = time.GetUtcNow().ToUnixTimeSeconds();
+            var source = addresses.GetValueOrDefault($"{shard.Name}/{active.Node}");
+            var engine = source is null ? null : driver.EngineFor(source.Host);
+            var name = BackupNames.ContainerName(cluster, shard.Name, active.Id);
+
             if (SupervisionTimeouts.IsTimedOut(active.StartedUnix, nowUnix, options.JobFullTimeoutSec))
             {
                 var timedOut = active with
@@ -305,12 +294,44 @@ public sealed class BackupProcess(
                     BackupNames.FullKey(cluster, shard.Name, active.Id), BackupStatusJson.Serialize(timedOut), ct);
                 if (!putTimeout.IsSuccess)
                     return putTimeout;
-                if (found is not null)
-                    await CleanupJobAsync(engine, cluster, shard.Name, active.Id, ct); // kill+rm контейнера и volume
+
+                // Cleanup best-effort (t13): kill+rm — только при доступном
+                // источнике (source/engine/list); недоступен → cleanup
+                // пропускается (осиротевший контейнер с детерминированным именем
+                // ничего не держит: id уникален, FAILED уже в etcd), пометка — в
+                // lastError той же journal-записи. PLANNED без контейнера —
+                // FAILED без kill (как до t13), БЕЗ пометки (cleanup не нужен,
+                // а не пропущен).
+                string cleanupNote = "";
+                if (engine is null)
+                {
+                    cleanupNote = "; cleanup пропущен: источник недоступен";
+                }
+                else
+                {
+                    var cleanupList = await engine.ListContainersAsync(name, all: true, ct);
+                    if (!cleanupList.IsSuccess)
+                        cleanupNote = "; cleanup пропущен: источник недоступен";
+                    else if (cleanupList.Value.Any(c => c.Names.Contains(name)))
+                        await CleanupJobAsync(engine, cluster, shard.Name, active.Id, ct); // kill+rm контейнера и volume
+                }
                 await journal.WritePhaseAsync(cluster, Op, $"job-timeout/{shard.Name}/{active.Id}",
-                    claims.InstanceId, timedOut.Error, ct);
+                    claims.InstanceId, timedOut.Error + cleanupNote, ct);
                 continue;
             }
+
+            // хост джоба — хост ноды-источника из portalloc (node-факт статуса);
+            // нода исчезла из portalloc → transient: следующий тик.
+            if (source is null)
+                continue;
+            if (engine is null)
+                continue;
+
+            var list = await engine.ListContainersAsync(name, all: true, ct);
+            if (!list.IsSuccess)
+                continue; // transient transport-отказ: статус не меняем (arch/19 §2)
+
+            var found = list.Value.FirstOrDefault(c => c.Names.Contains(name));
 
             // PLANNED: джоб ещё не стартовал — идемпотентный запуск (spec §2.4):
             // нет контейнера → create; старт — в обоих случаях (created прошлом
