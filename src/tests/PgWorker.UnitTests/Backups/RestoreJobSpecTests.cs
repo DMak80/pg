@@ -35,7 +35,8 @@ public class RestoreJobSpecTests
         spec.Env["TARGET_TIME"].Should().Be("2026-09-11T10:00:00Z");
         spec.Env["PGW_RECOVERY_TIMEOUT_SEC"].Should().Be("77");
         spec.Env["PGW_RESTORE_DATA_DIR"].Should().Be("/restore");
-        spec.Env["PGW_RESTORE_PGDATA"].Should().Be("/restore/pgdata/pgroot/data");
+        // внутри тома pgroot/data (volume-корень узла /home/postgres/pgdata)
+        spec.Env["PGW_RESTORE_PGDATA"].Should().Be("/restore/pgroot/data");
         spec.Env["MC_HOST_pgwbkp"].Should().Contain("ak:sk@minio:9000");
         spec.Hostname.Should().Be(BackupNames.RestoreContainerName("c1", "shard1", "id9"));
         spec.Label.Should().Be("c1");

@@ -28,7 +28,10 @@ public static class RestoreJobSpec
             [RestoreJobCommand.EnvTargetTime] = targetTime,
             [RestoreJobCommand.EnvRecoveryTimeoutSec] = opts.RestoreRecoveryTimeoutSec.ToString(),
             [RestoreJobCommand.EnvDataDir] = dataDir,
-            [RestoreJobCommand.EnvPgdata] = $"{dataDir}/pgdata/pgroot/data",
+            // Внутри тома: pgroot/data — volume-корень узла /home/postgres/pgdata,
+            // данные узла pgroot/data (arch/14 §2.1; инцидент E2E-гейта t05:
+            // лишний уровень pgdata делал PGDATA пустым для Patroni → reinit).
+            [RestoreJobCommand.EnvPgdata] = $"{dataDir}/pgroot/data",
         };
         return new ContainerSpec(
             Image: opts.JobImage,

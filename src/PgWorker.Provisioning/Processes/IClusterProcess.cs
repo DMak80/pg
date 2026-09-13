@@ -50,4 +50,4 @@ public sealed record PlacementOptions(
 /// ShardDeadSec → эвакуация (arch/14 §5 C); PatroniBootSec — бюджет ожидания
 /// Patroni после ensure нод (P2.2) и после restore-rejoin (t05 §3.5).
 /// </summary>
-public sealed record ThresholdsOptions(int NodeDeadSec, int ShardDeadSec, int PatroniBootSec = 600);
+public sealed record ThresholdsOptions(int NodeDeadSec, int ShardDeadSec, int PatroniBootSec = 300);

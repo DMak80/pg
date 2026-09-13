@@ -172,7 +172,7 @@ public sealed class ThresholdsOptions
 
     public int ShardDeadSec { get; set; } = 300;
 
-    public int PatroniBootSec { get; set; } = 600;
+    public int PatroniBootSec { get; set; } = 300;
 
     /// <summary>Бюджет ожидания слота на догон LSN при cutover (t01, spec §9).</summary>
     public int CutoverTimeoutSec { get; set; } = 90;

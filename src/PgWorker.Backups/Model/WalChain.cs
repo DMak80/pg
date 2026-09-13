@@ -14,6 +14,31 @@ public static class WalChain
     public static ChainResult Check(WalFileName chainStart, IEnumerable<string> objectNames)
         => Walk(chainStart, null, objectNames, null);
 
+    /// <summary>Check с перезапуском от нового TLI (t05 AC4): promote восстановленного
+    /// шарда открывает новый timeline, а сегменты старого TLI легитимно обрезаны
+    /// (restore откатил LSN назад — старый хвост не дописывается). Дыра на
+    /// TLI-границе при таком профиле — не деградация: если от первого сегмента
+    /// максимального TLI цепь непрерывна, она непрерывна. Настоящая дыра
+    /// (внутри одного TLI или в самом новом TLI) детектируется как раньше.</summary>
+    public static ChainResult CheckWithRestart(WalFileName chainStart, IEnumerable<string> objectNames)
+    {
+        var objects = objectNames as IReadOnlyList<string> ?? objectNames.ToList();
+        var first = Walk(chainStart, null, objects, null);
+        if (first.IsContinuous)
+            return first;
+
+        var segments = Collect(objects).Segments;
+        var maxTli = segments.Count > 0 ? segments.Max(s => s.Tli) : chainStart.Tli;
+        if (maxTli <= chainStart.Tli)
+            return first; // другой истории нет — это настоящая дыра
+
+        var restart = segments.First(s => s.Tli == maxTli);
+        if ((restart.Tli, restart.Log, restart.Seg) == (chainStart.Tli, chainStart.Log, chainStart.Seg))
+            return first; // уже стартовали с него
+        var retried = Walk(restart, null, objects, null);
+        return retried.IsContinuous ? retried : first;
+    }
+
     /// <summary>Проверка диапазона [chainStart..end] (t04, arch/19 §3): end —
     /// последний сегмент набора full/&lt;id&gt;/pg_wal/ (точка бэкапа); сегмент end
     /// ОБЯЗАН присутствовать среди объектов wal/ (дублирование t02). TLI-переходы

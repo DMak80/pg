@@ -138,7 +138,7 @@ data-volume первой ноды `pgw-<C>-<X>-<n>-data` в точку `/restore
 
 1. `{"phase":"downloading"}` — `mc cp --recursive` из
    `s3://<bucket>/<srcC>/<srcX>/full/<backup_id>/` в PGDATA-каталог Spilo
-   layout (`<точка-monтирования-volume>/pgdata/pgroot/data`), `chown -R
+   layout (`<точка-monтирования-volume>/pgroot/data`; volume-корень узла /home/postgres/pgdata — arch/14 §2.1), `chown -R
    101:101` (uid:gid postgres в Spilo; численно — в джобе postgres:18 uid
    иной, численное chown обязательно).
 2. Кладёт `/restore-wal.sh` (restore_command: `mc cp` сегмента/`.history` из
@@ -201,10 +201,17 @@ Env джоба: S3-комплект (MC_HOST-alias одной строкой —
    идемпотентен (PLANNED-паттерн t02).
 4. **REJOINING**: `EnsureNode` первой ноды на восстановленном volume
    (существующая механика провижининга: Spilo-конфиг тот же) → ожидание
-   Patroni-пробы, идентифицирующей нашу ноду (P2.2-образец; бюджет
+   Patroni-пробы, идентифицирующей нашу ноду как ЛИДЕРА (P2.2-образец:
+   `role=leader/primary` + `state=running/streaming`; бюджет
    `PatroniBootSec`) — Patroni поднимает существующие данные (bootstrap с
    непустым PGDATA при чистом DCS) → остальные ноды: чистые `EnsureNode`,
-   реплики догоняются `pg_basebackup` с лидера → все `RUNNING`.
+   реплики догоняются `pg_basebackup` с лидера → **контракт rejoin (решение
+   2026-09-12): COMPLETED ждёт лидера running/streaming + реплики,
+   успешно СТАРТОВАВШИЕ синхронизацию** (`state=creating replica` —
+   basebackup пошёл — или уже `running/streaming`); полное окончание
+   basebackup ожидает Patroni (свой retry), не заявка — иначе rejoin
+   висит на копировании данных (замер E2E: 55–70 с на ~100 МБ) и флейкует
+   на любом разумном бюджете.
 5. **COMPLETED**: пост-обработка — del ключа `wal` шарда (сброс цепочки);
    `finished_unix`, `restored_to_lsn`; журнал `phase=done`. Новый полный
    снимет планировщик (§3.5-расширение), агента поднимет WalStreamProcess.
