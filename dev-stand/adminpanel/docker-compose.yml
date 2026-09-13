@@ -292,6 +292,13 @@ services:
       WORKERS_PANEL_TLS_CERT_PATH: /tls-workers/panel.crt
       WORKERS_PANEL_TLS_KEY_PATH: /tls-workers/panel.key
       WORKERS_PANEL_TLS_SERVER_CA_PATH: /tls-workers/ca.pem
+      # t08: грань «Хранилище бэкапов» — read-only инвентарь MinIO из сети
+      # стенда (minio:9000 — compose-DNS; панель всегда в докере). Креды —
+      # стендовые дефолты as-minio; прод — per-install env (arch/19 §7).
+      AdminPanel__Backups__S3__Endpoint: http://minio:9000
+      AdminPanel__Backups__S3__Bucket: pgworker-backups
+      AdminPanel__Backups__S3__AccessKey: minioadmin
+      AdminPanel__Backups__S3__SecretKey: minioadmin
     volumes:
       # HostMap (s1a:8008 → hc1a:8008) — только JSON: env не собирает ключи
       # словаря с "__" (см. комментарий в самом файле)
