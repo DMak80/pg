@@ -99,7 +99,12 @@ public sealed class EtcdFixture : IAsyncLifetime
     }
 }
 
-// Один etcd-контейнер на оба contract/coordination-класса (ключи не пересекаются).
+// Один etcd-контейнер на все contract/coordination-классы. Инвариант непересечения
+// ключей держат сами классы: имена кластеров ОБЯЗАНЫ нести per-class guid-тег
+// (канон docs/e2e-isolation.md §1), клэймящие тесты чистят /pgworker/claims/<C>
+// перед TryClaim и отпускают клэйм в teardown (await using / IAsyncLifetime) —
+// литеральная коллизия имён (инцидент t07: sc3 BackupSupervisor × ShardScale)
+// даёт флейк полной сборки из-за lease-TTL 15с.
 [CollectionDefinition(Name)]
 public sealed class EtcdCollection : ICollectionFixture<EtcdFixture>
 {
