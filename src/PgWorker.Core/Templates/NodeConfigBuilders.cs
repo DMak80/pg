@@ -28,11 +28,13 @@ public sealed record InstallSecrets(string SuPassword, string StandbyPassword,
 /// /clusters/&lt;C&gt;/shards/&lt;X&gt;/master,
 /// P3 (wal_level=logical, sync_replication_slots, max_slot_wal_keep_size),
 /// P15 (максимальные соединения и бюджет doorman — синхронизированы).
-/// При tuning != null параметры PG — merge(PGTune ∪ канон): сначала вывод
-/// PgTune.Calculate в порядке §5.2 (минус ExcludeParams), затем PgWorker-канон
-/// поверх (перезапись по имени без дубликатов, новые ключи — в конец; spec.md
-/// §4.4). tuning == null — прежний хардкод-набор (тесты драйвера, изолированные
-/// пути). Per-нода PGW_NODE_HOST добавляет драйвер при создании контейнера.
+/// При tuning != null параметры PG — merge(PGTune ∪ канон), построение набора —
+/// в PgParametersCanon.Desired (единый источник с конвергенцией t11, arch/14
+/// §2.1/§5 C); SpiloEnvBuilder только цитирует значения для YAML (все — в
+/// двойных кавычках, КРОМЕ wal_level — исторический raw-string; порядок §5.2,
+/// канон поверх без дубликатов). tuning == null — прежний хардкод-набор (тесты
+/// драйвера, изолированные пути). Per-нода PGW_NODE_HOST добавляет драйвер при
+/// создании контейнера.
 /// </summary>
 public static class SpiloEnvBuilder
 {
@@ -134,58 +136,18 @@ public static class SpiloEnvBuilder
         "        log_rotation_size: \"100MB\"",
     ]);
 
-    // Канон PgWorker поверх PGTune (spec.md §4.4): P3 + лог-блок. Значения и
-    // кавычки — точно как в прежнем raw string (wal_level — без кавычек).
-    // Константы max_connections/shared_buffers/effective_cache_size/
-    // checkpoint_completion_target/random_page_cost из канона УБРАНЫ — их несёт PGTune.
-    private static readonly (string Name, string Value)[] CanonParameters =
-    [
-        ("wal_level", "logical"), // P3: логическое декодирование + failover slots
-        ("hot_standby", "\"on\""),
-        ("sync_replication_slots", "\"on\""),
-        ("max_slot_wal_keep_size", "\"16GB\""),
-        ("max_wal_senders", "\"10\""),
-        ("max_replication_slots", "\"10\""),
-        ("wal_keep_size", "\"2048MB\""),
-        ("checkpoint_timeout", "\"15min\""),
-        ("logging_collector", "\"on\""),
-        ("log_directory", "\"log\""),
-        ("log_filename", "\"postgresql-%Y-%m-%d.log\""),
-        ("log_rotation_age", "\"1d\""),
-        ("log_rotation_size", "\"100MB\""),
-    ];
+    // Канон PgWorker поверх PGTune (P3 + лог-блок) переехал в
+    // PgParametersCanon.CanonParameters (t11) — единый источник с конвергенцией.
 
-    // Merge PGTune ∪ канон (spec.md §4.4): сначала PGTune-параметры в порядке
-    // §5.2 (минус ExcludeParams — параметр не пишется вовсе, никаких пустых
-    // значений; exclude применяется ЗДЕСЬ, ядро всегда даёт полный вывод),
-    // затем канон «поверх» с перезаписью по имени без дубликатов: позиция
-    // первого вхождения сохраняется, новые ключи — в конец. PGTune-значения —
-    // YAML-строками в кавычках (текущий стиль max_connections: "60").
+    // Merge PGTune ∪ канон — единый источник PgParametersCanon.Desired (t11);
+    // YAML-цитирование — деталь ЭТОГО сериализатора: все значения в двойных
+    // кавычках, КРОМЕ wal_level (исторический стиль raw-string, инвариант
+    // байт-в-байт SPILO_CONFIGURATION).
     private static string TunedParametersBlock(PgTuneResult tuning, IReadOnlySet<string>? excludeParams)
     {
-        var exclude = excludeParams ?? new HashSet<string>(StringComparer.Ordinal);
-        var lines = new List<(string Name, string Value)>();
-        var positions = new Dictionary<string, int>(StringComparer.Ordinal);
-
-        void Upsert(string name, string value)
-        {
-            if (positions.TryGetValue(name, out var position))
-            {
-                lines[position] = (name, value);
-                return;
-            }
-
-            positions[name] = lines.Count;
-            lines.Add((name, value));
-        }
-
-        foreach (var parameter in tuning.Parameters)
-            if (!exclude.Contains(parameter.Name))
-                Upsert(parameter.Name, $"\"{parameter.Value}\"");
-        foreach (var (name, value) in CanonParameters)
-            Upsert(name, value);
-
-        return string.Join("\n", lines.Select(p => $"        {p.Name}: {p.Value}"));
+        var desired = PgParametersCanon.Desired(tuning, excludeParams);
+        return string.Join("\n", desired.Select(p =>
+            $"        {p.Name}: {(p.Name == "wal_level" ? p.RawValue : $"\"{p.RawValue}\"")}"));
     }
 
     // Примечание: секию postgresql (bin_dir/use_unix_socket) НЕ задаём —
