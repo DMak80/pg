@@ -57,9 +57,14 @@ builder.Services.AddOptions<PgWorkerOptions>()
         "ExcludeParams — только имена вывода PGTune (§5.2). Память/CPU — не здесь: заявки etcd request_{cpu,mem}")
     .ValidateOnStart();
 
+// Управляемый серт API (spec §3.2 п.1): чтение ключа /workers/api_tls/pgworker
+// ДО поднятия Kestrel; приоритет etcd > env; битый ключ — fail-fast.
+var etcdEndpoints = builder.Configuration.GetSection("PgWorker:Etcd:Endpoints").Get<string[]>() ?? [];
+var managedCert = await WorkerApiCertReader.ReadAsync(etcdEndpoints, "pgworker", CancellationToken.None);
+
 // mTLS HTTP API (arch/14 §1.1, t03): Kestrel с серверным сертом и требованием
 // клиентского серта per-install API-CA (порт — из ASPNETCORE_URLS/urls, иначе 8080).
-ApiTlsEndpoints.ConfigureMtls(builder);
+var apiTls = ApiTlsEndpoints.ConfigureMtls(builder, managedCert);
 
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<HealthState>();
@@ -580,6 +585,10 @@ var app = builder.Build();
 if (app.Services.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)
     app.Logger.LogWarning(
         "PgWorker:Api:Tls:AllowInsecureHttp=true — HTTP без TLS (ТОЛЬКО WAF-тесты, arch/14 §1.1)");
+if (apiTls.Source is { } certSource)
+    app.Logger.LogInformation("PgWorker:Api:Tls: серверный серт API — источник {Source}", certSource);
+if (apiTls.Warning is { } certWarning)
+    app.Logger.LogWarning("PgWorker:Api:Tls: {Warning}", certWarning);
 app.MapAppMetrics();
 app.MapHealthChecks("/healthz");
 app.MapWorkerApi();
