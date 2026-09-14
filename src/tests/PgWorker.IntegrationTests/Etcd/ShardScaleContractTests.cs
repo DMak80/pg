@@ -19,6 +19,12 @@ public class ShardScaleContractTests(EtcdFixture fixture)
 
     private string Endpoint => fixture.Endpoint;
 
+    // Per-class guid-тег (канон docs/e2e-isolation.md §1: guid во всех именах):
+    // имена кластеров несут уникальный суффикс — пересечение с соседними классами
+    // EtcdCollection механически невозможно (инцидент t07: BackupSupervisor взял
+    // имена sc1..sc3, клэйм sc3 жил 15с по TTL и ронял TryClaim этого класса).
+    private static readonly string Tag = Guid.NewGuid().ToString("N")[..8];
+
     // Сид Active-кластера (уникальное имя на тест — общий etcd коллекции).
     private async Task SeedActiveClusterAsync(string cluster, int buckets)
     {
@@ -62,11 +68,12 @@ public class ShardScaleContractTests(EtcdFixture fixture)
     public async Task PanelAddDeclaration_RealRange_ParserDetectsAddCandidate()
     {
         // Arrange — Active-кластер + add-декларация shard3 (сид в стиле панели)
-        await SeedActiveClusterAsync("sc1", 6);
-        await SeedAddDeclarationAsync("sc1", "shard3");
+        var cluster = $"sc1{Tag}";
+        await SeedActiveClusterAsync(cluster, 6);
+        await SeedAddDeclarationAsync(cluster, "shard3");
 
         // Act — реальный range → парсер → детекция scale-кандидатов
-        var snap = await SnapshotAsync("sc1");
+        var snap = await SnapshotAsync(cluster);
         var candidates = ShardScaleClassifier.Detect(snap);
 
         // Assert — только shard3 кандидат add; живые шарды не помечены
@@ -80,15 +87,16 @@ public class ShardScaleContractTests(EtcdFixture fixture)
     public async Task Marker_RealRange_ParserDetectsRemoveCandidate()
     {
         // Arrange — маркер демонтажа через реальный PUT
-        await SeedActiveClusterAsync("sc2", 6);
-        var put = await Gateway.PutAsync(Endpoint, "/clusters/sc2/shards/shard1/state", "TO_REMOVE",
+        var cluster = $"sc2{Tag}";
+        await SeedActiveClusterAsync(cluster, 6);
+        var put = await Gateway.PutAsync(Endpoint, $"/clusters/{cluster}/shards/shard1/state", "TO_REMOVE",
             null, TestContext.Current.CancellationToken);
         put.IsSuccess.Should().BeTrue();
 
         // Act
         var range = await Gateway.RangeAsync(Endpoint, "/clusters/", TestContext.Current.CancellationToken);
         var parsed = ClusterSnapshotParser.ParseClusters(range.Value, out var errors);
-        var candidates = ShardScaleClassifier.Detect(parsed.Value.Single(c => c.Config.Cluster == "sc2"));
+        var candidates = ShardScaleClassifier.Detect(parsed.Value.Single(c => c.Config.Cluster == cluster));
 
         // Assert — remove-кандидат найден; парсер не пишет parseErrors
         errors.Should().BeEmpty();
@@ -101,9 +109,10 @@ public class ShardScaleContractTests(EtcdFixture fixture)
         // Arrange — помеченный пустой шард (routing весь на shard2), portalloc
         // обоих шардов реальными Put, контейнеры в стаб-драйвере, клэйм наш
         var ct = TestContext.Current.CancellationToken;
-        await SeedActiveClusterAsync("sc3", 3);
-        await Gateway.PutAsync(Endpoint, "/clusters/sc3/shards/shard1/state", "TO_REMOVE", null, ct);
-        await Gateway.PutAsync(Endpoint, "/pgworker/portalloc/sc3", Portalloc.Serialize(
+        var cluster = $"sc3{Tag}";
+        await SeedActiveClusterAsync(cluster, 3);
+        await Gateway.PutAsync(Endpoint, $"/clusters/{cluster}/shards/shard1/state", "TO_REMOVE", null, ct);
+        await Gateway.PutAsync(Endpoint, $"/pgworker/portalloc/{cluster}", Portalloc.Serialize(
             new Dictionary<string, NodeAddress>
             {
                 ["shard1/shard1a"] = new("h1", new NodePorts(15000, 18000, 16500)),
@@ -111,35 +120,39 @@ public class ShardScaleContractTests(EtcdFixture fixture)
                 ["shard2/shard2a"] = new("h1", new NodePorts(15001, 18001, 16501)),
                 ["shard2/shard2b"] = new("h2", new NodePorts(15001, 18001, 16501)),
             }), null, ct);
-        await Gateway.PutAsync(Endpoint, "/pgworker/evacuations/sc3/shard1",
+        await Gateway.PutAsync(Endpoint, $"/pgworker/evacuations/{cluster}/shard1",
             """{"buckets":{"0":"shard2"},"reason":"shard-dead","evacuated_unix":1,"state":"DONE","returned_unix":null}""",
             null, ct);
         var driver = new StubScaleDriver
         {
-            NodeObjects = ["pgw-sc3-shard1-shard1a", "pgw-sc3-shard1-shard1b", "pgw-sc3-shard2-shard2a"],
+            NodeObjects = [$"pgw-{cluster}-shard1-shard1a", $"pgw-{cluster}-shard1-shard1b", $"pgw-{cluster}-shard2-shard2a"],
         };
-        var claims = new ClaimStore([Endpoint], Gateway, TimeProvider.System);
-        (await claims.TryClaimClusterAsync("sc3", ct)).Value.Should().BeTrue();
+        // Own-only предочистка клэйма (паттерн SeedAsync Backups-классов): тест не
+        // зависит от таймингов TTL соседей по коллекции.
+        await Gateway.DeleteAsync(Endpoint, $"/pgworker/claims/{cluster}", prefix: false, ct);
+        // Own-only teardown: DisposeAsync отзывает lease — ключ исчезает сразу, не по TTL 15с.
+        await using var claims = new ClaimStore([Endpoint], Gateway, TimeProvider.System);
+        (await claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
         var process = new RemoveShardProcess(
             Gateway, [Endpoint], driver, claims, new WorkJournal(Gateway, [Endpoint]), snapshot: null);
 
         // Act — демонтаж на реальном etcd
-        var outcome = await process.TickAsync(await SnapshotAsync("sc3"), "shard1", ct);
+        var outcome = await process.TickAsync(await SnapshotAsync(cluster), "shard1", ct);
 
         // Assert — ключи/порталы/журнал вычищены реальными del; сосед цел
         outcome.IsSuccess.Should().BeTrue();
         outcome.Value.Should().Be(ProcessOutcome.Done);
         driver.RemovedNodes.Should().BeEquivalentTo(["shard1/shard1a", "shard1/shard1b"]);
-        var shardPrefix = await Gateway.RangeAsync(Endpoint, "/clusters/sc3/shards/shard1/", ct);
+        var shardPrefix = await Gateway.RangeAsync(Endpoint, $"/clusters/{cluster}/shards/shard1/", ct);
         shardPrefix.Value.Should().BeEmpty();
-        var scopePrefix = await Gateway.RangeAsync(Endpoint, "/service/sc3-shard1/", ct);
+        var scopePrefix = await Gateway.RangeAsync(Endpoint, $"/service/{cluster}-shard1/", ct);
         scopePrefix.Value.Should().BeEmpty();
-        var portalloc = await Gateway.GetAsync(Endpoint, "/pgworker/portalloc/sc3", ct);
+        var portalloc = await Gateway.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
         portalloc.Value!.Value.Should().NotContain("shard1/");
         portalloc.Value.Value.Should().Contain("shard2/");
-        var evacuation = await Gateway.GetAsync(Endpoint, "/pgworker/evacuations/sc3/shard1", ct);
+        var evacuation = await Gateway.GetAsync(Endpoint, $"/pgworker/evacuations/{cluster}/shard1", ct);
         evacuation.Value.Should().BeNull();
-        var sibling = await Gateway.GetAsync(Endpoint, "/clusters/sc3/shards/shard2/dsn", ct);
+        var sibling = await Gateway.GetAsync(Endpoint, $"/clusters/{cluster}/shards/shard2/dsn", ct);
         sibling.Value.Should().NotBeNull();
     }
 
@@ -150,9 +163,10 @@ public class ShardScaleContractTests(EtcdFixture fixture)
         // видит объекты нод + живой агент (BackupAgentObjects); etcd-ключ
         // /pgworker/backups/<C>/shard1/wal посажен напрямую
         var ct = TestContext.Current.CancellationToken;
-        await SeedActiveClusterAsync("sc6", 3);
-        await Gateway.PutAsync(Endpoint, "/clusters/sc6/shards/shard1/state", "TO_REMOVE", null, ct);
-        await Gateway.PutAsync(Endpoint, "/pgworker/portalloc/sc6", Portalloc.Serialize(
+        var cluster = $"sc6{Tag}";
+        await SeedActiveClusterAsync(cluster, 3);
+        await Gateway.PutAsync(Endpoint, $"/clusters/{cluster}/shards/shard1/state", "TO_REMOVE", null, ct);
+        await Gateway.PutAsync(Endpoint, $"/pgworker/portalloc/{cluster}", Portalloc.Serialize(
             new Dictionary<string, NodeAddress>
             {
                 ["shard1/shard1a"] = new("h1", new NodePorts(15000, 18000, 16500)),
@@ -160,32 +174,34 @@ public class ShardScaleContractTests(EtcdFixture fixture)
                 ["shard2/shard2a"] = new("h1", new NodePorts(15001, 18001, 16501)),
                 ["shard2/shard2b"] = new("h2", new NodePorts(15001, 18001, 16501)),
             }), null, ct);
-        await Gateway.PutAsync(Endpoint, "/pgworker/backups/sc6/shard1/wal",
+        await Gateway.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/shard1/wal",
             """{"state":"ACTIVE","slot":"pgw_bkp_sc6_shard1","master_node":"shard1a","chain_start_segment":"000000010000000000000001","last_received_segment":"000000010000000000000002","last_uploaded_segment":"000000010000000000000002","last_uploaded_unix":1757500000,"lag_segments":1}""",
             null, ct);
         var driver = new StubScaleDriver
         {
-            NodeObjects = ["pgw-sc6-shard1-shard1a", "pgw-sc6-shard1-shard1b", "pgw-sc6-shard2-shard2a"],
+            NodeObjects = [$"pgw-{cluster}-shard1-shard1a", $"pgw-{cluster}-shard1-shard1b", $"pgw-{cluster}-shard2-shard2a"],
             BackupAgentObjects =
             [
                 new PgWorker.Docker.Engine.DockerContainer(
-                    "id-agent", ["/pgw-backup-wal-sc6-shard1"], "running", "bkp-img"),
+                    "id-agent", [$"/pgw-backup-wal-{cluster}-shard1"], "running", "bkp-img"),
             ],
         };
-        var claims = new ClaimStore([Endpoint], Gateway, TimeProvider.System);
-        (await claims.TryClaimClusterAsync("sc6", ct)).Value.Should().BeTrue();
+        // Own-only: предочистка клэйма + немедленный выпуск (await using).
+        await Gateway.DeleteAsync(Endpoint, $"/pgworker/claims/{cluster}", prefix: false, ct);
+        await using var claims = new ClaimStore([Endpoint], Gateway, TimeProvider.System);
+        (await claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
         var process = new RemoveShardProcess(
             Gateway, [Endpoint], driver, claims, new WorkJournal(Gateway, [Endpoint]), snapshot: null);
 
         // Act — тик RemoveShardProcess
-        var outcome = await process.TickAsync(await SnapshotAsync("sc6"), "shard1", ct);
+        var outcome = await process.TickAsync(await SnapshotAsync(cluster), "shard1", ct);
 
         // Assert — агент остановлен; docker-объектов шарда нет; ключ wal УДАЛЁН
         outcome.IsSuccess.Should().BeTrue();
         outcome.Value.Should().Be(ProcessOutcome.Done);
-        driver.RemovedBackupAgents.Should().Contain("pgw-backup-wal-sc6-shard1");
-        driver.BackupAgentObjects.Should().NotContain(c => c.Names.Any(n => n.Contains("sc6")));
-        var backupsPrefix = await Gateway.RangeAsync(Endpoint, "/pgworker/backups/sc6/shard1/", ct);
+        driver.RemovedBackupAgents.Should().Contain($"pgw-backup-wal-{cluster}-shard1");
+        driver.BackupAgentObjects.Should().NotContain(c => c.Names.Any(n => n.Contains(cluster)));
+        var backupsPrefix = await Gateway.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/shard1/", ct);
         backupsPrefix.Value.Should().BeEmpty("ключ wal не переживает демонтаж (CleanKeysAsync)");
     }
 
@@ -193,17 +209,18 @@ public class ShardScaleContractTests(EtcdFixture fixture)
     public async Task ConcurrentMarkerPuts_ConvergeToSameValue()
     {
         // Arrange — конкурентные PUT одного маркера (идемпотентность §4.2)
-        await SeedActiveClusterAsync("sc4", 2);
+        var cluster = $"sc4{Tag}";
+        await SeedActiveClusterAsync(cluster, 2);
         var ct = TestContext.Current.CancellationToken;
 
         // Act — два параллельных PUT
         var puts = await Task.WhenAll(
-            Gateway.PutAsync(Endpoint, "/clusters/sc4/shards/shard1/state", "TO_REMOVE", null, ct),
-            Gateway.PutAsync(Endpoint, "/clusters/sc4/shards/shard1/state", "TO_REMOVE", null, ct));
+            Gateway.PutAsync(Endpoint, $"/clusters/{cluster}/shards/shard1/state", "TO_REMOVE", null, ct),
+            Gateway.PutAsync(Endpoint, $"/clusters/{cluster}/shards/shard1/state", "TO_REMOVE", null, ct));
 
         // Assert — оба успеха; значение ровно "TO_REMOVE"
         puts.Should().OnlyContain(p => p.IsSuccess);
-        var read = await Gateway.GetAsync(Endpoint, "/clusters/sc4/shards/shard1/state", ct);
+        var read = await Gateway.GetAsync(Endpoint, $"/clusters/{cluster}/shards/shard1/state", ct);
         read.Value!.Value.Should().Be("TO_REMOVE");
     }
 
@@ -213,24 +230,27 @@ public class ShardScaleContractTests(EtcdFixture fixture)
         // Arrange — add-декларация shard3 (без dsn) + маркер: способ отменить
         // зависший add (Д5) — RemoveShardProcess вычищает декларацию
         var ct = TestContext.Current.CancellationToken;
-        await SeedActiveClusterAsync("sc5", 2);
-        await SeedAddDeclarationAsync("sc5", "shard3");
-        await Gateway.PutAsync(Endpoint, "/clusters/sc5/shards/shard3/state", "TO_REMOVE", null, ct);
-        var claims = new ClaimStore([Endpoint], Gateway, TimeProvider.System);
-        (await claims.TryClaimClusterAsync("sc5", ct)).Value.Should().BeTrue();
+        var cluster = $"sc5{Tag}";
+        await SeedActiveClusterAsync(cluster, 2);
+        await SeedAddDeclarationAsync(cluster, "shard3");
+        await Gateway.PutAsync(Endpoint, $"/clusters/{cluster}/shards/shard3/state", "TO_REMOVE", null, ct);
+        // Own-only: предочистка клэйма + немедленный выпуск (await using).
+        await Gateway.DeleteAsync(Endpoint, $"/pgworker/claims/{cluster}", prefix: false, ct);
+        await using var claims = new ClaimStore([Endpoint], Gateway, TimeProvider.System);
+        (await claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
         var process = new RemoveShardProcess(
             Gateway, [Endpoint], new StubScaleDriver(), claims,
             new WorkJournal(Gateway, [Endpoint]), snapshot: null);
 
         // Act
-        var outcome = await process.TickAsync(await SnapshotAsync("sc5"), "shard3", ct);
+        var outcome = await process.TickAsync(await SnapshotAsync(cluster), "shard3", ct);
 
         // Assert — декларация вычищена реальными del (контейнеров не было)
         outcome.IsSuccess.Should().BeTrue();
         outcome.Value.Should().Be(ProcessOutcome.Done);
-        var shardPrefix = await Gateway.RangeAsync(Endpoint, "/clusters/sc5/shards/shard3/", ct);
+        var shardPrefix = await Gateway.RangeAsync(Endpoint, $"/clusters/{cluster}/shards/shard3/", ct);
         shardPrefix.Value.Should().BeEmpty();
-        var scopePrefix = await Gateway.RangeAsync(Endpoint, "/service/sc5-shard3/", ct);
+        var scopePrefix = await Gateway.RangeAsync(Endpoint, $"/service/{cluster}-shard3/", ct);
         scopePrefix.Value.Should().BeEmpty();
     }
 }
