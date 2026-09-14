@@ -44,6 +44,11 @@ public class AdoptionContractTests(EtcdFixture fixture)
             """{"role":"replica","state":"running"}""", null, ct);
         await Gateway.PutAsync(Endpoint, $"/service/{cluster}-s1/members/s1b",
             """{"role":"replica","state":"running"}""", null, ct);
+        // Заявки ресурсов ОБЯЗАТЕЛЬНЫ (arch/14 §2.1 п.4, канонизировано f6d4574):
+        // сид зеркалит то, что панель пишет при создании шарда, — без них
+        // PgtuneInputsFactory фейлит тик усыновления (fail-fast, дефолтов нет).
+        await Gateway.PutAsync(Endpoint, $"/service/{cluster}-s1/request_cpu", "2", null, ct);
+        await Gateway.PutAsync(Endpoint, $"/service/{cluster}-s1/request_mem", "4Gi", null, ct);
     }
 
     private async Task<ClusterSnapshot> SnapshotAsync(string cluster)
@@ -176,6 +181,9 @@ public class AdoptionContractTests(EtcdFixture fixture)
             """{"role":"replica","state":"running"}""", null, ct);
         await Gateway.PutAsync(Endpoint, "/service/adoptadv-shard1/members/shard1b",
             """{"role":"replica","state":"running"}""", null, ct);
+        // Заявки обязательны (arch/14 §2.1 п.4): формат панели — как SeedExternalClusterAsync.
+        await Gateway.PutAsync(Endpoint, "/service/adoptadv-shard1/request_cpu", "2", null, ct);
+        await Gateway.PutAsync(Endpoint, "/service/adoptadv-shard1/request_mem", "4Gi", null, ct);
         await Gateway.PutAsync(Endpoint, "/clusters/adoptadv/shards/shard1/nodes/shard1a/state", "RUNNING", null, ct);
         await Gateway.PutAsync(Endpoint, "/clusters/adoptadv/shards/shard1/nodes/shard1b/state", "RUNNING", null, ct);
         await Gateway.PutAsync(Endpoint, "/pgworker/portalloc/adoptadv",
