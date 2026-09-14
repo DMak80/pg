@@ -61,7 +61,7 @@ public class E2eWorkerCertScenarios
 
             // Assert 1: грань на etcd-серте — /healthz 200 ТОЛЬКО при доверии
             // старому thumbprint; дискавери-ключ сообщает старый thumbprint.
-            var (oldUrl, discoveryOld) = await WaitForDiscoveryAsync(fx, oldThumb, ct);
+            var (oldUrl, discoveryOld) = await WaitForDiscoveryAsync(fx, ct);
             discoveryOld.Should().Be(oldThumb, "дискавери-ключ обязан нести thumbprint применённого серта");
             using (var client = TlsClient(clientPem, clientKeyPem, oldThumb))
             {
@@ -104,7 +104,7 @@ public class E2eWorkerCertScenarios
             // docker-политика restart: unless-stopped в e2e имитируется новым
             // инстансом с тем же контуром: при старте перечитан etcd-ключ.
             await using var p2 = await fx.StartHostAsync("cert-p2", extraEnv: extraEnv, ct: ct);
-            var (newUrl, discoveryNew) = await WaitForDiscoveryAsync(fx, newThumb, ct);
+            var (newUrl, discoveryNew) = await WaitForDiscoveryAsync(fx, ct);
             discoveryNew.Should().Be(newThumb, "дискавери-ключ переподставился с новым thumbprint");
             using (var client = TlsClient(clientPem, clientKeyPem, newThumb))
             {
@@ -118,7 +118,7 @@ public class E2eWorkerCertScenarios
             p2.Kill(); // рестарт: смерть процесса + повторный подъём = политика docker
             await using var p3 = await fx.StartHostAsync("cert-p3", extraEnv: extraEnv, ct: ct);
 
-            var (envUrl, discoveryEnv) = await WaitForDiscoveryAsync(fx, envThumb, ct);
+            var (envUrl, discoveryEnv) = await WaitForDiscoveryAsync(fx, ct);
             discoveryEnv.Should().Be(envThumb, "после удаления ключа воркер на env-серте (unmanaged)");
             using (var client = TlsClient(clientPem, clientKeyPem, envThumb))
             {
@@ -214,17 +214,21 @@ public class E2eWorkerCertScenarios
         put.IsSuccess.Should().BeTrue();
     }
 
-    // Дискавери-ключи /pgworker/api/<id>: [(url, cert_thumbprint)] — ждём
-    // появления ключа с ОЖИДАЕМЫМ thumbprint (переподстановка после рестарта).
+    // Дискавери-ключи /pgworker/api/<id>: ждём появления ключа (lease-подстановка
+    // после старта) и возвращаем ФАКТИЧЕСКИЙ url+thumbprint НОВЕЙШЕГО инстанса
+    // (максимум since_unix — старый ключ мог доживать по TTL lease): ассерты
+    // наверху сверяют факт с ожиданием, а не эхируют вход.
     private static async Task<(string Url, string Thumbprint)> WaitForDiscoveryAsync(
-        E2eEnvironment fx, string expectedThumb, CancellationToken ct)
+        E2eEnvironment fx, CancellationToken ct)
     {
         string? url = null;
+        string? actualThumb = null;
         var found = await E2eFixture.WaitForAsync(async () =>
         {
             var range = await fx.Gateway.RangeAsync(fx.EtcdEndpoint, DiscoveryPrefix, ct);
             if (!range.IsSuccess)
                 return false;
+            long bestSince = -1;
             foreach (var kv in range.Value)
             {
                 try
@@ -232,12 +236,19 @@ public class E2eWorkerCertScenarios
                     using var doc = JsonDocument.Parse(kv.Value);
                     var root = doc.RootElement;
                     if (!root.TryGetProperty("cert_thumbprint", out var thumb)
-                        || !root.TryGetProperty("url", out var jsonUrl))
+                        || thumb.GetString() is not { Length: > 0 } t
+                        || !root.TryGetProperty("url", out var jsonUrl)
+                        || jsonUrl.GetString() is not { Length: > 0 } u)
                         continue;
-                    if (thumb.GetString() == expectedThumb && jsonUrl.GetString() is { Length: > 0 } u)
+                    var since = root.TryGetProperty("since_unix", out var s)
+                        && s.ValueKind == JsonValueKind.Number
+                        ? s.GetInt64()
+                        : 0;
+                    if (since > bestSince)
                     {
+                        bestSince = since;
                         url = u;
-                        return true;
+                        actualThumb = t;
                     }
                 }
                 catch (JsonException)
@@ -246,10 +257,10 @@ public class E2eWorkerCertScenarios
                 }
             }
 
-            return false;
+            return bestSince >= 0;
         }, TimeSpan.FromSeconds(30), ct);
-        found.Should().BeTrue($"дискавери-ключ с thumbprint {expectedThumb[..16]}… обязан появиться");
-        return (url!, expectedThumb);
+        found.Should().BeTrue("дискавери-ключ с cert_thumbprint обязан появиться");
+        return (url!, actualThumb!);
     }
 
     // mTLS-клиент, доверяющий серверу ТОЛЬКО по SHA-256 thumbprint (панель
