@@ -62,8 +62,9 @@ public class WorkerTlsHandlerTests
         WorkerTlsHandler.EnvBindings.Should().HaveCount(6);
     }
 
-    // Локальный PKI-хелпер: GenerateCa + Issue по образцу ClusterPki воркера.
-    private static class TestPki
+    // Локальный PKI-хелпер: GenerateCa + Issue по образцу ClusterPki воркера
+    // (internal: переиспользуется тестами thumbprint-доверия ниже).
+    internal static class TestPki
     {
         public static (string CaPem, string CaKeyPem) GenerateCa()
         {
@@ -95,6 +96,21 @@ public class WorkerTlsHandlerTests
             return (cert.ExportCertificatePem(), leafKey.ExportPkcs8PrivateKeyPem());
         }
 
+        // Self-signed лист БЕЗ CA (проверка thumbprint-доверия, spec §3.3 п.3).
+        public static (string CertPem, string KeyPem) IssueSelfSigned()
+        {
+            using var rsa = RSA.Create(2048);
+            var request = new CertificateRequest(
+                "CN=self-signed-worker", rsa, HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
+            var san = new SubjectAlternativeNameBuilder();
+            san.AddDnsName("localhost");
+            san.AddIpAddress(System.Net.IPAddress.Loopback);
+            request.CertificateExtensions.Add(san.Build());
+            using var cert = request.CreateSelfSigned(
+                DateTimeOffset.UtcNow.AddDays(-1), DateTimeOffset.UtcNow.AddDays(30));
+            return (cert.ExportCertificatePem(), rsa.ExportPkcs8PrivateKeyPem());
+        }
+
         private static byte[] PemBody(string pem)
         {
             var begin = pem.IndexOf("-----\n", StringComparison.Ordinal) + 6;
@@ -102,5 +118,85 @@ public class WorkerTlsHandlerTests
             var base64 = string.Concat(pem[begin..end].Where(c => !char.IsWhiteSpace(c)));
             return Convert.FromBase64String(base64);
         }
+    }
+}
+
+// ===== Thumbprint-доверие: реальный TLS-хендшейк против локального SslStream-сервера =====
+
+public class WorkerTlsHandlerThumbprintTests
+{
+    // Локальный TLS-сервер: один хендшейк с сертом serverPem (self-signed), ответ 200.
+    private static async Task<int> ServeOnceAsync(string certPem, string keyPem, int port)
+    {
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, port);
+        listener.Start();
+        var pem = System.Security.Cryptography.X509Certificates.X509Certificate2.CreateFromPem(certPem, keyPem);
+        var serverCert = System.Security.Cryptography.X509Certificates.X509CertificateLoader.LoadPkcs12(
+            pem.Export(System.Security.Cryptography.X509Certificates.X509ContentType.Pkcs12), null);
+        using var client = await listener.AcceptTcpClientAsync(TestContext.Current.CancellationToken);
+        using var ssl = new SslStream(client.GetStream(), leaveInnerStreamOpen: false);
+        await ssl.AuthenticateAsServerAsync(new SslServerAuthenticationOptions
+        {
+            ServerCertificate = serverCert,
+            ClientCertificateRequired = false,
+            EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12,
+        });
+        // Прочитать заголовки запроса, ответить 200 и закрыть.
+        var buffer = new byte[4096];
+        _ = await ssl.ReadAsync(buffer);
+        var response = "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok"u8.ToArray();
+        await ssl.WriteAsync(response);
+        listener.Stop();
+        return port;
+    }
+
+    private static int FreePort()
+    {
+        using var probe = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        probe.Start();
+        var port = ((System.Net.IPEndPoint)probe.LocalEndpoint).Port;
+        probe.Stop();
+        return port;
+    }
+
+    [Fact]
+    public async Task Build_SelfSignedWithTrustedThumbprint_HandshakeOk()
+    {
+        // Arrange: серверный self-signed лист ВНЕ ServerCa (своя RSA-пара);
+        // доверие — thumbprint этого листа (spec §3.3 п.3: панель доверяет
+        // сертам, которые сама записала)
+        var (certPem, keyPem) = WorkerTlsHandlerTests.TestPki.IssueSelfSigned();
+        using var serverCert = System.Security.Cryptography.X509Certificates.X509Certificate2.CreateFromPem(certPem);
+        var thumb = Convert.ToHexString(SHA256.HashData(serverCert.RawData)).ToLowerInvariant();
+        var port = FreePort();
+        var serverTask = ServeOnceAsync(certPem, keyPem, port);
+
+        // Act: handler с доверенным thumbprint → GET за TLS
+        using var handler = WorkerTlsHandler.Build(new WorkerTlsOptions(), () => [thumb]);
+        using var client = new HttpClient(handler) { BaseAddress = new Uri($"https://127.0.0.1:{port}") };
+        var response = await client.GetAsync("/", TestContext.Current.CancellationToken);
+
+        // Assert: хендшейк успешен, запрос прошёл
+        response.StatusCode.Should().Be(System.Net.HttpStatusCode.OK);
+        await serverTask;
+    }
+
+    [Fact]
+    public async Task Build_UnknownSelfSigned_HandshakeRefused()
+    {
+        // Arrange: тот же серверный серт, но доверие-колбэк отдаёт ДРУГОЙ thumbprint
+        var (certPem, keyPem) = WorkerTlsHandlerTests.TestPki.IssueSelfSigned();
+        var port = FreePort();
+        var serverTask = ServeOnceAsync(certPem, keyPem, port);
+        var otherThumb = new string('f', 64);
+
+        // Act: колбэк доверяет только «другой» отпечаток
+        using var handler = WorkerTlsHandler.Build(new WorkerTlsOptions(), () => [otherThumb]);
+        using var client = new HttpClient(handler) { BaseAddress = new Uri($"https://127.0.0.1:{port}") };
+
+        // Assert: TLS-хендшейк отказ (сертификат отвергнут колбэком)
+        var act = async () => await client.GetAsync("/", TestContext.Current.CancellationToken);
+        (await Assert.ThrowsAnyAsync<System.Net.Http.HttpRequestException>(act)).Should().NotBeNull();
+        await serverTask;
     }
 }

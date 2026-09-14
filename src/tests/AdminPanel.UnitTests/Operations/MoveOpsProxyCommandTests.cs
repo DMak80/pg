@@ -27,6 +27,14 @@ public class MoveOpsProxyCommandTests
             Calls.Add(call);
             return Task.FromResult(Respond is not null ? Respond(call) : new WorkerApiResult(204, null));
         }
+
+        public Task<IReadOnlyList<WorkerApiInstanceResult>> SendAllAsync(
+            string worker, HttpMethod method, string path, object? body, string? requestedBy, CancellationToken ct)
+        {
+            // Стаб: один заготовленный инстанс (broadcast-семантика тестируется юнитами гейтвея).
+            var response = Respond is not null ? Respond(new Call(worker, method, path, body, requestedBy)) : new WorkerApiResult(204, null);
+            return Task.FromResult<IReadOnlyList<WorkerApiInstanceResult>>([new("stub-instance", response, null)]);
+        }
     }
 
     private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
