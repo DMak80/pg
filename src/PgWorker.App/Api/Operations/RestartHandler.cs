@@ -22,8 +22,17 @@ public sealed class RestartHandler(
             "POST /api/restart: запрошен перезапуск (оператор {Operator})", requestedBy ?? "unknown");
         _ = Task.Run(async () =>
         {
-            await Task.Delay(stopDelay ?? TimeSpan.FromSeconds(1));
-            lifetime.StopApplication();
+            try
+            {
+                await Task.Delay(stopDelay ?? TimeSpan.FromSeconds(1));
+                lifetime.StopApplication();
+            }
+            catch (Exception e)
+            {
+                // Fire-and-forget: ответ 202 уже ушёл, необработанное исключение
+                // фоновой задачи осталось бы невидимым оператору — пишем в журнал.
+                logger.LogError(e, "POST /api/restart: ошибка отложенного StopApplication");
+            }
         });
         return new RestartDto(true);
     }
