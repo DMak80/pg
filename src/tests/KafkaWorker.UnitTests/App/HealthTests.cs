@@ -2,6 +2,7 @@ using Microsoft.Extensions.Diagnostics.HealthChecks;
 using FluentAssertions;
 using KafkaWorker.App;
 using Shared.Core.HealthChecks;
+using Shared.Etcd.Client;
 using KafkaWorker.App.HealthChecks;
 using KafkaWorker.Core;
 using KafkaWorker.Etcd.Coordination;
@@ -20,7 +21,7 @@ public class HealthTests
         Docker = new DockerOptions { Hosts = [] },
     });
 
-    private static ServiceProbes Probes(KafkaWorker.Etcd.Client.IEtcdGateway etcd)
+    private static ServiceProbes Probes(IEtcdGateway etcd)
         => new(etcd, Options, new KafkaWorker.Docker.Engine.DockerEngineFactory());
 
     [Fact]

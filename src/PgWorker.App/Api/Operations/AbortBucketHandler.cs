@@ -1,7 +1,7 @@
 using System.Text.Json;
 using PgWorker.Core;
 using PgWorker.Core.Writing;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using PgWorker.Moves;
 
 namespace PgWorker.App.Api.Operations;

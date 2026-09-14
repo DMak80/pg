@@ -1,6 +1,6 @@
 using FluentAssertions;
 using KafkaWorker.Core;
-using KafkaWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using KafkaWorker.Provisioning.Processes;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;

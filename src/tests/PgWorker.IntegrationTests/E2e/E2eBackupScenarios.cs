@@ -1,7 +1,7 @@
 using System.Text.Json;
 using Npgsql;
 using PgWorker.Core.Templates;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using PgWorker.Etcd.Parsing;
 using PgWorker.IntegrationTests.Docker;
 using PgWorker.Provisioning.Sql;

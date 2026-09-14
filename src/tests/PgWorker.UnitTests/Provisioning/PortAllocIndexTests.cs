@@ -1,5 +1,5 @@
 using Microsoft.Extensions.Logging.Abstractions;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using PgWorker.Provisioning.Endpoints;
 
 namespace PgWorker.UnitTests.Provisioning;

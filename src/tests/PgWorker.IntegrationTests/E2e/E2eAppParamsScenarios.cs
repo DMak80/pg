@@ -1,4 +1,4 @@
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using PgWorker.IntegrationTests.Docker;
 using Xunit;
 

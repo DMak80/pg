@@ -2,7 +2,7 @@ using System.Collections.Concurrent;
 using System.Globalization;
 using PgWorker.Core;
 using PgWorker.Core.Model;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using PgWorker.Provisioning.Probes;
 
 namespace PgWorker.Provisioning.Processes;

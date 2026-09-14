@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using PgWorker.Core;
 using PgWorker.Core.Model;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 
 namespace PgWorker.Etcd.Parsing;
 

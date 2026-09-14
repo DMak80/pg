@@ -1,7 +1,7 @@
 using System.Text.Json;
 using Npgsql;
 using PgWorker.Core.Templates;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using PgWorker.Etcd.Parsing;
 using PgWorker.IntegrationTests.Docker;
 using PgWorker.Provisioning.Sql;
@@ -26,7 +26,7 @@ public class E2eRetentionScenarios
 
     private string Endpoint => Fx.EtcdEndpoint;
 
-    private PgWorker.Etcd.Client.EtcdGateway G => Fx.Gateway;
+    private EtcdGateway G => Fx.Gateway;
 
     // AAA: GFS-чистка на живом кластере — guard реального COMPLETED, удаление
     // старого через DELETING, WAL-trim ниже cutoff, ключ storage

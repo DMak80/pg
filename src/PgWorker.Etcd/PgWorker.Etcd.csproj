@@ -2,6 +2,7 @@
 
     <ItemGroup>
         <ProjectReference Include="..\PgWorker.Core\PgWorker.Core.csproj"/>
+        <ProjectReference Include="..\Shared.Etcd\Shared.Etcd.csproj"/>
     </ItemGroup>
 
     <ItemGroup>

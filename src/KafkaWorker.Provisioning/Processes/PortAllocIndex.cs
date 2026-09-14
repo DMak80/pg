@@ -1,6 +1,6 @@
 using System.Text.Json;
 using KafkaWorker.Core;
-using KafkaWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using Microsoft.Extensions.Logging;
 
 namespace KafkaWorker.Provisioning.Processes;

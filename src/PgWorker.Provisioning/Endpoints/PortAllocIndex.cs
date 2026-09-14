@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Logging;
 using PgWorker.Core;
 using PgWorker.Core.Model;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 
 namespace PgWorker.Provisioning.Endpoints;
 

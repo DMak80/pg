@@ -1,7 +1,7 @@
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Docker.Drivers;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using PgWorker.Etcd.Coordination;
 
 namespace PgWorker.Provisioning.Processes;

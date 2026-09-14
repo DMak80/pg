@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Options;
 using PgWorker.App;
 using PgWorker.Core;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 
 namespace PgWorker.UnitTests.App;
 
@@ -50,8 +50,14 @@ internal sealed class DeadEtcd : IEtcdGateway
     public Task<Result<byte[]>> SnapshotSaveAsync(string endpoint, CancellationToken ct)
         => Task.FromResult(Fail<byte[]>());
 
-    public Task<Result<long>> StatusAsync(string endpoint, CancellationToken ct)
-        => Task.FromResult(Fail<long>());
+    public Task<Result<EtcdStatusPayload>> StatusAsync(string endpoint, CancellationToken ct)
+        => Task.FromResult(Fail<EtcdStatusPayload>());
+
+    public Task<Result<IReadOnlyList<EtcdMember>>> MemberListAsync(string endpoint, CancellationToken ct)
+        => Task.FromResult(Fail<IReadOnlyList<EtcdMember>>());
+
+    public Task<Result<IReadOnlyList<EtcdAlarm>>> AlarmAsync(string endpoint, CancellationToken ct)
+        => Task.FromResult(Fail<IReadOnlyList<EtcdAlarm>>());
 
     public Task<Result> CompactAsync(string endpoint, long revision, CancellationToken ct)
         => Task.FromResult(Result.Failed(new HttpRequestException("etcd недоступен")));

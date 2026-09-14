@@ -1,6 +1,6 @@
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 
 namespace PgWorker.App.Api;
 

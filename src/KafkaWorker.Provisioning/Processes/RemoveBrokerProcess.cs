@@ -2,7 +2,7 @@ using System.Text.Json;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
 using KafkaWorker.Docker.Drivers;
-using KafkaWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Core.Planning;
 using KafkaWorker.Provisioning.Kafka;

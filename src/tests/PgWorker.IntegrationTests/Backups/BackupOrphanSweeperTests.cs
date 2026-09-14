@@ -1,7 +1,7 @@
 using FluentAssertions;
 using PgWorker.Backups;
 using PgWorker.Backups.Supervisor;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using PgWorker.Etcd.Coordination;
 using PgWorker.IntegrationTests.Etcd;
 using Xunit;

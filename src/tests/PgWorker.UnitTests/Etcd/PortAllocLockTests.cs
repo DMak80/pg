@@ -1,6 +1,7 @@
 using FluentAssertions;
 using PgWorker.Core;
 using PgWorker.Etcd.Coordination;
+using Shared.Etcd.Client;
 using PgWorker.UnitTests.Provisioning;
 using Xunit;
 
@@ -126,7 +127,7 @@ public class PortAllocLockTests
         // Arrange
         var etcd = new Fakes.FakeEtcd
         {
-            TxnFault = _ => Result<PgWorker.Etcd.Client.TxnResult>.Failed(
+            TxnFault = _ => Result<TxnResult>.Failed(
                 new ApplicationException("etcd: connection refused")),
         };
         var locks = new PortAllocLock([Ep], etcd, TimeProvider.System, "inst-1");

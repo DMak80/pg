@@ -4,7 +4,7 @@ using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
 using KafkaWorker.Core.Templates;
 using KafkaWorker.Docker.Drivers;
-using KafkaWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Provisioning.Kafka;
 

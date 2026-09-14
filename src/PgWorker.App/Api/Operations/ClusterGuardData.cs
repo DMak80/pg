@@ -1,6 +1,6 @@
 using System.Text.Json;
 using PgWorker.Core;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 
 namespace PgWorker.App.Api.Operations;
 

@@ -1,6 +1,6 @@
 using PgWorker.Core;
 using PgWorker.Core.Seed;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 
 namespace PgWorker.App.Api.Operations;
 

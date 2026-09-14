@@ -3,7 +3,7 @@ using System.Text.Json;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
 using KafkaWorker.Core.Templates;
-using KafkaWorker.Etcd.Client;
+using Shared.Etcd.Client;
 
 namespace KafkaWorker.Etcd.Parsing;
 

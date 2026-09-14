@@ -1,5 +1,5 @@
 using PgWorker.Core;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 
 namespace PgWorker.Provisioning.Processes;
 

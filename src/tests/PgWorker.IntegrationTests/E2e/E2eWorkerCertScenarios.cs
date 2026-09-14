@@ -2,7 +2,7 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using PgWorker.IntegrationTests.Docker;
 using Xunit;
 

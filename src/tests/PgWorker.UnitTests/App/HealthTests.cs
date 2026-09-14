@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using PgWorker.App;
 using Shared.Core.HealthChecks;
+using Shared.Etcd.Client;
 using PgWorker.App.HealthChecks;
 using PgWorker.Core;
 using PgWorker.Etcd.Coordination;
@@ -19,7 +20,7 @@ public class HealthTests
         Docker = new DockerOptions { Hosts = [] },
     });
 
-    private static ServiceProbes Probes(PgWorker.Etcd.Client.IEtcdGateway etcd)
+    private static ServiceProbes Probes(IEtcdGateway etcd)
         => new(etcd, Options, new PgWorker.Docker.Engine.DockerEngineFactory());
 
     [Fact]
