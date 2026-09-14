@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Npgsql;
 using PgWorker.Etcd.Client;
 using PgWorker.IntegrationTests.Docker;
 using Xunit;
@@ -14,7 +15,9 @@ namespace PgWorker.IntegrationTests.E2e;
 // 2) пересчёт от актуальных заявок: смена request_mem → пересоздание ноды
 //    надзором даёт env от НОВОЙ заявки; новых ключей etcd нет;
 // 3) отсутствие request_mem/request_cpu → расчёт от DefaultTotalMemoryBytes,
-//    параллельные параметры в YAML отсутствуют.
+//    параллельные параметры в YAML отсутствуют;
+// 4) конвергенция pg-параметров живого шарда (t11): смена заявки → PATCH DCS
+//    без пересоздания, динамика применена живым PG, postmaster → pending_restart.
 public class E2ePgtuneScenarios
 {
     private static readonly JsonSerializerOptions Json = new() { PropertyNameCaseInsensitive = true };
@@ -209,7 +212,108 @@ public class E2ePgtuneScenarios
         }
     }
 
+    // E2E-сценарий конвергенции pg-параметров (t11 spec §4.4, AC §7 п.1–3):
+    // живой кластер на заявке 8Gi → перезапись request_mem 16Gi → тик надзора
+    // патчит DCS: (а) GET /config несёт пересчитанные параметры (динамика +
+    // postmaster); (б) динамический параметр фактически применён живым PG
+    // (reload в пределах loop_wait); (в) нода с изменённым postmaster —
+    // pending_restart=true, рестарта/пересоздания нет; (г) идемпотентность —
+    // mod_revision /service/<scope>/config стабилен после конвергенции
+    // (не второй регулярный писатель); (д) возврат заявки 8Gi — патч вниз.
+    [Fact]
+    public async Task Pgtune_Convergence_RequestMemChanged_DcsPatchedLivePgReloaded()
+    {
+        DockerTrait.SkipIfUnavailable();
+        var ct = TestContext.Current.CancellationToken;
+
+        await using var fx = await E2eEnvironment.StartAsync("pgtune-converge", ct: ct);
+        Fx = fx;
+        var cluster = $"cshop{Fx.ClusterTag}";
+        var scope = $"{cluster}-shard1";
+
+        // Arrange: живой кластер на заявке 8Gi (расчёт: shared_buffers 2GB,
+        // effective_cache_size 6GB = 8Gi×3/4).
+        await SeedClusterAsync(cluster, requestMem: "8Gi", ct);
+        await using var host = await Fx.StartHostAsync("s1", ct: ct);
+        var provisioned = await E2eFixture.WaitForAsync(
+            () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+        provisioned.Should().BeTrue("provisioning кластера должен дойти до Active; " +
+                                    $"work={await WorkDumpAsync(cluster, ct)}");
+
+        var master = await MasterInfoAsync(cluster, "shard1", ct);
+        (await SqlScalarAsync(master.Dsn,
+                "SELECT current_setting('effective_cache_size')", ct))
+            .Should().Be("6GB", "bootstrap-расчёт от заявки 8Gi применён при инициализации");
+        // Бутовое значение postmaster-параметра: Spilo при инициализации
+        // пересчитывает shared_buffers из памяти контейнера, поэтому живое
+        // значение — НЕ литерал DCS ("2GB"), а автотюнинг (напр. "1983MB";
+        // инцидент первого прогона t11, 2026-09-14). Для проверки «postmaster
+        // не применён до рестарта» фиксируем фактическое бутовое значение.
+        var sharedBuffersAtBoot = await SqlScalarAsync(
+            master.Dsn, "SELECT current_setting('shared_buffers')", ct);
+
+        // Act: перезаписать заявку 8Gi → 16Gi (расчёт: effective_cache_size 12GB —
+        // динамика; shared_buffers 4GB — postmaster) — ЖИВОЙ шард, ноды не трогаем.
+        (await G.PutAsync(Endpoint, $"/service/{scope}/request_mem", "16Gi", null, ct))
+            .IsSuccess.Should().BeTrue("заявка request_mem должна перезаписаться");
+
+        // Assert (а): GET /config несёт пересчитанные параметры (динамика +
+        // postmaster) — тик надзора патчит DCS одним документом.
+        var configUpdated = await E2eFixture.WaitForAsync(async () =>
+            await GetPatroniParameterAsync(master.PatroniPort, "shared_buffers", ct) == "4GB"
+            && await GetPatroniParameterAsync(master.PatroniPort, "effective_cache_size", ct) == "12GB",
+            TimeSpan.FromSeconds(120), ct);
+        configUpdated.Should().BeTrue("тик надзора обязан патчить DCS-конфиг от новой заявки; " +
+                                      $"work={await WorkDumpAsync(cluster, ct)}");
+
+        // Assert (б): динамический параметр фактически применён живым PG без
+        // рестарта (Patroni reload в пределах loop_wait; поллинг).
+        var reloaded = await E2eFixture.WaitForAsync(async () =>
+            await SqlScalarAsync(master.Dsn,
+                "SELECT current_setting('effective_cache_size')", ct) == "12GB",
+            TimeSpan.FromSeconds(60), ct);
+        reloaded.Should().BeTrue("динамический параметр применяется Patroni без рестарта ноды");
+
+        // Assert (в): postmaster-параметр помечен pending_restart=true (GET
+        // /patroni), рестарт воркером НЕ инициируется: контейнеры живы;
+        // применённое значение ещё 2GB (bootstrap-расчёт).
+        var pending = await E2eFixture.WaitForAsync(async () =>
+            (await GetPatroniFieldAsync(master.PatroniPort, "pending_restart", ct)) == "true",
+            TimeSpan.FromSeconds(60), ct);
+        pending.Should().BeTrue("Patroni обязан пометить postmaster-расхождение pending_restart");
+        (await SqlScalarAsync(master.Dsn, "SELECT current_setting('shared_buffers')", ct))
+            .Should().Be(sharedBuffersAtBoot,
+                "postmaster-параметр НЕ применён до рестарта (решение 2026-09-14)");
+        (await ListContainerNamesAsync($"pgw-{cluster}-shard1-", all: true))
+            .Should().HaveCount(2, "воркер не пересоздаёт и не рестартует ноды конвергенцией");
+
+        // Assert (г): идемпотентность — сначала конфиг ОСЕДАЕТ (mod_revision
+        // не меняется 5 с: серия конвергенций при смене заявки завершена;
+        // журнал фаз не годится — /pgworker/work перезаписывается каждым
+        // тиком), затем mod_revision etcd-ключа /service/<scope>/config
+        // стабилен окно в несколько тиков надзора (не второй регулярный
+        // писатель).
+        var settled = await ConfigModRevisionSettledAsync(
+            scope, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30), ct);
+        settled.Should().BeTrue("конфиг должен перестать мутировать после конвергенции; " +
+                                $"work={await WorkDumpAsync(cluster, ct)}");
+        var stable = await ConfigModRevisionStableAsync(scope, TimeSpan.FromSeconds(15), ct);
+        stable.Should().BeTrue("повторные тики не патчат конвергентный конфиг");
+
+        // Act (д): возврат заявки 16Gi → 8Gi — патч ВНИЗ отрабатывает.
+        (await G.PutAsync(Endpoint, $"/service/{scope}/request_mem", "8Gi", null, ct))
+            .IsSuccess.Should().BeTrue("заявка request_mem должна вернуться к 8Gi");
+        var rolledBack = await E2eFixture.WaitForAsync(async () =>
+            await GetPatroniParameterAsync(master.PatroniPort, "shared_buffers", ct) == "2GB"
+            && await GetPatroniParameterAsync(master.PatroniPort, "effective_cache_size", ct) == "6GB",
+            TimeSpan.FromSeconds(120), ct);
+        rolledBack.Should().BeTrue("уменьшение значений тоже конвергируется (патч вниз); " +
+                                   $"work={await WorkDumpAsync(cluster, ct)}");
+    }
+
     // ===== Хелперы (приёмы E2eScaleScenarios, scoped на кластер) =====
+
+    private static readonly HttpClient PatroniHttp = new() { Timeout = TimeSpan.FromSeconds(3) };
 
     // Сид кластера в стиле панели (02 §9.1): заявки request_* опциональны —
     // сценарий отсутствия заявок сеет без них.
@@ -281,5 +385,161 @@ public class E2ePgtuneScenarios
             .Where(p => p.Length == 2)
             .GroupBy(p => p[0], StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => g.First()[1], StringComparer.Ordinal);
+    }
+
+    // Значение параметра из GET /config Patroni-ноды. JSON разбирается, а не
+    // ищется подстрокой: Patroni сериализует ответ json.dumps'ом С ПРОБЕЛАМИ
+    // ({"shared_buffers": "4GB"}) — компактные Contains не совпадают никогда
+    // (разбор по инциденту первого прогона t11, 2026-09-14).
+    private static async Task<string?> GetPatroniParameterAsync(int patroniPort, string name, CancellationToken ct)
+    {
+        using var response = await PatroniHttp.GetAsync($"http://localhost:{patroniPort}/config", ct);
+        response.IsSuccessStatusCode.Should().BeTrue($"GET /config → HTTP {(int)response.StatusCode}");
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+        var root = doc.RootElement;
+        if (!root.TryGetProperty("postgresql", out var postgresql)
+            || postgresql.ValueKind != JsonValueKind.Object
+            || !postgresql.TryGetProperty("parameters", out var parameters)
+            || parameters.ValueKind != JsonValueKind.Object
+            || !parameters.TryGetProperty(name, out var value))
+            return null;
+        return value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString(),
+            JsonValueKind.Number => value.GetRawText(),
+            JsonValueKind.True => "true",
+            JsonValueKind.False => "false",
+            _ => null,
+        };
+    }
+
+    // Поле корня GET /patroni (например, pending_restart) raw-текстом ("true").
+    private static async Task<string?> GetPatroniFieldAsync(int patroniPort, string field, CancellationToken ct)
+    {
+        using var response = await PatroniHttp.GetAsync($"http://localhost:{patroniPort}/patroni", ct);
+        if (!response.IsSuccessStatusCode)
+            return null;
+        using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
+        return doc.RootElement.TryGetProperty(field, out var value) ? value.GetRawText() : null;
+    }
+
+    // mod_revision /service/<scope>/config не меняется окно quiet (конфиг
+    // осел — серия конвергенций завершена); false — бюджет истёк при живой
+    // мутации конфига (пинг-понг патчей) или ключа нет.
+    private async Task<bool> ConfigModRevisionSettledAsync(
+        string scope, TimeSpan quiet, TimeSpan budget, CancellationToken ct)
+    {
+        var deadline = DateTimeOffset.UtcNow + budget;
+        var lastChange = DateTimeOffset.UtcNow;
+        var revision = (await GetOrNullAsync($"/service/{scope}/config"))?.ModRevision;
+        if (revision is null)
+            return false;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(1000, ct);
+            var current = (await GetOrNullAsync($"/service/{scope}/config"))?.ModRevision;
+            if (current is null)
+                return false;
+            if (current != revision)
+            {
+                revision = current;
+                lastChange = DateTimeOffset.UtcNow;
+            }
+            else if (DateTimeOffset.UtcNow - lastChange >= quiet)
+                return true;
+        }
+
+        return false;
+    }
+
+    // mod_revision etcd-ключа /service/<scope>/config стабилен окно window
+    // (перечитываем каждые 2 с; Patroni пишет конфиг только при изменении).
+    private async Task<bool> ConfigModRevisionStableAsync(string scope, TimeSpan window, CancellationToken ct)
+    {
+        var revision = (await GetOrNullAsync($"/service/{scope}/config"))?.ModRevision;
+        if (revision is null)
+            return false;
+        var deadline = DateTimeOffset.UtcNow + window;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            await Task.Delay(2000, ct);
+            if ((await GetOrNullAsync($"/service/{scope}/config"))?.ModRevision != revision)
+                return false;
+        }
+
+        return true;
+    }
+
+    // SQL-скаляр мастера шарда (паттерн E2eScaleScenarios.SqlScalarAsync).
+    private static async Task<string> SqlScalarAsync(string dsn, string sql, CancellationToken ct)
+    {
+        await using var con = new NpgsqlConnection(
+            $"{dsn};Timeout=10;SSL Mode=Require;Trust Server Certificate=true");
+        await con.OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(sql, con);
+        return (await cmd.ExecuteScalarAsync(ct))?.ToString() ?? "";
+    }
+
+    private sealed record NodeAddr(string Host, int Pg, int Patroni, int Doorman);
+
+    private async Task<Dictionary<string, NodeAddr>> PortallocAsync(string cluster)
+    {
+        var kv = await GetOrNullAsync($"/pgworker/portalloc/{cluster}");
+        if (kv is null)
+            return [];
+        return JsonSerializer.Deserialize<Dictionary<string, NodeAddr>>(kv.Value, Json) ?? [];
+    }
+
+    private sealed record MasterInfo(string Node, int Port, int PatroniPort, string Dsn);
+
+    // Мастер шарда: резолв по контракту arch/14 §5 C — проба /primary по
+    // patroni-портам portalloc (приём E2eScaleScenarios.MasterInfoAsync:
+    // матч master-ключа по doorman-порту недискриминантен при EnableDoorman=false).
+    private async Task<MasterInfo> MasterInfoAsync(string cluster, string shard, CancellationToken ct)
+    {
+        for (var i = 0; i < 60; i++)
+        {
+            var key = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/master");
+            if (key is { Value.Length: > 0 })
+            {
+                var addresses = await PortallocAsync(cluster);
+                foreach (var (nodeKey, addr) in addresses
+                             .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))
+                             .OrderBy(p => p.Key, StringComparer.Ordinal))
+                {
+                    try
+                    {
+                        using var response = await PatroniHttp.GetAsync(
+                            $"http://localhost:{addr.Patroni}/primary", ct);
+                        if (!response.IsSuccessStatusCode)
+                            continue;
+                        var node = nodeKey.Split('/')[1];
+                        return new MasterInfo(node, addr.Pg, addr.Patroni,
+                            $"Host=localhost;Port={addr.Pg};Database={cluster};Username=postgres;Password={E2eFixture.SuPassword}");
+                    }
+                    catch (Exception)
+                    {
+                        // сетевой сбой пробы (рестарт/ещё не готова) — не primary
+                    }
+                }
+            }
+
+            await Task.Delay(1000, ct);
+        }
+
+        throw new ApplicationException($"мастер {cluster}/{shard} не найден за 60 с");
+    }
+
+    private async Task<List<string>> ListContainerNamesAsync(string prefix, bool all = false)
+    {
+        var ct = TestContext.Current.CancellationToken;
+        var args = new List<string> { "ps", "--format", "{{.Names}}" };
+        if (all)
+            args.Add("-a");
+        args.AddRange(["--filter", $"name={prefix}"]);
+        var output = await Fx.RunDockerAsync([.. args], ct);
+        return output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(n => n.StartsWith(prefix, StringComparison.Ordinal))
+            .ToList();
     }
 }
