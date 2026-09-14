@@ -26,3 +26,8 @@
   `ApiTlsEndpoints` (PgWorker.App) ↔ `TlsEndpoints` (KafkaWorker.App) ↔
   TLS-хелперы (`DockerTlsMaterial.ValidateChain`, `WorkerTlsHandler`,
   env-биндинги/PEM-дуализм) — унифицировать тем же проходом.
+- **`t09-unify-worker-duplicates`** — Pg↔Kfw-дубли вне панельного контура (осознанно
+  не тронуты t08): Coordination `ClaimStore`/`PortAllocLock`/`WorkJournal`,
+  `SnapshotJob`, `Writing/{PlanPut,ValidationError}`, `Planning/{PlacementPlanner,
+  PortAllocator}` — перенос с параметризацией префиксов ключей и моделей журнала
+  (PgWorker несёт `RetrySeries`/`EvacuationJournal`).

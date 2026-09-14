@@ -38,7 +38,7 @@ Puzzle (архитектурный шаблон)          монорепо (pg)
 ───────────────────────────            ──────────────────────────────
 Infrastructure.App.Metrics   ──порт──► src/Shared.Metrics
   базовая OTel-обвязка:                 порт базы (копия, паттерн
-  + AddAppMetrics()/MapAppMetrics()     AdminPanel.Infrastructure)
+  + AddAppMetrics()/MapAppMetrics()     Shared.Core (бывший AdminPanel.Infrastructure))
   + конвенции имён/лейблов            + WorkerMetrics (надстройка
   + docs/01.20-metrics.md               воркер-паттерна §2.2 — только
                                         в монорепо: в Puzzle воркеров нет)
@@ -211,7 +211,7 @@ advertise-адресов portalloc (file_sd из etcd-снапшота — оп�
 
 1. Скопировать модуль `Infrastructure.App.Metrics` из Puzzle (или
    ProjectReference на `Shared.Metrics` внутри монорепо) — паттерн
-   `AdminPanel.Infrastructure`.
+   `Shared.Core (бывший AdminPanel.Infrastructure)`.
 2. `[Config]`-секция `<Service>:Metrics { Enabled=true, Path="/metrics" }`.
 3. `services.AddAppMetrics(...)`, `app.MapAppMetrics()`; доменные метрики —
    свои инструменты dot-нотацией по конвенциям `01.20-metrics.md`; для
