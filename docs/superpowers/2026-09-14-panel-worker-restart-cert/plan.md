@@ -53,7 +53,7 @@
   - `PgWorker.App.Api.ApiTlsSetup(X509Certificate2? ServerCert, string? Source, string? Warning)`
   - `ApiTlsEndpoints.ConfigureMtls(WebApplicationBuilder builder, ManagedCertRead? managedCert = null)` → `ApiTlsSetup` (было `void`; default-параметр сохраняет совместимость WAF-вызовов `ConfigureMtls(builder)`)
 
-- [ ] **Шаг 1: юнит-тесты ParsePayload (красный)**
+- [x] **Шаг 1: юнит-тесты ParsePayload (красный)**
 
 `src/tests/PgWorker.UnitTests/App/WorkerApiCertReaderTests.cs`:
 
@@ -101,12 +101,12 @@ public class WorkerApiCertReaderTests
 
 (Добавить `using FluentAssertions;` и `GlobalUsings`-совместимость по образцу соседних файлов.)
 
-- [ ] **Шаг 2: прогнать юниты — красный**
+- [x] **Шаг 2: прогнать юниты — красный**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests -c Debug --filter "FullyQualifiedName~WorkerApiCertReaderTests"`
 Expected: FAIL компиляция — `WorkerApiCertReader` не существует.
 
-- [ ] **Шаг 3: реализация WorkerApiCertReader**
+- [x] **Шаг 3: реализация WorkerApiCertReader**
 
 `src/PgWorker.App/Api/WorkerApiCertReader.cs`:
 
@@ -188,12 +188,12 @@ public static class WorkerApiCertReader
 }
 ```
 
-- [ ] **Шаг 4: прогнать юниты — зелёный**
+- [x] **Шаг 4: прогнать юниты — зелёный**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests -c Debug --filter "FullyQualifiedName~WorkerApiCertReaderTests"`
 Expected: PASS (3 теста).
 
-- [ ] **Шаг 5: интеграционные тесты чтения и применения (красный)**
+- [x] **Шаг 5: интеграционные тесты чтения и применения (красный)**
 
 `src/tests/PgWorker.IntegrationTests/Api/WorkerApiCertStartupTests.cs` — реальный etcd (`[Collection(PgApiCollection.Name)]`, фикстура `PgApiFixture`) + локальный TestPki (скопировать вложенный `private static class TestPki` из `MtlsApiTests.cs` того же каталога — GenerateCa/Issue RSA-2048) + `FreePort()` (TcpListener :0). Тесты чтения:
 
@@ -331,12 +331,12 @@ public class WorkerApiCertStartupTests(PgApiFixture fx)
 
 `TlsClientTrustThumbprint(string certPem, int port)` — приватный хелпер файла: SocketsHttpHandler, TLS 1.2, `RemoteCertificateValidationCallback = (_, c, _, _) => c is not null && SHA256(c.GetCertHash()) == SHA256(эталона)` (сравнение `Convert.ToHexString(SHA256.HashData(cert.GetRawCertData()))` с thumbprint эталонного `X509Certificate2.CreateFromPem(certPem)`).
 
-- [ ] **Шаг 6: прогнать интеграционные — красный**
+- [x] **Шаг 6: прогнать интеграционные — красный**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Debug --filter "FullyQualifiedName~WorkerApiCertStartupTests"`
 Expected: FAIL компиляция (`ConfigureMtls` ещё `void`, `ApiTlsSetup` нет).
 
-- [ ] **Шаг 7: расширение ApiTlsEndpoints.ConfigureMtls**
+- [x] **Шаг 7: расширение ApiTlsEndpoints.ConfigureMtls**
 
 В `src/PgWorker.App/Api/ApiTlsEndpoints.cs`:
 
@@ -391,7 +391,7 @@ public static ApiTlsSetup ConfigureMtls(WebApplicationBuilder builder, ManagedCe
 (`LoadServerCertificate` переписать на вызов `LoadCertificatePemPair(certPem, keyPem)`.)
 5. В конце: `return new ApiTlsSetup(serverCert, source, warning);` (ListenAnyIP-блок не меняется).
 
-- [ ] **Шаг 8: интеграция в Program.cs**
+- [x] **Шаг 8: интеграция в Program.cs**
 
 `src/PgWorker.App/Program.cs` — после `ApiTlsEndpoints.ApplyEnvOverrides(...)` (строка ~34), до `ConfigureMtls` (строка ~62):
 
@@ -415,12 +415,12 @@ if (apiTls.Warning is { } certWarning)
     app.Logger.LogWarning("PgWorker:Api:Tls: {Warning}", certWarning);
 ```
 
-- [ ] **Шаг 9: полный прогон воркера**
+- [x] **Шаг 9: полный прогон воркера**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx && DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests -c Debug && DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Debug --filter "FullyQualifiedName~Api"`
 Expected: сборка без предупреждений; все тесты зелёные (включая прежние `MtlsApiTests` — `ConfigureMtls(builder)` с default-параметром совместим).
 
-- [ ] **Шаг 10: коммит**
+- [x] **Шаг 10: коммит**
 
 ```bash
 git add src/PgWorker.App/Api/WorkerApiCertReader.cs src/PgWorker.App/Api/ApiTlsEndpoints.cs src/PgWorker.App/Program.cs src/tests/PgWorker.UnitTests/App/WorkerApiCertReaderTests.cs src/tests/PgWorker.IntegrationTests/Api/WorkerApiCertStartupTests.cs
@@ -447,29 +447,29 @@ git commit -m "feat(pgworker): чтение managed-серверного сер�
 - Consumes: типы из Task 1 воспроизводятся копией в namespace `KafkaWorker.App.Api` (осознанное дублирование, паттерн TlsEndpoints).
 - Produces: `KafkaWorker.App.Api.WorkerApiCertReader` / `ManagedCertRead` / `ManagedCertStatus` (сигнатуры 1:1 Task 1), `TlsEndpoints.ConfigureMtls(WebApplicationBuilder builder, int port, ManagedCertRead? managedCert = null)` → `ApiTlsSetup`.
 
-- [ ] **Шаг 1: копия юнит-тестов (красный)**
+- [x] **Шаг 1: копия юнит-тестов (красный)**
 
 `src/tests/KafkaWorker.UnitTests/App/WorkerApiCertReaderTests.cs` — 1:1 тесты Task 1 (Шаг 1) с `using KafkaWorker.App.Api;` и namespace `KafkaWorker.UnitTests.App`; в JSON-фикстуре ключ тот же формат (worker-agnostic ридер).
 
-- [ ] **Шаг 2: прогнать — красный**
+- [x] **Шаг 2: прогнать — красный**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/KafkaWorker.UnitTests -c Debug --filter "FullyQualifiedName~WorkerApiCertReaderTests"`
 Expected: FAIL компиляция.
 
-- [ ] **Шаг 3: копия реализации WorkerApiCertReader**
+- [x] **Шаг 3: копия реализации WorkerApiCertReader**
 
 `src/KafkaWorker.App/Api/WorkerApiCertReader.cs` — код 1:1 из Task 1 Шаг 3, отличия: `namespace KafkaWorker.App.Api;`, `using KafkaWorker.Etcd.Client;` (gateway KafkaWorker). Комментарий в шапке — «арх/16 §1.1, копия PgWorker.App/Api/WorkerApiCertReader.cs (осознанное дублирование по паттерну TlsEndpoints)».
 
-- [ ] **Шаг 4: прогнать юниты — зелёный**
+- [x] **Шаг 4: прогнать юниты — зелёный**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/KafkaWorker.UnitTests -c Debug --filter "FullyQualifiedName~WorkerApiCertReaderTests"`
 Expected: PASS.
 
-- [ ] **Шаг 5: интеграционные тесты (красный)**
+- [x] **Шаг 5: интеграционные тесты (красный)**
 
 `src/tests/KafkaWorker.IntegrationTests/Api/WorkerApiCertStartupTests.cs` — зеркально Task 1 Шаг 5: `[Collection(KafkaApiCollection.Name)]` (фикстура `KafkaApiFixture`, etcd — `fx.Etcd.Endpoint`), ключ `/workers/api_tls/kafkaworker`, `TlsEndpoints.ConfigureMtls(builder, port, read)`. Четыре Read-кейса (Missing/Found/Broken/Unreachable) + три ConfigureMtls-кейса (Found → грань на etcd-серте + `setup.Source == "etcd:/workers/api_tls/kafkaworker"`; Broken → исключение; Unreachable+env → `Source=="env"`, `Warning` не пуст). TestPki: у KafkaWorker-тестов есть прецедент `ClusterPki.GenerateCa/IssueBrokerCertificate` (см. `MtlsApiTests.cs` KafkaWorker) — использовать его вместо локальной копии.
 
-- [ ] **Шаг 6: расширение TlsEndpoints.ConfigureMtls**
+- [x] **Шаг 6: расширение TlsEndpoints.ConfigureMtls**
 
 `src/KafkaWorker.App/Api/TlsEndpoints.cs` — те же правки, что Task 1 Шаг 7:
 1. `public sealed record ApiTlsSetup(X509Certificate2? ServerCert, string? Source, string? Warning);` (namespace `KafkaWorker.App.Api`);
@@ -478,7 +478,7 @@ Expected: PASS.
 4. switch выбора серта как в Task 1, но текст ошибки — `KafkaWorker:Api:Tls: ключ /workers/api_tls/kafkaworker бит (...)`, источник `etcd:/workers/api_tls/kafkaworker`;
 5. `LoadCertificatePemPair`-extract (PFX round-trip) и `return new ApiTlsSetup(serverCert, source, warning);`.
 
-- [ ] **Шаг 7: интеграция в Program.cs KafkaWorker**
+- [x] **Шаг 7: интеграция в Program.cs KafkaWorker**
 
 `src/KafkaWorker.App/Program.cs` — после `TlsEndpoints.ApplyEnvOverrides(builder.Configuration);` (строка ~69):
 
@@ -491,12 +491,12 @@ var managedCert = await WorkerApiCertReader.ReadAsync(etcdEndpoints, "kafkaworke
 
 `TlsEndpoints.ConfigureMtls(builder, port: 8080);` → `var apiTls = TlsEndpoints.ConfigureMtls(builder, port: 8080, managedCert);`; после `builder.Build()` — логи источника/warning как в Task 1 Шаг 8 (тексты `KafkaWorker:Api:Tls: ...`).
 
-- [ ] **Шаг 8: полный прогон**
+- [x] **Шаг 8: полный прогон**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx && DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/KafkaWorker.UnitTests -c Debug && DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/KafkaWorker.IntegrationTests -c Debug --filter "FullyQualifiedName~Api"`
 Expected: всё зелёное; прежние `MtlsApiTests` KafkaWorker не сломаны (default-параметр).
 
-- [ ] **Шаг 9: коммит**
+- [x] **Шаг 9: коммит**
 
 ```bash
 git add src/KafkaWorker.App/Api/WorkerApiCertReader.cs src/KafkaWorker.App/Api/TlsEndpoints.cs src/KafkaWorker.App/Program.cs src/tests/KafkaWorker.UnitTests/App/WorkerApiCertReaderTests.cs src/tests/KafkaWorker.IntegrationTests/Api/WorkerApiCertStartupTests.cs
@@ -527,7 +527,7 @@ git commit -m "feat(kafkaworker): чтение managed-серверного се
   - `RestartHandler.Handle(string? requestedBy)` → `RestartDto(bool Restarting)`
   - HTTP: `POST /api/restart` → 202 `{"restarting":true}`; заголовок `X-Requested-By` — в лог; ~1 c пауза → `StopApplication`; в etcd ничего не пишет.
 
-- [ ] **Шаг 1: WAF-тест рестарта PgWorker (красный)**
+- [x] **Шаг 1: WAF-тест рестарта PgWorker (красный)**
 
 `src/tests/PgWorker.IntegrationTests/Api/RestartApiTests.cs`:
 
@@ -603,12 +603,12 @@ public sealed record RestartingDto(bool Restarting);
 
 Уточнение по Act (без лишнего Content): `using var response = await client.PostAsync("/api/restart", null, TestContext.Current.CancellationToken);`. Фабрике нужен etcd: для standalone-запуска — `new Etcd.EtcdFixture()` + `await etcd.InitializeAsync()` в `IAsyncLifetime`-обёртке, либо переиспользовать `PgApiFixture` через collection — РЕКОМЕНДАЦИЯ: оформить тест-класс на общей `PgApiFixture` нельзя (нужна своя фабрика) → сделать вложенный `IAsyncLifetime`-класс с собственным `EtcdFixture` (dispose в teardown).
 
-- [ ] **Шаг 2: прогнать — красный**
+- [x] **Шаг 2: прогнать — красный**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Debug --filter "FullyQualifiedName~RestartApiTests"`
 Expected: FAIL (404 — маршрута нет).
 
-- [ ] **Шаг 3: RestartHandler PgWorker + маршрут**
+- [x] **Шаг 3: RestartHandler PgWorker + маршрут**
 
 `src/PgWorker.App/Api/Operations/RestartHandler.cs`:
 
@@ -667,12 +667,12 @@ builder.Services.AddSingleton(sp => new RestartHandler(
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<RestartHandler>()));
 ```
 
-- [ ] **Шаг 4: прогнать PgWorker — зелёный**
+- [x] **Шаг 4: прогнать PgWorker — зелёный**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Debug --filter "FullyQualifiedName~RestartApiTests"`
 Expected: PASS.
 
-- [ ] **Шаг 5: KafkaWorker — копия теста, хендлера, маршрута, DI**
+- [x] **Шаг 5: KafkaWorker — копия теста, хендлера, маршрута, DI**
 
 `src/tests/KafkaWorker.IntegrationTests/Api/RestartApiTests.cs` — 1:1 Шагов 1 с `using KafkaWorker.App.Api.Operations;`, namespace `KafkaWorker.IntegrationTests.Api`, база — `KafkaApiFactory`, собственный `EtcdFixture` (`src/tests/KafkaWorker.IntegrationTests/Etcd/ApiEtcdFixture.cs`), collection-имя локальное (своя фикстура).
 
@@ -682,12 +682,12 @@ Expected: PASS.
 
 `src/KafkaWorker.App/Program.cs` — та же DI-регистрация после хендлеров.
 
-- [ ] **Шаг 6: полный прогон**
+- [x] **Шаг 6: полный прогон**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx && DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Debug --filter "FullyQualifiedName~RestartApiTests" && DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/KafkaWorker.IntegrationTests -c Debug --filter "FullyQualifiedName~RestartApiTests"`
 Expected: оба зелёные.
 
-- [ ] **Шаг 7: коммит**
+- [x] **Шаг 7: коммит**
 
 ```bash
 git add src/PgWorker.App/Api/Operations/RestartHandler.cs src/KafkaWorker.App/Api/Operations/RestartHandler.cs src/PgWorker.App/Api/ApiModule.cs src/KafkaWorker.App/Api/ApiModule.cs src/PgWorker.App/Program.cs src/KafkaWorker.App/Program.cs src/tests/PgWorker.IntegrationTests/Api/RestartApiTests.cs src/tests/KafkaWorker.IntegrationTests/Api/RestartApiTests.cs
@@ -714,7 +714,7 @@ git commit -m "feat(workers): POST /api/restart — graceful self-stop c 202 и 
 - Produces: value ключа `/pgworker/api/<id>` и `/kafkaworker/api/<id>` получает опциональное поле `cert_thumbprint` (sha256-hex, lowercase; null → поле не пишется). Читатели (Task 5) парсят поле опционально.
 - `ClaimStore(string[] endpoints, IEtcdGateway gateway, TimeProvider clock, string? advertiseApiUrl = null, string? certThumbprint = null)`.
 
-- [ ] **Шаг 1: тест ClaimStore PgWorker (красный)**
+- [x] **Шаг 1: тест ClaimStore PgWorker (красный)**
 
 В `src/tests/PgWorker.IntegrationTests/Etcd/EtcdCoordinationTests.cs` (коллекция `EtcdCollection`, gateway/endpoint фикстуры — по соседним Fact'ам):
 
@@ -758,12 +758,12 @@ git commit -m "feat(workers): POST /api/restart — graceful self-stop c 202 и 
     }
 ```
 
-- [ ] **Шаг 2: прогнать — красный**
+- [x] **Шаг 2: прогнать — красный**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Debug --filter "FullyQualifiedName~EtcdCoordinationTests"`
 Expected: FAIL компиляция (нет параметра `certThumbprint`).
 
-- [ ] **Шаг 3: правка ClaimStore PgWorker**
+- [x] **Шаг 3: правка ClaimStore PgWorker**
 
 `src/PgWorker.Etcd/Coordination/ClaimStore.cs`:
 
@@ -781,18 +781,18 @@ Expected: FAIL компиляция (нет параметра `certThumbprint`)
 ```
 3. `EnsureInstanceKeyAsync`: `new ApiDiscoveryPayload(url, InstanceId, Now(), _certThumbprint)`.
 
-- [ ] **Шаг 4: прогнать — зелёный**
+- [x] **Шаг 4: прогнать — зелёный**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.IntegrationTests -c Debug --filter "FullyQualifiedName~EtcdCoordinationTests"`
 Expected: PASS.
 
-- [ ] **Шаг 5: KafkaWorker — симметрично**
+- [x] **Шаг 5: KafkaWorker — симметрично**
 
 `src/tests/KafkaWorker.IntegrationTests/Etcd/ClaimStoreTests.cs` — два тех же Fact (`/kafkaworker/api/<id>`, локальные фикстуры файла).
 `src/KafkaWorker.Etcd/Coordination/ClaimStore.cs` — те же три правки (комментарий — arch/16 §1.1).
 Прогон: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/KafkaWorker.IntegrationTests -c Debug --filter "FullyQualifiedName~ClaimStoreTests"` — PASS.
 
-- [ ] **Шаг 6: Program.cs — передача thumbprint**
+- [x] **Шаг 6: Program.cs — передача thumbprint**
 
 `src/PgWorker.App/Program.cs` — после `var apiTls = ApiTlsEndpoints.ConfigureMtls(builder, managedCert);`:
 
@@ -808,12 +808,12 @@ var apiCertThumbprint = apiTls.ServerCert is { } appliedCert
 
 `src/KafkaWorker.App/Program.cs` — то же для `TlsEndpoints.ConfigureMtls`-результата (переменная `apiTls`) и регистрации `ClaimStore` (строка ~76).
 
-- [ ] **Шаг 7: сборка + регресс воркерских серий**
+- [x] **Шаг 7: сборка + регресс воркерских серий**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx && DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/PgWorker.UnitTests -c Debug && DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/KafkaWorker.UnitTests -c Debug`
 Expected: зелёные.
 
-- [ ] **Шаг 8: коммит**
+- [x] **Шаг 8: коммит**
 
 ```bash
 git add src/PgWorker.Etcd/Coordination/ClaimStore.cs src/KafkaWorker.Etcd/Coordination/ClaimStore.cs src/PgWorker.App/Program.cs src/KafkaWorker.App/Program.cs src/tests/PgWorker.IntegrationTests/Etcd/EtcdCoordinationTests.cs src/tests/KafkaWorker.IntegrationTests/Etcd/ClaimStoreTests.cs
@@ -848,7 +848,7 @@ git commit -m "feat(workers): cert_thumbprint применённого серт�
   - `AdminPanel.Etcd.Parsing.WorkerCertParseResult(WorkerApiCert? Cert, KeyParseError? Error)`; `WorkerCertParser.Parse(string key, Kv? kv)`.
   - Префиксы: `/workers/api_tls/pgworker`, `/workers/api_tls/kafkaworker`.
 
-- [ ] **Шаг 1: тесты WorkerCertParser (красный)**
+- [x] **Шаг 1: тесты WorkerCertParser (красный)**
 
 `src/tests/AdminPanel.UnitTests/WorkerCertParserTests.cs` — TestPki-хелпер (локальная копия вложенного класса по образцу `Workers/WorkerTlsHandlerTests.cs`): `GenerateCa()`, `IssueLeaf(caPem, caKeyPem, cn, eku: Oid[]? = null, ca: bool = false)` с параметрами EKU/CA для будущих задач; SAN — DNS `cn` + IP `127.0.0.1`.
 
@@ -919,7 +919,7 @@ public class WorkerCertParserTests
 }
 ```
 
-- [ ] **Шаг 2: тесты WorkerEndpointsParser с thumbprint (красный)**
+- [x] **Шаг 2: тесты WorkerEndpointsParser с thumbprint (красный)**
 
 Дополнить `src/tests/AdminPanel.UnitTests/WorkerEndpointsParserTests.cs`:
 
@@ -943,12 +943,12 @@ public class WorkerCertParserTests
     }
 ```
 
-- [ ] **Шаг 3: прогнать — красный**
+- [x] **Шаг 3: прогнать — красный**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/AdminPanel.UnitTests -c Debug --filter "FullyQualifiedName~WorkerCertParserTests|FullyQualifiedName~WorkerEndpointsParserTests"`
 Expected: FAIL компиляция.
 
-- [ ] **Шаг 4: модель WorkerApiCert + WorkerEndpoint.CertThumbprint**
+- [x] **Шаг 4: модель WorkerApiCert + WorkerEndpoint.CertThumbprint**
 
 `src/AdminPanel.Core/WorkerApiCert.cs`:
 
@@ -976,7 +976,7 @@ public sealed record WorkerApiCert(
 
 `EtcdSnapshot` — последний опциональный параметр `WorkerApiCert? WorkerApiCert = null` (после `MinioStorage`); `KafkaSnapshot` — после `AdminRotations`.
 
-- [ ] **Шаг 5: WorkerCertParser + WorkerEndpointsParser**
+- [x] **Шаг 5: WorkerCertParser + WorkerEndpointsParser**
 
 `src/AdminPanel.Etcd/Parsing/WorkerCertParser.cs`:
 
@@ -1056,12 +1056,12 @@ public static class WorkerCertParser
                         : null));
 ```
 
-- [ ] **Шаг 6: прогнать — зелёный**
+- [x] **Шаг 6: прогнать — зелёный**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/AdminPanel.UnitTests -c Debug --filter "FullyQualifiedName~WorkerCertParserTests|FullyQualifiedName~WorkerEndpointsParserTests|FullyQualifiedName~SnapshotBuilderTests"`
 Expected: PASS (SnapshotBuilderTests старые не сломаны — опциональные параметры).
 
-- [ ] **Шаг 7: чтение ключей в refresher'ах**
+- [x] **Шаг 7: чтение ключей в refresher'ах**
 
 `src/AdminPanel.Etcd/SnapshotRefresher.cs`:
 1. В тик (рядом с `pgApiTask`, ~строка 93):
@@ -1081,12 +1081,12 @@ Expected: PASS (SnapshotBuilderTests старые не сломаны — опц
 
 `src/AdminPanel.Etcd/KafkaSnapshotRefresher.cs` — симметрично: `Prefixes.WorkerApiCert = "/workers/api_tls/kafkaworker"`, чтение, парсинг, поле `WorkerApiCert: certParsed.Cert`, parseError — в `ParseErrors` kafka-снапшота.
 
-- [ ] **Шаг 8: сборка панели + полный юнит-прогон**
+- [x] **Шаг 8: сборка панели + полный юнит-прогон**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx && DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/AdminPanel.UnitTests -c Debug`
 Expected: зелёные (рефрешер-тесты `SnapshotRefresherTests`/`KafkaRefresherTests` — обновить сигнатуры тиков при необходимости компиляции: передать результат `WorkerCertParser.Parse(key, null)`).
 
-- [ ] **Шаг 9: коммит**
+- [x] **Шаг 9: коммит**
 
 ```bash
 git add src/AdminPanel.Core/WorkerApiCert.cs src/AdminPanel.Core/WorkerEndpoint.cs src/AdminPanel.Core/EtcdSnapshot.cs src/AdminPanel.Core/Kafka/KafkaSnapshot.cs src/AdminPanel.Etcd/Parsing/WorkerCertParser.cs src/AdminPanel.Etcd/Parsing/WorkerEndpointsParser.cs src/AdminPanel.Etcd/SnapshotRefresher.cs src/AdminPanel.Etcd/KafkaSnapshotRefresher.cs src/AdminPanel.Etcd/SnapshotBuilder.cs src/tests/AdminPanel.UnitTests/WorkerCertParserTests.cs src/tests/AdminPanel.UnitTests/WorkerEndpointsParserTests.cs src/tests/AdminPanel.UnitTests/SnapshotRefresherTests.cs src/tests/AdminPanel.UnitTests/KafkaRefresherTests.cs
@@ -1118,7 +1118,7 @@ git commit -m "feat(panel): модель WorkerApiCert + cert_thumbprint в Work
   - `WorkerCertWriteResult(string Worker, WorkerApiCert Meta)`.
   - Исключения (все — в `WorkerCertService.cs`, namespace `AdminPanel.Etcd.Workers`; Task 8 переиспользует, дублей в AdminPanel.Api нет): `WorkerCertInvalidException(string reason)` (400), `WorkerCertAffectsOutgoingException(string reason)` (422; message начинается с «сертификат влияет на коммуникации воркеров с их подчинёнными сервисами: »), `WorkerCertAlreadyManagedException(string worker)` (409), `WorkerCertNotFoundException(string worker)` (404), `WorkerNotFoundException(string worker)` (404; общий для всех эндпоинтов модуля, включая рестарт).
 
-- [ ] **Шаг 1: тесты валидатора и генератора (красный)**
+- [x] **Шаг 1: тесты валидатора и генератора (красный)**
 
 `src/tests/AdminPanel.UnitTests/Workers/WorkerCertServiceTests.cs` — TestPki-хеллер файла (RSA-2048; параметры: EKU-набор, CA=TRUE, окно валидности, SAN вкл/выкл):
 
@@ -1341,12 +1341,12 @@ public class WorkerCertServiceTests
 `DeadGateway : IEtcdGateway` — заглушка файла, все методы `Task.FromResult(Result.Failed(new EtcdUnreachableException("dead")))` (сигнатуры — `src/AdminPanel.Etcd/Client/IEtcdGateway.cs`). `FixedTimeProvider` — уже есть в `src/tests/AdminPanel.UnitTests/FixedTimeProvider.cs`.
 Кейс `Validate_KafkaCaBundle_AllPiecesChecked` упростить: завести в TestPki `IssueWithKey`-пару для newCa невозможно (CA генерируется self-signed со своим ключом) → использовать `TestPki.GenerateCa()` второй раз и передавать ЕГО ключ: `var (_, newKey) = TestPki.GenerateCa()` неверно — ключ от другой CA. Правильно: `GenerateCa` возвращает пару `(caPem, caKeyPem)`; для бандла взять ДВЕ пары: `(oldCa, oldKey)` и `(newCa, newKey)`; валидировать `newCa`+`newKey`.
 
-- [ ] **Шаг 2: прогнать — красный**
+- [x] **Шаг 2: прогнать — красный**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/AdminPanel.UnitTests -c Debug --filter "FullyQualifiedName~WorkerCertServiceTests"`
 Expected: FAIL компиляция.
 
-- [ ] **Шаг 3: реализация WorkerCertService**
+- [x] **Шаг 3: реализация WorkerCertService**
 
 `src/AdminPanel.Etcd/Workers/WorkerCertService.cs`:
 
@@ -1630,12 +1630,12 @@ public sealed class WorkerCertService(
 
 Примечания: `EtcdUnreachableException` — проверить фактическое имя в `src/AdminPanel.Etcd/Client/EtcdGateway.cs` и использовать его; `InjectAsSingleton` — из `AdminPanel.Infrastructure.DI`; `[Config]`-регистрация `WorkerApiOptions` уже есть (AddEtcd → AutoRegistration сканирует сборку — атрибут сам подхватится).
 
-- [ ] **Шаг 4: прогнать юниты — зелёный**
+- [x] **Шаг 4: прогнать юниты — зелёный**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/AdminPanel.UnitTests -c Debug --filter "FullyQualifiedName~WorkerCertServiceTests"`
 Expected: PASS (все кейсы).
 
-- [ ] **Шаг 5: сборка + коммит**
+- [x] **Шаг 5: сборка + коммит**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx`
 Expected: без предупреждений.
@@ -1668,7 +1668,7 @@ git commit -m "feat(panel): WorkerCertService — валидатор изоля�
   - `IWorkerApiGateway.SendAllAsync(string worker, HttpMethod method, string path, object? body, string? requestedBy, CancellationToken ct)` → `Task<IReadOnlyList<WorkerApiInstanceResult>>`; живых ключей нет → `WorkerApiUnavailableException`.
   - `WorkerTlsHandler.Build(WorkerTlsOptions tls, Func<IReadOnlyCollection<string>>? trustedThumbprints = null)` — серверный серт валиден, если цепочка к ServerCa ИЛИ sha256 в `trustedThumbprints()`.
 
-- [ ] **Шаг 1: тест SendAllAsync (красный)**
+- [x] **Шаг 1: тест SendAllAsync (красный)**
 
 Дополнить `src/tests/AdminPanel.UnitTests/Workers/WorkerApiGatewayTests.cs` по существующему паттерну файла (стаб-снапшоты + http-стаб или готовый локальный механизм файла):
 
@@ -1717,7 +1717,7 @@ git commit -m "feat(panel): WorkerCertService — валидатор изоля�
     }
 ```
 
-- [ ] **Шаг 2: тест thumbprint-доверия (красный)**
+- [x] **Шаг 2: тест thumbprint-доверия (красный)**
 
 Дополнить `src/tests/AdminPanel.UnitTests/Workers/WorkerTlsHandlerTests.cs` (там есть TestPki и SslStream-механика):
 
@@ -1748,12 +1748,12 @@ git commit -m "feat(panel): WorkerCertService — валидатор изоля�
     }
 ```
 
-- [ ] **Шаг 3: прогнать — красный**
+- [x] **Шаг 3: прогнать — красный**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/AdminPanel.UnitTests -c Debug --filter "FullyQualifiedName~WorkerApiGatewayTests|FullyQualifiedName~WorkerTlsHandlerTests"`
 Expected: FAIL компиляция.
 
-- [ ] **Шаг 4: реализация SendAllAsync**
+- [x] **Шаг 4: реализация SendAllAsync**
 
 `IWorkerApiGateway.cs` — добавить:
 
@@ -1816,7 +1816,7 @@ public sealed record WorkerApiInstanceResult(string Instance, WorkerApiResult? R
 
 `SendAsync` рефакторится на вызов того же `SendCoreAsync` (поведение failover не меняется — тесты `WorkerApiGatewayTests` прежние обязаны остаться зелёными).
 
-- [ ] **Шаг 5: реализация thumbprint-доверия**
+- [x] **Шаг 5: реализация thumbprint-доверия**
 
 `WorkerTlsHandler.cs`:
 
@@ -1846,7 +1846,7 @@ public sealed record WorkerApiInstanceResult(string Instance, WorkerApiResult? R
 ```
 (существующий блок `if (serverCaPem is not null) { ... }` заменяется приведённым; `using` на `ca` не ставить — серты живут время жизни handler'а).
 
-- [ ] **Шаг 6: подключение живых thumbprint'ов в ModuleExtensions**
+- [x] **Шаг 6: подключение живых thumbprint'ов в ModuleExtensions**
 
 `src/AdminPanel.Etcd/ModuleExtensions.cs` — замена регистрации `AddHttpClient(WorkerApiGateway.HttpClientName)`:
 
@@ -1869,7 +1869,7 @@ public sealed record WorkerApiInstanceResult(string Instance, WorkerApiResult? R
         };
 ```
 
-- [ ] **Шаг 7: прогнать — зелёный + стаб TestWorkerApi**
+- [x] **Шаг 7: прогнать — зелёный + стаб TestWorkerApi**
 
 `src/tests/AdminPanel.IntegrationTests/AuthTests.cs` — `TestWorkerApi : IWorkerApiGateway` реализует и `SendAllAsync` (стаб: журнал + `Respond`-делегат по аналогии; вернуть `IReadOnlyList<WorkerApiInstanceResult>`):
 
@@ -1890,7 +1890,7 @@ public sealed record WorkerApiInstanceResult(string Instance, WorkerApiResult? R
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx && DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/AdminPanel.UnitTests -c Debug --filter "FullyQualifiedName~WorkerApiGatewayTests|FullyQualifiedName~WorkerTlsHandlerTests"`
 Expected: PASS, включая прежние failover-тесты.
 
-- [ ] **Шаг 8: коммит**
+- [x] **Шаг 8: коммит**
 
 ```bash
 git add src/AdminPanel.Etcd/Workers/IWorkerApiGateway.cs src/AdminPanel.Etcd/Workers/WorkerApiGateway.cs src/AdminPanel.Etcd/Workers/WorkerTlsHandler.cs src/AdminPanel.Etcd/ModuleExtensions.cs src/tests/AdminPanel.UnitTests/Workers/WorkerApiGatewayTests.cs src/tests/AdminPanel.UnitTests/Workers/WorkerTlsHandlerTests.cs src/tests/AdminPanel.IntegrationTests/AuthTests.cs
@@ -1933,7 +1933,7 @@ public sealed record WorkerCertDto(
   - `POST /api/workers/{worker}/restart` → 202 `WorkerRestartDto(IReadOnlyList<RestartInstanceResultDto> Results)`; `RestartInstanceResultDto(string Instance, bool Accepted, string? Error)` | 404 (worker) | 503;
   - `worker` ∈ {pgworker, kafkaworker} иначе 404: generate/PUT/DELETE — гвард внутри `WorkerCertService` (до `KeyOf`, мусорный ключ не пишется), restart — явная проверка в `RestartWorkerCommandHandler`.
 
-- [ ] **Шаг 1: интеграционные тесты (красный)**
+- [x] **Шаг 1: интеграционные тесты (красный)**
 
 `src/tests/AdminPanel.IntegrationTests/WorkersWebFactory.cs` — фабрика по образцу `BackupsWebFactory` (PanelHostBuilder.BuildExclusive, реальный etcd через `UseSetting("AdminPanel:Etcd:Endpoints:0", ...)`):
 
@@ -2046,12 +2046,12 @@ public class WorkersApiTests
 
 Кейсы статусов: снапшоты строить по образцу `InspectionSnapshots.Fixture(...)` — дополнить хелпером с `WorkerApiCert` и `WorkerEndpoint(..., CertThumbprint: ...)` (файл `TestSnapshots.cs` расширить копией-методом `WithWorkers(...)`).
 
-- [ ] **Шаг 2: прогнать — красный**
+- [x] **Шаг 2: прогнать — красный**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/AdminPanel.IntegrationTests -c Debug --filter "FullyQualifiedName~WorkersApiTests"`
 Expected: FAIL (404 — маршрутов нет).
 
-- [ ] **Шаг 3: команды и хендлеры**
+- [x] **Шаг 3: команды и хендлеры**
 
 `src/AdminPanel.Api/Operations/WorkersCommands.cs`:
 
@@ -2190,7 +2190,7 @@ public sealed class RestartWorkerCommandHandler(IWorkerApiGateway api)
 
 (`Result.Map`-хелперы сверить с фактическими сигнатурами `AdminPanel.Infrastructure.Result`; при отсутствии нулевой Map — через явный if.)
 
-- [ ] **Шаг 4: query GET /api/workers**
+- [x] **Шаг 4: query GET /api/workers**
 
 В `WorkersModule.cs` (или отдельный `WorkersQuery.cs` по образцу `OverviewQuery.cs`):
 
@@ -2242,7 +2242,7 @@ public sealed class GetWorkersQueryHandler(ISnapshotStore pg, IKafkaSnapshotRead
 }
 ```
 
-- [ ] **Шаг 5: маршруты WorkersModule + Program.cs**
+- [x] **Шаг 5: маршруты WorkersModule + Program.cs**
 
 `src/AdminPanel.Api/Operations/WorkersModule.cs`:
 
@@ -2352,22 +2352,22 @@ public static class WorkersModule
 app.MapWorkersApi(); // серты API воркеров + рестарт (arch/adminpanel/02 §9.9, 03 §3.7)
 ```
 
-- [ ] **Шаг 6: правка WorkerCertService — аудит оператора в Meta**
+- [x] **Шаг 6: правка WorkerCertService — аудит оператора в Meta**
 
 В `GenerateAndPutAsync`/`PutAsync` (Task 6-файл) перед возвратом: `meta = meta with { UpdatedBy = updatedBy };` (record-with). Записи в etcd уже содержат `updated_by` (SerializePayload); метаданные ответа выравниваются.
 
-- [ ] **Шаг 7: прогнать интеграционные — зелёный**
+- [x] **Шаг 7: прогнать интеграционные — зелёный**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/AdminPanel.IntegrationTests -c Debug --filter "FullyQualifiedName~WorkersApiTests"`
 Expected: PASS (все кейсы Шага 1).
 
-- [ ] **Шаг 8: полный регресс панели**
+- [x] **Шаг 8: полный регресс панели**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx && DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/AdminPanel.UnitTests -c Debug && DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/AdminPanel.IntegrationTests -c Debug`
 Expected: зелёные (старые серии не сломаны подменами фабрик).
 После серии: зачистить docker-остатки тестов (`docker ps -aq` — только свои; контейнеры dev-стенда `as-*`/`adminpanel` не трогать) + `docker network prune -f`.
 
-- [ ] **Шаг 9: коммит**
+- [x] **Шаг 9: коммит**
 
 ```bash
 git add src/AdminPanel.Api/Operations/WorkersModule.cs src/AdminPanel.Api/Operations/WorkersCommands.cs src/AdminPanel.Api/Program.cs src/AdminPanel.Etcd/Workers/WorkerCertService.cs src/tests/AdminPanel.IntegrationTests/WorkersApiTests.cs src/tests/AdminPanel.IntegrationTests/WorkersWebFactory.cs
@@ -2394,7 +2394,7 @@ git commit -m "feat(panel): грань Воркеры — GET /api/workers + gen
 **Interfaces:**
 - Consumes: REST Task 8 (`/api/workers`, `.../api-cert/generate|PUT|DELETE`, `.../restart`).
 
-- [ ] **Шаг 1: DTO и queries**
+- [x] **Шаг 1: DTO и queries**
 
 `frontend/src/api/dto.ts` — добавить:
 
@@ -2488,11 +2488,11 @@ export function restartWorker(worker: string): Promise<WorkerRestartDto> {
 }
 ```
 
-- [ ] **Шаг 2: модал загрузки PEM**
+- [x] **Шаг 2: модал загрузки PEM**
 
 `frontend/src/pages/workers/UploadWorkerCertModal.tsx` — по образцу `CreateKafkaClusterModal.tsx`: `Modal` с двумя `Textarea` (сертификат PEM / приватный ключ PKCS#8) + кнопка выбора файла (`input type=file`, чтение `file.text()` в textarea); клиентская валидация-зеркало: непустые поля, `-----BEGIN CERTIFICATE-----`/`-----BEGIN PRIVATE KEY-----` в текстах; `useMutation(uploadWorkerApiCert)`; ошибка `ApiError` со статусом 422 → баннер `<Alert color="red">` с точным текстом из `error.detail` (заголовок уже от ProblemDetails: «Сертификат влияет на коммуникации воркеров с их подчинёнными сервисами — обновление отклонено»); 400 — тот же баннер; успех → `onClose()` + `invalidateQueries(workerQueryKeys.workers)`.
 
-- [ ] **Шаг 3: страница WorkersPage**
+- [x] **Шаг 3: страница WorkersPage**
 
 `frontend/src/pages/WorkersPage.tsx` — по образцу `KafkaClustersPage.tsx` (useQuery + polling + карточки):
 
@@ -2556,18 +2556,18 @@ export function WorkersPage() {
 - блок целевого серта (при наличии): subject/issuer/SAN (join «, ")/сроки (`notBeforeUnix`–`notAfterUnix` в читаемом виде)/thumbprint/«обновлён `updatedBy` …»;
 - действия: «Сгенерировать сертификат» (confirm: «применится только после перезапуска»), «Загрузить сертификат» (открывает модал), «Перезапустить воркера» (красная, confirm с предупреждением 03 §3.7), «Убрать управляемый сертификат» (красная, рендерится только при живом `targetCert`).
 
-- [ ] **Шаг 4: маршрут и навигация**
+- [x] **Шаг 4: маршрут и навигация**
 
 `frontend/src/App.tsx`: import `WorkersPage`; в children: `{ path: 'workers', element: <WorkersPage /> }` (после `alerts`).
 
 `frontend/src/layout/AppLayout.tsx`: в массив ссылок — `{ to: '/workers', label: 'Воркеры' }` (после «Обзор»).
 
-- [ ] **Шаг 5: проверка фронта**
+- [x] **Шаг 5: проверка фронта**
 
 Run: `cd frontend && npm run typecheck && npm run build`
 Expected: tsc без ошибок, vite-сборка успешна.
 
-- [ ] **Шаг 6: коммит**
+- [x] **Шаг 6: коммит**
 
 ```bash
 git add frontend/src/api/dto.ts frontend/src/api/queries.ts frontend/src/pages/WorkersPage.tsx frontend/src/pages/workers/UploadWorkerCertModal.tsx frontend/src/App.tsx frontend/src/layout/AppLayout.tsx
@@ -2589,7 +2589,7 @@ git commit -m "feat(panel-ui): страница Воркеры — серты AP
 **Interfaces:**
 - Consumes: `E2eEnvironment` (изолированное окружение: сеть/etcd/MinIO per-сценарий, `StartHostAsync`, DisposeAsync с ассертом чистоты), `E2eFixture` (WaitForAsync, EnsureAppDllAsync, RunDockerAsync), `E2eTestPki` (если подходит; иначе локальный TestPki).
 
-- [ ] **Шаг 1: сценарий полного цикла (красный)**
+- [x] **Шаг 1: сценарий полного цикла (красный)**
 
 `src/tests/PgWorker.IntegrationTests/E2e/E2eWorkerCertScenarios.cs` — изоляция per-сценарий (`await using var env = new E2eEnvironment(...)` в теле Fact, паттерн соседних `E2e*Scenarios.cs`; Release-бинарь — `E2eFixture.EnsureAppDllAsync` по образцу `E2eScenarios.cs`):
 
@@ -2652,17 +2652,17 @@ public class E2eWorkerCertScenarios
 - teardown при любом исходе — `await using`; упавший сценарий — `MarkFailed()` (телеметрия `docs/e2e-launch.md`);
 - рестарт-«политика»: хост-процесс перезапускает сам сценарий (документирующий комментарий: прод — docker `restart: unless-stopped`, E2E-хосты — имитация).
 
-- [ ] **Шаг 2: прогон E2E-сценариев (свежий Release)**
+- [x] **Шаг 2: прогон E2E-сценариев (свежий Release)**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.IntegrationTests -c Release --filter "FullyQualifiedName~E2eWorkerCertScenarios"`
 Expected: PASS оба сценария; в логе — фазы, артефакты в `/tmp/pgw-e2e-artifacts-<guid>/`.
 
-- [ ] **Шаг 3: зачистка docker после серии**
+- [x] **Шаг 3: зачистка docker после серии**
 
 Run: `docker ps -aq | wc -l` → удалить контейнеры СВОИХ прогонов (`docker rm -f` по списку; dev-стенд `as-*`/`adminpanel` не трогать) → `docker ps -aq | wc -l` — только стендовые/ноль → `docker network prune -f`.
 Expected: чисто.
 
-- [ ] **Шаг 4: коммит**
+- [x] **Шаг 4: коммит**
 
 ```bash
 git add src/tests/PgWorker.IntegrationTests/E2e/E2eWorkerCertScenarios.cs
@@ -2685,7 +2685,7 @@ git commit -m "test(e2e): полный цикл управляемого сер�
 **Interfaces:**
 - Consumes: живой стенд (панель :5050, cookie-логин admin/admin, воркеры в deploy-канон mTLS).
 
-- [ ] **Шаг 1: чек-скрипт**
+- [x] **Шаг 1: чек-скрипт**
 
 `dev-stand/adminpanel/checks/70-worker-cert.sh` — по образцу `10-smoke-api.sh` (curl + jq, trap-очистка JAR):
 
@@ -2744,12 +2744,12 @@ echo "✅ чек грани Воркеры пройден"
 
 `chmod +x dev-stand/adminpanel/checks/70-worker-cert.sh`.
 
-- [ ] **Шаг 2: проверка чека на живом стенде**
+- [x] **Шаг 2: проверка чека на живом стенде**
 
 Run: `bash dev-stand/adminpanel/checks/70-worker-cert.sh` (стенд поднят `00-up.sh`; если не поднят — поднять)
 Expected: «✅ чек грани Воркеры пройден»; панель после прогона на env-серте (стенд в исходном состоянии).
 
-- [ ] **Шаг 3: runbook**
+- [x] **Шаг 3: runbook**
 
 `docs/runbook.md` — новый раздел (после существующих `##`):
 
@@ -2813,7 +2813,7 @@ cd frontend && npm run typecheck && npm run build
 После серий: `docker rm -f` своих контейнеров (dev-стенд `as-*`/`adminpanel` не трогать), `docker ps -aq | wc -l` — контроль, `docker network prune -f`.
 Expected: все прогоны зелёные.
 
-- [ ] **Шаг 5: коммит**
+- [x] **Шаг 5: коммит**
 
 ```bash
 git add dev-stand/adminpanel/checks/70-worker-cert.sh docs/runbook.md
