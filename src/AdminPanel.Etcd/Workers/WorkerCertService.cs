@@ -182,7 +182,18 @@ public sealed class WorkerCertService(
     {
         if (worker is not ("pgworker" or "kafkaworker"))
             return Result<WorkerCertWriteResult>.Failed(new WorkerNotFoundException(worker)); // до KeyOf: мусорные ключи не пишем
-        var meta = ValidateAndBuildMeta(worker, certPem, keyPem);
+        // Валидация §4.3 (400/422) — в Result (REST-контракт 03 §1), не исключением:
+        // Error()-ветка модуля мапит тип ошибки на код ответа.
+        WorkerApiCert meta;
+        try
+        {
+            meta = ValidateAndBuildMeta(worker, certPem, keyPem);
+        }
+        catch (Exception e) when (e is WorkerCertInvalidException or WorkerCertAffectsOutgoingException)
+        {
+            return Result<WorkerCertWriteResult>.Failed(e);
+        }
+
         var put = await WithEtcdAsync(endpoint => gateway.PutAsync(
             endpoint, KeyOf(worker), SerializePayload(certPem, keyPem, updatedBy), ct));
         if (!put.IsSuccess)

@@ -108,6 +108,7 @@ app.MapBackupsInspectionApi(); // [t08] грань «Хранилище бэка
 app.MapKafkaInspectionApi(); // [B5] инспекция kafka-домена (arch/03 §7.1)
 app.MapOperationsApi(); // [t12] единственная мутация: POST /api/clusters (arch/02 §9)
 app.MapKafkaOperationsApi(); // [B5] kafka-мутации (arch/02 §10.2, arch/03 §7.1)
+app.MapWorkersApi(); // серты API воркеров + рестарт (arch/adminpanel/02 §9.9, 03 §3.7)
 
 // Живость самой панели (liveness, arch/03 §1): только чеки с тегом live.
 // Чек etcd (readiness-семантика) не роняет /api/healthz — его статус отдают t04+ эндпоинты.
