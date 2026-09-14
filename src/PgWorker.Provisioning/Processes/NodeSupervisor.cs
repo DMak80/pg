@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Extensions.Logging;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
@@ -33,6 +34,8 @@ public sealed class NodeSupervisor(
     InstallSecrets secrets,
     IAppParamsEnsurer appParams,
     PgtuneInputsFactory pgtune,
+    PgtuneSettings pgtuneSettings,
+    ILogger<NodeSupervisor> log,
     MasterKeyReconciler? masterKeys = null,
     EtcdEndpoints? etcdForNodes = null)
 {
@@ -170,7 +173,8 @@ public sealed class NodeSupervisor(
         }
 
         // 4) Конвергенция DCS-конфига (arch/14 §5 C, t09): активный динамический
-        // конфиг кластера сверяется с каноном PatroniTimings, расхождение
+        // конфиг кластера сверяется с каноном PatroniTimings + pg-параметры
+        // merge(PGTune ∪ канон) от актуальных заявок (t11), расхождение
         // патчится до канона — нода, подтянувшаяся к кластеру с отсутствующим/
         // чужим/дефолтным конфигом, приводится к канону без пересоздания
         // («старое с плохими параметрами» не живёт параллельно канону). Шаг —
@@ -282,13 +286,24 @@ public sealed class NodeSupervisor(
         return Result.Success();
     }
 
-    // Конвергенция динамического DCS-конфига (arch/14 §5 C, t09): GET /config
-    // первого канонического Patroni-узла шарда, расхождение с каноном
-    // PatroniTimings → PATCH до канона. Конфиг кластерный — один узел на шард
-    // и один патч на тик. Транзиент-толерантно: недоступность узла (рестарт/
-    // мёртвый шард) пропускает конвергенцию этого тика (общие контуры проб/
-    // rebuild/эвакуации займутся шардом сами), патч повторится следующим.
-    // Фазовая запись журнала при патче несёт трек недоступности текущего тика.
+    // Конвергенция динамического DCS-конфига (arch/14 §5 C; t09 — тайминги,
+    // t11 — pg-параметры): GET /config первого канонического Patroni-узла
+    // шарда → сверка с каноном (PatroniTimings + желаемый набор параметров
+    // merge(PGTune ∪ канон) от АКТУАЛЬНЫХ заявок, пересчёт на каждый тик, БЕЗ
+    // фиксации в etcd) → ОДИН PATCH /config на тик: обновляет расходящиеся,
+    // добавляет отсутствующие, удаляет лишние null-патчем. Postmaster-параметры
+    // Patroni помечает pending_restart — применяются при ближайшем рестарте
+    // ноды; воркер НИКОГДА не инициирует рестарт PG (решение 2026-09-14).
+    // Заявка request_{cpu,mem} отсутствует ИЛИ неполна (любое из полей
+    // ресурсов null — NodeResourcesParser.Parse("2", null) возвращает частичный
+    // объект, НЕ null) → pg-часть пропускается с warning (в конвергенции
+    // мутация опциональна: пропуск = конфиг прежний, безопасно; выдумывать
+    // размер ноды по остаточному ресурсу нельзя — решение 2026-09-14), тайминги
+    // конвергируются как раньше. Прочие исключения pgtune.Create (неполнота уже
+    // отсечена) — фейл фазы тика, транзиент-ретрай (как в EnsureNode-путях).
+    // Транзиент-толерантно (t09): недоступность GET/PATCH — skip этого тика,
+    // патч повторится следующим. Фазовая запись журнала при патче несёт трек
+    // недоступности текущего тика.
     private async Task<Result> ConvergeDcsConfigAsync(
         string cluster, ShardSpec shard, IReadOnlyDictionary<string, NodeAddress> addresses,
         Dictionary<string, long> track, CancellationToken ct)
@@ -305,16 +320,44 @@ public sealed class NodeSupervisor(
         if (!config.IsSuccess)
             return Result.Success(); // транзиент — сверка следующим тиком
 
-        var patch = DcsConfigConvergence.DivergencePatch(config.Value, null); // t11: желаемый набор подключит проводка (Task 3)
-        if (patch is null)
+        // Желаемый набор: от ОБЯЗАТЕЛЬНЫХ заявок (arch/14 §2.1 п.4). Отсутствие
+        // ИЛИ неполнота (любое поле null) — skip pg-части с warning, НЕ фейл
+        // тика (в отличие от EnsureNode-путей, где размер ноды обязателен).
+        var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
+        IReadOnlyList<(string Name, string RawValue)>? desired = null;
+        if (resources is null || resources.MemoryBytes is null || resources.CpuCores is null)
+        {
+            log.LogWarning(
+                "supervise {Cluster}/{Shard}: pgtune-конвергенция пропущена — заявка request_{{cpu,mem}} отсутствует/неполна " +
+                "(аномалия данных; тайминги DCS-конфига конвергируются без параметров)",
+                cluster, shard.Name);
+        }
+        else
+        {
+            // Неполнота отсечена выше — прочие исключения расчёта = фейл фазы
+            // тика, транзиент-ретрай (как в EnsureNode-путях).
+            var tuning = pgtune.Create(resources);
+            desired = PgParametersCanon.Desired(tuning, pgtuneSettings.ExcludeParams);
+        }
+
+        var divergence = DcsConfigConvergence.Analyze(config.Value, desired);
+        if (divergence.Patch is null)
             return Result.Success(); // конвергентно — мутаций нет
 
-        var applied = await probe.PatchConfigAsync(probeNode, patch, ct);
+        var applied = await probe.PatchConfigAsync(probeNode, divergence.Patch, ct);
         if (!applied.IsSuccess)
             return Result.Success(); // транзиент — патч следующим тиком
 
+        // Postmaster-параметры Patroni пометит pending_restart — штатно до
+        // ближайшего рестарта ноды (воркер рестарт не инициирует).
+        var note = $"{shard.Name}: DCS-конфиг сконвергирован к канону " +
+                   $"(updated:{divergence.Updated} added:{divergence.Added} removed:{divergence.Removed}" +
+                   (divergence.PostmasterTouched
+                       ? "; postmaster-параметры → pending_restart (применение при ближайшем рестарте ноды)"
+                       : string.Empty) +
+                   $") ({divergence.Patch})";
         await journal.WritePhaseAsync(cluster, "supervise", "dcs-converge", claims.InstanceId,
-            $"{shard.Name}: DCS-конфиг сконвергирован к канону ({patch})", ct, unreachable: track);
+            note, ct, unreachable: track);
         return Result.Success();
     }
 

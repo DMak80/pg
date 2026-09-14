@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using PgWorker.Core;
 using PgWorker.Core.Model;
@@ -22,6 +23,13 @@ internal static class Fakes
         new PgtuneSettings(18, "oltp", "ssd", "mid_ram", 60,
             new HashSet<string>(StringComparer.Ordinal)),
         NullLogger<PgtuneInputsFactory>.Instance);
+
+    // Настройки PgWorker:Pgtune для конструкторов процессов (дефолты опций);
+    // отдельная сущность от PgtuneFactory — NodeSupervisor получает её
+    // конструкторно для ExcludeParams (t11 spec §4.3 п.3).
+    internal static PgtuneSettings PgtuneSettings() => new(
+        18, "oltp", "ssd", "mid_ram", 60,
+        new HashSet<string>(StringComparer.Ordinal));
 
     // etcd в памяти: Put инкрементирует mod_revision; txn-compare честно
     // сверяет Version/Value/ModRevision (нужно P1-portalloc и P4-config).
@@ -461,5 +469,19 @@ internal static class Fakes
         // ensure-инжекция по dsn (живой-Ф7': целевая БД отсутствует — 3D000,
         // postgres-подключение — успех): проверяет, КАКОЙ dsn использует процесс.
         public Func<string, string, Result>? EnsureResultByDsn { get; set; }
+    }
+
+    // Записывающий ILogger: фиксирует отформатированные сообщения — проверка
+    // warning-логов процессов (t11: skip pgtune-конвергенции по заявке).
+    internal sealed class RecordingLogger<T> : ILogger<T>
+    {
+        public readonly List<(LogLevel Level, string Message)> Entries = [];
+
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+
+        public void Log<TState>(LogLevel logLevel, EventId eventId, TState state,
+            Exception? exception, Func<TState, Exception?, string> formatter)
+            => Entries.Add((logLevel, formatter(state, exception)));
     }
 }

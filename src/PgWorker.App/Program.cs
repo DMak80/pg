@@ -199,8 +199,12 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
 
 // Фабрика входов PGTune (spec.md §4.3): runtime-склейка PgWorker:Pgtune
 // (валидированы fail-fast'ом старта); расчёт — per-shard на EnsureNode-путях.
+// PgtuneSettings (runtime-склейка PgWorker:Pgtune) — единый ExcludeParams для
+// bootstrap и конвергенции DCS (t11, spec §4.3 п.3).
+builder.Services.AddSingleton(sp =>
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Pgtune.ToRuntime());
 builder.Services.AddSingleton(sp => new PgtuneInputsFactory(
-    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Pgtune.ToRuntime(),
+    sp.GetRequiredService<PgtuneSettings>(),
     sp.GetRequiredService<ILogger<PgtuneInputsFactory>>()));
 
 // Пробы Patroni REST и SQL-слой (Npgsql + Polly-ретраи).
@@ -279,6 +283,8 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
     sp.GetRequiredService<InstallSecrets>(),
     sp.GetRequiredService<IAppParamsEnsurer>(),
     sp.GetRequiredService<PgtuneInputsFactory>(),
+    sp.GetRequiredService<PgtuneSettings>(),
+    sp.GetRequiredService<ILogger<NodeSupervisor>>(),
     new MasterKeyReconciler(
         sp.GetRequiredService<IEtcdGateway>(),
         sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
