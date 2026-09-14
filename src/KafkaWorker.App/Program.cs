@@ -159,6 +159,11 @@ builder.Services.AddSingleton(sp => new SeedDemoHandler(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Api.EnableSeedEndpoint));
 
+// Graceful self-stop (spec §3.2 п.2): рестарт из панели применяет серт/конфиг.
+builder.Services.AddSingleton(sp => new RestartHandler(
+    sp.GetRequiredService<IHostApplicationLifetime>(),
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<RestartHandler>()));
+
 // docker: драйвер по режиму (Plain: таблица Hosts; Swarm: manager endpoint).
 builder.Services.AddSingleton<DockerEngineFactory>();
 builder.Services.AddSingleton<IClusterDriver>(sp =>

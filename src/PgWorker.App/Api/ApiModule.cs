@@ -439,6 +439,12 @@ public static class ApiModule
             };
         });
 
+        // POST /api/restart — graceful self-stop (spec §3.2 п.2, arch/14 §3.3):
+        // 202 {"restarting":true}, стоп отложен на ~1 c; etcd не пишет.
+        endpoints.MapPost("/api/restart", (
+            [Microsoft.AspNetCore.Mvc.FromHeader(Name = "X-Requested-By")] string? requestedBy,
+            RestartHandler handler) => Results.Accepted((string?)null, handler.Handle(requestedBy)));
+
         return endpoints;
     }
 }
