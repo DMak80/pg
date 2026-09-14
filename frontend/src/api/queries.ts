@@ -44,6 +44,10 @@ import type {
   BackupObjectsPageDto,
   BackupShardStorageDto,
   BackupStorageDto,
+  UploadWorkerCertRequestDto,
+  WorkerApiCertDto,
+  WorkerRestartDto,
+  WorkersViewDto,
 } from './dto';
 
 export const queryKeys = {
@@ -389,4 +393,47 @@ export function fetchBackupObjectsPage(
   params.set('maxKeys', String(maxKeys));
   if (continuationToken) params.set('continuationToken', continuationToken);
   return apiFetch<BackupObjectsPageDto>(`/api/backups/objects?${params.toString()}`);
+}
+
+// ===== Грань «Воркеры» (arch/adminpanel/03 §1/§3.7) =====
+
+export const workerQueryKeys = {
+  workers: ['workers'] as const,
+};
+
+export function fetchWorkers(): Promise<WorkersViewDto> {
+  return apiFetch<WorkersViewDto>('/api/workers');
+}
+
+// POST /api/workers/{worker}/api-cert/generate — self-signed лист (SAN по живым
+// advertise-URL); 409 при живом ключе (замените PUT-ом или удалите).
+export function generateWorkerApiCert(worker: string): Promise<WorkerApiCertDto> {
+  return apiFetch<WorkerApiCertDto>(
+    `/api/workers/${encodeURIComponent(worker)}/api-cert/generate`,
+    { method: 'POST' });
+}
+
+// PUT /api/workers/{worker}/api-cert — своя PEM-пара (полная валидация §4.3,
+// 400/422 с ProblemDetails при нарушении).
+export function uploadWorkerApiCert(
+  worker: string,
+  request: UploadWorkerCertRequestDto,
+): Promise<WorkerApiCertDto> {
+  return apiFetch<WorkerApiCertDto>(
+    `/api/workers/${encodeURIComponent(worker)}/api-cert`,
+    { method: 'PUT', body: request });
+}
+
+// DELETE /api/workers/{worker}/api-cert — откат на env-серт (после рестарта).
+export function deleteWorkerApiCert(worker: string): Promise<void> {
+  return apiFetch<void>(
+    `/api/workers/${encodeURIComponent(worker)}/api-cert`,
+    { method: 'DELETE' });
+}
+
+// POST /api/workers/{worker}/restart — broadcast на все живые инстансы.
+export function restartWorker(worker: string): Promise<WorkerRestartDto> {
+  return apiFetch<WorkerRestartDto>(
+    `/api/workers/${encodeURIComponent(worker)}/restart`,
+    { method: 'POST' });
 }

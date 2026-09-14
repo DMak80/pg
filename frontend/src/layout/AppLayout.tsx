@@ -11,6 +11,7 @@ import { AlertsNavCounters } from './AlertsNavCounters';
 // Активность: '/' — точное совпадение, остальные — по префиксу (t08 spec §4.2).
 const NAV_ITEMS = [
   { to: '/', label: 'Обзор' },
+  { to: '/workers', label: 'Воркеры' },
   { to: '/etcd', label: 'etcd' },
   { to: '/clusters', label: 'Кластеры' },
   { to: '/backups-storage', label: 'Хранилище бэкапов' },
