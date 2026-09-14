@@ -1,7 +1,7 @@
 using AdminPanel.Core;
 using AdminPanel.Core.Alerting;
 using AdminPanel.Etcd;
-using AdminPanel.Etcd.Client;
+using Shared.Etcd.Client;
 using AdminPanel.Etcd.Workers;
 using AdminPanel.Probes.S3;
 using FluentAssertions;
@@ -104,7 +104,7 @@ internal sealed class FakeEtcdGateway : IEtcdGateway
         StatusCalls++;
         return Task.FromResult(StatusFailEndpoints.Contains(endpoint)
             ? Result<EtcdStatusPayload>.Failed(new EtcdUnreachableException(endpoint))
-            : Result<EtcdStatusPayload>.Success(new EtcdStatusPayload("3.5.21", 20480, 42, 17, 3)));
+            : Result<EtcdStatusPayload>.Success(new EtcdStatusPayload("3.5.21", 20480, 42, 17, 3, null)));
     }
 
     public Task<Result<IReadOnlyList<EtcdMember>>> MemberListAsync(string endpoint, CancellationToken ct)
@@ -114,11 +114,31 @@ internal sealed class FakeEtcdGateway : IEtcdGateway
         => Task.FromResult(Result<IReadOnlyList<EtcdAlarm>>.Success(Alarms));
 
     // Write-методы (t12): refresher не пишет — заглушки ради интерфейса.
-    public Task<Result<TxnResult>> TxnAsync(
-        string endpoint, IReadOnlyList<TxnCompare> compares, IReadOnlyList<KvPut> puts, CancellationToken ct)
+    public Task<Result<TxnResult>> TxnAsync(string endpoint, TxnRequest req, CancellationToken ct)
         => Task.FromResult(Result<TxnResult>.Failed(new EtcdUnreachableException(endpoint)));
 
-    public Task<Result> PutAsync(string endpoint, string key, string value, CancellationToken ct)
+    public Task<Result> PutAsync(string endpoint, string key, string value, long? lease, CancellationToken ct)
+        => Task.FromResult(Result.Failed(new EtcdUnreachableException(endpoint)));
+
+    public Task<Result<Kv?>> GetAsync(string endpoint, string key, CancellationToken ct)
+        => Task.FromResult(Result<Kv?>.Failed(new EtcdUnreachableException(endpoint)));
+
+    public Task<Result<long>> LeaseGrantAsync(string endpoint, int ttlSec, CancellationToken ct)
+        => Task.FromResult(Result<long>.Failed(new EtcdUnreachableException(endpoint)));
+
+    public Task<Result> LeaseRevokeAsync(string endpoint, long lease, CancellationToken ct)
+        => Task.FromResult(Result.Failed(new EtcdUnreachableException(endpoint)));
+
+    public Task<Result> LeaseKeepaliveAsync(string endpoint, long lease, CancellationToken ct)
+        => Task.FromResult(Result.Failed(new EtcdUnreachableException(endpoint)));
+
+    public Task<Result<byte[]>> SnapshotSaveAsync(string endpoint, CancellationToken ct)
+        => Task.FromResult(Result<byte[]>.Failed(new EtcdUnreachableException(endpoint)));
+
+    public Task<Result> CompactAsync(string endpoint, long revision, CancellationToken ct)
+        => Task.FromResult(Result.Failed(new EtcdUnreachableException(endpoint)));
+
+    public Task<Result> DefragmentAsync(string endpoint, CancellationToken ct)
         => Task.FromResult(Result.Failed(new EtcdUnreachableException(endpoint)));
 
     public Task<Result> DeleteAsync(string endpoint, string keyOrPrefix, bool prefix, CancellationToken ct)

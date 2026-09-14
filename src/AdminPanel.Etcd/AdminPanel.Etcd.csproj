@@ -4,6 +4,7 @@
         <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions"/>
         <PackageReference Include="Microsoft.Extensions.Http"/>
         <ProjectReference Include="..\AdminPanel.Core\AdminPanel.Core.csproj"/>
+        <ProjectReference Include="..\Shared.Etcd\Shared.Etcd.csproj"/>
     </ItemGroup>
 
     <ItemGroup>

@@ -1,4 +1,5 @@
 using AdminPanel.Core;
+using Shared.Etcd.Client;
 
 namespace AdminPanel.UnitTests;
 

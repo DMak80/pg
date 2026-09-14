@@ -1,5 +1,6 @@
 using AdminPanel.Api.Inspection;
 using AdminPanel.Core;
+using Shared.Etcd.Client;
 using FluentAssertions;
 using Xunit;
 

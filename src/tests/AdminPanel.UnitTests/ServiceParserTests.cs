@@ -1,4 +1,4 @@
-using AdminPanel.Etcd.Client;
+using Shared.Etcd.Client;
 using AdminPanel.Etcd.Parsing;
 using FluentAssertions;
 using Xunit;
@@ -9,7 +9,7 @@ namespace AdminPanel.UnitTests;
 public class ServiceParserTests
 {
     // Локальный конструктор Kv для ad-hoc-ключей.
-    private static AdminPanel.Etcd.Client.Kv Kv(string key, string value) => new(key, value, 1);
+    private static Kv Kv(string key, string value) => new(key, value, 1);
 
     // Кластеры для мэтчинга — из реальной фикстуры /clusters/ (связка тика одного снапшота).
     private static readonly IReadOnlyList<AdminPanel.Core.ClusterInfo> DemoClusters =

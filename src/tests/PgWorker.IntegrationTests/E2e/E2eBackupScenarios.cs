@@ -434,12 +434,11 @@ public class E2eBackupScenarios
         cleaned.Should().BeTrue("verify-джоб и volume сносятся после итога (AC8)");
 
         // Assert 3 — воркерный и панельный парсеры читают без parseErrors (AC1);
-        // панельный Kv — отдельный тип (AdminPanel.Etcd.Client.Kv), маппинг 1:1
+        // Kv общий (Shared.Etcd.Client, t08) — тот же набор подаётся в оба парсера
         var kvs = (await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/", ct)).Value;
         var parsed = BackupsParser.Parse(kvs, out var parseErrors);
         parseErrors.Should().BeEmpty();
-        var panelKvs = kvs.Select(kv => new AdminPanel.Etcd.Client.Kv(kv.Key, kv.Value, kv.ModRevision)).ToList();
-        var panel = AdminPanel.Etcd.Parsing.BackupsParser.Parse(panelKvs);
+        var panel = AdminPanel.Etcd.Parsing.BackupsParser.Parse(kvs);
         panel.Errors.Should().BeEmpty();
         panel.Clusters.Single(c => c.Cluster == cluster).ShardVerifyFailures.Should().BeEmpty();
     }

@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using AdminPanel.Core;
 using AdminPanel.Etcd;
-using AdminPanel.Etcd.Client;
+using Shared.Etcd.Client;
 using AdminPanel.Etcd.Workers;
 using FluentAssertions;
 using Microsoft.Extensions.Options;
@@ -31,17 +31,31 @@ public class WorkerCertServiceTests
     {
         public Task<Result<IReadOnlyList<Kv>>> RangeAsync(string endpoint, string prefix, CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<Kv>>.Failed(new EtcdUnreachableException("dead")));
+        public Task<Result<Kv?>> GetAsync(string endpoint, string key, CancellationToken ct)
+            => Task.FromResult(Result<Kv?>.Failed(new EtcdUnreachableException("dead")));
         public Task<Result<EtcdStatusPayload>> StatusAsync(string endpoint, CancellationToken ct)
             => Task.FromResult(Result<EtcdStatusPayload>.Failed(new EtcdUnreachableException("dead")));
         public Task<Result<IReadOnlyList<EtcdMember>>> MemberListAsync(string endpoint, CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<EtcdMember>>.Failed(new EtcdUnreachableException("dead")));
         public Task<Result<IReadOnlyList<EtcdAlarm>>> AlarmAsync(string endpoint, CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<EtcdAlarm>>.Failed(new EtcdUnreachableException("dead")));
-        public Task<Result<TxnResult>> TxnAsync(string endpoint, IReadOnlyList<TxnCompare> compares, IReadOnlyList<KvPut> puts, CancellationToken ct)
+        public Task<Result<TxnResult>> TxnAsync(string endpoint, TxnRequest req, CancellationToken ct)
             => Task.FromResult(Result<TxnResult>.Failed(new EtcdUnreachableException("dead")));
-        public Task<Result> PutAsync(string endpoint, string key, string value, CancellationToken ct)
+        public Task<Result> PutAsync(string endpoint, string key, string value, long? lease, CancellationToken ct)
             => Task.FromResult(Result.Failed(new EtcdUnreachableException("dead")));
         public Task<Result> DeleteAsync(string endpoint, string keyOrPrefix, bool prefix, CancellationToken ct)
+            => Task.FromResult(Result.Failed(new EtcdUnreachableException("dead")));
+        public Task<Result<long>> LeaseGrantAsync(string endpoint, int ttlSec, CancellationToken ct)
+            => Task.FromResult(Result<long>.Failed(new EtcdUnreachableException("dead")));
+        public Task<Result> LeaseRevokeAsync(string endpoint, long lease, CancellationToken ct)
+            => Task.FromResult(Result.Failed(new EtcdUnreachableException("dead")));
+        public Task<Result> LeaseKeepaliveAsync(string endpoint, long lease, CancellationToken ct)
+            => Task.FromResult(Result.Failed(new EtcdUnreachableException("dead")));
+        public Task<Result<byte[]>> SnapshotSaveAsync(string endpoint, CancellationToken ct)
+            => Task.FromResult(Result<byte[]>.Failed(new EtcdUnreachableException("dead")));
+        public Task<Result> CompactAsync(string endpoint, long revision, CancellationToken ct)
+            => Task.FromResult(Result.Failed(new EtcdUnreachableException("dead")));
+        public Task<Result> DefragmentAsync(string endpoint, CancellationToken ct)
             => Task.FromResult(Result.Failed(new EtcdUnreachableException("dead")));
     }
 

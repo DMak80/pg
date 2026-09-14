@@ -1,6 +1,6 @@
 using AdminPanel.Core;
 using AdminPanel.Core.Kafka;
-using AdminPanel.Etcd.Client;
+using Shared.Etcd.Client;
 using AdminPanel.Etcd.Parsing;
 using FluentAssertions;
 using Xunit;

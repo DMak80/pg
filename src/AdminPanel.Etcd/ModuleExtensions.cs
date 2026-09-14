@@ -1,5 +1,5 @@
 using System.Reflection;
-using AdminPanel.Etcd.Client;
+using Shared.Etcd.Client;
 using AdminPanel.Etcd.Workers;
 using Shared.Core.DI;
 using Microsoft.Extensions.DependencyInjection;

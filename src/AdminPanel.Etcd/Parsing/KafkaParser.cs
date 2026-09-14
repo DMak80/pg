@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using AdminPanel.Core;
 using AdminPanel.Core.Kafka;
-using AdminPanel.Etcd.Client;
+using Shared.Etcd.Client;
 
 namespace AdminPanel.Etcd.Parsing;
 

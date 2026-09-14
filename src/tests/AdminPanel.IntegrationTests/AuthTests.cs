@@ -4,7 +4,7 @@ using System.Text;
 using System.Text.Json;
 using AdminPanel.Core;
 using AdminPanel.Etcd;
-using AdminPanel.Etcd.Client;
+using Shared.Etcd.Client;
 using AdminPanel.Etcd.Workers;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
@@ -78,7 +78,7 @@ public sealed class TestEtcdGateway : IEtcdGateway
         => Task.FromResult(Result<IReadOnlyList<Kv>>.Success([]));
 
     public Task<Result<EtcdStatusPayload>> StatusAsync(string endpoint, CancellationToken ct)
-        => Task.FromResult(Result<EtcdStatusPayload>.Success(new EtcdStatusPayload("3.5.21", 1, 1, 1, 1)));
+        => Task.FromResult(Result<EtcdStatusPayload>.Success(new EtcdStatusPayload("3.5.21", 1, 1, 1, 1, null)));
 
     public Task<Result<IReadOnlyList<EtcdMember>>> MemberListAsync(string endpoint, CancellationToken ct)
         => Task.FromResult(Result<IReadOnlyList<EtcdMember>>.Success([]));
@@ -87,13 +87,34 @@ public sealed class TestEtcdGateway : IEtcdGateway
         => Task.FromResult(Result<IReadOnlyList<EtcdAlarm>>.Success([]));
 
     public Task<Result<TxnResult>> TxnAsync(
-        string endpoint, IReadOnlyList<TxnCompare> compares, IReadOnlyList<KvPut> puts, CancellationToken ct)
+        string endpoint, TxnRequest req, CancellationToken ct)
         => FailWriteAsync<TxnResult>();
 
-    public Task<Result> PutAsync(string endpoint, string key, string value, CancellationToken ct)
+    public Task<Result> PutAsync(string endpoint, string key, string value, long? lease, CancellationToken ct)
         => FailWriteAsync();
 
     public Task<Result> DeleteAsync(string endpoint, string keyOrPrefix, bool prefix, CancellationToken ct)
+        => FailWriteAsync();
+
+    public Task<Result<Kv?>> GetAsync(string endpoint, string key, CancellationToken ct)
+        => Task.FromResult(Result<Kv?>.Success(null));
+
+    public Task<Result<long>> LeaseGrantAsync(string endpoint, int ttlSec, CancellationToken ct)
+        => Task.FromResult(Result<long>.Failed(new EtcdUnreachableException("панель не пишет в etcd")));
+
+    public Task<Result> LeaseRevokeAsync(string endpoint, long lease, CancellationToken ct)
+        => FailWriteAsync();
+
+    public Task<Result> LeaseKeepaliveAsync(string endpoint, long lease, CancellationToken ct)
+        => FailWriteAsync();
+
+    public Task<Result<byte[]>> SnapshotSaveAsync(string endpoint, CancellationToken ct)
+        => Task.FromResult(Result<byte[]>.Failed(new EtcdUnreachableException("панель не пишет в etcd")));
+
+    public Task<Result> CompactAsync(string endpoint, long revision, CancellationToken ct)
+        => FailWriteAsync();
+
+    public Task<Result> DefragmentAsync(string endpoint, CancellationToken ct)
         => FailWriteAsync();
 
     private Task<Result> FailWriteAsync()

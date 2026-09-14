@@ -1,5 +1,5 @@
 using System.Text.Json;
-using AdminPanel.Etcd.Client;
+using Shared.Etcd.Client;
 
 namespace AdminPanel.UnitTests;
 

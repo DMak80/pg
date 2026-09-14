@@ -2,7 +2,7 @@ using AdminPanel.Core;
 using AdminPanel.Core.Kafka;
 using AdminPanel.Core.Kafka.KafkaAlerting;
 using AdminPanel.Etcd;
-using AdminPanel.Etcd.Client;
+using Shared.Etcd.Client;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
@@ -45,7 +45,7 @@ public class KafkaRefresherTests
         // Не используются kafka-тиком — заглушки ради интерфейса.
         public Task<Result<EtcdStatusPayload>> StatusAsync(string endpoint, CancellationToken ct)
             => Task.FromResult(Result<EtcdStatusPayload>.Success(
-                new EtcdStatusPayload("3.5.21", 1, 1, 1, 1)));
+                new EtcdStatusPayload("3.5.21", 1, 1, 1, 1, null)));
 
         public Task<Result<IReadOnlyList<EtcdMember>>> MemberListAsync(string endpoint, CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<EtcdMember>>.Success([]));
@@ -53,14 +53,34 @@ public class KafkaRefresherTests
         public Task<Result<IReadOnlyList<EtcdAlarm>>> AlarmAsync(string endpoint, CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<EtcdAlarm>>.Success([]));
 
-        public Task<Result<TxnResult>> TxnAsync(
-            string endpoint, IReadOnlyList<TxnCompare> compares, IReadOnlyList<KvPut> puts, CancellationToken ct)
+        public Task<Result<TxnResult>> TxnAsync(string endpoint, TxnRequest req, CancellationToken ct)
             => Task.FromResult(Result<TxnResult>.Failed(new EtcdUnreachableException(endpoint)));
 
-        public Task<Result> PutAsync(string endpoint, string key, string value, CancellationToken ct)
+        public Task<Result> PutAsync(string endpoint, string key, string value, long? lease, CancellationToken ct)
             => Task.FromResult(Result.Failed(new EtcdUnreachableException(endpoint)));
 
         public Task<Result> DeleteAsync(string endpoint, string keyOrPrefix, bool prefix, CancellationToken ct)
+            => Task.FromResult(Result.Failed(new EtcdUnreachableException(endpoint)));
+
+        public Task<Result<Kv?>> GetAsync(string endpoint, string key, CancellationToken ct)
+            => Task.FromResult(Result<Kv?>.Failed(new EtcdUnreachableException(endpoint)));
+
+        public Task<Result<long>> LeaseGrantAsync(string endpoint, int ttlSec, CancellationToken ct)
+            => Task.FromResult(Result<long>.Failed(new EtcdUnreachableException(endpoint)));
+
+        public Task<Result> LeaseRevokeAsync(string endpoint, long lease, CancellationToken ct)
+            => Task.FromResult(Result.Failed(new EtcdUnreachableException(endpoint)));
+
+        public Task<Result> LeaseKeepaliveAsync(string endpoint, long lease, CancellationToken ct)
+            => Task.FromResult(Result.Failed(new EtcdUnreachableException(endpoint)));
+
+        public Task<Result<byte[]>> SnapshotSaveAsync(string endpoint, CancellationToken ct)
+            => Task.FromResult(Result<byte[]>.Failed(new EtcdUnreachableException(endpoint)));
+
+        public Task<Result> CompactAsync(string endpoint, long revision, CancellationToken ct)
+            => Task.FromResult(Result.Failed(new EtcdUnreachableException(endpoint)));
+
+        public Task<Result> DefragmentAsync(string endpoint, CancellationToken ct)
             => Task.FromResult(Result.Failed(new EtcdUnreachableException(endpoint)));
     }
 
@@ -332,14 +352,35 @@ public class KafkaRefresherTests
             => inner.AlarmAsync(endpoint, ct);
 
         public Task<Result<TxnResult>> TxnAsync(
-            string endpoint, IReadOnlyList<TxnCompare> compares, IReadOnlyList<KvPut> puts, CancellationToken ct)
-            => inner.TxnAsync(endpoint, compares, puts, ct);
+            string endpoint, TxnRequest req, CancellationToken ct)
+            => inner.TxnAsync(endpoint, req, ct);
 
-        public Task<Result> PutAsync(string endpoint, string key, string value, CancellationToken ct)
-            => inner.PutAsync(endpoint, key, value, ct);
+        public Task<Result> PutAsync(string endpoint, string key, string value, long? lease, CancellationToken ct)
+            => inner.PutAsync(endpoint, key, value, lease, ct);
 
         public Task<Result> DeleteAsync(string endpoint, string keyOrPrefix, bool prefix, CancellationToken ct)
             => inner.DeleteAsync(endpoint, keyOrPrefix, prefix, ct);
+
+        public Task<Result<Kv?>> GetAsync(string endpoint, string key, CancellationToken ct)
+            => inner.GetAsync(endpoint, key, ct);
+
+        public Task<Result<long>> LeaseGrantAsync(string endpoint, int ttlSec, CancellationToken ct)
+            => inner.LeaseGrantAsync(endpoint, ttlSec, ct);
+
+        public Task<Result> LeaseRevokeAsync(string endpoint, long lease, CancellationToken ct)
+            => inner.LeaseRevokeAsync(endpoint, lease, ct);
+
+        public Task<Result> LeaseKeepaliveAsync(string endpoint, long lease, CancellationToken ct)
+            => inner.LeaseKeepaliveAsync(endpoint, lease, ct);
+
+        public Task<Result<byte[]>> SnapshotSaveAsync(string endpoint, CancellationToken ct)
+            => inner.SnapshotSaveAsync(endpoint, ct);
+
+        public Task<Result> CompactAsync(string endpoint, long revision, CancellationToken ct)
+            => inner.CompactAsync(endpoint, revision, ct);
+
+        public Task<Result> DefragmentAsync(string endpoint, CancellationToken ct)
+            => inner.DefragmentAsync(endpoint, ct);
     }
 
     private static readonly DateTimeOffset HealthAt =

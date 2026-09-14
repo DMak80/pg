@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using AdminPanel.Core;
 using AdminPanel.Core.Alerting;
-using AdminPanel.Etcd.Client;
+using Shared.Etcd.Client;
 using AdminPanel.Etcd.Parsing;
 using Shared.Core.DI;
 using Shared.Core.HealthChecks;
