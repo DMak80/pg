@@ -13,11 +13,35 @@ namespace KafkaWorker.IntegrationTests.Api;
 // X-Requested-By (панель шлёт оператора), fallback "api" (значения etcd не
 // меняются при переходе на прокси, spec §3.7).
 [Collection(KafkaApiCollection.Name)]
-public class TopicMutationsApiTests(KafkaApiFixture fixture)
+public class TopicMutationsApiTests(KafkaApiFixture fixture) : IAsyncLifetime
 {
     private HttpClient Client => fixture.Factory.CreateClient();
 
     private Etcd.EtcdFixture Etcd => fixture.Etcd;
+
+    // own-only: чистим только кластерные префиксы, созданные этим классом
+    // (после каждого кейса — per-test teardown IAsyncLifetime: xUnit создаёт
+    // экземпляр класса на каждый тест, DisposeAsync выполняется после
+    // каждого кейса, а не однократно после всех — чистка только усиливается,
+    // подписка на класс не требуется) при любом исходе (правило полной
+    // самоочистки AGENTS.md); lifecycle-заявки topics/<t>/desired.* живут
+    // под префиксом кластера и уходят вместе с ним. Безопасно: кейсы
+    // самодостаточны, DeleteAsync по несуществующим ключам — no-op, методы
+    // класса не паралеллятся. CancellationToken.None — токен теста к
+    // teardown уже неактуален, удаления быстрые и идемпотентные.
+    private static readonly string[] OwnClusterPrefixes =
+    [
+        "/kafka/clusters/events/", "/kafka/clusters/events2/",
+        "/kafka/clusters/dx/", "/kafka/clusters/cx/",
+    ];
+
+    public ValueTask InitializeAsync() => ValueTask.CompletedTask;
+
+    public async ValueTask DisposeAsync()
+    {
+        foreach (var prefix in OwnClusterPrefixes)
+            await Etcd.Gateway.DeleteAsync(Etcd.Endpoint, prefix, prefix: true, CancellationToken.None);
+    }
 
     // AAA: PUT desired — 200 с DTO (панель отвечает Ok, чек 50); в etcd ключ
     // topics/<t> получает desired + desired_unix/desired_by (RMW, факт не тронут).
