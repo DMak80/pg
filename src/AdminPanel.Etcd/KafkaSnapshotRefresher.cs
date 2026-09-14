@@ -83,9 +83,10 @@ public sealed class KafkaSnapshotRefresher(
         var reassignmentsKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Reassignments, ct);
         var regensKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Regens, ct);
         var workerApiKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApi, ct);
+        var certKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApiCert, ct);
         if (!clustersKv.IsSuccess || !rotationsKv.IsSuccess || !adminRotationsKv.IsSuccess
             || !rebalancesKv.IsSuccess || !reassignmentsKv.IsSuccess || !regensKv.IsSuccess
-            || !workerApiKv.IsSuccess)
+            || !workerApiKv.IsSuccess || !certKv.IsSuccess)
             return FailTick(previous, now, "KV-чтения etcd не удались");
 
         _activeEndpoint = active;
@@ -98,6 +99,8 @@ public sealed class KafkaSnapshotRefresher(
         var reassignments = KafkaParser.ParseReassignments(reassignmentsKv.Value);
         var regens = KafkaParser.ParseRegens(regensKv.Value);
         var workerApi = WorkerEndpointsParser.Parse(workerApiKv.Value);
+        // Префикс-запрос точечный: ровно один ключ /workers/api_tls/kafkaworker.
+        var certParsed = WorkerCertParser.Parse(Prefixes.WorkerApiCert, certKv.Value.FirstOrDefault());
 
         // SASL/TLS-креды проб (B6 + t03): в модель кластера НЕ попадают
         // (arch/02 §10.1) — отдельный internal-словарь стора; securityReady —
@@ -119,9 +122,11 @@ public sealed class KafkaSnapshotRefresher(
             previous?.Probes ?? [],       // пробы переживают отказ etcd (симметрия pg spec §4.3)
             Alerts: [],
             [.. clusters.Errors, .. rotations.Errors, .. adminRotations.Errors, .. rebalances.Errors,
-                .. reassignments.Errors, .. regens.Errors, .. workerApi.Errors, .. secretsErrors],
+                .. reassignments.Errors, .. regens.Errors, .. workerApi.Errors, .. secretsErrors,
+                .. WorkerCertParser.ErrorsOf(certParsed)],
             clusters.UnknownKeyCount,
-            AdminRotations: adminRotations.Tickets);
+            AdminRotations: adminRotations.Tickets,
+            WorkerApiCert: certParsed.Cert);
 
         store.Replace(built with { Alerts = alertEngine.Evaluate(built, previous, securityReady) });
         return Result.Success();
@@ -276,5 +281,6 @@ public sealed class KafkaSnapshotRefresher(
         public const string Reassignments = "/kafkaworker/reassignments/";
         public const string Regens = "/kafkaworker/regens/";
         public const string WorkerApi = "/kafkaworker/api/";
+        public const string WorkerApiCert = "/workers/api_tls/kafkaworker";
     }
 }
