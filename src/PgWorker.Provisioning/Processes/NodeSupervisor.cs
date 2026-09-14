@@ -305,7 +305,7 @@ public sealed class NodeSupervisor(
         if (!config.IsSuccess)
             return Result.Success(); // транзиент — сверка следующим тиком
 
-        var patch = PatroniTimings.DivergencePatch(config.Value);
+        var patch = DcsConfigConvergence.DivergencePatch(config.Value, null); // t11: желаемый набор подключит проводка (Task 3)
         if (patch is null)
             return Result.Success(); // конвергентно — мутаций нет
 
