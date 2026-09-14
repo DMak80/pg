@@ -15,13 +15,13 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { Link } from 'react-router';
-import type { AlertSeverityName, HaScopeSummaryDto, OverviewDto } from '../api/dto';
-import { fetchAlerts, fetchHaScopes, fetchOverview, queryKeys } from '../api/queries';
+import type { AlertSeverityName, BackupStorageDto, HaScopeSummaryDto, MinioHealthDto, OverviewDto } from '../api/dto';
+import { backupsQueryKeys, fetchAlerts, fetchBackupsStorage, fetchHaScopes, fetchOverview, queryKeys } from '../api/queries';
 import { BucketStateBadge } from '../components/BucketStateBadge';
 import { AlertSeverityBadge } from '../components/AlertSeverityBadge';
 import { ErrorSection, LoadingSection } from '../components/LoadState';
 import { usePollingIntervalMs } from '../polling/PollingContext';
-import { formatUnix, formatUnixAge } from '../utils/format';
+import { formatBytes, formatUnix, formatUnixAge } from '../utils/format';
 
 // Сортировка ленты: critical раньше warning, внутри — новые сверху (t08 spec §4.4).
 function sortAlertRows(a: { severity: string; sinceUnix: number | null }, b: { severity: string; sinceUnix: number | null }): number {
@@ -49,6 +49,14 @@ export function OverviewPage() {
     queryFn: fetchHaScopes,
     refetchInterval: intervalMs,
   });
+  // Сводка бэкапов: клиентская агрегация GET /api/backups/storage (как HA —
+  // GET /api/ha); тот же ключ, что у страницы /backups-storage — TanStack
+  // дедуплицирует опрос.
+  const backups = useQuery({
+    queryKey: backupsQueryKeys.storage,
+    queryFn: fetchBackupsStorage,
+    refetchInterval: intervalMs,
+  });
 
   if (overview.data === undefined)
     return overview.isError ? (
@@ -67,6 +75,11 @@ export function OverviewPage() {
         <EtcdCard data={data} />
         <ClustersCard data={data} />
         <KafkaCard data={data} />
+        <BackupsCard
+          data={backups.data}
+          isPending={backups.isPending}
+          onRetry={() => void backups.refetch()}
+        />
         <AlertsCard data={data} />
         <HaCard
           scopes={haScopes.data}
@@ -168,6 +181,92 @@ function KafkaCard({ data }: { data: OverviewDto }) {
         </Group>
       )}
     </Card>
+  );
+}
+
+// Карточка бэкапов: health MinIO (api/live/cluster) + место (used/quota/state
+// воркера + live-факт) — компактная сводка грани «Хранилище бэкапов»,
+// клиентская агрегация GET /api/backups/storage (по образцу HA-агрегации,
+// arch/03 §3). Ошибка без данных — своя (не роняет остальные карточки),
+// паттерн HaCard.
+function BackupsCard({ data, isPending, onRetry }: {
+  data: BackupStorageDto | undefined;
+  isPending: boolean;
+  onRetry: () => void;
+}) {
+  let content;
+  if (data === undefined)
+    content = isPending ? (
+      <Text c="dimmed" size="sm">Загрузка бэкапов…</Text>
+    ) : (
+      <Stack gap="xs" align="flex-start">
+        <Alert color="red">Нет данных о хранилище бэкапов</Alert>
+        <Anchor size="sm" onClick={onRetry}>Повторить</Anchor>
+      </Stack>
+    );
+  else if (!data.configured)
+    content = <Text c="dimmed" size="sm">Хранилище бэкапов не настроено</Text>;
+  else
+    content = (
+      <Stack gap="xs">
+        <Group gap="xs" wrap="nowrap">
+          <HealthBadges health={data.health} />
+          {data.etcd === null ? null : (
+            <Badge
+              color={data.etcd.state === 'OK' ? 'green' : data.etcd.state === 'WARN' ? 'yellow' : 'red'}
+              variant="light"
+            >
+              {data.etcd.state}
+            </Badge>
+          )}
+          {data.inventoryError ? (
+            <Badge color="yellow" variant="light">инвентарь устаревает</Badge>
+          ) : null}
+        </Group>
+        {data.health?.apiError ? (
+          <Tooltip multiline label={data.health.apiError}>
+            <Text size="sm" c="red" lineClamp={1}>{data.health.apiError}</Text>
+          </Tooltip>
+        ) : null}
+        <Text size="sm">
+          {data.etcd === null
+            ? 'Место: ключ /pgworker/backups/storage в etcd отсутствует'
+            : `Место: ${formatBytes(data.etcd.usedBytes)}${
+                data.etcd.quotaBytes === null ? '' : ` из ${formatBytes(data.etcd.quotaBytes)}`
+              }${data.etcd.usedPercent === null ? '' : ` (${data.etcd.usedPercent.toFixed(1)}%)`}`}
+        </Text>
+        <Text size="sm" c="dimmed">
+          Live-инвентарь: {data.liveUsedBytes === null ? '—' : formatBytes(data.liveUsedBytes)}
+        </Text>
+      </Stack>
+    );
+  return (
+    <Card withBorder padding="md" radius="md">
+      <Group justify="space-between" wrap="nowrap" mb="xs">
+        <Text fw={600}>Бэкапы</Text>
+        <Anchor component={Link} to="/backups-storage" size="sm">Детали →</Anchor>
+      </Group>
+      {content}
+    </Card>
+  );
+}
+
+// Бейджи health MinIO — цветовая логика 1:1 с HealthCard страницы
+// /backups-storage (api/live teal/red, cluster gray при n/a).
+function HealthBadges({ health }: { health: MinioHealthDto | null }) {
+  if (health === null) return <Text size="sm" c="dimmed">health: нет данных (первый тик)</Text>;
+  return (
+    <Group gap="xs">
+      <Badge color={health.apiOk ? 'teal' : 'red'} variant="light">
+        api {health.apiOk ? 'ok' : 'down'}
+      </Badge>
+      <Badge color={health.liveOk ? 'teal' : 'red'} variant="light">
+        live {health.liveOk ? 'ok' : 'down'}
+      </Badge>
+      <Badge color={health.clusterOk === null ? 'gray' : health.clusterOk ? 'teal' : 'red'} variant="light">
+        cluster {health.clusterOk === null ? 'n/a' : health.clusterOk ? 'ok' : 'degraded'}
+      </Badge>
+    </Group>
   );
 }
 
