@@ -39,7 +39,6 @@
         <Project Path="AdminPanel.Api/AdminPanel.Api.csproj" />
         <Project Path="AdminPanel.Core/AdminPanel.Core.csproj" />
         <Project Path="AdminPanel.Etcd/AdminPanel.Etcd.csproj" />
-        <Project Path="AdminPanel.Infrastructure/AdminPanel.Infrastructure.csproj" />
         <Project Path="AdminPanel.Probes/AdminPanel.Probes.csproj" />
     </Folder>
     <Folder Name="/tests/">
