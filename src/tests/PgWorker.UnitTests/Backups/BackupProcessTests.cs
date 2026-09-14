@@ -892,4 +892,79 @@ public class BackupProcessTests
         rig.Engine.Removed.Should().BeEmpty();
         rig.Engine.RemovedVolumes.Should().BeEmpty();
     }
+
+    // AAA (t13 AC2): источник джоба исчез из portalloc НАВСЕГДА (replace ноды/
+    // рассинхрон при живом шарде), RUNNING старше бюджета: вердикт FAILED по
+    // возрасту — самостоятельный факт etcd (started_unix + часы воркера),
+    // docker-доступ не нужен → тик ставит FAILED job-timeout, cleanup
+    // пропускается (движок не тронут), journal несёт пометку. До t13 такой
+    // джоб застревал в вечном RUNNING и держал инвариант «один активный».
+    [Fact]
+    public async Task Источник_исчез_при_возрасте_свыше_бюджета_FAILED_без_cleanup()
+    {
+        // Arrange — RUNNING started = now-7h (бюджет 6 ч дефолт), node = shard1z:
+        // ноды нет в portalloc (источник исчез навсегда), порт-аллок жив
+        var rig = await NewRig();
+        var now = TimeProvider.System.GetUtcNow();
+        var active = new FullBackupState("20260908030000Z", FullBackupStatus.Running,
+            "shard1z", BackupSourceRole.Master, Unix(now.AddHours(-7)), null, null, null, null, null);
+
+        // Act
+        var outcome = await rig.Process.TickAsync(
+            await Snapshot(rig.Etcd), BackupsOf(active), CancellationToken.None);
+
+        // Assert — FAILED job-timeout по факту возраста; cleanup пропущен
+        // (контейнер/движок не тронуты — Engine.Removed пуст); journal —
+        // job-timeout/<shard>/<id> с пометкой о пропущенном cleanup
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        var parsed = BackupsParser.Parse(
+            (IReadOnlyList<Kv>)[new Kv(FullKey("20260908030000Z"),
+                rig.Etcd.Store[FullKey("20260908030000Z")].Value, 1)], out var errors);
+        errors.Should().BeEmpty();
+        var failed = parsed.Value[0].Shards["shard1"].Full.Single();
+        failed.State.Should().Be(FullBackupStatus.Failed);
+        failed.Error.Should().Contain("job-timeout");
+        rig.Engine.Removed.Should().BeEmpty("источник недоступен — cleanup пропущен (t13 AC3)");
+        rig.Engine.RemovedVolumes.Should().BeEmpty();
+        var entry = (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!;
+        entry.Phase.Should().Be("job-timeout/shard1/20260908030000Z");
+        entry.LastError.Should().Contain("job-timeout").And.Contain("cleanup пропущен");
+    }
+
+    // AAA (t13 AC3): возраст свыше бюджета + list-отказ (transient источника
+    // при доступном portalloc/engine): FAILED всё равно ставится — возраст
+    // самодостаточен; cleanup пропускается с пометкой в той же journal-записи
+    [Fact]
+    public async Task List_отказ_при_возрасте_свыше_бюджета_FAILED_и_cleanup_пропущен()
+    {
+        // Arrange — RUNNING started = now-7h на живой ноде shard1a, контейнер
+        // running («вечный» джоб), но list по движку падает (transport-отказ)
+        var rig = await NewRig();
+        var now = TimeProvider.System.GetUtcNow();
+        var active = new FullBackupState("20260908030000Z", FullBackupStatus.Running,
+            "shard1a", BackupSourceRole.Master, Unix(now.AddHours(-7)), null, null, null, null, null);
+        var name = BackupNames.ContainerName("shop", "shard1", "20260908030000Z");
+        rig.Engine.Containers[name] = new("cnt-listfail", "running", -1, "{\"phase\":\"basebackup\"}");
+        rig.Engine.ListFails = true;
+
+        // Act
+        var outcome = await rig.Process.TickAsync(
+            await Snapshot(rig.Etcd), BackupsOf(active), CancellationToken.None);
+
+        // Assert — FAILED job-timeout (transient list больше не откладывает
+        // бюджет); контейнер не тронут (cleanup пропущен); journal — пометка
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        var parsed = BackupsParser.Parse(
+            (IReadOnlyList<Kv>)[new Kv(FullKey("20260908030000Z"),
+                rig.Etcd.Store[FullKey("20260908030000Z")].Value, 1)], out var errors);
+        errors.Should().BeEmpty();
+        var failed = parsed.Value[0].Shards["shard1"].Full.Single();
+        failed.State.Should().Be(FullBackupStatus.Failed);
+        failed.Error.Should().Contain("job-timeout");
+        rig.Engine.Removed.Should().BeEmpty("list-отказ — cleanup пропущен (t13 AC3)");
+        rig.Engine.RemovedVolumes.Should().BeEmpty();
+        var entry = (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!;
+        entry.Phase.Should().Be("job-timeout/shard1/20260908030000Z");
+        entry.LastError.Should().Contain("cleanup пропущен");
+    }
 }

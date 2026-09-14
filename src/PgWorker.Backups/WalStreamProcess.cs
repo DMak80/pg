@@ -168,13 +168,30 @@ public sealed class WalStreamProcess(
         {
             if (chainKnown && wal!.State is WalStreamStatus.Active or WalStreamStatus.Degraded)
             {
+                // t13 (arch/19 §3): инвариант писателя (last_uploaded_unix в живом
+                // ACTIVE/DEGRADED-ключе) может быть нарушен (ручная правка ключа/
+                // будущий писатель при ослабленном гварде парсера — прецедент
+                // ed1561b): битый ключ не роняет тик форс-мьютом. Фолбэк
+                // clock-сейчас — defensive-значение ТОЛЬКО параметра baseUnix:
+                // BreakAsync потребляет его лишь при wal == null (запись с нуля),
+                // здесь wal != null (chainKnown) — в BROKEN-запись now() НЕ попадает
+                // («факт над записью», ревью Ф4-2 №2); факт битого ключа — в журнале.
+                if (wal.LastUploadedUnix is null)
+                {
+                    var invalid = $"last_uploaded_unix отсутствует — битый ключ /pgworker/backups/{cluster}/{shard.Name}/wal "
+                        + "(ручная правка/иной писатель); ветка «слот исчез» идёт с фолбэком времени";
+                    logger?.LogWarning("backup-wal {Cluster}/{Shard}: {Message}", cluster, shard.Name, invalid);
+                    await journal.WritePhaseAsync(cluster, Op, $"wal-key-invalid/{shard.Name}",
+                        claims.InstanceId, invalid, ct);
+                }
+
                 // BROKEN + слот пересоздаётся immediate+reserved СРАЗУ (t07, spec §3.2):
                 // к старту пересъёма полного слот уже держит позицию ≤ wal_start нового.
                 await BreakAsync(cluster, shard.Name, wal, slot, masterRef, adminDsn, ct,
                     baseStart: wal.LastUploadedSegment is { Length: > 0 }
                         ? wal.LastUploadedSegment : wal.ChainStartSegment,
                     baseLast: wal.LastUploadedSegment,
-                    baseUnix: wal.LastUploadedUnix!.Value,
+                    baseUnix: wal.LastUploadedUnix ?? clock.GetUtcNow().ToUnixTimeSeconds(),
                     error: $"слот {slot} исчез при живой цепочке (инвалидация max_slot_wal_keep_size?) — пересними полный бэкап",
                     recreateSlot: true);
                 return;
@@ -470,6 +487,11 @@ public sealed class WalStreamProcess(
     // пределах max_slot_wal_keep_size). wal == null — запись создаётся с
     // наблюдаемыми фактами контроля (AC4-тотальность: дыра найдена при первом
     // наблюдении цепочки). Возвращает записанное состояние (AC4c одним тиком).
+    // Инвариант baseUnix (t13): параметр потребляется ТОЛЬКО при wal == null
+    // (создание записи с нуля); при живом wal запись строится из него —
+    // now()-фолбэк вызывающего в ключ не попадает. Если будущая правка начнёт
+    // использовать baseUnix при живом wal — место пересмотреть: подмена факта
+    // now()-временем запрещена («факт над записью», arch/19 §3).
     private async Task<WalStreamState> BreakAsync(
         string cluster, string shard, WalStreamState? wal, string slot, string masterRef,
         string adminDsn, CancellationToken ct,

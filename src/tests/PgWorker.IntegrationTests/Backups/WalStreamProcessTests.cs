@@ -513,6 +513,62 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         sql.Slots.Should().ContainKey("pgw_bkp_cb2_shard1", "слот пересоздаётся при BROKEN (spec §3.2)");
     }
 
+    // AAA (t13 AC1): инвариант писателя нарушен (ACTIVE с last_uploaded_unix=null
+    // — ручная правка/иной писатель) + слот исчез: тик НЕ падает в shard-error —
+    // BROKEN (запись из живого ключа, now()-фолбэк в неё не попадает) + слот
+    // пересоздан + агент остановлен + journal-заметка wal-key-invalid/<X>.
+    // Битый wal в etcd не сидируется: снапшот-объект передан тику напрямую,
+    // парсеры не задействованы (spec §3.3); чтение ключа — raw (парсер отверг
+    // бы ключ без last_uploaded_unix — гвард остаётся первой линией, spec §3.4).
+    [Fact]
+    public async Task Слот_исчез_при_битом_last_uploaded_unix_не_роняет_тик()
+    {
+        // Arrange — wal ACTIVE с LastUploadedUnix = null (инвариант писателя
+        // нарушен), слота в FakeSql нет, агент жив; цепочка объектов в S3 есть
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("cb5");
+        (await _claims.TryClaimClusterAsync("cb5", ct)).Value.Should().BeTrue("клэйм — предусловие тика");
+        var sql = new FakeWalSqlExecutor();
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, "cb5", 1, 2);
+        var driver = new StubScaleDriver();
+        driver.BackupAgentObjects.Add(new PgWorker.Docker.Engine.DockerContainer(
+            "id-agent-cb5", ["/pgw-backup-wal-cb5-shard1"], "running", "img"));
+        var invalidWal = new WalStreamState(
+            WalStreamStatus.Active, "pgw_bkp_cb5_shard1", "shard1a",
+            "000000010000000000000001", "000000010000000000000002",
+            "000000010000000000000002", null, 1, null); // LastUploadedUnix = null!
+        var process = BuildProcess(Options(), sql, s3, driver);
+        var backups = new ClusterBackups("cb5", null,
+            new Dictionary<string, ShardBackups>
+            {
+                ["shard1"] = new(FullShard("000000010000000000000001").Full, invalidWal),
+            });
+
+        // Act
+        var result = await process.TickAsync(BuildSnap("cb5"), backups, ct);
+
+        // Assert — тик успешен (не shard-error); ключ BROKEN с error про слот и
+        // границей = last_uploaded_segment; now()-фолбэк в запись не попал
+        // (last_uploaded_unix в JSON отсутствует); слот пересоздан; агент
+        // остановлен; журнал — wal-key-invalid, НЕ shard-error
+        result.IsSuccess.Should().BeTrue();
+        var walKv = await fixture.Gateway.GetAsync(
+            fixture.Endpoint, "/pgworker/backups/cb5/shard1/wal", ct);
+        walKv.Value.Should().NotBeNull("BROKEN пишется даже из битого ключа");
+        walKv.Value!.Value.Should().Contain("\"state\":\"BROKEN\"").And.Contain("слот");
+        walKv.Value.Value.Should().Contain(
+            "\"chain_start_segment\":\"000000010000000000000002\"",
+            "граница разрыва — last_uploaded_segment на момент обнаружения");
+        walKv.Value.Value.Should().NotContain("\"last_uploaded_unix\"",
+            "запись строится из живого wal: now()-фолбэк в ключ не попадает (spec §2)");
+        sql.Slots.Should().ContainKey("pgw_bkp_cb5_shard1", "слот пересоздаётся при BROKEN (spec §3.2)");
+        driver.RemovedBackupAgents.Should().Contain("pgw-backup-wal-cb5-shard1");
+        var journal = await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/cb5", ct);
+        journal.Value!.Value.Should().Contain("wal-key-invalid/shard1");
+        journal.Value.Value.Should().NotContain("shard-error");
+    }
+
     // AAA (AC1/заживление): новый COMPLETED-полный ≥ границы + непрерывная цепь →
     // ACTIVE + агент ТЕМ ЖЕ тиком (даже без прошедшего VerifyIntervalSec)
     [Fact]
