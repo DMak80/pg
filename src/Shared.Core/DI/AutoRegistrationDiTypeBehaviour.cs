@@ -1,6 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 
-namespace AdminPanel.Infrastructure.DI;
+namespace Shared.Core.DI;
 
 public class AutoRegistrationDiTypeBehaviour(IServiceCollection services) : DiTypeBehaviour
 {

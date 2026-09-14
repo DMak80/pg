@@ -1,6 +1,6 @@
-using AdminPanel.Infrastructure.DI;
+using Shared.Core.DI;
 
-namespace AdminPanel.Infrastructure.Contexts;
+namespace Shared.Core.Contexts;
 
 public interface IServiceProviderHelper
 {

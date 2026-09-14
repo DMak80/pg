@@ -1,4 +1,4 @@
-namespace KafkaWorker.Core.Retry;
+namespace Shared.Core.Retry;
 
 public interface IRetryConfig
 {

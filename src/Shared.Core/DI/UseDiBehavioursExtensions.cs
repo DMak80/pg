@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace AdminPanel.Infrastructure.DI;
+namespace Shared.Core.DI;
 
 // Включает DI-поведения авто-регистрации для сборок, передаваемых в AutoRegistration.
 public static class UseDiBehavioursExtensions

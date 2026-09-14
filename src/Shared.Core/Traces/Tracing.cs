@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace AdminPanel.Infrastructure.Traces;
+namespace Shared.Core.Traces;
 
 public static class Tracing
 {

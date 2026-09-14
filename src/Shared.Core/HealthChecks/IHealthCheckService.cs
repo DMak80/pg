@@ -1,6 +1,6 @@
-using PgWorker.Core;
+using Shared.Core;
 
-namespace PgWorker.App.HealthChecks;
+namespace Shared.Core.HealthChecks;
 
 /// <summary>
 /// Грань наблюдаемости фонового сервиса (паттерн Puzzle): цикл отдаёт

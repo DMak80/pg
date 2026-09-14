@@ -1,4 +1,4 @@
-namespace AdminPanel.Infrastructure.CQRS;
+namespace Shared.Core.CQRS;
 
 // Хендлер запроса: чистое чтение, без транзакций и контекста БД.
 public interface IQueryHandler<in TQ, TR>

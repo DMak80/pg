@@ -1,7 +1,7 @@
 using System.Reflection;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace AdminPanel.Infrastructure.DI;
+namespace Shared.Core.DI;
 
 public static class ServiceCollectionExtensions
 {

@@ -1,6 +1,6 @@
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 
-namespace PgWorker.App.HealthChecks;
+namespace Shared.Core.HealthChecks;
 
 /// <summary>Обёртка IHealthCheckService → IHealthCheck (копия паттерна Puzzle).</summary>
 public class HealthCheckAbstract<T>(T service) : IHealthCheck

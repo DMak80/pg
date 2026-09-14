@@ -1,4 +1,4 @@
-namespace AdminPanel.Infrastructure.DI;
+namespace Shared.Core.DI;
 
 public abstract class DiTypeBehaviour
 {

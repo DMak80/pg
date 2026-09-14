@@ -2,7 +2,7 @@ using System.Net.Http;
 using Polly;
 using Polly.Retry;
 
-namespace KafkaWorker.Core.Retry;
+namespace Shared.Core.Retry;
 
 /// <summary>
 /// Джиттер-ретраи (Polly 8, ResiliencePipeline). Порт RetryPolicies PgWorker

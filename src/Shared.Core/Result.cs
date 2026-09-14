@@ -1,7 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 
-namespace AdminPanel.Infrastructure;
+namespace Shared.Core;
 
 public abstract record Result(Exception? Error = null)
 {

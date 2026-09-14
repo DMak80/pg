@@ -1,10 +1,10 @@
 using System.Diagnostics;
-using AdminPanel.Infrastructure.Contexts;
-using AdminPanel.Infrastructure.DI;
-using AdminPanel.Infrastructure.Traces;
+using Shared.Core.Contexts;
+using Shared.Core.DI;
+using Shared.Core.Traces;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace AdminPanel.Infrastructure.CQRS;
+namespace Shared.Core.CQRS;
 
 // Диспетчер запросов и команд: открывает scope при вызове из корневого провайдера и обрамляет выполнение Activity.
 public interface IHandler

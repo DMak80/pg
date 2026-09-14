@@ -1,6 +1,6 @@
 using Microsoft.Extensions.DependencyInjection;
 
-namespace AdminPanel.Infrastructure.DI;
+namespace Shared.Core.DI;
 
 [AttributeUsage(AttributeTargets.Class)]
 public class InjectAsAttribute(ServiceLifetime lifetime, params Type[] interfaces) : Attribute
