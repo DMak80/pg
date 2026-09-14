@@ -2,7 +2,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using System.Diagnostics;
 using Microsoft.Extensions.Options;
-using PgWorker.App.HealthChecks;
+using Shared.Core.HealthChecks;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Etcd.Client;

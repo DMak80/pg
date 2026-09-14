@@ -14,4 +14,8 @@
         <PackageReference Include="Npgsql"/>
     </ItemGroup>
 
+    <ItemGroup>
+        <Using Include="Shared.Core"/>
+    </ItemGroup>
+
 </Project>

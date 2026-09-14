@@ -34,4 +34,8 @@
         <ProjectReference Include="..\..\AdminPanel.Etcd\AdminPanel.Etcd.csproj"/>
     </ItemGroup>
 
+    <ItemGroup>
+        <Using Include="Shared.Core"/>
+    </ItemGroup>
+
 </Project>

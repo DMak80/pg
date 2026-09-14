@@ -138,7 +138,7 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
     // Исполнить батч (ExecuteNonQuery) с транзиент-ретраем Npgsql (Polly).
     public async Task<Result> ExecuteAsync(string dsn, string sql, CancellationToken ct)
     {
-        var pipeline = RetryPolicies.SqlRetry(RetryCount, FirstRetryDelay);
+        var pipeline = SqlRetryPolicies.SqlRetry(RetryCount, FirstRetryDelay);
         try
         {
             await pipeline.ExecuteAsync(async token =>
@@ -160,7 +160,7 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
     // Скалярный запрос (guard-проверки pg_database/pg_roles, SQL-пробы надзора).
     public async Task<Result<object?>> ExecuteScalarAsync(string dsn, string sql, CancellationToken ct)
     {
-        var pipeline = RetryPolicies.SqlRetry(RetryCount, FirstRetryDelay);
+        var pipeline = SqlRetryPolicies.SqlRetry(RetryCount, FirstRetryDelay);
         try
         {
             var value = await pipeline.ExecuteAsync(async token =>

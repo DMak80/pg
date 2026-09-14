@@ -15,4 +15,8 @@
         <PackageReference Include="SSH.NET" />
     </ItemGroup>
 
+    <ItemGroup>
+        <Using Include="Shared.Core"/>
+    </ItemGroup>
+
 </Project>

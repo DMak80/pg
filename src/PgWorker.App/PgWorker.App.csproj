@@ -18,4 +18,8 @@
         <ProjectReference Include="..\Shared.Metrics\Shared.Metrics.csproj"/>
     </ItemGroup>
 
+    <ItemGroup>
+        <Using Include="Shared.Core"/>
+    </ItemGroup>
+
 </Project>

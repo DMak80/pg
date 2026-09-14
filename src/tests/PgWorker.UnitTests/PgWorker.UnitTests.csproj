@@ -33,4 +33,8 @@
         <ProjectReference Include="..\..\PgWorker.App\PgWorker.App.csproj"/>
     </ItemGroup>
 
+    <ItemGroup>
+        <Using Include="Shared.Core"/>
+    </ItemGroup>
+
 </Project>

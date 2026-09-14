@@ -20,7 +20,7 @@ public sealed partial class NpgsqlMoveSqlExecutor : IMoveSqlExecutor
     // Скалярный запрос (префлайт/пробы/счётчики; DBNull → null).
     public async Task<Result<object?>> ScalarAsync(string dsn, string sql, CancellationToken ct)
     {
-        var pipeline = RetryPolicies.SqlRetry(RetryCount, FirstRetryDelay);
+        var pipeline = SqlRetryPolicies.SqlRetry(RetryCount, FirstRetryDelay);
         try
         {
             var value = await pipeline.ExecuteAsync(async token =>
@@ -42,7 +42,7 @@ public sealed partial class NpgsqlMoveSqlExecutor : IMoveSqlExecutor
     // Построчный список (sequences/инвентарь/слоты): пустой ответ → [].
     public async Task<Result<IReadOnlyList<string>>> ListAsync(string dsn, string sql, CancellationToken ct)
     {
-        var pipeline = RetryPolicies.SqlRetry(RetryCount, FirstRetryDelay);
+        var pipeline = SqlRetryPolicies.SqlRetry(RetryCount, FirstRetryDelay);
         try
         {
             var rows = await pipeline.ExecuteAsync(async token =>
@@ -71,7 +71,7 @@ public sealed partial class NpgsqlMoveSqlExecutor : IMoveSqlExecutor
     // Исполнить батч (ExecuteNonQuery: REVOKE/GRANT/CREATE/DROP).
     public async Task<Result> ExecuteAsync(string dsn, string sql, CancellationToken ct)
     {
-        var pipeline = RetryPolicies.SqlRetry(RetryCount, FirstRetryDelay);
+        var pipeline = SqlRetryPolicies.SqlRetry(RetryCount, FirstRetryDelay);
         try
         {
             await pipeline.ExecuteAsync(async token =>
