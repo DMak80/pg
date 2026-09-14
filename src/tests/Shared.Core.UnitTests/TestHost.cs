@@ -1,10 +1,10 @@
-using AdminPanel.Infrastructure;
-using AdminPanel.Infrastructure.DI;
-using AdminPanel.Infrastructure.Traces;
+using Shared.Core;
+using Shared.Core.DI;
+using Shared.Core.Traces;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace AdminPanel.UnitTests;
+namespace Shared.Core.UnitTests;
 
 // Единая точка DI-регистрации тестовой сборки: скан сборок выполняется ровно один раз
 // (ServiceCollectionExtensions кеширует просканированные сборки в статическом состоянии).
@@ -18,7 +18,7 @@ public static class TestHost
     private static ServiceCollection CreateCollection()
     {
         // Инициализация ActivitySource до первого HandleQuery — иначе NRE в Tracing.
-        Tracing.Init("AdminPanel.UnitTests");
+        Tracing.Init("Shared.Core.UnitTests");
 
         // Arrange-часть всех DI-тестов: in-memory конфигурация с тестовой секцией.
         var configuration = new ConfigurationBuilder()
@@ -32,7 +32,7 @@ public static class TestHost
         services.UseDiBehaviours(configuration);
         services.AutoRegistration(typeof(TestHost).Assembly);
         // Скан сборки каркаса: ServiceProviderHelper, IHandler (с Task 4) и будущие сервисы.
-        services.AddInfrastructure();
+        services.AddSharedCore();
         return services;
     }
 }

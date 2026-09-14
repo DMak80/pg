@@ -1,10 +1,9 @@
-using AdminPanel.Infrastructure.DI;
-using FluentAssertions;
+using Shared.Core.DI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 using Xunit;
 
-namespace AdminPanel.UnitTests;
+namespace Shared.Core.UnitTests;
 
 // Тесты attribute-DI: авто-регистрация сервисов и биндинг [Config]-POCO.
 public class AutoRegistrationTests

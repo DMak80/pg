@@ -1,8 +1,7 @@
-using FluentAssertions;
-using AdminPanel.Infrastructure;
+using Shared.Core;
 using Xunit;
 
-namespace AdminPanel.UnitTests;
+namespace Shared.Core.UnitTests;
 
 // Тесты монады Result, перенесённой из референса Puzzle.
 public class ResultTests

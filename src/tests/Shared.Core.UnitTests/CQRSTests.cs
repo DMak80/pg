@@ -1,11 +1,10 @@
-using AdminPanel.Infrastructure;
-using AdminPanel.Infrastructure.CQRS;
-using AdminPanel.Infrastructure.DI;
-using FluentAssertions;
+using Shared.Core;
+using Shared.Core.CQRS;
+using Shared.Core.DI;
 using Microsoft.Extensions.DependencyInjection;
 using Xunit;
 
-namespace AdminPanel.UnitTests;
+namespace Shared.Core.UnitTests;
 
 // Тесты query-диспетчера: резолв IHandler из AutoRegistration и вызов хендлера из корневого провайдера.
 public class CQRSTests
