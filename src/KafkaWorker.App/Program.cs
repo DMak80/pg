@@ -5,6 +5,7 @@ using KafkaWorker.App;
 using Shared.Metrics;
 using KafkaWorker.App.Api;
 using KafkaWorker.App.Api.Operations;
+using Shared.Core.HealthChecks;
 using KafkaWorker.App.HealthChecks;
 using KafkaWorker.App.Loops;
 using KafkaWorker.Core;

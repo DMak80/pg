@@ -1,10 +1,11 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <ItemGroup>
-        <PackageReference Include="Microsoft.Extensions.Configuration.Abstractions"/>
-        <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions"/>
-        <PackageReference Include="Microsoft.Extensions.Options.ConfigurationExtensions"/>
-        <PackageReference Include="Polly"/>
+        <ProjectReference Include="..\Shared.Core\Shared.Core.csproj"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <Using Include="Shared.Core"/>
     </ItemGroup>
 
 </Project>

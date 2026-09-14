@@ -1,6 +1,7 @@
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using FluentAssertions;
 using KafkaWorker.App;
+using Shared.Core.HealthChecks;
 using KafkaWorker.App.HealthChecks;
 using KafkaWorker.Core;
 using KafkaWorker.Etcd.Coordination;
