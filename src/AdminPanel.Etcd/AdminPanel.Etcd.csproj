@@ -11,4 +11,8 @@
         <Using Include="Shared.Core"/>
     </ItemGroup>
 
+    <ItemGroup>
+        <ProjectReference Include="..\Shared.Tls\Shared.Tls.csproj"/>
+    </ItemGroup>
+
 </Project>

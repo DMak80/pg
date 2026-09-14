@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Microsoft.Extensions.Configuration;
+using Shared.Tls;
 
 namespace KafkaWorker.App.Api;
 
@@ -28,15 +29,7 @@ public static class TlsEndpoints
 
     // Перенос env → конфиг; getenv-инъекция — для юнит-теста (без окружения).
     public static void ApplyEnvOverrides(ConfigurationManager configuration, Func<string, string?>? getenv = null)
-    {
-        getenv ??= Environment.GetEnvironmentVariable;
-        foreach (var (env, key) in EnvBindings)
-        {
-            var value = getenv(env);
-            if (!string.IsNullOrWhiteSpace(value))
-                configuration[key] = value;
-        }
-    }
+        => TlsEnv.ApplyEnvOverrides(EnvBindings, configuration, getenv);
 
     public static ApiTlsSetup ConfigureMtls(WebApplicationBuilder builder, int port, ManagedCertRead? managedCert = null)
     {
@@ -52,7 +45,7 @@ public static class TlsEndpoints
         switch (managedCert?.Status)
         {
             case ManagedCertStatus.Found:
-                serverCert = LoadCertificatePemPair(managedCert.CertPem!, managedCert.KeyPem!);
+                serverCert = TlsMaterial.LoadPemPair(managedCert.CertPem!, managedCert.KeyPem!);
                 source = "etcd:/workers/api_tls/kafkaworker";
                 break;
             case ManagedCertStatus.Broken:
@@ -80,7 +73,7 @@ public static class TlsEndpoints
             {
                 ServerCertificate = serverCert,
                 ClientCertificateMode = ClientCertificateMode.RequireCertificate,
-                ClientCertificateValidation = (certificate, _, _) => ValidateChain(certificate, clientCa),
+                ClientCertificateValidation = (certificate, _, _) => TlsChain.ValidateChain(certificate, clientCa),
             })));
         return new ApiTlsSetup(serverCert, source, warning);
     }
@@ -90,48 +83,18 @@ public static class TlsEndpoints
     // старт на env). ServerCert=null — AllowInsecureHttp (WAF-тесты).
     public sealed record ApiTlsSetup(X509Certificate2? ServerCert, string? Source, string? Warning);
 
-    // Валидация цепочки клиентского серта против per-install API-CA.
-    private static bool ValidateChain(X509Certificate2? certificate, X509Certificate2 clientCa)
-    {
-        if (certificate is null)
-            return false;
-        using var chain = new X509Chain();
-        chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
-        chain.ChainPolicy.CustomTrustStore.Add(clientCa);
-        // Per-install приватная CA не публикует CRL/OCSP — онлайн-проверка отзыва
-        // всегда падала бы и отвергала валидные клиентские серты.
-        chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
-        return chain.Build(certificate);
-    }
-
-    // PFX round-trip: ключ из CreateFromPem эфемерный (не экспортируемый) —
-    // SslStream (macOS) не может его использовать без ре-импорта.
-    private static X509Certificate2 LoadCertificatePemPair(string certPem, string keyPem)
-    {
-        var pem = X509Certificate2.CreateFromPem(certPem, keyPem);
-        return X509CertificateLoader.LoadPkcs12(pem.Export(X509ContentType.Pkcs12), null);
-    }
-
     private static X509Certificate2? LoadServerCertificate(TlsOptions tls)
     {
-        var certPem = tls.ServerCertPem ?? ReadFile(tls.ServerCertPath);
-        var keyPem = tls.ServerKeyPem ?? ReadFile(tls.ServerKeyPath);
+        var certPem = tls.ServerCertPem ?? TlsMaterial.ReadPemFile(tls.ServerCertPath);
+        var keyPem = tls.ServerKeyPem ?? TlsMaterial.ReadPemFile(tls.ServerKeyPath);
         if (certPem is null || keyPem is null)
             return null;
-        return LoadCertificatePemPair(certPem, keyPem);
+        return TlsMaterial.LoadPemPair(certPem, keyPem);
     }
 
     private static X509Certificate2? LoadClientCa(TlsOptions tls)
     {
-        var caPem = tls.ClientCaPem ?? ReadFile(tls.ClientCaPath);
-        if (caPem is null)
-            return null;
-        var ca = X509Certificate2.CreateFromPem(caPem);
-        return OperatingSystem.IsMacOS()
-            ? X509CertificateLoader.LoadPkcs12(ca.Export(X509ContentType.Pkcs12), null)
-            : ca;
+        var caPem = tls.ClientCaPem ?? TlsMaterial.ReadPemFile(tls.ClientCaPath);
+        return caPem is null ? null : TlsMaterial.LoadPem(caPem);
     }
-
-    private static string? ReadFile(string? path)
-        => path is null || !File.Exists(path) ? null : File.ReadAllText(path).Trim();
 }
