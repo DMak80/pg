@@ -107,6 +107,14 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     public string Slug { get; }
 
+    /// <summary>PEM per-install API-CA фикстуры (ClientCa воркера): клиентские
+    /// серты сценариев для mTLS-вызовов API воркера обязаны выпускаться от неё —
+    /// перекрывать воркеру PGW_API_TLS_CLIENT_CA нельзя, иначе проба готовности
+    /// (клиентский серт фикстуры) перестаёт проходить хендшейк.</summary>
+    public static string InstallCaPem => _installCa.CaPem;
+
+    public static string InstallCaKeyPem => _installCa.CaKeyPem;
+
     /// <summary>Каталог телеметрии прогона (docs/e2e-launch.md): docker-логи
     /// контейнеров (снимаются ПЕРЕД любым удалением), inspect'ы, host.log'ы
     /// воркеров, отметки медленных фаз. Живёт в tmp после прогона — данные для
@@ -371,6 +379,12 @@ public sealed class E2eEnvironment : IAsyncDisposable
             ["PGW_API_TLS_CERT"] = _serverCertPem,
             ["PGW_API_TLS_KEY"] = _serverKeyPem,
             ["PGW_API_TLS_CLIENT_CA"] = _installCa.CaPem,
+            // WAF-ModuleInitializer (TestEnv, MetricsApiFactory.cs) ставит
+            // process-env PgWorker__Api__Tls__AllowInsecureHttp=true — дочерние
+            // процессы наследуют её, и воркер стартует на dev-серте без mTLS
+            // (без чтения ключа /workers/api_tls, без thumbprint в дискавери).
+            // E2E проверяет mTLS-канон — явно возвращаем false.
+            ["PgWorker__Api__Tls__AllowInsecureHttp"] = "false",
             ["PgWorker__Api__AdvertiseUrl"] = $"https://127.0.0.1:{port}",
 
             ["ASPNETCORE_URLS"] = $"https://127.0.0.1:{port}",
