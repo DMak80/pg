@@ -86,34 +86,51 @@ URL API — из etcd)       URL воркера (§1.1)
 ВСЕХ мутаций kafka-домена (панель в etcd не пишет ничего): 15 мутаций
 контракта adminpanel/02 §10.2 — сигнатуры/валидации/протоколы записи 1:1
 (меняется исполнитель: была панель, стал воркер; guard'ы читают etcd
-напрямую, без панельного снапшота). Плюс стендовый сид — `POST
-/api/seed/demo` (2 кластера `events`/`pending`, топики-архетипы, заявка
-ротации, ребалансировка, drain-прогресс; набор — 1:1 сид-фикстуры
+напрямую, без панельного снапшота). Плюс управление инстансом —
+`POST /api/restart` (graceful self-stop, §1.1 ниже; применяет серверный серт
+из `/workers/api_tls/kafkaworker` при следующем старте) и стендовый сид —
+`POST /api/seed/demo` (2 кластера `events`/`pending`, топики-архетипы,
+заявка ротации, ребалансировка, drain-прогресс; набор — 1:1 сид-фикстуры
 интеграционных тестов; флаг `KafkaWorker:Api:EnableSeedEndpoint`, default
 `false`; идемпотентен: живой `/kafka/clusters/events/config` → 200
 `{"seeded":false}`).
 
 **Дискавери API**: ключ `/kafkaworker/api/<instanceId>` (lease TTL 15 с,
 паттерн `instances/<id>`; arch/15 §4) — value
-`{"url":"https://<host>:<port>","instance":"<id>","since_unix":…}`. Воркер
+`{"url":"https://<host>:<port>","instance":"<id>","since_unix":…,
+"cert_thumbprint"?:"<sha256-hex>"}`. Воркер
 ставит ключ сам при старте; URL — из `KafkaWorker:Api:AdvertiseUrl`
 (достижим панелью: compose-сеть стенда `https://kafkaworker:8080` или
 `host.docker.internal:<порт>`; в deploy —
-`https://host.docker.internal:8081`). Панель кеширует живые ключи в
-kafka-снапшоте и зовёт любой живой (failover на следующий; все умерли —
-503 + critical-алерт `worker-api-unreachable`).
+`https://host.docker.internal:8081`). `cert_thumbprint` — SHA-256 серта,
+фактически применённого на грани (из etcd-ключа `/workers/api_tls/kafkaworker`
+или env-фоллбека) — панель сверяет с целевым (applied / pending restart);
+поле опционально (старые инстансы не пишут — «неизвестно»). Панель кеширует
+живые ключи в kafka-снапшоте и зовёт любой живой (failover на следующий; все
+умерли — 503 + critical-алерт `worker-api-unreachable`).
 
 **Аутентификация — mTLS (t03)**: вся HTTP-грань воркера (вкл. `/healthz`)
 обслуживается только по TLS; клиенты (панель) аутентифицируются
-клиентским сертификатом, подписанным per-install API-CA. Серверный
-сертификат и доверие клиентским — env-секреты
-`KFW_API_TLS_{CERT,KEY,CLIENT_CA}` (PEM; или пути `…_PATH` из volume) —
-**единственные per-install секреты воркера** (осознанное исключение из
-§4: транспортная граница API не может жить в etcd — etcd-клиент сам
-ходит по HTTP). Клиент без валидного серта — 401 (TLS-хендшейк-отказ).
-`X-Api-Key`/`KFW_API_KEY` удалён. Отключение TLS
+клиентским сертификатом, подписанным per-install API-CA. Клиент без
+валидного серта — 401 (TLS-хендшейк-отказ). `X-Api-Key`/`KFW_API_KEY`
+удалён (t03). Отключение TLS
 (`KafkaWorker:Api:Tls:AllowInsecureHttp`, default false) — только для
 in-memory WAF-тестов; в deploy/стенде всегда mTLS.
+
+**Серверный серт API — источник etcd (перезапуск применяет)**: воркер при
+СТАРТЕ читает ключ `/workers/api_tls/kafkaworker` (JSON
+`{"cert_pem","key_pem","updated_unix","updated_by"}`; пишет ТОЛЬКО панель —
+канон ключа и протокол — adminpanel/02 §9.9) и поднимает грань на этом
+серте; env-секреты `KFW_API_TLS_{CERT,KEY}` (PEM/`…_PATH` из volume) —
+бутстрап-фоллбек при отсутствии ключа (приоритет: etcd > env; источник —
+в логе старта). `KFW_API_TLS_CLIENT_CA` остаётся только env. Применение
+нового серта — перезапуском: `POST /api/restart` — 202 Accepted, затем
+graceful stop хоста (`IHostApplicationLifetime.StopApplication` с короткой
+задержкой на доставку ответа); контейнер перезапускается docker-политикой
+(`restart: unless-stopped`). Без docker-restart-политики процесс останется
+остановленным — панель увидит `worker-api-unreachable`. Серт — материал
+входящей грани: исходящие коммуникации воркера (docker Engine API,
+kafka-брокеры SASL_SSL per-cluster CA §2.3, etcd) его не используют.
 - **Приложение** — читает только дискавери-ключи (15 §5): `endpoints`,
   `app_user`/`app_password`, реестр `topics/`. Напрямую в docker/Kafka не
   ходит.
@@ -342,6 +359,7 @@ placement constraint, `publish mode=host`. Объекты для сверок �
 | `/kafkaworker/ca_rotations/<C>` | заявка ротации per-cluster CA/сертов (K, t07) |
 | `/kafka/clusters/<C>/ca_next_key` + `ca_next_pem` | staging НОВОЙ CA в окне ротации (K): подпись сертов фазы R, источник bundle `ca_pem`; вне ротации ключей нет |
 | `/kafkaworker/rebalances/<C>` | заявка ребалансировки партиций (I) |
+| `/workers/api_tls/kafkaworker` | серверный серт mTLS-грани API (§1.1): читает ТОЛЬКО при старте; пишет панель (adminpanel/02 §9.9) |
 
 ### 3.2. Пишемые ключи
 
@@ -377,9 +395,11 @@ Per-cluster, в etcd, генерирует воркер (ensure txn put-if-absen
 - **inter-broker** — детерминированный пароль из имени кластера (§2.2),
   вне etcd, super.user.
 
-Env-секреты per-install — только TLS HTTP API (§1.1:
-`KFW_API_TLS_{CERT,KEY,CLIENT_CA}`): транспортная граница API не может
-жить в etcd — etcd-клиент сам ходит по HTTP.
+Env-секреты per-install — TLS HTTP API (§1.1): `KFW_API_TLS_{CERT,KEY}` —
+бутстрап-фоллбек серверного серта (приоритет — etcd-ключ
+`/workers/api_tls/kafkaworker`, §1.1; пишет только панель —
+adminpanel/02 §9.9); `KFW_API_TLS_CLIENT_CA` — валидатор клиентов, только
+env, панелью не меняется.
 
 ## 5. Процессы (машины состояний)
 

@@ -53,7 +53,11 @@ public static class WorkerEndpointsParser
                     root.TryGetProperty("since_unix", out var unix)
                         && unix.ValueKind == JsonValueKind.Number
                         ? unix.GetInt64()
-                        : 0));
+                        : 0,
+                    root.TryGetProperty("cert_thumbprint", out var tp)
+                        && tp.ValueKind == JsonValueKind.String
+                        ? tp.GetString()
+                        : null));
             }
             catch (JsonException e)
             {

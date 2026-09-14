@@ -33,12 +33,18 @@ public static class WorkerTlsHandler
         }
     }
 
-    public static HttpMessageHandler Build(WorkerTlsOptions tls)
+    // trustedThumbprints — живые thumbprint'ы целевых сертов воркеров (из
+    // снапшотов): панель доверяет сертам, которые сама записала (spec §3.3 п.3,
+    // arch/adminpanel/02 §9.9) — иначе self-signed генерация рвала бы доступ
+    // к перезапущенному воркеру.
+    public static HttpMessageHandler Build(
+        WorkerTlsOptions tls, Func<IReadOnlyCollection<string>>? trustedThumbprints = null)
     {
         var handler = new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(5) };
         var certPem = tls.ClientCertPem ?? ReadFile(tls.ClientCertPath);
         var keyPem = tls.ClientKeyPem ?? ReadFile(tls.ClientKeyPath);
         var serverCaPem = tls.ServerCaPem ?? ReadFile(tls.ServerCaPath);
+        X509Certificate2? ca = null;
         if (certPem is not null && keyPem is not null)
         {
             // PFX round-trip: ключ CreateFromPem эфемерный — macOS SslStream
@@ -46,19 +52,26 @@ public static class WorkerTlsHandler
             var pem = X509Certificate2.CreateFromPem(certPem, keyPem);
             var clientCert = X509CertificateLoader.LoadPkcs12(pem.Export(X509ContentType.Pkcs12), null);
             handler.SslOptions.ClientCertificates = new X509CertificateCollection { clientCert };
-            if (serverCaPem is not null)
-            {
-                var ca = X509Certificate2.CreateFromPem(serverCaPem);
-                handler.SslOptions.RemoteCertificateValidationCallback =
-                    (_, certificate, _, _) =>
-                    {
-                        // Колбэк отдаёт X509Certificate — построим X509Certificate2.
-                        var cert2 = certificate as X509Certificate2
-                            ?? (certificate is null ? null : new X509Certificate2(certificate));
-                        return ValidateChain(cert2, ca);
-                    };
-            }
         }
+
+        if (serverCaPem is not null)
+            ca = X509Certificate2.CreateFromPem(serverCaPem);
+        if (ca is not null || trustedThumbprints is not null)
+            handler.SslOptions.RemoteCertificateValidationCallback =
+                (_, certificate, _, _) =>
+                {
+                    // Колбэк отдаёт X509Certificate — построим X509Certificate2.
+                    var cert2 = certificate as X509Certificate2
+                        ?? (certificate is null ? null : new X509Certificate2(certificate));
+                    if (cert2 is null)
+                        return false;
+                    // Цепочка к per-install ServerCA ИЛИ доверие по thumbprint.
+                    if (ca is not null && ValidateChain(cert2, ca))
+                        return true;
+                    var thumbprint = Convert.ToHexString(
+                        System.Security.Cryptography.SHA256.HashData(cert2.RawData)).ToLowerInvariant();
+                    return trustedThumbprints?.Invoke().Contains(thumbprint) == true;
+                };
 
         return handler;
     }

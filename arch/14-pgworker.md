@@ -107,12 +107,18 @@ URL API — из etcd)       URL воркера (§1.1)
 
 **Дискавери API**: ключ `/pgworker/api/<instanceId>` (lease TTL 15 с,
 паттерн `instances/<id>`; §3.3) — value
-`{"url":"https://<host>:<port>","instance":"<id>","since_unix":…}`. Воркер
+`{"url":"https://<host>:<port>","instance":"<id>","since_unix":…,
+"cert_thumbprint"?:"<sha256-hex>"}`. Воркер
 ставит ключ сам при старте (keepalive-контур, вместе с `instances/<id>`);
 URL — из `PgWorker:Api:AdvertiseUrl` (адрес, ДОСТИЖИМЫЙ клиентами API —
 прежде всего панелью; docker-сети стендов — `https://host.docker.internal:<8080>`).
-Ключ жив = инстанс жив и URL валиден (lease гасит мёртвые). Панель читает
-ключи refresher-тиком, кеширует в снапшоте и при мутации зовёт любой живой
+`cert_thumbprint` — SHA-256 серта, ФАКТИЧЕСКИ применённого на грани (серта
+из etcd-ключа `/workers/api_tls/pgworker` §1.1.1 или env-фоллбека);
+панель сверяет с целевым сертом → статус применения (applied / pending
+restart); поле опционально (инстансы до введения его не пишут — панель
+показывает «неизвестно»). Ключ жив = инстанс жив и URL валиден (lease
+гасит мёртвые). Панель читает ключи refresher-тиком, кеширует в снапшоте
+и при мутации зовёт любой живой
 (при ошибке соединения — следующий; все умерли — 503 + critical-алерт
 `worker-api-unreachable`, arch/adminpanel/03 §4.1).
 
@@ -121,18 +127,38 @@ URL — из `PgWorker:Api:AdvertiseUrl` (адрес, ДОСТИЖИМЫЙ кл�
 скрейп Prometheus, docker-HEALTHCHECK) аутентифицируются клиентским
 сертификатом, подписанным per-install API-CA (единая пакета с KafkaWorker —
 arch/16 §1.1: CA `kfw-install-ca`, отдельные клиентские серты панели
-`panel.crt` и сида `seed.crt`). Серверный сертификат (`pgserver.crt`, SAN:
-`pgworker`, `localhost`, `host.docker.internal`, `127.0.0.1`) и доверие
-клиентским — env-секреты `PGW_API_TLS_{CERT,KEY,CLIENT_CA}` (PEM; или пути
-`…_PATH` из volume `/tls:ro`) — per-install секреты воркера (осознанное
-исключение из §4: транспортная граница API не может жить в etcd — etcd-клиент
-сам ходит по HTTP). Клиент без валидного серта — 401 (TLS-хендшейк-отказ).
+`panel.crt` и сида `seed.crt`). Клиент без валидного серта — 401
+(TLS-хендшейк-отказ).
 `X-Api-Key`/`PGW_API_KEY` удалён; отдельные креды панели и сида — разные
 клиентские серты одной клиентской CA (различимы в журналах сервера,
 отзываются независимо). Отключение TLS
 (`PgWorker:Api:Tls:AllowInsecureHttp`, default `false`) — только для
 in-memory WAF-тестов; в deploy/стенде всегда mTLS. Скрейп Prometheus —
 по mTLS (tls_config, arch/18 §5.2).
+
+**Серверный серт API — источник etcd (перезапуск применяет)**: воркер при
+СТАРТЕ читает ключ `/workers/api_tls/pgworker` (JSON
+`{"cert_pem","key_pem","updated_unix","updated_by"}`; пишет ТОЛЬКО панель —
+канон ключа и протокол — adminpanel/02 §9.9) и поднимает грань на этом
+серте; env-секреты
+`PGW_API_TLS_{CERT,KEY}` (PEM/`…_PATH` из volume `/tls:ro`) — бутстрап-фоллбек
+при ОТСУТСТВИИ ключа (обратная совместимость установок без управляемого
+серта). Приоритет: ключ etcd > env (воркер логирует, какой источник
+применил). CLIENT_CA (`PGW_API_TLS_CLIENT_CA`) остаётся только env —
+валидатор клиентов менять панелью нельзя. Применение нового серта — только
+перезапуском (перезагружает панель — adminpanel/03 §1/§3, команда
+`POST /api/restart` ниже); замена серта БЕЗ перезапуска на живой грани не
+происходит (серты живут всё приложение).
+
+**Перезапуск воркера** — `POST /api/restart`: 202 Accepted (запрос принят),
+затем graceful stop хоста (`IHostApplicationLifetime.StopApplication` с
+короткой задержкой на доставку ответа); процесс завершается, контейнер
+перезапускается docker-политикой (`restart: unless-stopped`, §2.1 deploy).
+Рестарт безопасен для кластеров: клэймы/джорнал/заявки — в etcd, lease
+истекает ≤15 с, операции продолжает этот же или другой инстанс. Без
+docker-restart-политики (не deploy-канон) процесс останется остановленным —
+панель увидит `worker-api-unreachable`. Заголовок `X-Requested-By`
+(оператор панели) попадает в журнал воркера.
 
 **Эндпоинты** (сигнатуры/коды — 1:1 UI-контракт панели 02 §9/03 §1; тело
 и ответы не менялись):
@@ -151,6 +177,7 @@ in-memory WAF-тестов; в deploy/стенде всегда mTLS. Скрей
 | `POST /api/clusters/{c}/secrets/rotate` | заявка ротации per-cluster секретов (app + bucket_admin + mover) | 02 §9.8 |
 | `POST /api/clusters/{c}/shards/{x}/restore` | заявка восстановления шарда из бэкапа (PITR latest/target_time, source-override; `confirm` = имя шарда) | пишет статус `/pgworker/backups/<C>/<X>/restore/<id>` сам (клэйм `<C>`; arch/19 §3.5): гварды — кластер Active, шард заявлен, максимум один активный restore на шард |
 | `POST /api/ha/{scope}/nodes/{node}/recreate` | маркеры `TO_RECREATE`+`recreate=soft\|hard` | как §9.6-подобный маркер (02 §9, 03 §2): guards по `/service/<scope>/members` |
+| `POST /api/restart` | graceful self-stop инстанса (перезапуск контейнера — docker-политикой) | etcd НЕ пишет: 202 → `StopApplication` (§1.1 выше); применение серверного серта из `/workers/api_tls/pgworker` — при следующем старте |
 | `POST /api/seed/demo` | стендовый демо-сид pg-контура | §1.1.1 |
 
 Guard'ы и валидации переносятся из панельных команд как есть; источником
@@ -514,9 +541,14 @@ arch/adminpanel/02 §2.3.1); координационные `leader`/`claims`/`i
 | `/pgworker/evacuations/<C>/<X>` | обычный | журнал эвакуации шарда: `{"evacuated_unix","reason","buckets":{...старый→новый владелец...},"state":"DONE\|QUARANTINED"}` — истина для разбора после возврата шарда. |
 | `/pgworker/portalloc/<C>` | обычный | закрепление выделенных портов за нодами (§2.4): `{"<shard>/<node>":{"host":"h1","pg":15432,"patroni":18008,"doorman":16432}}` (+опц. `"object"` для усыновлённых, §5 J) — переживает смерть инстанса, переиспользуется при rebuild; пишется также усыновлением (§5 J: read-modify-write merge под клэймом). |
 | `/pgworker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика; необязательно для работы) |
-| `/pgworker/api/<id>` | lease TTL 15 с | **дискавери API воркера** (§1.1): `{"url":"https://<host>:<port>","instance":"<id>","since_unix":…}` — ставит сам инстанс при старте; ключ жив = инстанс жив и его URL валиден. Читает панель (единственный способ найти API воркера) и оператор; в UI не отображается |
+| `/pgworker/api/<id>` | lease TTL 15 с | **дискавери API воркера** (§1.1): `{"url":"https://<host>:<port>","instance":"<id>","since_unix":…,"cert_thumbprint"?}` — ставит сам инстанс при старте; ключ жив = инстанс жив и его URL валиден. Читает панель (единственный способ найти API воркера) и оператор; в UI — только сводка инстансов на грани «Воркеры» (03 §3) |
 | `/pgworker/moves/<C>/bucket_<i>` | обычный | заявка на плановый переезд/откат/уборку/отмену (t01): `{"op":"move\|rollback\|finalize\|abort","to":…,"old_shard":…,"skip_reverse":…,"resume":…,"force":…,"requested_unix":…,"requested_by":…}`. Успех или перманентный валидационный отказ → ключ удаляется; transient-сбой → остаётся, фазы — в статус-ключе бакета. Обрабатывается только держателем клэйма `<C>`; одновременно — старейшая заявка кластера. Deprovisioning D2 чистит `/pgworker/moves/<C>/` (префикс). |
 | `/pgworker/rotations/<C>` | обычный | заявка на ротацию per-cluster секретов ВСЕГО кластера — app, bucket_admin, bucket_mover (панель, клэйм-txn `version==0` + put): `{"requested_unix":<unix>,"requested_by":"<username панели>"}`. Выполняет держатель клэйма `<C>` (§5 I): ALTER ROLE трёх ролей на мастере каждого поднятого шарда → атомарный txn-коммит (put `app_password`+`mover_password`+`bucket_admin_password`, перезапись dsn-ключей, del заявки). Уже стоит → панель получает 409 (идемпотентность повтора). Deprovisioning D2 удаляет ключ точечно. |
+
+Смежный ключ вне префикса `/pgworker/` — **`/workers/api_tls/pgworker`**
+(обычный, без lease): серверный серт API воркера (`cert_pem`+`key_pem`+аудит)
+— пишет ТОЛЬКО панель (adminpanel/02 §9.9), воркер ТОЛЬКО читает при старте
+(§1.1). Воркер ключ не удаляет и не перезаписывает.
 
 Инварианты: любая мутация чужих данных (`/clusters/`, docker) выполняется
 **только держателем клэйма** `<C>`; txn-записи в `/clusters/` сопровождаются
@@ -544,12 +576,16 @@ compare (routing=старое значение, config.mod_revision) — «пр�
    ключи etcd → config → env). `PGW_APP_ROLE_PASSWORD` исключён (app-секрет —
    только группа 1).
 3. **per-install TLS/транспорт (t03, §1.1/§2.2.1)** — env-секреты процесса,
-   не в git, не в etcd: `PGW_API_TLS_{CERT,KEY,CLIENT_CA}` (mTLS API;
-   `…_PATH` из volume), `PGW_DOCKER_TLS_{CA,CERT,KEY}` (клиентский транспорт
+   не в git: `PGW_API_TLS_{CERT,KEY}` (серверный серт mTLS API — с управлением
+   из панели это БУТСТРАП-ФОЛЛБЭК: приоритет у etcd-ключа
+   `/workers/api_tls/pgworker`, §1.1; `…_PATH` из volume),
+   `PGW_API_TLS_CLIENT_CA` (валидатор клиентов — только env, панелью не
+   меняется), `PGW_DOCKER_TLS_{CA,CERT,KEY}` (клиентский транспорт
    Engine API), `PGW_DOCKER_SSH_KEY[_PATH]` (key SSH-туннелей),
-   `PGW_DOCKER_SSH_FINGERPRINT` (опц. pin host-key). Транспортная граница API
-   не может жить в etcd (etcd-клиент сам ходит по HTTP — бутстрап-парадокс,
-   прецедент arch/16 §4); `PGW_API_KEY` исключён (заменён mTLS).
+   `PGW_DOCKER_SSH_FINGERPRINT` (опц. pin host-key). Серверный серт из
+   etcd-ключа — материал входящей грани, не исходящих коммуникаций
+   (docker/PG/etcd-транспорт воркера его не использует; валидация при
+   записи — adminpanel/02 §9.9); `PGW_API_KEY` исключён (заменён mTLS).
 
 ---
 
