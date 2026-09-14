@@ -5,6 +5,7 @@
         <Project Path="Shared.Metrics/Shared.Metrics.csproj" />
         <Project Path="Shared.Core/Shared.Core.csproj" />
         <Project Path="Shared.Etcd/Shared.Etcd.csproj" />
+        <Project Path="Shared.Tls/Shared.Tls.csproj" />
     </Folder>
     <Folder Name="/core/">
         <Project Path="PgWorker.Core/PgWorker.Core.csproj" />
