@@ -1,8 +1,12 @@
 using System.Net;
 using System.Text;
+using System.Text.Json;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
+using PgWorker.Core.Tuning;
 using PgWorker.Docker.Drivers;
 using PgWorker.Etcd.Client;
 using PgWorker.Etcd.Coordination;
@@ -78,7 +82,8 @@ public class NodeSupervisorTests
         long? staleUnreachableAll = null,
         Func<HttpRequestMessage, HttpResponseMessage>? respondRaw = null,
         IReadOnlyDictionary<string, NodeAddress>? addresses = null,
-        Fakes.FakeSql? sql = null)
+        Fakes.FakeSql? sql = null,
+        Fakes.RecordingLogger<NodeSupervisor>? log = null)
     {
         var etcd = new Fakes.FakeEtcd();
         SeedCluster(etcd);
@@ -111,7 +116,8 @@ public class NodeSupervisorTests
             etcd, [Ep], driver, probe, sql ?? new Fakes.FakeSql(), claims, journal,
             Thresholds, TimeProvider.System, Secrets,
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"),
-            Fakes.PgtuneFactory(),
+            Fakes.PgtuneFactory(), Fakes.PgtuneSettings(),
+            log is not null ? log : NullLogger<NodeSupervisor>.Instance,
             new MasterKeyReconciler(etcd, [Ep], probe));
         return new Rig(etcd, driver, claims, journal, supervisor);
     }
@@ -487,9 +493,9 @@ public class NodeSupervisorTests
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("UNREACHABLE");
     }
 
-    // AAA (t09, arch/14 §5 C конвергенция): DCS-конфиг кластера на дефолтах
-    // Patroni (нода подтянулась к чужому/пустому конфигу) — воркер патчит
-    // активный конфиг до канона (GET /config → PATCH /config).
+    // AAA (t09→t11): DCS-конфиг на дефолтах Patroni — патч несёт ВСЕ канонические
+    // тайминги И полный желаемый набор параметров (живой конфиг без блока
+    // parameters → все desired добавляются; заявка в сиде полная).
     [Fact]
     public async Task Regression_T09_DcsConfigConvergence_DefaultConfig_PatchedToCanonical()
     {
@@ -517,18 +523,66 @@ public class NodeSupervisorTests
         // Act
         var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
-        // Assert — патч каноном отправлен ровно один (конфиг кластерный)
+        // Assert — один PATCH: тайминги каноном + параметры от заявки 8Gi
+        // (shared_buffers 2GB, wal_level канонический) единым документом.
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
-        patches.Should().ContainSingle().Which.Should().Contain("\"ttl\":20")
+        patches.Should().ContainSingle()
+            .Which.Should().Contain("\"ttl\":20")
             .And.Contain("\"loop_wait\":1").And.Contain("\"retry_timeout\":3")
-            .And.Contain("\"synchronous_mode\":true");
+            .And.Contain("\"synchronous_mode\":true")
+            .And.Contain("\"postgresql\":{\"parameters\":{")
+            .And.Contain("\"shared_buffers\":\"2GB\"")
+            .And.Contain("\"wal_level\":\"logical\"");
     }
 
-    // AAA (t09): конвергентный конфиг — ноль мутаций (не второй регулярный писатель).
+    // AAA (t09→t11): конвергентный конфиг (тайминги + полный желаемый набор
+    // от заявки сида) — ноль мутаций (не второй регулярный писатель).
     [Fact]
     public async Task Regression_T09_DcsConfigConvergence_CanonicalConfig_NoPatch()
     {
-        // Arrange — GET /config уже канонический
+        // Arrange — GET /config уже канонический: тайминги + параметры desired
+        // от сида (cpu=2/mem=8Gi, опции Fakes.PgtuneSettings), собираем программно.
+        var desired = PgParametersCanon.Desired(PgTune.Calculate(
+            new PgTuneInput(18, PgTuneOsType.Linux, PgTuneDbType.Oltp, 8388608,
+                PgTuneMemoryUnit.KB, 2, 60, PgTuneHdType.Ssd, PgTuneDbSize.MidRam)), null);
+        var parameters = string.Join(",", desired.Select(p =>
+            $"{JsonSerializer.Serialize(p.Name)}:{JsonSerializer.Serialize(p.RawValue)}"));
+        // (конкатенация вместо $$"""-интерполяции: серия фигурных скобок ломает raw-string)
+        var canonicalConfig =
+            """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"postgresql":{"parameters":{""" + parameters + """}}}""";
+        var patches = new List<string>();
+        var rig = await NewRig(_ => Ok(), respondRaw: r =>
+        {
+            if (r.Method.Method == "PATCH" && r.RequestUri!.AbsolutePath == "/config")
+            {
+                patches.Add(new StreamReader(r.Content!.ReadAsStream()).ReadToEnd());
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }
+
+            if (r.Method.Method == "GET" && r.RequestUri!.AbsolutePath == "/config")
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                    { Content = new StringContent(canonicalConfig, Encoding.UTF8, "application/json") };
+
+            return Ok();
+        });
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert — PATCH не звался вовсе
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        patches.Should().BeEmpty("конфиг уже канонический — мутаций нет");
+    }
+
+    // AAA (t11, spec §4.4): живой /config расходится по ПАРАМЕТРАМ (заявка 8Gi,
+    // живой конфиг от прежней 4Gi) → ровно ОДИН PATCH за тик, документ несёт
+    // пересчитанные значения (shared_buffers 2GB/effective_cache_size 6GB от 8Gi)
+    // и добавляет отсутствующие desired-ключи; фаза dcs-converge в журнале.
+    [Fact]
+    public async Task Tick_DcsConfigConvergence_ParametersDiverged_SinglePatchWithRecalculated()
+    {
+        // Arrange — тайминги канонические; max_connections совпадает (60),
+        // shared_buffers/effective_cache_size от прежней заявки 4Gi (1GB/3GB).
         var patches = new List<string>();
         var rig = await NewRig(_ => Ok(), respondRaw: r =>
         {
@@ -542,7 +596,7 @@ public class NodeSupervisorTests
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new StringContent(
-                        """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"postgresql":{"use_pg_rewind":true}}""",
+                        """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"postgresql":{"parameters":{"max_connections":"60","shared_buffers":"1GB","effective_cache_size":"3GB"}}}""",
                         Encoding.UTF8, "application/json"),
                 };
 
@@ -552,9 +606,123 @@ public class NodeSupervisorTests
         // Act
         var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
 
-        // Assert — PATCH не звался вовсе
+        // Assert: один PATCH; расходящиеся обновлены к 8Gi-расчёту (2GB/6GB);
+        // журнал несёт фазу dcs-converge со счётчиками.
         outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
-        patches.Should().BeEmpty("конфиг уже канонический — мутаций нет");
+        patches.Should().ContainSingle()
+            .Which.Should().Contain("\"postgresql\":{\"parameters\":{")
+            .And.Contain("\"shared_buffers\":\"2GB\"")
+            .And.Contain("\"effective_cache_size\":\"6GB\"");
+        rig.Etcd.Store["/pgworker/work/shop"].Value
+            .Should().Contain("dcs-converge").And.Contain("updated:").And.Contain("added:");
+    }
+
+    // AAA (t11, решение 2026-09-14 «неполная заявка — SKIP»): заявка НЕПОЛНАЯ —
+    // request_mem удалён при живом request_cpu (ReadShardResourcesAsync вернёт
+    // NodeResources(CpuCores:2, MemoryBytes:null), НЕ null) → патч ТОЛЬКО
+    // таймингов + warning-лог; тик надзора НЕ фейлится.
+    [Fact]
+    public async Task Tick_DcsConfigConvergence_PartialResourceRequest_TimingsOnlyWithWarning()
+    {
+        // Arrange — request_mem снести (request_cpu жив); /config на дефолтных
+        // таймингах, PATCH ловим.
+        var log = new Fakes.RecordingLogger<NodeSupervisor>();
+        var patches = new List<string>();
+        var rig = await NewRig(_ => Ok(), log: log, respondRaw: r =>
+        {
+            if (r.Method.Method == "PATCH" && r.RequestUri!.AbsolutePath == "/config")
+            {
+                patches.Add(new StreamReader(r.Content!.ReadAsStream()).ReadToEnd());
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }
+
+            if (r.Method.Method == "GET" && r.RequestUri!.AbsolutePath == "/config")
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        """{"ttl":30,"loop_wait":10,"retry_timeout":10}""", Encoding.UTF8, "application/json"),
+                };
+
+            return Ok();
+        });
+        rig.Etcd.Store.Remove("/service/shop-shard1/request_mem");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: патч только таймингов, pg-параметров нет; warning записан; тик Done.
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        patches.Should().ContainSingle().Which.Should().NotContain("postgresql");
+        log.Entries.Should().Contain(e => e.Level == LogLevel.Warning
+            && e.Message.Contains("request_", StringComparison.Ordinal));
+    }
+
+    // AAA (t11, симметричный кейс полного отсутствия): ОБЕ заявки отсутствуют
+    // (ReadShardResourcesAsync == null) — тот же исход: тайминги + warning, тик Done.
+    [Fact]
+    public async Task Tick_DcsConfigConvergence_NoResourceRequests_TimingsOnlyWithWarning()
+    {
+        // Arrange — обе заявки снести; /config на дефолтных таймингах.
+        var log = new Fakes.RecordingLogger<NodeSupervisor>();
+        var patches = new List<string>();
+        var rig = await NewRig(_ => Ok(), log: log, respondRaw: r =>
+        {
+            if (r.Method.Method == "PATCH" && r.RequestUri!.AbsolutePath == "/config")
+            {
+                patches.Add(new StreamReader(r.Content!.ReadAsStream()).ReadToEnd());
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }
+
+            if (r.Method.Method == "GET" && r.RequestUri!.AbsolutePath == "/config")
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        """{"ttl":30,"loop_wait":10,"retry_timeout":10}""", Encoding.UTF8, "application/json"),
+                };
+
+            return Ok();
+        });
+        rig.Etcd.Store.Remove("/service/shop-shard1/request_mem");
+        rig.Etcd.Store.Remove("/service/shop-shard1/request_cpu");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: патч только таймингов; warning записан; тик Done.
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        patches.Should().ContainSingle().Which.Should().NotContain("postgresql");
+        log.Entries.Should().Contain(e => e.Level == LogLevel.Warning
+            && e.Message.Contains("request_", StringComparison.Ordinal));
+    }
+
+    // AAA (t11): /config недоступен (транспорт/5xx) → мутаций нет, тик не
+    // фейлится (транзиент — конвергенция повторится следующим тиком).
+    [Fact]
+    public async Task Tick_DcsConfigConvergence_ConfigUnavailable_NoMutation()
+    {
+        // Arrange — GET /config → 503 у probeNode (первый канонический узел,
+        // порт 18000), PATCH ловим (не должен зваться).
+        var patches = new List<string>();
+        var rig = await NewRig(port => port == 18000 ? Down() : Ok(), respondRaw: r =>
+        {
+            if (r.Method.Method == "PATCH" && r.RequestUri!.AbsolutePath == "/config")
+            {
+                patches.Add(new StreamReader(r.Content!.ReadAsStream()).ReadToEnd());
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }
+
+            if (r.Method.Method == "GET" && r.RequestUri!.AbsolutePath == "/config")
+                return Down();
+
+            return Ok();
+        });
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        patches.Should().BeEmpty("конфиг недоступен — транзиент, патча нет");
     }
 
 
@@ -1024,7 +1192,7 @@ public class NodeSupervisorTests
             etcd, [Ep], driver, Probe(port => port >= 18100 ? Ok() : Down()), new Fakes.FakeSql(),
             claims, journal, Thresholds, TimeProvider.System, Secrets,
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"),
-            Fakes.PgtuneFactory());
+            Fakes.PgtuneFactory(), Fakes.PgtuneSettings(), NullLogger<NodeSupervisor>.Instance);
 
         // Act — параллельные тики двух кластеров одним синглтоном
         var results = await Task.WhenAll(
