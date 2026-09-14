@@ -91,8 +91,15 @@ public class KafkaSeedApiTests(KafkaApiFixture fixture)
     [Fact]
     public async Task SeedDemo_AlreadySeeded_NoOp()
     {
-        // Arrange — наливаем (если ещё не налито предыдущим кейсом) и фиксируем значения
+        // Arrange — самодостаточный старт: порядок классов/методов коллекции не
+        // гарантирован, чужой /kafka/clusters/events/config (наследие
+        // SeedActiveClusterAsync соседних классов) уводил первый POST в no-op
+        // без записи rotations и ронял Assert на null — чистим все префиксы
+        // сида (как EmptyEtcd) и наливаем канонический набор сами
         var ct = TestContext.Current.CancellationToken;
+        foreach (var prefix in new[] { "/kafka/clusters/events/", "/kafka/clusters/pending/",
+            "/kafkaworker/rotations/", "/kafkaworker/rebalances/", "/kafkaworker/reassignments/" })
+            await Etcd.Gateway.DeleteAsync(Etcd.Endpoint, prefix, prefix: true, ct);
         await Client.PostAsync("/api/seed/demo", null, ct);
         var config = await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/kafka/clusters/events/config", ct);
         var rotation = await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/kafkaworker/rotations/events", ct);
