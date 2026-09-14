@@ -75,6 +75,12 @@ var managedCert = await WorkerApiCertReader.ReadAsync(etcdEndpoints, "kafkaworke
 TlsEndpoints.ApplyEnvOverrides(builder.Configuration);
 var apiTls = TlsEndpoints.ConfigureMtls(builder, port: 8080, managedCert);
 
+// Thumbprint применённого серта → дискавери-ключ (spec §3.2 п.3): панель
+// сверяет с целевым → applied/pending restart.
+var apiCertThumbprint = apiTls.ServerCert is { } appliedCert
+    ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(appliedCert.RawData)).ToLowerInvariant()
+    : null;
+
 // etcd-клиент (HTTP JSON gateway /v3/*) + координация (клэймы/лидерство, журнал).
 builder.Services.AddSingleton<IEtcdGateway>(sp =>
     new EtcdGateway(sp.GetRequiredService<IHttpClientFactory>().CreateClient("etcd")));
@@ -82,7 +88,8 @@ builder.Services.AddSingleton(sp => new ClaimStore(
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<TimeProvider>(),
-    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Api.AdvertiseUrl));
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Api.AdvertiseUrl,
+    apiCertThumbprint));
 // t91: глобальный portalloc-клэйм (arch/15 §4 / arch/16 §2.1) — DI-синглтон,
 // InstanceId единый с ClaimStore (сквозная диагностика держателя).
 builder.Services.AddSingleton(sp => new PortAllocLock(

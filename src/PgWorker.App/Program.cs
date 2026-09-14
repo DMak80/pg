@@ -66,6 +66,12 @@ var managedCert = await WorkerApiCertReader.ReadAsync(etcdEndpoints, "pgworker",
 // клиентского серта per-install API-CA (порт — из ASPNETCORE_URLS/urls, иначе 8080).
 var apiTls = ApiTlsEndpoints.ConfigureMtls(builder, managedCert);
 
+// Thumbprint применённого серта → дискавери-ключ (spec §3.2 п.3): панель
+// сверяет с целевым → applied/pending restart.
+var apiCertThumbprint = apiTls.ServerCert is { } appliedCert
+    ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(appliedCert.RawData)).ToLowerInvariant()
+    : null;
+
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<HealthState>();
 
@@ -96,7 +102,8 @@ builder.Services.AddSingleton(sp => new ClaimStore(
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<TimeProvider>(),
-    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Api.AdvertiseUrl));
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Api.AdvertiseUrl,
+    apiCertThumbprint));
 builder.Services.AddSingleton(sp => new WorkJournal(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));

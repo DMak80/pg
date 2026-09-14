@@ -9,13 +9,14 @@ namespace KafkaWorker.Etcd.Coordination;
 // + глобальный лидер для singleton-задач. Захват — txn compare version==0 +
 // put-with-lease TTL 15с; держатель продлевает keepalive-тиком (5с); смерть
 // инстанса гасит lease ≤15с — ключ исчезает сам, другой инстанс захватывает (takeover).
-public sealed class ClaimStore(string[] endpoints, IEtcdGateway gateway, TimeProvider clock, string? advertiseApiUrl = null)
+public sealed class ClaimStore(string[] endpoints, IEtcdGateway gateway, TimeProvider clock, string? advertiseApiUrl = null, string? certThumbprint = null)
     : IAsyncDisposable
 {
     private const int ClaimTtlSec = 15;
     private static readonly TimeSpan KeepaliveInterval = TimeSpan.FromSeconds(5);
 
     private readonly string? _advertiseApiUrl = advertiseApiUrl;
+    private readonly string? _certThumbprint = certThumbprint;
 
     private readonly object _sync = new();
     private readonly Dictionary<string, long> _clusterLeases = []; // cluster → lease (live)
@@ -252,7 +253,7 @@ public sealed class ClaimStore(string[] endpoints, IEtcdGateway gateway, TimePro
         if (_advertiseApiUrl is { Length: > 0 } url)
         {
             var payload = JsonSerializer.Serialize(
-                new ApiDiscoveryPayload(url, InstanceId, Now()), PayloadJson.Json);
+                new ApiDiscoveryPayload(url, InstanceId, Now(), _certThumbprint), PayloadJson.Json);
             var apiPut = await WithFailoverAsync(endpoint => gateway.PutAsync(
                 endpoint, $"/kafkaworker/api/{InstanceId}", payload, grant.Value, ct));
             if (!apiPut.IsSuccess)
@@ -337,14 +338,17 @@ public sealed class ClaimStore(string[] endpoints, IEtcdGateway gateway, TimePro
         [property: JsonPropertyName("since_unix")] long SinceUnix,
         [property: JsonPropertyName("phase")] string? Phase);
 
-    // Value ключа /kafkaworker/api/<id> (arch/16 §1.1): {"url","instance","since_unix"}.
+    // Value ключа /kafkaworker/api/<id> (arch/16 §1.1): {"url","instance","since_unix",
+    // "cert_thumbprint"?} — thumbprint серта, фактически применённого на грани
+    // (etcd-ключ §1.1.1 или env-фоллбек); опционально для читателей.
     // ВАЖНО: PayloadJson.Json НЕ задаёт PropertyNamingPolicy (дефолт PascalCase) —
     // поля маппим атрибутами, как у ClaimPayload, иначе парсер панели (контракт
     // arch/02 §2.3.1/§2.3.2 ждёт snake_case) не распарсит значение.
     private sealed record ApiDiscoveryPayload(
         [property: JsonPropertyName("url")] string Url,
         [property: JsonPropertyName("instance")] string Instance,
-        [property: JsonPropertyName("since_unix")] long SinceUnix);
+        [property: JsonPropertyName("since_unix")] long SinceUnix,
+        [property: JsonPropertyName("cert_thumbprint")] string? CertThumbprint);
 }
 
 // Общие JSON-настройки payload координации (camelCase/snake_case по контракту §4.3).
