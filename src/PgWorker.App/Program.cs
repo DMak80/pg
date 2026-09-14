@@ -57,9 +57,20 @@ builder.Services.AddOptions<PgWorkerOptions>()
         "ExcludeParams — только имена вывода PGTune (§5.2). Память/CPU — не здесь: заявки etcd request_{cpu,mem}")
     .ValidateOnStart();
 
+// Управляемый серт API (spec §3.2 п.1): чтение ключа /workers/api_tls/pgworker
+// ДО поднятия Kestrel; приоритет etcd > env; битый ключ — fail-fast.
+var etcdEndpoints = builder.Configuration.GetSection("PgWorker:Etcd:Endpoints").Get<string[]>() ?? [];
+var managedCert = await WorkerApiCertReader.ReadAsync(etcdEndpoints, "pgworker", CancellationToken.None);
+
 // mTLS HTTP API (arch/14 §1.1, t03): Kestrel с серверным сертом и требованием
 // клиентского серта per-install API-CA (порт — из ASPNETCORE_URLS/urls, иначе 8080).
-ApiTlsEndpoints.ConfigureMtls(builder);
+var apiTls = ApiTlsEndpoints.ConfigureMtls(builder, managedCert);
+
+// Thumbprint применённого серта → дискавери-ключ (spec §3.2 п.3): панель
+// сверяет с целевым → applied/pending restart.
+var apiCertThumbprint = apiTls.ServerCert is { } appliedCert
+    ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(appliedCert.RawData)).ToLowerInvariant()
+    : null;
 
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<HealthState>();
@@ -91,7 +102,8 @@ builder.Services.AddSingleton(sp => new ClaimStore(
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<TimeProvider>(),
-    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Api.AdvertiseUrl));
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Api.AdvertiseUrl,
+    apiCertThumbprint));
 builder.Services.AddSingleton(sp => new WorkJournal(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
@@ -147,6 +159,11 @@ builder.Services.AddSingleton(sp => new SeedDemoHandler(
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Api.EnableSeedEndpoint));
+
+// Graceful self-stop (spec §3.2 п.2): рестарт из панели применяет серт/конфиг.
+builder.Services.AddSingleton(sp => new RestartHandler(
+    sp.GetRequiredService<IHostApplicationLifetime>(),
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<RestartHandler>()));
 
 // docker: драйвер по режиму (Plain: таблица Hosts; Swarm: manager endpoint).
 // AdvertisedHost (advertised-правило arch/16): только Plain + ровно один хост —
@@ -586,6 +603,10 @@ var app = builder.Build();
 if (app.Services.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)
     app.Logger.LogWarning(
         "PgWorker:Api:Tls:AllowInsecureHttp=true — HTTP без TLS (ТОЛЬКО WAF-тесты, arch/14 §1.1)");
+if (apiTls.Source is { } certSource)
+    app.Logger.LogInformation("PgWorker:Api:Tls: серверный серт API — источник {Source}", certSource);
+if (apiTls.Warning is { } certWarning)
+    app.Logger.LogWarning("PgWorker:Api:Tls: {Warning}", certWarning);
 app.MapAppMetrics();
 app.MapHealthChecks("/healthz");
 app.MapWorkerApi();

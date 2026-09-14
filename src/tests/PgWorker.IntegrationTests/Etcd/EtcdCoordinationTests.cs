@@ -210,4 +210,42 @@ public class EtcdCoordinationTests(EtcdFixture fixture)
         result.Value.Should().NotBeEmpty();
         result.Value.Length.Should().BeGreaterThan(1024);
     }
+
+    [Fact]
+    public async Task ApiKey_IncludesCertThumbprint_WhenProvided()
+    {
+        // Arrange: thumbprint серта, поднятого на грани (spec §3.2 п.3)
+        const string thumb = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        var store = new ClaimStore([Endpoint], Gateway, TimeProvider.System,
+            advertiseApiUrl: $"https://localhost:9{Random.Shared.Next(1000, 9999)}",
+            certThumbprint: thumb);
+        await using var _ = store;
+
+        // Act: keepalive-контур ставит api-ключ
+        await store.StartAsync(TestContext.Current.CancellationToken);
+        await store.KeepaliveTickAsync(TestContext.Current.CancellationToken);
+
+        // Assert: value содержит cert_thumbprint
+        var kv = await Gateway.GetAsync(Endpoint, $"/pgworker/api/{store.InstanceId}", TestContext.Current.CancellationToken);
+        kv.Value!.Value.Should().Contain($"\"cert_thumbprint\":\"{thumb}\"");
+
+        // Cleanup: ключ гаснет с dispose (revoke lease)
+    }
+
+    [Fact]
+    public async Task ApiKey_OmitsCertThumbprint_WhenNull()
+    {
+        // Arrange: старая семантика — поле опционально (spec §3.1)
+        var store = new ClaimStore([Endpoint], Gateway, TimeProvider.System,
+            advertiseApiUrl: $"https://localhost:9{Random.Shared.Next(1000, 9999)}");
+        await using var _ = store;
+
+        // Act
+        await store.StartAsync(TestContext.Current.CancellationToken);
+        await store.KeepaliveTickAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        var kv = await Gateway.GetAsync(Endpoint, $"/pgworker/api/{store.InstanceId}", TestContext.Current.CancellationToken);
+        kv.Value!.Value.Should().NotContain("cert_thumbprint");
+    }
 }

@@ -43,7 +43,20 @@ public static class ModuleExtensions
         // (dev/локальные) TLS-опции не применяются — один HttpClient на оба воркера.
         services.AddHttpClient(WorkerApiGateway.HttpClientName)
             .ConfigurePrimaryHttpMessageHandler(sp => Workers.WorkerTlsHandler.Build(
-                sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<WorkerApiOptions>>().Value.WorkerTls));
+                sp.GetRequiredService<Microsoft.Extensions.Options.IOptions<WorkerApiOptions>>().Value.WorkerTls,
+                TrustedWorkerThumbprints(sp)));
+
+        // Живые thumbprint'ы целевых сертов из снапшотов (spec §3.3 п.3): панель
+        // доверяет сертам, которые сама записала; null-поле — ключа нет.
+        static Func<IReadOnlyCollection<string>> TrustedWorkerThumbprints(IServiceProvider sp) => () =>
+        {
+            var thumbs = new List<string>();
+            if (sp.GetRequiredService<ISnapshotStore>().Current?.WorkerApiCert is { } pg)
+                thumbs.Add(pg.Thumbprint);
+            if (sp.GetRequiredService<IKafkaSnapshotStore>().Current?.WorkerApiCert is { } kfw)
+                thumbs.Add(kfw.Thumbprint);
+            return thumbs;
+        };
         services.AddSingleton<WorkerApiGateway>();
         services.AddSingleton<IWorkerApiGateway>(sp => sp.GetRequiredService<WorkerApiGateway>());
 

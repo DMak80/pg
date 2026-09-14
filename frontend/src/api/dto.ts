@@ -758,3 +758,62 @@ export interface BackupObjectsPageDto {
   items: BackupObjectDto[];
   nextContinuationToken: string | null;
 }
+
+// ===== Грань «Воркеры» (arch/adminpanel/03 §1/§3.7): сводные DTO и мутации серта =====
+
+export type WorkerApplyStatus = 'applied' | 'pending restart' | 'unmanaged' | 'unknown';
+
+export interface WorkerInstanceDto {
+  instance: string;
+  url: string;
+  sinceUnix: number;
+  health?: string | null;
+  certThumbprint?: string | null;
+  applyStatus: WorkerApplyStatus;
+}
+
+export interface WorkerCertDto {
+  thumbprint: string;
+  subject: string;
+  issuer: string;
+  san: string[];
+  notBeforeUnix: number;
+  notAfterUnix: number;
+  updatedUnix: number;
+  updatedBy?: string | null;
+}
+
+export interface WorkerViewDto {
+  worker: string;
+  instances: WorkerInstanceDto[];
+  targetCert?: WorkerCertDto | null;
+}
+
+export interface WorkersViewDto {
+  workers: WorkerViewDto[];
+}
+
+export interface WorkerApiCertDto {
+  worker: string;
+  thumbprint: string;
+  updatedUnix: number;
+  updatedBy: string;
+  restartRequired: boolean;
+  warning?: string | null;
+}
+
+export interface RestartInstanceResultDto {
+  instance: string;
+  accepted: boolean;
+  error?: string | null;
+}
+
+export interface WorkerRestartDto {
+  results: RestartInstanceResultDto[];
+}
+
+// Тело PUT серта: snake_case — контракт 03 §3.7 (не camelCase).
+export interface UploadWorkerCertRequestDto {
+  cert_pem: string;
+  key_pem: string;
+}

@@ -65,10 +65,21 @@ builder.Services.AddOptions<KafkaWorkerOptions>()
         "AdvertiseUrl обязан быть https:// (mTLS-only API, arch/16 §1.1)")
     .ValidateOnStart();
 
+// Управляемый серт API (spec §3.2 п.1): чтение ключа /workers/api_tls/kafkaworker
+// ДО поднятия Kestrel; приоритет etcd > env; битый ключ — fail-fast.
+var etcdEndpoints = builder.Configuration.GetSection("KafkaWorker:Etcd:Endpoints").Get<string[]>() ?? [];
+var managedCert = await WorkerApiCertReader.ReadAsync(etcdEndpoints, "kafkaworker", CancellationToken.None);
+
 // mTLS HTTP API (arch/16 §1.1, t03): env-секреты TLS → конфиг, Kestrel c
 // серверным сертом и требованием клиентского серта per-install API-CA.
 TlsEndpoints.ApplyEnvOverrides(builder.Configuration);
-TlsEndpoints.ConfigureMtls(builder, port: 8080);
+var apiTls = TlsEndpoints.ConfigureMtls(builder, port: 8080, managedCert);
+
+// Thumbprint применённого серта → дискавери-ключ (spec §3.2 п.3): панель
+// сверяет с целевым → applied/pending restart.
+var apiCertThumbprint = apiTls.ServerCert is { } appliedCert
+    ? Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(appliedCert.RawData)).ToLowerInvariant()
+    : null;
 
 // etcd-клиент (HTTP JSON gateway /v3/*) + координация (клэймы/лидерство, журнал).
 builder.Services.AddSingleton<IEtcdGateway>(sp =>
@@ -77,7 +88,8 @@ builder.Services.AddSingleton(sp => new ClaimStore(
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<TimeProvider>(),
-    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Api.AdvertiseUrl));
+    sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Api.AdvertiseUrl,
+    apiCertThumbprint));
 // t91: глобальный portalloc-клэйм (arch/15 §4 / arch/16 §2.1) — DI-синглтон,
 // InstanceId единый с ClaimStore (сквозная диагностика держателя).
 builder.Services.AddSingleton(sp => new PortAllocLock(
@@ -153,6 +165,11 @@ builder.Services.AddSingleton(sp => new SeedDemoHandler(
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Api.EnableSeedEndpoint));
+
+// Graceful self-stop (spec §3.2 п.2): рестарт из панели применяет серт/конфиг.
+builder.Services.AddSingleton(sp => new RestartHandler(
+    sp.GetRequiredService<IHostApplicationLifetime>(),
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<RestartHandler>()));
 
 // docker: драйвер по режиму (Plain: таблица Hosts; Swarm: manager endpoint).
 builder.Services.AddSingleton<DockerEngineFactory>();
@@ -393,6 +410,10 @@ var app = builder.Build();
 if (app.Services.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)
     app.Logger.LogWarning(
         "KafkaWorker:Api:Tls:AllowInsecureHttp=true — HTTP без TLS (ТОЛЬКО WAF-тесты, arch/16 §1.1)");
+if (apiTls.Source is { } certSource)
+    app.Logger.LogInformation("KafkaWorker:Api:Tls: серверный серт API — источник {Source}", certSource);
+if (apiTls.Warning is { } certWarning)
+    app.Logger.LogWarning("KafkaWorker:Api:Tls: {Warning}", certWarning);
 app.MapAppMetrics();
 app.MapHealthChecks("/healthz");
 app.MapWorkerApi();

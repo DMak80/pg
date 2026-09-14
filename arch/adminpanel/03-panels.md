@@ -47,6 +47,11 @@ clusters/{cluster}/moves/{bucket}` (отмена стоящей заявки, 02
 | `GET /api/backups/storage/{cluster}/{shard}` | детали шарда: полные (id/size/objectCount/lastModified + etcd state/verify/size + статус сверки), WAL (S3-факт + etcd-статус), активный restore (бейдж), 404 — нет ни в etcd, ни в S3-дереве |
 | `GET /api/backups/objects?prefix=&maxKeys=200&continuationToken=` | on-demand list-v2 (единственный выход в MinIO на запрос): `prefix` пуст или `<кластерный паттерн>/…` **и** первый сегмент — кластер снапшота или S3-дерева инвентаря (иначе 400 — защита от произвольного листинга), `maxKeys` 1..1000 (иначе 400), `nextContinuationToken` |
 | `GET /api/alerts` | все алерты; query `?severity=critical|warning|info`, `?kind=` |
+| `GET /api/workers` | грань «Воркеры»: по `pgworker`/`kafkaworker` — живые инстансы (instance, url, since, health, cert_thumbprint), ЦЕЛЕВОЙ серт из `/workers/api_tls/<worker>` (метаданные: subject, issuer, SAN, not_before/not_after, sha256-thumbprint, updated_unix/by; PEM не отдаётся) и статус применения per-instance: `applied` \| `pending restart` \| `unmanaged` (ключа нет — env-серт) \| `unknown` (инстанс без thumbprint) |
+| `POST /api/workers/{worker}/api-cert/generate` | сгенерировать self-signed серверный лист и записать в etcd (02 §9.9): без тела → 201 `{worker, thumbprint, updatedUnix, updatedBy, restartRequired:true}` \| 422 (влияет на исходящие — не записан) \| 503 |
+| `PUT /api/workers/{worker}/api-cert` | загрузить готовый серт (02 §9.9): тело `{cert_pem, key_pem}` → 201 (те же коды, что generate) |
+| `DELETE /api/workers/{worker}/api-cert` | отказ от управляемого серта (откат к env после перезапуска; 02 §9.9): 204 \| 404 (ключа нет) \| 503 |
+| `POST /api/workers/{worker}/restart` | перезапуск воркера (02 §9.9): прокси `POST /api/restart` на каждый живой инстанс → 202 `{results:[{instance, accepted}\|{instance, error}]}`; живых нет → 503 |
 
 Дополнительно к квери-параметрам: `?owner=&state=` на `/api/clusters/{c}`
 возвращают отфильтрованный `buckets` (удобно для детальной страницы; по
@@ -381,6 +386,7 @@ MoveTicketDto: bucketId(int? — null у неканонического leaf'а)
 | **HA** | список scope'ов: scope, cluster/shard, лидер, члены (роль/состояние), лаг max, пометка unmatched |
 | **HA details** | leader, optime, таблица members: name/role/state/timeline/lag/probe-статус; блок «Заявленные ресурсы нод» (request_*, при наличии); raw config (свернуто) |
 | **Alerts** | таблица всех алертов: severity-цвет, kind, target, message, since; фильтр по severity |
+| **Воркеры** | `/workers` (§3.7): карточки PgWorker/KafkaWorker — инстансы (url, uptime, health), целевой серт API (метаданные + статус применения applied/pending restart/unmanaged), действия: сгенерировать/загрузить/убрать сертификат, перезапустить воркера |
 | **Хранилище бэкапов** | `/backups-storage` (t08, read-only): карточки Health (api/live/cluster + drives), Место (used/quota, прогресс-бар, state-бейдж OK/WARN/CRIT — вердикт воркера + штамп live), Buckets; таблица «Кластеры → шарды» (размер, полные шт., WAL-сегменты шт., пометки сверки); клик → детали шарда `/backups-storage/:cluster/:shard`: таблица полных (id/размер/дата/etcd state+verify/сверка), блок WAL (etcd-статус + S3-факт), бейдж активного restore, «Объекты» с on-demand пагинацией («Загрузить ещё»); блок «Осиротевшие префиксы» (реестр воркера OBSERVED/DELETING+TTL или «панель видит, в реестре нет»); `configured=false` — заглушка «не настроено (AdminPanel:Backups:S3)». Без форм ввода |
 
 ### 3.1. Форма «Создать кластер» (формы данных: эта + добавление шарда §3.2 + перенос бакетов §3.3)
@@ -495,6 +501,36 @@ Active-кластер). Показывает маршрут owner→target, фа
 переезд" (abort)». Отправка — DELETE `/api/clusters/{cluster}/moves/
 {bucket}` (§1.9); успех → инвалидация деталей; 404 «заявки нет» —
 тихо обновить (оператор мог опередить исполнение).
+
+### 3.7. Грань «Воркеры» (сертификаты API + перезапуск)
+
+Страница `/workers` — карточки PgWorker и KafkaWorker (02 §9.9). В каждой:
+
+- **Инстансы**: instance id, URL, uptime (since_unix), health-бейдж,
+  thumbprint применённого серта.
+- **Целевой серт** (из `/workers/api_tls/<worker>`): subject, issuer, SAN,
+  сроки, thumbprint, кем/когда обновлён; статус применения per-instance
+  (`applied` / `pending restart` / `unmanaged` / `unknown`); при
+  `pending restart` — бейдж «требуется перезапуск».
+- Кнопка **«Сгенерировать сертификат»** (self-signed лист, 02 §9.9):
+  подтверждение с предупреждением, что применится только после
+  перезапуска.
+- Кнопка **«Загрузить сертификат»**: форма PEM (cert + key; textarea×2 или
+  файлы). Клиентская валидация — зеркало серверной (02 §9.9); серверная —
+  источник истины: 422 «сертификат влияет на коммуникации воркеров с их
+  подчинёнными сервисами — обновление отклонено» выводится ЯВНО
+  (баннер-ошибка в теле формы, с причиной: CA / clientAuth / совпадение
+  fingerprint с per-cluster CA).
+- Кнопка **«Перезапустить воркера»**: подтверждение с предупреждением
+  «идущие операции (provisioning/переезды/ротации) продолжатся после
+  подъёма — клэймы и журнал в etcd; краткое окно недоступности API
+  (секунды)»; после 202 — статус применения серта обновится тиками.
+- Кнопка **«Убрать управляемый сертификат»** (красная; только при живом
+  ключе): подтверждение «воркер вернётся к env-сертификату после
+  перезапуска».
+
+PEM-материалы (cert/key) в UI не отображаются и в API не отдаются — только
+метаданные.
 
 ## 4. Каталог алертов (`AlertEngine`)
 

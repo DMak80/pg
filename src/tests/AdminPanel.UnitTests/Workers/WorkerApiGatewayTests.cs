@@ -276,4 +276,59 @@ public class WorkerApiGatewayTests
         // Assert
         result.StatusCode.Should().Be(201);
     }
+
+    // ===== SendAllAsync (рестарт, spec §4.4) =====
+
+    [Fact]
+    public async Task SendAll_TwoLiveEndpoints_BothCalledPerInstance()
+    {
+        // Arrange: два живых ключа (inst1 → 202, inst2 → 500; оба URL отвечают)
+        using var stub1 = new WorkerStub { StatusCode = 202, ResponseBody = """{"restarting":true}""" };
+        using var stub2 = new WorkerStub { StatusCode = 500 };
+        var gateway = NewGateway(PgStore(
+            new WorkerEndpoint("inst1", stub1.Url, 1),
+            new WorkerEndpoint("inst2", stub2.Url, 2)));
+
+        // Act
+        var results = await gateway.SendAllAsync(
+            "pgworker", HttpMethod.Post, "/api/restart", body: null,
+            requestedBy: "admin", TestContext.Current.CancellationToken);
+
+        // Assert: оба инстанса в ответе (порядок сортировки InstanceId); ответ
+        // НЕ-2xx НЕ прерывает остальных (в отличие от failover SendAsync)
+        results.Should().HaveCount(2);
+        results.Should().Contain(r => r.Instance == "inst1" && r.Response!.StatusCode == 202 && r.Error == null);
+        results.Should().Contain(r => r.Instance == "inst2" && r.Response!.StatusCode == 500 && r.Error == null);
+    }
+
+    [Fact]
+    public async Task SendAll_DeadEndpoint_ErrorResultOthersAlive()
+    {
+        // Arrange: inst1 — мёртвый порт (зонд свободного), inst2 — живой стаб
+        using var alive = new WorkerStub();
+        var gateway = NewGateway(PgStore(
+            new WorkerEndpoint("inst1", DeadUrl(), 1),
+            new WorkerEndpoint("inst2", alive.Url, 2)));
+
+        // Act
+        var results = await gateway.SendAllAsync(
+            "pgworker", HttpMethod.Post, "/api/restart", null, null, TestContext.Current.CancellationToken);
+
+        // Assert: мёртвый — Error != null и Response == null; живой — Response
+        results.Should().HaveCount(2);
+        results.Should().Contain(r => r.Instance == "inst1" && r.Error != null && r.Response == null);
+        results.Should().Contain(r => r.Instance == "inst2" && r.Response != null && r.Error == null);
+    }
+
+    [Fact]
+    public async Task SendAll_NoLiveEndpoints_ThrowsUnavailable()
+    {
+        // Arrange: снапшот с пустым списком ключей
+        var gateway = NewGateway(PgStore());
+
+        // Act / Assert
+        await Assert.ThrowsAsync<WorkerApiUnavailableException>(() =>
+            gateway.SendAllAsync("pgworker", HttpMethod.Post, "/api/restart", null, null,
+                TestContext.Current.CancellationToken));
+    }
 }

@@ -81,4 +81,22 @@ public class WorkerEndpointsParserTests
         endpoints.Should().ContainSingle().Which
             .Should().Be(new WorkerEndpoint("w1", "http://w1:8080", 0));
     }
+
+    [Fact]
+    public void Parse_CertThumbprint_OptionalField()
+    {
+        // Arrange: новые инстансы пишут thumbprint, старые — нет (spec §3.1)
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/api/new1", """{"url":"http://h:1","instance":"new1","since_unix":1,"cert_thumbprint":"ab"}""", 1),
+            new("/pgworker/api/old1", """{"url":"http://h:2","instance":"old1","since_unix":2}""", 2),
+        };
+
+        // Act
+        var (endpoints, _) = WorkerEndpointsParser.Parse(kvs);
+
+        // Assert
+        endpoints.Should().Contain(e => e.InstanceId == "new1" && e.CertThumbprint == "ab");
+        endpoints.Should().Contain(e => e.InstanceId == "old1" && e.CertThumbprint == null);
+    }
 }

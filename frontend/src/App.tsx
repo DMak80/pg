@@ -13,6 +13,7 @@ import { EtcdPage } from './pages/EtcdPage';
 import { HaPage } from './pages/HaPage';
 import { HaScopeDetailsPage } from './pages/HaScopeDetailsPage';
 import { OverviewPage } from './pages/OverviewPage';
+import { WorkersPage } from './pages/WorkersPage';
 
 export const router = createBrowserRouter([
   { path: '/login', element: <LoginPage /> },
@@ -31,6 +32,7 @@ export const router = createBrowserRouter([
       { path: 'ha', element: <HaPage /> },
       { path: 'ha/:scope', element: <HaScopeDetailsPage /> },
       { path: 'alerts', element: <AlertsPage /> },
+      { path: 'workers', element: <WorkersPage /> },
       { path: '*', element: <Navigate to="/" replace /> },
     ],
   },

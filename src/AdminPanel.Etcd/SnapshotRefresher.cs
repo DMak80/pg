@@ -91,6 +91,7 @@ public sealed class SnapshotRefresher(
         var movesTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Moves, t), ct);
         var backupsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Backups, t), ct);
         var pgApiTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PgWorkerApi, t), ct);
+        var pgCertTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.WorkerApiCert, t), ct);
         var workTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PgWorkerWork, t), ct);
         var membersTask = WithFailoverAsync(alive, active, (ep, t) => gateway.MemberListAsync(ep, t), ct);
         var alarmsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.AlarmAsync(ep, t), ct);
@@ -108,9 +109,13 @@ public sealed class SnapshotRefresher(
 
         // Частичный KV-провал = неполный снапшот: консервативно отказ тика, данные прежние
         // (уточнение к spec §7.2 п.5: пустой префикс — валидные данные, транспортный отказ — нет).
+        var pgCertKv = await pgCertTask;
+
+        // Частичный KV-провал = неполный снапшот: консервативно отказ тика, данные прежние
+        // (уточнение к spec §7.2 п.5: пустой префикс — валидные данные, транспортный отказ — нет).
         if (!clustersKv.IsSuccess || !serviceKv.IsSuccess || !nodesKv.IsSuccess
             || !portAllocKv.IsSuccess || !movesKv.IsSuccess || !backupsKv.IsSuccess
-            || !pgApiKv.IsSuccess || !workKv.IsSuccess)
+            || !pgApiKv.IsSuccess || !workKv.IsSuccess || !pgCertKv.IsSuccess)
             return FailTick(previous, statuses, now, "KV-чтения etcd не удались");
 
         // 4. Парсеры → модель (чистые функции, arch/02 §4 п.3).
@@ -121,6 +126,8 @@ public sealed class SnapshotRefresher(
         var movesParsed = MovesQueueParser.Parse(movesKv.Value);
         var backupsParsed = BackupsParser.Parse(backupsKv.Value);
         var pgApiParsed = WorkerEndpointsParser.Parse(pgApiKv.Value);
+        // Префикс-запрос точечный: ровно один ключ /workers/api_tls/pgworker.
+        var pgCertParsed = WorkerCertParser.Parse(Prefixes.WorkerApiCert, pgCertKv.Value.FirstOrDefault());
         var workParsed = WorkJournalParser.Parse(workKv.Value);
 
         // 5. Кворум-эвристика (spec §3.11) + мягкие метаданные member/alarm (ошибка не роняет тик).
@@ -156,7 +163,7 @@ public sealed class SnapshotRefresher(
         var built = ProbeEnricher.Apply(
             SnapshotBuilder.Build(
                 time, clustersParsed, serviceParsed, nodes, movesParsed, backupsParsed, pgApiParsed, workParsed,
-                etcd.Members, etcd.Alarms, etcd),
+                etcd.Members, etcd.Alarms, etcd, pgCertParsed),
             probeStateStore.Current)
             with
         {
@@ -288,5 +295,6 @@ public sealed class SnapshotRefresher(
         public const string Backups = "/pgworker/backups/";
         public const string PgWorkerApi = "/pgworker/api/";
         public const string PgWorkerWork = "/pgworker/work/";
+        public const string WorkerApiCert = "/workers/api_tls/pgworker";
     }
 }
