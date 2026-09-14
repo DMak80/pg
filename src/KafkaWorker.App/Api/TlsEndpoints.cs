@@ -38,15 +38,39 @@ public static class TlsEndpoints
         }
     }
 
-    public static void ConfigureMtls(WebApplicationBuilder builder, int port)
+    public static ApiTlsSetup ConfigureMtls(WebApplicationBuilder builder, int port, ManagedCertRead? managedCert = null)
     {
         var tls = builder.Configuration.GetSection("KafkaWorker:Api:Tls").Get<TlsOptions>() ?? new TlsOptions();
         if (tls.AllowInsecureHttp)
-            return; // без TLS — только WAF-тесты; warning логирует Program.cs
+            return new ApiTlsSetup(null, null, null); // без TLS — только WAF-тесты; warning логирует Program.cs
 
-        // Fail-fast при конфигурации хоста: серт/ключ/ClientCA обязаны быть заданы.
-        var serverCert = LoadServerCertificate(tls) ?? throw new ApplicationException(
-            "KafkaWorker:Api:Tls: серверный серт/ключ не заданы (KFW_API_TLS_CERT/KEY или *_PATH; arch/16 §1.1)");
+        // Управляемый серт: etcd-ключ > env (spec §3.2 п.1). Битый ключ —
+        // fail-fast: ключ — явное намерение оператора.
+        X509Certificate2? serverCert;
+        string? source;
+        string? warning = null;
+        switch (managedCert?.Status)
+        {
+            case ManagedCertStatus.Found:
+                serverCert = LoadCertificatePemPair(managedCert.CertPem!, managedCert.KeyPem!);
+                source = "etcd:/workers/api_tls/kafkaworker";
+                break;
+            case ManagedCertStatus.Broken:
+                throw new ApplicationException(
+                    $"KafkaWorker:Api:Tls: ключ /workers/api_tls/kafkaworker бит ({managedCert.Error}) — "
+                    + "исправьте из панели (PUT api-cert) или удалите (DELETE api-cert)");
+            default:
+                serverCert = LoadServerCertificate(tls);
+                source = "env";
+                if (managedCert?.Status == ManagedCertStatus.Unreachable)
+                    warning = $"etcd недоступен ({managedCert.Error}) — стартую на env-серте";
+                break;
+        }
+
+        if (serverCert is null)
+            throw new ApplicationException(
+                "KafkaWorker:Api:Tls: серверный серт/ключ не заданы (KFW_API_TLS_CERT/KEY или *_PATH; etcd-ключ /workers/api_tls/kafkaworker; arch/16 §1.1)");
+
         var clientCa = LoadClientCa(tls) ?? throw new ApplicationException(
             "KafkaWorker:Api:Tls: ClientCA не задан (KFW_API_TLS_CLIENT_CA[_PATH])");
 
@@ -58,7 +82,13 @@ public static class TlsEndpoints
                 ClientCertificateMode = ClientCertificateMode.RequireCertificate,
                 ClientCertificateValidation = (certificate, _, _) => ValidateChain(certificate, clientCa),
             })));
+        return new ApiTlsSetup(serverCert, source, warning);
     }
+
+    // Итог конфигурации серта (spec §3.2 п.1): применённый серт + источник
+    // ("etcd:/workers/api_tls/kafkaworker" | "env") + warning (etcd недоступен,
+    // старт на env). ServerCert=null — AllowInsecureHttp (WAF-тесты).
+    public sealed record ApiTlsSetup(X509Certificate2? ServerCert, string? Source, string? Warning);
 
     // Валидация цепочки клиентского серта против per-install API-CA.
     private static bool ValidateChain(X509Certificate2? certificate, X509Certificate2 clientCa)
@@ -74,17 +104,21 @@ public static class TlsEndpoints
         return chain.Build(certificate);
     }
 
+    // PFX round-trip: ключ из CreateFromPem эфемерный (не экспортируемый) —
+    // SslStream (macOS) не может его использовать без ре-импорта.
+    private static X509Certificate2 LoadCertificatePemPair(string certPem, string keyPem)
+    {
+        var pem = X509Certificate2.CreateFromPem(certPem, keyPem);
+        return X509CertificateLoader.LoadPkcs12(pem.Export(X509ContentType.Pkcs12), null);
+    }
+
     private static X509Certificate2? LoadServerCertificate(TlsOptions tls)
     {
         var certPem = tls.ServerCertPem ?? ReadFile(tls.ServerCertPath);
         var keyPem = tls.ServerKeyPem ?? ReadFile(tls.ServerKeyPath);
         if (certPem is null || keyPem is null)
             return null;
-
-        // PFX round-trip: ключ из CreateFromPem эфемерный (не экспортируемый) —
-        // SslStream (macOS) не может его использовать без ре-импорта.
-        var pem = X509Certificate2.CreateFromPem(certPem, keyPem);
-        return X509CertificateLoader.LoadPkcs12(pem.Export(X509ContentType.Pkcs12), null);
+        return LoadCertificatePemPair(certPem, keyPem);
     }
 
     private static X509Certificate2? LoadClientCa(TlsOptions tls)

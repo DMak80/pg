@@ -65,10 +65,15 @@ builder.Services.AddOptions<KafkaWorkerOptions>()
         "AdvertiseUrl обязан быть https:// (mTLS-only API, arch/16 §1.1)")
     .ValidateOnStart();
 
+// Управляемый серт API (spec §3.2 п.1): чтение ключа /workers/api_tls/kafkaworker
+// ДО поднятия Kestrel; приоритет etcd > env; битый ключ — fail-fast.
+var etcdEndpoints = builder.Configuration.GetSection("KafkaWorker:Etcd:Endpoints").Get<string[]>() ?? [];
+var managedCert = await WorkerApiCertReader.ReadAsync(etcdEndpoints, "kafkaworker", CancellationToken.None);
+
 // mTLS HTTP API (arch/16 §1.1, t03): env-секреты TLS → конфиг, Kestrel c
 // серверным сертом и требованием клиентского серта per-install API-CA.
 TlsEndpoints.ApplyEnvOverrides(builder.Configuration);
-TlsEndpoints.ConfigureMtls(builder, port: 8080);
+var apiTls = TlsEndpoints.ConfigureMtls(builder, port: 8080, managedCert);
 
 // etcd-клиент (HTTP JSON gateway /v3/*) + координация (клэймы/лидерство, журнал).
 builder.Services.AddSingleton<IEtcdGateway>(sp =>
@@ -393,6 +398,10 @@ var app = builder.Build();
 if (app.Services.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)
     app.Logger.LogWarning(
         "KafkaWorker:Api:Tls:AllowInsecureHttp=true — HTTP без TLS (ТОЛЬКО WAF-тесты, arch/16 §1.1)");
+if (apiTls.Source is { } certSource)
+    app.Logger.LogInformation("KafkaWorker:Api:Tls: серверный серт API — источник {Source}", certSource);
+if (apiTls.Warning is { } certWarning)
+    app.Logger.LogWarning("KafkaWorker:Api:Tls: {Warning}", certWarning);
 app.MapAppMetrics();
 app.MapHealthChecks("/healthz");
 app.MapWorkerApi();
