@@ -205,6 +205,14 @@ public sealed class WorkerCertService(
     {
         if (worker is not ("pgworker" or "kafkaworker"))
             return Result.Failed(new WorkerNotFoundException(worker)); // даже если мусорный ключ кем-то записан — не трогаем
+        // Осознанная гонка (TOCTOU) Range→Delete: между проверкой наличия ключа
+        // и удалением конкурентный generate (txn version==0) может создать ключ —
+        // DELETE удалит уже свежесозданный и вернёт 204 вместо 404. Атомарный
+        // txn «compare version>0 → delete» недоступен: IEtcdGateway.TxnAsync
+        // несёт только puts (arch/adminpanel/02 §9.2), расширение гейтвея —
+        // изменение контракта arch. Окно ничтожно: панель — единственный
+        // писатель, оператор один; потеря видна на следующем тике (статус
+        // инстансов unmanaged), восстановление — повторный generate/PUT.
         var existing = await WithEtcdAsync(endpoint =>
             gateway.RangeAsync(endpoint, KeyOf(worker), ct));
         if (!existing.IsSuccess)
