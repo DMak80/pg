@@ -24,12 +24,3 @@
   `ApiTlsEndpoints` (PgWorker.App) ↔ `TlsEndpoints` (KafkaWorker.App) ↔
   TLS-хелперы (`DockerTlsMaterial.ValidateChain`, `WorkerTlsHandler`,
   env-биндинги/PEM-дуализм) — унифицировать тем же проходом.
-- **`t11-pgtune-params-convergence`** — конвергенция pg-параметров работающих
-  нод: выравнивание живого конфига PostgreSQL с рассчитанным PGTune
-  (PATCH /config Patroni + pending_restart для postmaster-параметров —
-  `max_connections`, `shared_buffers`, …). Сегодня PGTune-параметры
-  (`PgTune.Calculate`, расчёт при provision по `request_*`) применяются только
-  при bootstrap контейнера; смена `PgWorker:Pgtune`/`request_*` подхватывается
-  лишь пересозданными нодами — живые продолжают работать на прежнем конфиге
-  (осознанный дрейф, spec `docs/superpowers/2026-09-12-pgtune-provision/spec.md`
-  §6). Задача: автоматическое выравнивание без пересоздания.
