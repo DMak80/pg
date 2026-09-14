@@ -1,4 +1,4 @@
-using AdminPanel.Infrastructure.DI;
+using Shared.Core.DI;
 using Microsoft.Extensions.Options;
 
 namespace AdminPanel.Core.Alerting.Rules;

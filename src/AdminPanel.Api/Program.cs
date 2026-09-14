@@ -5,9 +5,8 @@ using AdminPanel.Api.Operations;
 using AdminPanel.Api.Operations.Kafka;
 using AdminPanel.Core;
 using AdminPanel.Etcd;
-using AdminPanel.Infrastructure;
-using AdminPanel.Infrastructure.DI;
-using AdminPanel.Infrastructure.Traces;
+using Shared.Core.DI;
+using Shared.Core.Traces;
 using AdminPanel.Probes;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Shared.Metrics;
@@ -28,7 +27,7 @@ Tracing.Init(builder.Environment.ApplicationName);
 
 builder
    .Services.UseDiBehaviours(builder.Configuration)
-   .AddInfrastructure()
+   .AddSharedCore()
    .AddApi() // t02: auth-сервисы и [Config]-POCO Api-сборки
    .AddCore()
    .AddEtcd()

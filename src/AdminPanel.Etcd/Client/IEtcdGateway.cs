@@ -1,5 +1,4 @@
 using AdminPanel.Core;
-using AdminPanel.Infrastructure;
 
 namespace AdminPanel.Etcd.Client;
 

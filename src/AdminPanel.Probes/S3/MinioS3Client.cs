@@ -1,5 +1,4 @@
 using AdminPanel.Core;
-using AdminPanel.Infrastructure;
 using Amazon.Runtime;
 using Amazon.S3;
 using Amazon.S3.Model;

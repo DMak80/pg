@@ -1,7 +1,7 @@
 using System.Reflection;
 using AdminPanel.Etcd.Client;
 using AdminPanel.Etcd.Workers;
-using AdminPanel.Infrastructure.DI;
+using Shared.Core.DI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;

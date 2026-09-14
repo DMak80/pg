@@ -3,7 +3,6 @@ using AdminPanel.Core.Kafka;
 using AdminPanel.Core.Kafka.KafkaAlerting;
 using AdminPanel.Etcd;
 using AdminPanel.Etcd.Client;
-using AdminPanel.Infrastructure;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;

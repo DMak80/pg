@@ -6,7 +6,6 @@ using AdminPanel.Core;
 using AdminPanel.Etcd;
 using AdminPanel.Etcd.Client;
 using AdminPanel.Etcd.Workers;
-using AdminPanel.Infrastructure;
 using FluentAssertions;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;

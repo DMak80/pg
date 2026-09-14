@@ -2,9 +2,8 @@ using AdminPanel.Core;
 using AdminPanel.Core.Kafka;
 using AdminPanel.Etcd;
 using AdminPanel.Etcd.Workers;
-using AdminPanel.Infrastructure;
-using AdminPanel.Infrastructure.CQRS;
-using AdminPanel.Infrastructure.DI;
+using Shared.Core.CQRS;
+using Shared.Core.DI;
 
 namespace AdminPanel.Api.Operations;
 

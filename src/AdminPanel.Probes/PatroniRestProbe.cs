@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using AdminPanel.Core;
-using AdminPanel.Infrastructure.DI;
+using Shared.Core.DI;
 using Microsoft.Extensions.Options;
 
 namespace AdminPanel.Probes;

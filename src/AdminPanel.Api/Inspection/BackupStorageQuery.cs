@@ -1,9 +1,8 @@
 using AdminPanel.Core;
 using AdminPanel.Core.Alerting;
 using AdminPanel.Etcd;
-using AdminPanel.Infrastructure;
-using AdminPanel.Infrastructure.CQRS;
-using AdminPanel.Infrastructure.DI;
+using Shared.Core.CQRS;
+using Shared.Core.DI;
 using AdminPanel.Probes.S3;
 using Microsoft.Extensions.Options;
 

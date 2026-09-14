@@ -1,5 +1,5 @@
 using System.Reflection;
-using AdminPanel.Infrastructure.DI;
+using Shared.Core.DI;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace AdminPanel.Api;

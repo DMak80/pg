@@ -1,6 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
-using AdminPanel.Infrastructure.DI;
+using Shared.Core.DI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 

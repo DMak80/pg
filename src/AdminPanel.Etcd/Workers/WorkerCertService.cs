@@ -5,8 +5,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using AdminPanel.Core;
 using AdminPanel.Etcd.Client;
-using AdminPanel.Infrastructure;
-using AdminPanel.Infrastructure.DI;
+using Shared.Core.DI;
 using Microsoft.Extensions.Options;
 
 namespace AdminPanel.Etcd.Workers;

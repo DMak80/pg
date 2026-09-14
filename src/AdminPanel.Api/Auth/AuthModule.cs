@@ -1,6 +1,6 @@
 using System.Security.Claims;
 using System.Text.Json;
-using AdminPanel.Infrastructure.CQRS;
+using Shared.Core.CQRS;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Builder;

@@ -1,5 +1,5 @@
-using AdminPanel.Infrastructure.DI;
-using AdminPanel.Infrastructure.HealthChecks;
+using Shared.Core.DI;
+using Shared.Core.HealthChecks;
 
 namespace AdminPanel.Etcd;
 

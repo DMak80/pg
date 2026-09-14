@@ -6,4 +6,8 @@
         <ProjectReference Include="..\AdminPanel.Core\AdminPanel.Core.csproj"/>
     </ItemGroup>
 
+    <ItemGroup>
+        <Using Include="Shared.Core"/>
+    </ItemGroup>
+
 </Project>

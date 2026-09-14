@@ -3,7 +3,6 @@ using AdminPanel.Core.Alerting;
 using AdminPanel.Etcd;
 using AdminPanel.Etcd.Client;
 using AdminPanel.Etcd.Workers;
-using AdminPanel.Infrastructure;
 using AdminPanel.Probes.S3;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;

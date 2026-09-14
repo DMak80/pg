@@ -18,10 +18,14 @@
     </ItemGroup>
 
     <ItemGroup>
-        <ProjectReference Include="..\..\AdminPanel.Infrastructure\AdminPanel.Infrastructure.csproj"/>
+        <ProjectReference Include="..\..\Shared.Core\Shared.Core.csproj"/>
         <ProjectReference Include="..\..\AdminPanel.Api\AdminPanel.Api.csproj"/>
         <ProjectReference Include="..\..\AdminPanel.Core\AdminPanel.Core.csproj"/>
         <ProjectReference Include="..\..\AdminPanel.Etcd\AdminPanel.Etcd.csproj"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <Using Include="Shared.Core"/>
     </ItemGroup>
 
     <ItemGroup>

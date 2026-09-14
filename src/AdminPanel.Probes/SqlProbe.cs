@@ -1,7 +1,7 @@
 using System.Data;
 using System.Globalization;
 using AdminPanel.Core;
-using AdminPanel.Infrastructure.DI;
+using Shared.Core.DI;
 using Microsoft.Extensions.Options;
 using Npgsql;
 

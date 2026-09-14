@@ -3,8 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Net.Http.Json;
 using AdminPanel.Core;
-using AdminPanel.Infrastructure;
-using AdminPanel.Infrastructure.DI;
+using Shared.Core.DI;
 
 namespace AdminPanel.Etcd.Client;
 

@@ -2,7 +2,6 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using AdminPanel.Etcd;
-using AdminPanel.Infrastructure;
 using AdminPanel.Probes.S3;
 using FluentAssertions;
 using Microsoft.Extensions.DependencyInjection;

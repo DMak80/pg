@@ -1,6 +1,5 @@
 using AdminPanel.Core;
-using AdminPanel.Infrastructure;
-using AdminPanel.Infrastructure.DI;
+using Shared.Core.DI;
 
 namespace AdminPanel.Probes.Kafka;
 
