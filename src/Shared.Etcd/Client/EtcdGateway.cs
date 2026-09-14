@@ -2,18 +2,22 @@ using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using PgWorker.Core;
+using Shared.Core;
 
-namespace PgWorker.Etcd.Client;
+namespace Shared.Etcd.Client;
 
 // HTTP-ошибка gateway: не-2xx от /v3/*.
 public sealed class EtcdHttpException(string endpoint, int statusCode, string body)
     : Exception($"etcd {endpoint} ответил {statusCode}: {body}");
 
-// Реализация IEtcdGateway: HttpClient (именованный клиент DI), base64-кодирование ключей.
-// Таймаут задаётся конфигурацией клиента, не здесь.
+// Все живые endpoints не ответили (после failover).
+public sealed class EtcdUnreachableException(string message) : Exception(message);
+
+// Реализация IEtcdGateway: HttpClient (именованный клиент DI / IHttpClientFactory),
+// base64-кодирование ключей. Таймаут задаётся конфигурацией клиента, не здесь.
 public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
 {
+    public const string HttpClientName = "etcd";
     // etcd gateway сериализует int64 decimal-строками и не приводит proto-имена к camelCase.
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -118,11 +122,30 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
         return result;
     }
 
-    public async Task<Result<long>> StatusAsync(string endpoint, CancellationToken ct)
+    public async Task<Result<EtcdStatusPayload>> StatusAsync(string endpoint, CancellationToken ct)
     {
         var result = await Result<StatusResponse>.FromAsync(
             async () => await PostAsync<StatusResponse>(endpoint, "/v3/maintenance/status", new { }, ct));
-        return result.Map(r => (long)r.Header!.Revision);
+        return result.Map(r => new EtcdStatusPayload(
+            r.Version, r.DbSize, r.Leader, r.RaftIndex, r.RaftTerm, r.Header?.Revision));
+    }
+
+    public async Task<Result<IReadOnlyList<EtcdMember>>> MemberListAsync(string endpoint, CancellationToken ct)
+    {
+        var result = await Result<MemberListResponse>.FromAsync(
+            async () => await PostAsync<MemberListResponse>(endpoint, "/v3/cluster/member/list", new { }, ct));
+        return result.Map(r => (IReadOnlyList<EtcdMember>)(r.Members ?? [])
+            .Select(m => new EtcdMember(m.Id, m.Name, m.PeerUrls ?? [], m.ClientUrls ?? []))
+            .ToList());
+    }
+
+    public async Task<Result<IReadOnlyList<EtcdAlarm>>> AlarmAsync(string endpoint, CancellationToken ct)
+    {
+        var result = await Result<AlarmResponse>.FromAsync(
+            async () => await PostAsync<AlarmResponse>(endpoint, "/v3/maintenance/alarm", new { }, ct));
+        return result.Map(r => (IReadOnlyList<EtcdAlarm>)(r.Alarms ?? [])
+            .Select(a => new EtcdAlarm(a.MemberId, a.Type))
+            .ToList());
     }
 
     public async Task<Result> CompactAsync(string endpoint, long revision, CancellationToken ct)
@@ -296,6 +319,57 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
     {
         [JsonPropertyName("header")]
         public StatusHeader? Header { get; set; }
+
+        [JsonPropertyName("version")]
+        public string? Version { get; set; }
+
+        [JsonPropertyName("dbSize")]
+        public long? DbSize { get; set; }
+
+        [JsonPropertyName("leader")]
+        public ulong? Leader { get; set; }
+
+        [JsonPropertyName("raftIndex")]
+        public ulong? RaftIndex { get; set; }
+
+        [JsonPropertyName("raftTerm")]
+        public ulong? RaftTerm { get; set; }
+    }
+
+    private sealed class MemberListResponse
+    {
+        [JsonPropertyName("members")]
+        public List<MemberDto>? Members { get; set; }
+    }
+
+    private sealed class MemberDto
+    {
+        [JsonPropertyName("ID")]
+        public ulong Id { get; set; }
+
+        [JsonPropertyName("name")]
+        public string? Name { get; set; }
+
+        [JsonPropertyName("peerURLs")]
+        public List<string>? PeerUrls { get; set; }
+
+        [JsonPropertyName("clientURLs")]
+        public List<string>? ClientUrls { get; set; }
+    }
+
+    private sealed class AlarmResponse
+    {
+        [JsonPropertyName("alarms")]
+        public List<AlarmDto>? Alarms { get; set; }
+    }
+
+    private sealed class AlarmDto
+    {
+        [JsonPropertyName("memberID")]
+        public ulong MemberId { get; set; }
+
+        [JsonPropertyName("alarm")]
+        public EtcdAlarmType Type { get; set; }
     }
 
     private sealed class StatusHeader

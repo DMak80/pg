@@ -1,11 +1,8 @@
 using System.Net;
 using System.Text;
 using System.Text.Json;
-using PgWorker.Core;
-using PgWorker.Etcd.Client;
-using Xunit;
 
-namespace PgWorker.UnitTests.Etcd;
+namespace Shared.Etcd.UnitTests;
 
 // Транспорт etcd /v3/*: base64, range_end, txn-compare, lease (строковые int64), snapshot (задача 10).
 public class EtcdGatewayTests
@@ -245,5 +242,252 @@ public class EtcdGatewayTests
         var body = JsonDocument.Parse(handler.Requests.Single().Body).RootElement;
         body.GetProperty("key").GetString().Should().Be("L3Bnd29ya2VyL2xlYWRlcg==");
         body.GetProperty("lease").GetInt64().Should().Be(555);
+    }
+
+    // --- Панельные кейсы (t08, объединение gateway-тестов; ассерты прежние) ---
+
+    [Fact]
+    public async Task Range_DecodesBase64Kvs()
+    {
+        // Arrange — mod_revision приходит строкой
+        var handler = new FakeHandler(_ => Json(
+            """{ "kvs": [ { "key": "L2EvYg==", "value": "dg==", "mod_revision": "42" } ] }"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        var result = await gateway.RangeAsync("http://etcd:2379", "/a/", CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        var kv = result.Value.Should().ContainSingle().Subject;
+        kv.Key.Should().Be("/a/b");
+        kv.Value.Should().Be("v");
+        kv.ModRevision.Should().Be(42);
+    }
+
+    [Fact]
+    public async Task Range_MissingKvs_EmptyList()
+    {
+        // Arrange — пустой префикс: gateway не отдаёт kvs вовсе
+        var handler = new FakeHandler(_ => Json("""{"header":{}}"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        var result = await gateway.RangeAsync("http://etcd:2379", "/nope/", CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Status_ParsesFields()
+    {
+        // Arrange — payload 6-арный (t08: + Revision из header.revision)
+        var handler = new FakeHandler(_ => Json(
+            """{ "header": { "member_id": "13820473277879079085", "raft_term": "3" }, "version": "3.5.21", "dbSize": "20480", "leader": "13820473277879079085", "raftIndex": "17", "raftTerm": "3" }"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        var result = await gateway.StatusAsync("http://etcd:2379", CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Version.Should().Be("3.5.21");
+        result.Value.DbSizeBytes.Should().Be(20480);
+        result.Value.LeaderMemberId.Should().Be(13820473277879079085UL);
+        result.Value.RaftIndex.Should().Be(17);
+        result.Value.RaftTerm.Should().Be(3);
+        handler.Requests.Single().Url.Should().Be("http://etcd:2379/v3/maintenance/status");
+    }
+
+    [Fact]
+    public async Task MemberList_ParsesUrls()
+    {
+        // Arrange — имена полей по proto: ID/peerURLs/clientURLs
+        var handler = new FakeHandler(_ => Json(
+            """{ "members": [ { "ID": "13820473277879079085", "name": "test", "peerURLs": [ "http://localhost:2380" ], "clientURLs": [ "http://localhost:2379" ] } ] }"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        var result = await gateway.MemberListAsync("http://etcd:2379", CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        var member = result.Value.Should().ContainSingle().Subject;
+        member.Id.Should().Be(13820473277879079085UL);
+        member.Name.Should().Be("test");
+        member.PeerUrls.Should().Contain("http://localhost:2380");
+        member.ClientUrls.Should().Contain("http://localhost:2379");
+    }
+
+    [Fact]
+    public async Task Alarm_MapsAlarmType()
+    {
+        // Arrange — "alarm": 1 → NoSpace
+        var handler = new FakeHandler(_ => Json(
+            """{ "alarms": [ { "memberID": "13820473277879079085", "alarm": 1 } ] }"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        var result = await gateway.AlarmAsync("http://etcd:2379", CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        var alarm = result.Value.Should().ContainSingle().Subject;
+        alarm.MemberId.Should().Be(13820473277879079085UL);
+        alarm.Type.Should().Be(EtcdAlarmType.NoSpace);
+    }
+
+    [Fact]
+    public async Task HttpError_ReturnsFailed()
+    {
+        // Arrange — Content задан явно: ответ без тела дал бы null-Content и NRE вместо EtcdHttpException
+        var handler = new FakeHandler(_ => new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+        {
+            Content = new StringContent(string.Empty),
+        });
+        var gateway = NewGateway(handler);
+
+        // Act
+        var result = await gateway.StatusAsync("http://etcd:2379", CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().BeOfType<EtcdHttpException>();
+    }
+
+    [Fact]
+    public async Task NetworkError_ReturnsFailed()
+    {
+        // Arrange — HttpClient с недостижимым портом: connection refused мгновенен
+        var gateway = new EtcdGateway(new HttpClient { Timeout = TimeSpan.FromSeconds(2) });
+
+        // Act
+        var result = await gateway.StatusAsync("http://localhost:1", CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Txn_CompareFailed_MapsSucceededFalse()
+    {
+        // Arrange
+        var handler = new FakeHandler(_ => Json("""{"succeeded":false,"responses":[]}"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        var result = await gateway.TxnAsync("http://etcd:2379",
+            TxnRequest.Of([TxnCompare.NotExists("/k")], [new TxnOp.Put("/k", "v", null)]),
+            CancellationToken.None);
+
+        // Assert: отказ compare — не исключение, а Succeeded=false (клэйм имени занят, arch/02 §9.2).
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Succeeded.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Put_RequestHasBase64KeyValue()
+    {
+        // Arrange — одиночная запись без lease (панельный вызов)
+        var handler = new FakeHandler(_ => Json("""{"header":{}}"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        var result = await gateway.PutAsync("http://etcd:2379", "/a/b", "v", lease: null, CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        var request = handler.Requests.Should().ContainSingle().Subject;
+        request.Url.Should().Be("http://etcd:2379/v3/kv/put");
+        var body = JsonDocument.Parse(request.Body).RootElement;
+        body.GetProperty("key").GetString().Should().Be("L2EvYg==");
+        body.GetProperty("value").GetString().Should().Be("dg==");
+    }
+
+    [Fact]
+    public async Task Delete_Prefix_RequestHasKeyAndRangeEnd()
+    {
+        // Arrange
+        var handler = new FakeHandler(_ => Json("""{"deleted":3}"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        await gateway.DeleteAsync("http://etcd:2379", "/clusters/shop/", prefix: true, CancellationToken.None);
+        await gateway.DeleteAsync("http://etcd:2379", "/service/shop-shard1/request_cpu", prefix: false, CancellationToken.None);
+
+        // Assert: prefix=true → key+range_end (префиксный deleterange); точечный — только key.
+        var bodies = handler.Requests.Select(r => JsonDocument.Parse(r.Body).RootElement).ToList();
+        bodies[0].TryGetProperty("range_end", out _).Should().BeTrue();
+        bodies[1].TryGetProperty("range_end", out _).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Txn_RequestHasBase64Bodies()
+    {
+        // Arrange — панельный txn §9.9 через фабрики (compare version==0 + put без lease)
+        var handler = new FakeHandler(_ => Json("""{"succeeded":true}"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        var result = await gateway.TxnAsync("http://etcd:2379",
+            TxnRequest.Of(
+                [TxnCompare.NotExists("/clusters/shop/config")],
+                [new TxnOp.Put("/clusters/shop/config", "{}", null)]),
+            CancellationToken.None);
+
+        // Assert: base64("/clusters/shop/config") = L2NsdXN0ZXJzL3Nob3AvY29uZmln
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Succeeded.Should().BeTrue();
+        var request = handler.Requests.Should().ContainSingle().Subject;
+        request.Url.Should().Be("http://etcd:2379/v3/kv/txn");
+        var body = JsonDocument.Parse(request.Body).RootElement;
+        body.GetProperty("compare")[0].GetProperty("key").GetString().Should().Be("L2NsdXN0ZXJzL3Nob3AvY29uZmln");
+        body.GetProperty("compare")[0].GetProperty("version").GetInt32().Should().Be(0);
+        body.GetProperty("success")[0].GetProperty("request_put").GetProperty("key").GetString().Should().Be("L2NsdXN0ZXJzL3Nob3AvY29uZmln");
+    }
+
+    // --- Новые кейсы t08 ---
+
+    [Fact]
+    public async Task Status_ParsesRevision_FromHeader()
+    {
+        // Arrange — header.revision приходит int64-decimal-строкой (protojson).
+        var handler = new FakeHandler(_ => Json(
+            """{"header":{"revision":"42"},"version":"3.5.21","leader":"1"}"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        var status = await gateway.StatusAsync("http://etcd:2379", CancellationToken.None);
+
+        // Assert
+        status.IsSuccess.Should().BeTrue();
+        status.Value.Revision.Should().Be(42);
+        status.Value.Version.Should().Be("3.5.21");
+    }
+
+    [Fact]
+    public async Task Txn_FactoryNotExists_SerializesVersionZeroCompare()
+    {
+        // Arrange — фабрика NotExists(key) эквивалентна прямой форме
+        // new TxnCompare(key, TxnTarget.Version, TxnPredicate.Equal, "", 0) (spec §4.2).
+        var handler = new FakeHandler(_ => Json("""{"succeeded":true}"""));
+        var gateway = NewGateway(handler);
+
+        // Act
+        await gateway.TxnAsync("http://etcd:2379",
+            TxnRequest.Of([TxnCompare.NotExists("/k")], [new TxnOp.Put("/k", "v", null)]),
+            CancellationToken.None);
+
+        // Assert: target=VERSION(0), result=EQUAL(0), version=0; success-put без lease.
+        var body = JsonDocument.Parse(handler.Requests.Should().ContainSingle().Subject.Body).RootElement;
+        var compare = body.GetProperty("compare")[0];
+        compare.GetProperty("target").GetInt32().Should().Be(0);
+        compare.GetProperty("result").GetInt32().Should().Be(0);
+        compare.GetProperty("version").GetInt32().Should().Be(0);
+        var put = body.GetProperty("success")[0].GetProperty("request_put");
+        put.GetProperty("key").GetString().Should().Be("L2s=");
+        put.GetProperty("value").GetString().Should().Be("dg==");
     }
 }

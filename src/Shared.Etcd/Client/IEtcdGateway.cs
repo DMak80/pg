@@ -1,9 +1,9 @@
-using PgWorker.Core;
+using Shared.Core;
 
-namespace PgWorker.Etcd.Client;
+namespace Shared.Etcd.Client;
 
-// Клиент etcd через HTTP JSON gateway /v3/* (адаптация AdminPanel.Etcd, arch/14 §3).
-// Методы принимают endpoint явно: выбор/ротация «активного» — задача цикла App.
+// Клиент etcd через HTTP JSON gateway /v3/*: union воркеров (Pg/Kfw) и панели (t08).
+// Методы принимают endpoint явно: выбор/ротация «активного» — задача цикла App/refresher.
 // Все мутации /clusters/ — только держателем клэйма и только через txn-compare (spec §4.3).
 public interface IEtcdGateway
 {
@@ -34,8 +34,14 @@ public interface IEtcdGateway
     // POST /v3/snapshot/save — бинарный слепок БД etcd (P12).
     Task<Result<byte[]>> SnapshotSaveAsync(string endpoint, CancellationToken ct);
 
-    // POST /v3/maintenance/status — текущая ревизия кластера (header.revision).
-    Task<Result<long>> StatusAsync(string endpoint, CancellationToken ct);
+    // Статус: полный payload (панель) + Revision из header.revision (воркеры — compaction).
+    Task<Result<EtcdStatusPayload>> StatusAsync(string endpoint, CancellationToken ct);
+
+    // POST /v3/cluster/member/list.
+    Task<Result<IReadOnlyList<EtcdMember>>> MemberListAsync(string endpoint, CancellationToken ct);
+
+    // POST /v3/maintenance/alarm.
+    Task<Result<IReadOnlyList<EtcdAlarm>>> AlarmAsync(string endpoint, CancellationToken ct);
 
     // POST /v3/kv/compaction — сжатие истории до указанной ревизии (кластерная операция).
     Task<Result> CompactAsync(string endpoint, long revision, CancellationToken ct);
