@@ -13,11 +13,47 @@ namespace KafkaWorker.IntegrationTests.Api;
 // X-Requested-By (панель шлёт оператора), fallback "api" (значения etcd не
 // меняются при переходе на прокси, spec §3.7).
 [Collection(KafkaApiCollection.Name)]
-public class ClusterMutationsApiTests(KafkaApiFixture fixture)
+public class ClusterMutationsApiTests(KafkaApiFixture fixture) : IAsyncLifetime
 {
     private HttpClient Client => fixture.Factory.CreateClient();
 
     private EtcdFixture Etcd => fixture.Etcd;
+
+    // own-only: чистим только созданное этим классом (после каждого кейса —
+    // per-test teardown IAsyncLifetime: xUnit создаёт экземпляр класса на
+    // каждый тест, DisposeAsync выполняется после каждого кейса, а не
+    // однократно после всех — чистка только усиливается, подписка на класс
+    // не требуется) при любом исходе (правило полной самоочистки AGENTS.md).
+    // Кластерные префиксы — целиком (lifecycle-ключи живут под ними); заявки
+    // — точечными ключами, общие префиксы /kafkaworker/... не выключаем
+    // (чужая территория коллекции; bad/nosuch не создаются — невалидное
+    // тело/404). Безопасно: кейсы самодостаточны, DeleteAsync по
+    // несуществующим ключам — no-op, методы класса не паралеллятся.
+    // CancellationToken.None — токен теста к teardown уже неактуален,
+    // удаления быстрые и идемпотентные.
+    private static readonly string[] OwnClusterPrefixes =
+    [
+        "/kafka/clusters/smoke/", "/kafka/clusters/dup/", "/kafka/clusters/race/",
+        "/kafka/clusters/gone/", "/kafka/clusters/events/", "/kafka/clusters/events2/",
+        "/kafka/clusters/rotme/", "/kafka/clusters/rotme2/", "/kafka/clusters/reb/",
+    ];
+
+    private static readonly string[] OwnTicketKeys =
+    [
+        "/kafkaworker/rotations/events", "/kafkaworker/rotations/rotme",
+        "/kafkaworker/rotations/rotme2", "/kafkaworker/rebalances/events",
+        "/kafkaworker/rebalances/reb", "/kafkaworker/admin_rotations/events",
+    ];
+
+    public ValueTask InitializeAsync() => ValueTask.CompletedTask;
+
+    public async ValueTask DisposeAsync()
+    {
+        foreach (var prefix in OwnClusterPrefixes)
+            await Etcd.Gateway.DeleteAsync(Etcd.Endpoint, prefix, prefix: true, CancellationToken.None);
+        foreach (var key in OwnTicketKeys)
+            await Etcd.Gateway.DeleteAsync(Etcd.Endpoint, key, prefix: false, CancellationToken.None);
+    }
 
     // AAA: POST декларации пишет канонический набор ключей (arch/02 §10.2-1):
     // config NOT_INITIALIZED + state/resources на каждого брокера.
