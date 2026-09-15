@@ -1,9 +1,9 @@
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using PgWorker.Core;
-using PgWorker.Core.Writing;
 using Shared.Etcd.Client;
 
+using PgWorker.Core.Writing;
 namespace PgWorker.App.Api.Operations;
 
 // Ответ 201 POST /api/clusters/{cluster}/shards (arch/02 §9.5; дубль панельного DTO осознан, t08).

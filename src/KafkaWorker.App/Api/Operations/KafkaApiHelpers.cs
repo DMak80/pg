@@ -1,7 +1,7 @@
 using KafkaWorker.Core;
-using KafkaWorker.Core.Writing;
 using Shared.Etcd.Client;
 
+using KafkaWorker.Core.Writing;
 namespace KafkaWorker.App.Api.Operations;
 
 // Общие хелперы чтения kafka-ключей для хендлеров API (task etcd-via-worker-api):

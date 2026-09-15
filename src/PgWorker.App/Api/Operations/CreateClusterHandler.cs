@@ -1,7 +1,7 @@
 using PgWorker.Core;
-using PgWorker.Core.Writing;
 using Shared.Etcd.Client;
 
+using PgWorker.Core.Writing;
 namespace PgWorker.App.Api.Operations;
 
 // Ответ 201 POST /api/clusters (arch/02 §9.1; DTO панельный 1:1 — дубль осознан, t08).

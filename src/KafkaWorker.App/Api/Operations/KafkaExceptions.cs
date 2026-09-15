@@ -22,10 +22,10 @@ public sealed class InvalidKafkaConfigException(string cluster)
     : Exception($"config kafka-кластера {cluster} не читается (битый JSON)");
 
 // Валидация: 400 с errors по полям.
-public sealed class KafkaValidationException(IReadOnlyList<KafkaWorker.Core.Writing.ValidationError> errors)
+public sealed class KafkaValidationException(IReadOnlyList<ValidationError> errors)
     : Exception("параметры некорректны")
 {
-    public IReadOnlyList<KafkaWorker.Core.Writing.ValidationError> Errors { get; } = errors;
+    public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
 
 // RMW-compare проигран (конкурентная запись) — повтор запроса клиентом.

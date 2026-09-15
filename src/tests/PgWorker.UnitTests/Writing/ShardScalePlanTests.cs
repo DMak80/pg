@@ -1,5 +1,5 @@
-using PgWorker.Core.Writing;
 
+using PgWorker.Core.Writing;
 namespace PgWorker.UnitTests.Writing;
 
 // План ключей add-shard и валидатор запроса (arch/02 §9.5, t06).

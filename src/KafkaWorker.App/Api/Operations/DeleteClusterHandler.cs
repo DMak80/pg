@@ -1,7 +1,7 @@
 using KafkaWorker.Core;
-using KafkaWorker.Core.Writing;
 using Shared.Etcd.Client;
 
+using KafkaWorker.Core.Writing;
 namespace KafkaWorker.App.Api.Operations;
 
 // Удаление kafka-кластера через API воркера: перевод config.state в TO_REMOVE

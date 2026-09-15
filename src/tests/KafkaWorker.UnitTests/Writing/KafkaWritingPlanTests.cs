@@ -1,7 +1,7 @@
 using FluentAssertions;
-using KafkaWorker.Core.Writing;
 using Xunit;
 
+using KafkaWorker.Core.Writing;
 namespace KafkaWorker.UnitTests.Writing;
 
 // План создания kafka-кластера + валидатор + config-RMW (arch/02 §10.2/§10.3):

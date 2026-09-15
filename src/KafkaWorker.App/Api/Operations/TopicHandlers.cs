@@ -1,7 +1,7 @@
 using KafkaWorker.Core;
-using KafkaWorker.Core.Writing;
 using Shared.Etcd.Client;
 
+using KafkaWorker.Core.Writing;
 namespace KafkaWorker.App.Api.Operations;
 
 // ===== DTO топиковых мутаций (арх-канон arch/03 §7.2; дубль панельных осознан, t08) =====

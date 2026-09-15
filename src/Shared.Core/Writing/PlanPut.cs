@@ -1,4 +1,4 @@
-namespace KafkaWorker.Core.Writing;
+namespace Shared.Core.Writing;
 
 // Нейтральная пара «ключ-значение» планов записи декларативного контракта:
 // планы чистые (не зависят от etcd-клиента), txn/put выполняет хендлер API

@@ -1,7 +1,7 @@
 using KafkaWorker.Core;
-using KafkaWorker.Core.Writing;
 using Shared.Etcd.Client;
 
+using KafkaWorker.Core.Writing;
 namespace KafkaWorker.App.Api.Operations;
 
 // Ответ 201 POST /api/kafka/clusters/{c}/app-password/rotate (арх-канон; дубль осознан).

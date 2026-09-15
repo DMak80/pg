@@ -1,8 +1,8 @@
 using System.Text.RegularExpressions;
 using KafkaWorker.Core;
-using KafkaWorker.Core.Writing;
 using Shared.Etcd.Client;
 
+using KafkaWorker.Core.Writing;
 namespace KafkaWorker.App.Api.Operations;
 
 // Ответ 200 PUT /api/kafka/clusters/{c}/brokers/{b}/resources (t06, spec §4.2).

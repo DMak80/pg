@@ -1,4 +1,3 @@
-using KafkaWorker.Core.Writing;
 
 namespace KafkaWorker.Core.Seed;
 
