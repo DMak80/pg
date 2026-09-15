@@ -616,15 +616,16 @@ public sealed class RestoreProcess(
         // немедленно стартует пересъём, тесты/панель читают. Проба фактического
         // постгреса ПЕРВОЙ ноды (firstReady выше уже требует её лидерство):
         // pg_is_in_recovery()=false закрывает и crash recovery после рестарта
-        // (Patroni /primary там уже 200). ::text — Npgsql-скаляр boolean
-        // приходит boxed-bool, контракт гейта строковый «f» (spec t10 §4.2):
-        // без cast строковый паттерн никогда бы не совпал — осознанное
-        // уточнение spec (план t10, ревью v2 №4).
+        // (Patroni /primary там уже 200). Запрос БЕЗ ::text — Npgsql-скаляр
+        // PG-boolean приходит boxed-bool и сравнивается с false: строковый
+        // контракт «"f"» не сработал на PG18 (boolean::text там «false», а не
+        // «f», как в PG≤17) — осознанное уточнение spec t10 §4.2 по фактам
+        // прогона E2E (решение пользователя, 2026-09-15).
         var adminDsn = ShardEndpoints.AdminDsn(firstAddr, snap.Config.DbName, secrets);
-        var masterProbe = await db.ExecuteScalarAsync(adminDsn, "SELECT pg_is_in_recovery()::text", ct);
-        if (masterProbe is not { IsSuccess: true, Value: "f" })
+        var masterProbe = await db.ExecuteScalarAsync(adminDsn, "SELECT pg_is_in_recovery()", ct);
+        if (masterProbe is not { IsSuccess: true, Value: false })
             return await MasterSqlWaitAsync(cluster, shard.Name, op, waitKey, firstAddr,
-                masterProbe.IsSuccess ? "pg_is_in_recovery != f" : masterProbe.Error!.Message, ct);
+                masterProbe.IsSuccess ? "pg_is_in_recovery != false" : masterProbe.Error!.Message, ct);
 
         // COMPLETED (AC4): ноды RUNNING; wal-ключ шарда удаляется — сброс цепочки,
         // планировщик t02 немедленно переснимает полный; мастер-ключ обновит сам
