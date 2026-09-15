@@ -139,6 +139,17 @@ public static class RestoreJobCommand
         # /restore-путей и recovery-строк), убрать trust-строку
         rm -f "$PGDATA/recovery.signal"
         mv "$AUTO.orig" "$AUTO"
+        # Вычистка управляющих Patroni параметров архивации (инцидент t10,
+        # 2026-09-15): pristine auto.conf снят pg_basebackup-ом с ноды-источника
+        # и несёт её archive_mode=on; Patroni нового HA-scope навязывает свой
+        # archive_mode=None → reload для archive_mode недостаточен → «Pending
+        # restart» → отложенный рестарт postmaster рвёт соединения клиентов
+        # сразу после restore. WAL-архивация в системе — внешний pg_receivewal
+        # t03, archive_mode постгреса не используется: вычистка бэкап-контур
+        # не ломает. sed -i пересоздаёт файл под root — chown обязателен
+        # (блок chown -R выше уже прошёл).
+        sed -i '/^archive_mode[[:space:]=]/d;/^archive_command[[:space:]=]/d' "$AUTO"
+        chown 101:101 "$AUTO"
         sed -i '/^local all all trust$/d' "$PGDATA/pg_hba.conf"
 
         # System id восстановленного PGDATA (pg_controldata работает по

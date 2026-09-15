@@ -331,11 +331,52 @@ public class E2eRestoreScenarios
                 target: "latest", source: $"{cluster}/shard1", ct: ct);
 
             // Assert — оба restore COMPLETED (RestoreWithRetry не вернёт FAILED);
-            // контрольные строки на месте
+            // контрольные строки на месте.
+
+            // Гейт готовности мастера (t10): COMPLETED не гарантирует закрытия
+            // рестарт-окна postmaster (Npgsql 57P01) — SQL-проба SELECT 1 до
+            // финального чтения (эталон — backup_exec-гвард E2eBackupScenarios;
+            // docs/e2e-launch.md §2: новый ожидания-участок — только через
+            // WaitPhaseAsync). Бюджет 120 с согласован с PatroniBootSec хоста.
+            var masterReady = await WaitPhaseAsync("master-ready", async () =>
+            {
+                try
+                {
+                    var (gHost, gPort) = await MasterPgAsync(cluster, "shard1", ct);
+                    var gDsn = DatabaseProvisioner.BuildAdminDsn(gHost, gPort, cluster,
+                        new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
+                    await ScalarAsync(gDsn, "SELECT 1", ct);
+                    return true;
+                }
+                catch (NpgsqlException)
+                {
+                    return false; // рестарт-окно — поллинг повторит
+                }
+            }, TimeSpan.FromSeconds(120), ct);
+            masterReady.Should().BeTrue(
+                "мастер обязан принять SQL до финального чтения (гейт t10): "
+                + await DumpDiagnosticsAsync(cluster, "shard1"));
+
+            // Финальное чтение с ретраем (эталон rs-latest): даже после гейта
+            // Patroni может доводить конфиг мастера (рестарт рвёт соединения) —
+            // это переходный оконный артефакт rejoin'а.
             var (drHost, drPort) = await MasterPgAsync(cluster, "shard1", ct);
             var drDsn = DatabaseProvisioner.BuildAdminDsn(drHost, drPort, cluster,
                 new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
-            var rows = await ScalarAsync(drDsn, "SELECT count(*) FROM dr_probe", ct);
+            var rows = "";
+            for (var attempt = 1; attempt <= 5; attempt++)
+            {
+                try
+                {
+                    rows = await ScalarAsync(drDsn, "SELECT count(*) FROM dr_probe", ct);
+                    break;
+                }
+                catch (NpgsqlException) when (attempt < 5)
+                {
+                    await Task.Delay(8000, ct);
+                }
+            }
+
             rows.Should().Be("7", "данные совпадают с моментом бэкапа (RPO = точка полного): "
                 + await DumpDiagnosticsAsync(cluster, "shard1"));
         }, ct);

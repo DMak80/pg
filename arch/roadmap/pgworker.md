@@ -15,11 +15,3 @@
 - **`t05-quarantine-merge`** — слияние/восстановление данных карантинного
   шарда после его возврата (runbook-операция после аварийной эвакуации E0–E4:
   сверка записей «осиротевших» схем с новыми, разрешение конфликтов).
-- **`t10-rs-dr-master-readiness-gate`** — доработка E2E-сценария rs-dr
-  (`Restore_NewCluster_FromSourcePrefix`, `E2eRestoreScenarios`): добавить гейт
-  готовности мастера после restore перед финальным чтением — сейчас финальный
-  `SELECT count(*)` ловит рестарт-окно Patroni/postgres (Npgsql 57P01
-  «terminating connection due to administrator command»,
-  `E2eRestoreScenarios.cs` ScalarAsync:693 / вызов :338). Флейк системный на
-  текущей машине, воспроизводится на main-бейзлайне cf06ce0 без t09-изменений
-  (логи `/tmp/t09-rerun/pg-main-baseline.log`).

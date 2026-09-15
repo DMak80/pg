@@ -74,6 +74,32 @@ public class RestoreJobCommandTests
         script.Should().Contain("\\\"system_id\\\":\\\"$SYSID\\\"");
     }
 
+    // AAA: pristine auto.conf после возврата (mv) вычищается от управляющих
+    // Patroni параметров архивации (инцидент t10: archive_mode источника →
+    // «Pending restart» нового HA-scope → рестарт postmaster рвёт соединения);
+    // sed -i пересоздаёт файл под root — chown 101:101 после sed обязателен
+    // (блок chown -R выше по скрипту уже прошёл).
+    [Fact]
+    public void Build_PristineAutoConf_CleansPatroniArchiveParams()
+    {
+        // Arrange / Act
+        var script = RestoreJobCommand.Build()[2];
+
+        // Assert — вычистка archive_mode/archive_command из возвращённого pristine
+        script.Should().Contain(
+            @"sed -i '/^archive_mode[[:space:]=]/d;/^archive_command[[:space:]=]/d' ""$AUTO""");
+        // вычистка — ПОСЛЕ возврата pristine: применяется к итоговому auto.conf
+        script.IndexOf("sed -i '/^archive_mode", StringComparison.Ordinal)
+            .Should().BeGreaterThan(
+                script.IndexOf("mv \"$AUTO.orig\" \"$AUTO\"", StringComparison.Ordinal),
+                "вычистка применяется к возвращённому pristine auto.conf");
+        // chown — ПОСЛЕ sed: sed -i пересоздаёт файл под root
+        script.IndexOf("chown 101:101 \"$AUTO\"", StringComparison.Ordinal)
+            .Should().BeGreaterThan(
+                script.IndexOf("sed -i '/^archive_mode", StringComparison.Ordinal),
+                "sed -i пересоздаёт файл под root — владелец 101 возвращается после");
+    }
+
     // AAA: пути каталогов — из env-контракта джоба с дефолтами Spilo-layout (§3.3).
     [Fact]
     public void Build_DataDirPgdata_ThroughEnv()

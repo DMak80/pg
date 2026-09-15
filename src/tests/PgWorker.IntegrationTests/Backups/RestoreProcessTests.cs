@@ -14,6 +14,7 @@ using PgWorker.Core.Tuning;
 using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Processes;
 using PgWorker.Provisioning.Probes;
+using PgWorker.Provisioning.Sql;
 using Xunit;
 
 namespace PgWorker.IntegrationTests.Backups;
@@ -62,14 +63,36 @@ public class RestoreProcessTests(EtcdFixture fixture)
 
     private RestoreProcess BuildProcess(FakeBackupS3 s3, IClusterDriver driver,
         TimeProvider? clock = null, HttpMessageHandler? patroni = null,
-        BackupsRuntimeOptions? options = null)
+        BackupsRuntimeOptions? options = null, ISqlExecutor? db = null)
         => new(fixture.Gateway, [fixture.Endpoint], driver, s3, _claims,
             new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]), options ?? Options(),
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
             new EtcdEndpoints([fixture.Endpoint]), new StubAppSecret(),
             new ShardProbe(new HttpClient(patroni ?? new DeadHandler())),
+            db ?? new FakeDb(),
             new ThresholdsOptions(600, 1800, PatroniBootSec: 600),
             clock ?? TimeProvider.System);
+
+    // SQL-фейк гейта мастера (t10): Scalar — ответ pg_is_in_recovery()
+    // (boxed-bool от Npgsql: false — готова, дефолт: старые кейсы ведут себя
+    // как раньше; true — висит в recovery), FailScalar — транспорт рвётся.
+    // Оба transient-вида гейта идут одним путём ожидания (spec t10 §8).
+    private sealed class FakeDb : ISqlExecutor
+    {
+        public object? Scalar { get; set; } = false;
+        public bool FailScalar { get; set; }
+
+        public Task<Result> ExecuteAsync(string dsn, string sql, CancellationToken ct)
+            => Task.FromResult(Result.Success());
+
+        public Task<Result<object?>> ExecuteScalarAsync(string dsn, string sql, CancellationToken ct)
+            => Task.FromResult(FailScalar
+                ? Result<object?>.Failed(new ApplicationException("connection refused (fake)"))
+                : Result<object?>.Success(Scalar));
+
+        public Task<Result> EnsureDatabaseAsync(string dsn, string dbname, CancellationToken ct)
+            => Task.FromResult(Result.Success());
+    }
 
     // Patroni-фейк: /cluster отвечает членами шарда (Ready — running/старт;
     // FirstRole — роль первой ноды в Ready-ответе: «replica» моделирует
@@ -964,6 +987,149 @@ public class RestoreProcessTests(EtcdFixture fixture)
             .State.Should().Be(RestoreStatus.Rejoining);
         inner.EnsuredNodes.Should().NotContain(n => n.Contains("shard1b"),
             "реплики поднимаются только после избранного лидера");
+    }
+
+    // ── REJOINING: SQL-гейт мастера перед COMPLETED (t10) ──
+
+    // AAA (t10-а): Patroni-пробы готовы, но мастер «висит в recovery»
+    // (pg_is_in_recovery=true) → гейт не пускает: статус REJOINING, ноды не
+    // переводятся в RUNNING, wal-ключ жив; тик InProgress, журнал —
+    // master-sql-wait (без мутаций — тик повторит).
+    [Fact]
+    public async Task Rejoin_мастер_в_recovery_гейт_не_пускает_без_мутаций()
+    {
+        // Arrange — Patroni готов (лидер running, реплика creating replica),
+        // SQL-фейк: pg_is_in_recovery = true
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        await SeedTwoNodeAllocAsync();
+        // wal-ключ — полный JSON контракта TryParseWal (минимальный {"state":…}
+        // ломает BackupsParser — прецедент :818-820)
+        await fixture.Gateway.PutAsync(fixture.Endpoint, "/pgworker/backups/c1/shard1/wal",
+            """{"state":"ACTIVE","slot":"s","master_node":"shard1a","chain_start_segment":"000000010000000000000002","last_received_segment":"000000010000000000000004","last_uploaded_segment":"000000010000000000000004","last_uploaded_unix":1}""",
+            null, ct);
+        var driver = new TestDriver(new StubScaleDriver(), new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver,
+            patroni: new PatroniHandler { Ready = true }, db: new FakeDb { Scalar = true });
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911122100Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Rejoining);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        var result = await process.TickAsync(BuildTwoNodeSnap(), await BackupsFromEtcdAsync("c1"), ct);
+
+        // Assert — ожидание, никаких мутаций завершения
+        result.IsSuccess.Should().BeTrue(result.Error?.ToString());
+        result.Value.Should().Be(ProcessOutcome.InProgress);
+        (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
+            .State.Should().Be(RestoreStatus.Rejoining);
+        (await fixture.Gateway.GetAsync(fixture.Endpoint,
+            "/clusters/c1/shards/shard1/nodes/shard1a/state", ct)).Value
+            .Should().BeNull("RUNNING ставится только после SQL-гейта (t10)");
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/backups/c1/shard1/wal", ct))
+            .Value.Should().NotBeNull("wal-ключ удаляется только с COMPLETED");
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/c1", ct)).Value!.Value
+            .Should().Contain("master-sql-wait/shard1/");
+    }
+
+    // AAA (t10-б): Patroni готов + мастер принял SQL (pg_is_in_recovery=false)
+    // → гейт пропускает: ноды RUNNING, COMPLETED, wal-ключ удалён.
+    [Fact]
+    public async Task Rejoin_мастер_принял_SQL_гейт_пропускает_до_COMPLETED()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        await SeedTwoNodeAllocAsync();
+        // wal-ключ — полный JSON контракта TryParseWal (минимальный {"state":…}
+        // ломает BackupsParser — прецедент :818-820)
+        await fixture.Gateway.PutAsync(fixture.Endpoint, "/pgworker/backups/c1/shard1/wal",
+            """{"state":"ACTIVE","slot":"s","master_node":"shard1a","chain_start_segment":"000000010000000000000002","last_received_segment":"000000010000000000000004","last_uploaded_segment":"000000010000000000000004","last_uploaded_unix":1}""",
+            null, ct);
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver,
+            patroni: new PatroniHandler { Ready = true }, db: new FakeDb { Scalar = false });
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911122101Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Rejoining);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        (await process.TickAsync(BuildTwoNodeSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — COMPLETED с закрытым окном
+        inner.EnsuredNodes.Should().BeEquivalentTo(["shard1/shard1a", "shard1/shard1b"]);
+        (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
+            .State.Should().Be(RestoreStatus.Completed);
+        (await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/backups/c1/shard1/wal", ct))
+            .Value.Should().BeNull("COMPLETED сбрасывает цепочку (AC4)");
+    }
+
+    // AAA (t10-в): SQL-гейт не сходится дольше PatroniBootSec → permanent-FAILED
+    // «мастер не принял SQL» (фиксированные часы: тик 1 фиксирует since, тик 2
+    // после +700 с > 600).
+    [Fact]
+    public async Task Rejoin_SQL_гейт_сверх_бюджета_permanent_FAILED()
+    {
+        // Arrange — транспорт рвётся (connection refused)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        await SeedTwoNodeAllocAsync();
+        var clock = new MutableClock();
+        var driver = new TestDriver(new StubScaleDriver(), new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver, clock: clock,
+            patroni: new PatroniHandler { Ready = true }, db: new FakeDb { FailScalar = true });
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911122102Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Rejoining);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act — тик 1 (since зафиксирован), тик 2 после бюджета
+        (await process.TickAsync(BuildTwoNodeSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .Value.Should().Be(ProcessOutcome.InProgress);
+        clock.Now = clock.Now.AddSeconds(700);
+        (await process.TickAsync(BuildTwoNodeSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — permanent-FAILED с причиной и диагностикой
+        var failed = (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id);
+        failed.State.Should().Be(RestoreStatus.Failed);
+        failed.Error.Should().Contain("мастер не принял SQL за 600 с");
+        failed.Error.Should().Contain("connection refused (fake)");
+        failed.Error.Should().Contain("members=", "снимок Patroni-диагностики в причине");
+    }
+
+    // AAA (t10-г): takeover — инстанс A застрял в SQL-ожидании (REJOINING в
+    // etcd — истина), инстанс B (свежий, без in-memory трекера) продолжает по
+    // статусу: мастер принял SQL → COMPLETED (waitKey стабилен:
+    // {cluster}/{shard}/{op.Id} — от инстанса не зависит).
+    [Fact]
+    public async Task Rejoin_SQL_гейт_takeover_продолжает_по_статусу()
+    {
+        // Arrange — A: Patroni готов, SQL не готова
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        await SeedTwoNodeAllocAsync();
+        var processA = BuildProcess(new FakeBackupS3(),
+            new TestDriver(new StubScaleDriver(), new FakeBackupEngine()),
+            patroni: new PatroniHandler { Ready = true }, db: new FakeDb { Scalar = true });
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911122103Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Rejoining);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+        (await processA.TickAsync(BuildTwoNodeSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .Value.Should().Be(ProcessOutcome.InProgress);
+
+        // Act — B: тот же etcd-статус, SQL готова
+        var innerB = new StubScaleDriver();
+        var processB = BuildProcess(new FakeBackupS3(), new TestDriver(innerB, new FakeBackupEngine()),
+            patroni: new PatroniHandler { Ready = true }, db: new FakeDb { Scalar = false });
+        (await processB.TickAsync(BuildTwoNodeSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — B довёл до COMPLETED с ensure нод
+        innerB.EnsuredNodes.Should().NotBeEmpty("инстанс B продолжает ensure по etcd-статусу");
+        (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
+            .State.Should().Be(RestoreStatus.Completed);
     }
 
     // ── Каркас тика ──
