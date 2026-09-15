@@ -35,6 +35,11 @@ public static class ModuleExtensions
 
                 client.Timeout = TimeSpan.FromSeconds(seconds);
             });
+        // Интерфейс IEtcdGateway → typed-клиент (t08): раньше интерфейс давал
+        // атрибут [InjectAsSingleton(typeof(IEtcdGateway))] на панельной копии
+        // EtcdGateway — в общую сборку атрибут не переносится (воркеры его не
+        // сканируют), поэтому forward регистрируется здесь явно, singleton.
+        services.AddSingleton<IEtcdGateway>(sp => sp.GetRequiredService<EtcdGateway>());
 
         // Шлюз в API воркеров (прокси мутаций, arch/01 §1): URL по живым ключам
         // снапшотов; опции AdminPanel:Workers — [Config]-биндингом выше.
