@@ -7,7 +7,7 @@ using PgWorker.Core.Tuning;
 using PgWorker.Docker.Drivers;
 using PgWorker.Docker.Engine;
 using PgWorker.Core.Templates;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using PgWorker.Provisioning.Sql;
 using PgWorker.Provisioning.Processes;
 
@@ -173,11 +173,17 @@ internal static class Fakes
 
         public long StatusRevision { get; set; } = 42;
 
-        public Task<Result<long>> StatusAsync(string endpoint, CancellationToken ct)
+        public Task<Result<EtcdStatusPayload>> StatusAsync(string endpoint, CancellationToken ct)
         {
             StatusCalls.Add(endpoint);
-            return Task.FromResult(Result<long>.Success(StatusRevision));
+            return Task.FromResult(Result<EtcdStatusPayload>.Success(new EtcdStatusPayload(null, null, null, null, null, (ulong)StatusRevision)));
         }
+
+        public Task<Result<IReadOnlyList<EtcdMember>>> MemberListAsync(string endpoint, CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlyList<EtcdMember>>.Success([]));
+
+        public Task<Result<IReadOnlyList<EtcdAlarm>>> AlarmAsync(string endpoint, CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlyList<EtcdAlarm>>.Success([]));
 
         public readonly List<(string Endpoint, long Revision)> CompactCalls = [];
 

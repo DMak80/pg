@@ -1,6 +1,6 @@
 # 01 — Каркас: attribute-DI, CQRS, Result
 
-> Назад: [INDEX.md](INDEX.md) · Подсистема: `src/AdminPanel.Infrastructure`
+> Назад: [INDEX.md](INDEX.md) · Подсистема: `src/Shared.Core (/common/; бывший AdminPanel.Infrastructure, t08)`
 > (скопирован из `Puzzle`, обрезан до read-only: без Bus/Outbox/миграций).
 > Контракт слоёв: [arch/01](../../arch/adminpanel/01-architecture.md) §1–2.
 
@@ -18,7 +18,7 @@
 
 ## Регистрация сервисов: `[InjectAs...]`
 
-`src/AdminPanel.Infrastructure/DI/InjectAs.cs`; поведение —
+`src/Shared.Core/DI/InjectAs.cs`; поведение —
 `AutoRegistrationDiTypeBehaviour`:
 
 | Атрибут | Lifetime |

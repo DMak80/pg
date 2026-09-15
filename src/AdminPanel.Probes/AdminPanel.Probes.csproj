@@ -10,4 +10,8 @@
         <PackageReference Include="AWSSDK.S3"/>
     </ItemGroup>
 
+    <ItemGroup>
+        <Using Include="Shared.Core"/>
+    </ItemGroup>
+
 </Project>

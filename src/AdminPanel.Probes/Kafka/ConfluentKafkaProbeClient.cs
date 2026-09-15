@@ -1,4 +1,3 @@
-using AdminPanel.Infrastructure;
 using Confluent.Kafka;
 using Confluent.Kafka.Admin;
 

@@ -1,7 +1,12 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <ItemGroup>
-        <ProjectReference Include="..\AdminPanel.Infrastructure\AdminPanel.Infrastructure.csproj"/>
+        <ProjectReference Include="..\Shared.Core\Shared.Core.csproj"/>
+        <ProjectReference Include="..\Shared.Etcd\Shared.Etcd.csproj"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <Using Include="Shared.Core"/>
     </ItemGroup>
 
 </Project>

@@ -1,5 +1,5 @@
 using PgWorker.Backups.Restore;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.UnitTests.Backups;

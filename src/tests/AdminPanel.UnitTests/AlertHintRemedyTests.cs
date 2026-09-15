@@ -1,4 +1,5 @@
 using AdminPanel.Core;
+using Shared.Etcd.Client;
 using AdminPanel.Core.Alerting;
 using AdminPanel.Core.Alerting.Rules;
 using AdminPanel.Core.Kafka;

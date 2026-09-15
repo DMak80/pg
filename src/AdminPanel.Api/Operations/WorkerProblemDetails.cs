@@ -1,6 +1,5 @@
 using System.Text.Json;
 using AdminPanel.Etcd.Workers;
-using AdminPanel.Infrastructure;
 
 namespace AdminPanel.Api.Operations;
 

@@ -1,5 +1,5 @@
 using PgWorker.Core;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 
 namespace PgWorker.UnitTests.Api;
 
@@ -70,8 +70,14 @@ internal sealed class FakeEtcdGateway : IEtcdGateway
     public Task<Result<byte[]>> SnapshotSaveAsync(string endpoint, CancellationToken ct)
         => Task.FromResult(Result<byte[]>.Failed(new NotSupportedException("fake: snapshot")));
 
-    public Task<Result<long>> StatusAsync(string endpoint, CancellationToken ct)
-        => Task.FromResult(Result<long>.Success(1));
+    public Task<Result<EtcdStatusPayload>> StatusAsync(string endpoint, CancellationToken ct)
+        => Task.FromResult(Result<EtcdStatusPayload>.Success(new EtcdStatusPayload(null, null, null, null, null, 1)));
+
+    public Task<Result<IReadOnlyList<EtcdMember>>> MemberListAsync(string endpoint, CancellationToken ct)
+        => Task.FromResult(Result<IReadOnlyList<EtcdMember>>.Success([]));
+
+    public Task<Result<IReadOnlyList<EtcdAlarm>>> AlarmAsync(string endpoint, CancellationToken ct)
+        => Task.FromResult(Result<IReadOnlyList<EtcdAlarm>>.Success([]));
 
     public Task<Result> CompactAsync(string endpoint, long revision, CancellationToken ct)
         => Task.FromResult(Result.Success());

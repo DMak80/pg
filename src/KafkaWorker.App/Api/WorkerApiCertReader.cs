@@ -2,7 +2,7 @@
 // дублирование по паттерну TlsEndpoints).
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
-using KafkaWorker.Etcd.Client;
+using Shared.Etcd.Client;
 
 namespace KafkaWorker.App.Api;
 

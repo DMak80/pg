@@ -1,5 +1,6 @@
 using AdminPanel.Core.Alerting;
-using AdminPanel.Infrastructure.DI;
+using Shared.Etcd.Client;
+using Shared.Core.DI;
 
 namespace AdminPanel.Core.Alerting.Rules;
 

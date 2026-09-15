@@ -2,7 +2,7 @@ using AdminPanel.Core;
 using AdminPanel.Core.Alerting;
 using AdminPanel.Core.Alerting.Rules;
 using AdminPanel.Etcd;
-using AdminPanel.Etcd.Client;
+using Shared.Etcd.Client;
 using AdminPanel.Etcd.Workers;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -337,8 +337,8 @@ public class EtcdWorkJournalTests(EtcdContainerFixture fixture) : IClassFixture<
         var ct = TestContext.Current.CancellationToken;
         var gateway = EtcdTestHarness.NewGateway();
         await gateway.PutAsync(fixture.Endpoint, "/pgworker/work/shop",
-            """{"op":"provision","phase":"shard-provision","instance":"w-1","updated_unix":1756009200,"last_error":"boom","fail_count":2,"fail_first_unix":1756005400,"retry_not_before_unix":1756009210}""", ct);
-        await gateway.PutAsync(fixture.Endpoint, "/pgworker/work/bad", "{не-json", ct);
+            """{"op":"provision","phase":"shard-provision","instance":"w-1","updated_unix":1756009200,"last_error":"boom","fail_count":2,"fail_first_unix":1756005400,"retry_not_before_unix":1756009210}""", lease: null, ct);
+        await gateway.PutAsync(fixture.Endpoint, "/pgworker/work/bad", "{не-json", lease: null, ct);
         var store = new SnapshotStore();
         var refresher = EtcdTestHarness.NewRefresher(store, fixture.Endpoint);
 

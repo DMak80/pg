@@ -1,4 +1,4 @@
-using AdminPanel.Infrastructure.DI;
+using Shared.Core.DI;
 
 namespace AdminPanel.Probes.S3;
 

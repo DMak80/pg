@@ -140,8 +140,8 @@ public class SshTunnelEngineTests
     // socat стартует сразу за sshd, но форвард живёт на удалённой стороне:
     // первый Ping может словить отказ соединения через туннель — короткий ретрай
     // с бюджетом (transient-толерантность первого тика, spec §2).
-    private static async Task<PgWorker.Core.Result> ResultProbe(
-        Func<Task<PgWorker.Core.Result>> probe, TimeSpan budget)
+    private static async Task<Result> ResultProbe(
+        Func<Task<Result>> probe, TimeSpan budget)
     {
         var deadline = DateTimeOffset.UtcNow + budget;
         while (true)

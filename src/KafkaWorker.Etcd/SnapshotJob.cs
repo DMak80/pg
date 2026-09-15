@@ -1,5 +1,5 @@
 using KafkaWorker.Core;
-using KafkaWorker.Etcd.Client;
+using Shared.Etcd.Client;
 
 namespace KafkaWorker.Etcd;
 
@@ -81,7 +81,7 @@ public sealed class SnapshotJob(
             var status = await etcd.StatusAsync(endpoint, ct);
             if (status.IsSuccess)
             {
-                revision = status.Value;
+                revision = (long?)status.Value.Revision;
                 break;
             }
 

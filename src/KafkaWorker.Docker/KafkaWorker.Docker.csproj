@@ -9,4 +9,8 @@
         <ProjectReference Include="..\KafkaWorker.Core\KafkaWorker.Core.csproj"/>
     </ItemGroup>
 
+    <ItemGroup>
+        <Using Include="Shared.Core"/>
+    </ItemGroup>
+
 </Project>

@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using KafkaWorker.Core;
-using KafkaWorker.Etcd.Client;
+using Shared.Etcd.Client;
 
 namespace KafkaWorker.Etcd.Coordination;
 

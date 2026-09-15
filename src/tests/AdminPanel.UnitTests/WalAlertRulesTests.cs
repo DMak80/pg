@@ -5,7 +5,7 @@ using AdminPanel.Etcd.Parsing;
 using FluentAssertions;
 using Microsoft.Extensions.Options;
 using Xunit;
-using AdminPanel.Etcd.Client;
+using Shared.Etcd.Client;
 
 namespace AdminPanel.UnitTests;
 

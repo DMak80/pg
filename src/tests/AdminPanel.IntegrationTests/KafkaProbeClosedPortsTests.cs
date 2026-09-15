@@ -5,7 +5,6 @@ using System.Security.Cryptography.X509Certificates;
 using AdminPanel.Core;
 using AdminPanel.Core.Kafka;
 using AdminPanel.Etcd;
-using AdminPanel.Infrastructure;
 using AdminPanel.Probes;
 using AdminPanel.Probes.Kafka;
 using FluentAssertions;

@@ -1,7 +1,7 @@
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
-using KafkaWorker.App.HealthChecks;
+using Shared.Core.HealthChecks;
 using KafkaWorker.Core;
 using KafkaWorker.Etcd.Coordination;
 

@@ -6,7 +6,7 @@ using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
 using FluentAssertions;
 using PgWorker.Docker.Drivers;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;

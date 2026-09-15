@@ -1,5 +1,5 @@
 using System.Reflection;
-using AdminPanel.Infrastructure.DI;
+using Shared.Core.DI;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;

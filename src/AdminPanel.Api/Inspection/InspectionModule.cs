@@ -1,6 +1,5 @@
 using AdminPanel.Core;
-using AdminPanel.Infrastructure;
-using AdminPanel.Infrastructure.CQRS;
+using Shared.Core.CQRS;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;

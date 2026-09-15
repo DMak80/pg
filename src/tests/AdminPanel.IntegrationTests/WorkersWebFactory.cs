@@ -2,7 +2,6 @@ using AdminPanel.Core;
 using AdminPanel.Core.Kafka;
 using AdminPanel.Etcd;
 using AdminPanel.Etcd.Workers;
-using AdminPanel.Infrastructure;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;

@@ -8,6 +8,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Extensions.Logging;
 using PgWorker.Core;
+using Shared.Tls;
 
 namespace PgWorker.Docker.Engine;
 
@@ -146,9 +147,9 @@ internal sealed class DockerTlsMaterial
     // PEM с файловым fallback; частичная конфигурация → ApplicationException.
     public static DockerTlsMaterial Load(DockerTlsOptions tls)
     {
-        var caPem = tls.CaPem ?? ReadFile(tls.CaPath);
-        var certPem = tls.ClientCertPem ?? ReadFile(tls.ClientCertPath);
-        var keyPem = tls.ClientKeyPem ?? ReadFile(tls.ClientKeyPath);
+        var caPem = tls.CaPem ?? TlsMaterial.ReadPemFile(tls.CaPath);
+        var certPem = tls.ClientCertPem ?? TlsMaterial.ReadPemFile(tls.ClientCertPath);
+        var keyPem = tls.ClientKeyPem ?? TlsMaterial.ReadPemFile(tls.ClientKeyPath);
         if (caPem is null || certPem is null || keyPem is null)
             throw new ApplicationException(
                 "PgWorker:Docker:Tls: частичная TLS-конфигурация — нужны CA+CERT+KEY "
@@ -156,35 +157,18 @@ internal sealed class DockerTlsMaterial
 
         // PFX round-trip: ключ CreateFromPem эфемерный — macOS SslStream требует
         // ре-импорт (паттерн WorkerTlsHandler.Build).
-        var pem = X509Certificate2.CreateFromPem(certPem, keyPem);
-        var clientCert = X509CertificateLoader.LoadPkcs12(pem.Export(X509ContentType.Pkcs12), null);
-        var ca = X509Certificate2.CreateFromPem(caPem);
+        var clientCert = TlsMaterial.LoadPemPair(certPem, keyPem);
         return new DockerTlsMaterial
         {
             ClientCert = clientCert,
-            Ca = OperatingSystem.IsMacOS()
-                ? X509CertificateLoader.LoadPkcs12(ca.Export(X509ContentType.Pkcs12), null)
-                : ca,
+            Ca = TlsMaterial.LoadPem(caPem),
         };
     }
 
-    // Цепочка серверного серта демона против per-install docker-CA (паттерн
-    // WorkerTlsHandler.ValidateChain: CustomRootTrust + NoCheck — приватная CA без CRL).
+    // Цепочка серверного серта демона против per-install docker-CA — обёртка
+    // над общим TlsChain.ValidateChain (t08: тело в Shared.Tls).
     public static bool ValidateChain(X509Certificate? certificate, X509Certificate2 ca)
-    {
-        var cert2 = certificate as X509Certificate2
-            ?? (certificate is null ? null : new X509Certificate2(certificate));
-        if (cert2 is null)
-            return false;
-        using var chain = new X509Chain();
-        chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
-        chain.ChainPolicy.CustomTrustStore.Add(ca);
-        chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
-        return chain.Build(cert2);
-    }
-
-    private static string? ReadFile(string? path)
-        => path is null || !File.Exists(path) ? null : File.ReadAllText(path).Trim();
+        => TlsChain.ValidateChain(certificate, ca);
 }
 
 // HTTP-ошибка Engine API: не-2xx (кроме идемпотентных 404/409).

@@ -5,7 +5,7 @@ using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
-using KafkaWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using KafkaWorker.Etcd.Parsing;
 using Xunit;
 

@@ -1,3 +1,5 @@
+using Shared.Etcd.Client;
+
 namespace AdminPanel.Core;
 
 // Состояние кластера etcd: endpoints, members, alarms + свежесть и счётчик отказов (arch/02 §3, §2.4).
@@ -23,20 +25,5 @@ public sealed record EtcdEndpoint(
     ulong? RaftTerm,
     IReadOnlyList<string> Errors);
 
-// Член etcd-кластера из /v3/cluster/member/list (isLeader в DTO вычисляет API t04 по EtcdStatus).
-public sealed record EtcdMember(
-    ulong Id,
-    string? Name,
-    IReadOnlyList<string> PeerUrls,
-    IReadOnlyList<string> ClientUrls);
-
-// Активная тревога из /v3/maintenance/alarm.
-public sealed record EtcdAlarm(ulong MemberId, EtcdAlarmType Type);
-
-// Значения enum-поля alarm в gateway: 0/1/2.
-public enum EtcdAlarmType
-{
-    None = 0,
-    NoSpace = 1,
-    Corrupt = 2,
-}
+// Транспортные records EtcdMember/EtcdAlarm/EtcdAlarmType переехали в общую сборку
+// Shared.Etcd (t08): using Shared.Etcd.Client в шапке.

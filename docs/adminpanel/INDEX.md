@@ -11,7 +11,7 @@ Infrastructure скопирован из референса `Puzzle` (его doc
 
 | Документ | Подсистема | Назначение |
 |---|---|---|
-| [01 — Каркас](01-framework.md) | `AdminPanel.Infrastructure` | attribute-DI, CQRS-queries + `Result`, модульная композиция, health-checks; грабля статического кеша сборок. |
+| [01 — Каркас](01-framework.md) | `Shared.Core (/common/)` | attribute-DI, CQRS-queries + `Result`, модульная композиция, health-checks; грабля статического кеша сборок. |
 | [02 — etcd-снапшот](02-etcd-snapshot.md) | `AdminPanel.Etcd` | HTTP JSON gateway `/v3/*`, парсеры, `SnapshotRefresher`/`SnapshotStore`; инвариант «API не ходит в etcd на запрос». |
 | [03 — Пробы и алерты](03-probes-alerts.md) | `AdminPanel.Probes` + `Core/Alerting` | Patroni/SQL live-пробы, HostMap, `AlertEngine` — 25 правил. |
 | [04 — Фронтенд](04-frontend.md) | `frontend/` | Сборка SPA в wwwroot, api-слой, polling, guard; TS7-css и registry-грабли. |

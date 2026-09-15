@@ -1,6 +1,6 @@
 using FluentAssertions;
 using PgWorker.Backups;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using PgWorker.Core;
 using PgWorker.Etcd.Parsing;
 using PgWorker.UnitTests.Api;
@@ -224,10 +224,16 @@ public class WalStatusWriterTests
                 ? Task.FromResult(Fail<byte[]>(endpoint))
                 : inner.SnapshotSaveAsync(endpoint, ct);
 
-        public Task<Result<long>> StatusAsync(string endpoint, CancellationToken ct)
+        public Task<Result<EtcdStatusPayload>> StatusAsync(string endpoint, CancellationToken ct)
             => endpoint == badEndpoint
-                ? Task.FromResult(Fail<long>(endpoint))
+                ? Task.FromResult(Fail<EtcdStatusPayload>(endpoint))
                 : inner.StatusAsync(endpoint, ct);
+
+        public Task<Result<IReadOnlyList<EtcdMember>>> MemberListAsync(string endpoint, CancellationToken ct)
+            => inner.MemberListAsync(endpoint, ct);
+
+        public Task<Result<IReadOnlyList<EtcdAlarm>>> AlarmAsync(string endpoint, CancellationToken ct)
+            => inner.AlarmAsync(endpoint, ct);
 
         public Task<Result> CompactAsync(string endpoint, long revision, CancellationToken ct)
             => endpoint == badEndpoint

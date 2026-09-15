@@ -1,5 +1,5 @@
 using FluentAssertions;
-using KafkaWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using KafkaWorker.Etcd.Coordination;
 using Xunit;
 

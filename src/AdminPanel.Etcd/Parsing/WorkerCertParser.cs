@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using AdminPanel.Core;
-using AdminPanel.Etcd.Client;
+using Shared.Etcd.Client;
 
 namespace AdminPanel.Etcd.Parsing;
 

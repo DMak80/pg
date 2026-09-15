@@ -16,4 +16,8 @@
         <PackageReference Include="Confluent.Kafka"/>
     </ItemGroup>
 
+    <ItemGroup>
+        <Using Include="Shared.Core"/>
+    </ItemGroup>
+
 </Project>

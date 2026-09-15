@@ -15,14 +15,8 @@
 - **`t05-quarantine-merge`** — слияние/восстановление данных карантинного
   шарда после его возврата (runbook-операция после аварийной эвакуации E0–E4:
   сверка записей «осиротевших» схем с новыми, разрешение конфликтов).
-- **`t08-unify-adminpanel-duplicates`** — унификация дублей кода после переноса
-  AdminPanel в монорепо (2026-08-27): etcd-клиент `AdminPanel.Etcd/Client/`
-  (`EtcdGateway`/`IEtcdGateway`/`Kv` — урезанный аналог `PgWorker.Etcd/Client`,
-  без Coordination) → перевод панели на `PgWorker.Etcd`; Puzzle-каркас
-  `AdminPanel.Infrastructure` (attribute-DI, CQRS, `Result`, Traces) → перевод
-  на `PgWorker.Core`. Механика: панель получает ProjectReference на общие
-  сборки, дубли удаляются; поведение обеих систем не меняется (тесты зелёные).
-  Третья группа (t03, 2026-09-05): TLS-инфраструктура mTLS-граней —
-  `ApiTlsEndpoints` (PgWorker.App) ↔ `TlsEndpoints` (KafkaWorker.App) ↔
-  TLS-хелперы (`DockerTlsMaterial.ValidateChain`, `WorkerTlsHandler`,
-  env-биндинги/PEM-дуализм) — унифицировать тем же проходом.
+- **`t09-unify-worker-duplicates`** — Pg↔Kfw-дубли вне панельного контура (осознанно
+  не тронуты t08): Coordination `ClaimStore`/`PortAllocLock`/`WorkJournal`,
+  `SnapshotJob`, `Writing/{PlanPut,ValidationError}`, `Planning/{PlacementPlanner,
+  PortAllocator}` — перенос с параметризацией префиксов ключей и моделей журнала
+  (PgWorker несёт `RetrySeries`/`EvacuationJournal`).

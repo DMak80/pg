@@ -3,7 +3,7 @@ using FluentAssertions;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
 using KafkaWorker.Docker.Drivers;
-using KafkaWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Core.Templates;

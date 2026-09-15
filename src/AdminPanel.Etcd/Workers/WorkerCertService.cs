@@ -4,9 +4,8 @@ using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using AdminPanel.Core;
-using AdminPanel.Etcd.Client;
-using AdminPanel.Infrastructure;
-using AdminPanel.Infrastructure.DI;
+using Shared.Etcd.Client;
+using Shared.Core.DI;
 using Microsoft.Extensions.Options;
 
 namespace AdminPanel.Etcd.Workers;
@@ -167,8 +166,9 @@ public sealed class WorkerCertService(
         var value = SerializePayload(certPem, keyPem, updatedBy);
         var txn = await WithEtcdAsync(endpoint => gateway.TxnAsync(
             endpoint,
-            [new TxnCompare(KeyOf(worker), Version: 0)],
-            [new KvPut(KeyOf(worker), value)],
+            TxnRequest.Of(
+                [TxnCompare.NotExists(KeyOf(worker))],
+                [new TxnOp.Put(KeyOf(worker), value, null)]),
             ct));
         if (!txn.IsSuccess)
             return Result<WorkerCertWriteResult>.Failed(txn.Error!);
@@ -195,7 +195,7 @@ public sealed class WorkerCertService(
         }
 
         var put = await WithEtcdAsync(endpoint => gateway.PutAsync(
-            endpoint, KeyOf(worker), SerializePayload(certPem, keyPem, updatedBy), ct));
+            endpoint, KeyOf(worker), SerializePayload(certPem, keyPem, updatedBy), lease: null, ct));
         if (!put.IsSuccess)
             return Result<WorkerCertWriteResult>.Failed(put.Error!);
         return Result<WorkerCertWriteResult>.Success(new WorkerCertWriteResult(worker, meta with { UpdatedBy = updatedBy }));
@@ -207,10 +207,11 @@ public sealed class WorkerCertService(
             return Result.Failed(new WorkerNotFoundException(worker)); // даже если мусорный ключ кем-то записан — не трогаем
         // Осознанная гонка (TOCTOU) Range→Delete: между проверкой наличия ключа
         // и удалением конкурентный generate (txn version==0) может создать ключ —
-        // DELETE удалит уже свежесозданный и вернёт 204 вместо 404. Атомарный
-        // txn «compare version>0 → delete» недоступен: IEtcdGateway.TxnAsync
-        // несёт только puts (arch/adminpanel/02 §9.2), расширение гейтвея —
-        // изменение контракта arch. Окно ничтожно: панель — единственный
+        // DELETE удалит уже свежесозданный и вернёт 204 вместо 404. Общий
+        // TxnRequest (t08) умеет delete-ветки, но атомарный txn
+        // «compare version>0 → delete» остаётся неиспользованным осознанно:
+        // расширение протокола удаления — изменение контракта arch/adminpanel/02,
+        // вне t08. Окно ничтожно: панель — единственный
         // писатель, оператор один; потеря видна на следующем тике (статус
         // инстансов unmanaged), восстановление — повторный generate/PUT.
         var existing = await WithEtcdAsync(endpoint =>

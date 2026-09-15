@@ -1,9 +1,8 @@
 using AdminPanel.Core;
 using AdminPanel.Core.Alerting.Rules;
 using AdminPanel.Etcd;
-using AdminPanel.Infrastructure;
-using AdminPanel.Infrastructure.CQRS;
-using AdminPanel.Infrastructure.DI;
+using Shared.Core.CQRS;
+using Shared.Core.DI;
 using Microsoft.Extensions.Options;
 
 namespace AdminPanel.Api.Inspection;

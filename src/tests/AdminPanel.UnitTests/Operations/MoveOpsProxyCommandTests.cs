@@ -1,7 +1,6 @@
 using System.Text.Json;
 using AdminPanel.Api.Operations;
 using AdminPanel.Etcd.Workers;
-using AdminPanel.Infrastructure;
 using FluentAssertions;
 using Xunit;
 

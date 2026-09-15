@@ -78,17 +78,18 @@
   блокируется; API не ходит в MinIO на запрос, КРОМЕ on-demand
   `GET /api/backups/objects` (постраничный list-v2 — большой объём, тиком
   не тянется).
-- **Направление зависимостей**: `Api → (Core, Etcd, Probes, Infrastructure)`;
-  `Etcd → Core`; `Probes → Core`; `Core → Infrastructure`. Домен снапшота
-  (`Core`) не знает про HTTP и etcd-клиента.
+- **Направление зависимостей**: `Api → (Core, Etcd, Probes)`; `Etcd → (Core,
+  Shared.Etcd, Shared.Tls)`; `Probes → Core`; `Core → Shared.Core, Shared.Etcd`
+  (/common/: каркас; транспортные records etcd `EtcdMember`/`EtcdAlarm`/
+  `EtcdAlarmType` — общие из `Shared.Etcd`, HTTP-транспорт домену не известен).
 
 ## 2. Проекты решения (`src/AdminPanel.slnx`, формат .slnx)
 
 | Проект | Роль |
 |---|---|
-| `AdminPanel.Infrastructure` | Каркас, скопированный из референса `Puzzle` и обрезанный под панель: `Result`-монада, attribute-DI (`[InjectAs*]`, `[Config]`, `AutoRegistration`), CQRS (`IQuery<T>`/`IQueryHandler`, `ICommand<T>`/`ICommandHandler` — команды мутаций: создание/удаление кластера, добавление/демонтаж шарда, заявки на переезды бакетов; `IHandler`-диспетчер), health-check базис. Без Bus/Outbox/Kafka/миграций — панели не нужны |
-| `AdminPanel.Core` | Домен снапшота: `EtcdSnapshot` и его модели (`ClusterInfo`, `ShardInfo`, `NodeInfo`, `BucketInfo`, `HaScope`, `Alert`, …), `AlertEngine` (чистая функция `Snapshot → Alert[]`), парсинг scope `<C>-<X>` |
-| `AdminPanel.Etcd` | Клиент etcd через HTTP JSON gateway (`IEtcdGateway`): чтение (range/status/member/alarm) + минимальная запись для мутаций панели (txn/put/delete, 02 §9–§9.7); парсеры ключей `/clusters/`, `/service/`, `/cluster/nodes/`, `/pgworker/` (portalloc — адреса проб, moves — очередь заявок) в модель Core, `SnapshotRefresher`, `SnapshotStore` |
+| `/common/` (Shared.Core, Shared.Etcd, Shared.Tls) | Общие сборки монорепо (паттерн `Shared.Metrics`, шаблон `../Puzzle` `Infrastructure.App`): `Shared.Core` — каркас (attribute-DI, `Result`, CQRS, Contexts, Traces, HealthChecks-базис, Retry); `Shared.Etcd` — etcd-клиент HTTP JSON gateway `/v3/*` (вкл. транспортные records `EtcdMember`/`EtcdAlarm`); `Shared.Tls` — хелперы mTLS-граней. Бывший `AdminPanel.Infrastructure` (t08) |
+| `AdminPanel.Core` | Домен снапшота: `EtcdSnapshot` и его модели (`ClusterInfo`, `ShardInfo`, `NodeInfo`, `BucketInfo`, `HaScope`, `Alert`, …), `AlertEngine` (чистая функция `Snapshot → Alert[]`), парсинг scope `<C>-<X>`, транспортные records etcd (`EtcdMember`/`EtcdAlarm`) — общие из `Shared.Etcd` |
+| `AdminPanel.Etcd` | Клиент etcd — общая сборка `Shared.Etcd` (`IEtcdGateway`); у панели: парсеры ключей `/clusters/`, `/service/`, `/cluster/nodes/`, `/pgworker/` (portalloc — адреса проб, moves — очередь заявок) в модель Core, `SnapshotRefresher`, `SnapshotStore` |
 | `AdminPanel.Probes` | Опциональные live-пробы: Patroni REST `:8008` (`/cluster`), SQL через Npgsql (read-only к `pg_catalog`/`pg_stat_*`), S3/MinIO-инвентарь бэкапов (t08: read-only обёртка AWSSDK.S3 + health-эндпоинты). Обогащение снапшота полями runtime |
 | `AdminPanel.Api` | Host: `Program.cs` (модульная композиция ~50 строк), auth-модуль, REST-эндпоинты (GET-инспекция + мутации `POST/DELETE /api/clusters…`, 03 §1), раздача SPA из `wwwroot`, `/api/healthz` |
 | `frontend/` | React+Vite+TS (не dotnet-проект); `npm run build` кладёт бандл в `src/AdminPanel.Api/wwwroot` |

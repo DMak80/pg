@@ -1,6 +1,6 @@
 using KafkaWorker.Core;
 using KafkaWorker.Docker.Drivers;
-using KafkaWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using KafkaWorker.Etcd.Coordination;
 
 namespace KafkaWorker.Provisioning.Processes;

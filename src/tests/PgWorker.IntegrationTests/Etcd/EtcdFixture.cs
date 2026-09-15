@@ -3,7 +3,7 @@ using System.Net.Sockets;
 using System.Text;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using Xunit;
 
 namespace PgWorker.IntegrationTests.Etcd;

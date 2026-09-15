@@ -1,7 +1,7 @@
 using System.Reflection;
-using AdminPanel.Etcd.Client;
+using Shared.Etcd.Client;
 using AdminPanel.Etcd.Workers;
-using AdminPanel.Infrastructure.DI;
+using Shared.Core.DI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -35,6 +35,11 @@ public static class ModuleExtensions
 
                 client.Timeout = TimeSpan.FromSeconds(seconds);
             });
+        // Интерфейс IEtcdGateway → typed-клиент (t08): раньше интерфейс давал
+        // атрибут [InjectAsSingleton(typeof(IEtcdGateway))] на панельной копии
+        // EtcdGateway — в общую сборку атрибут не переносится (воркеры его не
+        // сканируют), поэтому forward регистрируется здесь явно, singleton.
+        services.AddSingleton<IEtcdGateway>(sp => sp.GetRequiredService<EtcdGateway>());
 
         // Шлюз в API воркеров (прокси мутаций, arch/01 §1): URL по живым ключам
         // снапшотов; опции AdminPanel:Workers — [Config]-биндингом выше.

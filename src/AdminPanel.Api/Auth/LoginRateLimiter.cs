@@ -1,5 +1,5 @@
 using System.Collections.Concurrent;
-using AdminPanel.Infrastructure.DI;
+using Shared.Core.DI;
 
 namespace AdminPanel.Api.Auth;
 

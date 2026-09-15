@@ -1,7 +1,6 @@
 using AdminPanel.Api.Operations;
 using AdminPanel.Api.Operations.Kafka;
 using AdminPanel.Etcd.Workers;
-using AdminPanel.Infrastructure;
 using FluentAssertions;
 using Xunit;
 

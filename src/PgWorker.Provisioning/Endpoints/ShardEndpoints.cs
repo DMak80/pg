@@ -3,7 +3,7 @@ using System.Text.RegularExpressions;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using PgWorker.Provisioning.Probes;
 using PgWorker.Provisioning.Sql;
 

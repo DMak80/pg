@@ -1,5 +1,5 @@
 using PgWorker.Core.Model;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Moves;
 using Xunit;

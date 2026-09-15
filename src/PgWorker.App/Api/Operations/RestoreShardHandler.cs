@@ -7,7 +7,7 @@ using PgWorker.Backups.Restore;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Writing;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using PgWorker.Etcd.Parsing;
 
 namespace PgWorker.App.Api.Operations;

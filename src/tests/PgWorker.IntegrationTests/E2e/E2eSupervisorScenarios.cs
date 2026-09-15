@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Text.Json;
 using Npgsql;
 using PgWorker.Core.Templates;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using PgWorker.Etcd.Parsing;
 using PgWorker.IntegrationTests.Docker;
 using PgWorker.Provisioning.Sql;
@@ -27,7 +27,7 @@ public class E2eSupervisorScenarios
 
     private string Endpoint => Fx.EtcdEndpoint;
 
-    private PgWorker.Etcd.Client.EtcdGateway G => Fx.Gateway;
+    private EtcdGateway G => Fx.Gateway;
 
     // AAA (AC1/AC10): живой кластер с валидной цепочкой → дыра (rm сегмента ВНУТРИ
     // цепочки) → контроль → wal=BROKEN → планировщик переснимает полный → цепь

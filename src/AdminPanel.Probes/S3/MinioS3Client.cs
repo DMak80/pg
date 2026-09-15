@@ -1,5 +1,4 @@
 using AdminPanel.Core;
-using AdminPanel.Infrastructure;
 using Amazon.Runtime;
 using Amazon.S3;
 using Amazon.S3.Model;
@@ -18,7 +17,7 @@ public sealed record S3Page(IReadOnlyList<MinioObjectInfo> Items, string? NextCo
 /// уровня кода — только ListBuckets/ListObjectsV2 и публичные health-эндпоинты;
 /// пишущих/удаляющих методов и admin-API НЕТ (они — только воркер, arch/19 §4/§5).
 /// Осознанный дубль PgWorker.Backups.BackupS3 (панель не ссылается на PgWorker.*;
-/// унификация — t08-unify-adminpanel-duplicates).</summary>
+/// унификация etcd-каркаса — t08, 2026-09-14; MinIO-клиент выведен за её скоуп).</summary>
 public interface IMinioS3
 {
     Task<Result<IReadOnlyList<string>>> ListBucketsAsync(CancellationToken ct);

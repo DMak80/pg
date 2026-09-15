@@ -1,5 +1,6 @@
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.Extensions.Configuration;
+using Shared.Tls;
 
 namespace AdminPanel.Etcd.Workers;
 
@@ -23,15 +24,7 @@ public static class WorkerTlsHandler
 
     // Перенос env → конфиг; getenv-инъекция — для юнит-теста (без окружения).
     public static void ApplyEnvOverrides(ConfigurationManager configuration, Func<string, string?>? getenv = null)
-    {
-        getenv ??= Environment.GetEnvironmentVariable;
-        foreach (var (env, key) in EnvBindings)
-        {
-            var value = getenv(env);
-            if (!string.IsNullOrWhiteSpace(value))
-                configuration[key] = value;
-        }
-    }
+        => TlsEnv.ApplyEnvOverrides(EnvBindings, configuration, getenv);
 
     // trustedThumbprints — живые thumbprint'ы целевых сертов воркеров (из
     // снапшотов): панель доверяет сертам, которые сама записала (spec §3.3 п.3,
@@ -41,21 +34,20 @@ public static class WorkerTlsHandler
         WorkerTlsOptions tls, Func<IReadOnlyCollection<string>>? trustedThumbprints = null)
     {
         var handler = new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(5) };
-        var certPem = tls.ClientCertPem ?? ReadFile(tls.ClientCertPath);
-        var keyPem = tls.ClientKeyPem ?? ReadFile(tls.ClientKeyPath);
-        var serverCaPem = tls.ServerCaPem ?? ReadFile(tls.ServerCaPath);
+        var certPem = tls.ClientCertPem ?? TlsMaterial.ReadPemFile(tls.ClientCertPath);
+        var keyPem = tls.ClientKeyPem ?? TlsMaterial.ReadPemFile(tls.ClientKeyPath);
+        var serverCaPem = tls.ServerCaPem ?? TlsMaterial.ReadPemFile(tls.ServerCaPath);
         X509Certificate2? ca = null;
         if (certPem is not null && keyPem is not null)
         {
             // PFX round-trip: ключ CreateFromPem эфемерный — macOS SslStream
             // требует ре-импорт (прод — Linux, паттерн переносим).
-            var pem = X509Certificate2.CreateFromPem(certPem, keyPem);
-            var clientCert = X509CertificateLoader.LoadPkcs12(pem.Export(X509ContentType.Pkcs12), null);
+            var clientCert = TlsMaterial.LoadPemPair(certPem, keyPem);
             handler.SslOptions.ClientCertificates = new X509CertificateCollection { clientCert };
         }
 
         if (serverCaPem is not null)
-            ca = X509Certificate2.CreateFromPem(serverCaPem);
+            ca = TlsMaterial.LoadPem(serverCaPem);
         if (ca is not null || trustedThumbprints is not null)
             handler.SslOptions.RemoteCertificateValidationCallback =
                 (_, certificate, _, _) =>
@@ -66,7 +58,7 @@ public static class WorkerTlsHandler
                     if (cert2 is null)
                         return false;
                     // Цепочка к per-install ServerCA ИЛИ доверие по thumbprint.
-                    if (ca is not null && ValidateChain(cert2, ca))
+                    if (ca is not null && TlsChain.ValidateChain(cert2, ca))
                         return true;
                     var thumbprint = Convert.ToHexString(
                         System.Security.Cryptography.SHA256.HashData(cert2.RawData)).ToLowerInvariant();
@@ -75,20 +67,4 @@ public static class WorkerTlsHandler
 
         return handler;
     }
-
-    // Валидация цепочки серверного серта против per-install ServerCA.
-    private static bool ValidateChain(X509Certificate2? certificate, X509Certificate2 ca)
-    {
-        if (certificate is null)
-            return false;
-        using var chain = new X509Chain();
-        chain.ChainPolicy.TrustMode = X509ChainTrustMode.CustomRootTrust;
-        chain.ChainPolicy.CustomTrustStore.Add(ca);
-        // Приватная CA без CRL/OCSP — онлайн-проверка всегда падала бы.
-        chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
-        return chain.Build(certificate);
-    }
-
-    private static string? ReadFile(string? path)
-        => path is null || !File.Exists(path) ? null : File.ReadAllText(path).Trim();
 }

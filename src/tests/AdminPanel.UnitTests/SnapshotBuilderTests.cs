@@ -1,4 +1,5 @@
 using AdminPanel.Core;
+using Shared.Etcd.Client;
 using AdminPanel.Etcd;
 using AdminPanel.Etcd.Parsing;
 using FluentAssertions;

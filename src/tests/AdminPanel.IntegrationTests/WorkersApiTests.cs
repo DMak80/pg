@@ -6,7 +6,7 @@ using System.Text.Json;
 using AdminPanel.Core;
 using AdminPanel.Core.Kafka;
 using AdminPanel.Etcd;
-using AdminPanel.Etcd.Client;
+using Shared.Etcd.Client;
 using AdminPanel.Etcd.Parsing;
 using AdminPanel.Etcd.Workers;
 using FluentAssertions;
@@ -474,7 +474,7 @@ public class WorkersApiTests(WorkersCertFixture fx)
         // Arrange: мусорный ключ foo записан в etcd руками
         await DeleteKeysAsync();
         var gateway = new EtcdGateway(new HttpClient());
-        await gateway.PutAsync(_etcd, "/workers/api_tls/foo", "x", TestContext.Current.CancellationToken);
+        await gateway.PutAsync(_etcd, "/workers/api_tls/foo", "x", lease: null, TestContext.Current.CancellationToken);
         fx.Factory.Snapshot = PgSnapshot();
         fx.Factory.KafkaSnapshot = null;
         using var client = await LoginAsync();
@@ -572,7 +572,7 @@ public class WorkersApiTests(WorkersCertFixture fx)
     {
         var gateway = new EtcdGateway(new HttpClient());
         var value = JsonSerializer.Serialize(new { cert_pem = certPem, key_pem = keyPem });
-        var put = await gateway.PutAsync(_etcd, "/workers/api_tls/pgworker", value, TestContext.Current.CancellationToken);
+        var put = await gateway.PutAsync(_etcd, "/workers/api_tls/pgworker", value, lease: null, TestContext.Current.CancellationToken);
         put.IsSuccess.Should().BeTrue();
         var range = await gateway.RangeAsync(_etcd, "/workers/api_tls/pgworker", TestContext.Current.CancellationToken);
         range.IsSuccess.Should().BeTrue();

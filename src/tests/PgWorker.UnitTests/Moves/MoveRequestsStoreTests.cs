@@ -1,4 +1,4 @@
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using PgWorker.Moves;
 using PgWorker.UnitTests.Provisioning;
 using FakeEtcd = PgWorker.UnitTests.Provisioning.Fakes.FakeEtcd;

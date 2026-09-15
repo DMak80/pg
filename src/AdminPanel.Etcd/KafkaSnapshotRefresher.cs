@@ -1,9 +1,8 @@
 using AdminPanel.Core;
 using AdminPanel.Core.Kafka;
 using AdminPanel.Core.Kafka.KafkaAlerting;
-using AdminPanel.Etcd.Client;
+using Shared.Etcd.Client;
 using AdminPanel.Etcd.Parsing;
-using AdminPanel.Infrastructure;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;

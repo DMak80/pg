@@ -1,7 +1,7 @@
 using System.Text.RegularExpressions;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Writing;
-using KafkaWorker.Etcd.Client;
+using Shared.Etcd.Client;
 
 namespace KafkaWorker.App.Api.Operations;
 

@@ -1,5 +1,4 @@
 using AdminPanel.Core;
-using AdminPanel.Infrastructure;
 using AdminPanel.Probes.S3;
 using FluentAssertions;
 using Microsoft.Extensions.Logging.Abstractions;

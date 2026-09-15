@@ -1,5 +1,5 @@
 using PgWorker.Core;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 
 namespace PgWorker.Provisioning.Snapshots;
 
@@ -81,7 +81,7 @@ public sealed class SnapshotJob(
             var status = await etcd.StatusAsync(endpoint, ct);
             if (status.IsSuccess)
             {
-                revision = status.Value;
+                revision = (long?)status.Value.Revision;
                 break;
             }
 

@@ -1,5 +1,5 @@
 using AdminPanel.Core;
-using AdminPanel.Etcd.Client;
+using Shared.Etcd.Client;
 
 namespace AdminPanel.Etcd.Parsing;
 

@@ -19,9 +19,9 @@ Patroni REST/SQL (тик 15 c), 25 правил алертов.
 | [`docs/`](INDEX.md) | Практические документы подсистем: чек-листы и грабли t01–t10 |
 | `src/AdminPanel.Api` | Host: Program.cs (модульная композиция), auth, REST `/api/*`, `/api/healthz`, раздача SPA |
 | `src/AdminPanel.Core` | Домен снапшота + `AlertEngine` (25 правил) |
-| `src/AdminPanel.Etcd` | etcd-клиент (HTTP JSON gateway), парсеры, `SnapshotRefresher`/`SnapshotStore` |
+| `src/AdminPanel.Etcd` | etcd-клиент (общая сборка `Shared.Etcd`), парсеры, `SnapshotRefresher`/`SnapshotStore` |
 | `src/AdminPanel.Probes` | Live-пробы Patroni REST/SQL, `HostMapResolver` |
-| `src/AdminPanel.Infrastructure` | Каркас из референса `Puzzle`: attribute-DI, CQRS, `Result`, health-checks |
+| `src/Shared.Core` | Каркас из референса `Puzzle` (/common/, t08): attribute-DI, CQRS, `Result`, health-checks |
 | `src/tests/` | Unit (xunit v3 + FluentAssertions) + Integration (Testcontainers: etcd, postgres:18) |
 | [`frontend/`](frontend/package.json) | SPA (React+Vite+TS+Mantine); сборка в `src/AdminPanel.Api/wwwroot` |
 | [`dev-stand/adminpanel/`](../../dev-stand/adminpanel/README.md) | Docker-стенд quick/full (etcd + шардированная PG + patroni-эмуляторы) и e2e-чеки |

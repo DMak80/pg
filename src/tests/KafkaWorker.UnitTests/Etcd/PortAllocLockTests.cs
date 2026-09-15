@@ -1,6 +1,7 @@
 using FluentAssertions;
 using KafkaWorker.Core;
 using KafkaWorker.Etcd.Coordination;
+using Shared.Etcd.Client;
 using KafkaWorker.UnitTests.Provisioning;
 using Xunit;
 
@@ -127,7 +128,7 @@ public class PortAllocLockTests
         // Arrange
         var etcd = new Fakes.FakeEtcd
         {
-            TxnFault = _ => Result<KafkaWorker.Etcd.Client.TxnResult>.Failed(
+            TxnFault = _ => Result<TxnResult>.Failed(
                 new ApplicationException("etcd: connection refused")),
         };
         var locks = new PortAllocLock([Ep], etcd, TimeProvider.System, "inst-1");

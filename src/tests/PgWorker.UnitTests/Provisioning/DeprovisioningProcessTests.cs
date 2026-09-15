@@ -54,7 +54,7 @@ public class DeprovisioningProcessTests
             snapshot: ct =>
             {
                 snapshots.Add("shot");
-                return Task.FromResult(Core.Result.Success());
+                return Task.FromResult(Result.Success());
             });
         return new Rig(etcd, usedDriver, claims, journal, process, snapshots);
     }

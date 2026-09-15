@@ -3,7 +3,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
-using KafkaWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Provisioning.Kafka;
 

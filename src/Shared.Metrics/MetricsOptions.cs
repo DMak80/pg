@@ -1,5 +1,5 @@
 // Порт Puzzle-модуля Infrastructure.App.Metrics (arch/18 §1; паттерн
-// AdminPanel.Infrastructure — копия осознанная).
+// Shared.Core — порт с паттерна Puzzle, бывший AdminPanel.Infrastructure, унифицирован t08).
 namespace Shared.Metrics;
 
 // [Config]-опции модуля метрик: секция "<Service>:Metrics".

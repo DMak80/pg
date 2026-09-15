@@ -1,6 +1,6 @@
 using PgWorker.Core;
 using PgWorker.Core.Model;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using PgWorker.Provisioning.Processes;
 using Xunit;
 
@@ -202,8 +202,14 @@ public class ClusterSecretEnsurerTests
         public Task<Result<byte[]>> SnapshotSaveAsync(string endpoint, CancellationToken ct)
             => inner.SnapshotSaveAsync(endpoint, ct);
 
-        public Task<Result<long>> StatusAsync(string endpoint, CancellationToken ct)
+        public Task<Result<EtcdStatusPayload>> StatusAsync(string endpoint, CancellationToken ct)
             => inner.StatusAsync(endpoint, ct);
+
+        public Task<Result<IReadOnlyList<EtcdMember>>> MemberListAsync(string endpoint, CancellationToken ct)
+            => inner.MemberListAsync(endpoint, ct);
+
+        public Task<Result<IReadOnlyList<EtcdAlarm>>> AlarmAsync(string endpoint, CancellationToken ct)
+            => inner.AlarmAsync(endpoint, ct);
 
         public Task<Result> CompactAsync(string endpoint, long revision, CancellationToken ct)
             => inner.CompactAsync(endpoint, revision, ct);

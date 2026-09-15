@@ -2,7 +2,7 @@ using KafkaWorker.Core;
 using KafkaWorker.Core.Planning;
 using KafkaWorker.Core.Templates;
 using KafkaWorker.Docker.Drivers;
-using KafkaWorker.Etcd.Client;
+using Shared.Etcd.Client;
 
 namespace KafkaWorker.UnitTests.Provisioning;
 
@@ -165,8 +165,14 @@ internal static class Fakes
             return Task.FromResult(Result<byte[]>.Success([1, 2, 3]));
         }
 
-        public Task<Result<long>> StatusAsync(string endpoint, CancellationToken ct)
-            => Task.FromResult(Result<long>.Success(42));
+        public Task<Result<EtcdStatusPayload>> StatusAsync(string endpoint, CancellationToken ct)
+            => Task.FromResult(Result<EtcdStatusPayload>.Success(new EtcdStatusPayload(null, null, null, null, null, 42)));
+
+        public Task<Result<IReadOnlyList<EtcdMember>>> MemberListAsync(string endpoint, CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlyList<EtcdMember>>.Success([]));
+
+        public Task<Result<IReadOnlyList<EtcdAlarm>>> AlarmAsync(string endpoint, CancellationToken ct)
+            => Task.FromResult(Result<IReadOnlyList<EtcdAlarm>>.Success([]));
 
         public Task<Result> CompactAsync(string endpoint, long revision, CancellationToken ct)
             => Task.FromResult(Result.Success());

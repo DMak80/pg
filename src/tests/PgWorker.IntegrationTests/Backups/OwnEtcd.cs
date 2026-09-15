@@ -3,7 +3,7 @@ using System.Text;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using FluentAssertions;
-using PgWorker.Etcd.Client;
+using Shared.Etcd.Client;
 using PgWorker.IntegrationTests.E2e;
 using Xunit;
 
