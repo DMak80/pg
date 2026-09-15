@@ -15,11 +15,6 @@
 - **`t05-quarantine-merge`** — слияние/восстановление данных карантинного
   шарда после его возврата (runbook-операция после аварийной эвакуации E0–E4:
   сверка записей «осиротевших» схем с новыми, разрешение конфликтов).
-- **`t09-unify-worker-duplicates`** — Pg↔Kfw-дубли вне панельного контура (осознанно
-  не тронуты t08): Coordination `ClaimStore`/`PortAllocLock`/`WorkJournal`,
-  `SnapshotJob`, `Writing/{PlanPut,ValidationError}`, `Planning/{PlacementPlanner,
-  PortAllocator}` — перенос с параметризацией префиксов ключей и моделей журнала
-  (PgWorker несёт `RetrySeries`/`EvacuationJournal`).
 - **`t10-rs-dr-master-readiness-gate`** — доработка E2E-сценария rs-dr
   (`Restore_NewCluster_FromSourcePrefix`, `E2eRestoreScenarios`): добавить гейт
   готовности мастера после restore перед финальным чтением — сейчас финальный
