@@ -190,8 +190,8 @@ public sealed class ProvisioningProcess(
             foreach (var p in dockerBusy.Value)
                 busy.Add(p);
 
-            var plan = PlacementPlanner.Plan(wanted, hosts.Value);
-            var allocated = PortAllocator.Allocate(plan, existing, busy, options.PortFrom, options.PortTo);
+            var plan = PlacementPlanner.Plan(KfwPlanning.Group(cluster, wanted), hosts.Value);
+            var allocated = PortAllocator.Allocate(plan, existing, busy, options.PortFrom, options.PortTo, KfwPlanning.PortsOf, KfwPlanning.HostOf, KfwPlanning.MakeAddress, KfwPlanning.KeyOf);
             if (!allocated.IsSuccess)
                 return allocated;
 

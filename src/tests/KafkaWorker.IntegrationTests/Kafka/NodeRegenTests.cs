@@ -1,6 +1,6 @@
 using Confluent.Kafka.Admin;
-using FluentAssertions;
 using KafkaWorker.Core.Planning;
+using FluentAssertions;
 using KafkaWorker.Provisioning;
 using KafkaWorker.Provisioning.Processes;
 using Microsoft.Extensions.Logging.Abstractions;

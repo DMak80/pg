@@ -59,7 +59,8 @@ public class PortAllocLockRaceTests(EtcdFixture fixture)
                 // Аллокация одной ноды (тройка pg/patroni/doorman)
                 var plan = new PlacementPlan([new NodePlacement("shard1", "n1", "h1")]);
                 var allocated = PortAllocator.Allocate(
-                    plan, new Dictionary<string, NodeAddress>(), busy, 15000, 15100);
+                    plan, new Dictionary<string, NodeAddress>(), busy, 15000, 15100,
+                    PgPlanning.PortsOf, PgPlanning.HostOf, PgPlanning.MakeAddress, PgPlanning.KeyOf);
                 if (!allocated.IsSuccess)
                     return allocated;
                 var put = await Gateway.PutAsync(

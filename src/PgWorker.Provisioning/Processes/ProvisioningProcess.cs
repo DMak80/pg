@@ -320,8 +320,8 @@ public sealed class ProvisioningProcess(
             var taken = new HashSet<(string, int)>(busy);
             foreach (var p in PortPlanConvergence.ConfirmedFact(existing, adopted.Value.SelfFactByNode))
                 taken.Remove(p);
-            var plan = PlacementPlanner.Plan(snap.Shards, hosts.Value);
-            var allocated = PortAllocator.Allocate(plan, existing, taken, placementOpts.PortFrom, placementOpts.PortTo);
+            var plan = PlacementPlanner.Plan(PgPlanning.ToGroups(snap.Shards), hosts.Value);
+            var allocated = PortAllocator.Allocate(plan, existing, taken, placementOpts.PortFrom, placementOpts.PortTo, PgPlanning.PortsOf, PgPlanning.HostOf, PgPlanning.MakeAddress, PgPlanning.KeyOf);
             if (!allocated.IsSuccess)
                 return allocated;
 

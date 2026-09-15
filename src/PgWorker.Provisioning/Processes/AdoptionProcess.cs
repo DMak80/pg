@@ -314,8 +314,8 @@ public sealed class AdoptionProcess(
                     var taken = new HashSet<(string, int)>(busy);
                     foreach (var p in PortPlanConvergence.ConfirmedFact(merged, selfFactByNode))
                         taken.Remove(p);
-                    var plan = PlacementPlanner.Plan(dsnShards, hosts.Value);
-                    var allocated = PortAllocator.Allocate(plan, merged, taken, placementOpts.PortFrom, placementOpts.PortTo);
+                    var plan = PlacementPlanner.Plan(PgPlanning.ToGroups(dsnShards), hosts.Value);
+                    var allocated = PortAllocator.Allocate(plan, merged, taken, placementOpts.PortFrom, placementOpts.PortTo, PgPlanning.PortsOf, PgPlanning.HostOf, PgPlanning.MakeAddress, PgPlanning.KeyOf);
                     if (!allocated.IsSuccess)
                         return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(allocated.Error!);
                     foreach (var (k, addr) in allocated.Value)

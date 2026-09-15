@@ -57,9 +57,10 @@ public class PortAllocLockRaceTests(EtcdFixture fixture)
                 // Аллокация одного брокера (1 клиентский порт); диапазон — значения
                 // в etcd, не host-биндинги: литералы допустимы (AGENTS.md — про
                 // хост-порты docker).
-                var plan = new PlacementPlan([new NodePlacement("broker1", "h1")]);
+                var plan = new PlacementPlan([new NodePlacement(cluster, "broker1", "h1")]);
                 var allocated = PortAllocator.Allocate(
-                    plan, new Dictionary<string, NodeAddress>(), busy, 16000, 16100);
+                    plan, new Dictionary<string, NodeAddress>(), busy, 16000, 16100,
+                    KfwPlanning.PortsOf, KfwPlanning.HostOf, KfwPlanning.MakeAddress, KfwPlanning.KeyOf);
                 if (!allocated.IsSuccess)
                     return allocated;
                 var put = await Gateway.PutAsync(

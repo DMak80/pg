@@ -158,8 +158,8 @@ public sealed class PortAllocHealer(
             foreach (var addr in merged.Values)
                 taken.Add((addr.Host, addr.ClientPort));
 
-            var plan = PlacementPlanner.Plan([broker], hosts.Value);
-            var allocated = PortAllocator.Allocate(plan, merged, taken, options.PortFrom, options.PortTo);
+            var plan = PlacementPlanner.Plan(KfwPlanning.Group(cluster, [broker]), hosts.Value);
+            var allocated = PortAllocator.Allocate(plan, merged, taken, options.PortFrom, options.PortTo, KfwPlanning.PortsOf, KfwPlanning.HostOf, KfwPlanning.MakeAddress, KfwPlanning.KeyOf);
             if (!allocated.IsSuccess)
                 return Result<HealedAddress>.Failed(allocated.Error!);
             foreach (var (node, addr) in allocated.Value)

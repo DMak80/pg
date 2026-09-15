@@ -213,9 +213,10 @@ public sealed partial class AddShardProcess(
 
             // Список из ОДНОГО шарда: анти-аффинити внутри нового; занятость живыми
             // шардами уже учтена (UsedSlots хостов + фактические busy-порты драйвера).
-            var plan = PlacementPlanner.Plan([shard], hosts.Value);
+            var plan = PlacementPlanner.Plan(PgPlanning.ToGroups([shard]), hosts.Value);
             var allocated = PortAllocator.Allocate(
-                plan, existing, busy, placementOpts.PortFrom, placementOpts.PortTo);
+                plan, existing, busy, placementOpts.PortFrom, placementOpts.PortTo,
+                PgPlanning.PortsOf, PgPlanning.HostOf, PgPlanning.MakeAddress, PgPlanning.KeyOf);
             if (!allocated.IsSuccess)
                 return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new ApplicationException(
                     $"порт-диапазон исчерпан — расширьте PortRange (PgWorker:Docker:PortRange): {allocated.Error!.Message}"));

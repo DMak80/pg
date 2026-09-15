@@ -139,14 +139,15 @@ public sealed class AddBrokerProcess(
                 // Закреплённые адреса исключаются из кандидатов явно; t91: плюс
                 // занятость portalloc ЧУЖИХ кластеров (окно «сосед записал,
                 // контейнеров ещё нет»).
-                var plan = PlacementPlanner.Plan(missing, hosts.Value);
+                var plan = PlacementPlanner.Plan(KfwPlanning.Group(cluster, missing), hosts.Value);
                 var taken = new HashSet<(string Host, int Port)>(dockerBusy.Value);
                 foreach (var p in foreign.Value)
                     taken.Add(p);
                 foreach (var addr in addresses.Values)
                     taken.Add((addr.Host, addr.ClientPort));
                 var allocated = PortAllocator.Allocate(
-                    plan, addresses, taken, options.PortFrom, options.PortTo);
+                    plan, addresses, taken, options.PortFrom, options.PortTo,
+                    KfwPlanning.PortsOf, KfwPlanning.HostOf, KfwPlanning.MakeAddress, KfwPlanning.KeyOf);
                 if (!allocated.IsSuccess)
                     return allocated;
                 foreach (var (node, addr) in allocated.Value)
