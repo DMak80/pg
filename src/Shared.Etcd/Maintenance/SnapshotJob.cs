@@ -1,7 +1,7 @@
-using PgWorker.Core;
+using Shared.Core;
 using Shared.Etcd.Client;
 
-namespace PgWorker.Provisioning.Snapshots;
+namespace Shared.Etcd.Maintenance;
 
 /// <summary>
 /// Снапшоты etcd (задача 22; P12, spec §7): /v3/snapshot/save → файл
@@ -20,7 +20,8 @@ public sealed class SnapshotJob(
 {
     // Локальное время последнего обслуживания (compact + defrag).
     // Статичная переменная: переживает реконструкцию SnapshotJob (singleton),
-    // protects от частых тиков SnapshotLoop.
+    // protects от частых тиков SnapshotLoop. Воркеры — разные процессы (t09),
+    // статика остаётся корректной.
     private static DateTimeOffset? _lastMaintenanceUtc;
 
     // Сброс состояния обслуживания (только для тестов).

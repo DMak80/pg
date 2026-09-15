@@ -35,6 +35,8 @@
 
     <ItemGroup>
         <Using Include="Shared.Core"/>
+        <Using Include="Shared.Etcd.Coordination"/>
+        <Using Include="Shared.Etcd.Maintenance"/>
     </ItemGroup>
 
 </Project>

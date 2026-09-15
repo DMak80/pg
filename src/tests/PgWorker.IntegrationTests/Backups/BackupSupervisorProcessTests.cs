@@ -3,7 +3,6 @@ using PgWorker.Backups;
 using PgWorker.Backups.Supervisor;
 using PgWorker.Core.Model;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.IntegrationTests.Etcd;
 using Xunit;
@@ -22,7 +21,7 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
     // sc3 этого класса жил 15с по TTL и ронял TryClaim жертвы).
     private static readonly string Tag = Guid.NewGuid().ToString("N")[..8];
 
-    private readonly ClaimStore _claims = new([fixture.Endpoint], fixture.Gateway, TimeProvider.System);
+    private readonly ClaimStore _claims = new("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
 
     public ValueTask InitializeAsync() => ValueTask.CompletedTask;
 
@@ -50,7 +49,7 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
     private BackupSupervisorProcess BuildProcess(
         BackupsRuntimeOptions? options, FakeBackupS3 s3) => new(
         fixture.Gateway, [fixture.Endpoint], s3, _claims,
-        new WorkJournal(fixture.Gateway, [fixture.Endpoint]),
+        new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
         () => options, TimeProvider.System);
 
     private static BackupsRuntimeOptions Options(int supervisorInterval = 0) => new(
@@ -154,10 +153,10 @@ public class BackupSupervisorProcessTests(EtcdFixture fixture) : IAsyncLifetime
         // Arrange 3 — чужой клэйм: отказ до любых мутаций
         var s3c = new FakeBackupS3();
         s3c.PrefixObjects.Add(($"{cluster}/shard1/full/20260911120000Z/backup_manifest", 100));
-        await using var claims2 = new ClaimStore([fixture.Endpoint], fixture.Gateway, TimeProvider.System);
+        await using var claims2 = new ClaimStore("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
         var other = new BackupSupervisorProcess(
             fixture.Gateway, [fixture.Endpoint], s3c, claims2,
-            new WorkJournal(fixture.Gateway, [fixture.Endpoint]),
+            new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => Options(), TimeProvider.System);
         (await other.TickAsync(BuildSnap(cluster), null, ct)).IsSuccess.Should().BeFalse(
             "мутации без клэйма запрещены");

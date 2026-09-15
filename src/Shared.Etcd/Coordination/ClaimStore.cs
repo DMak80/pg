@@ -1,15 +1,16 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using KafkaWorker.Core;
+using Shared.Core;
 using Shared.Etcd.Client;
 
-namespace KafkaWorker.Etcd.Coordination;
+namespace Shared.Etcd.Coordination;
 
-// Координация инстансов KafkaWorker в etcd (spec §4.3, Д2): пер-кластерные lease-клэймы
+// Координация инстансов воркера в etcd (spec §4.3, Д2): пер-кластерные lease-клэймы
 // + глобальный лидер для singleton-задач. Захват — txn compare version==0 +
 // put-with-lease TTL 15с; держатель продлевает keepalive-тиком (5с); смерть
 // инстанса гасит lease ≤15с — ключ исчезает сам, другой инстанс захватывает (takeover).
-public sealed class ClaimStore(string[] endpoints, IEtcdGateway gateway, TimeProvider clock, string? advertiseApiUrl = null, string? certThumbprint = null)
+// Префикс ключей — параметр конструктора (t09): "/pgworker" / "/kafkaworker".
+public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGateway gateway, TimeProvider clock, string? advertiseApiUrl = null, string? certThumbprint = null)
     : IAsyncDisposable
 {
     private const int ClaimTtlSec = 15;
@@ -58,7 +59,7 @@ public sealed class ClaimStore(string[] endpoints, IEtcdGateway gateway, TimePro
         return Result<bool>.Success(true);
     }
 
-    // Глобальный лидер (снапшоты P12): тот же примитив на /kafkaworker/leader.
+    // Глобальный лидер (снапшоты P12): тот же примитив на <prefix>/leader.
     public async Task<Result<bool>> TryBecomeLeaderAsync(CancellationToken ct)
     {
         lock (_sync)
@@ -71,7 +72,7 @@ public sealed class ClaimStore(string[] endpoints, IEtcdGateway gateway, TimePro
         if (!grant.IsSuccess)
             return Result<bool>.Failed(grant.Error!);
 
-        var claimed = await TryPutLeasedKeyAsync("/kafkaworker/leader", new ClaimPayload(InstanceId, Now(), null), grant.Value, ct);
+        var claimed = await TryPutLeasedKeyAsync($"{keyPrefix}/leader", new ClaimPayload(InstanceId, Now(), null), grant.Value, ct);
         if (claimed is { IsSuccess: false })
             return claimed;
 
@@ -126,7 +127,7 @@ public sealed class ClaimStore(string[] endpoints, IEtcdGateway gateway, TimePro
         await RevokeSilentlyAsync(lease);
     }
 
-    // Фоновый keepalive-цикл (тик 5с): все мои lease + instance-ключ /kafkaworker/instances/<id>.
+    // Фоновый keepalive-цикл (тик 5с): все мои lease + instance-ключ <prefix>/instances/<id>.
     public Task StartAsync(CancellationToken ct)
     {
         if (_loop is not null)
@@ -241,21 +242,21 @@ public sealed class ClaimStore(string[] endpoints, IEtcdGateway gateway, TimePro
             return; // диагностика — не блокируем работу клэймов
 
         var put = await WithFailoverAsync(endpoint => gateway.PutAsync(
-            endpoint, $"/kafkaworker/instances/{InstanceId}", InstanceId, grant.Value, ct));
+            endpoint, $"{keyPrefix}/instances/{InstanceId}", InstanceId, grant.Value, ct));
         if (!put.IsSuccess)
         {
             await RevokeSilentlyAsync(grant.Value);
             return;
         }
 
-        // Ключ доступа API (arch/16 §1.1): тем же lease, что instances/<id>, —
+        // Ключ доступа API (arch/14 §1.1): тем же lease, что instances/<id>, —
         // гаснут вместе; панель резолвит URL воркера только по этому ключу.
         if (_advertiseApiUrl is { Length: > 0 } url)
         {
             var payload = JsonSerializer.Serialize(
                 new ApiDiscoveryPayload(url, InstanceId, Now(), _certThumbprint), PayloadJson.Json);
             var apiPut = await WithFailoverAsync(endpoint => gateway.PutAsync(
-                endpoint, $"/kafkaworker/api/{InstanceId}", payload, grant.Value, ct));
+                endpoint, $"{keyPrefix}/api/{InstanceId}", payload, grant.Value, ct));
             if (!apiPut.IsSuccess)
             {
                 await RevokeSilentlyAsync(grant.Value);
@@ -301,7 +302,7 @@ public sealed class ClaimStore(string[] endpoints, IEtcdGateway gateway, TimePro
 
     private long Now() => clock.GetUtcNow().ToUnixTimeSeconds();
 
-    private static string ClaimKey(string cluster) => $"/kafkaworker/claims/{cluster}";
+    private string ClaimKey(string cluster) => $"{keyPrefix}/claims/{cluster}";
 
     // Failover по endpoints: первый успешный ответ выигрывает; все недоступны → последняя ошибка.
     private async Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
@@ -338,7 +339,7 @@ public sealed class ClaimStore(string[] endpoints, IEtcdGateway gateway, TimePro
         [property: JsonPropertyName("since_unix")] long SinceUnix,
         [property: JsonPropertyName("phase")] string? Phase);
 
-    // Value ключа /kafkaworker/api/<id> (arch/16 §1.1): {"url","instance","since_unix",
+    // Value ключа <prefix>/api/<id> (arch/14 §1.1): {"url","instance","since_unix",
     // "cert_thumbprint"?} — thumbprint серта, фактически применённого на грани
     // (etcd-ключ §1.1.1 или env-фоллбек); опционально для читателей.
     // ВАЖНО: PayloadJson.Json НЕ задаёт PropertyNamingPolicy (дефолт PascalCase) —

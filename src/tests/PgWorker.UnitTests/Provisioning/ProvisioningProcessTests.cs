@@ -7,7 +7,6 @@ using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
 using PgWorker.Docker.Drivers;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Processes;
@@ -148,9 +147,9 @@ public class ProvisioningProcessTests
     {
         var etcd = new Fakes.FakeEtcd();
         SeedCluster(etcd);
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("shop", CancellationToken.None);
-        var journal = new WorkJournal(etcd, [Ep]);
+        var journal = new WorkJournal("/pgworker", etcd, [Ep]);
         var driver = new Fakes.FakeDriver();
         var sql = new Fakes.FakeSql();
         var appSecret = new ClusterSecretEnsurer(etcd, [Ep]);
@@ -159,7 +158,7 @@ public class ProvisioningProcessTests
             etcd, [Ep], driver, sql, Probe(patroniResponse, trace, identityByEndpoint), claims, journal,
             opts ?? Opts, Secrets,
             appSecret, new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp, portAlloc,
-            new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId),
+            new PortAllocLock("/pgworker", [Ep], etcd, TimeProvider.System, claims.InstanceId),
             Fakes.PgtuneFactory(), snapshot: null);
         return new Rig(etcd, driver, sql, claims, journal, process);
     }
@@ -296,16 +295,16 @@ public class ProvisioningProcessTests
         etcd.Seed("/clusters/shop/shards/shard1/replicas", "2");
         etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1a/state", "NOT_INITIALIZED");
         etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1b/state", "NOT_INITIALIZED");
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("shop", CancellationToken.None);
-        var journal = new WorkJournal(etcd, [Ep]);
+        var journal = new WorkJournal("/pgworker", etcd, [Ep]);
         var driver = new Fakes.FakeDriver();
         var process = new ProvisioningProcess(
             etcd, [Ep], driver, new Fakes.FakeSql(), Probe(_ => Patroni("shard1a")),
             claims, journal, Opts, Secrets, new ClusterSecretEnsurer(etcd, [Ep]),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp,
             new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
-            new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId),
+            new PortAllocLock("/pgworker", [Ep], etcd, TimeProvider.System, claims.InstanceId),
             Fakes.PgtuneFactory(), snapshot: null);
 
         // Act
@@ -898,7 +897,7 @@ public class ProvisioningProcessTests
     {
         // Arrange — свежий кластер (порт-недобор), лок держит «другой инстанс»
         var rig = await NewRig(_ => DeadPatroni(), identityByEndpoint: EmptyIdentity);
-        var holder = new PortAllocLock([Ep], rig.Etcd, TimeProvider.System, "other");
+        var holder = new PortAllocLock("/pgworker", [Ep], rig.Etcd, TimeProvider.System, "other");
         (await holder.TryAcquireAsync(CancellationToken.None)).Value.Should().BeTrue();
 
         // Act
@@ -936,7 +935,7 @@ public class ProvisioningProcessTests
             p => new DiscoveredNode(
                 p.Key.Split('/')[1], p.Value.Host, $"pgw-shop-{p.Key.Replace('/', '-')}",
                 p.Value.Ports.Pg, p.Value.Ports.Patroni, p.Value.Ports.Doorman));
-        var holder = new PortAllocLock([Ep], rig.Etcd, TimeProvider.System, "other");
+        var holder = new PortAllocLock("/pgworker", [Ep], rig.Etcd, TimeProvider.System, "other");
         (await holder.TryAcquireAsync(CancellationToken.None)).Value.Should().BeTrue();
 
         // Act

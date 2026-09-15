@@ -4,8 +4,6 @@ using System.Diagnostics;
 using Microsoft.Extensions.Options;
 using Shared.Core.HealthChecks;
 using KafkaWorker.Core;
-using KafkaWorker.Etcd.Coordination;
-using KafkaWorker.Etcd;
 
 namespace KafkaWorker.App.Loops;
 

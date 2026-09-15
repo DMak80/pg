@@ -3,7 +3,6 @@ using KafkaWorker.Core.Model;
 using KafkaWorker.Core.Templates;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
-using KafkaWorker.Etcd.Coordination;
 using Xunit;
 using static KafkaWorker.UnitTests.Provisioning.Fakes;
 
@@ -20,12 +19,12 @@ public class CaRotatorTests
         new(16000, 16999, BrokerBootSec: 100, NodeDeadSec: 90, null, "apache/kafka:4.0.0");
 
     private static CaRotator Sut(FakeEtcd etcd, FakeKafkaDriver driver, FakeKafkaAdminClient admin)
-        => new(etcd, [Ep], driver, Claims(etcd), new WorkJournal(etcd, [Ep]),
+        => new(etcd, [Ep], driver, Claims(etcd), new WorkJournal("/kafkaworker", etcd, [Ep]),
             new FakeAdminFactory(admin), Options, new BrokerCertificateCache(), snapshot: null);
 
     private static ClaimStore Claims(FakeEtcd etcd)
     {
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/kafkaworker", [Ep], etcd, TimeProvider.System);
         claims.TryClaimClusterAsync(Cluster, CancellationToken.None).GetAwaiter().GetResult();
         etcd.Txns.Clear(); // отсечь claim-txn: ассерты — про txn ротации
         return claims;
@@ -86,9 +85,9 @@ public class CaRotatorTests
         etcd.Store.Should().NotContainKey($"/kafkaworker/ca_rotations/{Cluster}");
         // Канон ca_pem после коммита — ТОЛЬКО NEW (bundle свёрнут)
         newPem.Should().NotContain(oldPem, "после коммита доверие OLD снято");
-        (await new WorkJournal(etcd, [Ep]).ReadAsync(Cluster, CancellationToken.None)).Value!.Op
+        (await new WorkJournal("/kafkaworker", etcd, [Ep]).ReadAsync(Cluster, CancellationToken.None)).Value!.Op
             .Should().Be("rotate-ca");
-        (await new WorkJournal(etcd, [Ep]).ReadAsync(Cluster, CancellationToken.None)).Value!.Phase
+        (await new WorkJournal("/kafkaworker", etcd, [Ep]).ReadAsync(Cluster, CancellationToken.None)).Value!.Phase
             .Should().Be("done");
         // Rolling: оба брокера пересозданы с томом (removeVolume=false)
         driver.Removed.Should().HaveCount(2)
@@ -110,7 +109,7 @@ public class CaRotatorTests
         var admin = ReadyAdmin();
         var oldPem = etcd.Store[$"/kafka/clusters/{Cluster}/ca_pem"].Value;
         var claims = Claims(etcd);
-        var sut = new CaRotator(etcd, [Ep], driver, claims, new WorkJournal(etcd, [Ep]),
+        var sut = new CaRotator(etcd, [Ep], driver, claims, new WorkJournal("/kafkaworker", etcd, [Ep]),
             new FakeAdminFactory(admin), Options, new BrokerCertificateCache(), snapshot: null);
 
         // Act 1 — сбойный тик (P/D пройдены, R упал на первом RemoveNode)
@@ -123,7 +122,7 @@ public class CaRotatorTests
 
         // Act 2 — повторный тик на несошедшемся кластере (view: 1 брокер): R ждёт,
         // коммита нет — staging обязан остаться ТЕМ ЖЕ (не перегенерирован)
-        var converging = new CaRotator(etcd, [Ep], driver, claims, new WorkJournal(etcd, [Ep]),
+        var converging = new CaRotator(etcd, [Ep], driver, claims, new WorkJournal("/kafkaworker", etcd, [Ep]),
             new FakeAdminFactory(ReadyAdmin(1)), Options, new BrokerCertificateCache(), snapshot: null);
         var second = await converging.RunAsync(Snapshot(etcd,
             etcd.Store[$"/kafka/clusters/{Cluster}/ca_pem"].Value,
@@ -168,7 +167,7 @@ public class CaRotatorTests
 
         // Act — CaRotator с НЕ взявшим клэйм ClaimStore
         var sut = new CaRotator(etcd, [Ep], driver,
-            new ClaimStore([Ep], etcd, TimeProvider.System), new WorkJournal(etcd, [Ep]),
+            new ClaimStore("/kafkaworker", [Ep], etcd, TimeProvider.System), new WorkJournal("/kafkaworker", etcd, [Ep]),
             new FakeAdminFactory(admin), Options, new BrokerCertificateCache(), snapshot: null);
         var result = await sut.RunAsync(Snapshot(etcd,
             etcd.Store[$"/kafka/clusters/{Cluster}/ca_pem"].Value,
@@ -197,7 +196,7 @@ public class CaRotatorTests
         // Assert — waiting-cluster, брокеры не тронуты
         result.IsSuccess.Should().BeTrue();
         driver.Removed.Should().BeEmpty();
-        (await new WorkJournal(etcd, [Ep]).ReadAsync(Cluster, CancellationToken.None)).Value!.Phase
+        (await new WorkJournal("/kafkaworker", etcd, [Ep]).ReadAsync(Cluster, CancellationToken.None)).Value!.Phase
             .Should().Be("waiting-cluster");
     }
 

@@ -1,7 +1,6 @@
 using FluentAssertions;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
@@ -54,9 +53,9 @@ public class PasswordRotatorTests
     {
         var etcd = new Fakes.FakeEtcd();
         SeedActive(etcd, brokers);
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/kafkaworker", [Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("events", CancellationToken.None);
-        var journal = new WorkJournal(etcd, [Ep]);
+        var journal = new WorkJournal("/kafkaworker", etcd, [Ep]);
         var driver = new Fakes.FakeKafkaDriver();
         driver.NodeObjects.AddRange(Enumerable.Range(1, brokers).Select(k => $"kfw-events-broker{k}"));
         var admin = new FakeKafkaAdminClient();
@@ -254,9 +253,9 @@ public class PasswordRotatorTests
         var etcd = new Fakes.FakeEtcd();
         SeedActive(etcd);
         SeedRotation(etcd);
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/kafkaworker", [Ep], etcd, TimeProvider.System);
         var process = new PasswordRotator(
-            etcd, [Ep], new Fakes.FakeKafkaDriver(), claims, new WorkJournal(etcd, [Ep]),
+            etcd, [Ep], new Fakes.FakeKafkaDriver(), claims, new WorkJournal("/kafkaworker", etcd, [Ep]),
             new FakeAdminFactory(new FakeKafkaAdminClient()), ProvisioningOptions.Default, new BrokerCertificateCache());
 
         // Act

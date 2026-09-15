@@ -6,7 +6,6 @@ using KafkaWorker.Core.Planning;
 using KafkaWorker.Core.Templates;
 using KafkaWorker.Docker.Drivers;
 using Shared.Etcd.Client;
-using KafkaWorker.Etcd.Coordination;
 
 namespace KafkaWorker.Provisioning.Processes;
 
@@ -71,14 +70,14 @@ public sealed class NodeRegenerator(
         if (rotation.Value is not null || caRotation.Value is not null
             || rotateJournal.Value is { Op: "rotate" } r && r.Phase != "done"
             || rotateJournal.Value is { Op: "rotate-ca" } rc && rc.Phase != "done")
-            return await journal.WriteAsync(cluster, Op, "waiting-rotation", claims.InstanceId, null, ct);
+            return await journal.WritePhaseAsync(cluster, Op, "waiting-rotation", claims.InstanceId, null, ct);
 
         // J0b: живой reassignment — пересоздания не смешиваются с переездами реплик.
         var reassignment = await GetAsync($"/kafkaworker/reassignments/{cluster}", ct);
         if (!reassignment.IsSuccess)
             return Fail(cluster, reassignment.Error!, "reading-reassignment");
         if (reassignment.Value is not null)
-            return await journal.WriteAsync(cluster, Op, "waiting-reassign", claims.InstanceId, null, ct);
+            return await journal.WritePhaseAsync(cluster, Op, "waiting-reassign", claims.InstanceId, null, ct);
 
         // J1: кандидаты — стабильные ноды с декларацией ресурсов (TO_REMOVE/
         // REMOVING/PROVISIONING/NOT_INITIALIZED/UNREACHABLE — чужие процессы).
@@ -126,7 +125,7 @@ public sealed class NodeRegenerator(
                 var deleted = await DeleteAsync(RegenKey(cluster), ct);
                 if (!deleted.IsSuccess)
                     return Fail(cluster, deleted.Error!, "dropping-progress");
-                return await journal.WriteAsync(cluster, Op, "done", claims.InstanceId, null, ct);
+                return await journal.WritePhaseAsync(cluster, Op, "done", claims.InstanceId, null, ct);
             }
 
             return Result.Success();
@@ -141,13 +140,13 @@ public sealed class NodeRegenerator(
             var written = await WriteProgressAsync(cluster, pending, current, null, ct);
             if (!written.IsSuccess)
                 return written;
-            return await journal.WriteAsync(cluster, Op, "waiting-return", claims.InstanceId, null, ct);
+            return await journal.WritePhaseAsync(cluster, Op, "waiting-return", claims.InstanceId, null, ct);
         }
 
         // J5: пересоздание первой расходящейся ноды (одна за тик;
         // diverged гарантированно непуст — иначе мы выше в no-op/J3/J4).
         var target = diverged[0];
-        var marked = await journal.WriteAsync(
+        var marked = await journal.WritePhaseAsync(
             cluster, Op, $"regenerating:{target.Name}", claims.InstanceId, null, ct);
         if (!marked.IsSuccess)
             return marked;
@@ -243,7 +242,7 @@ public sealed class NodeRegenerator(
 
     private Result Fail(string cluster, Exception error, string phase)
     {
-        journal.WriteAsync(cluster, Op, phase, claims.InstanceId, error.Message, CancellationToken.None)
+        journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, error.Message, CancellationToken.None)
             .GetAwaiter().GetResult();
         return Result.Failed(error);
     }

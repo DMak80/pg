@@ -1,6 +1,5 @@
 using PgWorker.Core;
 using PgWorker.Core.Model;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Moves;
 using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Probes;
@@ -138,9 +137,9 @@ public class AbortSequenceTests
             _ => [],
         };
 
-        var claims = new ClaimStore([MoveRig.Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [MoveRig.Ep], etcd, TimeProvider.System);
         claims.TryClaimClusterAsync("shop", CancellationToken.None).GetAwaiter().GetResult();
-        var journal = new WorkJournal(etcd, [MoveRig.Ep]);
+        var journal = new WorkJournal("/pgworker", etcd, [MoveRig.Ep]);
         var status = new MoveStatusStore(etcd, [MoveRig.Ep]);
         var shards = new ShardEndpoints(etcd, [MoveRig.Ep], new ShardProbe(new HttpClient()));
         var abort = new AbortSequence(sql, status, new MoveRequestsStore(etcd, [MoveRig.Ep]),

@@ -33,6 +33,7 @@ public sealed class BucketEvacuator(
     ShardEndpoints shards,
     ClaimStore claims,
     WorkJournal journal,
+    EvacuationJournalStore evacuations,
     InstallSecrets secrets,
     Func<CancellationToken, Task<Result>>? snapshot = null)
 {
@@ -62,7 +63,7 @@ public sealed class BucketEvacuator(
             return Result<ProcessOutcome>.Success(ProcessOutcome.InProgress);
         }
 
-        var existing = await journal.ReadEvacuationAsync(cluster, deadShard, ct);
+        var existing = await evacuations.ReadAsync(cluster, deadShard, ct);
         if (!existing.IsSuccess)
             return Result<ProcessOutcome>.Failed(existing.Error!);
 
@@ -109,7 +110,7 @@ public sealed class BucketEvacuator(
         var evacuation = new EvacuationJournal(
             plan.Value.ToDictionary(a => a.BucketId, a => a.ToShard),
             Reason, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), "PLANNED", null);
-        var written = await journal.WriteEvacuationAsync(cluster, deadShard, evacuation, ct);
+        var written = await evacuations.WriteAsync(cluster, deadShard, evacuation, ct);
         if (!written.IsSuccess)
             return Result<ProcessOutcome>.Failed(written.Error!);
 
@@ -159,7 +160,7 @@ public sealed class BucketEvacuator(
                 continue; // идемпотентность повторного тика
 
             var conflict = evacuation with { State = "CONFLICT" };
-            await journal.WriteEvacuationAsync(cluster, deadShard, conflict, ct);
+            await evacuations.WriteAsync(cluster, deadShard, conflict, ct);
             return Result<ProcessOutcome>.Failed(new InvalidOperationException(
                 $"routing bucket_{assignment.BucketId} = '{current.Value?.Value}' (ожидался '{assignment.FromShard}') — конкурентное изменение, эвакуация остановлена"));
         }
@@ -178,7 +179,7 @@ public sealed class BucketEvacuator(
 
         // E4: journal DONE + снапшот «после» (P12).
         var finished = evacuation with { State = "DONE" };
-        var closed = await journal.WriteEvacuationAsync(cluster, deadShard, finished, ct);
+        var closed = await evacuations.WriteAsync(cluster, deadShard, finished, ct);
         if (!closed.IsSuccess)
             return Result<ProcessOutcome>.Failed(closed.Error!);
 
@@ -245,7 +246,7 @@ public sealed class BucketEvacuator(
         if (journalState.State != "QUARANTINED" || journalState.ReturnedUnix is null)
         {
             var returned = journalState with { State = "QUARANTINED", ReturnedUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds() };
-            var written = await journal.WriteEvacuationAsync(cluster, deadShard, returned, ct);
+            var written = await evacuations.WriteAsync(cluster, deadShard, returned, ct);
             if (!written.IsSuccess)
                 return Result<ProcessOutcome>.Failed(written.Error!);
         }

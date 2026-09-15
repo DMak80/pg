@@ -9,7 +9,6 @@ using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Processes;
 using PgWorker.Provisioning.Probes;
-using PgWorker.Provisioning.Snapshots;
 
 namespace PgWorker.UnitTests.Provisioning;
 
@@ -72,7 +71,8 @@ public class BucketEvacuatorTests
     }
 
     private sealed record Rig(Fakes.FakeEtcd Etcd, Fakes.FakeDriver Driver, Fakes.FakeSql Sql,
-        ClaimStore Claims, WorkJournal Journal, BucketEvacuator Evacuator, List<string> Events, List<int> Snapshots);
+        ClaimStore Claims, WorkJournal Journal, EvacuationJournalStore Store, BucketEvacuator Evacuator,
+        List<string> Events, List<int> Snapshots);
 
     private static async Task<Rig> NewRig(Func<int, HttpResponseMessage> respond)
     {
@@ -80,9 +80,10 @@ public class BucketEvacuatorTests
         SeedCluster(etcd);
         var events = new List<string>();
         etcd.OnPut = key => events.Add($"etcd:{key}");
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("shop", CancellationToken.None);
-        var journal = new WorkJournal(etcd, [Ep]);
+        var journal = new WorkJournal("/pgworker", etcd, [Ep]);
+        var store = new EvacuationJournalStore(etcd, [Ep]);
         var driver = new Fakes.FakeDriver();
         var sql = new Fakes.FakeSql
         {
@@ -91,13 +92,13 @@ public class BucketEvacuatorTests
         var snapshots = new List<int>();
         var probe = Probe(respond);
         var evacuator = new BucketEvacuator(
-            etcd, [Ep], driver, sql, probe, new ShardEndpoints(etcd, [Ep], probe), claims, journal, Secrets,
+            etcd, [Ep], driver, sql, probe, new ShardEndpoints(etcd, [Ep], probe), claims, journal, store, Secrets,
             snapshot: ct =>
             {
                 snapshots.Add(1);
                 return Task.FromResult(Result.Success());
             });
-        return new Rig(etcd, driver, sql, claims, journal, evacuator, events, snapshots);
+        return new Rig(etcd, driver, sql, claims, journal, store, evacuator, events, snapshots);
     }
 
     // AAA (t05 §3.4): шард с активной restore-заявкой эвакуации НЕ подлежит —
@@ -168,7 +169,7 @@ public class BucketEvacuatorTests
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("QUARANTINED");
         rig.Driver.RemovedNodes.Should().BeEmpty();
         rig.Driver.StoppedNodes.Should().BeEmpty();
-        var evacuation = await rig.Journal.ReadEvacuationAsync("shop", "shard1", CancellationToken.None);
+        var evacuation = await rig.Store.ReadAsync("shop", "shard1", CancellationToken.None);
         evacuation.Value!.State.Should().Be("DONE");
         evacuation.Value.Buckets.Should().BeEquivalentTo(new Dictionary<int, string> { [0] = "shard2", [2] = "shard2" });
         rig.Snapshots.Should().HaveCount(2);
@@ -198,7 +199,7 @@ public class BucketEvacuatorTests
 
         // Assert: эвакуация остановлена, конфликт зафиксирован в журнале
         outcome.IsSuccess.Should().BeFalse();
-        var evacuation = await rig.Journal.ReadEvacuationAsync("shop", "shard1", CancellationToken.None);
+        var evacuation = await rig.Store.ReadAsync("shop", "shard1", CancellationToken.None);
         evacuation.Value!.State.Should().Be("CONFLICT");
         rig.Etcd.Store[routingKey].Value.Should().Be("shard3"); // чужой flip не затёрт
     }
@@ -226,7 +227,7 @@ public class BucketEvacuatorTests
     {
         // Arrange — эвакуация завершена ранее (journal DONE), шард «ожил» (REST 200)
         var rig = await NewRig(_ => PatroniOk()); // все пробы живы — включая вернувшийся shard1
-        await rig.Journal.WriteEvacuationAsync("shop", "shard1", new EvacuationJournal(
+        await rig.Store.WriteAsync("shop", "shard1", new EvacuationJournal(
             new Dictionary<int, string> { [0] = "shard2", [2] = "shard2" },
             "shard-dead", 1755900000, "DONE", null), CancellationToken.None);
         rig.Etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1a/state", "RUNNING");
@@ -240,7 +241,7 @@ public class BucketEvacuatorTests
         rig.Driver.StoppedNodes.Should().BeEquivalentTo(["shard1/shard1a", "shard1/shard1b"]);
         rig.Driver.RemovedNodes.Should().BeEmpty();
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("QUARANTINED");
-        var evacuation = await rig.Journal.ReadEvacuationAsync("shop", "shard1", CancellationToken.None);
+        var evacuation = await rig.Store.ReadAsync("shop", "shard1", CancellationToken.None);
         evacuation.Value!.State.Should().Be("QUARANTINED");
         evacuation.Value.ReturnedUnix.Should().NotBeNull();
     }

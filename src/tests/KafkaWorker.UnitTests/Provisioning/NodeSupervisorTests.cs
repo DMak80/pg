@@ -1,7 +1,6 @@
 using System.Text.Json;
 using FluentAssertions;
 using KafkaWorker.Core.Model;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
@@ -53,9 +52,9 @@ public class NodeSupervisorTests
         etcd.Seed("/kafkaworker/portalloc/events",
             """{"broker1":{"host":"h1","client":16000},"broker2":{"host":"h1","client":16001},"broker3":{"host":"h1","client":16002}}""");
 
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/kafkaworker", [Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("events", CancellationToken.None);
-        var journal = new WorkJournal(etcd, [Ep]);
+        var journal = new WorkJournal("/kafkaworker", etcd, [Ep]);
         var driver = new Fakes.FakeKafkaDriver
         {
             NodeObjects = ["kfw-events-broker1", "kfw-events-broker2", "kfw-events-broker3"],
@@ -75,7 +74,7 @@ public class NodeSupervisorTests
             healer: healer
                 ? new PortAllocHealer(
                     etcd, [Ep], driver, claims, journal,
-                    new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId),
+                    new PortAllocLock("/kafkaworker", [Ep], etcd, TimeProvider.System, claims.InstanceId),
                     new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance), options,
                     new BrokerCertificateCache())
                 : null);
@@ -392,7 +391,7 @@ public class NodeSupervisorTests
         KeepSingleBroker(rig);
         rig.Etcd.Store.Remove("/kafkaworker/portalloc/events");
         rig.Driver.NodeObjects.Remove("kfw-events-broker1");
-        var foreign = new PortAllocLock([Ep], rig.Etcd, TimeProvider.System, "other-instance");
+        var foreign = new PortAllocLock("/kafkaworker", [Ep], rig.Etcd, TimeProvider.System, "other-instance");
         (await foreign.TryAcquireAsync(CancellationToken.None)).Value.Should().BeTrue();
 
         // Act: тик надзора.

@@ -2,7 +2,6 @@ using System.Text.Json;
 using FluentAssertions;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
@@ -57,9 +56,9 @@ public class PartitionReassignerProcessTests
     {
         var etcd = new Fakes.FakeEtcd();
         SeedActive(etcd);
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/kafkaworker", [Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("events", CancellationToken.None);
-        var journal = new WorkJournal(etcd, [Ep]);
+        var journal = new WorkJournal("/kafkaworker", etcd, [Ep]);
         var driver = new Fakes.FakeKafkaDriver();
         driver.NodeObjects.AddRange(Enumerable.Range(1, 4).Select(k => $"kfw-events-broker{k}"));
         var admin = new FakeKafkaAdminClient();
@@ -348,9 +347,9 @@ public class PartitionReassignerProcessTests
         // Arrange: клэйм кластера чужой (риг без TryClaim).
         var etcd = new Fakes.FakeEtcd();
         SeedActive(etcd);
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/kafkaworker", [Ep], etcd, TimeProvider.System);
         var process = new PartitionReassignerProcess(
-            etcd, [Ep], new Fakes.FakeKafkaDriver(), claims, new WorkJournal(etcd, [Ep]),
+            etcd, [Ep], new Fakes.FakeKafkaDriver(), claims, new WorkJournal("/kafkaworker", etcd, [Ep]),
             new FakeAdminFactory(new FakeKafkaAdminClient()), ReassignOptions.Default, new FixedTimeProvider());
 
         // Act

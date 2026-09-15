@@ -2,7 +2,6 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using PgWorker.Core.Model;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using Xunit;
 
@@ -75,7 +74,7 @@ public class EtcdContractTests(EtcdFixture fixture)
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
-        var journal = new WorkJournal(Gateway, [Endpoint]);
+        var journal = new WorkJournal("/pgworker", Gateway, [Endpoint]);
 
         // Act
         var write = await journal.WritePhaseAsync("shop", "provision", "planned", "inst-1", null, ct);
@@ -96,7 +95,7 @@ public class EtcdContractTests(EtcdFixture fixture)
     {
         // Arrange — журнал с контекстом серии ретраев (arch/14 §3.3).
         var ct = TestContext.Current.CancellationToken;
-        var journal = new WorkJournal(Gateway, [Endpoint]);
+        var journal = new WorkJournal("/pgworker", Gateway, [Endpoint]);
         var series = new RetrySeries(FailCount: 3, FailFirstUnix: 1756005400, RetryNotBeforeUnix: 1756009215);
 
         // Act — фейл с серией, затем фаза прогресса с переносом той же серии.

@@ -20,7 +20,6 @@ using PgWorker.Moves;
 using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Probes;
 using PgWorker.Provisioning.Processes;
-using PgWorker.Provisioning.Snapshots;
 using PgWorker.Provisioning.Sql;
 using Shared.Metrics;
 using ProcessThresholds = PgWorker.Provisioning.Processes.ThresholdsOptions;
@@ -97,15 +96,24 @@ builder.Services.AddHttpClient("etcd");
 builder.Services.AddHttpClient("patroni");
 
 // etcd-клиент (HTTP JSON gateway /v3/*) + координация (клэймы/лидерство, журнал).
+// Единое место литерала префикса etcd-ключей (t09): Shared-координация параметризована.
+const string KeyPrefix = "/pgworker";
 builder.Services.AddSingleton<IEtcdGateway>(sp =>
     new EtcdGateway(sp.GetRequiredService<IHttpClientFactory>().CreateClient("etcd")));
 builder.Services.AddSingleton(sp => new ClaimStore(
+    KeyPrefix,
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Api.AdvertiseUrl,
     apiCertThumbprint));
 builder.Services.AddSingleton(sp => new WorkJournal(
+    KeyPrefix,
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
+// Журнал эвакуаций (t09): Pg-домен на ключах /pgworker/evacuations/* — выделен
+// из WorkJournal при переносе координации в Shared.Etcd.
+builder.Services.AddSingleton(sp => new EvacuationJournalStore(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
 
@@ -254,6 +262,7 @@ builder.Services.AddSingleton(sp => new PortAllocIndex(
 // Глобальный portalloc-клэйм (t90, arch/14 §2.4/§3.3): взаимоисключение секции
 // довыделения портов между кластерами/инстансами; instance = InstanceId ClaimStore.
 builder.Services.AddSingleton(sp => new PortAllocLock(
+    KeyPrefix,
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints.ToArray(),
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<TimeProvider>(),
@@ -361,6 +370,7 @@ builder.Services.AddSingleton(sp => new BucketEvacuator(
     sp.GetRequiredService<ShardEndpoints>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<EvacuationJournalStore>(),
     sp.GetRequiredService<InstallSecrets>(),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 

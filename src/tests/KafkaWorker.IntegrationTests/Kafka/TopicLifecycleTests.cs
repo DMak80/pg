@@ -3,7 +3,6 @@ using Confluent.Kafka;
 using Confluent.Kafka.Admin;
 using FluentAssertions;
 using KafkaWorker.Core;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Provisioning.Processes;
 using Microsoft.Extensions.Logging.Abstractions;
 using Xunit;
@@ -23,12 +22,12 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
         KafkaClusterFixture fixture, string cluster, CancellationToken ct)
     {
         await fixture.SeedClusterAsync(cluster, brokers: 1);
-        var claims = new ClaimStore([fixture.Endpoint], fixture.Gateway, TimeProvider.System);
+        var claims = new ClaimStore("/kafkaworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
         await claims.TryClaimClusterAsync(cluster, ct);
-        var journal = new WorkJournal(fixture.Gateway, [fixture.Endpoint]);
+        var journal = new WorkJournal("/kafkaworker", fixture.Gateway, [fixture.Endpoint]);
         var provision = new ProvisioningProcess(
             fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal,
-            new PortAllocLock([fixture.Endpoint], fixture.Gateway, TimeProvider.System, claims.InstanceId),
+            new PortAllocLock("/kafkaworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System, claims.InstanceId),
             new PortAllocIndex(fixture.Gateway, [fixture.Endpoint], NullLogger<PortAllocIndex>.Instance),
             new ClusterSecretEnsurer(fixture.Gateway, [fixture.Endpoint]),
             fixture.AdminFactory, new ClusterConfigConverger(fixture.AdminFactory),
@@ -60,9 +59,9 @@ public class TopicLifecycleTests(KafkaClusterFixture fixture)
     private static async Task DownAsync(
         KafkaClusterFixture fixture, string cluster, CancellationToken ct)
     {
-        var claims = new ClaimStore([fixture.Endpoint], fixture.Gateway, TimeProvider.System);
+        var claims = new ClaimStore("/kafkaworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
         await claims.TryClaimClusterAsync(cluster, ct);
-        var journal = new WorkJournal(fixture.Gateway, [fixture.Endpoint]);
+        var journal = new WorkJournal("/kafkaworker", fixture.Gateway, [fixture.Endpoint]);
         var rawConfig = await fixture.GetAsync($"/kafka/clusters/{cluster}/config");
         await fixture.Gateway.PutAsync(fixture.Endpoint, $"/kafka/clusters/{cluster}/config",
             rawConfig!.Replace("}", ",\"state\":\"TO_REMOVE\"}", StringComparison.Ordinal), lease: null, ct);

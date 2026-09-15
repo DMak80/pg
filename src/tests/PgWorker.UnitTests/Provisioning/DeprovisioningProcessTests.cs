@@ -44,9 +44,9 @@ public class DeprovisioningProcessTests
     {
         var etcd = new Fakes.FakeEtcd();
         SeedRemovableCluster(etcd);
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("shop", CancellationToken.None);
-        var journal = new WorkJournal(etcd, [Ep]);
+        var journal = new WorkJournal("/pgworker", etcd, [Ep]);
         var usedDriver = driver ?? new Fakes.FakeDriver();
         var snapshots = new List<string>();
         var process = new DeprovisioningProcess(

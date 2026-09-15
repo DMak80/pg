@@ -4,7 +4,6 @@ using System.Text.Json.Serialization;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
 using Shared.Etcd.Client;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Provisioning.Kafka;
 
 namespace KafkaWorker.Provisioning.Processes;
@@ -134,7 +133,7 @@ public sealed class TopicSyncProcess(
             {
                 var ticketKey = LifecycleKey(cluster, del.Topic, TopicLifecycleOps.Delete);
                 await using var admin = adminFactory.Create(snap.Endpoints!, snap.AdminUser ?? "admin", snap.AdminPassword!, snap.CaPem);
-                var journaled = await journal.WriteAsync(cluster, Op, $"deleting-topic:{del.Topic}", claims.InstanceId, null, ct);
+                var journaled = await journal.WritePhaseAsync(cluster, Op, $"deleting-topic:{del.Topic}", claims.InstanceId, null, ct);
                 if (!journaled.IsSuccess)
                     return journaled;
 
@@ -150,7 +149,7 @@ public sealed class TopicSyncProcess(
             {
                 var ticketKey = LifecycleKey(cluster, create.Topic, TopicLifecycleOps.Create);
                 await using var admin = adminFactory.Create(snap.Endpoints!, snap.AdminUser ?? "admin", snap.AdminPassword!, snap.CaPem);
-                var journaled = await journal.WriteAsync(cluster, Op, $"creating-topic:{create.Topic}", claims.InstanceId, null, ct);
+                var journaled = await journal.WritePhaseAsync(cluster, Op, $"creating-topic:{create.Topic}", claims.InstanceId, null, ct);
                 if (!journaled.IsSuccess)
                     return journaled;
 
@@ -167,7 +166,7 @@ public sealed class TopicSyncProcess(
             {
                 // Чистка без исполнения: журнал-примечание + del заявки (для
                 // delete-ветки при отсутствующем топике — снести и missing-ключ).
-                var journaled = await journal.WriteAsync(cluster, Op, $"ticket-cleanup:{cleanup.Topic}", claims.InstanceId, cleanup.Reason, ct);
+                var journaled = await journal.WritePhaseAsync(cluster, Op, $"ticket-cleanup:{cleanup.Topic}", claims.InstanceId, cleanup.Reason, ct);
                 if (!journaled.IsSuccess)
                     return journaled;
 
@@ -292,7 +291,7 @@ public sealed class TopicSyncProcess(
 
                 // Перманентный отказ — журнал оператору (arch/16 §5 D), затем
                 // факт без заявки (converge не буксует, заявка не висит вечно).
-                var logged = await journal.WriteAsync(
+                var logged = await journal.WritePhaseAsync(
                     cluster, Op, "rejected", claims.InstanceId, reject.Reason, ct);
                 if (!logged.IsSuccess)
                     return logged;

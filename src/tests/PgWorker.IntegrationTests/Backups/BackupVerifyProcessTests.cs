@@ -10,7 +10,6 @@ using PgWorker.Core.Tuning;
 using PgWorker.Docker.Drivers;
 using PgWorker.Docker.Engine;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Probes;
@@ -31,7 +30,7 @@ public class BackupVerifyProcessTests
     // новый экземпляр на вызов давал бы чужой InstanceId в тике (guard «клэйм не наш»).
     private ClaimStore? _claimsStore;
 
-    private ClaimStore Claims => _claimsStore ??= new([Fx.Endpoint], Fx.Gateway, TimeProvider.System);
+    private ClaimStore Claims => _claimsStore ??= new("/pgworker", [Fx.Endpoint], Fx.Gateway, TimeProvider.System);
 
     // ── Фейк docker-движка (по образцу BackupProcessTests.FakeBackupEngine;
     //    тест управляет State/ExitCode/Logs — супервиз-ветки задачи 9) ──
@@ -198,7 +197,7 @@ public class BackupVerifyProcessTests
         => new(
             Fx.Gateway, [Fx.Endpoint], driver,
             new ShardEndpoints(Fx.Gateway, [Fx.Endpoint], new ShardProbe(new HttpClient())),
-            s3, Claims, new WorkJournal(Fx.Gateway, [Fx.Endpoint]),
+            s3, Claims, new WorkJournal("/pgworker", Fx.Gateway, [Fx.Endpoint]),
             options ?? new BackupsRuntimeOptions(
                 Enabled: true, S3Endpoint: "http://minio", S3Bucket: "bkt",
                 S3AccessKey: "ak", S3SecretKey: "sk", JobImage: "pgworker-backup:test",

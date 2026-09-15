@@ -6,7 +6,6 @@ using KafkaWorker.Core.Planning;
 using KafkaWorker.Core.Templates;
 using KafkaWorker.Docker.Drivers;
 using Shared.Etcd.Client;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Provisioning.Kafka;
 
 namespace KafkaWorker.Provisioning.Processes;
@@ -49,7 +48,7 @@ public sealed class AddBrokerProcess(
         if (pending.Count == 0)
             return Result.Success(); // заявок нет — no-op
 
-        var started = await journal.WriteAsync(cluster, Op, "started", claims.InstanceId, null, ct);
+        var started = await journal.WritePhaseAsync(cluster, Op, "started", claims.InstanceId, null, ct);
         if (!started.IsSuccess)
             return started;
 
@@ -65,7 +64,7 @@ public sealed class AddBrokerProcess(
             // t91: клэйм занят — не фейл, InProgress (следующий тик ~5 с).
             if (ports.Error is PortLockBusyException)
             {
-                await journal.WriteAsync(cluster, Op, "waiting-portalloc-lock", claims.InstanceId, null, ct);
+                await journal.WritePhaseAsync(cluster, Op, "waiting-portalloc-lock", claims.InstanceId, null, ct);
                 return Result.Success();
             }
 
@@ -98,7 +97,7 @@ public sealed class AddBrokerProcess(
         }
 
         _bootWaitSince.TryRemove(cluster, out _);
-        return await journal.WriteAsync(cluster, Op, "done", claims.InstanceId, null, ct);
+        return await journal.WritePhaseAsync(cluster, Op, "done", claims.InstanceId, null, ct);
     }
 
     // Добор адресов для новых брокеров: portalloc RMW по mod_revision (txn).
@@ -121,7 +120,7 @@ public sealed class AddBrokerProcess(
             if (!acquired.IsSuccess)
                 return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(acquired.Error!);
             if (!acquired.Value)
-                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new PortLockBusyException());
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new PortLockBusyException(portLock.Key));
             try
             {
                 var hosts = await driver.GetHostsAsync(ct);
@@ -326,7 +325,7 @@ public sealed class AddBrokerProcess(
 
     private Result Fail(string cluster, Exception error, string phase)
     {
-        journal.WriteAsync(cluster, Op, phase, claims.InstanceId, error.Message, CancellationToken.None)
+        journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, error.Message, CancellationToken.None)
             .GetAwaiter().GetResult();
         return Result.Failed(error);
     }

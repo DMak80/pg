@@ -1,7 +1,6 @@
 using FluentAssertions;
 using KafkaWorker.App.Loops;
 using KafkaWorker.Core;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -29,9 +28,9 @@ public class KafkaActiveGateTests(KafkaClusterFixture fixture)
         await fixture.PutAsync($"/kafka/clusters/{cluster}/app_user", "app");
         await fixture.PutAsync($"/kafka/clusters/{cluster}/app_password", "deadbeefdeadbeefdeadbeefdeadbeef");
 
-        var claims = new ClaimStore([fixture.Endpoint], fixture.Gateway, TimeProvider.System);
+        var claims = new ClaimStore("/kafkaworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
         await claims.TryClaimClusterAsync(cluster, ct);
-        var journal = new WorkJournal(fixture.Gateway, [fixture.Endpoint]);
+        var journal = new WorkJournal("/kafkaworker", fixture.Gateway, [fixture.Endpoint]);
         var factory = new KafkaAdminClientFactory(TimeSpan.FromSeconds(3));
         var backoff = new KafkaClusterBackoff(TimeProvider.System);
         backoff.RecordFailure(cluster, "connection refused"); // окно 15 c активно
@@ -39,7 +38,7 @@ public class KafkaActiveGateTests(KafkaClusterFixture fixture)
         var ep = new[] { fixture.Endpoint };
         var processes = new KafkaClusterProcesses(
             new ProvisioningProcess(fixture.Gateway, ep, fixture.Driver, claims, journal,
-                new PortAllocLock(ep, fixture.Gateway, TimeProvider.System, claims.InstanceId),
+                new PortAllocLock("/kafkaworker", ep, fixture.Gateway, TimeProvider.System, claims.InstanceId),
                 new PortAllocIndex(fixture.Gateway, ep, NullLogger<PortAllocIndex>.Instance),
                 new ClusterSecretEnsurer(fixture.Gateway, ep),
                 factory, new ClusterConfigConverger(factory), fixture.Options,
@@ -53,7 +52,7 @@ public class KafkaActiveGateTests(KafkaClusterFixture fixture)
             new RemoveBrokerProcess(fixture.Gateway, ep, fixture.Driver, claims, journal,
                 factory, fixture.Options),
             new AddBrokerProcess(fixture.Gateway, ep, fixture.Driver, claims, journal,
-                new PortAllocLock(ep, fixture.Gateway, TimeProvider.System, claims.InstanceId),
+                new PortAllocLock("/kafkaworker", ep, fixture.Gateway, TimeProvider.System, claims.InstanceId),
                 new PortAllocIndex(fixture.Gateway, ep, NullLogger<PortAllocIndex>.Instance),
                 factory, fixture.Options, fixture.Certificates),
             new PasswordRotator(fixture.Gateway, ep, fixture.Driver, claims, journal,

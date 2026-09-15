@@ -3,7 +3,6 @@ using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Processes;
 using PgWorker.Provisioning.Probes;
@@ -85,10 +84,10 @@ public class ClusterSecretRotatorTests
         if (etcd is null)
             SeedCluster(store);
         var usedSql = sql ?? new Fakes.FakeSql();
-        var claims = new ClaimStore([Ep], store, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [Ep], store, TimeProvider.System);
         await claims.TryClaimClusterAsync("shop", CancellationToken.None);
         store.Txns.Clear(); // отсечь claim-txn: ассерты — только про txn ротации
-        var journal = new WorkJournal(store, [Ep]);
+        var journal = new WorkJournal("/pgworker", store, [Ep]);
         var probe = new ShardProbe(new HttpClient(new DeadHandler()));
         var rotator = new ClusterSecretRotator(
             store, [Ep], usedSql, probe, claims, journal, Secrets,
@@ -335,11 +334,11 @@ public class ClusterSecretRotatorTests
         var etcd = new Fakes.FakeEtcd();
         SeedCluster(etcd);
         SeedTicket(etcd);
-        var journal = new WorkJournal(etcd, [Ep]);
+        var journal = new WorkJournal("/pgworker", etcd, [Ep]);
         var probe = new ShardProbe(new HttpClient(new DeadHandler()));
         var rotator = new ClusterSecretRotator(
             etcd, [Ep], new Fakes.FakeSql(), probe,
-            new ClaimStore([Ep], etcd, TimeProvider.System), journal, Secrets,
+            new ClaimStore("/pgworker", [Ep], etcd, TimeProvider.System), journal, Secrets,
             new ClusterSecretEnsurer(etcd, [Ep]), snapshot: null);
 
         // Act

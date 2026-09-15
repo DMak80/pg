@@ -1,7 +1,6 @@
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using KafkaWorker.Core;
-using KafkaWorker.Etcd.Coordination;
 
 namespace KafkaWorker.App.HealthChecks;
 

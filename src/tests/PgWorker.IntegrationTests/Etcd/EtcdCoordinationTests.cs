@@ -1,5 +1,4 @@
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using Xunit;
 
 namespace PgWorker.IntegrationTests.Etcd;
@@ -12,7 +11,7 @@ public class EtcdCoordinationTests(EtcdFixture fixture)
 
     private string Endpoint => fixture.Endpoint;
 
-    private ClaimStore NewClaimStore() => new([Endpoint], Gateway, TimeProvider.System);
+    private ClaimStore NewClaimStore() => new("/pgworker", [Endpoint], Gateway, TimeProvider.System);
 
     [Fact]
     public async Task TwoClaimStores_MutualExclusion()
@@ -118,7 +117,7 @@ public class EtcdCoordinationTests(EtcdFixture fixture)
         await using var fixture = new EtcdFixture();
         await fixture.InitializeAsync();
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-        var store = new ClaimStore(
+        var store = new ClaimStore("/pgworker", 
             [fixture.Endpoint], fixture.Gateway, TimeProvider.System,
             advertiseApiUrl: "http://host.docker.internal:8080");
 
@@ -157,7 +156,7 @@ public class EtcdCoordinationTests(EtcdFixture fixture)
         // Arrange — свой etcd на зарезервированном порту; контейнер ещё НЕ запущен
         await using var fixture = new EtcdFixture(EtcdFixture.ReserveHostPort());
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
-        var store = new ClaimStore(
+        var store = new ClaimStore("/pgworker", 
             [fixture.Endpoint], fixture.Gateway, TimeProvider.System,
             advertiseApiUrl: "http://host.docker.internal:8080");
 
@@ -216,7 +215,7 @@ public class EtcdCoordinationTests(EtcdFixture fixture)
     {
         // Arrange: thumbprint серта, поднятого на грани (spec §3.2 п.3)
         const string thumb = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        var store = new ClaimStore([Endpoint], Gateway, TimeProvider.System,
+        var store = new ClaimStore("/pgworker", [Endpoint], Gateway, TimeProvider.System,
             advertiseApiUrl: $"https://localhost:9{Random.Shared.Next(1000, 9999)}",
             certThumbprint: thumb);
         await using var _ = store;
@@ -236,7 +235,7 @@ public class EtcdCoordinationTests(EtcdFixture fixture)
     public async Task ApiKey_OmitsCertThumbprint_WhenNull()
     {
         // Arrange: старая семантика — поле опционально (spec §3.1)
-        var store = new ClaimStore([Endpoint], Gateway, TimeProvider.System,
+        var store = new ClaimStore("/pgworker", [Endpoint], Gateway, TimeProvider.System,
             advertiseApiUrl: $"https://localhost:9{Random.Shared.Next(1000, 9999)}");
         await using var _ = store;
 

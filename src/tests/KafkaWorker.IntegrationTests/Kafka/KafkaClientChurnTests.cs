@@ -3,7 +3,6 @@ using FluentAssertions;
 using KafkaWorker.Core;
 using KafkaWorker.Docker.Drivers;
 using KafkaWorker.Docker.Engine;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.IntegrationTests.Etcd;
 using KafkaWorker.Core.Templates;
@@ -44,9 +43,9 @@ public class KafkaClientChurnTests(EtcdFixture etcd)
         await etcd.PutAsync($"/kafka/clusters/{cluster}/ca_pem", caPem);
 
         var ep = new[] { etcd.Endpoint };
-        var claims = new ClaimStore(ep, etcd.Gateway, TimeProvider.System);
+        var claims = new ClaimStore("/kafkaworker", ep, etcd.Gateway, TimeProvider.System);
         await claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
-        var journal = new WorkJournal(etcd.Gateway, ep);
+        var journal = new WorkJournal("/kafkaworker", etcd.Gateway, ep);
         var driver = new PlainClusterDriver(
             [new HostEndpoint("local", "unix:///var/run/docker.sock")],
             new DockerEngineFactory());

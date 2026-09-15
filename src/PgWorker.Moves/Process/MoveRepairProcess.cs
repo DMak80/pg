@@ -2,7 +2,6 @@ using Microsoft.Extensions.Logging;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Provisioning.Processes;
 
 namespace PgWorker.Moves;

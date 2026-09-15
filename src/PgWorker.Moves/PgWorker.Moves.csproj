@@ -16,6 +16,7 @@
 
     <ItemGroup>
         <Using Include="Shared.Core"/>
+        <Using Include="Shared.Etcd.Coordination"/>
     </ItemGroup>
 
 </Project>

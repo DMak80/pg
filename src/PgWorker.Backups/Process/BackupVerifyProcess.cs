@@ -5,7 +5,6 @@ using PgWorker.Core.Model;
 using PgWorker.Docker.Drivers;
 using PgWorker.Docker.Engine;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Processes;

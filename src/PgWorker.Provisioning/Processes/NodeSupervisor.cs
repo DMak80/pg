@@ -6,7 +6,6 @@ using PgWorker.Core.Templates;
 using PgWorker.Core.Tuning;
 using PgWorker.Docker.Drivers;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Probes;
 using PgWorker.Provisioning.Sql;
@@ -162,7 +161,7 @@ public sealed class NodeSupervisor(
                 deadShards.Add(evacuated);
         }
 
-        await journal.WriteSupervisionAsync(cluster, claims.InstanceId, track, ct);
+        await journal.WriteSupervisionAsync(cluster, claims.InstanceId, track, null, ct);
 
         // 3) P11-сверка мастер-ключей (только при рассинхроне — отдельный контур).
         if (masterKeys is not null)

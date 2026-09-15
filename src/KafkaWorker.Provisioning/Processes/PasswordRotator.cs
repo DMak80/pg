@@ -6,7 +6,6 @@ using KafkaWorker.Core.Planning;
 using KafkaWorker.Core.Templates;
 using KafkaWorker.Docker.Drivers;
 using Shared.Etcd.Client;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Provisioning.Kafka;
 
 namespace KafkaWorker.Provisioning.Processes;
@@ -115,7 +114,7 @@ public sealed class PasswordRotator(
             return Result<bool>.Failed(caTicket.Error!);
         if (caTicket.Value is not null)
         {
-            var waitingCa = await journal.WriteAsync(
+            var waitingCa = await journal.WritePhaseAsync(
                 cluster, Op, role.Phase("waiting-ca-rotation"), claims.InstanceId, null, ct);
             return waitingCa.IsSuccess ? Result<bool>.Success(true) : Result<bool>.Failed(waitingCa.Error!);
         }
@@ -125,7 +124,7 @@ public sealed class PasswordRotator(
             // Кластер не поднят: ждём (заявка жива — ротация не теряется).
             if (ticket.Value is null)
                 return Result<bool>.Success(false);
-            var waiting = await journal.WriteAsync(
+            var waiting = await journal.WritePhaseAsync(
                 cluster, Op, role.Phase("waiting-cluster"), claims.InstanceId, null, ct);
             return waiting.IsSuccess ? Result<bool>.Success(true) : Result<bool>.Failed(waiting.Error!);
         }
@@ -141,7 +140,7 @@ public sealed class PasswordRotator(
         var alive = await WaitForBrokersAsync(snap, 1, ct);
         if (!alive.Value)
         {
-            var waitingCluster = await journal.WriteAsync(
+            var waitingCluster = await journal.WritePhaseAsync(
                 cluster, Op, role.Phase("waiting-cluster"), claims.InstanceId, null, ct);
             return waitingCluster.IsSuccess ? Result<bool>.Success(true) : Result<bool>.Failed(waitingCluster.Error!);
         }
@@ -156,7 +155,7 @@ public sealed class PasswordRotator(
                     return Result<bool>.Failed(Fail(cluster, before.Error!, role.Phase("phase-a")));
             }
 
-            var started = await journal.WriteAsync(cluster, Op, role.Phase("phase-a"), claims.InstanceId, null, ct);
+            var started = await journal.WritePhaseAsync(cluster, Op, role.Phase("phase-a"), claims.InstanceId, null, ct);
             if (!started.IsSuccess)
                 return Result<bool>.Failed(started.Error!);
 
@@ -199,7 +198,7 @@ public sealed class PasswordRotator(
                 current.Error ?? new ApplicationException($"нет ключа {PasswordKey(role, cluster)}"),
                 role.Phase("phase-c")));
 
-        var markedC = await journal.WriteAsync(cluster, Op, role.Phase(PhaseCommitted), claims.InstanceId, null, ct);
+        var markedC = await journal.WritePhaseAsync(cluster, Op, role.Phase(PhaseCommitted), claims.InstanceId, null, ct);
         if (!markedC.IsSuccess)
             return Result<bool>.Failed(markedC.Error!);
 
@@ -225,7 +224,7 @@ public sealed class PasswordRotator(
         _rolled.TryRemove((cluster, role.Name, "phase-c"), out _);
         _snapshotBeforeDone.TryRemove((cluster, role.Name), out _);
         _newPasswords.TryRemove((cluster, role.Name), out _);
-        var done = await journal.WriteAsync(cluster, Op, role.Phase(PhaseDone), claims.InstanceId, null, ct);
+        var done = await journal.WritePhaseAsync(cluster, Op, role.Phase(PhaseDone), claims.InstanceId, null, ct);
         return Result<bool>.Success(done.IsSuccess);
     }
 
@@ -332,7 +331,7 @@ public sealed class PasswordRotator(
 
     private Result Fail(string cluster, Exception error, string phase)
     {
-        journal.WriteAsync(cluster, Op, phase, claims.InstanceId, error.Message, CancellationToken.None)
+        journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, error.Message, CancellationToken.None)
             .GetAwaiter().GetResult();
         return Result.Failed(error);
     }

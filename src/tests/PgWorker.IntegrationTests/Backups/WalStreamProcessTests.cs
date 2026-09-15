@@ -3,7 +3,6 @@ using PgWorker.Backups;
 using PgWorker.Backups.Sql;
 using PgWorker.Core.Model;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.IntegrationTests.Etcd;
 using PgWorker.Core.Templates;
@@ -18,7 +17,7 @@ namespace PgWorker.IntegrationTests.Backups;
 [Collection(EtcdCollection.Name)]
 public class WalStreamProcessTests(EtcdFixture fixture)
 {
-    private readonly ClaimStore _claims = new([fixture.Endpoint], fixture.Gateway, TimeProvider.System);
+    private readonly ClaimStore _claims = new("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
 
     // ── Хелперы Arrange ──
 
@@ -57,7 +56,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
             new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
             sql, s3,
             new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]),
-            _claims, new WorkJournal(fixture.Gateway, [fixture.Endpoint]),
+            _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => options,
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
             clock ?? TimeProvider.System);
@@ -237,7 +236,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
             fixture.Gateway, [fixture.Endpoint], driver,
             new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
             sql, s3, new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]),
-            _claims, new WorkJournal(fixture.Gateway, [fixture.Endpoint]),
+            _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => Options(), new InstallSecrets("su", "sb", "adm", "mv"),
             TimeProvider.System, (c, s, l) => lags.Add((c, s, l)));
         var restoring = FullShard("000000010000000000000001") with
@@ -276,7 +275,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
             fixture.Gateway, [fixture.Endpoint], driver,
             new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
             sql, s3, new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]),
-            _claims, new WorkJournal(fixture.Gateway, [fixture.Endpoint]),
+            _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => Options(), new InstallSecrets("su", "sb", "adm", "mv"),
             TimeProvider.System, (c, s, l) => lags.Add((c, s, l)));
         var backups = new ClusterBackups("cc1", null,

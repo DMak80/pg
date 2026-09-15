@@ -8,7 +8,6 @@ using PgWorker.Core.Planning;
 using PgWorker.Docker.Drivers;
 using PgWorker.Docker.Engine;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.IntegrationTests.Etcd;
 using PgWorker.Core.Templates;
@@ -26,7 +25,7 @@ namespace PgWorker.IntegrationTests.Backups;
 [Collection(EtcdCollection.Name)]
 public class RestoreProcessTests(EtcdFixture fixture)
 {
-    private readonly ClaimStore _claims = new([fixture.Endpoint], fixture.Gateway, TimeProvider.System);
+    private readonly ClaimStore _claims = new("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
 
     // ── Хелперы Arrange ──
 
@@ -66,7 +65,7 @@ public class RestoreProcessTests(EtcdFixture fixture)
         TimeProvider? clock = null, HttpMessageHandler? patroni = null,
         BackupsRuntimeOptions? options = null)
         => new(fixture.Gateway, [fixture.Endpoint], driver, s3, _claims,
-            new WorkJournal(fixture.Gateway, [fixture.Endpoint]), options ?? Options(),
+            new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]), options ?? Options(),
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
             new EtcdEndpoints([fixture.Endpoint]), new StubAppSecret(),
             new ShardProbe(new HttpClient(patroni ?? new DeadHandler())),

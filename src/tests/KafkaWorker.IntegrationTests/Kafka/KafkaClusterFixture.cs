@@ -7,7 +7,6 @@ using KafkaWorker.Core.Model;
 using KafkaWorker.Docker.Drivers;
 using KafkaWorker.Docker.Engine;
 using Shared.Etcd.Client;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
@@ -229,7 +228,7 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
     {
         if (_claims.TryGetValue(cluster, out var store))
             return store;
-        store = new ClaimStore([Endpoint], Gateway, TimeProvider.System);
+        store = new ClaimStore("/kafkaworker", [Endpoint], Gateway, TimeProvider.System);
         await store.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
         _claims[cluster] = store;
         return store;
@@ -242,10 +241,10 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
     {
         var ct = TestContext.Current.CancellationToken;
         var claims = await ClaimsAsync(cluster);
-        var journal = new WorkJournal(Gateway, [Endpoint]);
+        var journal = new WorkJournal("/kafkaworker", Gateway, [Endpoint]);
         var healer = new PortAllocHealer(
             Gateway, [Endpoint], Driver, claims, journal,
-            new PortAllocLock([Endpoint], Gateway, TimeProvider.System, claims.InstanceId),
+            new PortAllocLock("/kafkaworker", [Endpoint], Gateway, TimeProvider.System, claims.InstanceId),
             new PortAllocIndex(Gateway, [Endpoint], NullLogger<PortAllocIndex>.Instance),
             Options, Certificates);
         return new NodeSupervisor(
@@ -261,10 +260,10 @@ public sealed class KafkaClusterFixture : IAsyncLifetime
     public async Task<ProvisioningProcess> ProvisionRigAsync(string cluster)
     {
         var claims = await ClaimsAsync(cluster);
-        var journal = new WorkJournal(Gateway, [Endpoint]);
+        var journal = new WorkJournal("/kafkaworker", Gateway, [Endpoint]);
         return new ProvisioningProcess(
             Gateway, [Endpoint], Driver, claims, journal,
-            new PortAllocLock([Endpoint], Gateway, TimeProvider.System, claims.InstanceId),
+            new PortAllocLock("/kafkaworker", [Endpoint], Gateway, TimeProvider.System, claims.InstanceId),
             new PortAllocIndex(Gateway, [Endpoint], NullLogger<PortAllocIndex>.Instance),
             new ClusterSecretEnsurer(Gateway, [Endpoint]),
             AdminFactory, new ClusterConfigConverger(AdminFactory),

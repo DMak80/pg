@@ -6,7 +6,6 @@ using Shared.Core.HealthChecks;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Processes;
 

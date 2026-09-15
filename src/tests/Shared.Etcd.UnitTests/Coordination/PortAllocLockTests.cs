@@ -1,17 +1,14 @@
-using FluentAssertions;
-using KafkaWorker.Core;
-using KafkaWorker.Etcd.Coordination;
-using Shared.Etcd.Client;
-using KafkaWorker.UnitTests.Provisioning;
+using Shared.Etcd.Coordination;
 using Xunit;
 
-namespace KafkaWorker.UnitTests.Etcd;
+namespace Shared.Etcd.UnitTests.Coordination;
 
-// PortAllocLock (t91, arch/15 §4 / arch/16 §2.1): глобальный portalloc-клэйм —
-// взаимоисключение секции довыделения портов между кластерами/инстансами
-// (порт набора t90 PgWorker).
+// PortAllocLock (t90/t91): глобальный portalloc-клэйм — взаимоисключение секции
+// довыделения портов между кластерами/инстансами. t09: влитие копий Pg и Kfw
+// (кейсы совпадают поимённо, канон — Pg-копия) с параметризацией префикса.
 public class PortAllocLockTests
 {
+    private const string Prefix = "/unit";
     private const string Ep = "http://etcd:2379";
 
     // AAA: первый захват проходит и пишет ключ с instance держателя;
@@ -20,9 +17,9 @@ public class PortAllocLockTests
     public async Task TryAcquire_SecondInstance_GetsFalse()
     {
         // Arrange
-        var etcd = new Fakes.FakeEtcd();
-        var first = new PortAllocLock([Ep], etcd, TimeProvider.System, "inst-1");
-        var second = new PortAllocLock([Ep], etcd, TimeProvider.System, "inst-2");
+        var etcd = new FakeCoordinationGateway();
+        var first = new PortAllocLock(Prefix, [Ep], etcd, TimeProvider.System, "inst-1");
+        var second = new PortAllocLock(Prefix, [Ep], etcd, TimeProvider.System, "inst-2");
 
         // Act
         var firstAcquired = await first.TryAcquireAsync(CancellationToken.None);
@@ -33,18 +30,18 @@ public class PortAllocLockTests
         firstAcquired.Value.Should().BeTrue();
         secondAcquired.IsSuccess.Should().BeTrue();
         secondAcquired.Value.Should().BeFalse();
-        etcd.Store[PortAllocLock.Key].Value.Should().Contain("inst-1");
+        etcd.Store[first.Key].Should().Contain("inst-1");
     }
 
-    // AAA: release (del + revoke) освобождает — повторный захват другим инстансом
-    // проходит; повторный ReleaseAsync — no-op.
+    // AAA: release (del + revoke) освобождает — повторный захват другим инстансом проходит;
+    // повторный ReleaseAsync — no-op.
     [Fact]
     public async Task Release_AllowsTakeover_AndIsIdempotent()
     {
         // Arrange
-        var etcd = new Fakes.FakeEtcd();
-        var first = new PortAllocLock([Ep], etcd, TimeProvider.System, "inst-1");
-        var second = new PortAllocLock([Ep], etcd, TimeProvider.System, "inst-2");
+        var etcd = new FakeCoordinationGateway();
+        var first = new PortAllocLock(Prefix, [Ep], etcd, TimeProvider.System, "inst-1");
+        var second = new PortAllocLock(Prefix, [Ep], etcd, TimeProvider.System, "inst-2");
         (await first.TryAcquireAsync(CancellationToken.None)).Value.Should().BeTrue();
 
         // Act
@@ -54,20 +51,20 @@ public class PortAllocLockTests
 
         // Assert
         reclaimed.Value.Should().BeTrue();
-        etcd.Store[PortAllocLock.Key].Value.Should().Contain("inst-2");
+        etcd.Store[second.Key].Should().Contain("inst-2");
     }
 
-    // AAA (ревью-блокер t90, порт): повторный TryAcquire тем же объектом при живом
-    // захвате — false, НЕ true: клэйм-объект DI-синглтон, ReconcileLoop тикает
-    // кластеры ПАРАЛЛЕЛЬНО (MaxClusters) — параллельные тики одного инстанса
-    // обязаны взаимоисключаться. «Занят» — не ошибка: waiting-portalloc-lock,
-    // следующий тик.
+    // AAA (ревью-блокер t90): повторный TryAcquire тем же объектом при живом
+    // захвате — false, НЕ true: клэйм-объект DI-синглтон, параллельные тики
+    // разных кластеров одного инстанса обязаны взаимоисключаться (reentrant-true
+    // пускал обе секции concurrently — гонка t90 воспроизводилась в дефолтной
+    // конфигурации). «Занят» — не ошибка: waiting-portalloc-lock, следующий тик.
     [Fact]
     public async Task TryAcquire_AlreadyHeldBySameObject_ReturnsFalse()
     {
         // Arrange
-        var etcd = new Fakes.FakeEtcd();
-        var locks = new PortAllocLock([Ep], etcd, TimeProvider.System, "inst-1");
+        var etcd = new FakeCoordinationGateway();
+        var locks = new PortAllocLock(Prefix, [Ep], etcd, TimeProvider.System, "inst-1");
         (await locks.TryAcquireAsync(CancellationToken.None)).Value.Should().BeTrue();
 
         // Act
@@ -76,17 +73,18 @@ public class PortAllocLockTests
         // Assert
         again.IsSuccess.Should().BeTrue();
         again.Value.Should().BeFalse(); // держит параллельный тик этого же инстанса
-        etcd.Store[PortAllocLock.Key].Value.Should().Contain("inst-1"); // ключ держателя не тронут
+        etcd.Store[locks.Key].Should().Contain("inst-1"); // ключ держателя не тронут
     }
 
-    // AAA (регрессия busy-гэта): два TryAcquireAsync на ОДНОМ объекте — первый
-    // true, второй false; после ReleaseAsync первого — захват снова проходит.
+    // AAA (регрессия ревью-блокера t90): два TryAcquireAsync на ОДНОМ объекте
+    // (один инстанс, параллельные тики двух кластеров) — первый true, второй
+    // false; после ReleaseAsync первого — захват снова проходит (следующий тик).
     [Fact]
     public async Task SameObject_SecondTickBlockedUntilRelease()
     {
         // Arrange
-        var etcd = new Fakes.FakeEtcd();
-        var portLock = new PortAllocLock([Ep], etcd, TimeProvider.System, "inst-1");
+        var etcd = new FakeCoordinationGateway();
+        var portLock = new PortAllocLock(Prefix, [Ep], etcd, TimeProvider.System, "inst-1");
 
         // Act
         var first = await portLock.TryAcquireAsync(CancellationToken.None);
@@ -107,31 +105,30 @@ public class PortAllocLockTests
     public async Task Release_AfterTakeover_DoesNotDeleteForeignKey()
     {
         // Arrange
-        var etcd = new Fakes.FakeEtcd();
-        var mine = new PortAllocLock([Ep], etcd, TimeProvider.System, "inst-1");
+        var etcd = new FakeCoordinationGateway();
+        var mine = new PortAllocLock(Prefix, [Ep], etcd, TimeProvider.System, "inst-1");
         (await mine.TryAcquireAsync(CancellationToken.None)).Value.Should().BeTrue();
         // имитация истечения TTL и перехвата: ключ перезаписан чужим value
-        etcd.Seed(PortAllocLock.Key, """{"instance":"inst-2","since_unix":1}""");
+        etcd.Seed(mine.Key, """{"instance":"inst-2","since_unix":1}""");
 
         // Act
         await mine.ReleaseAsync();
 
         // Assert: чужой ключ жив — del под ValueEqual(наш value) не сошёлся
-        etcd.Store[PortAllocLock.Key].Value.Should().Contain("inst-2");
+        etcd.Store[mine.Key].Should().Contain("inst-2");
     }
 
-    // AAA: сбой etcd на txn → Result.Failed (процесс пойдёт в обычный бэкофф,
-    // не InProgress-тихо).
+    // AAA: сбой etcd на txn → Result.Failed (процесс пойдёт в обычный бэкофф, не InProgress-тихо).
     [Fact]
     public async Task TryAcquire_EtcdTxnFailure_ReturnsFailed()
     {
         // Arrange
-        var etcd = new Fakes.FakeEtcd
+        var etcd = new FakeCoordinationGateway
         {
             TxnFault = _ => Result<TxnResult>.Failed(
                 new ApplicationException("etcd: connection refused")),
         };
-        var locks = new PortAllocLock([Ep], etcd, TimeProvider.System, "inst-1");
+        var locks = new PortAllocLock(Prefix, [Ep], etcd, TimeProvider.System, "inst-1");
 
         // Act
         var acquired = await locks.TryAcquireAsync(CancellationToken.None);

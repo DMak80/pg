@@ -9,7 +9,6 @@ using PgWorker.Core.Tuning;
 using PgWorker.Docker.Drivers;
 using PgWorker.Docker.Engine;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Processes;
@@ -292,11 +291,11 @@ public class BackupProcessTests
         var engine = new FakeBackupEngine();
         var ensurer = new FakeSecretEnsurer();
         var driver = new FakeBackupDriver(engine);
-        var claims = new ClaimStore([Ep], store, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [Ep], store, TimeProvider.System);
         if (claim)
             await claims.TryClaimClusterAsync("shop", CancellationToken.None);
         store.Txns.Clear(); // отсечь claim-txn: ассерты — только про тик бэкапов
-        var journal = new WorkJournal(store, [Ep]);
+        var journal = new WorkJournal("/pgworker", store, [Ep]);
         var probe = new ShardProbe(new HttpClient(new DeadHandler()));
         var process = new BackupProcess(
             store, [Ep], driver,

@@ -1,7 +1,6 @@
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using PgWorker.Core;
-using PgWorker.Etcd.Coordination;
 
 namespace PgWorker.App.HealthChecks;
 

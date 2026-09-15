@@ -3,7 +3,6 @@ using FluentAssertions;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
 using KafkaWorker.Core.Planning;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning;
 using KafkaWorker.Provisioning.Processes;
@@ -52,8 +51,8 @@ public class NodeRegeneratorTests : IAsyncLifetime
         _driver.Limits["kfw-events-broker2"] = new(2_000_000_000L, 4L << 30);
 
         var endpoints = new[] { "http://etcd" };
-        _claims = new ClaimStore(endpoints, _etcd, _time);
-        _journal = new WorkJournal(_etcd, endpoints);
+        _claims = new ClaimStore("/kafkaworker", endpoints, _etcd, _time);
+        _journal = new WorkJournal("/kafkaworker", _etcd, endpoints);
         _regen = new NodeRegenerator(_etcd, endpoints, _driver, _claims, _journal,
             new ProvisioningOptions(16000, 16999, BrokerBootSec: 100, NodeDeadSec: 90, null, "apache/kafka:4.0.0"),
             new BrokerCertificateCache());
@@ -80,7 +79,7 @@ public class NodeRegeneratorTests : IAsyncLifetime
 
     private NodeRegenerator Stranger()
         => new(_etcd, ["http://etcd"], _driver,
-            new ClaimStore(["http://etcd"], _etcd, _time), _journal,
+            new ClaimStore("/kafkaworker", ["http://etcd"], _etcd, _time), _journal,
             new ProvisioningOptions(16000, 16999, BrokerBootSec: 100, NodeDeadSec: 90, null, "apache/kafka:4.0.0"),
             new BrokerCertificateCache());
 

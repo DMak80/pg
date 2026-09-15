@@ -6,7 +6,6 @@ using KafkaWorker.Core.Planning;
 using KafkaWorker.Core.Templates;
 using KafkaWorker.Docker.Drivers;
 using Shared.Etcd.Client;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Provisioning.Kafka;
 
 namespace KafkaWorker.Provisioning.Processes;
@@ -385,7 +384,7 @@ public sealed class NodeSupervisor(
 
     private Result Fail(string cluster, Exception error, string phase)
     {
-        journal.WriteAsync(cluster, Op, phase, claims.InstanceId, error.Message, CancellationToken.None)
+        journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, error.Message, CancellationToken.None)
             .GetAwaiter().GetResult();
         return Result.Failed(error);
     }
@@ -394,7 +393,7 @@ public sealed class NodeSupervisor(
     // ошибки (фаза waiting-portalloc-lock в журнале), следующий тик повторит
     // (порт ProvisioningProcess K1 / AddBrokerProcess).
     private async Task<Result> FinishWaitingPortLockAsync(string cluster, CancellationToken ct)
-        => await journal.WriteAsync(cluster, Op, "waiting-portalloc-lock", claims.InstanceId, null, ct);
+        => await journal.WritePhaseAsync(cluster, Op, "waiting-portalloc-lock", claims.InstanceId, null, ct);
 
     private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> ReadPortAllocAsync(
         string cluster, CancellationToken ct)

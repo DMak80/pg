@@ -6,7 +6,6 @@ using PgWorker.Core.Planning;
 using PgWorker.Core.Templates;
 using PgWorker.Docker.Drivers;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Probes;
@@ -65,9 +64,9 @@ public class AdoptionContractTests(EtcdFixture fixture)
             new StubSql(), new StubAppSecret(),
             new AppParamsEnsurer(Gateway, [Endpoint], "sslmode=require"),
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
-            claims, new WorkJournal(Gateway, [Endpoint]),
+            claims, new WorkJournal("/pgworker", Gateway, [Endpoint]),
             new PortAllocIndex(Gateway, [Endpoint], NullLogger<PortAllocIndex>.Instance),
-            new PortAllocLock([Endpoint], Gateway, TimeProvider.System, claims.InstanceId),
+            new PortAllocLock("/pgworker", [Endpoint], Gateway, TimeProvider.System, claims.InstanceId),
             new PlacementOptions(15000, 15100, PatroniBootSec: 600),
             new EtcdEndpoints([Endpoint]),
             new PgtuneInputsFactory(
@@ -100,7 +99,7 @@ public class AdoptionContractTests(EtcdFixture fixture)
                 ["s1b"] = new("s1b", "local", "as-s1b", 5434, 8012, 0),
             },
         };
-        var claims = new ClaimStore([Endpoint], Gateway, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [Endpoint], Gateway, TimeProvider.System);
         (await claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken)).IsSuccess
             .Should().BeTrue();
         var adoption = NewAdoption(driver, claims);
@@ -139,7 +138,7 @@ public class AdoptionContractTests(EtcdFixture fixture)
                 ["s1a"] = new("s1a", "local", "as-s1a", 5433, 8011, 0),
             },
         };
-        var claims = new ClaimStore([Endpoint], Gateway, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [Endpoint], Gateway, TimeProvider.System);
         (await claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken)).IsSuccess
             .Should().BeTrue();
         var adoption = NewAdoption(driver, claims);
@@ -201,7 +200,7 @@ public class AdoptionContractTests(EtcdFixture fixture)
                 ["shard1b"] = new("shard1b", "host.docker.internal", "pgw-adoptadv-shard1-shard1b", 15701, 18701, 17201),
             },
         };
-        var claims = new ClaimStore([Endpoint], Gateway, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [Endpoint], Gateway, TimeProvider.System);
         (await claims.TryClaimClusterAsync(cluster, ct)).IsSuccess.Should().BeTrue();
         var adoption = NewAdoption(driver, claims);
 

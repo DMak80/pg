@@ -4,7 +4,6 @@ using PgWorker.App;
 using PgWorker.App.Loops;
 using PgWorker.Core;
 using PgWorker.Core.Model;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Processes;
 using PgWorker.UnitTests.Provisioning;
@@ -27,11 +26,11 @@ public class ReconcileLoopTests
 
     private ReconcileLoop CreateLoop(FakeProcesses processes, ClaimStore? claims = null, PgWorkerOptions? options = null)
     {
-        claims ??= new ClaimStore(_options.CurrentValue.Etcd.Endpoints, _etcd, TimeProvider.System);
+        claims ??= new ClaimStore("/pgworker", _options.CurrentValue.Etcd.Endpoints, _etcd, TimeProvider.System);
         return new ReconcileLoop(
             options is null ? _options : new FixedOptionsMonitor(options),
             _etcd, claims, processes,
-            new WorkJournal(_etcd, _options.CurrentValue.Etcd.Endpoints),
+            new WorkJournal("/pgworker", _etcd, _options.CurrentValue.Etcd.Endpoints),
             NullLogger<ReconcileLoop>.Instance, new HealthState(TimeProvider.System),
             new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
                 new System.Diagnostics.Metrics.Meter("TestReconcile"), TimeProvider.System));
@@ -71,9 +70,9 @@ public class ReconcileLoopTests
             Parallelism = new ParallelismOptions { MaxClusters = 4 },
         });
         var loop = new ReconcileLoop(
-            options, etcd, new ClaimStore(options.CurrentValue.Etcd.Endpoints, etcd, TimeProvider.System),
+            options, etcd, new ClaimStore("/pgworker", options.CurrentValue.Etcd.Endpoints, etcd, TimeProvider.System),
             new FakeProcesses(),
-            new WorkJournal(etcd, options.CurrentValue.Etcd.Endpoints),
+            new WorkJournal("/pgworker", etcd, options.CurrentValue.Etcd.Endpoints),
             NullLogger<ReconcileLoop>.Instance, new HealthState(TimeProvider.System),
             new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
                 new System.Diagnostics.Metrics.Meter("TestReconcile"), TimeProvider.System));
@@ -472,11 +471,11 @@ public class ReconcileLoopTests
     {
         // Arrange — все endpoints недоступны (gateway всегда падает)
         var deadEtcd = new DeadEtcd();
-        var claims = new ClaimStore(["http://dead:2379"], deadEtcd, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", ["http://dead:2379"], deadEtcd, TimeProvider.System);
         var processes = new FakeProcesses();
         var loop = new ReconcileLoop(
             _options, deadEtcd, claims, processes,
-            new WorkJournal(deadEtcd, ["http://dead:2379"]),
+            new WorkJournal("/pgworker", deadEtcd, ["http://dead:2379"]),
             NullLogger<ReconcileLoop>.Instance, new HealthState(TimeProvider.System),
             new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
                 new System.Diagnostics.Metrics.Meter("TestReconcile"), TimeProvider.System));

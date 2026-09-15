@@ -4,7 +4,6 @@ using PgWorker.Core.Planning;
 using PgWorker.Core.Templates;
 using PgWorker.Docker.Drivers;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Sql;
 
@@ -288,7 +287,7 @@ public sealed class AdoptionProcess(
             if (!acquired.IsSuccess)
                 return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(acquired.Error!);
             if (!acquired.Value)
-                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new PortLockBusyException());
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new PortLockBusyException(portLock.Key));
             try
             {
                 // Перепланирование занятых (Д1-механика для Active, живой-Ф7): занятость =

@@ -2,7 +2,6 @@ using FluentAssertions;
 using PgWorker.Backups;
 using PgWorker.Backups.Supervisor;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.IntegrationTests.Etcd;
 using Xunit;
 
@@ -42,7 +41,7 @@ public class BackupOrphanSweeperTests(EtcdFixture fixture)
     private BackupOrphanSweeper BuildSweeper(
         FakeBackupS3 s3, ClaimStore claims, MutableClock? clock = null, BackupsRuntimeOptions? options = null)
         => new(fixture.Gateway, [fixture.Endpoint], s3, claims,
-            new WorkJournal(fixture.Gateway, [fixture.Endpoint]),
+            new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => options ?? Options(), clock ?? TimeProvider.System);
 
     private async Task<OrphanRegistry.Registry?> ReadRegistryAsync()
@@ -61,7 +60,7 @@ public class BackupOrphanSweeperTests(EtcdFixture fixture)
         var ct = TestContext.Current.CancellationToken;
         var s3 = new FakeBackupS3();
         var clock = await SeedAsync(s3);
-        var claims = new ClaimStore([fixture.Endpoint], fixture.Gateway, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
         (await claims.TryBecomeLeaderAsync(ct)).Value.Should().BeTrue("лидерство — предусловие прохода");
         var sweeper = BuildSweeper(s3, claims, clock);
 
@@ -95,7 +94,7 @@ public class BackupOrphanSweeperTests(EtcdFixture fixture)
         var ct = TestContext.Current.CancellationToken;
         var s3 = new FakeBackupS3();
         var clock = await SeedAsync(s3);
-        var claims = new ClaimStore([fixture.Endpoint], fixture.Gateway, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
         (await claims.TryBecomeLeaderAsync(ct)).Value.Should().BeTrue();
         // сжатый TTL 60 c — как в E2E-сценарии (сжатое время)
         var sweeper = BuildSweeper(s3, claims, clock, Options(ttl: 60));
@@ -120,7 +119,7 @@ public class BackupOrphanSweeperTests(EtcdFixture fixture)
         var ct = TestContext.Current.CancellationToken;
         var s3 = new FakeBackupS3();
         var clock = await SeedAsync(s3);
-        var claims = new ClaimStore([fixture.Endpoint], fixture.Gateway, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
         (await claims.TryBecomeLeaderAsync(ct)).Value.Should().BeTrue();
         var sweeper = BuildSweeper(s3, claims, clock, Options(ttl: 0));
         (await sweeper.SweepAsync(ct)).IsSuccess.Should().BeTrue();
@@ -142,7 +141,7 @@ public class BackupOrphanSweeperTests(EtcdFixture fixture)
         var ct = TestContext.Current.CancellationToken;
         var s3 = new FakeBackupS3();
         var clock = await SeedAsync(s3);
-        var claims = new ClaimStore([fixture.Endpoint], fixture.Gateway, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
         (await claims.TryBecomeLeaderAsync(ct)).Value.Should().BeTrue();
         var sweeper = BuildSweeper(s3, claims, clock);
         (await sweeper.SweepAsync(ct)).IsSuccess.Should().BeTrue();
@@ -170,7 +169,7 @@ public class BackupOrphanSweeperTests(EtcdFixture fixture)
         var ct = TestContext.Current.CancellationToken;
         var s3 = new FakeBackupS3();
         await SeedAsync(s3);
-        var claims = new ClaimStore([fixture.Endpoint], fixture.Gateway, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
         var sweeper = BuildSweeper(s3, claims);
 
         // Act

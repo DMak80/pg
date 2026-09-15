@@ -1,28 +1,28 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using KafkaWorker.Core;
+using Shared.Core;
 using Shared.Etcd.Client;
 
-namespace KafkaWorker.Etcd.Coordination;
+namespace Shared.Etcd.Coordination;
 
 /// <summary>
-/// Глобальный portalloc-клэйм (t91, arch/15 §4 / arch/16 §2.1; порт PortAllocLock
-/// PgWorker t90): взаимоисключение секции довыделения портов «чтение занятости →
-/// выбор портов → запись portalloc» — пер-кластерные клэймы кросс-кластерную гонку
-/// не закрывают (два параллельно сеемых кластера читают /kafkaworker/portalloc/*
-/// до первой записи соседа и выбирают одинаковые порты). Захват — txn version==0 +
-/// put-with-lease TTL 15 с (паттерн /kafkaworker/leader); keepalive не нужен —
-/// секция короткая (единицы секунд ≪ TTL). Освобождение — явное: del под compare
-/// ValueEqual(наш value; lease истёк и лок перехвачен — чужой ключ не трогаем) +
-/// revoke lease. «Занят» (чужим инстансом или параллельным тиком этого же — объект
-/// в DI один на процесс) — не ошибка: вызывающий возвращает InProgress
-/// (waiting-portalloc-lock), следующий тик (~5 с) повторяет; смерть держателя гасит
-/// TTL ≤ 15 с — takeover без оператора.
+/// Глобальный portalloc-клэйм (t90, arch/14 §2.4/§3.3): взаимоисключение секции
+/// довыделения портов «чтение занятости → выбор троек → запись portalloc» —
+/// пер-кластерные клэймы кросс-кластерную гонку не закрывают (два параллельно
+/// сеемых кластера читают {prefix}/portalloc/* до первой записи соседа и
+/// выбирают одинаковые порты). Захват — txn version==0 + put-with-lease TTL 15 с
+/// (паттерн {prefix}/leader); keepalive не нужен — секция короткая (единицы
+/// секунд ≪ TTL). Освобождение — явное: del под compare ValueEqual(наш value;
+/// lease истёк и лок перехвачен — чужой ключ не трогаем) + revoke lease.
+/// «Занят» (чужим инстансом или параллельным тиком этого же — объект в DI один
+/// на процесс) — не ошибка: вызывающий возвращает InProgress, следующий тик
+/// (~5 с) повторяет; смерть держателя гасит TTL ≤ 15 с — takeover без оператора.
+/// Префикс ключей — параметр конструктора (t09): "/pgworker" / "/kafkaworker".
 /// </summary>
 public sealed class PortAllocLock(
-    string[] endpoints, IEtcdGateway gateway, TimeProvider clock, string instanceId)
+    string keyPrefix, string[] endpoints, IEtcdGateway gateway, TimeProvider clock, string instanceId)
 {
-    public const string Key = "/kafkaworker/locks/portalloc";
+    public string Key => $"{keyPrefix}/locks/portalloc";
     private const int TtlSec = 15;
 
     private readonly object _sync = new();
@@ -33,17 +33,18 @@ public sealed class PortAllocLock(
     /// параллельным тиком ЭТОГО инстанса — клэйм-объект DI-синглтон; НЕ ошибка).</summary>
     public async Task<Result<bool>> TryAcquireAsync(CancellationToken ct)
     {
-        // t90 (порт): объект — DI-синглтон, ReconcileLoop тикает кластеры
+        // t90 (ревью-блокер): объект — DI-синглтон, ReconcileLoop тикает кластеры
         // ПАРАЛЛЕЛЬНО (MaxClusters) — для второго тика того же инстанса клэйм
         // «занят» так же, как для чужого: пока тик A держит секцию (поля
         // _lease/_payload гасятся только в ReleaseAsync), тик B получает false →
-        // PortLockBusyException → waiting-portalloc-lock → следующий тик.
-        // Локальная проверка ДО etcd-раунда, а не reentrant-true: (1) второй
-        // конкурент НЕ входит в секцию concurrently — иначе обе секции читают
-        // busy и пишут portalloc (сама гонка t91); (2) не тратим grant+txn на
-        // заведомо занятый клэйм; (3) _lease/_payload пишет ровно один держатель
-        // инстанса — перехват по истёкшему TTL не перезапишет поля, и release
-        // зависшего тика не удалит чужой живой ключ под ValueEqual.
+        // PortLockBusyException → waiting-portalloc-lock → следующий тик
+        // (тиковая модель spec §2/§3.2). Локальная проверка ДО etcd-раунда, а не
+        // reentrant-true: (1) второй конкурент НЕ входит в секцию concurrently —
+        // иначе обе секции читают busy и пишут portalloc (сама гонка t90);
+        // (2) не тратим grant+txn на заведомо занятый клэйм; (3) _lease/_payload
+        // пишет ровно один держатель инстанса — перехват по истёкшему TTL не
+        // перезапишет поля, и release зависшего тика не удалит чужой живой ключ
+        // под ValueEqual с перезаписанным payload.
         lock (_sync)
         {
             if (_lease is not null)
@@ -151,14 +152,14 @@ public sealed class PortAllocLock(
         return last!;
     }
 
-    // Value ключа /kafkaworker/locks/portalloc (arch/15 §4).
+    // Value ключа {prefix}/locks/portalloc (arch/14 §3.3).
     private sealed record LockPayload(
         [property: JsonPropertyName("instance")] string Instance,
         [property: JsonPropertyName("since_unix")] long SinceUnix);
 }
 
-/// <summary>Сигнал «глобальный portalloc-клэйм занят другим инстансом» (t91):
+/// <summary>Сигнал «глобальный portalloc-клэйм занят другим инстансом» (t90):
 /// НЕ фейл — без бэкоффа; процесс возвращает InProgress (waiting-portalloc-lock),
 /// следующий тик повторяет. Маркер-тип для ветки обработки рядом с FailAsync.</summary>
-public sealed class PortLockBusyException() : Exception(
-    $"{PortAllocLock.Key}: занят другим инстансом — повторить следующим тиком");
+public sealed class PortLockBusyException(string key) : Exception(
+    $"{key}: занят другим инстансом — повторить следующим тиком");
