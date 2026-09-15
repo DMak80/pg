@@ -1,6 +1,5 @@
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Moves;
 using PgWorker.Provisioning.Processes;

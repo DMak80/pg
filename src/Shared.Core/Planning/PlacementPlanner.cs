@@ -40,11 +40,11 @@ public static class PlacementPlanner
                 var host = hosts
                    .Where(h => !takenByGroup.Contains(h.Name))
                    .OrderBy(h => load[h.Name])
-                   .ThenBy(h => h.Name)
+                   .ThenBy(h => h.Name, StringComparer.Ordinal)
                    .FirstOrDefault()
                  ?? hosts
                        .OrderBy(h => load[h.Name])
-                       .ThenBy(h => h.Name)
+                       .ThenBy(h => h.Name, StringComparer.Ordinal)
                        .First();
 
                 placements.Add(new NodePlacement(group.Name, node, host.Name));
