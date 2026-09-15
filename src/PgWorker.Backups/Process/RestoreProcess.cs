@@ -9,6 +9,7 @@ using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Processes;
 using PgWorker.Provisioning.Probes;
+using PgWorker.Provisioning.Sql;
 
 namespace PgWorker.Backups.Process;
 
@@ -37,6 +38,7 @@ public sealed class RestoreProcess(
     EtcdEndpoints etcdEndpoints,
     IClusterSecretEnsurer appSecret,
     ShardProbe probe,
+    ISqlExecutor db,
     ThresholdsOptions thresholds,
     TimeProvider time,
     ILogger<RestoreProcess>? logger = null)
@@ -608,6 +610,22 @@ public sealed class RestoreProcess(
         if (!allStarted)
             return await RejoinWaitAsync(cluster, shard.Name, op, waitKey, firstAddr, ct);
 
+        // SQL-гейт мастера (t10, arch/19 §3.5): Patroni-пробы живы и в
+        // переходном окне рестарта postmaster (57P01 у клиентов), а COMPLETED
+        // обязан означать закрытое окно — после него планировщик полных
+        // немедленно стартует пересъём, тесты/панель читают. Проба фактического
+        // постгреса ПЕРВОЙ ноды (firstReady выше уже требует её лидерство):
+        // pg_is_in_recovery()=false закрывает и crash recovery после рестарта
+        // (Patroni /primary там уже 200). ::text — Npgsql-скаляр boolean
+        // приходит boxed-bool, контракт гейта строковый «f» (spec t10 §4.2):
+        // без cast строковый паттерн никогда бы не совпал — осознанное
+        // уточнение spec (план t10, ревью v2 №4).
+        var adminDsn = ShardEndpoints.AdminDsn(firstAddr, snap.Config.DbName, secrets);
+        var masterProbe = await db.ExecuteScalarAsync(adminDsn, "SELECT pg_is_in_recovery()::text", ct);
+        if (masterProbe is not { IsSuccess: true, Value: "f" })
+            return await MasterSqlWaitAsync(cluster, shard.Name, op, waitKey, firstAddr,
+                masterProbe.IsSuccess ? "pg_is_in_recovery != f" : masterProbe.Error!.Message, ct);
+
         // COMPLETED (AC4): ноды RUNNING; wal-ключ шарда удаляется — сброс цепочки,
         // планировщик t02 немедленно переснимает полный; мастер-ключ обновит сам
         // лидер (lease-скрипт P11) — RestoreProcess его не пишет.
@@ -632,6 +650,7 @@ public sealed class RestoreProcess(
         if (!delWal.IsSuccess)
             return Result<ProcessOutcome>.Failed(delWal.Error!);
         await journal.WritePhaseAsync(cluster, Op, $"done/{shard.Name}/{op.Id}", claims.InstanceId, null, ct);
+        _rejoinWaitSince.TryRemove($"{waitKey}/sql", out _);
         _rejoinWaitSince.TryRemove(waitKey, out _);
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
     }
@@ -685,6 +704,46 @@ public sealed class RestoreProcess(
         }
 
         return await TransientAsync(cluster, $"rejoin-wait/{shard}/{op.Id}", null, ct);
+    }
+
+    // Бюджет SQL-ожидания мастера (t10): образец RejoinWaitAsync — тот же
+    // трекер _rejoinWaitSince (суффикс «/sql» отделяет от Patroni-ожидания),
+    // тот же бюджет PatroniBootSec; телеметрия каждые ~10 тиков — окно обязано
+    // объясняться журналом без перезапуска. Никаких мутаций до готовности
+    // (TransientAsync — тик повторит пробу). Бюджет исчерпан → permanent-FAILED
+    // со снимком Patroni-диагностики (по образцу RejoinWaitAsync).
+    private async Task<Result<ProcessOutcome>> MasterSqlWaitAsync(
+        string cluster, string shard, RestoreOperationState op, string waitKey,
+        NodeAddress? firstAddr, string? lastError, CancellationToken ct)
+    {
+        var sqlKey = $"{waitKey}/sql";
+        var now = NowUnix();
+        var since = _rejoinWaitSince.GetOrAdd(sqlKey, now);
+        var waited = now - since;
+        if (waited > thresholds.PatroniBootSec)
+        {
+            _rejoinWaitSince.TryRemove(sqlKey, out _);
+            var snapshot = "";
+            if (firstAddr is { } addr)
+            {
+                var diag = await probe.GetClusterAsync(addr, ct);
+                snapshot = diag.IsSuccess
+                    ? "; members=" + string.Join(",",
+                        diag.Value.Select(m => $"{m.Name}:{m.Role}:{m.State}"))
+                    : "; probe=" + diag.Error!.Message;
+            }
+            await FailPermanentAsync(cluster, shard, op,
+                $"мастер не принял SQL за {thresholds.PatroniBootSec} с (проба: {lastError ?? "-"}){snapshot}", ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
+
+        if (waited > 0 && waited % 10 == 0)
+            logger?.LogWarning(
+                "backup-restore {Cluster}/{Shard}/{Op}: master-sql-wait {Waited}s/{Budget}s, addr {Addr}: {Error}",
+                cluster, shard, op.Id, waited, thresholds.PatroniBootSec,
+                firstAddr?.ToString() ?? "-", lastError ?? "-");
+
+        return await TransientAsync(cluster, $"master-sql-wait/{shard}/{op.Id}", lastError, ct);
     }
 
     // Приватная копия ProvisioningProcess.Topology (прецедент кодовой базы).
