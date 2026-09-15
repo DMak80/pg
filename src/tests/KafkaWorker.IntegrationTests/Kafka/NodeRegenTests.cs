@@ -1,7 +1,6 @@
 using Confluent.Kafka.Admin;
-using FluentAssertions;
 using KafkaWorker.Core.Planning;
-using KafkaWorker.Etcd.Coordination;
+using FluentAssertions;
 using KafkaWorker.Provisioning;
 using KafkaWorker.Provisioning.Processes;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -26,13 +25,13 @@ public class NodeRegenTests(KafkaClusterFixture fixture)
     private Rig BuildRig()
     {
         // Порт NewRigAsync ReassignmentTests (реальные зависимости, без null!):
-        var claims = new ClaimStore([fixture.Endpoint], fixture.Gateway, TimeProvider.System);
-        var journal = new WorkJournal(fixture.Gateway, [fixture.Endpoint]);
+        var claims = new ClaimStore("/kafkaworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
+        var journal = new WorkJournal("/kafkaworker", fixture.Gateway, [fixture.Endpoint]);
         return new Rig(
             claims, journal,
             new ProvisioningProcess(
                 fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal,
-                new PortAllocLock([fixture.Endpoint], fixture.Gateway, TimeProvider.System, claims.InstanceId),
+                new PortAllocLock("/kafkaworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System, claims.InstanceId),
                 new PortAllocIndex(fixture.Gateway, [fixture.Endpoint], NullLogger<PortAllocIndex>.Instance),
                 new ClusterSecretEnsurer(fixture.Gateway, [fixture.Endpoint]),
                 fixture.AdminFactory, new ClusterConfigConverger(fixture.AdminFactory),
@@ -40,7 +39,7 @@ public class NodeRegenTests(KafkaClusterFixture fixture)
             snapshot: null),
             new AddBrokerProcess(
                 fixture.Gateway, [fixture.Endpoint], fixture.Driver, claims, journal,
-                new PortAllocLock([fixture.Endpoint], fixture.Gateway, TimeProvider.System, claims.InstanceId),
+                new PortAllocLock("/kafkaworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System, claims.InstanceId),
                 new PortAllocIndex(fixture.Gateway, [fixture.Endpoint], NullLogger<PortAllocIndex>.Instance),
                 fixture.AdminFactory, fixture.Options, fixture.Certificates),
             new NodeRegenerator(

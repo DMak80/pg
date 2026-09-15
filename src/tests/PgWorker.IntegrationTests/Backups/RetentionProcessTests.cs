@@ -5,7 +5,6 @@ using PgWorker.Backups.Job;
 using PgWorker.Backups.Sql;
 using PgWorker.Core.Model;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.IntegrationTests.Etcd;
 using PgWorker.Core.Templates;
@@ -26,7 +25,7 @@ namespace PgWorker.IntegrationTests.Backups;
 [Collection(EtcdCollection.Name)]
 public class RetentionProcessTests(EtcdFixture fixture)
 {
-    private readonly ClaimStore _claims = new([fixture.Endpoint], fixture.Gateway, TimeProvider.System);
+    private readonly ClaimStore _claims = new("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
 
     // Замороженный момент: среда 2026-09-09 12:00:00 UTC (все started_unix
     // считаются от него; updated_unix ключа storage детерминирован).
@@ -69,7 +68,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
     private RetentionProcess BuildProcess(
         BackupsRuntimeOptions options, FakeBackupS3 s3, TimeProvider? clock = null) => new(
         fixture.Gateway, [fixture.Endpoint], s3,
-        _claims, new WorkJournal(fixture.Gateway, [fixture.Endpoint]),
+        _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
         options, clock ?? new FrozenClock(),
         NullLogger<RetentionProcess>.Instance);
 
@@ -311,7 +310,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
         var walProcess = new WalStreamProcess(
             fixture.Gateway, [fixture.Endpoint], new StubScaleDriver(),
             new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
-            sql, s3, writer, _claims, new WorkJournal(fixture.Gateway, [fixture.Endpoint]),
+            sql, s3, writer, _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => (BackupsRuntimeOptions?)Options(), new InstallSecrets("su", "sb", "adm", "mv"),
             new FrozenClock());
 
@@ -404,7 +403,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
         var process = BuildProcess(Options() with { }, s3);
         var disabled = new RetentionProcess(
             fixture.Gateway, [fixture.Endpoint], s3,
-            _claims, new WorkJournal(fixture.Gateway, [fixture.Endpoint]),
+            _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             Options() with { Enabled = false }, new FrozenClock(),
             NullLogger<RetentionProcess>.Instance);
 

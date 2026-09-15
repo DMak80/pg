@@ -2,9 +2,9 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 using PgWorker.Core;
-using PgWorker.Core.Writing;
 using Shared.Etcd.Client;
 
+using PgWorker.Core.Writing;
 namespace PgWorker.App.Api.Operations;
 
 // Ответ 201 POST /api/clusters/{c}/secrets/rotate (арх-канон arch/02 §9.8; дубль осознан).

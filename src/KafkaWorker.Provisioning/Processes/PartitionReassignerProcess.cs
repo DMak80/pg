@@ -5,7 +5,6 @@ using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
 using KafkaWorker.Docker.Drivers;
 using Shared.Etcd.Client;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Provisioning.Kafka;
 
 namespace KafkaWorker.Provisioning.Processes;
@@ -96,7 +95,7 @@ public sealed class PartitionReassignerProcess(
         var described = await admin.DescribeTopicsAsync(includeInternal: true, ct);
         if (!described.IsSuccess)
         {
-            var blind = await journal.WriteAsync(cluster, Op, "waiting-cluster", claims.InstanceId,
+            var blind = await journal.WritePhaseAsync(cluster, Op, "waiting-cluster", claims.InstanceId,
                 $"метаданные недоступны — слепая проба, подач нет: {described.Error!.Message}", ct);
             if (!blind.IsSuccess)
                 return blind;
@@ -124,7 +123,7 @@ public sealed class PartitionReassignerProcess(
             // Заявка balance ждёт — сначала демонтаж (spec §5.3 B1).
             if (hasTicket)
             {
-                var waiting = await journal.WriteAsync(cluster, Op, "waiting-drain", claims.InstanceId,
+                var waiting = await journal.WritePhaseAsync(cluster, Op, "waiting-drain", claims.InstanceId,
                     $"идёт drain {drainCandidate.Name} — заявка ребалансировки ждёт", ct);
                 if (!waiting.IsSuccess)
                     return waiting;
@@ -145,7 +144,7 @@ public sealed class PartitionReassignerProcess(
             }
 
             _lastOk[cluster] = now;
-            return await journal.WriteAsync(cluster, Op, "cancelled", claims.InstanceId,
+            return await journal.WritePhaseAsync(cluster, Op, "cancelled", claims.InstanceId,
                 "заявка ребалансировки исчезла — подач больше нет, поданные батчи Kafka доиграет сама", ct);
         }
 
@@ -186,7 +185,7 @@ public sealed class PartitionReassignerProcess(
                     return Fail(cluster, removed.Error!, "deleting-progress");
 
                 _lastOk[cluster] = now;
-                return await journal.WriteAsync(cluster, Op, "done", claims.InstanceId,
+                return await journal.WritePhaseAsync(cluster, Op, "done", claims.InstanceId,
                     $"drain {drainBroker} завершён — демонтаж продолжится процессом remove", ct);
             }
 
@@ -199,7 +198,7 @@ public sealed class PartitionReassignerProcess(
                 return Fail(cluster, synced.Error!, "writing-progress");
 
             _lastOk[cluster] = now;
-            return await journal.WriteAsync(cluster, Op, "waiting-sync", claims.InstanceId,
+            return await journal.WritePhaseAsync(cluster, Op, "waiting-sync", claims.InstanceId,
                 $"реплик {drainBroker} больше нет — ждём догон ISR (under-replicated)", ct);
         }
 
@@ -224,7 +223,7 @@ public sealed class PartitionReassignerProcess(
                 return Fail(cluster, blocked.Error!, "writing-progress");
 
             _lastOk[cluster] = now;
-            return await journal.WriteAsync(cluster, Op, "waiting-minisr", claims.InstanceId,
+            return await journal.WritePhaseAsync(cluster, Op, "waiting-minisr", claims.InstanceId,
                 plan.Error.Message, ct);
         }
 
@@ -262,7 +261,7 @@ public sealed class PartitionReassignerProcess(
                 return Fail(cluster, delProgress.Error!, "deleting-progress");
 
             _lastOk[cluster] = now;
-            return await journal.WriteAsync(cluster, Op, "done", claims.InstanceId,
+            return await journal.WritePhaseAsync(cluster, Op, "done", claims.InstanceId,
                 "факт совпал с планом ребалансировки — заявка исполнена", ct);
         }
 
@@ -402,7 +401,7 @@ public sealed class PartitionReassignerProcess(
 
     private async Task<Result> JournalAsync(string cluster, string phase, string? message, CancellationToken ct)
     {
-        var written = await journal.WriteAsync(cluster, Op, phase, claims.InstanceId, message, ct);
+        var written = await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, message, ct);
         if (!written.IsSuccess)
             return written;
         return Result.Success();
@@ -410,7 +409,7 @@ public sealed class PartitionReassignerProcess(
 
     private Result Fail(string cluster, Exception error, string phase)
     {
-        journal.WriteAsync(cluster, Op, phase, claims.InstanceId, error.Message, CancellationToken.None)
+        journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, error.Message, CancellationToken.None)
             .GetAwaiter().GetResult();
         return Result.Failed(error);
     }

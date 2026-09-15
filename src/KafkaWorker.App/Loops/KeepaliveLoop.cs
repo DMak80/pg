@@ -3,7 +3,6 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using Shared.Core.HealthChecks;
 using KafkaWorker.Core;
-using KafkaWorker.Etcd.Coordination;
 
 namespace KafkaWorker.App.Loops;
 

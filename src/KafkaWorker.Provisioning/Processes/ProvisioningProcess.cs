@@ -8,7 +8,6 @@ using KafkaWorker.Core.Planning;
 using KafkaWorker.Core.Templates;
 using KafkaWorker.Docker.Drivers;
 using Shared.Etcd.Client;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning.Kafka;
 
@@ -68,7 +67,7 @@ public sealed class ProvisioningProcess(
         }
 
         // K0: journal-before-manipulations.
-        var started = await journal.WriteAsync(cluster, Op, "started", claims.InstanceId, null, ct);
+        var started = await journal.WritePhaseAsync(cluster, Op, "started", claims.InstanceId, null, ct);
         if (!started.IsSuccess)
             return started;
 
@@ -175,7 +174,7 @@ public sealed class ProvisioningProcess(
         if (!acquired.IsSuccess)
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(acquired.Error!);
         if (!acquired.Value)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new PortLockBusyException());
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new PortLockBusyException(portLock.Key));
         try
         {
             var hosts = await driver.GetHostsAsync(ct);
@@ -191,8 +190,8 @@ public sealed class ProvisioningProcess(
             foreach (var p in dockerBusy.Value)
                 busy.Add(p);
 
-            var plan = PlacementPlanner.Plan(wanted, hosts.Value);
-            var allocated = PortAllocator.Allocate(plan, existing, busy, options.PortFrom, options.PortTo);
+            var plan = PlacementPlanner.Plan(KfwPlanning.Group(cluster, wanted), hosts.Value);
+            var allocated = PortAllocator.Allocate(plan, existing, busy, options.PortFrom, options.PortTo, KfwPlanning.PortsOf, KfwPlanning.HostOf, KfwPlanning.MakeAddress, KfwPlanning.KeyOf);
             if (!allocated.IsSuccess)
                 return allocated;
 
@@ -240,7 +239,7 @@ public sealed class ProvisioningProcess(
     private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> PlannedAsync(
         Dictionary<string, NodeAddress> existing, string cluster, CancellationToken ct)
     {
-        var planned = await journal.WriteAsync(cluster, Op, "planned", claims.InstanceId, null, ct);
+        var planned = await journal.WritePhaseAsync(cluster, Op, "planned", claims.InstanceId, null, ct);
         return planned.IsSuccess
             ? Result<IReadOnlyDictionary<string, NodeAddress>>.Success(existing)
             : Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(planned.Error!);
@@ -406,14 +405,14 @@ public sealed class ProvisioningProcess(
 
     private async Task<Result> FinishAsync(string cluster, string phase, CancellationToken ct)
     {
-        var written = await journal.WriteAsync(cluster, Op, phase, claims.InstanceId, null, ct);
+        var written = await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, null, ct);
         return written;
     }
 
     private Result Fail(string cluster, Exception error, string phase)
     {
         // journal last_error + фаза (не ждём — процесс может быть уже сломан).
-        journal.WriteAsync(cluster, Op, phase, claims.InstanceId, error.Message, CancellationToken.None)
+        journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, error.Message, CancellationToken.None)
             .GetAwaiter().GetResult();
         return Result.Failed(error);
     }

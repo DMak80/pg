@@ -4,8 +4,6 @@ using System.Diagnostics;
 using Microsoft.Extensions.Options;
 using Shared.Core.HealthChecks;
 using PgWorker.Core;
-using PgWorker.Etcd.Coordination;
-using PgWorker.Provisioning.Snapshots;
 
 namespace PgWorker.App.Loops;
 

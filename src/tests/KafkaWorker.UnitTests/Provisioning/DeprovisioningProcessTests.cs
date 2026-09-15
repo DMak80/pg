@@ -1,6 +1,5 @@
 using FluentAssertions;
 using KafkaWorker.Core;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Provisioning.Processes;
 
 namespace KafkaWorker.UnitTests.Provisioning;
@@ -34,9 +33,9 @@ public class DeprovisioningProcessTests
         etcd.Seed("/kafkaworker/portalloc/events", """{"broker1":{"host":"h1","client":16000},"broker2":{"host":"h1","client":16001}}""");
         etcd.Seed("/kafkaworker/rotations/events", """{"requested_unix":1756500100,"requested_by":"admin"}""");
 
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/kafkaworker", [Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("events", CancellationToken.None);
-        var journal = new WorkJournal(etcd, [Ep]);
+        var journal = new WorkJournal("/kafkaworker", etcd, [Ep]);
         etcd.Seed("/kafkaworker/work/events", """{"op":"deprovision","phase":"started","instance":"x","updated_unix":1}""");
 
         var driver = new Fakes.FakeKafkaDriver
@@ -193,9 +192,9 @@ public class DeprovisioningProcessTests
         // Arrange: клэйм не захвачен.
         var etcd = new Fakes.FakeEtcd();
         etcd.Seed("/kafka/clusters/events/config", """{"brokers":1,"state":"TO_REMOVE"}""");
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/kafkaworker", [Ep], etcd, TimeProvider.System);
         var process = new DeprovisioningProcess(
-            etcd, [Ep], new Fakes.FakeKafkaDriver(), claims, new WorkJournal(etcd, [Ep]));
+            etcd, [Ep], new Fakes.FakeKafkaDriver(), claims, new WorkJournal("/kafkaworker", etcd, [Ep]));
 
         // Act.
         var result = await process.RunAsync("events", ["broker1"], CancellationToken.None);

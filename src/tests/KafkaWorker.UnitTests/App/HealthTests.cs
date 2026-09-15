@@ -5,7 +5,6 @@ using Shared.Core.HealthChecks;
 using Shared.Etcd.Client;
 using KafkaWorker.App.HealthChecks;
 using KafkaWorker.Core;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.UnitTests.Provisioning;
 using Xunit;
 
@@ -115,7 +114,7 @@ public class HealthTests
         // Arrange: любая непредвиденная ошибка тела чека (тут — опции).
         var check = new KafkaWorkerHealth(
             Probes(new Fakes.FakeEtcd()), new HealthState(TimeProvider.System),
-            new ClaimStore(["http://etcd:2379"], new Fakes.FakeEtcd(), TimeProvider.System),
+            new ClaimStore("/kafkaworker", ["http://etcd:2379"], new Fakes.FakeEtcd(), TimeProvider.System),
             new ThrowingOptionsMonitor(), TimeProvider.System);
 
         // Act

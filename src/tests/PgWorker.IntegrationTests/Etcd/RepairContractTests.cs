@@ -1,7 +1,6 @@
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Moves;
 using PgWorker.Provisioning.Processes;
@@ -40,11 +39,11 @@ public class RepairContractTests(EtcdFixture fixture)
 
     private async Task<MoveRepairProcess> NewRepairAsync(string cluster)
     {
-        var claims = new ClaimStore([Endpoint], Gateway, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [Endpoint], Gateway, TimeProvider.System);
         (await claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken)).IsSuccess
             .Should().BeTrue();
         return new MoveRepairProcess(
-            Gateway, [Endpoint], claims, new WorkJournal(Gateway, [Endpoint]),
+            Gateway, [Endpoint], claims, new WorkJournal("/pgworker", Gateway, [Endpoint]),
             new MovesRuntimeOptions(), TimeProvider.System);
     }
 

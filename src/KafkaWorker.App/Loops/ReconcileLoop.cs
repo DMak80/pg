@@ -6,7 +6,6 @@ using Shared.Core.HealthChecks;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
 using Shared.Etcd.Client;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning.Kafka;
 
@@ -228,7 +227,7 @@ internal sealed class ReconcileLoop(
         try
         {
             // CancellationToken.None: запись должна доехать даже при остановке host'а.
-            await journal.WriteAsync(
+            await journal.WritePhaseAsync(
                 cluster, op, "crashed", claims.InstanceId, ex.Message, CancellationToken.None);
         }
         catch (Exception journalEx)

@@ -5,7 +5,6 @@ using PgWorker.Core.Model;
 using PgWorker.Core.Planning;
 using PgWorker.Core.Templates;
 using PgWorker.Docker.Drivers;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Probes;
@@ -67,12 +66,12 @@ public class AdoptionProcessTests
         IReadOnlyDictionary<string, DiscoveredNode> inspect,
         PortAllocLock? portLock = null)
     {
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("demo", CancellationToken.None);
         // t90: по умолчанию — свежий свободный лок (все существующие тесты
         // исполняются в одиночном режиме, лок всегда берётся); занятый лок
         // передаёт только новый тест Tick_PortAllocLockBusy_WaitsWithoutPortallocWrite.
-        portLock ??= new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId);
+        portLock ??= new PortAllocLock("/pgworker", [Ep], etcd, TimeProvider.System, claims.InstanceId);
         var driver = new Fakes.FakeDriver { InspectResult = inspect };
         var sql = new Fakes.FakeSql();
         var process = new AdoptionProcess(
@@ -81,7 +80,7 @@ public class AdoptionProcessTests
             sql,
             new ClusterSecretEnsurer(etcd, [Ep]),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"),
-            Secrets, claims, new WorkJournal(etcd, [Ep]),
+            Secrets, claims, new WorkJournal("/pgworker", etcd, [Ep]),
             new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
             portLock,
             new PlacementOptions(15000, 15100, PatroniBootSec: 600),
@@ -433,7 +432,7 @@ public class AdoptionProcessTests
 
         // Arrange-контроль: сид трека реально читается WorkJournal (иначе гвард
         // мёртвым кодом не отличить от нечитаемого фейка).
-        (await new WorkJournal(etcd, [Ep]).ReadUnreachableAsync("demo", CancellationToken.None))
+        (await new WorkJournal("/pgworker", etcd, [Ep]).ReadUnreachableAsync("demo", CancellationToken.None))
             .Value.Should().ContainKey("s1/s1a");
 
         // Act
@@ -526,7 +525,7 @@ public class AdoptionProcessTests
         // только s1a; глобальный portalloc-клэйм держит «другой инстанс»
         var etcd = new Fakes.FakeEtcd();
         var snap = await SnapshotActive(etcd, ["s1"], ["s1"]);
-        var holder = new PortAllocLock([Ep], etcd, TimeProvider.System, "other");
+        var holder = new PortAllocLock("/pgworker", [Ep], etcd, TimeProvider.System, "other");
         (await holder.TryAcquireAsync(CancellationToken.None)).Value.Should().BeTrue();
         var (adoption, _, _) = await NewAdoption(
             etcd,
@@ -534,7 +533,7 @@ public class AdoptionProcessTests
             {
                 ["s1a"] = new("s1a", "local", "pgw-demo-s1-s1a", 15432, 18008, 16432),
             },
-            new PortAllocLock([Ep], etcd, TimeProvider.System, "inst"));
+            new PortAllocLock("/pgworker", [Ep], etcd, TimeProvider.System, "inst"));
 
         // Act
         var outcome = await adoption.TickAsync(snap, CancellationToken.None);

@@ -1,8 +1,8 @@
 using System.Text.Json;
 using KafkaWorker.Core;
-using KafkaWorker.Core.Writing;
 using Shared.Etcd.Client;
 
+using KafkaWorker.Core.Writing;
 namespace KafkaWorker.App.Api.Operations;
 
 // Ответ 201 POST /api/kafka/clusters/{c}/brokers (arch/03 §7.2; дубль осознан).
@@ -40,7 +40,7 @@ public sealed class AddBrokerHandler(IEtcdGateway gateway, string[] endpoints)
         var cpu = KafkaClusterCreatePlan.Canonical(request.Cpu ?? KafkaLimits.DefCpu);
         var memGi = request.MemGi ?? KafkaLimits.DefMemGi;
         var diskGi = request.DiskGi ?? KafkaLimits.DefDiskGi;
-        var errors = new List<KafkaWorker.Core.Writing.ValidationError>();
+        var errors = new List<ValidationError>();
         if ((request.Cpu ?? KafkaLimits.DefCpu) < KafkaLimits.MinCpu
             || (request.Cpu ?? KafkaLimits.DefCpu) > KafkaLimits.MaxCpu)
             errors.Add(new("cpu", $"cpu: {KafkaLimits.MinCpu}..{KafkaLimits.MaxCpu} ядер"));

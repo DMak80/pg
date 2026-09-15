@@ -6,7 +6,6 @@ using KafkaWorker.Core.Planning;
 using KafkaWorker.Core.Templates;
 using KafkaWorker.Docker.Drivers;
 using Shared.Etcd.Client;
-using KafkaWorker.Etcd.Coordination;
 
 namespace KafkaWorker.Provisioning.Processes;
 
@@ -53,7 +52,7 @@ public sealed class PortAllocHealer(
 
         // journal-before-manipulations (spec §3.3 / arch/16 §5): фаза
         // ДО первого txn/EnsureNode — ветка известна после инспекции.
-        var started = await journal.WriteAsync(cluster, Op, "started", claims.InstanceId, null, ct);
+        var started = await journal.WritePhaseAsync(cluster, Op, "started", claims.InstanceId, null, ct);
         if (!started.IsSuccess)
             return Result<HealedAddress>.Failed(started.Error!);
 
@@ -77,7 +76,7 @@ public sealed class PortAllocHealer(
         if (!acquired.IsSuccess)
             return Result<HealedAddress>.Failed(acquired.Error!);
         if (!acquired.Value)
-            return Result<HealedAddress>.Failed(new PortLockBusyException());
+            return Result<HealedAddress>.Failed(new PortLockBusyException(portLock.Key));
         try
         {
             var key = PortAllocKey(cluster);
@@ -107,10 +106,10 @@ public sealed class PortAllocHealer(
 
         if (found.AdvertisedClient is { } advertised
             && !advertised.EndsWith($":{found.ClientHostPort.ToString(CultureInfo.InvariantCulture)}", StringComparison.Ordinal))
-            await journal.WriteAsync(cluster, Op, "reconstructed", claims.InstanceId,
+            await journal.WritePhaseAsync(cluster, Op, "reconstructed", claims.InstanceId,
                 $"advertised {advertised} != published :{found.ClientHostPort} — канон PortBindings", ct);
         else
-            await journal.WriteAsync(cluster, Op, "reconstructed", claims.InstanceId, null, ct);
+            await journal.WritePhaseAsync(cluster, Op, "reconstructed", claims.InstanceId, null, ct);
 
         return Result<HealedAddress>.Success(new HealedAddress(address, Recreated: false));
     }
@@ -130,7 +129,7 @@ public sealed class PortAllocHealer(
         if (!acquired.IsSuccess)
             return Result<HealedAddress>.Failed(acquired.Error!);
         if (!acquired.Value)
-            return Result<HealedAddress>.Failed(new PortLockBusyException());
+            return Result<HealedAddress>.Failed(new PortLockBusyException(portLock.Key));
         try
         {
             var read = await ReadPortAllocWithRevisionAsync(cluster, ct);
@@ -159,8 +158,8 @@ public sealed class PortAllocHealer(
             foreach (var addr in merged.Values)
                 taken.Add((addr.Host, addr.ClientPort));
 
-            var plan = PlacementPlanner.Plan([broker], hosts.Value);
-            var allocated = PortAllocator.Allocate(plan, merged, taken, options.PortFrom, options.PortTo);
+            var plan = PlacementPlanner.Plan(KfwPlanning.Group(cluster, [broker]), hosts.Value);
+            var allocated = PortAllocator.Allocate(plan, merged, taken, options.PortFrom, options.PortTo, KfwPlanning.PortsOf, KfwPlanning.HostOf, KfwPlanning.MakeAddress, KfwPlanning.KeyOf);
             if (!allocated.IsSuccess)
                 return Result<HealedAddress>.Failed(allocated.Error!);
             foreach (var (node, addr) in allocated.Value)
@@ -189,7 +188,7 @@ public sealed class PortAllocHealer(
             if (endpointsError is not null)
                 return Result<HealedAddress>.Failed(endpointsError);
 
-            await journal.WriteAsync(cluster, Op, "reallocated", claims.InstanceId, null, ct);
+            await journal.WritePhaseAsync(cluster, Op, "reallocated", claims.InstanceId, null, ct);
             return Result<HealedAddress>.Success(new HealedAddress(address, Recreated: true));
         }
         finally

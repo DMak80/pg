@@ -1,7 +1,7 @@
 using KafkaWorker.Core;
-using KafkaWorker.Core.Writing;
 using Shared.Etcd.Client;
 
+using KafkaWorker.Core.Writing;
 namespace KafkaWorker.App.Api.Operations;
 
 // Ответ 200 PUT /api/kafka/clusters/{c}/config (arch/03 §7.2; панель отвечает

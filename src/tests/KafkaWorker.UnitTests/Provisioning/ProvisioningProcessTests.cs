@@ -2,7 +2,6 @@ using FluentAssertions;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Templates;
 using KafkaWorker.Core.Model;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
@@ -69,10 +68,10 @@ public class ProvisioningProcessTests
     {
         var etcd = new Fakes.FakeEtcd();
         SeedCluster(etcd, brokers);
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/kafkaworker", [Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("events", CancellationToken.None);
-        var journal = new WorkJournal(etcd, [Ep]);
-        var portLock = new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId);
+        var journal = new WorkJournal("/kafkaworker", etcd, [Ep]);
+        var portLock = new PortAllocLock("/kafkaworker", [Ep], etcd, TimeProvider.System, claims.InstanceId);
         var portAllocIndex = new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance);
         var driver = new Fakes.FakeKafkaDriver();
         var admin = new FakeKafkaAdminClient();
@@ -234,11 +233,11 @@ public class ProvisioningProcessTests
         // Arrange: кластер заявлен, но клэйм не захвачен этим инстансом.
         var etcd = new Fakes.FakeEtcd();
         SeedCluster(etcd);
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
-        var portLock = new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId);
+        var claims = new ClaimStore("/kafkaworker", [Ep], etcd, TimeProvider.System);
+        var portLock = new PortAllocLock("/kafkaworker", [Ep], etcd, TimeProvider.System, claims.InstanceId);
         var portAllocIndex = new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance);
         var process = new ProvisioningProcess(
-            etcd, [Ep], new Fakes.FakeKafkaDriver(), claims, new WorkJournal(etcd, [Ep]),
+            etcd, [Ep], new Fakes.FakeKafkaDriver(), claims, new WorkJournal("/kafkaworker", etcd, [Ep]),
             portLock, portAllocIndex,
             new ClusterSecretEnsurer(etcd, [Ep]), new FakeAdminFactory(new FakeKafkaAdminClient()),
             new FakeConverger(), ProvisioningOptions.Default, new BrokerCertificateCache(), snapshot: null);

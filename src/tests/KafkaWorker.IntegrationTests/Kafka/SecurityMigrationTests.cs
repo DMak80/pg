@@ -2,7 +2,6 @@ using Confluent.Kafka;
 using Confluent.Kafka.Admin;
 using FluentAssertions;
 using KafkaWorker.Core;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Docker.Drivers;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning.Processes;
@@ -34,9 +33,9 @@ public class SecurityMigrationTests(KafkaClusterFixture fixture)
         await fixture.Gateway.PutAsync(fixture.Endpoint, $"/kafka/clusters/{cluster}/app_user", "app", null, ct);
         await fixture.Gateway.PutAsync(fixture.Endpoint, $"/kafka/clusters/{cluster}/app_password",
             "LegacyAppPassword0123456789", null, ct);
-        var claims = new ClaimStore([fixture.Endpoint], fixture.Gateway, TimeProvider.System);
+        var claims = new ClaimStore("/kafkaworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
         await claims.TryClaimClusterAsync(cluster, ct);
-        var journal = new WorkJournal(fixture.Gateway, [fixture.Endpoint]);
+        var journal = new WorkJournal("/kafkaworker", fixture.Gateway, [fixture.Endpoint]);
 
         // Отдельное окно для legacy-брокера: PortFrom — база portalloc-зоны
         // provisioned-кластеров этого же прогона, публикация на ней гонялась

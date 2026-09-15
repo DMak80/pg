@@ -1,8 +1,8 @@
 using System.Text.Json;
 using PgWorker.Core;
-using PgWorker.Core.Writing;
 using Shared.Etcd.Client;
 
+using PgWorker.Core.Writing;
 namespace PgWorker.App.Api.Operations;
 
 // Тело POST /api/clusters/{cluster}/moves/finalize (arch/02 §9.7.3).

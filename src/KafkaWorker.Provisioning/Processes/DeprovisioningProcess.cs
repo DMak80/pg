@@ -1,7 +1,6 @@
 using KafkaWorker.Core;
 using KafkaWorker.Docker.Drivers;
 using Shared.Etcd.Client;
-using KafkaWorker.Etcd.Coordination;
 
 namespace KafkaWorker.Provisioning.Processes;
 
@@ -41,7 +40,7 @@ public sealed class DeprovisioningProcess(
         }
 
         // X0: journal-before-manipulations.
-        var started = await journal.WriteAsync(cluster, Op, "started", claims.InstanceId, null, ct);
+        var started = await journal.WritePhaseAsync(cluster, Op, "started", claims.InstanceId, null, ct);
         if (!started.IsSuccess)
             return started;
 
@@ -140,7 +139,7 @@ public sealed class DeprovisioningProcess(
 
     private Result Fail(string cluster, Exception error, string phase)
     {
-        journal.WriteAsync(cluster, Op, phase, claims.InstanceId, error.Message, CancellationToken.None)
+        journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, error.Message, CancellationToken.None)
             .GetAwaiter().GetResult();
         return Result.Failed(error);
     }

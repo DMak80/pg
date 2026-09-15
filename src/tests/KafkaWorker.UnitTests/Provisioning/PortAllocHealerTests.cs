@@ -4,7 +4,6 @@ using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
 using KafkaWorker.Docker.Drivers;
 using Shared.Etcd.Client;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Core.Templates;
 using KafkaWorker.Provisioning.Processes;
@@ -46,9 +45,9 @@ public class PortAllocHealerTests
             etcd.Seed("/kafkaworker/portalloc/events",
                 $"{{\"broker1\":{{\"host\":\"{addr.Host}\",\"client\":{addr.ClientPort}}}}}");
 
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/kafkaworker", [Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("events", CancellationToken.None);
-        var journal = new WorkJournal(etcd, [Ep]);
+        var journal = new WorkJournal("/kafkaworker", etcd, [Ep]);
         var driver = new Fakes.FakeKafkaDriver(); // контейнеров нет: NodeObjects пуст
 
         var range = await etcd.RangeAsync(Ep, "/kafka/clusters/", CancellationToken.None);
@@ -59,7 +58,7 @@ public class PortAllocHealerTests
         var options = new ProvisioningOptions(21000, 21100, 100, 90, "host.docker.internal", "apache/kafka:4.0.0");
         var healer = new PortAllocHealer(
             etcd, [Ep], driver, claims, journal,
-            new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId),
+            new PortAllocLock("/kafkaworker", [Ep], etcd, TimeProvider.System, claims.InstanceId),
             portAlloc, options, new BrokerCertificateCache());
         return new Rig(etcd, driver, claims, journal, options, snapshot, addresses, healer);
     }
@@ -85,7 +84,7 @@ public class PortAllocHealerTests
     // Чужой держатель клэйма locks/portalloc.
     private static async Task<PortAllocLock> HoldPortLockAsync(Rig rig)
     {
-        var foreign = new PortAllocLock([Ep], rig.Etcd, TimeProvider.System, "other-instance");
+        var foreign = new PortAllocLock("/kafkaworker", [Ep], rig.Etcd, TimeProvider.System, "other-instance");
         (await foreign.TryAcquireAsync(CancellationToken.None)).Value.Should().BeTrue();
         return foreign;
     }

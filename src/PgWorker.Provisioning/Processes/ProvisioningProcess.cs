@@ -8,7 +8,6 @@ using PgWorker.Core.Templates;
 using PgWorker.Core.Tuning;
 using PgWorker.Docker.Drivers;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Probes;
@@ -279,7 +278,7 @@ public sealed class ProvisioningProcess(
         if (!acquired.IsSuccess)
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(acquired.Error!);
         if (!acquired.Value)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new PortLockBusyException());
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new PortLockBusyException(portLock.Key));
         try
         {
             // Д1 (spec §3.7, живой-Ф7): занятость = ВСЯ фактическая — docker-публикации
@@ -321,8 +320,8 @@ public sealed class ProvisioningProcess(
             var taken = new HashSet<(string, int)>(busy);
             foreach (var p in PortPlanConvergence.ConfirmedFact(existing, adopted.Value.SelfFactByNode))
                 taken.Remove(p);
-            var plan = PlacementPlanner.Plan(snap.Shards, hosts.Value);
-            var allocated = PortAllocator.Allocate(plan, existing, taken, placementOpts.PortFrom, placementOpts.PortTo);
+            var plan = PlacementPlanner.Plan(PgPlanning.ToGroups(snap.Shards), hosts.Value);
+            var allocated = PortAllocator.Allocate(plan, existing, taken, placementOpts.PortFrom, placementOpts.PortTo, PgPlanning.PortsOf, PgPlanning.HostOf, PgPlanning.MakeAddress, PgPlanning.KeyOf);
             if (!allocated.IsSuccess)
                 return allocated;
 

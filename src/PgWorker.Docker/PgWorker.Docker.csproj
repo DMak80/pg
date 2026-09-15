@@ -17,6 +17,7 @@
 
     <ItemGroup>
         <Using Include="Shared.Core"/>
+        <Using Include="Shared.Core.Planning"/>
     </ItemGroup>
 
     <ItemGroup>

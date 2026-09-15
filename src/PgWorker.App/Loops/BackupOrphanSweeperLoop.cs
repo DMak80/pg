@@ -2,7 +2,6 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using PgWorker.Backups.Supervisor;
-using PgWorker.Etcd.Coordination;
 
 namespace PgWorker.App.Loops;
 

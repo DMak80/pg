@@ -2,7 +2,6 @@ using Microsoft.Extensions.Logging;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Moves;
 using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Probes;
@@ -227,14 +226,14 @@ internal static class MoveRig
 
         var sql = SqlOf(preflight);
         var driver = new Fakes.FakeDriver { ExecResult = (_, _) => Result<string>.Success("-- ddl") };
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [Ep], etcd, TimeProvider.System);
         if (claim)
         {
             var claimed = await claims.TryClaimClusterAsync("shop", CancellationToken.None);
             claimed.Value.Should().BeTrue("клэйм кластера обязан пройти на пустом FakeEtcd");
         }
 
-        var journal = new WorkJournal(etcd, [Ep]);
+        var journal = new WorkJournal("/pgworker", etcd, [Ep]);
         var shards = new ShardEndpoints(etcd, [Ep], new ShardProbe(new HttpClient()));
         var snapshots = new List<int>();
         var queue = new Queue<Result>(snapshotResults);

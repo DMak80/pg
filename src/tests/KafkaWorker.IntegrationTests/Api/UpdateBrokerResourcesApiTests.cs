@@ -1,9 +1,9 @@
 using System.Net;
 using System.Net.Http.Json;
 using KafkaWorker.App.Api.Operations;
-using KafkaWorker.Core.Writing;
 using Xunit;
 
+using KafkaWorker.Core.Writing;
 namespace KafkaWorker.IntegrationTests.Api;
 
 // Мутация №15 (t06, spec §4.2): guard'ы/канонизация/идемпотентность на

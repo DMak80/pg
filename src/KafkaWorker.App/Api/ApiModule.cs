@@ -2,8 +2,8 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using KafkaWorker.App.Api.Operations;
-using KafkaWorker.Core.Writing;
 
+using KafkaWorker.Core.Writing;
 namespace KafkaWorker.App.Api;
 
 // HTTP API воркера (arch/16 §1.1, task etcd-via-worker-api): мутации

@@ -1,5 +1,5 @@
-using PgWorker.Core.Writing;
 
+using PgWorker.Core.Writing;
 namespace PgWorker.UnitTests.Writing;
 
 // Валидация создания кластера: arch/02 §9.3 — сервер источник истины (spec t12 §3.3).

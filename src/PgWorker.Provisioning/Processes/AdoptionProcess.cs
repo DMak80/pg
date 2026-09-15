@@ -4,7 +4,6 @@ using PgWorker.Core.Planning;
 using PgWorker.Core.Templates;
 using PgWorker.Docker.Drivers;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Sql;
 
@@ -288,7 +287,7 @@ public sealed class AdoptionProcess(
             if (!acquired.IsSuccess)
                 return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(acquired.Error!);
             if (!acquired.Value)
-                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new PortLockBusyException());
+                return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(new PortLockBusyException(portLock.Key));
             try
             {
                 // Перепланирование занятых (Д1-механика для Active, живой-Ф7): занятость =
@@ -315,8 +314,8 @@ public sealed class AdoptionProcess(
                     var taken = new HashSet<(string, int)>(busy);
                     foreach (var p in PortPlanConvergence.ConfirmedFact(merged, selfFactByNode))
                         taken.Remove(p);
-                    var plan = PlacementPlanner.Plan(dsnShards, hosts.Value);
-                    var allocated = PortAllocator.Allocate(plan, merged, taken, placementOpts.PortFrom, placementOpts.PortTo);
+                    var plan = PlacementPlanner.Plan(PgPlanning.ToGroups(dsnShards), hosts.Value);
+                    var allocated = PortAllocator.Allocate(plan, merged, taken, placementOpts.PortFrom, placementOpts.PortTo, PgPlanning.PortsOf, PgPlanning.HostOf, PgPlanning.MakeAddress, PgPlanning.KeyOf);
                     if (!allocated.IsSuccess)
                         return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(allocated.Error!);
                     foreach (var (k, addr) in allocated.Value)

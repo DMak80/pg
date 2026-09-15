@@ -6,7 +6,6 @@ using KafkaWorker.Core.Planning;
 using KafkaWorker.Core.Templates;
 using KafkaWorker.Docker.Drivers;
 using Shared.Etcd.Client;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Provisioning.Kafka;
 
 namespace KafkaWorker.Provisioning.Processes;
@@ -160,7 +159,7 @@ public sealed class SecurityMigrator(
         var endpoints = snap.Endpoints;
         if (endpoints is null)
         {
-            var started = await journal.WriteAsync(cluster, Op, "waiting-endpoints", claims.InstanceId, null, ct);
+            var started = await journal.WritePhaseAsync(cluster, Op, "waiting-endpoints", claims.InstanceId, null, ct);
             return started.IsSuccess
                 ? Result<MigrationOutcome>.Success(MigrationOutcome.InProgress)
                 : Result<MigrationOutcome>.Failed(started.Error!);
@@ -211,7 +210,7 @@ public sealed class SecurityMigrator(
         if (!converged.IsSuccess)
             return await FailAsync(cluster, converged.Error!, "acl-converge", ct);
 
-        var done = await journal.WriteAsync(cluster, Op, PhaseDone, claims.InstanceId, null, ct);
+        var done = await journal.WritePhaseAsync(cluster, Op, PhaseDone, claims.InstanceId, null, ct);
         return done.IsSuccess
             ? Result<MigrationOutcome>.Success(MigrationOutcome.InProgress)
             : Result<MigrationOutcome>.Failed(done.Error!);
@@ -246,7 +245,7 @@ public sealed class SecurityMigrator(
     private async Task<Result<MigrationOutcome>> FinishTickAsync(
         string cluster, string phase, CancellationToken ct)
     {
-        var written = await journal.WriteAsync(cluster, Op, phase, claims.InstanceId, null, ct);
+        var written = await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, null, ct);
         return written.IsSuccess
             ? Result<MigrationOutcome>.Success(MigrationOutcome.InProgress)
             : Result<MigrationOutcome>.Failed(written.Error!);
@@ -255,7 +254,7 @@ public sealed class SecurityMigrator(
     private async Task<Result<MigrationOutcome>> FailAsync(
         string cluster, Exception error, string phase, CancellationToken ct)
     {
-        var written = await journal.WriteAsync(cluster, Op, phase, claims.InstanceId, error.Message, ct);
+        var written = await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, error.Message, ct);
         return written.IsSuccess
             ? Result<MigrationOutcome>.Failed(error)
             : Result<MigrationOutcome>.Failed(written.Error!);

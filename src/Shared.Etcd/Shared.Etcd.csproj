@@ -5,4 +5,9 @@
         <ProjectReference Include="..\Shared.Core\Shared.Core.csproj"/>
     </ItemGroup>
 
+    <!-- internal SnapshotJob.ResetMaintenanceState() доступен юнит-тестам (BucketEvacuatorTests, t09) -->
+    <ItemGroup>
+        <InternalsVisibleTo Include="PgWorker.UnitTests"/>
+    </ItemGroup>
+
 </Project>

@@ -1,8 +1,8 @@
 using FluentAssertions;
 using KafkaWorker.Core.Model;
-using KafkaWorker.Core.Writing;
 using Xunit;
 
+using KafkaWorker.Core.Writing;
 namespace KafkaWorker.UnitTests.Writing;
 
 // Валидация мутации №15 (t06, spec §4.2): границы §10.3, null = не менять,

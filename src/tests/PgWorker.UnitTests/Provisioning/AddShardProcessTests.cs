@@ -5,7 +5,6 @@ using PgWorker.Core.Model;
 using PgWorker.Core.Planning;
 using PgWorker.Core.Templates;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Endpoints;
 using PgWorker.Provisioning.Processes;
@@ -110,9 +109,9 @@ public class AddShardProcessTests
         var etcd = new Fakes.FakeEtcd();
         SeedActiveCluster(etcd);
         SeedAddDeclaration(etcd);
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("shop", CancellationToken.None);
-        var journal = new WorkJournal(etcd, [Ep]);
+        var journal = new WorkJournal("/pgworker", etcd, [Ep]);
         var driver = new Fakes.FakeDriver();
         if (busyPorts is not null)
             driver.BusyPorts = busyPorts;
@@ -123,7 +122,7 @@ public class AddShardProcessTests
             Secrets, new ClusterSecretEnsurer(etcd, [Ep]),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp,
             new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
-            new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId),
+            new PortAllocLock("/pgworker", [Ep], etcd, TimeProvider.System, claims.InstanceId),
             Fakes.PgtuneFactory(), snapshot: null);
         return new Rig(etcd, driver, sql, claims, journal, process);
     }
@@ -141,9 +140,9 @@ public class AddShardProcessTests
         var etcd = new Fakes.FakeEtcd();
         SeedActiveCluster(etcd);
         etcd.Seed("/clusters/shop/shards/shard3/replicas", "2");
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("shop", CancellationToken.None);
-        var journal = new WorkJournal(etcd, [Ep]);
+        var journal = new WorkJournal("/pgworker", etcd, [Ep]);
         var driver = new Fakes.FakeDriver();
         var process = new AddShardProcess(
             etcd, [Ep], driver, new Fakes.FakeSql(), Probe(_ => DeadPatroni()),
@@ -151,7 +150,7 @@ public class AddShardProcessTests
             new ClusterSecretEnsurer(etcd, [Ep]),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"), EtcdEndp,
             new PortAllocIndex(etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
-            new PortAllocLock([Ep], etcd, TimeProvider.System, claims.InstanceId),
+            new PortAllocLock("/pgworker", [Ep], etcd, TimeProvider.System, claims.InstanceId),
             Fakes.PgtuneFactory(), snapshot: null);
 
         // Act
@@ -337,7 +336,7 @@ public class AddShardProcessTests
             new ClusterSecretEnsurer(rig.Etcd, [Ep]),
             new AppParamsEnsurer(rig.Etcd, [Ep], "sslmode=require"), EtcdEndp,
             new PortAllocIndex(rig.Etcd, [Ep], NullLogger<PortAllocIndex>.Instance),
-            new PortAllocLock([Ep], rig.Etcd, TimeProvider.System, rig.Claims.InstanceId),
+            new PortAllocLock("/pgworker", [Ep], rig.Etcd, TimeProvider.System, rig.Claims.InstanceId),
             Fakes.PgtuneFactory(), snapshot: null);
         var outcome = await alive.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
 
@@ -435,7 +434,7 @@ public class AddShardProcessTests
     {
         // Arrange — полная декларация нового шарда, лок держит «другой инстанс»
         var rig = await NewRig(_ => DeadPatroni());
-        var holder = new PortAllocLock([Ep], rig.Etcd, TimeProvider.System, "other");
+        var holder = new PortAllocLock("/pgworker", [Ep], rig.Etcd, TimeProvider.System, "other");
         (await holder.TryAcquireAsync(CancellationToken.None)).Value.Should().BeTrue();
 
         // Act

@@ -1,9 +1,9 @@
 using System.Text;
 using System.Text.Json;
 using PgWorker.Core;
-using PgWorker.Core.Writing;
 using Shared.Etcd.Client;
 
+using PgWorker.Core.Writing;
 namespace PgWorker.App.Api.Operations;
 
 // Удаление кластера через API воркера: перевод config.state в TO_REMOVE

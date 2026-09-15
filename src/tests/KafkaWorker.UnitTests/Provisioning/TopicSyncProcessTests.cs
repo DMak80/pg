@@ -3,7 +3,6 @@ using FluentAssertions;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
 using Shared.Etcd.Client;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
@@ -44,9 +43,9 @@ public class TopicSyncProcessTests
         etcd.Seed("/kafka/clusters/events/app_user", "app");
         etcd.Seed("/kafka/clusters/events/app_password", "p");
         etcd.SeedSecurity("events");
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/kafkaworker", [Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("events", CancellationToken.None);
-        var journal = new WorkJournal(etcd, [Ep]);
+        var journal = new WorkJournal("/kafkaworker", etcd, [Ep]);
         var admin = new FakeKafkaAdminClient
         {
             ClusterView = new KafkaClusterView([new KafkaBrokerView(1, "broker1")], 1),
@@ -358,7 +357,7 @@ public class TopicSyncProcessTests
         // Arrange: клэйм держит другой инстанс (rig), процесс — со своим
         // ClaimStore без клэйма events.
         var rig = await NewRigAsync();
-        var stranger = new ClaimStore([Ep], rig.Etcd, TimeProvider.System);
+        var stranger = new ClaimStore("/kafkaworker", [Ep], rig.Etcd, TimeProvider.System);
         var process = new TopicSyncProcess(
             rig.Etcd, [Ep], stranger, rig.Journal, new FakeAdminFactory(rig.Admin), TimeProvider.System, 0);
         await stranger.DisposeAsync();

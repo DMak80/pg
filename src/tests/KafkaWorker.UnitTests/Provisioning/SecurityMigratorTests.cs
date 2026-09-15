@@ -3,7 +3,6 @@ using KafkaWorker.Core;
 using KafkaWorker.Core.Templates;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Core.Model;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
 using Xunit;
@@ -53,9 +52,9 @@ public class SecurityMigratorTests
     {
         var etcd = new Fakes.FakeEtcd();
         SeedLegacy(etcd, brokers);
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/kafkaworker", [Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("events", CancellationToken.None);
-        var journal = new WorkJournal(etcd, [Ep]);
+        var journal = new WorkJournal("/kafkaworker", etcd, [Ep]);
         var driver = new Fakes.FakeKafkaDriver();
         var admin = new FakeKafkaAdminClient();
         var migrator = new SecurityMigrator(

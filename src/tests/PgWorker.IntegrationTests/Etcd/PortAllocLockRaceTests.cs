@@ -2,7 +2,6 @@ using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Planning;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using Xunit;
 
 namespace PgWorker.IntegrationTests.Etcd;
@@ -60,7 +59,8 @@ public class PortAllocLockRaceTests(EtcdFixture fixture)
                 // Аллокация одной ноды (тройка pg/patroni/doorman)
                 var plan = new PlacementPlan([new NodePlacement("shard1", "n1", "h1")]);
                 var allocated = PortAllocator.Allocate(
-                    plan, new Dictionary<string, NodeAddress>(), busy, 15000, 15100);
+                    plan, new Dictionary<string, NodeAddress>(), busy, 15000, 15100,
+                    PgPlanning.PortsOf, PgPlanning.HostOf, PgPlanning.MakeAddress, PgPlanning.KeyOf);
                 if (!allocated.IsSuccess)
                     return allocated;
                 var put = await Gateway.PutAsync(
@@ -97,8 +97,8 @@ public class PortAllocLockRaceTests(EtcdFixture fixture)
     {
         // Arrange — «два инстанса» с независимыми клэймами
         var ct = TestContext.Current.CancellationToken;
-        var first = new PortAllocLock([Endpoint], Gateway, TimeProvider.System, "inst-1");
-        var second = new PortAllocLock([Endpoint], Gateway, TimeProvider.System, "inst-2");
+        var first = new PortAllocLock("/pgworker", [Endpoint], Gateway, TimeProvider.System, "inst-1");
+        var second = new PortAllocLock("/pgworker", [Endpoint], Gateway, TimeProvider.System, "inst-2");
         var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var task1 = Task.Run(async () => { await start.Task; return await CriticalSectionAsync(first, "shop1", ct); });
         var task2 = Task.Run(async () => { await start.Task; return await CriticalSectionAsync(second, "shop2", ct); });
@@ -119,7 +119,7 @@ public class PortAllocLockRaceTests(EtcdFixture fixture)
         intersection.Should().BeEmpty("клэйм сериализует выбор троек — повторная секция видит запись соседа");
 
         // Ключ клэйма исчез после release обеих секций
-        var lockKey = await Gateway.GetAsync(Endpoint, PortAllocLock.Key, ct);
+        var lockKey = await Gateway.GetAsync(Endpoint, first.Key, ct);
         lockKey.Value.Should().BeNull();
     }
 
@@ -129,8 +129,8 @@ public class PortAllocLockRaceTests(EtcdFixture fixture)
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
-        var first = new PortAllocLock([Endpoint], Gateway, TimeProvider.System, "inst-1");
-        var second = new PortAllocLock([Endpoint], Gateway, TimeProvider.System, "inst-2");
+        var first = new PortAllocLock("/pgworker", [Endpoint], Gateway, TimeProvider.System, "inst-1");
+        var second = new PortAllocLock("/pgworker", [Endpoint], Gateway, TimeProvider.System, "inst-2");
 
         // Act
         var firstAcquired = await first.TryAcquireAsync(ct);
@@ -143,6 +143,6 @@ public class PortAllocLockRaceTests(EtcdFixture fixture)
         firstAcquired.Value.Should().BeTrue();
         secondAcquired.Value.Should().BeFalse();
         reclaimed.Value.Should().BeTrue();
-        (await Gateway.GetAsync(Endpoint, PortAllocLock.Key, ct)).Value.Should().BeNull();
+        (await Gateway.GetAsync(Endpoint, first.Key, ct)).Value.Should().BeNull();
     }
 }

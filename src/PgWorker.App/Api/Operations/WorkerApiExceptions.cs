@@ -1,5 +1,5 @@
-using PgWorker.Core.Writing;
 
+using PgWorker.Core.Writing;
 namespace PgWorker.App.Api.Operations;
 
 // Исключения API воркера (task etcd-via-worker-api): перенос панельных
@@ -8,17 +8,17 @@ namespace PgWorker.App.Api.Operations;
 
 // Валидация policy бэкапов не прошла: 400 с errors по полям (t06, arch/19 §4).
 public sealed class BackupsPolicyValidationException(
-    IReadOnlyList<PgWorker.Core.Writing.ValidationError> errors)
+    IReadOnlyList<ValidationError> errors)
     : Exception("политика бэкапов некорректна")
 {
-    public IReadOnlyList<PgWorker.Core.Writing.ValidationError> Errors { get; } = errors;
+    public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
 
 // Валидация не прошла: 400 с errors по полям (arch/02 §9.3).
-public sealed class CreateClusterValidationException(IReadOnlyList<PgWorker.Core.Writing.ValidationError> errors)
+public sealed class CreateClusterValidationException(IReadOnlyList<ValidationError> errors)
     : Exception("параметры создания кластера некорректны")
 {
-    public IReadOnlyList<PgWorker.Core.Writing.ValidationError> Errors { get; } = errors;
+    public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
 
 // Клэйм-txn не сошёлся: имя занято (arch/02 §9.2) — 409.
@@ -38,10 +38,10 @@ public sealed class InvalidClusterConfigException(string name)
     : Exception($"config кластера {name} битый или без обязательных полей buckets/dbname");
 
 // Валидация add-shard не прошла: 400 с errors по полям (arch/02 §9.5).
-public sealed class AddShardValidationException(IReadOnlyList<PgWorker.Core.Writing.ValidationError> errors)
+public sealed class AddShardValidationException(IReadOnlyList<ValidationError> errors)
     : Exception("параметры добавления шарда некорректны")
 {
-    public IReadOnlyList<PgWorker.Core.Writing.ValidationError> Errors { get; } = errors;
+    public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
 
 // Кластер не Active: NOT_INITIALIZED («дождитесь инициализации») или TO_REMOVE
@@ -89,10 +89,10 @@ public sealed class ShardPrecheckUnavailableException()
     : Exception("снапшот панели отстаёт — повторите запрос");
 
 // Валидация тела заявок переездов не прошла: 400 (arch/02 §9.7).
-public sealed class MoveBucketsValidationException(IReadOnlyList<PgWorker.Core.Writing.ValidationError> errors)
+public sealed class MoveBucketsValidationException(IReadOnlyList<ValidationError> errors)
     : Exception("параметры переноса бакетов некорректны")
 {
-    public IReadOnlyList<PgWorker.Core.Writing.ValidationError> Errors { get; } = errors;
+    public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
 
 // Приёмник в демонтаже: на удаляемый шард везти нельзя (arch/02 §9.7 п.2; источник
@@ -114,10 +114,10 @@ public sealed class MoveClaimLostException(int bucket)
 
 // Валидация тел move-ops (rollback/finalize/abort) не прошла: 400 с errors
 // по полям (arch/02 §9.7.2–§9.7.4) — тот же маппинг, что у MoveBucketsValidationException.
-public sealed class MoveOpValidationException(IReadOnlyList<PgWorker.Core.Writing.ValidationError> errors)
+public sealed class MoveOpValidationException(IReadOnlyList<ValidationError> errors)
     : Exception("параметры операции переездов некорректны")
 {
-    public IReadOnlyList<PgWorker.Core.Writing.ValidationError> Errors { get; } = errors;
+    public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
 
 // Бакет не в состоянии, требуемом операцией (02 §9.7.2–§9.7.4): тексты по op —

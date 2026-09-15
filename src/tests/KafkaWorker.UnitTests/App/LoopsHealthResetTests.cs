@@ -5,7 +5,6 @@ using KafkaWorker.App.Loops;
 using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
 using KafkaWorker.Etcd;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.UnitTests.Provisioning;
 using Xunit;
@@ -44,9 +43,9 @@ public class LoopsHealthResetTests
         etcd.RangeFault = _ => new ApplicationException("etcd недоступен");
         var loop = new ReconcileLoop(
             Options(), etcd,
-            new ClaimStore(["http://etcd:2379"], etcd, TimeProvider.System),
+            new ClaimStore("/kafkaworker", ["http://etcd:2379"], etcd, TimeProvider.System),
             new FakeProcesses(),
-            new WorkJournal(etcd, ["http://etcd:2379"]),
+            new WorkJournal("/kafkaworker", etcd, ["http://etcd:2379"]),
             NullLogger<ReconcileLoop>.Instance, new HealthState(TimeProvider.System),
             new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
                 new System.Diagnostics.Metrics.Meter("TestLoops"), TimeProvider.System),
@@ -81,7 +80,7 @@ public class LoopsHealthResetTests
             etcd, ["http://etcd:2379"],
             Path.Combine(Path.GetTempPath(), $"kfw-health-{Guid.NewGuid():N}"), 10, 60);
         var loop = new SnapshotLoop(
-            options, new ClaimStore(["http://etcd:2379"], etcd, TimeProvider.System), job,
+            options, new ClaimStore("/kafkaworker", ["http://etcd:2379"], etcd, TimeProvider.System), job,
             NullLogger<SnapshotLoop>.Instance, new HealthState(TimeProvider.System), TimeProvider.System,
             new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
                 new System.Diagnostics.Metrics.Meter("TestLoops"), TimeProvider.System));
@@ -113,7 +112,7 @@ public class LoopsHealthResetTests
             etcd, ["http://etcd:2379"],
             Path.Combine(Path.GetTempPath(), $"kfw-health-{Guid.NewGuid():N}"), 10, 60);
         var loop = new SnapshotLoop(
-            Options(), new ClaimStore(["http://etcd:2379"], etcd, TimeProvider.System), job,
+            Options(), new ClaimStore("/kafkaworker", ["http://etcd:2379"], etcd, TimeProvider.System), job,
             NullLogger<SnapshotLoop>.Instance, new HealthState(TimeProvider.System), TimeProvider.System,
             new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
                 new System.Diagnostics.Metrics.Meter("TestLoops"), TimeProvider.System));
@@ -137,7 +136,7 @@ public class LoopsHealthResetTests
         // контура живы, StatusError остаётся Success (сброс каждым проходом).
         var etcd = new Fakes.FakeEtcd();
         var loop = new KeepaliveLoop(
-            Options(keepaliveSec: 0), new ClaimStore(["http://etcd:2379"], etcd, TimeProvider.System),
+            Options(keepaliveSec: 0), new ClaimStore("/kafkaworker", ["http://etcd:2379"], etcd, TimeProvider.System),
             NullLogger<KeepaliveLoop>.Instance, new HealthState(TimeProvider.System),
             new Shared.Metrics.Worker.WorkerMetricsInstrumentation(
                 new System.Diagnostics.Metrics.Meter("TestLoops"), TimeProvider.System));

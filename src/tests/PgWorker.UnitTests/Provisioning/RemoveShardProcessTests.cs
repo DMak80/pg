@@ -1,5 +1,4 @@
 using PgWorker.Core.Model;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Processes;
 
@@ -55,9 +54,9 @@ public class RemoveShardProcessTests
         var usedEtcd = etcd ?? SeedBase();
         var puts = new List<string>();
         usedEtcd.OnPut = puts.Add;
-        var claims = new ClaimStore([Ep], usedEtcd, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [Ep], usedEtcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("shop", CancellationToken.None);
-        var journal = new WorkJournal(usedEtcd, [Ep]);
+        var journal = new WorkJournal("/pgworker", usedEtcd, [Ep]);
         var usedDriver = driver ?? new Fakes.FakeDriver
         {
             NodeObjects = ["pgw-shop-shard1-shard1a", "pgw-shop-shard1-shard1b"],

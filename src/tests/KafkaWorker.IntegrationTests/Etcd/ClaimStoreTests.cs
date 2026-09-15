@@ -1,6 +1,5 @@
 using FluentAssertions;
 using Shared.Etcd.Client;
-using KafkaWorker.Etcd.Coordination;
 using Xunit;
 
 namespace KafkaWorker.IntegrationTests.Etcd;
@@ -15,7 +14,7 @@ public class ClaimStoreTests(Kafka.KafkaClusterFixture fixture)
 
     private EtcdGateway Gateway => fixture.Gateway;
 
-    private ClaimStore NewClaimStore() => new([Endpoint], Gateway, TimeProvider.System);
+    private ClaimStore NewClaimStore() => new("/kafkaworker", [Endpoint], Gateway, TimeProvider.System);
 
     [Fact]
     public async Task TwoClaimStores_MutualExclusion()
@@ -73,7 +72,7 @@ public class ClaimStoreTests(Kafka.KafkaClusterFixture fixture)
     {
         // Arrange — префикс /kafkaworker/api/ в фикстурном etcd кроме нас никто не пишет
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
-        var store = new ClaimStore(
+        var store = new ClaimStore("/kafkaworker", 
             [Endpoint], Gateway, TimeProvider.System,
             advertiseApiUrl: "http://kafkaworker:8080");
 
@@ -103,7 +102,7 @@ public class ClaimStoreTests(Kafka.KafkaClusterFixture fixture)
     {
         // Arrange: thumbprint серта, поднятого на грани (spec §3.2 п.3)
         const string thumb = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
-        var store = new ClaimStore([Endpoint], Gateway, TimeProvider.System,
+        var store = new ClaimStore("/kafkaworker", [Endpoint], Gateway, TimeProvider.System,
             advertiseApiUrl: $"https://localhost:9{Random.Shared.Next(1000, 9999)}",
             certThumbprint: thumb);
         await using var _ = store;
@@ -123,7 +122,7 @@ public class ClaimStoreTests(Kafka.KafkaClusterFixture fixture)
     public async Task ApiKey_OmitsCertThumbprint_WhenNull()
     {
         // Arrange: старая семантика — поле опционально (spec §3.1)
-        var store = new ClaimStore([Endpoint], Gateway, TimeProvider.System,
+        var store = new ClaimStore("/kafkaworker", [Endpoint], Gateway, TimeProvider.System,
             advertiseApiUrl: $"https://localhost:9{Random.Shared.Next(1000, 9999)}");
         await using var _ = store;
 
@@ -147,7 +146,7 @@ public class ClaimStoreTests(Kafka.KafkaClusterFixture fixture)
         // Arrange — свой etcd на зарезервированном порту; контейнер ещё НЕ запущен
         await using var fixture = new EtcdFixture(EtcdFixture.ReserveHostPort());
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(45));
-        var store = new ClaimStore(
+        var store = new ClaimStore("/kafkaworker", 
             [fixture.Endpoint], fixture.Gateway, TimeProvider.System,
             advertiseApiUrl: "http://kafkaworker:8080");
 

@@ -4,7 +4,6 @@ using Shared.Core.HealthChecks;
 using Shared.Etcd.Client;
 using PgWorker.App.HealthChecks;
 using PgWorker.Core;
-using PgWorker.Etcd.Coordination;
 using PgWorker.UnitTests.Provisioning;
 
 namespace PgWorker.UnitTests.App;
@@ -34,7 +33,7 @@ public class HealthTests
         health.MarkKeepaliveTick();
         health.MarkSnapshotTick();
         health.MarkSnapshotTaken();
-        var claims = new ClaimStore(["http://etcd:2379"], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", ["http://etcd:2379"], etcd, TimeProvider.System);
         var check = new PgWorkerHealth(Probes(etcd), health, claims, Options, TimeProvider.System);
 
         // Act
@@ -61,7 +60,7 @@ public class HealthTests
         health.MarkKeepaliveTick();
         health.MarkSnapshotTick();
         health.MarkSnapshotTaken();
-        var claims = new ClaimStore(["http://etcd:2379"], new DeadEtcd(), TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", ["http://etcd:2379"], new DeadEtcd(), TimeProvider.System);
         var check = new PgWorkerHealth(Probes(new DeadEtcd()), health, claims, Options, TimeProvider.System);
 
         // Act
@@ -79,7 +78,7 @@ public class HealthTests
         var etcd = new Fakes.FakeEtcd();
         var check = new PgWorkerHealth(
             Probes(etcd), new HealthState(TimeProvider.System),
-            new ClaimStore(["http://etcd:2379"], etcd, TimeProvider.System), Options, TimeProvider.System);
+            new ClaimStore("/pgworker", ["http://etcd:2379"], etcd, TimeProvider.System), Options, TimeProvider.System);
 
         // Act
         var result = await check.CheckHealthAsync(new HealthCheckContext(), TestContext.Current.CancellationToken);
@@ -103,7 +102,7 @@ public class HealthTests
         clock.Advance(TimeSpan.FromMinutes(6));
         health.MarkReconcileTick(ok: true, claimsHeld: 1);
         health.MarkKeepaliveTick();
-        var claims = new ClaimStore(["http://etcd:2379"], etcd, clock);
+        var claims = new ClaimStore("/pgworker", ["http://etcd:2379"], etcd, clock);
         var check = new PgWorkerHealth(Probes(etcd), health, claims, Options, clock);
 
         // Act

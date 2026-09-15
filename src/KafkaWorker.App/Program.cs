@@ -13,10 +13,8 @@ using KafkaWorker.Core.Model;
 using KafkaWorker.Core.Templates;
 using KafkaWorker.Docker.Drivers;
 using KafkaWorker.Docker.Engine;
-using KafkaWorker.Etcd;
 using Shared.Etcd.Client;
 using KafkaWorker.Etcd.Parsing;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Provisioning.Kafka;
 using KafkaWorker.Provisioning.Processes;
 
@@ -43,7 +41,7 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<TimeProvider>());
     // Единый seam фаз/операций (S2, зеркало PgWorker): терминальные фазы/
     // first-seen/подавление supervise и evacuate — внутри OnJournalPhase.
-    sp.GetRequiredService<KafkaWorker.Etcd.Coordination.WorkJournal>().PhaseWritten
+    sp.GetRequiredService<WorkJournal>().PhaseWritten
         += e => m.OnJournalPhase(e.Cluster, e.Op, e.Phase);
     return m;
 });
@@ -83,9 +81,12 @@ var apiCertThumbprint = apiTls.ServerCert is { } appliedCert
     : null;
 
 // etcd-клиент (HTTP JSON gateway /v3/*) + координация (клэймы/лидерство, журнал).
+// Единое место литерала префикса etcd-ключей (t09): Shared-координация параметризована.
+const string KeyPrefix = "/kafkaworker";
 builder.Services.AddSingleton<IEtcdGateway>(sp =>
     new EtcdGateway(sp.GetRequiredService<IHttpClientFactory>().CreateClient("etcd")));
 builder.Services.AddSingleton(sp => new ClaimStore(
+    KeyPrefix,
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<TimeProvider>(),
@@ -94,11 +95,13 @@ builder.Services.AddSingleton(sp => new ClaimStore(
 // t91: глобальный portalloc-клэйм (arch/15 §4 / arch/16 §2.1) — DI-синглтон,
 // InstanceId единый с ClaimStore (сквозная диагностика держателя).
 builder.Services.AddSingleton(sp => new PortAllocLock(
+    KeyPrefix,
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ClaimStore>().InstanceId));
 builder.Services.AddSingleton(sp => new WorkJournal(
+    KeyPrefix,
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints));
 

@@ -5,7 +5,6 @@ using KafkaWorker.Core.Model;
 using KafkaWorker.Core.Templates;
 using KafkaWorker.Docker.Drivers;
 using Shared.Etcd.Client;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Provisioning.Kafka;
 
 namespace KafkaWorker.Provisioning.Processes;
@@ -116,7 +115,7 @@ public sealed class CaRotator(
         var caPem = snap.CaPem;
         if (!caPem.Contains(nextPem))
         {
-            var markedD = await journal.WriteAsync(cluster, Op, "phase-d", claims.InstanceId, null, ct);
+            var markedD = await journal.WritePhaseAsync(cluster, Op, "phase-d", claims.InstanceId, null, ct);
             if (!markedD.IsSuccess)
                 return Result.Failed(markedD.Error!);
             var bundlePut = await TxnAsync(TxnRequest.Of(
@@ -133,7 +132,7 @@ public sealed class CaRotator(
         // по хешу CA-ключа), truststore — bundle. Ожидание сходимости после
         // КАЖДОГО брокера (arch/16 §2.3); трек не повторяет пересозданное.
         var bundle = caPem.Contains(nextPem) ? caPem : caPem + "\n" + nextPem;
-        var markedR = await journal.WriteAsync(cluster, Op, "phase-r", claims.InstanceId, null, ct);
+        var markedR = await journal.WritePhaseAsync(cluster, Op, "phase-r", claims.InstanceId, null, ct);
         if (!markedR.IsSuccess)
             return Result.Failed(markedR.Error!);
         var rolled = await RollingRecreateAsync(snap, brokers, nextPem, nextKey, bundle, ct);
@@ -144,7 +143,7 @@ public sealed class CaRotator(
 
         // Фаза C: атомарный коммит — NEW в канон, staging долой, заявка снята;
         // compare по staging-ключу закрывает гонку параллельной ротации.
-        var markedC = await journal.WriteAsync(cluster, Op, PhaseCommitted, claims.InstanceId, null, ct);
+        var markedC = await journal.WritePhaseAsync(cluster, Op, PhaseCommitted, claims.InstanceId, null, ct);
         if (!markedC.IsSuccess)
             return Result.Failed(markedC.Error!);
         var commit = await TxnAsync(TxnRequest.Of(
@@ -176,14 +175,14 @@ public sealed class CaRotator(
         }
 
         _rolled.TryRemove((cluster, "phase-r"), out _);
-        var done = await journal.WriteAsync(cluster, Op, "done", claims.InstanceId, null, ct);
+        var done = await journal.WritePhaseAsync(cluster, Op, "done", claims.InstanceId, null, ct);
         return done.IsSuccess ? Result.Success() : Result.Failed(done.Error!);
     }
 
     // Ждущий исход: journal-запись + успех тика (заявка жива — продолжим позже).
     private async Task<Result> WaitAsync(string cluster, string phase, CancellationToken ct)
     {
-        var waiting = await journal.WriteAsync(cluster, Op, phase, claims.InstanceId, null, ct);
+        var waiting = await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, null, ct);
         return waiting.IsSuccess ? Result.Success() : Result.Failed(waiting.Error!);
     }
 
@@ -265,7 +264,7 @@ public sealed class CaRotator(
             if (!ensured.IsSuccess)
                 return Result<bool>.Failed(ensured.Error!);
 
-            var mark = await journal.WriteAsync(
+            var mark = await journal.WritePhaseAsync(
                 cluster, Op, $"phase-r/{broker.Name}", claims.InstanceId, null, ct);
             if (!mark.IsSuccess)
                 return Result<bool>.Failed(mark.Error!);

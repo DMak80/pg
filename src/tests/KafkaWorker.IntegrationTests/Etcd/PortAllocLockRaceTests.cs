@@ -4,7 +4,6 @@ using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
 using KafkaWorker.Core.Planning;
 using Shared.Etcd.Client;
-using KafkaWorker.Etcd.Coordination;
 using Xunit;
 
 namespace KafkaWorker.IntegrationTests.Etcd;
@@ -58,9 +57,10 @@ public class PortAllocLockRaceTests(EtcdFixture fixture)
                 // Аллокация одного брокера (1 клиентский порт); диапазон — значения
                 // в etcd, не host-биндинги: литералы допустимы (AGENTS.md — про
                 // хост-порты docker).
-                var plan = new PlacementPlan([new NodePlacement("broker1", "h1")]);
+                var plan = new PlacementPlan([new NodePlacement(cluster, "broker1", "h1")]);
                 var allocated = PortAllocator.Allocate(
-                    plan, new Dictionary<string, NodeAddress>(), busy, 16000, 16100);
+                    plan, new Dictionary<string, NodeAddress>(), busy, 16000, 16100,
+                    KfwPlanning.PortsOf, KfwPlanning.HostOf, KfwPlanning.MakeAddress, KfwPlanning.KeyOf);
                 if (!allocated.IsSuccess)
                     return allocated;
                 var put = await Gateway.PutAsync(
@@ -102,8 +102,8 @@ public class PortAllocLockRaceTests(EtcdFixture fixture)
     {
         // Arrange — «два инстанса» с независимыми клэймами
         var ct = TestContext.Current.CancellationToken;
-        var first = new PortAllocLock([Endpoint], Gateway, TimeProvider.System, "inst-1");
-        var second = new PortAllocLock([Endpoint], Gateway, TimeProvider.System, "inst-2");
+        var first = new PortAllocLock("/kafkaworker", [Endpoint], Gateway, TimeProvider.System, "inst-1");
+        var second = new PortAllocLock("/kafkaworker", [Endpoint], Gateway, TimeProvider.System, "inst-2");
         var start = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var task1 = Task.Run(async () => { await start.Task; return await CriticalSectionAsync(first, "events1", ct); });
         var task2 = Task.Run(async () => { await start.Task; return await CriticalSectionAsync(second, "events2", ct); });
@@ -128,7 +128,7 @@ public class PortAllocLockRaceTests(EtcdFixture fixture)
             "клэйм сериализует секции — повторная видит запись соседа в busy");
 
         // Ключ клэйма исчез после release обеих секций
-        var lockKey = await Gateway.GetAsync(Endpoint, PortAllocLock.Key, ct);
+        var lockKey = await Gateway.GetAsync(Endpoint, first.Key, ct);
         lockKey.Value.Should().BeNull();
     }
 
@@ -138,8 +138,8 @@ public class PortAllocLockRaceTests(EtcdFixture fixture)
     {
         // Arrange
         var ct = TestContext.Current.CancellationToken;
-        var first = new PortAllocLock([Endpoint], Gateway, TimeProvider.System, "inst-1");
-        var second = new PortAllocLock([Endpoint], Gateway, TimeProvider.System, "inst-2");
+        var first = new PortAllocLock("/kafkaworker", [Endpoint], Gateway, TimeProvider.System, "inst-1");
+        var second = new PortAllocLock("/kafkaworker", [Endpoint], Gateway, TimeProvider.System, "inst-2");
 
         // Act
         var firstAcquired = await first.TryAcquireAsync(ct);
@@ -152,6 +152,6 @@ public class PortAllocLockRaceTests(EtcdFixture fixture)
         firstAcquired.Value.Should().BeTrue();
         secondAcquired.Value.Should().BeFalse();
         reclaimed.Value.Should().BeTrue();
-        (await Gateway.GetAsync(Endpoint, PortAllocLock.Key, ct)).Value.Should().BeNull();
+        (await Gateway.GetAsync(Endpoint, first.Key, ct)).Value.Should().BeNull();
     }
 }

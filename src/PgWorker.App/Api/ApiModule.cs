@@ -2,8 +2,8 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Routing;
 using PgWorker.App.Api.Operations;
-using PgWorker.Core.Writing;
 
+using PgWorker.Core.Writing;
 namespace PgWorker.App.Api;
 
 // HTTP API воркера (arch/14 §1.1, task etcd-via-worker-api): мутации декларативного

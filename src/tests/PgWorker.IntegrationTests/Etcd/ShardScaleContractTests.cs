@@ -1,8 +1,6 @@
 using PgWorker.App.Loops;
 using PgWorker.Core.Model;
-using PgWorker.Core.Planning;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Processes;
 using Xunit;
@@ -131,10 +129,10 @@ public class ShardScaleContractTests(EtcdFixture fixture)
         // зависит от таймингов TTL соседей по коллекции.
         await Gateway.DeleteAsync(Endpoint, $"/pgworker/claims/{cluster}", prefix: false, ct);
         // Own-only teardown: DisposeAsync отзывает lease — ключ исчезает сразу, не по TTL 15с.
-        await using var claims = new ClaimStore([Endpoint], Gateway, TimeProvider.System);
+        await using var claims = new ClaimStore("/pgworker", [Endpoint], Gateway, TimeProvider.System);
         (await claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
         var process = new RemoveShardProcess(
-            Gateway, [Endpoint], driver, claims, new WorkJournal(Gateway, [Endpoint]), snapshot: null);
+            Gateway, [Endpoint], driver, claims, new WorkJournal("/pgworker", Gateway, [Endpoint]), snapshot: null);
 
         // Act — демонтаж на реальном etcd
         var outcome = await process.TickAsync(await SnapshotAsync(cluster), "shard1", ct);
@@ -188,10 +186,10 @@ public class ShardScaleContractTests(EtcdFixture fixture)
         };
         // Own-only: предочистка клэйма + немедленный выпуск (await using).
         await Gateway.DeleteAsync(Endpoint, $"/pgworker/claims/{cluster}", prefix: false, ct);
-        await using var claims = new ClaimStore([Endpoint], Gateway, TimeProvider.System);
+        await using var claims = new ClaimStore("/pgworker", [Endpoint], Gateway, TimeProvider.System);
         (await claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
         var process = new RemoveShardProcess(
-            Gateway, [Endpoint], driver, claims, new WorkJournal(Gateway, [Endpoint]), snapshot: null);
+            Gateway, [Endpoint], driver, claims, new WorkJournal("/pgworker", Gateway, [Endpoint]), snapshot: null);
 
         // Act — тик RemoveShardProcess
         var outcome = await process.TickAsync(await SnapshotAsync(cluster), "shard1", ct);
@@ -236,11 +234,11 @@ public class ShardScaleContractTests(EtcdFixture fixture)
         await Gateway.PutAsync(Endpoint, $"/clusters/{cluster}/shards/shard3/state", "TO_REMOVE", null, ct);
         // Own-only: предочистка клэйма + немедленный выпуск (await using).
         await Gateway.DeleteAsync(Endpoint, $"/pgworker/claims/{cluster}", prefix: false, ct);
-        await using var claims = new ClaimStore([Endpoint], Gateway, TimeProvider.System);
+        await using var claims = new ClaimStore("/pgworker", [Endpoint], Gateway, TimeProvider.System);
         (await claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
         var process = new RemoveShardProcess(
             Gateway, [Endpoint], new StubScaleDriver(), claims,
-            new WorkJournal(Gateway, [Endpoint]), snapshot: null);
+            new WorkJournal("/pgworker", Gateway, [Endpoint]), snapshot: null);
 
         // Act
         var outcome = await process.TickAsync(await SnapshotAsync(cluster), "shard3", ct);

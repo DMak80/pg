@@ -9,7 +9,6 @@ using PgWorker.Core.Templates;
 using PgWorker.Core.Tuning;
 using PgWorker.Docker.Drivers;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Processes;
 using PgWorker.Provisioning.Probes;
@@ -89,9 +88,9 @@ public class NodeSupervisorTests
         SeedCluster(etcd);
         if (addresses is not null)
             etcd.Seed("/pgworker/portalloc/shop", Portalloc.Serialize(addresses));
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("shop", CancellationToken.None);
-        var journal = new WorkJournal(etcd, [Ep]);
+        var journal = new WorkJournal("/pgworker", etcd, [Ep]);
         if (staleUnreachableForShard1A.HasValue || staleUnreachableAll.HasValue)
         {
             var track = new Dictionary<string, long>();
@@ -100,7 +99,7 @@ public class NodeSupervisorTests
             if (staleUnreachableAll is { } staleAll)
                 for (var i = 0; i < 3; i++)
                     track[$"shard1/shard1{(char)('a' + i)}"] = staleAll;
-            await journal.WriteSupervisionAsync("shop", "seed", track, CancellationToken.None);
+            await journal.WriteSupervisionAsync("shop", "seed", track, null, CancellationToken.None);
         }
 
         var driver = new Fakes.FakeDriver
@@ -793,7 +792,7 @@ public class NodeSupervisorTests
         var track = new Dictionary<string, long>();
         for (var i = 0; i < 3; i++)
             track[$"shard2/shard2{(char)('a' + i)}"] = now - 400;
-        await journal.WriteSupervisionAsync("shop", "seed", track, CancellationToken.None);
+        await journal.WriteSupervisionAsync("shop", "seed", track, null, CancellationToken.None);
     }
 
     [Fact]
@@ -1167,17 +1166,17 @@ public class NodeSupervisorTests
         var etcd = new Fakes.FakeEtcd();
         SeedNamedCluster(etcd, "shopA", portOffset: 0);
         SeedNamedCluster(etcd, "shopB", portOffset: 100);
-        var claims = new ClaimStore([Ep], etcd, TimeProvider.System);
+        var claims = new ClaimStore("/pgworker", [Ep], etcd, TimeProvider.System);
         await claims.TryClaimClusterAsync("shopA", CancellationToken.None);
         await claims.TryClaimClusterAsync("shopB", CancellationToken.None);
-        var journal = new WorkJournal(etcd, [Ep]);
+        var journal = new WorkJournal("/pgworker", etcd, [Ep]);
         var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
         await journal.WriteSupervisionAsync("shopA", "seed", new Dictionary<string, long>
         {
             ["shard1/shard1a"] = now - 400,
             ["shard1/shard1b"] = now - 400,
             ["shard1/shard1c"] = now - 400,
-        }, CancellationToken.None);
+        }, null, CancellationToken.None);
 
         var driver = new Fakes.FakeDriver
         {

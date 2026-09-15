@@ -3,7 +3,6 @@ using KafkaWorker.Core;
 using KafkaWorker.Core.Model;
 using KafkaWorker.Docker.Drivers;
 using Shared.Etcd.Client;
-using KafkaWorker.Etcd.Coordination;
 using KafkaWorker.Core.Planning;
 using KafkaWorker.Provisioning.Kafka;
 
@@ -65,13 +64,13 @@ public sealed class RemoveBrokerProcess(
             // Guard: на брокере нет реплик партиций (факт знает только Kafka).
             if (await HasPartitionsAsync(snap, broker.Name, ct))
             {
-                var waiting = await journal.WriteAsync(
+                var waiting = await journal.WritePhaseAsync(
                     cluster, Op, "waiting-partitions", claims.InstanceId,
                     $"на {broker.Name} есть реплики партиций — drain идёт (процесс reassign), демонтаж продолжится сам", ct);
                 return waiting; // не ошибка: следующий тик повторит проверку
             }
 
-            var started = await journal.WriteAsync(
+            var started = await journal.WritePhaseAsync(
                 cluster, Op, "removing", claims.InstanceId, null, ct);
             if (!started.IsSuccess)
                 return started;
@@ -95,7 +94,7 @@ public sealed class RemoveBrokerProcess(
                 return Fail(cluster, filtered.Error!, "portalloc-filter");
         }
 
-        return await journal.WriteAsync(cluster, Op, "done", claims.InstanceId, null, ct);
+        return await journal.WritePhaseAsync(cluster, Op, "done", claims.InstanceId, null, ct);
     }
 
     // «На брокере есть реплики» — по DescribeTopics.ReplicasPerPartition (A8).
@@ -209,7 +208,7 @@ public sealed class RemoveBrokerProcess(
 
     private Result Fail(string cluster, Exception error, string phase)
     {
-        journal.WriteAsync(cluster, Op, phase, claims.InstanceId, error.Message, CancellationToken.None)
+        journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, error.Message, CancellationToken.None)
             .GetAwaiter().GetResult();
         return Result.Failed(error);
     }

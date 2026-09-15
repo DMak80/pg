@@ -1,3 +1,4 @@
+using KafkaWorker.Core.Planning;
 using System.Buffers.Binary;
 using System.Globalization;
 using System.Net.Sockets;
@@ -5,7 +6,6 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using KafkaWorker.Core;
-using KafkaWorker.Core.Planning;
 
 namespace KafkaWorker.Docker.Engine;
 

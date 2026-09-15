@@ -4,13 +4,11 @@ using PgWorker.Backups;
 using PgWorker.Backups.Job;
 using PgWorker.Core;
 using PgWorker.Core.Model;
-using PgWorker.Core.Planning;
 using PgWorker.Core.Templates;
 using PgWorker.Core.Tuning;
 using PgWorker.Docker.Drivers;
 using PgWorker.Docker.Engine;
 using Shared.Etcd.Client;
-using PgWorker.Etcd.Coordination;
 using PgWorker.Etcd.Parsing;
 using PgWorker.IntegrationTests.Etcd;
 using PgWorker.Provisioning.Endpoints;
@@ -28,7 +26,7 @@ namespace PgWorker.IntegrationTests.Backups;
 [Collection(EtcdCollection.Name)]
 public class BackupSelfHealTests(EtcdFixture fixture)
 {
-    private readonly ClaimStore _claims = new([fixture.Endpoint], fixture.Gateway, TimeProvider.System);
+    private readonly ClaimStore _claims = new("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
 
     // ── Хелперы Arrange (копия паттерна WalStreamProcessTests) ──
 
@@ -71,7 +69,7 @@ public class BackupSelfHealTests(EtcdFixture fixture)
             new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
             sql, s3,
             new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]),
-            _claims, new WorkJournal(fixture.Gateway, [fixture.Endpoint]),
+            _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => options,
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
             TimeProvider.System);
@@ -155,7 +153,7 @@ public class BackupSelfHealTests(EtcdFixture fixture)
             new SelfHealDriver(driver, engine),
             new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
             new StubDb(), new StubSecrets(), _claims,
-            new WorkJournal(fixture.Gateway, [fixture.Endpoint]),
+            new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
             Options(), TimeProvider.System, NullLogger<BackupProcess>.Instance);
         (await backupProcess.TickAsync(await SnapshotAsync("sh1"), [backups1], ct))
