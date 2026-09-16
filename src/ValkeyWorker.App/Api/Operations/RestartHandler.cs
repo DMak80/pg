@@ -1,0 +1,37 @@
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+
+namespace ValkeyWorker.App.Api.Operations;
+
+// Ответ 202 POST /api/restart (порт RestartHandler kfw).
+public sealed record RestartDto(bool Restarting);
+
+// Graceful self-stop воркера: рестарт = самостоятельный стоп; контейнер
+// поднимает docker-политика restart: unless-stopped. 202 → пауза ~1 c (ответ
+// успевает уйти) → StopApplication. В etcd ничего не пишет: клэймы/журнал
+// живут в lease, операцию продолжит этот же или другой инстанс.
+public sealed class RestartHandler(
+    IHostApplicationLifetime lifetime,
+    ILogger<RestartHandler> logger,
+    TimeSpan? stopDelay = null)
+{
+    public RestartDto Handle(string? requestedBy)
+    {
+        logger.LogInformation(
+            "POST /api/restart: запрошен перезапуск (оператор {Operator})", requestedBy ?? "unknown");
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                await Task.Delay(stopDelay ?? TimeSpan.FromSeconds(1));
+                lifetime.StopApplication();
+            }
+            catch (Exception e)
+            {
+                // Fire-and-forget: ответ 202 уже ушёл — пишем в журнал.
+                logger.LogError(e, "POST /api/restart: ошибка отложенного StopApplication");
+            }
+        });
+        return new RestartDto(true);
+    }
+}

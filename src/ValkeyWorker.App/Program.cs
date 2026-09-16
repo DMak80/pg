@@ -4,6 +4,7 @@ using Microsoft.Extensions.Options;
 using ValkeyWorker.App;
 using Shared.Metrics;
 using ValkeyWorker.App.Api;
+using ValkeyWorker.App.Api.Operations;
 using Shared.Core.HealthChecks;
 using ValkeyWorker.App.HealthChecks;
 using ValkeyWorker.App.Loops;
@@ -195,6 +196,34 @@ builder.Services.AddSingleton(sp => new PasswordRotator(
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IValkeyConnection>()));
 
+// HTTP API воркера (arch/21 §1.1): мутации декларативного контракта
+// valkey-домена — хендлеры-синглтоны.
+builder.Services.AddSingleton(sp => new CreateClusterHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton(sp => new DeleteClusterHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints));
+builder.Services.AddSingleton(sp => new UpdateConfigHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints));
+builder.Services.AddSingleton(sp => new UpdateResourcesHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints));
+builder.Services.AddSingleton(sp => new RotatePasswordHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton(sp => new SeedDemoHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Api.EnableSeedEndpoint));
+builder.Services.AddSingleton(sp => new RestartHandler(
+    sp.GetRequiredService<IHostApplicationLifetime>(),
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<RestartHandler>()));
+
 // Циклы: keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
 builder.Services.AddSingleton<IValkeyClusterProcesses, ValkeyClusterProcesses>();
 builder.Services.AddSingleton<KeepaliveLoop>();
@@ -229,6 +258,7 @@ if (apiTls.Warning is { } certWarning)
     app.Logger.LogWarning("ValkeyWorker:Api:Tls: {Warning}", certWarning);
 app.MapAppMetrics();
 app.MapHealthChecks("/healthz");
+app.MapWorkerApi();
 
 await app.RunAsync();
 
