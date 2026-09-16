@@ -325,6 +325,19 @@ internal static class Fakes
 
         public bool ConnectionFault { get; set; } // слепая проба (S7)
 
+        // Тесты полного прогона: креды генерирует ensure — пароль заранее
+        // неизвестен; true = AUTH принимает любую пару (нода «собрана»).
+        public bool TrustAnyPassword { get; set; }
+
+        // Хук на каждый вызов команды (двигает FixedTimeProvider в тестах V4-бюджета).
+        public Action? OnCommand { get; set; }
+
+        private void BeforeCommand() => OnCommand?.Invoke();
+
+        private bool AuthOk(ValkeyEndpoint ep)
+            => TrustAnyPassword
+               || (Users.TryGetValue(ep.User, out var account) && account.Passwords.Contains(ep.Password));
+
         public UserAccount AddUser(string name, string password, params string[] rules)
         {
             var account = new UserAccount();
@@ -341,9 +354,10 @@ internal static class Fakes
 
         public Task<Result> PingAsync(ValkeyEndpoint ep, CancellationToken ct)
         {
+            BeforeCommand();
             if (ConnectionFault || Silent)
                 return Task.FromResult(Fail());
-            if (!Users.TryGetValue(ep.User, out var account) || !account.Passwords.Contains(ep.Password))
+            if (!AuthOk(ep))
                 return Task.FromResult(Result.Failed(new ApplicationException("AUTH failed")));
             return Task.FromResult(Result.Success());
         }
@@ -351,9 +365,10 @@ internal static class Fakes
         public Task<Result<IReadOnlyDictionary<string, string>>> ConfigGetAsync(
             ValkeyEndpoint ep, string parameter, CancellationToken ct)
         {
+            BeforeCommand();
             if (ConnectionFault || Silent)
                 return Task.FromResult(Blind<IReadOnlyDictionary<string, string>>());
-            if (!Users.TryGetValue(ep.User, out var account) || !account.Passwords.Contains(ep.Password))
+            if (!AuthOk(ep))
                 return Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Failed(
                     new ApplicationException("AUTH failed")));
             var dict = new Dictionary<string, string>();
@@ -365,9 +380,10 @@ internal static class Fakes
 
         public Task<Result> ConfigSetAsync(ValkeyEndpoint ep, string parameter, string value, CancellationToken ct)
         {
+            BeforeCommand();
             if (ConnectionFault || Silent)
                 return Task.FromResult(Fail());
-            if (!Users.TryGetValue(ep.User, out var account) || !account.Passwords.Contains(ep.Password))
+            if (!AuthOk(ep))
                 return Task.FromResult(Result.Failed(new ApplicationException("AUTH failed")));
             Config[parameter] = value;
             return Task.FromResult(Result.Success());
@@ -375,9 +391,10 @@ internal static class Fakes
 
         public Task<Result<IReadOnlyList<string>>> AclListAsync(ValkeyEndpoint ep, CancellationToken ct)
         {
+            BeforeCommand();
             if (ConnectionFault || Silent)
                 return Task.FromResult(Blind<IReadOnlyList<string>>());
-            if (!Users.TryGetValue(ep.User, out var account) || !account.Passwords.Contains(ep.Password))
+            if (!AuthOk(ep))
                 return Task.FromResult(Result<IReadOnlyList<string>>.Failed(
                     new ApplicationException("AUTH failed")));
             var rules = Users.Select(u =>
@@ -392,9 +409,10 @@ internal static class Fakes
 
         public Task<Result> AclSetUserAsync(ValkeyEndpoint ep, IReadOnlyList<string> args, CancellationToken ct)
         {
+            BeforeCommand();
             if (ConnectionFault || Silent)
                 return Task.FromResult(Fail());
-            if (!Users.TryGetValue(ep.User, out var account) || !account.Passwords.Contains(ep.Password))
+            if (!AuthOk(ep))
                 return Task.FromResult(Result.Failed(new ApplicationException("AUTH failed")));
 
             // args: [user, модификаторы…] — модель по образцу valkey.

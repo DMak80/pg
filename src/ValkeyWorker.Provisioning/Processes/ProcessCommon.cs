@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using Shared.Core;
 using Shared.Etcd.Client;
 using ValkeyWorker.Core.Model;
@@ -116,5 +117,38 @@ public static class ProcessCommon
             mem = gi * 1024L * 1024 * 1024;
 
         return (cpu, mem);
+    }
+
+    // Формат portalloc (arch/20 §3): {"node<k>":{"host":"h","client":17001}}.
+    public static Dictionary<string, NodeAddress> ParsePortAlloc(string json)
+    {
+        var addresses = new Dictionary<string, NodeAddress>();
+        using var doc = JsonDocument.Parse(json);
+        foreach (var node in doc.RootElement.EnumerateObject())
+            addresses[node.Name] = new NodeAddress(
+                node.Value.GetProperty("host").GetString()!,
+                node.Value.GetProperty("client").GetInt32());
+        return addresses;
+    }
+
+    public static string SerializePortAlloc(IReadOnlyDictionary<string, NodeAddress> addresses)
+    {
+        using var buffer = new MemoryStream();
+        using (var writer = new Utf8JsonWriter(buffer))
+        {
+            writer.WriteStartObject();
+            foreach (var (node, addr) in addresses.OrderBy(p => p.Key, StringComparer.Ordinal))
+            {
+                writer.WritePropertyName(node);
+                writer.WriteStartObject();
+                writer.WriteString("host", addr.Host);
+                writer.WriteNumber("client", addr.ClientPort);
+                writer.WriteEndObject();
+            }
+
+            writer.WriteEndObject();
+        }
+
+        return System.Text.Encoding.UTF8.GetString(buffer.ToArray());
     }
 }
