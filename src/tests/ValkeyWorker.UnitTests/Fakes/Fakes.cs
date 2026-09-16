@@ -79,6 +79,8 @@ internal static class Fakes
             return Task.FromResult(Result.Success());
         }
 
+        public Action<string>? OnDelete { get; set; }
+
         public Task<Result> DeleteAsync(string endpoint, string keyOrPrefix, bool prefix, CancellationToken ct)
         {
             lock (_gate)
@@ -91,6 +93,7 @@ internal static class Fakes
                 }
             }
 
+            OnDelete?.Invoke(keyOrPrefix);
             return Task.FromResult(Result.Success());
         }
 
@@ -232,14 +235,25 @@ internal static class Fakes
             return Task.FromResult(Result.Success());
         }
 
+        public Action<string>? OnRemove { get; set; }
+
         public Task<Result> RemoveNodeAsync(string cluster, string nodeName, CancellationToken ct)
         {
+            var name = PlainClusterDriver.NodeName(cluster, nodeName);
             lock (_gate)
             {
-                var name = PlainClusterDriver.NodeName(cluster, nodeName);
                 Containers.Remove(name);
                 Stopped.Remove(name);
                 Removed.Add(name);
+            }
+
+            try
+            {
+                OnRemove?.Invoke(name);
+            }
+            catch (Exception ex)
+            {
+                return Task.FromResult(Result.Failed(ex));
             }
 
             return Task.FromResult(Result.Success());
