@@ -361,16 +361,25 @@ internal static class Fakes
             return account;
         }
 
+        // Слепая проба (S7): соединение не установилось — сетевой отказ.
         private Result Fail() => Result.Failed(new ApplicationException("valkey connection failed"));
 
         private Result<T> Blind<T>() where T : notnull
             => Result<T>.Failed(new ApplicationException("valkey connection failed"));
 
+        // Нода молчит: соединение установилось, ответа нет (таймаут пробы).
+        private Result SilentFail() => Result.Failed(new TimeoutException("valkey не ответил за бюджет пробы"));
+
+        private Result<T> SilentBlind<T>() where T : notnull
+            => Result<T>.Failed(new TimeoutException("valkey не ответил за бюджет пробы"));
+
         public Task<Result> PingAsync(ValkeyEndpoint ep, CancellationToken ct)
         {
             BeforeCommand();
-            if (ConnectionFault || Silent)
+            if (ConnectionFault)
                 return Task.FromResult(Fail());
+            if (Silent)
+                return Task.FromResult(SilentFail());
             if (!AuthOk(ep))
                 return Task.FromResult(Result.Failed(new ApplicationException("AUTH failed")));
             return Task.FromResult(Result.Success());
@@ -380,8 +389,10 @@ internal static class Fakes
             ValkeyEndpoint ep, string parameter, CancellationToken ct)
         {
             BeforeCommand();
-            if (ConnectionFault || Silent)
+            if (ConnectionFault)
                 return Task.FromResult(Blind<IReadOnlyDictionary<string, string>>());
+            if (Silent)
+                return Task.FromResult(SilentBlind<IReadOnlyDictionary<string, string>>());
             if (!AuthOk(ep))
                 return Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Failed(
                     new ApplicationException("AUTH failed")));
@@ -395,8 +406,10 @@ internal static class Fakes
         public Task<Result> ConfigSetAsync(ValkeyEndpoint ep, string parameter, string value, CancellationToken ct)
         {
             BeforeCommand();
-            if (ConnectionFault || Silent)
+            if (ConnectionFault)
                 return Task.FromResult(Fail());
+            if (Silent)
+                return Task.FromResult(SilentFail());
             if (!AuthOk(ep))
                 return Task.FromResult(Result.Failed(new ApplicationException("AUTH failed")));
             Config[parameter] = value;
@@ -406,8 +419,10 @@ internal static class Fakes
         public Task<Result<IReadOnlyList<string>>> AclListAsync(ValkeyEndpoint ep, CancellationToken ct)
         {
             BeforeCommand();
-            if (ConnectionFault || Silent)
+            if (ConnectionFault)
                 return Task.FromResult(Blind<IReadOnlyList<string>>());
+            if (Silent)
+                return Task.FromResult(SilentBlind<IReadOnlyList<string>>());
             if (!AuthOk(ep))
                 return Task.FromResult(Result<IReadOnlyList<string>>.Failed(
                     new ApplicationException("AUTH failed")));
@@ -424,8 +439,10 @@ internal static class Fakes
         public Task<Result> AclSetUserAsync(ValkeyEndpoint ep, IReadOnlyList<string> args, CancellationToken ct)
         {
             BeforeCommand();
-            if (ConnectionFault || Silent)
+            if (ConnectionFault)
                 return Task.FromResult(Fail());
+            if (Silent)
+                return Task.FromResult(SilentFail());
             if (!AuthOk(ep))
                 return Task.FromResult(Result.Failed(new ApplicationException("AUTH failed")));
 
