@@ -9,6 +9,8 @@ using ValkeyWorker.App.HealthChecks;
 using ValkeyWorker.App.Loops;
 using ValkeyWorker.Docker.Engine;
 using ValkeyWorker.Docker.Drivers;
+using ValkeyWorker.Core.Valkey;
+using ValkeyWorker.Provisioning.Processes;
 using Shared.Etcd.Client;
 
 // Точка входа ValkeyWorker (arch/21 §8): host-builder с mTLS-гранью HTTP API
@@ -134,8 +136,66 @@ builder.Services.AddSingleton(sp =>
         opts.Snapshots.Dir, opts.Snapshots.RetentionFiles, opts.Snapshots.MaintenanceIntervalMin);
 });
 
+// Процессы A–E + вспомогательные (arch/21 §5): снапшот-делегат P12 «до/после»
+// у provisioning/deprovisioning; RESP-клиент — короткоживущие пробы.
+builder.Services.AddSingleton<IValkeyConnection, ValkeyConnection>();
+builder.Services.AddSingleton<IClusterSecretEnsurer>(sp => new ClusterSecretEnsurer(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints));
+builder.Services.AddSingleton(sp => new PortAllocIndex(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<ILogger<PortAllocIndex>>()));
+builder.Services.AddSingleton(sp => new PortAllocHealer(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<PortAllocLock>(),
+    sp.GetRequiredService<PortAllocIndex>(),
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value)));
+builder.Services.AddSingleton(sp => new ProvisioningProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<PortAllocLock>(),
+    sp.GetRequiredService<PortAllocIndex>(),
+    sp.GetRequiredService<IClusterSecretEnsurer>(),
+    sp.GetRequiredService<IValkeyConnection>(),
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value),
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+builder.Services.AddSingleton(sp => new DeprovisioningProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+builder.Services.AddSingleton(sp => new NodeSupervisor(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<IValkeyConnection>(),
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value),
+    sp.GetRequiredService<PortAllocHealer>()));
+builder.Services.AddSingleton(sp => new ConfigConverger(
+    sp.GetRequiredService<IValkeyConnection>(),
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<WorkJournal>()));
+builder.Services.AddSingleton(sp => new PasswordRotator(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<IValkeyConnection>()));
+
 // Циклы: keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
-// Процессы A–E регистрируются в задаче 12 (IValkeyClusterProcesses — пуст).
 builder.Services.AddSingleton<IValkeyClusterProcesses, ValkeyClusterProcesses>();
 builder.Services.AddSingleton<KeepaliveLoop>();
 builder.Services.AddSingleton<SnapshotLoop>();
@@ -171,6 +231,19 @@ app.MapAppMetrics();
 app.MapHealthChecks("/healthz");
 
 await app.RunAsync();
+
+// Опции процессов из дерева конфигурации (arch/21 §8).
+static ValkeyWorker.Provisioning.Processes.ValkeyProvisioningOptions ToProvisioningOptions(ValkeyWorkerOptions opts) => new(
+    opts.Docker.PortRange.From,
+    opts.Docker.PortRange.To,
+    opts.Thresholds.NodeBootSec,
+    opts.Thresholds.NodeDeadSec,
+    opts.AdvertisedClientHost,
+    opts.Docker.Images.Node);
+
+// Делегат снапшота для процессов (P12 «до/после» в точках изменений).
+static Func<CancellationToken, Task<Result>> SnapshotDelegate(SnapshotJob job)
+    => async ct => await job.TakeAsync(ct);
 
 // WAF-тесты (ValkeyWorker.IntegrationTests/Api, задача 13): точка входа как public partial.
 public partial class Program;
