@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <ItemGroup>
+        <Using Include="Xunit"/>
+        <Using Include="FluentAssertions"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="coverlet.collector">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
+        <PackageReference Include="FluentAssertions"/>
+        <PackageReference Include="Microsoft.NET.Test.Sdk"/>
+        <PackageReference Include="xunit.runner.visualstudio">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
+        <PackageReference Include="xunit.v3"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\..\ValkeyWorker.Core\ValkeyWorker.Core.csproj"/>
+        <ProjectReference Include="..\..\ValkeyWorker.Etcd\ValkeyWorker.Etcd.csproj"/>
+        <ProjectReference Include="..\..\ValkeyWorker.Docker\ValkeyWorker.Docker.csproj"/>
+        <ProjectReference Include="..\..\ValkeyWorker.Provisioning\ValkeyWorker.Provisioning.csproj"/>
+        <ProjectReference Include="..\..\ValkeyWorker.App\ValkeyWorker.App.csproj"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <Using Include="Shared.Core"/>
+        <Using Include="Shared.Core.Planning"/>
+        <Using Include="Shared.Core.Writing"/>
+        <Using Include="Shared.Etcd.Maintenance"/>
+        <Using Include="Shared.Etcd.Coordination"/>
+    </ItemGroup>
+
+</Project>

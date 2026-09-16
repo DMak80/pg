@@ -1,0 +1,31 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="ValkeyWorker.UnitTests"/>
+        <InternalsVisibleTo Include="ValkeyWorker.IntegrationTests"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <FrameworkReference Include="Microsoft.AspNetCore.App"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\ValkeyWorker.Core\ValkeyWorker.Core.csproj"/>
+        <ProjectReference Include="..\ValkeyWorker.Etcd\ValkeyWorker.Etcd.csproj"/>
+        <ProjectReference Include="..\ValkeyWorker.Docker\ValkeyWorker.Docker.csproj"/>
+        <ProjectReference Include="..\ValkeyWorker.Provisioning\ValkeyWorker.Provisioning.csproj"/>
+        <ProjectReference Include="..\Shared.Metrics\Shared.Metrics.csproj"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <Using Include="Shared.Core"/>
+        <Using Include="Shared.Core.Writing"/>
+        <Using Include="Shared.Etcd.Maintenance"/>
+        <Using Include="Shared.Etcd.Coordination"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\Shared.Tls\Shared.Tls.csproj"/>
+    </ItemGroup>
+
+</Project>

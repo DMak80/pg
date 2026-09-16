@@ -35,6 +35,13 @@
         <Project Path="KafkaWorker.Provisioning/KafkaWorker.Provisioning.csproj" />
         <Project Path="KafkaWorker.App/KafkaWorker.App.csproj" />
     </Folder>
+    <Folder Name="/valkey/">
+        <Project Path="ValkeyWorker.Core/ValkeyWorker.Core.csproj" />
+        <Project Path="ValkeyWorker.Etcd/ValkeyWorker.Etcd.csproj" />
+        <Project Path="ValkeyWorker.Docker/ValkeyWorker.Docker.csproj" />
+        <Project Path="ValkeyWorker.Provisioning/ValkeyWorker.Provisioning.csproj" />
+        <Project Path="ValkeyWorker.App/ValkeyWorker.App.csproj" />
+    </Folder>
     <Folder Name="/admin/">
         <Project Path="AdminPanel.Api/AdminPanel.Api.csproj" />
         <Project Path="AdminPanel.Core/AdminPanel.Core.csproj" />
@@ -51,5 +58,7 @@
         <Project Path="tests/AdminPanel.IntegrationTests/AdminPanel.IntegrationTests.csproj" />
         <Project Path="tests/KafkaWorker.UnitTests/KafkaWorker.UnitTests.csproj" />
         <Project Path="tests/KafkaWorker.IntegrationTests/KafkaWorker.IntegrationTests.csproj" />
+        <Project Path="tests/ValkeyWorker.UnitTests/ValkeyWorker.UnitTests.csproj" />
+        <Project Path="tests/ValkeyWorker.IntegrationTests/ValkeyWorker.IntegrationTests.csproj" />
     </Folder>
 </Solution>
