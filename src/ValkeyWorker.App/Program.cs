@@ -8,6 +8,7 @@ using Shared.Core.HealthChecks;
 using ValkeyWorker.App.HealthChecks;
 using ValkeyWorker.App.Loops;
 using ValkeyWorker.Docker.Engine;
+using ValkeyWorker.Docker.Drivers;
 using Shared.Etcd.Client;
 
 // Точка входа ValkeyWorker (arch/21 §8): host-builder с mTLS-гранью HTTP API
@@ -100,8 +101,28 @@ builder.Services.AddSingleton(sp => new WorkJournal(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints));
 
-// docker-фабрика движков (health-пробы docker-hosts; драйвер по режиму — задача 4).
+// docker-фабрика движков (health-пробы docker-hosts) + драйвер по режиму
+// (Plain: таблица Hosts; Swarm: manager endpoint) — fail-fast на противоречивой
+// конфигурации (arch/21 §8).
 builder.Services.AddSingleton<DockerEngineFactory>();
+builder.Services.AddSingleton<IClusterDriver>(sp =>
+{
+    var docker = sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Docker;
+    var factory = sp.GetRequiredService<DockerEngineFactory>();
+    if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
+    {
+        if (string.IsNullOrWhiteSpace(docker.SwarmManager))
+            throw new ApplicationException("ValkeyWorker:Docker:Mode=Swarm требует ValkeyWorker:Docker:SwarmManager");
+        return new SwarmClusterDriver(docker.SwarmManager, factory);
+    }
+
+    var hosts = docker.Hosts
+        .Select(h => new HostEndpoint(h.Name, h.Endpoint))
+        .ToList();
+    if (hosts.Count == 0)
+        throw new ApplicationException("ValkeyWorker:Docker:Mode=Plain требует непустую таблицу ValkeyWorker:Docker:Hosts");
+    return new PlainClusterDriver(hosts, factory);
+});
 
 // Снапшоты P12 (SnapshotLoop-лидер + процессы в точках изменений «до/после»):
 // контроль-плейн /valkey/ + /valkeyworker/ — SnapshotJob снимает etcd целиком.
