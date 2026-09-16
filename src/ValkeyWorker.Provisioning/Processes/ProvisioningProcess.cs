@@ -346,8 +346,11 @@ public sealed class ProvisioningProcess(
         foreach (var node in NodeNames(snap))
         {
             var address = addresses[node];
+            // Проба по advertised-адресу (правило arch/21 §2) — тот же хост,
+            // что попадёт в endpoints (V5); placement-имя клиентам не видно.
             var endpoint = new ValkeyEndpoint(
-                address.Host, address.ClientPort, "admin", creds.AdminPassword);
+                options.AdvertisedClientHost ?? address.Host, address.ClientPort,
+                "admin", creds.AdminPassword);
             var startedAt = _clock.GetUtcNow();
             var budget = TimeSpan.FromSeconds(options.NodeBootSec);
 
