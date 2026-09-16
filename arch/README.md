@@ -109,6 +109,10 @@ arch/
 ├── 19-backups.md               ← ★ подсистема бэкапов шардов: PgWorker-оркестрация
 │                                  (pg_basebackup + pg_receivewal-агент, S3/MinIO,
 │                                   контракт /pgworker/backups/*, t02–t07)
+├── 20-valkey-clusters.md      ← ★ Valkey-кластера: контракт etcd /valkey/ + координация /valkeyworker/
+│                                  + клиентский дискавери (endpoints/ACL-креды app)
+├── 21-valkeyworker.md         ← ★ ValkeyWorker: оркестратор Valkey-кластеров
+│                                  (provisioning/deprovisioning/надзор/converge/ротация кред)
 ├── configs/
 │   ├── etcd/
 │   │   ├── docker-compose.yml
@@ -207,3 +211,9 @@ arch/
 16. [19-backups.md](19-backups.md) — подсистема бэкапов шардов: механика
     (полные `pg_basebackup`, online-WAL `pg_receivewal`-агент), layout S3,
     контракт `/pgworker/backups/*` (задачи t02–t07 — [roadmap/backup.md](roadmap/backup.md)).
+17. [20-valkey-clusters.md](20-valkey-clusters.md) — Valkey-кластера:
+    контракт etcd `/valkey/` (контроль-плейн кластеров, координация
+    `/valkeyworker/`) и клиентский дискавери (endpoints + ACL-креды).
+18. [21-valkeyworker.md](21-valkeyworker.md) — оркестратор ValkeyWorker:
+    декларативный жизненный цикл Valkey-кластеров (standalone-кеш,
+    ACL-креды, converge, ротация без рестартов; задачи — [roadmap/valkey.md](roadmap/valkey.md)).

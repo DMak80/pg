@@ -9,7 +9,9 @@
 [../17-synchronization-principles.md](../17-synchronization-principles.md).
 Клиентская библиотека исполняется в репозитории Puzzle
 (`PuzzleServer.Infrastructure.App.HA.Valkey` по образцу HA.Kafka —
-`docs/01.19-ha-kafka.md` там).
+`docs/01.19-ha-kafka.md` там). Канон домена —
+[../20-valkey-clusters.md](../20-valkey-clusters.md) (контракт etcd) и
+[../21-valkeyworker.md](../21-valkeyworker.md) (оркестратор).
 
 Порядок: канон → воркер → панель → библиотека Puzzle → метрики.
 
@@ -44,3 +46,21 @@
   Valkey-нод (аналог коллектора Kafka §4: INFO/репликация через redis-пробу,
   самонаблюдение коллектора), доменный словарь §2, дашборд Grafana
   `dashboards/valkey.json`, конфиг `ValkeyWorker:Metrics`.
+- **`t06-valkey-tls`** `← t01-valkey-canon` — TLS клиентских подключений
+  Valkey-кластеров (образец — kafka t03, arch/16 §2.3). **Что нужно
+  сделать**: per-cluster CA (`ca_pem`/`ca_key` в
+  `/valkey/clusters/<C>/`, ensure воркером при provisioning, подпись
+  серверного сертификата ноды CN=`node<k>` + SAN advertised-хоста);
+  tls-port контейнера (порт из portalloc; plain-порт закрывается);
+  дискавери-ключ `ca_pem` для внешнего читателя — доверие клиентов
+  StackExchange.Redis (`GetClientConfig()` получает `ssl=true` + CA);
+  advertised/SAN-правило по 16 §2.1; окно двойного доверия при ротации
+  CA — по потребности (образец CaRotator 16 §5 K). **Зачем**:
+  шифрование клиентского трафика и аутентификация сервера (сейчас —
+  доверенная docker-сеть + ACL-креды: пароли ходят по сети открыто в
+  пределах закрытого контура). **Почему отложено**: кеш восполним и не
+  содержит данных дороже секрета доступа; v1 живёт в доверенной
+  закрытой docker-сети домашней установки (enterprise-защиты не нужны
+  — AGENTS базовые правила п.8); контракт кред/endpoints не меняется —
+  добавятся только CA-ключи, внешняя библиотека t04 совместима без
+  переделок (обратная совместимость дискавери arch/20 §4).
