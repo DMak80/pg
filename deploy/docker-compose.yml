@@ -122,6 +122,41 @@ services:
       KFW_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
       KafkaWorker__Api__EnableSeedEndpoint: ${KFW_API_ENABLE_SEED:-false}
 
+  # ValkeyWorker (arch/21 §2/§8): docker.sock, том снапшотов P12. Хост-порт API
+  # 8082 — продолжение ряда pg 8080 / kfw 8081. Томов данных нод НЕТ
+  # (persistence off — томов у домена не бывает).
+  valkeyworker:
+    build:
+      context: ..
+      dockerfile: docker/ValkeyWorker.Dockerfile
+    image: valkeyworker:dev
+    restart: unless-stopped
+    ports:
+      - "${VWK_API_HOST_PORT:-8082}:8080" # /healthz (ряд pg 8080 / kfw 8081 / vwk 8082)
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - vw-snapshots:/snapshots
+      # mTLS HTTP API (arch/21 §1.1): per-install TLS-пакет из deploy/tls
+      # (генерация — bash deploy/tls/gen.sh; наполнение volume — 00-up.sh стенда).
+      - vw-api-tls:/tls:ro
+    extra_hosts:
+      # docker-хост "local" (appsettings Docker:Hosts) + advertised-хост нод —
+      # из контейнера резолвим их в шлюз docker-хоста.
+      - "local:host-gateway"
+      - "host.docker.internal:host-gateway"
+    environment:
+      ValkeyWorker__Etcd__Endpoints__0: ${VWK_ETCD_ENDPOINT:-http://localhost:2379}
+      # Advertised-хост клиентского порта нод → endpoints в etcd резолвимы
+      # клиентами (arch/21 §2 advertised-правило).
+      ValkeyWorker__AdvertisedClientHost: ${VWK_ADVERTISED_CLIENT_HOST:-host.docker.internal}
+      # HTTP API воркера (arch/21 §1.1): advertise-URL https:// в /valkeyworker/api/<id>,
+      # mTLS-серты из /tls, демо-сид за флагом (стенд; прод — false).
+      ValkeyWorker__Api__AdvertiseUrl: ${VWK_API_ADVERTISE_URL:-https://host.docker.internal:8082}
+      VWK_API_TLS_CERT_PATH: /tls/server.crt
+      VWK_API_TLS_KEY_PATH: /tls/server.key
+      VWK_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
+      ValkeyWorker__Api__EnableSeedEndpoint: ${VWK_API_ENABLE_SEED:-false}
+
   # Образ джоба полного бэкапа (t02, arch/19 §2): только сборка — сервиса нет,
   # джобы запускает PgWorker как ephemeral-контейнеры. Профиль build не даёт
   # подняться в up; entrypoint-заглушка — защита от случайного run.
@@ -138,3 +173,5 @@ volumes:
   pgw-api-tls:
   kfw-snapshots:
   kfw-api-tls:
+  vw-snapshots:
+  vw-api-tls:
