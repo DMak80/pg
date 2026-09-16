@@ -17,24 +17,15 @@
 
 ## Задачи
 
-- **`t01-valkey-canon`** — канон Valkey-домена: `arch/20-valkey-clusters.md` —
-  контракт etcd `/valkey/` (контроль-плейн: state/endpoints/креды кластеров,
-  клиентские точки дискавери и толерантность читателей) + координация
-  `/valkeyworker/`; `arch/21-valkeyworker.md` — оркестратор: декларативный
-  жизненный цикл Valkey-кластеров (docker provisioning/deprovisioning,
-  надзор, converge). Назначение — **разделяемый кеш набора инстансов
-  приложения**: топология standalone (реплики/sentinel/cluster — вне скоупа:
-  кеш восполним, шардирование не нужно); maxmemory + политика выселения
-  и модель кред (requirepass/ACL) — решения канона.
-- **`t02-valkey-worker`** `← t01-valkey-canon` — сервис ValkeyWorker
+- **`t02-valkey-worker`** — сервис ValkeyWorker
   (`src/ValkeyWorker.*`, аналог KafkaWorker): provisioning/deprovisioning
   Valkey-кластеров в docker, публикация факта в etcd `/valkey/`, надзор
   (health/converge); переиспользование `Shared.{Core,Etcd,Metrics,Tls}`.
-- **`t03-valkey-panel`** `← t01-valkey-canon` — valkey-домен AdminPanel:
+- **`t03-valkey-panel`** — valkey-домен AdminPanel:
   etcd-инспекция `/valkey/` (AdminPanel.Etcd), API + React-панель —
   кластеры/ноды/состояния, live-пробы, алерты, операции (создание/удаление
   кластера, операции над нодами).
-- **`t04-valkey-discovery-lib`** `← t01-valkey-canon` — клиентская
+- **`t04-valkey-discovery-lib`** — клиентская
   дискавери-библиотека в Puzzle: `PuzzleServer.Infrastructure.App.HA.Valkey`
   — только читатель `/valkey/clusters/<C>/` (снапшот endpoints/креды/state,
   watch+poll актуализация, fail-open, `GetClientConfig()` для
@@ -46,7 +37,7 @@
   Valkey-нод (аналог коллектора Kafka §4: INFO/репликация через redis-пробу,
   самонаблюдение коллектора), доменный словарь §2, дашборд Grafana
   `dashboards/valkey.json`, конфиг `ValkeyWorker:Metrics`.
-- **`t06-valkey-tls`** `← t01-valkey-canon` — TLS клиентских подключений
+- **`t06-valkey-tls`** — TLS клиентских подключений
   Valkey-кластеров (образец — kafka t03, arch/16 §2.3). **Что нужно
   сделать**: per-cluster CA (`ca_pem`/`ca_key` в
   `/valkey/clusters/<C>/`, ensure воркером при provisioning, подпись
