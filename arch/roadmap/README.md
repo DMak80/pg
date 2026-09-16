@@ -24,6 +24,7 @@
 | [pgworker.md](pgworker.md) | сервис PgWorker: переезды бакетов, секреты, сеть, метрики, эвакуация/автоскейлинг |
 | [kafkaworker.md](kafkaworker.md) | сервис KafkaWorker: топики, ребалансировка, безопасность, метрики, дискавери-библиотека |
 | [backup.md](backup.md) | подсистема бэкапов шардов (владелец PgWorker): полные/WAL-бэкапы, проверки, восстановление, ретенция, супервизор |
+| [valkey.md](valkey.md) | Valkey-домен: канон etcd-контракта, сервис ValkeyWorker (provisioning/надзор), UI панели, дискавери-библиотека Puzzle |
 
 Контекст всех задач — [`../`](../README.md) (особенно
 [11-bucket-sharding.md](../11-bucket-sharding.md),
