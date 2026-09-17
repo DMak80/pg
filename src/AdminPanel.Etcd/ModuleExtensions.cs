@@ -82,4 +82,21 @@ public static class ModuleExtensions
         services.AddHostedService(sp => sp.GetRequiredService<KafkaSnapshotRefresher>());
         return services;
     }
+
+    // Модуль valkey-домена (t03, arch/02 §11): hosted-service refresher'а + стор
+    // снапшота + стор кредов проб. Отдельный HttpClient не заводится — транспорт
+    // общий с pg/kafka-циклами (IEtcdGateway/«etcd», EtcdOptions).
+    public static IServiceCollection AddValkey(this IServiceCollection services)
+    {
+        services.AddSingleton<ValkeySnapshotStore>();
+        services.AddSingleton<IValkeySnapshotStore>(sp => sp.GetRequiredService<ValkeySnapshotStore>());
+        services.AddSingleton<IValkeySnapshotReader>(sp => sp.GetRequiredService<ValkeySnapshotStore>());
+
+        services.AddSingleton<ValkeySecretsStore>();
+        services.AddSingleton<IValkeySecretsStore>(sp => sp.GetRequiredService<ValkeySecretsStore>());
+
+        services.AddSingleton<ValkeySnapshotRefresher>();
+        services.AddHostedService(sp => sp.GetRequiredService<ValkeySnapshotRefresher>());
+        return services;
+    }
 }
