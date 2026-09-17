@@ -60,6 +60,8 @@ public static class ModuleExtensions
                 thumbs.Add(pg.Thumbprint);
             if (sp.GetRequiredService<IKafkaSnapshotStore>().Current?.WorkerApiCert is { } kfw)
                 thumbs.Add(kfw.Thumbprint);
+            if (sp.GetRequiredService<IValkeySnapshotStore>().Current?.WorkerApiCert is { } vwk)
+                thumbs.Add(vwk.Thumbprint);
             return thumbs;
         };
         services.AddSingleton<WorkerApiGateway>();

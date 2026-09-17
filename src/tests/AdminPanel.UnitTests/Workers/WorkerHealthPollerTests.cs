@@ -45,10 +45,19 @@ public class WorkerHealthPollerTests
         var poller = new WorkerHealthPoller(
             new StubReader(snapshot ?? TestSnapshots.Healthy(Now)), store,
             kafkaReader ?? new StubKafkaReader(null), kafkaStore ?? new KafkaWorkerHealthStore(),
+            // t03: valkey-пара нейтральна для pg/kafka-сценариев (пустой снапшот/стор).
+            new StubValkeyReader(null), new ValkeyWorkerHealthStore(),
             new StubFactory(new FakeHandler(respond)),
             Options.Create(new WorkerApiOptions { HealthIntervalSec = 15, TimeoutSec = 3 }),
             time, NullLogger<WorkerHealthPoller>.Instance);
         return (poller, store);
+    }
+
+    // t03: valkey-двойники поллера (в этих тестах valkey-ключей нет).
+    private sealed class StubValkeyReader(AdminPanel.Core.Valkey.ValkeySnapshot? snapshot)
+        : AdminPanel.Etcd.IValkeySnapshotReader
+    {
+        public AdminPanel.Core.Valkey.ValkeySnapshot? Current { get; } = snapshot;
     }
 
     [Fact]

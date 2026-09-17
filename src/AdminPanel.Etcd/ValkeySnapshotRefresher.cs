@@ -24,6 +24,7 @@ public sealed class ValkeySnapshotRefresher(
     IOptions<ValkeyPanelOptions> valkeyOptions,
     TimeProvider time,
     ILogger<ValkeySnapshotRefresher> logger,
+    AdminPanel.Etcd.Workers.IValkeyWorkerHealthStore workerHealthStore,
     IValkeyProbeReader? probeReader = null) : BackgroundService
 {
     private string? _activeEndpoint;
@@ -109,7 +110,7 @@ public sealed class ValkeySnapshotRefresher(
                 probeReader?.Current),
             rotations.Tickets,
             workerApi.Endpoints,
-            [],                         // WorkerHealth вносит health-поллер успешным тиком (Task 4)
+            workerHealthStore.Current ?? [],   // health-проб воркера вносит успешный тик (t03; arch/02 §2.3.3)
             previous?.Probes ?? [],     // пробы переживают отказ etcd (симметрия pg/kafka)
             Alerts: [],
             [.. clusters.Errors, .. rotations.Errors, .. workerApi.Errors,
