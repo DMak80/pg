@@ -26,4 +26,17 @@ public class ProbesOptions
     // «etcd-адрес ноды host:port» → «адрес, достижимый с хоста панели» (arch/02 §6):
     // точное совпадение ключа, иначе адрес без изменений; по умолчанию пуст (прод).
     public Dictionary<string, string> HostMap { get; set; } = [];
+
+    // Valkey-PING-пробы (t03, arch/03 §8): RESP-миниклиент панели.
+    public ValkeyProbesOptions Valkey { get; set; } = new();
+}
+
+// Параметры valkey-проб (spec §4.6): тик 15 c, таймаут одной пробы 3 c.
+public sealed class ValkeyProbesOptions
+{
+    public bool Enabled { get; set; } = true;
+
+    public double IntervalSec { get; set; } = 15;
+
+    public double TimeoutSec { get; set; } = 3;
 }
