@@ -17,7 +17,8 @@ namespace ValkeyWorker.App.Loops;
 /// <summary>Один reconcile-тик над всеми кластерами (процессы arch/21 §5).</summary>
 public interface IValkeyClusterProcesses
 {
-    Task TickAsync(CancellationToken ct);
+    /// <summary>Число клэймов, держимых этим инстансом (health-секция claims).</summary>
+    Task<int> TickAsync(CancellationToken ct);
 }
 
 /// <summary>
@@ -37,7 +38,7 @@ internal sealed class ValkeyClusterProcesses(
     PasswordRotator rotator,
     ILogger<ValkeyClusterProcesses> logger) : IValkeyClusterProcesses
 {
-    public async Task TickAsync(CancellationToken ct)
+    public async Task<int> TickAsync(CancellationToken ct)
     {
         var endpoints = options.CurrentValue.Etcd.Endpoints.ToArray();
         if (endpoints.Length == 0)
@@ -69,6 +70,9 @@ internal sealed class ValkeyClusterProcesses(
         {
             gate.Dispose();
         }
+
+        // Фактическое число СВОИХ клэймов (health-секция claims, spec §4.8).
+        return parsed.Value.Clusters.Count(c => claims.IsMine(c.Cluster));
     }
 
     // Обработка одного кластера под семафором: клэйм → классификация → процесс.

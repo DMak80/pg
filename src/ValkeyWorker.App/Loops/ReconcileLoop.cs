@@ -93,10 +93,11 @@ internal sealed class ReconcileLoop(
         if (endpoints.Length == 0)
             return Result.Failed(new ApplicationException("ValkeyWorker:Etcd:Endpoints не заданы"));
 
-        await processes.TickAsync(ct);
+        var claimsHeld = await processes.TickAsync(ct);
 
         health.MarkEtcdOk();
-        health.MarkReconcileTick(ok: true, claimsHeld: 0);
+        // Секция health «claims»: фактическое число клэймов этого инстанса.
+        health.MarkReconcileTick(ok: true, claimsHeld);
         metrics.LoopTick("reconcile", ok: true);
         return Result.Success();
     }
