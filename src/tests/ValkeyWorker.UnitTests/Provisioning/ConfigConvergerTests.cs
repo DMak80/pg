@@ -98,6 +98,49 @@ public class ConfigConvergerTests
     }
 
     [Fact]
+    public async Task ВключённыйDefault_КонвергеОтключает()
+    {
+        // Arrange: default включён (дрейф от канона «default off», arch/21 §5 D).
+        const string cluster = "defon";
+        var rig = new Rig();
+        rig.SeedActive(cluster);
+        rig.Valkey.Config["maxmemory"] = "536870912";
+        rig.Valkey.Config["maxmemory-policy"] = "allkeys-lru";
+        rig.Valkey.AddUser("default", "", "~*", "+@all");
+
+        // Act
+        var result = await rig.Converger.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+
+        // Assert: ACL SETUSER default off вызван, пользователь выключен.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        var call = rig.Valkey.SetUserCalls.Should().Contain(c => c.User == "default").Subject;
+        call.Args.Should().Contain("off");
+        rig.Valkey.Users["default"].On.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task ВыключенныйApp_КонвергеВключаетСПравами()
+    {
+        // Arrange: app выключен (права на месте — пользователи всё равно не работают).
+        const string cluster = "appoff";
+        var rig = new Rig();
+        rig.SeedActive(cluster);
+        rig.Valkey.Config["maxmemory"] = "536870912";
+        rig.Valkey.Config["maxmemory-policy"] = "allkeys-lru";
+        var app = rig.Valkey.AddUser("app", "AppPassword0123456789abcdef12345", "~*", "+@read", "+@write");
+        app.On = false;
+
+        // Act
+        var result = await rig.Converger.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+
+        // Assert: SETUSER app несёт on (права доливаются планом).
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        var call = rig.Valkey.SetUserCalls.Should().Contain(c => c.User == "app").Subject;
+        call.Args.Should().Contain("on");
+        rig.Valkey.Users["app"].On.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task MaxmemoryГеMem_JournalWarningR3()
     {
         // Arrange: maxmemory_bytes == mem-лимита (1Gi) — инвариант нарушен.
