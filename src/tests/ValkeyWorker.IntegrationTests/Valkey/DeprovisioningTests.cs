@@ -45,7 +45,8 @@ public class DeprovisioningTests(ValkeyClusterFixture fx)
             range.Value.Should().BeEmpty($"{prefix} пуст после демонтажа");
         }
 
-        // work/<C> несёт journal done (фаза X3 пишется после чистки X2 — S6-трек).
-        (await fx.GetAsync($"/valkeyworker/work/{cluster}")).Should().Contain("done");
+        // work/<C> пуст ПОСЛЕ чистки (финальной journal-записи нет: «done»
+        // воскресил бы удалённый ключ — arch/21 §5 B, образец kfw).
+        (await fx.GetAsync($"/valkeyworker/work/{cluster}")).Should().BeNull("координация <C> чиста");
     }
 }

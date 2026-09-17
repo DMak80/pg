@@ -48,6 +48,9 @@ public class DeprovisioningProcessTests
             Etcd.Seed($"/valkey/clusters/{cluster}/app_password", "AppPassword0123456789abcdef12345");
             Etcd.Seed($"/valkeyworker/portalloc/{cluster}", """{"node1":{"host":"h1","client":17001}}""");
             Etcd.Seed($"/valkeyworker/work/{cluster}", """{"op":"provision","phase":"done"}""");
+            // Стейт доигрывания ротации — вложенный ключ чистки X2.
+            Etcd.Seed($"/valkeyworker/work/{cluster}/rotation",
+                """{"phase":"e2-committed","role":"app","old":"o","new":"n","requested_by":"api"}""");
             Etcd.Seed($"/valkeyworker/rotations/{cluster}", """{"role":"app"}""");
             Driver.Containers[$"vwk-{cluster}-node1"] =
                 new Fakes.FakeDriver.ContainerFact("h1", 17001, null, null, ["valkey-server"], "valkey/valkey:9.1.2", "id1");
@@ -84,8 +87,10 @@ public class DeprovisioningProcessTests
         rig.Etcd.Store.Keys.Where(k => k.StartsWith($"/valkey/clusters/{cluster}/")).Should().BeEmpty();
         rig.Etcd.Store.Keys.Where(k => k.Contains($"/valkeyworker/portalloc/{cluster}")).Should().BeEmpty();
         rig.Etcd.Store.Keys.Where(k => k.Contains($"/valkeyworker/rotations/{cluster}")).Should().BeEmpty();
-        // journal-фаза done (X3) — финальный трек демонтажа (S6).
-        rig.Etcd.Store[$"/valkeyworker/work/{cluster}"].Value.Should().Contain("\"phase\":\"done\"");
+        // Координация <C> пуста ЦЕЛИКОМ: journal-записи после чистки нет
+        // (запись done воскресила бы удалённый work/<C> — arch/21 §5 B),
+        // стейт доигрывания ротации тоже удалён.
+        rig.Etcd.Store.Keys.Where(k => k.Contains($"/valkeyworker/work/{cluster}")).Should().BeEmpty();
         (await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken)).Value
             .Should().BeTrue("клэйм снят явно — второй инстанс захватывает");
         rig.Snapshots.Should().HaveCount(2);

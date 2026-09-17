@@ -8,7 +8,11 @@ namespace ValkeyWorker.Provisioning.Processes;
 /// Deprovisioning valkey-кластера (arch/21 §5 B, фазы X0–X3): от заявки
 /// TO_REMOVE до чистого etcd и удалённого контейнера. ПОРЯДОК «сначала docker,
 /// потом etcd»: ошибка docker-хоста оставляет etcd-декларацию нетронутой —
-/// следующий тик повторит демонтаж (томов у домена нет). Снапшоты P12
+/// следующий тик повторит демонтаж (томов у домена нет). X2 чистит координацию
+/// ВКЛЮЧАЯ заявки ротаций и стейт доигрывания (work/&lt;C&gt;/rotation); финальной
+/// journal-записи ПОСЛЕ чистки нет (образец kfw: запись done воскресила бы
+/// удалённый work/&lt;C&gt; — координация &lt;C&gt; обязана остаться пустой).
+/// Успех = пустой префикс домена (verify) + ЯВНО снятый клэйм. Снапшоты P12
 /// «до»/«после» — через snapshot-делегат. Вызывается только держателем клэйма.
 /// </summary>
 public sealed class DeprovisioningProcess(
@@ -54,7 +58,8 @@ public sealed class DeprovisioningProcess(
                 return Fail(cluster, removed.Error!, "remove-node");
         }
 
-        // X2: etcd после docker — домен + координация ВКЛЮЧАЯ заявки ротаций.
+        // X2: etcd после docker — домен + координация ВКЛЮЧАЯ заявки ротаций
+        // и стейт доигрывания ротации (work/<C>/rotation).
         var domainDel = await DeletePrefixAsync($"/valkey/clusters/{cluster}/", ct);
         if (!domainDel.IsSuccess)
             return Fail(cluster, domainDel.Error!, "delete-domain");
@@ -62,6 +67,7 @@ public sealed class DeprovisioningProcess(
                  {
                      $"/valkeyworker/claims/{cluster}",
                      $"/valkeyworker/work/{cluster}",
+                     $"/valkeyworker/work/{cluster}/rotation",
                      $"/valkeyworker/portalloc/{cluster}",
                      $"/valkeyworker/rotations/{cluster}",
                  })
@@ -71,7 +77,9 @@ public sealed class DeprovisioningProcess(
                 return Fail(cluster, del.Error!, $"delete {key}");
         }
 
-        // X3: снапшот «после» + явное снятие клэйма (del + revoke lease).
+        // X3: снапшот «после» + verify + явное снятие клэйма. Journal-записи
+        // после чистки НЕТ: «done» воскресил бы удалённый work/<C> (координация
+        // <C> обязана остаться пустой — arch/21 §5 B).
         if (snapshot is not null)
         {
             var after = await snapshot(ct);
@@ -79,9 +87,15 @@ public sealed class DeprovisioningProcess(
                 return Fail(cluster, after.Error!, "snapshot-after");
         }
 
-        var done = await journal.WritePhaseAsync(cluster, Op, "done", claims.InstanceId, null, ct);
-        if (!done.IsSuccess)
-            return done;
+        var config = await ProvisioningProcess.GetWithFailoverAsync(
+            gateway, endpoints, ProcessCommon.ConfigKey(cluster), ct);
+        if (!config.IsSuccess)
+            return Fail(cluster, config.Error!, "verifying");
+        if (config.Value is not null)
+            return Fail(cluster,
+                new ApplicationException("config-ключ пережил очистку — повтор тиком"),
+                "delete-domain");
+
         await claims.ReleaseClusterAsync(cluster, ct);
         return Result.Success();
     }
