@@ -292,7 +292,11 @@ R3 arch/21).
 
 ```
 E1 ACL SETUSER <role> >NEW    — OLD+NEW валидны, клиенты работают со OLD
-E2 ОДНА txn: [compare value(<role>_password)==OLD][put NEW; del заявки]
+E2 txn: [compare value(<role>_password)==OLD][put NEW];
+   del заявки — ОТДЕЛЬНАЯ условная txn [compare value(rotations/<C>)==
+   payload из стейта][del]: чужая/снятая заявка не трогается (коммит E2
+   от del не зависит); срыв compare «пароль уже NEW» — не тупик:
+   перечитывание → промоция e2-committed → доигрывание E3 (arch/21 §5 E)
 E3 ACL SETUSER <role> <OLD    — удаление старого пароля
 ```
 
