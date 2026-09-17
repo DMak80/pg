@@ -102,6 +102,7 @@ public class ValkeyRefresherTests
             Options.Create(new ValkeyPanelOptions()),
             new FixedTimeProvider(),
             NullLogger<ValkeySnapshotRefresher>.Instance,
+            new AdminPanel.Etcd.Workers.ValkeyWorkerHealthStore(),
             probeReader);
 
     private static ValkeyFakeGateway DemoGateway() => new()
