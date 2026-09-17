@@ -11,12 +11,17 @@ namespace ValkeyWorker.Provisioning.Processes;
 /// PasswordRotator (arch/21 §5 E): заявка /valkeyworker/rotations/&lt;C&gt;
 /// ({"role":"app"|"admin",…}) — окно двух паролей без рестартов:
 /// E1 ACL SETUSER &lt;role&gt; &gt;NEW (оба пароля валидны);
-/// E2 ОДНА txn: [compare value(&lt;role&gt;_password)==OLD][put NEW; del заявки];
+/// E2 txn [compare value(&lt;role&gt;_password)==OLD][put NEW]; del заявки —
+/// ОТДЕЛЬНАЯ условная txn (compare payload исходной заявки из стейта —
+/// чужая/снятая панелью не трогается);
 /// E3 ACL SETUSER &lt;role&gt; &lt;OLD (старый пароль удалён).
-/// Стейт доигрывания (фаза + OLD/NEW) — в отдельном ключе work/&lt;C&gt;/rotation,
-/// пишется ДО E1 (фаза e1-pending): SETUSER &gt;NEW идемпотентен, поэтому
-/// отказ/краш в любой точке после записи стейта доигрывается ТЕМ ЖЕ NEW —
-/// свежая генерация оставила бы на ноде валидный «осиротевший» пароль;
+/// Стейт доигрывания (фаза + OLD/NEW + payload заявки) — в отдельном ключе
+/// work/&lt;C&gt;/rotation, пишется ДО E1 (фаза e1-pending): SETUSER &gt;NEW
+/// идемпотентен, поэтому отказ/краш в любой точке после записи стейта
+/// доигрывается ТЕМ ЖЕ NEW — свежая генерация оставила бы на ноде валидный
+/// «осиротевший» пароль; срыв compare E2 (пароль уже NEW: прошлый тик
+/// закоммитил txn и упал до записи стейта) — не тупик: перечитываем пароль,
+/// == NEW из стейта → промоция e2-committed и доигрывание (arch/21 §5 E);
 /// журнал work/&lt;C&gt; надзор перезаписывает каждый тик; E3 доигрывается по
 /// фазе e2-committed даже без заявки (краш между E2 и E3 — без стейта OLD
 /// остался бы валидным навсегда). Ротация admin не трогает app и наоборот.
@@ -36,12 +41,16 @@ public sealed class PasswordRotator(
     private const string PhaseE2 = "e2-committed";
 
     // Payload стейта доигрывания (ключ work/<C>/rotation, arch/20 §3 — camelCase).
+    // Request — исходный payload заявки rotations/<C>: compare условного del
+    // в E2 — чужая/снятая панелью заявка не трогается; null (стейт без
+    // маркера) — заявка наша не считается, del не выполняется.
     private sealed record RotationState(
         [property: JsonPropertyName("phase")] string Phase,
         [property: JsonPropertyName("role")] string Role,
         [property: JsonPropertyName("old")] string Old,
         [property: JsonPropertyName("new")] string New,
-        [property: JsonPropertyName("requested_by")] string? RequestedBy);
+        [property: JsonPropertyName("requested_by")] string? RequestedBy,
+        [property: JsonPropertyName("request")] string? Request);
 
     public async Task<Result> TickAsync(ValkeyClusterSnapshot snap, CancellationToken ct)
     {
@@ -61,7 +70,7 @@ public sealed class PasswordRotator(
         var request = await ReadRequestAsync(cluster, ct);
         if (!request.IsSuccess)
             return request.Error!;
-        var (role, requestedBy) = request.Value ?? ("", null);
+        var (role, requestedBy, requestPayload) = request.Value ?? ("", null, "");
 
         if (state is null)
         {
@@ -79,7 +88,7 @@ public sealed class PasswordRotator(
                     cluster, Op, "invalid-request", claims.InstanceId, $"role={role}", ct);
             }
 
-            var started = await StartRotationAsync(snap, cluster, role, requestedBy, ct);
+            var started = await StartRotationAsync(snap, cluster, role, requestedBy, requestPayload, ct);
             if (!started.IsSuccess)
                 return started;
             state = started.Value;
@@ -94,7 +103,8 @@ public sealed class PasswordRotator(
     // отказ/краш в любой точке после записи доигрывается ТЕМ ЖЕ NEW —
     // «осиротевший» NEW невозможен (arch/21 §5 E).
     private async Task<Result<RotationState>> StartRotationAsync(
-        ValkeyClusterSnapshot snap, string cluster, string role, string? requestedBy, CancellationToken ct)
+        ValkeyClusterSnapshot snap, string cluster, string role, string? requestedBy,
+        string requestPayload, CancellationToken ct)
     {
         // Active-кластер: endpoints + admin-кред обязательны.
         if (snap.Endpoints is null || snap.AdminUser is null || snap.AdminPassword is null)
@@ -112,7 +122,8 @@ public sealed class PasswordRotator(
 
         // Стейт ДО E1: краш/отказ после SETUSER >NEW оставляет e1-pending
         // с ТЕМ ЖЕ NEW — следующий тик доигрывает им, а не свежей генерацией.
-        var pending = new RotationState(PhaseE1Pending, role, old, newP, requestedBy);
+        // Request — payload заявки на момент старта (compare условного del в E2).
+        var pending = new RotationState(PhaseE1Pending, role, old, newP, requestedBy, requestPayload);
         var saved = await WriteStateAsync(cluster, pending, ct);
         if (!saved.IsSuccess)
             return Result<RotationState>.Failed(saved.Error!);
@@ -123,7 +134,7 @@ public sealed class PasswordRotator(
             return Result<RotationState>.Failed(e1.Error!);
 
         // E1 подтверждён — доигрывание уходит сразу в E2.
-        var added = new RotationState(PhaseE1, role, old, newP, requestedBy);
+        var added = new RotationState(PhaseE1, role, old, newP, requestedBy, requestPayload);
         var promoted = await WriteStateAsync(cluster, added, ct);
         if (!promoted.IsSuccess)
             return Result<RotationState>.Failed(promoted.Error!);
@@ -156,7 +167,7 @@ public sealed class PasswordRotator(
             var e1Retry = await valkey.AclSetUserAsync(pendingEndpoint, [role, $">{state.New}"], ct);
             if (!e1Retry.IsSuccess)
                 return e1Retry.Error!;
-            var added = new RotationState(PhaseE1, role, state.Old, state.New, state.RequestedBy);
+            var added = new RotationState(PhaseE1, role, state.Old, state.New, state.RequestedBy, state.Request);
             var promoted = await WriteStateAsync(cluster, added, ct);
             if (!promoted.IsSuccess)
                 return promoted.Error!;
@@ -165,24 +176,50 @@ public sealed class PasswordRotator(
 
         if (state.Phase == PhaseE1)
         {
-            // E2: ОДНА txn [compare value==OLD][put NEW; del заявки].
+            // E2: txn [compare value==OLD][put NEW]. Del заявки — ОТДЕЛЬНОЙ
+            // условной txn ниже: compare в одной txn заглушил бы и put NEW,
+            // а доигрывание не зависит от судьбы заявки (arch/21 §5 E).
             var e2 = await TxnWithFailoverAsync(TxnRequest.Of(
             [
                 TxnCompare.ValueEqual(oldPasswordKey, state.Old),
             ], [
                 new TxnOp.Put(oldPasswordKey, state.New, null),
-                new TxnOp.Delete(ProcessCommon.RotationKey(cluster), Prefix: false),
             ]), ct);
             if (!e2.IsSuccess)
                 return e2.Error!;
             if (!e2.Value.Succeeded)
             {
-                // OLD уже сменился (параллельная ротация) — повтор тика перечитает.
-                return Result.Failed(new ApplicationException(
-                    $"rotate {cluster}: {oldPasswordKey} изменился под нами — ретрай тиком"));
+                // Compare не прошёл: пароль уже NEW (наш же прошлый тик
+                // закоммитил txn и упал до записи стейта — краш/отказ put)
+                // или чужая параллельная ротация. Перечитываем: == NEW из
+                // стейта → это наш коммит, доигрываем; иное — Failed.
+                var recheck = await GetWithFailoverAsync(oldPasswordKey, ct);
+                if (!recheck.IsSuccess)
+                    return recheck.Error!;
+                if (recheck.Value?.Value != state.New)
+                {
+                    return Result.Failed(new ApplicationException(
+                        $"rotate {cluster}: {oldPasswordKey} изменился под нами — ретрай тиком"));
+                }
             }
 
-            var committed = new RotationState(PhaseE2, role, state.Old, state.New, state.RequestedBy);
+            // Условный del заявки: только если это всё ещё ИСХОДНАЯ заявка
+            // (payload из стейта). Снятая панелью (отмена) или заменённая
+            // чужой — не трогаются; исход E2/переход стейта от del не зависит.
+            // Compare не прошёл (ключа нет/чужая) — штатно, не ошибка.
+            if (state.Request is { } requestPayload)
+            {
+                var del = await TxnWithFailoverAsync(TxnRequest.Of(
+                [
+                    TxnCompare.ValueEqual(ProcessCommon.RotationKey(cluster), requestPayload),
+                ], [
+                    new TxnOp.Delete(ProcessCommon.RotationKey(cluster), Prefix: false),
+                ]), ct);
+                if (!del.IsSuccess)
+                    return del.Error!;
+            }
+
+            var committed = new RotationState(PhaseE2, role, state.Old, state.New, state.RequestedBy, state.Request);
             var saved = await WriteStateAsync(cluster, committed, ct);
             if (!saved.IsSuccess)
                 return saved.Error!;
@@ -247,15 +284,17 @@ public sealed class PasswordRotator(
 
     // ── заявка ротации (панель) ──
 
-    // (role, requested_by) заявки; null — заявки нет.
-    private async Task<Result<(string Role, string? RequestedBy)?>> ReadRequestAsync(
+    // (role, requested_by, payload) заявки; null — заявки нет. Payload —
+    // исходная raw-строка (compare условного del в E2: заменённая панелью
+    // заявка — другой payload, не наша).
+    private async Task<Result<(string Role, string? RequestedBy, string Payload)?>> ReadRequestAsync(
         string cluster, CancellationToken ct)
     {
         var read = await GetWithFailoverAsync(ProcessCommon.RotationKey(cluster), ct);
         if (!read.IsSuccess)
-            return Result<(string, string?)?>.Failed(read.Error!);
+            return Result<(string, string?, string)?>.Failed(read.Error!);
         if (read.Value is not { } kv)
-            return Result<(string, string?)?>.Success(null);
+            return Result<(string, string?, string)?>.Success(null);
         try
         {
             using var doc = JsonDocument.Parse(kv.Value);
@@ -265,11 +304,11 @@ public sealed class PasswordRotator(
             var by = doc.RootElement.TryGetProperty("requested_by", out var b) && b.ValueKind == JsonValueKind.String
                 ? b.GetString()
                 : null;
-            return Result<(string, string?)?>.Success((role ?? "", by));
+            return Result<(string, string?, string)?>.Success((role ?? "", by, kv.Value));
         }
         catch (JsonException ex)
         {
-            return Result<(string, string?)?>.Failed(ex);
+            return Result<(string, string?, string)?>.Failed(ex);
         }
     }
 

@@ -9,9 +9,11 @@ using Xunit;
 namespace ValkeyWorker.UnitTests.Provisioning;
 
 // PasswordRotator E1–E3 (arch/21 §5 E): окно двух паролей, доигрывание по
-// стейту work/<C>/rotation (Тот ЖЕ NEW после отказа; E3 без заявки), изоляция
-// ролей, битая заявка. Генератор — реальный (ValkeyPasswordGenerator): NEW
-// читается из etcd/стейта, фиксированная строка не маскирует регенерацию.
+// стейту work/<C>/rotation (Тот ЖЕ NEW после отказа; E3 без заявки; срыв
+// compare E2 — пароль уже NEW — доигрывается), условный del заявки (compare
+// payload из стейта — чужая/снятая не трогается), изоляция ролей, битая
+// заявка. Генератор — реальный (ValkeyPasswordGenerator): NEW читается из
+// etcd/стейта, фиксированная строка не маскирует регенерацию.
 public class PasswordRotatorTests
 {
     private const string OldAdmin = "AdminOldPassword0123456789abcdef12";
@@ -228,6 +230,150 @@ public class PasswordRotatorTests
         rig.Valkey.Users["app"].Passwords.Should().NotContain(OldApp);
         rig.Etcd.Store.Should().NotContainKey("/valkeyworker/work/e2e3/rotation");
         rig.Etcd.Store[$"/valkeyworker/work/e2e3"].Value.Should().Contain("done");
+    }
+
+    [Fact]
+    public async Task КрашМеждуЕ2ТхнИСтейтом_ВторойТикПромотитИДоиграет()
+    {
+        // Arrange: отказ ТРЕТЬЕЙ записи ключа стейта (промоция e2-committed) —
+        // txn E2 уже закоммичена (etcd NEW, заявка снята), стейт остался e1-added.
+        const string cluster = "e2crash";
+        var stateKey = $"/valkeyworker/work/{cluster}/rotation";
+        var rig = new Rig();
+        rig.SeedActive(cluster);
+        rig.SeedRotation(cluster, "app");
+        await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
+        var statePuts = 0;
+        rig.Etcd.PutFault = key => key == stateKey && ++statePuts >= 3
+            ? Result.Failed(new ApplicationException("etcd put failed"))
+            : null;
+
+        var first = await rig.Rotator.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+
+        // Assert: окно «E2 закоммичен, стейт не записан» — etcd NEW, стейт
+        // e1-added (без исправления второй тик вечный Failed «изменился»).
+        first.IsSuccess.Should().BeFalse("запись e2-committed упала после коммита E2");
+        var state = rig.Etcd.Store[stateKey].Value;
+        state.Should().Contain("e1-added");
+        var stagedNew = Regex.Match(state, @"""new"":""([A-Za-z0-9]{32})""").Groups[1].Value;
+        stagedNew.Should().NotBeEmpty();
+        rig.Etcd.Store[$"/valkey/clusters/{cluster}/app_password"].Value.Should().Be(stagedNew,
+            "txn E2 закоммичена до отказа put");
+        rig.Etcd.Store.Should().NotContainKey($"/valkeyworker/rotations/{cluster}",
+            "условный del выполнен до отказа записи стейта");
+
+        // Act: второй тик — compare E2 не проходит (значение уже NEW),
+        // перечитывание подтверждает свой коммит → промоция стейта, E3.
+        rig.Etcd.PutFault = null;
+        var second = await rig.Rotator.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+
+        // Assert: доиграно до финала — OLD снят с ноды, стейт исчерпан.
+        second.IsSuccess.Should().BeTrue(second.Error?.Message);
+        rig.Etcd.Store[$"/valkey/clusters/{cluster}/app_password"].Value.Should().Be(stagedNew);
+        rig.Valkey.Users["app"].Passwords.Should().NotContain(OldApp);
+        rig.Valkey.Users["app"].Passwords.Should().Contain(stagedNew);
+        rig.Etcd.Store.Should().NotContainKey(stateKey);
+        rig.Etcd.Store[$"/valkeyworker/work/{cluster}"].Value.Should().Contain("done");
+    }
+
+    [Fact]
+    public async Task СидЕ1ДобавленПарольУжеNew_ТикДоигрываетДоФинала()
+    {
+        // Arrange: сид-кейс окна из прошлого тика — стейт e1-added, app_password
+        // в etcd уже == state.New, на ноде OLD+NEW; заявки нет.
+        const string cluster = "seednew";
+        var stateKey = $"/valkeyworker/work/{cluster}/rotation";
+        const string stagedNew = "StagedNewPassword0123456789abcde";
+        var rig = new Rig();
+        rig.SeedActive(cluster);
+        await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
+        rig.Etcd.Seed($"/valkey/clusters/{cluster}/app_password", stagedNew);
+        rig.Etcd.Seed(stateKey,
+            $$"""{"phase":"e1-added","role":"app","old":"{{OldApp}}","new":"{{stagedNew}}","requested_by":"panel"}""");
+        rig.Valkey.Users["app"].Passwords.Add(stagedNew);
+
+        // Act
+        var result = await rig.Rotator.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+
+        // Assert: срыв compare E2 доигран — стейт промоутен, OLD снят с ноды.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        rig.Etcd.Store[$"/valkey/clusters/{cluster}/app_password"].Value.Should().Be(stagedNew);
+        rig.Valkey.Users["app"].Passwords.Should().NotContain(OldApp);
+        rig.Valkey.Users["app"].Passwords.Should().Contain(stagedNew);
+        rig.Etcd.Store.Should().NotContainKey(stateKey);
+        rig.Etcd.Store[$"/valkeyworker/work/{cluster}"].Value.Should().Contain("done");
+    }
+
+    [Fact]
+    public async Task ЧужаяЗаявкаДругойРоли_Е2НеУдаляет_ОбрабатываетсяСледующимТиком()
+    {
+        // Arrange: живой стейт доигрывания app (payload исходной заявки в
+        // стейте); панель сняла заявку и поставила ЧУЖУЮ (role=admin).
+        const string cluster = "foreign";
+        var stateKey = $"/valkeyworker/work/{cluster}/rotation";
+        const string foreignPayload = """{"role":"admin","requested_unix":1756500001,"requested_by":"panel"}""";
+        const string stagedNew = "StagedNewPassword0123456789abcde";
+        var rig = new Rig();
+        rig.SeedActive(cluster);
+        rig.Etcd.Seed($"/valkeyworker/rotations/{cluster}", foreignPayload);
+        await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
+        rig.Etcd.Seed(stateKey,
+            $$"""{"phase":"e1-added","role":"app","old":"{{OldApp}}","new":"{{stagedNew}}","requested_by":"panel","request":"{\"role\":\"app\",\"requested_unix\":1756500000,\"requested_by\":\"panel\"}"}""");
+        rig.Valkey.Users["app"].Passwords.Add(stagedNew);
+
+        // Act: тик доигрывает E2/E3 своей ротации.
+        var first = await rig.Rotator.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+
+        // Assert: чужая заявка НЕ удалена (compare payload не совпал), своя
+        // ротация доиграна.
+        first.IsSuccess.Should().BeTrue(first.Error?.Message);
+        rig.Etcd.Store[$"/valkeyworker/rotations/{cluster}"].Value.Should().Be(foreignPayload,
+            "чужая заявка не тронута условным del");
+        rig.Etcd.Store[$"/valkey/clusters/{cluster}/app_password"].Value.Should().Be(stagedNew);
+        rig.Valkey.Users["app"].Passwords.Should().NotContain(OldApp);
+        rig.Etcd.Store.Should().NotContainKey(stateKey);
+
+        // Act: следующий тик обрабатывает чужую заявку (ротация admin).
+        var second = await rig.Rotator.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+
+        // Assert: admin-ротация исполнена полностью — заявка снята, admin-кред
+        // сменён, app-кред не тронут.
+        second.IsSuccess.Should().BeTrue(second.Error?.Message);
+        rig.Etcd.Store.Should().NotContainKey($"/valkeyworker/rotations/{cluster}");
+        var adminNew = rig.Etcd.Store[$"/valkey/clusters/{cluster}/admin_password"].Value;
+        CanonPassword.IsMatch(adminNew).Should().BeTrue("admin_password — NEW канона 32 симв");
+        adminNew.Should().NotBe(OldAdmin);
+        rig.Valkey.Users["admin"].Passwords.Should().NotContain(OldAdmin);
+        rig.Etcd.Store[$"/valkey/clusters/{cluster}/app_password"].Value.Should().Be(stagedNew,
+            "ротация admin не трогает app-кред");
+    }
+
+    [Fact]
+    public async Task СвояЗаявкаПейлоадСовпал_УдаляетсяКакРаньше()
+    {
+        // Arrange: стейт e1-added с payload исходной заявки; заявка в etcd —
+        // ТА ЖЕ (байт в байт).
+        const string cluster = "ownreq";
+        var stateKey = $"/valkeyworker/work/{cluster}/rotation";
+        const string ownPayload = """{"role":"app","requested_unix":1756500000,"requested_by":"panel"}""";
+        const string stagedNew = "StagedNewPassword0123456789abcde";
+        var rig = new Rig();
+        rig.SeedActive(cluster);
+        rig.Etcd.Seed($"/valkeyworker/rotations/{cluster}", ownPayload);
+        await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
+        rig.Etcd.Seed(stateKey,
+            $$"""{"phase":"e1-added","role":"app","old":"{{OldApp}}","new":"{{stagedNew}}","requested_by":"panel","request":"{\"role\":\"app\",\"requested_unix\":1756500000,\"requested_by\":\"panel\"}"}""");
+        rig.Valkey.Users["app"].Passwords.Add(stagedNew);
+
+        // Act
+        var result = await rig.Rotator.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+
+        // Assert: своя заявка удалена в E2 (как раньше), ротация доиграна.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        rig.Etcd.Store.Should().NotContainKey($"/valkeyworker/rotations/{cluster}");
+        rig.Etcd.Store[$"/valkey/clusters/{cluster}/app_password"].Value.Should().Be(stagedNew);
+        rig.Valkey.Users["app"].Passwords.Should().NotContain(OldApp);
+        rig.Etcd.Store.Should().NotContainKey(stateKey);
     }
 
     [Fact]
