@@ -71,7 +71,12 @@ public sealed record ValkeyConfigJson(
     [property: System.Text.Json.Serialization.JsonPropertyName("created_unix")] long? CreatedUnix,
     [property: System.Text.Json.Serialization.JsonPropertyName("state")] string? State)
 {
-    public string Serialize() => System.Text.Json.JsonSerializer.Serialize(this);
+    // Канон arch/20 §2.1: опциональные поля (state у Active-кластера)
+    // ОТСУТСТВУЮТ в значении ключа — WhenWritingNull, не "state":null.
+    private static readonly System.Text.Json.JsonSerializerOptions Canonical =
+        new() { DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull };
+
+    public string Serialize() => System.Text.Json.JsonSerializer.Serialize(this, Canonical);
 
     public static ValkeyConfigJson? Parse(string raw)
     {
