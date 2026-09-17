@@ -23,6 +23,21 @@ internal static class Fakes
         public readonly List<TxnRequest> Txns = [];
         public Action<string>? OnPut { get; set; }
 
+        // Журнал операций в порядке вызова (тесты порядка секций: «клэйм
+        // portalloc до чтения занятости» — arch/20 §3). SharedOps — общий
+        // журнал с другими фейками (единый порядок для теста).
+        public List<string> Ops { get; } = [];
+
+        private readonly List<string>? _sharedOps;
+
+        public FakeEtcd(List<string>? sharedOps = null) => _sharedOps = sharedOps;
+
+        private void Note(string op)
+        {
+            Ops.Add(op);
+            _sharedOps?.Add(op);
+        }
+
         // Транспортный отказ range (живой-Ф7-тесты, t09): префикс → исключение (обёрнуто в Failed).
         public Func<string, Exception?>? RangeFault { get; set; }
 
@@ -33,8 +48,9 @@ internal static class Fakes
         // тест успевает переписать ключ и сломать ModRevisionEqual.
         public Action<TxnRequest>? OnTxnBeforeCompare { get; set; }
 
-        // Сбой-инъекция txn (ошибка захвата PortAllocLock → Result.Failed).
-        public Func<TxnRequest, Result<TxnResult>>? TxnFault { get; set; }
+        // Сбой-инъекция txn (ошибка захвата PortAllocLock → Result.Failed):
+        // фильтр по содержимому — null = txn исполняется штатно.
+        public Func<TxnRequest, Result<TxnResult>?>? TxnFault { get; set; }
 
         private long _rev;
         private long _lease;
@@ -48,6 +64,7 @@ internal static class Fakes
             List<Kv> kvs;
             lock (_gate)
             {
+                Note($"range:{prefix}");
                 kvs = Store
                     .Where(p => p.Key.StartsWith(prefix, StringComparison.Ordinal))
                     .Select(p => new Kv(p.Key, p.Value.Value, (ulong)p.Value.ModRevision))
@@ -62,6 +79,7 @@ internal static class Fakes
             Kv? kv;
             lock (_gate)
             {
+                Note($"get:{key}");
                 kv = Store.TryGetValue(key, out var e) ? new Kv(key, e.Value, (ulong)e.ModRevision) : null;
             }
 
@@ -72,6 +90,7 @@ internal static class Fakes
         {
             lock (_gate)
             {
+                Note($"put:{key}");
                 Store[key] = new Entry(value, ++_rev, Store.TryGetValue(key, out var old) ? old.Version + 1 : 1);
             }
 
@@ -85,6 +104,7 @@ internal static class Fakes
         {
             lock (_gate)
             {
+                Note($"del:{keyOrPrefix}");
                 foreach (var key in Store.Keys.Where(k => prefix
                              ? k.StartsWith(keyOrPrefix, StringComparison.Ordinal)
                              : k == keyOrPrefix).ToList())
@@ -105,6 +125,7 @@ internal static class Fakes
             bool succeeded;
             lock (_gate)
             {
+                Note($"txn:{string.Join(',', req.Compare.Select(c => $"{c.Target}:{c.Key}"))}");
                 Txns.Add(req);
                 OnTxnBeforeCompare?.Invoke(req);
                 succeeded = req.Compare.All(c => c.Target switch
@@ -214,11 +235,37 @@ internal static class Fakes
         // Контейнер есть, но не running (stop) — жив, но PING не отвечает.
         public readonly HashSet<string> Stopped = [];
 
+        // Журнал вызовов (порядок: чтение занятости ПОСЛЕ захвата portalloc-клэйма).
+        // SharedOps — общий журнал с FakeEtcd (единый порядок для теста).
+        public List<string> Ops { get; } = [];
+
+        public List<string>? SharedOps { get; set; }
+
+        private void Note(string op)
+        {
+            Ops.Add(op);
+            SharedOps?.Add(op);
+        }
+
         public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct)
-            => Task.FromResult(Result<IReadOnlyList<HostInfo>>.Success(Hosts));
+        {
+            lock (_gate)
+            {
+                Note("docker:hosts");
+            }
+
+            return Task.FromResult(Result<IReadOnlyList<HostInfo>>.Success(Hosts));
+        }
 
         public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct)
-            => Task.FromResult(Result<IReadOnlySet<(string Host, int Port)>>.Success(BusyPorts));
+        {
+            lock (_gate)
+            {
+                Note("docker:busy-ports");
+            }
+
+            return Task.FromResult(Result<IReadOnlySet<(string Host, int Port)>>.Success(BusyPorts));
+        }
 
         public Task<Result> EnsureNodeAsync(ValkeyNodeSpec spec, CancellationToken ct)
         {
@@ -282,10 +329,14 @@ internal static class Fakes
             {
                 var name = PlainClusterDriver.NodeName(cluster, nodeName);
                 var fact = Containers.GetValueOrDefault(name);
+                // Реальный docker: у остановленного контейнера PortBindings
+                // персистят — endpoint не-null, Running=false (положительное
+                // свидетельство живого docker-факта, отказ пробы = молчание).
                 return Task.FromResult(Result<NodeEndpointInspection?>.Success(
-                    fact is null || Stopped.Contains(name)
+                    fact is null
                         ? null
-                        : new NodeEndpointInspection(fact.Host, fact.HostPort)));
+                        : new NodeEndpointInspection(
+                            fact.Host, fact.HostPort, Running: !Stopped.Contains(name))));
             }
         }
 
@@ -345,6 +396,10 @@ internal static class Fakes
 
         // Хук на каждый вызов команды (двигает FixedTimeProvider в тестах V4-бюджета).
         public Action? OnCommand { get; set; }
+
+        // Отказ ACL SETUSER с вызова с этим индексом (краш между фазами ротации:
+        // E3 — второй вызов тика). null — отказов нет.
+        public int? SetUserFailFromIndex { get; set; }
 
         private void BeforeCommand() => OnCommand?.Invoke();
 
@@ -445,6 +500,8 @@ internal static class Fakes
                 return Task.FromResult(SilentFail());
             if (!AuthOk(ep))
                 return Task.FromResult(Result.Failed(new ApplicationException("AUTH failed")));
+            if (SetUserFailFromIndex is { } from && SetUserCalls.Count >= from)
+                return Task.FromResult(Result.Failed(new ApplicationException("ACL SETUSER failed")));
 
             // args: [user, модификаторы…] — модель по образцу valkey.
             var target = args[0];

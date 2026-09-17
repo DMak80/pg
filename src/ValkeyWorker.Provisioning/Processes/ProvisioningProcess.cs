@@ -151,28 +151,18 @@ public sealed class ProvisioningProcess(
 
     private sealed record Plan(IReadOnlyDictionary<string, NodeAddress> Addresses);
 
+    // arch/20 §3: под глобальным portalloc-клэймом — ВСЯ секция «чтение
+    // занятости → выбор портов → запись portalloc»: без него два параллельных
+    // кластера читают пустую занятость до первой записи соседа и выбирают
+    // одни и те же порты (docker create второго падает, portalloc закреплён
+    // за коллизией — вечный failing-тик). Образец — PlanAsync kfw (t91-паттерн):
+    // чтение закрепления ДО клэйма + ранний выход «всё закреплено» (тики
+    // waiting-* не соперничают за глобальный клэйм); занятость и аллокация —
+    // ВНУТРИ секции.
     private async Task<Result<Plan>> PlanAsync(ValkeyClusterSnapshot snap, CancellationToken ct)
     {
         var cluster = snap.Cluster;
         var nodes = NodeNames(snap);
-
-        var hosts = await driver.GetHostsAsync(ct);
-        if (!hosts.IsSuccess)
-            return Result<Plan>.Failed(hosts.Error!);
-        var dockerBusy = await driver.GetBusyPortsAsync(ct);
-        if (!dockerBusy.IsSuccess)
-            return Result<Plan>.Failed(dockerBusy.Error!);
-        var foreign = await portIndex.ForeignAllocatedPortsAsync(cluster, ct);
-        if (!foreign.IsSuccess)
-            return Result<Plan>.Failed(foreign.Error!);
-
-        // Занятость: docker-публикации ∪ portalloc чужих (порт чужого кластера
-        // занят консервативно на каждом известном хосте — host-запись чужого
-        // размещения может не совпадать с топологией этого плана).
-        var taken = new HashSet<(string Host, int Port)>(dockerBusy.Value);
-        foreach (var host in hosts.Value)
-        foreach (var port in foreign.Value)
-            taken.Add((host.Name, port));
 
         // Существующее закрепление — переиспользуется аллокатором (V3-сверка порта).
         var read = await ReadPortAllocAsync(cluster, ct);
@@ -180,18 +170,16 @@ public sealed class ProvisioningProcess(
             return Result<Plan>.Failed(read.Error!);
         var pinned = read.Value;
 
-        var plan = PlacementPlanner.Plan(ValkeyPlanning.Group(cluster, nodes), hosts.Value);
-        var allocated = PortAllocator.Allocate(
-            plan, pinned, taken, options.PortRangeFrom, options.PortRangeTo,
-            ValkeyPlanning.PortsOf, ValkeyPlanning.HostOf, ValkeyPlanning.MakeAddress, ValkeyPlanning.KeyOf);
-        if (!allocated.IsSuccess)
-            return Result<Plan>.Failed(allocated.Error!);
+        // Ранний выход ДО клэйма: всё закреплено — переиспользование без записи.
+        if (nodes.All(pinned.ContainsKey))
+        {
+            var plannedOnly = await journal.WritePhaseAsync(cluster, Op, "planned", claims.InstanceId, null, ct);
+            return plannedOnly.IsSuccess
+                ? Result<Plan>.Success(new Plan(pinned))
+                : Result<Plan>.Failed(plannedOnly.Error!);
+        }
 
-        var merged = new Dictionary<string, NodeAddress>(pinned);
-        foreach (var (node, addr) in allocated.Value)
-            merged[node] = addr;
-
-        // Закрепление portalloc (переживает пересоздание контейнера) — под клэймом.
+        // Захват глобального клэйма; занят — PortLockBusyException → тик-ретрай.
         var acquired = await portLock.TryAcquireAsync(ct);
         if (!acquired.IsSuccess)
             return Result<Plan>.Failed(acquired.Error!);
@@ -199,6 +187,38 @@ public sealed class ProvisioningProcess(
             return Result<Plan>.Failed(new PortLockBusyException(portLock.Key));
         try
         {
+            // Занятость читается ВНУТРИ клэйма (буква arch/20 §3).
+            var hosts = await driver.GetHostsAsync(ct);
+            if (!hosts.IsSuccess)
+                return Result<Plan>.Failed(hosts.Error!);
+            var dockerBusy = await driver.GetBusyPortsAsync(ct);
+            if (!dockerBusy.IsSuccess)
+                return Result<Plan>.Failed(dockerBusy.Error!);
+            var foreign = await portIndex.ForeignAllocatedPortsAsync(cluster, ct);
+            if (!foreign.IsSuccess)
+                return Result<Plan>.Failed(foreign.Error!);
+
+            // Занятость: docker-публикации ∪ portalloc чужих (порт чужого
+            // кластера занят консервативно на каждом известном хосте —
+            // host-запись чужого размещения может не совпадать с топологией
+            // этого плана).
+            var taken = new HashSet<(string Host, int Port)>(dockerBusy.Value);
+            foreach (var host in hosts.Value)
+            foreach (var port in foreign.Value)
+                taken.Add((host.Name, port));
+
+            var plan = PlacementPlanner.Plan(ValkeyPlanning.Group(cluster, nodes), hosts.Value);
+            var allocated = PortAllocator.Allocate(
+                plan, pinned, taken, options.PortRangeFrom, options.PortRangeTo,
+                ValkeyPlanning.PortsOf, ValkeyPlanning.HostOf, ValkeyPlanning.MakeAddress, ValkeyPlanning.KeyOf);
+            if (!allocated.IsSuccess)
+                return Result<Plan>.Failed(allocated.Error!);
+
+            var merged = new Dictionary<string, NodeAddress>(pinned);
+            foreach (var (node, addr) in allocated.Value)
+                merged[node] = addr;
+
+            // Закрепление portalloc (переживает пересоздание контейнера).
             var key = ProcessCommon.PortAllocKey(cluster);
             var put = await TxnAsync(
                 TxnRequest.Of(
@@ -216,13 +236,17 @@ public sealed class ProvisioningProcess(
                 foreach (var (node, addr) in reread.Value)
                     merged[node] = addr;
             }
+
+            // journal planned — внутри секции, до release (клэйм короткий).
+            var planned = await journal.WritePhaseAsync(cluster, Op, "planned", claims.InstanceId, null, ct);
+            return planned.IsSuccess
+                ? Result<Plan>.Success(new Plan(merged))
+                : Result<Plan>.Failed(planned.Error!);
         }
         finally
         {
             await portLock.ReleaseAsync();
         }
-
-        return Result<Plan>.Success(new Plan(merged));
     }
 
     private static IReadOnlyList<string> NodeNames(ValkeyClusterSnapshot snap)

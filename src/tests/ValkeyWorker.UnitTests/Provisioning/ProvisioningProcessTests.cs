@@ -20,8 +20,10 @@ public class ProvisioningProcessTests
 
     private sealed class Rig
     {
-        public Fakes.FakeEtcd Etcd = new();
-        public Fakes.FakeDriver Driver = new();
+        // Единый журнал порядка операций etcd+docker (тест секции portalloc).
+        public List<string> OpsLog = [];
+        public Fakes.FakeEtcd Etcd = null!;
+        public Fakes.FakeDriver Driver = null!;
         public Fakes.FakeValkeyConnection Valkey = new() { TrustAnyPassword = true };
         public ClaimStore Claims = null!;
         public List<string> Snapshots = [];
@@ -30,6 +32,8 @@ public class ProvisioningProcessTests
         public static Rig Create(bool withSnapshot = true)
         {
             var rig = new Rig();
+            rig.Etcd = new Fakes.FakeEtcd(rig.OpsLog);
+            rig.Driver = new Fakes.FakeDriver { SharedOps = rig.OpsLog };
             rig.Claims = new ClaimStore("/valkeyworker", ["http://etcd:2379"], rig.Etcd, TimeProvider.System);
             rig.Process = new ValkeyWorker.Provisioning.Processes.ProvisioningProcess(
                 rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
@@ -253,5 +257,49 @@ public class ProvisioningProcessTests
         rig.Driver.Ensured.Should().BeEmpty();
         rig.Etcd.Store.Should().NotContainKey("/valkey/clusters/foreign/endpoints");
         rig.Etcd.Store["/valkey/clusters/foreign/nodes/node1/state"].Value.Should().Be("NOT_INITIALIZED");
+    }
+
+    [Fact]
+    public async Task ДовыделениеПортов_КлэймДоЧтенияЗанятости()
+    {
+        // Arrange: порт не закреплён — требуется секция довыделения (arch/20 §3).
+        const string cluster = "order";
+        var rig = Rig.Create(withSnapshot: false);
+        rig.SeedCluster(cluster);
+        await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
+
+        // Act: тик provisioning.
+        var result = await rig.Process.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+
+        // Assert: захват locks/portalloc зафиксирован в etcd РАНЬШЕ чтений
+        // занятости — секция «чтение занятости → выбор портов → запись»
+        // целиком под клэймом (иначе гонка MaxClusters>1 выбирает один порт).
+        var lockIndex = rig.OpsLog.FindIndex(o => o.Contains("/valkeyworker/locks/portalloc"));
+        var hostsIndex = rig.OpsLog.IndexOf("docker:hosts");
+        lockIndex.Should().BeGreaterThanOrEqualTo(0, "клэйм portalloc захвачен");
+        hostsIndex.Should().BeGreaterThanOrEqualTo(0, "занятость docker читалась");
+        lockIndex.Should().BeLessThan(hostsIndex, "чтение занятости — ВНУТРИ клэйма portalloc");
+        rig.OpsLog.IndexOf("docker:busy-ports").Should().BeGreaterThan(lockIndex);
+    }
+
+    [Fact]
+    public async Task ВсёЗакреплено_РаннийВыходБезКлэйма()
+    {
+        // Arrange: portalloc уже закреплён за кластером (re-run).
+        const string cluster = "pinned";
+        var rig = Rig.Create(withSnapshot: false);
+        rig.SeedCluster(cluster);
+        rig.Etcd.Seed("/valkeyworker/portalloc/pinned",
+            """{"node1":{"host":"h1","client":17555}}""");
+        await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
+
+        // Act
+        var result = await rig.Process.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+
+        // Assert: ранний выход — глобальный клэйм не брался, порт переиспользован.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        rig.OpsLog.Should().NotContain(o => o.Contains("/valkeyworker/locks/portalloc"));
+        rig.Etcd.Store["/valkey/clusters/pinned/endpoints"].Value.Should().Be("localhost:17555");
     }
 }
