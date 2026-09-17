@@ -1,0 +1,58 @@
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using Shared.Core.HealthChecks;
+using ValkeyWorker.App;
+
+namespace ValkeyWorker.App.Loops;
+
+/// <summary>
+/// Цикл продления координации (arch/21 §6): запускает фоновый keepalive-контур
+/// ClaimStore (все удерживаемые lease + instance-ключ /valkeyworker/instances/&lt;id&gt;
+/// + дискавери /valkeyworker/api/&lt;id&gt;) и живёт heartbeat-тиками для
+/// наблюдаемости. Смерть процесса гасит lease'ы ≤15 с (takeover другим инстансом).
+/// </summary>
+internal sealed class KeepaliveLoop(
+    IOptionsMonitor<ValkeyWorkerOptions> options,
+    ClaimStore claims,
+    ILogger<KeepaliveLoop> logger,
+    HealthState health,
+    Shared.Metrics.Worker.WorkerMetricsInstrumentation metrics) : BackgroundService, IHealthCheckService
+{
+    public bool Inited { get; private set; }
+
+    public bool Working { get; private set; }
+
+    public Result StatusError { get; private set; } = Result.Success();
+
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
+    {
+        Inited = true;
+        try
+        {
+            Working = true;
+            // Продление lease'ов + instance/api-ключи — фоновый контур ClaimStore.
+            await claims.StartAsync(stoppingToken);
+            logger.LogInformation("keepalive-контур запущен: instance {InstanceId}", claims.InstanceId);
+
+            while (!stoppingToken.IsCancellationRequested)
+            {
+                // healthz = «последний тик» (живой-Ф7, симметрия остальных циклов):
+                // проход контура жив — ошибка прошлого тика (если появится) гасится.
+                StatusError = Result.Success();
+                health.MarkKeepaliveTick();
+                metrics.LoopTick("keepalive", ok: true);
+                await Task.Delay(
+                    TimeSpan.FromSeconds(options.CurrentValue.Loops.KeepaliveSec), stoppingToken);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // штатная остановка host'а
+        }
+        finally
+        {
+            Working = false;
+        }
+    }
+}

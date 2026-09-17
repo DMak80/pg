@@ -17,10 +17,6 @@
 
 ## Задачи
 
-- **`t02-valkey-worker`** — сервис ValkeyWorker
-  (`src/ValkeyWorker.*`, аналог KafkaWorker): provisioning/deprovisioning
-  Valkey-кластеров в docker, публикация факта в etcd `/valkey/`, надзор
-  (health/converge); переиспользование `Shared.{Core,Etcd,Metrics,Tls}`.
 - **`t03-valkey-panel`** — valkey-домен AdminPanel:
   etcd-инспекция `/valkey/` (AdminPanel.Etcd), API + React-панель —
   кластеры/ноды/состояния, live-пробы, алерты, операции (создание/удаление
@@ -31,7 +27,7 @@
   watch+poll актуализация, fail-open, `GetClientConfig()` для
   StackExchange.Redis); интеграция с клиентским модулем Puzzle — по образцу
   интеграции HA.Kafka в `Infrastructure.App.Kafka`.
-- **`t05-valkey-metrics`** `← t02-valkey-worker` — телеметрия Valkey-домена
+- **`t05-valkey-metrics`** — телеметрия Valkey-домена
   по образцу [../18-metrics.md](../18-metrics.md): ValkeyWorker на каркасе
   `Shared.Metrics` (воркер-паттерн §2.2: фазы/HealthState), коллектор метрик
   Valkey-нод (аналог коллектора Kafka §4: INFO/репликация через redis-пробу,

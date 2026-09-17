@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="ValkeyWorker.UnitTests"/>
+        <InternalsVisibleTo Include="ValkeyWorker.IntegrationTests"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\ValkeyWorker.Core\ValkeyWorker.Core.csproj"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <Using Include="Shared.Core"/>
+        <Using Include="Shared.Core.Planning"/>
+    </ItemGroup>
+
+</Project>
