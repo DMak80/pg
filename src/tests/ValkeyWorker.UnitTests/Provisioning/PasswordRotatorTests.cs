@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using FluentAssertions;
 using Shared.Etcd.Client;
 using ValkeyWorker.Core.Model;
@@ -8,11 +9,15 @@ using Xunit;
 namespace ValkeyWorker.UnitTests.Provisioning;
 
 // PasswordRotator E1–E3 (arch/21 §5 E): окно двух паролей, доигрывание по
-// journal-фазе, изоляция ролей, битая заявка.
+// стейту work/<C>/rotation (Тот ЖЕ NEW после отказа; E3 без заявки), изоляция
+// ролей, битая заявка. Генератор — реальный (ValkeyPasswordGenerator): NEW
+// читается из etcd/стейта, фиксированная строка не маскирует регенерацию.
 public class PasswordRotatorTests
 {
     private const string OldAdmin = "AdminOldPassword0123456789abcdef12";
     private const string OldApp = "AppOldPassword0123456789abcdef12345";
+
+    private static readonly Regex CanonPassword = new("^[A-Za-z0-9]{32}$", RegexOptions.Compiled);
 
     private sealed class Rig
     {
@@ -27,7 +32,7 @@ public class PasswordRotatorTests
             Rotator = new ValkeyWorker.Provisioning.Processes.PasswordRotator(
                 Etcd, ["http://etcd:2379"], Claims,
                 new WorkJournal("/valkeyworker", Etcd, ["http://etcd:2379"]),
-                Valkey, () => "NewPassword0123456789abcdefgh12345");
+                Valkey);
         }
 
         public void SeedActive(string cluster)
@@ -70,39 +75,87 @@ public class PasswordRotatorTests
         // Act
         var result = await rig.Rotator.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
 
-        // Assert: etcd содержит NEW (E2), заявка удалена, E3 удалил OLD —
-        // в фейке проверяем через AUTH: OLD отвергнут, NEW работает.
+        // Assert: etcd содержит NEW (E2, канон 32 симв [A-Za-z0-9]), заявка и
+        // стейт доигрывания удалены, E3 удалил OLD — на ноде ровно NEW.
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
-        rig.Etcd.Store[$"/valkey/clusters/rot/app_password"].Value.Should().Be("NewPassword0123456789abcdefgh12345");
+        var newInEtcd = rig.Etcd.Store[$"/valkey/clusters/rot/app_password"].Value;
+        CanonPassword.IsMatch(newInEtcd).Should().BeTrue("NEW — канон 32 симв [A-Za-z0-9]");
+        newInEtcd.Should().NotBe(OldApp);
         rig.Etcd.Store.Should().NotContainKey("/valkeyworker/rotations/rot");
+        rig.Etcd.Store.Should().NotContainKey("/valkeyworker/work/rot/rotation");
         rig.Valkey.Users["app"].Passwords.Should().NotContain(OldApp);
-        rig.Valkey.Users["app"].Passwords.Should().Contain("NewPassword0123456789abcdefgh12345");
+        rig.Valkey.Users["app"].Passwords.Should().Contain(newInEtcd);
         // журнал: полный цикл фаз
         rig.Etcd.Store[$"/valkeyworker/work/rot"].Value.Should().Contain("done");
     }
 
     [Fact]
-    public async Task ОтказПослеЕ1_ПовторТикаДоигрываетСЕ2()
+    public async Task ОтказПослеЕ1_ДоигрываниеСТемЖеNew()
     {
-        // Arrange: journal-фаза e1-added (тик упал после E1).
+        // Arrange: E2-txn падает в первом тике (E1 уже добавил NEW на ноду).
         const string cluster = "resume";
         var rig = new Rig();
         rig.SeedActive(cluster);
         rig.SeedRotation(cluster, "app");
         await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
-        await new WorkJournal("/valkeyworker", rig.Etcd, ["http://etcd:2379"]).WritePhaseAsync(
-            "resume", "rotate", "e1-added", "inst-1", null, TestContext.Current.CancellationToken);
-        // OLD+NEW оба валидны (E1 уже применён прошлым тиком).
-        rig.Valkey.Users["app"].Passwords.Add("NewPassword0123456789abcdefgh12345");
+        // Отказ только E2-txn (compare value==OLD); прочие txn — штатно (null).
+        rig.Etcd.TxnFault = req => req.Compare.Any(c => c.Target == TxnTarget.Value
+            && c.Key == $"/valkey/clusters/{cluster}/app_password")
+            ? Result<TxnResult>.Failed(new ApplicationException("etcd txn failed"))
+            : null;
 
-        // Act
-        var result = await rig.Rotator.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+        var first = await rig.Rotator.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+        first.IsSuccess.Should().BeFalse("E2 упал — отказ после E1");
 
-        // Assert: доиграно с E2 (etcd NEW, заявка del) и E3 (OLD удалён).
-        result.IsSuccess.Should().BeTrue(result.Error?.Message);
-        rig.Etcd.Store[$"/valkey/clusters/resume/app_password"].Value.Should().Be("NewPassword0123456789abcdefgh12345");
+        // Стейт e1-added несёт NEW; OLD ещё в etcd.
+        var state = rig.Etcd.Store["/valkeyworker/work/resume/rotation"].Value;
+        state.Should().Contain("e1-added");
+        var stagedNew = Regex.Match(state, @"""new"":""([A-Za-z0-9]{32})""").Groups[1].Value;
+        stagedNew.Should().NotBeEmpty();
+        rig.Etcd.Store[$"/valkey/clusters/resume/app_password"].Value.Should().Be(OldApp);
+
+        // Act: второй тик (отказ ушёл) — доигрывание со стейта.
+        rig.Etcd.TxnFault = null;
+        var second = await rig.Rotator.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+
+        // Assert: закоммичен ТЕМ ЖЕ NEW из стейта (не свежая генерация — иначе
+        // на ноде остался бы валидный «осиротевший» пароль), E3 снял OLD.
+        second.IsSuccess.Should().BeTrue(second.Error?.Message);
+        rig.Etcd.Store[$"/valkey/clusters/resume/app_password"].Value.Should().Be(stagedNew);
         rig.Etcd.Store.Should().NotContainKey("/valkeyworker/rotations/resume");
+        rig.Etcd.Store.Should().NotContainKey("/valkeyworker/work/resume/rotation");
         rig.Valkey.Users["app"].Passwords.Should().NotContain(OldApp);
+        rig.Valkey.Users["app"].Passwords.Should().Contain(stagedNew);
+    }
+
+    [Fact]
+    public async Task ОтказМеждуЕ2иЕ3_ДоигрываниеЕ3БезЗаявки()
+    {
+        // Arrange: E3 (второй вызов SETUSER тика) падает — заявка уже удалена
+        // в E2, стейт e2-committed — единственный след недоигранной ротации.
+        const string cluster = "e2e3";
+        var rig = new Rig();
+        rig.SeedActive(cluster);
+        rig.SeedRotation(cluster, "app");
+        await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
+        rig.Valkey.SetUserFailFromIndex = 1;
+
+        var first = await rig.Rotator.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+        first.IsSuccess.Should().BeFalse("E3 упал — краш между E2 и E3");
+        rig.Etcd.Store[$"/valkey/clusters/e2e3/app_password"].Value.Should().NotBe(OldApp, "E2 закоммитил NEW");
+        rig.Etcd.Store.Should().NotContainKey("/valkeyworker/rotations/e2e3", "заявка снята в E2");
+        rig.Etcd.Store["/valkeyworker/work/e2e3/rotation"].Value.Should().Contain("e2-committed");
+        rig.Valkey.Users["app"].Passwords.Should().Contain(OldApp, "OLD ещё не снят (E3 упал)");
+
+        // Act: второй тик — заявки НЕТ, но стейт e2-committed доигрывает E3.
+        rig.Valkey.SetUserFailFromIndex = null;
+        var second = await rig.Rotator.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+
+        // Assert: OLD снят с ноды (без стейта он остался бы валидным навсегда).
+        second.IsSuccess.Should().BeTrue(second.Error?.Message);
+        rig.Valkey.Users["app"].Passwords.Should().NotContain(OldApp);
+        rig.Etcd.Store.Should().NotContainKey("/valkeyworker/work/e2e3/rotation");
+        rig.Etcd.Store[$"/valkeyworker/work/e2e3"].Value.Should().Contain("done");
     }
 
     [Fact]

@@ -50,6 +50,24 @@ public static class ProcessCommon
 
     public static string RotationKey(string cluster) => $"/valkeyworker/rotations/{cluster}";
 
+    // Стейт доигрывания ротации E (arch/21 §5 E): вложенный под work/<C> —
+    // ключ журнала надзор перезаписывает каждый тик, фаза ротации в нём
+    // не переживает тик.
+    public static string RotationStateKey(string cluster)
+        => $"/valkeyworker/work/{cluster}/rotation";
+
+    // Первый адрес endpoints "h1:p1,h2:p2,…" → (host, port); порт без числа
+    // (или без адреса) — канон-дефолт 6379 (пробы бессмысленны без порта).
+    public static (string Host, int Port) ParseEndpoint(string endpoints)
+    {
+        var first = endpoints.Split(',', StringSplitOptions.TrimEntries)[0];
+        var separator = first.LastIndexOf(':');
+        return separator > 0 && int.TryParse(first[(separator + 1)..],
+                   NumberStyles.Integer, CultureInfo.InvariantCulture, out var port)
+            ? (first[..separator], port)
+            : (first, 6379);
+    }
+
     // Текущий state ноды (null — ключа нет).
     public static async Task<Result<string?>> ReadNodeStateAsync(
         IEtcdGateway gateway, string[] endpoints, string cluster, string node, CancellationToken ct)
