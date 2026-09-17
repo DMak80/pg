@@ -165,7 +165,7 @@ per-install API-CA; клиенты без валидного серта — от
 | `/valkey/clusters/<C>/app_user` + `app_password` | provisioning ensure; ротация E | `"app"` / 32 симв; txn put-if-absent / txn-коммит ротации |
 | `/valkey/clusters/<C>/admin_user` + `admin_password` | provisioning ensure; ротация E | `"admin"` / 32 симв; txn put-if-absent / txn-коммит ротации |
 | `/valkey/clusters/<C>/config` | txn по завершении provisioning | пере-put канонического JSON **без** `state` (compare mod_revision) |
-| `/valkeyworker/*` (координация) | весь жизненный цикл | leader, claims, work, portalloc, locks/portalloc, instances, api — префикс `/valkeyworker/` ([20](20-valkey-clusters.md) §3) |
+| `/valkeyworker/*` (координация) | весь жизненный цикл | leader, claims, work (+ вложенный work/&lt;C&gt;/rotation — стейт доигрывания E, §5 E), portalloc, locks/portalloc, instances, api — префикс `/valkeyworker/` ([20](20-valkey-clusters.md) §3) |
 | `/valkeyworker/rotations/<C>` | по завершении ротации (E) | del заявки (или панелью — отмена) |
 | `/valkey/clusters/<C>/` (префикс) | TO_REMOVE, финал X2 | `del --prefix` |
 | `/valkeyworker/{claims,work,portalloc,rotations}/<C>*` | TO_REMOVE, финал X2 | del — очистка координации ВКЛЮЧАЯ заявки ротаций: остаточные заявки не переживают удаление кластера |
@@ -287,7 +287,14 @@ E3 ACL SETUSER <role> <OLD    — удаление старого пароля
 ```
 
 Отказ между фазами безопасен (оба пароля валидны; повтор тика доигрывает
-по journal-фазе). В отличие от kafka ([16](16-kafkaworker.md) §5 H) —
+по journal-фазе). Стейт доигрывания (фаза + OLD/NEW) ротатор держит в
+**отдельном ключе** `work/<C>/rotation`: ключ журнала `work/<C>` надзор (C)
+перезаписывает каждый тик — фаза ротации в нём не переживает тик, а NEW,
+добавленный на ноду в E1, обязан доигрываться тем же значением (свежая
+генерация на доигрывании оставила бы на ноде валидный «осиротевший» пароль).
+E3 доигрывается по фазе `e2-committed` **даже без заявки** (краш между E2 и
+E3: заявка уже снята — без стейта OLD остался бы валидным навсегда). В
+отличие от kafka ([16](16-kafkaworker.md) §5 H) —
 **без пересозданий контейнеров** (ACL — runtime); пересоздание надзором в
 окне ротации безопасно: аргументы собираются из etcd-актуальных кредов
 (фаза E1 уже закоммитила NEW — контейнер соберётся с NEW, OLD-пароль
