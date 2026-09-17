@@ -69,15 +69,18 @@ public interface IDockerEngine : IAsyncDisposable
     // Cmd swarm-сервиса ноды: Spec.TaskTemplate.ContainerSpec.Cmd; null = нет.
     Task<Result<IReadOnlyList<string>?>> InspectServiceCmdAsync(string name, CancellationToken ct);
 
-    // Инспекция endpoint'а контейнера (E9): published host-порт 6379;
-    // null = объекта нет.
+    // Инспекция endpoint'а контейнера (E9/надзор C): published host-порт 6379
+    // + флаг running; null = объекта нет.
     Task<Result<DockerNodeEndpoint?>> InspectNodeEndpointAsync(string name, CancellationToken ct);
 }
 
-// Факт endpoint'а из docker inspect (E9): published-порт контейнера на хосте.
+// Факт endpoint'а из docker inspect (E9/надзор C): published-порт контейнера
+// на хосте + State.Running (остановленный контейнер — положительное
+// свидетельство живого docker-факта: PortBindings персистят — endpoint не-null
+// при Running=false; надзор трактует отказ пробы как молчание, не слепоту).
 // TaskHost — хост running-таска (swarm-фолбэк: порт и хост — из ОДНОГО вызова
 // ListTasks движка); null в plain-ветке (host даёт перебор движков).
-public sealed record DockerNodeEndpoint(int ClientHostPort, string? TaskHost = null);
+public sealed record DockerNodeEndpoint(int ClientHostPort, string? TaskHost = null, bool Running = true);
 
 // Контейнер из /containers/json (Names — с ведущим "/").
 public sealed record DockerContainer(string Id, string[] Names, string State, string Image);

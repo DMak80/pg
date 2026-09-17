@@ -24,9 +24,11 @@ public sealed record ValkeyNodeSpec(
     decimal? CpuCores,
     long? MemoryBytes);
 
-// Инспекция размещения ноды (E9-реконструкция portalloc): Host — хост
-// размещения, ClientHostPort — published host-порт ноды (6379).
-public sealed record NodeEndpointInspection(string Host, int ClientHostPort);
+// Инспекция размещения ноды (E9-реконструкция portalloc / надзор C): Host —
+// хост размещения, ClientHostPort — published host-порт ноды (6379), Running —
+// факт docker-инспекта (false = контейнер/таск есть, но остановлен: отказ
+// пробы надзора — молчание ноды, не слепота воркера).
+public sealed record NodeEndpointInspection(string Host, int ClientHostPort, bool Running = true);
 
 // Унифицированное управление нодой в обоих режимах (порт драйверов kfw с
 // упрощениями домена — arch/21 §2): объекты — контейнер/сервис
@@ -223,7 +225,7 @@ public sealed class PlainClusterDriver(
     }
 
     // E9-реконструкция: перебор хостов — первый, где контейнер есть,
-    // отдаёт host-порт + host-алиас этого движка.
+    // отдаёт host-порт + host-алиас этого движка + флаг running.
     public async Task<Result<NodeEndpointInspection?>> InspectNodeEndpointAsync(
         string cluster, string nodeName, CancellationToken ct)
     {
@@ -234,7 +236,8 @@ public sealed class PlainClusterDriver(
             if (!endpoint.IsSuccess)
                 return Result<NodeEndpointInspection?>.Failed(endpoint.Error!);
             if (endpoint.Value is { } found)
-                return Result<NodeEndpointInspection?>.Success(new NodeEndpointInspection(host, found.ClientHostPort));
+                return Result<NodeEndpointInspection?>.Success(
+                    new NodeEndpointInspection(host, found.ClientHostPort, found.Running));
         }
 
         return Result<NodeEndpointInspection?>.Success(null);
@@ -312,7 +315,8 @@ public sealed class SwarmClusterDriver(
         => _engine.InspectServiceCmdAsync(PlainClusterDriver.NodeName(cluster, nodeName), ct);
 
     // E9-реконструкция: published-порт и хост таска отдаёт одна инспекция
-    // движка (swarm-фолбэк по running-таску — один HTTP-раунд ListTasks).
+    // движка (swarm-фолбэк по running-таску — один HTTP-раунд ListTasks);
+    // running-таск = Running (останавливаться у сервиса — только снятием).
     public async Task<Result<NodeEndpointInspection?>> InspectNodeEndpointAsync(
         string cluster, string nodeName, CancellationToken ct)
     {
@@ -324,7 +328,8 @@ public sealed class SwarmClusterDriver(
             return Result<NodeEndpointInspection?>.Success(null);
 
         return found.TaskHost is { } host
-            ? Result<NodeEndpointInspection?>.Success(new NodeEndpointInspection(host, found.ClientHostPort))
+            ? Result<NodeEndpointInspection?>.Success(
+                new NodeEndpointInspection(host, found.ClientHostPort, found.Running))
             : Result<NodeEndpointInspection?>.Success(null); // хоста таска нет — факта нет
     }
 

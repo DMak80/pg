@@ -335,8 +335,10 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             }
         });
 
-    // Инспекция endpoint'а контейнера (E9): published host-порт ноды 6379
-    // из HostConfig.PortBindings. 404 → null (объекта нет).
+    // Инспекция endpoint'а контейнера (E9/надзор C): published host-порт ноды
+    // 6379 из HostConfig.PortBindings + State.Running (PortBindings персистят
+    // и у остановленного контейнера — Running отличает «жив» от «есть, но
+    // остановлен»). 404 → null (объекта нет).
     public async Task<Result<DockerNodeEndpoint?>> InspectNodeEndpointAsync(string name, CancellationToken ct)
         => await Result<DockerNodeEndpoint?>.FromAsync(async () =>
         {
@@ -348,9 +350,15 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
                     return null;
 
                 var clientPort = ReadClientHostPort(body.GetProperty("HostConfig"));
-                return clientPort is { } port
-                    ? new DockerNodeEndpoint(port)
-                    : null; // привязки 6379 нет — endpoint-факта нет
+                if (clientPort is not { } port)
+                    return null; // привязки 6379 нет — endpoint-факта нет
+
+                // State.Running: отсутствие поля (старый движок) трактуем как running.
+                var running = body.TryGetProperty("State", out var state)
+                              && state.ValueKind == JsonValueKind.Object
+                              && state.TryGetProperty("Running", out var isRunning)
+                              && isRunning.ValueKind == JsonValueKind.True;
+                return new DockerNodeEndpoint(port, Running: running);
             }
             catch (DockerHttpException e) when (e.StatusCode == 404)
             {

@@ -14,10 +14,12 @@ namespace ValkeyWorker.Provisioning.Processes;
 /// расхождение лимитов (автоконверге) → пересоздание, state=PROVISIONING;
 /// молчание дольше NodeDeadSec → UNREACHABLE + пересоздание (трек first_seen
 /// в work/&lt;C&gt; через WriteSupervisionAsync, стартует по УСПЕШНОМУ
-/// зондированию); слепая проба — никаких действий (S7). Одно пересоздание за
-/// тик; кеш-ключи домена не чистятся никогда; ноды TO_REMOVE/REMOVING/
-/// PROVISIONING чужих процессов не трогаются; лестница E9 до деструктива;
-/// endpoints сходится к portalloc-канону (RMW).
+/// зондированию). Зрячесть пробы — по docker-факту: inspect прочитан → ЛЮБОЙ
+/// отказ пробы (таймаут, refused/reset, Running=false) = молчание ноды;
+/// слепой inspect (docker-хост молчит) — ошибка тика, пересозданий вслепую
+/// нет (S7). Одно пересоздание за тик; кеш-ключи домена не чистятся никогда;
+/// ноды TO_REMOVE/REMOVING/PROVISIONING чужих процессов не трогаются;
+/// лестница E9 до деструктива; endpoints сходится к portalloc-канону (RMW).
 /// </summary>
 public sealed class NodeSupervisor(
     IEtcdGateway gateway,
@@ -146,12 +148,12 @@ public sealed class NodeSupervisor(
                 continue;
             }
 
-            if (ping.Error is not TimeoutException)
-            {
-                // S7: слепая проба — никаких действий, трек заморожен.
-                warnings.Add($"слепая проба {node}: {ping.Error!.Message}");
-                continue;
-            }
+            // Docker-факт прочитан (inspect успешен выше) — проба зрячая: ЛЮБОЙ
+            // отказ пробы (таймаут, connection refused/reset — типично после
+            // docker stop; остановленный контейнер — Running=false при живом
+            // объекте) = положительное свидетельство молчания ноды. Слепота
+            // воркера — только недоступность docker-факта (слепой inspect —
+            // ошибка тика выше): вслепую ноду не трогаем (S7).
 
             // Нода молчит: трек first_seen — только для supervisable (PROVISIONING
             // грузится — бюджет молчания надзора не стартует, трек заморожен).

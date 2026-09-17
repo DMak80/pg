@@ -9,7 +9,8 @@ using Xunit;
 namespace ValkeyWorker.UnitTests.Provisioning;
 
 // NodeSupervisor (arch/21 §5 C): снос/пересоздание, автоконверге лимитов,
-// слепой inspect, UNREACHABLE по NodeDeadSec, S7, E9, endpoints-RMW.
+// слепой docker-инспект (S7), UNREACHABLE по NodeDeadSec (таймаут и refused —
+// молчание при живом docker-факте), E9, endpoints-RMW.
 public class NodeSupervisorTests
 {
     private static readonly FixedTimeProvider Clock = new();
@@ -178,9 +179,10 @@ public class NodeSupervisorTests
     }
 
     [Fact]
-    public async Task СлепаяПроба_S7_ТрекЗамороженБезДействий()
+    public async Task СлепойDocker_ТикFailedТрекЗамороженБезДействий()
     {
-        // Arrange: трек first_seen уже есть (нода молчала), теперь — ошибка соединения.
+        // Arrange: docker-хост молчит на инспектах (собственная слепота воркера,
+        // S7); трек first_seen уже есть — слепой тик не смеет его двигать.
         const string cluster = "s7";
         var rig = Rig.Create();
         rig.SeedActive(cluster);
@@ -188,19 +190,50 @@ public class NodeSupervisorTests
         await journal.WriteSupervisionAsync(
             "s7", "inst-1", new Dictionary<string, long> { ["node1"] = 1000 }, null,
             TestContext.Current.CancellationToken);
-        rig.Valkey.ConnectionFault = true;
+        rig.Driver.EndpointFault = true;
 
         // Act
         var result = await rig.Supervisor.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
 
-        // Assert: тик успешен (слепота — не ошибка тика... нет: S7 = «никаких
-        // действий», трек заморожен), пересоздания нет, state не менялся,
-        // first_seen не двигался.
-        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        // Assert: ошибка тика (слепой inspect — не проба), пересозданий нет,
+        // state не менялся, трек не перезаписан.
+        result.IsSuccess.Should().BeFalse();
         rig.Driver.Ensured.Should().BeEmpty();
         rig.Etcd.Store["/valkey/clusters/s7/nodes/node1/state"].Value.Should().Be("RUNNING");
         var track = await journal.ReadUnreachableAsync("s7", TestContext.Current.CancellationToken);
-        track.Value!["node1"].Should().Be(1000, "слепая проба не двигает трек");
+        track.Value!["node1"].Should().Be(1000, "слепой тик не двигает трек");
+    }
+
+    [Fact]
+    public async Task ОстановленныйКонтейнер_RefusedМолчание_ПорогПересоздание()
+    {
+        // Arrange: docker stop (объект жив, Running=false), PING — connection
+        // refused (не таймаут); трек молчания исчерпан прошлыми тиками.
+        const string cluster = "stopped";
+        var rig = Rig.Create();
+        rig.SeedActive(cluster);
+        rig.Driver.Stopped.Add("vwk-stopped-node1");
+        rig.Valkey.ConnectionFault = true;
+        var journal = new WorkJournal("/valkeyworker", rig.Etcd, ["http://etcd:2379"]);
+        var stale = Clock.GetUtcNow().AddSeconds(-91).ToUnixTimeSeconds();
+        await journal.WriteSupervisionAsync(
+            "stopped", "inst-1", new Dictionary<string, long> { ["node1"] = stale }, null,
+            TestContext.Current.CancellationToken);
+
+        // Act: тик надзора.
+        var result = await rig.Supervisor.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+
+        // Assert: refused при живом docker-факте — молчание (не слепая проба):
+        // UNREACHABLE-путь → пересоздание, state=PROVISIONING.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        rig.Etcd.Store["/valkey/clusters/stopped/nodes/node1/state"].Value.Should().Be("PROVISIONING");
+        rig.Driver.Ensured.Should().ContainSingle();
+
+        // Затем: контейнер поднят (Running), проба отвечает → RUNNING.
+        rig.Valkey.ConnectionFault = false;
+        var second = await rig.Supervisor.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+        second.IsSuccess.Should().BeTrue(second.Error?.Message);
+        rig.Etcd.Store["/valkey/clusters/stopped/nodes/node1/state"].Value.Should().Be("RUNNING");
     }
 
     [Fact]
