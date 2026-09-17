@@ -13,13 +13,14 @@ namespace ValkeyWorker.Provisioning.Processes;
 /// E1 ACL SETUSER &lt;role&gt; &gt;NEW (оба пароля валидны);
 /// E2 ОДНА txn: [compare value(&lt;role&gt;_password)==OLD][put NEW; del заявки];
 /// E3 ACL SETUSER &lt;role&gt; &lt;OLD (старый пароль удалён).
-/// Стейт доигрывания (фаза + OLD/NEW) — в отдельном ключе work/&lt;C&gt;/rotation:
-/// журнал work/&lt;C&gt; надзор перезаписывает каждый тик, а NEW, добавленный на
-/// ноду в E1, обязан доигрываться ТЕМ ЖЕ значением (свежая генерация на
-/// доигрывании оставила бы на ноде валидный «осиротевший» пароль); E3
-/// доигрывается по фазе e2-committed даже без заявки (краш между E2 и E3 —
-/// без стейта OLD остался бы валидным навсегда). Ротация admin не трогает
-/// app и наоборот. Битая заявка — мусор: del с journal.
+/// Стейт доигрывания (фаза + OLD/NEW) — в отдельном ключе work/&lt;C&gt;/rotation,
+/// пишется ДО E1 (фаза e1-pending): SETUSER &gt;NEW идемпотентен, поэтому
+/// отказ/краш в любой точке после записи стейта доигрывается ТЕМ ЖЕ NEW —
+/// свежая генерация оставила бы на ноде валидный «осиротевший» пароль;
+/// журнал work/&lt;C&gt; надзор перезаписывает каждый тик; E3 доигрывается по
+/// фазе e2-committed даже без заявки (краш между E2 и E3 — без стейта OLD
+/// остался бы валидным навсегда). Ротация admin не трогает app и наоборот.
+/// Битая заявка — мусор: del с journal.
 /// </summary>
 public sealed class PasswordRotator(
     IEtcdGateway gateway,
@@ -30,6 +31,7 @@ public sealed class PasswordRotator(
     Func<string>? generator = null) // генератор NEW (дефолт — канон 32 симв)
 {
     private const string Op = "rotate";
+    private const string PhaseE1Pending = "e1-pending";
     private const string PhaseE1 = "e1-added";
     private const string PhaseE2 = "e2-committed";
 
@@ -87,7 +89,10 @@ public sealed class PasswordRotator(
         return await ResumeAsync(snap, cluster, state, ct);
     }
 
-    // E1: генерация NEW, добавление на ноду, запись стейта — точка невозврата.
+    // E1: OLD (failover) → NEW → стейт e1-pending ДО SETUSER → SETUSER >NEW →
+    // стейт e1-added. Стейт раньше E1: SETUSER >NEW идемпотентен, поэтому
+    // отказ/краш в любой точке после записи доигрывается ТЕМ ЖЕ NEW —
+    // «осиротевший» NEW невозможен (arch/21 §5 E).
     private async Task<Result<RotationState>> StartRotationAsync(
         ValkeyClusterSnapshot snap, string cluster, string role, string? requestedBy, CancellationToken ct)
     {
@@ -105,37 +110,61 @@ public sealed class PasswordRotator(
                   ?? throw new ApplicationException($"rotate {cluster}: {role}_password отсутствует");
         var newP = (generator ?? ValkeyPasswordGenerator.Generate)();
 
+        // Стейт ДО E1: краш/отказ после SETUSER >NEW оставляет e1-pending
+        // с ТЕМ ЖЕ NEW — следующий тик доигрывает им, а не свежей генерацией.
+        var pending = new RotationState(PhaseE1Pending, role, old, newP, requestedBy);
+        var saved = await WriteStateAsync(cluster, pending, ct);
+        if (!saved.IsSuccess)
+            return Result<RotationState>.Failed(saved.Error!);
+
         var endpoint = ValkeyEndpointOf(snap);
         var e1 = await valkey.AclSetUserAsync(endpoint, [role, $">{newP}"], ct);
         if (!e1.IsSuccess)
             return Result<RotationState>.Failed(e1.Error!);
 
-        // Стейт ДО E2: отказ после E1 → следующий тик доигрывает с ТЕМ ЖЕ NEW.
-        var state = new RotationState(PhaseE1, role, old, newP, requestedBy);
-        var saved = await WriteStateAsync(cluster, state, ct);
-        if (!saved.IsSuccess)
-            return Result<RotationState>.Failed(saved.Error!);
+        // E1 подтверждён — доигрывание уходит сразу в E2.
+        var added = new RotationState(PhaseE1, role, old, newP, requestedBy);
+        var promoted = await WriteStateAsync(cluster, added, ct);
+        if (!promoted.IsSuccess)
+            return Result<RotationState>.Failed(promoted.Error!);
 
         var phase = await journal.WritePhaseAsync(cluster, Op, PhaseE1, claims.InstanceId, null, ct);
         return phase.IsSuccess
-            ? Result<RotationState>.Success(state)
+            ? Result<RotationState>.Success(added)
             : Result<RotationState>.Failed(phase.Error!);
     }
 
-    // E2 (фаза e1-added) → E3 (фаза e2-committed) по стейту; E3 — даже без заявки.
+    // Доигрывание по стейту: e1-pending → E1 (тем же NEW) → e1-added → E2 →
+    // e2-committed → E3; E3 — даже без заявки.
     private async Task<Result> ResumeAsync(
         ValkeyClusterSnapshot snap, string cluster, RotationState state, CancellationToken ct)
     {
         var role = state.Role;
         var oldPasswordKey = $"/valkey/clusters/{cluster}/{role}_password";
 
+        // Доигрыванию нужен полный Active-факт: без endpoints/admin-креда —
+        // Result.Failed при живом стейте (ретрай следующим тиком со свежим
+        // снапшотом), не NRE (arch/21 §5 E).
+        if (snap.Endpoints is null || snap.AdminUser is null || snap.AdminPassword is null)
+            return Result.Failed(new ApplicationException(
+                $"rotate {cluster}: нет endpoints/admin-креда — доигрывание ротации невозможно"));
+
+        if (state.Phase == PhaseE1Pending)
+        {
+            // E1 мог не доехать до ноды — повтор ТЕМ ЖЕ NEW (SETUSER >NEW идемпотентен).
+            var pendingEndpoint = ValkeyEndpointOf(snap);
+            var e1Retry = await valkey.AclSetUserAsync(pendingEndpoint, [role, $">{state.New}"], ct);
+            if (!e1Retry.IsSuccess)
+                return e1Retry.Error!;
+            var added = new RotationState(PhaseE1, role, state.Old, state.New, state.RequestedBy);
+            var promoted = await WriteStateAsync(cluster, added, ct);
+            if (!promoted.IsSuccess)
+                return promoted.Error!;
+            state = added;
+        }
+
         if (state.Phase == PhaseE1)
         {
-            // Active-креды обязательны и на доигрывании.
-            if (snap.AdminUser is null || snap.AdminPassword is null)
-                return Result.Failed(new ApplicationException(
-                    $"rotate {cluster}: нет admin-креда — доигрывание ротации невозможно"));
-
             // E2: ОДНА txn [compare value==OLD][put NEW; del заявки].
             var e2 = await TxnWithFailoverAsync(TxnRequest.Of(
             [

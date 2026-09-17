@@ -129,6 +129,78 @@ public class PasswordRotatorTests
     }
 
     [Fact]
+    public async Task ОтказPutСтейтаПослеЕ1_ДоигрываниеСТемЖеNew()
+    {
+        // Arrange: стейт пишется ДО E1 (e1-pending); отказ put стейта ПОСЛЕ
+        // успешного E1 — падает второй put ключа стейта (промоция e1-added).
+        const string cluster = "putfail";
+        var stateKey = $"/valkeyworker/work/{cluster}/rotation";
+        var rig = new Rig();
+        rig.SeedActive(cluster);
+        rig.SeedRotation(cluster, "app");
+        await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
+        var statePuts = 0;
+        rig.Etcd.PutFault = key => key == stateKey && ++statePuts >= 2
+            ? Result.Failed(new ApplicationException("etcd put failed"))
+            : null;
+
+        var first = await rig.Rotator.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+        first.IsSuccess.Should().BeFalse("put стейта после E1 упал");
+
+        // Стейт e1-pending записан до E1, NEW1 уже добавлен на ноду.
+        var state = rig.Etcd.Store[stateKey].Value;
+        state.Should().Contain("e1-pending");
+        var stagedNew = Regex.Match(state, @"""new"":""([A-Za-z0-9]{32})""").Groups[1].Value;
+        stagedNew.Should().NotBeEmpty();
+        rig.Valkey.Users["app"].Passwords.Should().Contain(stagedNew, "E1 успел до отказа put");
+        rig.Etcd.Store[$"/valkey/clusters/{cluster}/app_password"].Value.Should().Be(OldApp);
+
+        // Act: второй тик (отказ ушёл) — доигрывание с ТЕМ ЖЕ NEW из стейта
+        // (не свежая генерация — иначе NEW1 остался бы «осиротевшим»).
+        rig.Etcd.PutFault = null;
+        var second = await rig.Rotator.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+
+        // Assert: закоммичен ТЕМ ЖЕ NEW1; на ноде ровно один NEW (OLD снят E3,
+        // никакого NEW2), заявка и стейт доигрывания исчерпаны.
+        second.IsSuccess.Should().BeTrue(second.Error?.Message);
+        rig.Etcd.Store[$"/valkey/clusters/{cluster}/app_password"].Value.Should().Be(stagedNew);
+        rig.Valkey.Users["app"].Passwords.Should().HaveCount(1,
+            "E1 повторён тем же NEW (идемпотентно), без осиротевших паролей");
+        rig.Valkey.Users["app"].Passwords.Should().Contain(stagedNew);
+        rig.Etcd.Store.Should().NotContainKey($"/valkeyworker/rotations/{cluster}");
+        rig.Etcd.Store.Should().NotContainKey(stateKey);
+    }
+
+    [Theory]
+    [InlineData("e1-added")]
+    [InlineData("e2-committed")]
+    public async Task ДоигрываниеБезEndpoints_FailedБезNre(string phase)
+    {
+        // Arrange: живой стейт ротации, снапшот тика без endpoints (пришёл
+        // неполный Active-факт) — guard → Result.Failed, а не NRE.
+        const string cluster = "noep";
+        var stateKey = $"/valkeyworker/work/{cluster}/rotation";
+        var rig = new Rig();
+        rig.SeedActive(cluster);
+        await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
+        rig.Etcd.Seed(stateKey,
+            $$"""{"phase":"{{phase}}","role":"app","old":"{{OldApp}}","new":"NewPassword0123456789abcdef0123456789abcd","requested_by":"panel"}""");
+        var before = rig.Etcd.Store[stateKey].Value;
+        var snap = rig.Snapshot(cluster) with { Endpoints = null };
+
+        // Act
+        var result = await rig.Rotator.TickAsync(snap, TestContext.Current.CancellationToken);
+
+        // Assert: штатный Failed без исключения; стейт и кред не тронуты —
+        // доигрывание повторится следующим тиком со свежим снапшотом.
+        result.IsSuccess.Should().BeFalse("без endpoints доигрывание невозможно");
+        result.Error.Should().BeOfType<ApplicationException>();
+        rig.Etcd.Store[stateKey].Value.Should().Be(before);
+        rig.Etcd.Store[$"/valkey/clusters/{cluster}/app_password"].Value.Should().Be(OldApp, "до E2 дело не дошло");
+        rig.Valkey.SetUserCalls.Should().BeEmpty("ни E1, ни E3 не выполняются без endpoints");
+    }
+
+    [Fact]
     public async Task ОтказМеждуЕ2иЕ3_ДоигрываниеЕ3БезЗаявки()
     {
         // Arrange: E3 (второй вызов SETUSER тика) падает — заявка уже удалена

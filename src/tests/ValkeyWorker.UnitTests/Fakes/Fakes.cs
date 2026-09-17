@@ -52,6 +52,10 @@ internal static class Fakes
         // фильтр по содержимому — null = txn исполняется штатно.
         public Func<TxnRequest, Result<TxnResult>?>? TxnFault { get; set; }
 
+        // Сбой-инъекция put (отказ записи стейта ротации после E1): фильтр
+        // по ключу — null = put исполняется штатно.
+        public Func<string, Result?>? PutFault { get; set; }
+
         private long _rev;
         private long _lease;
         private readonly object _gate = new();
@@ -88,6 +92,9 @@ internal static class Fakes
 
         public Task<Result> PutAsync(string endpoint, string key, string value, long? lease, CancellationToken ct)
         {
+            if (PutFault?.Invoke(key) is { } failed)
+                return Task.FromResult(failed);
+
             lock (_gate)
             {
                 Note($"put:{key}");
