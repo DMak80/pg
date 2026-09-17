@@ -225,7 +225,7 @@ kafka-констант `SecurityProtocolValue`/`SaslMechanismValue`; `ssl=true`+
 | 2 | Каркас + модель + парсер (TDD) | Проект csproj, slnx, опции, реестр, исключение; `Model/*`, `Parsing/*`; unit-тесты парсера и модели | Puzzle |
 | 3 | Стор + актуализация + DI | `ValkeyDiscoveryStore`, `ValkeyDiscoveryRefresher`, оба сигнальщика, `HaValkeyHealthCheck`, `ModuleExtensions` (AddHaValkey/AddValkeyCluster, members-монитор); unit-тесты (FakeEtcdClient, регистрация) | Puzzle |
 | 4 | Интеграционные тесты | Фикстура etcd (порт-параметр), полный цикл обоих режимов, fail-open, read-only-фиксация | Puzzle |
-| 5 | Синхронизация и гейты | Сверка docs/01.21 с фактом; сборка 0 warnings; прогоны серий (юниты → интеграция) с зачисткой после каждой; code-review; мерж-гейт pg — снятие тега t04 из roadmap (пункт + `←`-зависимость t08) тем же мерж-коммитом | оба репо |
+| 5 | Синхронизация и гейты | Сверка docs/01.21 с фактом; сборка — 0 новых warnings (прод-код HA.Valkey — 0, см. §6 п.1); прогоны серий (юниты → интеграция) с зачисткой после каждой; code-review; мерж-гейт pg — снятие тега t04 из roadmap (пункт + `←`-зависимость t08) тем же мерж-коммитом | оба репо |
 
 Мерж в main любого репозитория и пуши — ТОЛЬКО по явной просьбе
 пользователя.
@@ -253,8 +253,10 @@ kafka-констант `SecurityProtocolValue`/`SaslMechanismValue`; `ssl=true`+
 
 ## 6. Критерии приёмки
 
-1. `dotnet build src/PuzzleServer.Api.slnx` — 0 warnings
-   (`TreatWarningsAsErrors=true` не нарушен); новых пакетов нет.
+1. `dotnet build src/PuzzleServer.Api.slnx` — 0 новых предупреждений
+   (эрратум мерж-гейта: в Puzzle `TreatWarningsAsErrors` не включён и есть
+   baseline-предупреждения решения; требование 0 warnings относится к
+   прод-коду HA.Valkey); новых пакетов нет.
 2. Юнит-тесты HA.Valkey зелёные: парсер по каноническим примерам arch/20
    §2.1 (заявочный config с state / Active-конфиг без state / TO_REMOVE),
    неполные креды → `App=null` → `GetClientConfig()=null`, пустой
