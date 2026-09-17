@@ -386,7 +386,7 @@ MoveTicketDto: bucketId(int? — null у неканонического leaf'а)
 | **HA** | список scope'ов: scope, cluster/shard, лидер, члены (роль/состояние), лаг max, пометка unmatched |
 | **HA details** | leader, optime, таблица members: name/role/state/timeline/lag/probe-статус; блок «Заявленные ресурсы нод» (request_*, при наличии); raw config (свернуто) |
 | **Alerts** | таблица всех алертов: severity-цвет, kind, target, message, since; фильтр по severity |
-| **Воркеры** | `/workers` (§3.7): карточки PgWorker/KafkaWorker — инстансы (url, uptime, health), целевой серт API (метаданные + статус применения applied/pending restart/unmanaged), действия: сгенерировать/загрузить/убрать сертификат, перезапустить воркера |
+| **Воркеры** | `/workers` (§3.7): карточки PgWorker/KafkaWorker/ValkeyWorker — инстансы (url, uptime, health), целевой серт API (метаданные + статус применения applied/pending restart/unmanaged), действия: сгенерировать/загрузить/убрать сертификат, перезапустить воркера |
 | **Хранилище бэкапов** | `/backups-storage` (t08, read-only): карточки Health (api/live/cluster + drives), Место (used/quota, прогресс-бар, state-бейдж OK/WARN/CRIT — вердикт воркера + штамп live), Buckets; таблица «Кластеры → шарды» (размер, полные шт., WAL-сегменты шт., пометки сверки); клик → детали шарда `/backups-storage/:cluster/:shard`: таблица полных (id/размер/дата/etcd state+verify/сверка), блок WAL (etcd-статус + S3-факт), бейдж активного restore, «Объекты» с on-demand пагинацией («Загрузить ещё»); блок «Осиротевшие префиксы» (реестр воркера OBSERVED/DELETING+TTL или «панель видит, в реестре нет»); `configured=false` — заглушка «не настроено (AdminPanel:Backups:S3)». Без форм ввода |
 
 ### 3.1. Форма «Создать кластер» (формы данных: эта + добавление шарда §3.2 + перенос бакетов §3.3)
@@ -504,7 +504,8 @@ Active-кластер). Показывает маршрут owner→target, фа
 
 ### 3.7. Грань «Воркеры» (сертификаты API + перезапуск)
 
-Страница `/workers` — карточки PgWorker и KafkaWorker (02 §9.9). В каждой:
+Страница `/workers` — карточки PgWorker, KafkaWorker и ValkeyWorker
+(02 §9.9; ValkeyWorker — t03). В каждой:
 
 - **Инстансы**: instance id, URL, uptime (since_unix), health-бейдж,
   thumbprint применённого серта.
@@ -788,7 +789,96 @@ ProblemDetails в теле формы. Двойной клик — блокир�
 | `kafka-topic-delete-pending` | warning | живая delete-заявка `topics/<T>/desired.delete` (t01 — деструктивная близка к исполнению) |
 | `kafka-lifecycle-stale` | warning | lifecycle-заявка не снята дольше `StaleDesiredSec` (600) — воркер буксует/кластер лежит (t01) |
 
-## 8. Версионирование контракта
+## 8. Valkey: панель и REST API (`/api/valkey/*`) — t03
+
+Четвёртый домен (etcd-контракт — 02 §11, канон ключей — arch/20; мутации
+исполняет ValkeyWorker, arch/21 §1.1). Источник данных — отдельный снапшот
+`ValkeySnapshot` (свой refresher, тик 3 с) + опциональная live-проба (тик 15 с,
+PING по admin-креду из etcd; пароль в UI/API не отдаётся никогда — 02 §11.1).
+v1: топология standalone `nodes=1` (всегда нода `node1`).
+
+### 8.1. Список эндпоинтов
+
+| Метод+путь | Назначение |
+|---|---|
+| `GET /api/valkey/clusters` | сводный список valkey-кластеров |
+| `POST /api/valkey/clusters` | создание кластера (02 §11.2-1): тело `CreateValkeyClusterRequestDto` → 201+`ValkeyClusterCreatedDto` \| 400 \| 409 \| 503 |
+| `GET /api/valkey/clusters/{cluster}` | детали: config, ноды (state/resources/live), endpoints, ротация |
+| `DELETE /api/valkey/clusters/{cluster}` | перевод в TO_REMOVE (02 §11.2-2; демонтаж исполняет воркер): 202 \| 404 \| 503 |
+| `PUT /api/valkey/clusters/{cluster}/config` | изменение `maxmemory_bytes`/`maxmemory_policy` (02 §11.2-3; converge `CONFIG SET` без рестартов): тело `ValkeyConfigUpdateRequestDto` → 200+`ValkeyConfigUpdatedDto` \| 400 \| 404 \| 503 |
+| `PUT /api/valkey/clusters/{cluster}/nodes/{node}/resources` | лимиты ноды (02 §11.2-4; применит автоконверге надзора — пересоздание контейнера): тело `ValkeyResourcesRequestDto` → 200+`ValkeyResourcesUpdatedDto` \| 400 \| 404 \| 503 |
+| `POST /api/valkey/clusters/{cluster}/password/rotate` | заявка ротации пароля app\|admin (02 §11.2-5; окно двух паролей, без рестартов): тело `{role}` → 202+`ValkeyPasswordRotatedDto` \| 400 \| 404 \| 409 \| 503 |
+
+`GET /api/alerts` объединяет алерты всех движков (kind `valkey-*`);
+`GET /api/overview` получает valkey-сводку (clustersTotal, clustersCritical —
+critical-алерты `valkey-node-not-running`/`valkey-endpoints-missing`).
+
+### 8.2. DTO (ключевые поля)
+
+```text
+ValkeyClusterSummaryDto: name, state(ACTIVE|NOT_INITIALIZED|TO_REMOVE),
+    nodesTotal (=1), nodesRunning (=0|1), endpoints,
+    rotationPending(bool), maxmemoryBytes, maxmemoryPolicy
+ValkeyClusterDto: name, state, nodesTotal(=1), maxmemoryBytes,
+    maxmemoryPolicy, createdUnix, endpoints, nodesList[ValkeyNodeDto],
+    rotation{role(app|admin), requestedUnix, requestedBy}?(nullable)
+ValkeyNodeDto: name(=node1), state(raw: NOT_INITIALIZED|PROVISIONING|
+    RUNNING|UNREACHABLE|REMOVING|TO_REMOVE), cpu, memGi, diskGi
+    (nullable — заявка resources), live(bool|null — из пробы PING;
+    null — проба молчит/кредов нет), probeError?(string|null)
+CreateValkeyClusterRequestDto: name, maxmemoryBytes?(def 536870912),
+    maxmemoryPolicy?(def allkeys-lru; 8 значений канона),
+    resources{cpu?(0.01..64 def 1), memGi?(1..65536 def 1),
+    diskGi?(1..65536 def 10)} — валидация 02 §11.3 (инвариант
+    maxmemoryBytes < memGi-лимита, R3)
+ValkeyClusterCreatedDto: name, state:"NOT_INITIALIZED", nodes,
+    maxmemoryBytes, maxmemoryPolicy, cpu, memGi, diskGi
+ValkeyConfigUpdateRequestDto: maxmemoryBytes?, maxmemoryPolicy?
+    (null = не менять)
+ValkeyConfigUpdatedDto: cluster, maxmemoryBytes, maxmemoryPolicy
+ValkeyResourcesRequestDto: cpu?, memGi?, diskGi? (null = не менять)
+ValkeyResourcesUpdatedDto: cluster, node, cpu, memGi, diskGi
+ValkeyRotateRequestDto: role(app|admin)
+ValkeyPasswordRotatedDto: cluster, role, requestedUnix, requestedBy
+```
+
+### 8.3. Панели UI
+
+| Панель | Что показывает |
+|---|---|
+| **ValkeyClusters** | список: имя, state-бейдж, нода running/всего, endpoints (сокращённо), maxmemory (MiB/GiB) + policy, бейдж ротации; кнопка «Создать кластер» → модальная форма §8.3.1 |
+| **ValkeyClusterDetails** | шапка: state-бейджи (TO_REMOVE/NOT_INITIALIZED), endpoints, кнопки «Изменить конфиг» (maxmemory/policy — модал с UI-предупреждением R3: `maxmemory` < mem-лимита, иначе OOM-килл), «Сменить app-пароль» и «Сменить admin-пароль» (модалы-предупреждения: после применения подключения со старым паролем отвергаются до перечитывания кредов — окно двух паролей закрывает перекрытие; 409 «уже запрошена» — текстом), «Удалить кластер» (красная, подтверждение; при TO_REMOVE скрыты); вкладка **Нода**: name/state/resources/live (из PING-пробы; null — проба молчит) + кнопка «Изменить ресурсы» (модал cpu/mem/disk; подпись «применяется пересозданием контейнера — кеш холодным стартом восполняется приложениями», disk — инфо-поле); `canMutate` = Active; admin-креды пробы в UI/API не отдаются никогда — только факт живости (live) |
+
+### 8.3.1. Форма «Создать valkey-кластер»
+
+Модальный диалог (Mantine) с кнопки «Создать кластер» на панели Valkey: имя;
+maxmemory (MiB, def 512); policy (select из 8 значений канона, def
+allkeys-lru); группа «Ресурсы ноды»: CPU/память/диск (def 1/1/10). Клиентская
+валидация — зеркало 02 §11.3 (вкл. инвариант maxmemory < mem); серверная —
+источник истины. Отправка — POST `/api/valkey/clusters`; успех → инвалидация
+списка (новый кластер с бейджем «не инициализирован»); ошибка — ProblemDetails
+в теле формы. Двойной клик — блокировка кнопки.
+
+### 8.4. Каталог valkey-алертов (`ValkeyAlertEngine`)
+
+Чистая функция `ValkeySnapshot (prev, next) → Alert[]`; пороги —
+`AdminPanel:ValkeyAlerts`. sinceUnix — по стабильному `id = kind:target`
+(§2-механика). Ротационный алерт живёт только у живого кластера: заявка
+ротации удаляется исполнением E2/E3 или демонтажом кластера (arch/21 X2) —
+вечный `valkey-rotation-pending` невозможен по построению.
+
+| kind | severity | Условие |
+|---|---|---|
+| `valkey-cluster-not-initialized` | info | state=NOT_INITIALIZED |
+| `valkey-cluster-to-remove` | info | state=TO_REMOVE |
+| `valkey-node-not-running` | critical | Active-кластер, нода state ∉ {RUNNING}, кроме fresh-PROVISIONING (< 60 с) |
+| `valkey-endpoints-missing` | critical | Active без `endpoints` (arch/20 §5) |
+| `valkey-rotation-pending` | info | живая заявка ротации `/valkeyworker/rotations/<C>` |
+| `valkey-key-malformed` | warning | valkey-ключ не разобран (parseError; arch/20 §5) |
+| `worker-api-unreachable` | critical | нет живых ключей `/valkeyworker/api/` (02 §2.3.3) — valkey-мутации панели 503; target `valkeyworker` |
+| `worker-unhealthy` | warning | живой ключ, но `/healthz` ≠ 200 (02 §2.3.3); target `valkeyworker/<id>` |
+
+## 9. Версионирование контракта
 
 Контракт API не версонируется (панель и API развёртываются одним артефактом,
 фронт и бэк всегда согласованы). Изменение DTO — правкой этого документа
