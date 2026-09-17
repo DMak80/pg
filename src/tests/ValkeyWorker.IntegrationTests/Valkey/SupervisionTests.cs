@@ -79,7 +79,10 @@ public class SupervisionTests(ValkeyClusterFixture fx)
         await proc.WaitForExitAsync(TestContext.Current.CancellationToken);
 
         // Act: тики с паузами 2 с — суммарно > NodeDeadSec (5 с); фиксируем
-        // стадии (до порога state держится RUNNING — молчание копится).
+        // стадии. Выход — ТОЛЬКО по факту пересоздания (state=PROVISIONING):
+        // значение state между тиками остаётся старым (RUNNING от
+        // provisioning-тика) — break по нему выходил бы на первой итерации,
+        // не дав порогу сработать (вакуум старого кейса).
         var deadline = DateTimeOffset.UtcNow.AddSeconds(30);
         var states = new List<string>();
         while (DateTimeOffset.UtcNow < deadline)
@@ -90,14 +93,14 @@ public class SupervisionTests(ValkeyClusterFixture fx)
             var state = await fx.GetAsync($"/valkey/clusters/{cluster}/nodes/node1/state");
             if (state is not null)
                 states.Add(state);
-            if (state == "PROVISIONING" || state == "RUNNING")
+            if (state == "PROVISIONING")
                 break;
             await Task.Delay(2000, TestContext.Current.CancellationToken);
         }
 
-        // Assert: пересоздание случилось — state ушёл в PROVISIONING (сначала
-        // был RUNNING: отказ пробы копил трек, а не валил тик), контейнер
-        // НОВЫЙ (Id сменился), затем RUNNING по зрячей пробе.
+        // Assert: до порога state держал RUNNING (отказ пробы копил трек, а не
+        // валил тик), затем PROVISIONING (пересоздание) — контейнер НОВЫЙ
+        // (Id сменился), нода поднялась на прежних кредах/порту.
         states.Should().Contain("RUNNING", "до порога молчание копится без действий");
         states.Should().Contain("PROVISIONING", "по порогу NodeDead — пересоздание");
         var idAfter = DockerInspectId($"vwk-{cluster}-node1");
