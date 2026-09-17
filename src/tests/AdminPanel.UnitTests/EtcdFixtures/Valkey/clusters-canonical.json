@@ -1,0 +1,15 @@
+[
+  { "key": "/valkey/clusters/cache/config", "value": "{\"nodes\":1,\"maxmemory_bytes\":536870912,\"maxmemory_policy\":\"allkeys-lru\",\"created_unix\":1756500000,\"state\":\"NOT_INITIALIZED\"}", "modRevision": 1 },
+  { "key": "/valkey/clusters/cache/nodes/node1/state", "value": "NOT_INITIALIZED", "modRevision": 2 },
+  { "key": "/valkey/clusters/cache/nodes/node1/resources", "value": "{\"cpu\":\"2\",\"mem\":\"4Gi\",\"disk\":\"40Gi\"}", "modRevision": 3 },
+  { "key": "/valkey/clusters/live/config", "value": "{\"nodes\":1,\"maxmemory_bytes\":536870912,\"maxmemory_policy\":\"allkeys-lru\",\"created_unix\":1756500000}", "modRevision": 4 },
+  { "key": "/valkey/clusters/live/endpoints", "value": "host.docker.internal:17001", "modRevision": 5 },
+  { "key": "/valkey/clusters/live/nodes/node1/state", "value": "RUNNING", "modRevision": 6 },
+  { "key": "/valkey/clusters/live/nodes/node1/resources", "value": "{\"cpu\":\"1\",\"mem\":\"1Gi\",\"disk\":\"10Gi\"}", "modRevision": 7 },
+  { "key": "/valkey/clusters/live/admin_user", "value": "admin", "modRevision": 8 },
+  { "key": "/valkey/clusters/live/admin_password", "value": "0123456789abcdef0123456789abcdef", "modRevision": 9 },
+  { "key": "/valkey/clusters/live/app_user", "value": "app", "modRevision": 10 },
+  { "key": "/valkey/clusters/live/app_password", "value": "ffffffffffffffffffffffffffffffff", "modRevision": 11 },
+  { "key": "/valkey/clusters/dying/config", "value": "{\"nodes\":1,\"maxmemory_bytes\":1073741824,\"maxmemory_policy\":\"noeviction\",\"created_unix\":1756500000,\"state\":\"TO_REMOVE\"}", "modRevision": 12 },
+  { "key": "/valkey/clusters/unknown/future_feature", "value": "{}", "modRevision": 13 }
+]

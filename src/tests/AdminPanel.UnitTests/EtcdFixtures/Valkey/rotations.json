@@ -1,0 +1,6 @@
+[
+  { "key": "/valkeyworker/rotations/live", "value": "{\"role\":\"app\",\"requested_unix\":1756500123,\"requested_by\":\"seed\"}", "modRevision": 1 },
+  { "key": "/valkeyworker/rotations/other", "value": "{\"role\":\"admin\",\"requested_unix\":1756500456}", "modRevision": 2 },
+  { "key": "/valkeyworker/rotations/broken", "value": "{oops", "modRevision": 3 },
+  { "key": "/valkeyworker/rotations/nofield", "value": "{\"role\":\"app\"}", "modRevision": 4 }
+]
