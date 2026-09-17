@@ -18,11 +18,17 @@ public sealed record OverviewDto(
     IReadOnlyList<OverviewClusterDto> Clusters,
     IReadOnlyList<OverviewMoveDto> ActiveMoves,
     OverviewKafkaDto? Kafka,
+    OverviewValkeyDto? Valkey,
     long SnapshotAgeMs,
     bool Stale);
 
 // Сводка kafka-домена (arch/03 §7.1): из KafkaSnapshot + kafka-алертов.
 public sealed record OverviewKafkaDto(
+    int ClustersTotal,
+    int ClustersCritical);
+
+// Сводка valkey-домена (arch/03 §8.1): из ValkeySnapshot + valkey-алертов.
+public sealed record OverviewValkeyDto(
     int ClustersTotal,
     int ClustersCritical);
 
@@ -67,9 +73,23 @@ public static class OverviewMapper
                         c.Name, b.Id, BucketStates.Name(b.State),
                         b.Move?.Owner, b.Move?.Target, b.Move?.UpdatedUnix)))],
             null, // kafka-сводка — хендлер дополняет из KafkaSnapshot (B5)
+            null, // valkey-сводка — хендлер дополняет из ValkeySnapshot (t03)
             Math.Max(0L, (long)Math.Round(age.TotalMilliseconds)),
             age > TimeSpan.FromSeconds(SnapshotStaleRule.Multiplier * refreshIntervalSeconds));
     }
+
+    // valkey-сводка: кластеры + critical-алерты ТОЛЬКО кластерных kinds
+    // valkey-node-not-running/valkey-endpoints-missing (arch/03 §8.1 — НЕ
+    // worker-api-unreachable: сознательное отличие от MapKafka, считающего
+    // все critical — фиксируется юнит-тестом в Task 7); null до первого тика
+    // valkey-refresher'а. Public static — юнит-тесты (как OverviewMapper.Map).
+    public static OverviewValkeyDto? MapValkey(Core.Valkey.ValkeySnapshot? valkey)
+        => valkey is null
+            ? null
+            : new OverviewValkeyDto(
+                valkey.Clusters.Count,
+                valkey.Alerts.Count(a => a.Severity == Core.AlertSeverity.Critical
+                    && a.Kind is "valkey-node-not-running" or "valkey-endpoints-missing"));
 }
 
 // Хендлер: store → отказ «снапшота нет» или маппер (spec §3.12).
@@ -77,6 +97,7 @@ public static class OverviewMapper
 public sealed class OverviewQueryHandler(
     ISnapshotStore store,
     IKafkaSnapshotReader kafkaStore,
+    IValkeySnapshotReader valkeyStore,
     TimeProvider time,
     IOptions<EtcdOptions> etcdOptions) : IQueryHandler<OverviewQuery, OverviewDto>
 {
@@ -88,7 +109,11 @@ public sealed class OverviewQueryHandler(
                 Result<OverviewDto>.Failed(new InspectionModule.SnapshotNotReadyException()));
 
         var overview = OverviewMapper.Map(snapshot, time.GetUtcNow(), EffectiveInterval(etcdOptions))
-            with { Kafka = MapKafka(kafkaStore.Current) };
+            with
+            {
+                Kafka = MapKafka(kafkaStore.Current),
+                Valkey = OverviewMapper.MapValkey(valkeyStore.Current),
+            };
         return ValueTask.FromResult(Result<OverviewDto>.Success(overview));
     }
 
