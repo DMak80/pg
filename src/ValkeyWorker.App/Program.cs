@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -30,7 +31,7 @@ builder.Services.AddSingleton<HealthState>();
 
 // Метрики (arch/18 §2.2): /metrics на том же mTLS-Kestrel-порту, что /healthz —
 // scrape ходит клиентским сертом per-install пакета. Коллектор доменных метрик
-// INFO — t05 (в t02 не входит).
+// INFO — arch/18 §4.2 (ValkeyMetricsCollector ниже).
 builder.Services.AddAppMetrics("ValkeyWorker", builder.Configuration.GetSection("ValkeyWorker:Metrics"));
 builder.Services.AddSingleton(sp =>
 {
@@ -233,6 +234,22 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<KeepaliveLoop>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SnapshotLoop>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<ReconcileLoop>());
 
+// Коллектор доменных метрик INFO (arch/18 §4.2, t05): read-only сбор вне клэймов;
+// источники — снапшот /valkey/clusters/ (парсер ValkeySnapshotParser) и Range
+// /valkeyworker/portalloc/; только Active + полные дискавери-креды (зеркало
+// Kafka-коллектора: сразу после циклов).
+builder.Services.AddSingleton(sp => new ValkeyMetricsState(
+    sp.GetRequiredService<System.Diagnostics.Metrics.Meter>()));
+builder.Services.AddHostedService(sp => new ValkeyMetricsCollector(
+    sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Metrics.CollectIntervalSec,
+    ct => SnapshotClustersAsync(sp, ct),
+    ct => SnapshotPortAllocAsync(sp, ct),
+    sp.GetRequiredService<IValkeyConnection>(),
+    sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.AdvertisedClientHost,
+    sp.GetRequiredService<ValkeyMetricsState>(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILogger<ValkeyMetricsCollector>>()));
+
 // Наблюдаемость (arch/21 §7): агрегированный health + per-loop обёртки.
 builder.Services.AddSingleton<ServiceProbes>();
 builder.Services.AddSingleton<ValkeyWorkerHealth>();
@@ -274,6 +291,72 @@ static ValkeyWorker.Provisioning.Processes.ValkeyProvisioningOptions ToProvision
 // Делегат снапшота для процессов (P12 «до/после» в точках изменений).
 static Func<CancellationToken, Task<Result>> SnapshotDelegate(SnapshotJob job)
     => async ct => await job.TakeAsync(ct);
+
+// Источник кластеров для коллектора метрик (arch/18 §4.2): Range /valkey/clusters/
+// c failover по endpoints → ValkeySnapshotParser (паттерн Kafka-коллектора).
+static async Task<Result<IReadOnlyList<ValkeyWorker.Core.Model.ValkeyClusterSnapshot>>> SnapshotClustersAsync(
+    IServiceProvider sp, CancellationToken ct)
+{
+    var gateway = sp.GetRequiredService<IEtcdGateway>();
+    var endpoints = sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints;
+    Result<IReadOnlyList<Kv>>? last = null;
+    foreach (var endpoint in endpoints)
+    {
+        var range = await gateway.RangeAsync(endpoint, "/valkey/clusters/", ct);
+        if (!range.IsSuccess)
+        {
+            last = range;
+            continue;
+        }
+
+        var parsed = ValkeyWorker.Etcd.Parsing.ValkeySnapshotParser.Parse(range.Value);
+        return parsed.IsSuccess
+            ? Result<IReadOnlyList<ValkeyWorker.Core.Model.ValkeyClusterSnapshot>>.Success(parsed.Value.Clusters)
+            : Result<IReadOnlyList<ValkeyWorker.Core.Model.ValkeyClusterSnapshot>>.Failed(parsed.Error!);
+    }
+
+    return Result<IReadOnlyList<ValkeyWorker.Core.Model.ValkeyClusterSnapshot>>.Failed(last!.Error!);
+}
+
+// Источник адресов нод коллектора: Range /valkeyworker/portalloc/ →
+// cluster → node → NodeAddress; битые ключи — warning + skip (паттерн PortAllocIndex),
+// тик не роняют.
+static async Task<Result<IReadOnlyDictionary<string, IReadOnlyDictionary<string, ValkeyWorker.Core.Model.NodeAddress>>>> SnapshotPortAllocAsync(
+    IServiceProvider sp, CancellationToken ct)
+{
+    var gateway = sp.GetRequiredService<IEtcdGateway>();
+    var logger = sp.GetRequiredService<ILogger<ValkeyMetricsCollector>>();
+    var endpoints = sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints;
+    Result<IReadOnlyList<Kv>>? last = null;
+    foreach (var endpoint in endpoints)
+    {
+        var range = await gateway.RangeAsync(endpoint, "/valkeyworker/portalloc/", ct);
+        if (!range.IsSuccess)
+        {
+            last = range;
+            continue;
+        }
+
+        var allocs = new Dictionary<string, IReadOnlyDictionary<string, ValkeyWorker.Core.Model.NodeAddress>>();
+        foreach (var kv in range.Value)
+        {
+            var cluster = kv.Key.Split('/')[^1];
+            try
+            {
+                allocs[cluster] = ValkeyWorker.Provisioning.Processes.ProcessCommon.ParsePortAlloc(kv.Value);
+            }
+            catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException)
+            {
+                logger.LogWarning("коллектор метрик: битый portalloc-ключ {Cluster}: {Error}",
+                    cluster, ex.Message);
+            }
+        }
+
+        return Result<IReadOnlyDictionary<string, IReadOnlyDictionary<string, ValkeyWorker.Core.Model.NodeAddress>>>.Success(allocs);
+    }
+
+    return Result<IReadOnlyDictionary<string, IReadOnlyDictionary<string, ValkeyWorker.Core.Model.NodeAddress>>>.Failed(last!.Error!);
+}
 
 // WAF-тесты (ValkeyWorker.IntegrationTests/Api, задача 13): точка входа как public partial.
 public partial class Program;

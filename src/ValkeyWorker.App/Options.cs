@@ -30,9 +30,17 @@ public sealed class ValkeyWorkerOptions
     /// <summary>HTTP API воркера (arch/21 §1.1): advertise-URL + стендовый сид.</summary>
     public ApiOptions Api { get; set; } = new();
 
-    /// <summary>Метрики воркера (arch/18 §2.2): базовый набор Shared.Metrics
-    /// (коллектор доменных метрик — t05, в t02 не входит).</summary>
-    public Shared.Metrics.MetricsOptions Metrics { get; set; } = new();
+    /// <summary>Метрики воркера (arch/18 §2.2/§2.6/§4.2): экспозиция + тик
+    /// коллектора INFO.</summary>
+    public ValkeyWorkerMetricsOptions Metrics { get; set; } = new();
+}
+
+/// <summary>Метрики ValkeyWorker (arch/18 §2.6/§4.2): базовая экспозиция +
+/// интервал тика коллектора INFO.</summary>
+public sealed class ValkeyWorkerMetricsOptions : Shared.Metrics.MetricsOptions
+{
+    /// <summary>Тик коллектора INFO, сек (default 30; arch/18 §4.2).</summary>
+    public int CollectIntervalSec { get; set; } = 30;
 }
 
 /// <summary>HTTP API воркера (arch/21 §1.1): advertise-URL в /valkeyworker/api/&lt;id&gt;
