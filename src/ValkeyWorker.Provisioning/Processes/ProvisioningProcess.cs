@@ -26,6 +26,7 @@ public sealed class ProvisioningProcess(
     PortAllocLock portLock,
     PortAllocIndex portIndex,
     IClusterSecretEnsurer secrets,
+    NodeTlsProvisioner tlsProvisioner,
     IValkeyConnection valkey,
     ValkeyProvisioningOptions options,
     Func<CancellationToken, Task<Result>>? snapshot = null,
@@ -272,6 +273,14 @@ public sealed class ProvisioningProcess(
                 snap.Config?.MaxmemoryBytes ?? 0, snap.Config?.MaxmemoryPolicy ?? "allkeys-lru",
                 creds.AdminPassword, creds.AppPassword);
 
+            // V3 TLS (t06, arch/21 §2): серт ноды в volume ДО EnsureNodeAsync —
+            // файлы обязаны существовать к старту контейнера (--tls-cert-file).
+            var advertised = options.AdvertisedClientHost ?? address.Host;
+            var tls = await tlsProvisioner.EnsureNodeTlsAsync(
+                cluster, node, address.Host, advertised, creds.CaPem, creds.CaKey, ct);
+            if (!tls.IsSuccess)
+                return tls;
+
             // Сверка re-run (V3): image + args + порт + лимиты — полное совпадение → пропуск.
             var existingArgs = await driver.NodeArgsAsync(cluster, node, ct);
             if (!existingArgs.IsSuccess)
@@ -302,7 +311,8 @@ public sealed class ProvisioningProcess(
 
             var ensured = await driver.EnsureNodeAsync(new ValkeyNodeSpec(
                 cluster, node, address.Host, address.ClientPort, options.NodeImage, args,
-                limits?.Cpu, limits?.MemBytes), ct);
+                limits?.Cpu, limits?.MemBytes,
+                TlsVolume: PlainClusterDriver.TlsVolumeName(cluster)), ct);
             if (!ensured.IsSuccess)
                 return ensured;
         }

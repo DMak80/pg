@@ -30,6 +30,7 @@ public sealed class NodeSupervisor(
     IValkeyConnection valkey,
     ValkeyProvisioningOptions options,
     PortAllocHealer healer,
+    NodeTlsProvisioner tlsProvisioner,
     TimeProvider? clock = null) // clock — тестовый порог NodeDeadSec (FixedTimeProvider)
 {
     private const string Op = "supervise";
@@ -47,13 +48,14 @@ public sealed class NodeSupervisor(
             return claimed;
 
         // Креды/декларация: без них args не собрать — пересоздания невозможны;
-        // ca_pem (t06) обязателен — пробы идут по TLS.
-        if (snap.AdminPassword is null || snap.AppPassword is null || snap.CaPem is null)
+        // ca_pem/ca_key (t06) обязательны — пробы по TLS, пересоздание без сертов
+        // не создаётся (миграция T доиграет — warning надзора).
+        if (snap.AdminPassword is null || snap.AppPassword is null || snap.CaPem is null || snap.CaKey is null)
         {
             var existingTrack = await journal.ReadUnreachableAsync(cluster, ct);
             var skip = await journal.WriteSupervisionAsync(
                 cluster, claims.InstanceId, existingTrack.Value ?? new Dictionary<string, long>(),
-                "нет ACL-кредов или ca_pem в etcd — пробы/пересоздания пропущены", ct);
+                "нет ACL-кредов или CA в etcd — пересоздание отложено (миграция T), пробы пропущены", ct);
             return skip.IsSuccess ? Result.Success() : skip;
         }
 
@@ -275,6 +277,14 @@ public sealed class NodeSupervisor(
             snap.Config?.MaxmemoryBytes ?? 0, snap.Config?.MaxmemoryPolicy ?? "allkeys-lru",
             snap.AdminPassword!, snap.AppPassword!);
 
+        // TLS (t06, arch/21 §5 C): серт в volume ДО EnsureNodeAsync; volume жив и
+        // валиден — переиспользование, иначе перевыпуск (кеш восполним).
+        var advertised = options.AdvertisedClientHost ?? address.Host;
+        var tls = await tlsProvisioner.EnsureNodeTlsAsync(
+            cluster, node, address.Host, advertised, snap.CaPem!, snap.CaKey!, ct);
+        if (!tls.IsSuccess)
+            return tls;
+
         // Контейнер мог остаться живым (UNREACHABLE/лимиты) — сначала снос.
         var removed = await driver.RemoveNodeAsync(cluster, node, ct);
         if (!removed.IsSuccess)
@@ -282,7 +292,8 @@ public sealed class NodeSupervisor(
 
         var ensured = await driver.EnsureNodeAsync(new ValkeyNodeSpec(
             cluster, node, address.Host, address.ClientPort, options.NodeImage, args,
-            limits?.Cpu, limits?.MemBytes), ct);
+            limits?.Cpu, limits?.MemBytes,
+            TlsVolume: PlainClusterDriver.TlsVolumeName(cluster)), ct);
         if (!ensured.IsSuccess)
             return ensured;
 
