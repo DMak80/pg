@@ -146,7 +146,8 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                 "устраните источник битой записи (внешний писатель) и приведите значение к канону arch/20; повторный тик распарсит ключ");
     }
 
-    // valkey-endpoints-missing + valkey-node-not-running (только Active-кластер).
+    // valkey-endpoints-missing + valkey-security-missing + valkey-node-not-running
+    // (только Active-кластер).
     private IEnumerable<Alert> ActiveClusterAlerts(
         ValkeyClusterInfo cluster, ValkeySnapshot? previous, ValkeySnapshot next)
     {
@@ -161,6 +162,20 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                 "Active-кластер без endpoints: endpoints дописывает воркер по факту подъёма ноды — без них клиенты не найдут инстанс; каждый Active-кластер обязан иметь endpoints",
                 AlertRemedy.WorkerAuto,
                 "воркер допишет endpoints по факту provisioning; висит — нода недоступна воркеру, проверьте контейнер vwk-<C>-node1");
+
+        // valkey-security-missing (critical, t06): Active-кластер без ca_pem —
+        // миграция TLS не доиграна либо ключ потерян (arch/20 §5).
+        if (!cluster.HasCaPem)
+            yield return new Alert(
+                $"valkey-security-missing:{cluster.Name}",
+                AlertSeverity.Critical,
+                "valkey-security-missing",
+                cluster.Name,
+                $"кластер {cluster.Name}: Active без ca_pem — TLS-канон не соблюдён",
+                null, null,
+                "Active-кластер без ca_pem: миграция TLS (migrate-tls воркера) не доиграна или ключ потерян; клиентские подключения без TLS-канона — риск R5 arch/21",
+                AlertRemedy.OperatorRunbook,
+                "дождитесь доигрывания миграции воркером (journal work/<C>, op=migrate-tls); висит — проверьте воркера и ключ /valkey/clusters/<C>/ca_pem в etcd");
 
         var prevCluster = previous?.Clusters.FirstOrDefault(c => c.Name == cluster.Name);
         foreach (var node in cluster.NodesList)

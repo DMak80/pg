@@ -29,7 +29,8 @@ public sealed record ValkeyClusterInfo(
     long? CreatedUnix,
     string? Endpoints,                       // null/пусто — воркер не дописал (алерт у Active)
     IReadOnlyList<ValkeyNodeInfo> NodesList, // node1 (v1 — один элемент)
-    ValkeyRotationTicket? Rotation = null);  // живая заявка ротации (джойн по кластеру)
+    ValkeyRotationTicket? Rotation = null,   // живая заявка ротации (джойн по кластеру)
+    bool HasCaPem = false);                  // ca_pem в etcd (t06): bool-флаг; сам PEM в API не отдаётся
 
 // Нода node<k>: state — raw-строка (NOT_INITIALIZED|PROVISIONING|RUNNING|UNREACHABLE|
 // REMOVING|TO_REMOVE; толерантно к новым); Live — из PING-пробы (null — проба молчит).

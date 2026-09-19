@@ -33,6 +33,7 @@ public static class ValkeyParser
         public readonly string Name = name;
         public string? ConfigRaw;
         public string? Endpoints;
+        public bool HasCaPem;
         public readonly Dictionary<string, NodeAcc> Nodes = [];
     }
 
@@ -67,8 +68,13 @@ public static class ValkeyParser
 
                 // Креды: панель app_* не читает вовсе, admin_* — только refresher в
                 // secrets-стор (§4.4); здесь — expected-skip без unknownKeys (02 §11.1).
+                // ca_pem (t06) — факт TLS-канона: строку не поднимаем, только флаг.
                 case "app_user" or "app_password" or "admin_user" or "admin_password"
                     when segments.Length == 5:
+                    break;
+
+                case "ca_pem" when segments.Length == 5:
+                    acc.HasCaPem = true;
                     break;
 
                 case "nodes" when segments.Length == 7
@@ -148,7 +154,8 @@ public static class ValkeyParser
             .Select(pair => BuildNode(acc.Name, pair.Value, errors))
             .ToList();
         return new ValkeyClusterInfo(
-            acc.Name, state, nodes, maxmemory, policy, createdUnix, acc.Endpoints, nodeList);
+            acc.Name, state, nodes, maxmemory, policy, createdUnix, acc.Endpoints, nodeList,
+            HasCaPem: acc.HasCaPem);
     }
 
     // Ключа config нет — кластер-скелет из прочих ключей; не ошибка парсера.
