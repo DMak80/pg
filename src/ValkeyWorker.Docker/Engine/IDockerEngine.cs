@@ -37,6 +37,18 @@ public interface IDockerEngine : IAsyncDisposable
     // DELETE /networks/<name> (404 = успех).
     Task<Result> DeleteNetworkAsync(string name, CancellationToken ct);
 
+    // POST /volumes/create (409 already exists = успех) — named volume TLS-секретов.
+    Task<Result> EnsureVolumeAsync(string name, CancellationToken ct);
+
+    // PUT /volumes/{name}/archive?path=/ — tar-тело (серты до старта контейнера).
+    Task<Result> PutVolumeArchiveAsync(string name, byte[] tar, CancellationToken ct);
+
+    // GET /volumes/{name}/archive?path=/ — tar-тело; null = volume нет.
+    Task<Result<byte[]?>> GetVolumeArchiveAsync(string name, CancellationToken ct);
+
+    // DELETE /volumes/{name} (404 = успех — идемпотентность демонтажа X1).
+    Task<Result> DeleteVolumeAsync(string name, CancellationToken ct);
+
     // swarm: GET /nodes (+ счётчик running-тасков по нодам).
     Task<Result<IReadOnlyList<DockerSwarmNode>>> ListNodesAsync(CancellationToken ct);
 
@@ -96,10 +108,11 @@ public sealed record DockerTask(string Id, string NodeId, string State, string? 
 public sealed record PortMap(int ContainerPort, int HostPort);
 
 // Спецификация контейнера ноды (упрощение домена, arch/21 §2): БЕЗ env
-// (конфигурация — Cmd-флаги valkey-server), БЕЗ volume (persistence off),
-// БЕЗ сети (контейнер живёт в сети запуска воркера). Cmd — обязательный
-// (вкл. пустой аргумент `--save ""` — элемент "" массива: экранирование
-// решается массивом Engine API, не строкой).
+// (конфигурация — Cmd-флаги valkey-server), без volume данных (persistence
+// off); Binds — только named volume TLS-секретов (t06, формат
+// "volume:/path"). БЕЗ сети (контейнер живёт в сети запуска воркера).
+// Cmd — обязательный (вкл. пустой аргумент `--save ""` — элемент "" массива:
+// экранирование решается массивом Engine API, не строкой).
 public sealed record ContainerSpec(
     string Image,
     IReadOnlyList<string> Cmd,
@@ -107,7 +120,8 @@ public sealed record ContainerSpec(
     string Hostname,
     double? CpuCores,
     long? MemoryBytes,
-    string? Label);
+    string? Label,
+    IReadOnlyList<string>? Binds = null);
 
 // Спецификация swarm-сервиса ноды: constraint на конкретную ноду (node.id==<id>).
 public sealed record ServiceSpec(string Name, ContainerSpec Template, string NodeConstraint);

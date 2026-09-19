@@ -368,6 +368,62 @@ internal static class Fakes
                     (IReadOnlyList<string>)[.. Containers.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).OrderBy(k => k, StringComparer.Ordinal)]));
             }
         }
+
+        // TLS-volume (t06): in-memory хранилище tar-архивов (cluster, host) → tar;
+        // отсутствие — null (GetTlsArchive), RemoveTlsVolume — 404 = успех.
+        public readonly Dictionary<(string Cluster, string Host), byte[]> TlsVolumes = [];
+
+        // Фильтр-инъекция: хост → Failed (симуляция «хост не в таблице Docker:Hosts»).
+        public Func<string, bool>? TlsVolumeFault { get; set; }
+
+        public Task<Result> EnsureTlsVolumeAsync(string cluster, string host, CancellationToken ct)
+        {
+            if (TlsVolumeFault?.Invoke(host) == true)
+                return Task.FromResult(Result.Failed(new ApplicationException($"host {host} mute")));
+
+            lock (_gate)
+            {
+                TlsVolumes.TryAdd((cluster, host), []);
+            }
+
+            return Task.FromResult(Result.Success());
+        }
+
+        public Task<Result> PutTlsArchiveAsync(string cluster, string host, byte[] tar, CancellationToken ct)
+        {
+            if (TlsVolumeFault?.Invoke(host) == true)
+                return Task.FromResult(Result.Failed(new ApplicationException($"host {host} mute")));
+
+            lock (_gate)
+            {
+                TlsVolumes[(cluster, host)] = tar;
+            }
+
+            return Task.FromResult(Result.Success());
+        }
+
+        public Task<Result<byte[]?>> GetTlsArchiveAsync(string cluster, string host, CancellationToken ct)
+        {
+            if (TlsVolumeFault?.Invoke(host) == true)
+                return Task.FromResult(Result<byte[]?>.Failed(new ApplicationException($"host {host} mute")));
+
+            lock (_gate)
+            {
+                var found = TlsVolumes.TryGetValue((cluster, host), out var tar) && tar.Length > 0 ? tar : null;
+                return Task.FromResult(Result<byte[]?>.Success(found));
+            }
+        }
+
+        public Task<Result> RemoveTlsVolumeAsync(string cluster, CancellationToken ct)
+        {
+            lock (_gate)
+            {
+                foreach (var key in TlsVolumes.Keys.Where(k => k.Cluster == cluster).ToList())
+                    TlsVolumes.Remove(key);
+            }
+
+            return Task.FromResult(Result.Success());
+        }
     }
 
     /// <summary>

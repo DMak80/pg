@@ -132,6 +132,57 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             }
         });
 
+    // POST /volumes/create; 409 «volume already exists» = успех (идемпотентность).
+    public async Task<Result> EnsureVolumeAsync(string name, CancellationToken ct)
+        => await Result.FromAsync(async () =>
+        {
+            try
+            {
+                await SendAsync(HttpMethod.Post, "/volumes/create",
+                    new Dictionary<string, object?> { ["Name"] = name }, ct);
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 409)
+            {
+                // volume с таким именем уже есть — идемпотентность
+            }
+        });
+
+    // PUT /volumes/{name}/archive?path=/ с tar-телом (серты до старта контейнера).
+    public async Task<Result> PutVolumeArchiveAsync(string name, byte[] tar, CancellationToken ct)
+        => await Result.FromAsync(async () =>
+            await SendBytesAsync(HttpMethod.Put,
+                $"/volumes/{Uri.EscapeDataString(name)}/archive?path=%2F", tar, ct));
+
+    // GET /volumes/{name}/archive?path=/ — tar-тело; 404 → null (volume нет:
+    // слёт тома — положительное свидетельство отсутствия, перевыпуск).
+    public async Task<Result<byte[]?>> GetVolumeArchiveAsync(string name, CancellationToken ct)
+        => await Result<byte[]?>.FromAsync(async () =>
+        {
+            try
+            {
+                return await GetBytesAsync(
+                    $"/volumes/{Uri.EscapeDataString(name)}/archive?path=%2F", ct);
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                return null; // volume нет — факта сертов нет
+            }
+        });
+
+    // DELETE /volumes/{name}; 404 = успех (идемпотентность демонтажа X1).
+    public async Task<Result> DeleteVolumeAsync(string name, CancellationToken ct)
+        => await Result.FromAsync(async () =>
+        {
+            try
+            {
+                await SendAsync(HttpMethod.Delete, $"/volumes/{Uri.EscapeDataString(name)}", ct: ct);
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                // volume уже нет — идемпотентность
+            }
+        });
+
     public async Task<Result<IReadOnlyList<DockerSwarmNode>>> ListNodesAsync(CancellationToken ct)
     {
         return await Result<IReadOnlyList<DockerSwarmNode>>.FromAsync(async () =>
@@ -525,6 +576,10 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         if (spec.MemoryBytes is { } memory)
             hostConfig["Memory"] = memory;
 
+        // Named volume TLS-секретов (t06): Binds формата "volume:/path".
+        if (spec.Binds is { Count: > 0 })
+            hostConfig["Binds"] = spec.Binds.ToArray();
+
         var body = new Dictionary<string, object?>
         {
             ["Image"] = spec.Image,
@@ -549,6 +604,16 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         };
         if (spec.Template.Label is { Length: > 0 } label)
             container["Labels"] = new Dictionary<string, string> { ["pgworker"] = label };
+        // Binds swarm-шаблона — Mounts (named volume TLS-секретов, t06).
+        if (spec.Template.Binds is { Count: > 0 })
+        {
+            container["Mounts"] = spec.Template.Binds.Select(b => new
+            {
+                Type = "volume",
+                Source = b[..b.IndexOf(':')],
+                Target = b[(b.IndexOf(':') + 1)..],
+            }).ToArray();
+        }
 
         var taskTemplate = new Dictionary<string, object?>
         {
@@ -610,6 +675,42 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
                 : await response.Content.ReadAsStringAsync(ct);
             throw new DockerHttpException(method.Method, path, (int)response.StatusCode, errorBody);
         }
+    }
+
+    // Команда с байтовым телом (tar для volume-archive API) — тот же контракт ошибок.
+    private async Task SendBytesAsync(HttpMethod method, string path, byte[] body, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(method, Api + path)
+        {
+            Content = new ByteArrayContent(body)
+            {
+                Headers = { ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-tar") },
+            },
+        };
+        using var response = await httpClient.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = response.Content is null
+                ? string.Empty
+                : await response.Content.ReadAsStringAsync(ct);
+            throw new DockerHttpException(method.Method, path, (int)response.StatusCode, errorBody);
+        }
+    }
+
+    // GET байтового тела (tar volume-archive API): пустое тело → пустой массив.
+    private async Task<byte[]> GetBytesAsync(string path, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, Api + path);
+        using var response = await httpClient.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = response.Content is null
+                ? string.Empty
+                : await response.Content.ReadAsStringAsync(ct);
+            throw new DockerHttpException("GET", path, (int)response.StatusCode, errorBody);
+        }
+
+        return await response.Content.ReadAsByteArrayAsync(ct);
     }
 
     // Команда с JSON-ответом (пустое тело → default).

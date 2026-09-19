@@ -8,7 +8,8 @@ namespace ValkeyWorker.Provisioning.Processes;
 /// Deprovisioning valkey-кластера (arch/21 §5 B, фазы X0–X3): от заявки
 /// TO_REMOVE до чистого etcd и удалённого контейнера. ПОРЯДОК «сначала docker,
 /// потом etcd»: ошибка docker-хоста оставляет etcd-декларацию нетронутой —
-/// следующий тик повторит демонтаж (томов у домена нет). X2 чистит координацию
+/// следующий тик повторит демонтаж (тома данных нет; TLS-volume t06 чистится
+/// в X1). X2 чистит координацию
 /// ВКЛЮЧАЯ заявки ротаций и стейт доигрывания (work/&lt;C&gt;/rotation); финальной
 /// journal-записи ПОСЛЕ чистки нет (образец kfw: запись done воскресила бы
 /// удалённый work/&lt;C&gt; — координация &lt;C&gt; обязана остаться пустой).
@@ -45,7 +46,8 @@ public sealed class DeprovisioningProcess(
                 return Fail(cluster, before.Error!, "snapshot-before");
         }
 
-        // X1: docker сначала (rm -f vwk-<C>-*, 404 = ок; томов нет).
+        // X1: docker сначала (rm -f vwk-<C>-*, 404 = ок; TLS-volume t06 —
+        // контейнеры снесены, том больше не нужен).
         var objects = await driver.ListNodeObjectsAsync(cluster, ct);
         if (!objects.IsSuccess)
             return Fail(cluster, objects.Error!, "list");
@@ -57,6 +59,11 @@ public sealed class DeprovisioningProcess(
             if (!removed.IsSuccess)
                 return Fail(cluster, removed.Error!, "remove-node");
         }
+
+        // X1: TLS-volume кластера (t06): контейнеры снесены — том больше не нужен.
+        var volumeRemoved = await driver.RemoveTlsVolumeAsync(cluster, ct);
+        if (!volumeRemoved.IsSuccess)
+            return Fail(cluster, volumeRemoved.Error!, "remove-tls-volume");
 
         // X2: etcd после docker — домен + координация ВКЛЮЧАЯ заявки ротаций
         // и стейт доигрывания ротации (work/<C>/rotation).
