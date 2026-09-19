@@ -344,6 +344,37 @@ services:
       KafkaWorker__Api__EnableSeedEndpoint: "true"
     depends_on: [etcd]
 
+  # Живой ValkeyWorker (t03; arch/04 §2.4): профиль valkey — только явно.
+  # Управляет docker-хостом через сокет; контейнеры нод vwk-* поднимает на
+  # хосте стенда (portalloc 17000–17999: на одном docker-хосте один valkey-контур).
+  # API-порт на хост НЕ публикуется: панель и чеки ходят через панель/панельную
+  # сеть (compose-DNS valkeyworker:8080); сид — 05-seed.sh (exec curl внутрь).
+  valkeyworker:
+    build:
+      context: ../..
+      dockerfile: docker/ValkeyWorker.Dockerfile
+    image: valkeyworker:dev
+    container_name: as-valkeyworker
+    restart: unless-stopped
+    profiles: ["valkey"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - vw-snapshots:/snapshots
+      # mTLS HTTP API (arch/21 §1.1): per-install пакет (deploy/tls/gen.sh) —
+      # server-серт с SAN DNS:valkeyworker (t03), клиентский CA общий.
+      - ../../deploy/tls:/tls:ro
+    extra_hosts:
+      - "local:host-gateway"
+    environment:
+      ValkeyWorker__Etcd__Endpoints__0: http://etcd:2379
+      ValkeyWorker__AdvertisedClientHost: host.docker.internal
+      ValkeyWorker__Api__AdvertiseUrl: https://valkeyworker:8080
+      VWK_API_TLS_CERT_PATH: /tls/server.crt
+      VWK_API_TLS_KEY_PATH: /tls/server.key
+      VWK_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
+      ValkeyWorker__Api__EnableSeedEndpoint: "true"
+    depends_on: [etcd]
+
   # Стек мониторинга (arch/18 §5; профиль metrics — входит в полный подъём
   # 00-up.sh, quick без него). Порты — env-override при коллизиях на хосте (M4).
   prometheus:
@@ -396,6 +427,7 @@ volumes:
   etcd-data:
   as-minio-data:
   kfw-snapshots:
+  vw-snapshots:
   prometheus-data:
   grafana-data:
   alertmanager-data:

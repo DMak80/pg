@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
-# Подъём полного стенда (профили full + kafka) и приведение в рабочее
+# Подъём полного стенда (профили full + kafka + valkey) и приведение в рабочее
 # состояние: реплики, sync-standby, инвентарь схем (spec t10 §7.1), живой
-# kafkaworker. Управление кафкой входит в стенд всегда (не только e2e-гейтом):
-# без воркера kafka-домен панели глух — отсюда «глупые» алерты и разборы.
+# kafkaworker, живой valkeyworker + сид demo (t03). Управление кафкой входит в
+# стенд всегда (не только e2e-гейтом): без воркера kafka-домен панели глух —
+# отсюда «глупые» алерты и разборы.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(cd ../.. && pwd)"
@@ -19,13 +20,14 @@ for bin in docker jq curl; do
   command -v "$bin" >/dev/null || { echo "❌ нет $bin в PATH"; exit 1; }
 done
 
-# mTLS API kafkaworker (t03, arch/16 §1.1): per-install TLS-пакет — генерируем
-# идемпотентно (только если ca.pem отсутствует); panel.crt/ca.pem уходят панели,
-# server.* + ca.pem — воркеру (bind ../../deploy/tls в стендовом compose).
-if [ ! -f "$ROOT/deploy/tls/ca.pem" ]; then
-  echo ">>> генерирую per-install TLS-пакет (deploy/tls/gen.sh)"
-  bash "$ROOT/deploy/tls/gen.sh"
-fi
+# mTLS API воркеров (t03, arch/16 §1.1 / arch/21 §1.1): per-install TLS-пакет —
+# gen.sh идемпотентен ПОФАЙЛОВО (ca.pem жив — клиентские/pgserver не трогаются;
+# server-серт без DNS:valkeyworker перегенерируется, t03), поэтому зовём
+# безусловно: на свежем хосте создаёт пакет, на живом — только чинит старый
+# server-серт; panel.crt/ca.pem уходят панели, server.* + ca.pem — воркерам
+# (bind ../../deploy/tls в стендовом compose).
+echo ">>> TLS-пакет (deploy/tls/gen.sh — идемпотентно)"
+bash "$ROOT/deploy/tls/gen.sh"
 
 # Наполнение deploy-volume pgw-api-tls пакетом (ro-монтирование воркером);
 # имя volume — с префиксом compose-проекта deploy (как его создаёт compose).
@@ -34,14 +36,14 @@ docker run --rm \
   -v "$ROOT/deploy/tls:/src:ro" -v deploy_pgw-api-tls:/tls alpine:3.20 \
   sh -c "cp /src/ca.pem /src/pgserver.crt /src/pgserver.key /src/healthcheck.crt /src/healthcheck.key /tls/"
 
-echo ">>> поднимаю стенд (docker compose --profile full --profile kafka --profile metrics up -d --build)"
+echo ">>> поднимаю стенд (docker compose --profile full --profile kafka --profile valkey --profile metrics up -d --build)"
 # Docker Desktop отдаёт хост-порт recreated-контейнера с задержкой (com.docke
 # держит публикацию после удаления старого контейнера; при пересборке образа
 # recreate стабилен — ID меняется метаданными даже на кэшированных слоях) —
 # ретрай compose up, иначе подъём падает на «port is already allocated».
 compose_up_ok=0
 for _ in 1 2 3; do
-  if docker compose --profile full --profile kafka --profile metrics up -d --build 2>&1 | tail -5; then
+  if docker compose --profile full --profile kafka --profile valkey --profile metrics up -d --build 2>&1 | tail -5; then
     compose_up_ok=1; break
   fi
   echo "  compose up не удался (порт не отдан после recreate) — пауза 10 c"; sleep 10
@@ -226,6 +228,24 @@ done
   || { echo "❌ kafkaworker не ожил за 60 c (docker compose logs kafkaworker)"; exit 1; }
 echo "  kafkaworker жив (heartbeat /kafkaworker/instances/*)"
 
+# 7b) valkeyworker жив (t03): heartbeat lease-ключ /valkeyworker/api/* — его
+#     ждут панель (WorkerEndpoints) и чек 51 (мутации через панель→воркер).
+for i in $(seq 1 60); do
+  [ -n "$(ect get /valkeyworker/api/ --prefix --keys-only 2>/dev/null | head -1)" ] && break
+  sleep 1
+done
+[ -n "$(ect get /valkeyworker/api/ --prefix --keys-only 2>/dev/null | head -1)" ] \
+  || { echo "❌ valkeyworker не ожил за 60 c (docker compose logs valkeyworker)"; exit 1; }
+echo "  valkeyworker жив (heartbeat /valkeyworker/api/*)"
+
+# 7c) valkey-сид (t03): демо-кластер demo наливается ЧЕРЕЗ API живого воркера —
+#     метрика spec §8.1: после ПОЛНОГО 00-up.sh панель /valkey уже показывает
+#     demo (Active, RUNNING, endpoints, live) — без отдельного запуска чека.
+#     05-seed.sh идемпотентен (SeedDemoHandler: живой config → 200 no-op),
+#     wait до Active — внутри seed-функции; прецедент — pg-контур (00-up.sh
+#     сам наливает pg-сид через API pgworker). Воркер продолжает жить.
+"$PWD/checks/05-seed.sh" valkey
+
 # 8) панель жива: всегда в докере (AGENTS.md), сервис adminpanel сети стенда,
 #    /api/healthz опубликован на :5050.
 for i in $(seq 1 60); do curl -fsS http://localhost:5050/api/healthz >/dev/null 2>&1 && break; sleep 1; done
@@ -240,4 +260,4 @@ curl -fsS -m 3 "http://localhost:${METRICS_PROMETHEUS_PORT:-9090}/-/ready" >/dev
   || { echo "❌ prometheus не готов за 60 c (docker compose logs prometheus)"; exit 1; }
 echo "  prometheus готов (:${METRICS_PROMETHEUS_PORT:-9090})"
 
-echo "✓ стенд поднят (полная система: панель + PG + kafka + PgWorker + мониторинг, контур один)"
+echo "✓ стенд поднят (полная система: панель + PG + kafka + valkey + PgWorker + мониторинг, контур один)"

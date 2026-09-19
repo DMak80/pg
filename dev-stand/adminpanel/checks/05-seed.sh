@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Идемпотентная наливка демо-сидов ЧЕРЕЗ API воркеров (spec §3.5; прямая
-# запись etcdctl'ом упразднена). Режимы: pg | kafka | all (default all).
+# запись etcdctl'ом упразднена). Режимы: pg | kafka | valkey | all (default all).
 # Скрипт НЕ управляет жизнью воркера ПОСЛЕ наливки (решение пользователя по
 # ревью Фазы 4): потребитель сида решает сам — чек 50 после наливки гоняет
 # мутации через живой API и останавливает kafkaworker финальным шагом
@@ -47,7 +47,33 @@ seed_kafka() {
   docker compose exec -T etcd etcdctl get /kafkaworker/api/ --prefix --keys-only 2>/dev/null | grep -q . \
     || { echo "❌ /kafkaworker/api/ пуст за 30 c (AdvertiseUrl/keepalive?)"; exit 1; }
 }
-[ "$MODE" = pg ] || [ "$MODE" = kafka ] || [ "$MODE" = all ] || { echo "usage: 05-seed.sh [pg|kafka|all]"; exit 1; }
-[ "$MODE" = kafka ] || seed_pg
-[ "$MODE" = pg ] || seed_kafka
+seed_valkey() {
+  docker compose --profile valkey up -d valkeyworker >/dev/null 2>&1
+  # mTLS-курл внутри образа воркера (curl установлен HEALTHCHECK'ом; серты /tls);
+  # API-порт на хост не публикуется — ходим изнутри контейнера на localhost:8080.
+  vwk_curl() {
+    docker compose exec -T valkeyworker curl -fsS -m 3 \
+      --cacert /tls/ca.pem --cert /tls/healthcheck.crt --key /tls/healthcheck.key "$@"
+  }
+  for i in $(seq 1 60); do vwk_curl https://localhost:8080/healthz >/dev/null 2>&1 && break; sleep 1; done
+  vwk_curl https://localhost:8080/healthz >/dev/null \
+    || { echo "❌ valkeyworker не ожил (:8080/healthz по mTLS из контейнера)"; exit 1; }
+  echo "  valkey-сид: $(vwk_curl -X POST https://localhost:8080/api/seed/demo)"
+  # Заявка доигрывается Reconcile-циклом воркера: ждём Active-конфиг demo
+  # (config без state) ≤ бюджета тиков (NodeBootSec-граница 120 c + запас).
+  for i in $(seq 1 150); do
+    cfg="$(docker compose exec -T etcd etcdctl get /valkey/clusters/demo/config --print-value-only </dev/null 2>/dev/null)"
+    [ -n "$cfg" ] && ! echo "$cfg" | grep -q '"state"' && break
+    sleep 1
+  done
+  cfg="$(docker compose exec -T etcd etcdctl get /valkey/clusters/demo/config --print-value-only </dev/null 2>/dev/null)"
+  [ -n "$cfg" ] && ! echo "$cfg" | grep -q '"state"' \
+    || { echo "❌ демо-кластер demo не стал Active за 150 c (docker compose logs valkeyworker; контейнер vwk-demo-node1?)"; exit 1; }
+  echo "  демо-кластер demo Active (воркер доиграл заявку; vwk-demo-node1 жив)"
+}
+[ "$MODE" = pg ] || [ "$MODE" = kafka ] || [ "$MODE" = valkey ] || [ "$MODE" = all ] \
+  || { echo "usage: 05-seed.sh [pg|kafka|valkey|all]"; exit 1; }
+[ "$MODE" = kafka ] || [ "$MODE" = valkey ] || seed_pg
+[ "$MODE" = pg ] || [ "$MODE" = valkey ] || seed_kafka
+[ "$MODE" = pg ] || [ "$MODE" = kafka ] || seed_valkey
 echo "✓ 05-seed ($MODE): сиды налиты через API воркеров (воркеры подняты — жизнью управляет потребитель)"
