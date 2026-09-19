@@ -24,13 +24,13 @@ public sealed class ConfigConverger(
     {
         var cluster = snap.Cluster;
 
-        // Active-ветка: endpoints + admin-кред обязательны.
-        if (snap.Endpoints is null || snap.AdminUser is null || snap.AdminPassword is null)
+        // Active-ветка: endpoints + admin-кред + ca_pem (TLS-транспорт t06) обязательны.
+        if (snap.Endpoints is null || snap.AdminUser is null || snap.AdminPassword is null || snap.CaPem is null)
             return Result.Failed(new ApplicationException(
-                $"converge {cluster}: нет endpoints/admin-креда — converge невозможен"));
+                $"converge {cluster}: нет endpoints/admin-креда/ca_pem — converge невозможен"));
 
         var endpoint = ProcessCommon.ParseEndpoint(snap.Endpoints);
-        var admin = new ValkeyEndpoint(endpoint.Host, endpoint.Port, snap.AdminUser, snap.AdminPassword);
+        var admin = new ValkeyEndpoint(endpoint.Host, endpoint.Port, snap.AdminUser, snap.AdminPassword, snap.CaPem);
 
         // CONFIG GET/SET maxmemory.
         var maxmemory = await valkey.ConfigGetAsync(admin, "maxmemory", ct);

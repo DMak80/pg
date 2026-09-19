@@ -2,6 +2,7 @@ using System.Text.RegularExpressions;
 using FluentAssertions;
 using Shared.Etcd.Client;
 using ValkeyWorker.Core.Model;
+using ValkeyWorker.Core.Valkey;
 using ValkeyWorker.Etcd.Parsing;
 using ValkeyWorker.UnitTests.Provisioning;
 using Xunit;
@@ -47,6 +48,9 @@ public class PasswordRotatorTests
             Etcd.Seed($"/valkey/clusters/{cluster}/app_password", OldApp);
             Etcd.Seed($"/valkey/clusters/{cluster}/admin_user", "admin");
             Etcd.Seed($"/valkey/clusters/{cluster}/admin_password", OldAdmin);
+            var (caPem, caKeyPem) = ValkeyPki.GenerateCa(cluster);
+            Etcd.Seed($"/valkey/clusters/{cluster}/ca_pem", caPem);
+            Etcd.Seed($"/valkey/clusters/{cluster}/ca_key", caKeyPem);
             // Нода: admin-проба воркера, app с OLD-паролем.
             Valkey.AddUser("admin", OldAdmin);
             Valkey.AddUser("app", OldApp, "~*", "+@read", "+@write");

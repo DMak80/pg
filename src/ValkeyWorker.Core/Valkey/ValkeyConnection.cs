@@ -1,4 +1,6 @@
+using System.Net.Security;
 using System.Net.Sockets;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Shared.Core;
 
@@ -46,22 +48,51 @@ public sealed class ValkeyConnection(TimeSpan? connectAndCommandTimeout = null) 
             using var client = new TcpClient();
             await client.ConnectAsync(ep.Host, ep.Port, timeout.Token);
 
-            // BufferedStream — один на соединение: буфер переживает чтение AUTH
-            // (сервер мог уже отправить оба кадра).
-            using var stream = new BufferedStream(client.GetStream(), 8192);
+            // TLS (t06, arch/21 §6): доверие — ТОЛЬКО per-cluster CA; системные
+            // якоря не участвуют (SslPolicyErrors игнорируем — строим свою цепочку
+            // CustomRootTrust) + SAN обязан покрывать хост endpoint'а.
+            // Валидатор — ЗАМЫКАНИЕ на распарсенный CA и ep.Host (не поле класса:
+            // соединение = один endpoint).
+            if (!ValkeyPki.TryParseCertificate(ep.CaPem, out var ca) || ca is null)
+                return Result<T>.Failed(new ApplicationException(
+                    $"valkey {ep.Host}:{ep.Port}: ca_pem — невалидный PEM ({command[0]})"));
+            using (ca)
+            {
+                // Валидатор — ЗАМЫКАНИЕ на распарсенный CA и ep.Host (не поле
+                // класса: соединение = один endpoint).
+                bool ValidateServerCertificate(
+                    object sender, X509Certificate? certificate, X509Chain? chain, SslPolicyErrors errors)
+                    => certificate is not null
+                       && Shared.Tls.TlsChain.ValidateChain(certificate, ca) // CustomRootTrust + NoCheck
+                       && SanMatchesHost(certificate, ep.Host);
 
-            // AUTH выполняется внутри каждой команды (после connect):
-            // запрос AUTH user password → ожидание +OK.
-            var auth = await Resp.WriteAndReadAsync(
-                stream, ["AUTH", ep.User, ep.Password], timeout.Token);
-            if (!IsOk(auth))
-                return FailedReply<T>("AUTH", auth);
+                using var ssl = new SslStream(client.GetStream(), false, ValidateServerCertificate);
+                var tlsOptions = new SslClientAuthenticationOptions
+                {
+                    TargetHost = ep.Host,
+                    ClientCertificates = null, // клиентские серты — нет (ACL)
+                    EnabledSslProtocols = System.Security.Authentication.SslProtocols.None, // дефолты ОС
+                    RemoteCertificateValidationCallback = ValidateServerCertificate,
+                };
+                await ssl.AuthenticateAsClientAsync(tlsOptions, timeout.Token);
 
-            var reply = await Resp.WriteAndReadAsync(stream, command, timeout.Token);
-            if (!IsSuccess(reply))
-                return FailedReply<T>(command[0], reply);
+                // BufferedStream — один на соединение: буфер переживает чтение AUTH
+                // (сервер мог уже отправить оба кадра).
+                using var stream = new BufferedStream(ssl, 8192);
 
-            return Result<T>.Success(project(reply));
+                // AUTH выполняется внутри каждой команды (после connect):
+                // запрос AUTH user password → ожидание +OK.
+                var auth = await Resp.WriteAndReadAsync(
+                    stream, ["AUTH", ep.User, ep.Password], timeout.Token);
+                if (!IsOk(auth))
+                    return FailedReply<T>("AUTH", auth);
+
+                var reply = await Resp.WriteAndReadAsync(stream, command, timeout.Token);
+                if (!IsSuccess(reply))
+                    return FailedReply<T>(command[0], reply);
+
+                return Result<T>.Success(project(reply));
+            }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
@@ -72,11 +103,31 @@ public sealed class ValkeyConnection(TimeSpan? connectAndCommandTimeout = null) 
             return Result<T>.Failed(new TimeoutException(
                 $"valkey {ep.Host}:{ep.Port} не ответил за {_timeout.TotalSeconds:F1} c ({command[0]})", ex));
         }
+        catch (System.Security.Authentication.AuthenticationException ex)
+        {
+            // TLS-хендшейк отвергнут (чужой CA / SAN-мисс / протокол) — отдельная ветка
+            return Result<T>.Failed(new ApplicationException(
+                $"valkey {ep.Host}:{ep.Port} TLS: {ex.Message}", ex));
+        }
         catch (Exception ex)
         {
             return Result<T>.Failed(new ApplicationException(
                 $"valkey {ep.Host}:{ep.Port} {command[0]}: {ex.Message}", ex));
         }
+    }
+
+    // SAN-хост (arch/21 §2): advertised DNS либо IP; ровно один SAN у сертов
+    // домена, но сверяем весь список — отказ при отсутствии покрытия.
+    private static bool SanMatchesHost(X509Certificate certificate, string host)
+    {
+        var cert = certificate as X509Certificate2 ?? new X509Certificate2(certificate);
+        using var _ = cert;
+        var san = cert.Extensions.OfType<X509SubjectAlternativeNameExtension>().FirstOrDefault();
+        if (san is null)
+            return false;
+        if (System.Net.IPAddress.TryParse(host, out var ip))
+            return san.EnumerateIPAddresses().Contains(ip);
+        return san.EnumerateDnsNames().Contains(host, StringComparer.OrdinalIgnoreCase);
     }
 
     // Успех = любой не-error кадр (+OK, +PONG, массив, целое, bulk).

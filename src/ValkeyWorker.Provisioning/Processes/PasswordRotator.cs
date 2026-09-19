@@ -106,10 +106,10 @@ public sealed class PasswordRotator(
         ValkeyClusterSnapshot snap, string cluster, string role, string? requestedBy,
         string requestPayload, CancellationToken ct)
     {
-        // Active-кластер: endpoints + admin-кред обязательны.
-        if (snap.Endpoints is null || snap.AdminUser is null || snap.AdminPassword is null)
+        // Active-кластер: endpoints + admin-кред + ca_pem (TLS t06) обязательны.
+        if (snap.Endpoints is null || snap.AdminUser is null || snap.AdminPassword is null || snap.CaPem is null)
             return Result<RotationState>.Failed(new ApplicationException(
-                $"rotate {cluster}: нет endpoints/admin-креда — ротация невозможна"));
+                $"rotate {cluster}: нет endpoints/admin-креда/ca_pem — ротация невозможна"));
 
         // OLD — текущее значение etcd (failover); NEW — генерация.
         var oldPasswordKey = $"/valkey/clusters/{cluster}/{role}_password";
@@ -247,7 +247,7 @@ public sealed class PasswordRotator(
     private static ValkeyEndpoint ValkeyEndpointOf(ValkeyClusterSnapshot snap)
     {
         var (host, port) = ProcessCommon.ParseEndpoint(snap.Endpoints!);
-        return new ValkeyEndpoint(host, port, snap.AdminUser!, snap.AdminPassword!);
+        return new ValkeyEndpoint(host, port, snap.AdminUser!, snap.AdminPassword!, snap.CaPem!);
     }
 
     // ── стейт доигрывания (work/<C>/rotation, failover по endpoints) ──

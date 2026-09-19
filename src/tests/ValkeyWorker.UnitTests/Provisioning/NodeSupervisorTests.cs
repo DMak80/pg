@@ -60,6 +60,9 @@ public class NodeSupervisorTests
             Etcd.Seed($"/valkey/clusters/{cluster}/app_password", "AppPassword0123456789abcdef12345");
             Etcd.Seed($"/valkey/clusters/{cluster}/admin_user", "admin");
             Etcd.Seed($"/valkey/clusters/{cluster}/admin_password", "AdminPassword0123456789abcdef12345");
+            var (caPem, caKeyPem) = ValkeyWorker.Core.Valkey.ValkeyPki.GenerateCa(cluster);
+            Etcd.Seed($"/valkey/clusters/{cluster}/ca_pem", caPem);
+            Etcd.Seed($"/valkey/clusters/{cluster}/ca_key", caKeyPem);
             Etcd.Seed($"/valkeyworker/portalloc/{cluster}", "{\"node1\":{\"host\":\"h1\",\"client\":" + port + "}}");
             Driver.Containers[$"vwk-{cluster}-node1"] =
                 new Fakes.FakeDriver.ContainerFact("h1", port, 2m, 1024L * 1024 * 1024,

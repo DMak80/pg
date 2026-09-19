@@ -46,13 +46,14 @@ public sealed class NodeSupervisor(
         if (!claimed.IsSuccess)
             return claimed;
 
-        // Креды/декларация: без них args не собрать — пересоздания невозможны.
-        if (snap.AdminPassword is null || snap.AppPassword is null)
+        // Креды/декларация: без них args не собрать — пересоздания невозможны;
+        // ca_pem (t06) обязателен — пробы идут по TLS.
+        if (snap.AdminPassword is null || snap.AppPassword is null || snap.CaPem is null)
         {
             var existingTrack = await journal.ReadUnreachableAsync(cluster, ct);
             var skip = await journal.WriteSupervisionAsync(
                 cluster, claims.InstanceId, existingTrack.Value ?? new Dictionary<string, long>(),
-                "нет ACL-кредов в etcd — пробы/пересоздания пропущены", ct);
+                "нет ACL-кредов или ca_pem в etcd — пробы/пересоздания пропущены", ct);
             return skip.IsSuccess ? Result.Success() : skip;
         }
 
@@ -128,11 +129,11 @@ public sealed class NodeSupervisor(
                 }
             }
 
-            // PING-проба admin-кредом по advertised-адресу (не published).
+            // PING-проба admin-кредом по advertised-адресу (не published), по TLS (t06).
             var ping = await valkey.PingAsync(
                 new ValkeyEndpoint(
                     options.AdvertisedClientHost ?? address.Value.Host, address.Value.ClientPort,
-                    "admin", snap.AdminPassword!), ct);
+                    "admin", snap.AdminPassword!, snap.CaPem), ct);
             if (ping.IsSuccess)
             {
                 // Успешное зондирование — счётчик молчания ноды стартует заново.
