@@ -41,12 +41,3 @@
   — AGENTS базовые правила п.8); контракт кред/endpoints не меняется —
   добавятся только CA-ключи, внешняя библиотека t04 совместима без
   переделок (обратная совместимость дискавери arch/20 §4).
-- **`t08-valkey-client-integration`** —
-  интеграция HA.Valkey в клиентский модуль Valkey приложения
-  (StackExchange.Redis) по образцу связки HA.Kafka →
-  `Infrastructure.App.Kafka` (docs/01.16 §1a): клиентский модуль в HaDb-режиме
-  регистрирует `AddHaValkey(...).AddValkeyCluster(<Valkey:Cluster>)`,
-  соединительные параметры берёт из снапшота `GetClientConfig()`, ротация
-  `app_password`/смена endpoints доставляется событием `Updated`, fail-open
-  без параметров. Берётся в работу, когда клиентский модуль Valkey появится
-  в Puzzle.
