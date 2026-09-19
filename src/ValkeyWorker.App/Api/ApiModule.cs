@@ -137,7 +137,7 @@ public static class ApiModule
         });
 
         // POST /api/valkey/clusters/{cluster}/password/rotate — заявка ротации
-        // (окно двух паролей исполняет процесс E); 202/404/409.
+        // (окно двух паролей исполняет процесс E); 202/400 (role)/404/409.
         endpoints.MapPost("/api/valkey/clusters/{cluster}/password/rotate", async (
             string cluster, RotateValkeyPasswordRequest request, HttpRequest http,
             RotatePasswordHandler handler, CancellationToken ct) =>
@@ -149,6 +149,16 @@ public static class ApiModule
 
             return result.Error switch
             {
+                // t03 (фикс): роль вне канона app|admin — валидация, как у
+                // create/config/resources: 400 с errors.<field> (02 §11.2).
+                ValkeyValidationException validation => Results.Problem(
+                    statusCode: StatusCodes.Status400BadRequest,
+                    title: "Validation failed",
+                    detail: result.Error.Message,
+                    extensions: new Dictionary<string, object?>
+                    {
+                        ["errors"] = validation.Errors.ToDictionary(e => e.Field, e => new[] { e.Message }),
+                    }),
                 ValkeyClusterNotFoundException => Results.Problem(
                     statusCode: StatusCodes.Status404NotFound, title: "Cluster not found",
                     detail: result.Error.Message),
