@@ -9,6 +9,8 @@ import { ClusterDetailsPage } from './pages/ClusterDetailsPage';
 import { ClustersPage } from './pages/ClustersPage';
 import { KafkaClusterDetailsPage } from './pages/kafka-cluster/KafkaClusterDetailsPage';
 import { KafkaClustersPage } from './pages/KafkaClustersPage';
+import { ValkeyClusterDetailsPage } from './pages/valkey-cluster/ValkeyClusterDetailsPage';
+import { ValkeyClustersPage } from './pages/ValkeyClustersPage';
 import { EtcdPage } from './pages/EtcdPage';
 import { HaPage } from './pages/HaPage';
 import { HaScopeDetailsPage } from './pages/HaScopeDetailsPage';
@@ -29,6 +31,8 @@ export const router = createBrowserRouter([
       { path: 'backups-storage/:cluster/:shard', element: <BackupsShardDetailsPage /> },
       { path: 'kafka', element: <KafkaClustersPage /> },
       { path: 'kafka/:cluster', element: <KafkaClusterDetailsPage /> },
+      { path: 'valkey', element: <ValkeyClustersPage /> },
+      { path: 'valkey/:cluster', element: <ValkeyClusterDetailsPage /> },
       { path: 'ha', element: <HaPage /> },
       { path: 'ha/:scope', element: <HaScopeDetailsPage /> },
       { path: 'alerts', element: <AlertsPage /> },

@@ -45,6 +45,15 @@ import type {
   BackupShardStorageDto,
   BackupStorageDto,
   UploadWorkerCertRequestDto,
+  ValkeyClusterCreatedDto,
+  ValkeyClusterDto,
+  ValkeyClusterSummaryDto,
+  ValkeyConfigUpdateRequestDto,
+  ValkeyConfigUpdatedDto,
+  ValkeyPasswordRotatedDto,
+  ValkeyResourcesRequestDto,
+  ValkeyResourcesUpdatedDto,
+  CreateValkeyClusterRequestDto,
   WorkerApiCertDto,
   WorkerRestartDto,
   WorkersViewDto,
@@ -362,6 +371,69 @@ export function cancelTopicLifecycle(
   return apiFetch<void>(
     `/api/kafka/clusters/${encodeURIComponent(cluster)}/topics/${encodeURIComponent(topic)}/desired.${op}`,
     { method: 'DELETE' });
+}
+
+// ===== Valkey-домен (arch/03 §8.1) =====
+
+export const valkeyQueryKeys = {
+  clusters: ['valkey-clusters'] as const,
+  cluster: (name: string) => ['valkey-clusters', name] as const,
+};
+
+export function fetchValkeyClusters(): Promise<ValkeyClusterSummaryDto[]> {
+  return apiFetch<ValkeyClusterSummaryDto[]>('/api/valkey/clusters');
+}
+
+export function fetchValkeyClusterDetails(name: string): Promise<ValkeyClusterDto> {
+  return apiFetch<ValkeyClusterDto>(`/api/valkey/clusters/${encodeURIComponent(name)}`);
+}
+
+// POST /api/valkey/clusters — создание кластера (arch/02 §11.2): заявка,
+// доигрывает ValkeyWorker (provisioning-цикл V0–V5).
+export function createValkeyCluster(
+  request: CreateValkeyClusterRequestDto,
+): Promise<ValkeyClusterCreatedDto> {
+  return apiFetch<ValkeyClusterCreatedDto>('/api/valkey/clusters', { method: 'POST', body: request });
+}
+
+// DELETE /api/valkey/clusters/{cluster} — демонтаж (arch/02 §11.2): воркер
+// снимет контейнер и удалит префикс /valkey/clusters/<C>/ (202).
+export function deleteValkeyCluster(cluster: string): Promise<void> {
+  return apiFetch<void>(`/api/valkey/clusters/${encodeURIComponent(cluster)}`, { method: 'DELETE' });
+}
+
+// PUT /api/valkey/clusters/{cluster}/config — maxmemory/policy (arch/02 §11.2):
+// применяется converger'ом воркера CONFIG REWRITE-механикой без рестарта.
+export function updateValkeyConfig(
+  cluster: string,
+  request: ValkeyConfigUpdateRequestDto,
+): Promise<ValkeyConfigUpdatedDto> {
+  return apiFetch<ValkeyConfigUpdatedDto>(
+    `/api/valkey/clusters/${encodeURIComponent(cluster)}/config`,
+    { method: 'PUT', body: request });
+}
+
+// PUT /api/valkey/clusters/{cluster}/nodes/{node}/resources — декларация
+// ресурсов (arch/02 §11.2): применяется пересозданием контейнера ноды.
+export function updateValkeyNodeResources(
+  cluster: string,
+  node: string,
+  request: ValkeyResourcesRequestDto,
+): Promise<ValkeyResourcesUpdatedDto> {
+  return apiFetch<ValkeyResourcesUpdatedDto>(
+    `/api/valkey/clusters/${encodeURIComponent(cluster)}/nodes/${encodeURIComponent(node)}/resources`,
+    { method: 'PUT', body: request });
+}
+
+// POST /api/valkey/clusters/{cluster}/password/rotate — заявка ротации пароля
+// роли app|admin (arch/02 §11.2): окно двух паролей без рестартов.
+export function rotateValkeyPassword(
+  cluster: string,
+  role: 'app' | 'admin',
+): Promise<ValkeyPasswordRotatedDto> {
+  return apiFetch<ValkeyPasswordRotatedDto>(
+    `/api/valkey/clusters/${encodeURIComponent(cluster)}/password/rotate`,
+    { method: 'POST', body: { role } });
 }
 
 // ===== Грань «Хранилище бэкапов» (t08, arch/03 §1) =====

@@ -142,11 +142,18 @@ export interface OverviewDto {
   activeMoves: OverviewMoveDto[];
   // Сводка kafka-домена (arch/03 §7.1); null до первого тика kafka-refresher'а.
   kafka: OverviewKafkaDto | null;
+  // Сводка valkey-домена (arch/03 §8.1); null до первого тика valkey-refresher'а.
+  valkey: OverviewValkeyDto | null;
   snapshotAgeMs: number;
   stale: boolean;
 }
 
 export interface OverviewKafkaDto {
+  clustersTotal: number;
+  clustersCritical: number;
+}
+
+export interface OverviewValkeyDto {
   clustersTotal: number;
   clustersCritical: number;
 }
@@ -638,6 +645,104 @@ export interface KafkaCaRotatedDto {
 // POST /api/kafka/clusters/{cluster}/rebalance — ответ (t02).
 export interface KafkaRebalanceRequestedDto {
   cluster: string;
+  requestedUnix: number;
+  requestedBy: string;
+}
+
+// ===== Valkey-домен (arch/03 §8.2; зеркало C#-DTO ValkeyQuery.cs/ValkeyCommands.cs) =====
+
+// Канон состояния valkey-кластера: config.state (arch/20 §2); отсутствие = ACTIVE.
+export type ValkeyClusterStateName = 'ACTIVE' | 'NOT_INITIALIZED' | 'TO_REMOVE';
+
+// GET /api/valkey/clusters — сводный список (arch/03 §8.2).
+export interface ValkeyClusterSummaryDto {
+  name: string;
+  state: ValkeyClusterStateName;
+  nodesTotal: number;
+  nodesRunning: number;
+  endpoints: string | null;
+  rotationPending: boolean;
+  maxmemoryBytes: number;
+  maxmemoryPolicy: string;
+}
+
+// GET /api/valkey/clusters/{cluster} — детали (arch/03 §8.2).
+export interface ValkeyClusterDto {
+  name: string;
+  state: ValkeyClusterStateName;
+  nodesTotal: number;
+  maxmemoryBytes: number;
+  maxmemoryPolicy: string;
+  createdUnix: number | null;
+  endpoints: string | null;
+  nodesList: ValkeyNodeDto[];
+  rotation: ValkeyRotationDto | null;
+}
+
+export interface ValkeyNodeDto {
+  name: string;
+  state: string | null;
+  cpu: number | null;
+  memGi: number | null;
+  diskGi: number | null;
+  // Из PING-пробы (только факт живости); null — проба молчит/кредов нет.
+  live: boolean | null;
+  probeError: string | null;
+}
+
+export interface ValkeyRotationDto {
+  role: string;
+  requestedUnix: number;
+  requestedBy: string | null;
+}
+
+// POST /api/valkey/clusters — тело и ответ (arch/03 §8.2/§8.3.1).
+export interface CreateValkeyClusterRequestDto {
+  name: string;
+  maxmemoryBytes?: number;
+  maxmemoryPolicy?: string;
+  resources?: { cpu?: number; memGi?: number; diskGi?: number };
+}
+
+export interface ValkeyClusterCreatedDto {
+  name: string;
+  state: string;
+  nodes: number;
+  maxmemoryBytes: number;
+  maxmemoryPolicy: string;
+  cpu: string;
+  memGi: string;
+  diskGi: string;
+}
+
+// PUT config / PUT resources / POST rotate — тела и ответы.
+export interface ValkeyConfigUpdateRequestDto {
+  maxmemoryBytes?: number;
+  maxmemoryPolicy?: string;
+}
+export interface ValkeyConfigUpdatedDto {
+  cluster: string;
+  maxmemoryBytes: number;
+  maxmemoryPolicy: string;
+}
+export interface ValkeyResourcesRequestDto {
+  cpu?: number;
+  memGi?: number;
+  diskGi?: number;
+}
+export interface ValkeyResourcesUpdatedDto {
+  cluster: string;
+  node: string;
+  cpu: string;
+  memGi: string;
+  diskGi: string;
+}
+export interface ValkeyRotateRequestDto {
+  role: 'app' | 'admin';
+}
+export interface ValkeyPasswordRotatedDto {
+  cluster: string;
+  role: string;
   requestedUnix: number;
   requestedBy: string;
 }

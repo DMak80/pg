@@ -16,6 +16,7 @@ const NAV_ITEMS = [
   { to: '/clusters', label: 'Кластеры' },
   { to: '/backups-storage', label: 'Хранилище бэкапов' },
   { to: '/kafka', label: 'Kafka' },
+  { to: '/valkey', label: 'Valkey' },
   { to: '/ha', label: 'HA' },
   { to: '/alerts', label: 'Алерты' },
 ];
