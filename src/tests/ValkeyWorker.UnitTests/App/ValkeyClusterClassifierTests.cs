@@ -13,7 +13,7 @@ public class ValkeyClusterClassifierTests
             "demo",
             state is null && !HasConfig() ? null : new ValkeyClusterConfig(1, 1, "allkeys-lru", 1, state),
             new Dictionary<string, ValkeyNodeSnapshot>(),
-            null, null, null, null, null, [], []);
+            null, null, null, null, null, null, null, [], []);
 
     // Хелпер-флаг: без config (null) — отдельный кейс.
     private static bool HasConfig() => false;
@@ -41,7 +41,7 @@ public class ValkeyClusterClassifierTests
         var snap = new ValkeyClusterSnapshot(
             "demo", new ValkeyClusterConfig(1, 1, "allkeys-lru", 1, null),
             new Dictionary<string, ValkeyNodeSnapshot>(),
-            null, null, null, null, null, [], []);
+            null, null, null, null, null, null, null, [], []);
 
         // Act/Assert
         ValkeyClusterClassifier.Classify(snap).Should().Be(ValkeyClusterKind.Active);
@@ -54,7 +54,7 @@ public class ValkeyClusterClassifierTests
         var snap = new ValkeyClusterSnapshot(
             "demo", null,
             new Dictionary<string, ValkeyNodeSnapshot>(),
-            null, null, null, null, null, [], ["битый JSON"]);
+            null, null, null, null, null, null, null, [], ["битый JSON"]);
 
         // Act/Assert
         ValkeyClusterClassifier.Classify(snap).Should().Be(ValkeyClusterKind.Skip);

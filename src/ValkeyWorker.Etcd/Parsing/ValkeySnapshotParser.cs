@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json;
 using Shared.Etcd.Client;
 using ValkeyWorker.Core.Model;
+using ValkeyWorker.Core.Valkey;
 
 namespace ValkeyWorker.Etcd.Parsing;
 
@@ -27,6 +28,8 @@ public static class ValkeySnapshotParser
         public string? AppPassword;
         public string? AdminUser;
         public string? AdminPassword;
+        public string? CaPem;
+        public string? CaKey;
         public readonly Dictionary<string, NodeAcc> Nodes = [];
         public readonly List<string> Errors = [];
         public readonly List<string> UnknownKeys = [];
@@ -75,6 +78,14 @@ public static class ValkeySnapshotParser
                     acc.AdminPassword = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
                     break;
 
+                case "ca_pem" when segments.Length == 5:
+                    acc.CaPem = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
+                    break;
+
+                case "ca_key" when segments.Length == 5:
+                    acc.CaKey = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
+                    break;
+
                 case "nodes" when segments.Length == 7
                     && segments[5].Length > 0
                     && segments[6] is "state" or "resources":
@@ -112,7 +123,24 @@ public static class ValkeySnapshotParser
     }
 
     private static ValkeyClusterSnapshot BuildCluster(ClusterAcc acc)
-        => new(
+    {
+        // CA-ключи t06 (arch/20 §5): битый PEM → parseError, поле в null —
+        // кластер жив (миграция/надзор доберут или алертят).
+        var caPem = acc.CaPem;
+        if (caPem is not null && !ValkeyPki.TryParseCertificate(caPem, out _))
+        {
+            acc.Errors.Add($"/valkey/clusters/{acc.Name}/ca_pem: битый PEM");
+            caPem = null;
+        }
+
+        var caKey = acc.CaKey;
+        if (caKey is not null && !ValkeyPki.TryParseRsaKey(caKey, out _))
+        {
+            acc.Errors.Add($"/valkey/clusters/{acc.Name}/ca_key: битый PEM");
+            caKey = null;
+        }
+
+        return new ValkeyClusterSnapshot(
             acc.Name,
             ParseConfig(acc.Name, acc.ConfigRaw, acc.Errors),
             acc.Nodes
@@ -125,8 +153,11 @@ public static class ValkeySnapshotParser
             acc.AppPassword,
             acc.AdminUser,
             acc.AdminPassword,
+            caPem,
+            caKey,
             acc.UnknownKeys,
             acc.Errors);
+    }
 
     private static ValkeyClusterConfig? ParseConfig(string cluster, string? raw, List<string> errors)
     {

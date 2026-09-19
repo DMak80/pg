@@ -1,6 +1,7 @@
 using FluentAssertions;
 using Shared.Etcd.Client;
 using ValkeyWorker.Core.Model;
+using ValkeyWorker.Core.Valkey;
 using ValkeyWorker.Etcd.Parsing;
 using Xunit;
 
@@ -85,6 +86,40 @@ public class ValkeySnapshotParserTests
         snap.AppPassword.Should().Be("AppPassword0123456789abcdef12345678");
         snap.AdminUser.Should().Be("admin");
         snap.AdminPassword.Should().Be("AdminPassword0123456789abcdef12345");
+    }
+
+    [Fact]
+    public void CaPem_CaKey_Читаются()
+    {
+        // Arrange: ключи CA в префиксе кластера (валидный PEM от ValkeyPki, t06).
+        var (caPem, caKeyPem) = ValkeyPki.GenerateCa("demo");
+        var snap = ParseOne(
+            Kv("/valkey/clusters/demo/config",
+                """{"nodes":1,"maxmemory_bytes":1,"maxmemory_policy":"allkeys-lru","created_unix":1}"""),
+            Kv("/valkey/clusters/demo/ca_pem", caPem),
+            Kv("/valkey/clusters/demo/ca_key", caKeyPem));
+
+        // Act/Assert: PEM читается как есть.
+        snap.CaPem.Should().Be(caPem);
+        snap.CaKey.Should().Be(caKeyPem);
+    }
+
+    [Fact]
+    public void БитыйCaPem_ParseErrorКластерЖив()
+    {
+        // Arrange: битый PEM в обоих CA-ключах (arch/20 §5) — не роняет парсер.
+        var snap = ParseOne(
+            Kv("/valkey/clusters/demo/config",
+                """{"nodes":1,"maxmemory_bytes":1,"maxmemory_policy":"allkeys-lru","created_unix":1}"""),
+            Kv("/valkey/clusters/demo/ca_pem", "garbage"),
+            Kv("/valkey/clusters/demo/ca_key", "-----BEGIN PRIVATE KEY-----\nZ2FyYmFnZQ==\n-----END PRIVATE KEY-----\n"));
+
+        // Act/Assert: по ошибке на каждый битый ключ, поля null — кластер жив.
+        snap.ParseErrors.Should().HaveCount(2);
+        snap.ParseErrors.Should().Contain(e => e.Contains("/valkey/clusters/demo/ca_pem"));
+        snap.ParseErrors.Should().Contain(e => e.Contains("/valkey/clusters/demo/ca_key"));
+        snap.CaPem.Should().BeNull();
+        snap.CaKey.Should().BeNull();
     }
 
     [Fact]
