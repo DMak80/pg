@@ -237,4 +237,96 @@ public class ValkeyConnectionTests
         var list = parsed.Should().BeOfType<List<object?>>().Subject;
         list.Should().Equal("foo", "bar");
     }
+
+    // ── INFO all: парсер + команда (t05, arch/18 §4.2) ──
+
+    // AAA: заголовки секций «# Name», пустые строки и \r\n — парсер даёт плоский словарь.
+    [Fact]
+    public void ParseInfo_СекцииПустыеСтроки_ПлоскийСловарь()
+    {
+        // Arrange: типовой фрагмент INFO all с тремя секциями.
+        var bulk = "# Server\r\nredis_version:9.1.2\r\nredis_mode:standalone\r\n\r\n" +
+                   "# Memory\r\nused_memory:1048576\r\nmaxmemory:536870912\r\n\r\n" +
+                   "# Keyspace\r\n";
+
+        // Act
+        var info = ValkeyConnection.ParseInfo(bulk);
+
+        // Assert: k:v-пары собраны; заголовки/пустые строки не попали.
+        info["redis_version"].Should().Be("9.1.2");
+        info["used_memory"].Should().Be("1048576");
+        info["maxmemory"].Should().Be("536870912");
+        info.Should().HaveCount(4);
+        info.Should().NotContainKey("# Server");
+    }
+
+    // AAA: нечисловые значения хранятся строками (db0 из Keyspace) — выбор чисел за коллектором.
+    [Fact]
+    public void ParseInfo_НечисловыеЗначения_ХранятсяСтроками()
+    {
+        // Arrange
+        var bulk = "# Keyspace\r\ndb0:keys=3,expires=0,avg_ttl=0\r\nrole:master\r\n";
+
+        // Act
+        var info = ValkeyConnection.ParseInfo(bulk);
+
+        // Assert
+        info["db0"].Should().Be("keys=3,expires=0,avg_ttl=0");
+        info["role"].Should().Be("master");
+    }
+
+    // AAA: битый ввод — строки без «ключа», «:значение», пустой bulk — мусор пропускается,
+    // пустой ввод → пустой словарь (не исключение).
+    [Fact]
+    public void ParseInfo_МусорныеСтроки_Пропущены()
+    {
+        // Arrange
+        var bulk = "без-разделителя\r\n:значение-без-ключа\r\nused_memory:1\r\n";
+
+        // Act
+        var info = ValkeyConnection.ParseInfo(bulk);
+
+        // Assert: валидная пара сохранена, мусор пропущен.
+        info.Should().HaveCount(1);
+        info["used_memory"].Should().Be("1");
+        ValkeyConnection.ParseInfo("").Should().BeEmpty();
+    }
+
+    // AAA: INFO all по проводу — bulk-кадр; фрейминг команды «INFO all» после AUTH.
+    [Fact]
+    public async Task InfoAll_BulkОтвет_СловарьПолей()
+    {
+        // Arrange: полный INFO-ответ (bulk), включающий Replication.
+        var body = "# Memory\r\nused_memory:1048576\r\nmaxmemory:536870912\r\n" +
+                   "# Replication\r\nrole:master\r\nconnected_slaves:0\r\n";
+        var bulk = $"${Encoding.UTF8.GetByteCount(body)}\r\n{body}\r\n";
+        await using var stub = RespStub.Start("+OK\r\n", bulk);
+        var conn = new ValkeyConnection(FastTimeout);
+
+        // Act
+        var result = await conn.InfoAllAsync(Ep(stub.Port), TestContext.Current.CancellationToken);
+
+        // Assert: словарь полей; фрейминг — RESP-массив INFO all.
+        result.IsSuccess.Should().BeTrue();
+        result.Value!["used_memory"].Should().Be("1048576");
+        result.Value!["role"].Should().Be("master");
+        var text = AssertAuthFrame(stub.Received);
+        text.Should().Contain("$4\r\nINFO\r\n$3\r\nall\r\n");
+    }
+
+    // AAA: ошибка сервера на INFO → Result.Failed (S7: проба — не исключение).
+    [Fact]
+    public async Task InfoAll_ОшибкаСервера_Failed()
+    {
+        // Arrange
+        await using var stub = RespStub.Start("+OK\r\n", "-ERR unknown command\r\n");
+        var conn = new ValkeyConnection(FastTimeout);
+
+        // Act
+        var result = await conn.InfoAllAsync(Ep(stub.Port), TestContext.Current.CancellationToken);
+
+        // Assert
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Message.Should().Contain("ERR");
+    }
 }
