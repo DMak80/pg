@@ -29,8 +29,7 @@ lease-клэймы, [20](20-valkey-clusters.md) §3); смерть контро�
 
 Границы (что НЕ входит): TLS клиентских подключений (`t06-valkey-tls` —
 per-cluster CA, tls-port, ключ `ca_pem`); реплики/sentinel/cluster-топологии
-(кеш восполним, шардирование не нужно); коллектор доменных метрик INFO и
-дашборд (t05, arch/18 §2.2/§4-паттерн); панель valkey-домена (t03);
+(кеш восполним, шардирование не нужно); панель valkey-домена (t03);
 клиентская библиотека Puzzle (t04); persistence RDB/AOF — off по канону
 (кеш восполним); квоты томов — томов нет.
 
@@ -342,7 +341,7 @@ Health `/healthz` по канону честного health (t09): послед�
 из `/valkeyworker/api/<id>`. Prometheus-метрики — единый каркас
 [18-metrics.md](18-metrics.md) §2.2 (воркер-паттерн: циклы/клэймы/фазы/
 операции/снапшоты; `ValkeyWorker` в Meter-именах); коллектор доменных
-метрик INFO и дашборд — t05 (вне t01). Diag-ключи:
+метрик INFO и дашборд — [18-metrics.md](18-metrics.md) §4.2/§2.6. Diag-ключи:
 `/valkeyworker/work/<C>`, `nodes/node<k>/state`.
 
 ## 8. Конфигурация (appsettings + env-оверрайды)
