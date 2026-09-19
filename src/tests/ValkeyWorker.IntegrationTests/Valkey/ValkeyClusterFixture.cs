@@ -159,10 +159,12 @@ public sealed class ValkeyClusterFixture : IAsyncLifetime
     public ClusterSecretEnsurer NewSecretEnsurer() =>
         new(Gateway, [Endpoint]);
 
+    public NodeTlsProvisioner NewTlsProvisioner() => new(Driver);
+
     public ProvisioningProcess NewProvisioning(ClaimStore claims, WorkJournal journal,
         PortAllocLock portLock, PortAllocIndex portIndex, IClusterSecretEnsurer secrets) =>
         new(Gateway, [Endpoint], Driver, claims, journal, portLock, portIndex, secrets,
-            new ValkeyConnection(TimeSpan.FromSeconds(2)), Options);
+            NewTlsProvisioner(), new ValkeyConnection(TimeSpan.FromSeconds(2)), Options);
 
     public DeprovisioningProcess NewDeprovisioning(ClaimStore claims, WorkJournal journal) =>
         new(Gateway, [Endpoint], Driver, claims, journal);
@@ -171,7 +173,7 @@ public sealed class ValkeyClusterFixture : IAsyncLifetime
         PortAllocHealer healer, int nodeDeadSec = 90) =>
         new(Gateway, [Endpoint], Driver, claims, journal,
             new ValkeyConnection(TimeSpan.FromSeconds(2)),
-            Options with { NodeDeadSec = nodeDeadSec }, healer);
+            Options with { NodeDeadSec = nodeDeadSec }, healer, NewTlsProvisioner());
 
     public PortAllocHealer NewHealer(ClaimStore claims, WorkJournal journal, PortAllocLock portLock,
         PortAllocIndex portIndex) =>
