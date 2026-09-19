@@ -46,8 +46,9 @@
                  ┌──────────────────────────────────────────────────────┐
                  │ POST /api/clusters|shards|moves|… — мутации панели: │
                  │  CQRS-команды → WorkerApiGateway → HTTP API воркера │
-                 │  (PgWorker/KafkaWorker; URL — живой lease-ключ      │
-                 │  /pgworker/api/<id>, /kafkaworker/api/<id> в etcd)  │
+                 │  (PgWorker/KafkaWorker/ValkeyWorker; URL — живой    │
+                 │  lease-ключ /pgworker/api/<id>,                     │
+                 │  /kafkaworker/api/<id>, /valkeyworker/api/<id>)     │
                  └───────────────┬──────────────────────────────────────┘
                                  │ воркер записал ключи в etcd; следующий
                                  ▼ тик refresher'а подхватывает их в снапшот
@@ -60,14 +61,15 @@
   `SnapshotStore` (singleton, атомарная замена ссылки). Скорость UI не зависит
   от латентности etcd, а отказ etcd не роняет панель: снапшок остаётся со
   штампом `lastRefreshUtc` и алертом «данные устарели». Панель пишет в etcd
-  ТОЛЬКО декларативные ключи: provisioning §9 и серверные серты API воркеров
-  `/workers/api_tls/*` (02 §9.9); остальные команды мутаций (создание/удаление
-  кластера, добавление/демонтаж шарда, заявки, ротации, recreate, kafka-домен,
-  перезапуск воркеров) проксируются в HTTP API исполнителей — PgWorker
-  (arch/14 §1.1) и KafkaWorker (arch/16 §1.1); URL живого инстанса —
-  lease-ключи дискавери `/pgworker/api/<id>`, `/kafkaworker/api/<id>`
-  (02 §2.3.1/§2.3.2) из того же снапшота. Отказ API воркера → 503 +
-  critical-алерт `worker-api-unreachable` (03 §4.1); чтение при этом работает.
+ТОЛЬКО декларативные ключи: provisioning §9 и серверные серты API воркеров
+`/workers/api_tls/*` (02 §9.9); остальные команды мутаций (создание/удаление
+кластера, добавление/демонтаж шарда, заявки, ротации, recreate, kafka-домен,
+valkey-домен, перезапуск воркеров) проксируются в HTTP API исполнителей —
+PgWorker (arch/14 §1.1), KafkaWorker (arch/16 §1.1) и ValkeyWorker
+(arch/21 §1.1); URL живого инстанса — lease-ключи дискавери
+`/pgworker/api/<id>`, `/kafkaworker/api/<id>`, `/valkeyworker/api/<id>`
+(02 §2.3.1/§2.3.2/§2.3.3) из того же снапшота. Отказ API воркера → 503 +
+critical-алерт `worker-api-unreachable` (03 §4.1); чтение при этом работает.
 - **Refresher — единственный писатель снапшота**; пробы пишут в него же
   (отдельным тиком, реже). Всё, что видит пользователь, — производные от
   снапшота: DTO для API, алерты, badge «stale».

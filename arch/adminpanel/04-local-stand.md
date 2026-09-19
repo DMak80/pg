@@ -12,6 +12,8 @@ etcd + шардированную PG с контроль-плейном, что�
 |---|---|---|
 | `quick` (по умолчанию) | `etcd` (+ панель; демо-сид — временно поднятым воркером через его API) | цикл бэкенд-разработки: API/алерты на сидированном контроль-плейне, PG не нужна |
 | `full` | quick + 2 «шарда» PG (s1a/s1b, s2a/s2b) + patroni-эмуляторы (`hc*`) | live-пробы (Patroni REST, SQL), failover-сценарии, e2e |
+| `kafka` | `kafkaworker` (живой воркер; поднимается чеками `50-59` и полным `00-up.sh`) | kafka-домен панели против живого исполнителя |
+| `valkey` (t03) | `valkeyworker` (живой воркер; полный `00-up.sh`; демо-кластер `demo` из сида — контейнер `vwk-demo-node1`) | valkey-домен панели: live-PING-пробы, мутации, E2E-цикл |
 
 Панель (Kestrel) — **сервис compose `adminpanel`, всегда в докере** (AGENTS.md:
 ВСЕГДА ЗНАЧИТ ВСЕГДА — хостовая панель не достаёт до стендовых нод, её
@@ -162,8 +164,40 @@ kafka-снапшота панели, гоняет мутации через па
     (роль/state живьём из PG) и `/cluster/nodes/<node>` (lease TTL 5 c);
     lease продлевается **только пока PG ноды отвечает** — смерть ноды
     убирает её из DCS через TTL, как у Patroni.
-  Рестарт-политика эмуляторов — без `always` (урок pg (этот монорепозиторий)-стенда: рестарт
-  сайдкара не должен реанимировать остановленную ноду).
+Рестарт-политика эмуляторов — без `always` (урок pg (этот монорепозиторий)-стенда: рестарт
+сайдкара не должен реанимировать остановленную ноду).
+
+### 2.4. `valkeyworker` (профиль `valkey`; t03)
+
+Живой ValkeyWorker по образцу сервиса `kafkaworker`: образ `valkeyworker:dev`
+(сборка `docker/ValkeyWorker.Dockerfile`; в registry НЕ класть), сеть стенда,
+`/var/run/docker.sock` (ноды-контейнеры `vwk-*` поднимает воркер на docker-хосте
+стенда), том `vw-snapshots`, том `vw-api-tls:ro` + env
+`VWK_API_TLS_{CERT,KEY,CLIENT_CA}_PATH` (общая пакета per-install API-CA со
+стендовыми сертами — та же, что у pgw/kfw-граней панели), env:
+`ValkeyWorker__Etcd__Endpoints__0=http://etcd:2379`,
+`ValkeyWorker__AdvertisedClientHost=host.docker.internal` (endpoints дискавери
+достижимы с хоста и из сети панели — порт из portalloc публикуется docker-хостом),
+`ValkeyWorker__Api__AdvertiseUrl=https://valkeyworker:8080` (compose-DNS из
+сети панели; lease-ключ `/valkeyworker/api/<id>`),
+`ValkeyWorker__Api__EnableSeedEndpoint=true` (только стенд-образы).
+API-порт на хост не публикуется (панель ходит по compose-DNS; хост-публикация
+8082 у kfw — наследие его чеков, для valkey не нужна — чеки ходят через панель).
+Хост-порты нод — из диапазона 17000–17999 portalloc: пересекаются с
+ValkeyWorker-стендом `deploy/` при одновременном подъёме — на одном хосте
+работает ОДИН valkey-контур (стенд ИЛИ deploy), как у pgw; чеки это не
+проверяют — выбор за оператором.
+
+**Валkey-сид** (`05-seed.sh`, t03): `POST /api/seed/demo` живого воркера —
+демо-кластер `demo` (512 MiB, `allkeys-lru`, ресурсы 1/1Gi/10Gi). В отличие
+от pg/kafka-сидов (статичные ключи), valkey-«сид» — ЗАЯВКА: её доигрывает
+Reconcile-цикл живого воркера (контейнер `vwk-demo-node1`, ключи
+endpoints/креды/RUNNING появляются тиками). Идемпотентность та же: живой
+config → no-op. Воркер в `valkey`-профиле продолжает жить после сида (полная
+система: панель видит живой кластер, PING-проба идёт по endpoints из etcd);
+чистка демо-контейнера — `90-down.sh` (воркер останавливается, контейнер
+`vwk-demo-node1` удаляется сценарием teardown — restart-политика
+`unless-stopped` не переживает удаление).
 
 Сопоставление «etcd-адрес ноды → адрес, достижимый из контейнера панели»
 задаётся настройкой `AdminPanel:Probes:HostMap` (порядок разрешения —
@@ -198,13 +232,14 @@ member'ов scope'а).
 
 | Скрипт | Сценарий | Ожидание |
 |---|---|---|
-| `00-up.sh` | `docker compose --profile full --profile kafka up -d` + wait-on-healthy (etcd, PG-реплики, seed, heartbeat kafkaworker, healthz панели); затем БД `demo` + 13 схем `bucket_%` (§2.3) и `synchronous_standby_names` (ALTER SYSTEM — паттерн pg (этот монорепозиторий): не флагами `-c`); шаг 9 — pg-контур полной системы: `pgw-stand-etcd` (`dev-stand/compose.yaml`, хост-2379) + PgWorker (`deploy/docker-compose.yml`, секреты `deploy/.env`) | стенд поднят (полная система: панель + PG + kafka + PgWorker), сид на месте, реплики streaming |
+| `00-up.sh` | `docker compose --profile full --profile kafka --profile valkey up -d` + wait-on-healthy (etcd, PG-реплики, seed, heartbeat kafkaworker/valkeyworker, healthz панели); затем БД `demo` + 13 схем `bucket_%` (§2.3) и `synchronous_standby_names` (ALTER SYSTEM — паттерн pg (этот монорепозиторий): не флагами `-c`); шаг 9 — pg-контур полной системы: `pgw-stand-etcd` (`dev-stand/compose.yaml`, хост-2379) + PgWorker (`deploy/docker-compose.yml`, секреты `deploy/.env`) | стенд поднят (полная система: панель + PG + kafka + valkey + PgWorker), сид на месте, реплики streaming |
 | `10-smoke-api.sh` | панель против стенда: login → 401 без cookie, `/api/overview`, `/api/etcd/status`, `/api/clusters/demo`, `/api/ha/demo-s1`, `/api/alerts` | 200, структура, сидированные данные видны |
 | `20-alerts.sh` | seeded-аномалии: FROZEN-протухший → `move-stale`, `bucket_7` → `move-aborting`; затем `shard-no-master` (critical): в full перед `etcdctl del master`-ключа s2 остановить эмуляторы `hc2a`/`hc2b` (keepalive перепишет ключ), в конце вернуть и дождаться восстановления lease (в quick эмуляторов нет — просто del/put) | алерты появляются ≤ 2 тиков; после восстановления гаснут |
 | `30-failover.sh` | `docker stop s1a` → lease гаснет → `shard-no-master` + `shard-no-leader` (`leader`-ключ тоже под lease, §2.3); promote s1b руками (`pg_ctl promote`) → эмулятор s1b берёт lease, алерты гаснут, Patroni-REST показывает нового мастера; финал — rejoin: `docker compose rm -sf s1a && up -d s1a` (self-healing клон от s1b) + sync-names на s1b | цикл алерт→успокоение; стенд снова консистентен для 40 |
 | `40-live-probes.sh` | панель (в докере, сеть стенда): `/api/ha/demo-s1` содержит lag/state от Patroni-REST (пробы идут на `hc1a:8008`/`hc1b:8008` через `HostMap` §2.3); `/api/clusters/demo` shards[].runtime заполнен (sync-standby, инвентарь 8+5 ACTIVE-схем — `inventory-mismatch` нет; SQL-пробы напрямую на `s1a:5432`/`s1b:5432`) | поля не null, probe-ошибок нет |
 | `45-backups-storage.sh` | налив mc-контейнером тестовых объектов в bucket бэкапов → `curl /api/backups/storage`: configured/health/дерево (t08, 02 §2.5) | `configured=true`, health ok, дерево содержит налитый префикс |
-| `90-down.sh` | разбор (с опцией `-v` — стереть данные) | — |
+| `51-valkey-api.sh` (t03) | valkey-домен против живого воркера (профиль `valkey`): сид `demo` → панель видит кластер (список/детали/нода RUNNING/endpoints), live-PING `live=true`; полный цикл мутаций через панель→прокси→API воркера: create (RunTag-имя) → NOT_INITIALIZED → RUNNING ≤ бюджета тиков, config-мутация (maxmemory converge), resources (пересоздание контейнера), ротации app+admin (заявки 202, исполнение окном двух паролей), delete → контейнера и ключей нет; 409-ветки (имя занято, двойная ротация) | каждый шаг ≤ бюджета; после delete — ни контейнера `vwk-<tag>-*`, ни ключей `/valkey/clusters/<tag>/` |
+| `90-down.sh` | разбор (с опцией `-v` — стереть данные); t03: останавливает valkeyworker и удаляет демо-контейнер `vwk-demo-node1` | — |
 
 Скрипты — bash+jq (как в pg (этот монорепозиторий)), гоняются вручную и в рамках задачи
 `t10-dev-stand`; CI не требуют (интеграционные тесты используют Testcontainers,

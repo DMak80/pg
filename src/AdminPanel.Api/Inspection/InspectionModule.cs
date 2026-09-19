@@ -158,6 +158,49 @@ public static class InspectionModule
         return endpoints;
     }
 
+    // GET /api/valkey/clusters[...] — инспекция valkey-домена из ValkeySnapshot (arch/03 §8.1).
+    public static IEndpointRouteBuilder MapValkeyInspectionApi(this IEndpointRouteBuilder endpoints)
+    {
+        // GET /api/valkey/clusters — сводный список (arch/03 §8.1).
+        endpoints.MapGet("/api/valkey/clusters", async (IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleQuery<ValkeyClustersQuery, IReadOnlyList<ValkeyClusterSummaryDto>>(
+                new ValkeyClustersQuery(), ct);
+            if (result.IsSuccess)
+                return Results.Ok(result.Value);
+            return result.Error is ValkeyClusterNotFound
+                ? Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound,
+                    title: "Not found",
+                    detail: result.Error.Message)
+                : Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable,
+                    title: "Valkey snapshot not ready",
+                    detail: result.Error!.Message);
+        });
+
+        // GET /api/valkey/clusters/{cluster} — детали; 404 кластера нет, прочее — 503.
+        endpoints.MapGet("/api/valkey/clusters/{cluster}", async (
+            string cluster, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleQuery<ValkeyClusterDetailsQuery, ValkeyClusterDto>(
+                new ValkeyClusterDetailsQuery(cluster), ct);
+            if (result.IsSuccess)
+                return Results.Ok(result.Value);
+            return result.Error is ValkeyClusterNotFound
+                ? Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound,
+                    title: "Not found",
+                    detail: result.Error.Message)
+                : Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable,
+                    title: "Valkey snapshot not ready",
+                    detail: result.Error!.Message);
+        });
+
+        return endpoints;
+    }
+
     // GET /api/backups/* — грань «Хранилище бэкапов» (t08, arch/03 §1): сводка/
     // детали — из снапшота; objects — on-demand list-v2 (единственный выход в MinIO).
     public static IEndpointRouteBuilder MapBackupsInspectionApi(this IEndpointRouteBuilder endpoints)

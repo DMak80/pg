@@ -19,7 +19,8 @@ public sealed class WorkerApiGateway(
     IOptions<WorkerApiOptions> options,
     IHttpClientFactory factory,
     ISnapshotStore pgStore,
-    IKafkaSnapshotStore kafkaStore) : IWorkerApiGateway
+    IKafkaSnapshotStore kafkaStore,
+    IValkeySnapshotStore valkeyStore) : IWorkerApiGateway
 {
     /// <summary>Имя именованного HttpClient в фабрике (ModuleExtensions.AddEtcd).</summary>
     public const string HttpClientName = "workers";
@@ -120,11 +121,12 @@ public sealed class WorkerApiGateway(
         return await client.SendAsync(request, ct);
     }
 
-    // Ключи доступа из снапшота соответствующего воркера (Task 11).
+    // Ключи доступа из снапшота соответствующего воркера (Task 11; valkey — t03).
     private IReadOnlyList<WorkerEndpoint>? ResolveEndpoints(string worker) => worker switch
     {
         "pgworker" => pgStore.Current?.PgWorkerEndpoints,
         "kafkaworker" => kafkaStore.Current?.WorkerEndpoints,
-        _ => throw new ArgumentOutOfRangeException(nameof(worker), worker, "ожидался pgworker|kafkaworker"),
+        "valkeyworker" => valkeyStore.Current?.WorkerEndpoints,
+        _ => throw new ArgumentOutOfRangeException(nameof(worker), worker, "ожидался pgworker|kafkaworker|valkeyworker"),
     };
 }

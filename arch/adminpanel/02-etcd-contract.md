@@ -23,7 +23,9 @@ kafka-домена — воркер сам валидирует и записы�
 NodeSupervisor PgWorker); она зафиксирована кодом ранее и контрактно ведёт
 себя как §9.6-подобный маркер. Отдельный домен **Kafka** (§10): чтение
 `/kafka/clusters/` + `/kafkaworker/{rotations,admin_rotations,ca_rotations,rebalances,reassignments}/` и
-14 мутаций декларативной модели (исполняет KafkaWorker API, arch/16 §1.1) + мутация №15 ресурсов брокера (t06) + мутация №16 ротации admin-пароля (t03) + мутация №17 ротации CA/сертов (t07).
+14 мутаций декларативной модели (исполняет KafkaWorker API, arch/16 §1.1) + мутация №15 ресурсов брокера (t06) + мутация №16 ротации admin-пароля (t03) + мутация №17 ротации CA/сертов (t07). Отдельный домен **Valkey** (§11,
+t03): чтение `/valkey/clusters/` + `/valkeyworker/{rotations,api}/` и 5 мутаций
+декларативной модели (исполняет ValkeyWorker API, arch/21 §1.1).
 
 ## 1. Транспорт: HTTP JSON gateway `/v3/*`
 
@@ -145,6 +147,21 @@ PgWorker-инстансов §2.3.1, — `AdminPanel:Workers:HealthIntervalSec`)
 (03 §4). Degraded/unhealthy воркер виден
 панели ≤ 2 тиков поллера, после восстановления алерт гаснет — панель и
 docker-health больше не расходятся.
+
+### 2.3.3. `/valkeyworker/api/…` — дискавери API ValkeyWorker (t03)
+
+Симметрично §2.3.2: lease-ключи `/valkeyworker/api/<id>` (ставит сам воркер,
+arch/21 §1.1; формат `{"url","instance","since_unix","cert_thumbprint"?}`)
+читаются valkey-refresher'ом в `ValkeySnapshot.WorkerEndpoints` — источник URL
+для valkey-мутаций §11.2. API — mTLS той же пакеты per-install API-CA
+(`AdminPanel:Workers:WorkerTls`, env `WORKERS_PANEL_TLS_*`), серверный серт —
+ключ `/workers/api_tls/valkeyworker` (§9.9). По тем же URL тик опроса
+`/healthz` (`AdminPanel:Workers:HealthIntervalSec`, тем же поллером, что у
+pg/kafka-инстансов) пробит живые инстансы ValkeyWorker → `WorkerHealth[]` в
+`ValkeySnapshot.WorkerHealth`, warning-алерт `worker-unhealthy`. Отсутствие
+живых ключей → 503 мутаций + critical-алерт `worker-api-unreachable`
+(03 §8.4). Остальные ключи `/valkeyworker/` панель не читает и не пишет
+(кроме `rotations/` — §11.1).
 
 ### 2.4. Кластерные метаданные etcd (не KV)
 
@@ -758,18 +775,20 @@ dsn-ключей шардов с новым bucket_admin-паролем, del з�
 ### 9.9. Серверные серты API воркеров (создание/замена/удаление + перезапуск)
 
 Управление серверными сертами входящих mTLS-граней воркеров
-(`pgworker`, `kafkaworker`) и перезапуск инстансов. В отличие от §9.1–§9.8,
-запись идёт **напрямую в etcd** (не через API воркера): воркер не может
-«принять» серт без перезапуска, а панель должна уметь положить серт ДО
-первого запуска воркера. Воркеры ключи только читают (при старте, arch/14
-§1.1 / arch/16 §1.1); панель — единственный писатель.
+(`pgworker`, `kafkaworker`, `valkeyworker` — t03) и перезапуск инстансов.
+В отличие от §9.1–§9.8, запись идёт **напрямую в etcd** (не через API
+воркера): воркер не может «принять» серт без перезапуска, а панель должна
+уметь положить серт ДО первого запуска воркера. Воркеры ключи только читают
+(при старте, arch/14 §1.1 / arch/16 §1.1 / arch/21 §1.1); панель —
+единственный писатель.
 
 Ключи (обычные, без lease):
 
 ```
-/workers/api_tls/pgworker     {"cert_pem":"<PEM>","key_pem":"<PEM>",
-                              "updated_unix":<unix>,"updated_by":"<username>"}
-/workers/api_tls/kafkaworker  (симметрично)
+/workers/api_tls/pgworker      {"cert_pem":"<PEM>","key_pem":"<PEM>",
+                               "updated_unix":<unix>,"updated_by":"<username>"}
+/workers/api_tls/kafkaworker   (симметрично)
+/workers/api_tls/valkeyworker  (симметрично; t03)
 ```
 
 `key_pem` — приватный ключ: в снапшот/API/UI отдаются ТОЛЬКО метаданные
@@ -939,3 +958,63 @@ min.insync.replicas?}}` + `desired_unix`=now + `desired_by`=username → txn
   lifecycle-заявки не живут одновременно: create/delete требуют отмены живого
   `desired` (409), живой `desired` у удаляемого топика гасится вместе с
   факт-ключом одной txn воркера.
+
+## 11. Valkey (чтение + мутации; t03)
+
+Четвёртый домен панели. Канон ключей — [20-valkey-clusters.md](../20-valkey-clusters.md)
+(контроль-плейн `/valkey/clusters/`, координация `/valkeyworker/` — дословно
+источник истины); эта глава фиксирует панельную проекцию. Декларатор — панель,
+исполнитель — ValkeyWorker ([21-valkeyworker.md](../21-valkeyworker.md));
+панель никогда не трогает контейнеры и Valkey-ноды напрямую (мутации — только
+через API воркера, пробы — read-only PING по admin-креду из etcd). Отдельный
+домен-снапшот `ValkeySnapshot` (не `EtcdSnapshot` pg и не `KafkaSnapshot`) —
+своя механика тика §4, теми же транспортом §1 и настройками endpoints.
+v1-упрощение домена: топология standalone `nodes=1` — всегда одна нода
+`node1`; реплики/sentinel/TLS — roadmap (arch/20 преамбула, t06).
+
+### 11.1. Читаемые ключи
+
+| Префикс/ключ | В модель | Примечание |
+|---|---|---|
+| `/valkey/clusters/<C>/config` | `ValkeyClusterInfo` (config + state-маппинг arch/20 §2) | `state` отсутствует = Active; `maxmemory_bytes`/`maxmemory_policy` — mutable-конфиги (converge D) |
+| `/valkey/clusters/<C>/nodes/node<k>/{state,resources}` | `ValkeyNodeInfo` | `state` — raw-строка (толерантно к новым); `resources` — `{cpu,mem,disk}` |
+| `/valkey/clusters/<C>/endpoints` | `ValkeyClusterInfo.Endpoints` | точка дискавери клиентов (arch/20 §2); отсутствие у Active — critical-алерт |
+| `/valkey/clusters/<C>/app_user`, `app_password` | — (парсер пропускает молча, без `unknownKeys`) | панель НЕ читает и не отображает: app-креды — роль приложений, панель к нодам с ними не ходит |
+| `/valkey/clusters/<C>/admin_user`, `admin_password` | internal-словарь стора (не в `ValkeyClusterInfo`, не в UI/API) | читаются ТОЛЬКО для live-проб PING (arch/20 §2: «панель читает для проб»); значение пароля наружу не отдаётся |
+| `/valkeyworker/rotations/<C>` | `ValkeyRotationTicket` | очередь ротаций в UI (единственное читаемое из `/valkeyworker/` кроме `api/`); формат `{"role":"app"\|"admin","requested_unix","requested_by"}`; снятие — только воркером (после исполнения); отмена из панели НЕТ (арх/20 §3, t03) |
+
+Неизвестные ключи внутри `/valkey/` — лог + счётчик `unknownKeys`; битый JSON —
+parseError-запись + warning-алерт `valkey-key-malformed` (arch/20 §5).
+Остальные ключи `/valkeyworker/` (leader, claims, work, portalloc, locks,
+instances) панель не читает и не пишет.
+
+### 11.2. Мутации панели (5; исполняет ValkeyWorker API, arch/21 §1.1)
+
+Все мутации панель отправляет в **API ValkeyWorker** (URL — живой
+`/valkeyworker/api/<id>`, §2.3.3); воркер сам валидирует и пишет в etcd.
+Общие правила исполнителя (реализовано t02, здесь — канон): имена
+канонические (`^[a-z][a-z0-9_]{0,62}$` — иначе 404), чтение config напрямую
+у etcd, ProblemDetails; панель маппит коды 1:1 (503 — в тч. когда живых
+ключей `/valkeyworker/api/` нет).
+
+| # | Мутация | Протокол записи (воркер) | Отказы |
+|---|---|---|---|
+| 1 | **Создание кластера** `POST /api/valkey/clusters` | (1) клэйм-txn `version(config)==0` + put config `state=NOT_INITIALIZED` (`nodes=1`, `maxmemory_*`, `created_unix` — §9.2-паттерн); (2) пакет PUT: `nodes/node1/state=NOT_INITIALIZED` + `nodes/node1/resources`; (3) сбой → компенсация `del --prefix /valkey/clusters/<C>/`; повтор — 409 на клэйме. Подъём контейнера — процесс A воркера (тики) | 400 (валидация §11.3), 409 (имя занято), 503 |
+| 2 | **Удаление кластера** `DELETE /api/valkey/clusters/{c}` | RMW-txn `config.state=TO_REMOVE` с сохранением остальных полей (§9.4-паттерн; уже TO_REMOVE → 202 без записи); демонтаж — процесс B воркера | 404, 503 |
+| 3 | **Изменение конфига** `PUT /api/valkey/clusters/{c}/config` | RMW-txn по `mod_revision`: обновить `maxmemory_bytes`/`maxmemory_policy` (остальные поля, вкл. `state`, — как прочитаны); применяет converge D (`CONFIG SET`, без рестартов); инвариант R3 сверяется с текущими `resources` etcd; проигрыш compare → 503 (retry клиентом) | 400, 404, 503 |
+| 4 | **Ресурсы ноды** `PUT /api/valkey/clusters/{c}/nodes/{node}/resources` | put ключа `nodes/node<k>/resources` каноническим JSON (перезапись целиком; null-поля → дефолты, v1 node1); применяет автоконверге надзора C (arch/21 §5 C: сверка лимитов → пересоздание контейнера, одно за тик — кеш восполним) | 400, 404 (кластер/нода), 503 |
+| 5 | **Заявка ротации пароля** `POST /api/valkey/clusters/{c}/password/rotate` | клэйм-txn `/valkeyworker/rotations/<C>` `version==0` + put `{"role":"app"\|"admin","requested_unix","requested_by"}` — §9.8-паттерн; исполнение — PasswordRotator (окно двух паролей E1–E3, arch/21 §5 E, без рестартов); state-гейта нет (заявка легальна для любого существующего кластера); отмена из панели НЕТ | 400 (role), 404, 409 (уже запрошена), 503 |
+
+`requested_by` — username сессии панели (заголовок `X-Requested-By`, аудит).
+
+### 11.3. Валидация (сервер — источник истины, фронт дублирует для UX)
+
+| Поле | Правило |
+|---|---|
+| `name` | `^[a-z][a-z0-9_]{0,62}$`; уникальность — клэйм-txn §11.2 п.1 |
+| `nodes` | = 1 всегда (v1 standalone; иное — 400, реплики — roadmap) |
+| `maxmemoryBytes` | целое ≥ 1 (байт), def 536870912 (512 MiB) |
+| `maxmemoryPolicy` | 8 значений канона arch/20 §2 (`allkeys-lru` \| `allkeys-lfu` \| `volatile-lru` \| `volatile-lfu` \| `allkeys-random` \| `volatile-random` \| `volatile-ttl` \| `noeviction`), def `allkeys-lru` |
+| `cpu` | десятичные ядра 0.01..64, def 1 (на ноду) |
+| `memGi`/`diskGi` | целые GiB 1..65536, def 1/10 (на ноду; в etcd `"<n>Gi"`; `disk` — инфо-поле, действий не вызывает) |
+| инвариант R3 | `maxmemoryBytes < memGi`-лимит (иначе OOM-килл контейнера) — 400 при create и конфиг-мутациях; UI-предупреждение (03 §8.3) |

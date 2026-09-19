@@ -1,0 +1,9 @@
+[
+  { "key": "/valkey/clusters/bad/config", "value": "{\"nodes\":1,", "modRevision": 1 },
+  { "key": "/valkey/clusters/weird/config", "value": "{\"nodes\":1,\"maxmemory_bytes\":1,\"maxmemory_policy\":\"allkeys-lru\",\"created_unix\":1,\"state\":\"FUTURE_STATE\"}", "modRevision": 2 },
+  { "key": "/valkey/clusters/noep/config", "value": "{\"nodes\":1,\"maxmemory_bytes\":1,\"maxmemory_policy\":\"noeviction\",\"created_unix\":1}", "modRevision": 3 },
+  { "key": "/valkey/clusters/noep/endpoints", "value": "   ", "modRevision": 4 },
+  { "key": "/valkey/clusters/badres/config", "value": "{\"nodes\":1,\"maxmemory_bytes\":1,\"maxmemory_policy\":\"noeviction\",\"created_unix\":1}", "modRevision": 5 },
+  { "key": "/valkey/clusters/badres/nodes/node1/resources", "value": "{\"cpu\":\"x\",\"mem\":\"4\",\"disk\":\"40Gb\"}", "modRevision": 6 },
+  { "key": "/valkey/clusters/half/admin_user", "value": "admin", "modRevision": 7 }
+]

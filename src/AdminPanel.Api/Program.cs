@@ -3,6 +3,7 @@ using AdminPanel.Api.Auth;
 using AdminPanel.Api.Inspection;
 using AdminPanel.Api.Operations;
 using AdminPanel.Api.Operations.Kafka;
+using AdminPanel.Api.Operations.Valkey;
 using AdminPanel.Core;
 using AdminPanel.Etcd;
 using Shared.Core.DI;
@@ -32,6 +33,7 @@ builder
    .AddCore()
    .AddEtcd()
    .AddKafka() // [B3] kafka-домен: refresher + стор снапшота (арх/02 §10)
+   .AddValkey() // t03: valkey-домен: refresher + сторы (arch/02 §11)
    .AddProbes()
    .AddOpenApi()
    .AddHealthChecks()
@@ -105,8 +107,10 @@ app.MapAuthApi();
 app.MapInspectionApi(); // [t04] эндпоинты инспекции etcd из снапшота (arch/03 §1)
 app.MapBackupsInspectionApi(); // [t08] грань «Хранилище бэкапов» (arch/03 §1)
 app.MapKafkaInspectionApi(); // [B5] инспекция kafka-домена (arch/03 §7.1)
+app.MapValkeyInspectionApi();  // t03: инспекция valkey-домена (arch/03 §8.1)
 app.MapOperationsApi(); // [t12] единственная мутация: POST /api/clusters (arch/02 §9)
 app.MapKafkaOperationsApi(); // [B5] kafka-мутации (arch/02 §10.2, arch/03 §7.1)
+app.MapValkeyOperationsApi();  // t03: valkey-мутации (arch/02 §11.2)
 app.MapWorkersApi(); // серты API воркеров + рестарт (arch/adminpanel/02 §9.9, 03 §3.7)
 
 // Живость самой панели (liveness, arch/03 §1): только чеки с тегом live.

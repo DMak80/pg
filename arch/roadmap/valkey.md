@@ -17,10 +17,6 @@
 
 ## Задачи
 
-- **`t03-valkey-panel`** — valkey-домен AdminPanel:
-  etcd-инспекция `/valkey/` (AdminPanel.Etcd), API + React-панель —
-  кластеры/ноды/состояния, live-пробы, алерты, операции (создание/удаление
-  кластера, операции над нодами).
 - **`t05-valkey-metrics`** — телеметрия Valkey-домена
   по образцу [../18-metrics.md](../18-metrics.md): ValkeyWorker на каркасе
   `Shared.Metrics` (воркер-паттерн §2.2: фазы/HealthState), коллектор метрик

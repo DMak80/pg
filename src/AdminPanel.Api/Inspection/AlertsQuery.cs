@@ -69,10 +69,13 @@ public static class AlertsMapper
 }
 
 // Хендлер: store → отказ «снапшота нет» или фильтры+маппер (spec §3.12).
-// GET /api/alerts объединяет алерты pg- и kafka-движков (kind различает kafka-*,
-// arch/03 §7.1); до первого kafka-тика — только pg-лента.
+// GET /api/alerts объединяет алерты pg-, kafka- и valkey-движков (kind различает
+// kafka-*/valkey-*, arch/03 §8.1); до первого kafka/valkey-тика — только pg-лента.
 [InjectAsScoped]
-public sealed class AlertsQueryHandler(ISnapshotStore store, IKafkaSnapshotReader kafkaStore)
+public sealed class AlertsQueryHandler(
+    ISnapshotStore store,
+    IKafkaSnapshotReader kafkaStore,
+    IValkeySnapshotReader valkeyStore)
     : IQueryHandler<AlertsQuery, IReadOnlyList<AlertDto>>
 {
     public ValueTask<Result<IReadOnlyList<AlertDto>>> Handle(AlertsQuery query, CancellationToken ct)
@@ -81,15 +84,17 @@ public sealed class AlertsQueryHandler(ISnapshotStore store, IKafkaSnapshotReade
         return ValueTask.FromResult(snapshot is null
             ? Result<IReadOnlyList<AlertDto>>.Failed(new InspectionModule.SnapshotNotReadyException())
             : Result<IReadOnlyList<AlertDto>>.Success(AlertsMapper.Map(AlertsMapper.ApplyFilters(
-                Merge(snapshot.Alerts, kafkaStore.Current?.Alerts),
+                Merge(snapshot.Alerts, kafkaStore.Current?.Alerts, valkeyStore.Current?.Alerts),
                 query.Severity, query.Kind))));
     }
 
-    // Merge: единая сортировка severity → kind → target (механика движков).
-    private static IReadOnlyList<Alert> Merge(IReadOnlyList<Alert> pg, IReadOnlyList<Alert>? kafka)
-        => kafka is null
+    // Merge: единая сортировка severity → kind → target (механика движков);
+    // kind уже различает valkey-* (arch/03 §8.1).
+    private static IReadOnlyList<Alert> Merge(
+        IReadOnlyList<Alert> pg, IReadOnlyList<Alert>? kafka, IReadOnlyList<Alert>? valkey)
+        => valkey is null && kafka is null
             ? pg
-            : [.. pg.Concat(kafka)
+            : [.. pg.Concat(kafka ?? []).Concat(valkey ?? [])
                 .OrderBy(a => a.Severity, Comparer<AlertSeverity>.Create((x, y) => y.CompareTo(x)))
                 .ThenBy(a => a.Kind, StringComparer.Ordinal)
                 .ThenBy(a => a.Target, StringComparer.Ordinal)];

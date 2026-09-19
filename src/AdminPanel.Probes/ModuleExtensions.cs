@@ -51,6 +51,16 @@ public static class ModuleExtensions
         services.AddSingleton<Kafka.KafkaProbeLoop>();
         services.AddHostedService(sp => sp.GetRequiredService<Kafka.KafkaProbeLoop>());
 
+        // Valkey-проба (t03, arch/03 §8): отдельный тик PING, состояние — свой стор
+        // (в снапшот вносит ValkeySnapshotRefresher через IValkeyProbeReader).
+        services.AddSingleton<Valkey.IValkeyProbeStore, Valkey.ValkeyProbeStore>();
+        services.AddSingleton<Valkey.IValkeyProbeClient, Valkey.ValkeyConnection>();
+        services.AddSingleton<Valkey.ValkeyProbeLoop>();
+        services.AddHostedService(sp => sp.GetRequiredService<Valkey.ValkeyProbeLoop>());
+        // Адаптер проб-стора для Etcd-читателя: Etcd не ссылается на Probes-сборку.
+        services.AddSingleton<AdminPanel.Etcd.IValkeyProbeReader>(sp =>
+            new ValkeyProbeReaderAdapter(sp.GetRequiredService<Valkey.IValkeyProbeStore>()));
+
         // MinIO-грань «Хранилище бэкапов» (t08, adminpanel/02 §2.5): read-only
         // S3-клиент (создаётся всегда — ходит только при конфигурации) + именованный
         // health-HttpClient без SigV4 с таймаутом из настроек.
@@ -80,4 +90,11 @@ internal sealed class ProbeReaderAdapter(Kafka.IKafkaProbeStore store)
     : AdminPanel.Etcd.IKafkaProbeReader
 {
     public AdminPanel.Core.Kafka.KafkaProbeState? Current => store.Current;
+}
+
+// Адаптер valkey-проб-стора для Etcd-читателя (паттерн ProbeReaderAdapter kafka).
+internal sealed class ValkeyProbeReaderAdapter(Valkey.IValkeyProbeStore store)
+    : AdminPanel.Etcd.IValkeyProbeReader
+{
+    public IReadOnlyList<AdminPanel.Core.Valkey.ValkeyProbeResult>? Current => store.Current;
 }

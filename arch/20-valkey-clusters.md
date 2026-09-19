@@ -88,14 +88,18 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
 | `/valkeyworker/locks/portalloc` | lease TTL 15 с | **глобальный portalloc-клэйм** (t90-паттерн): взаимоисключение секции довыделения клиентских портов «чтение занятости → выбор портов → запись `/valkeyworker/portalloc/<C>`» — пер-кластерные клэймы кросс-кластерную гонку не закрывают; txn `version==0` + put-with-lease, del + revoke lease по завершении секции; не взял → InProgress (следующий тик) |
 | `/valkeyworker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика) |
 | `/valkeyworker/api/<id>` | lease TTL 15 с | **дискавери API воркера** (паттерн [16](16-kafkaworker.md) §1.1): `{"url","instance","since_unix","cert_thumbprint"?}` — ставит сам инстанс; ключ жив = инстанс жив и URL валиден. Читает панель (мутации valkey-домена — через API воркера) |
-| `/valkeyworker/rotations/<C>` | обычный | заявка ротации креда `{"role":"app"\|"admin","requested_unix","requested_by"}` (панель, клэйм-txn `version==0`; del воркером по завершении или панелью — отмена) |
+| `/valkeyworker/rotations/<C>` | обычный | заявка ротации креда `{"role":"app"\|"admin","requested_unix","requested_by"}` (панель через API воркера — клэйм-txn `version==0`; del воркером по завершении; отмены из панели нет — t03) |
 
 Заявка ротации — **один ключ с полем `role`** (не два, как у kafka — там
 разделение app/admin-ротаций наследие JAAS-механики пересозданий; здесь
 ротация без рестартов единая для обеих ролей, [21](21-valkeyworker.md) §5 E).
 
 Панель читает из `/valkeyworker/` только `rotations/` (очередь ротаций в UI;
-реализация — t03); остальные ключи не читает и не пишет.
+реализация — t03) и `api/` (дискавери API — §3 таблица выше, мутации панели
+идут через HTTP-грань воркера); остальные ключи не читает и не пишет.
+Снятие заявки ротации — только воркером (del по завершении процесса E);
+отмены из панели нет (t03: окно «передумать» мало — заявка исполняется
+тиками за секунды; зависшая заявка — runbook, etcdctl).
 
 Реализация координации — переиспользование `Shared.Etcd` (`ClaimStore`/
 `PortAllocLock`/`WorkJournal` — `keyPrefix="/valkeyworker"`, префикс уже

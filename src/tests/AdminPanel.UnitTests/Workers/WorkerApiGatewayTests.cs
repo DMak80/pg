@@ -134,7 +134,17 @@ public class WorkerApiGatewayTests
             Options.Create(options ?? new WorkerApiOptions()),
             provider.GetRequiredService<IHttpClientFactory>(),
             pg ?? new SettableSnapshotStore(),
-            kafka ?? new SettableKafkaStore());
+            kafka ?? new SettableKafkaStore(),
+            // t03: valkey-стор нейтрален для kafka/pg-сценариев (пустой).
+            new SettableValkeyStore());
+    }
+
+    // t03: стор valkey-снапшота (в этих тестах живых valkey-ключей нет).
+    private sealed class SettableValkeyStore : IValkeySnapshotStore
+    {
+        public AdminPanel.Core.Valkey.ValkeySnapshot? Current { get; set; }
+
+        public void Replace(AdminPanel.Core.Valkey.ValkeySnapshot snapshot) => Current = snapshot;
     }
 
     // Снапшот с pg-ключами доступа (остальное — пустое; важен только список).
