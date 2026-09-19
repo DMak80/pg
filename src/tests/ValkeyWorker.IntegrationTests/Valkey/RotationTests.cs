@@ -27,12 +27,13 @@ public class RotationTests(ValkeyClusterFixture fx)
         var port = int.Parse(endpoints.Split(':')[1]);
         var oldAdmin = (await fx.GetAsync($"/valkey/clusters/{cluster}/admin_password"))!;
         var oldApp = (await fx.GetAsync($"/valkey/clusters/{cluster}/app_password"))!;
+        var caPem = (await fx.GetAsync($"/valkey/clusters/{cluster}/ca_pem"))!;
         await fx.PutAsync($"/valkeyworker/rotations/{cluster}",
             """{"role":"app","requested_unix":1756500000,"requested_by":"test"}""");
 
         // Окно двух паролей: вручную E1 (ACL SETUSER app >NEW) — ОБА валидны.
         const string newApp = "NewAppPassword0123456789abcdef123456";
-        var admin = new ValkeyWorker.Core.Valkey.ValkeyEndpoint("localhost", port, "admin", oldAdmin);
+        var admin = new ValkeyWorker.Core.Valkey.ValkeyEndpoint("localhost", port, "admin", oldAdmin, caPem);
         var connection = new ValkeyWorker.Core.Valkey.ValkeyConnection(TimeSpan.FromSeconds(2));
         (await connection.AclSetUserAsync(admin, ["app", $">{newApp}"], TestContext.Current.CancellationToken))
             .IsSuccess.Should().BeTrue();
