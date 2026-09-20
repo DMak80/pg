@@ -24,6 +24,13 @@ scrape_configs:
       cert_file: /tls/prometheus.crt
       key_file: /tls/prometheus.key
     static_configs: [{targets: ["kafkaworker:8080"]}]
+  - job_name: valkeyworker         # сеть стенда (профиль valkey; mTLS — общий tls_config, t05)
+    scheme: https
+    tls_config:
+      ca_file: /tls/ca.pem
+      cert_file: /tls/prometheus.crt
+      key_file: /tls/prometheus.key
+    static_configs: [{targets: ["valkeyworker:8080"]}]
   - job_name: adminpanel          # сеть стенда
     static_configs: [{targets: ["adminpanel:8080"]}]
   - job_name: patroni             # эмуляторы :8008 (arch/18 §2.5)

@@ -52,6 +52,29 @@ groups:
         annotations:
           summary: "коллектор kafka-метрик не собирает >5мин"
           description: "фиксированный порог ≥3×CollectIntervalSec(30с); runbook — arch/18 §4"
+  - name: valkey
+    rules:
+      - alert: ValkeyCollectorStalled
+        expr: time() - valkey_collector_last_success_timestamp_seconds > 300
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "коллектор valkey-метрик не собирает >5мин"
+          description: "фиксированный порог ≥3×CollectIntervalSec(30с); runbook — arch/18 §4.2"
+      - alert: ValkeyEvictionsGrowing
+        expr: rate(valkey_evicted_keys[5m]) > 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.cluster }}/{{ $labels.node }}: выселения ключей растут"
+          description: "rate по gauge-кумулятиву (сбросы при рестарте — arch/18 §2.6); runbook — arch/18 §2.6"
+      - alert: ValkeyMemoryNearMax
+        expr: (valkey_memory_used_bytes / valkey_memory_max_bytes > 0.9) and (valkey_memory_max_bytes > 0)
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.cluster }}/{{ $labels.node }}: память >90% maxmemory"
+          description: "and valkey_memory_max_bytes > 0 отсекает безлимитный maxmemory=0; runbook — arch/18 §2.6"
   - name: pg
     rules:
       - alert: PgReplicaLagHigh

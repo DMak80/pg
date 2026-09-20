@@ -1,0 +1,27 @@
+{
+  "uid": "valkey", "title": "Valkey (memory / hit-rate / evictions / clients / collector)", "schemaVersion": 41,
+  "refresh": "30s", "time": {"from": "now-1h", "to": "now"},
+  "panels": [
+    {"type": "timeseries", "title": "Memory used vs max", "gridPos": {"x":0,"y":0,"w":16,"h":9},
+     "targets": [{"expr": "valkey_memory_used_bytes", "legendFormat": "{{cluster}}/{{node}} used", "refId": "A"},
+                 {"expr": "valkey_memory_max_bytes", "legendFormat": "{{cluster}}/{{node}} max", "refId": "B"}]},
+    {"type": "stat", "title": "Memory pressure", "gridPos": {"x":16,"y":0,"w":8,"h":4},
+     "targets": [{"expr": "valkey_memory_used_bytes / valkey_memory_max_bytes and valkey_memory_max_bytes > 0", "refId": "A"}]},
+    {"type": "stat", "title": "Collector staleness, s (alert > 300)", "gridPos": {"x":16,"y":4,"w":8,"h":5},
+     "targets": [{"expr": "time() - valkey_collector_last_success_timestamp_seconds", "refId": "A"}]},
+    {"type": "stat", "title": "Keyspace hit rate", "gridPos": {"x":0,"y":9,"w":8,"h":5},
+     "targets": [{"expr": "valkey_keyspace_hits / clamp_min(valkey_keyspace_hits + valkey_keyspace_misses, 1)", "refId": "A"}]},
+    {"type": "timeseries", "title": "Evictions (rate 5m)", "gridPos": {"x":8,"y":9,"w":8,"h":5},
+     "targets": [{"expr": "rate(valkey_evicted_keys[5m])", "legendFormat": "{{cluster}}/{{node}}", "refId": "A"}]},
+    {"type": "timeseries", "title": "ops/sec", "gridPos": {"x":16,"y":9,"w":8,"h":5},
+     "targets": [{"expr": "valkey_instantaneous_ops_per_sec", "legendFormat": "{{cluster}}/{{node}}", "refId": "A"}]},
+    {"type": "timeseries", "title": "Clients", "gridPos": {"x":0,"y":14,"w":12,"h":8},
+     "targets": [{"expr": "valkey_connected_clients", "legendFormat": "{{cluster}}/{{node}} connected", "refId": "A"},
+                 {"expr": "valkey_blocked_clients", "legendFormat": "{{cluster}}/{{node}} blocked", "refId": "B"}]},
+    {"type": "timeseries", "title": "Connections (rate)", "gridPos": {"x":12,"y":14,"w":12,"h":8},
+     "targets": [{"expr": "rate(valkey_total_connections_received[5m])", "legendFormat": "{{cluster}}/{{node}} received", "refId": "A"},
+                 {"expr": "rate(valkey_rejected_connections[5m])", "legendFormat": "{{cluster}}/{{node}} rejected", "refId": "B"}]},
+    {"type": "stat", "title": "Connected slaves", "gridPos": {"x":0,"y":22,"w":24,"h":4},
+     "targets": [{"expr": "valkey_connected_slaves", "refId": "A"}]}
+  ]
+}
