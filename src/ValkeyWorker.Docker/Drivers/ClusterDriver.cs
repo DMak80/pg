@@ -87,8 +87,8 @@ public interface IClusterDriver
     // null = volume/архива нет.
     Task<Result<byte[]?>> GetTlsArchiveAsync(string cluster, string host, string image, CancellationToken ct);
 
-    // Демонтаж TLS-volume (X1; plain — перебор ВСЕХ хостов, 404 = успех на каждом;
-    // swarm — manager).
+    // Демонтаж TLS-volume (X1): volume нод-локален — перебор ВСЕХ engines
+    // (plain — таблица хостов; swarm — ноды таблицы + manager), 404 = успех.
     Task<Result> RemoveTlsVolumeAsync(string cluster, CancellationToken ct);
 }
 
@@ -421,10 +421,11 @@ public sealed class SwarmClusterDriver(
     public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
         => _engine.ListServicesAsync($"vwk-{cluster}-", ct);
 
-    // TLS-volume (t06): host игнорируется — глобальный объект swarm, всё через
-    // manager engine.
+    // TLS-volume (t06-ревью): volume нод-локален — ensure на ноде размещения
+    // (запись сертов Put'ом идёт туда же); ноды нет в таблице (однонодовый
+    // контур) — manager engine.
     public Task<Result> EnsureTlsVolumeAsync(string cluster, string host, CancellationToken ct)
-        => _engine.EnsureVolumeAsync(PlainClusterDriver.TlsVolumeName(cluster), ct);
+        => ResolveNodeEngine(host).EnsureVolumeAsync(PlainClusterDriver.TlsVolumeName(cluster), ct);
 
     // Архив сертов — через engine НОДЫ размещения (t06-ревью): volume нод-локален.
     public Task<Result> PutTlsArchiveAsync(
@@ -439,6 +440,19 @@ public sealed class SwarmClusterDriver(
     private IDockerEngine ResolveNodeEngine(string host)
         => _nodeEngines.TryGetValue(host, out var engine) ? engine : _engine;
 
-    public Task<Result> RemoveTlsVolumeAsync(string cluster, CancellationToken ct)
-        => _engine.DeleteVolumeAsync(PlainClusterDriver.TlsVolumeName(cluster), ct);
+    // Демонтаж (X1, t06-ревью): volume нод-локален — DELETE на КАЖДОМ engine
+    // таблицы нод + manager (реальный volume мог быть создан Docker'ом при
+    // helper-create на ноде размещения; manager-копия — при ensure по
+    // fallback); 404 = успех на каждом.
+    public async Task<Result> RemoveTlsVolumeAsync(string cluster, CancellationToken ct)
+    {
+        foreach (var engine in _nodeEngines.Values.Append(_engine))
+        {
+            var removed = await engine.DeleteVolumeAsync(PlainClusterDriver.TlsVolumeName(cluster), ct);
+            if (!removed.IsSuccess)
+                return removed;
+        }
+
+        return Result.Success();
+    }
 }

@@ -63,6 +63,46 @@ public class SwarmClusterDriverTlsTests
         factory.Engines["tcp://manager"].GetCalls.Should().Be(1);
     }
 
+    [Fact]
+    public async Task RemoveTlsVolume_DeletesOnAllNodesAndManager()
+    {
+        // Arrange — таблица Hosts: две ноды + manager; объём нод-локален,
+        // демонтаж X1 обязан снять его на КАЖДОМ engine (t06-ревью)
+        var factory = new RoutingFactory();
+        var driver = new SwarmClusterDriver("tcp://manager", factory,
+        [
+            new HostEndpoint("node-a", "tcp://node-a:2375"),
+            new HostEndpoint("node-b", "tcp://node-b:2375"),
+        ]);
+
+        // Act
+        var removed = await driver.RemoveTlsVolumeAsync("c1", TestContext.Current.CancellationToken);
+
+        // Assert — DELETE дошёл до всех нод таблицы и manager (404 = успех)
+        removed.IsSuccess.Should().BeTrue();
+        factory.Engines["tcp://node-a:2375"].DeleteCalls.Should().Be(1);
+        factory.Engines["tcp://node-b:2375"].DeleteCalls.Should().Be(1);
+        factory.Engines["tcp://manager"].DeleteCalls.Should().Be(1);
+    }
+
+    [Fact]
+    public async Task EnsureTlsVolume_EnsuresOnPlacementNodeEngine()
+    {
+        // Arrange
+        var factory = new RoutingFactory();
+        var driver = new SwarmClusterDriver("tcp://manager", factory,
+        [
+            new HostEndpoint("node-a", "tcp://node-a:2375"),
+        ]);
+
+        // Act
+        await driver.EnsureTlsVolumeAsync("c1", "node-a", TestContext.Current.CancellationToken);
+
+        // Assert — ensure на ноде размещения (та же, куда Put пишет серты)
+        factory.Engines["tcp://node-a:2375"].EnsureCalls.Should().Be(1);
+        factory.Engines["tcp://manager"].EnsureCalls.Should().Be(0);
+    }
+
     // Фабрика, отдающая по endpoint'у отдельный записывающий движок.
     private sealed class RoutingFactory : DockerEngineFactory
     {
@@ -87,6 +127,10 @@ public class SwarmClusterDriverTlsTests
 
         public int GetCalls { get; private set; }
 
+        public int DeleteCalls { get; private set; }
+
+        public int EnsureCalls { get; private set; }
+
         public Task<Result> PutVolumeArchiveAsync(string name, byte[] tar, string image, CancellationToken ct)
         {
             PutCalls++;
@@ -97,6 +141,18 @@ public class SwarmClusterDriverTlsTests
         {
             GetCalls++;
             return Task.FromResult(Result<byte[]?>.Success(null));
+        }
+
+        public Task<Result> DeleteVolumeAsync(string name, CancellationToken ct)
+        {
+            DeleteCalls++;
+            return Task.FromResult(Result.Success());
+        }
+
+        public Task<Result> EnsureVolumeAsync(string name, CancellationToken ct)
+        {
+            EnsureCalls++;
+            return Task.FromResult(Result.Success());
         }
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
@@ -112,8 +168,6 @@ public class SwarmClusterDriverTlsTests
         public Task<Result> RemoveContainerAsync(string idOrName, bool force, CancellationToken ct) => throw NotUsed();
         public Task<Result> EnsureNetworkAsync(string name, CancellationToken ct) => throw NotUsed();
         public Task<Result> DeleteNetworkAsync(string name, CancellationToken ct) => throw NotUsed();
-        public Task<Result> EnsureVolumeAsync(string name, CancellationToken ct) => throw NotUsed();
-        public Task<Result> DeleteVolumeAsync(string name, CancellationToken ct) => throw NotUsed();
         public Task<Result<IReadOnlyList<DockerSwarmNode>>> ListNodesAsync(CancellationToken ct) => throw NotUsed();
         public Task<Result> CreateServiceAsync(ServiceSpec spec, CancellationToken ct) => throw NotUsed();
         public Task<Result> RemoveServiceAsync(string name, CancellationToken ct) => throw NotUsed();
