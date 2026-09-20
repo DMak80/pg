@@ -25,4 +25,7 @@ public interface IValkeyConnection
 
     // ACL SETUSER <user> <args…> (ротация E1/E3, converge D) — args целиком.
     Task<Result> AclSetUserAsync(ValkeyEndpoint ep, IReadOnlyList<string> args, CancellationToken ct);
+
+    // INFO all → плоский словарь ключ → значение (коллектор метрик t05, arch/18 §4.2).
+    Task<Result<IReadOnlyDictionary<string, string>>> InfoAllAsync(ValkeyEndpoint ep, CancellationToken ct);
 }

@@ -26,7 +26,19 @@ $MTLS https://localhost:8082/healthz >/dev/null \
 for i in $(seq 1 60); do $MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
 $MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null \
   || { echo "❌ pgworker не жив на :8080 (mTLS) — поднимите стенд: checks/00-up.sh (deploy-pgworker-1, docker logs deploy-pgworker-1)"; exit 1; }
-echo "  воркеры живы (pgworker :8080, kafkaworker :8082)"
+# 0.1) гарантия живости valkeyworker (t05): up -d создаёт/стартует (частичная
+#      предыстория), healthz — mTLS-парой healthcheck ИЗНУТРИ контейнера.
+docker compose --profile valkey up -d valkeyworker >/dev/null 2>&1 || true
+for i in $(seq 1 60); do
+  docker compose exec -T valkeyworker curl -fsS -m 3 \
+    --cacert /tls/ca.pem --cert /tls/healthcheck.crt --key /tls/healthcheck.key \
+    https://localhost:8080/healthz >/dev/null 2>&1 && break; sleep 1
+done
+docker compose exec -T valkeyworker curl -fsS -m 3 \
+  --cacert /tls/ca.pem --cert /tls/healthcheck.crt --key /tls/healthcheck.key \
+  https://localhost:8080/healthz >/dev/null \
+  || { echo "❌ valkeyworker не ожил за 60 c (:8080/healthz mTLS изнутри; docker compose logs valkeyworker)"; exit 1; }
+echo "  воркеры живы (pgworker :8080, kafkaworker :8082, valkeyworker in-compose)"
 
 # 1) /metrics трёх сервисов (хост-публикации: deploy 8080, стенд 8082/5050).
 #    Подстрока вместо «echo | grep -q»: под pipefail большой экспорт панели
@@ -62,6 +74,15 @@ for s in worker_loop_ticks_total pg_replica_lag_seconds; do
   curl -fsS --data-urlencode "query=$s" "$PROM/api/v1/query" | jq -e '.data.result | length > 0' >/dev/null \
     || { echo "  ❌ серия $s не найдена в TSDB"; exit 1; }
 done
+# valkey-серия (t05): пустой домен = консервативный успех тика — серия обязана
+# быть в TSDB при живом воркере (отличие от условной kafka-серии).
+valkey_found=""
+for i in $(seq 1 30); do
+  curl -fsS --data-urlencode "query=valkey_collector_last_success_timestamp_seconds" "$PROM/api/v1/query" \
+    | jq -e '.data.result | length > 0' >/dev/null 2>&1 && { valkey_found=1; break; }; sleep 2
+done
+[ -n "$valkey_found" ] \
+  || { echo "❌ серия valkey_collector_last_success_timestamp_seconds не найдена в TSDB (жив valkeyworker? шаг 0)"; exit 1; }
 if timeout 2 bash -c '</dev/tcp/localhost/16001' 2>/dev/null; then
   curl -fsS --data-urlencode "query=kafka_collector_last_success_timestamp_seconds" "$PROM/api/v1/query" \
     | jq -e '.data.result | length > 0' >/dev/null \
@@ -71,14 +92,14 @@ else
   echo "  серии словаря arch/18 §2 в TSDB (kafka-серия пропущена: брокеров нет — консервативная свежесть, arch/18 §4)"
 fi
 
-# 4) rules зарегистрированы (8 алертов §3.7)
+# 4) rules зарегистрированы (11 алертов §3.7: 8 + 3 valkey)
 rules=$(curl -fsS "$PROM/api/v1/rules" | jq '[.data.groups[].rules[] | select(.type=="alerting")] | length')
-[ "$rules" -ge 8 ] || { echo "  ❌ алерт-рулы: $rules < 8"; exit 1; }
+[ "$rules" -ge 11 ] || { echo "  ❌ алерт-рулы: $rules < 11"; exit 1; }
 echo "  rules: $rules алертов зарегистрировано"
 
 # 5) Grafana: дашборды провиженены (basic admin/admin — стенд)
 ds=$(curl -fsS -u admin:admin "$GRAFANA/api/search?type=dash-db" | jq 'length')
-[ "$ds" -ge 3 ] || { echo "  ❌ дашборды: $ds < 3"; exit 1; }
+[ "$ds" -ge 4 ] || { echo "  ❌ дашборды: $ds < 4"; exit 1; }
 echo "  Grafana: $ds дашборда"
 
 # 6) Alertmanager жив

@@ -13,16 +13,10 @@
 [../20-valkey-clusters.md](../20-valkey-clusters.md) (контракт etcd) и
 [../21-valkeyworker.md](../21-valkeyworker.md) (оркестратор).
 
-Порядок: канон → воркер → панель → библиотека Puzzle → метрики.
+Порядок: канон → воркер → панель → библиотека Puzzle.
 
 ## Задачи
 
-- **`t05-valkey-metrics`** — телеметрия Valkey-домена
-  по образцу [../18-metrics.md](../18-metrics.md): ValkeyWorker на каркасе
-  `Shared.Metrics` (воркер-паттерн §2.2: фазы/HealthState), коллектор метрик
-  Valkey-нод (аналог коллектора Kafka §4: INFO/репликация через redis-пробу,
-  самонаблюдение коллектора), доменный словарь §2, дашборд Grafana
-  `dashboards/valkey.json`, конфиг `ValkeyWorker:Metrics`.
 - **`t06-valkey-tls`** — TLS клиентских подключений
   Valkey-кластеров (образец — kafka t03, arch/16 §2.3). **Что нужно
   сделать**: per-cluster CA (`ca_pem`/`ca_key` в

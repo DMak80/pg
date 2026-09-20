@@ -34,6 +34,10 @@ public sealed class ValkeyConnection(TimeSpan? connectAndCommandTimeout = null) 
         return await ExecuteAsync(ep, command, reply => IsOk(reply), ct);
     }
 
+    public async Task<Result<IReadOnlyDictionary<string, string>>> InfoAllAsync(
+        ValkeyEndpoint ep, CancellationToken ct)
+        => await ExecuteAsync(ep, ["INFO", "all"], ProjectInfo, ct);
+
     // ── Каркас: connect → AUTH → команда → проекция ответа ──
 
     private async Task<Result<T>> ExecuteAsync<T>(
@@ -113,6 +117,32 @@ public sealed class ValkeyConnection(TimeSpan? connectAndCommandTimeout = null) 
         => reply is List<object?> items
             ? [.. items.Select(i => i?.ToString() ?? "").Where(s => s.Length > 0)]
             : [];
+
+    // INFO all (bulk-строка) → словарь; не-bulk ответ — пустой словарь (не-error
+    // кадр: сбор успешен, серии не эмитятся — консервативно, arch/18 §2.6).
+    private static IReadOnlyDictionary<string, string> ProjectInfo(object? reply)
+        => reply is string bulk ? ParseInfo(bulk) : new Dictionary<string, string>();
+
+    // INFO-текст → плоский словарь: строки «ключ:значение» (\r\n-разделители);
+    // заголовки секций «# Name» и пустые строки пропускаются; значения — строки
+    // (числа выбирает коллектор). Чистая функция, internal — юнит-тесты
+    // (паттерн Resp-парсера).
+    internal static IReadOnlyDictionary<string, string> ParseInfo(string bulk)
+    {
+        var result = new Dictionary<string, string>();
+        foreach (var rawLine in bulk.Split('\n'))
+        {
+            var line = rawLine.TrimEnd('\r');
+            if (line.Length == 0 || line[0] == '#')
+                continue; // пустая строка / заголовок секции
+            var separator = line.IndexOf(':');
+            if (separator <= 0)
+                continue; // мусорная строка без «ключ:» — консервативный skip
+            result[line[..separator]] = line[(separator + 1)..];
+        }
+
+        return result;
+    }
 
     /// <summary>Ошибка протокола (-ERR…): отдельный тип — клиент переводит в Failed.</summary>
     internal sealed record RespError(string Message);

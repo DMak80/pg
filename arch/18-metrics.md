@@ -96,7 +96,9 @@ Infrastructure.App.Metrics   ──порт──► src/Shared.Metrics
 интеграционным тестом): у PgWorker — `provision`, `deprovision`, `adopt`,
 `add-shard`, `remove-shard`, `rotate-app-password`, `move`, `rollback`,
 `finalize`, `repair`, `abort`; у KafkaWorker — `provision`, `deprovision`, `add-broker`,
-`remove-broker`, `reassign`, `rotate`, `regen`, `topicsync`. `phase` —
+`remove-broker`, `reassign`, `rotate`, `regen`, `topicsync`;
+у ValkeyWorker — `provision`, `deprovision`, `rotate`, `supervise` (подавляемый),
+`healing-portalloc` (вспомогательный). `phase` —
 фаза машины состояний (journal-фаза). Завершение фазовой серии —
 терминальные фазы журнала по фактическому словарю: `done`, `failed`,
 `crashed`, `rejected`, `cancelled` (сброс серии + счёт `worker_operation_total`;
@@ -130,6 +132,36 @@ Patroni-нод (arch/08). Стенд: Patroni-эмуляторы (`hc*`) отд�
 static (DNS-имена сети стенда). Узлы, создаваемые PgWorker в per-cluster
 сетях, в контуре стендового Prometheus недостижимы — см. ограничение §5.4.
 
+### 2.6. Valkey-домен (коллектор ValkeyWorker §4)
+
+Имена — финальные Prometheus-формата; в коде — dot-нотация Meter. Лейблы конечны:
+`cluster` (доменное имя), `node` (`node<k>`), `role` ∈ {master,slave} (только у
+`valkey_role`); `job`/`instance` назначает Prometheus по scrape-джобе (§5.2).
+
+| Имя | Тип | Лейблы | Источник INFO | Смысл |
+|---|---|---|---|---|
+| `valkey_memory_used_bytes` | gauge | cluster, node | Memory.used_memory | потребление памяти нодой, байты |
+| `valkey_memory_max_bytes` | gauge | cluster, node | Memory.maxmemory | предел памяти ноды (maxmemory), байты |
+| `valkey_connected_clients` | gauge | cluster, node | Clients.connected_clients | подключённые клиенты |
+| `valkey_blocked_clients` | gauge | cluster, node | Clients.blocked_clients | заблокированные клиенты (BLPOP и т.п.) |
+| `valkey_evicted_keys` | gauge | cluster, node | Stats.evicted_keys | кумулятив выселенных ключей (сброс при рестарте — gauge) |
+| `valkey_expired_keys` | gauge | cluster, node | Stats.expired_keys | кумулятив истёкших ключей |
+| `valkey_keyspace_hits` | gauge | cluster, node | Stats.keyspace_hits | кумулятив попаданий (hit-rate = hits/(hits+misses)) |
+| `valkey_keyspace_misses` | gauge | cluster, node | Stats.keyspace_misses | кумулятив промахов |
+| `valkey_instantaneous_ops_per_sec` | gauge | cluster, node | Stats.instantaneous_ops_per_sec | операции/сек (готовая скорость, без rate()) |
+| `valkey_total_connections_received` | gauge | cluster, node | Stats.total_connections_received | кумулятив принятых соединений |
+| `valkey_rejected_connections` | gauge | cluster, node | Stats.rejected_connections | кумулятив отклонённых соединений (maxclients) |
+| `valkey_total_commands_processed` | gauge | cluster, node | Stats.total_commands_processed | кумулятив обработанных команд |
+| `valkey_role` | gauge | cluster, node, role | Replication.role | 1 в серии с `role="master\|slave"` (enum-паттерн) |
+| `valkey_connected_slaves` | gauge | cluster, node | Replication.connected_slaves | число реплик (v1 standalone — всегда 0; заготовка под будущие топологии) |
+| `valkey_collector_last_success_timestamp_seconds` | gauge | — | самонаблюдение | unix-время последнего успешного тика коллектора |
+
+Семантика gauge-кумулятивов: persistence off и пересоздания контейнера сбрасывают
+счётчики Valkey в 0 — counter-тип ломал бы `increase()`/`rate()`; динамика в PromQL —
+`rate()`/`increase()` по gauge-сериям (каноническое решение доменного словаря).
+Поле INFO отсутствует/нечислово в ответе ноды → конкретная серия не эмитится
+(консервативно, без нулей-фантомов); сам сбор кластера при этом успешен.
+
 ## 3. Экспозиция и безопасность
 
 - Воркеры: `/metrics` на том же Kestrel `:8080`, что `/healthz`;
@@ -140,7 +172,9 @@ static (DNS-имена сети стенда). Узлы, создаваемые 
 - Формат — Prometheus text/OpenMetrics (content-negotiation экспортёра);
   scrape-интервал стенда 15 с.
 
-## 4. Коллектор Kafka-метрик
+## 4. Коллекторы доменных метрик (Kafka, Valkey)
+
+### 4.1. Kafka
 
 Фоновый hosted-сервис `KafkaWorker.App` (тик `KafkaWorker:Metrics:
 CollectIntervalSec`, default 30): по Active-кластерам (снапшот etcd) через
@@ -151,6 +185,31 @@ ObservableGauge-стейт; ошибка сбора не валит тик (об
 `kafka_collector_last_success_timestamp_seconds`). Один AdminClient-коннект
 на тик по кластеру, таймаут короткий (seam-фабрика уже 10 с); сбор — вне
 клэймов (read-only, безопасен параллельно любым процессам).
+
+### 4.2. Valkey
+
+Фоновый hosted-сервис `ValkeyWorker.App` (тик `ValkeyWorker:Metrics:
+CollectIntervalSec`, default 30; `<=0` → 30 + warning-лог): по Active-кластерам
+(снапшот etcd `/valkey/clusters/`, парсер ValkeySnapshotParser; `Config.State == null`
+— невыполненные заявки не трогаем) с полными дискавери-кредами (`admin_user`/
+`admin_password`). Адреса нод — отдельный read-only Range `/valkeyworker/portalloc/`
+(канон `NodeAddress`); нода кластера без portalloc-записи — пропуск (лестница E9 —
+забота надзора C, коллектор только читает). Хост пробы —
+`AdvertisedClientHost ?? portalloc.host` (правило advertised arch/21 §2).
+
+Сбор ноды — ОДНА RESP-проба `INFO all` за тик (аналог «одного AdminClient-коннекта
+за тик» §4.1): все секции одним bulk-кадром, короткоживущий TCP с таймаутом клиента
+(5 с), admin-кред. Ошибка ноды → тик кластера неуспешен (warning-лог), остальные
+кластеры тика собираются. `valkey_collector_last_success_timestamp_seconds`
+обновляется ТОЛЬКО при полном успехе всех (cluster, node)-проб тика (консервативно;
+пустой список кластеров = успех). Сбор — вне клэймов (read-only, безопасен
+параллельно любым процессам).
+
+Без backoff-механизма (отличие от Kafka): RESP-миниклиент — лёгкая короткоживущая
+TCP-проба (не тяжёлый AdminClient); лежачая нода стоит один connect-таймаут за тик,
+отдельный backoff-стейт не нужен (YAGNI). Результаты пишутся в ObservableGauge-стейт
+§2.6 (`ValkeyMetricsState`, материализация измерений под lock — паттерн §4.1);
+`UpdateCluster` затирает предыдущие записи кластера — ушедшие ноды не копятся.
 
 ## 5. Хранение: стек мониторинга dev-стенда
 
@@ -173,6 +232,7 @@ ObservableGauge-стейт; ошибка сбора не валит тик (об
 |---|---|---|
 | `pgworker` | `host.docker.internal:8080` (публикация deploy-compose; вне сети стенда) | §2.1–2.2 |
 | `kafkaworker` | имя сети стенда `kafkaworker:8080` (хост-публикация 8082 — только для чеков, Prometheus её не использует; fallback не предусмотрен) | §2.1–2.3 |
+| `valkeyworker` | имя сети стенда `valkeyworker:8080` (профиль `valkey`; хост-публикации нет — чеки ходят изнутри контейнера) | §2.1–2.2, §2.6 |
 | `adminpanel` | имя сети стенда `adminpanel:8080` (хост-публикация 5050 — только для браузера/чеков) | §2.4 |
 | `patroni` | static: `hc1a:8008, hc1b:8008, hc2a:8008, hc2b:8008` | §2.5 |
 
@@ -187,6 +247,8 @@ cert_file: /tls/prometheus.crt, key_file: /tls/prometheus.key}` (t03: /metrics
 
 `dashboards/workers.json` (циклы/клэймы/фазы/операции/снапшоты обоих
 воркеров), `dashboards/kafka.json` (USR, consumer-lag, коллектор),
+`dashboards/valkey.json` (память/hit-rate/эвикции/ops/клиенты/подключения/
+slaves/коллектор),
 `dashboards/pg.json` (репликация Patroni-нод, health-грань систем).
 
 ### 5.4. Прод-паттерн (документируется, вне кода)
@@ -200,9 +262,13 @@ advertise-адресов portalloc (file_sd из etcd-снапшота — оп�
 
 - **Unit**: WorkerMetrics — семантика инструментов (счёт тиков по `ok`,
   сброс серий фаз, возраст снапшота) через тестовый MeterListener/коллектор.
+- **Unit**: valkey-коллектор — парсер INFO, затирание ушедших нод
+  UpdateCluster, консервативный LastSuccess, пропуски не-Active/без кредов/без
+  portalloc, дефолт интервала `<=0` → 30 (фейк `IValkeyConnection`).
 - **Integration**: `WebApplicationFactory` — `/metrics` отвечает 200
   text-format, содержит канонические имена §2 (фиксирует фактические
-  экспортированные имена против словаря); `/metrics` не требует ApiKey.
+  экспортированные имена против словаря); `/metrics` не требует ApiKey; valkey — все 15 имён §2.6 при живом демо-кластере (live-WAF
+  с реальным docker), живая/остановленная нода — LastSuccess стоит, тик не падает.
 - **E2E-чек стенда**: `checks/65-metrics.sh` — профиль `metrics` поднят,
   все scrape-джобы `up`, дашборды загружены, алерт-рулы зарегистрированы
   (`/api/v1/rules`), Alertmanager жив.
@@ -223,6 +289,7 @@ advertise-адресов portalloc (file_sd из etcd-снапшота — оп�
 ```
 <Service>:Metrics { Enabled=true, Path="/metrics" }   # все сервисы
 KafkaWorker:Metrics { CollectIntervalSec=30 }          # коллектор §4
+ValkeyWorker:Metrics { CollectIntervalSec=30 }          # коллектор §4.2
 # стенд (env-override compose):
 METRICS_PROMETHEUS_PORT=9090, METRICS_GRAFANA_PORT=3000,
 METRICS_ALERTMANAGER_PORT=9093, METRICS_ALERT_WEBHOOK_URL=   # пусто — только UI

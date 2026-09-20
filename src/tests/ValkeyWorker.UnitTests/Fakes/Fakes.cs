@@ -390,6 +390,9 @@ internal static class Fakes
 
         public readonly Dictionary<string, string> Config = [];
 
+        // INFO-словарь ноды (коллектор t05): пустой — поля «отсутствуют».
+        public readonly Dictionary<string, string> Info = [];
+
         // Журнал вызовов (тесты сверяют окно двух паролей E1–E3).
         public readonly List<(string User, IReadOnlyList<string> Args)> SetUserCalls = [];
 
@@ -531,6 +534,21 @@ internal static class Fakes
 
             SetUserCalls.Add((target, args));
             return Task.FromResult(Result.Success());
+        }
+
+        public Task<Result<IReadOnlyDictionary<string, string>>> InfoAllAsync(
+            ValkeyEndpoint ep, CancellationToken ct)
+        {
+            BeforeCommand();
+            if (ConnectionFault)
+                return Task.FromResult(Blind<IReadOnlyDictionary<string, string>>());
+            if (Silent)
+                return Task.FromResult(SilentBlind<IReadOnlyDictionary<string, string>>());
+            if (!AuthOk(ep))
+                return Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Failed(
+                    new ApplicationException("AUTH failed")));
+            return Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Success(
+                (IReadOnlyDictionary<string, string>)Info));
         }
     }
 }
