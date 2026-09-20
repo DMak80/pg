@@ -3,13 +3,15 @@
 # ЖИВОГО воркера (профиль valkey): сид demo (05-seed.sh valkey — заявка,
 # доигранная воркером) → панель видит кластер (live-PING) → полный цикл
 # мутаций ЧЕРЕЗ панель→прокси→API воркера с RunTag-именем → чистота после
-# delete. Финал: демо-контур остаётся (сид живёт — полная система).
+# delete. TLS-проверки t06: RESP-проба по TLS с ca_pem из etcd, plain-порт
+# закрыт. Финал: демо-контур остаётся (сид живёт — полная система).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 BASE="${ADMINPANEL_URL:-http://localhost:5050}"
 TAG="v51$(date +%s)"
-JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
+JAR="$(mktemp)"; TMP="$(mktemp -d)"
+trap 'rm -f "$JAR"; rm -rf "$TMP"' EXIT
 
 # etcd-хелперы (как 55-kafka-e2e.sh): чтение фактов мимо панели — для ожиданий.
 etcd_key() { docker compose exec -T etcd etcdctl get "$1" --print-value-only </dev/null 2>/dev/null; }
@@ -55,6 +57,36 @@ done
 api "/api/valkey/clusters/$TAG" | jq -e '.state == "ACTIVE" and .nodesList[0].state == "RUNNING"' >/dev/null \
   || { echo "❌ $TAG не достиг ACTIVE/RUNNING за 300 c (docker compose logs valkeyworker)"; exit 1; }
 echo "  create $TAG -> 201; RUNNING достигнут"
+
+# 2b) TLS-пробы (t06): ca_pem из etcd → TLS-проба app-кредом PONG; plain-порт
+#     закрыт (тот же вызов без --tls отклоняется, retry ≤ 30 c суммарно).
+etcd_key "/valkey/clusters/$TAG/ca_pem" | sed 's/\\n/\n/g' > "$TMP/ca.pem"
+grep -q "BEGIN CERTIFICATE" "$TMP/ca.pem" \
+  || { echo "❌ ca_pem отсутствует/битый в etcd (TLS-дискавери t06)"; exit 1; }
+endpoints="$(etcd_key "/valkey/clusters/$TAG/endpoints")"
+vh="${endpoints%%:*}"; vp="${endpoints##*:}"
+app_password="$(etcd_key "/valkey/clusters/$TAG/app_password")"
+tls_ok=""
+for i in $(seq 1 10); do
+  # PING вне прав app (ACL-канон: +@read +@write) — проба SET/GET по TLS.
+  [ "$(docker run --rm --network host -v "$TMP/ca.pem:/ca.pem:ro" valkey/valkey:9.1.2 \
+      valkey-cli --tls --cacert /ca.pem -h "$vh" -p "$vp" --user app -a "$app_password" \
+      --no-auth-warning SET tls:probe t06 2>/dev/null)" = OK ] \
+    && [ "$(docker run --rm --network host -v "$TMP/ca.pem:/ca.pem:ro" valkey/valkey:9.1.2 \
+      valkey-cli --tls --cacert /ca.pem -h "$vh" -p "$vp" --user app -a "$app_password" \
+      --no-auth-warning GET tls:probe 2>/dev/null)" = t06 ] && { tls_ok=1; break; }
+  sleep 3
+done
+[ -n "$tls_ok" ] || { echo "❌ TLS-проба app-кредом не ответила PONG"; exit 1; }
+plain_rejected=""
+for i in $(seq 1 10); do
+  if ! docker run --rm --network host valkey/valkey:9.1.2 \
+      valkey-cli -h "$vh" -p "$vp" -u app -a "$app_password" \
+      --no-auth-warning PING >/dev/null 2>&1; then plain_rejected=1; break; fi
+  sleep 3
+done
+[ -n "$plain_rejected" ] || { echo "❌ plain-подключение прошло (ожидался отказ — --port 0)"; exit 1; }
+echo "  TLS: PONG по TLS с ca_pem из etcd; plain-порт закрыт"
 
 # 3) Конфиг-мутация: 200; converge D применяет БЕЗ рестарта контейнера
 #    (container ID неизменен); панель видит новые значения ≤ пары тиков.
