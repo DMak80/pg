@@ -227,6 +227,37 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         return process.ExitCode == 0 && output.Trim() == "true";
     }
 
+    // Args контейнера как compact-JSON ({{json .Args}}) — маркер TLS t06:
+    // в args ноды обязаны быть --tls-port 6379/--port 0; пусто = объекта нет.
+    // Шаблон В КАВЫЧКАХ: в нём пробел, а .NET режет Arguments по пробелам.
+    public async Task<string> ContainerArgsJsonAsync(string name)
+    {
+        var inspect = new ProcessStartInfo("docker",
+            $"inspect --format \"{{{{json .Args}}}}\" {name}")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        using var process = Process.Start(inspect)!;
+        var output = await process.StandardOutput.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        return process.ExitCode == 0 ? output.Trim() : string.Empty;
+    }
+
+    // Факт существования named volume (точное имя) — чистота X1 (t06).
+    public async Task<bool> VolumeExistsAsync(string name)
+    {
+        var inspect = new ProcessStartInfo("docker", $"volume inspect {name}")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        using var process = Process.Start(inspect)!;
+        await process.StandardOutput.ReadToEndAsync();
+        await process.WaitForExitAsync();
+        return process.ExitCode == 0;
+    }
+
     // Телеметрия (docs/e2e-launch.md §1): docker-логи+inspect всех контейнеров
     // окружения — ДО любого удаления; вызывается в teardown и на slow-phase.
     public async Task CollectDiagnosticsAsync(string mark)
@@ -305,7 +336,8 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         try { await _net.DeleteAsync(); } catch { /* уже нет */ }
         _gatewayHttp.Dispose();
 
-        // Ассерт чистоты: ни контейнера, ни сети своего окружения.
+        // Ассерт чистоты: ни контейнера, ни сети, ни тома своего окружения
+        // (тома vwk-<C>-tls — X1 демонтажа, t06).
         foreach (var name in new[] { $"vwk-ew-{_runId}", $"vwk-ee-{_runId}" })
         {
             var inspect = new ProcessStartInfo("docker", $"inspect {name}")
@@ -314,6 +346,14 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
             await process.WaitForExitAsync();
             process.ExitCode.Should().NotBe(0, $"контейнер {name} удалён teardown'ом");
         }
+
+        var volumeList = new ProcessStartInfo("docker",
+            $"volume ls --format {{{{.Name}}}} --filter name=vwk-{ClusterTag}")
+        { RedirectStandardOutput = true };
+        using var volumeListing = Process.Start(volumeList)!;
+        var volumeNames = await volumeListing.StandardOutput.ReadToEndAsync();
+        await volumeListing.WaitForExitAsync();
+        volumeNames.Trim().Should().BeEmpty($"после teardown не осталось томов тега {ClusterTag}");
     }
 
     private static async Task SafeStopAsync(IContainer container, bool remove)

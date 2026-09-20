@@ -159,7 +159,17 @@ builder.Services.AddSingleton(sp => new PortAllocHealer(
 builder.Services.AddSingleton(sp => new NodeTlsProvisioner(
     sp.GetRequiredService<IClusterDriver>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value).NodeImage));
-builder.Services.AddSingleton<TlsMigrator>();
+builder.Services.AddSingleton(sp => new TlsMigrator(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<IClusterSecretEnsurer>(),
+    sp.GetRequiredService<NodeTlsProvisioner>(),
+    sp.GetRequiredService<IValkeyConnection>(),
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value),
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 builder.Services.AddSingleton(sp => new ProvisioningProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints,
