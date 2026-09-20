@@ -609,12 +609,13 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         }
     }
 
-    private static object BuildContainerBody(ContainerSpec spec)
+    internal static object BuildContainerBody(ContainerSpec spec)
     {
         var hostConfig = new Dictionary<string, object?>
         {
-            // arch/21 §2: docker сам поднимает контейнер после ребута хоста.
-            ["RestartPolicy"] = new { Name = "unless-stopped" },
+            // arch/21 §2: docker сам поднимает контейнер ноды после ребута
+            // хоста; служебные контейнеры (TLS-helper) задают «no» в спеке.
+            ["RestartPolicy"] = new { Name = spec.RestartPolicy ?? "unless-stopped" },
         };
         if (spec.Ports.Count > 0)
         {
@@ -781,10 +782,13 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
     private async Task CreateHelperAsync(string name, string volume, string image, CancellationToken ct)
     {
         // NodeImage помощника (тот же, что у ноды — локально гарантирован);
-        // без портов/лимитов — только sleep и mount (объект пустой).
+        // без портов/лимитов — только sleep и mount (объект пустой);
+        // RestartPolicy «no» (t06-ревью): крах воркера в окне записи не
+        // оставляет демону вечно рестартуемого держателя volume.
         var spec = new ContainerSpec(
             image, ["sleep", "120"], [], name, null, null, null,
-            Binds: (IReadOnlyList<string>?)new[] { volume + ":/mnt" });
+            Binds: (IReadOnlyList<string>?)new[] { volume + ":/mnt" },
+            RestartPolicy: "no");
         var created = await CreateContainerAsync(spec, name, ct);
         if (!created.IsSuccess)
             throw created.Error!;

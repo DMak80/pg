@@ -126,7 +126,11 @@ public sealed record ContainerSpec(
     double? CpuCores,
     long? MemoryBytes,
     string? Label,
-    IReadOnlyList<string>? Binds = null);
+    IReadOnlyList<string>? Binds = null,
+    // Docker RestartPolicy Name; null = канон нод «unless-stopped» (arch/21 §2).
+    // Эфемерные служебные контейнеры (TLS-helper t06) — «no»: крах воркера в
+    // окне записи не должен оставлять вечно рестартуемого держателя volume.
+    string? RestartPolicy = null);
 
 // Спецификация swarm-сервиса ноды: constraint на конкретную ноду (node.id==<id>).
 public sealed record ServiceSpec(string Name, ContainerSpec Template, string NodeConstraint);
