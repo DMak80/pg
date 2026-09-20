@@ -38,8 +38,8 @@ public class RotationTests(ValkeyClusterFixture fx)
         (await connection.AclSetUserAsync(admin, ["app", $">{newApp}"], TestContext.Current.CancellationToken))
             .IsSuccess.Should().BeTrue();
         // Проба окна — SET (право app: +@read +@write; PING в эти категории не входит).
-        var oldWorks = RespProbe.Execute("localhost", port, "app", oldApp, "SET", "rot:probe", "1");
-        var newWorks = RespProbe.Execute("localhost", port, "app", newApp, "GET", "rot:probe");
+        var oldWorks = RespProbe.ExecuteTls("localhost", port, "app", oldApp, caPem, "SET", "rot:probe", "1");
+        var newWorks = RespProbe.ExecuteTls("localhost", port, "app", newApp, caPem, "GET", "rot:probe");
         oldWorks.Ok.Should().BeTrue(oldWorks.Error);
         newWorks.Ok.Should().BeTrue(newWorks.Error);
 
@@ -54,11 +54,11 @@ public class RotationTests(ValkeyClusterFixture fx)
         var committed = (await fx.GetAsync($"/valkey/clusters/{cluster}/app_password"))!;
         committed.Should().NotBe(oldApp).And.NotBe(newApp).And.HaveLength(32);
         (await fx.GetAsync($"/valkeyworker/rotations/{cluster}")).Should().BeNull();
-        var oldRejected = RespProbe.Execute("localhost", port, "app", oldApp, "SET", "rot:probe2", "1");
+        var oldRejected = RespProbe.ExecuteTls("localhost", port, "app", oldApp, caPem, "SET", "rot:probe2", "1");
         oldRejected.Ok.Should().BeFalse("OLD удалён фазой E3");
-        var newAccepted = RespProbe.Execute("localhost", port, "app", committed, "SET", "rot:probe3", "1");
+        var newAccepted = RespProbe.ExecuteTls("localhost", port, "app", committed, caPem, "SET", "rot:probe3", "1");
         newAccepted.Ok.Should().BeTrue(newAccepted.Error);
-        var adminStillOk = RespProbe.Execute("localhost", port, "admin", oldAdmin, "PING");
+        var adminStillOk = RespProbe.ExecuteTls("localhost", port, "admin", oldAdmin, caPem, "PING");
         adminStillOk.Ok.Should().BeTrue("ротация app не трогает admin-кред");
     }
 }

@@ -46,6 +46,10 @@ public sealed class ValkeyClusterFixture : IAsyncLifetime
     // Advertised-хост клиентского порта для хост-процесса теста: localhost.
     public const string AdvertisedClientHost = "localhost";
 
+    // Имя единственного docker-хоста рига (HostEndpoint в InitializeAsync);
+    // portalloc/TLS-volume вызовы тестов ссылаются на него.
+    public const string DockerHost = "local";
+
     // Окно хост-портов публикации нод — динамическое (вне стендовой зоны).
     private static readonly (int From, int To) HostPorts = FreePortWindow.Find();
 
@@ -72,6 +76,12 @@ public sealed class ValkeyClusterFixture : IAsyncLifetime
     public ValkeyProvisioningOptions Options { get; } =
         new(HostPorts.From, HostPorts.To, NodeBootSec: 100, NodeDeadSec: 90, AdvertisedClientHost,
             "valkey/valkey:9.1.2");
+
+    private int _portCursor;
+
+    // Выделение host-порта из окна (тесты, поднимающие контейнер руками —
+    // TlsMigrationTests): без литералов, из динамического окна фикстуры.
+    public int NextPort() => HostPorts.From + 2 + Interlocked.Increment(ref _portCursor);
 
     public async ValueTask InitializeAsync()
     {
@@ -108,8 +118,10 @@ public sealed class ValkeyClusterFixture : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        // Демонтаж кластеров прогона (томов и per-cluster сетей у домена нет);
-        // 404/ошибки — лучшее усилие (прогон завершён).
+        // Демонтаж кластеров прогона (per-cluster сетей у домена нет; TLS-том
+        // vwk-<C>-tls чистится всегда — успешный X1 снимает его сам, здесь
+        // страховка для сценариев без демонтажа); 404/ошибки — лучшее усилие
+        // (прогон завершён).
         var ct = CancellationToken.None;
         foreach (var cluster in _clusters)
         {
@@ -124,6 +136,10 @@ public sealed class ValkeyClusterFixture : IAsyncLifetime
                     var node = name[$"vwk-{cluster}-".Length..];
                     await Driver.RemoveNodeAsync(cluster, node, ct);
                 }
+
+                // TLS-volume кластера (t06, шаг 9.4): ПОСЛЕ сноса контейнеров —
+                // volume «in use» docker удалять отказывается.
+                await Driver.RemoveTlsVolumeAsync(cluster, ct);
             }
             catch
             {
@@ -159,7 +175,7 @@ public sealed class ValkeyClusterFixture : IAsyncLifetime
     public ClusterSecretEnsurer NewSecretEnsurer() =>
         new(Gateway, [Endpoint]);
 
-    public NodeTlsProvisioner NewTlsProvisioner() => new(Driver);
+    public NodeTlsProvisioner NewTlsProvisioner() => new(Driver, Options.NodeImage);
 
     public ProvisioningProcess NewProvisioning(ClaimStore claims, WorkJournal journal,
         PortAllocLock portLock, PortAllocIndex portIndex, IClusterSecretEnsurer secrets) =>

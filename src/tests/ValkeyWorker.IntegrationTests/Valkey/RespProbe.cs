@@ -1,3 +1,4 @@
+using System.Net.Security;
 using System.Text;
 using ValkeyWorker.Core.Valkey;
 
@@ -14,7 +15,55 @@ public static class RespProbe
         using var client = new System.Net.Sockets.TcpClient();
         client.ConnectAsync(host, port).GetAwaiter().GetResult();
         using var stream = new BufferedStream(client.GetStream(), 8192);
+        return ExecuteOn(stream, user, password, command);
+    }
 
+    // TLS-проба (t06): SslStream с валидацией против ca_pem (CustomRootTrust +
+    // SAN-хост) — тот же доверительный путь, что у воркера/панели.
+    public static (bool Ok, string Error, string? Value) ExecuteTls(
+        string host, int port, string user, string password, string caPem, params string[] command)
+    {
+        using var client = new System.Net.Sockets.TcpClient();
+        client.ConnectAsync(host, port).GetAwaiter().GetResult();
+
+        if (!ValkeyPki.TryParseCertificate(caPem, out var ca) || ca is null)
+            return (false, "ca_pem: невалидный PEM", null);
+        bool ValidateServerCertificate(
+            object sender, System.Security.Cryptography.X509Certificates.X509Certificate? certificate,
+            System.Security.Cryptography.X509Certificates.X509Chain? chain,
+            SslPolicyErrors errors)
+            => certificate is not null
+               && Shared.Tls.TlsChain.ValidateChain(certificate, ca)
+               && SanMatchesHost(certificate, host);
+
+        using var ssl = new SslStream(client.GetStream(), false, ValidateServerCertificate);
+        ssl.AuthenticateAsClient(new SslClientAuthenticationOptions
+        {
+            TargetHost = host,
+            RemoteCertificateValidationCallback = ValidateServerCertificate,
+        });
+        using var stream = new BufferedStream(ssl, 8192);
+        return ExecuteOn(stream, user, password, command);
+    }
+
+    private static bool SanMatchesHost(
+        System.Security.Cryptography.X509Certificates.X509Certificate certificate, string host)
+    {
+        using var cert = certificate as System.Security.Cryptography.X509Certificates.X509Certificate2
+                         ?? new System.Security.Cryptography.X509Certificates.X509Certificate2(certificate);
+        var san = cert.Extensions
+            .OfType<System.Security.Cryptography.X509Certificates.X509SubjectAlternativeNameExtension>()
+            .FirstOrDefault();
+        if (san is null)
+            return false;
+        if (System.Net.IPAddress.TryParse(host, out var ip))
+            return san.EnumerateIPAddresses().Contains(ip);
+        return san.EnumerateDnsNames().Contains(host, StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static (bool Ok, string Error, string? Value) ExecuteOn(
+        System.IO.Stream stream, string user, string password, IReadOnlyList<string> command)
+    {
         var auth = WriteAndRead(stream, ["AUTH", user, password]);
         if (auth is ValkeyConnection.RespError authError)
             return (false, $"AUTH: {authError.Message}", null);
@@ -51,3 +100,4 @@ public static class RespProbe
             .GetAwaiter().GetResult();
     }
 }
+
