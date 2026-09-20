@@ -323,6 +323,9 @@ data-каталог создаётся от root и недоступен patroni
   `tcp://10.0.1.11:2376` (+TLS-конфиг `PgWorker:Docker:Tls`),
   `ssh://user@10.0.1.11[:22]` (SSH-туннель `PgWorker:Docker:Ssh`).
   Каждый хост — свой клиент Docker Engine API (per-host connection).
+  Клиент Engine API — общая сборка трёх воркеров `Shared.Docker`
+  (унификация t07: три копии движка объединены; SSH/TLS — опции фабрики,
+  доступные всем доменам; create при отсутствии образа — pull+retry).
 - PgWorker сам вычисляет placement (§2.4) и создаёт контейнеры на выбранных
   хостах: `POST /containers/create?name=pgw-<C>-<X>-<n>` → `start`.
   Restart-политика `unless-stopped` (docker сам поднимает после ребута хоста).
@@ -371,6 +374,10 @@ authz-плагины вне скоупа, граница зафиксирова�
   каждый хост — свой серверный серт; компрометация клиентского серта
   воркера = root всех docker-хостов установки → серт в env-секрете, ротация —
   перегенерация пакета.
+- **Реализация транспорта** (unix / tcp+TLS / ssh-туннель с кэшем и
+  reconnect, docker-PKI-материал) — общая сборка `Shared.Docker` (t07);
+  env-секреты `PGW_DOCKER_TLS_*`/`PGW_DOCKER_SSH_*` — pg-слой `PgWorker.App`
+  (`DockerEnvBindings`).
 
 ### 2.3. Режим Swarm
 

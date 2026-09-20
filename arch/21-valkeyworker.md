@@ -169,6 +169,13 @@ per-install API-CA; клиенты без валидного серта — от
 - Сам воркер — контейнер с `docker.sock`, поставляется через
   `deploy/docker-compose.yml` (сборка — t02, по образцу KafkaWorker).
 
+Клиент Engine API — общий `Shared.Docker` (порт t07-унификации движка;
+канон-суперсет: start 304-идемпотентен, create при отсутствии образа —
+pull+retry, exec-ошибка включает stdout, label контейнеров/сервисов —
+`valkeyworker`); TLS-volume-транспорт (helper-контейнер, tar-архив) —
+методы `Shared.Docker` (`EnsureVolumeAsync`/`PutVolumeArchiveAsync`/
+`GetVolumeArchiveAsync`/`DeleteVolumeAsync`).
+
 ## 3. Контракт etcd
 
 Транспорт и схема ключей — [20-valkey-clusters.md](20-valkey-clusters.md)
