@@ -156,15 +156,18 @@ api /api/alerts | jq -e 'any(.[]; .kind == "worker-api-unreachable" and .target 
 echo "  /api/alerts: valkey-грань чиста при живом воркере"
 
 # 8) Удаление: 202 → демонтаж воркером → кластер исчезает из панели; чистота:
-#    ни контейнера vwk-$TAG-*, ни ключей /valkey/clusters/$TAG/.
+#    ни контейнера vwk-$TAG-*, ни TLS-volume vwk-$TAG-tls (t06-ревью),
+#    ни ключей /valkey/clusters/$TAG/.
 c="$(code -X DELETE "$BASE/api/valkey/clusters/$TAG")"
 [ "$c" = 202 ] || { echo "❌ delete = $c, ожидался 202"; exit 1; }
 for i in $(seq 1 150); do
   ! docker inspect "vwk-$TAG-node1" >/dev/null 2>&1 \
+    && ! docker volume inspect "vwk-$TAG-tls" >/dev/null 2>&1 \
     && ! etcd_has "/valkey/clusters/$TAG/config" && break
   sleep 2
 done
 docker inspect "vwk-$TAG-node1" >/dev/null 2>&1 && { echo "❌ контейнер vwk-$TAG-node1 не удалён"; exit 1; }
+docker volume inspect "vwk-$TAG-tls" >/dev/null 2>&1 && { echo "❌ TLS-volume vwk-$TAG-tls не удалён (X1)"; exit 1; }
 etcd_has "/valkey/clusters/$TAG/config" && { echo "❌ ключи /valkey/clusters/$TAG/ не удалены"; exit 1; }
 # Список панели догоняет удаление тиком refresher'а (3 c) — поллинг, не одиночный выстрел.
 for i in $(seq 1 15); do
