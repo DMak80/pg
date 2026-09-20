@@ -1,6 +1,5 @@
 using Microsoft.Extensions.Options;
 using KafkaWorker.Core;
-using KafkaWorker.Docker.Engine;
 using Shared.Etcd.Client;
 
 namespace KafkaWorker.App.HealthChecks;

@@ -6,8 +6,6 @@ namespace KafkaWorker.Core.Planning;
 /// Фактические лимиты контейнера/сервиса брокера из docker inspect
 /// (t06, spec §5.3): 0 = лимит не задан.
 /// </summary>
-public sealed record NodeLimits(long NanoCpus, long MemoryBytes);
-
 /// <summary>
 /// Сверка лимитов контейнера с декларацией brokers/&lt;b&gt;/resources
 /// (t06, spec §5.2 J2 / §5.3). Формула cpu ПОКАЗАТЕЛЬНО повторяет

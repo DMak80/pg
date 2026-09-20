@@ -5,7 +5,6 @@ using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using KafkaWorker.Core.Model;
 using KafkaWorker.Docker.Drivers;
-using KafkaWorker.Docker.Engine;
 using Shared.Etcd.Client;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.Provisioning.Kafka;
