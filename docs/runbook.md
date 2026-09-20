@@ -154,3 +154,24 @@ etcd/S3, kafka-брокеры) управляемым сертом не затр
 
 Автоматическая проверка на живом стенде — `dev-stand/adminpanel/checks/70-worker-cert.sh`
 (generate → pending restart → restart → applied → откат на env).
+
+## TLS-подключения к Valkey-кластерам (t06)
+
+Клиентский порт Valkey-кластеров — TLS с t06 (`--tls-port 6379 --port 0`):
+plain-подключения отклоняются, адреса/portalloc не менялись (адрес тот же,
+транспорт TLS). Подключение требует per-cluster CA из etcd —
+`/valkey/clusters/<C>/ca_pem` (PEM одной строкой с `\n`):
+
+- `valkey-cli`/`redis-cli`:
+  `valkey-cli --tls --cacert ca.pem -h <host> -p <port> -u app -a <app_password>`
+  (значение из etcd развернуть на многострочный PEM: `sed 's/\\n/\n/g'`);
+- StackExchange.Redis: `Ssl=true` + доверие `ca_pem` через
+  certificate-validation callback (образец — `PuzzleServer.Infrastructure.App.Valkey`);
+- клиенты библиотеки HA.Valkey: `GetClientConfig()` отдаёт `ssl=true` и CA
+  автоматически (`ssl=true ⟺ ca_pem` прочитан).
+
+Plain-порт закрыт с t06 — это заявленный breaking change релиза: клиенты без
+TLS после обновления получают отказ на хендшейке. Пересоздание нод (надзор)
+перевыпускает серты автоматически (volume `vwk-<C>-tls`), вмешательство не
+требуется. Остаточный вектор — сеть контроль-плейна (arch/21 §9 R5); ротация
+CA — roadmap.
