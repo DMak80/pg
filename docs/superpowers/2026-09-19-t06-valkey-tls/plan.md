@@ -363,6 +363,14 @@ case "ca_key" when segments.Length == 5:
 
 ## Задача 4. Docker-механика: volume + tar + mount; `NodeArgsBuilder` TLS
 
+> **Примечание исполнения (2026-09-20, решение пользователя):** транспорт
+> `Put/GetVolumeArchiveAsync` реализован через короткоживущий helper-контейнер
+> (volume-archive API локальных томов недоступен без swarm — 503/404 на
+> Docker 29.8; детали — примечание в spec §1.1). Сигнатуры расширены
+> параметром `image` (образ helper'а = образ ноды, прокидывается из
+> `NodeTlsProvisioner(driver, nodeImage)`); права файлов — из заголовка tar,
+> ключ ноды `0644` (процесс valkey в образе не root).
+
 **Spec:** §4.2 (драйверы), §4.4 (NodeArgsBuilder), §1 п.4 (volume-доставка), §6 фаза 3.
 **Вход:** задача 3 закоммичена.
 **Файлы:** Modify `src/ValkeyWorker.Docker/Engine/{IDockerEngine,DockerEngine}.cs`; Create `src/ValkeyWorker.Docker/Engine/TarArchive.cs`; Modify `src/ValkeyWorker.Docker/Drivers/ClusterDriver.cs`; Modify `src/ValkeyWorker.Provisioning/Processes/NodeArgsBuilder.cs`; Test `src/tests/ValkeyWorker.UnitTests/Docker/TarArchiveTests.cs` (новый каталог), `src/tests/ValkeyWorker.UnitTests/Provisioning/NodeArgsBuilderTests.cs`.

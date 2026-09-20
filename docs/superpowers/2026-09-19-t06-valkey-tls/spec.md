@@ -60,6 +60,19 @@ kafka про бандлы openssl); серт ноды 10 лет RSA-2048, EKU Se
 roadmap-пункт §10.2); клиентские сертификаты к Valkey — нет (ACL-креды);
 TLS-тюнинг (шифры/версии) — дефолты valkey/.NET.
 
+> **Примечание исполнения (2026-09-20, решение пользователя).** Эндпоинты
+> volume-archive API (`PUT|GET /volumes/{name}/archive`) на демоне без swarm
+> отвергают локальные тома (503 «volume update only valid for cluster
+> volumes», проверено на Docker Engine 29.8.0; конфиг-фиксы нет). Все решения
+> этой строки сохраняются (named volume `vwk-<C>-tls`, tar, файлы до старта,
+> mount → `/tls`); меняется только транспорт внутри `DockerEngine`:
+> короткоживущий helper-контейнер (образ ноды) с volume в `/mnt` — запись
+> exec'ом с `chmod` из заголовка tar, чтение `GET /containers/<helper>/archive`
+> сквозь mount с переупаковкой tar в корень. Следствие из образа: процесс ноды
+> стартует НЕ root (entrypoint gosu valkey, uid 999) — файлам ключа ставится
+> `0644` (изоляция секрета — периметром контейнера: volume монтируется только
+> в контейнер ноды).
+
 ## 2. Принципы
 
 1. **arch-first**: канон arch/20, arch/21, adminpanel/02 §11 обновляется ДО
