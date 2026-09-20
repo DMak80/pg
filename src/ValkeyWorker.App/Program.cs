@@ -116,7 +116,11 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
     {
         if (string.IsNullOrWhiteSpace(docker.SwarmManager))
             throw new ApplicationException("ValkeyWorker:Docker:Mode=Swarm требует ValkeyWorker:Docker:SwarmManager");
-        return new SwarmClusterDriver(docker.SwarmManager, factory);
+        // Таблица Hosts — и для swarm: endpoint'ы Engine API нод по имени
+        // (hostname из /nodes) — TLS-volume пишет серты на ноду размещения
+        // (t06-ревью); пустая таблица (однонодовый контур) — manager.
+        return new SwarmClusterDriver(docker.SwarmManager, factory,
+            docker.Hosts.Select(h => new HostEndpoint(h.Name, h.Endpoint)).ToList());
     }
 
     var hosts = docker.Hosts

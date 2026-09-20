@@ -320,11 +320,21 @@ public sealed class PlainClusterDriver(
 }
 
 // Swarm-режим: сервисы через manager endpoint, replicas=1, constraint node.id==<id>.
+// hosts — endpoint'ы Engine API swarm-нод (по имени ноды, опционально): нужен
+// TLS-volume (t06-ревью) — named volume нод-локален, запись архива через manager
+// кладёт серты не на ноду размещения. Нет ноды в таблице (однонодовый Docker
+// Desktop/swarm) — manager engine (поведение не меняется).
 public sealed class SwarmClusterDriver(
     string managerEndpoint,
-    DockerEngineFactory factory) : IClusterDriver
+    DockerEngineFactory factory,
+    IReadOnlyList<HostEndpoint>? hosts = null) : IClusterDriver
 {
     private readonly IDockerEngine _engine = factory.Create(managerEndpoint, hostAlias: null);
+
+    // Engines нод из таблицы (по имени ноды размещения — как EnsureNodeAsync
+    // матчит spec.Host по Hostname ноды).
+    private readonly Dictionary<string, IDockerEngine> _nodeEngines = (hosts ?? [])
+        .ToDictionary(h => h.Name, h => factory.Create(h.Endpoint, hostAlias: h.Name));
 
     public async Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct)
     {
@@ -416,13 +426,18 @@ public sealed class SwarmClusterDriver(
     public Task<Result> EnsureTlsVolumeAsync(string cluster, string host, CancellationToken ct)
         => _engine.EnsureVolumeAsync(PlainClusterDriver.TlsVolumeName(cluster), ct);
 
+    // Архив сертов — через engine НОДЫ размещения (t06-ревью): volume нод-локален.
     public Task<Result> PutTlsArchiveAsync(
         string cluster, string host, byte[] tar, string image, CancellationToken ct)
-        => _engine.PutVolumeArchiveAsync(PlainClusterDriver.TlsVolumeName(cluster), tar, image, ct);
+        => ResolveNodeEngine(host).PutVolumeArchiveAsync(PlainClusterDriver.TlsVolumeName(cluster), tar, image, ct);
 
     public Task<Result<byte[]?>> GetTlsArchiveAsync(
         string cluster, string host, string image, CancellationToken ct)
-        => _engine.GetVolumeArchiveAsync(PlainClusterDriver.TlsVolumeName(cluster), image, ct);
+        => ResolveNodeEngine(host).GetVolumeArchiveAsync(PlainClusterDriver.TlsVolumeName(cluster), image, ct);
+
+    // Нода размещения из таблицы hosts; нет записи (однонодовый контур) — manager.
+    private IDockerEngine ResolveNodeEngine(string host)
+        => _nodeEngines.TryGetValue(host, out var engine) ? engine : _engine;
 
     public Task<Result> RemoveTlsVolumeAsync(string cluster, CancellationToken ct)
         => _engine.DeleteVolumeAsync(PlainClusterDriver.TlsVolumeName(cluster), ct);
