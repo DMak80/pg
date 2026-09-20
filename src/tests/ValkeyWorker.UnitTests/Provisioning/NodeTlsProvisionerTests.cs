@@ -42,6 +42,57 @@ public class NodeTlsProvisionerTests
     }
 
     [Fact]
+    public async Task Ensure_ValidTar_KeyCertMismatch_Reissues()
+    {
+        // Arrange — валидный tar, но node.key от ЧУЖОГО серта (неатомарная
+        // запись т06-ревью): факт невалиден, обязателен перевыпуск
+        var (driver, provisioner) = NewRig();
+        var (caPem, caKeyPem) = ValkeyPki.GenerateCa("c1");
+        await provisioner.EnsureNodeTlsAsync(
+            "c1", "node1", "h1", "localhost", caPem, caKeyPem, TestContext.Current.CancellationToken);
+        var before = driver.TlsVolumes[("c1", "h1")];
+
+        // Подмена ключа: свежая пара RSA, не связанная с node.crt
+        using var foreignRsa = System.Security.Cryptography.RSA.Create(2048);
+        var foreignKeyPem = foreignRsa.ExportPkcs8PrivateKeyPem();
+        var files = TarArchive.Read(before);
+        var tampered = TarArchive.Build(
+        [
+            new TarArchive.Entry("node.crt", 0b1_1010_0100, files["node.crt"]),
+            new TarArchive.Entry("node.key", 0b1_1010_0100, Encoding.UTF8.GetBytes(foreignKeyPem)),
+            new TarArchive.Entry("ca.pem", 0b1_1010_0100, files["ca.pem"]),
+        ]);
+        driver.TlsVolumes[("c1", "h1")] = tampered;
+
+        // Act
+        var result = await provisioner.EnsureNodeTlsAsync(
+            "c1", "node1", "h1", "localhost", caPem, caKeyPem, TestContext.Current.CancellationToken);
+
+        // Assert — перевыпуск: tar переписан, ключ соответствует серту
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        driver.TlsVolumes[("c1", "h1")].Should().NotBeSameAs(tampered);
+        NodeTlsProvisioner.IsValidTar(
+            driver.TlsVolumes[("c1", "h1")], "localhost", caPem, Clock).Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Ensure_ValidTar_MatchingKey_Reused()
+    {
+        // Arrange — валидный tar с СОГЛАСОВАННОЙ парой ключ↔серт
+        var (driver, provisioner) = NewRig();
+        var (caPem, caKeyPem) = ValkeyPki.GenerateCa("c1");
+        await provisioner.EnsureNodeTlsAsync(
+            "c1", "node1", "h1", "localhost", caPem, caKeyPem, TestContext.Current.CancellationToken);
+        var before = driver.TlsVolumes[("c1", "h1")];
+
+        // Act — проверка валидности согласованном набора
+        var valid = NodeTlsProvisioner.IsValidTar(before, "localhost", caPem, Clock);
+
+        // Assert — пара ключ↔серт сходится → факт валиден
+        valid.Should().BeTrue();
+    }
+
+    [Fact]
     public async Task Ensure_ReusesValidCert()
     {
         // Arrange — первый ensure записал валидный серт

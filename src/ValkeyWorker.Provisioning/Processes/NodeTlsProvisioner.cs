@@ -61,7 +61,7 @@ public sealed class NodeTlsProvisioner(
             var files = TarArchive.Read(tar);
             if (!files.TryGetValue("ca.pem", out var caBytes)
                 || !files.TryGetValue("node.crt", out var certBytes)
-                || !files.TryGetValue("node.key", out _))
+                || !files.TryGetValue("node.key", out var keyBytes))
                 return false;
             if (System.Text.Encoding.UTF8.GetString(caBytes).Trim() != caPem.Trim())
                 return false; // чужой/старый CA — перевыпуск
@@ -70,6 +70,11 @@ public sealed class NodeTlsProvisioner(
             using (cert)
             {
                 if (!Shared.Tls.TlsChain.ValidateChain(cert, ParseCa(caPem)))
+                    return false;
+                // Ключ обязан соответствовать серту (t06-ревью): неатомарная
+                // запись могла оставить несовпадающую пару — она проходит
+                // проверку наличия, но валит boot ноды вечно.
+                if (!KeyMatchesCertificate(PemOf(keyBytes), cert))
                     return false;
                 if (cert.NotAfter < clock.GetUtcNow())
                     return false;
@@ -82,10 +87,22 @@ public sealed class NodeTlsProvisioner(
                     .Contains(advertisedHost, StringComparer.OrdinalIgnoreCase);
             }
         }
-        catch (Exception e) when (e is ArgumentException or FormatException or ApplicationException)
+        catch (Exception e) when (e is ArgumentException or FormatException
+            or ApplicationException or System.Security.Cryptography.CryptographicException)
         {
-            return false; // битый tar/PEM — перевыпуск
+            return false; // битый tar/PEM/ключ — перевыпуск
         }
+    }
+
+    // Открытый ключ серта == публичная часть node.key (PKCS#8 RSA).
+    private static bool KeyMatchesCertificate(string keyPem, System.Security.Cryptography.X509Certificates.X509Certificate2 cert)
+    {
+        using var key = System.Security.Cryptography.RSA.Create();
+        key.ImportFromPem(keyPem);
+        using var certKey = cert.GetRSAPublicKey();
+        return certKey is not null
+            && key.ExportSubjectPublicKeyInfo().AsSpan()
+                .SequenceEqual(certKey.ExportSubjectPublicKeyInfo());
     }
 
     private static string PemOf(byte[] bytes) => System.Text.Encoding.UTF8.GetString(bytes);

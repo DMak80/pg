@@ -163,19 +163,30 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             try
             {
                 await CreateHelperAsync(helper, name, image, ct);
+                var entries = new List<TarArchive.Entry>();
                 foreach (var entry in TarArchive.ReadEntries(tar))
                 {
                     // Имя файла — из нашего tar; защита от выхода за /mnt.
                     if (entry.Name.Contains('/') || entry.Name.StartsWith("..", StringComparison.Ordinal))
                         throw new ApplicationException($"tls-volume: недопустимое имя файла '{entry.Name}'");
-                    // Права — из заголовка tar (как делал volume-archive API):
-                    // процесс ноды в образе НЕ root (entrypoint gosu) — без chmod
-                    // файлы остаются 0600 root и нода не читает серты.
-                    var mode = Convert.ToString(entry.Mode, 8);
-                    await ExecInHelperAsync(helper,
-                        $"umask 077; printf %s {Convert.ToBase64String(entry.Data)} | base64 -d > '/mnt/{entry.Name}' && chmod {mode} '/mnt/{entry.Name}'",
-                        ct);
+                    entries.Add(entry);
                 }
+
+                // ОДИН exec (t06-ревью): атомарность НАБОРА — файлы пишутся под
+                // временными именами, mv в конце переименовывает их на целевые
+                // (rename внутри одного тома атомарен). set -e: любой сбой —
+                // exit != 0 → Failed, прежний набор сертов не тронут (крах
+                // между тремя exec'ами оставлял несовпадающую пару ключ↔серт).
+                // Права — из заголовка tar (как делал volume-archive API):
+                // процесс ноды в образе НЕ root (entrypoint gosu) — без chmod
+                // файлы остаются 0600 root и нода не читает серты.
+                var writes = entries.Select(e =>
+                    $"printf %s {Convert.ToBase64String(e.Data)} | base64 -d > '/mnt/.{e.Name}.tmp' && chmod {Convert.ToString(e.Mode, 8)} '/mnt/.{e.Name}.tmp'");
+                var moves = string.Join(" && ",
+                    entries.Select(e => $"mv '/mnt/.{e.Name}.tmp' '/mnt/{e.Name}'"));
+                await ExecInHelperAsync(helper,
+                    "set -e; umask 077; " + string.Join(" && ", writes) + " && " + moves,
+                    ct);
             }
             finally
             {
