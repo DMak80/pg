@@ -117,7 +117,11 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
     {
         if (string.IsNullOrWhiteSpace(docker.SwarmManager))
             throw new ApplicationException("ValkeyWorker:Docker:Mode=Swarm требует ValkeyWorker:Docker:SwarmManager");
-        return new SwarmClusterDriver(docker.SwarmManager, factory);
+        // Таблица Hosts — и для swarm: endpoint'ы Engine API нод по имени
+        // (hostname из /nodes) — TLS-volume пишет серты на ноду размещения
+        // (t06-ревью); пустая таблица (однонодовый контур) — manager.
+        return new SwarmClusterDriver(docker.SwarmManager, factory,
+            docker.Hosts.Select(h => new HostEndpoint(h.Name, h.Endpoint)).ToList());
     }
 
     var hosts = docker.Hosts
@@ -157,6 +161,20 @@ builder.Services.AddSingleton(sp => new PortAllocHealer(
     sp.GetRequiredService<PortAllocLock>(),
     sp.GetRequiredService<PortAllocIndex>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value)));
+builder.Services.AddSingleton(sp => new NodeTlsProvisioner(
+    sp.GetRequiredService<IClusterDriver>(),
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value).NodeImage));
+builder.Services.AddSingleton(sp => new TlsMigrator(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<IClusterSecretEnsurer>(),
+    sp.GetRequiredService<NodeTlsProvisioner>(),
+    sp.GetRequiredService<IValkeyConnection>(),
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value),
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
 builder.Services.AddSingleton(sp => new ProvisioningProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints,
@@ -166,6 +184,7 @@ builder.Services.AddSingleton(sp => new ProvisioningProcess(
     sp.GetRequiredService<PortAllocLock>(),
     sp.GetRequiredService<PortAllocIndex>(),
     sp.GetRequiredService<IClusterSecretEnsurer>(),
+    sp.GetRequiredService<NodeTlsProvisioner>(),
     sp.GetRequiredService<IValkeyConnection>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
@@ -184,7 +203,8 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IValkeyConnection>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value),
-    sp.GetRequiredService<PortAllocHealer>()));
+    sp.GetRequiredService<PortAllocHealer>(),
+    sp.GetRequiredService<NodeTlsProvisioner>()));
 builder.Services.AddSingleton(sp => new ConfigConverger(
     sp.GetRequiredService<IValkeyConnection>(),
     sp.GetRequiredService<IEtcdGateway>(),

@@ -11,8 +11,10 @@ public sealed record HostEndpoint(string Name, string Endpoint);
 /// <summary>
 /// Спецификация ноды для docker-драйвера: Args готовит NodeArgsBuilder
 /// (детерминирован от декларации/кредов etcd — arch/21 §4.5.1); драйвер только
-/// размещает (хост, host-порт публикации 6379, лимиты; без volume, без
-/// per-cluster сети — arch/21 §2).
+/// размещает (хост, host-порт публикации 6379, лимиты; volume данных нет,
+/// per-cluster сети нет — arch/21 §2). TlsVolume — named volume TLS-секретов
+/// (t06): драйвер монтирует его в /tls; записи файлов в volume —
+/// NodeTlsProvisioner ДО EnsureNodeAsync.
 /// </summary>
 public sealed record ValkeyNodeSpec(
     string Cluster,
@@ -22,7 +24,8 @@ public sealed record ValkeyNodeSpec(
     string Image,
     IReadOnlyList<string> Args,
     decimal? CpuCores,
-    long? MemoryBytes);
+    long? MemoryBytes,
+    string? TlsVolume = null);
 
 // Инспекция размещения ноды (E9-реконструкция portalloc / надзор C): Host —
 // хост размещения, ClientHostPort — published host-порт ноды (6379), Running —
@@ -32,7 +35,8 @@ public sealed record NodeEndpointInspection(string Host, int ClientHostPort, boo
 
 // Унифицированное управление нодой в обоих режимах (порт драйверов kfw с
 // упрощениями домена — arch/21 §2): объекты — контейнер/сервис
-// vwk-<C>-node<k>; томов нет, per-cluster сетей нет.
+// vwk-<C>-node<k> + named volume TLS-секретов vwk-<C>-tls (t06); volume
+// данных нет, per-cluster сетей нет.
 // Идемпотентность: существующий объект сверяется по имени и не пересоздаётся
 // (решение о сверке/замене — у процессов V3/надзора); 404 на удалении /
 // 409 на создании — успех (движок).
@@ -49,7 +53,8 @@ public interface IClusterDriver
     // сервис с constraint node.id==<id>, publish mode=host).
     Task<Result> EnsureNodeAsync(ValkeyNodeSpec spec, CancellationToken ct);
 
-    // Остановить и удалить ноду (томов нет — removeVolume не существует; 404 = успех).
+    // Остановить и удалить ноду (volume данных нет; TLS-volume НЕ удаляется —
+    // переживает пересоздания, чистится отдельно RemoveTlsVolumeAsync; 404 = успех).
     Task<Result> RemoveNodeAsync(string cluster, string nodeName, CancellationToken ct);
 
     // Фактические лимиты контейнера/сервиса ноды (автоконверге C): null =
@@ -69,6 +74,22 @@ public interface IClusterDriver
 
     // Имена объектов нод кластера (vwk-<C>-*): сверка декларации + сироты (X1).
     Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct);
+
+    // TLS-volume кластера (t06, arch/21 §2): ensure named volume vwk-<C>-tls.
+    Task<Result> EnsureTlsVolumeAsync(string cluster, string host, CancellationToken ct);
+
+    // Запись tar-архива сертов (node.crt/node.key/ca.pem) в volume ДО старта;
+    // image — образ helper-контейнера (запись exec'ом изнутри — volume-archive
+    // API локальных томов демоны без swarm не поддерживают).
+    Task<Result> PutTlsArchiveAsync(string cluster, string host, byte[] tar, string image, CancellationToken ct);
+
+    // Чтение tar-архива сертов (валидность решает NodeTlsProvisioner);
+    // null = volume/архива нет.
+    Task<Result<byte[]?>> GetTlsArchiveAsync(string cluster, string host, string image, CancellationToken ct);
+
+    // Демонтаж TLS-volume (X1): volume нод-локален — перебор ВСЕХ engines
+    // (plain — таблица хостов; swarm — ноды таблицы + manager), 404 = успех.
+    Task<Result> RemoveTlsVolumeAsync(string cluster, CancellationToken ct);
 }
 
 // Plain-режим: контейнеры на перечисленных хостах, per-host Engine API.
@@ -78,6 +99,10 @@ public sealed class PlainClusterDriver(
 {
     // Контейнерный порт ноды valkey → выделенный host-порт (arch/21 §2).
     public const int ClientContainerPort = 6379;
+
+    // Имя named volume TLS-секретов кластера (t06, arch/21 §2): переживает
+    // пересоздания контейнера, демонтаж — RemoveTlsVolumeAsync (X1).
+    public static string TlsVolumeName(string cluster) => $"vwk-{cluster}-tls";
 
     private readonly Dictionary<string, IDockerEngine> _engines = hosts.ToDictionary(
         h => h.Name,
@@ -143,7 +168,10 @@ public sealed class PlainClusterDriver(
                 spec.NodeName,
                 CpuCores: (double?)spec.CpuCores,
                 MemoryBytes: spec.MemoryBytes,
-                Label: spec.Cluster);
+                Label: spec.Cluster,
+                // TLS-volume монтируется в /tls (t06) — файлы записывает
+                // NodeTlsProvisioner ДО EnsureNodeAsync.
+                Binds: spec.TlsVolume is { Length: > 0 } v ? (IReadOnlyList<string>?)new[] { v + ":/tls" } : null);
 
             var created = await engine.CreateContainerAsync(containerSpec, name, ct);
             if (!created.IsSuccess)
@@ -161,7 +189,9 @@ public sealed class PlainClusterDriver(
             var name = NodeName(cluster, nodeName);
             foreach (var engine in _engines.Values)
             {
-                // 404 на каждом шаге — успех (движок); томов у домена нет.
+                // 404 на каждом шаге — успех (движок); TLS-volume НЕ удаляется —
+                // переживает пересоздания контейнера (arch/21 §2); демонтаж —
+                // RemoveTlsVolumeAsync в X1.
                 var stopped = await engine.StopContainerAsync(name, timeoutSec: 10, ct);
                 if (!stopped.IsSuccess)
                     throw stopped.Error!;
@@ -243,16 +273,68 @@ public sealed class PlainClusterDriver(
         return Result<NodeEndpointInspection?>.Success(null);
     }
 
+    // TLS-volume (t06): объём живёт на хосте размещения ноды — engine по host
+    // (как EnsureNodeAsync; отсутствующий хост → Failed тем же текстом).
+    public async Task<Result> EnsureTlsVolumeAsync(string cluster, string host, CancellationToken ct)
+    {
+        if (!_engines.TryGetValue(host, out var engine))
+            return Result.Failed(new ApplicationException(
+                $"хост {host} не в таблице Docker:Hosts (кластер {cluster}, TLS-volume)"));
+        return await engine.EnsureVolumeAsync(TlsVolumeName(cluster), ct);
+    }
+
+    public async Task<Result> PutTlsArchiveAsync(
+        string cluster, string host, byte[] tar, string image, CancellationToken ct)
+    {
+        if (!_engines.TryGetValue(host, out var engine))
+            return Result.Failed(new ApplicationException(
+                $"хост {host} не в таблице Docker:Hosts (кластер {cluster}, TLS-volume)"));
+        return await engine.PutVolumeArchiveAsync(TlsVolumeName(cluster), tar, image, ct);
+    }
+
+    public async Task<Result<byte[]?>> GetTlsArchiveAsync(
+        string cluster, string host, string image, CancellationToken ct)
+    {
+        if (!_engines.TryGetValue(host, out var engine))
+            return Result<byte[]?>.Failed(new ApplicationException(
+                $"хост {host} не в таблице Docker:Hosts (кластер {cluster}, TLS-volume)"));
+        return await engine.GetVolumeArchiveAsync(TlsVolumeName(cluster), image, ct);
+    }
+
+    // Демонтаж (X1): volume не привязан к ноде — перебор ВСЕХ хостов
+    // (404 = успех на каждом).
+    public async Task<Result> RemoveTlsVolumeAsync(string cluster, CancellationToken ct)
+    {
+        foreach (var engine in _engines.Values)
+        {
+            var removed = await engine.DeleteVolumeAsync(TlsVolumeName(cluster), ct);
+            if (!removed.IsSuccess)
+                return removed;
+        }
+
+        return Result.Success();
+    }
+
     internal static string NodeName(string cluster, string nodeName)
         => $"vwk-{cluster}-{nodeName}";
 }
 
 // Swarm-режим: сервисы через manager endpoint, replicas=1, constraint node.id==<id>.
+// hosts — endpoint'ы Engine API swarm-нод (по имени ноды, опционально): нужен
+// TLS-volume (t06-ревью) — named volume нод-локален, запись архива через manager
+// кладёт серты не на ноду размещения. Нет ноды в таблице (однонодовый Docker
+// Desktop/swarm) — manager engine (поведение не меняется).
 public sealed class SwarmClusterDriver(
     string managerEndpoint,
-    DockerEngineFactory factory) : IClusterDriver
+    DockerEngineFactory factory,
+    IReadOnlyList<HostEndpoint>? hosts = null) : IClusterDriver
 {
     private readonly IDockerEngine _engine = factory.Create(managerEndpoint, hostAlias: null);
+
+    // Engines нод из таблицы (по имени ноды размещения — как EnsureNodeAsync
+    // матчит spec.Host по Hostname ноды).
+    private readonly Dictionary<string, IDockerEngine> _nodeEngines = (hosts ?? [])
+        .ToDictionary(h => h.Name, h => factory.Create(h.Endpoint, hostAlias: h.Name));
 
     public async Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct)
     {
@@ -290,7 +372,8 @@ public sealed class SwarmClusterDriver(
                 spec.NodeName,
                 CpuCores: (double?)spec.CpuCores,
                 MemoryBytes: spec.MemoryBytes,
-                Label: spec.Cluster);
+                Label: spec.Cluster,
+                Binds: spec.TlsVolume is { Length: > 0 } v ? (IReadOnlyList<string>?)new[] { v + ":/tls" } : null);
             var serviceSpec = new ServiceSpec(
                 PlainClusterDriver.NodeName(spec.Cluster, spec.NodeName),
                 template,
@@ -337,4 +420,39 @@ public sealed class SwarmClusterDriver(
     // vwk-<C>-. Существование сервиса ≠ живой таск: живость — PING-пробы.
     public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
         => _engine.ListServicesAsync($"vwk-{cluster}-", ct);
+
+    // TLS-volume (t06-ревью): volume нод-локален — ensure на ноде размещения
+    // (запись сертов Put'ом идёт туда же); ноды нет в таблице (однонодовый
+    // контур) — manager engine.
+    public Task<Result> EnsureTlsVolumeAsync(string cluster, string host, CancellationToken ct)
+        => ResolveNodeEngine(host).EnsureVolumeAsync(PlainClusterDriver.TlsVolumeName(cluster), ct);
+
+    // Архив сертов — через engine НОДЫ размещения (t06-ревью): volume нод-локален.
+    public Task<Result> PutTlsArchiveAsync(
+        string cluster, string host, byte[] tar, string image, CancellationToken ct)
+        => ResolveNodeEngine(host).PutVolumeArchiveAsync(PlainClusterDriver.TlsVolumeName(cluster), tar, image, ct);
+
+    public Task<Result<byte[]?>> GetTlsArchiveAsync(
+        string cluster, string host, string image, CancellationToken ct)
+        => ResolveNodeEngine(host).GetVolumeArchiveAsync(PlainClusterDriver.TlsVolumeName(cluster), image, ct);
+
+    // Нода размещения из таблицы hosts; нет записи (однонодовый контур) — manager.
+    private IDockerEngine ResolveNodeEngine(string host)
+        => _nodeEngines.TryGetValue(host, out var engine) ? engine : _engine;
+
+    // Демонтаж (X1, t06-ревью): volume нод-локален — DELETE на КАЖДОМ engine
+    // таблицы нод + manager (реальный volume мог быть создан Docker'ом при
+    // helper-create на ноде размещения; manager-копия — при ensure по
+    // fallback); 404 = успех на каждом.
+    public async Task<Result> RemoveTlsVolumeAsync(string cluster, CancellationToken ct)
+    {
+        foreach (var engine in _nodeEngines.Values.Append(_engine))
+        {
+            var removed = await engine.DeleteVolumeAsync(PlainClusterDriver.TlsVolumeName(cluster), ct);
+            if (!removed.IsSuccess)
+                return removed;
+        }
+
+        return Result.Success();
+    }
 }

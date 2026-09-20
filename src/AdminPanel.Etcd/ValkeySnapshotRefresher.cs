@@ -180,12 +180,15 @@ public sealed class ValkeySnapshotRefresher(
         return error;
     }
 
-    // Креды проб: "/valkey/clusters/<C>/admin_user|admin_password" → стор;
-    // полный набор → запись, частичный — пропуск без ошибки (ensure воркера).
+    // Креды проб: "/valkey/clusters/<C>/admin_user|admin_password|ca_pem" → стор;
+    // полный кред-набор → запись (ca_pem t06 — TLS-доверие пробы; ca без пары —
+    // запись не создаётся: пробы невозможны без кредов), частичный — пропуск
+    // без ошибки (ensure воркера/миграция в процессе).
     private static IReadOnlyDictionary<string, ValkeyClusterSecrets> ReadSecrets(IReadOnlyList<Kv> kvs)
     {
         var users = new Dictionary<string, string>();
         var passwords = new Dictionary<string, string>();
+        var cas = new Dictionary<string, string>();
         foreach (var kv in kvs)
         {
             // "/valkey/clusters/<C>/admin_user" → ["", "valkey", "clusters", <C>, "admin_user"]
@@ -200,6 +203,9 @@ public sealed class ValkeySnapshotRefresher(
                 case "admin_password":
                     passwords[segments[3]] = kv.Value;
                     break;
+                case "ca_pem":
+                    cas[segments[3]] = kv.Value;
+                    break;
             }
         }
 
@@ -211,7 +217,8 @@ public sealed class ValkeySnapshotRefresher(
             if (user.Length == 0 || password.Length == 0)
                 continue;
 
-            secrets[cluster] = new ValkeyClusterSecrets(cluster, user, password);
+            secrets[cluster] = new ValkeyClusterSecrets(
+                cluster, user, password, cas.GetValueOrDefault(cluster));
         }
 
         return secrets;

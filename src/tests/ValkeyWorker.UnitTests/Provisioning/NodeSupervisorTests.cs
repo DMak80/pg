@@ -15,6 +15,9 @@ public class NodeSupervisorTests
 {
     private static readonly FixedTimeProvider Clock = new();
 
+    // Образ ноды (константа рига — как ValkeyProvisioningOptions).
+    private const string Image = "valkey/valkey:9.1.2";
+
     private sealed class Rig
     {
         public Fakes.FakeEtcd Etcd = new();
@@ -42,7 +45,7 @@ public class NodeSupervisorTests
                 rig.Valkey,
                 new ValkeyWorker.Provisioning.Processes.ValkeyProvisioningOptions(
                     17000, 17999, 100, 90, "localhost", "valkey/valkey:9.1.2"),
-                healer, Clock);
+                healer, new ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner(rig.Driver, Image, Clock), Clock);
             return rig;
         }
 
@@ -60,6 +63,9 @@ public class NodeSupervisorTests
             Etcd.Seed($"/valkey/clusters/{cluster}/app_password", "AppPassword0123456789abcdef12345");
             Etcd.Seed($"/valkey/clusters/{cluster}/admin_user", "admin");
             Etcd.Seed($"/valkey/clusters/{cluster}/admin_password", "AdminPassword0123456789abcdef12345");
+            var (caPem, caKeyPem) = ValkeyWorker.Core.Valkey.ValkeyPki.GenerateCa(cluster);
+            Etcd.Seed($"/valkey/clusters/{cluster}/ca_pem", caPem);
+            Etcd.Seed($"/valkey/clusters/{cluster}/ca_key", caKeyPem);
             Etcd.Seed($"/valkeyworker/portalloc/{cluster}", "{\"node1\":{\"host\":\"h1\",\"client\":" + port + "}}");
             Driver.Containers[$"vwk-{cluster}-node1"] =
                 new Fakes.FakeDriver.ContainerFact("h1", port, 2m, 1024L * 1024 * 1024,
@@ -272,5 +278,60 @@ public class NodeSupervisorTests
         // Assert: endpoints сошлись к portalloc-канону.
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         rig.Etcd.Store["/valkey/clusters/ep/endpoints"].Value.Should().Be("localhost:17001");
+    }
+
+    // t06: пересоздание сохраняет TLS-канон — volume жив (переиспользование,
+    // tar не переписан), контейнер с TLS-args и TlsVolume.
+    [Fact]
+    public async Task Supervise_Recreate_ReusesVolumeAndTlsArgs()
+    {
+        // Arrange: Active-кластер; volume заполнен provisioning-ом (валидный серт).
+        const string cluster = "tlsrec";
+        var rig = Rig.Create();
+        rig.SeedActive(cluster);
+        var provisioner = new ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner(rig.Driver, Image, Clock);
+        (await provisioner.EnsureNodeTlsAsync(
+            cluster, "node1", "h1", "localhost", rig.Snapshot(cluster).CaPem!,
+            rig.Snapshot(cluster).CaKey!, TestContext.Current.CancellationToken))
+            .IsSuccess.Should().BeTrue();
+        var tarBefore = rig.Driver.TlsVolumes[(cluster, "h1")];
+        rig.Driver.Containers.Clear(); // снос контейнера — пересоздание
+
+        // Act: тик надзора.
+        var result = await rig.Supervisor.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+
+        // Assert: контейнер пересоздан с TLS-args и TlsVolume; volume не переписан.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        var ensured = rig.Driver.Ensured.Should().ContainSingle().Subject;
+        ensured.TlsVolume.Should().Be($"vwk-{cluster}-tls");
+        ensured.Args.Should().Contain("--tls-port").And.Contain("--tls-cert-file");
+        rig.Driver.TlsVolumes[(cluster, "h1")].Should().BeSameAs(tarBefore);
+    }
+
+    // t06: CA в etcd отсутствует — пересоздание отложено (миграция T доиграет),
+    // warning надзора, без docker-мутаций.
+    [Fact]
+    public async Task Supervise_NoCaInEtcd_RecreationDeferred()
+    {
+        // Arrange: Active-кластер без ca_pem/ca_key (премиграционный).
+        const string cluster = "noca";
+        var rig = Rig.Create();
+        rig.SeedActive(cluster);
+        rig.Etcd.Store.Remove("/valkey/clusters/noca/ca_pem");
+        rig.Etcd.Store.Remove("/valkey/clusters/noca/ca_key");
+        rig.Driver.Containers.Clear();
+
+        // Act: тик надзора.
+        var result = await rig.Supervisor.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+
+        // Assert: тик зелёный (отложено, не провал), пересозданий нет,
+        // в work/<C> — supervision-warning.
+        result.IsSuccess.Should().BeTrue();
+        rig.Driver.Ensured.Should().BeEmpty();
+        rig.Driver.Removed.Should().BeEmpty();
+        // last_error в journal — JSON-экранированный: декодируем.
+        using var doc = System.Text.Json.JsonDocument.Parse(rig.Etcd.Store["/valkeyworker/work/noca"].Value);
+        doc.RootElement.GetProperty("last_error").GetString()
+            .Should().Contain("пересоздание отложено");
     }
 }

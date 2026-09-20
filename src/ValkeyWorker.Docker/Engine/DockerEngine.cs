@@ -132,6 +132,123 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             }
         });
 
+    // POST /volumes/create; 409 «volume already exists» = успех (идемпотентность).
+    public async Task<Result> EnsureVolumeAsync(string name, CancellationToken ct)
+        => await Result.FromAsync(async () =>
+        {
+            try
+            {
+                await SendAsync(HttpMethod.Post, "/volumes/create",
+                    new Dictionary<string, object?> { ["Name"] = name }, ct);
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 409)
+            {
+                // volume с таким именем уже есть — идемпотентность
+            }
+        });
+
+    // Запись tar в named volume через helper-контейнер (серты до старта ноды).
+    // Почему не PUT /volumes/{name}/archive: демон без swarm отвечает на
+    // локальные тома 503 «volume update only valid for cluster volumes…»
+    // (проверено на Engine 29.8; endpoint фактически cluster-only), а PUT
+    // /containers/<id>/archive сквозь mount на Docker Desktop падает на xattr
+    // (500 при фактически записанных данных). Рабочий транспорт: helper с
+    // volume в /mnt + exec «printf %s <b64> | base64 -d > /mnt/<файл>» на
+    // каждый entry tar. Helper живёт секунды, имя вне схемы vwk-<C>-node —
+    // перечисление объектов кластера его не видит.
+    public async Task<Result> PutVolumeArchiveAsync(string name, byte[] tar, string image, CancellationToken ct)
+        => await Result.FromAsync(async () =>
+        {
+            var helper = HelperName(name);
+            try
+            {
+                await CreateHelperAsync(helper, name, image, ct);
+                var entries = new List<TarArchive.Entry>();
+                foreach (var entry in TarArchive.ReadEntries(tar))
+                {
+                    // Имя файла — из нашего tar; защита от выхода за /mnt.
+                    if (entry.Name.Contains('/') || entry.Name.StartsWith("..", StringComparison.Ordinal))
+                        throw new ApplicationException($"tls-volume: недопустимое имя файла '{entry.Name}'");
+                    entries.Add(entry);
+                }
+
+                // ОДИН exec (t06-ревью): атомарность НАБОРА — файлы пишутся под
+                // временными именами, mv в конце переименовывает их на целевые
+                // (rename внутри одного тома атомарен). set -e: любой сбой —
+                // exit != 0 → Failed, прежний набор сертов не тронут (крах
+                // между тремя exec'ами оставлял несовпадающую пару ключ↔серт).
+                // Права — из заголовка tar (как делал volume-archive API):
+                // процесс ноды в образе НЕ root (entrypoint gosu) — без chmod
+                // файлы остаются 0600 root и нода не читает серты.
+                var writes = entries.Select(e =>
+                    $"printf %s {Convert.ToBase64String(e.Data)} | base64 -d > '/mnt/.{e.Name}.tmp' && chmod {Convert.ToString(e.Mode, 8)} '/mnt/.{e.Name}.tmp'");
+                var moves = string.Join(" && ",
+                    entries.Select(e => $"mv '/mnt/.{e.Name}.tmp' '/mnt/{e.Name}'"));
+                await ExecInHelperAsync(helper,
+                    "set -e; umask 077; " + string.Join(" && ", writes) + " && " + moves,
+                    ct);
+            }
+            finally
+            {
+                // Чистка helper при любом исходе (даже отмене) — 404 = успех.
+                await RemoveContainerAsync(helper, force: true, CancellationToken.None);
+            }
+        });
+
+    // Чтение tar из named volume: инспекция volume (404 → null — факта сертов
+    // нет) + helper с mount + GET container-archive сквозь /mnt (имена файлов
+    // в корне архива). 404 helper-create при живом volume не бывает (после
+    // инспекции) — прочие ошибки уходят наверх Failed.
+    public async Task<Result<byte[]?>> GetVolumeArchiveAsync(string name, string image, CancellationToken ct)
+        => await Result<byte[]?>.FromAsync(async () =>
+        {
+            try
+            {
+                await SendAsync(HttpMethod.Get, $"/volumes/{Uri.EscapeDataString(name)}", ct: ct);
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                return null; // volume нет — факта сертов нет
+            }
+
+            var helper = HelperName(name);
+            try
+            {
+                await CreateHelperAsync(helper, name, image, ct);
+                var raw = await GetBytesAsync(
+                    $"/containers/{Uri.EscapeDataString(helper)}/archive?path=%2Fmnt", ct);
+                // docker включает базовый каталог пути: /mnt → записи «mnt/…»
+                // плюс сам каталог. Контракт драйвера — tar с файлами в корне:
+                // переупаковка (mode записей сохраняется).
+                var entries = TarArchive.ReadEntries(raw)
+                    .Where(e => !e.Name.EndsWith('/'))
+                    .Select(e => e.Name.StartsWith("mnt/", StringComparison.Ordinal)
+                        ? e with { Name = e.Name["mnt/".Length..] }
+                        : e)
+                    .Where(e => e.Name.Length > 0)
+                    .ToList();
+                return TarArchive.Build(entries);
+            }
+            finally
+            {
+                await RemoveContainerAsync(helper, force: true, CancellationToken.None);
+            }
+        });
+
+    // DELETE /volumes/{name}; 404 = успех (идемпотентность демонтажа X1).
+    public async Task<Result> DeleteVolumeAsync(string name, CancellationToken ct)
+        => await Result.FromAsync(async () =>
+        {
+            try
+            {
+                await SendAsync(HttpMethod.Delete, $"/volumes/{Uri.EscapeDataString(name)}", ct: ct);
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                // volume уже нет — идемпотентность
+            }
+        });
+
     public async Task<Result<IReadOnlyList<DockerSwarmNode>>> ListNodesAsync(CancellationToken ct)
     {
         return await Result<IReadOnlyList<DockerSwarmNode>>.FromAsync(async () =>
@@ -503,12 +620,13 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         }
     }
 
-    private static object BuildContainerBody(ContainerSpec spec)
+    internal static object BuildContainerBody(ContainerSpec spec)
     {
         var hostConfig = new Dictionary<string, object?>
         {
-            // arch/21 §2: docker сам поднимает контейнер после ребута хоста.
-            ["RestartPolicy"] = new { Name = "unless-stopped" },
+            // arch/21 §2: docker сам поднимает контейнер ноды после ребута
+            // хоста; служебные контейнеры (TLS-helper) задают «no» в спеке.
+            ["RestartPolicy"] = new { Name = spec.RestartPolicy ?? "unless-stopped" },
         };
         if (spec.Ports.Count > 0)
         {
@@ -524,6 +642,10 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             hostConfig["NanoCPUs"] = (long)(cores * 1_000_000_000);
         if (spec.MemoryBytes is { } memory)
             hostConfig["Memory"] = memory;
+
+        // Named volume TLS-секретов (t06): Binds формата "volume:/path".
+        if (spec.Binds is { Count: > 0 })
+            hostConfig["Binds"] = spec.Binds.ToArray();
 
         var body = new Dictionary<string, object?>
         {
@@ -549,6 +671,16 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         };
         if (spec.Template.Label is { Length: > 0 } label)
             container["Labels"] = new Dictionary<string, string> { ["pgworker"] = label };
+        // Binds swarm-шаблона — Mounts (named volume TLS-секретов, t06).
+        if (spec.Template.Binds is { Count: > 0 })
+        {
+            container["Mounts"] = spec.Template.Binds.Select(b => new
+            {
+                Type = "volume",
+                Source = b[..b.IndexOf(':')],
+                Target = b[(b.IndexOf(':') + 1)..],
+            }).ToArray();
+        }
 
         var taskTemplate = new Dictionary<string, object?>
         {
@@ -612,6 +744,23 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         }
     }
 
+    // GET байтового тела (tar из container-archive сквозь mount volume):
+    // пустое тело → пустой массив.
+    private async Task<byte[]> GetBytesAsync(string path, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, Api + path);
+        using var response = await httpClient.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = response.Content is null
+                ? string.Empty
+                : await response.Content.ReadAsStringAsync(ct);
+            throw new DockerHttpException("GET", path, (int)response.StatusCode, errorBody);
+        }
+
+        return await response.Content.ReadAsByteArrayAsync(ct);
+    }
+
     // Команда с JSON-ответом (пустое тело → default).
     private async Task<T?> GetAsync<T>(string path, CancellationToken ct)
     {
@@ -635,6 +784,88 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
     // Pull образа (POST /images/create): гарантирует наличие nodeImage перед create.
     internal Task PullImageAsync(string imageName, CancellationToken ct)
         => SendAsync(HttpMethod.Post, $"/images/create?fromImage={Uri.EscapeDataString(imageName)}", ct: ct);
+
+    // ── Helper-контейнер TLS-volume (t06): create+start «sleep», volume в /mnt ──
+
+    private static string HelperName(string volume)
+        => $"vwk-tls-writer-{Guid.NewGuid().ToString("N")[..12]}";
+
+    private async Task CreateHelperAsync(string name, string volume, string image, CancellationToken ct)
+    {
+        // NodeImage помощника (тот же, что у ноды — локально гарантирован);
+        // без портов/лимитов — только sleep и mount (объект пустой);
+        // RestartPolicy «no» (t06-ревью): крах воркера в окне записи не
+        // оставляет демону вечно рестартуемого держателя volume.
+        var spec = new ContainerSpec(
+            image, ["sleep", "120"], [], name, null, null, null,
+            Binds: (IReadOnlyList<string>?)new[] { volume + ":/mnt" },
+            RestartPolicy: "no");
+        var created = await CreateContainerAsync(spec, name, ct);
+        if (!created.IsSuccess)
+            throw created.Error!;
+        var started = await StartContainerAsync(name, ct);
+        if (!started.IsSuccess)
+            throw started.Error!;
+    }
+
+    // Exec «sh -c <команда>» в helper: Detach-start + поллинг inspect до
+    // завершения (бюджет 30 с — записи PEM занимают миллисекунды);
+    // ExitCode != 0 → исключение (Result-монада у вызывающего).
+    private async Task ExecInHelperAsync(string container, string shellCommand, CancellationToken ct)
+    {
+        var exec = await PostForJsonAsync<ExecDto>(
+            $"/containers/{Uri.EscapeDataString(container)}/exec",
+            new { Cmd = new[] { "sh", "-c", shellCommand }, AttachStdout = true, AttachStderr = true },
+            ct) ?? throw new ApplicationException($"docker exec: пустой ответ create ({container})");
+        await SendAsync(HttpMethod.Post, $"/exec/{Uri.EscapeDataString(exec.Id)}/start",
+            new { Detach = true, Tty = false }, ct);
+
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(30);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            var state = await GetAsync<ExecDto>($"/exec/{Uri.EscapeDataString(exec.Id)}/json", ct);
+            if (state is { Running: false, ExitCode: not null })
+            {
+                if (state.ExitCode != 0)
+                    throw new ApplicationException(
+                        $"docker exec (helper {container}): exit {state.ExitCode}");
+                return;
+            }
+
+            await Task.Delay(250, ct);
+        }
+
+        throw new TimeoutException($"docker exec (helper {container}) не завершился за 30 с");
+    }
+
+    // POST с JSON-ответом (exec create; SendAsync тело ответа отбрасывает).
+    private async Task<T?> PostForJsonAsync<T>(string path, object? body, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, Api + path);
+        if (body is not null)
+            request.Content = new StringContent(JsonSerializer.Serialize(body, Json), Encoding.UTF8, "application/json");
+        using var response = await httpClient.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = response.Content is null
+                ? string.Empty
+                : await response.Content.ReadAsStringAsync(ct);
+            throw new DockerHttpException("POST", path, (int)response.StatusCode, errorBody);
+        }
+
+        var text = await response.Content.ReadAsStringAsync(ct);
+        return text.Length == 0 ? default : JsonSerializer.Deserialize<T>(text, Json);
+    }
+
+    private sealed class ExecDto
+    {
+        [JsonPropertyName("Id")] public string Id { get; set; } = "";
+
+        [JsonPropertyName("Running")] public bool Running { get; set; }
+
+        // null, пока exec ещё работает (канон Engine API).
+        [JsonPropertyName("ExitCode")] public int? ExitCode { get; set; }
+    }
 
     public ValueTask DisposeAsync()
     {

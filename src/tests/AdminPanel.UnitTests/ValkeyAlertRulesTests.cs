@@ -272,4 +272,31 @@ public class ValkeyAlertRulesTests
         // Assert
         again.Single(x => x.Kind == "valkey-endpoints-missing").SinceUnix.Should().Be(100);
     }
+
+    // ===== valkey-security-missing (critical, t06) =====
+
+    // AAA: Active-кластер HasCaPem=false → critical valkey-security-missing;
+    // с HasCaPem=true — алерта нет.
+    [Fact]
+    public void ActiveCluster_БезCaPem_CriticalSecurityMissing()
+    {
+        // Arrange: Active-кластер без ca_pem (миграция не доиграна).
+        var withoutCa = Snapshot(ActiveCluster());
+
+        // Act
+        var alerts = Evaluate(withoutCa);
+
+        // Assert
+        var alert = alerts.Single(x => x.Kind == "valkey-security-missing");
+        alert.Severity.Should().Be(AlertSeverity.Critical);
+        alert.Target.Should().Be("live");
+
+        // Arrange/Act: с ca_pem — алерта нет.
+        var withCa = Snapshot(ActiveCluster() with { HasCaPem = true });
+        // Act
+        var withoutAlert = Evaluate(withCa);
+
+        // Assert
+        withoutAlert.Should().NotContain(x => x.Kind == "valkey-security-missing");
+    }
 }

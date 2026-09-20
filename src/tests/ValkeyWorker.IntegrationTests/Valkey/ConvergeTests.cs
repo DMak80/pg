@@ -25,6 +25,7 @@ public class ConvergeTests(ValkeyClusterFixture fx)
         var endpoints = (await fx.GetAsync($"/valkey/clusters/{cluster}/endpoints"))!;
         var port = int.Parse(endpoints.Split(':')[1]);
         var adminPassword = (await fx.GetAsync($"/valkey/clusters/{cluster}/admin_password"))!;
+        var caPem = (await fx.GetAsync($"/valkey/clusters/{cluster}/ca_pem"))!;
         var containerBefore = ContainerId($"vwk-{cluster}-node1");
 
         // Act: мутация config в etcd (как PUT /config) + тик конвергера.
@@ -35,10 +36,10 @@ public class ConvergeTests(ValkeyClusterFixture fx)
 
         // Assert: CONFIG GET = новое значение; контейнер НЕ пересоздан.
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
-        var maxmemory = RespProbe.Execute("localhost", port, "admin", adminPassword,
+        var maxmemory = RespProbe.ExecuteTls("localhost", port, "admin", adminPassword, caPem,
             "CONFIG", "GET", "maxmemory");
         maxmemory.Value.Should().Contain("268435456");
-        var policy = RespProbe.Execute("localhost", port, "admin", adminPassword,
+        var policy = RespProbe.ExecuteTls("localhost", port, "admin", adminPassword, caPem,
             "CONFIG", "GET", "maxmemory-policy");
         policy.Value.Should().Contain("volatile-ttl");
         ContainerId($"vwk-{cluster}-node1").Should().Be(containerBefore,

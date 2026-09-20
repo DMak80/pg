@@ -41,8 +41,9 @@ public class SupervisionTests(ValkeyClusterFixture fx)
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         (await fx.Driver.ListNodeObjectsAsync(cluster, TestContext.Current.CancellationToken))
             .Value.Should().Contain($"vwk-{cluster}-node1");
-        var probe = RespProbe.Execute("localhost", port, "admin", adminPassword, "PING");
-        var ok = probe.Ok || await WaitRunningAsync(cluster, claims, portLock, portIndex, adminPassword, port);
+        var caPem = (await fx.GetAsync($"/valkey/clusters/{cluster}/ca_pem"))!;
+        var probe = RespProbe.ExecuteTls("localhost", port, "admin", adminPassword, caPem, "PING");
+        var ok = probe.Ok || await WaitRunningAsync(cluster, claims, portLock, portIndex, adminPassword, caPem, port);
         ok.Should().BeTrue("нода поднялась на прежнем порту с прежними кредами");
     }
 
@@ -63,6 +64,7 @@ public class SupervisionTests(ValkeyClusterFixture fx)
             .IsSuccess.Should().BeTrue();
 
         var adminPassword = (await fx.GetAsync($"/valkey/clusters/{cluster}/admin_password"))!;
+        var caPem = (await fx.GetAsync($"/valkey/clusters/{cluster}/ca_pem"))!;
         var endpoints = (await fx.GetAsync($"/valkey/clusters/{cluster}/endpoints"))!;
         var port = int.Parse(endpoints.Split(':')[1]);
         var idBefore = DockerInspectId($"vwk-{cluster}-node1");
@@ -108,7 +110,7 @@ public class SupervisionTests(ValkeyClusterFixture fx)
 
         await ValkeyClusterFixture.WaitAsync(async () =>
         {
-            var probe = RespProbe.Execute("localhost", port, "admin", adminPassword, "PING");
+            var probe = RespProbe.ExecuteTls("localhost", port, "admin", adminPassword, caPem, "PING");
             return probe.Ok;
         }, TimeSpan.FromSeconds(60), $"PING vwk-{cluster}-node1 после пересоздания");
     }
@@ -129,12 +131,12 @@ public class SupervisionTests(ValkeyClusterFixture fx)
     }
 
     private async Task<bool> WaitRunningAsync(string cluster, ClaimStore claims, PortAllocLock portLock,
-        PortAllocIndex portIndex, string adminPassword, int port)
+        PortAllocIndex portIndex, string adminPassword, string caPem, int port)
     {
         // Нода стартует ≤ NodeBootSec: поллинг PING (Task.Delay(500) — канон репо).
         await ValkeyClusterFixture.WaitAsync(async () =>
         {
-            var probe = RespProbe.Execute("localhost", port, "admin", adminPassword, "PING");
+            var probe = RespProbe.ExecuteTls("localhost", port, "admin", adminPassword, caPem, "PING");
             return probe.Ok;
         }, TimeSpan.FromSeconds(60), $"PING vwk-{cluster}-node1 после пересоздания");
         return true;

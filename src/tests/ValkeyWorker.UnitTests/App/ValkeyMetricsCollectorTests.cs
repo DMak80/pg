@@ -53,7 +53,7 @@ public sealed class ValkeyMetricsCollectorTests
             new Dictionary<string, ValkeyNodeSnapshot> { ["node1"] = new("node1", "RUNNING", null) },
             Endpoints: "dockhost:17001", AppUser: "app", AppPassword: "app-secret",
             AdminUser: adminUser, AdminPassword: adminPassword,
-            UnknownKeys: [], ParseErrors: []);
+            CaPem: null, CaKey: null, UnknownKeys: [], ParseErrors: []);
 
     private static IReadOnlyDictionary<string, NodeAddress> Alloc(params (string Node, int Port)[] nodes)
         => nodes.ToDictionary(n => n.Node, n => new NodeAddress("dockhost", n.Port));

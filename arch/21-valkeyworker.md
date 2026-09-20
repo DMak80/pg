@@ -10,7 +10,7 @@ Valkey, обеспечивает per-cluster ACL-креды, пишет факт
 `/valkey/`, `/valkeyworker/` пишет ТОЛЬКО ValkeyWorker (панель и сиды ходят
 через его API); панель etcd только читает.
 
-Пять процессов (машины состояний):
+Пять процессов (машины состояний) + миграция TLS (t06):
 1. **Provisioning** (A, V0–V5) — от `NOT_INITIALIZED` до рабочего кластера;
 2. **Deprovisioning** (B, X0–X3) — от `TO_REMOVE` до чистого etcd и
    удалённого контейнера;
@@ -20,18 +20,22 @@ Valkey, обеспечивает per-cluster ACL-креды, пишет факт
    декларации (`CONFIG SET`, без рестартов) + converge ACL-плана
    (пользователи admin/app с правами канона);
 5. **PasswordRotator** (E) — ротация per-cluster ACL-паролей (app/admin)
-   без рестартов через окно двух паролей.
+   без рестартов через окно двух паролей;
+6. **TlsMigrator** (T, t06) — авто-миграция существующих plain-кластеров
+   на TLS (первый шаг Active-ветки, до надзора).
 
 Свойства: несколько инстансов работают одновременно (координация —
 lease-клэймы, [20](20-valkey-clusters.md) §3); смерть контролирующего
 инстанса не роняет процессы — takeover ≤ TTL 15 с + тик; все операции
 идемпотентны; значимое состояние переживает смерть контроллера (etcd).
 
-Границы (что НЕ входит): TLS клиентских подключений (`t06-valkey-tls` —
-per-cluster CA, tls-port, ключ `ca_pem`); реплики/sentinel/cluster-топологии
+Границы (что НЕ входит): ротация CA/сертов (окно двойного доверия) —
+roadmap `t07-valkey-ca-rotation` (t06 реализовал per-cluster CA и TLS
+клиентских подключений, ключи `ca_pem`/`ca_key`); реплики/sentinel/cluster-топологии
 (кеш восполним, шардирование не нужно); панель valkey-домена (t03);
 клиентская библиотека Puzzle (t04); persistence RDB/AOF — off по канону
-(кеш восполним); квоты томов — томов нет.
+(кеш восполним); квоты томов — томов нет (TLS-volume `vwk-<C>-tls` —
+секреты, не данные).
 
 ---
 
@@ -115,9 +119,33 @@ per-install API-CA; клиенты без валидного серта — от
   при создании (политика — из декларации, канон-дефолт `allkeys-lru`,
   [20](20-valkey-clusters.md) §2) + converge D (`CONFIG SET`) при мутациях
   декларации — без рестартов.
-- **Persistence off**: без volume, `--save ""`/`--appendonly no` (детали
-  флагов — t02; канон фиксирует: без тома, снапшоты RDB/AOF не пишутся).
-  Потеря контейнера = холодный старт кеша (документированное поведение).
+- **Persistence off**: без volume данных, `--save ""`/`--appendonly no`
+  (детали флагов — t02; канон фиксирует: без тома данных, снапшоты
+  RDB/AOF не пишутся). Потеря контейнера = холодный старт кеша
+  (документированное поведение). TLS-volume сертов — отдельный named
+  volume (ниже).
+- **TLS клиентского порта (t06)**: нода слушает `--tls-port 6379
+  --port 0` — тот же клиентский host-порт из portalloc (контейнерный 6379
+  слушает TLS, plain закрыт); `endpoints`/portalloc не меняются (адреса
+  стабильны, меняется только транспорт). Канонические аргументы:
+  `--tls-cert-file /tls/node.crt --tls-key-file /tls/node.key
+  --tls-ca-cert-file /tls/ca.pem --tls-auth-clients no --tls-replication
+  no` (клиентские серты — нет, принципалы из ACL; реплик нет — standalone).
+  Серт ноды: CN=`node<k>`, SAN только advertised-хоста (DNS|IP по правилу
+  §2), 10 лет, RSA-2048, EKU ServerAuth, подпись `ca_key`, NotAfter зажат
+  в CA (генерация — CertificateRequest .NET, без внешних инструментов).
+  Доставка — named volume `vwk-<C>-tls`: воркер пишет `node.crt`/
+  `node.key`/`ca.pem` ДО старта контейнера, mount → `/tls`. Транспорт —
+  короткоживущий helper-контейнер (образ ноды) с примонтированным volume:
+  запись — exec в helper (права — `chmod` из заголовка tar), чтение — GET
+  container-archive сквозь mount (переупаковка tar в корень); helper
+  удаляется в `finally` при любом исходе; механизм самодостаточен — не
+  полагается на рестарты демона. Права всех трёх файлов — 0644: процесс
+  valkey в образе НЕ root (entrypoint gosu, uid 999) и обязан читать ключ;
+  изоляция секрета — периметром контейнера (volume монтируется только в
+  контейнер ноды). Volume переживает пересоздания контейнера (перевыпуск
+  серта — при смене CA/SAN/истечении), удаляется в X1 демонтажа. Объекты
+  домена: кластер = контейнер(ы) `vwk-<C>-node<k>` + volume `vwk-<C>-tls`.
 - **Сеть**: per-cluster сеть НЕ создаётся (нет inter-node трафика;
   клиентский доступ — публикация host-порта из portalloc; контейнер живёт
   в сети запуска воркера — деталь t02). Прямое следствие: домен не порождает
@@ -156,6 +184,7 @@ per-install API-CA; клиенты без валидного серта — от
 | `/valkey/clusters/<C>/config` | заявка (nodes/maxmemory_*/created_unix) + `state` (NOT_INITIALIZED/TO_REMOVE/отсутствует=Active) — целиком, вкл. state-заявки |
 | `/valkey/clusters/<C>/nodes/node<k>/state` | заявки панели NOT_INITIALIZED/TO_REMOVE (+ свои записи — сверка) |
 | `/valkey/clusters/<C>/nodes/node<k>/resources` | лимиты контейнера (cpu/mem; disk — инфо) |
+| `/valkey/clusters/<C>/ca_pem`/`ca_key` | сверка серта volume с текущим CA кластера (переиспользование/перевыпуск), PING-пробы по TLS |
 | `/valkeyworker/rotations/<C>` | заявка ротации креда (`role`: app\|admin) — процесс E |
 | `/workers/api_tls/valkeyworker` | серверный серт mTLS-грани API (§1.1): читает ТОЛЬКО при старте; пишет панель (adminpanel/02 §9.9) |
 
@@ -167,6 +196,7 @@ per-install API-CA; клиенты без валидного серта — от
 | `/valkey/clusters/<C>/endpoints` | после подъёма; RMW при изменениях нод | `h1:p1,...` — advertised-хост + клиентский порт из portalloc |
 | `/valkey/clusters/<C>/app_user` + `app_password` | provisioning ensure; ротация E | `"app"` / 32 симв; txn put-if-absent / txn-коммит ротации |
 | `/valkey/clusters/<C>/admin_user` + `admin_password` | provisioning ensure; ротация E | `"admin"` / 32 симв; txn put-if-absent / txn-коммит ротации |
+| `/valkey/clusters/<C>/ca_pem` + `ca_key` | provisioning ensure (V2); миграция T1 | PEM CA одной строкой с `\n` (arch/20 §2.1); txn put-if-absent вместе с кредами |
 | `/valkey/clusters/<C>/config` | txn по завершении provisioning | пере-put канонического JSON **без** `state` (compare mod_revision) |
 | `/valkeyworker/*` (координация) | весь жизненный цикл | leader, claims, work (+ вложенный work/&lt;C&gt;/rotation — стейт доигрывания E, §5 E), portalloc, locks/portalloc, instances, api — префикс `/valkeyworker/` ([20](20-valkey-clusters.md) §3) |
 | `/valkeyworker/rotations/<C>` | по завершении ротации (E) | del заявки (или панелью — отмена) |
@@ -181,12 +211,16 @@ Per-cluster, в etcd, генерирует воркер (ensure txn put-if-absen
   приложения (ACL-роль app). Ротация — процесс E по заявке панели.
 - **admin** — `admin_user`=`"admin"`, `admin_password` (32 симв): воркер
   (converge/ACL/пробы), панель (read-only пробы). Ротация — процесс E.
+- **CA (t06)** — `ca_key` (PEM PKCS#8 — подпись серверных сертов нод),
+  `ca_pem` (PEM публичного CA — дискавери TLS-доверия клиентов, панель
+  читает для live-проб). Ensure той же txn put-if-absent, что и креды.
+  Компрометация etcd = зона доверия контроль-плейна (образец kafka R10);
+  ротация CA — roadmap.
 
 Env-секреты per-install — только TLS HTTP API воркера
 (`VWK_API_TLS_{CERT,KEY,CLIENT_CA}`, паттерн [16](16-kafkaworker.md) §4);
-per-cluster-секреты живут в etcd (зона доверия контроль-плейна; парольная
-защита кеша — достаточный уровень для домашнего контура, TLS-транспорт —
-t06).
+per-cluster-секреты живут в etcd (зона доверия контроль-плейна; клиентский
+трафик нод шифруется TLS с t06, парольная ACL-защита дополняет его).
 
 ## 5. Процессы (машины состояний)
 
@@ -196,11 +230,13 @@ t06).
 `REMOVING` (демонтаж); `TO_REMOVE` (маркер панели, one-way).
 
 Классификация тика: `config.state=NOT_INITIALIZED` → Provisioning (A);
-`TO_REMOVE` → Deprovisioning (B); иначе Active-ветка: надзор (C) →
-converger (D) → ротация (E). Все операции — только под живым клэймом `<C>`;
-journal-before-manipulations. Канон фиксирует классификацию без
-kafka-специфики (нет премиграционных кластеров/security-миграций — домен
-рождается с ACL-каноном).
+`TO_REMOVE` → Deprovisioning (B); иначе Active-ветка: **миграция TLS (T,
+t06) — ПЕРВЫМ шагом** → надзор (C) → converger (D) → ротация (E). Все
+операции — только под живым клэймом `<C>`;
+journal-before-manipulations. Детект миграции до надзора: Active-кластер
+без `ca_pem`/`ca_key` ИЛИ контейнер без TLS-args (`--tls-port` в args не
+найден) → TlsMigrator; InProgress ⇒ остальные шаги Active-ветки в этом
+тике не идут (миграция доигрывает тиками).
 
 ### A. ProvisioningProcess (V0–V5)
 
@@ -210,13 +246,17 @@ V1 план: placement + порт-аллокация — под глобальн
    /valkeyworker/locks/portalloc: занято = docker-публикации ∪ portalloc
    чужих кластеров; не взял клэйм → journal waiting-portalloc-lock
    (следующий тик); journal phase=planned
-V2 ensure секретов: admin + app — txn put-if-absent
+V2 ensure секретов: admin + app + CA (`ca_pem`/`ca_key` t06) — txn
+   put-if-absent по отсутствующим из шести ключей
    (проигрыш → re-read существующих)
-V3 контейнер (аргументы ACL/maxmemory из декларации и кредов, лимиты
-   resources, клиентский host-порт) + state=PROVISIONING;
-   существующий (re-run) — сверка и пропуск
-V4 ждать готовности: PING с admin-кредом отвечает (бюджет NodeBootSec,
-   транзиент-толерантно) → state=RUNNING
+V3 контейнер (аргументы ACL/maxmemory из декларации и кредов, TLS-args
+   t06, лимиты resources, клиентский host-порт) + state=PROVISIONING;
+   серт ноды: NodeTlsProvisioner — ensure volume vwk-<C>-tls с
+   node.crt/node.key/ca.pem (переиспользование валидного; отсутствие/
+   битость/чужой CA/SAN-drift — перевыпуск) ДО EnsureNodeAsync;
+   существующий (re-run) — сверка (вкл. TLS-args) и пропуск
+V4 ждать готовности: PING с admin-кредом по TLS отвечает (бюджет
+   NodeBootSec, транзиент-толерантно) → state=RUNNING
 V5 put endpoints (advertised host:clientPort); config: txn
    (compare mod_revision) → put канонического JSON без state;
    снапшот «после»; journal done
@@ -229,8 +269,9 @@ V5 put endpoints (advertised host:clientPort); config: txn
 
 ```
 X0 claim + journal(op=deprovision); снапшот «до»
-X1 docker: удалить контейнер vwk-<C>-* (404 = ок); порядок «сначала
-   docker, потом etcd»; томов нет
+X1 docker: удалить контейнер vwk-<C>-* (404 = ок); удалить volume
+   vwk-<C>-tls (t06; 404 = ок) — тома данных нет, TLS-том секретов
+   чистится; порядок «сначала docker, потом etcd»
 X2 etcd: del --prefix /valkey/clusters/<C>/ + del
    /valkeyworker/{claims,work,portalloc,rotations}/<C>* — очистка
    координации ВКЛЮЧАЯ заявки ротаций
@@ -239,10 +280,13 @@ X3 снапшот «после»; клэйм снят явно (del + revoke lea
 
 ### C. NodeSupervisor (надзор)
 
-Сверка декларации с фактом docker + PING-проба (с admin-кредом).
+Сверка декларации с фактом docker + PING-проба (с admin-кредом, **по TLS**).
 
 - **Снесённый контейнер** (docker-факт, не зависит от пробы) →
-  пересоздание с аргументами из текущей декларации и кредов etcd,
+  пересоздание с аргументами из текущей декларации и кредов etcd
+  (вкл. TLS-args t06: NodeTlsProvisioner обеспечивает volume/серт —
+  volume жив и валиден = переиспользование; CA в etcd отсутствует —
+  пересоздание отложено, warning «миграция T доиграет»),
   `state=PROVISIONING`; в `RUNNING` переводит следующий цикл по PING.
 - **Автоконверге лимитов `resources`** (применение изменений заявки): тик
   сверяет лимиты живого контейнера (inspect: NanoCpus/Memory) с
@@ -270,7 +314,8 @@ X3 снапшот «после»; клэйм снят явно (del + revoke lea
 ### D. ConfigConverger
 
 Active-ветка, лёгкий: `CONFIG GET maxmemory`/`maxmemory-policy` (по
-admin-креду) vs `config.{maxmemory_bytes,maxmemory_policy}` → при отличии
+admin-креду, по TLS-соединению t06) vs `config.{maxmemory_bytes,
+maxmemory_policy}` → при отличии
 `CONFIG SET` (без рестартов). Маппинг: `maxmemory_bytes`→`maxmemory`,
 `maxmemory_policy`→`maxmemory-policy`. **ACL-план**: `ACL LIST` vs канон
 (пользователи admin/app с правами §2; `default off`) → идемпотентный
@@ -310,13 +355,47 @@ E2 не прошло из-за того, что пароль уже NEW, — н�
 (фаза E1 уже закоммитила NEW — контейнер соберётся с NEW, OLD-пароль
 доочистит следующий тик E3; расхождение самолечится converge D). Ротация
 admin не трогает app-кред и наоборот. Битая заявка — мусор: del с journal
-(панель до того получает 409 «уже запрошена»).
+(панель до того получает 409 «уже запрошена»). Соединения всех фаз — по
+TLS (t06).
+
+### T. TlsMigrator (t06) — авто-миграция plain→TLS
+
+Первый шаг Active-ветки (до надзора C; образец kafka M,
+[16](16-kafkaworker.md) §5 M). nodes=1, persistence off — окно миграции =
+одно пересоздание контейнера (секунды; кеш восполним). Детект:
+`ca_pem`/`ca_key` отсутствуют в etcd ИЛИ args живого контейнера без
+`--tls-port` (иначе — no-op: отработавший миграцию кластер неотличим от
+поднятого канонически, повторный детект — no-op).
+
+```
+T0 claim + journal(op=migrate-tls, phase=started); снапшот «до»
+T1 ensure CA + кредов (txn put-if-absent, единый механизм с V2);
+   re-read; journal ensured-ca; перечитка config (гонка TO_REMOVE
+   посреди миграции — abort: journal aborted-state-changed, клэйм жив)
+T2 пересоздание контейнера с каноническими TLS-args: серт ноды в
+   volume (NodeTlsProvisioner), RemoveNode → EnsureNode с теми же
+   лимитами и портом portalloc (порт/адреса не меняются); journal
+   recreated; state=PROVISIONING
+T3 ждать готовности: PING по TLS (бюджет NodeBootSec, цикл 100 мс) →
+   state=RUNNING; снапшот «после»; journal done
+```
+
+Идемпотентность по факту: ключи CA есть? args TLS? PING по TLS
+отвечает? — отказ между фазами доигрывается повтором тика. Отработавший
+миграцию кластер неотличим от поднятого канонически.
 
 ## 6. Надёжность
 
-- **Идемпотентность**: каждый шаг перепроверяет факт (контейнер есть? PING
-  отвечает? конфиг == декларация? ACL-план == канону?); именование
-  детерминировано (`vwk-<C>-node<k>`, порты в portalloc).
+- **Идемпотентность**: каждый шаг перепроверяет факт (контейнер есть?
+  PING по TLS отвечает? конфиг == декларация? ACL-план == канону? серт
+  volume валиден против текущего CA?); именование
+  детерминировано (`vwk-<C>-node<k>`, порты в portalloc, volume
+  `vwk-<C>-tls`).
+- **Транспорт проб/команд (t06)**: все RESP-соединения воркера к нодам
+  (V4-проба, надзор C, converger D, ротатор E) — TLS: SslStream + ручная
+  валидация цепочки против `ca_pem` кластера (CustomRootTrust, системные
+  якоря не участвуют) + сверка SAN с advertised-хостом endpoint'а;
+  plain-ветки нет (plain-порт закрыт).
 - **Takeover**: состояние в etcd (journal, states, portalloc, endpoints,
   креды); смерть инстанса гасит lease ≤ 15 с — следующий продолжает с
   journal-фазы. Двойной контроллер невозможен: операции — только под живым
@@ -341,7 +420,8 @@ Health `/healthz` по канону честного health (t09): послед�
 из `/valkeyworker/api/<id>`. Prometheus-метрики — единый каркас
 [18-metrics.md](18-metrics.md) §2.2 (воркер-паттерн: циклы/клэймы/фазы/
 операции/снапшоты; `ValkeyWorker` в Meter-именах); коллектор доменных
-метрик INFO и дашборд — [18-metrics.md](18-metrics.md) §4.2/§2.6. Diag-ключи:
+метрик INFO и дашборд — [18-metrics.md](18-metrics.md) §4.2/§2.6;
+обязан ходить по TLS-транспорту воркера (§2). Diag-ключи:
 `/valkeyworker/work/<C>`, `nodes/node<k>/state`.
 
 ## 8. Конфигурация (appsettings + env-оверрайды)
@@ -372,9 +452,12 @@ ValkeyWorker:Api { AdvertiseUrl, EnableSeedEndpoint=false,
 | R2 | Порт-коллизии 17000–17999 с ручными контейнерами | portalloc проверяет фактическую занятость; коллизия → сдвиг порта |
 | R3 | `maxmemory_bytes` ≥ mem-лимит контейнера → OOM-килл | валидация заявки (t02/t03) + journal-warning конвергера; ответственность оператора (UI-предупреждение — t03); OOM-рестарт подхватит надзор C (кеш восполним) |
 | R4 | Ротация: отказ между фазами E1–E3 | оба пароля валидны (окно двух паролей); повтор тика доигрывает; пересоздание контейнера в окне безопасно (аргументы из etcd) |
-| R5 | Без TLS: трафик/креды в docker-сети | доверенная закрытая сеть установки (домашний контур, AGENTS п.8); зона доверия контроль-плейна; TLS — t06-valkey-tls |
+| R5 | Трафик/креды в docker-сети | TLS клиентских подключений с t06 (per-cluster CA, `--tls-port`, доверие `ca_pem`); остаточный вектор — внутри закрытой сети контроль-плейна (etcd/панель/воркер) |
 | R6 | Потеря кеша при пересоздании контейнера (persistence off) | документированное поведение: холодный старт, кеш восполним приложениями |
 | R7 | ACL-пароли в etcd — компрометация etcd = доступ к кешам | etcd — уже хранилище per-cluster-секретов (pg/kafka); закрытая сеть установки; ротация — процесс E |
+| R8 | Смена `AdvertisedClientHost` — SAN серта перестаёт покрывать хост | серт пересобирается при каждом пересоздании по правилу §2; до пересоздания клиенты по новому хосту получают TLS-отказ — ответственность оператора (образец kafka R8) |
+| R9 | Окно миграции plain→TLS: TLS-неготовые клиенты получают отказ после пересоздания | заявлено релизом t06 (панель, воркер, Puzzle-библиотеки обновляются тем же релизом); окно = одно пересоздание контейнера |
+| R10 | `ca_key` в etcd — компрометация etcd = выпуск валидных сертов | зона доверия контроль-плейна (как все per-cluster-секреты, R7); ротация CA — roadmap |
 
 ---
 

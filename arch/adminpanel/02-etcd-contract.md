@@ -970,7 +970,8 @@ min.insync.replicas?}}` + `desired_unix`=now + `desired_by`=username → txn
 домен-снапшот `ValkeySnapshot` (не `EtcdSnapshot` pg и не `KafkaSnapshot`) —
 своя механика тика §4, теми же транспортом §1 и настройками endpoints.
 v1-упрощение домена: топология standalone `nodes=1` — всегда одна нода
-`node1`; реплики/sentinel/TLS — roadmap (arch/20 преамбула, t06).
+`node1`; реплики/sentinel — roadmap (arch/20 преамбула); TLS клиентских
+подключений — с t06 (arch/20 §2: ключи `ca_pem`/`ca_key`).
 
 ### 11.1. Читаемые ключи
 
@@ -980,7 +981,7 @@ v1-упрощение домена: топология standalone `nodes=1` — 
 | `/valkey/clusters/<C>/nodes/node<k>/{state,resources}` | `ValkeyNodeInfo` | `state` — raw-строка (толерантно к новым); `resources` — `{cpu,mem,disk}` |
 | `/valkey/clusters/<C>/endpoints` | `ValkeyClusterInfo.Endpoints` | точка дискавери клиентов (arch/20 §2); отсутствие у Active — critical-алерт |
 | `/valkey/clusters/<C>/app_user`, `app_password` | — (парсер пропускает молча, без `unknownKeys`) | панель НЕ читает и не отображает: app-креды — роль приложений, панель к нодам с ними не ходит |
-| `/valkey/clusters/<C>/admin_user`, `admin_password` | internal-словарь стора (не в `ValkeyClusterInfo`, не в UI/API) | читаются ТОЛЬКО для live-проб PING (arch/20 §2: «панель читает для проб»); значение пароля наружу не отдаётся |
+| `/valkey/clusters/<C>/admin_user`, `admin_password`, `ca_pem` | internal-словарь стора (не в `ValkeyClusterInfo`, не в UI/API) | читаются ТОЛЬКО для live-проб PING (arch/20 §2: «панель читает для проб»; `ca_pem` — TLS-доверие пробы, t06); значения наружу не отдаются. Live-пробы PING — по TLS (SslStream + доверие `ca_pem` кластера + SAN-хост); ошибки чтения/валидации PEM — толерантность как у кредов (проба невозможна — failed-результат, без падения тика). Примечание: Active-кластер без `ca_pem` → critical-алерт `valkey-security-missing` (arch/20 §5; миграция TLS не доиграна / ключ потерян) |
 | `/valkeyworker/rotations/<C>` | `ValkeyRotationTicket` | очередь ротаций в UI (единственное читаемое из `/valkeyworker/` кроме `api/`); формат `{"role":"app"\|"admin","requested_unix","requested_by"}`; снятие — только воркером (после исполнения); отмена из панели НЕТ (арх/20 §3, t03) |
 
 Неизвестные ключи внутри `/valkey/` — лог + счётчик `unknownKeys`; битый JSON —

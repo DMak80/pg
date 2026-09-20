@@ -18,6 +18,9 @@ public class ProvisioningProcessTests
 
     private static readonly FixedTimeProvider Clock = new();
 
+    // Образ ноды (константа рига — как ValkeyProvisioningOptions).
+    private const string Image = "valkey/valkey:9.1.2";
+
     private sealed class Rig
     {
         // Единый журнал порядка операций etcd+docker (тест секции portalloc).
@@ -43,6 +46,7 @@ public class ProvisioningProcessTests
                     rig.Etcd, ["http://etcd:2379"],
                     NullLogger<ValkeyWorker.Provisioning.Processes.PortAllocIndex>.Instance),
                 new ValkeyWorker.Provisioning.Processes.ClusterSecretEnsurer(rig.Etcd, ["http://etcd:2379"]),
+                new ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner(rig.Driver, Image, Clock),
                 rig.Valkey, Options,
                 withSnapshot
                     ? async _ =>
@@ -301,5 +305,30 @@ public class ProvisioningProcessTests
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         rig.OpsLog.Should().NotContain(o => o.Contains("/valkeyworker/locks/portalloc"));
         rig.Etcd.Store["/valkey/clusters/pinned/endpoints"].Value.Should().Be("localhost:17555");
+    }
+
+    // t06: V3 пишет TLS-volume и поднимает контейнер с TLS-args и TlsVolume.
+    [Fact]
+    public async Task Provision_V3_WritesTlsVolumeAndStartsContainer()
+    {
+        // Arrange: заявка NOT_INITIALIZED.
+        const string cluster = "tlsprov";
+        var rig = Rig.Create(withSnapshot: false);
+        rig.SeedCluster(cluster);
+        await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
+
+        // Act: тик provisioning.
+        var result = await rig.Process.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+
+        // Assert: volume записан (3 файла), spec.TlsVolume = vwk-<C>-tls,
+        // args содержат --tls-port, ca_pem/ca_key появились в etcd (V2).
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        ValkeyWorker.Docker.Engine.TarArchive.Read(rig.Driver.TlsVolumes[(cluster, "h1")])
+            .Keys.Should().BeEquivalentTo("node.crt", "node.key", "ca.pem");
+        var ensured = rig.Driver.Ensured.Should().ContainSingle().Subject;
+        ensured.TlsVolume.Should().Be($"vwk-{cluster}-tls");
+        ensured.Args.Should().Contain("--tls-port");
+        rig.Etcd.Store[$"/valkey/clusters/{cluster}/ca_pem"].Value.Should().NotBeNullOrEmpty();
+        rig.Etcd.Store[$"/valkey/clusters/{cluster}/ca_key"].Value.Should().NotBeNullOrEmpty();
     }
 }

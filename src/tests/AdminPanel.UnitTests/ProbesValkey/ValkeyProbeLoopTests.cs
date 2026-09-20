@@ -79,7 +79,7 @@ public class ValkeyProbeLoopTests
         var client = new FakeProbeClient(ok: true);
         var loop = NewLoop(
             SnapshotWith(ActiveCluster()),
-            new() { ["live"] = new ValkeyClusterSecrets("live", "admin", "secret0123456789") },
+            new() { ["live"] = new ValkeyClusterSecrets("live", "admin", "secret0123456789", null) },
             client, store);
 
         // Act
@@ -126,7 +126,7 @@ public class ValkeyProbeLoopTests
         var client = new FakeProbeClient(ok: false, error: "WRONGPASS denied");
         var loop = NewLoop(
             SnapshotWith(ActiveCluster()),
-            new() { ["live"] = new ValkeyClusterSecrets("live", "admin", "topsecret42") },
+            new() { ["live"] = new ValkeyClusterSecrets("live", "admin", "topsecret42", null) },
             client, store);
 
         // Act
@@ -149,7 +149,7 @@ public class ValkeyProbeLoopTests
             "noeviction", 1, "127.0.0.1:17002", [new ValkeyNodeInfo("node1", "NOT_INITIALIZED", 1, 1, 10)]);
         var loop = NewLoop(
             SnapshotWith(pending),
-            new() { ["cache"] = new ValkeyClusterSecrets("cache", "admin", "secret0123456789") },
+            new() { ["cache"] = new ValkeyClusterSecrets("cache", "admin", "secret0123456789", null) },
             client, store);
 
         // Act

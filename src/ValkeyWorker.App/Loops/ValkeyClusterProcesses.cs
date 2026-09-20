@@ -36,6 +36,7 @@ internal sealed class ValkeyClusterProcesses(
     NodeSupervisor supervisor,
     ConfigConverger converger,
     PasswordRotator rotator,
+    TlsMigrator tlsMigrator,
     ILogger<ValkeyClusterProcesses> logger) : IValkeyClusterProcesses
 {
     public async Task<int> TickAsync(CancellationToken ct)
@@ -109,11 +110,20 @@ internal sealed class ValkeyClusterProcesses(
                     break;
 
                 case ValkeyClusterKind.Active:
-                    // Валю-туннель Active-ветки (arch/21 §5): надзор (C) →
-                    // converge (D) → ротация (E). Конвергер требует
-                    // endpoints+admin-кред — Active без дискавери пропускает D.
+                    // t06: миграция TLS — ПЕРВЫМ шагом Active-ветки (arch/21 §5):
+                    // InProgress ⇒ надзор/converge/ротация в этом тике не идут
+                    // (миграция доиграет тиками; узкое окно plain→TLS).
                     await RunClusterOpAsync(cluster, "active", async () =>
                     {
+                        var migration = await tlsMigrator.RunAsync(snap, ct);
+                        if (!migration.IsSuccess)
+                            return migration.Error!;
+                        if (migration.Value == TlsMigrator.MigrationOutcome.InProgress)
+                            return Result.Success();
+
+                        // Валю-туннель Active-ветки (arch/21 §5): надзор (C) →
+                        // converge (D) → ротация (E). Конвергер требует
+                        // endpoints+admin-кред — Active без дискавери пропускает D.
                         var supervised = await supervisor.TickAsync(snap, ct);
                         if (!supervised.IsSuccess)
                             return supervised;

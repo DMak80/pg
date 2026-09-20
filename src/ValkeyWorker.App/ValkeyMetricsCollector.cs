@@ -109,7 +109,7 @@ public sealed class ValkeyMetricsCollector(
                 var info = await valkey.InfoAllAsync(
                     new ValkeyEndpoint(
                         advertisedClientHost ?? address.Host, address.ClientPort,
-                        snap.AdminUser!, snap.AdminPassword!),
+                        snap.AdminUser!, snap.AdminPassword!, snap.CaPem!),
                     ct);
                 if (!info.IsSuccess)
                 {

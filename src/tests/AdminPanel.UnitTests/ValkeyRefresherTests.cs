@@ -167,6 +167,39 @@ public class ValkeyRefresherTests
         snapshot.UnknownKeyCount.Should().Be(1); // future_feature
     }
 
+    // t06: ca_pem попадает в internal-стор (рядом с admin-кредами); запись без
+    // ca_pem получает CaPem=null (миграция не доиграна — не ошибка тика).
+    [Fact]
+    public async Task RefreshOnce_CaPem_ReadToSecretsStore()
+    {
+        // Arrange: канон + ca_pem у кластера live.
+        var gateway = DemoGateway();
+        gateway.WorkerApiKv =
+        [
+            new Kv("/valkeyworker/api/i1", """{"url":"https://valkeyworker:8080","instance":"i1","since_unix":1756000001}""", 9),
+        ];
+        gateway.WorkerApiCertKv =
+        [
+            new Kv("/workers/api_tls/valkeyworker",
+                $$"""{"cert_pem":"{{ServerCertPem.Replace("\n", "\\n")}}","updated_unix":1756500000,"updated_by":"admin"}""", 10),
+        ];
+        gateway.ClustersKv =
+        [
+            .. gateway.ClustersKv,
+            new Kv("/valkey/clusters/live/ca_pem", "-----BEGIN CERTIFICATE-----\nCAPEM\n-----END CERTIFICATE-----", 7),
+        ];
+        var store = new ValkeySnapshotStore();
+        var secretsStore = new ValkeySecretsStore();
+        var refresher = New(gateway, store, secretsStore, endpoints: "http://e1");
+
+        // Act
+        var result = await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert: стор содержит CaPem у live; у кластеров без ca_pem — null.
+        result.IsSuccess.Should().BeTrue();
+        secretsStore.Current["live"].CaPem.Should().Contain("CAPEM");
+    }
+
     // Arrange: один из range-запросов (любой префикс) отвечает ошибкой.
     // Act: RefreshOnceAsync. Assert: Result неуспешен; прежний снапшот в сторе
     // (EtcdReachable=false, ConsecutiveFailures=+1, данные прежние).

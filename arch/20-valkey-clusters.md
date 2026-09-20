@@ -37,15 +37,16 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
 | `app_password` | 32 симв `[A-Za-z0-9]` | воркер (ensure + ротация) | per-cluster ACL-пароль приложений; в UI/API панели не отдаётся (как app-креды pg/kafka) |
 | `admin_user` | `"admin"` | воркер (ensure, txn put-if-absent) | per-cluster ACL-пользователь **администратора** (воркер: converge/ACL/пробы; панель: пробы; `+@all`) |
 | `admin_password` | 32 симв `[A-Za-z0-9]` | воркер (ensure + ротация) | per-cluster ACL-пароль администратора; панель читает для проб, в UI/API не отдаёт |
+| `ca_pem` | PEM-серт CA одной строкой с `\n` | воркер (ensure, txn put-if-absent) | публичный CA per-cluster — **точка дискавери TLS** внешних клиентов; панель читает для live-проб (internal); парсеры читателей не падают (unknownKeys-толерантность §5) |
+| `ca_key` | PEM PKCS#8 приватного ключа CA | воркер (ensure, txn put-if-absent) | подпись серверных сертов нод; секрет воркера — панель и приложения НЕ читают |
 
 Неизвестные ключи внутри `/valkey/` — не ошибка: лог + счётчик `unknownKeys`
 в снапшоте читателя (как pg/kafka; система развивается, парсеры не падают).
 
 **Отличия от kafka-таблицы [15](15-kafka-clusters.md) §2** (фиксируются
-явно): нет `role` (нет ролей нод — standalone), нет
-`ca_pem`/`ca_key`/`ca_next_*` (TLS — `t06-valkey-tls`; после t06 добавятся
-`ca_pem`/`ca_key`), нет `topics/` (Valkey ключи данных хранит сам,
-контроль-плейн их не реестрирует).
+явно): нет `role` (нет ролей нод — standalone), `ca_pem`/`ca_key` есть
+(t06); `ca_next_*` нет (ротация CA — roadmap), нет `topics/` (Valkey ключи
+данных хранит сам, контроль-плейн их не реестрирует).
 
 ### 2.1. Канонические примеры значений (критерий приёмки парсеров)
 
@@ -73,6 +74,16 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
 
 `app_user`: `"app"`; `admin_user`: `"admin"`; пароли — 32 симв
 `[A-Za-z0-9]` (генератор воркера).
+
+`ca_pem`/`ca_key` (t06) — PEM одной строкой с `\n` (канон значений etcd,
+формат kafka [15](15-kafka-clusters.md) §2.1): `ca_pem` —
+`"-----BEGIN CERTIFICATE-----\nMIIB...\n-----END CERTIFICATE-----\n"`;
+`ca_key` — `"-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"`
+(PKCS#8). CA self-signed RSA-2048, 10 лет; CN CA — `vwk-<C>-ca-<8hex>`
+(отпечаток ключа — subject уникален на генерацию, фикс t07 kafka).
+Серт ноды — подпись `ca_key`: CN=`node<k>`, SAN только advertised-хост
+(DNS либо IP по правилу [21](21-valkeyworker.md) §2), EKU ServerAuth,
+NotAfter зажат в CA (детали генерации — [21](21-valkeyworker.md) §2).
 
 ## 3. Координация воркера `/valkeyworker/`
 
@@ -114,20 +125,18 @@ etcd (JSON+base64), `POST /v3/kv/range` / `/v3/kv/put` / `/v3/kv/txn` /
 2. `/valkey/clusters/<C>/app_user` + `app_password` → ACL-креды
    (username+password, роль app);
 3. `/valkey/clusters/<C>/config` → только `state` (raw-строка; отсутствие
-   = Active — клиент видит заявочные переходы).
+   = Active — клиент видит заявочные переходы);
+4. `/valkey/clusters/<C>/ca_pem` → TLS-доверие клиента (публичный CA
+   per-cluster — аутентификация сервера).
 
 `GetClientConfig()` внешней библиотеки дискавери (t04, образец HA.Kafka —
-`docs/01.19-ha-kafka.md` в репозитории Puzzle) — plain-поля для
-StackExchange.Redis: `endpoints`, `username`, `password`, `ssl=false`
-(v1 без TLS; `ssl=true` + CA — после t06). Неполный набор кредов (есть
-`app_user`, нет `app_password`, и наоборот) → `App = null` →
-`GetClientConfig() = null` (потребитель обязан проверить).
-
-TLS в v1 отсутствует осознанно (решение пользователя): доверенная закрытая
-docker-сеть + ACL-креды; шифрование трафика и аутентификация сервера —
-`t06-valkey-tls` ([roadmap/valkey.md](roadmap/valkey.md)); контракт
-кред/endpoints при этом не меняется — добавится только ключ `ca_pem`
-(обратная совместимость читателя).
+`docs/01.19-ha-kafka.md` в репозитории Puzzle) после t06 отдаёт
+`ssl=true` + CA для StackExchange.Redis. Правило: **`ssl=true ⟺ ca_pem`
+прочитан** (снапшот без `ca_pem` — переходное/миграционное состояние, см.
+§5: окно миграции `ssl=false→true` прозрачно — старые контуры не ломаются,
+актуализация подтянет). Неполный набор кредов (есть `app_user`, нет
+`app_password`, и наоборот) → `App = null` → `GetClientConfig() = null`
+(потребитель обязан проверить).
 
 ## 5. Обработка сбоев (толерантность читателей)
 
@@ -139,6 +148,8 @@ docker-сеть + ACL-креды; шифрование трафика и аут�
 | Неполный набор кредов (`app_user` без `app_password` и наоборот) | `App = null`, `GetClientConfig() = null` — потребитель проверяет |
 | `config.state` — незнакомое значение | толерантно: трактуется как Active-ветка с raw-строкой state (state-значения строкой — система развивается) |
 | Пустой/пробельный `endpoints` | трактуется как отсутствующий (алерт `valkey-endpoints-missing`) |
+| Битый PEM в `ca_pem`/`ca_key` | parseError-запись + warning `valkey-key-malformed`; парсер не падает, поле в снапшоте null (кластер жив) |
+| Active-кластер без `ca_pem` | critical-алерт `valkey-security-missing` (миграция TLS не доиграна / ключ потерян) |
 
 ---
 

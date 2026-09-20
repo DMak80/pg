@@ -26,6 +26,7 @@ public class ConfigConvergerTests
 
         public void SeedActive(string cluster, string resources = """{"cpu":"2","mem":"1Gi","disk":"10Gi"}""")
         {
+            var (caPem, caKeyPem) = ValkeyWorker.Core.Valkey.ValkeyPki.GenerateCa(cluster);
             Etcd.Seed($"/valkey/clusters/{cluster}/config",
                 """{"nodes":1,"maxmemory_bytes":536870912,"maxmemory_policy":"allkeys-lru","created_unix":1756500000}""");
             Etcd.Seed($"/valkey/clusters/{cluster}/nodes/node1/resources", resources);
@@ -34,6 +35,8 @@ public class ConfigConvergerTests
             Etcd.Seed($"/valkey/clusters/{cluster}/app_password", "AppPassword0123456789abcdef12345");
             Etcd.Seed($"/valkey/clusters/{cluster}/admin_user", "admin");
             Etcd.Seed($"/valkey/clusters/{cluster}/admin_password", "AdminPassword0123456789abcdef12345");
+            Etcd.Seed($"/valkey/clusters/{cluster}/ca_pem", caPem);
+            Etcd.Seed($"/valkey/clusters/{cluster}/ca_key", caKeyPem);
         }
 
         public ValkeyClusterSnapshot Snapshot(string cluster)

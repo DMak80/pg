@@ -87,4 +87,28 @@ public sealed class ValkeyParserTests
         Assert.Contains(result.Errors, e => e.Key == "/valkeyworker/rotations/broken");
         Assert.Contains(result.Errors, e => e.Key == "/valkeyworker/rotations/nofield");
     }
+
+    // t06: ca_pem — факт TLS-канона: HasCaPem=true; отсутствие ключа — false;
+    // в unknownKeys ca_pem НЕ попадает (известный ключ, arch/20 §2).
+    [Fact]
+    public void ParseClusters_CaPem_HasCaPemFlag()
+    {
+        // Arrange: два кластера — с ca_pem и без.
+        var kvs = new List<Kv>
+        {
+            new("/valkey/clusters/withca/config",
+                """{"nodes":1,"maxmemory_bytes":1,"maxmemory_policy":"allkeys-lru","created_unix":1}""", 1),
+            new("/valkey/clusters/withca/ca_pem", "-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----", 1),
+            new("/valkey/clusters/noca/config",
+                """{"nodes":1,"maxmemory_bytes":1,"maxmemory_policy":"allkeys-lru","created_unix":1}""", 1),
+        };
+
+        // Act
+        var result = ValkeyParser.ParseClusters(kvs);
+
+        // Assert
+        Assert.True(Assert.Single(result.Clusters, c => c.Name == "withca").HasCaPem);
+        Assert.False(Assert.Single(result.Clusters, c => c.Name == "noca").HasCaPem);
+        Assert.Equal(0, result.UnknownKeyCount);
+    }
 }

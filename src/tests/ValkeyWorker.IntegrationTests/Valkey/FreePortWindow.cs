@@ -62,6 +62,50 @@ internal static class FreePortWindow
         throw new InvalidOperationException("FreePortWindow: свободного окна не нашлось");
     }
 
+    private static int _singleCursor;
+
+    // Выдача ОДНОГО свободного host-порта (ручные кейсы с контейнерами —
+    // TlsMigrationTests): статический курсор процесса + зонд bind'ом. Порт не
+    // пересекается ни с окнами других фикстур/коллекций параллельного прогона,
+    // ни с портами, уже розданными V1-PortAllocIndex живым кластерам серии —
+    // docker-proxy занятого порта держит LISTEN, зонд его видит (голый курсор
+    // «From+2+n» в полной серии выдавал занятый порт → docker 500 «port is
+    // already allocated»).
+    internal static int NextFreePort()
+    {
+        lock (Gate)
+        {
+            for (var attempt = 0; attempt < SearchTo - SearchFrom; attempt++)
+            {
+                var port = SearchFrom + _singleCursor;
+                _singleCursor = (_singleCursor + 1) % (SearchTo - SearchFrom);
+                if (port >= StandZoneFrom && port < StandZoneTo)
+                    continue; // зона dev-стенда — не выдаём
+                if (IsPortFree(port))
+                    return port;
+            }
+        }
+
+        throw new InvalidOperationException("FreePortWindow: свободного порта не нашлось");
+    }
+
+    // Зонд одиночного порта: TcpListener bind — порт занят любым живым
+    // биндингом (docker-proxy контейнера, чужой процесс).
+    private static bool IsPortFree(int port)
+    {
+        try
+        {
+            var listener = new TcpListener(IPAddress.Any, port);
+            listener.Start();
+            listener.Stop();
+            return true;
+        }
+        catch (SocketException)
+        {
+            return false;
+        }
+    }
+
     // Зонд окна: достаточно свободности первого порта (соседние с шагом).
     private static bool IsWindowFree(int start)
     {

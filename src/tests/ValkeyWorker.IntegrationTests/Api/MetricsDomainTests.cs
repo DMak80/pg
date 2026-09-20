@@ -155,6 +155,18 @@ public sealed class ValkeyMetricsDomainFixture : IAsyncLifetime
             {
                 // чистка на выходе — ошибки не всплывают
             }
+
+            try
+            {
+                // TLS-volume кластера (t06): миграция в живом контуре пишет
+                // vwk-<C>-tls, X1-демонтажа у сценария нет — снимаем руками.
+                // Отдельный try: сбой сноса контейнеров не должен оставлять том.
+                await Driver.RemoveTlsVolumeAsync(Cluster, ct);
+            }
+            catch
+            {
+                // чистка на выходе — ошибки не всплывают
+            }
         }
 
         _http.Dispose();

@@ -2,8 +2,10 @@ using Shared.Core;
 
 namespace ValkeyWorker.Core.Valkey;
 
-// Точка подключения + креды (admin-пробы воркера / converge).
-public sealed record ValkeyEndpoint(string Host, int Port, string User, string Password);
+// Точка подключения + креды + CA (admin-пробы воркера / converge).
+// CaPem — per-cluster CA (t06): PEM якоря для TLS-валидации сервера;
+// обязательный — plain-ветки нет (plain-порт закрыт).
+public sealed record ValkeyEndpoint(string Host, int Port, string User, string Password, string CaPem);
 
 // RESP-миниклиент (arch/21; spec §4.3): одна команда = одно короткоживущее
 // TCP-соединение (пробы/команды тиковые, мультиплексирование не нужно);
