@@ -5,7 +5,6 @@ using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
 using PgWorker.Docker.Drivers;
-using PgWorker.Docker.Engine;
 using Shared.Etcd.Client;
 using PgWorker.Etcd.Parsing;
 using PgWorker.Provisioning.Endpoints;
@@ -262,7 +261,9 @@ public sealed class WalStreamProcess(
             Hostname: agentName,
             CpuCores: options.AgentCpu,
             MemoryBytes: options.AgentMem,
+            LabelKey: "pgworker",
             Label: cluster,
+            ResetEntrypoint: true, // inline-команда агента — ENTRYPOINT образа сброшен (t03)
             Cmd: WalAgentCommand.Build(),
             Network: null, // сеть назначает драйвер (pgw-net)
             NetworkAliases: null,

@@ -1,5 +1,4 @@
 using PgWorker.Docker.Drivers;
-using PgWorker.Docker.Engine;
 using Xunit;
 
 namespace PgWorker.IntegrationTests.Docker;
@@ -48,8 +47,9 @@ public class ExecDriverTests
     {
         await using var engine = NewEngine();
         var spec = new ContainerSpec(
-            AlpineImage, new Dictionary<string, string>(), "", "", [],
-            "n1", null, null, null, ["sleep", "30"]);
+            AlpineImage, [], "n1",
+            Env: new Dictionary<string, string>(),
+            Cmd: ["sleep", "30"]);
         (await engine.CreateContainerAsync(spec, ContainerName, CancellationToken.None))
             .IsSuccess.Should().BeTrue("контейнер exec-теста должен создаться");
         (await engine.StartContainerAsync(ContainerName, CancellationToken.None))

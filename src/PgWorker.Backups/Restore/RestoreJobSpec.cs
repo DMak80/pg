@@ -1,5 +1,4 @@
 using PgWorker.Core.Model;
-using PgWorker.Docker.Engine;
 
 namespace PgWorker.Backups.Restore;
 
@@ -42,7 +41,9 @@ public static class RestoreJobSpec
             Hostname: BackupNames.RestoreContainerName(cluster, shard, id),
             CpuCores: opts.AgentCpu,
             MemoryBytes: opts.AgentMem,
+            LabelKey: "pgworker",
             Label: cluster,
+            ResetEntrypoint: true, // inline-команда джоба — ENTRYPOINT образа сброшен (t02)
             Cmd: RestoreJobCommand.Build(),
             Network: null,
             NetworkAliases: null,

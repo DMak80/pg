@@ -13,7 +13,6 @@ using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
 using PgWorker.Docker.Drivers;
-using PgWorker.Docker.Engine;
 using Shared.Etcd.Client;
 using PgWorker.Etcd.Coordination;
 using PgWorker.Moves;
@@ -30,10 +29,11 @@ using ProcessThresholds = PgWorker.Provisioning.Processes.ThresholdsOptions;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// t03: env-секреты TLS (API / Docker / SSH) → конфиг-дерево до всего остального.
+// t03: env-секреты TLS (API / Docker / SSH) → конфиг-дерево до всего остального
+// (t07: PGW_DOCKER_* — pg-биндинги в DockerEnvBindings, модели — в Shared.Docker).
 ApiTlsEndpoints.ApplyEnvOverrides(builder.Configuration);
-DockerTlsOptions.ApplyEnvOverrides(builder.Configuration);
-SshTunnelOptions.ApplyEnvOverrides(builder.Configuration);
+DockerEnvBindings.ApplyTlsEnvOverrides(builder.Configuration);
+DockerEnvBindings.ApplySshEnvOverrides(builder.Configuration);
 
 // Конфигурация: appsettings.json + env-оверрайды PgWorker__* (пример — в корне проекта).
 builder.Services.Configure<PgWorkerOptions>(builder.Configuration.GetSection("PgWorker"));

@@ -1,4 +1,3 @@
-using PgWorker.Docker.Engine;
 
 namespace PgWorker.Backups.Job;
 
@@ -34,7 +33,9 @@ public static class VerifyJobSpec
             Hostname: BackupNames.VerifyContainerName(cluster, shard, id),
             CpuCores: opts.AgentCpu,
             MemoryBytes: opts.AgentMem,
+            LabelKey: "pgworker",
             Label: cluster,
+            ResetEntrypoint: true, // inline-команда джоба — ENTRYPOINT образа сброшен (t02)
             Cmd: VerifyJobCommand.Build(),
             Network: null,
             NetworkAliases: null,

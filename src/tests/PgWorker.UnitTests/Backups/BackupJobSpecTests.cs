@@ -46,15 +46,15 @@ public class BackupJobSpecTests
         spec.Image.Should().Be("pgworker-backup:dev");
         spec.Hostname.Should().Be("pgw-backup-full-demo-s1-20260910030000Z");
         spec.Ports.Should().BeEmpty("джоб — клиент без публикации портов");
-        spec.Env["PGW_BK_DSN"].Should().Be(
+        spec.Env!["PGW_BK_DSN"].Should().Be(
             "host=host.docker.internal port=15432 user=backup_exec password=pw sslmode=require");
-        spec.Env["PGW_BK_ID"].Should().Be("20260910030000Z");
-        spec.Env["PGW_BK_S3_ENDPOINT"].Should().Be("http://host.docker.internal:9000");
-        spec.Env["PGW_BK_S3_BUCKET"].Should().Be("pgworker-backups");
-        spec.Env["PGW_BK_S3_ACCESS_KEY"].Should().Be("ak");
-        spec.Env["PGW_BK_S3_SECRET_KEY"].Should().Be("sk");
-        spec.Env["PGW_BK_PREFIX"].Should().Be("demo/s1");
-        spec.Env["PGW_BK_STAGING_DIR"].Should().Be("/backup-staging");
+        spec.Env!["PGW_BK_ID"].Should().Be("20260910030000Z");
+        spec.Env!["PGW_BK_S3_ENDPOINT"].Should().Be("http://host.docker.internal:9000");
+        spec.Env!["PGW_BK_S3_BUCKET"].Should().Be("pgworker-backups");
+        spec.Env!["PGW_BK_S3_ACCESS_KEY"].Should().Be("ak");
+        spec.Env!["PGW_BK_S3_SECRET_KEY"].Should().Be("sk");
+        spec.Env!["PGW_BK_PREFIX"].Should().Be("demo/s1");
+        spec.Env!["PGW_BK_STAGING_DIR"].Should().Be("/backup-staging");
         spec.ExtraHosts.Should().Contain("host.docker.internal:host-gateway")
             .And.Contain("local:host-gateway", "зарезервированное имя docker-хоста стенда");
         spec.Label.Should().Be("demo");
@@ -110,12 +110,12 @@ public class BackupJobSpecTests
 
         // Assert
         spec.Image.Should().Be("pgworker-backup:dev");
-        spec.Env["PGW_BK_S3_ENDPOINT"].Should().Be("http://minio:9000");
-        spec.Env["PGW_BK_S3_REGION"].Should().Be("us-east-1");
-        spec.Env["PGW_BK_S3_BUCKET"].Should().Be("bkt");
-        spec.Env["PGW_BK_PREFIX"].Should().Be("c1/shard1");
-        spec.Env["PGW_BK_ID"].Should().Be("20260911120000Z");
-        spec.Env["PGW_BK_STAGING_DIR"].Should().Be("/backup-staging");
+        spec.Env!["PGW_BK_S3_ENDPOINT"].Should().Be("http://minio:9000");
+        spec.Env!["PGW_BK_S3_REGION"].Should().Be("us-east-1");
+        spec.Env!["PGW_BK_S3_BUCKET"].Should().Be("bkt");
+        spec.Env!["PGW_BK_PREFIX"].Should().Be("c1/shard1");
+        spec.Env!["PGW_BK_ID"].Should().Be("20260911120000Z");
+        spec.Env!["PGW_BK_STAGING_DIR"].Should().Be("/backup-staging");
         spec.Env[VerifyJobCommand.EnvMcHostVariable].Should().Contain("ak:sk@minio:9000");
         spec.Cmd.Should().BeEquivalentTo(VerifyJobCommand.Build(), o => o.WithStrictOrdering());
         spec.CpuCores.Should().Be(0.5, "лимиты Agent { Cpu, Mem } — как у джоба t02 (spec §3.2)");

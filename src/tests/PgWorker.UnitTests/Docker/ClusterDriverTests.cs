@@ -2,7 +2,6 @@ using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
 using PgWorker.Core.Tuning;
 using PgWorker.Docker.Drivers;
-using PgWorker.Docker.Engine;
 using PgWorker.Core;
 using Xunit;
 
@@ -15,6 +14,21 @@ public class ClusterDriverTests
     // Мок движка: записывает вызовы и отвечает заготовками.
     private sealed class FakeEngine : IDockerEngine
     {
+
+        // ── union-члены t07 (kfw/vwk-методы): pg-доменом не используются — стабы ──
+        public Task<Result> DeleteNetworkAsync(string name, CancellationToken ct) => Task.FromResult(Result.Success());
+        public Task<Result<bool>> VolumeExistsAsync(string name, CancellationToken ct) => Task.FromResult(Result<bool>.Success(false));
+        public Task<Result> EnsureVolumeAsync(string name, CancellationToken ct) => Task.FromResult(Result.Success());
+        public Task<Result> DeleteVolumeAsync(string name, CancellationToken ct) => Task.FromResult(Result.Success());
+        public Task<Result> PutVolumeArchiveAsync(string name, byte[] tar, string image, CancellationToken ct) => Task.FromResult(Result.Success());
+        public Task<Result<byte[]?>> GetVolumeArchiveAsync(string name, string image, CancellationToken ct) => Task.FromResult(Result<byte[]?>.Success(null));
+        public Task<Result<NodeLimits?>> InspectContainerResourcesAsync(string name, CancellationToken ct) => Task.FromResult(Result<NodeLimits?>.Success(null));
+        public Task<Result<NodeLimits?>> InspectServiceResourcesAsync(string name, CancellationToken ct) => Task.FromResult(Result<NodeLimits?>.Success(null));
+        public Task<Result<IReadOnlyDictionary<string, string>?>> InspectContainerEnvAsync(string idOrName, CancellationToken ct) => Task.FromResult(Result<IReadOnlyDictionary<string, string>?>.Success(null));
+        public Task<Result<IReadOnlyDictionary<string, string>?>> InspectServiceEnvAsync(string name, CancellationToken ct) => Task.FromResult(Result<IReadOnlyDictionary<string, string>?>.Success(null));
+        public Task<Result<IReadOnlyList<string>?>> InspectContainerCmdAsync(string idOrName, CancellationToken ct) => Task.FromResult(Result<IReadOnlyList<string>?>.Success(null));
+        public Task<Result<IReadOnlyList<string>?>> InspectServiceCmdAsync(string name, CancellationToken ct) => Task.FromResult(Result<IReadOnlyList<string>?>.Success(null));
+        public Task<Result<DockerNodeEndpoint?>> InspectNodeEndpointAsync(string name, int containerPort, CancellationToken ct) => Task.FromResult(Result<DockerNodeEndpoint?>.Success(null));
         public List<(string Call, object? Arg)> Calls = [];
 
         public List<DockerContainer> Containers = [];
@@ -349,7 +363,7 @@ public class ClusterDriverTests
         // Assert: движок найден (create прошёл), PGW_NODE_HOST = advertised.
         result.IsSuccess.Should().BeTrue();
         engine.CreatedSpec.Should().NotBeNull();
-        engine.CreatedSpec!.Env["PGW_NODE_HOST"].Should().Be("host.docker.internal");
+        engine.CreatedSpec!.Env!["PGW_NODE_HOST"].Should().Be("host.docker.internal");
     }
 
     // AAA: advertised-режим — планировщик видит advertised-имя хоста (кандидаты
@@ -545,10 +559,10 @@ public class ClusterDriverTests
         spec.VolumeName.Should().Be("pgw-shop-shard1-shard1a-data");
         spec.VolumeDest.Should().Be("/home/postgres/pgdata"); // дефолтный PGDATA-корень Spilo
         spec.Hostname.Should().Be("shard1a");
-        spec.Env["SCOPE"].Should().Be("shop-shard1");
-        spec.Env["ETCD3_HOSTS"].Should().Be("etcd:2379"); // Patroni: host:port без scheme
-        spec.Env["PGW_NODE_HOST"].Should().Be("h1");
-        spec.Env["DOORMAN_CONFIG"].Should().Contain("pool_mode = \"transaction\"");
+        spec.Env!["SCOPE"].Should().Be("shop-shard1");
+        spec.Env!["ETCD3_HOSTS"].Should().Be("etcd:2379"); // Patroni: host:port без scheme
+        spec.Env!["PGW_NODE_HOST"].Should().Be("h1");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("pool_mode = \"transaction\"");
         // HAPROXY_CONFIG не передаётся: PG и HAProxy конфликтуют на :5432 (Д4).
         spec.Env.Should().NotContainKey("HAPROXY_CONFIG");
         spec.Ports.Should().BeEquivalentTo(
@@ -581,10 +595,10 @@ public class ClusterDriverTests
         // "2GB"), exclude применён при сборке YAML; doorman = max_connections − 5.
         result.IsSuccess.Should().BeTrue();
         var spec = engine.CreatedSpec!;
-        spec.Env["SPILO_CONFIGURATION"].Should().Contain("shared_buffers: \"1GB\"");
-        spec.Env["SPILO_CONFIGURATION"].Should().Contain("wal_level: logical");
-        spec.Env["SPILO_CONFIGURATION"].Should().NotContain("io_method");
-        spec.Env["DOORMAN_CONFIG"].Should().Contain("max_db_connections = 55");
+        spec.Env!["SPILO_CONFIGURATION"].Should().Contain("shared_buffers: \"1GB\"");
+        spec.Env!["SPILO_CONFIGURATION"].Should().Contain("wal_level: logical");
+        spec.Env!["SPILO_CONFIGURATION"].Should().NotContain("io_method");
+        spec.Env!["DOORMAN_CONFIG"].Should().Contain("max_db_connections = 55");
     }
 
     [Fact]
@@ -788,9 +802,13 @@ public class ClusterDriverTests
         var engine = new FakeEngine();
         var driver = NewPlainDriver(engine, advertisedHost: "host.docker.internal");
         var spec = new ContainerSpec(
-            "pgworker-backup:test", new Dictionary<string, string>(),
-            BackupAgentNames.Volume("shop", "shard1"), "/backup-staging",
-            [], "pgw-backup-wal-shop-shard1", null, null, "shop");
+            "pgworker-backup:test", [], "pgw-backup-wal-shop-shard1",
+            Env: new Dictionary<string, string>(),
+            VolumeName: BackupAgentNames.Volume("shop", "shard1"),
+            VolumeDest: "/backup-staging",
+            ResetEntrypoint: true,
+            LabelKey: "pgworker",
+            Label: "shop");
 
         // Act
         var ensured = await driver.EnsureBackupAgentAsync(

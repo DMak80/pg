@@ -1,6 +1,5 @@
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
-using PgWorker.Docker.Engine;
 using Xunit;
 
 namespace PgWorker.IntegrationTests.Docker;
@@ -62,7 +61,9 @@ public class BackupEngineTests
             Hostname: name,
             CpuCores: null,
             MemoryBytes: null,
+            LabelKey: "pgworker",
             Label: "enginetest",
+            ResetEntrypoint: true,
             Cmd: ["sh", "-c", "mount | grep backup-staging; getent hosts host.docker.internal; exit 0"],
             Tmpfs: new Dictionary<string, string> { ["/backup-staging"] = "size=10485760" },
             ExtraHosts: ["host.docker.internal:host-gateway"],

@@ -332,7 +332,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var s3 = new FakeBackupS3();
         SeedSegments(s3, "cc3", 1, 2);
         var driver = new StubScaleDriver();
-        driver.BackupAgentObjects.Add(new PgWorker.Docker.Engine.DockerContainer(
+        driver.BackupAgentObjects.Add(new DockerContainer(
             "id-agent-cc3", ["/pgw-backup-wal-cc3-shard1"], "running", "img"));
         var writer = new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]);
         var liveWal = new WalStreamState(
@@ -400,7 +400,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var s3 = new FakeBackupS3 { LastModified = DateTimeOffset.UtcNow.AddSeconds(-3600) };
         SeedSegments(s3, "cc5", 1, 2);
         var driver = new StubScaleDriver();
-        driver.BackupAgentObjects.Add(new PgWorker.Docker.Engine.DockerContainer(
+        driver.BackupAgentObjects.Add(new DockerContainer(
             "id-agent-cc5", ["/pgw-backup-wal-cc5-shard1"], "exited", "img"));
         var process = BuildProcess(Options(stale: 60), sql, s3, driver);
         var backups = new ClusterBackups("cc5", null,
@@ -431,7 +431,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var s3 = new FakeBackupS3();
         SeedSegments(s3, "cc8", 1, 2);
         var driver = new StubScaleDriver();
-        driver.BackupAgentObjects.Add(new PgWorker.Docker.Engine.DockerContainer(
+        driver.BackupAgentObjects.Add(new DockerContainer(
             "id-agent-cc8", ["pgw-backup-wal-cc8-shard1"], "running", "img"));
         var process = BuildProcess(Options(), sql, s3, driver);
         var backups = new ClusterBackups("cc8", null,
@@ -487,7 +487,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var s3 = new FakeBackupS3();
         SeedSegments(s3, "cb2", 1, 2);
         var driver = new StubScaleDriver();
-        driver.BackupAgentObjects.Add(new PgWorker.Docker.Engine.DockerContainer(
+        driver.BackupAgentObjects.Add(new DockerContainer(
             "id-agent-cb2", ["/pgw-backup-wal-cb2-shard1"], "running", "img"));
         var writer = new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]);
         var liveWal = new WalStreamState(
@@ -531,7 +531,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var s3 = new FakeBackupS3();
         SeedSegments(s3, "cb5", 1, 2);
         var driver = new StubScaleDriver();
-        driver.BackupAgentObjects.Add(new PgWorker.Docker.Engine.DockerContainer(
+        driver.BackupAgentObjects.Add(new DockerContainer(
             "id-agent-cb5", ["/pgw-backup-wal-cb5-shard1"], "running", "img"));
         var invalidWal = new WalStreamState(
             WalStreamStatus.Active, "pgw_bkp_cb5_shard1", "shard1a",
@@ -662,7 +662,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var s3 = new FakeBackupS3();
         SeedSegments(s3, "cm1", 1, 2);
         var driver = new StubScaleDriver();
-        driver.BackupAgentObjects.Add(new PgWorker.Docker.Engine.DockerContainer(
+        driver.BackupAgentObjects.Add(new DockerContainer(
             "id-agent-cm1", ["/pgw-backup-wal-cm1-shard1"], "running", "img"));
         var writer = new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]);
         var liveWal = new WalStreamState(

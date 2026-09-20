@@ -4,7 +4,6 @@ using System.Text;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using FluentAssertions;
-using PgWorker.Docker.Engine;
 using Xunit;
 
 namespace PgWorker.IntegrationTests.Docker;

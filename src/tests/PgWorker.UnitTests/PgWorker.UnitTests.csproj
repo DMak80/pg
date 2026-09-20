@@ -37,6 +37,7 @@
         <Using Include="Shared.Core"/>
         <Using Include="Shared.Core.Planning"/>
         <Using Include="Shared.Core.Writing"/>
+        <Using Include="Shared.Docker"/>
         <Using Include="Shared.Etcd.Coordination"/>
         <Using Include="Shared.Etcd.Maintenance"/>
     </ItemGroup>
