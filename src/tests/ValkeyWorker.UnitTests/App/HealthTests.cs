@@ -19,7 +19,7 @@ public class HealthTests
     });
 
     private static ServiceProbes Probes(IEtcdGateway etcd)
-        => new(etcd, Options, new ValkeyWorker.Docker.Engine.DockerEngineFactory());
+        => new(etcd, Options, new DockerEngineFactory());
 
     [Fact]
     public async Task EtcdProbe_GatewayThrows_ReturnsFailedNotThrows()
@@ -64,9 +64,9 @@ public class HealthTests
 
     // Фабрика docker-клиентов, бросающая при создании (t09): пер-хостовая
     // проба оборачивает исключение в Failed — структура, не бросок.
-    private sealed class ThrowingFactory : ValkeyWorker.Docker.Engine.DockerEngineFactory
+    private sealed class ThrowingFactory : DockerEngineFactory
     {
-        public override ValkeyWorker.Docker.Engine.IDockerEngine Create(string endpoint, string? hostAlias = null)
+        public override IDockerEngine Create(string endpoint, string? hostAlias = null)
             => throw new ApplicationException("docker engine недоступен");
     }
 

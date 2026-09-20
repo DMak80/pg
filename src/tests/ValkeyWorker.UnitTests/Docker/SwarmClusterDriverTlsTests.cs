@@ -1,6 +1,5 @@
 using ValkeyWorker.Core.Model;
 using ValkeyWorker.Docker.Drivers;
-using ValkeyWorker.Docker.Engine;
 
 namespace ValkeyWorker.UnitTests.Docker;
 
@@ -174,10 +173,19 @@ public class SwarmClusterDriverTlsTests
         public Task<Result<IReadOnlyList<string>>> ListServicesAsync(string namePrefix, CancellationToken ct) => throw NotUsed();
         public Task<Result<IReadOnlyList<DockerTask>>> ListTasksAsync(string serviceName, CancellationToken ct) => throw NotUsed();
         public Task<Result<IReadOnlySet<(string Host, int Port)>>> BusyPortsAsync(CancellationToken ct) => throw NotUsed();
-        public Task<Result<NodeLimits?>> InspectContainerResourcesAsync(string name, CancellationToken ct) => throw NotUsed();
-        public Task<Result<NodeLimits?>> InspectServiceResourcesAsync(string name, CancellationToken ct) => throw NotUsed();
+        public Task<Result<Shared.Docker.NodeLimits?>> InspectContainerResourcesAsync(string name, CancellationToken ct) => throw NotUsed();
+        public Task<Result<Shared.Docker.NodeLimits?>> InspectServiceResourcesAsync(string name, CancellationToken ct) => throw NotUsed();
         public Task<Result<IReadOnlyList<string>?>> InspectContainerCmdAsync(string idOrName, CancellationToken ct) => throw NotUsed();
         public Task<Result<IReadOnlyList<string>?>> InspectServiceCmdAsync(string name, CancellationToken ct) => throw NotUsed();
-        public Task<Result<DockerNodeEndpoint?>> InspectNodeEndpointAsync(string name, CancellationToken ct) => throw NotUsed();
+        public Task<Result<DockerNodeEndpoint?>> InspectNodeEndpointAsync(string name, int containerPort, CancellationToken ct) => throw NotUsed();
+
+        // ── union-члены t07 вне сценария теста ──
+        public Task<Result<DockerContainerInspect>> InspectContainerAsync(string id, CancellationToken ct) => throw NotUsed();
+        public Task<Result<string>> GetContainerLogsAsync(string idOrName, int tail, CancellationToken ct) => throw NotUsed();
+        public Task<Result<string>> ExecAsync(string containerId, IReadOnlyList<string> cmd, CancellationToken ct) => throw NotUsed();
+        public Task<Result> RemoveVolumeAsync(string name, CancellationToken ct) => throw NotUsed();
+        public Task<Result<bool>> VolumeExistsAsync(string name, CancellationToken ct) => throw NotUsed();
+        public Task<Result<IReadOnlyDictionary<string, string>?>> InspectContainerEnvAsync(string idOrName, CancellationToken ct) => throw NotUsed();
+        public Task<Result<IReadOnlyDictionary<string, string>?>> InspectServiceEnvAsync(string name, CancellationToken ct) => throw NotUsed();
     }
 }

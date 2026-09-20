@@ -1,6 +1,5 @@
 using Microsoft.Extensions.Options;
 using ValkeyWorker.App;
-using ValkeyWorker.Docker.Engine;
 using Shared.Etcd.Client;
 
 namespace ValkeyWorker.App.HealthChecks;

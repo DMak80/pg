@@ -9,7 +9,6 @@ using Microsoft.Extensions.Logging;
 using Shared.Core.Planning;
 using Shared.Etcd.Client;
 using ValkeyWorker.Docker.Drivers;
-using ValkeyWorker.Docker.Engine;
 using ValkeyWorker.IntegrationTests.Valkey;
 using Xunit;
 
