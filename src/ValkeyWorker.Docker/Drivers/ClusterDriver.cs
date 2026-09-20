@@ -78,11 +78,14 @@ public interface IClusterDriver
     // TLS-volume кластера (t06, arch/21 §2): ensure named volume vwk-<C>-tls.
     Task<Result> EnsureTlsVolumeAsync(string cluster, string host, CancellationToken ct);
 
-    // Запись tar-архива сертов (node.crt/node.key/ca.pem) в volume ДО старта.
-    Task<Result> PutTlsArchiveAsync(string cluster, string host, byte[] tar, CancellationToken ct);
+    // Запись tar-архива сертов (node.crt/node.key/ca.pem) в volume ДО старта;
+    // image — образ helper-контейнера (запись exec'ом изнутри — volume-archive
+    // API локальных томов демоны без swarm не поддерживают).
+    Task<Result> PutTlsArchiveAsync(string cluster, string host, byte[] tar, string image, CancellationToken ct);
 
-    // Чтение tar-архива сертов (валидность решает NodeTlsProvisioner); null = volume/архива нет.
-    Task<Result<byte[]?>> GetTlsArchiveAsync(string cluster, string host, CancellationToken ct);
+    // Чтение tar-архива сертов (валидность решает NodeTlsProvisioner);
+    // null = volume/архива нет.
+    Task<Result<byte[]?>> GetTlsArchiveAsync(string cluster, string host, string image, CancellationToken ct);
 
     // Демонтаж TLS-volume (X1; plain — перебор ВСЕХ хостов, 404 = успех на каждом;
     // swarm — manager).
@@ -281,21 +284,21 @@ public sealed class PlainClusterDriver(
     }
 
     public async Task<Result> PutTlsArchiveAsync(
-        string cluster, string host, byte[] tar, CancellationToken ct)
+        string cluster, string host, byte[] tar, string image, CancellationToken ct)
     {
         if (!_engines.TryGetValue(host, out var engine))
             return Result.Failed(new ApplicationException(
                 $"хост {host} не в таблице Docker:Hosts (кластер {cluster}, TLS-volume)"));
-        return await engine.PutVolumeArchiveAsync(TlsVolumeName(cluster), tar, ct);
+        return await engine.PutVolumeArchiveAsync(TlsVolumeName(cluster), tar, image, ct);
     }
 
     public async Task<Result<byte[]?>> GetTlsArchiveAsync(
-        string cluster, string host, CancellationToken ct)
+        string cluster, string host, string image, CancellationToken ct)
     {
         if (!_engines.TryGetValue(host, out var engine))
             return Result<byte[]?>.Failed(new ApplicationException(
                 $"хост {host} не в таблице Docker:Hosts (кластер {cluster}, TLS-volume)"));
-        return await engine.GetVolumeArchiveAsync(TlsVolumeName(cluster), ct);
+        return await engine.GetVolumeArchiveAsync(TlsVolumeName(cluster), image, ct);
     }
 
     // Демонтаж (X1): volume не привязан к ноде — перебор ВСЕХ хостов
@@ -414,12 +417,12 @@ public sealed class SwarmClusterDriver(
         => _engine.EnsureVolumeAsync(PlainClusterDriver.TlsVolumeName(cluster), ct);
 
     public Task<Result> PutTlsArchiveAsync(
-        string cluster, string host, byte[] tar, CancellationToken ct)
-        => _engine.PutVolumeArchiveAsync(PlainClusterDriver.TlsVolumeName(cluster), tar, ct);
+        string cluster, string host, byte[] tar, string image, CancellationToken ct)
+        => _engine.PutVolumeArchiveAsync(PlainClusterDriver.TlsVolumeName(cluster), tar, image, ct);
 
     public Task<Result<byte[]?>> GetTlsArchiveAsync(
-        string cluster, string host, CancellationToken ct)
-        => _engine.GetVolumeArchiveAsync(PlainClusterDriver.TlsVolumeName(cluster), ct);
+        string cluster, string host, string image, CancellationToken ct)
+        => _engine.GetVolumeArchiveAsync(PlainClusterDriver.TlsVolumeName(cluster), image, ct);
 
     public Task<Result> RemoveTlsVolumeAsync(string cluster, CancellationToken ct)
         => _engine.DeleteVolumeAsync(PlainClusterDriver.TlsVolumeName(cluster), ct);

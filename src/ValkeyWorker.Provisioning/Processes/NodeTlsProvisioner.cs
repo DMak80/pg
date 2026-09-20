@@ -17,6 +17,7 @@ namespace ValkeyWorker.Provisioning.Processes;
 /// </summary>
 public sealed class NodeTlsProvisioner(
     IClusterDriver driver,
+    string nodeImage,
     TimeProvider? clock = null)
 {
     public const string MountPath = "/tls";
@@ -31,7 +32,7 @@ public sealed class NodeTlsProvisioner(
         if (!volume.IsSuccess)
             return volume;
 
-        var existing = await driver.GetTlsArchiveAsync(cluster, host, ct);
+        var existing = await driver.GetTlsArchiveAsync(cluster, host, nodeImage, ct);
         if (!existing.IsSuccess)
             return existing;
         if (existing.Value is { } tar && IsValidTar(tar, advertisedHost, caPem, _clock))
@@ -41,10 +42,14 @@ public sealed class NodeTlsProvisioner(
         var entries = new[]
         {
             new TarArchive.Entry("node.crt", 0b1_1010_0100, System.Text.Encoding.UTF8.GetBytes(certPem)), // 0o644
-            new TarArchive.Entry("node.key", 0b1_1000_0000, System.Text.Encoding.UTF8.GetBytes(keyPem)),  // 0o600
+            // Ключ 0o644 (не 0o600): процесс ноды в образе стартует НЕ root
+            // (entrypoint gosu valkey, uid 999) и не читает root:root 0600.
+            // Изоляция секрета — периметром контейнера: volume монтируется
+            // ТОЛЬКО в контейнер ноды (arch/21 §2).
+            new TarArchive.Entry("node.key", 0b1_1010_0100, System.Text.Encoding.UTF8.GetBytes(keyPem)),  // 0o644
             new TarArchive.Entry("ca.pem", 0b1_1010_0100, System.Text.Encoding.UTF8.GetBytes(caPem)),
         };
-        return await driver.PutTlsArchiveAsync(cluster, host, TarArchive.Build(entries), ct);
+        return await driver.PutTlsArchiveAsync(cluster, host, TarArchive.Build(entries), nodeImage, ct);
     }
 
     // Валидность факта (идемпотентность по факту, spec §2.4): ca.pem == текущему

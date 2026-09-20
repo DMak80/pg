@@ -18,6 +18,9 @@ public class ProvisioningProcessTests
 
     private static readonly FixedTimeProvider Clock = new();
 
+    // Образ ноды (константа рига — как ValkeyProvisioningOptions).
+    private const string Image = "valkey/valkey:9.1.2";
+
     private sealed class Rig
     {
         // Единый журнал порядка операций etcd+docker (тест секции portalloc).
@@ -43,7 +46,7 @@ public class ProvisioningProcessTests
                     rig.Etcd, ["http://etcd:2379"],
                     NullLogger<ValkeyWorker.Provisioning.Processes.PortAllocIndex>.Instance),
                 new ValkeyWorker.Provisioning.Processes.ClusterSecretEnsurer(rig.Etcd, ["http://etcd:2379"]),
-                new ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner(rig.Driver, Clock),
+                new ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner(rig.Driver, Image, Clock),
                 rig.Valkey, Options,
                 withSnapshot
                     ? async _ =>

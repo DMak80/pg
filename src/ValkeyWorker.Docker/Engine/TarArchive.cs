@@ -44,8 +44,13 @@ public static class TarArchive
     }
 
     public static IReadOnlyDictionary<string, byte[]> Read(byte[] tar)
+        => ReadEntries(tar).ToDictionary(e => e.Name, e => e.Data);
+
+    // Полное чтение записей (имя + mode + данные): transport'у движка нужен
+    // mode заголовка — файлы в volume ноды читает НЕ-root процесс (t06).
+    public static IReadOnlyList<Entry> ReadEntries(byte[] tar)
     {
-        var result = new Dictionary<string, byte[]>();
+        var result = new List<Entry>();
         var offset = 0;
         while (offset + Block <= tar.Length)
         {
@@ -57,8 +62,9 @@ public static class TarArchive
             if (name.Length == 0 || sizeField.Length == 0)
                 throw new ApplicationException($"tar: некорректный заголовок на смещении {offset}");
             var size = Convert.ToInt32(sizeField, 8);
+            var modeField = ReadString(tar, offset + 100, 8).TrimEnd('\0', ' ');
             var data = tar.AsSpan(offset + Block, size).ToArray();
-            result[name] = data;
+            result.Add(new Entry(name, string.IsNullOrEmpty(modeField) ? 0 : Convert.ToInt32(modeField, 8), data));
             offset += Block + size + (Block - size % Block) % Block;
         }
 

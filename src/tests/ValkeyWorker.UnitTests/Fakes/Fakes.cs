@@ -389,7 +389,7 @@ internal static class Fakes
             return Task.FromResult(Result.Success());
         }
 
-        public Task<Result> PutTlsArchiveAsync(string cluster, string host, byte[] tar, CancellationToken ct)
+        public Task<Result> PutTlsArchiveAsync(string cluster, string host, byte[] tar, string image, CancellationToken ct)
         {
             if (TlsVolumeFault?.Invoke(host) == true)
                 return Task.FromResult(Result.Failed(new ApplicationException($"host {host} mute")));
@@ -402,7 +402,7 @@ internal static class Fakes
             return Task.FromResult(Result.Success());
         }
 
-        public Task<Result<byte[]?>> GetTlsArchiveAsync(string cluster, string host, CancellationToken ct)
+        public Task<Result<byte[]?>> GetTlsArchiveAsync(string cluster, string host, string image, CancellationToken ct)
         {
             if (TlsVolumeFault?.Invoke(host) == true)
                 return Task.FromResult(Result<byte[]?>.Failed(new ApplicationException($"host {host} mute")));

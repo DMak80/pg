@@ -4,13 +4,13 @@ using ValkeyWorker.Docker.Engine;
 namespace ValkeyWorker.UnitTests.Docker;
 
 // ustar-писатель/читатель для Docker volume-archive API (spec §4.2):
-// round-trip имя→данные, права ключа 0600 сохраняются в заголовке.
+// round-trip имя→данные, переданный mode сохраняется в заголовке ustar.
 public sealed class TarArchiveTests
 {
     [Fact]
     public void Build_Read_RoundTrip()
     {
-        // Arrange — права ustar: 0o600 ключ, 0o644 публичные
+        // Arrange — произвольные mode (факт применения прав — транспорт движка)
         var entries = new[]
         {
             new TarArchive.Entry("node.key", 0b1_1000_0000, Encoding.UTF8.GetBytes("key-data")),
@@ -27,7 +27,7 @@ public sealed class TarArchiveTests
     [Fact]
     public void Build_KeyHeaderMode0600()
     {
-        // Arrange — права приватного ключа 0600 (arch/21 §2)
+        // Arrange — mode 0o600 как пример произвольного режима
         var entries = new[]
         {
             new TarArchive.Entry("node.key", 0b1_1000_0000, [1, 2, 3]), // 0o600

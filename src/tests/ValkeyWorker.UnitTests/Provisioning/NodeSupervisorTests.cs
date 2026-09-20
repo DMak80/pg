@@ -15,6 +15,9 @@ public class NodeSupervisorTests
 {
     private static readonly FixedTimeProvider Clock = new();
 
+    // Образ ноды (константа рига — как ValkeyProvisioningOptions).
+    private const string Image = "valkey/valkey:9.1.2";
+
     private sealed class Rig
     {
         public Fakes.FakeEtcd Etcd = new();
@@ -42,7 +45,7 @@ public class NodeSupervisorTests
                 rig.Valkey,
                 new ValkeyWorker.Provisioning.Processes.ValkeyProvisioningOptions(
                     17000, 17999, 100, 90, "localhost", "valkey/valkey:9.1.2"),
-                healer, new ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner(rig.Driver, Clock), Clock);
+                healer, new ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner(rig.Driver, Image, Clock), Clock);
             return rig;
         }
 
@@ -286,7 +289,7 @@ public class NodeSupervisorTests
         const string cluster = "tlsrec";
         var rig = Rig.Create();
         rig.SeedActive(cluster);
-        var provisioner = new ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner(rig.Driver, Clock);
+        var provisioner = new ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner(rig.Driver, Image, Clock);
         (await provisioner.EnsureNodeTlsAsync(
             cluster, "node1", "h1", "localhost", rig.Snapshot(cluster).CaPem!,
             rig.Snapshot(cluster).CaKey!, TestContext.Current.CancellationToken))

@@ -13,10 +13,12 @@ public class NodeTlsProvisionerTests
 {
     private static readonly FixedTimeProvider Clock = new();
 
+    private const string Image = "valkey/valkey:9.1.2";
+
     private static (Fakes.FakeDriver Driver, NodeTlsProvisioner Provisioner) NewRig()
     {
         var driver = new Fakes.FakeDriver();
-        return (driver, new NodeTlsProvisioner(driver, Clock));
+        return (driver, new NodeTlsProvisioner(driver, Image, Clock));
     }
 
     [Fact]
@@ -30,8 +32,8 @@ public class NodeTlsProvisionerTests
         var result = await provisioner.EnsureNodeTlsAsync(
             "c1", "node1", "h1", "localhost", caPem, caKeyPem, TestContext.Current.CancellationToken);
 
-        // Assert — tar с тремя файлами записан (права 0600 ключа — в заголовке,
-        // покрыто TarArchiveTests.Build_KeyHeaderMode0600).
+        // Assert — tar с тремя файлами записан (права файлов — 0644: процесс ноды
+        // в образе НЕ root, см. NodeTlsProvisioner; кодирование mode — TarArchiveTests).
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         var tar = driver.TlsVolumes[("c1", "h1")];
         var files = TarArchive.Read(tar);

@@ -19,6 +19,8 @@ public class TlsMigratorTests
 
     private static readonly FixedTimeProvider Clock = new();
 
+    private const string Image = "valkey/valkey:9.1.2";
+
     private static readonly IReadOnlyList<string> TlsArgs =
         ["valkey-server", "--tls-port", "6379", "--port", "0"];
     private static readonly IReadOnlyList<string> PlainArgs =
@@ -41,7 +43,7 @@ public class TlsMigratorTests
                 rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
                 new WorkJournal("/valkeyworker", rig.Etcd, ["http://etcd:2379"]),
                 new ValkeyWorker.Provisioning.Processes.ClusterSecretEnsurer(rig.Etcd, ["http://etcd:2379"]),
-                new ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner(rig.Driver, Clock),
+                new ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner(rig.Driver, Image, Clock),
                 rig.Valkey, Options,
                 async _ =>
                 {

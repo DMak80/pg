@@ -147,25 +147,80 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             }
         });
 
-    // PUT /volumes/{name}/archive?path=/ с tar-телом (серты до старта контейнера).
-    public async Task<Result> PutVolumeArchiveAsync(string name, byte[] tar, CancellationToken ct)
+    // Запись tar в named volume через helper-контейнер (серты до старта ноды).
+    // Почему не PUT /volumes/{name}/archive: демон без swarm отвечает на
+    // локальные тома 503 «volume update only valid for cluster volumes…»
+    // (проверено на Engine 29.8; endpoint фактически cluster-only), а PUT
+    // /containers/<id>/archive сквозь mount на Docker Desktop падает на xattr
+    // (500 при фактически записанных данных). Рабочий транспорт: helper с
+    // volume в /mnt + exec «printf %s <b64> | base64 -d > /mnt/<файл>» на
+    // каждый entry tar. Helper живёт секунды, имя вне схемы vwk-<C>-node —
+    // перечисление объектов кластера его не видит.
+    public async Task<Result> PutVolumeArchiveAsync(string name, byte[] tar, string image, CancellationToken ct)
         => await Result.FromAsync(async () =>
-            await SendBytesAsync(HttpMethod.Put,
-                $"/volumes/{Uri.EscapeDataString(name)}/archive?path=%2F", tar, ct));
+        {
+            var helper = HelperName(name);
+            try
+            {
+                await CreateHelperAsync(helper, name, image, ct);
+                foreach (var entry in TarArchive.ReadEntries(tar))
+                {
+                    // Имя файла — из нашего tar; защита от выхода за /mnt.
+                    if (entry.Name.Contains('/') || entry.Name.StartsWith("..", StringComparison.Ordinal))
+                        throw new ApplicationException($"tls-volume: недопустимое имя файла '{entry.Name}'");
+                    // Права — из заголовка tar (как делал volume-archive API):
+                    // процесс ноды в образе НЕ root (entrypoint gosu) — без chmod
+                    // файлы остаются 0600 root и нода не читает серты.
+                    var mode = Convert.ToString(entry.Mode, 8);
+                    await ExecInHelperAsync(helper,
+                        $"umask 077; printf %s {Convert.ToBase64String(entry.Data)} | base64 -d > '/mnt/{entry.Name}' && chmod {mode} '/mnt/{entry.Name}'",
+                        ct);
+                }
+            }
+            finally
+            {
+                // Чистка helper при любом исходе (даже отмене) — 404 = успех.
+                await RemoveContainerAsync(helper, force: true, CancellationToken.None);
+            }
+        });
 
-    // GET /volumes/{name}/archive?path=/ — tar-тело; 404 → null (volume нет:
-    // слёт тома — положительное свидетельство отсутствия, перевыпуск).
-    public async Task<Result<byte[]?>> GetVolumeArchiveAsync(string name, CancellationToken ct)
+    // Чтение tar из named volume: инспекция volume (404 → null — факта сертов
+    // нет) + helper с mount + GET container-archive сквозь /mnt (имена файлов
+    // в корне архива). 404 helper-create при живом volume не бывает (после
+    // инспекции) — прочие ошибки уходят наверх Failed.
+    public async Task<Result<byte[]?>> GetVolumeArchiveAsync(string name, string image, CancellationToken ct)
         => await Result<byte[]?>.FromAsync(async () =>
         {
             try
             {
-                return await GetBytesAsync(
-                    $"/volumes/{Uri.EscapeDataString(name)}/archive?path=%2F", ct);
+                await SendAsync(HttpMethod.Get, $"/volumes/{Uri.EscapeDataString(name)}", ct: ct);
             }
             catch (DockerHttpException e) when (e.StatusCode == 404)
             {
                 return null; // volume нет — факта сертов нет
+            }
+
+            var helper = HelperName(name);
+            try
+            {
+                await CreateHelperAsync(helper, name, image, ct);
+                var raw = await GetBytesAsync(
+                    $"/containers/{Uri.EscapeDataString(helper)}/archive?path=%2Fmnt", ct);
+                // docker включает базовый каталог пути: /mnt → записи «mnt/…»
+                // плюс сам каталог. Контракт драйвера — tar с файлами в корне:
+                // переупаковка (mode записей сохраняется).
+                var entries = TarArchive.ReadEntries(raw)
+                    .Where(e => !e.Name.EndsWith('/'))
+                    .Select(e => e.Name.StartsWith("mnt/", StringComparison.Ordinal)
+                        ? e with { Name = e.Name["mnt/".Length..] }
+                        : e)
+                    .Where(e => e.Name.Length > 0)
+                    .ToList();
+                return TarArchive.Build(entries);
+            }
+            finally
+            {
+                await RemoveContainerAsync(helper, force: true, CancellationToken.None);
             }
         });
 
@@ -677,27 +732,8 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         }
     }
 
-    // Команда с байтовым телом (tar для volume-archive API) — тот же контракт ошибок.
-    private async Task SendBytesAsync(HttpMethod method, string path, byte[] body, CancellationToken ct)
-    {
-        using var request = new HttpRequestMessage(method, Api + path)
-        {
-            Content = new ByteArrayContent(body)
-            {
-                Headers = { ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/x-tar") },
-            },
-        };
-        using var response = await httpClient.SendAsync(request, ct);
-        if (!response.IsSuccessStatusCode)
-        {
-            var errorBody = response.Content is null
-                ? string.Empty
-                : await response.Content.ReadAsStringAsync(ct);
-            throw new DockerHttpException(method.Method, path, (int)response.StatusCode, errorBody);
-        }
-    }
-
-    // GET байтового тела (tar volume-archive API): пустое тело → пустой массив.
+    // GET байтового тела (tar из container-archive сквозь mount volume):
+    // пустое тело → пустой массив.
     private async Task<byte[]> GetBytesAsync(string path, CancellationToken ct)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, Api + path);
@@ -736,6 +772,85 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
     // Pull образа (POST /images/create): гарантирует наличие nodeImage перед create.
     internal Task PullImageAsync(string imageName, CancellationToken ct)
         => SendAsync(HttpMethod.Post, $"/images/create?fromImage={Uri.EscapeDataString(imageName)}", ct: ct);
+
+    // ── Helper-контейнер TLS-volume (t06): create+start «sleep», volume в /mnt ──
+
+    private static string HelperName(string volume)
+        => $"vwk-tls-writer-{Guid.NewGuid().ToString("N")[..12]}";
+
+    private async Task CreateHelperAsync(string name, string volume, string image, CancellationToken ct)
+    {
+        // NodeImage помощника (тот же, что у ноды — локально гарантирован);
+        // без портов/лимитов — только sleep и mount (объект пустой).
+        var spec = new ContainerSpec(
+            image, ["sleep", "120"], [], name, null, null, null,
+            Binds: (IReadOnlyList<string>?)new[] { volume + ":/mnt" });
+        var created = await CreateContainerAsync(spec, name, ct);
+        if (!created.IsSuccess)
+            throw created.Error!;
+        var started = await StartContainerAsync(name, ct);
+        if (!started.IsSuccess)
+            throw started.Error!;
+    }
+
+    // Exec «sh -c <команда>» в helper: Detach-start + поллинг inspect до
+    // завершения (бюджет 30 с — записи PEM занимают миллисекунды);
+    // ExitCode != 0 → исключение (Result-монада у вызывающего).
+    private async Task ExecInHelperAsync(string container, string shellCommand, CancellationToken ct)
+    {
+        var exec = await PostForJsonAsync<ExecDto>(
+            $"/containers/{Uri.EscapeDataString(container)}/exec",
+            new { Cmd = new[] { "sh", "-c", shellCommand }, AttachStdout = true, AttachStderr = true },
+            ct) ?? throw new ApplicationException($"docker exec: пустой ответ create ({container})");
+        await SendAsync(HttpMethod.Post, $"/exec/{Uri.EscapeDataString(exec.Id)}/start",
+            new { Detach = true, Tty = false }, ct);
+
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(30);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            var state = await GetAsync<ExecDto>($"/exec/{Uri.EscapeDataString(exec.Id)}/json", ct);
+            if (state is { Running: false, ExitCode: not null })
+            {
+                if (state.ExitCode != 0)
+                    throw new ApplicationException(
+                        $"docker exec (helper {container}): exit {state.ExitCode}");
+                return;
+            }
+
+            await Task.Delay(250, ct);
+        }
+
+        throw new TimeoutException($"docker exec (helper {container}) не завершился за 30 с");
+    }
+
+    // POST с JSON-ответом (exec create; SendAsync тело ответа отбрасывает).
+    private async Task<T?> PostForJsonAsync<T>(string path, object? body, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, Api + path);
+        if (body is not null)
+            request.Content = new StringContent(JsonSerializer.Serialize(body, Json), Encoding.UTF8, "application/json");
+        using var response = await httpClient.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = response.Content is null
+                ? string.Empty
+                : await response.Content.ReadAsStringAsync(ct);
+            throw new DockerHttpException("POST", path, (int)response.StatusCode, errorBody);
+        }
+
+        var text = await response.Content.ReadAsStringAsync(ct);
+        return text.Length == 0 ? default : JsonSerializer.Deserialize<T>(text, Json);
+    }
+
+    private sealed class ExecDto
+    {
+        [JsonPropertyName("Id")] public string Id { get; set; } = "";
+
+        [JsonPropertyName("Running")] public bool Running { get; set; }
+
+        // null, пока exec ещё работает (канон Engine API).
+        [JsonPropertyName("ExitCode")] public int? ExitCode { get; set; }
+    }
 
     public ValueTask DisposeAsync()
     {

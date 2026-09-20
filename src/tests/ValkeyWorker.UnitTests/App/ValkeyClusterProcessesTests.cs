@@ -16,6 +16,8 @@ public class ValkeyClusterProcessesTests
 {
     private static readonly FixedTimeProvider Clock = new();
 
+    private const string Image = "valkey/valkey:9.1.2";
+
     private sealed class Rig
     {
         public Fakes.FakeEtcd Etcd = new();
@@ -30,7 +32,7 @@ public class ValkeyClusterProcessesTests
             var journal = new WorkJournal("/valkeyworker", Etcd, ["http://etcd:2379"]);
             var options = new ValkeyWorker.Provisioning.Processes.ValkeyProvisioningOptions(
                 17000, 17999, 100, 90, "localhost", "valkey/valkey:9.1.2");
-            var tlsProvisioner = new ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner(Driver, Clock);
+            var tlsProvisioner = new ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner(Driver, Image, Clock);
             Processes = new ValkeyClusterProcesses(
                 Etcd, new FixedOptionsMonitor(new ValkeyWorkerOptions
                 {

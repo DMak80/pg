@@ -40,11 +40,16 @@ public interface IDockerEngine : IAsyncDisposable
     // POST /volumes/create (409 already exists = успех) — named volume TLS-секретов.
     Task<Result> EnsureVolumeAsync(string name, CancellationToken ct);
 
-    // PUT /volumes/{name}/archive?path=/ — tar-тело (серты до старта контейнера).
-    Task<Result> PutVolumeArchiveAsync(string name, byte[] tar, CancellationToken ct);
+    // Запись tar в named volume (серты до старта контейнера). Транспорт —
+    // helper-контейнер (image) с volume в /mnt + exec-запись файлов: сам
+    // volume-archive API (PUT /volumes/{name}/archive) на демон без swarm
+    // отвечает на локальные тома 503 «only valid for cluster volumes».
+    Task<Result> PutVolumeArchiveAsync(string name, byte[] tar, string image, CancellationToken ct);
 
-    // GET /volumes/{name}/archive?path=/ — tar-тело; null = volume нет.
-    Task<Result<byte[]?>> GetVolumeArchiveAsync(string name, CancellationToken ct);
+    // Чтение tar из named volume (GET /containers/<helper>/archive сквозь
+    // mount); null = volume нет (слёт тома — положительное свидетельство
+    // отсутствия, перевыпуск).
+    Task<Result<byte[]?>> GetVolumeArchiveAsync(string name, string image, CancellationToken ct);
 
     // DELETE /volumes/{name} (404 = успех — идемпотентность демонтажа X1).
     Task<Result> DeleteVolumeAsync(string name, CancellationToken ct);

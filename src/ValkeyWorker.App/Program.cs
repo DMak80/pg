@@ -156,7 +156,9 @@ builder.Services.AddSingleton(sp => new PortAllocHealer(
     sp.GetRequiredService<PortAllocLock>(),
     sp.GetRequiredService<PortAllocIndex>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value)));
-builder.Services.AddSingleton<NodeTlsProvisioner>();
+builder.Services.AddSingleton(sp => new NodeTlsProvisioner(
+    sp.GetRequiredService<IClusterDriver>(),
+    ToProvisioningOptions(sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value).NodeImage));
 builder.Services.AddSingleton<TlsMigrator>();
 builder.Services.AddSingleton(sp => new ProvisioningProcess(
     sp.GetRequiredService<IEtcdGateway>(),
