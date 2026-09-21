@@ -323,7 +323,7 @@ public class ProvisioningProcessTests
         // Assert: volume записан (3 файла), spec.TlsVolume = vwk-<C>-tls,
         // args содержат --tls-port, ca_pem/ca_key появились в etcd (V2).
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
-        ValkeyWorker.Docker.Engine.TarArchive.Read(rig.Driver.TlsVolumes[(cluster, "h1")])
+        TarArchive.Read(rig.Driver.TlsVolumes[(cluster, "h1")])
             .Keys.Should().BeEquivalentTo("node.crt", "node.key", "ca.pem");
         var ensured = rig.Driver.Ensured.Should().ContainSingle().Subject;
         ensured.TlsVolume.Should().Be($"vwk-{cluster}-tls");

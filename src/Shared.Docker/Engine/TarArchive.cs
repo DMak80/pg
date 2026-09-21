@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace ValkeyWorker.Docker.Engine;
+namespace Shared.Docker;
 
 /// <summary>
 /// Минимальный ustar-тар (t06): запись/чтение набора файлов для Docker

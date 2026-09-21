@@ -3,7 +3,6 @@ using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
 using PgWorker.Core.Tuning;
 using PgWorker.Docker.Drivers;
-using PgWorker.Docker.Engine;
 
 namespace PgWorker.IntegrationTests.Etcd;
 

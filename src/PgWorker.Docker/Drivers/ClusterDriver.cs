@@ -2,7 +2,6 @@ using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
 using PgWorker.Core.Tuning;
-using PgWorker.Docker.Engine;
 
 namespace PgWorker.Docker.Drivers;
 
@@ -129,6 +128,10 @@ public sealed class PlainClusterDriver(
     string? advertisedHost = null,
     IReadOnlySet<string>? pgtuneExclude = null) : IClusterDriver
 {
+    // Label-ключ контейнеров/сервисов pg-домена (t07: ключ — параметр спеки
+    // движка LabelKey; читателей label в коде нет, docker-inspect-косметика).
+    internal const string LabelKey = "pgworker";
+
     // Plain: инспект контейнера — факт running-процесса (arch/14 §5 C).
     public bool SupportsRunningInspection => true;
     // Общая сеть нод кластера: Patroni-репликация по внутренним адресам
@@ -616,13 +619,14 @@ public sealed class PlainClusterDriver(
 
         return new ContainerSpec(
             nodeImage,
-            env,
-            VolumeName(topology.Cluster, topology.Shard, nodeName),
-            "/home/postgres/pgdata", // дефолтный PGDATA-корень Spilo (pgroot ломает bootstrap)
             ports,
             nodeName,
+            Env: env,
+            VolumeName: VolumeName(topology.Cluster, topology.Shard, nodeName),
+            VolumeDest: "/home/postgres/pgdata", // дефолтный PGDATA-корень Spilo (pgroot ломает bootstrap)
             CpuCores: resources?.CpuCores,
             MemoryBytes: resources?.MemoryBytes,
+            LabelKey: LabelKey,
             Label: topology.Cluster,
             Network: NodesNetwork,
             NetworkAliases: [nodeName, NodeName(topology.Cluster, topology.Shard, nodeName)]);

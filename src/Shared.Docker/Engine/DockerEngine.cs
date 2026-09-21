@@ -1,186 +1,16 @@
 using System.Buffers.Binary;
 using System.Globalization;
-using System.Net.Security;
-using System.Net.Sockets;
-using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Microsoft.Extensions.Logging;
-using PgWorker.Core;
-using Shared.Tls;
+using Shared.Core;
 
-namespace PgWorker.Docker.Engine;
-
-// Фабрика движков (arch/14 §2.2/§2.2.1, t03): endpoint "unix:///var/run/docker.sock"
-// | "tcp://host[:2375]" (+TLS при заданном DockerTlsOptions) | "ssh://[user@]host[:22]"
-// (туннель — SshTunnelOptions). API-версия закреплена v1.44 (docker >= 23).
-public class DockerEngineFactory : IAsyncDisposable
-{
-    private readonly DockerTlsMaterial? _tls;
-    private readonly SshTunnelOptions? _ssh;
-    private readonly ILogger<DockerEngineFactory>? _logger;
-    private readonly ILoggerFactory? _loggerFactory;
-    private readonly Dictionary<string, SshHostConnection> _tunnels = new();
-    private readonly object _tunnelsLock = new();
-
-    // Fail-fast здесь (а не в тике): частичная TLS-конфигурация — ошибка старта.
-    public DockerEngineFactory(
-        DockerTlsOptions? tls = null,
-        SshTunnelOptions? ssh = null,
-        ILogger<DockerEngineFactory>? logger = null,
-        ILoggerFactory? loggerFactory = null)
-    {
-        _ssh = ssh;
-        _logger = logger ?? loggerFactory?.CreateLogger<DockerEngineFactory>();
-        _loggerFactory = loggerFactory;
-        _tls = tls is null ? null : DockerTlsMaterial.Load(tls);
-    }
-
-    // Транспортный handler: unix → ConnectCallback с UnixDomainSocketEndPoint;
-    // tcp → TLS (клиентский серт + цепочка против docker-CA), если сконфигурирован.
-    internal HttpMessageHandler CreateHandler(string endpoint)
-    {
-        var scheme = EndpointScheme.Parse(endpoint);
-        var sockets = new SocketsHttpHandler
-        {
-            // docker-прокси держит соединения — не рвём их агрессивно
-            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-        };
-        if (scheme.Scheme == EndpointScheme.Unix)
-        {
-            var socketPath = scheme.Host;
-            sockets.ConnectCallback = async (context, ct) =>
-            {
-                var socket = new System.Net.Sockets.Socket(
-                    System.Net.Sockets.AddressFamily.Unix, System.Net.Sockets.SocketType.Stream,
-                    System.Net.Sockets.ProtocolType.Unspecified);
-                try
-                {
-                    await socket.ConnectAsync(new System.Net.Sockets.UnixDomainSocketEndPoint(socketPath), ct);
-                    return new System.Net.Sockets.NetworkStream(socket, ownsSocket: true);
-                }
-                catch
-                {
-                    socket.Dispose();
-                    throw;
-                }
-            };
-        }
-        else if (_tls is not null)
-        {
-            // tcp (+TLS поверх ssh-туннеля — endpoint уже tcp://127.0.0.1:<bound>)
-            sockets.SslOptions.ClientCertificates = new X509CertificateCollection { _tls.ClientCert };
-            sockets.SslOptions.RemoteCertificateValidationCallback =
-                (_, certificate, _, _) => DockerTlsMaterial.ValidateChain(certificate, _tls.Ca);
-        }
-        else if (scheme.Scheme == EndpointScheme.Tcp)
-        {
-            // R15: plaintext tcp — только dev/тесты/локальные стенды; канон прода —
-            // 2376+mTLS или ssh (arch/14 §2.2.1).
-            _logger?.LogWarning(
-                "Engine API {Endpoint} без TLS (plaintext tcp; канон прода — tcp://:2376 mTLS или ssh://, arch/14 §2.2.1)",
-                endpoint);
-        }
-
-        return sockets;
-    }
-
-    // hostAlias — имя docker-хоста для BusyPorts plain-режима (swarm: null).
-    public virtual IDockerEngine Create(string endpoint, string? hostAlias = null)
-    {
-        var scheme = EndpointScheme.Parse(endpoint);
-        if (scheme.Scheme == EndpointScheme.Ssh)
-            endpoint = $"tcp://127.0.0.1:{TunnelFor(endpoint, scheme).BoundPort}";
-
-        var parsedEndpoint = EndpointScheme.Parse(endpoint);
-        var baseAddress = scheme.Scheme == EndpointScheme.Unix
-            ? "http://localhost" // фиктивный хост: соединение уходит в unix-сокет через ConnectCallback
-            : (_tls is not null
-                ? $"https://{parsedEndpoint.Host}:{parsedEndpoint.Port}"
-                : $"http://{parsedEndpoint.Host}:{parsedEndpoint.Port}"); // HttpClient не понимает tcp://
-        var httpClient = new HttpClient(CreateHandler(endpoint)) { BaseAddress = new Uri(baseAddress) };
-        return new DockerEngine(httpClient, hostAlias);
-    }
-
-    // кэш туннелей по endpoint: подключённый — переиспользуем; разорванный —
-    // reconnect с бэкоффом (EnsureConnected бросает transient-ошибку на тик).
-    private SshHostConnection TunnelFor(string endpoint, EndpointScheme scheme)
-    {
-        lock (_tunnelsLock)
-        {
-            if (_tunnels.TryGetValue(endpoint, out var existing))
-            {
-                existing.EnsureConnected();
-                return existing;
-            }
-
-            var tunnel = new SshHostConnection(scheme, _ssh ?? new SshTunnelOptions(),
-                _loggerFactory?.CreateLogger<SshHostConnection>());
-            _tunnels[endpoint] = tunnel;
-            return tunnel;
-        }
-    }
-
-    public async ValueTask DisposeAsync()
-    {
-        SshHostConnection[] tunnels;
-        lock (_tunnelsLock)
-        {
-            tunnels = [.. _tunnels.Values];
-            _tunnels.Clear();
-        }
-
-        foreach (var tunnel in tunnels)
-            await tunnel.DisposeAsync();
-    }
-}
-
-// Загруженный TLS-материал фабрики: живёт время жизни фабрики (валидация цепочки
-// вызывается на КАЖДОМ хендшейке — без using; паттерн WorkerTlsHandler.Build).
-internal sealed class DockerTlsMaterial
-{
-    public required X509Certificate2 ClientCert { get; init; }
-
-    public required X509Certificate2 Ca { get; init; }
-
-    // PEM с файловым fallback; частичная конфигурация → ApplicationException.
-    public static DockerTlsMaterial Load(DockerTlsOptions tls)
-    {
-        var caPem = tls.CaPem ?? TlsMaterial.ReadPemFile(tls.CaPath);
-        var certPem = tls.ClientCertPem ?? TlsMaterial.ReadPemFile(tls.ClientCertPath);
-        var keyPem = tls.ClientKeyPem ?? TlsMaterial.ReadPemFile(tls.ClientKeyPath);
-        if (caPem is null || certPem is null || keyPem is null)
-            throw new ApplicationException(
-                "PgWorker:Docker:Tls: частичная TLS-конфигурация — нужны CA+CERT+KEY "
-                + "(env PGW_DOCKER_TLS_{CA,CERT,KEY}[_PATH], arch/14 §2.2.1)");
-
-        // PFX round-trip: ключ CreateFromPem эфемерный — macOS SslStream требует
-        // ре-импорт (паттерн WorkerTlsHandler.Build).
-        var clientCert = TlsMaterial.LoadPemPair(certPem, keyPem);
-        return new DockerTlsMaterial
-        {
-            ClientCert = clientCert,
-            Ca = TlsMaterial.LoadPem(caPem),
-        };
-    }
-
-    // Цепочка серверного серта демона против per-install docker-CA — обёртка
-    // над общим TlsChain.ValidateChain (t08: тело в Shared.Tls).
-    public static bool ValidateChain(X509Certificate? certificate, X509Certificate2 ca)
-        => TlsChain.ValidateChain(certificate, ca);
-}
-
-// HTTP-ошибка Engine API: не-2xx (кроме идемпотентных 404/409).
-public sealed class DockerHttpException(string method, string path, int statusCode, string body)
-    : Exception($"docker {method} {path} ответил {statusCode}: {body}")
-{
-    public int StatusCode { get; } = statusCode;
-
-    public string Body { get; } = body;
-}
+namespace Shared.Docker;
 
 // Реализация: HttpClient + System.Text.Json по Engine API v1.44.
+// Общий движок трёх воркеров (t07): pg-канон + влитые методы kfw/vwk,
+// канон-суперсет семантики (spec §7): start 304-идемпотентен, create при
+// отсутствии образа — pull+retry, exec-ошибка включает stderr И stdout.
 public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDockerEngine
 {
     private const string Api = "/v1.44";
@@ -281,6 +111,15 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             {
                 // идемпотентность: контейнер с именем уже существует
             }
+            catch (DockerHttpException e) when (e.StatusCode == 404 && e.Body.Contains("No such image", StringComparison.OrdinalIgnoreCase))
+            {
+                // Образа нет на хосте — тянем и повторяем create (первый запуск
+                // на чистом хосте; kfw/vwk-семантика, канон-суперсет t07 §7.2).
+                // Локально-собираемые образы (не в registry) fallback не спасает —
+                // поведение не хуже прежнего голого 404.
+                await PullImageAsync(spec.Image, ct);
+                await SendAsync(HttpMethod.Post, $"/containers/create?name={Uri.EscapeDataString(name)}", BuildContainerBody(spec), ct);
+            }
         });
 
     public async Task<Result> StartContainerAsync(string idOrName, CancellationToken ct)
@@ -293,7 +132,8 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             catch (DockerHttpException e) when (e.StatusCode == 304)
             {
                 // 304 — контейнер уже запущен (идемпотентность супервиза, t03:
-                // контракт интерфейса «304 already-started = успех»)
+                // контракт интерфейса «304 already-started = успех»; pg-семантика,
+                // канон-суперсет t07 §7.1 для kfw/vwk)
             }
         });
 
@@ -336,6 +176,49 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             }
         });
 
+    public async Task<Result<bool>> VolumeExistsAsync(string name, CancellationToken ct)
+        => await Result<bool>.FromAsync(async () =>
+        {
+            try
+            {
+                await SendAsync(HttpMethod.Get, $"/volumes/{Uri.EscapeDataString(name)}", ct: ct);
+                return true;
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                return false; // volume не существует — физически утрачен
+            }
+        });
+
+    // POST /volumes/create; 409 «volume already exists» = успех (идемпотентность).
+    public async Task<Result> EnsureVolumeAsync(string name, CancellationToken ct)
+        => await Result.FromAsync(async () =>
+        {
+            try
+            {
+                await SendAsync(HttpMethod.Post, "/volumes/create",
+                    new Dictionary<string, object?> { ["Name"] = name }, ct);
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 409)
+            {
+                // volume с таким именем уже есть — идемпотентность
+            }
+        });
+
+    // DELETE /volumes/{name}; 404 = успех (идемпотентность демонтажа X1).
+    public async Task<Result> DeleteVolumeAsync(string name, CancellationToken ct)
+        => await Result.FromAsync(async () =>
+        {
+            try
+            {
+                await SendAsync(HttpMethod.Delete, $"/volumes/{Uri.EscapeDataString(name)}", ct: ct);
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                // volume уже нет — идемпотентность
+            }
+        });
+
     public async Task<Result> EnsureNetworkAsync(string name, CancellationToken ct)
         => await Result.FromAsync(async () =>
         {
@@ -347,6 +230,109 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             catch (DockerHttpException e) when (e.StatusCode == 409)
             {
                 // сеть с таким именем уже есть — идемпотентность
+            }
+        });
+
+    // DELETE /networks/<name>; 404 = успех (идемпотентность). «Has active
+    // endpoints» уходит наверх Failed — вызывающий решает (t09-фикс).
+    public async Task<Result> DeleteNetworkAsync(string name, CancellationToken ct)
+        => await Result.FromAsync(async () =>
+        {
+            try
+            {
+                await SendAsync(HttpMethod.Delete, $"/networks/{Uri.EscapeDataString(name)}", ct: ct);
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                // сети уже нет — идемпотентность
+            }
+        });
+
+    // Запись tar в named volume через helper-контейнер (серты до старта ноды).
+    // Почему не PUT /volumes/{name}/archive: демон без swarm отвечает на
+    // локальные тома 503 «volume update only valid for cluster volumes…»
+    // (проверено на Engine 29.8; endpoint фактически cluster-only), а PUT
+    // /containers/<id>/archive сквозь mount на Docker Desktop падает на xattr
+    // (500 при фактически записанных данных). Рабочий транспорт: helper с
+    // volume в /mnt + exec «printf %s <b64> | base64 -d > /mnt/<файл>» на
+    // каждый entry tar. Helper живёт секунды, имя вне схемы vwk-<C>-node —
+    // перечисление объектов кластера его не видит.
+    public async Task<Result> PutVolumeArchiveAsync(string name, byte[] tar, string image, CancellationToken ct)
+        => await Result.FromAsync(async () =>
+        {
+            var helper = HelperName(name);
+            try
+            {
+                await CreateHelperAsync(helper, name, image, ct);
+                var entries = new List<TarArchive.Entry>();
+                foreach (var entry in TarArchive.ReadEntries(tar))
+                {
+                    // Имя файла — из нашего tar; защита от выхода за /mnt.
+                    if (entry.Name.Contains('/') || entry.Name.StartsWith("..", StringComparison.Ordinal))
+                        throw new ApplicationException($"tls-volume: недопустимое имя файла '{entry.Name}'");
+                    entries.Add(entry);
+                }
+
+                // ОДИН exec (t06-ревью): атомарность НАБОРА — файлы пишутся под
+                // временными именами, mv в конце переименовывает их на целевые
+                // (rename внутри одного тома атомарен). set -e: любой сбой —
+                // exit != 0 → Failed, прежний набор сертов не тронут (крах
+                // между тремя exec'ами оставлял несовпадающую пару ключ↔серт).
+                // Права — из заголовка tar (как делал volume-archive API):
+                // процесс ноды в образе НЕ root (entrypoint gosu) — без chmod
+                // файлы остаются 0600 root и нода не читает серты.
+                var writes = entries.Select(e =>
+                    $"printf %s {Convert.ToBase64String(e.Data)} | base64 -d > '/mnt/.{e.Name}.tmp' && chmod {Convert.ToString(e.Mode, 8)} '/mnt/.{e.Name}.tmp'");
+                var moves = string.Join(" && ",
+                    entries.Select(e => $"mv '/mnt/.{e.Name}.tmp' '/mnt/{e.Name}'"));
+                await ExecInHelperAsync(helper,
+                    "set -e; umask 077; " + string.Join(" && ", writes) + " && " + moves,
+                    ct);
+            }
+            finally
+            {
+                // Чистка helper при любом исходе (даже отмене) — 404 = успех.
+                await RemoveContainerAsync(helper, force: true, CancellationToken.None);
+            }
+        });
+
+    // Чтение tar из named volume: инспекция volume (404 → null — факта сертов
+    // нет) + helper с mount + GET container-archive сквозь /mnt (имена файлов
+    // в корне архива). 404 helper-create при живом volume не бывает (после
+    // инспекции) — прочие ошибки уходят наверх Failed.
+    public async Task<Result<byte[]?>> GetVolumeArchiveAsync(string name, string image, CancellationToken ct)
+        => await Result<byte[]?>.FromAsync(async () =>
+        {
+            try
+            {
+                await SendAsync(HttpMethod.Get, $"/volumes/{Uri.EscapeDataString(name)}", ct: ct);
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                return null; // volume нет — факта сертов нет
+            }
+
+            var helper = HelperName(name);
+            try
+            {
+                await CreateHelperAsync(helper, name, image, ct);
+                var raw = await GetBytesAsync(
+                    $"/containers/{Uri.EscapeDataString(helper)}/archive?path=%2Fmnt", ct);
+                // docker включает базовый каталог пути: /mnt → записи «mnt/…»
+                // плюс сам каталог. Контракт драйвера — tar с файлами в корне:
+                // переупаковка (mode записей сохраняется).
+                var entries = TarArchive.ReadEntries(raw)
+                    .Where(e => !e.Name.EndsWith('/'))
+                    .Select(e => e.Name.StartsWith("mnt/", StringComparison.Ordinal)
+                        ? e with { Name = e.Name["mnt/".Length..] }
+                        : e)
+                    .Where(e => e.Name.Length > 0)
+                    .ToList();
+                return TarArchive.Build(entries);
+            }
+            finally
+            {
+                await RemoveContainerAsync(helper, force: true, CancellationToken.None);
             }
         });
 
@@ -369,11 +355,15 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             // 2) старт: тело ответа — application/vnd.docker.raw-stream (мультиплексирован).
             var (stdout, stderr) = await StartExecAsync(exec.Id, ct);
 
-            // 3) exit-код; ненулевой — ошибка со stderr (не выбрасываем его молча).
+            // 3) exit-код; ненулевой — ошибка со stderr И stdout (канон-суперсет
+            // t07 §7.3, kfw-семантика: Kafka-CLI 4.x печатает диагностику,
+            // включая stack trace, в stdout).
             var inspect = await GetAsync<ExecInspectDto>($"/exec/{Uri.EscapeDataString(exec.Id)}/json", ct);
             var exit = inspect?.ExitCode ?? -1;
             if (exit != 0)
-                throw new ApplicationException($"exec {string.Join(' ', cmd)} → exit {exit}: {stderr}");
+                throw new ApplicationException(
+                    $"exec {string.Join(' ', cmd)} → exit {exit}: {stderr}"
+                    + (stdout.Length > 0 ? $" / stdout: {stdout}" : ""));
 
             return stdout;
         });
@@ -534,6 +524,252 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         });
     }
 
+    // Лимиты контейнера (t06, spec §5.3; docker-факт — 0 = без лимита): те же
+    // поля, что пишет CreateContainerAsync; 404 → null. Несимметричность тегов
+    // Docker: create принимает «NanoCPUs», inspect отдаёт HostConfig.«NanoCpus» —
+    // читаем оба варианта (факт: docker inspect возвращает NanoCpus).
+    // Доменные конверсии (vwk: nanoCpus → cores) — у потребителей.
+    public async Task<Result<NodeLimits?>> InspectContainerResourcesAsync(string name, CancellationToken ct)
+        => await Result<NodeLimits?>.FromAsync(async () =>
+        {
+            try
+            {
+                var body = await GetAsync<JsonElement>(
+                    $"/containers/{Uri.EscapeDataString(name)}/json", ct);
+                if (body.ValueKind == JsonValueKind.Undefined)
+                    return null; // пустое тело — факта для сверки нет
+                var host = body.GetProperty("HostConfig");
+                return new NodeLimits(
+                    TryReadNumber(host, "NanoCpus", "NanoCPUs"),
+                    TryReadNumber(host, "Memory"));
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                return null; // контейнера нет — факта для сверки нет
+            }
+        });
+
+    // Лимиты swarm-сервиса ноды (t06, spec §5.3): TaskTemplate.Resources.
+    // Limits.{NanoCPUs, MemoryBytes}; 404 → null. Swarm-теги — «NanoCPUs»
+    // (верхний регистр, api/types/swarm), но на асимметрию Docker не
+    // полагаемся — читаем оба варианта.
+    public async Task<Result<NodeLimits?>> InspectServiceResourcesAsync(string name, CancellationToken ct)
+        => await Result<NodeLimits?>.FromAsync(async () =>
+        {
+            try
+            {
+                var body = await GetAsync<JsonElement>(
+                    $"/services/{Uri.EscapeDataString(name)}", ct);
+                if (body.ValueKind == JsonValueKind.Undefined)
+                    return null; // пустое тело — факта для сверки нет
+                var limits = body.GetProperty("Spec").GetProperty("TaskTemplate")
+                    .GetProperty("Resources").GetProperty("Limits");
+                return new NodeLimits(
+                    TryReadNumber(limits, "NanoCPUs", "NanoCpus"),
+                    TryReadNumber(limits, "MemoryBytes", "Memory"));
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                return null; // сервиса нет — факта для сверки нет
+            }
+        });
+
+    // Числовое поле по первому существующему имени (0 — нет/не число).
+    private static long TryReadNumber(JsonElement parent, params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (parent.ValueKind == JsonValueKind.Object
+                && parent.TryGetProperty(name, out var value)
+                && value.ValueKind == JsonValueKind.Number)
+                return value.GetInt64();
+        }
+
+        return 0;
+    }
+
+    // Env живого контейнера (t03): GET /containers/{id}/json → Config.Env[];
+    // 404 → null (объекта нет).
+    public async Task<Result<IReadOnlyDictionary<string, string>?>> InspectContainerEnvAsync(
+        string idOrName, CancellationToken ct)
+        => await Result<IReadOnlyDictionary<string, string>?>.FromAsync(async () =>
+        {
+            try
+            {
+                var body = await GetAsync<JsonElement>(
+                    $"/containers/{Uri.EscapeDataString(idOrName)}/json", ct);
+                if (body.ValueKind == JsonValueKind.Undefined)
+                    return null;
+                var env = body.GetProperty("Config").GetProperty("Env");
+                var result = new Dictionary<string, string>();
+                foreach (var entry in env.EnumerateArray())
+                {
+                    var pair = entry.GetString();
+                    if (pair is null)
+                        continue;
+                    var sep = pair.IndexOf('=');
+                    if (sep <= 0)
+                        continue;
+                    result[pair[..sep]] = pair[(sep + 1)..];
+                }
+
+                return result;
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                return null; // контейнера нет — факта нет
+            }
+        });
+
+    // Env swarm-сервиса ноды (t03): GET /services/{name} → Spec.TaskTemplate.
+    // ContainerSpec.Env[] (KEY=VALUE); 404 → null.
+    public async Task<Result<IReadOnlyDictionary<string, string>?>> InspectServiceEnvAsync(
+        string name, CancellationToken ct)
+        => await Result<IReadOnlyDictionary<string, string>?>.FromAsync(async () =>
+        {
+            try
+            {
+                var body = await GetAsync<JsonElement>(
+                    $"/services/{Uri.EscapeDataString(name)}", ct);
+                if (body.ValueKind == JsonValueKind.Undefined)
+                    return null;
+                var env = body.GetProperty("Spec").GetProperty("TaskTemplate")
+                    .GetProperty("ContainerSpec").GetProperty("Env");
+                var result = new Dictionary<string, string>();
+                foreach (var entry in env.EnumerateArray())
+                {
+                    var pair = entry.GetString();
+                    if (pair is null)
+                        continue;
+                    var sep = pair.IndexOf('=');
+                    if (sep <= 0)
+                        continue;
+                    result[pair[..sep]] = pair[(sep + 1)..];
+                }
+
+                return result;
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                return null; // сервиса нет — факта нет
+            }
+        });
+
+    // Cmd (args) живого контейнера — сверка V3 (vwk): Config.Cmd; 404 → null.
+    public async Task<Result<IReadOnlyList<string>?>> InspectContainerCmdAsync(
+        string idOrName, CancellationToken ct)
+        => await Result<IReadOnlyList<string>?>.FromAsync(async () =>
+        {
+            try
+            {
+                var body = await GetAsync<JsonElement>(
+                    $"/containers/{Uri.EscapeDataString(idOrName)}/json", ct);
+                if (body.ValueKind == JsonValueKind.Undefined)
+                    return null;
+                var cmd = body.GetProperty("Config").GetProperty("Cmd");
+                return cmd.ValueKind == JsonValueKind.Array
+                    ? (IReadOnlyList<string>?)[.. cmd.EnumerateArray().Select(e => e.GetString() ?? "")]
+                    : null;
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                return null; // контейнера нет — факта нет
+            }
+        });
+
+    // Cmd swarm-сервиса ноды (сверка V3): Spec.TaskTemplate.ContainerSpec.Cmd; 404 → null.
+    public async Task<Result<IReadOnlyList<string>?>> InspectServiceCmdAsync(
+        string name, CancellationToken ct)
+        => await Result<IReadOnlyList<string>?>.FromAsync(async () =>
+        {
+            try
+            {
+                var body = await GetAsync<JsonElement>(
+                    $"/services/{Uri.EscapeDataString(name)}", ct);
+                if (body.ValueKind == JsonValueKind.Undefined)
+                    return null;
+                var cmd = body.GetProperty("Spec").GetProperty("TaskTemplate")
+                    .GetProperty("ContainerSpec").GetProperty("Cmd");
+                return cmd.ValueKind == JsonValueKind.Array
+                    ? (IReadOnlyList<string>?)[.. cmd.EnumerateArray().Select(e => e.GetString() ?? "")]
+                    : null;
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                return null; // сервиса нет — факта нет
+            }
+        });
+
+    // Инспекция endpoint'а контейнера (t05 E9 / надзор C): published host-порт
+    // клиентского listener'а <containerPort>/tcp из HostConfig.PortBindings
+    // (порт — параметр: kfw 9094, vwk 6379 — доменная константа у драйвера) +
+    // State.Running (PortBindings персистят и у остановленного контейнера —
+    // Running отличает «жив» от «есть, но остановлен»). 404 → null (объекта
+    // нет). Advertised-чтение (kfw) — в доменном драйвере (t07 §4.6.1).
+    public async Task<Result<DockerNodeEndpoint?>> InspectNodeEndpointAsync(
+        string name, int containerPort, CancellationToken ct)
+        => await Result<DockerNodeEndpoint?>.FromAsync(async () =>
+        {
+            try
+            {
+                var body = await GetAsync<JsonElement>(
+                    $"/containers/{Uri.EscapeDataString(name)}/json", ct);
+                if (body.ValueKind == JsonValueKind.Undefined)
+                    return null;
+
+                var clientPort = ReadClientHostPort(body.GetProperty("HostConfig"), containerPort);
+                if (clientPort is not { } port)
+                    return null; // привязки порта нет — endpoint-факта нет
+
+                // State.Running: PortBindings персистят и у остановленного
+                // контейнера — Running отличает «жив» от «есть, но остановлен»
+                // (vwk-семантика).
+                var running = body.TryGetProperty("State", out var state)
+                              && state.ValueKind == JsonValueKind.Object
+                              && state.TryGetProperty("Running", out var isRunning)
+                              && isRunning.ValueKind == JsonValueKind.True;
+                return new DockerNodeEndpoint(port, running);
+            }
+            catch (DockerHttpException e) when (e.StatusCode == 404)
+            {
+                // Контейнера нет: swarm-фолбэк — только на swarm-движке (hostAlias
+                // null; на plain-хосте /tasks даёт 503 not-a-swarm-manager).
+                // Движок один на endpoint — фолбэк выполняется лишь после plain-404.
+                return hostAlias is null ? await InspectSwarmTaskEndpointAsync(name, ct) : null;
+            }
+        });
+
+    // swarm-фолбэк: published-порт и хост running-таска сервиса. Один
+    // ListTasks — порт и TaskHost из одного снимка таска (ревью Ф7-3).
+    // Сервиса/таска нет → null (факта нет).
+    private async Task<DockerNodeEndpoint?> InspectSwarmTaskEndpointAsync(string name, CancellationToken ct)
+    {
+        var tasks = await ListTasksAsync(name, ct);
+        if (!tasks.IsSuccess)
+            throw tasks.Error!;
+        var running = tasks.Value.FirstOrDefault(t => t.State == "running" && t.PublishedPort > 0);
+        return running is null
+            ? null
+            : new DockerNodeEndpoint(running.PublishedPort!.Value, Running: true, running.Host);
+    }
+
+    // "<port>/tcp" → первый HostPort (int).
+    private static int? ReadClientHostPort(JsonElement hostConfig, int containerPort)
+    {
+        if (!hostConfig.TryGetProperty("PortBindings", out var bindings)
+            || bindings.ValueKind != JsonValueKind.Object
+            || !bindings.TryGetProperty($"{containerPort}/tcp", out var slot)
+            || slot.ValueKind != JsonValueKind.Array
+            || slot.GetArrayLength() == 0)
+            return null;
+
+        var first = slot[0];
+        return first.TryGetProperty("HostPort", out var hp)
+            && int.TryParse(hp.GetString(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var port)
+                ? port
+                : null;
+    }
+
     // (hostname ноды, published порт) по services×running tasks.
     private async Task<List<(string Host, int Port)>> CollectSwarmPortsAsync(CancellationToken ct)
     {
@@ -624,18 +860,22 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         }
     }
 
-    private static object BuildContainerBody(ContainerSpec spec)
+    internal static object BuildContainerBody(ContainerSpec spec)
     {
         var hostConfig = new Dictionary<string, object?>
         {
             // RestartPolicy: узлы — unless-stopped (docker сам поднимает после
-            // ребута хоста); ephemeral-джобы бэкапов (t02) — "no": перезапуск
-            // джоба docker'ом в обход супервизии воркера запрещён (exit-код —
-            // истина итога, повтор — только новым id через планировщик).
+            // ребута хоста); ephemeral-джобы бэкапов (t02) и TLS-helper'ы (t06)
+            // — "no" (перезапуск служебного контейнера docker'ом в обход
+            // супервизии воркера запрещён / не нужен).
             ["RestartPolicy"] = new { Name = spec.RestartPolicy ?? "unless-stopped" },
         };
-        if (spec.VolumeName.Length > 0)
+        // volume данных (pg/kfw): VolumeName:VolumeDest.
+        if (spec.VolumeName is { Length: > 0 })
             hostConfig["Binds"] = new[] { $"{spec.VolumeName}:{spec.VolumeDest}" };
+        // Named volume TLS-секретов (vwk, t06): Binds формата "volume:/path".
+        if (spec.Binds is { Count: > 0 })
+            hostConfig["Binds"] = spec.Binds.ToArray();
         if (spec.Ports.Count > 0)
         {
             var bindings = spec.Ports.ToDictionary(
@@ -661,10 +901,13 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         var body = new Dictionary<string, object?>
         {
             ["Image"] = spec.Image,
-            ["Env"] = spec.Env.Select(p => $"{p.Key}={p.Value}").OrderBy(v => v, StringComparer.Ordinal).ToArray(),
             ["Hostname"] = spec.Hostname,
             ["HostConfig"] = hostConfig,
         };
+        // Env — только когда задан (канон-суперсет t07 §7.4: vwk-контейнеры
+        // без env не меняются; pg/kfw передают словарь — вкл. пустой).
+        if (spec.Env is not null)
+            body["Env"] = spec.Env.Select(p => $"{p.Key}={p.Value}").OrderBy(v => v, StringComparer.Ordinal).ToArray();
         if (spec.Network is { Length: > 0 } network)
         {
             // Общая сеть нод кластера: контейнеры резолвят друг друга по alias
@@ -680,26 +923,43 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         }
         if (spec.Cmd is { Count: > 0 } cmd)
         {
-            // t03: сброс ENTRYPOINT образа — inline-команда агента/тест-контейнера
-            // заменяет его целиком (образ pgworker-backup несёт ENTRYPOINT джоба
-            // t02; без сброса Cmd ушёл бы ему аргументами, агент не стартовал бы).
-            body["Entrypoint"] = Array.Empty<string>();
+            if (spec.ResetEntrypoint)
+            {
+                // t03/pg-семантика (флаг ResetEntrypoint супер-спеки t07): сброс
+                // ENTRYPOINT образа — inline-команда агента/тест-контейнера
+                // выполняется как есть, а не аргументами образного entrypoint
+                // (образ pgworker-backup несёт ENTRYPOINT джоба t02).
+                body["Entrypoint"] = Array.Empty<string>();
+            }
+
+            // Без флага — Cmd как аргументы образного entrypoint (kfw/vwk:
+            // pgworker-node / docker-entrypoint.sh).
             body["Cmd"] = cmd;
         }
-        if (spec.Label is { Length: > 0 } label)
-            body["Labels"] = new Dictionary<string, string> { ["pgworker"] = label };
+        // label-пара (канон-суперсет t07 §7.4): ключ — домен (pgworker/
+        // kafkaworker/valkeyworker); неполная пара не пишется вовсе.
+        if (spec.LabelKey is { Length: > 0 } labelKey && spec.Label is { Length: > 0 } label)
+            body["Labels"] = new Dictionary<string, string> { [labelKey] = label };
         return body;
     }
 
-    private static object BuildServiceBody(ServiceSpec spec)
+    internal static object BuildServiceBody(ServiceSpec spec)
     {
         var container = new Dictionary<string, object?>
         {
             ["Image"] = spec.Template.Image,
-            ["Env"] = spec.Template.Env.Select(p => $"{p.Key}={p.Value}").OrderBy(v => v, StringComparer.Ordinal).ToArray(),
             ["Hostname"] = spec.Template.Hostname,
         };
-        if (spec.Template.VolumeName.Length > 0)
+        if (spec.Template.Env is not null)
+            container["Env"] = spec.Template.Env.Select(p => $"{p.Key}={p.Value}").OrderBy(v => v, StringComparer.Ordinal).ToArray();
+        if (spec.Template.Cmd is { Count: > 0 } cmd)
+        {
+            if (spec.Template.ResetEntrypoint)
+                container["Entrypoint"] = Array.Empty<string>(); // union-семантика как в BuildContainerBody
+            container["Cmd"] = cmd;
+        }
+        // volume данных (pg/kfw) — Mounts.
+        if (spec.Template.VolumeName is { Length: > 0 })
         {
             container["Mounts"] = new[]
             {
@@ -707,8 +967,20 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             };
         }
 
-        if (spec.Template.Label is { Length: > 0 } label)
-            container["Labels"] = new Dictionary<string, string> { ["pgworker"] = label };
+        // Binds swarm-шаблона (vwk, t06) — Mounts (формат "volume:/path").
+        if (spec.Template.Binds is { Count: > 0 })
+        {
+            container["Mounts"] = spec.Template.Binds.Select(b => new
+            {
+                Type = "volume",
+                Source = b[..b.IndexOf(':')],
+                Target = b[(b.IndexOf(':') + 1)..],
+            }).ToArray();
+        }
+
+        // label-пара — та же семантика, что в BuildContainerBody.
+        if (spec.Template.LabelKey is { Length: > 0 } labelKey && spec.Template.Label is { Length: > 0 } label)
+            container["Labels"] = new Dictionary<string, string> { [labelKey] = label };
 
         var taskTemplate = new Dictionary<string, object?>
         {
@@ -773,6 +1045,23 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         }
     }
 
+    // GET байтового тела (tar из container-archive сквозь mount volume):
+    // пустое тело → пустой массив.
+    private async Task<byte[]> GetBytesAsync(string path, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, Api + path);
+        using var response = await httpClient.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = response.Content is null
+                ? string.Empty
+                : await response.Content.ReadAsStringAsync(ct);
+            throw new DockerHttpException("GET", path, (int)response.StatusCode, errorBody);
+        }
+
+        return await response.Content.ReadAsByteArrayAsync(ct);
+    }
+
     // Команда с JSON-ответом (пустое тело → default).
     private async Task<T?> GetAsync<T>(string path, CancellationToken ct)
     {
@@ -816,14 +1105,106 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
         return JsonSerializer.Deserialize<T>(text, Json);
     }
 
-    // Pull образа (POST /images/create): гарантирует наличие nodeImage перед create.
+    // Pull образа (POST /images/create): гарантирует наличие образа перед
+    // повторным create (pull-fallback §7.2).
     internal Task PullImageAsync(string imageName, CancellationToken ct)
         => SendAsync(HttpMethod.Post, $"/images/create?fromImage={Uri.EscapeDataString(imageName)}", ct: ct);
+
+    // ── Helper-контейнер TLS-volume (t06): create+start «sleep», volume в /mnt ──
+
+    private static string HelperName(string volume)
+        => $"vwk-tls-writer-{Guid.NewGuid().ToString("N")[..12]}";
+
+    private async Task CreateHelperAsync(string name, string volume, string image, CancellationToken ct)
+    {
+        // NodeImage помощника (тот же, что у ноды — локально гарантирован);
+        // без портов/лимитов — только sleep и mount (объект пустой);
+        // RestartPolicy «no» (t06-ревью): крах воркера в окне записи не
+        // оставляет демону вечно рестартуемого держателя volume. Без label —
+        // служебный объект вне перечислений кластера (как сегодня).
+        var spec = new ContainerSpec(image, [], name,
+            Cmd: ["sleep", "120"],
+            Binds: new[] { volume + ":/mnt" },
+            RestartPolicy: "no");
+        var created = await CreateContainerAsync(spec, name, ct);
+        if (!created.IsSuccess)
+            throw created.Error!;
+        var started = await StartContainerAsync(name, ct);
+        if (!started.IsSuccess)
+            throw started.Error!;
+    }
+
+    // Exec «sh -c <команда>» в helper: Detach-start + поллинг inspect до
+    // завершения (бюджет 30 с — записи PEM занимают миллисекунды);
+    // ExitCode != 0 → исключение (Result-монада у вызывающего).
+    private async Task ExecInHelperAsync(string container, string shellCommand, CancellationToken ct)
+    {
+        var exec = await PostForJsonAsync<ExecDto>(
+            $"/containers/{Uri.EscapeDataString(container)}/exec",
+            new { Cmd = new[] { "sh", "-c", shellCommand }, AttachStdout = true, AttachStderr = true },
+            ct) ?? throw new ApplicationException($"docker exec: пустой ответ create ({container})");
+        await SendAsync(HttpMethod.Post, $"/exec/{Uri.EscapeDataString(exec.Id)}/start",
+            new { Detach = true, Tty = false }, ct);
+
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(30);
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            var state = await GetAsync<ExecDto>($"/exec/{Uri.EscapeDataString(exec.Id)}/json", ct);
+            if (state is { Running: false, ExitCode: not null })
+            {
+                if (state.ExitCode != 0)
+                    throw new ApplicationException(
+                        $"docker exec (helper {container}): exit {state.ExitCode}");
+                return;
+            }
+
+            await Task.Delay(250, ct);
+        }
+
+        throw new TimeoutException($"docker exec (helper {container}) не завершился за 30 с");
+    }
+
+    // POST с JSON-ответом (exec create; SendAsync тело ответа отбрасывает).
+    private async Task<T?> PostForJsonAsync<T>(string path, object? body, CancellationToken ct)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Post, Api + path);
+        if (body is not null)
+            request.Content = new StringContent(JsonSerializer.Serialize(body, Json), Encoding.UTF8, "application/json");
+        using var response = await httpClient.SendAsync(request, ct);
+        if (!response.IsSuccessStatusCode)
+        {
+            var errorBody = response.Content is null
+                ? string.Empty
+                : await response.Content.ReadAsStringAsync(ct);
+            throw new DockerHttpException("POST", path, (int)response.StatusCode, errorBody);
+        }
+
+        var text = await response.Content.ReadAsStringAsync(ct);
+        return text.Length == 0 ? default : JsonSerializer.Deserialize<T>(text, Json);
+    }
 
     public ValueTask DisposeAsync()
     {
         httpClient.Dispose();
         return ValueTask.CompletedTask;
+    }
+
+    // exec-инстанс из POST /containers/<id>/exec; Detach-поллинг (helper)
+    // читает Running/ExitCode из /exec/<id>/json.
+    private sealed class ExecDto
+    {
+        [JsonPropertyName("Id")] public string Id { get; set; } = "";
+
+        [JsonPropertyName("Running")] public bool Running { get; set; }
+
+        // null, пока exec ещё работает (канон Engine API).
+        [JsonPropertyName("ExitCode")] public int? ExitCode { get; set; }
+    }
+
+    // GET /exec/<id>/json — exit-код синхронной exec-цепочки.
+    private sealed class ExecInspectDto
+    {
+        [JsonPropertyName("ExitCode")] public int? ExitCode { get; set; }
     }
 
     // DTO реальных ответов Engine API (только нужные поля).
@@ -936,18 +1317,6 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
     private sealed class TaskContainerStatusDto
     {
         [JsonPropertyName("ContainerID")] public string? ContainerId { get; set; }
-    }
-
-    // exec-инстанс из POST /containers/<id>/exec.
-    private sealed class ExecDto
-    {
-        [JsonPropertyName("Id")] public string Id { get; set; } = "";
-    }
-
-    // GET /exec/<id>/json — только exit-код.
-    private sealed class ExecInspectDto
-    {
-        [JsonPropertyName("ExitCode")] public int? ExitCode { get; set; }
     }
 
     private sealed class ServiceDto

@@ -1,21 +1,13 @@
 using System.Security.Cryptography;
-using Microsoft.Extensions.Configuration;
 
-namespace PgWorker.Docker.Engine;
+namespace Shared.Docker;
 
 // SSH-туннель к Engine API (arch/14 §2.2.1, t03): worker-managed
 // ForwardedPortLocal → RemoteDaemonHost:RemoteDaemonPort. key-аутентификация
 // (пароли вне канона); fingerprint-pin опционален (без него TOFU+warning, R14).
+// env-биндинги PGW_DOCKER_SSH_* — pg-специфика, живут в PgWorker.App (t07).
 public sealed class SshTunnelOptions
 {
-    // env-секреты → конфиг-дерево (паттерн WorkerTlsHandler.EnvBindings).
-    public static readonly (string Env, string Key)[] EnvBindings =
-    [
-        ("PGW_DOCKER_SSH_KEY", "PgWorker:Docker:Ssh:KeyPem"),
-        ("PGW_DOCKER_SSH_KEY_PATH", "PgWorker:Docker:Ssh:KeyPath"),
-        ("PGW_DOCKER_SSH_FINGERPRINT", "PgWorker:Docker:Ssh:FingerprintSha256"),
-    ];
-
     /// <summary>PEM приватного ключа PKCS#8/OpenSSL RSA (или KEY_PATH файл).</summary>
     public string? KeyPem { get; set; }
 
@@ -36,17 +28,6 @@ public sealed class SshTunnelOptions
 
     /// <summary>Бюджет подключения/аутентификации, сек.</summary>
     public int ConnectTimeoutSec { get; set; } = 10;
-
-    public static void ApplyEnvOverrides(ConfigurationManager configuration, Func<string, string?>? getenv = null)
-    {
-        getenv ??= Environment.GetEnvironmentVariable;
-        foreach (var (env, key) in EnvBindings)
-        {
-            var value = getenv(env);
-            if (!string.IsNullOrWhiteSpace(value))
-                configuration[key] = value;
-        }
-    }
 
     // Цель форварда на удалённом хосте (чистая функция — юнит-тесты без сети,
     // spec §5.5 «target-вычисление туннеля»): валидация host/порта.

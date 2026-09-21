@@ -5,7 +5,6 @@ using Shared.Core.Planning;
 using Shared.Etcd.Client;
 using ValkeyWorker.Core.Model;
 using ValkeyWorker.Docker.Drivers;
-using ValkeyWorker.Docker.Engine;
 using Shared.Etcd.Coordination;
 using Shared.Etcd.Maintenance;
 using ValkeyWorker.Core.Valkey;

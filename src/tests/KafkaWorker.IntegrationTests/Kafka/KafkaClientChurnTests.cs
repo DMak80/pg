@@ -2,7 +2,6 @@ using System.Diagnostics;
 using FluentAssertions;
 using KafkaWorker.Core;
 using KafkaWorker.Docker.Drivers;
-using KafkaWorker.Docker.Engine;
 using KafkaWorker.Etcd.Parsing;
 using KafkaWorker.IntegrationTests.Etcd;
 using KafkaWorker.Core.Templates;

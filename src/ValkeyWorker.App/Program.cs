@@ -9,7 +9,6 @@ using ValkeyWorker.App.Api.Operations;
 using Shared.Core.HealthChecks;
 using ValkeyWorker.App.HealthChecks;
 using ValkeyWorker.App.Loops;
-using ValkeyWorker.Docker.Engine;
 using ValkeyWorker.Docker.Drivers;
 using ValkeyWorker.Core.Valkey;
 using ValkeyWorker.Provisioning.Processes;

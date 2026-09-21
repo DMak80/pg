@@ -29,15 +29,15 @@ public class RestoreJobSpecTests
         spec.Cmd.Should().Equal(RestoreJobCommand.Build());
         spec.RestartPolicy.Should().Be("no");
         spec.ExtraHosts.Should().Equal("host.docker.internal:host-gateway", "local:host-gateway");
-        spec.Env["SRC_PREFIX"].Should().Be("srcc/srcx");
-        spec.Env["BACKUP_ID"].Should().Be("id9");
-        spec.Env["S3_BUCKET"].Should().Be("bkt");
-        spec.Env["TARGET_TIME"].Should().Be("2026-09-11T10:00:00Z");
-        spec.Env["PGW_RECOVERY_TIMEOUT_SEC"].Should().Be("77");
-        spec.Env["PGW_RESTORE_DATA_DIR"].Should().Be("/restore");
+        spec.Env!["SRC_PREFIX"].Should().Be("srcc/srcx");
+        spec.Env!["BACKUP_ID"].Should().Be("id9");
+        spec.Env!["S3_BUCKET"].Should().Be("bkt");
+        spec.Env!["TARGET_TIME"].Should().Be("2026-09-11T10:00:00Z");
+        spec.Env!["PGW_RECOVERY_TIMEOUT_SEC"].Should().Be("77");
+        spec.Env!["PGW_RESTORE_DATA_DIR"].Should().Be("/restore");
         // внутри тома pgroot/data (volume-корень узла /home/postgres/pgdata)
-        spec.Env["PGW_RESTORE_PGDATA"].Should().Be("/restore/pgroot/data");
-        spec.Env["MC_HOST_pgwbkp"].Should().Contain("ak:sk@minio:9000");
+        spec.Env!["PGW_RESTORE_PGDATA"].Should().Be("/restore/pgroot/data");
+        spec.Env!["MC_HOST_pgwbkp"].Should().Contain("ak:sk@minio:9000");
         spec.Hostname.Should().Be(BackupNames.RestoreContainerName("c1", "shard1", "id9"));
         spec.Label.Should().Be("c1");
         spec.Network.Should().BeNull();
@@ -57,6 +57,6 @@ public class RestoreJobSpecTests
         var spec = RestoreJobSpec.Build(opts, "c1", "shard1", "id9", "vol", "", "srcc", "srcx");
 
         // Assert
-        spec.Env["TARGET_TIME"].Should().BeEmpty();
+        spec.Env!["TARGET_TIME"].Should().BeEmpty();
     }
 }

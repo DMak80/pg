@@ -180,7 +180,7 @@ public class ShardScaleContractTests(EtcdFixture fixture)
             NodeObjects = [$"pgw-{cluster}-shard1-shard1a", $"pgw-{cluster}-shard1-shard1b", $"pgw-{cluster}-shard2-shard2a"],
             BackupAgentObjects =
             [
-                new PgWorker.Docker.Engine.DockerContainer(
+                new DockerContainer(
                     "id-agent", [$"/pgw-backup-wal-{cluster}-shard1"], "running", "bkp-img"),
             ],
         };

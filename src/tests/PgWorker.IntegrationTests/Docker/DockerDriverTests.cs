@@ -1,7 +1,6 @@
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
 using PgWorker.Docker.Drivers;
-using PgWorker.Docker.Engine;
 using Xunit;
 
 namespace PgWorker.IntegrationTests.Docker;
@@ -67,8 +66,12 @@ public class DockerDriverTests
         const int port = 25101;
         await using var engine = NewEngine();
         var spec = new ContainerSpec(
-            AlpineImage, new Dictionary<string, string>(), $"{ContainerName(cluster)}-data", "/data",
-            [new PortMap(8080, port)], "n1", null, null, null, ["sleep", "60"]);
+            AlpineImage, [new PortMap(8080, port)], "n1",
+            Env: new Dictionary<string, string>(),
+            VolumeName: $"{ContainerName(cluster)}-data",
+            VolumeDest: "/data",
+            ResetEntrypoint: true,
+            Cmd: ["sleep", "60"]);
 
         // Act
         var created = await engine.CreateContainerAsync(spec, ContainerName(cluster), CancellationToken.None);
@@ -151,8 +154,12 @@ public class DockerDriverTests
         await using (var engine = NewEngine())
         {
             var spec = new ContainerSpec(
-                AlpineImage, new Dictionary<string, string>(), $"{ContainerName(cluster)}-data", "/data",
-                [new PortMap(8080, port)], "n1", null, null, null, ["sleep", "60"]);
+                AlpineImage, [new PortMap(8080, port)], "n1",
+                Env: new Dictionary<string, string>(),
+                VolumeName: $"{ContainerName(cluster)}-data",
+                VolumeDest: "/data",
+                ResetEntrypoint: true,
+                Cmd: ["sleep", "60"]);
             (await engine.CreateContainerAsync(spec, ContainerName(cluster), CancellationToken.None))
                 .IsSuccess.Should().BeTrue();
             (await engine.StartContainerAsync(ContainerName(cluster), CancellationToken.None))
@@ -187,8 +194,10 @@ public class DockerDriverTests
         const int port = 25109;
         await using var engine = NewEngine();
         var spec = new ContainerSpec(
-            AlpineImage, new Dictionary<string, string>(), "", "",
-            [new PortMap(8080, port)], "n1", null, null, null, ["sleep", "60"]);
+            AlpineImage, [new PortMap(8080, port)], "n1",
+            Env: new Dictionary<string, string>(),
+            ResetEntrypoint: true,
+            Cmd: ["sleep", "60"]);
         await engine.CreateContainerAsync(spec, ContainerName(cluster), CancellationToken.None);
         await engine.StartContainerAsync(ContainerName(cluster), CancellationToken.None);
 

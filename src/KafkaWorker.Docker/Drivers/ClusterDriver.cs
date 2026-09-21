@@ -1,6 +1,5 @@
 using KafkaWorker.Core.Planning;
 using KafkaWorker.Core;
-using KafkaWorker.Docker.Engine;
 
 namespace KafkaWorker.Docker.Drivers;
 
@@ -99,6 +98,10 @@ public sealed class PlainClusterDriver(
     // Контейнерный порт CLIENT-listener → выделенный host-порт.
     public const int ClientContainerPort = 9094;
 
+    // Label-ключ контейнеров/сервисов kfw-домена (t07: ключ — параметр спеки
+    // движка LabelKey; читателей label в коде нет, docker-inspect-косметика).
+    internal const string LabelKey = "kafkaworker";
+
     // Точка монтирования тома данных kafka (arch/16 §2.1).
     public const string DataDir = "/var/lib/kafka/data";
 
@@ -166,13 +169,14 @@ public sealed class PlainClusterDriver(
 
             var containerSpec = new ContainerSpec(
                 spec.Image,
-                spec.Env,
-                VolumeName(spec.Cluster, spec.NodeName),
-                DataDir,
                 [new PortMap(ClientContainerPort, spec.ClientHostPort)],
                 spec.NodeName,
+                Env: spec.Env,
+                VolumeName: VolumeName(spec.Cluster, spec.NodeName),
+                VolumeDest: DataDir,
                 CpuCores: (double?)spec.CpuCores,
                 MemoryBytes: spec.MemoryBytes,
+                LabelKey: LabelKey,
                 Label: spec.Cluster,
                 Network: NetworkName(spec.Cluster),
                 NetworkAliases: [spec.NodeName, name]);
@@ -306,22 +310,40 @@ public sealed class PlainClusterDriver(
     }
 
     // E9-реконструкция (t05): перебор хостов — первый, где контейнер есть,
-    // отдаёт host-порт + host-алиас этого движка.
+    // отдаёт host-порт + host-алиас этого движка. AdvertisedClient — из env
+    // живого контейнера через NodeEnvAsync (t07 §7.5: парсер KAFKA_ADVERTISED_
+    // LISTENERS переехал из движка в драйвер — движок нейтрален к доменам;
+    // значение то же).
     public async Task<Result<NodeEndpointInspection?>> InspectNodeEndpointAsync(
         string cluster, string nodeName, CancellationToken ct)
     {
         var name = NodeName(cluster, nodeName);
         foreach (var (host, engine) in _engines)
         {
-            var endpoint = await engine.InspectNodeEndpointAsync(name, ct);
+            var endpoint = await engine.InspectNodeEndpointAsync(name, ClientContainerPort, ct);
             if (!endpoint.IsSuccess)
                 return Result<NodeEndpointInspection?>.Failed(endpoint.Error!);
             if (endpoint.Value is { } found)
+            {
+                var env = await NodeEnvAsync(cluster, nodeName, ct);
+                var advertised = env.IsSuccess ? ReadAdvertisedClient(env.Value) : null;
                 return Result<NodeEndpointInspection?>.Success(
-                    new NodeEndpointInspection(host, found.ClientHostPort, found.AdvertisedClient));
+                    new NodeEndpointInspection(host, found.ClientHostPort, advertised));
+            }
         }
 
         return Result<NodeEndpointInspection?>.Success(null);
+    }
+
+    // env KAFKA_ADVERTISED_LISTENERS → сегмент CLIENT://host:port (t07: парсер
+    // из kfw-движка; null — env недоступен/сегмента нет — «источник недоступен»).
+    internal static string? ReadAdvertisedClient(IReadOnlyDictionary<string, string>? env)
+    {
+        var value = env?.GetValueOrDefault("KAFKA_ADVERTISED_LISTENERS");
+        if (value is null)
+            return null;
+        return value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault(p => p.StartsWith("CLIENT://", StringComparison.Ordinal));
     }
 
     // Контейнер брокера по имени kfw-<C>-<b>: перебор хостов (аналог Remove),
@@ -401,13 +423,14 @@ public sealed class SwarmClusterDriver(
 
             var template = new ContainerSpec(
                 spec.Image,
-                spec.Env,
-                PlainClusterDriver.VolumeName(spec.Cluster, spec.NodeName),
-                PlainClusterDriver.DataDir,
                 [new PortMap(PlainClusterDriver.ClientContainerPort, spec.ClientHostPort)],
                 spec.NodeName,
+                Env: spec.Env,
+                VolumeName: PlainClusterDriver.VolumeName(spec.Cluster, spec.NodeName),
+                VolumeDest: PlainClusterDriver.DataDir,
                 CpuCores: (double?)spec.CpuCores,
                 MemoryBytes: spec.MemoryBytes,
+                LabelKey: PlainClusterDriver.LabelKey,
                 Label: spec.Cluster,
                 Network: PlainClusterDriver.NetworkName(spec.Cluster),
                 NetworkAliases: [spec.NodeName, PlainClusterDriver.NodeName(spec.Cluster, spec.NodeName)]);
@@ -443,14 +466,16 @@ public sealed class SwarmClusterDriver(
         string cluster, string nodeName, CancellationToken ct)
         => _engine.InspectServiceEnvAsync(PlainClusterDriver.NodeName(cluster, nodeName), ct);
 
-    // E9-реконструкция (t05): published-порт, advertised и хост таска отдаёт
-    // одна инспекция движка (swarm-фолбэк по running-таску; ревью Ф7-3 — один
-    // HTTP-раунд ListTasks, второй вызов драйвера удалён).
+    // E9-реконструкция (t05): published-порт и хост таска отдаёт одна инспекция
+    // движка (swarm-фолбэк по running-таску; ревью Ф7-3 — один HTTP-раунд
+    // ListTasks, второй вызов драйвера удалён). AdvertisedClient — null: env
+    // шаблона не читаем, сверка advertised — plain-only (как сегодня; t07 —
+    // движок нейтрален к доменам, advertised читает только драйвер).
     public async Task<Result<NodeEndpointInspection?>> InspectNodeEndpointAsync(
         string cluster, string nodeName, CancellationToken ct)
     {
         var name = PlainClusterDriver.NodeName(cluster, nodeName);
-        var endpoint = await _engine.InspectNodeEndpointAsync(name, ct);
+        var endpoint = await _engine.InspectNodeEndpointAsync(name, PlainClusterDriver.ClientContainerPort, ct);
         if (!endpoint.IsSuccess)
             return Result<NodeEndpointInspection?>.Failed(endpoint.Error!);
         if (endpoint.Value is not { } found)
@@ -458,7 +483,7 @@ public sealed class SwarmClusterDriver(
 
         return found.TaskHost is { } host
             ? Result<NodeEndpointInspection?>.Success(
-                new NodeEndpointInspection(host, found.ClientHostPort, found.AdvertisedClient))
+                new NodeEndpointInspection(host, found.ClientHostPort, AdvertisedClient: null))
             : Result<NodeEndpointInspection?>.Success(null); // хоста таска нет — факта нет
     }
 

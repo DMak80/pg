@@ -72,7 +72,7 @@ public class TlsMigrationTests(ValkeyClusterFixture fx)
         int.Parse(endpoints.Split(':')[1]).Should().Be(port, "portalloc не меняется");
         var tar = (await fx.Driver.GetTlsArchiveAsync(cluster, ValkeyClusterFixture.DockerHost, fx.Options.NodeImage, ct)).Value;
         tar.Should().NotBeNull();
-        ValkeyWorker.Docker.Engine.TarArchive.Read(tar!)
+        TarArchive.Read(tar!)
             .Keys.Should().BeEquivalentTo("node.crt", "node.key", "ca.pem");
         var caPem = (await fx.GetAsync($"/valkey/clusters/{cluster}/ca_pem"))!;
         caPem.Should().Contain("BEGIN CERTIFICATE");

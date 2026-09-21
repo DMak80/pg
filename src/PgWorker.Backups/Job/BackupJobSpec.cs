@@ -1,5 +1,4 @@
 using PgWorker.Core.Model;
-using PgWorker.Docker.Engine;
 
 namespace PgWorker.Backups.Job;
 
@@ -35,6 +34,7 @@ public static class BackupJobSpec
             Hostname: BackupNames.ContainerName(cluster, shard, id),
             CpuCores: opts.AgentCpu,
             MemoryBytes: opts.AgentMem,
+            LabelKey: "pgworker",
             Label: cluster,
             Cmd: null,
             Network: null,

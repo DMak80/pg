@@ -5,7 +5,6 @@ using PgWorker.Backups.Restore;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Docker.Drivers;
-using PgWorker.Docker.Engine;
 using Shared.Etcd.Client;
 using PgWorker.Etcd.Parsing;
 using PgWorker.IntegrationTests.Etcd;
@@ -720,12 +719,12 @@ public class RestoreProcessTests(EtcdFixture fixture)
         var (name, spec) = engine.Created.Should().ContainSingle().Subject;
         name.Should().Be(BackupNames.RestoreContainerName("c1", "shard1", op.Id));
         engine.Started.Count(s => s == name).Should().BeGreaterThanOrEqualTo(1);
-        spec.Env["SRC_PREFIX"].Should().Be("c1/shard1");
-        spec.Env["TARGET_TIME"].Should().Be("");
+        spec.Env!["SRC_PREFIX"].Should().Be("c1/shard1");
+        spec.Env!["TARGET_TIME"].Should().Be("");
         spec.VolumeName.Should().Be("pgw-c1-shard1-shard1a-data");
         // BACKUP_ID — резолвнутый полный (op.BackupId), не id заявки:
         // джоб качает full/<backup_id>/ (регрессия E2E-гейта t05)
-        spec.Env["BACKUP_ID"].Should().Be("20260910120000Z").And.NotBe(op.Id);
+        spec.Env!["BACKUP_ID"].Should().Be("20260910120000Z").And.NotBe(op.Id);
     }
 
     [Fact]
@@ -748,7 +747,7 @@ public class RestoreProcessTests(EtcdFixture fixture)
         (await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct)).IsSuccess.Should().BeTrue();
 
         // Assert
-        engine.Created.Should().ContainSingle().Subject.Spec.Env["TARGET_TIME"]
+        engine.Created.Should().ContainSingle().Subject.Spec.Env!["TARGET_TIME"]
             .Should().Be("2026-09-11 10:00:00+00:00");
     }
 

@@ -5,7 +5,6 @@ using PgWorker.Core.Model;
 using PgWorker.Core.Planning;
 using PgWorker.Core.Tuning;
 using PgWorker.Docker.Drivers;
-using PgWorker.Docker.Engine;
 using PgWorker.Core.Templates;
 using Shared.Etcd.Client;
 using PgWorker.Provisioning.Sql;

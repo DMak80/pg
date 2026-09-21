@@ -7,11 +7,13 @@
 
     <ItemGroup>
         <ProjectReference Include="..\KafkaWorker.Core\KafkaWorker.Core.csproj"/>
+        <ProjectReference Include="..\Shared.Docker\Shared.Docker.csproj"/>
     </ItemGroup>
 
     <ItemGroup>
         <Using Include="Shared.Core"/>
         <Using Include="Shared.Core.Planning"/>
+        <Using Include="Shared.Docker"/>
     </ItemGroup>
 
 </Project>

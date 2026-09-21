@@ -1,8 +1,8 @@
 using FluentAssertions;
-using PgWorker.Docker.Engine;
+using Shared.Docker;
 using Xunit;
 
-namespace PgWorker.UnitTests.Docker;
+namespace Shared.Docker.UnitTests.Engine;
 
 // Парсинг endpoint-схем Engine API (arch/14 §2.2, t03): unix-сокет, tcp с
 // дефолтом 2375, ssh c user@host и дефолтом 22; неизвестная схема — отказ.

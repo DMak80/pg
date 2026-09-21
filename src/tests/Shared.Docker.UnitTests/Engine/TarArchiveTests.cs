@@ -1,7 +1,7 @@
 using System.Text;
-using ValkeyWorker.Docker.Engine;
+using Shared.Docker;
 
-namespace ValkeyWorker.UnitTests.Docker;
+namespace Shared.Docker.UnitTests.Engine;
 
 // ustar-писатель/читатель для Docker volume-archive API (spec §4.2):
 // round-trip имя→данные, переданный mode сохраняется в заголовке ustar.

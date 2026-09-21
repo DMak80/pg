@@ -2,7 +2,6 @@ using System.Net;
 using DotNet.Testcontainers.Builders;
 using FluentAssertions;
 using PgWorker.Core.Model;
-using PgWorker.Docker.Engine;
 using Xunit;
 using static PgWorker.IntegrationTests.Docker.EngineProxyTestPki;
 
@@ -64,15 +63,30 @@ public class TlsEngineProxyTests
         });
         await using var engine = factory.Create($"tcp://localhost:{port}", hostAlias: "local");
 
-        // Act 1: транспорт жив — Ping + ListContainers.
-        (await engine.PingAsync(TestContext.Current.CancellationToken)).IsSuccess.Should().BeTrue("TLS-прокси к Engine API жив");
+        // Act 1: транспорт жив — Ping + ListContainers. nginx внутри контейнера
+        // стартует не мгновенно после StartAsync (testcontainers ждёт лишь процесс)
+        // — короткий опрос готовности (бюджет 30 с; AGENTS: таймауты ≤ 30 с);
+        // ошибка последней попытки — в сообщении ассерта (диагностика без перезапуска).
+        Result ping = default!;
+        for (var attempt = 0; ; attempt++)
+        {
+            ping = await engine.PingAsync(TestContext.Current.CancellationToken);
+            if (ping.IsSuccess || attempt >= 29)
+                break;
+            await Task.Delay(500, TestContext.Current.CancellationToken);
+        }
+
+        ping.IsSuccess.Should().BeTrue(
+            "TLS-прокси к Engine API жив (последняя ошибка: {0})", ping.Error?.Message);
         var listed = await engine.ListContainersAsync("pgw-tls-proxy-test", all: false, TestContext.Current.CancellationToken);
         listed.IsSuccess.Should().BeTrue();
 
         // Act 2 / Assert 2: полный цикл одноразового контейнера через TLS.
         var name = "pgw-tls-proxy-test-" + Guid.NewGuid().ToString("N")[..6];
         var spec = new ContainerSpec(
-            "alpine:3.20", new Dictionary<string, string>(), "", "", [], name, null, null, null,
+            "alpine:3.20", [], name,
+            Env: new Dictionary<string, string>(),
+            ResetEntrypoint: true,
             Cmd: ["sleep", "5"]);
         (await engine.CreateContainerAsync(spec, name, TestContext.Current.CancellationToken)).IsSuccess.Should().BeTrue();
         (await engine.StartContainerAsync(name, TestContext.Current.CancellationToken)).IsSuccess.Should().BeTrue();

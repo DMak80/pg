@@ -20,7 +20,7 @@ public class HealthTests
     });
 
     private static ServiceProbes Probes(IEtcdGateway etcd)
-        => new(etcd, Options, new PgWorker.Docker.Engine.DockerEngineFactory());
+        => new(etcd, Options, new DockerEngineFactory());
 
     [Fact]
     public async Task Check_AllSectionsPresentInData()

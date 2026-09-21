@@ -2,10 +2,11 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
-using PgWorker.Docker.Engine;
+using FluentAssertions;
+using Shared.Docker;
 using Xunit;
 
-namespace PgWorker.UnitTests.Docker;
+namespace Shared.Docker.UnitTests.Engine;
 
 // Тонкий клиент Docker Engine API (задача 14): формат запросов, идемпотентность 404/409, BusyPorts.
 public class DockerEngineTests
@@ -102,13 +103,14 @@ public class DockerEngineTests
         var engine = NewEngine(handler);
         var spec = new ContainerSpec(
             "pgworker-node:dev",
-            new Dictionary<string, string> { ["SCOPE"] = "shop-shard1", ["ETCD_HOSTS"] = "http://etcd:2379" },
-            "pgw-shop-shard1-shard1a-data",
-            "/home/postgres/pgroot",
             [new PortMap(5432, 15432), new PortMap(8008, 18008)],
             "shard1a",
+            Env: new Dictionary<string, string> { ["SCOPE"] = "shop-shard1", ["ETCD_HOSTS"] = "http://etcd:2379" },
+            VolumeName: "pgw-shop-shard1-shard1a-data",
+            VolumeDest: "/home/postgres/pgroot",
             CpuCores: 2,
             MemoryBytes: 2147483648,
+            LabelKey: "pgworker",
             Label: "shop");
 
         // Act
@@ -144,8 +146,10 @@ public class DockerEngineTests
         var handler = new FakeHandler(_ => Json("""{"Id":"abc","Warnings":[]}""", HttpStatusCode.Created));
         var engine = NewEngine(handler);
         var spec = new ContainerSpec(
-            "pgworker-backup:test", new Dictionary<string, string>(), "pgw-backup-wal-shop-shard1-staging",
-            "/backup-staging", [], "pgw-backup-wal-shop-shard1", null, null, "shop",
+            "pgworker-backup:test", [], "pgw-backup-wal-shop-shard1",
+            Env: new Dictionary<string, string>(),
+            VolumeName: "pgw-backup-wal-shop-shard1-staging",
+            VolumeDest: "/backup-staging",
             Network: "pgw-net");
 
         // Act
@@ -167,13 +171,64 @@ public class DockerEngineTests
             """{"message":"Conflict. The container name \"/pgw-shop-shard1-shard1a\" is already in use"}""",
             HttpStatusCode.Conflict));
         var engine = NewEngine(handler);
-        var spec = new ContainerSpec("alpine", new Dictionary<string, string>(), "v", "/d", [], "h", null, null, null);
+        var spec = new ContainerSpec("alpine", [], "h",
+            Env: new Dictionary<string, string>(),
+            VolumeName: "v",
+            VolumeDest: "/d");
 
         // Act
         var result = await engine.CreateContainerAsync(spec, "pgw-shop-shard1-shard1a", CancellationToken.None);
 
         // Assert: 409 «already in use» — не ошибка
         result.IsSuccess.Should().BeTrue();
+    }
+
+    // Канон-суперсет t07 §7.2: образа нет на хосте → pull → повтор create.
+    [Fact]
+    public async Task CreateContainer_404NoSuchImage_PullsAndRetries()
+    {
+        // Arrange — сценарий: create 404 «No such image» → pull 201 → create 201
+        var createCalls = 0;
+        var handler = new FakeHandler(req =>
+        {
+            var path = req.RequestUri!.PathAndQuery;
+            if (path.StartsWith("/v1.44/containers/create", StringComparison.Ordinal)
+                && Interlocked.Increment(ref createCalls) == 1)
+                return Json("""{"message":"No such image: registry.example/pgw-t07-no-such-image:missing"}""", HttpStatusCode.NotFound);
+            if (path.StartsWith("/v1.44/images/create", StringComparison.Ordinal))
+                return Json("""{"status":"Pulling…"}""", HttpStatusCode.OK);
+            if (path.StartsWith("/v1.44/containers/create", StringComparison.Ordinal))
+                return Json("""{"Id":"abc","Warnings":[]}""", HttpStatusCode.Created);
+            return Json("""{"message":"unexpected"}""", HttpStatusCode.BadRequest);
+        });
+        var engine = NewEngine(handler);
+        var spec = new ContainerSpec("registry.example/pgw-t07-no-such-image:missing", [], "h");
+
+        // Act
+        var result = await engine.CreateContainerAsync(spec, "pgw-t07-test", CancellationToken.None);
+
+        // Assert: три вызова (create → pull → create), итог — успех
+        result.IsSuccess.Should().BeTrue();
+        handler.Requests.Select(r => r.Url.Split('?')[0]).Should().Equal(
+            "/v1.44/containers/create",
+            "/v1.44/images/create",
+            "/v1.44/containers/create");
+    }
+
+    // Канон-суперсет t07 §7.1: 304 already-started = успех (pg-семантика).
+    [Fact]
+    public async Task StartContainer_304AlreadyStarted_ReturnsSuccess()
+    {
+        // Arrange — docker отвечает 304 (контейнер уже запущен)
+        var handler = new FakeHandler(_ => Json("""{"message":"container already started"}""", HttpStatusCode.NotModified));
+        var engine = NewEngine(handler);
+
+        // Act
+        var result = await engine.StartContainerAsync("pgw-shop-shard1-shard1a", CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        handler.Requests.Single().Url.Should().Be("/v1.44/containers/pgw-shop-shard1-shard1a/start");
     }
 
     [Fact]
@@ -271,9 +326,12 @@ public class DockerEngineTests
         var handler = new FakeHandler(_ => Json("""{"ID":"svc-1"}""", HttpStatusCode.Created));
         var engine = NewEngine(handler);
         var template = new ContainerSpec(
-            "pgworker-node:dev", new Dictionary<string, string> { ["SCOPE"] = "shop-shard1" },
-            "pgw-shop-shard1-shard1a-data", "/home/postgres/pgroot",
-            [new PortMap(5432, 15432)], "shard1a", null, null, "shop");
+            "pgworker-node:dev", [new PortMap(5432, 15432)], "shard1a",
+            Env: new Dictionary<string, string> { ["SCOPE"] = "shop-shard1" },
+            VolumeName: "pgw-shop-shard1-shard1a-data",
+            VolumeDest: "/home/postgres/pgroot",
+            LabelKey: "pgworker",
+            Label: "shop");
 
         // Act
         var result = await engine.CreateServiceAsync(
@@ -304,10 +362,12 @@ public class DockerEngineTests
         var handler = new FakeHandler(_ => Json("""{"ID":"svc-1"}""", HttpStatusCode.Created));
         var engine = NewEngine(handler);
         var template = new ContainerSpec(
-            "pgworker-node:dev", new Dictionary<string, string>(),
-            "pgw-shop-shard1-shard1a-data", "/home/postgres/pgdata",
-            [new PortMap(5432, 15432)], "shard1a",
-            CpuCores: 0.5, MemoryBytes: 8L * 1024 * 1024 * 1024, Label: null);
+            "pgworker-node:dev", [new PortMap(5432, 15432)], "shard1a",
+            Env: new Dictionary<string, string>(),
+            VolumeName: "pgw-shop-shard1-shard1a-data",
+            VolumeDest: "/home/postgres/pgdata",
+            CpuCores: 0.5,
+            MemoryBytes: 8L * 1024 * 1024 * 1024);
 
         // Act
         var result = await engine.CreateServiceAsync(

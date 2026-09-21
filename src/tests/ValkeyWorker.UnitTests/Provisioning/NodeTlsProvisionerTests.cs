@@ -1,7 +1,6 @@
 using System.Text;
 using FluentAssertions;
 using ValkeyWorker.Core.Valkey;
-using ValkeyWorker.Docker.Engine;
 using ValkeyWorker.Provisioning.Processes;
 using Xunit;
 

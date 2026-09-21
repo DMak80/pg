@@ -4,7 +4,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Renci.SshNet;
 
-namespace PgWorker.Docker.Engine;
+namespace Shared.Docker;
 
 // SSH-туннель к Engine API (arch/14 §2.2.1, t03, О3): одна SshClient-сессия
 // (key-аутентификация, fingerprint-pin/TOFU) + ForwardedPortLocal

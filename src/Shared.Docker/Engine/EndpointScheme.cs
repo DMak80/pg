@@ -1,4 +1,4 @@
-namespace PgWorker.Docker.Engine;
+namespace Shared.Docker;
 
 // Разбор endpoint-схем Engine API (arch/14 §2.2, t03): unix://<path> |
 // tcp://[host][:port] | ssh://[user@]host[:port]. Чистая функция — юнит-тесты

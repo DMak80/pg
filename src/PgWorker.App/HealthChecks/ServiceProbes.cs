@@ -1,6 +1,5 @@
 using Microsoft.Extensions.Options;
 using PgWorker.Core;
-using PgWorker.Docker.Engine;
 using Shared.Etcd.Client;
 
 namespace PgWorker.App.HealthChecks;

@@ -1,37 +1,17 @@
 using System.Security.Cryptography;
 using System.Text;
 using FluentAssertions;
-using Microsoft.Extensions.Configuration;
-using PgWorker.Docker.Engine;
+using Shared.Docker;
 using Xunit;
 
-namespace PgWorker.UnitTests.Docker;
+namespace Shared.Docker.UnitTests.Engine;
 
-// SSH-туннель к Engine API (arch/14 §2.2.1, t03): env-биндинги, fingerprint-семантика
+// SSH-туннель к Engine API (arch/14 §2.2.1, t03): fingerprint-семантика
 // (pin задан — строгое сравнение; не задан — TOFU-accept c признаком warning, R14),
-// целевой адрес форварда — чистые функции без сети.
-public class SshTunnelOptionsTests
+// целевой адрес форварда — чистые функции без сети. env-биндинги PGW_DOCKER_SSH_* —
+// pg-специфика, их тесты — в PgWorker.UnitTests (t07).
+public class SshTunnelOptionsModelTests
 {
-    [Fact]
-    public void ApplyEnvOverrides_SshKeysMapped()
-    {
-        // Arrange
-        var env = new Dictionary<string, string>
-        {
-            ["PGW_DOCKER_SSH_KEY_PATH"] = "/secrets/id_pgworker",
-            ["PGW_DOCKER_SSH_FINGERPRINT"] = "SHA256:abcdef",
-        };
-        var config = new ConfigurationManager();
-
-        // Act
-        SshTunnelOptions.ApplyEnvOverrides(config, key => env.GetValueOrDefault(key));
-
-        // Assert
-        config["PgWorker:Docker:Ssh:KeyPath"].Should().Be("/secrets/id_pgworker");
-        config["PgWorker:Docker:Ssh:FingerprintSha256"].Should().Be("SHA256:abcdef");
-        SshTunnelOptions.EnvBindings.Should().HaveCount(3);
-    }
-
     [Fact]
     public void DecideHostKeyTrust_ExpectedPinSet_StrictComparison()
     {

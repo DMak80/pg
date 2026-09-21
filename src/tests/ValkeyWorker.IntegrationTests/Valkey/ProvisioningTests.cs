@@ -93,7 +93,7 @@ public class ProvisioningTests(ValkeyClusterFixture fx)
         var port = int.Parse(endpoints.Split(':')[1]);
         var tar = (await fx.Driver.GetTlsArchiveAsync(cluster, ValkeyClusterFixture.DockerHost, fx.Options.NodeImage, TestContext.Current.CancellationToken)).Value;
         tar.Should().NotBeNull();
-        ValkeyWorker.Docker.Engine.TarArchive.Read(tar!)
+        TarArchive.Read(tar!)
             .Keys.Should().BeEquivalentTo("node.crt", "node.key", "ca.pem");
 
         // Assert 3: app-кред roundtrip по TLS с ca_pem из etcd.

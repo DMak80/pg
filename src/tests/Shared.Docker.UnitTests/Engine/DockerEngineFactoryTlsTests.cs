@@ -1,37 +1,18 @@
+using System.Net;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
 using FluentAssertions;
-using Microsoft.Extensions.Configuration;
-using PgWorker.Docker.Engine;
+using Shared.Docker;
 using Xunit;
 
-namespace PgWorker.UnitTests.Docker;
+namespace Shared.Docker.UnitTests.Engine;
 
-// TLS к Engine API (arch/14 §2.2.1, t03): env-биндинги, сборка handler'а с
-// клиентским сертом и доверием docker-CA, fail-fast частичной конфигурации,
-// unix:// игнорирует TLS, plaintext tcp:// без TLS остаётся рабочим (R15).
-public class DockerTlsOptionsTests
+// TLS к Engine API (arch/14 §2.2.1, t03): сборка handler'а с клиентским сертом
+// и доверием docker-CA, fail-fast частичной конфигурации, unix:// игнорирует
+// TLS, plaintext tcp:// без TLS остаётся рабочим (R15).
+public class DockerEngineFactoryTlsTests
 {
-    [Fact]
-    public void ApplyEnvOverrides_DockerTlsKeysMapped()
-    {
-        // Arrange: env-словарь (inject, без окружения).
-        var env = new Dictionary<string, string>
-        {
-            ["PGW_DOCKER_TLS_CA"] = "ca-pem",
-            ["PGW_DOCKER_TLS_CERT_PATH"] = "/tls/pgworker-docker.crt",
-        };
-        var config = new ConfigurationManager();
-
-        // Act
-        DockerTlsOptions.ApplyEnvOverrides(config, key => env.GetValueOrDefault(key));
-
-        // Assert: ключи легли в PgWorker:Docker:Tls:*; таблица — 6 записей.
-        config["PgWorker:Docker:Tls:CaPem"].Should().Be("ca-pem");
-        config["PgWorker:Docker:Tls:ClientCertPath"].Should().Be("/tls/pgworker-docker.crt");
-        DockerTlsOptions.EnvBindings.Should().HaveCount(6);
-    }
-
     [Fact]
     public void Factory_TcpWithTls_ClientCertAndChainCallbackSet()
     {
@@ -129,4 +110,74 @@ public class DockerTlsOptionsTests
             return (cert.ExportCertificatePem(), rsa.ExportPkcs8PrivateKeyPem());
         }
     }
+}
+
+// Канон-суперсет t07 (§4.6.1): инспекция endpoint'а с параметром контейнерного
+// порта (kfw: 9094, vwk: 6379) — порт-биндинг из одного инспекта, Running из
+// State.Running.
+public class InspectNodeEndpointTests
+{
+    private sealed class FakeHandler(Func<HttpRequestMessage, HttpResponseMessage> responder) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+            => Task.FromResult(responder(request));
+    }
+
+    private static HttpResponseMessage Json(string body) => new()
+    {
+        StatusCode = HttpStatusCode.OK,
+        Content = new StringContent(body, Encoding.UTF8, "application/json"),
+    };
+
+    // Инспект контейнера с биндингами обоих клиентских портов (kfw/vwk).
+    private const string InspectBody = """
+        {"Id":"abc","HostConfig":{"PortBindings":{"9094/tcp":[{"HostIp":"0.0.0.0","HostPort":"19094"}],
+          "6379/tcp":[{"HostIp":"0.0.0.0","HostPort":"16379"}]}},
+         "State":{"Running":true,"Status":"running"}}
+        """;
+
+    [Fact]
+    public async Task InspectNodeEndpoint_PortParameter_ResolvesBinding()
+    {
+        // Arrange — один инспект несёт биндинги 9094/tcp и 6379/tcp
+        var handler = new FakeHandler(_ => Json(InspectBody));
+
+        // Act: kfw-порт
+        var kfw = await NewEngine(handler).InspectNodeEndpointAsync("node1", 9094, CancellationToken.None);
+        // Act: vwk-порт
+        var vwk = await NewEngine(handler).InspectNodeEndpointAsync("node1", 6379, CancellationToken.None);
+
+        // Assert: каждый вызов вернул порт СВОЕГО биндинга; Running — из State.Running
+        kfw.IsSuccess.Should().BeTrue();
+        kfw.Value.Should().NotBeNull();
+        kfw.Value!.ClientHostPort.Should().Be(19094);
+        kfw.Value.Running.Should().BeTrue();
+        vwk.IsSuccess.Should().BeTrue();
+        vwk.Value.Should().NotBeNull();
+        vwk.Value!.ClientHostPort.Should().Be(16379);
+        vwk.Value.Running.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task InspectNodeEndpoint_NotRunning_FromState()
+    {
+        // Arrange — контейнер есть, но остановлен: PortBindings персистят
+        const string stopped = """
+            {"Id":"abc","HostConfig":{"PortBindings":{"6379/tcp":[{"HostIp":"0.0.0.0","HostPort":"16379"}]}},
+             "State":{"Running":false,"Status":"exited"}}
+            """;
+        var handler = new FakeHandler(_ => Json(stopped));
+
+        // Act
+        var result = await NewEngine(handler).InspectNodeEndpointAsync("node1", 6379, CancellationToken.None);
+
+        // Assert: endpoint-факт есть, Running=false (vwk-семантика надзора)
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().NotBeNull();
+        result.Value!.ClientHostPort.Should().Be(16379);
+        result.Value.Running.Should().BeFalse();
+    }
+
+    private static DockerEngine NewEngine(FakeHandler handler)
+        => new(new HttpClient(handler) { BaseAddress = new Uri("http://docker") }, hostAlias: null);
 }

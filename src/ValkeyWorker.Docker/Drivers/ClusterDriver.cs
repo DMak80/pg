@@ -1,7 +1,11 @@
 using Shared.Core.Planning;
 using Shared.Core;
 using ValkeyWorker.Core.Model;
-using ValkeyWorker.Docker.Engine;
+// t07: движок возвращает docker-факт Shared.Docker.NodeLimits(long,long);
+// доменная запись NodeLimits(decimal? ядра, long?) остаётся в ValkeyWorker.Core
+// — конверсия у драйвера (Convert). Алиасы снимают коллизию имён.
+using NodeLimits = ValkeyWorker.Core.Model.NodeLimits;
+using DockerLimits = Shared.Docker.NodeLimits;
 
 namespace ValkeyWorker.Docker.Drivers;
 
@@ -100,6 +104,17 @@ public sealed class PlainClusterDriver(
     // Контейнерный порт ноды valkey → выделенный host-порт (arch/21 §2).
     public const int ClientContainerPort = 6379;
 
+    // Label-ключ контейнеров/сервисов vwk-домена (t07: наследие-литерал
+    // "pgworker" заменён доменным; читателей label в коде нет).
+    internal const string LabelKey = "valkeyworker";
+
+    // Конверсия docker-факта лимитов в доменную запись (t07 §4.6.2):
+    // 0 = без лимита → null — семантика значений прежнего vwk-движка.
+    internal static NodeLimits Convert(DockerLimits limits)
+        => new(
+            limits.NanoCpus > 0 ? limits.NanoCpus / 1_000_000_000m : null,
+            limits.MemoryBytes > 0 ? limits.MemoryBytes : null);
+
     // Имя named volume TLS-секретов кластера (t06, arch/21 §2): переживает
     // пересоздания контейнера, демонтаж — RemoveTlsVolumeAsync (X1).
     public static string TlsVolumeName(string cluster) => $"vwk-{cluster}-tls";
@@ -163,15 +178,18 @@ public sealed class PlainClusterDriver(
 
             var containerSpec = new ContainerSpec(
                 spec.Image,
-                spec.Args,
                 [new PortMap(ClientContainerPort, spec.ClientHostPort)],
                 spec.NodeName,
+                // Cmd — args флаги valkey-server: аргументы образного
+                // docker-entrypoint.sh (ResetEntrypoint=false по умолчанию).
+                Cmd: spec.Args,
                 CpuCores: (double?)spec.CpuCores,
                 MemoryBytes: spec.MemoryBytes,
+                LabelKey: LabelKey,
                 Label: spec.Cluster,
                 // TLS-volume монтируется в /tls (t06) — файлы записывает
                 // NodeTlsProvisioner ДО EnsureNodeAsync.
-                Binds: spec.TlsVolume is { Length: > 0 } v ? (IReadOnlyList<string>?)new[] { v + ":/tls" } : null);
+                Binds: spec.TlsVolume is { Length: > 0 } v ? new[] { v + ":/tls" } : null);
 
             var created = await engine.CreateContainerAsync(containerSpec, name, ct);
             if (!created.IsSuccess)
@@ -222,6 +240,8 @@ public sealed class PlainClusterDriver(
     }
 
     // Перебор хостов: первый хост с контейнером отдаёт факт (симметрия args).
+    // Движок возвращает docker-факт (NanoCpus/Memory) — конверсия в доменные
+    // decimal?-ядра у драйвера (t07 §4.6.2).
     public async Task<Result<NodeLimits?>> NodeResourcesAsync(string cluster, string nodeName, CancellationToken ct)
     {
         var name = NodeName(cluster, nodeName);
@@ -229,9 +249,9 @@ public sealed class PlainClusterDriver(
         {
             var limits = await engine.InspectContainerResourcesAsync(name, ct);
             if (!limits.IsSuccess)
-                return limits;
+                return Result<NodeLimits?>.Failed(limits.Error!);
             if (limits.Value is not null)
-                return limits;
+                return Result<NodeLimits?>.Success(Convert(limits.Value));
         }
 
         return Result<NodeLimits?>.Success(null);
@@ -262,7 +282,7 @@ public sealed class PlainClusterDriver(
         var name = NodeName(cluster, nodeName);
         foreach (var (host, engine) in _engines)
         {
-            var endpoint = await engine.InspectNodeEndpointAsync(name, ct);
+            var endpoint = await engine.InspectNodeEndpointAsync(name, ClientContainerPort, ct);
             if (!endpoint.IsSuccess)
                 return Result<NodeEndpointInspection?>.Failed(endpoint.Error!);
             if (endpoint.Value is { } found)
@@ -367,13 +387,14 @@ public sealed class SwarmClusterDriver(
 
             var template = new ContainerSpec(
                 spec.Image,
-                spec.Args,
                 [new PortMap(PlainClusterDriver.ClientContainerPort, spec.ClientHostPort)],
                 spec.NodeName,
+                Cmd: spec.Args, // args образного entrypoint (ResetEntrypoint=false)
                 CpuCores: (double?)spec.CpuCores,
                 MemoryBytes: spec.MemoryBytes,
+                LabelKey: PlainClusterDriver.LabelKey,
                 Label: spec.Cluster,
-                Binds: spec.TlsVolume is { Length: > 0 } v ? (IReadOnlyList<string>?)new[] { v + ":/tls" } : null);
+                Binds: spec.TlsVolume is { Length: > 0 } v ? new[] { v + ":/tls" } : null);
             var serviceSpec = new ServiceSpec(
                 PlainClusterDriver.NodeName(spec.Cluster, spec.NodeName),
                 template,
@@ -389,8 +410,16 @@ public sealed class SwarmClusterDriver(
     public Task<Result> RemoveNodeAsync(string cluster, string nodeName, CancellationToken ct)
         => _engine.RemoveServiceAsync(PlainClusterDriver.NodeName(cluster, nodeName), ct);
 
-    public Task<Result<NodeLimits?>> NodeResourcesAsync(string cluster, string nodeName, CancellationToken ct)
-        => _engine.InspectServiceResourcesAsync(PlainClusterDriver.NodeName(cluster, nodeName), ct);
+    // Docker-факт движка → доменная запись (конверсия PlainClusterDriver.Convert).
+    public async Task<Result<NodeLimits?>> NodeResourcesAsync(string cluster, string nodeName, CancellationToken ct)
+    {
+        var limits = await _engine.InspectServiceResourcesAsync(PlainClusterDriver.NodeName(cluster, nodeName), ct);
+        if (!limits.IsSuccess)
+            return Result<NodeLimits?>.Failed(limits.Error!);
+        return limits.Value is not null
+            ? Result<NodeLimits?>.Success(PlainClusterDriver.Convert(limits.Value))
+            : Result<NodeLimits?>.Success(null);
+    }
 
     // Args сервиса ноды (сверка V3): Spec.TaskTemplate.ContainerSpec.Cmd.
     public Task<Result<IReadOnlyList<string>?>> NodeArgsAsync(
@@ -404,7 +433,7 @@ public sealed class SwarmClusterDriver(
         string cluster, string nodeName, CancellationToken ct)
     {
         var name = PlainClusterDriver.NodeName(cluster, nodeName);
-        var endpoint = await _engine.InspectNodeEndpointAsync(name, ct);
+        var endpoint = await _engine.InspectNodeEndpointAsync(name, PlainClusterDriver.ClientContainerPort, ct);
         if (!endpoint.IsSuccess)
             return Result<NodeEndpointInspection?>.Failed(endpoint.Error!);
         if (endpoint.Value is not { } found)

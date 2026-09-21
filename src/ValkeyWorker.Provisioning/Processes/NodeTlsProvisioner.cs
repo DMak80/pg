@@ -2,7 +2,6 @@ using System.Security.Cryptography.X509Certificates;
 using Shared.Core;
 using ValkeyWorker.Core.Valkey;
 using ValkeyWorker.Docker.Drivers;
-using ValkeyWorker.Docker.Engine;
 
 namespace ValkeyWorker.Provisioning.Processes;
 

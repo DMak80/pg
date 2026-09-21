@@ -2,6 +2,9 @@ using System.Text.Json;
 using Shared.Core;
 using Shared.Etcd.Client;
 using ValkeyWorker.Core.Model;
+// t07: NodeLimits здесь — доменная запись; docker-факт движка (Shared.Docker)
+// конвертируется драйвером — Shared-имя сюда не пробрасывается.
+using NodeLimits = ValkeyWorker.Core.Model.NodeLimits;
 using ValkeyWorker.Core.Valkey;
 using ValkeyWorker.Core.Writing;
 using ValkeyWorker.Docker.Drivers;
