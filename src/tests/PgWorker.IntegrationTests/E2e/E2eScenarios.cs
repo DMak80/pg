@@ -281,6 +281,19 @@ public class E2eScenarios(ITestOutputHelper output)
         var container = $"pgw-{cluster}-{shard}-{masterBefore.Node}";
         (await ContainerStatusAsync(container, ct)).Should().Be("running", "лидер до failover работает");
 
+        // t14 (гейт против stale-RUNNING): фиксируем ревизию ключа state ноды
+        // ДО stop. После docker stop супервизор пишет ключ строго в порядке
+        // UNREACHABLE → REBUILDING → RUNNING (NodeSupervisor.SuperviseShardAsync,
+        // arch/14 §5 C): каждая запись — PutAsync и растит ModRevision, а
+        // RUNNING живого пути пишется только нодам, живым пробой. До-стоповое
+        // RUNNING (с provisioning-времени) имеет ревизию <= revAtStop — гейт
+        // фазы ac5-rebuild ниже отсекает его безусловно, не полагаясь на
+        // тайминги опроса. Гипотетический флап между фиксацией и stop лишь
+        // увеличит ревизию — гейт остаётся корректным (строже).
+        var stateBefore = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/nodes/{masterBefore.Node}/state");
+        (stateBefore?.Value).Should().Be("RUNNING", "лидер до failover: ключ state существует и равен RUNNING (предусловие гейта t14)");
+        var revAtStop = stateBefore!.ModRevision;
+
         var sw = Stopwatch.StartNew();
         await Fx.RunDockerAsync(["stop", container], ct);
 
@@ -311,13 +324,31 @@ public class E2eScenarios(ITestOutputHelper output)
         sw.Elapsed.Should().BeLessThanOrEqualTo(TimeSpan.FromSeconds(5),
             "бюджет смены лидера ≤5с (t09: graceful demote/ускорение failover воркером, канон ttl=20/loop_wait=1)");
 
-        // Rebuild: остановленный контейнер пересоздаётся, нода RUNNING.
+        // Rebuild: остановленный контейнер пересоздаётся, нода проходит
+        // REBUILDING → RUNNING (AC5, spec задачи 26 §11.5). Гейт по ревизии:
+        // RUNNING && ModRevision > revAtStop — условие ложно на до-стоповом
+        // значении ключа (в установившемся режиме гварды NodeSupervisor не
+        // перезаписывают RUNNING), а новая запись RUNNING с ревизией выше
+        // возможна только после реального цикла восстановления: порядок
+        // записей строго UNREACHABLE → REBUILDING → RUNNING, RUNNING пишется
+        // только живым пробой нодам (NodeSupervisor, arch/14 §5 C). Без гейта
+        // фаза мгновенно истинна на stale-ключе (рейс t07/t14) и одиночный
+        // inspect ниже падает на исходном остановленном контейнере.
         var rebuilt = await WaitPhaseAsync("ac5-rebuild", async () =>
         {
             var state = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/nodes/{masterBefore.Node}/state");
-            return state?.Value == "RUNNING";
+            return state?.Value == "RUNNING" && state.ModRevision > revAtStop;
         }, TimeSpan.FromSeconds(300), ct);
-        rebuilt.Should().BeTrue("остановленная нода должна быть пересоздана и вернуться в RUNNING");
+        if (!rebuilt)
+        {
+            var current = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/nodes/{masterBefore.Node}/state");
+            Assert.Fail($"восстановление ноды не зафиксировано за 300с; state: {current?.Value ?? "нет"} " +
+                        $"(ModRevision {current?.ModRevision.ToString() ?? "-"}, revAtStop {revAtStop}); " +
+                        $"статус контейнера: {await ContainerStatusAsync(container, ct)}");
+        }
+        // Одиночный inspect корректен: RUNNING с ревизией > revAtStop пишется
+        // только когда пересозданная нода жива пробой → контейнер уже running;
+        // повторная смерть сразу после — реальный сбой, тест обязан упасть.
         (await ContainerStatusAsync(container, ct)).Should().Be("running", "контейнер ноды пересоздан");
 
         // Реплика догоняет: на шарде ровно один мастер (pg_is_in_recovery).
