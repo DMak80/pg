@@ -10,7 +10,7 @@ Valkey, обеспечивает per-cluster ACL-креды, пишет факт
 `/valkey/`, `/valkeyworker/` пишет ТОЛЬКО ValkeyWorker (панель и сиды ходят
 через его API); панель etcd только читает.
 
-Пять процессов (машины состояний) + миграция TLS (t06):
+Семь процессов (машины состояний):
 1. **Provisioning** (A, V0–V5) — от `NOT_INITIALIZED` до рабочего кластера;
 2. **Deprovisioning** (B, X0–X3) — от `TO_REMOVE` до чистого etcd и
    удалённого контейнера;
@@ -22,16 +22,16 @@ Valkey, обеспечивает per-cluster ACL-креды, пишет факт
 5. **PasswordRotator** (E) — ротация per-cluster ACL-паролей (app/admin)
    без рестартов через окно двух паролей;
 6. **TlsMigrator** (T, t06) — авто-миграция существующих plain-кластеров
-   на TLS (первый шаг Active-ветки, до надзора).
+   на TLS (первый шаг Active-ветки, до надзора);
+7. **CaRotator** (K, t07) — ротация per-cluster CA и серверных сертов
+   (окно двойного доверия; второй шаг Active-ветки, до надзора).
 
 Свойства: несколько инстансов работают одновременно (координация —
 lease-клэймы, [20](20-valkey-clusters.md) §3); смерть контролирующего
 инстанса не роняет процессы — takeover ≤ TTL 15 с + тик; все операции
 идемпотентны; значимое состояние переживает смерть контроллера (etcd).
 
-Границы (что НЕ входит): ротация CA/сертов (окно двойного доверия) —
-roadmap `t07-valkey-ca-rotation` (t06 реализовал per-cluster CA и TLS
-клиентских подключений, ключи `ca_pem`/`ca_key`); реплики/sentinel/cluster-топологии
+Границы (что НЕ входит): реплики/sentinel/cluster-топологии
 (кеш восполним, шардирование не нужно); панель valkey-домена (t03);
 клиентская библиотека Puzzle (t04); persistence RDB/AOF — off по канону
 (кеш восполним); квоты томов — томов нет (TLS-volume `vwk-<C>-tls` —
@@ -146,6 +146,12 @@ per-install API-CA; клиенты без валидного серта — от
   контейнер ноды). Volume переживает пересоздания контейнера (перевыпуск
   серта — при смене CA/SAN/истечении), удаляется в X1 демонтажа. Объекты
   домена: кластер = контейнер(ы) `vwk-<C>-node<k>` + volume `vwk-<C>-tls`.
+  **Ротация CA (t07, §5 K)**: серт ноды в фазе R перевыпускается от НОВОЙ
+  CA (`ca_next_key` staging), `ca.pem` в volume — НОВЫЙ CA (НЕ bundle —
+  отличие от kafka truststore: `--tls-auth-clients no`, нода клиентов не
+  валидирует, файл — только материал issuer'а; после коммита C
+  `ca.pem`(volume) == `ca_pem`(etcd) == NEW — переиспользование при
+  следующих пересозданиях).
 - **Сеть**: per-cluster сеть НЕ создаётся (нет inter-node трафика;
   клиентский доступ — публикация host-порта из portalloc; контейнер живёт
   в сети запуска воркера — деталь t02). Прямое следствие: домен не порождает
@@ -192,7 +198,9 @@ pull+retry, exec-ошибка включает stdout, label контейнер�
 | `/valkey/clusters/<C>/nodes/node<k>/state` | заявки панели NOT_INITIALIZED/TO_REMOVE (+ свои записи — сверка) |
 | `/valkey/clusters/<C>/nodes/node<k>/resources` | лимиты контейнера (cpu/mem; disk — инфо) |
 | `/valkey/clusters/<C>/ca_pem`/`ca_key` | сверка серта volume с текущим CA кластера (переиспользование/перевыпуск), PING-пробы по TLS |
+| `/valkey/clusters/<C>/ca_next_key` + `ca_next_pem` | staging НОВОЙ CA в окне ротации (K, t07): подпись серта фазы R, источник bundle; вне ротации ключей нет |
 | `/valkeyworker/rotations/<C>` | заявка ротации креда (`role`: app\|admin) — процесс E |
+| `/valkeyworker/ca_rotations/<C>` | заявка ротации CA/сертов — процесс K (t07) |
 | `/workers/api_tls/valkeyworker` | серверный серт mTLS-грани API (§1.1): читает ТОЛЬКО при старте; пишет панель (adminpanel/02 §9.9) |
 
 ### 3.2. Пишемые ключи
@@ -204,11 +212,15 @@ pull+retry, exec-ошибка включает stdout, label контейнер�
 | `/valkey/clusters/<C>/app_user` + `app_password` | provisioning ensure; ротация E | `"app"` / 32 симв; txn put-if-absent / txn-коммит ротации |
 | `/valkey/clusters/<C>/admin_user` + `admin_password` | provisioning ensure; ротация E | `"admin"` / 32 симв; txn put-if-absent / txn-коммит ротации |
 | `/valkey/clusters/<C>/ca_pem` + `ca_key` | provisioning ensure (V2); миграция T1 | PEM CA одной строкой с `\n` (arch/20 §2.1); txn put-if-absent вместе с кредами |
+| `/valkey/clusters/<C>/ca_next_key` + `ca_next_pem` | ротация CA, фаза P (K) | staging НОВОЙ CA: txn put-if-absent; фаза C — del (коммит) |
+| `/valkey/clusters/<C>/ca_pem` | ротация CA, фаза D (K) | bundle OLD+NEW (txn compare value==OLD — внешняя запись = ретрай тиком); фаза C — put NEW |
+| `/valkey/clusters/<C>/ca_key` | ротация CA, фаза C (K) | перезапись значением NEW (OLD-ключ уничтожается — после окна никем не доверяется) |
 | `/valkey/clusters/<C>/config` | txn по завершении provisioning | пере-put канонического JSON **без** `state` (compare mod_revision) |
 | `/valkeyworker/*` (координация) | весь жизненный цикл | leader, claims, work (+ вложенный work/&lt;C&gt;/rotation — стейт доигрывания E, §5 E), portalloc, locks/portalloc, instances, api — префикс `/valkeyworker/` ([20](20-valkey-clusters.md) §3) |
 | `/valkeyworker/rotations/<C>` | по завершении ротации (E) | del заявки (или панелью — отмена) |
+| `/valkeyworker/ca_rotations/<C>` | ротация CA, коммит фазы C (K) | del заявки одной txn с put ca_pem/ca_key (снятие атомарно коммиту) |
 | `/valkey/clusters/<C>/` (префикс) | TO_REMOVE, финал X2 | `del --prefix` |
-| `/valkeyworker/{claims,work,portalloc,rotations}/<C>*` | TO_REMOVE, финал X2 | del — очистка координации ВКЛЮЧАЯ заявки ротаций: остаточные заявки не переживают удаление кластера |
+| `/valkeyworker/{claims,work,portalloc,rotations,ca_rotations}/<C>*` | TO_REMOVE, финал X2 | del — очистка координации ВКЛЮЧАЯ заявки ротаций (кредов и CA): остаточные заявки не переживают удаление кластера |
 
 ## 4. Секреты
 
@@ -238,12 +250,26 @@ per-cluster-секреты живут в etcd (зона доверия конт�
 
 Классификация тика: `config.state=NOT_INITIALIZED` → Provisioning (A);
 `TO_REMOVE` → Deprovisioning (B); иначе Active-ветка: **миграция TLS (T,
-t06) — ПЕРВЫМ шагом** → надзор (C) → converger (D) → ротация (E). Все
+t06) — ПЕРВЫМ шагом** → **ротация CA (K, t07) — ВТОРЫМ шагом, до надзора** →
+надзор (C) → converger (D) → ротация (E). Все
 операции — только под живым клэймом `<C>`;
 journal-before-manipulations. Детект миграции до надзора: Active-кластер
 без `ca_pem`/`ca_key` ИЛИ контейнер без TLS-args (`--tls-port` в args не
 найден) → TlsMigrator; InProgress ⇒ остальные шаги Active-ветки в этом
-тике не идут (миграция доигрывает тиками).
+тике не идут (миграция доигрывает тиками). **CaRotator — окно
+эксклюзивно**: окно ОТКРЫТО (staging `ca_next_*` есть ИЛИ journal
+op=rotate-ca фаза вне {done, waiting-*}) ⇒ InProgress ⇒ надзор/converger/
+ротация кредов в этом тике не идут; ждущие исходы K (waiting-*) ветку НЕ
+блокируют (ротация кредов доиграет этим же тиком ниже по ветке).
+Основание эксклюзивности (отличие от kafka §5 K, где CaRotator — последним
+с guard'ами): у valkey серт в volume сверяется только при пересоздании
+ноды («env-сверки» надзора нет) — пересоздание надзором в окне D→R
+собрало бы OLD-серт от bundle+OLD-key, а после коммита C нода осталась бы
+с недоверенным сертом до следующего пересоздания (самокоррекции нет); в
+окне пересоздает ТОЛЬКО CaRotator (фаза R — она же лечение: мёртвая нода
+пересоздаётся ротацией, преф-чека живости нет — отличие от kafka, где
+rolling мёртвого кластера ронял ISR; nodes=1, persistence off — кеш
+восполним).
 
 ### A. ProvisioningProcess (V0–V5)
 
@@ -279,9 +305,9 @@ X0 claim + journal(op=deprovision); снапшот «до»
 X1 docker: удалить контейнер vwk-<C>-* (404 = ок); удалить volume
    vwk-<C>-tls (t06; 404 = ок) — тома данных нет, TLS-том секретов
    чистится; порядок «сначала docker, потом etcd»
-X2 etcd: del --prefix /valkey/clusters/<C>/ + del
-   /valkeyworker/{claims,work,portalloc,rotations}/<C>* — очистка
-   координации ВКЛЮЧАЯ заявки ротаций
+X2 etcd: del --prefix /valkey/clusters/<C>/ (заберёт и ca_next_* staging)
+   + del /valkeyworker/{claims,work,portalloc,rotations,ca_rotations}/<C>*
+   — очистка координации ВКЛЮЧАЯ заявки ротаций (кредов и CA)
 X3 снапшот «после»; клэйм снят явно (del + revoke lease)
 ```
 
@@ -391,11 +417,79 @@ T3 ждать готовности: PING по TLS (бюджет NodeBootSec, ц�
 отвечает? — отказ между фазами доигрывается повтором тика. Отработавший
 миграцию кластер неотличим от поднятого канонически.
 
+### K. CaRotator (t07) — ротация per-cluster CA и серверных сертов
+
+Исполнение заявки `/valkeyworker/ca_rotations/<C>` (панель через API
+воркера §1.1, клэйм-txn `version==0`; формат — §9.8 adminpanel/02 один в
+один с ротациями кредов: `{"requested_unix","requested_by"}`).
+Исполнитель — держатель клэйма `<C>`; **второй шаг Active-ветки** (после
+миграции T, до надзора C; InProgress ⇒ C/D/E тика не идут —
+эксклюзивность, см. классификацию §5). Образец — kafka [16](16-kafkaworker.md)
+§5 K; специфика valkey: nodes=1 — «rolling» = одно пересоздание `node1`,
+весь цикл P→C укладывается в один тик (окно для внешних читателей —
+секунды); ACL-креды и maxmemory ротацией CA не затрагиваются;
+endpoints/portalloc не меняются.
+
+```
+K0 guard'ы (ДО открытия окна; после — не проверяются — окно уже
+   эксклюзивно, см. классификацию §5): клэйм наш; заявки нет и
+   journal-хвоста нет — no-op (NotNeeded); хвост после коммита
+   (phase=committed, заявка снята) — финал K4. Кластер не поднят (нет
+   endpoints/кредов/CA) — journal waiting-cluster (премиграционный —
+   миграция T доведёт; заявка жива — ротация не теряется). Живая ротация
+   креда (заявка rotations/<C> или стейт work/<C>/rotation фаз e1*/e2) —
+   waiting-password-rotation (E доиграет этим же тиком ниже по ветке —
+   ждущие исходы ветку НЕ блокируют; старт окна — следующим тиком).
+   Ждущие исходы возвращаются БЕЗ мутаций. Перечитка config: TO_REMOVE —
+   abort (journal aborted-state-changed; демонтаж B чистит всё, вкл.
+   staging — X2)
+P  journal phase-p (окно открыто) → генерация НОВОЙ CA
+   (ValkeyPki.GenerateCa, случайно) → txn put-if-absent
+   ca_next_key/ca_next_pem. Staging в etcd — переживает рестарт воркера;
+   проигрыш txn (гонка) → re-read — чужая staging валидна (одна на жизнь
+   ротации). Инвариант окна: серт NEW появляется на ноде (R) ТОЛЬКО
+   после bundle в ca_pem (D) — фазы строго последовательны P→D→R→C
+D  phase-d → txn [compare value(ca_pem)==OLD][put ca_pem = OLD + "\n" +
+   nextPem] — клиенты, перечитавшие точку дискавери (20 §4), доверяют
+   сертам обоих поколений. Идемпотентность: повторный тик распознаёт
+   готовность по вхождению nextPem в ca_pem (put пропускается); срыв
+   compare — ca_pem менялся внешне → ретрай тиком
+R  phase-r → одно пересоздание node1 с перевыпуском серта от NEW CA
+   (лечение ЛЮБОГО состояния ноды — преф-чека живости нет: мёртвая нода
+   пересоздаётся здесь же; отличие от kafka, где rolling мёртвого
+   кластера ронял ISR). Детект по факту (GetTlsArchive →
+   IsValidTar(tar, advertised, nextPem)): валидный NEW-серт уже в volume
+   ⇒ R done (идемпотентность рестарта воркера без in-memory трека);
+   иначе NodeTlsProvisioner.EnsureNodeTls (ca.pem volume = NEW, подпись
+   ca_next_key — §2) → RemoveNode → EnsureNode (args/лимиты/порт из
+   декларации и portalloc — адреса не меняются) → state=PROVISIONING →
+   AwaitBoot: PING по TLS с доверием nextPem (якорь OLD/bundle здесь
+   неверен: одноблочный парсер доверия, серт уже NEW) в бюджете
+   NodeBootSec → state=RUNNING. Перечитка config перед R: TO_REMOVE —
+   abort
+C  committed → ОДНА txn [compare value(ca_next_key)==staging]
+   [put ca_pem=NEW; put ca_key=NEW; del ca_next_pem; del ca_next_key;
+   del ca_rotations/<C>] — OLD-ключ уничтожается перезаписью (после окна
+   он никем не доверяется); снятие заявки атомарно коммиту; срыв compare —
+   параллельная ротация → ретрай тиком
+K4 финал: снапшот P12 «после» + journal phase=done (идемпотентно — хвост
+   после C доигрывается тем же путём)
+```
+
+Отказ между фазами безопасен: staging/bundle-состояния в etcd стабильны,
+повтор тика доигрывает по факту (staging есть? bundle содержит nextPem?
+серт volume валиден против nextPem?). Читатели с одноблочным парсингом
+`ca_pem` (панельные пробы, метрики-коллектор — OLD-first в bundle) в окне
+D→C транзиентно недоверяют NEW-серту: окно = секунды (один poll-цикл),
+самокоррекция после коммита C; клиенты библиотеки дискавери строят
+доверие по всем блокам (20 §4) — окно для них прозрачно.
+
 ## 6. Надёжность
 
 - **Идемпотентность**: каждый шаг перепроверяет факт (контейнер есть?
-  PING по TLS отвечает? конфиг == декларация? ACL-план == канону? серт
-  volume валиден против текущего CA?); именование
+  PING по TLS отвечает? конфиг == декларации? ACL-план == канону? серт
+  volume валиден против текущего CA — в окне ротации против staging
+  `ca_next_pem`? bundle уже содержит nextPem?); именование
   детерминировано (`vwk-<C>-node<k>`, порты в portalloc, volume
   `vwk-<C>-tls`).
 - **Транспорт проб/команд (t06)**: все RESP-соединения воркера к нодам
@@ -464,7 +558,8 @@ ValkeyWorker:Api { AdvertiseUrl, EnableSeedEndpoint=false,
 | R7 | ACL-пароли в etcd — компрометация etcd = доступ к кешам | etcd — уже хранилище per-cluster-секретов (pg/kafka); закрытая сеть установки; ротация — процесс E |
 | R8 | Смена `AdvertisedClientHost` — SAN серта перестаёт покрывать хост | серт пересобирается при каждом пересоздании по правилу §2; до пересоздания клиенты по новому хосту получают TLS-отказ — ответственность оператора (образец kafka R8) |
 | R9 | Окно миграции plain→TLS: TLS-неготовые клиенты получают отказ после пересоздания | заявлено релизом t06 (панель, воркер, Puzzle-библиотеки обновляются тем же релизом); окно = одно пересоздание контейнера |
-| R10 | `ca_key` в etcd — компрометация etcd = выпуск валидных сертов | зона доверия контроль-плейна (как все per-cluster-секреты, R7); ротация CA — roadmap |
+| R10 | `ca_key` в etcd — компрометация etcd = выпуск валидных сертов | зона доверия контроль-плейна (как все per-cluster-секреты, R7); ротация CA — процесс K (t07): компрометированный OLD-ключ уничтожается перезаписью в коммите C, серт ноды перевыпускается от NEW CA, клиенты забирают NEW из `ca_pem` (окно двойного доверия — без недоступности) |
+| R11 | Окно ротации CA: клиенты с закэшированным OLD-доверием получают TLS-отказ после R до перечитывания `ca_pem`; одноблочные читатели (панельные пробы, метрики-коллектор) транзиентно недоверяют NEW-серту между D и C | poll-дискавери библиотеки перечитывает снапшот (секунды); окно D→C — один тик воркера (nodes=1 — одно пересоздание); панельные пробы/метрики самокорректируются следующим poll-циклом; многосертовые читатели окна не видят (20 §4) |
 
 ---
 

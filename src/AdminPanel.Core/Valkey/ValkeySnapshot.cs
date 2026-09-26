@@ -17,6 +17,7 @@ public sealed record ValkeySnapshot(
     IReadOnlyList<Alert> Alerts,                       // ValkeyAlertEngine (arch/03 §8.4)
     IReadOnlyList<KeyParseError> ParseErrors,          // битые JSON valkey-ключей (arch/20 §5)
     int UnknownKeyCount,
+    IReadOnlyList<ValkeyCaRotationTicket>? CaRotations = null, // /valkeyworker/ca_rotations/ (t07, 02 §11.1)
     WorkerApiCert? WorkerApiCert = null);              // целевой серт /workers/api_tls/valkeyworker (arch/02 §9.9)
 
 // Кластер /valkey/clusters/<C>/ (arch/20 §2): config + state + факт (nodes/endpoints).
@@ -30,7 +31,8 @@ public sealed record ValkeyClusterInfo(
     string? Endpoints,                       // null/пусто — воркер не дописал (алерт у Active)
     IReadOnlyList<ValkeyNodeInfo> NodesList, // node1 (v1 — один элемент)
     ValkeyRotationTicket? Rotation = null,   // живая заявка ротации (джойн по кластеру)
-    bool HasCaPem = false);                  // ca_pem в etcd (t06): bool-флаг; сам PEM в API не отдаётся
+    bool HasCaPem = false,                   // ca_pem в etcd (t06): bool-флаг; сам PEM в API не отдаётся
+    ValkeyCaRotationTicket? CaRotation = null); // живая заявка CA-ротации (t07, джойн по кластеру)
 
 // Нода node<k>: state — raw-строка (NOT_INITIALIZED|PROVISIONING|RUNNING|UNREACHABLE|
 // REMOVING|TO_REMOVE; толерантно к новым); Live — из PING-пробы (null — проба молчит).
@@ -46,6 +48,11 @@ public sealed record ValkeyNodeInfo(
 // Заявка ротации /valkeyworker/rotations/<C> (arch/20 §3): role app|admin + аудит.
 public sealed record ValkeyRotationTicket(
     string Cluster, string Role, long RequestedUnix, string? RequestedBy);
+
+// Заявка ротации CA /valkeyworker/ca_rotations/<C> (t07, arch/20 §3):
+// payload {"requested_unix","requested_by"} — без role.
+public sealed record ValkeyCaRotationTicket(
+    string Cluster, long RequestedUnix, string? RequestedBy);
 
 // Результат live-пробы кластера (spec §4.6): одна нода в v1.
 public sealed record ValkeyProbeResult(

@@ -174,6 +174,32 @@ public static class ApiModule
             };
         });
 
+        // POST /api/valkey/clusters/{cluster}/ca/rotate — заявка ротации CA/сертов
+        // (t07, окно двойного доверия P/D/R/C); 202/404/409/503.
+        endpoints.MapPost("/api/valkey/clusters/{cluster}/ca/rotate", async (
+            string cluster, HttpRequest http, RotateCaHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleAsync(cluster, RequestedBy(http), ct);
+            if (result.IsSuccess)
+                return Results.Accepted((string?)null, result.Value);
+
+            return result.Error switch
+            {
+                ValkeyClusterNotFoundException => Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound, title: "Cluster not found",
+                    detail: result.Error.Message),
+                ValkeyClusterNotActiveException or ValkeyRotationAlreadyRequestedException => Results.Problem(
+                    statusCode: StatusCodes.Status409Conflict, title: "Rotation rejected",
+                    detail: result.Error.Message),
+                EtcdWriteUnavailableException or InvalidValkeyConfigException => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write unavailable",
+                    detail: result.Error.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
+                    detail: result.Error!.Message),
+            };
+        });
+
         // POST /api/seed/demo — стендовый сид за флагом (идемпотентен).
         endpoints.MapPost("/api/seed/demo", async (SeedDemoHandler handler, CancellationToken ct) =>
         {

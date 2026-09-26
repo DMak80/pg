@@ -69,8 +69,37 @@ public class ValkeyClusterProcessesTests
                     Etcd, ["http://etcd:2379"], Driver, Claims, journal,
                     new ValkeyWorker.Provisioning.Processes.ClusterSecretEnsurer(Etcd, ["http://etcd:2379"]),
                     tlsProvisioner, Valkey, options, snapshot: null, Clock),
+                new ValkeyWorker.Provisioning.Processes.CaRotator(
+                    Etcd, ["http://etcd:2379"], Driver, Claims, journal,
+                    tlsProvisioner, Valkey, options, snapshot: null, Clock),
                 NullLogger<ValkeyClusterProcesses>.Instance);
         }
+
+        // Канонический TLS-кластер (миграция t06 уже отработала): креды, CA-ключи,
+        // endpoints, portalloc, state RUNNING, контейнер с TLS-args (порт CaRotator).
+        public void SeedTlsCanonical(string cluster, int port = 17001)
+        {
+            Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken).GetAwaiter().GetResult();
+            Etcd.Seed($"/valkey/clusters/{cluster}/config",
+                """{"nodes":1,"maxmemory_bytes":536870912,"maxmemory_policy":"allkeys-lru","created_unix":1756500000}""");
+            Etcd.Seed($"/valkey/clusters/{cluster}/nodes/node1/state", "RUNNING");
+            Etcd.Seed($"/valkey/clusters/{cluster}/endpoints", $"localhost:{port}");
+            Etcd.Seed($"/valkey/clusters/{cluster}/app_user", "app");
+            Etcd.Seed($"/valkey/clusters/{cluster}/app_password", "AppPassword0123456789abcdef12345");
+            Etcd.Seed($"/valkey/clusters/{cluster}/admin_user", "admin");
+            Etcd.Seed($"/valkey/clusters/{cluster}/admin_password", "AdminPassword0123456789abcdef12345");
+            var (caPem, caKeyPem) = ValkeyWorker.Core.Valkey.ValkeyPki.GenerateCa(cluster);
+            Etcd.Seed($"/valkey/clusters/{cluster}/ca_pem", caPem);
+            Etcd.Seed($"/valkey/clusters/{cluster}/ca_key", caKeyPem);
+            Etcd.Seed($"/valkeyworker/portalloc/{cluster}", "{\"node1\":{\"host\":\"h1\",\"client\":" + port + "}}");
+            Driver.Containers[$"vwk-{cluster}-node1"] =
+                new Fakes.FakeDriver.ContainerFact("h1", port, 2m, 1024L * 1024 * 1024,
+                    ["valkey-server", "--tls-port", "6379", "--port", "0"], Image, "id-tls");
+        }
+
+        // Чтение журнала работы кластера (ассерты вентиля).
+        public string? Work(string cluster)
+            => Etcd.Store.TryGetValue($"/valkeyworker/work/{cluster}", out var kv) ? kv.Value : null;
 
         // Премиграционный Active-кластер: без ca-ключей, plain-контейнер.
         public void SeedPlain(string cluster, int port = 17001)
@@ -110,5 +139,64 @@ public class ValkeyClusterProcessesTests
         // Контейнер пересоздан с TLS-args (миграция T2).
         rig.Driver.Ensured.Should().ContainSingle();
         rig.Driver.Ensured[0].Args.Should().Contain("--tls-port");
+    }
+
+    [Fact]
+    public async Task Active_CaRotationInProgress_SupervisorConvergerSkipped()
+    {
+        // Arrange — канонический TLS-кластер + заявка CA-ротации: тик
+        // исполнит ротацию (окно было открыто в момент вызова K) и вернёт
+        // InProgress — надзор/конвергер/ротатор в этом тике НЕ вызываются
+        var rig = new Rig();
+        rig.SeedTlsCanonical("gate1");
+        rig.Etcd.Seed("/valkeyworker/ca_rotations/gate1",
+            """{"requested_unix":1756500000,"requested_by":"it"}""");
+
+        // Act
+        await rig.Processes.TickAsync(TestContext.Current.CancellationToken);
+
+        // Assert — журнал работы держит op=rotate-ca done: надзор НЕ
+        // перезаписал его своим op («supervise» появился бы, если бы ветка
+        // дошла до C) — эксклюзивность окна доказана journal'ом
+        var work = rig.Work("gate1");
+        work.Should().Contain("rotate-ca", "K исполнился и держит ветку");
+        work.Should().Contain("done", "цикл завершён одним тиком");
+        work.Should().NotContain("supervise", "надзор в окне не идёт");
+        // Коммит прошёл: заявка снята (staging после C отсутствует —
+        // ассертить его наличие НЕЛЬЗЯ)
+        rig.Etcd.Store.TryGetValue("/valkeyworker/ca_rotations/gate1", out _)
+            .Should().BeFalse("заявка снята атомарно коммиту фазы C");
+    }
+
+    [Fact]
+    public async Task Active_CaRotationWaiting_PasswordRotationPlays()
+    {
+        // Arrange — канонический кластер + заявки: CA (K вернёт Waiting —
+        // окно не открывается) И пароль (E доиграет тем же тиком ниже по
+        // ветке). Журнал: K запишет waiting-password-rotation, но затем
+        // надзор C и ротатор E перезапишут work/<C> своими op — финальное
+        // состояние журнала «rotate done», а НЕ waiting-фаза K.
+        var rig = new Rig();
+        rig.SeedTlsCanonical("gate2");
+        rig.Etcd.Seed("/valkeyworker/ca_rotations/gate2",
+            """{"requested_unix":1756500000,"requested_by":"it"}""");
+        rig.Etcd.Seed("/valkeyworker/rotations/gate2",
+            """{"role":"app","requested_unix":1756500000,"requested_by":"it"}""");
+
+        // Act
+        await rig.Processes.TickAsync(TestContext.Current.CancellationToken);
+
+        // Assert — ветка НЕ заблокирована Waiting: ротатор E доиграл свою
+        // заявку этим же тиком (заявка rotations снята, журнал — op rotate
+        // done); CA-заявка жива, окно НЕ открывалось
+        rig.Etcd.Store.TryGetValue("/valkeyworker/rotations/gate2", out _)
+            .Should().BeFalse("E доиграл заявку пароля этим же тиком");
+        var work = rig.Work("gate2");
+        work.Should().Contain("\"rotate\"", "журнал завершён ротатором E (K не заблокировал ветку)");
+        work.Should().Contain("done", "E доведён до конца");
+        rig.Etcd.Store.TryGetValue("/valkeyworker/ca_rotations/gate2", out _)
+            .Should().BeTrue("CA-заявка ждёт (окно не открывалось)");
+        rig.Etcd.Store.TryGetValue("/valkey/clusters/gate2/ca_next_key", out _)
+            .Should().BeFalse("окно не открывалось");
     }
 }

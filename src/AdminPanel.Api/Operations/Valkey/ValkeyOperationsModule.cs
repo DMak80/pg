@@ -66,6 +66,16 @@ public static class ValkeyOperationsModule
             return result.IsSuccess ? Results.Accepted((string?)null, result.Value) : Error(result);
         });
 
+        // POST /api/valkey/clusters/{cluster}/ca/rotate — заявка ротации CA/сертов
+        // (02 §11.2-6, t07): 202; оператор сессии — X-Requested-By.
+        endpoints.MapPost("/api/valkey/clusters/{cluster}/ca/rotate", async (
+            string cluster, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<RotateValkeyCaCommand, ValkeyCaRotatedDto>(
+                new RotateValkeyCaCommand(cluster, user.Identity?.Name ?? "adminpanel"), ct);
+            return result.IsSuccess ? Results.Accepted((string?)null, result.Value) : Error(result);
+        });
+
         return endpoints;
     }
 

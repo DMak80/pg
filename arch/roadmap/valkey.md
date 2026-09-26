@@ -16,12 +16,3 @@
 Порядок: канон → воркер → панель → библиотека Puzzle.
 
 ## Задачи
-
-- **`t07-valkey-ca-rotation`** — ротация per-cluster CA и серверных
-  сертов Valkey (окно двойного доверия, образец CaRotator
-  [../16-kafkaworker.md](../16-kafkaworker.md) §5 K; `ca_next_*`
-  staging, bundle `ca_pem`, пересоздание нод с перевыпуском) —
-  по потребности; канон после t06 —
-  [../20-valkey-clusters.md](../20-valkey-clusters.md) §2,
-  [../21-valkeyworker.md](../21-valkeyworker.md) §9 (R10-аналог:
-  `ca_key` в etcd — зона доверия контроль-плейна).

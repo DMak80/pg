@@ -98,3 +98,22 @@ public sealed class RotateValkeyPasswordCommandHandler(IWorkerApiGateway api)
             $"/api/valkey/clusters/{command.Cluster}/password/rotate",
             new RotateValkeyPasswordRequest(command.Role), command.RequestedBy, ct);
 }
+
+// 6. Заявка ротации per-cluster CA/сертов (02 §11.2-6, t07; окно двойного
+// доверия P/D/R/C исполняет CaRotator воркера; нода пересоздаётся).
+public sealed record RotateValkeyCaCommand(string Cluster, string RequestedBy)
+    : ICommand<ValkeyCaRotatedDto>;
+
+public sealed record ValkeyCaRotatedDto(string Cluster, long RequestedUnix, string RequestedBy);
+
+[InjectAsScoped]
+public sealed class RotateValkeyCaCommandHandler(IWorkerApiGateway api)
+    : ICommandHandler<RotateValkeyCaCommand, ValkeyCaRotatedDto>
+{
+    public async ValueTask<Result<ValkeyCaRotatedDto>> Handle(
+        RotateValkeyCaCommand command, CancellationToken ct)
+        => await WorkerProxy.SendAsync<ValkeyCaRotatedDto>(
+            api, "valkeyworker", HttpMethod.Post,
+            $"/api/valkey/clusters/{command.Cluster}/ca/rotate",
+            body: null, command.RequestedBy, ct);
+}

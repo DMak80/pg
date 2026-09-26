@@ -77,6 +77,7 @@ public sealed class DeprovisioningProcess(
                      $"/valkeyworker/work/{cluster}/rotation",
                      $"/valkeyworker/portalloc/{cluster}",
                      $"/valkeyworker/rotations/{cluster}",
+                     $"/valkeyworker/ca_rotations/{cluster}",
                  })
         {
             var del = await DeleteKeyAsync(key, ct);

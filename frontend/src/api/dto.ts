@@ -677,6 +677,8 @@ export interface ValkeyClusterDto {
   endpoints: string | null;
   nodesList: ValkeyNodeDto[];
   rotation: ValkeyRotationDto | null;
+  // Живая заявка ротации CA /valkeyworker/ca_rotations/<C> (t07; бейдж UI).
+  caRotation: ValkeyCaRotationDto | null;
 }
 
 export interface ValkeyNodeDto {
@@ -745,6 +747,19 @@ export interface ValkeyPasswordRotatedDto {
   role: string;
   requestedUnix: number;
   requestedBy: string;
+}
+
+// Ответ 202 POST /api/valkey/clusters/{c}/ca/rotate (t07).
+export interface ValkeyCaRotatedDto {
+  cluster: string;
+  requestedUnix: number;
+  requestedBy: string;
+}
+
+// Живая заявка ротации CA из деталей кластера (t07; JSON-поле caRotation).
+export interface ValkeyCaRotationDto {
+  requestedUnix: number;
+  requestedBy: string | null;
 }
 
 // ===== Грань «Хранилище бэкапов» (t08, arch/03 §2; зеркало C#-DTO BackupStorageQuery.cs) =====

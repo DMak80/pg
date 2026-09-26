@@ -51,6 +51,7 @@ import type {
   ValkeyConfigUpdateRequestDto,
   ValkeyConfigUpdatedDto,
   ValkeyPasswordRotatedDto,
+  ValkeyCaRotatedDto,
   ValkeyResourcesRequestDto,
   ValkeyResourcesUpdatedDto,
   CreateValkeyClusterRequestDto,
@@ -434,6 +435,14 @@ export function rotateValkeyPassword(
   return apiFetch<ValkeyPasswordRotatedDto>(
     `/api/valkey/clusters/${encodeURIComponent(cluster)}/password/rotate`,
     { method: 'POST', body: { role } });
+}
+
+// POST /api/valkey/clusters/{cluster}/ca/rotate — заявка ротации CA/сертов
+// (t07): окно двойного доверия P/D/R/C исполняет CaRotator воркера.
+export function rotateValkeyCa(cluster: string): Promise<ValkeyCaRotatedDto> {
+  return apiFetch<ValkeyCaRotatedDto>(
+    `/api/valkey/clusters/${encodeURIComponent(cluster)}/ca/rotate`,
+    { method: 'POST' });
 }
 
 // ===== Грань «Хранилище бэкапов» (t08, arch/03 §1) =====

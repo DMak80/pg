@@ -37,6 +37,7 @@ internal sealed class ValkeyClusterProcesses(
     ConfigConverger converger,
     PasswordRotator rotator,
     TlsMigrator tlsMigrator,
+    CaRotator caRotator,
     ILogger<ValkeyClusterProcesses> logger) : IValkeyClusterProcesses
 {
     public async Task<int> TickAsync(CancellationToken ct)
@@ -119,6 +120,17 @@ internal sealed class ValkeyClusterProcesses(
                         if (!migration.IsSuccess)
                             return migration.Error!;
                         if (migration.Value == TlsMigrator.MigrationOutcome.InProgress)
+                            return Result.Success();
+
+                        // t07: ротация CA — ВТОРОЙ шаг Active-ветки (arch/21 §5 K):
+                        // окно открыто (InProgress) ⇒ надзор/converge/ротация в
+                        // этом тике не идут (узкое окно двойного доверия);
+                        // Waiting/NotNeeded — ветка продолжается (ждущие исходы
+                        // ничего не мутировали; E доиграет ниже по ветке).
+                        var rotation = await caRotator.RunAsync(snap, ct);
+                        if (!rotation.IsSuccess)
+                            return rotation.Error!;
+                        if (rotation.Value == CaRotator.RotationOutcome.InProgress)
                             return Result.Success();
 
                         // Валю-туннель Active-ветки (arch/21 §5): надзор (C) →

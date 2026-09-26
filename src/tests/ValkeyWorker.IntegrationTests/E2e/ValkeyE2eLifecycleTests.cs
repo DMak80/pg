@@ -245,4 +245,155 @@ public class ValkeyE2eLifecycleTests
             throw;
         }
     }
+
+    // t07-маркер мерж-гейта (spec §7.4): ротация CA без остановки доверия —
+    // полный прод-контур заявки (mTLS POST /api/valkey/clusters/{c}/ca/rotate)
+    // → окно двойного доверия P→D→R→C тиками живого воркера → journal done;
+    // ca_pem/ca_key = NEW (bundle свёрнут), staging/заявки нет, контейнер
+    // пересоздан, PING по NEW отвечает, OLD-якорь отклонён.
+    [Fact]
+    public async Task CaRotation_ClusterRotatesWithoutDowntimeOfTrust()
+    {
+        // Arrange: гейт запуска — без docker-режима E2E скипается.
+        var enabled = Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") == "1";
+        if (!enabled)
+        {
+            Assert.Skip("PGW_TEST_DOCKER=1 не задан — docker-E2E пропущен");
+            return;
+        }
+
+        // Окружение: сеть + etcd + воркер (свежий Release-образ) + TLS-пакет.
+        await using var fx = await ValkeyE2eEnvironment.StartAsync("carot");
+        var cluster = $"e2e{fx.ClusterTag}";
+        using var api = fx.CreateApiHttpClient();
+        var ct = TestContext.Current.CancellationToken;
+
+        try
+        {
+            // [PHASE] wait-worker: /healthz по mTLS готов (≤ 30 с).
+            await fx.WaitPhaseAsync("wait-worker", async () =>
+            {
+                try
+                {
+                    using var health = await api.GetAsync("/healthz", ct);
+                    return health.StatusCode == HttpStatusCode.OK;
+                }
+                catch (HttpRequestException)
+                {
+                    return false;
+                }
+            }, TimeSpan.FromSeconds(30), ct);
+
+            // Act 1: API-create → 201 (контур как Lifecycle_ProvisionToClean).
+            using var created = await api.PostAsJsonAsync("/api/valkey/clusters",
+                new
+                {
+                    name = cluster,
+                    nodes = 1,
+                    maxmemoryBytes = 536870912,
+                    maxmemoryPolicy = "allkeys-lru",
+                    resources = new { cpu = 1m, memGi = 1, diskGi = 10 },
+                }, ct);
+            var createdBody = await created.Content.ReadAsStringAsync(ct);
+            created.StatusCode.Should().Be(HttpStatusCode.Created, createdBody);
+
+            // [PHASE] wait-provision: RUNNING + контейнер жив (≤ 100 с).
+            await fx.WaitPhaseAsync("wait-provision", async () =>
+            {
+                var kv = await fx.Gateway.GetAsync(fx.EtcdEndpoint,
+                    $"/valkey/clusters/{cluster}/nodes/node1/state", ct);
+                return kv.Value?.Value == "RUNNING"
+                    && await fx.ContainerAliveAsync($"vwk-{cluster}-node1");
+            }, TimeSpan.FromSeconds(100), ct);
+
+            // Baseline: PING по OLD-CA (дискавери из etcd; проба по advertised-
+            // хосту из endpoints — SAN серта = advertised, литералов портов нет).
+            var endpoints = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
+                $"/valkey/clusters/{cluster}/endpoints", ct)).Value!.Value;
+            var probeHost = endpoints.Split(':')[0];
+            var port = int.Parse(endpoints.Split(':')[1]);
+            var oldCaPem = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
+                $"/valkey/clusters/{cluster}/ca_pem", ct)).Value!.Value;
+            var adminPw = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
+                $"/valkey/clusters/{cluster}/admin_password", ct)).Value!.Value;
+            var baseline = RespProbe.ExecuteTls(probeHost, port, "admin", adminPw, oldCaPem, "PING");
+            baseline.Ok.Should().BeTrue(baseline.Error);
+
+            // Act 2: заявка ротации через HTTP-грань воркера (mTLS-клиент)
+            // → 202 (полный прод-контур заявки, spec §6.1).
+            using var posted = await api.PostAsync(
+                $"/api/valkey/clusters/{cluster}/ca/rotate", content: null, ct);
+            var postedBody = await posted.Content.ReadAsStringAsync(ct);
+            posted.StatusCode.Should().Be(HttpStatusCode.Accepted, postedBody);
+
+            // [PHASE] wait-rotation: journal rotate-ca доведён до done тиками
+            // живого воркера (≤ 100 с; фазы P→D→R→C→K4 — пересоздание ноды).
+            await fx.WaitPhaseAsync("wait-rotation", async () =>
+                (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
+                    $"/valkeyworker/work/{cluster}", ct)).Value?.Value
+                    is { } w && w.Contains("rotate-ca") && w.Contains("done"),
+                TimeSpan.FromSeconds(100), ct);
+
+            // Assert 1: ca_pem/ca_key = NEW (не bundle), staging нет, заявки нет.
+            var newCaPem = (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
+                $"/valkey/clusters/{cluster}/ca_pem", ct)).Value!.Value;
+            newCaPem.Should().NotBe(oldCaPem).And.NotContain(oldCaPem, "bundle свёрнут");
+            (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
+                $"/valkey/clusters/{cluster}/ca_key", ct)).Value!.Value.Should().NotBe(oldCaPem);
+            (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
+                $"/valkey/clusters/{cluster}/ca_next_key", ct)).Value.Should().BeNull();
+            (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
+                $"/valkey/clusters/{cluster}/ca_next_pem", ct)).Value.Should().BeNull();
+            (await fx.Gateway.GetAsync(fx.EtcdEndpoint,
+                $"/valkeyworker/ca_rotations/{cluster}", ct)).Value.Should().BeNull();
+
+            // Assert 2: контейнер пересоздан фазой R (жив, имя то же).
+            (await fx.ContainerAliveAsync($"vwk-{cluster}-node1")).Should().BeTrue();
+
+            // Assert 3: PING по NEW-CA отвечает; OLD-CA отклоняется (ключ
+            // уничтожен перезаписью — серт ноды подписан NEW).
+            var newPing = RespProbe.ExecuteTls(probeHost, port, "admin", adminPw, newCaPem, "PING");
+            newPing.Ok.Should().BeTrue(newPing.Error);
+            var oldRejected = false;
+            try
+            {
+                oldRejected = !RespProbe.ExecuteTls(
+                    probeHost, port, "admin", adminPw, oldCaPem, "PING").Ok;
+            }
+            catch (Exception e) when (e is System.Security.Authentication.AuthenticationException
+                or System.IO.IOException or ApplicationException)
+            {
+                // Отказ хендшейка — OLD больше не якорь: колбэк отклоняет серт
+                // (AuthenticationException) либо соединение сброшено (IOException).
+                oldRejected = true;
+            }
+
+            oldRejected.Should().BeTrue("OLD-ключ уничтожен перезаписью");
+
+            // Финал: DELETE → 202 → демонтаж (канон самоочистки e2e-isolation:
+            // ноду/том снимает только демонтаж воркера — teardown фикстуры их
+            // не трогает); wait-clean: ни контейнера, ни тома, ни ключей.
+            using var deleted = await api.DeleteAsync($"/api/valkey/clusters/{cluster}", ct);
+            deleted.StatusCode.Should().Be(HttpStatusCode.Accepted);
+            await fx.WaitPhaseAsync("wait-clean", async () =>
+            {
+                var alive = await fx.ContainerAliveAsync($"vwk-{cluster}-node1");
+                if (alive || await fx.VolumeExistsAsync($"vwk-{cluster}-tls"))
+                    return false;
+                var domain = await fx.Gateway.RangeAsync(fx.EtcdEndpoint,
+                    $"/valkey/clusters/{cluster}/", ct);
+                return domain.Value.Count == 0;
+            }, TimeSpan.FromSeconds(60), ct);
+
+            // Teardown фикстуры (DisposeAsync) сносит окружение; ассерты
+            // чистоты — внутри фикстуры (тома/контейнеры/сети тега).
+        }
+        catch
+        {
+            // docs/e2e-launch.md §3: упавший сценарий — teardown остановит
+            // контейнеры, но не удалит (разбор по артефактам /tmp/pgw-e2e-artifacts-*).
+            fx.MarkFailed();
+            throw;
+        }
+    }
 }
