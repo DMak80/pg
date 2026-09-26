@@ -17,6 +17,11 @@ public sealed record ValkeyRotationsParseResult(
     IReadOnlyList<ValkeyRotationTicket> Tickets,
     IReadOnlyList<KeyParseError> Errors);
 
+// Результат разбора очереди CA-ротаций /valkeyworker/ca_rotations/ (t07, 02 §11.1).
+public sealed record ValkeyCaRotationsParseResult(
+    IReadOnlyList<ValkeyCaRotationTicket> Tickets,
+    IReadOnlyList<KeyParseError> Errors);
+
 // Парсер valkey-домена: чистые функции Kv[] → модель, битые значения не бросают
 // исключений — порождают KeyParseError (порт KafkaParser; arch/20 §5).
 public static class ValkeyParser
@@ -134,6 +139,48 @@ public static class ValkeyParser
                 tickets.Add(new ValkeyRotationTicket(
                     segments[3],
                     JsonValues.ReadString(root, "role") ?? "",
+                    requested.Value,
+                    JsonValues.ReadString(root, "requested_by")));
+            }
+            catch (JsonException e)
+            {
+                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+            }
+        }
+
+        return new(tickets, errors);
+    }
+
+    // CA-ротации (t07): {"requested_unix","requested_by"} — БЕЗ role; битый
+    // JSON / нет requested_unix / лишняя глубина → parseError-запись
+    // (точный порт ParseRotations на префикс ca_rotations).
+    public static ValkeyCaRotationsParseResult ParseCaRotations(IReadOnlyList<Kv> kvs)
+    {
+        var tickets = new List<ValkeyCaRotationTicket>();
+        var errors = new List<KeyParseError>();
+        foreach (var kv in kvs)
+        {
+            // "/valkeyworker/ca_rotations/<C>" → ["", "valkeyworker", "ca_rotations", <C>]
+            var segments = kv.Key.Split('/');
+            if (segments.Length != 4 || segments[3].Length == 0)
+            {
+                errors.Add(new(kv.Key, "ожидается /valkeyworker/ca_rotations/<cluster>"));
+                continue;
+            }
+
+            try
+            {
+                using var doc = JsonDocument.Parse(kv.Value);
+                var root = doc.RootElement;
+                var requested = JsonValues.ReadLong(root, "requested_unix");
+                if (requested is null)
+                {
+                    errors.Add(new(kv.Key, "нет поля requested_unix"));
+                    continue;
+                }
+
+                tickets.Add(new ValkeyCaRotationTicket(
+                    segments[3],
                     requested.Value,
                     JsonValues.ReadString(root, "requested_by")));
             }

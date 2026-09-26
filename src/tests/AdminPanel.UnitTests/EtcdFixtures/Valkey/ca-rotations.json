@@ -1,0 +1,7 @@
+[
+  { "key": "/valkeyworker/ca_rotations/live", "value": "{\"requested_unix\":1756500123,\"requested_by\":\"seed\"}", "modRevision": 1 },
+  { "key": "/valkeyworker/ca_rotations/other", "value": "{\"requested_unix\":1756500456}", "modRevision": 2 },
+  { "key": "/valkeyworker/ca_rotations/broken", "value": "{oops", "modRevision": 3 },
+  { "key": "/valkeyworker/ca_rotations/nofield", "value": "{}", "modRevision": 4 },
+  { "key": "/valkeyworker/ca_rotations/nested/bad", "value": "{}", "modRevision": 5 }
+]

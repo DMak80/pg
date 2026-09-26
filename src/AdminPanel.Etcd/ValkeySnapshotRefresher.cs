@@ -77,15 +77,18 @@ public sealed class ValkeySnapshotRefresher(
 
         var clustersKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Clusters, ct);
         var rotationsKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Rotations, ct);
+        var caRotationsKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.CaRotations, ct);
         var workerApiKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApi, ct);
         var certKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApiCert, ct);
-        if (!clustersKv.IsSuccess || !rotationsKv.IsSuccess || !workerApiKv.IsSuccess || !certKv.IsSuccess)
+        if (!clustersKv.IsSuccess || !rotationsKv.IsSuccess || !caRotationsKv.IsSuccess
+            || !workerApiKv.IsSuccess || !certKv.IsSuccess)
             return FailTick(previous, now, "KV-чтения etcd не удались");
 
         _activeEndpoint = active;
 
         var clusters = ValkeyParser.ParseClusters(clustersKv.Value);
         var rotations = ValkeyParser.ParseRotations(rotationsKv.Value);
+        var caRotations = ValkeyParser.ParseCaRotations(caRotationsKv.Value); // t07
         var workerApi = WorkerEndpointsParser.Parse(workerApiKv.Value);
         // Префикс-запрос точечный: ровно один ключ /workers/api_tls/valkeyworker.
         var certParsed = WorkerCertParser.Parse(Prefixes.WorkerApiCert, certKv.Value.FirstOrDefault());
@@ -97,6 +100,9 @@ public sealed class ValkeySnapshotRefresher(
         var rotationsByCluster = rotations.Tickets
             .GroupBy(t => t.Cluster, StringComparer.Ordinal)
             .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
+        var caRotationsByCluster = caRotations.Tickets
+            .GroupBy(t => t.Cluster, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.First(), StringComparer.Ordinal);
 
         var built = new ValkeySnapshot(
             now,
@@ -106,6 +112,7 @@ public sealed class ValkeySnapshotRefresher(
                 [.. clusters.Clusters.Select(c => c with
                 {
                     Rotation = rotationsByCluster.GetValueOrDefault(c.Name),
+                    CaRotation = caRotationsByCluster.GetValueOrDefault(c.Name),
                 })],
                 probeReader?.Current),
             rotations.Tickets,
@@ -113,9 +120,10 @@ public sealed class ValkeySnapshotRefresher(
             workerHealthStore.Current ?? [],   // health-проб воркера вносит успешный тик (t03; arch/02 §2.3.3)
             previous?.Probes ?? [],     // пробы переживают отказ etcd (симметрия pg/kafka)
             Alerts: [],
-            [.. clusters.Errors, .. rotations.Errors, .. workerApi.Errors,
-                .. WorkerCertParser.ErrorsOf(certParsed)],
+            [.. clusters.Errors, .. rotations.Errors, .. caRotations.Errors,
+                .. workerApi.Errors, .. WorkerCertParser.ErrorsOf(certParsed)],
             clusters.UnknownKeyCount,
+            CaRotations: caRotations.Tickets,
             WorkerApiCert: certParsed.Cert);
 
         store.Replace(built with { Alerts = alertEngine.Evaluate(built, previous) });
@@ -233,6 +241,7 @@ public sealed class ValkeySnapshotRefresher(
     {
         public const string Clusters = "/valkey/clusters/";
         public const string Rotations = "/valkeyworker/rotations/";
+        public const string CaRotations = "/valkeyworker/ca_rotations/"; // t07
         public const string WorkerApi = "/valkeyworker/api/";
         public const string WorkerApiCert = "/workers/api_tls/valkeyworker";
     }

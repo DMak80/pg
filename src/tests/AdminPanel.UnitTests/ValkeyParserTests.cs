@@ -1,6 +1,7 @@
 using AdminPanel.Core;
 using AdminPanel.Core.Valkey;
 using AdminPanel.Etcd.Parsing;
+using FluentAssertions;
 using Shared.Etcd.Client;
 using Xunit;
 
@@ -110,5 +111,19 @@ public sealed class ValkeyParserTests
         Assert.True(Assert.Single(result.Clusters, c => c.Name == "withca").HasCaPem);
         Assert.False(Assert.Single(result.Clusters, c => c.Name == "noca").HasCaPem);
         Assert.Equal(0, result.UnknownKeyCount);
+    }
+
+    // Arrange: ca-rotations.json. Act: ParseCaRotations. Assert: тикет без role;
+    // битый JSON/пустой/вложенный ключ → parseError-толерантность (порт rotations).
+    [Fact]
+    public void ParseCaRotations_TicketWithoutRole_And_BrokenJson()
+    {
+        var result = ValkeyParser.ParseCaRotations(EtcdFixtures.LoadKv("Valkey/ca-rotations.json"));
+
+        result.Tickets.Should().ContainSingle(t => t.Cluster == "live"
+            && t.RequestedUnix == 1756500123 && t.RequestedBy == "seed");
+        Assert.Contains(result.Errors, e => e.Key == "/valkeyworker/ca_rotations/broken");
+        Assert.Contains(result.Errors, e => e.Key == "/valkeyworker/ca_rotations/nofield");
+        Assert.Contains(result.Errors, e => e.Key == "/valkeyworker/ca_rotations/nested/bad");
     }
 }

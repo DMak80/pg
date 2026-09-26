@@ -31,7 +31,8 @@ public sealed record ValkeyClusterDto(
     long? CreatedUnix,
     string? Endpoints,
     IReadOnlyList<ValkeyNodeDto> NodesList,
-    ValkeyRotationDto? Rotation);
+    ValkeyRotationDto? Rotation,
+    ValkeyCaRotationDto? CaRotation); // t07: живая заявка CA-ротации (бейдж UI)
 
 // Нода node1: state raw + ресурсы + live из PING-пробы (null — проба молчит).
 public sealed record ValkeyNodeDto(
@@ -45,6 +46,10 @@ public sealed record ValkeyNodeDto(
 
 // Живая заявка ротации (бейдж UI).
 public sealed record ValkeyRotationDto(string Role, long RequestedUnix, string? RequestedBy);
+
+// Живая заявка ротации CA /valkeyworker/ca_rotations/<C> (t07, бейдж UI):
+// payload без role — {requestedUnix, requestedBy}.
+public sealed record ValkeyCaRotationDto(long RequestedUnix, string? RequestedBy);
 
 // Core → DTO: чистые функции (arch/03 §8.2; camelCase-зеркало модели).
 public static class ValkeyMappers
@@ -73,7 +78,10 @@ public static class ValkeyMappers
                 n.Name, n.State, n.Cpu, n.MemGi, n.DiskGi, n.Live, n.ProbeError))],
             cluster.Rotation is null
                 ? null
-                : new ValkeyRotationDto(cluster.Rotation.Role, cluster.Rotation.RequestedUnix, cluster.Rotation.RequestedBy));
+                : new ValkeyRotationDto(cluster.Rotation.Role, cluster.Rotation.RequestedUnix, cluster.Rotation.RequestedBy),
+            cluster.CaRotation is null
+                ? null
+                : new ValkeyCaRotationDto(cluster.CaRotation.RequestedUnix, cluster.CaRotation.RequestedBy));
 
     public static string StateName(ValkeyClusterState state) => state switch
     {
