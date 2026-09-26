@@ -11,6 +11,7 @@ import { usePollingIntervalMs } from '../../polling/PollingContext';
 import { DeleteValkeyClusterButton } from './DeleteValkeyClusterButton';
 import { EditClusterConfigModal } from './EditClusterConfigModal';
 import { EditNodeResourcesModal } from './EditNodeResourcesModal';
+import { RotateCaButton } from './RotateCaButton';
 import { RotatePasswordButton } from './RotatePasswordButton';
 import type { ValkeyNodeDto } from '../../api/dto';
 
@@ -57,12 +58,20 @@ export function ValkeyClusterDetailsPage() {
               </Badge>
             </Tooltip>
           ) : null}
+          {c.caRotation != null ? (
+            <Tooltip label={`заявка ротации CA жива: воркер применяет окно двойного доверия (${c.caRotation.requestedBy ?? '—'})`}>
+              <Badge color="violet" variant="light">
+                ротация CA · {rotationAgeMinutes(c.caRotation.requestedUnix)}
+              </Badge>
+            </Tooltip>
+          ) : null}
         </Group>
         {canMutate ? (
           <Group gap="sm">
             <EditClusterConfigModal cluster={c} />
             <RotatePasswordButton cluster={c.name} role="app" disabled={c.rotation !== null} />
             <RotatePasswordButton cluster={c.name} role="admin" disabled={c.rotation !== null} />
+            <RotateCaButton cluster={c.name} disabled={c.rotation !== null || c.caRotation != null} />
             <DeleteValkeyClusterButton cluster={c.name} />
           </Group>
         ) : null}
