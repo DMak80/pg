@@ -196,6 +196,34 @@ public class ValkeyOperationsTests
         result.Error.Should().BeOfType<WorkerApiUnavailableException>();
     }
 
+    // t07 (02 §11.2-6): мутация №6 — заявка ротации CA проксируется в API
+    // воркера (POST, тело пустое, оператор — X-Requested-By).
+    [Fact]
+    public async Task RotateValkeyCa_ProxiesToWorkerApi()
+    {
+        // Arrange — стаб IWorkerApiGateway: 202 + JSON тела воркера
+        var api = new StubWorkerApi
+        {
+            Respond = _ => new WorkerApiResult(202,
+                """{"cluster":"live","requestedUnix":1756500123,"requestedBy":"opsuser"}"""),
+        };
+
+        // Act
+        var result = await new RotateValkeyCaCommandHandler(api).Handle(
+            new RotateValkeyCaCommand("live", "opsuser"), CancellationToken.None);
+
+        // Assert — POST в API воркера, тело пустое, оператор — в заголовке
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        var call = Assert.Single(api.Calls);
+        call.Method.Should().Be(HttpMethod.Post);
+        call.Path.Should().Be("/api/valkey/clusters/live/ca/rotate");
+        call.RequestedBy.Should().Be("opsuser");
+        call.Body.Should().BeNull();
+        result.Value.Cluster.Should().Be("live");
+        result.Value.RequestedUnix.Should().Be(1756500123);
+        result.Value.RequestedBy.Should().Be("opsuser");
+    }
+
     // «METHOD path» по зафиксированным вызовам стаба.
     private static IReadOnlyList<string> Paths(StubWorkerApi api)
         => [.. api.Calls.Select(c => $"{c.Method.Method} {c.Path}")];
