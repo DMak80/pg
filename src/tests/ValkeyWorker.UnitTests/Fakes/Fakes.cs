@@ -462,6 +462,10 @@ internal static class Fakes
         // неизвестен; true = AUTH принимает любую пару (нода «собрана»).
         public bool TrustAnyPassword { get; set; }
 
+        // t07: якорь CA последнего PING (кейсы AwaitBoot CaRotator — PING
+        // обязан идти с NEW-CA, а не bundle/OLD).
+        public string? LastCaPem { get; private set; }
+
         // Хук на каждый вызов команды (двигает FixedTimeProvider в тестах V4-бюджета).
         public Action? OnCommand { get; set; }
 
@@ -499,6 +503,7 @@ internal static class Fakes
         public Task<Result> PingAsync(ValkeyEndpoint ep, CancellationToken ct)
         {
             BeforeCommand();
+            LastCaPem = ep.CaPem; // фиксируем якорь пробы (t07)
             if (ConnectionFault)
                 return Task.FromResult(Fail());
             if (Silent)

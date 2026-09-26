@@ -143,15 +143,143 @@ public sealed class CaRotator(
         return await ReplayNodeCommitAsync(snap, nextPem, nextKey, ct);
     }
 
-    // Плейсхолдер этой задачи: окно открыто и держится (реализация R/C — Task 3).
-    // driver/tlsProvisioner/valkey/options читаются фазами R/C (Task 3) —
-    // здесь гасится CS9113 о неиспользуемых параметрах первичного ctor.
+    // R: пересоздание node1 с перевыпуском серта от NEW (лечение ЛЮБОГО
+    // состояния ноды; преф-чека живости нет — nodes=1, persistence off,
+    // кеш восполним; spec §5 R) → C: атомарный коммит → K4: финал.
     private async Task<Result<RotationOutcome>> ReplayNodeCommitAsync(
         ValkeyClusterSnapshot snap, string nextPem, string nextKey, CancellationToken ct)
     {
-        _ = (driver, tlsProvisioner, valkey, options);
-        await Task.CompletedTask;
-        return Result<RotationOutcome>.Success(RotationOutcome.InProgress);
+        var cluster = snap.Cluster;
+
+        // R.1: факт-детект — валидный NEW-серт в TLS-volume ⇒ R завершён.
+        var addresses = await ReadPortAllocAsync(cluster, ct);
+        if (!addresses.IsSuccess)
+            return Result<RotationOutcome>.Failed(addresses.Error!);
+        if (!addresses.Value.TryGetValue("node1", out var address))
+            return Result<RotationOutcome>.Failed(new ApplicationException(
+                $"rotate-ca {cluster}: node1 не закреплён в portalloc"));
+        var archive = await driver.GetTlsArchiveAsync(cluster, address.Host, options.NodeImage, ct);
+        if (!archive.IsSuccess)
+            return await FailAsync(cluster, archive.Error!, "phase-r", ct);
+        if (archive.Value is { } tar && NodeTlsProvisioner.IsValidTar(tar,
+                options.AdvertisedClientHost ?? address.Host, nextPem, _clock))
+            return await CommitAsync(cluster, nextPem, nextKey, ct);
+
+        // R.2: гонка TO_REMOVE перед пересозданием — abort.
+        var removed = await ConfigRemovedAsync(cluster, ct);
+        if (!removed.IsSuccess)
+            return Result<RotationOutcome>.Failed(removed.Error!);
+        if (removed.Value)
+            return await AbortAsync(cluster);
+
+        // R.3: серт/ca.pem volume = NEW (НЕ bundle: --tls-auth-clients no),
+        // journal phase-r, RemoveNode → EnsureNode (порт/лимиты прежние —
+        // порт из portalloc, лимиты из декларации resources ноды).
+        var tls = await tlsProvisioner.EnsureNodeTlsAsync(
+            cluster, "node1", address.Host, options.AdvertisedClientHost ?? address.Host,
+            nextPem, nextKey, ct);
+        if (!tls.IsSuccess)
+            return await FailAsync(cluster, tls.Error!, "phase-r", ct);
+        var markedR = await journal.WritePhaseAsync(cluster, Op, "phase-r", claims.InstanceId, null, ct);
+        if (!markedR.IsSuccess)
+            return Result<RotationOutcome>.Failed(markedR.Error!);
+
+        var nodeSnap = snap.Nodes.GetValueOrDefault("node1");
+        var limits = ProcessCommon.ParseResources(nodeSnap?.Resources);
+        var args = NodeArgsBuilder.Build(
+            snap.Config?.MaxmemoryBytes ?? 0, snap.Config?.MaxmemoryPolicy ?? "allkeys-lru",
+            snap.AdminPassword!, snap.AppPassword!);
+        var removedNode = await driver.RemoveNodeAsync(cluster, "node1", ct);
+        if (!removedNode.IsSuccess)
+            return await FailAsync(cluster, removedNode.Error!, "phase-r/node1", ct);
+        var ensured = await driver.EnsureNodeAsync(new ValkeyNodeSpec(
+            cluster, "node1", address.Host, address.ClientPort, options.NodeImage, args,
+            limits?.Cpu, limits?.MemBytes,
+            TlsVolume: PlainClusterDriver.TlsVolumeName(cluster)), ct);
+        if (!ensured.IsSuccess)
+            return await FailAsync(cluster, ensured.Error!, "phase-r/node1", ct);
+        var provisioning = await ProcessCommon.WriteNodeStateAsync(
+            gateway, endpoints, cluster, "node1", "PROVISIONING", ct);
+        if (!provisioning.IsSuccess)
+            return Result<RotationOutcome>.Failed(provisioning.Error!);
+        var markedRNode = await journal.WritePhaseAsync(
+            cluster, Op, "phase-r/node1", claims.InstanceId, null, ct);
+        if (!markedRNode.IsSuccess)
+            return Result<RotationOutcome>.Failed(markedRNode.Error!);
+
+        // R.4: AwaitBoot — PING по TLS с якорем nextPem (серт уже NEW);
+        // бюджет NodeBootSec, цикл 100 мс (порт TlsMigrator.AwaitBootAsync).
+        var boot = await AwaitBootAsync(address, snap.AdminPassword!, nextPem, ct);
+        if (!boot.IsSuccess)
+            return await FailAsync(cluster, boot.Error!, "boot-timeout", ct);
+        var running = await ProcessCommon.WriteNodeStateAsync(
+            gateway, endpoints, cluster, "node1", "RUNNING", ct);
+        if (!running.IsSuccess)
+            return Result<RotationOutcome>.Failed(running.Error!);
+
+        return await CommitAsync(cluster, nextPem, nextKey, ct);
+    }
+
+    // C: атомарный коммит ОДНОЙ txn (compare по staging-ключу — гонка
+    // параллельной ротации закрыта) → K4.
+    private async Task<Result<RotationOutcome>> CommitAsync(
+        string cluster, string nextPem, string nextKey, CancellationToken ct)
+    {
+        var markedC = await journal.WritePhaseAsync(cluster, Op, PhaseCommitted, claims.InstanceId, null, ct);
+        if (!markedC.IsSuccess)
+            return Result<RotationOutcome>.Failed(markedC.Error!);
+        var commit = await TxnAsync(TxnRequest.Of(
+            [TxnCompare.ValueEqual(NextKeyKey(cluster), nextKey)],
+            [
+                new TxnOp.Put(CaPemKey(cluster), nextPem, null),
+                new TxnOp.Put(CaKeyKey(cluster), nextKey, null),
+                new TxnOp.Delete(NextPemKey(cluster), Prefix: false),
+                new TxnOp.Delete(NextKeyKey(cluster), Prefix: false),
+                new TxnOp.Delete(TicketKey(cluster), Prefix: false),
+            ]), ct);
+        if (!commit.IsSuccess)
+            return await FailAsync(cluster, commit.Error!, PhaseCommitted, ct);
+        if (!commit.Value.Succeeded)
+            return await FailAsync(cluster, new ApplicationException(
+                $"rotate-ca {cluster}: ca_next_key изменился с момента чтения (параллельная ротация?) — ретрай тиком"), PhaseCommitted, ct);
+
+        return await FinishAsync(cluster, ct);
+    }
+
+    // PING по TLS с якорем NEW: транзиент-толерантный цикл в бюджете NodeBootSec.
+    private async Task<Result> AwaitBootAsync(
+        NodeAddress address, string adminPassword, string nextPem, CancellationToken ct)
+    {
+        var endpoint = new ValkeyEndpoint(
+            options.AdvertisedClientHost ?? address.Host, address.ClientPort,
+            "admin", adminPassword, nextPem);
+        var startedAt = _clock.GetUtcNow();
+        var budget = TimeSpan.FromSeconds(options.NodeBootSec);
+        while (true)
+        {
+            ct.ThrowIfCancellationRequested();
+            var ping = await valkey.PingAsync(endpoint, ct);
+            if (ping.IsSuccess)
+                return Result.Success();
+            if (_clock.GetUtcNow() - startedAt > budget)
+                return Result.Failed(new TimeoutException(
+                    $"rotate-ca нода не отвечает по TLS (якорь NEW) {budget.TotalSeconds:F0} c " +
+                    $"({ping.Error!.Message})"));
+            await Task.Delay(100, ct);
+        }
+    }
+
+    private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> ReadPortAllocAsync(
+        string cluster, CancellationToken ct)
+    {
+        var result = await GetAsync(ProcessCommon.PortAllocKey(cluster), ct);
+        if (!result.IsSuccess)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(result.Error!);
+        if (result.Value is not { } kv)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(
+                (IReadOnlyDictionary<string, NodeAddress>)new Dictionary<string, NodeAddress>());
+        return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(
+            ProcessCommon.ParsePortAlloc(kv.Value));
     }
 
     // Окно открыто: staging есть ИЛИ journal rotate-ca вне {done, waiting-*}.
