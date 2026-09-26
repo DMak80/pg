@@ -245,6 +245,10 @@ builder.Services.AddSingleton(sp => new RotatePasswordHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton(sp => new RotateCaHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>()));
 builder.Services.AddSingleton(sp => new SeedDemoHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints,
