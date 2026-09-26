@@ -137,4 +137,29 @@ public class DeprovisioningProcessTests
         rig.Etcd.Store.Keys.Where(k => k.StartsWith($"/valkey/clusters/{cluster}/")).Should().NotBeEmpty();
         rig.Etcd.Store.Should().ContainKey($"/valkeyworker/portalloc/{cluster}");
     }
+
+    [Fact]
+    public async Task Deprovision_WithLiveCaRotationTicket_CleansCoordination()
+    {
+        // Arrange — TO_REMOVE-кластер с ЖИВОЙ заявкой ca_rotations и staging
+        // (t07, X2: координация ротации CA сносится вместе с прочей)
+        const string cluster = "x2ca";
+        var rig = Rig.Create();
+        rig.SeedCluster(cluster);
+        rig.Etcd.Seed($"/valkeyworker/ca_rotations/{cluster}",
+            """{"requested_unix":1756500000,"requested_by":"it"}""");
+        rig.Etcd.Seed($"/valkey/clusters/{cluster}/ca_next_key", "stg");
+        rig.Etcd.Seed($"/valkey/clusters/{cluster}/ca_next_pem", "stg");
+        await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
+
+        // Act — тик демонтажа доводит до конца
+        var result = await rig.Process.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+
+        // Assert — ни заявки, ни staging, ни клэйма
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        rig.Etcd.Store.Should().NotContainKey($"/valkeyworker/ca_rotations/{cluster}");
+        rig.Etcd.Store.Keys.Where(k => k.StartsWith($"/valkey/clusters/{cluster}/"))
+            .Should().BeEmpty("префиксный del домена забирает staging ca_next_*");
+        rig.Etcd.Store.Should().NotContainKey($"/valkeyworker/claims/{cluster}");
+    }
 }
