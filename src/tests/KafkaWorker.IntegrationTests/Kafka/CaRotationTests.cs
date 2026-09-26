@@ -100,7 +100,7 @@ public class CaRotationTests(KafkaClusterFixture fixture)
             $"next_key={(await fixture.GetAsync($"/kafka/clusters/{cluster}/ca_next_key")) is not null}, " +
             $"broker_up={brokerUp}, ep={snapDiag!.Endpoints is not null}, app={snapDiag.AppPassword is not null}, " +
             $"admin={snapDiag.AdminPassword is not null}, ca={snapDiag.CaPem is not null}, cakey={snapDiag.CaKey is not null}, " +
-            $"parse_errors={string.Join(";", snapDiag.ParseErrors)}, admin={adminDiag}, {await EnvDiagAsync(fixture, cluster)}, " +
+            $"parse_errors={string.Join(";", snapDiag!.ParseErrors)}, admin={adminDiag}, {await EnvDiagAsync(fixture, cluster)}, " +
             "logs=[" + BrokerLogTail(cluster) + "]";
         ticketGone.Should().BeTrue($"ротация исполнена: заявка удалена [{diag}]");
 
