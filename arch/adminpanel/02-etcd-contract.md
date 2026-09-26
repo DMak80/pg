@@ -982,14 +982,15 @@ v1-упрощение домена: топология standalone `nodes=1` — 
 | `/valkey/clusters/<C>/endpoints` | `ValkeyClusterInfo.Endpoints` | точка дискавери клиентов (arch/20 §2); отсутствие у Active — critical-алерт |
 | `/valkey/clusters/<C>/app_user`, `app_password` | — (парсер пропускает молча, без `unknownKeys`) | панель НЕ читает и не отображает: app-креды — роль приложений, панель к нодам с ними не ходит |
 | `/valkey/clusters/<C>/admin_user`, `admin_password`, `ca_pem` | internal-словарь стора (не в `ValkeyClusterInfo`, не в UI/API) | читаются ТОЛЬКО для live-проб PING (arch/20 §2: «панель читает для проб»; `ca_pem` — TLS-доверие пробы, t06); значения наружу не отдаются. Live-пробы PING — по TLS (SslStream + доверие `ca_pem` кластера + SAN-хост); ошибки чтения/валидации PEM — толерантность как у кредов (проба невозможна — failed-результат, без падения тика). Примечание: Active-кластер без `ca_pem` → critical-алерт `valkey-security-missing` (arch/20 §5; миграция TLS не доиграна / ключ потерян) |
-| `/valkeyworker/rotations/<C>` | `ValkeyRotationTicket` | очередь ротаций в UI (единственное читаемое из `/valkeyworker/` кроме `api/`); формат `{"role":"app"\|"admin","requested_unix","requested_by"}`; снятие — только воркером (после исполнения); отмена из панели НЕТ (арх/20 §3, t03) |
+| `/valkeyworker/rotations/<C>` | `ValkeyRotationTicket` | очередь ротаций в UI (единственное читаемое из `/valkeyworker/` кроме `api/`, `ca_rotations/`); формат `{"role":"app"\|"admin","requested_unix","requested_by"}`; снятие — только воркером (после исполнения); отмена из панели НЕТ (арх/20 §3, t03) |
+| `/valkeyworker/ca_rotations/<C>` | `ValkeyCaRotationTicket` | очередь ротаций CA в UI (t07); формат `{"requested_unix","requested_by"}` (§9.8-паттерн без role); снятие — только воркером (атомарно коммиту фазы C CaRotator, arch/21 §5 K); отмена из панели НЕТ |
 
 Неизвестные ключи внутри `/valkey/` — лог + счётчик `unknownKeys`; битый JSON —
 parseError-запись + warning-алерт `valkey-key-malformed` (arch/20 §5).
 Остальные ключи `/valkeyworker/` (leader, claims, work, portalloc, locks,
 instances) панель не читает и не пишет.
 
-### 11.2. Мутации панели (5; исполняет ValkeyWorker API, arch/21 §1.1)
+### 11.2. Мутации панели (6; исполняет ValkeyWorker API, arch/21 §1.1)
 
 Все мутации панель отправляет в **API ValkeyWorker** (URL — живой
 `/valkeyworker/api/<id>`, §2.3.3); воркер сам валидирует и пишет в etcd.
@@ -1005,6 +1006,7 @@ instances) панель не читает и не пишет.
 | 3 | **Изменение конфига** `PUT /api/valkey/clusters/{c}/config` | RMW-txn по `mod_revision`: обновить `maxmemory_bytes`/`maxmemory_policy` (остальные поля, вкл. `state`, — как прочитаны); применяет converge D (`CONFIG SET`, без рестартов); инвариант R3 сверяется с текущими `resources` etcd; проигрыш compare → 503 (retry клиентом) | 400, 404, 503 |
 | 4 | **Ресурсы ноды** `PUT /api/valkey/clusters/{c}/nodes/{node}/resources` | put ключа `nodes/node<k>/resources` каноническим JSON (перезапись целиком; null-поля → дефолты, v1 node1); применяет автоконверге надзора C (arch/21 §5 C: сверка лимитов → пересоздание контейнера, одно за тик — кеш восполним) | 400, 404 (кластер/нода), 503 |
 | 5 | **Заявка ротации пароля** `POST /api/valkey/clusters/{c}/password/rotate` | клэйм-txn `/valkeyworker/rotations/<C>` `version==0` + put `{"role":"app"\|"admin","requested_unix","requested_by"}` — §9.8-паттерн; исполнение — PasswordRotator (окно двух паролей E1–E3, arch/21 §5 E, без рестартов); state-гейта нет (заявка легальна для любого существующего кластера); отмена из панели НЕТ | 400 (role), 404, 409 (уже запрошена), 503 |
+| 6 | **Заявка ротации CA/сертов** `POST /api/valkey/clusters/{c}/ca/rotate` | клэйм-txn `/valkeyworker/ca_rotations/<C>` `version==0` + put `{"requested_unix","requested_by"}` — §9.8-паттерн; исполнение — CaRotator воркера (окно двойного доверия P→D→R→C, arch/21 §5 K: staging `ca_next_*`, bundle `ca_pem`, одно пересоздание ноды с перевыпуском серта от NEW CA); state-гейт: `state≠Active` (NOT_INITIALIZED/TO_REMOVE) → 409 (ротация не поднятого/демонтируемого кластера бессмысленна — образец kafka); отмена из панели НЕТ | 404, 409 (уже запрошена / не Active), 503 |
 
 `requested_by` — username сессии панели (заголовок `X-Requested-By`, аудит).
 
