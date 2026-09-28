@@ -54,13 +54,13 @@ public class CreateClusterApiTests(PgApiFixture fixture)
         // Arrange — первый POST занимает имя
         await Client.PostAsJsonAsync("/api/clusters",
             new { name = "dup", buckets = 2, shards = 1, replicas = 1,
-                  requestCpu = 1, requestMem = 1, requestDisk = 1 },
+                  synchronousModeStrict = false, requestCpu = 1, requestMem = 1, requestDisk = 1 },
             TestContext.Current.CancellationToken);
 
         // Act
         var resp = await Client.PostAsJsonAsync("/api/clusters",
             new { name = "dup", buckets = 2, shards = 1, replicas = 1,
-                  requestCpu = 1, requestMem = 1, requestDisk = 1 },
+                  synchronousModeStrict = false, requestCpu = 1, requestMem = 1, requestDisk = 1 },
             TestContext.Current.CancellationToken);
 
         // Assert
@@ -76,6 +76,7 @@ public class CreateClusterApiTests(PgApiFixture fixture)
     {
         // Arrange
         var payload = new { name = "race", buckets = 4, shards = 2, replicas = 1,
+                            synchronousModeStrict = false,
                             requestCpu = 1, requestMem = 1, requestDisk = 1 };
         var ct = TestContext.Current.CancellationToken;
 
@@ -111,6 +112,41 @@ public class CreateClusterApiTests(PgApiFixture fixture)
         problem.GetProperty("errors").GetProperty("buckets").GetArrayLength().Should().BeGreaterThan(0);
     }
 
+    // AAA (t06, spec §6.2): без поля → strict-кластер; strict+replicas=1 → 400;
+    // strict=false+replicas=1 → 201. Wire-имя поля — synchronousModeStrict
+    // (сквозная проверка camelCase-биндинга — критерий спеки §6.2).
+    [Fact]
+    public async Task PostCluster_StrictSemantics()
+    {
+        // Arrange / Act — три POST с camelCase-телами.
+        var ct = TestContext.Current.CancellationToken;
+        var noField = await Client.PostAsJsonAsync("/api/clusters",
+            new { name = "s1t06", buckets = 4, shards = 2, replicas = 2,
+                  requestCpu = 1, requestMem = 1, requestDisk = 1 }, ct);
+        var strictSingle = await Client.PostAsJsonAsync("/api/clusters",
+            new { name = "s2t06", buckets = 4, shards = 2, replicas = 1,
+                  synchronousModeStrict = true,
+                  requestCpu = 1, requestMem = 1, requestDisk = 1 }, ct);
+        var looseSingle = await Client.PostAsJsonAsync("/api/clusters",
+            new { name = "s3t06", buckets = 4, shards = 2, replicas = 1,
+                  synchronousModeStrict = false,
+                  requestCpu = 1, requestMem = 1, requestDisk = 1 }, ct);
+
+        // Assert — 201/400/201: config кейса 1 несёт strict=true (поле
+        // отсутствовало → дефолт durability-first); 400 — errors.syncStrict;
+        // кейс 3 — 201 + strict=false в config.
+        noField.StatusCode.Should().Be(HttpStatusCode.Created);
+        (await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/clusters/s1t06/config", ct))
+            .Value!.Value.Should().Contain("\"synchronous_mode_strict\":true");
+        strictSingle.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await strictSingle.Content.ReadFromJsonAsync<JsonElement>(ct);
+        problem.GetProperty("errors").GetProperty("syncStrict")
+            .GetArrayLength().Should().BeGreaterThan(0);
+        looseSingle.StatusCode.Should().Be(HttpStatusCode.Created);
+        (await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/clusters/s3t06/config", ct))
+            .Value!.Value.Should().Contain("\"synchronous_mode_strict\":false");
+    }
+
     // AAA: DELETE существующего кластера — 204 + config.state=TO_REMOVE;
     // повторный DELETE — идемпотентный 204.
     [Fact]
@@ -120,7 +156,7 @@ public class CreateClusterApiTests(PgApiFixture fixture)
         var ct = TestContext.Current.CancellationToken;
         await Client.PostAsJsonAsync("/api/clusters",
             new { name = "gone", buckets = 2, shards = 1, replicas = 1,
-                  requestCpu = 1, requestMem = 1, requestDisk = 1 }, ct);
+                  synchronousModeStrict = false, requestCpu = 1, requestMem = 1, requestDisk = 1 }, ct);
 
         // Act
         var resp = await Client.DeleteAsync("/api/clusters/gone", ct);

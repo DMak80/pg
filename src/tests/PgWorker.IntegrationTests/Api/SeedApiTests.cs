@@ -53,7 +53,8 @@ public class SeedApiTests(PgApiFixture fixture)
         var body = await resp.Content.ReadFromJsonAsync<JsonElement>(ct);
         body.GetProperty("seeded").GetBoolean().Should().BeTrue();
         (await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/clusters/demo/config", ct))
-            .Value!.Value.Should().Contain("\"buckets\":16").And.Contain("\"dbname\":\"demo\"");
+            .Value!.Value.Should().Contain("\"buckets\":16").And.Contain("\"dbname\":\"demo\"")
+            .And.Contain("\"synchronous_mode_strict\":true"); // t06: сид пишет поле явленно
         (await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/clusters/demo/buckets/routing/bucket_0", ct))
             .Value!.Value.Should().Be("s1");
         (await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/clusters/demo/buckets/routing/bucket_15", ct))
