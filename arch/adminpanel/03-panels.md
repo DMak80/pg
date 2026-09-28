@@ -41,6 +41,7 @@ clusters/{cluster}/moves/{bucket}` (отмена стоящей заявки, 02
 | `POST /api/clusters/{cluster}/moves/abort` | заявка отмены незавершённого переезда (02 §9.7.4): тело `AbortBucketRequestDto` → 201+`BucketAbortQueuedDto` \| 400 \| 404 \| 409 \| 503 |
 | `DELETE /api/clusters/{cluster}/moves/{bucket}` | отмена стоящей заявки (02 §9.7.5): 204 \| 404 \| 503 |
 | `POST /api/clusters/{cluster}/app-password/rotate` | заявка ротации app-пароля кластера (02 §9.8): без тела → 201+`AppPasswordRotatedDto` \| 404 \| 409 \| 503 |
+| `PUT /api/clusters/{cluster}/config` | мутация synchronous_mode_strict (204; прокси в API воркера — 02 §9.10; 400/404/409/503 как у воркера) |
 | `GET /api/ha` | список HA-scope'ов (сводный) |
 | `GET /api/ha/{scope}` | детали scope: leader, members+runtime, optime, raw config, request_* |
 | `GET /api/backups/storage` | грань «Хранилище бэкапов»: `configured` (false → только это поле+причина), endpoint/bucket (без ключей), health, место (etcd-ключ `storage` + live-инвентарь), дерево кластеров/шардов, сироты (реестр воркера + сверка панели), `inventoryUpdatedUnix`/`inventoryError` (t08, 02 §2.5) |
@@ -69,7 +70,9 @@ CreateClusterRequestDto: name, sharded (bool, опционально: отсут
                           sharded=false не требуются — сервер нормализует
                           в 1/1, 02 §9.3), replicas,
                           requestCpu (число ядер, десятичное),
-                          requestMem (GiB, целое), requestDisk (GiB, целое)
+                          requestMem (GiB, целое), requestDisk (GiB, целое),
+                          synchronousModeStrict (bool, опционально:
+                          отсутствие = true; false допускает replicas=1 — t06)
 ```
 
 Ответ 201 (кластер записан в etcd, состояние NOT_INITIALIZED; снапшот
@@ -294,7 +297,8 @@ EtcdStatusDto: endpoints[{url, reachable, latencyMs, version, dbSizeBytes,
               peerUrls, clientUrls, isLeader}], alarms[{memberId, type}],
               quorumSuspected, lastRefreshUtc
 ClusterDto:   name, dbname, bucketsCount, createdUnix, incomplete(bool),
-              state(ACTIVE|NOT_INITIALIZED|TO_REMOVE), sharded(bool), shards[ShardDto],
+              state(ACTIVE|NOT_INITIALIZED|TO_REMOVE), sharded(bool),
+              synchronousModeStrict(bool — снапшот-поле, t06), shards[ShardDto],
               buckets[BucketDto], pendingMoves[MoveTicketDto] — очередь заявок
               /pgworker/moves/<C>/ (02 §2.3.1; джойн по кластеру, сортировка
               по requestedUnix), work{op, phase, updatedUnix, lastError}?
@@ -306,7 +310,7 @@ ClusterDto:   name, dbname, bucketsCount, createdUnix, incomplete(bool),
               UI-блок «Стендовая топология» рисуется при наличии)
 ClusterSummaryDto: name, dbname, bucketsCount, incomplete(bool),
               notInitialized(bool), toRemove(bool), shardsTotal, shardsWithMaster,
-              activeMoves
+              synchronousModeStrict(bool — снапшот-поле, t06), activeMoves
 ShardDto:     name, state(ACTIVE|TO_REMOVE — маркер демонтажа 02 §2.1/§9.6,
               отсутствие ключа = ACTIVE), dsn, hosts[], replicasDeclared,
               masterAddress, masterLeaseAlive(bool), nodes[{name, state}],
@@ -381,8 +385,14 @@ MoveTicketDto: bucketId(int? — null у неканонического leaf'а)
 | **Login** | форма логин/пароль; ошибка 401 |
 | **Overview** | бейдж stale; карточки: etcd (reachable, endpoints ok/total; alarms — в ленте алертов и на панели etcd), кластеры (шарды/бакеты/переезды), активные переезды списком, лента алертов (critical/warning); сводка HA: скольки scope'ов без лидера (клиентская агрегация `GET /api/ha` — `OverviewDto` HA-полей не содержит); карточка «Бэкапы»: health MinIO (бейджи api/live/cluster) + место (used/quota, state-бейдж OK/WARN/CRIT воркера, live-факт) — клиентская агрегация `GET /api/backups/storage` (по образцу HA-агрегации, `OverviewDto` backup-полей не содержит) |
 | **etcd** | таблица endpoints (reachable, latency, версия, raftTerm, ошибки, метка «активный»), members (+лидер), alarms; `lastRefreshUtc` |
-| **Clusters** | список: имя, dbname, N, шард мастеровых/всего, активные переезды, пометки (incomplete, not-initialized, «к удалению» при `toRemove`); кнопка «Создать кластер» → модальная форма (§3.1) |
-| **Cluster details** | вкладки: Шарды (dsn, replicas, master+leaseAlive, sync-standby, лаг слотов; ноды: имя+state; заявка ресурсов на ноду cpu/mem/disk; колонка действий — кнопка «Убрать шард» (красная, per-row; диалог со счётчиком бакетов шарда, дизейбл при N>0 с пояснением «сначала перевезите бакеты», серверный 409 — текстом ProblemDetails); бейдж «к удалению» у шарда state=TO_REMOVE; кнопка «Добавить шард» в заголовке вкладки — модальная форма §3.2: реплики/CPU/память/диск, без имени — генерируется; подпись «Шард стартует пустым — перераспределение бакетов выполняется отдельными явными переездами»; кнопки скрыты, когда кластер не Active — симметрия с «Удалить кластер»), Бакеты (грид id×owner×state, фильтр по owner/state, подсветка не-ACTIVE, возраст; вкладка скрыта при `sharded=false` — нешардированная БД 1×1 без карты бакетов, 02 §9.1; кнопка «Перенести бакеты» в заголовке вкладки (только Active && sharded — canScale) — модальная форма §3.3; колонка действий per-row у ACTIVE-бакетов при canScale — пост-переездные операции: «Откатить» (модал §3.4) и «Финализировать» (модал §3.5); у бакета со стоящей заявкой вместо кнопок бейдж «в очереди: <op>»), Переезды (только не-ACTIVE, кроме NOT_INITIALIZED: phase, updated, last_error; колонка действий per-row — красная «Отменить переезд» (abort, модал §3.6 с чекбоксом force) при canScale; блок «Очередь заявок» — `pendingMoves` по возрастанию requestedUnix: бакет, op, to, возраст заявки, кем поставлена, колонка действий «Снять заявку» (DELETE moves/{bucket}, подтверждение «начатый переезд доедет — остановка только abort») при canScale; исчезновение заявки без смены routing/status = отвергнута PgWorker'ом; блок «Журнал воркера» — поле `work` деталей: последний op/phase/updated/last_error процесса (результат исполненной/отвергнутой заявки)), Heals (журнал), «Стендовая топология» (блок по `standNodes` деталей — реестр `/cluster/nodes/`, скрыт при пустом); шапка: бейдж TO_REMOVE, кнопка «Сменить app-пароль» (только Active; → `POST /api/clusters/{cluster}/app-password/rotate` — 02 §9.8; модальное подтверждение с предупреждением «после применения подключения со старым паролем отвергаются до перечитывания кредов приложением — выполняйте в тихое окно»; 409 «уже запрошена» — текстом) и кнопка «Удалить кластер» (красная, с подтверждением; → `DELETE /api/clusters/{name}` — 02 §9.4; при `state=TO_REMOVE` обе кнопки скрыты — обратного перехода нет) |
+| **Clusters** | список: имя, dbname, N, шард мастеровых/всего, активные переезды, бейдж режима `strict`/`availability` (t06, по `synchronousModeStrict`), пометки (incomplete, not-initialized, «к удалению» при `toRemove`); кнопка «Создать кластер» → модальная форма (§3.1) |
+| **Cluster details** | вкладки: Шарды (dsn, replicas, master+leaseAlive, sync-standby, лаг слотов; ноды: имя+state; заявка ресурсов на ноду cpu/mem/disk; колонка действий — кнопка «Убрать шард» (красная, per-row; диалог со счётчиком бакетов шарда, дизейбл при N>0 с пояснением «сначала перевезите бакеты», серверный 409 — текстом ProblemDetails); бейдж «к удалению» у шарда state=TO_REMOVE; кнопка «Добавить шард» в заголовке вкладки — модальная форма §3.2: реплики/CPU/память/диск, без имени — генерируется; подпись «Шард стартует пустым — перераспределение бакетов выполняется отдельными явными переездами»; кнопки скрыты, когда кластер не Active — симметрия с «Удалить кластер»), Бакеты (грид id×owner×state, фильтр по owner/state, подсветка не-ACTIVE, возраст; вкладка скрыта при `sharded=false` — нешардированная БД 1×1 без карты бакетов, 02 §9.1; кнопка «Перенести бакеты» в заголовке вкладки (только Active && sharded — canScale) — модальная форма §3.3; колонка действий per-row у ACTIVE-бакетов при canScale — пост-переездные операции: «Откатить» (модал §3.4) и «Финализировать» (модал §3.5); у бакета со стоящей заявкой вместо кнопок бейдж «в очереди: <op>»), Переезды (только не-ACTIVE, кроме NOT_INITIALIZED: phase, updated, last_error; колонка действий per-row — красная «Отменить переезд» (abort, модал §3.6 с чекбоксом force) при canScale; блок «Очередь заявок» — `pendingMoves` по возрастанию requestedUnix: бакет, op, to, возраст заявки, кем поставлена, колонка действий «Снять заявку» (DELETE moves/{bucket}, подтверждение «начатый переезд доедет — остановка только abort») при canScale; исчезновение заявки без смены routing/status = отвергнута PgWorker'ом; блок «Журнал воркера» — поле `work` деталей: последний op/phase/updated/last_error процесса (результат исполненной/отвергнутой заявки)), Heals (журнал), «Стендовая топология» (блок по `standNodes` деталей — реестр `/cluster/nodes/`, скрыт при пустом); шапка: бейдж TO_REMOVE, бейдж режима «strict»/«availability» (t06, по
+`synchronousModeStrict`) и переключатель strict-режима (мутация только для
+Active; не-Active — контрол заблокирован с подсказкой «после инициализации»;
+подтверждение — модальный диалог с предупреждением о последствиях: включение —
+«запись будет блокироваться при потере sync-реплики (durability)», выключение —
+«при failover возможна потеря неподтверждённых транзакций (availability)»;
+→ `PUT /api/clusters/{cluster}/config` — 02 §9.10), кнопка «Сменить app-пароль» (только Active; → `POST /api/clusters/{cluster}/app-password/rotate` — 02 §9.8; модальное подтверждение с предупреждением «после применения подключения со старым паролем отвергаются до перечитывания кредов приложением — выполняйте в тихое окно»; 409 «уже запрошена» — текстом) и кнопка «Удалить кластер» (красная, с подтверждением; → `DELETE /api/clusters/{name}` — 02 §9.4; при `state=TO_REMOVE` обе кнопки скрыты — обратного перехода нет) |
 | **HA** | список scope'ов: scope, cluster/shard, лидер, члены (роль/состояние), лаг max, пометка unmatched |
 | **HA details** | leader, optime, таблица members: name/role/state/timeline/lag/probe-статус; блок «Заявленные ресурсы нод» (request_*, при наличии); raw config (свернуто) |
 | **Alerts** | таблица всех алертов: severity-цвет, kind, target, message, since; фильтр по severity |
@@ -393,10 +403,14 @@ MoveTicketDto: bucketId(int? — null у неканонического leaf'а)
 
 Модальный диалог (Mantine Modal + TextInput/NumberInput) с кнопки «Создать
 кластер» на панели Clusters. Поля: имя; бакеты; шарды (≤ бакетов); реплики
-(дефолт 2, минимум 1 — только мастер); группа «Ресурсы нод (заявка, на каждую
+(дефолт 2, минимум 1 — только мастер); чекбокс «Синхронный strict-режим
+(блокировать запись при потере sync-реплики)» — дефолт включён (t06);
+группа «Ресурсы нод (заявка, на каждую
 ноду)»: CPU (ядра, шаг 0.1), память (GiB), диск (GiB). Клиентская валидация —
-зеркало 02 §9.3 (быстрая ошибка у поля); серверная — источник истины.
-Отправка — POST `/api/clusters`; успех → закрыть форму, инвалидировать
+зеркало 02 §9.3 (быстрая ошибка у поля): strict + replicas=1 → ошибка у поля
+реплик (зеркало серверной 02 §9.3); при выключенном strict ограничений нет.
+Отправка — POST `/api/clusters` (тело всегда несёт `synchronousModeStrict`);
+успех → закрыть форму, инвалидировать
 `clusters`-запросы (список обновится, новый кластер — с бейджем
 «не инициализирован»); ошибка — ProblemDetails в теле формы (409 — «имя
 занято», 400 — по полям, 503 — «etcd недоступен»). Двойной клик защищён
@@ -406,7 +420,8 @@ MoveTicketDto: bucketId(int? — null у неканонического leaf'а)
 
 Модальный диалог с кнопки «Добавить шард» в заголовке вкладки Шарды на
 Cluster details (только Active-кластер). Поля: реплики (дефолт 2, минимум 1 —
-только мастер), группа «Ресурсы нод (заявка, на каждую ноду)»: CPU (ядра,
+только мастер; у strict-кластера минимум 2 — клиентская валидация, t06;
+серверная — arch/14 §5 G), группа «Ресурсы нод (заявка, на каждую ноду)»: CPU (ядра,
 шаг 0.1), память (GiB), диск (GiB); поля имени НЕТ — имя генерирует сервер
 (`shard<max+1>`, 02 §9.5). Подпись в форме: «Шард стартует пустым —
 перераспределение бакетов выполняется отдельными явными переездами (UI
@@ -561,7 +576,7 @@ PEM-материалы (cert/key) в UI не отображаются и в API 
 | `replica-lag-high` | warning | лаг реплики > `ReplicaLagBytes` (16 МБ) | Patroni REST |
 | `slot-lag-high` / `slot-wal-lost` | warning / critical | лаг слота > порога / `wal_status='lost'` (P4) | SQL-проба |
 | `slot-invalidation-risk` | warning | `safe_wal_size` < порога (P4, ДО среза) | SQL-проба |
-| `sync-standby-missing` | warning | у мастера нет `sync_state IN ('sync','quorum')` (P8 — предусловие переездов) | SQL-проба |
+| `sync-standby-missing` | strict ? critical : warning (t06: strict — запись блокирована, инцидент; не-strict — предусловие переездов) | у мастера нет `sync_state IN ('sync','quorum')` (P8 — предусловие переездов); Hint/Remedy (t06): для strict ремеди «запись блокирована — восстановите реплику (rebuild воркера) или выключите strict (PUT config)» | SQL-проба |
 | `inventory-mismatch` | warning | фактические схемы `bucket_%` ≠ routing (P21/P23) | SQL-проба |
 | `probe-failed` | по цели (critical/warning) | ошибки проб **Active-целей**: SQL-проба шарда упала → **critical** («шард недоступен»: ни один хост DSN не принял подключение или writable-мастер не найден — 02 §6.2); Patroni-проба одного члена скопа упала → **warning**; Patroni-пробы **всех** членов matched-скопа упали → один **critical** на скоп (id `probe-failed:patroni-scope:<scope>`, per-member warning этого скопа не эмитятся — один факт, один алерт) | пробы |
 | `backup-s3-unreachable` | warning | грань настроена && инвентарь-тик MinIO падал ≥ 2 подряд (configured && consecutiveFailures ≥ 2); снимается первым успешным тиком | MinIO live-тик (02 §2.5) |
