@@ -47,12 +47,6 @@ P3 (t13–t17) — наблюдаемость, P4 (t18–t22) — долговр
   либо канон «данные Kafka невосстановимы из бэкапов, RPO держится
   RF×minISR» (arch/15/16), либо объём экспорта/снапшотов топиков. Сейчас
   бэкапов нет нигде и позиция нигде не зафиксирована.
-- **`t06-sync-strict-option`** — per-cluster опция
-  `synchronous_mode_strict`: сейчас глобально `false`
-  (NodeConfigBuilders) — при потере всех реплик запись продолжается,
-  последующий failover теряет хвост; долговечность-vs-доступность должна
-  быть настройкой кластера, а не глобальной константой
-  (`sync-standby-missing` — только warning).
 - **`t07-worker-second-instance`** — второй инстанс воркеров в деплое
   (`deploy/docker-compose.yml`): код полностью готов (lease-клэймы, takeover
   ≤15 с, PortAllocLock — доказано E2E AC3/mid-add/mid-move), но деплой
