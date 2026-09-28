@@ -53,6 +53,11 @@ public class RestoreProcessTests(EtcdFixture fixture)
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, $"/pgworker/backups/{cluster}/", prefix: true, ct);
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, $"/pgworker/claims/{cluster}", prefix: false, ct);
         await fixture.Gateway.DeleteAsync(fixture.Endpoint, $"/pgworker/work/{cluster}", prefix: false, ct);
+        // Изоляция (канон docs/e2e-isolation.md §1): etcd один на коллекцию,
+        // соседние тесты класса оставляют /clusters/<C>/... (состояния нод
+        // REBUILDING/RUNNING) — без чистки ассерты BeNull флакуют от порядка
+        // (прецедент t07: литеральные имена кластеров в общей коллекции).
+        await fixture.Gateway.DeleteAsync(fixture.Endpoint, $"/clusters/{cluster}/", prefix: true, ct);
         await fixture.Gateway.PutAsync(fixture.Endpoint, $"/pgworker/portalloc/{cluster}",
             Portalloc.Serialize(alloc ?? new Dictionary<string, NodeAddress>
             {
