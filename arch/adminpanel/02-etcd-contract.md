@@ -121,6 +121,8 @@ Scope = `<C>-<X>`, глобально уникален. Связь со шард
 | `/pgworker/api/<id>` | lease TTL 15 c, JSON `{"url":"https://<host>:<port>","instance":"<id>","since_unix":…,"cert_thumbprint"?:"<sha256-hex>"}` | `WorkerEndpoint[]` (§3) | **дискавери API PgWorker** (arch/14 §1.1): ставит сам воркер; ключ жив = инстанс жив и URL валиден. URL — `https://` (t03): API PgWorker обслуживается только по mTLS — панель аутентифицируется клиентским сертификатом per-install API-CA (единая пакета с KafkaWorker, §2.3.2: `AdminPanel:Workers:WorkerTls`, env `WORKERS_PANEL_TLS_*`); `X-Api-Key`/`PGW_API_KEY` удалён (t03). `cert_thumbprint` — SHA-256 серта, фактически применённого на грани (из `/workers/api_tls/pgworker` §9.9 или env-фоллбека): панель сверяет с целевым сертом → статус applied/pending-restart на грани «Воркеры» (03 §3); поле опционально (старые инстансы не пишут — «неизвестно»). Панель кеширует в снапшоте и зовёт любой живой при мутациях §9; по этим же URL отдельный тик опрашивает `/healthz` (результат — `WorkerHealth[]`, алерт `worker-unhealthy` 03 §4) |
 | `/pgworker/backups/<C>/…` | JSON-статусы полных/WAL (канон — [19-backups.md](../19-backups.md) §4) | `BackupsInfo` (§3, t02) | подсистема бэкапов (arch/19): панель ЧИТАЕТ статусы полных и WAL-цепочек; суточный алерт `backup-full-stale` per-shard (возраст последнего ВАЛИДНОГО COMPLETED-полного — `verify ≠ FAILED`, t04 — > `full_max_age_sec` политики кластера, дефолт 86400) — t02, WAL-алерты («разрыв/отставание цепочки») — t03, ретенционные алерты `backup-storage-quota` (WARN/CRIT по `state` ключа `/pgworker/backups/storage`) и `backup-deleting-stuck` (warning: `DELETING` старше порога `Alerts:Backups:DeletingStaleSec`, дефолт 21600) — t06, алерт `backup-verify-failed` (critical, провал verify полного — `verify.error`) — t04; UI-грань бэкапов — t08 (статусы полных/WAL/restore джойнятся с S3-инвентарём в сверке грани); пишет префикс ТОЛЬКО PgWorker |
 | `/pgworker/backups/storage` | JSON `{"used_bytes":<n>,"quota_bytes"?<n>,"used_percent"?<n>,"state":"OK"\|"WARN"\|"CRIT","updated_unix":<unix>}` (канон — arch/19 §4) | `BackupsInfo.Storage` (t06) | занятость bucket бэкапов установки: пишет ретенционный проход PgWorker (t06; ключ глобальный — вне per-cluster префиксов); панель читает в снапшот префикса `/pgworker/backups/` и зажигает `backup-storage-quota` по `state` (алерт уровня каталога 03 §4); отображается в грани "Хранилище бэкапов" (t08: карточка «Место» — used/quota/вердикт воркера + штамп live-инвентаря) |
+| `/pgworker/backups/orphan-holds/<C>/<X>` | JSON `{"set_unix":<unix>,"set_by":"operator"\|"panel"}` (канон — arch/19 §4, reliability t04) | `BackupOrphansInfo.Holds` (§3) | hold-флаги сирот (DR-hold): панель читает для индикации (бейдж «hold», текст алерта `backup-orphan`) и ставит/снимает через мутации §9.10 — API PgWorker, панель в etcd не пишет; sweeper воркера гасит ключи несирот (воскрес/исчез) |
+| `/pgworker/backups/orphan-deletes/<C>/<X>` | JSON `{"requested_unix":<unix>,"requested_by":"operator"\|"panel"}` (канон — arch/19 §4, reliability t04) | `BackupOrphansInfo.DeleteRequests` (§3) | заявки явного удаления сирот: панель читает (индикация «к удалению» до прохода sweeper'а) и ставит через confirm-мутацию §9.10 (API PgWorker); исполняет sweeper воркера ближайшим проходом, заявка гасится вместе с записью |
 
 ### 2.3.2. `/kafkaworker/api/…` — дискавери API KafkaWorker
 
@@ -185,7 +187,11 @@ health + ОДИН полный list-v2 bucket → агрегаты дерева 
 `GET /api/backups/objects` (пагинация, единственный прямой выход на запрос).
 Сверка S3↔etcd — отображение (полные без ключа / ключи без объектов / сироты с
 джойном на реестр /pgworker/backups/orphans): находит и удаляет сироты
-супервизор воркера (arch/19 §4) — панель ничего не удаляет.
+супервизор воркера (arch/19 §4) — панель ничего не удаляет. DR-hold
+(reliability t04): сирота с валидным полным (`has_valid_full` записи реестра)
+или живым hold-ключом TTL-автоматикой не удаляется — панель показывает
+бейджи защиты («полный/hold»), кнопку явного удаления (confirm, §9.10) и
+текст алерта `backup-orphan` различает защищённые/незащищенные записи.
 
 ## 3. Модель снапшота (С#-типы, проект `Core`)
 
@@ -841,6 +847,36 @@ env-серте) / `unknown` (инстанс не сообщает thumbprint).
 SHA-256(fingerprint) с сертом из `/workers/api_tls/<worker>` — панель
 доверяет сертам, которые сама записала (self-signed генерация не рвёт
 mTLS-доступ панели к воркеру после перезапуска).
+
+### 9.10. Сироты бэкапов: hold / unhold / явное удаление (reliability t04)
+
+Три мутации панели в грани «Хранилище бэкапов» (список сирот) — все прокси в
+API PgWorker (арх-канон arch/19 §4; панель в etcd не пишет):
+
+- **hold**: `POST /api/backups/orphans/{C}/{X}/hold` — постановка hold-ключа;
+  идемпотентен (повтор → тот же 204);
+- **unhold**: `DELETE /api/backups/orphans/{C}/{X}/hold` — снятие hold-ключа;
+  идемпотентен (нет ключа → 204);
+- **delete**: `POST /api/backups/orphans/{C}/{X}/delete` c телом
+  `{"confirm":"<C>/<X>"}` — заявка явного удаления (мисматч confirm → 400);
+  осознанная потеря DR-источника — UI требует ввода префикса, как confirm
+  restore.
+
+Протокол (гварды — на воркере, панель дублирует для UX по снапшоту):
+(1) префикс — сирота реестра `/pgworker/backups/orphans`, иначе 404;
+(2) state записи `DELETING` → 409 «удаление уже идёт» (hold ставить поздно);
+(3) повторная заявка delete — идемпотентный put поверх (не 409: заявка —
+состояние «хочу удалить», а не эксклюзивный клэйм); (4) сбой etcd → 503 без
+компенсаций (повтор идемпотентен). Исполнение асинхронно: sweeper воркера
+следующим проходом (IntervalSec) доводит удаление; до прохода панель видит
+заявку (`DeleteRequests`) и помечает сироту «к удалению».
+
+UI грани «Хранилище бэкапов»: в строке сироты — бейджи защиты
+(`has_valid_full` → «полный: защита», hold → «hold»), остаток TTL только у
+незащищённых, кнопки Hold/Unhold (без подтверждения — обратимы) и Delete
+(confirm-модал «введи `<C>/<X>`»). Алерт `backup-orphan` различает:
+защищённые — «удаление только явной командой» (Remedy OperatorRunbook),
+незащищённые — прежний остаток TTL.
 
 ## 10. Kafka (чтение + записи панели)
 
