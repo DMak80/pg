@@ -9,7 +9,8 @@ public sealed record ClusterInfo(
     ClusterState State,
     IReadOnlyList<ShardInfo> Shards,
     IReadOnlyList<BucketInfo> Buckets,
-    IReadOnlyList<HealRecord> Heals)
+    IReadOnlyList<HealRecord> Heals,
+    bool SynchronousModeStrict = true) // t06: config.synchronous_mode_strict; отсутствие/не-bool = true
 {
     // Пометка «incomplete» (arch/02 §7): префикс есть, config отсутствует/пуст.
     public bool Incomplete => DbName is null || BucketsCount <= 0;

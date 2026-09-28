@@ -160,7 +160,7 @@ public static class ClustersParser
 
     private static ClusterInfo BuildCluster(ClusterAcc acc, List<KeyParseError> errors)
     {
-        var (dbName, bucketsCount, createdUnix, state) = ParseConfig(acc.Name, acc.ConfigRaw, errors);
+        var (dbName, bucketsCount, createdUnix, state, syncStrict) = ParseConfig(acc.Name, acc.ConfigRaw, errors);
 
         var shards = acc.Shards
             .OrderBy(pair => pair.Key, StringComparer.Ordinal)
@@ -169,20 +169,25 @@ public static class ClustersParser
 
         var buckets = BuildBuckets(bucketsCount, acc, errors);
 
-        return new ClusterInfo(acc.Name, dbName, bucketsCount, createdUnix, state, shards, buckets, acc.Heals);
+        return new ClusterInfo(acc.Name, dbName, bucketsCount, createdUnix, state, shards, buckets, acc.Heals, syncStrict);
     }
 
-    private static (string? DbName, int BucketsCount, long? CreatedUnix, ClusterState State) ParseConfig(
+    private static (string? DbName, int BucketsCount, long? CreatedUnix, ClusterState State, bool SyncStrict) ParseConfig(
         string cluster, string? raw, List<KeyParseError> errors)
     {
         if (raw is null)
-            return (null, 0, null, ClusterState.Active); // ключа нет — incomplete, не ошибка (arch/02 §7)
+            return (null, 0, null, ClusterState.Active, true); // ключа нет — incomplete, не ошибка (arch/02 §7)
 
         try
         {
             using var doc = JsonDocument.Parse(raw);
             var root = doc.RootElement;
             var buckets = JsonValues.ReadLong(root, "buckets");
+            // t06: отсутствие/не-bool = true (arch/02 §2.1) — тернарник, не &&-свёртка.
+            var syncStrict = root.TryGetProperty("synchronous_mode_strict", out var strict)
+                && strict.ValueKind is JsonValueKind.True or JsonValueKind.False
+                    ? strict.GetBoolean()
+                    : true;
             return (
                 JsonValues.ReadString(root, "dbname"),
                 buckets is null ? 0 : (int)buckets.Value,
@@ -192,12 +197,13 @@ public static class ClustersParser
                     "NOT_INITIALIZED" => ClusterState.NotInitialized,
                     "TO_REMOVE" => ClusterState.ToRemove, // arch/02 §9.4
                     _ => ClusterState.Active, // отсутствие state = Active (arch/02 §9)
-                });
+                },
+                syncStrict);
         }
         catch (JsonException)
         {
             errors.Add(new KeyParseError($"/clusters/{cluster}/config", "битый JSON config"));
-            return (null, 0, null, ClusterState.Active);
+            return (null, 0, null, ClusterState.Active, true);
         }
     }
 
