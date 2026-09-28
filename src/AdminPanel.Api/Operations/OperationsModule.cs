@@ -176,6 +176,39 @@ public static class OperationsModule
             return Error(result);
         });
 
+        // POST /api/backups/orphans/{cluster}/{shard}/hold — hold-флаг сироты
+        // (t04, 02 §9.10): прокси в API PgWorker; 204 (ошибки — ProblemDetails
+        // воркера как есть, недоступность API — 503).
+        endpoints.MapPost("/api/backups/orphans/{cluster}/{shard}/hold", async (
+            string cluster, string shard, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<HoldOrphanCommand, OrphanMutatedDto>(
+                new HoldOrphanCommand(cluster, shard, user.Identity?.Name ?? "adminpanel"), ct);
+            return result.IsSuccess ? Results.NoContent() : Error(result);
+        });
+
+        // DELETE /api/backups/orphans/{cluster}/{shard}/hold — снятие hold
+        // (t04, 02 §9.10): прокси; 204 идемпотентен.
+        endpoints.MapDelete("/api/backups/orphans/{cluster}/{shard}/hold", async (
+            string cluster, string shard, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<UnholdOrphanCommand, OrphanMutatedDto>(
+                new UnholdOrphanCommand(cluster, shard), ct);
+            return result.IsSuccess ? Results.NoContent() : Error(result);
+        });
+
+        // POST /api/backups/orphans/{cluster}/{shard}/delete — заявка явного
+        // удаления сироты (t04, 02 §9.10): confirm подставляет панель (сервер
+        // воркера перепроверит); 202 + DTO воркера.
+        endpoints.MapPost("/api/backups/orphans/{cluster}/{shard}/delete", async (
+            string cluster, string shard, ClaimsPrincipal user, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<DeleteOrphanCommand, OrphanDeleteAcceptedDto>(
+                new DeleteOrphanCommand(cluster, shard, $"{cluster}/{shard}",
+                    user.Identity?.Name ?? "adminpanel"), ct);
+            return result.IsSuccess ? Results.Accepted((string?)null, result.Value) : Error(result);
+        });
+
         return endpoints;
     }
 
