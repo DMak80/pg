@@ -7,7 +7,9 @@ namespace AdminPanel.Api.Operations;
 // Тело POST /api/clusters (arch/03 §1.1): биндится Minimal API как JSON и
 // уходит в API PgWorker как есть (панель не валидирует — источник истины
 // воркер, spec §3.4). Sharded: отсутствует/null = true — совместимость
-// старых клиентов (arch/02 §9.3; нормализует воркер).
+// старых клиентов (arch/02 §9.3; нормализует воркер). SynchronousModeStrict:
+// camelCase-биндинг/сериализация Web даёт wire-имя synchronousModeStrict
+// 1:1 с воркером (t06, arch/03 §1.1).
 public sealed record CreateClusterRequest(
     string Name,
     int Buckets,
@@ -16,7 +18,8 @@ public sealed record CreateClusterRequest(
     decimal RequestCpu,
     int RequestMem,
     int RequestDisk,
-    bool? Sharded = null);
+    bool? Sharded = null,
+    bool? SynchronousModeStrict = null);
 
 // Команда создания кластера — прокси в API PgWorker (arch/14 §1.1): панель
 // не пишет в etcd; воркер выполняет claim-txn/PUT/компенсацию 1:1 (§9.2).

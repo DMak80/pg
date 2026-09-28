@@ -337,4 +337,22 @@ public class ClustersMappersTests
         with.Work.LastError.Should().BeNull();
         without.Work.Should().BeNull();
     }
+    // AAA (t06): поле strict проходит в сводку и детали кластера.
+    [Fact]
+    public void Map_ClusterCarriesSynchronousModeStrict()
+    {
+        // Arrange — ClusterInfo со strict=false (конструктор файла-фикстуры).
+        var cluster = TestSnapshots.FullCluster() with { SynchronousModeStrict = false };
+
+        // Act — ClustersMapper.Map / ClusterDetailsMapper.Map.
+        var summary = ClustersMapper.Map([cluster]).Single();
+        var details = ClusterDetailsMapper.Map(cluster, NowUnix, null, null, [], [], [], null);
+
+        // Assert — DTO.SynchronousModeStrict == false (сводка и детали);
+        // дефолт фикстуры (true) проходит как true.
+        summary.SynchronousModeStrict.Should().BeFalse();
+        details.SynchronousModeStrict.Should().BeFalse();
+        ClustersMapper.Map([TestSnapshots.FullCluster()]).Single()
+            .SynchronousModeStrict.Should().BeTrue();
+    }
 }

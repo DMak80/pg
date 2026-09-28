@@ -18,6 +18,7 @@ public sealed record ClusterDto(
     bool Incomplete,
     string State,
     bool Sharded,
+    bool SynchronousModeStrict, // t06: снапшот-поле (config.synchronous_mode_strict)
     IReadOnlyList<ShardDto> Shards,
     IReadOnlyList<BucketDto> Buckets,
     IReadOnlyList<MoveTicketDto> PendingMoves,   // очередь заявок переездов кластера (arch/03 §2)
@@ -149,6 +150,7 @@ public static class ClusterDetailsMapper
             // sharded — вычисляемое поле отображения (arch/03 §2): false ⟺ ровно 1
             // бакет и не более 1 шарда; признак «тип БД» в etcd не хранится (02 §9.1).
             !(cluster.BucketsCount == 1 && cluster.Shards.Count <= 1),
+            cluster.SynchronousModeStrict, // t06
             [.. cluster.Shards.Select(s =>
             {
                 // Заявка шарда — join scope "<C>-<X>" (все три ключа обязательны)
