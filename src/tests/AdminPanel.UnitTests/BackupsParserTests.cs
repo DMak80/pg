@@ -480,6 +480,34 @@ public void Parse_OrphansMalformedJson_KeyParseError()
     result.Errors.Should().ContainSingle().Which.Key.Should().Be("/pgworker/backups/orphans");
 }
 
+// AAA (AC7/AC9): реестр с has_valid_full + hold/заявки парсятся в снапшот;
+// отсутствие has_valid_full → false (толерантный читатель); битые hold/заявки —
+// KeyParseError + пропуск, реестр не теряется
+[Fact]
+public void Parse_держит_полных_и_заявки_толерантно()
+{
+    // Arrange — orphans c has_valid_full, hold-ключ, заявка, битый hold
+    var kvs = new List<Kv>
+    {
+        new("/pgworker/backups/orphans", """{"orphans":[{"prefix":"g/s1","kind":"cluster","size_bytes":1,"first_seen_unix":2,"state":"OBSERVED","has_valid_full":true},{"prefix":"g/s2","kind":"cluster","size_bytes":1,"first_seen_unix":2,"state":"OBSERVED"}],"updated_unix":3}""", 1),
+        new("/pgworker/backups/orphan-holds/g/s1", """{"set_unix":5,"set_by":"panel"}""", 2),
+        new("/pgworker/backups/orphan-deletes/g/s2", """{"requested_unix":6,"requested_by":"operator"}""", 3),
+        new("/pgworker/backups/orphan-holds/g/s3", "{не json", 4),
+    };
+
+    // Act
+    var result = BackupsParser.Parse(kvs);
+
+    // Assert
+    var orphans = result.Orphans!;
+    orphans.Orphans.Single(o => o.Prefix == "g/s1").HasValidFull.Should().BeTrue();
+    orphans.Orphans.Single(o => o.Prefix == "g/s2").HasValidFull.Should().BeFalse("поля нет — старый формат");
+    orphans.Holds.Should().ContainKey("g/s1");
+    orphans.Holds!["g/s1"].SetBy.Should().Be("panel");
+    orphans.DeleteRequests.Should().ContainKey("g/s2");
+    result.Errors.Should().ContainSingle(e => e.Key == "/pgworker/backups/orphan-holds/g/s3");
+}
+
 // AAA: full-ключ собирает полный факт per-full для сверки (t08): state/verify/size
 [Fact]
 public void Parse_FullKey_CollectsFullInfo()

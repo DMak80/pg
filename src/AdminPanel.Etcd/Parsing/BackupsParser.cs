@@ -37,11 +37,52 @@ public static class BackupsParser
         var fulls = new Dictionary<string, Dictionary<string, List<BackupFullInfo>>>();
         BackupStorageInfo? storage = null;
         BackupOrphansInfo? orphans = null;
+        // t04: hold/заявки сирот (arch/19 §4) — per-префиксные ключи; собираем
+        // ВСЕГДА, в модель кладём только при валидном orphans-ключе (без реестра
+        // не информативны); сборка BackupOrphansInfo — ПОСЛЕ цикла: ключи в
+        // списке не упорядочены (hold может идти раньше/позже orphans).
+        List<BackupOrphanInfo>? orphansEntries = null;
+        long orphansUpdated = 0;
+        var holds = new Dictionary<string, OrphanHoldInfo>(StringComparer.Ordinal);
+        var deleteRequests = new Dictionary<string, OrphanDeleteRequestInfo>(StringComparer.Ordinal);
         var verifyFailures = new Dictionary<string, Dictionary<string, ShardVerifyFailure>>();
         var errors = new List<KeyParseError>();
         foreach (var kv in kvs)
         {
             var segments = kv.Key.Split('/');
+
+            // Hold/заявки сирот (t04, arch/19 §4): 6 сегментов — ДО гварда длины
+            // (гвард "< 5 → continue" их не пропускает, но ветка orphans-ключа —
+            // раньше; единый ранний разбор глобальных ключей t04). Формат
+            // {"set_unix":T,"set_by":"…"} / {"requested_unix":T,"requested_by":"…"};
+            // битые — KeyParseError + пропуск (толерантный читатель).
+            if (segments.Length == 6 && segments[1] == "pgworker" && segments[2] == "backups"
+                && (segments[3] == "orphan-holds" || segments[3] == "orphan-deletes"))
+            {
+                var isHold = segments[3] == "orphan-holds";
+                var orphanPrefix = $"{segments[4]}/{segments[5]}";
+                try
+                {
+                    using var doc = JsonDocument.Parse(kv.Value);
+                    var root = doc.RootElement;
+                    var unix = Long(root, isHold ? "set_unix" : "requested_unix");
+                    var by = String(root, isHold ? "set_by" : "requested_by");
+                    if (unix is null || by is null)
+                        errors.Add(new(kv.Key, isHold
+                            ? "битый hold-ключ сироты (set_unix/set_by)"
+                            : "битый ключ заявки сироты (requested_unix/requested_by)"));
+                    else if (isHold)
+                        holds[orphanPrefix] = new OrphanHoldInfo(orphanPrefix, unix.Value, by);
+                    else
+                        deleteRequests[orphanPrefix] = new OrphanDeleteRequestInfo(orphanPrefix, unix.Value, by);
+                }
+                catch (JsonException e)
+                {
+                    errors.Add(new(kv.Key, $"битый JSON hold/заявки сироты: {e.Message}"));
+                }
+
+                continue;
+            }
 
             // Глобальный ключ /pgworker/backups/storage (t06): ДО гварда длины —
             // у него 4 сегмента, гвард "< 5 → continue" его не пропускает.
@@ -111,14 +152,20 @@ public static class BackupsParser
                                 break;
                             }
 
-                            entries.Add(new BackupOrphanInfo(prefix, kind, size.Value, seen.Value, state));
+                            // has_valid_full — t04 (DR-hold): отсутствие поля (старый
+                            // воркер) — валидно, false (ближайший проход пересчитает).
+                            entries.Add(new BackupOrphanInfo(prefix, kind, size.Value, seen.Value, state,
+                                Bool(item, "has_valid_full") ?? false));
                         }
 
                         if (malformed)
                             errors.Add(new(kv.Key,
                                 "битая запись сироты (prefix/kind/size_bytes/first_seen_unix/state)"));
                         else
-                            orphans = new BackupOrphansInfo(entries, updated.Value);
+                        {
+                            orphansEntries = entries;
+                            orphansUpdated = updated.Value;
+                        }
                     }
                 }
                 catch (JsonException e)
@@ -398,6 +445,14 @@ public static class BackupsParser
                             .OrderBy(f => f.Id, StringComparer.Ordinal).ToList())
                     : null))
             .ToList();
+        // t04: реестр сирот собирается после цикла — с джойном hold/заявок
+        // (ключи произвольного порядка); orphans-ключа нет/битый → null
+        // (hold/заявки без реестра не информативны — только errors).
+        orphans = orphansEntries is null
+            ? null
+            : new BackupOrphansInfo(orphansEntries, orphansUpdated,
+                holds.Count > 0 ? holds : null,
+                deleteRequests.Count > 0 ? deleteRequests : null);
         return new(clusters, errors, storage, orphans);
     }
 
@@ -420,6 +475,13 @@ public static class BackupsParser
            && v.ValueKind == JsonValueKind.Number
            && v.TryGetInt64(out var parsed)
             ? parsed
+            : null;
+
+    // t04 (DR-hold): has_valid_full записи сироты; отсутствие/не-bool — null (валидно).
+    private static bool? Bool(JsonElement root, string name)
+        => root.TryGetProperty(name, out var v)
+           && v.ValueKind is JsonValueKind.True or JsonValueKind.False
+            ? v.GetBoolean()
             : null;
 
     private static double? Double(JsonElement root, string name)
