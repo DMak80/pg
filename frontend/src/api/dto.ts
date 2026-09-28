@@ -22,6 +22,9 @@ export interface CreateClusterRequestDto {
   requestCpu: number;
   requestMem: number;
   requestDisk: number;
+  // t06 (arch/03 §1.1): опционально — отсутствие = true (durability-first);
+  // false допускает replicas=1 (валидация зеркалится на клиенте).
+  synchronousModeStrict?: boolean;
 }
 
 export interface ClusterCreatedDto {
@@ -231,6 +234,8 @@ export interface ClusterSummaryDto {
   // Вычисляется сервером (arch/03 §2), как в деталях: false ⟺ 1 бакет и ≤1
   // шард — список рисует прочерк в «Бакеты»/«Шарды».
   sharded: boolean;
+  // t06: снапшот-поле (config.synchronous_mode_strict) — бейдж режима в списке.
+  synchronousModeStrict: boolean;
 }
 
 // GET /api/clusters/{cluster} — детали.
@@ -244,6 +249,8 @@ export interface ClusterDto {
   // Вычисляется сервером (arch/03 §2): false ⟺ 1 бакет и ≤1 шард —
   // нешардированная БД; скрывает вкладку «Бакеты» на странице деталей.
   sharded: boolean;
+  // t06: снапшот-поле (config.synchronous_mode_strict) — бейдж + переключатель.
+  synchronousModeStrict: boolean;
   shards: ShardDto[];
   buckets: BucketDto[];
   pendingMoves: MoveTicketDto[]; // очередь заявок переездов (arch/02 §2.3.1)

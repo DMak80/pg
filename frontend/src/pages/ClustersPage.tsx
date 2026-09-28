@@ -86,6 +86,10 @@ function ClusterRow({ cluster }: { cluster: ClusterSummaryDto }) {
       </Table.Td>
       <Table.Td>
         {cluster.incomplete ? <Badge color="yellow" variant="light">incomplete</Badge> : null}
+        {/* t06: бейдж режима strict/availability (arch/03 §3, компактный) */}
+        {cluster.synchronousModeStrict
+          ? <Badge color="red" variant="light" ml={cluster.incomplete ? 5 : 0}>strict</Badge>
+          : <Badge color="teal" variant="light" ml={cluster.incomplete ? 5 : 0}>avail.</Badge>}
         {cluster.notInitialized ? (
           <Tooltip label="кластер заявлен, ноды не подняты">
             <Badge color="gray" variant="light" ml={cluster.incomplete ? 5 : 0}>не инициализирован</Badge>

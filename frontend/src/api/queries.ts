@@ -212,6 +212,18 @@ export function rotateClusterSecrets(cluster: string): Promise<ClusterSecretsRot
     { method: 'POST' });
 }
 
+// t06: мутация strict-режима кластера (02 §9.10; 204, ошибки — ProblemDetails);
+// применение к живому Patroni — конвергенция DCS воркера.
+export async function updateClusterConfig(
+  cluster: string,
+  body: { synchronousModeStrict: boolean },
+): Promise<void> {
+  await apiFetch<void>(`/api/clusters/${encodeURIComponent(cluster)}/config`, {
+    method: 'PUT',
+    body,
+  });
+}
+
 // ===== Kafka-домен (arch/03 §7.1) =====
 
 export const kafkaQueryKeys = {

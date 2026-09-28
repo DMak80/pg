@@ -15,8 +15,8 @@ interface FormState {
 
 const EMPTY: FormState = { replicas: 2, requestCpu: 2, requestMem: 8, requestDisk: 100 };
 
-export function AddShardModal({ cluster, opened, onClose }: {
-  cluster: string; opened: boolean; onClose: () => void;
+export function AddShardModal({ cluster, strict, opened, onClose }: {
+  cluster: string; strict: boolean; opened: boolean; onClose: () => void;
 }) {
   const queryClient = useQueryClient();
   const [form, setForm] = useState<FormState>(EMPTY);
@@ -35,11 +35,14 @@ export function AddShardModal({ cluster, opened, onClose }: {
     },
   });
 
-  // Зеркало серверной валидации §9.3 (replicas/cpu/mem/disk — те же границы).
+  // Зеркало серверной валидации §9.3 (replicas/cpu/mem/disk — те же границы);
+  // t06: strict-кластер — минимум 2 реплики (серверная — arch/14 §5 G).
   function validate(): boolean {
     const errors: Record<string, string> = {};
     if (!Number.isInteger(form.replicas) || form.replicas < 1 || form.replicas > 26)
       errors.replicas = 'целое 1..26 (1 = только мастер)';
+    if (strict && form.replicas < 2)
+      errors.replicas = 'strict-кластер: минимум 2 реплики';
     if (form.requestCpu < 0.01 || form.requestCpu > 64) errors.requestCpu = '0.01..64';
     if (!Number.isInteger(form.requestMem) || form.requestMem < 1 || form.requestMem > 65536)
       errors.requestMem = 'целое 1..65536';
@@ -56,9 +59,11 @@ export function AddShardModal({ cluster, opened, onClose }: {
     <Modal opened={opened} onClose={onClose} title="Добавить шард" centered>
       <Stack gap="sm">
         <Text size="sm" c="dimmed">Имя генерируется автоматически (shard&lt;N+1&gt;).</Text>
-        <NumberInput label="Реплики" min={1} max={26} value={form.replicas}
+        {/* t06: у strict-кластера поле «Реплики» — минимум 2 */}
+        <NumberInput label="Реплики" min={strict ? 2 : 1} max={26} value={form.replicas}
           description="2 = мастер + реплика"
           error={fieldErrors.replicas} onChange={(v) => set('replicas', Number(v ?? 0))} />
+        {strict ? <Text size="sm" c="dimmed">кластер в strict-режиме</Text> : null}
         <Text size="sm" c="dimmed">Ресурсы нод (заявка, на каждую ноду)</Text>
         <Group grow gap="sm">
           <NumberInput label="CPU (ядра)" min={0.01} max={64} step={0.1} decimalScale={2}

@@ -11,9 +11,11 @@ import { RemoveShardButton } from './RemoveShardButton';
 
 // canScale — кластер Active (кнопки скрыты для NOT_INITIALIZED/TO_REMOVE —
 // симметрия с «Удалить кластер», t06 spec §6.3); bucketCounts — счётчик
-// бакетов шарда по routing для диалога удаления.
-export function ShardsTab({ cluster, canScale, shards, bucketCounts }: {
+// бакетов шарда по routing для диалога удаления; strict — per-cluster режим
+// (t06): add-shard форма ограничивает реплики минимумом 2.
+export function ShardsTab({ cluster, canScale, shards, bucketCounts, strict }: {
   cluster: string; canScale: boolean; shards: ShardDto[]; bucketCounts: Record<string, number>;
+  strict: boolean;
 }) {
   const [addOpened, setAddOpened] = useState(false);
   const probesOff = shards.every((s) => s.runtime === null);
@@ -25,7 +27,8 @@ export function ShardsTab({ cluster, canScale, shards, bucketCounts }: {
         {canScale ? (
           <Group gap="xs">
             <Button size="xs" variant="light" onClick={() => setAddOpened(true)}>Добавить шард</Button>
-            <AddShardModal cluster={cluster} opened={addOpened} onClose={() => setAddOpened(false)} />
+            <AddShardModal cluster={cluster} strict={strict} opened={addOpened}
+              onClose={() => setAddOpened(false)} />
           </Group>
         ) : null}
       </Group>

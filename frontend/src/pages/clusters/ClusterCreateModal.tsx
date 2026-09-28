@@ -12,6 +12,7 @@ import {
   Paper,
   SegmentedControl,
   Stack,
+  Switch,
   Text,
   TextInput,
 } from '@mantine/core';
@@ -31,6 +32,7 @@ interface FormState {
   buckets: number;
   shards: number;
   replicas: number;
+  syncStrict: boolean; // t06: дефолт включён (durability-first)
   requestCpu: number;
   requestMem: number;
   requestDisk: number;
@@ -42,6 +44,7 @@ const EMPTY: FormState = {
   buckets: 16,
   shards: 2,
   replicas: 2,
+  syncStrict: true, // t06: дефолт strict (спека §3.1 п.5)
   requestCpu: 2,
   requestMem: 8,
   requestDisk: 100,
@@ -77,6 +80,10 @@ export function ClusterCreateModal({ opened, onClose }: { opened: boolean; onClo
     }
     if (!Number.isInteger(form.replicas) || form.replicas < 1 || form.replicas > 26)
       errors.replicas = 'целое 1..26 (1 = только мастер)';
+    // t06: strict + replicas=1 → ошибка у поля реплик (зеркало серверной 02 §9.3);
+    // при выключенном strict ограничений нет.
+    if (form.syncStrict && form.replicas < 2)
+      errors.replicas = 'strict-режим требует реплик ≥ 2 (выключите strict для 1)';
     if (form.requestCpu < 0.01 || form.requestCpu > 64) errors.requestCpu = '0.01..64';
     if (!Number.isInteger(form.requestMem) || form.requestMem < 1 || form.requestMem > 65536)
       errors.requestMem = 'целое 1..65536';
@@ -89,13 +96,25 @@ export function ClusterCreateModal({ opened, onClose }: { opened: boolean; onClo
   function submit() {
     if (!validate()) return;
     // Тело запроса: при sharded=false поля бакетов/шардов не передаются вовсе —
-    // сервер нормализует в 1/1 (arch/02 §9.3).
+    // сервер нормализует в 1/1 (arch/02 §9.3). synchronousModeStrict — обе ветки
+    // (t06: форма всегда несёт явное значение).
     const body: CreateClusterRequestDto = form.sharded
-      ? { ...form }
+      ? {
+          name: form.name,
+          sharded: true,
+          buckets: form.buckets,
+          shards: form.shards,
+          replicas: form.replicas,
+          synchronousModeStrict: form.syncStrict,
+          requestCpu: form.requestCpu,
+          requestMem: form.requestMem,
+          requestDisk: form.requestDisk,
+        }
       : {
           name: form.name,
           sharded: false,
           replicas: form.replicas,
+          synchronousModeStrict: form.syncStrict,
           requestCpu: form.requestCpu,
           requestMem: form.requestMem,
           requestDisk: form.requestDisk,
@@ -149,6 +168,13 @@ export function ClusterCreateModal({ opened, onClose }: { opened: boolean; onClo
         <NumberInput label="Реплики" min={1} max={26} value={form.replicas}
           description="2 = мастер + реплика"
           error={fieldErrors.replicas} onChange={(v) => set('replicas', Number(v ?? 0))} />
+        {/* t06: strict-режим — дефолт включён; выключение допускает replicas=1 */}
+        <Switch
+          label="Синхронный strict-режим (блокировать запись при потере sync-реплики)"
+          description="strict: без синхронной реплики запись блокируется (нет потерь); требует реплик ≥ 2"
+          checked={form.syncStrict}
+          onChange={(e) => set('syncStrict', e.currentTarget.checked)}
+        />
         <Text size="sm" c="dimmed">Ресурсы нод (заявка, на каждую ноду)</Text>
         <Group grow gap="sm">
           <NumberInput label="CPU (ядра)" min={0.01} max={64} step={0.1} decimalScale={2}
