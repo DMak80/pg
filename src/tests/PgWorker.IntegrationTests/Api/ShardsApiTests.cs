@@ -20,8 +20,9 @@ public class ShardsApiTests(PgApiFixture fixture)
     [Fact]
     public async Task AddShard_ActiveCluster_201ShardMaxPlusOne()
     {
-        // Arrange — кластер 4×2 в каноне после provisioning (config без state)
-        await ApiTestSeed.SeedActiveClusterAsync(Etcd, "scale", buckets: 4, shards: 2);
+        // Arrange — кластер 4×2 в каноне после provisioning (config без state;
+        // strict выключен — механика max+1 не про strict-гвард, t06)
+        await ApiTestSeed.SeedActiveClusterAsync(Etcd, "scale", buckets: 4, shards: 2, syncStrict: false);
         var ct = TestContext.Current.CancellationToken;
 
         // Act
@@ -67,8 +68,9 @@ public class ShardsApiTests(PgApiFixture fixture)
     [Fact]
     public async Task AddShard_NameTakenByOrphanReplicas_409()
     {
-        // Arrange — shard3 «существует» только replicas-ключом (не anchored)
-        await ApiTestSeed.SeedActiveClusterAsync(Etcd, "orphan", buckets: 4, shards: 2);
+        // Arrange — shard3 «существует» только replicas-ключом (не anchored);
+        // strict выключен — кейс про 409-механику клэйма, не про strict-гвард (t06)
+        await ApiTestSeed.SeedActiveClusterAsync(Etcd, "orphan", buckets: 4, shards: 2, syncStrict: false);
         var ct = TestContext.Current.CancellationToken;
         await Etcd.Gateway.PutAsync(Etcd.Endpoint, "/clusters/orphan/shards/shard3/replicas",
             "1", null, ct);

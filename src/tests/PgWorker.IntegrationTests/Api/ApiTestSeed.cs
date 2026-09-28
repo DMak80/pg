@@ -6,14 +6,17 @@ namespace PgWorker.IntegrationTests.Api;
 // (образец панельных integration-тестов, канонические значения arch/02 §9.1).
 internal static class ApiTestSeed
 {
-    /// <summary>Кластер в каноне ПОСЛЕ provisioning (config без state = Active).</summary>
+    /// <summary>Кластер в каноне ПОСЛЕ provisioning (config без state = Active);
+    /// syncStrict — per-cluster опция synchronous_mode_strict в config (t06;
+    /// true — пишется явленно, false — выключенный strict, add-shard без ограничений).</summary>
     public static async Task SeedActiveClusterAsync(
-        EtcdFixture etcd, string name, int buckets = 4, int shards = 2, int replicas = 1)
+        EtcdFixture etcd, string name, int buckets = 4, int shards = 2, int replicas = 1,
+        bool syncStrict = true)
     {
         var ct = TestContext.Current.CancellationToken;
         var gw = etcd.Gateway;
         await gw.PutAsync(etcd.Endpoint, $"/clusters/{name}/config",
-            $$"""{"buckets":{{buckets}},"dbname":"{{name}}","created_unix":1756000000}""", null, ct);
+            $$"""{"buckets":{{buckets}},"dbname":"{{name}}","created_unix":1756000000,"synchronous_mode_strict":{{(syncStrict ? "true" : "false")}}}""", null, ct);
         for (var s = 1; s <= shards; s++)
         {
             await gw.PutAsync(etcd.Endpoint, $"/clusters/{name}/shards/shard{s}/replicas",
