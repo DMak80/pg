@@ -358,7 +358,7 @@ public class ClusterDriverTests
 
         // Act
         var result = await driver.EnsureNodeAsync(
-            Topology(addr), "shard1a", addr, Secrets, Etcd, resources: null, tuning: null, ct: CancellationToken.None);
+            Topology(addr), "shard1a", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
 
         // Assert: движок найден (create прошёл), PGW_NODE_HOST = advertised.
         result.IsSuccess.Should().BeTrue();
@@ -457,7 +457,7 @@ public class ClusterDriverTests
         var driver = NewPlainDriver(engine);
 
         // Act
-        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, ct: CancellationToken.None);
+        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
 
         // Assert: ни create, ни start — только сверка списком и инспектом
         result.IsSuccess.Should().BeTrue();
@@ -483,7 +483,7 @@ public class ClusterDriverTests
         var driver = NewPlainDriver(engine);
 
         // Act
-        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, ct: CancellationToken.None);
+        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
 
         // Assert: stop → create → start с планом портов (PROVISIONING-фаза, volume жив).
         result.IsSuccess.Should().BeTrue();
@@ -508,7 +508,7 @@ public class ClusterDriverTests
         var driver = new PlainClusterDriver([new HostEndpoint("h1", "fake://h1")], new FakeFactory(engine), enableDoorman: false);
 
         // Act
-        await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, ct: CancellationToken.None);
+        await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
 
         // Assert: пересоздание (отсутствие ожидаемого биндинга = расхождение).
         engine.Calls.Select(c => c.Call).Should().Contain("create");
@@ -532,7 +532,7 @@ public class ClusterDriverTests
         var addr = new NodeAddress("h1", new NodePorts(15432, 18008, 16432), Object: "foreign-1");
 
         // Act
-        var result = await driver.EnsureNodeAsync(Topology(addr), "shard1a", addr, Secrets, Etcd, resources: null, tuning: null, ct: CancellationToken.None);
+        var result = await driver.EnsureNodeAsync(Topology(addr), "shard1a", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
 
         // Assert: никаких stop/remove/create.
         result.IsSuccess.Should().BeTrue();
@@ -548,7 +548,7 @@ public class ClusterDriverTests
         var driver = NewPlainDriver(engine);
 
         // Act
-        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, ct: CancellationToken.None);
+        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
 
         // Assert: имя pgw-<C>-<X>-<n>; env из SpiloEnvBuilder + PGW_NODE_HOST;
         // volume -data; publish тройка портов; затем start
@@ -589,7 +589,7 @@ public class ClusterDriverTests
 
         // Act
         var result = await driver.EnsureNodeAsync(
-            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning, CancellationToken.None);
+            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning, syncStrict: false, CancellationToken.None);
 
         // Assert: SPILO_CONFIGURATION — merge(PGTune ∪ канон) от tuning (не хардкод
         // "2GB"), exclude применён при сборке YAML; doorman = max_connections − 5.
@@ -610,7 +610,7 @@ public class ClusterDriverTests
             [new HostEndpoint("h1", "fake://h1")], new FakeFactory(engine), enableDoorman: false);
 
         // Act
-        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, ct: CancellationToken.None);
+        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
 
         // Assert: порт 6432 не публикуется, DOORMAN_CONFIG не генерируется
         result.IsSuccess.Should().BeTrue();
@@ -690,7 +690,7 @@ public class ClusterDriverTests
         var driver = new SwarmClusterDriver("fake://manager", new FakeFactory(engine), enableDoorman: true);
 
         // Act
-        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, ct: CancellationToken.None);
+        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
 
         // Assert: ServiceSpec с constraint по id найденной ноды; шаблон — как у plain
         result.IsSuccess.Should().BeTrue();
@@ -713,7 +713,7 @@ public class ClusterDriverTests
         var resources = new NodeResources(CpuCores: 2, MemoryBytes: 8L * 1024 * 1024 * 1024);
 
         // Act
-        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources, tuning: null, CancellationToken.None);
+        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources, tuning: null, syncStrict: false, CancellationToken.None);
 
         // Assert
         result.IsSuccess.Should().BeTrue();

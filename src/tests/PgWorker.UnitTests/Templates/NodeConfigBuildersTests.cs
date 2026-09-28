@@ -34,7 +34,7 @@ public class NodeConfigBuildersTests
         // Arrange: топология шарда из 2 нод и адреса etcd.
 
         // Act: генерируем env контейнера ноды.
-        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets);
+        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false);
 
         // Assert: SPILO_CONFIGURATION несёт канон таймингов (t09: полы Patroni
         // 4.x — ttl=20/loop_wait=1/retry_timeout=3), P3 (wal_level),
@@ -55,7 +55,7 @@ public class NodeConfigBuildersTests
         // Arrange: scope = "<C>-<X>" и список etcd-эндпоинтов.
 
         // Act: генерируем env контейнера ноды.
-        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets);
+        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false);
 
         // Assert: идентификация Patroni-кластера и адреса DCS на месте.
         env["SCOPE"].Should().Be("shop-shard1");
@@ -70,7 +70,7 @@ public class NodeConfigBuildersTests
         // Arrange: секреты установки (Д7).
 
         // Act: генерируем все три конфига.
-        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets);
+        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false);
         var doorman = DoormanConfigBuilder.Build("shop", 55);
         var haproxy = HaproxyConfigBuilder.Build(Topology);
 
@@ -93,7 +93,7 @@ public class NodeConfigBuildersTests
         var secrets = new InstallSecrets("su", "sb", "adm", "mov");
 
         // Act
-        var env = SpiloEnvBuilder.Build(topology, new EtcdEndpoints(["http://etcd:2379"]), secrets);
+        var env = SpiloEnvBuilder.Build(topology, new EtcdEndpoints(["http://etcd:2379"]), secrets, syncStrict: false);
 
         // Assert — app-пароль в env контейнера не попадает (spec §2.4, критерий 6);
         // bucket_admin-механизм env не тронут
@@ -127,7 +127,7 @@ public class NodeConfigBuildersTests
         var tuning = PgTune.Calculate(new PgTuneInput(
             18, PgTuneOsType.Linux, PgTuneDbType.Oltp, 8388608, PgTuneMemoryUnit.KB,
             4, 60, PgTuneHdType.Ssd, PgTuneDbSize.MidRam));
-        var spilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, tuning, DefaultExclude)["SPILO_CONFIGURATION"];
+        var spilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, tuning, DefaultExclude)["SPILO_CONFIGURATION"];
 
         // Assert: PGTune-параметры в YAML (в кавычках, стиль текущего блока).
         spilo.Should().Contain("max_connections: \"60\"");
@@ -172,7 +172,7 @@ public class NodeConfigBuildersTests
         var dwTuning = PgTune.Calculate(new PgTuneInput(
             18, PgTuneOsType.Linux, PgTuneDbType.Dw, 8388608, PgTuneMemoryUnit.KB,
             4, 60, PgTuneHdType.Ssd, PgTuneDbSize.MidRam));
-        var dwSpilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, dwTuning, DefaultExclude)["SPILO_CONFIGURATION"];
+        var dwSpilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, dwTuning, DefaultExclude)["SPILO_CONFIGURATION"];
 
         // Assert: wal_level: logical сохранён при dw.
         dwSpilo.Should().Contain("wal_level: logical");
@@ -190,7 +190,7 @@ public class NodeConfigBuildersTests
             72, 60, PgTuneHdType.Ssd, PgTuneDbSize.MidRam));
         tuning["io_method"].Should().Be("worker");
         tuning["io_workers"].Should().Be("18");
-        var spilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, tuning, DefaultExclude)["SPILO_CONFIGURATION"];
+        var spilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, tuning, DefaultExclude)["SPILO_CONFIGURATION"];
 
         // Assert: исключённые параметры в YAML отсутствуют вовсе (никаких
         // пустых значений), остальные PGTune-параметры на месте.
@@ -231,11 +231,26 @@ public class NodeConfigBuildersTests
         // Arrange/Act: tuning == null — прежний путь (изолированные пути/тесты).
 
         // Assert: хардкод-набор не изменён (константы канона остаются в нём).
-        var spilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets)["SPILO_CONFIGURATION"];
+        var spilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false)["SPILO_CONFIGURATION"];
         spilo.Should().Contain("max_connections: \"60\"");
         spilo.Should().Contain("shared_buffers: \"2GB\"");
         spilo.Should().Contain("random_page_cost: \"1.1\"");
         spilo.Should().Contain("# P15: 55 pg_doorman + 2 админ/mover + 3 reserved");
+    }
+
+    // AAA (t06, spec §3.4/§6.3): strict из параметра попадает в bootstrap.dcs
+    // SPILO_CONFIGURATION рядом с synchronous_mode; false сохраняет прежний текст.
+    [Theory]
+    [InlineData(true, "synchronous_mode_strict: true")]
+    [InlineData(false, "synchronous_mode_strict: false")]
+    public void Build_SyncStrict_GoesToBootstrapDcs(bool syncStrict, string expected)
+    {
+        // Arrange — топология/секреты фикстуры файла.
+        // Act
+        var spilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict)["SPILO_CONFIGURATION"];
+
+        // Assert
+        spilo.Should().Contain(expected).And.Contain("synchronous_mode: true");
     }
 
     [Fact]

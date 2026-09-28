@@ -414,7 +414,8 @@ public sealed class AdoptionProcess(
                     continue; // живой контейнер на месте — сверка EnsureNode-путей процессов
 
                 var ensured = await driver.EnsureNodeAsync(
-                    topology, nodeName, addr, secrets, etcdEndpoints, resources, tuning, ct);
+                    topology, nodeName, addr, secrets, etcdEndpoints, resources, tuning,
+                    snap.Config.SyncStrict, ct);
                 if (!ensured.IsSuccess)
                     return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(ensured.Error!);
                 recreated = true;

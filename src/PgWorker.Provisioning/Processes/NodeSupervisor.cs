@@ -276,7 +276,8 @@ public sealed class NodeSupervisor(
 
                 var ensured = await driver.EnsureNodeAsync(
                     topology, node.Name, topology.Nodes[node.Name], secrets,
-                    etcdForNodes ?? new EtcdEndpoints(endpoints), resources, tuning, ct);
+                    etcdForNodes ?? new EtcdEndpoints(endpoints), resources, tuning,
+                    snap.Config.SyncStrict, ct);
                 if (!ensured.IsSuccess)
                     return ensured;
             }
@@ -500,7 +501,8 @@ public sealed class NodeSupervisor(
             var tuning = pgtune.Create(resources);
             var ensured = await driver.EnsureNodeAsync(
                 topology, node.Name, addr, secrets,
-                etcdForNodes ?? new EtcdEndpoints(endpoints), resources, tuning, ct);
+                etcdForNodes ?? new EtcdEndpoints(endpoints), resources, tuning,
+                snap.Config.SyncStrict, ct);
             if (!ensured.IsSuccess)
                 return ensured;
 
@@ -653,7 +655,8 @@ public sealed class NodeSupervisor(
                 var tuning = pgtune.Create(resources);
                 var ensured = await driver.EnsureNodeAsync(
                     topology, name, addr, secrets,
-                    etcdForNodes ?? new EtcdEndpoints(endpoints), resources, tuning, ct);
+                    etcdForNodes ?? new EtcdEndpoints(endpoints), resources, tuning,
+                    snap.Config.SyncStrict, ct);
                 if (!ensured.IsSuccess)
                     return ensured;
                 var rebuilding = await PutAsync(

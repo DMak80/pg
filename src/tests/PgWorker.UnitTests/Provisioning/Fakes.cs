@@ -223,6 +223,7 @@ internal static class Fakes
 
         public readonly List<string> EnsuredNodes = [];
         public readonly List<(string Node, NodeResources? Resources)> EnsuredDetails = [];
+        public readonly List<bool> EnsuredSyncStrict = []; // t06: strict из EnsureNode-вызовов
         public readonly List<string> RemovedNodes = [];
         public readonly List<string> StoppedNodes = [];
         public readonly List<(string Node, IReadOnlyList<string> Cmd)> Executed = [];
@@ -295,12 +296,14 @@ internal static class Fakes
             => Task.FromResult(Result<IReadOnlySet<(string Host, int Port)>>.Success(BusyPorts));
 
         public Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
-            InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning, CancellationToken ct)
+            InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
+            bool syncStrict, CancellationToken ct)
         {
             lock (_gate)
             {
                 EnsuredNodes.Add($"{topology.Shard}/{nodeName}");
                 EnsuredDetails.Add((nodeName, resources));
+                EnsuredSyncStrict.Add(syncStrict); // t06: значение фиксируется для ассертов
             }
 
             return Task.FromResult(EnsureResultByNode is { } f ? f(nodeName) : Result.Success());

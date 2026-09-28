@@ -33,14 +33,17 @@ public sealed record InstallSecrets(string SuPassword, string StandbyPassword,
 /// §2.1/§5 C); SpiloEnvBuilder только цитирует значения для YAML (все — в
 /// двойных кавычках, КРОМЕ wal_level — исторический raw-string; порядок §5.2,
 /// канон поверх без дубликатов). tuning == null — прежний хардкод-набор (тесты
-/// драйвера, изолированные пути). Per-нода PGW_NODE_HOST добавляет драйвер при
+/// драйвера, изолированные пути). syncStrict — per-cluster опция
+/// synchronous_mode_strict из config кластера (t06, arch/14 §2.1/§3):
+/// bootstrap.dcs несёт значение кластера, живые кластеры приводит конвергенция
+/// DCS (§5 C). Per-нода PGW_NODE_HOST добавляет драйвер при
 /// создании контейнера.
 /// </summary>
 public static class SpiloEnvBuilder
 {
     public static IReadOnlyDictionary<string, string> Build(
         ShardTopology topology, EtcdEndpoints etcd, InstallSecrets secrets,
-        PgTuneResult? tuning = null, IReadOnlySet<string>? excludeParams = null)
+        bool syncStrict, PgTuneResult? tuning = null, IReadOnlySet<string>? excludeParams = null)
     {
         // Patroni DCS: Spilo строит его из env ETCD3_HOSTS (etcd v3 API; наш etcd
         // 3.5 без v2). Формат — "host:port" БЕЗ scheme (полный URL Patroni
@@ -81,7 +84,8 @@ public static class SpiloEnvBuilder
 
             // Patroni-конфигурация: эталон pg.env; параметры PG — merge(PGTune ∪
             // канон) при tuning != null, иначе прежний хардкод-набор; тайминги —
-            // из канона PatroniTimings (полы Patroni 4.x, t09).
+            // из канона PatroniTimings (полы Patroni 4.x, t09); strict —
+            // per-cluster опция из config кластера (t06, arch/14 §2.1/§3).
             ["SPILO_CONFIGURATION"] = $$"""
                 ---
                 bootstrap:
@@ -90,7 +94,7 @@ public static class SpiloEnvBuilder
                     loop_wait: {{PatroniTimings.LoopWait}}
                     retry_timeout: {{PatroniTimings.RetryTimeout}}
                     synchronous_mode: true
-                    synchronous_mode_strict: false
+                    synchronous_mode_strict: {{(syncStrict ? "true" : "false")}}
                     postgresql:
                       use_pg_rewind: true
                       callbacks:
