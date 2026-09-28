@@ -105,10 +105,11 @@ public class ClusterCreatePlanTests
         // Act
         var plan = ClusterCreatePlan.Build(request, nowUnix: 1755900000);
 
-        // Assert: клэйм — конфиг со state NOT_INITIALIZED
+        // Assert: клэйм — конфиг со state NOT_INITIALIZED (t06: strict-поле
+        // присутствует — дефолт true; поле, не точная строка — канон arch/02 §9.1)
         plan.ConfigKey.Should().Be("/clusters/shop/config");
-        plan.ConfigValue.Should().Be(
-            """{"buckets":4,"dbname":"shop","created_unix":1755900000,"state":"NOT_INITIALIZED"}""");
+        plan.ConfigValue.Should().Contain("\"state\":\"NOT_INITIALIZED\"");
+        plan.ConfigValue.Should().Contain("\"synchronous_mode_strict\":true");
 
         // Порядок ключей пакета: shards → nodes → routing+status → request_* (детерминированный).
         var keys = plan.Puts.Select(p => p.Key).ToList();
