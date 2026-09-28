@@ -719,6 +719,9 @@ public sealed class ProvisioningProcess(
     }
 
     // P4: txn compare config.mod_revision → put канонического JSON без state (Д1).
+    // synchronous_mode_strict (t06) — переносится из прочитанного config БЕЗ
+    // изменения: пер-кластерная опция не стирается (созданный со strict=false
+    // кластер не «молча» становится strict, arch/14 §3.2).
     private async Task<Result> CommitConfigAsync(ClusterSnapshot snap, CancellationToken ct)
     {
         var key = $"/clusters/{snap.Config.Cluster}/config";
@@ -729,7 +732,8 @@ public sealed class ProvisioningProcess(
             return Result.Success(); // ключа нет (внешняя очистка) — не наш случай
 
         var canonical = JsonSerializer.Serialize(
-            new CanonicalConfig(snap.Config.Buckets, snap.Config.DbName, snap.Config.CreatedUnix),
+            new CanonicalConfig(snap.Config.Buckets, snap.Config.DbName, snap.Config.CreatedUnix,
+                snap.Config.SyncStrict),
             CanonicalJson);
         if (current.Value.Value == canonical)
             return Result.Success(); // уже закоммичен (повторные тики идемпотентны)
@@ -868,5 +872,8 @@ public sealed class ProvisioningProcess(
     private sealed record CanonicalConfig(
         [property: JsonPropertyName("buckets")] int Buckets,
         [property: JsonPropertyName("dbname")] string DbName,
-        [property: JsonPropertyName("created_unix")] long? CreatedUnix);
+        [property: JsonPropertyName("created_unix")] long? CreatedUnix,
+        // t06: переносится БЕЗ изменения (всегда явленно — отсутствие поля
+        // легаси-конфига трактуется читателями как true, значение не меняется).
+        [property: JsonPropertyName("synchronous_mode_strict")] bool SyncStrict);
 }

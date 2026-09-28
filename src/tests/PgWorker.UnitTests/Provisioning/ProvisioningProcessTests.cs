@@ -227,7 +227,9 @@ public class ProvisioningProcessTests
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value.Should().Be("RUNNING");
         rig.Etcd.Store.Keys.Should().NotContain(k => k.Contains("/status/bucket_"));
 
-        // config перезаписан без state через txn compare mod_revision
+        // config перезаписан без state через txn compare mod_revision;
+        // strict-поле (t06) перенесено: в сиде поля нет → семантический true
+        // записан явленно
         var configTxn = rig.Etcd.Txns.Should().Contain(t =>
             t.Success.OfType<TxnOp.Put>().Any(put => put.Key == "/clusters/shop/config")).Subject;
         configTxn.Compare.Should().ContainSingle(c =>
@@ -235,8 +237,32 @@ public class ProvisioningProcessTests
         var config = rig.Etcd.Store["/clusters/shop/config"].Value;
         config.Should().NotContain("state");
         JsonDocument.Parse(config).RootElement.GetProperty("buckets").GetInt32().Should().Be(4);
+        config.Should().Contain("\"synchronous_mode_strict\":true");
 
         (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.Phase.Should().Be("done");
+    }
+
+    // AAA (t06): созданный со strict=false кластер — финальный коммит config
+    // provisioning ПЕРЕНОСИТ значение (не стирает): кластер не «молча» становится
+    // strict (arch/14 §3.2, спека §2.5 — без вечной блокировки однорепликных).
+    [Fact]
+    public async Task Tick_CommitConfig_CarriesSyncStrictFalse()
+    {
+        // Arrange — сид со strict=false в config (создан через API с выключенным strict).
+        var rig = await NewRig(port => Patroni(port == 18000 ? "shard1a" : "shard2a"));
+        rig.Etcd.Store["/clusters/shop/config"] = new Fakes.FakeEtcd.Entry(
+            """{"buckets":4,"dbname":"shop","created_unix":1755900000,"state":"NOT_INITIALIZED","synchronous_mode_strict":false}""",
+            1, 1);
+
+        // Act — полный поток до DONE (первый тик создаёт ноды, второй завершает).
+        await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+        outcome.Value.Should().Be(ProcessOutcome.Done);
+
+        // Assert — config без state; strict=false ПЕРЕНЕСЁН.
+        var config = rig.Etcd.Store["/clusters/shop/config"].Value;
+        config.Should().NotContain("state");
+        config.Should().Contain("\"synchronous_mode_strict\":false");
     }
 
     [Fact]

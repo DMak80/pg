@@ -522,7 +522,7 @@ success-ветке). **Poll, без watch** (аргументация — AdminP
 | `/clusters/<C>/shards/<X>/dsn` | после поднятия нод шарда | `host=h1,h2 port=15432,15433 dbname=<C> user=<bucket_admin> password=<per-cluster bucket_admin>` (multi-host; креды bucket_admin per-cluster — канон ключи `bucket_admin_*` (t02 §3.1), порядок чтения ключи → config → env; порты — выделенные аллокатором, §2.4; app-секрет в DSN не попадает никогда) |
 | `/clusters/<C>/shards/<X>/nodes/<n>/state` | весь жизненный цикл | таблица состояний §5 |
 | `/clusters/<C>/buckets/status/bucket_<i>` | DELETE при завершении provisioning | снятие = бакет ACTIVE (семантика [11](11-bucket-sharding.md) §2, панели 02 §2.1) |
-| `/clusters/<C>/config` | txn по завершении provisioning | пере-put канонического JSON **без поля `state`** (инициализирован = поле отсутствует, 02 §2.1; compare по `mod_revision`) |
+| `/clusters/<C>/config` | txn по завершении provisioning | пере-put канонического JSON **без поля `state`** (инициализирован = поле отсутствует, 02 §2.1; compare по `mod_revision`); `synchronous_mode_strict` (t06) — переносится из прочитанного config БЕЗ изменения (пер-кластерная опция не стирается: созданный со strict=false кластер не «молча» становится strict) |
 | `/clusters/<C>/…` (весь префикс) | TO_REMOVE, финал | `del --prefix` |
 | `/service/<C>-shard<k>/request_*` | TO_REMOVE, финал | точечные `del` (свои заявки; остальное пространство Patroni не трогаем) |
 | `/service/<C>-<X>/` (весь scope) | TO_REMOVE, после удаления нод | `del --prefix` (guard: контейнеров/сервисов нет) |
