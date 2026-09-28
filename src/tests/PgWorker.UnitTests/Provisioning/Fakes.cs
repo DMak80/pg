@@ -49,6 +49,9 @@ internal static class Fakes
         // Сбой-инъекция txn (t90: ошибка захвата PortAllocLock → Result.Failed).
         public Func<TxnRequest, Result<TxnResult>>? TxnFault { get; set; }
 
+        // Гонка RMW (t06, образец KafkaWorker Fakes): конкурентная запись ДО compare.
+        public Action<TxnRequest>? OnTxnBeforeCompare { get; set; }
+
         private long _rev;
         private long _lease;
         private readonly object _gate = new();
@@ -110,6 +113,7 @@ internal static class Fakes
         {
             if (TxnFault?.Invoke(req) is { } failed)
                 return Task.FromResult(failed);
+            OnTxnBeforeCompare?.Invoke(req); // t06: инжекция гонки до compare
             bool succeeded;
             lock (_gate)
             {

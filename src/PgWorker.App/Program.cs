@@ -128,6 +128,9 @@ builder.Services.AddSingleton(sp => new DeleteClusterHandler(
 builder.Services.AddSingleton(sp => new AddShardHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
+builder.Services.AddSingleton(sp => new UpdateClusterConfigHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints)); // t06: PUT config
 builder.Services.AddSingleton(sp => new DeleteShardHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
