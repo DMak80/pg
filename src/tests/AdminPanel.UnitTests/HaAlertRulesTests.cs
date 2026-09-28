@@ -549,6 +549,42 @@ public class HaAlertRulesTests
         alerts.Should().BeEmpty();
     }
 
+    // Хелпер t06: снапшот demo-кластера с заданным strict-режимом (мастер
+    // без sync-standby — Runtime от SnapshotWithRuntime-механики файла).
+    private static EtcdSnapshot SnapshotWithStrictCluster(bool synchronousModeStrict)
+        => TestSnapshots.Healthy(Now) with
+        {
+            Clusters =
+            [
+                TestSnapshots.FullCluster() with
+                {
+                    SynchronousModeStrict = synchronousModeStrict,
+                    Shards = [TestSnapshots.FullCluster().Shards.Single()
+                        with { Runtime = TestSnapshots.ShardRuntimeOf("s1") }],
+                },
+            ],
+        };
+
+    // AAA (t06, spec §3.5/§6.9): strict-кластер без sync-standby — critical
+    // (запись блокирована); не-strict — warning (как раньше).
+    [Fact]
+    public void SyncStandbyMissing_SeverityDependsOnStrict()
+    {
+        // Arrange — снапшот: кластер с мастером без sync-standby (фикстура файла);
+        // вариант strict и вариант strict=false.
+        var strictSnapshot = SnapshotWithStrictCluster(synchronousModeStrict: true);
+        var looseSnapshot = SnapshotWithStrictCluster(synchronousModeStrict: false);
+
+        // Act
+        var strictAlerts = new SyncStandbyMissingRule().Evaluate(strictSnapshot, Context()).ToList();
+        var looseAlerts = new SyncStandbyMissingRule().Evaluate(looseSnapshot, Context()).ToList();
+
+        // Assert
+        strictAlerts.Single().Severity.Should().Be(AlertSeverity.Critical);
+        looseAlerts.Single().Severity.Should().Be(AlertSeverity.Warning);
+        strictAlerts.Single().RemedyText.Should().Contain("выключите strict");
+    }
+
     [Fact]
     public void InventoryMismatch_MissingAndExtraSchemas_Warning()
     {
@@ -738,18 +774,19 @@ public class HaAlertRulesTests
         var alerts = engine.Evaluate(snapshot, null, Now, 3).ToList();
 
         // Assert: сортировка severity → kind (Ordinal): critical (shard-no-leader,
-        // slot-wal-lost) → warning (ha-member-not-streaming, probe-failed,
-        // slot-invalidation-risk, sync-standby-missing). probe-failed теперь
-        // warning (spec 2026-09-01 §3.1) — стоит между ha-member и slot-риском.
+        // slot-wal-lost, sync-standby-missing — t06: strict-кластер дефолта
+        // фикстуры, запись блокирована) → warning (ha-member-not-streaming,
+        // probe-failed, slot-invalidation-risk). probe-failed — warning
+        // (spec 2026-09-01 §3.1) — стоит между ha-member и slot-риском.
         // Слот фикстуры несёт safe_wal_size 512 МБ < 1 GiB — risk-алерт входит
         // в сценарий законно (6-й). t04/t05-правила на этой фикстуре молчат.
         alerts.Select(a => a.Id).Should().ContainInOrder(
             "shard-no-leader:demo-s1",
             "slot-wal-lost:demo/s1/move_bucket_3",
+            "sync-standby-missing:demo/s1",
             "ha-member-not-streaming:demo-s1/s1b",
             "probe-failed:patroni:demo-s1/s1a",
-            "slot-invalidation-risk:demo/s1/move_bucket_3",
-            "sync-standby-missing:demo/s1");
+            "slot-invalidation-risk:demo/s1/move_bucket_3");
         alerts.Select(a => a.Id).Should().HaveCount(6);
     }
 
