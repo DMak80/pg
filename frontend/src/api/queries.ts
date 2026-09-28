@@ -58,6 +58,7 @@ import type {
   WorkerApiCertDto,
   WorkerRestartDto,
   WorkersViewDto,
+  OrphanDeleteAcceptedDto,
 } from './dto';
 
 export const queryKeys = {
@@ -455,6 +456,30 @@ export const backupsQueryKeys = {
 
 export function fetchBackupsStorage(): Promise<BackupStorageDto> {
   return apiFetch<BackupStorageDto>('/api/backups/storage');
+}
+
+// POST /api/backups/orphans/{cluster}/{shard}/hold — hold-флаг сироты
+// (reliability t04, 02 §9.10): защита «до разбора»; 204 без тела.
+export function holdOrphan(cluster: string, shard: string): Promise<void> {
+  return apiFetch<void>(
+    `/api/backups/orphans/${encodeURIComponent(cluster)}/${encodeURIComponent(shard)}/hold`,
+    { method: 'POST' });
+}
+
+// DELETE /api/backups/orphans/{cluster}/{shard}/hold — снятие hold
+// (идемпотентен: нет ключа — тоже 204).
+export function unholdOrphan(cluster: string, shard: string): Promise<void> {
+  return apiFetch<void>(
+    `/api/backups/orphans/${encodeURIComponent(cluster)}/${encodeURIComponent(shard)}/hold`,
+    { method: 'DELETE' });
+}
+
+// POST /api/backups/orphans/{cluster}/{shard}/delete — заявка явного удаления
+// (единственный путь удалить защищённую сироту; confirm = "<C>/<X>"; 202 + DTO).
+export function deleteOrphan(cluster: string, shard: string, confirm: string): Promise<OrphanDeleteAcceptedDto> {
+  return apiFetch<OrphanDeleteAcceptedDto>(
+    `/api/backups/orphans/${encodeURIComponent(cluster)}/${encodeURIComponent(shard)}/delete`,
+    { method: 'POST', body: { confirm } });
 }
 
 export function fetchBackupShardStorage(cluster: string, shard: string): Promise<BackupShardStorageDto> {
