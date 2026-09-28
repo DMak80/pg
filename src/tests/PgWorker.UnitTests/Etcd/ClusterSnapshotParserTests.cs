@@ -359,4 +359,25 @@ public class ClusterSnapshotParserTests
         nodes.Single(n => n.Name == "shard1b").AppParams.Should().Be("");
         nodes.Single(n => n.Name == "shard1c").AppParams.Should().BeNull();
     }
+
+    // Хелпер t06: парс одного config-ключа кластера (механика kvs-сида файла).
+    private static ClusterSnapshot ParseSingleClusterConfig(string raw)
+        => ClusterSnapshotParser.ParseClusters(
+            [new Kv("/clusters/shop/config", raw, 1)], out _).Value.Single();
+
+    // AAA (t06, spec §6.1): config-поле synchronous_mode_strict — true/false
+    // читается; отсутствие поля и не-bool значение = true (durability-first).
+    [Theory]
+    [InlineData("""{"buckets":2,"dbname":"shop","synchronous_mode_strict":true}""", true)]
+    [InlineData("""{"buckets":2,"dbname":"shop","synchronous_mode_strict":false}""", false)]
+    [InlineData("""{"buckets":2,"dbname":"shop"}""", true)]
+    [InlineData("""{"buckets":2,"dbname":"shop","synchronous_mode_strict":"yes"}""", true)]
+    public void ParseConfig_SyncStrict_FieldAbsentOrNonBool_IsTrue(string raw, bool expected)
+    {
+        // Arrange — сид одного config-ключа кластера.
+        var snapshot = ParseSingleClusterConfig(raw);
+
+        // Act / Assert
+        snapshot.Config.SyncStrict.Should().Be(expected);
+    }
 }
