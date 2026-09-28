@@ -185,7 +185,8 @@ public sealed class NodeSupervisor(
                 continue;
             if (restoring.Contains(shard.Name))
                 continue; // t05 §3.4: конфиг DCS восстановит свежеподнятая нода
-            var converged = await ConvergeDcsConfigAsync(cluster, shard, addresses.Value, track, ct);
+            var converged = await ConvergeDcsConfigAsync(cluster, shard, addresses.Value,
+                snap.Config.SyncStrict, track, ct);
             if (!converged.IsSuccess)
                 return Fail(converged.Error!);
         }
@@ -287,8 +288,11 @@ public sealed class NodeSupervisor(
     }
 
     // Конвергенция динамического DCS-конфига (arch/14 §5 C; t09 — тайминги,
-    // t11 — pg-параметры): GET /config первого канонического Patroni-узла
-    // шарда → сверка с каноном (PatroniTimings + желаемый набор параметров
+    // t11 — pg-параметры, t06 — strict): GET /config первого канонического
+    // Patroni-узла
+    // шарда → сверка с каноном (PatroniTimings + synchronous_mode_strict из
+    // config кластера — per-cluster ожидание, НЕ константа; динамический
+    // параметр, рестартов не требует + желаемый набор параметров
     // merge(PGTune ∪ канон) от АКТУАЛЬНЫХ заявок, пересчёт на каждый тик, БЕЗ
     // фиксации в etcd) → ОДИН PATCH /config на тик: обновляет расходящиеся,
     // добавляет отсутствующие, удаляет лишние null-патчем. Postmaster-параметры
@@ -306,7 +310,7 @@ public sealed class NodeSupervisor(
     // недоступности текущего тика.
     private async Task<Result> ConvergeDcsConfigAsync(
         string cluster, ShardSpec shard, IReadOnlyDictionary<string, NodeAddress> addresses,
-        Dictionary<string, long> track, CancellationToken ct)
+        bool syncStrict, Dictionary<string, long> track, CancellationToken ct)
     {
         var probeNode = addresses
             .Where(p => p.Key.StartsWith($"{shard.Name}/", StringComparison.Ordinal))
@@ -340,7 +344,7 @@ public sealed class NodeSupervisor(
             desired = PgParametersCanon.Desired(tuning, pgtuneSettings.ExcludeParams);
         }
 
-        var divergence = DcsConfigConvergence.Analyze(config.Value, desired);
+        var divergence = DcsConfigConvergence.Analyze(config.Value, syncStrict, desired);
         if (divergence.Patch is null)
             return Result.Success(); // конвергентно — мутаций нет
 

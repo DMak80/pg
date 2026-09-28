@@ -82,10 +82,14 @@ public class NodeSupervisorTests
         Func<HttpRequestMessage, HttpResponseMessage>? respondRaw = null,
         IReadOnlyDictionary<string, NodeAddress>? addresses = null,
         Fakes.FakeSql? sql = null,
-        Fakes.RecordingLogger<NodeSupervisor>? log = null)
+        Fakes.RecordingLogger<NodeSupervisor>? log = null,
+        string? configOverride = null)
     {
         var etcd = new Fakes.FakeEtcd();
         SeedCluster(etcd);
+        // t06: переопределение config-ключа кластера (семантика strict и др.).
+        if (configOverride is not null)
+            etcd.Seed("/clusters/shop/config", configOverride);
         if (addresses is not null)
             etcd.Seed("/pgworker/portalloc/shop", Portalloc.Serialize(addresses));
         var claims = new ClaimStore("/pgworker", [Ep], etcd, TimeProvider.System);
@@ -119,6 +123,38 @@ public class NodeSupervisorTests
             log is not null ? log : NullLogger<NodeSupervisor>.Instance,
             new MasterKeyReconciler(etcd, [Ep], probe));
         return new Rig(etcd, driver, claims, journal, supervisor);
+    }
+
+    // AAA (t06, spec §6.4): strict=false в config кластера — конвергенция ведёт
+    // DCS к false (per-cluster ожидание, не константа).
+    [Fact]
+    public async Task Tick_DcsConvergence_StrictFalseCluster_PatchesStrictFalse()
+    {
+        // Arrange — сид с явным strict=false; GET /config с strict=true.
+        var patches = new List<string>();
+        var rig = await NewRig(_ => Ok(), respondRaw: r =>
+        {
+            if (r.Method.Method == "PATCH" && r.RequestUri!.AbsolutePath == "/config")
+            {
+                patches.Add(new StreamReader(r.Content!.ReadAsStream()).ReadToEnd());
+                return new HttpResponseMessage(HttpStatusCode.OK);
+            }
+            if (r.Method.Method == "GET" && r.RequestUri!.AbsolutePath == "/config")
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"synchronous_mode_strict":true}""",
+                        Encoding.UTF8, "application/json"),
+                };
+            return Ok();
+        }, configOverride: """{"buckets":2,"dbname":"shop","created_unix":1755900000,"synchronous_mode_strict":false}""");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        patches.Should().ContainSingle().Which.Should().Contain("\"synchronous_mode_strict\":false");
     }
 
     // AAA (t05 §3.4): шард с активной restore-заявкой надзор НЕ трогает:
@@ -529,6 +565,7 @@ public class NodeSupervisorTests
             .Which.Should().Contain("\"ttl\":20")
             .And.Contain("\"loop_wait\":1").And.Contain("\"retry_timeout\":3")
             .And.Contain("\"synchronous_mode\":true")
+            .And.Contain("\"synchronous_mode_strict\":true") // t06: strict — часть таймингового патча
             .And.Contain("\"postgresql\":{\"parameters\":{")
             .And.Contain("\"shared_buffers\":\"2GB\"")
             .And.Contain("\"wal_level\":\"logical\"");
@@ -548,7 +585,7 @@ public class NodeSupervisorTests
             $"{JsonSerializer.Serialize(p.Name)}:{JsonSerializer.Serialize(p.RawValue)}"));
         // (конкатенация вместо $$"""-интерполяции: серия фигурных скобок ломает raw-string)
         var canonicalConfig =
-            """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"postgresql":{"parameters":{""" + parameters + """}}}""";
+            """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"synchronous_mode_strict":true,"postgresql":{"parameters":{""" + parameters + """}}}""";
         var patches = new List<string>();
         var rig = await NewRig(_ => Ok(), respondRaw: r =>
         {
@@ -595,7 +632,7 @@ public class NodeSupervisorTests
                 return new HttpResponseMessage(HttpStatusCode.OK)
                 {
                     Content = new StringContent(
-                        """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"postgresql":{"parameters":{"max_connections":"60","shared_buffers":"1GB","effective_cache_size":"3GB"}}}""",
+                        """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"synchronous_mode_strict":true,"postgresql":{"parameters":{"max_connections":"60","shared_buffers":"1GB","effective_cache_size":"3GB"}}}""",
                         Encoding.UTF8, "application/json"),
                 };
 

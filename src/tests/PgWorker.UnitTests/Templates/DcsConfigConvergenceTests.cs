@@ -18,6 +18,58 @@ public class DcsConfigConvergenceTests
             18, PgTuneOsType.Linux, PgTuneDbType.Oltp, 8388608, PgTuneMemoryUnit.KB,
             4, 60, PgTuneHdType.Ssd, PgTuneDbSize.MidRam)), null);
 
+    // AAA (t06, spec §6.4): strict расходится/отсутствует/битый → в патче;
+    // конвергентно → null. Порядок: strict после synchronous_mode.
+    [Fact]
+    public void Divergence_StrictMismatch_PatchCarriesStrict()
+    {
+        // Arrange — живой конфиг с strict=false, ожидание true.
+        const string config = """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"synchronous_mode_strict":false}""";
+
+        // Act
+        var patch = DcsConfigConvergence.DivergencePatch(config, syncStrict: true, null);
+
+        // Assert
+        patch.Should().Be("""{"synchronous_mode_strict":true}""");
+    }
+
+    [Fact]
+    public void Divergence_StrictAbsent_AddedToPatch()
+    {
+        // Arrange — поля нет (легаси-конфиг).
+        const string config = """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true}""";
+
+        // Act
+        var patch = DcsConfigConvergence.DivergencePatch(config, syncStrict: true, null);
+
+        // Assert
+        patch.Should().Be("""{"synchronous_mode_strict":true}""");
+    }
+
+    [Fact]
+    public void Divergence_StrictConvergent_NoPatch()
+    {
+        // Arrange / Act
+        var patch = DcsConfigConvergence.DivergencePatch(
+            """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"synchronous_mode_strict":true}""",
+            syncStrict: true, null);
+
+        // Assert
+        patch.Should().BeNull();
+    }
+
+    // AAA: порядок ключей — тайминги → strict → параметры (детерминизм).
+    [Fact]
+    public void Divergence_BothTimingAndStrictDiverge_StrictAfterTimings()
+    {
+        // Arrange / Act
+        var patch = DcsConfigConvergence.DivergencePatch("{}", syncStrict: true, null);
+
+        // Assert
+        patch.Should().Be(
+            """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"synchronous_mode_strict":true}""");
+    }
+
     // ---------- Миграция кейсов t09 (desired == null → патч только таймингов) ----------
 
     // AAA (t09): дефолтный конфиг Patroni — патч несёт ВСЕ канонические поля.
@@ -28,7 +80,7 @@ public class DcsConfigConvergenceTests
         const string config = """{"ttl":30,"loop_wait":10,"retry_timeout":10,"postgresql":{"use_pg_rewind":true}}""";
 
         // Act
-        var patch = DcsConfigConvergence.DivergencePatch(config, null);
+        var patch = DcsConfigConvergence.DivergencePatch(config, syncStrict: true, null);
 
         // Assert: все канонические тайминги в патче; postgresql не тронут
         // (desired == null — параметры вне игры).
@@ -46,10 +98,10 @@ public class DcsConfigConvergenceTests
         const string config = """{"ttl":20,"loop_wait":2,"retry_timeout":3,"synchronous_mode":true}""";
 
         // Act
-        var patch = DcsConfigConvergence.DivergencePatch(config, null);
+        var patch = DcsConfigConvergence.DivergencePatch(config, syncStrict: true, null);
 
         // Assert
-        patch.Should().Be("""{"loop_wait":1}""");
+        patch.Should().Be("""{"loop_wait":1,"synchronous_mode_strict":true}""");
     }
 
     // AAA (t09): канонический конфиг — null, мутаций нет.
@@ -57,10 +109,10 @@ public class DcsConfigConvergenceTests
     public void Regression_T09_Divergence_CanonicalConfig_NoPatch()
     {
         // Arrange
-        const string config = """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true}""";
+        const string config = """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"synchronous_mode_strict":true}""";
 
         // Act
-        var patch = DcsConfigConvergence.DivergencePatch(config, null);
+        var patch = DcsConfigConvergence.DivergencePatch(config, syncStrict: true, null);
 
         // Assert
         patch.Should().BeNull();
@@ -77,7 +129,7 @@ public class DcsConfigConvergenceTests
         // Arrange — непонятный конфиг приводится к канону.
 
         // Act
-        var patch = DcsConfigConvergence.DivergencePatch(config, Desired());
+        var patch = DcsConfigConvergence.DivergencePatch(config, syncStrict: true, Desired());
 
         // Assert: тайминги + все параметры желаемого набора в патче.
         patch.Should().NotBeNull();
@@ -101,10 +153,10 @@ public class DcsConfigConvergenceTests
             ("max_connections", "60"), ("shared_buffers", "2GB"),
         };
         const string config =
-            """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"postgresql":{"parameters":{"max_connections":"60","shared_buffers":"1GB"}}}""";
+            """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"synchronous_mode_strict":true,"postgresql":{"parameters":{"max_connections":"60","shared_buffers":"1GB"}}}""";
 
         // Act
-        var divergence = DcsConfigConvergence.Analyze(config, desired);
+        var divergence = DcsConfigConvergence.Analyze(config, syncStrict: true, desired);
 
         // Assert: только расходящийся параметр; updated=1; патч без таймингов.
         divergence.Patch.Should().Be(
@@ -121,10 +173,10 @@ public class DcsConfigConvergenceTests
     {
         // Arrange — живой конфиг без блока parameters вовсе.
         var desired = new List<(string Name, string RawValue)> { ("max_connections", "60") };
-        const string config = """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true}""";
+        const string config = """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"synchronous_mode_strict":true}""";
 
         // Act
-        var divergence = DcsConfigConvergence.Analyze(config, desired);
+        var divergence = DcsConfigConvergence.Analyze(config, syncStrict: true, desired);
 
         // Assert: desired добавлен; postmaster-имя затронуто.
         divergence.Patch.Should().Be(
@@ -146,10 +198,10 @@ public class DcsConfigConvergenceTests
             ("max_connections", "60"), ("shared_buffers", "2GB"),
         };
         const string config =
-            """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"postgresql":{"parameters":{"max_connections":"60","shared_buffers":"1GB","my_custom":"42"}}}""";
+            """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"synchronous_mode_strict":true,"postgresql":{"parameters":{"max_connections":"60","shared_buffers":"1GB","my_custom":"42"}}}""";
 
         // Act
-        var divergence = DcsConfigConvergence.Analyze(config, desired);
+        var divergence = DcsConfigConvergence.Analyze(config, syncStrict: true, desired);
 
         // Assert: обновление раньше, удаление null — последним ключом.
         divergence.Patch.Should().Be(
@@ -167,10 +219,10 @@ public class DcsConfigConvergenceTests
         // Arrange — shared_buffers числом; desired несёт строку "2048".
         var desired = new List<(string Name, string RawValue)> { ("shared_buffers", "2048") };
         const string config =
-            """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"postgresql":{"parameters":{"shared_buffers":2048}}}""";
+            """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"synchronous_mode_strict":true,"postgresql":{"parameters":{"shared_buffers":2048}}}""";
 
         // Act
-        var patch = DcsConfigConvergence.DivergencePatch(config, desired);
+        var patch = DcsConfigConvergence.DivergencePatch(config, syncStrict: true, desired);
 
         // Assert: нормализация числа к строке — совпадение, патч пуст.
         patch.Should().BeNull();
@@ -184,10 +236,10 @@ public class DcsConfigConvergenceTests
         // Arrange — hot_standby: true (JSON-bool), канон несёт "on".
         var desired = new List<(string Name, string RawValue)> { ("hot_standby", "on") };
         const string config =
-            """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"postgresql":{"parameters":{"hot_standby":true}}}""";
+            """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"synchronous_mode_strict":true,"postgresql":{"parameters":{"hot_standby":true}}}""";
 
         // Act
-        var patch = DcsConfigConvergence.DivergencePatch(config, desired);
+        var patch = DcsConfigConvergence.DivergencePatch(config, syncStrict: true, desired);
 
         // Assert: "true" ≠ "on" → расхождение, в патч каноническим значением.
         patch.Should().Be("""{"postgresql":{"parameters":{"hot_standby":"on"}}}""");
@@ -204,10 +256,10 @@ public class DcsConfigConvergenceTests
             ("max_connections", "60"), ("work_mem", "16MB"),
         };
         const string config =
-            """{"ttl":20,"loop_wait":5,"retry_timeout":3,"synchronous_mode":true,"postgresql":{"parameters":{"max_connections":"20","work_mem":"16MB","old_key":"1"}}}""";
+            """{"ttl":20,"loop_wait":5,"retry_timeout":3,"synchronous_mode":true,"synchronous_mode_strict":true,"postgresql":{"parameters":{"max_connections":"20","work_mem":"16MB","old_key":"1"}}}""";
 
         // Act
-        var patch = DcsConfigConvergence.DivergencePatch(config, desired);
+        var patch = DcsConfigConvergence.DivergencePatch(config, syncStrict: true, desired);
 
         // Assert
         patch.Should().Be(
@@ -224,7 +276,7 @@ public class DcsConfigConvergenceTests
             """{"ttl":30,"loop_wait":10,"retry_timeout":10,"postgresql":{"parameters":{"max_connections":"20"}}}""";
 
         // Act
-        var patch = DcsConfigConvergence.DivergencePatch(config, null);
+        var patch = DcsConfigConvergence.DivergencePatch(config, syncStrict: true, null);
 
         // Assert: только тайминги; параметры не тронуты.
         patch.Should().NotContain("postgresql");
@@ -239,10 +291,10 @@ public class DcsConfigConvergenceTests
             .Select(p => $"{JsonSerializer.Serialize(p.Name)}:{JsonSerializer.Serialize(p.RawValue)}"));
         // (конкатенация вместо $$"""-интерполяции: серия фигурных скобок ломает raw-string)
         var config =
-            """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"postgresql":{"parameters":{""" + parameters + """}}}""";
+            """{"ttl":20,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"synchronous_mode_strict":true,"postgresql":{"parameters":{""" + parameters + """}}}""";
 
         // Act
-        var divergence = DcsConfigConvergence.Analyze(config, Desired());
+        var divergence = DcsConfigConvergence.Analyze(config, syncStrict: true, Desired());
 
         // Assert: расхождений нет, postmaster не тронут.
         divergence.Patch.Should().BeNull();
@@ -282,13 +334,13 @@ public class DcsConfigConvergenceTests
             $"{JsonSerializer.Serialize(p.Name)}:{JsonSerializer.Serialize(p.Value)}"));
         // (конкатенация вместо $$"""-интерполяции: серия фигурных скобок ломает raw-string)
         var config =
-            $$"""{"ttl":{{PatroniTimings.Ttl}},"loop_wait":{{PatroniTimings.LoopWait}},"retry_timeout":{{PatroniTimings.RetryTimeout}},"synchronous_mode":true,"postgresql":{"parameters":{""" + parameters + """}}}""";
+            $$"""{"ttl":{{PatroniTimings.Ttl}},"loop_wait":{{PatroniTimings.LoopWait}},"retry_timeout":{{PatroniTimings.RetryTimeout}},"synchronous_mode":true,"synchronous_mode_strict":false,"postgresql":{"parameters":{""" + parameters + """}}}""";
 
         // Assert: bootstrap-YAML и desired дают нулевой патч (один источник);
         // состав блока совпадает с desired поимённо.
         var desired = PgParametersCanon.Desired(tuning, null);
         lines.Select(p => p.Name).Should().Equal(desired.Select(p => p.Name));
-        DcsConfigConvergence.DivergencePatch(config, desired).Should()
+        DcsConfigConvergence.DivergencePatch(config, syncStrict: false, desired).Should()
             .BeNull("bootstrap и конвергенция строят параметры из одного набора");
     }
 }

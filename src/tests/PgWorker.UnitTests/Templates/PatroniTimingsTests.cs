@@ -24,8 +24,8 @@ public class PatroniTimingsTests
             topology, new EtcdEndpoints(["http://e1:2379"]),
             new InstallSecrets("su", "sb", "adm", "mov"), syncStrict: false)["SPILO_CONFIGURATION"];
         var selfPatch = DcsConfigConvergence.DivergencePatch(
-            $$"""{"ttl":{{PatroniTimings.Ttl}},"loop_wait":{{PatroniTimings.LoopWait}},"retry_timeout":{{PatroniTimings.RetryTimeout}},"synchronous_mode":true}""",
-            null);
+            $$"""{"ttl":{{PatroniTimings.Ttl}},"loop_wait":{{PatroniTimings.LoopWait}},"retry_timeout":{{PatroniTimings.RetryTimeout}},"synchronous_mode":true,"synchronous_mode_strict":false}""",
+            syncStrict: false, null);
 
         // Assert: env несёт канон; канон конвергентен сам себе (null-патч);
         // полы и правило Patroni 4.x соблюдены.
