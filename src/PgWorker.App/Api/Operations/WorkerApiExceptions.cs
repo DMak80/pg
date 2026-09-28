@@ -208,3 +208,21 @@ public sealed class RestoreValidationException(IReadOnlyList<ValidationError> er
 {
     public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
+
+// ── Сироты бэкапов (reliability t04, arch/19 §4) ──
+
+// Префикса нет в реестре сирот / имена неканонические — 404.
+public sealed class OrphanNotFoundException(string prefix)
+    : Exception($"сирота {prefix} не найдена в реестре /pgworker/backups/orphans");
+
+// Запись в DELETING — доводку начатого удаления не спасти — 409.
+public sealed class OrphanDeletingException(string prefix)
+    : Exception($"сирота {prefix} уже в DELETING — удаление идёт, доводку не остановить");
+
+// confirm != "<C>/<X>" — 400 (осознанная потеря DR-источника).
+public sealed class OrphanConfirmMismatchException(string expected, string got)
+    : Exception($"confirm обязан совпадать с префиксом сироты: ожидался '{expected}', получен '{got}'");
+
+// Подсистема бэкапов выключена — 503 (заявки копятся? нет — API не принимает).
+public sealed class BackupsDisabledException()
+    : Exception("подсистема бэкапов выключена (PgWorker:Backups:Enabled=false) — операции сирот недоступны");

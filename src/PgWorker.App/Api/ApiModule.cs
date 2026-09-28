@@ -419,6 +419,81 @@ public static class ApiModule
             };
         });
 
+        // POST /api/backups/orphans/{cluster}/{shard}/hold — hold-флаг сироты
+        // (reliability t04, arch/19 §4): put per-префиксного ключа orphan-holds;
+        // 204; 404 не-сирота/мусорные имена; 409 DELETING; 503 etcd/выключено.
+        endpoints.MapPost("/api/backups/orphans/{cluster}/{shard}/hold", async (
+            string cluster, string shard, HttpRequest http, OrphanHoldHandler handler, CancellationToken ct) =>
+        {
+            var requestedBy = http.Headers.TryGetValue("X-Requested-By", out var by)
+                && !string.IsNullOrWhiteSpace(by) ? by.ToString() : "operator";
+            var result = await handler.SetAsync(cluster, shard, requestedBy, ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return result.Error switch
+            {
+                OrphanNotFoundException => Results.Problem(statusCode: 404,
+                    title: "Not found", detail: result.Error.Message),
+                OrphanDeletingException => Results.Problem(statusCode: 409,
+                    title: "Orphan hold rejected", detail: result.Error.Message),
+                BackupsDisabledException or EtcdWriteUnavailableException => Results.Problem(statusCode: 503,
+                    title: "Backups unavailable", detail: result.Error.Message),
+                _ => Results.Problem(statusCode: 503,
+                    title: "Etcd write failed", detail: result.Error!.Message),
+            };
+        });
+
+        // DELETE /api/backups/orphans/{cluster}/{shard}/hold — снятие hold-флага
+        // (t04): del ключа, идемпотентен (ключа нет — тоже 204); 503 etcd/выключено.
+        endpoints.MapDelete("/api/backups/orphans/{cluster}/{shard}/hold", async (
+            string cluster, string shard, OrphanHoldHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.RemoveAsync(cluster, shard, ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return result.Error switch
+            {
+                BackupsDisabledException or EtcdWriteUnavailableException => Results.Problem(statusCode: 503,
+                    title: "Backups unavailable", detail: result.Error.Message),
+                _ => Results.Problem(statusCode: 503,
+                    title: "Etcd write failed", detail: result.Error!.Message),
+            };
+        });
+
+        // POST /api/backups/orphans/{cluster}/{shard}/delete — заявка явного
+        // удаления сироты (t04): body {"confirm":"<C>/<X>"}; 202
+        // {prefix,requestedUnix,requestedBy}; 400 confirm-мисматч/нет тела;
+        // 404/409/503 — маппинг как у hold.
+        endpoints.MapPost("/api/backups/orphans/{cluster}/{shard}/delete", async (
+            string cluster, string shard, OrphanDeleteRequest? body, HttpRequest http,
+            OrphanDeleteHandler handler, CancellationToken ct) =>
+        {
+            if (body is null)
+                return Results.Problem(statusCode: StatusCodes.Status400BadRequest,
+                    title: "Invalid body", detail: "тело запроса обязательно: {\"confirm\":\"<C>/<X>\"}");
+            var requestedBy = http.Headers.TryGetValue("X-Requested-By", out var by)
+                && !string.IsNullOrWhiteSpace(by) ? by.ToString() : "operator";
+            var result = await handler.RequestAsync(cluster, shard, body, requestedBy, ct);
+            if (result.IsSuccess)
+                return Results.Accepted((string?)null, result.Value); // 202
+
+            return result.Error switch
+            {
+                OrphanConfirmMismatchException => Results.Problem(statusCode: 400,
+                    title: "Orphan delete rejected", detail: result.Error.Message),
+                OrphanNotFoundException => Results.Problem(statusCode: 404,
+                    title: "Not found", detail: result.Error.Message),
+                OrphanDeletingException => Results.Problem(statusCode: 409,
+                    title: "Orphan delete rejected", detail: result.Error.Message),
+                BackupsDisabledException or EtcdWriteUnavailableException => Results.Problem(statusCode: 503,
+                    title: "Backups unavailable", detail: result.Error.Message),
+                _ => Results.Problem(statusCode: 503,
+                    title: "Etcd write failed", detail: result.Error!.Message),
+            };
+        });
+
         // POST /api/seed/demo — демо-сид pg-контура (arch/14 §1.1.1, стенд):
         // перенос seed.sh 1:1; идемпотентен по /clusters/demo/config.
         // Флаг EnableSeedEndpoint проверяет хендлер (выключен → 404).
