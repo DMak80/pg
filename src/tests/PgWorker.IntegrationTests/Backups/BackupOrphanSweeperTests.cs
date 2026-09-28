@@ -9,8 +9,10 @@ namespace PgWorker.IntegrationTests.Backups;
 
 // Интеграции BackupOrphanSweeper (t07, spec §3.4 глобальная часть): реальный
 // etcd (реестр/лидерство/кластеры) + FakeBackupS3 + MutableClock (сжатое TTL).
-[Collection(EtcdCollection.Name)]
-public class BackupOrphanSweeperTests(EtcdFixture fixture)
+// Целевая архитектура E2E (docs/e2e-isolation.md §1): единица изоляции —
+// класс; окружение — СВОЙ etcd в СВОЙ docker-сети (OwnedEtcdFixture) —
+// чужие записи в общий etcd коллекции на класс не влияют.
+public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<OwnedEtcdFixture>
 {
     // Фиксированные часы: сжатое время TTL/first_seen (AAA).
     private sealed class MutableClock : TimeProvider

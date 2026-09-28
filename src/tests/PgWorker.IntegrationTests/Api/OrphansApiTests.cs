@@ -2,8 +2,14 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
+using PgWorker.App;
 using PgWorker.Backups.Supervisor;
+using PgWorker.Core.Templates;
 using PgWorker.IntegrationTests.Etcd;
 using Xunit;
 
@@ -13,26 +19,60 @@ namespace PgWorker.IntegrationTests.Api;
 // arch/19 §4): hold/unhold/заявка явного удаления сирот. Гварды 400
 // (confirm-мисматч/нет тела), 404 (не сирота/мусорные имена), 409 (DELETING),
 // 503 (etcd-сбой/подсистема выключена); повторные hold/заявки идемпотентны.
-[Collection(PgApiCollection.Name)]
-public class OrphansApiTests(PgApiFixture fixture) : IAsyncDisposable
+// Целевая архитектура E2E (docs/e2e-isolation.md §1): единица изоляции —
+// класс; окружение — СВОЙ etcd в СВОЙ docker-сети (OwnedEtcdFixture) —
+// никто вне класса не может писать в его etcd.
+public class OrphansApiTests(OwnedEtcdFixture etcdFixture)
+    : IClassFixture<OwnedEtcdFixture>, IAsyncDisposable
 {
     // Фабрика с ВКЛЮЧЕННОЙ подсистемой бэкапов (основные кейсы); выключенное
-    // состояние проверяет БАЗОВАЯ фабрика fixture.Factory (default false).
-    private readonly OrphansApiFactory _factory = new(fixture.Etcd);
+    // состояние проверяет _disabledFactory (default false, тот же etcd).
+    private readonly OrphansApiFactory _factory = new(etcdFixture);
+
+    // Фабрика с выключенной подсистемой (кейс 503) — на ТОМ ЖЕ собственном etcd.
+    private readonly DisabledBackupsApiFactory _disabledFactory = new(etcdFixture);
 
     private HttpClient Client => _factory.CreateClient();
 
-    private EtcdFixture Etcd => fixture.Etcd;
+    private OwnedEtcdFixture Etcd => etcdFixture;
+
+    // Конфигурация WAF-хоста PgWorker: копия легационной PgWorkerApiFactory
+    // (та привязана к типу коллекционной EtcdFixture) + собственные секреты
+    // Д7 через DI вместо process-env — класс не зависит от process-wide
+    // переменных и не делит окружение ни с кем. Loops не стартуют (API-мутации).
+    private static void ConfigurePgWorkerHost(IWebHostBuilder builder, string etcdEndpoint)
+    {
+        builder.UseEnvironment("Development");
+        builder.ConfigureAppConfiguration((_, cfg) => cfg.AddInMemoryCollection(
+            new Dictionary<string, string?>
+            {
+                ["PgWorker:Etcd:Endpoints:0"] = etcdEndpoint,
+                ["PgWorker:Docker:Hosts:0:Name"] = "local",
+                ["PgWorker:Docker:Hosts:0:Endpoint"] = "unix:///var/run/does-not-exist.sock",
+                // WAF-хост без сертов: mTLS выключен (прод-канон — false, arch/14 §1.1).
+                ["PgWorker:Api:Tls:AllowInsecureHttp"] = "true",
+                ["PgWorker:Api:AdvertiseUrl"] = "https://localhost:9999",
+                ["PgWorker:Api:EnableSeedEndpoint"] = "true",
+            }));
+        builder.ConfigureServices(services =>
+        {
+            services.RemoveAll<IHostedService>(); // Reconcile/Keepalive/Snapshot не стартуют
+            // Секреты Д7 — фиксированные значения вместо env (SecretsFromEnv
+            // читает process-env при старте хоста; здесь заменяем регистрацию).
+            services.RemoveAll<InstallSecrets>();
+            services.AddSingleton(new InstallSecrets("x", "x", "x", "x"));
+        });
+    }
 
     // WAF-оверрайд: подсистема бэкапов включена (гвард 503 снят для основных
-    // кейсов; выключенное состояние проверяет базовая фабрика с default false).
+    // кейсов; выключенное состояние проверяет DisabledBackupsApiFactory).
     // S3-комплект/Job:Image — dummy: fail-fast валидация Enabled=true требует
     // непустой комплект (API-грани сирот S3 не касается — это только валидатор).
-    private sealed class OrphansApiFactory(EtcdFixture etcd) : PgWorkerApiFactory(etcd)
+    private sealed class OrphansApiFactory(OwnedEtcdFixture etcd) : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
-            base.ConfigureWebHost(builder);
+            ConfigurePgWorkerHost(builder, etcd.Endpoint);
             builder.ConfigureAppConfiguration((_, cfg) => cfg.AddInMemoryCollection(
                 new Dictionary<string, string?>
                 {
@@ -44,6 +84,14 @@ public class OrphansApiTests(PgApiFixture fixture) : IAsyncDisposable
                     ["PgWorker:Backups:Job:Image"] = "pgworker-backup:test",
                 }));
         }
+    }
+
+    // Выключенная подсистема (default false): кейс 503 «подсистема выключена».
+    private sealed class DisabledBackupsApiFactory(OwnedEtcdFixture etcd)
+        : WebApplicationFactory<Program>
+    {
+        protected override void ConfigureWebHost(IWebHostBuilder builder) =>
+            ConfigurePgWorkerHost(builder, etcd.Endpoint);
     }
 
     // Чистка контура сирот: реестр + hold/заявки предыдущих кейсов (изоляция —
@@ -304,14 +352,14 @@ public class OrphansApiTests(PgApiFixture fixture) : IAsyncDisposable
         (await GetValueAsync(OrphanRegistry.DeleteKey("ghost/s1"))).Should().BeNull();
     }
 
-    // AAA (AC6): подсистема бэкапов выключена (базовая фабрика, default false) → 503
+    // AAA (AC6): подсистема бэкапов выключена (_disabledFactory, default false) → 503
     [Fact]
     public async Task Hold_503_подсистема_выключена()
     {
-        // Arrange — клиент БАЗОВОЙ фабрики (Enabled=false по умолчанию)
+        // Arrange — клиент выключенной фабрики (Enabled=false по умолчанию)
         await CleanupAsync();
         await SeedRegistryAsync("ghost/s1");
-        using var client = fixture.Factory.CreateClient();
+        using var client = _disabledFactory.CreateClient();
         var ct = TestContext.Current.CancellationToken;
 
         // Act
@@ -341,5 +389,9 @@ public class OrphansApiTests(PgApiFixture fixture) : IAsyncDisposable
         return await Client.SendAsync(req, ct);
     }
 
-    public async ValueTask DisposeAsync() => await _factory.DisposeAsync();
+    public async ValueTask DisposeAsync()
+    {
+        await _factory.DisposeAsync();
+        await _disabledFactory.DisposeAsync();
+    }
 }

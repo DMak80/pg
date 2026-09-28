@@ -21,8 +21,10 @@ namespace PgWorker.IntegrationTests.Backups;
 // Интеграции RestoreProcess (t05 spec Ф2): реальный etcd (статусы/журнал) +
 // фейки docker/S3. Снапшот кластера и бэкапы строятся руками. PLANNED-фаза:
 // валидация (усыновление/полный/manifest/цепочка) и гвард дублей.
-[Collection(EtcdCollection.Name)]
-public class RestoreProcessTests(EtcdFixture fixture)
+// Целевая архитектура E2E (docs/e2e-isolation.md §1): единица изоляции —
+// класс; окружение — СВОЙ etcd в СВОЙ docker-сети (OwnedEtcdFixture) —
+// чужие записи в общий etcd коллекции на класс не влияют.
+public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<OwnedEtcdFixture>
 {
     private readonly ClaimStore _claims = new("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
 
