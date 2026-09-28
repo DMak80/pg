@@ -856,7 +856,8 @@ API PgWorker (арх-канон arch/19 §4; панель в etcd не пише�
 - **hold**: `POST /api/backups/orphans/{C}/{X}/hold` — постановка hold-ключа;
   идемпотентен (повтор → тот же 204);
 - **unhold**: `DELETE /api/backups/orphans/{C}/{X}/hold` — снятие hold-ключа;
-  идемпотентен (нет ключа → 204);
+  идемпотентен (нет ключа → 204; unhold — гварды реестра не применяются:
+  идемпотентен, только 503);
 - **delete**: `POST /api/backups/orphans/{C}/{X}/delete` c телом
   `{"confirm":"<C>/<X>"}` — заявка явного удаления (мисматч confirm → 400);
   осознанная потеря DR-источника — UI требует ввода префикса, как confirm
