@@ -45,7 +45,8 @@ public sealed class BackupOrphanSweeper(
         var listed = await s3.ListPrefixAsync("", ct: ct);
         if (!listed.IsSuccess)
             return Result.Failed(listed.Error!);
-        var observed = OrphanRegistry.GroupShardPrefixes(listed.Value);
+        var grouped = OrphanRegistry.GroupPrefixes(listed.Value);
+        var observed = grouped.Sizes;
 
         // (2) Владельцы: /clusters/ → живые кластеры (State ≠ ToRemove) и их
         // шарды (!ToRemove).
@@ -71,14 +72,17 @@ public sealed class BackupOrphanSweeper(
         // только при изменении записей (безделье не пишет; updated_unix —
         // свежесть прохода, в сравнение не входит).
         var current = await ReadRegistryAsync(ct);
-        var merged = OrphanRegistry.Merge(current, observed, liveShards, liveClusters, nowUnix);
+        var merged = OrphanRegistry.Merge(
+            current, observed, grouped.FullPrefixes, liveShards, liveClusters, nowUnix);
         var changed = current is null || !OrphanRegistry.SameOrphans(current, merged);
         if (changed && await PutRegistryAsync(merged, ct) is { IsSuccess: false } putMerged)
             return putMerged; // transient — реестр не записан, удаление не начинаем
 
         // (4) TTL: один префикс за проход (тик короткий, образец ретенции).
+        // hold-множество здесь пусто (санитар/чтение hold-ключей — Task 2 t04).
         var candidate = OrphanRegistry.SelectTtlCandidate(
-            merged, options.SupervisorOrphanTtlSec, nowUnix);
+            merged, options.SupervisorOrphanTtlSec, nowUnix,
+            new HashSet<string>(StringComparer.Ordinal));
         if (candidate is null)
             return Result.Success();
         var entry = merged.Orphans.First(e => e.Prefix == candidate);
