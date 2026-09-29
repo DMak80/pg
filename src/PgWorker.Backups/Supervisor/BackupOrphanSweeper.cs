@@ -180,7 +180,8 @@ public sealed class BackupOrphanSweeper(
             return putDone;
         await journal.WritePhaseAsync(candidate.Split('/')[0], Op,
             $"orphan-deleted/{candidate}", claims.InstanceId, null, ct);
-        logger?.LogInformation("{Op}: сирота {Prefix} удалена по TTL", Op, candidate);
+        logger?.LogInformation("{Op}: сирота {Prefix} удалена {Reason}", Op, candidate,
+            byRequest ? "по заявке оператора" : "по TTL");
 
         // Заявка исполнена — гасим её ключ (санитар следующего прохода тоже бы
         // гасил, но чистим сразу: заявка и запись гасятся вместе — AC4).
