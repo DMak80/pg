@@ -561,7 +561,8 @@ public sealed class RestoreProcess(
         }
 
         var firstEnsure = await driver.EnsureNodeAsync(
-            topology, first, firstAddr, clusterSecrets, etcdEndpoints, resources, null, ct);
+            topology, first, firstAddr, clusterSecrets, etcdEndpoints, resources, null,
+            snap.Config.SyncStrict, ct); // t06: bootstrap восстановленной ноды несёт strict кластера
         if (!firstEnsure.IsSuccess)
             return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
                 firstEnsure.Error!.Message, ct);
@@ -590,7 +591,8 @@ public sealed class RestoreProcess(
                 return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
             }
             var ensured = await driver.EnsureNodeAsync(
-                topology, node, addr, clusterSecrets, etcdEndpoints, resources, null, ct);
+                topology, node, addr, clusterSecrets, etcdEndpoints, resources, null,
+                snap.Config.SyncStrict, ct);
             if (!ensured.IsSuccess)
                 return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
                     ensured.Error!.Message, ct);

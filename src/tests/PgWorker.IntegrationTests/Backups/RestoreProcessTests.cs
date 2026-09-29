@@ -399,7 +399,7 @@ public class RestoreProcessTests(EtcdFixture fixture)
         public bool SupportsRunningInspection => inner.SupportsRunningInspection;
         public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct) => inner.GetHostsAsync(ct);
         public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct) => inner.GetBusyPortsAsync(ct);
-        public Task<Result> EnsureNodeAsync(ShardTopology t, string n, NodeAddress a, InstallSecrets s, EtcdEndpoints e, NodeResources? r, PgTuneResult? tuning, CancellationToken ct) => inner.EnsureNodeAsync(t, n, a, s, e, r, tuning, ct);
+        public Task<Result> EnsureNodeAsync(ShardTopology t, string n, NodeAddress a, InstallSecrets s, EtcdEndpoints e, NodeResources? r, PgTuneResult? tuning, bool syncStrict, CancellationToken ct) => inner.EnsureNodeAsync(t, n, a, s, e, r, tuning, syncStrict, ct);
         public Task<Result> RemoveNodeAsync(string c, string sh, string node, CancellationToken ct) => inner.RemoveNodeAsync(c, sh, node, ct);
         public Task<Result> StopNodeAsync(string c, string sh, string node, CancellationToken ct) => inner.StopNodeAsync(c, sh, node, ct);
         public Task<Result<DataPresence>> NodeDataPresenceAsync(string c, string sh, string node, CancellationToken ct) => inner.NodeDataPresenceAsync(c, sh, node, ct);

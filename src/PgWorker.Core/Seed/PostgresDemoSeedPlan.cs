@@ -16,9 +16,10 @@ public sealed record PostgresDemoSeedPlan(long NowUnix)
     {
         List<PlanPut> puts =
         [
-            // Config (Active-канон: state-поля нет — кластер проинициализирован).
+            // Config (Active-канон: state-поля нет — кластер проинициализирован;
+            // t06: сид пишет strict-поле явленно — durability-first).
             new PlanPut("/clusters/demo/config",
-                $"{{\"buckets\":16,\"dbname\":\"demo\",\"created_unix\":{now}}}"),
+                $"{{\"buckets\":16,\"dbname\":\"demo\",\"created_unix\":{now},\"synchronous_mode_strict\":true}}"),
 
             // Шарды: dsn/replicas/master (master статично; эмуляторы стенда
             // перепишут с lease — здесь только декларация).

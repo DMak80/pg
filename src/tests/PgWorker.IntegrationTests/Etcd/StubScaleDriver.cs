@@ -88,7 +88,8 @@ public sealed class StubScaleDriver : IClusterDriver
         => Task.FromResult(Result<IReadOnlySet<(string, int)>>.Success(BusyPorts));
 
     public Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
-        InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning, CancellationToken ct)
+        InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
+        bool syncStrict, CancellationToken ct)
     {
         EnsuredNodes.Add($"{topology.Shard}/{nodeName}");
         NodeObjects.Add($"pgw-{topology.Cluster}-{topology.Shard}-{nodeName}");

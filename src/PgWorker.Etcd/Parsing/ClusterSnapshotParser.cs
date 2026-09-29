@@ -248,7 +248,12 @@ public static class ClusterSnapshotParser
                     _ => ClusterState.Active, // отсутствие state = Active (02 §2.1)
                 },
                 ReadString(root, "bucket_admin_user"),
-                ReadString(root, "bucket_admin_password"));
+                ReadString(root, "bucket_admin_password"),
+                // t06: отсутствие поля или не-bool = true (durability-first, arch/14 §3).
+                SyncStrict: root.TryGetProperty("synchronous_mode_strict", out var strict)
+                    && strict.ValueKind is JsonValueKind.True or JsonValueKind.False
+                        ? strict.GetBoolean()
+                        : true);
         }
         catch (JsonException)
         {

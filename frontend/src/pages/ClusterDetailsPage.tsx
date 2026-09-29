@@ -15,6 +15,7 @@ import { MovesTab } from './cluster-details/MovesTab';
 import { RotateClusterSecretsButton } from './cluster-details/RotateClusterSecretsButton';
 import { ShardsTab } from './cluster-details/ShardsTab';
 import { StandNodesBlock } from './cluster-details/StandNodesBlock';
+import { StrictModeSwitch } from './cluster-details/StrictModeSwitch';
 
 export function ClusterDetailsPage() {
   const { cluster = '' } = useParams();
@@ -61,11 +62,18 @@ export function ClusterDetailsPage() {
             <Title order={2}>{data.name}</Title>
             {data.incomplete ? <Badge color="yellow" variant="light">incomplete</Badge> : null}
             {toRemove ? <Badge color="red" variant="light">к удалению</Badge> : null}
+            {/* t06: бейдж режима в шапке (arch/03 §3) */}
+            {data.synchronousModeStrict
+              ? <Badge color="red" variant="light">strict</Badge>
+              : <Badge color="teal" variant="light">availability</Badge>}
           </Group>
           {/* Ротация — только Active (у NOT_INITIALIZED пароль ещё не используется);
               у TO_REMOVE обе кнопки скрыты (обратного перехода нет, arch/02 §9.4). */}
           {toRemove ? null : (
             <Group gap="sm">
+              {/* t06: переключатель strict-режима (мутация только Active) */}
+              <StrictModeSwitch cluster={data.name} state={data.state}
+                strict={data.synchronousModeStrict} />
               {data.state === 'ACTIVE' ? <RotateClusterSecretsButton name={data.name} /> : null}
               <DeleteClusterButton name={data.name} />
             </Group>
@@ -86,7 +94,7 @@ export function ClusterDetailsPage() {
         </Tabs.List>
         <Tabs.Panel value="shards" pt="sm">
           <ShardsTab cluster={data.name} canScale={canScale} shards={data.shards}
-            bucketCounts={bucketCounts} />
+            bucketCounts={bucketCounts} strict={data.synchronousModeStrict} />
         </Tabs.Panel>
         {data.sharded ? (
           <Tabs.Panel value="buckets" pt="sm">

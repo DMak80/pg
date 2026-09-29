@@ -44,6 +44,17 @@ public sealed class AddShardValidationException(IReadOnlyList<ValidationError> e
     public IReadOnlyList<ValidationError> Errors { get; } = errors;
 }
 
+// Валидация мутации config не прошла: 400 с errors по полям (t06, 02 §9.10).
+public sealed class UpdateClusterConfigValidationException(IReadOnlyList<ValidationError> errors)
+    : Exception("параметры мутации config некорректны")
+{
+    public IReadOnlyList<ValidationError> Errors { get; } = errors;
+}
+
+// RMW-txn проигран: config изменился между чтением и записью — 503, retry клиентом (t06).
+public sealed class ClusterConcurrentWriteException(string key)
+    : Exception($"конкурентная запись изменила {key} между чтением и записью — повторите запрос");
+
 // Кластер не Active: NOT_INITIALIZED («дождитесь инициализации») или TO_REMOVE
 // («кластер удаляется») — подсказка оператору по state (§9.5/§9.6).
 public sealed class ClusterNotActiveException(string name, string state)

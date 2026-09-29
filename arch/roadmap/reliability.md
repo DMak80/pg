@@ -43,12 +43,6 @@ P3 (t13–t17) — наблюдаемость, P4 (t18–t22) — долговр
   авто-удаляется через `OrphanTtlSec` (7 сут) — DR возможен только «если
   успеть» (BackupOrphanSweeper, docs/backup-restore.md §5.1); нужен
   hold-флаг / правило «не удалять последний полный сироты».
-- **`t06-sync-strict-option`** — per-cluster опция
-  `synchronous_mode_strict`: сейчас глобально `false`
-  (NodeConfigBuilders) — при потере всех реплик запись продолжается,
-  последующий failover теряет хвост; долговечность-vs-доступность должна
-  быть настройкой кластера, а не глобальной константой
-  (`sync-standby-missing` — только warning).
 - **`t07-worker-second-instance`** — второй инстанс воркеров в деплое
   (`deploy/docker-compose.yml`): код полностью готов (lease-клэймы, takeover
   ≤15 с, PortAllocLock — доказано E2E AC3/mid-add/mid-move), но деплой

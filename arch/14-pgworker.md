@@ -175,6 +175,7 @@ docker-restart-политики (не deploy-канон) процесс оста
 | `POST /api/clusters/{c}/moves/abort` | заявка отмены переезда | 02 §9.7.4 |
 | `DELETE /api/clusters/{c}/moves/{bucket}` | отмена стоящей заявки (del ключа) | 02 §9.7.5 |
 | `POST /api/clusters/{c}/secrets/rotate` | заявка ротации per-cluster секретов (app + bucket_admin + mover) | 02 §9.8 |
+| `PUT /api/clusters/{c}/config` | мутация per-cluster опции `synchronous_mode_strict` | 02 §9.10: RMW-txn по mod_revision; гварды — кластер Active |
 | `POST /api/clusters/{c}/shards/{x}/restore` | заявка восстановления шарда из бэкапа (PITR latest/target_time, source-override; `confirm` = имя шарда) | пишет статус `/pgworker/backups/<C>/<X>/restore/<id>` сам (клэйм `<C>`; arch/19 §3.5): гварды — кластер Active, шард заявлен, максимум один активный restore на шард |
 | `POST /api/ha/{scope}/nodes/{node}/recreate` | маркеры `TO_RECREATE`+`recreate=soft\|hard` | как §9.6-подобный маркер (02 §9, 03 §2): guards по `/service/<scope>/members` |
 | `POST /api/restart` | graceful self-stop инстанса (перезапуск контейнера — docker-политикой) | etcd НЕ пишет: 202 → `StopApplication` (§1.1 выше); применение серверного серта из `/workers/api_tls/pgworker` — при следующем старте |
@@ -226,7 +227,12 @@ keepalive цикл 1 с, TTL 5 с). Внутри контейнера всё о�
 отдельными сервисами громоздки).
 
 **Канонические тайминги Patroni (t09)**: `ttl=20, loop_wait=1,
-retry_timeout=3` (плюс `synchronous_mode=true`, strict=false). Обоснование:
+retry_timeout=3` (плюс `synchronous_mode=true`; `synchronous_mode_strict` —
+НЕ глобальная константа, а per-cluster опция из `/clusters/<C>/config`, §3:
+отсутствие поля = `true`, дефолт durability-first; bootstrap ноды подставляет
+значение кластера в `bootstrap.dcs` SPILO_CONFIGURATION, живые кластеры
+приводит конвергенция DCS (§5 C) — динамический параметр, без рестартов PG).
+Обоснование:
 Patroni 4.x валидирует динамический конфиг жёсткими полами — `loop_wait≥1`,
 `retry_timeout≥3`, **`ttl≥20`** — и правилом `loop_wait + 2*retry_timeout ≤
 ttl`; заниженное значение молча поднимается до пола и записывается обратно в
@@ -487,6 +493,13 @@ success-ветке). **Poll, без watch** (аргументация — AdminP
 | Ключ | Зачем |
 |---|---|
 | `/clusters/<C>/config` | константы (buckets=N, dbname) + `state` (NOT_INITIALIZED/TO_REMOVE/отсутствует) |
+
+Формат config-JSON (t06) дополнен полем `"synchronous_mode_strict"?: true|false`
+— per-cluster HA-режим: отсутствие поля или не-bool значение = `true`
+(durability-first: strict-кластер при отсутствии sync-standby блокирует
+запись). Пишут ТОЛЬКО API создания (POST /api/clusters) и мутации
+(PUT /api/clusters/{c}/config, 02 §9.10); воркер поле читает (bootstrap +
+конвергенция), но никогда не пишет.
 | `/clusters/<C>/shards/<X>/replicas` | плановое число нод шарда |
 | `/clusters/<C>/shards/<X>/nodes/<n>/state` | состояние нод (свои же записи — проверка идемпотентности) |
 | `/clusters/<C>/shards/<X>/master` | живой мастер (lease TTL 5 с) — маршрутизация SQL-операций |
@@ -509,7 +522,7 @@ success-ветке). **Poll, без watch** (аргументация — AdminP
 | `/clusters/<C>/shards/<X>/dsn` | после поднятия нод шарда | `host=h1,h2 port=15432,15433 dbname=<C> user=<bucket_admin> password=<per-cluster bucket_admin>` (multi-host; креды bucket_admin per-cluster — канон ключи `bucket_admin_*` (t02 §3.1), порядок чтения ключи → config → env; порты — выделенные аллокатором, §2.4; app-секрет в DSN не попадает никогда) |
 | `/clusters/<C>/shards/<X>/nodes/<n>/state` | весь жизненный цикл | таблица состояний §5 |
 | `/clusters/<C>/buckets/status/bucket_<i>` | DELETE при завершении provisioning | снятие = бакет ACTIVE (семантика [11](11-bucket-sharding.md) §2, панели 02 §2.1) |
-| `/clusters/<C>/config` | txn по завершении provisioning | пере-put канонического JSON **без поля `state`** (инициализирован = поле отсутствует, 02 §2.1; compare по `mod_revision`) |
+| `/clusters/<C>/config` | txn по завершении provisioning | пере-put канонического JSON **без поля `state`** (инициализирован = поле отсутствует, 02 §2.1; compare по `mod_revision`); `synchronous_mode_strict` (t06) — переносится из прочитанного config БЕЗ изменения (пер-кластерная опция не стирается: созданный со strict=false кластер не «молча» становится strict) |
 | `/clusters/<C>/…` (весь префикс) | TO_REMOVE, финал | `del --prefix` |
 | `/service/<C>-shard<k>/request_*` | TO_REMOVE, финал | точечные `del` (свои заявки; остальное пространство Patroni не трогаем) |
 | `/service/<C>-<X>/` (весь scope) | TO_REMOVE, после удаления нод | `del --prefix` (guard: контейнеров/сервисов нет) |
@@ -698,7 +711,9 @@ P2 на каждый шард X:
        (Spilo env: SCOPE=<C>-<X>, ETCD3_HOSTS=host:port (etcd v3),
         канонические тайминги ttl=20/loop_wait=1/retry_timeout=3 в
         bootstrap.dcs (§2.1, t09: полы Patroni 4.x; гарантируются
-        конвергенцией §5 C),
+        конвергенцией §5 C); `SpiloEnvBuilder` подставляет
+        `synchronous_mode_strict` из config кластера (per-cluster опция,
+        t06) в bootstrap.dcs рядом с `synchronous_mode`,
         параметры PG — merge(PGTune ∪ канон): PGTune-вывод P2.0 в порядке
         §5.2, канон P3/P4 поверх (wal_level=logical +
         sync_replication_slots + max_slot_wal_keep_size, walsenders/slots=10);
@@ -815,14 +830,17 @@ D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый �
   (e2e-профиль: ≤5 с).
 - **Конвергенция DCS-конфига (t09; pg-параметры — t11)**: раз в тик надзора
   по одному узлу шарда — GET /config; расхождение с каноном (§2.1:
-  ttl/loop_wait/retry_timeout/synchronous_mode + `postgresql.parameters` =
+  ttl/loop_wait/retry_timeout/synchronous_mode + `synchronous_mode_strict`
+  с per-cluster ожиданием из config кластера (t06, не константа) +
+  `postgresql.parameters` =
   merge(PGTune ∪ канон) от актуальных заявок `request_{cpu,mem}` и опций
   `PgWorker:Pgtune`, пересчёт на каждый тик конвергенции, БЕЗ фиксации в
   etcd) → ОДИН PATCH /config: обновляет расходящиеся значения, добавляет
   отсутствующие и удаляет лишние (null-патч — параметр исчез из PGTune-вывода
   при смене заявок или добавлен в `ExcludeParams`; «старое не живёт параллельно
   канону», включая вручную записанные оператором ключи — канал переопределения
-  один: опции `PgWorker:Pgtune` + `ExcludeParams`). Динамические параметры
+  один: опции `PgWorker:Pgtune` + `ExcludeParams`); порядок ключей патча
+  детерминированный: тайминги → strict → параметры (t06). Динамические параметры
   Patroni применяет сам (reload в пределах loop_wait); postmaster-параметры
   (`max_connections`, `shared_buffers`, …) Patroni помечает `pending_restart`
   (GET /patroni) — применяются при ближайшем рестарте ноды (rebuild/эвакуация/
@@ -1005,7 +1023,10 @@ phase=waiting-keys); `dsn` нет (есть → Done); scope `/service/<C>-<X>/i
 поднимающийся Patroni после A3 — идемпотентность повторных тиков); коллизия
 имён — initialize с чужим лидером (перманентная ошибка);
 имя шарда `^[a-z][a-z0-9_]{0,30}$`; перечитывание config (R6) — NOT_INITIALIZED/
-TO_REMOVE → phase=aborted. Перед созданием ролей — ensure app-секрета
+TO_REMOVE → phase=aborted; strict-гвард (t06): strict-кластер
+(`config.synchronous_mode_strict` = true, отсутствие поля = true) отклоняет
+add-shard с `replicas < 2` (400 панели) — без sync-standby новый шард
+блокировал бы запись. Перед созданием ролей — ensure app-секрета
 кластера (образец P1.5: у живого кластера ключи уже есть — читаем;
 отсутствуют, кластер создан до app-секрета, — генерируем и кладём txn
 put-if-absent; роль app выравнивается `ALTER ROLE … PASSWORD`).

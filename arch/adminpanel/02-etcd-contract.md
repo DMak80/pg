@@ -61,7 +61,7 @@ t03): чтение `/valkey/clusters/` + `/valkeyworker/{rotations,api}/` и 5 �
 
 | Ключ | Формат значения | В модель | Примечания |
 |---|---|---|---|
-| `/clusters/<C>/config` | JSON `{"buckets":N,"dbname":"<C>","created_unix":…,"state"?:"NOT_INITIALIZED"\|"TO_REMOVE"}` | `ClusterInfo` (константы) | N — константа навсегда (P18); `created_unix` может отсутствовать (старые init); `state` пишется только панелью: при создании (§9) и переводе в удаление (§9.4); отсутствует/иное = обычный инициализированный кластер |
+| `/clusters/<C>/config` | JSON `{"buckets":N,"dbname":"<C>","created_unix":…,"state"?:"NOT_INITIALIZED"\|"TO_REMOVE","synchronous_mode_strict"?:true\|false}` | `ClusterInfo` (константы, `SynchronousModeStrict`) | N — константа навсегда (P18); `created_unix` может отсутствовать (старые init); `state` пишется только панелью: при создании (§9) и переводе в удаление (§9.4); отсутствует/иное = обычный инициализированный кластер; `synchronous_mode_strict` (t06) — отсутствие/не-bool = `true`; пишут API создания/мутации (§9.10), воркер читает |
 | `/clusters/<C>/shards/<X>/dsn` | libpq-строка `host=n1,n2,n3 port=5432 dbname=<C> user=bucket_admin` | `ShardInfo.Dsn`, парсим хосты/порт/dbname/user | dsn PgWorker-кластеров несёт `password=` (per-cluster bucket_admin); панель разбирает его в `ShardInfo.Password`, SQL-проба использует `shard.Password ?? AdminPanel:Probes:Password`; у создаваемого панелью кластера ключа нет — ноды ещё не подняты (§9) |
 | `/clusters/<C>/shards/<X>/replicas` | целое-строка `"2"` | `ShardInfo.ReplicasDeclared` | декларативное намерение; факт — в HA (`/service/`) |
 | `/clusters/<C>/shards/<X>/master` | `"host:6432"` | `ShardInfo.MasterAddress` (nullable) | lease TTL 5 c; отсутствие = нет живого мастера (P11) |
@@ -241,7 +241,8 @@ sealed record ClusterInfo(
     ClusterState State,                       // Active|NotInitialized|ToRemove (config.state, §9/§9.4)
     IReadOnlyList<ShardInfo> Shards,
     IReadOnlyList<BucketInfo> Buckets,     // все N, включая ACTIVE
-    IReadOnlyList<HealRecord> Heals);
+    IReadOnlyList<HealRecord> Heals,
+    bool SynchronousModeStrict = true);    // config.synchronous_mode_strict (t06): отсутствие/не-bool = true
 
 sealed record ShardInfo(
     string Name, string Dsn, IReadOnlyList<string> DsnHosts, int? Port,
@@ -422,7 +423,10 @@ Patroni и инициализация схем — процессы самого
 ```
 /clusters/<C>/config                              {"buckets":N,"dbname":"<C>",
                                                     "created_unix":T,
-                                                    "state":"NOT_INITIALIZED"}
+                                                    "state":"NOT_INITIALIZED",
+                                                    "synchronous_mode_strict":<bool>}
+                                                    (t06: значение из запроса создания;
+                                                     отсутствие поля запроса = true)
 /clusters/<C>/shards/shard<k>/replicas            "<R>"            (k=1..S)
 /clusters/<C>/shards/shard<k>/nodes/<n>/state     "NOT_INITIALIZED" (n = <k>-я буква
                                                      a..z: shard1a..; R ключей на шард)
@@ -530,6 +534,7 @@ Patroni и инициализация схем — процессы самого
 | `replicas` | целое 1..26 (буквы нод a..z), по умолчанию 2; 1 = только мастер |
 | `requestCpu` | десятичные ядра, 0.01..64, каноническая invariant-строка (`"0.5"`, `"2"`) |
 | `requestMem` / `requestDisk` | целые GiB 1..65536, в etcd — `"<n>Gi"` |
+| `synchronousModeStrict` (t06) | bool, опционально: `!= false` (вкл. отсутствие = `true`) при `replicas < 2` → ошибка по полю `syncStrict` («strict-режим требует replicas ≥ 2 на каждом шарде (без sync-standby запись блокируется)»); при явном `false` ограничений нет |
 
 ### 9.4. Удаление кластера (перевод в TO_REMOVE)
 
@@ -841,6 +846,30 @@ env-серте) / `unknown` (инстанс не сообщает thumbprint).
 SHA-256(fingerprint) с сертом из `/workers/api_tls/<worker>` — панель
 доверяет сертам, которые сама записала (self-signed генерация не рвёт
 mTLS-доступ панели к воркеру после перезапуска).
+
+### 9.10. Мутация config: `synchronous_mode_strict` (t06)
+
+Исполнитель — воркер (`PUT /api/clusters/{c}/config`, arch/14 §1.1); панель —
+зеркальный эндпоинт-прокси. Тело: `{"synchronousModeStrict": bool}` — поле
+обязательное (отсутствие → 400); меняется ровно это поле, прочие поля config
+переносятся без изменений.
+
+Протокол (RMW-txn по образцу §10.2):
+1. Чтение `/clusters/<C>/config` напрямую у etcd (НЕ из снапшота) вместе с
+   `mod_revision`. Ключа нет → 404; битый JSON → 503.
+2. Гвард: `state` не Active → 409 (NOT_INITIALIZED «дождитесь инициализации» /
+   TO_REMOVE «кластер удаляется»).
+3. Валидация включения: `synchronousModeStrict=true` требует `replicas ≥ 2` на
+   ВСЕХ шардах (чтение `/clusters/<C>/shards/*/replicas`) → иначе 400 по полю
+   `syncStrict`. Выключение (false) разрешено всегда.
+4. Идемпотентность: текущее значение уже совпадает → 204 без записи.
+5. txn: `compare mod_revision(config) == прочитанной` + `put` обновлённого
+   config-JSON. Проигрыш compare → 503 (retry клиентом).
+
+Коды: 204 / 400 (валидация, битое тело) / 404 / 409 / 503 (etcd, гонка).
+Применение к живому Patroni — конвергенция DCS воркера (arch/14 §5 C):
+панель после 204 показывает значение опции; наблюдение применения — HA-страница
+`/service/<scope>/config` (raw-JSON) и журнал `dcs-converge`.
 
 ## 10. Kafka (чтение + записи панели)
 

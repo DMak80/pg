@@ -351,4 +351,24 @@ public class ClustersParserTests
         var nodes = result.Clusters.Single().Shards.Single().Nodes;
         nodes.Should().HaveCount(2); // app_params не влияет на ноды
     }
+
+    // Хелпер t06: парс одного кластера из config-ключа (механика Kv-сида файла).
+    private static ClusterInfo ParseSingleCluster(string configRaw)
+        => ClustersParser.Parse([Kv("/clusters/shop/config", configRaw)]).Clusters.Single();
+
+    // AAA (t06, spec §6.1/§6.9): config-поле читается в снапшот панели;
+    // отсутствие/не-bool/битый JSON = true (единая семантика с воркером).
+    [Theory]
+    [InlineData("""{"buckets":2,"dbname":"shop","synchronous_mode_strict":false}""", false)]
+    [InlineData("""{"buckets":2,"dbname":"shop","synchronous_mode_strict":true}""", true)]
+    [InlineData("""{"buckets":2,"dbname":"shop"}""", true)]
+    [InlineData("""{"buckets":2,"dbname":"shop","synchronous_mode_strict":"yes"}""", true)]
+    public void Parse_StrictField_SemanticsMatchesWorker(string configRaw, bool expected)
+    {
+        // Arrange — kvs с config-ключом (хелпер файла).
+        var cluster = ParseSingleCluster(configRaw);
+
+        // Act / Assert
+        cluster.SynchronousModeStrict.Should().Be(expected);
+    }
 }

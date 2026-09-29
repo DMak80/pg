@@ -121,7 +121,8 @@ public sealed partial class AddShardProcess(
             BucketAdminPassword = creds.Value.BucketAdmin.Password,
             MoverPassword = creds.Value.MoverPassword,
         };
-        var ensured = await EnsureNodesAsync(cluster, shard, topology, resources, tuning, clusterSecrets, ct);
+        var ensured = await EnsureNodesAsync(cluster, shard, topology, resources, tuning,
+            clusterSecrets, snap.Config.SyncStrict, ct);
         if (!ensured.IsSuccess)
             return await FailAsync(cluster, ensured.Error!, "ensure-nodes", ct);
 
@@ -252,9 +253,10 @@ public sealed partial class AddShardProcess(
     }
 
     // A3: EnsureNode всех нод шарда (state != RUNNING) + state=PROVISIONING.
+    // syncStrict — per-cluster опция из config (t06): bootstrap ноды несёт strict кластера.
     private async Task<Result> EnsureNodesAsync(
         string cluster, ShardSpec shard, ShardTopology topology, NodeResources? resources,
-        PgTuneResult tuning, InstallSecrets clusterSecrets, CancellationToken ct)
+        PgTuneResult tuning, InstallSecrets clusterSecrets, bool syncStrict, CancellationToken ct)
     {
         foreach (var node in shard.Nodes)
         {
@@ -269,7 +271,8 @@ public sealed partial class AddShardProcess(
             }
 
             var ensured = await driver.EnsureNodeAsync(
-                topology, node.Name, topology.Nodes[node.Name], clusterSecrets, etcdEndpoints, resources, tuning, ct);
+                topology, node.Name, topology.Nodes[node.Name], clusterSecrets, etcdEndpoints, resources,
+                tuning, syncStrict, ct);
             if (!ensured.IsSuccess)
                 return ensured;
         }

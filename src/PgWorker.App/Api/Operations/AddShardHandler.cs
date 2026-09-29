@@ -55,6 +55,16 @@ public sealed partial class AddShardHandler(IEtcdGateway gateway, string[] endpo
         if (rawState is not null)
             return Result<ShardAddedDto>.Failed(new ClusterNotActiveException(cluster, rawState));
 
+        // t06 (arch/14 §5 G): strict-кластер требует replicas ≥ 2 и на новом шарде —
+        // однорепликный шард в strict-кластере навсегда блокирует запись.
+        var clusterStrict = ReadStrictField(config.Value);
+        if (clusterStrict && request.Replicas < 2)
+            return Result<ShardAddedDto>.Failed(new AddShardValidationException(
+            [
+                new ValidationError("replicas",
+                    "strict-кластер: replicas ≥ 2 на каждом шарде (без sync-standby запись блокируется); выключите strict (PUT config) для однорепликных шардов"),
+            ]));
+
         // 3) Имя shard<max+1> по фактическому префиксу shards/ (range).
         //    «Существующий» шард = replicas + (nodes ИЛИ dsn/master/state):
         //    недодекларация (выжил только replicas после провалившейся
@@ -160,5 +170,15 @@ public sealed partial class AddShardHandler(IEtcdGateway gateway, string[] endpo
             && buckets.ValueKind == JsonValueKind.Number
             ? buckets.GetInt32()
             : 0;
+    }
+
+    // strict из config-JSON; отсутствие/не-bool = true (t06, arch/14 §3).
+    internal static bool ReadStrictField(string raw)
+    {
+        using var doc = JsonDocument.Parse(raw);
+        return doc.RootElement.TryGetProperty("synchronous_mode_strict", out var strict)
+            && strict.ValueKind is JsonValueKind.True or JsonValueKind.False
+                ? strict.GetBoolean()
+                : true;
     }
 }

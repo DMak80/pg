@@ -71,6 +71,43 @@ public static class ApiModule
             };
         });
 
+        // PUT /api/clusters/{cluster}/config — мутация synchronous_mode_strict (t06,
+        // 02 §9.10): 204; 400 валидация/битое тело; 404; 409 не-Active; 503 etcd/гонка.
+        endpoints.MapPut("/api/clusters/{cluster}/config", async (
+            string cluster, UpdateClusterConfigRequest request, UpdateClusterConfigHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleAsync(cluster, request, ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return result.Error switch
+            {
+                UpdateClusterConfigValidationException validation => Results.Problem(
+                    statusCode: StatusCodes.Status400BadRequest,
+                    title: "Validation failed",
+                    detail: result.Error.Message,
+                    extensions: new Dictionary<string, object?>
+                    {
+                        ["errors"] = validation.Errors.ToDictionary(e => e.Field, e => new[] { e.Message }),
+                    }),
+                ClusterNotFoundException => Results.Problem(
+                    statusCode: StatusCodes.Status404NotFound, title: "Cluster not found",
+                    detail: result.Error.Message),
+                ClusterNotActiveException => Results.Problem(
+                    statusCode: StatusCodes.Status409Conflict, title: "Cluster not active",
+                    detail: result.Error.Message),
+                ClusterConcurrentWriteException => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Concurrent write",
+                    detail: result.Error.Message),
+                EtcdWriteUnavailableException or InvalidClusterConfigException => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd unavailable",
+                    detail: result.Error.Message),
+                _ => Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable, title: "Etcd write failed",
+                    detail: result.Error!.Message),
+            };
+        });
+
         // POST /api/clusters/{cluster}/shards — добавить шард Active-кластеру (02 §9.5).
         endpoints.MapPost("/api/clusters/{cluster}/shards", async (
             string cluster, AddShardRequest request, AddShardHandler handler, CancellationToken ct) =>

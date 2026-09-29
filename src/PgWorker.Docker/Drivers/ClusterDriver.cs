@@ -32,10 +32,11 @@ public interface IClusterDriver
     // tuning — рассчитанный per-shard PGTune-вывод (PgtuneInputsFactory, arch/14
     // §2.1: пересчёт на каждый EnsureNode-путь, без фиксации в etcd); несётся в
     // SPILO_CONFIGURATION (merge(PGTune ∪ канон)) и doorman-бюджет; null →
-    // прежний хардкод-набор (изолированные пути).
+    // прежний хардкод-набор (изолированные пути). syncStrict — per-cluster
+    // опция synchronous_mode_strict из config кластера (t06, arch/14 §3).
     Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
         InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources,
-        PgTuneResult? tuning, CancellationToken ct);
+        PgTuneResult? tuning, bool syncStrict, CancellationToken ct);
 
     // Остановить и удалить ноду + volume (404 = успех). swarm: service rm
     // (volume остаётся на ноде таска — manager не управляет volume нод).
@@ -187,7 +188,7 @@ public sealed class PlainClusterDriver(
 
     public async Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
         InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources,
-        PgTuneResult? tuning, CancellationToken ct)
+        PgTuneResult? tuning, bool syncStrict, CancellationToken ct)
     {
         if (!_engines.TryGetValue(addr.Host, out var engine))
         {
@@ -236,7 +237,7 @@ public sealed class PlainClusterDriver(
                     throw removed.Error!;
             }
 
-            var spec = BuildSpec(topology, nodeName, addr, secrets, etcd, resources, tuning);
+            var spec = BuildSpec(topology, nodeName, addr, secrets, etcd, resources, tuning, syncStrict);
             var created = await engine.CreateContainerAsync(spec, name, ct);
             if (!created.IsSuccess)
                 throw created.Error!;
@@ -583,12 +584,14 @@ public sealed class PlainClusterDriver(
     // Сборка ContainerSpec: env Spilo + PGW_NODE_HOST + конфиги doorman/haproxy (Д4).
     // tuning — рассчитанный per-shard PGTune-вывод: env — merge(PGTune ∪ канон,
     // минус pgtuneExclude), doorman-бюджет — от рассчитанного max_connections
-    // (P15); tuning == null → прежний хардкод-набор и бюджет 55.
+    // (P15); tuning == null → прежний хардкод-набор и бюджет 55. syncStrict —
+    // per-cluster опция synchronous_mode_strict из config кластера (t06).
     internal ContainerSpec BuildSpec(ShardTopology topology, string nodeName, NodeAddress addr,
-        InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning)
+        InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
+        bool syncStrict)
     {
         var env = new Dictionary<string, string>(
-            SpiloEnvBuilder.Build(topology, etcd, secrets, tuning, pgtuneExclude))
+            SpiloEnvBuilder.Build(topology, etcd, secrets, syncStrict, tuning, pgtuneExclude))
         {
             // Адрес этой ноды для lease-скрипта мастер-ключа (P11) и сверок.
             ["PGW_NODE_HOST"] = addr.Host,
@@ -766,7 +769,7 @@ public sealed class SwarmClusterDriver(
 
     public async Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
         InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources,
-        PgTuneResult? tuning, CancellationToken ct)
+        PgTuneResult? tuning, bool syncStrict, CancellationToken ct)
     {
         return await Result.FromAsync(async () =>
         {
@@ -783,7 +786,7 @@ public sealed class SwarmClusterDriver(
                 throw new ApplicationException($"swarm-нода с Hostname={addr.Host} не найдена");
 
             var plain = new PlainClusterDriver([], new DockerEngineFactory(), enableDoorman, nodeImage, pgtuneExclude: pgtuneExclude);
-            var template = plain.BuildSpec(topology, nodeName, addr, secrets, etcd, resources, tuning);
+            var template = plain.BuildSpec(topology, nodeName, addr, secrets, etcd, resources, tuning, syncStrict);
             var spec = new ServiceSpec(
                 PlainClusterDriver.NodeName(topology.Cluster, topology.Shard, nodeName),
                 template,

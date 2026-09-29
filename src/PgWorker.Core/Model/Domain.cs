@@ -38,7 +38,8 @@ public enum BucketMoveState
 /// <summary>/clusters/&lt;C&gt;/config: константы создания + state + per-cluster credentials.</summary>
 public sealed record ClusterConfig(string Cluster, int Buckets, string DbName,
     long? CreatedUnix, ClusterState State,
-    string? BucketAdminUser = null, string? BucketAdminPassword = null);
+    string? BucketAdminUser = null, string? BucketAdminPassword = null,
+    bool SyncStrict = true);
 
 /// <summary>Per-cluster креды приложения: /clusters/&lt;C&gt;/app_user + app_password.</summary>
 public sealed record AppCredentials(string User, string Password);

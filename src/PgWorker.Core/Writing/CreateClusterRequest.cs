@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
 
 namespace PgWorker.Core.Writing;
@@ -14,18 +15,21 @@ public sealed record CreateClusterRequest(
     decimal RequestCpu,
     int RequestMem,
     int RequestDisk,
-    bool? Sharded = null)
+    bool? Sharded = null,
+    // Wire-имя фиксировано атрибутом: camelCase от SyncStrict дал бы syncStrict,
+    // а контракт (спека §2 п.7, arch/03 §1.1) — synchronousModeStrict (t06).
+    [property: JsonPropertyName("synchronousModeStrict")] bool? SyncStrict = null)
 {
-    // Нормализация (arch/02 §9.3): sharded=false → buckets/shards игнорируются и
-    // перезаписываются в 1/1 (нешардированная БД — вырожденный случай §9.1);
-    // отсутствующий sharded трактуется как true. Вызывается ДО Validate
-    // (симметрично «Build — только после Validate»). Идемпотентна.
+    // Нормализация (arch/02 §9.3 + t06): sharded=false → buckets/shards в 1/1;
+    // отсутствующий syncStrict трактуется как true (durability-first).
+    // Вызывается ДО Validate. Идемпотентна.
     public CreateClusterRequest Normalize()
     {
         var sharded = Sharded ?? true;
+        var syncStrict = SyncStrict ?? true;
         return sharded
-            ? this with { Sharded = sharded }
-            : this with { Sharded = sharded, Buckets = 1, Shards = 1 };
+            ? this with { Sharded = sharded, SyncStrict = syncStrict }
+            : this with { Sharded = sharded, Buckets = 1, Shards = 1, SyncStrict = syncStrict };
     }
 }
 
@@ -63,6 +67,9 @@ public static class CreateClusterValidator
             errors.Add(new("shards", $"шарды: целое {CreateClusterLimits.MinShards}..{CreateClusterLimits.MaxShards} и не больше бакетов"));
         if (request.Replicas is < CreateClusterLimits.MinReplicas or > CreateClusterLimits.MaxReplicas)
             errors.Add(new("replicas", $"реплики: целое {CreateClusterLimits.MinReplicas}..{CreateClusterLimits.MaxReplicas}"));
+        // t06: strict-режим требует sync-standby → replicas ≥ 2; отсутствие опции = true.
+        if ((request.SyncStrict ?? true) && request.Replicas < 2)
+            errors.Add(new("syncStrict", "strict-режим требует replicas ≥ 2 на каждом шарде (без sync-standby запись блокируется)"));
         if (request.RequestCpu < CreateClusterLimits.MinCpu || request.RequestCpu > CreateClusterLimits.MaxCpu)
             errors.Add(new("requestCpu", $"CPU (ядра): {CreateClusterLimits.MinCpu}..{CreateClusterLimits.MaxCpu}"));
         if (request.RequestMem is < CreateClusterLimits.MinGiB or > CreateClusterLimits.MaxGiB)

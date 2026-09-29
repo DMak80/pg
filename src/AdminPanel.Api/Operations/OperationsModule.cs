@@ -149,6 +149,19 @@ public static class OperationsModule
             return Error(result);
         });
 
+        // PUT /api/clusters/{cluster}/config — мутация synchronous_mode_strict (t06,
+        // 02 §9.10): 204; ошибки воркера — ProblemDetails как есть.
+        endpoints.MapPut("/api/clusters/{cluster}/config", async (
+            string cluster, UpdateClusterConfigRequest request, IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleCommand<UpdateClusterConfigCommand, ClusterConfigUpdatedDto>(
+                new UpdateClusterConfigCommand(cluster, request), ct);
+            if (result.IsSuccess)
+                return Results.NoContent();
+
+            return Error(result);
+        });
+
         // POST /api/ha/{scope}/nodes/{node}/recreate — маркер пересоздания ноды
         // (TO_RECREATE) с режимом soft|hard (нет тела — soft); битый JSON — 400.
         endpoints.MapPost("/api/ha/{scope}/nodes/{node}/recreate", async (

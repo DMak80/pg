@@ -24,7 +24,8 @@ public sealed record ClusterCreatePlan(
         var mem = CreateClusterValidator.CanonicalGiB(request.RequestMem);
         var disk = CreateClusterValidator.CanonicalGiB(request.RequestDisk);
 
-        var config = new ConfigJson(request.Buckets, request.Name, nowUnix, NotInitialized);
+        var config = new ConfigJson(request.Buckets, request.Name, nowUnix, NotInitialized,
+            request.SyncStrict ?? true); // Build — после Normalize; ?? true — страховка от прямых вызовов
         var puts = new List<PlanPut>();
         var requestKeys = new List<string>();
 
@@ -83,7 +84,8 @@ public sealed record ClusterCreatePlan(
         [property: JsonPropertyName("buckets")] int Buckets,
         [property: JsonPropertyName("dbname")] string DbName,
         [property: JsonPropertyName("created_unix")] long CreatedUnix,
-        [property: JsonPropertyName("state")] string State);
+        [property: JsonPropertyName("state")] string State,
+        [property: JsonPropertyName("synchronous_mode_strict")] bool SyncStrict);
 
     // Статус-ключ бакета: без target/started_unix/phase — это не переезд (arch/02 §2.1).
     private sealed record StatusJson(
