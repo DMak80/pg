@@ -112,6 +112,7 @@ Patroni REST без TLS/аутентификации (`t22`).
 | `t20-kfw-vwk-takeover-e2e` | host-kill E2E для KafkaWorker/ValkeyWorker | P4 | R |
 | `t21-host-failure-scenarios` | сценарии отказа docker-хоста/DC | P4 | R |
 | `t22-patroni-rest-tls` | TLS/аутентификация Patroni REST :8008 | P4 | N |
+| `t24-e2e-suite-under-load` | устойчивость полной E2E-серии к параллельной нагрузке | P3 | N |
 
 Смежное вне трека: `t02-external-secret-manager` (pgworker-трек) —
 секреты вне etcd; закрыт вместе с ним — строку сюда не переносим,
