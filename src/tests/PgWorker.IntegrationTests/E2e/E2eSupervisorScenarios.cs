@@ -320,6 +320,90 @@ public class E2eSupervisorScenarios
         }, ct);
     }
 
+    // AAA (AC1/AC4/AC10): DR-источник выжил после истёкшего TTL; заявка чистит.
+    // Сирота с объектом full/<id>/backup_manifest → реестр has_valid_full=true →
+    // TTL 120 c истёк → объекты ЖИВЫ (автоправило) → заявка delete (etcd-put
+    // канона) → sweeper исполнил: объекты удалены, запись и заявка погашены.
+    [Fact]
+    public async Task Backup_OrphanDrHold_ПолныйПереживаетTtl_ЗаявкаЧистит()
+    {
+        // Arrange 1 — окружение bk-drh (withMinio), воркер с OrphanTtlSec=120,
+        //   Supervisor IntervalSec=60 (StartOrphanHostAsync — сжатое время)
+        DockerTrait.SkipIfUnavailable();
+        var ct = TestContext.Current.CancellationToken;
+        await RunScenarioAsync("bk-drh", async fx =>
+        {
+        Fx = fx;
+        var cluster = $"bkdrh{Fx.ClusterTag}";
+        var ghost = $"ghost{Fx.ClusterTag}";
+        await SeedClusterAsync(cluster);
+        await using var app = await StartOrphanHostAsync(cluster, ct);
+
+        // Arrange 2 — provisioning DONE; посев СИРОТЫ С ВАЛИДНЫМ ПОЛНЫМ:
+        //   manifest — критерий DR-выбора (arch/19 §3.5/§5)
+        var provisioned = await WaitPhaseAsync("provisioning",
+            () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+        provisioned.Should().BeTrue("provisioning обязан дойти до DONE");
+        await McCpAsync($"{ghost}/shard1/full/20260911110000Z/base.tar", "dr-data");
+        await McCpAsync($"{ghost}/shard1/full/20260911110000Z/backup_manifest", "manifest");
+
+        // Act 1 — реестр: запись с has_valid_full=true (WaitFor)
+        var observed = await WaitPhaseAsync("orphan-has-full", async () =>
+        {
+            var raw = await GetOrNullAsync("/pgworker/backups/orphans");
+            return raw?.Value.Contains($"{ghost}/shard1") == true
+                   && raw.Value.Contains("\"has_valid_full\":true");
+        }, TimeSpan.FromSeconds(180), ct);
+        observed.Should().BeTrue(
+            $"сирота обязана попасть в реестр с has_valid_full=true: [{(await GetOrNullAsync("/pgworker/backups/orphans"))?.Value}]");
+
+        // Act 2 — окно выживания: WaitFor, пока с момента first_seen записи
+        // прошло ≥ TTL (120 c) + один проход (60 c) = 180 c — к этому моменту
+        // sweeper УЖЕ обязан был удалить незащищённую (поллинг по часам хоста;
+        // сна >30 c в тесте нет — условие опрашивается тиками WaitFor)
+        long firstSeen = 0;
+        var window = await WaitPhaseAsync("dr-ttl-window", async () =>
+        {
+            var raw = await GetOrNullAsync("/pgworker/backups/orphans");
+            if (raw is null || !raw.Value.Contains($"{ghost}/shard1"))
+                return false;
+            using var doc = JsonDocument.Parse(raw.Value);
+            firstSeen = doc.RootElement.GetProperty("orphans").EnumerateArray()
+                .Single(o => o.GetProperty("prefix").GetString() == $"{ghost}/shard1")
+                .GetProperty("first_seen_unix").GetInt64();
+            return DateTimeOffset.UtcNow.ToUnixTimeSeconds() >= firstSeen + 120 + 60;
+        }, TimeSpan.FromSeconds(360), ct);
+        window.Should().BeTrue("окно истёкшего TTL + один проход обязано наступить");
+
+        // Assert 1 — объекты ЖИВЫ, запись OBSERVED с has_valid_full (AC1)
+        (await McLsAsync($"{ghost}/shard1/")).Should().HaveCountGreaterThanOrEqualTo(2,
+            "DR-источник с валидным полным не удаляется автоматикой НИКОГДА");
+        var registryAfter = (await GetOrNullAsync("/pgworker/backups/orphans"))!.Value;
+        registryAfter.Should().Contain($"{ghost}/shard1")
+            .And.Contain("OBSERVED").And.Contain("\"has_valid_full\":true",
+            "запись жива под автоправилом");
+
+        // Act 3 — заявка явного удаления (ручной путь канона, runbook §2);
+        //   after-окно: TTL уже истёк, заявка приоритетнее — ближайший проход
+        await G.PutAsync(Endpoint,
+            $"/pgworker/backups/orphan-deletes/{ghost}/shard1",
+            $$"""{"requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds()}},"requested_by":"operator"}""",
+            null, ct);
+
+        // Assert — sweeper исполнил: объекты удалены, запись и заявка погашены
+        var swept = await WaitPhaseAsync("orphan-delete-by-request", async () =>
+        {
+            var listed = await McLsAsync($"{ghost}/shard1/");
+            var raw = await GetOrNullAsync("/pgworker/backups/orphans");
+            var req = await GetOrNullAsync($"/pgworker/backups/orphan-deletes/{ghost}/shard1");
+            return listed.Count == 0
+                   && (raw is null || !raw.Value.Contains($"{ghost}/shard1"))
+                   && req is null;
+        }, TimeSpan.FromSeconds(300), ct);
+        swept.Should().BeTrue("заявка удаляет защищённую сироту; запись и заявка гасятся вместе");
+        }, ct);
+    }
+
     // ===== Хелперы (копии образца E2eRetentionScenarios — файлы сценариев
     // независимы, паттерн репо) =====
 

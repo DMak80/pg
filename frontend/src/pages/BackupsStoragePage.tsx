@@ -1,10 +1,11 @@
 // Грань «Хранилище бэкапов» (t08, arch/03 §3): карточки Health/Место/Buckets,
-// дерево «Кластеры → шарды» с пометками сверки, блок сирот; read-only, без
-// форм ввода. Данные — снапшот (live-инвентарь MinIO вносится тиком).
-import { useQuery } from '@tanstack/react-query';
+// дерево «Кластеры → шарды» с пометками сверки, блок сирот с защитой (t04) и
+// кнопками Hold/Unhold/Delete. Данные — снапшот (live-инвентарь MinIO вносится тиком).
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
   Badge,
+  Button,
   Card,
   Group,
   Progress,
@@ -14,12 +15,14 @@ import {
   Title,
   Tooltip,
 } from '@mantine/core';
+import { useState } from 'react';
 import { Link } from 'react-router';
 import type { BackupStorageDto, MinioHealthDto, BackupOrphanDto } from '../api/dto';
-import { backupsQueryKeys, fetchBackupsStorage } from '../api/queries';
+import { backupsQueryKeys, fetchBackupsStorage, holdOrphan, unholdOrphan } from '../api/queries';
 import { ErrorSection, LoadingSection } from '../components/LoadState';
 import { usePollingIntervalMs } from '../polling/PollingContext';
 import { formatBytes, formatUnix, formatUnixAge } from '../utils/format';
+import { DeleteOrphanModal } from './backups-storage/DeleteOrphanModal';
 
 export function BackupsStoragePage() {
   const intervalMs = usePollingIntervalMs();
@@ -242,56 +245,143 @@ function ClustersTable({ data }: { data: BackupStorageDto }) {
   );
 }
 
-// Осиротевшие префиксы: реестр воркера (OBSERVED/DELETING + TTL) или
-// «панель видит, в реестре нет» (AC5; удаление — супервизор воркера).
+// Осиротевшие префиксы: реестр воркера (OBSERVED/DELETING + TTL у незащищённых)
+// или «панель видит, в реестре нет»; бейджи защиты (полный/hold/к удалению) и
+// кнопки Hold/Unhold (обратимы, без модала) / Delete (confirm-модал) — t04.
 function OrphansCard({ orphans }: { orphans: BackupOrphanDto[] }) {
+  const [deleting, setDeleting] = useState<BackupOrphanDto | null>(null);
   return (
     <Card withBorder padding="md" radius="md">
       <Text fw={600} mb="xs">Осиротевшие префиксы</Text>
       {orphans.length === 0 ? (
         <Text c="teal" size="sm">Сирот не обнаружено</Text>
       ) : (
-        <Table.ScrollContainer minWidth={760}>
-          <Table highlightOnHover>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Префикс</Table.Th>
-                <Table.Th>Тип</Table.Th>
-                <Table.Th>Размер</Table.Th>
-                <Table.Th>Реестр воркера</Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {orphans.map((o) => (
-                <Table.Tr key={o.prefix}>
-                  <Table.Td ff="monospace">{o.prefix}</Table.Td>
-                  <Table.Td>{o.kind}</Table.Td>
-                  <Table.Td>{formatBytes(o.sizeBytes)}</Table.Td>
-                  <Table.Td>
-                    {o.inWorkerRegistry ? (
-                      <Group gap="xs">
-                        <Badge color={o.registryState === 'DELETING' ? 'orange' : 'blue'} variant="light">
-                          {o.registryState ?? '—'}
-                        </Badge>
-                        <Text size="sm" c="dimmed">
-                          замечен {formatUnix(o.firstSeenUnix)}
-                          {o.ttlLeftSec === null
-                            ? ''
-                            : `, удаление по TTL через ${formatTtlLeft(o.ttlLeftSec)}`}
-                        </Text>
-                      </Group>
-                    ) : (
-                      <Text size="sm" c="yellow">панель видит, в реестре нет</Text>
-                    )}
-                  </Table.Td>
+        <>
+          <Table.ScrollContainer minWidth={860}>
+            <Table highlightOnHover>
+              <Table.Thead>
+                <Table.Tr>
+                  <Table.Th>Префикс</Table.Th>
+                  <Table.Th>Тип</Table.Th>
+                  <Table.Th>Размер</Table.Th>
+                  <Table.Th>Реестр воркера</Table.Th>
+                  <Table.Th>Защита</Table.Th>
+                  <Table.Th>Действия</Table.Th>
                 </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        </Table.ScrollContainer>
+              </Table.Thead>
+              <Table.Tbody>
+                {orphans.map((o) => (
+                  <OrphanRow key={o.prefix} orphan={o} onDelete={() => setDeleting(o)} />
+                ))}
+              </Table.Tbody>
+            </Table>
+          </Table.ScrollContainer>
+          {deleting !== null ? (
+            <DeleteOrphanModal
+              prefix={deleting.prefix}
+              cluster={deleting.prefix.split('/')[0]}
+              shard={deleting.prefix.split('/')[1] ?? ''}
+              onClose={() => setDeleting(null)}
+              onDone={() => setDeleting(null)}
+            />
+          ) : null}
+        </>
       )}
     </Card>
   );
+}
+
+// Бейджи защиты строки сироты (t04): автозащита полным / hold / к удалению.
+function ProtectionBadges({ orphan }: { orphan: BackupOrphanDto }) {
+  if (!orphan.hasValidFull && !orphan.held && !orphan.deleteRequested)
+    return <Text c="dimmed" size="sm">—</Text>;
+  return (
+    <Group gap="xs">
+      {orphan.hasValidFull ? (
+        <Tooltip label="в префиксе есть валидный полный — TTL-автоматика не удаляет">
+          <Badge color="teal" variant="light">полный: защита</Badge>
+        </Tooltip>
+      ) : null}
+      {orphan.held ? (
+        <Tooltip label="hold-флаг оператора — TTL-отбор исключён">
+          <Badge color="indigo" variant="light">
+            hold{orphan.heldBy !== null ? ` (${orphan.heldBy})` : ''}
+          </Badge>
+        </Tooltip>
+      ) : null}
+      {orphan.deleteRequested ? (
+        <Tooltip label="заявка явного удаления — исполнит sweeper ближайшим проходом">
+          <Badge color="red" variant="light">к удалению</Badge>
+        </Tooltip>
+      ) : null}
+    </Group>
+  );
+}
+
+// Кнопки Hold/Unhold/Delete строки (t04): hold/unhold — без модала (спиннер
+// до 204, после — refetch хранилища); Delete — confirm-модал, только для
+// строк реестра; в DELETING кнопки скрыты (доводку не остановить).
+function OrphanRow({ orphan, onDelete }: { orphan: BackupOrphanDto; onDelete: () => void }) {
+  const queryClient = useQueryClient();
+  const refresh = () => void queryClient.invalidateQueries({ queryKey: backupsQueryKeys.storage });
+  const hold = useMutation({ mutationFn: () => holdOrphan(...orphanPrefix(orphan)), onSuccess: refresh });
+  const unhold = useMutation({ mutationFn: () => unholdOrphan(...orphanPrefix(orphan)), onSuccess: refresh });
+  const pending = hold.isPending || unhold.isPending;
+  const deleting = orphan.registryState === 'DELETING';
+
+  return (
+    <Table.Tr key={orphan.prefix}>
+      <Table.Td ff="monospace">{orphan.prefix}</Table.Td>
+      <Table.Td>{orphan.kind}</Table.Td>
+      <Table.Td>{formatBytes(orphan.sizeBytes)}</Table.Td>
+      <Table.Td>
+        {orphan.inWorkerRegistry ? (
+          <Group gap="xs">
+            <Badge color={orphan.registryState === 'DELETING' ? 'orange' : 'blue'} variant="light">
+              {orphan.registryState ?? '—'}
+            </Badge>
+            <Text size="sm" c="dimmed">
+              замечен {formatUnix(orphan.firstSeenUnix)}
+              {orphan.ttlLeftSec === null
+                ? ''
+                : `, удаление по TTL через ${formatTtlLeft(orphan.ttlLeftSec)}`}
+            </Text>
+          </Group>
+        ) : (
+          <Text size="sm" c="yellow">панель видит, в реестре нет</Text>
+        )}
+      </Table.Td>
+      <Table.Td><ProtectionBadges orphan={orphan} /></Table.Td>
+      <Table.Td>
+        {orphan.inWorkerRegistry && !deleting ? (
+          <Group gap="xs">
+            {orphan.held ? (
+              <Button size="xs" variant="default" loading={unhold.isPending} disabled={pending}
+                onClick={() => unhold.mutate()}>
+                Unhold
+              </Button>
+            ) : (
+              <Button size="xs" variant="default" loading={hold.isPending} disabled={pending}
+                onClick={() => hold.mutate()}>
+                Hold
+              </Button>
+            )}
+            <Button size="xs" color="red" variant="light" onClick={onDelete}>
+              Delete
+            </Button>
+          </Group>
+        ) : (
+          <Text c="dimmed" size="sm">—</Text>
+        )}
+      </Table.Td>
+    </Table.Tr>
+  );
+}
+
+// «<C>/<X>» → пара (cluster, shard) для мутаций (префикс канона).
+function orphanPrefix(orphan: BackupOrphanDto): [string, string] {
+  const [cluster, shard] = orphan.prefix.split('/');
+  return [cluster, shard ?? ''];
 }
 
 // Остаток TTL в человекочитаемом виде: «2 д 3 ч», «45 мин».

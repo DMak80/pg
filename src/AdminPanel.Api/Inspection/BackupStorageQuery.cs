@@ -87,9 +87,15 @@ public sealed record BackupShardSummaryDto(
     string Cluster, string Shard, long SizeBytes,
     int FullsCount, long WalSegmentCount, bool HasS3Only, bool Orphan); // пометки сверки
 
+// Сирота грани «Хранилище бэкапов» (t08; защита — reliability t04, arch/19 §4):
+// HasValidFull — автозащита (валидный полный), Held — hold-флаг, DeleteRequested
+// — заявка явного удаления; TtlLeftSec — только у незащищённых (защищённым/
+// заявленным TTL-строка не нужна — spec §3.5).
 public sealed record BackupOrphanDto(
     string Prefix, string Kind, long SizeBytes,
-    bool InWorkerRegistry, string? RegistryState, long? FirstSeenUnix, long? TtlLeftSec);
+    bool InWorkerRegistry, string? RegistryState, long? FirstSeenUnix, long? TtlLeftSec,
+    bool HasValidFull = false, bool Held = false, long? HeldUnix = null, string? HeldBy = null,
+    bool DeleteRequested = false, long? DeleteRequestedUnix = null, string? DeleteRequestedBy = null);
 
 public sealed record BackupShardStorageDto(
     string Cluster, string Shard,
@@ -211,6 +217,8 @@ public static class BackupStorageMappers
 
     // Сироты: панельная сверка (с джойном на реестр) ∪ записи реестра без
     // S3-факта (воркер уже удалил — TTL-строка оператору), слияние по Prefix.
+    // Защита (reliability t04): джойн hold/заявок + has_valid_full — бейджи в
+    // DTO; TtlLeftSec — только у незащищённых.
     private static IReadOnlyList<BackupOrphanDto> MergeOrphans(
         IReadOnlyList<BackupOrphanPrefix> panelOrphans,
         BackupOrphansInfo? registry,
@@ -219,31 +227,56 @@ public static class BackupStorageMappers
     {
         var byRegistry = registry?.Orphans.ToDictionary(o => o.Prefix, StringComparer.Ordinal)
             ?? new Dictionary<string, BackupOrphanInfo>(StringComparer.Ordinal);
+        var holds = registry?.Holds;
+        var deleteRequests = registry?.DeleteRequests;
+
+        // Одна сборка DTO (для обеих веток слияния): джойн реестр×hold×заявка.
+        BackupOrphanDto Map(string prefix, string kind, long sizeBytes, bool inRegistry,
+            string? registryState, long? firstSeenUnix, bool hasValidFull)
+        {
+            OrphanHoldInfo? hold = null;
+            if (holds is not null && holds.TryGetValue(prefix, out var h))
+                hold = h;
+            OrphanDeleteRequestInfo? requested = null;
+            if (deleteRequests is not null && deleteRequests.TryGetValue(prefix, out var r))
+                requested = r;
+            var protectedOrRequested = hasValidFull || hold is not null || requested is not null;
+            return new BackupOrphanDto(
+                prefix, kind, sizeBytes, inRegistry, registryState, firstSeenUnix,
+                TtlLeftSec(firstSeenUnix, orphanTtlSec, nowUnix, protectedOrRequested),
+                HasValidFull: hasValidFull,
+                Held: hold is not null, HeldUnix: hold?.SetUnix, HeldBy: hold?.SetBy,
+                DeleteRequested: requested is not null, DeleteRequestedUnix: requested?.RequestedUnix,
+                DeleteRequestedBy: requested?.RequestedBy);
+        }
 
         var merged = panelOrphans
             .OrderBy(o => o.Prefix, StringComparer.Ordinal)
             .Select(o =>
             {
                 byRegistry.TryGetValue(o.Prefix, out var entry);
-                return new BackupOrphanDto(
-                    o.Prefix, o.Kind, entry?.SizeBytes ?? o.SizeBytes,
+                return Map(o.Prefix, o.Kind, entry?.SizeBytes ?? o.SizeBytes,
                     o.InWorkerRegistry, o.RegistryState, o.FirstSeenUnix,
-                    TtlLeftSec(o.FirstSeenUnix, orphanTtlSec, nowUnix));
+                    entry?.HasValidFull ?? false);
             })
             .ToList();
 
         merged.AddRange(byRegistry
             .Where(kv => merged.All(m => m.Prefix != kv.Key))
             .OrderBy(kv => kv.Key, StringComparer.Ordinal)
-            .Select(kv => new BackupOrphanDto(
-                kv.Value.Prefix, kv.Value.Kind, kv.Value.SizeBytes,
-                InWorkerRegistry: true, kv.Value.State, kv.Value.FirstSeenUnix,
-                TtlLeftSec(kv.Value.FirstSeenUnix, orphanTtlSec, nowUnix))));
+            .Select(kv => Map(kv.Value.Prefix, kv.Value.Kind, kv.Value.SizeBytes,
+                inRegistry: true, kv.Value.State, kv.Value.FirstSeenUnix,
+                kv.Value.HasValidFull)));
         return merged;
     }
 
-    private static long? TtlLeftSec(long? firstSeenUnix, long ttlSec, long nowUnix)
-        => firstSeenUnix is { } seen && ttlSec > 0 ? seen + ttlSec - nowUnix : null;
+    // Остаток TTL только у незащищённых (защищённым/заявленным — null, spec §3.5):
+    // отрицательный остаток — «следующий проход воркера».
+    private static long? TtlLeftSec(
+        long? firstSeenUnix, long ttlSec, long nowUnix, bool protectedOrRequested)
+        => !protectedOrRequested && firstSeenUnix is { } seen && ttlSec > 0
+            ? seen + ttlSec - nowUnix
+            : null;
 
     // Детали шарда: джойн сверки per-full + WAL + активный restore.
     public static BackupShardStorageDto MapShard(

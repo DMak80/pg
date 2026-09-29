@@ -293,3 +293,63 @@ public class BackupsOptionsBindingApiTests : IAsyncDisposable
 
     public async ValueTask DisposeAsync() => await _factory.DisposeAsync();
 }
+
+// Сироты с защитой (reliability t04, AC7): сводка orphans несёт hasValidFull/
+// held/deleteRequested + hold/заявки из etcd (реестр без S3-факта — вторая
+// ветка слияния); TtlLeftSec null у защищённых.
+[Collection("backups")]
+public class BackupsStorageOrphanProtectApiTests(
+    EtcdContainerFixture etcd, MinioContainerFixture minio)
+    : IClassFixture<EtcdContainerFixture>, IClassFixture<MinioContainerFixture>,
+      IAsyncDisposable
+{
+    private readonly BackupsWebFactory _factory = new()
+    {
+        EtcdEndpoint = etcd.Endpoint,
+        MinioEndpoint = minio.HostEndpoint,
+        MinioBucket = minio.Bucket,
+    };
+
+    [Fact]
+    public async Task Storage_Orphans_CarryProtectionBadges()
+    {
+        _factory.EnsureBuilt();
+        // Arrange: реестр сирот (g/s1 с валидным полным + заявка; g/s2 под hold)
+        // + hold/заявка per-префиксными ключами канона; тики инвентаря/снапшота.
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        await EtcdSeed.PutAsync(etcd.Endpoint, "/pgworker/backups/orphans",
+            $$"""{"orphans":[{"prefix":"g/s1","kind":"cluster","size_bytes":10,"first_seen_unix":{{now - 100}},"state":"OBSERVED","has_valid_full":true},{"prefix":"g/s2","kind":"cluster","size_bytes":20,"first_seen_unix":{{now - 100}},"state":"OBSERVED"}],"updated_unix":{{now}}}""",
+            TestContext.Current.CancellationToken);
+        await EtcdSeed.PutAsync(etcd.Endpoint, "/pgworker/backups/orphan-holds/g/s2",
+            """{"set_unix":1757760000,"set_by":"panel"}""", TestContext.Current.CancellationToken);
+        await EtcdSeed.PutAsync(etcd.Endpoint, "/pgworker/backups/orphan-deletes/g/s1",
+            """{"requested_unix":1757760000,"requested_by":"operator"}""", TestContext.Current.CancellationToken);
+        var loop = _factory.Services.GetRequiredService<MinioInventoryLoop>();
+        var refresher = _factory.Services.GetRequiredService<SnapshotRefresher>();
+        await loop.RunOnceAsync(TestContext.Current.CancellationToken);
+        (await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken))
+            .IsSuccess.Should().BeTrue();
+        using var client = await BackupsLogin.LoginAsync(_factory);
+
+        // Act
+        using var response = await client.GetAsync(
+            "/api/backups/storage", TestContext.Current.CancellationToken);
+
+        // Assert: orphans несут бейджи защиты; ttlLeftSec null у защищённых.
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var dto = await response.Content.ReadFromJsonAsync<JsonElement>(
+            TestContext.Current.CancellationToken);
+        var orphans = dto.GetProperty("orphans").EnumerateArray().ToList();
+        var s1 = orphans.Single(o => o.GetProperty("prefix").GetString() == "g/s1");
+        s1.GetProperty("hasValidFull").GetBoolean().Should().BeTrue();
+        s1.GetProperty("deleteRequested").GetBoolean().Should().BeTrue();
+        s1.GetProperty("deleteRequestedBy").GetString().Should().Be("operator");
+        s1.GetProperty("ttlLeftSec").ValueKind.Should().Be(JsonValueKind.Null, "защищён полным + заявка");
+        var s2 = orphans.Single(o => o.GetProperty("prefix").GetString() == "g/s2");
+        s2.GetProperty("held").GetBoolean().Should().BeTrue();
+        s2.GetProperty("heldBy").GetString().Should().Be("panel");
+        s2.GetProperty("ttlLeftSec").ValueKind.Should().Be(JsonValueKind.Null, "под hold");
+    }
+
+    public async ValueTask DisposeAsync() => await _factory.DisposeAsync();
+}

@@ -24,8 +24,8 @@ public class BackupOrphanRuleTests
     private static BackupOrphanInfo Entry(
         string prefix = "ghost1/s1", string kind = "cluster",
         long size = 1024 * 1024 * 1024, long firstSeen = 1757100000,
-        string state = "OBSERVED")
-        => new(prefix, kind, size, firstSeen, state);
+        string state = "OBSERVED", bool hasValidFull = false)
+        => new(prefix, kind, size, firstSeen, state, hasValidFull);
 
     private static EtcdSnapshot SnapshotWith(BackupOrphansInfo? orphans)
         => TestSnapshots.Healthy(Now) with { BackupOrphans = orphans };
@@ -93,5 +93,80 @@ public class BackupOrphanRuleTests
     {
         // Arrange / Act / Assert
         Evaluate(SnapshotWith(null)).Should().BeEmpty();
+    }
+
+    // ── DR-hold (reliability t04): fate-приоритет DELETING → hold → полный →
+    // заявка → TTL — AAA ——
+
+    // AAA (AC7): OBSERVED+hold → «защищён hold-флагом (<by>) — удаление только
+    // явной командой», Remedy OperatorRunbook
+    [Fact]
+    public void Orphan_Hold_ФразаЗащищён_ИРунбук()
+    {
+        // Arrange — сирота под hold панелью (вне TTL-отбора воркера)
+        var snapshot = SnapshotWith(new BackupOrphansInfo(
+            [Entry(firstSeen: Now.ToUnixTimeSeconds() - 172800)],
+            Now.ToUnixTimeSeconds(),
+            Holds: new Dictionary<string, OrphanHoldInfo>
+            {
+                ["ghost1/s1"] = new("ghost1/s1", Now.ToUnixTimeSeconds() - 60, "panel"),
+            }));
+
+        // Act
+        var alerts = Evaluate(snapshot);
+
+        // Assert
+        var alert = alerts.Should().ContainSingle().Subject;
+        alert.Severity.Should().Be(AlertSeverity.Warning);
+        alert.Remedy.Should().Be(AlertRemedy.OperatorRunbook);
+        alert.Message.Should().Contain("защищён hold-флагом (panel)")
+            .And.Contain("только явной командой");
+        alert.Details!["heldBy"].Should().Be("panel");
+    }
+
+    // AAA (AC7): OBSERVED+has_valid_full → «защищён автоправилом (есть валидный
+    // полный) — удаление только явной командой», Remedy OperatorRunbook
+    [Fact]
+    public void Orphan_Полный_ФразаАвтоправило()
+    {
+        // Arrange — сирота с валидным полным (автоправило последнего полного)
+        var snapshot = SnapshotWith(new BackupOrphansInfo(
+            [Entry(firstSeen: Now.ToUnixTimeSeconds() - 172800, hasValidFull: true)],
+            Now.ToUnixTimeSeconds()));
+
+        // Act
+        var alerts = Evaluate(snapshot);
+
+        // Assert
+        var alert = alerts.Should().ContainSingle().Subject;
+        alert.Remedy.Should().Be(AlertRemedy.OperatorRunbook);
+        alert.Message.Should().Contain("защищён автоправилом (есть валидный полный)")
+            .And.Contain("только явной командой");
+        alert.Details!["hasValidFull"].Should().Be("true");
+    }
+
+    // AAA (AC7): OBSERVED+заявка delete → «к удалению заявкой оператора —
+    // ближайший проход воркера», Remedy WorkerAuto
+    [Fact]
+    public void Orphan_Заявка_КУдалению()
+    {
+        // Arrange — заявка явного удаления на незащищённую сироту
+        var snapshot = SnapshotWith(new BackupOrphansInfo(
+            [Entry(firstSeen: Now.ToUnixTimeSeconds() - 172800)],
+            Now.ToUnixTimeSeconds(),
+            DeleteRequests: new Dictionary<string, OrphanDeleteRequestInfo>
+            {
+                ["ghost1/s1"] = new("ghost1/s1", Now.ToUnixTimeSeconds() - 30, "operator"),
+            }));
+
+        // Act
+        var alerts = Evaluate(snapshot);
+
+        // Assert
+        var alert = alerts.Should().ContainSingle().Subject;
+        alert.Remedy.Should().Be(AlertRemedy.WorkerAuto);
+        alert.Message.Should().Contain("к удалению заявкой оператора")
+            .And.Contain("ближайший проход");
+        alert.Details!["deleteRequested"].Should().Be("true");
     }
 }

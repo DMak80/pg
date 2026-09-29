@@ -38,11 +38,6 @@ P3 (t13–t17) — наблюдаемость, P4 (t18–t22) — долговр
   bucket replication в отдельный endpoint-хранилище): DR-сценарий опирается
   на выживание того же S3, что и основной (один bucket на установку,
   arch/19 §5).
-- **`t04-orphan-dr-hold`** — защита DR-источника от сиротского TTL: после
-  deprovisioning единственный бэкап-префикс погибшего кластера
-  авто-удаляется через `OrphanTtlSec` (7 сут) — DR возможен только «если
-  успеть» (BackupOrphanSweeper, docs/backup-restore.md §5.1); нужен
-  hold-флаг / правило «не удалять последний полный сироты».
 - **`t07-worker-second-instance`** — второй инстанс воркеров в деплое
   (`deploy/docker-compose.yml`): код полностью готов (lease-клэймы, takeover
   ≤15 с, PortAllocLock — доказано E2E AC3/mid-add/mid-move), но деплой

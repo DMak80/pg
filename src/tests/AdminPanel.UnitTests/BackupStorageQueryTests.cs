@@ -172,6 +172,56 @@ public class BackupStorageQueryTests
         orphan.TtlLeftSec.Should().Be(TtlSec - 100).And.BeGreaterThan(0);
     }
 
+    // AAA (AC7): джойн реестр×hold×заявка — бейджи защиты в DTO; TtlLeftSec
+    // только у незащищённых
+    [Fact]
+    public void MergeOrphans_защита_и_заявки_в_DTO()
+    {
+        // Arrange — реестр: g/s1 с полным, g/s2 без; hold на g/s2; заявка на g/s1
+        var registry = new BackupOrphansInfo(
+        [
+            new BackupOrphanInfo("g/s1", "cluster", 10, NowUnix - 86400, "OBSERVED", HasValidFull: true),
+            new BackupOrphanInfo("g/s2", "cluster", 20, NowUnix - TtlSec - 10, "OBSERVED"),
+        ], NowUnix,
+        new Dictionary<string, OrphanHoldInfo> { ["g/s2"] = new("g/s2", NowUnix - 60, "panel") },
+        new Dictionary<string, OrphanDeleteRequestInfo> { ["g/s1"] = new("g/s1", NowUnix - 30, "operator") });
+
+        // Act — MapStorage с деревом, где оба префикса (по образцу SnapshotWithTree)
+        var dto = BackupStorageMappers.MapStorage(SnapshotWithTree(registry), TtlSec, NowUnix);
+
+        // Assert
+        var s1 = dto.Orphans.Single(o => o.Prefix == "g/s1");
+        s1.HasValidFull.Should().BeTrue();
+        s1.DeleteRequested.Should().BeTrue();
+        s1.DeleteRequestedBy.Should().Be("operator");
+        s1.TtlLeftSec.Should().BeNull("защищён полным + заявка");
+        var s2 = dto.Orphans.Single(o => o.Prefix == "g/s2");
+        s2.Held.Should().BeTrue();
+        s2.HeldBy.Should().Be("panel");
+        s2.TtlLeftSec.Should().BeNull("под hold");
+    }
+
+    // AAA (AC7): незащищённая просроченная сирота без заявки — TtlLeftSec не null
+    // (отрицательный — «следующий проход»)
+    [Fact]
+    public void MergeOrphans_незащищённый_TtlLeft_не_null()
+    {
+        // Arrange — реестр с одной незащищённой сиротой g/s3, TTL давно истёк
+        var registry = new BackupOrphansInfo(
+            [new BackupOrphanInfo("g/s3", "cluster", 30, NowUnix - TtlSec - 100, "OBSERVED")],
+            NowUnix);
+
+        // Act
+        var dto = BackupStorageMappers.MapStorage(SnapshotWithTree(registry), TtlSec, NowUnix);
+
+        // Assert — бейджей защиты нет, TTL-остаток есть (истёкший — отрицательный)
+        var s3 = dto.Orphans.Single(o => o.Prefix == "g/s3");
+        s3.HasValidFull.Should().BeFalse();
+        s3.Held.Should().BeFalse();
+        s3.DeleteRequested.Should().BeFalse();
+        s3.TtlLeftSec.Should().NotBeNull().And.BeLessThan(0, "истёк — удаление следующим проходом");
+    }
+
     // ——— маппер деталей шарда — AAA ———
 
     // AAA: etcd full COMPLETED+verify OK + S3-факт → Reconcile="Ok"; PLANNED-restore — бейдж
@@ -211,11 +261,12 @@ public class BackupStorageQueryTests
 
     // ——— фикстуры ———
 
-    private static EtcdSnapshot SnapshotWithTree() => TestSnapshots.Healthy(Now) with
+    private static EtcdSnapshot SnapshotWithTree(BackupOrphansInfo? registry = null) => TestSnapshots.Healthy(Now) with
     {
         MinioStorage = Minio(
             ClusterNode("demo", ShardNode("demo", "s1", fulls: [Full("b1")])),
             ClusterNode("ghost-shard", ShardNode("ghost-shard", "s9", size: 50))),
+        BackupOrphans = registry,
     };
 
     private static MinioStorageInfo Minio(params MinioClusterNode[] clusters) => new(

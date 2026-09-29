@@ -817,7 +817,22 @@ export interface BackupOrphanDto {
   inWorkerRegistry: boolean;
   registryState: string | null;
   firstSeenUnix: number | null;
-  ttlLeftSec: number | null;
+  ttlLeftSec: number | null; // null у защищённых/заявленных (reliability t04)
+  // Защита сироты (reliability t04, arch/19 §4):
+  hasValidFull: boolean; // автозащита: в префиксе есть валидный полный
+  held: boolean; // hold-флаг оператора
+  heldUnix: number | null;
+  heldBy: string | null;
+  deleteRequested: boolean; // заявка явного удаления (исполнит sweeper)
+  deleteRequestedUnix: number | null;
+  deleteRequestedBy: string | null;
+}
+
+// 202-ответ заявки явного удаления сироты (POST /api/backups/orphans/{c}/{x}/delete).
+export interface OrphanDeleteAcceptedDto {
+  prefix: string;
+  requestedUnix: number;
+  requestedBy: string;
 }
 
 export interface BackupStorageDto {

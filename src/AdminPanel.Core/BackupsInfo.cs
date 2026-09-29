@@ -19,14 +19,31 @@ public sealed record WalStreamInfo(
 /// <summary>Одна запись реестра сирот из глобального ключа
 /// /pgworker/backups/orphans (t07; дубль воркерной модели — осознанный):
 /// префикс «&lt;C&gt;/&lt;X&gt;»,
-/// kind shard|cluster, размер, первое наблюдение, состояние OBSERVED|DELETING.</summary>
+/// kind shard|cluster, размер, первое наблюдение, состояние OBSERVED|DELETING;
+/// HasValidFull — автозащита DR-hold (reliability t04, arch/19 §4): в префиксе
+/// есть валидный полный (full/&lt;id&gt;/backup_manifest), TTL-автоматика не
+/// удалит; отсутствие поля (старый воркер) — false.</summary>
 public sealed record BackupOrphanInfo(
-    string Prefix, string Kind, long SizeBytes, long FirstSeenUnix, string State);
+    string Prefix, string Kind, long SizeBytes, long FirstSeenUnix, string State,
+    bool HasValidFull = false);
+
+/// <summary>Hold-флаг сироты из ключа /pgworker/backups/orphan-holds/&lt;C&gt;/&lt;X&gt;
+/// (reliability t04, arch/19 §4): защита «до разбора», ставит API воркера.</summary>
+public sealed record OrphanHoldInfo(string Prefix, long SetUnix, string SetBy);
+
+/// <summary>Заявка явного удаления сироты из ключа
+/// /pgworker/backups/orphan-deletes/&lt;C&gt;/&lt;X&gt; (reliability t04,
+/// arch/19 §4): исполнит sweeper ближайшим проходом.</summary>
+public sealed record OrphanDeleteRequestInfo(string Prefix, long RequestedUnix, string RequestedBy);
 
 /// <summary>Реестр сирот установки из глобального ключа
-/// /pgworker/backups/orphans (t07; пишет только лидер-проход воркера).</summary>
+/// /pgworker/backups/orphans (t07; пишет только лидер-проход воркера);
+/// Holds/DeleteRequests (reliability t04) — джойн hold-ключей и заявок
+/// удаления по префиксу (панель — толерантный читатель).</summary>
 public sealed record BackupOrphansInfo(
-    IReadOnlyList<BackupOrphanInfo> Orphans, long UpdatedUnix);
+    IReadOnlyList<BackupOrphanInfo> Orphans, long UpdatedUnix,
+    IReadOnlyDictionary<string, OrphanHoldInfo>? Holds = null,
+    IReadOnlyDictionary<string, OrphanDeleteRequestInfo>? DeleteRequests = null);
 
 /// <summary>Вердикт занятости bucket бэкапов (t06): OK/WARN/CRIT.</summary>
 public enum BackupStorageState { Ok, Warn, Crit }

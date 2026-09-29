@@ -162,6 +162,23 @@ builder.Services.AddSingleton(sp => new RotateClusterSecretsHandler(
 builder.Services.AddSingleton(sp => new BackupsPolicyHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
+// Сироты бэкапов: hold/unhold/delete-заявки (reliability t04, arch/19 §4) —
+// пер-префиксные ключи orphan-holds/orphan-deletes, пишет только API;
+// runtime-функция — как у sweeper (Enabled=false → гвард 503).
+builder.Services.AddSingleton(sp => new OrphanHoldHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>(),
+    () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.Enabled
+        ? sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.ToRuntime()
+        : null));
+builder.Services.AddSingleton(sp => new OrphanDeleteHandler(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<TimeProvider>(),
+    () => sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.Enabled
+        ? sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.ToRuntime()
+        : null));
 builder.Services.AddSingleton(sp => new RecreateNodeHandler(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints));
