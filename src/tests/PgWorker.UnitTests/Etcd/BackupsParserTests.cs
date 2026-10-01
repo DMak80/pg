@@ -394,4 +394,116 @@ public class BackupsParserTests
         result.Value.Single().Shards["x"].Restores.Select(r => r.Id).Should().Equal(
             "20260911090000Z", "20260911120000Z", "20260911150000Z-2");
     }
+
+    // AAA: ключ <X>/drill парсится в ShardBackups.Drill (все поля).
+    [Fact]
+    public void Parse_DrillKey_FillsDrillState()
+    {
+        // Arrange — успешный дрилл со всеми полями.
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/c1/x1/drill",
+                """{"state":"SUCCEEDED","id":"20261001120000Z","backup_id":"20261001090000Z","started_unix":1760000000,"finished_unix":1760000300,"restored_to_lsn":"0/1"}""", 1),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs, out var errors);
+
+        // Assert
+        errors.Should().BeEmpty();
+        var drill = result.Value.Single().Shards["x1"].Drill;
+        drill.Should().NotBeNull();
+        drill!.Id.Should().Be("20261001120000Z");
+        drill.State.Should().Be(DrillStatus.Succeeded);
+        drill.BackupId.Should().Be("20261001090000Z");
+        drill.StartedUnix.Should().Be(1760000000);
+        drill.FinishedUnix.Should().Be(1760000300);
+        drill.RestoredToLsn.Should().Be("0/1");
+        drill.Phase.Should().BeNull();
+        drill.Error.Should().BeNull();
+    }
+
+    // AAA: phase читается (cleaning/downloading/recovering).
+    [Fact]
+    public void Parse_DrillKey_PhasePreserved()
+    {
+        // Arrange — терминальный ключ с фазой сноса.
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/c1/x1/drill",
+                """{"state":"FAILED","id":"id1","backup_id":"b1","started_unix":1,"finished_unix":2,"phase":"cleaning","error":"boom"}""", 1),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs, out var errors);
+
+        // Assert
+        errors.Should().BeEmpty();
+        var drill = result.Value.Single().Shards["x1"].Drill!;
+        drill.State.Should().Be(DrillStatus.Failed);
+        drill.Phase.Should().Be("cleaning");
+        drill.Error.Should().Be("boom");
+    }
+
+    // AAA: битый JSON / неизвестное state → parseErrors + Drill=null (шард жив).
+    [Fact]
+    public void Parse_DrillKey_BadJson_Reported()
+    {
+        // Arrange
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/c1/x1/drill", "{битый", 1),
+            new("/pgworker/backups/c1/x2/drill",
+                """{"state":"НЕИЗВЕСТНОЕ","id":"id1","backup_id":"b1","started_unix":1}""", 2),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs, out var errors);
+
+        // Assert — оба шарда живы, дриллы null, ошибки с ключами.
+        errors.Should().HaveCount(2);
+        result.Value.Single().Shards["x1"].Drill.Should().BeNull();
+        result.Value.Single().Shards["x2"].Drill.Should().BeNull();
+    }
+
+    // AAA: policy.drill.interval_days → BackupPolicy.DrillIntervalDays; отсутствие → null.
+    [Fact]
+    public void Parse_PolicyDrillInterval_ReadAndDefault()
+    {
+        // Arrange — policy с drill-полем и policy без него.
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/c1/policy",
+                """{"retention":{"days":7,"weeks":4,"months":6},"full_max_age_sec":86400,"drill":{"interval_days":3}}""", 1),
+            new("/pgworker/backups/c2/policy",
+                """{"retention":{"days":7,"weeks":4,"months":6},"full_max_age_sec":86400}""", 2),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs, out var errors);
+
+        // Assert
+        errors.Should().BeEmpty();
+        result.Value.Single(c => c.Cluster == "c1").Policy!.DrillIntervalDays.Should().Be(3);
+        result.Value.Single(c => c.Cluster == "c2").Policy!.DrillIntervalDays.Should().BeNull();
+    }
+
+    // AAA: старая policy без drill-поля парсится без ошибок (backwards-compat).
+    [Fact]
+    public void Parse_PolicyWithoutDrill_NoError()
+    {
+        // Arrange — policy в формате до t02-restore-drill.
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/c1/policy",
+                """{"retention":{"days":7,"weeks":4,"months":6},"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":604800}}""", 1),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs, out var errors);
+
+        // Assert
+        errors.Should().BeEmpty();
+        result.Value.Single().Policy.Should().NotBeNull();
+    }
 }

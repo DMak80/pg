@@ -58,6 +58,11 @@ public static class BackupsParser
                     GetOrAdd(acc.Shards, segments[4], static _ => new ShardAcc()).WalRaw = kv.Value;
                     break;
 
+                // "/pgworker/backups/<C>/<X>/drill" (reliability t02)
+                case 6 when segments[4].Length > 0 && segments[5] == "drill":
+                    GetOrAdd(acc.Shards, segments[4], static _ => new ShardAcc()).DrillRaw = kv.Value;
+                    break;
+
                 default:
                     // система развивается — неизвестный ключ не ошибка, просто игнор
                     break;
@@ -80,6 +85,8 @@ public static class BackupsParser
         public readonly List<(string Id, string Raw)> Restores = [];
 
         public string? WalRaw;
+
+        public string? DrillRaw;
     }
 
     private sealed class ClusterAcc(string name)
@@ -111,7 +118,8 @@ public static class BackupsParser
                         .Where(r => r is not null)
                         .Select(r => r!)
                         .OrderBy(r => r.Id, StringComparer.Ordinal)
-                        .ToList()));
+                        .ToList(),
+                    TryParseDrill(acc.Name, pair.Key, pair.Value.DrillRaw, errors)));
         return new ClusterBackups(acc.Name, policy, shards);
     }
 
@@ -164,10 +172,20 @@ public static class BackupsParser
                         ? parsed
                         : null;
 
+            // reliability t02: период дрилов — drill.interval_days policy-ключа
+            // (перекрывает дефолт конфига); отсутствие/невалидное → null.
+            int? drillIntervalDays = null;
+            if (root.TryGetProperty("drill", out var drill)
+                && drill.ValueKind == JsonValueKind.Object
+                && drill.TryGetProperty("interval_days", out var drillDays)
+                && drillDays.ValueKind == JsonValueKind.Number
+                && drillDays.TryGetInt32(out var daysValue))
+                drillIntervalDays = daysValue;
+
             return new BackupPolicy(
                 days, weeks, months,
                 ReadLong(root, "full_max_age_sec") ?? 86400,
-                verifyOnCreate, verifyIntervalSec);
+                verifyOnCreate, verifyIntervalSec, drillIntervalDays);
         }
         catch (JsonException)
         {
@@ -288,6 +306,49 @@ public static class BackupsParser
             {
                 SystemId = ReadString(root, "system_id"),
             };
+        }
+        catch (JsonException)
+        {
+            errors.Add($"{key}: битый JSON");
+            return null;
+        }
+    }
+
+    // drill (reliability t02): обязательны state (RUNNING|SUCCEEDED|FAILED)/id/
+    // backup_id/started_unix; опциональны finished_unix/phase/restored_to_lsn/
+    // error; битое/неизвестное state → error + null (шард жив, ключа нет).
+    private static DrillState? TryParseDrill(
+        string cluster, string shard, string? raw, List<string> errors)
+    {
+        if (raw is null)
+            return null; // нет ключа — дрилов не было, не ошибка
+
+        var key = $"/pgworker/backups/{cluster}/{shard}/drill";
+        try
+        {
+            using var doc = JsonDocument.Parse(raw);
+            var root = doc.RootElement;
+            var state = ReadString(root, "state") switch
+            {
+                "RUNNING" => DrillStatus.Running,
+                "SUCCEEDED" => DrillStatus.Succeeded,
+                "FAILED" => DrillStatus.Failed,
+                _ => (DrillStatus?)null,
+            };
+            var id = ReadString(root, "id");
+            var backupId = ReadString(root, "backup_id");
+            var startedUnix = ReadLong(root, "started_unix");
+            if (state is null || string.IsNullOrEmpty(id) || string.IsNullOrEmpty(backupId)
+                || startedUnix is null)
+            {
+                errors.Add($"{key}: битый JSON или неизвестное state, обязательное поле отсутствует");
+                return null;
+            }
+
+            return new DrillState(
+                id, state.Value, backupId, startedUnix.Value,
+                ReadLong(root, "finished_unix"), ReadString(root, "phase"),
+                ReadString(root, "restored_to_lsn"), ReadString(root, "error"));
         }
         catch (JsonException)
         {
