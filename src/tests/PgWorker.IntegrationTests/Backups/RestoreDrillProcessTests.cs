@@ -187,10 +187,18 @@ public class RestoreDrillProcessTests
             => Task.FromResult(Result.Success());
         public Task<Result> RemoveRestoreJobsAsync(string cluster, string shard, CancellationToken ct)
             => Task.FromResult(Result.Success());
+        // Сбой таблицы Docker:Hosts (transient-окно после вердикта, F1).
+        public bool HostsFails { get; set; }
+
         public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct)
-            => Task.FromResult(Result<IReadOnlyList<HostInfo>>.Success(
+        {
+            if (HostsFails)
+                return Task.FromResult(Result<IReadOnlyList<HostInfo>>.Failed(
+                    new ApplicationException("docker: hosts table failed")));
+            return Task.FromResult(Result<IReadOnlyList<HostInfo>>.Success(
                 (IReadOnlyList<HostInfo>)[.. _engines.Keys.OrderBy(k => k, StringComparer.Ordinal)
                     .Select(k => new HostInfo(k, 0))]));
+        }
         public Task<Result> EnsureBackupAgentAsync(
             string cluster, string shard, ContainerSpec spec, string host, CancellationToken ct)
             => Task.FromResult(Result.Success());
@@ -969,5 +977,50 @@ public class RestoreDrillProcessTests
         (await ReadDrillAsync(cluster)).Should().Contain("\"phase\":\"recovering\"")
             .And.NotContain("drill-vanished").And.NotContain("\"FAILED\"");
         engineH1.Created.Should().BeEmpty("досоздача-дубликат на чужом хосте запрещена");
+    }
+
+    // AAA (AC4, окно вердикт→cleaning, F1): вердикт пишется ОДНИМ put сразу с
+    // phase=cleaning — transient-сбой сноса (GetHosts недоступен) после вердикта
+    // оставляет ключ терминальным С cleaning (фильтр тика его видит); следующий
+    // тик дочищает до чистого итога. Двух-put код оставлял бы ключ БЕЗ phase —
+    // снос терялся навсегда (утечка контейнера/volume до D1).
+    [Fact]
+    public async Task Supervise_VerdictThenTransientCleanup_KeyKeepsCleaningPhase()
+    {
+        // Arrange — RUNNING + exited ok; таблица хостов недоступна (снос сорвётся).
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("drill", ct);
+        Fx = fx;
+        const string cluster = "dr22";
+        await SeedAsync(cluster);
+        var engineH1 = new FakeDrillEngine();
+        var driver = new FakeDrillDriver(engineH1) { HostsFails = true };
+        var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
+        SeedContainer(engineH1, name, "exited", 0,
+            "{\"ok\":true,\"restored_to_lsn\":\"0/700\"}");
+        await SeedDrillAsync(cluster,
+            new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
+        var process = BuildProcess(cluster, driver, new FakeBackupS3());
+
+        // Act 1 — вердикт одним put; снос падает на GetHosts (transient).
+        (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 1 — ключ SUCCEEDED С phase=cleaning: инвариант «терминал ⇒
+        // cleaning» (снос не потерян, фильтр тика выбирает); контейнер ещё жив.
+        var key = await ReadDrillAsync(cluster);
+        key.Should().Contain("\"SUCCEEDED\"").And.Contain("\"phase\":\"cleaning\"")
+            .And.Contain("\"restored_to_lsn\":\"0/700\"");
+        engineH1.Containers.Should().ContainKey(name, "снос сорвался — контур на месте");
+
+        // Act 2 — хосты доступны: следующий тик дочищает.
+        driver.HostsFails = false;
+        (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2 — чистый итог: phase снят, контур снесён.
+        (await ReadDrillAsync(cluster)).Should().Contain("\"SUCCEEDED\"").And.NotContain("phase");
+        engineH1.Removed.Should().Contain(name);
+        engineH1.RemovedVolumes.Should().Contain(BackupNames.DrillVolumeName(cluster, Shard, DrillId));
     }
 }

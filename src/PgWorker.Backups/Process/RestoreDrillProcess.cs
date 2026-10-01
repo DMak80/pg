@@ -254,15 +254,19 @@ public sealed class RestoreDrillProcess(
             var age = nowUnix - drill.StartedUnix;
             if (SupervisionTimeouts.IsTimedOut(drill.StartedUnix, nowUnix, options.DrillTimeoutSec))
             {
+                // Вердикт ОДНИМ put сразу с phase=cleaning (spec §2.5): между
+                // «терминал» и «снос» нет окна — transient put оставляет ключ
+                // RUNNING, вердикт выводится заново по факту отсутствия джоба.
                 var vanished = drill with
                 {
                     State = DrillStatus.Failed,
                     FinishedUnix = nowUnix,
                     Error = $"drill-vanished: контейнер отсутствует, возраст {age} с > {options.DrillTimeoutSec} с",
+                    Phase = "cleaning",
                 };
                 var put = await PutDrillAsync(cluster, shard, vanished, ct);
                 if (!put.IsSuccess)
-                    return; // transient — статус не сменился
+                    return; // ключ остаётся RUNNING — вердикт следующим тиком
                 await FinishCleanupAsync(cluster, shard, vanished, ct);
                 return;
             }
@@ -278,15 +282,18 @@ public sealed class RestoreDrillProcess(
         // исчерпан → FAILED drill-timeout → снос (kill+rm через cleaning).
         if (SupervisionTimeouts.IsTimedOut(drill.StartedUnix, nowUnix, options.DrillTimeoutSec))
         {
+            // Вердикт ОДНИМ put сразу с phase=cleaning (spec §2.5; повторный
+            // тик по RUNNING перепроверит возраст — вердикт идемпотентен).
             var timedOut = drill with
             {
                 State = DrillStatus.Failed,
                 FinishedUnix = nowUnix,
                 Error = $"drill-timeout: {nowUnix - drill.StartedUnix} с > {options.DrillTimeoutSec} с",
+                Phase = "cleaning",
             };
             var put = await PutDrillAsync(cluster, shard, timedOut, ct);
             if (!put.IsSuccess)
-                return; // transient — статус не сменился
+                return; // ключ остаётся RUNNING — вердикт следующим тиком
             await FinishCleanupAsync(cluster, shard, timedOut, ct);
             return;
         }
@@ -325,6 +332,9 @@ public sealed class RestoreDrillProcess(
             return; // transient — итог недоступен
         var result = DrillJobLog.Parse(exitLogs.Value);
 
+        // Вердикт ОДНИМ put сразу с phase=cleaning (spec §2.5): окно
+        // «терминал без cleaning» исключено — transient put оставляет ключ
+        // RUNNING, exited-джоб инспектируется заново следующим тиком.
         DrillState terminal;
         if (exitCode == 0 && result.Result is { Ok: true })
         {
@@ -334,6 +344,7 @@ public sealed class RestoreDrillProcess(
                 State = DrillStatus.Succeeded,
                 FinishedUnix = nowUnix,
                 RestoredToLsn = result.Result.RestoredToLsn,
+                Phase = "cleaning",
             };
         }
         else
@@ -343,12 +354,13 @@ public sealed class RestoreDrillProcess(
                 State = DrillStatus.Failed,
                 FinishedUnix = nowUnix,
                 Error = result.Result is { Ok: false, Error: { } err } ? err : $"exit {exitCode}",
+                Phase = "cleaning",
             };
         }
 
         var putTerminal = await PutDrillAsync(cluster, shard, terminal, ct);
         if (!putTerminal.IsSuccess)
-            return; // transient — статус не сменился, вердикт следующим тиком
+            return; // ключ остаётся RUNNING — вердикт выведется заново следующим тиком
         await FinishCleanupAsync(cluster, shard, terminal, ct);
     }
 
@@ -370,20 +382,11 @@ public sealed class RestoreDrillProcess(
 
         var containerName = BackupNames.DrillContainerName(cluster, shard, drill.Id);
 
-        // journal-before-manipulations + видимая фаза сноса в etcd (spec §2.5):
-        // «что происходит» — ДО rm.
-        if (drill.Phase != "cleaning")
-        {
-            await journal.WritePhaseAsync(cluster, Op, $"drill-cleanup/{shard}/{drill.Id}",
-                claims.InstanceId, null, ct);
-            var putCleaning = await PutDrillAsync(cluster, shard, drill with
-            {
-                Phase = "cleaning",
-                FinishedUnix = drill.FinishedUnix ?? NowUnix(),
-            }, ct);
-            if (!putCleaning.IsSuccess)
-                return; // transient — фаза не записана, снос следующим тиком
-        }
+        // journal-before-manipulations: факт сноса — ДО rm (идемпотентная запись;
+        // фаза cleaning уже в ключе — вердикт писался одним put с ней, окно
+        // «терминал без cleaning», теряющего снос, исключено).
+        await journal.WritePhaseAsync(cluster, Op, $"drill-cleanup/{shard}/{drill.Id}",
+            claims.InstanceId, null, ct);
 
         // rm контейнера (force) и volume — одно имя, на КАЖДОМ хосте
         // (404 = ок — идемпотентность); отказ rm (не 404, а реальный сбой) —
