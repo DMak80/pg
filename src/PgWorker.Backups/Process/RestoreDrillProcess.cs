@@ -43,7 +43,6 @@ public sealed class RestoreDrillProcess(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
     {
         var cluster = snap.Config.Cluster;
-        _ = s3; // валидация кандидата (манифест/WalChain) — Task 7
 
         // Guard 1: клэйм наш (мутации /pgworker/backups/* — только держатель).
         if (!claims.IsMine(cluster))
@@ -80,6 +79,123 @@ public sealed class RestoreDrillProcess(
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
         }
 
+        // ── Отбор кандидата (новых запусков нет, пока есть незавершённый дрилл
+        // или снос — activities выше вернули; arch/19 §3.6 п.3): интервал —
+        // policy.drill.interval_days ?? конфига; 0/Enabled=false — выкл новых
+        // запусков (доводка выше продолжается — стоп-семантика).
+        var intervalDays = mine.Policy?.DrillIntervalDays ?? options.DrillIntervalDays;
+        if (intervalDays <= 0 || !options.Enabled)
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+
+        var drills = mine.Shards
+            .Where(p => p.Value.Drill is not null)
+            .ToDictionary(p => p.Key, p => p.Value.Drill!);
+        var candidate = DrillPlanner.SelectCandidate(snap.Shards, mine.Shards, drills, intervalDays, nowUnix);
+        if (candidate is null)
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+
+        return await ValidateAndStartAsync(snap, candidate, mine, nowUnix, ct);
+    }
+
+    // ── Валидация кандидата + запуск (arch/19 §3.6 п.4–5) — путь restore-заявки
+    // own-source (RestoreProcess.ValidateAsync t05, чистые функции те же): ──
+
+    private async Task<Result<ProcessOutcome>> ValidateAndStartAsync(
+        ClusterSnapshot snap, string shard, ClusterBackups mine, long nowUnix, CancellationToken ct)
+    {
+        var cluster = snap.Config.Cluster;
+
+        if (!mine.Shards.TryGetValue(shard, out var sb))
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        var fresh = sb.Full
+            .Where(f => f.State == FullBackupStatus.Completed)
+            .MaxBy(f => f.Id, StringComparer.Ordinal);
+        if (fresh is null)
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // гвард отбора — молча
+        var backupId = fresh.Id;
+
+        // 1. Манифест: upload t02 не атомарен — частичный префикс отсеиваем
+        // (t05-образец); отказ — валидационный FAILED без джоба.
+        var manifest = await s3.DownloadTextAsync(cluster, shard, $"full/{backupId}/backup_manifest", ct);
+        if (!manifest.IsSuccess)
+            return await FailValidationAsync(cluster, shard, backupId, nowUnix,
+                $"полный {backupId} без backup_manifest (недокачан/бит)", ct);
+
+        // 2. Стартовая точка WAL: etcd-статус; нет — backup_label из S3.
+        var walStart = fresh.WalStartSegment;
+        if (walStart is not { Length: > 0 })
+        {
+            var label = await s3.DownloadTextAsync(cluster, shard, $"full/{backupId}/backup_label", ct);
+            walStart = label.IsSuccess ? Restore.BackupLabel.WalStartSegment(label.Value) : null;
+            if (walStart is null)
+                return await FailValidationAsync(cluster, shard, backupId, nowUnix,
+                    $"full/{backupId}: backup_label недоступен/бит", ct);
+        }
+        var chainStart = WalFileName.TryParse(walStart);
+        if (chainStart is null)
+            return await FailValidationAsync(cluster, shard, backupId, nowUnix,
+                $"full/{backupId}: wal_start '{walStart}' не разбирается", ct);
+
+        // 3. Непрерывность WAL-цепочки (WalChain t03); S3-отказ → transient
+        // (статус не трогаем — тик повторит).
+        var wal = await s3.ListWalAsync(cluster, shard, ct: ct);
+        if (!wal.IsSuccess)
+        {
+            await journal.WritePhaseAsync(cluster, Op, $"transient/{shard}",
+                claims.InstanceId, "s3 list недоступен — валидация следующим тиком", ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
+        var chain = WalChain.Check(chainStart.Value, wal.Value.Select(o => o.Name));
+        if (!chain.IsContinuous)
+            return await FailValidationAsync(cluster, shard, backupId, nowUnix,
+                chain.GapError ?? "дыра WAL-цепочки", ct);
+
+        // ── Запуск: journal-before-manipulations — put RUNNING до create
+        // (arch/17); хост — первая нода шарда из portalloc (как restore-джоб).
+        var id = BackupPlanner.NextId([], time.GetUtcNow().UtcDateTime);
+        var engine = await EngineForShardAsync(snap, shard, ct);
+        if (engine is null)
+        {
+            await journal.WritePhaseAsync(cluster, Op, $"transient/{shard}",
+                claims.InstanceId, "docker-хост не резолвится — запуск следующим тиком", ct);
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+        }
+
+        var running = new DrillState(id, DrillStatus.Running, backupId, nowUnix);
+        var put = await PutDrillAsync(cluster, shard, running, ct);
+        if (!put.IsSuccess)
+            return Result<ProcessOutcome>.Failed(put.Error!);
+
+        var jobName = BackupNames.DrillContainerName(cluster, shard, id);
+        var created = await engine.CreateContainerAsync(
+            DrillJobSpec.Build(options, cluster, shard, id), jobName, ct);
+        if (!created.IsSuccess)
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // transient — RUNNING остаётся, тик досоздаст по имени
+        var started = await engine.StartContainerAsync(jobName, ct);
+        if (!started.IsSuccess)
+            return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // transient
+
+        await journal.WritePhaseAsync(cluster, Op, $"started/{shard}/{id}", claims.InstanceId, null, ct);
+        logger.LogInformation("{Op} {cluster}/{shard}: drill-джоб {job} запущен (полный {backupId})",
+            Op, cluster, shard, jobName, backupId);
+        return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
+    }
+
+    // Валидационный FAILED — БЕЗ запуска джоба: ключ сразу чистый терминальный
+    // итог (контейнера не было — снос не нужен); честный исход «восстановимость
+    // не доказана» — оператор видит ровно то, что увидел бы DR.
+    private async Task<Result<ProcessOutcome>> FailValidationAsync(
+        string cluster, string shard, string backupId, long nowUnix, string error, CancellationToken ct)
+    {
+        var id = BackupPlanner.NextId([], time.GetUtcNow().UtcDateTime);
+        var failed = new DrillState(id, DrillStatus.Failed, backupId, nowUnix,
+            FinishedUnix: nowUnix, Error: error);
+        var put = await PutDrillAsync(cluster, shard, failed, ct);
+        if (!put.IsSuccess)
+            return Result<ProcessOutcome>.Failed(put.Error!);
+        await journal.WritePhaseAsync(cluster, Op, $"failed/{shard}/{id}", claims.InstanceId, error, ct);
+        logger.LogWarning("{Op} {cluster}/{shard}: дрилл провален валидацией: {error}",
+            Op, cluster, shard, error);
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
     }
 
@@ -111,8 +227,10 @@ public sealed class RestoreDrillProcess(
             c.Names.Any(n => n.TrimStart('/') == containerName));
 
         // Контейнера нет при успешном list — takeover-аномалия (arch/19 §3.6):
-        // возраст < бюджета — transient-ожидание (create подтверждён, а
-        // start/list моргнул); старше — FAILED drill-vanished (+ снос volume).
+        // возраст < бюджета — досоздача по детерминированному имени (create
+        // прошедшего тика не дошёл; канон §3.3 п.5 «джоб пересоздаётся по имени
+        // идемпотентно»; create не прошёл — имя занято живым джобом → ждём,
+        // супервиз следующим тиком); старше — FAILED drill-vanished (+ снос).
         if (container is null)
         {
             var age = nowUnix - drill.StartedUnix;
@@ -128,9 +246,14 @@ public sealed class RestoreDrillProcess(
                 if (!put.IsSuccess)
                     return; // transient — статус не сменился
                 await FinishCleanupAsync(cluster, shard, vanished, engine, ct);
+                return;
             }
 
-            return; // младше бюджета — ждём (Task 7: vanish-бюджет)
+            // Молодой RUNNING без контейнера — статус не трогаем (transient).
+            await engine.CreateContainerAsync(
+                DrillJobSpec.Build(options, cluster, shard, drill.Id), containerName, ct);
+            await engine.StartContainerAsync(containerName, ct);
+            return;
         }
 
         // Бюджет активного дрилла — возраст RUNNING-ключа (etcd-факт + часы):
