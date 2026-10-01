@@ -2,8 +2,10 @@
 namespace PgWorker.Core.Seed;
 
 // Демо-сид pg-контура (arch/14 §1.1.1, task etcd-via-worker-api): перенос
-// dev-stand/adminpanel/seed.sh 1:1. Чистые (key, value)-пары: порядок/значения
-// каноничны, txn не нужен (скрипт писал плоскими put). Сид СОГЛАСОВАННЫЙ:
+// dev-stand/adminpanel/seed.sh + обязательные заявки ресурсов шардов (t25 —
+// обязательность EnsureNode-путей введена позже переноса, f6d4574). Чистые
+// (key, value)-пары: порядок/значения каноничны, txn не нужен (скрипт писал
+// плоскими put). Сид СОГЛАСОВАННЫЙ:
 // аномалии переездов не сеются (adopt-repair spec §3.6) — брошенные статусы/
 // заявки нахерачивает checks/20-alerts.sh, доказывая гашение алертов реальным
 // ремонтом живого PgWorker. Динамические части — только now-смещение heal'а
@@ -60,6 +62,13 @@ public sealed record PostgresDemoSeedPlan(long NowUnix)
         foreach (var s in new[] { "s1", "s2" })
         {
             var (a, b) = ($"{s}a", $"{s}b");
+            // Обязательные заявки ресурсов шарда (arch/14 §2.1 п.4, t25): как
+            // панель при создании через API (ClusterCreatePlan: CanonicalCpu /
+            // CanonicalGiB) — без заявки EnsureNode-пути (adopt-репарация,
+            // надзор) фейлят каждый тик. request_disk не сеется — воркером
+            // не читается (docker-лимита диска у volume-контейнера нет).
+            puts.Add(new PlanPut($"/service/demo-{s}/request_cpu", "2"));
+            puts.Add(new PlanPut($"/service/demo-{s}/request_mem", "2Gi"));
             puts.Add(new PlanPut($"/service/demo-{s}/leader", $$"""{"name":"{{a}}"}"""));
             puts.Add(new PlanPut($"/service/demo-{s}/members/{a}",
                 $$"""{"name":"{{a}}","conn_url":"{{a}}:5432","role":"master","state":"running","timeline":1,"lag":0}"""));

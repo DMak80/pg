@@ -32,8 +32,9 @@ public class SeedApiTests(PgApiFixture fixture)
 
     // AAA: наливка на «пустом» (относительно demo) etcd — 200 {"seeded":true}
     // и канонический согласованный набор ключей seed.sh: config, routing
-    // bucket_0→s1/bucket_15→s2, heal bucket_5, HA-скоп demo-s1, топология s1a.
-    // Аномалии переездов сидом НЕ сеются (adopt-repair §3.6) — их нахерачивает
+    // bucket_0→s1/bucket_15→s2, heal bucket_5, HA-скоп demo-s1, топология s1a,
+    // обязательные заявки request_{cpu,mem} обоих шардов (t25). Аномалии
+    // переездов сидом НЕ сеются (adopt-repair §3.6) — их нахерачивает
     // checks/20-alerts.sh.
     [Fact]
     public async Task SeedDemo_EmptyEtcd_SeedsCanonicalKeySet()
@@ -65,6 +66,17 @@ public class SeedApiTests(PgApiFixture fixture)
             .Value!.Value.Should().Be("172.28.0.11");
         (await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/service/demo-s1/leader", ct))
             .Value!.Value.Should().Contain("\"name\":\"s1a\"");
+        // t25: заявки ресурсов ОБЯЗАТЕЛЬНЫ для EnsureNode-путей (arch/14 §2.1
+        // п.4) — значения каноничны панели (ClusterCreatePlan: «2»/«2Gi»);
+        // без них adopt-репарация на свежем etcd фейлит каждый тик.
+        (await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/service/demo-s1/request_cpu", ct))
+            .Value!.Value.Should().Be("2");
+        (await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/service/demo-s1/request_mem", ct))
+            .Value!.Value.Should().Be("2Gi");
+        (await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/service/demo-s2/request_cpu", ct))
+            .Value!.Value.Should().Be("2");
+        (await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/service/demo-s2/request_mem", ct))
+            .Value!.Value.Should().Be("2Gi");
     }
 
     // AAA: повторный вызов при живом /clusters/demo/config — 200 {"seeded":false},
