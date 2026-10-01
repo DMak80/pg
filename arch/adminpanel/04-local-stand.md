@@ -22,16 +22,18 @@ live-пробы таймаутятся, критичный функционал 
 `adminpanel.appsettings.json`, монтируемый как `appsettings.Stand.json`
 (`ASPNETCORE_ENVIRONMENT=Stand`). Публикация портов на хост (compose
 `publish`; фиксируется этой таблицей — compose из `t10-dev-stand` ей
-соответствует). Имена **сервисов** compose — канонические (`etcd`, `s1a`, …:
+соответствует). Имена **сервисов** compose — канонические (`etcd1/etcd2/etcd3`, `s1a`, …:
 резолвятся DNS-сети стенда — на них построены DSN/`primary_conninfo`/скрипты),
-а `container_name` — с префиксом `as-` (`as-etcd`, `as-s1a`, …): имена
+а `container_name` — с префиксом `as-` (`as-etcd-1/2/3`, `as-s1a`, …): имена
 контейнеров pg (этот монорепозиторий)-стенда совпадают, сосуществование двух стендов не должно
 рукнуться конфликтом имён (порты pg (этот монорепозиторий) на хост не публикует — конфликта
 портов нет):
 
 | Контейнер | Внутри | На хосте | Ключ `HostMap` (адрес ноды из etcd) |
 |---|---|---|---|
-| `etcd` | 2379 | 2379 | — (панель использует env `Endpoints=http://etcd:2379`) |
+| `etcd1` | 2379 | 2379 (env `ETCD1_HOST_PORT`) | — (панель — списки `AdminPanel__Etcd__Endpoints__0..2`, §2.1) |
+| `etcd2` | 2379 | 2381 (env `ETCD2_HOST_PORT`) | — |
+| `etcd3` | 2379 | 2383 (env `ETCD3_HOST_PORT`) | — |
 | `s1a` | 5432 | 5433 | — (панель в сети стенда: резолв напрямую) |
 | `s1b` | 5432 | 5434 | — |
 | `s2a` | 5432 | 5435 | — |
@@ -48,10 +50,12 @@ live-пробы таймаутятся, критичный функционал 
 (стендовые дефолты as-minio; прод — per-install env) — панель и as-minio
 в одной compose-сети, `minio` резолвится напрямую (docker-only панели).
 
-`as-etcd` — **единственный etcd полной системы** (источник правды, контур
-один): advertise `host.docker.internal:2379` потребляют Patroni-ноды,
+`as-etcd-1/2/3` — **единственный etcd полной системы** — 3 узла ОДНИМ
+кластером (кворум 2/3; рецепт — arch/04 §8, зеркало прода): advertise
+`host.docker.internal:2379/2381/2383` потребляют Patroni-ноды,
 создаваемые PgWorker в своих сетях; PgWorker из `deploy/` подключается по
-`PGW_ETCD_ENDPOINT=http://host.docker.internal:2379` (шаг 9 `00-up.sh`).
+`PGW_ETCD_ENDPOINT_0..2=http://host.docker.internal:2379/2381/2383`
+(публикации трёх узлов; шаг 9 `00-up.sh`).
 
 Адреса live-проб панель берёт из etcd (DSN `host=s1a,s1b port=5432`,
 Patroni `http://<host>:8008`). SQL-хосты compose-сети резолвятся панелью
@@ -63,11 +67,13 @@ Patroni `http://<host>:8008`). SQL-хосты compose-сети резолвят�
 
 ## 2. Сервисы
 
-### 2.1. `etcd` (оба профиля)
+### 2.1. `etcd1/etcd2/etcd3` (оба профиля)
 
-- `quay.io/coreos/etcd:v3.5.21`, одиночный (как в pg (этот монорепозиторий)-стенде — этого
-  достаточно: панель лишь читает); флаги CLI (gateway `/v3/*` включён по
-  умолчанию), named volume `etcd-data` (переживает `docker compose down`).
+- `quay.io/coreos/etcd:v3.5.21`, 3 узла `etcd1/etcd2/etcd3` одним
+  static-bootstrap кластером (arch/04 §8; стенд зеркалит прод — надёжность
+  дефолтом); peer по compose-DNS, клиентские публикации 2379/2381/2383;
+  named volumes `etcd1-data`/`etcd2-data`/`etcd3-data` (переживают
+  `docker compose down`); healthcheck `etcdctl endpoint health`.
 
 ### 2.2. `seed` — демо-сид через API воркеров (обоих профилей)
 
@@ -237,6 +243,7 @@ member'ов scope'а).
 | `20-alerts.sh` | seeded-аномалии: FROZEN-протухший → `move-stale`, `bucket_7` → `move-aborting`; затем `shard-no-master` (critical): в full перед `etcdctl del master`-ключа s2 остановить эмуляторы `hc2a`/`hc2b` (keepalive перепишет ключ), в конце вернуть и дождаться восстановления lease (в quick эмуляторов нет — просто del/put) | алерты появляются ≤ 2 тиков; после восстановления гаснут |
 | `30-failover.sh` | `docker stop s1a` → lease гаснет → `shard-no-master` + `shard-no-leader` (`leader`-ключ тоже под lease, §2.3); promote s1b руками (`pg_ctl promote`) → эмулятор s1b берёт lease, алерты гаснут, Patroni-REST показывает нового мастера; финал — rejoin: `docker compose rm -sf s1a && up -d s1a` (self-healing клон от s1b) + sync-names на s1b | цикл алерт→успокоение; стенд снова консистентен для 40 |
 | `40-live-probes.sh` | панель (в докере, сеть стенда): `/api/ha/demo-s1` содержит lag/state от Patroni-REST (пробы идут на `hc1a:8008`/`hc1b:8008` через `HostMap` §2.3); `/api/clusters/demo` shards[].runtime заполнен (sync-standby, инвентарь 8+5 ACTIVE-схем — `inventory-mismatch` нет; SQL-пробы напрямую на `s1a:5432`/`s1b:5432`) | поля не null, probe-ошибок нет |
+| `43-etcd-ha.sh` (t09) | кворум/health/member list; stop as-etcd-2 → запись/healthz/master-ключ живы; start → снова 3/3 | каждый шаг ≤ бюджета |
 | `45-backups-storage.sh` | налив mc-контейнером тестовых объектов в bucket бэкапов → `curl /api/backups/storage`: configured/health/дерево (t08, 02 §2.5) | `configured=true`, health ok, дерево содержит налитый префикс |
 | `51-valkey-api.sh` (t03) | valkey-домен против живого воркера (профиль `valkey`): сид `demo` → панель видит кластер (список/детали/нода RUNNING/endpoints), live-PING `live=true`; полный цикл мутаций через панель→прокси→API воркера: create (RunTag-имя) → NOT_INITIALIZED → RUNNING ≤ бюджета тиков, config-мутация (maxmemory converge), resources (пересоздание контейнера), ротации app+admin (заявки 202, исполнение окном двух паролей), delete → контейнера и ключей нет; 409-ветки (имя занято, двойная ротация) | каждый шаг ≤ бюджета; после delete — ни контейнера `vwk-<tag>-*`, ни ключей `/valkey/clusters/<tag>/` |
 | `90-down.sh` | разбор (с опцией `-v` — стереть данные); t03: останавливает valkeyworker и удаляет демо-контейнер `vwk-demo-node1` | — |

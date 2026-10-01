@@ -821,7 +821,7 @@ converge-изменения. Diag-ключи: `/kafkaworker/work/<C>`,
 ## 8. Конфигурация (appsettings + env-оверрайды)
 
 ```
-KafkaWorker:Etcd { Endpoints[] }
+KafkaWorker:Etcd { Endpoints[] }                   # список всех узлов HA-контура — 04 §8 (env KFW_ETCD_ENDPOINT_0..2)
 KafkaWorker:Docker { Mode: Plain|Swarm, Hosts[{Name,Endpoint}], SwarmManager,
                      PortRange{From=16000,To=16999}, Images{Node="apache/kafka:4.0.0"} }
 KafkaWorker:Loops { ScanIntervalSec=5, KeepaliveSec=5, ErrorDelayMs=2000,

@@ -7,6 +7,22 @@ etcd — фундамент всего. Поднимаем **первым**, д�
 
 ---
 
+## 0. Два применения одного рецепта
+
+Этот документ — рецепт etcd-контура ВООБЩЕ (3 узла, static bootstrap, кворум 2/3).
+Два применения различаются размещением и advertised-правилами:
+
+- **(а) DCS Patroni-стенда** (arch/01–13): etcd на тех же 3 нодах, что и PG
+  (pg1/pg2/pg3, host-network) — §1–7 ниже;
+- **(б) HA-контур контроль-плейна воркер-инсталляции** (arch/14+): etcd — внешний
+  контур, «запускается отдельно» (deploy/docker-compose.yml), потребители —
+  воркеры PgWorker/KafkaWorker/ValkeyWorker, панель AdminPanel и Patroni-ноды,
+  создаваемые воркером — §8.
+
+Параметры кластера одни (§3); процедура потери кворума — общая (09 §4).
+
+---
+
 ## 1. Почему именно так
 
 - **3 узла** — минимальное количество для отказоустойчивости (переживает потерю 1).
@@ -170,5 +186,56 @@ docker compose up -d      # применить (контейнер переза�
 [ ] etcdctl member list → 3 started
 [ ] INITIAL_CLUSTER_STATE переключён в existing на всех нодах
 ```
+
+## 8. HA-контур контроль-плейна воркер-инсталляции
+
+Контроль-плейн (декларации кластеров, координация воркеров, Patroni-DCS
+создаваемых нод, мастер-ключи) живёт в ОТДЕЛЬНОМ от PG-нод etcd-контуре.
+Отказ единственного etcd = заморозка надзора, панели и DCS (характеристика R,
+reliability-report) — контур обязан быть 3-узловым. Рецепт узла:
+`deploy/etcd/{docker-compose.yml,etcd.env.example}` (зона оператора).
+
+1. **Топология**: 3 узла, static bootstrap (`--initial-cluster`, токен один),
+   кворум 2/3, ПО ОДНОМУ узлу на docker-хосте — хосты РАЗНЫЕ (анти-аффинити:
+   потеря одного хоста ≠ потеря кворума; допустимо совмещение с docker-хостами
+   воркера, но не всех трёх на одном). Требования к хосту — как §2/03: SSD под
+   data-dir, стабильные IP/DNS, NTP.
+2. **Параметры** — те же, что §3: `--heartbeat-interval=250`,
+   `--election-timeout=2000`, `--auto-compaction-retention=1`,
+   `--quota-backend-bytes=8GiB`, образ v3.5.21; `--initial-cluster-state=new`
+   только на первом старте, затем `existing` (§5 — общий).
+3. **Advertised-правила потребителей** (ключевое отличие от (а)):
+
+   | Потребитель | Откуда берёт адреса | Формат |
+   |---|---|---|
+   | Воркеры (deploy) | env `PGW/KFW/VWK_ETCD_ENDPOINT_0..2` | полные URL |
+   | Панель | `AdminPanel__Etcd__Endpoints__0..2` | полные URL |
+   | Patroni-ноды (Spilo) | `PgWorker:Etcd:AdvertisedEndpoints` (fallback `Endpoints`) → `ETCD3_HOSTS` | `host:port` без scheme, список |
+   | lease мастер-ключа нод | тот же источник → `PGW_ETCD` | полные URL, список через запятую |
+
+   Правило: клиенты контура всегда получают список ВСЕХ клиентских URL;
+   единственный endpoint допустим только для стендов/разработки. Advertise
+   каждого узла — адрес(а), резолвимые из КАЖДОЙ сети потребителей: etcd
+   допускает список в `--advertise-client-urls` (на стенде — compose-DNS для
+   сети стенда + `host.docker.internal:PORT` для per-cluster сетей воркера;
+   в проде — IP хоста узла, host-network как §3).
+4. **Кворум-семантика**: 1 узел недоступен — всё работает (клиенты с failover
+   даже не обязаны переключаться); 2 узла — кворума нет: контроль-плейн
+   заморожен (надзор/панель/DCS), датаплейн живёт сам; восстановление —
+   09 §4. Потеря узла НАВСЕГДА (замена хоста): `member remove` + `member add`
+   + data-dir заново:
+   ```bash
+   etcdctl member remove <ID>                          # на живом члене
+   # на НОВОМ хосте: очистить data-dir, в etcd.env — INITIAL_CLUSTER_STATE=existing
+   etcdctl member add etcdN --peer-urls=http://<NEW_IP>:2380
+   # обновить PEERS на всех узлах (добавленный адрес) и перезапустить узел
+   ```
+5. **Чек-лист контура (прод)**: `member list` = 3 started; `endpoint health
+   --cluster` = 3 healthy; все воркеры/панель видят один и тот же список
+   endpoints; healthz воркеров `etcd-reachable` жив; панель `GET
+   /api/etcd/status` — 3 члена с единым leader/term.
+6. **Стендовое зеркало**: дев-стенд поднимает тот же 3-узловой контур
+   (`dev-stand/adminpanel/docker-compose.yml`, `etcd1/etcd2/etcd3`);
+   отказоустойчивость гоняет чек `43-etcd-ha.sh` на каждом прогоне стенда.
 
 Кластер DCS готов → [05-deploy-postgres.md](05-deploy-postgres.md).
