@@ -158,18 +158,39 @@ public class RestoreDrillProcessTests
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
 
-    // Драйвер с единственным хостом h1 (portalloc-сид даёт shard1/shard1a → h1).
-    internal sealed class FakeDrillDriver(FakeDrillEngine engine) : IClusterDriver
+    // Драйвер: один хост h1 (ctor по образцу verify) или два h1+h2 (мульти-хост
+    // кейсы доводки/супервиза — Finding 1 ревью). GetHostsAsync — таблица
+    // Docker:Hosts = ключи словаря движков (порядок Ordinal).
+    internal sealed class FakeDrillDriver : IClusterDriver
     {
+        private readonly Dictionary<string, IDockerEngine> _engines;
+
+        public FakeDrillDriver(FakeDrillEngine engine)
+            : this(engine, null)
+        {
+        }
+
+        public FakeDrillDriver(FakeDrillEngine h1Engine, FakeDrillEngine? h2Engine)
+        {
+            _engines = new Dictionary<string, IDockerEngine> { ["h1"] = h1Engine };
+            if (h2Engine is not null)
+                _engines["h2"] = h2Engine;
+        }
+
         public bool SupportsRunningInspection => true;
-        public IDockerEngine? EngineFor(string host) => engine;
+
+        public IDockerEngine? EngineFor(string host)
+            => _engines.TryGetValue(host, out var engine) ? engine : null;
+
+        public IReadOnlyDictionary<string, IDockerEngine> Engines => _engines;
         public Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct)
             => Task.FromResult(Result.Success());
         public Task<Result> RemoveRestoreJobsAsync(string cluster, string shard, CancellationToken ct)
             => Task.FromResult(Result.Success());
         public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct)
             => Task.FromResult(Result<IReadOnlyList<HostInfo>>.Success(
-                (IReadOnlyList<HostInfo>)[new HostInfo("h1", 0)]));
+                (IReadOnlyList<HostInfo>)[.. _engines.Keys.OrderBy(k => k, StringComparer.Ordinal)
+                    .Select(k => new HostInfo(k, 0))]));
         public Task<Result> EnsureBackupAgentAsync(
             string cluster, string shard, ContainerSpec spec, string host, CancellationToken ct)
             => Task.FromResult(Result.Success());
@@ -845,5 +866,108 @@ public class RestoreDrillProcessTests
 
         // Assert — запуска нет (policy 0 перекрыла дефолт конфига 1).
         engine.Created.Should().BeEmpty();
+    }
+
+    // ── Мульти-хост: доводка сноса и супервиз fallback-путём (Finding 1 ревью) ──
+
+    // AAA (AC4, мульти-хост): терминальный ключ с phase=cleaning, контейнер+volume
+    // на ВТОРОМ хосте → доводка (снос стартует с engine=null) перебирает хосты,
+    // находит и сносит на h2, ключ — чистый итог.
+    [Fact]
+    public async Task Cleanup_TwoHosts_JobOnSecondHost_FindsAndCleans()
+    {
+        // Arrange — два хоста; джоб (exited) и volume живут на h2.
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("drill", ct);
+        Fx = fx;
+        const string cluster = "dr18";
+        await SeedAsync(cluster);
+        var engineH1 = new FakeDrillEngine();
+        var engineH2 = new FakeDrillEngine();
+        var driver = new FakeDrillDriver(engineH1, engineH2);
+        var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
+        SeedContainer(engineH2, name, "exited", 0, "{\"ok\":true}");
+        await SeedDrillAsync(cluster,
+            new DrillState(DrillId, DrillStatus.Succeeded, "20261001090000Z", NowUnix() - 600,
+                FinishedUnix: NowUnix() - 300, Phase: "cleaning"));
+        var process = BuildProcess(cluster, driver, new FakeBackupS3());
+
+        // Act — тик доводки (краш-рекавери: снос без движка из супервиза).
+        (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — контур снесён на h2 (не «404 чужого хоста»), ключ чист.
+        engineH2.Removed.Should().Contain(name, "доводка обязана найти джоб на втором хосте");
+        engineH2.RemovedVolumes.Should().Contain(BackupNames.DrillVolumeName(cluster, Shard, DrillId));
+        (await ReadDrillAsync(cluster)).Should().Contain("\"SUCCEEDED\"").And.NotContain("phase");
+    }
+
+    // AAA (AC4, мульти-хост): джоб был на ПЕРВОМ хосте, снос стартует с engine=null
+    // (тик активностей) → доводка сносит на h1 и подтверждает отсутствие на h2.
+    [Fact]
+    public async Task Cleanup_TwoHosts_JobOnFirstHost_CleansAndConfirmsBoth()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("drill", ct);
+        Fx = fx;
+        const string cluster = "dr19";
+        await SeedAsync(cluster);
+        var engineH1 = new FakeDrillEngine();
+        var engineH2 = new FakeDrillEngine();
+        var driver = new FakeDrillDriver(engineH1, engineH2);
+        var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
+        SeedContainer(engineH1, name, "exited", 1, "{\"ok\":false,\"error\":\"boom\"}");
+        await SeedDrillAsync(cluster,
+            new DrillState(DrillId, DrillStatus.Succeeded, "20261001090000Z", NowUnix() - 600,
+                FinishedUnix: NowUnix() - 300, Phase: "cleaning"));
+        var process = BuildProcess(cluster, driver, new FakeBackupS3());
+
+        // Act
+        (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — снос на h1; h2 — только 404-проход (чистого итога не ломает).
+        engineH1.Removed.Should().Contain(name);
+        engineH1.RemovedVolumes.Should().Contain(BackupNames.DrillVolumeName(cluster, Shard, DrillId));
+        (await ReadDrillAsync(cluster)).Should().NotContain("phase");
+    }
+
+    // AAA (AC9, мульти-хост): portalloc без шарда (шард демонтируется) —
+    // fallback-супервиз ищет RUNNING-джоб на остальных хостах и супервизит
+    // найденный на h2 (фаза из логов пишется в ключ).
+    [Fact]
+    public async Task Supervise_Fallback_JobOnSecondHost_Supervised()
+    {
+        // Arrange — portalloc БЕЗ shard1 (fallback-путь); джоб running на h2.
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("drill", ct);
+        Fx = fx;
+        const string cluster = "dr20";
+        await SeedAsync(cluster);
+        await Fx.Gateway.PutAsync(Fx.Endpoint, $"/pgworker/portalloc/{cluster}",
+            Portalloc.Serialize(new Dictionary<string, NodeAddress>
+            {
+                // shard1 демонтируется — записи нет; остался чужой shard2
+                ["shard2/shard2a"] = new("h1", new NodePorts(16011, 18011, 17011)),
+            }), null, ct);
+        var engineH1 = new FakeDrillEngine();
+        var engineH2 = new FakeDrillEngine();
+        var driver = new FakeDrillDriver(engineH1, engineH2);
+        var name = BackupNames.DrillContainerName(cluster, Shard, DrillId);
+        SeedContainer(engineH2, name, "running", -1, "{\"phase\":\"recovering\"}");
+        await SeedDrillAsync(cluster,
+            new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
+        var process = BuildProcess(cluster, driver, new FakeBackupS3());
+
+        // Act
+        (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — фаза найденного на h2 джоба в ключе; джоб НЕ считался vanished
+        // (ни досоздачи на h1, ни FAILED).
+        (await ReadDrillAsync(cluster)).Should().Contain("\"phase\":\"recovering\"")
+            .And.NotContain("drill-vanished").And.NotContain("\"FAILED\"");
+        engineH1.Created.Should().BeEmpty("досоздача-дубликат на чужом хосте запрещена");
     }
 }
