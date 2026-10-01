@@ -687,6 +687,18 @@ public class E2eBackupScenarios
                 $"journal=[{workKvDiag?.Value[..Math.Min(400, workKvDiag?.Value.Length ?? 0)]}] " +
                 $"agents=[{agentsDiag.Replace('\n', ';')}]");
         }
+        // Останавливаем WAL-агента ДО порчи: иначе гонка самозалечивания — BROKEN
+        // → пересъём/агент успевают вернуть сегмент до валидации дрилла (тик 1 с;
+        // прогон мерж-гейта 2026-10-01: дрилл легитимно SUCCEEDED на зажившей
+        // цепи). Остановленный агент ничего не ре-аплоадит; планировщик BROKEN-
+        // пересъёма завершается ПОСЛЕ валидации дрилла (дыра живёт ≥1 тик).
+        var agents = await Fx.RunDockerAsync(
+            ["ps", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-wal-{cluster}-shard1"], ct);
+        var agentName = agents.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+            .Select(n => n.Trim()).FirstOrDefault();
+        agentName.Should().NotBeNullOrEmpty("агент shard1 жив — предусловие стопа");
+        await Fx.RunDockerAsync(["stop", agentName!], ct);
+
         (await corruptS3.DeleteKeysAsync([$"{cluster}/shard1/wal/{victim.Name}"], ct))
             .IsSuccess.Should().BeTrue("сегмент-жертва обязан удалиться");
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
