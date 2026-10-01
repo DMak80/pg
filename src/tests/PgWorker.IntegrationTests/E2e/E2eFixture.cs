@@ -140,7 +140,8 @@ public sealed class HostInstance(
     Process process,
     string snapshotsDir,
     HttpClient healthHttp,
-    StreamWriter? logWriter = null) : IAsyncDisposable
+    StreamWriter? logWriter = null,
+    int apiPort = 0) : IAsyncDisposable
 {
     private bool _disposed;
 
@@ -149,6 +150,8 @@ public sealed class HostInstance(
     public Process Process { get; } = process;
 
     public string SnapshotsDir { get; } = snapshotsDir;
+
+    public int ApiPort { get; } = apiPort;   // хост-порт /healthz (проба живости из сценариев)
 
     /// <summary>Мгновенный kill (смерть контроллера, AC3) — lease истекают ≤15 с.</summary>
     public void Kill()
