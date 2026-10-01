@@ -189,6 +189,32 @@ public static class OperationsModule
             return Error(result);
         });
 
+        // PUT /api/clusters/{cluster}/backups/policy — мутация policy бэкапов
+        // (reliability t02, 02 §9.12): панель НЕ пишет в etcd — команда-прокси
+        // в POST policy-API воркера ПОЛНЫМ телом (retention + full_max_age_sec +
+        // verify + drill; канон замещения целиком). Валидация панели — дубль
+        // для UX; истина — сервер воркера (400 перечнем проксируется как есть).
+        endpoints.MapPut("/api/clusters/{cluster}/backups/policy", async (
+            string cluster, UpdateBackupsPolicyRequest request, ClaimsPrincipal user,
+            IHandler handler, CancellationToken ct) =>
+        {
+            if (request.RetentionDays < 1 || request.RetentionWeeks < 0 || request.RetentionMonths < 0
+                || request.FullMaxAgeSec < 600
+                || request.DrillIntervalDays is < 0 or > 3650)
+            {
+                return Results.Problem(
+                    statusCode: StatusCodes.Status400BadRequest,
+                    title: "Invalid body",
+                    detail: "retentionDays ≥ 1, weeks/months ≥ 0, fullMaxAgeSec ≥ 600, drillIntervalDays в [0..3650]");
+            }
+
+            var result = await handler.HandleCommand<UpdateBackupsPolicyCommand, string>(
+                new UpdateBackupsPolicyCommand(cluster, request.RetentionDays, request.RetentionWeeks,
+                    request.RetentionMonths, request.FullMaxAgeSec, request.VerifyOnCreate,
+                    request.DrillIntervalDays, user.Identity?.Name ?? "adminpanel"), ct);
+            return result.IsSuccess ? Results.Ok(result.Value) : Error(result);
+        });
+
         // POST /api/backups/orphans/{cluster}/{shard}/hold — hold-флаг сироты
         // (t04, 02 §9.10): прокси в API PgWorker; 204 (ошибки — ProblemDetails
         // воркера как есть, недоступность API — 503).

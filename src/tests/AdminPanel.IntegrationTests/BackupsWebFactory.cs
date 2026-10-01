@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Extensions.DependencyInjection;
+using AdminPanel.Etcd.Workers;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 
@@ -68,6 +69,10 @@ public sealed class BackupsWebFactory : WebApplicationFactory<Program>
     /// <summary>Bucket фикстуры MinIO (apm-backups-{guid}).</summary>
     public string MinioBucket { get; set; } = "";
 
+    /// <summary>Стаб API воркера для прокси-мутаций (reliability t02: policy);
+    /// null — реальный гейтвей (тесты прокси ставят свой TestWorkerApi).</summary>
+    public TestWorkerApi? WorkerApi { get; set; }
+
     /// <summary>Вариант AC1: хост без настроек MinIO-грани.</summary>
     public static BackupsWebFactory WithoutMinio(string etcdEndpoint) => new()
     {
@@ -118,6 +123,9 @@ public sealed class BackupsWebFactory : WebApplicationFactory<Program>
             // MinioInventoryLoop) зарегистрированы отдельными дескрипторами,
             // RemoveAll снимает только пересылки IHostedService.
             services.RemoveAll<IHostedService>();
+            if (WorkerApi is not null)
+                services.Replace(new ServiceDescriptor(
+                    typeof(IWorkerApiGateway), WorkerApi));
         });
     }
 }
