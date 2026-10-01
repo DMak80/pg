@@ -26,10 +26,10 @@ trap 'rm -f "$JAR"; rm -rf "$WORK"' EXIT
 
 # etcd стенда — единственный источник адресов/кредов (дискавери §3.5).
 # </dev/null: docker CLI в пайпе (producer stdin) не должен съедать stdin.
-etcd_key() { docker compose exec -T etcd etcdctl get "$1" --print-value-only </dev/null 2>/dev/null; }
-etcd_has() { docker compose exec -T etcd etcdctl get "$1" --print-value-only </dev/null 2>/dev/null | grep -q .; }
+etcd_key() { docker compose exec -T etcd1 etcdctl get "$1" --print-value-only </dev/null 2>/dev/null; }
+etcd_has() { docker compose exec -T etcd1 etcdctl get "$1" --print-value-only </dev/null 2>/dev/null | grep -q .; }
 etcd_kafka_keys() {
-  docker compose exec -T etcd etcdctl get /kafka/ --prefix --keys-only 2>/dev/null | grep -v '^$' || true
+  docker compose exec -T etcd1 etcdctl get /kafka/ --prefix --keys-only 2>/dev/null | grep -v '^$' || true
 }
 
 kafka_cli() { # kafka_cli <tool> <args…>: креды/адрес — только чтением etcd.
@@ -116,7 +116,7 @@ echo ">>> (3/15) топик $TOPIC kafka-topics CLI (креды из etcd) → �
 kafka_cli kafka-topics --create --topic "$TOPIC" --partitions 3 --replication-factor 3 >/dev/null \
   || { echo "❌ kafka-topics --create не прошёл"; exit 1; }
 wait_until "ключ topics/$TOPIC в etcd (автосинк ≤ 2 тиков)" 60 \
-  bash -c 'docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/topics/e2e --print-value-only 2>/dev/null | grep -q .'
+  bash -c 'docker compose exec -T etcd1 etcdctl get /kafka/clusters/e2e/topics/e2e --print-value-only 2>/dev/null | grep -q .'
 etcd_key "/kafka/clusters/$CLUSTER/topics/$TOPIC" \
   | jq -e '.partitions == 3 and .replication_factor == 3 and .missing == false and (has("desired") | not)' >/dev/null \
   || { echo "❌ ключ топика не с фактом"; exit 1; }
@@ -128,7 +128,7 @@ c="$(code -X PUT "$BASE/api/kafka/clusters/$CLUSTER/topics/$TOPIC" \
   -H 'Content-Type: application/json' -d '{"partitions":6,"retentionMs":86400000}')"
 [ "$c" = 200 ] || { echo "❌ PUT desired = $c, ожидался 200"; exit 1; }
 wait_until "desired применён и снят (partitions 6, retention 1д)" 90 bash -c '
-  key="$(docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/topics/e2e --print-value-only 2>/dev/null)"
+  key="$(docker compose exec -T etcd1 etcdctl get /kafka/clusters/e2e/topics/e2e --print-value-only 2>/dev/null)"
   echo "$key" | jq -e ".partitions == 6 and .configs[\"retention.ms\"] == \"86400000\" and (has(\"desired\") | not)"'
 kafka_cli kafka-configs --entity-type topics --entity-name "$TOPIC" --describe 2>/dev/null \
   | grep -q 'retention.ms=86400000' \
@@ -169,7 +169,7 @@ echo "  desired стоит в ключе (etcdctl подтверждает)"
 kafka_cli kafka-topics --delete --topic "$TOPIC" >/dev/null \
   || { echo "❌ kafka-topics --delete не прошёл"; exit 1; }
 wait_until "missing=true + алерт kafka-topic-missing-desired" 90 bash -c '
-  key="$(docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/topics/e2e --print-value-only 2>/dev/null)"
+  key="$(docker compose exec -T etcd1 etcdctl get /kafka/clusters/e2e/topics/e2e --print-value-only 2>/dev/null)"
   alerts="$(curl -fsS -b "'"$JAR"'" "'"$BASE"'/api/alerts")"
   echo "$key" | jq -e ".missing == true and .desired != null" \
     && echo "$alerts" | jq -e "any(.[]; .kind == \"kafka-topic-missing-desired\" and (.target | startswith(\"e2e/\")))"'
@@ -177,7 +177,7 @@ echo "  missing=true, заявка жива, алерт на месте"
 c="$(code -X DELETE "$BASE/api/kafka/clusters/$CLUSTER/topics/$TOPIC/desired")"
 [ "$c" = 204 ] || { echo "❌ DELETE desired = $c, ожидался 204"; exit 1; }
 wait_until "ключ topics/$TOPIC удалён (топика и заявки нет)" 60 \
-  bash -c '! docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/topics/e2e --print-value-only 2>/dev/null | grep -q .'
+  bash -c '! docker compose exec -T etcd1 etcdctl get /kafka/clusters/e2e/topics/e2e --print-value-only 2>/dev/null | grep -q .'
 echo "  отмена заявки → автосинк удалил ключ"
 
 # ===== 8) Создание топика из панели → воркер исполняет (t01) =====
@@ -186,7 +186,7 @@ c="$(code -X POST "$BASE/api/kafka/clusters/$CLUSTER/topics" -H 'Content-Type: a
   -d '{"name":"e2e-panel","partitions":6,"replicationFactor":3,"retentionMs":86400000}')"
 [ "$c" = 201 ] || { echo "❌ POST create = $c"; exit 1; }
 wait_until "факт-ключ e2e-panel (partitions 6 / RF 3 / retention 1д, без заявок)" 90 bash -c '
-  docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/topics/e2e-panel --print-value-only 2>/dev/null \
+  docker compose exec -T etcd1 etcdctl get /kafka/clusters/e2e/topics/e2e-panel --print-value-only 2>/dev/null \
   | jq -e ".partitions == 6 and .replication_factor == 3 and .configs[\"retention.ms\"] == \"86400000\" and (has(\"desired\") | not)"'
 # NB: pipefail + grep -q здесь нельзя: grep выходит после совпадения, java
 # CLI дописывает строки → docker run получает SIGPIPE (141) → пайплайн падает;
@@ -209,7 +209,7 @@ echo ">>> (10/15) DELETE e2e-panel → топик и ключи исчезли"
 c="$(code -X DELETE "$BASE/api/kafka/clusters/$CLUSTER/topics/e2e-panel")"
 [ "$c" = 204 ] || { echo "❌ DELETE = $c"; exit 1; }
 wait_until "факт-ключ и заявка e2e-panel удалены" 60 bash -c '
-  ! docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/topics/e2e-panel --print-value-only 2>/dev/null | grep -q .'
+  ! docker compose exec -T etcd1 etcdctl get /kafka/clusters/e2e/topics/e2e-panel --print-value-only 2>/dev/null | grep -q .'
 if kafka_cli kafka-topics --list </dev/null 2>/dev/null | grep e2e-panel >/dev/null; then
   echo "❌ топик e2e-panel всё ещё в Kafka"; exit 1
 fi
@@ -222,13 +222,13 @@ c="$(code -X POST "$BASE/api/kafka/clusters/$CLUSTER/topics" -H 'Content-Type: a
 c="$(code -X DELETE "$BASE/api/kafka/clusters/$CLUSTER/topics/e2e-cancel/desired.create")"
 [ "$c" = 204 ] || { echo "❌ отмена = $c"; exit 1; }
 sleep 35  # 2 тика автосинка
-if docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/topics/e2e-cancel --print-value-only </dev/null 2>/dev/null | grep . >/dev/null; then
+if docker compose exec -T etcd1 etcdctl get /kafka/clusters/e2e/topics/e2e-cancel --print-value-only </dev/null 2>/dev/null | grep . >/dev/null; then
   # Гонка задокументирована (спека §6): тик успел раньше отмены — доводим до удаления.
   echo "  гонка: тик исполнил create раньше отмены — доводим до удаления"
   c="$(code -X DELETE "$BASE/api/kafka/clusters/$CLUSTER/topics/e2e-cancel")"
   [ "$c" = 204 ] || { echo "❌ cleanup e2e-cancel = $c"; exit 1; }
   wait_until "e2e-cancel удалён (гонка тика)" 60 bash -c '
-    ! docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/topics/e2e-cancel --print-value-only 2>/dev/null | grep -q .'
+    ! docker compose exec -T etcd1 etcdctl get /kafka/clusters/e2e/topics/e2e-cancel --print-value-only 2>/dev/null | grep -q .'
 fi
 echo "  заявка e2e-cancel отменена до исполнения (или гонка доведена)"
 
@@ -238,7 +238,7 @@ c="$(code -X POST "$BASE/api/kafka/clusters/$CLUSTER/topics" -H 'Content-Type: a
   -d '{"name":"e2e-undo","partitions":1,"replicationFactor":1}')"
 [ "$c" = 201 ] || { echo "❌ POST create e2e-undo = $c"; exit 1; }
 wait_until "факт-ключ e2e-undo" 90 bash -c '
-  docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/topics/e2e-undo --print-value-only 2>/dev/null | grep -q .'
+  docker compose exec -T etcd1 etcdctl get /kafka/clusters/e2e/topics/e2e-undo --print-value-only 2>/dev/null | grep -q .'
 c="$(code -X DELETE "$BASE/api/kafka/clusters/$CLUSTER/topics/e2e-undo")"
 [ "$c" = 204 ] || { echo "❌ DELETE e2e-undo = $c"; exit 1; }
 c="$(code -X DELETE "$BASE/api/kafka/clusters/$CLUSTER/topics/e2e-undo/desired.delete")"
@@ -252,9 +252,9 @@ if ! kafka_cli kafka-topics --list </dev/null 2>/dev/null | grep e2e-undo >/dev/
     -d '{"name":"e2e-undo","partitions":1,"replicationFactor":1}')"
   [ "$c" = 201 ] || { echo "❌ восстановление e2e-undo = $c"; exit 1; }
   wait_until "факт-ключ e2e-undo восстановлен" 90 bash -c '
-    docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/topics/e2e-undo --print-value-only 2>/dev/null | grep -q .'
+    docker compose exec -T etcd1 etcdctl get /kafka/clusters/e2e/topics/e2e-undo --print-value-only 2>/dev/null | grep -q .'
 fi
-docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/topics/e2e-undo --print-value-only </dev/null 2>/dev/null \
+docker compose exec -T etcd1 etcdctl get /kafka/clusters/e2e/topics/e2e-undo --print-value-only </dev/null 2>/dev/null \
   | grep . >/dev/null || { echo "❌ факт-ключ e2e-undo пропал после отмены delete"; exit 1; }
 echo "  отмена delete до тика: топик e2e-undo жив"
 
@@ -280,9 +280,9 @@ echo "  топик e2e2: RF=4, 6 партиций, 12 сообщений"
 c="$(code -X DELETE "$BASE/api/kafka/clusters/$CLUSTER/brokers/broker4")"
 [ "$c" = 204 ] || { echo "❌ DELETE broker4 = $c, ожидался 204"; exit 1; }
 wait_until "прогресс-ключ reassignments/e2e появился (drain идёт)" 120 \
-  bash -c 'docker compose exec -T etcd etcdctl get /kafkaworker/reassignments/e2e --print-value-only 2>/dev/null | grep -q .'
+  bash -c 'docker compose exec -T etcd1 etcdctl get /kafkaworker/reassignments/e2e --print-value-only 2>/dev/null | grep -q .'
 wait_until "broker4 демонтирован после drain (ключей brokers/broker4 нет)" 300 \
-  bash -c '! docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/brokers/broker4/ --prefix --keys-only 2>/dev/null | grep -q broker4'
+  bash -c '! docker compose exec -T etcd1 etcdctl get /kafka/clusters/e2e/brokers/broker4/ --prefix --keys-only 2>/dev/null | grep -q broker4'
 # Факт после drain: в репликах нет 4, ровно 3 реплики, ISR непуст (упрощённый
 # parse; Kafka 4.0 печатает describe с TAB-разделителями — нормализуем в пробелы).
 describe_check() {
@@ -302,7 +302,7 @@ EOF
 }
 wait_until "describe e2e2: без nodeId=4, по 3 реплики, ISR непуст" 60 describe_check
 wait_until "реестр topics/e2e2: replication_factor=3 (автосинк)" 60 \
-  bash -c 'docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/topics/e2e2 --print-value-only 2>/dev/null | grep -q "\"replication_factor\":3"'
+  bash -c 'docker compose exec -T etcd1 etcdctl get /kafka/clusters/e2e/topics/e2e2 --print-value-only 2>/dev/null | grep -q "\"replication_factor\":3"'
 echo "  broker4 (непустой) дренирован и демонтирован, RF e2e2 снижен 4→3"
 
 # ===== 14) Ребалансировка: заявочный цикл на 3-брокерном факте =====
@@ -317,7 +317,7 @@ echo "  повторный POST rebalance -> 409"
 # (Balance_Восстанавливает_RF_После_Повторного_Add); здесь заявочный цикл на
 # факте RF=3: факт == план → заявка снимется без движения.
 wait_until "заявка rebalances/e2e снята (факт == план RF=3)" 300 \
-  bash -c '! docker compose exec -T etcd etcdctl get /kafkaworker/rebalances/e2e --print-value-only 2>/dev/null | grep -q .'
+  bash -c '! docker compose exec -T etcd1 etcdctl get /kafkaworker/rebalances/e2e --print-value-only 2>/dev/null | grep -q .'
 describe_check || { echo "❌ describe e2e2 после balance: RF не 3"; exit 1; }
 echo "  заявка снята, план не ухудшил факт (RF=3)"
 c="$(code -X DELETE "$BASE/api/kafka/clusters/$CLUSTER/rebalance")"
@@ -329,9 +329,9 @@ echo ">>> (15/15) удаление кластера → /kafka/ пуст"
 c="$(code -X DELETE "$BASE/api/kafka/clusters/$CLUSTER")"
 [ "$c" = 204 ] || { echo "❌ DELETE cluster = $c"; exit 1; }
 wait_until "префикс /kafka/clusters/$CLUSTER/ пуст + kfw-контейнеров нет" 180 bash -c '
-  [ -z "$(docker compose exec -T etcd etcdctl get /kafka/clusters/e2e/ --prefix --keys-only 2>/dev/null | grep -v "^$")" ] \
+  [ -z "$(docker compose exec -T etcd1 etcdctl get /kafka/clusters/e2e/ --prefix --keys-only 2>/dev/null | grep -v "^$")" ] \
     && [ -z "$(docker ps -a --format "{{.Names}}" | grep "^kfw-e2e-")" ]'
-left="$(docker compose exec -T etcd etcdctl get /kafkaworker/ --prefix --keys-only 2>/dev/null | grep "e2e" || true)"
+left="$(docker compose exec -T etcd1 etcdctl get /kafkaworker/ --prefix --keys-only 2>/dev/null | grep "e2e" || true)"
 [ -z "$left" ] || { echo "❌ остаточные kafkaworker-ключи: $left"; exit 1; }
 echo "  демонтаж завершён: контейнеры/тома/ключи чисты"
 

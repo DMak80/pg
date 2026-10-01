@@ -16,7 +16,11 @@ import pg8000.native
 PG_PORT = 5432
 PG_USER = "postgres"
 PG_DB = "postgres"
-ETCD = os.getenv("ETCD_ENDPOINTS", "http://etcd:2379").rstrip("/")
+# HA-контур (t09, arch/04 §8): ETCD_ENDPOINTS — СПИСОК URL через запятую;
+# активный кешируется, транспортная ошибка → перебор до первого живого
+# (single-URL значения остаются валидными — не-HA прогоны).
+ETCD_LIST = [u.strip().rstrip("/") for u in os.getenv("ETCD_ENDPOINTS", "http://etcd1:2379").split(",") if u.strip()]
+_active = {"url": ETCD_LIST[0] if ETCD_LIST else ""}
 NODE = os.getenv("NODE_NAME", "")
 CLUSTER = os.getenv("CLUSTER", "demo")
 SHARD = os.getenv("SHARD", "s1")
@@ -77,11 +81,27 @@ def node_ip(host):
 
 # ---------- etcd gateway (паттерн rolecheck.py) ----------
 def etcd_post(path, payload):
-    req = urllib.request.Request(
-        ETCD + path, data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=5) as r:
-        return json.load(r)
+    # Активный endpoint (кеш) первым; исключение/5xx — следующий из списка;
+    # успех на новом адресе обновляет кеш (переключение видно в логе).
+    order = [_active["url"]] + [u for u in ETCD_LIST if u != _active["url"]]
+    last_error = None
+    for url in order:
+        try:
+            req = urllib.request.Request(
+                url + path, data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                if url != _active["url"]:
+                    print(f"{NODE}: etcd endpoint switch {_active['url']} -> {url}", flush=True)
+                    _active["url"] = url
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code < 500:
+                raise  # 4xx — не отказ узла, протоколная ошибка
+            last_error = e
+        except Exception as e:
+            last_error = e
+    raise last_error
 
 
 def etcd_put_leased(key, value, lease_id):

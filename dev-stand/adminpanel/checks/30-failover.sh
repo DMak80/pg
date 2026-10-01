@@ -6,7 +6,7 @@ cd "$(dirname "$0")/.."
 
 BASE="${ADMINPANEL_URL:-http://localhost:5050}"
 JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
-ect() { docker compose exec -T etcd etcdctl --endpoints=http://localhost:2379 "$@"; }
+ect() { docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 "$@"; }
 # Запрос — только через -c: позиционный аргумент psql трактуется как DBNAME
 sq()   { docker compose exec -T "$1" psql -U postgres -d postgres -qAt -v ON_ERROR_STOP=1 -c "$2"; }
 

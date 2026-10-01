@@ -8,9 +8,9 @@
 ```bash
 # всё — одним скриптом; стенд = локальный запуск ПОЛНОЙ системы (AGENTS.md):
 # панель (докер, localhost:5050, admin/admin), PG-шарды+эмуляторы, kafkaworker,
-# PgWorker (deploy/) — и ВСЕ на одном etcd (as-etcd, источник правды, контур один)
+# PgWorker (deploy/) — и ВСЕ на одном etcd-кластере as-etcd-1/2/3 (источник правды, контур один, 3 узла — зеркало прода, arch/04 §8)
 cd dev-stand/adminpanel && checks/00-up.sh
-# или: docker compose up -d   # стенд части: etcd+панель (без PG/kafka/PgWorker);
+# или: docker compose up -d   # стенд части: etcd-кластер+панель (без PG/kafka/PgWorker);
 #                             # сиды — отдельно через checks/05-seed.sh
 
 open http://localhost:5050
@@ -58,6 +58,11 @@ open http://localhost:5050
 `AdminPanel__Backups__S3__*` сервиса `adminpanel`; проверка —
 `checks/45-backups-storage.sh` (mc-налив тестовых объектов → configured/
 health/дерево/objects/без секретов).
+
+**HA-etcd (t09)**: контур всегда 3 узла (`as-etcd-1/2/3`, порты
+2379/2381/2383, env `ETCD{1,2,3}_HOST_PORT` при коллизиях);
+отказоустойчивость проверяет `checks/43-etcd-ha.sh` (stop узла → кворум
+пишет, master-ключ жив → start → 3/3).
 
 ## Сиды через API воркеров
 
@@ -131,7 +136,7 @@ Quick-режим: `checks/90-down.sh -v && checks/05-seed.sh` → зелёные
 - контейнеры: `docker compose ps`, логи `docker compose logs <сервис>`;
   ноды — по имени сервиса (`s1a`…), контейнеры — `as-*` (не конфликтуют
   со стендом pg (этот монорепозиторий));
-- etcd: `docker compose exec etcd etcdctl --endpoints=http://localhost:2379 get / --prefix --keys-only`;
+- etcd: `docker compose exec etcd1 etcdctl --endpoints=http://localhost:2379 get / --prefix --keys-only`;
 - живые ключи API воркеров (lease TTL 15 c): `etcdctl get /pgworker/api/ --prefix`
   и `/kafkaworker/api/` — ключ есть = инстанс жив и URL валиден;
 - эмуляторы: `curl 127.0.0.1:8011/cluster | jq .` (8011/8012/8021/8022);

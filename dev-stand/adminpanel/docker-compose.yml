@@ -6,23 +6,96 @@
 # стендом pg (монорепозиторий), который порты на хост не публикует; arch/04 §1).
 name: adminpanel-stand
 
+# Общий анкор узлов HA-контура (extension-поле — ТОЛЬКО на верхнем уровне
+# compose: внутри services ключ x-* compose считает отдельным сервисом).
+x-etcd-common: &etcd-common
+  image: quay.io/coreos/etcd:v3.5.21
+  restart: unless-stopped
+  logging: { driver: json-file, options: { max-size: "10m", max-file: "3" } }
+  healthcheck:
+    test: ["CMD", "etcdctl", "--endpoints=http://localhost:2379", "endpoint", "health"]
+    interval: 5s
+    timeout: 3s
+    retries: 20
+    start_period: 20s
+
 services:
-  etcd:
-    image: quay.io/coreos/etcd:v3.5.21
-    container_name: as-etcd
+  # HA-контур: 3 узла ОДНИМ кластером (t09, arch/04 §8; стенд зеркалит прод —
+  # надёжность дефолтом, прецедент t07). Peer — compose-DNS; клиентские
+  # публикации: 2379 (etcd1 — совместимость инструментария), 2381/2382+1 —
+  # etcd2/etcd3 (env-override при коллизиях, прецедент METRICS_*). Advertise
+  # двумя URL: etcdN:2379 — потребители сети стенда; host.docker.internal:PORT —
+  # Patroni-ноды PgWorker из per-cluster сетей (паттерн прежнего as-etcd).
+  # initial-cluster-state=new переживает `docker compose down` (без -v):
+  # узел стартует с существующим data-dir и игнорирует bootstrap-флаги
+  # (etcd сам видит членство в data-dir); при `down -v` кластер пересобирается
+  # с нуля — флаг `new` снова корректен.
+
+  etcd1:
+    <<: *etcd-common
+    container_name: as-etcd-1
     ports:
-      - "2379:2379"
+      - "${ETCD1_HOST_PORT:-2379}:2379"
     command:
       - etcd
+      - --name=etcd1
       - --data-dir=/var/etcd/data
       - --listen-client-urls=http://0.0.0.0:2379
-      # ЕДИНЫЙ etcd полной системы (контур всегда один): advertise
-      # host.docker.internal потребляют Patroni-ноды, создаваемые PgWorker в
-      # своих сетях (паттерн dev-stand/compose.yaml), и он же работает из сети
-      # стенда — Docker Desktop проксирует обратно в публикацию 2379.
-      - --advertise-client-urls=http://host.docker.internal:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd1:2380
+      - --advertise-client-urls=http://etcd1:2379,http://host.docker.internal:${ETCD1_HOST_PORT:-2379}
+      - --initial-cluster=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - --initial-cluster-token=as-etcd-cluster
+      - --initial-cluster-state=new
+      - --heartbeat-interval=250
+      - --election-timeout=2000
+      - --auto-compaction-retention=1
     volumes:
-      - etcd-data:/var/etcd/data
+      - etcd1-data:/var/etcd/data
+
+  etcd2:
+    <<: *etcd-common
+    container_name: as-etcd-2
+    ports:
+      - "${ETCD2_HOST_PORT:-2381}:2379"
+    command:
+      - etcd
+      - --name=etcd2
+      - --data-dir=/var/etcd/data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd2:2380
+      - --advertise-client-urls=http://etcd2:2379,http://host.docker.internal:${ETCD2_HOST_PORT:-2381}
+      - --initial-cluster=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - --initial-cluster-token=as-etcd-cluster
+      - --initial-cluster-state=new
+      - --heartbeat-interval=250
+      - --election-timeout=2000
+      - --auto-compaction-retention=1
+    volumes:
+      - etcd2-data:/var/etcd/data
+
+  etcd3:
+    <<: *etcd-common
+    container_name: as-etcd-3
+    ports:
+      - "${ETCD3_HOST_PORT:-2383}:2379"
+    command:
+      - etcd
+      - --name=etcd3
+      - --data-dir=/var/etcd/data
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --initial-advertise-peer-urls=http://etcd3:2380
+      - --advertise-client-urls=http://etcd3:2379,http://host.docker.internal:${ETCD3_HOST_PORT:-2383}
+      - --initial-cluster=etcd1=http://etcd1:2380,etcd2=http://etcd2:2380,etcd3=http://etcd3:2380
+      - --initial-cluster-token=as-etcd-cluster
+      - --initial-cluster-state=new
+      - --heartbeat-interval=250
+      - --election-timeout=2000
+      - --auto-compaction-retention=1
+    volumes:
+      - etcd3-data:/var/etcd/data
 
   # MinIO — S3-хранилище бэкапов (arch/19 §5, t01): каркас подсистемы в
   # стенде; PgWorker (deploy-проект) ходит публикацией host:9000. Креды —
@@ -214,7 +287,7 @@ services:
     ports: ["8011:8008"]
     environment:
       NODE_NAME: s1a
-      ETCD_ENDPOINTS: http://etcd:2379
+      ETCD_ENDPOINTS: http://etcd1:2379,http://etcd2:2379,http://etcd3:2379
       CLUSTER: demo
       SHARD: s1
       MEMBERS: s1a,s1b
@@ -227,7 +300,7 @@ services:
     ports: ["8012:8008"]
     environment:
       NODE_NAME: s1b
-      ETCD_ENDPOINTS: http://etcd:2379
+      ETCD_ENDPOINTS: http://etcd1:2379,http://etcd2:2379,http://etcd3:2379
       CLUSTER: demo
       SHARD: s1
       MEMBERS: s1a,s1b
@@ -240,7 +313,7 @@ services:
     ports: ["8021:8008"]
     environment:
       NODE_NAME: s2a
-      ETCD_ENDPOINTS: http://etcd:2379
+      ETCD_ENDPOINTS: http://etcd1:2379,http://etcd2:2379,http://etcd3:2379
       CLUSTER: demo
       SHARD: s2
       MEMBERS: s2a,s2b
@@ -253,7 +326,7 @@ services:
     ports: ["8022:8008"]
     environment:
       NODE_NAME: s2b
-      ETCD_ENDPOINTS: http://etcd:2379
+      ETCD_ENDPOINTS: http://etcd1:2379,http://etcd2:2379,http://etcd3:2379
       CLUSTER: demo
       SHARD: s2
       MEMBERS: s2a,s2b
@@ -274,7 +347,9 @@ services:
       - "5050:8080"
     environment:
       ASPNETCORE_ENVIRONMENT: Stand
-      AdminPanel__Etcd__Endpoints__0: http://etcd:2379
+      AdminPanel__Etcd__Endpoints__0: http://etcd1:2379
+      AdminPanel__Etcd__Endpoints__1: http://etcd2:2379
+      AdminPanel__Etcd__Endpoints__2: http://etcd3:2379
       # cookie-логин по http (стенд без TLS)
       AdminPanel__Auth__Username: admin
       AdminPanel__Auth__Password: admin
@@ -332,7 +407,9 @@ services:
       # в шлюз docker-хоста (прецедент pgworker, deploy/docker-compose.yml)
       - "local:host-gateway"
     environment:
-      KafkaWorker__Etcd__Endpoints__0: http://etcd:2379
+      KafkaWorker__Etcd__Endpoints__0: http://etcd1:2379
+      KafkaWorker__Etcd__Endpoints__1: http://etcd2:2379
+      KafkaWorker__Etcd__Endpoints__2: http://etcd3:2379
       KafkaWorker__AdvertisedClientHost: host.docker.internal
       # HTTP API воркера (arch/16 §1.1, t03): mTLS-only, панель ходит по
       # compose-DNS с клиентским сертом (lease-ключ /kafkaworker/api/<id> —
@@ -342,7 +419,7 @@ services:
       KFW_API_TLS_KEY_PATH: /tls/server.key
       KFW_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
       KafkaWorker__Api__EnableSeedEndpoint: "true"
-    depends_on: [etcd]
+    depends_on: [etcd1, etcd2, etcd3]
 
   # Второй инстанс KafkaWorker (t07, arch/16 §2.1): тот же образ/env/сеть,
   # compose-DNS advertise; БЕЗ хост-публикации порта (панель и Prometheus
@@ -362,14 +439,16 @@ services:
     extra_hosts:
       - "local:host-gateway"
     environment:
-      KafkaWorker__Etcd__Endpoints__0: http://etcd:2379
+      KafkaWorker__Etcd__Endpoints__0: http://etcd1:2379
+      KafkaWorker__Etcd__Endpoints__1: http://etcd2:2379
+      KafkaWorker__Etcd__Endpoints__2: http://etcd3:2379
       KafkaWorker__AdvertisedClientHost: host.docker.internal
       KafkaWorker__Api__AdvertiseUrl: https://kafkaworker-2:8080
       KFW_API_TLS_CERT_PATH: /tls/server.crt
       KFW_API_TLS_KEY_PATH: /tls/server.key
       KFW_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
       KafkaWorker__Api__EnableSeedEndpoint: "true"
-    depends_on: [etcd]
+    depends_on: [etcd1, etcd2, etcd3]
 
   # Живой ValkeyWorker (t03; arch/04 §2.4): профиль valkey — только явно.
   # Управляет docker-хостом через сокет; контейнеры нод vwk-* поднимает на
@@ -393,14 +472,16 @@ services:
     extra_hosts:
       - "local:host-gateway"
     environment:
-      ValkeyWorker__Etcd__Endpoints__0: http://etcd:2379
+      ValkeyWorker__Etcd__Endpoints__0: http://etcd1:2379
+      ValkeyWorker__Etcd__Endpoints__1: http://etcd2:2379
+      ValkeyWorker__Etcd__Endpoints__2: http://etcd3:2379
       ValkeyWorker__AdvertisedClientHost: host.docker.internal
       ValkeyWorker__Api__AdvertiseUrl: https://valkeyworker:8080
       VWK_API_TLS_CERT_PATH: /tls/server.crt
       VWK_API_TLS_KEY_PATH: /tls/server.key
       VWK_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
       ValkeyWorker__Api__EnableSeedEndpoint: "true"
-    depends_on: [etcd]
+    depends_on: [etcd1, etcd2, etcd3]
 
   # Второй инстанс ValkeyWorker (t07, arch/21 §2): симметрично kafkaworker-2 —
   # compose-DNS advertise, без хост-публикации; клэймы/portalloc разрулит etcd.
@@ -419,14 +500,16 @@ services:
     extra_hosts:
       - "local:host-gateway"
     environment:
-      ValkeyWorker__Etcd__Endpoints__0: http://etcd:2379
+      ValkeyWorker__Etcd__Endpoints__0: http://etcd1:2379
+      ValkeyWorker__Etcd__Endpoints__1: http://etcd2:2379
+      ValkeyWorker__Etcd__Endpoints__2: http://etcd3:2379
       ValkeyWorker__AdvertisedClientHost: host.docker.internal
       ValkeyWorker__Api__AdvertiseUrl: https://valkeyworker-2:8080
       VWK_API_TLS_CERT_PATH: /tls/server.crt
       VWK_API_TLS_KEY_PATH: /tls/server.key
       VWK_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
       ValkeyWorker__Api__EnableSeedEndpoint: "true"
-    depends_on: [etcd]
+    depends_on: [etcd1, etcd2, etcd3]
 
   # Стек мониторинга (arch/18 §5; профиль metrics — входит в полный подъём
   # 00-up.sh, quick без него). Порты — env-override при коллизиях на хосте (M4).
@@ -477,7 +560,9 @@ services:
       METRICS_ALERT_WEBHOOK_URL: ${METRICS_ALERT_WEBHOOK_URL:-}
 
 volumes:
-  etcd-data:
+  etcd1-data:
+  etcd2-data:
+  etcd3-data:
   as-minio-data:
   kfw-snapshots:
   vw-snapshots:

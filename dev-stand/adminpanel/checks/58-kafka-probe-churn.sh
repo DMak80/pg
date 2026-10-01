@@ -28,7 +28,7 @@ curl -fsS -c "$JAR" -o /dev/null -X POST "$BASE/api/auth/login" \
   -H 'Content-Type: application/json' -d '{"username":"admin","password":"admin"}' \
   || { echo "❌ login (панель на $BASE? поднимите 00-up.sh)"; exit 1; }
 api() { curl -fsS -b "$JAR" "$BASE$1"; }
-ect() { docker compose exec -T etcd etcdctl --endpoints=http://localhost:2379 "$@"; }
+ect() { docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 "$@"; }
 
 docker inspect as-adminpanel >/dev/null 2>&1 \
   || { echo "❌ контейнер as-adminpanel не найден — поднимите стенд (00-up.sh)"; exit 1; }

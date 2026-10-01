@@ -53,15 +53,15 @@ for _ in 1 2 3; do
 done
 [ "$compose_up_ok" = 1 ] || { echo "❌ стенд не поднялся за 3 попытки (docker compose logs kafkaworker)"; exit 1; }
 
-ect() { docker compose exec -T etcd etcdctl --endpoints=http://localhost:2379 "$@"; }
+ect() { docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 "$@"; }
 # Запрос — только через -c: позиционный аргумент psql трактуется как DBNAME
 sq()   { docker compose exec -T "$1" psql -U postgres -d postgres -qAt -v ON_ERROR_STOP=1 -c "$2"; }
 
-# 1) etcd жив
-for i in $(seq 1 60); do ect endpoint health >/dev/null 2>&1 && break; sleep 1; done
-ect endpoint health >/dev/null 2>&1 \
-  || { echo "  ❌ etcd не стал здоровым за 60 c (docker compose logs etcd)"; exit 1; }
-echo "  etcd ready"
+# 1) etcd-контур: кворум собран (3 узла одним кластером, arch/04 §8)
+ect_ok() { [ "$(ect member list 2>/dev/null | grep -c 'started')" = "3" ]; }
+for i in $(seq 1 100); do ect_ok && break; sleep 1; done
+ect_ok || { echo "  ❌ кворум as-etcd-1/2/3 не собрался за 100 c (docker compose logs etcd1 etcd2 etcd3)"; exit 1; }
+echo "  etcd-контур ready (3/3 started)"
 
 # 1a) MinIO (S3 бэкапов, arch/19): healthy + стендовый bucket pgworker-backups
 #      (идемпотентный сид mc mb --ignore-existing; креды — стендовые дефолты;

@@ -23,7 +23,7 @@ PGW_PORT2="$(env_or_dotenv PGW_API_HOST_PORT2 8083)"
 # deploy/); env-оверрайд на случай нестандартного имени проекта.
 PGW1="${PGW1_CONTAINER:-deploy-pgworker-1}"
 MTLS="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem --cert $ROOT/deploy/tls/healthcheck.crt --key $ROOT/deploy/tls/healthcheck.key"
-ect() { docker compose exec -T etcd etcdctl --endpoints=http://localhost:2379 "$@"; }
+ect() { docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 "$@"; }
 keys() { ect get "$1" --prefix --keys-only 2>/dev/null | grep -c . || true; }
 wait_keys() { # <prefix> <want> <budget-sec> <label>
   local got=""

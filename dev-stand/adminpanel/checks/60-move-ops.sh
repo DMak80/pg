@@ -12,7 +12,7 @@ BASE="${ADMINPANEL_URL:-http://localhost:5050}"
 JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
 
 # Arrange: демо-сид жив (идемпотентен), панель отвечает, etcd под рукой.
-[ -n "$(docker compose exec -T etcd etcdctl get /clusters/demo/config --print-value-only 2>/dev/null)" ] \
+[ -n "$(docker compose exec -T etcd1 etcdctl get /clusters/demo/config --print-value-only 2>/dev/null)" ] \
   || { "$PWD/checks/05-seed.sh" pg; }
 for i in $(seq 1 60); do curl -fsS "$BASE/api/healthz" >/dev/null 2>&1 && break; sleep 1; done
 curl -fsS "$BASE/api/healthz" >/dev/null || { echo "❌ панель не отвечает: $BASE"; exit 1; }
@@ -24,7 +24,7 @@ api()  { curl -fsS -b "$JAR" "$BASE$1"; }
 # POST с телом, возвращающий тело ответа без -f (409 ProblemDetails читаемы).
 post() { curl -s -b "$JAR" -X POST "$BASE$1" -H 'Content-Type: application/json' -d "$2"; }
 code() { curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$@"; }
-ect()  { docker compose exec -T etcd etcdctl --endpoints=http://localhost:2379 "$@"; }
+ect()  { docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 "$@"; }
 now()  { date +%s; }
 
 # Сводная проверка тика панели (детали демо-кластера читаются).
