@@ -71,6 +71,13 @@ internal interface IClusterProcesses
     Task<Result<ProcessOutcome>> RestoreAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
 
+    /// <summary>Дрилл восстановимости (reliability t02, arch/19 §3.6): после
+    /// backup-restore, до repair; зовётся ВСЕГДА — Enabled=false / интервал 0 —
+    /// стоп-семантика в процессе (доводка активного дрилла и сноса контура,
+    /// новых запусков нет).</summary>
+    Task<Result<ProcessOutcome>> DrillAsync(
+        ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct);
+
     /// <summary>Per-cluster сверка S3↔etcd (t07, arch/19 §4): мусор full/&lt;id&gt;/
     /// живого шарда без etcd-ключа удаляется; после backups-retention (гигиена
     /// FAILED может оставить объекты), до backup-restore (гвард владельца).</summary>
@@ -99,7 +106,8 @@ internal sealed class ClusterProcesses(
     PgWorker.Backups.BackupVerifyProcess verifyProcess,
     PgWorker.Backups.RetentionProcess retention,
     PgWorker.Backups.Supervisor.BackupSupervisorProcess backupsSupervisor,
-    PgWorker.Backups.Process.RestoreProcess restore) : IClusterProcesses
+    PgWorker.Backups.Process.RestoreProcess restore,
+    PgWorker.Backups.Process.RestoreDrillProcess drill) : IClusterProcesses
 {
     public Task<Result<ProcessOutcome>> ProvisionAsync(ClusterSnapshot snap, CancellationToken ct)
         => provision.TickAsync(snap, ct);
@@ -174,6 +182,12 @@ internal sealed class ClusterProcesses(
     public Task<Result<ProcessOutcome>> RestoreAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
         => restore.TickAsync(snap, backups, ct);
+
+    // reliability t02 (arch/19 §3.6): дрилл шардов кластера — всегда, стоп-
+    // семантика внутри процесса.
+    public Task<Result<ProcessOutcome>> DrillAsync(
+        ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
+        => drill.TickAsync(snap, backups, ct);
 
     // t07 (arch/19 §4): бэкапы своего кластера — из аргумента тика (парс
     // префикса /pgworker/backups/ этим же тиком), как ретенция/restore.

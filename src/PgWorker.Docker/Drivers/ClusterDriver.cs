@@ -658,6 +658,10 @@ internal static class BackupJobsCleaner
     // t04: verify-джобы — второй класс чистки D1 (имя-канон BackupNames — дубль без ссылки).
     public const string VerifyContainerPrefix = "pgw-backup-verify-";
 
+    // reliability t02: drill-джобы (контейнер и volume одно имя — чистка тем же
+    // проходом D1 по префиксу).
+    public const string DrillContainerPrefix = "pgw-backup-drill-";
+
     public static async Task<Result> RemoveAsync(
         IEnumerable<IDockerEngine> engines, string cluster, CancellationToken ct)
     {
@@ -666,7 +670,7 @@ internal static class BackupJobsCleaner
         // volumePrefix ОБЯЗАН содержать кластер (pgw-backup-<C>-) — имя контейнера
         // без префикса даёт только <X>-<id>.
         foreach (var (prefix, sameVolumeName) in new[]
-                 { (JobContainerPrefix, false), (VerifyContainerPrefix, true) })
+                 { (JobContainerPrefix, false), (VerifyContainerPrefix, true), (DrillContainerPrefix, true) })
         {
             var containerPrefix = $"{prefix}{cluster}-";
             var volumePrefix = $"{JobVolumePrefix}{cluster}-"; // pgw-backup-<C>-

@@ -675,6 +675,14 @@ public class ReconcileLoopTests
             return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
         }
 
+        // reliability t02 (arch/19 §3.6): дрилл — после backup-restore, до repair.
+        public Task<Result<ProcessOutcome>> DrillAsync(
+            ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
+        {
+            using var _ = Track(snap.Config.Cluster, [], callName: "backup-drill");
+            return Task.FromResult(Result<ProcessOutcome>.Success(ProcessOutcome.Done));
+        }
+
         // t07 (arch/19 §4): per-cluster сверка S3↔etcd — между retention и restore.
         public Task<Result<ProcessOutcome>> SuperviseBackupsAsync(
             ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)

@@ -98,4 +98,28 @@ public class BackupJobsCleanerTests
         engine.RemovedVolumes.Should().BeEquivalentTo(
             ["pgw-backup-c1-shard1-20260911120000Z", "pgw-backup-verify-c1-shard1-20260911120000Z"]);
     }
+
+    // AAA (reliability t02, AC4/D1): drill-префикс в чистке — контейнер и volume
+    // одно имя (pgw-backup-drill-<C>-<X>-<id>), оба сносятся тем же проходом.
+    [Fact]
+    public async Task Remove_чищает_drill_джобы_сVolumes()
+    {
+        // Arrange — движок с drill-джобом кластера c1 и чужим drill-джобом c2.
+        var engine = new FakeCleanerEngine
+        {
+            Containers =
+            [
+                ("pgw-backup-drill-c1-shard1-20261001120000Z", "exited"),
+                ("pgw-backup-drill-c2-shard1-20261001130000Z", "running"), // чужой кластер
+            ],
+        };
+
+        // Act
+        var removed = await BackupJobsCleaner.RemoveAsync([engine], "c1", CancellationToken.None);
+
+        // Assert — свой drill-джоб снесён (контейнер+volume одно имя), чужой нет.
+        removed.IsSuccess.Should().BeTrue();
+        engine.RemovedContainers.Should().BeEquivalentTo(["pgw-backup-drill-c1-shard1-20261001120000Z"]);
+        engine.RemovedVolumes.Should().BeEquivalentTo(["pgw-backup-drill-c1-shard1-20261001120000Z"]);
+    }
 }
