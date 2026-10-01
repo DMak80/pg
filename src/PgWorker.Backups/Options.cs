@@ -51,7 +51,13 @@ public sealed record BackupsRuntimeOptions(
     long SupervisorOrphanTtlSec = 604800,
     int JobFullTimeoutSec = 21600,
     int JobVerifyTimeoutSec = 21600,
-    int JobRestoreTimeoutSec = 86400)
+    int JobRestoreTimeoutSec = 86400,
+    // reliability t02 (arch/19 §9, spec §3.2): дрилл восстановимости — дефолт
+    // периода (суток; policy.drill.interval_days кластера перекрывает; 0 —
+    // глобальное выключение новых запусков) и бюджет активного дрилла от
+    // started_unix → FAILED drill-timeout.
+    int DrillIntervalDays = 1,
+    int DrillTimeoutSec = 21600)
 {
     /// <summary>Endpoint S3 для env контейнера агента/джоба (t03, §7: адресация
     /// env, не строка команды; advertised-fallback).</summary>
