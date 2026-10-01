@@ -138,4 +138,125 @@ public class BackupsPolicyApiTests(PgApiFixture fixture)
         var stored = await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/pgworker/backups/nocluster/policy", ct);
         stored.Value.Should().BeNull();
     }
+
+    // ---- reliability t02: drill.interval_days ----
+
+    // AAA: тело с drill.interval_days=3 → 200, policy-ключ содержит
+    // "drill":{"interval_days":3} рядом с прежними секциями.
+    [Fact]
+    public async Task Policy_WithDrillInterval_AcceptedAndStored()
+    {
+        // Arrange — активный кластер + валидная политика с drill.
+        await ApiTestSeed.SeedActiveClusterAsync(Etcd, "bpd1", buckets: 4, shards: 2);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        var resp = await Client.PostAsJsonAsync("/api/clusters/bpd1/backups/policy", new
+        {
+            retention = new { days = 7, weeks = 4, months = 6 },
+            full_max_age_sec = 86400,
+            verify = new { on_create = true },
+            drill = new { interval_days = 3 },
+        }, ct);
+
+        // Assert — 200 и секция drill в ключе; парсер читает интервал.
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var stored = await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/pgworker/backups/bpd1/policy", ct);
+        stored.Value!.Value.Should().Contain("\"drill\":{\"interval_days\":3}");
+        var range = await Etcd.Gateway.RangeAsync(Etcd.Endpoint, "/pgworker/backups/bpd1/", ct);
+        var parsed = BackupsParser.Parse(range.Value, out var errors);
+        errors.Should().BeEmpty();
+        parsed.Value.Single().Policy!.DrillIntervalDays.Should().Be(3);
+    }
+
+    // AAA: drill в теле отсутствует → в записанной policy секции drill НЕТ
+    // (кластер на глобальном дефолте; замещение целиком сохраняется).
+    [Fact]
+    public async Task Policy_WithoutDrill_DrillSectionOmitted()
+    {
+        // Arrange — активный кластер; тело без drill (ранее ключ с drill был).
+        await ApiTestSeed.SeedActiveClusterAsync(Etcd, "bpd2", buckets: 4, shards: 2);
+        var ct = TestContext.Current.CancellationToken;
+        await Etcd.Gateway.PutAsync(Etcd.Endpoint, "/pgworker/backups/bpd2/policy",
+            """{"retention":{"days":7,"weeks":4,"months":6},"full_max_age_sec":86400,"drill":{"interval_days":5}}""",
+            null, ct);
+
+        // Act
+        var resp = await Client.PostAsJsonAsync("/api/clusters/bpd2/backups/policy", new
+        {
+            retention = new { days = 7, weeks = 4, months = 6 },
+            full_max_age_sec = 86400,
+        }, ct);
+
+        // Assert — секция drill ушла из ключа (замещение целиком).
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var stored = await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/pgworker/backups/bpd2/policy", ct);
+        stored.Value!.Value.Should().NotContain("drill");
+    }
+
+    // AAA: interval_days=-1 / 3651 → 400 с "drill.interval_days" в перечне.
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(3651)]
+    public async Task Policy_DrillOutOfRange_Rejected400(int intervalDays)
+    {
+        // Arrange — активный кластер.
+        await ApiTestSeed.SeedActiveClusterAsync(Etcd, "bpd3", buckets: 4, shards: 2);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        var resp = await Client.PostAsJsonAsync("/api/clusters/bpd3/backups/policy", new
+        {
+            drill = new { interval_days = intervalDays },
+        }, ct);
+
+        // Assert — 400 и поле в перечне; ключ не пишется.
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var problem = await resp.Content.ReadFromJsonAsync<JsonElement>(ct);
+        problem.GetProperty("errors").TryGetProperty("drill.interval_days", out _).Should().BeTrue();
+        var stored = await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/pgworker/backups/bpd3/policy", ct);
+        stored.Value.Should().BeNull();
+    }
+
+    // AAA: interval_days=0 — валиден (выключение дрилов кластера).
+    [Fact]
+    public async Task Policy_DrillZero_Valid()
+    {
+        // Arrange — активный кластер.
+        await ApiTestSeed.SeedActiveClusterAsync(Etcd, "bpd4", buckets: 4, shards: 2);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        var resp = await Client.PostAsJsonAsync("/api/clusters/bpd4/backups/policy", new
+        {
+            drill = new { interval_days = 0 },
+        }, ct);
+
+        // Assert — 200 и drill.interval_days=0 в ключе.
+        resp.StatusCode.Should().Be(HttpStatusCode.OK);
+        var stored = await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/pgworker/backups/bpd4/policy", ct);
+        stored.Value!.Value.Should().Contain("\"drill\":{\"interval_days\":0}");
+    }
+
+    // AAA: мисматч остального тела по-прежнему 400 (замещение целиком не
+    // ослаблено появлением drill-секции).
+    [Fact]
+    public async Task Policy_BadRetentionWithDrill_Rejected400()
+    {
+        // Arrange — валидный drill + невалидная retention в одном теле.
+        await ApiTestSeed.SeedActiveClusterAsync(Etcd, "bpd5", buckets: 4, shards: 2);
+        var ct = TestContext.Current.CancellationToken;
+
+        // Act
+        var resp = await Client.PostAsJsonAsync("/api/clusters/bpd5/backups/policy", new
+        {
+            retention = new { days = 400 },
+            drill = new { interval_days = 2 },
+        }, ct);
+
+        // Assert — 400 по retention.days; drill-ключа в etcd нет.
+        resp.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        var stored = await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/pgworker/backups/bpd5/policy", ct);
+        stored.Value.Should().BeNull();
+    }
 }
