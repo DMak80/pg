@@ -1267,7 +1267,124 @@ docker network prune -f
     - «Сделано в рамках трека» — добавить строку: `| t09-ha-etcd-canon | — (мерж-коммит t09) | деплой/стенд: etcd-контур 3 узла одним кластером (deploy/etcd + as-etcd-1/2/3, Endpoints__0..2 всем потребителям, master-lease/эмулятор перебирают endpoints) — SPOF контроль-плейна снят; чек 43 (stop узла — запись/healthz/master-ключ живы) + docker-E2E HaEtcd (kill узла посреди add-shard) доказывают отказоустойчивость |`.
     - Сводка «R»: из «Открытые разрывы» убрать «etcd одиночный — SPOF контроль-плейна (`t09`…)».
     - Таблица «Деплой-уровень»: «etcd один endpoint (`t09`)» → «etcd 3-узловой HA-контур (`t09`)».
-- [ ] **Step 8.5: мерж-коммит** (по явному приказу пользователя «мерж»: diff на ревью → мерж → roadmap-правки 8.4 в ТОМ ЖЕ коммите → push → автоочистка worktree по базовым правилам).
+- [ ] **Step 8.5: мерж-коммит** (по явному приказу пользователя «мерж»: diff на ревью → мерж → roadmap-правки 8.4 в ТОМ ЖЕ коммите → push → автоочистка worktree по базовым правилам). **ПРЕДУСЛОВИЕ (код-ревью Фазы 7):** выполняется только после Tasks 9–10 ниже — правки по findings ревью (инструкция `deploy/etcd` + AGENTS.md) и полная docker-E2E серия на изменённой общей фикстуре `E2eEnvironment`.
+
+---
+
+### Task 9 (код-ревью Фазы 7): инструкция запуска `deploy/etcd` через `--env-file` + актуализация AGENTS.md
+
+**Вход (предусловие):** Tasks 1–8.4 исполнены (8 коммитов ветки); findings 1–2 код-ревью Фазы 7.
+
+**Files:**
+- Modify: `deploy/etcd/docker-compose.yml` (шапка-инструкция, строки 1–7; сам сервис НЕ меняется)
+- Modify: `docs/runbook.md` (раздел «HA-etcd контур контроль-плейна», блок «Подъём (прод)», ~строка 161)
+- Modify: `arch/04-deploy-etcd.md` (§8, первый абзац рядом со ссылкой на рецепт, ~строка 196)
+- Modify: `AGENTS.md` (~строка 35 — правило «etcd-кластер ВСЕГДА ТОЛЬКО ОДИН»)
+
+**Interfaces:**
+- Consumes: фактический сервис `deploy/etcd/docker-compose.yml` (Task 2: `image: ${ETCD_IMAGE}`, `volumes: ${DATA_DIR}:/data`, `command: --name=${NODE_NAME} …` — интерполяция YAML-переменных, `env_file: etcd.env` — переменные внутрь контейнера).
+- Produces: единая команда запуска `docker compose --env-file etcd.env up -d` во всех трёх местах (compose-шапка, runbook, arch/04 §8).
+
+**Выход:** рецепт узла поднимается по собственной инструкции (интерполяция `${…}` в YAML — из `--env-file`, без экспорта переменных в shell); живое правило AGENTS.md описывает фактический контур стенда.
+
+**Spec:** §4 п.1 (рецепт узла «копируется на каждый из 3 хостов»), §12.2; отступлений от spec нет — правка доставки рецепта.
+
+- [x] **Step 9.1: `deploy/etcd/docker-compose.yml` — шапка-инструкция.** Строку `#   docker compose up -d        # первый старт — все 3 узла …` заменить на:
+
+```yaml
+#   docker compose --env-file etcd.env up -d   # первый старт — все 3 узла в пределах election-timeout
+```
+
+и сразу после блока инструкции добавить пояснение (2 строки комментария):
+
+```yaml
+# ВАЖНО: env_file передаёт переменные ТОЛЬКО внутрь контейнера; интерполяция
+# ${…} в этом YAML (image/volumes/command) идёт из --env-file — поэтому запуск
+# всегда с --env-file etcd.env (без него up упадёт на пустом image).
+```
+
+Секцию `services:` НЕ трогать.
+
+- [x] **Step 9.2: `docs/runbook.md` — «Подъём (прод)»** (строка ~161): «Первый старт: `INITIAL_CLUSTER_STATE=new` на всех трёх, `docker compose up -d` в пределах election-timeout…» → «…`docker compose --env-file etcd.env up -d` в пределах election-timeout…» (переменные узла интерполируются в YAML из env-файла).
+
+- [x] **Step 9.3: `arch/04-deploy-etcd.md` §8** (~строка 196, абзац «Рецепт узла: `deploy/etcd/{docker-compose.yml,etcd.env.example}` (зона оператора)»): дополнить «; запуск — `docker compose --env-file etcd.env up -d` (интерполяция переменных узла в YAML — из env-файла, не из shell)».
+
+- [x] **Step 9.4: `AGENTS.md` ~строка 35** — правило «etcd-кластер ВСЕГДА ТОЛЬКО ОДИН»: «(`as-etcd` стенда, публикация+advertise `host.docker.internal:2379`)» → «(`as-etcd-1/2/3` стенда — 3-узловой кластер одним контуром, публикации 2379/2381/2383)». Правка текста живого правила под фактический стенд (код не затрагивает, НЕ-цели §1.3 не нарушает).
+
+- [x] **Step 9.5: Проверка:**
+
+```bash
+# 1) Команда ИЗ ИНСТРУКЦИИ валидна БЕЗ экспорта переменных в shell.
+#    Сначала подкладываем etcd.env (паттерн Task 2 Step 2.6): сервис объявляет
+#    env_file: etcd.env, резолвится от директории compose-файла — без файла
+#    config падает «env file … not found» (сообщение НЕ содержит «variable
+#    is not set» — счётчик без этого был бы вакуумным гейтом).
+#    Доказательство closing finding 1: код выхода config = 0 (OK-config)
+#    И ноль warnings о неустановленных переменных.
+#    (Третья строка в блоке ревьюера содержала опечатку — env-файл передан
+#    флагом -f как compose-файл; здесь исправлено на --env-file, замысел
+#    команды сохранён: счётчик warnings от той же config-команды.)
+cp deploy/etcd/etcd.env.example deploy/etcd/etcd.env
+docker compose -f deploy/etcd/docker-compose.yml --env-file deploy/etcd/etcd.env config >/dev/null && echo OK-config
+docker compose -f deploy/etcd/docker-compose.yml --env-file deploy/etcd/etcd.env config 2>&1 | grep -ci "variable is not set"   # → 0
+rm deploy/etcd/etcd.env
+# 2) Инструкция с --env-file — во всех трёх местах:
+grep -rn -- "--env-file etcd.env up" deploy/etcd/docker-compose.yml docs/runbook.md arch/04-deploy-etcd.md
+# 3) AGENTS.md описывает фактический контур; старой формулировки нет:
+grep -n "as-etcd-1/2/3" AGENTS.md
+! grep -n '`as-etcd` стенда' AGENTS.md    # → пусто
+```
+
+Ожидание: п.1 — `OK-config` напечатан И счётчик 0 (только тогда finding 1 код-ревью Фазы 7 считается доказанно закрытым); п.2 — строка найдена в трёх файлах; п.3 — новая строка есть, старой нет.
+
+- [x] **Step 9.6: Commit:**
+
+```bash
+git add deploy/etcd/docker-compose.yml docs/runbook.md arch/04-deploy-etcd.md AGENTS.md
+git commit -m "fix(t09): рецепт deploy/etcd запускается через --env-file etcd.env (env_file не интерполирует YAML-переменные — up без него падал на пустом image; инструкция в шапке compose/runbook/arch/04 §8) + AGENTS.md: контур стенда as-etcd-1/2/3 (код-ревью Фазы 7)"
+```
+
+---
+
+### Task 10 (код-ревью Фазы 7): полная docker-E2E серия на изменённой общей фикстуре — финальный гейт перед Step 8.5
+
+**Вход (предусловие):** Task 9 закоммичен; стенд разобран (`bash dev-stand/adminpanel/checks/90-down.sh -v`), сети зачищены (`docker network prune -f`), docker-демон свободен от чужих серий.
+
+**Files:** изменений файлов нет — прогон (обоснование: Task 6 изменил ОБЩИЙ путь старта etcd-окружения `E2eEnvironment` для ВСЕХ E2E-сценариев, включая `haEtcd=false`: снята testcontainers wait-стратегия одиночного etcd, готовность — `WaitForAsync` /health + leader≠0; мерж-гейт Task 8 прогнал только `Scale_AddEmptyShard|HaEtcd|MasterLeaseFailover`, остальные ~15 docker-E2E сценариев (E2eBackup/Restore/Move/SecondInstance/Supervisor/Strict/Rotate/Retention/Pgtune и др.) на изменённой фикстуре не гонялись; канон AGENTS.md «полный прогон E2eFixture — при изменении provisioning/portalloc/moves-процессов» — изменение общего пути фикстуры именно такой случай).
+
+**Interfaces:**
+- Consumes: `src/tests/PgWorker.IntegrationTests` целиком (E2e-сценарии + Docker/Etcd-серии, вкл. `HaEtcd` и `MasterLeaseFailover`); автосборка Release фикстурой (`EnsureAppDllAsync`, БЕЗ `PGW_TEST_E2E_NOBUILD`).
+
+**Выход:** полная docker-E2E серия зелёная на свежем Release — доказано, что изменение общего пути `E2eEnvironment` не регрессировало остальные сценарии; готовность к Step 8.5 (мерж по приказу).
+
+**Spec:** §8 (E2E-окружение), §12.6–12.7; `docs/e2e-isolation.md`/`docs/e2e-launch.md` (телеметрия/чистота); AGENTS.md (полный прогон E2eFixture).
+
+- [ ] **Step 10.1: предусловия-зачистка** (серия тяжёлая и живёт на общем хосте — чужих контуров быть не должно):
+
+```bash
+bash dev-stand/adminpanel/checks/90-down.sh -v 2>/dev/null || true
+docker ps -a --format '{{.Names}}' | grep 'pgw-' | awk '{print $1}' | xargs -r docker rm -f
+docker network prune -f
+```
+
+- [ ] **Step 10.2: полная docker-E2E серия** (одна команда, без фильтров, без NOBUILD — фикстура сама собирает свежий Release, урок t09):
+
+```bash
+DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/PgWorker.IntegrationTests -c Release
+```
+
+Ожидание: все тесты зелёные (весь `PgWorker.IntegrationTests`: E2e-сценарии на изменённой фикстуре — haEtcd=false-путь, Docker-серии вкл. `MasterLeaseFailover`, Etcd-контракты).
+
+**Правила при красной серии (docs/e2e-launch.md):** упавший сценарий помечен `MarkFailed()` — его контейнеры ОСТАНОВЛЕНЫ, не удалены; логи сняты в `/tmp/pgw-e2e-artifacts-<guid>/`. Разбор по логам БЕЗ перезапуска тестов; повторный прогон — только после полного анализа причин и согласия пользователя. Красная серия = СТОП (Step 8.5 недостижим до фикс-коммита и повторной полной серии).
+
+- [ ] **Step 10.3: зачистка после финальной строки серии** (дождаться завершения команды Step 10.2):
+
+```bash
+docker ps -a --format '{{.Names}}' | grep 'pgw-' | awk '{print $1}' | xargs -r docker rm -f
+docker network prune -f
+```
+
+- [ ] **Step 10.4: готовность к мержу.** Только при зелёной Step 10.2: все предусловия Step 8.5 выполнены (Tasks 1–10); мерж — по явному приказу пользователя («мерж» → Step 8.5).
 
 ---
 
@@ -1287,3 +1404,9 @@ docker network prune -f
 6. Task 5: зафиксировано отступление от spec §7 п.2 — запись тестового ключа etcdctl'ом (у панели нет API произвольной записи), живость панели/api — healthz/`/api/clusters/demo`.
 7. Task 7: добавлен шаг проверки (Step 7.3, grep раздела/строки образа).
 8. Task 6 Steps 6.7/6.8: формулировка уточнена — чистота наследуется teardown-ассертом `E2eEnvironment.DisposeAsync`, ручной гейт — страховка AGENTS.md против осиротевших сетей движка.
+
+## Правки по код-ревью Фазы 7 (добавлены после исполнения Tasks 1–8.4)
+
+1. [impl/major → **Task 9**]: рецепт `deploy/etcd` не поднимался по собственной инструкции — `env_file` передаёт переменные ТОЛЬКО в контейнер и не интерполирует `${…}` в YAML; команда запуска во всех трёх местах (шапка compose, runbook «Подъём (прод)», arch/04 §8) — `docker compose --env-file etcd.env up -d` (минимальный вариант ревью; реорганизация на `environment:` не выбрана). Контроль (Step 9.5 п.1, уточнён кругом 3 ревью Фазы 4): cp example→etcd.env (иначе config падает «env file … not found» — сообщение не содержит «variable is not set», счётчик был вакуумным) → config с проверкой кода выхода (`OK-config`) → счётчик warnings «variable is not set» = 0 → rm копии; закрытие finding 1 доказано только парой «OK-config + 0».
+2. [impl/minor → **Task 9**]: AGENTS.md ~строка 35 — живое правило описывало несуществующий контейнер `as-etcd`; обновлено на фактический контур `as-etcd-1/2/3` (3-узловой кластер, публикации 2379/2381/2383).
+3. [plan/minor → **Task 10**]: Task 6 изменил ОБЩИЙ путь старта etcd-окружения для всех E2E-сценариев (снята wait-стратегия одиночного etcd), а мерж-гейт прогонял только 3 фильтрованных теста — добавлена обязательная ПОЛНАЯ docker-E2E серия `src/tests/PgWorker.IntegrationTests` (Step 10.2, PGW_TEST_DOCKER=1, Release, без NOBUILD) с зачисткой и правилами телеметрии; Step 8.5 получил явное предусловие «после Tasks 9–10».
