@@ -158,10 +158,11 @@ advertised-правила потребителей, кворум-семанти�
 - **Подъём (прод)**: скопировать `deploy/etcd/{docker-compose.yml,etcd.env}` на
   3 РАЗНЫХ docker-хоста; в `etcd.env` каждого — свой `NODE_NAME/NODE_IP`
   (`PEERS`/`CLUSTER_TOKEN` одинаковые; образ — `192.168.0.1:5000/quay.io/coreos/etcd:v3.5.21`).
-  Первый старт: `INITIAL_CLUSTER_STATE=new` на всех трёх, `docker compose up -d`
-  в пределах election-timeout друг от друга; после сбора кворума перевести в
-  `existing` на всех узлах (arch/04 §5). Воркеры/панель получают список
-  `*_ETCD_ENDPOINT_0..2` / `AdminPanel__Etcd__Endpoints__0..2`.
+  Первый старт: `INITIAL_CLUSTER_STATE=new` на всех трёх,
+  `docker compose --env-file etcd.env up -d` (переменные узла интерполируются в
+  YAML из env-файла) в пределах election-timeout друг от друга; после сбора
+  кворума перевести в `existing` на всех узлах (arch/04 §5). Воркеры/панель
+  получают список `*_ETCD_ENDPOINT_0..2` / `AdminPanel__Etcd__Endpoints__0..2`.
 - **Стендовое зеркало**: дев-стенд всегда поднимает тот же 3-узловой контур,
   что рецепт `deploy/etcd` (`as-etcd-1/2/3`, публикации 2379/2381/2383,
   env `ETCD{1,2,3}_HOST_PORT`).

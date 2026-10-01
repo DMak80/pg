@@ -193,7 +193,9 @@ docker compose up -d      # применить (контейнер переза�
 создаваемых нод, мастер-ключи) живёт в ОТДЕЛЬНОМ от PG-нод etcd-контуре.
 Отказ единственного etcd = заморозка надзора, панели и DCS (характеристика R,
 reliability-report) — контур обязан быть 3-узловым. Рецепт узла:
-`deploy/etcd/{docker-compose.yml,etcd.env.example}` (зона оператора).
+`deploy/etcd/{docker-compose.yml,etcd.env.example}` (зона оператора);
+запуск — `docker compose --env-file etcd.env up -d` (интерполяция переменных
+узла в YAML — из env-файла, не из shell).
 
 1. **Топология**: 3 узла, static bootstrap (`--initial-cluster`, токен один),
    кворум 2/3, ПО ОДНОМУ узлу на docker-хосте — хосты РАЗНЫЕ (анти-аффинити:

@@ -3,8 +3,11 @@
 #   sudo mkdir -p /opt/etcd && cd /opt/etcd
 #   # скопировать сюда docker-compose.yml + etcd.env (из etcd.env.example,
 #   # ОТРЕДАКТИРОВАТЬ NODE_NAME/NODE_IP под узел)
-#   docker compose up -d        # первый старт — все 3 узла в пределах election-timeout
+#   docker compose --env-file etcd.env up -d   # первый старт — все 3 узла в пределах election-timeout
 # Проверка контура и перевод INITIAL_CLUSTER_STATE=existing — arch/04 §4/§5/§8.
+# ВАЖНО: env_file передаёт переменные ТОЛЬКО внутрь контейнера; интерполяция
+# ${…} в этом YAML (image/volumes/command) идёт из --env-file — поэтому запуск
+# всегда с --env-file etcd.env (без него up упадёт на пустом image).
 services:
   etcd:
     image: ${ETCD_IMAGE}
