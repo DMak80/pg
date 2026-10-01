@@ -256,12 +256,14 @@ function DrillCard({ drill, cluster }: { drill: BackupDrillBadgeDto | null; clus
   const [drillDays, setDrillDays] = useState<number | ''>(1);
   const initialized = useRef(false);
   useEffect(() => {
-    // policy нет (fresh-кластер) → форма остаётся на дефолте 1 — том же,
-    // что уходит в save при policy=null (полное замещение фиксирует значение).
-    if (initialized.current) return;
+    // Инициализация — когда политика известна ИЛИ загрузка завершилась (F3):
+    // на pending-прогоне policy ещё null — не застываем на дефолте.
+    // policy нет (fresh-кластер) → дефолт 1 — тот же, что уходит в save
+    // при policy=null (полное замещение фиксирует значение).
+    if (initialized.current || (policy === null && storage.isPending)) return;
     initialized.current = true;
     setDrillDays(policy?.drillIntervalDays ?? 1);
-  }, [policy]);
+  }, [policy, storage.isPending]);
 
   const save = useMutation({
     mutationFn: () =>
