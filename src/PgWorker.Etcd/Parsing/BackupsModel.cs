@@ -63,9 +63,13 @@ public enum RestoreStatus
 /// <param name="VerifyOnCreate">Проверять полный сразу после создания (t04).</param>
 /// <param name="VerifyIntervalSec">Период перепроверки оставшихся полных, c
 /// (t04); null — не задан в policy-ключе → дефолт подставляет потребитель.</param>
+/// <param name="DrillIntervalDays">Период дрилов шардов кластера, суток
+/// (reliability t02, arch/19 §4); 0 — дрилл кластера выключен; null — поля
+/// нет в policy-ключе → дефолт конфига подставляет потребитель.</param>
 public sealed record BackupPolicy(
     int RetentionDays, int RetentionWeeks, int RetentionMonths,
-    long FullMaxAgeSec, bool VerifyOnCreate, long? VerifyIntervalSec = null);
+    long FullMaxAgeSec, bool VerifyOnCreate, long? VerifyIntervalSec = null,
+    int? DrillIntervalDays = null);
 
 /// <summary>Результат проверки полного: состояние + время последней проверки;
 /// Error — причина провала (t04, только для FAILED).</summary>
@@ -127,14 +131,39 @@ public sealed record RestoreOperationState(
     public string? SystemId { get; init; }
 }
 
+/// <summary>Состояние дрилла восстановимости шарда (ключ
+/// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/drill, reliability t02, arch/19 §4).</summary>
+public enum DrillStatus
+{
+    Running,
+    Succeeded,
+    Failed,
+}
+
+/// <summary>Последний/текущий дрилл шарда: state/id/backup_id/started_unix
+/// обязательны; Phase — downloading|recovering|cleaning (снятие фазы у
+/// терминального = контур подтверждённо снесён); ключ перезаписывается каждым
+/// новым дриллом (история — фазы журнала воркера, arch/19 §4).</summary>
+public sealed record DrillState(
+    string Id,
+    DrillStatus State,
+    string BackupId,
+    long StartedUnix,
+    long? FinishedUnix = null,
+    string? Phase = null,
+    string? RestoredToLsn = null,
+    string? Error = null);
+
 /// <summary>Бэкапы одного шарда: полные (сортированы по Id) + WAL-поток
 /// (null — ключа нет: агент не поднимался, t03) + restore-операции (t05,
-/// сортированы по Id; пусто — restore-ключей нет). Опциональный ctor-параметр
-/// Restores сохраняет обратную совместимость вызовов new(full, wal) (t02+).</summary>
+/// сортированы по Id; пусто — restore-ключей нет) + последний дрилл (t02-
+/// restore-drill; null — ключа нет). Опциональный ctor-параметр Restores
+/// сохраняет обратную совместимость вызовов new(full, wal) (t02+).</summary>
 public sealed record ShardBackups(
     IReadOnlyList<FullBackupState> Full,
     WalStreamState? Wal,
-    IReadOnlyList<RestoreOperationState>? Restores = null)
+    IReadOnlyList<RestoreOperationState>? Restores = null,
+    DrillState? Drill = null)
 {
     // Не-null инвариант для гвардов t05: пусто, если restore-ключей нет.
     public IReadOnlyList<RestoreOperationState> Restores { get; init; } = Restores ?? [];
