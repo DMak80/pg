@@ -344,6 +344,33 @@ services:
       KafkaWorker__Api__EnableSeedEndpoint: "true"
     depends_on: [etcd]
 
+  # Второй инстанс KafkaWorker (t07, arch/16 §2.1): тот же образ/env/сеть,
+  # compose-DNS advertise; БЕЗ хост-публикации порта (панель и Prometheus
+  # ходят из сети стенда; хост-порт 8082 остаётся у первого для curl-чеков).
+  kafkaworker-2:
+    build:
+      context: ../..
+      dockerfile: docker/KafkaWorker.Dockerfile
+    image: kafkaworker:dev
+    container_name: as-kafkaworker-2
+    restart: unless-stopped
+    profiles: ["kafka"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - kfw-snapshots:/snapshots
+      - ../../deploy/tls:/tls:ro
+    extra_hosts:
+      - "local:host-gateway"
+    environment:
+      KafkaWorker__Etcd__Endpoints__0: http://etcd:2379
+      KafkaWorker__AdvertisedClientHost: host.docker.internal
+      KafkaWorker__Api__AdvertiseUrl: https://kafkaworker-2:8080
+      KFW_API_TLS_CERT_PATH: /tls/server.crt
+      KFW_API_TLS_KEY_PATH: /tls/server.key
+      KFW_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
+      KafkaWorker__Api__EnableSeedEndpoint: "true"
+    depends_on: [etcd]
+
   # Живой ValkeyWorker (t03; arch/04 §2.4): профиль valkey — только явно.
   # Управляет docker-хостом через сокет; контейнеры нод vwk-* поднимает на
   # хосте стенда (portalloc 17000–17999: на одном docker-хосте один valkey-контур).
@@ -369,6 +396,32 @@ services:
       ValkeyWorker__Etcd__Endpoints__0: http://etcd:2379
       ValkeyWorker__AdvertisedClientHost: host.docker.internal
       ValkeyWorker__Api__AdvertiseUrl: https://valkeyworker:8080
+      VWK_API_TLS_CERT_PATH: /tls/server.crt
+      VWK_API_TLS_KEY_PATH: /tls/server.key
+      VWK_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
+      ValkeyWorker__Api__EnableSeedEndpoint: "true"
+    depends_on: [etcd]
+
+  # Второй инстанс ValkeyWorker (t07, arch/21 §2): симметрично kafkaworker-2 —
+  # compose-DNS advertise, без хост-публикации; клэймы/portalloc разрулит etcd.
+  valkeyworker-2:
+    build:
+      context: ../..
+      dockerfile: docker/ValkeyWorker.Dockerfile
+    image: valkeyworker:dev
+    container_name: as-valkeyworker-2
+    restart: unless-stopped
+    profiles: ["valkey"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - vw-snapshots:/snapshots
+      - ../../deploy/tls:/tls:ro
+    extra_hosts:
+      - "local:host-gateway"
+    environment:
+      ValkeyWorker__Etcd__Endpoints__0: http://etcd:2379
+      ValkeyWorker__AdvertisedClientHost: host.docker.internal
+      ValkeyWorker__Api__AdvertiseUrl: https://valkeyworker-2:8080
       VWK_API_TLS_CERT_PATH: /tls/server.crt
       VWK_API_TLS_KEY_PATH: /tls/server.key
       VWK_API_TLS_CLIENT_CA_PATH: /tls/ca.pem

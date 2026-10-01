@@ -19,7 +19,9 @@ echo ">>> чек 65: мониторинг (профиль metrics)"
 # 0) гарантия живости воркеров (ревью Ф4-3): 50-kafka-api.sh штатно останавливает
 #    as-kafkaworker финальным шагом; deploy-pgworker переживает серию чеков, но
 #    проверяем оба — чек обязан проходить после ЛЮБОЙ предыстории серии.
-docker start as-kafkaworker >/dev/null 2>&1 || true
+# t07: оба инстанса kafkaworker (50-й останавливает обоих; таргет kafkaworker-2
+# обязан быть жив к шагу «все scrape-джобы up»)
+docker start as-kafkaworker as-kafkaworker-2 >/dev/null 2>&1 || true
 for i in $(seq 1 60); do $MTLS https://localhost:8082/healthz >/dev/null 2>&1 && break; sleep 1; done
 $MTLS https://localhost:8082/healthz >/dev/null \
   || { echo "❌ kafkaworker не ожил за 60 c на :8082 (mTLS; docker compose logs kafkaworker)"; exit 1; }
@@ -28,7 +30,7 @@ $MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null \
   || { echo "❌ pgworker не жив на :8080 (mTLS) — поднимите стенд: checks/00-up.sh (deploy-pgworker-1, docker logs deploy-pgworker-1)"; exit 1; }
 # 0.1) гарантия живости valkeyworker (t05): up -d создаёт/стартует (частичная
 #      предыстория), healthz — mTLS-парой healthcheck ИЗНУТРИ контейнера.
-docker compose --profile valkey up -d valkeyworker >/dev/null 2>&1 || true
+docker compose --profile valkey up -d valkeyworker valkeyworker-2 >/dev/null 2>&1 || true
 for i in $(seq 1 60); do
   docker compose exec -T valkeyworker curl -fsS -m 3 \
     --cacert /tls/ca.pem --cert /tls/healthcheck.crt --key /tls/healthcheck.key \
@@ -38,6 +40,15 @@ docker compose exec -T valkeyworker curl -fsS -m 3 \
   --cacert /tls/ca.pem --cert /tls/healthcheck.crt --key /tls/healthcheck.key \
   https://localhost:8080/healthz >/dev/null \
   || { echo "❌ valkeyworker не ожил за 60 c (:8080/healthz mTLS изнутри; docker compose logs valkeyworker)"; exit 1; }
+for i in $(seq 1 60); do
+  docker compose exec -T valkeyworker-2 curl -fsS -m 3 \
+    --cacert /tls/ca.pem --cert /tls/healthcheck.crt --key /tls/healthcheck.key \
+    https://localhost:8080/healthz >/dev/null 2>&1 && break; sleep 1
+done
+docker compose exec -T valkeyworker-2 curl -fsS -m 3 \
+  --cacert /tls/ca.pem --cert /tls/healthcheck.crt --key /tls/healthcheck.key \
+  https://localhost:8080/healthz >/dev/null \
+  || { echo "❌ valkeyworker-2 не ожил за 60 c (:8080/healthz mTLS изнутри; docker compose logs valkeyworker-2)"; exit 1; }
 echo "  воркеры живы (pgworker :8080, kafkaworker :8082, valkeyworker in-compose)"
 
 # 1) /metrics трёх сервисов (хост-публикации: deploy 8080, стенд 8082/5050).

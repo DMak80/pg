@@ -62,8 +62,10 @@ wait_request_gone() { # bucket [timeout_sec] — auto-finalize доработа�
 full=0
 if $PG_MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1; then
   full=1
-  echo "  (full) пауза PgWorker (deploy-pgworker-1) до нахерачивания"
-  docker stop -t 3 deploy-pgworker-1 >/dev/null
+  # t07: паузим ОБА инстанса — репарация идёт у держателя клэйма, живой
+  # второй гасил бы статусы быстрее тика панели (гонка Assert 2)
+  echo "  (full) пауза PgWorker (deploy-pgworker-1 + deploy-pgworker-2-1) до нахерачивания"
+  docker stop -t 3 deploy-pgworker-1 deploy-pgworker-2-1 >/dev/null
 fi
 now=$(date +%s); past=$((now - 3600))
 ect put /clusters/demo/buckets/status/bucket_3 \
@@ -88,7 +90,8 @@ if [ "$full" != 1 ]; then
   exit 0
 fi
 echo "  (full) старт PgWorker — репарация гасит алерты ремонтом"
-docker start deploy-pgworker-1 >/dev/null
+# t07: оба инстанса (пауза была у обоих)
+docker start deploy-pgworker-1 deploy-pgworker-2-1 >/dev/null
 for i in $(seq 1 60); do $PG_MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
 $PG_MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 \
   || { echo "❌ PgWorker не ожил после старта (:${PGW_API_HOST_PORT:-8080}/healthz)"; exit 1; }
@@ -161,7 +164,8 @@ echo "✓ alerts/repair-сценарий зелёный (появление → 
 #    Quick-стенд без pgworker (нет :8080/healthz) — шаг пропускается.
 if $PG_MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1; then
   ect get /pgworker/api/ --prefix --keys-only | grep -q . || { echo "❌ нет /pgworker/api/*"; exit 1; }
-  ( cd ../../deploy && docker compose stop pgworker >/dev/null 2>&1 )
+  # t07: оба инстанса — иначе второй держит ключ /pgworker/api/ (ни 503, ни алерта)
+  ( cd ../../deploy && docker compose stop pgworker pgworker-2 >/dev/null 2>&1 )
   code="$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR" -X POST "$BASE/api/clusters" \
     -H 'Content-Type: application/json' -d '{"name":"probeapi"}')"
   [ "$code" = 503 ] || { echo "❌ мутация при мёртвом воркере = $code (ожидался 503)"; exit 1; }
@@ -174,7 +178,7 @@ if $PG_MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1
   curl -fsS -b "$JAR" "$BASE/api/alerts" | jq -e 'any(.[]; .kind=="worker-api-unreachable" and .target=="pgworker")' >/dev/null \
     || { echo "❌ worker-api-unreachable не появился"; exit 1; }
   echo "  worker-api-unreachable -> pgworker (critical) появился"
-  ( cd ../../deploy && docker compose start pgworker >/dev/null 2>&1 )
+  ( cd ../../deploy && docker compose start pgworker pgworker-2 >/dev/null 2>&1 )
   for i in $(seq 1 30); do $PG_MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
   # Гашение: ключ /pgworker/api/ восстановился (keepalive ≤15 c) + 2 тика панели → алерт исчез.
   for i in $(seq 1 20); do

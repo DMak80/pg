@@ -1,161 +1,217 @@
+# Вторые инстансы воркеров (t07, arch/14 §2): SPOF надзора устранён дефолтом —
+# по два контейнера каждого воркера, координацию разбирает etcd (клэймы
+# мигрируют ≤ TTL 15 c). Отличие второго сервиса ТОЛЬКО в публикации порта и
+# AdvertiseUrl: env/volumes/build — общие анкоры (merge keys). Тома снапшотов
+# и TLS — ОБЩИЕ на оба инстанса (лидерство снапшотов мигрирует между ними).
 # Запуск PgWorker (spec §5.4, §10): docker.sock (plain на одном хосте /
 # swarm manager), том снапшотов P12, секреты per-install из env (Д7).
 # etcd запускается отдельно (dev-stand/compose.yaml или свой кластер).
+x-pgworker-env: &pgworker-env
+  # Обязательные секреты установки (Д7): не в git, не в etcd.
+  PGW_PG_SUPERUSER_PASSWORD: ${PGW_PG_SUPERUSER_PASSWORD:?задайте секрет}
+  PGW_PG_STANDBY_PASSWORD: ${PGW_PG_STANDBY_PASSWORD:?задайте секрет}
+  PGW_BUCKET_ADMIN_PASSWORD: ${PGW_BUCKET_ADMIN_PASSWORD:?задайте секрет}
+  PGW_BUCKET_MOVER_PASSWORD: ${PGW_BUCKET_MOVER_PASSWORD:?задайте секрет}
+  # Конфигурация — env-оверрайды appsettings (пример: endpoints etcd).
+  PgWorker__Etcd__Endpoints__0: ${PGW_ETCD_ENDPOINT:-http://localhost:2379}
+  # Advertised-имя docker-хоста в portalloc/dsn (advertised-правило arch/16,
+  # симметрия KafkaWorker:AdvertisedClientHost): адреса нод в etcd обязаны
+  # быть резолвимы клиентами — панель пробирует host.docker.internal:15xxx/
+  # 18xxx; внутреннее имя "local" резолвится только контейнерами воркеров
+  # (extra_hosts), панель видела DNS-таймауты проб. Пусто (прод/мульти-хост)
+  # → имя docker-хоста как есть.
+  PgWorker__Docker__AdvertisedHost: ${PGW_ADVERTISED_HOST:-host.docker.internal}
+  # HTTP API воркера (arch/14 §1.1, t03): mTLS-only грань — advertise
+  # https://, ключи-серты из /tls (per-install пакет kfw-install-ca);
+  # демо-сид POST /api/seed/demo за флагом (стенд; прод — false).
+  # X-Api-Key удалён (t03) — аутентификация транспортная (mTLS).
+  # AdvertiseUrl ЗАДАЁТСЯ В СЕРВИСАХ (уникален per инстанс, t07).
+  PGW_API_TLS_CERT_PATH: /tls/pgserver.crt
+  PGW_API_TLS_KEY_PATH: /tls/pgserver.key
+  PGW_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
+  PgWorker__Api__EnableSeedEndpoint: ${PGW_API_ENABLE_SEED:-false}
+  # Подсистема бэкапов (arch/19, t01): каркас — Enabled=false default;
+  # S3-креды per-install только env (PGW_BACKUP_S3_*, deploy/.env.example).
+  # Пустые значения валидны при Enabled=false (валидация старта воркера).
+  PgWorker__Backups__Enabled: ${PGW_BACKUPS_ENABLED:-false}
+  PgWorker__Backups__S3__Endpoint: ${PGW_BACKUP_S3_ENDPOINT:-}
+  PgWorker__Backups__S3__Region: ${PGW_BACKUP_S3_REGION:-}
+  PgWorker__Backups__S3__Bucket: ${PGW_BACKUP_S3_BUCKET:-}
+  PgWorker__Backups__S3__AccessKey: ${PGW_BACKUP_S3_ACCESS_KEY:-}
+  PgWorker__Backups__S3__SecretKey: ${PGW_BACKUP_S3_SECRET_KEY:-}
+  # S3 из контейнеров агентов/джобов (single-host: host.docker.internal; пусто
+  # → ENDPOINT как есть — паттерн Etcd:AdvertisedEndpoints, t03).
+  PgWorker__Backups__S3__AdvertisedEndpoint: ${PGW_BACKUP_S3_ADVERTISED_ENDPOINT:-}
+  # Образ джоба полного бэкапа (t02): тег = дефолт Job.Image; сборка —
+  # build-сервис pgworker-backup ниже (compose build) или 00-up.sh.
+  PgWorker__Backups__Job__Image: ${PGW_BACKUP_JOB_IMAGE:-pgworker-backup:dev}
+  # PGTune-параметры PG-нод (arch/14 §2.1/§8): postgresql.conf ноды
+  # рассчитывается при СОЗДАНИИ контейнера; память/CPU — из etcd-заявок
+  # request_{cpu,mem} ноды (НЕ env), остальное — эти константы; канон P3
+  # (wal_level=logical, walsenders) перекрывает расчёт; doorman =
+  # Connections − 5 (P15). DbType=desktop запрещён (fail-fast старта).
+  PgWorker__Pgtune__DbVersion: ${PGW_PGTUNE_DB_VERSION:-18}
+  PgWorker__Pgtune__DbType: ${PGW_PGTUNE_DB_TYPE:-oltp}
+  PgWorker__Pgtune__HdType: ${PGW_PGTUNE_HD_TYPE:-ssd}
+  PgWorker__Pgtune__DbSize: ${PGW_PGTUNE_DB_SIZE:-mid_ram}
+  PgWorker__Pgtune__Connections: ${PGW_PGTUNE_CONNECTIONS:-60}
+  # ExcludeParams — env-массив задаётся ЦЕЛИКОМ (__0/__1 заменяют appsettings);
+  # io_method/io_workers выключены, пока Spilo-18 не проверен на liburing.
+  PgWorker__Pgtune__ExcludeParams__0: ${PGW_PGTUNE_EXCLUDE_0:-io_method}
+  PgWorker__Pgtune__ExcludeParams__1: ${PGW_PGTUNE_EXCLUDE_1:-io_workers}
+
+x-pgworker-base: &pgworker-base
+  build:
+    context: ..
+    dockerfile: docker/PgWorker.Dockerfile
+  image: pgworker:dev
+  restart: unless-stopped
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+    - pgw-snapshots:/snapshots
+    # mTLS HTTP API (t03, arch/14 §1.1): per-install пакет kfw-install-ca
+    # (bash deploy/tls/gen.sh; наполнение volume — dev-stand 00-up.sh).
+    - pgw-api-tls:/tls:ro
+    # RBAC вместо сокета наружу (arch/14 §2.2.1, НЕ включено: текущие стенды
+    # работают root'ом контейнера): выделенный пользователь + группа docker
+    # host-машины — раскомментировать и указать gid (getent group docker):
+    #   user: "10001:10001"
+    #   group_add: ["<gid docker>"]
+    # и заменить bind сокета на tcp://…:2376 (mTLS, deploy/tls/gen-docker.sh).
+  extra_hosts:
+    # Ноды несут docker-хост "local" (appsettings Docker:Hosts) и пробируются
+    # по этому имени; из контейнера резолвим его в docker-хост
+    # (на Docker Desktop = host.docker.internal, на Linux — шлюз bridge).
+    - "local:host-gateway"
+    # advertised-хост записей portalloc/dsn — резолвим и его (Linux-паритет;
+    # Docker Desktop резолвит сам, extra_hosts безвреден).
+    - "host.docker.internal:host-gateway"
+
+# KafkaWorker (arch/16 §2.1/§8): docker.sock, том снапшотов P12.
+# Env-секретов per-install нет (единственный секрет — per-cluster
+# app_password в etcd). AdvertiseUrl — в сервисах (уникален per инстанс).
+x-kafkaworker-env: &kafkaworker-env
+  KafkaWorker__Etcd__Endpoints__0: ${KFW_ETCD_ENDPOINT:-http://localhost:2379}
+  # Advertised-хост CLIENT-listener → endpoints в etcd резолвимы клиентами
+  # (arch/16 advertised-правило; null допустим только когда имя docker-хоста
+  # резолвимо клиентами само по себе).
+  KafkaWorker__AdvertisedClientHost: ${KFW_ADVERTISED_CLIENT_HOST:-host.docker.internal}
+  # HTTP API воркера (arch/16 §1.1): advertise-URL https:// в /kafkaworker/api/<id>,
+  # mTLS-серты из /tls, демо-сид за флагом (стенд; прод — false). KFW_API_KEY
+  # удалён (t03) — грань mTLS-only.
+  KFW_API_TLS_CERT_PATH: /tls/server.crt
+  KFW_API_TLS_KEY_PATH: /tls/server.key
+  KFW_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
+  KafkaWorker__Api__EnableSeedEndpoint: ${KFW_API_ENABLE_SEED:-false}
+
+x-kafkaworker-base: &kafkaworker-base
+  build:
+    context: ..
+    dockerfile: docker/KafkaWorker.Dockerfile
+  image: kafkaworker:dev
+  restart: unless-stopped
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+    - kfw-snapshots:/snapshots
+    # mTLS HTTP API (t03, arch/16 §1.1): per-install TLS-пакет из deploy/tls
+    # (генерация — bash deploy/tls/gen.sh; наполнение volume — 00-up.sh стенда).
+    - kfw-api-tls:/tls:ro
+  extra_hosts:
+    # docker-хост "local" (appsettings KafkaWorker:Docker:Hosts) — из контейнера
+    # резолвим его в шлюз docker-хоста (прецедент pgworker выше).
+    - "local:host-gateway"
+
+# ValkeyWorker (arch/21 §2/§8): docker.sock, том снапшотов P12. Хост-порт API
+# 8082 — продолжение ряда pg 8080 / kfw 8081. Томов данных нод НЕТ
+# (persistence off — томов у домена не бывает). AdvertiseUrl — в сервисах.
+x-valkeyworker-env: &valkeyworker-env
+  ValkeyWorker__Etcd__Endpoints__0: ${VWK_ETCD_ENDPOINT:-http://localhost:2379}
+  # Advertised-хост клиентского порта нод → endpoints в etcd резолвимы
+  # клиентами (arch/21 §2 advertised-правило).
+  ValkeyWorker__AdvertisedClientHost: ${VWK_ADVERTISED_CLIENT_HOST:-host.docker.internal}
+  # HTTP API воркера (arch/21 §1.1): advertise-URL https:// в /valkeyworker/api/<id>,
+  # mTLS-серты из /tls, демо-сид за флагом (стенд; прод — false).
+  VWK_API_TLS_CERT_PATH: /tls/server.crt
+  VWK_API_TLS_KEY_PATH: /tls/server.key
+  VWK_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
+  ValkeyWorker__Api__EnableSeedEndpoint: ${VWK_API_ENABLE_SEED:-false}
+
+x-valkeyworker-base: &valkeyworker-base
+  build:
+    context: ..
+    dockerfile: docker/ValkeyWorker.Dockerfile
+  image: valkeyworker:dev
+  restart: unless-stopped
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+    - vw-snapshots:/snapshots
+    # mTLS HTTP API (arch/21 §1.1): per-install TLS-пакет из deploy/tls
+    # (генерация — bash deploy/tls/gen.sh; наполнение volume — 00-up.sh стенда).
+    - vw-api-tls:/tls:ro
+  extra_hosts:
+    # docker-хост "local" (appsettings Docker:Hosts) + advertised-хост нод —
+    # из контейнера резолвим их в шлюз docker-хоста.
+    - "local:host-gateway"
+    - "host.docker.internal:host-gateway"
+
 services:
   pgworker:
-    build:
-      context: ..
-      dockerfile: docker/PgWorker.Dockerfile
-    image: pgworker:dev
-    restart: unless-stopped
+    <<: *pgworker-base
     ports:
       # Хост-публикация API параметризуется (коллизии на хосте, прецедент
       # METRICS_*_PORT стенда); внутри контейнера канонический 8080.
       - "${PGW_API_HOST_PORT:-8080}:8080"
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - pgw-snapshots:/snapshots
-      # mTLS HTTP API (t03, arch/14 §1.1): per-install пакет kfw-install-ca
-      # (bash deploy/tls/gen.sh; наполнение volume — dev-stand 00-up.sh).
-      - pgw-api-tls:/tls:ro
-      # RBAC вместо сокета наружу (arch/14 §2.2.1, НЕ включено: текущие стенды
-      # работают root'ом контейнера): выделенный пользователь + группа docker
-      # host-машины — раскомментировать и указать gid (getent group docker):
-      #   user: "10001:10001"
-      #   group_add: ["<gid docker>"]
-      # и заменить bind сокета на tcp://…:2376 (mTLS, deploy/tls/gen-docker.sh).
-    extra_hosts:
-      # Ноды несут docker-хост "local" (appsettings Docker:Hosts) и пробируются
-      # по этому имени; из контейнера резолвим его в docker-хост
-      # (на Docker Desktop = host.docker.internal, на Linux — шлюз bridge).
-      - "local:host-gateway"
-      # advertised-хост записей portalloc/dsn — резолвим и его (Linux-паритет;
-      # Docker Desktop резолвит сам, extra_hosts безвреден).
-      - "host.docker.internal:host-gateway"
     environment:
-      # Обязательные секреты установки (Д7): не в git, не в etcd.
-      PGW_PG_SUPERUSER_PASSWORD: ${PGW_PG_SUPERUSER_PASSWORD:?задайте секрет}
-      PGW_PG_STANDBY_PASSWORD: ${PGW_PG_STANDBY_PASSWORD:?задайте секрет}
-      PGW_BUCKET_ADMIN_PASSWORD: ${PGW_BUCKET_ADMIN_PASSWORD:?задайте секрет}
-      PGW_BUCKET_MOVER_PASSWORD: ${PGW_BUCKET_MOVER_PASSWORD:?задайте секрет}
-      # Конфигурация — env-оверрайды appsettings (пример: endpoints etcd).
-      PgWorker__Etcd__Endpoints__0: ${PGW_ETCD_ENDPOINT:-http://localhost:2379}
-      # Advertised-имя docker-хоста в portalloc/dsn (advertised-правило arch/16,
-      # симметрия KafkaWorker:AdvertisedClientHost): адреса нод в etcd обязаны
-      # быть резолвимы клиентами — панель пробирует host.docker.internal:15xxx/
-      # 18xxx; внутреннее имя "local" резолвится только контейнерами воркеров
-      # (extra_hosts), панель видела DNS-таймауты проб. Пусто (прод/мульти-хост)
-      # → имя docker-хоста как есть.
-      PgWorker__Docker__AdvertisedHost: ${PGW_ADVERTISED_HOST:-host.docker.internal}
-      # HTTP API воркера (arch/14 §1.1, t03): mTLS-only грань — advertise
-      # https://, ключи-серты из /tls (per-install пакет kfw-install-ca);
-      # демо-сид POST /api/seed/demo за флагом (стенд; прод — false).
-      # X-Api-Key удалён (t03) — аутентификация транспортная (mTLS).
+      <<: *pgworker-env
       PgWorker__Api__AdvertiseUrl: ${PGW_API_ADVERTISE_URL:-https://host.docker.internal:${PGW_API_HOST_PORT:-8080}}
-      PGW_API_TLS_CERT_PATH: /tls/pgserver.crt
-      PGW_API_TLS_KEY_PATH: /tls/pgserver.key
-      PGW_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
-      PgWorker__Api__EnableSeedEndpoint: ${PGW_API_ENABLE_SEED:-false}
-      # Подсистема бэкапов (arch/19, t01): каркас — Enabled=false default;
-      # S3-креды per-install только env (PGW_BACKUP_S3_*, deploy/.env.example).
-      # Пустые значения валидны при Enabled=false (валидация старта воркера).
-      PgWorker__Backups__Enabled: ${PGW_BACKUPS_ENABLED:-false}
-      PgWorker__Backups__S3__Endpoint: ${PGW_BACKUP_S3_ENDPOINT:-}
-      PgWorker__Backups__S3__Region: ${PGW_BACKUP_S3_REGION:-}
-      PgWorker__Backups__S3__Bucket: ${PGW_BACKUP_S3_BUCKET:-}
-      PgWorker__Backups__S3__AccessKey: ${PGW_BACKUP_S3_ACCESS_KEY:-}
-      PgWorker__Backups__S3__SecretKey: ${PGW_BACKUP_S3_SECRET_KEY:-}
-      # S3 из контейнеров агентов/джобов (single-host: host.docker.internal; пусто
-      # → ENDPOINT как есть — паттерн Etcd:AdvertisedEndpoints, t03).
-      PgWorker__Backups__S3__AdvertisedEndpoint: ${PGW_BACKUP_S3_ADVERTISED_ENDPOINT:-}
-      # Образ джоба полного бэкапа (t02): тег = дефолт Job.Image; сборка —
-      # build-сервис pgworker-backup ниже (compose build) или 00-up.sh.
-      PgWorker__Backups__Job__Image: ${PGW_BACKUP_JOB_IMAGE:-pgworker-backup:dev}
-      # PGTune-параметры PG-нод (arch/14 §2.1/§8): postgresql.conf ноды
-      # рассчитывается при СОЗДАНИИ контейнера; память/CPU — из etcd-заявок
-      # request_{cpu,mem} ноды (НЕ env), остальное — эти константы; канон P3
-      # (wal_level=logical, walsenders) перекрывает расчёт; doorman =
-      # Connections − 5 (P15). DbType=desktop запрещён (fail-fast старта).
-      PgWorker__Pgtune__DbVersion: ${PGW_PGTUNE_DB_VERSION:-18}
-      PgWorker__Pgtune__DbType: ${PGW_PGTUNE_DB_TYPE:-oltp}
-      PgWorker__Pgtune__HdType: ${PGW_PGTUNE_HD_TYPE:-ssd}
-      PgWorker__Pgtune__DbSize: ${PGW_PGTUNE_DB_SIZE:-mid_ram}
-      PgWorker__Pgtune__Connections: ${PGW_PGTUNE_CONNECTIONS:-60}
-      # ExcludeParams — env-массив задаётся ЦЕЛИКОМ (__0/__1 заменяют appsettings);
-      # io_method/io_workers выключены, пока Spilo-18 не проверен на liburing.
-      PgWorker__Pgtune__ExcludeParams__0: ${PGW_PGTUNE_EXCLUDE_0:-io_method}
-      PgWorker__Pgtune__ExcludeParams__1: ${PGW_PGTUNE_EXCLUDE_1:-io_workers}
 
-  # KafkaWorker (arch/16 §2.1/§8): docker.sock, том снапшотов P12.
-  # Env-секретов per-install нет (единственный секрет — per-cluster
-  # app_password в etcd).
+  # Второй инстанс PgWorker (t07, arch/14 §2): тот же образ/секреты/тома;
+  # отличается ТОЛЬКО порт публикации (ряд 8080→8083) и AdvertiseUrl —
+  # advertise следует за портом автоматически (compose-дефолт, отдельная
+  # env не нужна). container_name НЕ задаём (compose: deploy-pgworker-2-1).
+  pgworker-2:
+    <<: *pgworker-base
+    ports:
+      - "${PGW_API_HOST_PORT2:-8083}:8080"
+    environment:
+      <<: *pgworker-env
+      PgWorker__Api__AdvertiseUrl: https://host.docker.internal:${PGW_API_HOST_PORT2:-8083}
+
   kafkaworker:
-    build:
-      context: ..
-      dockerfile: docker/KafkaWorker.Dockerfile
-    image: kafkaworker:dev
-    restart: unless-stopped
+    <<: *kafkaworker-base
     ports:
       - "8081:8080" # /healthz (8081 — не конфликтует с pgworker)
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - kfw-snapshots:/snapshots
-      # mTLS HTTP API (t03, arch/16 §1.1): per-install TLS-пакет из deploy/tls
-      # (генерация — bash deploy/tls/gen.sh; наполнение volume — 00-up.sh стенда).
-      - kfw-api-tls:/tls:ro
-    extra_hosts:
-      # docker-хост "local" (appsettings Docker:Hosts) — из контейнера резолвим
-      # его в шлюз docker-хоста (прецедент pgworker выше).
-      - "local:host-gateway"
     environment:
-      KafkaWorker__Etcd__Endpoints__0: ${KFW_ETCD_ENDPOINT:-http://localhost:2379}
-      # Advertised-хост CLIENT-listener → endpoints в etcd резолвимы клиентами
-      # (arch/16 advertised-правило; null допустим только когда имя docker-хоста
-      # резолвимо клиентами само по себе).
-      KafkaWorker__AdvertisedClientHost: ${KFW_ADVERTISED_CLIENT_HOST:-host.docker.internal}
-      # HTTP API воркера (arch/16 §1.1): advertise-URL https:// в /kafkaworker/api/<id>,
-      # mTLS-серты из /tls, демо-сид за флагом (стенд; прод — false). KFW_API_KEY
-      # удалён (t03) — грань mTLS-only.
+      <<: *kafkaworker-env
       KafkaWorker__Api__AdvertiseUrl: ${KFW_API_ADVERTISE_URL:-https://host.docker.internal:8081}
-      KFW_API_TLS_CERT_PATH: /tls/server.crt
-      KFW_API_TLS_KEY_PATH: /tls/server.key
-      KFW_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
-      KafkaWorker__Api__EnableSeedEndpoint: ${KFW_API_ENABLE_SEED:-false}
 
-  # ValkeyWorker (arch/21 §2/§8): docker.sock, том снапшотов P12. Хост-порт API
-  # 8082 — продолжение ряда pg 8080 / kfw 8081. Томов данных нод НЕТ
-  # (persistence off — томов у домена не бывает).
+  # Второй инстанс KafkaWorker (t07, arch/16 §2.1): ряд 8081→8084; advertise
+  # следует за портом (compose-дефолт). Тома kfw-snapshots/kfw-api-tls — общие.
+  kafkaworker-2:
+    <<: *kafkaworker-base
+    ports:
+      - "${KFW_API_HOST_PORT2:-8084}:8080"
+    environment:
+      <<: *kafkaworker-env
+      KafkaWorker__Api__AdvertiseUrl: https://host.docker.internal:${KFW_API_HOST_PORT2:-8084}
+
   valkeyworker:
-    build:
-      context: ..
-      dockerfile: docker/ValkeyWorker.Dockerfile
-    image: valkeyworker:dev
-    restart: unless-stopped
+    <<: *valkeyworker-base
     ports:
       - "${VWK_API_HOST_PORT:-8082}:8080" # /healthz (ряд pg 8080 / kfw 8081 / vwk 8082)
-    volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - vw-snapshots:/snapshots
-      # mTLS HTTP API (arch/21 §1.1): per-install TLS-пакет из deploy/tls
-      # (генерация — bash deploy/tls/gen.sh; наполнение volume — 00-up.sh стенда).
-      - vw-api-tls:/tls:ro
-    extra_hosts:
-      # docker-хост "local" (appsettings Docker:Hosts) + advertised-хост нод —
-      # из контейнера резолвим их в шлюз docker-хоста.
-      - "local:host-gateway"
-      - "host.docker.internal:host-gateway"
     environment:
-      ValkeyWorker__Etcd__Endpoints__0: ${VWK_ETCD_ENDPOINT:-http://localhost:2379}
-      # Advertised-хост клиентского порта нод → endpoints в etcd резолвимы
-      # клиентами (arch/21 §2 advertised-правило).
-      ValkeyWorker__AdvertisedClientHost: ${VWK_ADVERTISED_CLIENT_HOST:-host.docker.internal}
-      # HTTP API воркера (arch/21 §1.1): advertise-URL https:// в /valkeyworker/api/<id>,
-      # mTLS-серты из /tls, демо-сид за флагом (стенд; прод — false).
+      <<: *valkeyworker-env
       ValkeyWorker__Api__AdvertiseUrl: ${VWK_API_ADVERTISE_URL:-https://host.docker.internal:8082}
-      VWK_API_TLS_CERT_PATH: /tls/server.crt
-      VWK_API_TLS_KEY_PATH: /tls/server.key
-      VWK_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
-      ValkeyWorker__Api__EnableSeedEndpoint: ${VWK_API_ENABLE_SEED:-false}
+
+  # Второй инстанс ValkeyWorker (t07, arch/21 §2): ряд 8082→8085; advertise
+  # следует за портом (compose-дефолт). Тома vw-snapshots/vw-api-tls — общие.
+  valkeyworker-2:
+    <<: *valkeyworker-base
+    ports:
+      - "${VWK_API_HOST_PORT2:-8085}:8080"
+    environment:
+      <<: *valkeyworker-env
+      ValkeyWorker__Api__AdvertiseUrl: https://host.docker.internal:${VWK_API_HOST_PORT2:-8085}
 
   # Образ джоба полного бэкапа (t02, arch/19 §2): только сборка — сервиса нет,
   # джобы запускает PgWorker как ephemeral-контейнеры. Профиль build не даёт
