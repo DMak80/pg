@@ -239,6 +239,8 @@ public sealed class RestoreDrillProcess(
             if (foundEngine is not null)
             {
                 var foundList = await foundEngine.ListContainersAsync(prefix, all: true, ct);
+                if (!foundList.IsSuccess)
+                    return; // transient — найденный хост перестал отвечать, тик повторит
                 container = foundList.Value.FirstOrDefault(c =>
                     c.Names.Any(n => n.TrimStart('/') == containerName));
             }
