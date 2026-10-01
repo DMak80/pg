@@ -162,10 +162,10 @@ ReconcileLoop (§3.5). Шаги тика:
      SUCCEEDED (+`finished_unix`, `restored_to_lsn`); иначе FAILED (+`error`
      из result-JSON или `exit <N>`);
    - контейнера нет у RUNNING-ключа (list пуст, transient-отказ list
-     исключён) ⇒ takeover-аномалия: возраст < бюджета — transient-ожидание
-     (джоб мог быть создан тиком, чей create подтверждён, а start/list
-     моргнул), иначе исход FAILED `drill-vanished` (образец t02 «RUNNING без
-     контейнера → FAILED»);
+     исключён) ⇒ идемпотентная ДОСОЗДАЧА джоба по имени, пока возраст
+     RUNNING-ключа < бюджета (create/start прошедшего тика не дошёл —
+     transient; образец t02 «supervision по детерминированному имени»);
+     старше бюджета — исход FAILED `drill-vanished`;
    - **снос после терминального исхода** (все пути выше сходятся сюда):
      journal `drill-cleanup/<X>/<id>` ДО манипуляций ⇒ в ключе терминальный
      `state` + `finished_unix` + `phase:"cleaning"` ⇒ kill+rm контейнера
