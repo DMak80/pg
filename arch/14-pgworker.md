@@ -177,6 +177,7 @@ docker-restart-политики (не deploy-канон) процесс оста
 | `POST /api/clusters/{c}/secrets/rotate` | заявка ротации per-cluster секретов (app + bucket_admin + mover) | 02 §9.8 |
 | `PUT /api/clusters/{c}/config` | мутация per-cluster опции `synchronous_mode_strict` | 02 §9.10: RMW-txn по mod_revision; гварды — кластер Active |
 | `POST /api/clusters/{c}/shards/{x}/restore` | заявка восстановления шарда из бэкапа (PITR latest/target_time, source-override; `confirm` = имя шарда) | пишет статус `/pgworker/backups/<C>/<X>/restore/<id>` сам (клэйм `<C>`; arch/19 §3.5): гварды — кластер Active, шард заявлен, максимум один активный restore на шард |
+| `POST /api/clusters/{c}/backups/policy` | приём per-cluster политики бэкапов (t06; замещение целиком — arch/19 §4); тело дополнительно принимает `"drill":{"interval_days":int}` (reliability t02; валидация [0..3650]; поле отсутствует → секция `drill` в записываемую policy не кладётся — кластер живёт на глобальном дефолте; замещение целиком сохраняется) | пишет ключ `/pgworker/backups/<C>/policy` сам (клэйм `<C>`; arch/19 §4) |
 | `POST /api/ha/{scope}/nodes/{node}/recreate` | маркеры `TO_RECREATE`+`recreate=soft\|hard` | как §9.6-подобный маркер (02 §9, 03 §2): guards по `/service/<scope>/members` |
 | `POST /api/restart` | graceful self-stop инстанса (перезапуск контейнера — docker-политикой) | etcd НЕ пишет: 202 → `StopApplication` (§1.1 выше); применение серверного серта из `/workers/api_tls/pgworker` — при следующем старте |
 | `POST /api/seed/demo` | стендовый демо-сид pg-контура | §1.1.1 |

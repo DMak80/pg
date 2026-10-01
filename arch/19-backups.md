@@ -346,6 +346,100 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   поднимается из бэкапов с проверкой данных (E2E-гейт + ручной прогон
   dev-станда).
 
+## 3.6. Дрилл восстановимости (reliability t02)
+
+- **Роль**: плановое НЕдеструктивное доказательство восстановимости —
+  периодический автоматический прогон DR-пути restore-заявки (§3.5) на
+  бэкапе живого шарда: тот же кандидат (новейший COMPLETED-полный) и та же
+  валидация (манифест существует, WalChain от `wal_start_segment`
+  непрерывна), что у реального DR-restore — дрилл доказывает ровно тот
+  путь, который сработает при аварии. Прод-шард не трогается вовсе; S3 —
+  только чтение (list + скачивание). Контроль — «старт + выход из
+  recovery»: postgres джоба стартовал на восстановленном PGDATA и вышел из
+  recovery (`pg_is_in_recovery() = false`), `restored_to_lsn` фиксируется
+  в статус и result-джоба; SQL-проверок данных НЕТ (целостность файлов —
+  verify §5; сверка счётчиков с продом не имеет смысла — прод уходит
+  вперёд точки бэкапа).
+- **RestoreDrillProcess** — тиковая машина под клэймом `<C>` (Op
+  `backup-drill`; врезка ReconcileLoop после backup-restore, до repair;
+  вызов ВСЕГДА — стоп-семантика ниже): супервиз активного дрилла/доводка
+  сноса, затем отбор кандидата, валидация, запуск. Бюджет активного
+  дрилла — `Drill:TimeoutSec` от `started_unix` → FAILED
+  `drill-timeout: <age> с > TimeoutSec` (kill+rm — в сносе); бюджет
+  наката WAL внутри джоба — общий `Restore:RecoveryTimeoutSec`
+  (REJOINING-фаз у дрилла нет — после джоба сразу терминальный исход).
+  Takeover: всё состояние — в etcd-ключе (§4) + детерминированные имена
+  контейнера/volume — новый инстанс продолжает супервиз до исхода;
+  RUNNING-ключ без контейнера при успешном list: возраст < бюджета —
+  transient-ожидание (create подтверждён, start/list моргнул), старше —
+  FAILED `drill-vanished` (снос: volume).
+- **Drill-джоб**: ephemeral контейнер `pgw-backup-drill-<C>-<X>-<id>`
+  (id — как у полных, §2), образ `pgworker-backup` (§2), inline-команда
+  от воркера — механика restore-джоба §3.5 ЦЕЛИКОМ (один bash-скрипт
+  `RestoreJobCommand` на restore и дрилл: скачивание `full/<id>/` в свой
+  volume, restore_command через mc, recovery latest — БЕЗ target,
+  локальный postgres unix-socket `listen_addresses=''`, поллинг
+  `pg_is_in_recovery()`, снятие `pg_current_wal_lsn()`, stop,
+  result-JSON `{"ok":true,"restored_to_lsn":"…"}` / `{"ok":false,"error":…}`
+  — инцидентные правки restore-механики автоматически достаются дриллу;
+  лишнее джобу поле `system_id` результата воркер дрилла игнорирует).
+  Фазы джоба — `downloading|recovering` (stdout-маркеры §3.5). Изоляция
+  ПО ПОСТРОЕНИЮ: СВОЙ ephemeral volume `pgw-backup-drill-<C>-<X>-<id>`
+  (точка монтирования `/drill`, PGDATA `/drill/pgroot/data`), `Ports: []`,
+  `Network: null` (unix-socket), рестарт `no`, лимиты `Agent { Cpu, Mem }`
+  (§6), `ExtraHosts` advertised-S3; docker-хост — первая нода шарда из
+  portalloc (как restore-джоб). Нод в кластере дрилл НЕ создаёт,
+  HA-scope и synchronous-режим мастера (Patroni) не затрагивает,
+  per-cluster сети не входит.
+- **Отбор кандидата** — чистая функция: один шард за проход кластера —
+  наименее свежий по последнему терминальному дриллу (MIN
+  `finished_unix`; «никогда» = 0 — обслуживается первым; tie-break по
+  имени — детерминизм). Гварды: `interval_days ≤ 0` — дрилл кластера
+  выключен; незавершённый дрилл кластера (RUNNING либо терминальный с
+  `phase=cleaning`) блокирует новые — один активный дрилл на кластер;
+  активная restore-заявка владеет жизненным циклом шарда (§3.5) — шард
+  не кандидат; `ToRemove`-шард и шард без COMPLETED-полных — не
+  кандидаты. Готовность: `now − (finished_unix последнего терминального
+  дрилла шарда)` ≥ `interval_days×86400`; ключа дрилла нет вообще —
+  готов немедленно (первый дрилл). Интервал per-cluster:
+  `policy.drill.interval_days` (§4) ?? дефолт конфига
+  `Drill:IntervalDays` (§9).
+- **Валидация и запуск**: валидация кандидата — та же, что у
+  restore-заявки §3.5 own-source (новейший COMPLETED ⇒ манифест
+  `full/<id>/backup_manifest` существует (S3) ⇒ `wal_start_segment`
+  (etcd-статус либо `backup_label`) ⇒ WalChain непрерывна); S3-отказ —
+  transient (статус не трогаем, тик повторит). Отказ валидации
+  (манифеста нет / дыра цепочки) → FAILED-дрилл БЕЗ запуска джоба:
+  `started_unix`/`finished_unix` поставлены, `error` — причина (границы
+  дыры от WalChain); контейнера не было — снос не нужен, ключ сразу
+  чистый терминальный итог — честный исход «восстановимость не
+  доказана». Запуск — journal-before-manipulations: put ключа RUNNING
+  до create ⇒ create+start контейнера; отказ create/start — transient
+  (ключ остаётся RUNNING — следующий тик создаст по имени
+  идемпотентно).
+- **Снос контура — доводимая фаза** (при любом исходе; все терминальные
+  пути сходятся): journal `drill-cleanup/<X>/<id>` ДО rm ⇒ put ключа:
+  терминальный `state` + `finished_unix` + `phase:"cleaning"` ⇒ rm
+  контейнера (force) и rm volume (одно имя, §4; у vanished-пути
+  контейнера уже нет — чистится volume) ⇒ подтверждение (повторный list
+  по имени пуст) ⇒ `phase` снимается — ключ = чистый терминальный итог,
+  journal `drill-done/<X>/<id>` / `drill-failed/<X>/<id>`. transient
+  docker rm ⇒ ключ остаётся с `cleaning`, следующий тик повторяет
+  (идемпотентно); краш-рекавери: тик находит терминальный ключ с
+  `cleaning` ⇒ доводит rm по детерминированным именам — снос переживает
+  рестарт воркера. Осиротевших контейнеров/сетей дрилл не оставляет
+  (сетей не создаёт вовсе).
+- **Стоп-семантика**: `Backups:Enabled=false` (или интервал `0`) — новых
+  запусков нет; идущий дрилл доводится до терминального исхода и снос
+  доводится (`cleaning` до подтверждённого удаления — иначе выключение
+  оставляло бы осиротевший exited-контейнер).
+- **Deprovisioning**: D1 — префикс `pgw-backup-drill-<C>-` в чистке
+  джобов бэкапов (контейнер и volume — одно имя, сносятся тем же
+  проходом); D2 — ключ `drill` уходит с per-cluster префиксом
+  `/pgworker/backups/<C>/`. Идущий дрилл не ломается демонтажом шарда
+  (дрилл без нод — S3 + docker-хост + свой volume); remove-shard при
+  активной restore — дрилл шарда не стартует (гвард отбора).
+
 ## 4. Контракт etcd `/pgworker/backups/*`
 
 - Пишет ТОЛЬКО PgWorker под клэймом `<C>` (операции бэкапов — под тем же
@@ -355,7 +449,7 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
 
 | Ключ | Значение |
 |---|---|
-| `/pgworker/backups/<C>/policy` | per-cluster политика: `{"retention":{"days":7,"weeks":4,"months":6},"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":604800}}`; пишет воркер (приём через API — t06; до того — ручная запись ключа); отсутствует → дефолт `PgWorker:Backups:Policy` |
+| `/pgworker/backups/<C>/policy` | per-cluster политика: `{"retention":{"days":7,"weeks":4,"months":6},"full_max_age_sec":86400,"verify":{"on_create":true,"interval_sec":604800},"drill":{"interval_days":N}}` (reliability t02, §3.6: `interval_days` — период дрилов шардов кластера в сутках, `N=0` — дрилл кластера выключен; поле отсутствует → дефолт конфига `PgWorker:Backups:Drill:IntervalDays`); пишет воркер (приём через API — t06; до того — ручная запись ключа); отсутствует → дефолт `PgWorker:Backups:Policy` |
 | `/pgworker/backups/<C>/<X>/full/<id>` | статус полного: `{"state":"PLANNED\|RUNNING\|UPLOADING\|COMPLETED\|FAILED\|DELETING","node":"<n>","role":"replica\|master","started_unix","finished_unix"?,"wal_start_segment"?,"size_bytes"?,"error"?,"verify":{"state":"PENDING\|OK\|FAILED","checked_unix"?,"error"?}}`; `wal_start_segment` заполняется с фазы UPLOADING (из `backup_label` джоба; для рано упавших FAILED может отсутствовать — до этого неизвестен); `verify` — результат проверки t04 (§5): PENDING в т.ч. «идёт», `error` — причина невалидности (checksums/цепочка с границами) |
 | `/pgworker/backups/<C>/<X>/wal` | состояние WAL-потока шарда: `{"state":"ACTIVE\|DEGRADED\|STOPPED\|BROKEN","slot":"<slot>","master_node","chain_start_segment","last_received_segment","last_uploaded_segment","last_uploaded_unix","lag_segments"?,"error"?}` |
 | `/pgworker/backups/storage` | занятость хранилища установки (t06): `{"used_bytes":…,"quota_bytes"?,"used_percent"?,"state":"OK\|WARN\|CRIT","updated_unix":…}`; ключ ГЛОБАЛЬНЫЙ (вне per-cluster префиксов, D2-чистки не касается); пишет ретенционный проход (см. «Ретенция» ниже) — любой живой клэйм пишет одно и то же свежее значение (идемпотентно); `quota_bytes` не задан (0) → пишется только `used_bytes`, `state=OK` |
@@ -363,6 +457,7 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
 | `/pgworker/backups/orphan-holds/<C>/<X>` | hold-флаг сироты (reliability t04): `{"set_unix":T,"set_by":"operator\|panel"}`; ключ ГЛОБАЛЬНЫЙ per-префиксный (D2-чистки не касается); ставит/снимает API воркера (`POST`/`DELETE /api/backups/orphans/{C}/{X}/hold`, arch/14 §1.1) — атомарные put/del одного ключа, без read-modify-write (нет гонок ни между инстансами API, ни с лидер-проходом sweeper'а — реестр тот не пишет); гварды API: префикс — OBSERVED-сирота реестра (нет → 404; DELETING → 409 — доводку уже начатого удаления не спасти); повторный hold идемпотентен (put поверх); снятие hold (unhold) → сирота возвращается под общие правила (TTL уже истёк и защиты нет → удаление ближайшим проходом; unhold — гварды реестра не применяются: идемпотентен, только 503). Sweeper читает при TTL-отборе (hold → не кандидат) и гасит ключи несирот (владелец воскрес / префикс исчез) — санитар прохода; DELETING-записи hold не защищают |
 | `/pgworker/backups/orphan-deletes/<C>/<X>` | заявка явного удаления сироты (reliability t04): `{"requested_unix":T,"requested_by":"operator\|panel"}`; пишет API воркера по confirm-команде оператора (`POST /api/backups/orphans/{C}/{X}/delete`, body `{"confirm":"<C>/<X>"}` — мисматч → 400; сироты в реестре нет → 404; уже DELETING → 409; повторная заявка идемпотентна — put поверх); исполняет sweeper ближайшим проходом: DELETING (journal) → batch-delete → del записи реестра + del заявки; заявка гасится и когда сирота к проходу исчезла/воскресла; заявка — осознанная команда оператора: минует и hold, и автоправило «последнего полного» (единственный путь удалить защищённый DR-источник) |
 | `/pgworker/backups/<C>/<X>/restore/<id>` | операция восстановления шарда (t05, §3.5): `{"state":"PLANNED\|RUNNING\|REJOINING\|COMPLETED\|FAILED","backup_id","source":"<srcC>/<srcX>","target":"latest"\|"time:<RFC3339>","node","requested_unix","requested_by","started_unix"?,"finished_unix"?,"phase"?,"restored_to_lsn"?,"error"?}`; `id` — как у полных (§2); максимум один активный (не COMPLETED/FAILED) restore на шард; `phase` — фаза джоба/процесса (`downloading\|recovering`); по COMPLETED ключ `wal` шарда удаляется (переснятие полного планировщиком §2) |
+| `/pgworker/backups/<C>/<X>/drill` | состояние последнего/текущего дрилла шарда (reliability t02, §3.6): `{"state":"RUNNING\|SUCCEEDED\|FAILED","id","backup_id","started_unix","finished_unix"?,"phase"?,"restored_to_lsn"?,"error"?}`; `id` — как у полных (§2); `phase` — `downloading\|recovering` (фазы джоба) \| `cleaning` (идёт снос тестового контура после терминального исхода); снятый `phase` у терминального ключа = контейнер и volume подтверждённо удалены — чистый итог; ключ перезаписывается каждым новым дриллом (история — фазы журнала `backup-drill/<X>/<id>`); ключ один на шард — «максимум один активный дрилл» следует из формата; пишет воркер (держатель клэйма `<C>`) |
 
 - **Правила**: transient-сбой → статус с `error` + ретраи тиками (t02/t03);
   permanent-отказ → фиксация причины + алерт. `DELETING` — транзитная фаза
@@ -371,6 +466,11 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   цепочке): агент остановлен, лечение — пересъём полного (§2/§3, t07).
   `chain_start_segment` в BROKEN-записи — граница разрыва; ratchet —
   значение никогда не понижается (§3).
+- **Backwards-compat дрилла (reliability t02)**: панельный парсер
+  толерантен к отсутствию drill-ключей (подсистема не включена / дрилов
+  не было — правила дрилла молчат) и к policy без поля `drill`
+  (парсится как «дефолт интервала»); JSON статусов без новых полей
+  читается без ошибок.
 - **DR-hold сирот (reliability t04)**: автоматика TTL удаляет только
   НЕзащищённые сироты (`has_valid_full=false` и без hold-ключа) — потеря
   потенциального DR-источника автоматикой исключена (R4-симметрия:
@@ -449,7 +549,10 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   (тихая порча/утеря объектов S3).
 - **Deprovisioning кластера** (D2, [14-pgworker.md](14-pgworker.md) §5 B)
   чистит etcd-префикс `/pgworker/backups/<C>/` тем же `del --prefix` (и
-  убивает бегущие джоб-контейнеры `pgw-backup-full-<C>-*`); объекты
+  убивает бегущие джоб-контейнеры семейства `pgw-backup-<C>-*`: полные
+  `full-`, verify, restore, дриллы `drill-` — у drill-джобов контейнер и
+  volume одно имя `pgw-backup-drill-<C>-<X>-<id>`, volume сносится тем же
+  проходом D1 по префиксу `pgw-backup-drill-<C>-`); объекты
   S3 этим путём НЕ удаляются (данные дороже места; осознанное удаление —
   только ретенция t06 по политике): префикс S3 без
   etcd-владельца попадает в реестр сирот `/pgworker/backups/orphans`
@@ -615,11 +718,18 @@ s3://<bucket>/<C>/<X>/
   ключа/алертов хранилища; `Bytes=0` — квота не задана, пишется только
   `used_bytes`), `Restore { RecoveryTimeoutSec=1800 }` (t05: бюджет
   локального наката WAL restore-джобом — фаза recovering; исчерпание →
-  FAILED «target не достигнут»), `Supervisor { IntervalSec=600,
+  FAILED «target не достигнут»), `Drill { IntervalDays=1, TimeoutSec=21600 }`
+  (reliability t02, §3.6: дефолт периода дрилов шардов кластеров без
+  policy-поля `drill.interval_days`, `0` — глобальное выключение новых
+  запусков при доводке активных; бюджет активного дрилла от
+  `started_unix` → FAILED `drill-timeout`; бюджет наката WAL внутри
+  drill-джоба — общий `Restore:RecoveryTimeoutSec`), `Supervisor { IntervalSec=600,
   OrphanTtlSec=604800 }` (t07: период сверок per-cluster и глобального
   лидер-прохода; TTL сирот, `0` — только алерт). Валидация старта:
   `Enabled=true` при пустых S3-полях — fail-fast; отрицательные
-  таймауты/TTL супервизора — fail-fast.
+  таймауты/TTL супервизора — fail-fast; отрицательные
+  `Drill:IntervalDays`/`Drill:TimeoutSec` — fail-fast (`0` интервала
+  валиден — глобальное выключение новых запусков).
 
 ## 10. Риски
 
@@ -646,3 +756,5 @@ s3://<bucket>/<C>/<X>/
 | DELETING-сирота vs воскресший владелец (DR-restore в окне удаления) | TTL-окно 7 сут покрывает разбор; гвард: владелец появился в etcd → доводка отменяется, запись гаснет; DR-hold (reliability t04): префикс с валидным полным в DELETING по TTL вообще не попадает — остаточный риск «частично удалённое при старте DR» остаётся только для мусорных префиксов без полных |
 | Осиротевшие префиксы с валидными полными копятся в bucket (автоправило «последний полного не удаляет», reliability t04) | накопление видимо: ключ `/pgworker/backups/storage` (занятость/квота, алерты t06) + записи реестра (`has_valid_full`) + алерт панели; чистка — явная заявка `orphan-deletes` с confirm (панель/runbook); это осознанная плата «данные дороже места» (R4) |
 | Ratchet chain_start vs restore/PITR-назад | restore COMPLETED удаляет wal-ключ целиком (t05 AC4) — ratchet уходит вместе с ключом; новая цепочка строится планировщиком с нуля |
+| Нагрузка дрилла (скачивание полного + накат WAL) на фоне живых бэкапов — большие базы (reliability t02) | лимиты `Agent { Cpu, Mem }` (§6), один дрилл на кластер за проход (§3.6), расписание `interval_days` (policy/дефолт) — дриллы размазаны по времени и шардам |
+| Параллельные дриллы разных кластеров одновременно (глобального лидер-гварда нет — по одному на клэйм; домашняя установка 1–2 кластера) | зафиксирован риском: глобальный гвард не вводится — по одному дриллу на клэйм `<C>` (§3.6), параллельность кластеров ограничена числом кластеров установки |
