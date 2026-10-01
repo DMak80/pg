@@ -23,14 +23,14 @@ public class DrillJobSpecTests
         var opts = Opts();
 
         // Act
-        var spec = DrillJobSpec.Build(opts, "c1", "shard1", "id7");
+        var spec = DrillJobSpec.Build(opts, "c1", "shard1", "id7", "20261001090000Z");
 
         // Assert
         spec.VolumeName.Should().Be(BackupNames.DrillVolumeName("c1", "shard1", "id7"));
         spec.VolumeDest.Should().Be("/drill");
         spec.Env!["PGW_RESTORE_DATA_DIR"].Should().Be("/drill");
         spec.Env!["PGW_RESTORE_PGDATA"].Should().Be("/drill/pgroot/data");
-        spec.Env!["BACKUP_ID"].Should().Be("id7");
+        spec.Env!["BACKUP_ID"].Should().Be("20261001090000Z");
         spec.Env!["SRC_PREFIX"].Should().Be("c1/shard1");
         spec.Env!["TARGET_TIME"].Should().BeEmpty();
         spec.Env!["PGW_RECOVERY_TIMEOUT_SEC"].Should().Be("1800");
@@ -45,7 +45,7 @@ public class DrillJobSpecTests
         var opts = Opts();
 
         // Act
-        var spec = DrillJobSpec.Build(opts, "c1", "shard1", "id7");
+        var spec = DrillJobSpec.Build(opts, "c1", "shard1", "id7", "20261001090000Z");
 
         // Assert
         spec.Ports.Should().BeEmpty();

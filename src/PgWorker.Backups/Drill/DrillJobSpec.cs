@@ -12,9 +12,12 @@ namespace PgWorker.Backups.Drill;
 // unix-socket, никаких паролей PG.
 public static class DrillJobSpec
 {
+    // id — идентификатор дрилла (имя контейнера/volume); backupId — РЕЗОЛВНУТЫЙ
+    // валидацией полный (BACKUP_ID env: джоб качает full/<backup_id>/ — инцидент
+    // E2E t05: в спеку уходил id заявки, mc «Object does not exist»).
     public static ContainerSpec Build(
         BackupsRuntimeOptions opts, string cluster, string shard, string id,
-        string dataDir = "/drill")
+        string backupId, string dataDir = "/drill")
     {
         var env = new Dictionary<string, string>
         {
@@ -22,7 +25,7 @@ public static class DrillJobSpec
                 opts.AgentS3Endpoint, opts.S3AccessKey, opts.S3SecretKey),
             [Restore.RestoreJobCommand.EnvBucket] = opts.S3Bucket,
             [Restore.RestoreJobCommand.EnvSrcPrefix] = $"{cluster}/{shard}",
-            [Restore.RestoreJobCommand.EnvBackupId] = id,
+            [Restore.RestoreJobCommand.EnvBackupId] = backupId,
             // "" = latest (скрипт не пишет recovery_target_* — конец WAL = promote)
             [Restore.RestoreJobCommand.EnvTargetTime] = "",
             [Restore.RestoreJobCommand.EnvRecoveryTimeoutSec] = opts.RestoreRecoveryTimeoutSec.ToString(),

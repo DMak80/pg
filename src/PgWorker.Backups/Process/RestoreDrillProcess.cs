@@ -168,7 +168,7 @@ public sealed class RestoreDrillProcess(
 
         var jobName = BackupNames.DrillContainerName(cluster, shard, id);
         var created = await engine.CreateContainerAsync(
-            DrillJobSpec.Build(options, cluster, shard, id), jobName, ct);
+            DrillJobSpec.Build(options, cluster, shard, id, backupId), jobName, ct);
         if (!created.IsSuccess)
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // transient — RUNNING остаётся, тик досоздаст по имени
         var started = await engine.StartContainerAsync(jobName, ct);
@@ -251,7 +251,7 @@ public sealed class RestoreDrillProcess(
 
             // Молодой RUNNING без контейнера — статус не трогаем (transient).
             await engine.CreateContainerAsync(
-                DrillJobSpec.Build(options, cluster, shard, drill.Id), containerName, ct);
+                DrillJobSpec.Build(options, cluster, shard, drill.Id, drill.BackupId), containerName, ct);
             await engine.StartContainerAsync(containerName, ct);
             return;
         }
