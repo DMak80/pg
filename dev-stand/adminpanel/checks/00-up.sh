@@ -83,9 +83,10 @@ docker build -q -f "$ROOT/docker/PgWorker.Backup.Dockerfile" -t pgworker-backup:
   || { echo "❌ образ pgworker-backup не собрался (docker/PgWorker.Backup.Dockerfile)"; exit 1; }
 echo "  образ pgworker-backup:dev готов"
 
-# 1b) PgWorker (стенд = полная система; контур ВСЕГДА один — etcd стенда):
-#     воркеры (2 инстанса, t07) из deploy/docker-compose.yml ходят в as-etcd через хост-2379
-#     (PGW_ETCD_ENDPOINT=host.docker.internal:2379 — advertise as-etcd);
+# 1b) PgWorker (стенд = полная система; контур ВСЕГДА один — etcd-кластер стенда):
+#     воркеры (2 инстанса, t07) из deploy/docker-compose.yml ходят в as-etcd-1/2/3
+#     через хост (PGW_ETCD_ENDPOINT_0..2=host.docker.internal:2379/2381/2383 —
+#     дефолты deploy/docker-compose.yml, t09; advertise as-etcd-1/2/3);
 #     Patroni-ноды, которые он создаёт, ходят в DCS по тому же advertise.
 #     Секреты per-install — deploy/.env (нет файла → dev-шаблон .env.example;
 #     deploy/.env в .gitignore). Поднимается ДО сида: pg-сид наливается его
