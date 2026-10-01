@@ -256,9 +256,11 @@ function DrillCard({ drill, cluster }: { drill: BackupDrillBadgeDto | null; clus
   const [drillDays, setDrillDays] = useState<number | ''>(1);
   const initialized = useRef(false);
   useEffect(() => {
-    if (initialized.current || policy === null) return;
+    // policy нет (fresh-кластер) → форма остаётся на дефолте 1 — том же,
+    // что уходит в save при policy=null (полное замещение фиксирует значение).
+    if (initialized.current) return;
     initialized.current = true;
-    setDrillDays(policy.drillIntervalDays ?? 1);
+    setDrillDays(policy?.drillIntervalDays ?? 1);
   }, [policy]);
 
   const save = useMutation({
@@ -320,7 +322,6 @@ function DrillCard({ drill, cluster }: { drill: BackupDrillBadgeDto | null; clus
         <Button
           size="sm"
           loading={save.isPending}
-          disabled={policy === null}
           onClick={() => save.mutate()}
         >
           Сохранить
