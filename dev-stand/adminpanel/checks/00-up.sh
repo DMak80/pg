@@ -8,11 +8,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(cd ../.. && pwd)"
 # Хост-публикация API pgworker параметризуется (коллизии портов на хосте;
-# канон 8080). Advertise обязан совпадать с фактической публикацией (панель
-# и чеки стучатся по advertise), prometheus-target — файл file_sd.
+# канон 8080, второй инстанс — 8083, t07). Advertise обязан совпадать с
+# фактической публикацией (панель и чеки стучатся по advertise),
+# prometheus-target — файл file_sd (оба инстанса).
 export PGW_API_HOST_PORT="${PGW_API_HOST_PORT:-8080}"
+export PGW_API_HOST_PORT2="${PGW_API_HOST_PORT2:-8083}"
 [ "${PGW_API_ADVERTISE_URL:-}" ] || export PGW_API_ADVERTISE_URL="https://host.docker.internal:${PGW_API_HOST_PORT}"
-printf '[{"targets": ["host.docker.internal:%s"]}]\n' "$PGW_API_HOST_PORT" \
+printf '[{"targets": ["host.docker.internal:%s", "host.docker.internal:%s"]}]\n' \
+  "$PGW_API_HOST_PORT" "$PGW_API_HOST_PORT2" \
   > metrics/prometheus/pgworker-targets.json
 
 # Arrange: инструменты хоста
@@ -81,7 +84,7 @@ docker build -q -f "$ROOT/docker/PgWorker.Backup.Dockerfile" -t pgworker-backup:
 echo "  образ pgworker-backup:dev готов"
 
 # 1b) PgWorker (стенд = полная система; контур ВСЕГДА один — etcd стенда):
-#     воркер из deploy/docker-compose.yml ходит в as-etcd через хост-2379
+#     воркеры (2 инстанса, t07) из deploy/docker-compose.yml ходят в as-etcd через хост-2379
 #     (PGW_ETCD_ENDPOINT=host.docker.internal:2379 — advertise as-etcd);
 #     Patroni-ноды, которые он создаёт, ходят в DCS по тому же advertise.
 #     Секреты per-install — deploy/.env (нет файла → dev-шаблон .env.example;
@@ -100,10 +103,16 @@ if grep -q '^PGW_API_HOST_PORT=' "$ROOT/deploy/.env"; then
 else
   printf 'PGW_API_HOST_PORT=%s\n' "$PGW_API_HOST_PORT" >> "$ROOT/deploy/.env"
 fi
+# t07: тот же sync для второго инстанса — чеки читают порт из .env.
+if grep -q '^PGW_API_HOST_PORT2=' "$ROOT/deploy/.env"; then
+  sed -i.bak "s/^PGW_API_HOST_PORT2=.*/PGW_API_HOST_PORT2=$PGW_API_HOST_PORT2/" "$ROOT/deploy/.env" && rm -f "$ROOT/deploy/.env.bak"
+else
+  printf 'PGW_API_HOST_PORT2=%s\n' "$PGW_API_HOST_PORT2" >> "$ROOT/deploy/.env"
+fi
 # тот же race порта (Docker Desktop отдаёт публикацию с задержкой) — ретрай.
 pg_up_ok=0
 for _ in 1 2 3; do
-  if ( cd "$ROOT/deploy" && docker compose --env-file "$ROOT/deploy/.env" up -d --build --force-recreate pgworker 2>&1 | tail -2 ); then
+  if ( cd "$ROOT/deploy" && docker compose --env-file "$ROOT/deploy/.env" up -d --build --force-recreate pgworker pgworker-2 2>&1 | tail -2 ); then
     pg_up_ok=1; break
   fi
   echo "  pgworker up не удался (порт не отдан после recreate) — пауза 15 c"; sleep 15
@@ -113,7 +122,20 @@ MTLS="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem --cert $ROOT/deploy/tls/he
 for i in $(seq 1 60); do $MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
 $MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null \
   || { echo "❌ pgworker не ожил за 60 c (https :${PGW_API_HOST_PORT:-8080}/healthz по mTLS; docker logs deploy-pgworker-1)"; exit 1; }
-echo "  pgworker жив (https :${PGW_API_HOST_PORT:-8080}/healthz, mTLS, общий etcd-контур)"
+for i in $(seq 1 60); do $MTLS https://localhost:${PGW_API_HOST_PORT2:-8083}/healthz >/dev/null 2>&1 && break; sleep 1; done
+$MTLS https://localhost:${PGW_API_HOST_PORT2:-8083}/healthz >/dev/null \
+  || { echo "❌ pgworker-2 не ожил за 60 c (https :${PGW_API_HOST_PORT2:-8083}/healthz по mTLS; docker logs deploy-pgworker-2-1)"; exit 1; }
+# t07: оба инстанса публикуют свой lease-ключ дискавери (InstanceId = GUID,
+# уникальный per контейнер) — двухинстансовый надзор доказан ключами.
+pgw_api_keys=0
+for i in $(seq 1 30); do
+  pgw_api_keys="$(ect get /pgworker/api/ --prefix --keys-only 2>/dev/null | grep -c . || true)"
+  [ "${pgw_api_keys:-0}" -ge 2 ] && break
+  sleep 2
+done
+[ "${pgw_api_keys:-0}" -ge 2 ] \
+  || { echo "❌ /pgworker/api/ содержит ${pgw_api_keys:-0} ключей (<2) — второй инстанс не публикует AdvertiseUrl/keepalive (docker logs deploy-pgworker-2-1)"; exit 1; }
+echo "  pgworker жив ×2 (:${PGW_API_HOST_PORT:-8080} + :${PGW_API_HOST_PORT2:-8083}/healthz mTLS; ключей /pgworker/api/: ${pgw_api_keys})"
 
 # 1c) pg-сид — ЧЕРЕЗ API воркера (spec §3.5; прямой etcdctl-сид упразднён):
 #     05-seed.sh идемпотентно ждёт /healthz и зовёт POST /api/seed/demo,
@@ -217,26 +239,33 @@ schemas "$master1" "0 2 3 4 6 8 10 11 12 14"
 schemas "$master2" "1 5 7 9 13 15"
 echo "  инвентарь: 10 схем на $master1, 6 на $master2"
 
-# 7) kafkaworker жив: heartbeat /kafkaworker/instances/* (lease TTL — ключ
-#    исчезает со смертью воркера). 50-й наливает kafka-сид ЧЕРЕЗ API живого
-#    воркера (05-seed.sh kafka) и останавливает его финальным шагом (spec §3.5).
+# 7) kafkaworker жив ×2 (t07): по два lease-ключа /kafkaworker/api/ и
+#    /kafkaworker/instances/ (два инстанса = два ключа каждого вида).
+kfw_keys=0
 for i in $(seq 1 60); do
-  [ -n "$(ect get /kafkaworker/instances/ --prefix --keys-only 2>/dev/null | head -1)" ] && break
+  kfw_keys="$(ect get /kafkaworker/api/ --prefix --keys-only 2>/dev/null | grep -c . || true)"
+  [ "${kfw_keys:-0}" -ge 2 ] && break
   sleep 1
 done
-[ -n "$(ect get /kafkaworker/instances/ --prefix --keys-only 2>/dev/null | head -1)" ] \
-  || { echo "❌ kafkaworker не ожил за 60 c (docker compose logs kafkaworker)"; exit 1; }
-echo "  kafkaworker жив (heartbeat /kafkaworker/instances/*)"
+[ "${kfw_keys:-0}" -ge 2 ] \
+  || { echo "❌ /kafkaworker/api/ содержит ${kfw_keys:-0} ключей (<2; docker compose logs kafkaworker kafkaworker-2)"; exit 1; }
+[ "$(ect get /kafkaworker/instances/ --prefix --keys-only 2>/dev/null | grep -c . || true)" -ge 2 ] \
+  || { echo "❌ /kafkaworker/instances/ меньше 2 ключей"; exit 1; }
+echo "  kafkaworker жив ×2 (heartbeat /kafkaworker/{api,instances}/*: по ${kfw_keys})"
 
-# 7b) valkeyworker жив (t03): heartbeat lease-ключ /valkeyworker/api/* — его
-#     ждут панель (WorkerEndpoints) и чек 51 (мутации через панель→воркер).
+# 7b) valkeyworker жив ×2 (t03+t07): по два lease-ключа /valkeyworker/api/ и
+#     /valkeyworker/instances/ — их ждут панель (WorkerEndpoints) и чек 51.
+vwk_keys=0
 for i in $(seq 1 60); do
-  [ -n "$(ect get /valkeyworker/api/ --prefix --keys-only 2>/dev/null | head -1)" ] && break
+  vwk_keys="$(ect get /valkeyworker/api/ --prefix --keys-only 2>/dev/null | grep -c . || true)"
+  [ "${vwk_keys:-0}" -ge 2 ] && break
   sleep 1
 done
-[ -n "$(ect get /valkeyworker/api/ --prefix --keys-only 2>/dev/null | head -1)" ] \
-  || { echo "❌ valkeyworker не ожил за 60 c (docker compose logs valkeyworker)"; exit 1; }
-echo "  valkeyworker жив (heartbeat /valkeyworker/api/*)"
+[ "${vwk_keys:-0}" -ge 2 ] \
+  || { echo "❌ /valkeyworker/api/ содержит ${vwk_keys:-0} ключей (<2; docker compose logs valkeyworker valkeyworker-2)"; exit 1; }
+[ "$(ect get /valkeyworker/instances/ --prefix --keys-only 2>/dev/null | grep -c . || true)" -ge 2 ] \
+  || { echo "❌ /valkeyworker/instances/ меньше 2 ключей"; exit 1; }
+echo "  valkeyworker жив ×2 (heartbeat /valkeyworker/{api,instances}/*: по ${vwk_keys})"
 
 # 7c) valkey-сид (t03): демо-кластер demo наливается ЧЕРЕЗ API живого воркера —
 #     метрика spec §8.1: после ПОЛНОГО 00-up.sh панель /valkey уже показывает

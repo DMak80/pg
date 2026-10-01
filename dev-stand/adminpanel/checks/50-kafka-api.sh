@@ -181,7 +181,8 @@ echo "  /api/alerts: kafka-rotation-pending events в общей ленте"
 # spec §3.5) — мутации прошли через живой API, останавливаем. Сразу проверяем
 # kafka-грань worker-api-unreachable (spec §9.5): lease-ключ гаснет ≤15 c,
 # тик kafka-снапшота ≤3 c → алерт target=kafkaworker появляется (jq, поллинг).
-docker compose --profile kafka stop kafkaworker >/dev/null 2>&1
+# t07: оба инстанса — второй живой держал бы ключ /kafkaworker/api/ (алерта нет)
+docker compose --profile kafka stop kafkaworker kafkaworker-2 >/dev/null 2>&1
 for i in $(seq 1 20); do
   api /api/alerts 2>/dev/null | jq -e 'any(.[]; .kind=="worker-api-unreachable" and .target=="kafkaworker")' >/dev/null 2>&1 && break
   sleep 2
