@@ -29,6 +29,9 @@ public static class BackupsParser
         // "/pgworker/backups/<C>/policy" | "/pgworker/backups/<C>/<X>/full/<id>"
         // | "/pgworker/backups/<C>/<X>/wal" (t03)
         var policies = new Dictionary<string, long?>();
+        // reliability t02: полная policy (retention/verify/drill) + drill-ключи per-shard.
+        var policiesFull = new Dictionary<string, BackupsPolicyInfo>();
+        var drills = new Dictionary<string, Dictionary<string, DrillInfo>>();
         var shards = new Dictionary<string, Dictionary<string, long?>>();
         var wal = new Dictionary<string, Dictionary<string, WalStreamInfo?>>();
         var deleting = new Dictionary<string, Dictionary<string, List<DeletingFullInfo>>>();
@@ -188,16 +191,88 @@ public static class BackupsParser
                 try
                 {
                     using var doc = JsonDocument.Parse(kv.Value);
-                    policies[cluster] = doc.RootElement.ValueKind == JsonValueKind.Object
-                        && doc.RootElement.TryGetProperty("full_max_age_sec", out var age)
+                    var root = doc.RootElement;
+                    policies[cluster] = root.ValueKind == JsonValueKind.Object
+                        && root.TryGetProperty("full_max_age_sec", out var age)
                         && age.ValueKind == JsonValueKind.Number
                         && age.TryGetInt64(out var value)
                         ? value
                         : null;
+
+                    // reliability t02: полный разбор (retention/verify/drill);
+                    // битое/отсутствующее поле → null (форма фронта дефолтирует;
+                    // панель — толерантный читатель, писатель — policy-API воркера).
+                    int? retentionDays = null, retentionWeeks = null, retentionMonths = null;
+                    if (root.ValueKind == JsonValueKind.Object
+                        && root.TryGetProperty("retention", out var retention)
+                        && retention.ValueKind == JsonValueKind.Object)
+                    {
+                        retentionDays = Int32Of(retention, "days");
+                        retentionWeeks = Int32Of(retention, "weeks");
+                        retentionMonths = Int32Of(retention, "months");
+                    }
+
+                    bool? verifyOnCreate = null;
+                    if (root.ValueKind == JsonValueKind.Object
+                        && root.TryGetProperty("verify", out var verify)
+                        && verify.ValueKind == JsonValueKind.Object)
+                        verifyOnCreate = Bool(verify, "on_create");
+
+                    int? drillIntervalDays = null;
+                    if (root.ValueKind == JsonValueKind.Object
+                        && root.TryGetProperty("drill", out var drillEl)
+                        && drillEl.ValueKind == JsonValueKind.Object)
+                        drillIntervalDays = Int32Of(drillEl, "interval_days");
+
+                    policiesFull[cluster] = new BackupsPolicyInfo(
+                        retentionDays, retentionWeeks, retentionMonths,
+                        policies[cluster], verifyOnCreate, drillIntervalDays);
                 }
                 catch (JsonException e)
                 {
                     errors.Add(new(kv.Key, $"битый JSON policy: {e.Message}"));
+                }
+
+                continue;
+            }
+
+            // reliability t02: /<X>/drill — статус дрилла шарда (state обязателен:
+            // RUNNING|SUCCEEDED|FAILED; незнакомое → KeyParseError + пропуск —
+            // правила дрилла на мусоре молчат; id/backup_id/started_unix обязательны).
+            if (segments.Length == 6 && segments[5] == "drill" && segments[4].Length > 0)
+            {
+                try
+                {
+                    using var doc = JsonDocument.Parse(kv.Value);
+                    var root = doc.RootElement;
+                    if (root.ValueKind != JsonValueKind.Object)
+                    {
+                        errors.Add(new(kv.Key, "drill-статус не JSON-объект"));
+                        continue;
+                    }
+
+                    var state = String(root, "state") is "RUNNING" or "SUCCEEDED" or "FAILED"
+                        ? String(root, "state")
+                        : null;
+                    var id = String(root, "id");
+                    var backupId = String(root, "backup_id");
+                    var started = Long(root, "started_unix");
+                    if (state is null || id is null || backupId is null || started is null)
+                    {
+                        errors.Add(new(kv.Key, "битый drill-статус (state/id/backup_id/started_unix)"));
+                        continue;
+                    }
+
+                    if (!drills.TryGetValue(cluster, out var perShardDrills))
+                        drills[cluster] = perShardDrills = [];
+                    perShardDrills[segments[4]] = new DrillInfo(
+                        cluster, segments[4], id, state, backupId, started.Value,
+                        Long(root, "finished_unix"), String(root, "phase"),
+                        String(root, "restored_to_lsn"), String(root, "error"));
+                }
+                catch (JsonException e)
+                {
+                    errors.Add(new(kv.Key, $"битый JSON drill: {e.Message}"));
                 }
 
                 continue;
@@ -410,6 +485,8 @@ public static class BackupsParser
             .Concat(wal.Keys.Where(w => !shards.ContainsKey(w) && !policies.ContainsKey(w)))
             .Concat(restores.Keys.Where(r => !shards.ContainsKey(r) && !policies.ContainsKey(r)
                 && !wal.ContainsKey(r)))
+            .Concat(drills.Keys.Where(d => !shards.ContainsKey(d) && !policies.ContainsKey(d)
+                && !wal.ContainsKey(d) && !restores.ContainsKey(d)))
             .Distinct()
             .OrderBy(c => c, StringComparer.Ordinal)
             .Select(c => new ClusterBackupsInfo(
@@ -443,7 +520,12 @@ public static class BackupsParser
                         p => p.Key,
                         p => (IReadOnlyList<BackupFullInfo>)p.Value
                             .OrderBy(f => f.Id, StringComparer.Ordinal).ToList())
-                    : null))
+                    : null,
+                // reliability t02: дриллы per-shard (пусто → null — ключей не было)
+                drills.TryGetValue(c, out var perShardDrills) && perShardDrills.Count > 0
+                    ? perShardDrills.ToDictionary(p => p.Key, p => p.Value)
+                    : null,
+                policiesFull.TryGetValue(c, out var policyFull) ? policyFull : null))
             .ToList();
         // t04: реестр сирот собирается после цикла — с джойном hold/заявок
         // (ключи произвольного порядка); orphans-ключа нет/битый → null
@@ -483,6 +565,10 @@ public static class BackupsParser
            && v.ValueKind is JsonValueKind.True or JsonValueKind.False
             ? v.GetBoolean()
             : null;
+
+    // reliability t02: целочисленные поля policy (days/weeks/months/interval_days).
+    private static int? Int32Of(JsonElement root, string name)
+        => Long(root, name) is { } v && v is >= int.MinValue and <= int.MaxValue ? (int?)v : null;
 
     private static double? Double(JsonElement root, string name)
         => root.TryGetProperty(name, out var v)
