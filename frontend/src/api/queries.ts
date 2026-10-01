@@ -494,6 +494,28 @@ export function deleteOrphan(cluster: string, shard: string, confirm: string): P
     { method: 'POST', body: { confirm } });
 }
 
+// PUT /api/clusters/{cluster}/backups/policy — мутация policy бэкапов
+// (reliability t02, 02 §9.12): панель PUTит ПОЛНЫЙ набор полей (retention +
+// full_max_age_sec + verify + drill — канон замещения целиком); панель в etcd
+// не пишет — команда-прокси в policy-API воркера.
+export interface UpdateBackupsPolicyRequestDto {
+  retentionDays: number;
+  retentionWeeks: number;
+  retentionMonths: number;
+  fullMaxAgeSec: number;
+  verifyOnCreate: boolean;
+  drillIntervalDays: number;
+}
+
+export function updateBackupsPolicy(
+  cluster: string,
+  body: UpdateBackupsPolicyRequestDto,
+): Promise<void> {
+  return apiFetch<void>(
+    `/api/clusters/${encodeURIComponent(cluster)}/backups/policy`,
+    { method: 'PUT', body });
+}
+
 export function fetchBackupShardStorage(cluster: string, shard: string): Promise<BackupShardStorageDto> {
   return apiFetch<BackupShardStorageDto>(
     `/api/backups/storage/${encodeURIComponent(cluster)}/${encodeURIComponent(shard)}`);
