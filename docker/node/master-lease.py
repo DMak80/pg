@@ -45,7 +45,11 @@ def local_role():
 
 load_env_file()
 
-ETCD = os.getenv("PGW_ETCD", "http://etcd:2379")
+# HA-контур (t09, arch/04 §8): PGW_ETCD — СПИСОК URL через запятую (SpiloEnvBuilder
+# передаёт все узлы контура); активный endpoint кешируется, транспортная
+# ошибка/5xx → перебор до первого живого. Один URL — частный случай.
+ETCD_LIST = [u.strip().rstrip("/") for u in os.getenv("PGW_ETCD", "http://etcd:2379").split(",") if u.strip()]
+_active = {"url": ETCD_LIST[0] if ETCD_LIST else ""}
 KEY = os.getenv("PGW_MASTER_KEY", "")
 HOST = os.getenv("PGW_NODE_HOST", "")
 DOORMAN_PORT = os.getenv("PGW_DOORMAN_PORT", "6432")
@@ -56,11 +60,27 @@ MASTER_ROLES = {"master", "primary", "master}", "primary}"}
 
 
 def etcd_post(path, payload):
-    req = urllib.request.Request(
-        ETCD + path, data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=5) as r:
-        return json.load(r)
+    # Активный endpoint (кеш) первым; исключение/5xx — сброс и следующий из
+    # списка; успех на новом адресе обновляет кеш (переключение — в лог).
+    order = [_active["url"]] + [u for u in ETCD_LIST if u != _active["url"]]
+    last_error = None
+    for url in order:
+        try:
+            req = urllib.request.Request(
+                url + path, data=json.dumps(payload).encode(),
+                headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=5) as r:
+                if url != _active["url"]:
+                    print(f"master-lease: endpoint switch {_active['url']} -> {url}", flush=True)
+                    _active["url"] = url
+                return json.load(r)
+        except urllib.error.HTTPError as e:
+            if e.code < 500:
+                raise  # 4xx — протоколная ошибка, не отказ узла
+            last_error = e
+        except Exception as e:
+            last_error = e
+    raise last_error
 
 
 def etcd_put_leased(key, value, lease_id):
