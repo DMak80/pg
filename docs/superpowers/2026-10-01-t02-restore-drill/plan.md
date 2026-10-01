@@ -42,7 +42,7 @@
 - Consumes: spec §3.1–§3.8 (проект правок уже написан в spec — переносится в каноническую лексику).
 - Produces: канон, на который ссылаются все последующие задачи (ревью plan↔spec и код↔arch).
 
-- [ ] **Step 1.1: arch/19 §3.6 — раздел «Дрилл восстановимости (reliability t02)»**
+- [x] **Step 1.1: arch/19 §3.6 — раздел «Дрилл восстановимости (reliability t02)»**
 
   **Вход:** spec §3.3–§3.5 прочитаны; `arch/19-backups.md` открыт (разделы идут после §3.5, перед §4).
   **Действие:** вставить новый `## 3.6. Дрилл восстановимости (reliability t02)` текстом spec §3.3–§3.5 в канонической лексике: роль (НЕдеструктивный прогон DR-пути: тот же кандидат и валидация, что у restore-заявки t05 — новейший COMPLETED + манифест + WalChain); RestoreDrillProcess под клэймом `<C>` (супервиз/таймаут `DrillTimeoutSec`/takeover `drill-vanished`); контроль «старт postgres + выход из recovery» (`pg_is_in_recovery()=false` + `restored_to_lsn`; SQL-проверок данных нет — целостность файлов за verify t04); drill-джоб `pgw-backup-drill-<C>-<X>-<id>` (образ `pgworker-backup`, свой ephemeral volume, `Ports: []`, `Network: null`, unix-socket); фазы джоба `downloading|recovering`; отбор — один шард за проход, наименее свежий по `finished_unix`, гварды (active restore владеет шардом, `interval_days=0` — выкл); снос контура — доводимая фаза `cleaning` (journal `drill-cleanup/<X>/<id>` ДО rm; ключ = чистый терминальный итог после подтверждённого удаления контейнера И volume; переживает рестарт воркера — идемпотентная доводка по детерминированным именам); изоляция — нод в кластере не создаёт, HA-scope и synchronous-режим мастера не затрагивает, S3 только читает; стоп-семантика `Backups:Enabled=false` (доводка активного и сноса без новых запусков); deprovisioning D1 — префикс `pgw-backup-drill-<C>-` в чистке джобов бэкапов (контейнер+volume одно имя), D2 — ключ уходит с per-cluster префиксом.
@@ -50,7 +50,7 @@
   **Проверка:** визуально: раздел на месте, порядок §3.5 → §3.6 → §4 сохранён; §8 (карта задач) НЕ тронут.
   **Spec:** §3.8.1, §2.2–§2.5.
 
-- [ ] **Step 1.2: arch/19 §4 — строка ключа `drill` и поле policy**
+- [x] **Step 1.2: arch/19 §4 — строка ключа `drill` и поле policy**
 
   **Вход:** Step 1.1 выполнен.
   **Действие:** в таблицу ключей §4 добавить строку:
@@ -60,7 +60,7 @@
   **Проверка:** таблица §4 содержит обе правки; deprovisioning-абзац §4 упоминает префикс `pgw-backup-drill-<C>-` в D1-чистке джобов бэкапов.
   **Spec:** §3.1, §3.8.1.
 
-- [ ] **Step 1.3: arch/19 §9 — секция конфигурации Drill; §10 — риски**
+- [x] **Step 1.3: arch/19 §9 — секция конфигурации Drill; §10 — риски**
 
   **Вход:** Step 1.2 выполнен.
   **Действие:** в §9 после `Restore { … }` добавить: `Drill { IntervalDays=1, TimeoutSec=21600 }` (reliability t02: дефолт периода дрилов шардов кластеров без policy-поля, `0` — глобальное выключение новых запусков при доводке активных; бюджет активного дрилла от `started_unix` → FAILED `drill-timeout`; бюджет наката WAL внутри джоба — общий `Restore:RecoveryTimeoutSec`). В валидацию старта §9 добавить: отрицательные `Drill:IntervalDays`/`Drill:TimeoutSec` — fail-fast. В §10 добавить два риска: «нагрузка дрилла (скачивание полного + накат WAL) на фоне живых бэкапов — большие базы» → закрытие: лимиты `Agent { Cpu, Mem }`, один дрилл на кластер за проход, расписание `interval_days`; «параллельные дриллы разных кластеров одновременно (глобального лидер-гварда нет — по одному на клэйм; домашняя установка 1–2 кластера)» → закрытие: зафиксирован риском, глобальный гвард не вводится (spec §5).
@@ -68,7 +68,7 @@
   **Проверка:** grep `Drill {` arch/19-backups.md — одно вхождение в §9; в §10 две новые строки.
   **Spec:** §3.2, §3.8.1, §5.
 
-- [ ] **Step 1.4: arch/adminpanel/02 §2.3.1 + §9**
+- [x] **Step 1.4: arch/adminpanel/02 §2.3.1 + §9**
 
   **Вход:** Step 1.3 выполнен.
   **Действие:** в таблицу §2.3.1 добавить строку ключа `/pgworker/backups/<C>/<X>/drill` (формат из arch/19 §4; в модель — `DrillInfo` §3; панель читает, пишет только воркер; кормит алерты `backup-drill-failed`/`backup-drill-stale` и per-shard статус грани «Хранилище бэкапов»). В §9 — новая под-секция «§9.x. Мутация policy бэкапов: интервал дрила» после §9.11: панель НЕ пишет в etcd — PUT `/api/clusters/{c}/backups/policy` панели (прокси) → команда `UpdateBackupsPolicyCommand` → POST `/api/clusters/{c}/backups/policy` API воркера (arch/14 §1.1) полным телом (retention + full_max_age_sec + verify + drill); поле «Дрилл каждые N суток» (0 = выкл) в грани «Хранилище бэкапов»; применяется следующим проходом воркера без рестарта.
@@ -76,7 +76,7 @@
   **Проверка:** grep `drill` arch/adminpanel/02-etcd-contract.md — есть в §2.3.1 и §9.
   **Spec:** §3.6, §3.8.2.
 
-- [ ] **Step 1.5: arch/14 §1.1 — тело policy-API**
+- [x] **Step 1.5: arch/14 §1.1 — тело policy-API**
 
   **Вход:** Step 1.4 выполнен.
   **Действие:** в §1.1 к строке эндпоинта `POST /api/clusters/{cluster}/backups/policy` (т06) дописать одну фразу: тело дополнительно принимает `"drill":{"interval_days":int}` (валидация [0..3650]; поле отсутствует → секция `drill` в записываемую policy не кладётся — кластер живёт на глобальном дефолте; замещение целиком сохраняется — reliability t02, arch/19 §4).
@@ -84,7 +84,7 @@
   **Проверка:** grep `interval_days` arch/14-pgworker.md — одно вхождение в §1.1.
   **Spec:** §3.6 (API воркера), §3.8.3.
 
-- [ ] **Step 1.6: Коммит arch-правок**
+- [x] **Step 1.6: Коммит arch-правок**
 
   **Вход:** Steps 1.1–1.5 выполнены.
   **Действие:**
@@ -110,7 +110,7 @@
 - Consumes: формат ключа `drill` из arch/19 §4 (Task 1).
 - Produces (для Tasks 3–8): `DrillStatus { Running, Succeeded, Failed }`; `DrillState(string Id, DrillStatus State, string BackupId, long StartedUnix, long? FinishedUnix = null, string? Phase = null, string? RestoredToLsn = null, string? Error = null)`; `BackupPolicy(…, int? DrillIntervalDays = null)`; `ShardBackups(…, DrillState? Drill = null)`; `BackupNames.DrillKey(cluster, shard)`, `DrillContainerName(cluster, shard, id)`, `DrillVolumeName(cluster, shard, id)`, `DrillJobContainerPrefix(cluster)`; `DrillStatusJson.Serialize(DrillState) → string`.
 
-- [ ] **Step 2.1: Пишу failing-тесты DrillStatusJson + имён (TDD)**
+- [x] **Step 2.1: Пишу failing-тесты DrillStatusJson + имён (TDD)**
 
   **Вход:** модель/имена/сериализатор ещё не существуют.
   **Действие:** создать `src/tests/PgWorker.UnitTests/Backups/DrillStatusJsonTests.cs` (по образцу `RestoreStatusJsonTests.cs`):
@@ -136,7 +136,7 @@
   **Проверка:** `dotnet build src/PgWorker.slnx` — ошибки компиляции отсутствия `DrillState`/`DrillStatusJson` (ожидаемый RED).
   **Spec:** §3.1 (формат ключа), AC4/AC9 (детерминированные имена).
 
-- [ ] **Step 2.2: Реализация модели, имён, сериализатора**
+- [x] **Step 2.2: Реализация модели, имён, сериализатора**
 
   **Вход:** Step 2.1 (RED).
   **Действие:**
@@ -189,7 +189,7 @@
   **Проверка:** `dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~DrillStatusJson|FullyQualifiedName~BackupNames"` — PASS (GREEN).
   **Spec:** §3.1, §3.8.1.
 
-- [ ] **Step 2.3: Коммит**
+- [x] **Step 2.3: Коммит**
 
   **Вход:** Step 2.2 зелёный.
   **Действие:** `git add -A src/PgWorker.Etcd/Parsing/BackupsModel.cs src/PgWorker.Backups/BackupNames.cs src/PgWorker.Backups/Drill/ src/tests/PgWorker.UnitTests/Backups/ && git commit -m "feat(backups): модель DrillState + policy.drill.interval_days + имена/DrillStatusJson дрилла (t02-restore-drill)"`
@@ -209,7 +209,7 @@
 - Consumes: `ShardSpec` (`PgWorker.Core.Model`: `Name`, `ToRemove`), `ShardBackups` (Task 2), `DrillState`, `RestoreStatus`.
 - Produces (для Task 7): `DrillPlanner.SelectCandidate(IReadOnlyList<ShardSpec> shards, IReadOnlyDictionary<string, ShardBackups> backups, IReadOnlyDictionary<string, DrillState> drills, int intervalDays, long nowUnix) → string?` — имя шарда-кандидата или null.
 
-- [ ] **Step 3.1: Пишу failing-тесты отбора (TDD)**
+- [x] **Step 3.1: Пишу failing-тесты отбора (TDD)**
 
   **Вход:** DrillPlanner не существует.
   **Действие:** `src/tests/PgWorker.UnitTests/Backups/DrillPlannerTests.cs` (AAA-комментарии; хелперы-фабрики shard/full/drill/restore):
@@ -239,7 +239,7 @@
   **Проверка:** `dotnet build src/PgWorker.slnx` — RED.
   **Spec:** §3.3 п.3, AC1, AC8.
 
-- [ ] **Step 3.2: Реализация DrillPlanner**
+- [x] **Step 3.2: Реализация DrillPlanner**
 
   **Вход:** Step 3.1 (RED).
   **Действие:** `src/PgWorker.Backups/Drill/DrillPlanner.cs`:
@@ -276,7 +276,7 @@
   **Проверка:** `dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~DrillPlanner` — PASS.
   **Spec:** §3.3 п.3.
 
-- [ ] **Step 3.3: Коммит**
+- [x] **Step 3.3: Коммит**
 
   **Вход:** Step 3.2 зелёный.
   **Действие:** `git add src/PgWorker.Backups/Drill/DrillPlanner.cs src/tests/PgWorker.UnitTests/Backups/DrillPlannerTests.cs && git commit -m "feat(backups): DrillPlanner — чистый отбор кандидата дрилла (t02-restore-drill)"`
@@ -298,7 +298,7 @@
 - Consumes: `RestoreJobCommand.Build()`, `RestoreJobLog.Parse(logs) → RestoreJobMarkers(string? Phase, RestoreJobResult? Result)`, `RestoreJobCommand.Env*`, `WalAgentCommand.McHost`, `ContainerSpec`, `BackupsRuntimeOptions` (`AgentS3Endpoint`, `S3Bucket`, `S3AccessKey`, `S3SecretKey`, `JobImage`, `AgentCpu`, `AgentMem`, `RestoreRecoveryTimeoutSec`), `BackupNames` (Task 2).
 - Produces (для Task 6/7): `DrillJobCommand.Build() → IReadOnlyList<string>`; `DrillJobLog.Parse(string logs) → RestoreJobMarkers`; `DrillJobSpec.Build(BackupsRuntimeOptions opts, string cluster, string shard, string id) → ContainerSpec`.
 
-- [ ] **Step 4.1: Пишу failing-тесты спеки джоба (TDD)**
+- [x] **Step 4.1: Пишу failing-тесты спеки джоба (TDD)**
 
   **Вход:** DrillJobSpec не существует.
   **Действие:** `src/tests/PgWorker.UnitTests/Backups/DrillJobSpecTests.cs` (по образцу `RestoreJobSpecTests.cs`, AAA):
@@ -317,7 +317,7 @@
   **Проверка:** `dotnet build src/PgWorker.slnx` — RED.
   **Spec:** §3.4; решение гейта плана (обёртки).
 
-- [ ] **Step 4.2: Реализация обёрток и спеки**
+- [x] **Step 4.2: Реализация обёрток и спеки**
 
   **Вход:** Step 4.1 (RED).
   **Действие:**
@@ -350,7 +350,7 @@
   **Проверка:** `dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~DrillJobSpec"` — PASS.
   **Spec:** §3.4, §2.4.
 
-- [ ] **Step 4.3: Коммит**
+- [x] **Step 4.3: Коммит**
 
   **Вход:** Step 4.2 зелёный.
   **Действие:** `git add src/PgWorker.Backups/Drill/ src/tests/PgWorker.UnitTests/Backups/DrillJobSpecTests.cs && git commit -m "feat(backups): DrillJobCommand/DrillJobLog (обёртки t05) + DrillJobSpec изолированного drill-джоба (t02-restore-drill)"`
@@ -370,7 +370,7 @@
 - Consumes: `DrillState`/`DrillStatus`/`ShardBackups.Drill`/`BackupPolicy.DrillIntervalDays` (Task 2).
 - Produces: снапшотная модель с drill-ключами (вход `RestoreDrillProcess`, Tasks 6–7) и интервалом policy.
 
-- [ ] **Step 5.1: Пишу failing-тесты парсера (TDD)**
+- [x] **Step 5.1: Пишу failing-тесты парсера (TDD)**
 
   **Вход:** парсер drill-ключей не читает.
   **Действие:** в `PgWorker.UnitTests/Etcd/BackupsParserTests.cs` добавить (AAA):
@@ -390,7 +390,7 @@
   **Проверка:** `dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~BackupsParserTests"` — RED на новых.
   **Spec:** §3.1 (backwards-compat), §3.3 п.3 (интервал policy).
 
-- [ ] **Step 5.2: Реализация в BackupsParser**
+- [x] **Step 5.2: Реализация в BackupsParser**
 
   **Вход:** Step 5.1 (RED).
   **Действие:** в switch парсера добавить `case 6 when segments[4].Length > 0 && segments[5] == "drill":` → `GetOrAdd(acc.Shards, segments[4], …).DrillRaw = kv.Value;` (`ShardAcc` + `string? DrillRaw`); в `BuildCluster` — `TryParseDrill(acc.Name, pair.Key, pair.Value.DrillRaw, errors)`. `TryParseDrill` — по образцу `TryParseRestore`: обязательны `state` (RUNNING|SUCCEEDED|FAILED)/`id`/`backup_id`/`started_unix`; опциональны `finished_unix`/`phase`/`restored_to_lsn`/`error`; битое/неизвестное state → error + null. `TryParsePolicy`: после verify-блока — `int? drillIntervalDays = null;` из `root.drill.interval_days` (Number|int; невалидное → null), передать в ctor `BackupPolicy`.
@@ -398,7 +398,7 @@
   **Проверка:** `dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~BackupsParserTests"` — PASS.
   **Spec:** §3.1.
 
-- [ ] **Step 5.3: Коммит**
+- [x] **Step 5.3: Коммит**
 
   **Вход:** Step 5.2 зелёный.
   **Действие:** `git add src/PgWorker.Etcd/Parsing/BackupsParser.cs src/tests/PgWorker.UnitTests/Etcd/BackupsParserTests.cs && git commit -m "feat(etcd): парсинг ключа drill и policy.drill.interval_days в снапшот бэкапов (t02-restore-drill)"`
@@ -418,7 +418,7 @@
 - Consumes: `DrillStatusJson.Serialize`, `BackupNames.Drill*`, `DrillJobLog`, `DrillJobSpec`, `DrillPlanner` (Task 7), `SupervisionTimeouts.IsTimedOut`, `ShardEndpoints.ReadPortAllocAsync`, `WorkJournal.WritePhaseAsync`, `ClaimStore.IsMine`, `BackupPlanner.NextId`, `WalChain`/`WalFileName`/`BackupLabel`, `IBackupS3` (`DownloadTextAsync`, `ListWalAsync`).
 - Produces: `RestoreDrillProcess(IEtcdGateway etcd, string[] endpoints, IClusterDriver driver, ShardEndpoints shardEndpoints, IBackupS3 s3, ClaimStore claims, WorkJournal journal, BackupsRuntimeOptions options, TimeProvider time, ILogger<RestoreDrillProcess> logger)` с `Task<Result<ProcessOutcome>> TickAsync(ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)`; const `Op = "backup-drill"`.
 
-- [ ] **Step 6.1: Скелет процесса + окружение теста**
+- [x] **Step 6.1: Скелет процесса + окружение теста**
 
   **Вход:** Tasks 2–5 слиты; образцы `BackupVerifyProcess.cs`/`BackupVerifyProcessTests.cs` изучены.
   **Действие:** создать `RestoreDrillProcess.cs` — primary-ctor как в Interfaces, каркас `TickAsync`:
@@ -432,7 +432,7 @@
   **Проверка:** `dotnet build src/PgWorker.slnx -c Release`.
   **Spec:** §3.3 п.1–2.
 
-- [ ] **Step 6.2: Failing-интеграции супервиза и сноса (TDD)**
+- [x] **Step 6.2: Failing-интеграции супервиза и сноса (TDD)**
 
   **Вход:** скелет 6.1.
   **Действие:** в `RestoreDrillProcessTests.cs` (каждый Fact — своё `OwnEtcd`; AAA):
@@ -452,7 +452,7 @@
   **Проверка:** `PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~RestoreDrillProcessTests` — RED (сборка должна проходить).
   **Spec:** §3.3 п.2, AC4, AC3.
 
-- [ ] **Step 6.3: Реализация супервиза и сноса**
+- [x] **Step 6.3: Реализация супервиза и сноса**
 
   **Вход:** Step 6.2 (RED).
   **Действие:** в `RestoreDrillProcess`:
@@ -471,7 +471,7 @@
   **Проверка:** `PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~RestoreDrillProcessTests` — PASS; после серии — зачистка `docker ps -a --format '{{.Names}}' | grep pgw-` (пусто) и осиротевших сетей `docker network ls | grep -c 'pgw\|kfw-net'` → при остатках `docker network prune -f`.
   **Spec:** §3.3 п.2 (все подпункты), §2.5, AC4.
 
-- [ ] **Step 6.4: Коммит**
+- [x] **Step 6.4: Коммит**
 
   **Вход:** Step 6.3 зелёный.
   **Действие:** `git add src/PgWorker.Backups/Process/RestoreDrillProcess.cs src/tests/PgWorker.IntegrationTests/Backups/RestoreDrillProcessTests.cs && git commit -m "feat(backups): RestoreDrillProcess — супервиз drill-джоба и доводимый снос cleaning (t02-restore-drill)"`
@@ -491,7 +491,7 @@
 - Consumes: `DrillPlanner.SelectCandidate` (Task 3), `DrillJobSpec`/`DrillJobCommand` (Task 4), `BackupPlanner.NextId`, `WalChain.Check`, `WalFileName.TryParse`, `Restore.BackupLabel.WalStartSegment`, `FakeBackupS3` (сид манифеста/label/wal).
 - Produces: полный тик `RestoreDrillProcess` (потребитель — врезка Task 8).
 
-- [ ] **Step 7.1: Failing-интеграции отбора/валидации/запуска (TDD)**
+- [x] **Step 7.1: Failing-интеграции отбора/валидации/запуска (TDD)**
 
   **Вход:** Task 6 слит.
   **Действие:** добавить Fact'ы (AAA; сжатое время — интервал policy 1–2 с НЕ возможен: интервал в СУТКАХ; «просрочка» проверяется сидом готового ключа с старым `finished_unix`):
@@ -525,7 +525,7 @@
   **Проверка:** `PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~RestoreDrillProcessTests` — RED на новых, GREEN на Task 6.
   **Spec:** §3.3 п.2 (таймаут/vanished) п.3–5, AC1/AC8/AC9/AC10.
 
-- [ ] **Step 7.2: Реализация отбора, валидации, запуска**
+- [x] **Step 7.2: Реализация отбора, валидации, запуска**
 
   **Вход:** Step 7.1 (RED).
   **Действие:** в `TickAsync` после супервиза:
@@ -538,7 +538,7 @@
   **Проверка:** `PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~RestoreDrillProcessTests` — PASS; зачистка серии (как в 6.3).
   **Spec:** §3.3 п.3–5, §2.6.
 
-- [ ] **Step 7.3: Коммит**
+- [x] **Step 7.3: Коммит**
 
   **Вход:** Step 7.2 зелёный.
   **Действие:** `git add src/PgWorker.Backups/Process/RestoreDrillProcess.cs src/tests/PgWorker.IntegrationTests/Backups/RestoreDrillProcessTests.cs && git commit -m "feat(backups): отбор/валидация/запуск дрилла, таймаут и vanished (t02-restore-drill)"`
@@ -563,7 +563,7 @@
 - Consumes: `RestoreDrillProcess` (Tasks 6–7).
 - Produces: `PgWorker:Backups:Drill { IntervalDays=1, TimeoutSec=21600 }` (конфиг); runtime `BackupsRuntimeOptions.DrillIntervalDays/DrillTimeoutSec`; `IClusterProcesses.DrillAsync(snap, backups, ct)`.
 
-- [ ] **Step 8.1: Failing-тесты опций (TDD)**
+- [x] **Step 8.1: Failing-тесты опций (TDD)**
 
   **Вход:** секции Drill нет.
   **Действие:** в `BackupsOptionsTests.cs` добавить (AAA):
@@ -579,7 +579,7 @@
   **Проверка:** `dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~BackupsOptionsTests` — RED на новых.
   **Spec:** §3.2.
 
-- [ ] **Step 8.2: Реализация опций + DI + врезка + D1**
+- [x] **Step 8.2: Реализация опций + DI + врезка + D1**
 
   **Вход:** Step 8.1 (RED).
   **Действие:**
@@ -601,7 +601,7 @@
   **Проверка:** `dotnet build src/PgWorker.slnx -c Release` — без warnings-ошибок; `dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~BackupsOptionsTests|FullyQualifiedName~ReconcileLoopTests"` — PASS.
   **Spec:** §3.2, §3.5, AC10.
 
-- [ ] **Step 8.3: Коммит**
+- [x] **Step 8.3: Коммит**
 
   **Вход:** Step 8.2 зелёный.
   **Действие:** `git add -A src/PgWorker.Backups/Options.cs src/PgWorker.App/Options.cs src/PgWorker.App/Program.cs src/PgWorker.App/Loops/ src/PgWorker.Docker/Drivers/ClusterDriver.cs src/tests/PgWorker.UnitTests/App/ && git commit -m "feat(app): опции Drill + DI RestoreDrillProcess + врезка backup-drill в ReconcileLoop + D1-префикс (t02-restore-drill)"`
@@ -621,7 +621,7 @@
 - Consumes: формат policy из arch/19 §4 (Task 1).
 - Produces: POST `/api/clusters/{cluster}/backups/policy` принимает `"drill":{"interval_days":int}`; панель (Task 12) шлёт полный набор.
 
-- [ ] **Step 9.1: Failing-API-интеграции (TDD)**
+- [x] **Step 9.1: Failing-API-интеграции (TDD)**
 
   **Вход:** handler не знает drill.
   **Действие:** в `BackupsPolicyApiTests.cs` добавить (AAA; фабрика `PgWorkerApiFactory` — как существующие):
@@ -641,7 +641,7 @@
   **Проверка:** `dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~BackupsPolicyApiTests` — RED на новых.
   **Spec:** §3.6 (API воркера), AC7.
 
-- [ ] **Step 9.2: Реализация в handler**
+- [x] **Step 9.2: Реализация в handler**
 
   **Вход:** Step 9.1 (RED).
   **Действие:** `private sealed record DrillBody([property: JsonPropertyName("interval_days")] int? IntervalDays);`; в `PolicyBody` — `[property: JsonPropertyName("drill")] DrillBody? Drill;`; валидация: `var drillDays = body.Drill?.IntervalDays; if (drillDays is < 0 or > 3650) errors.Add(new("drill.interval_days", "период дрилов — целое в [0..3650]"));`; в payload: `if (drillDays is { } d) ["drill"] = new Dictionary<string, object> { ["interval_days"] = d };` (отсутствие → секция не кладётся — замещение целиком сохраняется).
@@ -649,7 +649,7 @@
   **Проверка:** `dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~BackupsPolicyApiTests` — PASS.
   **Spec:** §3.6.
 
-- [ ] **Step 9.3: Коммит**
+- [x] **Step 9.3: Коммит**
 
   **Вход:** Step 9.2 зелёный.
   **Действие:** `git add src/PgWorker.App/Api/Operations/BackupsPolicyHandler.cs src/tests/PgWorker.IntegrationTests/Api/BackupsPolicyApiTests.cs && git commit -m "feat(api): policy-API бэкапов принимает drill.interval_days [0..3650] (t02-restore-drill)"`
@@ -670,7 +670,7 @@
 - Consumes: формат arch/19 §4 / adminpanel/02 §2.3.1 (Task 1).
 - Produces (для Tasks 11–13): `DrillInfo(string Cluster, string Shard, string Id, string State, string BackupId, long StartedUnix, long? FinishedUnix, string? Phase, string? RestoredToLsn, string? Error)`; `ClusterBackupsInfo(…, IReadOnlyDictionary<string, DrillInfo>? ShardsDrills = null, BackupsPolicyInfo? Policy = null)`; `BackupsPolicyInfo(int? RetentionDays, int? RetentionWeeks, int? RetentionMonths, long? FullMaxAgeSec, bool? VerifyOnCreate, int? DrillIntervalDays)` (null-поля = отсутствуют в policy-ключе; форма фронта читает и дефолтирует).
 
-- [ ] **Step 10.1: Failing-тесты панельного парсера (TDD)**
+- [x] **Step 10.1: Failing-тесты панельного парсера (TDD)**
 
   **Вход:** панельный парсер drill-ключи не читает; policy читает только full_max_age_sec.
   **Действие:** в `AdminPanel.UnitTests/BackupsParserTests.cs` добавить (AAA):
@@ -688,7 +688,7 @@
   **Проверка:** `dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~AdminPanel.UnitTests.BackupsParserTests"` — RED на новых.
   **Spec:** §3.6 (парсер), §3.1 (backwards-compat).
 
-- [ ] **Step 10.2: Реализация модели и парсера**
+- [x] **Step 10.2: Реализация модели и парсера**
 
   **Вход:** Step 10.1 (RED).
   **Действие:** `BackupInfo.cs` — record'ы из Interfaces (doc: панель читает, панель в etcd не пишет); `ClusterBackupsInfo` — два опциональных параметра в конец. `AdminPanel.Etcd/Parsing/BackupsParser.cs` — новая ветка `segments.Length == 6 && segments[5] == "drill"` (рядом с веткой `wal`): разбор state (RUNNING|SUCCEEDED|FAILED; незнакомое → KeyParseError + пропуск), обязательны `id`/`backup_id`/`started_unix`, опциональны finished/phase/lsn/error; словарь `drills` + джойн в `ClusterBackupsInfo.ShardsDrills`; policy-ветка — полный разбор в `BackupsPolicyInfo` (retention.days/weeks/months, full_max_age_sec — прежняя логика, verify.on_create, drill.interval_days; битое поле → null). Сборка `ClusterBackupsInfo` — с `ShardsDrills` (null если пусто) и `Policy`.
@@ -696,7 +696,7 @@
   **Проверка:** `dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~AdminPanel.UnitTests"` — PASS (регресс старых парсеров).
   **Spec:** §3.6.
 
-- [ ] **Step 10.3: Коммит**
+- [x] **Step 10.3: Коммит**
 
   **Вход:** Step 10.2 зелёный.
   **Действие:** `git add src/AdminPanel.Core/BackupInfo.cs src/AdminPanel.Etcd/Parsing/BackupsParser.cs src/tests/AdminPanel.UnitTests/BackupsParserTests.cs && git commit -m "feat(panel): DrillInfo + полный policy в модели бэкапов, парсер drill-ключей (t02-restore-drill)"`
@@ -717,7 +717,7 @@
 - Consumes: `ClusterBackupsInfo.ShardsDrills`/`ShardLastCompletedUnix`/`Policy.DrillIntervalDays` (Task 10), `EtcdSnapshot.Clusters` (Active-гвард по образцу `RestoreFailedRule`).
 - Produces: kind'ы `backup-drill-failed` (critical) и `backup-drill-stale` (warning) в `AlertEngine` (DI-автоматика `InjectAsSingleton(typeof(IAlertRule))`).
 
-- [ ] **Step 11.1: Failing-тесты правил (TDD)**
+- [x] **Step 11.1: Failing-тесты правил (TDD)**
 
   **Вход:** правил нет.
   **Действие:** `BackupDrillFailedRuleTests.cs` (AAA):
@@ -746,7 +746,7 @@
   **Проверка:** `dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~BackupDrill"` — RED.
   **Spec:** §3.6 (алерты), AC5, AC6.
 
-- [ ] **Step 11.2: Реализация правил**
+- [x] **Step 11.2: Реализация правил**
 
   **Вход:** Step 11.1 (RED).
   **Действие:** `BackupDrillFailedRule` — образец `RestoreFailedRule`: Active-кластер с живым шардом + `ShardsDrills[X].State == "FAILED"` → Alert(Critical, KindName, `$"{C}/{X}"`, текст `$"дрилл восстановления шарда {X} кластера {C} провалился: {Error}"`, labels drillId/backupId/startedUnix, hint: «дрилл восстановления провалился — восстановимость из бэкапа не доказана», remedy: OperatorRunbook, action: «разбор по docs/backup-restore.md §Дрилл; восстановимость доказывается повторным дриллом после лечения»). `BackupDrillStaleRule` — образец `BackupFullStaleRule`: `intervalDays = Policy?.DrillIntervalDays ?? 1` (константа дефолта 1 — канон arch/19 §9); `intervalDays <= 0` → молчит; для шарда со значением `ShardLastCompletedUnix[X] != null` (есть COMPLETED): `lastSuccess = ShardsDrills[X] is { State: "SUCCEEDED", FinishedUnix: { } f } ? f : 0`; горит если `nowUnix - lastSuccess > 2L * intervalDays * 86400` (0 = «успешного не было» — горит при наличии полных); пустой префикс — словарь пуст, правило молчит; Alert(Warning, …, hint «восстановимость не доказывается — дриллы молча не исполняются (вечный transient/выключение)»).
@@ -754,7 +754,7 @@
   **Проверка:** `dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~AdminPanel.UnitTests"` — PASS.
   **Spec:** §3.6, AC5/AC6.
 
-- [ ] **Step 11.3: Коммит**
+- [x] **Step 11.3: Коммит**
 
   **Вход:** Step 11.2 зелёный.
   **Действие:** `git add src/AdminPanel.Core/Alerting/Rules/BackupDrill*.cs src/tests/AdminPanel.UnitTests/BackupDrill*.cs && git commit -m "feat(panel): алерты backup-drill-failed (critical) и backup-drill-stale (warning) (t02-restore-drill)"`
@@ -776,7 +776,7 @@
 - Consumes: `WorkerProxy.SendAsync` (`IWorkerApiGateway`, образец `OrphansCommands`), панельная модель Task 10, POST-эндпоинт воркера (Task 9).
 - Produces (для Task 13): панельный `PUT /api/clusters/{cluster}/backups/policy` (тело: полный набор полей формы); `BackupShardStorageDto.Drill: BackupDrillBadgeDto | null`; `BackupClusterStorageDto.Policy: BackupPolicyDto | null`.
 
-- [ ] **Step 12.1: Failing-панельные интеграции (TDD)**
+- [x] **Step 12.1: Failing-панельные интеграции (TDD)**
 
   **Вход:** эндпоинта/полей нет.
   **Действие:** `BackupsPolicyPanelApiTests.cs` (AAA; сид etcd через `EtcdSeed`/`BackupsWebFactory`):
@@ -796,7 +796,7 @@
   **Проверка:** `dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~BackupsPolicyPanelApiTests` — RED.
   **Spec:** §3.6 (DTO и UI/API), AC7.
 
-- [ ] **Step 12.2: Реализация команды, эндпоинта, DTO**
+- [x] **Step 12.2: Реализация команды, эндпоинта, DTO**
 
   **Вход:** Step 12.1 (RED).
   **Действие:**
@@ -830,7 +830,7 @@
   **Проверка:** `dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~AdminPanel.IntegrationTests"` — PASS.
   **Spec:** §3.6, §3.8.2.
 
-- [ ] **Step 12.3: Коммит**
+- [x] **Step 12.3: Коммит**
 
   **Вход:** Step 12.2 зелёный.
   **Действие:** `git add src/AdminPanel.Api/Operations/BackupsCommands.cs src/AdminPanel.Api/Operations/OperationsModule.cs src/AdminPanel.Api/Inspection/BackupStorageQuery.cs src/tests/AdminPanel.IntegrationTests/BackupsPolicyPanelApiTests.cs && git commit -m "feat(panel): команда-прокси UpdateBackupsPolicy + drill-бейдж/policy в DTO грани бэкапов (t02-restore-drill)"`
@@ -852,7 +852,7 @@
 - Consumes: DTO/эндпоинты Task 12.
 - Produces: UI-грань AC7 (поле интервала с PUT) и видимость per-shard статуса.
 
-- [ ] **Step 13.1: DTO + мутация**
+- [x] **Step 13.1: DTO + мутация**
 
   **Вход:** Task 12 слит.
   **Действие:** `dto.ts` —
@@ -873,7 +873,7 @@
   **Проверка:** `cd frontend && npm run typecheck` — без ошибок.
   **Spec:** §3.6 (DTO и UI).
 
-- [ ] **Step 13.2: UI — блок дрилла и форма интервала**
+- [x] **Step 13.2: UI — блок дрилла и форма интервала**
 
   **Вход:** Step 13.1.
   **Действие:** `BackupsShardDetailsPage.tsx`: блок «Дрилл восстановимости» (Badge: SUCCEEDED зелёный / FAILED красный / RUNNING синий с фазой `downloading|recovering|cleaning`; возраст от started/finished; `restored_to_lsn`; error-строка) — по образцу блока restore-бейджа; ниже — форма «Дрилл каждые N суток» (NumberInput 0..3650, 0 = выкл; кнопка «Сохранить»): читает текущие значения из `policy` кластера (дефолты фронта при null: 7/4/6/86400/true/1), PUTит ПОЛНЫЙ набор (`updateBackupsPolicy`) — как требует AC7/канон замещения; успех/ошибка — Notifications. `BackupsStoragePage.tsx`: в строке кластера — компактный бейдж «дрилл: ok/failed/—» (агрегат по шардам из тех же данных; реализация по вкусу существующих сводок).
@@ -881,7 +881,7 @@
   **Проверка:** `cd frontend && npm run build` — успешно (tsc + vite).
   **Spec:** §3.6, AC7.
 
-- [ ] **Step 13.3: Коммит**
+- [x] **Step 13.3: Коммит**
 
   **Вход:** Step 13.2 зелёный.
   **Действие:** `git add frontend/src/api/dto.ts frontend/src/api/queries.ts frontend/src/pages/backups-storage/BackupsShardDetailsPage.tsx frontend/src/pages/BackupsStoragePage.tsx && git commit -m "feat(frontend): статус дрилла per-shard и поле интервала с PUT-policy (t02-restore-drill)"`
@@ -900,7 +900,7 @@
 - Consumes: механика Tasks 6–9; arch/19 §3.6 (Task 1).
 - Produces: операционный текст AC11.
 
-- [ ] **Step 14.1: Раздел runbook**
+- [x] **Step 14.1: Раздел runbook**
 
   **Вход:** все предыдущие задачи слиты (кроме E2E).
   **Действие:** добавить раздел «Дрилл восстановимости»: что такое ключ `drill` и его фазы (`downloading|recovering|cleaning`; снятая фаза у терминального = контур подтверждённо снесён; `RUNNING` = идёт); чтение статуса (`etcdctl get /pgworker/backups/<C>/<X>/drill` + панель, грань «Хранилище бэкапов»); действия при FAILED (разбор `error`: «полный без манифеста» / границы WAL-дыры — лечение по разделам verify/restore; восстановимость доказывается повторным дриллом после лечения — следующий по `interval_days`); настройка интервала (curl POST policy-API c `"drill":{"interval_days":N}` + панель; 0 — выключение; применяется следующим проходом без рестарта воркера); явная строка: дрилл не влияет на Patroni-контур и synchronous-режим мастера — нод в кластере не создаёт, HA-scope не трогает, пишет только в свой ephemeral volume `pgw-backup-drill-*`; взаимосвязь с verify (verify — целостность файлов, дрилл — разворачиваемость: старт postgres и выход из recovery; зелёный verify при красном дрилле = проблема механики разворачивания — разбор по `error` статуса дрилла).
@@ -908,7 +908,7 @@
   **Проверка:** визуально; grep `Дрилл восстановимости` docs/backup-restore.md.
   **Spec:** §3.7, AC11.
 
-- [ ] **Step 14.2: Коммит**
+- [x] **Step 14.2: Коммит**
 
   **Вход:** Step 14.1.
   **Действие:** `git add docs/backup-restore.md && git commit -m "docs: раздел «Дрилл восстановимости» в runbook бэкапов (t02-restore-drill)"`
@@ -927,7 +927,7 @@
 - Consumes: вся система (Tasks 2–9); `E2eFixture.WaitForAsync`; образ `pgworker-backup:e2e` (`E2eEnvironment.JobImage`); `DockerTrait.SkipIfUnavailable`.
 - Produces: кейс-маркер `Drill_Succeeds_CleansUp` для мерж-гейта (Task 16).
 
-- [ ] **Step 15.1: Кейс Drill_Succeeds_CleansUp (маркер)**
+- [x] **Step 15.1: Кейс Drill_Succeeds_CleansUp (маркер)**
 
   **Вход:** хелперы E2eBackupScenarios изучены (Backup_Verify_Ok_OnCreate — образец).
   **Действие:** добавить Fact (AAA; ОДИН Fact — одно окружение, teardown в `DisposeAsync` базового класса уже есть — `Fx` поле):
@@ -1003,7 +1003,7 @@
   **Проверка:** `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~Drill_Succeeds_CleansUp` — PASS; после прогона — зачистка серии: контейнеры `docker ps -a --format '{{.Names}}' | grep pgw-` (пусто), сети `docker network ls | grep kfw-net` → `docker network prune -f` при остатках.
   **Spec:** §4 Фаза 5, AC1–AC5, AGENTS.base §12.
 
-- [ ] **Step 15.2: Кейс Drill_Failed_OnCorruptedWal**
+- [x] **Step 15.2: Кейс Drill_Failed_OnCorruptedWal**
 
   **Вход:** Step 15.1 зелёный; серия зачищена.
   **Действие:** добавить Fact (AAA; детерминированный провал без гонки: запуск дрилов отключен глобально env, порча WAL, затем ВКЛЮЧЕНИЕ policy-полем — тестирует и применение policy на лету):
@@ -1065,7 +1065,7 @@
   **Проверка:** `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~Drill_Failed_OnCorruptedWal` — PASS; зачистка серии (как 15.1).
   **Spec:** §4 Фаза 5 (негативная ветка), AC3/AC5.
 
-- [ ] **Step 15.3: Коммит**
+- [x] **Step 15.3: Коммит**
 
   **Вход:** Steps 15.1–15.2 зелёные.
   **Действие:** `git add src/tests/PgWorker.IntegrationTests/E2e/E2eBackupScenarios.cs && git commit -m "test(e2e): Drill_Succeeds_CleansUp + Drill_Failed_OnCorruptedWal (t02-restore-drill)"`
@@ -1085,7 +1085,7 @@
 - Consumes: все задачи слиты; AGENTS.md (мерж-гейт E2E на свежем Release); правило мерж-гейта трека reliability.
 - Produces: ветка, готовая к мержу (сам мерж в `main` — ТОЛЬКО по отдельной команде пользователя).
 
-- [ ] **Step 16.1: Полный прогон без docker (юниты + интеграции)**
+- [x] **Step 16.1: Полный прогон без docker (юниты + интеграции)**
 
   **Вход:** Tasks 1–15 слиты.
   **Действие:** `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Release` — все тестовые проекты (PgWorker/AdminPanel/Kafka/Valkey/Shared юниты и интеграции без docker-гейтов).
@@ -1093,7 +1093,7 @@
   **Проверка:** итоговая строка `Passed!` без failed; зачистка остаточных контейнеров/сетей серии при их появлении.
   **Spec:** AC12.
 
-- [ ] **Step 16.2: Docker-E2E кейс-маркеры на свежем Release**
+- [x] **Step 16.2: Docker-E2E кейс-маркеры на свежем Release**
 
   **Вход:** Step 16.1 зелёный.
   **Действие:** серия 1 — `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~Scale_AddEmptyShard` (кейс-маркер AGENTS.md; E2eFixture соберёт Release сама — инкрементальный no-op); дождаться финальной строки, зачистить серию (контейнеры/сети). Серия 2 — `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~Drill_Succeeds_CleansUp|FullyQualifiedName~Drill_Failed_OnCorruptedWal"` (drill-кейс гейта); зачистить серию. НЕ запускать серию поверх незачищенной предыдущей.
@@ -1101,7 +1101,7 @@
   **Проверка:** `Passed!` в обеих сериях; `docker ps -a --format '{{.Names}}' | grep -c pgw-` → 0; `docker network ls | grep -c kfw-net` → 0 (иначе `docker network prune -f` и разбор причины).
   **Spec:** AC12, AGENTS.md (мерж-гейт), §4 Фаза 5.
 
-- [ ] **Step 16.3: Снятие roadmap-тега + строка reliability-report (тем же коммитом)**
+- [x] **Step 16.3: Снятие roadmap-тега + строка reliability-report (тем же коммитом)**
 
   **Вход:** Step 16.2 зелёный.
   **Действие:** ОДИН коммит: (1) `arch/roadmap/reliability.md` — удалить пункт `**t02-restore-drill**` (строку из списка задач; проверить `←`-зависимости других пунктов на t02 — их нет по текущему файлу, но проверить grep `t02-restore-drill`); (2) `arch/roadmap/reliability-report.md` — перенести строку t02 из перечня открытых разрывов в «Сделано» (формат раздела), в сводке D убрать фразу «восстановимость не доказывается регулярно — drill нет (t02)» и добавить краткое описание дрилла (по формату сводки). Никаких пометок «закрыта» в надёжности списков.
@@ -1113,7 +1113,7 @@
   **Проверка:** `grep -rn "t02-restore-drill" arch/roadmap/` — 0 вхождений (кроме, при наличии, исторических сносок отчёта «Сделано» — там строка остаётся с merge-фактом); `git show --stat HEAD` — ровно 2 файла.
   **Spec:** AC12, roadmap README (мерж-гейт трека).
 
-- [ ] **Step 16.4: Итоговая готовность ветки (мерж — по команде пользователя)**
+- [x] **Step 16.4: Итоговая готовность ветки (мерж — по команде пользователя)**
 
   **Вход:** Step 16.3 выполнен.
   **Действие:** `git log --oneline main..t02-restore-drill` — сводка коммитов для ревью; доложить пользователю: план исполнен, гейты зелёные, ветка готова к ревью/мержу. В `main` НЕ мержить и НЕ пушить — только по явной команде.
