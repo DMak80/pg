@@ -174,6 +174,12 @@ per-install API-CA; клиенты без валидного серта — от
   OOM-килл — риск R3).
 - Сам воркер — контейнер с `docker.sock`, поставляется через
   `deploy/docker-compose.yml` (сборка — t02, по образцу KafkaWorker).
+- **Два инстанса по умолчанию** (t07): как у KafkaWorker — второй сервис
+  `valkeyworker-2` того же образа (`VWK_API_HOST_PORT2`, ряд 8082/8085,
+  уникальный `Api:AdvertiseUrl`), общие на оба инстанса тома `vw-snapshots` и
+  `vw-api-tls:ro`, уникальность — случайный `InstanceId` без env-идентификации.
+  Dev-стенд — `as-valkeyworker-2` (advertise `https://valkeyworker-2:8080` по
+  compose-DNS, без хост-публикации порта).
 
 Клиент Engine API — общий `Shared.Docker` (порт t07-унификации движка;
 канон-суперсет: start 304-идемпотентен, create при отсутствии образа —

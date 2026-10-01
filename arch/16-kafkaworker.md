@@ -205,6 +205,14 @@ kafka-брокеры SASL_SSL per-cluster CA §2.3, etcd) его не испол
   (`docker/KafkaWorker.Dockerfile`). **Env-секреты per-install — только
   TLS API** (§1.1): per-cluster-секреты (`app_password`, `admin_password`,
   `ca_key`) живут в etcd, генерирует воркер (§4).
+- **Два инстанса по умолчанию** (t07): деплой-рецепт поднимает второй сервис
+  `kafkaworker-2` того же образа — уникальный хост-порт публикации
+  (`KFW_API_HOST_PORT2`, ряд 8081/8084) и уникальный `Api:AdvertiseUrl`
+  (lease-ключ `/kafkaworker/api/<InstanceId>`), общие на оба инстанса тома
+  `kfw-snapshots` и `kfw-api-tls:ro` (лидерство снапшотов мигрирует между
+  инстансами), уникальность — случайный `InstanceId` (§4) без env-идентификации.
+  Dev-стенд — симметрично: `as-kafkaworker-2` (advertise по compose-DNS
+  `https://kafkaworker-2:8080`, без хост-публикации порта).
 
 ### 2.2. Канонический env-набор брокера (генерирует NodeEnvBuilder)
 
