@@ -144,11 +144,35 @@ Go-1.24-клиентами с ошибкой `x509: certificate is not standards
 | `prom/alertmanager:v0.28.1` | dev-стенд (метрики) |
 | `prom/prometheus:v3.14.0` | dev-стенд (метрики) |
 | `python:3.12-alpine` | сайдкар эмулятора Patroni (dev-stand) |
-| `quay.io/coreos/etcd:v3.5.21` | etcd-контур стенда, E2E/интеграция-фикстуры (×5) |
+| `quay.io/coreos/etcd:v3.5.21` | etcd-контур: стенд ×3 (HA), deploy/etcd ×3 (HA, по узлу на хост), E2E/интеграция-фикстуры (×5) |
 
 При смене версии образа в коде/компоузе — обновить строку в `images.txt` и
 перемазеркалировать (старую версию из registry можно удалить — см. «Удаление
 образа» в инструкции registry).
+
+## HA-etcd контур контроль-плейна (t09)
+
+Канон — `arch/04-deploy-etcd.md` §8 (два применения одного рецепта; параметры,
+advertised-правила потребителей, кворум-семантика, чек-лист). Кратко:
+
+- **Подъём (прод)**: скопировать `deploy/etcd/{docker-compose.yml,etcd.env}` на
+  3 РАЗНЫХ docker-хоста; в `etcd.env` каждого — свой `NODE_NAME/NODE_IP`
+  (`PEERS`/`CLUSTER_TOKEN` одинаковые; образ — `192.168.0.1:5000/quay.io/coreos/etcd:v3.5.21`).
+  Первый старт: `INITIAL_CLUSTER_STATE=new` на всех трёх, `docker compose up -d`
+  в пределах election-timeout друг от друга; после сбора кворума перевести в
+  `existing` на всех узлах (arch/04 §5). Воркеры/панель получают список
+  `*_ETCD_ENDPOINT_0..2` / `AdminPanel__Etcd__Endpoints__0..2`.
+- **Стендовое зеркало**: дев-стенд всегда поднимает тот же 3-узловой контур,
+  что рецепт `deploy/etcd` (`as-etcd-1/2/3`, публикации 2379/2381/2383,
+  env `ETCD{1,2,3}_HOST_PORT`).
+- **Чеки**: стендовый `dev-stand/adminpanel/checks/43-etcd-ha.sh` (member list
+  3 started → stop узла: запись/healthz/master-ключ живы → start → 3/3);
+  прод-чек-лист — arch/04 §8 п.5 (`endpoint health --cluster`, панель
+  `/api/etcd/status` = 3 члена/единый leader).
+- **Потеря узла/кворума**: 1 узел — не-событие (кворум 2/3); 2 узла —
+  контроль-плейн заморожен, датаплейн живёт сам, восстановление — arch/09 §4;
+  замена узла навсегда — `member remove` + `member add` + data-dir заново
+  (arch/04 §8 п.4).
 
 ## Управление сертом API воркера из панели
 
