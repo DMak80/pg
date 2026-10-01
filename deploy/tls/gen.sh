@@ -9,7 +9,7 @@
 set -euo pipefail
 DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$DIR"
-SERVER_SAN="DNS:kafkaworker,DNS:valkeyworker,DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1"
+SERVER_SAN="DNS:kafkaworker,DNS:kafkaworker-2,DNS:valkeyworker,DNS:valkeyworker-2,DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1"
 DAYS=3650
 
 if [ ! -f ca.pem ]; then
@@ -33,8 +33,10 @@ subjectAltName=$san"
   rm -f "$name.csr"
 }
 
-# t03: старый server-серт без DNS:valkeyworker — перегенерируем (CA жив).
-if [ ! -f server.crt ] || ! openssl x509 -in server.crt -noout -text 2>/dev/null | grep -q 'DNS:valkeyworker'; then
+# t03+t07: старый server-серт без DNS:valkeyworker (t03) или без
+# DNS:kafkaworker-2/DNS:valkeyworker-2 (стендовые вторые инстансы, t07 —
+# Prometheus проверяет имя таргета против SAN) — перегенерируем (CA жив).
+if [ ! -f server.crt ] || ! openssl x509 -in server.crt -noout -text 2>/dev/null | grep -q 'DNS:kafkaworker-2'; then
   issue server kafkaworker serverAuth "$SERVER_SAN"
 fi
 
