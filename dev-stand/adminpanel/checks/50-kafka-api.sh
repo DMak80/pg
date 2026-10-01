@@ -137,16 +137,34 @@ c="$(code -X DELETE "$BASE/api/kafka/clusters/events/brokers/broker1")"
 [ "$c" = 409 ] || { echo "❌ DELETE broker1 (controller) = $c, ожидался 409"; exit 1; }
 echo "  DELETE brokers/broker1 (controller) -> 409"
 
-# 11) DELETE cluster pending → 204; после тика — бейдж TO_REMOVE.
+# 11) DELETE cluster pending → 204; демонтаж подтверждаем исчезновением:
+#     etcd-префикс и координация чисты, кластера нет в панельном списке.
+#     Бейдж TO_REMOVE в панели НЕ ассертим: для пустого NOT_INITIALIZED-кластера
+#     он — переходное состояние <1 c (первый же тик воркера, 5 c, доходит X1–X2
+#     и сносит префикс /kafka/clusters/<C>/ целиком), а снапшот панели тикает
+#     независимо (3 c) — поллинг бейджа гоняется с демонтажом и флеймит
+#     (t26, диагностика 2026-10-01). Исчезновение — единственный
+#     детерминированный наблюдаемый исход (канон: 55/59 финальные шаги, 51 §8).
 c="$(code -X DELETE "$BASE/api/kafka/clusters/pending")"
 [ "$c" = 204 ] || { echo "❌ DELETE pending = $c, ожидался 204"; exit 1; }
+# Демонтаж: тик воркера (5 c) + мгновенные фазы; чистота etcd первична.
 for i in $(seq 1 15); do
-  api /api/kafka/clusters | jq -e '([.[] | select(.name=="pending")][0].state == "TO_REMOVE")' >/dev/null && break
-  sleep 1
+  left="$(docker compose exec -T etcd etcdctl get /kafka/clusters/pending/ --prefix --keys-only </dev/null 2>/dev/null | grep -v '^$' || true)"
+  [ -z "$left" ] && break
+  sleep 2
 done
-api /api/kafka/clusters | jq -e '([.[] | select(.name=="pending")][0].state == "TO_REMOVE")' >/dev/null \
-  || { echo "❌ pending не получил бейдж TO_REMOVE"; exit 1; }
-echo "  DELETE pending -> 204; бейдж TO_REMOVE виден"
+left="$(docker compose exec -T etcd etcdctl get /kafka/clusters/pending/ --prefix --keys-only </dev/null 2>/dev/null | grep -v '^$' || true)"
+[ -z "$left" ] || { echo "❌ префикс /kafka/clusters/pending/ пережил демонтаж: $left"; exit 1; }
+coord="$(docker compose exec -T etcd etcdctl get /kafkaworker/ --prefix --keys-only </dev/null 2>/dev/null | grep pending || true)"
+[ -z "$coord" ] || { echo "❌ остаточные kafkaworker-ключи pending: $coord"; exit 1; }
+# Список панели догоняет удаление тиком снапшота (3 c) — поллинг, не одиночный выстрел.
+for i in $(seq 1 15); do
+  api /api/kafka/clusters | jq -e 'any(.[]; .name == "pending") | not' >/dev/null 2>&1 && break
+  sleep 2
+done
+api /api/kafka/clusters | jq -e 'any(.[]; .name == "pending") | not' >/dev/null \
+  || { echo "❌ pending не исчез из панельного списка"; exit 1; }
+echo "  DELETE pending -> 204; демонтаж подтверждён: ключей pending нет, из панели исчез"
 
 # 12) Ротация events: заявка уже стоит (сид) → 409.
 c="$(code -X POST "$BASE/api/kafka/clusters/events/app-password/rotate")"
