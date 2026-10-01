@@ -808,6 +808,19 @@ export interface BackupClusterStorageDto {
   cluster: string;
   sizeBytes: number;
   shards: BackupShardSummaryDto[];
+  // Полная policy кластера (reliability t02); null — policy-ключа нет, форма дефолтирует.
+  policy: BackupPolicyDto | null;
+}
+
+// Полная policy кластера (reliability t02, arch/19 §4): null-поля = отсутствуют
+// в policy-ключе — форма фронта читает и дефолтирует.
+export interface BackupPolicyDto {
+  retentionDays: number | null;
+  retentionWeeks: number | null;
+  retentionMonths: number | null;
+  fullMaxAgeSec: number | null;
+  verifyOnCreate: boolean | null;
+  drillIntervalDays: number | null;
 }
 
 export interface BackupOrphanDto {
@@ -887,6 +900,18 @@ export interface BackupShardStorageDto {
   wal: BackupWalDto | null;
   activeRestore: BackupRestoreBadgeDto | null;
   reconcileNote: string | null;
+  // Последний/текущий дрилл шарда (reliability t02, arch/19 §3.6); null — ключа нет.
+  drill: BackupDrillBadgeDto | null;
+}
+
+// Статус дрилла шарда (reliability t02): state/фаза/времена/LSN/error.
+export interface BackupDrillBadgeDto {
+  state: string;
+  phase: string | null;
+  startedUnix: number;
+  finishedUnix: number | null;
+  restoredToLsn: string | null;
+  error: string | null;
 }
 
 // GET /api/backups/objects — on-demand постраничный list-v2.

@@ -359,6 +359,11 @@ public sealed class BackupsOptions
     /// per-cluster и глобального лидер-прохода; TTL сирот S3.</summary>
     public BackupsSupervisorOptions Supervisor { get; set; } = new();
 
+    /// <summary>Дрилл восстановимости (reliability t02, arch/19 §9): дефолт
+    /// периода дрилов шардов кластеров без policy-поля drill.interval_days
+    /// (0 — глобальное выключение новых запусков) и бюджет активного дрилла.</summary>
+    public BackupsDrillOptions Drill { get; set; } = new();
+
     /// <summary>Runtime-опции подсистемы бэкапов: склейка Backups-секции
     /// (t02: джобы/ретраи; t03: advertised-S3/Wal-пороги; t06: ретенция/квота)
     /// — именованными аргументами: record расширялся с обеих сторон.</summary>
@@ -397,7 +402,9 @@ public sealed class BackupsOptions
         SupervisorOrphanTtlSec: Supervisor.OrphanTtlSec,
         JobFullTimeoutSec: Job.FullTimeoutSec,
         JobVerifyTimeoutSec: Job.VerifyTimeoutSec,
-        JobRestoreTimeoutSec: Job.RestoreTimeoutSec);
+        JobRestoreTimeoutSec: Job.RestoreTimeoutSec,
+        DrillIntervalDays: Drill.IntervalDays,
+        DrillTimeoutSec: Drill.TimeoutSec);
 
     /// <summary>Fail-fast старта (образец TLS arch/14 §2.2.1): Enabled=true
     /// обязан иметь полный S3-комплект; false — подсистема не активна.
@@ -417,7 +424,20 @@ public sealed class BackupsOptions
            && Supervisor.OrphanTtlSec >= 0          // 0 — авто-удаление выключено (только алерт)
            && Job.FullTimeoutSec > 0
            && Job.VerifyTimeoutSec > 0
-           && Job.RestoreTimeoutSec > 0;
+           && Job.RestoreTimeoutSec > 0
+           && Drill.IntervalDays >= 0             // 0 — глобальное выключение новых запусков
+           && Drill.TimeoutSec > 0;               // бюджет активного дрилла обязателен
+}
+
+/// <summary>Дрилл восстановимости (reliability t02, arch/19 §9): IntervalDays —
+/// дефолт периода дрилов (суток) для кластеров без policy-поля drill.interval_days,
+/// 0 — глобальное выключение новых запусков при доводке активных; TimeoutSec —
+/// бюджет активного дрилла от started_unix → FAILED drill-timeout.</summary>
+public sealed class BackupsDrillOptions
+{
+    public int IntervalDays { get; set; } = 1;
+
+    public int TimeoutSec { get; set; } = 21600;
 }
 
 /// <summary>Параметры ретенционного прохода (t06, arch/19 §9): период и

@@ -81,7 +81,16 @@ public sealed record BackupStorageDto(
     long InventoryUpdatedUnix, string? InventoryError);
 
 public sealed record BackupClusterStorageDto(
-    string Cluster, long SizeBytes, IReadOnlyList<BackupShardSummaryDto> Shards);
+    string Cluster, long SizeBytes, IReadOnlyList<BackupShardSummaryDto> Shards,
+    // reliability t02: policy кластера (форма мутации интервала дрилов);
+    // null — policy-ключа нет, фронт дефолтирует.
+    BackupPolicyDto? Policy = null);
+
+// Полная policy кластера (reliability t02): null-поля = отсутствуют в
+// policy-ключе — форма фронта читает и дефолтирует.
+public sealed record BackupPolicyDto(
+    int? RetentionDays, int? RetentionWeeks, int? RetentionMonths,
+    long? FullMaxAgeSec, bool? VerifyOnCreate, int? DrillIntervalDays);
 
 public sealed record BackupShardSummaryDto(
     string Cluster, string Shard, long SizeBytes,
@@ -102,7 +111,13 @@ public sealed record BackupShardStorageDto(
     IReadOnlyList<BackupFullDto> Fulls,
     BackupWalDto? Wal,
     BackupRestoreBadgeDto? ActiveRestore, // state/phase/error (без кнопок — arch/19 §3.5)
-    string? ReconcileNote);               // сводная пометка (напр. «объекты без ключа: 2»)
+    string? ReconcileNote,                // сводная пометка (напр. «объекты без ключа: 2»)
+    BackupDrillBadgeDto? Drill = null);   // последний/текущий дрилл (reliability t02)
+
+// Статус дрилла шарда (reliability t02, arch/19 §3.6): state/фаза/времена/LSN/error.
+public sealed record BackupDrillBadgeDto(
+    string State, string? Phase, long StartedUnix, long? FinishedUnix,
+    string? RestoredToLsn, string? Error);
 
 public sealed record BackupFullDto(
     string Id, long? SizeBytes, long? ObjectCount, long? LastModifiedUnix,
@@ -172,7 +187,7 @@ public static class BackupStorageMappers
             Buckets: minio.Buckets,
             Etcd: MapEtcdStorage(snapshot.BackupStorage),
             LiveUsedBytes: minio.UsedBytes,
-            Clusters: MapClusters(minio.Clusters, reconcile),
+            Clusters: MapClusters(minio.Clusters, reconcile, snapshot.Backups),
             ForeignPrefixes: minio.ForeignPrefixes,
             Orphans: MergeOrphans(reconcile.OrphanPrefixes, snapshot.BackupOrphans, orphanTtlSec, nowUnix),
             InventoryUpdatedUnix: minio.UpdatedAtUnix,
@@ -191,7 +206,8 @@ public static class BackupStorageMappers
             storage.State.ToString().ToUpperInvariant(), storage.UpdatedUnix);
 
     private static IReadOnlyList<BackupClusterStorageDto> MapClusters(
-        IReadOnlyList<MinioClusterNode> clusters, BackupReconcileInfo reconcile)
+        IReadOnlyList<MinioClusterNode> clusters, BackupReconcileInfo reconcile,
+        IReadOnlyList<ClusterBackupsInfo> etcdBackups)
     {
         var s3OnlyByShard = reconcile.Fulls
             .Where(f => f.Status == BackupFullReconcileStatus.S3Only)
@@ -202,6 +218,7 @@ public static class BackupStorageMappers
             .Select(o => o.Prefix)
             .ToHashSet();
 
+        var policies = etcdBackups.ToDictionary(b => b.Cluster, b => b.Policy);
         return [.. clusters.Select(c => new BackupClusterStorageDto(
             c.Cluster,
             c.SizeBytes,
@@ -212,8 +229,17 @@ public static class BackupStorageMappers
                 s.Fulls.Count,
                 s.Wal?.SegmentCount ?? 0,
                 HasS3Only: s3OnlyByShard.Contains((s.Cluster, s.Shard)),
-                Orphan: orphanPrefixes.Contains($"{s.Cluster}/{s.Shard}")))]))];
+                Orphan: orphanPrefixes.Contains($"{s.Cluster}/{s.Shard}")))],
+            policies.TryGetValue(c.Cluster, out var policy)
+                ? MapPolicy(policy)
+                : null))];
     }
+
+    // Полная policy → DTO (reliability t02): null-поля как есть — фронт дефолтирует.
+    private static BackupPolicyDto? MapPolicy(BackupsPolicyInfo? policy)
+        => policy is null ? null : new BackupPolicyDto(
+            policy.RetentionDays, policy.RetentionWeeks, policy.RetentionMonths,
+            policy.FullMaxAgeSec, policy.VerifyOnCreate, policy.DrillIntervalDays);
 
     // Сироты: панельная сверка (с джойном на реестр) ∪ записи реестра без
     // S3-факта (воркер уже удалил — TTL-строка оператору), слияние по Prefix.
@@ -323,12 +349,18 @@ public static class BackupStorageMappers
         if (deleting > 0)
             notes.Add($"идёт удаление: {deleting}");
 
+        var drill = etcdCluster?.ShardsDrills?.TryGetValue(shard, out var drillInfo) == true
+            ? new BackupDrillBadgeDto(drillInfo.State, drillInfo.Phase, drillInfo.StartedUnix,
+                drillInfo.FinishedUnix, drillInfo.RestoredToLsn, drillInfo.Error)
+            : null;
+
         return new BackupShardStorageDto(
             cluster, shard, fulls, wal,
             restore is null
                 ? null
                 : new BackupRestoreBadgeDto(restore.State, restore.Phase, restore.Error),
-            notes.Count > 0 ? string.Join("; ", notes) : null);
+            notes.Count > 0 ? string.Join("; ", notes) : null,
+            drill);
     }
 }
 

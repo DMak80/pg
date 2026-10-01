@@ -123,6 +123,7 @@ Scope = `<C>-<X>`, глобально уникален. Связь со шард
 | `/pgworker/backups/storage` | JSON `{"used_bytes":<n>,"quota_bytes"?<n>,"used_percent"?<n>,"state":"OK"\|"WARN"\|"CRIT","updated_unix":<unix>}` (канон — arch/19 §4) | `BackupsInfo.Storage` (t06) | занятость bucket бэкапов установки: пишет ретенционный проход PgWorker (t06; ключ глобальный — вне per-cluster префиксов); панель читает в снапшот префикса `/pgworker/backups/` и зажигает `backup-storage-quota` по `state` (алерт уровня каталога 03 §4); отображается в грани "Хранилище бэкапов" (t08: карточка «Место» — used/quota/вердикт воркера + штамп live-инвентаря) |
 | `/pgworker/backups/orphan-holds/<C>/<X>` | JSON `{"set_unix":<unix>,"set_by":"operator"\|"panel"}` (канон — arch/19 §4, reliability t04) | `BackupOrphansInfo.Holds` (§3) | hold-флаги сирот (DR-hold): панель читает для индикации (бейдж «hold», текст алерта `backup-orphan`) и ставит/снимает через мутации §9.10 — API PgWorker, панель в etcd не пишет; sweeper воркера гасит ключи несирот (воскрес/исчез) |
 | `/pgworker/backups/orphan-deletes/<C>/<X>` | JSON `{"requested_unix":<unix>,"requested_by":"operator"\|"panel"}` (канон — arch/19 §4, reliability t04) | `BackupOrphansInfo.DeleteRequests` (§3) | заявки явного удаления сирот: панель читает (индикация «к удалению» до прохода sweeper'а) и ставит через confirm-мутацию §9.10 (API PgWorker); исполняет sweeper воркера ближайшим проходом, заявка гасится вместе с записью |
+| `/pgworker/backups/<C>/<X>/drill` | JSON-статус дрилла шарда `{"state":"RUNNING"\|"SUCCEEDED"\|"FAILED","id","backup_id","started_unix","finished_unix"?,"phase"?,"restored_to_lsn"?,"error"?}` (канон — arch/19 §4, reliability t02) | `DrillInfo` (§3) | панель читает, пишет только PgWorker (держатель клэйма `<C>`); кормит алерты `backup-drill-failed`/`backup-drill-stale` (03 §4) и per-shard статус грани «Хранилище бэкапов»; `phase` — `downloading\|recovering` (фазы джоба) \| `cleaning` (идёт снос тестового контура); снятая фаза у терминального ключа = контур подтверждённо снесён; ключ перезаписывается каждым новым дриллом; битый JSON — parseError-запись (толерантный читатель: нет ключей — правила дрилла молчат) |
 
 ### 2.3.2. `/kafkaworker/api/…` — дискавери API KafkaWorker
 
@@ -906,6 +907,26 @@ UI грани «Хранилище бэкапов»: в строке сирот�
 (confirm-модал «введи `<C>/<X>`»). Алерт `backup-orphan` различает:
 защищённые — «удаление только явной командой» (Remedy OperatorRunbook),
 незащищённые — прежний остаток TTL.
+
+### 9.12. Мутация policy бэкапов: интервал дрилов (reliability t02)
+
+Панель НЕ пишет в etcd — мутация интервала дрилов шардов кластера
+(`policy.drill.interval_days`, arch/19 §4) — прокси в policy-API воркера:
+
+`PUT /api/clusters/{c}/backups/policy` (панель) → команда
+`UpdateBackupsPolicyCommand` → `POST /api/clusters/{c}/backups/policy`
+API PgWorker (arch/14 §1.1, приём BackupsPolicyHandler) ПОЛНЫМ телом —
+retention + full_max_age_sec + verify + drill (канон замещения целиком:
+панель в своей форме всегда шлёт полный набор полей, включая текущее
+значение drill, прочитанное из policy-ключа/дефолта). Поле «Дрилл каждые
+N суток» (0 = выкл, диапазон валидации 0..3650; истина валидации —
+сервер воркера, панель дублирует для UX) — в грани «Хранилище бэкапов»
+кластера. Применяется следующим проходом воркера без рестарта
+(тик читает policy-ключ). Коды — как у прочих прокси-мутаций §9: 200/204
+успех, 400 валидация воркера (перечень полей), 503 живых инстансов
+воркера нет, 404 кластера нет. Панель парсер policy — толерантен:
+policy без секции `drill` читается без ошибок (дефолт), drill-ключей нет —
+правила дрилла молчат.
 
 ## 10. Kafka (чтение + записи панели)
 

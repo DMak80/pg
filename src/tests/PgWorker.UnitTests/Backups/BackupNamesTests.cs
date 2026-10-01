@@ -25,4 +25,22 @@ public class BackupNamesTests
         // Assert — начинается с pgw-backup-restore- (чистка D1/pgw-backup-*).
         name.Should().Be("pgw-backup-restore-c1-shard1-20260911120000Z");
     }
+
+    // AAA: имена дрилла детерминированы (takeover-инвариант), volume = имя
+    // контейнера (reliability t02, arch/19 §3.6).
+    [Fact]
+    public void DrillNames_AreDeterministic()
+    {
+        // Act
+        var key = BackupNames.DrillKey("c1", "shard1");
+        var container = BackupNames.DrillContainerName("c1", "shard1", "20261001120000Z");
+        var volume = BackupNames.DrillVolumeName("c1", "shard1", "20261001120000Z");
+        var prefix = BackupNames.DrillJobContainerPrefix("c1");
+
+        // Assert
+        key.Should().Be("/pgworker/backups/c1/shard1/drill");
+        container.Should().Be("pgw-backup-drill-c1-shard1-20261001120000Z");
+        volume.Should().Be(container);
+        prefix.Should().Be("pgw-backup-drill-c1-");
+    }
 }

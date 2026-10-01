@@ -253,6 +253,13 @@ internal sealed class ReconcileLoop(
                         await RunClusterOpAsync(cluster, "backup-restore",
                             () => processes.RestoreAsync(snap, backups, ct), ct);
 
+                    // Дрилл восстановимости (reliability t02, arch/19 §3.6): после backup-restore
+                    // (гвард restore-владения отработал в отборе), до repair. Зовётся ВСЕГДА:
+                    // Backups:Enabled=false / интервал 0 — стоп-семантика в процессе (доводка
+                    // активного дрилла и сноса контура, новых запусков нет).
+                    await RunClusterOpAsync(cluster, "backup-drill",
+                        () => processes.DrillAsync(snap, backups, ct), ct);
+
                     // Репарация брошенных переездов (spec §3.5, arch/14 §5 K): синтетические
                     // заявки до moves — этот же тик начнёт их обработку (старейшая заявка).
                     await RunClusterOpAsync(cluster, "repair",

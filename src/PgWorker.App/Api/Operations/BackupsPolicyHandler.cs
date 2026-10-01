@@ -20,7 +20,13 @@ public sealed partial class BackupsPolicyHandler(IEtcdGateway gateway, string[] 
     private sealed record PolicyBody(
         [property: JsonPropertyName("retention")] RetentionBody? Retention,
         [property: JsonPropertyName("full_max_age_sec")] long? FullMaxAgeSec,
-        [property: JsonPropertyName("verify")] VerifyBody? Verify);
+        [property: JsonPropertyName("verify")] VerifyBody? Verify,
+        [property: JsonPropertyName("drill")] DrillBody? Drill);
+
+    // reliability t02 (arch/19 §4/§14 §1.1): interval_days — период дрилов
+    // шардов кластера в сутках; null/отсутствие секции → поля в policy нет.
+    private sealed record DrillBody(
+        [property: JsonPropertyName("interval_days")] int? IntervalDays);
 
     private sealed record RetentionBody(
         [property: JsonPropertyName("days")] int? Days,
@@ -77,16 +83,26 @@ public sealed partial class BackupsPolicyHandler(IEtcdGateway gateway, string[] 
             errors.Add(new("retention.months", "месячная гранула — целое в [0..120]"));
         if (maxAge < 600)
             errors.Add(new("full_max_age_sec", "минимум 600 c"));
+        // reliability t02: период дрилов — целое в [0..3650]; 0 — дрилл
+        // кластера выключен; поле отсутствует → секции drill в policy не будет.
+        var drillDays = body.Drill?.IntervalDays;
+        if (drillDays is < 0 or > 3650)
+            errors.Add(new("drill.interval_days", "период дрилов — целое в [0..3650]"));
         if (errors.Count > 0)
             return Result<string>.Failed(new BackupsPolicyValidationException(errors));
 
-        // 5) Put полного значения формата канона (тело замещает политику целиком).
-        var payload = JsonSerializer.Serialize(new Dictionary<string, object>
+        // 5) Put полного значения формата канона (тело замещает политику целиком):
+        // drill в теле отсутствует → секция НЕ кладётся (кластер на глобальном
+        // дефолте конфига Drill:IntervalDays, reliability t02).
+        var policyBody = new Dictionary<string, object>
         {
             ["retention"] = new Dictionary<string, object> { ["days"] = days, ["weeks"] = weeks, ["months"] = months },
             ["full_max_age_sec"] = maxAge,
             ["verify"] = new Dictionary<string, object> { ["on_create"] = onCreate },
-        });
+        };
+        if (drillDays is { } d)
+            policyBody["drill"] = new Dictionary<string, object> { ["interval_days"] = d };
+        var payload = JsonSerializer.Serialize(policyBody);
         var put = await EtcdFailover.CallAsync(endpoints,
             endpoint => gateway.PutAsync(endpoint, $"/pgworker/backups/{cluster}/policy", payload, null, ct));
         if (!put.IsSuccess)

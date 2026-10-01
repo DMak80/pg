@@ -621,4 +621,112 @@ public void Parse_FullKey_UnknownState_Tolerated()
     var full = result.Clusters.Single(c => c.Cluster == "demo").ShardsFulls!["s1"].Single();
     full.State.Should().Be("WEIRD");
 }
+
+    // ---- reliability t02: drill-ключи + полная policy ----
+
+    // AAA: <X>/drill → DrillInfo в ShardsDrills (state/фазы/lsn/error).
+    [Fact]
+    public void Parse_DrillKey_FillsShardsDrills()
+    {
+        // Arrange — успешный дрилл шарда s1.
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/p1/s1/drill",
+                """{"state":"SUCCEEDED","id":"20261001120000Z","backup_id":"20261001090000Z","started_unix":100,"finished_unix":400,"restored_to_lsn":"0/42"}""",
+                1),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs);
+
+        // Assert
+        result.Errors.Should().BeEmpty();
+        var drill = result.Clusters.Single(c => c.Cluster == "p1").ShardsDrills!["s1"];
+        drill.Cluster.Should().Be("p1");
+        drill.Shard.Should().Be("s1");
+        drill.Id.Should().Be("20261001120000Z");
+        drill.State.Should().Be("SUCCEEDED");
+        drill.BackupId.Should().Be("20261001090000Z");
+        drill.StartedUnix.Should().Be(100);
+        drill.FinishedUnix.Should().Be(400);
+        drill.RestoredToLsn.Should().Be("0/42");
+        drill.Phase.Should().BeNull();
+        drill.Error.Should().BeNull();
+    }
+
+    // AAA: битый drill-JSON → KeyParseError + пропуск (толерантный читатель).
+    [Fact]
+    public void Parse_DrillKey_BadJson_ErrorAndSkip()
+    {
+        // Arrange
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/p1/s1/drill", "{битый", 1),
+            new("/pgworker/backups/p1/s2/drill",
+                """{"state":"ЧТО-ТО","id":"d1","backup_id":"b1","started_unix":1}""", 2),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs);
+
+        // Assert — обе записи с ошибкой; валидных ключей нет — кластер не собирается
+        // (ShardsDrills нигде не заведён: правила дрилла на мусоре молчат).
+        result.Errors.Should().HaveCount(2);
+        result.Clusters.Should().BeEmpty();
+    }
+
+    // AAA: drill-ключей нет → ShardsDrills null (подсистема не включена/дрилов не было).
+    [Fact]
+    public void Parse_NoDrillKeys_NullDictionary()
+    {
+        // Arrange — только full-ключ (дринов нет).
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/p1/s1/full/f1",
+                """{"state":"COMPLETED","node":"n","role":"replica","started_unix":100,"finished_unix":200}""",
+                1),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs);
+
+        // Assert
+        result.Errors.Should().BeEmpty();
+        result.Clusters.Single(c => c.Cluster == "p1").ShardsDrills.Should().BeNull();
+    }
+
+    // AAA: policy полный — retention/verify/drill читаются; старая policy без
+    // drill — DrillIntervalDays=null, без ошибок.
+    [Fact]
+    public void Parse_PolicyFull_AndLegacy_NoErrors()
+    {
+        // Arrange — полная policy кластера p1 и легаси-policy p2.
+        var kvs = new List<Kv>
+        {
+            new("/pgworker/backups/p1/policy",
+                """{"retention":{"days":7,"weeks":4,"months":6},"full_max_age_sec":86400,"verify":{"on_create":true},"drill":{"interval_days":2}}""",
+                1),
+            new("/pgworker/backups/p2/policy",
+                """{"retention":{"days":3,"weeks":1,"months":2},"full_max_age_sec":3600,"verify":{"on_create":false}}""",
+                2),
+        };
+
+        // Act
+        var result = BackupsParser.Parse(kvs);
+
+        // Assert — оба прочитаны без ошибок; поля полной policy на месте.
+        result.Errors.Should().BeEmpty();
+        var full = result.Clusters.Single(c => c.Cluster == "p1").Policy!;
+        full.RetentionDays.Should().Be(7);
+        full.RetentionWeeks.Should().Be(4);
+        full.RetentionMonths.Should().Be(6);
+        full.FullMaxAgeSec.Should().Be(86400);
+        full.VerifyOnCreate.Should().BeTrue();
+        full.DrillIntervalDays.Should().Be(2);
+        var legacy = result.Clusters.Single(c => c.Cluster == "p2").Policy!;
+        legacy.DrillIntervalDays.Should().BeNull();
+        legacy.VerifyOnCreate.Should().BeFalse();
+        // FullMaxAgeSec — прежнее поле модели не сломано.
+        result.Clusters.Single(c => c.Cluster == "p1").FullMaxAgeSec.Should().Be(86400);
+    }
 }

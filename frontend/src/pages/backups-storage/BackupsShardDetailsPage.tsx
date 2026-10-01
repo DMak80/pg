@@ -2,7 +2,7 @@
 // (id/размер/дата + etcd state/verify + статус сверки), блок WAL (etcd-статус
 // + S3-факт), бейдж активного restore, блок «Объекты» с on-demand пагинацией
 // («Загрузить ещё» — единственный прямой выход панели в MinIO на действие).
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   Alert,
   Anchor,
@@ -11,14 +11,17 @@ import {
   Card,
   Group,
   Loader,
+  NumberInput,
   Stack,
   Table,
   Text,
   Title,
 } from '@mantine/core';
+import { notifications } from '@mantine/notifications';
 import { Link, useParams } from 'react-router';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type {
+  BackupDrillBadgeDto,
   BackupFullDto,
   BackupObjectsPageDto,
   BackupReconcileStatusName,
@@ -28,6 +31,8 @@ import {
   backupsQueryKeys,
   fetchBackupObjectsPage,
   fetchBackupShardStorage,
+  fetchBackupsStorage,
+  updateBackupsPolicy,
 } from '../../api/queries';
 import { ApiError } from '../../api/client';
 import { ErrorSection, LoadingSection } from '../../components/LoadState';
@@ -105,6 +110,7 @@ export function BackupsShardDetailsPage() {
       </div>
       <FullsTable fulls={data.fulls} />
       <WalCard wal={data.wal} />
+      <DrillCard drill={data.drill} cluster={data.cluster} />
       <ObjectsBlock cluster={data.cluster} shard={data.shard} />
     </Stack>
   );
@@ -224,6 +230,105 @@ function WalCard({ wal }: { wal: BackupWalDto | null }) {
           </Table.Tr>
         </Table.Tbody>
       </Table>
+    </Card>
+  );
+}
+
+// Цвет бейджа дрилла по состоянию ключа (arch/19 §3.6).
+function drillColor(state: string): string {
+  return state === 'SUCCEEDED' ? 'green' : state === 'FAILED' ? 'red' : 'blue';
+}
+
+// Блок «Дрилл восстановимости» (reliability t02, arch/19 §3.6): статус
+// последнего/текущего дрилла (state/фаза/возраст/LSN/error) + форма «Дрилл
+// каждые N суток» (0 = выкл) — PUT ПОЛНОЙ policy через панельную команду-прокси
+// (канон замещения целиком; панель в etcd не пишет).
+function DrillCard({ drill, cluster }: { drill: BackupDrillBadgeDto | null; cluster: string }) {
+  const queryClient = useQueryClient();
+  // policy кластера — из сводки грани (форма читает текущие значения/дефолтирует).
+  const storage = useQuery({
+    queryKey: backupsQueryKeys.storage,
+    queryFn: fetchBackupsStorage,
+  });
+  const policy = storage.data?.clusters.find((c) => c.cluster === cluster)?.policy ?? null;
+
+  // Дефолты фронта при null-полях policy (7/4/6/86400/true/1 — канон arch/19 §9).
+  const [drillDays, setDrillDays] = useState<number | ''>(1);
+  const initialized = useRef(false);
+  useEffect(() => {
+    // Инициализация — когда политика известна ИЛИ загрузка завершилась (F3):
+    // на pending-прогоне policy ещё null — не застываем на дефолте.
+    // policy нет (fresh-кластер) → дефолт 1 — тот же, что уходит в save
+    // при policy=null (полное замещение фиксирует значение).
+    if (initialized.current || (policy === null && storage.isPending)) return;
+    initialized.current = true;
+    setDrillDays(policy?.drillIntervalDays ?? 1);
+  }, [policy, storage.isPending]);
+
+  const save = useMutation({
+    mutationFn: () =>
+      updateBackupsPolicy(cluster, {
+        retentionDays: policy?.retentionDays ?? 7,
+        retentionWeeks: policy?.retentionWeeks ?? 4,
+        retentionMonths: policy?.retentionMonths ?? 6,
+        fullMaxAgeSec: policy?.fullMaxAgeSec ?? 86400,
+        verifyOnCreate: policy?.verifyOnCreate ?? true,
+        drillIntervalDays: drillDays === '' ? 1 : drillDays,
+      }),
+    onSuccess: () => {
+      notifications.show({
+        message: 'Интервал дрилов применён — следующий проход воркера без рестарта',
+        color: 'teal',
+      });
+      void queryClient.invalidateQueries({ queryKey: backupsQueryKeys.storage });
+    },
+    onError: (e) => {
+      notifications.show({
+        message: e instanceof ApiError ? e.message : 'Не удалось применить интервал',
+        color: 'red',
+      });
+    },
+  });
+
+  return (
+    <Card withBorder padding="md" radius="md">
+      <Text fw={600} mb="xs">Дрилл восстановимости</Text>
+      {drill === null ? (
+        <Text c="dimmed" size="sm">Дрилов не было (ключа /drill нет)</Text>
+      ) : (
+        <Group gap="xs" mb="xs" wrap="wrap">
+          <Badge color={drillColor(drill.state)} variant="light">
+            Дрилл: {drill.state}
+            {drill.phase ? ` ${drill.phase}` : ''}
+          </Badge>
+          <Text size="sm">
+            старт {formatUnix(drill.startedUnix)}
+            {drill.finishedUnix === null ? '' : `, финиш ${formatUnix(drill.finishedUnix)}`}
+          </Text>
+          {drill.restoredToLsn ? (
+            <Text size="sm" ff="monospace">restored_to_lsn: {drill.restoredToLsn}</Text>
+          ) : null}
+        </Group>
+      )}
+      {drill?.error ? <Text size="sm" c="red" mb="xs">{drill.error}</Text> : null}
+      <Group gap="xs" align="end">
+        <NumberInput
+          label="Дрилл каждые N суток"
+          description="0 — выключено; применяется следующим проходом воркера"
+          value={drillDays}
+          onChange={(v) => setDrillDays(typeof v === 'number' ? v : '')}
+          min={0}
+          max={3650}
+          w={220}
+        />
+        <Button
+          size="sm"
+          loading={save.isPending}
+          onClick={() => save.mutate()}
+        >
+          Сохранить
+        </Button>
+      </Group>
     </Card>
   );
 }

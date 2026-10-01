@@ -198,13 +198,23 @@ function ClustersTable({ data }: { data: BackupStorageDto }) {
                 c.shards.length === 0 ? (
                   // Кластер без шардов в инвентаре — одна строка-заглушка.
                   <Table.Tr key={c.cluster}>
-                    <Table.Td ff="monospace">{c.cluster}</Table.Td>
+                    <Table.Td ff="monospace">
+                      <Group gap="xs">
+                        {c.cluster}
+                        <DrillIntervalBadge intervalDays={c.policy?.drillIntervalDays ?? null} />
+                      </Group>
+                    </Table.Td>
                     <Table.Td colSpan={5}><Text c="dimmed" size="sm">—</Text></Table.Td>
                   </Table.Tr>
                 ) : (
                   c.shards.map((s) => (
                     <Table.Tr key={`${s.cluster}/${s.shard}`}>
-                      <Table.Td ff="monospace">{s.cluster}</Table.Td>
+                      <Table.Td ff="monospace">
+                        <Group gap="xs">
+                          {s.cluster}
+                          <DrillIntervalBadge intervalDays={c.policy?.drillIntervalDays ?? null} />
+                        </Group>
+                      </Table.Td>
                       <Table.Td>
                         <Text
                           component={Link}
@@ -248,6 +258,19 @@ function ClustersTable({ data }: { data: BackupStorageDto }) {
 // Осиротевшие префиксы: реестр воркера (OBSERVED/DELETING + TTL у незащищённых)
 // или «панель видит, в реестре нет»; бейджи защиты (полный/hold/к удалению) и
 // кнопки Hold/Unhold (обратимы, без модала) / Delete (confirm-модал) — t04.
+// Компактный индикатор интервала дрилов кластера (reliability t02):
+// «N сут» / «выкл» (0) / нет бейджа (policy-ключа нет — дефолт конфига).
+function DrillIntervalBadge({ intervalDays }: { intervalDays: number | null }) {
+  if (intervalDays === null) return null;
+  return (
+    <Tooltip label="интервал дрилов восстановимости (policy)">
+      <Badge color={intervalDays === 0 ? 'gray' : 'blue'} variant="light">
+        дрилл: {intervalDays === 0 ? 'выкл' : `${intervalDays} сут`}
+      </Badge>
+    </Tooltip>
+  );
+}
+
 function OrphansCard({ orphans }: { orphans: BackupOrphanDto[] }) {
   const [deleting, setDeleting] = useState<BackupOrphanDto | null>(null);
   return (

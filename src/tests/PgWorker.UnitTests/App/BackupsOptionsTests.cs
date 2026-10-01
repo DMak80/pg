@@ -340,4 +340,54 @@ public class BackupsOptionsTests
         runtime.JobVerifyTimeoutSec.Should().Be(21600);
         runtime.JobRestoreTimeoutSec.Should().Be(86400);
     }
+
+    // ---- reliability t02: дрилл восстановимости (arch/19 §9) ----
+
+    // AAA: Drill-секция склеивается в runtime (дефолты 1/21600)
+    [Fact]
+    public void ToRuntime_Drill_DefaultsOneDaySixHours()
+    {
+        // Arrange — дефолтная секция (appsettings без Drill).
+        var options = new BackupsOptions();
+
+        // Act
+        var runtime = options.ToRuntime();
+
+        // Assert — дефолты канона arch/19 §9.
+        options.Drill.IntervalDays.Should().Be(1);
+        options.Drill.TimeoutSec.Should().Be(21600);
+        runtime.DrillIntervalDays.Should().Be(1);
+        runtime.DrillTimeoutSec.Should().Be(21600);
+    }
+
+    // AAA: отрицательные IntervalDays/TimeoutSec — fail-fast IsValid
+    [Theory]
+    [InlineData(-1, 21600)]
+    [InlineData(1, -5)]
+    public void IsValid_NegativeDrill_Fails(int intervalDays, int timeoutSec)
+    {
+        // Arrange
+        var options = new BackupsOptions
+        {
+            Drill = new BackupsDrillOptions { IntervalDays = intervalDays, TimeoutSec = timeoutSec },
+        };
+
+        // Act / Assert — Program.cs ValidateOnStart уронит старт.
+        options.IsValid().Should().BeFalse("отрицательные Drill-бюджеты — мусорный конфиг");
+    }
+
+    // AAA: IntervalDays=0 валиден (глобальное выключение новых запусков)
+    [Fact]
+    public void IsValid_ZeroInterval_Valid()
+    {
+        // Arrange — дриллы выключены глобально; доводка активных продолжается.
+        var options = new BackupsOptions
+        {
+            Drill = new BackupsDrillOptions { IntervalDays = 0, TimeoutSec = 21600 },
+        };
+
+        // Act / Assert
+        options.IsValid().Should().BeTrue("0 — легитимное выключение новых запусков");
+        options.ToRuntime().DrillIntervalDays.Should().Be(0);
+    }
 }

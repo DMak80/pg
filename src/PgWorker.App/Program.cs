@@ -574,6 +574,20 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupVerifyProcess(
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.BackupVerifyProcess>(),
     sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupVerify));
 
+// Дрилл восстановимости (reliability t02, arch/19 §3.6): супервиз drill-джоба,
+// отбор/валидация/запуск, доводимый снос; runtime — как у verify.
+builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreDrillProcess(
+    sp.GetRequiredService<IEtcdGateway>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
+    sp.GetRequiredService<IClusterDriver>(),
+    sp.GetRequiredService<ShardEndpoints>(),
+    sp.GetRequiredService<IBackupS3>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<WorkJournal>(),
+    sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Backups.ToRuntime(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Process.RestoreDrillProcess>()));
+
 // Сверка S3↔etcd (t07, arch/19 §4): per-cluster чистка мусора full/<id>/ без
 // etcd-ключа; runtime-функция через IOptionsMonitor — Enabled=false → no-op
 // (образец WalStreamProcess).

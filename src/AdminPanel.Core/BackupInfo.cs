@@ -11,6 +11,21 @@ namespace AdminPanel.Core;
 /// правила backup-verify-failed (текст алерта — Error).</summary>
 public sealed record ShardVerifyFailure(string Shard, string Id, string Error, long? CheckedUnix);
 
+/// <summary>Статус дрилла шарда (reliability t02, ключ /pgworker/backups/&lt;C&gt;/&lt;X&gt;/drill):
+/// панель читает, панель в etcd не пишет (пишет воркер под клэймом). Phase —
+/// downloading|recovering|cleaning; снятая фаза у терминального = контур
+/// подтверждённо снесён.</summary>
+public sealed record DrillInfo(
+    string Cluster, string Shard, string Id, string State, string BackupId,
+    long StartedUnix, long? FinishedUnix, string? Phase, string? RestoredToLsn, string? Error);
+
+/// <summary>Полная per-cluster политика бэкапов (arch/19 §4; reliability t02 —
+/// drill.interval_days): null-поля = отсутствуют в policy-ключе — форма фронта
+/// читает и дефолтирует (панель PUTит полный набор через policy-API воркера).</summary>
+public sealed record BackupsPolicyInfo(
+    int? RetentionDays, int? RetentionWeeks, int? RetentionMonths,
+    long? FullMaxAgeSec, bool? VerifyOnCreate, int? DrillIntervalDays);
+
 public sealed record ClusterBackupsInfo(
     string Cluster,
     long? FullMaxAgeSec,
@@ -28,7 +43,13 @@ public sealed record ClusterBackupsInfo(
     IReadOnlyDictionary<string, IReadOnlyList<RestoreOperationInfo>>? ShardsRestores = null,
     // t08: все etcd-полные per-shard — вход MinioReconciler; null = парсер t08
     // их не собрал.
-    IReadOnlyDictionary<string, IReadOnlyList<BackupFullInfo>>? ShardsFulls = null);
+    IReadOnlyDictionary<string, IReadOnlyList<BackupFullInfo>>? ShardsFulls = null,
+    // reliability t02: последний/текущий дрилл per-shard (вход правил
+    // backup-drill-failed/stale и статуса грани); null = drill-ключей нет.
+    IReadOnlyDictionary<string, DrillInfo>? ShardsDrills = null,
+    // reliability t02: полная policy кластера (форма мутации интервала дрилов);
+    // null = policy-ключа нет.
+    BackupsPolicyInfo? Policy = null);
 
 /// <summary>Один etcd-ключ полного /pgworker/backups/&lt;C&gt;/&lt;X&gt;/full/&lt;id&gt; (t08):
 /// полный факт state/verify/size для сверки с S3 и деталей шарда.</summary>
