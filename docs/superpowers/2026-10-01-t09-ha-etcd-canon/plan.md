@@ -1359,7 +1359,7 @@ git commit -m "fix(t09): рецепт deploy/etcd запускается чер�
 
 **Spec:** §8 (E2E-окружение), §12.6–12.7; `docs/e2e-isolation.md`/`docs/e2e-launch.md` (телеметрия/чистота); AGENTS.md (полный прогон E2eFixture).
 
-- [ ] **Step 10.1: предусловия-зачистка** (серия тяжёлая и живёт на общем хосте — чужих контуров быть не должно):
+- [x] **Step 10.1: предусловия-зачистка** (серия тяжёлая и живёт на общем хосте — чужих контуров быть не должно):
 
 ```bash
 bash dev-stand/adminpanel/checks/90-down.sh -v 2>/dev/null || true
@@ -1367,7 +1367,7 @@ docker ps -a --format '{{.Names}}' | grep 'pgw-' | awk '{print $1}' | xargs -r d
 docker network prune -f
 ```
 
-- [ ] **Step 10.2: полная docker-E2E серия** (одна команда, без фильтров, без NOBUILD — фикстура сама собирает свежий Release, урок t09):
+- [x] **Step 10.2: полная docker-E2E серия** (одна команда, без фильтров, без NOBUILD — фикстура сама собирает свежий Release, урок t09):
 
 ```bash
 DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/PgWorker.IntegrationTests -c Release
@@ -1377,14 +1377,14 @@ DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/PgWorker.Integ
 
 **Правила при красной серии (docs/e2e-launch.md):** упавший сценарий помечен `MarkFailed()` — его контейнеры ОСТАНОВЛЕНЫ, не удалены; логи сняты в `/tmp/pgw-e2e-artifacts-<guid>/`. Разбор по логам БЕЗ перезапуска тестов; повторный прогон — только после полного анализа причин и согласия пользователя. Красная серия = СТОП (Step 8.5 недостижим до фикс-коммита и повторной полной серии).
 
-- [ ] **Step 10.3: зачистка после финальной строки серии** (дождаться завершения команды Step 10.2):
+- [x] **Step 10.3: зачистка после финальной строки серии** (дождаться завершения команды Step 10.2):
 
 ```bash
 docker ps -a --format '{{.Names}}' | grep 'pgw-' | awk '{print $1}' | xargs -r docker rm -f
 docker network prune -f
 ```
 
-- [ ] **Step 10.4: готовность к мержу.** Только при зелёной Step 10.2: все предусловия Step 8.5 выполнены (Tasks 1–10); мерж — по явному приказу пользователя («мерж» → Step 8.5).
+- [x] **Step 10.4: готовность к мержу.** Только при зелёной Step 10.2: все предусловия Step 8.5 выполнены (Tasks 1–10); мерж — по явному приказу пользователя («мерж» → Step 8.5).
 
 ---
 
