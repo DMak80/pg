@@ -14,8 +14,8 @@ JAR="$(mktemp)"; TMP="$(mktemp -d)"
 trap 'rm -f "$JAR"; rm -rf "$TMP"' EXIT
 
 # etcd-хелперы (как 55-kafka-e2e.sh): чтение фактов мимо панели — для ожиданий.
-etcd_key() { docker compose exec -T etcd etcdctl get "$1" --print-value-only </dev/null 2>/dev/null; }
-etcd_has() { docker compose exec -T etcd etcdctl get "$1" --print-value-only </dev/null 2>/dev/null | grep -q .; }
+etcd_key() { docker compose exec -T etcd1 etcdctl get "$1" --print-value-only </dev/null 2>/dev/null; }
+etcd_has() { docker compose exec -T etcd1 etcdctl get "$1" --print-value-only </dev/null 2>/dev/null | grep -q .; }
 
 # Arrange: сид через API живого воркера (поднимает valkeyworker, ждёт demo Active).
 "$PWD/checks/05-seed.sh" valkey

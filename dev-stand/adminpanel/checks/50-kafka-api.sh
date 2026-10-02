@@ -20,7 +20,7 @@ JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
 # Готовность прокси: панель должна увидеть живой WorkerEndpoint в kafka-снапшоте
 # (тик 3 c) — без него kafka-мутации панели вернут 503.
 for i in $(seq 1 15); do
-  docker compose exec -T etcd etcdctl get /kafkaworker/api/ --prefix --keys-only 2>/dev/null | grep -q . && break
+  docker compose exec -T etcd1 etcdctl get /kafkaworker/api/ --prefix --keys-only 2>/dev/null | grep -q . && break
   sleep 1
 done
 
@@ -99,7 +99,7 @@ echo "  негативы: повторный create 409, существующи�
 # 5) Отмена create → ключ заявки исчез; DELETE orders идемпотентен (204 ×2).
 c="$(code -X DELETE "$BASE/api/kafka/clusters/events/topics/audit/desired.create")"
 [ "$c" = 204 ] || { echo "❌ отмена create = $c"; exit 1; }
-docker compose exec -T etcd etcdctl get /kafka/clusters/events/topics/audit/desired.create \
+docker compose exec -T etcd1 etcdctl get /kafka/clusters/events/topics/audit/desired.create \
   </dev/null 2>/dev/null | grep -q . && { echo "❌ заявка audit не удалена"; exit 1; }
 c="$(code -X DELETE "$BASE/api/kafka/clusters/events/topics/orders")"
 [ "$c" = 204 ] || { echo "❌ DELETE orders #1 = $c"; exit 1; }
@@ -149,13 +149,13 @@ c="$(code -X DELETE "$BASE/api/kafka/clusters/pending")"
 [ "$c" = 204 ] || { echo "❌ DELETE pending = $c, ожидался 204"; exit 1; }
 # Демонтаж: тик воркера (5 c) + мгновенные фазы; чистота etcd первична.
 for i in $(seq 1 15); do
-  left="$(docker compose exec -T etcd etcdctl get /kafka/clusters/pending/ --prefix --keys-only </dev/null 2>/dev/null | grep -v '^$' || true)"
+  left="$(docker compose exec -T etcd1 etcdctl get /kafka/clusters/pending/ --prefix --keys-only </dev/null 2>/dev/null | grep -v '^$' || true)"
   [ -z "$left" ] && break
   sleep 2
 done
-left="$(docker compose exec -T etcd etcdctl get /kafka/clusters/pending/ --prefix --keys-only </dev/null 2>/dev/null | grep -v '^$' || true)"
+left="$(docker compose exec -T etcd1 etcdctl get /kafka/clusters/pending/ --prefix --keys-only </dev/null 2>/dev/null | grep -v '^$' || true)"
 [ -z "$left" ] || { echo "❌ префикс /kafka/clusters/pending/ пережил демонтаж: $left"; exit 1; }
-coord="$(docker compose exec -T etcd etcdctl get /kafkaworker/ --prefix --keys-only </dev/null 2>/dev/null | grep pending || true)"
+coord="$(docker compose exec -T etcd1 etcdctl get /kafkaworker/ --prefix --keys-only </dev/null 2>/dev/null | grep pending || true)"
 [ -z "$coord" ] || { echo "❌ остаточные kafkaworker-ключи pending: $coord"; exit 1; }
 # Список панели догоняет удаление тиком снапшота (3 c) — поллинг, не одиночный выстрел.
 for i in $(seq 1 15); do

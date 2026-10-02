@@ -303,6 +303,7 @@ rebuild — пересоздание контейнера пишет и новы
   scheme; v2-клиент Spilo с etcd 3.5 несовместим). Адреса etcd для нод —
   отдельная настройка `PgWorker:Etcd:AdvertisedEndpoints` (ноды ходят в etcd
   через docker-сеть, а не через endpoint'ы самого PgWorker).
+  HA-контур контроль-плейна: список ВСЕХ узлов etcd — [04](04-deploy-etcd.md) §8 (advertised-правила потребителей).
 - Ноды кластера подключаются к общей docker-сети `pgw-net` (alias = имя ноды):
   Patroni-репликация по внутренним адресам (в default bridge hostname-резолва нет).
 - Callback мастер-ключа — `on_start` + `on_role_change` (в `on_start` Patroni
@@ -1282,6 +1283,7 @@ MR3 journal op=repair (сколько/какие статусы диспатче
 
 ```
 PgWorker:Etcd:Endpoints[]                          # http://host:2379
+                                                   # список всех узлов HA-контура — 04 §8
 PgWorker:Docker { Mode: Plain|Swarm, Hosts[{Name,Endpoint}],
                   SwarmManager, PortRange{From,To}, Images{Node}, EnableDoorman,
                   Tls {CaPem|CaPath, ClientCertPem|Path, ClientKeyPem|Path},   # §2.2.1

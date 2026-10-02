@@ -5,7 +5,8 @@
 # и TLS — ОБЩИЕ на оба инстанса (лидерство снапшотов мигрирует между ними).
 # Запуск PgWorker (spec §5.4, §10): docker.sock (plain на одном хосте /
 # swarm manager), том снапшотов P12, секреты per-install из env (Д7).
-# etcd запускается отдельно (dev-stand/compose.yaml или свой кластер).
+# etcd запускается отдельно: HA-контур — deploy/etcd/ на 3 хостах (arch/04 §8);
+# не-HA прогон — один endpoint.
 x-pgworker-env: &pgworker-env
   # Обязательные секреты установки (Д7): не в git, не в etcd.
   PGW_PG_SUPERUSER_PASSWORD: ${PGW_PG_SUPERUSER_PASSWORD:?задайте секрет}
@@ -13,7 +14,13 @@ x-pgworker-env: &pgworker-env
   PGW_BUCKET_ADMIN_PASSWORD: ${PGW_BUCKET_ADMIN_PASSWORD:?задайте секрет}
   PGW_BUCKET_MOVER_PASSWORD: ${PGW_BUCKET_MOVER_PASSWORD:?задайте секрет}
   # Конфигурация — env-оверрайды appsettings (пример: endpoints etcd).
-  PgWorker__Etcd__Endpoints__0: ${PGW_ETCD_ENDPOINT:-http://localhost:2379}
+  # HA-контур контроль-плейна (t09, arch/04 §8): список ВСЕХ клиентских URL;
+  # дефолты — стендовые публикации (as-etcd-1/2/3), прод переопределяет в
+  # deploy/.env на адреса узлов deploy/etcd. Узла 2/3 может не быть (не-HA
+  # прогон) — failover переберёт список, недоступный endpoint пропускается.
+  PgWorker__Etcd__Endpoints__0: ${PGW_ETCD_ENDPOINT_0:-http://host.docker.internal:2379}
+  PgWorker__Etcd__Endpoints__1: ${PGW_ETCD_ENDPOINT_1:-http://host.docker.internal:2381}
+  PgWorker__Etcd__Endpoints__2: ${PGW_ETCD_ENDPOINT_2:-http://host.docker.internal:2383}
   # Advertised-имя docker-хоста в portalloc/dsn (advertised-правило arch/16,
   # симметрия KafkaWorker:AdvertisedClientHost): адреса нод в etcd обязаны
   # быть резолвимы клиентами — панель пробирует host.docker.internal:15xxx/
@@ -91,7 +98,11 @@ x-pgworker-base: &pgworker-base
 # Env-секретов per-install нет (единственный секрет — per-cluster
 # app_password в etcd). AdvertiseUrl — в сервисах (уникален per инстанс).
 x-kafkaworker-env: &kafkaworker-env
-  KafkaWorker__Etcd__Endpoints__0: ${KFW_ETCD_ENDPOINT:-http://localhost:2379}
+  # HA-контур (t09, arch/04 §8): список ВСЕХ клиентских URL (дефолты — стендовые
+  # публикации as-etcd-1/2/3; узла 2/3 может не быть — failover переберёт список).
+  KafkaWorker__Etcd__Endpoints__0: ${KFW_ETCD_ENDPOINT_0:-http://host.docker.internal:2379}
+  KafkaWorker__Etcd__Endpoints__1: ${KFW_ETCD_ENDPOINT_1:-http://host.docker.internal:2381}
+  KafkaWorker__Etcd__Endpoints__2: ${KFW_ETCD_ENDPOINT_2:-http://host.docker.internal:2383}
   # Advertised-хост CLIENT-listener → endpoints в etcd резолвимы клиентами
   # (arch/16 advertised-правило; null допустим только когда имя docker-хоста
   # резолвимо клиентами само по себе).
@@ -125,7 +136,11 @@ x-kafkaworker-base: &kafkaworker-base
 # 8082 — продолжение ряда pg 8080 / kfw 8081. Томов данных нод НЕТ
 # (persistence off — томов у домена не бывает). AdvertiseUrl — в сервисах.
 x-valkeyworker-env: &valkeyworker-env
-  ValkeyWorker__Etcd__Endpoints__0: ${VWK_ETCD_ENDPOINT:-http://localhost:2379}
+  # HA-контур (t09, arch/04 §8): список ВСЕХ клиентских URL (дефолты — стендовые
+  # публикации as-etcd-1/2/3; узла 2/3 может не быть — failover переберёт список).
+  ValkeyWorker__Etcd__Endpoints__0: ${VWK_ETCD_ENDPOINT_0:-http://host.docker.internal:2379}
+  ValkeyWorker__Etcd__Endpoints__1: ${VWK_ETCD_ENDPOINT_1:-http://host.docker.internal:2381}
+  ValkeyWorker__Etcd__Endpoints__2: ${VWK_ETCD_ENDPOINT_2:-http://host.docker.internal:2383}
   # Advertised-хост клиентского порта нод → endpoints в etcd резолвимы
   # клиентами (arch/21 §2 advertised-правило).
   ValkeyWorker__AdvertisedClientHost: ${VWK_ADVERTISED_CLIENT_HOST:-host.docker.internal}

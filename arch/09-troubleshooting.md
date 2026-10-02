@@ -28,6 +28,8 @@ ssh pg1 'docker logs --tail 200 postgres'
 ssh pg1 'docker logs --tail 200 etcd'
 ```
 
+etcd-контур (3 узла): arch/04 §8; чек-лист контура — там же п.5.
+
 ---
 
 ## 1. Нода «отстаёт» от лидера (lag > 0)
@@ -103,6 +105,7 @@ docker exec -it postgres psql -U postgres -c "SELECT now()-pg_last_xact_replay_t
 
 Patroni не может проводить выборы → кластер «замораживается» (лидер либо продолжает работу,
 если он сам + его Patroni видит хотя бы один etcd, либо уходит в read-only).
+(рецепт HA-контура контроль-плейна — [04](04-deploy-etcd.md) §8)
 
 **Восстановление**:
 1. Поднять упавшие узлы etcd:

@@ -1,0 +1,37 @@
+# Узел HA-контура контроль-плейна воркер-инсталляции (t09, arch/04 §8).
+# ПОДНИМАЕТСЯ ОПЕРАТОРОМ на 3 РАЗНЫХ docker-хостах (анти-аффинити):
+#   sudo mkdir -p /opt/etcd && cd /opt/etcd
+#   # скопировать сюда docker-compose.yml + etcd.env (из etcd.env.example,
+#   # ОТРЕДАКТИРОВАТЬ NODE_NAME/NODE_IP под узел)
+#   docker compose --env-file etcd.env up -d   # первый старт — все 3 узла в пределах election-timeout
+# Проверка контура и перевод INITIAL_CLUSTER_STATE=existing — arch/04 §4/§5/§8.
+# ВАЖНО: env_file передаёт переменные ТОЛЬКО внутрь контейнера; интерполяция
+# ${…} в этом YAML (image/volumes/command) идёт из --env-file — поэтому запуск
+# всегда с --env-file etcd.env (без него up упадёт на пустом image).
+services:
+  etcd:
+    image: ${ETCD_IMAGE}
+    container_name: etcd
+    restart: unless-stopped
+    env_file: etcd.env
+    network_mode: host          # peer/client работают «как есть» на IP хоста (arch/04 §3)
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+    volumes:
+      - ${DATA_DIR}:/data
+    command:
+      - /usr/local/bin/etcd
+      - --name=${NODE_NAME}
+      - --data-dir=/data
+      - --listen-peer-urls=http://0.0.0.0:2380
+      - --listen-client-urls=http://0.0.0.0:2379
+      - --initial-advertise-peer-urls=http://${NODE_IP}:2380
+      - --advertise-client-urls=http://${NODE_IP}:2379
+      - --initial-cluster=${PEERS}
+      - --initial-cluster-token=${CLUSTER_TOKEN}
+      - --initial-cluster-state=${INITIAL_CLUSTER_STATE}
+      - --heartbeat-interval=250
+      - --election-timeout=2000
+      - --auto-compaction-retention=1
+      - --quota-backend-bytes=8589934592   # 8 ГБ (arch/04 §3)

@@ -534,7 +534,7 @@ Health `/healthz` по канону честного health (t09): послед�
 ## 8. Конфигурация (appsettings + env-оверрайды)
 
 ```
-ValkeyWorker:Etcd { Endpoints[] }
+ValkeyWorker:Etcd { Endpoints[] }                  # список всех узлов HA-контура — 04 §8 (env VWK_ETCD_ENDPOINT_0..2)
 ValkeyWorker:Docker { Mode: Plain|Swarm, Hosts[{Name,Endpoint}], SwarmManager,
                       PortRange{From=17000,To=17999}, Images{Node="valkey/valkey:<пин>"} }
 ValkeyWorker:Loops { ScanIntervalSec=5, KeepaliveSec=5, ErrorDelayMs=2000 }

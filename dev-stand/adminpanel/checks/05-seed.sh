@@ -27,7 +27,7 @@ seed_pg() {
   $SEED_TLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null || { echo "❌ pgworker не ожил (https :${PGW_API_HOST_PORT:-8080}/healthz, seed-серт)"; exit 1; }
   echo "  pg-сид: $($SEED_TLS -X POST https://localhost:${PGW_API_HOST_PORT:-8080}/api/seed/demo)"
   # живость ключа доступа (arch/14 §1.1)
-  docker compose exec -T etcd etcdctl get /pgworker/api/ --prefix --keys-only | grep -q . \
+  docker compose exec -T etcd1 etcdctl get /pgworker/api/ --prefix --keys-only | grep -q . \
     || { echo "❌ /pgworker/api/ пуст"; exit 1; }
 }
 seed_kafka() {
@@ -41,10 +41,10 @@ seed_kafka() {
   # мутации чека 50; воркер остаётся Поднятым (безопасно: контейнеров брокеров
   # нет → пробы слепые → сидовые заявки не исполняются, arch/16 §5 C).
   for i in $(seq 1 30); do
-    docker compose exec -T etcd etcdctl get /kafkaworker/api/ --prefix --keys-only 2>/dev/null | grep -q . && break
+    docker compose exec -T etcd1 etcdctl get /kafkaworker/api/ --prefix --keys-only 2>/dev/null | grep -q . && break
     sleep 1
   done
-  docker compose exec -T etcd etcdctl get /kafkaworker/api/ --prefix --keys-only 2>/dev/null | grep -q . \
+  docker compose exec -T etcd1 etcdctl get /kafkaworker/api/ --prefix --keys-only 2>/dev/null | grep -q . \
     || { echo "❌ /kafkaworker/api/ пуст за 30 c (AdvertiseUrl/keepalive?)"; exit 1; }
 }
 seed_valkey() {
@@ -62,11 +62,11 @@ seed_valkey() {
   # Заявка доигрывается Reconcile-циклом воркера: ждём Active-конфиг demo
   # (config без state) ≤ бюджета тиков (NodeBootSec-граница 120 c + запас).
   for i in $(seq 1 150); do
-    cfg="$(docker compose exec -T etcd etcdctl get /valkey/clusters/demo/config --print-value-only </dev/null 2>/dev/null)"
+    cfg="$(docker compose exec -T etcd1 etcdctl get /valkey/clusters/demo/config --print-value-only </dev/null 2>/dev/null)"
     [ -n "$cfg" ] && ! echo "$cfg" | grep -q '"state"' && break
     sleep 1
   done
-  cfg="$(docker compose exec -T etcd etcdctl get /valkey/clusters/demo/config --print-value-only </dev/null 2>/dev/null)"
+  cfg="$(docker compose exec -T etcd1 etcdctl get /valkey/clusters/demo/config --print-value-only </dev/null 2>/dev/null)"
   [ -n "$cfg" ] && ! echo "$cfg" | grep -q '"state"' \
     || { echo "❌ демо-кластер demo не стал Active за 150 c (docker compose logs valkeyworker; контейнер vwk-demo-node1?)"; exit 1; }
   echo "  демо-кластер demo Active (воркер доиграл заявку; vwk-demo-node1 жив)"

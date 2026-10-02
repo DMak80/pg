@@ -1,6 +1,8 @@
 using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using System.Text.Json;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
@@ -28,6 +30,10 @@ namespace PgWorker.IntegrationTests.E2e;
 /// Release-бинарь PgWorker.App) собираются один раз на процесс — это не
 /// мутабельный рантайм-стейт; всё, что сценарий меняет в рантайме, живёт и
 /// умирает внутри своего окружения.
+/// Опция haEtcd (t09, arch/04 §8): контур — 3 узла static-bootstrap кластером
+/// (кворум 2/3); хост-порты — зонд свободных, advertise host.docker.internal
+/// (Patroni-ноды ходят из per-cluster сетей). Дефолт false — 1 узел, как
+/// прежде: обычные сценарии не дорожают.
 /// </summary>
 public sealed class E2eEnvironment : IAsyncDisposable
 {
@@ -55,7 +61,8 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     private readonly List<HostInstance> _hosts = [];
     private readonly HttpClient _gatewayHttp = new();
-    private readonly IContainer _etcd;
+    private readonly IReadOnlyList<IContainer> _etcdNodes;
+    private readonly IReadOnlyList<string> _etcdNames;
     private readonly INetwork _net;
     private readonly IContainer? _minio;
 
@@ -85,16 +92,19 @@ public sealed class E2eEnvironment : IAsyncDisposable
         string slug,
         string runId,
         string netName,
-        string etcdEndpoint,
-        IContainer etcd,
+        IReadOnlyList<IContainer> etcdNodes,
+        IReadOnlyList<string> etcdNames,
+        IReadOnlyList<string> etcdEndpoints,
         INetwork net,
         IContainer? minio)
     {
         Slug = slug;
         _runId = runId;
         NetName = netName;
-        EtcdEndpoint = etcdEndpoint;
-        _etcd = etcd;
+        EtcdEndpoint = etcdEndpoints[0];
+        _etcdNodes = etcdNodes;
+        _etcdNames = etcdNames;
+        EtcdEndpoints = etcdEndpoints;
         _net = net;
         _minio = minio;
         Gateway = new EtcdGateway(_gatewayHttp);
@@ -130,6 +140,10 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// advertise для контейнеров — host.docker.internal на тот же порт.</summary>
     public string EtcdEndpoint { get; }
 
+    /// <summary>Все клиентские URL контура окружения (localhost-публикации);
+    /// при haEtcd=false — один (прежняя семантика).</summary>
+    public IReadOnlyList<string> EtcdEndpoints { get; }
+
     /// <summary>Имя docker-сети окружения (уникально на прогон) — удаляется в
     /// teardown'е самими (ryuk не гарант), отсутствие проверяется ассертом.</summary>
     public string NetName { get; }
@@ -159,7 +173,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// строится от фактического published порта. Гейт PGW_TEST_DOCKER и скип —
     /// ответственность сценария (DockerTrait.SkipIfUnavailable до StartAsync).</summary>
     public static async Task<E2eEnvironment> StartAsync(
-        string slug, bool withMinio = false, CancellationToken ct = default)
+        string slug, bool withMinio = false, bool haEtcd = false, CancellationToken ct = default)
     {
         await EnsureStaticAsync(ct);
 
@@ -169,7 +183,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         for (var attempt = 1; ; attempt++)
             try
             {
-                return await StartOnceAsync(slug, withMinio, ct);
+                return await StartOnceAsync(slug, withMinio, haEtcd, ct);
             }
             catch (Exception e) when (attempt < 3 && IsForeignPruneRace(e))
             {
@@ -184,40 +198,87 @@ public sealed class E2eEnvironment : IAsyncDisposable
            && e.Message.Contains("not found", StringComparison.OrdinalIgnoreCase);
 
     private static async Task<E2eEnvironment> StartOnceAsync(
-        string slug, bool withMinio, CancellationToken ct)
+        string slug, bool withMinio, bool haEtcd, CancellationToken ct)
     {
         // Сеть окружения: имя = короткий префикс + полный guid прогона (уникален),
         // создаём/удаляем сами, ryuk не гарант; отсутствие после teardown — ассерт.
         var runId = Guid.NewGuid().ToString("N");
         var netName = $"pgw-en-{runId}";
         var net = new NetworkBuilder().WithName(netName).Build();
-        IContainer? etcd = null;
+        var etcdNodes = new List<IContainer>();
+        var etcdNames = new List<string>();
         IContainer? minio = null;
         try
         {
             await net.CreateAsync(ct);
 
-            // etcd (внешний слой стенда). Хост-порт — зонд свободного порта (правило
-            // динамических портов); advertise host.docker.internal:<порт>: Patroni-ноды
-            // узнают адреса членов из advertise-client-urls — обязаны быть достижимы
-            // ИЗ контейнеров. Готовность — wait-стратегия etcd /health (блокирующий
-            // StartAsync, без sleep-поллинга), бюджет ≤ 100 с.
-            var etcdPort = E2eFixture.FreePort();
-            etcd = new ContainerBuilder(EtcdImage)
-                .WithName($"pgw-ee-{runId}")
-                .WithCommand(
-                    "etcd", "--name=e2e", "--data-dir=/etcd-data",
-                    "--listen-client-urls=http://0.0.0.0:2379",
-                    $"--advertise-client-urls=http://host.docker.internal:{etcdPort}")
-                .WithPortBinding(etcdPort, 2379) // (hostPort, containerPort)
-                .WithNetwork(net)
-                .WithWaitStrategy(Wait.ForUnixContainer()
-                    .UntilHttpRequestIsSucceeded(
-                        request => request.ForPort(2379).ForPath("/health"),
-                        wait => wait.WithTimeout(TimeSpan.FromSeconds(100))))
-                .Build();
-            await etcd.StartAsync(ct);
-            var etcdEndpoint = $"http://localhost:{etcd.GetMappedPublicPort(2379)}";
+            // etcd-контур (внешний слой стенда): haEtcd=false — ОДИН узел (прежняя
+            // семантика), true — ТРИ узла static-bootstrap кластером (кворум 2/3,
+            // t09 arch/04 §8). Хост-порты — зонд свободного порта (правило
+            // динамических портов); advertise host.docker.internal:<порт>:
+            // Patroni-ноды узнают адреса членов из advertise-client-urls —
+            // обязаны быть достижимы ИЗ контейнеров.
+            var etcdPorts = Enumerable.Range(0, haEtcd ? 3 : 1).Select(_ => E2eFixture.FreePort()).ToArray();
+            var initialCluster = haEtcd
+                ? string.Join(",", Enumerable.Range(1, 3).Select(n => $"e2e-etcd{n}=http://e2e-etcd{n}:2380"))
+                : "e2e-etcd1=http://e2e-etcd1:2380";
+            for (var i = 0; i < etcdPorts.Length; i++)
+            {
+                // команда узла: static bootstrap по внутренним alias (peer 2380 в сети
+                // окружения), advertise двумя URL: compose-alias (сеть окружения) +
+                // host.docker.internal:PORT (Patroni-ноды из per-cluster сетей —
+                // прецедент прежнего одиночного etcd).
+                var command = new List<string> { "etcd", $"--name=e2e-etcd{i + 1}", "--data-dir=/etcd-data",
+                    "--listen-client-urls=http://0.0.0.0:2379", "--listen-peer-urls=http://0.0.0.0:2380",
+                    $"--initial-advertise-peer-urls=http://e2e-etcd{i + 1}:2380",
+                    $"--advertise-client-urls=http://e2e-etcd{i + 1}:2379,http://host.docker.internal:{etcdPorts[i]}",
+                    $"--initial-cluster={initialCluster}", $"--initial-cluster-token=e2e-{runId}",
+                    "--initial-cluster-state=new", "--heartbeat-interval=250", "--election-timeout=2000" };
+                var node = new ContainerBuilder(EtcdImage)
+                    .WithName($"pgw-ee{i + 1}-{runId}")
+                    .WithCommand([.. command])
+                    .WithPortBinding(etcdPorts[i], 2379) // (hostPort, containerPort)
+                    .WithNetwork(net)
+                    .WithNetworkAliases($"e2e-etcd{i + 1}")
+                    .Build();
+                etcdNodes.Add(node);
+                etcdNames.Add($"pgw-ee{i + 1}-{runId}");
+            }
+
+            foreach (var node in etcdNodes)
+                await node.StartAsync(ct);
+            var endpoints = etcdNodes
+                .Select(n => $"http://localhost:{n.GetMappedPublicPort(2379)}")
+                .ToList();
+
+            // Готовность контура (бюджет ≤ 100 c — быстрое падение фикстуры, AGENTS.md):
+            // одиночный — /health 200; HA — /health 200 на всех трёх + лидер избран
+            // (POST /v3/maintenance/status → leader ≠ 0; grpc-gateway отдаёт uint64 строкой).
+            using var probe = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+            var ready = await E2eFixture.WaitForAsync(async () =>
+            {
+                foreach (var url in endpoints)
+                {
+                    try
+                    {
+                        using var health = await probe.GetAsync(url + "/health", ct);
+                        if (!health.IsSuccessStatusCode) return false;
+                        using var status = await probe.PostAsync(url + "/v3/maintenance/status",
+                            new StringContent("{}", Encoding.UTF8, "application/json"), ct);
+                        if (!status.IsSuccessStatusCode) return false;
+                        using var doc = JsonDocument.Parse(await status.Content.ReadAsStringAsync(ct));
+                        if (doc.RootElement.TryGetProperty("leader", out var leader)
+                            && leader.GetString() == "0") return false;
+                    }
+                    catch (Exception)
+                    {
+                        return false; // ещё поднимается / кворум не собран
+                    }
+                }
+
+                return true;
+            }, TimeSpan.FromSeconds(100), ct);
+            ready.Should().BeTrue($"etcd-контур ({(haEtcd ? 3 : 1)} узла) обязан собраться за 100 c");
 
             if (withMinio)
             {
@@ -252,13 +313,13 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 await EnsureJobImageAsync(ct);
             }
 
-            return new E2eEnvironment(slug, runId, netName, etcdEndpoint, etcd, net, minio);
+            return new E2eEnvironment(slug, runId, netName, etcdNodes, etcdNames, endpoints, net, minio);
         }
         catch
         {
             // частично поднятое окружение не оставляем (лучшими усилиями):
             // контейнер, чей StartAsync упал, чистит сам testcontainers; живые
-            // etcd/MinIO — здесь; сеть (без endpoints) — здесь.
+            // узлы etcd/MinIO — здесь; сеть (без endpoints) — здесь.
             if (minio is not null)
                 try
                 {
@@ -269,10 +330,10 @@ public sealed class E2eEnvironment : IAsyncDisposable
                     // guid-имя, чужие прогоны не заденем; добьёт ассерт/ryuk
                 }
 
-            if (etcd is not null)
+            foreach (var node in etcdNodes)
                 try
                 {
-                    await etcd.DisposeAsync();
+                    await node.DisposeAsync();
                 }
                 catch
                 {
@@ -331,11 +392,8 @@ public sealed class E2eEnvironment : IAsyncDisposable
             ["PGW_BUCKET_MOVER_PASSWORD"] = E2eFixture.MoverPassword,
 
             // Конфигурация (env-оверрайды appsettings): один docker-хост plain.
-            // AdvertisedEndpoints: контейнеры нод ходят в etcd этого окружения
-            // через host.docker.internal, сам PgWorker — по localhost.
-            ["PgWorker__Etcd__Endpoints__0"] = EtcdEndpoint,
-            ["PgWorker__Etcd__AdvertisedEndpoints__0"] = EtcdEndpoint.Replace(
-                "localhost:", "host.docker.internal:", StringComparison.Ordinal),
+            // HA-контур (t09, arch/04 §8): СПИСОК endpoints добавляется циклом
+            // ПОСЛЕ инициализатора (Endpoints__0..N — по длине EtcdEndpoints).
             ["PgWorker__Docker__Mode"] = "Plain",
             // Имя docker-хоста = advertised-имя для КОНТЕЙНЕРОВ (portalloc host,
             // DSN бэкап-джобов arch/19 §2/§6): джобы ходят к нодам через
@@ -391,6 +449,16 @@ public sealed class E2eEnvironment : IAsyncDisposable
             ["DOTNET_ENVIRONMENT"] = "Production",
         };
 
+        // HA-контур (t09, arch/04 §8): воркер получает СПИСОК всех узлов
+        // (failover перебирает); Advertised — те же URL с host.docker.internal
+        // (их получают Patroni-ноды и master-lease из per-cluster сетей).
+        for (var i = 0; i < EtcdEndpoints.Count; i++)
+        {
+            env[$"PgWorker__Etcd__Endpoints__{i}"] = EtcdEndpoints[i];
+            env[$"PgWorker__Etcd__AdvertisedEndpoints__{i}"] = EtcdEndpoints[i].Replace(
+                "localhost:", "host.docker.internal:", StringComparison.Ordinal);
+        }
+
         var process = new Process
         {
             StartInfo = new ProcessStartInfo("dotnet", [_appDll])
@@ -422,7 +490,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
-        var instance = new HostInstance(name, process, snapshotsDir, _healthHttp, logWriter);
+        var instance = new HostInstance(name, process, snapshotsDir, _healthHttp, logWriter, port);
         _hosts.Add(instance);
 
         // Готовность: /healthz отвечает (любой статус, кроме 404 = маршрут жив).
@@ -472,6 +540,39 @@ public sealed class E2eEnvironment : IAsyncDisposable
     public Task<string> RunDockerAsync(string[] args, CancellationToken ct = default)
         => E2eFixture.RunProcessAsync("docker", args, ct);
 
+    /// <summary>Стоп/старт узла контура по индексу (0-based) — сценарии отказа;
+    /// docker stop/start по имени: контейнер и data-dir переживают, член возвращается в кворум.</summary>
+    public Task StopEtcdNodeAsync(int index, CancellationToken ct = default)
+        => E2eFixture.RunProcessAsync("docker", ["stop", _etcdNames[index]], ct);
+
+    public Task StartEtcdNodeAsync(int index, CancellationToken ct = default)
+        => E2eFixture.RunProcessAsync("docker", ["start", _etcdNames[index]], ct);
+
+    /// <summary>etcdctl в узле №1 (сценарии: member list / endpoint health).</summary>
+    public Task<string> EtcdctlAsync(params string[] args)
+        => E2eFixture.RunProcessAsync("docker",
+            ["exec", _etcdNames[0], "etcdctl", "--endpoints=http://localhost:2379", .. args]);
+
+    /// <summary>Проба /healthz инстанса (живость API на интервале отказа узла):
+    /// true = маршрут отвечает (не 404), транспорт досягаем.</summary>
+    public async Task<bool> HealthzOkAsync(HostInstance host)
+    {
+        try
+        {
+            using var response = await _healthHttp.GetAsync(
+                $"https://127.0.0.1:{host.ApiPort}/healthz", CancellationToken.None);
+            return response.StatusCode != System.Net.HttpStatusCode.NotFound;
+        }
+        catch (HttpRequestException)
+        {
+            return false;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+    }
+
     /// <summary>
     /// Полный teardown при ЛЮБОМ исходе. Политика телеметрии (docs/e2e-launch.md):
     /// 0) ДО любых удалений — docker-логи/inspect всех своих контейнеров и
@@ -510,7 +611,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             return;
         }
 
-        // 2) etcd и MinIO (testcontainers: stop + rm; ключи умирают вместе с etcd).
+        // 2) etcd-контур и MinIO (testcontainers: stop + rm; ключи умирают вместе с etcd).
         try
         {
             if (_minio is not null)
@@ -521,14 +622,15 @@ public sealed class E2eEnvironment : IAsyncDisposable
             problems.Add($"minio: {e.Message}");
         }
 
-        try
-        {
-            await _etcd.DisposeAsync();
-        }
-        catch (Exception e)
-        {
-            problems.Add($"etcd: {e.Message}");
-        }
+        foreach (var node in _etcdNodes)
+            try
+            {
+                await node.DisposeAsync();
+            }
+            catch (Exception e)
+            {
+                problems.Add($"etcd: {e.Message}");
+            }
 
         _gatewayHttp.Dispose();
 
@@ -710,7 +812,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 problems.Add($"stop контейнера {id}: {e.Message}");
             }
 
-        foreach (var container in new[] { _etcd, _minio })
+        foreach (var container in _etcdNodes.Concat<IContainer?>([_minio]))
             try
             {
                 if (container is not null)

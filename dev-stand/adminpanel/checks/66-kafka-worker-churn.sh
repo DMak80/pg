@@ -21,7 +21,7 @@ CHURN_PORTS="${CHURN_PORTS:-24997 24998 24999}"
 CLUSTER="churnkw"
 WORKER="as-kafkaworker"
 
-ect() { docker exec as-etcd etcdctl --endpoints=http://localhost:2379 "$@"; }
+ect() { docker exec as-etcd-1 etcdctl --endpoints=http://localhost:2379 "$@"; }
 cleanup() {
   ect del "/kafka/clusters/$CLUSTER" --prefix >/dev/null 2>&1 || true
   ect del "/kafkaworker/portalloc/$CLUSTER" >/dev/null 2>&1 || true
@@ -65,9 +65,9 @@ openssl req -x509 -newkey rsa:2048 -nodes \
   -subj "/CN=kfw-$CLUSTER-ca" >/dev/null 2>&1
 # PEM начинается с «-----» — etcdctl счёл бы аргумент флагом, поэтому значение
 # подаётся через stdin (docker exec -i), а не позиционным аргументом.
-docker exec -i as-etcd etcdctl --endpoints=http://localhost:2379 \
+docker exec -i as-etcd-1 etcdctl --endpoints=http://localhost:2379 \
   put "/kafka/clusters/$CLUSTER/ca_pem" < "$CA_TMP/ca.pem" >/dev/null
-docker exec -i as-etcd etcdctl --endpoints=http://localhost:2379 \
+docker exec -i as-etcd-1 etcdctl --endpoints=http://localhost:2379 \
   put "/kafka/clusters/$CLUSTER/ca_key" < "$CA_TMP/ca.key" >/dev/null
 ect put "/kafka/clusters/$CLUSTER/admin_user" "admin" >/dev/null
 ect put "/kafka/clusters/$CLUSTER/admin_password" "deadbeef" >/dev/null

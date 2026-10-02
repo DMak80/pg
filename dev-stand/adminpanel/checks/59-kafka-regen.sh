@@ -23,9 +23,9 @@ trap 'rm -f "$JAR"' EXIT
 
 # etcd стенда — единственный источник правды (дискавери §3.5).
 # </dev/null: docker CLI в пайпе не должен съедать stdin.
-etcd_key() { docker compose exec -T etcd etcdctl get "$1" --print-value-only </dev/null 2>/dev/null; }
+etcd_key() { docker compose exec -T etcd1 etcdctl get "$1" --print-value-only </dev/null 2>/dev/null; }
 etcd_kafka_keys() {
-  docker compose exec -T etcd etcdctl get /kafka/ --prefix --keys-only 2>/dev/null | grep -v '^$' || true
+  docker compose exec -T etcd1 etcdctl get /kafka/ --prefix --keys-only 2>/dev/null | grep -v '^$' || true
 }
 # Лимиты контейнера брокера: HostConfig.NanoCpus (тег inspect — «NanoCpus»).
 broker_nano() { docker inspect "kfw-$CLUSTER-broker1" --format '{{.HostConfig.NanoCpus}}'; }
@@ -113,7 +113,7 @@ wait_until "сходимость: regen=null, broker1 RUNNING, NanoCPUs=30000000
   curl -fsS -b "'"$JAR"'" "'"$BASE"'/api/kafka/clusters/'"$CLUSTER"'" \
   | jq -e ".regen == null and ([.brokersList[] | select(.name == \"broker1\")][0].state == \"RUNNING\")" \
   && [ "$(docker inspect kfw-'"$CLUSTER"'-broker1 --format "{{.HostConfig.NanoCpus}}")" = "3000000000" ] \
-  && ! docker compose exec -T etcd etcdctl get /kafkaworker/regens/'"$CLUSTER"' --print-value-only 2>/dev/null | grep -q .'
+  && ! docker compose exec -T etcd1 etcdctl get /kafkaworker/regens/'"$CLUSTER"' --print-value-only 2>/dev/null | grep -q .'
 echo "  лимиты сошлись к декларации: NanoCPUs=3000000000, регенерация завершена"
 
 # ===== 6) Негативы =====
@@ -147,9 +147,9 @@ echo ">>> (8/8) удаление кластера → /kafka/ пуст"
 c="$(code -X DELETE "$BASE/api/kafka/clusters/$CLUSTER")"
 [ "$c" = 204 ] || { echo "❌ DELETE cluster = $c, ожидался 204"; exit 1; }
 wait_until "префикс /kafka/clusters/$CLUSTER/ пуст + kfw-контейнеров нет" 180 bash -c '
-  [ -z "$(docker compose exec -T etcd etcdctl get /kafka/clusters/e2e6/ --prefix --keys-only 2>/dev/null | grep -v "^$")" ] \
+  [ -z "$(docker compose exec -T etcd1 etcdctl get /kafka/clusters/e2e6/ --prefix --keys-only 2>/dev/null | grep -v "^$")" ] \
     && [ -z "$(docker ps -a --format "{{.Names}}" | grep "^kfw-e2e6-")" ]'
-left="$(docker compose exec -T etcd etcdctl get /kafkaworker/ --prefix --keys-only 2>/dev/null | grep "e2e6" || true)"
+left="$(docker compose exec -T etcd1 etcdctl get /kafkaworker/ --prefix --keys-only 2>/dev/null | grep "e2e6" || true)"
 [ -z "$left" ] || { echo "❌ остаточные kafkaworker-ключи: $left"; exit 1; }
 echo "  демонтаж завершён: контейнеры/тома/ключи чисты"
 

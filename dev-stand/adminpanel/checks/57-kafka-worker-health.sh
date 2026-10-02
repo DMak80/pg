@@ -42,7 +42,7 @@ wait_state() {
   echo "❌ $label не достигнуто за 120 c ($fn/$want)"; return 1
 }
 wait_healthz() { for i in $(seq 1 30); do curl -fsS -o /dev/null --cacert "$TLS_DIR/ca.pem" --cert "$TLS_DIR/healthcheck.crt" --key "$TLS_DIR/healthcheck.key" "$WORKER_HEALTHZ" && return 0; sleep 1; done; echo "❌ $WORKER_HEALTHZ не вернулся в 200 за 30 c"; return 1; }
-ect() { docker compose exec -T etcd etcdctl --endpoints=http://localhost:2379 "$@"; }
+ect() { docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 "$@"; }
 
 # Preconditions: lease-ключи живы, воркер здоров, worker-* алертов нет.
 [ -n "$(ect get /kafkaworker/api/ --prefix --keys-only </dev/null 2>/dev/null)" ] \
