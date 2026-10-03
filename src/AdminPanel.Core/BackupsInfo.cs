@@ -53,3 +53,10 @@ public enum BackupStorageState { Ok, Warn, Crit }
 public sealed record BackupStorageInfo(
     long UsedBytes, long? QuotaBytes, double? UsedPercent,
     BackupStorageState State, long UpdatedUnix);
+
+/// <summary>Статус выгрузки etcd-снапшотов в S3 (t08, adminpanel/02 §2.3.1):
+/// ключ /pgworker/etcd-snapshots, пишет PgWorker; null-поля — толерантный
+/// парсинг (битые/старые ключи); enabled=false/ключа нет — правила молчат.</summary>
+public sealed record EtcdSnapshotExportInfo(
+    bool Enabled, string? State, long? LastUploadedUnix, string? LastObject,
+    string? LastSha256, long? SizeBytes, int? IntervalMin, string? Error);

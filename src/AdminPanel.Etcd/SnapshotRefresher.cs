@@ -91,6 +91,7 @@ public sealed class SnapshotRefresher(
         var backupsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.Backups, t), ct);
         var pgApiTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PgWorkerApi, t), ct);
         var pgCertTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.WorkerApiCert, t), ct);
+        var etcdSnapshotsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.EtcdSnapshots, t), ct);
         var workTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.PgWorkerWork, t), ct);
         var membersTask = WithFailoverAsync(alive, active, (ep, t) => gateway.MemberListAsync(ep, t), ct);
         var alarmsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.AlarmAsync(ep, t), ct);
@@ -109,12 +110,14 @@ public sealed class SnapshotRefresher(
         // Частичный KV-провал = неполный снапшот: консервативно отказ тика, данные прежние
         // (уточнение к spec §7.2 п.5: пустой префикс — валидные данные, транспортный отказ — нет).
         var pgCertKv = await pgCertTask;
+        var etcdSnapshotsKv = await etcdSnapshotsTask;
 
         // Частичный KV-провал = неполный снапшот: консервативно отказ тика, данные прежние
         // (уточнение к spec §7.2 п.5: пустой префикс — валидные данные, транспортный отказ — нет).
         if (!clustersKv.IsSuccess || !serviceKv.IsSuccess || !nodesKv.IsSuccess
             || !portAllocKv.IsSuccess || !movesKv.IsSuccess || !backupsKv.IsSuccess
-            || !pgApiKv.IsSuccess || !workKv.IsSuccess || !pgCertKv.IsSuccess)
+            || !pgApiKv.IsSuccess || !workKv.IsSuccess || !pgCertKv.IsSuccess
+            || !etcdSnapshotsKv.IsSuccess)
             return FailTick(previous, statuses, now, "KV-чтения etcd не удались");
 
         // 4. Парсеры → модель (чистые функции, arch/02 §4 п.3).
@@ -127,6 +130,8 @@ public sealed class SnapshotRefresher(
         var pgApiParsed = WorkerEndpointsParser.Parse(pgApiKv.Value);
         // Префикс-запрос точечный: ровно один ключ /workers/api_tls/pgworker.
         var pgCertParsed = WorkerCertParser.Parse(Prefixes.WorkerApiCert, pgCertKv.Value.FirstOrDefault());
+        // Префикс-запрос точечный: ровно один ключ /pgworker/etcd-snapshots (t08, паттерн WorkerApiCert).
+        var etcdSnapshotsParsed = EtcdSnapshotsParser.Parse(etcdSnapshotsKv.Value.FirstOrDefault());
         var workParsed = WorkJournalParser.Parse(workKv.Value);
 
         // 5. Кворум-эвристика (spec §3.11) + мягкие метаданные member/alarm (ошибка не роняет тик).
@@ -162,7 +167,7 @@ public sealed class SnapshotRefresher(
         var built = ProbeEnricher.Apply(
             SnapshotBuilder.Build(
                 time, clustersParsed, serviceParsed, nodes, movesParsed, backupsParsed, pgApiParsed, workParsed,
-                etcd.Members, etcd.Alarms, etcd, pgCertParsed),
+                etcd.Members, etcd.Alarms, etcd, pgCertParsed, etcdSnapshotsParsed),
             probeStateStore.Current)
             with
         {
@@ -247,7 +252,9 @@ public sealed class SnapshotRefresher(
             previous?.UnknownKeyCount ?? 0,
             previous?.BackupStorage, // ключ storage переживает отказный тик — как Backups (t06)
             previous?.BackupOrphans, // реестр сирот переживает отказный тик — как storage (t07)
-            previous?.MinioStorage); // инвентарь MinIO переживает отказ etcd (t08, как WorkerHealth)
+            previous?.MinioStorage, // инвентарь MinIO переживает отказ etcd (t08, как WorkerHealth)
+            null, // WorkerApiCert — прежнее поведение отказного тика (серт не переносится)
+            previous?.EtcdSnapshots); // статус выгрузки etcd-снапшотов переживает отказный тик (t08)
 
         // Алерты вычисляются и на отказном тике: etcd-unreachable/snapshot-stale
         // живут именно здесь (spec §3.5); data-алерты пересчитываются по прежним данным.
@@ -295,5 +302,6 @@ public sealed class SnapshotRefresher(
         public const string PgWorkerApi = "/pgworker/api/";
         public const string PgWorkerWork = "/pgworker/work/";
         public const string WorkerApiCert = "/workers/api_tls/pgworker";
+        public const string EtcdSnapshots = "/pgworker/etcd-snapshots";
     }
 }
