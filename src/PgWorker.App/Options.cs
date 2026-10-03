@@ -314,6 +314,44 @@ public sealed class SnapshotOptions
 
     /// <summary>Интервал обслуживания etcd: compact + defrag (минуты, по умолчанию 60).</summary>
     public int MaintenanceIntervalMin { get; set; } = 60;
+
+    /// <summary>Выгрузка слепков etcd в S3 (t08, arch/14 §8).</summary>
+    public SnapshotExportOptions Export { get; set; } = new();
+}
+
+/// <summary>Выгрузка снапшотов etcd в S3 (t08, arch/14 §8): каждый слепок уходит
+/// в bucket подсистемы бэкапов префиксом etcd/ (S3-комплект — Backups:S3;
+/// Backups:Enabled НЕ требуется — контроль-плейн не зависит от бэкапов PG).
+/// Enabled=false (дефолт) — sink не подключается, поведение прежнее (§2.10).</summary>
+public sealed class SnapshotExportOptions
+{
+    /// <summary>Выгрузка включена.</summary>
+    public bool Enabled { get; set; }
+
+    /// <summary>Сколько последних пар .db+.meta.json держать в S3 (≥1;
+    /// 28 ≈ неделя при интервале 6 ч).</summary>
+    public int RetentionObjects { get; set; } = 28;
+
+    /// <summary>Сон лидера-тика при отстающей выгрузке, с (&gt;0;
+    /// вместо полного SnapshotIntervalMin — RPO-окно транзиента закрывается минутами).</summary>
+    public int RetryIntervalSec { get; set; } = 300;
+
+    /// <summary>Единый бюджет ОДНОЙ попытки экспорта (&gt;0): ExportAsync целиком
+    /// (puts + ретенция + статус, linked-CTS CancelAfter) — транзиент не тормозит
+    /// фазы процессов кластеров.</summary>
+    public int TimeoutSec { get; set; } = 30;
+
+    /// <summary>Fail-fast старта (образец BackupsOptions.IsValid): Enabled=true
+    /// требует полный S3-комплект Backups:S3; диапазоны — всегда.</summary>
+    public bool IsValid(BackupsS3Options s3)
+        => (!Enabled
+            || (!string.IsNullOrWhiteSpace(s3.Endpoint)
+                && !string.IsNullOrWhiteSpace(s3.Bucket)
+                && !string.IsNullOrWhiteSpace(s3.AccessKey)
+                && !string.IsNullOrWhiteSpace(s3.SecretKey)))
+           && RetentionObjects >= 1
+           && RetryIntervalSec > 0
+           && TimeoutSec > 0;
 }
 
 /// <summary>Дефолт значения ключа nodes/&lt;n&gt;/app_params (spec §3.1): libpq-строка

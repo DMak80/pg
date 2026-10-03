@@ -8,6 +8,7 @@ using Shared.Core.HealthChecks;
 using PgWorker.App.HealthChecks;
 using PgWorker.App.Loops;
 using PgWorker.Backups;
+using PgWorker.Backups.EtcdExport;
 using PgWorker.Backups.Sql;
 using PgWorker.Core;
 using PgWorker.Core.Model;
@@ -48,6 +49,10 @@ builder.Services.AddOptions<PgWorkerOptions>()
     // default Enabled=false — подсистема не активна, поведение не меняется.
     .Validate(o => o.Backups.IsValid(),
         "PgWorker:Backups: Enabled=true требует непустые PgWorker:Backups:S3:Endpoint/Bucket/AccessKey/SecretKey (env PGW_BACKUP_S3_*) и Backups:Job:Image (arch/19 §7/§9)")
+    // Экспорт etcd-снапшотов в S3 (reliability t08): Enabled=true требует
+    // S3-комплект из Backups:S3 (Backups:Enabled не нужен); диапазоны — всегда.
+    .Validate(o => o.Snapshots.Export.IsValid(o.Backups.S3),
+        "PgWorker:Snapshots:Export: Enabled=true требует непустые PgWorker:Backups:S3:Endpoint/Bucket/AccessKey/SecretKey (env PGW_BACKUP_S3_*); RetentionObjects>=1, RetryIntervalSec>0, TimeoutSec>0")
     // Расчёт PGTune (spec.md §4.2): мусорный конфиг виден на старте, а не на
     // первом provision'е. desktop запрещён — его wal_level=minimal/max_wal_senders=0
     // несовместимы с P3 (логическое декодирование, переезды бакетов).
@@ -258,13 +263,34 @@ builder.Services.AddSingleton(sp =>
     new ShardProbe(sp.GetRequiredService<IHttpClientFactory>().CreateClient("patroni")));
 builder.Services.AddSingleton<ISqlExecutor, DatabaseProvisioner>();
 
-// Снапшоты P12 (SnapshotLoop-лидер + процессы в точках изменений).
+// t08: S3-sink экспорта — один синглтон на процесс; null при выключенной опции
+// (креды фиксируются на старте: env-секреты деплоя меняются recreate контейнера).
+// null! — осознанный контракт: GetService<EtcdSnapshotSink>() обязан вернуть null
+// при Enabled=false (потребители — SnapshotJob/SnapshotLoop).
+builder.Services.AddSingleton(sp =>
+{
+    var opts = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value;
+    return opts.Snapshots.Export.Enabled
+        ? new EtcdSnapshotSink(
+            new BackupS3(opts.Backups.ToRuntime()),
+            sp.GetRequiredService<IEtcdGateway>(),
+            opts.Etcd.Endpoints,
+            opts.Snapshots.Export.RetentionObjects,
+            opts.Snapshots.Export.TimeoutSec,
+            sp.GetRequiredService<ClaimStore>().InstanceId,
+            opts.Loops.SnapshotIntervalMin)
+        : null!;
+});
+
+// Снапшоты P12 (SnapshotLoop-лидер + процессы в точках изменений) + опциональный
+// S3-sink (t08): Enabled=false → sink null, поведение прежнее (§2.10).
 builder.Services.AddSingleton(sp =>
 {
     var opts = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value;
     return new SnapshotJob(
         sp.GetRequiredService<IEtcdGateway>(), opts.Etcd.Endpoints,
-        opts.Snapshots.Dir, opts.Snapshots.RetentionFiles, opts.Snapshots.MaintenanceIntervalMin);
+        opts.Snapshots.Dir, opts.Snapshots.RetentionFiles, opts.Snapshots.MaintenanceIntervalMin,
+        sp.GetService<EtcdSnapshotSink>());
 });
 
 // Процессы-машины состояний (§6.4): снапшот передаётся делегатом от SnapshotJob.
