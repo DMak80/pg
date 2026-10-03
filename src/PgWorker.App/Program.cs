@@ -649,7 +649,17 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<PgWorker.App.Loops
 // Регистрируются синглтонами — health-обёртки читают их состояние напрямую.
 builder.Services.AddSingleton<IClusterProcesses, ClusterProcesses>();
 builder.Services.AddSingleton<KeepaliveLoop>();
-builder.Services.AddSingleton<SnapshotLoop>();
+// t08: явная фабрика SnapshotLoop — последний параметр (sink) может быть null
+// при выключенной опции; sp.GetService вернёт null (это рабочий режим).
+builder.Services.AddSingleton(sp => new SnapshotLoop(
+    sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<SnapshotJob>(),
+    sp.GetRequiredService<ILogger<SnapshotLoop>>(),
+    sp.GetRequiredService<HealthState>(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>(),
+    sp.GetService<EtcdSnapshotSink>()));
 builder.Services.AddSingleton<ReconcileLoop>();
 builder.Services.AddHostedService(sp => sp.GetRequiredService<KeepaliveLoop>());
 builder.Services.AddHostedService(sp => sp.GetRequiredService<SnapshotLoop>());
