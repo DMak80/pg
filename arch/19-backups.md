@@ -596,6 +596,18 @@ s3://<bucket>/<C>/<X>/
   полного бэкапа лежат и в `full/<id>/pg_wal/` (1:1 с manifest — база
   verify t04), и копией в `wal/` (общий префикс — стартовая точка цепочки
   t03); перезапись одного и того же сегмента идемпотентна.
+- **Служебный префикс `etcd/` (reliability t08)**: выгрузка снапшотов etcd
+  (контроль-плейн) — `etcd/snapshot-<id>.db` 1:1 + `etcd/snapshot-<id>.meta.json`
+  (sha256/size/revision?/taken_unix/uploaded_unix/instance; `uploaded_unix` —
+  фактическое время put'а объекта, в отличие от «покрытия» в статус-ключе).
+  Каждый снятый слепок выгружается; статус-ключ покрытия
+  `/pgworker/etcd-snapshots` (arch/14 §3) обновляется после каждой выгрузки.
+  Вне per-cluster layout: не форма `<C>/<X>/` → реестр сирот t07 его не группирует (ключи короче
+  3 сегментов); ретенция t06 и sweeper t07 к `etcd/` не прикасаются (их пути
+  адресны: `full/<id>/`, `wal/`, `<C>/<X>/`). Единственный удаляющий — ретенция
+  самого экспорта (N последних пар, guard ≥1 полная пара). Объекты `etcd/`
+  входят в `used_bytes` ключа `/pgworker/backups/storage` (list всего bucket —
+  занятость bucket, корректно).
 - **Ретенционная чистка (t06, §4)**: удаление полного = delete всего
   префикса `full/<id>/` (list + batch-delete, идемпотентно; 404/пустой
   префикс = уже удалён); чистка WAL = delete сегментов `wal/<segment>` со
@@ -682,7 +694,9 @@ s3://<bucket>/<C>/<X>/
   `PGW_BACKUP_S3_ACCESS_KEY`, `PGW_BACKUP_S3_SECRET_KEY` — конфиг-биндинг
   `PgWorker:Backups:S3` (группа транспортных секретов
   [14-pgworker.md](14-pgworker.md) §4 п.3); передача агенту/джобу — env
-  контейнера (t02/t03).
+  контейнера (t02/t03); тот же комплект S3 обслуживает и выгрузку etcd-снапшотов
+  (t08: `Snapshots:Export` — см. [14-pgworker.md](14-pgworker.md) §8);
+  второй набор S3-секретов не заводится.
 - **Per-cluster БД-роль** `backup_exec` (LOGIN + REPLICATION): пароль
   per-cluster `/clusters/<C>/backup_password` — по образцу t02-секретов
   (ensure put-if-absent, ротация в общем тикете §9.8, 32 симв

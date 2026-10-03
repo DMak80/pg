@@ -110,7 +110,7 @@ Scope = `<C>-<X>`, глобально уникален. Связь со шард
 ### 2.3.1. `/pgworker/…` — координация воркеров (читается избирательно)
 
 Префикс координации PgWorker (`arch/14` §3.3) панель читает точечно —
-пять ключа-семейства, остальные ключи префикса (`leader`, `claims`,
+шесть ключа-семейства, остальные ключи префикса (`leader`, `claims`,
 `evacuations`, `instances`) панель НЕ читает и не пишет:
 
 | Ключ | Формат значения | В модель | Примечания |
@@ -124,6 +124,7 @@ Scope = `<C>-<X>`, глобально уникален. Связь со шард
 | `/pgworker/backups/orphan-holds/<C>/<X>` | JSON `{"set_unix":<unix>,"set_by":"operator"\|"panel"}` (канон — arch/19 §4, reliability t04) | `BackupOrphansInfo.Holds` (§3) | hold-флаги сирот (DR-hold): панель читает для индикации (бейдж «hold», текст алерта `backup-orphan`) и ставит/снимает через мутации §9.10 — API PgWorker, панель в etcd не пишет; sweeper воркера гасит ключи несирот (воскрес/исчез) |
 | `/pgworker/backups/orphan-deletes/<C>/<X>` | JSON `{"requested_unix":<unix>,"requested_by":"operator"\|"panel"}` (канон — arch/19 §4, reliability t04) | `BackupOrphansInfo.DeleteRequests` (§3) | заявки явного удаления сирот: панель читает (индикация «к удалению» до прохода sweeper'а) и ставит через confirm-мутацию §9.10 (API PgWorker); исполняет sweeper воркера ближайшим проходом, заявка гасится вместе с записью |
 | `/pgworker/backups/<C>/<X>/drill` | JSON-статус дрилла шарда `{"state":"RUNNING"\|"SUCCEEDED"\|"FAILED","id","backup_id","started_unix","finished_unix"?,"phase"?,"restored_to_lsn"?,"error"?}` (канон — arch/19 §4, reliability t02) | `DrillInfo` (§3) | панель читает, пишет только PgWorker (держатель клэйма `<C>`); кормит алерты `backup-drill-failed`/`backup-drill-stale` (03 §4) и per-shard статус грани «Хранилище бэкапов»; `phase` — `downloading\|recovering` (фазы джоба) \| `cleaning` (идёт снос тестового контура); снятая фаза у терминального ключа = контур подтверждённо снесён; ключ перезаписывается каждым новым дриллом; битый JSON — parseError-запись (толерантный читатель: нет ключей — правила дрилла молчат) |
+| `/pgworker/etcd-snapshots` | JSON `{"enabled":bool,"state":"OK"\|"FAILED","last_uploaded_unix"?<unix>,"last_object"?,"last_sha256"?,"size_bytes"?<n>,"interval_min"?<n>,"error"?}` (канон — arch/14 §3.3, reliability t08) | `EtcdSnapshotExportInfo` (§3) | статус выгрузки etcd-снапшотов в S3: пишет ТОЛЬКО PgWorker (инстанс-исполнитель экспорта), панель читает; кормит алерты `etcd-snapshot-export-failed`/`etcd-snapshot-export-stale` (03 §4) и карточку «etcd-снапшоты» грани «Хранилище бэкапов»; `enabled=false`/отсутствие ключа — правила молчат (толерантный читатель: битый JSON — parseError-запись) |
 
 ### 2.3.2. `/kafkaworker/api/…` — дискавери API KafkaWorker
 

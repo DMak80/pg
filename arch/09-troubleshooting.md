@@ -117,16 +117,21 @@ Patroni не может проводить выборы → кластер «з�
 > Это **крайний** случай. Patroni не сможет управлять кластером, но **данные PostgreSQL на
 > нодах целы**.
 
-Восстановление (если есть бэкап etcd):
+Восстановление (источник — S3-выгрузка t08: `etcd/snapshot-<id>.db` в bucket
+бэкапов; полный операторский путь с проверкой целостности ДО восстановления —
+docs/runbook.md §«Восстановление etcd из S3-выгрузки (t08)»; локальный файл
+тома `pgw-snapshots` (если пережил) — fallback того же формата):
 ```bash
-# 1) стартовать etcd заново как новый кластер (INITIAL_CLUSTER_STATE=new)
-# 2) восстановить snapshot:
+# 1) скачать новейший snapshot-<id>.db (+ .meta.json), сверить sha256
+#    и etcdctl snapshot status (обязательный шаг, runbook t08)
+# 2) стартовать etcd заново как новый кластер (INITIAL_CLUSTER_STATE=new)
+# 3) восстановить snapshot:
 etcdctl snapshot restore /backup/etcd.snap --data-dir=/data/etcd
 ```
 Если бэкапа etcd нет — Patroni можно «объяснить», что кластер уже инициализирован:
 см. процедуру `patroni reinit` для каждой ноды с `--force` на свежем DCS.
 
-> Поэтому **бэкап etcd** (`etcdctl snapshot save`) — обязателен, хотя бы раз в сутки.
+> Поэтому **бэкап etcd** (`etcdctl snapshot save`) — обязателен, хотя бы раз в сутки; при `Snapshots:Export:Enabled=true` выгрузка уходит в S3 автоматически каждым слепком (t08).
 
 ---
 
