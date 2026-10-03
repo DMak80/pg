@@ -45,6 +45,10 @@ x-pgworker-env: &pgworker-env
   # Образ джоба полного бэкапа (t02): тег = дефолт Job.Image; сборка —
   # build-сервис pgworker-backup ниже (compose build) или 00-up.sh.
   PgWorker__Backups__Job__Image: ${PGW_BACKUP_JOB_IMAGE:-pgworker-backup:dev}
+  # Экспорт etcd-снапшотов в S3 (reliability t08, arch/14 §8): тот же bucket
+  # бэкапов (PGW_BACKUP_S3_*), служебный префикс etcd/; S3-креды отдельной
+  # переменной НЕ задаются. false → sink не подключается (поведение прежнее).
+  PgWorker__Snapshots__Export__Enabled: ${PGW_SNAPSHOTS_EXPORT_ENABLED:-false}
   # PGTune-параметры PG-нод (arch/14 §2.1/§8): postgresql.conf ноды
   # рассчитывается при СОЗДАНИИ контейнера; память/CPU — из etcd-заявок
   # request_{cpu,mem} ноды (НЕ env), остальное — эти константы; канон P3
