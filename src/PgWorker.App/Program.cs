@@ -739,6 +739,10 @@ file sealed class ReloadableBackupS3(IOptionsMonitor<PgWorkerOptions> options) :
         IReadOnlyList<string> keys, CancellationToken ct = default)
         => await (await CurrentAsync()).DeleteKeysAsync(keys, ct);
 
+    public async Task<Result> PutObjectAsync(
+        string key, byte[] data, string? sha256, CancellationToken ct = default)
+        => await (await CurrentAsync()).PutObjectAsync(key, data, sha256, ct);
+
     public async Task<Result<IReadOnlyList<PgWorker.Backups.WalObject>>> ListAsync(
         string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
         => await (await CurrentAsync()).ListAsync(cluster, shard, prefix, maxKeysPerTest, ct);
@@ -790,6 +794,11 @@ file sealed class ReloadableBackupS3(IOptionsMonitor<PgWorkerOptions> options) :
 
         public Task<Result> DeleteKeysAsync(
             IReadOnlyList<string> keys, CancellationToken ct = default)
+            => Task.FromResult(Result.Failed(
+                new ApplicationException("Backups:Enabled=false")));
+
+        public Task<Result> PutObjectAsync(
+            string key, byte[] data, string? sha256, CancellationToken ct = default)
             => Task.FromResult(Result.Failed(
                 new ApplicationException("Backups:Enabled=false")));
 
