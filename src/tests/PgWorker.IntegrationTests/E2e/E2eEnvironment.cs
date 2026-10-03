@@ -130,6 +130,10 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// advertise для контейнеров — host.docker.internal на тот же порт.</summary>
     public string EtcdEndpoint { get; }
 
+    /// <summary>Имя etcd-контейнера окружения (pgw-ee-{runId}) для docker cp/exec
+    /// etcdctl в restore-verify сценариях (t08, публичное — как OwnEtcd.ContainerName).</summary>
+    public string EtcdContainerName => $"pgw-ee-{_runId}";
+
     /// <summary>Имя docker-сети окружения (уникально на прогон) — удаляется в
     /// teardown'е самими (ryuk не гарант), отсутствие проверяется ассертом.</summary>
     public string NetName { get; }
