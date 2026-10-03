@@ -64,7 +64,7 @@
 **Проверка:** `git diff --stat` показывает 5 arch-файлов; текст каждого дополнения соответствует пунктам spec §3.9.
 **Связь со spec:** §3.9 п.1–4, §2.1 (arch-first), AC9.
 
-- [ ] **Step 1.1: `arch/14-pgworker.md` — три правки**
+- [x] **Step 1.1: `arch/14-pgworker.md` — три правки**
 
   1. §3.3 таблица «НОВЫЕ ключи координации воркеров» — новая строка после `/pgworker/rotations/<C>`:
 
@@ -110,7 +110,7 @@
                   # fail-fast старта
   ```
 
-- [ ] **Step 1.2: `arch/19-backups.md` — §5 и §7**
+- [x] **Step 1.2: `arch/19-backups.md` — §5 и §7**
 
   §5 после блока layout (перед «Ретенционная чистка (t06…)») — новый пункт:
 
@@ -131,7 +131,7 @@
 
   §7 первый пункт — дополнить в конец: «тот же комплект S3 обслуживает и выгрузку etcd-снапшотов (t08: `Snapshots:Export` — см. [14-pgworker.md](14-pgworker.md) §8); второй набор S3-секретов не заводится».
 
-- [ ] **Step 1.3: `arch/09-troubleshooting.md` §4** — в подраздел «Если etcd-кластер разрушен полностью (нет данных)» заменить абзац «Восстановление (если есть бэкап etcd):» на:
+- [x] **Step 1.3: `arch/09-troubleshooting.md` §4** — в подраздел «Если etcd-кластер разрушен полностью (нет данных)» заменить абзац «Восстановление (если есть бэкап etcd):» на:
 
   ```markdown
   Восстановление (источник — S3-выгрузка t08: `etcd/snapshot-<id>.db` в bucket
@@ -149,13 +149,13 @@
 
   И финальную строку секции «Поэтому бэкап etcd… обязателен» дополнить: «; при `Snapshots:Export:Enabled=true` выгрузка уходит в S3 автоматически каждым слепком (t08)».
 
-- [ ] **Step 1.4: `arch/adminpanel/02-etcd-contract.md` §2.3.1** — две правки: (1) в преамбуле секции (строка ~112: «панель читает точечно — пять ключа-семейства, остальные ключи префикса…») заменить «пять» → «шесть» (добавляется семейство из п.2); (2) в таблицу (после строки `/pgworker/backups/<C>/<X>/drill`) новая строка:
+- [x] **Step 1.4: `arch/adminpanel/02-etcd-contract.md` §2.3.1** — две правки: (1) в преамбуле секции (строка ~112: «панель читает точечно — пять ключа-семейства, остальные ключи префикса…») заменить «пять» → «шесть» (добавляется семейство из п.2); (2) в таблицу (после строки `/pgworker/backups/<C>/<X>/drill`) новая строка:
 
   ```markdown
   | `/pgworker/etcd-snapshots` | JSON `{"enabled":bool,"state":"OK"\|"FAILED","last_uploaded_unix"?<unix>,"last_object"?,"last_sha256"?,"size_bytes"?<n>,"interval_min"?<n>,"error"?}` (канон — arch/14 §3.3, reliability t08) | `EtcdSnapshotExportInfo` (§3) | статус выгрузки etcd-снапшотов в S3: пишет ТОЛЬКО PgWorker (инстанс-исполнитель экспорта), панель читает; кормит алерты `etcd-snapshot-export-failed`/`etcd-snapshot-export-stale` (03 §4) и карточку «etcd-снапшоты» грани «Хранилище бэкапов»; `enabled=false`/отсутствие ключа — правила молчат (толерантный читатель: битый JSON — parseError-запись) |
   ```
 
-- [ ] **Step 1.5: `arch/adminpanel/03-panels.md` §4** — в таблицу каталога алертов (после `backup-s3-unreachable`) две строки:
+- [x] **Step 1.5: `arch/adminpanel/03-panels.md` §4** — в таблицу каталога алертов (после `backup-s3-unreachable`) две строки:
 
   ```markdown
   | `etcd-snapshot-export-failed` | critical | `enabled=true` и `state=FAILED` — текст `error`; контроль-плейн не защищён от потери хоста | `/pgworker/etcd-snapshots` |
@@ -164,7 +164,7 @@
 
   И в §3 (Панели UI) строку грани «Хранилище бэкапов» дополнить упоминанием карточки «etcd-снапшоты» (последняя выгрузка: время/возраст, sha256-префикс, размер, статус OK/FAILED, ошибка; read-only).
 
-- [ ] **Step 1.6: Commit**
+- [x] **Step 1.6: Commit**
 
 ```bash
 git add arch/14-pgworker.md arch/19-backups.md arch/09-troubleshooting.md arch/adminpanel/02-etcd-contract.md arch/adminpanel/03-panels.md
@@ -181,7 +181,7 @@ git commit -m "docs(t08): arch-first — канон экспорта etcd-сна
 **Проверка:** `dotnet test src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~EtcdExport|FullyQualifiedName~OrphanRegistry"` — зелёные.
 **Связь со spec:** §3.1 (формат ключа), §3.2 (layout/ретенция/guard), §3.6 (чистые функции), Фаза 1, AC4/AC6/AC8.
 
-- [ ] **Step 2.1: Failing-тесты статус-JSON** — создать `src/tests/PgWorker.UnitTests/Backups/EtcdExportStatusJsonTests.cs`:
+- [x] **Step 2.1: Failing-тесты статус-JSON** — создать `src/tests/PgWorker.UnitTests/Backups/EtcdExportStatusJsonTests.cs`:
 
 ```csharp
 using FluentAssertions;
@@ -302,9 +302,9 @@ public class EtcdExportStatusJsonTests
 }
 ```
 
-- [ ] **Step 2.2: Run → FAIL** (`dotnet test src/PgWorker.slnx -c Debug --filter FullyQualifiedName~EtcdExportStatusJson` — не компилируется: типов нет).
+- [x] **Step 2.2: Run → FAIL** (`dotnet test src/PgWorker.slnx -c Debug --filter FullyQualifiedName~EtcdExportStatusJson` — не компилируется: типов нет).
 
-- [ ] **Step 2.3: Реализация** — создать `src/PgWorker.Backups/EtcdExport/EtcdSnapshotStatus.cs`:
+- [x] **Step 2.3: Реализация** — создать `src/PgWorker.Backups/EtcdExport/EtcdSnapshotStatus.cs`:
 
 ```csharp
 using System.Globalization;
@@ -422,9 +422,9 @@ public static class EtcdSnapshotStatusJson
 
 (Если slicing-вариант `TakenUnixFromName` окажется громче прямой проверки — допустимо упростить до `Regex`/двух `StartsWith`-гвардов + `TryParseExact` средней части; тест из 2.1 обязан проходить.)
 
-- [ ] **Step 2.4: Run → PASS** (`--filter FullyQualifiedName~EtcdExportStatusJson`).
+- [x] **Step 2.4: Run → PASS** (`--filter FullyQualifiedName~EtcdExportStatusJson`).
 
-- [ ] **Step 2.5: Failing-тесты meta-JSON** — создать `src/tests/PgWorker.UnitTests/Backups/EtcdExportMetaJsonTests.cs` (кейсы AAA):
+- [x] **Step 2.5: Failing-тесты meta-JSON** — создать `src/tests/PgWorker.UnitTests/Backups/EtcdExportMetaJsonTests.cs` (кейсы AAA):
 
 ```csharp
 // AAA: полный формат — revision присутствует; uploaded_unix — ФАКТИЧЕСКОЕ время
@@ -462,9 +462,9 @@ public void Parse_круговорот_и_битый()
 }
 ```
 
-- [ ] **Step 2.6: Реализация** — `src/PgWorker.Backups/EtcdExport/EtcdSnapshotMeta.cs`: record `EtcdSnapshotMeta(string Sha256, long SizeBytes, long? Revision, long TakenUnix, long UploadedUnix, string Instance)` (doc: `UploadedUnix` — фактическое время put'а объекта; TakenUnix — метка снятия из имени) + static `EtcdSnapshotMetaJson { string Serialize(EtcdSnapshotMeta); EtcdSnapshotMeta? Parse(string) }` (паттерн `EtcdSnapshotStatusJson`: private record `Payload` c `JsonPropertyName`, `JsonIgnoreCondition.WhenWritingNull`).
+- [x] **Step 2.6: Реализация** — `src/PgWorker.Backups/EtcdExport/EtcdSnapshotMeta.cs`: record `EtcdSnapshotMeta(string Sha256, long SizeBytes, long? Revision, long TakenUnix, long UploadedUnix, string Instance)` (doc: `UploadedUnix` — фактическое время put'а объекта; TakenUnix — метка снятия из имени) + static `EtcdSnapshotMetaJson { string Serialize(EtcdSnapshotMeta); EtcdSnapshotMeta? Parse(string) }` (паттерн `EtcdSnapshotStatusJson`: private record `Payload` c `JsonPropertyName`, `JsonIgnoreCondition.WhenWritingNull`).
 
-- [ ] **Step 2.7: Failing-тесты ретенции** — `src/tests/PgWorker.UnitTests/Backups/EtcdExportRetentionTests.cs`:
+- [x] **Step 2.7: Failing-тесты ретенции** — `src/tests/PgWorker.UnitTests/Backups/EtcdExportRetentionTests.cs`:
 
 ```csharp
 using PgWorker.Backups;
@@ -542,7 +542,7 @@ public class EtcdExportRetentionTests
 }
 ```
 
-- [ ] **Step 2.8: Реализация** — `src/PgWorker.Backups/EtcdExport/EtcdExportRetention.cs`:
+- [x] **Step 2.8: Реализация** — `src/PgWorker.Backups/EtcdExport/EtcdExportRetention.cs`:
 
 ```csharp
 using PgWorker.Backups;
@@ -595,7 +595,7 @@ public static class EtcdExportRetention
 
 (`S3ObjectInfo` уже в namespace `PgWorker.Backups` — using одноимённый допустим опустить при warning'е CA/IDE; сборка без warnings обязательна.)
 
-- [ ] **Step 2.9: Гвард изоляции префикса** — дописать в `src/tests/PgWorker.UnitTests/Backups/OrphanRegistryTests.cs` один Fact:
+- [x] **Step 2.9: Гвард изоляции префикса** — дописать в `src/tests/PgWorker.UnitTests/Backups/OrphanRegistryTests.cs` один Fact:
 
 ```csharp
 // AAA (t08): объекты etcd/* не группируются реестром сирот — префикс служебный,
@@ -619,9 +619,9 @@ public void GroupPrefixes_объекты_etcd_мимо_реестра()
 }
 ```
 
-- [ ] **Step 2.10: Run all** — `dotnet test src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~EtcdExport|FullyQualifiedName~OrphanRegistry"` — PASS.
+- [x] **Step 2.10: Run all** — `dotnet test src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~EtcdExport|FullyQualifiedName~OrphanRegistry"` — PASS.
 
-- [ ] **Step 2.11: Commit**
+- [x] **Step 2.11: Commit**
 
 ```bash
 git add src/PgWorker.Backups/EtcdExport/ src/tests/PgWorker.UnitTests/Backups/
@@ -638,7 +638,7 @@ git commit -m "feat(backups): t08 — чистые функции экспорт
 **Проверка:** `dotnet test src/PgWorker.slnx -c Debug --filter FullyQualifiedName~SnapshotJob` — зелёные; `dotnet build src/PgWorker.slnx -c Debug` — без warnings (фабрики Kafka/Valkey компилируются без правок).
 **Связь со spec:** §3.4, §2.2/§2.3 (экспорт в точке снятия; сбой не роняет снятие), AC1/AC3.
 
-- [ ] **Step 3.1: Failing-тесты** — создать `src/tests/Shared.Etcd.UnitTests/Maintenance/SnapshotJobSinkTests.cs`. Мини-fake gateway — inline в файле (в Shared.Etcd.UnitTests фейка нет, EtcdGatewayTests гоняет живое API):
+- [x] **Step 3.1: Failing-тесты** — создать `src/tests/Shared.Etcd.UnitTests/Maintenance/SnapshotJobSinkTests.cs`. Мини-fake gateway — inline в файле (в Shared.Etcd.UnitTests фейка нет, EtcdGatewayTests гоняет живое API):
 
 ```csharp
 using Shared.Core;
@@ -765,9 +765,9 @@ public class SnapshotJobSinkTests
 
 (Строку `File.ReadAllBytesAsync...Should().BeEquivalentTo` при реализации заменить на прямой `Assert`-стиль проекта: `var bytes = await File.ReadAllBytesAsync(...); bytes.Should().Equal(9);` — главное: содержимое файла равно.)
 
-- [ ] **Step 3.2: Run → FAIL** (типа `ISnapshotSink` и перегрузки нет).
+- [x] **Step 3.2: Run → FAIL** (типа `ISnapshotSink` и перегрузки нет).
 
-- [ ] **Step 3.3: Реализация** — создать `src/Shared.Etcd/Maintenance/ISnapshotSink.cs`:
+- [x] **Step 3.3: Реализация** — создать `src/Shared.Etcd/Maintenance/ISnapshotSink.cs`:
 
 ```csharp
 using Shared.Core;
@@ -819,9 +819,9 @@ if (sink is not null)
 
   Doc-комментарий класса дополнить строкой про опциональный sink.
 
-- [ ] **Step 3.4: Run → PASS; сборка всего solution** — `dotnet test src/PgWorker.slnx -c Debug --filter FullyQualifiedName~SnapshotJobSink && dotnet build src/PgWorker.slnx -c Debug` (без warnings; фабрики Kafka/Valkey не менялись и компилируются).
+- [x] **Step 3.4: Run → PASS; сборка всего solution** — `dotnet test src/PgWorker.slnx -c Debug --filter FullyQualifiedName~SnapshotJobSink && dotnet build src/PgWorker.slnx -c Debug` (без warnings; фабрики Kafka/Valkey не менялись и компилируются).
 
-- [ ] **Step 3.5: Commit**
+- [x] **Step 3.5: Commit**
 
 ```bash
 git add src/Shared.Etcd/Maintenance/ src/tests/Shared.Etcd.UnitTests/Maintenance/
@@ -838,7 +838,7 @@ git commit -m "feat(etcd): t08 — ISnapshotSink + опциональный sink
 **Проверка:** `PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~BackupS3Tests"` — зелёные; после серии — зачистка (`docker ps -a | grep pgw-em-` пусто).
 **Связь со spec:** §3.6 (PutObjectAsync), §3.2 (sha256-мета/проверка целостности), AC1/AC5.
 
-- [ ] **Step 4.1: Failing-интеграция** — дописать в `src/tests/PgWorker.IntegrationTests/Backups/BackupS3Tests.cs` (паттерн файла — OwnMinio на Fact, SeedClient уже есть):
+- [x] **Step 4.1: Failing-интеграция** — дописать в `src/tests/PgWorker.IntegrationTests/Backups/BackupS3Tests.cs` (паттерн файла — OwnMinio на Fact, SeedClient уже есть):
 
 ```csharp
 // AAA (t08): put байтов с sha256 — объект читается обратно 1:1 (транспорт цел)
@@ -885,9 +885,9 @@ private static string Sha256Hex(byte[] data)
 
   (Хеш `"0000…"` в тесте — реальная 64-символьная hex-строка нулей/неверного значения; подставить корректную длину.)
 
-- [ ] **Step 4.2: Run → FAIL** (метода нет — не компилируется).
+- [x] **Step 4.2: Run → FAIL** (метода нет — не компилируется).
 
-- [ ] **Step 4.3: Реализация** — `src/PgWorker.Backups/BackupS3.cs`: в `IBackupS3` после `DeleteKeysAsync`:
+- [x] **Step 4.3: Реализация** — `src/PgWorker.Backups/BackupS3.cs`: в `IBackupS3` после `DeleteKeysAsync`:
 
 ```csharp
 /// <summary>put байтов с SHA256-проверкой целостности транспорта (t08:
@@ -921,9 +921,9 @@ public async Task<Result> PutObjectAsync(string key, byte[] data, string? sha256
 }
 ```
 
-- [ ] **Step 4.4: Run → PASS** (docker-серия; после — зачистка проверена teardown'ом OwnMinio + `docker ps -a --filter name=pgw-em-` пусто).
+- [x] **Step 4.4: Run → PASS** (docker-серия; после — зачистка проверена teardown'ом OwnMinio + `docker ps -a --filter name=pgw-em-` пусто).
 
-- [ ] **Step 4.5: Commit**
+- [x] **Step 4.5: Commit**
 
 ```bash
 git add src/PgWorker.Backups/BackupS3.cs src/tests/PgWorker.IntegrationTests/Backups/BackupS3Tests.cs
@@ -940,7 +940,7 @@ git commit -m "feat(backups): t08 — IBackupS3.PutObjectAsync: put байтов
 **Проверка:** `PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~EtcdSnapshotSink"` — зелёные; в `ExportAsync` нет ветви сравнения sha с прошлым состоянием (явный запрет §3.6); зачистка серий после прогона.
 **Связь со spec:** §3.1/§3.2/§3.6, §2.6/§2.7/§2.8 (идемпотентность/каждый слепок уезжает/takeover), AC1–AC6.
 
-- [ ] **Step 5.1: Реализация** — создать `src/PgWorker.Backups/EtcdExport/EtcdSnapshotSink.cs`:
+- [x] **Step 5.1: Реализация** — создать `src/PgWorker.Backups/EtcdExport/EtcdSnapshotSink.cs`:
 
 ```csharp
 using System.Security.Cryptography;
@@ -1123,9 +1123,9 @@ public sealed class EtcdSnapshotSink(
 }
 ```
 
-- [ ] **Step 5.2: OwnEtcd — публичное имя контейнера** (нужно для `docker exec etcdctl`): в `src/tests/PgWorker.IntegrationTests/Backups/OwnEtcd.cs` добавить `public string ContainerName => …;` (сейчас приватное авто-свойство `private string ContainerName => $"pgw-ee-{RunId}";` — сменить модификатор на `public`).
+- [x] **Step 5.2: OwnEtcd — публичное имя контейнера** (нужно для `docker exec etcdctl`): в `src/tests/PgWorker.IntegrationTests/Backups/OwnEtcd.cs` добавить `public string ContainerName => …;` (сейчас приватное авто-свойство `private string ContainerName => $"pgw-ee-{RunId}";` — сменить модификатор на `public`).
 
-- [ ] **Step 5.3: Интеграции** — создать `src/tests/PgWorker.IntegrationTests/Backups/EtcdSnapshotSinkTests.cs`. Окружение Fact'а: `await using var etcdFx = await OwnEtcd.StartAsync("sink", ct); await using var minioFx = await OwnMinio.StartAsync("sink", ct);` (обе фикстуры — teardown+ассерт чистоты). Клиенты: `var s3 = new BackupS3(minioFx.Runtime());` — НО: `Runtime()` хост-эндпоинт MinIO, а `etcdFx.Endpoint` — для шлюза. Хелпер-заголовок файла:
+- [x] **Step 5.3: Интеграции** — создать `src/tests/PgWorker.IntegrationTests/Backups/EtcdSnapshotSinkTests.cs`. Окружение Fact'а: `await using var etcdFx = await OwnEtcd.StartAsync("sink", ct); await using var minioFx = await OwnMinio.StartAsync("sink", ct);` (обе фикстуры — teardown+ассерт чистоты). Клиенты: `var s3 = new BackupS3(minioFx.Runtime());` — НО: `Runtime()` хост-эндпоинт MinIO, а `etcdFx.Endpoint` — для шлюза. Хелпер-заголовок файла:
 
 ```csharp
 // S3-sink снапшотов etcd (t08): OwnEtcd + OwnMinio на Fact (своё окружение,
@@ -1204,9 +1204,9 @@ public async Task Export_после_TakeAsync_объекты_мета_стату
   6. **`Разворачиваемость_etcdctl_snapshot_status`** — после успешного экспорта: скачать `.db` AWSSDK в temp-файл; `await E2eFixture.RunDockerAsync(["cp", tempFile, $"{etcdFx.ContainerName}:/tmp/snap.db"], ct)`; `var out = await E2eFixture.RunDockerAsync(["exec", etcdFx.ContainerName, "etcdctl", "snapshot", "status", "/tmp/snap.db"], ct)` — вывод содержит хеш/размер; порча: `data[100] ^= 0xFF` → перезаписать temp → cp поверх → повторный exec — падает (ошибка/exit ≠ 0 — проверять по выводу команды, RunProcessAsync возвращает stdout; для exit-кода использовать `docker exec ... && echo OK`-обёртку и absence "OK") (AC5).
   7. **`Takeover_статус_пишет_инстанс_исполнитель`** — sink A (`instance:"inst-A"`) экспортирует слепок; пауза 1.1 c (имена расходятся по секундам); sink B (`instance:"inst-B"`, те же etcd+minio) экспортирует следующий слепок (новая пара). Assert: `.meta.json` новейшего объекта содержит `"instance":"inst-B"`; в S3 две пары; статус OK (AC6).
 
-- [ ] **Step 5.4: Run** — `PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Debug --filter FullyQualifiedName~EtcdSnapshotSink` — PASS; зачистка после серии (`docker ps -a --filter name=pgw-ee-` / `pgw-em-` пусто; при остаточных сетях — `docker network prune -f` по правилам AGENTS.md).
+- [x] **Step 5.4: Run** — `PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Debug --filter FullyQualifiedName~EtcdSnapshotSink` — PASS; зачистка после серии (`docker ps -a --filter name=pgw-ee-` / `pgw-em-` пусто; при остаточных сетях — `docker network prune -f` по правилам AGENTS.md).
 
-- [ ] **Step 5.5: Commit**
+- [x] **Step 5.5: Commit**
 
 ```bash
 git add src/PgWorker.Backups/EtcdExport/EtcdSnapshotSink.cs src/tests/PgWorker.IntegrationTests/Backups/EtcdSnapshotSinkTests.cs src/tests/PgWorker.IntegrationTests/Backups/OwnEtcd.cs
@@ -1223,7 +1223,7 @@ git commit -m "feat(backups): t08 — EtcdSnapshotSink: put db+meta (серве�
 **Проверка:** `dotnet test src/PgWorker.slnx -c Debug --filter FullyQualifiedName~SnapshotExportOptions` + сборка solution без warnings.
 **Связь со spec:** §3.3 (таблица опций/дефолты/валидация), §2.10 (нулевое влияние при false), AC10.
 
-- [ ] **Step 6.1: Failing-тесты валидации** — создать `src/tests/PgWorker.UnitTests/App/SnapshotExportOptionsTests.cs`:
+- [x] **Step 6.1: Failing-тесты валидации** — создать `src/tests/PgWorker.UnitTests/App/SnapshotExportOptionsTests.cs`:
 
 ```csharp
 using PgWorker.App;
@@ -1295,9 +1295,9 @@ public class SnapshotExportOptionsTests
 }
 ```
 
-- [ ] **Step 6.2: Run → FAIL** (типа нет).
+- [x] **Step 6.2: Run → FAIL** (типа нет).
 
-- [ ] **Step 6.3: Реализация** — `src/PgWorker.App/Options.cs`: внутрь `SnapshotOptions` добавить `public SnapshotExportOptions Export { get; set; } = new();` и новый класс (после `SnapshotOptions`):
+- [x] **Step 6.3: Реализация** — `src/PgWorker.App/Options.cs`: внутрь `SnapshotOptions` добавить `public SnapshotExportOptions Export { get; set; } = new();` и новый класс (после `SnapshotOptions`):
 
 ```csharp
 /// <summary>Выгрузка снапшотов etcd в S3 (t08, arch/14 §8): каждый слепок уходит
@@ -1379,14 +1379,14 @@ builder.Services.AddSingleton(sp =>
 
   (Регистрация sink — ЕДИНСТВЕННЫЙ синглтон-блок выше; SnapshotLoop-фабрика в Task 7 берёт его тем же `sp.GetService<EtcdSnapshotSink>()` — может вернуть null при выключенной опции, это рабочий режим.) `appsettings.json` строку `"Snapshots": { "Dir": "/snapshots", "RetentionFiles": 10 }` заменить на `"Snapshots": { "Dir": "/snapshots", "RetentionFiles": 10, "MaintenanceIntervalMin": 60, "Export": { "Enabled": false, "RetentionObjects": 28, "RetryIntervalSec": 300, "TimeoutSec": 30 } }`.
 
-- [ ] **Step 6.4: Run → PASS + сборка**
+- [x] **Step 6.4: Run → PASS + сборка**
 
 ```bash
 dotnet test src/PgWorker.slnx -c Debug --filter FullyQualifiedName~SnapshotExportOptions
 dotnet build src/PgWorker.slnx -c Debug
 ```
 
-- [ ] **Step 6.5: Commit**
+- [x] **Step 6.5: Commit**
 
 ```bash
 git add src/PgWorker.App/Options.cs src/PgWorker.App/Program.cs src/PgWorker.App/appsettings.json src/tests/PgWorker.UnitTests/App/SnapshotExportOptionsTests.cs
@@ -1403,7 +1403,7 @@ git commit -m "feat(app): t08 — SnapshotExportOptions (Enabled/RetentionObject
 **Проверка:** `dotnet test src/PgWorker.slnx -c Debug --filter FullyQualifiedName~SnapshotLoopExport` — зелёные.
 **Связь со spec:** §3.5 (п.1–3), §2.8 (takeover наследуется), AC3.
 
-- [ ] **Step 7.1: Failing-тест** — создать `src/tests/PgWorker.UnitTests/App/SnapshotLoopExportTests.cs` (паттерн `KafkaWorker.UnitTests/App/LoopsHealthResetTests`; PgWorker.App internals видимы — `InternalsVisibleTo Include="PgWorker.UnitTests"` уже есть). Использовать `FakeEtcd` из `PgWorker.UnitTests.Provisioning` (`SnapshotSaveAsync` → `[1,2,3]`, `StatusAsync` → ревизия) и `FakeEtcdGateway` из `PgWorker.UnitTests.Api` как хранилище статус-ключа; S3-часть — мини-фейк `IBackupS3` в памяти:
+- [x] **Step 7.1: Failing-тест** — создать `src/tests/PgWorker.UnitTests/App/SnapshotLoopExportTests.cs` (паттерн `KafkaWorker.UnitTests/App/LoopsHealthResetTests`; PgWorker.App internals видимы — `InternalsVisibleTo Include="PgWorker.UnitTests"` уже есть). Использовать `FakeEtcd` из `PgWorker.UnitTests.Provisioning` (`SnapshotSaveAsync` → `[1,2,3]`, `StatusAsync` → ревизия) и `FakeEtcdGateway` из `PgWorker.UnitTests.Api` как хранилище статус-ключа; S3-часть — мини-фейк `IBackupS3` в памяти:
 
 ```csharp
 using Microsoft.Extensions.Logging.Abstractions;
@@ -1570,9 +1570,9 @@ public class SnapshotLoopExportTests
 
   Примечания: `Provisioning.FakeEtcd` — файл `src/tests/PgWorker.UnitTests/Provisioning/Fakes.cs`, класс `internal sealed class FakeEtcd : IEtcdGateway` в namespace `PgWorker.UnitTests.Provisioning` (уточнить фактический namespace при реализации и импортировать). Если его `PutAsync`/`GetAsync` недостаточны (нет `GetAsync`-нюансов) — расширять фейк нельзя без нужды: статус-ключ пишется/читается через те же Put/Get — достаточно. `ClaimStore` — реальный (паттерн LoopsHealthResetTests).
 
-- [ ] **Step 7.2: Run → FAIL** (SnapshotLoop ещё не зовёт CatchUpAsync).
+- [x] **Step 7.2: Run → FAIL** (SnapshotLoop ещё не зовёт CatchUpAsync).
 
-- [ ] **Step 7.3: Реализация** — `src/PgWorker.App/Loops/SnapshotLoop.cs`: конструктор получает последний опциональный параметр `EtcdSnapshotSink? exportSink = null`; в ветке `if (claims.IsLeader)` — ПЕРЕД `TakeAsync`:
+- [x] **Step 7.3: Реализация** — `src/PgWorker.App/Loops/SnapshotLoop.cs`: конструктор получает последний опциональный параметр `EtcdSnapshotSink? exportSink = null`; в ветке `if (claims.IsLeader)` — ПЕРЕД `TakeAsync`:
 
 ```csharp
 // t08 (spec §3.5 п.1/п.3): доводка отстающей выгрузки ДО снятия — транзиент S3
@@ -1619,9 +1619,9 @@ builder.Services.AddSingleton(sp => new SnapshotLoop(
 
   (Аккуратно с фактическим конструктором: параметры — `IOptionsMonitor<PgWorkerOptions> options, ClaimStore claims, SnapshotJob snapshots, ILogger<SnapshotLoop> logger, HealthState health, TimeProvider clock, WorkerMetricsInstrumentation metrics`; последний новый параметр `EtcdSnapshotSink? exportSink = null`. `sp.GetService<EtcdSnapshotSink>()` возвращает null при выключенной опции — registrations из Task 6 хранят `EtcdSnapshotSink?`; для резолва типа `EtcdSnapshotSink?` использовать `sp.GetService<EtcdSnapshotSink>()`.)
 
-- [ ] **Step 7.4: Run → PASS** (`--filter FullyQualifiedName~SnapshotLoopExport`); полные юниты: `dotnet test src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~PgWorker.UnitTests"`.
+- [x] **Step 7.4: Run → PASS** (`--filter FullyQualifiedName~SnapshotLoopExport`); полные юниты: `dotnet test src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~PgWorker.UnitTests"`.
 
-- [ ] **Step 7.5: Commit**
+- [x] **Step 7.5: Commit**
 
 ```bash
 git add src/PgWorker.App/Loops/SnapshotLoop.cs src/PgWorker.App/Program.cs src/tests/PgWorker.UnitTests/App/SnapshotLoopExportTests.cs
@@ -1638,7 +1638,7 @@ git commit -m "feat(app): t08 — SnapshotLoop: доводка отстающе�
 **Проверка:** `docker compose -f deploy/docker-compose.yml --env-file deploy/.env.example config` — интерполяция без ошибок.
 **Связь со spec:** §3.3 (развёртывание), §2.5.
 
-- [ ] **Step 8.1: compose** — в `deploy/docker-compose.yml`, x-pgworker-env после блока `PgWorker__Backups__Job__Image`:
+- [x] **Step 8.1: compose** — в `deploy/docker-compose.yml`, x-pgworker-env после блока `PgWorker__Backups__Job__Image`:
 
 ```yaml
   # Экспорт etcd-снапшотов в S3 (reliability t08, arch/14 §8): тот же bucket
@@ -1647,7 +1647,7 @@ git commit -m "feat(app): t08 — SnapshotLoop: доводка отстающе�
   PgWorker__Snapshots__Export__Enabled: ${PGW_SNAPSHOTS_EXPORT_ENABLED:-false}
 ```
 
-- [ ] **Step 8.2: .env.example** — после блока `PGW_BACKUP_S3_*`:
+- [x] **Step 8.2: .env.example** — после блока `PGW_BACKUP_S3_*`:
 
 ```bash
 # Экспорт etcd-снапшотов в S3 (t08): тот же bucket/креды, что PGW_BACKUP_S3_*;
@@ -1655,7 +1655,7 @@ git commit -m "feat(app): t08 — SnapshotLoop: доводка отстающе�
 PGW_SNAPSHOTS_EXPORT_ENABLED=false
 ```
 
-- [ ] **Step 8.3: Проверка + Commit**
+- [x] **Step 8.3: Проверка + Commit**
 
 ```bash
 docker compose -f deploy/docker-compose.yml --env-file deploy/.env.example config >/dev/null && echo OK
@@ -1663,7 +1663,7 @@ git add deploy/docker-compose.yml deploy/.env.example
 git commit -m "feat(deploy): t08 — PGW_SNAPSHOTS_EXPORT_ENABLED в x-pgworker-env (оба инстанса) + .env.example; S3-креды переиспользуются из PGW_BACKUP_S3_*"
 ```
 
-- [ ] **Step 8.4: Примечание dev-stand (без правок кода).** Dev-stand (`dev-stand/adminpanel/`) отдельного compose-сервиса pgworker не содержит — PgWorker стенда поднимается своим `deploy/docker-compose.yml` (`00-up.sh`: `--env-file deploy/.env`, оба инстанса). Поэтому правки dev-stand не требуются: включение экспорта на стенде = `PGW_SNAPSHOTS_EXPORT_ENABLED=true` в `deploy/.env` (секретов новых нет — S3-креды уже там) + пересоздание pgworker-контейнеров. Отражено в runbook Task 12 (раздел ссылается на переменную).
+- [x] **Step 8.4: Примечание dev-stand (без правок кода).** Dev-stand (`dev-stand/adminpanel/`) отдельного compose-сервиса pgworker не содержит — PgWorker стенда поднимается своим `deploy/docker-compose.yml` (`00-up.sh`: `--env-file deploy/.env`, оба инстанса). Поэтому правки dev-stand не требуются: включение экспорта на стенде = `PGW_SNAPSHOTS_EXPORT_ENABLED=true` в `deploy/.env` (секретов новых нет — S3-креды уже там) + пересоздание pgworker-контейнеров. Отражено в runbook Task 12 (раздел ссылается на переменную).
 
 ---
 
@@ -1675,7 +1675,7 @@ git commit -m "feat(deploy): t08 — PGW_SNAPSHOTS_EXPORT_ENABLED в x-pgworker-
 **Проверка:** `dotnet test src/PgWorker.slnx -c Debug --filter FullyQualifiedName~EtcdSnapshotsParser` — зелёные.
 **Связь со spec:** §3.7 (парсер), AC7.
 
-- [ ] **Step 9.1: Failing-тесты парсера** — создать `src/tests/AdminPanel.UnitTests/EtcdSnapshotsParserTests.cs`:
+- [x] **Step 9.1: Failing-тесты парсера** — создать `src/tests/AdminPanel.UnitTests/EtcdSnapshotsParserTests.cs`:
 
 ```csharp
 using AdminPanel.Etcd.Parsing;
@@ -1756,9 +1756,9 @@ public class EtcdSnapshotsParserTests
 }
 ```
 
-- [ ] **Step 9.2: Run → FAIL**.
+- [x] **Step 9.2: Run → FAIL**.
 
-- [ ] **Step 9.3: Реализация**:
+- [x] **Step 9.3: Реализация**:
 
   1. `src/AdminPanel.Core/BackupsInfo.cs` — добавить record:
 
@@ -1818,9 +1818,9 @@ public static class EtcdSnapshotsParser
 
   4. `src/AdminPanel.Etcd/SnapshotRefresher.cs`: в `Prefixes` — `public const string EtcdSnapshots = "/pgworker/etcd-snapshots";`; среди параллельных чтений — `var etcdSnapshotsTask = WithFailoverAsync(alive, active, (ep, t) => gateway.RangeAsync(ep, Prefixes.EtcdSnapshots, t), ct);` (точечный префикс-запрос — вернёт ровно один ключ; паттерн WorkerApiCert); провал — в общий гвард «KV-чтения etcd не удались»; парсинг `var etcdSnapshotsParsed = EtcdSnapshotsParser.Parse(etcdSnapshotsKv.Value.FirstOrDefault());` → прокинуть в `SnapshotBuilder.Build(...)` (новый параметр) и `EtcdSnapshots = etcdSnapshotsParsed.Info` в `built with {...}`; parseErrors — аппендить в коллекцию ошибок сборки; в `FailTick` — `previous?.EtcdSnapshots` (ключ переживает отказный тик). `SnapshotBuilder.Build` — прокинуть параметр в конструктор `EtcdSnapshot` (последним).
 
-- [ ] **Step 9.4: Run → PASS** (`--filter FullyQualifiedName~EtcdSnapshotsParser`; сборка `AdminPanel.*` без warnings).
+- [x] **Step 9.4: Run → PASS** (`--filter FullyQualifiedName~EtcdSnapshotsParser`; сборка `AdminPanel.*` без warnings).
 
-- [ ] **Step 9.5: Commit**
+- [x] **Step 9.5: Commit**
 
 ```bash
 git add src/AdminPanel.Core/BackupsInfo.cs src/AdminPanel.Core/EtcdSnapshot.cs src/AdminPanel.Etcd/Parsing/EtcdSnapshotsParser.cs src/AdminPanel.Etcd/SnapshotRefresher.cs src/AdminPanel.Etcd/SnapshotBuilder.cs src/tests/AdminPanel.UnitTests/EtcdSnapshotsParserTests.cs
@@ -1837,7 +1837,7 @@ git commit -m "feat(panel): t08 — EtcdSnapshotExportInfo + толерантн�
 **Проверка:** `dotnet test src/PgWorker.slnx -c Debug --filter FullyQualifiedName~EtcdSnapshotExportRule` — зелёные.
 **Связь со spec:** §3.7 (алерты, порог честен благодаря семантике «покрытия» §3.1), AC2 (stale молчит на живом контуре)/AC7, adminpanel/03 §4 (Task 1).
 
-- [ ] **Step 10.1: Failing-тесты** — `src/tests/AdminPanel.UnitTests/EtcdSnapshotExportRuleTests.cs` (сборка снапшота — `TestSnapshots.Healthy(...) with { EtcdSnapshots = new EtcdSnapshotExportInfo(...) }`; AlertContext — `new AlertContext(null, now, 3)`):
+- [x] **Step 10.1: Failing-тесты** — `src/tests/AdminPanel.UnitTests/EtcdSnapshotExportRuleTests.cs` (сборка снапшота — `TestSnapshots.Healthy(...) with { EtcdSnapshots = new EtcdSnapshotExportInfo(...) }`; AlertContext — `new AlertContext(null, now, 3)`):
 
 ```csharp
 // AAA-кейсы (все — правила, snapshot с EtcdSnapshots; полный код кейса 1,
@@ -1888,7 +1888,7 @@ public void Failed_выключено_молчит()
 
   (Кейсы 3–7 — по образцу этих двух: меняются поля `EtcdSnapshotExportInfo` и ожидаемый алерт; `ctx` — общее поле фикстуры класса.)
 
-- [ ] **Step 10.2: Реализация** — два файла в `src/AdminPanel.Core/Alerting/Rules/`:
+- [x] **Step 10.2: Реализация** — два файла в `src/AdminPanel.Core/Alerting/Rules/`:
 
 ```csharp
 // EtcdSnapshotExportFailedRule.cs
@@ -1956,9 +1956,9 @@ public sealed class EtcdSnapshotExportStaleRule : IAlertRule
 
   (Сигнатуру `Alert`-конструктора сверить с существующими правилами: `id, severity, kind, target, description, attrs, null, hint, remedy, action` — как в `BackupDrillFailedRule`.)
 
-- [ ] **Step 10.3: Run → PASS** (`--filter FullyQualifiedName~EtcdSnapshotExportRule`).
+- [x] **Step 10.3: Run → PASS** (`--filter FullyQualifiedName~EtcdSnapshotExportRule`).
 
-- [ ] **Step 10.4: Commit**
+- [x] **Step 10.4: Commit**
 
 ```bash
 git add src/AdminPanel.Core/Alerting/Rules/EtcdSnapshotExportFailedRule.cs src/AdminPanel.Core/Alerting/Rules/EtcdSnapshotExportStaleRule.cs src/tests/AdminPanel.UnitTests/EtcdSnapshotExportRuleTests.cs
@@ -1975,7 +1975,7 @@ git commit -m "feat(panel): t08 — алерты etcd-snapshot-export-failed (cr
 **Проверка:** `dotnet test src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~EtcdSnapshotExportDto|FullyQualifiedName~BackupsStorageApi"` — зелёные; `frontend` — типы согласованы (сборка SPA в docker-образе — Task 14/E2E прогонит).
 **Связь со spec:** §3.7 (UI-карточка), AC7.
 
-- [ ] **Step 11.1: DTO + маппер** — `src/AdminPanel.Api/Inspection/BackupStorageQuery.cs`:
+- [x] **Step 11.1: DTO + маппер** — `src/AdminPanel.Api/Inspection/BackupStorageQuery.cs`:
 
 ```csharp
 // Статус выгрузки etcd-снапшотов (t08): ключ /pgworker/etcd-snapshots.
@@ -1995,7 +1995,7 @@ public static EtcdSnapshotsDto? MapEtcdSnapshots(EtcdSnapshotExportInfo? export)
 
   (В обеих ветках MapStorage — configured/notConfigured: `EtcdSnapshots: MapEtcdSnapshots(snapshot.EtcdSnapshots)` — карточка живёт в грани независимо от настроенности S3-грани панели: ключ etcd читается всегда.)
 
-- [ ] **Step 11.2: Failing-юнит маппера** — `src/tests/AdminPanel.UnitTests/EtcdSnapshotExportDtoTests.cs`:
+- [x] **Step 11.2: Failing-юнит маппера** — `src/tests/AdminPanel.UnitTests/EtcdSnapshotExportDtoTests.cs`:
 
 ```csharp
 // AAA: маппер статуса выгрузки — 1:1; null → null (карточка «не включена»)
@@ -2022,7 +2022,7 @@ public void MapEtcdSnapshots_null_нет_ключа()
 
   Run → FAIL → реализация (11.1) → PASS.
 
-- [ ] **Step 11.3: Frontend-карточка** — `frontend/src/pages/BackupsStoragePage.tsx`: в шапку (рядом `StorageCard`) добавить:
+- [x] **Step 11.3: Frontend-карточка** — `frontend/src/pages/BackupsStoragePage.tsx`: в шапку (рядом `StorageCard`) добавить:
 
 ```tsx
 // Карточка «etcd-снапшоты» (t08): последняя выгрузка слепка etcd в S3 —
@@ -2059,7 +2059,7 @@ function EtcdSnapshotsCard({ etcd }: { etcd: EtcdSnapshotsDto | null }) {
 
   В компоненте страницы — `<EtcdSnapshotsCard etcd={data.etcdSnapshots} />` после `<StorageCard data={data} />`; в типах API-клиента фронта (где описан `BackupStorageDto` — `frontend/src/api/…`, найти по `interface BackupStorageDto`) — поле `etcdSnapshots: EtcdSnapshotsDto | null` + интерфейс `EtcdSnapshotsDto { enabled: boolean; state: string | null; lastUploadedUnix: number | null; lastObject: string | null; lastSha256: string | null; sizeBytes: number | null; intervalMin: number | null; error: string | null }`. (Стиль — как соседние карточки; `useCreateStyles` не обязателен — свернуть к локальной разметке по образцу `StorageCard`.)
 
-- [ ] **Step 11.4: Панельная интеграция** — в `src/tests/AdminPanel.IntegrationTests/BackupsStorageApiTests.cs` (Collection `backups`, `EtcdContainerFixture` + `BackupsWebFactory` с MinIO — классы серии) добавить Fact:
+- [x] **Step 11.4: Панельная интеграция** — в `src/tests/AdminPanel.IntegrationTests/BackupsStorageApiTests.cs` (Collection `backups`, `EtcdContainerFixture` + `BackupsWebFactory` с MinIO — классы серии) добавить Fact:
 
 ```csharp
 // AAA (t08): ключ /pgworker/etcd-snapshots попадает в DTO грани (панель читает,
@@ -2088,7 +2088,7 @@ public async Task Storage_EtcdSnapshots_в_DTO()
 
   (Класс теста — по образцу соседних `BackupsStorage*ApiTests` той же коллекции: фикстуры и логин — как у них; имя и структура — фактические на месте.)
 
-- [ ] **Step 11.5: Run → PASS; Commit**
+- [x] **Step 11.5: Run → PASS; Commit**
 
 ```bash
 dotnet test src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~EtcdSnapshotExportDto|FullyQualifiedName~BackupsStorageApi"
@@ -2106,7 +2106,7 @@ git commit -m "feat(panel): t08 — DTO etcdSnapshots грани «Хранил�
 **Проверка:** текст содержит все 6 шагов spec §3.8; arch/09 §4 (Task 1) ссылается на раздел.
 **Связь со spec:** §3.8, AC9.
 
-- [ ] **Step 12.1: Раздел** — добавить в `docs/runbook.md`:
+- [x] **Step 12.1: Раздел** — добавить в `docs/runbook.md`:
 
 ```markdown
 ## Восстановление etcd из S3-выгрузки (t08)
@@ -2147,7 +2147,7 @@ git commit -m "feat(panel): t08 — DTO etcdSnapshots грани «Хранил�
    лежат или вечный transient).
 ```
 
-- [ ] **Step 12.2: Commit**
+- [x] **Step 12.2: Commit**
 
 ```bash
 git add docs/runbook.md
@@ -2164,9 +2164,9 @@ git commit -m "docs(t08): runbook — восстановление etcd из S3-
 **Проверка:** `PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~E2eEtcdSnapshotExport` — зелёные; зачистка окружения после серии.
 **Связь со spec:** §4 Ф5, AC1/AC3/AC5/AC7 (сквозные), AGENTS.md (E2E-каноны).
 
-- [ ] **Step 13.1: E2eEnvironment** — добавить публичное свойство имени etcd-контейнера (для `docker cp`/`exec etcdctl`): в `src/tests/PgWorker.IntegrationTests/E2e/E2eEnvironment.cs` рядом с `EtcdEndpoint` — `public string EtcdContainerName { get; }` = фактическое имя `pgw-ee-{runId}` (присвоить в StartOnceAsync).
+- [x] **Step 13.1: E2eEnvironment** — добавить публичное свойство имени etcd-контейнера (для `docker cp`/`exec etcdctl`): в `src/tests/PgWorker.IntegrationTests/E2e/E2eEnvironment.cs` рядом с `EtcdEndpoint` — `public string EtcdContainerName { get; }` = фактическое имя `pgw-ee-{runId}` (присвоить в StartOnceAsync).
 
-- [ ] **Step 13.2: Сценарии** — создать `src/tests/PgWorker.IntegrationTests/E2e/E2eEtcdSnapshotExportScenarios.cs` (шапка и хелперы — по образцу `E2eBackupScenarios`: `Fx`, `Endpoint`, `G`, `McLsAsync`,SeedClusterAsync не нужен — кластеров поднимать НЕ надо, снапшот-контур живёт без них):
+- [x] **Step 13.2: Сценарии** — создать `src/tests/PgWorker.IntegrationTests/E2e/E2eEtcdSnapshotExportScenarios.cs` (шапка и хелперы — по образцу `E2eBackupScenarios`: `Fx`, `Endpoint`, `G`, `McLsAsync`,SeedClusterAsync не нужен — кластеров поднимать НЕ надо, снапшот-контур живёт без них):
 
 ```csharp
 // E2E экспорта etcd-снапшотов (t08): изолированное окружение E2eEnvironment
@@ -2242,9 +2242,9 @@ public async Task Export_плановый_слепок_уезжает_в_S3_кл
   2. **`Export_ретенция_держит_N_пар`** (AAA): хост с `retention: 1`, `intervalMin: 1`; после первого OK-ключа ждать OK-ключ со свежим `last_object` (каждый плановый слепок уезжает новой парой — интервал 1 мин; бюджет ≤ 180 с) → `McLsAsync("etcd/")`: ровно 2 ключа (одна пара), старейшего id нет (AC4 сквозно).
   3. **`Export_негатив_S3_недоступен_слепок_снят_ключ_FAILED_алерт`** (AAA): хост с `s3Override: "http://host.docker.internal:1"` (закрытый порт — протокольный «всегда закрыт», паттерн `Backup_FailsOnBadS3`); ждать ключ `\"state\":\"FAILED\"` + непустой `error` (бюджет 120 с); Assert: локальный файл снят (`Directory.GetFiles(app.SnapshotsDir, "snapshot-*.db")` непуст — HostInstance несёт SnapshotsDir) и цикл жив (ключ `/pgworker/api/` инстанса существует); панельный алерт — паттерн drill-ассерта E2eBackupScenarios:741–747: приватный хелпер строит минимальный `EtcdSnapshot` с `EtcdSnapshots = AdminPanel.Etcd.Parsing.EtcdSnapshotsParser.Parse(new Kv("/pgworker/etcd-snapshots", kvValue, 1)).Info` → `new EtcdSnapshotExportFailedRule().Evaluate(snapshot, new AlertContext(null, now, 3))` содержит critical-алерт (AC3, AC7).
 
-- [ ] **Step 13.3: Run + зачистка** — `PGW_TEST_DOCKER=1 DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~E2eEtcdSnapshotExport`; teardown окружений отработал → `docker ps -a | grep pgw-e` пусто; остаточные сети — `docker network ls | grep kfw-net` → при мусоре `docker network prune -f` (AGENTS.md).
+- [x] **Step 13.3: Run + зачистка** — `PGW_TEST_DOCKER=1 DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~E2eEtcdSnapshotExport`; teardown окружений отработал → `docker ps -a | grep pgw-e` пусто; остаточные сети — `docker network ls | grep kfw-net` → при мусоре `docker network prune -f` (AGENTS.md).
 
-- [ ] **Step 13.4: Commit**
+- [x] **Step 13.4: Commit**
 
 ```bash
 git add src/tests/PgWorker.IntegrationTests/E2e/E2eEtcdSnapshotExportScenarios.cs src/tests/PgWorker.IntegrationTests/E2e/E2eEnvironment.cs
