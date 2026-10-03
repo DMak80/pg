@@ -278,4 +278,24 @@ public class OrphanRegistryTests
         [new OrphanEntry("g1/s1", "cluster", 11, Now, OrphanState.Observed)], Now);
         OrphanRegistry.SameOrphans(a, changed).Should().BeFalse("size изменился — нужен put");
     }
+
+    // AAA (t08): объекты etcd/* не группируются реестром сирот — префикс служебный,
+    // не форма <C>/<X>/ (ключи короче 3 сегментов); реестр пуст (spec §3.2, AC8)
+    [Fact]
+    public void GroupPrefixes_объекты_etcd_мимо_реестра()
+    {
+        // Arrange
+        var objects = new[]
+        {
+            new S3ObjectInfo("etcd/snapshot-20261001-010000.db", 2048, DateTimeOffset.UnixEpoch),
+            new S3ObjectInfo("etcd/snapshot-20261001-010000.meta.json", 100, DateTimeOffset.UnixEpoch),
+        };
+
+        // Act
+        var grouping = OrphanRegistry.GroupPrefixes(objects);
+
+        // Assert — ни размеров, ни fulls: префикс вне группировки
+        grouping.Sizes.Should().BeEmpty();
+        grouping.FullPrefixes.Should().BeEmpty();
+    }
 }
