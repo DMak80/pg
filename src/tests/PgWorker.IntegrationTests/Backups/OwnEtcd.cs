@@ -39,7 +39,9 @@ public sealed class OwnEtcd : IAsyncDisposable
     /// контейнер pgw-ee-{guid}; никаких константных имён окружений.</summary>
     public string RunId { get; }
 
-    private string ContainerName => $"pgw-ee-{RunId}";
+    /// <summary>Имя контейнера (pgw-ee-{guid}): публичное для docker cp/exec
+    /// etcdctl в restore-verify сценариях (t08).</summary>
+    public string ContainerName => $"pgw-ee-{RunId}";
 
     public EtcdGateway Gateway { get; }
 
