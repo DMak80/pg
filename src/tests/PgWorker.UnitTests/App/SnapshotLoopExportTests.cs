@@ -132,6 +132,42 @@ public class SnapshotLoopExportTests
         catchUp.Value.Should().BeTrue("FAILED держит короткий сон даже при пустом томе");
     }
 
+    // AAA (круг 7, §3.5 п.3): ПЕРВЫЙ транзиент S3 в момент TakeAsync — статус
+    // ДО тика здоров (OK), слепок снят, встроенный экспорт падает и пишет
+    // FAILED уже ПОСЛЕ расчёта «до» — повторный расчёт после TakeAsync обязан
+    // дать короткий сон: второй слепок в пределах RetryIntervalSec, не 360 мин.
+    // (Отличие от кейса Сон_при_отставании_RetryIntervalSec: там статус
+    // предзасеян FAILED — короткий сон виден и по старому расчёту «до»;
+    // здесь короткий сон доказывает ИМЕННО повторный расчёт после снятия.)
+    [Fact]
+    public async Task Первый_транзиент_в_тике_TakeAsync_сон_короткий()
+    {
+        // Arrange — ЗДОРОВЫЙ статус OK (прошлая выгрузка успешна, отставания
+        // нет), том пуст, S3-фейк с отказом put: тик 1 снимет слепок,
+        // встроенный экспорт упадёт — статус-ключ станет FAILED после снятия
+        var etcd = new Provisioning.Fakes.FakeEtcd();
+        var dir = Directory.CreateTempSubdirectory("loop-fresh-retry-").FullName;
+        await etcd.PutAsync(Ep, EtcdSnapshotStatusJson.Key,
+            EtcdSnapshotStatusJson.Ok(0, "etcd/snapshot-19700101-000000.db", "abc", 1, 360),
+            null, TestContext.Current.CancellationToken);
+        var s3 = new MemoryS3 { PutObjectFails = true };
+        var sink = new EtcdSnapshotSink(s3, etcd, [Ep], 28, 5, "inst-A", 360);
+
+        var loop = BuildLoop(etcd, dir, sink, retrySec: 1, snapshotMin: 360);
+        using var cts = new CancellationTokenSource();
+        await loop.StartAsync(cts.Token);
+
+        // Act — ждём ВТОРОЙ локальный слепок: CatchUpAsync до снятия вернул
+        // «здорово» (OK, не отстаёт); FAILED появился только в момент
+        // TakeAsync — короткий сон даёт повторный расчёт ПОСЛЕ снятия
+        var second = await WaitUntilAsync(() =>
+            Directory.GetFiles(dir, "snapshot-*.db").Length >= 2, budgetMs: 15_000);
+
+        // Assert
+        second.Should().BeTrue("первый транзиент в тике TakeAsync — повторный расчёт даёт сон RetryIntervalSec=1 c, не SnapshotIntervalMin=360 (spec §3.5 п.3)");
+        await loop.StopAsync(CancellationToken.None);
+    }
+
     private SnapshotLoop BuildLoop(Provisioning.Fakes.FakeEtcd etcd, string dir, EtcdSnapshotSink sink,
         int retrySec, int snapshotMin)
     {

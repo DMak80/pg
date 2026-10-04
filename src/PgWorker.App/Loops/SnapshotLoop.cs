@@ -87,6 +87,21 @@ internal sealed class SnapshotLoop(
 
                     health.MarkSnapshotTick();
                     metrics.LoopTick("snapshot", ok: true);
+                    // t08 (круг 7, spec §3.5 п.3): повторный расчёт ПОСЛЕ снятия — первый
+                    // транзиент S3 в тике TakeAsync переводит статус-ключ в FAILED уже ПОСЛЕ
+                    // расчёта «до»; без пере-расчёта лидер ушёл бы в полный SnapshotIntervalMin
+                    // с невыгруженным слепком (запрещено §3.5 п.3). Считаем по свежему
+                    // статус-ключу и метке новейшего локального слепка (тот самый, только что
+                    // снятый); отказ чтения ключа — трактуем как отставание (короткий сон).
+                    if (exportSink is not null)
+                    {
+                        var fresh = await exportSink.ReadStatusAsync(stoppingToken);
+                        var latest = EtcdSnapshotSink.LatestLocalFile(options.CurrentValue.Snapshots.Dir);
+                        behind = !fresh.IsSuccess
+                                 || EtcdSnapshotStatus.IsBehind(
+                                     fresh.Value, EtcdSnapshotStatus.TakenUnixFromName(Path.GetFileName(latest ?? "")));
+                    }
+
                     // Сон тика лидера (spec §3.5 п.3): выгрузка здорова (state=OK, не отстаёт —
                     // каждый успешный проход sink'а продвигает покрытие к метке нового слепка) —
                     // SnapshotIntervalMin как раньше; отстаёт/FAILED — RetryIntervalSec

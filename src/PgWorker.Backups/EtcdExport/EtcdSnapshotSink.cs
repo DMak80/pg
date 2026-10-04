@@ -174,7 +174,9 @@ public sealed class EtcdSnapshotSink(
     }
 
     // Новейший локальный слепок (имя — таймстемп, Ordinal-сортировка = время).
-    internal static string? LatestLocalFile(string dir)
+    // public (круг 7): call-сайт за пределами сборки — SnapshotLoop
+    // (PgWorker.App) повторно считает отставание после TakeAsync (T7 Step 7.3).
+    public static string? LatestLocalFile(string dir)
         => Directory.Exists(dir)
             ? Directory.GetFiles(dir, "snapshot-*.db").OrderByDescending(f => f, StringComparer.Ordinal).FirstOrDefault()
             : null;
