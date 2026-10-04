@@ -625,15 +625,27 @@ public sealed class WalStreamProcess(
         foreach (var tli in missingTlis)
         {
             var fileName = $"{tli:x8}.history";
+            // $PGDATA/../pg_wal — Spilo-layout (PGDATA=…/pgroot/data); при отсутствии
+            // файла stdout: маркер + листинг pg_wal (диагностика пути в журнале).
             var exec = await driver.ExecNodeAsync(cluster, shard, masterRef,
             [
-                "sh", "-c", $"base64 -w0 /home/postgres/pgdata/pgroot/pg_wal/{fileName}",
+                "sh", "-c",
+                $"if [ -f ${{PGDATA}}/../pg_wal/{fileName} ]; then base64 -w0 ${{PGDATA}}/../pg_wal/{fileName}; else echo FILE_NOT_FOUND; ls -la ${{PGDATA}}/../pg_wal 2>&1 | tail -8; fi",
             ], ct);
-            if (!exec.IsSuccess || string.IsNullOrWhiteSpace(exec.Value))
+            if (!exec.IsSuccess)
             {
-                // файла нет/нода недоступна — transient: контроль повторит (YAGNI-счётчик)
-                logger?.LogInformation("backup-wal: history {File} недоступна на {Node} — повтор следующим контролем",
-                    fileName, masterRef);
+                // нода недоступна — transient: контроль повторит (YAGNI-счётчик)
+                logger?.LogInformation("backup-wal: history {File} недоступна на {Node}: {Error} — повтор следующим контролем",
+                    fileName, masterRef, exec.Error!.Message);
+                continue;
+            }
+
+            if (exec.Value.Contains("FILE_NOT_FOUND", StringComparison.Ordinal))
+            {
+                // pg_wal ноды не содержит файла (промоут мог ещё не написать/нода старая):
+                // transient — контроль повторит; фактическая структура в журнале ниже.
+                logger?.LogInformation("backup-wal: history {File} не найдена на {Node}: {Listing}",
+                    fileName, masterRef, exec.Value);
                 continue;
             }
 
@@ -644,7 +656,8 @@ public sealed class WalStreamProcess(
             }
             catch (FormatException e)
             {
-                throw new ApplicationException($"history {fileName}: битый base64 от ноды: {e.Message}", e);
+                throw new ApplicationException($"history {fileName}: битый base64 от ноды: {e.Message}: " +
+                    $"raw[{exec.Value.Trim()[..Math.Min(120, exec.Value.Trim().Length)]}]", e);
             }
 
             var sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(content));
