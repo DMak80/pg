@@ -24,12 +24,15 @@ public sealed record ControlOutcome(WalStreamState? State)
 }
 
 /// <summary>WalStreamProcess — машина одного тика WAL-архивации шардов кластера
-/// под клэймом <C> (t03, arch/19 §3): (1) креды/ensure-зависимости, (2) резолв
-/// мастера, (3) ensure слота, (4) контейнер агента, (5) супервиз (exited/смена
-/// мастера → пересоздание), (6–7) контроль цепочки+lag по расписанию
-/// Wal:VerifyIntervalSec, (8) статус etcd. runtime() == null (Enabled=false) —
-/// стоп-семантика. Ошибка шарда не роняет остальные; guard'ы: Active-кластер,
-/// шард с dsn. Идемпотентность каждого шага (arch/17).</summary>
+/// под клэймом <C> (t03/t27, arch/19 §3): (1) креды/ensure-зависимости, (2) резолв
+/// ДВУХ источников (мастер + sync-standby — двойная архивация), (3) ensure слота
+/// per-instance (живой слот на любой ноде — не BROKEN), (4–5) per-node контейнеры
+/// агентов pgw-backup-wal-&lt;C&gt;-&lt;X&gt;-&lt;N&gt; + супервиз (exited/смена источника →
+/// пересоздание; старый одноагентный формат сносится тем же демонтажем — миграция),
+/// (6–7) контроль цепочки+lag по расписанию Wal:VerifyIntervalSec, (8) статус etcd
+/// с супервиз-фактами agents. runtime() == null (Enabled=false) — стоп-семантика.
+/// Ошибка шарда не роняет остальные; guard'ы: Active-кластер, шард с dsn.
+/// Идемпотентность каждого шага (arch/17).</summary>
 public sealed class WalStreamProcess(
     IEtcdGateway etcd,
     string[] endpoints,
@@ -123,7 +126,9 @@ public sealed class WalStreamProcess(
             return;
         }
 
-        // (2) Резолв мастера: недоступен → transient-пропуск (failover-окно, статус не деградирует).
+        // (2) Два источника (t27 §3.3 п.2): мастер + sync-standby (двойная архивация,
+        //     оба из portalloc; sync нет → только мастер — второй агент тиком при
+        //     появлении; sync == мастер → один источник).
         var addresses = await shards.ReadPortAllocAsync(cluster, ct);
         if (!addresses.IsSuccess)
             throw new ApplicationException($"portalloc: {addresses.Error!.Message}");
@@ -137,9 +142,16 @@ public sealed class WalStreamProcess(
             return;
         }
 
-        // conninfo-пара для агента + masterRef для сверки смены (arch/19 §3 «Подключение»):
-        // каноническая нода — alias сети pgw-net :5432; усыновлённая (object) — host:pg-port.
-        var (masterRef, pgHost, pgPort) = ResolveMasterRef(shard, addresses.Value, masterAddr);
+        var (masterRef, masterPgHost, masterPgPort) = ResolveNodeRef(shard, addresses.Value, masterAddr);
+        var sources = new List<WalSource> { new(masterRef, masterAddr, masterPgHost, masterPgPort) };
+        var sync = await shards.ResolveSyncStandbyAsync(cluster, shard, addresses.Value, ct);
+        if (!sync.IsSuccess)
+            throw new ApplicationException($"резолв sync-standby: {sync.Error!.Message}");
+        if (sync.Value is { } syncAddr && syncAddr != masterAddr)
+        {
+            var (syncRef, syncPgHost, syncPgPort) = ResolveNodeRef(shard, addresses.Value, syncAddr);
+            sources.Add(new WalSource(syncRef, syncAddr, syncPgHost, syncPgPort));
+        }
 
         var slot = BackupNames.Slot(cluster, shard.Name);
         var wal = shardBackups?.Wal;
@@ -153,16 +165,22 @@ public sealed class WalStreamProcess(
             return;
         }
 
-        // (3) Ensure слота (spec §3.2 п.3; t07 arch/19 §3): есть → пропуск; нет при
-        //     живой (ACTIVE/DEGRADED) записи о цепочке → инвалидация (BROKEN + стоп
-        //     агента + слот пересоздаётся immediate+reserved сразу — держит позицию
-        //     ≤ wal_start будущего переснятого полного); нет при BROKEN → просто
-        //     ensure (повторный Break не нужен); нет и цепочки нет (первый старт) →
-        //     create immediate+reserved.
-        var slotExists = await sql.SlotExistsAsync(adminDsn, slot, ct);
-        if (!slotExists.IsSuccess)
-            throw new ApplicationException($"слот-зонд {slot}: {slotExists.Error!.Message}");
-        if (!slotExists.Value)
+        // (3) Ensure слота per-instance (t27 §3.3 п.3): имя слота одно и то же на
+        //     КАЖДОЙ ноде-источнике (слоты разных инстансов независимы); правило
+        //     «слот исчез» (t07) — BROKEN только если слота нет НИ на одном
+        //     источнике при живой цепочке (живой слот на любой ноде держит WAL);
+        //     recreate при инвалидации — на мастере. Ensure идемпотентен.
+        var slotProbes = new List<(WalSource Src, string Dsn, bool Exists)>();
+        foreach (var src in sources)
+        {
+            var dsn = ShardEndpoints.AdminDsn(src.Addr, snap.Config.DbName, secrets);
+            var exists = await sql.SlotExistsAsync(dsn, slot, ct);
+            if (!exists.IsSuccess)
+                throw new ApplicationException($"слот-зонд {slot}@{src.Node}: {exists.Error!.Message}");
+            slotProbes.Add((src, dsn, exists.Value));
+        }
+
+        if (slotProbes.All(p => !p.Exists))
         {
             if (chainKnown && wal!.State is WalStreamStatus.Active or WalStreamStatus.Degraded)
             {
@@ -195,11 +213,27 @@ public sealed class WalStreamProcess(
                 return;
             }
 
-            // Первый старт ИЛИ BROKEN-ключ (слот ensure: жив не трогаем — выше;
-            // исчез — создаём).
-            var created = await sql.EnsureSlotAsync(adminDsn, slot, ct);
-            if (!created.IsSuccess)
-                throw new ApplicationException($"ensure слота {slot}: {created.Error!.Message}");
+            // Первый старт ИЛИ BROKEN-ключ: ensure на КАЖДОМ источнике (где нет —
+            // все; immediate+reserved).
+            foreach (var missing in slotProbes)
+            {
+                var created = await sql.EnsureSlotAsync(missing.Dsn, slot, ct);
+                if (!created.IsSuccess)
+                    throw new ApplicationException(
+                        $"ensure слота {slot}@{missing.Src.Node}: {created.Error!.Message}");
+            }
+        }
+        else
+        {
+            // Живой слот есть хотя бы на одной ноде — не BROKEN (t27 §3.3 п.3):
+            // ensure на источниках, где слота нет (разные инстансы независимы).
+            foreach (var missing in slotProbes.Where(p => !p.Exists))
+            {
+                var created = await sql.EnsureSlotAsync(missing.Dsn, slot, ct);
+                if (!created.IsSuccess)
+                    throw new ApplicationException(
+                        $"ensure слота {slot}@{missing.Src.Node}: {created.Error!.Message}");
+            }
         }
 
         // (6–7) Контроль — ДО ensure агента. ControlOutcome: State — свежее состояние
@@ -211,112 +245,165 @@ public sealed class WalStreamProcess(
         var controlled = await ControlDueAsync(
             cluster, shard.Name, wal, shardBackups, options, masterRef, slot, adminDsn, ct);
 
-        // (4–5) Агент + супервиз.
+        // (4–5) Per-node агенты + супервиз.
         if (!controlled.ChainBroken)
-            await EnsureAgentAsync(cluster, shard.Name, options, slot, masterRef, pgHost, pgPort,
-                password, masterAddr.Host, controlled.State, ct);
+        {
+            var shardNodes = addresses.Value.Keys
+                .Where(k => k.StartsWith($"{shard.Name}/", StringComparison.Ordinal))
+                .Select(k => k.Split('/')[1])
+                .ToList();
+            await EnsureAgentsAsync(cluster, shard.Name, sources, shardNodes, options, slot,
+                password, controlled.State, ct);
+        }
     }
 
-    // (4–5) Контейнер агента: создание идемпотентно (по образцу EnsureNode, без
-    // портов); супервиз: running → пропуск; exited → пересоздание (цикл
-    // пересоздания: устаревшие креды/staging переполнен — включая transient-DEGRADED
-    // статуса: деградация тишины НЕ запирает restart-контур, ревью Ф4-2 №1);
-    // смена мастера (резолв ≠ master_node статуса) → пересоздание с нового мастера.
-    private async Task EnsureAgentAsync(
-        string cluster, string shard, BackupsRuntimeOptions options, string slot,
-        string masterRef, string pgHost, int pgPort, string password, string agentHost,
-        WalStreamState? wal, CancellationToken ct)
+    /// <summary>Источник WAL-архивации (t27): нода-владелец агента (имя из
+    /// portalloc), её адрес (docker-хост для контейнера) и conninfo-пара.</summary>
+    private sealed record WalSource(string Node, NodeAddress Addr, string PgHost, int PgPort);
+
+    // (4–5) Per-node контейнеры агентов (t27 §3.3 п.5): desired-имена по
+    // источникам (мастер [+ sync]); супервиз: живой running с нужным именем →
+    // пропуск; иначе (нет/exited/чужое имя — смена источника, старый одноагентный
+    // формат) → демонтаж ВСЕХ агентов шарда (сносит и старый формат с его
+    // staging-томом — миграция §3.6 тем же механизмом) → создание всех desired.
+    // Секреты — env контейнера (§3.1, без argv); restart-политика no (exited —
+    // только permanent, супервиз тика пересоздаёт со свежими env).
+    private async Task EnsureAgentsAsync(
+        string cluster, string shard, IReadOnlyList<WalSource> sources,
+        IReadOnlyList<string> shardNodes, BackupsRuntimeOptions options, string slot,
+        string password, WalStreamState? wal, CancellationToken ct)
     {
         var listed = await driver.ListBackupAgentsAsync(cluster, ct);
         if (!listed.IsSuccess)
             throw new ApplicationException($"лист агентов: {listed.Error!.Message}");
-        // t27: per-node имя — в текущем контуре агент один, на мастере (Task 12
-        // переписывает ensure под два источника мастер+sync).
-        var agentName = BackupAgentNames.Container(cluster, shard, masterRef);
+
+        var desired = sources
+            .Select(src => (Src: src, Name: BackupAgentNames.Container(cluster, shard, src.Node)))
+            .ToList();
         // Канон движка — имена контейнеров БЕЗ ведущего "/" (ListContainersAsync
-        // trimит); матч обоих форматов: «/»-литерал — устаревший StubDriver-формат
-        // (t05-регресс 2026-09-13: существующий агент не находился — супервиз
-        // трактовал exited-агента как отсутствующий и не пересоздавал его).
-        var existing = listed.Value.FirstOrDefault(c =>
-            c.Names.Contains(agentName) || c.Names.Contains("/" + agentName));
+        // trimит); матч обоих форматов («/»-литерал — устаревший формат движков).
+        static bool RunningOn(IReadOnlyList<DockerContainer> listed, string name)
+            => listed.Any(c => c.State == "running"
+                && (c.Names.Contains(name) || c.Names.Contains("/" + name)));
 
-        // Смена мастера: резолв разошёлся со статусом → пересоздание с нового мастера.
-        var masterChanged = wal is not null && wal.MasterNode != masterRef;
-        if (existing is { State: "running" } && !masterChanged)
-            return; // жив и на месте — docker unless-stopped держит процесс
+        // Разбор листинга: чужие имена (старый одноагентный формат §3.6, имена
+        // сменившихся источников) — снос ВСЕХ агентов шарда и создание всех desired;
+        // absent-desired (агента никогда не было — появился sync) — создание ТОЛЬКО
+        // недостающих (живые источники не трогаются — двойная архивация не рвётся);
+        // все running — skip (супервиз-безделье).
+        var listedNames = listed.Value
+            .SelectMany(c => c.Names)
+            .Select(n => n.TrimStart('/'))
+            .Where(n => n.StartsWith(BackupAgentNames.Prefix(cluster), StringComparison.Ordinal))
+            .Distinct()
+            .ToList();
+        var desiredNames = desired.Select(d => d.Name).ToList();
+        var foreign = listedNames.Where(n => !desiredNames.Contains(n, StringComparer.Ordinal)).ToList();
+        var missing = desired.Where(d => !RunningOn(listed.Value, d.Name)).ToList();
+        var recreateAll = foreign.Count > 0
+            || missing.Any(m => listedNames.Contains(m.Name, StringComparer.Ordinal)); // exited-контейнер
 
-        if (existing is not null)
+        var toEnsure = recreateAll ? desired : missing;
+        if (recreateAll)
         {
-            logger?.LogInformation("backup-wal: агент {Agent} {Reason} — пересоздание",
-                agentName, existing.State != "running" ? $"exited({existing.State})" : "смена мастера");
+            logger?.LogInformation("backup-wal: агенты {Shard} — пересоздание per-node ({Desired})",
+                shard, string.Join(",", desired.Select(d => d.Name)));
+            // Снос ВСЕХ агентов шарда: старый одноагентный формат (без суффикса
+            // ноды) и его -staging-том сносятся тем же демонтажем (миграция §3.6).
             var removed = await driver.RemoveBackupAgentsAsync(cluster, shard, ct);
             if (!removed.IsSuccess)
-                throw new ApplicationException($"демонтаж агента: {removed.Error!.Message}");
+                throw new ApplicationException($"демонтаж агентов: {removed.Error!.Message}");
         }
 
-        var spec = new ContainerSpec(
-            Image: options.JobImage, // общий образ джобов t02 и агентов t03 (arch/19 §2)
-            Env: (IReadOnlyDictionary<string, string>)AgentEnv(options, cluster, shard, slot, pgHost, pgPort, password),
-            VolumeName: null,   // t27: staging-том упразднён — буфер сегмента в памяти приёмника
-            VolumeDest: null,
-            Ports: [],
-            Hostname: agentName,
-            CpuCores: options.AgentCpu,
-            MemoryBytes: options.AgentMem,
-            LabelKey: "pgworker",
-            Label: cluster,
-            ResetEntrypoint: true, // inline-команда агента — ENTRYPOINT образа сброшен (t03)
-            Cmd: WalAgentCommand.Build(),
-            Network: null, // сеть назначает драйвер (pgw-net)
-            NetworkAliases: null,
-            // Без рестарт-политики: обрыв pg_receivewal внутри контейнера
-            // переживается скриптом (loop-переподключение, arch/19 §3); exited —
-            // только неисправимое (квота staging) — супервиз тика пересоздаёт
-            // агента со свежими env за ScanIntervalSec
-            RestartPolicy: "no");
+        if (toEnsure.Count > 0)
+        {
+            foreach (var d in toEnsure)
+            {
+                var spec = new ContainerSpec(
+                    Image: options.WalAgentImage, // t27: образ приёмника pgworker-wal
+                    Env: (IReadOnlyDictionary<string, string>)AgentEnv(
+                        options, cluster, shard, slot, d.Src.PgHost, d.Src.PgPort, password),
+                    VolumeName: null,   // t27: staging-том упразднён — буфер в памяти приёмника
+                    VolumeDest: null,
+                    Ports: [],
+                    Hostname: d.Name,
+                    CpuCores: options.AgentCpu,
+                    MemoryBytes: options.AgentMem,
+                    LabelKey: "pgworker",
+                    Label: cluster,
+                    ResetEntrypoint: false, // ENTRYPOINT образа приёмника (§3.2)
+                    Cmd: null,
+                    Network: null, // сеть назначает драйвер (pgw-net)
+                    NetworkAliases: null,
+                    RestartPolicy: "no");
 
-        // Хост агента = docker-хост мастера (per-cluster сеть живёт на нём).
-        var ensured = await driver.EnsureBackupAgentAsync(cluster, shard, masterRef, spec, agentHost, ct);
-        if (!ensured.IsSuccess)
-            throw new ApplicationException($"подъём агента: {ensured.Error!.Message}");
-        logger?.LogInformation("backup-wal: агент {Agent} поднят (слот {Slot}, мастер {Master})",
-            agentName, slot, masterRef);
+                // Хост агента = docker-хост своего источника (per-cluster сеть на нём).
+                var ensured = await driver.EnsureBackupAgentAsync(
+                    cluster, shard, d.Src.Node, spec, d.Src.Addr.Host, ct);
+                if (!ensured.IsSuccess)
+                    throw new ApplicationException($"подъём агента {d.Name}: {ensured.Error!.Message}");
+            }
+
+            logger?.LogInformation("backup-wal: агенты {Shard} подняты (слот {Slot})",
+                shard, slot);
+        }
+
+        // agents-факты (t27 §3.5): после супервиза все desired — running; ноды
+        // portalloc шарда вне источников (sync не резолвится) — absent (наблюдаемость
+        // неполноты двойной архивации, spec §5). Пишем только при живом wal-ключе —
+        // факты ДОБАВКА к контролю, ключ создаёт контроль (spec п.8); WriteIfChanged
+        // — идемпотентно.
+        if (wal is not null && shardNodes.Count > 0)
+        {
+            var facts = shardNodes
+                .Select(n => new WalAgentState(n,
+                    desired.Any(d => d.Src.Node == n)
+                        ? WalAgentPresence.Running
+                        : WalAgentPresence.Absent))
+                .ToList();
+            await status.WriteIfChangedAsync(cluster, shard, wal with { Agents = facts }, ct);
+        }
     }
 
-    // env контейнера агента: СЕКРЕТЫ — env, не строка команды (arch/19 §7):
-    // PG-параметры по-переменно; S3-креды — ОДНОЙ строкой MC_HOST (mc резолвит
-    // alias из env; секреты не попадают в argv процессов — ревью Ф4-2 №5).
+    // env контейнера агента-приёмника (t27 §3.1): СЕКРЕТЫ — только env, в argv/логи
+    // не попадают; приёмник читает Environment.GetEnvironmentVariable (WalReceiverEnv).
     private static IReadOnlyDictionary<string, string> AgentEnv(
         BackupsRuntimeOptions options, string cluster, string shard, string slot,
-        string pgHost, int pgPort, string password) => new Dictionary<string, string>
+        string pgHost, int pgPort, string password)
     {
-        [WalAgentCommand.EnvMcHostVariable] = WalAgentCommand.McHost(
-            options.AgentS3Endpoint, options.S3AccessKey, options.S3SecretKey),
-        [WalAgentCommand.EnvS3Bucket] = options.S3Bucket,
-        [WalAgentCommand.EnvCluster] = cluster,
-        [WalAgentCommand.EnvShard] = shard,
-        [WalAgentCommand.EnvSlot] = slot,
-        [WalAgentCommand.EnvPgHost] = pgHost,
-        [WalAgentCommand.EnvPgPort] = pgPort.ToString(),
-        [WalAgentCommand.EnvPgUser] = "backup_exec",
-        [WalAgentCommand.EnvPgPassword] = password,
-        [WalAgentCommand.EnvPgDbName] = "postgres",
-        [WalAgentCommand.EnvStagingDir] = options.StagingDir,
-        [WalAgentCommand.EnvStagingQuotaBytes] = options.StagingQuotaBytes?.ToString() ?? "",
-        [WalAgentCommand.EnvPollSec] = "5",
-    };
+        var env = new Dictionary<string, string>
+        {
+            ["PG_HOST"] = pgHost,
+            ["PG_PORT"] = pgPort.ToString(),
+            ["PG_USER"] = "backup_exec",
+            ["PG_PASSWORD"] = password,
+            ["PG_DBNAME"] = "postgres",
+            ["SLOT"] = slot,
+            ["CLUSTER"] = cluster,
+            ["SHARD"] = shard,
+            ["S3_ENDPOINT"] = options.AgentS3Endpoint,
+            ["S3_BUCKET"] = options.S3Bucket,
+            ["S3_ACCESS_KEY"] = options.S3AccessKey,
+            ["S3_SECRET_KEY"] = options.S3SecretKey,
+            ["S3_PATHSTYLE"] = options.S3PathStyle ? "true" : "false",
+        };
+        if (options.S3Region is { Length: > 0 } region)
+            env["S3_REGION"] = region;
+        return env;
+    }
 
-    // masterRef + conninfo-пара: каноническая нода → alias :5432 в сети нод;
-    // усыновлённая (object) → host:pg-port из portalloc (arch/19 §3 «Подключение»).
-    private (string MasterRef, string PgHost, int PgPort) ResolveMasterRef(
-        ShardSpec shard, IReadOnlyDictionary<string, NodeAddress> addresses, NodeAddress master)
+    // nodeRef + conninfo-пара ноды-источника: каноническая нода → alias :5432 в
+    // сети нод; усыновлённая (object) → host:pg-port из portalloc (arch/19 §3).
+    // DRY: общий для мастера и sync (t27).
+    private (string NodeRef, string PgHost, int PgPort) ResolveNodeRef(
+        ShardSpec shard, IReadOnlyDictionary<string, NodeAddress> addresses, NodeAddress node)
     {
-        foreach (var node in shard.Nodes)
-            if (addresses.TryGetValue($"{shard.Name}/{node.Name}", out var addr)
-                && addr.Host == master.Host
-                && addr.Ports == master.Ports)
-                return (node.Name, node.Name, 5432); // alias сети нод
-        return (master.Object ?? $"{master.Host}:{master.Ports.Pg}", master.Host, master.Ports.Pg);
+        foreach (var shardNode in shard.Nodes)
+            if (addresses.TryGetValue($"{shard.Name}/{shardNode.Name}", out var addr)
+                && addr.Host == node.Host
+                && addr.Ports == node.Ports)
+                return (shardNode.Name, shardNode.Name, 5432); // alias сети нод
+        return (node.Object ?? $"{node.Host}:{node.Ports.Pg}", node.Host, node.Ports.Pg);
     }
 
     private async Task<WalStreamState?> ReadWalAsync(string cluster, string shard, CancellationToken ct)

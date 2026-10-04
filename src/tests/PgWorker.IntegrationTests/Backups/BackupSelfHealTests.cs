@@ -189,7 +189,7 @@ public class BackupSelfHealTests(EtcdFixture fixture)
         var healed = await ReadWalAsync("sh1");
         healed!.State.Should().Be(WalStreamStatus.Active);
         healed.ChainStartSegment.Should().Be("000000010000000000000005");
-        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-sh1-shard1");
+        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-sh1-shard1-shard1a");
     }
 
     // Драйвер-композит (паттерн RestoreProcessTests.TestDriver): агентные вызовы —

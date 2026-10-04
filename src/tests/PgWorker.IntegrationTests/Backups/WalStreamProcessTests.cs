@@ -21,6 +21,11 @@ public class WalStreamProcessTests(EtcdFixture fixture)
 
     // ── Хелперы Arrange ──
 
+    // DSN источника-ноды (как ShardEndpoints.AdminDsn): сид слотов per-DSN (t27).
+    private static string SourceDsn(int pgPort, string cluster) => ShardEndpoints.AdminDsn(
+        new NodeAddress("127.0.0.1", new NodePorts(pgPort, 18001, 17001)),
+        cluster, new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"));
+
     // Активный кластер c1/shard1 с нодой shard1a (master-ключ → shard1a:17001).
     private static ClusterSnapshot BuildSnap(string cluster = "c1") => new(
         new ClusterConfig(cluster, 2, cluster, null, ClusterState.Active),
@@ -39,7 +44,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         await fixture.Gateway.PutAsync(fixture.Endpoint, $"/pgworker/portalloc/{cluster}",
             Portalloc.Serialize(new Dictionary<string, NodeAddress>
             {
-                ["shard1/shard1a"] = new("localhost", new NodePorts(16001, 18001, 17001)),
+                ["shard1/shard1a"] = new("127.0.0.1", new NodePorts(16001, 18001, 17001)),
             }), null, ct);
         await fixture.Gateway.PutAsync(fixture.Endpoint, $"/clusters/{cluster}/backup_password",
             password, null, ct);
@@ -100,14 +105,15 @@ public class WalStreamProcessTests(EtcdFixture fixture)
 
         // Assert
         result.IsSuccess.Should().BeTrue();
-        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-c1-shard1");
+        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-c1-shard1-shard1a");
         // Контракт (ревью Ф7 №1): процесс НЕ назначает сеть — драйвер владеет
         // pgw-net и проставляет её при create (юнит-тест ClusterDriverTests).
         driver.EnsuredAgentSpecs.Should().ContainSingle().Which.Network.Should().BeNull();
         // Рестарт-политики у агента нет: docker не лупит — супервиз тика
         // пересоздаёт exited-агента (иначе луп молотит на снесённом мастере)
         driver.EnsuredAgentSpecs.Should().ContainSingle().Which.RestartPolicy.Should().Be("no");
-        sql.Slots.Should().ContainKey("pgw_bkp_c1_shard1");
+        // Слот ensured на DSN мастера (адресация ShardEndpoints.AdminDsn)
+        sql.SlotsByDsn.Values.Should().Contain(s => s.Contains("pgw_bkp_c1_shard1"));
         var wal = await fixture.Gateway.GetAsync(
             fixture.Endpoint, "/pgworker/backups/c1/shard1/wal", ct);
         wal.Value.Should().BeNull("ключ не пишется до первого наблюдения (spec §3.2 п.8)");
@@ -130,7 +136,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         (await process.TickAsync(BuildSnap(), null, ct)).IsSuccess.Should().BeTrue();
 
         // Assert — EnsuredBackupAgents без дублей; ключ wal не пишется
-        driver.EnsuredBackupAgents.Should().ContainSingle(n => n == "pgw-backup-wal-c1-shard1");
+        driver.EnsuredBackupAgents.Should().ContainSingle(n => n == "pgw-backup-wal-c1-shard1-shard1a");
         var wal = await fixture.Gateway.GetAsync(
             fixture.Endpoint, "/pgworker/backups/c1/shard1/wal", ct);
         wal.Value.Should().BeNull();
@@ -154,7 +160,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
 
         // Assert — transient-пропуск: ни слота, ни агента
         result.IsSuccess.Should().BeTrue();
-        sql.Slots.Should().BeEmpty("агент/слот не поднимаются без кредов (spec §3.2 п.1)");
+        sql.SlotsByDsn.Should().BeEmpty("агент/слот не поднимаются без кредов (spec §3.2 п.1)");
         driver.EnsuredBackupAgents.Should().BeEmpty();
         var journal = await fixture.Gateway.GetAsync(
             fixture.Endpoint, "/pgworker/work/c1", ct);
@@ -179,7 +185,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // первый тик с ВКЛЮЧЁННОЙ подсистемой — агент поднят
         var process = BuildProcess(Options(), sql, s3, driver);
         (await process.TickAsync(BuildSnap(), null, ct)).IsSuccess.Should().BeTrue();
-        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-c1-shard1");
+        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-c1-shard1-shard1a");
 
         // Act — тик с ВЫКЛЮЧЕННОЙ подсистемой (Enabled=false → runtime()=null)
         var stopped = BuildProcess(null, sql, s3, driver);
@@ -187,7 +193,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
 
         // Assert — агенты вниз, ключ финально STOPPED
         result.IsSuccess.Should().BeTrue();
-        driver.RemovedBackupAgents.Should().Contain("pgw-backup-wal-c1-shard1");
+        driver.RemovedBackupAgents.Should().Contain("pgw-backup-wal-c1-shard1-shard1a");
         var wal = await writer.ReadAsync("c1", "shard1", ct);
         wal.Value!.State.Should().Be(WalStreamStatus.Stopped);
     }
@@ -253,7 +259,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // Assert — агент не поднят, wal-ключа нет, слот не создавался
         result.IsSuccess.Should().BeTrue();
         driver.EnsuredBackupAgents.Should().BeEmpty();
-        sql.Slots.Should().BeEmpty();
+        sql.SlotsByDsn.Should().BeEmpty();
         var wal = await fixture.Gateway.GetAsync(
             fixture.Endpoint, "/pgworker/backups/cr9/shard1/wal", ct);
         wal.Value.Should().BeNull("шард в restore — контуры бэкапов молчат");
@@ -356,7 +362,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         wal.Error.Should().Contain("слот");
         wal.ChainStartSegment.Should().Be("000000010000000000000002", "граница разрыва — last_uploaded на момент обнаружения");
         driver.RemovedBackupAgents.Should().Contain("pgw-backup-wal-cc3-shard1");
-        sql.Slots.Should().ContainKey("pgw_bkp_cc3_shard1", "слот пересоздаётся при BROKEN (spec §3.2)");
+        sql.SlotsByDsn.Values.Should().Contain(s => s.Contains("pgw_bkp_cc3_shard1"), "слот пересоздаётся при BROKEN (spec §3.2)");
     }
 
     [Fact]
@@ -386,7 +392,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var wal = await ReadWal("cc4");
         wal!.State.Should().Be(WalStreamStatus.Active);
         wal.ChainStartSegment.Should().Be("000000010000000000000005");
-        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-cc4-shard1");
+        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-cc4-shard1-shard1a");
     }
 
     [Fact]
@@ -414,7 +420,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         wal!.State.Should().Be(WalStreamStatus.Degraded);
         wal.Error.Should().Contain("тишина");
         driver.RemovedBackupAgents.Should().Contain("pgw-backup-wal-cc5-shard1");
-        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-cc5-shard1");
+        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-cc5-shard1-shard1a");
     }
 
     [Fact]
@@ -432,7 +438,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         SeedSegments(s3, "cc8", 1, 2);
         var driver = new StubScaleDriver();
         driver.BackupAgentObjects.Add(new DockerContainer(
-            "id-agent-cc8", ["pgw-backup-wal-cc8-shard1"], "running", "img"));
+            "id-agent-cc8", ["pgw-backup-wal-cc8-shard1-shard1a"], "running", "img"));
         var process = BuildProcess(Options(), sql, s3, driver);
         var backups = new ClusterBackups("cc8", null,
             new Dictionary<string, ShardBackups> { ["shard1"] = FullShard("000000010000000000000001") });
@@ -509,7 +515,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         wal.Error.Should().Contain("слот");
         wal.ChainStartSegment.Should().Be("000000010000000000000002");
         driver.RemovedBackupAgents.Should().Contain("pgw-backup-wal-cb2-shard1");
-        sql.Slots.Should().ContainKey("pgw_bkp_cb2_shard1", "слот пересоздаётся при BROKEN (spec §3.2)");
+        sql.SlotsByDsn.Values.Should().Contain(s => s.Contains("pgw_bkp_cb2_shard1"), "слот пересоздаётся при BROKEN (spec §3.2)");
     }
 
     // AAA (t13 AC1): инвариант писателя нарушен (ACTIVE с last_uploaded_unix=null
@@ -561,7 +567,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
             "граница разрыва — last_uploaded_segment на момент обнаружения");
         walKv.Value.Value.Should().NotContain("\"last_uploaded_unix\"",
             "запись строится из живого wal: now()-фолбэк в ключ не попадает (spec §2)");
-        sql.Slots.Should().ContainKey("pgw_bkp_cb5_shard1", "слот пересоздаётся при BROKEN (spec §3.2)");
+        sql.SlotsByDsn.Values.Should().Contain(s => s.Contains("pgw_bkp_cb5_shard1"), "слот пересоздаётся при BROKEN (spec §3.2)");
         driver.RemovedBackupAgents.Should().Contain("pgw-backup-wal-cb5-shard1");
         var journal = await fixture.Gateway.GetAsync(fixture.Endpoint, "/pgworker/work/cb5", ct);
         journal.Value!.Value.Should().Contain("wal-key-invalid/shard1");
@@ -599,7 +605,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var wal = await ReadWal("cb3");
         wal!.State.Should().Be(WalStreamStatus.Active);
         wal.ChainStartSegment.Should().Be("000000010000000000000005");
-        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-cb3-shard1");
+        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-cb3-shard1-shard1a");
     }
 
     // AAA (AC4 — рестарт-устойчивость): BROKEN живёт в etcd — пересоздание
@@ -654,11 +660,13 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         await fixture.Gateway.PutAsync(fixture.Endpoint, "/pgworker/portalloc/cm1",
             Portalloc.Serialize(new Dictionary<string, NodeAddress>
             {
-                ["shard1/shard1a"] = new("localhost", new NodePorts(16001, 18001, 17001)),
+                ["shard1/shard1a"] = new("127.0.0.1", new NodePorts(16001, 18001, 17001)),
                 ["shard1/shard1b"] = new("localhost", new NodePorts(16002, 18002, 17002)),
             }), null, ct);
         var sql = new FakeWalSqlExecutor();
-        sql.Slots["pgw_bkp_cm1_shard1"] = true;
+        // Слот жив на DSN ОБОИХ нод (источники shard1a/shard1b — независимые инстансы)
+        sql.SlotsByDsn.GetOrAdd(SourceDsn(16001, "cm1"), _ => []).Add("pgw_bkp_cm1_shard1");
+        sql.SlotsByDsn.GetOrAdd(SourceDsn(16002, "cm1"), _ => []).Add("pgw_bkp_cm1_shard1");
         var s3 = new FakeBackupS3();
         SeedSegments(s3, "cm1", 1, 2);
         var driver = new StubScaleDriver();
@@ -690,7 +698,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
 
         // Assert — старый агент снят, новый поднят (пересоздание с нового мастера)
         driver.RemovedBackupAgents.Should().Contain("pgw-backup-wal-cm1-shard1");
-        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-cm1-shard1");
+        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-cm1-shard1-shard1b");
     }
 
     [Fact]
@@ -739,7 +747,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         // Assert — ключ НЕ пишется (ревью Ф4-2 №2); агент при этом работает
         var wal = await ReadWal("cc7");
         wal.Should().BeNull();
-        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-cc7-shard1");
+        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-cc7-shard1-shard1a");
     }
 
     [Fact]
@@ -752,7 +760,8 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var clock = new MutableClock();
         var staleUnix = clock.Now.AddHours(-1).ToUnixTimeSeconds();
         var sql = new FakeWalSqlExecutor();
-        sql.Slots["pgw_bkp_cc8_shard1"] = true; // слот жив — деградация от тишины
+        // Слот жив на DSN мастера (источник один — shard1a, pg 16001)
+        sql.SlotsByDsn.GetOrAdd(SourceDsn(16001, "cc8"), _ => []).Add("pgw_bkp_cc8_shard1");
         var s3 = new FakeBackupS3();
         var driver = new StubScaleDriver();
         var writer = new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]);
@@ -801,8 +810,8 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var wal = await ReadWal("cc9");
         wal!.State.Should().Be(WalStreamStatus.Degraded);
         wal.Error.Should().Contain("отставание");
-        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-cc9-shard1");
-        driver.RemovedBackupAgents.Should().NotContain("pgw-backup-wal-cc9-shard1");
+        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-cc9-shard1-shard1a");
+        driver.RemovedBackupAgents.Should().NotContain("pgw-backup-wal-cc9-shard1-shard1a");
     }
 
     [Fact]
@@ -825,5 +834,248 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var wal = await ReadWal("cca");
         wal!.State.Should().Be(WalStreamStatus.Active);
         wal.ChainStartSegment.Should().Be("000000010000000000000002");
+    }
+
+    // ---- t27: два источника, per-node супервиз, миграция (Ф3, spec §3.3/§3.4/§3.6) ----
+
+    private const string SyncClusterJson =
+        """{"members":[{"name":"shard1a","role":"master","state":"running","timeline":1},""" +
+        """{"name":"shard1b","role":"replica","state":"running","timeline":1,"lag":0,"sync":true}]}""";
+
+    // Сид двухнодового portalloc (patroni-порты обеих нод — фейк Patroni).
+    private async Task<(FakePatroni Patroni, string Cluster)> SeedTwoNodeAsync(
+        FakeWalSqlExecutor sql, FakePatroni? patroni, string cluster, string password = "pw")
+    {
+        var ct = TestContext.Current.CancellationToken;
+        await fixture.Gateway.DeleteAsync(fixture.Endpoint, $"/pgworker/backups/{cluster}/", prefix: true, ct);
+        await fixture.Gateway.DeleteAsync(fixture.Endpoint, $"/pgworker/claims/{cluster}", prefix: false, ct);
+        var patroniPort = patroni?.Port ?? 1; // без фейка — порт-заглушка (sync не резолвится)
+        await fixture.Gateway.PutAsync(fixture.Endpoint, $"/pgworker/portalloc/{cluster}",
+            Portalloc.Serialize(new Dictionary<string, NodeAddress>
+            {
+                ["shard1/shard1a"] = new("127.0.0.1", new NodePorts(16001, patroniPort, 17001)),
+                ["shard1/shard1b"] = new("127.0.0.1", new NodePorts(16002, patroniPort, 17002)),
+            }), null, ct);
+        await fixture.Gateway.PutAsync(fixture.Endpoint, $"/clusters/{cluster}/backup_password",
+            password, null, ct);
+        // Слоты per-instance: ensured на ОБОИХ DSN (тик создаст недостающие).
+        return (patroni!, cluster);
+    }
+
+    // Двухнодовый снапшот (master-ключ → shard1a).
+    private static ClusterSnapshot BuildTwoNodeSnap(string cluster = "c1") => new(
+        new ClusterConfig(cluster, 2, cluster, null, ClusterState.Active),
+        [new ShardSpec("shard1", 2, $"host=shard1a dbname={cluster}", "shard1a:17001",
+        [
+            new NodeSpec("shard1", "shard1a", NodeState.Running),
+            new NodeSpec("shard1", "shard1b", NodeState.Running),
+        ])],
+        []);
+
+    // AAA (AC3-контур): два источника (мастер + sync-standby) → ДВА per-node агента,
+    // слоты ensured на ОБОИХ DSN, ключ wal содержит agents с двумя running-нодами.
+    [Fact]
+    public async Task Двойная_архивация_два_агента_слоты_на_обеих_нодах_agents()
+    {
+        // Arrange — двухнодовый кластер, Patroni-фейк с sync на shard1b
+        var ct = TestContext.Current.CancellationToken;
+        var patroni = await FakePatroni.StartAsync(SyncClusterJson, ct);
+        await using var patroniOwner = patroni;
+        var cluster = $"da1{Guid.NewGuid().ToString("N")[..6]}";
+        await SeedTwoNodeAsync(new FakeWalSqlExecutor(), patroni, cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, cluster, 1, 2);
+        var driver = new StubScaleDriver();
+        var process = BuildProcess(Options(), sql, s3, driver);
+
+        // Act — тик
+        var result = await process.TickAsync(BuildTwoNodeSnap(cluster), null, ct);
+
+        // Assert — два per-node агента (мастер + sync)
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        driver.EnsuredBackupAgents.Should().Contain($"pgw-backup-wal-{cluster}-shard1-shard1a");
+        driver.EnsuredBackupAgents.Should().Contain($"pgw-backup-wal-{cluster}-shard1-shard1b");
+        // Слоты ensured на ОБОИХ DSN (инстансы независимы)
+        sql.SlotsByDsn.GetOrAdd(SourceDsn(16001, cluster), _ => [])
+            .Should().Contain("pgw_bkp_" + cluster + "_shard1");
+        sql.SlotsByDsn.GetOrAdd(SourceDsn(16002, cluster), _ => [])
+            .Should().Contain("pgw_bkp_" + cluster + "_shard1");
+        // Ключ wal содержит agents с двумя running-нодами
+        var wal = await ReadWal(cluster);
+        wal.Should().NotBeNull("сегменты в S3 — контроль пишет ключ");
+        wal!.Agents.Should().NotBeNull();
+        wal.Agents.Should().BeEquivalentTo(
+        [
+            new WalAgentState("shard1a", WalAgentPresence.Running),
+            new WalAgentState("shard1b", WalAgentPresence.Running),
+        ]);
+    }
+
+    // AAA (миграция §3.6 / AC7-сценарий): агент старого формата (имя без ноды,
+    // running) → тик: старый снесён, per-node поднят; повторный тик идемпотентен.
+    [Fact]
+    public async Task Миграция_старый_агент_сносится_per_node_поднимается()
+    {
+        // Arrange — живой агент старого формата pgw-backup-wal-<C>-shard1
+        var ct = TestContext.Current.CancellationToken;
+        var patroni = await FakePatroni.StartAsync(SyncClusterJson, ct);
+        await using var patroniOwner = patroni;
+        var cluster = $"mg1{Guid.NewGuid().ToString("N")[..6]}";
+        await SeedTwoNodeAsync(new FakeWalSqlExecutor(), patroni, cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, cluster, 1, 2);
+        var driver = new StubScaleDriver();
+        driver.BackupAgentObjects.Add(new DockerContainer(
+            "id-old", [$"/pgw-backup-wal-{cluster}-shard1"], "running", "img"));
+        var process = BuildProcess(Options(), sql, s3, driver);
+
+        // Act — тик миграции
+        (await process.TickAsync(BuildTwoNodeSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — старый снесён, per-node поднят
+        driver.RemovedBackupAgents.Should().Contain($"pgw-backup-wal-{cluster}-shard1");
+        driver.EnsuredBackupAgents.Should().Contain($"pgw-backup-wal-{cluster}-shard1-shard1a");
+        driver.EnsuredBackupAgents.Should().Contain($"pgw-backup-wal-{cluster}-shard1-shard1b");
+
+        // Act/Assert — повторный тик идемпотентен (новых ensured нет)
+        var ensuredBefore = driver.EnsuredBackupAgents.Count;
+        (await process.TickAsync(BuildTwoNodeSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
+        driver.EnsuredBackupAgents.Skip(ensuredBefore).Should().BeEmpty();
+    }
+
+    // AAA (смена источника): агент per-node мастера -shard1a; мастер сменился на
+    // shard1b → агент -shard1a снесён (чужое имя), -shard1b поднят.
+    [Fact]
+    public async Task Смена_мастера_per_node_агент_переносится()
+    {
+        // Arrange — тик 1: мастер shard1a, агенты per-node
+        var ct = TestContext.Current.CancellationToken;
+        var patroni = await FakePatroni.StartAsync(SyncClusterJson, ct);
+        await using var patroniOwner = patroni;
+        var cluster = $"sw1{Guid.NewGuid().ToString("N")[..6]}";
+        await SeedTwoNodeAsync(new FakeWalSqlExecutor(), patroni, cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, cluster, 1, 2);
+        var driver = new StubScaleDriver();
+        var process = BuildProcess(Options(), sql, s3, driver);
+        (await process.TickAsync(BuildTwoNodeSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
+
+        // Act — master-ключ шарда → shard1b: второй тик
+        var switched = new ClusterSnapshot(
+            new ClusterConfig(cluster, 2, cluster, null, ClusterState.Active),
+            [new ShardSpec("shard1", 2, $"host=shard1b dbname={cluster}", "shard1b:17002",
+            [
+                new NodeSpec("shard1", "shard1a", NodeState.Running),
+                new NodeSpec("shard1", "shard1b", NodeState.Running),
+            ])],
+            []);
+        driver.EnsuredBackupAgents.Clear();
+        (await process.TickAsync(switched, null, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — старый агент снесён, поднят на новом мастере
+        driver.RemovedBackupAgents.Should().Contain($"pgw-backup-wal-{cluster}-shard1-shard1a");
+        driver.EnsuredBackupAgents.Should().Contain($"pgw-backup-wal-{cluster}-shard1-shard1b");
+    }
+
+    // AAA («слот исчез» — правило всех нод, t27 §3.3 п.3): слот жив только на
+    // sync-ноде → тик НЕ пишет BROKEN (ensure на мастере); слот исчез на обеих при
+    // живой цепочке → BROKEN + recreateSlot.
+    [Fact]
+    public async Task Слот_исчез_правило_всех_нод()
+    {
+        // Arrange — два источника; слот жив ТОЛЬКО на sync-ноде (16002)
+        var ct = TestContext.Current.CancellationToken;
+        var patroni = await FakePatroni.StartAsync(SyncClusterJson, ct);
+        await using var patroniOwner = patroni;
+        var cluster = $"sg1{Guid.NewGuid().ToString("N")[..6]}";
+        await SeedTwoNodeAsync(new FakeWalSqlExecutor(), patroni, cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        sql.SlotsByDsn.GetOrAdd(SourceDsn(16002, cluster), _ => [])
+            .Add($"pgw_bkp_{cluster}_shard1");
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, cluster, 1, 2);
+        var writer = new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]);
+        var liveWal = new WalStreamState(
+            WalStreamStatus.Active, $"pgw_bkp_{cluster}_shard1", "shard1a",
+            "000000010000000000000001", "000000010000000000000002",
+            "000000010000000000000002", 1757500000, 0, null);
+        await writer.WriteIfChangedAsync(cluster, "shard1", liveWal, ct);
+        var driver = new StubScaleDriver();
+        var process = BuildProcess(Options(verify: 3600), sql, s3, driver);
+        var backups = new ClusterBackups(cluster, null,
+            new Dictionary<string, ShardBackups>
+            {
+                ["shard1"] = new(FullShard("000000010000000000000001").Full, liveWal),
+            });
+
+        // Act — тик при живом sync-слоте
+        (await process.TickAsync(BuildTwoNodeSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — не BROKEN; слот ensured на мастере (16001)
+        var walAfterSyncAlive = await ReadWal(cluster);
+        walAfterSyncAlive!.State.Should().NotBe(WalStreamStatus.Broken,
+            "живой слот на любой ноде — не BROKEN (t27 §3.3 п.3)");
+        sql.SlotsByDsn.GetOrAdd(SourceDsn(16001, cluster), _ => [])
+            .Should().Contain($"pgw_bkp_{cluster}_shard1", "ensure на источнике, где слота нет");
+
+        // Act 2 — слот исчез на ОБОИХ (границы словаря чистим) при живой цепочке
+        sql.SlotsByDsn.Clear();
+        driver.EnsuredBackupAgents.Clear();
+        (await process.TickAsync(BuildTwoNodeSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — BROKEN + recreateSlot (слот пересоздан на мастере)
+        var walGone = await ReadWal(cluster);
+        walGone!.State.Should().Be(WalStreamStatus.Broken);
+        walGone.Error.Should().Contain("слот");
+        sql.SlotsByDsn.Values.Should().Contain(s => s.Contains($"pgw_bkp_{cluster}_shard1"),
+            "recreateSlot immediate+reserved на мастере (t07)");
+    }
+
+    // AAA («sync появился»): тик 1 single-node (sync не резолвится) → один агент;
+    // тик 2 с sync → второй агент поднят, первый жив (не пересоздан).
+    [Fact]
+    public async Task Sync_появился_второй_агент_первый_жив()
+    {
+        // Arrange — patroni-порт заглушка (sync не резолвится): тик 1
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = $"ap1{Guid.NewGuid().ToString("N")[..6]}";
+        await SeedTwoNodeAsync(new FakeWalSqlExecutor(), null, cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, cluster, 1, 2);
+        var driver = new StubScaleDriver();
+        var process = BuildProcess(Options(), sql, s3, driver);
+        (await process.TickAsync(BuildTwoNodeSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert тика 1 — только агент мастера
+        driver.EnsuredBackupAgents.Should().Contain($"pgw-backup-wal-{cluster}-shard1-shard1a");
+        driver.EnsuredBackupAgents.Should().NotContain(n => n.EndsWith("-shard1b", StringComparison.Ordinal));
+
+        // Act — patroni с sync появился: тик 2
+        var patroni = await FakePatroni.StartAsync(SyncClusterJson, ct);
+        await using var patroniOwner = patroni;
+        await fixture.Gateway.PutAsync(fixture.Endpoint, $"/pgworker/portalloc/{cluster}",
+            Portalloc.Serialize(new Dictionary<string, NodeAddress>
+            {
+                ["shard1/shard1a"] = new("127.0.0.1", new NodePorts(16001, patroni.Port, 17001)),
+                ["shard1/shard1b"] = new("127.0.0.1", new NodePorts(16002, patroni.Port, 17002)),
+            }), null, ct);
+        driver.EnsuredBackupAgents.Clear();
+        (await process.TickAsync(BuildTwoNodeSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — второй агент поднят; первый жив (не снесён, не пересоздан)
+        driver.EnsuredBackupAgents.Should().Contain($"pgw-backup-wal-{cluster}-shard1-shard1b");
+        driver.RemovedBackupAgents.Should().NotContain(
+            n => n.StartsWith($"pgw-backup-wal-{cluster}-shard1-shard1a", StringComparison.Ordinal));
+        driver.BackupAgentObjects.Should().Contain(c =>
+            c.State == "running" && c.Names.Contains($"/pgw-backup-wal-{cluster}-shard1-shard1a"));
     }
 }

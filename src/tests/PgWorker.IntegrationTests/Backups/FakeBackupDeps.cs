@@ -1,23 +1,26 @@
 using System.Collections.Concurrent;
+using System.Net;
 using PgWorker.Backups;
 using PgWorker.Backups.Sql;
 using PgWorker.Core;
 
 namespace PgWorker.IntegrationTests.Backups;
 
-// Фейковый SQL-слой: слоты в памяти, LSN управляется тестом (AAA-Act).
+// Фейковый SQL-слой: слоты в памяти per-инстансу (t27: ключ — adminDsn источника,
+// слоты разных нод независимы), LSN управляется тестом (AAA-Act).
 public sealed class FakeWalSqlExecutor : IWalSqlExecutor
 {
-    public ConcurrentDictionary<string, bool> Slots { get; } = new();
+    public ConcurrentDictionary<string, HashSet<string>> SlotsByDsn { get; } = new();
 
     public (string Lsn, int Tli) Current { get; set; } = ("0/1000000", 1);
 
     public Task<Result<bool>> SlotExistsAsync(string adminDsn, string slot, CancellationToken ct)
-        => Task.FromResult(Result<bool>.Success(Slots.TryGetValue(slot, out var alive) && alive));
+        => Task.FromResult(Result<bool>.Success(
+            SlotsByDsn.TryGetValue(adminDsn, out var slots) && slots.Contains(slot)));
 
     public Task<Result> EnsureSlotAsync(string adminDsn, string slot, CancellationToken ct)
     {
-        Slots[slot] = true;
+        SlotsByDsn.GetOrAdd(adminDsn, _ => []).Add(slot);
         return Task.FromResult(Result.Success());
     }
 
@@ -176,5 +179,80 @@ public sealed class FakeBackupS3 : IBackupS3
             return Task.FromResult(Result.Failed(new ApplicationException("s3 down")));
         PrefixObjects.Add((key, data.Length));
         return Task.FromResult(Result.Success());
+    }
+
+
+}
+
+/// <summary>Фейк Patroni REST (t27): HttpListener на свободном порту (зонд
+/// TcpListener(0) — никаких литералов), отдаёт заданный /cluster-JSON; teardown
+/// при любом исходе. Живёт до DisposeAsync — тест управляет появлением sync.</summary>
+public sealed class FakePatroni : IAsyncDisposable
+{
+    private readonly HttpListener _listener = new();
+
+    private FakePatroni(int port)
+    {
+        Port = port;
+        _listener.Prefixes.Add($"http://127.0.0.1:{port}/");
+    }
+
+    public int Port { get; }
+
+    private string Body { get; set; } = "";
+
+    public static async Task<FakePatroni> StartAsync(string body, CancellationToken ct)
+    {
+        var port = FreePort();
+        var fake = new FakePatroni(port) { Body = body };
+        fake._listener.Start();
+        _ = fake.ServeLoopAsync(ct);
+        await Task.Delay(50, ct); // листенер начал принимать
+        return fake;
+    }
+
+    private async Task ServeLoopAsync(CancellationToken ct)
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            try
+            {
+                var context = await _listener.GetContextAsync();
+                var buffer = System.Text.Encoding.UTF8.GetBytes(Body);
+                context.Response.ContentType = "application/json";
+                context.Response.ContentLength64 = buffer.Length;
+                await context.Response.OutputStream.WriteAsync(buffer, ct);
+                context.Response.Close();
+            }
+            catch (Exception) when (ct.IsCancellationRequested)
+            {
+                break; // штатная остановка теста
+            }
+            catch (HttpListenerException)
+            {
+                break;
+            }
+        }
+    }
+
+    // Свободный порт: зонд TcpListener(0) (динамические порты везде).
+    private static int FreePort()
+    {
+        var probe = new System.Net.Sockets.TcpListener(IPAddress.Loopback, 0);
+        probe.Start();
+        try
+        {
+            return ((IPEndPoint)probe.LocalEndpoint).Port;
+        }
+        finally
+        {
+            probe.Stop();
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        _listener.Close();
+        await Task.CompletedTask;
     }
 }

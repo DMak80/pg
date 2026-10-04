@@ -40,63 +40,6 @@ public class ShardEndpointsSyncTests(EtcdFixture fixture)
     private sealed class TcpListenerAdapter(IPAddress address, int port)
         : System.Net.Sockets.TcpListener(address, port);
 
-    /// <summary>Фейк Patroni: HttpListener на свободном порту, отдаёт заданный JSON
-    /// на GET /cluster; порт закрывается DisposeAsync (тестовый ассет).</summary>
-    private sealed class FakePatroni : IAsyncDisposable
-    {
-        private readonly HttpListener _listener = new();
-
-        private FakePatroni(int port)
-        {
-            Port = port;
-            _listener.Prefixes.Add($"http://127.0.0.1:{port}/");
-        } // сид тоже на 127.0.0.1 — без IPv6-неоднозначности localhost
-
-        public int Port { get; private set; }
-
-        private string Body { get; set; } = "";
-
-        public static async Task<FakePatroni> StartAsync(string body, CancellationToken ct)
-        {
-            var port = FreePort();
-            var fake = new FakePatroni(port) { Body = body };
-            fake._listener.Start();
-            _ = fake.ServeLoopAsync(ct);
-            await Task.Delay(50, ct); // листенер начал принимать
-            return fake;
-        }
-
-        private async Task ServeLoopAsync(CancellationToken ct)
-        {
-            while (!ct.IsCancellationRequested)
-            {
-                try
-                {
-                    var context = await _listener.GetContextAsync();
-                    var buffer = System.Text.Encoding.UTF8.GetBytes(Body);
-                    context.Response.ContentType = "application/json";
-                    context.Response.ContentLength64 = buffer.Length;
-                    await context.Response.OutputStream.WriteAsync(buffer, ct);
-                    context.Response.Close();
-                }
-                catch (Exception) when (ct.IsCancellationRequested)
-                {
-                    break; // штатная остановка теста
-                }
-                catch (HttpListenerException)
-                {
-                    break;
-                }
-            }
-        }
-
-        public async ValueTask DisposeAsync()
-        {
-            _listener.Close();
-            await Task.CompletedTask;
-        }
-    }
-
     private async Task<ShardEndpoints> BuildEndpointsAsync(string cluster, int patroniPort, CancellationToken ct)
     {
         // portalloc-сид: две ноды шарда, patroni-порт обеих — фейк (один Patroni

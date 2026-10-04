@@ -14,6 +14,16 @@ namespace PgWorker.Backups.Restore;
 // Spilo-layout (§3.3): точка монтирования volume и PGDATA конфигурируются env.
 public static class RestoreJobCommand
 {
+    /// <summary>Значение env MC_HOST-alias (формат mc: MC_HOST_&lt;alias&gt;):
+    /// scheme://access:secret@authority. URL-escape кредов — секреты per-install
+    /// могут содержать спецсимволы URL. (t27: перенесено из удалённого
+    /// WalAgentCommand — джобы restore/drill/verify продолжают пользоваться.)</summary>
+    public static string McHost(string endpoint, string accessKey, string secretKey)
+    {
+        var uri = new Uri(endpoint);
+        return $"{uri.Scheme}://{Uri.EscapeDataString(accessKey)}:{Uri.EscapeDataString(secretKey)}@{uri.Authority}";
+    }
+
     public const string EnvMcHost = "MC_HOST_pgwbkp";
     public const string EnvBucket = "S3_BUCKET";
     public const string EnvSrcPrefix = "SRC_PREFIX";

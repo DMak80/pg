@@ -5,7 +5,7 @@ namespace PgWorker.Backups.Restore;
 // Спецификация ephemeral restore-джоба (t05, arch/19 §3.5): монтирует
 // data-volume ПЕРВОЙ ноды шарда в точку dataDir (docker создаст named volume
 // при create контейнера) и пишет в него восстановленный PGDATA. Env —
-// S3-комплект одной MC_HOST-строкой (паттерн WalAgentCommand.McHost, §7),
+// S3-комплект одной MC_HOST-строкой (RestoreJobCommand.McHost, §7),
 // source-префикс, backup_id, цель и пути PGDATA (env-контракт §3.3); никаких
 // паролей PG (джоб слушает только unix-socket). Порты/сеть/рестарт — как у
 // джоба t02: none.
@@ -18,7 +18,7 @@ public static class RestoreJobSpec
     {
         var env = new Dictionary<string, string>
         {
-            [RestoreJobCommand.EnvMcHost] = WalAgentCommand.McHost(
+            [RestoreJobCommand.EnvMcHost] = RestoreJobCommand.McHost(
                 opts.AgentS3Endpoint, opts.S3AccessKey, opts.S3SecretKey),
             [RestoreJobCommand.EnvBucket] = opts.S3Bucket,
             [RestoreJobCommand.EnvSrcPrefix] = $"{srcCluster}/{srcShard}",
