@@ -101,10 +101,14 @@ public sealed class NpgsqlXLogSource(WalReceiverOptions o) : IXLogReplicationSou
 
     public async Task<Result<byte[]?>> ReadTimelineHistoryAsync(uint tli, CancellationToken ct)
     {
+        // TIMELINE_HISTORY — replication-команда: сервер обслуживает её ТОЛЬКО до
+        // START_REPLICATION (E2E-факт t27: запрос по стрим-коннекту не работает) —
+        // отдельное replication-соединение на каждый запрос (короткоживущее).
         try
         {
-            var replication = _replication ?? throw new InvalidOperationException("OpenAsync не выполнен");
-            var file = await replication.TimelineHistory(tli, ct);
+            await using var history = new PhysicalReplicationConnection(ConnString);
+            await history.Open(ct);
+            var file = await history.TimelineHistory(tli, ct);
             return Result<byte[]?>.Success(file.Content);
         }
         catch (Exception)
