@@ -954,6 +954,23 @@ public class E2eBackupScenarios
             }, TimeSpan.FromSeconds(300), ct);
             grew.Should().BeTrue("агент реплики продолжает доставку после смерти мастера");
 
+            // Фаза стабилизации: надзор пометил упавшую ноду unreachable и чинит её
+            // repair-контуром (восстановление ноды — продуктовое поведение, минуты);
+            // WalStream честно уходит в restore-гвард, пока шард восстанавливается.
+            // Ждём снятия unreachable циклом 30-секундных окон (каждое окно —
+            // проверка факта; суммарный лимит 600 c на восстановление ноды).
+            TestContext.Current.TestOutputHelper?.WriteLine(
+                "[PHASE] wal-ac4: ожидание снятия unreachable shard1 (repair-контур надзора)");
+            var repairDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(600);
+            while (DateTime.UtcNow < repairDeadline)
+            {
+                var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
+                var stillUnreachable = workKv?.Value?.Contains("\"unreachable:{\"shard1/shard1b\"}") == true;
+                if (!stillUnreachable)
+                    break;
+                await Task.Delay(TimeSpan.FromSeconds(30), ct);
+            }
+
             // Чтение ключа — поллингом (etcd-транспорт может дать transient-отказ:
             // ReadAsync Failed → Value null; факт ждём, не фиксируем одноразовым чтением)
             PgWorker.Etcd.Parsing.WalStreamState? keyState = null;
