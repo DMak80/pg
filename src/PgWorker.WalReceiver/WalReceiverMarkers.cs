@@ -1,3 +1,4 @@
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -12,6 +13,8 @@ public static class WalReceiverMarkers
     private static readonly JsonSerializerOptions Options = new()
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
+        // Кириллица ошибок читаемой строкой (маркеры — не HTML-контекст).
+        Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
     };
 
     /// <summary>LSN → PG-формат `X/Y`: старшие 32 бита / младшие (hex).</summary>
@@ -33,6 +36,11 @@ public static class WalReceiverMarkers
     public static string Heartbeat(ulong confirmedLsn)
         => ToJson(new HeartbeatMarker(LsnText(confirmedLsn)));
 
+    /// <summary>TLI-переход без истории (Npgsql не экспонирует TIMELINE_HISTORY):
+    /// fallback-контроль воркера (docker-exec, arch/19 §3).</summary>
+    public static string HistoryMissing(uint tli)
+        => ToJson(new HistoryMissingMarker(tli));
+
     public static string Result(bool ok, string? error, string? lastDelivered)
         => ToJson(new ResultMarker(ok, error, lastDelivered));
 
@@ -51,6 +59,17 @@ public static class WalReceiverMarkers
     }
 
     private sealed record HeartbeatMarker([property: JsonPropertyName("heartbeat")] string Heartbeat);
+
+    private sealed record HistoryMissingMarker(
+        [property: JsonPropertyName("history_missing")] string Tli)
+    {
+        public HistoryMissingMarker(uint tli) : this($"{tli}")
+        {
+        }
+
+        [property: JsonPropertyName("phase")]
+        public string Phase => "streaming";
+    }
 
     private sealed record ResultMarker(
         [property: JsonPropertyName("ok")] bool Ok,
