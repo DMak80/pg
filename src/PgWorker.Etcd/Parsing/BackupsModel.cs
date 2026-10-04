@@ -91,8 +91,16 @@ public sealed record FullBackupState(
     string? Error,
     BackupVerify? Verify);
 
+/// <summary>Факт супервиза wal-агента на ноде (t27, arch/19 §4): running — жив,
+/// exited — завершился сам (permanent-выход приёмника), absent — контейнера нет.</summary>
+public enum WalAgentPresence { Running, Exited, Absent }
+
+/// <summary>Состояние wal-агента одной ноды-источника (t27): per-node супервиз-факт
+/// в поле agents ключа wal.</summary>
+public sealed record WalAgentState(string Node, WalAgentPresence State);
+
 /// <summary>WAL-поток шарда (ключ /pgworker/backups/&lt;C&gt;/&lt;X&gt;/wal):
-/// агент pg_receivewal (t03); инвариант непрерывности chain_start →
+/// wal-агенты per-node (t27); инвариант непрерывности chain_start →
 /// last_uploaded без дыр (arch/19 §3).</summary>
 public sealed record WalStreamState(
     WalStreamStatus State,
@@ -103,7 +111,10 @@ public sealed record WalStreamState(
     string LastUploadedSegment,
     long? LastUploadedUnix,
     long? LagSegments,
-    string? Error);
+    string? Error,
+    // t27 (arch/19 §4): опциональные супервиз-факты per-node (старые ключи
+    // поля не несут — парсер возвращает null, обратная совместимость AC7).
+    IReadOnlyList<WalAgentState>? Agents = null);
 
 /// <summary>Операция восстановления шарда из бэкапа (ключ
 /// /pgworker/backups/&lt;C&gt;/&lt;X&gt;/restore/&lt;id&gt;, id=YYYYMMDDHHMMSSZ

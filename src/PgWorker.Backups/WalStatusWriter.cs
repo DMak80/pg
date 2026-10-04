@@ -29,7 +29,9 @@ public sealed class WalStatusWriter(IEtcdGateway etcd, string[] endpoints)
             StateName(state.State), state.Slot, state.MasterNode,
             state.ChainStartSegment, state.LastReceivedSegment,
             state.LastUploadedSegment, state.LastUploadedUnix,
-            state.LagSegments, state.Error), Json);
+            state.LagSegments, state.Error,
+            state.Agents?.Select(a => new WalAgentPayload(
+                a.Node, AgentName(a.State))).ToList()), Json);
 
     public async Task<Result<WalStreamState?>> ReadAsync(string cluster, string shard, CancellationToken ct)
     {
@@ -94,7 +96,9 @@ public sealed class WalStatusWriter(IEtcdGateway etcd, string[] endpoints)
                 StateOf(payload.State), payload.Slot ?? "", payload.MasterNode ?? "",
                 payload.ChainStartSegment ?? "", payload.LastReceivedSegment ?? "",
                 payload.LastUploadedSegment ?? "", payload.LastUploadedUnix,
-                payload.LagSegments, payload.Error));
+                payload.LagSegments, payload.Error,
+                payload.Agents?.Select(a => new WalAgentState(
+                    a.Node ?? "", AgentOf(a.State))).ToList()));
         }
         catch (JsonException e)
         {
@@ -122,6 +126,22 @@ public sealed class WalStatusWriter(IEtcdGateway etcd, string[] endpoints)
         _ => WalStreamStatus.Active,
     };
 
+    // t27 (arch/19 §4): поле agents — супервиз-факты per-node; маппинг enum ↔
+    // канонические строки running/exited/absent. Старые ключи поля не несут.
+    private static string AgentName(WalAgentPresence state) => state switch
+    {
+        WalAgentPresence.Exited => "exited",
+        WalAgentPresence.Absent => "absent",
+        _ => "running",
+    };
+
+    private static WalAgentPresence AgentOf(string? name) => name switch
+    {
+        "exited" => WalAgentPresence.Exited,
+        "absent" => WalAgentPresence.Absent,
+        _ => WalAgentPresence.Running,
+    };
+
     // snake_case-поля ключа (архивный формат §4; писать/читать — только через ToJson/Parse)
     private sealed record WalStatusPayload(
         [property: JsonPropertyName("state")] string? State,
@@ -132,5 +152,10 @@ public sealed class WalStatusWriter(IEtcdGateway etcd, string[] endpoints)
         [property: JsonPropertyName("last_uploaded_segment")] string? LastUploadedSegment,
         [property: JsonPropertyName("last_uploaded_unix")] long? LastUploadedUnix,
         [property: JsonPropertyName("lag_segments")] long? LagSegments,
-        [property: JsonPropertyName("error")] string? Error);
+        [property: JsonPropertyName("error")] string? Error,
+        [property: JsonPropertyName("agents")] List<WalAgentPayload>? Agents);
+
+    private sealed record WalAgentPayload(
+        [property: JsonPropertyName("node")] string? Node,
+        [property: JsonPropertyName("state")] string? State);
 }
