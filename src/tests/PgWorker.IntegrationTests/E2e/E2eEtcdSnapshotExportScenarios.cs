@@ -116,7 +116,10 @@ public class E2eEtcdSnapshotExportScenarios
         status.LastObject.Should().Be($"etcd/{keys.Single(k => k.EndsWith(".db"))}");
         var bytes = await DownloadAsync(status.LastObject!, ct);
         Sha256Hex(bytes).Should().Be(status.LastSha256, "sha256 статуса = sha256 содержимого S3-объекта");
-        // Assert — restore-verify: etcdctl snapshot status в контейнере etcd окружения
+        // Assert — verify слепка (AC5): etcdctl snapshot status на ВАЛИДНОМ слепке
+        // в контейнере etcd окружения — положительный вердикт структуры/ревизии
+        // (etcd 3.5.x печатает hash, но при status его НЕ сверяет — порча байта
+        // в E2E не проверяется, покрыта интеграциями T5 Fact 6)
         var tempFile = Path.Combine(Path.GetTempPath(), $"pgw-e2e-snap-{Guid.NewGuid():N}.db");
         await File.WriteAllBytesAsync(tempFile, bytes, ct);
         try
@@ -125,7 +128,7 @@ public class E2eEtcdSnapshotExportScenarios
             var verdict = await Fx.RunDockerAsync(
                 ["exec", Fx.EtcdContainerName, "etcdctl", "snapshot", "status", "/tmp/snap.db"], ct);
             verdict.Should().MatchRegex("^[0-9a-f]{8}, \\d+, \\d+, .+",
-                "слепок из S3 проходит etcdctl snapshot status (AC5): hash/keys/size");
+                "валидный слепок из S3 проходит etcdctl snapshot status (AC5): hash/keys/size");
         }
         finally
         {

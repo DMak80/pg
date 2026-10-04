@@ -122,11 +122,13 @@ Patroni не может проводить выборы → кластер «з�
 docs/runbook.md §«Восстановление etcd из S3-выгрузки (t08)»; локальный файл
 тома `pgw-snapshots` (если пережил) — fallback того же формата):
 ```bash
-# 1) скачать новейший snapshot-<id>.db (+ .meta.json), сверить sha256
-#    и etcdctl snapshot status (обязательный шаг, runbook t08)
+# 1) скачать новейший snapshot-<id>.db (+ .meta.json), сверить sha256 файла
+#    с meta.json — ручная сверка и есть операторский барьер; etcdctl snapshot
+#    status — информационный шаг (3.5.x hash при status НЕ сверяет);
+#    финальный барьер — restore-верификация (шаг 3, etcdutl)
 # 2) стартовать etcd заново как новый кластер (INITIAL_CLUSTER_STATE=new)
-# 3) восстановить snapshot:
-etcdctl snapshot restore /backup/etcd.snap --data-dir=/data/etcd
+# 3) восстановить snapshot (restore верифицирует sha256 при разворачивании):
+etcdutl snapshot restore /backup/etcd.snap --data-dir=/data/etcd
 ```
 Если бэкапа etcd нет — Patroni можно «объяснить», что кластер уже инициализирован:
 см. процедуру `patroni reinit` для каждой ноды с `--force` на свежем DCS.

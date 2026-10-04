@@ -235,12 +235,16 @@ public class EtcdSnapshotSinkTests
         status.LastSha256.Should().Be(Sha256Hex(await File.ReadAllBytesAsync(latest, ct)));
     }
 
-    // AAA (AC5): скачанный из S3 слепок проходит etcdctl snapshot status;
-    // порченный байт — провал проверки (runbook-шаг «проверка до восстановления»).
+    // AAA (AC5; круг 7 — по обновлённой букве spec): (а) валидный слепок —
+    // положительный вердикт etcdctl snapshot status (структура/размер/ревизия);
+    // (б) порча байта — sha256 файла расходится с sha256 из .meta.json (ручная
+    // сверка — операторский барьер runbook-шага 2) И провал etcdutl snapshot
+    // restore (restore верифицирует sha256 при разворачивании — финальный
+    // барьер).
     [Fact]
-    public async Task Разворачиваемость_etcdctl_snapshot_status()
+    public async Task Верификация_целостности_status_и_restore()
     {
-        // Arrange — экспорт слепка в S3; скачивание .db в temp-файл
+        // Arrange — экспорт слепка в S3; скачивание .db и .meta.json
         var ct = TestContext.Current.CancellationToken;
         await using var etcdFx = await OwnEtcd.StartAsync("sink6", ct);
         await using var minioFx = await OwnMinio.StartAsync("sink6", ct);
@@ -252,36 +256,52 @@ public class EtcdSnapshotSinkTests
         var s3 = new BackupS3(minioFx.Runtime());
         var listed = (await s3.ListPrefixAsync("etcd/", ct: ct)).Value!;
         var dbKey = listed.Single(k => k.Key.EndsWith(".db")).Key;
+        var metaKey = listed.Single(k => k.Key.EndsWith(".meta.json")).Key;
         var data = await GetObjectBytesAsync(minioFx, dbKey, ct);
+        var meta = EtcdSnapshotMetaJson.Parse(System.Text.Encoding.UTF8.GetString(
+            await GetObjectBytesAsync(minioFx, metaKey, ct)))!;
         var tempFile = Path.Combine(Path.GetTempPath(), $"pgw-snap-{Guid.NewGuid():N}.db");
         await File.WriteAllBytesAsync(tempFile, data, ct);
         try
         {
-            // Act — cp слепка в контейнер etcd + snapshot status (etcdctl в
-            // образе — /usr/local/bin/etcdctl; shell в образе НЕТ — без sh -c)
+            // Act (а) — cp слепка в контейнер etcd + snapshot status (etcdctl в
+            // образе — /usr/local/bin/etcdctl)
             await E2eFixture.RunDockerAsync(["cp", tempFile, $"{etcdFx.ContainerName}:/tmp/snap.db"], ct);
             var verdict = await E2eFixture.RunDockerAsync(
                 ["exec", etcdFx.ContainerName, "etcdctl", "snapshot", "status", "/tmp/snap.db"], ct);
 
-            // Assert — вердикт etcdctl 3.5.x: строка «<hash>, <revision>, <ключи>,
-            // <размер>» (Hash+размер в одной строке; таблица — формат etcdutl)
+            // Assert (а) — положительный вердикт etcdctl 3.5.x: строка
+            // «<hash>, <revision>, <ключи>, <размер>». Эмпирика 3.5.x: status
+            // hash печатает, но НЕ сверяет — целостность им не доказывается.
             verdict.Should().MatchRegex("^[0-9a-f]{8}, \\d+, \\d+, .+",
-                "слепок из S3 проходит etcdctl snapshot status (AC5): hash/keys/size");
+                "валидный слепок из S3 проходит etcdctl snapshot status (AC5): hash/keys/size");
 
-            // Act/Assert — порча байта → разворачивание отклонено. Нюанс etcd
-            // 3.5.x: snapshot status hash только ПЕЧАТАЕТ (проверено на живом
-            // 3.5.21: порченный байт данных не меняет вердикт), верификация
-            // sha256 — в restore (etcdutl): «expected sha256 … got …» — ровно
-            // runbook-шаг «файл с битым хешем не разворачивать» (AC5).
+            // Act (б) — порча байта; перезаписать temp → cp поверх
             data[100] ^= 0xFF;
             await File.WriteAllBytesAsync(tempFile, data, ct);
             await E2eFixture.RunDockerAsync(["cp", tempFile, $"{etcdFx.ContainerName}:/tmp/bad.db"], ct);
+
+            // Assert (б-1) — ручная сверка sha256 с .meta.json: расхождение
+            // (операторский барьер runbook-шага 2 — ловит порчу ДО restore)
+            Sha256Hex(data).Should().NotBe(meta.Sha256,
+                "порченный файл обязан расходиться с sha256 из .meta.json (AC5)");
+
+            // Assert (б-2) — restore-верификация: провал разворачивания. Нюанс etcd
+            // 3.5.x: snapshot status hash только ПЕЧАТАЕТ (проверено на живом
+            // 3.5.21: порченный байт данных не меняет вердикт), sha256 сверяет
+            // restore (etcdutl): «expected sha256 … got …» — финальный барьер
+            // runbook-шага «файл с битым хешем не разворачивать» (AC5).
+            // Примечание среды: обёртка sh -c "… && echo OK" невыполнима — в
+            // образе etcd 3.5.x НЕТ shell (проверено: «sh: executable file not
+            // found»); провал фиксируется исключением RunProcessAsync (exit ≠ 0),
+            // эквивалент «отсутствия OK» — текст «expected sha256» в stderr.
             var corrupt = await FluentActions.Awaiting(() => E2eFixture.RunDockerAsync(
                 ["exec", etcdFx.ContainerName, "etcdutl", "snapshot", "restore", "/tmp/bad.db",
-                 "--data-dir", "/tmp/rest-bad"], ct))
+                 "--data-dir", "/tmp/restore-bad"], ct))
                 .Should().ThrowAsync<ApplicationException>(
                     "порченный слепок обязан провалить restore-верификацию sha256 (AC5)");
-            corrupt.Which.Message.Should().Contain("sha256");
+            corrupt.Which.Message.Should().Contain("sha256",
+                "restore отвергает слепок расхождением sha256 — финальный барьер целостности (AC5)");
         }
         finally
         {
