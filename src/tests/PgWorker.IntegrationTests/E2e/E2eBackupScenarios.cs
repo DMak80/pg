@@ -543,6 +543,25 @@ public class E2eBackupScenarios
         }
     }
 
+    /// <summary>Штатный promote/switchover Patroni (POST /switchover): управляемая
+    /// смена мастера без «смерти» ноды — надзор не уходит в repair-контур
+    /// (восстановление упавшей ноды), WalStream продолжает тики. Новый timeline
+    /// TLI+1 создаётся switchover'ом (AC5-механика .history).</summary>
+    private async Task PatroniSwitchoverAsync(
+        string cluster, string fromNode, string toNode, CancellationToken ct)
+    {
+        var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
+        var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
+        // Switchover-запрос — на ЛЮБОГО члена контура (Patroni маршрутизирует).
+        var port = entries[$"shard1/{fromNode}"].GetProperty("patroni").GetInt32();
+        using var content = new StringContent(
+            "{\"leader\":\"" + fromNode + "\",\"candidate\":\"" + toNode + "\"}",
+            System.Text.Encoding.UTF8, "application/json");
+        using var response = await PatroniHttp.PostAsync(
+            $"http://127.0.0.1:{port}/switchover", content, ct);
+        response.EnsureSuccessStatusCode();
+    }
+
     // Диагностика Patroni-контекста (sync-выбор): GET /cluster первой ноды шарда.
     private async Task<string> PatroniClusterDumpAsync(string cluster, CancellationToken ct)
     {
@@ -938,11 +957,12 @@ public class E2eBackupScenarios
 
         try
         {
-            // Act — docker stop контейнера мастер-ноды; Patroni promote реплики
-            Console.WriteLine($"[PHASE] wal-ac4: docker stop pgw-{cluster}-shard1-{masterNode}");
-            await Fx.RunDockerAsync(["stop", $"pgw-{cluster}-shard1-{masterNode}"], ct);
+            // Act — штатный promote/switchover Patroni (лидер жив: надзор не уходит
+            // в repair-контур, WalStream продолжает тики — AC4 про роли агентов)
+            Console.WriteLine($"[PHASE] wal-ac4: switchover {masterNode} → shard1b");
+            await PatroniSwitchoverAsync(cluster, masterNode, "shard1b", ct);
             var (newMaster, _, _) = await MasterPgAsync(cluster, "shard1", ct);
-            newMaster.Should().NotBe(masterNode, "после смерти мастера primary — реплика");
+            newMaster.Should().NotBe(masterNode, "после switchover primary — бывшая реплика");
             Console.WriteLine($"[PHASE] wal-ac4: новый primary {newMaster}");
 
             // Assert — доставка продолжается (новые сегменты после смерти мастера),
@@ -953,23 +973,6 @@ public class E2eBackupScenarios
                 return list.IsSuccess && list.Value.Count > beforeList.Value.Count;
             }, TimeSpan.FromSeconds(300), ct);
             grew.Should().BeTrue("агент реплики продолжает доставку после смерти мастера");
-
-            // Фаза стабилизации: надзор пометил упавшую ноду unreachable и чинит её
-            // repair-контуром (восстановление ноды — продуктовое поведение, минуты);
-            // WalStream честно уходит в restore-гвард, пока шард восстанавливается.
-            // Ждём снятия unreachable циклом 30-секундных окон (каждое окно —
-            // проверка факта; суммарный лимит 600 c на восстановление ноды).
-            TestContext.Current.TestOutputHelper?.WriteLine(
-                "[PHASE] wal-ac4: ожидание снятия unreachable shard1 (repair-контур надзора)");
-            var repairDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(600);
-            while (DateTime.UtcNow < repairDeadline)
-            {
-                var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
-                var stillUnreachable = workKv?.Value?.Contains("\"unreachable:{\"shard1/shard1b\"}") == true;
-                if (!stillUnreachable)
-                    break;
-                await Task.Delay(TimeSpan.FromSeconds(30), ct);
-            }
 
             // Чтение ключа — поллингом (etcd-транспорт может дать transient-отказ:
             // ReadAsync Failed → Value null; факт ждём, не фиксируем одноразовым чтением)
@@ -1063,11 +1066,11 @@ public class E2eBackupScenarios
 
         try
         {
-            // Act — promote: docker stop мастер-ноды
-            await Fx.RunDockerAsync(["stop", $"pgw-{cluster}-shard1-{masterNode}"], ct);
+            // Act — штатный promote/switchover: новый timeline TLI+1
+            await PatroniSwitchoverAsync(cluster, masterNode, "shard1b", ct);
             await MasterPgAsync(cluster, "shard1", ct); // ждём новый primary
             var tli = await PrimaryTimelineAsync(cluster, "shard1", ct);
-            tli.Should().BeGreaterThanOrEqualTo(2u, "promote открывает новый timeline");
+            tli.Should().BeGreaterThanOrEqualTo(2u, "switchover открывает новый timeline");
 
             // Assert — .history нового TLI в S3 (приёмник запрашивает TIMELINE_HISTORY)
             var history = await E2eFixture.WaitForAsync(async () =>
