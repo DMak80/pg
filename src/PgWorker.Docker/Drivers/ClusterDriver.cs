@@ -75,13 +75,13 @@ public interface IClusterDriver
 
     // ── WAL-агенты бэкапов (arch/19 §3, t03) ──
 
-    // Идемпотентно поднять контейнер агента pgw-backup-wal-<C>-<X> на docker-хосте
-    // host: resolve движка с advertised-fallback (как EnsureNodeAsync — single-host
-    // advertised-стенды), сеть нод pgw-net (адрес мастера по alias :5432),
-    // create + start. spec (ContainerSpec) — от WalStreamProcess (механика агента —
-    // код воркера).
+    // Идемпотентно подратить контейнер агента pgw-backup-wal-<C>-<X>-<N> на docker-хосте
+    // host (t27: per-node имена — агент на каждой ноде-источнике): resolve движка с
+    // advertised-fallback (как EnsureNodeAsync — single-host advertised-стенды), сеть
+    // нод pgw-net (адрес мастера по alias :5432), create + start. spec (ContainerSpec)
+    // — от WalStreamProcess (механика агента — код воркера).
     Task<Result> EnsureBackupAgentAsync(
-        string cluster, string shard, ContainerSpec spec, string host, CancellationToken ct);
+        string cluster, string shard, string node, ContainerSpec spec, string host, CancellationToken ct);
 
     // Остановить и удалить контейнеры агентов кластера (shard=null → все) + staging
     // volume (404 = успех). Стоп-семантика: Enabled=false/QUARANTINED/remove-shard/D1.
@@ -295,7 +295,7 @@ public sealed class PlainClusterDriver(
     // ── WAL-агенты бэкапов (t03, arch/19 §3): те же engine-инстансы, сеть нод ──
 
     public async Task<Result> EnsureBackupAgentAsync(
-        string cluster, string shard, ContainerSpec spec, string host, CancellationToken ct)
+        string cluster, string shard, string node, ContainerSpec spec, string host, CancellationToken ct)
     {
         if (!_engines.TryGetValue(host, out var engine))
         {
@@ -304,13 +304,9 @@ public sealed class PlainClusterDriver(
             // гарантирует единственный хост — fallback на него.
             if (advertisedHost is not { Length: > 0 } || host != advertisedHost || _engines.Count != 1)
                 return Result.Failed(new ApplicationException(
-                    $"хост {host} не в таблице Docker:Hosts (агент {cluster}/{shard})"));
+                    $"хост {host} не в таблице Docker:Hosts (агент {cluster}/{shard}/{node})"));
             engine = _engines.Values.Single();
         }
-
-        if (!string.Equals(spec.VolumeName, BackupAgentNames.Volume(cluster, shard), StringComparison.Ordinal))
-            return Result.Failed(new ApplicationException(
-                $"VolumeName спеки агента {cluster}/{shard} обязан быть {BackupAgentNames.Volume(cluster, shard)}"));
 
         return await Result.FromAsync(async () =>
         {
@@ -326,7 +322,7 @@ public sealed class PlainClusterDriver(
             // alias не нужны — hostname контейнера = имя агента).
             var agentSpec = spec with { Network = NodesNetwork };
 
-            var name = BackupAgentNames.Container(cluster, shard);
+            var name = BackupAgentNames.Container(cluster, shard, node);
             var existing = await engine.ListContainersAsync(name, all: true, ct);
             if (!existing.IsSuccess)
                 throw existing.Error!;
@@ -406,13 +402,12 @@ public sealed class PlainClusterDriver(
             .ToList();
     }
 
-    // pgw-backup-wal-<C>-<X>(-staging) → <X>: хвост после префикса без volume-суффикса.
+    // pgw-backup-wal-<C>-<ХВОСТ> → <X>: хвост == <X> (старый одноагентный формат,
+    // миграция t27 §3.6) ИЛИ начинается с <X>- (per-node имя t27).
     private static string AgentShardOf(string cluster, string containerName)
     {
         var tail = containerName[BackupAgentNames.Prefix(cluster).Length..];
-        return tail.EndsWith("-staging", StringComparison.Ordinal)
-            ? tail[..^"-staging".Length]
-            : tail;
+        return tail.StartsWith("-", StringComparison.Ordinal) ? "" : tail.Split('-')[0];
     }
 
     // Данные ноды (Д3): docker-exec test -f PG_VERSION; контейнера нет/exec-сбой/
@@ -819,12 +814,12 @@ public sealed class SwarmClusterDriver(
         return stopped;
     }
 
-    // t03: агенты бэкапов — plain-контейнеры; swarm-режим подсистема не поднимает
+    // t03/t27: агенты бэкапов — plain-контейнеры; swarm-режим подсистема не поднимает
     // (деплой/стенд/E2E — plain): явный Failed, процесс переведёт шард в journal-заметку.
     public Task<Result> EnsureBackupAgentAsync(
-        string cluster, string shard, ContainerSpec spec, string host, CancellationToken ct)
+        string cluster, string shard, string node, ContainerSpec spec, string host, CancellationToken ct)
         => Task.FromResult(Result.Failed(new ApplicationException(
-            "WAL-агенты бэкапов в Mode=Swarm не поддерживаются (t03, arch/19 — plain-деплой)")));
+            "WAL-агенты бэкапов в Mode=Swarm не поддерживаются (arch/19 — plain-деплой)")));
 
     public async Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct)
     {
@@ -844,8 +839,12 @@ public sealed class SwarmClusterDriver(
         });
     }
 
+    // Хвост == <X> (старый формат) ИЛИ начинается с <X>- (per-node, t27) — как Plain.
     private static string AgentShardOfSwarm(string cluster, string service)
-        => service[BackupAgentNames.Prefix(cluster).Length..];
+    {
+        var tail = service[BackupAgentNames.Prefix(cluster).Length..];
+        return tail.StartsWith("-", StringComparison.Ordinal) ? "" : tail.Split('-')[0];
+    }
 
     public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(
         string cluster, CancellationToken ct)

@@ -230,7 +230,9 @@ public sealed class WalStreamProcess(
         var listed = await driver.ListBackupAgentsAsync(cluster, ct);
         if (!listed.IsSuccess)
             throw new ApplicationException($"лист агентов: {listed.Error!.Message}");
-        var agentName = BackupAgentNames.Container(cluster, shard);
+        // t27: per-node имя — в текущем контуре агент один, на мастере (Task 12
+        // переписывает ensure под два источника мастер+sync).
+        var agentName = BackupAgentNames.Container(cluster, shard, masterRef);
         // Канон движка — имена контейнеров БЕЗ ведущего "/" (ListContainersAsync
         // trimит); матч обоих форматов: «/»-литерал — устаревший StubDriver-формат
         // (t05-регресс 2026-09-13: существующий агент не находился — супервиз
@@ -255,8 +257,8 @@ public sealed class WalStreamProcess(
         var spec = new ContainerSpec(
             Image: options.JobImage, // общий образ джобов t02 и агентов t03 (arch/19 §2)
             Env: (IReadOnlyDictionary<string, string>)AgentEnv(options, cluster, shard, slot, pgHost, pgPort, password),
-            VolumeName: BackupAgentNames.Volume(cluster, shard),
-            VolumeDest: options.StagingDir,
+            VolumeName: null,   // t27: staging-том упразднён — буфер сегмента в памяти приёмника
+            VolumeDest: null,
             Ports: [],
             Hostname: agentName,
             CpuCores: options.AgentCpu,
@@ -274,7 +276,7 @@ public sealed class WalStreamProcess(
             RestartPolicy: "no");
 
         // Хост агента = docker-хост мастера (per-cluster сеть живёт на нём).
-        var ensured = await driver.EnsureBackupAgentAsync(cluster, shard, spec, agentHost, ct);
+        var ensured = await driver.EnsureBackupAgentAsync(cluster, shard, masterRef, spec, agentHost, ct);
         if (!ensured.IsSuccess)
             throw new ApplicationException($"подъём агента: {ensured.Error!.Message}");
         logger?.LogInformation("backup-wal: агент {Agent} поднят (слот {Slot}, мастер {Master})",

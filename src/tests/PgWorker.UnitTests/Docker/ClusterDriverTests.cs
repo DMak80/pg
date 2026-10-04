@@ -802,22 +802,22 @@ public class ClusterDriverTests
         var engine = new FakeEngine();
         var driver = NewPlainDriver(engine, advertisedHost: "host.docker.internal");
         var spec = new ContainerSpec(
-            "pgworker-backup:test", [], "pgw-backup-wal-shop-shard1",
+            "pgworker-wal:dev", [], "pgw-backup-wal-shop-shard1-shard1a",
             Env: new Dictionary<string, string>(),
-            VolumeName: BackupAgentNames.Volume("shop", "shard1"),
-            VolumeDest: "/backup-staging",
-            ResetEntrypoint: true,
+            VolumeName: null,   // t27: staging-том упразднён — буфер в памяти приёмника
+            VolumeDest: null,
+            ResetEntrypoint: false,
             LabelKey: "pgworker",
             Label: "shop");
 
         // Act
         var ensured = await driver.EnsureBackupAgentAsync(
-            "shop", "shard1", spec, "host.docker.internal", ct: CancellationToken.None);
+            "shop", "shard1", "shard1a", spec, "host.docker.internal", ct: CancellationToken.None);
 
         // Assert — драйвер владеет сетью нод: NetworkMode=pgw-net в созданной спеке
         // (ревью Ф7 №1: без сети агент в default bridge не резолвит alias мастера)
         ensured.IsSuccess.Should().BeTrue();
-        engine.CreatedName.Should().Be("pgw-backup-wal-shop-shard1");
+        engine.CreatedName.Should().Be("pgw-backup-wal-shop-shard1-shard1a");
         engine.Calls.Should().Contain(c => c.Call == "create").And.Contain(c => c.Call == "start");
         engine.CreatedSpec!.Network.Should().Be(PlainClusterDriver.NodesNetwork);
     }

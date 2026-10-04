@@ -200,7 +200,7 @@ public class RestoreDrillProcessTests
                     .Select(k => new HostInfo(k, 0))]));
         }
         public Task<Result> EnsureBackupAgentAsync(
-            string cluster, string shard, ContainerSpec spec, string host, CancellationToken ct)
+            string cluster, string shard, string node, ContainerSpec spec, string host, CancellationToken ct)
             => Task.FromResult(Result.Success());
         public Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct)
             => Task.FromResult(Result.Success());

@@ -38,9 +38,9 @@ public sealed class StubScaleDriver : IClusterDriver
     public List<ContainerSpec> EnsuredAgentSpecs = [];
 
     public Task<Result> EnsureBackupAgentAsync(
-        string cluster, string shard, ContainerSpec spec, string host, CancellationToken ct)
+        string cluster, string shard, string node, ContainerSpec spec, string host, CancellationToken ct)
     {
-        var name = BackupAgentNames.Container(cluster, shard);
+        var name = BackupAgentNames.Container(cluster, shard, node);
         EnsuredBackupAgents.Add(name);
         EnsuredAgentSpecs.Add(spec);
         if (BackupAgentObjects.All(c => !c.Names.Contains("/" + name)))
@@ -67,7 +67,8 @@ public sealed class StubScaleDriver : IClusterDriver
                     BackupAgentNames.Prefix(cluster), StringComparison.Ordinal)))
                 .ToList()));
 
-    // Живые агенты кластера (shard=null → все): имена без ведущего "/".
+    // Живые агенты кластера (shard=null → все): имена без ведущего "/"; матчинг
+    // шарда как в драйвере (t27): старый формат <X> ИЛИ per-node <X>-<нода>.
     private List<string> BackupAgentNamesOf(string cluster, string? shard)
     {
         var prefix = BackupAgentNames.Prefix(cluster);
@@ -75,9 +76,12 @@ public sealed class StubScaleDriver : IClusterDriver
             .SelectMany(c => c.Names)
             .Select(n => n.TrimStart('/'))
             .Where(n => n.StartsWith(prefix, StringComparison.Ordinal))
-            .Where(n => shard is null || n == BackupAgentNames.Container(cluster, shard))
+            .Where(n => shard is null || AgentShardOf(n[prefix.Length..]) == shard)
             .Distinct()
             .ToList();
+
+        static string AgentShardOf(string tail)
+            => tail.Split('-')[0];
     }
 
     public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct)
