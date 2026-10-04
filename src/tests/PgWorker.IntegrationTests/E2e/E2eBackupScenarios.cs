@@ -1624,9 +1624,17 @@ public class E2eBackupScenarios
     {
         await using var conn = new NpgsqlConnection(adminDsn);
         await conn.OpenAsync(ct);
-        await using (var create = new NpgsqlCommand(
-            "CREATE TABLE IF NOT EXISTS wal_load(id bigserial, payload text)", conn))
-            await create.ExecuteNonQueryAsync(ct);
+        try
+        {
+            await using (var create = new NpgsqlCommand(
+                "CREATE TABLE IF NOT EXISTS wal_load(id bigserial, payload text)", conn))
+                await create.ExecuteNonQueryAsync(ct);
+        }
+        catch (Npgsql.PostgresException e) when (e.SqlState == "23505")
+        {
+            // Гонка CREATE IF NOT EXISTS двух сессий (catalog-индекс): таблица
+            // создаётся другой сессией — не ошибка нагрузки.
+        }
         for (var i = 0; i < 30; i++)
         {
             await using var insert = new NpgsqlCommand(
