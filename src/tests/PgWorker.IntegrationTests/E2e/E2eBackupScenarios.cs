@@ -941,10 +941,11 @@ public class E2eBackupScenarios
             // Act — жёсткая потеря мастер-ноды (multi-host-риск «машина отключилась
             // целиком»): никто не делает управляемый switchover — Patroni сам
             // проводит failover силами выжившей реплики.
-            Console.WriteLine($"[PHASE] wal-ac4: docker stop pgw-{cluster}-shard1-{masterNode}");
-            await Fx.RunDockerAsync(["stop", $"pgw-{cluster}-shard1-{masterNode}"], ct);
+            var (_, _, currentMaster) = await MasterPgAsync(cluster, "shard1", ct);
+            Console.WriteLine($"[PHASE] wal-ac4: docker stop pgw-{cluster}-shard1-{currentMaster}");
+            await Fx.RunDockerAsync(["stop", $"pgw-{cluster}-shard1-{currentMaster}"], ct);
             var (_, _, newMasterNode) = await MasterPgAsync(cluster, "shard1", ct);
-            newMasterNode.Should().NotBe(masterNode, "после смерти мастера primary — реплика");
+            newMasterNode.Should().NotBe(currentMaster, "после смерти мастера primary — реплика");
             Console.WriteLine($"[PHASE] wal-ac4: новый primary {newMasterNode}");
 
             // Фаза стабилизации: надзор пометил упавшую ноду unreachable и чинит её
@@ -1069,8 +1070,9 @@ public class E2eBackupScenarios
         {
             // Act — жёсткая потеря мастер-ноды: Patroni failover реплики открывает
             // новый timeline (механика .history та же, что при любом promote)
-            Console.WriteLine($"[PHASE] wal-ac5: docker stop pgw-{cluster}-shard1-{masterNode}");
-            await Fx.RunDockerAsync(["stop", $"pgw-{cluster}-shard1-{masterNode}"], ct);
+            var (_, _, currentMaster) = await MasterPgAsync(cluster, "shard1", ct);
+            Console.WriteLine($"[PHASE] wal-ac5: docker stop pgw-{cluster}-shard1-{currentMaster}");
+            await Fx.RunDockerAsync(["stop", $"pgw-{cluster}-shard1-{currentMaster}"], ct);
             await MasterPgAsync(cluster, "shard1", ct); // ждём новый primary
             var tli = await PrimaryTimelineAsync(cluster, "shard1", ct);
             tli.Should().BeGreaterThanOrEqualTo(2u, "failover открывает новый timeline");
