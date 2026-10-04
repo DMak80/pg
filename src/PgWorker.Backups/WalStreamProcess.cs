@@ -600,6 +600,8 @@ public sealed class WalStreamProcess(
         string masterRef, CancellationToken ct)
     {
         var listedNames = objects.Select(o => o.Name).ToHashSet(StringComparer.Ordinal);
+        if (listedNames.Count == 0)
+            return; // сегментов нет — докладывать нечего
         // History нужен для КАЖДОГО TLI-перехода: все TLI набора, КРОМЕ минимального
         // (от минимального цепочка стартует — для него history-файла не существует;
         // «tli > chainStart.Tli» недостаточно: ratchet может встать уже НОВЫМ TLI —
