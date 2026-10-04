@@ -120,11 +120,11 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
         return Result<NodeAddress?>.Success(null);
     }
 
-    // Источник полного бэкапа (t02, arch/19 §2/§6): штатно sync-standby
-    // (Patroni GET /cluster: role=replica, state=running, sync-статус) —
-    // мастер не трогаем; нет sync-реплики/недоступна → fallback мастер
-    // (ResolveMasterAsync, журнал-факт role=master).
-    public async Task<Result<NodeAddress?>> ResolveBackupSourceAsync(
+    // Sync-standby шарда (t27, arch/19 §3.3 п.2): Patroni GET /cluster —
+    // member role=replica, state=running, sync=true, имя в portalloc шарда →
+    // адрес ноды. Не найден/недоступен → Success(null) БЕЗ fallback на мастера
+    // (двойная архивация: второй агент поднимется тиком при появлении sync).
+    public async Task<Result<NodeAddress?>> ResolveSyncStandbyAsync(
         string cluster, ShardSpec shard, IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
     {
         var shardNodes = addresses
@@ -143,6 +143,18 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
                 return Result<NodeAddress?>.Success(shardNodes[sync.Name]);
         }
 
+        return Result<NodeAddress?>.Success(null);
+    }
+
+    // Источник полного бэкапа (t02, arch/19 §2/§6): штатно sync-standby —
+    // мастер не трогаем; нет sync-реплики/недоступна → fallback мастер
+    // (ResolveMasterAsync, журнал-факт role=master). DRY: sync-резолв общий с t27.
+    public async Task<Result<NodeAddress?>> ResolveBackupSourceAsync(
+        string cluster, ShardSpec shard, IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
+    {
+        var sync = await ResolveSyncStandbyAsync(cluster, shard, addresses, ct);
+        if (sync.IsSuccess && sync.Value is { } address)
+            return Result<NodeAddress?>.Success(address);
         return await ResolveMasterAsync(cluster, shard, addresses, ct);
     }
 
