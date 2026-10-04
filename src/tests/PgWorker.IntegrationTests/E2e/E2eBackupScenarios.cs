@@ -436,12 +436,15 @@ public class E2eBackupScenarios
     {
         var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
         kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
-        var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
+        var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!
+            .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal)).ToList();
+        // Опрос ВСЕХ нод (после docker stop мастер-ноды её patroni-порт закрыт);
+        // ждём именно TLI ≥ 2: promote мог случиться только-что — /cluster члена
+        // показывает его timeline не мгновенно (длительность failover-процесса).
         uint tli = 0;
         await E2eFixture.WaitForAsync(async () =>
         {
-            foreach (var (key, addr) in entries
-                         .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal)))
+            foreach (var (key, addr) in entries)
             {
                 try
                 {
@@ -454,10 +457,10 @@ public class E2eBackupScenarios
                         var role = member.GetProperty("role").GetString();
                         if (role is "master" or "leader" or "primary"
                             && member.TryGetProperty("timeline", out var t)
-                            && t.TryGetUInt32(out var value))
+                            && t.TryGetUInt32(out var value)
+                            && value > tli)
                         {
                             tli = value;
-                            return true;
                         }
                     }
                 }
@@ -467,7 +470,7 @@ public class E2eBackupScenarios
                 }
             }
 
-            return false;
+            return tli >= 2;
         }, TimeSpan.FromSeconds(120), ct);
         return tli;
     }
@@ -549,12 +552,25 @@ public class E2eBackupScenarios
         try
         {
             var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
-            var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
-            var first = entries.First(p => p.Key.StartsWith("shard1/", StringComparison.Ordinal));
-            using var response = await PatroniHttp.GetAsync(
-                $"http://localhost:{first.Value.GetProperty("patroni").GetInt32()}/cluster", ct);
-            var body = await response.Content.ReadAsStringAsync(ct);
-            return body[..Math.Min(700, body.Length)];
+            var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!
+                .Where(p => p.Key.StartsWith("shard1/", StringComparison.Ordinal)).ToList();
+            foreach (var (key, addr) in entries)
+            {
+                try
+                {
+                    using var response = await PatroniHttp.GetAsync(
+                        $"http://localhost:{addr.GetProperty("patroni").GetInt32()}/cluster", ct);
+                    if (!response.IsSuccessStatusCode) continue;
+                    var body = await response.Content.ReadAsStringAsync(ct);
+                    return $"[{key}] " + body[..Math.Min(700, body.Length)];
+                }
+                catch (Exception)
+                {
+                    // нода недоступна — следующая
+                }
+            }
+
+            return "<ни одна нода shard1 не отвечает /cluster>";
         }
         catch (Exception e)
         {
