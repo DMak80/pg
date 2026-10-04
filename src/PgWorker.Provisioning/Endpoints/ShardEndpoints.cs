@@ -138,8 +138,10 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
                 continue; // нода недоступна — пробуем следующую
             // Patroni 3.x роль sync-члена — "sync_standby" (E2E-факт t27; поле sync
             // у него ОТСУТСТВУЕТ), старые версии — "replica" + sync-флаг. Обе формы.
+            // Живой sync-член: state "streaming" (реплицируется) или "running" —
+            // E2E-факт t27 (sync_standby: state=streaming, фильтр "running" отсекал).
             var sync = members.Value.FirstOrDefault(m =>
-                m.State == "running"
+                m.State is "streaming" or "running"
                 && (m.Role == "sync_standby"
                     || (m.Role == "replica" && m.Sync == true))
                 && shardNodes.ContainsKey(m.Name));
