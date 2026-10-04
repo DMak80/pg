@@ -298,7 +298,15 @@ public sealed class WalStreamProcess(
             .Distinct()
             .ToList();
         var desiredNames = desired.Select(d => d.Name).ToList();
-        var foreign = listedNames.Where(n => !desiredNames.Contains(n, StringComparer.Ordinal)).ToList();
+        // Чужие — ТОЛЬКО агенты СВОЕГО шарда не из desired (старый одноагентный
+        // формат §3.6, имена сменившихся источников): иначе агент СОСЕДНЕГО
+        // шарда кластера (листинг по кластеру) триггерил вечный recreate-цикл
+        // этого шарда — E2E-факт t27 (AC3: shard2-агент в листинге кластера).
+        var agentPrefix = BackupAgentNames.Prefix(cluster);
+        var foreign = listedNames
+            .Where(n => !desiredNames.Contains(n, StringComparer.Ordinal))
+            .Where(n => ShardOfListedName(n, agentPrefix) == shard)
+            .ToList();
         var missing = desired.Where(d => !RunningOn(listed.Value, d.Name)).ToList();
         var recreateAll = foreign.Count > 0
             || missing.Any(m => listedNames.Contains(m.Name, StringComparer.Ordinal)); // exited-контейнер
@@ -363,6 +371,14 @@ public sealed class WalStreamProcess(
                 .ToList();
             await status.WriteIfChangedAsync(cluster, shard, wal with { Agents = facts }, ct);
         }
+    }
+
+    // pgw-backup-wal-<C>-<ХВОСТ> → <X>: хвост == <X> (старый формат) или <X>-<нода>
+    // (per-node) — зеркально ClusterDriver.AgentShardOf (матчинг одного правила).
+    private static string ShardOfListedName(string containerName, string prefix)
+    {
+        var tail = containerName[prefix.Length..];
+        return tail.Split('-')[0];
     }
 
     // env контейнера агента-приёмника (t27 §3.1): СЕКРЕТЫ — только env, в argv/логи

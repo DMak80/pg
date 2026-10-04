@@ -1078,4 +1078,53 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         driver.BackupAgentObjects.Should().Contain(c =>
             c.State == "running" && c.Names.Contains($"/pgw-backup-wal-{cluster}-shard1-shard1a"));
     }
+
+    // AAA (регресс t27-E2E AC3): агент СОСЕДНЕГО шарда кластера (листинг по
+    // кластеру) не триггерит recreate-цикл этого шарда: foreign-детект —
+    // только в рамках шарда.
+    [Fact]
+    public async Task Агент_соседнего_шарда_не_триггерит_recreate()
+    {
+        // Arrange — двухнодовый шард1 (sync на shard1b) + ЖИВОЙ агент шарда shard2
+        var ct = TestContext.Current.CancellationToken;
+        var patroni = await FakePatroni.StartAsync(SyncClusterJson, ct);
+        await using var patroniOwner = patroni;
+        var cluster = $"nb1{Guid.NewGuid().ToString("N")[..6]}";
+        await SeedTwoNodeAsync(new FakeWalSqlExecutor(), patroni, cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, cluster, 1, 2);
+        var driver = new StubScaleDriver();
+        driver.BackupAgentObjects.Add(new DockerContainer(
+            "id-nb-shard2", [$"/pgw-backup-wal-{cluster}-shard2-shard2a"], "running", "img"));
+        var process = BuildProcess(Options(), sql, s3, driver);
+        // Снапшот с ОБОИМИ шардами (shard2 — как в реальном кластере, dsn задан)
+        var snap = new ClusterSnapshot(
+            new ClusterConfig(cluster, 2, cluster, null, ClusterState.Active),
+            [
+                new ShardSpec("shard1", 2, $"host=shard1a dbname={cluster}", "shard1a:17001",
+                [
+                    new NodeSpec("shard1", "shard1a", NodeState.Running),
+                    new NodeSpec("shard1", "shard1b", NodeState.Running),
+                ]),
+                new ShardSpec("shard2", 2, $"host=shard2a dbname={cluster}", "shard2a:17011",
+                [
+                    new NodeSpec("shard2", "shard2a", NodeState.Running),
+                    new NodeSpec("shard2", "shard2b", NodeState.Running),
+                ]),
+            ],
+            []);
+
+        // Act — два тика (второй — после стабилизации: agents обеих нод shard1)
+        (await process.TickAsync(snap, null, ct)).IsSuccess.Should().BeTrue();
+        (await process.TickAsync(snap, null, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — shard1-агенты per-node созданы; shard2-агент НЕ снесён
+        driver.EnsuredBackupAgents.Should().Contain($"pgw-backup-wal-{cluster}-shard1-shard1a");
+        driver.EnsuredBackupAgents.Should().Contain($"pgw-backup-wal-{cluster}-shard1-shard1b");
+        driver.RemovedBackupAgents.Should().NotContain(
+            n => n.Contains("shard2", StringComparison.Ordinal),
+            "агент соседнего шарда — не foreign для этого шарда (регресс вечного recreate)");
+    }
 }
