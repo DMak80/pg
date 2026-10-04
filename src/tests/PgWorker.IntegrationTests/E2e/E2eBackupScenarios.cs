@@ -408,7 +408,9 @@ public class E2eBackupScenarios
                 await insert.ExecuteNonQueryAsync(ct);
                 await using var switchWal = new NpgsqlCommand("SELECT pg_switch_wal()", conn);
                 await switchWal.ExecuteScalarAsync(ct);
-                await Task.Delay(3000, ct);
+                // Раз в ~15 c: сегменты закрываются ЗАПОЛНЕННЫМИ (сотни пустых
+                // 16 MiB-put'ов секундного цикла давали гигабайты перекладки).
+                await Task.Delay(15000, ct);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
@@ -497,14 +499,20 @@ public class E2eBackupScenarios
     private async Task<(E2eEnvironment Env, HostInstance App, string Cluster, string AdminDsn, string MasterNode)>
         StartWalScenarioAsync(string slug, string clusterPrefix, CancellationToken ct)
     {
+        var phaseStart = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        Console.WriteLine($"[PHASE] {slug}: start (unix={phaseStart})");
         var fx = await E2eEnvironment.StartAsync(slug, withMinio: true, ct: ct);
         Fx = fx;
+        Console.WriteLine($"[PHASE] {slug}: окружение поднято за " +
+            (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " c (вкл. Release-сборку и образы)");
         var cluster = $"{clusterPrefix}{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         var app = await StartWalHostAsync(slug, ct);
         var provisioned = await E2eFixture.WaitForAsync(
             () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning обязан дойти до DONE до WAL-нагрузки");
+        Console.WriteLine($"[PHASE] {slug}: provisioning DONE за " +
+            (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " c от старта");
         var (_, pgPort, masterNode) = await MasterPgAsync(cluster, "shard1", ct);
         var adminDsn = DatabaseProvisioner.BuildAdminDsn("localhost", pgPort, cluster,
             new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
@@ -672,6 +680,11 @@ public class E2eBackupScenarios
                 list.Value.Select(o => o.Name));
             chain.IsContinuous.Should().BeTrue(chain.GapError ?? "цепочка непрерывна");
         }
+        catch (Exception)
+        {
+            Fx.MarkFailed(); // артефакты телеметрии переживают teardown (канон e2e-launch)
+            throw;
+        }
         finally
         {
             await load.CancelAsync();
@@ -729,7 +742,7 @@ public class E2eBackupScenarios
                 "--format", "{{.Names}} {{.State}}",
             ], ct);
             return ps.Split('\n', StringSplitOptions.RemoveEmptyEntries).Count(l => l.EndsWith("running")) >= 2;
-        }, TimeSpan.FromSeconds(600), ct);
+        }, TimeSpan.FromSeconds(300), ct);
         if (!bothAgents)
         {
             var agentsPs = await Fx.RunDockerAsync(
@@ -791,6 +804,11 @@ public class E2eBackupScenarios
             ((bool)(await cmd.ExecuteScalarAsync(ct))!)
                 .Should().BeTrue($"слот существует на ноде {key} (AC3, per-instance)");
         }
+        }
+        catch (Exception)
+        {
+            Fx.MarkFailed(); // артефакты телеметрии переживают teardown
+            throw;
         }
         finally
         {
@@ -884,6 +902,11 @@ public class E2eBackupScenarios
             }, TimeSpan.FromSeconds(300), ct);
             newAgent.Should().BeTrue($"агент новой мастер-ноды {newMaster} running");
         }
+        catch (Exception)
+        {
+            Fx.MarkFailed(); // артефакты телеметрии переживают teardown
+            throw;
+        }
         finally
         {
             await load.CancelAsync();
@@ -969,6 +992,11 @@ public class E2eBackupScenarios
                     && read.Value.State == PgWorker.Etcd.Parsing.WalStreamStatus.Active;
             }, TimeSpan.FromSeconds(300), ct);
             glueOk.Should().BeTrue("цепочка CheckWithRestart непрерывна, ключ ACTIVE (AC5)");
+        }
+        catch (Exception)
+        {
+            Fx.MarkFailed(); // артефакты телеметрии переживают teardown
+            throw;
         }
         finally
         {
