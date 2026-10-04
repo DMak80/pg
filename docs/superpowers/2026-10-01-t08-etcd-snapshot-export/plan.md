@@ -936,9 +936,9 @@ git commit -m "feat(backups): t08 — IBackupS3.PutObjectAsync: put байтов
 
 **Вход:** Task 2–4 смержены.
 **Действие:** `EtcdSnapshotSink` (путь один, без ветви сравнения с прошлым состоянием — §3.6: put db → put meta → ретенция → статус OK; неудача → статус FAILED + `Result.Failed`; `CatchUpAsync` — доводка новейшего локального); интеграции на OwnEtcd+OwnMinio, вкл. `etcdctl snapshot status` через docker exec.
-**Выход:** полный S3-конвейер выгрузки с доказательством разворачиваемости (AC5).
+**Выход:** полный S3-конвейер выгрузки с доказательством разворачиваемости и операторского барьера (AC5: валидный слепок — положительный `snapshot status`; порча байта — провал sha256-сверки с `.meta.json` и `etcdutl snapshot restore`).
 **Проверка:** `PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~EtcdSnapshotSink"` — зелёные; в `ExportAsync` нет ветви сравнения sha с прошлым состоянием (явный запрет §3.6); зачистка серий после прогона.
-**Связь со spec:** §3.1/§3.2/§3.6, §2.6/§2.7/§2.8 (идемпотентность/каждый слепок уезжает/takeover), AC1–AC6.
+**Связь со spec:** §3.1/§3.2/§3.6, §2.6/§2.7/§2.8 (идемпотентность/каждый слепок уезжает/takeover), §4 Ф2 (верификация: валидный — `snapshot status`, порча — sha256 + `etcdutl restore`), AC1–AC6 (AC5 — эхо новой буквы: статус на валидном, порча байта — sha256-расхождение + провал restore, только интеграция).
 
 - [x] **Step 5.1: Реализация** — создать `src/PgWorker.Backups/EtcdExport/EtcdSnapshotSink.cs`:
 
@@ -1116,7 +1116,9 @@ public sealed class EtcdSnapshotSink(
     }
 
     // Новейший локальный слепок (имя — таймстемп, Ordinal-сортировка = время).
-    internal static string? LatestLocalFile(string dir)
+    // public (круг 7): call-сайт за пределами сборки — SnapshotLoop
+    // (PgWorker.App) повторно считает отставание после TakeAsync (T7 Step 7.3).
+    public static string? LatestLocalFile(string dir)
         => Directory.Exists(dir)
             ? Directory.GetFiles(dir, "snapshot-*.db").OrderByDescending(f => f, StringComparer.Ordinal).FirstOrDefault()
             : null;
@@ -1131,8 +1133,9 @@ public sealed class EtcdSnapshotSink(
 // S3-sink снапшотов etcd (t08): OwnEtcd + OwnMinio на Fact (своё окружение,
 // динамические порты, teardown при любом исходе — e2e-isolation §1/§3).
 // Сценарии: экспорт после TakeAsync, каждый слепок новой парой, ретенция,
-// транзиент → FAILED → доводка, верификация разворачиваемости (etcdctl
-// snapshot status), takeover.
+// транзиент → FAILED → доводка, верификация целостности (валидный слепок —
+// snapshot status; порча байта — sha256-расхождение + провал etcdutl restore;
+// круг 7/AC5), takeover.
 public class EtcdSnapshotSinkTests
 {
     private static BackupsRuntimeOptions BadS3Runtime(OwnMinio minio)
@@ -1201,7 +1204,7 @@ public async Task Export_после_TakeAsync_объекты_мета_стату
   3. **`Ретенция_сверх_лимита_старейшие_пары_снесены`** — sink с `retention: 2`; 3 TakeAsync с паузами 1.1 c между ними (имена расходятся по секундам — каждый слепок уезжает своей парой). Assert: ровно 2 пары (4 ключа), старейшего id нет; сид одиночной `.meta.json` без `.db` (прямой AWSSDK-клиент) → четвёртый TakeAsync → сирота снесена (AC4).
   4. **`Транзиент_S3_не_роняет_снятие_статус_FAILED`** — sink на `BadS3Runtime` (закрытый порт). Act: TakeAsync. Assert: `shot.IsSuccess` true, локальный файл существует; статус-ключ: `State=="FAILED"`, `Error` не пуст (AC3).
   5. **`Доводка_CatchUp_выгружает_новейший_локальный`** — после сценария 4: живой sink (`SinkAsync` на реальном MinIO) → `CatchUpAsync(dir, ct)` → `Result<bool>` true; объекты в `etcd/` есть, статус OK, sha256 = SHA256(новейшего локального файла) (AC3).
-  6. **`Разворачиваемость_etcdctl_snapshot_status`** — после успешного экспорта: скачать `.db` AWSSDK в temp-файл; `await E2eFixture.RunDockerAsync(["cp", tempFile, $"{etcdFx.ContainerName}:/tmp/snap.db"], ct)`; `var out = await E2eFixture.RunDockerAsync(["exec", etcdFx.ContainerName, "etcdctl", "snapshot", "status", "/tmp/snap.db"], ct)` — вывод содержит хеш/размер; порча: `data[100] ^= 0xFF` → перезаписать temp → cp поверх → повторный exec — падает (ошибка/exit ≠ 0 — проверять по выводу команды, RunProcessAsync возвращает stdout; для exit-кода использовать `docker exec ... && echo OK`-обёртку и absence "OK") (AC5).
+  6. **`Верификация_целостности_status_и_restore`** (AC5; круг 7 — по обновлённой букве spec) — после успешного экспорта: (а) валидный слепок: скачать `.db` AWSSDK в temp-файл → `docker cp` в контейнер OwnEtcd → `docker exec … etcdctl snapshot status /tmp/snap.db` — положительный вердикт структуры/размера/ревизии (etcd 3.5.x печатает hash, но при status его НЕ сверяет — целостность им не доказывается); (б) порча байта (`data[100] ^= 0xFF`, перезаписать temp → cp поверх): sha256 файла расходится с `sha256` из `.meta.json` (ручная сверка — операторский барьер runbook-шага 2) И `docker exec … etcdutl snapshot restore /tmp/snap.db --data-dir=/tmp/restore-bad` проваливается (restore верифицирует sha256 при разворачивании — финальный барьер; exit ≠ 0 проверять обёрткой `sh -c "etcdutl … && echo OK"` и отсутствием "OK" в выводе) (AC5).
   7. **`Takeover_статус_пишет_инстанс_исполнитель`** — sink A (`instance:"inst-A"`) экспортирует слепок; пауза 1.1 c (имена расходятся по секундам); sink B (`instance:"inst-B"`, те же etcd+minio) экспортирует следующий слепок (новая пара). Assert: `.meta.json` новейшего объекта содержит `"instance":"inst-B"`; в S3 две пары; статус OK (AC6).
 
 - [x] **Step 5.4: Run** — `PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Debug --filter FullyQualifiedName~EtcdSnapshotSink` — PASS; зачистка после серии (`docker ps -a --filter name=pgw-ee-` / `pgw-em-` пусто; при остаточных сетях — `docker network prune -f` по правилам AGENTS.md).
@@ -1210,7 +1213,7 @@ public async Task Export_после_TakeAsync_объекты_мета_стату
 
 ```bash
 git add src/PgWorker.Backups/EtcdExport/EtcdSnapshotSink.cs src/tests/PgWorker.IntegrationTests/Backups/EtcdSnapshotSinkTests.cs src/tests/PgWorker.IntegrationTests/Backups/OwnEtcd.cs
-git commit -m "feat(backups): t08 — EtcdSnapshotSink: put db+meta (серверная проверка) → ретенция → статус OK/FAILED; CatchUpAsync-доводка новейшего локального; интеграции OwnEtcd+OwnMinio: экспорт/каждый слепок новой парой/ретенция/транзиент→FAILED→доводка/etcdctl snapshot status (вкл. битый байт)/takeover"
+git commit -m "feat(backups): t08 — EtcdSnapshotSink: put db+meta (серверная проверка) → ретенция → статус OK/FAILED; CatchUpAsync-доводка новейшего локального; интеграции OwnEtcd+OwnMinio: экспорт/каждый слепок новой парой/ретенция/транзиент→FAILED→доводка/верификация: валидный слепок — etcdctl snapshot status; порча байта — sha256-расхождение + провал etcdutl snapshot restore/takeover"
 ```
 
 ---
@@ -1398,10 +1401,10 @@ git commit -m "feat(app): t08 — SnapshotExportOptions (Enabled/RetentionObject
 ## Task 7: SnapshotLoop — доводка и сон (spec §3.5)
 
 **Вход:** Task 6 смержен (sink регистрируется, `CatchUpAsync`/`ReadStatusAsync` есть).
-**Действие:** тик лидера: доводка перед снятием (`exportSink.CatchUpAsync(dir)`), сон `RetryIntervalSec` при отставании, иначе `SnapshotIntervalMin` как раньше.
-**Выход:** RPO-окно транзиента закрывается минутами; takeover без изменений.
+**Действие:** тик лидера: доводка перед снятием (`exportSink.CatchUpAsync(dir)`), повторный расчёт отставания ПОСЛЕ снятия по свежему статус-ключу (круг 7: транзиент S3 в момент `TakeAsync` не тянет полный сон), сон `RetryIntervalSec` при отставании, иначе `SnapshotIntervalMin` как раньше.
+**Выход:** RPO-окно транзиента закрывается минутами (в т.ч. при первом транзиенте в самом тике снятия); takeover без изменений.
 **Проверка:** `dotnet test src/PgWorker.slnx -c Debug --filter FullyQualifiedName~SnapshotLoopExport` — зелёные.
-**Связь со spec:** §3.5 (п.1–3), §2.8 (takeover наследуется), AC3.
+**Связь со spec:** §3.5 (п.1–3; п.3 — повторный расчёт отставания после TakeAsync: сон по устаревшему «здорово» запрещён), §2.8 (takeover наследуется), AC3.
 
 - [x] **Step 7.1: Failing-тест** — создать `src/tests/PgWorker.UnitTests/App/SnapshotLoopExportTests.cs` (паттерн `KafkaWorker.UnitTests/App/LoopsHealthResetTests`; PgWorker.App internals видимы — `InternalsVisibleTo Include="PgWorker.UnitTests"` уже есть). Использовать `FakeEtcd` из `PgWorker.UnitTests.Provisioning` (`SnapshotSaveAsync` → `[1,2,3]`, `StatusAsync` → ревизия) и `FakeEtcdGateway` из `PgWorker.UnitTests.Api` как хранилище статус-ключа; S3-часть — мини-фейк `IBackupS3` в памяти:
 
@@ -1537,6 +1540,42 @@ public class SnapshotLoopExportTests
         catchUp.Value.Should().BeTrue("FAILED держит короткий сон даже при пустом томе");
     }
 
+    // AAA (круг 7, §3.5 п.3): ПЕРВЫЙ транзиент S3 в момент TakeAsync — статус
+    // ДО тика здоров (OK), слепок снят, встроенный экспорт падает и пишет
+    // FAILED уже ПОСЛЕ расчёта «до» — повторный расчёт после TakeAsync обязан
+    // дать короткий сон: второй слепок в пределах RetryIntervalSec, не 360 мин.
+    // (Отличие от кейса Сон_при_отставании_RetryIntervalSec: там статус
+    // предзасеян FAILED — короткий сон виден и по старому расчёту «до»;
+    // здесь короткий сон доказывает ИМЕННО повторный расчёт после снятия.)
+    [Fact]
+    public async Task Первый_транзиент_в_тике_TakeAsync_сон_короткий()
+    {
+        // Arrange — ЗДОРОВЫЙ статус OK (прошлая выгрузка успешна, отставания
+        // нет), том пуст, S3-фейк с отказом put: тик 1 снимет слепок,
+        // встроенный экспорт упадёт — статус-ключ станет FAILED после снятия
+        var etcd = new Provisioning.FakeEtcd();
+        var dir = Directory.CreateTempSubdirectory("loop-fresh-retry-").FullName;
+        await etcd.PutAsync("http://etcd:2379", EtcdSnapshotStatusJson.Key,
+            EtcdSnapshotStatusJson.Ok(0, "etcd/snapshot-19700101-000000.db", "abc", 1, 360),
+            null, TestContext.Current.CancellationToken);
+        var s3 = new MemoryS3 { PutObjectFails = true };
+        var sink = new EtcdSnapshotSink(s3, etcd, ["http://etcd:2379"], 28, 5, "inst-A", 360);
+
+        var loop = BuildLoop(etcd, dir, sink, retrySec: 1, snapshotMin: 360);
+        using var cts = new CancellationTokenSource();
+        await loop.StartAsync(cts.Token);
+
+        // Act — ждём ВТОРОЙ локальный слепок: CatchUpAsync до снятия вернул
+        // «здорово» (OK, не отстаёт); FAILED появился только в момент
+        // TakeAsync — короткий сон даёт повторный расчёт ПОСЛЕ снятия
+        var second = await WaitUntilAsync(() =>
+            Directory.GetFiles(dir, "snapshot-*.db").Length >= 2, budgetMs: 15_000);
+
+        // Assert
+        second.Should().BeTrue("первый транзиент в тике TakeAsync — повторный расчёт даёт сон RetryIntervalSec=1 c, не SnapshotIntervalMin=360 (spec §3.5 п.3)");
+        await loop.StopAsync(CancellationToken.None);
+    }
+
     private static SnapshotLoop BuildLoop(Provisioning.FakeEtcd etcd, string dir, EtcdSnapshotSink sink,
         int retrySec, int snapshotMin)
     {
@@ -1589,7 +1628,28 @@ if (exportSink is not null)
 }
 ```
 
-  Сон (замена `Task.Delay(TimeSpan.FromMinutes(...SnapshotIntervalMin), ...)` в ветке лидера):
+  ПОСЛЕ `TakeAsync` (при `exportSink != null`) — повторный расчёт отставания по СВЕЖЕМУ статус-ключу (круг 7, impl-major: расчёт «до» не видит транзиент S3 в момент самого снятия — статус-ключ становится FAILED уже после него; сон по устаревшему «здорово» тянул бы полный `SnapshotIntervalMin` вопреки §3.5 п.3):
+
+```csharp
+// t08 (круг 7, spec §3.5 п.3): повторный расчёт ПОСЛЕ снятия — первый
+// транзиент S3 в тике TakeAsync переводит статус-ключ в FAILED уже ПОСЛЕ
+// расчёта «до»; без пере-расчёта лидер ушёл бы в полный SnapshotIntervalMin
+// с невыгруженным слепком (запрещено §3.5 п.3). Считаем по свежему
+// статус-ключу и метке новейшего локального слепка (тот самый, только что
+// снятый); отказ чтения ключа — трактуем как отставание (короткий сон).
+if (exportSink is not null)
+{
+    var fresh = await exportSink.ReadStatusAsync(stoppingToken);
+    var latest = EtcdSnapshotSink.LatestLocalFile(options.CurrentValue.Snapshots.Dir);
+    behind = !fresh.IsSuccess
+             || EtcdSnapshotStatus.IsBehind(
+                 fresh.Value, EtcdSnapshotStatus.TakenUnixFromName(Path.GetFileName(latest ?? "")));
+}
+```
+
+  (`EtcdSnapshotSink.LatestLocalFile` — public (правка T5 Step 5.1, круг 7); `using PgWorker.Backups.EtcdExport` в SnapshotLoop.cs — добавить при необходимости.)
+
+  Сон (замена `Task.Delay(TimeSpan.FromMinutes(...SnapshotIntervalMin), ...)` в ветке лидера; `behind` — свежий, после пере-расчёта):
 
 ```csharp
 // Сон тика лидера (spec §3.5 п.3): выгрузка здорова (state=OK, не отстаёт —
@@ -2104,9 +2164,9 @@ git commit -m "feat(panel): t08 — DTO etcdSnapshots грани «Хранил�
 **Действие:** раздел в `docs/runbook.md` (в конец файла, после раздела «Ротация CA valkey (t07)»).
 **Выход:** полный операторский рецепт «погиб etcd/хост → контроль-плейн жив» (AC9).
 **Проверка:** текст содержит все 6 шагов spec §3.8; arch/09 §4 (Task 1) ссылается на раздел.
-**Связь со spec:** §3.8, AC9.
+**Связь со spec:** §3.8 (проверка целостности ДО восстановления: ручная sha256-сверка с `.meta.json` — операторский барьер, `snapshot status` — информационный, финальный барьер — restore-верификация `etcdutl`), AC5/AC9.
 
-- [x] **Step 12.1: Раздел** — добавить в `docs/runbook.md`:
+- [x] **Step 12.1: Раздел** — добавить в `docs/runbook.md` (круг 7: шаги 2/4 переформулированы под обновлённый AC5 — ручная sha256-сверка как барьер, `snapshot status` — информационный, restore — `etcdutl snapshot restore`):
 
 ```markdown
 ## Восстановление etcd из S3-выгрузки (t08)
@@ -2121,16 +2181,22 @@ git commit -m "feat(panel): t08 — DTO etcdSnapshots грани «Хранил�
    `mc ls --recursive <alias>/<bucket>/etcd/` — выбрать новейший
    `snapshot-<id>.db` и его `.meta.json`. Пусто → см. границы (п.6).
 2. **Проверка целостности ДО восстановления** (обязательный шаг):
-   скачать `.db`; сверить sha256 файла с `sha256` из `.meta.json`; затем
-   `etcdctl snapshot status <file>` (проверяет hash и структуру слепка).
-   Не прошёл → взять предыдущий (ретенция хранит N последних пар);
-   файл с битым хешем не разворачивать НИКОГДА.
+   скачать `.db`; сверить sha256 файла с `sha256` из `.meta.json` — ручная
+   сверка и есть операторский барьер (ловит порчу до restore); затем
+   `etcdctl snapshot status <file>` — информационный шаг (структура/размер/
+   ревизия слепка; etcd 3.5.x печатает hash, но при status его НЕ сверяет —
+   целостность им не доказывается); restore дополнительно верифицирует сам
+   слепок (`etcdutl snapshot restore` проверяет sha256 при разворачивании,
+   шаг 4). Расхождение sha256 или провал restore ⇒ взять предыдущий слепок
+   (ретенция хранит N последних пар); файл с битым хешем не разворачивать
+   НИКОГДА.
 3. **Свежий etcd**: контейнер(ы) etcd с чистым data-dir
    (`INITIAL_CLUSTER_STATE=new`). Прод-3-ноды: сначала single-member,
    остальные — `etcdctl member add` после старта.
-4. **Restore**: остановить etcd → `etcdctl snapshot restore <file>
-   --data-dir=<data-dir>` (restore — офлайн-операция над слепком) →
-   стартовать etcd на восстановленном data-dir.
+4. **Restore**: остановить etcd → `etcdutl snapshot restore <file>
+   --data-dir=<data-dir>` (restore — офлайн-операция над слепком;
+   верифицирует sha256 слепка при разворачивании — финальный барьер
+   целостности) → стартовать etcd на восстановленном data-dir.
 5. **Контроль**: `etcdctl endpoint health`; воркеры/панель переподключаются
    сами (poll-тик; клэймы переснимутся lease-механикой; R7 arch/14: journal
    мог откатиться к точке слепка — процессы идемпотентны и доводят фазы);
@@ -2159,10 +2225,10 @@ git commit -m "docs(t08): runbook — восстановление etcd из S3-
 ## Task 13: E2E — полный контур экспорта (spec §4 Фаза 5)
 
 **Вход:** Tasks 2–8, 10 смержены (воркер экспортирует; правила панели есть).
-**Действие:** `E2eEtcdSnapshotExportScenarios.cs` (E2eEnvironment с MinIO, хост-воркер с включённым экспортом) + публичное имя etcd-контейнера окружения для restore-verify.
-**Выход:** сквозное доказательство: слепок → S3 (db+meta, sha256) → ключ OK → ретенция → разворачиваемость; негативная ветка → FAILED + панельный алерт.
+**Действие:** `E2eEtcdSnapshotExportScenarios.cs` (E2eEnvironment с MinIO, хост-воркер с включённым экспортом) + публичное имя etcd-контейнера окружения для verify слепка (`etcdctl snapshot status`).
+**Выход:** сквозное доказательство: слепок → S3 (db+meta, sha256) → ключ OK → ретенция → verify: положительный `snapshot status` на валидном слепке (AC5; порча байта в E2E не проверяется — покрыта интеграциями T5 Fact 6); негативная ветка → FAILED + панельный алерт.
 **Проверка:** `PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~E2eEtcdSnapshotExport` — зелёные; зачистка окружения после серии.
-**Связь со spec:** §4 Ф5, AC1/AC3/AC5/AC7 (сквозные), AGENTS.md (E2E-каноны).
+**Связь со spec:** §4 Ф5, AC1/AC3/AC5 (положительный `snapshot status` на валидном слепке; порча байта — интеграции T5)/AC7 (сквозные), AGENTS.md (E2E-каноны).
 
 - [x] **Step 13.1: E2eEnvironment** — добавить публичное свойство имени etcd-контейнера (для `docker cp`/`exec etcdctl`): в `src/tests/PgWorker.IntegrationTests/E2e/E2eEnvironment.cs` рядом с `EtcdEndpoint` — `public string EtcdContainerName { get; }` = фактическое имя `pgw-ee-{runId}` (присвоить в StartOnceAsync).
 
@@ -2201,7 +2267,8 @@ public class E2eEtcdSnapshotExportScenarios
 
 ```csharp
 // AAA: включённый экспорт — слепок лидера уезжает парой db+meta в MinIO,
-// ключ OK с фактом, sha256 совпадает, слепок разворачиваем (etcdctl).
+// ключ OK с фактом, sha256 совпадает, валидный слепок проходит etcdctl
+// snapshot status (порча байта — интеграции T5, не E2E).
 [Fact]
 public async Task Export_плановый_слепок_уезжает_в_S3_ключ_OK()
 {
@@ -2229,13 +2296,16 @@ public async Task Export_плановый_слепок_уезжает_в_S3_кл
     var dbKey = status.LastObject!;
     using var s3 = new PgWorker.Backups.BackupS3(Fx.MinioRuntimeForHost()); // helper-обёртка на Fx.S3Endpoint/креды (добавить рядом с McLsAsync по образцу OwnMinio.Runtime)
     // … скачать dbKey AWSSDK-клиентом теста → SHA256 == status.LastSha256
-    // Assert — restore-verify: etcdctl snapshot status в контейнере etcd окружения
+    // Assert — verify слепка (AC5): etcdctl snapshot status на ВАЛИДНОМ слепке
+    // в контейнере etcd окружения — положительный вердикт структуры/ревизии
+    // (etcd 3.5.x печатает hash, но при status его НЕ сверяет — порча байта
+    // в E2E не проверяется, покрыта интеграциями T5 Fact 6)
     var tempFile = Path.Combine(Path.GetTempPath(), $"pgw-e2e-snap-{Guid.NewGuid():N}.db");
     // … записать скачанные байты в tempFile
     await Fx.RunDockerAsync(["cp", tempFile, $"{Fx.EtcdContainerName}:/tmp/snap.db"], ct);
     var verdict = await Fx.RunDockerAsync(
         ["exec", Fx.EtcdContainerName, "sh", "-c", "etcdctl snapshot status /tmp/snap.db && echo VERIFY_OK"], ct);
-    verdict.Should().Contain("VERIFY_OK", "слепок из S3 проходит etcdctl snapshot status (AC5)");
+    verdict.Should().Contain("VERIFY_OK", "валидный слепок из S3 проходит etcdctl snapshot status (AC5)");
 }
 ```
 
@@ -2282,14 +2352,16 @@ git commit -m "merge: t08-etcd-snapshot-export — мерж-гейт трека 
 
 ---
 
-## Self-Review (обновлён после шестого круга ревью Фазы 4)
+## Self-Review (обновлён после седьмого круга ревью — Ф4 к.5/6 + Ф7 code-review; + круг 8 — 2 текстовые правки)
 
 - **Дедуп убран совсем (круг 4, contract HIGH — синхронизация с обновлённым spec §2.7/§3.6):** сравнение sha256 слепка с `last_sha256` до put отвергнуто ревью как самореферентно недостижимое — статус-ключ живёт в снимаемом etcd и обновляется каждой выгрузкой, поэтому sha следующего слепка всегда отличается после первого цикла. `ExportAsync` (T5) — путь один: put db → put meta → ретенция → статус `Ok(taken, objKey, sha, size, interval)`; чтение статуса СОХРАНЯЕТСЯ только для FAILED-ветки (перенос полей последнего успеха — §3.6); в реализации нет ветви сравнения sha с прошлым состоянием (явный запрет §3.6), дедуп-тестов нет. AC2 «каждый слепок уезжает»: T5 Fact 2 — повторный TakeAsync ⇒ в S3 +2 объекта (новая пара db+meta), статус OK, `last_uploaded_unix == taken2 > taken1`, `last_object`/`last_sha256` — второго слепка, `IsBehind=false` (сон `SnapshotIntervalMin`, stale молчит; пауза 1.1 c разводит имена по секундам); T10 кейс 5 — stale молчит при живом каденсе (каждый слепок продвигает `last_uploaded_unix`); T7 сон-комментарий — `state=OK` + не отстаёт ⇒ `SnapshotIntervalMin`. Arch-редакции T1 — формулировки §3.9 обновлённого spec без дедупа: «каждый снятый слепок выгружается; статус-ключ покрытия обновляется после каждой выгрузки» (arch/14 §3.3+§6, arch/19 §5); сняты «не кладёт объектов, но обновляет…» и «дедуп … не кладёт объектов». `last_sha256` в статус-ключе остаётся (наблюдаемость, §3.1; тесты парсинга T2/T9 живы). Барьер «дедуп не вводится» зафиксирован в глобальных ограничениях плана (зеркало spec §2.7/§5).
 - **Мета-нейминг по канону §3.2 (круг 5/6, plan HIGH):** мета-объект кладётся ключом `etcd/snapshot-<id>.meta.json` — по id БЕЗ `.db` (`snapshotFileName[..^".db".Length]`), НЕ `"{objKey}.meta.json"`: ключ `snapshot-<id>.db.meta.json` ретенция `EtcdExportRetention.Select` разобрала бы как мету с id `snapshot-<id>.db` без пары (`.db.db`) → сирота → снос первым же ретенционным проходом того же `ExportAsync` (красные Fact 1/2/3/7 и T13, недостижимы AC1/AC5). Fact 1 (T5) фиксирует нейминг ассертом: листинг содержит ключ с окончанием `.meta.json` и НЕ содержит `.db.meta.json`; комментарий Step 5.1 объясняет запрет. Layout согласован со всеми остальными местами плана (юниты T2, гвард T2 Step 2.9, runbook T12, E2E T13 — `snapshot-*.meta.json`).
+- **AC5-эха обновлённой буквы spec (круг 7, contract-echo; spec уточнён по Ф7 code-review):** проверка целостности развёрнута по ролям инструментов — `etcdctl snapshot status` даёт только положительный вердикт структуры/ревизии на валидном слепке (etcd 3.5.x печатает hash, но при status его НЕ сверяет); порчу байта ловят ручная sha256-сверка с `.meta.json` (операторский барьер) и restore-верификация (`etcdutl snapshot restore` верифицирует sha256 при разворачивании — финальный барьер). Отражено: T12 runbook-шаг 2 (sha256 — барьер, status — информационный, «Расхождение sha256 или провал restore ⇒ предыдущий») и шаг 4 (`etcdutl snapshot restore`, не etcdctl); T5 Fact 6 — валидный: положительный status; порча: sha256-расхождение + провал `etcdutl restore` (интеграция); T13 — E2E проверяет только валидный слепок (порча байта в E2E НЕ добавляется — spec её больше не требует, эхо «restore-verify» заменено на «verify слепка»); Связи-строки T5/T12/T13 несут AC5-расшифровку. Требует доработки исполнителем: тест/доки Tasks 5/12 уже смержены со старыми формулировками — правка по этим пунктам плана (как и фикс сна ниже) выполняется в Фазе 6 по этому плану, ВКЛЮЧАЯ arch/09 §4-цитату T1 Step 1.3: `etcdctl snapshot restore` → `etcdutl snapshot restore`; в комментарии шага 1 статус — информационный, барьер — ручная sha256-сверка (+ restore-верификация) — иначе исполнитель по Self-Review починит только T5/T12/T7, и канон arch/09 §4 разъедется с runbook/AC5.
+- **Step 7.3 — точность сна при первом транзиенте в тике снятия (круг 7, impl-major):** CatchUpAsync вычисляет `behind` ДО `TakeAsync`, а сон берётся после — при ранее здоровом статусе транзиент S3 в момент `TakeAsync` (статус-ключ становится FAILED уже после расчёта «до») давал бы полный `SnapshotIntervalMin` вопреки §3.5 п.3. Фикс: после `TakeAsync` (при `sink != null`) повторный расчёт по свежему статус-ключу — `ReadStatusAsync` → `behind = !ok || IsBehind(fresh, TakenUnixFromName(имя новейшего локального слепка))`; для этого `EtcdSnapshotSink.LatestLocalFile` стал `public` (правка T5 Step 5.1: call-сайт из PgWorker.App). Новый юнит-кейс T7 `Первый_транзиент_в_тике_TakeAsync_сон_короткий` (Arrange: здоровый OK-статус + `MemoryS3.PutObjectFails=true`; ассерт ≥2 слепков за бюджет — короткий сон доказывает именно повторный расчёт); существующий кейс с предзасеянным FAILED (`Сон_при_отставании_RetryIntervalSec`) остаётся.
 - **Покрытие spec:** §3.1→T2/T5/T9; §3.2→T2/T5; §3.3→T6/T8 (+dev-stand примечание T8 Step 8.4); §3.4→T3; §3.5→T5(CatchUpAsync, инвариант покрытия)+T7(сон п.3); §3.6→T2/T4/T5(единый путь put→meta→ретенция→статус); §3.7→T9/T10/T11; §3.8→T12; §3.9→T1 (п.1–4, формулировки без дедупа + семантика «покрытия» в arch/14/arch/19-редакциях, «пять»→«шесть» в преамбуле adminpanel/02 §2.3.1) + T14 (п.5); Фазы §4→T2(Ф1)/T3–T5(Ф2)/T6–T8(Ф3)/T9–T11(Ф4)/T12–T14(Ф5); AC1–AC11 распределены (AC2 — «каждый слепок уезжает новой парой», AC6 — семантика «покрытия»). **AC8 полный:** гвард `GroupPrefixes` (T2 Step 2.9) + вхождение `etcd/*` в list всего bucket = база `used_bytes` (T5 Fact 1). **AC10-хвост** — косвенное покрытие (приемлемо по ревью Ф4): писатель статус-ключа при `Enabled=false` отсутствует по построению (T6), T3 Fact `TakeAsync_без_sink` + T10 кейсы 2–3 закрывают поведение.
 - **TimeoutSec — примечание к букве spec:** семантика TimeoutSec уточнена относительно spec §3.3/§3.6 («бюджет одного S3-put-шага» / «таймаут шага») по решению ревью Фазы 4: единый бюджет ОДНОЙ попытки `ExportAsync` (linked-CTS CancelAfter: puts+ретенция+статус суммарно) — строже и безопаснее пошагового. Правка spec сознательно НЕ делается; канон — arch §8-редакция Task 1 Step 1.1 п.3. Формулировки выровнены в T1 (arch)/T3/T5/T6; CTS-механика T5 не менялась.
 - **CatchUpAsync — семантика отставания (вариант (б) ревью Ф4-круг2, принят; согласован с кругами 3/4/5):** возврат `Result<bool>` = «выгрузка отстаёт ПО СТАТУС-ключУ» (`EtcdSnapshotStatus.IsBehind`: FAILED / ключа нет / локальный новее подтверждённого покрытия), не «была ли попытка доводки» — закрывает краевой случай «FAILED при пустом томе»; успешный re-export продвигает `last_uploaded_unix` и закрывает отставание (§3.5 п.1). Ошибка re-export → `Failed` → формула сна T7 `behind = catchUp.IsSuccess ? catchUp.Value : true` даёт короткий сон. Тесты T7: Fact 2 достижим (пустой том + FAILED + `PutObjectFails`: тик 1 → слепок 1, сон 1 c → тик 2 → слепок 2; предзасеянный файл сознательно НЕ используется — вакуумировал бы ассерт «≥2»), Fact `CatchUp_пустой_том_FAILED_отстаёт`.
 - **Типы/имена:** `IsBehind`/`TakenUnixFromName` — статические методы на record `EtcdSnapshotStatus` (круг 4, LOW: call-сайты T2 Step 2.1/T5/T7 зовут их от типа записи; в `EtcdSnapshotStatusJson` остаётся только JSON: `Ok(coveredTakenUnix, …)/Failed/Parse/Key`); `EtcdSnapshotMeta`(+`EtcdSnapshotMetaJson`)/`EtcdExportRetention`/`EtcdSnapshotSink`/`ISnapshotSink`/`SnapshotExportOptions`/`EtcdSnapshotExportInfo`/`EtcdSnapshotsParser`/`EtcdSnapshotExportFailedRule`/`EtcdSnapshotExportStaleRule` — согласованы между тасками; статус-ключ `/pgworker/etcd-snapshots` один везде; `PutObjectAsync(string, byte[], string?, CancellationToken)` — сигнатура из spec §3.6; `MemoryS3.PutObjectFails` — инъекция транзиента (T7); парсер панели зовёт фактические `JsonValues.ReadString/ReadLong/ReadInt`. Регистрация `EtcdSnapshotSink` — единственный синглтон-блок (T6 Step 6.3), обе фабрики берут его `sp.GetService<EtcdSnapshotSink>()`. `Parse` возвращает nullable-ссылку, не `Nullable<T>` — доступ в тестах через локаль `var p = parsed!;` (круг 5).
 - **Реальные файлы:** все Modify-пути проверены по worktree (SnapshotJob.cs, SnapshotLoop.cs, BackupS3.cs, OrphanRegistry.cs, Options.cs, Program.cs, SnapshotRefresher.cs, BackupsParser.cs-паттерн, BackupStorageQuery.cs, BackupsStoragePage.tsx, deploy/*, arch/*, runbook.md).
 - **Open-точки исполнителя** (сверить на месте, не решения): фактический namespace `FakeEtcd` (Provisioning/Fakes.cs); сигнатура `Alert`-record; стиль карточки фронта по соседним.
-- **Правки ревью:** круг 1 (LOW/INFO): AC8-хвост used_bytes (T5 Fact 1); dev-stand (T8 Step 8.4); дубль DI-регистрации (T6); семантика TimeoutSec в плане; имена JsonValues (T9); «один Fact» (T2). Круг 2: тест T7 Fact 2 — статус-семантика CatchUpAsync + `PutObjectFails`-Arrange + Fact краевого случая; примечание TimeoutSec-vs-spec; «пять»→«шесть» (Step 1.4); фиксация косвенного AC10-покрытия. Круг 3 (contract): дедуп-пропуск = успешная выгрузка с обновлением статус-ключа покрытия (впоследствии перекрыт кругом 4). Круг 4 (contract HIGH): дедуп убран совсем — T5 `ExportAsync` (один путь put→meta→ретенция→статус; чтение статуса только для FAILED-переноса полей), T5 Fact 2 (AC2: +2 объекта/новая пара, taken2 > taken1, IsBehind=false), T1 (arch-редакции arch/14 §3.3+§6, arch/19 §5 без дедупа), T2 (комментарии Ok/IsBehind), T7 сон, T10 кейс 5 (живой каденс), шапка/карта файлов/глобальное ограничение-барьер. Круг 5 (LOW/косметика): `parsed!.Value` → локаль `var status = parsed!;` (T2 Step 2.1; идентичная CS1061-проблема `info!.Value` поправлена и в T9 Step 9.1 — Parse возвращает nullable-ссылку); ссылка BackupS3Tests:188 → 189 (T5 Fact 1, фактическая строка `ListPrefixAsync("")`). Круг 5/6 (plan HIGH): мета-нейминг по канону §3.2 — Step 5.1: мета-ключ `{Prefix}{snapshotFileName[..^".db".Length]}.meta.json` (по id без `.db`, не `objKey.meta.json` — иначе ретенция сносит мету как сироту в том же проходе); Fact 1: комментарий + ассерт нейминга (`NotContain ".db.meta.json"`).
+- **Правки ревью:** круг 1 (LOW/INFO): AC8-хвост used_bytes (T5 Fact 1); dev-stand (T8 Step 8.4); дубль DI-регистрации (T6); семантика TimeoutSec в плане; имена JsonValues (T9); «один Fact» (T2). Круг 2: тест T7 Fact 2 — статус-семантика CatchUpAsync + `PutObjectFails`-Arrange + Fact краевого случая; примечание TimeoutSec-vs-spec; «пять»→«шесть» (Step 1.4); фиксация косвенного AC10-покрытия. Круг 3 (contract): дедуп-пропуск = успешная выгрузка с обновлением статус-ключа покрытия (впоследствии перекрыт кругом 4). Круг 4 (contract HIGH): дедуп убран совсем — T5 `ExportAsync` (один путь put→meta→ретенция→статус; чтение статуса только для FAILED-переноса полей), T5 Fact 2 (AC2: +2 объекта/новая пара, taken2 > taken1, IsBehind=false), T1 (arch-редакции arch/14 §3.3+§6, arch/19 §5 без дедупа), T2 (комментарии Ok/IsBehind), T7 сон, T10 кейс 5 (живой каденс), шапка/карта файлов/глобальное ограничение-барьер. Круг 5 (LOW/косметика): `parsed!.Value` → локаль `var status = parsed!;` (T2 Step 2.1; идентичная CS1061-проблема `info!.Value` поправлена и в T9 Step 9.1 — Parse возвращает nullable-ссылку); ссылка BackupS3Tests:188 → 189 (T5 Fact 1, фактическая строка `ListPrefixAsync("")`). Круг 5/6 (plan HIGH): мета-нейминг по канону §3.2 — Step 5.1: мета-ключ `{Prefix}{snapshotFileName[..^".db".Length]}.meta.json` (по id без `.db`, не `objKey.meta.json` — иначе ретенция сносит мету как сироту в том же проходе); Fact 1: комментарий + ассерт нейминга (`NotContain ".db.meta.json"`). Круг 7 (Ф7: AC5 contract-echo + Step 7.3 impl-major): T12 шаг 2 (ручная sha256-сверка — операторский барьер; `snapshot status` — информационный: 3.5.x hash при status НЕ сверяет; финальный барьер — restore-верификация) и шаг 4 (`etcdutl snapshot restore`, не etcdctl); T5 Fact 6 переписан (валидный — положительный status; порча — sha256-расхождение + провал `etcdutl restore`) + Выход/хелпер/Связь; T13 — verify только на валидном слепке (порча байта в E2E НЕ добавляется, spec её не требует; «restore-verify» → «verify слепка»); Step 7.3 — повторный расчёт `behind` после `TakeAsync` по свежему статус-ключу (транзиент в тике снятия не тянет полный сон, §3.5 п.3), `LatestLocalFile` → `public` (T5 Step 5.1), новый юнит-кейс T7 `Первый_транзиент_в_тике_TakeAsync_сон_короткий`; Связи-строки T5/T7/T12/T13 дополнены AC5/§3.5-п.3-расшифровками.
