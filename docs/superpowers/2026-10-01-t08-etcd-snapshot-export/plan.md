@@ -2261,13 +2261,15 @@ git commit -m "test(e2e): t08 — сквозной экспорт etcd-снап�
 **Проверка:** все серии зелёные; `grep t08-etcd-snapshot-export arch/roadmap/reliability.md` пусто; reliability-report.md содержит строку в «Сделано».
 **Связь со spec:** §4 Ф5, AC11, AGENTS.md (E2E на свежем Release обязателен).
 
-- [ ] **Step 14.1: Юниты** — `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~UnitTests"` — 0 failed, 0 warnings.
+- [x] **Step 14.1: Юниты** — `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~UnitTests"` — 0 failed, 0 warnings.
 
-- [ ] **Step 14.2: Интеграции (docker)** — `PGW_TEST_DOCKER=1 DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~IntegrationTests"` — дождаться финальной строки; зачистка: `docker ps -a --filter name=pgw- --format '{{.Names}}'` пусто (кроме поднятого dev-стенда, если есть — свои префиксы), `docker network prune -f`.
+- [x] **Step 14.2: Интеграции (docker)** — `PGW_TEST_DOCKER=1 DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~IntegrationTests"` — дождаться финальной строки; зачистка: `docker ps -a --filter name=pgw- --format '{{.Names}}'` пусто (кроме поднятого dev-стенда, если есть — свои префиксы), `docker network prune -f`.
 
-- [ ] **Step 14.3: E2E свежий Release** — `PGW_TEST_DOCKER=1 DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~E2eEtcdSnapshotExport"` (свежая сборка — E2eFixture собирает сам; `PGW_TEST_E2E_NOBUILD` НЕ ставить) + кейс-маркер мерж-гейта: `PGW_TEST_DOCKER=1 DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~Scale_AddEmptyShard`. Между сериями — зачистка контейнеров/сетей.
+- [x] **Step 14.3: E2E свежий Release** — `PGW_TEST_DOCKER=1 DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~E2eEtcdSnapshotExport"` (свежая сборка — E2eFixture собирает сам; `PGW_TEST_E2E_NOBUILD` НЕ ставить) + кейс-маркер мерж-гейта: `PGW_TEST_DOCKER=1 DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~Scale_AddEmptyShard`. Между сериями — зачистка контейнеров/сетей.
 
-- [ ] **Step 14.4: Roadmap-гейт** — `arch/roadmap/reliability.md`: удалить пункт `t08-etcd-snapshot-export` (и `←`-ссылки на него, если есть — поиском по файлам `arch/roadmap/*.md`); `arch/roadmap/reliability-report.md`: перенести строку `| t08-etcd-snapshot-export | … | P2 | D, R |` из «Осталось» в «Сделано в рамках трека» + дополнить сводку D (RPO контроль-плейна закрыт S3-выгрузкой слепков) и R (самовосстанавливаемость: доводка тика) по формату раздела.
+- [ ] **Step 14.4: Roadmap-гейт** (перенесён на мерж-коммит, Фаза 8; блокер гейта —
+  флэйк WalStream закарантинен отдельной задачей t27-wal-staging-loss,
+  arch/roadmap/reliability.md) — `arch/roadmap/reliability.md`: удалить пункт `t08-etcd-snapshot-export` (и `←`-ссылки на него, если есть — поиском по файлам `arch/roadmap/*.md`); `arch/roadmap/reliability-report.md`: перенести строку `| t08-etcd-snapshot-export | … | P2 | D, R |` из «Осталось» в «Сделано в рамках трека» + дополнить сводку D (RPO контроль-плейна закрыт S3-выгрузкой слепков) и R (самовосстанавливаемость: доводка тика) по формату раздела.
 
 - [ ] **Step 14.5: Commit**
 
