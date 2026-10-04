@@ -472,6 +472,51 @@ public class E2eBackupScenarios
         return tli;
     }
 
+    /// <summary>Гарантированный дамп диагностики Wal-сценария В САМОМ catch (до
+    /// teardown): агенты, wal/work-ключи, Patroni, хвост host.log воркера —
+    /// переживает любые dispose-порядки (файл /tmp/pgw-diag-&lt;cluster&gt;.txt).</summary>
+    private async Task WalScenarioDiagDumpAsync(string cluster, string reason)
+    {
+        try
+        {
+            var agentsPs = await Fx.RunDockerAsync(
+                ["ps", "-a", "--format", "{{.Names}} {{.State}}",
+                 "--filter", $"name=pgw-backup-wal-{cluster}-"], TestContext.Current.CancellationToken);
+            var walKv = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal");
+            var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
+            var claimKv = await GetOrNullAsync($"/pgworker/claims/{cluster}");
+            var patroni = await PatroniClusterDumpAsync(cluster, TestContext.Current.CancellationToken);
+            var hostLog = "";
+            foreach (var host in Fx.Hosts)
+                try
+                {
+                    var lines = File.ReadAllLines(Path.Combine(host.SnapshotsDir, "host.log"));
+                    var interesting = lines.Where(l =>
+                        !l.Contains("HTTP request") && !l.Contains("HTTP response")
+                        && !l.Contains("End processing HTTP") && !l.Contains("Received HTTP")
+                        && !l.Contains("Sending HTTP") && !l.Contains("PgtuneInputsFactory")
+                        && !l.Contains("wal_compression")).ToList();
+                    hostLog += $"\n== {host.Name} ({interesting.Count} строк):\n" +
+                        string.Join("\n", interesting[^Math.Min(80, interesting.Count)..]);
+                }
+                catch (Exception e)
+                {
+                    hostLog += $"\n== {host.Name}: host.log недоступен: {e.Message}";
+                }
+
+            var dump =
+                $"reason={reason}\nagents=[{agentsPs.Replace('\n', ';')}]\n" +
+                $"wal=[{walKv?.Value ?? "-"}]\nwork=[{workKv?.Value ?? "-"}]\n" +
+                $"claim=[{claimKv?.Value ?? "-"}]\npatroni={patroni}\nHOST.LOG:{hostLog}\n";
+            await File.WriteAllTextAsync($"/tmp/pgw-diag-{cluster}.txt", dump);
+            Console.WriteLine($"[DIAG] дамп: /tmp/pgw-diag-{cluster}.txt");
+        }
+        catch
+        {
+            // дамп — лучшие усилия, не маскируем исходный сбой сценария
+        }
+    }
+
     // Диагностика Patroni-контекста (sync-выбор): GET /cluster первой ноды шарда.
     private async Task<string> PatroniClusterDumpAsync(string cluster, CancellationToken ct)
     {
@@ -680,9 +725,10 @@ public class E2eBackupScenarios
                 list.Value.Select(o => o.Name));
             chain.IsContinuous.Should().BeTrue(chain.GapError ?? "цепочка непрерывна");
         }
-        catch (Exception)
+        catch (Exception ex)
         {
             Fx.MarkFailed(); // артефакты телеметрии переживают teardown (канон e2e-launch)
+            await WalScenarioDiagDumpAsync(cluster, "AC2: " + ex.Message);
             throw;
         }
         finally
@@ -805,9 +851,10 @@ public class E2eBackupScenarios
                 .Should().BeTrue($"слот существует на ноде {key} (AC3, per-instance)");
         }
         }
-        catch (Exception)
+        catch (Exception ex)
         {
             Fx.MarkFailed(); // артефакты телеметрии переживают teardown
+            await WalScenarioDiagDumpAsync(cluster, "AC3: " + ex.Message);
             throw;
         }
         finally
@@ -881,13 +928,23 @@ public class E2eBackupScenarios
             }, TimeSpan.FromSeconds(300), ct);
             grew.Should().BeTrue("агент реплики продолжает доставку после смерти мастера");
 
-            var read = await writer.ReadAsync(cluster, "shard1", ct);
-            read.Value.Should().NotBeNull();
-            read.Value!.State.Should().NotBe(
+            // Чтение ключа — поллингом (etcd-транспорт может дать transient-отказ:
+            // ReadAsync Failed → Value null; факт ждём, не фиксируем одноразовым чтением)
+            PgWorker.Etcd.Parsing.WalStreamState? keyState = null;
+            var keySeen = await E2eFixture.WaitForAsync(async () =>
+            {
+                var read = await writer.ReadAsync(cluster, "shard1", ct);
+                if (!read.IsSuccess || read.Value is null)
+                    return false;
+                keyState = read.Value;
+                return true;
+            }, TimeSpan.FromSeconds(30), ct);
+            keySeen.Should().BeTrue("wal-ключ обязан существовать после failover");
+            keyState!.State.Should().NotBe(
                 PgWorker.Etcd.Parsing.WalStreamStatus.Broken, "ключ не BROKEN (AC4)");
             var list = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
             var chain = PgWorker.Backups.WalChain.CheckWithRestart(
-                PgWorker.Backups.WalFileName.TryParse(read.Value!.ChainStartSegment)!.Value,
+                PgWorker.Backups.WalFileName.TryParse(keyState!.ChainStartSegment)!.Value,
                 list.Value!.Select(o => o.Name));
             chain.IsContinuous.Should().BeTrue(chain.GapError ?? "цепочка склеена через TLI");
 
@@ -902,9 +959,10 @@ public class E2eBackupScenarios
             }, TimeSpan.FromSeconds(300), ct);
             newAgent.Should().BeTrue($"агент новой мастер-ноды {newMaster} running");
         }
-        catch (Exception)
+        catch (Exception ex)
         {
             Fx.MarkFailed(); // артефакты телеметрии переживают teardown
+            await WalScenarioDiagDumpAsync(cluster, "AC4: " + ex.Message);
             throw;
         }
         finally
@@ -993,9 +1051,10 @@ public class E2eBackupScenarios
             }, TimeSpan.FromSeconds(300), ct);
             glueOk.Should().BeTrue("цепочка CheckWithRestart непрерывна, ключ ACTIVE (AC5)");
         }
-        catch (Exception)
+        catch (Exception ex)
         {
             Fx.MarkFailed(); // артефакты телеметрии переживают teardown
+            await WalScenarioDiagDumpAsync(cluster, "AC5: " + ex.Message);
             throw;
         }
         finally
