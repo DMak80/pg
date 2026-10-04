@@ -625,12 +625,15 @@ public sealed class WalStreamProcess(
         foreach (var tli in missingTlis)
         {
             var fileName = $"{tli:x8}.history";
-            // $PGDATA/../pg_wal — Spilo-layout (PGDATA=…/pgroot/data); при отсутствии
-            // файла stdout: маркер + листинг pg_wal (диагностика пути в журнале).
+            // Путь pg_wal в Spilo: /home/postgres/pgdata/pgroot/pg_wal ($PGDATA в
+            // exec-сессии пуст — E2E-факт t27); при отсутствии файла stdout:
+            // маркер + листинг pgroot (фактическая структура в журнал).
             var exec = await driver.ExecNodeAsync(cluster, shard, masterRef,
             [
                 "sh", "-c",
-                $"if [ -f ${{PGDATA}}/../pg_wal/{fileName} ]; then base64 -w0 ${{PGDATA}}/../pg_wal/{fileName}; else echo FILE_NOT_FOUND; ls -la ${{PGDATA}}/../pg_wal 2>&1 | tail -8; fi",
+                $"f=/home/postgres/pgdata/pgroot/pg_wal/{fileName}; " +
+                "[ -f \"$f\" ] && base64 -w0 \"$f\" && exit 0; " +
+                "echo FILE_NOT_FOUND; ls -la /home/postgres/pgdata/pgroot/ 2>&1 | tail -12; ls -la /home/postgres/pgdata/ 2>&1 | tail -6",
             ], ct);
             if (!exec.IsSuccess)
             {
