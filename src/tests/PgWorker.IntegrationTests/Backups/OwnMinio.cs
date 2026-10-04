@@ -112,6 +112,15 @@ public sealed class OwnMinio : IAsyncDisposable
         WalLagMaxSegments: 1024,
         WalStaleSec: 300);
 
+    /// <summary>Тестовый обрыв S3 (AC6): docker pause — put/list зависают, контейнер жив.
+    /// </summary>
+    public async Task PauseAsync(CancellationToken ct = default)
+        => await _container.PauseAsync(ct);
+
+    /// <summary>Восстановление S3 после паузы (AC6).</summary>
+    public async Task UnpauseAsync(CancellationToken ct = default)
+        => await _container.UnpauseAsync(ct);
+
     /// <summary>Teardown при любом исходе: стоп/rm СВОЕГО контейнера → АССЕРТ
     /// ЧИСТОТЫ: pgw-em-{guid} в docker ps -a отсутствует.</summary>
     public async ValueTask DisposeAsync()
