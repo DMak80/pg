@@ -554,12 +554,25 @@ public class E2eBackupScenarios
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         // Switchover-запрос — на ЛЮБОГО члена контура (Patroni маршрутизирует).
         var port = entries[$"shard1/{fromNode}"].GetProperty("patroni").GetInt32();
-        using var content = new StringContent(
-            "{\"leader\":\"" + fromNode + "\",\"candidate\":\"" + toNode + "\"}",
-            System.Text.Encoding.UTF8, "application/json");
-        using var response = await PatroniHttp.PostAsync(
-            $"http://127.0.0.1:{port}/switchover", content, ct);
-        response.EnsureSuccessStatusCode();
+        // Ретраи: switchover 400, пока Patroni не считает контур готовым
+        // (sync-кандидат должен быть назначен и догнать лидера).
+        for (var attempt = 1; ; attempt++)
+        {
+            using var content = new StringContent(
+                "{\"leader\":\"" + fromNode + "\",\"candidate\":\"" + toNode + "\"}",
+                System.Text.Encoding.UTF8, "application/json");
+            using var response = await PatroniHttp.PostAsync(
+                $"http://127.0.0.1:{port}/switchover", content, ct);
+            if (response.IsSuccessStatusCode)
+                return;
+            var body = await response.Content.ReadAsStringAsync(ct);
+            if (attempt >= 6)
+                throw new ApplicationException(
+                    $"switchover {fromNode}→{toNode}: HTTP {(int)response.StatusCode}: {body[..Math.Min(300, body.Length)]}");
+            Console.WriteLine($"[PHASE] switchover попытка {attempt}: HTTP {(int)response.StatusCode}: " +
+                $"{body[..Math.Min(200, body.Length)]} — повтор через 10 c");
+            await Task.Delay(TimeSpan.FromSeconds(10), ct);
+        }
     }
 
     // Диагностика Patroni-контекста (sync-выбор): GET /cluster первой ноды шарда.
