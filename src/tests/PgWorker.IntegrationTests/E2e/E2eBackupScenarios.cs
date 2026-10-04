@@ -491,13 +491,39 @@ public class E2eBackupScenarios
                 try
                 {
                     var lines = File.ReadAllLines(Path.Combine(host.SnapshotsDir, "host.log"));
-                    var interesting = lines.Where(l =>
-                        !l.Contains("HTTP request") && !l.Contains("HTTP response")
-                        && !l.Contains("End processing HTTP") && !l.Contains("Received HTTP")
-                        && !l.Contains("Sending HTTP") && !l.Contains("PgtuneInputsFactory")
-                        && !l.Contains("wal_compression")).ToList();
-                    hostLog += $"\n== {host.Name} ({interesting.Count} строк):\n" +
-                        string.Join("\n", interesting[^Math.Min(80, interesting.Count)..]);
+                    var noise = new[]
+                    {
+                        "ClientHandler", "LogicalHandler", "HTTP request", "HTTP response",
+                        "End processing HTTP", "Received HTTP", "Sending HTTP",
+                        "PgtuneInputsFactory", "wal_compression", "AwaitableSocketAsyncEventArgs",
+                    };
+                    var interesting = lines
+                        .Where(l => !noise.Any(n => l.Contains(n, StringComparison.Ordinal)))
+                        .Where(l => l.Contains("backup", StringComparison.OrdinalIgnoreCase)
+                            || l.Contains("wal", StringComparison.OrdinalIgnoreCase)
+                            || l.Contains("agent", StringComparison.OrdinalIgnoreCase)
+                            || l.Contains("error", StringComparison.OrdinalIgnoreCase)
+                            || l.Contains("warn", StringComparison.OrdinalIgnoreCase)
+                            || l.Contains("fail", StringComparison.OrdinalIgnoreCase)
+                            || l.Contains("exception", StringComparison.OrdinalIgnoreCase)
+                            || l.Contains("claim", StringComparison.OrdinalIgnoreCase)
+                            || l.Contains("supervise", StringComparison.OrdinalIgnoreCase)
+                            || l.Contains("repair", StringComparison.OrdinalIgnoreCase)
+                            || l.Contains("evacuat", StringComparison.OrdinalIgnoreCase)
+                            || l.Contains("provision", StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+                    var opLines = lines
+                        .Where(l => l.Contains("backup-wal", StringComparison.OrdinalIgnoreCase)
+                            || l.Contains("WalStreamProcess", StringComparison.OrdinalIgnoreCase)
+                            || l.Contains("supervise", StringComparison.OrdinalIgnoreCase)
+                            || l.Contains("repair", StringComparison.OrdinalIgnoreCase)
+                            || l.Contains("provision ", StringComparison.OrdinalIgnoreCase)
+                            || l.Contains("эвакуа", StringComparison.OrdinalIgnoreCase)
+                            || l.Contains("REBUILDING", StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+                    hostLog += $"\n== {host.Name} OPS({opLines.Count}):\n{string.Join("\n", opLines)}" +
+                        $"\nTAIL({interesting.Count}):\n" +
+                        string.Join("\n", interesting[^Math.Min(40, interesting.Count)..]);
                 }
                 catch (Exception e)
                 {
