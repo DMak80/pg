@@ -390,4 +390,54 @@ public class BackupsOptionsTests
         options.IsValid().Should().BeTrue("0 — легитимное выключение новых запусков");
         options.ToRuntime().DrillIntervalDays.Should().Be(0);
     }
+
+    // ---- t27: Wal:AgentImage (arch/19 §3/§9) ----
+
+    // AAA: дефолт образа wal-агента — pgworker-wal:dev (arch/19 §9)
+    [Fact]
+    public void Wal_AgentImage_Дефолт_каноничен()
+    {
+        // Arrange
+        var options = new BackupsOptions();
+
+        // Act / Assert
+        options.Wal.AgentImage.Should().Be("pgworker-wal:dev");
+        options.ToRuntime().WalAgentImage.Should().Be("pgworker-wal:dev");
+    }
+
+    // AAA: Enabled=true с пустым AgentImage — мусорный конфиг (fail-fast старта)
+    [Fact]
+    public void Wal_AgentImage_Пустой_Invalid()
+    {
+        // Arrange — включили с полным S3-комплектом, но образ агента не задан
+        var options = new BackupsOptions
+        {
+            Enabled = true,
+            S3 = new BackupsS3Options
+            {
+                Endpoint = "http://host.docker.internal:9000",
+                Bucket = "pgworker-backups",
+                AccessKey = "minioadmin",
+                SecretKey = "minioadmin",
+            },
+            Wal = new BackupsWalOptions { AgentImage = "" },
+        };
+
+        // Act / Assert
+        options.IsValid().Should().BeFalse();
+    }
+
+    // AAA: ToRuntime переносит AgentImage (пер-инсталльная настройка образа)
+    [Fact]
+    public void Wal_AgentImage_ToRuntime_переносит()
+    {
+        // Arrange
+        var options = new BackupsOptions
+        {
+            Wal = new BackupsWalOptions { AgentImage = "pgworker-wal:e2e" },
+        };
+
+        // Act / Assert
+        options.ToRuntime().WalAgentImage.Should().Be("pgworker-wal:e2e");
+    }
 }

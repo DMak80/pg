@@ -57,7 +57,10 @@ public sealed record BackupsRuntimeOptions(
     // глобальное выключение новых запусков) и бюджет активного дрилла от
     // started_unix → FAILED drill-timeout.
     int DrillIntervalDays = 1,
-    int DrillTimeoutSec = 21600)
+    int DrillTimeoutSec = 21600,
+    // t27 (arch/19 §3/§9): образ wal-агента-приёмника (per-node long-running
+    // контейнеры pgw-backup-wal-*); дефолт — локальная сборка стенда.
+    string WalAgentImage = "pgworker-wal:dev")
 {
     /// <summary>Endpoint S3 для env контейнера агента/джоба (t03, §7: адресация
     /// env, не строка команды; advertised-fallback).</summary>
