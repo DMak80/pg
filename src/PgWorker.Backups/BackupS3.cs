@@ -42,6 +42,12 @@ public interface IBackupS3
     /// отсутствие ключа в ответе не ошибка (повтор прохода безопасен).</summary>
     Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default);
 
+    /// <summary>put байтов с SHA256-проверкой целостности транспорта (t08:
+    /// экспорт etcd-слепков): ChecksumSHA256 уходит с запросом — сервер сверяет
+    /// содержимое и отвергает put при несовпадении (BadDigest); успех = байты
+    /// доставлены целыми. sha256=null — без проверки (мелкие служебные объекты).</summary>
+    Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default);
+
     /// <summary>Листинг произвольного префикса (t04, verify): prefix — относительно
     /// &lt;C&gt;/&lt;X&gt;/, напр. "wal/" | "full/&lt;id&gt;/pg_wal/"; та же пагинация list-v2
     /// через общий кор с t06 ListPrefixAsync.</summary>
@@ -209,6 +215,29 @@ public sealed class BackupS3 : IBackupS3, IAsyncDisposable
         catch (Exception e)
         {
             return Result.Failed(new ApplicationException($"S3 batch-delete: {e.Message}", e));
+        }
+    }
+
+    public async Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default)
+    {
+        try
+        {
+            var request = new PutObjectRequest
+            {
+                BucketName = _bucket,
+                Key = key,
+                InputStream = new MemoryStream(data),
+            };
+            // Канон sha256 в мете/статусе — hex (spec §3.2); транспорт AWSSDK
+            // ChecksumSHA256 ждёт BASE64-дайджест — конвертация на границе.
+            if (!string.IsNullOrEmpty(sha256))
+                request.ChecksumSHA256 = Convert.ToBase64String(Convert.FromHexString(sha256));
+            await _client.PutObjectAsync(request, ct);
+            return Result.Success();
+        }
+        catch (Exception e)
+        {
+            return Result.Failed(new ApplicationException($"S3 put {key}: {e.Message}", e));
         }
     }
 

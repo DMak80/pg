@@ -461,4 +461,47 @@ public class BackupS3Tests
         text.Value.Should().Contain("START WAL LOCATION");
         missing.IsSuccess.Should().BeFalse();
     }
+
+    // AAA (t08): put байтов с sha256 — объект читается обратно 1:1 (транспорт цел)
+    [Fact]
+    public async Task PutObject_байты_доставлены_1к1()
+    {
+        // Arrange — своё MinIO-окружение Fact'а
+        var ct = TestContext.Current.CancellationToken;
+        await using var minio = await OwnMinio.StartAsync("s3put", ct);
+        await using var s3 = new BackupS3(minio.Runtime());
+        var data = new byte[] { 1, 2, 3, 4, 5 };
+
+        // Act
+        var put = await s3.PutObjectAsync("etcd/snapshot-test.db", data, Sha256Hex(data), ct);
+
+        // Assert — прямой клиент читает те же байты
+        put.IsSuccess.Should().BeTrue();
+        using var client = SeedClient(minio);
+        var response = await client.GetObjectAsync(new GetObjectRequest { BucketName = OwnMinio.Bucket, Key = "etcd/snapshot-test.db" }, ct);
+        using var ms = new MemoryStream();
+        await response.ResponseStream.CopyToAsync(ms, ct);
+        ms.ToArray().Should().Equal(data);
+    }
+
+    // AAA (t08): несовпадающий sha256 — MinIO отвергает put (BadDigest) → Failed
+    [Fact]
+    public async Task PutObject_битый_ша_отклонён_сервером()
+    {
+        // Arrange
+        var ct = TestContext.Current.CancellationToken;
+        await using var minio = await OwnMinio.StartAsync("s3bad", ct);
+        await using var s3 = new BackupS3(minio.Runtime());
+        // 64-символьная hex-строка нулей — валидная длина, неверное значение
+        const string wrongSha = "0000000000000000000000000000000000000000000000000000000000000000";
+
+        // Act
+        var put = await s3.PutObjectAsync("etcd/snapshot-test.db", [1, 2, 3], wrongSha, ct);
+
+        // Assert — серверная проверка целостности отклонила (не Result.Success)
+        put.IsSuccess.Should().BeFalse("сервер обязан отвергнуть put с неверной чексуммой");
+    }
+
+    private static string Sha256Hex(byte[] data)
+        => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(data)).ToLowerInvariant();
 }

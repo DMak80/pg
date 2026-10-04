@@ -168,4 +168,13 @@ public sealed class FakeBackupS3 : IBackupS3
 
         return Task.FromResult(Result.Success());
     }
+
+    // t08: put байтов — объект в память (sha256 не проверяется: фейк не транспорт).
+    public Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default)
+    {
+        if (Fails)
+            return Task.FromResult(Result.Failed(new ApplicationException("s3 down")));
+        PrefixObjects.Add((key, data.Length));
+        return Task.FromResult(Result.Success());
+    }
 }

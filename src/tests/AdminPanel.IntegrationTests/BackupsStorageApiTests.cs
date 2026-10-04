@@ -174,6 +174,38 @@ public class BackupsStorageInventoryApiTests(
     }
 
     public async ValueTask DisposeAsync() => await _factory.DisposeAsync();
+
+    // AAA (t08): ключ /pgworker/etcd-snapshots попадает в DTO грани (панель
+    // читает, пишет только PgWorker); карточка живёт независимо от инвентаря.
+    [Fact]
+    public async Task Storage_EtcdSnapshots_в_DTO()
+    {
+        _factory.EnsureBuilt(); // до любого Services — иначе ленивый build без очистки кеша
+        // Arrange — свой etcd-класс серии: сид статус-ключа + тик снапшота
+        await EtcdSeed.PutAsync(etcd.Endpoint, "/pgworker/etcd-snapshots",
+            """{"enabled":true,"state":"OK","last_uploaded_unix":1759330000,"last_object":"etcd/snapshot-20261001-120000.db","last_sha256":"abc123","size_bytes":2048,"interval_min":360}""",
+            TestContext.Current.CancellationToken);
+        var refresher = _factory.Services.GetRequiredService<SnapshotRefresher>();
+        (await refresher.RefreshOnceAsync(TestContext.Current.CancellationToken))
+            .IsSuccess.Should().BeTrue();
+        using var client = await BackupsLogin.LoginAsync(_factory);
+
+        // Act
+        using var response = await client.GetAsync(
+            "/api/backups/storage", TestContext.Current.CancellationToken);
+
+        // Assert — статус выгрузки доезжает в DTO с полями факта
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        var dto = await response.Content.ReadFromJsonAsync<JsonElement>(
+            TestContext.Current.CancellationToken);
+        var export = dto.GetProperty("etcdSnapshots");
+        export.GetProperty("enabled").GetBoolean().Should().BeTrue();
+        export.GetProperty("state").GetString().Should().Be("OK");
+        export.GetProperty("lastUploadedUnix").GetInt64().Should().Be(1759330000);
+        export.GetProperty("lastSha256").GetString().Should().Be("abc123");
+        export.GetProperty("intervalMin").GetInt32().Should().Be(360);
+        export.GetProperty("sizeBytes").GetInt64().Should().Be(2048);
+    }
 }
 
 // AC3 (t08 spec §7.3): остановленный MinIO → apiOk=false/liveOk=false, инвентарь

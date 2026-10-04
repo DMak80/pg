@@ -17,7 +17,7 @@ import {
 } from '@mantine/core';
 import { useState } from 'react';
 import { Link } from 'react-router';
-import type { BackupStorageDto, MinioHealthDto, BackupOrphanDto } from '../api/dto';
+import type { BackupStorageDto, EtcdSnapshotsDto, MinioHealthDto, BackupOrphanDto } from '../api/dto';
 import { backupsQueryKeys, fetchBackupsStorage, holdOrphan, unholdOrphan } from '../api/queries';
 import { ErrorSection, LoadingSection } from '../components/LoadState';
 import { usePollingIntervalMs } from '../polling/PollingContext';
@@ -69,6 +69,7 @@ export function BackupsStoragePage() {
       <Group align="flex-start" gap="md">
         <HealthCard health={data.health} />
         <StorageCard data={data} />
+        <EtcdSnapshotsCard etcd={data.etcdSnapshots} />
         <BucketsCard buckets={data.buckets} />
       </Group>
       <ClustersTable data={data} />
@@ -150,6 +151,43 @@ function StorageCard({ data }: { data: BackupStorageDto }) {
       <Text size="sm" c="dimmed" mt="xs">
         Live-инвентарь: {data.liveUsedBytes === null ? '—' : formatBytes(data.liveUsedBytes)}
       </Text>
+    </Card>
+  );
+}
+
+// Карточка «etcd-снапшоты» (t08): последняя выгрузка слепка etcd в S3 —
+// статус OK/FAILED, время/возраст, sha256-префикс, размер, ошибка; read-only.
+function EtcdSnapshotsCard({ etcd }: { etcd: EtcdSnapshotsDto | null }) {
+  if (etcd === null) {
+    return (
+      <Card withBorder padding="md" radius="md" w={340}>
+        <Text fw={600} mb="xs">etcd-снапшоты</Text>
+        <Text c="dimmed" size="sm">Выгрузка не включена (ключа /pgworker/etcd-snapshots нет)</Text>
+      </Card>
+    );
+  }
+  const ok = etcd.state === 'OK';
+  return (
+    <Card withBorder padding="md" radius="md" w={340}>
+      <Group justify="space-between" mb="xs">
+        <Text fw={600}>etcd-снапшоты</Text>
+        <Badge color={ok ? 'green' : 'red'} variant="light">{etcd.state ?? '?'}</Badge>
+      </Group>
+      <Stack gap="xs">
+        <Text size="sm">
+          Последняя выгрузка:{' '}
+          {etcd.lastUploadedUnix === null
+            ? '—'
+            : `${formatUnix(etcd.lastUploadedUnix)} (${formatUnixAge(etcd.lastUploadedUnix)} назад)`}
+        </Text>
+        <Text size="sm" c="dimmed" ff="monospace">
+          sha256: {etcd.lastSha256 === null ? '—' : etcd.lastSha256.slice(0, 12)}
+        </Text>
+        <Text size="sm" c="dimmed">
+          размер: {etcd.sizeBytes === null ? '—' : formatBytes(etcd.sizeBytes)}
+        </Text>
+        {!ok && etcd.error !== null ? <Text size="sm" c="red">{etcd.error}</Text> : null}
+      </Stack>
     </Card>
   );
 }

@@ -190,9 +190,52 @@ public class EtcdGatewayTests
     }
 
     [Fact]
-    public async Task Snapshot_ReadsBytes()
+    public async Task Snapshot_DecodesGrpcGatewayJsonFrame()
     {
-        // Arrange — snapshot/save отвечает бинарным blob
+        // Arrange — grpc-gateway (etcd 3.5.x) отдаёт конверт {"result":{"blob":"<base64>"}},
+        // не сырые байты (t08: сырой конверт, сохранённый как слепок, — не bbolt-файл)
+        var bytes = new byte[] { 0x1a, 0x2b, 0x3c, 0x00, 0xff };
+        var frame = "{\"result\":{\"blob\":\"" + Convert.ToBase64String(bytes) + "\"}}\n";
+        var handler = new FakeHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(frame, Encoding.UTF8, "application/json"),
+        });
+        var gateway = NewGateway(handler);
+
+        // Act
+        var result = await gateway.SnapshotSaveAsync("http://etcd:2379", CancellationToken.None);
+
+        // Assert — декодированные байты слепка
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Equal(bytes);
+        handler.Requests.Single().Url.Should().Be("http://etcd:2379/v3/maintenance/snapshot");
+    }
+
+    [Fact]
+    public async Task Snapshot_ConcatenatesMultipleFrames()
+    {
+        // Arrange — стрим чанками: несколько фреймов подряд (по одному на Send)
+        var part1 = new byte[] { 0x01, 0x02, 0x03 };
+        var part2 = new byte[] { 0x04, 0x05 };
+        var body = "{\"result\":{\"blob\":\"" + Convert.ToBase64String(part1) + "\"}}\n"
+                 + "{\"result\":{\"blob\":\"" + Convert.ToBase64String(part2) + "\"}}\n";
+        var handler = new FakeHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(body, Encoding.UTF8, "application/json"),
+        });
+
+        // Act
+        var result = await NewGateway(handler).SnapshotSaveAsync("http://etcd:2379", CancellationToken.None);
+
+        // Assert — чанки склеены в один слепок
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Equal([.. part1, .. part2]);
+    }
+
+    [Fact]
+    public async Task Snapshot_PassesThroughRawBinary()
+    {
+        // Arrange — сырой бинарный поток (bbolt начинается не с '{') — как есть
         var bytes = new byte[] { 0x1a, 0x2b, 0x3c, 0x00, 0xff };
         var handler = new FakeHandler(_ => new HttpResponseMessage(HttpStatusCode.OK)
         {

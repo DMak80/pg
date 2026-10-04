@@ -848,6 +848,18 @@ export interface OrphanDeleteAcceptedDto {
   requestedBy: string;
 }
 
+// Статус выгрузки etcd-снапшотов (t08): ключ /pgworker/etcd-snapshots.
+export interface EtcdSnapshotsDto {
+  enabled: boolean;
+  state: string | null;
+  lastUploadedUnix: number | null;
+  lastObject: string | null;
+  lastSha256: string | null;
+  sizeBytes: number | null;
+  intervalMin: number | null;
+  error: string | null;
+}
+
 export interface BackupStorageDto {
   configured: boolean;
   notConfiguredReason: string | null;
@@ -856,6 +868,7 @@ export interface BackupStorageDto {
   health: MinioHealthDto | null;
   buckets: string[];
   etcd: BackupStorageEtcdDto | null;
+  etcdSnapshots: EtcdSnapshotsDto | null;
   liveUsedBytes: number | null;
   clusters: BackupClusterStorageDto[];
   foreignPrefixes: string[];

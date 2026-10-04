@@ -69,11 +69,17 @@ public sealed record MinioHealthDto(
 public sealed record BackupStorageEtcdDto(
     long UsedBytes, long? QuotaBytes, double? UsedPercent, string State, long UpdatedUnix);
 
+// Статус выгрузки etcd-снапшотов (t08): ключ /pgworker/etcd-snapshots.
+public sealed record EtcdSnapshotsDto(
+    bool Enabled, string? State, long? LastUploadedUnix, string? LastObject,
+    string? LastSha256, long? SizeBytes, int? IntervalMin, string? Error);
+
 public sealed record BackupStorageDto(
     bool Configured, string? NotConfiguredReason, string? Endpoint, string? Bucket,
     MinioHealthDto? Health,
     IReadOnlyList<string> Buckets, // бакеты установки (live-инвентарь, arch/03 §3)
     BackupStorageEtcdDto? Etcd, // ключ /pgworker/backups/storage (вердикт воркера)
+    EtcdSnapshotsDto? EtcdSnapshots, // ключ /pgworker/etcd-snapshots (t08, read-only карточка)
     long? LiveUsedBytes,        // live-инвентарь (снапшот MinioStorage)
     IReadOnlyList<BackupClusterStorageDto> Clusters,
     IReadOnlyList<string> ForeignPrefixes, // корневые префиксы вне <C>/<X> — без вердикта
@@ -171,6 +177,7 @@ public static class BackupStorageMappers
                 Configured: false,
                 NotConfiguredReason: "AdminPanel:Backups:S3:Endpoint не задан",
                 Endpoint: null, Bucket: null, Health: null, Buckets: [], Etcd: null,
+                EtcdSnapshots: MapEtcdSnapshots(snapshot.EtcdSnapshots),
                 LiveUsedBytes: null, Clusters: [], ForeignPrefixes: [], Orphans: [],
                 InventoryUpdatedUnix: 0, InventoryError: null);
         }
@@ -186,6 +193,7 @@ public static class BackupStorageMappers
             Health: MapHealth(minio.Health),
             Buckets: minio.Buckets,
             Etcd: MapEtcdStorage(snapshot.BackupStorage),
+            EtcdSnapshots: MapEtcdSnapshots(snapshot.EtcdSnapshots),
             LiveUsedBytes: minio.UsedBytes,
             Clusters: MapClusters(minio.Clusters, reconcile, snapshot.Backups),
             ForeignPrefixes: minio.ForeignPrefixes,
@@ -204,6 +212,13 @@ public static class BackupStorageMappers
         => storage is null ? null : new BackupStorageEtcdDto(
             storage.UsedBytes, storage.QuotaBytes, storage.UsedPercent,
             storage.State.ToString().ToUpperInvariant(), storage.UpdatedUnix);
+
+    // Статус выгрузки etcd-снапшотов (t08): карточка живёт в грани независимо
+    // от настроенности S3-грани панели — ключ etcd читается всегда.
+    public static EtcdSnapshotsDto? MapEtcdSnapshots(EtcdSnapshotExportInfo? export)
+        => export is null ? null : new EtcdSnapshotsDto(
+            export.Enabled, export.State, export.LastUploadedUnix, export.LastObject,
+            export.LastSha256, export.SizeBytes, export.IntervalMin, export.Error);
 
     private static IReadOnlyList<BackupClusterStorageDto> MapClusters(
         IReadOnlyList<MinioClusterNode> clusters, BackupReconcileInfo reconcile,

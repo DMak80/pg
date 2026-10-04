@@ -116,10 +116,34 @@ public sealed class EtcdGateway(HttpClient httpClient) : IEtcdGateway
                 throw new EtcdHttpException(endpoint, (int)response.StatusCode, errorBody);
             }
 
-            // Бинарный слепок БД (application/octet-stream), не JSON.
-            return await response.Content.ReadAsByteArrayAsync(ct);
+            // grpc-gateway отдаёт поток JSON-фреймов {"result":{"blob":"<base64>"}}\n
+            // (по чанку на Send) — декодируем в бинарный слепок БД; сырой бинарный
+            // поток (если endpoint отдаёт его напрямую) возвращаем как есть (t08).
+            var body = await response.Content.ReadAsByteArrayAsync(ct);
+            return DecodeSnapshotBody(body);
         });
         return result;
+    }
+
+    // Декодирование тела /v3/maintenance/snapshot: конверт grpc-gateway → байты
+    // слепка. bbolt-файл начинается не с '{' — сырой поток отличим от JSON.
+    private static byte[] DecodeSnapshotBody(byte[] body)
+    {
+        if (body.Length == 0 || body[0] != (byte)'{')
+            return body;
+        using var output = new MemoryStream();
+        // Фреймов в потоке несколько (по чанку на Send) — топ-уровень не один.
+        var reader = new Utf8JsonReader(body, new JsonReaderOptions { AllowMultipleValues = true });
+        while (reader.Read())
+        {
+            if (reader.TokenType != JsonTokenType.StartObject)
+                continue;
+            using var frame = JsonDocument.ParseValue(ref reader);
+            var blob = frame.RootElement.GetProperty("result").GetProperty("blob").GetString();
+            output.Write(Convert.FromBase64String(blob!));
+        }
+
+        return output.ToArray();
     }
 
     public async Task<Result<EtcdStatusPayload>> StatusAsync(string endpoint, CancellationToken ct)

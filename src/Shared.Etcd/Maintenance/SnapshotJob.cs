@@ -10,13 +10,16 @@ namespace Shared.Etcd.Maintenance;
 /// SnapshotLoop (лидер) и процессы в точках изменений (до/после).
 /// Обслуживание (MaintainAsync): compact кластера + последовательная
 /// дефрагментация каждой ноды — не чаще раза в MaintenanceIntervalMin.
+/// Опциональный sink (t08): каждый записанный слепок сразу уходит в
+/// ISnapshotSink.ExportAsync (выгрузка в S3); сбой sink снятие НЕ роняет.
 /// </summary>
 public sealed class SnapshotJob(
     IEtcdGateway etcd,
     string[] endpoints,
     string dir,
     int retentionFiles = 10,
-    int maintenanceIntervalMin = 60)
+    int maintenanceIntervalMin = 60,
+    ISnapshotSink? sink = null)
 {
     // Локальное время последнего обслуживания (compact + defrag).
     // Статичная переменная: переживает реконструкцию SnapshotJob (singleton),
@@ -54,6 +57,34 @@ public sealed class SnapshotJob(
                 $"snapshot-{DateTimeOffset.UtcNow:yyyyMMdd-HHmmss}.db");
             await File.WriteAllBytesAsync(path, data, ct);
             ApplyRetention();
+
+            // Экспорт слепка в S3 (t08, spec §3.4): каждый слепок — плановый и внеочередной.
+            // Ревизия — best-effort (failover по endpoints, паттерн MaintainAsync): не
+            // снялась — null, слепок не виноват. Сбой sink НЕ роняет снятие (принцип 3
+            // spec §2): статус пишет сам sink, доводка SnapshotLoop догонит.
+            if (sink is not null)
+            {
+                try
+                {
+                    long? revision = null;
+                    foreach (var endpoint in endpoints)
+                    {
+                        var status = await etcd.StatusAsync(endpoint, ct);
+                        if (status.IsSuccess)
+                        {
+                            revision = (long?)status.Value.Revision;
+                            break;
+                        }
+                    }
+
+                    await sink.ExportAsync(Path.GetFileName(path), data, revision, ct);
+                }
+                catch
+                {
+                    // транзиент экспорта не мешает снятию; ошибка — в статус-ключе sink'а
+                }
+            }
+
             return Result<string>.Success(path);
         }
         catch (Exception e)
