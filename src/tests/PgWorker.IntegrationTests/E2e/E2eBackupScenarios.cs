@@ -943,9 +943,9 @@ public class E2eBackupScenarios
             // проводит failover силами выжившей реплики.
             Console.WriteLine($"[PHASE] wal-ac4: docker stop pgw-{cluster}-shard1-{masterNode}");
             await Fx.RunDockerAsync(["stop", $"pgw-{cluster}-shard1-{masterNode}"], ct);
-            var (newMaster, _, _) = await MasterPgAsync(cluster, "shard1", ct);
-            newMaster.Should().NotBe(masterNode, "после смерти мастера primary — реплика");
-            Console.WriteLine($"[PHASE] wal-ac4: новый primary {newMaster}");
+            var (_, _, newMasterNode) = await MasterPgAsync(cluster, "shard1", ct);
+            newMasterNode.Should().NotBe(masterNode, "после смерти мастера primary — реплика");
+            Console.WriteLine($"[PHASE] wal-ac4: новый primary {newMasterNode}");
 
             // Фаза стабилизации: надзор пометил упавшую ноду unreachable и чинит её
             // repair-контуром (восстановление ноды — продуктовое поведение, минуты);
@@ -1001,10 +1001,10 @@ public class E2eBackupScenarios
             {
                 var ps = await Fx.RunDockerAsync(
                     ["ps", "--format", "{{.Names}} {{.State}}",
-                     "--filter", $"name=pgw-backup-wal-{cluster}-shard1-{newMaster}"], ct);
+                     "--filter", $"name=pgw-backup-wal-{cluster}-shard1-{newMasterNode}"], ct);
                 return ps.Contains("running");
             }, TimeSpan.FromSeconds(300), ct);
-            newAgent.Should().BeTrue($"агент новой мастер-ноды {newMaster} running");
+            newAgent.Should().BeTrue($"агент новой мастер-ноды {newMasterNode} running");
         }
         catch (Exception ex)
         {
