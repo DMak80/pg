@@ -543,38 +543,6 @@ public class E2eBackupScenarios
         }
     }
 
-    /// <summary>Штатный promote/switchover Patroni (POST /switchover): управляемая
-    /// смена мастера без «смерти» ноды — надзор не уходит в repair-контур
-    /// (восстановление упавшей ноды), WalStream продолжает тики. Новый timeline
-    /// TLI+1 создаётся switchover'ом (AC5-механика .history).</summary>
-    private async Task PatroniSwitchoverAsync(
-        string cluster, string fromNode, string toNode, CancellationToken ct)
-    {
-        var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
-        var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
-        // Switchover-запрос — на ЛЮБОГО члена контура (Patroni маршрутизирует).
-        var port = entries[$"shard1/{fromNode}"].GetProperty("patroni").GetInt32();
-        // Ретраи: switchover 400, пока Patroni не считает контур готовым
-        // (sync-кандидат должен быть назначен и догнать лидера).
-        for (var attempt = 1; ; attempt++)
-        {
-            using var content = new StringContent(
-                "{\"leader\":\"" + fromNode + "\",\"candidate\":\"" + toNode + "\"}",
-                System.Text.Encoding.UTF8, "application/json");
-            using var response = await PatroniHttp.PostAsync(
-                $"http://127.0.0.1:{port}/switchover", content, ct);
-            if (response.IsSuccessStatusCode)
-                return;
-            var body = await response.Content.ReadAsStringAsync(ct);
-            if (attempt >= 6)
-                throw new ApplicationException(
-                    $"switchover {fromNode}→{toNode}: HTTP {(int)response.StatusCode}: {body[..Math.Min(300, body.Length)]}");
-            Console.WriteLine($"[PHASE] switchover попытка {attempt}: HTTP {(int)response.StatusCode}: " +
-                $"{body[..Math.Min(200, body.Length)]} — повтор через 10 c");
-            await Task.Delay(TimeSpan.FromSeconds(10), ct);
-        }
-    }
-
     // Диагностика Patroni-контекста (sync-выбор): GET /cluster первой ноды шарда.
     private async Task<string> PatroniClusterDumpAsync(string cluster, CancellationToken ct)
     {
@@ -970,13 +938,33 @@ public class E2eBackupScenarios
 
         try
         {
-            // Act — штатный promote/switchover Patroni (лидер жив: надзор не уходит
-            // в repair-контур, WalStream продолжает тики — AC4 про роли агентов)
-            Console.WriteLine($"[PHASE] wal-ac4: switchover {masterNode} → shard1b");
-            await PatroniSwitchoverAsync(cluster, masterNode, "shard1b", ct);
+            // Act — жёсткая потеря мастер-ноды (multi-host-риск «машина отключилась
+            // целиком»): никто не делает управляемый switchover — Patroni сам
+            // проводит failover силами выжившей реплики.
+            Console.WriteLine($"[PHASE] wal-ac4: docker stop pgw-{cluster}-shard1-{masterNode}");
+            await Fx.RunDockerAsync(["stop", $"pgw-{cluster}-shard1-{masterNode}"], ct);
             var (newMaster, _, _) = await MasterPgAsync(cluster, "shard1", ct);
-            newMaster.Should().NotBe(masterNode, "после switchover primary — бывшая реплика");
+            newMaster.Should().NotBe(masterNode, "после смерти мастера primary — реплика");
             Console.WriteLine($"[PHASE] wal-ac4: новый primary {newMaster}");
+
+            // Фаза стабилизации: надзор пометил упавшую ноду unreachable и чинит её
+            // repair-контуром (восстановление ноды — продуктовое поведение, минуты);
+            // WalStream честно уходит в restore-гвард, пока шард восстанавливается.
+            // Ждём снятия unreachable циклом 30-секундных окон (каждое окно —
+            // проверка факта; суммарный лимит 600 c на восстановление ноды).
+            TestContext.Current.TestOutputHelper?.WriteLine(
+                "[PHASE] wal-ac4: ожидание снятия unreachable (repair-контур надзора)");
+            var repairDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(600);
+            while (DateTime.UtcNow < repairDeadline)
+            {
+                var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
+                var stillUnreachable = workKv?.Value?.Contains("unreachable") == true;
+                if (!stillUnreachable)
+                    break;
+                await Task.Delay(TimeSpan.FromSeconds(30), ct);
+            }
+            TestContext.Current.TestOutputHelper?.WriteLine(
+                "[PHASE] wal-ac4: repair-фаза завершена/снята — замеры ключа");
 
             // Assert — доставка продолжается (новые сегменты после смерти мастера),
             // цепочка непрерывна (CheckWithRestart), ключ не BROKEN
@@ -1079,11 +1067,13 @@ public class E2eBackupScenarios
 
         try
         {
-            // Act — штатный promote/switchover: новый timeline TLI+1
-            await PatroniSwitchoverAsync(cluster, masterNode, "shard1b", ct);
+            // Act — жёсткая потеря мастер-ноды: Patroni failover реплики открывает
+            // новый timeline (механика .history та же, что при любом promote)
+            Console.WriteLine($"[PHASE] wal-ac5: docker stop pgw-{cluster}-shard1-{masterNode}");
+            await Fx.RunDockerAsync(["stop", $"pgw-{cluster}-shard1-{masterNode}"], ct);
             await MasterPgAsync(cluster, "shard1", ct); // ждём новый primary
             var tli = await PrimaryTimelineAsync(cluster, "shard1", ct);
-            tli.Should().BeGreaterThanOrEqualTo(2u, "switchover открывает новый timeline");
+            tli.Should().BeGreaterThanOrEqualTo(2u, "failover открывает новый timeline");
 
             // Assert — .history нового TLI в S3 (приёмник запрашивает TIMELINE_HISTORY)
             var history = await E2eFixture.WaitForAsync(async () =>
