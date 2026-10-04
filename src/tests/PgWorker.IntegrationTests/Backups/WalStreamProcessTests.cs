@@ -4,6 +4,7 @@ using PgWorker.Backups.Sql;
 using PgWorker.Core.Model;
 using Shared.Etcd.Client;
 using PgWorker.Etcd.Parsing;
+using PgWorker.IntegrationTests.E2e;
 using PgWorker.IntegrationTests.Etcd;
 using PgWorker.Core.Templates;
 using PgWorker.Provisioning.Endpoints;
@@ -1126,5 +1127,41 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         driver.RemovedBackupAgents.Should().NotContain(
             n => n.Contains("shard2", StringComparison.Ordinal),
             "агент соседнего шарда — не foreign для этого шарда (регресс вечного recreate)");
+    }
+
+    // AAA (t27 Task 13, канон §3 fallback): контроль видит TLI-переход без
+    // history-объекта → docker-exec ноды (base64) → put wal/<tli>.history в S3;
+    // повторный тик — идемпотентен (exec не повторяется).
+    [Fact]
+    public async Task History_fallback_контроль_докладывает_history_при_TLI_переходе()
+    {
+        // Arrange — сегменты TLI 1 (…0001, …0002) и TLI 2 (…0002); history НЕТ;
+        // exec ноды возвращает base64 синтетики history-файла
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = $"hb1{Guid.NewGuid().ToString("N")[..6]}";
+        await SeedTwoNodeAsync(new FakeWalSqlExecutor(), null, cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        var s3 = new FakeBackupS3();
+        s3.Objects.Add((cluster, "shard1", "000000010000000000000001"));
+        s3.Objects.Add((cluster, "shard1", "000000010000000000000002"));
+        s3.Objects.Add((cluster, "shard1", "000000020000000000000002"));
+        var driver = new StubScaleDriver();
+        driver.ExecNodeResult = Convert.ToBase64String("1\t0/20000060\n"u8.ToArray());
+        var process = BuildProcess(Options(), sql, s3, driver);
+
+        // Act — тик 1: контроль находит TLI-переход без history → докладывает
+        (await process.TickAsync(BuildTwoNodeSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — history-объект в S3
+        var execCalls1 = driver.ExecNodeCalls;
+        execCalls1.Should().BeGreaterThan(0, "exec ноды за history-файлом");
+        var listed = await s3.ListWalAsync(cluster, "shard1", ct: ct);
+        listed.Value.Should().Contain(o => o.Name == "00000002.history",
+            "wal/00000002.history докладывается контролем (AC5-fallback)");
+
+        // Act/Assert — повторный тик: history уже в S3 — exec не повторяется
+        (await process.TickAsync(BuildTwoNodeSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
+        driver.ExecNodeCalls.Should().Be(execCalls1, "идемпотентность: history уже загружен");
     }
 }

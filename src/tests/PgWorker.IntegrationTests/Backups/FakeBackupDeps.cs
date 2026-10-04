@@ -178,6 +178,16 @@ public sealed class FakeBackupS3 : IBackupS3
         if (Fails)
             return Task.FromResult(Result.Failed(new ApplicationException("s3 down")));
         PrefixObjects.Add((key, data.Length));
+        // put объекта в wal/-префикс виден листингом wal/ (как реальный S3):
+        // t27 Task 13 (history-fallback) кладёт history прямым put'ом.
+        var parts = key.Split('/', 3);
+        if (parts.Length == 3 && parts[2].StartsWith("wal/", StringComparison.Ordinal))
+        {
+            var name = parts[2][4..];
+            if (!Objects.Any(o => o.Cluster == parts[0] && o.Shard == parts[1] && o.Name == name))
+                Objects.Add((parts[0], parts[1], name));
+        }
+
         return Task.FromResult(Result.Success());
     }
 

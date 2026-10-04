@@ -110,9 +110,16 @@ public sealed class StubScaleDriver : IClusterDriver
     public Task<Result> StopNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct)
         => Task.FromResult(Result.Success());
 
+    // t27 Task 13: конфигурируемый stdout exec (history-fallback) + счётчик вызовов.
+    public string ExecNodeResult { get; set; } = string.Empty;
+    public int ExecNodeCalls;
+
     public Task<Result<string>> ExecNodeAsync(
         string cluster, string shard, string node, IReadOnlyList<string> cmd, CancellationToken ct)
-        => Task.FromResult(Result<string>.Success(string.Empty));
+    {
+        ExecNodeCalls++;
+        return Task.FromResult(Result<string>.Success(ExecNodeResult));
+    }
 
     // Инспекция усыновления (adopt-repair T3): фиксированная карта находок.
     public IReadOnlyDictionary<string, DiscoveredNode> InspectResult { get; set; }

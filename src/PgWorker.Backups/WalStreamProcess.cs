@@ -511,6 +511,14 @@ public sealed class WalStreamProcess(
         // CheckWithRestart: после restore promote открывает новый TLI, старые
         // сегменты обрезаны легитимно (AC4) — дыра на TLI-границе не деградация
         var chain = WalChain.CheckWithRestart(start, objects.Select(o => o.Name));
+
+        // History-fallback (t27 Task 13, канон §3): приёмник не смог запросить
+        // TIMELINE_HISTORY во время стрима (replication-команды после
+        // START_REPLICATION сервером не обслуживаются — E2E-факт) — контроль
+        // докладывает недостающий .history docker-exec'ом ноды при TLI-переходе.
+        await DeliverMissingHistoriesAsync(
+            cluster, shard, objects, start, masterRef, adminDsn, ct);
+
         if (!chain.IsContinuous)
         {
             // Дыра: BROKEN даже без прошлого ключа (t07, AC4-тотальность) —
@@ -580,6 +588,62 @@ public sealed class WalStreamProcess(
             lastUploadedUnix, lag, error);
         await status.WriteIfChangedAsync(cluster, shard, next, ct);
         return new ControlOutcome(next); // цепочка цела (ACTIVE/DEGRADED) — супервиз разрешён
+    }
+
+    /// <summary>Доклад недостающих .history (t27 Task 13, канон §3): TLI сегментов
+    /// из objects, каждый tli > chainStart.Tli без wal/&lt;tli&gt;.history в списке —
+    /// docker-exec ноды источника (base64 — бинарная безопасность), decode → put
+    /// wal/&lt;tli:x8&gt;.history (sha256). Exec-сбой/файла нет — transient (следующий
+    /// контроль повторит; счётчик не вводим — YAGNI). Источник — мастер (жив по
+    /// определению резолва).</summary>
+    private async Task DeliverMissingHistoriesAsync(
+        string cluster, string shard, IReadOnlyList<WalObject> objects,
+        WalFileName chainStart, string masterRef, string adminDsn, CancellationToken ct)
+    {
+        var listedNames = objects.Select(o => o.Name).ToHashSet(StringComparer.Ordinal);
+        var missingTlis = objects
+            .Select(o => WalFileName.TryParse(o.Name))
+            .OfType<WalFileName>()
+            .Where(f => f.Tli > chainStart.Tli)
+            .Select(f => f.Tli)
+            .Distinct()
+            .Where(tli => !listedNames.Contains($"{tli:x8}.history"))
+            .ToList();
+        if (missingTlis.Count == 0)
+            return;
+
+        foreach (var tli in missingTlis)
+        {
+            var fileName = $"{tli:x8}.history";
+            var exec = await driver.ExecNodeAsync(cluster, shard, masterRef,
+            [
+                "sh", "-c", $"base64 -w0 /home/postgres/pgdata/pgroot/pg_wal/{fileName}",
+            ], ct);
+            if (!exec.IsSuccess || string.IsNullOrWhiteSpace(exec.Value))
+            {
+                // файла нет/нода недоступна — transient: контроль повторит (YAGNI-счётчик)
+                logger?.LogInformation("backup-wal: history {File} недоступна на {Node} — повтор следующим контролем",
+                    fileName, masterRef);
+                continue;
+            }
+
+            byte[] content;
+            try
+            {
+                content = Convert.FromBase64String(exec.Value.Trim());
+            }
+            catch (FormatException e)
+            {
+                throw new ApplicationException($"history {fileName}: битый base64 от ноды: {e.Message}", e);
+            }
+
+            var sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(content));
+            var put = await s3.PutObjectAsync($"{cluster}/{shard}/wal/{fileName}", content, sha256, ct);
+            if (!put.IsSuccess)
+                throw new ApplicationException($"put history {fileName}: {put.Error!.Message}");
+            logger?.LogInformation("backup-wal: history {File} доложена контролем ({Bytes} байт)",
+                fileName, content.Length);
+        }
     }
 
     // Разрыв цепочки (t07, arch/19 §3): BROKEN + error + граница разрыва в
