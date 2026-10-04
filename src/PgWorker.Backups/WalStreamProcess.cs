@@ -516,8 +516,7 @@ public sealed class WalStreamProcess(
         // TIMELINE_HISTORY во время стрима (replication-команды после
         // START_REPLICATION сервером не обслуживаются — E2E-факт) — контроль
         // докладывает недостающий .history docker-exec'ом ноды при TLI-переходе.
-        await DeliverMissingHistoriesAsync(
-            cluster, shard, objects, start, masterRef, adminDsn, ct);
+        await DeliverMissingHistoriesAsync(cluster, shard, objects, masterRef, ct);
 
         if (!chain.IsContinuous)
         {
@@ -598,13 +597,22 @@ public sealed class WalStreamProcess(
     /// определению резолва).</summary>
     private async Task DeliverMissingHistoriesAsync(
         string cluster, string shard, IReadOnlyList<WalObject> objects,
-        WalFileName chainStart, string masterRef, string adminDsn, CancellationToken ct)
+        string masterRef, CancellationToken ct)
     {
         var listedNames = objects.Select(o => o.Name).ToHashSet(StringComparer.Ordinal);
+        // History нужен для КАЖДОГО TLI-перехода: все TLI набора, КРОМЕ минимального
+        // (от минимального цепочка стартует — для него history-файла не существует;
+        // «tli > chainStart.Tli» недостаточно: ratchet может встать уже НОВЫМ TLI —
+        // E2E-факт t27 AC5: chain_start=TLI2 исключал 00000002.history из доклада).
+        var minTli = objects
+            .Select(o => WalFileName.TryParse(o.Name))
+            .OfType<WalFileName>()
+            .Select(f => f.Tli)
+            .Min();
         var missingTlis = objects
             .Select(o => WalFileName.TryParse(o.Name))
             .OfType<WalFileName>()
-            .Where(f => f.Tli > chainStart.Tli)
+            .Where(f => f.Tli > minTli)
             .Select(f => f.Tli)
             .Distinct()
             .Where(tli => !listedNames.Contains($"{tli:x8}.history"))
