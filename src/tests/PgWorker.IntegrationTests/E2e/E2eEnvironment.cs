@@ -55,11 +55,19 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
     public const string JobImage = "pgworker-backup:e2e";
 
+    /// <summary>Образ wal-агента-приёмника (t27, arch/19 §3): собирается рядом с
+    /// джобовым (та же ветка withMinio) — pgworker-wal:e2e.</summary>
+    public const string WalImage = "pgworker-wal:e2e";
+
     private const string MinioUser = "minioadmin";
     private const string MinioPassword = "minioadmin";
     private const string BucketName = "pgworker-backups";
 
     private readonly List<HostInstance> _hosts = [];
+
+    /// <summary>Живые host-инстансы окружения (диагностика сценариев: host.log-хвост
+    /// при падении — канон e2e-launch «что произошло» без перезапуска).</summary>
+    public IReadOnlyList<HostInstance> Hosts => _hosts;
     private readonly HttpClient _gatewayHttp = new();
     private readonly IReadOnlyList<IContainer> _etcdNodes;
     private readonly IReadOnlyList<string> _etcdNames;
@@ -171,6 +179,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private static string _serverKeyPem = "";
     private static HttpClient _healthHttp = null!;
     private static bool _jobImageReady;
+    private static bool _walImageReady;
 
     /// <summary>Подъём окружения: сеть → etcd (wait-стратегия /health) →
     /// опционально MinIO + bucket. Хост-порты — зонд свободного порта; advertise
@@ -315,6 +324,8 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 // Образ джоба: сборка из корня репо (контекст — корень: COPY docker/backup/…),
                 // один раз на процесс (статический ассет, docker-cache инкрементален).
                 await EnsureJobImageAsync(ct);
+                // Образ wal-агента-приёмника (t27): та же схема.
+                await EnsureWalImageAsync(ct);
             }
 
             return new E2eEnvironment(slug, runId, netName, etcdNodes, etcdNames, endpoints, net, minio);
@@ -760,7 +771,8 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 {
                     await File.WriteAllTextAsync(
                         Path.Combine(ArtifactsDir, $"container-{name}.log"),
-                        await E2eFixture.RunProcessAsync("docker", ["logs", "--timestamps", id]));
+                        await E2eFixture.RunProcessAsync("docker", ["logs", "--timestamps", id],
+                            CancellationToken.None, TimeSpan.FromSeconds(60)));
                 }
                 catch (Exception e)
                 {
@@ -773,7 +785,8 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 {
                     await File.WriteAllTextAsync(
                         Path.Combine(ArtifactsDir, $"container-{name}.json"),
-                        await E2eFixture.RunProcessAsync("docker", ["inspect", id]));
+                        await E2eFixture.RunProcessAsync("docker", ["inspect", id],
+                            CancellationToken.None, TimeSpan.FromSeconds(60)));
                 }
                 catch
                 {
@@ -922,6 +935,29 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 "build", "-q", "-f", $"{_root}/docker/PgWorker.Backup.Dockerfile", "-t", JobImage, _root,
             ], ct);
             _jobImageReady = true;
+        }
+        finally
+        {
+            StaticGate.Release();
+        }
+    }
+
+    // Образ wal-агента-приёмника (t27, arch/19 §3): опубликованный PgWorker.WalReceiver
+    // в dotnet/runtime; сборка один раз на процесс (статический ассет).
+    private static async Task EnsureWalImageAsync(CancellationToken ct)
+    {
+        if (_walImageReady)
+            return;
+        await StaticGate.WaitAsync(ct);
+        try
+        {
+            if (_walImageReady)
+                return;
+            await E2eFixture.RunProcessAsync("docker",
+            [
+                "build", "-q", "-f", $"{_root}/docker/PgWorker.Wal.Dockerfile", "-t", WalImage, _root,
+            ], ct);
+            _walImageReady = true;
         }
         finally
         {

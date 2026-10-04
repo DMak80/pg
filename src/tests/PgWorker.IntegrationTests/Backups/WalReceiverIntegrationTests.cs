@@ -151,7 +151,7 @@ public class WalReceiverIntegrationTests
             await GenerateWalAsync(postgres.AdminDsn, Switches, ct);
             await WaitUntilAsync(async () =>
                 (await ListSegmentsAsync(s3, cluster, shard, ct)).Names.Count >= 2,
-                TimeSpan.FromSeconds(60),
+                TimeSpan.FromSeconds(30),
                 async () =>
                 {
                     var (_, names) = await ListSegmentsAsync(s3, cluster, shard, ct);
@@ -196,7 +196,7 @@ public class WalReceiverIntegrationTests
         await GenerateWalAsync(postgres.AdminDsn, Switches, ct);
         await WaitUntilAsync(async () =>
             (await ListSegmentsAsync(s3, cluster, shard, ct)).Names.Count >= 2,
-            TimeSpan.FromSeconds(60));
+            TimeSpan.FromSeconds(30));
         cts1.Cancel();
         (await run1).Should().Be(0);
         var (_, beforeNames) = await ListSegmentsAsync(s3, cluster, shard, ct);
@@ -208,7 +208,7 @@ public class WalReceiverIntegrationTests
         {
             await WaitUntilAsync(async () =>
                 (await ListSegmentsAsync(s3, cluster, shard, ct)).Names.Count > beforeNames.Count,
-                TimeSpan.FromSeconds(60));
+                TimeSpan.FromSeconds(30));
 
             // Assert — цепочка непрерывна (дыр нет), AC1 сохраняется
             var (minName, names) = await ListSegmentsAsync(s3, cluster, shard, ct);
@@ -243,7 +243,7 @@ public class WalReceiverIntegrationTests
             await GenerateWalAsync(postgres.AdminDsn, Switches, ct);
             await WaitUntilAsync(async () =>
                 (await ListSegmentsAsync(s3, cluster, shard, ct)).Names.Count >= 1,
-                TimeSpan.FromSeconds(60));
+                TimeSpan.FromSeconds(30));
             var (_, namesBefore) = await ListSegmentsAsync(s3, cluster, shard, ct);
             var chainBefore = WalChain.Check(
                 WalFileName.TryParse(namesBefore.Min()!)!.Value, namesBefore);
@@ -252,6 +252,8 @@ public class WalReceiverIntegrationTests
             // Act AC6 — S3-обрыв: docker pause MinIO; бюджет спеки «≥1 мин»
             TestContext.Current.TestOutputHelper?.WriteLine("[PHASE] pause-wait 60s (S3 недоступен)");
             await minio.PauseAsync(ct);
+            // Длительность сценария по AC6 (≥1 мин недоступности S3), не таймаут
+            // ожидания — не увеличивать и не уменьшать.
             await Task.Delay(TimeSpan.FromSeconds(60), ct);
 
             // Assert — приёмник НЕ подтверждает за недоставленное (backpressure)
@@ -267,7 +269,7 @@ public class WalReceiverIntegrationTests
             {
                 var (_, names) = await ListSegmentsAsync(s3, cluster, shard, ct);
                 return names.Count > namesBefore.Count;
-            }, TimeSpan.FromSeconds(90));
+            }, TimeSpan.FromSeconds(30));
 
             // Assert — цепочка непрерывна, AC1 после восстановления
             var (minName, namesAfter) = await ListSegmentsAsync(s3, cluster, shard, ct);

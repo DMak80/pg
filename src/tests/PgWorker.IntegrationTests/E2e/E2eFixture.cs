@@ -39,6 +39,14 @@ public static class E2eFixture
         => RunProcessAsync("docker", args, ct);
 
     internal static async Task<string> RunProcessAsync(string file, string[] args, CancellationToken ct = default)
+        => await RunProcessAsync(file, args, ct, timeout: null);
+
+    /// <summary>Процесс с бюджетом (t27): docker-CLI изредка виснет (daemon-флэйм,
+    /// e2e-факт: teardown замер на docker logs навсегда) — по истечении дерево
+    /// процесса убивается, наружу ApplicationException (вызывающий телеметрии
+    /// глотает — «лучшими усилиями», канон e2e-launch).</summary>
+    internal static async Task<string> RunProcessAsync(
+        string file, string[] args, CancellationToken ct, TimeSpan? timeout)
     {
         var psi = new ProcessStartInfo(file, args)
         {
@@ -49,12 +57,33 @@ public static class E2eFixture
         };
         using var process = Process.Start(psi)
             ?? throw new ApplicationException($"не удалось запустить {file}");
-        var output = await process.StandardOutput.ReadToEndAsync(ct);
-        var error = await process.StandardError.ReadToEndAsync(ct);
-        await process.WaitForExitAsync(ct);
-        if (process.ExitCode != 0)
-            throw new ApplicationException($"{file} {string.Join(' ', args)} → {process.ExitCode}: {error.Trim()}");
-        return output.Trim();
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (timeout is { } budget)
+            timeoutCts.CancelAfter(budget);
+        try
+        {
+            var output = await process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
+            var error = await process.StandardError.ReadToEndAsync(timeoutCts.Token);
+            await process.WaitForExitAsync(timeoutCts.Token);
+            if (process.ExitCode != 0)
+                throw new ApplicationException($"{file} {string.Join(' ', args)} → {process.ExitCode}: {error.Trim()}");
+            return output.Trim();
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Бюджет исчерпан (не остановка host'а): убиваем дерево, наверх — отказ.
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+                // процесс мог уже выйти
+            }
+
+            throw new ApplicationException(
+                $"{file} {string.Join(' ', args)} не завершился за {timeout!.Value.TotalSeconds:0} c — убит");
+        }
     }
 
     /// <summary>

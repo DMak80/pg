@@ -136,8 +136,12 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
             var members = await probe.GetClusterAsync(node.Value, ct);
             if (!members.IsSuccess)
                 continue; // нода недоступна — пробуем следующую
+            // Patroni 3.x роль sync-члена — "sync_standby" (E2E-факт t27; поле sync
+            // у него ОТСУТСТВУЕТ), старые версии — "replica" + sync-флаг. Обе формы.
             var sync = members.Value.FirstOrDefault(m =>
-                m.Role == "replica" && m.State == "running" && m.Sync == true
+                m.State == "running"
+                && (m.Role == "sync_standby"
+                    || (m.Role == "replica" && m.Sync == true))
                 && shardNodes.ContainsKey(m.Name));
             if (sync is not null)
                 return Result<NodeAddress?>.Success(shardNodes[sync.Name]);
