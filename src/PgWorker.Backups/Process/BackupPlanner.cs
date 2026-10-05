@@ -17,18 +17,22 @@ public static class BackupPlanner
         => f.State == FullBackupStatus.Completed
            && f.Verify is not { State: BackupVerifyStatus.Failed };
 
-    // Rolling-правило (t02 + t04 + t05 §3.5 + t07 §3.2): нет ВАЛИДНОГО COMPLETED —
-    // true; иначе возраст последнего валидного (finished_unix; толерантно
-    // started_unix) больше full_max_age_sec ИЛИ wal-ключа нет (t05: цепочка
-    // сброшена restore'ом — полный переснимается немедленно, инвариант
-    // «поднятый шард всегда имеет валидную цепочку или активный полный»).
-    // Полный также обязан быть НОВЕЕ последней COMPLETED-restore шарда:
-    // restore перестраивает шард из бэкапа — до пересъёма «валидный» полный
-    // описывает прежнюю жизнь шарда. WalStream восстанавливает wal-ключ
-    // немедленно (упреждая гвард !walKeyExists — инцидент E2E-гейта t05,
-    // 2026-09-13), поэтому сигнал — не ключ, а факт restore.
+    // Rolling-правило (t02 + t04 + t05 §3.5 + t07 §3.2 + t27): нет ВАЛИДНОГО
+    // COMPLETED — true; иначе возраст последнего валидного (finished_unix;
+    // толерантно started_unix) больше full_max_age_sec. Инвариант «поднятый
+    // шард всегда имеет валидную цепочку или свежий полный» (arch/19 §2):
+    // цепочку заведёт контроль (§3) от wal_start_segment свежего COMPLETED,
+    // когда агенты донесут ПЕРВЫЙ ЗАКРЫТЫЙ сегмент — приёмник (t27) выгружает
+    // только закрытые сегменты, поэтому на шарде без нагрузки ключ wal
+    // появляется позже первого полного; прежний сигнал «ключа нет — пересъём»
+    // в этом окне давал серию полных подряд (t27 E2E-факт: 4 COMPLETED за 26 с)
+    // без пользы. Полный также обязан быть НОВЕЕ последней COMPLETED-restore
+    // шарда: restore перестраивает шард из бэкапа — до пересъёма «валидный»
+    // полный описывает прежнюю жизнь шарда (сигнал — факт restore, не ключ:
+    // WalStream восстанавливает wal-ключ немедленно — инцидент E2E-гейта t05,
+    // 2026-09-13).
     public static bool IsDue(
-        IReadOnlyList<FullBackupState> fulls, bool walKeyExists, long fullMaxAgeSec, long nowUnix,
+        IReadOnlyList<FullBackupState> fulls, long fullMaxAgeSec, long nowUnix,
         long? lastRestoreFinishedUnix = null, bool walChainBroken = false)
     {
         // t07 (arch/19 §2): BROKEN wal-ключа — пересъём безусловно (разрыв лечит
@@ -48,7 +52,7 @@ public static class BackupPlanner
         if (lastRestoreFinishedUnix is { } restored && finished <= restored)
             return true;
 
-        return nowUnix - finished > fullMaxAgeSec || !walKeyExists;
+        return nowUnix - finished > fullMaxAgeSec;
     }
 
     // Бэкофф переснятия: n = попытки после последнего ВАЛИДНОГО — FAILED-джобы +
