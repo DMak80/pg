@@ -1,14 +1,14 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
     <!-- E2E-классы изолированы каноном (guid-контуры, own-only teardown) —
-         коллекции гоняются параллельно (max 5 контуров одновременно: пул
-         docker ~30 user-сетей, движковая сеть нод одна на всех — 5 env-сетей
-         держат запас; контроль docker network ls в прогонах серий);
-         «тихие» классы с общими ассетами при конфликте — в [Collection]-группу.
-         Канон AGENTS.md «E2E-образы/E2E-изоляция». -->
+         коллекции гоняются параллельно. max 3 контура: при 5 docker-хост
+         деградирует по DNS (getaddrinfo empty в логах нод → failover-каскады,
+         e2e-факт: WalStream_Promote упал, серии шли дольше N=3), ускорения
+         нет — 5 контуров не выдерживает; «тихие» классы с общими ассетами
+         при конфликте — в [Collection]-группу. Канон AGENTS.md. -->
     <PropertyGroup>
         <XunitParallelizeTestCollections>true</XunitParallelizeTestCollections>
-        <XunitMaxParallelThreads>5</XunitMaxParallelThreads>
+        <XunitMaxParallelThreads>3</XunitMaxParallelThreads>
         <XunitParallelizeAssembly>false</XunitParallelizeAssembly>
     </PropertyGroup>
 
