@@ -108,6 +108,10 @@ public static class E2eFixture
         // Не RunProcessAsync: ошибки msbuild идут в stdout, а он включает в
         // исключение только stderr — здесь нужен хвост полного вывода в
         // сообщении (spec «фаза Г»), а не молчаливый запуск старого бинаря.
+        // MSBUILDDISABLENODEREUSE: ноды умирают вместе с процессом сборки —
+        // пережившие nodeReuse-ноды (общие с родительским dotnet test slnx)
+        // удерживают stdout-пайп навсегда → ReadToEndAsync не завершается
+        // (E2E-факт: slnx-прогон висел 10+ минут в статик-фазе «app-dll»).
         var psi = new ProcessStartInfo(
             "dotnet", ["build", Path.Combine(root, "src", "PgWorker.slnx"), "-c", "Release"])
         {
@@ -116,11 +120,25 @@ public static class E2eFixture
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
+        psi.EnvironmentVariables["MSBUILDDISABLENODEREUSE"] = "1";
         using var build = Process.Start(psi)
             ?? throw new ApplicationException("не удалось запустить dotnet build");
         var stdoutTask = build.StandardOutput.ReadToEndAsync();
         var stderrTask = build.StandardError.ReadToEndAsync();
-        await build.WaitForExitAsync();
+        // Бюджет 10 мин: инкрементальный no-op — секунды, полная пересборка —
+        // минуты; тишина дольше бюджета = зависание (fail-fast, не вечное ожидание)
+        using var budget = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+        try
+        {
+            await build.WaitForExitAsync(budget.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            build.Kill(entireProcessTree: true);
+            throw new ApplicationException(
+                "автосборка Release не завершилась за 10 мин — зависание (MSBuild-ноды/пайп);"
+                + " соберите вручную dotnet build src/PgWorker.slnx -c Release и повторите");
+        }
         var output = await stdoutTask + await stderrTask;
         if (build.ExitCode != 0)
             throw new ApplicationException(
