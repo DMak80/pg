@@ -80,9 +80,14 @@ public static class E2eFixture
             timeoutCts.CancelAfter(budget);
         try
         {
-            var output = await process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
-            var error = await process.StandardError.ReadToEndAsync(timeoutCts.Token);
+            // Оба потока — ПАРАЛЛЕЛЬНО: последовательное чтение при полном
+            // stderr и пустом stdout дедлокает пайп до бюджета (kill даст
+            // ложный «не завершился»; docker build пишет прогресс в stderr).
+            var outTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
+            var errTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
             await process.WaitForExitAsync(timeoutCts.Token);
+            var output = await outTask;
+            var error = await errTask;
             if (process.ExitCode != 0)
                 throw new ApplicationException($"{file} {string.Join(' ', args)} → {process.ExitCode}: {error.Trim()}");
             return output.Trim();

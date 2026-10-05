@@ -115,7 +115,25 @@ public sealed class NpgsqlXLogSource : IXLogReplicationSource
             // иначе копит живые walsender'ы — утечка соединений.
             await KillReplicationAsync();
             var replication = NewConnection();
-            await replication.Open(ct);
+            try
+            {
+                await replication.Open(ct);
+            }
+            catch
+            {
+                // Открытие не удалось — свежесозданное соединение гасим
+                // (симметрия с остальными ветками: ни одно соединение
+                // не переживает свой сбой).
+                try
+                {
+                    await replication.DisposeAsync();
+                }
+                catch
+                {
+                    // уже мертво
+                }
+                throw;
+            }
             _replication = replication;
             return Result.Success();
         }

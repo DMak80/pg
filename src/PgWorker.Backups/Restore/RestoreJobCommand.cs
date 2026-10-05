@@ -166,9 +166,9 @@ public static class RestoreJobCommand
         # и несёт её archive_mode=on; Patroni нового HA-scope навязывает свой
         # archive_mode=None → reload для archive_mode недостаточен → «Pending
         # restart» → отложенный рестарт postmaster рвёт соединения клиентов
-        # сразу после restore. WAL-архивация в системе — внешний pg_receivewal
-        # t03, archive_mode постгреса не используется: вычистка бэкап-контур
-        # не ломает. sed -i пересоздаёт файл под root — chown обязателен
+        # сразу после restore. WAL-архивация — wal-приёмник воркера
+        # (arch/19 §3), archive_mode постгреса не используется: вычистка
+        # бэкап-контур не ломает. sed -i пересоздаёт файл под root — chown обязателен
         # (блок chown -R выше уже прошёл).
         sed -i '/^archive_mode[[:space:]=]/d;/^archive_command[[:space:]=]/d' "$AUTO"
         chown 101:101 "$AUTO"
