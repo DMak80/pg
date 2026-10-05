@@ -9,4 +9,9 @@
     <ItemGroup>
         <ProjectReference Include="..\PgWorker.Backups\PgWorker.Backups.csproj"/>
     </ItemGroup>
+    <ItemGroup>
+        <!-- Юниты транспорта: фабрика фейковых replication-соединений
+             (счётчики открытий/закрытий — инвариант отсутствия утечек). -->
+        <InternalsVisibleTo Include="PgWorker.UnitTests"/>
+    </ItemGroup>
 </Project>
