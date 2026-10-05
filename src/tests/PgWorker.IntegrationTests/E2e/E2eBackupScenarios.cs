@@ -1106,9 +1106,16 @@ public class E2eBackupScenarios
             var (_, _, currentMaster) = await MasterPgAsync(cluster, "shard1", ct);
             Console.WriteLine($"[PHASE] wal-ac5: docker stop pgw-{cluster}-shard1-{currentMaster}");
             await Fx.RunDockerAsync(["stop", $"pgw-{cluster}-shard1-{currentMaster}"], ct);
-            await MasterPgAsync(cluster, "shard1", ct); // ждём новый primary
+            var (newMasterHost, newMasterPort, _) = await MasterPgAsync(cluster, "shard1", ct); // ждём новый primary
             var tli = await PrimaryTimelineAsync(cluster, "shard1", ct);
             tli.Should().BeGreaterThanOrEqualTo(2u, "failover открывает новый timeline");
+
+            // TLI-граница обязана попасть в ЗАКРЫТЫЙ сегмент: фоновый лоадер умер
+            // вместе со старым мастером, idle-база закрывает сегмент минутами —
+            // форсируем переключение на новом мастере (образец Drill_Failed_OnCorruptedWal).
+            var newMasterDsn = DatabaseProvisioner.BuildAdminDsn(newMasterHost, newMasterPort, cluster,
+                new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
+            await SwitchWalsAsync(newMasterDsn, 2, ct);
 
             // Assert — .history нового TLI в S3 (приёмник запрашивает TIMELINE_HISTORY)
             var history = await E2eFixture.WaitForAsync(async () =>
@@ -1587,6 +1594,20 @@ public class E2eBackupScenarios
         foreach (var (key, value) in extraEnv ?? new Dictionary<string, string>())
             env[key] = value;
         return Fx.StartHostAsync(name, extraEnv: env, ct: ct);
+    }
+
+    // Закрытие count сегментов на мастере (логические сообщения + pg_switch_wal):
+    // idle-база закрывает сегмент 16 МБ минутами — TLI-границы/хвосты форсируются
+    // (образец E2eRestoreScenarios.SwitchWalsAsync).
+    private static async Task SwitchWalsAsync(string adminDsn, int count, CancellationToken ct)
+    {
+        await using var conn = new NpgsqlConnection(adminDsn);
+        await conn.OpenAsync(ct);
+        for (var i = 0; i < count; i++)
+        {
+            await using var switchWal = new NpgsqlCommand("SELECT pg_switch_wal()", conn);
+            await switchWal.ExecuteScalarAsync(ct);
+        }
     }
 
     private async Task<IReadOnlyList<Kv>> FullKeysAsync(string cluster, string shard)
