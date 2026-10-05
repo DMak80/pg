@@ -25,6 +25,7 @@
     </Folder>
     <Folder Name="/backups/">
         <Project Path="PgWorker.Backups/PgWorker.Backups.csproj" />
+        <Project Path="PgWorker.WalReceiver/PgWorker.WalReceiver.csproj" />
     </Folder>
     <Folder Name="/app/">
         <Project Path="PgWorker.App/PgWorker.App.csproj" />

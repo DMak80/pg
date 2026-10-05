@@ -245,11 +245,11 @@ internal static class Fakes
         public List<DockerContainer> BackupAgentObjects = [];
 
         public Task<Result> EnsureBackupAgentAsync(
-            string cluster, string shard, ContainerSpec spec, string host, CancellationToken ct)
+            string cluster, string shard, string node, ContainerSpec spec, string host, CancellationToken ct)
         {
             lock (_gate)
             {
-                var name = BackupAgentNames.Container(cluster, shard);
+                var name = BackupAgentNames.Container(cluster, shard, node);
                 EnsuredBackupAgents.Add(name);
                 if (BackupAgentObjects.All(c => !c.Names.Contains("/" + name)))
                     BackupAgentObjects.Add(new DockerContainer($"id-{name}", ["/" + name], "running", spec.Image));
@@ -267,7 +267,7 @@ internal static class Fakes
                     .SelectMany(c => c.Names)
                     .Select(n => n.TrimStart('/'))
                     .Where(n => n.StartsWith(prefix, StringComparison.Ordinal))
-                    .Where(n => shard is null || n == BackupAgentNames.Container(cluster, shard))
+                    .Where(n => shard is null || n.Split('-')[0] == shard)
                     .Distinct()
                     .ToList();
                 foreach (var name in names)

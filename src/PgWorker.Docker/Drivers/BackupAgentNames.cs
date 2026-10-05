@@ -1,13 +1,13 @@
 namespace PgWorker.Docker.Drivers;
 
-/// <summary>Имена docker-объектов WAL-агентов бэкапов (arch/19 §3): контейнер
-/// pgw-backup-wal-&lt;C&gt;-&lt;X&gt; + staging volume. ЕДИНСТВЕННЫЙ источник имён для
-/// драйвера (ensure/remove/list) и WalStreamProcess (ContainerSpec).</summary>
+/// <summary>Имена docker-объектов WAL-агентов бэкапов (t27, arch/19 §3): per-node
+/// контейнеры pgw-backup-wal-&lt;C&gt;-&lt;X&gt;-&lt;N&gt; (агент на каждой ноде-источнике);
+/// staging-тома больше нет (буфер сегмента — память приёмника). ЕДИНСТВЕННЫЙ
+/// источник имён для драйвера (ensure/remove/list) и WalStreamProcess (ContainerSpec).</summary>
 public static class BackupAgentNames
 {
     public static string Prefix(string cluster) => $"pgw-backup-wal-{cluster}-";
 
-    public static string Container(string cluster, string shard) => $"pgw-backup-wal-{cluster}-{shard}";
-
-    public static string Volume(string cluster, string shard) => $"pgw-backup-wal-{cluster}-{shard}-staging";
+    public static string Container(string cluster, string shard, string node)
+        => $"pgw-backup-wal-{cluster}-{shard}-{node}";
 }

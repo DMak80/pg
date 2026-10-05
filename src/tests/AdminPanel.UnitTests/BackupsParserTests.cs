@@ -438,6 +438,28 @@ public void Parse_WalUnknownState_KeyParseError()
     result.Errors.Should().ContainSingle().Which.Key.Should().Be("/pgworker/backups/c1/s1/wal");
 }
 
+// AAA (t27 AC7): wal-ключ с полем agents (супервиз-факты per-node) читается
+// без parseErrors — панель игнорирует незнакомое поле (backwards-compat, §4)
+[Fact]
+public void Parse_WalС_Agents_БезParseErrors()
+{
+    // Arrange — новый воркер t27: wal-ключ с agents (running/exited/absent)
+    var kvs = new List<Kv>
+    {
+        new("/pgworker/backups/c1/s1/wal",
+            """{"state":"ACTIVE","slot":"pgw_bkp_c1_s1","master_node":"s1a","last_uploaded_unix":1760000000,"agents":[{"node":"s1a","state":"running"},{"node":"s1b","state":"exited"},{"node":"s1c","state":"absent"}]}""", 1),
+    };
+
+    // Act
+    var result = BackupsParser.Parse(kvs);
+
+    // Assert — панель читает известные поля, agents не ломает парсинг (AC7)
+    result.Errors.Should().BeEmpty();
+    var wal = result.Clusters.Single().Shards!["s1"];
+    wal!.State.Should().Be(WalStreamInfoState.Active);
+    wal.MasterNode.Should().Be("s1a");
+}
+
 // AAA (AC7/AC8): глобальный ключ orphans парсится; битая запись — ошибка ключа
 [Fact]
 public void Parse_Orphans_Ключ_Читается()

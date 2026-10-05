@@ -1,5 +1,17 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+    <!-- E2E-классы изолированы каноном (guid-контуры, own-only teardown) —
+         коллекции гоняются параллельно. max 3 контура: при 5 docker-хост
+         деградирует по DNS (getaddrinfo empty в логах нод → failover-каскады,
+         e2e-факт: WalStream_Promote упал, серии шли дольше N=3), ускорения
+         нет — 5 контуров не выдерживает; «тихие» классы с общими ассетами
+         при конфликте — в [Collection]-группу. Канон AGENTS.md. -->
+    <PropertyGroup>
+        <XunitParallelizeTestCollections>true</XunitParallelizeTestCollections>
+        <XunitMaxParallelThreads>3</XunitMaxParallelThreads>
+        <XunitParallelizeAssembly>false</XunitParallelizeAssembly>
+    </PropertyGroup>
+
     <ItemGroup>
         <Using Include="FluentAssertions"/>
         <Using Include="Xunit"/>
@@ -29,6 +41,7 @@
         <ProjectReference Include="..\..\PgWorker.Provisioning\PgWorker.Provisioning.csproj"/>
         <ProjectReference Include="..\..\PgWorker.Moves\PgWorker.Moves.csproj"/>
         <ProjectReference Include="..\..\PgWorker.Backups\PgWorker.Backups.csproj"/>
+        <ProjectReference Include="..\..\PgWorker.WalReceiver\PgWorker.WalReceiver.csproj"/>
         <ProjectReference Include="..\..\PgWorker.App\PgWorker.App.csproj"/>
         <!-- t04: E2E-ассерт «панельный парсер читает без parseErrors» (Assert 3 маркера). -->
         <ProjectReference Include="..\..\AdminPanel.Etcd\AdminPanel.Etcd.csproj"/>

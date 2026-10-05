@@ -14,6 +14,16 @@ namespace PgWorker.Backups.Restore;
 // Spilo-layout (§3.3): точка монтирования volume и PGDATA конфигурируются env.
 public static class RestoreJobCommand
 {
+    /// <summary>Значение env MC_HOST-alias (формат mc: MC_HOST_&lt;alias&gt;):
+    /// scheme://access:secret@authority. URL-escape кредов — секреты per-install
+    /// могут содержать спецсимволы URL. (t27: перенесено из удалённого
+    /// WalAgentCommand — джобы restore/drill/verify продолжают пользоваться.)</summary>
+    public static string McHost(string endpoint, string accessKey, string secretKey)
+    {
+        var uri = new Uri(endpoint);
+        return $"{uri.Scheme}://{Uri.EscapeDataString(accessKey)}:{Uri.EscapeDataString(secretKey)}@{uri.Authority}";
+    }
+
     public const string EnvMcHost = "MC_HOST_pgwbkp";
     public const string EnvBucket = "S3_BUCKET";
     public const string EnvSrcPrefix = "SRC_PREFIX";
@@ -57,7 +67,12 @@ public static class RestoreJobCommand
         cat > "$PGDATA/restore-wal.sh" <<'WALSH'
         #!/bin/bash
         set -o pipefail
-        exec mc cp "pgwbkp/$S3_BUCKET/$SRC_PREFIX/wal/$1" "$2"
+        # %f приходит в ВЕРХНЕМ регистре hex (XLogFileName, %08X), а объекты S3
+        # записаны приёмником строчными; S3-ключи регистрозависимы — первый же
+        # буквенный сегмент (…a-f, t27: WAL длиннее 0x9000000) давал ложный 404
+        # («Object does not exist») и обрыв recovery за полсекунды до цели.
+        SEG="${1,,}"
+        exec mc cp "pgwbkp/$S3_BUCKET/$SRC_PREFIX/wal/$SEG" "$2"
         WALSH
         chmod 755 "$PGDATA/restore-wal.sh"
 
@@ -98,6 +113,13 @@ public static class RestoreJobCommand
         printf "shared_preload_libraries = ''\n" >> "$AUTO"
         printf "ssl = off\n" >> "$AUTO"
         printf "logging_collector = off\n" >> "$AUTO"
+        # Набор, снятый pg_basebackup с РЕПЛИКИ (t27: штатный источник полных —
+        # sync-standby), несёт standby.signal источника. Вместе с recovery.signal
+        # он даёт STANDBY-старт: постгрес бесконечно ждёт новые сегменты,
+        # targeted recovery не завершается (drill/restore висят «recovering» до
+        # бюджета, restored_to_lsn не наступает). Сигнал реплики снимается —
+        # режим целевого восстановления задаёт наш recovery.signal.
+        rm -f "$PGDATA/standby.signal"
         : > "$PGDATA/recovery.signal"
         # временный локальный trust для поллинга (сокет-only; после rejoin Patroni
         # перепишет pg_hba своим конфигом)
@@ -144,9 +166,9 @@ public static class RestoreJobCommand
         # и несёт её archive_mode=on; Patroni нового HA-scope навязывает свой
         # archive_mode=None → reload для archive_mode недостаточен → «Pending
         # restart» → отложенный рестарт postmaster рвёт соединения клиентов
-        # сразу после restore. WAL-архивация в системе — внешний pg_receivewal
-        # t03, archive_mode постгреса не используется: вычистка бэкап-контур
-        # не ломает. sed -i пересоздаёт файл под root — chown обязателен
+        # сразу после restore. WAL-архивация — wal-приёмник воркера
+        # (arch/19 §3), archive_mode постгреса не используется: вычистка
+        # бэкап-контур не ломает. sed -i пересоздаёт файл под root — chown обязателен
         # (блок chown -R выше уже прошёл).
         sed -i '/^archive_mode[[:space:]=]/d;/^archive_command[[:space:]=]/d' "$AUTO"
         chown 101:101 "$AUTO"

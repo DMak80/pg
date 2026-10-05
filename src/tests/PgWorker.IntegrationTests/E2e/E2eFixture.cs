@@ -39,6 +39,29 @@ public static class E2eFixture
         => RunProcessAsync("docker", args, ct);
 
     internal static async Task<string> RunProcessAsync(string file, string[] args, CancellationToken ct = default)
+        // Дефолтный бюджет docker-CLI (ревью Фазы 7): зависший процесс обязан
+        // умирать по таймауту, а не висеть вечно; обычные команды — секунды.
+        // Долгие операции (docker build) передают бюджет явно.
+        => await RunProcessAsync(file, args, ct, timeout: TimeSpan.FromMinutes(2), env: null);
+
+    /// <summary>Env вложенных dotnet-сборок (publish/build из фикстур): долгоживущие
+    /// MSBuild/Roslyn build-server'ы и nodeReuse-ноды переживают процесс сборки и
+    /// удерживают stdout-пайп навсегда — ReadToEndAsync не получает EOF (e2e-факт:
+    /// wal:e2e publish висел 11 мин, app-dll — 10 мин). Отключаем обе формы
+    /// реюза: сборка живёт ровно столько, сколько её процесс.</summary>
+    internal static readonly IReadOnlyDictionary<string, string> NoMsBuildReuseEnv = new Dictionary<string, string>
+    {
+        ["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER"] = "1",
+        ["MSBUILDDISABLENODEREUSE"] = "1",
+    };
+
+    /// <summary>Процесс с бюджетом (t27): docker-CLI изредка виснет (daemon-флэйм,
+    /// e2e-факт: teardown замер на docker logs навсегда) — по истечении дерево
+    /// процесса убивается, наружу ApplicationException (вызывающий телеметрии
+    /// глотает — «лучшими усилиями», канон e2e-launch).</summary>
+    internal static async Task<string> RunProcessAsync(
+        string file, string[] args, CancellationToken ct, TimeSpan? timeout,
+        IReadOnlyDictionary<string, string>? env = null)
     {
         var psi = new ProcessStartInfo(file, args)
         {
@@ -47,14 +70,43 @@ public static class E2eFixture
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
+        if (env is not null)
+            foreach (var (key, value) in env)
+                psi.EnvironmentVariables[key] = value;
         using var process = Process.Start(psi)
             ?? throw new ApplicationException($"не удалось запустить {file}");
-        var output = await process.StandardOutput.ReadToEndAsync(ct);
-        var error = await process.StandardError.ReadToEndAsync(ct);
-        await process.WaitForExitAsync(ct);
-        if (process.ExitCode != 0)
-            throw new ApplicationException($"{file} {string.Join(' ', args)} → {process.ExitCode}: {error.Trim()}");
-        return output.Trim();
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        if (timeout is { } budget)
+            timeoutCts.CancelAfter(budget);
+        try
+        {
+            // Оба потока — ПАРАЛЛЕЛЬНО: последовательное чтение при полном
+            // stderr и пустом stdout дедлокает пайп до бюджета (kill даст
+            // ложный «не завершился»; docker build пишет прогресс в stderr).
+            var outTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
+            var errTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
+            await process.WaitForExitAsync(timeoutCts.Token);
+            var output = await outTask;
+            var error = await errTask;
+            if (process.ExitCode != 0)
+                throw new ApplicationException($"{file} {string.Join(' ', args)} → {process.ExitCode}: {error.Trim()}");
+            return output.Trim();
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Бюджет исчерпан (не остановка host'а): убиваем дерево, наверх — отказ.
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+                // процесс мог уже выйти
+            }
+
+            throw new ApplicationException(
+                $"{file} {string.Join(' ', args)} не завершился за {timeout!.Value.TotalSeconds:0} c — убит");
+        }
     }
 
     /// <summary>
@@ -79,6 +131,8 @@ public static class E2eFixture
         // Не RunProcessAsync: ошибки msbuild идут в stdout, а он включает в
         // исключение только stderr — здесь нужен хвост полного вывода в
         // сообщении (spec «фаза Г»), а не молчаливый запуск старого бинаря.
+        // NoMsBuildReuseEnv: build-server/ноды переживают сборку и держат
+        // stdout-пайл навсегда (E2E-факт: slnx-прогон висел 10+ мин).
         var psi = new ProcessStartInfo(
             "dotnet", ["build", Path.Combine(root, "src", "PgWorker.slnx"), "-c", "Release"])
         {
@@ -87,11 +141,26 @@ public static class E2eFixture
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
+        foreach (var (key, value) in NoMsBuildReuseEnv)
+            psi.EnvironmentVariables[key] = value;
         using var build = Process.Start(psi)
             ?? throw new ApplicationException("не удалось запустить dotnet build");
         var stdoutTask = build.StandardOutput.ReadToEndAsync();
         var stderrTask = build.StandardError.ReadToEndAsync();
-        await build.WaitForExitAsync();
+        // Бюджет 10 мин: инкрементальный no-op — секунды, полная пересборка —
+        // минуты; тишина дольше бюджета = зависание (fail-fast, не вечное ожидание)
+        using var budget = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+        try
+        {
+            await build.WaitForExitAsync(budget.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            build.Kill(entireProcessTree: true);
+            throw new ApplicationException(
+                "автосборка Release не завершилась за 10 мин — зависание (MSBuild-ноды/пайп);"
+                + " соберите вручную dotnet build src/PgWorker.slnx -c Release и повторите");
+        }
         var output = await stdoutTask + await stderrTask;
         if (build.ExitCode != 0)
             throw new ApplicationException(

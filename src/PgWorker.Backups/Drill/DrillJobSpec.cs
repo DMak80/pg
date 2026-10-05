@@ -21,7 +21,7 @@ public static class DrillJobSpec
     {
         var env = new Dictionary<string, string>
         {
-            [Restore.RestoreJobCommand.EnvMcHost] = WalAgentCommand.McHost(
+            [Restore.RestoreJobCommand.EnvMcHost] = Restore.RestoreJobCommand.McHost(
                 opts.AgentS3Endpoint, opts.S3AccessKey, opts.S3SecretKey),
             [Restore.RestoreJobCommand.EnvBucket] = opts.S3Bucket,
             [Restore.RestoreJobCommand.EnvSrcPrefix] = $"{cluster}/{shard}",

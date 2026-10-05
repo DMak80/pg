@@ -243,6 +243,16 @@ services:
     profiles: ["build"]
     entrypoint: ["true"]
 
+  # Образ WAL-агента-приёмника (t27, arch/19 §3): только сборка — сервиса нет,
+  # агентов запускает PgWorker как long-running контейнеры per-node.
+  pgworker-wal:
+    build:
+      context: ..
+      dockerfile: docker/PgWorker.Wal.Dockerfile
+    image: pgworker-wal:dev
+    profiles: ["build"]
+    entrypoint: ["true"]
+
 volumes:
   pgw-snapshots:
   pgw-api-tls:

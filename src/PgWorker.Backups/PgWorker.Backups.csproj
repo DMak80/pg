@@ -21,4 +21,8 @@
         <Using Include="Shared.Etcd.Coordination"/>
     </ItemGroup>
 
+    <ItemGroup>
+        <!-- Юниты ворк-фактов agents (t27): BuildAgentFacts — internal-функция. -->
+        <InternalsVisibleTo Include="PgWorker.UnitTests"/>
+    </ItemGroup>
 </Project>

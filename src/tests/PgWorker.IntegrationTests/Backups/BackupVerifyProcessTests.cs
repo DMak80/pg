@@ -163,7 +163,7 @@ public class BackupVerifyProcessTests
             => Task.FromResult(Result<IReadOnlyList<HostInfo>>.Success(
                 (IReadOnlyList<HostInfo>)[new HostInfo("h1", 0)]));
         public Task<Result> EnsureBackupAgentAsync(
-            string cluster, string shard, ContainerSpec spec, string host, CancellationToken ct)
+            string cluster, string shard, string node, ContainerSpec spec, string host, CancellationToken ct)
             => Task.FromResult(Result.Success());
         public Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct)
             => Task.FromResult(Result.Success());

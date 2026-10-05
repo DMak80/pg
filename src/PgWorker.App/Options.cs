@@ -442,7 +442,8 @@ public sealed class BackupsOptions
         JobVerifyTimeoutSec: Job.VerifyTimeoutSec,
         JobRestoreTimeoutSec: Job.RestoreTimeoutSec,
         DrillIntervalDays: Drill.IntervalDays,
-        DrillTimeoutSec: Drill.TimeoutSec);
+        DrillTimeoutSec: Drill.TimeoutSec,
+        WalAgentImage: Wal.AgentImage);
 
     /// <summary>Fail-fast старта (образец TLS arch/14 §2.2.1): Enabled=true
     /// обязан иметь полный S3-комплект; false — подсистема не активна.
@@ -453,7 +454,8 @@ public sealed class BackupsOptions
                 && !string.IsNullOrWhiteSpace(S3.Bucket)
                 && !string.IsNullOrWhiteSpace(S3.AccessKey)
                 && !string.IsNullOrWhiteSpace(S3.SecretKey)
-                && !string.IsNullOrWhiteSpace(Job.Image)))
+                && !string.IsNullOrWhiteSpace(Job.Image)
+                && !string.IsNullOrWhiteSpace(Wal.AgentImage)))   // t27: образ wal-агента
            && Quota.WarnPercent < Quota.CritPercent
            && Quota.CritPercent <= 100
            && Retention.IntervalSec >= 60
@@ -616,7 +618,8 @@ public sealed class BackupsAgentOptions
 }
 
 /// <summary>WAL-поток шарда (t03, arch/19 §3/§9): период list/контроля цепочки,
-/// порог отставания в сегментах, порог тишины загрузок.</summary>
+/// порог отставания в сегментах, порог тишины загрузок; t27 — образ
+/// wal-агента-приёмника (per-node long-running контейнеры).</summary>
 public sealed class BackupsWalOptions
 {
     public int VerifyIntervalSec { get; set; } = 30;
@@ -624,4 +627,8 @@ public sealed class BackupsWalOptions
     public int LagMaxSegments { get; set; } = 1024;
 
     public int StaleSec { get; set; } = 300;
+
+    /// <summary>Образ wal-агента-приёмника (t27, arch/19 §3/§9): дефолт —
+    /// локальная сборка стенда; E2E — pgworker-wal:e2e.</summary>
+    public string AgentImage { get; set; } = "pgworker-wal:dev";
 }

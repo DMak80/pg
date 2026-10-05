@@ -121,9 +121,34 @@ public class RestoreJobCommandTests
 
         // Assert
         script.Should().Contain("restore-wal.sh");
-        script.Should().Contain(@"exec mc cp ""pgwbkp/$S3_BUCKET/$SRC_PREFIX/wal/$1"" ""$2""");
+        // %f верхним регистром (XLogFileName %08X) нормализуется в строчный:
+        // S3-ключи регистрозависимы, объекты записаны приёмником строчными
+        // (t27-факт: первый буквенный сегмент …000a давал ложный 404)
+        script.Should().Contain(@"SEG=""${1,,}""");
+        script.Should().Contain(@"exec mc cp ""pgwbkp/$S3_BUCKET/$SRC_PREFIX/wal/$SEG"" ""$2""");
         script.Should().Contain("restore_command = '/bin/bash");
         script.Should().Contain("""recovery.signal""");
+    }
+
+    // AAA: standby.signal источника снимается ДО старта postgres — набор,
+    // снятый pg_basebackup с реплики (t27: источник полных — sync-standby),
+    // содержит её standby.signal; вместе с recovery.signal он даёт STANDBY-старт:
+    // постгрес бесконечно ждёт новые сегменты, targeted recovery не завершается
+    // (E2E-факт t27: drill-джоб «recovering» до бюджета, restored_to_lsn не
+    // наступает). Порядок: rm — до recovery.signal (оба сигнала управляют
+    // режимом на старте postmaster).
+    [Fact]
+    public void Build_StandbySignalRemoved_BeforeRecoveryStart()
+    {
+        // Arrange / Act
+        var script = RestoreJobCommand.Build()[2];
+
+        // Assert — сигнал реплики-источника снесён, targeted recovery — свой
+        script.Should().Contain(@"rm -f ""$PGDATA/standby.signal""");
+        script.IndexOf(@"rm -f ""$PGDATA/standby.signal""", StringComparison.Ordinal)
+            .Should().BeLessThan(
+                script.IndexOf(@": > ""$PGDATA/recovery.signal""", StringComparison.Ordinal),
+                "режим старта определяется сигналами до запуска postmaster");
     }
 
     // AAA: env-имена контракта джоба (§3.3) — константы для спеки (Task 5).

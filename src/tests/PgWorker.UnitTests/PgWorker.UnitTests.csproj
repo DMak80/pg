@@ -30,6 +30,7 @@
         <ProjectReference Include="..\..\PgWorker.Provisioning\PgWorker.Provisioning.csproj"/>
         <ProjectReference Include="..\..\PgWorker.Moves\PgWorker.Moves.csproj"/>
         <ProjectReference Include="..\..\PgWorker.Backups\PgWorker.Backups.csproj"/>
+        <ProjectReference Include="..\..\PgWorker.WalReceiver\PgWorker.WalReceiver.csproj"/>
         <ProjectReference Include="..\..\PgWorker.App\PgWorker.App.csproj"/>
     </ItemGroup>
 

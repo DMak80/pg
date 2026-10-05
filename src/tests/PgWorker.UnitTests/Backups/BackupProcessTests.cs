@@ -249,7 +249,7 @@ public class BackupProcessTests
 
         // WAL-агенты (t03): в тестах джобов не используются.
         public Task<Result> EnsureBackupAgentAsync(
-            string cluster, string shard, ContainerSpec spec, string host, CancellationToken ct) => throw NotSupported();
+            string cluster, string shard, string node, ContainerSpec spec, string host, CancellationToken ct) => throw NotSupported();
         public Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct) => throw NotSupported();
         public Task<Result<IReadOnlyList<DockerContainer>>> ListBackupAgentsAsync(string cluster, CancellationToken ct) => throw NotSupported();
     }

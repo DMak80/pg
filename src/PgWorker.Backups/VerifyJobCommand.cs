@@ -1,7 +1,7 @@
 namespace PgWorker.Backups;
 
 /// <summary>Билдер inline bash-команды verify-джоба (arch/19 §2/§5, t04; паттерн
-/// WalAgentCommand): скачивание full/&lt;id&gt;/ 1:1 в staging (mc) → pg_verifybackup
+/// RestoreJobCommand.McHost): скачивание full/&lt;id&gt;/ 1:1 в staging (mc) → pg_verifybackup
 /// (manifest SHA256, вкл. pg_wal/ набора). Протокол t02: result-JSON в stdout +
 /// exit-код; вывод утилиты — stderr. S3-креды — ТОЛЬКО env (MC_HOST_pgw собирает
 /// воркер; секреты не в argv/ps). Статус PENDING/OK/FAILED пишет воркер — джоб

@@ -646,6 +646,51 @@ public class E2eRestoreScenarios
         // Журнал воркера целиком (политика телеметрии: без обрезок — по нему
         // отвечают «почему фаза не уложилась»; объёмы в e2e — единицы КБ).
         var journal = workKv?.Value ?? "<absent>";
+        // PG-лог restore-джоба (/tmp/restore-pg.log в контейнере): какие сегменты
+        // запрашивал restore_command, где сорвалось (t27-разбор: mc-404 существующего).
+        var pgLog = "";
+        try
+        {
+            var psJobs = await Fx.RunDockerAsync(
+            ["ps", "-a", "--format", "{{.Names}}", "--filter", $"name=pgw-backup-restore-{cluster}-"],
+            TestContext.Current.CancellationToken);
+            foreach (var line in psJobs.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var name = line.Trim().Split(' ')[0];
+                var copied = Path.Combine(Path.GetTempPath(), $"pgw-restore-pg-{cluster}.log");
+                try
+                {
+                    await E2eFixture.RunProcessAsync("docker", ["cp", $"{name}:/tmp/restore-pg.log", copied],
+                        TestContext.Current.CancellationToken);
+                    var text = File.ReadAllText(copied);
+                    pgLog += $"\n== {name}:\n{text[..Math.Min(4000, text.Length)]}";
+                }
+                catch (Exception cp)
+                {
+                    pgLog += $"\n== {name}: лог недоступен ({cp.Message})";
+                }
+
+                // Видимость сегментов ИЗ ЖИВОГО джоба (тот же mc/alias/сеть):
+                // t27-разбор — restore_command получил 404 на сегмент, который в S3 есть.
+                try
+                {
+                    var live = await E2eFixture.RunProcessAsync("docker", ["exec", name, "bash", "-c",
+                        "ls /tmp/.mc 2>/dev/null | head -3; for s in 000000010000000000000009 00000001000000000000000a 00000001000000000000000b; do " +
+                        "mc stat \"pgwbkp/$S3_BUCKET/$SRC_PREFIX/wal/$s\" 2>&1 | head -2; done"],
+                        TestContext.Current.CancellationToken);
+                    pgLog += $"\n== {name} MC-STAT(живой):\n{live[..Math.Min(1500, live.Length)]}";
+                }
+                catch (Exception ex)
+                {
+                    pgLog += $"\n== {name} MC-STAT: недоступен ({ex.Message})";
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            pgLog = $"\npg-log failed: {e.Message}";
+        }
+
         return $"journal=[{journal}] " +
                $"restores=[{string.Join(";", (restoreKvs.Value ?? []).Select(k => k.Value))}] " +
                $"fulls=[{string.Join(";", fullKvs.Select(k => k.Value))}] " +
@@ -653,7 +698,8 @@ public class E2eRestoreScenarios
                $"wal=[{string.Join(",", walNames.OrderBy(n => n, StringComparer.Ordinal))}] " +
                $"patroniScope=[{scopeDump}] " +
                $"nodes=[{nodeDump}] " +
-               $"jobs=[{jobs}]";
+               $"jobs=[{jobs}]" +
+               $"RESTORE.PG.LOG:{pgLog}";
     }
 
     // Range Failed (разовый сбой etcd/транспорт) — пустой список: поллинг

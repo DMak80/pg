@@ -163,10 +163,12 @@ public sealed class BackupProcess(
             if (!hbaPatched)
                 continue;
 
-            // G3: новый полный — только без активного, при due (возраст ИЛИ
-            // отсутствие wal-ключа после restore, t05 §3.5, ИЛИ полный старее
-            // последней restore — WalStream восстанавливает ключ быстрее тика,
-            // инцидент E2E-гейта t05; t07: BROKEN wal-ключа — пересъём безусловно)
+            // G3: новый полный — только без активного, при due (возраст, ИЛИ
+            // валидного COMPLETED нет вовсе — инвариант «свежий полный заведёт
+            // цепочку от своего wal_start», t27: пересъём в окне до первого
+            // закрытого сегмента бессмыслен; ИЛИ полный старее последней
+            // restore — WalStream восстанавливает ключ быстрее тика, инцидент
+            // E2E-гейта t05; t07: BROKEN wal-ключа — пересъём безусловно)
             // и после бэкоффа.
             // t07 (прогон 2026-09-13, arch/19 §2): BROKEN-пересъём — только пока
             // разрыв НЕ покрыт: COMPLETED-полный с wal_start ≥ границы разрыва
@@ -188,8 +190,7 @@ public sealed class BackupProcess(
                 && fulls.Any(f => f.State == FullBackupStatus.Completed
                     && f.WalStartSegment is { Length: > 0 } walStart
                     && string.CompareOrdinal(walStart, boundary) >= 0);
-            if (!BackupPlanner.IsDue(fulls, walKeyExists: shardBackups?.Wal is not null,
-                    fullMaxAgeSec, nowUnix, lastRestoreFinished,
+            if (!BackupPlanner.IsDue(fulls, fullMaxAgeSec, nowUnix, lastRestoreFinished,
                     walChainBroken: brokenBoundary is not null && !breakCovered))
                 continue;
             if (!BackupPlanner.BackoffPassed(fulls, options.RetryBaseSec, options.RetryMaxSec, nowUnix))

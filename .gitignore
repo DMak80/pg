@@ -27,3 +27,4 @@ src/AdminPanel.Api/wwwroot/
 
 # Секреты установки PgWorker (deploy/.env; шаблон — deploy/.env.example)
 deploy/.env
+artifacts/

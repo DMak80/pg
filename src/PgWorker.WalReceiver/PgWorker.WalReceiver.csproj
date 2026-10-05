@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <!-- Приёмник WAL (t27, arch/19 §3): физическая репликация Npgsql + доставка
+         сегментов в S3 (IBackupS3 из Backups). Отдельный образ pgworker-wal (§2). -->
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\PgWorker.Backups\PgWorker.Backups.csproj"/>
+    </ItemGroup>
+    <ItemGroup>
+        <!-- Юниты транспорта: фабрика фейковых replication-соединений
+             (счётчики открытий/закрытий — инвариант отсутствия утечек). -->
+        <InternalsVisibleTo Include="PgWorker.UnitTests"/>
+    </ItemGroup>
+</Project>

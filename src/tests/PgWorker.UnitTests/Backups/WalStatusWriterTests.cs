@@ -124,6 +124,84 @@ public class WalStatusWriterTests
         gateway.Store["/pgworker/backups/c1/shard1/wal"].Should().Be(WalStatusWriter.ToJson(Sample()));
     }
 
+    // ---- t27: поле agents (супервиз-факты per-node, arch/19 §4, AC7) ----
+
+    // AAA: writer с Agents → JSON содержит agents в канонической форме
+    [Fact]
+    public void ToJson_с_Agents_содержит_поле()
+    {
+        // Arrange — два агента per-node: мастер running, sync exited
+        var state = Sample() with { Agents =
+        [
+            new WalAgentState("shard1a", WalAgentPresence.Running),
+            new WalAgentState("shard1b", WalAgentPresence.Exited),
+        ] };
+
+        // Act
+        var json = WalStatusWriter.ToJson(state);
+
+        // Assert — формат канона arch/19 §4
+        json.Should().Contain("\"agents\":[{\"node\":\"shard1a\",\"state\":\"running\"}," +
+            "{\"node\":\"shard1b\",\"state\":\"exited\"}]");
+    }
+
+    // AAA: без Agents поле НЕ пишется (обратно совместимо, опционально)
+    [Fact]
+    public void ToJson_без_Agents_поля_нет()
+    {
+        // Arrange / Act
+        var json = WalStatusWriter.ToJson(Sample());
+
+        // Assert
+        json.Should().NotContain("agents");
+    }
+
+    // AAA: парсинг старого JSON (без agents) → Agents == null (AC7)
+    [Fact]
+    public async Task Parse_старый_JSON_без_agents_Agents_null()
+    {
+        // Arrange — «старый» воркер: ключ без agents
+        var gateway = new FakeEtcdGateway();
+        var writer = new WalStatusWriter(gateway, ["http://test"]);
+        gateway.Store["/pgworker/backups/c1/shard1/wal"] = WalStatusWriter.ToJson(Sample());
+
+        // Act
+        var read = await writer.ReadAsync("c1", "shard1", ct: TestContext.Current.CancellationToken);
+
+        // Assert
+        read.IsSuccess.Should().BeTrue();
+        read.Value.Should().NotBeNull();
+        read.Value!.Agents.Should().BeNull();
+    }
+
+    // AAA: парсинг JSON с agents → список на месте (roundtrip running/exited/absent)
+    [Fact]
+    public async Task Parse_с_agents_список_на_месте()
+    {
+        // Arrange
+        var state = Sample() with { Agents =
+        [
+            new WalAgentState("shard1a", WalAgentPresence.Running),
+            new WalAgentState("shard1b", WalAgentPresence.Exited),
+            new WalAgentState("shard1c", WalAgentPresence.Absent),
+        ] };
+        var gateway = new FakeEtcdGateway();
+        var writer = new WalStatusWriter(gateway, ["http://test"]);
+        gateway.Store["/pgworker/backups/c1/shard1/wal"] = WalStatusWriter.ToJson(state);
+
+        // Act
+        var read = await writer.ReadAsync("c1", "shard1", ct: TestContext.Current.CancellationToken);
+
+        // Assert — все три состояния прочитаны (AC7)
+        read.IsSuccess.Should().BeTrue(read.Error?.Message);
+        read.Value!.Agents.Should().NotBeNull();
+        read.Value.Agents.Should().HaveCount(3);
+        read.Value.Agents![0].Node.Should().Be("shard1a");
+        read.Value.Agents![0].State.Should().Be(WalAgentPresence.Running);
+        read.Value.Agents![1].State.Should().Be(WalAgentPresence.Exited);
+        read.Value.Agents![2].State.Should().Be(WalAgentPresence.Absent);
+    }
+
     [Fact]
     public async Task WriteIfChanged_изменение_state_перезаписывает()
     {
