@@ -1,5 +1,15 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
+    <!-- E2E-классы изолированы каноном (guid-контуры, own-only teardown) —
+         коллекции гоняются параллельно (max 3 контура одновременно, лимит
+         docker-сетей); «тихие» классы с общими ассетами при конфликте —
+         в [Collection]-группу. Канон AGENTS.md «E2E-образы/E2E-изоляция». -->
+    <PropertyGroup>
+        <XunitParallelizeTestCollections>true</XunitParallelizeTestCollections>
+        <XunitMaxParallelThreads>3</XunitMaxParallelThreads>
+        <XunitParallelizeAssembly>false</XunitParallelizeAssembly>
+    </PropertyGroup>
+
     <ItemGroup>
         <Using Include="FluentAssertions"/>
         <Using Include="Xunit"/>

@@ -158,6 +158,23 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// не существует никогда.</summary>
     public string EtcdContainerName => $"pgw-ee1-{_runId}";
 
+    /// <summary>[PHASE]-метка статических фаз подготовки: Console (в лог факта)
+    /// + ФАЙЛ /tmp/pgw-e2e-static-phase.log — xUnit буферизует Console до конца
+    /// факта, файл виден наблюдателю во время «тихих» фаз (канон e2e-launch).</summary>
+    private static void StaticPhase(string message)
+    {
+        var line = $"{DateTime.UtcNow:HH:mm:ss} [PHASE] e2e-static: {message}";
+        Console.WriteLine(line);
+        try
+        {
+            File.AppendAllText("/tmp/pgw-e2e-static-phase.log", line + Environment.NewLine);
+        }
+        catch
+        {
+            // файловая телеметрия — «лучшими усилиями», не роняет подготовку
+        }
+    }
+
     /// <summary>Имя docker-сети окружения (уникально на прогон) — удаляется в
     /// teardown'е самими (ryuk не гарант), отсутствие проверяется ассертом.</summary>
     public string NetName { get; }
@@ -906,21 +923,23 @@ public sealed class E2eEnvironment : IAsyncDisposable
             // Корень репозитория и артефакты: от каталога тестовой сборки вверх.
             _root = E2eFixture.FindRoot(AppContext.BaseDirectory);
             // Автосборка Release до docker-сборок (быстрый fail); NOBUILD — лазейка t09.
-            Console.WriteLine("[PHASE] e2e-env static: app-dll Release-сборка…");
+            // [PHASE]-метки дублируются в ФАЙЛ: xUnit буферизует Console статических
+            // фаз до конца факта, файл виден наблюдателю в реальном времени.
+            StaticPhase("app-dll Release-сборка…");
             await E2eFixture.EnsureAppDllAsync(
-                _root, Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") == "1"); // [PHASE] выше
+                _root, Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") == "1");
             _appDll = Path.Combine(_root, "src", "PgWorker.App", "bin", "Release", "net10.0", "PgWorker.App.dll");
 
             // Образ узла (задача 25): собирается ДО запуска процессов; docker-cache
             // делает повторные сборки инкрементальными. ПЕРЕДАЧА КОНТЕКСТА (COPY src)
             // — самая «тихая» фаза: метки до/после обязательны (канон e2e-launch).
             var nodeSw = System.Diagnostics.Stopwatch.StartNew();
-            Console.WriteLine("[PHASE] e2e-env static: docker build pgworker-node:e2e (контекст src — может молчать минуты)…");
+            StaticPhase("docker build pgworker-node:e2e — передача контекста src, может молчать минуты (норма)…");
             await E2eFixture.RunProcessAsync("docker",
             [
                 "build", "-q", "-f", $"{_root}/docker/node/Dockerfile", "-t", NodeImage, _root,
             ], ct);
-            Console.WriteLine($"[PHASE] e2e-env static: pgworker-node:e2e готов за {nodeSw.Elapsed.TotalSeconds:F0} с");
+            StaticPhase($"pgworker-node:e2e готов за {nodeSw.Elapsed.TotalSeconds:F0} с");
 
             _staticReady = true;
         }
@@ -943,14 +962,13 @@ public sealed class E2eEnvironment : IAsyncDisposable
             // .NET-publish не нужен; узкий контекст docker/ (без «тихой» передачи
             // корня репозитория), вывод — без -q, с [PHASE]-меткой и таймингом.
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            Console.WriteLine($"[PHASE] e2e-image {JobImage}: docker build (контекст docker/)…");
+            StaticPhase($"e2e-image {JobImage}: docker build (контекст docker/)…");
             var buildLog = await E2eFixture.RunProcessAsync("docker",
             [
                 "build", "-f", $"{_root}/docker/PgWorker.Backup.E2E.Dockerfile", "-t", JobImage,
                 $"{_root}/docker",
             ], ct);
-            Console.WriteLine($"[PHASE] e2e-image {JobImage}: готов за {sw.Elapsed.TotalSeconds:F0} с\n" +
-                buildLog[^Math.Min(500, buildLog.Length)..]);
+            StaticPhase($"e2e-image {JobImage}: готов за {sw.Elapsed.TotalSeconds:F0} с");
             _jobImageReady = true;
         }
         finally
@@ -973,19 +991,18 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 return;
             var outDir = Path.Combine(_root, "artifacts", "e2e", "wal");
             var sw = System.Diagnostics.Stopwatch.StartNew();
-            Console.WriteLine($"[PHASE] e2e-image {WalImage}: dotnet publish WalReceiver (host)…");
+            StaticPhase($"e2e-image {WalImage}: dotnet publish WalReceiver (host)…");
             await E2eFixture.RunProcessAsync("dotnet",
             [
                 "publish", $"{_root}/src/PgWorker.WalReceiver/PgWorker.WalReceiver.csproj",
                 "-c", "Release", "-o", outDir, "--nologo",
             ], ct);
-            Console.WriteLine($"[PHASE] e2e-image {WalImage}: publish готов за {sw.Elapsed.TotalSeconds:F0} с — docker build (контекст artifacts/e2e/wal)…");
+            StaticPhase($"e2e-image {WalImage}: publish готов за {sw.Elapsed.TotalSeconds:F0} с — docker build (контекст artifacts/e2e/wal)…");
             var buildLog = await E2eFixture.RunProcessAsync("docker",
             [
                 "build", "-f", $"{_root}/docker/PgWorker.Wal.E2E.Dockerfile", "-t", WalImage, outDir,
             ], ct);
-            Console.WriteLine($"[PHASE] e2e-image {WalImage}: готов за {sw.Elapsed.TotalSeconds:F0} с (publish+build)\n" +
-                buildLog[^Math.Min(500, buildLog.Length)..]);
+            StaticPhase($"e2e-image {WalImage}: готов за {sw.Elapsed.TotalSeconds:F0} с (publish+build)");
             _walImageReady = true;
         }
         finally
