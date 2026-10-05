@@ -41,6 +41,22 @@ public class E2eRetentionScenarios
         // Уникальное имя кластера на прогон: движковые контейнеры/тома (pgw-<C>-*,
         // pgw-backup-*-<C>-*) опознаются teardown'ом окружения по своему тегу.
         var cluster = $"bkret{Fx.ClusterTag}";
+        try
+        {
+            await ScenarioAsync(cluster, ct);
+        }
+        catch
+        {
+            // Канон e2e-launch: упавший сценарий помечается MarkFailed — teardown
+            // снимает телеметрию и ОСТАНАВЛИВАЕТ контур, не удаляя его (разбор
+            // по живым данным; зачистка вручную по README-cleanup.txt).
+            Fx.MarkFailed();
+            throw;
+        }
+    }
+
+    private async Task ScenarioAsync(string cluster, CancellationToken ct)
+    {
         await SeedClusterAsync(cluster);
         await G.PutAsync(Endpoint, $"/pgworker/backups/{cluster}/policy",
             """{"retention":{"days":1,"weeks":0,"months":0},"full_max_age_sec":600,"verify":{"on_create":false}}""",
@@ -57,7 +73,7 @@ public class E2eRetentionScenarios
         var (pgHost, pgPort) = await MasterPgAsync(cluster, "shard1", ct);
         var adminDsn = DatabaseProvisioner.BuildAdminDsn(pgHost, pgPort, cluster,
             new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
-        await SwitchWalsAsync(adminDsn, 16, ct);
+        await GenerateWalAsync(adminDsn, 6, ct);
 
         // Arrange 4 — реальный COMPLETED полный; при слишком низком wal_start
         // (гонка старта джоба с генерацией) — переснимаем: чистим ключи,
@@ -164,10 +180,10 @@ public class E2eRetentionScenarios
             if (parsed is { } w && (long)w.Log * 256 + w.Seg >= 5)
                 return (done.Key.Split('/').Last(), walSeg!);
 
-            // Позиция мала (гонка старта джоба с генерацией WAL) — дожимаем
-            // переключения и переснимаем полный с чистого листа
+            // Позиция мала (рестартпоинт реплики ещё не взял позицию нагрузки) —
+            // дожимаем генерацией и переснимаем полный с чистого листа
             Assert.True(attempt < 3, "полный так и не встал выше позиции 5 по wal_start");
-            await SwitchWalsAsync(adminDsn, 16, ct);
+            await GenerateWalAsync(adminDsn, 6, ct);
             await G.DeleteAsync(Endpoint, $"/pgworker/backups/{cluster}/shard1/full/",
                 prefix: true, ct);
         }
@@ -274,15 +290,39 @@ public class E2eRetentionScenarios
 
     // pg_switch_wal × n (superuser-only): форсированное закрытие пустых
     // сегментов 16 МБ — wal_start будущего полного уходит выше позиции посева.
-    private static async Task SwitchWalsAsync(string adminDsn, int count, CancellationToken ct)
+    // Гарантированная генерация WAL под standby-съём полных: START WAL LOCATION
+    // backup_label'а = REDO последнего рестартпоинта sync-реплики, а рестартпоинт
+    // подтягивается только checkpoint-записью мастера — серия pg_switch_wal
+    // записей не создаёт, и wal_start полных «прилипает» к рестартпоинту
+    // provisioning-эпохи (E2E-факт t27: 4 полных подряд с wal_start < 5).
+    // INSERT-нагрузка (каждый коммит синхронно подтверждён репликой — WAL
+    // физически в pg_wal обеих нод) + CHECKPOINT форсируют запись выше
+    // переключений → рестартпоинт реплики берёт позицию нагрузки.
+    private static async Task GenerateWalAsync(string adminDsn, int iterations, CancellationToken ct)
     {
         await using var conn = new NpgsqlConnection(adminDsn);
         await conn.OpenAsync(ct);
-        for (var i = 0; i < count; i++)
+        try
         {
+            await using (var create = new NpgsqlCommand(
+                "CREATE TABLE IF NOT EXISTS wal_load(id bigserial, payload text)", conn))
+                await create.ExecuteNonQueryAsync(ct);
+        }
+        catch (Npgsql.PostgresException e) when (e.SqlState == "23505")
+        {
+            // Гонка CREATE IF NOT EXISTS двух сессий (catalog-индекс): таблица
+            // создаётся другой сессией — не ошибка нагрузки.
+        }
+        for (var i = 0; i < iterations; i++)
+        {
+            await using var insert = new NpgsqlCommand(
+                "INSERT INTO wal_load(payload) SELECT repeat('x', 1048576) FROM generate_series(1, 8)", conn);
+            await insert.ExecuteNonQueryAsync(ct);
             await using var switchWal = new NpgsqlCommand("SELECT pg_switch_wal()", conn);
             await switchWal.ExecuteScalarAsync(ct);
         }
+        await using var checkpoint = new NpgsqlCommand("CHECKPOINT", conn);
+        await checkpoint.ExecuteNonQueryAsync(ct);
     }
 
     // Условие готовности provisioning: config без state + dsn + нода RUNNING.
