@@ -602,19 +602,15 @@ public sealed class WalStreamProcess(
         var listedNames = objects.Select(o => o.Name).ToHashSet(StringComparer.Ordinal);
         if (listedNames.Count == 0)
             return; // сегментов нет — докладывать нечего
-        // History нужен для КАЖДОГО TLI-перехода: все TLI набора, КРОМЕ минимального
-        // (от минимального цепочка стартует — для него history-файла не существует;
-        // «tli > chainStart.Tli» недостаточно: ratchet может встать уже НОВЫМ TLI —
-        // E2E-факт t27 AC5: chain_start=TLI2 исключал 00000002.history из доклада).
-        var minTli = objects
-            .Select(o => WalFileName.TryParse(o.Name))
-            .OfType<WalFileName>()
-            .Select(f => f.Tli)
-            .Min();
+        // History нужен для КАЖДОГО TLI-перехода: все TLI набора > 1 без
+        // wal/<tli>.history в списке. НЕ «кроме минимального»: history-файл не
+        // бывает только у TLI 1; если минимальный TLI набора > 1 (контур
+        // стартовал уже на новом таймлайне — приёмники донесли сегменты без
+        // предыстории, E2E-факт t27 AC5), склейка без его history невозможна.
         var missingTlis = objects
             .Select(o => WalFileName.TryParse(o.Name))
             .OfType<WalFileName>()
-            .Where(f => f.Tli > minTli)
+            .Where(f => f.Tli > 1)
             .Select(f => f.Tli)
             .Distinct()
             .Where(tli => !listedNames.Contains($"{tli:x8}.history"))

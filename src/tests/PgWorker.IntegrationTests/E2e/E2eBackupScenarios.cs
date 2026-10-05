@@ -368,10 +368,18 @@ public class E2eBackupScenarios
         var agents = await Fx.RunDockerAsync(
             ["ps", "--filter", $"name=pgw-backup-wal-{cluster}-shard1-", "--format", "{{.Names}} {{.State}}"], ct);
         agents.Should().Contain($"pgw-backup-wal-{cluster}-shard1-{masterNode} running");
-        // t27 §3.5: ключ wal несёт супервиз-факты agents (мастер running)
-        wal.Agents.Should().NotBeNull("agents-факты пишутся супервизом (t27)");
-        wal.Agents.Should().Contain(a =>
-            a.Node == wal.MasterNode && a.State == PgWorker.Etcd.Parsing.WalAgentPresence.Running);
+        // t27 §3.5: ключ wal несёт супервиз-факты agents (мастер running).
+        // Перечитываем ключ поллингом: контроль пишет wal, супервиз добавляет
+        // agents тем же тиком — снапшот Assert 2 может быть пойман между двумя
+        // put (гонка живого потока, как в Assert 2).
+        var agentsInKey = await E2eFixture.WaitForAsync(async () =>
+        {
+            var read = await writer.ReadAsync(cluster, "shard1", ct);
+            return read.IsSuccess && read.Value?.Agents is { } facts
+                   && facts.Any(a =>
+                       a.Node == masterNode && a.State == PgWorker.Etcd.Parsing.WalAgentPresence.Running);
+        }, TimeSpan.FromSeconds(30), ct);
+        agentsInKey.Should().BeTrue("agents-факты пишутся супервизом (t27): мастер running");
         await using var adminConn = new NpgsqlConnection(adminDsn);
         await adminConn.OpenAsync(ct);
         await using var slotCmd = new NpgsqlCommand(

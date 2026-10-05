@@ -1164,4 +1164,35 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         (await process.TickAsync(BuildTwoNodeSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
         driver.ExecNodeCalls.Should().Be(execCalls1, "идемпотентность: history уже загружен");
     }
+
+    // AAA (t27, AC5): префикс wal/ БЕЗ сегментов TLI 1 (контур стартовал уже на
+    // TLI 2: промотка до первого наблюдения) — history МИНИМАЛЬНОГО TLI набора
+    // (>1) обязана докладываться: для TLI>1 history-файл существует и нужен
+    // склейке (не бывает только у TLI 1). Прежнее правило «все TLI кроме
+    // минимального» молча пропускало этот случай — AC5-факт E2E.
+    [Fact]
+    public async Task History_fallback_минимальныйTLIБольше1_докладывает_history()
+    {
+        // Arrange — сегменты ТОЛЬКО TLI 2; history НЕТ; exec возвращает синтетику
+        var ct = TestContext.Current.CancellationToken;
+        var cluster = $"hb2{Guid.NewGuid().ToString("N")[..6]}";
+        await SeedTwoNodeAsync(new FakeWalSqlExecutor(), null, cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        var s3 = new FakeBackupS3();
+        s3.Objects.Add((cluster, "shard1", "000000020000000000000023"));
+        s3.Objects.Add((cluster, "shard1", "000000020000000000000024"));
+        var driver = new StubScaleDriver();
+        driver.ExecNodeResult = Convert.ToBase64String("2\t0/25000060\n"u8.ToArray());
+        var process = BuildProcess(Options(), sql, s3, driver);
+
+        // Act — тик: минимальный TLI набора = 2 (>1) без history → доклад
+        (await process.TickAsync(BuildTwoNodeSnap(cluster), null, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — history-объект в S3
+        driver.ExecNodeCalls.Should().BeGreaterThan(0, "exec ноды за history-файлом");
+        var listed = await s3.ListWalAsync(cluster, "shard1", ct: ct);
+        listed.Value.Should().Contain(o => o.Name == "00000002.history",
+            "history минимального TLI>1 склеивает переход — докладывается (AC5)");
+    }
 }
