@@ -39,7 +39,10 @@ public static class E2eFixture
         => RunProcessAsync("docker", args, ct);
 
     internal static async Task<string> RunProcessAsync(string file, string[] args, CancellationToken ct = default)
-        => await RunProcessAsync(file, args, ct, timeout: null, env: null);
+        // Дефолтный бюджет docker-CLI (ревью Фазы 7): зависший процесс обязан
+        // умирать по таймауту, а не висеть вечно; обычные команды — секунды.
+        // Долгие операции (docker build) передают бюджет явно.
+        => await RunProcessAsync(file, args, ct, timeout: TimeSpan.FromMinutes(2), env: null);
 
     /// <summary>Env вложенных dotnet-сборок (publish/build из фикстур): долгоживущие
     /// MSBuild/Roslyn build-server'ы и nodeReuse-ноды переживают процесс сборки и

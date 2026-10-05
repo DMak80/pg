@@ -938,7 +938,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             await E2eFixture.RunProcessAsync("docker",
             [
                 "build", "-q", "-f", $"{_root}/docker/node/Dockerfile", "-t", NodeImage, _root,
-            ], ct);
+            ], ct, timeout: TimeSpan.FromMinutes(10));
             StaticPhase($"pgworker-node:e2e готов за {nodeSw.Elapsed.TotalSeconds:F0} с");
 
             _staticReady = true;
@@ -967,7 +967,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             [
                 "build", "-f", $"{_root}/docker/PgWorker.Backup.E2E.Dockerfile", "-t", JobImage,
                 $"{_root}/docker",
-            ], ct);
+            ], ct, timeout: TimeSpan.FromMinutes(10));
             StaticPhase($"e2e-image {JobImage}: готов за {sw.Elapsed.TotalSeconds:F0} с");
             _jobImageReady = true;
         }
@@ -1004,7 +1004,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             var buildLog = await E2eFixture.RunProcessAsync("docker",
             [
                 "build", "-f", $"{_root}/docker/PgWorker.Wal.E2E.Dockerfile", "-t", WalImage, outDir,
-            ], ct);
+            ], ct, timeout: TimeSpan.FromMinutes(10));
             StaticPhase($"e2e-image {WalImage}: готов за {sw.Elapsed.TotalSeconds:F0} с (publish+build)");
             _walImageReady = true;
         }
