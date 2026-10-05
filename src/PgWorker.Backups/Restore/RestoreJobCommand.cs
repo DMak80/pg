@@ -67,7 +67,12 @@ public static class RestoreJobCommand
         cat > "$PGDATA/restore-wal.sh" <<'WALSH'
         #!/bin/bash
         set -o pipefail
-        exec mc cp "pgwbkp/$S3_BUCKET/$SRC_PREFIX/wal/$1" "$2"
+        # %f приходит в ВЕРХНЕМ регистре hex (XLogFileName, %08X), а объекты S3
+        # записаны приёмником строчными; S3-ключи регистрозависимы — первый же
+        # буквенный сегмент (…a-f, t27: WAL длиннее 0x9000000) давал ложный 404
+        # («Object does not exist») и обрыв recovery за полсекунды до цели.
+        SEG="${1,,}"
+        exec mc cp "pgwbkp/$S3_BUCKET/$SRC_PREFIX/wal/$SEG" "$2"
         WALSH
         chmod 755 "$PGDATA/restore-wal.sh"
 

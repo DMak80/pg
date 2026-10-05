@@ -121,7 +121,11 @@ public class RestoreJobCommandTests
 
         // Assert
         script.Should().Contain("restore-wal.sh");
-        script.Should().Contain(@"exec mc cp ""pgwbkp/$S3_BUCKET/$SRC_PREFIX/wal/$1"" ""$2""");
+        // %f верхним регистром (XLogFileName %08X) нормализуется в строчный:
+        // S3-ключи регистрозависимы, объекты записаны приёмником строчными
+        // (t27-факт: первый буквенный сегмент …000a давал ложный 404)
+        script.Should().Contain(@"SEG=""${1,,}""");
+        script.Should().Contain(@"exec mc cp ""pgwbkp/$S3_BUCKET/$SRC_PREFIX/wal/$SEG"" ""$2""");
         script.Should().Contain("restore_command = '/bin/bash");
         script.Should().Contain("""recovery.signal""");
     }
