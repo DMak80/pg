@@ -1536,8 +1536,18 @@ public class E2eBackupScenarios
         // границы дыры — ASCII-имена сегментов (кириллица в JSON экранируется
         // сериализатором как \uXXXX — текст «дыра» в сыром значении не ищется);
         // FAILED без phase — чистый терминальный итог (джоб не запускался).
-        drill.Should().Contain("000000010000000000000004", "граница дыры — wal_start")
-            .And.Contain("000000010000000000000005", "граница дыры — найденный сегмент")
+        // Границы динамические (жертва — сам wal_start, Act выше): «ожидался» —
+        // wal_start жертвы, «найден» — ближайший доставленный сегмент после неё.
+        var after = await corruptS3.ListWalAsync(cluster, "shard1", ct: ct);
+        after.IsSuccess.Should().BeTrue("лист wal после порчи доступен");
+        var found = after.Value
+            .Select(o => o.Name)
+            .Where(n => string.CompareOrdinal(n, victim.Name) > 0)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .FirstOrDefault();
+        found.Should().NotBeNull("после жертвы есть более поздний сегмент — дыра имеет «найдено»");
+        drill.Should().Contain(victim.Name, "граница дыры — wal_start")
+            .And.Contain(found!, "граница дыры — найденный сегмент")
             .And.NotContain("phase", "без джоба — чистый итог");
 
         // Assert — контейнеров дрилла нет вовсе (джоб не запускался).
