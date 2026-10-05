@@ -338,13 +338,20 @@ AdminPanel (UI)              PgWorker (оркестратор бэкапов)
   (`pgdata/pgroot/data`; владелец — uid:gid `101:101` Spilo- postgres,
   численно), (2) кладёт скрипт `restore_command` (скачивает сегмент/`.history`
   из `wal/` префикса S3 прямо в запрошенный путь; объекта нет → ненулевой
-  exit — конец WAL) и `postgresql.auto.conf` c `restore_command` +
+  exit — конец WAL; имя из `%f` postgres передаёт ВЕРХНИМ hex, а приёмник
+  кладёт объекты `wal/` строчными — скрипт нормализует регистр, иначе первый
+  буквенный сегмент даёт ложный 404 и обрывает recovery до цели) и
+  `postgresql.auto.conf` c `restore_command` +
   recovery-параметры (`recovery_target_time` при цели time,
   `recovery_target_action=promote`; цель latest — БЕЗ target: конец WAL =
-  promote), (3) локально стартует postgres (`pg_ctl`, unix-socket,
+  promote), (3) локально стартает postgres (`pg_ctl`, unix-socket,
   `listen_addresses=''` — сеть не слушает, кредов PG не нужно) и ждёт
   выхода из recovery (поллинг `pg_is_in_recovery()`; бюджет
-  `Restore:RecoveryTimeoutSec`), (4) `pg_ctl stop -m fast`, убирает
+  `Restore:RecoveryTimeoutSec`); перед стартом из PGDATA УДАЛЯЕТСЯ
+  `standby.signal`: pristine-набор снят `pg_basebackup`-ом со standby-источника
+  (§2: приоритет sync-реплики) и несёт его `standby.signal` — не убрав,
+  postgres стартует standby-режимом и бесконечно ждёт WAL из restore_command,
+  не входя в recovery; (4) `pg_ctl stop -m fast`, убирает
   recovery-остатки из `auto.conf`. При возврате pristine `auto.conf` из него
   вычищаются управляющие Patroni параметры архивации
   (`archive_mode`/`archive_command`): pristine снят `pg_basebackup`-ом с
@@ -834,6 +841,7 @@ s3://<bucket>/<C>/<X>/
 | Поведение физического слота реплики при её promote (двойная архивация §3) | promote сохраняет слоты; агент после promote возобновляет от хвоста S3 уже новой TLI (стартовая позиция явная, restart_lsn для старта не используется) — проверяется docker-E2E (§8/AC) |
 | ×2 стрим-трафик двойной архивации + второй буфер сегмента | осознанная плата избыточности источника (§3); лимиты `Agent { Cpu, Mem }`; домашняя установка — 1–2 кластера |
 | Npgsql не экспонирует TIMELINE_HISTORY протокола | fallback канона §3: доклад history воркером docker-exec ноды (контроль видит TLI-переход без history-объекта) |
+| Смешанный сегмент точки failover-переключения (TLI1→TLI2 внутри одного 16-МиБ сегмента) | приёмник закрывает сегмент по границе LSN — объект содержит байты обоих таймлайнов; восстановимость через точку переключения опирается на replay-континуальность postgres (промоутнутая нода начинает новую TLI с END_OF_RECOVERY-записи, restore-накат читает её в том же сегменте); E2E-сценарий восстановления ЦЕЛИКОМ через точку переключения (полный до failover + WAL, содержащий границу) отсутствует — отдельная roadmap-задача; AC5 закрывает склейку `.history` и непрерывность CheckWithRestart после промоута |
 | Длинные имена `<C>-<X>` ломают имена слота/контейнера | слот — sha1-усечение (§3); имена контейнеров — те же ограничения, что у pgw-нод (существующая практика) |
 | Превышение staging-квоты джоба («нет места» — частый сбой бэкапов) | `Staging:QuotaBytes` → tmpfs `size=` (жёсткая квота, ENOSPC от ядра); null → disk-volume с реактивным ENOSPC; оба пути → FAILED + суточный алерт (§6, t02) |
 | Протокол джоба (stdout-маркеры фаз/result-JSON) — неявный контракт воркера и образа | маркеры зафиксированы §2 (фазы + result с wal_start_segment/size_bytes); воркер толерантен к незнакомым строкам лога (парсит только свои JSON); смена формата — правкой канона |
