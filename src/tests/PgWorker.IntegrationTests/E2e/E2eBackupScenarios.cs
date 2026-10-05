@@ -533,10 +533,19 @@ public class E2eBackupScenarios
                     hostLog += $"\n== {host.Name}: host.log недоступен: {e.Message}";
                 }
 
+            var agentLogs = "";
+            foreach (var line in agentsPs.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                var name = line.Split(' ')[0];
+                var logs = await Fx.RunDockerAsync(["logs", "--tail", "60", name],
+                    TestContext.Current.CancellationToken);
+                agentLogs += $"\n== {name}:\n{logs}";
+            }
+
             var dump =
                 $"reason={reason}\nagents=[{agentsPs.Replace('\n', ';')}]\n" +
                 $"wal=[{walKv?.Value ?? "-"}]\nwork=[{workKv?.Value ?? "-"}]\n" +
-                $"claim=[{claimKv?.Value ?? "-"}]\npatroni={patroni}\nHOST.LOG:{hostLog}\n";
+                $"claim=[{claimKv?.Value ?? "-"}]\npatroni={patroni}\nAGENT.LOGS:{agentLogs}\nHOST.LOG:{hostLog}\n";
             await File.WriteAllTextAsync($"/tmp/pgw-diag-{cluster}.txt", dump);
             Console.WriteLine($"[DIAG] дамп: /tmp/pgw-diag-{cluster}.txt");
         }

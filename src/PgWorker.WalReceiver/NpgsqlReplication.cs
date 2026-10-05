@@ -111,10 +111,12 @@ public sealed class NpgsqlXLogSource(WalReceiverOptions o) : IXLogReplicationSou
             var file = await history.TimelineHistory(tli, ct);
             return Result<byte[]?>.Success(file.Content);
         }
-        catch (Exception)
+        catch (Exception e)
         {
             // Рантайм не смог отдать историю (нет файла/ошибка протокола) — валидное
-            // «нет»: fallback-контроль воркера (arch/19 §3).
+            // «нет»: fallback-контроль воркера (arch/19 §3). Причина — в stderr
+            // контейнера (диагностика без перезапуска).
+            Console.Error.WriteLine($"history_error tli={tli}: {e.GetType().Name}: {e.Message}");
             return Result<byte[]?>.Success(null);
         }
     }
