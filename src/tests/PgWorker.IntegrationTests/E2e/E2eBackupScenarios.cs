@@ -908,6 +908,29 @@ public class E2eBackupScenarios
             };
             ((bool)(await cmd.ExecuteScalarAsync(ct))!)
                 .Should().BeTrue($"слот существует на ноде {key} (AC3, per-instance)");
+
+            // AC1-инвариант каждого источника (буква критерия «каждого»):
+            // restart_lsn слота ≤ конца последнего доставленного в S3 сегмента —
+            // подтверждение только по факту put. Хвост — СВЕЖИЙ list на момент
+            // зонда: нагрузка живая, цепочка растёт.
+            await using var lsnCmd = new NpgsqlCommand(
+                "SELECT restart_lsn::text FROM pg_replication_slots WHERE slot_name = @slot", conn)
+            {
+                Parameters = { new() { ParameterName = "slot", Value = $"pgw_bkp_{cluster}_shard1" } },
+            };
+            var restartRaw = (string)(await lsnCmd.ExecuteScalarAsync(ct))!;
+            var parts = restartRaw.Split('/');
+            var restartLsn = (ulong.Parse(parts[0], System.Globalization.NumberStyles.HexNumber) << 32)
+                             | ulong.Parse(parts[1], System.Globalization.NumberStyles.HexNumber);
+            var fresh = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
+            fresh.IsSuccess.Should().BeTrue("AC1-зонд: свежий list хвоста");
+            var tail = fresh.Value
+                .Select(o => PgWorker.Backups.WalFileName.TryParse(o.Name))
+                .Where(w => w is not null).Select(w => w!.Value)
+                .OrderByDescending(w => (long)w.Log * 256 + w.Seg).First();
+            restartLsn.Should().BeLessOrEqualTo(
+                PgWorker.WalReceiver.S3TailResolver.EndLsn(tail),
+                $"AC1 на ноде {key}: restart_lsn {restartRaw} ≤ конца доставленного {tail.Name}");
         }
         }
         catch (Exception ex)

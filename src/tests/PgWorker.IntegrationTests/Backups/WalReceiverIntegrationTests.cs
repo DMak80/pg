@@ -143,10 +143,9 @@ public class WalReceiverIntegrationTests
         var (cts, run) = await StartCoreAsync(postgres, minio, cluster, shard);
         try
         {
-            // Диагностика старта: жив ли run через 5 c
-            await Task.Delay(5000, ct);
-            _output.WriteLine($"[DIAG] core run 5s: status={run.Status}" +
-                (run.IsFaulted ? $" exception={run.Exception?.GetBaseException().Message}" : ""));
+            // Слепой sleep старта не нужен: готовность приёмника покрыта
+            // WaitUntil ниже (бюджет 30 c, debug-дамп печатает сегменты и
+            // restart_lsn — полную картину при недожатии).
             // WAL-нагрузка: 6 переключений ≈ 50 MiB → ≥2 полных сегмента 16 MiB
             await GenerateWalAsync(postgres.AdminDsn, Switches, ct);
             await WaitUntilAsync(async () =>
