@@ -356,22 +356,43 @@ public sealed class WalStreamProcess(
                 shard, slot);
         }
 
-        // agents-факты (t27 §3.5): после супервиза все desired — running; ноды
-        // portalloc шарда вне источников (sync не резолвится) — absent (наблюдаемость
-        // неполноты двойной архивации, spec §5). Пишем только при живом wal-ключе —
-        // факты ДОБАВКА к контролю, ключ создаёт контроль (spec п.8); WriteIfChanged
-        // — идемпотентно.
+        // agents-факты (t27 §3.5, arch/19 §4): из ПОСТ-супервиз листинга — не из
+        // desired: permanent-exited агент обязан отражаться exited до пересоздания
+        // супервизом следующего тика (наблюдаемость, не «всегда running»);
+        // ноды portalloc шарда вне листинга — absent (неполнота двойной
+        // архивации, spec §5). Пишем только при живом wal-ключе — факты
+        // ДОБАВКА к контролю, ключ создаёт контроль (spec п.8); WriteIfChanged
+        // — идемпотентно. Перечитка упала — пропускаем (напишет следующий тик).
         if (wal is not null && shardNodes.Count > 0)
         {
-            var facts = shardNodes
-                .Select(n => new WalAgentState(n,
-                    desired.Any(d => d.Src.Node == n)
-                        ? WalAgentPresence.Running
-                        : WalAgentPresence.Absent))
-                .ToList();
-            await status.WriteIfChangedAsync(cluster, shard, wal with { Agents = facts }, ct);
+            var relisted = await driver.ListBackupAgentsAsync(cluster, ct);
+            if (relisted.IsSuccess)
+            {
+                var facts = BuildAgentFacts(cluster, shard, shardNodes, relisted.Value);
+                await status.WriteIfChangedAsync(cluster, shard, wal with { Agents = facts }, ct);
+            }
         }
     }
+
+    /// <summary>Факты агентов из листинга драйвера (контракт arch/19 §4):
+    /// контейнер ноды running → Running, exited → Exited, нет контейнера →
+    /// Absent. Матч имени — per-node формат («/»-литерал старых движков).</summary>
+    internal static IReadOnlyList<WalAgentState> BuildAgentFacts(
+        string cluster, string shard,
+        IReadOnlyList<string> shardNodes,
+        IReadOnlyList<Shared.Docker.DockerContainer> listed)
+        => shardNodes
+            .Select(n =>
+            {
+                var name = BackupAgentNames.Container(cluster, shard, n);
+                var state = listed.FirstOrDefault(c =>
+                    c.Names.Contains(name) || c.Names.Contains("/" + name));
+                return new WalAgentState(n,
+                    state is null ? WalAgentPresence.Absent
+                    : state.State == "running" ? WalAgentPresence.Running
+                    : WalAgentPresence.Exited);
+            })
+            .ToList();
 
     // pgw-backup-wal-<C>-<ХВОСТ> → <X>: хвост == <X> (старый формат) или <X>-<нода>
     // (per-node) — зеркально ClusterDriver.AgentShardOf (матчинг одного правила).
