@@ -1312,6 +1312,38 @@ public class E2eBackupScenarios
             return kv.Value?.Value.Contains("\"SUCCEEDED\"") == true
                    && !kv.Value.Value.Contains("phase");
         }, TimeSpan.FromSeconds(600), ct);
+        if (!succeeded)
+        {
+            // Телеметрия упавшего дрилла: дамп до teardown (канон e2e-launch)
+            var drillKv = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/drill");
+            var walKv = await GetOrNullAsync($"/pgworker/backups/{cluster}/shard1/wal");
+            var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
+            var fulls = await FullKeysAsync(cluster, "shard1");
+            var hostLog = "";
+            foreach (var host in Fx.Hosts)
+                try
+                {
+                    var lines = File.ReadAllLines(Path.Combine(host.SnapshotsDir, "host.log"));
+                    var interesting = lines.Where(l =>
+                        !l.Contains("ClientHandler") && !l.Contains("LogicalHandler")
+                        && !l.Contains("HTTP request") && !l.Contains("HTTP response")
+                        && !l.Contains("End processing HTTP") && !l.Contains("Received HTTP")
+                        && !l.Contains("Sending HTTP") && !l.Contains("PgtuneInputsFactory")
+                        && !l.Contains("wal_compression")).ToList();
+                    hostLog += $"\n== {host.Name} ({interesting.Count}):\n" +
+                        string.Join("\n", interesting[^Math.Min(60, interesting.Count)..]);
+                }
+                catch (Exception e)
+                {
+                    hostLog += $"\n== {host.Name}: host.log недоступен: {e.Message}";
+                }
+
+            await File.WriteAllTextAsync($"/tmp/pgw-diag-{cluster}.txt",
+                $"reason=drill not SUCCEEDED\nfulls=[{string.Join("; ", fulls.Select(f => f.Key + "=" + f.Value[..Math.Min(160, f.Value.Length)]))}]\n" +
+                $"drill=[{drillKv?.Value ?? "-"}]\nwal=[{walKv?.Value ?? "-"}]\nwork=[{workKv?.Value ?? "-"}]\nHOST.LOG:{hostLog}\n",
+                TestContext.Current.CancellationToken);
+        }
+
         succeeded.Should().BeTrue("первый дрилл стартует немедленно и обязан выйти из recovery");
 
         // Assert — restored_to_lsn в ключе; чистый итог: без phase
