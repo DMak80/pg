@@ -108,6 +108,13 @@ public static class RestoreJobCommand
         printf "shared_preload_libraries = ''\n" >> "$AUTO"
         printf "ssl = off\n" >> "$AUTO"
         printf "logging_collector = off\n" >> "$AUTO"
+        # Набор, снятый pg_basebackup с РЕПЛИКИ (t27: штатный источник полных —
+        # sync-standby), несёт standby.signal источника. Вместе с recovery.signal
+        # он даёт STANDBY-старт: постгрес бесконечно ждёт новые сегменты,
+        # targeted recovery не завершается (drill/restore висят «recovering» до
+        # бюджета, restored_to_lsn не наступает). Сигнал реплики снимается —
+        # режим целевого восстановления задаёт наш recovery.signal.
+        rm -f "$PGDATA/standby.signal"
         : > "$PGDATA/recovery.signal"
         # временный локальный trust для поллинга (сокет-only; после rejoin Patroni
         # перепишет pg_hba своим конфигом)

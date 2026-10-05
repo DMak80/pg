@@ -126,6 +126,27 @@ public class RestoreJobCommandTests
         script.Should().Contain("""recovery.signal""");
     }
 
+    // AAA: standby.signal источника снимается ДО старта postgres — набор,
+    // снятый pg_basebackup с реплики (t27: источник полных — sync-standby),
+    // содержит её standby.signal; вместе с recovery.signal он даёт STANDBY-старт:
+    // постгрес бесконечно ждёт новые сегменты, targeted recovery не завершается
+    // (E2E-факт t27: drill-джоб «recovering» до бюджета, restored_to_lsn не
+    // наступает). Порядок: rm — до recovery.signal (оба сигнала управляют
+    // режимом на старте postmaster).
+    [Fact]
+    public void Build_StandbySignalRemoved_BeforeRecoveryStart()
+    {
+        // Arrange / Act
+        var script = RestoreJobCommand.Build()[2];
+
+        // Assert — сигнал реплики-источника снесён, targeted recovery — свой
+        script.Should().Contain(@"rm -f ""$PGDATA/standby.signal""");
+        script.IndexOf(@"rm -f ""$PGDATA/standby.signal""", StringComparison.Ordinal)
+            .Should().BeLessThan(
+                script.IndexOf(@": > ""$PGDATA/recovery.signal""", StringComparison.Ordinal),
+                "режим старта определяется сигналами до запуска postmaster");
+    }
+
     // AAA: env-имена контракта джоба (§3.3) — константы для спеки (Task 5).
     [Fact]
     public void Env_NamesContract()
