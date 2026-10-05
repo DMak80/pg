@@ -992,11 +992,14 @@ public sealed class E2eEnvironment : IAsyncDisposable
             var outDir = Path.Combine(_root, "artifacts", "e2e", "wal");
             var sw = System.Diagnostics.Stopwatch.StartNew();
             StaticPhase($"e2e-image {WalImage}: dotnet publish WalReceiver (host)…");
+            // NoMsBuildReuseEnv + бюджет: build-server/ноды держат stdout-пайп
+            // после завершения publish (e2e-факт: 11 мин тишины) — без реюза
+            // процесс умирает вместе с пайпом; зависание = fail-fast за бюджет.
             await E2eFixture.RunProcessAsync("dotnet",
             [
                 "publish", $"{_root}/src/PgWorker.WalReceiver/PgWorker.WalReceiver.csproj",
                 "-c", "Release", "-o", outDir, "--nologo",
-            ], ct);
+            ], ct, timeout: TimeSpan.FromMinutes(10), env: E2eFixture.NoMsBuildReuseEnv);
             StaticPhase($"e2e-image {WalImage}: publish готов за {sw.Elapsed.TotalSeconds:F0} с — docker build (контекст artifacts/e2e/wal)…");
             var buildLog = await E2eFixture.RunProcessAsync("docker",
             [

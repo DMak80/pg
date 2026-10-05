@@ -39,14 +39,26 @@ public static class E2eFixture
         => RunProcessAsync("docker", args, ct);
 
     internal static async Task<string> RunProcessAsync(string file, string[] args, CancellationToken ct = default)
-        => await RunProcessAsync(file, args, ct, timeout: null);
+        => await RunProcessAsync(file, args, ct, timeout: null, env: null);
+
+    /// <summary>Env вложенных dotnet-сборок (publish/build из фикстур): долгоживущие
+    /// MSBuild/Roslyn build-server'ы и nodeReuse-ноды переживают процесс сборки и
+    /// удерживают stdout-пайп навсегда — ReadToEndAsync не получает EOF (e2e-факт:
+    /// wal:e2e publish висел 11 мин, app-dll — 10 мин). Отключаем обе формы
+    /// реюза: сборка живёт ровно столько, сколько её процесс.</summary>
+    internal static readonly IReadOnlyDictionary<string, string> NoMsBuildReuseEnv = new Dictionary<string, string>
+    {
+        ["DOTNET_CLI_DO_NOT_USE_MSBUILD_SERVER"] = "1",
+        ["MSBUILDDISABLENODEREUSE"] = "1",
+    };
 
     /// <summary>Процесс с бюджетом (t27): docker-CLI изредка виснет (daemon-флэйм,
     /// e2e-факт: teardown замер на docker logs навсегда) — по истечении дерево
     /// процесса убивается, наружу ApplicationException (вызывающий телеметрии
     /// глотает — «лучшими усилиями», канон e2e-launch).</summary>
     internal static async Task<string> RunProcessAsync(
-        string file, string[] args, CancellationToken ct, TimeSpan? timeout)
+        string file, string[] args, CancellationToken ct, TimeSpan? timeout,
+        IReadOnlyDictionary<string, string>? env = null)
     {
         var psi = new ProcessStartInfo(file, args)
         {
@@ -55,6 +67,9 @@ public static class E2eFixture
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
+        if (env is not null)
+            foreach (var (key, value) in env)
+                psi.EnvironmentVariables[key] = value;
         using var process = Process.Start(psi)
             ?? throw new ApplicationException($"не удалось запустить {file}");
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
@@ -108,10 +123,8 @@ public static class E2eFixture
         // Не RunProcessAsync: ошибки msbuild идут в stdout, а он включает в
         // исключение только stderr — здесь нужен хвост полного вывода в
         // сообщении (spec «фаза Г»), а не молчаливый запуск старого бинаря.
-        // MSBUILDDISABLENODEREUSE: ноды умирают вместе с процессом сборки —
-        // пережившие nodeReuse-ноды (общие с родительским dotnet test slnx)
-        // удерживают stdout-пайп навсегда → ReadToEndAsync не завершается
-        // (E2E-факт: slnx-прогон висел 10+ минут в статик-фазе «app-dll»).
+        // NoMsBuildReuseEnv: build-server/ноды переживают сборку и держат
+        // stdout-пайл навсегда (E2E-факт: slnx-прогон висел 10+ мин).
         var psi = new ProcessStartInfo(
             "dotnet", ["build", Path.Combine(root, "src", "PgWorker.slnx"), "-c", "Release"])
         {
@@ -120,7 +133,8 @@ public static class E2eFixture
             RedirectStandardError = true,
             CreateNoWindow = true,
         };
-        psi.EnvironmentVariables["MSBUILDDISABLENODEREUSE"] = "1";
+        foreach (var (key, value) in NoMsBuildReuseEnv)
+            psi.EnvironmentVariables[key] = value;
         using var build = Process.Start(psi)
             ?? throw new ApplicationException("не удалось запустить dotnet build");
         var stdoutTask = build.StandardOutput.ReadToEndAsync();
