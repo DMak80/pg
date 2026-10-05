@@ -152,9 +152,11 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// при haEtcd=false — один (прежняя семантика).</summary>
     public IReadOnlyList<string> EtcdEndpoints { get; }
 
-    /// <summary>Имя etcd-контейнера окружения (pgw-ee-{runId}) для docker cp/exec
-    /// etcdctl в restore-verify сценариях (t08, публичное — как OwnEtcd.ContainerName).</summary>
-    public string EtcdContainerName => $"pgw-ee-{_runId}";
+    /// <summary>Имя ПЕРВОЙ etcd-ноды окружения (pgw-ee1-{runId}) для docker cp/exec
+    /// etcdctl в restore-verify сценариях (t08, публичное — как OwnEtcd.ContainerName).
+    /// Ноды именуются pgw-ee{i+1}-{runId} (t09ha: 1-3 узла) — имя pgw-ee-{runId}
+    /// не существует никогда.</summary>
+    public string EtcdContainerName => $"pgw-ee1-{_runId}";
 
     /// <summary>Имя docker-сети окружения (уникально на прогон) — удаляется в
     /// teardown'е самими (ryuk не гарант), отсутствие проверяется ассертом.</summary>
