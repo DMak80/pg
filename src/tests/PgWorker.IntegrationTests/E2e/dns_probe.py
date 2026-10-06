@@ -1,9 +1,7 @@
-# Синтетический DNS-зонд (t24, spec §5.2): циклический резолв набора имён с
-# логированием исхода и латентности. Режимы:
-#   measure — попытка за попыткой (probe-dns,...) — телеметрия E2E-окружений;
-#   storm   — резолв без пауз, агрегат каждые 5 с (storm-dns,...) — шумовой
-#             профиль нагрузочного генератора.
-# Вывод в stdout (docker logs): CSV; в E2E подбирается CollectDiagnosticsAsync.
+# Синтетический DNS-зонд нагрузочного генератора (t24, spec §5.1): резолв без
+# пауз, агрегат каждые 5 с (storm-dns,...) — шумовой профиль E2eLoadGen.
+# Встроенная E2E-телеметрия (measure-режим, подбор CollectDiagnosticsAsync)
+# исключена ревизией 6 — DNS-контроль прогонов идёт по Patroni/docker-логам.
 import os, socket, time
 
 targets = [t for t in os.environ.get("DNS_PROBE_TARGETS", "").split(",") if t]
