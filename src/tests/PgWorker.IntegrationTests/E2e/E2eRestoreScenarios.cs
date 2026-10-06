@@ -439,6 +439,7 @@ public class E2eRestoreScenarios
             ["PgWorker__Backups__S3__AccessKey"] = "minioadmin",
             ["PgWorker__Backups__S3__SecretKey"] = "minioadmin",
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
+            ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
             ["PgWorker__Backups__Wal__VerifyIntervalSec"] = "2",
