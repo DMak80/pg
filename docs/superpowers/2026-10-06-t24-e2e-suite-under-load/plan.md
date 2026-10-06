@@ -2,19 +2,20 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Цель:** полная docker-E2E-серия PgWorker устойчива к параллельной нагрузке на том же docker-хосте в границах канона прогона: причина деградации (симптомы A «подвисание при тяжёлом соседе» и Б «DNS-деградация при N≥5») либо устранена, либо осознанно закрыта каноном N=3 с рельсами.
+**Цель:** полная docker-E2E-серия PgWorker устойчива к параллельной нагрузке на том же docker-хосте в границах канона прогона: причина деградации (симптомы A «подвисание при тяжёлом соседе» и Б «DNS-деградация при N≥5») либо устранена, либо осознанно закрыта каноном N=3 с рельсами; конфигурация параллелизма приведена к целевой схеме «xunit.runner.json + последовательная не-E2E-коллекция» (решение гейта конфигурации Фазы 6).
 
-**Архитектура:** исследовательская задача с управляемым воспроизведением — синтетический DNS-зонд (`dns_probe.py` в тестовом проекте, режимы measure/storm) пишет CSV латентности/ошибок резолва в docker-логи (подбирается существующей телеметрией `CollectDiagnosticsAsync`); диагностический нагрузочный генератор (`src/tools/E2eLoadGen`, временный инструмент ветки, вне `PgWorker.slnx`) поднимает K шумовых guid-контуров (профили dns/cpu/io/full) на том же скрипте; матрица прогонов серии с гипотезами различает H1–H4; гейт решения фиксирует ветку «канон N=3» (рельса-предупреждение по фактическому числу живых контуров в `E2eEnvironment`) или «устранение» (отдельный мини-план митигаций); итог канонизируется в `docs/e2e-launch.md` и одном источнике истины csproj.
+**Архитектура:** первым делом конфигурация параллелизма приводится к целевой схеме (Task 1): xunit.runner.json (maxParallelThreads=3, копирование в output) — единственный источник потолка; CollectionBehavior-атрибут и мёртвые Xunit*-свойства csproj удаляются; все не-E2E классы сборки — в одной [Collection]-группе с DisableParallelization=true (гарантированная последовательность; фикстуры прежних коллекций переносятся в неё как ICollectionFixture); E2E-серия становится реально параллельной N=3 впервые. Далее — исследовательская часть с управляемым воспроизведением: синтетический DNS-зонд (`dns_probe.py`, режимы measure/storm) пишет CSV латентности/ошибок резолва в docker-логи (подбирается существующей телеметрией `CollectDiagnosticsAsync`); диагностический нагрузочный генератор (`src/tools/E2eLoadGen`, временный инструмент ветки, вне `PgWorker.slnx`) поднимает K шумовых guid-контуров (профили dns/cpu/io/full) на том же скрипте; матрица прогонов с гипотезами различает H1–H4; гейт решения фиксирует ветку «канон N=3» (рельса-предупреждение по фактическому числу живых контуров в `E2eEnvironment`) или «устранение» (отдельный мини-план митигаций); итог канонизируется в `docs/e2e-launch.md` и runner.json.
 
-**Tech Stack:** .NET 10 (`TreatWarningsAsErrors=true`), xUnit v3 (`XunitMaxParallelThreads`), Testcontainers 4.14.0, Docker CLI, python:3.12-alpine + alpine:3.20 (уже зеркалированы в локальный registry), etcd v3.5.21, MinIO.
+**Tech Stack:** .NET 10 (`TreatWarningsAsErrors=true`), xUnit v3 3.2.2 (`src/Directory.Packages.props`; конфигурация — xunit.runner.json), Testcontainers 4.14.0, Docker CLI, python:3.12-alpine + alpine:3.20 (уже зеркалированы в локальный registry), etcd v3.5.21, MinIO.
 
-**Spec:** [`docs/superpowers/2026-10-06-t24-e2e-suite-under-load/spec.md`](spec.md) — план аргументируется от спеки; исполнители читают оба документа. Рабочие каноны: `AGENTS.md`, `AGENTS.base.md` §12–13, [`docs/e2e-isolation.md`](../../../docs/e2e-isolation.md), [`docs/e2e-launch.md`](../../../docs/e2e-launch.md). Канон требований: `arch/roadmap/reliability.md`, пункт `t24`.
+**Spec:** [`docs/superpowers/2026-10-06-t24-e2e-suite-under-load/spec.md`](spec.md) (ревизия 2026-10-06 — приведён к эмпирике Фазы 6 и решению гейта Task 1) — план аргументируется от спеки; исполнители читают оба документа. Рабочие каноны: `AGENTS.md`, `AGENTS.base.md` §12–13, [`docs/e2e-isolation.md`](../../../docs/e2e-isolation.md), [`docs/e2e-launch.md`](../../../docs/e2e-launch.md). Канон требований: `arch/roadmap/reliability.md`, пункт `t24`. Эмпирика конфигурации: `journal.md` (Фаза 6, коммит 5eff776).
 
 **Worktree:** `/Users/demakaev/ZCodeProject/worktrees/feat-t24-e2e-suite-under-load`, ветка `feat-t24-e2e-suite-under-load`. Все пути ниже — от корня worktree.
 
 ## Global Constraints
 
 - .NET 10, C# `LangVersion=latest`, `Nullable=enable`, **`TreatWarningsAsErrors=true`** — 0 warnings в каждой сборке.
+- Конфигурация параллелизма (spec §1, целевая схема): единственный источник потолка — `src/tests/PgWorker.IntegrationTests/xunit.runner.json` (`maxParallelThreads=3`, копируется в output); `CollectionBehavior`-атрибута и `Xunit*`-свойств csproj в сборке нет; все не-E2E классы — в `[Collection(NonE2eCollection.Name)]` с `CollectionDefinition(DisableParallelization=true)` — их последовательность гарантирована; диагностические прогоны с N≠3 — ТОЛЬКО через временную правку runner.json с обязательным возвратом (см. «Операционную модель»).
 - Канон изоляции E2E нерушим (spec §7): guid-контуры, own-only чистка (`OwnName` по runId/тегу), ассерт чистоты, динамические порты, никаких широких фильтров `pgw-*` и глобальных prune из кода. Шумовые контуры генератора — те же правила (`pgw-noise-` префикс + guid).
 - Таймауты ожидания агента ≤ 30 с (AGENTS.base §12): длинные прогоны — фоновыми процессами с поллингом хвоста лога (см. «Операционная модель прогонов» ниже). Полл в тестах 500 мс — канон репо. Бюджеты фикстур ≤ 100 с.
 - Каждый экспериментальный прогон — с гипотезой, записанной в журнал ДО запуска (spec §3.2); перезапуск упавших прогонов для выяснения «что было» запрещён (docs/e2e-launch.md §4); падение серии — разбор по телеметрии (`/tmp/pgw-e2e-artifacts-<guid>/`), зачистка stop-остатков по `README-cleanup.txt` после разбора; спорный результат повторяется один раз и с той же гипотезой (spec §9).
@@ -23,10 +24,9 @@
 - Суммарное число живых user-сетей в экспериментах не подбирается к пулу ~30; между прогонами серии — контроль `docker network ls` (spec §7).
 - Генератор нагрузки — временный инструмент ветки: постоянным тестом в main не остаётся (удаляется фазой приёмки, Task 10); DNS-зонд в E2E (env-флаг) — кандидат остаться (судьба — на гейте).
 - Язык: документация/журнал — русский; идентификаторы — английские; тесты — AAA-комментарии.
-- Интеграционные не-E2E тесты той же сборки: фиксируется только отсутствие ИЗМЕНЕНИЯ их поведения после чистки `AssemblyInfo.cs` (spec §7).
 - Коммиты — в feature-ветке по ходу задач (execute-фаза); мерж-гейт roadmap (Task 11) — тем же мерж-коммитом.
 
-## Операционная модель прогонов (обязательна для Tasks 4, 5, 10)
+## Операционная модель прогонов (обязательна для Tasks 4, 5, 8, 10)
 
 Полная серия — 37–59 мин; агент НЕ ждёт команду дольше 30 с (AGENTS.base §12). Модель каждого серийного прогона:
 
@@ -42,7 +42,22 @@ DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 \
   2>&1 | tee /tmp/pgw-t24-runNN.log
 ```
 
-   Вариация N — ключом `-p:XunitMaxParallelThreads=N` (MSBuild-свойство xunit.v3; инкрементальная пересборка — секунды). Вариация соседа — генератор (Task 3) СОБРАННЫМ бинарём в фоне (бинарь собран Task 3 Step 5):
+   **Канонический прогон** — запуск выше без каких-либо правок конфигурации; перед ним — контроль-гейт канонического значения: `grep -c '"maxParallelThreads": 3' src/tests/PgWorker.IntegrationTests/xunit.runner.json` → `1`.
+
+   **Диагностическое переопределение потолка параллелизма** (N=1/N=2/N=5; spec §6 фаза 0/фаза 1) — `-p:XunitMaxParallelThreads` и прочие MSBuild-свойства xunit.v3 НЕ поддерживают (мёртвая механика, эмпирика журнала) — переопределение ТОЛЬКО временной правкой runner.json:
+
+```bash
+sed -i '' 's/"maxParallelThreads": 3/"maxParallelThreads": 5/' src/tests/PgWorker.IntegrationTests/xunit.runner.json
+# …прогон (сборка скопирует обновлённый runner.json в output — PreserveNewest)…
+# возврат ОБЯЗАТЕЛЬНО, сразу после прогона (до любого следующего шага):
+git checkout -- src/tests/PgWorker.IntegrationTests/xunit.runner.json
+# контроль возврата:
+grep '"maxParallelThreads": 3' src/tests/PgWorker.IntegrationTests/xunit.runner.json
+```
+
+   Прогон с переопределённым потолком помечается в журнале («N=5 — переопределённый потолок»); забытая правка = следующий «канонический» прогон фактически вне канона — контроль-гейт п.3 перед каждым каноническим прогоном обязателен.
+
+   Вариация соседа — генератор (Task 3) СОБРАННЫМ бинарём в фоне (бинарь собран Task 3 Step 5):
 
 ```bash
 dotnet src/tools/E2eLoadGen/bin/Release/net10.0/E2eLoadGen.dll \
@@ -58,6 +73,8 @@ dotnet src/tools/E2eLoadGen/bin/Release/net10.0/E2eLoadGen.dll \
 
 ### Task 0: Журнал задачи — каркас для протоколов прогонов и гипотез
 
+**Статус: выполнен (Фаза 6)** — `journal.md` создан и уже ведётся; секция «Наблюдения вне прогонов» содержит эмпирику конфигурации (Task 1 Фазы 6, коммит 5eff776). Чекбоксы оставлены отмеченными для истории; якоря секций (`## Сводка прогонов`, `## Карта гипотез (AC2)`, `## Гейт решения (AC3)`, `## Наблюдения вне прогонов`) используются всеми последующими задачами.
+
 **Вход:** spec утверждён; worktree создан; журнал — обязательный артефакт задачи (spec §3.5: «каждый прогон — гипотеза, условия, измерения, вердикт»).
 
 **Действие (Files):**
@@ -65,117 +82,277 @@ dotnet src/tools/E2eLoadGen/bin/Release/net10.0/E2eLoadGen.dll \
 
 **Interfaces:**
 - Consumes: —
-- Produces: `journal.md` с секциями-якорями, которые заполняют все последующие задачи: `## Сводка прогонов`, `## Карта гипотез (AC2)`, `## Гейт решения (AC3)`, `## Наблюдения вне прогонов`.
+- Produces: якоря секций журнала для всех последующих задач.
 
-**Выход:** место, куда ДО запуска пишется гипотеза каждого прогона (spec §3.2: «прогон без сформулированной гипотезы — нарушение»), и куда сводятся измерения для AC1–AC3.
+**Выход:** место, куда ДО запуска пишется гипотеза каждого прогона (spec §3.2), и куда сводятся измерения для AC1–AC3.
 
-- [ ] **Step 1: Создать journal.md с шаблоном**
+- [x] **Step 1: Создать journal.md с шаблоном** (каркас: сводка прогонов; карта гипотез H1–H4; гейт решения; наблюдения вне прогонов).
+- [x] **Step 2: Проверка** — якоря секций на месте (`grep -c "Карта гипотез" journal.md` → `1`).
+- [x] **Step 3: Commit** — выполнен Фазой 6 (эмпирика Task 1 дописана в «Наблюдения вне прогонов»).
 
-```markdown
-# Журнал задачи t24-e2e-suite-under-load
-
-Протокол расследования (spec §3.5): каждый прогон/эксперимент — гипотеза ДО
-запуска, условия, измерения, вердикт. Перезапуски упавших прогонов — только
-по канону docs/e2e-launch.md §4 (полный анализ телеметрии + гипотеза).
-
-## Сводка прогонов
-
-| # | Дата | Конфигурация (N; профиль/K соседа) | Гипотеза (записана ДО запуска) | Исход (зелёность, время, пик pgw-en-сетей) | Артефакты |
-|---|------|------------------------------------|-------------------------------|---------------------------------------------|-----------|
-
-## Карта гипотез (AC2)
-
-| Гипотеза | Проверяемое следствие | Измерение | Вердикт (подтверждено/исключено) | Артефакт |
-|----------|-----------------------|-----------|----------------------------------|----------|
-| H1 — DNS-резолвер Docker Desktop деградирует (латентность/ошибки растут с числом сетей; фейлы на этапе резолва, не TCP) | | | | |
-| H2 — CPU/IO-конкуренция на хосте (корреляция фейлов с загрузкой; синтетическая CPU/IO без DNS-шума воспроизводит фейлы коннекта) | | | | |
-| H3 — «подвисание» = транзиент-циклы против бюджетов фикстур (журнал прогресса `[PHASE] … elapsed` до обрыва; движение между ретраями) | | | | |
-| H4 — соседний прогон как множитель (порог от суммарной нагрузки K соседей, не от N серии) | | | | |
-
-## Гейт решения (AC3)
-
-- Критерии: spec §6 «ГЕЙТ РЕШЕНИЯ» (устраняем и поднимаем N — причина в наших границах + митигация дёшева + матрица зелёная при N>3; канон N=3 + рельсы — ограничение Docker Desktop/хоста, или митигация дороже выгоды, или N>3 без выигрыша).
-- Измерения к гейту: (заполняет Task 7 из карты гипотез и сводки прогонов)
-- РЕШЕНИЕ: (заполняет Task 7: ветка А или Б, обоснование по критериям; при неоднозначности — вопрос/ответ пользователя)
-- Судьба инструментов: генератор E2eLoadGen — удалить перед мержем (Task 10); DNS-зонд в E2E — (решение гейта: остаётся как опциональная телеметрия / удаляется)
-
-## Наблюдения вне прогонов
-
-(дискретные факты: диагностика хоста, выводы из телеметрии, команды зачистки)
-```
-
-- [ ] **Step 2: Проверка**
-
-Run: `test -f docs/superpowers/2026-10-06-t24-e2e-suite-under-load/journal.md && grep -c "Карта гипотез" docs/superpowers/2026-10-06-t24-e2e-suite-under-load/journal.md`
-Expected: `1`.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add docs/superpowers/2026-10-06-t24-e2e-suite-under-load/journal.md
-git commit -m "docs(t24): журнал задачи — каркас протоколов прогонов и карты гипотез"
-```
-
-**Проверка задачи:** журнал существует с якорями секций.
+**Проверка задачи:** журнал существует, якоря секций на месте, эмпирика Фазы 6 зафиксирована.
 **Связь со spec:** §3.5 (журнал задачи), §3.2 (гипотеза до эксперимента) — инфраструктура для AC1–AC3.
 
 ---
 
-### Task 1: Один источник истины параллелизма — удаление мёртвого `CollectionBehavior`-атрибута
+### Task 1: Приведение конфигурации параллелизма к целевой схеме — runner.json + последовательная не-E2E-коллекция
 
-**Вход:** Task 0 (журнал). Фактическое поведение раннера задаёт csproj (`XunitParallelizeTestCollections=true`, `XunitMaxParallelThreads=3`), атрибут в `AssemblyInfo.cs` устарел и перекрыт (spec §1 «Конфигурационный долг»).
+**Вход:** эмпирика Фазы 6 уже собрана и закоммичена (5eff776; НЕ планировать заново): атрибут `CollectionBehavior(DisableTestParallelization=true)` — РАБОЧИЙ (задавал N=1 всей сборке при любом способе `dotnet test`); csproj-свойства `Xunit*` — МЁРТВЫЕ (xunit.v3 не поддерживает v2-механику MSBuild-свойств); в беззащитной конфигурации (атрибут удалён, коллекций нет) получен фейл `WalReceiverIntegrationTests.Рестарт_дозасылает_от_хвоста` — параллельная конкуренция для не-E2E не норма. `AssemblyInfo.cs` возвращён на место, рабочее дерево чисто. База «до» не-E2E серии снята Фазой 6: 310/310 зелёные, ~4,5 мин, строго последовательное исполнение (журнал). Решение пользователя (гейт конфигурации, дословно): «не е2е должны быть последовательно, их в коллекцию надо закинуть».
 
 **Действие (Files):**
-- Delete: `src/tests/PgWorker.IntegrationTests/AssemblyInfo.cs` (весь файл — кроме мёртвого атрибута с ложным комментарием содержимого нет).
-- Modify: `docs/superpowers/2026-10-06-t24-e2e-suite-under-load/journal.md` (записи до/после).
+- Delete: `src/tests/PgWorker.IntegrationTests/AssemblyInfo.cs` (весь файл — кроме атрибута содержимого нет)
+- Modify: `src/tests/PgWorker.IntegrationTests/PgWorker.IntegrationTests.csproj` (удалить PropertyGroup мёртвых `Xunit*`-свойств с комментарием; добавить копирование runner.json в output с комментарием канона)
+- Create: `src/tests/PgWorker.IntegrationTests/xunit.runner.json` (`maxParallelThreads=3`)
+- Create: `src/tests/PgWorker.IntegrationTests/NonE2eCollection.cs` (Definition последовательной не-E2E-коллекции с фикстурами прежних коллекций)
+- Modify: 24 тестовых файла (перенос из прежних коллекций в NonE2eCollection; удаление трёх прежних CollectionDefinition-классов; в двух из них — `Backups/BackupSupervisorProcessTests.cs`, `Etcd/ShardScaleContractTests.cs` — дополнительно правка комментариев, ссылающихся на удаляемый `EtcdCollection`) и 17 тестовых файлов (новая `[Collection]`-пометка) — точные списки в Steps 3–4
+- Modify: `docs/superpowers/2026-10-06-t24-e2e-suite-under-load/journal.md` (итоги контрольных прогонов)
 
 **Interfaces:**
-- Consumes: —
-- Produces: сборка `PgWorker.IntegrationTests` без assembly-атрибута; поведение раннера определяется ТОЛЬКО csproj (AC4).
+- Consumes: фикстуры `EtcdFixture` (namespace `PgWorker.IntegrationTests.Etcd`), `PgApiFixture` и `PgMetricsFixture` (namespace `PgWorker.IntegrationTests.Api`) — переносятся в общую коллекцию как `ICollectionFixture` (семантика «один контур на коллекцию» сохраняется: поднимаются один раз на не-E2E серию).
+- Produces (для всех последующих задач и AC4):
+  - `src/tests/PgWorker.IntegrationTests/xunit.runner.json` — ЕДИНСТВЕННЫЙ источник потолка параллелизма (`"maxParallelThreads": 3`), копируется в output;
+  - `public sealed class NonE2eCollection` в namespace `PgWorker.IntegrationTests` c `public const string Name = "non-e2e-sequential"`; все тестовые namespace сборки вложены в `PgWorker.IntegrationTests` — класс виден каждому тестовому файлу без using;
+  - ВСЕ не-E2E классы сборки помечены `[Collection(NonE2eCollection.Name)]` → гарантированно последовательны (и между собой, и с E2E не пересекаются — non-parallel очередь xUnit); E2e-классы — collection-per-class, параллельны до 3 потоков из runner.json.
 
-**Выход:** устранена ловушка для следующего читателя; все дальнейшие прогоны задачи идут в финальной конфигурации параллелизма.
+**Выход:** целевая схема spec §1/§5.4 установлена: потолок N=3 реален в каноническом запуске впервые (внутрибиблиотечного N=3 до этого не существовало — атрибут давал N=1); последовательность не-E2E гарантирована механизмом, а не дисциплиной.
 
-- [ ] **Step 1: Контрольная не-E2E серия ДО правки (базлайн поведения)**
+- [ ] **Step 1: xunit.runner.json + csproj (мёртвые свойства убрать, копирование добавить)**
 
-Интеграционные не-E2E классы той же сборки (Docker/Etcd/Api — `[Collection]`-группы): прогон ДО удаления атрибута, фиксация зелёности и времени:
+`src/tests/PgWorker.IntegrationTests/xunit.runner.json`:
+
+```json
+{
+    "$schema": "https://xunit.net/schema/current/xunit.runner.schema.json",
+    "maxParallelThreads": 3
+}
+```
+
+В `PgWorker.IntegrationTests.csproj` УДАЛИТЬ PropertyGroup с мёртвыми свойствами вместе с её комментарием целиком (ориентир: единственная PropertyGroup с `XunitParallelize*`; дословное содержимое на момент плана):
+
+```xml
+    <!-- E2E-классы изолированы каноном (guid-контуры, own-only teardown) —
+         коллекции гоняются параллельно. max 3 контура: при 5 docker-хост
+         деградирует по DNS (getaddrinfo empty в логах нод → failover-каскады,
+         e2e-факт: WalStream_Promote упал, серии шли дольше N=3), ускорения
+         нет — 5 контуров не выдерживает; «тихие» классы с общими ассетами
+         при конфликте — в [Collection]-группу. Канон AGENTS.md. -->
+    <PropertyGroup>
+        <XunitParallelizeTestCollections>true</XunitParallelizeTestCollections>
+        <XunitMaxParallelThreads>3</XunitMaxParallelThreads>
+        <XunitParallelizeAssembly>false</XunitParallelizeAssembly>
+    </PropertyGroup>
+```
+
+и ДОБАВИТЬ ItemGroup копирования (xunit.v3 читает runner.json ТОЛЬКО из output):
+
+```xml
+    <!-- Канон параллелизма E2E (t24, решение гейта конфигурации Фазы 6):
+         единственный источник потолка — xunit.runner.json
+         (maxParallelThreads=3; xunit.v3 читает конфиг ТОЛЬКО из output —
+         копирование обязательно). Не-E2E классы — в последовательной
+         [Collection]-группе NonE2eCollection (DisableParallelization=true):
+         параллельная конкуренция для них не норма (эмпирика, журнал задачи).
+         Бывшие CollectionBehavior-атрибут (задавал N=1 всей сборке) и
+         Xunit*-свойства csproj (xunit.v3 не поддерживает) удалены. Канон и
+         правила соседней нагрузки — docs/e2e-launch.md §5. -->
+    <ItemGroup>
+        <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest"/>
+    </ItemGroup>
+```
+
+- [ ] **Step 2: NonE2eCollection.cs**
+
+`src/tests/PgWorker.IntegrationTests/NonE2eCollection.cs` (namespace — корневой, виден всем вложенным без using):
+
+```csharp
+using PgWorker.IntegrationTests.Api;
+using PgWorker.IntegrationTests.Etcd;
+using Xunit;
+
+namespace PgWorker.IntegrationTests;
+
+/// <summary>Последовательная группа ВСЕХ не-E2E тестов сборки (t24, решение
+/// гейта конфигурации Фазы 6: «не е2е должны быть последовательно, их в
+/// коллекцию надо закинуть»). DisableParallelization выводит коллекцию из
+/// параллельного пула xUnit — не-E2E тесты не конкурируют между собой
+/// (эмпирика: WalReceiverIntegrationTests падал под конкуренцией в
+/// беззащитной конфигурации). Фикстуры прежних коллекций (общий etcd,
+/// API-хосты, метрики) подняты на эту коллекцию — та же семантика «один
+/// контур на серию», какой обладали прежние коллекции. E2e-классы остаются
+/// collection-per-class и параллельны до maxParallelThreads из
+/// xunit.runner.json. ОДНА коллекция обязательна: разные коллекции с
+/// DisableParallelization параллельны МЕЖДУ собой — несколько групп
+/// гарантии последовательности не дают.</summary>
+[CollectionDefinition(Name, DisableParallelization = true)]
+public sealed class NonE2eCollection :
+    ICollectionFixture<EtcdFixture>,
+    ICollectionFixture<PgApiFixture>,
+    ICollectionFixture<PgMetricsFixture>
+{
+    public const string Name = "non-e2e-sequential";
+}
+```
+
+- [ ] **Step 3: Перевести 24 класса из прежних коллекций; удалить 3 прежних Definition**
+
+Замена `[Collection(EtcdCollection.Name)]` → `[Collection(NonE2eCollection.Name)]` (12 файлов):
+
+- `Etcd/RepairContractTests.cs`, `Etcd/ShardScaleContractTests.cs`, `Etcd/PortAllocLockRaceTests.cs`, `Etcd/MoveContractTests.cs`, `Etcd/EtcdContractTests.cs`, `Etcd/AdoptionContractTests.cs`, `Etcd/EtcdCoordinationTests.cs`
+- `Backups/BackupSupervisorProcessTests.cs`, `Backups/ShardEndpointsSyncTests.cs`, `Backups/BackupSelfHealTests.cs`, `Backups/WalStreamProcessTests.cs`, `Backups/RetentionProcessTests.cs`
+
+Замена `[Collection(PgApiCollection.Name)]` → `[Collection(NonE2eCollection.Name)]` (11 файлов):
+
+- `Api/RestoreApiTests.cs`, `Api/SeedApiTests.cs`, `Api/BackupsPolicyApiTests.cs`, `Api/MtlsApiTests.cs`, `Api/CreateClusterApiTests.cs`, `Api/MoveOpsApiTests.cs`, `Api/MovesApiTests.cs`, `Api/RecreateRotateApiTests.cs`, `Api/ShardsApiTests.cs`, `Api/UpdateClusterConfigApiTests.cs`, `Api/WorkerApiCertStartupTests.cs`
+
+Замена `[Collection(PgMetricsCollection.Name)]` → `[Collection(NonE2eCollection.Name)]` (1 файл): `Api/MetricsTests.cs`.
+
+Удалить прежние Definition-классы (сами фикстуры ОСТАЮТСЯ): блок `EtcdCollection` в `Etcd/EtcdFixture.cs` (вкл. комментарий про инвариант непересечения ключей — комментарий перенести в doc-комментарий `NonE2eCollection` или оставить рядом с фикстурой), блок `PgApiCollection` в `Api/PgWorkerApiFactory.cs`, блок `PgMetricsCollection` в `Api/MetricsApiFactory.cs`.
+
+Плюс переформулировать два комментария, остающихся в тестовых файлах со ссылкой на удаляемый класс (гейт Step 5 их не матчит — паттерн `EtcdCollection.Name`, — но комментарии стали бы дезинформирующими; упоминание инцидента t07 сохраняется — это история):
+
+- `Backups/BackupSupervisorProcessTests.cs:20` — «…пересечение с ShardScaleContractTests (sc1..sc6) и любым будущим классом EtcdCollection механически невозможно (инцидент t07: …)» → «…пересечение с ShardScaleContractTests (sc1..sc6) и любым будущим классом не-E2E-коллекции (NonE2eCollection) механически невозможно (инцидент t07: клэйм sc3 этого класса жил 15с по TTL и ронял TryClaim жертвы)»;
+- `Etcd/ShardScaleContractTests.cs:22` — «…пересечение с соседними классами EtcdCollection механически невозможно (инцидент t07: …)» → «…пересечение с соседними классами не-E2E-коллекции (NonE2eCollection) механически невозможно (инцидент t07: BackupSupervisor взял имена sc1..sc3, клэйм sc3 жил 15с по TTL и ронял TryClaim этого класса)».
+
+- [ ] **Step 4: Пометить 17 безколлекционных не-E2E классов**
+
+Добавить `[Collection(NonE2eCollection.Name)]` строкой над объявлением класса (конструкторы и class-fixture'ы не трогать — коллекция с `IClassFixture` совместима):
+
+- `Docker/`: `SshTunnelEngineTests`, `TlsEngineProxyTests`, `ExecDriverTests`, `EngineSupersetTests`, `BackupEngineTests`, `DockerDriverTests`, `MasterLeaseFailoverTests` (7)
+- `Api/`: `OrphansApiTests`, `RestartApiTests` (2)
+- `Backups/`: `RestoreProcessTests`, `WalSqlTests`, `EtcdSnapshotSinkTests`, `WalReceiverIntegrationTests`, `BackupOrphanSweeperTests`, `BackupVerifyProcessTests`, `BackupS3Tests`, `RestoreDrillProcessTests` (8)
+
+- [ ] **Step 5: Удалить AssemblyInfo.cs + сборка**
+
+```bash
+git rm src/tests/PgWorker.IntegrationTests/AssemblyInfo.cs
+dotnet build src/PgWorker.slnx -c Release
+```
+
+Expected: 0 errors, 0 warnings. Дополнительно, гейт по КОДУ (`--include='*.cs'` — комментарий csproj, ставимый Step 1, упоминает имена удалённой механики намеренно, в гейт не входит): `grep -rn "XunitParallelize\|CollectionBehavior\|EtcdCollection.Name\|PgApiCollection.Name\|PgMetricsCollection.Name" --include='*.cs' src/tests/PgWorker.IntegrationTests/` → пусто.
+
+- [ ] **Step 6: Контрольный прогон не-E2E «после» — эквивалентный последовательный режим**
+
+База «до» — Фаза 6 (310/310, ~4,5 мин, последовательные блоки; журнал), НЕ переснимается. Прогон «после»:
 
 ```bash
 DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 \
   dotnet test src/tests/PgWorker.IntegrationTests -c Release \
   --filter "FullyQualifiedName!~E2e" --logger "console;verbosity=detailed" \
-  2>&1 | tee /tmp/pgw-t24-none2e-before.log
+  2>&1 | tee /tmp/pgw-t24-none2e-after2.log
 ```
 
-(серия короче E2E — минуты; гейты чистоты хоста до/после по Global Constraints). Записать в `journal.md` → «Наблюдения вне прогонов»: `не-E2E до: <итоговая строка Passed! + Total duration>`.
+Expected: (а) зелёность ≥ базы — 0 failed, включая `WalReceiverIntegrationTests.Рестарт_дозасылает_от_хвоста` (перепроверка фейла беззащитной конфигурации под защитой-коллекцией; повторный фейл — разбор по телеметрии без перезапуска, причины в журнал, STOP и вопрос контролёру); (б) длительность сопоставима (~4,5 мин ±20%); (в) interleaving-анализ (методика журнала Фазы 6): смены тестового класса ~40 строгих блоков (последовательное исполнение), НЕ параллельное чередование. Итоги — в `journal.md` → «Наблюдения вне прогонов».
 
-- [ ] **Step 2: Удалить AssemblyInfo.cs**
+- [ ] **Step 7: E2E-smoke параллельности (первое наблюдение нового режима)**
 
 ```bash
-git rm src/tests/PgWorker.IntegrationTests/AssemblyInfo.cs
+DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 PGW_TEST_E2E_DNS_PROBE=1 \
+  dotnet test src/PgWorker.slnx -c Release \
+  --filter "FullyQualifiedName~E2eAppParams|FullyQualifiedName~E2eAppSecret|FullyQualifiedName~E2eRotate|FullyQualifiedName~E2ePgtune" \
+  --logger "console;verbosity=detailed" 2>&1 | tee /tmp/pgw-t24-par-smoke.log
 ```
 
-- [ ] **Step 3: Сборка без warnings**
+Expected: серия зелёная; во время прогона пик `docker network ls --format '{{.Name}}' | grep -c '^pgw-en-'` ≥ 2 (E2e-классы параллельны — runner.json работает; полная серия и пик =3 — Task 4, это ранний smoke). Если пик =1 при 4 классах — runner.json не подхвачен (проверить копирование в output: `ls src/tests/PgWorker.IntegrationTests/bin/Release/net10.0/xunit.runner.json`), исправить, повторить с гипотезой в журнале.
 
-Run: `dotnet build src/PgWorker.slnx -c Release`
-Expected: 0 errors, 0 warnings (`TreatWarningsAsErrors=true`).
-
-- [ ] **Step 4: Контрольная не-E2E серия ПОСЛЕ правки**
-
-Та же команда, лог `/tmp/pgw-t24-none2e-after.log`. Сравнить с ДО в `journal.md`: зелёность та же (0 failed), время сопоставимо (±20%). КРИТЕРИЙ «поведение НЕ изменилось» (spec §5.4) — эти две записи: атрибут был мёртвым (перекрыт csproj), удаление ничего не меняет.
-
-- [ ] **Step 5: Если серия ПОСЛЕ деградировала (fail/замедление > 20%)**
-
-Вернуть файл (`git checkout HEAD -- src/tests/PgWorker.IntegrationTests/AssemblyInfo.cs`, не коммитить), зафиксировать факт в `journal.md`, СТОП и вопрос пользователю через контролёр флоу (`{status: NEEDS_CONTEXT}`): атрибут оказался НЕ мёртвым — трактовка spec §1 неверна, способ чистки решает пользователь. Не продолжать молча.
-
-- [ ] **Step 6: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add -A
-git commit -m "refactor(t24): убран устаревший CollectionBehavior-атрибут из AssemblyInfo.cs — единственный источник истины параллелизма csproj (AC4); не-E2E серии до/после в журнале задачи"
+git commit -m "feat(t24): целевая схема параллелизма — xunit.runner.json (maxParallelThreads=3) единственный источник; CollectionBehavior-атрибут и мёртвые Xunit*-свойства удалены; не-E2E — последовательная NonE2e-коллекция (гейт конфигурации Фазы 6, AC4)"
 ```
 
-**Проверка задачи:** `git ls-files src/tests/PgWorker.IntegrationTests/ | grep AssemblyInfo` → пусто; обе контрольные серии в журнале, поведение не изменилось.
-**Связь со spec:** §1 (конфигурационный долг), §5.4, AC4, §7 (не-E2E — только фиксация отсутствия изменения).
+**Проверка задачи:** grep-гейт Step 5 пуст; не-E2E «после» зелёная и последовательная (interleaving), WalReceiver-тест зелёный; E2E-smoke показал параллельность ≥2 контуров; перед Task 4 — контроль `grep '"maxParallelThreads": 3' runner.json` → `1`.
+**Связь со spec:** §1 (конфигурационный факт и целевая схема — решение гейта Task 1), §5.4, §6 фаза 0 (конфигурационная часть), §7 (гарантия последовательности не-E2E), AC4.
+
+---
+
+### Task 1b: Перевод интеграционных тестов бэкапов на postgres:18-alpine
+
+**Вход:** Task 0 (журнал — для фиксации контрольной серии). Целевая версия PG проекта — 18; два тестовых контура бэкапов сидят на `postgres:17-alpine` и переходят на `postgres:18-alpine`. Задача ортогональна остальному плану (E2e-код и серии не трогает), НО её контрольная серия — docker-нагрузка на том же демоне: НЕ запускать её поверх идущей полной E2E-серии (канон соседей, docs/e2e-launch.md §5) — согласовать очередь с контролёром флоу (execute идёт в фоне).
+
+**Действие (Files):**
+- Modify: `src/tests/PgWorker.IntegrationTests/Backups/OwnPostgres.cs:26` (константа) и `:73` (doc-комментарий)
+- Modify: `src/tests/PgWorker.IntegrationTests/Backups/WalSqlTests.cs:22` (ContainerBuilder)
+- Modify: `dev-stand/images/images.txt:17` (замена строки)
+- Modify: `docs/runbook.md:142` (строка таблицы образов)
+- Modify: `docs/superpowers/2026-10-06-t24-e2e-suite-under-load/journal.md` (итог контрольной серии)
+
+**Interfaces:**
+- Consumes: зеркало образов локального registry 192.168.0.1:5000 (`dev-stand/images/mirror-image.sh <образ>` — мульти-арх по ранбуку `docs/runbook.md`).
+- Produces: интеграционные контуры бэкапов (`OwnPostgres`, `WalSqlTests`) на `postgres:18-alpine`; образ `postgres:18-alpine` зеркалирован и числится в `images.txt` (готов к `pull-images.sh`).
+
+**Выход:** тестовые контуры бэкапов соответствуют целевой версии PG 18; список зеркалируемых образов и ранбук синхронны факту (`postgres:17-alpine` из реестра проекта уходит — других потребителей нет).
+
+- [ ] **Step 1: Проверить отсутствие других потребителей 17-alpine**
+
+Run: `grep -rn "postgres:17-alpine" --include='*.cs' --include='*.txt' --include='*.md' --include='*.yaml' --include='*.yml' --include='*.sh' . | grep -v docs/superpowers`
+Expected: ровно 5 строк в 4 файлах — OwnPostgres.cs (2: константа `Image` и doc-комментарий), WalSqlTests.cs (1), images.txt (1), runbook.md (1). Если потребители сверх этого есть — STOP и вопрос контролёру флоу (замена строки images.txt заденет их).
+
+- [ ] **Step 2: Зеркалировать postgres:18-alpine в локальный registry (ДО правки тестов)**
+
+```bash
+./dev-stand/images/mirror-image.sh postgres:18-alpine
+```
+
+Expected: скрипт отработал без ошибок (манифест-лист amd64+arm64 запушен в 192.168.0.1:5000; вывод скрипта — контроль). Порядок обязателен: тесты тянут образ из локального registry, а не из недоступного апстрима.
+
+- [ ] **Step 3: OwnPostgres.cs — константа и doc-комментарий**
+
+Строка 26:
+
+```csharp
+    private const string Image = "postgres:18-alpine";
+```
+
+Doc-комментарий метода `StartAsync` (~строка 73), первое предложение:
+
+```csharp
+    /// <summary>Подъём: postgres:18-alpine (образ в images.txt), pg_isready ≤ 45 c,
+```
+
+- [ ] **Step 4: WalSqlTests.cs — образ контейнера**
+
+Строка 22:
+
+```csharp
+        await using var postgres = new ContainerBuilder("postgres:18-alpine")
+```
+
+- [ ] **Step 5: images.txt — заменить строку 17-alpine на 18-alpine**
+
+`dev-stand/images/images.txt`: `postgres:17-alpine` → `postgres:18-alpine` (строка существует ради этих тестов; `postgres:18` не-alpine — не трогать, он для dev-станда/панели/opsbox). Других потребителей 17-alpine нет (Step 1) — строка ЗАМЕНЯЕТСЯ, а не добавляется рядом (правило ранбука: список — только живые потребители).
+
+- [ ] **Step 6: runbook.md — строка таблицы образов**
+
+Строка 142:
+
+```markdown
+| `postgres:18-alpine` | интеграционные тесты бэкапов (OwnPostgres, WalSqlTests) |
+```
+
+(назначение уточнено по факту: строка обслуживала оба контура, а не только WalSqlTests — синхронизация документа с фактом).
+
+- [ ] **Step 7: Сборка + контрольная интеграционная серия Backups**
+
+```bash
+dotnet build src/PgWorker.slnx -c Release
+DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 \
+  dotnet test src/PgWorker.slnx -c Release \
+  --filter "FullyQualifiedName~PgWorker.IntegrationTests.Backups" \
+  --logger "console;verbosity=detailed" 2>&1 | tee /tmp/pgw-t24-backups-pg18.log
+```
+
+Гейты чистоты хоста до/после — по Global Constraints. Expected: серия зелёная на 18-alpine; итоговая строка (`Passed!` + `Total duration`) — в `journal.md` → «Наблюдения вне прогонов». Фейл — разбор по телеметрии без перезапуска: если причина — поведенческое различие PG 18 в этих тестах (а не инфраструктура), STOP и вопрос контролёру флоу (молча расширять правки за рамки задачи нельзя).
+
+- [ ] **Step 8: Commit**
+
+```bash
+git add src/tests/PgWorker.IntegrationTests/Backups/OwnPostgres.cs src/tests/PgWorker.IntegrationTests/Backups/WalSqlTests.cs dev-stand/images/images.txt docs/runbook.md docs/superpowers/2026-10-06-t24-e2e-suite-under-load/journal.md
+git commit -m "test(t24): интеграционные контуры бэкапов на postgres:18-alpine (OwnPostgres, WalSqlTests) + зеркало images.txt/ранбук — целевая версия PG 18"
+```
+
+**Проверка задачи:** `grep -rn "postgres:17-alpine" src dev-stand docs/runbook.md` → пусто; `grep -c "postgres:18-alpine" dev-stand/images/images.txt docs/runbook.md` → `1` и `1`; контрольная серия Backups зелёная (journal.md).
+**Связь со spec:** вне исходного scope spec; включено прямым требованием пользователя 2026-10-06 в ходе Фазы 6 (execute); ортогональная техническая правка — целевая версия PG проекта 18. Не соотносится с AC1–AC8; контрольная серия фиксируется в журнале задачи по общим правилам плана.
 
 ---
 
@@ -192,8 +369,8 @@ git commit -m "refactor(t24): убран устаревший CollectionBehavior
 - Consumes: `E2eEnvironment.StartOnceAsync` (etcd-алиасы, `net`, `minio`), `E2eFixture.FindRoot`.
 - Produces (используют Task 3 генератор и Tasks 5–6 эксперименты):
   - `dns_probe.py` — env-контракт: `DNS_PROBE_TARGETS` (имена через запятую), `DNS_PROBE_MODE=measure|storm`, `DNS_PROBE_INTERVAL` (сек, default 1, только measure). Вывод в stdout (docker logs): measure — `probe-dns,<unix_ts>,<target>,<1|0>,<latency_ms>,<error>` на попытку; storm — без пауз, агрегат каждые 5 с `storm-dns,<window_ts>,<iterations>,<fails>,<avg_ms>,<max_ms>`.
-  - `internal static class E2eDnsProbe` c `internal const string Image = "python:3.12-alpine";`, `internal const string ScriptRelativePath = "src/tests/PgWorker.IntegrationTests/E2e/dns_probe.py";`, `internal static IContainer Build(string runId, INetwork net, IReadOnlyList<string> targets, string mode, string intervalSec)`.
   - measure-цели E2E-окружения — ТРИ категории spec §5.2: алиасы сети `e2e-etcdN` (+`e2e-minio` при наличии), спец-резолвер `host.docker.internal`, внешнее имя `quay.io` (резолв через форвардеры Docker Desktop наружу — отдельный тракт от embedded DNS 127.0.0.11: различает, ЧТО деградирует, работает на H1/AC2).
+  - `internal static class E2eDnsProbe` c `internal const string Image = "python:3.12-alpine";`, `internal const string ScriptRelativePath = "src/tests/PgWorker.IntegrationTests/E2e/dns_probe.py";`, `internal static IContainer Build(string runId, INetwork net, IReadOnlyList<string> targets, string mode, string intervalSec)`.
   - `E2eEnvironment`: поле `private readonly IContainer? _dnsProbe;`, контейнер `pgw-dns-{runId}` (runId в имени → `OwnName` подбирает его и teardown'ом, и телеметрией `CollectDiagnosticsAsync`).
 
 **Выход:** латентность/ошибки резолва измеримы в любом прогоне (фазы 1–2, H1/H3-доказательства); лог зонда автоматически попадает в артефакты teardown как `container-pgw-dns-{runId}.log`.
@@ -289,14 +466,21 @@ internal static class E2eDnsProbe
 }
 ```
 
-- [ ] **Step 3: Врезка в E2eEnvironment.StartOnceAsync (после блока MinIO, перед return)**
+- [ ] **Step 3: Врезка зонда в E2eEnvironment.StartOnceAsync (две точки + catch)**
+
+**(1) Объявление — в шапке `StartOnceAsync`, ДО try-блока, по образцу `minio`** (`IContainer? minio = null;` стоит до try именно затем, чтобы существующий catch мог чистить частично поднятый контур; локальная переменная, объявленная внутри try, в C# НЕ видна в catch — CS0103):
+
+```csharp
+IContainer? dnsProbe = null;
+```
+
+**(2) Врезка — внутри try, после блока MinIO, перед return (только присваивание):**
 
 ```csharp
 // Синтетический DNS-зонд (t24, spec §5.2): опциональная телеметрия E2E —
 // env PGW_TEST_E2E_DNS_PROBE=1. Лог (container-pgw-dns-*.log) подбирается
 // CollectDiagnosticsAsync по OwnName(runId) — доказательная база «резолв
 // умер, а не PG» при разборе упавших прогонов.
-IContainer? dnsProbe = null;
 if (Environment.GetEnvironmentVariable("PGW_TEST_E2E_DNS_PROBE") == "1")
 {
     var targets = Enumerable.Range(1, etcdNodes.Count).Select(n => $"e2e-etcd{n}").ToList();
@@ -327,6 +511,22 @@ catch (Exception e)
 ```
 
 В `FailedTearDownAsync` зонд останавливается общим циклом `docker stop` по `OwnContainersAsync` (имя содержит runId) — отдельного кода не нужно.
+
+В существующий `catch`-блок `StartOnceAsync` (канон файла: «частично поднятое окружение не оставляем» — там уже чистятся minio/etcdNodes/сеть) добавить best-effort dispose зонда (переменная объявлена ДО try — см. (1) — поэтому видна в catch):
+
+```csharp
+// зонд поднимается последним перед return — исключение после его старта
+// не должно оставлять контейнер (частично поднятое окружение не оставляем)
+if (dnsProbe is not null)
+    try
+    {
+        await dnsProbe.DisposeAsync();
+    }
+    catch
+    {
+        // guid-имя, чужие прогоны не заденем; добьёт ассерт/ryuk
+    }
+```
 
 - [ ] **Step 4: Сборка**
 
@@ -674,7 +874,7 @@ public sealed class NoiseContour : IAsyncDisposable
         }
         catch (IOException)
         {
-            // bind-каталог мог быть занят демоном;.guid-имя — заденем только своё
+            // bind-каталог мог быть занят демоном; guid-имя — заденем только своё
         }
 
         // АССЕРТ ЧИСТОТЫ контура: ни контейнеров, ни сети со своим префиксом.
@@ -822,40 +1022,40 @@ git commit -m "feat(t24): диагностический нагрузочный 
 
 ---
 
-### Task 4: Фаза 0 — базлайны серии (N=3 и N=1, без соседей)
+### Task 4: Фаза 0 (базлайны) — первый канонический параллельный прогон N=3 и последовательный контроль N=1
 
-**Вход:** Tasks 0–3 (журнал, чистая конфигурация параллелизма, зонд+генератор готовы). Хост чист; dev-стенд опущен (если поднят — зафиксировать в журнале как условие прогона).
+**Вход:** Task 1 (конфигурация приведена к целевой схеме — конфигурационная часть фазы 0 spec выполнена задачей Task 1, здесь НЕ дублируется); Tasks 2–3 (зонд+генератор готовы). Хост чист; dev-стенд опущен (если поднят — зафиксировать в журнале как условие прогона).
 
 **Действие (Files):**
 - Modify: `docs/superpowers/2026-10-06-t24-e2e-suite-under-load/journal.md` (две строки «Сводки прогонов», наблюдения).
 
 **Interfaces:**
-- Consumes: «Операционная модель прогонов» (Global Constraints).
-- Produces: журнал с базлайнами — эталон времени/зелёности для сравнения в фазах 1–2; фактическое число фактов серии (spec говорит 26 — сверить с фактом живого прогона); наблюдение фактического параллелизма N=3 (AC4: «поведение раннера подтверждено НАБЛЮДЕНИЕМ прогона», не чтением конфига).
+- Consumes: «Операционная модель прогонов» (Global Constraints): канонический запуск + диагностическое переопределение потолка (sed runner.json).
+- Produces: журнал с базлайнами — эталон времени/зелёности для сравнения в фазах 1–2; фактическое число фактов серии (spec говорит 26 — сверить с фактом живого прогона); наблюдение фактического параллелизма N=3 (AC4: «поведение подтверждено НАБЛЮДЕНИЕМ прогонов» — E2E параллельна ≤3, не-E2E последовательны — не-E2E-часть уже зафиксирована прогонами Task 1).
 
-**Выход:** «тихое» состояние серии зелёное и измеренное (spec фаза 0).
+**Выход:** «тихое» состояние серии зелёное и измеренное в обоих режимах (spec фаза 0, выход).
 
 - [ ] **Step 1: Гипотезы в журнал ДО запуска**
 
-`journal.md` → «Сводка прогонов», две строки: прогон №1 (N=3, K=0): гипотеза «серия в тишине зелёная, ~37–40 мин; пик живых pgw-en-сетей = 3»; прогон №2 (N=1, K=0): гипотеза «зелёная, дольше N=3 (последовательные классы), пик сетей = 1».
+`journal.md` → «Сводка прогонов», две строки: прогон №1 (N=3 канонический, K=0): гипотеза «первый канонический параллельный прогон: зелёный, быстрее последовательного (внутрибиблиотечный N=3 фактического не существовал — атрибут давал N=1); пик живых pgw-en-сетей = 3»; прогон №2 (N=1, переопределённый потолок, K=0): гипотеза «зелёный, дольше канонического; пик сетей = 1 — последовательный контроль».
 
-- [ ] **Step 2: Прогон №1 — N=3 (канон)**
+- [ ] **Step 2: Прогон №1 — N=3 канонический (первый канонический параллельный прогон)**
 
-По «Операционной модели»: гейт чистоты → запуск полной серии (без `-p:`) с `PGW_TEST_E2E_DNS_PROBE=1` (телеметрия резолва на каждом прогоне — бесплатно) → поллинг хвоста лога раз в ~25 с, фиксировать пик `docker network ls --format '{{.Name}}' | grep -c '^pgw-en-'` → итог в журнал (зелёность, Total duration, пик сетей, число фактов из итоговой строки) → гейт чистоты.
+По «Операционной модели»: контроль-гейт `grep '"maxParallelThreads": 3' runner.json` → гейт чистоты → запуск полной серии (канонический, без правок) с `PGW_TEST_E2E_DNS_PROBE=1` → поллинг хвоста лога раз в ~25 с, фиксировать пик `docker network ls --format '{{.Name}}' | grep -c '^pgw-en-'` → итог в журнал (зелёность, Total duration, пик сетей — ожидание 3, число фактов из итоговой строки) → гейт чистоты.
 
-- [ ] **Step 3: Прогон №2 — N=1**
+- [ ] **Step 3: Прогон №2 — N=1 (диагностическое переопределение потолка)**
 
-Та же процедура с `-p:XunitMaxParallelThreads=1`. Сравнение времени с N=3 — в журнал (базлайн «последовательного» режима из симптома А: «последовательно по классам — зелёные»).
+Та же процедура с переопределением `3→1` по «Операционной модели» (sed → прогон → `git checkout` возврат → контроль возврата grep'ом). Сравнение времени с каноническим — в журнал (последовательный контроль: симптом А «последовательно по классам — зелёные»).
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add docs/superpowers/2026-10-06-t24-e2e-suite-under-load/journal.md
-git commit -m "docs(t24): фаза 0 — базлайны полной серии N=3/N=1 в тишине (зелёность, время, пик контуров)"
+git commit -m "docs(t24): фаза 0 — базлайны полной серии: первый канонический параллельный прогон N=3 и последовательный контроль N=1"
 ```
 
 **Проверка задачи:** обе серии зелёные; в журнале оба эталона; если ЛЮБАЯ серия упала — разбор по телеметрии без перезапуска (канон e2e-launch §4), причины в журнал, зачистка stop-остатков, повтор только после анализа и с гипотезой (spec §9: спорный результат повторяется один раз).
-**Связь со spec:** §6 фаза 0, AC4 (наблюдение N=3), AC6-база.
+**Связь со spec:** §6 фаза 0 (контрольные прогоны; конфигурационная часть — Task 1), AC4 (наблюдение N=3), AC6-база.
 
 ---
 
@@ -867,24 +1067,24 @@ git commit -m "docs(t24): фаза 0 — базлайны полной сери�
 - Modify: `docs/superpowers/2026-10-06-t24-e2e-suite-under-load/journal.md` (строки прогонов, промежуточные вердикты).
 
 **Interfaces:**
-- Consumes: генератор (CLI из Task 3), зонд (Task 2), базлайны Task 4.
+- Consumes: генератор (CLI из Task 3), зонд (Task 2), базлайны Task 4, «Операционная модель» (переопределение потолка, сосед).
 - Produces: устойчиво воспроизведённые (или опровергнутые — тоже результат, spec §9) симптомы А и Б с измерениями; данные для различения H1–H4 (Task 6); фиксация K «тяжёлого соседа».
 
 Определение «тяжёлого соседа» (управляемая переменная): генератор `-p full -k 3 -d <время серии по базлайну + 20 мин>` — эквивалент соседнего docker-тяжёлого прогона (мерж-гейта) по совокупной нагрузке на демона (до 3 живых контуров). Если N=3 + сосед K=3 НЕ воспроизводит симптом А — K поднимается ступенчато (5, 7), каждая попытка — строкой в журнал (это эмпирика порога H4, не «подгонка»).
 
 **Выход:** матрица прогонов (spec §6 фаза 1 п.1–5) выполнена; каждый прогон различает гипотезы одной переменной (N, либо K, либо профиль).
 
-- [ ] **Step 1: Прогон №3 — (N=3, K=3 full) — воспроизведение симптома А**
+- [ ] **Step 1: Прогон №3 — (N=3 канонический, K=3 full) — воспроизведение симптома А**
 
-Гипотеза в журнал ДО: «при тяжёлом соседе серия N=3 деградирует: рост времени фаз (`[PHASE]` elapsed), фейлы/подвисания на Restore/WalStream-сценариях, в DNS-зонде — рост латентности/ошибок». Запуск: сосед в фоне собранным бинарём (по «Операционной модели», `-k 3 -p full`), затем серия N=3 (с `PGW_TEST_E2E_DNS_PROBE=1`). Поллинг ОБОИХ логов. По завершении серии: журнал (зелёность, время vs базлайн N=3, суммарный пик сетей pgw-en-+pgw-noise-, агрегаты storm-лога соседа: fails/avg/max) → разбор фейлов по телеметрии при наличии → остановить соседа `kill -INT $(pgrep -f 'E2eLoadGen.dll')` и дождаться подтверждённого teardown (итоговая строка `noise:` в логе генератора либо пустой `docker network ls | grep pgw-noise-`) → гейт чистоты.
+Гипотеза в журнал ДО: «при тяжёлом соседе серия N=3 деградирует: рост времени фаз (`[PHASE]` elapsed), фейлы/подвисания на Restore/WalStream-сценариях, в DNS-зонде — рост латентности/ошибок». Запуск: сосед в фоне собранным бинарём (по «Операционной модели», `-k 3 -p full`), затем каноническая серия N=3 (с `PGW_TEST_E2E_DNS_PROBE=1`). Поллинг ОБОИХ логов. По завершении серии: журнал (зелёность, время vs базлайн N=3, суммарный пик сетей pgw-en-+pgw-noise-, агрегаты storm-лога соседа: fails/avg/max) → разбор фейлов по телеметрии при наличии → остановить соседа `kill -INT $(pgrep -f 'E2eLoadGen.dll')` и дождаться подтверждённого teardown (итоговая строка `noise:` в логе генератора либо пустой `docker network ls | grep pgw-noise-`) → гейт чистоты.
 
-- [ ] **Step 2: Прогон №4 — (N=5, K=0) — воспроизведение симптома Б**
+- [ ] **Step 2: Прогон №4 — (N=5, переопределённый потолок, K=0) — воспроизведение симптома Б**
 
-Гипотеза ДО: «N=5 без соседей воспроизводит DNS-деградацию: `getaddrinfo`-фейлы в логах PG-нод и/или зонде, мгновенные ~0,3 с фейлы коннекта, время серии ≥ базлайна N=3 (ускорения нет)». Серия с `-p:XunitMaxParallelThreads=5`, зонд включён. Ожидаемо 25/26 зелёные + WalStream-падение (симптом Б) — это прогон с гипотезой, не «перезапуск упавшего»: падения разбираются по телеметрии, MarkFailed-остатки зачищаются после разбора по README-cleanup.
+Гипотеза ДО: «N=5 без соседей воспроизводит DNS-деградацию: `getaddrinfo`-фейлы в логах PG-нод и/или зонде, мгновенные ~0,3 с фейлы коннекта, время серии ≥ базлайна N=3 (ускорения нет)». Серия с диагностическим переопределением потолка `3→5` по «Операционной модели» (sed → прогон → возврат → контроль возврата), зонд включён. Ожидаемо 25/26 зелёные + WalStream-падение (симптом Б) — это прогон с гипотезой, не «перезапуск упавшего»: падения разбираются по телеметрии, MarkFailed-остатки зачищаются после разбора по README-cleanup.
 
-- [ ] **Step 3: Прогон №5 — (N=2, K=3 full) — проверка H4 (порог от суммарной нагрузки)**
+- [ ] **Step 3: Прогон №5 — (N=2, переопределённый потолок, K=3 full) — проверка H4 (порог от суммарной нагрузки)**
 
-Гипотеза ДО: «если решает СУММАРНАЯ нагрузка (H4), N=2 + сосед K=3 (суммарно ~5 контуров) деградирует аналогично прогону №4; если решает N самой серии — N=2+сосед устойчив». Серия `-p:XunitMaxParallelThreads=2` + сосед как в Step 1. Сравнение с прогонами №3/№4 в журнале.
+Гипотеза ДО: «если решает СУММАРНАЯ нагрузка (H4), N=2 + сосед K=3 (суммарно ~5 контуров) деградирует аналогично прогону №4; если решает N самой серии — N=2+сосед устойчив». Серия с переопределением `3→2` + сосед как в Step 1. Сравнение с прогонами №3/№4 в журнале.
 
 - [ ] **Step 4: DNS-кривая — резолв от числа сетей без PG (H1 в чистом виде)**
 
@@ -911,7 +1111,7 @@ git commit -m "docs(t24): фаза 1 — матрица воспроизведе
 ```
 
 **Проверка задачи:** 3 серийных прогона + DNS-кривая в журнале; каждая строка — с гипотезой ДО; хост чист после каждого.
-**Связь со spec:** §6 фаза 1 (п.1–5; прогон №1 матрицы = базлайн Task 4), AC1.
+**Связь со spec:** §6 фаза 1 (п.1–5; прогон №1 матрицы = базлайн Task 4; N=5 — диагностическое переопределение потолка), AC1.
 
 ---
 
@@ -930,11 +1130,11 @@ git commit -m "docs(t24): фаза 1 — матрица воспроизведе
 
 - [ ] **Step 1: H1 — где именно умирает соединение**
 
-По артефактам упавших прогонов №3/№4: сверка DNS-зонда окружения (`container-pgw-dns-*.log`) с логами PG-нод (`getaddrinfo returns an empty list`) и transient-циклами воркеров (`host-*.log`): фейлы на этапе РЕЗОЛВА (зонд фиксирует fail в те же секунды) vs TCP-коннект/хендшейк (зонд зелёный, коннект падает). Вывод в карту: H1 подтверждён/исключён + ссылки на файлы артефактов. Дополнительный аргумент — DNS-кривая Task 5 Step 4.
+По артефактам упавших прогонов №3/№4: сверка DNS-зонда окружения (`container-pgw-dns-*.log`) с логами PG-нод (`getaddrinfo returns an empty list`) и transient-циклами воркеров (`host-*.log`): фейлы на этапе РЕЗОЛВА (зонд фиксирует fail в те же секунды; отдельно — внешний резолв `quay.io`: деградация embedded DNS при живом форварде наружу сужает локализацию) vs TCP-коннект/хендшейк (зонд зелёный, коннект падает). Вывод в карту: H1 подтверждён/исключён + ссылки на файлы артефактов. Дополнительный аргумент — DNS-кривая Task 5 Step 4.
 
 - [ ] **Step 2: H2 — CPU/IO без DNS-шума**
 
-Изолирующий прогон №6: сосед из двух генераторов БЕЗ dns-профиля (`-p cpu -k 3` и `-p io -k 3` параллельно) при серии N=3. Гипотеза ДО: «если H2 — чистая CPU/IO-нагрузка воспроизводит фейлы коннекта при зелёном DNS-зондe; если фейлов нет — H2 исключается как самостоятельная причина симптомов». Во время серии поллить `docker stats --no-stream` и `uptime` — корреляция фейлов с пиком нагрузки в журнал.
+Изолирующий прогон №6: сосед из двух генераторов БЕЗ dns-профиля (`-p cpu -k 3` и `-p io -k 3` параллельно) при канонической серии N=3. Гипотеза ДО: «если H2 — чистая CPU/IO-нагрузка воспроизводит фейлы коннекта при зелёном DNS-зонде; если фейлов нет — H2 исключается как самостоятельная причина симптомов». Во время серии поллить `docker stats --no-stream` и `uptime` — корреляция фейлов с пиком нагрузки в журнал.
 
 - [ ] **Step 3: H3 — «подвисание» = транзиент-циклы против бюджетов**
 
@@ -975,7 +1175,7 @@ git commit -m "docs(t24): фаза 2 — карта гипотез H1-H4 (сле
 
 - [ ] **Step 1: Применить критерии к карте**
 
-В «Гейт решения» журнала записать по критериям spec §6: (1) причина в наших границах? (из Task 6 Step 5-а); (2) митигация дёшева? (Step 5-б); (3) есть ли измеримый выигрыш N>3? (нет — измерено: 58м59с/26 фактов при N=5 против 37м37с/24 при N=3).
+В «Гейт решения» журнала записать по критериям spec §6: (1) причина в наших границах? (из Task 6 Step 5-а); (2) митигация дёшева? (Step 5-б); (3) есть ли измеримый выигрыш N>3? (нет — измерено: 58м59с/26 фактов при N=5 против 37м37с/24 при N=3, наблюдения t27 при внешнем переопределении параллелизма).
 
 - [ ] **Step 2: Зафиксировать решение**
 
@@ -1001,7 +1201,7 @@ git commit -m "docs(t24): гейт решения — ветка <А|Б> заф�
 
 ### Task 8: (Ветка А) Рельса канона — громкое предупреждение при превышении фактического параллелизма
 
-**Вход:** Task 7 = ветка А. Канон: ≤3 контура; жёсткий запрет НЕ вводим — диагностические прогоны с N>3 легальны, но громки (spec §6 фаза 3 ветвь А, AC7).
+**Вход:** Task 7 = ветка А. Канон: ≤3 контура; жёсткий запрет НЕ вводим — диагностические прогоны с переопределённым потолком N>3 легальны, но громки (spec §6 фаза 3 ветвь А, AC7).
 
 **Действие (Files):**
 - Create: `src/tests/PgWorker.IntegrationTests/E2e/E2eParallelismGuard.cs`
@@ -1009,9 +1209,9 @@ git commit -m "docs(t24): гейт решения — ветка <А|Б> заф�
 
 **Interfaces:**
 - Consumes: —
-- Produces: `internal static class E2eParallelismGuard` c `internal const int CanonMaxLiveEnvironments = 3;`, `public static int OnEnvironmentStarted(string slug)` (инкремент живых окружений процесса; при превышении канона — ОДНО на процесс громкое предупреждение `[E2E-PARALLELISM]` в stderr + `/tmp/pgw-e2e-static-phase.log`), `public static void OnEnvironmentDisposed()`. Рельса меряет ФАКТ (число одновременно живых контуров), а не декларацию конфига — срабатывает при любом способе задания N.
+- Produces: `internal static class E2eParallelismGuard` c `internal const int CanonMaxLiveEnvironments = 3;`, `public static int OnEnvironmentStarted(string slug)` (инкремент живых окружений процесса; при превышении канона — ОДНО на процесс громкое предупреждение `[E2E-PARALLELISM]` в stderr + `/tmp/pgw-e2e-static-phase.log`), `public static void OnEnvironmentDisposed()`. Рельса меряет ФАКТ (число одновременно живых контуров), а не декларацию конфигурации — срабатывает при любом способе переопределения потолка.
 
-**Выход:** прогон серии с фактическим N выше канона маркирует себя в журнале прогона (AC7).
+**Выход:** прогон серии с фактически переопределённым потолком выше канона маркирует себя в журнале прогона (AC7).
 
 - [ ] **Step 1: E2eParallelismGuard.cs**
 
@@ -1022,8 +1222,8 @@ namespace PgWorker.IntegrationTests.E2e;
 /// потолок — 3 одновременно живых контура. Считает ФАКТИЧЕСКИ живые окружения
 /// процесса: при превышении канона один раз на процесс пишет громкое
 /// предупреждение в stderr и /tmp/pgw-e2e-static-phase.log. Жёсткий запрет
-/// не вводится — диагностические прогоны с N&gt;3 легальны, но обязаны быть
-/// громкими.</summary>
+/// не вводится — диагностические прогоны с переопределённым потолком N&gt;3
+/// легальны, но обязаны быть громкими.</summary>
 internal static class E2eParallelismGuard
 {
     internal const int CanonMaxLiveEnvironments = 3;
@@ -1039,7 +1239,7 @@ internal static class E2eParallelismGuard
         if (live > CanonMaxLiveEnvironments && Interlocked.Exchange(ref _warned, 1) == 0)
         {
             var line = $"{DateTime.UtcNow:HH:mm:ss} [E2E-PARALLELISM] e2e[{slug}]: живых E2E-контуров {live} > канона"
-                + $" {CanonMaxLiveEnvironments} (XunitMaxParallelThreads / docs/e2e-launch.md «Параллелизм и нагрузка»)"
+                + $" {CanonMaxLiveEnvironments} (xunit.runner.json maxParallelThreads / docs/e2e-launch.md «Параллелизм и нагрузка»)"
                 + " — прогон ВНЕ канона: вероятна деградация docker-хоста (DNS/сети); результаты требуют этой пометки.";
             Console.Error.WriteLine(line);
             try
@@ -1081,13 +1281,13 @@ E2eParallelismGuard.OnEnvironmentDisposed();
 Run: `dotnet build src/PgWorker.slnx -c Release`
 Expected: 0 errors, 0 warnings.
 
-- [ ] **Step 4: Проверка рельсы прогоном с N=5 (AC7)**
+- [ ] **Step 4: Проверка рельсы прогоном с переопределённым потолком N=5 (AC7)**
 
-5 классов по 1–4 факта, по «Операционной модели» (ВНИМАНИЕ: пик живых контуров >3 — вероятностное перекрытие окружений по времени, для лёгких классов НЕ гарантирован — молчание рельсы без достигнутого пика не означает её поломку):
+5 классов по 1–4 факта, по «Операционной модели» (ВНИМАНИЕ: пик живых контуров >3 — вероятностное перекрытие окружений по времени, для лёгких классов НЕ гарантирован — молчание рельсы без достигнутого пика не означает её поломку). Переопределение `3→5` по «Операционной модели» (sed runner.json → прогон → возврат → контроль возврата):
 
 ```bash
 DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 \
-  dotnet test src/PgWorker.slnx -c Release -p:XunitMaxParallelThreads=5 \
+  dotnet test src/PgWorker.slnx -c Release \
   --filter "FullyQualifiedName~E2eAppParams|FullyQualifiedName~E2eAppSecret|FullyQualifiedName~E2eRotate|FullyQualifiedName~E2ePgtune|FullyQualifiedName~E2eRetention" \
   --logger "console;verbosity=detailed" 2>&1 | tee /tmp/pgw-t24-railsmoke.log
 ```
@@ -1100,7 +1300,7 @@ Expected — двухчастный критерий (отличает «рел�
 
 - [ ] **Step 5: Контрольная проверка молчания рельсы в каноне**
 
-Прогон тех же 5 классов с `-p:XunitMaxParallelThreads=3`: `grep -c "E2E-PARALLELISM" <лог>` → `0` (пик ≤ 3 — рельса молчит; ложных срабатываний нет).
+Канонический прогон тех же 5 классов (runner.json `3`, без правок; контроль-гейт grep перед запуском): `grep -c "E2E-PARALLELISM" <лог>` → `0` (пик ≤ 3 — рельса молчит; ложных срабатываний нет).
 
 - [ ] **Step 6: Commit**
 
@@ -1110,23 +1310,23 @@ git commit -m "feat(t24): рельса канона N=3 — E2eParallelismGuard:
 ```
 
 **Проверка задачи:** Step 4 — пик живых контуров > 3 ДОСТИГНУТ (по стартовым строкам `[PHASE] e2e-env … живых контуров …`) И предупреждение `[E2E-PARALLELISM]` есть; Step 5 — молчит в каноне.
-**Связь со spec:** §6 фаза 3 ветвь А, AC7.
+**Связь со spec:** §6 фаза 3 ветвь А, AC7 («проверено прогоном с переопределённым потолком параллелизма»).
 
 ---
 
-### Task 9: (Ветка А) Канонизация — раздел «Параллелизм и нагрузка» в docs/e2e-launch.md + согласование csproj
+### Task 9: (Ветка А) Канонизация — раздел «Параллелизм и нагрузка» в docs/e2e-launch.md + согласование runner.json
 
-**Вход:** Task 8 (рельса live); решение гейта Task 7 (N канона = 3).
+**Вход:** Task 8 (рельса live); решение гейта Task 7 (N канона = 3 — уже в runner.json от Task 1).
 
 **Действие (Files):**
 - Modify: `docs/e2e-launch.md` (новый раздел §5 перед «Где что лежит после прогона»)
-- Modify: `src/tests/PgWorker.IntegrationTests/PgWorker.IntegrationTests.csproj` (комментарий над PropertyGroup)
+- Modify: `src/tests/PgWorker.IntegrationTests/PgWorker.IntegrationTests.csproj` (комментарий канона над ItemGroup копирования runner.json — поставлен Task 1 Step 1; здесь — сверка согласованности с docs)
 
 **Interfaces:**
-- Consumes: измерения журнала (базлайны, матрица), `E2eParallelismGuard` (Task 8).
-- Produces: канон прогона серии целиком (AC5): потолок N, правило соседних прогонов, признаки деградации, действия при фейле — согласованный с csproj.
+- Consumes: измерения журнала (базлайны, матрица), `E2eParallelismGuard` (Task 8), runner.json (Task 1).
+- Produces: канон прогона серии целиком (AC5): потолок N, правило соседних прогонов, признаки деградации, действия при фейле — согласованный с runner.json.
 
-**Выход:** канон «как гонять серию» описан в каноническом документе запуска; комментарий csproj ссылается на него (число N — единственный источник истины csproj, толкование — docs).
+**Выход:** канон «как гонять серию» описан в каноническом документе запуска; комментарий csproj ссылается на него (число N — единственный источник runner.json, толкование — docs).
 
 - [ ] **Step 1: Раздел в docs/e2e-launch.md**
 
@@ -1136,13 +1336,19 @@ git commit -m "feat(t24): рельса канона N=3 — E2eParallelismGuard:
 ## 5. Параллелизм и нагрузка (канон прогона серии)
 
 Потолок параллелизма полной E2E-серии — **3 контура**
-(`XunitMaxParallelThreads=3` в
-`src/tests/PgWorker.IntegrationTests/PgWorker.IntegrationTests.csproj` —
-единственный источник истины). Выше — docker-хост деградирует: DNS-резолв
-внутри сетей отдаёт пустые ответы (`getaddrinfo returns an empty list` в
-логах PG-нод), коннекты стрим-клиентов падают мгновенно (~0,3 с) в
-transient-цикле; ускорения нет (N=5 медленнее N=3 — измерения в журнале
-задачи t24 в `docs/superpowers/`).
+(`maxParallelThreads=3` в
+`src/tests/PgWorker.IntegrationTests/xunit.runner.json` — единственный
+источник потолка; xunit.v3 читает конфиг из output, у тестовой сборки
+нет ни CollectionBehavior-атрибутов, ни Xunit*-свойств csproj). Выше —
+docker-хост деградирует: DNS-резолв внутри сетей отдаёт пустые ответы
+(`getaddrinfo returns an empty list` в логах PG-нод), коннекты
+стрим-клиентов падают мгновенно (~0,3 с) в transient-цикле; ускорения
+нет (N=5 медленнее N=3 — измерения в журнале задачи t24 в
+`docs/superpowers/`).
+
+Не-E2E тесты сборки последовательны всегда: `[Collection]-группа
+`NonE2eCollection` (`DisableParallelization=true`) — параллельная
+конкуренция для них не норма.
 
 Правила соседней нагрузки:
 
@@ -1153,8 +1359,11 @@ transient-цикле; ускорения нет (N=5 медленнее N=3 — 
   интеграционные серии соседних задач) — дождаться завершения;
 - рельса: `E2eEnvironment` при фактическом превышении канона пишет в журнал
   прогона громкое предупреждение `[E2E-PARALLELISM]` (жёсткий запрет не
-  вводится — диагностические прогоны с N>3 легальны, но обязаны быть
-  громкими; пример запуска: `dotnet test … -p:XunitMaxParallelThreads=5`).
+  вводится — диагностические прогоны с переопределённым потолком легальны,
+  но обязаны быть громкими). Переопределение потолка — временная правка
+  `maxParallelThreads` в xunit.runner.json с ОБЯЗАТЕЛЬНЫМ возвратом
+  (`git checkout --`) и контролем канонического значения перед следующим
+  каноническим прогоном.
 
 Признаки деградации (что смотреть в логах):
 
@@ -1174,37 +1383,29 @@ transient-цикле; ускорения нет (N=5 медленнее N=3 — 
   ТОЛЬКО после полного анализа и с сформулированной гипотезой (§4).
 ```
 
-- [ ] **Step 2: Комментарий csproj — согласование с docs**
+- [ ] **Step 2: Сверка согласованности csproj-комментария и runner.json**
 
-Заменить комментарий над PropertyGroup в `PgWorker.IntegrationTests.csproj` на:
-
-```xml
-    <!-- E2E-классы изолированы каноном (guid-контуры, own-only teardown) —
-         коллекции гоняются параллельно. Потолок 3 контура: docker-хост
-         деградирует выше (DNS/сети) — канон и правила соседней нагрузки:
-         docs/e2e-launch.md §5 «Параллелизм и нагрузка» (t24). «Тихие»
-         классы с общими ассетами при конфликте — в [Collection]-группу. -->
-```
+Комментарий канона над ItemGroup копирования runner.json поставлен Task 1 Step 1 (упоминает runner.json как единственный источник и ссылается на docs/e2e-launch.md §5): проверить, что формулировка соответствует финальному канону ветки А (N=3); при расхождении — согласовать текст комментария с разделом §5. (Для ветки Б — Task 10 Step 2 обновит оба места на новое N.)
 
 - [ ] **Step 3: Проверка согласованности**
 
-Run: `grep -c "Параллелизм и нагрузка" docs/e2e-launch.md` → `1`; `grep -c "e2e-launch.md" src/tests/PgWorker.IntegrationTests/PgWorker.IntegrationTests.csproj` → `1`; `grep -rc "CollectionBehavior" src/tests` → `0` по всем файлам (атрибут не вернулся).
+Run: `grep -c "Параллелизм и нагрузка" docs/e2e-launch.md` → `1`; `grep '"maxParallelThreads"' src/tests/PgWorker.IntegrationTests/xunit.runner.json` → `"maxParallelThreads": 3`; `grep -c "e2e-launch.md" src/tests/PgWorker.IntegrationTests/PgWorker.IntegrationTests.csproj` → `1`; `grep -rn "CollectionBehavior\|XunitParallelize" --include='*.cs' src/tests/PgWorker.IntegrationTests/` → пусто (по коду атрибут/свойства не вернулись; комментарий csproj упоминает их имена намеренно — как и гейт Task 1 Step 5, проверяем только `*.cs`).
 
 - [ ] **Step 4: Commit**
 
 ```bash
 git add docs/e2e-launch.md src/tests/PgWorker.IntegrationTests/PgWorker.IntegrationTests.csproj
-git commit -m "docs(t24): канон прогона серии — раздел «Параллелизм и нагрузка» в e2e-launch.md (потолок N=3, соседи, признаки, действия) + согласование csproj (AC5)"
+git commit -m "docs(t24): канон прогона серии — раздел «Параллелизм и нагрузка» в e2e-launch.md (потолок N=3, соседи, признаки, действия) + согласование с runner.json (AC5)"
 ```
 
-**Проверка задачи:** раздел существует; csproj ссылается на него; `CollectionBehavior` отсутствует в src/tests.
-**Связь со spec:** §5.5, §6 фаза 3 ветвь А, AC5.
+**Проверка задачи:** раздел существует; runner.json несёт каноническое 3; csproj-комментарий ссылается на docs; `CollectionBehavior`/`XunitParallelize` отсутствуют.
+**Связь со spec:** §5.5, §6 фаза 3 ветвь А, AC5 («runner.json согласован с docs»).
 
 ---
 
 ### Task 10: Фаза 4 — приёмка: финальные контрольные прогоны и судьба инструментов
 
-**Вход:** Tasks 8–9 (ветка А) или mini-план ветки Б (Task 7 Step 3); все митигации/рельсы закоммичены.
+**Вход:** Tasks 8–9 (ветка А) или mini-план ветки Б (Task 7 Step 3); все митигации/рельсы закоммичены; конфигурация — целевая схема Task 1.
 
 **Действие (Files):**
 - Modify: `docs/superpowers/2026-10-06-t24-e2e-suite-under-load/journal.md` (итоговые прогоны приёмки)
@@ -1212,18 +1413,18 @@ git commit -m "docs(t24): канон прогона серии — раздел 
 - (Только при подтверждённом вкладе H3) Modify: `src/tests/PgWorker.IntegrationTests/E2e/*.cs` — точечные уточнения телеметрии/бюджетов медленных фаз
 
 **Interfaces:**
-- Consumes: канон Task 9, рельса Task 8, журнал.
-- Produces: приёмочные прогоны AC6 (для ветки А — ДВЕ последовательные зелёные серии: устойчивость, а не удача).
+- Consumes: канон Task 9, рельса Task 8, runner.json-схема Task 1, журнал.
+- Produces: приёмочные прогоны AC6 (для ветки А — ДВЕ последовательные зелёные серии в целевой конфигурации: устойчивость, а не удача).
 
-**Выход:** финальная приёмка: серия(и) на свежем Release по канону зелёные, хост чист, инструменты-диагностики покинули ветку (кроме зонда, если решено оставить).
+**Выход:** финальная приёмка: серия(и) на свежем Release по канону (канонический запуск, runner.json N=3 без правок) зелёные, хост чист, инструменты-диагностики покинули ветку (кроме зонда, если решено оставить).
 
-- [ ] **Step 1: (Ветка А) Две последовательные зелёные серии по канону**
+- [ ] **Step 1: (Ветка А) Две последовательные зелёные серии по канону — в новой конфигурации**
 
-По «Операционной модели», подряд, между ними — только гейт чистоты хоста (никаких правок кода): серия A1 (N=3 канон, `PGW_TEST_E2E_DNS_PROBE=1`), гейт чистоты, серия A2 (та же команда). Обе зелёные; время каждой + сравнение с базлайном Task 4 — в журнал. Любой фейл — разбор по телеметрии без перезапуска; повтор серии допустим только после анализа и с гипотезой (spec §9: один повтор).
+По «Операционной модели», подряд, между ними — только гейт чистоты хоста (никаких правок кода; перед каждой — контроль-гейт канонического `grep '"maxParallelThreads": 3' runner.json` → `1`): серия A1 (канонический запуск, `PGW_TEST_E2E_DNS_PROBE=1`), гейт чистоты, серия A2 (та же команда). Обе зелёные; время каждой + сравнение с базлайном Task 4 — в журнал. Любой фейл — разбор по телеметрии без перезапуска; повтор серии допустим только после анализа и с гипотезой (spec §9: один повтор).
 
 - [ ] **Step 2: (Ветка Б) Матрица при новом N**
 
-По mini-плану ветки Б: серия без соседей + серия с соседом при новом N — обе зелёные; канон в docs/csproj обновлён на новое N (правки `docs/e2e-launch.md` §5 и csproj-комментария — те же шаги, что Task 9, с новым числом). Итоги в журнал.
+По mini-плану ветки Б: серия без соседей + серия с соседом при новом N — обе зелёные; канон обновлён на новое N: `maxParallelThreads` в `xunit.runner.json` + тексты раздела `docs/e2e-launch.md` §5 и csproj-комментария (те же шаги, что Task 9, с новым числом). Итоги в журнал.
 
 - [ ] **Step 3: Точечные уточнения H3 (только если вклад H3 подтверждён в Task 6)**
 
@@ -1246,10 +1447,10 @@ Expected: удаление ок; сборка решения зелёная (г�
 
 ```bash
 git add -A
-git commit -m "chore(t24): приёмка — финальные прогоны по канону в журнале, генератор удалён из ветки (AC6)"
+git commit -m "chore(t24): приёмка — финальные прогоны по канону в целевой конфигурации, генератор удалён из ветки (AC6)"
 ```
 
-**Проверка задачи:** AC6 закрыт прогонами (ветка А: 2 зелёные серии подряд; ветка Б: матрица зелёная при новом N); хост чист; `src/tools/E2eLoadGen` не существует.
+**Проверка задачи:** AC6 закрыт прогонами в целевой конфигурации (ветка А: 2 зелёные серии подряд каноническим запуском; ветка Б: матрица зелёная при новом N); хост чист; `src/tools/E2eLoadGen` не существует.
 **Связь со spec:** §6 фаза 4, AC6, §7 (генератор не остаётся в main).
 
 ---
@@ -1270,14 +1471,14 @@ git commit -m "chore(t24): приёмка — финальные прогоны 
 
 - [ ] **Step 1: reliability.md — удалить пункт t24 и проверить зависимости**
 
-Удалить блок списка, начинающийся `- **\`t24-e2e-suite-under-load\`** —` (устойчивость полной E2E-серии к параллельной нагрузке, канон `XunitMaxParallelThreads=3`). Run: `grep -c "t24" arch/roadmap/reliability.md` → `0`.
+Удалить блок списка, начинающийся `- **\`t24-e2e-suite-under-load\`** —` (устойчивость полной E2E-серии к параллельной нагрузке, канон `maxParallelThreads=3`). Run: `grep -c "t24" arch/roadmap/reliability.md` → `0`.
 
 - [ ] **Step 2: reliability-report.md — перенос строки**
 
 Из таблицы «Осталось» удалить строку `| \`t24-e2e-suite-under-load\` | устойчивость полной E2E-серии к параллельной нагрузке | P3 | N |`. В «Сделано в рамках трека» добавить строку по образцу строки t27 — вариант для ветки А (вместо фрагментов в ‹› — фактические формулировки из journal.md: вердикт фазы 2 по границам причины):
 
 ```markdown
-| `t24-e2e-suite-under-load` | — (мерж-коммит t24-e2e-suite-under-load) | устойчивость полной E2E-серии к параллельной нагрузке (характеристика N): симптомы воспроизведены управляемым нагрузочным генератором, причина локализована как ‹вердикт фазы 2: ограничение Docker Desktop/хоста — DNS-резолвер деградирует при росте параллельных сетей ИЛИ иная локализация из journal.md›; принят канон прогона N=3 с рельсами — единственный источник истины csproj (устаревший CollectionBehavior-атрибут удалён), громкое предупреждение [E2E-PARALLELISM] при фактическом превышении живых контуров, раздел «Параллелизм и нагрузка» в docs/e2e-launch.md (потолок, соседи, признаки деградации, действия при фейле), опциональный DNS-зонд PGW_TEST_E2E_DNS_PROBE=1 в телеметрии окружения; приёмка — две последовательные зелёные серии по канону, хост чист |
+| `t24-e2e-suite-under-load` | — (мерж-коммит t24-e2e-suite-under-load) | устойчивость полной E2E-серии к параллельной нагрузке (характеристика N): конфигурация параллелизма приведена к целевой схеме — xunit.runner.json (maxParallelThreads=3) единственный источник потолка (CollectionBehavior-атрибут, задававший N=1 всей сборке, и мёртвые Xunit*-свойства csproj удалены), не-E2E тесты гарантированно последовательны [Collection]-группой NonE2eCollection, E2E-серия реально параллельна N=3 впервые; симптомы воспроизведены управляемым нагрузочным генератором, причина локализована как ‹вердикт фазы 2: ограничение Docker Desktop/хоста — DNS-резолвер деградирует при росте параллельных сетей ИЛИ иная локализация из journal.md›; принят канон прогона N=3 с рельсами — громкое предупреждение [E2E-PARALLELISM] при фактическом превышении живых контуров, раздел «Параллелизм и нагрузка» в docs/e2e-launch.md (потолок, соседи, признаки деградации, действия при фейле), опциональный DNS-зонд PGW_TEST_E2E_DNS_PROBE=1 в телеметрии окружения; приёмка — две последовательные зелёные серии по канону в целевой конфигурации, хост чист |
 ```
 
 Для ветки Б — та же строка с заменой середины на реализованные митигации и новый канон N (из mini-плана ветки Б и журнала). Проверить сводку по характеристике N в начале отчёта: если она упоминала неустойчивость серии — дополнить фактом закрытия (только текущее состояние, без истории).
@@ -1300,7 +1501,9 @@ git commit -m "roadmap(t24): пункт снят из reliability.md, отчёт
 
 ## Самопроверка плана (итог self-review)
 
-- **Покрытие spec:** §5.1 генератор → Task 3; §5.2 зонд → Task 2; §5.3 матрица → Tasks 4–5; §5.4 единый источник истины → Task 1; §5.5 раздел docs → Task 9; §5.6 митигации → Task 7 Step 3 (ветка Б, mini-план: состав определяется фазой 2, импровизация в плане запрещена); фаза 0 → Task 4; фаза 1 → Task 5; фаза 2 → Task 6; гейт → Task 7; фаза 3 ветвь А → Tasks 8–9 (H3-уточнения — Task 10 Step 3, обе ветви); фаза 4 → Task 10; мерж-гейт → Task 11. AC: AC1→Task 5, AC2→Task 6, AC3→Task 7, AC4→Tasks 1+4, AC5→Task 9, AC6→Task 10, AC7→Task 8, AC8→Task 11. Ограничения §7 — в Global Constraints; риски §9 — в Tasks 4/5/10 (повтор один раз, невоспроизводимость = результат).
+- **Покрытие spec (ревизия 2026-10-06):** §5.1 генератор → Task 3; §5.2 зонд → Task 2; §5.3 матрица → Tasks 4–5; §5.4 целевая схема конфигурации → Task 1 (24 переноса + 17 новых [Collection]-пометок = 41 не-E2E класс; runner.json; удаление атрибута и мёртвых свойств; контроль не-E2E до/после в эквивалентном последовательном режиме с базой Фазы 6 — без переснимания); §5.5 раздел docs → Task 9; §5.6 митигации → Task 7 Step 3 (ветка Б, mini-план); фаза 0 «конфигурация и базлайны» → Tasks 1 (конфигурация) + 4 (базлайны: первый канонический параллельный прогон N=3, последовательный контроль N=1) без дублирования шагов; фаза 1 → Task 5 (N=5 — «диагностическое переопределение потолка»); фаза 2 → Task 6; гейт → Task 7; фаза 3 ветвь А → Tasks 8–9 (H3-уточнения — Task 10 Step 3); фаза 4 → Task 10; мерж-гейт → Task 11. AC: AC1→Task 5, AC2→Task 6, AC3→Task 7, AC4→Task 1 (схема+наблюдения) + Task 4 (наблюдение N=3), AC5→Task 9, AC6→Task 10, AC7→Task 8, AC8→Task 11. Ограничения §7 и риск «смена режима прогона» §9 — в Global Constraints и Task 1 (перепроверка WalReceiver-фейла под защитой-коллекцией).
+- **Вне scope spec (прямое требование пользователя):** Task 1b — перевод интеграционных контуров бэкапов на `postgres:18-alpine` (OwnPostgres.cs, WalSqlTests.cs, images.txt-замена, runbook) с контрольной серией Backups; помечен «вне исходного scope» честно, без привязки к AC1–AC8; ортогонален E2E-фазам, место — рядом с Task 1 до старта серий.
 - **Развилка веток:** гейт (Task 7) — единственная точка выбора; ветка Б уходит в отдельный mini-план (состав митигаций по spec §5.6 определяется фазой 2 — в плане процедура, а не выдуманный состав); при неоднозначности — возврат `NEEDS_CONTEXT` контролёру.
-- **Типы/имена:** `LoadGenOptions.Parse` / `NoiseContour.CreateAsync(int index, string profile, string outDir, CancellationToken ct)` (Task 3) согласованы с использованием в Task 5; `E2eDnsProbe.Build(runId, net, targets, mode, intervalSec)` и имя `pgw-dns-{runId}` — между Steps 3 Task 2 и телеметрией/teardown окружения; `E2eParallelismGuard.OnEnvironmentStarted/OnEnvironmentDisposed` — между Steps 1–2 Task 8; скрипт `dns_probe.py` и его env-контракт (`DNS_PROBE_TARGETS/MODE/INTERVAL`) едины для E2E (measure) и генератора (storm); состав целей — ТРИ категории spec §5.2 (алиас сети, `host.docker.internal`, внешнее имя `quay.io`) в обоих потребителях (врезка Task 2 Step 3 и `stormTargets` Task 3 Step 3).
+- **Механика переопределения потолка:** `-p:XunitMaxParallelThreads` и прочие MSBuild-свойства из плана УБРАНЫ (мёртвая механика xunit.v3, эмпирика журнала): N=1/2/5 — временная правка `maxParallelThreads` в runner.json с обязательным `git checkout`-возвратом и контроль-гейтом grep перед каждым каноническим прогоном (операционная модель; Tasks 4, 5, 8, 10).
+- **Типы/имена:** `NonE2eCollection.Name = "non-e2e-sequential"` — единый идентификатор коллекции для 41 файла Task 1 (корневой namespace — виден всем вложенным без using); фикстуры `EtcdFixture`/`PgApiFixture`/`PgMetricsFixture` перенесены в NonE2eCollection как ICollectionFixture, прежние Definition-классы удалены; `LoadGenOptions.Parse` / `NoiseContour.CreateAsync(int index, string profile, string outDir, CancellationToken ct)` (Task 3) согласованы с использованием в Task 5; `E2eDnsProbe.Build(runId, net, targets, mode, intervalSec)` и имя `pgw-dns-{runId}` — между Steps 3 Task 2 и телеметрией/teardown окружения; `E2eParallelismGuard.OnEnvironmentStarted/OnEnvironmentDisposed` — между Steps 1–2 Task 8; скрипт `dns_probe.py` и его env-контракт (`DNS_PROBE_TARGETS/MODE/INTERVAL`) едины для E2E (measure) и генератора (storm); состав целей — ТРИ категории spec §5.2 (алиас сети, `host.docker.internal`, внешнее имя `quay.io`) в обоих потребителях.
 - **Операционные механики:** фоновый сосед запускается собранным бинарём и останавливается `kill -INT $(pgrep -f 'E2eLoadGen.dll')` (SIGINT → `Console.CancelKeyPress` → teardown в `finally`; Ctrl-C фоновой job не доставляется) — гейт чистоты только после подтверждённого teardown соседа; проверка AC7 — двухчастная: сначала факт пика контуров >3 по стартовым строкам guard'а, затем наличие `[E2E-PARALLELISM]` (молчание без пика — не фейл рельсы).
