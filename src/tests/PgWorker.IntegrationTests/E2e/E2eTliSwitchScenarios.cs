@@ -1,5 +1,8 @@
 using System.Diagnostics;
 using System.Text.Json;
+using Amazon.Runtime;
+using Amazon.S3;
+using Amazon.S3.Model;
 using Npgsql;
 using PgWorker.Backups.Restore;
 using PgWorker.Core.Templates;
@@ -8,6 +11,7 @@ using PgWorker.Etcd.Parsing;
 using PgWorker.IntegrationTests.Docker;
 using PgWorker.Provisioning.Sql;
 using Xunit;
+using RestoreStatus = PgWorker.Etcd.Parsing.RestoreStatus;
 
 namespace PgWorker.IntegrationTests.E2e;
 
@@ -148,20 +152,57 @@ public sealed class TliSwitchContext : IAsyncLifetime
                | ulong.Parse(parts[1], System.Globalization.NumberStyles.HexNumber);
     }
 
+    // Байтовое чтение объекта сегмента + проход page-заголовков (spec §3.1):
+    // XLogPageHeaderData (C-выравнивание): xlp_tli = LeU32 @ +4,
+    // xlp_pageaddr = LeU64 @ +8; шаг страницы 8192 (XLOG_BLCKSZ) — карта
+    // pageaddr→tli для побайтового ассерта §3.3 п.3. GET — прямым
+    // AmazonS3Client с теми же endpoint/кредами/path-style, что HostS3Client:
+    // IBackupS3.GetObjectAsync читает объект StreamReader'ом UTF8 (текстовые
+    // .history) и бинарный сегмент исказил бы; продуктовый код не трогаем
+    // (spec §5). BitConverter — little-endian, как и формат WAL.
+    private async Task<List<(ulong PageAddr, uint Tli)>> SegmentPageTlisAsync(
+        string cluster, string shard, string segmentName, CancellationToken ct)
+    {
+        using var client = new AmazonS3Client(
+            new BasicAWSCredentials("minioadmin", "minioadmin"),
+            new AmazonS3Config
+            {
+                ServiceURL = Fx.S3Endpoint.Replace(
+                    "host.docker.internal:", "localhost:", StringComparison.Ordinal),
+                ForcePathStyle = true,
+            });
+        var response = await client.GetObjectAsync(new GetObjectRequest
+        {
+            BucketName = Bucket,
+            Key = $"{cluster}/{shard}/wal/{segmentName}",
+        }, ct);
+        await using var stream = response.ResponseStream;
+        using var ms = new MemoryStream();
+        await stream.CopyToAsync(ms, ct);
+        var bytes = ms.ToArray();
+        const int pageSize = 8192;
+        var pages = new List<(ulong PageAddr, uint Tli)>();
+        for (var off = 0; off + 12 <= bytes.Length; off += pageSize)
+            pages.Add((BitConverter.ToUInt64(bytes, off + 8), BitConverter.ToUInt32(bytes, off + 4)));
+        return pages;
+    }
+
     // Шаг 6 — СТРОГИЙ гейт смешанности (spec §3.3, AC1; решение user-review):
     // (1) switchWALLsn ВНУТРИ сегмента S (не на границе 16 МиБ — «на границе»
     //     покрытием t28 не считается: накат шёл бы по стыку сегментов);
-    // (2) смешанный объект wal/0000000N…S доставлен;
-    // (3) последний TLI1-сегмент == S−1 и TLI1-версии S в архиве НЕТ (мастер
-    //     умер до закрытия — единственный носитель позиции S: объект TLI2);
-    // (4) WalChain.Check(wal_start, list) непрерывен — тем же валидатором,
+    // (2) сегмент S доставлен РОВНО один раз — под именем TLI родителя
+    //     00000001…S (приёмник именует по page header границы; иных имён S нет);
+    // (3) ПОБАЙТОВО: page-заголовки объекта S по обе стороны switchWALLSN
+    //     показывают TLI1/TLI2 (переходная страница не ассертится);
+    // (4) первый TLI2-именованный объект = Next(S), TLI1-именованных выше S
+    //     нет — профиль в точности эвристика TLI-перехода валидатора restore;
+    // (5) WalChain.Check(wal_start, list) непрерывен — тем же валидатором,
     //     которым restore-заявка пройдёт валидацию.
-    // Вместе (3)+(4) финализируют требование шага 4 «TLI2-сегменты выше точки
-    // переключения»: TLI2-хвост доставлен от самого S без дыр.
     // Провал ЛЮБОГО пункта — диагностическое исключение с дампом (буква
-    // spec §3.3: history-содержимое, list wal/, ключи full/wal, Patroni
-    // /cluster), НЕ ретрай: профиль прогона зафиксирован и либо смешанный,
-    // либо контур честно красный с точной причиной.
+    // spec §3.3: history-содержимое, карта pageaddr→tli объекта S, list wal/,
+    // ключи full/wal, Patroni /cluster), НЕ ретрай: профиль прогона
+    // зафиксирован и либо смешанный, либо контур честно красный с точной
+    // причиной.
     private async Task AssertMixedSwitchAsync(CancellationToken ct)
     {
         try
@@ -187,40 +228,122 @@ public sealed class TliSwitchContext : IAsyncLifetime
                 history = $"<сбой чтения: {he.Message}>";
             }
 
+            // Карта pageaddr→tli объекта S (лучшими усилиями — входит в дамп
+            // провала по букве §3.3): имя родителя — из последней записи history.
+            var pageMap = "";
+            try
+            {
+                if (PgWorker.Backups.WalHistory.Parse(history) is { Count: > 0 } es)
+                {
+                    var seg = PgWorker.Backups.WalFileName.FromLsn(0, es[^1].SwitchLsn);
+                    var mapPages = await SegmentPageTlisAsync(Cluster, "shard1",
+                        $"{es[^1].ParentTli:x8}{seg.Log:x8}{seg.Seg:x8}", ct);
+                    pageMap = "pageMap=[" + string.Join("; ",
+                        mapPages.Select(p => $"0x{p.PageAddr:x}:tli{p.Tli}")) + "]";
+                }
+            }
+            catch (Exception pe)
+            {
+                pageMap = $"<карта недоступна: {pe.Message}>";
+            }
+
             throw new ApplicationException(
-                $"гейт смешанности провален: {ex.Message}\nhistory=[{history}]\n"
+                $"гейт смешанности провален: {ex.Message}\nhistory=[{history}]\n{pageMap}\n"
                 + await DumpDiagnosticsAsync(Cluster, "shard1"), ex);
         }
     }
 
-    // Ассерты гейта (без обёртки диагностики).
+    // Ассерты гейта (без обёртки диагностики) — редакция spec §3.3 «имя
+    // родителя + побайтовость»: TLI имени закрываемого сегмента приёмник
+    // берёт из long page header его ГРАНИЦЫ (SegmentAssembler.Close), а
+    // границу S открывал мастер TLI1 — смешанный объект архивируется под
+    // именем РОДИТЕЛЯ 00000001…S; TLI2-поток продолжается с Next(S).
     private async Task AssertMixedSwitchCoreAsync(CancellationToken ct)
     {
         var entry = await HistoryEntryAsync(Cluster, "shard1", Tli2, ct);
         entry.ParentTli.Should().Be(1u,
             $"последняя запись {Tli2:x8}.history — сам TLI2 от родителя TLI1: parent={entry.ParentTli}");
+        var switchValue = ParseLsn(entry.SwitchLsn);
         var switchSeg = PgWorker.Backups.WalFileName.FromLsn(0, entry.SwitchLsn);
-        (ParseLsn(entry.SwitchLsn) % (ulong)PgWorker.Backups.WalFileName.SegmentBytes)
+
+        // (1) точка переключения СТРОГО внутри сегмента S («на границе»
+        // покрытием t28 не считается: накат шёл бы по стыку сегментов).
+        (switchValue % (ulong)PgWorker.Backups.WalFileName.SegmentBytes)
             .Should().NotBe(0UL,
                 $"точка переключения {entry.SwitchLsn} ВНУТРИ сегмента {switchSeg.Name} "
-                + "(не на границе 16 МиБ) — профиль «на границе» покрытием t28 не считается");
+                + "(не на границе 16 МиБ)");
 
         var names = await ListWalNamesAsync(Cluster, "shard1");
-        var mixed = $"{Tli2:x8}{switchSeg.Log:x8}{switchSeg.Seg:x8}";
-        names.Should().Contain(mixed,
-            "смешанный объект (TLI1-префикс + END_OF_RECOVERY + TLI2-хвост) доставлен в wal/");
+        var parentName = $"{entry.ParentTli:x8}{switchSeg.Log:x8}{switchSeg.Seg:x8}";
 
-        var tli1Max = names
+        // (2) сегмент S доставлен РОВНО один раз — под именем TLI родителя;
+        // иных имён S (в частности 00000002…S) в архиве нет.
+        var sNames = names
             .Select(n => PgWorker.Backups.WalFileName.TryParse(n))
-            .Where(w => w is { Tli: 1 })
-            .Select(w => (long)w!.Value.Log * 256 + w!.Value.Seg)
-            .DefaultIfEmpty(-1).Max();
-        var switchPos = (long)switchSeg.Log * 256 + switchSeg.Seg;
-        tli1Max.Should().Be(switchPos - 1,
-            "TLI1-цепочка кончается сегментом S−1 — мастер умер до закрытия S");
-        names.Should().NotContain($"00000001{switchSeg.Log:x8}{switchSeg.Seg:x8}",
-            "TLI1-версии S в архиве нет — единственный носитель позиции S: смешанный объект TLI2");
+            .Where(w => w is not null
+                && w!.Value.Log == switchSeg.Log && w.Value.Seg == switchSeg.Seg)
+            .Select(w => w!.Value.Name)
+            .ToList();
+        sNames.Should().BeEquivalentTo([parentName],
+            $"сегмент S доставлен РОВНО один раз, под именем TLI родителя {parentName} "
+            + "(SegmentAssembler.Close именует по page header границы); иные имена S недопустимы");
 
+        // (3) ПОБАЙТОВОЕ подтверждение смешанности: page-заголовки объекта S
+        // по разные стороны switchWALLSN показывают TLI родителя / TLI нового.
+        var pages = await SegmentPageTlisAsync(Cluster, "shard1", parentName, ct);
+        pages.Should().NotBeEmpty("объект S обязан содержать page-заголовки");
+        var segStart = (ulong)((long)switchSeg.Log * 256 + switchSeg.Seg)
+            * (ulong)PgWorker.Backups.WalFileName.SegmentBytes;
+        pages[0].PageAddr.Should().Be(segStart, "страница 0 — граница сегмента S");
+        pages[0].Tli.Should().Be(entry.ParentTli,
+            "страница 0 — long header границы (записан мастером TLI1): источник имени объекта; "
+            + "TLI1-сторона смешанности (spec §3.3 п.3 «включая страницу 0» — точка может лежать "
+            + "в первой странице: replica-sync прижимает её к позиции единственной записи мастера в S)");
+        // Валидные страницы — внутри границ сегмента S: нулевой хвост недописанного
+        // сегмента (pageaddr=0/tli=0 — незаполненные байты) заголовками не является
+        // и побайтовому ассерту не подлежит.
+        var segEnd = segStart + (ulong)PgWorker.Backups.WalFileName.SegmentBytes;
+        var validPages = pages
+            .Where(p => p.PageAddr >= segStart && p.PageAddr < segEnd)
+            .ToList();
+        const int pageSize = 8192;
+        foreach (var (pageAddr, tli) in validPages)
+        {
+            if (pageAddr + pageSize <= switchValue)
+                tli.Should().Be(entry.ParentTli,
+                    $"страница 0x{pageAddr:x} целиком ниже switchWALLSN — байты TLI1 в объекте {parentName}");
+            else if (pageAddr > switchValue)
+                tli.Should().Be(Tli2,
+                    $"страница 0x{pageAddr:x} целиком выше switchWALLSN — байты TLI2 в объекте {parentName}");
+            // страница, СОДЕРЖАЩАЯ switchWALLSN (pageaddr ≤ точка < pageaddr+8192),
+            // — переходная: её заголовок создан до переключения, жёстко НЕ
+            // ассертится (spec §3.3 п.3)
+        }
+        validPages.Should().Contain(p => p.PageAddr > switchValue && p.Tli == Tli2,
+            "в объекте есть страницы TLI2 выше точки — хвост байтов нового таймлайна");
+
+        // (4) TLI2-поток продолжается со следующего сегмента: первый
+        // TLI2-именованный объект = Next(S); TLI1-именованных выше S нет.
+        // Профиль S (имя TLI1) → Next(S) (имя TLI2) + history-объект — в
+        // точности эвристика TLI-перехода валидатора restore.
+        var next = switchSeg.Next();
+        var tli2Segments = names
+            .Select(n => PgWorker.Backups.WalFileName.TryParse(n))
+            .Where(w => w is { Tli: var t } && t == Tli2)
+            .Select(w => w!.Value)
+            .OrderBy(w => (long)w.Log * 256 + w.Seg)
+            .ToList();
+        tli2Segments.Should().NotBeEmpty("TLI2-именованные сегменты доставлены (гейт шага 4)");
+        (tli2Segments[0].Log, tli2Segments[0].Seg).Should().Be((next.Log, next.Seg),
+            $"первый TLI2-именованный объект = Next(S) = {next.Name}");
+        var switchPos = (long)switchSeg.Log * 256 + switchSeg.Seg;
+        names.Where(n => PgWorker.Backups.WalFileName.TryParse(n) is { } w
+                && w.Tli == entry.ParentTli
+                && (long)w.Log * 256 + w.Seg > switchPos)
+            .Should().BeEmpty("TLI1-именованных объектов выше S нет");
+
+        // (5) WalChain.Check — тем же валидатором, которым restore-заявка
+        // пройдёт валидацию (S под именем TLI1 → Next(S) под TLI2 + history).
         var start = PgWorker.Backups.WalFileName.TryParse(WalStartSegment)!.Value;
         var check = PgWorker.Backups.WalChain.Check(start, names);
         check.IsContinuous.Should().BeTrue(check.GapError ??
