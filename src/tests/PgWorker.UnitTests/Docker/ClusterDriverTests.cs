@@ -16,7 +16,11 @@ public class ClusterDriverTests
     {
 
         // ── union-члены t07 (kfw/vwk-методы): pg-доменом не используются — стабы ──
-        public Task<Result> DeleteNetworkAsync(string name, CancellationToken ct) => Task.FromResult(Result.Success());
+        public Task<Result> DeleteNetworkAsync(string name, CancellationToken ct)
+        {
+            Calls.Add(("delete-network", name));
+            return Task.FromResult(Result.Success());
+        }
         public Task<Result<bool>> VolumeExistsAsync(string name, CancellationToken ct) => Task.FromResult(Result<bool>.Success(false));
         public Task<Result> EnsureVolumeAsync(string name, CancellationToken ct) => Task.FromResult(Result.Success());
         public Task<Result> DeleteVolumeAsync(string name, CancellationToken ct) => Task.FromResult(Result.Success());
@@ -44,6 +48,14 @@ public class ClusterDriverTests
         public Task<Result> EnsureNetworkAsync(string name, CancellationToken ct)
         {
             Calls.Add(("ensure-network", name));
+            return Task.FromResult(Result.Success());
+        }
+
+        // t24 (arch/14 §2.1): подключение контейнера к сети кластера —
+        // ensure-инвариант; записываем для юнит-проверок лечения ноды.
+        public Task<Result> NetworkConnectAsync(string network, string container, CancellationToken ct)
+        {
+            Calls.Add(("network-connect", $"{network}:{container}"));
             return Task.FromResult(Result.Success());
         }
 
@@ -631,11 +643,154 @@ public class ClusterDriverTests
         // Act
         var result = await driver.RemoveNodeAsync("shop", "shard1", "shard1a", CancellationToken.None);
 
-        // Assert: stop → rm(force) → volume rm; никаких других вызовов
+        // Assert: stop → rm(force) → volume rm; далее демонтажный контроль
+        // (объектов кластера нет → delete-network per-cluster сети, arch/14 §2.1)
         result.IsSuccess.Should().BeTrue();
-        engine.Calls.Select(c => c.Call).Should().Equal("stop", "rm-container", "rm-volume");
+        var calls = engine.Calls.Select(c => c.Call).ToList();
+        calls.Take(3).Should().Equal("stop", "rm-container", "rm-volume");
         engine.Calls[1].Arg.Should().Be("pgw-shop-shard1-shard1a");
         engine.Calls[2].Arg.Should().Be("pgw-shop-shard1-shard1a-data");
+        calls.Should().Contain("delete-network");
+        engine.Calls.Should().Contain(c => c.Call == "delete-network" && c.Arg!.Equals("pgw-net-shop"));
+    }
+
+    // AAA (t24, arch/14 §2.1): имя сети нод — PER-CLUSTER (kfw-паттерн):
+    // префикс + имя кластера; единая сеть делала DNS-зону общей для всех
+    // кластеров docker-хоста (перекрёстная видимость чужих алиасов).
+    [Fact]
+    public void NetworkName_имя_сети_кластера_пер_кластерный_префикс()
+    {
+        // Arrange / Act — kfw-паттерн: префикс + имя кластера
+        // Assert
+        PlainClusterDriver.NetworkName("shop").Should().Be("pgw-net-shop");
+        PlainClusterDriver.NodesNetworkPrefix.Should().Be("pgw-net-");
+    }
+
+    // AAA (t24, arch/14 §2.1): ensure ноды создаёт и держит СЕТЬ КЛАСТЕРА
+    // pgw-net-<C>, спека контейнера несёт её же — «нода в сети кластера».
+    [Fact]
+    public async Task EnsureNode_сеть_и_спека_пер_кластера()
+    {
+        // Arrange
+        var engine = new FakeEngine();
+        var driver = NewPlainDriver(engine);
+
+        // Act
+        var result = await driver.EnsureNodeAsync(
+            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
+
+        // Assert — ensure сети + спека с per-cluster Network
+        result.IsSuccess.Should().BeTrue();
+        engine.Calls.Should().Contain(c => c.Call == "ensure-network" && c.Arg!.Equals("pgw-net-shop"));
+        engine.CreatedSpec!.Network.Should().Be("pgw-net-shop");
+    }
+
+    // AAA (t24, arch/14 §2.1): ensure-инвариант — существующая нода с планом
+    // портов, но в ЧУЖОЙ сети (наследие единой pgw-net) подключается к сети
+    // кластера docker network connect; пересоздание недопустимо (нода с данными).
+    [Fact]
+    public async Task EnsureNode_нода_в_чужой_сети_подключается_к_кластерной()
+    {
+        // Arrange — контейнер на месте, порты совпадают с планом, сеть старая
+        var engine = new FakeEngine
+        {
+            Containers = [new DockerContainer("id-1", ["pgw-shop-shard1-shard1a"], "running", "img")],
+            Inspects = new Dictionary<string, DockerContainerInspect>
+            {
+                ["id-1"] = new("id-1", "shard1a", ["shard1a"], [],
+                    [new PortMap(5432, 15432), new PortMap(8008, 18008), new PortMap(6432, 16432)],
+                    Networks: ["pgw-net-old"]),
+            },
+        };
+        var driver = NewPlainDriver(engine);
+
+        // Act
+        var result = await driver.EnsureNodeAsync(
+            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
+
+        // Assert — connect к сети кластера, БЕЗ пересоздания
+        result.IsSuccess.Should().BeTrue();
+        engine.Calls.Should().Contain(c =>
+            c.Call == "network-connect" && c.Arg!.Equals("pgw-net-shop:pgw-shop-shard1-shard1a"));
+        engine.Calls.Should().NotContain(c => c.Call == "create");
+    }
+
+    // AAA (t24, arch/14 §2.1): нода уже в сети кластера — идемпотентность,
+    // никаких connect/create.
+    [Fact]
+    public async Task EnsureNode_нода_в_сети_кластера_идемпотентна()
+    {
+        // Arrange
+        var engine = new FakeEngine
+        {
+            Containers = [new DockerContainer("id-1", ["pgw-shop-shard1-shard1a"], "running", "img")],
+            Inspects = new Dictionary<string, DockerContainerInspect>
+            {
+                ["id-1"] = new("id-1", "shard1a", ["shard1a"], [],
+                    [new PortMap(5432, 15432), new PortMap(8008, 18008), new PortMap(6432, 16432)],
+                    Networks: ["pgw-net-shop"]),
+            },
+        };
+        var driver = NewPlainDriver(engine);
+
+        // Act
+        var result = await driver.EnsureNodeAsync(
+            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        engine.Calls.Should().NotContain(c => c.Call == "network-connect");
+        engine.Calls.Should().NotContain(c => c.Call == "create");
+    }
+
+    // AAA (t24, arch/14 §2.1): ensure-инвариант агента — агент в ЧУЖОЙ сети
+    // мастера не видит (pg_receivewal-рестарт-луп); лечение — пересоздание
+    // (stateless) со staging-volume, новый агент создаётся в pgw-net-<C>.
+    [Fact]
+    public async Task EnsureBackupAgent_агент_в_чужой_сети_пересоздаётся()
+    {
+        // Arrange — агент жив, но в старой единой сети
+        var engine = new FakeEngine
+        {
+            Containers = [new DockerContainer("id-ag", ["pgw-backup-wal-shop-shard1-shard1a"], "running", "wal-img")],
+            Inspects = new Dictionary<string, DockerContainerInspect>
+            {
+                ["id-ag"] = new("id-ag", "pgw-backup-wal-shop-shard1-shard1a", [], [], [], Networks: ["pgw-net-legacy"]),
+            },
+        };
+        var driver = NewPlainDriver(engine);
+        var spec = new ContainerSpec("pgworker-wal:dev", [], "pgw-backup-wal-shop-shard1-shard1a",
+            Env: new Dictionary<string, string>(), ResetEntrypoint: false, LabelKey: "pgworker", Label: "shop");
+
+        // Act
+        var ensured = await driver.EnsureBackupAgentAsync(
+            "shop", "shard1", "shard1a", spec, "h1", CancellationToken.None);
+
+        // Assert — stop + rm + rm staging-volume, затем create в per-cluster сети
+        ensured.IsSuccess.Should().BeTrue();
+        engine.Calls.Select(c => c.Call).Should().ContainInOrder("stop", "rm-container", "rm-volume", "create", "start");
+        engine.Calls.Should().Contain(c => c.Call == "rm-volume" && c.Arg!.Equals("pgw-backup-wal-shop-shard1-shard1a-staging"));
+        engine.CreatedSpec!.Network.Should().Be("pgw-net-shop");
+    }
+
+    // AAA (t24, arch/14 §2.1): демонтаж сети кластера — только когда объектов
+    // кластера не осталось; чужие контейнеры кластера держат сеть живой.
+    [Fact]
+    public async Task RemoveNode_живые_объекты_кластера_держат_сеть()
+    {
+        // Arrange — после удаления ноды в кластере остаётся живая нода другого шарда
+        var engine = new FakeEngine
+        {
+            Containers = [new DockerContainer("id-2", ["pgw-shop-shard2-shard2a"], "running", "img")],
+        };
+        var driver = NewPlainDriver(engine);
+
+        // Act
+        var result = await driver.RemoveNodeAsync("shop", "shard1", "shard1a", CancellationToken.None);
+
+        // Assert — демонтаж прошёл, сеть НЕ удаляется (объекты живы)
+        result.IsSuccess.Should().BeTrue();
+        engine.Calls.Should().NotContain(c => c.Call == "delete-network");
     }
 
     [Fact]
@@ -814,12 +969,12 @@ public class ClusterDriverTests
         var ensured = await driver.EnsureBackupAgentAsync(
             "shop", "shard1", "shard1a", spec, "host.docker.internal", ct: CancellationToken.None);
 
-        // Assert — драйвер владеет сетью нод: NetworkMode=pgw-net в созданной спеке
-        // (ревью Ф7 №1: без сети агент в default bridge не резолвит alias мастера)
+        // Assert — драйвер владеет сетью нод: NetworkMode=pgw-net-<C> в созданной
+        // спеке (ревью Ф7 №1: без сети агент в default bridge не резолвит alias мастера)
         ensured.IsSuccess.Should().BeTrue();
         engine.CreatedName.Should().Be("pgw-backup-wal-shop-shard1-shard1a");
         engine.Calls.Should().Contain(c => c.Call == "create").And.Contain(c => c.Call == "start");
-        engine.CreatedSpec!.Network.Should().Be(PlainClusterDriver.NodesNetwork);
+        engine.CreatedSpec!.Network.Should().Be(PlainClusterDriver.NetworkName("shop"));
     }
 
     [Fact]

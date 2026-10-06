@@ -65,8 +65,11 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
                         ports.Add(new PortMap(containerPort, hostPort));
             }
 
-            var aliases = (dto.NetworkSettings?.Networks ?? new Dictionary<string, NetworkDto>())
-                .Values.SelectMany(n => n.Aliases ?? []).Distinct().ToArray();
+            var networksMap = dto.NetworkSettings?.Networks ?? new Dictionary<string, NetworkDto>();
+            var aliases = networksMap.Values.SelectMany(n => n.Aliases ?? []).Distinct().ToArray();
+            // t24 (arch/14 §2.1): ключи NetworkSettings.Networks — факт сетей
+            // контейнера (ensure-инвариант кластерной сети движков).
+            var networks = networksMap.Keys.ToArray();
             // t07: StartedAt (RFC3339) → unix; отсутствие/битая строка → null
             // (бюджет verify-джоба не применяется).
             long? startedAtUnix = DateTimeOffset.TryParse(dto.State?.StartedAt,
@@ -76,7 +79,7 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
                 : null;
             return new DockerContainerInspect(dto.Id, dto.Config?.Hostname ?? "", aliases, dto.Config?.Env ?? [],
                 ports.Distinct().ToArray(),
-                dto.State?.Running, dto.State?.ExitCode, StartedAtUnix: startedAtUnix);
+                dto.State?.Running, dto.State?.ExitCode, StartedAtUnix: startedAtUnix, Networks: networks);
         });
 
     // GET /containers/<id>/logs — тело raw-stream (мультиплексировано), demux
@@ -246,6 +249,17 @@ public sealed class DockerEngine(HttpClient httpClient, string? hostAlias) : IDo
             {
                 // сети уже нет — идемпотентность
             }
+        });
+
+    // POST /networks/<net>/connect (t24, arch/14 §2.1): подключить контейнер к
+    // сети; 404 сети/контейнера и 403 «already connected» — наверх (вызывающий
+    // держит сеть созданной Ensure'ом, а повторное подключение docker
+    // молча принимает как no-op — идемпотентность API).
+    public async Task<Result> NetworkConnectAsync(string network, string container, CancellationToken ct)
+        => await Result.FromAsync(async () =>
+        {
+            await SendAsync(HttpMethod.Post, $"/networks/{Uri.EscapeDataString(network)}/connect",
+                new Dictionary<string, object?> { ["Container"] = container }, ct);
         });
 
     // Запись tar в named volume через helper-контейнер (серты до старта ноды).

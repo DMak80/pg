@@ -23,10 +23,14 @@ namespace PgWorker.IntegrationTests.Etcd;
 // (встроенные HTTP-wait шлют GET, а /v3/* требует POST), бюджет ≤ 30 c.
 public sealed class OwnedEtcdFixture : IAsyncLifetime
 {
-    // Разные guid-префиксы сети и контейнера: substring-фильтры docker
-    // в ассерте чистоты не пересекаются.
-    private readonly string _netName = $"pgw-it-net-{Guid.NewGuid():N}";
-    private readonly string _containerName = $"pgw-it-etcd-{Guid.NewGuid():N}";
+    // ЕДИНЫЙ runId окружения (канон per-runId, t24: «все сети частные на один
+    // тест класс»): один guid опознаёт и сеть, и контейнер — own-only чистка
+    // и ассерт чистоты по этому идентификатору (docs/e2e-isolation.md §2–3).
+    // Прежние имена сохранены свойствами-выражениями: конструктор (:43/:45)
+    // не меняется; ассерт DisposeAsync переформулирован по _runId (ниже).
+    private readonly string _runId = Guid.NewGuid().ToString("N");
+    private string _netName => $"pgw-it-net-{_runId}";
+    private string _containerName => $"pgw-it-etcd-{_runId}";
 
     private readonly INetwork _network;
     private readonly IContainer _container;
@@ -87,12 +91,13 @@ public sealed class OwnedEtcdFixture : IAsyncLifetime
 
         // АССЕРТ ЧИСТОТЫ окружения (docs/e2e-isolation.md §3.6): не осталось
         // ни контейнера, ни сети СВОЕГО окружения — иначе тесты класса краснеют
-        // сразу, а не когда кончатся подсети. Чужие объекты не включаются.
+        // сразу, а не когда кончатся подсети. Фильтр по единому runId покрывает
+        // оба объекта; чужие не включаются.
         var leftContainers = await RunDockerAsync(
-            $"ps -a --filter name={_containerName} --format {{{{.Names}}}}");
+            $"ps -a --filter name={_runId} --format {{{{.Names}}}}");
         leftContainers.Should().BeEmpty("teardown окружения неполный: остался контейнер");
         var leftNetworks = await RunDockerAsync(
-            $"network ls --filter name={_netName} --format {{{{.Names}}}}");
+            $"network ls --filter name={_runId} --format {{{{.Names}}}}");
         leftNetworks.Should().BeEmpty("teardown окружения неполный: осталась сеть");
     }
 

@@ -138,7 +138,9 @@ public class DockerEngineTests
     }
 
     // t03-ревью Ф7 №1: сеть спеки обязана дойти до NetworkMode/NetworkingConfig —
-    // иначе контейнер создаётся в default bridge и не резолвит alias нод (pgw-net).
+    // иначе контейнер создаётся в default bridge и не резолвит alias нод
+    // (per-cluster сети вида pgw-net-<C> у драйверов; имя здесь нейтральное —
+    // тест проверяет маппинг поля, а не константу драйвера).
     [Fact]
     public async Task CreateContainer_WithNetwork_SetsNetworkModeAndEndpointsConfig()
     {
@@ -150,7 +152,7 @@ public class DockerEngineTests
             Env: new Dictionary<string, string>(),
             VolumeName: "pgw-backup-wal-shop-shard1-staging",
             VolumeDest: "/backup-staging",
-            Network: "pgw-net");
+            Network: "test-net");
 
         // Act
         var result = await engine.CreateContainerAsync(spec, "pgw-backup-wal-shop-shard1", CancellationToken.None);
@@ -158,9 +160,9 @@ public class DockerEngineTests
         // Assert — NetworkMode + NetworkingConfig с сетью нод (DNS-резолв alias мастера)
         result.IsSuccess.Should().BeTrue();
         var body = JsonDocument.Parse(handler.Requests.Single().Body).RootElement;
-        body.GetProperty("HostConfig").GetProperty("NetworkMode").GetString().Should().Be("pgw-net");
+        body.GetProperty("HostConfig").GetProperty("NetworkMode").GetString().Should().Be("test-net");
         body.GetProperty("NetworkingConfig").GetProperty("EndpointsConfig")
-            .EnumerateObject().Should().ContainSingle(p => p.Name == "pgw-net");
+            .EnumerateObject().Should().ContainSingle(p => p.Name == "test-net");
     }
 
     [Fact]

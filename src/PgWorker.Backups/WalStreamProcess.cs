@@ -341,7 +341,7 @@ public sealed class WalStreamProcess(
                     Label: cluster,
                     ResetEntrypoint: false, // ENTRYPOINT образа приёмника (§3.2)
                     Cmd: null,
-                    Network: null, // сеть назначает драйвер (pgw-net)
+                    Network: null, // сеть назначает драйвер (per-cluster pgw-net-<C>)
                     NetworkAliases: null,
                     RestartPolicy: "no");
 

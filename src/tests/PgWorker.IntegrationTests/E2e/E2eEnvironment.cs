@@ -7,7 +7,6 @@ using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Containers;
 using DotNet.Testcontainers.Networks;
 using FluentAssertions;
-using PgWorker.Docker.Drivers;
 using Shared.Etcd.Client;
 using Xunit;
 
@@ -261,13 +260,15 @@ public sealed class E2eEnvironment : IAsyncDisposable
             for (var i = 0; i < etcdPorts.Length; i++)
             {
                 // команда узла: static bootstrap по внутренним alias (peer 2380 в сети
-                // окружения), advertise двумя URL: compose-alias (сеть окружения) +
-                // host.docker.internal:PORT (Patroni-ноды из per-cluster сетей —
-                // прецедент прежнего одиночного etcd).
+                // окружения). Advertise-client-urls — ТОЛЬКО URL, резолвимые из КАЖДОЙ
+                // сети потребителей (arch/04 §8 п.3, t24/4f7b146): Patroni-ноды живут
+                // в per-cluster сетях движка — алиас e2e-etcdN в их DNS-зоне не
+                // существует, etcd отдавал его Patroni в member-discovery → NXDOMAIN-шторм.
+                // Потребители peer-URL — другие узлы ТОЙ ЖЕ сети окружения.
                 var command = new List<string> { "etcd", $"--name=e2e-etcd{i + 1}", "--data-dir=/etcd-data",
                     "--listen-client-urls=http://0.0.0.0:2379", "--listen-peer-urls=http://0.0.0.0:2380",
                     $"--initial-advertise-peer-urls=http://e2e-etcd{i + 1}:2380",
-                    $"--advertise-client-urls=http://e2e-etcd{i + 1}:2379,http://host.docker.internal:{etcdPorts[i]}",
+                    $"--advertise-client-urls=http://host.docker.internal:{etcdPorts[i]}",
                     $"--initial-cluster={initialCluster}", $"--initial-cluster-token=e2e-{runId}",
                     "--initial-cluster-state=new", "--heartbeat-interval=250", "--election-timeout=2000" };
                 var node = new ContainerBuilder(EtcdImage)
@@ -651,9 +652,10 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// (_failed): контейнеры (вкл. etcd/MinIO) ОСТАНАВЛИВАЮТСЯ, тома/сети/etcd
     /// остаются до ручной зачистки (README-cleanup.txt) — перезапуск теста ради
     /// логов запрещён. Успешный сценарий: 3) stop/rm контейнеров → 4) rm томов
-    /// → 5) rm сети окружения → 6) rm сети движка pgw-net (попытка) → 7) АССЕРТ
-    /// ЧИСТОТЫ: не осталось ни одного КОНТЕЙНЕРА/ТОМА/СЕТИ СВОЕГО окружения
-    /// (опознание по идентификатору прогона). Чужие pgw-* не трогаются.
+    /// → 5) rm сети окружения → 6) rm per-cluster сетей СВОИХ кластеров
+    /// (pgw-net-<C>) → 7) АССЕРТ ЧИСТОТЫ: не осталось ни одного
+    /// КОНТЕЙНЕРА/ТОМА/СЕТИ СВОЕГО идентификатора (окружение + кластеры).
+    /// Чужие pgw-* не трогаются.
     /// </summary>
     public async ValueTask DisposeAsync()
     {
@@ -763,16 +765,22 @@ public sealed class E2eEnvironment : IAsyncDisposable
             problems.Add($"сеть {NetName}: {e.Message}");
         }
 
-        // 6) Сеть нод движка pgw-net (ryuk её не подбирает): попытка удаления —
-        // сеть общесистемная, имя фиксированное, «своё/чужое» не различить. Если
-        // в ней живы endpoints чужого прогона — docker сам откажет, это не ошибка.
-        try
+        // 6) Per-cluster сети нод СВОИХ кластеров (pgw-net-<C>, создаёт движок;
+        // демонтаж кластера удаляет — здесь страховка own-only: упавшие сценарии
+        // оставляют; опознание по тегу кластера через OwnName).
+        foreach (var net in (await E2eFixture.RunProcessAsync(
+                     "docker", ["network", "ls", "--format", "{{.Name}}"]))
+                 .Split(['\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                 .Where(n => n != NetName && OwnName(n)))
         {
-            await E2eFixture.RunProcessAsync("docker", ["network", "rm", PlainClusterDriver.NodesNetwork]);
-        }
-        catch (Exception e)
-        {
-            Console.Error.WriteLine($"e2e[{Slug}]: сеть {PlainClusterDriver.NodesNetwork} не удалена (живы endpoints или уже нет): {e.Message}");
+            try
+            {
+                await E2eFixture.RunProcessAsync("docker", ["network", "rm", net]);
+            }
+            catch (Exception e)
+            {
+                problems.Add($"сеть кластера {net}: {e.Message}");
+            }
         }
 
         // 7) АССЕРТ ЧИСТОТЫ: от своего окружения не осталось следов.
@@ -782,10 +790,13 @@ public sealed class E2eEnvironment : IAsyncDisposable
         var leftVolumes = await OwnVolumesAsync();
         if (leftVolumes.Count > 0)
             problems.Add($"остались тома окружения: {string.Join(' ', leftVolumes)}");
-        var leftNet = await E2eFixture.RunProcessAsync(
-            "docker", ["network", "ls", "--format", "{{.Name}}", "--filter", $"name={NetName}"]);
-        if (leftNet.Length > 0)
-            problems.Add($"осталась сеть окружения {NetName}");
+        var leftNets = (await E2eFixture.RunProcessAsync(
+                "docker", ["network", "ls", "--format", "{{.Name}}"]))
+            .Split(['\n'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Where(OwnName)
+            .ToList();
+        if (leftNets.Count > 0)
+            problems.Add($"остались сети окружения/кластеров: {string.Join(' ', leftNets)}");
 
         if (problems.Count > 0)
             throw new ApplicationException(
@@ -916,6 +927,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
               docker rm -f $(docker ps -aq --filter name=__TAG__)
               docker volume rm -f $(docker volume ls -q --filter name=__TAG__)
               docker network rm __NET__
+              docker network rm $(docker network ls -q --filter name=__TAG__)
             """;
         await File.WriteAllTextAsync(
             Path.Combine(ArtifactsDir, "README-cleanup.txt"),
