@@ -73,6 +73,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private readonly IReadOnlyList<string> _etcdNames;
     private readonly INetwork _net;
     private readonly IContainer? _minio;
+    private readonly IContainer? _dnsProbe;
 
     // Политика телеметрии E2E (docs/e2e-launch.md): упавший сценарий помечается
     // MarkFailed() — teardown тогда НЕ удаляет docker-объекты окружения, а
@@ -104,7 +105,8 @@ public sealed class E2eEnvironment : IAsyncDisposable
         IReadOnlyList<string> etcdNames,
         IReadOnlyList<string> etcdEndpoints,
         INetwork net,
-        IContainer? minio)
+        IContainer? minio,
+        IContainer? dnsProbe)
     {
         Slug = slug;
         _runId = runId;
@@ -115,6 +117,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         EtcdEndpoints = etcdEndpoints;
         _net = net;
         _minio = minio;
+        _dnsProbe = dnsProbe;
         Gateway = new EtcdGateway(_gatewayHttp);
         S3Endpoint = minio is null
             ? ""
@@ -240,6 +243,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
         var etcdNodes = new List<IContainer>();
         var etcdNames = new List<string>();
         IContainer? minio = null;
+        IContainer? dnsProbe = null;
         try
         {
             await net.CreateAsync(ct);
@@ -349,7 +353,25 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 await EnsureWalImageAsync(ct);
             }
 
-            return new E2eEnvironment(slug, runId, netName, etcdNodes, etcdNames, endpoints, net, minio);
+            // Синтетический DNS-зонд (t24, spec §5.2): опциональная телеметрия E2E —
+            // env PGW_TEST_E2E_DNS_PROBE=1. Лог (container-pgw-dns-*.log) подбирается
+            // CollectDiagnosticsAsync по OwnName(runId) — доказательная база «резолв
+            // умер, а не PG» при разборе упавших прогонов.
+            if (Environment.GetEnvironmentVariable("PGW_TEST_E2E_DNS_PROBE") == "1")
+            {
+                var targets = Enumerable.Range(1, etcdNodes.Count).Select(n => $"e2e-etcd{n}").ToList();
+                if (minio is not null)
+                    targets.Add("e2e-minio");
+                targets.Add("host.docker.internal");
+                // Внешнее имя (третья категория spec §5.2): резолв через форвардеры
+                // Docker Desktop наружу — отдельный тракт от embedded DNS 127.0.0.11;
+                // quay.io уже зеркалирован в локальный registry, getaddrinfo трафика не тянет.
+                targets.Add("quay.io");
+                dnsProbe = E2eDnsProbe.Build(runId, net, targets, "measure", "1");
+                await dnsProbe.StartAsync(ct);
+            }
+
+            return new E2eEnvironment(slug, runId, netName, etcdNodes, etcdNames, endpoints, net, minio, dnsProbe);
         }
         catch
         {
@@ -360,6 +382,18 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 try
                 {
                     await minio.DisposeAsync();
+                }
+                catch
+                {
+                    // guid-имя, чужие прогоны не заденем; добьёт ассерт/ryuk
+                }
+
+            // зонд поднимается последним перед return — исключение после его старта
+            // не должно оставлять контейнер (частично поднятое окружение не оставляем)
+            if (dnsProbe is not null)
+                try
+                {
+                    await dnsProbe.DisposeAsync();
                 }
                 catch
                 {
@@ -656,6 +690,16 @@ public sealed class E2eEnvironment : IAsyncDisposable
         catch (Exception e)
         {
             problems.Add($"minio: {e.Message}");
+        }
+
+        try
+        {
+            if (_dnsProbe is not null)
+                await _dnsProbe.DisposeAsync();
+        }
+        catch (Exception e)
+        {
+            problems.Add($"dns-probe: {e.Message}");
         }
 
         foreach (var node in _etcdNodes)
