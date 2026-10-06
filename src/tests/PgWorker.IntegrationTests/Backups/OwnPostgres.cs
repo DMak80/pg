@@ -23,7 +23,7 @@ public sealed class OwnPostgres : IAsyncDisposable
     public const string Password = "pgw-test-su";
     public const string Slot = "pgw_bkp_it";
 
-    private const string Image = "postgres:17-alpine";
+    private const string Image = "postgres:18-alpine";
 
     private readonly IContainer _container;
     private readonly string _certsDir;
@@ -70,7 +70,7 @@ public sealed class OwnPostgres : IAsyncDisposable
             S3SecretKey: secretKey,
             S3PathStyle: true);
 
-    /// <summary>Подъём: postgres:17-alpine (образ в images.txt), pg_isready ≤ 45 c,
+    /// <summary>Подъём: postgres:18-alpine (образ в images.txt), pg_isready ≤ 45 c,
     /// затем TLS-раскладка + reload + физический слот immediately_reserve.
     /// initdbArgs — нестандартные аргументы initdb (напр. «--wal-segsize=32»
     /// для permanent-теста несовместимого segment size).</summary>

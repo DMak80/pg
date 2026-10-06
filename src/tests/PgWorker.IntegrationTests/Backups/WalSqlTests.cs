@@ -20,7 +20,7 @@ public class WalSqlTests
         // Arrange
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
-        await using var postgres = new ContainerBuilder("postgres:17-alpine")
+        await using var postgres = new ContainerBuilder("postgres:18-alpine")
             .WithEnvironment("POSTGRES_PASSWORD", Password)
             .WithPortBinding(5432, assignRandomHostPort: true)
             .WithWaitStrategy(Wait.ForUnixContainer().UntilCommandIsCompleted(
