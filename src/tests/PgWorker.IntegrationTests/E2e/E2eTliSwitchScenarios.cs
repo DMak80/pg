@@ -99,8 +99,92 @@ public sealed class TliSwitchContext : IAsyncLifetime
 
         // Шаг 2 — полный на TLI1 + pre-wal (TLI1-хвост после точки полного).
         await SeedFullBackupAsync(ct);
-        // Шаги 3–5 (failover + данные нового TLI) — Task 2.
+
+        // Шаги 3–5 — failover + данные нового TLI.
+        await FailoverAsync(ct);
+        await SeedNewTimelineAsync(ct);
         // Шаг 6 (строгий гейт смешанности) — Task 3.
+    }
+
+    // Шаг 3 (spec §3.2): жёсткая потеря мастера — docker stop (БЕЗ
+    // switchover): Patroni сам промоутит выжившую sync-реплику (образец AC4
+    // t27). Ожидание: новый primary (узел ≠ остановленному) + TLI ≥ 2 ≤ 120 с.
+    private async Task FailoverAsync(CancellationToken ct)
+    {
+        var (_, _, master) = await MasterPgAsync(Cluster, "shard1", ct);
+        Console.WriteLine($"[PHASE] tlsw-failover: docker stop pgw-{Cluster}-shard1-{master}");
+        await Fx.RunDockerAsync(["stop", $"pgw-{Cluster}-shard1-{master}"], ct);
+        var (host, port, newMaster) = await MasterPgAsync(Cluster, "shard1", ct);
+        newMaster.Should().NotBe(master, "после смерти мастера primary — выжившая реплика");
+        Console.WriteLine($"[PHASE] tlsw-failover: новый primary {newMaster}");
+        Tli2 = await PrimaryTimelineAsync(Cluster, "shard1", ct);
+        Tli2.Should().BeGreaterThanOrEqualTo(2u, "failover открывает новый timeline");
+        _newMasterDsn = AdminDsn(host, port);
+    }
+
+    private string _newMasterDsn = null!;
+
+    // Шаги 4–5 (spec §3.2): post-switch на новом TLI; доставка .history +
+    // TLI2-хвоста по list-S3 (истина §2; repair-контур остановленной ноды НЕ
+    // ждём — гвардом restore владеет заявка); фиксация T_cut (+ пауза 2 с —
+    // разделение коммитов, rs-time-паттерн); after-cut ОБЯЗАНЫ лежать в
+    // архиве (иначе их отсутствие в restore тривиально).
+    private async Task SeedNewTimelineAsync(CancellationToken ct)
+    {
+        // Шаг 4 — данные на новом TLI + доставка TLI2-хвоста. Условие
+        // усилено позицией: TLI2-сегмент строго правее последнего доставленного
+        // TLI1 (S−1) — первый сегмент нового TLI не ниже точки переключения.
+        // Точное «выше точки» (позиция switchWALLSN из .history) финализирует
+        // строгий гейт Task 3: tli1Max == S−1 + непрерывность WalChain.Check
+        // доказывают доставленный бездырный TLI2-хвост от самого S.
+        await ExecAsync(_newMasterDsn,
+            "INSERT INTO tli_switch_probe SELECT g, 'post-switch' FROM generate_series(11, 15) g", ct);
+        await SwitchWalsAsync(_newMasterDsn, 3, ct);
+        var tailDelivered = await WaitPhaseAsync("tli2-tail", async () =>
+        {
+            var names = await ListWalNamesAsync(Cluster, "shard1");
+            var tli1Max = names
+                .Select(n => PgWorker.Backups.WalFileName.TryParse(n))
+                .Where(w => w is { Tli: 1 })
+                .Select(w => (long)w!.Value.Log * 256 + w!.Value.Seg)
+                .DefaultIfEmpty(-1).Max();
+            return names.Contains($"{Tli2:x8}.history")
+                   && names.Any(n => PgWorker.Backups.WalFileName.TryParse(n) is { } w
+                       && w.Tli == Tli2
+                       && (long)w.Log * 256 + w.Seg > tli1Max);
+        }, TimeSpan.FromSeconds(300), ct);
+        tailDelivered.Should().BeTrue(
+            $"wal/{Tli2:x8}.history и TLI2-сегменты выше точки переключения обязаны доставиться (агент реплики продолжает от хвоста): "
+            + await DumpDiagnosticsAsync(Cluster, "shard1"));
+
+        // Шаг 4 (конец) — фиксация цели PITR: T_cut строго между post-switch
+        // и after-cut (пауза 2 с разделяет коммиты — неоднозначность цели
+        // исключена, риск-таблица §7).
+        TCut = DateTime.UtcNow;
+        await Task.Delay(2000, ct);
+
+        // Шаг 5 — after-cut: закрываем сегменты и ждём доставки позиции.
+        // Цель = max(list) до INSERT + 3: switch ×3 закрывает сегмент с
+        // after-cut и два следующих — доставка до posBefore+3 гарантирует,
+        // что сегмент с after-cut записями доставлен.
+        var posBefore = (await ListWalNamesAsync(Cluster, "shard1"))
+            .Select(WalPosOf).DefaultIfEmpty(-1).Max();
+        await ExecAsync(_newMasterDsn,
+            "INSERT INTO tli_switch_probe SELECT g, 'after-cut' FROM generate_series(16, 18) g", ct);
+        await SwitchWalsAsync(_newMasterDsn, 3, ct);
+        AfterCutPos = posBefore + 3;
+        // [PHASE]-телеметрия вокруг гейта доставки (семантика WaitPhaseAsync;
+        // сам WalArchivedAsync — дословная копия образца, не трогаем):
+        // строка в журнал всегда, фаза > 60 с — docker-логи в артефакты
+        // (spec §3.6/AC4: ВСЕ ожидания — с [PHASE]-строками).
+        var afterSw = Stopwatch.StartNew();
+        var afterArchived = await WalArchivedAsync(Cluster, "shard1", AfterCutPos, ct);
+        afterSw.Stop();
+        Console.WriteLine($"[PHASE] after-cut-archived: ok={afterArchived}, elapsed={afterSw.Elapsed.TotalSeconds:F1}s");
+        if (afterSw.Elapsed > TimeSpan.FromSeconds(60))
+            await Fx.CollectDiagnosticsAsync($"slow-phase-after-cut-archived-{(int)afterSw.Elapsed.TotalSeconds}s");
+        afterArchived.Should().BeTrue("сегменты с after-cut обязаны попасть в архив: "
+            + await DumpDiagnosticsAsync(Cluster, "shard1"));
     }
 
     // Шаг 2 (spec §3.2): контрольная таблица + pre (уходят в полный) →
@@ -639,6 +723,11 @@ public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<
                 "исходный COMPLETED-полный зафиксирован (шаг 2)");
             Ctx.WalStartSegment.Should().NotBeNullOrEmpty();
             Ctx.DsnBefore.Should().NotBeNullOrEmpty("dsn-эталон зафиксирован (шаг 1)");
+
+            // Ф2-ассерты каркаса: failover состоялся, цель и after-cut зафиксированы
+            Ctx.Tli2.Should().BeGreaterThanOrEqualTo(2u, "failover открыл новый timeline");
+            Ctx.TCut.Should().BeAfter(DateTime.MinValue, "T_cut зафиксирован");
+            Ctx.AfterCutPos.Should().BeGreaterThan(0, "позиция after-cut зафиксирована");
         }
         catch
         {
