@@ -67,15 +67,15 @@ public class ProvisioningProcessTests
     }
 
     // Дефолтная карта идентичностей стандартного сида (Д1б): patroni-порты нод
-    // после аллокации placement (shard1a h1:18000, shard1b h2:18000,
-    // shard2a h1:18001, shard2b h2:18001).
+    // после аллокации placement (последовательные тройки, t24: shard1a h1:15001,
+    // shard1b h2:15001, shard2a h1:15004, shard2b h2:15004).
     private static readonly IReadOnlyDictionary<(string Host, int Port), (string Scope, string Name)>
         DefaultIdentity = new Dictionary<(string, int), (string, string)>
         {
-            [("h1", 18000)] = ("shop-shard1", "shard1a"),
-            [("h2", 18000)] = ("shop-shard1", "shard1b"),
-            [("h1", 18001)] = ("shop-shard2", "shard2a"),
-            [("h2", 18001)] = ("shop-shard2", "shard2b"),
+            [("h1", 15001)] = ("shop-shard1", "shard1a"),
+            [("h2", 15001)] = ("shop-shard1", "shard1b"),
+            [("h1", 15004)] = ("shop-shard2", "shard2a"),
+            [("h2", 15004)] = ("shop-shard2", "shard2b"),
         };
 
     // Пустая карта /patroni (Д1б): каждый запрос → 404 (чужой Patroni) — DeadPatroni-риг.
@@ -135,7 +135,7 @@ public class ProvisioningProcessTests
     private static HttpResponseMessage DeadPatroni() => new(HttpStatusCode.InternalServerError);
 
     // Находка инспекции: имя узла игнорируется (матчится по карте драйвера).
-    private static DiscoveredNode Node(string host, string obj, int pg, int patroni, int doorman = 16500)
+    private static DiscoveredNode Node(string host, string obj, int pg, int patroni, int doorman = 0)
         => new("ignored", host, obj, pg, patroni, doorman);
 
     private sealed record Rig(Fakes.FakeEtcd Etcd, Fakes.FakeDriver Driver, Fakes.FakeSql Sql,
@@ -190,7 +190,7 @@ public class ProvisioningProcessTests
     public async Task Tick_PatroniAlive_DoesEverythingToDone()
     {
         // Arrange — Patroni жив: master шарда1 = shard1a, шарда2 = shard2a
-        var rig = await NewRig(port => Patroni(port == 18000 ? "shard1a" : "shard2a"));
+        var rig = await NewRig(port => Patroni(port == 15001 ? "shard1a" : "shard2a"));
         await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
         rig.Driver.EnsuredNodes.Should().HaveCount(4); // первый тик создал ноды
 
@@ -203,23 +203,23 @@ public class ProvisioningProcessTests
         outcome.IsSuccess.Should().BeTrue();
         outcome.Value.Should().Be(ProcessOutcome.Done);
 
-        // placement: анти-аффинити → ноды шарда на h1,h2; на каждом хосте свой base
-        // (шард1: 15000, шард2: 15001 — тройки портов не пересекаются на хосте)
+        // placement: анти-аффинити → ноды шарда на h1,h2; последовательные тройки
+        // per-host (t24): шард1 15000-15002, шард2 15003-15005 — без пересечений
         rig.Etcd.Store["/clusters/shop/shards/shard1/dsn"].Value.Should()
             .Be("host=h1,h2 port=15000,15000 dbname=shop user=bucket_admin password=adm-pw");
         rig.Etcd.Store["/clusters/shop/shards/shard2/dsn"].Value.Should()
-            .Be("host=h1,h2 port=15001,15001 dbname=shop user=bucket_admin password=adm-pw");
+            .Be("host=h1,h2 port=15003,15003 dbname=shop user=bucket_admin password=adm-pw");
 
         // portalloc закреплён (ключ создан txn-ом NotExists)
         rig.Etcd.Txns.Should().Contain(t => t.Compare.Any(c =>
             c.Key == "/pgworker/portalloc/shop" && c.Target == TxnTarget.Version && c.Num == 0));
 
-        // БД создаётся на мастере каждого шарда (shard1a → h1:15000, shard2a → h1:15001);
+        // БД создаётся на мастере каждого шарда (shard1a → h1:15000, shard2a → h1:15003);
         // оба тика повторяют вызовы — SQL идемпотентен (повтор безопасен, §7)
         rig.Sql.EnsuredDatabases.Should().Contain(
             ("Host=h1;Port=15000;Database=postgres;Username=postgres;Password=su-pw;SSL Mode=Require;Trust Server Certificate=true", "shop"));
         rig.Sql.EnsuredDatabases.Should().Contain(
-            ("Host=h1;Port=15001;Database=postgres;Username=postgres;Password=su-pw;SSL Mode=Require;Trust Server Certificate=true", "shop"));
+            ("Host=h1;Port=15003;Database=postgres;Username=postgres;Password=su-pw;SSL Mode=Require;Trust Server Certificate=true", "shop"));
         rig.Sql.Executed.Should().Contain(e => e.Sql.Contains("CREATE SCHEMA IF NOT EXISTS bucket_0"));
         rig.Sql.Executed.Should().Contain(e => e.Sql.Contains("CREATE SCHEMA IF NOT EXISTS bucket_1"));
 
@@ -249,7 +249,7 @@ public class ProvisioningProcessTests
     public async Task Tick_CommitConfig_CarriesSyncStrictFalse()
     {
         // Arrange — сид со strict=false в config (создан через API с выключенным strict).
-        var rig = await NewRig(port => Patroni(port == 18000 ? "shard1a" : "shard2a"));
+        var rig = await NewRig(port => Patroni(port == 15001 ? "shard1a" : "shard2a"));
         rig.Etcd.Store["/clusters/shop/config"] = new Fakes.FakeEtcd.Entry(
             """{"buckets":4,"dbname":"shop","created_unix":1755900000,"state":"NOT_INITIALIZED","synchronous_mode_strict":false}""",
             1, 1);
@@ -269,7 +269,7 @@ public class ProvisioningProcessTests
     public async Task Tick_AfterDone_NoNewEnsureNodes()
     {
         // Arrange — кластер доведён до DONE, снапшот перечитан (ноды RUNNING)
-        var rig = await NewRig(port => Patroni(port == 18000 ? "shard1a" : "shard2a"));
+        var rig = await NewRig(port => Patroni(port == 15001 ? "shard1a" : "shard2a"));
         await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
         await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
         var ensuredTotal = rig.Driver.EnsuredNodes.Count;
@@ -347,7 +347,7 @@ public class ProvisioningProcessTests
     public async Task Tick_ConfigSwitchedToRemove_SafelyAborts()
     {
         // Arrange — R6: панель перевела кластер в TO_REMOVE до тика
-        var rig = await NewRig(port => Patroni(port == 18000 ? "shard1a" : "shard2a"));
+        var rig = await NewRig(port => Patroni(port == 15001 ? "shard1a" : "shard2a"));
         rig.Etcd.Seed("/clusters/shop/config",
             """{"buckets":4,"dbname":"shop","created_unix":1755900000,"state":"TO_REMOVE"}""");
 
@@ -405,7 +405,7 @@ public class ProvisioningProcessTests
     {
         // Arrange — Patroni жив, мастера shard1a/shard2a; первый тик создаёт ноды,
         // SQL-фаза идёт вторым тиком по свежему снапшоту (образец DoesEverythingToDone)
-        var rig = await NewRig(port => Patroni(port == 18000 ? "shard1a" : "shard2a"));
+        var rig = await NewRig(port => Patroni(port == 15001 ? "shard1a" : "shard2a"));
         await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
         // Act
@@ -547,10 +547,10 @@ public class ProvisioningProcessTests
         var rig = await NewRig(_ => Patroni("shard1a"));
         rig.Driver.InspectResult = new Dictionary<string, DiscoveredNode>
         {
-            ["shard1a"] = Node("h1", "pgw-shop-shard1-shard1a", 15004, 18004),
-            ["shard1b"] = Node("h2", "pgw-shop-shard1-shard1b", 15005, 18005),
-            ["shard2a"] = Node("h1", "pgw-shop-shard2-shard2a", 15006, 18006),
-            ["shard2b"] = Node("h2", "pgw-shop-shard2-shard2b", 15007, 18007),
+            ["shard1a"] = Node("h1", "pgw-shop-shard1-shard1a", 15004, 15005, 15006),
+            ["shard1b"] = Node("h2", "pgw-shop-shard1-shard1b", 15005, 15006, 15007),
+            ["shard2a"] = Node("h1", "pgw-shop-shard2-shard2a", 15006, 15007, 15008),
+            ["shard2b"] = Node("h2", "pgw-shop-shard2-shard2b", 15007, 15008, 15009),
         };
 
         // Act
@@ -558,7 +558,7 @@ public class ProvisioningProcessTests
 
         // Assert: portalloc записан ФАКТОМ контейнеров (не свежей аллокацией 15000+), без object.
         var raw = rig.Etcd.Store["/pgworker/portalloc/shop"].Value;
-        raw.Should().Contain("\"shard1/shard1a\":{\"host\":\"h1\",\"pg\":15004,\"patroni\":18004,\"doorman\":16500}");
+        raw.Should().Contain("\"shard1/shard1a\":{\"host\":\"h1\",\"pg\":15004,\"patroni\":15005,\"doorman\":15006}");
         raw.Should().NotContain("\"object\"");
     }
 
@@ -573,17 +573,17 @@ public class ProvisioningProcessTests
         var rig = await NewRig(_ => Patroni("shard1a"));
         rig.Etcd.Seed("/pgworker/portalloc/shop",
             """
-            {"shard1/shard1a":{"host":"h1","pg":15014,"patroni":18014,"doorman":16514},
-            "shard1/shard1b":{"host":"h2","pg":15015,"patroni":18015,"doorman":16515},
-            "shard2/shard2a":{"host":"h1","pg":15016,"patroni":18016,"doorman":16516},
-            "shard2/shard2b":{"host":"h2","pg":15017,"patroni":18017,"doorman":16517}}
+            {"shard1/shard1a":{"host":"h1","pg":15014,"patroni":15015,"doorman":15016},
+            "shard1/shard1b":{"host":"h2","pg":15015,"patroni":15016,"doorman":15017},
+            "shard2/shard2a":{"host":"h1","pg":15016,"patroni":15017,"doorman":15018},
+            "shard2/shard2b":{"host":"h2","pg":15017,"patroni":15018,"doorman":15019}}
             """);
         rig.Driver.InspectResult = new Dictionary<string, DiscoveredNode>
         {
-            ["shard1a"] = Node("h1", "pgw-shop-shard1-shard1a", 15004, 18004),
-            ["shard1b"] = Node("h2", "pgw-shop-shard1-shard1b", 15005, 18005),
-            ["shard2a"] = Node("h1", "pgw-shop-shard2-shard2a", 15006, 18006),
-            ["shard2b"] = Node("h2", "pgw-shop-shard2-shard2b", 15007, 18007),
+            ["shard1a"] = Node("h1", "pgw-shop-shard1-shard1a", 15004, 15005, 15006),
+            ["shard1b"] = Node("h2", "pgw-shop-shard1-shard1b", 15005, 15006, 15007),
+            ["shard2a"] = Node("h1", "pgw-shop-shard2-shard2a", 15006, 15007, 15008),
+            ["shard2b"] = Node("h2", "pgw-shop-shard2-shard2b", 15007, 15008, 15009),
         };
 
         // Act
@@ -610,15 +610,15 @@ public class ProvisioningProcessTests
         rig.Etcd.Seed("/clusters/shop/app_password", "pw");
         rig.Etcd.Seed("/pgworker/portalloc/shop",
             """
-            {"shard1/shard1a":{"host":"h1","pg":15014,"patroni":18014,"doorman":16514},
-            "shard1/shard1b":{"host":"h2","pg":15015,"patroni":18015,"doorman":16515,"object":"external-1"}}
+            {"shard1/shard1a":{"host":"h1","pg":15014,"patroni":15015,"doorman":15016},
+            "shard1/shard1b":{"host":"h2","pg":15015,"patroni":15016,"doorman":15017,"object":"external-1"}}
             """);
         rig.Driver.InspectResult = new Dictionary<string, DiscoveredNode>
         {
-            ["shard1a"] = Node("h1", "pgw-shop-shard1-shard1a", 15004, 18004),
-            ["shard1b"] = Node("h2", "pgw-shop-shard1-shard1b", 15005, 18005),
-            ["shard2a"] = Node("h1", "pgw-shop-shard2-shard2a", 15006, 18006),
-            ["shard2b"] = Node("h2", "pgw-shop-shard2-shard2b", 15007, 18007),
+            ["shard1a"] = Node("h1", "pgw-shop-shard1-shard1a", 15004, 15005, 15006),
+            ["shard1b"] = Node("h2", "pgw-shop-shard1-shard1b", 15005, 15006, 15007),
+            ["shard2a"] = Node("h1", "pgw-shop-shard2-shard2a", 15006, 15007, 15008),
+            ["shard2b"] = Node("h2", "pgw-shop-shard2-shard2b", 15007, 15008, 15009),
         };
 
         // Act
@@ -649,7 +649,7 @@ public class ProvisioningProcessTests
         var rig = await NewRig(_ => DeadPatroni(), identityByEndpoint: EmptyIdentity);
         rig.Driver.InspectResult = new Dictionary<string, DiscoveredNode>
         {
-            ["shard1a"] = Node("h1", "weird-container", 15004, 18004),
+            ["shard1a"] = Node("h1", "weird-container", 15004, 15005, 15006),
         };
 
         // Act
@@ -669,17 +669,17 @@ public class ProvisioningProcessTests
         var rig = await NewRig(_ => Patroni("shard1a"));
         rig.Etcd.Seed("/pgworker/portalloc/shop",
             """
-            {"shard1/shard1a":{"host":"h1","pg":15000,"patroni":18000,"doorman":16500},
-            "shard1/shard1b":{"host":"h2","pg":15001,"patroni":18001,"doorman":16501},
-            "shard2/shard2a":{"host":"h1","pg":15002,"patroni":18002,"doorman":16502},
-            "shard2/shard2b":{"host":"h2","pg":15003,"patroni":18003,"doorman":16503}}
+            {"shard1/shard1a":{"host":"h1","pg":15000,"patroni":15001,"doorman":15002},
+            "shard1/shard1b":{"host":"h2","pg":15000,"patroni":15001,"doorman":15002},
+            "shard2/shard2a":{"host":"h1","pg":15003,"patroni":15004,"doorman":15005},
+            "shard2/shard2b":{"host":"h2","pg":15003,"patroni":15004,"doorman":15005}}
             """);
         rig.Driver.InspectResult = new Dictionary<string, DiscoveredNode>
         {
-            ["shard1a"] = Node("h1", "pgw-shop-shard1-shard1a", 15000, 18000, 16500),
-            ["shard1b"] = Node("h2", "pgw-shop-shard1-shard1b", 15001, 18001, 16501),
-            ["shard2a"] = Node("h1", "pgw-shop-shard2-shard2a", 15002, 18002, 16502),
-            ["shard2b"] = Node("h2", "pgw-shop-shard2-shard2b", 15003, 18003, 16503),
+            ["shard1a"] = Node("h1", "pgw-shop-shard1-shard1a", 15000, 15001, 15002),
+            ["shard1b"] = Node("h2", "pgw-shop-shard1-shard1b", 15000, 15001, 15002),
+            ["shard2a"] = Node("h1", "pgw-shop-shard2-shard2a", 15003, 15004, 15005),
+            ["shard2b"] = Node("h2", "pgw-shop-shard2-shard2b", 15003, 15004, 15005),
         };
 
         // Act
@@ -700,15 +700,15 @@ public class ProvisioningProcessTests
         // Arrange: сосед закрепил 15000-тройку (все 3 порта); наш кластер без контейнеров.
         var rig = await NewRig(_ => Patroni("shard1a"));
         rig.Etcd.Seed("/pgworker/portalloc/canon10",
-            """{"s1/n1":{"host":"h1","pg":15000,"patroni":18000,"doorman":16500}}""");
+            """{"s1/n1":{"host":"h1","pg":15000,"patroni":15001,"doorman":15002}}""");
 
         // Act
         await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
-        // Assert: первая нода h1 ушла от занятой тройки соседа: база 15001 даёт
-        // 15001/18001/16501 — свободно.
+        // Assert: первая нода h1 ушла от занятой тройки соседа 15000-15002 —
+        // первая свободная тройка 15003-15005.
         var raw = rig.Etcd.Store["/pgworker/portalloc/shop"].Value;
-        raw.Should().Contain("\"shard1/shard1a\":{\"host\":\"h1\",\"pg\":15001");
+        raw.Should().Contain("\"shard1/shard1a\":{\"host\":\"h1\",\"pg\":15003");
     }
 
     // AAA: Д1 — порт плана занят чужим docker-фактом: нода перепланирована и
@@ -721,24 +721,24 @@ public class ProvisioningProcessTests
         var rig = await NewRig(_ => DeadPatroni(), identityByEndpoint: EmptyIdentity);
         rig.Etcd.Seed("/pgworker/portalloc/shop",
             """
-            {"shard1/shard1a":{"host":"h1","pg":15000,"patroni":18000,"doorman":16500},
-            "shard1/shard1b":{"host":"h2","pg":15001,"patroni":18001,"doorman":16501},
-            "shard2/shard2a":{"host":"h1","pg":15002,"patroni":18002,"doorman":16502},
-            "shard2/shard2b":{"host":"h2","pg":15003,"patroni":18003,"doorman":16503}}
+            {"shard1/shard1a":{"host":"h1","pg":15000,"patroni":15001,"doorman":15002},
+            "shard1/shard1b":{"host":"h2","pg":15000,"patroni":15001,"doorman":15002},
+            "shard2/shard2a":{"host":"h1","pg":15003,"patroni":15004,"doorman":15005},
+            "shard2/shard2b":{"host":"h2","pg":15003,"patroni":15004,"doorman":15005}}
             """);
         rig.Driver.BusyPorts = new HashSet<(string, int)> { ("h1", 15000) };
 
         // Act
         var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
-        // Assert: ТОЛЬКО shard1a перепланирована (свободная тройка h1 = 15001/18001/16501),
+        // Assert: ТОЛЬКО shard1a перепланирована (свободная тройка h1 = 15001-15003),
         // остальные записи переиспользованы; EnsureNode выполнен в том же тике
         // (контейнер создаётся сразу — Д1 «сам починил» без оператора).
         outcome.IsSuccess.Should().BeTrue();
         var raw = rig.Etcd.Store["/pgworker/portalloc/shop"].Value;
         raw.Should().Contain("\"shard1/shard1a\":{\"host\":\"h1\",\"pg\":15001");
-        raw.Should().Contain("\"shard1/shard1b\":{\"host\":\"h2\",\"pg\":15001");
-        raw.Should().Contain("\"shard2/shard2a\":{\"host\":\"h1\",\"pg\":15002");
+        raw.Should().Contain("\"shard1/shard1b\":{\"host\":\"h2\",\"pg\":15000");
+        raw.Should().Contain("\"shard2/shard2a\":{\"host\":\"h1\",\"pg\":15004");
         rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
         // Ключ существовал → перезапись put-ом (не txn), version вырос.
         rig.Etcd.Store["/pgworker/portalloc/shop"].Version.Should().Be(2);
@@ -754,19 +754,19 @@ public class ProvisioningProcessTests
         var rig = await NewRig(_ => DeadPatroni(), identityByEndpoint: EmptyIdentity);
         rig.Etcd.Seed("/pgworker/portalloc/shop",
             """
-            {"shard1/shard1a":{"host":"h1","pg":15000,"patroni":18000,"doorman":16500},
-            "shard1/shard1b":{"host":"h2","pg":15001,"patroni":18001,"doorman":16501},
-            "shard2/shard2a":{"host":"h1","pg":15002,"patroni":18002,"doorman":16502},
-            "shard2/shard2b":{"host":"h2","pg":15003,"patroni":18003,"doorman":16503}}
+            {"shard1/shard1a":{"host":"h1","pg":15000,"patroni":15001,"doorman":15002},
+            "shard1/shard1b":{"host":"h2","pg":15000,"patroni":15001,"doorman":15002},
+            "shard2/shard2a":{"host":"h1","pg":15003,"patroni":15004,"doorman":15005},
+            "shard2/shard2b":{"host":"h2","pg":15003,"patroni":15004,"doorman":15005}}
             """);
         rig.Driver.InspectResult = new Dictionary<string, DiscoveredNode>
         {
-            ["shard1a"] = Node("h1", "pgw-shop-shard1-shard1a", 15000, 18000, 16500),
-            ["shard1b"] = Node("h2", "pgw-shop-shard1-shard1b", 15001, 18001, 16501),
-            ["shard2a"] = Node("h1", "pgw-shop-shard2-shard2a", 15002, 18002, 16502),
-            ["shard2b"] = Node("h2", "pgw-shop-shard2-shard2b", 15003, 18003, 16503),
+            ["shard1a"] = Node("h1", "pgw-shop-shard1-shard1a", 15000, 15001, 15002),
+            ["shard1b"] = Node("h2", "pgw-shop-shard1-shard1b", 15000, 15001, 15002),
+            ["shard2a"] = Node("h1", "pgw-shop-shard2-shard2a", 15003, 15004, 15005),
+            ["shard2b"] = Node("h2", "pgw-shop-shard2-shard2b", 15003, 15004, 15005),
         };
-        rig.Driver.BusyPorts = new HashSet<(string, int)> { ("h1", 15000), ("h1", 18000), ("h2", 15001) };
+        rig.Driver.BusyPorts = new HashSet<(string, int)> { ("h1", 15000), ("h1", 15001), ("h2", 15000) };
 
         // Act
         var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
@@ -790,22 +790,22 @@ public class ProvisioningProcessTests
         var rig = await NewRig(_ => DeadPatroni(), identityByEndpoint: EmptyIdentity);
         rig.Etcd.Seed("/pgworker/portalloc/shop",
             """
-            {"shard1/shard1a":{"host":"h1","pg":15000,"patroni":18000,"doorman":16500},
-            "shard1/shard1b":{"host":"h2","pg":15001,"patroni":18001,"doorman":16501},
-            "shard2/shard2a":{"host":"h1","pg":15000,"patroni":18000,"doorman":16500},
-            "shard2/shard2b":{"host":"h2","pg":15003,"patroni":18003,"doorman":16503}}
+            {"shard1/shard1a":{"host":"h1","pg":15000,"patroni":15001,"doorman":15002},
+            "shard1/shard1b":{"host":"h2","pg":15000,"patroni":15001,"doorman":15002},
+            "shard2/shard2a":{"host":"h1","pg":15000,"patroni":15001,"doorman":15002},
+            "shard2/shard2b":{"host":"h2","pg":15003,"patroni":15004,"doorman":15005}}
             """);
         rig.Driver.InspectResult = new Dictionary<string, DiscoveredNode>
         {
-            ["shard1a"] = Node("h1", "pgw-shop-shard1-shard1a", 15000, 18000, 16500),
-            ["shard1b"] = Node("h2", "pgw-shop-shard1-shard1b", 15001, 18001, 16501),
-            ["shard2b"] = Node("h2", "pgw-shop-shard2-shard2b", 15003, 18003, 16503),
+            ["shard1a"] = Node("h1", "pgw-shop-shard1-shard1a", 15000, 15001, 15002),
+            ["shard1b"] = Node("h2", "pgw-shop-shard1-shard1b", 15000, 15001, 15002),
+            ["shard2b"] = Node("h2", "pgw-shop-shard2-shard2b", 15003, 15004, 15005),
         };
         rig.Driver.BusyPorts = new HashSet<(string, int)>
         {
-            ("h1", 15000), ("h1", 18000), ("h1", 16500),
-            ("h2", 15001), ("h2", 18001), ("h2", 16501),
-            ("h2", 15003), ("h2", 18003), ("h2", 16503),
+            ("h1", 15000), ("h1", 15001), ("h1", 15002),
+            ("h2", 15000), ("h2", 15001), ("h2", 15002),
+            ("h2", 15003), ("h2", 15004), ("h2", 15005),
         };
 
         // Act
@@ -817,7 +817,7 @@ public class ProvisioningProcessTests
         outcome.IsSuccess.Should().BeTrue();
         var raw = rig.Etcd.Store["/pgworker/portalloc/shop"].Value;
         raw.Should().Contain("\"shard1/shard1a\":{\"host\":\"h1\",\"pg\":15000");
-        raw.Should().Contain("\"shard2/shard2a\":{\"host\":\"h1\",\"pg\":15001");
+        raw.Should().Contain("\"shard2/shard2a\":{\"host\":\"h1\",\"pg\":15003");
         rig.Driver.EnsuredNodes.Should().Contain("shard2/shard2a");
         rig.Etcd.Store["/pgworker/portalloc/shop"].Version.Should().Be(2);
     }
@@ -829,7 +829,7 @@ public class ProvisioningProcessTests
     {
         // Arrange: /cluster жив (respondByPort отвечает members), но /patroni по
         // план-портам — пустая карта → все 404 = чужой scope (коллизия портов).
-        var rig = await NewRig(port => Patroni(port == 18000 ? "shard1a" : "shard2a"),
+        var rig = await NewRig(port => Patroni(port == 15001 ? "shard1a" : "shard2a"),
             identityByEndpoint: EmptyIdentity);
 
         // Act

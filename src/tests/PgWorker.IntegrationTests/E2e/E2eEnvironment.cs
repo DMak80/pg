@@ -91,6 +91,19 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// имени кластера [a-z][a-z0-9_]{0,62} допускает суффикс из hex-цифр.</summary>
     public string ClusterTag => _runId[..8];
 
+    /// <summary>Следующий последовательный host-порт ОКНА контура (t24, spec
+    /// §1.5): для контейнеров сценариев (w1/w2 вторых инстансов, любые
+    /// контейнерные порты) — все порты контура идут подряд из своего окна,
+    /// межконтурных гонок bind'ов нет.</summary>
+    public int ReserveWindowPort() => _windowNext++;
+
+    /// <summary>Остаток окна контура [From, To) для PortRange воркер-контейнеров
+    /// сценариев — тот же контракт, что у хост-воркеров StartHostAsync: окно за
+    /// вычетом уже занятого инфраструктурой контура (etcd, MinIO, API-порты).
+    /// Литеральные PortRange в конфиге воркера E2E запрещены
+    /// (docs/e2e-isolation.md §5 — межконтурная гонка bind'ов).</summary>
+    public (int From, int To) RemainingPortRange => (_windowNext, _portWindowStart + PortWindowSize);
+
     // Свой ли объект по имени (контейнер/том/сеть).
     private bool OwnName(string name)
         => name.Contains(_runId, StringComparison.Ordinal)
@@ -105,7 +118,9 @@ public sealed class E2eEnvironment : IAsyncDisposable
         IReadOnlyList<string> etcdEndpoints,
         INetwork net,
         IContainer? minio,
-        IContainer? dnsProbe)
+        IContainer? dnsProbe,
+        int portWindowStart,
+        int windowNext)
     {
         Slug = slug;
         _runId = runId;
@@ -117,6 +132,8 @@ public sealed class E2eEnvironment : IAsyncDisposable
         _net = net;
         _minio = minio;
         _dnsProbe = dnsProbe;
+        _portWindowStart = portWindowStart;
+        _windowNext = windowNext;
         Gateway = new EtcdGateway(_gatewayHttp);
         S3Endpoint = minio is null
             ? ""
@@ -206,33 +223,66 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// опционально MinIO + bucket. Хост-порты — зонд свободного порта; advertise
     /// строится от фактического published порта. Гейт PGW_TEST_DOCKER и скип —
     /// ответственность сценария (DockerTrait.SkipIfUnavailable до StartAsync).</summary>
+    // Портовое окно контура (t24, spec §1.5, arch/14 §2.4 п.2): 200 портов,
+    // физическое резервирование bind'ом — первыми портами окна публикуются
+    // etcd-узлы (etcd поднимается окружением всегда — его подъём «запирает»
+    // окно); занятость (bind/старт-фейл) → окно сдвигается на следующий блок
+    // → пересоздание контура. Бюджет конечен: быстрый фейл с диагностикой,
+    // не вечный ретрай.
+    private const int PortWindowBase = 15100;
+    private const int PortWindowSize = 200;
+    private const int PortWindowBudget = 40;
+
+    // База занятого окна и счётчик последовательной выдачи остатку контура
+    // (MinIO → API-порты хост-воркеров → контейнеры сценариев через
+    // ReserveWindowPort) — все host-порты контура идут ПОДРЯД из окна.
+    private readonly int _portWindowStart;
+    private int _windowNext;
+
     public static async Task<E2eEnvironment> StartAsync(
         string slug, bool withMinio = false, bool haEtcd = false, CancellationToken ct = default)
     {
         await EnsureStaticAsync(ct);
 
-        // Транзиентная защита от ЧУЖОГО глобального prune на общем демоне (старые
-        // фикстуры параллельных задач): только что созданная сеть без контейнеров
-        // может быть снесена до старта etcd — пересоздаём окружение целиком.
-        for (var attempt = 1; ; attempt++)
+        // Ретрай старта против внешних гонок (docs/e2e-isolation.md §4):
+        // (а) чужой глобальный prune — только что созданная сеть без контейнеров
+        // может быть снесена до старта etcd; (б) портовая — bind-фейл первого
+        // порта окна (окно занято кем-то на хосте). Оба — пересоздание окружения
+        // ЦЕЛИКОМ на СЛЕДУЮЩЕМ окне (сдвиг +200), бюджет = PortWindowBudget
+        // (быстрый фейл с диагностикой, не вечный ретрай).
+        Exception? last = null;
+        for (var w = 0; w < PortWindowBudget; w++)
+        {
+            var windowStart = PortWindowBase + w * PortWindowSize;
             try
             {
-                return await StartOnceAsync(slug, withMinio, haEtcd, ct);
+                return await StartOnceAsync(slug, withMinio, haEtcd, windowStart, ct);
             }
-            catch (Exception e) when (attempt < 3 && IsForeignPruneRace(e))
+            catch (Exception e) when (IsRetryableStartRace(e))
             {
+                last = e;
                 Console.Error.WriteLine(
-                    $"e2e[{slug}]: окружение сорвано чужим prune — пересоздаём (попытка {attempt + 1}): {e.Message.Split('\n')[0]}");
+                    $"e2e[{slug}]: старт сорван внешней гонкой — пересоздаём на следующем окне (попытка {w + 1}/{PortWindowBudget}, база {windowStart}): {e.Message.Split('\n')[0]}");
                 await Task.Delay(2000, ct);
             }
+        }
+
+        throw new ApplicationException(
+            $"e2e[{slug}]: не удалось занять портовое окно за {PortWindowBudget} попыток "
+            + $"(диапазон перебора {PortWindowBase}..{PortWindowBase + PortWindowBudget * PortWindowSize}); "
+            + $"последняя ошибка: {last?.Message}");
     }
 
-    private static bool IsForeignPruneRace(Exception e)
-        => e.Message.Contains("network", StringComparison.OrdinalIgnoreCase)
-           && e.Message.Contains("not found", StringComparison.OrdinalIgnoreCase);
+    // Ретрай-условия старта: чужой prune сети (network … not found) ИЛИ портовый
+    // bind-фейл окна (port is already allocated / bind: address already in use).
+    private static bool IsRetryableStartRace(Exception e)
+        => (e.Message.Contains("network", StringComparison.OrdinalIgnoreCase)
+            && e.Message.Contains("not found", StringComparison.OrdinalIgnoreCase))
+           || e.Message.Contains("already allocated", StringComparison.OrdinalIgnoreCase)
+           || e.Message.Contains("address already in use", StringComparison.OrdinalIgnoreCase);
 
     private static async Task<E2eEnvironment> StartOnceAsync(
-        string slug, bool withMinio, bool haEtcd, CancellationToken ct)
+        string slug, bool withMinio, bool haEtcd, int windowStart, CancellationToken ct)
     {
         // Сеть окружения: имя = короткий префикс + полный guid прогона (уникален),
         // создаём/удаляем сами, ryuk не гарант; отсутствие после teardown — ассерт.
@@ -249,11 +299,12 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
             // etcd-контур (внешний слой стенда): haEtcd=false — ОДИН узел (прежняя
             // семантика), true — ТРИ узла static-bootstrap кластером (кворум 2/3,
-            // t09 arch/04 §8). Хост-порты — зонд свободного порта (правило
-            // динамических портов); advertise host.docker.internal:<порт>:
-            // Patroni-ноды узнают адреса членов из advertise-client-urls —
-            // обязаны быть достижимы ИЗ контейнеров.
-            var etcdPorts = Enumerable.Range(0, haEtcd ? 3 : 1).Select(_ => E2eFixture.FreePort()).ToArray();
+            // t09 arch/04 §8). Хост-порты — ПЕРВЫЕ ПОСЛЕДОВАТЕЛЬНЫЕ слоты окна
+            // контура (t24, spec §1.5): bind = физическое резервирование окна,
+            // advertise host.docker.internal:<порт> — Patroni-ноды узнают адреса
+            // членов из advertise-client-urls, обязаны быть достижимы ИЗ контейнеров.
+            var etcdPorts = Enumerable.Range(0, haEtcd ? 3 : 1).Select(i => windowStart + i).ToArray();
+            var windowNext = windowStart + etcdPorts.Length;
             var initialCluster = haEtcd
                 ? string.Join(",", Enumerable.Range(1, 3).Select(n => $"e2e-etcd{n}=http://e2e-etcd{n}:2380"))
                 : "e2e-etcd1=http://e2e-etcd1:2380";
@@ -322,6 +373,9 @@ public sealed class E2eEnvironment : IAsyncDisposable
             {
                 // MinIO в сети окружения (mc ходит по алиасу; джобы — через published
                 // порт, сеть им не нужна). Готовность — wait-стратегия health/live.
+                // Хост-порт — СЛЕДУЮЩИЙ последовательный слот окна контура (t24,
+                // spec §1.5: все контейнеры контура — подряд из своего окна).
+                var minioPort = windowNext++;
                 minio = new ContainerBuilder(MinioImage)
                     .WithName($"pgw-em-{runId}")
                     .WithCommand("server", "/data")
@@ -329,7 +383,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                     .WithEnvironment("MINIO_ROOT_PASSWORD", MinioPassword)
                     .WithNetwork(net)
                     .WithNetworkAliases("e2e-minio")
-                    .WithPortBinding(9000, assignRandomHostPort: true) // AGENTS.md: порты динамические
+                    .WithPortBinding(minioPort, 9000) // окно контура: последовательный слот
                     .WithWaitStrategy(Wait.ForUnixContainer()
                         .UntilHttpRequestIsSucceeded(
                             request => request.ForPort(9000).ForPath("/minio/health/live"),
@@ -372,7 +426,8 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 await dnsProbe.StartAsync(ct);
             }
 
-            return new E2eEnvironment(slug, runId, netName, etcdNodes, etcdNames, endpoints, net, minio, dnsProbe);
+            return new E2eEnvironment(slug, runId, netName, etcdNodes, etcdNames, endpoints, net, minio, dnsProbe,
+                windowStart, windowNext);
         }
         catch
         {
@@ -431,9 +486,10 @@ public sealed class E2eEnvironment : IAsyncDisposable
         string name, int snapshotIntervalMin = 360,
         IReadOnlyDictionary<string, string>? extraEnv = null, CancellationToken ct = default)
     {
-        // Ретрай выбора порта: зонд FreePort закрывает листенер до старта процесса —
-        // в окне эфемерный порт может занять исходящее соединение (AddressInUse,
-        // инцидент гейта t03-merge). Повторяем зонд, максимум 3 попытки.
+        // Ретрай выбора порта (t24: порт — последовательный слот ОКНА контура,
+        // конфликтов внутри окна нет; эфемерные исходящие соединения хоста всё
+        // же могут занять слот до старта листенера — AddressInUse, инцидент
+        // t03-merge). Повтор берёт следующий слот, максимум 3 попытки.
         for (var attempt = 1; ; attempt++)
             try
             {
@@ -450,7 +506,9 @@ public sealed class E2eEnvironment : IAsyncDisposable
         string name, int snapshotIntervalMin,
         IReadOnlyDictionary<string, string>? extraEnv, CancellationToken ct)
     {
-        var port = E2eFixture.FreePort();
+        // API-порт хост-воркера — следующий последовательный слот окна контура
+        // (t24, spec §1.5): до зова FreePort() вне окна — межконтурная гонка.
+        var port = _windowNext++;
         var snapshotsDir = Path.Combine(Path.GetTempPath(), $"pgw-e2e-{name}-{port}");
         Directory.CreateDirectory(snapshotsDir);
 
@@ -472,8 +530,8 @@ public sealed class E2eEnvironment : IAsyncDisposable
             // как контейнеры нод — к etcd (AdvertisedEndpoints ниже).
             ["PgWorker__Docker__Hosts__0__Name"] = "host.docker.internal",
             ["PgWorker__Docker__Hosts__0__Endpoint"] = "unix:///var/run/docker.sock",
-            ["PgWorker__Docker__PortRange__From"] = "15100",
-            ["PgWorker__Docker__PortRange__To"] = "15200",
+            ["PgWorker__Docker__PortRange__From"] = _windowNext.ToString(),
+            ["PgWorker__Docker__PortRange__To"] = (_portWindowStart + PortWindowSize).ToString(),
             ["PgWorker__Docker__Images__Node"] = NodeImage,
             ["PgWorker__Docker__EnableDoorman"] = "false",
 
