@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <!-- Диагностический нагрузочный генератор (t24, spec §5.1): временный
+         инструмент ВЕТКИ задачи — в src/PgWorker.slnx НЕ включён, в main не
+         поставляется (удаляется фазой приёмки). Поднимает K шумовых
+         изолированных контуров (профили dns/cpu/io/full) по канону
+         docs/e2e-isolation.md: guid-имена, own-only teardown, ассерт чистоты.
+         Шторм-режим DNS — общий скрипт
+         src/tests/PgWorker.IntegrationTests/E2e/dns_probe.py. -->
+    <PropertyGroup>
+        <OutputType>Exe</OutputType>
+        <TargetFramework>net10.0</TargetFramework>
+        <ImplicitUsings>enable</ImplicitUsings>
+        <Nullable>enable</Nullable>
+        <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+        <IsPackable>false</IsPackable>
+        <RootNamespace>PgWorker.IntegrationTests.E2eLoadGen</RootNamespace>
+    </PropertyGroup>
+    <ItemGroup>
+        <PackageReference Include="Testcontainers"/>
+    </ItemGroup>
+</Project>
