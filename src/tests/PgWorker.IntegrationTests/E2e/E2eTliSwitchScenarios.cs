@@ -100,10 +100,131 @@ public sealed class TliSwitchContext : IAsyncLifetime
         // Шаг 2 — полный на TLI1 + pre-wal (TLI1-хвост после точки полного).
         await SeedFullBackupAsync(ct);
 
+        // Гейт синхронизации реплик до failover (spec §3.2 шаг 3, ОБЯЗАТЕЛЕН):
+        // точка промоута определяется ПОЗИЦИЕЙ РЕПЛИКИ (replay_lsn), а не
+        // мастера — отставшая реплика промоутнется ВНУТРИ уже закрытого
+        // мастером сегмента (точка выйдет из открытого S — профиль не
+        // смешанный). Ждём replay_lsn каждой реплики ≥ позиции мастера
+        // (последняя запись — emit «t28» в SeedFullBackupAsync, строго внутри
+        // ОТКРЫТОГО сегмента): тогда promote-точка внутри открытого S —
+        // единственный носитель позиции S: смешанный объект под именем
+        // родителя (§3.3, AC1).
+        var synced = await WaitPhaseAsync("replica-sync", () => ReplicasSyncedAsync(ct),
+            TimeSpan.FromSeconds(60), ct);
+        synced.Should().BeTrue("реплики обязаны догнать позицию мастера до failover: "
+            + await DumpDiagnosticsAsync(Cluster, "shard1"));
+
         // Шаги 3–5 — failover + данные нового TLI.
         await FailoverAsync(ct);
         await SeedNewTimelineAsync(ct);
-        // Шаг 6 (строгий гейт смешанности) — Task 3.
+
+        // Шаг 6 — строгий гейт смешанности: контур готов к заявкам.
+        await AssertMixedSwitchAsync(ct);
+        Console.WriteLine($"[PHASE] tlsw-ready: контур готов (OldBackupId={OldBackupId}, " +
+            $"Tli2={Tli2}, T_cut={TCut:yyyy-MM-ddTHH:mm:ssZ})");
+    }
+
+    // Скачивание и разбор wal/<tli>.history (host-клиент GetObjectAsync +
+    // WalHistory.Parse — строгий парсер t04). Последняя запись файла
+    // описывает сам <tli>: родитель и точка переключения switchWALLSN.
+    private async Task<PgWorker.Backups.WalHistoryEntry> HistoryEntryAsync(
+        string cluster, string shard, uint tli, CancellationToken ct)
+    {
+        await using var s3 = HostS3Client();
+        var got = await s3.GetObjectAsync(cluster, shard, $"wal/{tli:x8}.history", ct);
+        got.IsSuccess.Should().BeTrue(
+            $"history-объект wal/{tli:x8}.history доступен: {got.Error?.Message}");
+        var entries = PgWorker.Backups.WalHistory.Parse(got.Value!);
+        entries.Should().NotBeNull(
+            $"history-файл wal/{tli:x8}.history строго разбирается: [{got.Value}]");
+        return entries![^1];
+    }
+
+    // LSN «X/Y» → число (обе половины hex).
+    private static ulong ParseLsn(string lsn)
+    {
+        var parts = lsn.Split('/');
+        return (ulong.Parse(parts[0], System.Globalization.NumberStyles.HexNumber) << 32)
+               | ulong.Parse(parts[1], System.Globalization.NumberStyles.HexNumber);
+    }
+
+    // Шаг 6 — СТРОГИЙ гейт смешанности (spec §3.3, AC1; решение user-review):
+    // (1) switchWALLsn ВНУТРИ сегмента S (не на границе 16 МиБ — «на границе»
+    //     покрытием t28 не считается: накат шёл бы по стыку сегментов);
+    // (2) смешанный объект wal/0000000N…S доставлен;
+    // (3) последний TLI1-сегмент == S−1 и TLI1-версии S в архиве НЕТ (мастер
+    //     умер до закрытия — единственный носитель позиции S: объект TLI2);
+    // (4) WalChain.Check(wal_start, list) непрерывен — тем же валидатором,
+    //     которым restore-заявка пройдёт валидацию.
+    // Вместе (3)+(4) финализируют требование шага 4 «TLI2-сегменты выше точки
+    // переключения»: TLI2-хвост доставлен от самого S без дыр.
+    // Провал ЛЮБОГО пункта — диагностическое исключение с дампом (буква
+    // spec §3.3: history-содержимое, list wal/, ключи full/wal, Patroni
+    // /cluster), НЕ ретрай: профиль прогона зафиксирован и либо смешанный,
+    // либо контур честно красный с точной причиной.
+    private async Task AssertMixedSwitchAsync(CancellationToken ct)
+    {
+        try
+        {
+            await AssertMixedSwitchCoreAsync(ct);
+        }
+        catch (Exception ex)
+        {
+            // Дамп провала: history-содержимое повторным чтением (лучшие
+            // усилия — недоступность объекта могла быть самой причиной) +
+            // DumpDiagnosticsAsync (list wal/, ключи full/wal, Patroni-scope,
+            // журнал воркера, docker-объекты). Inner сохранён — стек ассерта
+            // не теряется.
+            var history = "";
+            try
+            {
+                await using var s3 = HostS3Client();
+                var got = await s3.GetObjectAsync(Cluster, "shard1", $"wal/{Tli2:x8}.history", ct);
+                history = got.IsSuccess ? got.Value! : $"<недоступен: {got.Error?.Message}>";
+            }
+            catch (Exception he)
+            {
+                history = $"<сбой чтения: {he.Message}>";
+            }
+
+            throw new ApplicationException(
+                $"гейт смешанности провален: {ex.Message}\nhistory=[{history}]\n"
+                + await DumpDiagnosticsAsync(Cluster, "shard1"), ex);
+        }
+    }
+
+    // Ассерты гейта (без обёртки диагностики).
+    private async Task AssertMixedSwitchCoreAsync(CancellationToken ct)
+    {
+        var entry = await HistoryEntryAsync(Cluster, "shard1", Tli2, ct);
+        entry.ParentTli.Should().Be(1u,
+            $"последняя запись {Tli2:x8}.history — сам TLI2 от родителя TLI1: parent={entry.ParentTli}");
+        var switchSeg = PgWorker.Backups.WalFileName.FromLsn(0, entry.SwitchLsn);
+        (ParseLsn(entry.SwitchLsn) % (ulong)PgWorker.Backups.WalFileName.SegmentBytes)
+            .Should().NotBe(0UL,
+                $"точка переключения {entry.SwitchLsn} ВНУТРИ сегмента {switchSeg.Name} "
+                + "(не на границе 16 МиБ) — профиль «на границе» покрытием t28 не считается");
+
+        var names = await ListWalNamesAsync(Cluster, "shard1");
+        var mixed = $"{Tli2:x8}{switchSeg.Log:x8}{switchSeg.Seg:x8}";
+        names.Should().Contain(mixed,
+            "смешанный объект (TLI1-префикс + END_OF_RECOVERY + TLI2-хвост) доставлен в wal/");
+
+        var tli1Max = names
+            .Select(n => PgWorker.Backups.WalFileName.TryParse(n))
+            .Where(w => w is { Tli: 1 })
+            .Select(w => (long)w!.Value.Log * 256 + w!.Value.Seg)
+            .DefaultIfEmpty(-1).Max();
+        var switchPos = (long)switchSeg.Log * 256 + switchSeg.Seg;
+        tli1Max.Should().Be(switchPos - 1,
+            "TLI1-цепочка кончается сегментом S−1 — мастер умер до закрытия S");
+        names.Should().NotContain($"00000001{switchSeg.Log:x8}{switchSeg.Seg:x8}",
+            "TLI1-версии S в архиве нет — единственный носитель позиции S: смешанный объект TLI2");
+
+        var start = PgWorker.Backups.WalFileName.TryParse(WalStartSegment)!.Value;
+        var check = PgWorker.Backups.WalChain.Check(start, names);
+        check.IsContinuous.Should().BeTrue(check.GapError ??
+            $"WalChain.Check от {WalStartSegment} непрерывен — тем же валидатором, что пройдёт restore-заявка");
     }
 
     // Шаг 3 (spec §3.2): жёсткая потеря мастера — docker stop (БЕЗ
@@ -124,6 +245,32 @@ public sealed class TliSwitchContext : IAsyncLifetime
 
     private string _newMasterDsn = null!;
 
+    // Синхронизация реплик шарда: replay_lsn КАЖДОЙ реплики ≥ текущей позиции
+    // записи мастера (pg_current_wal_lsn). Гейт профиля смешанности: мастер
+    // держит сегмент S открытым, догнавшая реплика промоутнется внутри S.
+    private async Task<bool> ReplicasSyncedAsync(CancellationToken ct)
+    {
+        var (mHost, mPort, master) = await MasterPgAsync(Cluster, "shard1", ct);
+        var masterPos = ParseLsn(await ScalarAsync(
+            AdminDsn(mHost, mPort), "SELECT pg_current_wal_lsn()", ct));
+        var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{Cluster}", ct);
+        var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
+        foreach (var (key, addr) in entries
+                     .Where(p => p.Key.StartsWith("shard1/", StringComparison.Ordinal)))
+        {
+            if (key.Split('/')[1] == master)
+                continue; // сам мастер — не проверяется
+            var replay = ParseLsn(await ScalarAsync(
+                AdminDsn(addr.GetProperty("host").GetString()!,
+                    addr.GetProperty("pg").GetInt32()),
+                "SELECT pg_last_wal_replay_lsn()", ct));
+            if (replay < masterPos)
+                return false;
+        }
+
+        return true;
+    }
+
     // Шаги 4–5 (spec §3.2): post-switch на новом TLI; доставка .history +
     // TLI2-хвоста по list-S3 (истина §2; repair-контур остановленной ноды НЕ
     // ждём — гвардом restore владеет заявка); фиксация T_cut (+ пауза 2 с —
@@ -132,11 +279,10 @@ public sealed class TliSwitchContext : IAsyncLifetime
     private async Task SeedNewTimelineAsync(CancellationToken ct)
     {
         // Шаг 4 — данные на новом TLI + доставка TLI2-хвоста. Условие
-        // усилено позицией: TLI2-сегмент строго правее последнего доставленного
-        // TLI1 (S−1) — первый сегмент нового TLI не ниже точки переключения.
-        // Точное «выше точки» (позиция switchWALLSN из .history) финализирует
-        // строгий гейт Task 3: tli1Max == S−1 + непрерывность WalChain.Check
-        // доказывают доставленный бездырный TLI2-хвост от самого S.
+        // усилено позицией: TLI2-именованный сегмент не ниже Next(последнего
+        // доставленного TLI1-именованного; после доставки смешанного объекта
+        // под именем родителя это Next(S)). Строгое «первый TLI2-именованный
+        // = Next(S)» ассертит гейт §3.3 п.4 (позиция S — из .history).
         await ExecAsync(_newMasterDsn,
             "INSERT INTO tli_switch_probe SELECT g, 'post-switch' FROM generate_series(11, 15) g", ct);
         await SwitchWalsAsync(_newMasterDsn, 3, ct);
