@@ -12,6 +12,7 @@ namespace PgWorker.IntegrationTests.Docker;
 // и socat (TCP-LISTEN:2376 → unix:docker.sock); DockerEngineFactory на
 // ssh://testuser@localhost:<mapped> — Ping/ListContainers через ForwardedPortLocal.
 // Fingerprint-pin: корректный pin — подключается; неверный — отказ host-key.
+[Collection(NonE2eCollection.Name)]
 public class SshTunnelEngineTests
 {
     private static SshTunnelOptions Options(string keyPem, string? fingerprint = null) => new()

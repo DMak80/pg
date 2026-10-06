@@ -4,7 +4,7 @@ using Xunit;
 namespace PgWorker.IntegrationTests.Etcd;
 
 // Координация на реальном etcd (задача 13, spec §4.3): клэймы, txn-compare, lease, snapshot.
-[Collection(EtcdCollection.Name)]
+[Collection(NonE2eCollection.Name)]
 public class EtcdCoordinationTests(EtcdFixture fixture)
 {
     private EtcdGateway Gateway => fixture.Gateway;

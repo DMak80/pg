@@ -9,7 +9,7 @@ namespace PgWorker.IntegrationTests.Api;
 
 // POST /api/clusters/{c}/backups/policy (t06, spec Ф4): валидация + put
 // policy-ключа формата канона; парсер t01 читает его без parseErrors.
-[Collection(PgApiCollection.Name)]
+[Collection(NonE2eCollection.Name)]
 public class BackupsPolicyApiTests(PgApiFixture fixture)
 {
     private HttpClient Client => fixture.Factory.CreateClient();

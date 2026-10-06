@@ -8,7 +8,7 @@ namespace PgWorker.IntegrationTests.Api;
 
 // POST /api/clusters/{c}/secrets/rotate (t02) + POST /api/ha/{scope}/nodes/{node}/recreate
 // (task etcd-via-worker-api): порт панельных RotateAppPasswordApiTests/RecreateNodeApiTests.
-[Collection(PgApiCollection.Name)]
+[Collection(NonE2eCollection.Name)]
 public class RecreateRotateApiTests(PgApiFixture fixture)
 {
     private HttpClient Client => fixture.Factory.CreateClient();

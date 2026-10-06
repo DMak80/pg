@@ -21,6 +21,7 @@ namespace PgWorker.IntegrationTests.Backups;
 // Fact своё etcd-окружение OwnEtcd (guid-имя pgw-ee-*, динамический порт,
 // own-only teardown с ассертом чистоты — docs/e2e-isolation.md) + фейки
 // docker-движка и S3 (паттерны BackupVerifyProcessTests/FakeBackupDeps).
+[Collection(NonE2eCollection.Name)]
 public class RestoreDrillProcessTests
 {
     // Окружение Fact'а (свой etcd); создаётся в начале каждого сценария.

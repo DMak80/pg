@@ -16,6 +16,7 @@ namespace PgWorker.IntegrationTests.Backups;
 // Сценарии: экспорт после TakeAsync, каждый слепок новой парой, ретенция,
 // транзиент → FAILED → доводка, верификация разворачиваемости (etcdctl
 // snapshot status), takeover.
+[Collection(NonE2eCollection.Name)]
 public class EtcdSnapshotSinkTests
 {
     // Прямой клиент-помощник для сида/чтения объектов (AWSSDK, не тестируемый код).

@@ -7,6 +7,7 @@ namespace PgWorker.IntegrationTests.Docker;
 
 // Драйвер на живом docker (задача 16, spec §11.1 docker-серия): create/start/stop/rm,
 // идемпотентность EnsureNode/RemoveNode/StopNode, BusyPorts. Гейт: PGW_TEST_DOCKER=1.
+[Collection(NonE2eCollection.Name)]
 public class DockerDriverTests
 {
     private const string AlpineImage = "alpine:3.20";

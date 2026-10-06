@@ -12,6 +12,7 @@ namespace PgWorker.IntegrationTests.Backups;
 // ассертом чистоты — docs/e2e-isolation.md §1/§3): посев одного теста не виден
 // другому. Сценарии: list/пагинация/отсутствие префикса (t03 spec Ф2),
 // ретенционные list/delete (t06), verify-листинг/GET history (t04 Ф2).
+[Collection(NonE2eCollection.Name)]
 public class BackupS3Tests
 {
     // Прямой клиент-помощник для сида объектов (AWSSDK, не тестируемый код).

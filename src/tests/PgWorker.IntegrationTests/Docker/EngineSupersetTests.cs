@@ -9,6 +9,7 @@ namespace PgWorker.IntegrationTests.Docker;
 // /images/create) и повтор create. Негативная форма: pull несуществующего
 // образа из локального registry завершается ошибкой — ассерт различает СТАДИЮ
 // по пути в DockerHttpException (голый 404 create дал бы /containers/create).
+[Collection(NonE2eCollection.Name)]
 public class EngineSupersetTests
 {
     private const string AlpineImage = "alpine:3.20";

@@ -20,6 +20,7 @@ namespace PgWorker.IntegrationTests.Backups;
 // NpgsqlXLogSource реализует ReadTimelineHistoryAsync через него; условный
 // fallback (docker-exec) НЕ нужен. TLI-переход в Ф2 не воспроизводится
 // (single-node) — путь закрыт юнитом WalReceiverCoreTests и E2E (AC5, promote).
+[Collection(NonE2eCollection.Name)]
 public class WalReceiverIntegrationTests
 {
     // Нагрузка: INSERT ~8 MiB + pg_switch_wal (superuser) — форсированное закрытие.
