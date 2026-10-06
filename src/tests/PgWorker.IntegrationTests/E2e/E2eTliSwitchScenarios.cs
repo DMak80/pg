@@ -11,6 +11,7 @@ using PgWorker.Etcd.Parsing;
 using PgWorker.IntegrationTests.Docker;
 using PgWorker.Provisioning.Sql;
 using Xunit;
+using Xunit.v3;
 using RestoreStatus = PgWorker.Etcd.Parsing.RestoreStatus;
 
 namespace PgWorker.IntegrationTests.E2e;
@@ -392,6 +393,47 @@ public sealed class TliSwitchContext : IAsyncLifetime
         }
 
         return true;
+    }
+
+    // Гейт мастера (t10) + DSN чтения: COMPLETED restore не гарантирует
+    // закрытия рестарт-окна postmaster — SQL-проба SELECT 1 до возврата DSN
+    // (эталон rs-dr; бюджет 120 с согласован с PatroniBootSec хоста).
+    public async Task<string> MasterReadyDsnAsync(CancellationToken ct)
+    {
+        var ready = await WaitPhaseAsync("master-ready", async () =>
+        {
+            try
+            {
+                var (host, port, _) = await MasterPgAsync(Cluster, "shard1", ct);
+                await ScalarAsync(AdminDsn(host, port), "SELECT 1", ct);
+                return true;
+            }
+            catch (NpgsqlException)
+            {
+                return false; // рестарт-окно — поллинг повторит
+            }
+        }, TimeSpan.FromSeconds(120), ct);
+        ready.Should().BeTrue("мастер обязан принять SQL до чтения данных (гейт t10): "
+            + await DumpDiagnosticsAsync(Cluster, "shard1"));
+        var (h, p, _) = await MasterPgAsync(Cluster, "shard1", ct);
+        return AdminDsn(h, p);
+    }
+
+    // Финальное чтение с ретраями (эталон rs-latest): Patroni доводит конфиг
+    // мастера после COMPLETED — рестарт рвёт соединения, переходное окно.
+    public async Task<string> ScalarRetryAsync(string dsn, string sql, CancellationToken ct)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await ScalarAsync(dsn, sql, ct);
+            }
+            catch (NpgsqlException) when (attempt < 5)
+            {
+                await Task.Delay(8000, ct);
+            }
+        }
     }
 
     // Шаги 4–5 (spec §3.2): post-switch на новом TLI; доставка .history +
@@ -974,33 +1016,176 @@ public sealed class TliSwitchContext : IAsyncLifetime
     }
 }
 
+// Порядок Fact'ов (инвариант spec §3.3): latest ОБЯЗАН идти первым — после
+// target_time-restore новый TLI-поток пишет с позиций T_cut (ниже after-cut
+// сегментов TLI2) и делает latest-валидацию по исходной цепочке невозможной.
+public sealed class TliSwitchFactOrderer : ITestCaseOrderer
+{
+    private static readonly string[] Order =
+    [
+        "Restore_LatestThroughTliSwitch_PicksUpWholeTail",
+        "Restore_TargetTimeThroughTliSwitch_StopsAtGoal",
+    ];
+
+    // Сигнатура xunit.v3 3.2.2: ограничение notnull + Xunit.Sdk.ITestCase;
+    // имя метода доступно напрямую — ITestCase наследует
+    // ITestCaseMetadata.TestMethodName (каст не нужен).
+    public IReadOnlyCollection<TTestCase> OrderTestCases<TTestCase>(
+        IReadOnlyCollection<TTestCase> tests)
+        where TTestCase : notnull, Xunit.Sdk.ITestCase
+        // явный список имён; неизвестные имена — в конец (стабильная сортировка)
+        => [.. tests.OrderBy(t =>
+        {
+            var idx = Array.IndexOf(Order, t.TestMethodName);
+            return idx < 0 ? int.MaxValue : idx;
+        })];
+}
+
 // Два Fact'а на ОДНОМ контуре класса (решение user-review): latest первым,
 // target_time вторым — детерминированный порядок задаёт orderer (Task 4,
 // инвариант §3.3). Падение подготовки → оба Fact'а красные ошибкой фикстуры.
+[TestCaseOrderer(typeof(TliSwitchFactOrderer))]
 public sealed class E2eTliSwitchScenarios(TliSwitchContext Ctx) : IClassFixture<TliSwitchContext>
 {
-    // AAA (Ф1-каркас): контур шагов 1–2 готов — окружение/provisioning DONE,
-    // COMPLETED-полный зафиксирован, pre-wal доставлены (цепочка от wal_start
-    // непрерывна). Тело расширяется фазами Ф2–Ф3 (задачи 2–4).
+    // AAA (AC2 — полный хвост через точку): контур фикстуры (полный на TLI1 +
+    // failover + гейт смешанности) → заявка latest по ЯВНОМУ OldBackupId →
+    // COMPLETED с restored_to_lsn; 18 строк = 5 pre (полный) + 5 pre-wal
+    // (TLI1-хвост в смешанном сегменте) + 5 post-switch (TLI2 после
+    // END_OF_RECOVERY) + 3 after-cut (хвост за целью PITR) — накат прошёл
+    // ВСЁ, включая хвост за целью; ноды RUNNING, dsn не изменился; wal-ключ
+    // заведён заново, полный переснят, wal-агент running (инвариант §3.5).
     [Fact]
     public async Task Restore_LatestThroughTliSwitch_PicksUpWholeTail()
     {
         DockerTrait.SkipIfUnavailable();
+        var ct = TestContext.Current.CancellationToken;
         try
         {
-            Ctx.OldBackupId.Should().NotBeNullOrEmpty(
-                "исходный COMPLETED-полный зафиксирован (шаг 2)");
-            Ctx.WalStartSegment.Should().NotBeNullOrEmpty();
-            Ctx.DsnBefore.Should().NotBeNullOrEmpty("dsn-эталон зафиксирован (шаг 1)");
+            // Act — заявка latest по исходному полному (ретраи ≤ 3 на гонки
+            // доставки; валидация идёт по «чистому» list-S3 исходной цепочки).
+            var done = await Ctx.RestoreWithRetryAsync(
+                Ctx.Cluster, "shard1", "latest", Ctx.OldBackupId, ct);
 
-            // Ф2-ассерты каркаса: failover состоялся, цель и after-cut зафиксированы
-            Ctx.Tli2.Should().BeGreaterThanOrEqualTo(2u, "failover открыл новый timeline");
-            Ctx.TCut.Should().BeAfter(DateTime.MinValue, "T_cut зафиксирован");
-            Ctx.AfterCutPos.Should().BeGreaterThan(0, "позиция after-cut зафиксирована");
+            // Assert 1 — COMPLETED с restored_to_lsn.
+            done["state"].GetString().Should().Be("COMPLETED");
+            done["restored_to_lsn"].GetString().Should().NotBeNullOrEmpty();
+
+            // Assert 2 — полный хвост через точку (гейт мастера t10 + ретраи
+            // чтения: переходное окно рестарта postmaster).
+            var dsn = await Ctx.MasterReadyDsnAsync(ct);
+            var rows = await Ctx.ScalarRetryAsync(dsn,
+                "SELECT count(*) || '|' || count(*) FILTER (WHERE note = 'pre-wal')" +
+                " || '|' || count(*) FILTER (WHERE note = 'post-switch')" +
+                " || '|' || count(*) FILTER (WHERE note = 'after-cut')" +
+                " FROM tli_switch_probe", ct);
+            var parts = rows.Split('|');
+            parts[0].Should().Be("18",
+                "все контрольные строки восстановлены, включая after-cut (хвост за целью PITR)");
+            parts[1].Should().Be("5",
+                "TLI1-хвост после полного накатился через смешанный сегмент (байты TLI1 в префиксе S)");
+            parts[2].Should().Be("5",
+                "данные TLI2 после END_OF_RECOVERY накатились");
+            parts[3].Should().Be("3",
+                "after-cut восстановлены — restore дошёл до конца цепочки TLI2");
+
+            // Assert 3 — контур: ноды RUNNING, dsn-ключ не изменился
+            // (эталон DsnBefore фиксации шага 1; образец rs-latest).
+            var nodeA = await Ctx.GetOrNullAsync(
+                $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1a/state");
+            var nodeB = await Ctx.GetOrNullAsync(
+                $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1b/state");
+            nodeA!.Value.Should().Be("RUNNING");
+            nodeB!.Value.Should().Be("RUNNING");
+            var dsnAfter = await Ctx.GetOrNullAsync(
+                $"/clusters/{Ctx.Cluster}/shards/shard1/dsn");
+            dsnAfter!.Value.Should().Be(Ctx.DsnBefore, "portalloc/dsn restore не трогает (AC2)");
+
+            // Assert 4 (инвариант §3.5 после restore) — wal-ключ сброшен и
+            // заведён заново (ACTIVE), новый COMPLETED-полный ≠ OldBackupId,
+            // wal-агент running (rs-latest-паттерн AC4, ≤ 300 с).
+            var reinited = await Ctx.WaitPhaseAsync("wal-reinit", async () =>
+            {
+                var walKv = await Ctx.GetOrNullAsync(
+                    $"/pgworker/backups/{Ctx.Cluster}/shard1/wal");
+                if (walKv is null || !walKv.Value.Contains("ACTIVE"))
+                    return false;
+                var fulls = await Ctx.FullKeysAsync(Ctx.Cluster, "shard1");
+                if (!fulls.Any(f => f.Value.Contains("COMPLETED")
+                        && f.Key.Split('/').Last() != Ctx.OldBackupId))
+                    return false;
+                var agents = await Ctx.Fx.RunDockerAsync(
+                    ["ps", "--format", "{{.Names}}", "--filter",
+                        $"name=pgw-backup-wal-{Ctx.Cluster}-shard1"], ct);
+                return agents.Length > 0;
+            }, TimeSpan.FromSeconds(300), ct);
+            reinited.Should().BeTrue("инвариант после restore (wal-reinit): "
+                + await Ctx.DumpDiagnosticsAsync(Ctx.Cluster, "shard1"));
+
+            // Assert 5 — фиксация исхода: гейт skip'а Fact 2.
+            Ctx.LatestRestoreSucceeded = true;
         }
         catch
         {
             Ctx.MarkFailed(); // контейнеры остаются для разбора (e2e-launch)
+            throw;
+        }
+    }
+
+    // AAA (AC3 — остановка в цели): контур после Fact 1 (latest прошёл,
+    // TLI3-хвост выше конца TLI2) → заявка time:T_cut по ТОМУ ЖЕ OldBackupId
+    // (явный backup_id обязателен: новейший COMPLETED — уже TLI3-полный) →
+    // COMPLETED; 15 строк = pre + pre-wal + post-switch, after-cut = 0 —
+    // цель ПОСЛЕ точки переключения соблюдена; вместе с Fact 1 (18 строк на
+    // той же цепочке) — демонстрация PITR через TLI-границу. Ноды RUNNING.
+    [Fact]
+    public async Task Restore_TargetTimeThroughTliSwitch_StopsAtGoal()
+    {
+        DockerTrait.SkipIfUnavailable();
+        // Гейт (spec §3.5): Fact 1 упал → повторная заявка на сломанном
+        // контуре — каскадный красный без новой информации; телеметрия
+        // первой заявки уже собрана.
+        if (!Ctx.LatestRestoreSucceeded)
+            Assert.Skip("Fact 1 (latest) упал — контур для target_time недостоверен, разбор по телеметрии Fact 1");
+        var ct = TestContext.Current.CancellationToken;
+        try
+        {
+            // Act — заявка PITR на T_cut по СТАРОМУ полному (валидация от
+            // wal_start старого полного проходит: TLI3-хвост выше конца TLI2,
+            // переход TLI2→TLI3 легитимен; recovery остановится на T_cut).
+            var done = await Ctx.RestoreWithRetryAsync(Ctx.Cluster, "shard1",
+                $"time:{Ctx.TCut:yyyy-MM-ddTHH:mm:ssZ}", Ctx.OldBackupId, ct);
+
+            // Assert 1 — COMPLETED; LSN остановки не дальше доставки after-cut.
+            done["state"].GetString().Should().Be("COMPLETED");
+            var lsn = done["restored_to_lsn"].GetString();
+            lsn.Should().NotBeNullOrEmpty();
+            var restoredSeg = PgWorker.Backups.WalFileName.FromLsn(0, lsn!);
+            var restoredPos = (long)restoredSeg.Log * 256 + restoredSeg.Seg;
+            restoredPos.Should().BeLessThanOrEqualTo(Ctx.AfterCutPos,
+                "цель раньше конца цепочки — recovery не уходил дальше after-cut");
+
+            // Assert 2 — остановка в цели: 15 строк, after-cut нет.
+            var dsn = await Ctx.MasterReadyDsnAsync(ct);
+            var rows = await Ctx.ScalarRetryAsync(dsn,
+                "SELECT count(*) || '|' || count(*) FILTER (WHERE note = 'after-cut')" +
+                " FROM tli_switch_probe", ct);
+            var parts = rows.Split('|');
+            parts[0].Should().Be("15",
+                "pre + pre-wal + post-switch восстановлены — обе стороны TLI-границы через смешанный сегмент");
+            parts[1].Should().Be("0", "коммиты после T_cut не накатились — PITR-остановка в цели");
+
+            // Assert 3 — контур: ноды RUNNING (rejoin второй заявки — тот же
+            // RestoreProcess), dsn жив.
+            var nodeA = await Ctx.GetOrNullAsync(
+                $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1a/state");
+            var nodeB = await Ctx.GetOrNullAsync(
+                $"/clusters/{Ctx.Cluster}/shards/shard1/nodes/shard1b/state");
+            nodeA!.Value.Should().Be("RUNNING");
+            nodeB!.Value.Should().Be("RUNNING");
+        }
+        catch
+        {
+            Ctx.MarkFailed();
             throw;
         }
     }
