@@ -7,6 +7,7 @@ using Shared.Metrics;
 using ValkeyWorker.App.Api;
 using ValkeyWorker.App.Api.Operations;
 using Shared.Core.HealthChecks;
+using Shared.Core.Hosting;
 using ValkeyWorker.App.HealthChecks;
 using ValkeyWorker.App.Loops;
 using ValkeyWorker.Docker.Drivers;
@@ -297,6 +298,19 @@ builder.Services.AddHealthChecks()
     .AddCheck<HealthCheckAbstract<ReconcileLoop>>("reconcile-loop")
     .AddCheck<HealthCheckAbstract<KeepaliveLoop>>("keepalive-loop")
     .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop");
+
+// Watchdog зависших циклов (arch/21 §6): staleness тиков всех циклов → журнал +
+// метрика + graceful self-stop (путь POST /api/restart); Enabled=false (секция
+// ValkeyWorker:Loops:Watchdog) — компонент не регистрируется.
+builder.Services.AddSingleton<ValkeyWorkerLoopsVitality>();
+builder.Services.AddSingleton<Shared.Core.Hosting.ILoopsVitality>(
+    sp => sp.GetRequiredService<ValkeyWorkerLoopsVitality>());
+var loopsWatchdog = new Shared.Core.Hosting.WatchdogOptions();
+builder.Configuration.GetSection("ValkeyWorker:Loops:Watchdog").Bind(loopsWatchdog);
+builder.Services.AddLoopWatchdog(
+    loopsWatchdog,
+    (sp, loop) => sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>()
+        .WatchdogRestart(loop));
 
 var app = builder.Build();
 if (app.Services.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)
