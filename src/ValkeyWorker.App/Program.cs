@@ -28,6 +28,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<ValkeyWorkerOptions>(builder.Configuration.GetSection("ValkeyWorker"));
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<HealthState>();
+// Прогресс-отметки долгих фаз reconcile в глубину процессов (provisioning).
+builder.Services.AddSingleton<Shared.Core.Hosting.ILoopProgress>(sp => sp.GetRequiredService<HealthState>());
 
 // Метрики (arch/18 §2.2): /metrics на том же mTLS-Kestrel-порту, что /healthz —
 // scrape ходит клиентским сертом per-install пакета. Коллектор доменных метрик
@@ -197,7 +199,8 @@ builder.Services.AddSingleton(sp => new ProvisioningProcess(
     sp.GetRequiredService<NodeTlsProvisioner>(),
     sp.GetRequiredService<IValkeyConnection>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value),
-    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
+    sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 builder.Services.AddSingleton(sp => new DeprovisioningProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints,

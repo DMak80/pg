@@ -93,6 +93,8 @@ internal sealed class ReconcileLoop(
         if (endpoints.Length == 0)
             return Result.Failed(new ApplicationException("ValkeyWorker:Etcd:Endpoints не заданы"));
 
+        health.MarkReconcileActivity(); // heartbeat: старт итерации (долгие фазы отмечаются глубже)
+
         var claimsHeld = await processes.TickAsync(ct);
 
         health.MarkEtcdOk();
