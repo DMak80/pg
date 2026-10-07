@@ -517,7 +517,9 @@ D→C транзиентно недоверяют NEW-серту: окно = с�
 - **Отказ etcd**: контроль-плейн заморожен; живые Valkey-ноды от него не
   зависят (клиенты работают по последнему снапшоту дискавери — fail-open).
 - **Watchdog зависших циклов**: внутренний компонент `LoopWatchdog`
-  (Shared.Core, `BackgroundService`) следит за возрастом тиков циклов
+  (Shared.Core, `BackgroundService`) следит за возрастом активности (тик или
+  прогресс-отметка; долгие фазы — создание контейнеров нод, PING-цикл
+  ожидания готовности (бюджет `NodeBootSec`)) циклов
   (reconcile/keepalive/snapshot) по отметкам `HealthState`; staleness
   сверх порога (`Loops:Watchdog:Multiplier` × порог healthz loops-alive)
   → журнал (critical) + метрика `worker_watchdog_restarts_total{loop}` +

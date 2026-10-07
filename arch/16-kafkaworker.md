@@ -787,7 +787,9 @@ t03; панель обновляется тем же релизом). После
   §2.1; отставание реплик видно метрикой USR, §7). Подсистема бэкапов
   [19-backups.md](19-backups.md) покрывает только PG-шарды.
 - **Watchdog зависших циклов**: внутренний компонент `LoopWatchdog`
-  (Shared.Core, `BackgroundService`) следит за возрастом тиков циклов
+  (Shared.Core, `BackgroundService`) следит за возрастом активности (тик или
+  прогресс-отметка; глубоких долгих фаз у KafkaWorker нет — ожидания
+  расползаются по тикам) циклов
   (reconcile/keepalive/snapshot) по отметкам `HealthState`; staleness
   сверх порога (`Loops:Watchdog:Multiplier` × порог healthz loops-alive)
   → журнал (critical) + метрика `worker_watchdog_restarts_total{loop}` +

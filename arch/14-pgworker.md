@@ -1301,15 +1301,19 @@ MR3 journal op=repair (сколько/какие статусы диспатче
   недоступный хост → нода UNREACHABLE → сценарии надзора; новые ноды —
   только на живые хосты.
 - **Watchdog зависших циклов**: внутренний компонент `LoopWatchdog`
-  (Shared.Core, `BackgroundService`) следит за возрастом тиков всех фоновых
-  циклов (reconcile/keepalive/snapshot/orphan-sweep) по отметкам `HealthState`;
+  (Shared.Core, `BackgroundService`) следит за возрастом **активности** всех
+  фоновых циклов (reconcile/keepalive/snapshot/orphan-sweep) по отметкам
+  `HealthState` (активность = тик или прогресс-отметка; долгие фазы итерации —
+  создание контейнеров нод, ожидание готовности нод, поллинг-циклы переездов —
+  отмечают живость);
   порог — множитель `Loops:Watchdog:Multiplier` (дефолт 2) к порогу healthz
   loops-alive (формулы — общий хелпер `LoopStaleness` Shared.Core: healthz и
   watchdog читают одну формулу и не разъезжаются). Staleness сверх порога →
   запись в журнал (critical) + метрика `worker_watchdog_restarts_total{loop}` +
   graceful `StopApplication` (тот же путь, что `POST /api/restart`): контейнер
   поднимает docker-политика, lease гаснут ≤15 с, клэймы мигрируют второму
-  инстансу (takeover). Отметка `null` («цикл ещё не тикал») не firing, пока
+  инстансу (takeover). Отметка `null` («цикл ещё не проявлял активности») не
+  firing, пока
   возраст watchdog с его запуска меньше 2×порога цикла; дальше — рестарт
   (цикл не стартовал или завис при старте). Компонент без сетевых вызовов и
   без etcd; за собой не следит. Граница: «завис весь процесс» (healthz не
