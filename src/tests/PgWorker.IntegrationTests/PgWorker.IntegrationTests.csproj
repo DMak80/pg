@@ -2,7 +2,7 @@
 
     <!-- Канон параллелизма E2E (t24, решение гейта конфигурации Фазы 6):
          единственный источник потолка — xunit.runner.json
-         (maxParallelThreads=3; xunit.v3 читает конфиг ТОЛЬКО из output —
+         (maxParallelThreads=5 — канон приёмки t24 фазы 4; xunit.v3 читает конфиг ТОЛЬКО из output —
          копирование обязательно). Не-E2E классы — в последовательной
          [Collection]-группе NonE2eCollection (DisableParallelization=true):
          параллельная конкуренция для них не норма (эмпирика, журнал задачи).
