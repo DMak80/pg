@@ -209,12 +209,13 @@ public class E2eRestoreScenarios
             var t1Archived = await WalArchivedAsync(cluster, "shard1", ws + 5, ct);
             t1Archived.Should().BeTrue("сегменты с T1 обязаны попасть в архив: "
                 + await DumpDiagnosticsAsync(cluster, "shard1"));
-            var tCut = DateTime.UtcNow;
-            // Страховка от гранулярности recovery_target_time (секунда) и
-            // расхождения часов хост/нода: tCut обязан строго предшествовать
-            // DROP-сегменту — 5 с (решение пользователя по H3-транзиенту №3/№3п;
-            // 2 с оказался недостаточным при параллельном N=3/5).
+            // Пауза ДО фиксации tCut выносит коммиты T1 из секунды фиксации:
+            // target-time округляется ВНИЗ до секунды — коммит T1 в той же
+            // секунде, что tCut, терялся при recovery (разбор 9f16793; пауза
+            // ПОСЛЕ tCut на target↔T1 не влияла). Попутно tCut фиксируется
+            // позже ⇒ дальше от DROP — DROP-защита не слабеет.
             await Task.Delay(5000, ct);
+            var tCut = DateTime.UtcNow;
 
             // Arrange 4 — порча: DROP уходит в последующие (заархивированные) сегменты
             await ExecAsync(adminDsn, "DROP TABLE pitr_probe", ct);
