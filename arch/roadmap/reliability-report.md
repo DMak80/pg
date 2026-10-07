@@ -58,8 +58,7 @@ cleaning при любом исходе (t02-restore-drill, arch/19 §3.6).
 (t08-etcd-snapshot-export).
 
 Открытые разрывы: бэкапы не шифрованы и в единственном хранилище
-(`t01`, `t03`); сокращение окна пересъёма — инкрементальные полные
-(`t18`) и автозакрытие потерянных слотов (`t19`).
+(`t01`, `t03`); автозакрытие потерянных слотов (`t19`).
 
 ### R — быстрая самовосстанавливаемость
 
@@ -122,7 +121,6 @@ healthz с секциями. Слабое место — «молчание»: �
 | `t15-prometheus-file-sd` | file_sd для скрейпа реальных нод | P3 | N |
 | `t16-cert-expiry-monitoring` | мониторинг сроков сертификатов | P3 | N |
 | `t17-rpo-rto-dashboard` | RPO/RTO-числа оператору | P3 | N |
-| `t18-incremental-backups` | инкрементальные полные (PG17+) | P4 | D |
 | `t19-slot-auto-recreate` | автозакрытие потерянных слотов | P4 | D, R |
 | `t20-kfw-vwk-takeover-e2e` | host-kill E2E для KafkaWorker/ValkeyWorker | P4 | R |
 | `t21-host-failure-scenarios` | сценарии отказа docker-хоста/DC | P4 | R |

@@ -18,10 +18,13 @@ public class RetentionPlannerTests
 
     private static readonly BackupPolicy Policy = new(7, 4, 6, 86400, VerifyOnCreate: false);
 
-    // COMPLETED-полный с заданным стартом (остальные поля — нейтральные).
-    private static FullBackupState Full(string id, DateTimeOffset started, BackupVerify? verify = null)
+    // COMPLETED-полный с заданным стартом (остальные поля — нейтральные);
+    // walStart — позиция wal_start_segment, verify — статус проверки.
+    private static FullBackupState Full(
+            string id, DateTimeOffset started,
+            string walStart = "000000010000000000000001", BackupVerify? verify = null)
         => new(id, FullBackupStatus.Completed, "n1", BackupSourceRole.Replica,
-            Unix(started), Unix(started) + 60, "000000010000000000000001", 1024, null, verify);
+            Unix(started), Unix(started) + 60, walStart, 1024, null, verify);
 
     // Проверка Keep/Delete по id в фиксированный момент Now.
     private static (IReadOnlySet<string> Keep, IReadOnlyList<string> Delete) Select(
@@ -145,9 +148,10 @@ public class RetentionPlannerTests
 
     // Годовая граница ISO-недель (ревью Ф4 №1, итерация 2 — weeks=2
     // дискриминирует баг календарного года): 2024-12-30 (пн) и 2025-01-05 (вс)
-    // — ОДНА ISO-неделя 1 ISO-2025. Корректная реализация: одна группа →
-    // ОДИН слот недель → Delete = [2024-12-30]. Багованная (d.Year): две
-    // группы занимают оба слота weeks=2 → Delete = [] — ассерт падает.
+    // — ОДНА ISO-неделя 1 ISO-2025 (предыдущая от now=W2 ISO-2025).
+    // Корректная реализация: одна группа → один слот weeks; представитель
+    // 05.01 удержан, Delete = [2024-12-30]. Багованная (d.Year): две группы
+    // занимают оба слота weeks=2 → Delete = [] — ассерт падает.
     [Fact]
     public void Годовая_граница_ISO_недели()
     {
@@ -538,5 +542,176 @@ public class RetentionPlannerTests
 
         // Assert — вердикт одинаков (n=30 и n=20 дают одинаково capped-окно)
         before.Should().Be(after);
+    }
+
+    // ---- t18: точность «предыдущих периодов» GFS (AC1) ----
+
+    // AC1: дефолт 1/1/1 на суточном ряду — ровно ТРИ позиции: последний +
+    // последний полный предыдущей ISO-недели + последний полный предыдущего
+    // календарного месяца; промежуточные суточные — кандидаты удаления.
+    // now = ср 2026-09-09 (ISO-неделя 37: пн 07.09); предыдущая неделя W36 =
+    // 31.08–06.09; предыдущий месяц — август.
+    [Fact]
+    public void Дефолт_1_1_1_ровно_три_позиции()
+    {
+        // Arrange — суточный ряд: 08.09 (последний, W37), 07.09 (W37),
+        // 06.09 (вс — последний W36), 04.09 (пт W36), 01.09 (вт W36),
+        // 31.08 (пн W36 — последний августа), 20.08, 15.07 (старше месячного окна)
+        var policy = new BackupPolicy(1, 1, 1, 86400, false);
+        FullBackupState[] fulls =
+        [
+            Full("last", new DateTimeOffset(2026, 9, 8, 10, 0, 0, TimeSpan.Zero)),
+            Full("w37-mid", new DateTimeOffset(2026, 9, 7, 10, 0, 0, TimeSpan.Zero)),
+            Full("w36-last", new DateTimeOffset(2026, 9, 6, 10, 0, 0, TimeSpan.Zero)),
+            Full("w36-fri", new DateTimeOffset(2026, 9, 4, 10, 0, 0, TimeSpan.Zero)),
+            Full("w36-tue", new DateTimeOffset(2026, 9, 1, 10, 0, 0, TimeSpan.Zero)),
+            Full("aug-last", new DateTimeOffset(2026, 8, 31, 10, 0, 0, TimeSpan.Zero)),
+            Full("aug-mid", new DateTimeOffset(2026, 8, 20, 10, 0, 0, TimeSpan.Zero)),
+            Full("jul", new DateTimeOffset(2026, 7, 15, 10, 0, 0, TimeSpan.Zero)),
+        ];
+
+        // Act — отбор
+        var (keep, delete) = Select(policy, fulls);
+
+        // Assert — три позиции; всё промежуточное (вкл. текущую неделю вне
+        // дневного окна и середину августа) — Delete
+        keep.Should().BeEquivalentTo(["last", "w36-last", "aug-last"]);
+        delete.Should().BeEquivalentTo(["w37-mid", "w36-fri", "w36-tue", "aug-mid", "jul"]);
+    }
+
+    // Дискриминация бага «слот на текущем периоде»: недельный слот НЕ уходит на
+    // текущую ISO-неделю — вчерашний полный (W37) удерживается только guard
+    // последнего, недельная точка = последний W36 (канон §4 п.1 «предыдущих»).
+    [Fact]
+    public void Недельный_слот_не_уходит_на_текущую_неделю()
+    {
+        // Arrange — days=1/weeks=1/months=0; вчера 08.09 (W37) и 06.09 (W36)
+        var policy = new BackupPolicy(1, 1, 0, 86400, false);
+        FullBackupState[] fulls =
+        [
+            Full("yesterday", new DateTimeOffset(2026, 9, 8, 10, 0, 0, TimeSpan.Zero)),
+            Full("w36-last", new DateTimeOffset(2026, 9, 6, 10, 0, 0, TimeSpan.Zero)),
+        ];
+
+        // Act — отбор
+        var (keep, delete) = Select(policy, fulls);
+
+        // Assert — недельная точка W36 удержана (багованный отбор брал W37 и
+        // ставил w36-last в Delete)
+        keep.Should().BeEquivalentTo(["yesterday", "w36-last"]);
+        delete.Should().BeEmpty();
+    }
+
+    // Дискриминация бага «слот на текущем периоде»: месячный слот НЕ уходит на
+    // текущий месяц — точка = последний ПРЕДЫДУЩЕГО месяца.
+    [Fact]
+    public void Месячный_слот_не_уходит_на_текущий_месяц()
+    {
+        // Arrange — days=1/weeks=0/months=1; 01.09 (текущий месяц, самый свежий)
+        // и 31.08 (последний августа)
+        var policy = new BackupPolicy(1, 0, 1, 86400, false);
+        FullBackupState[] fulls =
+        [
+            Full("sep01", new DateTimeOffset(2026, 9, 1, 10, 0, 0, TimeSpan.Zero)),
+            Full("aug31", new DateTimeOffset(2026, 8, 31, 10, 0, 0, TimeSpan.Zero)),
+        ];
+
+        // Act — отбор
+        var (keep, delete) = Select(policy, fulls);
+
+        // Assert — месячная точка августа удержана; 01.09 жив только guard-ом
+        // последнего (багованный отбор тратил слот на сентябрь → aug31 удалялся)
+        keep.Should().BeEquivalentTo(["sep01", "aug31"]);
+        delete.Should().BeEmpty();
+    }
+
+    // ---- t18: LatestVerifiedWalStart — точка отсчёта cutoff/chain_start (AC2/AC3) ----
+
+    // AC2: точка = wal_start новейшего (по started_unix) OK-полного — недельная/
+    // месячная (старые OK) на неё НЕ влияют.
+    [Fact]
+    public void LatestVerifiedWalStart_новейший_OK_полный()
+    {
+        // Arrange — месячный OK ..01, недельный OK ..02, последний OK ..08
+        var fulls = new[]
+        {
+            Full("m", Now.AddMonths(-1), "000000010000000000000001",
+                new BackupVerify(BackupVerifyStatus.Ok, 1)),
+            Full("w", Now.AddDays(-8), "000000010000000000000002",
+                new BackupVerify(BackupVerifyStatus.Ok, 1)),
+            Full("last", Now.AddDays(-1), "000000010000000000000008",
+                new BackupVerify(BackupVerifyStatus.Ok, 1)),
+        };
+
+        // Act — выбор точки
+        var start = RetentionPlanner.LatestVerifiedWalStart(fulls);
+
+        // Assert — wal_start последнего OK-полного
+        start!.Value.Name.Should().Be("000000010000000000000008");
+    }
+
+    // AC3: verify не OK (PENDING/FAILED/отсутствует) — полные не кандидаты;
+    // ни одного OK → null (прунинг no-op).
+    [Fact]
+    public void LatestVerifiedWalStart_без_OK_полных_null()
+    {
+        // Arrange — последний PENDING, старший FAILED, третий без verify вовсе
+        var fulls = new[]
+        {
+            Full("pending", Now.AddDays(-1), "000000010000000000000008",
+                new BackupVerify(BackupVerifyStatus.Pending, null)),
+            Full("failed", Now.AddDays(-2), "000000010000000000000005",
+                new BackupVerify(BackupVerifyStatus.Failed, 1)),
+            Full("noverify", Now.AddDays(-3), "000000010000000000000003"),
+        };
+
+        // Act — выбор точки
+        var start = RetentionPlanner.LatestVerifiedWalStart(fulls);
+
+        // Assert — безопасной точки нет
+        start.Should().BeNull();
+    }
+
+    // AC3-гвард: новейший по времени полный не прошёл verify (PENDING/FAILED,
+    // в т.ч. перепроверка OK→FAILED) — точка держится на предыдущем OK.
+    [Fact]
+    public void LatestVerifiedWalStart_непроверенный_новый_держит_предыдущий_OK()
+    {
+        // Arrange — OK недельной давности ..03 и вчерашний FAILED ..08
+        var fulls = new[]
+        {
+            Full("ok-old", Now.AddDays(-8), "000000010000000000000003",
+                new BackupVerify(BackupVerifyStatus.Ok, 1)),
+            Full("failed-new", Now.AddDays(-1), "000000010000000000000008",
+                new BackupVerify(BackupVerifyStatus.Failed, 1)),
+        };
+
+        // Act — выбор точки
+        var start = RetentionPlanner.LatestVerifiedWalStart(fulls);
+
+        // Assert — cutoff на предыдущем OK (WAL ниже ..03 уже срезан ранее —
+        // понижение точки ничего не восстановит и запрещено гвардом)
+        start!.Value.Name.Should().Be("000000010000000000000003");
+    }
+
+    // Дефективный wal_start у новейшего OK (ручная правка ключа) — пропускается,
+    // берётся следующий OK ниже (defensiveness парсера, без исключений).
+    [Fact]
+    public void LatestVerifiedWalStart_битый_wal_start_пропущен()
+    {
+        // Arrange — новейший OK с мусорным wal_start, старший OK валиден
+        var fulls = new[]
+        {
+            Full("broken", Now.AddDays(-1), "not-a-wal-name",
+                new BackupVerify(BackupVerifyStatus.Ok, 1)),
+            Full("ok", Now.AddDays(-2), "000000010000000000000005",
+                new BackupVerify(BackupVerifyStatus.Ok, 1)),
+        };
+
+        // Act — выбор точки
+        var start = RetentionPlanner.LatestVerifiedWalStart(fulls);
+
+        // Assert — взят валидный OK ниже
+        start!.Value.Name.Should().Be("000000010000000000000005");
     }
 }

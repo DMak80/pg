@@ -486,8 +486,9 @@ public sealed class WalStreamProcess(
 
     // (6–7) Контроль (spec §3.2 п.6–8; t07 arch/19 §3): при BROKEN-ключе — КАЖДЫЙ
     // тик (без VerifyIntervalSec-расчёта: скорость заживления; list дырного
-    // префикса дёшев); иначе по расписанию. list S3 → chain_start (ratchet:
-    // min wal_start COMPLETED-полных ≥ записанной границы ?? записанная ?? min-объект)
+    // префикса дёшев); иначе по расписанию. list S3 → chain_start (t18:
+    // wal_start новейшего verify-OK COMPLETED-полного, ratchet — не понижается
+    // ?? min-объект)
     // → CheckChain → дыра: BROKEN + ОСТАНОВ агента (в т.ч. без прошлого ключа —
     // AC4-тотальность); факты прогресса — ТОЛЬКО из наблюдений: last_uploaded из
     // S3-объектов либо прошлого ключа, никогда от now() («факт над записью»,
@@ -517,15 +518,15 @@ public sealed class WalStreamProcess(
             throw new ApplicationException($"list S3 {cluster}/{shard}/wal: {listed.Error!.Message}");
         var objects = listed.Value;
 
-        // chain_start (п.8; t07 ratchet): min wal_start COMPLETED-полных со стартом
-        // ≥ записанного chain_start (полные ниже границы разрыва игнорируются —
-        // их цепь может быть цела, дыра выше) ?? записанное ?? min-объект.
+        // chain_start (t18, arch/19 §3): wal_start новейшего (по started_unix)
+        // COMPLETED-полного с verify.state=OK — ОДНА точка с cutoff-ретенции
+        // (§4 п.5; расщепление точек давало бы ложный BROKEN после среза WAL);
+        // ratchet — не понижается ниже записанной границы; нет OK-полного →
+        // записанная ?? min-объект потока (как раньше при полных нет).
         var ratchet = wal is { ChainStartSegment.Length: > 0 }
             ? WalFileName.TryParse(wal.ChainStartSegment) : null;
         WalFileName? fromFull = WalChain.RatchetedStart(ratchet,
-            shardBackups?.Full
-                .Where(f => f.State == FullBackupStatus.Completed)
-                .Select(f => f.WalStartSegment) ?? []);
+            RetentionPlanner.LatestVerifiedWalStart(shardBackups?.Full ?? []));
         WalFileName? minObject = objects
             .Select(o => WalFileName.TryParse(o.Name))
             .Where(s => s is not null)

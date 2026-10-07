@@ -56,12 +56,12 @@ public static partial class RetentionPlanner
         foreach (var f in dailyWindow)
             keep.Add(f.Id);
 
-        // Недельные: полные вне дневного окна группируются по ISO-неделе UTC;
-        // из каждой из retention.weeks свежейших групп — последний (max started_unix).
-        AddCalendarPoint(completed, dailyWindow, keep, policy.RetentionWeeks, ISOWeekYearOf);
+        // Недельные: полные ВНЕ ТЕКУЩЕЙ ISO-недели группируются по ISO-неделе UTC;
+        // из каждой из retention.weeks предыдущих свежайших групп — последний.
+        AddCalendarPoint(completed, keep, policy.RetentionWeeks, ISOWeekYearOf, now);
 
         // Месячные: аналогично по календарному месяцу UTC.
-        AddCalendarPoint(completed, dailyWindow, keep, policy.RetentionMonths, MonthOf);
+        AddCalendarPoint(completed, keep, policy.RetentionMonths, MonthOf, now);
 
         var freshest = completed.MaxBy(f => f.StartedUnix);
         if (freshest is not null)
@@ -85,6 +85,24 @@ public static partial class RetentionPlanner
 
         return new RetentionSelection(keep, delete);
     }
+
+    /// <summary>Точка отсчёта WAL-ретенции и контроля цепочки (t18, arch/19
+    /// §4 п.5/§3): wal_start новейшего (по started_unix) COMPLETED-полного с
+    /// verify.state=OK — ОДНА точка для cutoff-чистки WAL и chain_start.
+    /// verify-OK-полного нет (PENDING/FAILED/verify отсутствует) → null:
+    /// безопасной точки привязки нет, прунинг WAL запрещён. Чистая функция.
+    /// Дефективный wal_start кандидата (ранний FAILED-хвост/ручная правка)
+    /// пропускается — берётся следующий OK ниже.</summary>
+    public static WalFileName? LatestVerifiedWalStart(IReadOnlyList<FullBackupState> fulls)
+        => fulls
+            .Where(f => f.State == FullBackupStatus.Completed
+                        && f.Verify is { State: BackupVerifyStatus.Ok })
+            .Select(f => (f.StartedUnix, Start: WalFileName.TryParse(f.WalStartSegment ?? "")))
+            .Where(x => x.Start is not null)
+            .OrderByDescending(x => x.StartedUnix)
+            .Select(x => x.Start)
+            .Cast<WalFileName?>()
+            .FirstOrDefault();
 
     /// <summary>План чистки WAL (spec §3.1): сегменты строго ниже cutoff (TLI
     /// ниже ИЛИ тот же TLI с позицией log·256+seg ниже cutoff) и `.history`
@@ -160,26 +178,30 @@ public static partial class RetentionPlanner
         return (d.Year, d.Month);
     }
 
-    // Универсальная гранула (недели/месяцы): вне дневного окна → группы по
-    // календарному периоду UTC → N свежайших групп (сравнение (Year, Num)
-    // лексикографически) → из каждой последний COMPLETED (max started_unix).
-    // counter = 0 → гранула исключена (spec AC1: weeks=0/months=0).
+    // Универсальная гранула (недели/месяцы): кандидаты — полные ПЕРИОДА
+    // СТРОГО РАНЬШЕ текущего (t18, arch/19 §4 п.1: счётчики считают предыдущие
+    // календарные периоды; полные текущей недели/месяца вне дневного окна
+    // точками не удерживаются — текущий период держит только дневная гранула)
+    // → группы по календарному периоду UTC → N свежайших групп (сравнение
+    // (Year, Num) лексикографически) → из каждой последний COMPLETED
+    // (max started_unix). counter = 0 → гранула исключена.
     private static void AddCalendarPoint<TGroup>(
-        List<FullBackupState> completed, List<FullBackupState> dailyWindow,
-        HashSet<string> keep, int counter,
-        Func<FullBackupState, TGroup> groupOf)
+        List<FullBackupState> completed, HashSet<string> keep, int counter,
+        Func<FullBackupState, TGroup> groupOf, DateTime now)
         where TGroup : IComparable<TGroup>
     {
         if (counter <= 0)
             return;
 
-        var dailyIds = dailyWindow.Select(f => f.Id).ToHashSet();
-        var outsideDaily = completed
-            .Where(f => !dailyIds.Contains(f.Id))
+        var current = groupOf(new FullBackupState(
+            "now", FullBackupStatus.Completed, "n1", BackupSourceRole.Replica,
+            new DateTimeOffset(now).ToUnixTimeSeconds(), null, null, null, null, null));
+        var previous = completed
+            .Where(f => groupOf(f).CompareTo(current) < 0)
             .GroupBy(groupOf)
             .OrderByDescending(g => g.Key)
             .Take(counter);
-        foreach (var group in outsideDaily)
+        foreach (var group in previous)
         {
             var last = group.MaxBy(f => f.StartedUnix); // ПОСЛЕДНИЙ периода (AC1)
             if (last is not null)

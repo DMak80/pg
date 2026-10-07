@@ -87,10 +87,14 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         WalLagMaxSegments: lag,
         WalStaleSec: stale);
 
-    // Полный COMPLETED с wal_start_segment (для chain_start от полного).
-    private static ShardBackups FullShard(string walStart, WalStreamState? wal = null) => new(
+    // Полный COMPLETED с wal_start_segment (для chain_start от полного);
+    // t18: якорь chain_start — только verify-OK полные, поэтому по умолчанию
+    // полный валиден (Ok), не-OK задаётся явно параметром.
+    private static ShardBackups FullShard(
+            string walStart, WalStreamState? wal = null, BackupVerify? verify = null) => new(
         [new FullBackupState("20260910120000Z", FullBackupStatus.Completed, "shard1a",
-            BackupSourceRole.Replica, 1757500000, 1757500300, walStart, 1024, null, null)],
+            BackupSourceRole.Replica, 1757500000, 1757500300, walStart, 1024, null,
+            verify ?? new BackupVerify(BackupVerifyStatus.Ok, 1757500400))],
         wal);
 
     [Fact]
@@ -841,6 +845,83 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var wal = await ReadWal("cca");
         wal!.State.Should().Be(WalStreamStatus.Active);
         wal.ChainStartSegment.Should().Be("000000010000000000000002");
+    }
+
+    // ---- t18 (AC4): контроль от wal_start новейшего verify-OK полного ----
+
+    // AC4: после среза WAL ниже cutoff контроль стартует от wal_start
+    // новейшего OK-полного — ложный BROKEN отсутствует. Дискриминация
+    // старой min-семантики: от старого OK (..03) при объектах {5,6} контроль
+    // дал бы дыру «ожидался ..04» и BROKEN.
+    [Fact]
+    public async Task Контроль_стартует_от_новейшего_OK_полного_без_ложного_BROKEN()
+    {
+        // Arrange — два OK-полных: старый wal_start=..03 (сегменты ..03/..04
+        // срезаны ретенцией), новый wal_start=..05; S3: 5,6; ключа wal нет
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("cv1");
+        (await _claims.TryClaimClusterAsync("cv1", ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor { Current = ("0/6000000", 1) };
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, "cv1", 5, 6);
+        var driver = new StubScaleDriver();
+        var process = BuildProcess(Options(), sql, s3, driver);
+        var oldOk = FullShard("000000010000000000000003").Full[0];
+        var newOk = oldOk with
+        {
+            Id = "20260911120000Z", StartedUnix = 1757600000, FinishedUnix = 1757600300,
+            WalStartSegment = "000000010000000000000005",
+        };
+        var backups = new ClusterBackups("cv1", null,
+            new Dictionary<string, ShardBackups> { ["shard1"] = new([oldOk, newOk], null) });
+
+        // Act — контроль due
+        (await process.TickAsync(BuildSnap("cv1"), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — chain_start от ..05 (новейший OK), ACTIVE — не BROKEN
+        var wal = await ReadWal("cv1");
+        wal!.State.Should().Be(WalStreamStatus.Active);
+        wal.ChainStartSegment.Should().Be("000000010000000000000005");
+    }
+
+    // AC4: ratchet — новый OK-полный со стартом НИЖЕ записанной границы
+    // (verify-перепроверка старшего OK→FAILED откатила точку) не понижает
+    // chain_start.
+    [Fact]
+    public async Task Ratchet_chain_start_не_понижается_младшим_OK_полным()
+    {
+        // Arrange — ключ ACTIVE с chain_start=..05; OK-полный wal_start=..03;
+        // S3: 5,6,7 (непрерывны от ..05)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("cv2");
+        (await _claims.TryClaimClusterAsync("cv2", ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor { Current = ("0/7000000", 1) };
+        // Слот жив на DSN мастера (живой ключ без слота = «слот исчез» → BROKEN
+        // раньше проверки цепочки; паттерн соседних тестов cc8/cm1)
+        sql.SlotsByDsn.GetOrAdd(SourceDsn(16001, "cv2"), _ => []).Add("pgw_bkp_cv2_shard1");
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, "cv2", 5, 7);
+        var driver = new StubScaleDriver();
+        var writer = new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]);
+        await writer.WriteIfChangedAsync("cv2", "shard1", new WalStreamState(
+            WalStreamStatus.Active, "pgw_bkp_cv2_shard1", "shard1a",
+            "000000010000000000000005", "000000010000000000000007",
+            "000000010000000000000007", 1757500000, 0, null), ct);
+        var process = BuildProcess(Options(), sql, s3, driver);
+        var walKey = (await writer.ReadAsync("cv2", "shard1", ct)).Value;
+        var backups = new ClusterBackups("cv2", null,
+            new Dictionary<string, ShardBackups>
+            {
+                ["shard1"] = new(FullShard("000000010000000000000003").Full, walKey),
+            });
+
+        // Act — контроль due
+        (await process.TickAsync(BuildSnap("cv2"), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — chain_start остался ..05 (ratchet не понижается), ACTIVE
+        var wal = await ReadWal("cv2");
+        wal!.State.Should().Be(WalStreamStatus.Active);
+        wal.ChainStartSegment.Should().Be("000000010000000000000005");
     }
 
     // ---- t27: два источника, per-node супервиз, миграция (Ф3, spec §3.3/§3.4/§3.6) ----

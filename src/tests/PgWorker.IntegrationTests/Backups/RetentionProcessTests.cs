@@ -72,10 +72,11 @@ public class RetentionProcessTests(EtcdFixture fixture)
         options, clock ?? new FrozenClock(),
         NullLogger<RetentionProcess>.Instance);
 
-    // Тест-опции: ретенция каждым тиком; дефолт-политика — параметризуется.
+    // Тест-опции: ретенция каждым тиком; дефолт-политика — параметризуется
+    // (t18: дефолт 1/1/1 — новый прод-дефолт целевой схемы).
     private static BackupsRuntimeOptions Options(
         int intervalSec = 0, int keepFailed = 20,
-        int policyDays = 7, int policyWeeks = 4, int policyMonths = 6,
+        int policyDays = 1, int policyWeeks = 1, int policyMonths = 1,
         long quotaBytes = 0, int quotaWarn = 80, int quotaCrit = 90)
         => new(
             Enabled: true,
@@ -160,7 +161,8 @@ public class RetentionProcessTests(EtcdFixture fixture)
     }
 
     // AC7-хвост: per-cluster политика из ключа замещает дефолт конфига —
-    // при дефолте (месячная точка) старый удерживался бы, policy 1/0/0 удаляет.
+    // при дефолте 1/1/1 40-дневный полный вне «предыдущего месяца» не
+    // удерживается месячной точкой, policy 1/0/0 тоже удаляет.
     [Fact]
     public async Task Policy_из_ключа_кластера_действует()
     {
@@ -180,7 +182,7 @@ public class RetentionProcessTests(EtcdFixture fixture)
                 ["shard1"] = new([fresh, old], null),
             });
         var s3 = new FakeBackupS3();
-        var process = BuildProcess(Options(), s3); // дефолт конфига 7/4/6
+        var process = BuildProcess(Options(), s3); // дефолт конфига 1/1/1
 
         // Act — тик ретенции
         (await process.TickAsync(BuildSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
@@ -245,12 +247,14 @@ public class RetentionProcessTests(EtcdFixture fixture)
     [Fact]
     public async Task WAL_чистка_ниже_cutoff()
     {
-        // Arrange — COMPLETED с wal_start=..05; wal/ содержит 3,4,5,6 + history
+        // Arrange — COMPLETED с verify OK (t18: cutoff только от verify-OK) и
+        // wal_start=..05; wal/ содержит 3,4,5,6 + history
         var ct = TestContext.Current.CancellationToken;
         const string cluster = "rt5";
         await SeedAsync(cluster);
         (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
-        var full = Full("20260908000000Z", Now.AddDays(-1), walStart: "000000010000000000000005");
+        var full = Full("20260908000000Z", Now.AddDays(-1), walStart: "000000010000000000000005",
+            verify: new BackupVerify(BackupVerifyStatus.Ok, Unix(Now)));
         await SeedFullAsync(cluster, full);
         var s3 = new FakeBackupS3();
         s3.PrefixObjects.AddRange(new[]
@@ -295,7 +299,8 @@ public class RetentionProcessTests(EtcdFixture fixture)
             }), null, ct);
         await fixture.Gateway.PutAsync(fixture.Endpoint, $"/clusters/{cluster}/backup_password",
             "pw", null, ct);
-        var full = Full("20260908000000Z", Now.AddDays(-1), walStart: "000000010000000000000005");
+        var full = Full("20260908000000Z", Now.AddDays(-1), walStart: "000000010000000000000005",
+            verify: new BackupVerify(BackupVerifyStatus.Ok, Unix(Now)));
         await SeedFullAsync(cluster, full);
         var s3 = new FakeBackupS3();
         for (var i = 3; i <= 7; i++)
@@ -572,6 +577,142 @@ public class RetentionProcessTests(EtcdFixture fixture)
         result.IsSuccess.Should().BeTrue();
         s3.DeletedKeys.Should().BeEmpty();
         (await GetKvAsync(BackupNames.FullKey(cluster, "shard1", full.Id))).Should().NotBeNull();
+    }
+
+    // ---- t18: cutoff по последнему verify-OK (AC2/AC3) ----
+
+    // AC3: последний полный PENDING — прунинг WAL ниже его wal_start запрещён:
+    // cutoff держится на предыдущем OK (удаляется только строго ниже OK-точки).
+    [Fact]
+    public async Task WAL_чистка_гвард_последний_PENDING_держит_предыдущий_OK()
+    {
+        // Arrange — old OK wal_start=..03 (8 дней назад), новый PENDING wal_start=..06
+        // (вчера); объекты ..01.. ..08
+        var ct = TestContext.Current.CancellationToken;
+        const string cluster = "rt16";
+        await SeedAsync(cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var okOld = Full("20260901000000Z", Now.AddDays(-8), walStart: "000000010000000000000003",
+            verify: new BackupVerify(BackupVerifyStatus.Ok, Unix(Now)));
+        var pendingNew = Full("20260908000000Z", Now.AddDays(-1), walStart: "000000010000000000000006",
+            verify: new BackupVerify(BackupVerifyStatus.Pending, null));
+        await SeedFullAsync(cluster, okOld);
+        await SeedFullAsync(cluster, pendingNew);
+        var s3 = new FakeBackupS3();
+        for (var i = 1; i <= 8; i++)
+            s3.PrefixObjects.Add(($"{cluster}/shard1/wal/0000000100000000000000{i:x2}", 16L));
+        var process = BuildProcess(Options(), s3);
+
+        // Act — тик ретенции
+        (await process.TickAsync(BuildSnap(cluster), backups(cluster, okOld, pendingNew), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — срез строго ниже ..03 (точка предыдущего OK); WAL между ..03 и
+        // ..06 (ниже непроверенного полного) жив
+        s3.DeletedKeys.Should().BeEquivalentTo(
+        [
+            $"{cluster}/shard1/wal/000000010000000000000001",
+            $"{cluster}/shard1/wal/000000010000000000000002",
+        ]);
+    }
+
+    // AC3: последний полный verify=FAILED — гвард симметричен PENDING.
+    [Fact]
+    public async Task WAL_чистка_гвард_последний_FAILED_держит_предыдущий_OK()
+    {
+        // Arrange — как предыдущий тест, но новый полный verify=FAILED
+        var ct = TestContext.Current.CancellationToken;
+        const string cluster = "rt17";
+        await SeedAsync(cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var okOld = Full("20260901000000Z", Now.AddDays(-8), walStart: "000000010000000000000003",
+            verify: new BackupVerify(BackupVerifyStatus.Ok, Unix(Now)));
+        var failedNew = Full("20260908000000Z", Now.AddDays(-1), walStart: "000000010000000000000006",
+            verify: new BackupVerify(BackupVerifyStatus.Failed, Unix(Now)));
+        await SeedFullAsync(cluster, okOld);
+        await SeedFullAsync(cluster, failedNew);
+        var s3 = new FakeBackupS3();
+        for (var i = 1; i <= 8; i++)
+            s3.PrefixObjects.Add(($"{cluster}/shard1/wal/0000000100000000000000{i:x2}", 16L));
+        var process = BuildProcess(Options(), s3);
+
+        // Act — тик ретенции
+        (await process.TickAsync(BuildSnap(cluster), backups(cluster, okOld, failedNew), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — cutoff на ..03, WAL ..04+ (вкл. ниже FAILED-полного) жив
+        s3.DeletedKeys.Should().BeEquivalentTo(
+        [
+            $"{cluster}/shard1/wal/000000010000000000000001",
+            $"{cluster}/shard1/wal/000000010000000000000002",
+        ]);
+    }
+
+    // AC3-хвост: ни одного verify-OK полного — WAL-чистка no-op (полный есть,
+    // но непроверенный: точки привязки нет).
+    [Fact]
+    public async Task WAL_чистка_нет_OK_полных_no_op()
+    {
+        // Arrange — единственный COMPLETED без verify вовсе; объекты есть
+        var ct = TestContext.Current.CancellationToken;
+        const string cluster = "rt18";
+        await SeedAsync(cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var pending = Full("20260908000000Z", Now.AddDays(-1), walStart: "000000010000000000000005",
+            verify: new BackupVerify(BackupVerifyStatus.Pending, null));
+        await SeedFullAsync(cluster, pending);
+        var s3 = new FakeBackupS3();
+        for (var i = 1; i <= 4; i++)
+            s3.PrefixObjects.Add(($"{cluster}/shard1/wal/0000000100000000000000{i:x2}", 16L));
+        var process = BuildProcess(Options(), s3);
+
+        // Act — тик ретенции
+        (await process.TickAsync(BuildSnap(cluster), backups(cluster, pending), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — ничего не удалено (гвард: прунинг без успешного verify запрещён)
+        s3.DeletedKeys.Should().BeEmpty();
+    }
+
+    // AC2-хвост: недельная/месячная точки на cutoff НЕ влияют — cutoff = wal_start
+    // последнего OK-полного; срез идёт ниже НЕГО (вкл. сегменты выше старых точек).
+    [Fact]
+    public async Task WAL_чистка_недельная_месячная_точки_не_влияют_на_cutoff()
+    {
+        // Arrange — GFS-точка августа OK wal_start=..03 (31.08 — последний W36 и
+        // последний августа: удерживается и недельной, и месячной гранулой 1/1/1)
+        // + последний OK wal_start=..08 (вчера); объекты ..01.. ..0A
+        var ct = TestContext.Current.CancellationToken;
+        const string cluster = "rt19";
+        await SeedAsync(cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var monthly = Full("20260831000000Z", new DateTimeOffset(2026, 8, 31, 10, 0, 0, TimeSpan.Zero),
+            walStart: "000000010000000000000003",
+            verify: new BackupVerify(BackupVerifyStatus.Ok, Unix(Now)));
+        var latest = Full("20260908000000Z", Now.AddDays(-1), walStart: "000000010000000000000008",
+            verify: new BackupVerify(BackupVerifyStatus.Ok, Unix(Now)));
+        await SeedFullAsync(cluster, monthly);
+        await SeedFullAsync(cluster, latest);
+        var s3 = new FakeBackupS3();
+        for (var i = 1; i <= 10; i++)
+            s3.PrefixObjects.Add(($"{cluster}/shard1/wal/0000000100000000000000{i:x2}", 16L));
+        var process = BuildProcess(Options(), s3);
+
+        // Act — тик ретенции
+        (await process.TickAsync(BuildSnap(cluster), backups(cluster, monthly, latest), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — удалено строго ниже ..08 (вкл. ..03.. ..07 — «выше» месячной
+        // точки, но ниже последнего полного); ..08+ живы
+        s3.DeletedKeys.Should().BeEquivalentTo(
+            Enumerable.Range(1, 7)
+                .Select(i => $"{cluster}/shard1/wal/0000000100000000000000{i:x2}"));
+        s3.PrefixObjects.Select(o => o.Key).Should().BeEquivalentTo(
+        [
+            $"{cluster}/shard1/wal/000000010000000000000008",
+            $"{cluster}/shard1/wal/000000010000000000000009",
+            $"{cluster}/shard1/wal/00000001000000000000000a", // каноническое имя — lowercase hex (WalFileName.Name)
+        ]);
     }
 
     // Вспомогательное: ClusterBackups c одним шардовым набором полных.
