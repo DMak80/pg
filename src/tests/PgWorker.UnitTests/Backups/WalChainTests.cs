@@ -419,45 +419,70 @@ public class WalChainTests
         result.IsContinuous.Should().BeFalse();
     }
 
-    // AAA: ratchet — полные со стартом НИЖЕ границы игнорируются (AC1: контроль не
-    // видит дыру снова от старого полного)
+    // ---- t18: RatchetedStart — одиночный кандидат (новейший verify-OK полный) ----
+
+    // AAA (t18): кандидат ≥ записанной границы — контроль от кандидата
+    // (новый OK-полный закрывает разрыв/поднимает точку).
     [Fact]
-    public void RatchetedStart_ПолныеНижеГраницы_Игнорируются()
+    public void RatchetedStart_кандидат_выше_границы_принят()
     {
-        // Arrange — записанная граница ..05; полные ..01 (старый дырный) и ..09
+        // Arrange — записанная граница ..05; кандидат (новейший OK-полный) ..09
         var recorded = WalFileName.TryParse("000000010000000000000005");
+        var candidate = WalFileName.TryParse("000000010000000000000009");
 
         // Act
-        var start = WalChain.RatchetedStart(recorded,
-            ["000000010000000000000001", "000000010000000000000009"]);
+        var start = WalChain.RatchetedStart(recorded, candidate);
 
-        // Assert — контроль от ..09 (min кандидатов ≥ границы), не от ..01
+        // Assert — контроль от ..09
         start!.Value.Name.Should().Be("000000010000000000000009");
     }
 
-    // AAA: ratchet — кандидатов выше границы нет → записанная точка держится
+    // AAA (t18): ratchet — кандидат НИЖЕ границы не понижает точку: verify-
+    // перепроверка старшего OK→FAILED откатила кандидата — контроль остаётся
+    // на прежней границе (полные ниже границы разрыва игнорируются).
     [Fact]
-    public void RatchetedStart_НетКандидатов_ВозвращаетЗаписанную()
+    public void RatchetedStart_кандидат_ниже_границы_не_понижает()
     {
-        // Arrange
+        // Arrange — записанная граница ..05; кандидат ..03
         var recorded = WalFileName.TryParse("000000010000000000000005");
+        var candidate = WalFileName.TryParse("000000010000000000000003");
 
         // Act
-        var start = WalChain.RatchetedStart(recorded, ["000000010000000000000001"]);
+        var start = WalChain.RatchetedStart(recorded, candidate);
 
-        // Assert
+        // Assert — точка не понижена
         start.Should().Be(recorded);
     }
 
-    // AAA: записи нет — min всех COMPLETED-стартов (поведение t03 сохранено)
+    // AAA (t18): записи нет — контроль от кандидата (первый OK-полный задаёт
+    // стартовую точку; полных нет — остаётся min-объект потока у вызова).
     [Fact]
-    public void RatchetedStart_БезЗаписи_MinПолных()
+    public void RatchetedStart_без_записи_кандидат()
     {
-        // Act
-        var start = WalChain.RatchetedStart(null,
-            ["000000010000000000000003", "000000010000000000000001", null]);
+        // Arrange — записи нет; кандидат ..03
+        var candidate = WalFileName.TryParse("000000010000000000000003");
 
-        // Assert — null-старты (ранние FAILED без wal_start) отфильтрованы
-        start!.Value.Name.Should().Be("000000010000000000000001");
+        // Act
+        var start = WalChain.RatchetedStart(null, candidate);
+
+        // Assert — старт от кандидата
+        start!.Value.Name.Should().Be("000000010000000000000003");
+    }
+
+    // AAA (t18): кандидата нет (verify-OK-полных нет) — записанная точка
+    // держится; нет и записи — null (контролю остаётся min-объект).
+    [Fact]
+    public void RatchetedStart_нет_кандидата_записанная()
+    {
+        // Arrange — записанная ..05; кандидата нет
+        var recorded = WalFileName.TryParse("000000010000000000000005");
+
+        // Act
+        var onlyRecorded = WalChain.RatchetedStart(recorded, null);
+        var neither = WalChain.RatchetedStart(null, null);
+
+        // Assert — записанная точка / null
+        onlyRecorded.Should().Be(recorded);
+        neither.Should().BeNull();
     }
 }
