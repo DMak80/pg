@@ -35,6 +35,7 @@ public static class AbortPhases
 /// Контракт «одна заявка на бакет» (spec §4.1, ревью №6): ключ
 /// /pgworker/moves/&lt;C&gt;/bucket_&lt;i&gt; один — abort-заявка оператора перезаписывает
 /// move-заявку; здесь удаляется только СВОЯ (op=abort) заявка.
+/// progress — heartbeat-отметки долгих фаз (null в тестах/без DI).
 /// </summary>
 public sealed class AbortSequence(
     IMoveSqlExecutor sql,
@@ -42,7 +43,8 @@ public sealed class AbortSequence(
     MoveRequestsStore requests,
     WorkJournal journal,
     ShardEndpoints shards,
-    InstallSecrets secrets)
+    InstallSecrets secrets,
+    Shared.Core.Hosting.ILoopProgress? progress = null)
 {
     public async Task<Result<ProcessOutcome>> RunAsync(
         ClusterSnapshot snap, string bucket, MoveRequest request,
@@ -337,6 +339,7 @@ public sealed class AbortSequence(
             {
                 await Task.Delay(TimeSpan.FromSeconds(1), ct);
                 var recheck = await sql.ScalarAsync(dsn, MoveSql.SlotActive(slot), ct);
+                progress?.Mark(); // heartbeat: проход дезактивации слота (≤5×1 c)
                 if (!recheck.IsSuccess)
                     return recheck;
                 if (ToBool(recheck.Value) != true)

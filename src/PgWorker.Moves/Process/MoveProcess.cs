@@ -39,6 +39,7 @@ public static class MovePhases
 /// transient (заявка жива, work.last_error) — недоступность, ретраи тиками.
 /// M4–M6 (задача 14): cutover с классификацией исходов, post-flip, done.
 /// Rollback/finalize/abort — задачи 15–16.
+/// progress — heartbeat-отметки долгих фаз (null в тестах/без DI).
 /// </summary>
 public sealed class MoveProcess(
     IEtcdGateway etcd,
@@ -53,14 +54,15 @@ public sealed class MoveProcess(
     MovesRuntimeOptions options,
     TimeProvider clock,
     ILogger<MoveProcess>? logger = null,
-    Func<CancellationToken, Task<Result>>? snapshot = null)
+    Func<CancellationToken, Task<Result>>? snapshot = null,
+    Shared.Core.Hosting.ILoopProgress? progress = null)
 {
     private readonly MoveRequestsStore requests = new(etcd, etcdEndpoints);
     private readonly MoveStatusStore status = new(etcd, etcdEndpoints);
 
     // Cutover-блок M4/rollback (задача 12/14) — свой стор статуса поверх того же etcd.
     private readonly CutoverSequence cutover = new(
-        sql, new MoveStatusStore(etcd, etcdEndpoints), secrets);
+        sql, new MoveStatusStore(etcd, etcdEndpoints), secrets, progress);
 
     // Читаются фазами M1–M6 (задачи 13–16): DDL-перенос, exec-транспорт, опции ожиданий.
     private readonly MoveDdl ddl = ddl;
@@ -919,6 +921,7 @@ public sealed class MoveProcess(
             {
                 await Task.Delay(TimeSpan.FromSeconds(1), ct);
                 var recheck = await sql.ScalarAsync(dsn, MoveSql.SlotActive(slot), ct);
+                progress?.Mark(); // heartbeat: проход дезактивации слота (≤5×1 c)
                 if (!recheck.IsSuccess)
                     return recheck;
                 if (ToBool(recheck.Value) != true)
@@ -940,7 +943,7 @@ public sealed class MoveProcess(
     private Task<Result<ProcessOutcome>> RunAbortAsync(
         ClusterSnapshot snap, string bucket, MoveRequest request, CancellationToken ct)
     {
-        var abort = new AbortSequence(sql, status, requests, journal, shards, secrets);
+        var abort = new AbortSequence(sql, status, requests, journal, shards, secrets, progress);
         return abort.RunAsync(snap, bucket, request, claims, clock, options, ct, snapshot);
     }
 

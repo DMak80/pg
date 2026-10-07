@@ -23,6 +23,7 @@ namespace PgWorker.Provisioning.Processes;
 /// /clusters/ и docker — только держателем). Один тик доводит кластер насколько
 /// возможно: ожидания (Patroni, мастер) возвращают InProgress — цикл задачи 23
 /// продолжит следующим тиком с записанной фазы из /pgworker/work/&lt;C&gt;.
+/// progress — heartbeat-отметки долгих фаз (null в тестах/без DI).
 /// </summary>
 public sealed class ProvisioningProcess(
     IEtcdGateway etcd,
@@ -40,7 +41,8 @@ public sealed class ProvisioningProcess(
     PortAllocIndex portAlloc,
     PortAllocLock portLock,
     PgtuneInputsFactory pgtune,
-    Func<CancellationToken, Task<Result>>? snapshot = null) : IClusterProcess
+    Func<CancellationToken, Task<Result>>? snapshot = null,
+    Shared.Core.Hosting.ILoopProgress? progress = null) : IClusterProcess
 {
     private const int TxnBatchSize = 128; // лимит ops в txn (P3)
     private const string Op = "provision";
@@ -463,6 +465,7 @@ public sealed class ProvisioningProcess(
             var ensured = await driver.EnsureNodeAsync(
                 topology, node.Name, topology.Nodes[node.Name], clusterSecrets, etcdEndpoints, resources,
                 tuning, syncStrict, ct);
+            progress?.Mark(); // heartbeat: create/start контейнера ноды — долгая фаза
             if (!ensured.IsSuccess)
                 return ensured;
         }
@@ -506,6 +509,7 @@ public sealed class ProvisioningProcess(
         foreach (var node in topology.Nodes.Keys)
         {
             var identity = await probe.IdentifyAsync(topology.Nodes[node], ct);
+            progress?.Mark(); // heartbeat: итерация опроса готовности ноды
             if (!identity.IsSuccess
                 || identity.Value is not { } id
                 || id.Scope != scope

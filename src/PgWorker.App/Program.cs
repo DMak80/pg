@@ -80,6 +80,8 @@ var apiCertThumbprint = apiTls.ServerCert is { } appliedCert
 
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<HealthState>();
+// Прогресс-отметки долгих фаз reconcile в глубину процессов (Provisioning/Moves).
+builder.Services.AddSingleton<Shared.Core.Hosting.ILoopProgress>(sp => sp.GetRequiredService<HealthState>());
 
 // Метрики (arch/18 §3): /metrics на том же mTLS-Kestrel-порту, что /healthz (t03).
 builder.Services.AddAppMetrics("PgWorker", builder.Configuration.GetSection("PgWorker:Metrics"));
@@ -333,7 +335,8 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<PortAllocIndex>(),
         sp.GetRequiredService<PortAllocLock>(),
         sp.GetRequiredService<PgtuneInputsFactory>(),
-        SnapshotDelegate(job));
+        SnapshotDelegate(job),
+        sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>());
 });
 builder.Services.AddSingleton(sp => new DeprovisioningProcess(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -439,7 +442,8 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<PortAllocIndex>(),
         sp.GetRequiredService<PortAllocLock>(),
         sp.GetRequiredService<PgtuneInputsFactory>(),
-        SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
+        SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
+        sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>());
 });
 builder.Services.AddSingleton(sp => new RemoveShardProcess(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -472,7 +476,8 @@ builder.Services.AddSingleton(sp =>
         opts.Moves.ToRuntime(opts.Thresholds),
         sp.GetRequiredService<TimeProvider>(),
         sp.GetRequiredService<ILoggerFactory>().CreateLogger<MoveProcess>(),
-        SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
+        SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
+        sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>());
 });
 
 // Репарация брошенных переездов (adopt-repair spec §3.5): синтетические заявки
