@@ -61,7 +61,7 @@ public class E2eWorkerCertScenarios
 
             // Assert 1: грань на etcd-серте — /healthz 200 ТОЛЬКО при доверии
             // старому thumbprint; дискавери-ключ сообщает старый thumbprint.
-            var (oldUrl, discoveryOld) = await WaitForDiscoveryAsync(fx, ct);
+            var (oldUrl, discoveryOld) = await WaitForDiscoveryAsync(fx, p1, ct);
             discoveryOld.Should().Be(oldThumb, "дискавери-ключ обязан нести thumbprint применённого серта");
             using (var client = TlsClient(clientPem, clientKeyPem, oldThumb))
             {
@@ -95,7 +95,7 @@ public class E2eWorkerCertScenarios
                 body.Should().Contain("restarting");
             }
 
-            var exited = await E2eFixture.WaitForAsync(
+            var exited = await E2ePhase.WaitAsync(fx, "cert-restart-exit",
                 () => Task.FromResult(p1.Process.HasExited), TimeSpan.FromSeconds(30), ct);
             exited.Should().BeTrue("graceful self-stop обязан завершить процесс после ~1 c");
             exitCode = p1.Process.HasExited ? p1.Process.ExitCode : -1;
@@ -104,7 +104,7 @@ public class E2eWorkerCertScenarios
             // docker-политика restart: unless-stopped в e2e имитируется новым
             // инстансом с тем же контуром: при старте перечитан etcd-ключ.
             await using var p2 = await fx.StartHostAsync("cert-p2", extraEnv: extraEnv, ct: ct);
-            var (newUrl, discoveryNew) = await WaitForDiscoveryAsync(fx, ct);
+            var (newUrl, discoveryNew) = await WaitForDiscoveryAsync(fx, p2, ct);
             discoveryNew.Should().Be(newThumb, "дискавери-ключ переподставился с новым thumbprint");
             using (var client = TlsClient(clientPem, clientKeyPem, newThumb))
             {
@@ -118,7 +118,7 @@ public class E2eWorkerCertScenarios
             p2.Kill(); // рестарт: смерть процесса + повторный подъём = политика docker
             await using var p3 = await fx.StartHostAsync("cert-p3", extraEnv: extraEnv, ct: ct);
 
-            var (envUrl, discoveryEnv) = await WaitForDiscoveryAsync(fx, ct);
+            var (envUrl, discoveryEnv) = await WaitForDiscoveryAsync(fx, p3, ct);
             discoveryEnv.Should().Be(envThumb, "после удаления ключа воркер на env-серте (unmanaged)");
             using (var client = TlsClient(clientPem, clientKeyPem, envThumb))
             {
@@ -217,13 +217,14 @@ public class E2eWorkerCertScenarios
     // Дискавери-ключи /pgworker/api/<id>: ждём появления ключа (lease-подстановка
     // после старта) и возвращаем ФАКТИЧЕСКИЙ url+thumbprint НОВЕЙШЕГО инстанса
     // (максимум since_unix — старый ключ мог доживать по TTL lease): ассерты
-    // наверху сверяют факт с ожиданием, а не эхируют вход.
+    // наверху сверяют факт с ожиданием, а не эхируют вход. Фаза cert-discovery
+    // (t29 §3.7): прогресс — живость процесса + число api-ключей в range.
     private static async Task<(string Url, string Thumbprint)> WaitForDiscoveryAsync(
-        E2eEnvironment fx, CancellationToken ct)
+        E2eEnvironment fx, HostInstance host, CancellationToken ct)
     {
         string? url = null;
         string? actualThumb = null;
-        var found = await E2eFixture.WaitForAsync(async () =>
+        var found = await E2ePhase.WaitAsync(fx, "cert-discovery", async () =>
         {
             var range = await fx.Gateway.RangeAsync(fx.EtcdEndpoint, DiscoveryPrefix, ct);
             if (!range.IsSuccess)
@@ -258,9 +259,18 @@ public class E2eWorkerCertScenarios
             }
 
             return bestSince >= 0;
-        }, TimeSpan.FromSeconds(30), ct);
+        }, TimeSpan.FromSeconds(30), ct,
+            progress: async () =>
+                $"alive={!host.Process.HasExited}, api-keys={await CountApiKeysAsync(fx, ct)}");
         found.Should().BeTrue("дискавери-ключ с cert_thumbprint обязан появиться");
         return (url!, actualThumb!);
+    }
+
+    // Лёгкий range-подсчёт api-ключей (etcd-чтение, без docker) для прогресс-тиков.
+    private static async Task<int> CountApiKeysAsync(E2eEnvironment fx, CancellationToken ct)
+    {
+        var range = await fx.Gateway.RangeAsync(fx.EtcdEndpoint, DiscoveryPrefix, ct);
+        return range.IsSuccess ? range.Value.Count : 0;
     }
 
     // mTLS-клиент, доверяющий серверу ТОЛЬКО по SHA-256 thumbprint (панель
