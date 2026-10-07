@@ -30,6 +30,9 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     private readonly Dictionary<(string Operation, string Result), long> _operations = new();
     private DateTimeOffset? _lastSnapshotTaken;
     private readonly Dictionary<(string Cluster, string Shard), long> _walLag = new();
+    private readonly Dictionary<(string Cluster, string Shard), long> _fullAgeFinishedUnix = new();
+    private readonly Dictionary<(string Cluster, string Shard), long> _fullMaxAge = new();
+    private readonly Dictionary<(string Cluster, string Shard), long> _walUploadedUnix = new();
     private readonly Dictionary<(string Cluster, string Shard, string Result), long> _backupVerify = new();
     private readonly Dictionary<(string Cluster, string Shard, string Result), long> _backupRestore = new();
     private readonly Dictionary<(string Cluster, string Shard, string Result), long> _backupDrill = new();
@@ -81,6 +84,35 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                     new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
                     new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
             unit: "{segment}", description: "Отставание WAL-потока бэкапов, сегментов (arch/19 §3)");
+
+        // t14 (arch/18 §2.7): возрастные серии хранят unix-факт, колбэк пересчитывает
+        // now − unix на КАЖДОМ scrape — между тиками процессов значение не замирает
+        // (паттерн worker_snapshot_age_seconds).
+        meter.CreateObservableGauge(
+            "pgworker_backup_full_age_seconds",
+            () => Measure(() => _fullAgeFinishedUnix.Select(kv =>
+                new Measurement<double>(
+                    Math.Max(0, _clock.GetUtcNow().ToUnixTimeSeconds() - kv.Value),
+                    new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
+                    new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
+            unit: "s", description: "Возраст последнего валидного полного бэкапа, с (arch/18 §2.7)");
+
+        meter.CreateObservableGauge(
+            "pgworker_backup_full_max_age_seconds",
+            () => Measure(() => _fullMaxAge.Select(kv =>
+                new Measurement<long>(kv.Value,
+                    new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
+                    new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
+            unit: "s", description: "Порог full_max_age_sec эффективной политики кластера (arch/18 §2.7)");
+
+        meter.CreateObservableGauge(
+            "pgworker_backup_wal_last_uploaded_age_seconds",
+            () => Measure(() => _walUploadedUnix.Select(kv =>
+                new Measurement<double>(
+                    Math.Max(0, _clock.GetUtcNow().ToUnixTimeSeconds() - kv.Value),
+                    new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
+                    new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
+            unit: "s", description: "Возраст последней загрузки WAL-сегмента в S3, с (arch/18 §2.7)");
 
         meter.CreateObservableGauge(
             "worker.process.phase.duration_seconds",
@@ -239,6 +271,66 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                     _walLag[(cluster, shard)] = value;
                 else
                     _walLag.Remove((cluster, shard));
+            }
+        }
+        catch
+        {
+            // Пассивный наблюдатель.
+        }
+    }
+
+    // Gauge pgworker_backup_full_age_seconds/full_max_age_seconds (t14, arch/18
+    // §2.7): ЕДИНЫЙ марк-метод на тик кластера — набор шардов тика замещает
+    // стейт кластера ЦЕЛИКОМ (паттерн UpdateCluster §4.2: шард, не пришедший в
+    // наборе, серии больше не эмитит). Элемент набора: LastValidUnix — источник
+    // возраста (null → age-серия шарда отсутствует), MaxAgeSec — порог (пишется
+    // всегда; per-cluster порог алерта age > max_age без хардкода в правиле).
+    public void BackupFullAge(
+        string cluster, IReadOnlyDictionary<string, (long? LastValidUnix, long MaxAgeSec)> shards)
+    {
+        try
+        {
+            lock (_lock)
+            {
+                foreach (var gone in _fullMaxAge.Keys
+                             .Where(k => k.Cluster == cluster && !shards.ContainsKey(k.Shard))
+                             .ToList())
+                {
+                    _fullAgeFinishedUnix.Remove(gone);
+                    _fullMaxAge.Remove(gone);
+                }
+
+                foreach (var (shard, value) in shards)
+                {
+                    _fullMaxAge[(cluster, shard)] = value.MaxAgeSec;
+                    if (value.LastValidUnix is { } unix)
+                        _fullAgeFinishedUnix[(cluster, shard)] = unix;
+                    else
+                        _fullAgeFinishedUnix.Remove((cluster, shard));
+                }
+            }
+        }
+        catch
+        {
+            // Пассивный наблюдатель.
+        }
+    }
+
+    // Gauge pgworker_backup_wal_last_uploaded_age_seconds (t14, arch/18 §2.7):
+    // возраст последней доставки закрытого сегмента — наблюдение контрольного
+    // прохода WalStreamProcess; null — серия исчезает (симметрия BackupWalLag).
+    // Хранится unix-факт (now − age наблюдения), колбэк гейджа пересчитывает
+    // возраст на каждом scrape.
+    public void BackupWalUploadedAge(string cluster, string shard, long? ageSec)
+    {
+        try
+        {
+            lock (_lock)
+            {
+                if (ageSec is { } age)
+                    _walUploadedUnix[(cluster, shard)] = _clock.GetUtcNow().ToUnixTimeSeconds() - age;
+                else
+                    _walUploadedUnix.Remove((cluster, shard));
             }
         }
         catch
@@ -442,6 +534,9 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 _backupVerify.ToFrozenDictionary(),
                 _backupRestore.ToFrozenDictionary(),
                 _backupDrill.ToFrozenDictionary(),
+                _fullAgeFinishedUnix.ToFrozenDictionary(),
+                _fullMaxAge.ToFrozenDictionary(),
+                _walUploadedUnix.ToFrozenDictionary(),
                 age);
         }
     }
@@ -457,6 +552,9 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         IReadOnlyDictionary<(string Cluster, string Shard, string Result), long> BackupVerifyTotals,
         IReadOnlyDictionary<(string Cluster, string Shard, string Result), long> BackupRestoreTotals,
         IReadOnlyDictionary<(string Cluster, string Shard, string Result), long> BackupDrillTotals,
+        IReadOnlyDictionary<(string Cluster, string Shard), long> FullAgeFinishedUnix,
+        IReadOnlyDictionary<(string Cluster, string Shard), long> FullMaxAge,
+        IReadOnlyDictionary<(string Cluster, string Shard), long> WalUploadedUnix,
         double? SnapshotAgeSeconds);
 
     internal sealed record DebugPhase(string Phase, DateTimeOffset StartedAt);
