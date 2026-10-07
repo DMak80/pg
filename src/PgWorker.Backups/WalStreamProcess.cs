@@ -476,8 +476,9 @@ public sealed class WalStreamProcess(
 
     // (6–7) Контроль (spec §3.2 п.6–8; t07 arch/19 §3): при BROKEN-ключе — КАЖДЫЙ
     // тик (без VerifyIntervalSec-расчёта: скорость заживления; list дырного
-    // префикса дёшев); иначе по расписанию. list S3 → chain_start (ratchet:
-    // min wal_start COMPLETED-полных ≥ записанной границы ?? записанная ?? min-объект)
+    // префикса дёшев); иначе по расписанию. list S3 → chain_start (t18:
+    // wal_start новейшего verify-OK COMPLETED-полного, ratchet — не понижается
+    // ?? min-объект)
     // → CheckChain → дыра: BROKEN + ОСТАНОВ агента (в т.ч. без прошлого ключа —
     // AC4-тотальность); факты прогресса — ТОЛЬКО из наблюдений: last_uploaded из
     // S3-объектов либо прошлого ключа, никогда от now() («факт над записью»,
