@@ -5,6 +5,7 @@ using PgWorker.App;
 using PgWorker.App.Api;
 using PgWorker.App.Api.Operations;
 using Shared.Core.HealthChecks;
+using Shared.Core.Hosting;
 using PgWorker.App.HealthChecks;
 using PgWorker.App.Loops;
 using PgWorker.Backups;
@@ -685,6 +686,19 @@ builder.Services.AddHealthChecks()
     .AddCheck<HealthCheckAbstract<ReconcileLoop>>("reconcile-loop")
     .AddCheck<HealthCheckAbstract<KeepaliveLoop>>("keepalive-loop")
     .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop");
+
+// Watchdog зависших циклов (arch/14 §6): staleness тиков всех циклов → журнал +
+// метрика + graceful self-stop (путь POST /api/restart); Enabled=false (секция
+// PgWorker:Loops:Watchdog) — компонент не регистрируется.
+builder.Services.AddSingleton<PgWorkerLoopsVitality>();
+builder.Services.AddSingleton<Shared.Core.Hosting.ILoopsVitality>(
+    sp => sp.GetRequiredService<PgWorkerLoopsVitality>());
+var loopsWatchdog = new Shared.Core.Hosting.WatchdogOptions();
+builder.Configuration.GetSection("PgWorker:Loops:Watchdog").Bind(loopsWatchdog);
+builder.Services.AddLoopWatchdog(
+    loopsWatchdog,
+    (sp, loop) => sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>()
+        .WatchdogRestart(loop));
 
 var app = builder.Build();
 if (app.Services.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)
