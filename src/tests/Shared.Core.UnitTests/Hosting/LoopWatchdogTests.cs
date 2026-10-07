@@ -102,9 +102,10 @@ public sealed class LoopWatchdogTests
     }
 
     [Fact]
-    public async Task StaleTick_FiresOnce_LogsCritical_AndMarksMetric()
+    public async Task StaleActivity_FiresOnce_LogsCritical_AndMarksMetric()
     {
-        // Arrange: цикл тикал 60 c назад при пороге 10 c — за пределами grace
+        // Arrange: активности нет ни тиком, ни отметкой — возраст LastActivityAt
+        // (60 c) превысил порог (10 c) и вышел за grace
         var lifetime = new FakeLifetime();
         var logger = new CollectingLogger();
         var marks = new List<string>();
@@ -125,14 +126,16 @@ public sealed class LoopWatchdogTests
         marks.Should().ContainSingle().Which.Should().Be("reconcile");
         logger.Entries.Should().Contain(e =>
             e.Level == LogLevel.Critical && e.Message.Contains("reconcile")
+            && e.Message.Contains("не проявлял активности")
             && e.Message.Contains("self-restart"));
         cts.Cancel();
     }
 
     [Fact]
-    public async Task FreshTicks_DoNotStop()
+    public async Task FreshActivity_EvenLongIteration_DoesNotStop()
     {
-        // Arrange: все циклы тикали только что
+        // Arrange: прогресс-отметки внутри порога — долгая, но живая итерация;
+        // тик может быть давним (снимок отдаёт активность секундной давности)
         var lifetime = new FakeLifetime();
         var sut = new LoopWatchdog(
             new FakeVitality(new LoopHeartbeat("reconcile",
@@ -151,9 +154,9 @@ public sealed class LoopWatchdogTests
     }
 
     [Fact]
-    public async Task NullTick_InGraceWindow_DoesNotFire()
+    public async Task NullActivity_InGraceWindow_DoesNotFire()
     {
-        // Arrange: цикл ещё не тикал, grace = 2×порог = 4 c от запуска watchdog
+        // Arrange: цикл ещё не проявлял активности, grace = 2×порог = 4 c от запуска watchdog
         var lifetime = new FakeLifetime();
         var sut = new LoopWatchdog(
             new FakeVitality(new LoopHeartbeat("snapshot", null, TimeSpan.FromSeconds(2))),
@@ -171,9 +174,9 @@ public sealed class LoopWatchdogTests
     }
 
     [Fact]
-    public async Task NullTick_AfterGrace_Fires()
+    public async Task NullActivity_AfterGrace_Fires()
     {
-        // Arrange: null-отметка и порог 1 c → grace = 2 c
+        // Arrange: null-отметка (активности не было вовсе) и порог 1 c → grace = 2 c
         var lifetime = new FakeLifetime();
         var sut = new LoopWatchdog(
             new FakeVitality(new LoopHeartbeat("snapshot", null, TimeSpan.FromSeconds(1))),
@@ -184,7 +187,7 @@ public sealed class LoopWatchdogTests
         await sut.StartAsync(cts.Token);
         await PollUntilAsync(() => lifetime.StopCalls > 0, TimeSpan.FromSeconds(10));
 
-        // Assert: цикл не тикнул за grace — рестарт
+        // Assert: активности не было за grace — рестарт
         lifetime.StopCalls.Should().Be(1);
         cts.Cancel();
     }

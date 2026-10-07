@@ -3,9 +3,11 @@ using Microsoft.Extensions.Logging;
 
 namespace Shared.Core.Hosting;
 
-/// <summary>Сердцебиение одного цикла: имя, последний тик, порог staleness
-/// watchdog (множитель уже применён реализацией ILoopsVitality).</summary>
-public sealed record LoopHeartbeat(string Name, DateTimeOffset? LastTickAt, TimeSpan StaleAfter);
+/// <summary>Сердцебиение одного цикла: имя, момент последней активности, порог
+/// staleness watchdog (множитель уже применён реализацией ILoopsVitality).
+/// Активность = тик ИЛИ прогресс-отметка долгой фазы (healthz loops-alive —
+/// не консюмерер LoopHeartbeat: он читает HealthSnapshot по тикам напрямую).</summary>
+public sealed record LoopHeartbeat(string Name, DateTimeOffset? LastActivityAt, TimeSpan StaleAfter);
 
 /// <summary>Источник живости циклов воркера: реализация per-app поверх своего
 /// HealthState + LoopsOptions; чтение lock-free (миллисекунды).</summary>
@@ -24,7 +26,7 @@ public sealed class WatchdogOptions
     /// <summary>Множитель порога healthz (окно Degraded→рестарт).</summary>
     public int Multiplier { get; set; } = 2;
 
-    /// <summary>Период проверки возрастов тиков.</summary>
+    /// <summary>Период проверки возрастов активности.</summary>
     public int CheckIntervalSec { get; set; } = 15;
 
     /// <summary>Пауза перед StopApplication (лог/событие доезжают в выхлоп).</summary>
@@ -32,8 +34,9 @@ public sealed class WatchdogOptions
 }
 
 /// <summary>
-/// Watchdog зависших циклов: staleness тика сверх порога → журнал (critical) +
-/// маркер метрики (колбэк) + graceful StopApplication (путь POST /api/restart).
+/// Watchdog зависших циклов: отсутствие активности (ни тика, ни
+/// прогресс-отметки) сверх порога → журнал (critical) + маркер метрики
+/// (колбэк) + graceful StopApplication (путь POST /api/restart).
 /// Без сетевых вызовов и etcd; за собой не следит (его собственное зависание —
 /// деградация всего процесса, зона docker HEALTHCHECK).
 /// </summary>
@@ -62,10 +65,11 @@ public sealed class LoopWatchdog(
                 foreach (var heartbeat in vitality.Snapshot())
                 {
                     var now = clock.GetUtcNow();
-                    if (heartbeat.LastTickAt is { } at)
+                    if (heartbeat.LastActivityAt is { } at)
                     {
-                        // Firing: одного наблюдения превышения достаточно — порог
-                        // сам по себе защита от ложных срабатываний (гистерезис не вводим).
+                        // Firing: отсутствию активности (ни тика, ни прогресс-отметки)
+                        // достаточно одного наблюдения превышения — порог сам по себе
+                        // защита от ложных срабатываний (гистерезис не вводим).
                         var age = now - at;
                         if (age > heartbeat.StaleAfter)
                         {
@@ -75,7 +79,7 @@ public sealed class LoopWatchdog(
                     }
                     else if (now - startedAt > TimeSpan.FromTicks(heartbeat.StaleAfter.Ticks * 2))
                     {
-                        // Grace старта исчерпан: цикл не тикнул вовсе.
+                        // Grace старта исчерпан: цикл ещё не проявлял активности.
                         await FireAndStopAsync(heartbeat, now - startedAt, stoppingToken);
                         return;
                     }
@@ -97,7 +101,7 @@ public sealed class LoopWatchdog(
     {
         StaleLoop = heartbeat.Name;
         logger.LogCritical(
-            "watchdog: цикл {Loop} не тикал {Age:F0} c (порог {Threshold:F0} c) — инициирован self-restart",
+            "watchdog: цикл {Loop} не проявлял активности {Age:F0} c (порог {Threshold:F0} c) — инициирован self-restart",
             heartbeat.Name, age.TotalSeconds, heartbeat.StaleAfter.TotalSeconds);
         try
         {
