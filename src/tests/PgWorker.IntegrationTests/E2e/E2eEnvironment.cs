@@ -236,7 +236,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private readonly int _portWindowStart;
     private int _windowNext;
 
-    // Заражённый движку From (MINOR-3 ревью Ф7): резерв API-портов и портов
+    // Отданный движку From (MINOR-3 ревью Ф7): резерв API-портов и портов
     // контейнеров сценариев ДО первого From, отдаваемого движку, — порт
     // второго хоста/воркер-контейнера не должен попадать в PortRange уже
     // работающего хоста (слепой _windowNext наезжал на From первого).
