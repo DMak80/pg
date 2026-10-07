@@ -210,7 +210,11 @@ public class E2eRestoreScenarios
             t1Archived.Should().BeTrue("сегменты с T1 обязаны попасть в архив: "
                 + await DumpDiagnosticsAsync(cluster, "shard1"));
             var tCut = DateTime.UtcNow;
-            await Task.Delay(2000, ct);
+            // Страховка от гранулярности recovery_target_time (секунда) и
+            // расхождения часов хост/нода: tCut обязан строго предшествовать
+            // DROP-сегменту — 5 с (решение пользователя по H3-транзиенту №3/№3п;
+            // 2 с оказался недостаточным при параллельном N=3/5).
+            await Task.Delay(5000, ct);
 
             // Arrange 4 — порча: DROP уходит в последующие (заархивированные) сегменты
             await ExecAsync(adminDsn, "DROP TABLE pitr_probe", ct);
