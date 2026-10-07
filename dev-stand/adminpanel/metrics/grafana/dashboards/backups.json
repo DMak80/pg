@@ -1,141 +1,24 @@
 {
-  "uid": "backups",
-  "title": "Backups (PgWorker)",
-  "schemaVersion": 41,
-  "refresh": "30s",
-  "time": {
-    "from": "now-1h",
-    "to": "now"
-  },
+  "uid": "backups", "title": "Backups (PgWorker)", "schemaVersion": 41,
+  "refresh": "30s", "time": {"from": "now-1h", "to": "now"},
   "panels": [
-    {
-      "type": "timeseries",
-      "title": "Full backup age, s (by cluster/shard)",
-      "gridPos": {
-        "x": 0,
-        "y": 0,
-        "w": 12,
-        "h": 8
-      },
-      "targets": [
-        {
-          "expr": "pgworker_backup_full_age_seconds",
-          "legendFormat": "{{cluster}}/{{shard}}",
-          "refId": "A"
-        },
-        {
-          "expr": "pgworker_backup_full_max_age_seconds",
-          "legendFormat": "max {{cluster}}/{{shard}}",
-          "refId": "B"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "WAL lag, segments",
-      "gridPos": {
-        "x": 12,
-        "y": 0,
-        "w": 12,
-        "h": 8
-      },
-      "targets": [
-        {
-          "expr": "pgworker_backup_wal_lag_segments",
-          "legendFormat": "{{cluster}}/{{shard}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "WAL uploaded age, s",
-      "gridPos": {
-        "x": 0,
-        "y": 8,
-        "w": 12,
-        "h": 8
-      },
-      "targets": [
-        {
-          "expr": "pgworker_backup_wal_last_uploaded_age_seconds",
-          "legendFormat": "{{cluster}}/{{shard}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Verify outcomes (increase 15m, by result)",
-      "gridPos": {
-        "x": 12,
-        "y": 8,
-        "w": 12,
-        "h": 8
-      },
-      "targets": [
-        {
-          "expr": "increase(pgworker_backup_verify_total[15m])",
-          "legendFormat": "{{cluster}}/{{shard}} {{result}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Restore outcomes (increase 15m, by result)",
-      "gridPos": {
-        "x": 0,
-        "y": 16,
-        "w": 12,
-        "h": 8
-      },
-      "targets": [
-        {
-          "expr": "increase(pgworker_backup_restore_total[15m])",
-          "legendFormat": "{{cluster}}/{{shard}} {{result}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "Drill outcomes (increase 15m, by result)",
-      "gridPos": {
-        "x": 12,
-        "y": 16,
-        "w": 12,
-        "h": 8
-      },
-      "targets": [
-        {
-          "expr": "increase(pgworker_backup_drill_total[15m])",
-          "legendFormat": "{{cluster}}/{{shard}} {{result}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "type": "timeseries",
-      "title": "HA RTO durations, s (by cluster/shard)",
-      "gridPos": {
-        "x": 0,
-        "y": 24,
-        "w": 12,
-        "h": 8
-      },
-      "targets": [
-        {
-          "expr": "pgworker_ha_failover_duration_seconds",
-          "legendFormat": "failover {{cluster}}/{{shard}}",
-          "refId": "A"
-        },
-        {
-          "expr": "pgworker_ha_rebuild_duration_seconds",
-          "legendFormat": "rebuild {{cluster}}/{{shard}}",
-          "refId": "B"
-        }
-      ]
-    }
+    {"type": "timeseries", "title": "Full backup age, s (by cluster/shard)", "gridPos": {"x":0,"y":0,"w":12,"h":8},
+     "targets": [
+        {"expr": "pgworker_backup_full_age_seconds", "legendFormat": "{{cluster}}/{{shard}}", "refId": "A"},
+        {"expr": "pgworker_backup_full_max_age_seconds", "legendFormat": "max {{cluster}}/{{shard}}", "refId": "B"}]},
+    {"type": "timeseries", "title": "WAL lag, segments", "gridPos": {"x":12,"y":0,"w":12,"h":8},
+     "targets": [{"expr": "pgworker_backup_wal_lag_segments", "legendFormat": "{{cluster}}/{{shard}}", "refId": "A"}]},
+    {"type": "timeseries", "title": "WAL uploaded age, s", "gridPos": {"x":0,"y":8,"w":12,"h":8},
+     "targets": [{"expr": "pgworker_backup_wal_last_uploaded_age_seconds", "legendFormat": "{{cluster}}/{{shard}}", "refId": "A"}]},
+    {"type": "timeseries", "title": "Verify outcomes (increase 15m, by result)", "gridPos": {"x":12,"y":8,"w":12,"h":8},
+     "targets": [{"expr": "increase(pgworker_backup_verify_total[15m])", "legendFormat": "{{cluster}}/{{shard}} {{result}}", "refId": "A"}]},
+    {"type": "timeseries", "title": "Restore outcomes (increase 15m, by result)", "gridPos": {"x":0,"y":16,"w":12,"h":8},
+     "targets": [{"expr": "increase(pgworker_backup_restore_total[15m])", "legendFormat": "{{cluster}}/{{shard}} {{result}}", "refId": "A"}]},
+    {"type": "timeseries", "title": "Drill outcomes (increase 15m, by result)", "gridPos": {"x":12,"y":16,"w":12,"h":8},
+     "targets": [{"expr": "increase(pgworker_backup_drill_total[15m])", "legendFormat": "{{cluster}}/{{shard}} {{result}}", "refId": "A"}]},
+    {"type": "timeseries", "title": "HA RTO durations, s (by cluster/shard)", "gridPos": {"x":0,"y":24,"w":12,"h":8},
+     "targets": [
+        {"expr": "pgworker_ha_failover_duration_seconds", "legendFormat": "failover {{cluster}}/{{shard}}", "refId": "A"},
+        {"expr": "pgworker_ha_rebuild_duration_seconds", "legendFormat": "rebuild {{cluster}}/{{shard}}", "refId": "B"}]}
   ]
 }
