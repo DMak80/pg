@@ -70,9 +70,11 @@ public sealed partial class BackupsPolicyHandler(IEtcdGateway gateway, string[] 
         // 4) Валидация диапазонов (400 с перечнем): days [1..365], weeks [0..52],
         //    months [0..120], full_max_age_sec >= 600, on_create — bool из JSON-схемы.
         var errors = new List<ValidationError>();
-        var days = body.Retention?.Days ?? 7;
-        var weeks = body.Retention?.Weeks ?? 4;
-        var months = body.Retention?.Months ?? 6;
+        //    t18: отсутствующие retention-поля → дефолт 1/1/1 (целевая схема,
+        //    arch/19 §9) — partial-policy PUT не возвращает кластер к 7/4/6.
+        var days = body.Retention?.Days ?? 1;
+        var weeks = body.Retention?.Weeks ?? 1;
+        var months = body.Retention?.Months ?? 1;
         var maxAge = body.FullMaxAgeSec ?? 86400;
         var onCreate = body.Verify?.OnCreate ?? true;
         if (days is < 1 or > 365)

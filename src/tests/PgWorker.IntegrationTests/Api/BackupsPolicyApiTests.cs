@@ -68,12 +68,13 @@ public class BackupsPolicyApiTests(PgApiFixture fixture)
         var resp = await Client.PostAsync("/api/clusters/bpd/backups/policy",
             new StringContent("{}", System.Text.Encoding.UTF8, "application/json"), ct);
 
-        // Assert — 200, ключ с дефолтами 7/4/6/86400/true
+        // Assert — 200, ключ с дефолтами 1/1/1/86400/true (t18: целевая схема,
+        // хендлер зеркалит дефолт канона arch/19 §9)
         resp.StatusCode.Should().Be(HttpStatusCode.OK);
         var stored = await Etcd.Gateway.GetAsync(Etcd.Endpoint, "/pgworker/backups/bpd/policy", ct);
-        stored.Value!.Value.Should().Contain("\"days\":7")
-            .And.Contain("\"weeks\":4")
-            .And.Contain("\"months\":6")
+        stored.Value!.Value.Should().Contain("\"days\":1")
+            .And.Contain("\"weeks\":1")
+            .And.Contain("\"months\":1")
             .And.Contain("\"full_max_age_sec\":86400")
             .And.Contain("\"on_create\":true");
     }
