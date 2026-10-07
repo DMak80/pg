@@ -469,7 +469,13 @@ public class E2eScenarios(ITestOutputHelper output)
             TimeSpan.FromSeconds(30), ct);
         hasLeader.Should().BeTrue("лидер снапшотов должен быть выбран");
 
-        // Снапшоты снимает ТОЛЬКО лидер: файл появился ровно в одном каталоге.
+        // Снапшоты снимает ТОЛЬКО лидер (§11.7). Ретрай-окно на РОСТ ровно
+        // одного каталога (t24, вскрывшийся фейл точечного повтора): после
+        // Kill(previous) оба инстанса могут законно побыть лидерами по очереди
+        // (lease-TTL истёк → p3 взял → p4 перебил) — файловый след необратим,
+        // «ровно один каталог с файлами» в переходном окне неверен по механике.
+        // Стабильный инвариант: за окно больше интервала снимков (interval=1
+        // мин → окно 70 с) НОВЫЕ файлы появились ровно в ОДНОМ каталоге.
         var instances = new[] { p3, p4 };
         var shot = await WaitPhaseAsync(
             "ac7-snapshots",
@@ -478,22 +484,49 @@ public class E2eScenarios(ITestOutputHelper output)
             TimeSpan.FromSeconds(60), ct);
         shot.Should().BeTrue("лидер снимает регулярные снапшоты (SnapshotLoop)");
 
-        await Task.Delay(TimeSpan.FromSeconds(5), ct);
-        instances.Count(i => Directory.GetFiles(i.SnapshotsDir, "snapshot-*.db").Length > 0)
-            .Should().Be(1, "не-лидер снапшоты не снимает (§11.7)");
+        var singleGrower = await WaitPhaseAsync(
+            "ac7-single-grower",
+            async () =>
+            {
+                var before = instances
+                    .Select(i => Directory.GetFiles(i.SnapshotsDir, "snapshot-*.db").Length).ToArray();
+                await Task.Delay(TimeSpan.FromSeconds(70), ct);
+                var after = instances
+                    .Select(i => Directory.GetFiles(i.SnapshotsDir, "snapshot-*.db").Length).ToArray();
+                return after.Select((n, i) => n > before[i]).Count(g => g) == 1;
+            },
+            TimeSpan.FromSeconds(240), ct);
+        singleGrower.Should().BeTrue(
+            "не-лидер снапшоты не снимает (§11.7): за окно снимков растёт ровно один каталог");
 
         // Кластер обрабатывает ровно один инстанс: work.instance стабилен.
-        var seen = new HashSet<string>();
-        for (var i = 0; i < 3; i++)
-        {
-            var work = await GetOrNullAsync($"/pgworker/work/{cluster}");
-            work.Should().NotBeNull();
-            seen.Add(JsonSerializer
-                .Deserialize<Dictionary<string, JsonElement>>(work!.Value)!["instance"].GetString()!);
-            await Task.Delay(TimeSpan.FromSeconds(3), ct);
-        }
+        // Ретрай-окно на СТАБИЛЬНОСТЬ (t24, фейлы №15/№17 при N=5):
+        // previous.Kill() — клэйм убитого инстанса живёт по lease-TTL, новый
+        // держатель переизбирается не мгновенно; сэмплирование «3×3 с» ловило
+        // переходное окно (два разных instance). Устойчивость = подряд идущие
+        // сэмплы (3 сэмплa × 3 с, как было) дают ОДИН instance — поллингом
+        // с бюджетом, а не ассертом в первое попавшееся окно.
+        var stableInstance = await WaitPhaseAsync(
+            "ac7-single-instance",
+            async () =>
+            {
+                var seenNow = new HashSet<string>();
+                for (var i = 0; i < 3; i++)
+                {
+                    var work = await GetOrNullAsync($"/pgworker/work/{cluster}");
+                    if (work is null)
+                        return false;
+                    seenNow.Add(JsonSerializer
+                        .Deserialize<Dictionary<string, JsonElement>>(work.Value)!["instance"].GetString()!);
+                    if (i < 2)
+                        await Task.Delay(TimeSpan.FromSeconds(3), ct);
+                }
 
-        seen.Should().HaveCount(1, $"кластер {cluster} обрабатывает только один инстанс (клэймы Д2)");
+                return seenNow.Count == 1;
+            },
+            TimeSpan.FromSeconds(120), ct);
+        stableInstance.Should().BeTrue(
+            $"кластер {cluster} обрабатывает только один инстанс (клэймы Д2; окно переизбрания после Kill предыдущего выдержано)");
     }
 
     // ===== Хелперы docker/sql =====

@@ -8,6 +8,7 @@ namespace PgWorker.IntegrationTests.Docker;
 // ненулевой exit — Result.Failed с кодом, отсутствие контейнера — отказ.
 // Гейт: PGW_TEST_DOCKER=1 (DockerTrait), трейт DockerAvailable — для фильтрации.
 [Trait("DockerAvailable", "true")]
+[Collection(NonE2eCollection.Name)]
 public class ExecDriverTests
 {
     private const string AlpineImage = "alpine:3.20";

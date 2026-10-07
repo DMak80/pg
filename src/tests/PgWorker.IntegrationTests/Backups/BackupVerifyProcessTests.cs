@@ -19,6 +19,7 @@ namespace PgWorker.IntegrationTests.Backups;
 // окружение OwnEtcd (guid-имя pgw-ee-*, динамический порт, own-only teardown
 // с ассертом чистоты — docs/e2e-isolation.md §1/§3; ключи умирают с контейнером)
 // + фейки docker-движка и S3 (паттерны FakeBackupDeps/FakeBackupEngine).
+[Collection(NonE2eCollection.Name)]
 public class BackupVerifyProcessTests
 {
     // Окружение Fact'а (свой etcd); создаётся в начале каждого сценария.
@@ -37,6 +38,7 @@ public class BackupVerifyProcessTests
 
         // ── union-члены t07 (kfw/vwk-методы): pg-доменом не используются — стабы ──
         public Task<Result> DeleteNetworkAsync(string name, CancellationToken ct) => Task.FromResult(Result.Success());
+        public Task<Result> NetworkConnectAsync(string network, string container, CancellationToken ct) => Task.FromResult(Result.Success());
         public Task<Result<bool>> VolumeExistsAsync(string name, CancellationToken ct) => Task.FromResult(Result<bool>.Success(false));
         public Task<Result> EnsureVolumeAsync(string name, CancellationToken ct) => Task.FromResult(Result.Success());
         public Task<Result> DeleteVolumeAsync(string name, CancellationToken ct) => Task.FromResult(Result.Success());

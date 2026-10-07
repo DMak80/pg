@@ -11,7 +11,7 @@ public class PortAllocatorTests
 
     private static IReadOnlyList<int> PortsOf(PgAddr a) => [a.Pg, a.Patroni, a.Doorman];
     private static string HostOf(PgAddr a) => a.Host;
-    private static PgAddr MakeAddress(string host, int basePort) => new(host, basePort, basePort + 3000, basePort + 1500);
+    private static PgAddr MakeAddress(string host, int basePort) => new(host, basePort, basePort + 1, basePort + 2);
     private static string KeyOf(NodePlacement p) => $"{p.Group}/{p.Node}";
 
     private static readonly IReadOnlyList<NodePlacement> TwoNodes =
@@ -27,7 +27,7 @@ public class PortAllocatorTests
         var plan = new PlacementPlan([new("shard1", "shard1a", "h1")]);
         var existing = new Dictionary<string, PgAddr>
         {
-            ["shard1/shard1a"] = new("h1", 15123, 18123, 16623),
+            ["shard1/shard1a"] = new("h1", 15123, 15124, 15125),
         };
 
         // Act: аллокация с пустой занятостью.
@@ -57,7 +57,7 @@ public class PortAllocatorTests
     }
 
     [Fact]
-    public void Allocate_BusyConflict_ShiftsToNextBase()
+    public void Allocate_BusyConflict_ShiftsToNextFreeTriple()
     {
         // Arrange: чужой контейнер занял (h1, 15000) — база 15000 недоступна.
         var plan = new PlacementPlan(TwoNodes);
@@ -68,9 +68,11 @@ public class PortAllocatorTests
             new Dictionary<string, PgAddr>(), busy, 15000, 16000,
             PortsOf, HostOf, MakeAddress, KeyOf);
 
-        // Assert: первая нода сдвинулась на base 15001, вторая — на 15002.
+        // Assert: первая нода — тройка 15001-15003; вторая НЕ может взять
+        // пересекающуюся (base 15002/15003 заняты портами первой) — первая
+        // свободная тройка 15004-15006 (последовательные слоты, t24).
         result.Value["shard1/shard1a"].Pg.Should().Be(15001);
-        result.Value["shard1/shard1b"].Pg.Should().Be(15002);
+        result.Value["shard1/shard1b"].Pg.Should().Be(15004);
     }
 
     [Fact]
@@ -91,7 +93,7 @@ public class PortAllocatorTests
     }
 
     [Fact]
-    public void Allocate_Offsets_AreBaseDoormanPatroni()
+    public void Allocate_SequentialSlots_AreBasePlusOneTwo()
     {
         // Arrange: чистый хост, base 15000.
         var plan = new PlacementPlan([new("shard1", "shard1a", "h1")]);
@@ -102,12 +104,61 @@ public class PortAllocatorTests
             new HashSet<(string, int)>(), 15000, 16000,
             PortsOf, HostOf, MakeAddress, KeyOf);
 
-        // Assert: смещения по spec §6.3 — pg=base, doorman=base+1500, patroni=base+3000.
+        // Assert: последовательные слоты (arch/14 §2.4 п.2, t24): тройка
+        // pg/patroni/doorman идёт подряд — смещения +3000/+1500 упразднены.
         var addr = result.Value["shard1/shard1a"];
         addr.Host.Should().Be("h1");
         addr.Pg.Should().Be(15000);
-        addr.Doorman.Should().Be(16500);
-        addr.Patroni.Should().Be(18000);
+        addr.Patroni.Should().Be(15001);
+        addr.Doorman.Should().Be(15002);
+    }
+
+    // AAA (t24, arch/14 §2.4 п.2): последовательное выделение — тройки нод
+    // НЕ пересекаются и идут подряд по диапазону (никаких +3000/+1500-дыр).
+    [Fact]
+    public void Allocate_MultipleNodes_DisjointConsecutiveTriples()
+    {
+        // Arrange: три ноды, диапазон ровно на три тройки [15000, 15009).
+        var plan = new PlacementPlan(
+        [
+            new("shard1", "shard1a", "h1"),
+            new("shard1", "shard1b", "h1"),
+            new("shard1", "shard1c", "h1"),
+        ]);
+
+        // Act
+        var result = PortAllocator.Allocate(plan,
+            new Dictionary<string, PgAddr>(),
+            new HashSet<(string, int)>(), 15000, 15009,
+            PortsOf, HostOf, MakeAddress, KeyOf);
+
+        // Assert: базы подряд (15000, 15003, 15006); все порты всех троек
+        // различны и внутри [From, To).
+        var bases = new[] { "shard1/shard1a", "shard1/shard1b", "shard1/shard1c" }
+            .Select(k => result.Value[k].Pg).ToList();
+        bases.Should().Equal(15000, 15003, 15006);
+        var allPorts = result.Value.Values.SelectMany(PortsOf).ToList();
+        allPorts.Should().OnlyHaveUniqueItems();
+        allPorts.Should().OnlyContain(p => p >= 15000 && p < 15009);
+    }
+
+    // AAA (t24): исчерпание диапазона — фейл, а НЕ выход за To: последняя
+    // тройка обязана целиком лежать в [From, To).
+    [Fact]
+    public void Allocate_RangeFitsOneTripleOnly_SecondNodeFails()
+    {
+        // Arrange: диапазон [15000, 15003) вмещает ровно одну тройку.
+        var plan = new PlacementPlan(TwoNodes);
+
+        // Act
+        var result = PortAllocator.Allocate(plan,
+            new Dictionary<string, PgAddr>(),
+            new HashSet<(string, int)>(), 15000, 15003,
+            PortsOf, HostOf, MakeAddress, KeyOf);
+
+        // Assert: вторая нода не разместилась; ports первой не вышли за To.
+        result.IsSuccess.Should().BeFalse();
+        result.Error.Should().NotBeNull();
     }
 
     // AAA: дубль-страховка контракта C (spec §3.3/§6): busy-union, переданный
@@ -115,16 +166,16 @@ public class PortAllocatorTests
     [Fact]
     public void Allocate_PinnedPortInBusyWithoutExisting_AllocatesNext()
     {
-        // Arrange: busy-union (docker ∪ portalloc соседей) занял 15000-тройку; existing пуст.
+        // Arrange: busy-union (docker ∪ portalloc соседей) занял тройку 15000-15002; existing пуст.
         var plan = new PlacementPlan([new("shard1", "shard1a", "h1")]);
-        var busy = new HashSet<(string, int)> { ("h1", 15000), ("h1", 18000), ("h1", 16500) };
+        var busy = new HashSet<(string, int)> { ("h1", 15000), ("h1", 15001), ("h1", 15002) };
 
         // Act
         var result = PortAllocator.Allocate(plan, new Dictionary<string, PgAddr>(), busy, 15000, 16000,
             PortsOf, HostOf, MakeAddress, KeyOf);
 
         // Assert: база сдвинута — соседская тройка не переиспользуется.
-        result.Value["shard1/shard1a"].Pg.Should().Be(15001);
+        result.Value["shard1/shard1a"].Pg.Should().Be(15003);
     }
 
     // --- Зеркальные Kfw-кейсы (generic-инстанс с одним портом) ---

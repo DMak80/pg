@@ -12,14 +12,14 @@ namespace PgWorker.UnitTests.Planning;
 
 public class PortPlanConvergenceTests
 {
-    private static NodeAddress Addr(string host, int pg) => new(host, new NodePorts(pg, pg + 3000, pg + 1500));
+    private static NodeAddress Addr(string host, int pg) => new(host, new NodePorts(pg, pg + 1, pg + 2));
 
     private static IReadOnlyDictionary<string, IReadOnlySet<(string Host, int Port)>> Facts(
         params (string Key, int Pg, string Host)[] nodes)
     {
         var map = new Dictionary<string, IReadOnlySet<(string, int)>>();
         foreach (var (key, pg, host) in nodes)
-            map[key] = new HashSet<(string, int)> { (host, pg), (host, pg + 3000), (host, pg + 1500) };
+            map[key] = new HashSet<(string, int)> { (host, pg), (host, pg + 1), (host, pg + 2) };
         return map;
     }
 
@@ -47,7 +47,7 @@ public class PortPlanConvergenceTests
         // здоровые закрепления).
         var existing = new Dictionary<string, NodeAddress> { ["s1/n1"] = Addr("h1", 15000) };
         var selfFactByNode = Facts(("s1/n1", 15000, "h1"));
-        var busy = new HashSet<(string, int)> { ("h1", 15000), ("h1", 18000), ("h1", 16500) };
+        var busy = new HashSet<(string, int)> { ("h1", 15000), ("h1", 15001), ("h1", 15002) };
 
         // Act
         var changed = PortPlanConvergence.DetachColliding(existing, selfFactByNode, busy);
@@ -71,7 +71,7 @@ public class PortPlanConvergenceTests
             ["s1/n2"] = Addr("h1", 15000),
         };
         var selfFactByNode = Facts(("s1/n1", 15000, "h1"));
-        var busy = new HashSet<(string, int)> { ("h1", 15000), ("h1", 18000), ("h1", 16500) };
+        var busy = new HashSet<(string, int)> { ("h1", 15000), ("h1", 15001), ("h1", 15002) };
 
         // Act
         var changed = PortPlanConvergence.DetachColliding(existing, selfFactByNode, busy);
@@ -89,17 +89,17 @@ public class PortPlanConvergenceTests
     [Fact]
     public void DetachColliding_DoormanDisabledZeroPort_RecordConfirmed()
     {
-        // Arrange: режим R1 — без пулера: запись pg=15000/patroni=18000/doorman=0;
+        // Arrange: режим R1 — без пулера: запись pg=15000/patroni=15001/doorman=0;
         // факт контейнера — те же два порта (0 в факт не собирается).
         var existing = new Dictionary<string, NodeAddress>
         {
-            ["s1/n1"] = new("h1", new NodePorts(15000, 18000, 0)),
+            ["s1/n1"] = new("h1", new NodePorts(15000, 15001, 0)),
         };
         var selfFactByNode = new Dictionary<string, IReadOnlySet<(string, int)>>
         {
-            ["s1/n1"] = new HashSet<(string, int)> { ("h1", 15000), ("h1", 18000) },
+            ["s1/n1"] = new HashSet<(string, int)> { ("h1", 15000), ("h1", 15001) },
         };
-        var busy = new HashSet<(string, int)> { ("h1", 15000), ("h1", 18000) };
+        var busy = new HashSet<(string, int)> { ("h1", 15000), ("h1", 15001) };
 
         // Act
         var changed = PortPlanConvergence.DetachColliding(existing, selfFactByNode, busy);
@@ -115,7 +115,7 @@ public class PortPlanConvergenceTests
         // Arrange: object-запись (усыновлённая) с портом в занятости.
         var existing = new Dictionary<string, NodeAddress>
         {
-            ["s1/n1"] = new("h1", new NodePorts(15000, 18000, 16500), Object: "external-1"),
+            ["s1/n1"] = new("h1", new NodePorts(15000, 15001, 15002), Object: "external-1"),
         };
 
         // Act
@@ -130,12 +130,12 @@ public class PortPlanConvergenceTests
     [Fact]
     public void DetachColliding_PatroniPortCollision_RemovesRecord()
     {
-        // Arrange: занят PATRONI-порт (18000) — коллизия по любому из трёх портов.
+        // Arrange: занят PATRONI-порт (15001) — коллизия по любому из трёх портов.
         var existing = new Dictionary<string, NodeAddress> { ["s1/n1"] = Addr("h1", 15000) };
 
         // Act
         var changed = PortPlanConvergence.DetachColliding(existing, Facts(),
-            new HashSet<(string, int)> { ("h1", 18000) });
+            new HashSet<(string, int)> { ("h1", 15001) });
 
         // Assert
         changed.Should().BeTrue();
@@ -175,7 +175,7 @@ public class PortPlanConvergenceTests
         var confirmed = PortPlanConvergence.ConfirmedFact(existing, selfFactByNode);
 
         // Assert: только тройка портов живой n1 — не вся docker-занятость.
-        confirmed.Should().BeEquivalentTo(new[] { ("h1", 15000), ("h1", 18000), ("h1", 16500) });
+        confirmed.Should().BeEquivalentTo(new[] { ("h1", 15000), ("h1", 15001), ("h1", 15002) });
     }
 }
 
@@ -185,7 +185,7 @@ public class PortPlanConvergenceTests
 public class PortPlanConvergenceAllConfirmedTests
 {
     private static NodeAddress Addr(string host = "h1", int pg = 15000)
-        => new(host, new NodePorts(pg, pg + 3000, pg + 1500));
+        => new(host, new NodePorts(pg, pg + 1, pg + 2));
 
     private static IReadOnlySet<(string, int)> Fact(NodeAddress a) => new HashSet<(string, int)>
     {

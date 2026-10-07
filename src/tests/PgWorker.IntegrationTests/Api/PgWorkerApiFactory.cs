@@ -65,9 +65,3 @@ public sealed class PgApiFixture : IAsyncLifetime
         Environment.SetEnvironmentVariable("PGW_BUCKET_MOVER_PASSWORD", null);
     }
 }
-
-[CollectionDefinition(Name)]
-public sealed class PgApiCollection : ICollectionFixture<PgApiFixture>
-{
-    public const string Name = "pg-api";
-}

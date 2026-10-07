@@ -1,16 +1,17 @@
 <Project Sdk="Microsoft.NET.Sdk">
 
-    <!-- E2E-классы изолированы каноном (guid-контуры, own-only teardown) —
-         коллекции гоняются параллельно. max 3 контура: при 5 docker-хост
-         деградирует по DNS (getaddrinfo empty в логах нод → failover-каскады,
-         e2e-факт: WalStream_Promote упал, серии шли дольше N=3), ускорения
-         нет — 5 контуров не выдерживает; «тихие» классы с общими ассетами
-         при конфликте — в [Collection]-группу. Канон AGENTS.md. -->
-    <PropertyGroup>
-        <XunitParallelizeTestCollections>true</XunitParallelizeTestCollections>
-        <XunitMaxParallelThreads>3</XunitMaxParallelThreads>
-        <XunitParallelizeAssembly>false</XunitParallelizeAssembly>
-    </PropertyGroup>
+    <!-- Канон параллелизма E2E (t24, решение гейта конфигурации Фазы 6):
+         единственный источник потолка — xunit.runner.json
+         (maxParallelThreads=5 — канон приёмки t24 фазы 4; xunit.v3 читает конфиг ТОЛЬКО из output —
+         копирование обязательно). Не-E2E классы — в последовательной
+         [Collection]-группе NonE2eCollection (DisableParallelization=true):
+         параллельная конкуренция для них не норма (эмпирика, журнал задачи).
+         Бывшие CollectionBehavior-атрибут (задавал N=1 всей сборке) и
+         Xunit*-свойства csproj (xunit.v3 не поддерживает) удалены. Канон и
+         правила соседней нагрузки — docs/e2e-launch.md §5. -->
+    <ItemGroup>
+        <None Update="xunit.runner.json" CopyToOutputDirectory="PreserveNewest"/>
+    </ItemGroup>
 
     <ItemGroup>
         <Using Include="FluentAssertions"/>

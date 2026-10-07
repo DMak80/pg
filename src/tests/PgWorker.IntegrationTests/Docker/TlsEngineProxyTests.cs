@@ -11,6 +11,7 @@ namespace PgWorker.IntegrationTests.Docker;
 // unix:/var/run/docker.sock) с сертами фикстуры — DockerEngineFactory на
 // tcp://localhost:<mapped> + DockerTlsOptions выполняет Ping/ListContainers и
 // create/start/delete одноразового контейнера. Порт — динамический.
+[Collection(NonE2eCollection.Name)]
 public class TlsEngineProxyTests
 {
     [Fact]

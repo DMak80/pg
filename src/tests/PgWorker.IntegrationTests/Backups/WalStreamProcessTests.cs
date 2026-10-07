@@ -15,7 +15,7 @@ namespace PgWorker.IntegrationTests.Backups;
 
 // Интеграции WalStreamProcess (t03 spec Ф3): реальный etcd (статусы/журнал) +
 // фейки docker-агентов/SQL/S3. Снапшот кластера строится руками.
-[Collection(EtcdCollection.Name)]
+[Collection(NonE2eCollection.Name)]
 public class WalStreamProcessTests(EtcdFixture fixture)
 {
     private readonly ClaimStore _claims = new("/pgworker", [fixture.Endpoint], fixture.Gateway, TimeProvider.System);
@@ -108,7 +108,8 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         result.IsSuccess.Should().BeTrue();
         driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-c1-shard1-shard1a");
         // Контракт (ревью Ф7 №1): процесс НЕ назначает сеть — драйвер владеет
-        // pgw-net и проставляет её при create (юнит-тест ClusterDriverTests).
+        // per-cluster сетью pgw-net-<C> и проставляет её при create (юнит-тест
+        // ClusterDriverTests).
         driver.EnsuredAgentSpecs.Should().ContainSingle().Which.Network.Should().BeNull();
         // Рестарт-политики у агента нет: docker не лупит — супервиз тика
         // пересоздаёт exited-агента (иначе луп молотит на снесённом мастере)

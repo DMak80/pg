@@ -22,7 +22,7 @@ namespace PgWorker.IntegrationTests.Api;
 // транспорт in-memory TLS не исполняет) — порт динамический (зонд FreePort).
 // https-валидация advertise: http-URL при выключенном AllowInsecureHttp — fail-fast
 // старта хоста (ValidateOnStart, arch/14 §1.1).
-[Collection(PgApiCollection.Name)]
+[Collection(NonE2eCollection.Name)]
 public class MtlsApiTests(PgApiFixture fx)
 {
     // Локальный PKI-хелпер: CertificateRequest + RSA-2048 (паттерн TestPki из

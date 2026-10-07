@@ -207,7 +207,10 @@ public sealed class DockerHostOptions
     public string Endpoint { get; set; } = "";
 }
 
-/// <summary>Диапазон базовых портов нод [From, To): pg=base, patroni=+3000, doorman=+1500.</summary>
+/// <summary>Диапазон портов нод [From, To): последовательные слоты per-node
+/// (pg / patroni / doorman = base / base+1 / base+2 — arch/14 §2.4 п.2, t24:
+/// схема смещений +3000/+1500 упразднена); параметризуется средой — прод
+/// per-install, E2E — per-contour окно.</summary>
 public sealed class PortRangeOptions
 {
     public int From { get; set; } = 15000;

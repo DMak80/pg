@@ -78,7 +78,7 @@ public interface IClusterDriver
     // Идемпотентно подратить контейнер агента pgw-backup-wal-<C>-<X>-<N> на docker-хосте
     // host (t27: per-node имена — агент на каждой ноде-источнике): resolve движка с
     // advertised-fallback (как EnsureNodeAsync — single-host advertised-стенды), сеть
-    // нод pgw-net (адрес мастера по alias :5432), create + start. spec (ContainerSpec)
+    // нод pgw-net-<C> (адрес мастера по alias :5432), create + start. spec (ContainerSpec)
     // — от WalStreamProcess (механика агента — код воркера).
     Task<Result> EnsureBackupAgentAsync(
         string cluster, string shard, string node, ContainerSpec spec, string host, CancellationToken ct);
@@ -135,9 +135,15 @@ public sealed class PlainClusterDriver(
 
     // Plain: инспект контейнера — факт running-процесса (arch/14 §5 C).
     public bool SupportsRunningInspection => true;
-    // Общая сеть нод кластера: Patroni-репликация по внутренним адресам
-    // (alias = имя ноды); без user-defined сети hostname-резолва нет.
-    public const string NodesNetwork = "pgw-net";
+    // Сеть нод — PER-CLUSTER (arch/14 §2.1, как kfw-net-<C> у KafkaWorker):
+    // Patroni-репликация по внутренним адресам (alias = имя ноды), без
+    // user-defined сети hostname-резолва нет. Единая сеть делала DNS-зону
+    // общей для всех кластеров docker-хоста — перекрёстная видимость чужих
+    // алиасов, сетевой изоляции контуров не было; per-cluster сеть даёт её
+    // по построению (уникальное имя кластера ⇒ уникальная DNS-зона, t24).
+    public const string NodesNetworkPrefix = "pgw-net-";
+
+    public static string NetworkName(string cluster) => $"{NodesNetworkPrefix}{cluster}";
 
     private static string Advertised(string host, string? advertised)
         => advertised is { Length: > 0 } ? advertised : host;
@@ -204,8 +210,8 @@ public sealed class PlainClusterDriver(
         {
             var name = NodeName(topology.Cluster, topology.Shard, nodeName);
 
-            // Сеть нод (идемпотентно; 409 already exists = успех).
-            var network = await engine.EnsureNetworkAsync(NodesNetwork, ct);
+            // Сеть нод кластера (идемпотентно; 409 already exists = успех).
+            var network = await engine.EnsureNetworkAsync(NetworkName(topology.Cluster), ct);
             if (!network.IsSuccess)
                 throw network.Error!;
 
@@ -227,7 +233,21 @@ public sealed class PlainClusterDriver(
                 if (!inspect.IsSuccess)
                     throw inspect.Error!;
                 if (PortsMatchPlan(inspect.Value.Ports, addr))
+                {
+                    // Ensure-инвариант кластерной сети (arch/14 §2.1, t24): нода
+                    // обязана жить в pgw-net-<C> — контейнер из старой единой
+                    // сети (наследие миграции) подключается к сети кластера;
+                    // пересоздание недопустимо (нода с данными).
+                    var clusterNet = NetworkName(topology.Cluster);
+                    if ((inspect.Value.Networks ?? []).All(n => n != clusterNet))
+                    {
+                        var connected = await engine.NetworkConnectAsync(clusterNet, name, ct);
+                        if (!connected.IsSuccess)
+                            throw connected.Error!;
+                    }
+
                     return; // контейнер на месте с планом — идемпотентность
+                }
 
                 var stopped = await engine.StopContainerAsync(name, timeoutSec: 10, ct);
                 if (!stopped.IsSuccess)
@@ -275,6 +295,39 @@ public sealed class PlainClusterDriver(
                 if (!volume.IsSuccess)
                     throw volume.Error!;
             }
+
+            // Демонтаж сети кластера (arch/14 §2.1, kfw-паттерн): когда объектов
+            // кластера (ноды + wal-агенты) не осталось, per-cluster сеть
+            // удаляется — пул subnet'ов хоста конечен, сирот не копим.
+            // «Active endpoints» транзиентен (docker API держит endpoint после
+            // force-remove) — ретраи; итоговая неудача НЕ роняет демонтаж (сеть
+            // могла быть снесена параллельно) — громкий след в stderr воркера,
+            // подберут следующий демонтаж/чистка хоста.
+            var objects = await ListNodeObjectsAsync(cluster, ct);
+            if (!objects.IsSuccess || objects.Value.Count > 0)
+                return;
+            var agents = await ListBackupAgentsAsync(cluster, ct);
+            if (!agents.IsSuccess || agents.Value.Count > 0)
+                return;
+            foreach (var engine in _engines.Values)
+            {
+                for (var attempt = 0; ; attempt++)
+                {
+                    var deleted = await engine.DeleteNetworkAsync(NetworkName(cluster), ct);
+                    if (deleted.IsSuccess)
+                        break;
+                    var error = deleted.Error!;
+                    if (attempt >= 3
+                        || !error.Message.Contains("active endpoints", StringComparison.Ordinal))
+                    {
+                        Console.Error.WriteLine(
+                            $"pgw: сеть кластера {NetworkName(cluster)} не удалена при демонтаже: {error.Message}");
+                        break;
+                    }
+
+                    await Task.Delay(1000, ct); // endpoint отцепится — повторяем
+                }
+            }
         });
     }
 
@@ -311,7 +364,7 @@ public sealed class PlainClusterDriver(
         return await Result.FromAsync(async () =>
         {
             // Сеть нод кластера (как EnsureNode): агент видит мастера по alias :5432.
-            var network = await engine.EnsureNetworkAsync(NodesNetwork, ct);
+            var network = await engine.EnsureNetworkAsync(NetworkName(cluster), ct);
             if (!network.IsSuccess)
                 throw network.Error!;
 
@@ -320,18 +373,42 @@ public sealed class PlainClusterDriver(
             // недоступен, pg_receivewal не подключился бы (рестарт-луп). Проставляем
             // при create независимо от спеки (WalStreamProcess передаёт Network: null;
             // alias не нужны — hostname контейнера = имя агента).
-            var agentSpec = spec with { Network = NodesNetwork };
+            var agentSpec = spec with { Network = NetworkName(cluster) };
 
             var name = BackupAgentNames.Container(cluster, shard, node);
             var existing = await engine.ListContainersAsync(name, all: true, ct);
             if (!existing.IsSuccess)
                 throw existing.Error!;
-            if (existing.Value.FirstOrDefault(c => c.Names.Contains(name)) is not null)
+            if (existing.Value.FirstOrDefault(c => c.Names.Contains(name)) is { } agent)
             {
-                var started = await engine.StartContainerAsync(name, ct); // 304 = успех
-                if (!started.IsSuccess)
-                    throw started.Error!;
-                return; // контейнер есть — идемпотентность (супервиз процесса решает про пересоздание)
+                // Ensure-инвариант кластерной сети (arch/14 §2.1, t24): агент
+                // обязан жить в pgw-net-<C> вместе с нодой — агент из старой
+                // единой сети мастера не видит (pg_receivewal-рестарт-луп).
+                // Лечение по канону идемпотентности: пересоздание (stateless),
+                // staging-volume вместе с ним (семантика RemoveBackupAgents).
+                var inspect = await engine.InspectContainerAsync(agent.Id, ct);
+                if (!inspect.IsSuccess)
+                    throw inspect.Error!;
+                var clusterNet = NetworkName(cluster);
+                if ((inspect.Value.Networks ?? []).All(n => n != clusterNet))
+                {
+                    var stopped = await engine.StopContainerAsync(name, timeoutSec: 10, ct);
+                    if (!stopped.IsSuccess)
+                        throw stopped.Error!;
+                    var removed = await engine.RemoveContainerAsync(name, force: true, ct);
+                    if (!removed.IsSuccess)
+                        throw removed.Error!;
+                    var staging = await engine.RemoveVolumeAsync($"{name}-staging", ct);
+                    if (!staging.IsSuccess)
+                        throw staging.Error!;
+                }
+                else
+                {
+                    var started = await engine.StartContainerAsync(name, ct); // 304 = успех
+                    if (!started.IsSuccess)
+                        throw started.Error!;
+                    return; // контейнер есть — идемпотентность (супервиз процесса решает про пересоздание)
+                }
             }
 
             var created = await engine.CreateContainerAsync(agentSpec, name, ct);
@@ -626,7 +703,7 @@ public sealed class PlainClusterDriver(
             MemoryBytes: resources?.MemoryBytes,
             LabelKey: LabelKey,
             Label: topology.Cluster,
-            Network: NodesNetwork,
+            Network: NetworkName(topology.Cluster),
             NetworkAliases: [nodeName, NodeName(topology.Cluster, topology.Shard, nodeName)]);
     }
 

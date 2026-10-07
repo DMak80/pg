@@ -20,6 +20,11 @@ public interface IDockerEngine : IAsyncDisposable
     Task<Result<string>> ExecAsync(string containerId, IReadOnlyList<string> cmd, CancellationToken ct);
     Task<Result> EnsureNetworkAsync(string name, CancellationToken ct);
     Task<Result> DeleteNetworkAsync(string name, CancellationToken ct);
+
+    // Подключить работающий контейнер к сети (POST /networks/<net>/connect;
+    // t24/arch/14 §2.1): ensure-инвариант «нода и её wal-агенты в одной сети
+    // кластера» — лечение ноды с данными, пересоздание которой недопустимо.
+    Task<Result> NetworkConnectAsync(string network, string container, CancellationToken ct);
     Task<Result> RemoveVolumeAsync(string name, CancellationToken ct);
     Task<Result<bool>> VolumeExistsAsync(string name, CancellationToken ct);
     Task<Result> EnsureVolumeAsync(string name, CancellationToken ct);
@@ -53,7 +58,11 @@ public sealed record DockerContainerInspect(
     bool? Running = null, int? ExitCode = null,
     // t07 (arch/19 §6): docker-факт возраста running-джоба (StartedAt, RFC3339 →
     // unix) — бюджет verify-джоба; null при отсутствии/битой строке инспекта.
-    long? StartedAtUnix = null);
+    long? StartedAtUnix = null,
+    // t24 (arch/14 §2.1): имена сетей контейнера (ключи NetworkSettings.Networks)
+    // — сверка ensure-инварианта «нода и её wal-агенты в одной сети кластера»;
+    // null = инспект без сетей (фейки/урезанный ответ).
+    string[]? Networks = null);
 
 // Swarm-нода из /nodes + число работающих тасков.
 public sealed record DockerSwarmNode(string Id, string Hostname, string State, int RunningTasks);

@@ -39,6 +39,7 @@ public class ClusterDriverLimitsTests
         public Task<Result<string>> ExecAsync(string containerId, IReadOnlyList<string> cmd, CancellationToken ct) => throw NotUsed();
         public Task<Result> EnsureNetworkAsync(string name, CancellationToken ct) => throw NotUsed();
         public Task<Result> DeleteNetworkAsync(string name, CancellationToken ct) => throw NotUsed();
+        public Task<Result> NetworkConnectAsync(string network, string container, CancellationToken ct) => throw NotUsed();
         public Task<Result> RemoveVolumeAsync(string name, CancellationToken ct) => throw NotUsed();
         public Task<Result<bool>> VolumeExistsAsync(string name, CancellationToken ct) => throw NotUsed();
         public Task<Result> EnsureVolumeAsync(string name, CancellationToken ct) => throw NotUsed();

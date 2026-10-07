@@ -9,7 +9,7 @@ namespace PgWorker.IntegrationTests.Etcd;
 
 // Контракт форматов /clusters/ и /pgworker/* на реальном etcd (задача 13, критерий §11.8):
 // сид панели → парсер; WorkJournal round-trip; portalloc round-trip.
-[Collection(EtcdCollection.Name)]
+[Collection(NonE2eCollection.Name)]
 public class EtcdContractTests(EtcdFixture fixture)
 {
     // DTO формата /pgworker/portalloc (spec §4.3): плоский {"host","pg","patroni","doorman"}.
