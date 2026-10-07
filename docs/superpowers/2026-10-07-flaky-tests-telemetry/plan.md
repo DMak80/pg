@@ -20,8 +20,18 @@
 - Сборка: `dotnet build` без ошибок И без warnings (`TreatWarningsAsErrors=true`).
 - Все пути ниже — от корня worktree `/Users/demakaev/ZCodeProject/worktrees/feat-flaky-tests-telemetry`.
 - Точечная сборка тестового проекта: `dotnet build src/tests/PgWorker.IntegrationTests/PgWorker.IntegrationTests.csproj -c Release` (из корня worktree).
-- Прогоны docker-серий — только в задаче 11 (AC7/AC10); после финальной строки каждой серии — страховочная проверка чистоты (см. задачу 11 п.6).
+- Прогоны docker-серий — только в задачах 11 и 14 (AC7/AC10); после финальной строки каждой серии — страховочная проверка чистоты (см. задачу 11 п.6 и задачу 14 п.4).
 - Коммит в feature-ветке `feat-flaky-tests-telemetry` — свободно, после каждой задачи; стиль сообщений: `test(t29): …` / `docs(t29): …`.
+
+---
+
+> **СТАТУС (дополнение по spec §3.9/§3.10).** Задачи 1–11 ИСПОЛНЕНЫ и
+> закоммичены (коммиты `592a6f7`…`ca1524f`; в ветку смержен свежий main —
+> `ce0bf7c`): `E2ePhase`, `RunProcessAsync`-logFile, миграция шести
+> t29-классов, не-E2E-ретрай etcd, `docs/e2e-launch.md`, приёмка — пройдены.
+> Исполнению подлежат ТОЛЬКО задачи 12–14 — новые улики прогона 43 фактов
+> 2026-10-07 (WalStream_MasterDown 16 м 29 с; Strict×2 5–6 м). База
+> AC8-диффа задач 12–14 — коммит `ce0bf7c` (текущий HEAD на момент старта).
 
 ---
 
@@ -683,27 +693,232 @@ ready.Should().BeTrue($"etcd-контур ({(haEtcd ? 3 : 1)} узла) обяз
 
 ---
 
+### Задача 12: `E2eWalStreamMasterDownScenarios` — все ожидания и repair-цикл через `E2ePhase`, дамп в `ArtifactsDir`
+
+**Вход (предусловие):** задачи 1–11 исполнены (в ветке есть `E2ePhase`); база диффа — `ce0bf7c`.
+
+**Действие (файлы):**
+- Modify: `src/tests/PgWorker.IntegrationTests/E2e/E2eWalStreamMasterDownScenarios.cs`
+
+**Interfaces (потребляет):** `E2ePhase.WaitAsync(fx, phase, condition, budget, ct, progress)` — уже в коде (задача 1).
+
+1. **Миграция всех 7 `E2eFixture.WaitForAsync`** (бюджеты ДОСЛОВНО, AC8; у `MasterPgAsync` фаза с одним именем — метод вызывается из факта дважды, до/после `docker stop`; контексты различимы по соседним строкам `[PHASE] wal-ac4: docker stop …` / `новый primary …`):
+
+| Место | Имя фазы | Бюджет | Прогресс |
+|---|---|---|---|
+| `StartWalScenarioAsync` provisioning | `wal-ac4-provisioning` | 360 с | — |
+| `MasterPgAsync` primary-резолв (вызов ×2) | `wal-ac4-master-resolved` | 120 с | — |
+| Fact `bothAgents` | `wal-ac4-agents-up` | 300 с | — (condition сам зовёт docker ps — существующее поведение, в тики не дублируем) |
+| repair-цикл (см. п.2) | `wal-ac4-repair` | 600 с (окна 30 с) | `unreachable=…, окно N` |
+| Fact `grew` (delivery-гейт) | `wal-ac4-delivery-grew` | 300 с | листинг S3 (п.3) |
+| Fact `keySeen` (wal-ключ) | `wal-ac4-key-seen` | 30 с | — |
+| Fact `newAgent` | `wal-ac4-new-agent` | 300 с | — (docker ps в condition остаётся) |
+| `PrimaryTimelineAsync` (хелпер; в факте НЕ вызывается — мигрируется для единообразия класса) | `wal-ac4-tli-ready` | 120 с | `tli=<текущий>` |
+
+2. **Repair-цикл** (бюджет 600 с и 30-с окна — ДОСЛОВНО, spec §2/§3.9; окно живёт ВНУТРИ condition — проверка факта раз в 30 с, как сейчас; статус/номер окна — в замыкании, прогресс форматирует их БЕЗ новых чтений; тик `E2ePhase` печатается по завершении condition — фактическая частота ≈ строка на окно). Ассерта на результат цикла в коде НЕТ — итог используется только в строке телеметрии (не добавляем новый ассерт):
+```csharp
+TestContext.Current.TestOutputHelper?.WriteLine(
+    "[PHASE] wal-ac4: ожидание снятия unreachable (repair-контур надзора)");
+var stillUnreachable = true;
+var window = 0;
+var repaired = await E2ePhase.WaitAsync(Fx, "wal-ac4-repair", async () =>
+{
+    var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
+    stillUnreachable = workKv?.Value?.Contains("unreachable") == true;
+    if (!stillUnreachable)
+        return true;
+    window++;
+    await Task.Delay(TimeSpan.FromSeconds(30), ct); // 30-с окно проверки — дословно, полл не учащается
+    return false;
+}, TimeSpan.FromSeconds(600), ct,
+    progress: () => Task.FromResult($"unreachable={(stillUnreachable ? "да" : "нет")}, окно {window}"));
+TestContext.Current.TestOutputHelper?.WriteLine(
+    $"[PHASE] wal-ac4: repair-фаза завершена/снята (repaired={repaired}) — замеры ключа");
+```
+3. **Прогресс delivery-гейта** (`wal-ac4-delivery-grew`; динамика листинга wal/-префикса, spec §3.9 п.2; листинг локального MinIO — S3 в тиках не чаще 5 с — интервал тиков):
+```csharp
+progress: async () =>
+{
+    var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
+    return listed.IsSuccess
+        ? $"objects={listed.Value.Count} (before={beforeList.Value.Count})"
+        : "listing=ошибка";
+}
+```
+Живость агентов-реплик — в failed/slow-phase-сбор `CollectDiagnosticsAsync` (docker ps в тиках ЗАПРЕЩЁН).
+4. **Дамп в `ArtifactsDir`** (`WalScenarioDiagDumpAsync`, копия дампа Promote — тот же дефект §4.6): `/tmp/pgw-diag-{cluster}.txt` → `Path.Combine(Fx.ArtifactsDir, $"wal-diag-{cluster}.txt")`; строку `[DIAG] дамп: …` вывести с новым путём (try/catch «лучшие усилия» внутри метода сохранить). `MarkFailed` в catch — уже есть, не трогаем.
+
+- [ ] **Шаг 12.1.** Миграция 7 ожиданий (таблица п.1) + repair-цикл через `E2ePhase` (п.2) + прогресс delivery-гейта (п.3).
+- [ ] **Шаг 12.2.** Дамп → `ArtifactsDir/wal-diag-<cluster>.txt` (п.4).
+- [ ] **Шаг 12.3.** Проверка — точечная сборка: `dotnet build src/tests/PgWorker.IntegrationTests/PgWorker.IntegrationTests.csproj -c Release` → 0 errors / 0 warnings.
+- [ ] **Шаг 12.4.** Проверка AC8: `git diff ce0bf7c -- src/tests/PgWorker.IntegrationTests/E2e/E2eWalStreamMasterDownScenarios.cs | grep -E '^[+-].*(FromSeconds|FromMinutes|Task\.Delay)'` — только парные переносы без изменения чисел: 360, 300, 120×2, 600, 30 (окна repair), 300, 30, 300, 120 (tli-хелпер).
+- [ ] **Шаг 12.5.** Коммит: `git commit -m "test(t29): WalStream-MasterDown — все ожидания и repair-цикл через E2ePhase (прогресс доставки по листингу S3, unreachable/окно N), дамп в ArtifactsDir (spec §3.9, §4.6)"`.
+
+**Выход:** 16-минутный монолитный факт телеметрируется пофазно: provisioning/агенты/резолв мастера ×2/repair (окна видны)/доставка/ключ/новый агент — `[PHASE]` с budget, тики repair и delivery, failed/slow-phase-сбор, дамп в каталоге телеметрии.
+
+**Проверка:** сборка + grep-гейт; функционально — задача 14 п.3 (AC10).
+
+**Связь со spec:** §3.9 (слепые зоны 1–4), §4.1, §4.3–4.4, §4.6; AC1–AC3, AC8.
+
+---
+
+### Задача 13: `E2eStrictScenarios` — оба теста через `E2ePhase`
+
+**Вход (предусловие):** задачи 1–11 исполнены; база диффа — `ce0bf7c`. Независима от задачи 12.
+
+**Действие (файлы):**
+- Modify: `src/tests/PgWorker.IntegrationTests/E2e/E2eStrictScenarios.cs`
+
+**Interfaces (потребляет):** `E2ePhase.WaitAsync` (задача 1).
+
+1. **Миграция всех 6 `E2eFixture.WaitForAsync`** (бюджеты ДОСЛОВНО, AC8; `WaitForDiscoveryAsync` — общий хелпер, вызывается из обоих тестов — миграция в одном месте покрывает обе точки):
+
+| Тест | Место | Имя фазы | Бюджет | Прогресс (ТОЛЬКО etcd-чтения) |
+|---|---|---|---|---|
+| 1 | `provisioned` (dsn обоих шардов) | `strict-provisioning` | 360 с | dsn/state-ключи нод (п.2) |
+| 1 | `active` (config без state) | `strict-active` | 60 с | config-state (п.3) |
+| 1 | `converged` (Patroni strict=false) | `strict-dcs-converged` | 360 с | work-ключ из etcd (п.4) |
+| 1+2 | `WaitForDiscoveryAsync` | `strict-discovery` | 30 с | `api-keys=N` |
+| 2 | `provisioned` | `strict-provisioning` | 360 с | как тест 1 |
+| 2 | `active` | `strict-active` | 60 с | config-state |
+
+Точки исполнения — 7 (discovery дважды); имена фаз у повторяющихся гейтов одинаковы (различимы по времени в `phases.log`). Patroni-проба `GET /config` остаётся ТОЛЬКО условием фазы `strict-dcs-converged` (существующее поведение); в тиках — etcd-чтения, Patroni-пробу в тики НЕ добавляем (гигиена нагрузки телеметрии, spec §9). Ассерты и окна — без изменений.
+
+2. **Прогресс provisioning** (state-ключи нод и dsn из etcd; число нод — из ключа replicas: shard2 однорепликный в тесте 2):
+```csharp
+progress: async () =>
+{
+    var parts = new List<string>();
+    foreach (var shard in new[] { "shard1", "shard2" })
+    {
+        var replicasKv = await GetOrNullAsync($"/clusters/{Cluster}/shards/{shard}/replicas");
+        var replicas = int.TryParse(replicasKv?.Value, out var r) ? r : 2;
+        var states = new List<string>();
+        for (var i = 0; i < replicas; i++)
+            states.Add((await GetOrNullAsync(
+                $"/clusters/{Cluster}/shards/{shard}/nodes/{shard}{(char)('a' + i)}/state"))?.Value ?? "-");
+        var dsn = await GetOrNullAsync($"/clusters/{Cluster}/shards/{shard}/dsn") is null ? "нет" : "есть";
+        parts.Add($"{shard}: [{string.Join(",", states)}] dsn={dsn}");
+    }
+    return string.Join("; ", parts);
+}
+```
+3. **Прогресс Active-гейта** (какой state висит — слепая зона §3.10 п.2; `ConfigStateFieldAsync` уже в классе):
+```csharp
+progress: async () => $"state={await ConfigStateFieldAsync(Cluster) ?? "нет (Active)"}"
+```
+4. **Прогресс конвергенции** (etcd work-ключ: фаза надзора и ушёл ли strict-патч — слепая зона §3.10 п.4):
+```csharp
+progress: async () =>
+{
+    var work = (await GetOrNullAsync($"/pgworker/work/{Cluster}"))?.Value;
+    if (work is null)
+        return "work=нет";
+    try
+    {
+        using var doc = JsonDocument.Parse(work);
+        var phase = doc.RootElement.TryGetProperty("phase", out var p) ? p.GetString() : "-";
+        var err = doc.RootElement.TryGetProperty("last_error", out var e) ? e.GetString() : null;
+        return $"work.phase={phase}, strict-патч={(err is not null && err.Contains("synchronous_mode_strict", StringComparison.Ordinal) ? "есть" : "нет")}";
+    }
+    catch (JsonException)
+    {
+        return "work=<не-JSON>";
+    }
+}
+```
+5. **Прогресс discovery** (внутри `WaitForDiscoveryAsync`, после миграции ожидания на `E2ePhase.WaitAsync(Fx, "strict-discovery", …, TimeSpan.FromSeconds(30), ct, progress: …)`):
+```csharp
+progress: async () => $"api-keys={(await G.RangeAsync(Endpoint, "/pgworker/api/", ct)).Value.Count}"
+```
+
+- [ ] **Шаг 13.1.** Миграция 6 ожиданий (таблица п.1) с прогрессами пп.2–5.
+- [ ] **Шаг 13.2.** Проверка — точечная сборка: `dotnet build src/tests/PgWorker.IntegrationTests/PgWorker.IntegrationTests.csproj -c Release` → 0 errors / 0 warnings.
+- [ ] **Шаг 13.3.** Проверка AC8: `git diff ce0bf7c -- src/tests/PgWorker.IntegrationTests/E2e/E2eStrictScenarios.cs | grep -E '^[+-].*(FromSeconds|FromMinutes|Task\.Delay)'` — только парные переносы: 360, 60, 360, 30 (discovery), 360, 60.
+- [ ] **Шаг 13.4.** Коммит: `git commit -m "test(t29): Strict — оба теста через E2ePhase (прогресс: config-state, state-ключи нод, dsn, work-ключ конвергенции) (spec §3.10)"`.
+
+**Выход:** голый класс телеметрируется: гейты provisioning/Active/converged/discovery несут `[PHASE]` с budget, тики показывают висящий state и застрявшие ноды; провал 60-с окна Active оставляет failed-phase-картину (AC4 — окно 60 с < порога 60 с закрывается немедленным сбором).
+
+**Проверка:** сборка + grep-гейт; функционально — задача 14 п.3 (AC10).
+
+**Связь со spec:** §3.10 (слепые зоны 1–4), §4.1, §4.3–4.4; AC1–AC4, AC8.
+
+---
+
+### Задача 14: Приёмка-дополнение (улики §3.9/§3.10) — сборка, AC8-гейт, расширенный AC10-прогон
+
+**Вход (предусловие):** задачи 12–13 закоммичены (после `ce0bf7c`).
+
+**Действие (файлы):** правок кода нет (кроме исправлений, если гейты найдут нарушение — тогда фикс и повтор гейта).
+
+**Interfaces (потребляет):** задачи 12–13.
+
+1. **Полная сборка решения**:
+   ```bash
+   dotnet build src/PgWorker.slnx -c Release
+   ```
+   Критерий: 0 Error(s), 0 Warning(s).
+2. **AC8 — гейт по диффу задач 12–13** (база `ce0bf7c`; белый список новых чисел НЕ действует — он исчерпан кодом задач 1–2, в этом диффе допустимы ТОЛЬКО парные переносы без изменения чисел):
+   ```bash
+   git diff ce0bf7c..HEAD -- src/tests/PgWorker.IntegrationTests/E2e/E2eWalStreamMasterDownScenarios.cs src/tests/PgWorker.IntegrationTests/E2e/E2eStrictScenarios.cs | grep -E '^[+-].*(FromSeconds|FromMinutes|FromMilliseconds|Task\.Delay|CancelAfter)'
+   ```
+   Критерий: каждая пара −/+ — перенос; контрольные числа: WalStream_MasterDown 360/300/120×2/600 (окна 30 с)/300/30/300 (+120 tli-хелпер); Strict 360/60/360 (тест 1)/30 с discovery/360/60. Ассерты (`Should().BeTrue("кластер перешёл в Active…")`, `newMasterNode.Should().NotBe…`, `chain.IsContinuous.Should()…`) — нетронуты.
+3. **AC10 — прогон E2E t29-фильтром ПОЛНОГО перечня §3** (8 классов; канонический N=5; нормальный рабочий фон — без условий и ожиданий; для классов задач 3–8 — контрольное повторное покрытие, для 12–13 — первичное):
+   ```bash
+   DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~E2eScenarios.Acceptance|FullyQualifiedName~E2eMoveScenarios|FullyQualifiedName~E2eWalStreamPromoteScenarios|FullyQualifiedName~E2eWalStreamMasterDownScenarios|FullyQualifiedName~E2eHaEtcdScenarios|FullyQualifiedName~E2eWorkerCertScenarios|FullyQualifiedName~E2eSecondInstanceScenarios|FullyQualifiedName~E2eStrictScenarios"
+   ```
+   Критерии (зелёность НЕ обязательна): каждая фаза каждого класса (включая `wal-ac4-*` и `strict-*`) оставила `[PHASE] … budget=…`; `phases.log` заполнен в каждом `/tmp/pgw-e2e-artifacts-<guid>/`:
+   ```bash
+   ls /tmp/pgw-e2e-artifacts-*/phases.log
+   grep -hc '\[PHASE\]' /tmp/pgw-e2e-artifacts-*/phases.log
+   ```
+   Упавшие — разбор ПО ТЕЛЕМЕТРИИ без перезапуска (журнал, `phases.log`, `failed-phase-*`, docker-логи, `host-*.log`, `wal-diag-*`); причины — в отчёт; перезапуск — только по согласию пользователя.
+4. **Чистота до/после серии** (AGENTS.md): ПЕРЕД стартом серии и после финальной строки:
+   ```bash
+   docker ps -a --format '{{.Names}}' | grep -c 'pgw-'
+   docker network ls --format '{{.Name}}' | grep -cE 'pgw-|kfw-net'
+   ```
+   Оба счётчика 0 до старта и после зачистки; ненулевые после прогона (упавшие сценарии оставляют объекты намеренно) — разбор, ручная зачистка по `README-cleanup.txt`, повторная проверка до нуля. Новую серию поверх незачищенной НЕ запускать.
+5. **Итог** — краткий отчёт в `docs/superpowers/2026-10-07-flaky-tests-telemetry/journal.md`: результаты пп.1–4, список фаз новых классов с budget по артефактам, причины упавших (если были). Коммит (если правки не потребовались — отчёт без коммита):
+   ```bash
+   git add -A && git commit -m "test(t29): приёмка-дополнение §3.9/§3.10 — сборка 0/0, AC8-гейт, E2E t29-прогон N=5 (8 классов): телеметрия полная (spec §8)"
+   ```
+
+**Выход:** AC1–AC4/AC8/AC10 подтверждены на полном перечне §3 (включая оба новых класса); ветка готова к code-review и мерж-гейту.
+
+**Проверка:** сами гейты пп.1–4.
+
+**Связь со spec:** §3.9, §3.10, §7 фаза 2 (хвост миграции) и фаза 5, §8 (AC1/2/3/8/10).
+
+---
+
 ## Соответствие задач критериям приёмки (spec §8)
 
 | AC | Чем закрывается |
 |---|---|
-| AC1 место сбоя видно | задачи 1, 3–8 (фазы+тики+failed-phase), 4 (`phases.log` — последний шаг) |
-| AC2 единый формат + phases.log | задачи 1, 3–8, 10 |
-| AC3 порог 60 с всюду в t29 | задача 1 (перенос порога в `E2ePhase`), 3–8 (все длинные фазы мигрированы), 11 п.4 |
-| AC4 провал окна = картина момента | задача 1 (`failed-phase-*`), 11 п.4 |
+| AC1 место сбоя видно | задачи 1, 3–8, 12–13 (фазы+тики+failed-phase, `phases.log` — последний шаг) |
+| AC2 единый формат + phases.log | задачи 1, 3–8, 10, 12–13 |
+| AC3 порог 60 с всюду в t29 | задача 1 (перенос порога в `E2ePhase`), 3–8 и 12–13 (все длинные фазы мигрированы), 11 п.4 / 14 п.3 |
+| AC4 провал окна = картина момента | задача 1 (`failed-phase-*`), 11 п.4 / 14 п.3 |
 | AC5 AC5-разложение | задача 3, 11 п.5 |
 | AC6 build с хвостом | задачи 2, 8, 11 п.5 |
 | AC7 ретрай готовности etcd | задача 9, 11 п.3 |
-| AC8 бюджеты не тронуты | инвариант каждой задачи + гейт 11 п.2 |
+| AC8 бюджеты не тронуты | инвариант каждой задачи + гейты 11 п.2 и 14 п.2 |
 | AC9 документация | задача 10 |
-| AC10 валидация телеметрии | 11 п.4 (t29-фильтр, N=5, полнота телеметрии) |
+| AC10 валидация телеметрии | 11 п.4 / 14 п.3 (t29-фильтр — весь перечень §3, включая WalStreamMasterDown и Strict; N=5, полнота телеметрии) |
 
 ## Порядок исполнения и зависимости
 
+**Статус:** задачи 1–11 исполнены (коммиты `592a6f7`…`ca1524f`, base `ce0bf7c`) — НЕ переисполнять. Исполнять только задачи 12–14.
+
 ```
-1 (E2ePhase) ─┬─> 3 (AC5) ─> 4 (Move) ─> 5 (WalStream) ─> 6 (HaEtcd) ─> 7 (WorkerCert) ─┐
-              └─> 2 (RunProcessAsync) ──────────────────────────────> 8 (SecondInstance) ┘
-2 и 3 независимы между собой; 9 (не-E2E) — после 1–8; 10 (док) — после 9; 11 (приёмка) — после 10.
+Исполнено (1–11):  1 (E2ePhase) ─┬─> 3 (AC5) ─> 4 (Move) ─> 5 (WalStreamPromote) ─> 6 (HaEtcd) ─> 7 (WorkerCert) ─┐
+                                 └─> 2 (RunProcessAsync) ─────────────────────────> 8 (SecondInstance) ─┘
+                    9 (не-E2E) — после 1–8; 10 (док) — после 9; 11 (приёмка) — после 10.
+
+Дополняется (12–14): 12 (MasterDown) ─┬─> 14 (приёмка-дополнение)
+                      13 (Strict) ─────┘
+12 и 13 независимы друг от друга, обе — от базы ce0bf7c; 14 — после 12–13.
 ```
 
-Порядок миграции классов (3→8) зафиксирован spec §7 по частоте флейка; менять нельзя.
+Порядок миграции классов (3→8, затем 12→13) зафиксирован spec §7 по частоте флейка; менять нельзя.
