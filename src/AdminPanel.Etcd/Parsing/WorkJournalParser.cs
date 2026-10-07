@@ -45,6 +45,10 @@ public static class WorkJournalParser
                     continue;
                 }
 
+                if (!TryFact(root, "last_failover", kv.Key, out var failover, errors)
+                    || !TryFact(root, "last_rebuild", kv.Key, out var rebuild, errors))
+                    continue;
+
                 items.Add(new WorkJournalInfo(
                     cluster,
                     String(root, "op") ?? "",
@@ -54,7 +58,9 @@ public static class WorkJournalParser
                     String(root, "last_error"),
                     (int?)Long(root, "fail_count"),
                     Long(root, "fail_first_unix"),
-                    Long(root, "retry_not_before_unix")));
+                    Long(root, "retry_not_before_unix"),
+                    failover,
+                    rebuild));
             }
             catch (JsonException e)
             {
@@ -74,4 +80,34 @@ public static class WorkJournalParser
         => root.TryGetProperty(name, out var el) && el.ValueKind == JsonValueKind.Number
             ? el.GetInt64()
             : null;
+
+    // Факт-поле (last_failover/last_rebuild): отсутствует/null → факт null (старый
+    // ключ); битое (не объект / нет обязательных shard/node/cause/detected_unix) —
+    // false + parseError-запись (толерантность: тик не роняют, ключ не трогаем).
+    private static bool TryFact(
+        JsonElement root, string name, string key,
+        out HaSupervisionInfo? fact, List<KeyParseError> errors)
+    {
+        fact = null;
+        if (!root.TryGetProperty(name, out var el) || el.ValueKind == JsonValueKind.Null)
+            return true;
+        if (el.ValueKind != JsonValueKind.Object
+            || !el.TryGetProperty("shard", out var shardEl) || shardEl.ValueKind != JsonValueKind.String
+            || !el.TryGetProperty("node", out var nodeEl) || nodeEl.ValueKind != JsonValueKind.String
+            || !el.TryGetProperty("cause", out var causeEl) || causeEl.ValueKind != JsonValueKind.String
+            || !el.TryGetProperty("detected_unix", out var detectedEl) || detectedEl.ValueKind != JsonValueKind.Number)
+        {
+            errors.Add(new(key, $"поле {name} битое: ожидается объект shard/node/cause/detected_unix"));
+            return false;
+        }
+
+        fact = new HaSupervisionInfo(
+            shardEl.GetString()!, nodeEl.GetString()!, causeEl.GetString()!,
+            detectedEl.GetInt64(),
+            el.TryGetProperty("resolved_unix", out var resolved) && resolved.ValueKind == JsonValueKind.Number
+                ? resolved.GetInt64() : null,
+            el.TryGetProperty("duration_sec", out var duration) && duration.ValueKind == JsonValueKind.Number
+                ? duration.GetInt64() : null);
+        return true;
+    }
 }

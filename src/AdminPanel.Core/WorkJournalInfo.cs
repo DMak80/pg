@@ -12,4 +12,12 @@ public sealed record WorkJournalInfo(
     string? LastError,
     int? FailCount,
     long? FailFirstUnix,
-    long? RetryNotBeforeUnix);
+    long? RetryNotBeforeUnix,
+    HaSupervisionInfo? LastFailover = null,
+    HaSupervisionInfo? LastRebuild = null);
+
+// Последний HA-факт надзора из /pgworker/work/<C> (arch/14 §3.3;
+// панельный дубль воркерной модели — осознанный): null = факта нет/старый ключ.
+public sealed record HaSupervisionInfo(
+    string Shard, string Node, string Cause,
+    long DetectedUnix, long? ResolvedUnix, long? DurationSec);

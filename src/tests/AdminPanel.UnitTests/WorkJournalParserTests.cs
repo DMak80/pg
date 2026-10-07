@@ -61,4 +61,81 @@ public class WorkJournalParserTests
         result.Items.Should().BeEmpty();
         result.Errors.Should().ContainSingle().Which.Key.Should().Be("/pgworker/work/bad");
     }
+
+    [Fact]
+    public void Parse_LastFailoverAndRebuild_Mapped()
+    {
+        // Arrange: work-ключ с закрытым failover и открытым rebuild
+        var kv = new Kv("/pgworker/work/shop", """
+            {"op":"supervise","phase":"supervising","instance":"i1","updated_unix":1756000000,
+             "unreachable":{"shard1/shard1b":1756000000},
+             "last_failover":{"shard":"shard1","node":"shard1b","cause":"accelerated","detected_unix":1000,"resolved_unix":1075,"duration_sec":75},
+             "last_rebuild":{"shard":"shard1","node":"shard1a","cause":"auto-dead","detected_unix":900}}
+            """, 42);
+
+        // Act
+        var result = WorkJournalParser.Parse([kv]);
+
+        // Assert
+        var item = result.Items.Should().ContainSingle().Subject;
+        item.LastFailover.Should().NotBeNull();
+        item.LastFailover!.Shard.Should().Be("shard1");
+        item.LastFailover.Node.Should().Be("shard1b");
+        item.LastFailover.Cause.Should().Be("accelerated");
+        item.LastFailover.DetectedUnix.Should().Be(1000);
+        item.LastFailover.ResolvedUnix.Should().Be(1075);
+        item.LastFailover.DurationSec.Should().Be(75);
+        item.LastRebuild!.Cause.Should().Be("auto-dead");
+        item.LastRebuild.ResolvedUnix.Should().BeNull();
+        result.Errors.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Parse_OldKeyWithoutFacts_Nulls()
+    {
+        // Arrange: старый ключ (надзор прежней версии) — полей фактов нет
+        var kv = new Kv("/pgworker/work/old",
+            """{"op":"supervise","phase":"supervising","instance":"i","updated_unix":1756000000}""", 42);
+
+        // Act
+        var result = WorkJournalParser.Parse([kv]);
+
+        // Assert: толерантный читатель — факты null, не ошибка
+        var item = result.Items.Should().ContainSingle().Subject;
+        item.LastFailover.Should().BeNull();
+        item.LastRebuild.Should().BeNull();
+        result.Errors.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Parse_UnrelatedFields_Ignored()
+    {
+        // Arrange: незнакомые поля значения — игнор
+        var kv = new Kv("/pgworker/work/shop", """
+            {"op":"supervise","phase":"supervising","instance":"i1","updated_unix":1756000000,
+             "future_field":123,"last_failover":{"shard":"s","node":"n","cause":"elections","detected_unix":1,"extra":"x"}}
+            """, 42);
+
+        // Act
+        var result = WorkJournalParser.Parse([kv]);
+
+        // Assert
+        result.Items.Should().ContainSingle().Subject.LastFailover!.Cause.Should().Be("elections");
+        result.Errors.Should().BeEmpty();
+    }
+
+    [Fact]
+    public void Parse_MalformedFactField_ParseError()
+    {
+        // Arrange: поле last_failover не объект / без обязательных полей — битое значение ключа
+        var kv = new Kv("/pgworker/work/shop",
+            """{"op":"supervise","phase":"supervising","instance":"i1","updated_unix":1756000000,"last_failover":"oops"}""", 42);
+
+        // Act
+        var result = WorkJournalParser.Parse([kv]);
+
+        // Assert: parseError-запись (существующий паттерн толерантности)
+        result.Items.Should().BeEmpty();
+        result.Errors.Should().ContainSingle().Which.Key.Should().Be("/pgworker/work/shop");
+    }
 }
