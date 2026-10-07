@@ -18,6 +18,7 @@ const NAV_ITEMS = [
   { to: '/kafka', label: 'Kafka' },
   { to: '/valkey', label: 'Valkey' },
   { to: '/ha', label: 'HA' },
+  { to: '/reliability', label: 'Надёжность' },
   { to: '/alerts', label: 'Алерты' },
 ];
 

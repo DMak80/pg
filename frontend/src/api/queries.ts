@@ -59,6 +59,7 @@ import type {
   WorkerRestartDto,
   WorkersViewDto,
   OrphanDeleteAcceptedDto,
+  ReliabilityDto,
 } from './dto';
 
 export const queryKeys = {
@@ -576,4 +577,12 @@ export function restartWorker(worker: string): Promise<WorkerRestartDto> {
   return apiFetch<WorkerRestartDto>(
     `/api/workers/${encodeURIComponent(worker)}/restart`,
     { method: 'POST' });
+}
+
+export const reliabilityQueryKeys = {
+  all: ['reliability'] as const,
+};
+
+export function fetchReliability(): Promise<ReliabilityDto> {
+  return apiFetch<ReliabilityDto>('/api/reliability');
 }

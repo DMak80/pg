@@ -13,6 +13,7 @@ import { ValkeyClusterDetailsPage } from './pages/valkey-cluster/ValkeyClusterDe
 import { ValkeyClustersPage } from './pages/ValkeyClustersPage';
 import { EtcdPage } from './pages/EtcdPage';
 import { HaPage } from './pages/HaPage';
+import { ReliabilityPage } from './pages/ReliabilityPage';
 import { HaScopeDetailsPage } from './pages/HaScopeDetailsPage';
 import { OverviewPage } from './pages/OverviewPage';
 import { WorkersPage } from './pages/WorkersPage';
@@ -35,6 +36,7 @@ export const router = createBrowserRouter([
       { path: 'valkey/:cluster', element: <ValkeyClusterDetailsPage /> },
       { path: 'ha', element: <HaPage /> },
       { path: 'ha/:scope', element: <HaScopeDetailsPage /> },
+      { path: 'reliability', element: <ReliabilityPage /> },
       { path: 'alerts', element: <AlertsPage /> },
       { path: 'workers', element: <WorkersPage /> },
       { path: '*', element: <Navigate to="/" replace /> },
