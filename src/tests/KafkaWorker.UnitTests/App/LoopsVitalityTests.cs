@@ -43,5 +43,24 @@ public sealed class LoopsVitalityTests
         // Assert: отметки HealthState — единственный источник живости
         beats.First(b => b.Name == "reconcile").LastActivityAt.Should().NotBeNull();
         beats.First(b => b.Name == "keepalive").LastActivityAt.Should().BeNull();
+        health.Snapshot().LastReconcileActivity.Should().NotBeNull(); // MarkReconcileTick обновляет и тик, и активность
+    }
+
+    [Fact]
+    public void Snapshot_ReconcileActivity_UpdatedWithoutTick()
+    {
+        // Arrange: долгая итерация — только прогресс-отметка, тика нет
+        var health = new HealthState(TimeProvider.System);
+        health.MarkReconcileActivity();
+        var sut = new KafkaWorkerLoopsVitality(Options, health);
+
+        // Act
+        var beats = sut.Snapshot();
+
+        // Assert: активность свежая (watchdog не firing), тик остался null
+        // (healthz loops-alive по тикам — Degraded, HTTP-семантика не меняется)
+        beats.First(b => b.Name == "reconcile").LastActivityAt.Should().NotBeNull();
+        health.Snapshot().LastReconcileTick.Should().BeNull();
+        health.Snapshot().LastReconcileActivity.Should().NotBeNull();
     }
 }

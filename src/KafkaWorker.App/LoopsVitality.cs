@@ -20,7 +20,9 @@ public sealed class KafkaWorkerLoopsVitality(
         var snap = health.Snapshot();
         return
         [
-            new LoopHeartbeat("reconcile", snap.LastReconcileTick, fast),
+            // активность = тик или прогресс-отметка; keepalive/snapshot —
+            // активность = тик (долгих фаз нет)
+            new LoopHeartbeat("reconcile", snap.LastReconcileActivity, fast),
             new LoopHeartbeat("keepalive", snap.LastKeepaliveTick, fast),
             new LoopHeartbeat("snapshot", snap.LastSnapshotTick, snapshotLoop),
         ];
