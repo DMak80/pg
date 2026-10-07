@@ -58,10 +58,13 @@ public static class E2eFixture
     /// <summary>Процесс с бюджетом (t27): docker-CLI изредка виснет (daemon-флэйм,
     /// e2e-факт: teardown замер на docker logs навсегда) — по истечении дерево
     /// процесса убивается, наружу ApplicationException (вызывающий телеметрии
-    /// глотает — «лучшими усилиями», канон e2e-launch).</summary>
+    /// глотает — «лучшими усилиями», канон e2e-launch). logFile — полный вывод
+    /// процесса (успех и таймаут — единый журнал build-вызовов, t29 §4.5);
+    /// при kill по бюджету хвост вывода (~40 строк) попадает в исключение.</summary>
     internal static async Task<string> RunProcessAsync(
         string file, string[] args, CancellationToken ct, TimeSpan? timeout,
-        IReadOnlyDictionary<string, string>? env = null)
+        IReadOnlyDictionary<string, string>? env = null,
+        string? logFile = null)
     {
         var psi = new ProcessStartInfo(file, args)
         {
@@ -78,23 +81,28 @@ public static class E2eFixture
         using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         if (timeout is { } budget)
             timeoutCts.CancelAfter(budget);
+        // Оба потока — ПАРАЛЛЕЛЬНО и БЕЗ токена бюджета (t29 §4.5): при kill
+        // по бюджету дерево умирает, пайпы закрываются, чтения завершаются
+        // сами — накопленный вывод доступен (ReadToEndAsync(ct) при отмене
+        // терял вывод: фейл build > 120 c не оставлял следов, на каком шаге
+        // зависло). Последовательное чтение при полном stderr и пустом
+        // stdout дедлокает пайп до бюджета (docker build пишет в stderr).
+        var outTask = process.StandardOutput.ReadToEndAsync();
+        var errTask = process.StandardError.ReadToEndAsync();
         try
         {
-            // Оба потока — ПАРАЛЛЕЛЬНО: последовательное чтение при полном
-            // stderr и пустом stdout дедлокает пайп до бюджета (kill даст
-            // ложный «не завершился»; docker build пишет прогресс в stderr).
-            var outTask = process.StandardOutput.ReadToEndAsync(timeoutCts.Token);
-            var errTask = process.StandardError.ReadToEndAsync(timeoutCts.Token);
             await process.WaitForExitAsync(timeoutCts.Token);
             var output = await outTask;
             var error = await errTask;
+            await WriteLogAsync(logFile, output + error);
             if (process.ExitCode != 0)
                 throw new ApplicationException($"{file} {string.Join(' ', args)} → {process.ExitCode}: {error.Trim()}");
             return output.Trim();
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {
-            // Бюджет исчерпан (не остановка host'а): убиваем дерево, наверх — отказ.
+            // Бюджет исчерпан (не остановка host'а): убиваем дерево, вывод — в
+            // диагностику: хвост в исключение, полный — в logFile (если задан).
             try
             {
                 process.Kill(entireProcessTree: true);
@@ -104,8 +112,45 @@ public static class E2eFixture
                 // процесс мог уже выйти
             }
 
+            var killed = await DrainAsync(outTask, errTask);
+            await WriteLogAsync(logFile, killed);
+            var tail = OutputTail(killed, lines: 40);
             throw new ApplicationException(
-                $"{file} {string.Join(' ', args)} не завершился за {timeout!.Value.TotalSeconds:0} c — убит");
+                $"{file} {string.Join(' ', args)} не завершился за {timeout!.Value.TotalSeconds:0} c — убит"
+                + (tail.Length == 0 ? "" : $"; хвост вывода:\n{tail}"));
+        }
+    }
+
+    // Дренаж вывода убитого процесса: после Kill(entireProcessTree) пайпы
+    // закрываются операционкой и оба чтения завершаются естественно; страховка
+    // от зависшего пайпа — короткий бюджет (диагностика уже убитого процесса,
+    // НЕ бюджет выполняемой команды — таймауты команд не меняются).
+    private static async Task<string> DrainAsync(Task<string> outTask, Task<string> errTask)
+    {
+        try
+        {
+            var drained = await Task.WhenAll(outTask, errTask).WaitAsync(TimeSpan.FromSeconds(5));
+            return drained[0] + drained[1];
+        }
+        catch (TimeoutException)
+        {
+            return "";
+        }
+    }
+
+    // Полный вывод процесса в logFile (успех и таймаут — единый журнал
+    // build-вызовов); файловая телеметрия не роняет вызов.
+    private static async Task WriteLogAsync(string? logFile, string output)
+    {
+        if (logFile is null)
+            return;
+        try
+        {
+            await File.AppendAllTextAsync(logFile, output);
+        }
+        catch
+        {
+            // телеметрия — «лучшими усилиями»
         }
     }
 
