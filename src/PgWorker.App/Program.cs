@@ -537,7 +537,8 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreProcess(
         sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.ShardDeadSec,
         sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.PatroniBootSec),
     sp.GetRequiredService<TimeProvider>(),
-    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Process.RestoreProcess>()));
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Process.RestoreProcess>(),
+    sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupRestore));
 
 // Заявка restore через API (t05 §3.2): гварды + txn put-if-not-exists
 // PLANNED-ключа; исполнение — RestoreProcess (держатель клэйма).
