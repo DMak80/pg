@@ -692,7 +692,8 @@ builder.Services.AddHealthChecks()
     .AddCheck<HealthCheckAbstract<KeepaliveLoop>>("keepalive-loop")
     .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop");
 
-// Watchdog зависших циклов (arch/14 §6): staleness тиков всех циклов → журнал +
+// Watchdog зависших циклов (arch/14 §6): staleness активности (тик или
+// прогресс-отметка) всех циклов → журнал +
 // метрика + graceful self-stop (путь POST /api/restart); Enabled=false (секция
 // PgWorker:Loops:Watchdog) — компонент не регистрируется.
 builder.Services.AddSingleton<PgWorkerLoopsVitality>();

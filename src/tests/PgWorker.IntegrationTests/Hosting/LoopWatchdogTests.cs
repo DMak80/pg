@@ -36,6 +36,7 @@ public sealed class LoopWatchdogTests
             var now = DateTimeOffset.UtcNow;
             if (stale)
                 return [new LoopHeartbeat("reconcile", now - TimeSpan.FromMinutes(5), threshold)];
+            markEvery ??= TimeSpan.FromSeconds(3); // завод по умолчанию G.1: 3 c (дефолт параметра невозможен: для TimeSpan? нет константного литерала 3 с)
             if (_lastMark is null || now - _lastMark >= markEvery)
                 _lastMark = now; // прогресс-отметка долгой фазы
             return [new LoopHeartbeat("reconcile", _lastMark, threshold)];

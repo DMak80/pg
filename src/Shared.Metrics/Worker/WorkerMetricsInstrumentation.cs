@@ -241,7 +241,8 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     }
 
     /// <summary>Counter worker_watchdog_restarts_total{loop}: watchdog инициировал
-    /// self-restart по staleness цикла (колбэк LoopWatchdog из Program.cs app).</summary>
+    /// self-restart по отсутствию активности (тик или прогресс-отметка)
+    /// (колбэк LoopWatchdog из Program.cs app).</summary>
     public void WatchdogRestart(string loop)
     {
         try

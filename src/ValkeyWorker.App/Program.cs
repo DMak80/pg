@@ -302,7 +302,8 @@ builder.Services.AddHealthChecks()
     .AddCheck<HealthCheckAbstract<KeepaliveLoop>>("keepalive-loop")
     .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop");
 
-// Watchdog зависших циклов (arch/21 §6): staleness тиков всех циклов → журнал +
+// Watchdog зависших циклов (arch/21 §6): staleness активности (тик или
+// прогресс-отметка) всех циклов → журнал +
 // метрика + graceful self-stop (путь POST /api/restart); Enabled=false (секция
 // ValkeyWorker:Loops:Watchdog) — компонент не регистрируется.
 builder.Services.AddSingleton<ValkeyWorkerLoopsVitality>();
