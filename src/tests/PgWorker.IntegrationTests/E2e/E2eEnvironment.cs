@@ -356,8 +356,12 @@ public sealed class E2eEnvironment : IAsyncDisposable
             // одиночный — /health 200; HA — /health 200 на всех трёх + лидер избран
             // (POST /v3/maintenance/status → leader ≠ 0; grpc-gateway отдаёт uint64 строкой).
             using var probe = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+            var probeAttempts = 0;
+            var lastProbeLatencyMs = 0.0;
             var ready = await E2eFixture.WaitForAsync(async () =>
             {
+                probeAttempts++;
+                var sw = System.Diagnostics.Stopwatch.StartNew();
                 foreach (var url in endpoints)
                 {
                     try
@@ -373,13 +377,16 @@ public sealed class E2eEnvironment : IAsyncDisposable
                     }
                     catch (Exception)
                     {
+                        lastProbeLatencyMs = sw.Elapsed.TotalMilliseconds;
                         return false; // ещё поднимается / кворум не собран
                     }
                 }
 
+                lastProbeLatencyMs = sw.Elapsed.TotalMilliseconds;
                 return true;
             }, TimeSpan.FromSeconds(100), ct);
-            ready.Should().BeTrue($"etcd-контур ({(haEtcd ? 3 : 1)} узла) обязан собраться за 100 c");
+            ready.Should().BeTrue($"etcd-контур ({(haEtcd ? 3 : 1)} узла) обязан собраться за 100 c "
+                + $"(проб сделано {probeAttempts}, латентность последней {lastProbeLatencyMs:0} мс)");
 
             if (withMinio)
             {
