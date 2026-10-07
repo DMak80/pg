@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using PgWorker.App;
 using Shared.Core.HealthChecks;
@@ -19,6 +20,10 @@ public class HealthTests
         Docker = new DockerOptions { Hosts = [] },
     });
 
+    // Пустой провайдер: watchdog не зарегистрирован → секция "disabled".
+    private static readonly IServiceProvider EmptyServices =
+        new ServiceCollection().BuildServiceProvider();
+
     private static ServiceProbes Probes(IEtcdGateway etcd)
         => new(etcd, Options, new DockerEngineFactory());
 
@@ -33,8 +38,9 @@ public class HealthTests
         health.MarkKeepaliveTick();
         health.MarkSnapshotTick();
         health.MarkSnapshotTaken();
+        health.MarkOrphanSweepTick();
         var claims = new ClaimStore("/pgworker", ["http://etcd:2379"], etcd, TimeProvider.System);
-        var check = new PgWorkerHealth(Probes(etcd), health, claims, Options, TimeProvider.System);
+        var check = new PgWorkerHealth(Probes(etcd), health, claims, Options, TimeProvider.System, EmptyServices);
 
         // Act
         var result = await check.CheckHealthAsync(new HealthCheckContext(), TestContext.Current.CancellationToken);
@@ -48,6 +54,10 @@ public class HealthTests
         result.Data.Keys.Should().Contain("snapshot");
         result.Data["etcd"].ToString().Should().Be("reachable");
         result.Data["claims"].ToString().Should().Contain("held=1");
+
+        // Assert — секция watchdog (не зарегистрирован → disabled; AC4)
+        result.Data.Keys.Should().Contain("watchdog");
+        result.Data["watchdog"].ToString().Should().Be("disabled");
     }
 
     [Fact]
@@ -61,7 +71,7 @@ public class HealthTests
         health.MarkSnapshotTick();
         health.MarkSnapshotTaken();
         var claims = new ClaimStore("/pgworker", ["http://etcd:2379"], new DeadEtcd(), TimeProvider.System);
-        var check = new PgWorkerHealth(Probes(new DeadEtcd()), health, claims, Options, TimeProvider.System);
+        var check = new PgWorkerHealth(Probes(new DeadEtcd()), health, claims, Options, TimeProvider.System, EmptyServices);
 
         // Act
         var result = await check.CheckHealthAsync(new HealthCheckContext(), TestContext.Current.CancellationToken);
@@ -78,7 +88,7 @@ public class HealthTests
         var etcd = new Fakes.FakeEtcd();
         var check = new PgWorkerHealth(
             Probes(etcd), new HealthState(TimeProvider.System),
-            new ClaimStore("/pgworker", ["http://etcd:2379"], etcd, TimeProvider.System), Options, TimeProvider.System);
+            new ClaimStore("/pgworker", ["http://etcd:2379"], etcd, TimeProvider.System), Options, TimeProvider.System, EmptyServices);
 
         // Act
         var result = await check.CheckHealthAsync(new HealthCheckContext(), TestContext.Current.CancellationToken);
@@ -102,14 +112,36 @@ public class HealthTests
         clock.Advance(TimeSpan.FromMinutes(6));
         health.MarkReconcileTick(ok: true, claimsHeld: 1);
         health.MarkKeepaliveTick();
+        health.MarkOrphanSweepTick(); // loops-alive включает sweeper (AC5) — без тика был бы Degraded
         var claims = new ClaimStore("/pgworker", ["http://etcd:2379"], etcd, clock);
-        var check = new PgWorkerHealth(Probes(etcd), health, claims, Options, clock);
+        var check = new PgWorkerHealth(Probes(etcd), health, claims, Options, clock, EmptyServices);
 
         // Act
         var result = await check.CheckHealthAsync(new HealthCheckContext(), TestContext.Current.CancellationToken);
 
         // Assert — порог свежести snapshot-тика считается от SnapshotIntervalMin, а не от scan-интервала
         result.Status.Should().Be(HealthStatus.Healthy);
+    }
+
+    [Fact]
+    public async Task Check_OrphanSweepInLoopsAlive()
+    {
+        // Arrange — все циклы тикали, включая sweeper
+        var etcd = new Fakes.FakeEtcd();
+        var health = new HealthState(TimeProvider.System);
+        health.MarkEtcdOk();
+        health.MarkReconcileTick(ok: true, claimsHeld: 0);
+        health.MarkKeepaliveTick();
+        health.MarkSnapshotTick();
+        health.MarkOrphanSweepTick();
+        var claims = new ClaimStore("/pgworker", ["http://etcd:2379"], etcd, TimeProvider.System);
+        var check = new PgWorkerHealth(Probes(etcd), health, claims, Options, TimeProvider.System, EmptyServices);
+
+        // Act
+        var result = await check.CheckHealthAsync(new HealthCheckContext(), TestContext.Current.CancellationToken);
+
+        // Assert — sweeper в loops-alive (AC5)
+        result.Data["loops"].ToString().Should().Contain("orphan-sweep=");
     }
 
     [Fact]
