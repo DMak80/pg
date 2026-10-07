@@ -113,6 +113,46 @@ public class HaFactStateTests
     }
 
     [Fact]
+    public void FailoverDetected_ClosedFactSameNode_OverwritesAsNewEvent()
+    {
+        // Arrange: закрытый failover той же ноды (уже было событие)
+        var state = HaFactState.FromStored(null, null);
+        state.FailoverDetected("s1", "n1", "accelerated", 1000);
+        state.LeaderChanged("s1", "n2", nowUnix: 1075);
+
+        // Act: нода СНОВА становится лидером и умирает — новое событие
+        state.FailoverDetected("s1", "n1", "elections", 2000);
+
+        // Assert: перезапись (spec §3.1 «новое событие перезаписывает поле»):
+        // новый detected/cause, resolved сброшен — событие открыто
+        var failover = state.ToRecord().LastFailover!;
+        failover.Cause.Should().Be("elections");
+        failover.DetectedUnix.Should().Be(2000);
+        failover.ResolvedUnix.Should().BeNull();
+        failover.DurationSec.Should().BeNull();
+    }
+
+    [Fact]
+    public void RebuildDetected_ClosedFactSameNode_OverwritesAsNewEvent()
+    {
+        // Arrange: rebuild закрыт по NodeAlive — нода восстановилась
+        var state = HaFactState.FromStored(null, null);
+        state.RebuildDetected("s1", "n2", "auto-dead", 1000);
+        state.NodeAlive("s1", "n2", nowUnix: 1150);
+
+        // Act: нода умирает СНОВА — новый rebuild (иначе last_rebuild навсегда
+        // показывает старое событие)
+        state.RebuildDetected("s1", "n2", "operator-recreate", 3000);
+
+        // Assert: новый detected/cause, resolved сброшен
+        var rebuild = state.ToRecord().LastRebuild!;
+        rebuild.Cause.Should().Be("operator-recreate");
+        rebuild.DetectedUnix.Should().Be(3000);
+        rebuild.ResolvedUnix.Should().BeNull();
+        rebuild.DurationSec.Should().BeNull();
+    }
+
+    [Fact]
     public void RebuildDetected_ThenNodeAlive_Closes()
     {
         // Arrange/Act: rebuild auto-dead открыт, нода поднялась

@@ -73,6 +73,11 @@ export function OverviewPage() {
     );
 
   const data = overview.data;
+  // Active-кластера для агрегаций карточек: кластерная сводка OverviewDto
+  // state-поля не несёт — прокси «активен» = не notInitialized.
+  const activeClusterNames = new Set(
+    data.clusters.filter((c) => !c.notInitialized).map((c) => c.name),
+  );
   return (
     <Stack gap="md">
       <Title order={2}>Обзор</Title>
@@ -87,7 +92,7 @@ export function OverviewPage() {
           isPending={backups.isPending}
           onRetry={() => void backups.refetch()}
         />
-        <ReliabilityCard data={reliability.data} isPending={reliability.isPending} onRetry={() => void reliability.refetch()} />
+        <ReliabilityCard data={reliability.data} activeClusters={activeClusterNames} isPending={reliability.isPending} onRetry={() => void reliability.refetch()} />
         <AlertsCard data={data} />
         <HaCard
           scopes={haScopes.data}
@@ -109,8 +114,9 @@ export function OverviewPage() {
 // Карточка «Надёжность» (arch/03 §3): worst RPO-потенциал по Active-кластерам,
 // счётчики шардов mode=full («RPO держится только полным») и mode=off,
 // длительность последнего failover установки (клиентская агрегация GET /api/reliability).
-function ReliabilityCard({ data, isPending, onRetry }: {
+function ReliabilityCard({ data, activeClusters, isPending, onRetry }: {
   data: ReliabilityDto | undefined;
+  activeClusters: Set<string>;
   isPending: boolean;
   onRetry: () => void;
 }) {
@@ -130,7 +136,11 @@ function ReliabilityCard({ data, isPending, onRetry }: {
       </Card>
     );
 
-  const shards = (data.clusters ?? []).flatMap((c) => c.shards);
+  // Агрегация — только Active-кластерам (spec §3.6): демонтируемые/не
+  // инициализированные не завышают счётчики и не задают worst.
+  const shards = (data.clusters ?? [])
+    .filter((c) => activeClusters.has(c.cluster))
+    .flatMap((c) => c.shards);
   const potentials = shards
     .filter((s) => s.rpo && s.rpo.mode !== 'off' && s.rpo.rpoPotentialSec !== null && s.rpo.rpoPotentialSec !== undefined)
     .map((s) => s.rpo!.rpoPotentialSec!);

@@ -21,19 +21,21 @@ public sealed class HaFactState
     public static HaFactState FromStored(HaSupervisionFact? failover, HaSupervisionFact? rebuild)
         => new(failover, rebuild);
 
-    // Открытие failover (dead-ветка надзора/применённое ускорение):
-    // уже открытое событие того же (shard, node) не перезаписываем.
+    // Открытие failover (dead-ветка надзора/применённое ускорение): игнор —
+    // только ОТКРЫТОЕ событие той же (shard, node) (detected первого тика);
+    // закрытый факт той же ноды — реальное новое событие, перезаписывает.
     public void FailoverDetected(string shard, string node, string cause, long detectedUnix)
     {
-        if (Failover is { } open && open.Shard == shard && open.Node == node)
+        if (Failover is { ResolvedUnix: null } open && open.Shard == shard && open.Node == node)
             return;
         Failover = new HaSupervisionFact(shard, node, cause, detectedUnix);
     }
 
-    // Открытие rebuild (rebuild-ветка/маркер TO_RECREATE).
+    // Открытие rebuild (rebuild-ветка/маркер TO_RECREATE); симметрично failover:
+    // игнор — только открытое событие той же ноды, закрытое перезаписывается.
     public void RebuildDetected(string shard, string node, string cause, long detectedUnix)
     {
-        if (Rebuild is { } open && open.Shard == shard && open.Node == node)
+        if (Rebuild is { ResolvedUnix: null } open && open.Shard == shard && open.Node == node)
             return;
         Rebuild = new HaSupervisionFact(shard, node, cause, detectedUnix);
     }

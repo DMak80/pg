@@ -171,8 +171,13 @@ public sealed class NodeSupervisor(
                 deadShards.Add(evacuated);
         }
 
-        await journal.WriteSupervisionAsync(cluster, claims.InstanceId, track, null, ct,
-            haFacts.ToRecord());
+        // Запись фактов/трека — финальный put тика (arch/14 §5 C): сбой —
+        // warning-лог (наблюдаемость ≠ данные), тик не роняем.
+        var supervisionPut = await journal.WriteSupervisionAsync(
+            cluster, claims.InstanceId, track, null, ct, haFacts.ToRecord());
+        if (!supervisionPut.IsSuccess)
+            log.LogWarning("supervise {Cluster}: финальная запись work-ключа не удалась: {Error}",
+                cluster, supervisionPut.Error!.Message);
 
         // RTO-серии (arch/18 §2.7): только завершённые длительности; наблюдатель
         // пассивный (try/catch внутри марк-метода).
