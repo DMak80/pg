@@ -8,7 +8,7 @@ namespace PgWorker.IntegrationTests.Api;
 
 // POST /api/clusters/{c}/shards + DELETE /api/clusters/{c}/shards/{x} (task
 // etcd-via-worker-api): порт панельных ShardsApiTests на WAF-хост воркера.
-[Collection(PgApiCollection.Name)]
+[Collection(NonE2eCollection.Name)]
 public class ShardsApiTests(PgApiFixture fixture)
 {
     private HttpClient Client => fixture.Factory.CreateClient();

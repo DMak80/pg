@@ -12,6 +12,7 @@ namespace PgWorker.IntegrationTests.Backups;
 // Целевая архитектура E2E (docs/e2e-isolation.md §1): единица изоляции —
 // класс; окружение — СВОЙ etcd в СВОЙ docker-сети (OwnedEtcdFixture) —
 // чужие записи в общий etcd коллекции на класс не влияют.
+[Collection(NonE2eCollection.Name)]
 public class BackupOrphanSweeperTests(OwnedEtcdFixture fixture) : IClassFixture<OwnedEtcdFixture>
 {
     // Фиксированные часы: сжатое время TTL/first_seen (AAA).

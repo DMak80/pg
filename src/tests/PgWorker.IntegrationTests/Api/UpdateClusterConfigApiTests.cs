@@ -13,7 +13,7 @@ namespace PgWorker.IntegrationTests.Api;
 // юнит-формой (UpdateClusterConfigHandlerTests, Задача 8 шаг 3б — примечание
 // в плане t06): инъекция конкурентной записи внутри одного вызова на реальном
 // etcd детерминированно невоспроизводима.
-[Collection(PgApiCollection.Name)]
+[Collection(NonE2eCollection.Name)]
 public class UpdateClusterConfigApiTests(PgApiFixture fixture)
 {
     private HttpClient Client => fixture.Factory.CreateClient();

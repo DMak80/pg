@@ -11,7 +11,7 @@ namespace PgWorker.IntegrationTests.Api;
 // POST /api/seed/demo (task etcd-via-worker-api): демо-сид pg-контура через API
 // воркера — перенос dev-stand/adminpanel/seed.sh 1:1; идемпотентен по живому
 // /clusters/demo/config; за флагом EnableSeedEndpoint (выключен → 404).
-[Collection(PgApiCollection.Name)]
+[Collection(NonE2eCollection.Name)]
 public class SeedApiTests(PgApiFixture fixture)
 {
     private HttpClient Client => fixture.Factory.CreateClient();

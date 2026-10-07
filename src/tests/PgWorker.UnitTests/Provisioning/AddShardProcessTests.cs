@@ -37,7 +37,7 @@ public class AddShardProcessTests
         etcd.Seed("/clusters/shop/shards/shard2/replicas", "2");
         etcd.Seed("/clusters/shop/shards/shard2/nodes/shard2a/state", "RUNNING");
         etcd.Seed("/clusters/shop/shards/shard2/nodes/shard2b/state", "RUNNING");
-        etcd.Seed("/clusters/shop/shards/shard2/dsn", "host=h1,h2 port=15001,15001 dbname=shop user=bucket_admin");
+        etcd.Seed("/clusters/shop/shards/shard2/dsn", "host=h1,h2 port=15003,15003 dbname=shop user=bucket_admin");
         for (var i = 0; i < 6; i++)
             etcd.Seed($"/clusters/shop/buckets/routing/bucket_{i}", i % 2 == 0 ? "shard1" : "shard2");
         etcd.Seed("/service/shop-shard1/initialize", "7403705125687833961");
@@ -50,12 +50,14 @@ public class AddShardProcessTests
         etcd.Seed("/service/shop-shard2/request_cpu", "2");
         etcd.Seed("/service/shop-shard2/request_mem", "8Gi");
 
+        // Тройки портов ПОСЛЕДОВАТЕЛЬНЫЕ (t24, arch/14 §2.4 п.2): per-host базы
+        // разносятся на ширину тройки — shard1 h1/h2 15000-15002, shard2 15003-15005.
         var existing = new Dictionary<string, NodeAddress>
         {
-            ["shard1/shard1a"] = new("h1", new NodePorts(15000, 18000, 16500)),
-            ["shard1/shard1b"] = new("h2", new NodePorts(15000, 18000, 16500)),
-            ["shard2/shard2a"] = new("h1", new NodePorts(15001, 18001, 16501)),
-            ["shard2/shard2b"] = new("h2", new NodePorts(15001, 18001, 16501)),
+            ["shard1/shard1a"] = new("h1", new NodePorts(15000, 15001, 15002)),
+            ["shard1/shard1b"] = new("h2", new NodePorts(15000, 15001, 15002)),
+            ["shard2/shard2a"] = new("h1", new NodePorts(15003, 15004, 15005)),
+            ["shard2/shard2b"] = new("h2", new NodePorts(15003, 15004, 15005)),
         };
         etcd.Seed("/pgworker/portalloc/shop", Portalloc.Serialize(existing));
     }
@@ -127,10 +129,12 @@ public class AddShardProcessTests
         return new Rig(etcd, driver, sql, claims, journal, process);
     }
 
-    // Порты живых нод (docker видит публикации контейнеров) — новые ноды уходят выше.
+    // Порты живых нод (docker видит публикации контейнеров) — новые ноды уходят выше:
+    // все тройки живых нод обоих шардов на обоих хостах (последовательные слоты, t24).
     private static IReadOnlySet<(string Host, int Port)> LiveNodePorts() => new HashSet<(string, int)>
     {
-        ("h1", 15000), ("h2", 15000), ("h1", 15001), ("h2", 15001),
+        ("h1", 15000), ("h1", 15001), ("h1", 15002), ("h1", 15003), ("h1", 15004), ("h1", 15005),
+        ("h2", 15000), ("h2", 15001), ("h2", 15002), ("h2", 15003), ("h2", 15004), ("h2", 15005),
     };
 
     [Fact]
@@ -247,7 +251,7 @@ public class AddShardProcessTests
     public async Task Tick_PatroniAlive_BootStrapsEmptyShardAndRegistersDsn()
     {
         // Arrange — Patroni шарда поднялся (initialize + leader + REST по портам нод)
-        var rig = await NewRig(port => port == 18002 ? Patroni("shard3a") : DeadPatroni(),
+        var rig = await NewRig(port => port == 15007 ? Patroni("shard3a") : DeadPatroni(),
             busyPorts: LiveNodePorts());
         rig.Etcd.Seed("/service/shop-shard3/initialize", "7403705125687833998");
         rig.Etcd.Seed("/service/shop-shard3/leader", """{"name":"shard3a","poll_queued_commands":0}""");
@@ -262,12 +266,12 @@ public class AddShardProcessTests
         outcome.IsSuccess.Should().BeTrue();
         outcome.Value.Should().Be(ProcessOutcome.Done);
         rig.Sql.EnsuredDatabases.Should().Contain(
-            ("Host=h1;Port=15002;Database=postgres;Username=postgres;Password=su-pw;SSL Mode=Require;Trust Server Certificate=true", "shop"));
+            ("Host=h1;Port=15006;Database=postgres;Username=postgres;Password=su-pw;SSL Mode=Require;Trust Server Certificate=true", "shop"));
         rig.Sql.Scalars.Should().Contain(s => s.Sql.Contains("CREATE ROLE \"app\""));
         rig.Sql.Scalars.Should().Contain(s => s.Sql.Contains("CREATE ROLE \"bucket_admin\""));
         rig.Sql.Executed.Should().NotContain(e => e.Sql.Contains("CREATE SCHEMA bucket_"));
         rig.Etcd.Store["/clusters/shop/shards/shard3/dsn"].Value.Should()
-            .Be("host=h1,h2 port=15002,15002 dbname=shop user=bucket_admin password=adm-pw");
+            .Be("host=h1,h2 port=15006,15006 dbname=shop user=bucket_admin password=adm-pw");
         rig.Etcd.Store["/clusters/shop/shards/shard3/nodes/shard3a/state"].Value.Should().Be("RUNNING");
         rig.Etcd.Store["/clusters/shop/shards/shard3/nodes/shard3b/state"].Value.Should().Be("RUNNING");
         var routingAfter = rig.Etcd.Store
@@ -282,7 +286,7 @@ public class AddShardProcessTests
     {
         // Arrange — кластер Active с app-ключами (созданы provisioning'ом раньше)
         // + декларация нового шарда; Patroni шарда поднялся (как в соседних тестах)
-        var rig = await NewRig(port => port == 18002 ? Patroni("shard3a") : DeadPatroni(),
+        var rig = await NewRig(port => port == 15007 ? Patroni("shard3a") : DeadPatroni(),
             busyPorts: LiveNodePorts());
         rig.Etcd.Seed("/service/shop-shard3/initialize", "7403705125687833998");
         rig.Etcd.Seed("/service/shop-shard3/leader", """{"name":"shard3a","poll_queued_commands":0}""");
@@ -305,7 +309,7 @@ public class AddShardProcessTests
     {
         // Arrange — шард уже зарегистрирован (dsn записан ранее)
         var rig = await NewRig(_ => DeadPatroni());
-        rig.Etcd.Seed("/clusters/shop/shards/shard3/dsn", "host=h1,h2 port=15002,15002 dbname=shop user=bucket_admin password=adm-pw");
+        rig.Etcd.Seed("/clusters/shop/shards/shard3/dsn", "host=h1,h2 port=15006,15006 dbname=shop user=bucket_admin password=adm-pw");
 
         // Act
         var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
@@ -324,14 +328,14 @@ public class AddShardProcessTests
         // Arrange — первый тик с глухим Patroni (ноды PROVISIONING, portalloc записан)
         var rig = await NewRig(_ => DeadPatroni(), busyPorts: LiveNodePorts());
         await rig.Process.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
-        var firstDsn = "host=h1,h2 port=15002,15002 dbname=shop user=bucket_admin password=adm-pw";
+        var firstDsn = "host=h1,h2 port=15006,15006 dbname=shop user=bucket_admin password=adm-pw";
 
         // Act — Patroni ожил; второй тик по СВЕЖЕМУ снапшоту доводит до dsn
         rig.Etcd.Seed("/service/shop-shard3/initialize", "7403705125687833998");
         rig.Etcd.Seed("/service/shop-shard3/leader", """{"name":"shard3a","poll_queued_commands":0}""");
         var alive = new AddShardProcess(
             rig.Etcd, [Ep], rig.Driver, rig.Sql,
-            Probe(port => port == 18002 ? Patroni("shard3a") : DeadPatroni()),
+            Probe(port => port == 15007 ? Patroni("shard3a") : DeadPatroni()),
             rig.Claims, rig.Journal, new PlacementOptions(15000, 15100, 600), Secrets,
             new ClusterSecretEnsurer(rig.Etcd, [Ep]),
             new AppParamsEnsurer(rig.Etcd, [Ep], "sslmode=require"), EtcdEndp,
@@ -383,7 +387,7 @@ public class AddShardProcessTests
         // Arrange — add-shard shard3 доведён до SQL-фазы (Patroni жив — образец
         // Tick_PatroniAlive); app-секрет кластера меняется ПОСЛЕ старта тика
         // (ротация успела закоммитить новый пароль)
-        var rig = await NewRig(port => port == 18002 ? Patroni("shard3a") : DeadPatroni(),
+        var rig = await NewRig(port => port == 15007 ? Patroni("shard3a") : DeadPatroni(),
             busyPorts: LiveNodePorts());
         rig.Etcd.Seed("/service/shop-shard3/initialize", "7403705125687833998");
         rig.Etcd.Seed("/service/shop-shard3/leader", """{"name":"shard3a","poll_queued_commands":0}""");
@@ -406,23 +410,25 @@ public class AddShardProcessTests
     }
 
     // AAA: C — новый шард видит portalloc-закрепления СОСЕДЕЙ (других кластеров):
-    // busy = docker ∪ etcd-записи; без foreign-busy база 15000 занята только соседом
+    // busy = docker ∪ etcd-записи соседей (свои живые ноды закрывает docker-busy
+    // публикаций — в юните docker пуст, тест изолирует foreign-portalloc-механику)
     [Fact]
     public async Task Tick_FreshShard_AvoidsForeignPortallocRecords()
     {
-        // Arrange: сосед закрепил h1-тройку 15000/18000/16500; наш shard3 заявлен,
-        // контейнеров нет (docker-busy пуст) — без foreign-busy новый шард получил бы базу 15000.
+        // Arrange: сосед закрепил h1-тройку 15000-15002 (последовательные слоты);
+        // наш shard3 заявлен, контейнеров нет (docker-busy пуст).
         var rig = await NewRig(_ => Patroni("shard3a"));
         rig.Etcd.Seed("/pgworker/portalloc/neighbor",
-            """{"s1/n1":{"host":"h1","pg":15000,"patroni":18000,"doorman":16500}}""");
+            """{"s1/n1":{"host":"h1","pg":15000,"patroni":15001,"doorman":15002}}""");
 
         // Act
         var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), "shard3", CancellationToken.None);
 
-        // Assert: нода h1 нового шарда обошла чужую тройку (база 15001); h2 не затронут соседом.
+        // Assert: нода h1 нового шарда обошла соседскую тройку 15000-15002 —
+        // первая свободная база 15003; h2 не затронут соседом.
         outcome.IsSuccess.Should().BeTrue();
         var raw = rig.Etcd.Store["/pgworker/portalloc/shop"].Value;
-        raw.Should().Contain("\"shard3/shard3a\":{\"host\":\"h1\",\"pg\":15001");
+        raw.Should().Contain("\"shard3/shard3a\":{\"host\":\"h1\",\"pg\":15003");
     }
 
     // AAA (t90): глобальный portalloc-клэйм занят — add-shard ждёт

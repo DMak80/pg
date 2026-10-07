@@ -10,7 +10,7 @@ namespace PgWorker.IntegrationTests.Etcd;
 // Контракт scale-ключей на реальном etcd (t06 spec §8): сид панели → детекция
 // ShardScaleClassifier → RemoveShardProcess реальными txn/del; идемпотентность
 // конкурентных PUT маркера; демонтаж недоднятого add (Д5).
-[Collection(EtcdCollection.Name)]
+[Collection(NonE2eCollection.Name)]
 public class ShardScaleContractTests(EtcdFixture fixture)
 {
     private EtcdGateway Gateway => fixture.Gateway;
@@ -19,8 +19,9 @@ public class ShardScaleContractTests(EtcdFixture fixture)
 
     // Per-class guid-тег (канон docs/e2e-isolation.md §1: guid во всех именах):
     // имена кластеров несут уникальный суффикс — пересечение с соседними классами
-    // EtcdCollection механически невозможно (инцидент t07: BackupSupervisor взял
-    // имена sc1..sc3, клэйм sc3 жил 15с по TTL и ронял TryClaim этого класса).
+    // не-E2E-коллекции (NonE2eCollection) механически невозможно (инцидент t07:
+    // BackupSupervisor взял имена sc1..sc3, клэйм sc3 жил 15с по TTL и ронял
+    // TryClaim этого класса).
     private static readonly string Tag = Guid.NewGuid().ToString("N")[..8];
 
     // Сид Active-кластера (уникальное имя на тест — общий etcd коллекции).

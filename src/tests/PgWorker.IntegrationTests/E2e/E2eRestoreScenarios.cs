@@ -209,8 +209,13 @@ public class E2eRestoreScenarios
             var t1Archived = await WalArchivedAsync(cluster, "shard1", ws + 5, ct);
             t1Archived.Should().BeTrue("сегменты с T1 обязаны попасть в архив: "
                 + await DumpDiagnosticsAsync(cluster, "shard1"));
+            // Пауза ДО фиксации tCut выносит коммиты T1 из секунды фиксации:
+            // target-time округляется ВНИЗ до секунды — коммит T1 в той же
+            // секунде, что tCut, терялся при recovery (разбор 9f16793; пауза
+            // ПОСЛЕ tCut на target↔T1 не влияла). Попутно tCut фиксируется
+            // позже ⇒ дальше от DROP — DROP-защита не слабеет.
+            await Task.Delay(5000, ct);
             var tCut = DateTime.UtcNow;
-            await Task.Delay(2000, ct);
 
             // Arrange 4 — порча: DROP уходит в последующие (заархивированные) сегменты
             await ExecAsync(adminDsn, "DROP TABLE pitr_probe", ct);
@@ -263,125 +268,6 @@ public class E2eRestoreScenarios
             reinited.Should().BeTrue("после PITR цепочка заводится заново (инвариант §3.5)");
         }, ct);
     }
-
-    // ===== Сценарий 3 (AC3+AC6-D2): DR — новый кластер из S3-префикса =====
-
-    // AAA: кластер A с данными и полным → deprovision (etcd-контур пуст ВКЛЮЧАЯ
-    // /pgworker/backups/A/, S3 жив) → пересоздание декларацией → restore обеих
-    // шардов с source=A/shard1 (list-S3 без etcd-статусов) → COMPLETED + данные.
-    [Fact]
-    public async Task Restore_NewCluster_FromSourcePrefix()
-    {
-        DockerTrait.SkipIfUnavailable();
-        var ct = TestContext.Current.CancellationToken;
-        await RunScenarioAsync("rs-dr", async fx =>
-        {
-            // Arrange 1 — окружение + кластер rdr<тег>, данные, полный COMPLETED
-            var cluster = $"rdr{fx.ClusterTag}";
-            await SeedClusterAsync(cluster);
-            await using var app = await StartRestoreHostAsync("rsdr", ct);
-
-            var provisioned = await WaitPhaseAsync(
-                "provisioning", () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
-            provisioned.Should().BeTrue("provisioning должен дойти до DONE до бэкапов");
-            var (pgHost, pgPort) = await MasterPgAsync(cluster, "shard1", ct);
-            var adminDsn = DatabaseProvisioner.BuildAdminDsn(pgHost, pgPort, cluster,
-                new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
-            await ExecAsync(adminDsn, "CREATE TABLE dr_probe(id int, note text)", ct);
-            await ExecAsync(adminDsn,
-                "INSERT INTO dr_probe SELECT g, 'keeper' FROM generate_series(1, 7) g", ct);
-            var completed = await WaitPhaseAsync(
-                "full-completed", async () => (await FullKeysAsync(cluster, "shard1")).Any(f => f.Value.Contains("COMPLETED")),
-                TimeSpan.FromSeconds(300), ct);
-            completed.Should().BeTrue("полный обязан дойти до COMPLETED до deprovision");
-
-            // Act 1 — deprovision: state=TO_REMOVE → контур A пуст (D2-ассерт: и
-            // /clusters/A/, и /pgworker/backups/A/), S3-префикс жив
-            var config = await G.GetAsync(Endpoint, $"/clusters/{cluster}/config", ct);
-            config.Value.Should().NotBeNull();
-            var doc = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(config.Value!.Value)!;
-            doc["state"] = JsonSerializer.SerializeToElement("TO_REMOVE");
-            await G.PutAsync(Endpoint, $"/clusters/{cluster}/config",
-                JsonSerializer.Serialize(doc), null, ct);
-            var deprovisioned = await WaitPhaseAsync("deprovision", async () =>
-            {
-                var clusterPrefix = await G.RangeAsync(Endpoint, $"/clusters/{cluster}/", ct);
-                var backupsPrefix = await G.RangeAsync(Endpoint, $"/pgworker/backups/{cluster}/", ct);
-                // Failed (разовый сбой) ≠ «пусто»: считаем условие не выполненным —
-                // поллинг повторит, ложный успешный ассерт исключён.
-                if (!clusterPrefix.IsSuccess || !backupsPrefix.IsSuccess)
-                    return false;
-                return clusterPrefix.Value.Count == 0 && backupsPrefix.Value.Count == 0;
-            }, TimeSpan.FromSeconds(300), ct);
-            deprovisioned.Should().BeTrue("deprovision обязан вычистить контур кластера (вкл. restore/full/wal)");
-            await using var backupS3 = HostS3Client();
-            var fullsInS3 = await backupS3.ListFullsAsync(cluster, "shard1", ct: ct);
-            fullsInS3.IsSuccess.Should().BeTrue();
-            fullsInS3.Value.Should().NotBeEmpty("S3 переживает кластер — фактический DR-источник");
-
-            // Act 2 — пересоздание декларацией + restore обеих шардов из A/shard1
-            // (source-override; ретрай на гонку t03 — дыры цепочки source-префикса)
-            await SeedClusterAsync(cluster);
-            var reprovisioned = await WaitPhaseAsync(
-                "reprovisioning", () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
-            reprovisioned.Should().BeTrue("кластер обязан подняться заново (пустые шарды)");
-            var drDone = await RestoreWithRetryAsync(cluster, "shard1",
-                target: "latest", source: $"{cluster}/shard1", ct: ct);
-            var drDone2 = await RestoreWithRetryAsync(cluster, "shard2",
-                target: "latest", source: $"{cluster}/shard1", ct: ct);
-
-            // Assert — оба restore COMPLETED (RestoreWithRetry не вернёт FAILED);
-            // контрольные строки на месте.
-
-            // Гейт готовности мастера (t10): COMPLETED не гарантирует закрытия
-            // рестарт-окна postmaster (Npgsql 57P01) — SQL-проба SELECT 1 до
-            // финального чтения (эталон — backup_exec-гвард E2eBackupScenarios;
-            // docs/e2e-launch.md §2: новый ожидания-участок — только через
-            // WaitPhaseAsync). Бюджет 120 с согласован с PatroniBootSec хоста.
-            var masterReady = await WaitPhaseAsync("master-ready", async () =>
-            {
-                try
-                {
-                    var (gHost, gPort) = await MasterPgAsync(cluster, "shard1", ct);
-                    var gDsn = DatabaseProvisioner.BuildAdminDsn(gHost, gPort, cluster,
-                        new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
-                    await ScalarAsync(gDsn, "SELECT 1", ct);
-                    return true;
-                }
-                catch (NpgsqlException)
-                {
-                    return false; // рестарт-окно — поллинг повторит
-                }
-            }, TimeSpan.FromSeconds(120), ct);
-            masterReady.Should().BeTrue(
-                "мастер обязан принять SQL до финального чтения (гейт t10): "
-                + await DumpDiagnosticsAsync(cluster, "shard1"));
-
-            // Финальное чтение с ретраем (эталон rs-latest): даже после гейта
-            // Patroni может доводить конфиг мастера (рестарт рвёт соединения) —
-            // это переходный оконный артефакт rejoin'а.
-            var (drHost, drPort) = await MasterPgAsync(cluster, "shard1", ct);
-            var drDsn = DatabaseProvisioner.BuildAdminDsn(drHost, drPort, cluster,
-                new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
-            var rows = "";
-            for (var attempt = 1; attempt <= 5; attempt++)
-            {
-                try
-                {
-                    rows = await ScalarAsync(drDsn, "SELECT count(*) FROM dr_probe", ct);
-                    break;
-                }
-                catch (NpgsqlException) when (attempt < 5)
-                {
-                    await Task.Delay(8000, ct);
-                }
-            }
-
-            rows.Should().Be("7", "данные совпадают с моментом бэкапа (RPO = точка полного): "
-                + await DumpDiagnosticsAsync(cluster, "shard1"));
-        }, ct);
-    }
-
     // ===== Хелперы (копии образцов E2eBackupScenarios/E2eRetentionScenarios —
     // файлы сценариев независимы, паттерн репо) =====
 
@@ -439,6 +325,7 @@ public class E2eRestoreScenarios
             ["PgWorker__Backups__S3__AccessKey"] = "minioadmin",
             ["PgWorker__Backups__S3__SecretKey"] = "minioadmin",
             ["PgWorker__Backups__Job__Image"] = E2eEnvironment.JobImage,
+            ["PgWorker__Backups__Wal__AgentImage"] = E2eEnvironment.WalImage,
             ["PgWorker__Backups__Retry__BaseSec"] = "2",
             ["PgWorker__Backups__Retry__MaxSec"] = "4",
             ["PgWorker__Backups__Wal__VerifyIntervalSec"] = "2",

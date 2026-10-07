@@ -15,6 +15,7 @@ namespace PgWorker.IntegrationTests.Docker;
 // пока жив PID1-сессия sleep) с bind-mount файла docker/node/master-lease.py.
 // Два ОДИНОЧНЫХ etcd-контейнера (не кластер): lease-скрипту безразличен кворум,
 // важен перебор transport-отказов. Гейт PGW_TEST_DOCKER=1 (DockerTrait).
+[Collection(NonE2eCollection.Name)]
 public class MasterLeaseFailoverTests
 {
     private const string EtcdImage = "quay.io/coreos/etcd:v3.5.21";

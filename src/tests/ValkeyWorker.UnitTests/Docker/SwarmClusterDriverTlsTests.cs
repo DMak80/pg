@@ -167,6 +167,7 @@ public class SwarmClusterDriverTlsTests
         public Task<Result> RemoveContainerAsync(string idOrName, bool force, CancellationToken ct) => throw NotUsed();
         public Task<Result> EnsureNetworkAsync(string name, CancellationToken ct) => throw NotUsed();
         public Task<Result> DeleteNetworkAsync(string name, CancellationToken ct) => throw NotUsed();
+        public Task<Result> NetworkConnectAsync(string network, string container, CancellationToken ct) => throw NotUsed();
         public Task<Result<IReadOnlyList<DockerSwarmNode>>> ListNodesAsync(CancellationToken ct) => throw NotUsed();
         public Task<Result> CreateServiceAsync(ServiceSpec spec, CancellationToken ct) => throw NotUsed();
         public Task<Result> RemoveServiceAsync(string name, CancellationToken ct) => throw NotUsed();

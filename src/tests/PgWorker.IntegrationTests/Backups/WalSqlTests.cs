@@ -9,6 +9,7 @@ namespace PgWorker.IntegrationTests.Backups;
 
 // Слот-SQL против живого postgres (testcontainers, динамический порт): идемпотентный
 // ensure + LSN-зонд — t03 spec Ф3 (шаги 3/7).
+[Collection(NonE2eCollection.Name)]
 public class WalSqlTests
 {
     private const string Password = "pgw-test-su";
@@ -19,7 +20,7 @@ public class WalSqlTests
         // Arrange
         DockerTrait.SkipIfUnavailable();
         var ct = TestContext.Current.CancellationToken;
-        await using var postgres = new ContainerBuilder("postgres:17-alpine")
+        await using var postgres = new ContainerBuilder("postgres:18-alpine")
             .WithEnvironment("POSTGRES_PASSWORD", Password)
             .WithPortBinding(5432, assignRandomHostPort: true)
             .WithWaitStrategy(Wait.ForUnixContainer().UntilCommandIsCompleted(

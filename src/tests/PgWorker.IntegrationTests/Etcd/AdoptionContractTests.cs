@@ -18,7 +18,7 @@ namespace PgWorker.IntegrationTests.Etcd;
 // кластера (dsn-шарды, HA-members) + стаб-драйвер с контейнерами → portalloc
 // с object, nodes-ключи RUNNING, идемпотентность второго тика; частичная
 // находка журналируется. SQL/секреты — на стабах (etcd-контракт здесь).
-[Collection(EtcdCollection.Name)]
+[Collection(NonE2eCollection.Name)]
 public class AdoptionContractTests(EtcdFixture fixture)
 {
     private EtcdGateway Gateway => fixture.Gateway;

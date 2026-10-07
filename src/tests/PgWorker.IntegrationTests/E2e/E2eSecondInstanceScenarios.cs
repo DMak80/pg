@@ -57,8 +57,11 @@ public class E2eSecondInstanceScenarios
             await Fx.RunDockerAsync(["build", "-q", "-f", $"{root}/docker/PgWorker.Dockerfile", "-t", image, root], ct);
             Console.Error.WriteLine($"[PHASE] build {image}: {buildSw.Elapsed.TotalSeconds:F0} c");
 
-            var p1 = E2eFixture.FreePort();
-            var p2 = E2eFixture.FreePort();
+            // Порты w1/w2 — последовательные слоты ОКНА контура (t24, spec §1.5):
+            // FreePort() вне окна гонялся бы за теми же базами, что и окна
+            // параллельных контуров — межконтурная гонка bind'ов.
+            var p1 = Fx.ReserveWindowPort();
+            var p2 = Fx.ReserveWindowPort();
             await RunWorkerContainerAsync(w1, image, p1, serverCert, serverKey, ca, ct);
             await RunWorkerContainerAsync(w2, image, p2, serverCert, serverKey, ca, ct);
 
@@ -143,8 +146,12 @@ public class E2eSecondInstanceScenarios
             ["PgWorker__Docker__Mode"] = "Plain",
             ["PgWorker__Docker__Hosts__0__Name"] = "host.docker.internal",
             ["PgWorker__Docker__Hosts__0__Endpoint"] = "unix:///var/run/docker.sock",
-            ["PgWorker__Docker__PortRange__From"] = "15100",
-            ["PgWorker__Docker__PortRange__To"] = "15200",
+            // PortRange — остаток ОКНА контура (t24, spec §1.5): тот же контракт,
+            // что у хост-воркеров StartHostAsync — окно за вычетом инфраструктуры
+            // контура (etcd/MinIO/API-порты/w1/w2); литеральные диапазоны
+            // (одинаковые всем контурам) запрещены — межконтурная гонка bind'ов.
+            ["PgWorker__Docker__PortRange__From"] = Fx.RemainingPortRange.From.ToString(),
+            ["PgWorker__Docker__PortRange__To"] = Fx.RemainingPortRange.To.ToString(),
             ["PgWorker__Docker__Images__Node"] = E2eEnvironment.NodeImage,
             ["PgWorker__Docker__EnableDoorman"] = "false",
 

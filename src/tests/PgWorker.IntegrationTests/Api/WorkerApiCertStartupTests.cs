@@ -21,7 +21,7 @@ namespace PgWorker.IntegrationTests.Api;
 // Чтение ключа /workers/api_tls/pgworker при старте (spec §3.2 п.1):
 // Found/Missing/Unreachable/Broken + применение в ConfigureMtls (серт грани
 // из ключа; fail-fast на битый; env-фоллбек при недоступном etcd).
-[Collection(PgApiCollection.Name)]
+[Collection(NonE2eCollection.Name)]
 public class WorkerApiCertStartupTests(PgApiFixture fx)
 {
     private string Endpoints => fx.Etcd.Endpoint;

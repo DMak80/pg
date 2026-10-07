@@ -98,15 +98,3 @@ public sealed class EtcdFixture : IAsyncLifetime
         throw new InvalidOperationException($"etcd в {Endpoint} не поднялся за 30 c");
     }
 }
-
-// Один etcd-контейнер на все contract/coordination-классы. Инвариант непересечения
-// ключей держат сами классы: имена кластеров ОБЯЗАНЫ нести per-class guid-тег
-// (канон docs/e2e-isolation.md §1), клэймящие тесты чистят /pgworker/claims/<C>
-// перед TryClaim и отпускают клэйм в teardown (await using / IAsyncLifetime) —
-// литеральная коллизия имён (инцидент t07: sc3 BackupSupervisor × ShardScale)
-// даёт флейк полной сборки из-за lease-TTL 15с.
-[CollectionDefinition(Name)]
-public sealed class EtcdCollection : ICollectionFixture<EtcdFixture>
-{
-    public const string Name = "etcd";
-}

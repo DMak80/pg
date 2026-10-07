@@ -12,6 +12,7 @@ namespace PgWorker.IntegrationTests.Api;
 // в DI запрещена хостом (.NET «Replacing IHostApplicationLifetime is not supported») —
 // проверяем РЕАЛЬНЫЙ StopApplication на собственной фабрике (общий хост PgApiFixture
 // не гасим): подписка на ApplicationStopping до POST.
+[Collection(NonE2eCollection.Name)]
 public class RestartApiTests
 {
     // Свой etcd + своя фабрика на тест-класс (teardown при любом исходе).

@@ -107,13 +107,33 @@ public class E2eEtcdSnapshotExportScenarios
         okKey.Should().BeTrue("первый тик лидера снимает слепок и выгружает его");
         var kv = await StatusValueAsync(ct);
         kv.Should().Contain("\"interval_min\":1").And.Contain("\"last_object\":\"etcd/snapshot-");
-        // Assert — объекты в MinIO: пара db+meta (имена относительно etcd/)
+        // Assert — объекты в MinIO: пара db+meta (имена относительно etcd/).
+        // Ретрай-поллинг до УСТОЙЧИВОГО листинга (t24, фейлы №14/№16/№17):
+        // intervalMin=1 — в окне ожидания OK воркер успевает снять ЕЩЁ один
+        // слепок, и счёт пар в листинге — зона РЕТЕНЦИЯ-факта (Export_ретенция
+        // ниже), не этого. Устойчивость здесь = в листинге присутствует пара
+        // ПОСЛЕДНЕГО выгруженного объекта (db + его meta), за вычетом гонки
+        // «снимок снят, но пара ещё не долетела».
+        var stablePair = await E2eFixture.WaitForAsync(async () =>
+        {
+            var keysNow = McKeys(await McLsAsync("etcd/"));
+            var last = PgWorker.Backups.EtcdExport.EtcdSnapshotStatusJson.Parse(
+                await StatusValueAsync(ct))!;
+            var dbKey = last.LastObject!["etcd/".Length..];
+            var metaKey = dbKey.EndsWith(".db")
+                ? dbKey[..^".db".Length] + ".meta.json"
+                : dbKey;
+            return keysNow.Contains(dbKey) && keysNow.Contains(metaKey);
+        }, TimeSpan.FromSeconds(120), ct);
+        stablePair.Should().BeTrue("пара последнего выгруженного слепка (db+meta) устойчиво в листинге");
         var listing = await McLsAsync("etcd/");
         var keys = McKeys(listing);
-        keys.Should().HaveCount(2).And.Contain(k => k.EndsWith(".db")).And.Contain(k => k.EndsWith(".meta.json"));
         // Assert — sha256 выгрузки == sha256 содержимого S3-объекта (целостность)
         var status = PgWorker.Backups.EtcdExport.EtcdSnapshotStatusJson.Parse(kv)!;
-        status.LastObject.Should().Be($"etcd/{keys.Single(k => k.EndsWith(".db"))}");
+        // db-ключ из статуса (не Single по листингу: в окне факта воркер мог
+        // снять следующий слепок — счёт пар в листинге не инвариант этого факта)
+        var lastDb = status.LastObject!["etcd/".Length..];
+        keys.Should().Contain(lastDb, "последний выгруженный db-объект в листинге");
         var bytes = await DownloadAsync(status.LastObject!, ct);
         Sha256Hex(bytes).Should().Be(status.LastSha256, "sha256 статуса = sha256 содержимого S3-объекта");
         // Assert — verify слепка (AC5): etcdctl snapshot status на ВАЛИДНОМ слепке
@@ -127,7 +147,9 @@ public class E2eEtcdSnapshotExportScenarios
             await Fx.RunDockerAsync(["cp", tempFile, $"{Fx.EtcdContainerName}:/tmp/snap.db"], ct);
             var verdict = await Fx.RunDockerAsync(
                 ["exec", Fx.EtcdContainerName, "etcdctl", "snapshot", "status", "/tmp/snap.db"], ct);
-            verdict.Should().MatchRegex("^[0-9a-f]{8}, \\d+, \\d+, .+",
+            // etcdctl печатает hash БЕЗ ведущих нулей (напр. «9367b56» — 7 hex) —
+            // {8} ловил только полный паддинг; диапазон 1..8 по механике вывода.
+            verdict.Should().MatchRegex("^[0-9a-f]{1,8}, \\d+, \\d+, .+",
                 "валидный слепок из S3 проходит etcdctl snapshot status (AC5): hash/keys/size");
         }
         finally

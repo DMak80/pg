@@ -61,12 +61,6 @@ public sealed class PgMetricsFixture : IAsyncLifetime
     }
 }
 
-[CollectionDefinition(Name)]
-public sealed class PgMetricsCollection : ICollectionFixture<PgMetricsFixture>
-{
-    public const string Name = "pg-metrics";
-}
-
 // Env-флаг до первого Program.Main процесса тестов (WAF-хосты не задают серты).
 internal static class TestEnv
 {
