@@ -404,8 +404,12 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 await EnsureWalImageAsync(ct);
             }
 
-            return new E2eEnvironment(slug, runId, netName, etcdNodes, etcdNames, endpoints, net, minio,
+            var env = new E2eEnvironment(slug, runId, netName, etcdNodes, etcdNames, endpoints, net, minio,
                 windowStart, windowNext);
+            var liveEnvironments = E2eParallelismGuard.OnEnvironmentStarted(slug);
+            Console.WriteLine(
+                $"[PHASE] e2e-env {slug}: окружение поднято (живых контуров процесса: {liveEnvironments})");
+            return env;
         }
         catch
         {
@@ -683,6 +687,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// </summary>
     public async ValueTask DisposeAsync()
     {
+        E2eParallelismGuard.OnEnvironmentDisposed();
         var problems = new List<string>();
 
         // 0) Телеметрия прежде удалений — снимается при ЛЮБОМ исходе: полные
