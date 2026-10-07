@@ -37,6 +37,38 @@ Prometheus видят оба инстанса.
   kill→takeover всех трёх воркеров с восстановлением; docker-E2E —
   `PGW_TEST_DOCKER=1 dotnet test … --filter FullyQualifiedName~SecondInstance`.
 
+## Watchdog зависших циклов воркера
+
+Внутренний watchdog каждого воркера (PgWorker/KafkaWorker/ValkeyWorker) следит
+за возрастом тиков фоновых циклов (reconcile/keepalive/snapshot; у PgWorker ещё
+orphan-sweep) и самолечит зависание «без исключения»: staleness сверх порога →
+graceful self-stop (тот же механизм, что `POST /api/restart`) → контейнер
+поднимает docker-политика `restart: unless-stopped` → lease гаснут ≤15 с →
+клэймы мигрируют второму инстансу. RTO самовосстановления ~1,5–2 мин (порог 60 с
++ shutdown ≤30 с + старт контейнера).
+
+- **Порог** = `Loops:Watchdog:Multiplier` (дефолт 2) × порог healthz loops-alive
+  (формула от интервалов циклов: быстрые 3×max(scan,keepalive)+15; snapshot — от
+  `SnapshotIntervalMin`). Порог ×1 (Degraded healthz) срабатывает раньше порога
+  ×2 (рестарт): между ними — окно алертов оператора (`WorkerLoopStalled`
+  critical 60 с, панельный `worker-unhealthy`) и легитимно-длинных тиков.
+- **Метрика**: `worker_watchdog_restarts_total{loop=…}` — инициированные
+  watchdog-остановки. Растёт — цикл стабильно зависает: смотреть журналы
+  воркера и причины зависания тика (не увеличивать порог вслепую).
+- **Журнал**: последняя запись перед остановкой — `watchdog: цикл <loop> не
+  тикал N c (порог M c) — инициирован self-restart` (critical). Docker сохраняет
+  логи контейнера через рестарт — событие видно постфактум (`docker logs`).
+- **Легитимное выключение** (только диагностика/временно): `Loops:Watchdog:
+  Enabled=false` — компонент не регистрируется, поведение как без watchdog;
+  после разбора вернуть `true`.
+- **Связь с чеком 35** (`dev-stand/adminpanel/checks/35-worker-second-instance.sh`,
+  kill→takeover): watchdog — та же точка самовосстановления, но по staleness
+  тиков, а не по смерти контейнера; второй инстанс подхватывает клэймы в обоих
+  случаях (идемпотентность + takeover).
+- Граница: «завис весь процесс» (healthz не отвечает) — watchdog не лечит, это
+  зона docker HEALTHCHECK; лимита частоты рестартов нет — ресторм сдерживает
+  docker restart-backoff, видимость дают метрика и журнал.
+
 ## PGTune-параметры PG-нод (`PgWorker:Pgtune`)
 
 `postgresql.conf` нод рассчитывается алгоритмом PGTune (`PgTune.Calculate`,
