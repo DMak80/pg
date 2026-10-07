@@ -13,28 +13,37 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.Hosting;
 
-// Интеграционные кейсы watchdog (не docker): хост воркера с подменённой
-// ILoopsVitality — устаревший тик инициирует graceful остановку в бюджет;
-// свежие тики — хост живёт. Циклы не поднимаются (RemoveAll<IHostedService> +
-// возврат hosted-обёртки LoopWatchdog), витальность — фейк с порогом по
-// формулам от уменьшенных тестовых интервалов Loops (2/2 → healthz 21 c,
-// watchdog ×2 = 42 c; тик устарел на 5 мин → firing первой проверкой).
+// Интеграционные кейсы watchdog (не docker): семантика АКТИВНОСТИ (тиков может
+// не быть — циклы не поднимаются, RemoveAll<IHostedService> + возврат
+// hosted-обёртки LoopWatchdog). Витальность — фейк с порогом по формулам от
+// уменьшенных тестовых интервалов Loops (2/2 → healthz 21 c, watchdog ×2 = 42 c).
+// stale — активности нет (ни тика, ни отметки), возраст LastActivityAt 5 мин →
+// firing первой проверкой; longPhase — «долгая итерация»: активность обновляется
+// прогресс-отметками каждые markEvery, хост живёт.
 [Collection(NonE2eCollection.Name)]
 public sealed class LoopWatchdogTests
 {
-    private sealed class FakeVitality(bool stale) : ILoopsVitality
+    // Витальность с семантикой активности: stale — активность заморожена давно
+    // (зависание без исключения); longPhase — «долгая итерация»: активность
+    // обновляется прогресc-отметками каждые markEvery (тик при этом давний/отсутствует).
+    private sealed class FakeVitality(bool stale, TimeSpan? markEvery = null) : ILoopsVitality
     {
+        private DateTimeOffset? _lastMark;
+
         public IReadOnlyList<LoopHeartbeat> Snapshot()
         {
             var threshold = TimeSpan.FromSeconds(21) * 2; // FastLoops(2,2)=21 c ×2
-            var at = stale ? DateTimeOffset.UtcNow - TimeSpan.FromMinutes(5)
-                           : DateTimeOffset.UtcNow;
-            return [new LoopHeartbeat("reconcile", at, threshold)];
+            var now = DateTimeOffset.UtcNow;
+            if (stale)
+                return [new LoopHeartbeat("reconcile", now - TimeSpan.FromMinutes(5), threshold)];
+            if (_lastMark is null || now - _lastMark >= markEvery)
+                _lastMark = now; // прогресс-отметка долгой фазы
+            return [new LoopHeartbeat("reconcile", _lastMark, threshold)];
         }
     }
 
     // Своя фабрика: циклы сняты, watchdog оставлен, витальность подменена.
-    private sealed class WatchdogFactory(Etcd.EtcdFixture etcd, bool stale)
+    private sealed class WatchdogFactory(Etcd.EtcdFixture etcd, bool stale, TimeSpan? markEvery = null)
         : WebApplicationFactory<Program>
     {
         protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -57,7 +66,7 @@ public sealed class LoopWatchdogTests
             {
                 services.RemoveAll<IHostedService>(); // циклы и MeterProvider не нужны
                 services.RemoveAll<ILoopsVitality>();
-                services.AddSingleton<ILoopsVitality>(_ => new FakeVitality(stale));
+                services.AddSingleton<ILoopsVitality>(_ => new FakeVitality(stale, markEvery));
                 // LoopWatchdog-синглтон уже зарегистрирован Program.cs (Enabled=true
                 // из appsettings.json) — возвращаем hosted-обёртку над ним.
                 services.AddHostedService(sp => sp.GetRequiredService<LoopWatchdog>());
@@ -79,9 +88,9 @@ public sealed class LoopWatchdogTests
             Environment.SetEnvironmentVariable("PGW_BUCKET_MOVER_PASSWORD", "x");
         }
 
-        public WebApplicationFactory<Program> CreateFactory(bool stale)
+        public WebApplicationFactory<Program> CreateFactory(bool stale, TimeSpan? markEvery = null)
         {
-            _factory = new WatchdogFactory(Etcd, stale);
+            _factory = new WatchdogFactory(Etcd, stale, markEvery);
             return _factory;
         }
 
@@ -98,9 +107,10 @@ public sealed class LoopWatchdogTests
     }
 
     [Fact]
-    public async Task StaleHeartbeat_HostStopsWithinBudget()
+    public async Task StaleActivity_HostStopsWithinBudget()
     {
-        // Arrange: хост с устаревшим тиком; ApplicationStopping — маркер стопа
+        // Arrange: активности нет — ни тика, ни отметки, возраст LastActivityAt
+        // 5 мин при пороге 42 с; ApplicationStopping — маркер стопа
         await using var host = new WatchdogHost();
         await host.InitializeAsync();
         var factory = host.CreateFactory(stale: true);
@@ -117,26 +127,29 @@ public sealed class LoopWatchdogTests
     }
 
     [Fact]
-    public async Task FreshHeartbeats_HostAlive_AndHealthzWatchdogSection()
+    public async Task LongPhase_ProgressMarks_HostAlive_AndHealthzWatchdogSection()
     {
-        // Arrange: хост со свежими тиками; ApplicationStopping — маркер стопа
+        // Arrange: «долгая итерация» — активность обновляется прогресс-отметками
+        // каждые 3 с (тика нет вовсе); ApplicationStopping — маркер стопа
         await using var host = new WatchdogHost();
         await host.InitializeAsync();
-        var factory = host.CreateFactory(stale: false);
+        var factory = host.CreateFactory(stale: false, markEvery: TimeSpan.FromSeconds(3));
         using var client = factory.CreateClient();
         var lifetime = factory.Services.GetRequiredService<IHostApplicationLifetime>();
         var stopping = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         lifetime.ApplicationStopping.Register(() => stopping.TrySetResult());
 
-        // Act: 5 с наблюдения + GET /healthz + данные чека реального хоста
-        // (грань /healthz отдаёт только статус-строку — секции читаем из
-        // HealthCheckService того же DI-графа)
-        await Task.Delay(TimeSpan.FromSeconds(5), TestContext.Current.CancellationToken);
+        // Act: 15 с наблюдения (3+ цикла отметок при markEvery 3 с — отметки
+        // регулярно обновляются, порог 42 с не достигается) + GET /healthz + данные
+        // чека реального хоста (грань /healthz отдаёт только статус-строку —
+        // секции читаем из HealthCheckService того же DI-графа)
+        await Task.Delay(TimeSpan.FromSeconds(15), TestContext.Current.CancellationToken);
         using var response = await client.GetAsync("/healthz", TestContext.Current.CancellationToken);
         var report = await factory.Services.GetRequiredService<HealthCheckService>()
             .CheckHealthAsync(TestContext.Current.CancellationToken);
 
-        // Assert: хост жив; секция watchdog armed в данных /healthz (AC4)
+        // Assert: хост жив (долгая, но живая итерация рестарта не даёт); секция
+        // watchdog armed в данных /healthz (AC2/AC4)
         stopping.Task.IsCompleted.Should().BeFalse();
         response.StatusCode.Should().Be(HttpStatusCode.OK);
         report.Entries["pgworker"].Data["watchdog"].ToString().Should().Be("armed; stale=нет");
