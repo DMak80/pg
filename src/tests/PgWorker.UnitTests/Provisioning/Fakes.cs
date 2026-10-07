@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
+using PgWorker.Backups;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Planning;
@@ -495,5 +496,47 @@ internal static class Fakes
         public void Log<TState>(LogLevel logLevel, EventId eventId, TState state,
             Exception? exception, Func<TState, Exception?, string> formatter)
             => Entries.Add((logLevel, formatter(state, exception)));
+    }
+
+    // Заглушка S3 для юнит-тестов подсистемы бэкапов (аналог приватной
+    // DisabledBackupS3 из Program.cs): каждый вызов — Failed «выключено»;
+    // sweeper при Backups:Enabled=false в S3 не ходит — стаб только для DI.
+    internal sealed class DisabledBackupS3Stub : IBackupS3
+    {
+        private static Result<T> Off<T>()
+            => Result<T>.Failed(new ApplicationException("Backups:Enabled=false"));
+
+        public Task<Result<bool>> BucketExistsAsync(CancellationToken ct)
+            => Task.FromResult(Off<bool>());
+
+        public Task<Result<IReadOnlyList<WalObject>>> ListWalAsync(
+            string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
+            => Task.FromResult(Off<IReadOnlyList<WalObject>>());
+
+        public Task<Result<IReadOnlyList<S3ObjectInfo>>> ListPrefixAsync(
+            string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
+            => Task.FromResult(Off<IReadOnlyList<S3ObjectInfo>>());
+
+        public Task<Result> DeleteKeysAsync(IReadOnlyList<string> keys, CancellationToken ct = default)
+            => Task.FromResult(Result.Failed(new ApplicationException("Backups:Enabled=false")));
+
+        public Task<Result> PutObjectAsync(string key, byte[] data, string? sha256, CancellationToken ct = default)
+            => Task.FromResult(Result.Failed(new ApplicationException("Backups:Enabled=false")));
+
+        public Task<Result<IReadOnlyList<WalObject>>> ListAsync(
+            string cluster, string shard, string prefix, int? maxKeysPerTest = null, CancellationToken ct = default)
+            => Task.FromResult(Off<IReadOnlyList<WalObject>>());
+
+        public Task<Result<string>> GetObjectAsync(
+            string cluster, string shard, string key, CancellationToken ct = default)
+            => Task.FromResult(Off<string>());
+
+        public Task<Result<IReadOnlyList<string>>> ListFullsAsync(
+            string cluster, string shard, int? maxKeysPerTest = null, CancellationToken ct = default)
+            => Task.FromResult(Off<IReadOnlyList<string>>());
+
+        public Task<Result<string>> DownloadTextAsync(
+            string cluster, string shard, string objectKey, CancellationToken ct = default)
+            => Task.FromResult(Off<string>());
     }
 }

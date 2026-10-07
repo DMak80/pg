@@ -6,15 +6,17 @@ using PgWorker.Backups.Supervisor;
 namespace PgWorker.App.Loops;
 
 /// <summary>Лидерный фоновый цикл сирот S3 (t07, arch/19 §4, паттерн
-/// SnapshotLoop упрощённый — без health-обёртки): глобальный лидер
-/// /pgworker/leader выполняет BackupOrphanSweeper.SweepAsync раз в
-/// Supervisor:IntervalSec; не-лидер периодически пытается захватить лидерство
-/// (takeover ≤ TTL 15 с + тик) и ждёт Loops:ScanIntervalSec. Backups:Enabled=
-/// false — лидерство поддерживается, сверки не выполняются (no-op).</summary>
+/// SnapshotLoop упрощённый; тики живости — HealthState.MarkOrphanSweepTick):
+/// глобальный лидер /pgworker/leader выполняет BackupOrphanSweeper.SweepAsync
+/// раз в Supervisor:IntervalSec; не-лидер периодически пытается захватить
+/// лидерство (takeover ≤ TTL 15 с + тик) и ждёт Loops:ScanIntervalSec.
+/// Backups:Enabled=false — лидерство поддерживается, сверки не выполняются
+/// (no-op).</summary>
 internal sealed class BackupOrphanSweeperLoop(
     IOptionsMonitor<PgWorkerOptions> options,
     ClaimStore claims,
     BackupOrphanSweeper sweeper,
+    HealthState health,
     ILogger<BackupOrphanSweeperLoop> logger) : BackgroundService
 {
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -23,6 +25,8 @@ internal sealed class BackupOrphanSweeperLoop(
         {
             try
             {
+                health.MarkOrphanSweepTick();
+
                 // Лидерство — только здесь (singleton-проход по всему bucket'у).
                 if (!claims.IsLeader)
                 {
@@ -41,7 +45,7 @@ internal sealed class BackupOrphanSweeperLoop(
                     if (!result.IsSuccess)
                         logger.LogWarning("orphan-sweep: {Error}", result.Error?.Message);
 
-                    await Task.Delay(
+                    await DelayTickingAsync(
                         TimeSpan.FromSeconds(options.CurrentValue.Backups.Supervisor.IntervalSec),
                         stoppingToken);
                 }
@@ -72,6 +76,22 @@ internal sealed class BackupOrphanSweeperLoop(
                     break;
                 }
             }
+        }
+    }
+
+    // Сон лидера чанками ScanIntervalSec с тиком живости в каждом чанке:
+    // Supervisor:IntervalSec (600 c) ≫ порога быстрых циклов — непрерывный сон без
+    // тиков дал бы ложный self-restart watchdog'ом (порог sweeper'а — как у быстрых).
+    internal async Task DelayTickingAsync(TimeSpan total, CancellationToken ct)
+    {
+        var remaining = total;
+        var chunk = TimeSpan.FromSeconds(Math.Max(1, options.CurrentValue.Loops.ScanIntervalSec));
+        while (remaining > TimeSpan.Zero && !ct.IsCancellationRequested)
+        {
+            var step = chunk < remaining ? chunk : remaining;
+            await Task.Delay(step, ct);
+            remaining -= step;
+            health.MarkOrphanSweepTick();
         }
     }
 }

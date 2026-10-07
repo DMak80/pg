@@ -642,7 +642,12 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Supervisor.BackupOrphan
         : null,
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Supervisor.BackupOrphanSweeper>()));
-builder.Services.AddSingleton<PgWorker.App.Loops.BackupOrphanSweeperLoop>();
+builder.Services.AddSingleton(sp => new PgWorker.App.Loops.BackupOrphanSweeperLoop(
+    sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<PgWorker.Backups.Supervisor.BackupOrphanSweeper>(),
+    sp.GetRequiredService<HealthState>(),
+    sp.GetRequiredService<ILogger<PgWorker.App.Loops.BackupOrphanSweeperLoop>>()));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<PgWorker.App.Loops.BackupOrphanSweeperLoop>());
 
 // Циклы (§6.2): keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.

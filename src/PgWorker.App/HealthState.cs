@@ -13,6 +13,7 @@ public sealed class HealthState(TimeProvider clock)
     private DateTimeOffset? _lastKeepaliveTick;
     private DateTimeOffset? _lastSnapshotTick;
     private DateTimeOffset? _lastSnapshotTaken;
+    private DateTimeOffset? _lastOrphanSweepTick;
     private int _claimsHeld;
 
     /// <summary>Успешный цикл чтения etcd (Range /clusters/ + /service/).</summary>
@@ -62,6 +63,15 @@ public sealed class HealthState(TimeProvider clock)
         }
     }
 
+    /// <summary>Тик BackupOrphanSweeperLoop (итерация цикла: лидерная/холостая).</summary>
+    public void MarkOrphanSweepTick()
+    {
+        lock (_sync)
+        {
+            _lastOrphanSweepTick = clock.GetUtcNow();
+        }
+    }
+
     /// <summary>Immutable-снимок состояний для health-пробы.</summary>
     public HealthSnapshot Snapshot()
     {
@@ -69,7 +79,8 @@ public sealed class HealthState(TimeProvider clock)
         {
             return new HealthSnapshot(
                 _lastEtcdOk, _lastReconcileTick, _lastKeepaliveTick,
-                _lastSnapshotTick, _lastSnapshotTaken, _claimsHeld);
+                _lastSnapshotTick, _lastSnapshotTaken, _claimsHeld,
+                _lastOrphanSweepTick);
         }
     }
 }
@@ -81,4 +92,5 @@ public sealed record HealthSnapshot(
     DateTimeOffset? LastKeepaliveTick,
     DateTimeOffset? LastSnapshotTick,
     DateTimeOffset? LastSnapshotTaken,
-    int ClaimsHeld);
+    int ClaimsHeld,
+    DateTimeOffset? LastOrphanSweepTick);
