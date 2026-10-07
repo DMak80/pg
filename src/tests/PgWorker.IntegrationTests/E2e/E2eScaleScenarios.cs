@@ -36,141 +36,151 @@ public class E2eScaleScenarios
         // опознаются teardown'ом окружения по своему тегу (OwnName) и снимаются им.
         var cluster = $"sshop{Fx.ClusterTag}";
 
-        // ---------- §8-1: add-shard в живой кластер — шард поднят и ПУСТ ----------
-        // Arrange: сид (NOT_INITIALIZED) → контроллер → provisioning до Active.
-        await SeedClusterAsync(cluster);
-        await using var p1 = await Fx.StartHostAsync("s1", ct: ct);
-
-        var provisioned = await E2eFixture.WaitForAsync(
-            () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
-        provisioned.Should().BeTrue("provisioning кластера должен дойти до Active (dsn/RUNNING/без status)");
-
-        // DDL-сид: bucket_0 у shard1 и bucket_1/bucket_3 у shard2 (INSERT-пробы
-        // живости записи до/после scale-операций; гранты app выдаёт сид).
-        var m1 = await MasterInfoAsync(cluster, "shard1", ct);
-        var m2 = await MasterInfoAsync(cluster, "shard2", ct);
-        await SeedBucketAsync(m1.Dsn, "bucket_0", ct);
-        await SeedBucketAsync(m2.Dsn, "bucket_1", ct);
-        await SeedBucketAsync(m2.Dsn, "bucket_3", ct);
-        (await TryInsertAppAsync(cluster, "shard1", "bucket_0", ct))
-            .Should().BeTrue("запись в bucket_0 (владелец shard1) работает до add-shard");
-
-        // Снапшот routing ДО (главный ассерт границы §2.1).
-        var routingBefore = await RoutingSnapshotAsync(cluster, ct);
-
-        // Act: сид add-декларации shard3 В СТИЛЕ ПАНЕЛИ (§6.1).
-        await SeedAddDeclarationAsync(cluster, "shard3", ct);
-
-        // Assert: шард поднят и зарегистрирован; контейнеры живы.
-        var added = await E2eFixture.WaitForAsync(() => ShardRegisteredAsync(cluster, "shard3"),
-            TimeSpan.FromSeconds(360), ct);
-        added.Should().BeTrue($"AddShardProcess должен поднять shard3 (dsn/RUNNING); work={await WorkDumpAsync(cluster, ct)}");
-
-        var containers = await ListContainerNamesAsync($"pgw-{cluster}-shard3-");
-        containers.Should().BeEquivalentTo([$"pgw-{cluster}-shard3-shard3a", $"pgw-{cluster}-shard3-shard3b"],
-            "контейнеры нового шарда подняты");
-
-        // ГЛАВНЫЙ ассерт границы §2.1: routing/status/schema-мир не изменён НИКАК.
-        (await RoutingSnapshotAsync(cluster, ct)).Should().Equal(routingBefore,
-            "add-shard не двигает ни один бакет (routing неизменен)");
-        (await RangeAsync($"/clusters/{cluster}/buckets/status/")).Should().BeEmpty("status-ключи не появились");
-        var m3 = await MasterInfoAsync(cluster, "shard3", ct);
-        var schemas = await SqlScalarAsync(m3.Dsn,
-            "SELECT count(*) FROM pg_namespace WHERE nspname LIKE 'bucket_%'", ct);
-        schemas.Should().Be("0", "шард стартует ПУСТЫМ — схем бакетов на нём нет (§2.1)");
-        (await TryInsertAppAsync(cluster, "shard1", "bucket_0", ct))
-            .Should().BeTrue("запись в существующие бакеты не прерывалась");
-
-        // ---------- §8-2: remove шарда с бакетами заблокирован G3 ----------
-        // Arrange: sync-режим приёмников (P8-префлайт move), переезд bucket_1 → shard3.
-        await EnableSyncModeAsync(cluster, "shard3", ct);
-        await PutMoveRequestAsync(cluster, "bucket_1",
-            $$"""{"op":"move","to":"shard3","requested_unix":{{NowUnix()}}}""", ct);
-        var moved = await E2eFixture.WaitForAsync(
-            () => RoutingIsAsync(cluster, "bucket_1", "shard3", ct), TimeSpan.FromSeconds(120), ct);
-        moved.Should().BeTrue($"move bucket_1 → shard3 должен завершиться; work={await WorkDumpAsync(cluster, ct)}");
-
-        // Act: маркер демонтажа на shard1 (на нём ещё 3 бакета: 0, 2, 4).
-        await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/shard1/state", "TO_REMOVE", null, ct);
-
-        // Assert: G3 держит демонтаж — фаза blocked-G3 и причина с числом бакетов
-        // (кириллица в work-JSON экранируется \uXXXX — читаем поле last_error парсером).
-        var blocked = await E2eFixture.WaitForAsync(async () =>
+        try
         {
-            var work = (await GetOrNullAsync($"/pgworker/work/{cluster}"))?.Value;
-            if (work is null || !work.Contains("blocked-G3", StringComparison.Ordinal))
-                return false;
-            try
+            // ---------- §8-1: add-shard в живой кластер — шард поднят и ПУСТ ----------
+            // Arrange: сид (NOT_INITIALIZED) → контроллер → provisioning до Active.
+            await SeedClusterAsync(cluster);
+            await using var p1 = await Fx.StartHostAsync("s1", ct: ct);
+
+            var provisioned = await E2eFixture.WaitForAsync(
+                () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+            provisioned.Should().BeTrue("provisioning кластера должен дойти до Active (dsn/RUNNING/без status)");
+
+            // DDL-сид: bucket_0 у shard1 и bucket_1/bucket_3 у shard2 (INSERT-пробы
+            // живости записи до/после scale-операций; гранты app выдаёт сид).
+            var m1 = await MasterInfoAsync(cluster, "shard1", ct);
+            var m2 = await MasterInfoAsync(cluster, "shard2", ct);
+            await SeedBucketAsync(m1.Dsn, "bucket_0", ct);
+            await SeedBucketAsync(m2.Dsn, "bucket_1", ct);
+            await SeedBucketAsync(m2.Dsn, "bucket_3", ct);
+            (await TryInsertAppAsync(cluster, "shard1", "bucket_0", ct))
+                .Should().BeTrue("запись в bucket_0 (владелец shard1) работает до add-shard");
+
+            // Снапшот routing ДО (главный ассерт границы §2.1).
+            var routingBefore = await RoutingSnapshotAsync(cluster, ct);
+
+            // Act: сид add-декларации shard3 В СТИЛЕ ПАНЕЛИ (§6.1).
+            await SeedAddDeclarationAsync(cluster, "shard3", ct);
+
+            // Assert: шард поднят и зарегистрирован; контейнеры живы.
+            var added = await E2eFixture.WaitForAsync(() => ShardRegisteredAsync(cluster, "shard3"),
+                TimeSpan.FromSeconds(360), ct);
+            added.Should().BeTrue($"AddShardProcess должен поднять shard3 (dsn/RUNNING); work={await WorkDumpAsync(cluster, ct)}");
+
+            var containers = await ListContainerNamesAsync($"pgw-{cluster}-shard3-");
+            containers.Should().BeEquivalentTo([$"pgw-{cluster}-shard3-shard3a", $"pgw-{cluster}-shard3-shard3b"],
+                "контейнеры нового шарда подняты");
+
+            // ГЛАВНЫЙ ассерт границы §2.1: routing/status/schema-мир не изменён НИКАК.
+            (await RoutingSnapshotAsync(cluster, ct)).Should().Equal(routingBefore,
+                "add-shard не двигает ни один бакет (routing неизменен)");
+            (await RangeAsync($"/clusters/{cluster}/buckets/status/")).Should().BeEmpty("status-ключи не появились");
+            var m3 = await MasterInfoAsync(cluster, "shard3", ct);
+            var schemas = await SqlScalarAsync(m3.Dsn,
+                "SELECT count(*) FROM pg_namespace WHERE nspname LIKE 'bucket_%'", ct);
+            schemas.Should().Be("0", "шард стартует ПУСТЫМ — схем бакетов на нём нет (§2.1)");
+            (await TryInsertAppAsync(cluster, "shard1", "bucket_0", ct))
+                .Should().BeTrue("запись в существующие бакеты не прерывалась");
+
+            // ---------- §8-2: remove шарда с бакетами заблокирован G3 ----------
+            // Arrange: sync-режим приёмников (P8-префлайт move), переезд bucket_1 → shard3.
+            await EnableSyncModeAsync(cluster, "shard3", ct);
+            await PutMoveRequestAsync(cluster, "bucket_1",
+                $$"""{"op":"move","to":"shard3","requested_unix":{{NowUnix()}}}""", ct);
+            var moved = await E2eFixture.WaitForAsync(
+                () => RoutingIsAsync(cluster, "bucket_1", "shard3", ct), TimeSpan.FromSeconds(120), ct);
+            moved.Should().BeTrue($"move bucket_1 → shard3 должен завершиться; work={await WorkDumpAsync(cluster, ct)}");
+
+            // Act: маркер демонтажа на shard1 (на нём ещё 3 бакета: 0, 2, 4).
+            await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/shard1/state", "TO_REMOVE", null, ct);
+
+            // Assert: G3 держит демонтаж — фаза blocked-G3 и причина с числом бакетов
+            // (кириллица в work-JSON экранируется \uXXXX — читаем поле last_error парсером).
+            var blocked = await E2eFixture.WaitForAsync(async () =>
             {
-                using var doc = JsonDocument.Parse(work);
-                return doc.RootElement.TryGetProperty("last_error", out var error)
-                    && error.GetString()?.Contains("бакет", StringComparison.Ordinal) == true;
-            }
-            catch (JsonException)
-            {
-                return false;
-            }
-        }, TimeSpan.FromSeconds(60), ct);
-        blocked.Should().BeTrue($"guard G3 должен записать причину с числом бакетов; work={await WorkDumpAsync(cluster, ct)}");
-        (await ListContainerNamesAsync($"pgw-{cluster}-shard1-")).Should().HaveCount(2,
-            "контейнеры помеченного шарда живы, пока на нём бакеты");
-        (await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/state"))!.Value.Should().Be("TO_REMOVE");
+                var work = (await GetOrNullAsync($"/pgworker/work/{cluster}"))?.Value;
+                if (work is null || !work.Contains("blocked-G3", StringComparison.Ordinal))
+                    return false;
+                try
+                {
+                    using var doc = JsonDocument.Parse(work);
+                    return doc.RootElement.TryGetProperty("last_error", out var error)
+                        && error.GetString()?.Contains("бакет", StringComparison.Ordinal) == true;
+                }
+                catch (JsonException)
+                {
+                    return false;
+                }
+            }, TimeSpan.FromSeconds(60), ct);
+            blocked.Should().BeTrue($"guard G3 должен записать причину с числом бакетов; work={await WorkDumpAsync(cluster, ct)}");
+            (await ListContainerNamesAsync($"pgw-{cluster}-shard1-")).Should().HaveCount(2,
+                "контейнеры помеченного шарда живы, пока на нём бакеты");
+            (await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/state"))!.Value.Should().Be("TO_REMOVE");
 
-        // ---------- §8-3: явные переезды → демонтаж завершается сам ----------
-        // Act: увозим оставшиеся бакеты shard1 (bucket_0 → shard3, 2/4 → shard2) +
-        // finalize каждого (заявки t01; повторную команду демонтажа НЕ подаём).
-        await PutMoveRequestAsync(cluster, "bucket_0",
-            $$"""{"op":"move","to":"shard3","requested_unix":{{NowUnix()}}}""", ct);
-        await PutMoveRequestAsync(cluster, "bucket_2",
-            $$"""{"op":"move","to":"shard2","requested_unix":{{NowUnix()}}}""", ct);
-        await PutMoveRequestAsync(cluster, "bucket_4",
-            $$"""{"op":"move","to":"shard2","requested_unix":{{NowUnix()}}}""", ct);
-        await EnableSyncModeAsync(cluster, "shard2", ct);
+            // ---------- §8-3: явные переезды → демонтаж завершается сам ----------
+            // Act: увозим оставшиеся бакеты shard1 (bucket_0 → shard3, 2/4 → shard2) +
+            // finalize каждого (заявки t01; повторную команду демонтажа НЕ подаём).
+            await PutMoveRequestAsync(cluster, "bucket_0",
+                $$"""{"op":"move","to":"shard3","requested_unix":{{NowUnix()}}}""", ct);
+            await PutMoveRequestAsync(cluster, "bucket_2",
+                $$"""{"op":"move","to":"shard2","requested_unix":{{NowUnix()}}}""", ct);
+            await PutMoveRequestAsync(cluster, "bucket_4",
+                $$"""{"op":"move","to":"shard2","requested_unix":{{NowUnix()}}}""", ct);
+            await EnableSyncModeAsync(cluster, "shard2", ct);
 
-        var allMoved = await E2eFixture.WaitForAsync(async () =>
-            await RoutingIsAsync(cluster, "bucket_0", "shard3", ct)
-            && await RoutingIsAsync(cluster, "bucket_2", "shard2", ct)
-            && await RoutingIsAsync(cluster, "bucket_4", "shard2", ct),
-            TimeSpan.FromSeconds(240), ct);
-        allMoved.Should().BeTrue($"все бакеты shard1 должны уехать; work={await WorkDumpAsync(cluster, ct)}, " +
-                                 $"заявки={await MovesDumpAsync(cluster, ct)}");
+            var allMoved = await E2eFixture.WaitForAsync(async () =>
+                await RoutingIsAsync(cluster, "bucket_0", "shard3", ct)
+                && await RoutingIsAsync(cluster, "bucket_2", "shard2", ct)
+                && await RoutingIsAsync(cluster, "bucket_4", "shard2", ct),
+                TimeSpan.FromSeconds(240), ct);
+            allMoved.Should().BeTrue($"все бакеты shard1 должны уехать; work={await WorkDumpAsync(cluster, ct)}, " +
+                                     $"заявки={await MovesDumpAsync(cluster, ct)}");
 
-        foreach (var bucket in new[] { "bucket_0", "bucket_2", "bucket_4" })
-            await PutMoveRequestAsync(cluster, bucket,
-                $$"""{"op":"finalize","old_shard":"shard1","requested_unix":{{NowUnix()}}}""", ct);
+            foreach (var bucket in new[] { "bucket_0", "bucket_2", "bucket_4" })
+                await PutMoveRequestAsync(cluster, bucket,
+                    $$"""{"op":"finalize","old_shard":"shard1","requested_unix":{{NowUnix()}}}""", ct);
 
-        var finalized = await E2eFixture.WaitForAsync(
-            () => MovesEmptyAsync(cluster, ct), TimeSpan.FromSeconds(240), ct);
-        finalized.Should().BeTrue($"finalize-заявки должны разобраться; заявки={await MovesDumpAsync(cluster, ct)}, " +
-                                  $"work={await WorkDumpAsync(cluster, ct)}");
+            var finalized = await E2eFixture.WaitForAsync(
+                () => MovesEmptyAsync(cluster, ct), TimeSpan.FromSeconds(240), ct);
+            finalized.Should().BeTrue($"finalize-заявки должны разобраться; заявки={await MovesDumpAsync(cluster, ct)}, " +
+                                      $"work={await WorkDumpAsync(cluster, ct)}");
 
-        // Assert: демонтаж дошёл сам (маркер не повторяли): контейнеры/volumes
-        // удалены, ключи/порталы вычищены, кластер продолжает обслуживать запись.
-        var dismantled = await E2eFixture.WaitForAsync(
-            () => ShardDismantledAsync(cluster, "shard1", ct), TimeSpan.FromSeconds(180), ct);
-        dismantled.Should().BeTrue($"после уезда последнего бакета демонтаж завершается сам; " +
-                                   $"work={await WorkDumpAsync(cluster, ct)}, контейнеры={string.Join(",", await ListContainerNamesAsync($"pgw-{cluster}-shard1-", all: true))}");
+            // Assert: демонтаж дошёл сам (маркер не повторяли): контейнеры/volumes
+            // удалены, ключи/порталы вычищены, кластер продолжает обслуживать запись.
+            var dismantled = await E2eFixture.WaitForAsync(
+                () => ShardDismantledAsync(cluster, "shard1", ct), TimeSpan.FromSeconds(180), ct);
+            dismantled.Should().BeTrue($"после уезда последнего бакета демонтаж завершается сам; " +
+                                       $"work={await WorkDumpAsync(cluster, ct)}, контейнеры={string.Join(",", await ListContainerNamesAsync($"pgw-{cluster}-shard1-", all: true))}");
 
-        (await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/dsn")).Should().BeNull("ключей демонтированного шарда нет");
-        (await RangeAsync($"/clusters/{cluster}/shards/shard1/")).Should().BeEmpty();
-        (await RangeAsync($"/service/{cluster}-shard1/")).Should().BeEmpty();
-        var portalloc = (await GetOrNullAsync($"/pgworker/portalloc/{cluster}"))!.Value;
-        portalloc.Should().NotContain("shard1/").And.Contain("shard2/").And.Contain("shard3/",
-            "portalloc вычищен точечно — записи остальных шардов живы");
+            (await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/dsn")).Should().BeNull("ключей демонтированного шарда нет");
+            (await RangeAsync($"/clusters/{cluster}/shards/shard1/")).Should().BeEmpty();
+            (await RangeAsync($"/service/{cluster}-shard1/")).Should().BeEmpty();
+            var portalloc = (await GetOrNullAsync($"/pgworker/portalloc/{cluster}"))!.Value;
+            portalloc.Should().NotContain("shard1/").And.Contain("shard2/").And.Contain("shard3/",
+                "portalloc вычищен точечно — записи остальных шардов живы");
 
-        (await TryInsertAppAsync(cluster, "shard3", "bucket_1", ct))
-            .Should().BeTrue("кластер жив: запись в бакет на shard3 успешна после демонтажа");
-        (await TryInsertAppAsync(cluster, "shard2", "bucket_3", ct))
-            .Should().BeTrue("кластер жив: запись в бакет на shard2 успешна после демонтажа");
+            (await TryInsertAppAsync(cluster, "shard3", "bucket_1", ct))
+                .Should().BeTrue("кластер жив: запись в бакет на shard3 успешна после демонтажа");
+            (await TryInsertAppAsync(cluster, "shard2", "bucket_3", ct))
+                .Should().BeTrue("кластер жив: запись в бакет на shard2 успешна после демонтажа");
 
-        // ---------- §8-5: имя освобождается демонтажом ----------
-        // Act: add-декларация с именем shard1 НАПРЯМУЮ в etcd (в обход автогенерации).
-        await SeedAddDeclarationAsync(cluster, "shard1", ct);
+            // ---------- §8-5: имя освобождается демонтажом ----------
+            // Act: add-декларация с именем shard1 НАПРЯМУЮ в etcd (в обход автогенерации).
+            await SeedAddDeclarationAsync(cluster, "shard1", ct);
 
-        // Assert: AddShardProcess принял освобождённое имя (клэйм-инвариант §4.2).
-        var reused = await E2eFixture.WaitForAsync(() => ShardRegisteredAsync(cluster, "shard1"),
-            TimeSpan.FromSeconds(360), ct);
-        reused.Should().BeTrue($"имя shard1 освобождено демонтажом и принято заново; work={await WorkDumpAsync(cluster, ct)}");
+            // Assert: AddShardProcess принял освобождённое имя (клэйм-инвариант §4.2).
+            var reused = await E2eFixture.WaitForAsync(() => ShardRegisteredAsync(cluster, "shard1"),
+                TimeSpan.FromSeconds(360), ct);
+            reused.Should().BeTrue($"имя shard1 освобождено демонтажом и принято заново; work={await WorkDumpAsync(cluster, ct)}");
+        }
+        catch
+        {
+            // docs/e2e-launch.md §3: упавший сценарий — окружение ОСТАНОВИТЬ, не
+            // удалить (телеметрия в артефактах + живые объекты для разбора).
+            Fx.MarkFailed();
+            throw;
+        }
     }
 
     [Fact]
@@ -184,33 +194,43 @@ public class E2eScaleScenarios
         // Уникальное имя кластера на прогон (см. scale-add).
         var cluster = $"stshop{Fx.ClusterTag}";
 
-        // ---------- §8-4: takeover посреди A3 ----------
-        // Arrange: живой кластер (provisioned первым инстансом), затем
-        // add-декларация shard3; ждём ПЕРВЫЙ контейнер нового шарда (A3 начался).
-        await SeedClusterAsync(cluster);
-        await using var s2 = await Fx.StartHostAsync("s2", ct: ct);
+        try
+        {
+            // ---------- §8-4: takeover посреди A3 ----------
+            // Arrange: живой кластер (provisioned первым инстансом), затем
+            // add-декларация shard3; ждём ПЕРВЫЙ контейнер нового шарда (A3 начался).
+            await SeedClusterAsync(cluster);
+            await using var s2 = await Fx.StartHostAsync("s2", ct: ct);
 
-        var provisioned = await E2eFixture.WaitForAsync(
-            () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
-        provisioned.Should().BeTrue("provisioning кластера должен дойти до Active до старта add");
+            var provisioned = await E2eFixture.WaitForAsync(
+                () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+            provisioned.Should().BeTrue("provisioning кластера должен дойти до Active до старта add");
 
-        await SeedAddDeclarationAsync(cluster, "shard3", ct);
-        var a3Started = await E2eFixture.WaitForAsync(
-            () => DockerHasAsync($"pgw-{cluster}-shard3-"), TimeSpan.FromSeconds(120), ct);
-        a3Started.Should().BeTrue("первый инстанс должен начать A3 (появился контейнер shard3)");
+            await SeedAddDeclarationAsync(cluster, "shard3", ct);
+            var a3Started = await E2eFixture.WaitForAsync(
+                () => DockerHasAsync($"pgw-{cluster}-shard3-"), TimeSpan.FromSeconds(120), ct);
+            a3Started.Should().BeTrue("первый инстанс должен начать A3 (появился контейнер shard3)");
 
-        // Act: docker-kill PgWorker посреди A3 → второй инстанс доносит шард.
-        s2.Kill();
-        await s2.DisposeAsync();
-        await using var s3 = await Fx.StartHostAsync("s3", ct: ct);
+            // Act: docker-kill PgWorker посреди A3 → второй инстанс доносит шард.
+            s2.Kill();
+            await s2.DisposeAsync();
+            await using var s3 = await Fx.StartHostAsync("s3", ct: ct);
 
-        // Assert: шард донесён (клэйм истёк ≤15 с), дублей контейнеров нет.
-        var finished = await E2eFixture.WaitForAsync(() => ShardRegisteredAsync(cluster, "shard3"),
-            TimeSpan.FromSeconds(360), ct);
-        finished.Should().BeTrue($"второй инстанс должен донести shard3 после takeover; work={await WorkDumpAsync(cluster, ct)}");
+            // Assert: шард донесён (клэйм истёк ≤15 с), дублей контейнеров нет.
+            var finished = await E2eFixture.WaitForAsync(() => ShardRegisteredAsync(cluster, "shard3"),
+                TimeSpan.FromSeconds(360), ct);
+            finished.Should().BeTrue($"второй инстанс должен донести shard3 после takeover; work={await WorkDumpAsync(cluster, ct)}");
 
-        var containers = await ListContainerNamesAsync($"pgw-{cluster}-shard3-", all: true);
-        containers.Should().HaveCount(2, "контейнеров нового шарда ровно 2 (нет дублей после takeover)");
+            var containers = await ListContainerNamesAsync($"pgw-{cluster}-shard3-", all: true);
+            containers.Should().HaveCount(2, "контейнеров нового шарда ровно 2 (нет дублей после takeover)");
+        }
+        catch
+        {
+            // docs/e2e-launch.md §3: упавший сценарий — окружение ОСТАНОВИТЬ, не
+            // удалить (телеметрия в артефактах + живые объекты для разбора).
+            Fx.MarkFailed();
+            throw;
+        }
     }
 
     // ===== Хелперы (приёмы E2eScenarios/E2eMoveScenarios, scoped на кластер) =====
