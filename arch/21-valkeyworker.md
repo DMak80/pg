@@ -516,12 +516,22 @@ D→C транзиентно недоверяют NEW-серту: окно = с�
   транзиент-толерантный цикл с бюджетом `NodeBootSec`.
 - **Отказ etcd**: контроль-плейн заморожен; живые Valkey-ноды от него не
   зависят (клиенты работают по последнему снапшоту дискавери — fail-open).
+- **Watchdog зависших циклов**: внутренний компонент `LoopWatchdog`
+  (Shared.Core, `BackgroundService`) следит за возрастом тиков циклов
+  (reconcile/keepalive/snapshot) по отметкам `HealthState`; staleness
+  сверх порога (`Loops:Watchdog:Multiplier` × порог healthz loops-alive)
+  → журнал (critical) + метрика `worker_watchdog_restarts_total{loop}` +
+  graceful `StopApplication` — контейнер поднимает docker-политика, lease
+  гаснут ≤15 с, takeover вторым инстансом. Механика (пороги, grace старта,
+  границы) — канон [14-pgworker.md](14-pgworker.md) §6; формулы — общий
+  хелпер `LoopStaleness` Shared.Core.
 
 ## 7. Наблюдаемость
 
 Health `/healthz` по канону честного health (t09): последнее состояние
 цикла, а не первый сбой; структура всегда. Секции: `etcd-reachable`,
-`docker-hosts`, `loops-alive`, `claims`, `snapshot-freshness`. Etcd-клиент
+`docker-hosts`, `loops-alive`, `claims`, `snapshot-freshness`, `watchdog`
+(armed/stale — состояние компонента). Etcd-клиент
 — SocketsHttpHandler + IPv4-first-резолв (паттерн [16](16-kafkaworker.md)
 §7). **Единая правда для панели**: опрос `/healthz` живых инстансов по URL
 из `/valkeyworker/api/<id>`. Prometheus-метрики — единый каркас
@@ -537,7 +547,10 @@ Health `/healthz` по канону честного health (t09): послед�
 ValkeyWorker:Etcd { Endpoints[] }                  # список всех узлов HA-контура — 04 §8 (env VWK_ETCD_ENDPOINT_0..2)
 ValkeyWorker:Docker { Mode: Plain|Swarm, Hosts[{Name,Endpoint}], SwarmManager,
                       PortRange{From=17000,To=17999}, Images{Node="valkey/valkey:<пин>"} }
-ValkeyWorker:Loops { ScanIntervalSec=5, KeepaliveSec=5, ErrorDelayMs=2000 }
+ValkeyWorker:Loops { ScanIntervalSec=5, KeepaliveSec=5, ErrorDelayMs=2000,
+                     Watchdog { Enabled=true, Multiplier=2, CheckIntervalSec=15, StopDelaySec=1 } }
+                     # watchdog зависших циклов: порог = Multiplier × порог healthz
+                     # loops-alive; Enabled=false — компонент не регистрируется
 ValkeyWorker:Thresholds { NodeBootSec=120, NodeDeadSec=90 }
 ValkeyWorker:Parallelism { MaxClusters=4 }
 ValkeyWorker:Snapshots { Dir="/snapshots", RetentionFiles=10 }

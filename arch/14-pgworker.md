@@ -1300,6 +1300,22 @@ MR3 journal op=repair (сколько/какие статусы диспатче
 - **Отказ docker-хоста**: размещение не меняется (portalloc фиксирован);
   недоступный хост → нода UNREACHABLE → сценарии надзора; новые ноды —
   только на живые хосты.
+- **Watchdog зависших циклов**: внутренний компонент `LoopWatchdog`
+  (Shared.Core, `BackgroundService`) следит за возрастом тиков всех фоновых
+  циклов (reconcile/keepalive/snapshot/orphan-sweep) по отметкам `HealthState`;
+  порог — множитель `Loops:Watchdog:Multiplier` (дефолт 2) к порогу healthz
+  loops-alive (формулы — общий хелпер `LoopStaleness` Shared.Core: healthz и
+  watchdog читают одну формулу и не разъезжаются). Staleness сверх порога →
+  запись в журнал (critical) + метрика `worker_watchdog_restarts_total{loop}` +
+  graceful `StopApplication` (тот же путь, что `POST /api/restart`): контейнер
+  поднимает docker-политика, lease гаснут ≤15 с, клэймы мигрируют второму
+  инстансу (takeover). Отметка `null` («цикл ещё не тикал») не firing, пока
+  возраст watchdog с его запуска меньше 2×порога цикла; дальше — рестарт
+  (цикл не стартовал или завис при старте). Компонент без сетевых вызовов и
+  без etcd; за собой не следит. Граница: «завис весь процесс» (healthz не
+  отвечает) — зона docker HEALTHCHECK, watchdog закрывает только «цикл завис,
+  процесс жив». Анти-луп рестартов не вводится: сдерживание — docker
+  restart-backoff, видимость — метрика/журнал.
 
 ---
 
@@ -1308,7 +1324,7 @@ MR3 journal op=repair (сколько/какие статусы диспатче
 - **Health checks** (`/healthz`): `etcd-reachable` (все endpoints),
   `docker-hosts` (per-host ping), `loops-alive` (последний тик каждого
   цикла), `claims` (сколько держим), `snapshot-freshness` (возраст
-  последнего снапшота).
+  последнего снапшота), `watchdog` (armed/stale — состояние компонента).
 - **Логи**: ключевые события — claim/takeover кластера, фазы процессов
   (с journal-фазой), rebuild ноды, эвакуация (полный план), сверка
   мастер-ключа с коррекцией.
@@ -1316,7 +1332,8 @@ MR3 journal op=repair (сколько/какие статусы диспатче
   `/pgworker/work/<C>` (живая фаза), `nodes/<n>/state`, journal эвакуаций.
 - Prometheus-метрики — единый каркас [18-metrics.md](18-metrics.md):
   `/metrics` на том же порту `:8080` (словарь §2.2 — циклы/клэймы/фазы/
-  операции/снапшоты), репликация PG — scrape Patroni `:8008` напрямую.
+  операции/снапшоты/рестарты watchdog), репликация PG — scrape Patroni
+  `:8008` напрямую.
 
 ---
 
@@ -1331,7 +1348,12 @@ PgWorker:Docker { Mode: Plain|Swarm, Hosts[{Name,Endpoint}],
                   Ssh {KeyPem|KeyPath, RemoteDaemonHost=127.0.0.1,
                        RemoteDaemonPort=2376, FingerprintSha256?} }            # §2.2.1
 PgWorker:Loops { ScanIntervalSec=5, KeepaliveSec=5, SnapshotIntervalMin=360,
-                 ErrorDelayMs=2000 }
+                 ErrorDelayMs=2000,
+                 Watchdog { Enabled=true, Multiplier=2, CheckIntervalSec=15, StopDelaySec=1 } }
+                 # watchdog зависших циклов: порог = Multiplier × порог healthz
+                 # loops-alive (60 c на быстрых циклах при дефолтах); Enabled=false
+                 # — компонент не регистрируется; явного StaleAfterSec-оверрайда
+                 # нет — пороги следуют за интервалами циклов
 PgWorker:Thresholds { NodeDeadSec=90, ShardDeadSec=300, PatroniBootSec=600,
                      CutoverTimeoutSec=90, ConnFailBudgetSec=120,
                      ProvisionRetryBaseSec=5, ProvisionRetryMaxSec=60 }

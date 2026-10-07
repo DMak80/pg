@@ -91,6 +91,7 @@ Infrastructure.App.Metrics   ──порт──► src/Shared.Metrics
 | `worker_process_phase_duration_seconds` | gauge | `cluster`, `process`, `phase` | сколько секунд кластер в текущей фазе процесса (source: марк-методы фаз; смена фазы/завершение процесса сбрасывает серию) |
 | `worker_operation_total` | counter | `operation`, `result` | завершённые операции (provision/deprovision/rotate/move/rollback/finalize/abort…; подавленные ops — supervise/evacuate — не считаются, см. ниже), `result` ∈ {ok,error} |
 | `worker_snapshot_age_seconds` | gauge | — | возраст последнего снапшота P12 |
+| `worker_watchdog_restarts_total` | counter | `loop` | инициированные watchdog-остановки цикла по staleness (внутренний watchdog воркера: arch/14 §6, arch/16 §6, arch/21 §6); источник — марк-метод `WatchdogRestart` |
 
 `process` — фактическое `op` журнала работы (канон = факт, фиксируется
 интеграционным тестом): у PgWorker — `provision`, `deprovision`, `adopt`,
