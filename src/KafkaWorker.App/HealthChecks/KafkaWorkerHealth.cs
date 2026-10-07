@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
 using KafkaWorker.Core;
@@ -16,7 +17,8 @@ public sealed class KafkaWorkerHealth(
     HealthState health,
     ClaimStore claims,
     IOptionsMonitor<KafkaWorkerOptions> options,
-    TimeProvider clock) : IHealthCheck
+    TimeProvider clock,
+    IServiceProvider services) : IHealthCheck
 {
     public async Task<HealthCheckResult> CheckHealthAsync(HealthCheckContext context, CancellationToken ct = default)
     {
@@ -57,13 +59,11 @@ public sealed class KafkaWorkerHealth(
         foreach (var failed in hosts.Where(p => !p.Value.IsSuccess))
             degraded.Add($"docker-хост {failed.Key} недоступен");
 
-        // loops-alive: возраст последнего тика каждого цикла (пассивно, HealthState).
+        // loops-alive: возраст последнего тика каждого цикла (пассивно, HealthState);
+        // пороги — общий хелпер LoopStaleness (healthz и watchdog читают одну формулу).
         var loops = options.CurrentValue.Loops;
-        var staleAfter = TimeSpan.FromSeconds(3 * Math.Max(loops.ScanIntervalSec, loops.KeepaliveSec) + 15);
-        // snapshot-цикл между тиками спит SnapshotIntervalMin (лидер) — порог
-        // свежести у него свой, а не как у scan-циклов.
-        var snapshotStaleAfter = TimeSpan.FromSeconds(
-            3 * Math.Max(loops.ScanIntervalSec, 60 * loops.SnapshotIntervalMin) + 15);
+        var staleAfter = Shared.Core.HealthChecks.LoopStaleness.FastLoops(loops.ScanIntervalSec, loops.KeepaliveSec);
+        var snapshotStaleAfter = Shared.Core.HealthChecks.LoopStaleness.SnapshotLoop(loops.ScanIntervalSec, loops.SnapshotIntervalMin);
         var snapshot = health.Snapshot();
         data["loops"] = string.Join("; ", new[]
         {
@@ -83,6 +83,13 @@ public sealed class KafkaWorkerHealth(
             else if (clock.GetUtcNow() - at.Value > threshold)
                 degraded.Add($"цикл {name} не тикал {(clock.GetUtcNow() - at.Value).TotalSeconds:F0} с");
         }
+
+        // watchdog: состояние компонента (Enabled=false — не зарегистрирован);
+        // контракт статусов HTTP не меняется — только наблюдаемость.
+        var watchdog = services.GetService<Shared.Core.Hosting.LoopWatchdog>();
+        data["watchdog"] = watchdog is null
+            ? "disabled"
+            : watchdog.Armed ? $"armed; stale={watchdog.StaleLoop ?? "нет"}" : "starting";
 
         // claims: сколько клэймов удерживает инстанс + лидерство снапшотов (Д2).
         data["claims"] = $"held={snapshot.ClaimsHeld}; leader={claims.IsLeader}; instance={claims.InstanceId}";
