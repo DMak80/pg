@@ -93,6 +93,17 @@ P3 (t13–t17) — наблюдаемость, P4 (t18–t22) — долговр
   3. `WalStream_Promote_TliHistory_ChainGlued` — ожидание загрузки
      приёмником wal/00000002.history: редкий фон при N=5 (артефакт
      e8085c34: backup-wal Done, файла в листинге нет в бюджете).
+  Улики полного E2E-прогона 43 фактов (41 + тяжёлый restore-E2E контур
+  ~20 мин в каноне ≤5 параллельных, 2026-10-07, 39/43): `WalStream_MasterDown_
+  ReplicaAgentContinues` — 16 м 29 с, гейт «доставка WAL выросла за
+  300 с» после kill мастера; `Strict_BootstrapCarriesStrict_
+  MutationConvergesWithoutRestarts` — 5 м 5 с и
+  `Strict_EnableWithSingleReplicaShard_400` — 6 м 16 с, гейт «кластер
+  перешёл в Active»; `HaEtcd_KillNodeMidAddShard` — 7 м 23 с (см. «редкие»
+  выше). Patroni-ноды упавших контуров живы и кластеризованы — воркер
+  не укладывает provisioning/доставка-гейты в бюджет под пиковой
+  параллельной нагрузкой. Телеметрия упавших: `/tmp/pgw-e2e-43-failanalysis/`,
+  лог серии: `/tmp/pgw-e2e-43-full.log`.
   Редкие того же семейства (фиксов не было, на финальном бинаре t24 не
   воспроизводились): HaEtcd master-lease-проба (NRE чтения master-ключа,
   бюджет 5×2 с — три серии, артефакт 2fd28950), SecondInstance
@@ -110,3 +121,14 @@ P3 (t13–t17) — наблюдаемость, P4 (t18–t22) — долговр
   дисперсия), детерминизировать чувствительные классы (бюджеты от
   фактических p99, снижение CPU/IO-конкуренции) без ослабления
   прод-требования.
+- **`t30-backup-job-s3-endpoint`** — env full-джоба бэкапа получает СЫРОЙ
+  `Backups:S3:Endpoint` воркера (`BackupJobSpec`:
+  `PGW_BK_S3_ENDPOINT = opts.S3Endpoint`), а не `AgentS3Endpoint`
+  (advertised-fallback), как все прочие контейнерные потребители
+  (WalStreamProcess/Drill/Restore/Verify): воркер с host-заменённым
+  endpoint даёт джобу `http://localhost:<порт>` — недостижим изнутри
+  контейнера, полный бэкап падает «upload full failed» (уловлено в полном
+  E2E-прогоне 2026-10-07: контур `shopac4453af02f`, телеметрия
+  `/tmp/pgw-e2e-43-failanalysis/`). Сейчас маскируется (WalStream-сценарии
+  полный не ассертят), но контракт «джобы/агенты получают advertised»
+  нарушен — выровнять `BackupJobSpec` на `AgentS3Endpoint`.
