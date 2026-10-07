@@ -220,4 +220,21 @@ public sealed class WorkerMetricsInstrumentationTests
         // Assert: гейдж хранит последнее значение
         sut.DebugSnapshot().ClaimsHeld.Should().Be(3);
     }
+
+    [Fact]
+    public void WatchdogRestart_CountsPerLoop()
+    {
+        // Arrange
+        using var meter = new Meter("TestWorker");
+        using var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
+
+        // Act: watchdog инициировал две остановки reconcile и одну keepalive
+        sut.WatchdogRestart("reconcile");
+        sut.WatchdogRestart("reconcile");
+        sut.WatchdogRestart("keepalive");
+
+        // Assert: counter per-loop (лейбл цикла), пассивность — без исключений
+        sut.DebugSnapshot().WatchdogRestarts["reconcile"].Should().Be(2);
+        sut.DebugSnapshot().WatchdogRestarts["keepalive"].Should().Be(1);
+    }
 }

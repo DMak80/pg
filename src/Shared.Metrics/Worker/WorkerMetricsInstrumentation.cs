@@ -31,6 +31,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     private DateTimeOffset? _lastSnapshotTaken;
     private readonly Dictionary<(string Cluster, string Shard), long> _walLag = new();
     private readonly Dictionary<string, long> _backupVerify = new();
+    private readonly Dictionary<string, long> _watchdogRestarts = new();
     private int _claimsHeld;
 
     private bool _disposed;
@@ -46,6 +47,9 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
             "worker.operation.total", description: "Завершённые операции (result: ok/error)");
         var backupVerify = meter.CreateCounter<long>(
             "pgworker_backup_verify_total", description: "Результаты verify полных бэкапов (arch/19 §5, t04)");
+        var watchdogRestarts = meter.CreateCounter<long>(
+            "worker_watchdog_restarts_total",
+            description: "Инициированные watchdog-остановки по staleness (arch/18 §2.2)");
 
         // Gauge-серии: по одному ObservableGauge на серию; колбэки читают стейт;
         // длительность фазы вычисляется в колбэке как clock.GetUtcNow() - startedAt.
@@ -131,11 +135,23 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 // Пассивный наблюдатель.
             }
         };
+        WatchdogRestartMark = loop =>
+        {
+            try
+            {
+                watchdogRestarts.Add(1, new KeyValuePair<string, object?>("loop", loop));
+            }
+            catch
+            {
+                // Пассивный наблюдатель.
+            }
+        };
     }
 
     private readonly Action<string, bool> LoopTickMark;
     private readonly Action<string, string> OperationMark;
     private readonly Action<string> BackupVerifyMark;
+    private readonly Action<string> WatchdogRestartMark;
 
     // Колбэк ObservableGauge: чтение стейта под lock; после Dispose — серии пустые.
     // Материализация (.ToArray) ОБЯЗАТЕЛЬНА под lock: OTel перечисляет результат
@@ -221,6 +237,24 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         catch
         {
             // Пассивный наблюдатель.
+        }
+    }
+
+    /// <summary>Counter worker_watchdog_restarts_total{loop}: watchdog инициировал
+    /// self-restart по staleness цикла (колбэк LoopWatchdog из Program.cs app).</summary>
+    public void WatchdogRestart(string loop)
+    {
+        try
+        {
+            WatchdogRestartMark(loop);
+            lock (_lock)
+            {
+                _watchdogRestarts[loop] = _watchdogRestarts.TryGetValue(loop, out var n) ? n + 1 : 1;
+            }
+        }
+        catch
+        {
+            // Пассивный наблюдатель: ошибка инструментария не влияет на остановку.
         }
     }
 
@@ -360,6 +394,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 _claimsHeld,
                 _walLag.ToFrozenDictionary(),
                 _backupVerify.ToFrozenDictionary(),
+                _watchdogRestarts.ToFrozenDictionary(),
                 age);
         }
     }
@@ -373,6 +408,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         int ClaimsHeld,
         IReadOnlyDictionary<(string Cluster, string Shard), long> WalLag,
         IReadOnlyDictionary<string, long> BackupVerifyTotals,
+        IReadOnlyDictionary<string, long> WatchdogRestarts,
         double? SnapshotAgeSeconds);
 
     internal sealed record DebugPhase(string Phase, DateTimeOffset StartedAt);
