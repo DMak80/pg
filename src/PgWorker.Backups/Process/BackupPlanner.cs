@@ -17,6 +17,19 @@ public static class BackupPlanner
         => f.State == FullBackupStatus.Completed
            && f.Verify is not { State: BackupVerifyStatus.Failed };
 
+    // Unix последнего ВАЛИДНОГО полного (finished_unix, толерантно started_unix —
+    // образец IsDue); null — валидного нет. Источник возрастной серии
+    // pgworker_backup_full_age_seconds (t14, arch/18 §2.7): метрика не вводит
+    // третьего толкования «валидный».
+    public static long? LastValidUnix(IReadOnlyList<FullBackupState> fulls)
+    {
+        var last = fulls
+            .Where(IsValid)
+            .OrderByDescending(f => f.FinishedUnix ?? f.StartedUnix)
+            .FirstOrDefault();
+        return last is null ? null : last.FinishedUnix ?? last.StartedUnix;
+    }
+
     // Rolling-правило (t02 + t04 + t05 §3.5 + t07 §3.2 + t27): нет ВАЛИДНОГО
     // COMPLETED — true; иначе возраст последнего валидного (finished_unix;
     // толерантно started_unix) больше full_max_age_sec. Инвариант «поднятый
@@ -41,18 +54,14 @@ public static class BackupPlanner
         if (walChainBroken)
             return true;
 
-        var lastValid = fulls
-            .Where(IsValid)
-            .OrderByDescending(f => f.FinishedUnix ?? f.StartedUnix)
-            .FirstOrDefault();
-        if (lastValid is null)
+        var lastValidUnix = LastValidUnix(fulls);
+        if (lastValidUnix is null)
             return true;
 
-        var finished = lastValid.FinishedUnix ?? lastValid.StartedUnix;
-        if (lastRestoreFinishedUnix is { } restored && finished <= restored)
+        if (lastRestoreFinishedUnix is { } restored && lastValidUnix <= restored)
             return true;
 
-        return nowUnix - finished > fullMaxAgeSec;
+        return nowUnix - lastValidUnix.Value > fullMaxAgeSec;
     }
 
     // Бэкофф переснятия: n = попытки после последнего ВАЛИДНОГО — FAILED-джобы +
