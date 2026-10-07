@@ -297,7 +297,8 @@ public class BackupProcessTests
 
     private static async Task<Rig> NewRig(
         bool claim = true, bool seedPortalloc = true, BackupsRuntimeOptions? options = null,
-        Fakes.FakeEtcd? etcdOverride = null)
+        Fakes.FakeEtcd? etcdOverride = null,
+        Action<string, IReadOnlyDictionary<string, (long? LastValidUnix, long MaxAgeSec)>>? observer = null)
     {
         var store = etcdOverride ?? new Fakes.FakeEtcd();
         SeedCluster(store);
@@ -317,7 +318,8 @@ public class BackupProcessTests
             store, [Ep], driver,
             new ShardEndpoints(store, [Ep], probe), sql, ensurer,
             claims, journal, Secrets, options ?? new BackupsRuntimeOptions { Enabled = true },
-            TimeProvider.System, NullLogger<BackupProcess>.Instance, snapshot: null);
+            TimeProvider.System, NullLogger<BackupProcess>.Instance, snapshot: null,
+            fullAgeObserver: observer);
         return new Rig(store, sql, engine, driver, ensurer, claims, journal, process);
     }
 
@@ -336,6 +338,42 @@ public class BackupProcessTests
         outcome.Value.Should().Be(ProcessOutcome.Done);
         rig.Ensurer.Calls.Should().Be(0);
         rig.Etcd.Store.Keys.Should().NotContain(k => k.StartsWith("/pgworker/backups/"));
+    }
+
+    // AAA: t14 — тик передаёт наблюдателю набор бэкапимых шардов: валидный
+    // COMPLETED → LastValidUnix его finished; verify-FAILED → null; max_age —
+    // эффективная политика тика (дефолт конфига при отсутствии policy-ключа)
+    [Fact]
+    public async Task Tick_ПередаётНаблюдателюВозрастПолных()
+    {
+        // Arrange — шард с валидным COMPLETED (finished=T); дефолт FullMaxAgeSec=86400
+        var seen = new List<(string Cluster,
+            IReadOnlyDictionary<string, (long? LastValidUnix, long MaxAgeSec)> Shards)>();
+        var rig = await NewRig(observer: (c, shards) => seen.Add((c, shards)));
+        const long finished = 1_757_500_300;
+        var valid = new FullBackupState("20260910120000Z", FullBackupStatus.Completed, "shard1a",
+            BackupSourceRole.Replica, 1_757_500_000, finished, "000000010000000000000001", 1024, null, null);
+        var broken = valid with
+        {
+            Id = "20260911090000Z", StartedUnix = 1_757_586_000, FinishedUnix = 1_757_586_300,
+            Verify = new BackupVerify(BackupVerifyStatus.Failed, 1_757_586_300, "bad"),
+        };
+
+        // Act — тик с валидным, затем тик, где валидного нет (новейший COMPLETED verify-FAILED)
+        (await rig.Process.TickAsync(await Snapshot(rig.Etcd), BackupsOf(valid), CancellationToken.None))
+            .IsSuccess.Should().BeTrue();
+        (await rig.Process.TickAsync(await Snapshot(rig.Etcd), BackupsOf(broken), CancellationToken.None))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — один вызов на тик; замещение семантики набора проверяет
+        // instrumentation (WorkerMetricsInstrumentationTests), здесь — содержимое
+        seen.Should().HaveCount(2);
+        seen[0].Cluster.Should().Be("shop");
+        seen[0].Shards.Should().ContainKey("shard1")
+            .WhoseValue.LastValidUnix.Should().Be(finished);
+        seen[0].Shards["shard1"].MaxAgeSec.Should().Be(86_400);
+        seen[1].Shards["shard1"].LastValidUnix.Should().BeNull("verify FAILED — не валиден");
+        seen[1].Shards["shard1"].MaxAgeSec.Should().Be(86_400, "порог пишется всегда");
     }
 
     // AAA: G3 — due (COMPLETED нет): PLANNED → контейнер (env backup_exec,

@@ -514,7 +514,8 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupProcess(
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Backups.ToRuntime(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.BackupProcess>(),
-    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
+    fullAgeObserver: sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupFullAge));
 
 // Восстановление шарда из бэкапа (t05, arch/19 §3.5): PLANNED→RUNNING→
 // REJOINING→COMPLETED; plain-only, Exec в объёме джоба. Runtime-опции —

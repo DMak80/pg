@@ -36,7 +36,8 @@ public sealed class BackupProcess(
     BackupsRuntimeOptions options,
     TimeProvider time,
     ILogger<BackupProcess> logger,
-    Func<CancellationToken, Task<Result>>? snapshot = null)
+    Func<CancellationToken, Task<Result>>? snapshot = null,
+    Action<string, IReadOnlyDictionary<string, (long? LastValidUnix, long MaxAgeSec)>>? fullAgeObserver = null)
 {
     private const string Op = "backups";
 
@@ -244,6 +245,18 @@ public sealed class BackupProcess(
             logger.LogInformation("backups {Cluster}/{Shard}: полный {Id} запущен на {Node} (role={Role})",
                 cluster, shard.Name, id, node, role);
         }
+
+        // t14 (arch/18 §2.7): возрастные серии полных — наблюдение тика
+        // планировщика: набор бэкапимых шардов (dsn, не ToRemove) замещает стейт
+        // кластера в instrumentation целиком; возрастной факт — семантика
+        // планировщика (BackupPlanner.LastValidUnix), порог — эффективная
+        // политика тика (policy-ключ ?? дефолт конфига).
+        fullAgeObserver?.Invoke(cluster, snap.Shards
+            .Where(s => s.Dsn is not null && !s.ToRemove)
+            .ToDictionary(
+                s => s.Name,
+                s => (BackupPlanner.LastValidUnix(mine.Shards.GetValueOrDefault(s.Name)?.Full ?? []),
+                    fullMaxAgeSec)));
 
         // Делегат снапшота etcd (SnapshotJob) в тике планировщика не используется —
         // параметр держит контракт DI (wiring); прецедент — PasswordRotator.afterCommit.
