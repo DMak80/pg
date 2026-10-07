@@ -102,6 +102,10 @@ internal sealed class ReconcileLoop(
         if (endpoints.Length == 0)
             return Result.Failed(new ApplicationException("KafkaWorker:Etcd:Endpoints не заданы"));
 
+        // Единственная точка KafkaWorker: ожидания расползаются по тикам
+        // (один DescribeCluster RequestTimeout=10 с за тик) — спека §4.6.
+        health.MarkReconcileActivity();
+
         // Снапшот контроль-плейна (P9: без свежего чтения мутаций не делаем).
         var clustersKvs = await RangeWithFailoverAsync(endpoints, "/kafka/clusters/", ct);
         if (!clustersKvs.IsSuccess)
