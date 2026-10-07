@@ -21,6 +21,7 @@ namespace PgWorker.Provisioning.Processes;
 /// НЕ трогая routing/status/схемы бакетов (граница §2.1). Механика —
 /// ProvisioningProcess в scoped-to-shard виде; идемпотентность каждого шага,
 /// R6-перечитывание config, фазы в /pgworker/work/&lt;C&gt;.
+/// progress — heartbeat-отметки долгих фаз (null в тестах/без DI).
 /// </summary>
 public sealed partial class AddShardProcess(
     IEtcdGateway etcd,
@@ -38,7 +39,8 @@ public sealed partial class AddShardProcess(
     PortAllocIndex portAlloc,
     PortAllocLock portLock,
     PgtuneInputsFactory pgtune,
-    Func<CancellationToken, Task<Result>>? snapshot = null)
+    Func<CancellationToken, Task<Result>>? snapshot = null,
+    Shared.Core.Hosting.ILoopProgress? progress = null)
 {
     private const string Op = "add-shard";
 
@@ -273,6 +275,7 @@ public sealed partial class AddShardProcess(
             var ensured = await driver.EnsureNodeAsync(
                 topology, node.Name, topology.Nodes[node.Name], clusterSecrets, etcdEndpoints, resources,
                 tuning, syncStrict, ct);
+            progress?.Mark(); // heartbeat: create/start контейнера ноды — долгая фаза
             if (!ensured.IsSuccess)
                 return ensured;
         }
@@ -308,7 +311,9 @@ public sealed partial class AddShardProcess(
         var probesAlive = true;
         foreach (var node in topology.Nodes.Keys)
         {
-            if (!await probe.IsAliveAsync(topology.Nodes[node], ct))
+            var alive = await probe.IsAliveAsync(topology.Nodes[node], ct);
+            progress?.Mark(); // heartbeat: итерация опроса готовности ноды
+            if (!alive)
             {
                 probesAlive = false;
                 break;

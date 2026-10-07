@@ -786,12 +786,24 @@ t03; панель обновляется тем же релизом). После
   (RF/minISR — per-cluster конфиги, §5 E; служебные топики — формулы
   §2.1; отставание реплик видно метрикой USR, §7). Подсистема бэкапов
   [19-backups.md](19-backups.md) покрывает только PG-шарды.
+- **Watchdog зависших циклов**: внутренний компонент `LoopWatchdog`
+  (Shared.Core, `BackgroundService`) следит за возрастом активности (тик или
+  прогресс-отметка; глубоких долгих фаз у KafkaWorker нет — ожидания
+  расползаются по тикам) циклов
+  (reconcile/keepalive/snapshot) по отметкам `HealthState`; staleness
+  сверх порога (`Loops:Watchdog:Multiplier` × порог healthz loops-alive)
+  → журнал (critical) + метрика `worker_watchdog_restarts_total{loop}` +
+  graceful `StopApplication` — контейнер поднимает docker-политика, lease
+  гаснут ≤15 с, takeover вторым инстансом. Механика (пороги, grace старта,
+  границы) — канон [14-pgworker.md](14-pgworker.md) §6; формулы — общий
+  хелпер `LoopStaleness` Shared.Core.
 
 ## 7. Наблюдаемость
 
 Health `/healthz`: `etcd-reachable` (все endpoints), `docker-hosts`
 (per-host ping), `loops-alive` (последний тик каждого цикла), `claims`
-(сколько держим), `snapshot-freshness`. Канон честного health (t09):
+(сколько держим), `snapshot-freshness`, `watchdog` (armed/stale —
+состояние компонента). Канон честного health (t09):
 
 - **healthz = последнее состояние цикла, а не первый сбой**: успешный тик
   гасит `StatusError` прошлого тика (живой-Ф7, порт циклов PgWorker) —
@@ -826,7 +838,10 @@ KafkaWorker:Docker { Mode: Plain|Swarm, Hosts[{Name,Endpoint}], SwarmManager,
                      PortRange{From=16000,To=16999}, Images{Node="apache/kafka:4.0.0"} }
 KafkaWorker:Loops { ScanIntervalSec=5, KeepaliveSec=5, ErrorDelayMs=2000,
                     TopicSyncIntervalSec=15, ReassignIntervalSec=15,
-                    ReassignBatchPartitions=10 }
+                    ReassignBatchPartitions=10,
+                    Watchdog { Enabled=true, Multiplier=2, CheckIntervalSec=15, StopDelaySec=1 } }
+                    # watchdog зависших циклов: порог = Multiplier × порог healthz
+                    # loops-alive; Enabled=false — компонент не регистрируется
 KafkaWorker:Thresholds { BrokerBootSec=600, NodeDeadSec=90, ReassignExecSec=180,
                          ReassignRetrySubmitSec=120 }
 KafkaWorker:Parallelism { MaxClusters=4 }

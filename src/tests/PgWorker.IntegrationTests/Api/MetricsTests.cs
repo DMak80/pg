@@ -110,4 +110,28 @@ public sealed class MetricsTests(PgMetricsFixture fx)
         body.Should().NotContain(
             """pgworker_backup_full_age_seconds{otel_scope_name="PgWorker",cluster="canon",shard="s2"}""");
     }
+
+    [Fact]
+    public async Task Metrics_WatchdogRestartSeries_ExposedAfterMark()
+    {
+        // Arrange: живой хост метрик-фабрики; маркер вызывается колбэком watchdog
+        var instrumentation = fx.Factory.Services.GetRequiredService<
+            Shared.Metrics.Worker.WorkerMetricsInstrumentation>();
+
+        // Act: watchdog-остановка цикла (как это сделает LoopWatchdog перед stop);
+        // ждём серии в экспорте (retry-цикл до 15 с — первый collect экспортёра)
+        instrumentation.WatchdogRestart("reconcile");
+        using var client = fx.Factory.CreateClient();
+        string body = "";
+        for (var i = 0; i < 30; i++)
+        {
+            body = await client.GetStringAsync("/metrics", TestContext.Current.CancellationToken);
+            if (body.Contains("worker_watchdog_restarts_total"))
+                break;
+            await Task.Delay(500, TestContext.Current.CancellationToken);
+        }
+
+        // Assert: серия counter с лейблом цикла в экспорте (AC4)
+        body.Should().Contain("""worker_watchdog_restarts_total{otel_scope_name="PgWorker",loop="reconcile"}""");
+    }
 }

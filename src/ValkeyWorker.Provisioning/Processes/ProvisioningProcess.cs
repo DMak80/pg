@@ -18,6 +18,7 @@ namespace ValkeyWorker.Provisioning.Processes;
 /// безопасно прекращает процесс). Снапшоты P12 «до» (после claim) и «после»
 /// (перед journal done) — через snapshot-делегат. Вызывается только держателем
 /// клэйма &lt;C&gt;. Сверка V3 re-run: image + args + порт + лимиты.
+/// progress — heartbeat-отметки долгих фаз (null в тестах/без DI).
 /// </summary>
 public sealed class ProvisioningProcess(
     IEtcdGateway gateway,
@@ -32,6 +33,7 @@ public sealed class ProvisioningProcess(
     IValkeyConnection valkey,
     ValkeyProvisioningOptions options,
     Func<CancellationToken, Task<Result>>? snapshot = null,
+    Shared.Core.Hosting.ILoopProgress? progress = null,
     TimeProvider? clock = null) // clock — тестовый бюджет V4 (FixedTimeProvider)
 {
     private const string Op = "provision";
@@ -315,6 +317,7 @@ public sealed class ProvisioningProcess(
                 cluster, node, address.Host, address.ClientPort, options.NodeImage, args,
                 limits?.Cpu, limits?.MemBytes,
                 TlsVolume: PlainClusterDriver.TlsVolumeName(cluster)), ct);
+            progress?.Mark(); // heartbeat: create/start контейнера ноды — долгая фаза
             if (!ensured.IsSuccess)
                 return ensured;
         }
@@ -392,9 +395,12 @@ public sealed class ProvisioningProcess(
             var budget = TimeSpan.FromSeconds(options.NodeBootSec);
 
             // Транзиент-толерантный цикл: ошибка пробы не прерывает — только бюджет.
+            // Бюджет NodeBootSec × ноды за один тик — PING-цикл обязан отмечать
+            // живость каждой пробой.
             while (true)
             {
                 var ping = await valkey.PingAsync(endpoint, ct);
+                progress?.Mark(); // heartbeat: итерация PING-цикла готовности
                 if (ping.IsSuccess)
                     break;
                 if (_clock.GetUtcNow() - startedAt > budget)

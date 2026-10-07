@@ -147,6 +147,10 @@ public sealed class LoopsOptions
     public int SnapshotIntervalMin { get; set; } = 360;
 
     public int ErrorDelayMs { get; set; } = 2000;
+
+    /// <summary>Watchdog зависших циклов (arch/16 §6/§8): Enabled=false — компонент
+    /// не регистрируется; порог = Multiplier × порог healthz loops-alive.</summary>
+    public Shared.Core.Hosting.WatchdogOptions Watchdog { get; set; } = new();
 }
 
 /// <summary>Пороги процессов (arch/16 §8).</summary>

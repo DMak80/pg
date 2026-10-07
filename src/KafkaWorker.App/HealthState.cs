@@ -10,6 +10,7 @@ public sealed class HealthState(TimeProvider clock)
 
     private DateTimeOffset? _lastEtcdOk;
     private DateTimeOffset? _lastReconcileTick;
+    private DateTimeOffset? _lastReconcileActivity;
     private DateTimeOffset? _lastKeepaliveTick;
     private DateTimeOffset? _lastSnapshotTick;
     private DateTimeOffset? _lastSnapshotTaken;
@@ -24,14 +25,27 @@ public sealed class HealthState(TimeProvider clock)
         }
     }
 
-    /// <summary>Тик ReconcileLoop + сколько клэймов удерживаем после него.</summary>
+    /// <summary>Тик ReconcileLoop + сколько клэймов удерживаем после него
+    /// (тик — тоже активность).</summary>
     public void MarkReconcileTick(bool ok, int claimsHeld)
     {
         lock (_sync)
         {
             _lastReconcileTick = clock.GetUtcNow();
+            _lastReconcileActivity = _lastReconcileTick;
             if (ok)
                 _claimsHeld = claimsHeld;
+        }
+    }
+
+    /// <summary>Прогресс-отметка reconcile (активность без тика) — глубоких
+    /// долгих фаз у KafkaWorker нет, отмечается только старт итерации; читает
+    /// только watchdog, healthz loops-alive — по тикам.</summary>
+    public void MarkReconcileActivity()
+    {
+        lock (_sync)
+        {
+            _lastReconcileActivity = clock.GetUtcNow();
         }
     }
 
@@ -69,7 +83,8 @@ public sealed class HealthState(TimeProvider clock)
         {
             return new HealthSnapshot(
                 _lastEtcdOk, _lastReconcileTick, _lastKeepaliveTick,
-                _lastSnapshotTick, _lastSnapshotTaken, _claimsHeld);
+                _lastSnapshotTick, _lastSnapshotTaken, _claimsHeld,
+                _lastReconcileActivity);
         }
     }
 }
@@ -81,4 +96,5 @@ public sealed record HealthSnapshot(
     DateTimeOffset? LastKeepaliveTick,
     DateTimeOffset? LastSnapshotTick,
     DateTimeOffset? LastSnapshotTaken,
-    int ClaimsHeld);
+    int ClaimsHeld,
+    DateTimeOffset? LastReconcileActivity);

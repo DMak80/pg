@@ -57,11 +57,13 @@ public sealed record CutoverContext(
 /// → put new + delete status; при PostFlipPhase — put фазы доведения вместо delete,
 /// ревью №1). Отказ до flip: разморозка + возврат FailState (transient);
 /// verify-failed и flip-conflict — CutoverPermanentException (ревью №1).
+/// progress — heartbeat-отметки долгих фаз (null в тестах/без DI).
 /// </summary>
 public sealed class CutoverSequence(
     IMoveSqlExecutor sql,
     MoveStatusStore status,
-    InstallSecrets secrets)
+    InstallSecrets secrets,
+    Shared.Core.Hosting.ILoopProgress? progress = null)
 {
     /// <summary>
     /// true = flip прошёл. Failed-исходы: transient (обычное исключение; заморозка снята,
@@ -108,6 +110,7 @@ public sealed class CutoverSequence(
                 freeze = Result.Failed(names.Error!);
             }
 
+            progress?.Mark(); // поллинг cutover — до CutoverTimeoutSec за один тик: отмечаем живость каждым проходом, иначе легитимное ожидание догоняния слота расстрелял бы watchdog
             if (attempt < o.FreezeLockTries)
                 await Task.Delay(TimeSpan.FromSeconds(o.PollIntervalSec), ct);
         }
@@ -135,6 +138,7 @@ public sealed class CutoverSequence(
         while (true)
         {
             var caught = await sql.ScalarAsync(curDsn, MoveSql.SlotCaughtUp(c.Slot, lsnText), ct);
+            progress?.Mark(); // поллинг cutover — до CutoverTimeoutSec за один тик: отмечаем живость каждым проходом, иначе легитимное ожидание догоняния слота расстрелял бы watchdog
             if (caught.IsSuccess && ToBool(caught.Value) == true)
                 break;
 

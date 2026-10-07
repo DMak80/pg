@@ -6,6 +6,7 @@ using Shared.Metrics;
 using KafkaWorker.App.Api;
 using KafkaWorker.App.Api.Operations;
 using Shared.Core.HealthChecks;
+using Shared.Core.Hosting;
 using KafkaWorker.App.HealthChecks;
 using KafkaWorker.App.Loops;
 using KafkaWorker.Core;
@@ -408,6 +409,20 @@ builder.Services.AddHealthChecks()
     .AddCheck<HealthCheckAbstract<ReconcileLoop>>("reconcile-loop")
     .AddCheck<HealthCheckAbstract<KeepaliveLoop>>("keepalive-loop")
     .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop");
+
+// Watchdog зависших циклов (arch/16 §6): staleness активности (тик или
+// прогресс-отметка) всех циклов → журнал +
+// метрика + graceful self-stop (путь POST /api/restart); Enabled=false (секция
+// KafkaWorker:Loops:Watchdog) — компонент не регистрируется.
+builder.Services.AddSingleton<KafkaWorkerLoopsVitality>();
+builder.Services.AddSingleton<Shared.Core.Hosting.ILoopsVitality>(
+    sp => sp.GetRequiredService<KafkaWorkerLoopsVitality>());
+var loopsWatchdog = new Shared.Core.Hosting.WatchdogOptions();
+builder.Configuration.GetSection("KafkaWorker:Loops:Watchdog").Bind(loopsWatchdog);
+builder.Services.AddLoopWatchdog(
+    loopsWatchdog,
+    (sp, loop) => sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>()
+        .WatchdogRestart(loop));
 
 var app = builder.Build();
 if (app.Services.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)

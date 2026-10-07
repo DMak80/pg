@@ -1,3 +1,4 @@
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using FluentAssertions;
 using KafkaWorker.App;
@@ -19,6 +20,10 @@ public class HealthTests
         Etcd = new EtcdOptions { Endpoints = ["http://etcd:2379"] },
         Docker = new DockerOptions { Hosts = [] },
     });
+
+    // Пустой провайдер: watchdog не зарегистрирован → секция "disabled".
+    private static readonly IServiceProvider EmptyServices =
+        new ServiceCollection().BuildServiceProvider();
 
     private static ServiceProbes Probes(IEtcdGateway etcd)
         => new(etcd, Options, new DockerEngineFactory());
@@ -115,7 +120,7 @@ public class HealthTests
         var check = new KafkaWorkerHealth(
             Probes(new Fakes.FakeEtcd()), new HealthState(TimeProvider.System),
             new ClaimStore("/kafkaworker", ["http://etcd:2379"], new Fakes.FakeEtcd(), TimeProvider.System),
-            new ThrowingOptionsMonitor(), TimeProvider.System);
+            new ThrowingOptionsMonitor(), TimeProvider.System, EmptyServices);
 
         // Act
         var result = await check.CheckHealthAsync(new HealthCheckContext(), TestContext.Current.CancellationToken);
@@ -123,5 +128,23 @@ public class HealthTests
         // Assert: Degraded с данными секции error — не исключение чека.
         result.Status.Should().Be(HealthStatus.Degraded);
         result.Data.Keys.Should().Contain("error");
+    }
+
+    [Fact]
+    public async Task Check_WatchdogSection_DisabledWhenNotRegistered()
+    {
+        // Arrange: обычные опции, циклы ещё не тикали — структура отдаётся всегда
+        var etcd = new Fakes.FakeEtcd();
+        var check = new KafkaWorkerHealth(
+            Probes(etcd), new HealthState(TimeProvider.System),
+            new ClaimStore("/kafkaworker", ["http://etcd:2379"], etcd, TimeProvider.System),
+            Options, TimeProvider.System, EmptyServices);
+
+        // Act
+        var result = await check.CheckHealthAsync(new HealthCheckContext(), TestContext.Current.CancellationToken);
+
+        // Assert: секция watchdog — disabled (компонент не зарегистрирован; AC4)
+        result.Data.Keys.Should().Contain("watchdog");
+        result.Data["watchdog"].ToString().Should().Be("disabled");
     }
 }

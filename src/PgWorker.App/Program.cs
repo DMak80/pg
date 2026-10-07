@@ -5,6 +5,7 @@ using PgWorker.App;
 using PgWorker.App.Api;
 using PgWorker.App.Api.Operations;
 using Shared.Core.HealthChecks;
+using Shared.Core.Hosting;
 using PgWorker.App.HealthChecks;
 using PgWorker.App.Loops;
 using PgWorker.Backups;
@@ -79,6 +80,8 @@ var apiCertThumbprint = apiTls.ServerCert is { } appliedCert
 
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<HealthState>();
+// Прогресс-отметки долгих фаз reconcile в глубину процессов (Provisioning/Moves).
+builder.Services.AddSingleton<Shared.Core.Hosting.ILoopProgress>(sp => sp.GetRequiredService<HealthState>());
 
 // Метрики (arch/18 §3): /metrics на том же mTLS-Kestrel-порту, что /healthz (t03).
 builder.Services.AddAppMetrics("PgWorker", builder.Configuration.GetSection("PgWorker:Metrics"));
@@ -332,7 +335,8 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<PortAllocIndex>(),
         sp.GetRequiredService<PortAllocLock>(),
         sp.GetRequiredService<PgtuneInputsFactory>(),
-        SnapshotDelegate(job));
+        SnapshotDelegate(job),
+        sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>());
 });
 builder.Services.AddSingleton(sp => new DeprovisioningProcess(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -439,7 +443,8 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<PortAllocIndex>(),
         sp.GetRequiredService<PortAllocLock>(),
         sp.GetRequiredService<PgtuneInputsFactory>(),
-        SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
+        SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
+        sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>());
 });
 builder.Services.AddSingleton(sp => new RemoveShardProcess(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -472,7 +477,8 @@ builder.Services.AddSingleton(sp =>
         opts.Moves.ToRuntime(opts.Thresholds),
         sp.GetRequiredService<TimeProvider>(),
         sp.GetRequiredService<ILoggerFactory>().CreateLogger<MoveProcess>(),
-        SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
+        SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
+        sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>());
 });
 
 // Репарация брошенных переездов (adopt-repair spec §3.5): синтетические заявки
@@ -647,7 +653,12 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Supervisor.BackupOrphan
         : null,
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Supervisor.BackupOrphanSweeper>()));
-builder.Services.AddSingleton<PgWorker.App.Loops.BackupOrphanSweeperLoop>();
+builder.Services.AddSingleton(sp => new PgWorker.App.Loops.BackupOrphanSweeperLoop(
+    sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>(),
+    sp.GetRequiredService<ClaimStore>(),
+    sp.GetRequiredService<PgWorker.Backups.Supervisor.BackupOrphanSweeper>(),
+    sp.GetRequiredService<HealthState>(),
+    sp.GetRequiredService<ILogger<PgWorker.App.Loops.BackupOrphanSweeperLoop>>()));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<PgWorker.App.Loops.BackupOrphanSweeperLoop>());
 
 // Циклы (§6.2): keepalive первым (lease живут до Reconcile), затем снапшоты и reconcile.
@@ -685,6 +696,20 @@ builder.Services.AddHealthChecks()
     .AddCheck<HealthCheckAbstract<ReconcileLoop>>("reconcile-loop")
     .AddCheck<HealthCheckAbstract<KeepaliveLoop>>("keepalive-loop")
     .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop");
+
+// Watchdog зависших циклов (arch/14 §6): staleness активности (тик или
+// прогресс-отметка) всех циклов → журнал +
+// метрика + graceful self-stop (путь POST /api/restart); Enabled=false (секция
+// PgWorker:Loops:Watchdog) — компонент не регистрируется.
+builder.Services.AddSingleton<PgWorkerLoopsVitality>();
+builder.Services.AddSingleton<Shared.Core.Hosting.ILoopsVitality>(
+    sp => sp.GetRequiredService<PgWorkerLoopsVitality>());
+var loopsWatchdog = new Shared.Core.Hosting.WatchdogOptions();
+builder.Configuration.GetSection("PgWorker:Loops:Watchdog").Bind(loopsWatchdog);
+builder.Services.AddLoopWatchdog(
+    loopsWatchdog,
+    (sp, loop) => sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>()
+        .WatchdogRestart(loop));
 
 var app = builder.Build();
 if (app.Services.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)

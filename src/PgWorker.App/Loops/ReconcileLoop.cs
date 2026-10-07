@@ -104,6 +104,8 @@ internal sealed class ReconcileLoop(
         if (endpoints.Length == 0)
             return Result.Failed(new ApplicationException("PgWorker:Etcd:Endpoints не заданы"));
 
+        health.MarkReconcileActivity(); // heartbeat: старт итерации (долгие фазы отмечаются глубже)
+
         // Снапшот контроль-плейна (P9: без свежего чтения мутаций не делаем).
         var clustersKvs = await RangeWithFailoverAsync(endpoints, "/clusters/", ct);
         if (!clustersKvs.IsSuccess)

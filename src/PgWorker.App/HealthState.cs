@@ -3,16 +3,19 @@ namespace PgWorker.App;
 /// <summary>
 /// Пассивные состояния наблюдаемости (spec §8): циклы пишут тики/события,
 /// health-проба /healthz читает снимок. Immutable-снимок + lock — без гонок.
+/// Реализует ILoopProgress — доставка прогресс-отметок в процессы ниже App.
 /// </summary>
-public sealed class HealthState(TimeProvider clock)
+public sealed class HealthState(TimeProvider clock) : Shared.Core.Hosting.ILoopProgress
 {
     private readonly object _sync = new();
 
     private DateTimeOffset? _lastEtcdOk;
     private DateTimeOffset? _lastReconcileTick;
+    private DateTimeOffset? _lastReconcileActivity;
     private DateTimeOffset? _lastKeepaliveTick;
     private DateTimeOffset? _lastSnapshotTick;
     private DateTimeOffset? _lastSnapshotTaken;
+    private DateTimeOffset? _lastOrphanSweepTick;
     private int _claimsHeld;
 
     /// <summary>Успешный цикл чтения etcd (Range /clusters/ + /service/).</summary>
@@ -24,16 +27,32 @@ public sealed class HealthState(TimeProvider clock)
         }
     }
 
-    /// <summary>Тик ReconcileLoop + сколько клэймов удерживаем после него.</summary>
+    /// <summary>Тик ReconcileLoop + сколько клэймов удерживаем после него
+    /// (тик — тоже активность).</summary>
     public void MarkReconcileTick(bool ok, int claimsHeld)
     {
         lock (_sync)
         {
             _lastReconcileTick = clock.GetUtcNow();
+            _lastReconcileActivity = _lastReconcileTick;
             if (ok)
                 _claimsHeld = claimsHeld;
         }
     }
+
+    /// <summary>Прогресс-отметка reconcile (heartbeat долгих фаз итерации:
+    /// контейнеры нод, ожидание готовности, поллинг переездов) — активность без
+    /// тика; читает только watchdog, healthz loops-alive — по тикам.</summary>
+    public void MarkReconcileActivity()
+    {
+        lock (_sync)
+        {
+            _lastReconcileActivity = clock.GetUtcNow();
+        }
+    }
+
+    /// <summary>ILoopProgress — доставка прогресс-отметок в процессы ниже App.</summary>
+    public void Mark() => MarkReconcileActivity();
 
     /// <summary>Тик KeepaliveLoop (продление lease'ов + instance-ключ).</summary>
     public void MarkKeepaliveTick()
@@ -62,6 +81,15 @@ public sealed class HealthState(TimeProvider clock)
         }
     }
 
+    /// <summary>Тик BackupOrphanSweeperLoop (итерация цикла: лидерная/холостая).</summary>
+    public void MarkOrphanSweepTick()
+    {
+        lock (_sync)
+        {
+            _lastOrphanSweepTick = clock.GetUtcNow();
+        }
+    }
+
     /// <summary>Immutable-снимок состояний для health-пробы.</summary>
     public HealthSnapshot Snapshot()
     {
@@ -69,7 +97,8 @@ public sealed class HealthState(TimeProvider clock)
         {
             return new HealthSnapshot(
                 _lastEtcdOk, _lastReconcileTick, _lastKeepaliveTick,
-                _lastSnapshotTick, _lastSnapshotTaken, _claimsHeld);
+                _lastSnapshotTick, _lastSnapshotTaken, _claimsHeld,
+                _lastOrphanSweepTick, _lastReconcileActivity);
         }
     }
 }
@@ -81,4 +110,6 @@ public sealed record HealthSnapshot(
     DateTimeOffset? LastKeepaliveTick,
     DateTimeOffset? LastSnapshotTick,
     DateTimeOffset? LastSnapshotTaken,
-    int ClaimsHeld);
+    int ClaimsHeld,
+    DateTimeOffset? LastOrphanSweepTick,
+    DateTimeOffset? LastReconcileActivity);

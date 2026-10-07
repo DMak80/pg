@@ -55,7 +55,7 @@ public class ProvisioningProcessTests
                         return Result.Success();
                     }
                     : null,
-                Clock);
+                clock: Clock); // progress не передаётся (null) — в юните heartbeat-отметки не нужны
             return rig;
         }
 

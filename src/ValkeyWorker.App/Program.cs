@@ -7,6 +7,7 @@ using Shared.Metrics;
 using ValkeyWorker.App.Api;
 using ValkeyWorker.App.Api.Operations;
 using Shared.Core.HealthChecks;
+using Shared.Core.Hosting;
 using ValkeyWorker.App.HealthChecks;
 using ValkeyWorker.App.Loops;
 using ValkeyWorker.Docker.Drivers;
@@ -27,6 +28,8 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.Configure<ValkeyWorkerOptions>(builder.Configuration.GetSection("ValkeyWorker"));
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddSingleton<HealthState>();
+// Прогресс-отметки долгих фаз reconcile в глубину процессов (provisioning).
+builder.Services.AddSingleton<Shared.Core.Hosting.ILoopProgress>(sp => sp.GetRequiredService<HealthState>());
 
 // Метрики (arch/18 §2.2): /metrics на том же mTLS-Kestrel-порту, что /healthz —
 // scrape ходит клиентским сертом per-install пакета. Коллектор доменных метрик
@@ -196,7 +199,8 @@ builder.Services.AddSingleton(sp => new ProvisioningProcess(
     sp.GetRequiredService<NodeTlsProvisioner>(),
     sp.GetRequiredService<IValkeyConnection>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value),
-    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
+    sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 builder.Services.AddSingleton(sp => new DeprovisioningProcess(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints,
@@ -297,6 +301,20 @@ builder.Services.AddHealthChecks()
     .AddCheck<HealthCheckAbstract<ReconcileLoop>>("reconcile-loop")
     .AddCheck<HealthCheckAbstract<KeepaliveLoop>>("keepalive-loop")
     .AddCheck<HealthCheckAbstract<SnapshotLoop>>("snapshot-loop");
+
+// Watchdog зависших циклов (arch/21 §6): staleness активности (тик или
+// прогресс-отметка) всех циклов → журнал +
+// метрика + graceful self-stop (путь POST /api/restart); Enabled=false (секция
+// ValkeyWorker:Loops:Watchdog) — компонент не регистрируется.
+builder.Services.AddSingleton<ValkeyWorkerLoopsVitality>();
+builder.Services.AddSingleton<Shared.Core.Hosting.ILoopsVitality>(
+    sp => sp.GetRequiredService<ValkeyWorkerLoopsVitality>());
+var loopsWatchdog = new Shared.Core.Hosting.WatchdogOptions();
+builder.Configuration.GetSection("ValkeyWorker:Loops:Watchdog").Bind(loopsWatchdog);
+builder.Services.AddLoopWatchdog(
+    loopsWatchdog,
+    (sp, loop) => sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>()
+        .WatchdogRestart(loop));
 
 var app = builder.Build();
 if (app.Services.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)

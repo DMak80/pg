@@ -142,6 +142,10 @@ public sealed class LoopsOptions
     // транспорентно для домена (прецедент примечания плана про
     // Snapshots.MaintenanceIntervalMin).
     public int SnapshotIntervalMin { get; set; } = 360;
+
+    /// <summary>Watchdog зависших циклов (arch/21 §6/§8): Enabled=false — компонент
+    /// не регистрируется; порог = Multiplier × порог healthz loops-alive.</summary>
+    public Shared.Core.Hosting.WatchdogOptions Watchdog { get; set; } = new();
 }
 
 /// <summary>Пороги процессов (arch/21 §8).</summary>
