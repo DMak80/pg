@@ -147,7 +147,9 @@ public class E2eEtcdSnapshotExportScenarios
             await Fx.RunDockerAsync(["cp", tempFile, $"{Fx.EtcdContainerName}:/tmp/snap.db"], ct);
             var verdict = await Fx.RunDockerAsync(
                 ["exec", Fx.EtcdContainerName, "etcdctl", "snapshot", "status", "/tmp/snap.db"], ct);
-            verdict.Should().MatchRegex("^[0-9a-f]{8}, \\d+, \\d+, .+",
+            // etcdctl печатает hash БЕЗ ведущих нулей (напр. «9367b56» — 7 hex) —
+            // {8} ловил только полный паддинг; диапазон 1..8 по механике вывода.
+            verdict.Should().MatchRegex("^[0-9a-f]{1,8}, \\d+, \\d+, .+",
                 "валидный слепок из S3 проходит etcdctl snapshot status (AC5): hash/keys/size");
         }
         finally
