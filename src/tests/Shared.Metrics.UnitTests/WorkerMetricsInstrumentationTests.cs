@@ -187,23 +187,64 @@ public sealed class WorkerMetricsInstrumentationTests
         sut.DebugSnapshot().WalLag[("c1", "s2")].Should().Be(0);
     }
 
-    // AAA: counter pgworker_backup_verify_total{result} — инкременты по result
+    // AAA: counter pgworker_backup_verify_total{cluster,shard,result} — лейблы
+    // cluster/shard добавлены (миграция серии t14, arch/18 §2.7): инкременты по тройке
     [Fact]
-    public void BackupVerify_ИнкрементыПоРезультату()
+    public void BackupVerify_ИнкрементыПоКластеруШардуРезультату()
     {
         // Arrange
         using var meter = new Meter("TestWorker");
         using var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
 
-        // Act — три ok + один failed
+        // Act — три ok + один failed, два шарда
         sut.BackupVerify("c1", "s1", "ok");
         sut.BackupVerify("c1", "s1", "ok");
         sut.BackupVerify("c1", "s2", "ok");
         sut.BackupVerify("c1", "s2", "failed");
 
+        // Assert — тройка (cluster, shard, result): s2/ok не смешался с s1/ok
+        sut.DebugSnapshot().BackupVerifyTotals[("c1", "s1", "ok")].Should().Be(2);
+        sut.DebugSnapshot().BackupVerifyTotals[("c1", "s2", "ok")].Should().Be(1);
+        sut.DebugSnapshot().BackupVerifyTotals[("c1", "s2", "failed")].Should().Be(1);
+    }
+
+    // AAA: counter pgworker_backup_restore_total{cluster,shard,result} — исходы restore
+    [Fact]
+    public void BackupRestore_ИнкрементыПоИсходам()
+    {
+        // Arrange
+        using var meter = new Meter("TestWorker");
+        using var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
+
+        // Act — ok и failed разных шардов
+        sut.BackupRestore("c1", "s1", "ok");
+        sut.BackupRestore("c1", "s1", "failed");
+        sut.BackupRestore("c2", "s1", "ok");
+
         // Assert
-        sut.DebugSnapshot().BackupVerifyTotals["ok"].Should().Be(3);
-        sut.DebugSnapshot().BackupVerifyTotals["failed"].Should().Be(1);
+        var d = sut.DebugSnapshot();
+        d.BackupRestoreTotals[("c1", "s1", "ok")].Should().Be(1);
+        d.BackupRestoreTotals[("c1", "s1", "failed")].Should().Be(1);
+        d.BackupRestoreTotals[("c2", "s1", "ok")].Should().Be(1);
+    }
+
+    // AAA: counter pgworker_backup_drill_total{cluster,shard,result} — исходы дрилов
+    [Fact]
+    public void BackupDrill_ИнкрементыПоИсходам()
+    {
+        // Arrange
+        using var meter = new Meter("TestWorker");
+        using var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
+
+        // Act
+        sut.BackupDrill("c1", "s1", "ok");
+        sut.BackupDrill("c1", "s1", "ok");
+        sut.BackupDrill("c1", "s2", "failed");
+
+        // Assert
+        var d = sut.DebugSnapshot();
+        d.BackupDrillTotals[("c1", "s1", "ok")].Should().Be(2);
+        d.BackupDrillTotals[("c1", "s2", "failed")].Should().Be(1);
     }
 
     [Fact]

@@ -30,7 +30,9 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     private readonly Dictionary<(string Operation, string Result), long> _operations = new();
     private DateTimeOffset? _lastSnapshotTaken;
     private readonly Dictionary<(string Cluster, string Shard), long> _walLag = new();
-    private readonly Dictionary<string, long> _backupVerify = new();
+    private readonly Dictionary<(string Cluster, string Shard, string Result), long> _backupVerify = new();
+    private readonly Dictionary<(string Cluster, string Shard, string Result), long> _backupRestore = new();
+    private readonly Dictionary<(string Cluster, string Shard, string Result), long> _backupDrill = new();
     private int _claimsHeld;
 
     private bool _disposed;
@@ -46,6 +48,12 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
             "worker.operation.total", description: "Завершённые операции (result: ok/error)");
         var backupVerify = meter.CreateCounter<long>(
             "pgworker_backup_verify_total", description: "Результаты verify полных бэкапов (arch/19 §5, t04)");
+        var backupRestore = meter.CreateCounter<long>(
+            "pgworker_backup_restore_total",
+            description: "Терминальные исходы restore-заявок (arch/18 §2.7)");
+        var backupDrill = meter.CreateCounter<long>(
+            "pgworker_backup_drill_total",
+            description: "Терминальные исходы дрилов восстановимости (arch/18 §2.7)");
 
         // Gauge-серии: по одному ObservableGauge на серию; колбэки читают стейт;
         // длительность фазы вычисляется в колбэке как clock.GetUtcNow() - startedAt.
@@ -120,11 +128,42 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 // Пассивный наблюдатель.
             }
         };
-        BackupVerifyMark = result =>
+        BackupVerifyMark = (cluster, shard, result) =>
         {
             try
             {
-                backupVerify.Add(1, new KeyValuePair<string, object?>("result", result));
+                backupVerify.Add(1,
+                    new KeyValuePair<string, object?>("cluster", cluster),
+                    new KeyValuePair<string, object?>("shard", shard),
+                    new KeyValuePair<string, object?>("result", result));
+            }
+            catch
+            {
+                // Пассивный наблюдатель.
+            }
+        };
+        BackupRestoreMark = (cluster, shard, result) =>
+        {
+            try
+            {
+                backupRestore.Add(1,
+                    new KeyValuePair<string, object?>("cluster", cluster),
+                    new KeyValuePair<string, object?>("shard", shard),
+                    new KeyValuePair<string, object?>("result", result));
+            }
+            catch
+            {
+                // Пассивный наблюдатель.
+            }
+        };
+        BackupDrillMark = (cluster, shard, result) =>
+        {
+            try
+            {
+                backupDrill.Add(1,
+                    new KeyValuePair<string, object?>("cluster", cluster),
+                    new KeyValuePair<string, object?>("shard", shard),
+                    new KeyValuePair<string, object?>("result", result));
             }
             catch
             {
@@ -135,7 +174,9 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
 
     private readonly Action<string, bool> LoopTickMark;
     private readonly Action<string, string> OperationMark;
-    private readonly Action<string> BackupVerifyMark;
+    private readonly Action<string, string, string> BackupVerifyMark;
+    private readonly Action<string, string, string> BackupRestoreMark;
+    private readonly Action<string, string, string> BackupDrillMark;
 
     // Колбэк ObservableGauge: чтение стейта под lock; после Dispose — серии пустые.
     // Материализация (.ToArray) ОБЯЗАТЕЛЬНА под lock: OTel перечисляет результат
@@ -206,16 +247,55 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         }
     }
 
-    /// <summary>Counter pgworker_backup_verify_total{result=ok|failed|transient}: итог
-    /// проверки полного (BackupVerifyProcess; кластер/шард — только трассировка вызова).</summary>
+    /// <summary>Counter pgworker_backup_verify_total{cluster,shard,result}:
+    /// итог проверки полного (BackupVerifyProcess), result ∈ ok|failed|transient.</summary>
     public void BackupVerify(string cluster, string shard, string result)
     {
         try
         {
-            BackupVerifyMark(result);
+            BackupVerifyMark(cluster, shard, result);
             lock (_lock)
             {
-                _backupVerify[result] = _backupVerify.TryGetValue(result, out var n) ? n + 1 : 1;
+                var key = (cluster, shard, result);
+                _backupVerify[key] = _backupVerify.TryGetValue(key, out var n) ? n + 1 : 1;
+            }
+        }
+        catch
+        {
+            // Пассивный наблюдатель.
+        }
+    }
+
+    /// <summary>Counter pgworker_backup_restore_total{cluster,shard,result}: терминальный
+    /// исход restore-заявки (RestoreProcess), result ∈ ok|failed (arch/18 §2.7).</summary>
+    public void BackupRestore(string cluster, string shard, string result)
+    {
+        try
+        {
+            BackupRestoreMark(cluster, shard, result);
+            lock (_lock)
+            {
+                var key = (cluster, shard, result);
+                _backupRestore[key] = _backupRestore.TryGetValue(key, out var n) ? n + 1 : 1;
+            }
+        }
+        catch
+        {
+            // Пассивный наблюдатель.
+        }
+    }
+
+    /// <summary>Counter pgworker_backup_drill_total{cluster,shard,result}: чистый терминальный
+    /// итог дрилла (RestoreDrillProcess), result ∈ ok|failed (arch/18 §2.7).</summary>
+    public void BackupDrill(string cluster, string shard, string result)
+    {
+        try
+        {
+            BackupDrillMark(cluster, shard, result);
+            lock (_lock)
+            {
+                var key = (cluster, shard, result);
+                _backupDrill[key] = _backupDrill.TryGetValue(key, out var n) ? n + 1 : 1;
             }
         }
         catch
@@ -360,6 +440,8 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 _claimsHeld,
                 _walLag.ToFrozenDictionary(),
                 _backupVerify.ToFrozenDictionary(),
+                _backupRestore.ToFrozenDictionary(),
+                _backupDrill.ToFrozenDictionary(),
                 age);
         }
     }
@@ -372,7 +454,9 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         IReadOnlyDictionary<(string Operation, string Result), long> Operations,
         int ClaimsHeld,
         IReadOnlyDictionary<(string Cluster, string Shard), long> WalLag,
-        IReadOnlyDictionary<string, long> BackupVerifyTotals,
+        IReadOnlyDictionary<(string Cluster, string Shard, string Result), long> BackupVerifyTotals,
+        IReadOnlyDictionary<(string Cluster, string Shard, string Result), long> BackupRestoreTotals,
+        IReadOnlyDictionary<(string Cluster, string Shard, string Result), long> BackupDrillTotals,
         double? SnapshotAgeSeconds);
 
     internal sealed record DebugPhase(string Phase, DateTimeOffset StartedAt);
