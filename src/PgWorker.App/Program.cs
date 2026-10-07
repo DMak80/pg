@@ -567,7 +567,8 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<InstallSecrets>(),
         sp.GetRequiredService<TimeProvider>(),
         sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupWalLag,
-        sp.GetRequiredService<ILoggerFactory>().CreateLogger("WalStreamProcess"));
+        sp.GetRequiredService<ILoggerFactory>().CreateLogger("WalStreamProcess"),
+        sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupWalUploadedAge);
 });
 builder.Services.AddSingleton<IWalSqlExecutor, NpgsqlWalSqlExecutor>();
 // Ретенция (t06, arch/19 §4): GFS/WAL-чистка/гигиена + монитор хранилища;
