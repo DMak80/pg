@@ -125,19 +125,16 @@ public sealed class RetentionProcess(
             await FinishDeletionAsync(cluster, shard, marked, ct);
         }
 
-        // (4) Чистка WAL: cutoff = min(wal_start оставляемых COMPLETED — Keep ∪
-        // неподавленные шагом 3, т.е. все текущие COMPLETED минус удалённый).
+        // (4) Чистка WAL (t18, arch/19 §4 п.5): cutoff = wal_start новейшего
+        // (по started_unix) verify-OK COMPLETED-полного из оставляемых — ОДНА
+        // точка с chain_start контроля (§3). ГВАРД verify: OK-полного нет
+        // (PENDING/FAILED/отсутствует) → шаг no-op — прунинг без успешного
+        // verify нового полного запрещён; недельная/месячная точки на cutoff
+        // не влияют.
         var remaining = fulls.Where(f =>
             f.State == FullBackupStatus.Completed
-            && !(selection.Delete.Count > 0 && f.Id == selection.Delete[0]));
-        var cutoffs = remaining
-            .Select(f => WalFileName.TryParse(f.WalStartSegment ?? ""))
-            .Where(w => w is not null)
-            .Select(w => w!.Value)
-            .OrderBy(w => w.Name, StringComparer.Ordinal)
-            .Cast<WalFileName?>()
-            .FirstOrDefault();
-        if (cutoffs is { } cutoff)
+            && !(selection.Delete.Count > 0 && f.Id == selection.Delete[0])).ToList();
+        if (RetentionPlanner.LatestVerifiedWalStart(remaining) is { } cutoff)
         {
             var listed = await s3.ListPrefixAsync($"{cluster}/{shard}/wal/", ct: ct);
             if (!listed.IsSuccess)
