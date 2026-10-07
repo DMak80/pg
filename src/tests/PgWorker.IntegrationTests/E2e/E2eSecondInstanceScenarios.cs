@@ -53,8 +53,16 @@ public class E2eSecondInstanceScenarios
             // ---------- Arrange: образ + два инстанса-контейнера ----------
             // Образ воркера: сборка в сценарии, тег с идентификатором прогона
             // (кэш слоёв делает повторные прогоны быстрыми; свежий код всегда).
+            // [PHASE]-метка ДО старта: тихая фаза без метки старта нарушает канон
+            // статических фаз (spec §3.6); полный вывод при kill по бюджету — в
+            // ArtifactsDir (RunProcessAsync logFile, t29 §4.5); бюджет 120 c —
+            // прежний дефолт docker-CLI, передаётся явно (число не меняется).
+            Console.Error.WriteLine($"[PHASE] build {image}: старт (контекст корня репо, бюджет 120 c)…");
             var buildSw = Stopwatch.StartNew();
-            await Fx.RunDockerAsync(["build", "-q", "-f", $"{root}/docker/PgWorker.Dockerfile", "-t", image, root], ct);
+            await E2eFixture.RunProcessAsync("docker",
+                ["build", "-q", "-f", $"{root}/docker/PgWorker.Dockerfile", "-t", image, root],
+                ct, timeout: TimeSpan.FromMinutes(2),
+                logFile: Path.Combine(Fx.ArtifactsDir, $"process-build-{tag}.log"));
             Console.Error.WriteLine($"[PHASE] build {image}: {buildSw.Elapsed.TotalSeconds:F0} c");
 
             // Порты w1/w2 — последовательные слоты ОКНА контура (t24, spec §1.5):
@@ -67,20 +75,26 @@ public class E2eSecondInstanceScenarios
 
             // Готовность ОБОИХ: по 2 lease-ключа api/instances (start-бюджет
             // <=100 c; ключ жив = процесс поднялся, etcd-keepalive тикает).
-            var bothUp = await E2eFixture.WaitForAsync(async () =>
+            var bothUp = await E2ePhase.WaitAsync(Fx, "si2-instances-up", async () =>
                 (await RangeAsync("/pgworker/api/")).Count == 2
                 && (await RangeAsync("/pgworker/instances/")).Count == 2,
-                TimeSpan.FromSeconds(100), ct);
+                TimeSpan.FromSeconds(100), ct,
+                progress: async () =>
+                {
+                    var api = (await RangeAsync("/pgworker/api/")).Count;
+                    var instances = (await RangeAsync("/pgworker/instances/")).Count;
+                    return $"api={api}, instances={instances}";
+                });
             bothUp.Should().BeTrue("оба контейнерных инстанса обязаны опубликовать дискавери-ключи за 100 c");
 
             // ---------- Arrange: живой кластер + add-декларация shard3 ----------
             await SeedClusterAsync(cluster);
-            var provisioned = await E2eFixture.WaitForAsync(
+            var provisioned = await E2ePhase.WaitAsync(Fx, "si2-provisioning",
                 () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
             provisioned.Should().BeTrue("provisioning кластера должен дойти до Active до старта add");
 
             await SeedAddDeclarationAsync(cluster, "shard3", ct);
-            var a3Started = await E2eFixture.WaitForAsync(
+            var a3Started = await E2ePhase.WaitAsync(Fx, "si2-a3-started",
                 () => DockerHasAsync($"pgw-{cluster}-shard3-"), TimeSpan.FromSeconds(120), ct);
             a3Started.Should().BeTrue("первый инстанс должен начать A3 (появился контейнер shard3)");
 
@@ -89,8 +103,17 @@ public class E2eSecondInstanceScenarios
             await Fx.RunDockerAsync(["kill", w1], ct);
 
             // ---------- Assert: выживший донёс, дублей нет, клэйм у него ----------
-            var finished = await E2eFixture.WaitForAsync(
-                () => ShardRegisteredAsync(cluster, "shard3"), TimeSpan.FromSeconds(360), ct);
+            var finished = await E2ePhase.WaitAsync(Fx, "si2-takeover-done",
+                () => ShardRegisteredAsync(cluster, "shard3"), TimeSpan.FromSeconds(360), ct,
+                // Прогресс state-ключей shard3 (по образцу HaEtcd, t29 §3.5).
+                progress: async () =>
+                {
+                    var a = (await GetOrNullAsync($"/clusters/{cluster}/shards/shard3/nodes/shard3a/state"))?.Value ?? "-";
+                    var b = (await GetOrNullAsync($"/clusters/{cluster}/shards/shard3/nodes/shard3b/state"))?.Value ?? "-";
+                    var dsn = await GetOrNullAsync($"/clusters/{cluster}/shards/shard3/dsn") is null ? "нет" : "есть";
+                    var work = (await GetOrNullAsync($"/pgworker/work/{cluster}"))?.Value ?? "нет";
+                    return $"shard3: {a}/{b}, dsn={dsn}, work={Trunc(work)}";
+                });
             finished.Should().BeTrue(
                 $"выживший контейнер должен донести shard3 после takeover; work={await WorkDumpAsync(cluster, ct)}");
 
@@ -193,6 +216,10 @@ public class E2eSecondInstanceScenarios
     }
 
     // ===== Хелперы (приёмы E2eScaleScenarios, scoped на кластер) =====
+
+    // Обрезка длинного work-JSON до ~120 симв., чтобы прогресс-тик читался.
+    private static string Trunc(string value)
+        => value.Length <= 120 ? value : value[..120] + "…";
 
     private async Task<Shared.Etcd.Client.Kv?> GetOrNullAsync(string key)
         => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;
