@@ -101,7 +101,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// вычетом уже занятого инфраструктурой контура (etcd, MinIO, API-порты).
     /// Литеральные PortRange в конфиге воркера E2E запрещены
     /// (docs/e2e-isolation.md §5 — межконтурная гонка bind'ов).</summary>
-    public (int From, int To) RemainingPortRange => (_windowNext, _portWindowStart + PortWindowSize);
+    public (int From, int To) RemainingPortRange => (EngineFrom(), _portWindowStart + PortWindowSize);
 
     // Свой ли объект по имени (контейнер/том/сеть).
     private bool OwnName(string name)
@@ -235,6 +235,22 @@ public sealed class E2eEnvironment : IAsyncDisposable
     // ReserveWindowPort) — все host-порты контура идут ПОДРЯД из окна.
     private readonly int _portWindowStart;
     private int _windowNext;
+
+    // Заражённый движку From (MINOR-3 ревью Ф7): резерв API-портов и портов
+    // контейнеров сценариев ДО первого From, отдаваемого движку, — порт
+    // второго хоста/воркер-контейнера не должен попадать в PortRange уже
+    // работающего хоста (слепой _windowNext наезжал на From первого).
+    private int? _engineFrom;
+
+    // Запас слотов сверх текущего указателя: покрывает максимум хостов и
+    // w-контейнеров одного контура в кодовой базе (Acceptance 4-6, Second
+    // Instance 1+2); 10 — с запасом, окно 200 слотов.
+    private const int ContourApiReserve = 10;
+
+    // From движка: фиксируется один раз при первом запросе (хост или
+    // RemainingPortRange) — ЗА резервом, все последующие выдачи портам
+    // контура идут ДО него из резерва.
+    private int EngineFrom() => _engineFrom ??= _windowNext + ContourApiReserve;
 
     public static async Task<E2eEnvironment> StartAsync(
         string slug, bool withMinio = false, bool haEtcd = false, CancellationToken ct = default)
@@ -477,7 +493,9 @@ public sealed class E2eEnvironment : IAsyncDisposable
         IReadOnlyDictionary<string, string>? extraEnv, CancellationToken ct)
     {
         // API-порт хост-воркера — следующий последовательный слот окна контура
-        // (t24, spec §1.5): до зова FreePort() вне окна — межконтурная гонка.
+        // (t24, spec §1.5): FreePort() вне окна — межконтурная гонка. Слоты
+        // API-портов лежат В РЕЗЕРВЕ до EngineFrom (MINOR-3): порт второго
+        // хоста не наезжает на PortRange уже работающего первого.
         var port = _windowNext++;
         var snapshotsDir = Path.Combine(Path.GetTempPath(), $"pgw-e2e-{name}-{port}");
         Directory.CreateDirectory(snapshotsDir);
@@ -500,7 +518,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             // как контейнеры нод — к etcd (AdvertisedEndpoints ниже).
             ["PgWorker__Docker__Hosts__0__Name"] = "host.docker.internal",
             ["PgWorker__Docker__Hosts__0__Endpoint"] = "unix:///var/run/docker.sock",
-            ["PgWorker__Docker__PortRange__From"] = _windowNext.ToString(),
+            ["PgWorker__Docker__PortRange__From"] = EngineFrom().ToString(),
             ["PgWorker__Docker__PortRange__To"] = (_portWindowStart + PortWindowSize).ToString(),
             ["PgWorker__Docker__Images__Node"] = NodeImage,
             ["PgWorker__Docker__EnableDoorman"] = "false",
@@ -679,9 +697,9 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// по логам, без перезапуска теста). 1) kill воркеров. 2) Упавший сценарий
     /// (_failed): контейнеры (вкл. etcd/MinIO) ОСТАНАВЛИВАЮТСЯ, тома/сети/etcd
     /// остаются до ручной зачистки (README-cleanup.txt) — перезапуск теста ради
-    /// логов запрещён. Успешный сценарий: 3) stop/rm контейнеров → 4) rm томов
-    /// → 5) rm сети окружения → 6) rm per-cluster сетей СВОИХ кластеров
-    /// (pgw-net-<C>) → 7) АССЕРТ ЧИСТОТЫ: не осталось ни одного
+    /// логов запрещён. Успешный сценарий: 3) etcd/MinIO → 4) stop/rm контейнеров
+    /// → 5) rm томов → 6) rm сети окружения → 7) rm per-cluster сетей СВОИХ
+    /// кластеров (pgw-net-<C>) → 8) АССЕРТ ЧИСТОТЫ: не осталось ни одного
     /// КОНТЕЙНЕРА/ТОМА/СЕТИ СВОЕГО идентификатора (окружение + кластеры).
     /// Чужие pgw-* не трогаются.
     /// </summary>
@@ -712,7 +730,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             return;
         }
 
-        // 2) etcd-контур и MinIO (testcontainers: stop + rm; ключи умирают вместе с etcd).
+        // 3) etcd-контур и MinIO (testcontainers: stop + rm; ключи умирают вместе с etcd).
         try
         {
             if (_minio is not null)
@@ -735,7 +753,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
 
         _gatewayHttp.Dispose();
 
-        // 3) Контейнеры окружения: ТОЛЬКО содержащие свой идентификатор прогона
+        // 4) Контейнеры окружения: ТОЛЬКО содержащие свой идентификатор прогона
         // (guid инфраструктуры или тег кластера в движковых именах). Широкий
         // фильтр pgw-* запрещён: на общем демоне живут чужие прогоны.
         // «Removal ... is already in progress» — контейнер уже удаляется
@@ -754,7 +772,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 problems.Add($"rm контейнера {id}: {e.Message}");
             }
 
-        // 4) Тома окружения: тоже только свои. docker rm -f возвращает управление
+        // 5) Тома окружения: тоже только свои. docker rm -f возвращает управление
         // до фактического освобождения volume-ссылки демоном (гонка Docker
         // Desktop) — ретраим, бюджет ≤ 30 с.
         foreach (var volume in await OwnVolumesAsync())
@@ -774,7 +792,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             }
         }
 
-        // 5) Сеть окружения (контейнеры уже отвязаны).
+        // 6) Сеть окружения (контейнеры уже отвязаны).
         try
         {
             await _net.DeleteAsync();
@@ -784,7 +802,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             problems.Add($"сеть {NetName}: {e.Message}");
         }
 
-        // 6) Per-cluster сети нод СВОИХ кластеров (pgw-net-<C>, создаёт движок;
+        // 7) Per-cluster сети нод СВОИХ кластеров (pgw-net-<C>, создаёт движок;
         // демонтаж кластера удаляет — здесь страховка own-only: упавшие сценарии
         // оставляют; опознание по тегу кластера через OwnName).
         foreach (var net in (await E2eFixture.RunProcessAsync(
@@ -802,7 +820,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
             }
         }
 
-        // 7) АССЕРТ ЧИСТОТЫ: от своего окружения не осталось следов.
+        // 8) АССЕРТ ЧИСТОТЫ: от своего окружения не осталось следов.
         var leftContainers = await OwnContainersAsync();
         if (leftContainers.Count > 0)
             problems.Add($"остались контейнеры окружения: {string.Join(' ', leftContainers)}");
