@@ -49,9 +49,12 @@ public sealed class HaFactState
     }
 
     // Флап-оживание: нода жива и лидерство сохранила — факта НЕ БЫЛО.
+    // Сброс применим только к ОТКРЫТОЙ записи: закрытый факт (смена уже была)
+    // — реальное событие, возврат лидера его не отменяет.
     public void LeaderRecovered(string shard, string node, string? leader)
     {
-        if (Failover is { } open && open.Shard == shard && open.Node == node && leader == node)
+        if (Failover is { } open && open.ResolvedUnix is null
+            && open.Shard == shard && open.Node == node && leader == node)
             Failover = null;
     }
 

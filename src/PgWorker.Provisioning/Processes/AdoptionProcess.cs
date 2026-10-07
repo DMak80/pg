@@ -385,9 +385,10 @@ public sealed class AdoptionProcess(
         // надзора (supervise в тике строго раньше adopt и пишет трек в etcd) —
         // домен supervise: rebuild после NodeDeadSec при кворуме, эвакуация после
         // ShardDeadSec без него; adopt перезапись порогов не сбрасывает.
-        var unreachableTrack = await journal.ReadUnreachableAsync(cluster, ct);
-        if (!unreachableTrack.IsSuccess)
-            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(unreachableTrack.Error!);
+        var supervision = await journal.ReadSupervisionStateAsync(cluster, ct);
+        if (!supervision.IsSuccess)
+            return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(supervision.Error!);
+        var unreachableTrack = new Dictionary<string, long>(supervision.Value.Unreachable);
         var recreated = false;
         foreach (var (shardName, names) in candidatesByShard)
         {
@@ -406,7 +407,7 @@ public sealed class AdoptionProcess(
             foreach (var nodeName in names)
             {
                 var key = $"{shardName}/{nodeName}";
-                if (unreachableTrack.Value.ContainsKey(key))
+                if (unreachableTrack.ContainsKey(key))
                     continue; // нода под надзором — rebuild/эвакуация решат её судьбу
                 if (!merged.TryGetValue(key, out var addr) || addr.Object is not null)
                     continue; // записи нет / усыновлённая (object) — чужой контейнер, R9
@@ -425,7 +426,8 @@ public sealed class AdoptionProcess(
         if (recreated)
             await journal.WritePhaseAsync(
                 cluster, Op, "recreated-node", claims.InstanceId, null, ct,
-                unreachable: unreachableTrack.Value); // трек не стираем — домен supervise продолжается
+                unreachable: unreachableTrack, // трек не стираем — домен supervise продолжается
+                facts: new HaSupervisionFacts(supervision.Value.LastFailover, supervision.Value.LastRebuild));
 
         return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(merged);
     }
