@@ -162,6 +162,39 @@ static (DNS-имена сети стенда). Узлы, создаваемые 
 Поле INFO отсутствует/нечислово в ответе ноды → конкретная серия не эмитится
 (консервативно, без нулей-фантомов); сам сбор кластера при этом успешен.
 
+### 2.7. Бэкап-домен PgWorker (серии питают тики процессов бэкапов, arch/19)
+
+Отдельного коллектора НЕТ: серии пишутся тиками существующих процессов бэкапов
+под клэймом `<C>` (observer-делегаты, паттерн §4.1/§4.2) — возраст полных —
+BackupProcess (планировщик уже вычисляет обе величины, arch/19 §2), WAL-серии —
+контрольный проход WalStreamProcess (`Wal:VerifyIntervalSec`, arch/19 §3),
+counters — точки фиксации терминальных исходов verify/restore/drill. Набор серий
+кластера перезатирается каждым тиком (паттерн `UpdateCluster` §4.2): ушедшие
+шарды/кластеры стейт не копят; null-факт (нет валидного полного, зонд не удался,
+wal-ключ STOPPED/BROKEN/удалён) — серия исчезает до появления факта. Панель этих
+серий не читает (живёт на etcd-снапшоте) — словарь для Prometheus/Grafana/алертов;
+панельные правила бэкапов (etcd-истина) остаются, Prometheus-группа — независимый
+от панели канал наблюдения.
+
+| Имя | Тип | Лейблы | Смысл |
+|---|---|---|---|
+| `pgworker_backup_full_age_seconds` | gauge | cluster, shard | возраст последнего ВАЛИДНОГО COMPLETED-полного (валидный = verify ≠ FAILED — семантика планировщика arch/19 §2 и панельного `backup-full-stale`); нет валидного — серия не эмитится |
+| `pgworker_backup_full_max_age_seconds` | gauge | cluster, shard | порог `full_max_age_sec` эффективной политики кластера (policy-ключ ?? дефолт конфига) — per-cluster порог алерта `age > max_age` без хардкода |
+| `pgworker_backup_wal_lag_segments` | gauge | cluster, shard | отставание WAL-потока шарда, сегментов (arch/19 §3) |
+| `pgworker_backup_wal_last_uploaded_age_seconds` | gauge | cluster, shard | возраст последней доставки закрытого сегмента в S3 (тишина загрузок) |
+| `pgworker_backup_verify_total` | counter | cluster, shard, result | исходы verify полных, `result` ∈ {ok,failed,transient} |
+| `pgworker_backup_restore_total` | counter | cluster, shard, result | терминальные исходы restore-заявок, `result` ∈ {ok,failed} |
+| `pgworker_backup_drill_total` | counter | cluster, shard, result | терминальные исходы дрилов восстановимости, `result` ∈ {ok,failed} |
+
+Prometheus-алерты группы `backups` (rules.yml; severity — зеркало панельных
+правил): `BackupFullStale` (critical; `age > max_age` — порог per-cluster из
+серии), `BackupFullMissing` (critical; `max_age unless age` — валидного полного
+нет вовсе), `BackupWalLagHigh` (warning; порог = дефолт `Wal:LagMaxSegments`,
+конфиг per-install — в etcd per-cluster политики WAL нет), `BackupWalStale`
+(warning; порог = дефолт `Wal:StaleSec`), `BackupVerifyFailed`,
+`BackupRestoreFailed`, `BackupDrillFailed` (critical; `increase(total{result=
+"failed"}[15m]) > 0`).
+
 ## 3. Экспозиция и безопасность
 
 - Воркеры: `/metrics` на том же Kestrel `:8080`, что `/healthz`;
@@ -249,7 +282,9 @@ cert_file: /tls/prometheus.crt, key_file: /tls/prometheus.key}` (t03: /metrics
 воркеров), `dashboards/kafka.json` (USR, consumer-lag, коллектор),
 `dashboards/valkey.json` (память/hit-rate/эвикции/ops/клиенты/подключения/
 slaves/коллектор),
-`dashboards/pg.json` (репликация Patroni-нод, health-грань систем).
+`dashboards/pg.json` (репликация Patroni-нод, health-грань систем),
+`dashboards/backups.json` (бэкап-домен §2.7: возраст полных vs per-cluster
+порог, WAL-лаг/тишина загрузок, исходы verify/restore/drill).
 
 ### 5.4. Прод-паттерн (документируется, вне кода)
 
@@ -271,7 +306,8 @@ advertise-адресов portalloc (file_sd из etcd-снапшота — оп�
   с реальным docker), живая/остановленная нода — LastSuccess стоит, тик не падает.
 - **E2E-чек стенда**: `checks/65-metrics.sh` — профиль `metrics` поднят,
   все scrape-джобы `up`, дашборды загружены, алерт-рулы зарегистрированы
-  (`/api/v1/rules`), Alertmanager жив.
+  (`/api/v1/rules`, счётчик включает группу `backups` §2.7),
+  Alertmanager жив.
 
 ## 7. Подключение нового .NET-проекта
 

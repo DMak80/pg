@@ -56,7 +56,9 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         FakeWalSqlExecutor sql,
         FakeBackupS3 s3,
         StubScaleDriver driver,
-        TimeProvider? clock = null)
+        TimeProvider? clock = null,
+        Action<string, string, long?>? uploadedAgeObserver = null,
+        Action<string, string, long?>? lagObserver = null)
         => new(
             fixture.Gateway, [fixture.Endpoint], driver,
             new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
@@ -65,7 +67,10 @@ public class WalStreamProcessTests(EtcdFixture fixture)
             _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => options,
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
-            clock ?? TimeProvider.System);
+            clock ?? TimeProvider.System,
+            lagObserver,
+            null,
+            uploadedAgeObserver);
 
     // Тест-опции: VerifyIntervalSec=0 — контроль выполняется КАЖДЫМ тиком (AAA).
     private static BackupsRuntimeOptions Options(int verify = 0, int lag = 1024, int stale = 300) => new(
@@ -1195,5 +1200,62 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var listed = await s3.ListWalAsync(cluster, "shard1", ct: ct);
         listed.Value.Should().Contain(o => o.Name == "00000002.history",
             "history минимального TLI>1 склеивает переход — докладывается (AC5)");
+    }
+
+    // AAA: t14 — контрольный проход отдаёт ОБЕИМ наблюдателям факт одного
+    // прохода: lag (сегменты) и uploaded-age (now − last_uploaded_unix ≥ 0)
+    [Fact]
+    public async Task Контроль_наблюдатели_получают_лаг_и_возраст_загрузки()
+    {
+        // Arrange — полный COMPLETED wal_start=..01; S3: сегменты 1..3; мастер 0/3000000
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("cw1");
+        (await _claims.TryClaimClusterAsync("cw1", ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor { Current = ("0/3000000", 1) };
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, "cw1", 1, 3);
+        var lags = new List<(string C, string S, long? Lag)>();
+        var ages = new List<(string C, string S, long? Age)>();
+        var process = BuildProcess(Options(), sql, s3, new StubScaleDriver(),
+            uploadedAgeObserver: (c, s, a) => ages.Add((c, s, a)),
+            lagObserver: (c, s, l) => lags.Add((c, s, l)));
+        var backups = new ClusterBackups("cw1", null,
+            new Dictionary<string, ShardBackups> { ["shard1"] = FullShard("000000010000000000000001") });
+
+        // Act — контроль due (VerifyIntervalSec=0)
+        (await process.TickAsync(BuildSnap("cw1"), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — по одному вызову на наблюдателя: lag посчитан, возраст ≥ 0
+        lags.Should().ContainSingle(t => t.C == "cw1" && t.S == "shard1" && t.Lag.HasValue);
+        ages.Should().ContainSingle(t => t.C == "cw1" && t.S == "shard1")
+            .Which.Age.Should().BeGreaterThanOrEqualTo(0);
+    }
+
+    // AAA: t14 — BROKEN (дыра цепочки) снимает обе серии: наблюдатели получают null
+    [Fact]
+    public async Task Контроль_дыра_BROKEN_снимаетСерииОбоихНаблюдателей()
+    {
+        // Arrange — wal_start=..01; S3: 1 и 3 (дыра на ..02)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("cw2");
+        (await _claims.TryClaimClusterAsync("cw2", ct)).Value.Should().BeTrue();
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, "cw2", 1, 1);
+        s3.Objects.Add(("cw2", "shard1", "000000010000000000000003"));
+        var lags = new List<(string C, string S, long? Lag)>();
+        var ages = new List<(string C, string S, long? Age)>();
+        var process = BuildProcess(Options(), new FakeWalSqlExecutor(), s3, new StubScaleDriver(),
+            uploadedAgeObserver: (c, s, a) => ages.Add((c, s, a)),
+            lagObserver: (c, s, l) => lags.Add((c, s, l)));
+        var backups = new ClusterBackups("cw2", null,
+            new Dictionary<string, ShardBackups> { ["shard1"] = FullShard("000000010000000000000001") });
+
+        // Act
+        (await process.TickAsync(BuildSnap("cw2"), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — BROKEN: ровно один вызов на наблюдателя, оба null (серии исчезают)
+        (await ReadWal("cw2"))!.State.Should().Be(WalStreamStatus.Broken);
+        lags.Should().ContainSingle(t => t.C == "cw2" && t.Lag == null);
+        ages.Should().ContainSingle(t => t.C == "cw2" && t.Age == null);
     }
 }

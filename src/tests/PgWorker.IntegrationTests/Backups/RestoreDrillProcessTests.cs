@@ -251,7 +251,8 @@ public class RestoreDrillProcessTests
     }
 
     private RestoreDrillProcess BuildProcess(
-        string cluster, FakeDrillDriver driver, IBackupS3 s3, BackupsRuntimeOptions? options = null)
+        string cluster, FakeDrillDriver driver, IBackupS3 s3, BackupsRuntimeOptions? options = null,
+        Action<string, string, string>? drillObserver = null)
         => new(
             Fx.Gateway, [Fx.Endpoint], driver,
             new ShardEndpoints(Fx.Gateway, [Fx.Endpoint], new ShardProbe(new HttpClient())),
@@ -260,7 +261,8 @@ public class RestoreDrillProcessTests
                 Enabled: true, S3Endpoint: "http://minio", S3Bucket: "bkt",
                 S3AccessKey: "ak", S3SecretKey: "sk", JobImage: "pgworker-backup:test"),
             TimeProvider.System,
-            Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreDrillProcess>.Instance);
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreDrillProcess>.Instance,
+            drillObserver);
 
     // Сид drill-ключа шарда (значение — сериализатор канона §4).
     private async Task SeedDrillAsync(string cluster, DrillState drill)
@@ -1024,5 +1026,54 @@ public class RestoreDrillProcessTests
         (await ReadDrillAsync(cluster)).Should().Contain("\"SUCCEEDED\"").And.NotContain("phase");
         engineH1.Removed.Should().Contain(name);
         engineH1.RemovedVolumes.Should().Contain(BackupNames.DrillVolumeName(cluster, Shard, DrillId));
+    }
+
+    // AAA: t14 — оба пути чистого терминального итога зовут наблюдателя:
+    // FAILED-валидация без джоба ("failed") и доведённый SUCCEEDED ("ok")
+    [Fact]
+    public async Task ТерминальныеИсходы_зовут_наблюдателя()
+    {
+        // Arrange 1 — полный есть, манифеста нет: FAILED-валидация без джоба
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("drill-obs", ct);
+        Fx = fx;
+        const string cluster = "dro1";
+        await SeedAsync(cluster);
+        await SeedFullAsync(cluster);
+        var s3 = new FakeBackupS3();
+        s3.Objects.Add((cluster, Shard, "000000010000000000000001"));
+        s3.Objects.Add((cluster, Shard, "000000010000000000000002"));
+        s3.Objects.Add((cluster, Shard, "000000010000000000000003"));
+        var outcomes = new List<(string C, string S, string Result)>();
+        var process = BuildProcess(cluster, new FakeDrillDriver(new FakeDrillEngine()), s3,
+            drillObserver: (c, s, r) => outcomes.Add((c, s, r)));
+
+        // Act 1 — тик валидации
+        (await process.TickAsync(BuildSnap(cluster), await SnapshotBackupsAsync(cluster), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 1 — чистый итог без джоба
+        outcomes.Should().ContainSingle().Which.Should().Be((cluster, Shard, "failed"));
+
+        // Arrange 2 — RUNNING-джоб exited(0) ok → чистый итог SUCCEEDED
+        const string cluster2 = "dro2";
+        await SeedAsync(cluster2);
+        var engine = new FakeDrillEngine();
+        var driver = new FakeDrillDriver(engine);
+        var name = BackupNames.DrillContainerName(cluster2, Shard, DrillId);
+        SeedContainer(engine, name, "exited", 0,
+            "{\"phase\":\"recovering\"}\n{\"ok\":true,\"restored_to_lsn\":\"0/42\"}");
+        await SeedDrillAsync(cluster2,
+            new DrillState(DrillId, DrillStatus.Running, "20261001090000Z", NowUnix()));
+        outcomes.Clear();
+        var process2 = BuildProcess(cluster2, driver, new FakeBackupS3(),
+            drillObserver: (c, s, r) => outcomes.Add((c, s, r)));
+
+        // Act 2 — вердикт + доводка сноса одним тиком
+        (await process2.TickAsync(BuildSnap(cluster2), await SnapshotBackupsAsync(cluster2), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2 — ровно один вызов: ok после снятия cleaning
+        outcomes.Should().ContainSingle().Which.Should().Be((cluster2, Shard, "ok"));
     }
 }

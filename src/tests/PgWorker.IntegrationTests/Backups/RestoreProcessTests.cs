@@ -70,7 +70,8 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
 
     private RestoreProcess BuildProcess(FakeBackupS3 s3, IClusterDriver driver,
         TimeProvider? clock = null, HttpMessageHandler? patroni = null,
-        BackupsRuntimeOptions? options = null, ISqlExecutor? db = null)
+        BackupsRuntimeOptions? options = null, ISqlExecutor? db = null,
+        Action<string, string, string>? restoreObserver = null)
         => new(fixture.Gateway, [fixture.Endpoint], driver, s3, _claims,
             new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]), options ?? Options(),
             new InstallSecrets("su-pw", "sb-pw", "adm-pw", "mov-pw"),
@@ -78,7 +79,8 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
             new ShardProbe(new HttpClient(patroni ?? new DeadHandler())),
             db ?? new FakeDb(),
             new ThresholdsOptions(600, 1800, PatroniBootSec: 600),
-            clock ?? TimeProvider.System);
+            clock ?? TimeProvider.System,
+            restoreObserver: restoreObserver);
 
     // SQL-фейк гейта мастера (t10): Scalar — ответ pg_is_in_recovery()
     // (boxed-bool от Npgsql: false — готова, дефолт: старые кейсы ведут себя
@@ -1183,5 +1185,57 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         result.Value.Should().Be(ProcessOutcome.Done);
         (await ReadRestoresAsync("c1", "shard9")).Single(r => r.Id == op.Id)
             .State.Should().Be(RestoreStatus.Planned);
+    }
+
+    // AAA: t14 — оба терминальных исхода restore: permanent-FAILED ("failed")
+    // в точке записи статуса и COMPLETED ("ok") после успешного putDone
+    // (симметрия drill-теста; обе точки вставки 3b/3c)
+    [Fact]
+    public async Task Терминальные_исходы_FAILED_и_COMPLETED_зовут_наблюдателя()
+    {
+        // Arrange 1 — заявка PLANNED, полных нет ни в etcd (ShardBackups.Full пуст),
+        // ни в S3 (FakeBackupS3.Fulls пуст) → DR-резолв «полные не найдены»
+        // → permanent-FAILED (FailPermanentAsync)
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("rc1");
+        (await _claims.TryClaimClusterAsync("rc1", ct)).Value.Should().BeTrue();
+        var s3 = new FakeBackupS3();
+        var driver = new StubScaleDriver();
+        var outcomes = new List<(string C, string S, string Result)>();
+        var process = BuildProcess(s3, driver, restoreObserver: (c, s, r) => outcomes.Add((c, s, r)));
+        var op = new RestoreOperationState("20260910120000Z", RestoreStatus.Planned,
+            "", "rc1/shard1", "latest", "shard1a", 1_757_500_000, "admin");
+
+        // Act 1
+        (await process.TickAsync(BuildSnap("rc1"),
+            [new ClusterBackups("rc1", null,
+                new Dictionary<string, ShardBackups> { ["shard1"] = new([], null, [op]) })], ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 1 — терминальный FAILED зафиксирован наблюдателем
+        outcomes.Should().ContainSingle().Which.Should().Be(("rc1", "shard1", "failed"));
+
+        // Arrange 2 — успешный rejoin одним тиком до COMPLETED: REJOINING-заявка,
+        // Patroni Ready (лидер running + реплика creating replica), two-node
+        // portalloc/снапшот (wal-ключ не сидируется: его удаление идемпотентно,
+        // для наблюдателя не нужно)
+        await SeedAsync("c1");
+        await SeedTwoNodeAllocAsync();
+        var inner = new StubScaleDriver();
+        var driver2 = new TestDriver(inner, new FakeBackupEngine());
+        var outcomes2 = new List<(string C, string S, string Result)>();
+        var process2 = BuildProcess(new FakeBackupS3(), driver2,
+            patroni: new PatroniHandler { Ready = true },
+            restoreObserver: (c, s, r) => outcomes2.Add((c, s, r)));
+        await SeedRestoreAsync("c1", "shard1", "20260911122009Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Rejoining);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act 2
+        (await process2.TickAsync(BuildTwoNodeSnap(), await BackupsFromEtcdAsync("c1"), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2 — COMPLETED зафиксирован наблюдателем ("ok" после putDone)
+        outcomes2.Should().ContainSingle().Which.Should().Be(("c1", "shard1", "ok"));
     }
 }

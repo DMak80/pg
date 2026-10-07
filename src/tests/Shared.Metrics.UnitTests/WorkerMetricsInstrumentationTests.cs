@@ -187,23 +187,64 @@ public sealed class WorkerMetricsInstrumentationTests
         sut.DebugSnapshot().WalLag[("c1", "s2")].Should().Be(0);
     }
 
-    // AAA: counter pgworker_backup_verify_total{result} — инкременты по result
+    // AAA: counter pgworker_backup_verify_total{cluster,shard,result} — лейблы
+    // cluster/shard добавлены (миграция серии t14, arch/18 §2.7): инкременты по тройке
     [Fact]
-    public void BackupVerify_ИнкрементыПоРезультату()
+    public void BackupVerify_ИнкрементыПоКластеруШардуРезультату()
     {
         // Arrange
         using var meter = new Meter("TestWorker");
         using var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
 
-        // Act — три ok + один failed
+        // Act — три ok + один failed, два шарда
         sut.BackupVerify("c1", "s1", "ok");
         sut.BackupVerify("c1", "s1", "ok");
         sut.BackupVerify("c1", "s2", "ok");
         sut.BackupVerify("c1", "s2", "failed");
 
+        // Assert — тройка (cluster, shard, result): s2/ok не смешался с s1/ok
+        sut.DebugSnapshot().BackupVerifyTotals[("c1", "s1", "ok")].Should().Be(2);
+        sut.DebugSnapshot().BackupVerifyTotals[("c1", "s2", "ok")].Should().Be(1);
+        sut.DebugSnapshot().BackupVerifyTotals[("c1", "s2", "failed")].Should().Be(1);
+    }
+
+    // AAA: counter pgworker_backup_restore_total{cluster,shard,result} — исходы restore
+    [Fact]
+    public void BackupRestore_ИнкрементыПоИсходам()
+    {
+        // Arrange
+        using var meter = new Meter("TestWorker");
+        using var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
+
+        // Act — ok и failed разных шардов
+        sut.BackupRestore("c1", "s1", "ok");
+        sut.BackupRestore("c1", "s1", "failed");
+        sut.BackupRestore("c2", "s1", "ok");
+
         // Assert
-        sut.DebugSnapshot().BackupVerifyTotals["ok"].Should().Be(3);
-        sut.DebugSnapshot().BackupVerifyTotals["failed"].Should().Be(1);
+        var d = sut.DebugSnapshot();
+        d.BackupRestoreTotals[("c1", "s1", "ok")].Should().Be(1);
+        d.BackupRestoreTotals[("c1", "s1", "failed")].Should().Be(1);
+        d.BackupRestoreTotals[("c2", "s1", "ok")].Should().Be(1);
+    }
+
+    // AAA: counter pgworker_backup_drill_total{cluster,shard,result} — исходы дрилов
+    [Fact]
+    public void BackupDrill_ИнкрементыПоИсходам()
+    {
+        // Arrange
+        using var meter = new Meter("TestWorker");
+        using var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
+
+        // Act
+        sut.BackupDrill("c1", "s1", "ok");
+        sut.BackupDrill("c1", "s1", "ok");
+        sut.BackupDrill("c1", "s2", "failed");
+
+        // Assert
+        var d = sut.DebugSnapshot();
+        d.BackupDrillTotals[("c1", "s1", "ok")].Should().Be(2);
+        d.BackupDrillTotals[("c1", "s2", "failed")].Should().Be(1);
     }
 
     [Fact]
@@ -219,5 +260,71 @@ public sealed class WorkerMetricsInstrumentationTests
 
         // Assert: гейдж хранит последнее значение
         sut.DebugSnapshot().ClaimsHeld.Should().Be(3);
+    }
+
+    // AAA: t14 — набор тика замещает стейт кластера ЦЕЛИКОМ: age null → age-серия
+    // отсутствует, max_age пишется всегда, ушедший из набора шард не эмитится
+    [Fact]
+    public void BackupFullAge_ЗамещениеНабора_nullУбираетAge_maxAgeВсегда()
+    {
+        // Arrange — тик 1: s1 с валидным, s2 без
+        using var meter = new Meter("TestWorker");
+        using var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
+        sut.BackupFullAge("c1", new Dictionary<string, (long? LastValidUnix, long MaxAgeSec)>
+        {
+            ["s1"] = (9_000, 86_400),
+            ["s2"] = (null, 86_400),
+        });
+
+        // Act — тик 2: s2 получил валидный, s1 ушёл из набора
+        sut.BackupFullAge("c1", new Dictionary<string, (long? LastValidUnix, long MaxAgeSec)>
+        {
+            ["s2"] = (9_500, 43_200),
+        });
+
+        // Assert — стейт кластера = последний набор: s1 исчез, s2 обновлён
+        var d = sut.DebugSnapshot();
+        d.FullAgeFinishedUnix.Keys.Should().ContainSingle(k => k.Cluster == "c1" && k.Shard == "s2");
+        d.FullAgeFinishedUnix[("c1", "s2")].Should().Be(9_500);
+        d.FullMaxAge.Keys.Should().ContainSingle(k => k.Cluster == "c1" && k.Shard == "s2");
+        d.FullMaxAge[("c1", "s2")].Should().Be(43_200);
+    }
+
+    // AAA: t14 — age-серия шарда исчезает при null-факте, max_age остаётся
+    [Fact]
+    public void BackupFullAge_nullУбираетТолькоAge_шардыРазныхКластеровНезависимы()
+    {
+        // Arrange — два кластера
+        using var meter = new Meter("TestWorker");
+        using var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
+        sut.BackupFullAge("c1", new Dictionary<string, (long? LastValidUnix, long MaxAgeSec)> { ["s1"] = (100, 10) });
+        sut.BackupFullAge("c2", new Dictionary<string, (long? LastValidUnix, long MaxAgeSec)> { ["s1"] = (200, 20) });
+
+        // Act — c1/s1 потерял валидный
+        sut.BackupFullAge("c1", new Dictionary<string, (long? LastValidUnix, long MaxAgeSec)> { ["s1"] = (null, 10) });
+
+        // Assert
+        var d = sut.DebugSnapshot();
+        d.FullAgeFinishedUnix.Keys.Should().ContainSingle(k => k.Cluster == "c2" && k.Shard == "s1");
+        d.FullMaxAge.Should().HaveCount(2); // max_age обоих кластеров жив
+    }
+
+    // AAA: t14 — uploaded-age хранится как unix-факт (now − age на момент
+    // наблюдения — колбэк гейджа пересчитывает на каждом scrape); null удаляет
+    [Fact]
+    public void BackupWalUploadedAge_unixФакт_nullУдаляет()
+    {
+        // Arrange — часы на T=10_000
+        var clock = new FakeTimeProvider { Now = DateTimeOffset.UnixEpoch.AddSeconds(10_000) };
+        using var meter = new Meter("TestWorker");
+        using var sut = new WorkerMetricsInstrumentation(meter, clock);
+
+        // Act — наблюдение «сегмент загружен 42 с назад» → unix 9_958; затем снятие
+        sut.BackupWalUploadedAge("c1", "s1", 42);
+        sut.DebugSnapshot().WalUploadedUnix[("c1", "s1")].Should().Be(9_958);
+        sut.BackupWalUploadedAge("c1", "s1", null);
+
+        // Assert — серия исчезла
+        sut.DebugSnapshot().WalUploadedUnix.Should().BeEmpty();
     }
 }

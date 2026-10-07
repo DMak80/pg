@@ -84,3 +84,56 @@ groups:
         annotations:
           summary: "реплика {{ $labels.node }} ({{ $labels.scope }}) отстаёт >30с"
           description: "scrape Patroni-эмуляторов; runbook — arch/18 §2.5"
+  # t14 (arch/18 §2.7): бэкап-домен — зеркало подмножества панельных правил
+  # (независимый от панели канал; etcd-источник истины статусов остаётся).
+  - name: backups
+    rules:
+      - alert: BackupFullStale
+        expr: pgworker_backup_full_age_seconds > pgworker_backup_full_max_age_seconds
+        for: 0m
+        labels: {severity: critical}
+        annotations:
+          summary: "кластер {{ $labels.cluster }}/{{ $labels.shard }}: возраст валидного полного выше порога"
+          description: "per-cluster порог из серии max_age (политики бэкапов, arch/19 §2); runbook — arch/18 §2.7"
+      - alert: BackupFullMissing
+        expr: pgworker_backup_full_max_age_seconds unless pgworker_backup_full_age_seconds
+        for: 0m
+        labels: {severity: critical}
+        annotations:
+          summary: "кластер {{ $labels.cluster }}/{{ $labels.shard }}: валидного полного нет вовсе"
+          description: "max_age эмитится, age нет — семантика IsValid планировщика; runbook — arch/18 §2.7"
+      - alert: BackupWalLagHigh
+        expr: pgworker_backup_wal_lag_segments > 1024
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.cluster }}/{{ $labels.shard }}: отставание WAL-потока >1024 сегментов"
+          description: "порог = дефолт PgWorker:Backups:Wal:LagMaxSegments (per-install конфиг; per-cluster WAL-политики в etcd нет, arch/19 §4); runbook — arch/18 §2.7"
+      - alert: BackupWalStale
+        expr: pgworker_backup_wal_last_uploaded_age_seconds > 300
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "{{ $labels.cluster }}/{{ $labels.shard }}: тишина WAL-загрузок >300с"
+          description: "порог = дефолт PgWorker:Backups:Wal:StaleSec (per-install конфиг); runbook — arch/18 §2.7"
+      - alert: BackupVerifyFailed
+        expr: increase(pgworker_backup_verify_total{result="failed"}[15m]) > 0
+        for: 0m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.cluster }}/{{ $labels.shard }}: проверка полного бэкапа провалена"
+          description: "increase[15m] при scrape 15с; runbook — arch/18 §2.7, arch/19 §5"
+      - alert: BackupRestoreFailed
+        expr: increase(pgworker_backup_restore_total{result="failed"}[15m]) > 0
+        for: 0m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.cluster }}/{{ $labels.shard }}: восстановление из бэкапа провалено"
+          description: "терминальный FAILED restore-заявки; runbook — arch/18 §2.7, arch/19 §3.5"
+      - alert: BackupDrillFailed
+        expr: increase(pgworker_backup_drill_total{result="failed"}[15m]) > 0
+        for: 0m
+        labels: {severity: critical}
+        annotations:
+          summary: "{{ $labels.cluster }}/{{ $labels.shard }}: дрилл восстановимости провален"
+          description: "восстановимость не доказана; runbook — arch/18 §2.7, arch/19 §3.6"

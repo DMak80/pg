@@ -47,7 +47,8 @@ public sealed class WalStreamProcess(
     InstallSecrets secrets,
     TimeProvider clock,
     Action<string, string, long?>? lagObserver = null,
-    ILogger? logger = null)
+    ILogger? logger = null,
+    Action<string, string, long?>? uploadedAgeObserver = null) // t14: uploaded-age (arch/18 §2.7)
 {
     private const string Op = "backup-wal";
 
@@ -104,6 +105,15 @@ public sealed class WalStreamProcess(
     }
 
     // ── Шаги одного шарда (spec §3.2 п.1–5) ──
+
+    // Наблюдатели контрольного прохода (t14, arch/18 §2.7): лаг и uploaded-age —
+    // один факт одного прохода, одинаковая null-семантика (BROKEN/STOPPED/факта
+    // нет — серии исчезают; null идемпотентен).
+    private void Observe(string cluster, string shard, long? lagSegments, long? uploadedAgeSec)
+    {
+        lagObserver?.Invoke(cluster, shard, lagSegments);
+        uploadedAgeObserver?.Invoke(cluster, shard, uploadedAgeSec);
+    }
 
     private async Task TickShardAsync(
         string cluster, ClusterSnapshot snap, ShardSpec shard, ShardBackups? shardBackups,
@@ -528,7 +538,10 @@ public sealed class WalStreamProcess(
         // Нет полных, нет объектов, нет прошлого ключа — писать нечего (п.8):
         // ключ не пишется до первого наблюдения; агент работает (объекты появятся).
         if (chainStart is not { } start)
+        {
+            Observe(cluster, shard, null, null); // t14: факта нет — серии исчезают
             return new ControlOutcome(wal);
+        }
 
         // CheckWithRestart: после restore promote открывает новый TLI, старые
         // сегменты обрезаны легитимно (AC4) — дыра на TLI-границе не деградация
@@ -575,7 +588,10 @@ public sealed class WalStreamProcess(
         // (spec п.8: «ключ не пишется до первого наблюдения»; писать
         // last_uploaded = chain_start, который не загружался, — подмена факта).
         if (lastUploadedName is null || lastUploadedUnix is null)
+        {
+            Observe(cluster, shard, null, null); // t14: наблюдения нет — серии исчезают
             return new ControlOutcome(wal);
+        }
 
         // (7) Lag-зонд: pg_current_wal_lsn() мастера → сегмент → дистанция.
         long? lag = null;
@@ -586,7 +602,7 @@ public sealed class WalStreamProcess(
             lag = Math.Max(0, lastSegment.DistanceTo(masterSegment));
         }
 
-        lagObserver?.Invoke(cluster, shard, lag);
+        Observe(cluster, shard, lag, now - lastUploadedUnix.Value); // t14: факт прохода
 
         // Деградации transient-природы (lag/тишина): агент НЕ останавливаем и
         // супервиз НЕ блокируем (ChainBroken=false — ретраи тиками; exited-агент
@@ -732,6 +748,7 @@ public sealed class WalStreamProcess(
             Error = error,
         };
         await status.WriteIfChangedAsync(cluster, shard, broken, ct);
+        Observe(cluster, shard, null, null); // t14: BROKEN — серии исчезают
         return broken;
     }
 
@@ -752,6 +769,7 @@ public sealed class WalStreamProcess(
             if (wal is not null && wal.State != WalStreamStatus.Stopped)
                 await status.WriteIfChangedAsync(cluster, shard.Name,
                     wal with { State = WalStreamStatus.Stopped }, ct);
+            Observe(cluster, shard.Name, null, null); // t14: STOPPED — серии исчезают
         }
 
         return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
@@ -767,5 +785,6 @@ public sealed class WalStreamProcess(
         if (wal is not null && wal.State != WalStreamStatus.Stopped)
             await status.WriteIfChangedAsync(cluster, shard,
                 wal with { State = WalStreamStatus.Stopped }, ct);
+        Observe(cluster, shard, null, null); // t14: STOPPED — серии исчезают
     }
 }

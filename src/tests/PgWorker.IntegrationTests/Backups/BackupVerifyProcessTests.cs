@@ -209,7 +209,8 @@ public class BackupVerifyProcessTests
     }
 
     private BackupVerifyProcess BuildProcess(
-        string cluster, FakeVerifyDriver driver, IBackupS3 s3, BackupsRuntimeOptions? options = null)
+        string cluster, FakeVerifyDriver driver, IBackupS3 s3, BackupsRuntimeOptions? options = null,
+        Action<string, string, string>? verifyObserver = null)
         => new(
             Fx.Gateway, [Fx.Endpoint], driver,
             new ShardEndpoints(Fx.Gateway, [Fx.Endpoint], new ShardProbe(new HttpClient())),
@@ -219,7 +220,8 @@ public class BackupVerifyProcessTests
                 S3AccessKey: "ak", S3SecretKey: "sk", JobImage: "pgworker-backup:test",
                 StagingDir: "/backup-staging"),
             TimeProvider.System,
-            Microsoft.Extensions.Logging.Abstractions.NullLogger<BackupVerifyProcess>.Instance);
+            Microsoft.Extensions.Logging.Abstractions.NullLogger<BackupVerifyProcess>.Instance,
+            verifyObserver);
 
     private static IReadOnlyList<ClusterBackups> BackupsOf(string cluster, params FullBackupState[] fulls)
         => [new ClusterBackups(cluster, null,
@@ -852,5 +854,71 @@ public class BackupVerifyProcessTests
         engine.Created.Should().ContainSingle(c => c.Name == "pgw-backup-verify-vc8-shard1-20260911120000Z");
         var journal = await Fx.Gateway.GetAsync(Fx.Endpoint, "/pgworker/work/vc8", ct);
         journal.Value!.Value.Should().Contain("engine-fallback/shard1");
+    }
+
+    // AAA: t14 — observe-точки verify: S3 недоступен → transient; битый
+    // wal_start → permanent FAILED → failed; exited(0) ok:true → ok
+    // (процесс не меняется — тест фиксирует вызовы всех трёх исходов)
+    [Fact]
+    public async Task Verify_исходы_зовут_наблюдателя_transient_failed_ok()
+    {
+        // Arrange 1 — COMPLETED PENDING-кандидат; S3-транспорт лежит
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = await OwnEtcd.StartAsync("verify-obs", ct);
+        Fx = fx;
+        const string cluster = "vo1";
+        await SeedAsync(cluster);
+        var s3 = new FakeBackupS3 { Fails = true };
+        var outcomes = new List<(string C, string S, string Result)>();
+        var process = BuildProcess(cluster, new FakeVerifyDriver(new FakeVerifyEngine()), s3,
+            verifyObserver: (c, s, r) => outcomes.Add((c, s, r)));
+
+        // Act 1
+        (await process.TickAsync(BuildSnap(cluster), BackupsOf(cluster,
+                Completed("20260911120000Z", "000000010000000000000001",
+                    new BackupVerify(BackupVerifyStatus.Pending, null))), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 1 — list S3 упал: transient, статус кандидата не тронут
+        outcomes.Should().ContainSingle().Which.Should().Be((cluster, "shard1", "transient"));
+
+        // Arrange 2 — wal_start не разбирается: permanent FAILED сразу
+        const string cluster2 = "vo2";
+        await SeedAsync(cluster2);
+        var outcomes2 = new List<(string C, string S, string Result)>();
+        var process2 = BuildProcess(cluster2, new FakeVerifyDriver(new FakeVerifyEngine()), new FakeBackupS3(),
+            verifyObserver: (c, s, r) => outcomes2.Add((c, s, r)));
+
+        // Act 2
+        (await process2.TickAsync(BuildSnap(cluster2), BackupsOf(cluster2,
+                Completed("20260911120000Z", "garbage-wal-start",
+                    new BackupVerify(BackupVerifyStatus.Pending, null))), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 2 — вердикт permanent: failed после успешной записи FAILED в etcd
+        outcomes2.Should().ContainSingle().Which.Should().Be((cluster2, "shard1", "failed"));
+
+        // Arrange 3 — джоб стартует первым тиком (StartJobAsync без наблюдателя:
+        // старт-тик исходов не эмитит), контейнер завершается exit 0 + ok:true
+        // (образец «Супервиз_Exit0_Ok_чисткаДжоба»)
+        const string cluster3 = "vo3";
+        await SeedAsync(cluster3);
+        var s3ok = new FakeBackupS3();
+        var engine = await StartJobAsync(cluster3, s3ok);
+        var jobName = $"pgw-backup-verify-{cluster3}-shard1-20260911120000Z";
+        engine.Containers[jobName] = engine.Containers[jobName] with
+            { State = "exited", ExitCode = 0, Logs = "{\"ok\":true}" };
+        var outcomes3 = new List<(string C, string S, string Result)>();
+        var process3 = BuildProcess(cluster3, new FakeVerifyDriver(engine), s3ok,
+            verifyObserver: (c, s, r) => outcomes3.Add((c, s, r)));
+
+        // Act 3 — тик супервиза итога
+        (await process3.TickAsync(BuildSnap(cluster3), BackupsOf(cluster3,
+                Completed("20260911120000Z", "000000010000000000000001",
+                    new BackupVerify(BackupVerifyStatus.Pending, null))), ct))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert 3 — exit 0 + ok:true → observe ok после успешной записи OK в etcd
+        outcomes3.Should().ContainSingle().Which.Should().Be((cluster3, "shard1", "ok"));
     }
 }

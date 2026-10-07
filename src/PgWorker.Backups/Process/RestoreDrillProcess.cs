@@ -35,7 +35,8 @@ public sealed class RestoreDrillProcess(
     WorkJournal journal,
     BackupsRuntimeOptions options,
     TimeProvider time,
-    ILogger<RestoreDrillProcess> logger)
+    ILogger<RestoreDrillProcess> logger,
+    Action<string, string, string>? drillObserver = null) // (cluster, shard, ok|failed) — t14, arch/18 §2.7
 {
     public const string Op = "backup-drill";
 
@@ -193,6 +194,7 @@ public sealed class RestoreDrillProcess(
         var put = await PutDrillAsync(cluster, shard, failed, ct);
         if (!put.IsSuccess)
             return Result<ProcessOutcome>.Failed(put.Error!);
+        drillObserver?.Invoke(cluster, shard, "failed"); // t14: FAILED-валидация — итог без джоба
         await journal.WritePhaseAsync(cluster, Op, $"failed/{shard}/{id}", claims.InstanceId, error, ct);
         logger.LogWarning("{Op} {cluster}/{shard}: дрилл провален валидацией: {error}",
             Op, cluster, shard, error);
@@ -421,6 +423,8 @@ public sealed class RestoreDrillProcess(
         var put = await PutDrillAsync(cluster, shard, clean, ct);
         if (!put.IsSuccess)
             return; // cleaning-фаза осталась — следующий тик перепишет (идемпотентно)
+        drillObserver?.Invoke(cluster, shard,
+            drill.State == DrillStatus.Succeeded ? "ok" : "failed"); // t14: чистый терминальный итог
         await journal.WritePhaseAsync(cluster, Op,
             $"{(drill.State == DrillStatus.Succeeded ? "drill-done" : "drill-failed")}/{shard}/{drill.Id}",
             claims.InstanceId, null, ct);

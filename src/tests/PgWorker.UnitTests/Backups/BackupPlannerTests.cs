@@ -299,4 +299,51 @@ public class BackupPlannerTests
         // Assert
         next.Should().Be("20260910030000Z");
     }
+
+    // AAA: t14 — unix последнего валидного: COMPLETED с verify FAILED не считается,
+    // finished_unix приоритетен, толерантность started_unix как в IsDue
+    [Fact]
+    public void LastValidUnix_ПоследнийВалидный_finished_или_started()
+    {
+        // Arrange — старый валидный (без verify), новее — COMPLETED c verify FAILED
+        var validFinished = Unix(Now.AddHours(-2));
+        var fulls = new[]
+        {
+            Full("20260911010000Z", FullBackupStatus.Completed,
+                Unix(Now.AddHours(-2).AddMinutes(-5)), validFinished),
+            Full("20260911020000Z", FullBackupStatus.Completed, Unix(Now.AddHours(-1)), Unix(Now.AddHours(-1)),
+                verify: new BackupVerify(BackupVerifyStatus.Failed, Unix(Now.AddHours(-1)), "bad")),
+        };
+
+        // Act / Assert — валиден только первый: его finished_unix
+        BackupPlanner.LastValidUnix(fulls).Should().Be(validFinished);
+    }
+
+    // AAA: t14 — валидного нет вовсе (только FAILED-статусы/verify) → null
+    [Fact]
+    public void LastValidUnix_ВалидныхНет_null()
+    {
+        // Arrange
+        var fulls = new[]
+        {
+            Full("20260911020000Z", FullBackupStatus.Failed, Unix(Now.AddHours(-1))),
+            Full("20260911030000Z", FullBackupStatus.Completed, Unix(Now.AddHours(-1)), Unix(Now.AddHours(-1)),
+                verify: new BackupVerify(BackupVerifyStatus.Failed, Unix(Now), "bad")),
+        };
+
+        // Act / Assert
+        BackupPlanner.LastValidUnix(fulls).Should().BeNull();
+    }
+
+    // AAA: t14 — finished_unix отсутствует → толерантно started_unix (образец IsDue)
+    [Fact]
+    public void LastValidUnix_БезFinished_БерётStarted()
+    {
+        // Arrange — COMPLETED ещё без finished_unix (аномалия ключа)
+        var started = Unix(Now.AddHours(-1));
+        var fulls = new[] { Full("20260911030000Z", FullBackupStatus.Completed, started) };
+
+        // Act / Assert
+        BackupPlanner.LastValidUnix(fulls).Should().Be(started);
+    }
 }

@@ -514,7 +514,8 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupProcess(
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Backups.ToRuntime(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.BackupProcess>(),
-    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
+    fullAgeObserver: sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupFullAge));
 
 // Восстановление шарда из бэкапа (t05, arch/19 §3.5): PLANNED→RUNNING→
 // REJOINING→COMPLETED; plain-only, Exec в объёме джоба. Runtime-опции —
@@ -536,7 +537,8 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreProcess(
         sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.ShardDeadSec,
         sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.PatroniBootSec),
     sp.GetRequiredService<TimeProvider>(),
-    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Process.RestoreProcess>()));
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Process.RestoreProcess>(),
+    sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupRestore));
 
 // Заявка restore через API (t05 §3.2): гварды + txn put-if-not-exists
 // PLANNED-ключа; исполнение — RestoreProcess (держатель клэйма).
@@ -566,7 +568,8 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<InstallSecrets>(),
         sp.GetRequiredService<TimeProvider>(),
         sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupWalLag,
-        sp.GetRequiredService<ILoggerFactory>().CreateLogger("WalStreamProcess"));
+        sp.GetRequiredService<ILoggerFactory>().CreateLogger("WalStreamProcess"),
+        sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupWalUploadedAge);
 });
 builder.Services.AddSingleton<IWalSqlExecutor, NpgsqlWalSqlExecutor>();
 // Ретенция (t06, arch/19 §4): GFS/WAL-чистка/гигиена + монитор хранилища;
@@ -612,7 +615,8 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Process.RestoreDrillPro
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Backups.ToRuntime(),
     sp.GetRequiredService<TimeProvider>(),
-    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Process.RestoreDrillProcess>()));
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Process.RestoreDrillProcess>(),
+    sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupDrill));
 
 // Сверка S3↔etcd (t07, arch/19 §4): per-cluster чистка мусора full/<id>/ без
 // etcd-ключа; runtime-функция через IOptionsMonitor — Enabled=false → no-op

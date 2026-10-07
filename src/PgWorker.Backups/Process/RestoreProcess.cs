@@ -41,7 +41,8 @@ public sealed class RestoreProcess(
     ISqlExecutor db,
     ThresholdsOptions thresholds,
     TimeProvider time,
-    ILogger<RestoreProcess>? logger = null)
+    ILogger<RestoreProcess>? logger = null,
+    Action<string, string, string>? restoreObserver = null) // (cluster, shard, ok|failed) — t14, arch/18 §2.7
 {
     private const string Op = "backup-restore";
 
@@ -648,6 +649,7 @@ public sealed class RestoreProcess(
         var putDone = await PutStatusAsync(cluster, shard.Name, completed, ct);
         if (!putDone.IsSuccess)
             return Result<ProcessOutcome>.Failed(putDone.Error!);
+        restoreObserver?.Invoke(cluster, shard.Name, "ok"); // t14: COMPLETED зафиксирован в etcd
         var delWal = await etcd.DeleteAsync(endpoints[0],
             $"/pgworker/backups/{cluster}/{shard.Name}/wal", prefix: false, ct);
         if (!delWal.IsSuccess)
@@ -834,6 +836,8 @@ public sealed class RestoreProcess(
         if (!put.IsSuccess)
             logger?.LogError("backup-restore {Cluster}/{Shard}/{Id}: статус FAILED не записан — {Error}",
                 cluster, shard, op.Id, put.Error?.Message);
+        else
+            restoreObserver?.Invoke(cluster, shard, "failed"); // t14: терминальный исход зафиксирован в etcd
         await journal.WritePhaseAsync(cluster, Op, $"failed/{shard}/{op.Id}", claims.InstanceId, error, ct);
     }
 
