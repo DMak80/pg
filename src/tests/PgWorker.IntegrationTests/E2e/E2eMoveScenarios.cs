@@ -35,20 +35,30 @@ public class E2eMoveScenarios(ITestOutputHelper output)
         DockerTrait.SkipIfUnavailable();
         await using var fx = await E2eEnvironment.StartAsync("move-chain", ct: TestContext.Current.CancellationToken);
         Fx = fx;
-        await E1_Provisioning();
-        output.WriteLine("=== E1 done, calling E2 ===");
+        try
+        {
+            await E1_Provisioning();
+            output.WriteLine("=== E1 done, calling E2 ===");
 
-        await E2_MoveUnderLoad();
-        output.WriteLine("=== E2 done, calling E3 ===");
+            await E2_MoveUnderLoad();
+            output.WriteLine("=== E2 done, calling E3 ===");
 
-        await E3_AutoFinalize();
-        output.WriteLine("=== E3 done, calling E4 ===");
+            await E3_AutoFinalize();
+            output.WriteLine("=== E3 done, calling E4 ===");
 
-        await E4_AbortTakeover();
-        output.WriteLine("=== E4 done, calling E5 ===");
+            await E4_AbortTakeover();
+            output.WriteLine("=== E4 done, calling E5 ===");
 
-        await E5_Deprovisioning();
-        output.WriteLine("=== E5 done — lifecycle complete ===");
+            await E5_Deprovisioning();
+            output.WriteLine("=== E5 done — lifecycle complete ===");
+        }
+        catch
+        {
+            // docs/e2e-launch.md §3: упавший сценарий — окружение ОСТАНОВИТЬ, не
+            // удалить (телеметрия в артефактах + живые объекты для разбора).
+            Fx.MarkFailed();
+            throw;
+        }
     }
 
     // ===== E1: Provisioning =====
@@ -61,8 +71,22 @@ public class E2eMoveScenarios(ITestOutputHelper output)
         await SeedClusterAsync();
         Host = await Fx.StartHostAsync("m1", ct: ct);
 
-        var provisioned = await E2eFixture.WaitForAsync(
-            () => ProvisionedAsync(), TimeSpan.FromSeconds(360), ct);
+        var provisioned = await E2ePhase.WaitAsync(Fx, "move-provisioning",
+            () => ProvisionedAsync(), TimeSpan.FromSeconds(360), ct,
+            // Прогресс-снапшот provisioning: state-ключи нод + dsn-ключи из etcd
+            // (дешёвые чтения, тик 5 с) — какая нода в каком состоянии.
+            progress: async () =>
+            {
+                var parts = new List<string>();
+                foreach (var shard in new[] { "shard1", "shard2" })
+                {
+                    var dsn = await GetOrNullAsync($"/clusters/{Cluster}/shards/{shard}/dsn") is null ? "нет" : "есть";
+                    var a = (await GetOrNullAsync($"/clusters/{Cluster}/shards/{shard}/nodes/{shard}a/state"))?.Value ?? "-";
+                    var b = (await GetOrNullAsync($"/clusters/{Cluster}/shards/{shard}/nodes/{shard}b/state"))?.Value ?? "-";
+                    parts.Add($"{shard}: {a}/{b}, dsn={dsn}");
+                }
+                return string.Join("; ", parts);
+            });
         provisioned.Should().BeTrue($"provisioning {Cluster} должен дойти до DONE");
 
         var shard1 = await MasterInfoAsync("shard1", ct);
@@ -98,7 +122,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
         await PutMoveRequestAsync("bucket_0",
             $$"""{"op":"move","to":"shard2","requested_unix":{{NowUnix()}}}""", ct);
 
-        var moved = await E2eFixture.WaitForAsync(
+        var moved = await E2ePhase.WaitAsync(Fx, "move-routing-flip",
             () => RoutingIsAsync("bucket_0", "shard2", ct), TimeSpan.FromSeconds(120), ct);
         moved.Should().BeTrue($"move должен завершиться; routing={await RoutingAsync("bucket_0", ct)}, " +
                               $"status={await StatusAsync("bucket_0", ct) ?? "нет"}, work={await WorkDumpAsync(ct)}");
@@ -108,7 +132,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
         // секунды post-flip SQL (pub_rb/sub_rb). Kill до REPLACE оставлял заявку
         // op=move, m2 отклонял её «бакет уже на shard2», и finalize не начинался
         // (E3: artifacts не вычищены). Ждём op=finalize — свидетельство M6.
-        var replacedOnFinalize = await E2eFixture.WaitForAsync(async () =>
+        var replacedOnFinalize = await E2ePhase.WaitAsync(Fx, "move-finalize-op", async () =>
         {
             var req = await GetOrNullAsync(MoveNames.MoveKey(Cluster, "bucket_0"));
             return req?.Value.Contains("\"op\":\"finalize\"", StringComparison.Ordinal) == true;
@@ -124,11 +148,11 @@ public class E2eMoveScenarios(ITestOutputHelper output)
 
         output.WriteLine("E2: routing flipped, host killed, checking FROZEN window...");
 
-        var sawDenied = await E2eFixture.WaitForAsync(
+        var sawDenied = await E2ePhase.WaitAsync(Fx, "move-frozen-denied",
             () => Task.FromResult(load.Snapshot().Any(e => !e.Ok)), TimeSpan.FromSeconds(20), ct);
         sawDenied.Should().BeTrue("нагрузка обязана упереться в заморозку P1 (42501)");
         var firstDenied = load.Snapshot().First(e => !e.Ok);
-        var okAfter = await E2eFixture.WaitForAsync(
+        var okAfter = await E2ePhase.WaitAsync(Fx, "move-frozen-resumed",
             () => Task.FromResult(load.Snapshot().Any(e => e.Ok && e.TsMs >= firstDenied.TsMs)),
             TimeSpan.FromSeconds(20), ct);
         okAfter.Should().BeTrue("после flip нагрузка обязана продолжить запись у нового владельца");
@@ -140,12 +164,21 @@ public class E2eMoveScenarios(ITestOutputHelper output)
 
         load.Pause();
 
-        var aligned = await E2eFixture.WaitForAsync(async () =>
+        var aligned = await E2ePhase.WaitAsync(Fx, "move-sub-rb-catchup", async () =>
         {
             var c1 = await SqlScalarAsync(shard1.Dsn, "SELECT count(*) FROM bucket_0.items", ct);
             var c2 = await SqlScalarAsync(shard2.Dsn, "SELECT count(*) FROM bucket_0.items", ct);
             return c1 == c2;
-        }, TimeSpan.FromSeconds(15), ct);
+        }, TimeSpan.FromSeconds(15), ct,
+            // Снапшот counts обеих сторон в каждый тик (лёгкий SQL-скаляр малой
+            // таблицы): видна динамика догоняет/застряла; NpgsqlException на
+            // рестартующих нодах глотается хелпером (<progress error: …>).
+            progress: async () =>
+            {
+                var c1 = await SqlScalarAsync(shard1.Dsn, "SELECT count(*) FROM bucket_0.items", ct);
+                var c2 = await SqlScalarAsync(shard2.Dsn, "SELECT count(*) FROM bucket_0.items", ct);
+                return $"src={c1}, dst={c2}";
+            });
         aligned.Should().BeTrue("обратная репликация sub_rb должна догнать");
 
         var count1 = await SqlScalarAsync(shard1.Dsn, "SELECT count(*) FROM bucket_0.items", ct);
@@ -183,7 +216,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
 
         Host = await Fx.StartHostAsync("m2", ct: ct);
 
-        var autoFin = await E2eFixture.WaitForAsync(
+        var autoFin = await E2ePhase.WaitAsync(Fx, "move-auto-finalize",
             () => ArtifactsCleanAsync("shard1", "bucket_0", schemaMustBeAbsent: true, ct),
             TimeSpan.FromSeconds(120), ct);
         autoFin.Should().BeTrue($"auto-finalize должен вычистить shard1; " +
@@ -203,7 +236,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
 
         await PutMoveRequestAsync("bucket_1",
             $$"""{"op":"move","to":"shard1","requested_unix":{{NowUnix()}}}""", ct);
-        var syncing = await E2eFixture.WaitForAsync(
+        var syncing = await E2ePhase.WaitAsync(Fx, "move-abort-syncing",
             async () => (await StatusAsync("bucket_1", ct))?.Contains("SYNCING") == true,
             TimeSpan.FromSeconds(60), ct);
         syncing.Should().BeTrue("переезд bucket_1 должен войти в SYNCING до отмены");
@@ -214,7 +247,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
         await Host.DisposeAsync();
         Host = await Fx.StartHostAsync("m3", ct: ct);
 
-        var aborted = await E2eFixture.WaitForAsync(
+        var aborted = await E2ePhase.WaitAsync(Fx, "move-abort-done",
             async () => await StatusAsync("bucket_1", ct) is null, TimeSpan.FromSeconds(180), ct);
         aborted.Should().BeTrue($"abort должен довестись новым контроллером (takeover); " +
                                 $"status={await StatusAsync("bucket_1", ct) ?? "нет"}, work={await WorkDumpAsync(ct)}");
@@ -242,7 +275,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
             $$"""{"op":"move","to":"shard1","requested_unix":{{NowUnix()}}}""", ct);
         await SetToRemoveAsync();
 
-        var deprovisioned = await E2eFixture.WaitForAsync(
+        var deprovisioned = await E2ePhase.WaitAsync(Fx, "move-deprovisioning",
             () => DeprovisionedAsync(), TimeSpan.FromSeconds(180), ct);
         deprovisioned.Should().BeTrue("deprovisioning должен убрать кластер целиком");
 
@@ -312,7 +345,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
         }
     }
 
-    private static async Task SeedBucketAsync(string adminDsn, string bucket, int rows, CancellationToken ct)
+    private async Task SeedBucketAsync(string adminDsn, string bucket, int rows, CancellationToken ct)
     {
         var ddl = $"""
             CREATE TABLE {bucket}.items(id bigint GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY, note text NOT NULL);
@@ -326,7 +359,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
         // PG-контейнер ещё не готов) — детерминизация t09: ждём готовность, а не
         // полагаемся на мгновенный коннект (паттерн O2-probe в E2eScenarios).
         // SQL-ошибки (PostgresException) НЕ ретраим — это валидный провал.
-        (await E2eFixture.WaitForAsync(async () =>
+        (await E2ePhase.WaitAsync(Fx, "move-seed-bucket", async () =>
         {
             try
             {
@@ -453,7 +486,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
         response.IsSuccessStatusCode.Should().BeTrue(
             $"Patroni {shard} должен принять PATCH /config (получили HTTP {(int)response.StatusCode})");
 
-        var synced = await E2eFixture.WaitForAsync(async () =>
+        var synced = await E2ePhase.WaitAsync(Fx, "move-sync-mode", async () =>
         {
             var names = await SqlScalarAsync(master.Dsn,
                 "SELECT setting FROM pg_settings WHERE name = 'synchronous_standby_names'", ct);

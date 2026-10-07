@@ -55,7 +55,7 @@ public class E2eWalStreamPromoteScenarios
                 S3PathStyle = true,
             });
         var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
-        var bothAgents = await E2eFixture.WaitForAsync(async () =>
+        var bothAgents = await E2ePhase.WaitAsync(Fx, "wal-agents-up", async () =>
         {
             var ps = await Fx.RunDockerAsync(
             [
@@ -87,16 +87,30 @@ public class E2eWalStreamPromoteScenarios
                 new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
             await SwitchWalsAsync(newMasterDsn, 2, ct);
 
+            // Прогресс листинга S3 (t29 §3.4): размер, max-TLI сегментов, наличие
+            // .history; S3-листинг в тиках — не чаще 1 раза в 5 с (интервал
+            // тиков). Делегат общий для фаз history/склейки.
+            Func<Task<string>> walListingProgress = async () =>
+            {
+                var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
+                if (!listed.IsSuccess || listed.Value.Count == 0)
+                    return "listing=пусто";
+                var names = listed.Value.Select(o => o.Name).ToList();
+                var maxTli = names.Where(n => !n.EndsWith(".history", StringComparison.Ordinal))
+                    .Select(n => Convert.ToUInt32(n[..8], 16)).DefaultIfEmpty(0u).Max();
+                return $"objects={names.Count}, maxTli=0x{maxTli:x}, history={(names.Any(n => n.EndsWith(".history", StringComparison.Ordinal)) ? "есть" : "нет")}";
+            };
+
             // Assert — .history нового TLI в S3 (приёмник запрашивает TIMELINE_HISTORY)
-            var history = await E2eFixture.WaitForAsync(async () =>
+            var history = await E2ePhase.WaitAsync(Fx, "wal-history-present", async () =>
             {
                 var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
                 return listed.IsSuccess && listed.Value.Any(o => o.Name == $"{tli:x8}.history");
-            }, TimeSpan.FromSeconds(300), ct);
+            }, TimeSpan.FromSeconds(300), ct, progress: walListingProgress);
             history.Should().BeTrue($"wal/{tli:x8}.history загружен приёмником (AC5)");
 
             // Цепочка склеена через TLI-переход; ключ ACTIVE
-            var glueOk = await E2eFixture.WaitForAsync(async () =>
+            var glueOk = await E2ePhase.WaitAsync(Fx, "wal-chain-glued", async () =>
             {
                 var read = await writer.ReadAsync(cluster, "shard1", ct);
                 if (!read.IsSuccess || read.Value is null) return false;
@@ -109,7 +123,7 @@ public class E2eWalStreamPromoteScenarios
                     chainStart.Value, listed.Value.Select(o => o.Name));
                 return chain.IsContinuous
                     && read.Value.State == PgWorker.Etcd.Parsing.WalStreamStatus.Active;
-            }, TimeSpan.FromSeconds(300), ct);
+            }, TimeSpan.FromSeconds(300), ct, progress: walListingProgress);
             glueOk.Should().BeTrue("цепочка CheckWithRestart непрерывна, ключ ACTIVE (AC5)");
         }
         catch (Exception ex)
@@ -154,7 +168,7 @@ public class E2eWalStreamPromoteScenarios
         // ждём именно TLI ≥ 2: promote мог случиться только-что — /cluster члена
         // показывает его timeline не мгновенно (длительность failover-процесса).
         uint tli = 0;
-        await E2eFixture.WaitForAsync(async () =>
+        await E2ePhase.WaitAsync(Fx, "wal-tli-ready", async () =>
         {
             foreach (var (key, addr) in entries)
             {
@@ -183,7 +197,8 @@ public class E2eWalStreamPromoteScenarios
             }
 
             return tli >= 2;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(120), ct,
+            progress: () => Task.FromResult($"tli={tli}"));
         return tli;
     }
 
@@ -258,8 +273,11 @@ public class E2eWalStreamPromoteScenarios
                 $"reason={reason}\nagents=[{agentsPs.Replace('\n', ';')}]\n" +
                 $"wal=[{walKv?.Value ?? "-"}]\nwork=[{workKv?.Value ?? "-"}]\n" +
                 $"claim=[{claimKv?.Value ?? "-"}]\npatroni={patroni}\nAGENT.LOGS:{agentLogs}\nHOST.LOG:{hostLog}\n";
-            await File.WriteAllTextAsync($"/tmp/pgw-diag-{cluster}.txt", dump);
-            Console.WriteLine($"[DIAG] дамп: /tmp/pgw-diag-{cluster}.txt");
+            // Дамп — в каталог телеметрии прогона (t29 §3.4): рядом с
+            // phases.log/docker-логами, а не в /tmp мимо артефактов.
+            var dumpPath = Path.Combine(Fx.ArtifactsDir, $"wal-diag-{cluster}.txt");
+            await File.WriteAllTextAsync(dumpPath, dump);
+            Console.WriteLine($"[DIAG] дамп: {dumpPath}");
         }
         catch
         {
@@ -315,7 +333,7 @@ public class E2eWalStreamPromoteScenarios
         var cluster = $"{clusterPrefix}{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         var app = await StartWalHostAsync(slug, ct);
-        var provisioned = await E2eFixture.WaitForAsync(
+        var provisioned = await E2ePhase.WaitAsync(Fx, "wal-provisioning",
             () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning обязан дойти до DONE до WAL-нагрузки");
         Console.WriteLine($"[PHASE] {slug}: provisioning DONE за " +
@@ -408,7 +426,7 @@ public class E2eWalStreamPromoteScenarios
         kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         string? primary = null;
-        var resolved = await E2eFixture.WaitForAsync(async () =>
+        var resolved = await E2ePhase.WaitAsync(Fx, "wal-master-resolved", async () =>
         {
             foreach (var (key, addr) in entries
                          .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))

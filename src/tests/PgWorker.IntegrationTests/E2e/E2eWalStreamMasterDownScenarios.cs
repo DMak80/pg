@@ -55,7 +55,7 @@ public class E2eWalStreamMasterDownScenarios
                 S3PathStyle = true,
             });
         var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
-        var bothAgents = await E2eFixture.WaitForAsync(async () =>
+        var bothAgents = await E2ePhase.WaitAsync(Fx, "wal-ac4-agents-up", async () =>
         {
             var ps = await Fx.RunDockerAsync(
             [
@@ -87,33 +87,51 @@ public class E2eWalStreamMasterDownScenarios
             // WalStream честно уходит в restore-гвард, пока шард восстанавливается.
             // Ждём снятия unreachable циклом 30-секундных окон (каждое окно —
             // проверка факта; суммарный лимит 600 c на восстановление ноды).
+            // Окно живёт ВНУТРИ condition — проверка факта раз в 30 с, как раньше;
+            // статус/номер окна — в замыкании, прогресс форматирует их БЕЗ новых
+            // чтений; тик E2ePhase печатается по завершении condition — фактическая
+            // частота ≈ строка на окно (t29 §3.9). Ассерта на результат цикла нет —
+            // итог только в строке телеметрии (новый ассерт не добавляем).
             TestContext.Current.TestOutputHelper?.WriteLine(
                 "[PHASE] wal-ac4: ожидание снятия unreachable (repair-контур надзора)");
-            var repairDeadline = DateTime.UtcNow + TimeSpan.FromSeconds(600);
-            while (DateTime.UtcNow < repairDeadline)
+            var stillUnreachable = true;
+            var window = 0;
+            var repaired = await E2ePhase.WaitAsync(Fx, "wal-ac4-repair", async () =>
             {
                 var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
-                var stillUnreachable = workKv?.Value?.Contains("unreachable") == true;
+                stillUnreachable = workKv?.Value?.Contains("unreachable") == true;
                 if (!stillUnreachable)
-                    break;
-                await Task.Delay(TimeSpan.FromSeconds(30), ct);
-            }
+                    return true;
+                window++;
+                await Task.Delay(TimeSpan.FromSeconds(30), ct); // 30-с окно проверки — дословно, полл не учащается
+                return false;
+            }, TimeSpan.FromSeconds(600), ct,
+                progress: () => Task.FromResult($"unreachable={(stillUnreachable ? "да" : "нет")}, окно {window}"));
             TestContext.Current.TestOutputHelper?.WriteLine(
-                "[PHASE] wal-ac4: repair-фаза завершена/снята — замеры ключа");
+                $"[PHASE] wal-ac4: repair-фаза завершена/снята (repaired={repaired}) — замеры ключа");
 
             // Assert — доставка продолжается (новые сегменты после смерти мастера),
             // цепочка непрерывна (CheckWithRestart), ключ не BROKEN
-            var grew = await E2eFixture.WaitForAsync(async () =>
+            var grew = await E2ePhase.WaitAsync(Fx, "wal-ac4-delivery-grew", async () =>
             {
                 var list = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
                 return list.IsSuccess && list.Value.Count > beforeList.Value.Count;
-            }, TimeSpan.FromSeconds(300), ct);
+            }, TimeSpan.FromSeconds(300), ct,
+                // Динамика листинга wal/-префикса по тикам (t29 §3.9): растёт ли
+                // число сегментов; S3-листинг не чаще интервала тиков (5 с).
+                progress: async () =>
+                {
+                    var listed = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
+                    return listed.IsSuccess
+                        ? $"objects={listed.Value.Count} (before={beforeList.Value.Count})"
+                        : "listing=ошибка";
+                });
             grew.Should().BeTrue("агент реплики продолжает доставку после смерти мастера");
 
             // Чтение ключа — поллингом (etcd-транспорт может дать transient-отказ:
             // ReadAsync Failed → Value null; факт ждём, не фиксируем одноразовым чтением)
             PgWorker.Etcd.Parsing.WalStreamState? keyState = null;
-            var keySeen = await E2eFixture.WaitForAsync(async () =>
+            var keySeen = await E2ePhase.WaitAsync(Fx, "wal-ac4-key-seen", async () =>
             {
                 var read = await writer.ReadAsync(cluster, "shard1", ct);
                 if (!read.IsSuccess || read.Value is null)
@@ -132,7 +150,9 @@ public class E2eWalStreamMasterDownScenarios
 
             // После promote воркер пересоздаёт агентов на новых ролях: running-агент
             // новой мастер-ноды ≤ 300 c (смена источника — пересоздание).
-            var newAgent = await E2eFixture.WaitForAsync(async () =>
+            // Живость агентов — в failed/slow-phase-сбор, docker ps в тиках
+            // запрещён (t29 §4.1).
+            var newAgent = await E2ePhase.WaitAsync(Fx, "wal-ac4-new-agent", async () =>
             {
                 var ps = await Fx.RunDockerAsync(
                     ["ps", "--format", "{{.Names}} {{.State}}",
@@ -215,7 +235,7 @@ public class E2eWalStreamMasterDownScenarios
         // ждём именно TLI ≥ 2: promote мог случиться только-что — /cluster члена
         // показывает его timeline не мгновенно (длительность failover-процесса).
         uint tli = 0;
-        await E2eFixture.WaitForAsync(async () =>
+        await E2ePhase.WaitAsync(Fx, "wal-ac4-tli-ready", async () =>
         {
             foreach (var (key, addr) in entries)
             {
@@ -244,7 +264,8 @@ public class E2eWalStreamMasterDownScenarios
             }
 
             return tli >= 2;
-        }, TimeSpan.FromSeconds(120), ct);
+        }, TimeSpan.FromSeconds(120), ct,
+            progress: () => Task.FromResult($"tli={tli}"));
         return tli;
     }
 
@@ -319,8 +340,11 @@ public class E2eWalStreamMasterDownScenarios
                 $"reason={reason}\nagents=[{agentsPs.Replace('\n', ';')}]\n" +
                 $"wal=[{walKv?.Value ?? "-"}]\nwork=[{workKv?.Value ?? "-"}]\n" +
                 $"claim=[{claimKv?.Value ?? "-"}]\npatroni={patroni}\nAGENT.LOGS:{agentLogs}\nHOST.LOG:{hostLog}\n";
-            await File.WriteAllTextAsync($"/tmp/pgw-diag-{cluster}.txt", dump);
-            Console.WriteLine($"[DIAG] дамп: /tmp/pgw-diag-{cluster}.txt");
+            // Дамп — в каталог телеметрии прогона (t29 §3.9): рядом с
+            // phases.log/docker-логами, а не в /tmp мимо артефактов.
+            var dumpPath = Path.Combine(Fx.ArtifactsDir, $"wal-diag-{cluster}.txt");
+            await File.WriteAllTextAsync(dumpPath, dump);
+            Console.WriteLine($"[DIAG] дамп: {dumpPath}");
         }
         catch
         {
@@ -376,7 +400,7 @@ public class E2eWalStreamMasterDownScenarios
         var cluster = $"{clusterPrefix}{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         var app = await StartWalHostAsync(slug, ct);
-        var provisioned = await E2eFixture.WaitForAsync(
+        var provisioned = await E2ePhase.WaitAsync(Fx, "wal-ac4-provisioning",
             () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning обязан дойти до DONE до WAL-нагрузки");
         Console.WriteLine($"[PHASE] {slug}: provisioning DONE за " +
@@ -469,7 +493,7 @@ public class E2eWalStreamMasterDownScenarios
         kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
         var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
         string? primary = null;
-        var resolved = await E2eFixture.WaitForAsync(async () =>
+        var resolved = await E2ePhase.WaitAsync(Fx, "wal-ac4-master-resolved", async () =>
         {
             foreach (var (key, addr) in entries
                          .Where(p => p.Key.StartsWith($"{shard}/", StringComparison.Ordinal))

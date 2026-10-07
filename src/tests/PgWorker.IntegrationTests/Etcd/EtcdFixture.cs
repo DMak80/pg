@@ -73,11 +73,18 @@ public sealed class EtcdFixture : IAsyncLifetime
         return port;
     }
 
+    // Готовность POST-ретраем (30×1 c); транзиентные транспортные сбои (t29
+    // §4.7): клиентский таймаут пробы (3 c) — «ещё не готов», отмена теста
+    // продолжает всплывать; реальный фейл — с попытками и латентностью.
     private async Task WaitReadyAsync(CancellationToken ct)
     {
         using var probeClient = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+        var attempts = 0;
+        var lastLatencyMs = 0.0;
         for (var i = 0; i < 30; i++)
         {
+            attempts++;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 using var probe = await probeClient.PostAsync(
@@ -91,10 +98,17 @@ public sealed class EtcdFixture : IAsyncLifetime
             {
                 // etcd ещё поднимается — ждём следующую попытку
             }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // Клиентский таймаут пробы (3 c) при холодном/медленном старте
+                // контейнера — «ещё не готов»; бюджет 30×1 c неизменен (t29 §4.7).
+            }
 
+            lastLatencyMs = sw.Elapsed.TotalMilliseconds;
             await Task.Delay(1000, ct);
         }
 
-        throw new InvalidOperationException($"etcd в {Endpoint} не поднялся за 30 c");
+        throw new InvalidOperationException(
+            $"etcd в {Endpoint} не поднялся за 30 c (попыток {attempts}, латентность последней пробы {lastLatencyMs:0} мс)");
     }
 }

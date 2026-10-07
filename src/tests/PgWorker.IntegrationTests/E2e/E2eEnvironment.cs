@@ -356,8 +356,12 @@ public sealed class E2eEnvironment : IAsyncDisposable
             // одиночный — /health 200; HA — /health 200 на всех трёх + лидер избран
             // (POST /v3/maintenance/status → leader ≠ 0; grpc-gateway отдаёт uint64 строкой).
             using var probe = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+            var probeAttempts = 0;
+            var lastProbeLatencyMs = 0.0;
             var ready = await E2eFixture.WaitForAsync(async () =>
             {
+                probeAttempts++;
+                var sw = System.Diagnostics.Stopwatch.StartNew();
                 foreach (var url in endpoints)
                 {
                     try
@@ -373,13 +377,16 @@ public sealed class E2eEnvironment : IAsyncDisposable
                     }
                     catch (Exception)
                     {
+                        lastProbeLatencyMs = sw.Elapsed.TotalMilliseconds;
                         return false; // ещё поднимается / кворум не собран
                     }
                 }
 
+                lastProbeLatencyMs = sw.Elapsed.TotalMilliseconds;
                 return true;
             }, TimeSpan.FromSeconds(100), ct);
-            ready.Should().BeTrue($"etcd-контур ({(haEtcd ? 3 : 1)} узла) обязан собраться за 100 c");
+            ready.Should().BeTrue($"etcd-контур ({(haEtcd ? 3 : 1)} узла) обязан собраться за 100 c "
+                + $"(проб сделано {probeAttempts}, латентность последней {lastProbeLatencyMs:0} мс)");
 
             if (withMinio)
             {
@@ -1031,7 +1038,11 @@ public sealed class E2eEnvironment : IAsyncDisposable
             await E2eFixture.RunProcessAsync("docker",
             [
                 "build", "-q", "-f", $"{_root}/docker/node/Dockerfile", "-t", NodeImage, _root,
-            ], ct, timeout: TimeSpan.FromMinutes(10));
+            ], ct, timeout: TimeSpan.FromMinutes(10),
+                // Полный вывод статических build — рядом с журналом статических
+                // фаз (ArtifactsDir окружения ещё не существует): при kill по
+                // бюджету хвост остаётся для разбора (t29 §4.5).
+                logFile: "/tmp/pgw-e2e-static-process-node-e2e.log");
             StaticPhase($"pgworker-node:e2e готов за {nodeSw.Elapsed.TotalSeconds:F0} с");
 
             _staticReady = true;
@@ -1060,7 +1071,8 @@ public sealed class E2eEnvironment : IAsyncDisposable
             [
                 "build", "-f", $"{_root}/docker/PgWorker.Backup.E2E.Dockerfile", "-t", JobImage,
                 $"{_root}/docker",
-            ], ct, timeout: TimeSpan.FromMinutes(10));
+            ], ct, timeout: TimeSpan.FromMinutes(10),
+                logFile: "/tmp/pgw-e2e-static-process-backup-e2e.log");
             StaticPhase($"e2e-image {JobImage}: готов за {sw.Elapsed.TotalSeconds:F0} с");
             _jobImageReady = true;
         }
@@ -1092,12 +1104,14 @@ public sealed class E2eEnvironment : IAsyncDisposable
             [
                 "publish", $"{_root}/src/PgWorker.WalReceiver/PgWorker.WalReceiver.csproj",
                 "-c", "Release", "-o", outDir, "--nologo",
-            ], ct, timeout: TimeSpan.FromMinutes(10), env: E2eFixture.NoMsBuildReuseEnv);
+            ], ct, timeout: TimeSpan.FromMinutes(10), env: E2eFixture.NoMsBuildReuseEnv,
+                logFile: "/tmp/pgw-e2e-static-process-wal-e2e-publish.log");
             StaticPhase($"e2e-image {WalImage}: publish готов за {sw.Elapsed.TotalSeconds:F0} с — docker build (контекст artifacts/e2e/wal)…");
             var buildLog = await E2eFixture.RunProcessAsync("docker",
             [
                 "build", "-f", $"{_root}/docker/PgWorker.Wal.E2E.Dockerfile", "-t", WalImage, outDir,
-            ], ct, timeout: TimeSpan.FromMinutes(10));
+            ], ct, timeout: TimeSpan.FromMinutes(10),
+                logFile: "/tmp/pgw-e2e-static-process-wal-e2e-build.log");
             StaticPhase($"e2e-image {WalImage}: готов за {sw.Elapsed.TotalSeconds:F0} с (publish+build)");
             _walImageReady = true;
         }

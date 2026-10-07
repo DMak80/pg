@@ -43,17 +43,20 @@ public class E2eStrictScenarios
         {
             await SeedClusterAsync(Cluster, strict: true, shard2Replicas: 2);
             await using var app = await Fx.StartHostAsync("strict", ct: ct);
-            var provisioned = await E2eFixture.WaitForAsync(async () =>
+            var provisioned = await E2ePhase.WaitAsync(Fx, "strict-provisioning", async () =>
                 await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn") is not null
                 && await GetOrNullAsync($"/clusters/{Cluster}/shards/shard2/dsn") is not null,
-                TimeSpan.FromSeconds(360), ct);
+                TimeSpan.FromSeconds(360), ct,
+                progress: ProvisioningProgressAsync);
             provisioned.Should().BeTrue("кластер поднялся");
 
             // Ожидание Active: P4 provisioning переписывает config каноническим
             // JSON БЕЗ поля state (arch/14 §5 A, Д1) — мутация разрешена только
-            // Active-кластерам (PUT до этого перехода = 409).
-            var active = await E2eFixture.WaitForAsync(async () =>
-                await ConfigStateFieldAsync(Cluster) is null, TimeSpan.FromSeconds(60), ct);
+            // Active-кластерам (PUT до этого перехода = 409). Прогресс-тик —
+            // какой state висит (t29 §3.10).
+            var active = await E2ePhase.WaitAsync(Fx, "strict-active", async () =>
+                await ConfigStateFieldAsync(Cluster) is null, TimeSpan.FromSeconds(60), ct,
+                progress: async () => $"state={await ConfigStateFieldAsync(Cluster) ?? "нет (Active)"}");
             active.Should().BeTrue("кластер перешёл в Active (config без state)");
 
             // Assert 1 (bootstrap): SPILO_CONFIGURATION первой ноды несёт
@@ -86,10 +89,28 @@ public class E2eStrictScenarios
             // Assert 4 (конвергенция): в пределах нескольких тиков надзора
             // GET /config несёт false — БЕЗ рестартов нод (набор контейнеров тот
             // же, StartedAt не свежее момента PUT); журнал несёт фазу
-            // dcs-converge с патчем по strict.
-            var converged = await E2eFixture.WaitForAsync(async () =>
+            // dcs-converge с патчем по strict. Patroni-проба — ТОЛЬКО условие
+            // фазы (т29 §3.10: в тиках — etcd-чтения, гигиена нагрузки).
+            var converged = await E2ePhase.WaitAsync(Fx, "strict-dcs-converged", async () =>
                 await PatroniSyncStrictAsync(shard1a.Patroni, ct) == false,
-                TimeSpan.FromSeconds(360), ct);
+                TimeSpan.FromSeconds(360), ct,
+                progress: async () =>
+                {
+                    var work = (await GetOrNullAsync($"/pgworker/work/{Cluster}"))?.Value;
+                    if (work is null)
+                        return "work=нет";
+                    try
+                    {
+                        using var doc = JsonDocument.Parse(work);
+                        var phase = doc.RootElement.TryGetProperty("phase", out var p) ? p.GetString() : "-";
+                        var err = doc.RootElement.TryGetProperty("last_error", out var e) ? e.GetString() : null;
+                        return $"work.phase={phase}, strict-патч={(err is not null && err.Contains("synchronous_mode_strict", StringComparison.Ordinal) ? "есть" : "нет")}";
+                    }
+                    catch (JsonException)
+                    {
+                        return "work=<не-JSON>";
+                    }
+                });
             converged.Should().BeTrue("конвергенция DCS привела /config к false");
 
             var startedAtAfter = await StartedAtAsync(nodes, ct);
@@ -134,16 +155,19 @@ public class E2eStrictScenarios
         {
             await SeedClusterAsync(Cluster, strict: false, shard2Replicas: 1);
             await using var app = await Fx.StartHostAsync("strict-400", ct: ct);
-            var provisioned = await E2eFixture.WaitForAsync(async () =>
+            var provisioned = await E2ePhase.WaitAsync(Fx, "strict-provisioning", async () =>
                 await GetOrNullAsync($"/clusters/{Cluster}/shards/shard1/dsn") is not null
                 && await GetOrNullAsync($"/clusters/{Cluster}/shards/shard2/dsn") is not null,
-                TimeSpan.FromSeconds(360), ct);
+                TimeSpan.FromSeconds(360), ct,
+                progress: ProvisioningProgressAsync);
             provisioned.Should().BeTrue("кластер поднялся (в т.ч. однорепликный shard2)");
 
             // Ожидание Active: PUT разрешён только Active-кластерам (config без
-            // state — P4 provisioning, arch/14 §5 A), иначе 409.
-            var active = await E2eFixture.WaitForAsync(async () =>
-                await ConfigStateFieldAsync(Cluster) is null, TimeSpan.FromSeconds(60), ct);
+            // state — P4 provisioning, arch/14 §5 A), иначе 409; прогресс-тик —
+            // какой state висит (t29 §3.10).
+            var active = await E2ePhase.WaitAsync(Fx, "strict-active", async () =>
+                await ConfigStateFieldAsync(Cluster) is null, TimeSpan.FromSeconds(60), ct,
+                progress: async () => $"state={await ConfigStateFieldAsync(Cluster) ?? "нет (Active)"}");
             active.Should().BeTrue("кластер перешёл в Active (config без state)");
 
             // Act — включение strict кластеру с однорепликным шардом.
@@ -274,12 +298,13 @@ public class E2eStrictScenarios
 
     // Дискавери API воркера (образец E2eWorkerCertScenarios.WaitForDiscoveryAsync):
     // ждём ключ /pgworker/api/<id>, возвращаем ФАКТИЧЕСКИЙ url и thumbprint
-    // применённого серверного серта (новейший инстанс по since_unix).
+    // применённого серверного серта (новейший инстанс по since_unix). Фаза
+    // strict-discovery (t29 §3.10): прогресс — лёгкий range-подсчёт api-ключей.
     private async Task<(string Url, string Thumbprint)> WaitForDiscoveryAsync(CancellationToken ct)
     {
         string? url = null;
         string? thumb = null;
-        var found = await E2eFixture.WaitForAsync(async () =>
+        var found = await E2ePhase.WaitAsync(Fx, "strict-discovery", async () =>
         {
             var range = await G.RangeAsync(Endpoint, "/pgworker/api/", ct);
             if (!range.IsSuccess)
@@ -310,10 +335,30 @@ public class E2eStrictScenarios
             }
 
             return url is not null;
-        }, TimeSpan.FromSeconds(30), ct);
+        }, TimeSpan.FromSeconds(30), ct,
+            progress: async () => $"api-keys={(await G.RangeAsync(Endpoint, "/pgworker/api/", ct)).Value.Count}");
         found.Should().BeTrue("дискавери-ключ API воркера обязан появиться");
         thumb.Should().NotBeNullOrEmpty("воркер публикует thumbprint применённого серта");
         return (url!, thumb!);
+    }
+
+    // Прогресс provisioning-гейта (t29 §3.10): state-ключи нод и dsn из etcd;
+    // число нод — из ключа replicas (shard2 однорепликный в тесте 2).
+    private async Task<string> ProvisioningProgressAsync()
+    {
+        var parts = new List<string>();
+        foreach (var shard in new[] { "shard1", "shard2" })
+        {
+            var replicasKv = await GetOrNullAsync($"/clusters/{Cluster}/shards/{shard}/replicas");
+            var replicas = int.TryParse(replicasKv?.Value, out var r) ? r : 2;
+            var states = new List<string>();
+            for (var i = 0; i < replicas; i++)
+                states.Add((await GetOrNullAsync(
+                    $"/clusters/{Cluster}/shards/{shard}/nodes/{shard}{(char)('a' + i)}/state"))?.Value ?? "-");
+            var dsn = await GetOrNullAsync($"/clusters/{Cluster}/shards/{shard}/dsn") is null ? "нет" : "есть";
+            parts.Add($"{shard}: [{string.Join(",", states)}] dsn={dsn}");
+        }
+        return string.Join("; ", parts);
     }
 
     // mTLS-клиент API (образец E2eWorkerCertScenarios.TlsClient): клиентский

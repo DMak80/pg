@@ -34,7 +34,7 @@ public class E2eHaEtcdScenarios
             // списке endpoints, кластер запровиженен, master-ключ жив.
             await SeedClusterAsync(cluster);
             await using var h1 = await Fx.StartHostAsync("ha1", ct: ct);
-            var provisioned = await E2eFixture.WaitForAsync(
+            var provisioned = await E2ePhase.WaitAsync(Fx, "haetcd-provisioning",
                 () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
             provisioned.Should().BeTrue("provisioning обязан дойти до Active на 3-узловом контуре");
             Fx.EtcdEndpoints.Should().HaveCount(3);
@@ -48,25 +48,41 @@ public class E2eHaEtcdScenarios
 
             // Assert (интервал отказа): healthz жив, lease-ключи API не гаснут,
             // master-ключ пережил отказ (непрерывно жив > 2×TTL 5 c — пишет
-            // через второй endpoint, задача 4).
+            // через второй endpoint, задача 4). По-пробная телеметрия (t29 §3.5):
+            // каждая проба видна в журнале; пробы остаются жёсткими — НЕ ретрай.
             for (var probe = 0; probe < 5; probe++)
             {
-                (await Fx.HealthzOkAsync(h1)).Should().BeTrue(
-                    $"healthz воркера жив на всём интервале отказа (проба {probe + 1}/5)");
-                (await RangeAsync("/pgworker/api/")).Should().NotBeEmpty(
-                    "keepalive-ключ API публикуется (надзор жив)");
-                (await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/master"))!.Value
-                    .Should().NotBeEmpty($"master-ключ жив (проба {probe + 1}/5)");
+                var healthz = await Fx.HealthzOkAsync(h1);
+                var apiKeys = (await RangeAsync("/pgworker/api/")).Count;
+                var master = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/master");
+                Console.WriteLine(
+                    $"[PROBE] ha-etcd {probe + 1}/5: healthz={healthz}, api={apiKeys}, " +
+                    $"master={(master is { Value.Length: > 0 } ? $"len={master.Value.Length}" : (master is null ? "absent" : "empty"))}");
+                healthz.Should().BeTrue($"healthz воркера жив на всём интервале отказа (проба {probe + 1}/5)");
+                apiKeys.Should().BeGreaterThan(0, "keepalive-ключ API публикуется (надзор жив)");
+                master.Should().NotBeNull($"master-ключ жив (проба {probe + 1}/5); фактически: отсутствует");
+                master!.Value.Should().NotBeNullOrEmpty(
+                    $"master-ключ жив (проба {probe + 1}/5); фактически: len={master.Value.Length}");
                 await Task.Delay(TimeSpan.FromSeconds(2), ct);
             }
 
-            var added = await E2eFixture.WaitForAsync(
-                () => ShardRegisteredAsync(cluster, "shard3"), TimeSpan.FromSeconds(360), ct);
+            var added = await E2ePhase.WaitAsync(Fx, "haetcd-shard3-registered",
+                () => ShardRegisteredAsync(cluster, "shard3"), TimeSpan.FromSeconds(360), ct,
+                // Прогресс: state-ключи нод shard3 + work-ключ (обрезан до ~120
+                // симв., чтобы тик читался одной строкой).
+                progress: async () =>
+                {
+                    var a = (await GetOrNullAsync($"/clusters/{cluster}/shards/shard3/nodes/shard3a/state"))?.Value ?? "-";
+                    var b = (await GetOrNullAsync($"/clusters/{cluster}/shards/shard3/nodes/shard3b/state"))?.Value ?? "-";
+                    var dsn = await GetOrNullAsync($"/clusters/{cluster}/shards/shard3/dsn") is null ? "нет" : "есть";
+                    var work = (await GetOrNullAsync($"/pgworker/work/{cluster}"))?.Value ?? "нет";
+                    return $"shard3: {a}/{b}, dsn={dsn}, work={Trunc(work)}";
+                });
             added.Should().BeTrue($"add-shard доведён через уцелевшие endpoints; work={await WorkDumpAsync(cluster, ct)}");
 
             // Возврат узла: member list снова 3, health 3/3 (узел догоняет кластер).
             await Fx.StartEtcdNodeAsync(0, ct);
-            var back = await E2eFixture.WaitForAsync(async () =>
+            var back = await E2ePhase.WaitAsync(Fx, "haetcd-node-back", async () =>
             {
                 var members = (await Fx.EtcdctlAsync("member", "list"))
                     .Split('\n', StringSplitOptions.RemoveEmptyEntries);
@@ -84,6 +100,10 @@ public class E2eHaEtcdScenarios
     }
 
     // ===== Хелперы (копии приёмов E2eScaleScenarios — приватные там) =====
+
+    // Обрезка длинного work-JSON до ~120 симв., чтобы прогресс-тик читался.
+    private static string Trunc(string value)
+        => value.Length <= 120 ? value : value[..120] + "…";
 
     private async Task<Shared.Etcd.Client.Kv?> GetOrNullAsync(string key)
         => (await G.GetAsync(Endpoint, key, TestContext.Current.CancellationToken)).Value;

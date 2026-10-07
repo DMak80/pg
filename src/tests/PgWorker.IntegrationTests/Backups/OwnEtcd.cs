@@ -72,11 +72,18 @@ public sealed class OwnEtcd : IAsyncDisposable
 
     // Готовность POST-ретраем с конечным бюджетом (30 c): встроенные HTTP-wait
     // testcontainers шлют GET, а /v3/* принимает только POST (паттерн EtcdFixture).
+    // Транзиентные транспортные сбои (t29 §4.7): клиентский таймаут пробы (3 c)
+    // при холодном/медленном старте контейнера — «ещё не готов» (как
+    // StartHostOnPortAsync-readiness); отмена теста продолжает всплывать.
     private async Task WaitReadyAsync(CancellationToken ct)
     {
         using var probe = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+        var attempts = 0;
+        var lastLatencyMs = 0.0;
         for (var i = 0; i < 30; i++)
         {
+            attempts++;
+            var sw = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 using var response = await probe.PostAsync(
@@ -90,11 +97,18 @@ public sealed class OwnEtcd : IAsyncDisposable
             {
                 // etcd ещё поднимается — повтор пробы (не сон: блокирующий ретрай)
             }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+            {
+                // Клиентский таймаут пробы (3 c) при холодном/медленном старте
+                // контейнера — «ещё не готов»; бюджет 30×1 c неизменен (t29 §4.7).
+            }
 
+            lastLatencyMs = sw.Elapsed.TotalMilliseconds;
             await Task.Delay(1000, ct);
         }
 
-        throw new InvalidOperationException($"etcd {ContainerName} не поднялся за 30 c");
+        throw new InvalidOperationException(
+            $"etcd {ContainerName} не поднялся за 30 c (попыток {attempts}, латентность последней пробы {lastLatencyMs:0} мс)");
     }
 
     /// <summary>Teardown при любом исходе: стоп/rm СВОЕГО контейнера (ключи умирают

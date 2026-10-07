@@ -56,7 +56,7 @@ public class E2eScenarios(ITestOutputHelper output)
         await SeedClusterAsync(Cluster);
         await using var p1 = await Fx.StartHostAsync("p1", ct: ct);
 
-        var provisioned = await WaitPhaseAsync(
+        var provisioned = await E2ePhase.WaitAsync(Fx,
             "ac2-provisioning", () => ProvisionedAsync(Cluster), TimeSpan.FromSeconds(360), ct);
         provisioned.Should().BeTrue("provisioning должен дойти до DONE (dsn/RUNNING/без status/state)");
 
@@ -64,14 +64,14 @@ public class E2eScenarios(ITestOutputHelper output)
 
         // ---------- AC3: takeover (kill посреди provisioning) ----------
         await SeedClusterAsync(Cluster2);
-        var started = await WaitPhaseAsync(
+        var started = await E2ePhase.WaitAsync(Fx,
             "ac3-takeover-started", () => DockerHasAsync($"pgw-{Cluster2}-"), TimeSpan.FromSeconds(120), ct);
         started.Should().BeTrue($"первый инстанс должен начать provisioning {Cluster2}");
 
         p1.Kill(); // смерть контроллера посреди работы (клэйм истечёт ≤15 с)
         await using var p2 = await Fx.StartHostAsync("p2", ct: ct);
 
-        var taken = await WaitPhaseAsync(
+        var taken = await E2ePhase.WaitAsync(Fx,
             "ac3-takeover-done", () => ProvisionedAsync(Cluster2), TimeSpan.FromSeconds(360), ct);
         taken.Should().BeTrue($"второй инстанс должен донести {Cluster2} до DONE (takeover)");
 
@@ -81,7 +81,7 @@ public class E2eScenarios(ITestOutputHelper output)
         // ---------- AC4: deprovisioning ----------
         await SetToRemoveAsync(Cluster2);
 
-        var deprovisioned = await WaitPhaseAsync(
+        var deprovisioned = await E2ePhase.WaitAsync(Fx,
             "ac4-deprovisioning", () => DeprovisionedAsync(Cluster2), TimeSpan.FromSeconds(180), ct);
         deprovisioned.Should().BeTrue("deprovisioning должен удалить контейнеры/volume/ключи и снять клэйм");
 
@@ -93,22 +93,6 @@ public class E2eScenarios(ITestOutputHelper output)
 
         // ---------- AC7: клэймы + снапшоты только лидером ----------
         await AssertClaimsAndLeaderSnapshotsAsync(Cluster, p2, ct);
-    }
-
-    // Обёртка ожиданий по docs/e2e-launch.md §2: замер фазы + строка
-    // `[PHASE] …: ok=…, elapsed=…` в журнал теста; фаза дольше 60 с —
-    // немедленный сбор docker-логов окружения в артефакты (не дожидаясь
-    // teardown'а), даже если тест зелёный.
-    private async Task<bool> WaitPhaseAsync(
-        string phase, Func<Task<bool>> condition, TimeSpan timeout, CancellationToken ct)
-    {
-        var sw = Stopwatch.StartNew();
-        var ok = await E2eFixture.WaitForAsync(condition, timeout, ct);
-        sw.Stop();
-        output.WriteLine($"[PHASE] {phase}: ok={ok}, elapsed={sw.ElapsedMilliseconds} ms");
-        if (sw.Elapsed > TimeSpan.FromSeconds(60))
-            await Fx.CollectDiagnosticsAsync($"slow-phase-{phase}");
-        return ok;
     }
 
     // ===== Хелперы сида/чтения etcd =====
@@ -235,7 +219,7 @@ public class E2eScenarios(ITestOutputHelper output)
         {
             // Реплика в первый момент может рестартовать Patroni (bootstrap) —
             // даём обеим нодам бюджет на готовность.
-            var alive = await WaitPhaseAsync("ac2-nodes-sql-ready", async () =>
+            var alive = await E2ePhase.WaitAsync(Fx, "ac2-nodes-sql-ready", async () =>
             {
                 try
                 {
@@ -294,8 +278,14 @@ public class E2eScenarios(ITestOutputHelper output)
         (stateBefore?.Value).Should().Be("RUNNING", "лидер до failover: ключ state существует и равен RUNNING (предусловие гейта t14)");
         var revAtStop = stateBefore!.ModRevision;
 
-        var sw = Stopwatch.StartNew();
+        var sw = Stopwatch.StartNew(); // T0 жёсткого ассерта ≤5с — ДО docker stop (не меняем)
+        // Длительность самой stop-команды — отдельной строкой (t29 §3.1): замер окна
+        // failover неотделим от длительности SIGTERM-завершения PG, ассерт при этом
+        // остаётся от того же T0.
+        var stopSw = Stopwatch.StartNew();
         await Fx.RunDockerAsync(["stop", container], ct);
+        stopSw.Stop();
+        output.WriteLine($"[PHASE] ac5-docker-stop: elapsed={stopSw.Elapsed.TotalSeconds:F1}s");
 
         // Master-ключ обновляется (Patroni failover, P11: callback + reconciler).
         // При EnableDoorman=false (e2e) portalloc-записи несут doorman:0 (миграция
@@ -308,14 +298,20 @@ public class E2eScenarios(ITestOutputHelper output)
         // контейнер лидера → снятие лидер-лока) + промоушен в пределах
         // loop_wait. Окно ожидания 10с — чтобы поймать факт; жёсткий ассерт
         // ниже — ≤5с. Опрос WaitForAsync — 0.5с.
-        var flipped = await WaitPhaseAsync("ac5-failover", async () =>
+        var flipped = await E2ePhase.WaitAsync(Fx, "ac5-failover", async () =>
         {
             var key = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/master");
             if (key is not { Value.Length: > 0 })
                 return false;
             var primary = await PrimaryNodeAsync(cluster, shard, ct);
             return primary is not null && primary != masterBefore.Node;
-        }, TimeSpan.FromSeconds(10), ct);
+        }, TimeSpan.FromSeconds(10), ct,
+            progress: async () =>
+            {
+                var key = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/master");
+                var primary = await PrimaryNodeAsync(cluster, shard, ct); // HTTP-проба Patroni — дёшево, тик 5 с
+                return $"primary={primary ?? "none"}, master-key={(key is { Value.Length: > 0 } ? "есть" : "нет")}";
+            });
         sw.Stop();
         flipped.Should().BeTrue("master-ключ жив, а фактический primary шарда сменился после failover (P11: callback + reconciler)");
         // Фактическое время смены лидера — в вывод теста (t09: журнал фикс-гейта
@@ -334,7 +330,7 @@ public class E2eScenarios(ITestOutputHelper output)
         // только живым пробой нодам (NodeSupervisor, arch/14 §5 C). Без гейта
         // фаза мгновенно истинна на stale-ключе (рейс t07/t14) и одиночный
         // inspect ниже падает на исходном остановленном контейнере.
-        var rebuilt = await WaitPhaseAsync("ac5-rebuild", async () =>
+        var rebuilt = await E2ePhase.WaitAsync(Fx, "ac5-rebuild", async () =>
         {
             var state = await GetOrNullAsync($"/clusters/{cluster}/shards/{shard}/nodes/{masterBefore.Node}/state");
             return state?.Value == "RUNNING" && state.ModRevision > revAtStop;
@@ -357,7 +353,7 @@ public class E2eScenarios(ITestOutputHelper output)
         nodes.Should().HaveCount(2);
         // Реплика догоняет (rebuild мог пересоздать контейнер прямо между
         // проверками) — собираем картину с ретраями до стабильного результата.
-        var stable = await WaitPhaseAsync("ac5-replica-catchup", async () =>
+        var stable = await E2ePhase.WaitAsync(Fx, "ac5-replica-catchup", async () =>
         {
             try
             {
@@ -387,7 +383,7 @@ public class E2eScenarios(ITestOutputHelper output)
             await Fx.RunDockerAsync(["stop", container], ct);
 
         // Эвакуация: journal DONE (E4) после ShardDeadSec.
-        var evacuated = await WaitPhaseAsync("ac6-evacuation", async () =>
+        var evacuated = await E2ePhase.WaitAsync(Fx, "ac6-evacuation", async () =>
         {
             var journal = await GetOrNullAsync($"/pgworker/evacuations/{cluster}/{deadShard}");
             if (journal is null)
@@ -424,7 +420,7 @@ public class E2eScenarios(ITestOutputHelper output)
         foreach (var container in await ListContainerNamesAsync($"pgw-{cluster}-{deadShard}-", all: true))
             await Fx.RunDockerAsync(["start", container], ct);
 
-        var quarantined = await WaitPhaseAsync("ac6-quarantine", async () =>
+        var quarantined = await E2ePhase.WaitAsync(Fx, "ac6-quarantine", async () =>
         {
             var journal = await GetOrNullAsync($"/pgworker/evacuations/{cluster}/{deadShard}");
             if (journal is null)
@@ -463,7 +459,7 @@ public class E2eScenarios(ITestOutputHelper output)
         await using var p4 = await Fx.StartHostAsync("p4", snapshotIntervalMin: 1, ct: ct);
 
         // Лидер выбран ровно один (Д2: снапшоты — singleton-работа).
-        var hasLeader = await WaitPhaseAsync(
+        var hasLeader = await E2ePhase.WaitAsync(Fx,
             "ac7-snapshot-leader",
             async () => await GetOrNullAsync("/pgworker/leader") is not null,
             TimeSpan.FromSeconds(30), ct);
@@ -477,14 +473,14 @@ public class E2eScenarios(ITestOutputHelper output)
         // Стабильный инвариант: за окно больше интервала снимков (interval=1
         // мин → окно 70 с) НОВЫЕ файлы появились ровно в ОДНОМ каталоге.
         var instances = new[] { p3, p4 };
-        var shot = await WaitPhaseAsync(
+        var shot = await E2ePhase.WaitAsync(Fx,
             "ac7-snapshots",
             () => Task.FromResult(instances.Count(i =>
                 Directory.GetFiles(i.SnapshotsDir, "snapshot-*.db").Length > 0) > 0),
             TimeSpan.FromSeconds(60), ct);
         shot.Should().BeTrue("лидер снимает регулярные снапшоты (SnapshotLoop)");
 
-        var singleGrower = await WaitPhaseAsync(
+        var singleGrower = await E2ePhase.WaitAsync(Fx,
             "ac7-single-grower",
             async () =>
             {
@@ -506,7 +502,7 @@ public class E2eScenarios(ITestOutputHelper output)
         // переходное окно (два разных instance). Устойчивость = подряд идущие
         // сэмплы (3 сэмплa × 3 с, как было) дают ОДИН instance — поллингом
         // с бюджетом, а не ассертом в первое попавшееся окно.
-        var stableInstance = await WaitPhaseAsync(
+        var stableInstance = await E2ePhase.WaitAsync(Fx,
             "ac7-single-instance",
             async () =>
             {
