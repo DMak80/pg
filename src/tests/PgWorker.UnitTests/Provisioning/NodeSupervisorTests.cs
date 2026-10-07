@@ -1432,4 +1432,299 @@ public class NodeSupervisorTests
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1b/app_params"].Value
             .Should().Be("sslmode=verify-full");
     }
+
+    // --- HA-факты (arch/14 §3.3/§5 C): last_failover/last_rebuild в work-ключе ---
+
+    private static async Task<WorkState?> WorkStateOf(Rig rig)
+        => (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value;
+
+    [Fact]
+    public async Task Tick_DeadLeaderContainer_AccelerationApplied_OpensAcceleratedFailover()
+    {
+        // Arrange: контейнер ЛИДЕРА shard1b снесён (docker-объекта нет — EnsureDeclared
+        // ускоряет), реплики живы, SupportsRunningInspection=true
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var rig = await NewRig(_ => Ok(), nodeObjects:
+        [
+            "pgw-shop-shard1-shard1a", "pgw-shop-shard1-shard1c",
+        ]);
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1b"}""");
+        rig.Etcd.Seed("/clusters/shop/shards/shard1/master", "h1:16500");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: открытый факт failover cause=accelerated; detected — первый тик
+        // недоступности (трека не было — момент детекции этого тика)
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        var state = await WorkStateOf(rig);
+        state!.LastFailover.Should().NotBeNull();
+        state.LastFailover!.Shard.Should().Be("shard1");
+        state.LastFailover.Node.Should().Be("shard1b");
+        state.LastFailover.Cause.Should().Be("accelerated");
+        state.LastFailover.ResolvedUnix.Should().BeNull();
+        state.LastFailover.DetectedUnix.Should().BeGreaterThan(now - 5);
+    }
+
+    [Fact]
+    public async Task Tick_DeadLeader_NoRunningInspection_OpensElectionsFailover()
+    {
+        // Arrange: лидер shard1b мертва по пробе, все docker-объекты на месте
+        // (EnsureDeclared не ускоряет), Swarm-подобный драйвер — ускорение НЕ применяется
+        var rig = await NewRig(port => port == 18001 ? Down() : Ok());
+        rig.Driver.SupportsRunningInspection = false;
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1b"}""");
+
+        // Act
+        await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: открытый факт cause=elections (промоушен ждёт Patroni)
+        var state = await WorkStateOf(rig);
+        state!.LastFailover!.Cause.Should().Be("elections");
+        state.LastFailover.Node.Should().Be("shard1b");
+    }
+
+    [Fact]
+    public async Task Tick_DeadLeaderContainer_NoLiveCandidate_OpensElectionsFailover()
+    {
+        // Arrange: контейнер ЛИДЕРА shard1a снесён (EnsureDeclared пытается ускорить),
+        // ВСЕ ноды шарда мертвы по Patroni-пробам (18000/18001/18002 Down) —
+        // живого кандидата нет (NoCandidate), лидер мёртв → alive-ветка его не видит.
+        // ВАЖНО: лидер обязан быть мёртвым И по пробе — иначе alive-ветка того же
+        // тика сделает флап-сброс факта (LeaderRecovered, R3) и факт исчезнет.
+        var rig = await NewRig(port => port == 18000 || port == 18001 || port == 18002 ? Down() : Ok(),
+            nodeObjects:
+            [
+                "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c",
+            ]);
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a"}""");
+
+        // Act
+        await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: ускорение НЕ применено (маркера нет), факт ОТКРЫТ cause=elections
+        // и пережил тик (флап-сброс не сработал — нода мертва)
+        rig.Etcd.Store.Should().NotContainKey("/service/shop-shard1/failover");
+        var state = await WorkStateOf(rig);
+        state!.LastFailover!.Cause.Should().Be("elections");
+        state.LastFailover.Node.Should().Be("shard1a");
+        state.LastFailover.ResolvedUnix.Should().BeNull();
+    }
+
+    // ПРЕДУПРЕЖДЕНИЕ (фиксация решения): если этот тест падает из-за того, что
+    // факт исчез (LastFailover == null) — это НЕ повод ослаблять флап-сброс
+    // (LeaderRecovered): сброс — канон spec §3.1/R3 («транзиентный флап — запись
+    // удаляется без фиксации»). Чинить СИД (лидер должен быть мёртв по пробе),
+    // не семантику флапа.
+
+    [Fact]
+    public async Task Tick_LeaderChanged_ClosesFailoverWithDuration()
+    {
+        // Arrange: открытый факт от прошлого тика (detected=1000), лидер уже ДРУГАЯ нода
+        var rig = await NewRig(_ => Ok());
+        await rig.Journal.WriteSupervisionAsync("shop", "seed",
+            new Dictionary<string, long>(), null, CancellationToken.None,
+            new HaSupervisionFacts(
+                new HaSupervisionFact("shard1", "shard1b", "accelerated", 1000), null));
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1c"}""");
+
+        // Act
+        await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: закрыт — resolved/duration зафиксированы
+        var state = await WorkStateOf(rig);
+        state!.LastFailover!.ResolvedUnix.Should().NotBeNull();
+        state.LastFailover.DurationSec.Should().Be(state.LastFailover.ResolvedUnix!.Value - 1000);
+    }
+
+    [Fact]
+    public async Task Tick_LeaderFlapRecovery_DropsOpenFailover()
+    {
+        // Arrange: открытый факт, нода ожила и лидерство СОХРАНИЛА
+        var rig = await NewRig(_ => Ok());
+        await rig.Journal.WriteSupervisionAsync("shop", "seed",
+            new Dictionary<string, long>(), null, CancellationToken.None,
+            new HaSupervisionFacts(
+                new HaSupervisionFact("shard1", "shard1b", "elections", 1000), null));
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1b"}""");
+
+        // Act
+        await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: транзиентный флап — факта НЕ БЫЛО, запись удалена без фиксации
+        var state = await WorkStateOf(rig);
+        state!.LastFailover.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Tick_DeadNonLeaderRebuild_OpensAutoDeadFact()
+    {
+        // Arrange: не-лидер shard1a мертва дольше NodeDeadSec, кворум жив
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var rig = await NewRig(
+            port => port == 18000 ? Down() : Ok(),
+            staleUnreachableForShard1A: now - 200);
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1b"}""");
+
+        // Act
+        await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: открытый rebuild cause=auto-dead, detected из трека
+        var state = await WorkStateOf(rig);
+        state!.LastRebuild!.Shard.Should().Be("shard1");
+        state.LastRebuild.Node.Should().Be("shard1a");
+        state.LastRebuild.Cause.Should().Be("auto-dead");
+        state.LastRebuild.DetectedUnix.Should().Be(now - 200);
+        state.LastRebuild.ResolvedUnix.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Tick_RebuiltNodeAlive_ClosesRebuild()
+    {
+        // Arrange: открытый rebuild, нода пересоздана и жива (state=REBUILDING → RUNNING)
+        var rig = await NewRig(_ => Ok());
+        rig.Etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1a/state", "REBUILDING");
+        await rig.Journal.WriteSupervisionAsync("shop", "seed",
+            new Dictionary<string, long>(), null, CancellationToken.None,
+            new HaSupervisionFacts(null,
+                new HaSupervisionFact("shard1", "shard1a", "auto-dead", 1000)));
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1b"}""");
+
+        // Act
+        await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: закрытие — первый тик живости (переход → RUNNING)
+        var state = await WorkStateOf(rig);
+        state!.LastRebuild!.ResolvedUnix.Should().NotBeNull();
+        state.LastRebuild.DurationSec.Should().Be(state.LastRebuild.ResolvedUnix!.Value - 1000);
+        rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value
+            .Should().Be("RUNNING");
+    }
+
+    [Fact]
+    public async Task Tick_RecreateMarker_OpensOperatorRebuildFact()
+    {
+        // Arrange: нода помечена TO_RECREATE (заявка оператора)
+        var rig = await NewRig(_ => Ok());
+        rig.Etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1a/state", "TO_RECREATE");
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1b"}""");
+
+        // Act
+        await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: rebuild cause=operator-recreate, detected — момент исполнения
+        // (живая нода — трека недоступности нет)
+        var state = await WorkStateOf(rig);
+        state!.LastRebuild!.Cause.Should().Be("operator-recreate");
+        state.LastRebuild.Node.Should().Be("shard1a");
+    }
+
+    [Fact]
+    public async Task Tick_PhaseWrites_CarryFactsForward()
+    {
+        // Arrange: факты записаны надзором; фазовая запись dcs-converge (патч DCS-конфига)
+        // с явным unreachable перенесёт их (put всего ключа не стирает)
+        var rig = await NewRig(_ => Ok(), respondRaw: r =>
+        {
+            if (r.Method.Method == "GET" && r.RequestUri!.AbsolutePath == "/config")
+                return new HttpResponseMessage(HttpStatusCode.OK)
+                {
+                    Content = new StringContent(
+                        """{"ttl":20,"loop_wait":1,"retry_timeout":3}""",
+                        Encoding.UTF8, "application/json"),
+                };
+            return Ok();
+        }, configOverride: """{"buckets":2,"dbname":"shop","created_unix":1755900000,"synchronous_mode_strict":true,"postgresql":{"parameters":{"shared_buffers":"1GB"}}}""");
+        await rig.Journal.WriteSupervisionAsync("shop", "seed",
+            new Dictionary<string, long>(), null, CancellationToken.None,
+            new HaSupervisionFacts(new HaSupervisionFact("shard1", "shard1b", "elections", 1000, 1100, 100), null));
+
+        // Act: тик надзора с патчем DCS-конфига (фазовая запись dcs-converge)
+        await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: факт пережил фазовую запись (carry-forward)
+        var state = await WorkStateOf(rig);
+        state!.LastFailover!.DurationSec.Should().Be(100);
+    }
+
+    [Fact]
+    public async Task Tick_AdoptedNode_DeadBySqlProbe_NoRebuildFact()
+    {
+        // Arrange: усыновлённая нода shard1a (object в portalloc, patroni=0) МЕРТВА
+        // ПО SQL-ПРОБЕ (ScalarResultByDsn падает — без этого FakeSql молчит Success,
+        // нода «жива», dead/rebuild-путь не выполняется и тест проходит вхолостую);
+        // трек недоступности свежий; реплики живы по Patroni
+        var now = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var adopted = new Dictionary<string, NodeAddress>
+        {
+            ["shard1/shard1a"] = new("ext-h", new NodePorts(15000, 0, 16500), Object: "external"),
+            ["shard1/shard1b"] = new("h1", new NodePorts(15001, 18001, 16501)),
+            ["shard1/shard1c"] = new("h2", new NodePorts(15002, 18002, 16502)),
+        };
+        var rig = await NewRig(
+            _ => Ok(), // Patroni-пробы реплик живы; лидер — shard1b (не усыновлённая)
+            addresses: adopted,
+            staleUnreachableForShard1A: now - 200,
+            sql: new Fakes.FakeSql
+            {
+                ScalarResultByDsn = _ => Result<object?>.Failed(new ApplicationException("down")),
+            });
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1b"}""");
+
+        // Act
+        await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: нода мертва по пробе, но rebuild усыновлённых не выполняется
+        // (гвард adopted) — rebuild-факта нет; failover-факта тоже нет (не лидер)
+        var state = await WorkStateOf(rig);
+        state!.LastRebuild.Should().BeNull("усып. нода мертва по SQL, но rebuild-гвард её исключает");
+        state.LastFailover.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Tick_ToRemoveShard_DeadLeader_AcceleratedButNoFacts()
+    {
+        // Arrange: шард помечен TO_REMOVE (демонтаж); контейнеры всех нод на месте
+        // (EnsureDeclared TO_REMOVE-шард скипает), лидер shard1a мёртв ПО ПРОБЕ
+        // (18000 Down), реплики живы; фейк-инспект по умолчанию пуст → «нода не в
+        // running» → dead-ветвь ускоряет КАК РАНЬШЕ
+        var rig = await NewRig(port => port == 18000 ? Down() : Ok());
+        rig.Etcd.Seed("/clusters/shop/shards/shard1/state", "TO_REMOVE");
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1a"}""");
+
+        // Act
+        var outcome = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: механика не изменилась — failover-маркер поставлен; фактов нет
+        outcome.Value.Outcome.Should().Be(ProcessOutcome.Done);
+        rig.Etcd.Store.Should().ContainKey("/service/shop-shard1/failover",
+            "TO_REMOVE не отключает ускорение — гвард только на записи фактов");
+        var state = await WorkStateOf(rig);
+        state!.LastFailover.Should().BeNull("TO_REMOVE — демонтируемое, фактов нет");
+        state.LastRebuild.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Tick_QuarantinedAndRemovingDeadNodes_NoFacts()
+    {
+        // Arrange: нода shard1a в QUARANTINED (домен эвакуатора), нода shard1c в
+        // REMOVING (домен демонтажа) — обе мертвы по пробам; гвард проб один:
+        // node.State is Quarantined or Removing; лидер shard1b жив
+        var rig = await NewRig(port => port == 18000 || port == 18002 ? Down() : Ok());
+        rig.Etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1a/state", "QUARANTINED");
+        rig.Etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1c/state", "REMOVING");
+        rig.Etcd.Seed("/service/shop-shard1/leader", """{"name":"shard1b"}""");
+
+        // Act
+        await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: обе ноды вне проб надзора; фактов нет, state обеих не перезаписан
+        var state = await WorkStateOf(rig);
+        state!.LastFailover.Should().BeNull();
+        state.LastRebuild.Should().BeNull();
+        rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1a/state"].Value
+            .Should().Be("QUARANTINED");
+        rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1c/state"].Value
+            .Should().Be("REMOVING");
+    }
 }

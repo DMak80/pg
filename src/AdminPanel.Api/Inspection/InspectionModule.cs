@@ -103,6 +103,18 @@ public static class InspectionModule
                     detail: result.Error!.Message);
         });
 
+        // GET /api/reliability — грань «Надёжность» (arch/03 §1): RPO/RTO-числа.
+        endpoints.MapGet("/api/reliability", async (IHandler handler, CancellationToken ct) =>
+        {
+            var result = await handler.HandleQuery<ReliabilityQuery, ReliabilityDto>(new ReliabilityQuery(), ct);
+            return result.IsSuccess
+                ? Results.Ok(result.Value)
+                : Results.Problem(
+                    statusCode: StatusCodes.Status503ServiceUnavailable,
+                    title: "Snapshot not ready",
+                    detail: result.Error!.Message);
+        });
+
         endpoints.MapGet("/api/alerts", async (string? severity, string? kind, IHandler handler, CancellationToken ct) =>
         {
             // Валидация до query: строго critical|warning|info, иначе 400 (spec §3.13).

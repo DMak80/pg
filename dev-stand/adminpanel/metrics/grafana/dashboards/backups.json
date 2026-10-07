@@ -15,6 +15,10 @@
     {"type": "timeseries", "title": "Restore outcomes (increase 15m, by result)", "gridPos": {"x":0,"y":16,"w":12,"h":8},
      "targets": [{"expr": "increase(pgworker_backup_restore_total[15m])", "legendFormat": "{{cluster}}/{{shard}} {{result}}", "refId": "A"}]},
     {"type": "timeseries", "title": "Drill outcomes (increase 15m, by result)", "gridPos": {"x":12,"y":16,"w":12,"h":8},
-     "targets": [{"expr": "increase(pgworker_backup_drill_total[15m])", "legendFormat": "{{cluster}}/{{shard}} {{result}}", "refId": "A"}]}
+     "targets": [{"expr": "increase(pgworker_backup_drill_total[15m])", "legendFormat": "{{cluster}}/{{shard}} {{result}}", "refId": "A"}]},
+    {"type": "timeseries", "title": "HA RTO durations, s (by cluster/shard)", "gridPos": {"x":0,"y":24,"w":12,"h":8},
+     "targets": [
+        {"expr": "pgworker_ha_failover_duration_seconds", "legendFormat": "failover {{cluster}}/{{shard}}", "refId": "A"},
+        {"expr": "pgworker_ha_rebuild_duration_seconds", "legendFormat": "rebuild {{cluster}}/{{shard}}", "refId": "B"}]}
   ]
 }

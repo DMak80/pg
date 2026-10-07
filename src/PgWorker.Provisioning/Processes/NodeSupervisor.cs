@@ -12,6 +12,11 @@ using PgWorker.Provisioning.Sql;
 
 namespace PgWorker.Provisioning.Processes;
 
+/// <summary>Исход попытки ускорения failover (arch/14 §5 C): Applied — маркер
+/// поставлен и leader-ключ снят; NotLeader — нода не лидер scope; NoCandidate —
+/// лидер мёртв, живого кандидата нет (промоушен ждёт Patroni — elections).</summary>
+public enum FailoverAcceleration { Applied, NotLeader, NoCandidate }
+
 /// <summary>
 /// NodeSupervisor — штатный надзор инициализированных кластеров (задача 21;
 /// spec §6.4 C, arch/14 §5 C; эталон rebuild-node.sh): сверка декларации
@@ -36,7 +41,8 @@ public sealed class NodeSupervisor(
     PgtuneSettings pgtuneSettings,
     ILogger<NodeSupervisor> log,
     MasterKeyReconciler? masterKeys = null,
-    EtcdEndpoints? etcdForNodes = null)
+    EtcdEndpoints? etcdForNodes = null,
+    Action<string, IReadOnlyDictionary<string, (long? FailoverSec, long? RebuildSec)>>? haDurations = null)
 {
     /// <summary>
     /// Один тик надзора (не IClusterProcess: исход несёт мёртвые шарды).
@@ -64,6 +70,14 @@ public sealed class NodeSupervisor(
             return Fail(new ApplicationException(
                 $"supervise {cluster}: клэйм не наш (или потерян) — мутации запрещены"));
 
+        // Состояние надзора одним чтением: трек недоступности + HA-факты
+        // (takeover продолжает открытые события от сохранённого detected).
+        var supervision = await journal.ReadSupervisionStateAsync(cluster, ct);
+        if (!supervision.IsSuccess)
+            return Fail(supervision.Error!);
+        var track = new Dictionary<string, long>(supervision.Value.Unreachable);
+        var haFacts = HaFactState.FromStored(supervision.Value.LastFailover, supervision.Value.LastRebuild);
+
         var addresses = await ReadPortAllocAsync(cluster, ct);
         if (!addresses.IsSuccess)
             return Fail(addresses.Error!);
@@ -74,7 +88,7 @@ public sealed class NodeSupervisor(
         var declaredSnap = restoring.Count == 0
             ? snap
             : snap with { Shards = snap.Shards.Where(s => !restoring.Contains(s.Name)).ToList() };
-        var declared = await EnsureDeclaredNodesAsync(cluster, declaredSnap, addresses.Value, ct);
+        var declared = await EnsureDeclaredNodesAsync(cluster, declaredSnap, addresses.Value, track, haFacts, ct);
         if (!declared.IsSuccess)
             return Fail(declared.Error!);
 
@@ -95,10 +109,6 @@ public sealed class NodeSupervisor(
         }
 
         // 2) Пробы + сценарии недоступности (трек в work-журнале, план №4).
-        var unreachable = await journal.ReadUnreachableAsync(cluster, ct);
-        if (!unreachable.IsSuccess)
-            return Fail(unreachable.Error!);
-        var track = new Dictionary<string, long>(unreachable.Value);
         var deadShards = new List<string>();
 
         foreach (var shard in snap.Shards)
@@ -116,11 +126,11 @@ public sealed class NodeSupervisor(
 
             // Operator-triggered recreate (TO_RECREATE): оператор панелью просит
             // пересоздать ноду — rebuild немедленно, без ожидания NodeDeadSec.
-            var recreated = await RecreateMarkedNodesAsync(cluster, snap, shard, addresses.Value, ct);
+            var recreated = await RecreateMarkedNodesAsync(cluster, snap, shard, addresses.Value, track, haFacts, ct);
             if (!recreated.IsSuccess)
                 return Fail(recreated.Error!);
 
-            var shardTrack = await SuperviseShardAsync(cluster, snap, shard, addresses.Value, track, ct);
+            var shardTrack = await SuperviseShardAsync(cluster, snap, shard, addresses.Value, track, haFacts, ct);
             if (!shardTrack.IsSuccess)
                 return Fail(shardTrack.Error!);
 
@@ -161,7 +171,26 @@ public sealed class NodeSupervisor(
                 deadShards.Add(evacuated);
         }
 
-        await journal.WriteSupervisionAsync(cluster, claims.InstanceId, track, null, ct);
+        // Запись фактов/трека — финальный put тика (arch/14 §5 C): сбой —
+        // warning-лог (наблюдаемость ≠ данные), тик не роняем.
+        var supervisionPut = await journal.WriteSupervisionAsync(
+            cluster, claims.InstanceId, track, null, ct, haFacts.ToRecord());
+        if (!supervisionPut.IsSuccess)
+            log.LogWarning("supervise {Cluster}: финальная запись work-ключа не удалась: {Error}",
+                cluster, supervisionPut.Error!.Message);
+
+        // RTO-серии (arch/18 §2.7): только завершённые длительности; наблюдатель
+        // пассивный (try/catch внутри марк-метода).
+        if (haDurations is not null)
+        {
+            var factsRecord = haFacts.ToRecord();
+            haDurations(cluster, snap.Shards
+                .Where(s => s.Dsn is not null)
+                .ToDictionary(
+                    s => s.Name,
+                    s => ((factsRecord.LastFailover is { } f && f.Shard == s.Name) ? f.DurationSec : null,
+                          (factsRecord.LastRebuild is { } r && r.Shard == s.Name) ? r.DurationSec : null)));
+        }
 
         // 3) P11-сверка мастер-ключей (только при рассинхроне — отдельный контур).
         if (masterKeys is not null)
@@ -186,7 +215,7 @@ public sealed class NodeSupervisor(
             if (restoring.Contains(shard.Name))
                 continue; // t05 §3.4: конфиг DCS восстановит свежеподнятая нода
             var converged = await ConvergeDcsConfigAsync(cluster, shard, addresses.Value,
-                snap.Config.SyncStrict, track, ct);
+                snap.Config.SyncStrict, track, haFacts, ct);
             if (!converged.IsSuccess)
                 return Fail(converged.Error!);
         }
@@ -202,7 +231,8 @@ public sealed class NodeSupervisor(
     // Сверка декларации: EnsureNode плановых нод без docker-объекта.
     private async Task<Result> EnsureDeclaredNodesAsync(
         string cluster, ClusterSnapshot snap,
-        IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
+        IReadOnlyDictionary<string, NodeAddress> addresses,
+        Dictionary<string, long> track, HaFactState haFacts, CancellationToken ct)
     {
         var objects = await driver.ListNodeObjectsAsync(cluster, ct);
         if (!objects.IsSuccess)
@@ -265,6 +295,14 @@ public sealed class NodeSupervisor(
                     cluster, shard, node.Name, addresses, ct);
                 if (!accelerated.IsSuccess)
                     return accelerated;
+                // Наблюдатель: Applied — accelerated; NoCandidate — elections
+                // (мёртвый лидер без живого кандидата, промоушен ждёт Patroni);
+                // NotLeader — не событие (нода не лидер scope). TO_REMOVE —
+                // демонтируемое, фактов нет (гвард только на факте).
+                if (!shard.ToRemove && accelerated.Value is not FailoverAcceleration.NotLeader)
+                    haFacts.FailoverDetected(shard.Name, node.Name,
+                        accelerated.Value == FailoverAcceleration.Applied ? "accelerated" : "elections",
+                        track.GetValueOrDefault($"{shard.Name}/{node.Name}", Now()));
 
                 if (node.State != NodeState.Provisioning)
                 {
@@ -310,7 +348,7 @@ public sealed class NodeSupervisor(
     // недоступности текущего тика.
     private async Task<Result> ConvergeDcsConfigAsync(
         string cluster, ShardSpec shard, IReadOnlyDictionary<string, NodeAddress> addresses,
-        bool syncStrict, Dictionary<string, long> track, CancellationToken ct)
+        bool syncStrict, Dictionary<string, long> track, HaFactState haFacts, CancellationToken ct)
     {
         var probeNode = addresses
             .Where(p => p.Key.StartsWith($"{shard.Name}/", StringComparison.Ordinal))
@@ -361,7 +399,7 @@ public sealed class NodeSupervisor(
                        : string.Empty) +
                    $") ({divergence.Patch})";
         await journal.WritePhaseAsync(cluster, "supervise", "dcs-converge", claims.InstanceId,
-            note, ct, unreachable: track);
+            note, ct, unreachable: track, facts: haFacts.ToRecord());
         return Result.Success();
     }
 
@@ -376,17 +414,17 @@ public sealed class NodeSupervisor(
     // Кандидат — живая нода с ролью sync_standby (по GET /cluster), иначе
     // первая живая. Нет живых — не ускоряем: некому промоутиться, лидер
     // вернётся рестартом контейнера.
-    private async Task<Result> AccelerateDeadLeaderFailoverAsync(
+    private async Task<Result<FailoverAcceleration>> AccelerateDeadLeaderFailoverAsync(
         string cluster, ShardSpec shard, string missing,
         IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
     {
         var scope = $"{cluster}-{shard.Name}";
         var scopeKvs = await RangeAsync($"/service/{scope}/", ct);
         if (!scopeKvs.IsSuccess)
-            return scopeKvs;
+            return Result<FailoverAcceleration>.Failed(scopeKvs.Error!);
         var leader = ClusterSnapshotParser.ParseService(scopeKvs.Value).FirstOrDefault()?.LeaderName;
         if (leader != missing)
-            return Result.Success(); // лидер не она (уже переехал/не была) — обычный подъём
+            return Result<FailoverAcceleration>.Success(FailoverAcceleration.NotLeader); // лидер не она (уже переехал/не была) — обычный подъём
 
         string? candidate = null;
         foreach (var other in shard.Nodes.Where(n => n.Name != missing
@@ -406,15 +444,18 @@ public sealed class NodeSupervisor(
         }
 
         if (candidate is null)
-            return Result.Success();
+            return Result<FailoverAcceleration>.Success(FailoverAcceleration.NoCandidate);
 
         var scheduled = clock.GetUtcNow().UtcDateTime.ToString("o");
         var marked = await PutAsync($"/service/{scope}/failover",
             $$"""{"leader":"{{missing}}","member":"{{candidate}}","scheduled_at":"{{scheduled}}"}""", ct);
         if (!marked.IsSuccess)
-            return marked;
+            return Result<FailoverAcceleration>.Failed(marked.Error!);
 
-        return await DeleteAsync($"/service/{scope}/leader", ct);
+        var deleted = await DeleteAsync($"/service/{scope}/leader", ct);
+        return deleted.IsSuccess
+            ? Result<FailoverAcceleration>.Success(FailoverAcceleration.Applied)
+            : Result<FailoverAcceleration>.Failed(deleted.Error!);
     }
 
     // Operator-triggered recreate (TO_RECREATE): оператор панелью просит
@@ -427,7 +468,8 @@ public sealed class NodeSupervisor(
     // плановая) нода-свидетель помимо помеченной; без кворума ждём.
     private async Task<Result> RecreateMarkedNodesAsync(
         string cluster, ClusterSnapshot snap, ShardSpec shard,
-        IReadOnlyDictionary<string, NodeAddress> addresses, CancellationToken ct)
+        IReadOnlyDictionary<string, NodeAddress> addresses,
+        Dictionary<string, long> track, HaFactState haFacts, CancellationToken ct)
     {
         var marked = shard.Nodes.Where(n => n.State == NodeState.ToRecreate).ToList();
         if (marked.Count == 0)
@@ -516,6 +558,13 @@ public sealed class NodeSupervisor(
             if (!rebuilding.IsSuccess)
                 return rebuilding;
 
+            // Наблюдатель (arch/14 §5 C): rebuild по заявке оператора. Для живой
+            // ноды трека нет — detected = момент исполнения маркера; object-ветка
+            // уже сделала continue раньше — усыновлённые фактов не порождают.
+            if (!shard.ToRemove)
+                haFacts.RebuildDetected(shard.Name, node.Name, "operator-recreate",
+                    track.GetValueOrDefault($"{shard.Name}/{node.Name}", Now()));
+
             // Маркер режима исполнен — убрать (state=REBUILDING дальше живёт сам).
             var unmarked = await DeleteAsync(
                 $"/clusters/{cluster}/shards/{shard.Name}/nodes/{node.Name}/recreate", ct);
@@ -541,13 +590,17 @@ public sealed class NodeSupervisor(
     private async Task<Result> SuperviseShardAsync(
         string cluster, ClusterSnapshot snap, ShardSpec shard,
         IReadOnlyDictionary<string, NodeAddress> addresses,
-        Dictionary<string, long> track, CancellationToken ct)
+        Dictionary<string, long> track, HaFactState haFacts, CancellationToken ct)
     {
         var scope = $"{cluster}-{shard.Name}";
         var scopeKvs = await RangeAsync($"/service/{scope}/", ct);
         if (!scopeKvs.IsSuccess)
             return scopeKvs;
         var leader = ClusterSnapshotParser.ParseService(scopeKvs.Value).FirstOrDefault()?.LeaderName;
+
+        // Закрытие открытого failover: лидер scope — ДРУГАЯ нода (R4: смена без
+        // открытого факта событием не изобретается — только закрытие существующего).
+        haFacts.LeaderChanged(shard.Name, leader, Now());
 
         // Санитизация failover-ключа (хвост failover-first ускорения): Patroni
         // не всегда потребляет ключ после промоушена — висящий ключ с чужим
@@ -628,6 +681,8 @@ public sealed class NodeSupervisor(
             // Swarm-инспект — заглушка (всегда пуст), и без гварда любой
             // транспортный флап пробы лидера давал ложный failover живого
             // лидера (удаление leader-ключа + failover-маркер).
+            // Условие ускорения — без изменений (механика надзора не меняется);
+            // новые гварды ToRemove — ТОЛЬКО вокруг записи фактов.
             if (isLeader && !adopted && node.State != NodeState.ToRecreate
                 && alive.Count > 0 && driver.SupportsRunningInspection)
             {
@@ -640,7 +695,20 @@ public sealed class NodeSupervisor(
                         cluster, shard, name, addresses, ct);
                     if (!accelerated.IsSuccess)
                         return accelerated;
+                    // В этой ветке NotLeader невозможен (isLeader по свежему
+                    // leader-ключу тика): Applied → accelerated, NoCandidate →
+                    // elections (spec §3.1).
+                    if (!shard.ToRemove)
+                        haFacts.FailoverDetected(shard.Name, name,
+                            accelerated.Value == FailoverAcceleration.Applied ? "accelerated" : "elections",
+                            track[trackKey]);
                 }
+            }
+            else if (isLeader && !adopted && node.State != NodeState.ToRecreate && !shard.ToRemove)
+            {
+                // Ускорение не применяется (нет честной инспекции/живых по пробам):
+                // промоушен ждёт Patroni — фиксируем elections-факт (наблюдатель).
+                haFacts.FailoverDetected(shard.Name, name, "elections", track[trackKey]);
             }
 
             if (!isLeader && quorum && expired && !adopted)
@@ -667,6 +735,10 @@ public sealed class NodeSupervisor(
                     $"/clusters/{cluster}/shards/{shard.Name}/nodes/{name}/state", "REBUILDING", ct);
                 if (!rebuilding.IsSuccess)
                     return rebuilding;
+                // Наблюдатель (arch/14 §5 C): rebuild по недоступности — detected
+                // читается ДО Remove (первый тик недоступности из трека).
+                if (!shard.ToRemove)
+                    haFacts.RebuildDetected(shard.Name, name, "auto-dead", track[trackKey]);
                 track.Remove(trackKey); // пересоздана — счётчик с нуля
                 continue;
             }
@@ -691,6 +763,11 @@ public sealed class NodeSupervisor(
         {
             var node = shard.Nodes.Single(n => n.Name == name);
             track.Remove($"{shard.Name}/{name}");
+            // Флап-оживание лидера: недоступность БЕЗ смены лидера — факта не было.
+            haFacts.LeaderRecovered(shard.Name, name, leader);
+            // Живая нода пробой — закрытие открытого rebuild (переход → RUNNING
+            // или уже RUNNING при takeover после подъёма).
+            haFacts.NodeAlive(shard.Name, name, Now());
             if (node.State is not (NodeState.Running or NodeState.ToRecreate))
             {
                 var running = await PutAsync(

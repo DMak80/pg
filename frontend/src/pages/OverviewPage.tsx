@@ -15,13 +15,13 @@ import {
   Tooltip,
 } from '@mantine/core';
 import { Link } from 'react-router';
-import type { AlertSeverityName, BackupStorageDto, HaScopeSummaryDto, MinioHealthDto, OverviewDto } from '../api/dto';
-import { backupsQueryKeys, fetchAlerts, fetchBackupsStorage, fetchHaScopes, fetchOverview, queryKeys } from '../api/queries';
+import type { AlertSeverityName, BackupStorageDto, HaScopeSummaryDto, MinioHealthDto, OverviewDto, ReliabilityDto } from '../api/dto';
+import { backupsQueryKeys, fetchAlerts, fetchBackupsStorage, fetchHaScopes, fetchOverview, fetchReliability, queryKeys, reliabilityQueryKeys } from '../api/queries';
 import { BucketStateBadge } from '../components/BucketStateBadge';
 import { AlertSeverityBadge } from '../components/AlertSeverityBadge';
 import { ErrorSection, LoadingSection } from '../components/LoadState';
 import { usePollingIntervalMs } from '../polling/PollingContext';
-import { formatBytes, formatUnix, formatUnixAge } from '../utils/format';
+import { formatAge, formatBytes, formatUnix, formatUnixAge } from '../utils/format';
 
 // Сортировка ленты: critical раньше warning, внутри — новые сверху (t08 spec §4.4).
 function sortAlertRows(a: { severity: string; sinceUnix: number | null }, b: { severity: string; sinceUnix: number | null }): number {
@@ -57,6 +57,13 @@ export function OverviewPage() {
     queryFn: fetchBackupsStorage,
     refetchInterval: intervalMs,
   });
+  // Сводка надёжности: клиентская агрегация GET /api/reliability (arch/03 §3);
+  // тот же ключ, что у страницы /reliability — TanStack дедуплицирует опрос.
+  const reliability = useQuery({
+    queryKey: reliabilityQueryKeys.all,
+    queryFn: fetchReliability,
+    refetchInterval: intervalMs,
+  });
 
   if (overview.data === undefined)
     return overview.isError ? (
@@ -66,6 +73,11 @@ export function OverviewPage() {
     );
 
   const data = overview.data;
+  // Active-кластера для агрегаций карточек: кластерная сводка OverviewDto
+  // state-поля не несёт — прокси «активен» = не notInitialized.
+  const activeClusterNames = new Set(
+    data.clusters.filter((c) => !c.notInitialized).map((c) => c.name),
+  );
   return (
     <Stack gap="md">
       <Title order={2}>Обзор</Title>
@@ -80,6 +92,7 @@ export function OverviewPage() {
           isPending={backups.isPending}
           onRetry={() => void backups.refetch()}
         />
+        <ReliabilityCard data={reliability.data} activeClusters={activeClusterNames} isPending={reliability.isPending} onRetry={() => void reliability.refetch()} />
         <AlertsCard data={data} />
         <HaCard
           scopes={haScopes.data}
@@ -95,6 +108,75 @@ export function OverviewPage() {
         rows={(alerts.data ?? []).filter((a) => a.severity !== 'info').sort(sortAlertRows)}
       />
     </Stack>
+  );
+}
+
+// Карточка «Надёжность» (arch/03 §3): worst RPO-потенциал по Active-кластерам,
+// счётчики шардов mode=full («RPO держится только полным») и mode=off,
+// длительность последнего failover установки (клиентская агрегация GET /api/reliability).
+function ReliabilityCard({ data, activeClusters, isPending, onRetry }: {
+  data: ReliabilityDto | undefined;
+  activeClusters: Set<string>;
+  isPending: boolean;
+  onRetry: () => void;
+}) {
+  if (data === undefined)
+    return isPending ? (
+      <Card withBorder padding="md" radius="md">
+        <Text fw={600} mb="xs">Надёжность</Text>
+        <Text c="dimmed" size="sm">Загрузка надёжности…</Text>
+      </Card>
+    ) : (
+      <Card withBorder padding="md" radius="md">
+        <Text fw={600} mb="xs">Надёжность</Text>
+        <Stack gap="xs" align="flex-start">
+          <Alert color="red">Нет данных надёжности</Alert>
+          <Anchor size="sm" onClick={onRetry}>Повторить</Anchor>
+        </Stack>
+      </Card>
+    );
+
+  // Агрегация — только Active-кластерам (spec §3.6): демонтируемые/не
+  // инициализированные не завышают счётчики и не задают worst.
+  const shards = (data.clusters ?? [])
+    .filter((c) => activeClusters.has(c.cluster))
+    .flatMap((c) => c.shards);
+  const potentials = shards
+    .filter((s) => s.rpo && s.rpo.mode !== 'off' && s.rpo.rpoPotentialSec !== null && s.rpo.rpoPotentialSec !== undefined)
+    .map((s) => s.rpo!.rpoPotentialSec!);
+  const worst = potentials.length > 0 ? Math.max(...potentials) : null;
+  const fullCount = shards.filter((s) => s.rpo?.mode === 'full').length;
+  const offCount = shards.filter((s) => s.rpo?.mode === 'off').length;
+  // «Последний failover установки» — самый НЕдавний закрытый факт (max
+  // resolvedUnix, fallback detectedUnix), а не самый длинный.
+  let lastFailover: { durationSec: number; atUnix: number } | null = null;
+  for (const s of shards) {
+    const f = s.rto?.lastFailover;
+    if (!f || f.durationSec === null || f.durationSec === undefined) continue;
+    const at = f.resolvedUnix ?? f.detectedUnix;
+    if (lastFailover === null || at > lastFailover.atUnix)
+      lastFailover = { durationSec: f.durationSec, atUnix: at };
+  }
+  return (
+    <Card withBorder padding="md" radius="md">
+      <Group justify="space-between" mb="xs">
+        <Text fw={600}>Надёжность</Text>
+        <Anchor size="sm" component={Link} to="/reliability">детали</Anchor>
+      </Group>
+      <Stack gap="xs">
+        <Text size="sm">
+          Худший RPO-потенциал: {worst === null ? '—' : formatAge(worst * 1000)}
+        </Text>
+        <Text size="sm" c={fullCount > 0 ? 'orange' : undefined}>
+          RPO держится только полными: {fullCount} {offCount > 0 ? `· off: ${offCount}` : ''}
+        </Text>
+        <Text size="sm" c="dimmed">
+          Последний failover: {lastFailover === null
+            ? '—'
+            : `${formatAge(lastFailover.durationSec * 1000)} (${formatUnixAge(lastFailover.atUnix)} назад)`}
+        </Text>
+      </Stack>
+    </Card>
   );
 }
 

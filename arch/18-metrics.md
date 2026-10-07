@@ -162,13 +162,14 @@ static (DNS-имена сети стенда). Узлы, создаваемые 
 Поле INFO отсутствует/нечислово в ответе ноды → конкретная серия не эмитится
 (консервативно, без нулей-фантомов); сам сбор кластера при этом успешен.
 
-### 2.7. Бэкап-домен PgWorker (серии питают тики процессов бэкапов, arch/19)
+### 2.7. Бэкап-домен и RTO-длительности PgWorker (серии питают тики процессов бэкапов и надзора, arch/19, arch/14 §5 C)
 
 Отдельного коллектора НЕТ: серии пишутся тиками существующих процессов бэкапов
 под клэймом `<C>` (observer-делегаты, паттерн §4.1/§4.2) — возраст полных —
 BackupProcess (планировщик уже вычисляет обе величины, arch/19 §2), WAL-серии —
 контрольный проход WalStreamProcess (`Wal:VerifyIntervalSec`, arch/19 §3),
-counters — точки фиксации терминальных исходов verify/restore/drill. Набор серий
+counters — точки фиксации терминальных исходов verify/restore/drill. RTO-длительности
+пишутся тиком надзора (NodeSupervisor) из фактов work-ключа (arch/14 §3.3). Набор серий
 кластера перезатирается каждым тиком (паттерн `UpdateCluster` §4.2): ушедшие
 шарды/кластеры стейт не копят; null-факт (нет валидного полного, зонд не удался,
 wal-ключ STOPPED/BROKEN/удалён) — серия исчезает до появления факта. Панель этих
@@ -185,6 +186,8 @@ wal-ключ STOPPED/BROKEN/удалён) — серия исчезает до �
 | `pgworker_backup_verify_total` | counter | cluster, shard, result | исходы verify полных, `result` ∈ {ok,failed,transient} |
 | `pgworker_backup_restore_total` | counter | cluster, shard, result | терминальные исходы restore-заявок, `result` ∈ {ok,failed} |
 | `pgworker_backup_drill_total` | counter | cluster, shard, result | терминальные исходы дрилов восстановимости, `result` ∈ {ok,failed} |
+| `pgworker_ha_failover_duration_seconds` | gauge | cluster, shard | длительность последнего ЗАВЕРШЁННОГО failover (смена лидера после недоступности; resolved − detected, arch/14 §3.3); открытого события/факта нет — серия не эмитится |
+| `pgworker_ha_rebuild_duration_seconds` | gauge | cluster, shard | длительность последнего ЗАВЕРШЁННОГО rebuild ноды; факта нет — серия не эмитится |
 
 Prometheus-алерты группы `backups` (rules.yml; severity — зеркало панельных
 правил): `BackupFullStale` (critical; `age > max_age` — порог per-cluster из

@@ -32,6 +32,8 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     private readonly Dictionary<(string Cluster, string Shard), long> _walLag = new();
     private readonly Dictionary<(string Cluster, string Shard), long> _fullAgeFinishedUnix = new();
     private readonly Dictionary<(string Cluster, string Shard), long> _fullMaxAge = new();
+    private readonly Dictionary<(string Cluster, string Shard), long> _haFailoverSec = new();
+    private readonly Dictionary<(string Cluster, string Shard), long> _haRebuildSec = new();
     private readonly Dictionary<(string Cluster, string Shard), long> _walUploadedUnix = new();
     private readonly Dictionary<(string Cluster, string Shard, string Result), long> _backupVerify = new();
     private readonly Dictionary<(string Cluster, string Shard, string Result), long> _backupRestore = new();
@@ -113,6 +115,25 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                     new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
                     new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
             unit: "s", description: "Возраст последней загрузки WAL-сегмента в S3, с (arch/18 §2.7)");
+
+        // t17 (arch/18 §2.7): RTO-длительности — только ЗАВЕРШЁННЫЕ факты надзора
+        // (resolved − detected, arch/14 §3.3); открытого события/факта нет — серия
+        // не эмитится. Источник — тик NodeSupervisor (наблюдатель haDurations).
+        meter.CreateObservableGauge(
+            "pgworker_ha_failover_duration_seconds",
+            () => Measure(() => _haFailoverSec.Select(kv =>
+                new Measurement<long>(kv.Value,
+                    new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
+                    new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
+            unit: "s", description: "Длительность последнего завершённого failover, с (arch/14 §3.3)");
+
+        meter.CreateObservableGauge(
+            "pgworker_ha_rebuild_duration_seconds",
+            () => Measure(() => _haRebuildSec.Select(kv =>
+                new Measurement<long>(kv.Value,
+                    new KeyValuePair<string, object?>("cluster", kv.Key.Cluster),
+                    new KeyValuePair<string, object?>("shard", kv.Key.Shard)))),
+            unit: "s", description: "Длительность последнего завершённого rebuild, с (arch/14 §3.3)");
 
         meter.CreateObservableGauge(
             "worker.process.phase.duration_seconds",
@@ -313,6 +334,43 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         catch
         {
             // Пассивный наблюдатель.
+        }
+    }
+
+    // Gauge pgworker_ha_{failover,rebuild}_duration_seconds (arch/18 §2.7):
+    // ЕДИНЫЙ марк-метод на тик надзора — набор шардов тика замещает стейт
+    // кластера ЦЕЛИКОМ (ушедшие шарды серии не копят; null-факт — серия шарда
+    // исчезает до появления завершённого факта).
+    public void HaDurations(string cluster, IReadOnlyDictionary<string, (long? FailoverSec, long? RebuildSec)> shards)
+    {
+        try
+        {
+            lock (_lock)
+            {
+                foreach (var gone in _haFailoverSec.Keys.Concat(_haRebuildSec.Keys)
+                             .Where(k => k.Cluster == cluster && !shards.ContainsKey(k.Shard))
+                             .Distinct().ToList())
+                {
+                    _haFailoverSec.Remove(gone);
+                    _haRebuildSec.Remove(gone);
+                }
+
+                foreach (var (shard, value) in shards)
+                {
+                    if (value.FailoverSec is { } failover)
+                        _haFailoverSec[(cluster, shard)] = failover;
+                    else
+                        _haFailoverSec.Remove((cluster, shard));
+                    if (value.RebuildSec is { } rebuild)
+                        _haRebuildSec[(cluster, shard)] = rebuild;
+                    else
+                        _haRebuildSec.Remove((cluster, shard));
+                }
+            }
+        }
+        catch
+        {
+            // Пассивный наблюдатель: ошибка инструментария не влияет на цикл.
         }
     }
 
@@ -537,7 +595,9 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
                 _fullAgeFinishedUnix.ToFrozenDictionary(),
                 _fullMaxAge.ToFrozenDictionary(),
                 _walUploadedUnix.ToFrozenDictionary(),
-                age);
+                age,
+                _haFailoverSec.ToFrozenDictionary(),
+                _haRebuildSec.ToFrozenDictionary());
         }
     }
 
@@ -555,7 +615,9 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         IReadOnlyDictionary<(string Cluster, string Shard), long> FullAgeFinishedUnix,
         IReadOnlyDictionary<(string Cluster, string Shard), long> FullMaxAge,
         IReadOnlyDictionary<(string Cluster, string Shard), long> WalUploadedUnix,
-        double? SnapshotAgeSeconds);
+        double? SnapshotAgeSeconds,
+        IReadOnlyDictionary<(string Cluster, string Shard), long> HaFailoverDurations,
+        IReadOnlyDictionary<(string Cluster, string Shard), long> HaRebuildDurations);
 
     internal sealed record DebugPhase(string Phase, DateTimeOffset StartedAt);
 }

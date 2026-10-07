@@ -354,4 +354,29 @@ public class EtcdWorkJournalTests(EtcdContainerFixture fixture) : IClassFixture<
         work.RetryNotBeforeUnix.Should().Be(1756009210);
         store.Current.ParseErrors.Should().Contain(e => e.Key == "/pgworker/work/bad");
     }
+
+    [Fact]
+    public async Task Refresh_WorkKeyWithHaFacts_SnapshotCarriesThem()
+    {
+        // Arrange: реальный etcd (Demo-сид фикстуры); поверх — расширенный work-ключ
+        var ct = TestContext.Current.CancellationToken;
+        var gateway = EtcdTestHarness.NewGateway();
+        await gateway.PutAsync(fixture.Endpoint, "/pgworker/work/shop", """
+            {"op":"supervise","phase":"supervising","instance":"i1","updated_unix":1756000000,
+             "last_failover":{"shard":"s1","node":"n1","cause":"accelerated","detected_unix":1000,"resolved_unix":1075,"duration_sec":75},
+             "last_rebuild":{"shard":"s1","node":"n2","cause":"auto-dead","detected_unix":900}}
+            """, lease: null, ct);
+        var store = new SnapshotStore();
+        var refresher = EtcdTestHarness.NewRefresher(store, fixture.Endpoint);
+
+        // Act: один тик refresher'а
+        var result = await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert: снапшот несёт факты; parseError пуст
+        result.IsSuccess.Should().BeTrue();
+        var work = store.Current!.PgWorkerWork.Should().ContainSingle(w => w.Cluster == "shop").Subject;
+        work.LastFailover!.DurationSec.Should().Be(75);
+        work.LastRebuild!.Cause.Should().Be("auto-dead");
+        store.Current.ParseErrors.Should().NotContain(e => e.Key == "/pgworker/work/shop");
+    }
 }

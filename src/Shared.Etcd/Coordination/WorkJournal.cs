@@ -17,11 +17,32 @@ public sealed record WorkState(
     [property: JsonPropertyName("unreachable")] IReadOnlyDictionary<string, long>? Unreachable = null,
     [property: JsonPropertyName("fail_count")] int? FailCount = null,
     [property: JsonPropertyName("fail_first_unix")] long? FailFirstUnix = null,
-    [property: JsonPropertyName("retry_not_before_unix")] long? RetryNotBeforeUnix = null);
+    [property: JsonPropertyName("retry_not_before_unix")] long? RetryNotBeforeUnix = null,
+    [property: JsonPropertyName("last_failover")] HaSupervisionFact? LastFailover = null,
+    [property: JsonPropertyName("last_rebuild")] HaSupervisionFact? LastRebuild = null);
 
 /// <summary>Серия подряд идущих фейлов процесса (бэкофф ретраев, arch/14 §3.3/§5 A):
 /// живёт в {prefix}/work/&lt;C&gt;, пишется фейлом, переносится фазами, сбрасывается Done.</summary>
 public sealed record RetrySeries(int FailCount, long FailFirstUnix, long RetryNotBeforeUnix);
+
+/// <summary>HA-факт надзора (arch/14 §3.3): последнее событие вида в
+/// {prefix}/work/&lt;C&gt;; открытое событие — без ResolvedUnix/DurationSec.</summary>
+public sealed record HaSupervisionFact(
+    [property: JsonPropertyName("shard")] string Shard,
+    [property: JsonPropertyName("node")] string Node,
+    [property: JsonPropertyName("cause")] string Cause,
+    [property: JsonPropertyName("detected_unix")] long DetectedUnix,
+    [property: JsonPropertyName("resolved_unix")] long? ResolvedUnix = null,
+    [property: JsonPropertyName("duration_sec")] long? DurationSec = null);
+
+/// <summary>Пара фактов тика надзора: null внутри = факта вида нет/сброшен.</summary>
+public sealed record HaSupervisionFacts(HaSupervisionFact? LastFailover, HaSupervisionFact? LastRebuild);
+
+/// <summary>Состояние надзора из work-ключа одним чтением: трек + факты.</summary>
+public sealed record SupervisionState(
+    IReadOnlyDictionary<string, long> Unreachable,
+    HaSupervisionFact? LastFailover,
+    HaSupervisionFact? LastRebuild);
 
 // Обёртка над {prefix}/work/<C> (t09: общий журнал Pg/Kfw, префикс — параметр ctor):
 // чистая etcd-запись фаз процессов (крах оставляет самодокументирующийся след;
@@ -65,7 +86,8 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
     // пороги сбрасываются каждой фазовой записью).
     public async Task<Result> WritePhaseAsync(
         string cluster, string op, string phase, string instance, string? lastError, CancellationToken ct,
-        RetrySeries? series = null, IReadOnlyDictionary<string, long>? unreachable = null)
+        RetrySeries? series = null, IReadOnlyDictionary<string, long>? unreachable = null,
+        HaSupervisionFacts? facts = null)
     {
         // t09 (унификация с Pg, фикс AC6): фазовая запись БЕЗ явного трека
         // сохраняет существующий (fix сброса порогов NodeDead/BrokerDead;
@@ -75,16 +97,23 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
         // и раньше стирали трек → supervise перечитывал пустоту и пороги не
         // истекали никогда.
         IReadOnlyDictionary<string, long>? track = unreachable;
+        HaSupervisionFact? carryFailover = facts?.LastFailover;
+        HaSupervisionFact? carryRebuild = facts?.LastRebuild;
         if (track is null)
         {
             var current = await ReadAsync(cluster, ct);
             if (!current.IsSuccess)
                 return current;
             track = current.Value?.Unreachable;
+            // carry-forward фактов (arch/14 §3.3): фазовая запись без явных
+            // фактов сохраняет существующие из ключа (как unreachable).
+            carryFailover ??= current.Value?.LastFailover;
+            carryRebuild ??= current.Value?.LastRebuild;
         }
 
         var payload = new WorkState(op, phase, instance, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), lastError,
-            track, series?.FailCount, series?.FailFirstUnix, series?.RetryNotBeforeUnix);
+            track, series?.FailCount, series?.FailFirstUnix, series?.RetryNotBeforeUnix,
+            carryFailover, carryRebuild);
         var put = await WithFailoverAsync(endpoint => gateway.PutAsync(
             endpoint, WorkKey(cluster), JsonSerializer.Serialize(payload, Json), lease: null, ct));
         if (put.IsSuccess)
@@ -112,16 +141,20 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
     }
 
     // Тик надзора: op=supervise + трек недоступности (пороги NodeDead/BrokerDead);
-    // lastError — накопленные warning-ы тика (RF=1-пересоздания и т.п.).
+    // lastError — накопленные warning-ы тика (RF=1-пересоздания и т.п.);
+    // facts — HA-факты тика (arch/14 §3.3: facts=null → поля опускаются —
+    // kfw/vwk-ключи фактов не несут; Pg-надзор передаёт всегда, в т.ч.
+    // null-полями внутри = сброс/флап).
     // ВНИМАНИЕ: стационарная запись надзора событие PhaseWritten НЕ эмитит —
     // supervise подавлен в фазовых сериях (arch/18 §2.2, решение ревью Ф4-2).
     public Task<Result> WriteSupervisionAsync(
         string cluster, string instance, IReadOnlyDictionary<string, long> unreachable,
-        string? lastError, CancellationToken ct)
+        string? lastError, CancellationToken ct, HaSupervisionFacts? facts = null)
         => WithFailoverAsync(endpoint => gateway.PutAsync(
             endpoint, WorkKey(cluster),
             JsonSerializer.Serialize(new WorkState("supervise", "supervising", instance,
-                DateTimeOffset.UtcNow.ToUnixTimeSeconds(), lastError, unreachable), Json),
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds(), lastError, unreachable,
+                LastFailover: facts?.LastFailover, LastRebuild: facts?.LastRebuild), Json),
             lease: null, ct));
 
     // Прочитать трек недоступности (null = журнала нет/поля нет).
@@ -133,6 +166,19 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
 
         return Result<IReadOnlyDictionary<string, long>>.Success(
             state.Value?.Unreachable ?? (IReadOnlyDictionary<string, long>)new Dictionary<string, long>());
+    }
+
+    // Состояние надзора одним чтением: трек недоступности + HA-факты
+    // (takeover-продолжение открытых событий, arch/14 §5 C).
+    public async Task<Result<SupervisionState>> ReadSupervisionStateAsync(string cluster, CancellationToken ct)
+    {
+        var state = await ReadAsync(cluster, ct);
+        if (!state.IsSuccess)
+            return Result<SupervisionState>.Failed(state.Error!);
+
+        return Result<SupervisionState>.Success(new SupervisionState(
+            state.Value?.Unreachable ?? (IReadOnlyDictionary<string, long>)new Dictionary<string, long>(),
+            state.Value?.LastFailover, state.Value?.LastRebuild));
     }
 
     private string WorkKey(string cluster) => $"{keyPrefix}/work/{cluster}";

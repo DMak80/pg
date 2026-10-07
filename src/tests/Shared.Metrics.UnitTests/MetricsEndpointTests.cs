@@ -59,6 +59,8 @@ public sealed class MetricsEndpointTests
             sut.ProcessPhase("demo", "provision", "started", now);
             sut.Operation("provision", ok: true);
             sut.SnapshotTaken(now);
+            // t17 (arch/18 §2.7): RTO-длительности — пин обоих гейджей
+            sut.HaDurations("demo", new Dictionary<string, (long?, long?)> { ["s1"] = (12, 34) });
 
             // Act: первый запрос — прогрев, второй — фактическая проверка экспорта
             await GetAsync(app);
@@ -73,6 +75,8 @@ public sealed class MetricsEndpointTests
             body.Should().Contain("worker_process_phase_duration_seconds");
             body.Should().Contain("worker_operation_total");
             body.Should().Contain("worker_snapshot_age_seconds");
+            body.Should().Contain("pgworker_ha_failover_duration_seconds");
+            body.Should().Contain("pgworker_ha_rebuild_duration_seconds");
             // §2.1: Runtime- и ASP.NET-метры. Факт пинов 1.16.0-beta.1 (M3): на
             // минимальном хосте гистограмма http_server_request_duration_seconds
             // не эмитится; фактический ASP.NET-метр — http_server_active_requests

@@ -616,7 +616,7 @@ arch/adminpanel/02 §2.3.1); координационные `leader`/`claims`/`i
 | `/pgworker/leader` | lease TTL 15 с | глобальный лидер для singleton-задач (регулярные снапшоты P12). Value: `{"instance":"<id>","since_unix":…}`. Захват: txn `version==0` + put-with-lease; продление keepalive раз в 5 с. Умер лидер → lease истёк → любой другой захватывает. |
 | `/pgworker/claims/<C>` | lease TTL 15 с | **пер-кластерный клэйм** работы: exclusivity обработки кластера одним инстансом. Value: `{"instance":"<id>","since_unix":…,"phase":…}`. Захват txn `version==0` + put-with-lease; держатель продлевает. Takeover: lease истёк → ключ исчез сам → txn другого инстанса succeeds. |
 | `/pgworker/locks/portalloc` | lease TTL 15 с | **глобальный portalloc-клэйм** (t90, §2.4): взаимоисключение секции довыделения портов «чтение занятости → выбор троек → запись `/pgworker/portalloc/<C>`» (provision P1 / add-shard / adoption-реплан) — пер-кластерные клэймы кросс-кластерную гонку не закрывают. Value: `{"instance":"<id>","since_unix":…}`. Захват txn `version==0` + put-with-lease; освобождение по завершении секции (del + revoke lease), смерть держателя — TTL. Не взял → InProgress (следующий тик). Без keepalive: секция короткая (единицы секунд ≪ TTL). |
-| `/pgworker/work/<C>` | обычный | журнал текущего процесса кластера (journal-before-manipulations, по образцу P7): `{"op":"provision\|deprovision\|evacuate\|rebuild","phase":"…","updated_unix":…,"instance":"<id>","last_error"?,"fail_count"?,"fail_first_unix"?,"retry_not_before_unix"?,"unreachable"?}`. Крах оставляет самодокументирующийся след; следующий инстанс продолжает с записанной фазы. Поля ретраев (2026-09-01): `fail_count` — подряд идущие фейлы (сбрасывается при успехе/`done`), `fail_first_unix` — первый фейл серии (возраст проблемы; живёт до закрытия серии), `retry_not_before_unix` — до какого времени тики процесса — skip (бэкофф §5 A); переносятся записями фаз внутри серии. Читает панель (алерт `provision-stuck`, arch/adminpanel/02 §2.3.1) и оператор. Одна запись на процесс — «последняя фаза побеждает»: каждая фаза/тик перезаписывает ключ, журнал — НЕ лог-история (счёт событий/вхождений по нему невозможен, урок t11); наблюдаемость «мутация происходит/не происходит» — по mod_revision целевого ключа (идемпотентность конвергенции DCS проверяется стабильностью mod_revision `/service/<scope>/config`, §5 C). |
+| `/pgworker/work/<C>` | обычный | журнал текущего процесса кластера (journal-before-manipulations, по образцу P7): `{"op":"provision\|deprovision\|evacuate\|rebuild","phase":"…","updated_unix":…,"instance":"<id>","last_error"?,"fail_count"?,"fail_first_unix"?,"retry_not_before_unix"?,"unreachable"?,"last_failover"?,"last_rebuild"?}`. Крах оставляет самодокументирующийся след; следующий инстанс продолжает с записанной фазы. Поля ретраев (2026-09-01): `fail_count` — подряд идущие фейлы (сбрасывается при успехе/`done`), `fail_first_unix` — первый фейл серии (возраст проблемы; живёт до закрытия серии), `retry_not_before_unix` — до какого времени тики процесса — skip (бэкофф §5 A); переносятся записями фаз внутри серии. Читает панель (алерт `provision-stuck`, arch/adminpanel/02 §2.3.1) и оператор. Одна запись на процесс — «последняя фаза побеждает»: каждая фаза/тик перезаписывает ключ, журнал — НЕ лог-история (счёт событий/вхождений по нему невозможен, урок t11); наблюдаемость «мутация происходит/не происходит» — по mod_revision целевого ключа (идемпотентность конвергенции DCS проверяется стабильностью mod_revision `/service/<scope>/config`, §5 C). Поля HA-фактов надзора (последний факт каждого вида, без истории): `last_failover` — недоступность лидера HA-scope, завершившаяся сменой лидера: `{"shard":"<X>","node":"<n>","cause":"accelerated"|"elections","detected_unix":<unix>,"resolved_unix"?,"duration_sec"?}`; `last_rebuild` — пересоздание ноды: `{"shard":"<X>","node":"<n>","cause":"auto-dead"|"operator-recreate","detected_unix":<unix>,"resolved_unix"?,"duration_sec"?}`. `detected_unix` — первый тик недоступности из трека `unreachable` (для operator-recreate живой ноды — момент исполнения маркера); `resolved_unix`/`duration_sec` отсутствуют — событие открыто (идёт сейчас; takeover продолжает от сохранённого `detected_unix`). Длительность — от первого тика недоступности до работоспособности (окно детекции входит — честный RTO). Новое событие того же вида перезаписывает поле. Владелец полей — надзор (единственный писатель); фазовые записи процессов переносят оба поля (как `unreachable`). |
 | `/pgworker/evacuations/<C>/<X>` | обычный | журнал эвакуации шарда: `{"evacuated_unix","reason","buckets":{...старый→новый владелец...},"state":"DONE\|QUARANTINED"}` — истина для разбора после возврата шарда. |
 | `/pgworker/portalloc/<C>` | обычный | закрепление выделенных портов за нодами (§2.4): `{"<shard>/<node>":{"host":"h1","pg":15432,"patroni":18008,"doorman":16432}}` (+опц. `"object"` для усыновлённых, §5 J) — переживает смерть инстанса, переиспользуется при rebuild; пишется также усыновлением (§5 J: read-modify-write merge под клэймом). |
 | `/pgworker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика; необязательно для работы) |
@@ -905,6 +905,27 @@ D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый �
 - Весь шард недоступен (все ноды молчат, master-ключ протух) дольше
   `ShardDeadSec` (300 с, конфиг) → эвакуация (D). Пороговое время трекается
   в `/pgworker/work/<C>` (поле `unreachable`).
+- **HA-факты в work-ключе** (`last_failover`/`last_rebuild`, §3.3):
+  надзор фиксирует последний факт каждого вида. Failover: недоступность
+  лидера (трек `unreachable`) с применённым ускорением
+  (`AccelerateDeadLeaderFailoverAsync` — docker-объект отсутствует/не
+  running) → `cause=accelerated`; без применения ускорения — нет
+  `SupportsRunningInspection`, живых по пробам, либо живой кандидат не
+  найден (промоушен ждёт Patroni) → `cause=elections`. Закрытие — тик, где
+  leader-ключ scope указывает на ДРУГУЮ ноду (`resolved_unix` = тик,
+  `duration_sec` = resolved − detected); транзиентный флап (нода ожила,
+  лидерство сохранила) — открытая запись удаляется без фиксации; graceful
+  switchover живого лидера (soft-path recreate) — не событие. Rebuild:
+  rebuild-ветка надзора → `cause=auto-dead`; исполнение маркера
+  TO_RECREATE → `cause=operator-recreate`; закрытие — первый тик, где
+  пересозданная нода жива пробой (переход state → RUNNING). Границы:
+  усыновлённые (`object`) ноды фактов не порождают; QUARANTINED/REMOVING —
+  вне проб; шард без dsn и шард с TO_REMOVE — фактов нет (самовосстановление
+  и ускорение для TO_REMOVE работают как раньше — гвард только на записи
+  фактов). Открытое событие живёт в ключе (переживает takeover); запись —
+  финальный put тика надзора, сбой записи — warning (наблюдаемость ≠
+  данные). Панель отображает факты только шардов живой декларации (ключ
+  кластерный; чистки D2 достаточно).
 - **MasterKeyReconciler** (P11): у каждого шарда сверить master-ключ с
   фактом (`GET /primary` по нодам): расхождение или ключа нет при живом
   primary → lease-put коррекция `host:<doorman-port>` (пишет только при

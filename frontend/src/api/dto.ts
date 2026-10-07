@@ -997,3 +997,58 @@ export interface UploadWorkerCertRequestDto {
   cert_pem: string;
   key_pem: string;
 }
+
+// GET /api/reliability — грань «Надёжность» (RPO/RTO-числа).
+export type RpoMode = 'wal' | 'full' | 'off';
+
+export interface RpoDto {
+  mode: RpoMode;
+  fullAgeSec?: number | null;
+  fullId?: string | null;
+  walLagSegments?: number | null;
+  walAgeSec?: number | null;
+  rpoPotentialSec?: number | null;
+  thresholdFullAgeSec: number;
+}
+
+export interface HaFactRtoDto {
+  shard: string;
+  node: string;
+  cause: string;
+  detectedUnix: number;
+  resolvedUnix?: number | null;
+  durationSec?: number | null;
+  ongoing: boolean;
+  ongoingSec: number;
+}
+
+export interface OpRtoDto {
+  state: string;
+  durationSec?: number | null;
+  ongoingSec?: number | null;
+  finishedUnix?: number | null;
+  error?: string | null;
+}
+
+export interface RtoDto {
+  lastFailover?: HaFactRtoDto | null;
+  lastRebuild?: HaFactRtoDto | null;
+  lastDrill?: OpRtoDto | null;
+  lastRestore?: OpRtoDto | null;
+}
+
+export interface ReliabilityShardDto {
+  shard: string;
+  declared: boolean;
+  rpo?: RpoDto | null;
+  rto?: RtoDto | null;
+}
+
+export interface ReliabilityClusterDto {
+  cluster: string;
+  shards: ReliabilityShardDto[];
+}
+
+export interface ReliabilityDto {
+  clusters: ReliabilityClusterDto[];
+}

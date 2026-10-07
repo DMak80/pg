@@ -267,4 +267,110 @@ public class WorkJournalTests
         var state = await journal.ReadAsync("demo", CancellationToken.None);
         state.Value!.Unreachable.Should().BeEmpty();
     }
+
+    // --- HA-факты надзора (arch/14 §3.3: last_failover/last_rebuild) ---
+
+    [Fact]
+    public async Task WriteSupervisionAsync_WithFacts_RoundTrip()
+    {
+        // Arrange: закрытый failover-факт + открытый rebuild-факт
+        var gateway = new FakeCoordinationGateway();
+        var journal = NewJournal(gateway);
+        var failover = new HaSupervisionFact("s1", "n1", "accelerated", 1000, 1075, 75);
+        var rebuild = new HaSupervisionFact("s1", "n2", "auto-dead", 900);
+        var facts = new HaSupervisionFacts(failover, rebuild);
+
+        // Act: тик надзора с факторами
+        var result = await journal.WriteSupervisionAsync("demo", "i1",
+            new Dictionary<string, long>(), null, TestContext.Current.CancellationToken, facts);
+
+        // Assert: JSON snake_case, null-поля опущены; чтение возвращает факты
+        result.IsSuccess.Should().BeTrue();
+        var raw = gateway.Store[$"{Prefix}/work/demo"];
+        raw.Should().Contain("\"last_failover\":{\"shard\":\"s1\",\"node\":\"n1\",\"cause\":\"accelerated\"");
+        raw.Should().Contain("\"detected_unix\":1000").And.Contain("\"resolved_unix\":1075").And.Contain("\"duration_sec\":75");
+        raw.Should().Contain("\"last_rebuild\":{\"shard\":\"s1\",\"node\":\"n2\",\"cause\":\"auto-dead\",\"detected_unix\":900}");
+        var state = await journal.ReadSupervisionStateAsync("demo", TestContext.Current.CancellationToken);
+        state.Value!.LastFailover.Should().Be(failover);
+        state.Value.LastRebuild.Should().Be(rebuild);
+    }
+
+    [Fact]
+    public async Task WriteSupervisionAsync_WithoutFacts_OmitsFields()
+    {
+        // Arrange: запись надзора без фактов (KafkaWorker/ValkeyWorker — свой префикс,
+        // фактов не пишут; поля опускаются сериализацией)
+        var gateway = new FakeCoordinationGateway();
+        var journal = NewJournal(gateway);
+
+        // Act
+        var result = await journal.WriteSupervisionAsync("demo", "i1",
+            new Dictionary<string, long>(), null, TestContext.Current.CancellationToken);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        gateway.Store[$"{Prefix}/work/demo"].Should().NotContain("last_failover");
+        gateway.Store[$"{Prefix}/work/demo"].Should().NotContain("last_rebuild");
+    }
+
+    [Fact]
+    public async Task ReadSupervisionStateAsync_LegacyKey_FactsNull()
+    {
+        // Arrange: старый ключ без полей фактов
+        var gateway = new FakeCoordinationGateway();
+        gateway.Store[$"{Prefix}/work/old"] =
+            """{"op":"supervise","phase":"supervising","instance":"i","updated_unix":1756000000,"unreachable":{"b1":100}}""";
+        var journal = NewJournal(gateway);
+
+        // Act
+        var state = await journal.ReadSupervisionStateAsync("old", TestContext.Current.CancellationToken);
+
+        // Assert: обратная совместимость — трек читается, факты null
+        state.Value!.Unreachable.Should().ContainKey("b1").WhoseValue.Should().Be(100);
+        state.Value.LastFailover.Should().BeNull();
+        state.Value.LastRebuild.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task WritePhaseAsync_WithoutFacts_PreservesExistingFacts()
+    {
+        // Arrange: надзор записал факты
+        var gateway = new FakeCoordinationGateway();
+        var journal = NewJournal(gateway);
+        await journal.WriteSupervisionAsync("demo", "i1", new Dictionary<string, long>(), null,
+            TestContext.Current.CancellationToken,
+            new HaSupervisionFacts(new HaSupervisionFact("s1", "n1", "elections", 1000, 1100, 100), null));
+
+        // Act: фазовая запись процесса БЕЗ фактов (чтение ключа для трека — carry-forward)
+        var result = await journal.WritePhaseAsync("demo", "wal-stream", "running", "i1", null,
+            TestContext.Current.CancellationToken);
+
+        // Assert: факт пережил фазовую запись (перенос, как unreachable)
+        result.IsSuccess.Should().BeTrue();
+        var state = await journal.ReadAsync("demo", TestContext.Current.CancellationToken);
+        state.Value!.LastFailover.Should().NotBeNull();
+        state.Value.LastFailover!.DurationSec.Should().Be(100);
+    }
+
+    [Fact]
+    public async Task WritePhaseAsync_WithExplicitTrackAndFacts_CarriesFactsExplicitly()
+    {
+        // Arrange: dcs-converge-путь — явный трек + явные факты (чтения ключа нет)
+        var gateway = new FakeCoordinationGateway();
+        var journal = NewJournal(gateway);
+        await journal.WriteSupervisionAsync("demo", "i1", new Dictionary<string, long>(), null,
+            TestContext.Current.CancellationToken,
+            new HaSupervisionFacts(null, new HaSupervisionFact("s1", "n2", "operator-recreate", 500)));
+
+        // Act: фазовая запись с ЯВНЫМ треком и факторами
+        var result = await journal.WritePhaseAsync("demo", "supervise", "dcs-converge", "i1", "note",
+            TestContext.Current.CancellationToken,
+            unreachable: new Dictionary<string, long>(),
+            facts: new HaSupervisionFacts(null, new HaSupervisionFact("s1", "n2", "operator-recreate", 500)));
+
+        // Assert: факт на месте (не стёрт фазовой записью)
+        result.IsSuccess.Should().BeTrue();
+        var state = await journal.ReadAsync("demo", TestContext.Current.CancellationToken);
+        state.Value!.LastRebuild!.DetectedUnix.Should().Be(500);
+    }
 }

@@ -327,4 +327,49 @@ public sealed class WorkerMetricsInstrumentationTests
         // Assert — серия исчезла
         sut.DebugSnapshot().WalUploadedUnix.Should().BeEmpty();
     }
+
+    // AAA: t17 — единый марк-метод HaDurations: набор шардов тика замещает стейт
+    // кластера целиком; null-факт — серия шарда исчезает (arch/18 §2.7)
+    [Fact]
+    public void HaDurations_ЗамещениеНабора_nullУбирает_СериюШардаИсчезает()
+    {
+        // Arrange
+        using var meter = new Meter("test");
+        var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
+
+        // Act: тик 1 — оба факта; тик 2 — failover закрылся (55с), rebuild ушёл (null)
+        sut.HaDurations("c1", new Dictionary<string, (long?, long?)>
+        {
+            ["s1"] = (null, 40),
+            ["s2"] = (10, null),
+        });
+        sut.HaDurations("c1", new Dictionary<string, (long?, long?)>
+        {
+            ["s1"] = (55, null),
+        });
+
+        // Assert: набор кластера перезаписан целиком; s2 исчез; null-факт не эмитится
+        var state = sut.DebugSnapshot();
+        state.HaFailoverDurations.Should().ContainKey(("c1", "s1")).WhoseValue.Should().Be(55);
+        state.HaFailoverDurations.Should().NotContainKey(("c1", "s2"));
+        state.HaRebuildDurations.Should().BeEmpty();
+    }
+
+    // AAA: t17 — кластеры независимы (failover/rebuild — независимые серии)
+    [Fact]
+    public void HaDurations_РазныеКластерыНезависимы()
+    {
+        // Arrange
+        using var meter = new Meter("test");
+        var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
+
+        // Act
+        sut.HaDurations("c1", new Dictionary<string, (long?, long?)> { ["s1"] = (11, null) });
+        sut.HaDurations("c2", new Dictionary<string, (long?, long?)> { ["s1"] = (null, 22) });
+
+        // Assert
+        var state = sut.DebugSnapshot();
+        state.HaFailoverDurations[("c1", "s1")].Should().Be(11);
+        state.HaRebuildDurations[("c2", "s1")].Should().Be(22);
+    }
 }

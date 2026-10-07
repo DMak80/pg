@@ -362,7 +362,8 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
         sp.GetRequiredService<IEtcdGateway>(),
         sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
         sp.GetRequiredService<ShardProbe>()),
-    sp.GetRequiredService<EtcdEndpoints>()));
+    sp.GetRequiredService<EtcdEndpoints>(),
+    sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().HaDurations));
 // Адресация шардов (t01 задача 9): master-ключ/portalloc + DSN-билдеры —
 // общий сервис эвакуатора и процессов переезда (MoveProcess — задача 17).
 builder.Services.AddSingleton(sp => new ShardEndpoints(
