@@ -591,14 +591,15 @@ public sealed class BackupsPolicyOptions
     public long VerifyIntervalSec { get; set; } = 604800;
 }
 
-/// <summary>GFS-ретенция полных бэкапов (дни/недели/месяцы, t06).</summary>
+/// <summary>GFS-ретенция полных бэкапов (дни/недели/месяцы, t06; t18 —
+/// дефолт целевой схемы: последний + недельная + месячная позиции).</summary>
 public sealed class BackupsRetentionOptions
 {
-    public int Days { get; set; } = 7;
+    public int Days { get; set; } = 1;
 
-    public int Weeks { get; set; } = 4;
+    public int Weeks { get; set; } = 1;
 
-    public int Months { get; set; } = 6;
+    public int Months { get; set; } = 1;
 }
 
 /// <summary>Staging джобов/агентов бэкапов (arch/19 §6): ephemeral volume с

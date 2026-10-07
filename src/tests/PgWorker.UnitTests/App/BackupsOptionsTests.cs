@@ -108,12 +108,13 @@ public class BackupsOptionsTests
         // Arrange / Act — дефолты каркаса (арх/19 §4/§6/§9).
         var options = new BackupsOptions();
 
-        // Assert — GFS 7/4/6, суточное окно, verify при создании; staging-
-        // каталог; квота и лимиты джобов — null (без лимита, образец request_*
-        // нод arch/14 §2.4 п.4).
-        options.Policy.Retention.Days.Should().Be(7);
-        options.Policy.Retention.Weeks.Should().Be(4);
-        options.Policy.Retention.Months.Should().Be(6);
+        // Assert — GFS 1/1/1 — целевая схема (t18: последний + недельная +
+        // месячная позиции), суточное окно, verify при создании; staging-каталог;
+        // квота и лимиты джобов — null (без лимита, образец request_* нод
+        // arch/14 §2.4 п.4).
+        options.Policy.Retention.Days.Should().Be(1);
+        options.Policy.Retention.Weeks.Should().Be(1);
+        options.Policy.Retention.Months.Should().Be(1);
         options.Policy.FullMaxAgeSec.Should().Be(86400);
         options.Policy.VerifyOnCreate.Should().BeTrue();
         options.Staging.Dir.Should().Be("/backup-staging");
