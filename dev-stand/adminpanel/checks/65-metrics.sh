@@ -103,14 +103,14 @@ else
   echo "  серии словаря arch/18 §2 в TSDB (kafka-серия пропущена: брокеров нет — консервативная свежесть, arch/18 §4)"
 fi
 
-# 4) rules зарегистрированы (11 алертов §3.7: 8 + 3 valkey)
+# 4) rules зарегистрированы (18 алертов: 11 + 7 группы backups §2.7)
 rules=$(curl -fsS "$PROM/api/v1/rules" | jq '[.data.groups[].rules[] | select(.type=="alerting")] | length')
-[ "$rules" -ge 11 ] || { echo "  ❌ алерт-рулы: $rules < 11"; exit 1; }
+[ "$rules" -ge 18 ] || { echo "  ❌ алерт-рулы: $rules < 18"; exit 1; }
 echo "  rules: $rules алертов зарегистрировано"
 
 # 5) Grafana: дашборды провиженены (basic admin/admin — стенд)
 ds=$(curl -fsS -u admin:admin "$GRAFANA/api/search?type=dash-db" | jq 'length')
-[ "$ds" -ge 4 ] || { echo "  ❌ дашборды: $ds < 4"; exit 1; }
+[ "$ds" -ge 5 ] || { echo "  ❌ дашборды: $ds < 5"; exit 1; }
 echo "  Grafana: $ds дашборда"
 
 # 6) Alertmanager жив
