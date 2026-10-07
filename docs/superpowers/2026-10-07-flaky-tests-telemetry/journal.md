@@ -105,3 +105,64 @@ WorkerCert 19 с + 4 с). Упавших нет — перезапуски не 
 Итог: цель spec достигнута — по логам/артефактам прогона любого t29-класса
 видно место торможения/сбоя (фаза, elapsed, budget, прогресс-снапшот,
 последний успешный шаг) без перезапуска тестов и без чтения кода.
+
+## Приёмка-дополнение §3.9/§3.10 (задачи 12–14, база диффа ce0bf7c)
+
+После подтяжки свежего main (t28) спека дополнена уликами §3.9
+(WalStream-MasterDown) и §3.10 (Strict); мигрированы два оставшихся класса.
+
+### 12. `E2eWalStreamMasterDownScenarios` (spec §3.9)
+
+Все 7 ожиданий + repair-цикл → `E2ePhase` (8 точек): `wal-ac4-provisioning`
+360 с, `wal-ac4-master-resolved` 120 с (×3 исполнения), `wal-ac4-agents-up`
+300 с, `wal-ac4-repair` 600 с с 30-с окнами внутри condition (каденция
+тиков ≈ окно, числа дословно), `wal-ac4-delivery-grew` 300 с (+прогресс
+листинга S3 `objects=N (before=M)`), `wal-ac4-key-seen` 30 с,
+`wal-ac4-new-agent` 300 с, `wal-ac4-tli-ready` 120 с (хелпер, в факте не
+вызывается — для единообразия класса). Дамп → `ArtifactsDir/wal-diag-<cluster>.txt`.
+Ассерт на repair НЕ добавлялся.
+
+### 13. `E2eStrictScenarios` (spec §3.10)
+
+6 точек / 7 исполнений: `strict-provisioning` 360 с (×2; прогресс — state-ключи
+нод с учётом replicas и dsn), `strict-active` 60 с (×2; прогресс
+`state=<висящий|нет (Active)>`), `strict-dcs-converged` 360 с (прогресс
+work-ключа: `work.phase=dcs-converge, strict-патч=есть`), `strict-discovery`
+30 с (×2; прогресс `api-keys=N`). Patroni GET /config — только условие фазы
+конвергенции; в тиках — etcd-чтения.
+
+### 14. Приёмка-дополнение
+
+1. `dotnet build src/PgWorker.slnx -c Release` — 0 Error(s), 0 Warning(s).
+2. AC8-гейт (`git diff ce0bf7c..HEAD` по двум файлам, белый список НЕ
+   применяется): ТОЛЬКО парные переносы — Strict 360/60/360/360/60/30;
+   MasterDown 600 (repairDeadline→бюджет фазы), Task.Delay(30) дословно,
+   300 (delivery), 120 (tli-хелпер). Ассерты (`Should().BeTrue`,
+   `NotBe`, `IsContinuous`) — диф пуст.
+3. AC10 — E2E t29-фильтром полного перечня §3 (8 классов, 10 фактов),
+   канонический N=5, обычный рабочий фон:
+   **Test Run Successful: 10/10 passed, 12,0 мин** (Acceptance 5 м 49 с;
+   Move 2 м 26 с; Wal-Promote 2 м 38 с; Wal-MasterDown ~11 мин; HaEtcd
+   2 м 4 с; Si2 2 м 9 с; WorkerCert 25 с + 11 с; Strict 1 м 1 с + 32 с).
+   Полнота телеметрии:
+   - все фазы новых классов в `phases.log` с budget (список выше) + тики:
+     `wal-ac4-repair t=30,0s…581,1s: unreachable=да, окно 1…19` (каденция
+     ≈30,5 с — окна видны), `strict-provisioning … [PROVISIONING]→[RUNNING]`
+     (однорепликный shard2 теста 2 виден как `[PROVISIONING]`);
+   - AC3: `20261007-120828-slow-phase-wal-ac4-repair.txt` (фаза > 60 с);
+   - AC4: `20261007-121739-failed-phase-wal-ac4-repair.txt` — реальное
+     срабатывание немедленного сбора при провале окна: `wal-ac4-repair
+     ok=False, elapsed=612,7s, budget=600s` (нода НЕ восстановилась за 19
+     окон), при этом ТЕСТ ЗЕЛЁНЫЙ: repair-фаза не ассертится (итог — только
+     телеметрия, по плану), доставка выросла (`objects=3 (before=0)`),
+     ключ жив, агент новой мастер-ноды running — полная картина
+     «недовосстановление ноды + зелёный тест» в артефактах без перезапуска;
+   - тики delivery-гейта и discovery (api-keys=1) — в phases.log контуров.
+4. Чистота: до серии 0/0/0 и после финальной строки 0/0/0 (контейнеры/
+   сети/тома); упавших сценариев нет, MarkFailed не срабатывал, дампы
+   wal-diag не создавались (фейл-путь не понадобился).
+
+Итог дополнения: AC1–AC4/AC8/AC10 подтверждены на полном перечне §3
+(10 фактов, включая оба новых класса); полнота телеметрии — по артефактам
+каждого контура.
+
