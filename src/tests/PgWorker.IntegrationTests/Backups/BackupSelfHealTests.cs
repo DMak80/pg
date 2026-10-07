@@ -88,9 +88,12 @@ public class BackupSelfHealTests(EtcdFixture fixture)
         WalLagMaxSegments: 1024,
         WalStaleSec: 300);
 
+    // Полный COMPLETED с wal_start_segment; t18: якорь chain_start — только
+    // verify-OK полные, поэтому по умолчанию полный валиден (Ok).
     private static ShardBackups FullShard(string walStart, WalStreamState? wal = null) => new(
         [new FullBackupState("20260910120000Z", FullBackupStatus.Completed, "shard1a",
-            BackupSourceRole.Replica, 1757500000, 1757500300, walStart, 1024, null, null)],
+            BackupSourceRole.Replica, 1757500000, 1757500300, walStart, 1024, null,
+            new BackupVerify(BackupVerifyStatus.Ok, 1757500400))],
         wal);
 
     private static void SeedSegments(FakeBackupS3 s3, string cluster, int from, int to)
@@ -164,7 +167,7 @@ public class BackupSelfHealTests(EtcdFixture fixture)
         const string newId = "20260910130000Z";
         var recompleted = new FullBackupState(newId, FullBackupStatus.Completed, "shard1a",
             BackupSourceRole.Replica, 1757501000, 1757501300, "000000010000000000000005",
-            2048, null, null);
+            2048, null, new BackupVerify(BackupVerifyStatus.Ok, 1757501400));
         await fixture.Gateway.PutAsync(fixture.Endpoint,
             BackupNames.FullKey("sh1", "shard1", newId),
             BackupStatusJson.Serialize(recompleted), null, ct);
