@@ -18,10 +18,13 @@ public class RetentionPlannerTests
 
     private static readonly BackupPolicy Policy = new(7, 4, 6, 86400, VerifyOnCreate: false);
 
-    // COMPLETED-полный с заданным стартом (остальные поля — нейтральные).
-    private static FullBackupState Full(string id, DateTimeOffset started, BackupVerify? verify = null)
+    // COMPLETED-полный с заданным стартом (остальные поля — нейтральные);
+    // walStart — позиция wal_start_segment, verify — статус проверки.
+    private static FullBackupState Full(
+            string id, DateTimeOffset started,
+            string walStart = "000000010000000000000001", BackupVerify? verify = null)
         => new(id, FullBackupStatus.Completed, "n1", BackupSourceRole.Replica,
-            Unix(started), Unix(started) + 60, "000000010000000000000001", 1024, null, verify);
+            Unix(started), Unix(started) + 60, walStart, 1024, null, verify);
 
     // Проверка Keep/Delete по id в фиксированный момент Now.
     private static (IReadOnlySet<string> Keep, IReadOnlyList<string> Delete) Select(
@@ -620,5 +623,95 @@ public class RetentionPlannerTests
         // последнего (багованный отбор тратил слот на сентябрь → aug31 удалялся)
         keep.Should().BeEquivalentTo(["sep01", "aug31"]);
         delete.Should().BeEmpty();
+    }
+
+    // ---- t18: LatestVerifiedWalStart — точка отсчёта cutoff/chain_start (AC2/AC3) ----
+
+    // AC2: точка = wal_start новейшего (по started_unix) OK-полного — недельная/
+    // месячная (старые OK) на неё НЕ влияют.
+    [Fact]
+    public void LatestVerifiedWalStart_новейший_OK_полный()
+    {
+        // Arrange — месячный OK ..01, недельный OK ..02, последний OK ..08
+        var fulls = new[]
+        {
+            Full("m", Now.AddMonths(-1), "000000010000000000000001",
+                new BackupVerify(BackupVerifyStatus.Ok, 1)),
+            Full("w", Now.AddDays(-8), "000000010000000000000002",
+                new BackupVerify(BackupVerifyStatus.Ok, 1)),
+            Full("last", Now.AddDays(-1), "000000010000000000000008",
+                new BackupVerify(BackupVerifyStatus.Ok, 1)),
+        };
+
+        // Act — выбор точки
+        var start = RetentionPlanner.LatestVerifiedWalStart(fulls);
+
+        // Assert — wal_start последнего OK-полного
+        start!.Value.Name.Should().Be("000000010000000000000008");
+    }
+
+    // AC3: verify не OK (PENDING/FAILED/отсутствует) — полные не кандидаты;
+    // ни одного OK → null (прунинг no-op).
+    [Fact]
+    public void LatestVerifiedWalStart_без_OK_полных_null()
+    {
+        // Arrange — последний PENDING, старший FAILED, третий без verify вовсе
+        var fulls = new[]
+        {
+            Full("pending", Now.AddDays(-1), "000000010000000000000008",
+                new BackupVerify(BackupVerifyStatus.Pending, null)),
+            Full("failed", Now.AddDays(-2), "000000010000000000000005",
+                new BackupVerify(BackupVerifyStatus.Failed, 1)),
+            Full("noverify", Now.AddDays(-3), "000000010000000000000003"),
+        };
+
+        // Act — выбор точки
+        var start = RetentionPlanner.LatestVerifiedWalStart(fulls);
+
+        // Assert — безопасной точки нет
+        start.Should().BeNull();
+    }
+
+    // AC3-гвард: новейший по времени полный не прошёл verify (PENDING/FAILED,
+    // в т.ч. перепроверка OK→FAILED) — точка держится на предыдущем OK.
+    [Fact]
+    public void LatestVerifiedWalStart_непроверенный_новый_держит_предыдущий_OK()
+    {
+        // Arrange — OK недельной давности ..03 и вчерашний FAILED ..08
+        var fulls = new[]
+        {
+            Full("ok-old", Now.AddDays(-8), "000000010000000000000003",
+                new BackupVerify(BackupVerifyStatus.Ok, 1)),
+            Full("failed-new", Now.AddDays(-1), "000000010000000000000008",
+                new BackupVerify(BackupVerifyStatus.Failed, 1)),
+        };
+
+        // Act — выбор точки
+        var start = RetentionPlanner.LatestVerifiedWalStart(fulls);
+
+        // Assert — cutoff на предыдущем OK (WAL ниже ..03 уже срезан ранее —
+        // понижение точки ничего не восстановит и запрещено гвардом)
+        start!.Value.Name.Should().Be("000000010000000000000003");
+    }
+
+    // Дефективный wal_start у новейшего OK (ручная правка ключа) — пропускается,
+    // берётся следующий OK ниже (defensiveness парсера, без исключений).
+    [Fact]
+    public void LatestVerifiedWalStart_битый_wal_start_пропущен()
+    {
+        // Arrange — новейший OK с мусорным wal_start, старший OK валиден
+        var fulls = new[]
+        {
+            Full("broken", Now.AddDays(-1), "not-a-wal-name",
+                new BackupVerify(BackupVerifyStatus.Ok, 1)),
+            Full("ok", Now.AddDays(-2), "000000010000000000000005",
+                new BackupVerify(BackupVerifyStatus.Ok, 1)),
+        };
+
+        // Act — выбор точки
+        var start = RetentionPlanner.LatestVerifiedWalStart(fulls);
+
+        // Assert — взят валидный OK ниже
+        start!.Value.Name.Should().Be("000000010000000000000005");
     }
 }

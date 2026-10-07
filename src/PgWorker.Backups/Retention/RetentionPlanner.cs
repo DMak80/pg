@@ -86,6 +86,24 @@ public static partial class RetentionPlanner
         return new RetentionSelection(keep, delete);
     }
 
+    /// <summary>Точка отсчёта WAL-ретенции и контроля цепочки (t18, arch/19
+    /// §4 п.5/§3): wal_start новейшего (по started_unix) COMPLETED-полного с
+    /// verify.state=OK — ОДНА точка для cutoff-чистки WAL и chain_start.
+    /// verify-OK-полного нет (PENDING/FAILED/verify отсутствует) → null:
+    /// безопасной точки привязки нет, прунинг WAL запрещён. Чистая функция.
+    /// Дефективный wal_start кандидата (ранний FAILED-хвост/ручная правка)
+    /// пропускается — берётся следующий OK ниже.</summary>
+    public static WalFileName? LatestVerifiedWalStart(IReadOnlyList<FullBackupState> fulls)
+        => fulls
+            .Where(f => f.State == FullBackupStatus.Completed
+                        && f.Verify is { State: BackupVerifyStatus.Ok })
+            .Select(f => (f.StartedUnix, Start: WalFileName.TryParse(f.WalStartSegment ?? "")))
+            .Where(x => x.Start is not null)
+            .OrderByDescending(x => x.StartedUnix)
+            .Select(x => x.Start)
+            .Cast<WalFileName?>()
+            .FirstOrDefault();
+
     /// <summary>План чистки WAL (spec §3.1): сегменты строго ниже cutoff (TLI
     /// ниже ИЛИ тот же TLI с позицией log·256+seg ниже cutoff) и `.history`
     /// TLI ниже стартового — на удаление. Сам cutoff, сегменты выше/новее,
