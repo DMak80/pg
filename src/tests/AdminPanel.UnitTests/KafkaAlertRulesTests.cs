@@ -703,4 +703,148 @@ public class KafkaAlertRulesTests
         // Act / Assert
         Evaluate(snapshot).Should().NotContain(a => a.Kind == "kafka-security-missing");
     }
+
+    // ===== t10 (arch/03 §7.4): ca-rotation-pending, stale-ротации, ticket-expired =====
+
+    // Снапшот с ротационным набором (t10): канонический Active-кластер events +
+    // заявки/исходы в именованных списках.
+    private static KafkaSnapshot RotationSnapshot(
+        IReadOnlyList<KafkaRotationTicket>? rotations = null,
+        IReadOnlyList<KafkaRotationTicket>? adminRotations = null,
+        IReadOnlyList<KafkaCaRotationTicket>? caRotations = null,
+        IReadOnlyList<KafkaRebalanceTicket>? rebalances = null,
+        IReadOnlyList<KafkaTicketOutcome>? outcomes = null) => new(
+        Now, EtcdReachable: true, ConsecutiveFailures: 0,
+        [ActiveCluster()],
+        Rotations: rotations ?? [], Rebalances: rebalances ?? [],
+        Reassignments: [], Regens: [],
+        WorkerEndpoints: [new WorkerEndpoint("kw1", "http://kafkaworker:8080", 1)],
+        WorkerHealth: [], Probes: [], Alerts: [], ParseErrors: [], UnknownKeyCount: 0,
+        AdminRotations: adminRotations ?? [],
+        CaRotations: caRotations ?? [],
+        TicketOutcomes: outcomes ?? []);
+
+    [Fact]
+    public void RotationStale_BeyondThreshold_Warning()
+    {
+        // Arrange: app-заявка старше порога 1800 с.
+        var next = RotationSnapshot(
+            rotations: [new KafkaRotationTicket("events", NowUnix - 1801, "admin")]);
+
+        // Act
+        var alerts = Evaluate(next);
+
+        // Assert: warning kafka-rotation-stale на кластер.
+        var a = alerts.Should().ContainSingle(x => x.Kind == "kafka-rotation-stale").Subject;
+        a.Severity.Should().Be(AlertSeverity.Warning);
+        a.Target.Should().Be("events");
+    }
+
+    [Fact]
+    public void RotationStale_AdminRotation_AlsoStale()
+    {
+        // Arrange: admin-заявка старше порога — та же семья H.
+        var next = RotationSnapshot(
+            adminRotations: [new KafkaRotationTicket("events", NowUnix - 1801, "admin")]);
+
+        // Act / Assert: kafka-rotation-stale и на admin-заявку.
+        Evaluate(next).Should().ContainSingle(x => x.Kind == "kafka-rotation-stale");
+    }
+
+    [Fact]
+    public void RotationStale_BelowThreshold_NoAlert()
+    {
+        // Arrange: свежая заявка (60 c < порога).
+        var next = RotationSnapshot(
+            rotations: [new KafkaRotationTicket("events", NowUnix - 60, "admin")]);
+
+        // Act / Assert
+        Evaluate(next).Should().NotContain(x => x.Kind == "kafka-rotation-stale");
+    }
+
+    [Fact]
+    public void CaRotationPending_Info()
+    {
+        // Arrange: живая ca-заявка свежая.
+        var next = RotationSnapshot(
+            caRotations: [new KafkaCaRotationTicket("events", NowUnix - 60, "it")]);
+
+        // Act / Assert: info kafka-ca-rotation-pending.
+        var a = Evaluate(next).Should().ContainSingle(
+            x => x.Kind == "kafka-ca-rotation-pending" && x.Target == "events").Subject;
+        a.Severity.Should().Be(AlertSeverity.Info);
+    }
+
+    [Fact]
+    public void CaRotationStale_BeyondThreshold_Warning()
+    {
+        // Arrange: ca-заявка старше порога.
+        var next = RotationSnapshot(
+            caRotations: [new KafkaCaRotationTicket("events", NowUnix - 1801, "it")]);
+
+        // Act / Assert
+        var a = Evaluate(next).Should().ContainSingle(x => x.Kind == "kafka-ca-rotation-stale").Subject;
+        a.Severity.Should().Be(AlertSeverity.Warning);
+    }
+
+    [Fact]
+    public void RebalanceStale_BeyondThreshold_Warning()
+    {
+        // Arrange: заявка ребалансировки старше порога.
+        var next = RotationSnapshot(
+            rebalances: [new KafkaRebalanceTicket("events", NowUnix - 1801, "admin")]);
+
+        // Act / Assert
+        var a = Evaluate(next).Should().ContainSingle(x => x.Kind == "kafka-rebalance-stale").Subject;
+        a.Severity.Should().Be(AlertSeverity.Warning);
+    }
+
+    [Fact]
+    public void TicketExpired_WarningWithReasonHint()
+    {
+        // Arrange: исход expired с reason.
+        var next = RotationSnapshot(outcomes:
+        [
+            new KafkaTicketOutcome("events", "password-app", "expired", "waiting-cluster",
+                NowUnix - 4000, "admin", NowUnix - 100),
+        ]);
+
+        // Act / Assert: warning kafka-ticket-expired; Hint упоминает reason.
+        var a = Evaluate(next).Should().ContainSingle(x => x.Kind == "kafka-ticket-expired").Subject;
+        a.Severity.Should().Be(AlertSeverity.Warning);
+        a.Hint.Should().Contain("waiting-cluster");
+    }
+
+    [Fact]
+    public void TicketOutcome_Done_NoExpiredAlert()
+    {
+        // Arrange: исход done — успешная ротация гасит expired-алерт (AC13).
+        var next = RotationSnapshot(outcomes:
+        [
+            new KafkaTicketOutcome("events", "password-app", "done", null,
+                NowUnix - 4000, "admin", NowUnix - 100),
+        ]);
+
+        // Act / Assert
+        Evaluate(next).Should().NotContain(x => x.Kind == "kafka-ticket-expired");
+    }
+
+    [Fact]
+    public void StaleAlert_SinceUnix_CarriedFromPrevious()
+    {
+        // Arrange: stale-алерт горел в prev с sinceUnix=100; next — свежий снапшот
+        // (заявка всё ещё старше порога).
+        var baseSnap = RotationSnapshot(
+            rotations: [new KafkaRotationTicket("events", NowUnix - 1801, "admin")]);
+        var first = Evaluate(baseSnap).Single(x => x.Kind == "kafka-rotation-stale");
+        var prev = baseSnap with { Alerts = [first with { SinceUnix = 100 }] };
+        var next = RotationSnapshot(
+            rotations: [new KafkaRotationTicket("events", NowUnix - 2000, "admin")]);
+
+        // Act
+        var again = Evaluate(next, prev);
+
+        // Assert: sinceUnix перенесён по стабильному id kind:cluster.
+        again.Single(x => x.Kind == "kafka-rotation-stale").SinceUnix.Should().Be(100);
+    }
 }
