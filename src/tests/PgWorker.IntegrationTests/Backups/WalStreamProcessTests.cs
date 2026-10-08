@@ -1182,7 +1182,8 @@ public class WalStreamProcessTests(EtcdFixture fixture)
             n => n.Contains("shard1", StringComparison.Ordinal), "агенты не трогаются");
     }
 
-    // AAA (t19 AC7): тик на здоровых (не lost) слотах — нулевые мутации слотов
+    // AAA (фаза A2 — «повторный тик на здоровом слоте — нулевые мутации»):
+    // тик на здоровых (не lost) слотах — нулевые мутации слотов
     // и никаких журнальных фаз slot-recreate.
     [Fact]
     public async Task Тик_на_здоровых_слотах_нулевые_мутации()
@@ -1212,7 +1213,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         (await process.TickAsync(BuildTwoNodeSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
 
         // Assert — ни одного вызова мутации слота; журнал без slot-recreate
-        sql.Calls.Should().BeEmpty("здоровый слот не трогается (критерий 7)");
+        sql.Calls.Should().BeEmpty("здоровый слот не трогается (фаза A2)");
         var journal = await fixture.Gateway.GetAsync(
             fixture.Endpoint, $"/pgworker/work/{cluster}", ct);
         (journal.Value?.Value ?? "").Should().NotContain("slot-recreate");
