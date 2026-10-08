@@ -72,6 +72,10 @@ public sealed record TxnCompare(string Key, TxnTarget Target, TxnPredicate Pred,
     public static TxnCompare NotExists(string key)
         => new(key, TxnTarget.Version, TxnPredicate.Equal, string.Empty, 0);
 
+    // Ключ существует (version > 0) — примитив условного снятия заявок (t10).
+    public static TxnCompare Exists(string key)
+        => new(key, TxnTarget.Version, TxnPredicate.Greater, string.Empty, 0);
+
     // Значение ключа равно ожидаемому — примитив конкурентного flip routing (arch/11 §5).
     public static TxnCompare ValueEqual(string key, string expected)
         => new(key, TxnTarget.Value, TxnPredicate.Equal, expected, 0);
