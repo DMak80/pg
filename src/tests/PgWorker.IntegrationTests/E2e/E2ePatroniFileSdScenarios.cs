@@ -1,4 +1,3 @@
-using System.Globalization;
 using System.Text.Json;
 using DotNet.Testcontainers.Builders;
 using DotNet.Testcontainers.Configurations;
@@ -10,10 +9,13 @@ using Xunit;
 
 namespace PgWorker.IntegrationTests.E2e;
 
-// docker-E2E file_sd-канала (t15, spec §4 Ф4, §6.3): реальный кластер PgWorker
-// в изолированном окружении + настоящий Prometheus + sd-generator:
-// кластер → таргеты patroni-nodes up → канон-минимум patroni_* в TSDB →
-// демонтаж → таргеты исчезли. Контур мониторинга сценария (volume, sd-generator,
+// docker-E2E file_sd-канала (t15, spec §4 Ф4/Д4, §6.3): реальный кластер PgWorker
+// в изолированном окружении + настоящий Prometheus + sd-generator в ЕДИНОЙ сети
+// окружения класса (t15 ревизия 3): etcd/sd-generator/prometheus/ноды вместе,
+// воркер с PgWorker__Docker__ScrapeNetwork = сеть окружения, скрейп
+// patroni-nodes по <alias>:8008, host-форвардинга в контуре нет
+// (кластер → таргеты up → канон-минимум patroni_* в TSDB → демонтаж →
+// таргеты исчезли). Контур мониторинга сценария (volume, sd-generator,
 // тестовый Prometheus) чистит сам — finally при любом исходе; docker-логи обоих
 // контейнеров снимаются в артефакты ДО удаления (канон телеметрии e2e-launch).
 // Сборка образа sdgenerator:e2e — лениво из этого сценария (EnsureSdImageAsync):
@@ -70,9 +72,18 @@ public class E2ePatroniFileSdScenarios
                       - targets: ["sd-generator:8080"]
                 """, ct);
 
-            // Host-порт etcd окружения — из фактического endpoint (advertise
-            // контейнеру контура — через host.docker.internal/host-gateway).
-            var etcdPort = int.Parse(Fx.EtcdEndpoint.Split(':').Last(), CultureInfo.InvariantCulture);
+            // Контур мониторинга — единая сеть окружения класса (t15 ревизия 3):
+            // sd-generator читает etcd по alias e2e-etcdN:2379, prometheus скрейпит
+            // ноды по <alias>:8008 — host-форвардинга в контуре НЕТ вообще
+            // (WithExtraHost отсутствует: регрессия ловится конструктивно —
+            // резолва нет → скрейп умер → тест красный).
+            var sdGenEnv = new Dictionary<string, string>
+            {
+                ["SdGenerator__OutputPath"] = "/sd/patroni-nodes.json",
+                ["SdGenerator__RefreshIntervalSec"] = "2",
+            };
+            for (var i = 0; i < Fx.EtcdEndpoints.Count; i++)
+                sdGenEnv[$"SdGenerator__Etcd__Endpoints__{i}"] = $"http://e2e-etcd{i + 1}:2379";
 
             // sd-generator: alias обязателен — static-таргет «sd-generator:8080»
             // резолвится по имени/alias, а случайное имя контейнеру даёт testcontainers.
@@ -80,17 +91,13 @@ public class E2ePatroniFileSdScenarios
                 .WithName($"pgw-sdgen-{Fx.ClusterTag}")
                 .WithNetwork(Fx.Net)
                 .WithNetworkAliases("sd-generator")
-                .WithExtraHost("host.docker.internal", "host-gateway")
                 .WithVolumeMount($"pgw-sd-{Fx.ClusterTag}", "/sd")
-                .WithEnvironment("SdGenerator__Etcd__Endpoints__0", $"http://host.docker.internal:{etcdPort}")
-                .WithEnvironment("SdGenerator__OutputPath", "/sd/patroni-nodes.json")
-                .WithEnvironment("SdGenerator__RefreshIntervalSec", "2")
+                .WithEnvironment(sdGenEnv)
                 .Build();
 
             prom = new ContainerBuilder("prom/prometheus:v3.14.0")
                 .WithName($"pgw-prom-{Fx.ClusterTag}")
                 .WithNetwork(Fx.Net)
-                .WithExtraHost("host.docker.internal", "host-gateway")
                 .WithVolumeMount($"pgw-sd-{Fx.ClusterTag}", "/etc/prometheus/sd", AccessMode.ReadOnly)
                 .WithBindMount(promConfigPath, "/etc/prometheus/prometheus.yml")
                 .WithPortBinding(9090, assignRandomHostPort: true)
@@ -106,20 +113,46 @@ public class E2ePatroniFileSdScenarios
             // ---------- кластер ----------
             Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: сид кластера {cluster} + провижининг (≤360 c)…");
             await SeedClusterAsync(cluster);
-            await using var p1 = await Fx.StartHostAsync("s1", ct: ct);
+            // ScrapeNetwork = имя сети окружения класса (t15 ревизия 3, spec §3.5):
+            // движок Ensure-attach'ит ноды к сети окружения поверх pgw-net-<C>,
+            // portalloc несёт alias/net, генератор строит <alias>:8008.
+            await using var p1 = await Fx.StartHostAsync("s1", ct: ct, extraEnv: new Dictionary<string, string>
+            {
+                ["PgWorker__Docker__ScrapeNetwork"] = Fx.NetName,
+            });
 
             var provisioned = await E2eFixture.WaitForAsync(
                 () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
             provisioned.Should().BeTrue("provisioning кластера должен дойти до Active (dsn/RUNNING/без status)");
 
+            // ---------- сетевая идентичность (Д1-контур в E2E) ----------
+            // portalloc: все 4 записи с alias вида pgw-<cluster>-… и net = сети
+            // окружения; membership каждой ноды в сети — docker inspect
+            // (spec §6.4 «inspect подтверждает membership», обязательный ассерт).
+            Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: сетевая идентичность portalloc + membership нод…");
+            var aliases = await PatroniAliasesAsync(cluster);
+            foreach (var alias in aliases)
+            {
+                var inspect = await Fx.RunDockerAsync(
+                    ["inspect", alias, "--format", "{{json .NetworkSettings.Networks}}"], ct);
+                inspect.Should().Contain($"\"{Fx.NetName}\"",
+                    $"нода {alias} подключена к сети окружения {Fx.NetName} (Ensure-attach движка)");
+            }
+
             // ---------- таргеты up ----------
             Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: ожидание таргетов patroni-nodes up…");
-            var patroniPorts = await PatroniPortsAsync(cluster);
-            patroniPorts.Should().HaveCount(4, "portalloc кластера: 2 шарда × 2 реплики с живым Patroni");
             var targetsUp = await E2eFixture.WaitForAsync(
-                () => PatroniTargetsUpAsync(promHttp, promPort, patroniPorts),
+                () => PatroniTargetsUpAsync(promHttp, promPort, aliases),
                 TimeSpan.FromSeconds(120), ct);
             targetsUp.Should().BeTrue("таргеты patroni-nodes обязаны появиться и быть up");
+
+            // Канон ревизии 3: ни один scrapeUrl (обе джобы: patroni-nodes и
+            // sd-generator) не содержит host.docker.internal — скрейп целиком
+            // сетевой, host-форвардинга в контуре нет.
+            var allUrls = await AllScrapeUrlsAsync(promHttp, promPort);
+            allUrls.Should().NotBeEmpty("activeTargets прометея непусты");
+            allUrls.Should().NotContain(u => u.Contains("host.docker.internal", StringComparison.Ordinal),
+                "ни один таргет не на host-форвардинге (канон t15 ревизии 3)");
 
             // ---------- канон-минимум серий (M3-факт) ----------
             Console.WriteLine($"[PHASE] e2e[{Fx.Slug}]: фиксация фактического словаря patroni_* + самоскрейп генератора…");
@@ -275,15 +308,32 @@ public class E2ePatroniFileSdScenarios
         return (await RangeAsync($"/clusters/{cluster}/buckets/status/")).Count == 0;
     }
 
-    private sealed record PortallocEntry(string Host, int Pg, int Patroni, int Doorman);
+    // Контейнерный порт Patroni REST — константа контракта ноды; синхрон с
+    // TargetMapping.PatroniRestPort (DTO генератора независим от Core).
+    private const int PatroniRestPort = 8008;
 
-    // Фактические patroni-порты нод из portalloc (НЕ хардкод — канон AGENTS.md).
-    private async Task<List<int>> PatroniPortsAsync(string cluster)
+    private sealed record PortallocEntry(string Host, int Pg, int Patroni, int Doorman,
+        string? Alias = null, string? Net = null);
+
+    // Сетевые alias живых нод из portalloc (t15 ревизия 3): записи канонического
+    // провижининга при заданном ScrapeNetwork несут alias = pgw-<C>-<X>-<n> и
+    // net = имя сети окружения класса — доказательство Д1-контура в E2E.
+    private async Task<List<string>> PatroniAliasesAsync(string cluster)
     {
         var kv = await GetOrNullAsync($"/pgworker/portalloc/{cluster}");
         kv.Should().NotBeNull("portalloc кластера записан провижинингом");
         var dict = JsonSerializer.Deserialize<Dictionary<string, PortallocEntry>>(kv!.Value, Json) ?? [];
-        return dict.Values.Select(e => e.Patroni).Where(p => p > 0).ToList();
+        var live = dict.Where(p => p.Value.Patroni > 0).ToList();
+        live.Should().HaveCount(4, "portalloc кластера: 2 шарда × 2 реплики с живым Patroni");
+        foreach (var (key, entry) in live)
+        {
+            entry.Alias.Should().NotBeNullOrEmpty(
+                $"запись {key} несёт alias (ScrapeNetwork задан —decorate точек записи)");
+            entry.Alias.Should().StartWith($"pgw-{cluster}-", "alias — полное docker-имя ноды");
+            entry.Net.Should().Be(Fx.NetName, "net записи = имя сети окружения класса");
+        }
+
+        return live.Select(p => p.Value.Alias!).ToList();
     }
 
     // Таргеты patroni-nodes: пары (health, scrapeUrl) — материализуются ВНУТРИ
@@ -301,9 +351,22 @@ public class E2ePatroniFileSdScenarios
             .ToList();
     }
 
-    // Все таргеты patroni-nodes up, scrapeUrl — host-публикация с фактическим
-    // patroni-портом из portalloc (адрес честен, НЕ литерал порта).
-    private async Task<bool> PatroniTargetsUpAsync(HttpClient http, int promPort, List<int> patroniPorts)
+    // scrapeUrl ВСЕХ активных таргетов (обе джобы) — прямой канон-ассерт
+    // ревизии 3: host-форвардинга нет ни в одной джобе.
+    private async Task<List<string>> AllScrapeUrlsAsync(HttpClient http, int promPort)
+    {
+        using var doc = JsonDocument.Parse(
+            await http.GetStringAsync($"http://localhost:{promPort}/api/v1/targets"));
+        return doc.RootElement.GetProperty("data").GetProperty("activeTargets").EnumerateArray()
+            .Select(t => t.GetProperty("scrapeUrl").GetString())
+            .Cast<string>()
+            .ToList();
+    }
+
+    // Все таргеты patroni-nodes up, scrapeUrl — сетевые http://<alias>:8008:
+    // Uri.Host ∈ alias'ам portalloc, Uri.Port — контейнерный порт контракта
+    // (host-публикации записи в таргете НЕ участвуют).
+    private async Task<bool> PatroniTargetsUpAsync(HttpClient http, int promPort, List<string> aliases)
     {
         List<(string? Health, string? Url)> targets;
         try
@@ -321,14 +384,11 @@ public class E2ePatroniFileSdScenarios
         {
             if (health != "up")
                 return false;
-            if (url is null
-                || !url.StartsWith("http://host.docker.internal:", StringComparison.Ordinal))
+            if (url is null || !Uri.TryCreate(url, UriKind.Absolute, out var u))
                 return false;
-            // Uri.Port — без ручного разреза строки (порт с path «:P/metrics»);
-            // порт без публикации (80) в portalloc не входит → false, повтор полла.
-            if (!Uri.TryCreate(url, UriKind.Absolute, out var u))
+            if (!aliases.Contains(u.Host))
                 return false;
-            if (!patroniPorts.Contains(u.Port))
+            if (u.Port != PatroniRestPort)
                 return false;
         }
 
