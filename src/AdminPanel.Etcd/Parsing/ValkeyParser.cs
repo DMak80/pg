@@ -22,6 +22,11 @@ public sealed record ValkeyCaRotationsParseResult(
     IReadOnlyList<ValkeyCaRotationTicket> Tickets,
     IReadOnlyList<KeyParseError> Errors);
 
+// Результат разбора исходов заявок /valkeyworker/ticket_outcomes/ (t10).
+public sealed record ValkeyTicketOutcomesParseResult(
+    IReadOnlyList<ValkeyTicketOutcome> Tickets,
+    IReadOnlyList<KeyParseError> Errors);
+
 // Парсер valkey-домена: чистые функции Kv[] → модель, битые значения не бросают
 // исключений — порождают KeyParseError (порт KafkaParser; arch/20 §5).
 public static class ValkeyParser
@@ -183,6 +188,54 @@ public static class ValkeyParser
                     segments[3],
                     requested.Value,
                     JsonValues.ReadString(root, "requested_by")));
+            }
+            catch (JsonException e)
+            {
+                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+            }
+        }
+
+        return new(tickets, errors);
+    }
+
+    // Исходы заявок /valkeyworker/ticket_outcomes/<C> (t10, arch/20 §3):
+    // обязательны kind/outcome/requested_unix/finished_unix (outcome —
+    // толерантно-строковый); reason/requested_by опциональны; битый JSON /
+    // нет поля → parseError-запись (порт kafka-парсера исходов).
+    public static ValkeyTicketOutcomesParseResult ParseTicketOutcomes(IReadOnlyList<Kv> kvs)
+    {
+        var tickets = new List<ValkeyTicketOutcome>();
+        var errors = new List<KeyParseError>();
+        foreach (var kv in kvs)
+        {
+            // "/valkeyworker/ticket_outcomes/<C>" → ["", "valkeyworker", "ticket_outcomes", <C>]
+            var segments = kv.Key.Split('/');
+            if (segments.Length != 4 || segments[3].Length == 0)
+            {
+                errors.Add(new(kv.Key, "ожидается /valkeyworker/ticket_outcomes/<cluster>"));
+                continue;
+            }
+
+            try
+            {
+                using var doc = JsonDocument.Parse(kv.Value);
+                var root = doc.RootElement;
+                var kind = JsonValues.ReadString(root, "kind");
+                var outcome = JsonValues.ReadString(root, "outcome");
+                var requested = JsonValues.ReadLong(root, "requested_unix");
+                var finished = JsonValues.ReadLong(root, "finished_unix");
+                if (kind is null || outcome is null || requested is null || finished is null)
+                {
+                    errors.Add(new(kv.Key, "нет обязательных полей kind/outcome/requested_unix/finished_unix"));
+                    continue;
+                }
+
+                tickets.Add(new ValkeyTicketOutcome(
+                    segments[3], kind, outcome,
+                    JsonValues.ReadString(root, "reason"),
+                    requested.Value,
+                    JsonValues.ReadString(root, "requested_by"),
+                    finished.Value));
             }
             catch (JsonException e)
             {

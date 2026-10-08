@@ -25,6 +25,10 @@ public class KafkaRefresherTests
 
         public IReadOnlyList<Kv> ReassignmentsKv { get; set; } = [];
 
+        public IReadOnlyList<Kv> CaRotationsKv { get; set; } = [];
+
+        public IReadOnlyList<Kv> TicketOutcomesKv { get; set; } = [];
+
         public IReadOnlyList<Kv> WorkerApiKv { get; set; } = [];
 
         public List<string> FailEndpoints { get; } = [];
@@ -38,6 +42,8 @@ public class KafkaRefresherTests
                     "/kafkaworker/rotations/" => RotationsKv,
                     "/kafkaworker/rebalances/" => RebalancesKv,
                     "/kafkaworker/reassignments/" => ReassignmentsKv,
+                    "/kafkaworker/ca_rotations/" => CaRotationsKv,
+                    "/kafkaworker/ticket_outcomes/" => TicketOutcomesKv,
                     "/kafkaworker/api/" => WorkerApiKv,
                     _ => [],
                 }));
@@ -331,6 +337,38 @@ public class KafkaRefresherTests
         result.IsSuccess.Should().BeTrue();
         store.Current!.AdminRotations.Should().ContainSingle()
             .Which.Should().Be(new KafkaRotationTicket("events", 1756500900, "admin"));
+    }
+
+    [Fact]
+    public async Task Refresh_CaRotationsAndTicketOutcomes_InSnapshot()
+    {
+        // Arrange (t10): ca-заявка + исход expired + битый исход в новых префиксах.
+        var gateway = DemoGateway();
+        gateway.CaRotationsKv =
+        [
+            new Kv("/kafkaworker/ca_rotations/events", """{"requested_unix":1756500300,"requested_by":"it"}""", 5),
+        ];
+        gateway.TicketOutcomesKv =
+        [
+            new Kv("/kafkaworker/ticket_outcomes/events",
+                """{"kind":"password-app","outcome":"expired","reason":"waiting-cluster","requested_unix":1750000000,"requested_by":"admin","finished_unix":1750003600}""", 6),
+            new Kv("/kafkaworker/ticket_outcomes/broken", "{oops", 7),
+        ];
+        var store = new KafkaSnapshotStore();
+
+        // Act
+        var result = await New(gateway, store, "http://e1").RefreshOnceAsync(CancellationToken.None);
+
+        // Assert: снапшот несёт CaRotations и TicketOutcomes; битый исход —
+        // ParseErrors (тик не падает).
+        result.IsSuccess.Should().BeTrue();
+        store.Current!.CaRotations.Should().ContainSingle()
+            .Which.Should().Be(new KafkaCaRotationTicket("events", 1756500300, "it"));
+        var outcome = store.Current.TicketOutcomes.Should().ContainSingle().Which;
+        outcome.Kind.Should().Be("password-app");
+        outcome.Outcome.Should().Be("expired");
+        outcome.Reason.Should().Be("waiting-cluster");
+        store.Current.ParseErrors.Should().Contain(e => e.Key == "/kafkaworker/ticket_outcomes/broken");
     }
 
     // Обёртка fake-gateway: добавляет чтение префикса /kafkaworker/admin_rotations/.

@@ -195,15 +195,18 @@ TopicDoesNotExist = исполнено; отказ между мутацией �
 | `/kafkaworker/locks/portalloc` | lease TTL 15 с | **глобальный portalloc-клэйм** (t91, arch/16 §2.1): взаимоисключение секции довыделения клиентских портов «чтение занятости → выбор портов → запись `/kafkaworker/portalloc/<C>`» (provision K1 / add-broker) — пер-кластерные клэймы кросс-кластерную гонку не закрывают. Value: `{"instance":"<id>","since_unix":…}`. Захват txn `version==0` + put-with-lease; освобождение по завершении секции (del + revoke lease), смерть держателя — TTL. Не взял → InProgress (следующий тик). Без keepalive: секция короткая (единицы секунд ≪ TTL). |
 | `/kafkaworker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика) |
 | `/kafkaworker/api/<id>` | lease TTL 15 с | **дискавери API воркера** (arch/16 §1.1): `{"url":"http://<host>:<port>","instance":"<id>","since_unix":…}` — ставит сам инстанс; ключ жив = инстанс жив и URL валиден. Читает панель; префикс `/kafka/` и этот координационный слой пишет только воркер (мутации панели — через его API) |
-| `/kafkaworker/rotations/<C>` | обычный | заявка ротации app-пароля `{"requested_unix","requested_by"}` (панель, клэйм-txn; формат и протокол — pg 02 §9.8) |
-| `/kafkaworker/admin_rotations/<C>` | обычный | заявка ротации admin-пароля `{"requested_unix","requested_by"}` (панель, клэйм-txn `version==0` — протокол ротаций; исполнение — фазы A/B/C с окном двух кредов `user_admin`/`user_admin2`, 16 §5 H; del воркером по завершении или панелью — отмена) |
-| `/kafkaworker/rebalances/<C>` | обычный | заявка ребалансировки партиций `{"requested_unix","requested_by"}` (панель, клэйм-txn — протокол ротаций; del воркером по завершении или панелью — отмена) |
+| `/kafkaworker/rotations/<C>` | обычный | заявка ротации app-пароля `{"requested_unix","requested_by"}` (панель, клэйм-txn; формат и протокол — pg 02 §9.8; del воркером по завершении, панелью — отмена или возрастным таймаутом не-начатой — t10, 16 §5) |
+| `/kafkaworker/admin_rotations/<C>` | обычный | заявка ротации admin-пароля `{"requested_unix","requested_by"}` (панель, клэйм-txn `version==0` — протокол ротаций; исполнение — фазы A/B/C с окном двух кредов `user_admin`/`user_admin2`, 16 §5 H; del воркером по завершении, панелью — отмена или возрастным таймаутом не-начатой — t10) |
+| `/kafkaworker/ca_rotations/<C>` | обычный | заявка ротации per-cluster CA/сертов `{"requested_unix","requested_by"}` (t07; формат/протокол — 02 §9.8 один в один; исполнение — 16 §5 K; del воркером в коммите фазы C или возрастным таймаутом не-начатой — t10) |
+| `/kafkaworker/rebalances/<C>` | обычный | заявка ребалансировки партиций `{"requested_unix","requested_by"}` (панель, клэйм-txn — протокол ротаций; del воркером по завершении, панелью — отмена или возрастным таймаутом не-начатой — t10, 16 §5 I) |
 | `/kafkaworker/reassignments/<C>` | обычный | прогресс текущего reassignment — пишет только воркер: `{"mode":"drain"\|"balance","drain_broker"?,"partitions_total","partitions_remaining","submitted_unix","updated_unix","instance","last_error"?}`; ключ живёт только во время операции (put при старте, del по завершении — пусто = операции нет) |
 | `/kafkaworker/regens/<C>` | обычный | прогресс rolling-регенерации брокеров (16 §5 J) — пишет только воркер: `{"brokers_total","brokers_remaining","current_broker"?,"updated_unix","instance","last_error"?}`; ключ живёт только во время операции (put при старте первого пересоздания, del по сходимости всех лимитов — пусто = операции нет) |
+| `/kafkaworker/ticket_outcomes/<C>` | обычный | последний исход заявки (t10) — пишет только воркер: `{"kind":"password-app"\|"password-admin"\|"ca"\|"rebalance","outcome":"expired"\|"done","reason"?,"requested_unix","requested_by","finished_unix"}`; перезаписывается новым исходом, чистится демонтажом (16 X2); панель читает (алерт `kafka-ticket-expired`, 03 §7.4) |
 
 Панель читает из `/kafkaworker/` только `rotations/`, `admin_rotations/`,
-`rebalances/`, `reassignments/`, `regens/` (очередь ротаций app/admin и
-ребалансировок + прогресс reassignment и регенерации в UI); остальные
+`ca_rotations/`, `rebalances/`, `reassignments/`, `regens/`,
+`ticket_outcomes/` (очередь ротаций app/admin/CA и ребалансировок +
+прогресс reassignment/регенерации + исходы заявок в UI); остальные
 ключи не читает и не пишет.
 
 ## 5. Клиентский дискавери (приложения)

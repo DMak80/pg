@@ -101,6 +101,24 @@ public sealed class WorkerMetricsInstrumentationTests
         }
     }
 
+    [Theory]
+    [InlineData("rotate")]
+    [InlineData("reassign")]
+    public void OnJournalPhase_Expired_ClosesSeriesAndCountsExpiredResult(string op)
+    {
+        // Arrange: фазовая серия открыта (phase-a жива).
+        using var meter = new Meter("TestWorker");
+        using var sut = new WorkerMetricsInstrumentation(meter, TimeProvider.System);
+        sut.OnJournalPhase("demo", op, "phase-a");
+
+        // Act: терминальная фаза expired (возрастное снятие не-начатой заявки, t10).
+        sut.OnJournalPhase("demo", op, "expired");
+
+        // Assert: серия фаз закрыта (не вечная); операция посчитана result=expired.
+        sut.DebugSnapshot().Phases.Should().NotContainKey(("demo", op));
+        sut.DebugSnapshot().Operations[(op, "expired")].Should().Be(1);
+    }
+
     [Fact]
     public void OnJournalPhase_Rejected_MoveAndAbort_CloseSeries()
     {

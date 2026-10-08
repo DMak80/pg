@@ -5,7 +5,8 @@ using Microsoft.Extensions.Options;
 
 namespace AdminPanel.Core.Valkey.ValkeyAlerting;
 
-// Чистая функция (ValkeySnapshot next, prev) → Alert[] — каталог arch/03 §8.4.
+// Чистая функция (ValkeySnapshot next, prev) → Alert[] — каталог arch/03 §8.4
+// (t10 — stale-ротации и ticket-expired).
 // sinceUnix — по стабильному id из prev.Alerts (механика KafkaAlertEngine);
 // сортировка severity → kind → target.
 public interface IValkeyAlertEngine
@@ -131,6 +132,46 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                 AlertRemedy.WorkerAuto,
                 "ротацию исполняет воркер, ключ исчезнет; висит — воркер буксует, проверьте journal");
 
+        // ===== t10 (arch/03 §8.4): видимость зависших ротационных заявок =====
+
+        var rotationNowUnix = next.BuiltAtUtc.ToUnixTimeSeconds();
+
+        // valkey-rotation-stale / valkey-ca-rotation-stale (warning): живая заявка
+        // старше RotationStaleSeconds — видимость ДО возрастного снятия воркером.
+        foreach (var rotation in next.Rotations.Where(r => alive.Contains(r.Cluster)))
+        {
+            var age = rotationNowUnix - rotation.RequestedUnix;
+            if (age > _options.RotationStaleSeconds)
+                yield return RotationStaleAlert("valkey-rotation-stale", rotation.Cluster, age, "ротация пароля");
+        }
+        foreach (var ca in (next.CaRotations ?? []).Where(r => alive.Contains(r.Cluster)))
+        {
+            var age = rotationNowUnix - ca.RequestedUnix;
+            if (age > _options.RotationStaleSeconds)
+                yield return RotationStaleAlert("valkey-ca-rotation-stale", ca.Cluster, age, "ротация CA/сертов");
+        }
+
+        // valkey-ticket-expired (warning, t10): заявка снята возрастным таймаутом
+        // воркера — устранить причину и повторить; гаснет перезаписью исхода done.
+        foreach (var outcome in (next.TicketOutcomes ?? []).Where(
+                     o => o.Outcome == "expired" && alive.Contains(o.Cluster)))
+            yield return new Alert(
+                $"valkey-ticket-expired:{outcome.Cluster}",
+                AlertSeverity.Warning,
+                "valkey-ticket-expired",
+                outcome.Cluster,
+                $"заявка кластера {outcome.Cluster} снята возрастным таймаутом воркера (kind={outcome.Kind}, причина: {outcome.Reason ?? "не указана"})",
+                new Dictionary<string, string>
+                {
+                    ["kind"] = outcome.Kind,
+                    ["reason"] = outcome.Reason ?? "",
+                    ["finishedUnix"] = outcome.FinishedUnix.ToString(),
+                },
+                null,
+                $"устранить причину ({outcome.Reason ?? "см. reason в исходе"}) и повторить заявку",
+                AlertRemedy.OperatorRunbook,
+                "устраните причину waiting-фазы (waiting-cluster — поднимите кластер, миграция T доведёт) и повторите заявку; успешная ротация перезапишет исход done и алерт погаснет");
+
         // valkey-key-malformed (warning): parseError-записи (arch/20 §5).
         foreach (var error in next.ParseErrors)
             yield return new Alert(
@@ -145,6 +186,25 @@ public sealed class ValkeyAlertEngine(IOptions<ValkeyAlertsOptions> options) : I
                 AlertRemedy.OperatorRunbook,
                 "устраните источник битой записи (внешний писатель) и приведите значение к канону arch/20; повторный тик распарсит ключ");
     }
+
+    // Stale-алерт ротационной заявки (t10): warning с возрастом и остатком до
+    // возрастного снятия (связность stale = RotationTicketTimeoutSec/2 — spec §2).
+    private Alert RotationStaleAlert(string kind, string cluster, long age, string what)
+        => new(
+            $"{kind}:{cluster}",
+            AlertSeverity.Warning,
+            kind,
+            cluster,
+            $"{what} кластера {cluster} не начата дольше {age} c (порог {_options.RotationStaleSeconds} c) — исполнитель не стартует",
+            new Dictionary<string, string>
+            {
+                ["ageSec"] = age.ToString(),
+                ["staleSec"] = _options.RotationStaleSeconds.ToString(),
+            },
+            null,
+            $"заявка не начата дольше {_options.RotationStaleSeconds} c — до возрастного снятия воркером осталось {Math.Max(0, 2 * _options.RotationStaleSeconds - age)} c; проверьте journal (waiting-фаза)",
+            AlertRemedy.WorkerAuto,
+            "воркер снимет заявку возрастным таймаутом (t10); висит — проверьте journal воркера и доступность кластера");
 
     // valkey-endpoints-missing + valkey-security-missing + valkey-node-not-running
     // (только Active-кластер).

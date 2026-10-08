@@ -223,10 +223,11 @@ pull+retry, exec-ошибка включает stdout, label контейнер�
 | `/valkey/clusters/<C>/ca_key` | ротация CA, фаза C (K) | перезапись значением NEW (OLD-ключ уничтожается — после окна никем не доверяется) |
 | `/valkey/clusters/<C>/config` | txn по завершении provisioning | пере-put канонического JSON **без** `state` (compare mod_revision) |
 | `/valkeyworker/*` (координация) | весь жизненный цикл | leader, claims, work (+ вложенный work/&lt;C&gt;/rotation — стейт доигрывания E, §5 E), portalloc, locks/portalloc, instances, api — префикс `/valkeyworker/` ([20](20-valkey-clusters.md) §3) |
-| `/valkeyworker/rotations/<C>` | по завершении ротации (E) | del заявки (или панелью — отмена) |
-| `/valkeyworker/ca_rotations/<C>` | ротация CA, коммит фазы C (K) | del заявки одной txn с put ca_pem/ca_key (снятие атомарно коммиту) |
+| `/valkeyworker/rotations/<C>` | по завершении ротации (E); возрастной таймаут не-начатой (t10) | del заявки (или панелью — отмена) |
+| `/valkeyworker/ca_rotations/<C>` | ротация CA, коммит фазы C (K); возрастной таймаут не-начатой (t10) | del заявки одной txn с put ca_pem/ca_key (снятие атомарно коммиту) |
+| `/valkeyworker/ticket_outcomes/<C>` | исход заявки: экспирация (t10) или успешный финал | `{"kind":"password-app"\|"password-admin"\|"ca","outcome":"expired"\|"done","reason"?,"requested_unix","requested_by","finished_unix"}` — перезаписывается каждым новым исходом; чистка — демонтаж X2; панель читает (алерт `valkey-ticket-expired`) |
 | `/valkey/clusters/<C>/` (префикс) | TO_REMOVE, финал X2 | `del --prefix` |
-| `/valkeyworker/{claims,work,portalloc,rotations,ca_rotations}/<C>*` | TO_REMOVE, финал X2 | del — очистка координации ВКЛЮЧАЯ заявки ротаций (кредов и CA): остаточные заявки не переживают удаление кластера |
+| `/valkeyworker/{claims,work,portalloc,rotations,ca_rotations,ticket_outcomes}/<C>*` | TO_REMOVE, финал X2 | del — очистка координации ВКЛЮЧАЯ заявки ротаций (кредов и CA) и исходы: остаточные заявки не переживают удаление кластера |
 
 ## 4. Секреты
 
@@ -365,6 +366,15 @@ journal-warning (ответственность оператора, по обр�
 ### E. PasswordRotator (окно двух паролей, без рестартов; роли app|admin)
 
 Заявка `/valkeyworker/rotations/<C>` (`role`); NEW = генерация (32 симв).
+Кластер не поднят (нет endpoints/admin-креда/ca_pem) при живой заявке и
+ОТСУТСТВУЮЩЕМ стейте доигрывания → journal `waiting-cluster`, тик — успех
+(t10; заявка не начата — миграция T доведёт кластер, ротация исполнится
+после). Возрастная самозачистка (t10): заявка старше
+`RotationTicketTimeoutSec` при отсутствии стейта `work/<C>/rotation`
+(стейт = НАЧАТАЯ ротация: NEW на ноде, доигрывание обязательно —
+таймаутом не снимается) → journal-фаза `expired` (терминальная) → ОДНА
+txn `[del заявки][put /valkeyworker/ticket_outcomes/<C>]` → счёт
+`worker_operation_total{result=expired}`.
 
 ```
 E1 ACL SETUSER <role> >NEW    — оба пароля (OLD+NEW) валидны, клиенты работают со OLD
@@ -394,8 +404,9 @@ E2 не прошло из-за того, что пароль уже NEW, — н�
 (фаза E1 уже закоммитила NEW — контейнер соберётся с NEW, OLD-пароль
 доочистит следующий тик E3; расхождение самолечится converge D). Ротация
 admin не трогает app-кред и наоборот. Битая заявка — мусор: del с journal
-(панель до того получает 409 «уже запрошена»). Соединения всех фаз — по
-TLS (t06).
+(панель до того получает 409 «уже запрошена»). Финал E3 — вместе с journal
+done put `ticket_outcomes/<C>` outcome=done (kind=password-<role>, t10).
+Соединения всех фаз — по TLS (t06).
 
 ### T. TlsMigrator (t06) — авто-миграция plain→TLS
 
@@ -443,10 +454,17 @@ K0 guard'ы (ДО открытия окна; после — не проверя�
    (phase=committed, заявка снята) — финал K4. Кластер не поднят (нет
    endpoints/кредов/CA) — journal waiting-cluster (премиграционный —
    миграция T доведёт; заявка жива — ротация не теряется). Живая ротация
-   креда (заявка rotations/<C> или стейт work/<C>/rotation фаз e1*/e2) —
+   креда (заявка rotations/<C>, стейт work/<C>/rotation фаз e1*/e2, ИЛИ
+   журнал rotate в мутационной фазе e1-added/e2-committed; терминальные
+   done/expired — не живые: expired пишется только вне мутаций) —
    waiting-password-rotation (E доиграет этим же тиком ниже по ветке —
    ждущие исходы ветку НЕ блокируют; старт окна — следующим тиком).
-   Ждущие исходы возвращаются БЕЗ мутаций. Перечитка config: TO_REMOVE —
+   Ждущие исходы возвращаются БЕЗ мутаций и все — ДО открытия окна
+   (staging ставится только в P): в каждом из них действует возрастная
+   самозачистка (t10) — ca-заявка старше RotationTicketTimeoutSec →
+   journal expired → txn [del заявки][put ticket_outcomes/<C>
+   outcome=expired] → метрика expired; НАЧАТАЯ ротация (staging жив,
+   фазы P–C идут) таймаутом не снимается. Перечитка config: TO_REMOVE —
    abort (journal aborted-state-changed; демонтаж B чистит всё, вкл.
    staging — X2)
 P  journal phase-p (окно открыто) → генерация НОВОЙ CA
@@ -478,7 +496,8 @@ C  committed → ОДНА txn [compare value(ca_next_key)==staging]
    del ca_rotations/<C>] — OLD-ключ уничтожается перезаписью (после окна
    он никем не доверяется); снятие заявки атомарно коммиту; срыв compare —
    параллельная ротация → ретрай тиком
-K4 финал: снапшот P12 «после» + journal phase=done (идемпотентно — хвост
+K4 финал: снапшот P12 «после» + journal phase=done + put
+   ticket_outcomes/<C> outcome=done (kind=ca, t10; идемпотентно — хвост
    после C доигрывается тем же путём)
 ```
 
@@ -516,6 +535,12 @@ D→C транзиентно недоверяют NEW-серту: окно = с�
   транзиент-толерантный цикл с бюджетом `NodeBootSec`.
 - **Отказ etcd**: контроль-плейн заморожен; живые Valkey-ноды от него не
   зависят (клиенты работают по последнему снапшоту дискавери — fail-open).
+- **Самозачистка зависших заявок (t10)**: заявки ротаций (кредов/CA) не
+  висят вечно — не-начатая заявка (нет стейта `work/<C>/rotation` для
+  кредов, окно CA не открыто) старше `RotationTicketTimeoutSec` снимается
+  воркером в waiting-точке (исход — `ticket_outcomes/<C>`, метрика
+  expired); начатые ротации доигрываются идемпотентно по стейту/фактам
+  (takeover/ретраи).
 - **Watchdog зависших циклов**: внутренний компонент `LoopWatchdog`
   (Shared.Core, `BackgroundService`) следит за активностью (тик или
   прогресс-отметка; долгие фазы — создание контейнеров нод, PING-цикл
@@ -559,12 +584,15 @@ ValkeyWorker:Docker { Mode: Plain|Swarm, Hosts[{Name,Endpoint}], SwarmManager,
                       PortRange{From=17000,To=17999}, Images{Node="valkey/valkey:<пин>"} }
 ValkeyWorker:Loops { ScanIntervalSec=5, KeepaliveSec=5, ErrorDelayMs=2000,
                      Watchdog { Enabled=true, Multiplier=2, CheckIntervalSec=15, StopDelaySec=1 } }
-                     # watchdog зависших циклов (t19): порог сноса = Multiplier ×
+                     # watchdog зависших циклов: порог сноса = Multiplier ×
                      # CheckIntervalSec («2 по 15» = 30 с); порог healthz в
                      # формуле НЕ участвует; Enabled=false — компонент не
                      # регистрируется; ScanIntervalSec/KeepaliveSec < порога
                      # сноса — fail-fast старта
-ValkeyWorker:Thresholds { NodeBootSec=120, NodeDeadSec=90 }
+ValkeyWorker:Thresholds { NodeBootSec=120, NodeDeadSec=90, RotationTicketTimeoutSec=3600 }
+                      # RotationTicketTimeoutSec: возраст не-начатой
+                      # заявки ротации (кредов/CA), после которого воркер
+                      # снимает её в waiting-точке (§5 E/K)
 ValkeyWorker:Parallelism { MaxClusters=4 }
 ValkeyWorker:Snapshots { Dir="/snapshots", RetentionFiles=10 }
 ValkeyWorker:AdvertisedClientHost=null   # правило §2; стенды — host.docker.internal

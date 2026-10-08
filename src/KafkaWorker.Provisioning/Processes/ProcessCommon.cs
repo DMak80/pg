@@ -24,22 +24,25 @@ public sealed record ProvisioningOptions(
     int BrokerBootSec,
     int NodeDeadSec,
     string? AdvertisedClientHost,
-    string NodeImage)
+    string NodeImage,
+    int RotationTicketTimeoutSec = 3600)
 {
-    public static ProvisioningOptions Default { get; } = new(16000, 16999, 600, 90, null, "apache/kafka:4.0.0");
+    public static ProvisioningOptions Default { get; } = new(16000, 16999, 600, 90, null, "apache/kafka:4.0.0", 3600);
 }
 
 /// <summary>
 /// Параметры процесса reassign I (arch/16 §8): интервал тиков, размер батча
 /// подач, бюджет exec CLI и окно дедупа переподачи одного батча.
+/// RotationTicketTimeoutSec — возраст не-начатой заявки rebalances до снятия (t10).
 /// </summary>
 public sealed record ReassignOptions(
     int IntervalSec,
     int BatchPartitions,
     int ExecSec,
-    int RetrySubmitSec)
+    int RetrySubmitSec,
+    int RotationTicketTimeoutSec = 3600)
 {
-    public static ReassignOptions Default { get; } = new(15, 10, 180, 120);
+    public static ReassignOptions Default { get; } = new(15, 10, 180, 120, 3600);
 }
 
 /// <summary>

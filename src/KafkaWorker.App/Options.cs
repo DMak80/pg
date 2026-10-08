@@ -169,6 +169,10 @@ public sealed class ThresholdsOptions
 
     /// <summary>Дедуп переподачи одного батча reassignment (t02, KIP-455).</summary>
     public int ReassignRetrySubmitSec { get; set; } = 120;
+
+    /// <summary>Возраст не-начатой заявки (ротации app/admin/CA, ребалансировка),
+    /// после которого воркер снимает её в waiting-точке (t10, arch/16 §5).</summary>
+    public int RotationTicketTimeoutSec { get; set; } = 3600;
 }
 
 /// <summary>Параллелизм обработки кластеров тика.</summary>

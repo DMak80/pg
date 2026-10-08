@@ -33,10 +33,6 @@ P3 (t13–t17) — наблюдаемость, P4 (t20–t22) — долговр
   bucket replication в отдельный endpoint-хранилище): DR-сценарий опирается
   на выживание того же S3, что и основной (один bucket на установку,
   arch/19 §5).
-- **`t10-rotation-ticket-timeouts`** — возрастные таймауты/самозачистка
-  зависших ротационных заявок kafka/valkey (password/CA: исходы `waiting-*`
-  висят неограниченно, снятие только ручное по runbook) + алерт на
-  зависание.
 - **`t11-swarm-running-inspection`** — реализовать `SupportsRunningInspection`
   Swarm-драйвером: сейчас заглушка отключает ускоренный failover мёртвого
   лидера (промоушен ждёт Patroni ttl=20 с) и сверку портов EnsureNode

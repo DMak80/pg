@@ -13,7 +13,7 @@ import { EditClusterConfigModal } from './EditClusterConfigModal';
 import { EditNodeResourcesModal } from './EditNodeResourcesModal';
 import { RotateCaButton } from './RotateCaButton';
 import { RotatePasswordButton } from './RotatePasswordButton';
-import type { ValkeyNodeDto } from '../../api/dto';
+import type { TicketOutcomeDto, ValkeyNodeDto } from '../../api/dto';
 
 const MIB = 1024 * 1024;
 
@@ -144,6 +144,11 @@ export function ValkeyClusterDetailsPage() {
           <Text c="dimmed">Ноды не заявлены</Text>
         </Card>
       )}
+
+      {/* Последний исход заявки (t10): expired подсвечен warning-цветом. */}
+      {c.ticketOutcome !== null ? (
+        <TicketOutcomeLine outcome={c.ticketOutcome} />
+      ) : null}
     </Stack>
   );
 }
@@ -152,6 +157,18 @@ export function ValkeyClusterDetailsPage() {
 function rotationAgeMinutes(requestedUnix: number): string {
   const minutes = Math.max(0, Math.floor((Date.now() / 1000 - requestedUnix) / 60));
   return `${minutes} мин`;
+}
+
+// Строка «Последний исход заявки» (t10) — порт kafka-деталей.
+function TicketOutcomeLine({ outcome }: { outcome: TicketOutcomeDto }) {
+  const expired = outcome.outcome === 'expired';
+  return (
+    <Text size="sm" c={expired ? 'yellow' : undefined}>
+      Последний исход заявки: {outcome.kind} → {outcome.outcome} (
+      {new Date(outcome.finishedUnix * 1000).toLocaleString()})
+      {outcome.reason ? ` — причина: ${outcome.reason}` : ''}
+    </Text>
+  );
 }
 
 function NodeStateBadge({ state }: { state: string | null }) {

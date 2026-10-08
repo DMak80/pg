@@ -6,13 +6,14 @@ namespace KafkaWorker.Provisioning.Processes;
 
 /// <summary>
 /// Deprovisioning — полный демонтаж Kafka-кластера (arch/16 §5 B, фазы X0–X3).
-/// X1 удаляет контейнеры/сервисы и тома kfw-<C>-* (включая сирот; 404 = ок) ДО
+/// X1 удаляет контейнеры/сервисы и тома kfw-&lt;C&gt;-* (включая сирот; 404 = ок) ДО
 /// чистки etcd — «мёртвые» ключи при сбое безвредны (кластер в TO_REMOVE,
 /// повторный тик продолжает). X2: del --prefix /kafka/clusters/&lt;C&gt;/ +
-/// координация /kafkaworker/{claims,work,portalloc}/&lt;C&gt; + ЗАЯВКА РОТАЦИИ
-/// /kafkaworker/rotations/&lt;C&gt; (остаточная заявка не переживает удаление
-/// кластера — иначе вечный алерт kafka-rotation-pending). Снапшоты P12 «до/после».
-/// Успех = пустой префикс + ЯВНО снятый клэйм (не ждём TTL).
+/// координация /kafkaworker/{claims,work,portalloc}/&lt;C&gt; + ПОЛНЫЙ набор заявок
+/// (rotations/admin_rotations/ca_rotations/rebalances) и исходов
+/// ticket_outcomes/&lt;C&gt; — заявка/исход не переживают удаление кластера
+/// (иначе вечные алерты kafka-*-pending/kafka-ticket-expired). Снапшоты P12
+/// «до/после». Успех = пустой префикс + ЯВНО снятый клэйм (не ждём TTL).
 /// </summary>
 public sealed class DeprovisioningProcess(
     IEtcdGateway etcd,
@@ -122,6 +123,9 @@ public sealed class DeprovisioningProcess(
             ($"/kafkaworker/work/{cluster}", false),
             ($"/kafkaworker/portalloc/{cluster}", false),
             ($"/kafkaworker/rotations/{cluster}", false), // заявка ротации не переживает кластер
+            ($"/kafkaworker/admin_rotations/{cluster}", false), // заявка admin-ротации не переживает кластер (инвариант «заявка не переживает кластер», t10)
+            ($"/kafkaworker/ca_rotations/{cluster}", false),    // заявка CA-ротации не переживает кластер (t10)
+            ($"/kafkaworker/ticket_outcomes/{cluster}", false), // исходы заявок не переживают кластер (t10) — иначе вечный kafka-ticket-expired
             ($"/kafkaworker/rebalances/{cluster}", false), // заявка ребалансировки не переживает кластер (t02 §11.9)
             ($"/kafkaworker/reassignments/{cluster}", false), // прогресс reassignment не переживает кластер
             ($"/kafkaworker/regens/{cluster}", false), // regens — live-прогресс регенерации, не переживает демонтаж (t06, spec §10.5)

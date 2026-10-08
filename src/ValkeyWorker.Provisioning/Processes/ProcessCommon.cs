@@ -27,10 +27,11 @@ public sealed record ValkeyProvisioningOptions(
     int NodeBootSec,
     int NodeDeadSec,
     string? AdvertisedClientHost,
-    string NodeImage)
+    string NodeImage,
+    int RotationTicketTimeoutSec = 3600)
 {
     public static ValkeyProvisioningOptions Default { get; } =
-        new(17000, 17999, 120, 90, null, "valkey/valkey:9.1.2");
+        new(17000, 17999, 120, 90, null, "valkey/valkey:9.1.2", 3600);
 }
 
 /// <summary>

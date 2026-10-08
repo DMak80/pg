@@ -126,4 +126,35 @@ public sealed class ValkeyParserTests
         Assert.Contains(result.Errors, e => e.Key == "/valkeyworker/ca_rotations/nofield");
         Assert.Contains(result.Errors, e => e.Key == "/valkeyworker/ca_rotations/nested/bad");
     }
+
+    // t10: исходы заявок /valkeyworker/ticket_outcomes/<C> — обязательны
+    // kind/outcome/requested_unix/finished_unix; reason/requested_by опциональны;
+    // битый JSON/нет поля → parseError (порт kafka-парсера исходов).
+    [Fact]
+    public void ParseTicketOutcomes_ValidAndBroken()
+    {
+        // Arrange: исход expired с reason + исход done без опциональных + битые.
+        var kvs = new List<Kv>
+        {
+            new("/valkeyworker/ticket_outcomes/c1",
+                """{"kind":"password-app","outcome":"expired","reason":"waiting-cluster","requested_unix":1750000000,"requested_by":"it","finished_unix":1750003600}""", 1),
+            new("/valkeyworker/ticket_outcomes/c2",
+                """{"kind":"ca","outcome":"done","requested_unix":1750000000,"finished_unix":1750000500}""", 2),
+            new("/valkeyworker/ticket_outcomes/broken", "{oops", 3),
+            new("/valkeyworker/ticket_outcomes/nofinish", """{"kind":"ca","outcome":"done","requested_unix":1}""", 4),
+        };
+
+        // Act
+        var parsed = ValkeyParser.ParseTicketOutcomes(kvs);
+
+        // Assert
+        parsed.Tickets.Should().HaveCount(2);
+        parsed.Tickets.Single(t => t.Cluster == "c1").Should().Be(new ValkeyTicketOutcome(
+            "c1", "password-app", "expired", "waiting-cluster", 1750000000, "it", 1750003600));
+        var done = parsed.Tickets.Single(t => t.Cluster == "c2");
+        done.Reason.Should().BeNull();
+        done.RequestedBy.Should().BeNull();
+        parsed.Errors.Select(e => e.Key).Should().Contain("/valkeyworker/ticket_outcomes/broken")
+            .And.Contain("/valkeyworker/ticket_outcomes/nofinish");
+    }
 }

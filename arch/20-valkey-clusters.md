@@ -115,21 +115,25 @@ NotAfter зажат в CA (детали генерации — [21](21-valkeywor
 | `/valkeyworker/locks/portalloc` | lease TTL 15 с | **глобальный portalloc-клэйм** (t90-паттерн): взаимоисключение секции довыделения клиентских портов «чтение занятости → выбор портов → запись `/valkeyworker/portalloc/<C>`» — пер-кластерные клэймы кросс-кластерную гонку не закрывают; txn `version==0` + put-with-lease, del + revoke lease по завершении секции; не взял → InProgress (следующий тик) |
 | `/valkeyworker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика) |
 | `/valkeyworker/api/<id>` | lease TTL 15 с | **дискавери API воркера** (паттерн [16](16-kafkaworker.md) §1.1): `{"url","instance","since_unix","cert_thumbprint"?}` — ставит сам инстанс; ключ жив = инстанс жив и URL валиден. Читает панель (мутации valkey-домена — через API воркера) |
-| `/valkeyworker/rotations/<C>` | обычный | заявка ротации креда `{"role":"app"\|"admin","requested_unix","requested_by"}` (панель через API воркера — клэйм-txn `version==0`; del воркером по завершении; отмены из панели нет — t03) |
-| `/valkeyworker/ca_rotations/<C>` | обычный | заявка ротации per-cluster CA/сертов `{"requested_unix","requested_by"}` (t07; панель через API воркера — клэйм-txn `version==0`, протокол §9.8 один в один с ротациями кредов; del воркером в коммите фазы C; отмены из панели нет — зависшая заявка/осиротевший staging — runbook, etcdctl) |
+| `/valkeyworker/rotations/<C>` | обычный | заявка ротации креда `{"role":"app"\|"admin","requested_unix","requested_by"}` (панель через API воркера — клэйм-txn `version==0`; del воркером по завершении или возрастным таймаутом не-начатой — t10, 21 §5 E; отмены из панели нет — t03) |
+| `/valkeyworker/ca_rotations/<C>` | обычный | заявка ротации per-cluster CA/сертов `{"requested_unix","requested_by"}` (t07; панель через API воркера — клэйм-txn `version==0`, протокол §9.8 один в один с ротациями кредов; del воркером в коммите фазы C или возрастным таймаутом не-начатой — t10, 21 §5 K) |
+| `/valkeyworker/ticket_outcomes/<C>` | обычный | последний исход заявки (t10) — пишет только воркер: `{"kind":"password-app"\|"password-admin"\|"ca","outcome":"expired"\|"done","reason"?,"requested_unix","requested_by","finished_unix"}`; перезаписывается новым исходом, чистится демонтажом (21 X2); панель читает (алерт `valkey-ticket-expired`, 03 §8.4) |
 
 Заявка ротации — **один ключ с полем `role`** (не два, как у kafka — там
 разделение app/admin-ротаций наследие JAAS-механики пересозданий; здесь
 ротация без рестартов единая для обеих ролей, [21](21-valkeyworker.md) §5 E).
 
 Панель читает из `/valkeyworker/` только `rotations/` (очередь ротаций в UI;
-реализация — t03), `ca_rotations/` (очередь ротаций CA в UI; t07) и
+реализация — t03), `ca_rotations/` (очередь ротаций CA в UI; t07),
+`ticket_outcomes/` (исходы заявок — t10) и
 `api/` (дискавери API — §3 таблица выше, мутации панели
 идут через HTTP-грань воркера); остальные ключи не читает и не пишет.
-Снятие заявки ротации — только воркером (del по завершении процесса E;
-rotations — del в коммите фазы C CaRotator);
+Снятие заявки ротации — только воркером: del по завершении процесса
+(rotations — E3, ca_rotations — коммит фазы C CaRotator) или возрастной
+таймаут не-начатой заявки (t10: `RotationTicketTimeoutSec`, исход —
+`ticket_outcomes/<C>`);
 отмены из панели нет (t03: окно «передумать» мало — заявка исполняется
-тиками за секунды; зависшая заявка — runbook, etcdctl).
+тиками за секунды; начатая ротация — доигрывается, staging не сиротеет).
 
 Реализация координации — переиспользование `Shared.Etcd` (`ClaimStore`/
 `PortAllocLock`/`WorkJournal` — `keyPrefix="/valkeyworker"`, префикс уже

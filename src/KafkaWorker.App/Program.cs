@@ -301,7 +301,8 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<IKafkaAdminClientFactory>(),
         new ReassignOptions(
             opts.Loops.ReassignIntervalSec, opts.Loops.ReassignBatchPartitions,
-            opts.Thresholds.ReassignExecSec, opts.Thresholds.ReassignRetrySubmitSec),
+            opts.Thresholds.ReassignExecSec, opts.Thresholds.ReassignRetrySubmitSec,
+            opts.Thresholds.RotationTicketTimeoutSec),
         sp.GetRequiredService<TimeProvider>());
 });
 builder.Services.AddSingleton(sp => new RemoveBrokerProcess(
@@ -454,7 +455,8 @@ static ProvisioningOptions ToProvisioningOptions(KafkaWorkerOptions opts) => new
     opts.Thresholds.BrokerBootSec,
     opts.Thresholds.NodeDeadSec,
     opts.AdvertisedClientHost,
-    opts.Docker.Images.Node);
+    opts.Docker.Images.Node,
+    opts.Thresholds.RotationTicketTimeoutSec);
 
 // Делегат снапшота для процессов (P12 «до/после» в точках изменений).
 static Func<CancellationToken, Task<Result>> SnapshotDelegate(SnapshotJob job)

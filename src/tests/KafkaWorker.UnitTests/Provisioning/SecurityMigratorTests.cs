@@ -142,22 +142,88 @@ public class SecurityMigratorTests
     // ===== RunAsync (M0–M4 на фейках) =====
 
     [Fact]
-    public async Task RunAsync_M0_LiveTicket_JournalWaiting_NoMutations()
+    public async Task Run_LiveRotationTickets_DoNotGateMigration()
     {
-        // Arrange: премиграционный кластер + живая заявка app-ротации (M0-гвард).
+        // Arrange (AC6, t10): премиграционный кластер + живые заявки ротаций
+        // (app/admin/CA/rebalance) — M0 их НЕ гейтит: на премиграционном
+        // кластере их исполнение не могло начаться (H/K сами уходят в
+        // waiting-cluster до миграции), после M заявки исполнятся.
         var rig = await NewRig();
         rig.Etcd.Seed("/kafkaworker/rotations/events",
             """{"requested_unix":1750000200,"requested_by":"t"}""");
+        rig.Etcd.Seed("/kafkaworker/admin_rotations/events",
+            """{"requested_unix":1750000210,"requested_by":"t"}""");
+        rig.Etcd.Seed("/kafkaworker/ca_rotations/events",
+            """{"requested_unix":1750000220,"requested_by":"t"}""");
+        rig.Etcd.Seed("/kafkaworker/rebalances/events",
+            """{"requested_unix":1750000230,"requested_by":"t"}""");
 
         // Act
         var result = await rig.Migrator.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
 
-        // Assert: InProgress, брокеры не тронуты, journal waiting-rotation.
+        // Assert: миграция идёт — journal НЕ waiting-rotation; M1-секреты
+        // созданы (CA в etcd); брокеры пересозданы в новом каноне (M2).
         result.IsSuccess.Should().BeTrue();
         result.Value.Should().Be(SecurityMigrator.MigrationOutcome.InProgress);
-        rig.Driver.Removed.Should().BeEmpty();
         var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
-        state.Value!.Phase.Should().Be("waiting-rotation");
+        state.Value!.Phase.Should().NotBe("waiting-rotation");
+        rig.Etcd.Store.Should().ContainKey("/kafka/clusters/events/ca_pem");
+        rig.Driver.Removed.Should().NotBeEmpty();
+    }
+
+    [Fact]
+    public async Task Run_LiveReassignment_StillGates()
+    {
+        // Arrange: живой reassignments-прогресс — НАЧАТАЯ операция гейтит (t10).
+        var rig = await NewRig();
+        rig.Etcd.Seed("/kafkaworker/reassignments/events",
+            """{"mode":"balance","partitions_total":1,"partitions_remaining":1,"submitted_unix":1,"updated_unix":2,"instance":"x"}""");
+
+        // Act
+        var result = await rig.Migrator.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: waiting-reassignment; миграция не начиналась (секретов нет).
+        result.IsSuccess.Should().BeTrue();
+        result.Value.Should().Be(SecurityMigrator.MigrationOutcome.InProgress);
+        var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
+        state.Value!.Phase.Should().Be("waiting-reassignment");
+        rig.Etcd.Store.Should().NotContainKey("/kafka/clusters/events/ca_pem");
+        rig.Driver.Removed.Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task Run_LiveRegen_StillGates()
+    {
+        // Arrange: живой regens-прогресс — гейтит (t10).
+        var rig = await NewRig();
+        rig.Etcd.Seed("/kafkaworker/regens/events",
+            """{"brokers_total":1,"brokers_remaining":1,"current_broker":"broker1","updated_unix":1,"instance":"x"}""");
+
+        // Act
+        var result = await rig.Migrator.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: waiting-reassignment (фаза едина), миграция не начиналась.
+        result.IsSuccess.Should().BeTrue();
+        var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
+        state.Value!.Phase.Should().Be("waiting-reassignment");
+        rig.Etcd.Store.Should().NotContainKey("/kafka/clusters/events/ca_pem");
+    }
+
+    [Fact]
+    public async Task Run_OpenCaWindow_StillGates()
+    {
+        // Arrange: живой staging ca_next_* — открытое CA-окно K гейтит (t10).
+        var rig = await NewRig();
+        rig.Etcd.Seed("/kafka/clusters/events/ca_next_key", "next-key");
+
+        // Act
+        var result = await rig.Migrator.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: waiting-ca-window; миграция не начиналась.
+        result.IsSuccess.Should().BeTrue();
+        var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
+        state.Value!.Phase.Should().Be("waiting-ca-window");
+        rig.Etcd.Store.Should().NotContainKey("/kafka/clusters/events/ca_pem");
     }
 
     [Fact]
