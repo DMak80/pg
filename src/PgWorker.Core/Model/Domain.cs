@@ -76,8 +76,13 @@ public sealed record NodePorts(int Pg, int Patroni, int Doorman);
 
 /// <summary>Адрес ноды: docker-хост + выделенные host-порты; Object — имя
 /// фактического docker-контейнера усыновлённой ноды (arch/14 §2.4/§5 J),
-/// null = каноническая pgw-нода нашего провижининга.</summary>
-public sealed record NodeAddress(string Host, NodePorts Ports, string? Object = null);
+/// null = каноническая pgw-нода нашего провижининга. ScrapeAlias/ScrapeNetwork
+/// (t15, arch/14 §2.4) — сетевая идентичность ноды для скрейпа (alias =
+/// docker-имя, резолвится DNS сети контура; net = имя сети, информационное):
+/// пишутся только каноническим нодам при заданном PgWorker:Docker:ScrapeNetwork,
+/// в dsn/endpoints/пробы не попадают.</summary>
+public sealed record NodeAddress(string Host, NodePorts Ports, string? Object = null,
+    string? ScrapeAlias = null, string? ScrapeNetwork = null);
 
 /// <summary>Адреса etcd (http://host:2379) — для lease-скрипта мастер-ключа ноды.</summary>
 public sealed record EtcdEndpoints(IReadOnlyList<string> Http);

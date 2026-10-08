@@ -44,7 +44,8 @@ public sealed class ProvisioningProcess(
     Func<CancellationToken, Task<Result>>? snapshot = null,
     Shared.Core.Hosting.ILoopProgress? progress = null,
     TimeSpan? watchdogWindow = null,
-    Microsoft.Extensions.Logging.ILogger? logger = null) : IClusterProcess
+    Microsoft.Extensions.Logging.ILogger? logger = null,
+    string? scrapeNetwork = null) : IClusterProcess
 {
     private const int TxnBatchSize = 128; // лимит ops в txn (P3)
     private const string Op = "provision";
@@ -407,6 +408,11 @@ public sealed class ProvisioningProcess(
             {
                 if (current.Object is not null)
                     continue; // object-запись (усыновлённая ранее) не перезаписываем
+                // t15: scrape-поля записи переживают перезапись фактом — без
+                // переноса record-Equals(current с alias, fact без) ложь на каждом
+                // тике → вечная перезапись portalloc (Decorate допишет при записи,
+                // но сравнение происходит ДО сериализации).
+                fact = fact with { ScrapeAlias = current.ScrapeAlias, ScrapeNetwork = current.ScrapeNetwork };
                 if (current.Equals(fact))
                     continue; // совпадение записи с фактом — не пишем (идемпотентность)
             }
@@ -424,7 +430,7 @@ public sealed class ProvisioningProcess(
         string cluster, IReadOnlyDictionary<string, NodeAddress> addresses, bool keyExisted, CancellationToken ct)
     {
         var key = PortAllocKey(cluster);
-        var value = SerializePortAlloc(addresses);
+        var value = SerializePortAlloc(cluster, addresses);
         if (keyExisted)
             return await PutAsync(key, value, ct);
 
@@ -834,8 +840,11 @@ public sealed class ProvisioningProcess(
         return Portalloc.Parse(cluster, kv.Value);
     }
 
-    private static string SerializePortAlloc(IReadOnlyDictionary<string, NodeAddress> addresses)
-        => Portalloc.Serialize(addresses); // плоский контрактный формат §4.3
+    // t15 (arch/14 §2.4): при заданном ключе ScrapeNetwork каноническим записям
+    // дописывается сетевая идентичность (alias/net) — покрывает обе точки
+    // CommitPortAllocAsync; пустой ключ — словарь без изменений.
+    private string SerializePortAlloc(string cluster, IReadOnlyDictionary<string, NodeAddress> addresses)
+        => Portalloc.Serialize(PortallocIdentity.Decorate(addresses, cluster, scrapeNetwork));
 
     private static string PortAllocKey(string cluster) => $"/pgworker/portalloc/{cluster}";
 

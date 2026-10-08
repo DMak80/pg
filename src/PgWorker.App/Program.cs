@@ -238,6 +238,15 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
                 "PgWorker:Docker:AdvertisedHost требует ровно один хост в PgWorker:Docker:Hosts (single-host/tunnel)");
     }
 
+    // ScrapeNetwork (t15, arch/18 §5.4): сетевой attach нод реализован для
+    // plain-контейнеров; swarm-Ensure — сервисы, второй сети у сервиса нет в
+    // MVP — молчаливое игнорирование ключа недопустимо (fail-fast, прецедент
+    // AdvertisedHost).
+    if (!string.IsNullOrWhiteSpace(docker.ScrapeNetwork)
+        && string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
+        throw new ApplicationException(
+            "PgWorker:Docker:ScrapeNetwork не поддерживается в Mode=Swarm — сетевой attach нод реализован для plain-контейнеров");
+
     if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
     {
         if (string.IsNullOrWhiteSpace(docker.SwarmManager))
@@ -252,7 +261,7 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
     if (hosts.Count == 0)
         throw new ApplicationException("PgWorker:Docker:Mode=Plain требует непустую таблицу PgWorker:Docker:Hosts");
     return new PlainClusterDriver(hosts, factory, docker.EnableDoorman, docker.Images.Node, docker.AdvertisedHost,
-        pgtuneExclude: pgtuneExclude);
+        pgtuneExclude: pgtuneExclude, scrapeNetwork: docker.ScrapeNetwork);
 });
 
 // Фабрика входов PGTune (spec.md §4.3): runtime-склейка PgWorker:Pgtune
@@ -342,7 +351,8 @@ builder.Services.AddSingleton(sp =>
         SnapshotDelegate(job),
         sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>(),
         TimeSpan.FromSeconds(opts.Loops.Watchdog.CheckIntervalSec),
-        sp.GetRequiredService<ILogger<ProvisioningProcess>>());
+        sp.GetRequiredService<ILogger<ProvisioningProcess>>(),
+        opts.Docker.ScrapeNetwork);
 });
 builder.Services.AddSingleton(sp => new DeprovisioningProcess(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -403,7 +413,8 @@ builder.Services.AddSingleton(sp =>
             opts.Thresholds.ProvisionRetryBaseSec, opts.Thresholds.ProvisionRetryMaxSec),
         sp.GetRequiredService<EtcdEndpoints>(),
         sp.GetRequiredService<PgtuneInputsFactory>(),
-        SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
+        SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
+        opts.Docker.ScrapeNetwork);
 });
 
 // Ensure per-cluster app-секрета (spec §4.1): чтение/txn put-if-absent
@@ -452,7 +463,8 @@ builder.Services.AddSingleton(sp =>
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
         sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>(),
         TimeSpan.FromSeconds(opts.Loops.Watchdog.CheckIntervalSec),
-        sp.GetRequiredService<ILogger<AddShardProcess>>());
+        sp.GetRequiredService<ILogger<AddShardProcess>>(),
+        opts.Docker.ScrapeNetwork);
 });
 builder.Services.AddSingleton(sp => new RemoveShardProcess(
     sp.GetRequiredService<IEtcdGateway>(),

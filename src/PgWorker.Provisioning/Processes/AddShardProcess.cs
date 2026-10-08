@@ -42,7 +42,8 @@ public sealed partial class AddShardProcess(
     Func<CancellationToken, Task<Result>>? snapshot = null,
     Shared.Core.Hosting.ILoopProgress? progress = null,
     TimeSpan? watchdogWindow = null,
-    Microsoft.Extensions.Logging.ILogger? logger = null)
+    Microsoft.Extensions.Logging.ILogger? logger = null,
+    string? scrapeNetwork = null)
 {
     private const string Op = "add-shard";
 
@@ -239,7 +240,10 @@ public sealed partial class AddShardProcess(
             foreach (var (merged, addr) in allocated.Value)
                 existing[merged] = addr;
 
-            var put = await PutAsync(PortAllocKey(cluster), Portalloc.Serialize(existing), ct);
+            // t15 (arch/14 §2.4): decorate сетевой идентичности канонических
+            // записей при заданном ключе ScrapeNetwork (alias/net в portalloc).
+            var put = await PutAsync(PortAllocKey(cluster),
+                Portalloc.Serialize(PortallocIdentity.Decorate(existing, cluster, scrapeNetwork)), ct);
             if (!put.IsSuccess)
                 return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(put.Error!);
 
