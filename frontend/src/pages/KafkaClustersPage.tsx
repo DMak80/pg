@@ -90,11 +90,18 @@ function KafkaClusterRow({ cluster }: { cluster: KafkaClusterSummaryDto }) {
         <Text size="sm" ff="monospace">{cluster.endpoints ?? '—'}</Text>
       </Table.Td>
       <Table.Td>
-        {cluster.rotationPending ? (
-          <Tooltip label="заявка ротации app-пароля жива: исполняет воркер (фазы A/B/C)">
-            <Badge color="blue" variant="light">ротация</Badge>
-          </Tooltip>
-        ) : null}
+        <Group gap="xs">
+          {cluster.rotationPending ? (
+            <Tooltip label="заявка ротации app-пароля жива: исполняет воркер (фазы A/B/C)">
+              <Badge color="blue" variant="light">ротация</Badge>
+            </Tooltip>
+          ) : null}
+          {cluster.caRotationPending ? (
+            <Tooltip label="заявка ротации CA/сертов жива: воркер играет окно двойного доверия (P/D/R/C)">
+              <Badge color="grape" variant="light">CA-ротация</Badge>
+            </Tooltip>
+          ) : null}
+        </Group>
       </Table.Td>
     </Table.Tr>
   );

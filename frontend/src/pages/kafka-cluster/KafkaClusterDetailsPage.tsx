@@ -15,6 +15,7 @@ import { RotatePasswordButton } from './RotatePasswordButton';
 import { RotateAdminPasswordButton } from './RotateAdminPasswordButton';
 import { RotateCaButton } from './RotateCaButton';
 import { TopicsTab } from './TopicsTab';
+import type { TicketOutcomeDto } from '../../api/dto';
 
 const DAY_MS = 86_400_000;
 
@@ -51,6 +52,11 @@ export function KafkaClusterDetailsPage() {
           {c.rotation !== null ? (
             <Tooltip label="заявка ротации жива: rolling-перезапуск брокеров (фазы A/B/C)">
               <Badge color="blue" variant="light">ротация app-пароля</Badge>
+            </Tooltip>
+          ) : null}
+          {c.caRotation !== null ? (
+            <Tooltip label="заявка CA-ротации жива: окно двойного доверия (P/D/R/C), брокеры перезапускаются по одному">
+              <Badge color="grape" variant="light">ротация CA</Badge>
             </Tooltip>
           ) : null}
           {c.reassignment !== null ? (
@@ -114,6 +120,11 @@ export function KafkaClusterDetailsPage() {
         </Text>
       ) : null}
 
+      {/* Последний исход заявки (t10): expired подсвечен warning-цветом. */}
+      {c.ticketOutcome !== null ? (
+        <TicketOutcomeLine outcome={c.ticketOutcome} />
+      ) : null}
+
       <BrokersTab cluster={c.name} brokers={c.brokersList} canScale={active}
         reassignment={c.reassignment} regen={c.regen} />
       <TopicsTab
@@ -133,5 +144,18 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
       <Text size="xs" c="dimmed" tt="uppercase">{label}</Text>
       {typeof children === 'string' ? <Text>{children}</Text> : children}
     </Stack>
+  );
+}
+
+// Строка «Последний исход заявки» (t10): kind → outcome (finished); expired
+// подсвечен warning-цветом, причина — в тексте.
+export function TicketOutcomeLine({ outcome }: { outcome: TicketOutcomeDto }) {
+  const expired = outcome.outcome === 'expired';
+  return (
+    <Text size="sm" c={expired ? 'yellow' : undefined}>
+      Последний исход заявки: {outcome.kind} → {outcome.outcome} (
+      {new Date(outcome.finishedUnix * 1000).toLocaleString()})
+      {outcome.reason ? ` — причина: ${outcome.reason}` : ''}
+    </Text>
   );
 }

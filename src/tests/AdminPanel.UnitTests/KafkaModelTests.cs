@@ -310,3 +310,89 @@ public class KafkaRebalanceDtoMappingTests
         idle.RebalancePending.Should().BeFalse();
     }
 }
+
+// Маппинг ca-ротации и исходов заявок в DTO (t10, arch/adminpanel/03 §7.2):
+// бейдж сводки, детали по кластеру, null при отсутствии.
+public class KafkaTicketOutcomeDtoMappingTests
+{
+    private static KafkaClusterInfo Cluster(string name = "events")
+        => new(
+            name, KafkaClusterState.Active,
+            Brokers: 3, ReplicationFactor: 3, MinInSyncReplicas: 2, DefaultPartitions: 12,
+            DefaultRetentionMs: 604800000, CreatedUnix: 1756500000,
+            Endpoints: "host.docker.internal:16001",
+            BrokersList: [new KafkaBrokerInfo("broker1", "RUNNING", "controller", 2m, 4, 40)],
+            Topics: []);
+
+    private static KafkaSnapshot Snapshot(IReadOnlyList<KafkaCaRotationTicket>? caRotations = null)
+        => new(
+            new DateTimeOffset(2026, 8, 30, 12, 0, 0, TimeSpan.Zero),
+            EtcdReachable: true, ConsecutiveFailures: 0,
+            [Cluster()],
+            Rotations: [], Rebalances: [], Reassignments: [], Regens: [],
+            WorkerEndpoints: [], WorkerHealth: [], Probes: [], Alerts: [], ParseErrors: [],
+            UnknownKeyCount: 0,
+            CaRotations: caRotations ?? []);
+
+    [Fact]
+    public void MapSummaries_CaRotationTicket_PendingTrue()
+    {
+        // Arrange: снапшот с живой ca-заявкой кластера events.
+        var snapshot = Snapshot([new KafkaCaRotationTicket("events", 1750000300, "it")]);
+
+        // Act
+        var summaries = Inspection.KafkaMappers.MapSummaries(snapshot);
+
+        // Assert: бейдж сводки проставлен.
+        summaries.Single().CaRotationPending.Should().BeTrue();
+    }
+
+    [Fact]
+    public void MapSummaries_NoCaRotation_PendingFalse()
+    {
+        // Arrange / Act
+        var summaries = Inspection.KafkaMappers.MapSummaries(Snapshot());
+
+        // Assert
+        summaries.Single().CaRotationPending.Should().BeFalse();
+    }
+
+    [Fact]
+    public void MapDetails_CaRotationAndTicketOutcome_FilledByCluster()
+    {
+        // Arrange: ca-заявка + исход expired кластера events; исход чужого
+        // кластера shop в списке не мешает.
+        var caRotations = new[] { new KafkaCaRotationTicket("events", 1750000300, "it") };
+        var outcomes = new[]
+        {
+            new KafkaTicketOutcome("shop", "ca", "expired", "waiting-cluster", 1750000000, null, 1750003600),
+            new KafkaTicketOutcome("events", "password-app", "expired", "waiting-cluster", 1750000000, "admin", 1750003600),
+        };
+
+        // Act
+        var dto = Inspection.KafkaMappers.MapDetails(
+            Cluster(), [], [], [], caRotations: caRotations, ticketOutcomes: outcomes);
+
+        // Assert: поля по кластеру events.
+        dto.CaRotation.Should().NotBeNull();
+        dto.CaRotation!.RequestedUnix.Should().Be(1750000300);
+        dto.CaRotation.RequestedBy.Should().Be("it");
+        dto.TicketOutcome.Should().NotBeNull();
+        dto.TicketOutcome!.Kind.Should().Be("password-app");
+        dto.TicketOutcome.Outcome.Should().Be("expired");
+        dto.TicketOutcome.Reason.Should().Be("waiting-cluster");
+        dto.TicketOutcome.RequestedBy.Should().Be("admin");
+        dto.TicketOutcome.FinishedUnix.Should().Be(1750003600);
+    }
+
+    [Fact]
+    public void MapDetails_NoCaRotationNoOutcome_NullFields()
+    {
+        // Arrange / Act: ни заявки, ни исхода.
+        var dto = Inspection.KafkaMappers.MapDetails(Cluster(), [], [], []);
+
+        // Assert: null = данных нет (бейдж/строка UI не рендерятся).
+        dto.CaRotation.Should().BeNull();
+        dto.TicketOutcome.Should().BeNull();
+    }
+}

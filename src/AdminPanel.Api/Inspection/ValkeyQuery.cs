@@ -21,7 +21,7 @@ public sealed record ValkeyClusterSummaryDto(
     long MaxmemoryBytes,
     string MaxmemoryPolicy);
 
-// Детали кластера: config, нода, ротация (arch/03 §8.2).
+// Детали кластера: config, нода, ротация, CA-ротация (t07), исход заявки (t10).
 public sealed record ValkeyClusterDto(
     string Name,
     string State,
@@ -32,7 +32,8 @@ public sealed record ValkeyClusterDto(
     string? Endpoints,
     IReadOnlyList<ValkeyNodeDto> NodesList,
     ValkeyRotationDto? Rotation,
-    ValkeyCaRotationDto? CaRotation); // t07: живая заявка CA-ротации (бейдж UI)
+    ValkeyCaRotationDto? CaRotation, // t07: живая заявка CA-ротации (бейдж UI)
+    TicketOutcomeDto? TicketOutcome = null); // t10: последний исход заявки
 
 // Нода node1: state raw + ресурсы + live из PING-пробы (null — проба молчит).
 public sealed record ValkeyNodeDto(
@@ -65,7 +66,7 @@ public static class ValkeyMappers
             c.MaxmemoryBytes,
             c.MaxmemoryPolicy))];
 
-    public static ValkeyClusterDto MapDetails(ValkeyClusterInfo cluster)
+    public static ValkeyClusterDto MapDetails(ValkeyClusterInfo cluster, ValkeyTicketOutcome? ticketOutcome = null)
         => new(
             cluster.Name,
             StateName(cluster.State),
@@ -81,7 +82,10 @@ public static class ValkeyMappers
                 : new ValkeyRotationDto(cluster.Rotation.Role, cluster.Rotation.RequestedUnix, cluster.Rotation.RequestedBy),
             cluster.CaRotation is null
                 ? null
-                : new ValkeyCaRotationDto(cluster.CaRotation.RequestedUnix, cluster.CaRotation.RequestedBy));
+                : new ValkeyCaRotationDto(cluster.CaRotation.RequestedUnix, cluster.CaRotation.RequestedBy),
+            ticketOutcome is null ? null : new TicketOutcomeDto(
+                ticketOutcome.Kind, ticketOutcome.Outcome, ticketOutcome.Reason,
+                ticketOutcome.RequestedUnix, ticketOutcome.RequestedBy, ticketOutcome.FinishedUnix));
 
     public static string StateName(ValkeyClusterState state) => state switch
     {
@@ -121,7 +125,9 @@ public sealed class ValkeyClusterDetailsQueryHandler(IValkeySnapshotReader store
         var cluster = snapshot.Clusters.FirstOrDefault(c => c.Name == query.Cluster);
         return ValueTask.FromResult(cluster is null
             ? Result<ValkeyClusterDto>.Failed(new ValkeyClusterNotFound(query.Cluster))
-            : Result<ValkeyClusterDto>.Success(ValkeyMappers.MapDetails(cluster)));
+            : Result<ValkeyClusterDto>.Success(ValkeyMappers.MapDetails(
+                cluster,
+                (snapshot.TicketOutcomes ?? []).FirstOrDefault(o => o.Cluster == query.Cluster))));
     }
 }
 

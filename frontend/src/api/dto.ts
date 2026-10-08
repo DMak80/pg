@@ -419,6 +419,8 @@ export interface KafkaClusterSummaryDto {
   endpoints: string | null;
   rotationPending: boolean;
   rebalancePending: boolean;
+  // Живая заявка CA-ротации (t10; бейдж UI).
+  caRotationPending: boolean;
 }
 
 // GET /api/kafka/clusters/{cluster} — детали.
@@ -440,6 +442,10 @@ export interface KafkaClusterDto {
   reassignment: KafkaReassignmentDto | null;
   // Live-прогресс rolling-регенерации брокеров (t06): null = операции нет.
   regen: KafkaRegenDto | null;
+  // Живая заявка CA-ротации (t10): null = заявки нет.
+  caRotation: KafkaCaRotationTicketDto | null;
+  // Последний исход заявки (t10): null = исходов нет.
+  ticketOutcome: TicketOutcomeDto | null;
   // Live-группы из пробы (волна C): null — проба молчит о кластере.
   groups: KafkaGroupDto[] | null;
   probeOk: boolean | null;
@@ -519,6 +525,23 @@ export interface KafkaTopicCreatedDto {
 export interface KafkaRotationTicketDto {
   requestedUnix: number;
   requestedBy: string | null;
+}
+
+// Живая заявка CA-ротации (t10, arch/03 §7.2); null = заявки нет.
+export interface KafkaCaRotationTicketDto {
+  requestedUnix: number;
+  requestedBy: string | null;
+}
+
+// Последний исход заявки воркера (t10, arch/03 §7.2/§8.2): expired|done;
+// общий для kafka/valkey (строка деталей кластера).
+export interface TicketOutcomeDto {
+  kind: string;
+  outcome: string;
+  reason?: string | null;
+  requestedUnix: number;
+  requestedBy?: string | null;
+  finishedUnix: number;
 }
 
 // Заявка ребалансировки (t02, arch/03 §7.2); null = заявки нет.
@@ -686,6 +709,8 @@ export interface ValkeyClusterDto {
   rotation: ValkeyRotationDto | null;
   // Живая заявка ротации CA /valkeyworker/ca_rotations/<C> (t07; бейдж UI).
   caRotation: ValkeyCaRotationDto | null;
+  // Последний исход заявки (t10): null = исходов нет.
+  ticketOutcome: TicketOutcomeDto | null;
 }
 
 export interface ValkeyNodeDto {
