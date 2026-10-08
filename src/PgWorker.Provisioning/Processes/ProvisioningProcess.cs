@@ -42,7 +42,9 @@ public sealed class ProvisioningProcess(
     PortAllocLock portLock,
     PgtuneInputsFactory pgtune,
     Func<CancellationToken, Task<Result>>? snapshot = null,
-    Shared.Core.Hosting.ILoopProgress? progress = null) : IClusterProcess
+    Shared.Core.Hosting.ILoopProgress? progress = null,
+    TimeSpan? watchdogWindow = null,
+    Microsoft.Extensions.Logging.ILogger? logger = null) : IClusterProcess
 {
     private const int TxnBatchSize = 128; // лимит ops в txn (P3)
     private const string Op = "provision";
@@ -185,7 +187,18 @@ public sealed class ProvisioningProcess(
             if (master is null)
                 return; // waiting-master — InProgress
 
-            var sqlDone = await ProvisionShardSqlAsync(snap, shard, topology, master, creds.Value, token);
+            // Поллинг SQL-фазы (arch/14 §6 инвариант поллинга; разбор E2E-маркера:
+            // фаза молчала десятки секунд на Npgsql-вызовах): последовательность
+            // идемпотентна (guard-SELECT/IF NOT EXISTS/ALTER) — итерация с таймаутом
+            // короче окна повторяет её с начала; каждая итерация — Mark по факту +
+            // лог elapsed. Бюджет — существующий порог PatroniBootSec.
+            var sqlDone = await LongCallPolling.EnsureAsync(
+                $"sql шарда {shard.Name}",
+                token => ProvisionShardSqlAsync(snap, shard, topology, master, creds.Value, token),
+                progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
+                TimeSpan.FromTicks(Math.Max(
+                    TimeSpan.TicksPerSecond, (watchdogWindow ?? TimeSpan.FromSeconds(15)).Ticks / 2)),
+                TimeSpan.FromSeconds(placementOpts.PatroniBootSec), token);
             if (!sqlDone.IsSuccess)
                 shardErrors.Enqueue(sqlDone.Error!);
         });
@@ -462,10 +475,19 @@ public sealed class ProvisioningProcess(
                     return marked;
             }
 
-            var ensured = await driver.EnsureNodeAsync(
-                topology, node.Name, topology.Nodes[node.Name], clusterSecrets, etcdEndpoints, resources,
-                tuning, syncStrict, ct);
-            progress?.Mark(); // heartbeat: create/start контейнера ноды — долгая фаза
+            // Поллинг create/start (arch/14 §5 A P2.1): одиночный вызов таймаутом
+            // короче окна проверки (половина — 7.5 c при дефолтах), идемпотентный
+            // повтор; каждая итерация — Mark по факту + лог elapsed (внутри
+            // LongCallPolling). Бюджет — существующий порог PatroniBootSec.
+            var ensured = await LongCallPolling.EnsureAsync(
+                $"create/start ноды {node.Name}",
+                token => driver.EnsureNodeAsync(
+                    topology, node.Name, topology.Nodes[node.Name], clusterSecrets, etcdEndpoints, resources,
+                    tuning, syncStrict, token),
+                progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
+                TimeSpan.FromTicks(Math.Max(
+                    TimeSpan.TicksPerSecond, (watchdogWindow ?? TimeSpan.FromSeconds(15)).Ticks / 2)),
+                TimeSpan.FromSeconds(placementOpts.PatroniBootSec), ct);
             if (!ensured.IsSuccess)
                 return ensured;
         }

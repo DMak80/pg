@@ -110,7 +110,11 @@ internal sealed class SnapshotLoop(
                     var delay = exportSink is not null && behind
                         ? TimeSpan.FromSeconds(options.CurrentValue.Snapshots.Export.RetryIntervalSec)
                         : TimeSpan.FromMinutes(options.CurrentValue.Loops.SnapshotIntervalMin);
-                    await Task.Delay(delay, stoppingToken);
+                    // Сон длиннее порога сноса — пульсирующий (чанк < окна проверки 15 c):
+                    // MarkSnapshotActivity — активность без тика (healthz loops-alive не меняется)
+                    await Shared.Core.Hosting.PulsingDelay.SleepAsync(delay,
+                        TimeSpan.FromSeconds(options.CurrentValue.Loops.Watchdog.CheckIntervalSec),
+                        health.MarkSnapshotActivity, stoppingToken);
                 }
                 else
                 {

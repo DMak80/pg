@@ -517,16 +517,24 @@ D→C транзиентно недоверяют NEW-серту: окно = с�
 - **Отказ etcd**: контроль-плейн заморожен; живые Valkey-ноды от него не
   зависят (клиенты работают по последнему снапшоту дискавери — fail-open).
 - **Watchdog зависших циклов**: внутренний компонент `LoopWatchdog`
-  (Shared.Core, `BackgroundService`) следит за возрастом активности (тик или
+  (Shared.Core, `BackgroundService`) следит за активностью (тик или
   прогресс-отметка; долгие фазы — создание контейнеров нод, PING-цикл
-  ожидания готовности (бюджет `NodeBootSec`)) циклов
-  (reconcile/keepalive/snapshot) по отметкам `HealthState`; staleness
-  сверх порога (`Loops:Watchdog:Multiplier` × порог healthz loops-alive)
+  ожидания готовности (бюджет `NodeBootSec`); сон snapshot-лидера длиннее
+  окна проверки — пульсирующим сном, t19) циклов
+  (reconcile/keepalive/snapshot) по отметкам `HealthState`; возраст
+  активности сверх порога `Loops:Watchdog:Multiplier` ×
+  `Loops:Watchdog:CheckIntervalSec` («2 по 15» = 30 с, t19; порог
+  healthz loops-alive в формуле НЕ участвует — watchdog знает только
+  свои опции, `WatchdogOptions` без изменений; сон snapshot-лидера
+  длиннее порога — пульсирующим сном, t19; интервалы
+  `ScanIntervalSec`/`KeepaliveSec` < порога сноса — fail-fast старта,
+  общий `WatchdogConfigGuard` в Program.cs трёх воркеров, t19)
   → журнал (critical) + метрика `worker_watchdog_restarts_total{loop}` +
   graceful `StopApplication` — контейнер поднимает docker-политика, lease
-  гаснут ≤15 с, takeover вторым инстансом. Механика (пороги, grace старта,
-  границы) — канон [14-pgworker.md](14-pgworker.md) §6; формулы — общий
-  хелпер `LoopStaleness` Shared.Core.
+  гаснут ≤15 с, takeover вторым инстансом. Механика (инварианты живости/
+  поллинга, границы) — канон [14-pgworker.md](14-pgworker.md) §6; формулы
+  порогов healthz loops-alive — общий хелпер `LoopStaleness` Shared.Core
+  (healthz watchdog больше не потребляет).
 
 ## 7. Наблюдаемость
 
@@ -551,8 +559,11 @@ ValkeyWorker:Docker { Mode: Plain|Swarm, Hosts[{Name,Endpoint}], SwarmManager,
                       PortRange{From=17000,To=17999}, Images{Node="valkey/valkey:<пин>"} }
 ValkeyWorker:Loops { ScanIntervalSec=5, KeepaliveSec=5, ErrorDelayMs=2000,
                      Watchdog { Enabled=true, Multiplier=2, CheckIntervalSec=15, StopDelaySec=1 } }
-                     # watchdog зависших циклов: порог = Multiplier × порог healthz
-                     # loops-alive; Enabled=false — компонент не регистрируется
+                     # watchdog зависших циклов (t19): порог сноса = Multiplier ×
+                     # CheckIntervalSec («2 по 15» = 30 с); порог healthz в
+                     # формуле НЕ участвует; Enabled=false — компонент не
+                     # регистрируется; ScanIntervalSec/KeepaliveSec < порога
+                     # сноса — fail-fast старта
 ValkeyWorker:Thresholds { NodeBootSec=120, NodeDeadSec=90 }
 ValkeyWorker:Parallelism { MaxClusters=4 }
 ValkeyWorker:Snapshots { Dir="/snapshots", RetentionFiles=10 }

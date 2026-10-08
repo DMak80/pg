@@ -58,7 +58,7 @@ cleaning при любом исходе (t02-restore-drill, arch/19 §3.6).
 (t08-etcd-snapshot-export).
 
 Открытые разрывы: бэкапы не шифрованы и в единственном хранилище
-(`t01`, `t03`); автозакрытие потерянных слотов (`t19`).
+(`t01`, `t03`).
 
 ### R — быстрая самовосстанавливаемость
 
@@ -119,7 +119,6 @@ TLS/аутентификации (`t22`).
 | `t13-alert-notifications` | внешняя нотификация алертов + история | P3 | N |
 | `t15-prometheus-file-sd` | file_sd для скрейпа реальных нод | P3 | N |
 | `t16-cert-expiry-monitoring` | мониторинг сроков сертификатов | P3 | N |
-| `t19-slot-auto-recreate` | автозакрытие потерянных слотов | P4 | D, R |
 | `t20-kfw-vwk-takeover-e2e` | host-kill E2E для KafkaWorker/ValkeyWorker | P4 | R |
 | `t21-host-failure-scenarios` | сценарии отказа docker-хоста/DC | P4 | R |
 | `t22-patroni-rest-tls` | TLS/аутентификация Patroni REST :8008 | P4 | N |
@@ -135,6 +134,7 @@ TLS/аутентификации (`t22`).
 
 | Тег | Merge | Влияние на характеристику |
 |---|---|---|
+| `t19-slot-auto-recreate` | — (мерж-коммит t19-slot-auto-recreate) | потерянный wal-слот закрывается автоматикой без оператора (D, R): зонд слота — существование+`wal_status` на каждом источнике (мастер+sync — закрывает невидимую панели sync-сторону); lost одного при живом втором — авто-recreate слота (drop+create immediate+reserved, журнальная фаза `slot-recreate` до мутации) без BROKEN, потерянный агент возвращается от хвоста S3 вечным ретраем приёмника; lost/исчезновение всех источников — BROKEN + пересъём полного (путь t07); ремеди `slot-wal-lost` — WorkerAuto, runbook-раздел «Потеря wal-слота». Попутно (watchdog/поллинг): порог сноса = `Multiplier × CheckIntervalSec` (30 с единый, healthz-порог из формулы исключён — устранён ложный self-restart на легитимно долгих фазах), поллинг долгих фаз (итерации короче окна 15 с: Mark+elapsed-лог на каждой, отмена итерации по таймауту — повтор до бюджета, а не фейл), таймауты etcd/patroni/SQL 7–7,5 с, пульсирующий сон, fail-fast конфига ×3 воркера |
 | `t12-loop-watchdog` | — (мерж-коммит t12-loop-watchdog) | зависший без исключения цикл самолечется self-restart'ом за ~минуту (внутренний LoopWatchdog Shared.Core у всех трёх воркеров, порог ×2 от healthz, graceful StopApplication — путь POST /api/restart), lease гаснут ≤15 с, takeover вторым инстансом не блокируется; BackupOrphanSweeperLoop получил тики живости (loops-alive + watchdog), метрика worker_watchdog_restarts_total{loop}, runbook-раздел |
 | `t17-rpo-rto-dashboard` | — (мерж-коммит t17-rpo-rto-dashboard) | RPO/RTO-числа оператору (характеристика N): грань «Надёжность» панели — страница `/reliability` (таблица кластер×шард: возраст валидного полного + id, лаг WAL, сводный RPO-потенциал с режимом wal/full/off, длительности последнего failover/rebuild/drill/restore с cause, ongoing-бейджи «идёт») + карточка-сводка на Overview (только Active-кластеры), `GET /api/reliability` — read-only над существующим etcd-снапшотом (панель остаётся немым читателем, новых etcd-операций ноль); фактические RTO-факты фиксирует воркер: work-ключ `/pgworker/work/<C>` дополнен `last_failover`/`last_rebuild` (последний факт каждого вида, detected от первого тика недоступности — окно детекции входит в RTO, cause: accelerated/elections и auto-dead/operator-recreate; carry-forward через фазовые тики, открытый факт переживает takeover; новых etcd-ключей нет, чистки D2/S3 не меняются); независимый канал — Prometheus-серии `pgworker_ha_{failover,rebuild}_duration_seconds` (расширение словаря arch/18 §2.7, перезапись набора кластера, Grafana-панель в backups.json); механика надзора не изменена (гварды только вокруг записей фактов) |
 | `t14-backup-metrics-export` | — (мерж-коммит t14-backup-metrics-export) | независимый от панели Prometheus-канал наблюдения бэкап-домена (характеристика N): 7 серий словаря arch/18 §2.7 — возраст валидного полного с per-cluster порогом (`full_age_seconds`/`full_max_age_seconds`), WAL-лаг и тишина загрузок (`wal_lag_segments`/`wal_last_uploaded_age_seconds`), счётчики исходов verify/restore/drill с лейблами cluster/shard/result; серии питают тики существующих процессов через nullable-наблюдателей (отдельного коллектора нет, пассивные наблюдатели), возраст пересчитывается на каждом scrape (unix-факт в ObservableGauge); группа алертов `backups` — 7 правил (full stale/missing, wal lag/stale — пороги = дефолты конфига, verify/restore/drill failed через `increase[15m]`) + Grafana-дашборд `backups.json` (6 панелей); чек 65 — 18 алерт-рулов и 5 дашбордов; словарь зафиксирован канон-тестом /metrics (arch/18 §6) |

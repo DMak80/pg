@@ -70,8 +70,12 @@ internal sealed class SnapshotLoop(
 
                     health.MarkSnapshotTick();
                     metrics.LoopTick("snapshot", ok: true);
-                    await Task.Delay(
-                        TimeSpan.FromMinutes(options.CurrentValue.Loops.SnapshotIntervalMin), stoppingToken);
+                    // Сон длиннее порога сноса — пульсирующий (чанк < окна проверки 15 c):
+                    // MarkSnapshotActivity — активность без тика (healthz loops-alive не меняется)
+                    await Shared.Core.Hosting.PulsingDelay.SleepAsync(
+                        TimeSpan.FromMinutes(options.CurrentValue.Loops.SnapshotIntervalMin),
+                        TimeSpan.FromSeconds(options.CurrentValue.Loops.Watchdog.CheckIntervalSec),
+                        health.MarkSnapshotActivity, stoppingToken);
                 }
                 else
                 {

@@ -143,8 +143,10 @@ public sealed class LoopsOptions
     // Snapshots.MaintenanceIntervalMin).
     public int SnapshotIntervalMin { get; set; } = 360;
 
-    /// <summary>Watchdog зависших циклов (arch/21 §6/§8): Enabled=false — компонент
-    /// не регистрируется; порог = Multiplier × порог healthz loops-alive.</summary>
+    /// <summary>Watchdog зависших циклов (arch/21 §6/§8 — у PgWorker/Kafka свои
+    /// arch/14 §6/§8 / arch/16 §6/§8): Enabled=false — компонент не регистрируется;
+    /// порог сноса = Multiplier × CheckIntervalSec (30 c при дефолтах, единый для
+    /// всех циклов; порог healthz loops-alive в формуле не участвует).</summary>
     public Shared.Core.Hosting.WatchdogOptions Watchdog { get; set; } = new();
 }
 

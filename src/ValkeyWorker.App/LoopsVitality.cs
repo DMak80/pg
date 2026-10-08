@@ -1,30 +1,37 @@
 using Microsoft.Extensions.Options;
-using Shared.Core.HealthChecks;
 using Shared.Core.Hosting;
 
 namespace ValkeyWorker.App;
 
-/// <summary>Живость циклов ValkeyWorker для watchdog: снимок HealthState + пороги
-/// LoopStaleness × Loops:Watchdog:Multiplier; перечень — reconcile/keepalive/snapshot
-/// (имена = loops-alive healthz).</summary>
+/// <summary>Живость циклов ValkeyWorker для watchdog: снимок HealthState + единый
+/// порог сноса от собственных опций watchdog (Multiplier × CheckIntervalSec);
+/// перечень — reconcile/keepalive/snapshot (имена = loops-alive healthz).</summary>
 public sealed class ValkeyWorkerLoopsVitality(
     IOptionsMonitor<ValkeyWorkerOptions> options,
     HealthState health) : ILoopsVitality
 {
     public IReadOnlyList<LoopHeartbeat> Snapshot()
     {
-        var loops = options.CurrentValue.Loops;
-        var multiplier = Math.Max(1, loops.Watchdog.Multiplier);
-        var fast = TimeSpan.FromTicks(LoopStaleness.FastLoops(loops.ScanIntervalSec, loops.KeepaliveSec).Ticks * multiplier);
-        var snapshotLoop = TimeSpan.FromTicks(LoopStaleness.SnapshotLoop(loops.ScanIntervalSec, loops.SnapshotIntervalMin).Ticks * multiplier);
+        // Порог сноса — от собственных опций watchdog (arch/14 §6):
+        // Multiplier × CheckIntervalSec = 30 c при дефолтах, ЕДИНЫЙ для всех
+        // циклов; healthz-порог (LoopStaleness) в формуле не участвует.
+        var watchdog = options.CurrentValue.Loops.Watchdog;
+        var staleAfter = TimeSpan.FromSeconds(
+            Math.Max(1, watchdog.Multiplier) * Math.Max(1, watchdog.CheckIntervalSec));
         var snap = health.Snapshot();
+
+        // snapshot: тик ИЛИ пульс сна — позднейший факт активности (сны длиннее
+        // порога 30 c пульсируют MarkSnapshotActivity, B2)
+        var snapshotActivity = snap.LastSnapshotTick is { } tick && snap.LastSnapshotActivity is { } pulse
+            ? (tick > pulse ? tick : pulse)
+            : snap.LastSnapshotTick ?? snap.LastSnapshotActivity;
         return
         [
-            // активность = тик или прогресс-отметка; keepalive/snapshot —
-            // активность = тик (долгих фаз нет)
-            new LoopHeartbeat("reconcile", snap.LastReconcileActivity, fast),
-            new LoopHeartbeat("keepalive", snap.LastKeepaliveTick, fast),
-            new LoopHeartbeat("snapshot", snap.LastSnapshotTick, snapshotLoop),
+            // активность = тик или прогресс-отметка; keepalive — активность = тик
+            // (долгих фаз нет; сон snapshot — пульс B2)
+            new LoopHeartbeat("reconcile", snap.LastReconcileActivity, staleAfter),
+            new LoopHeartbeat("keepalive", snap.LastKeepaliveTick, staleAfter),
+            new LoopHeartbeat("snapshot", snapshotActivity, staleAfter),
         ];
     }
 }
