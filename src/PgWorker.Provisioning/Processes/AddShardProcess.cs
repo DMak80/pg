@@ -147,7 +147,17 @@ public sealed partial class AddShardProcess(
 
         // A5: БД/роли на мастере НОВОГО шарда; СХЕМЫ БАКЕТОВ НЕ СОЗДАЮТСЯ (§2.1);
         // dsn multi-host (порты portalloc, без пароля).
-        var sqlDone = await ProvisionShardSqlAsync(snap, shard, topology, master, ct);
+        // Поллинг SQL-фазы (arch/14 §6 инвариант поллинга; разбор E2E-маркера:
+        // фаза молчала десятки секунд на Npgsql-вызовах): последовательность
+        // идемпотентна — итерация с таймаутом короче окна повторяет её
+        // с начала; каждая итерация — Mark по факту + лог elapsed.
+        var sqlDone = await LongCallPolling.EnsureAsync(
+            $"sql шарда {shard.Name}",
+            token => ProvisionShardSqlAsync(snap, shard, topology, master, token),
+            progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
+            TimeSpan.FromTicks(Math.Max(
+                TimeSpan.TicksPerSecond, (watchdogWindow ?? TimeSpan.FromSeconds(15)).Ticks / 2)),
+            TimeSpan.FromSeconds(placementOpts.PatroniBootSec), ct);
         if (!sqlDone.IsSuccess)
             return await FailAsync(cluster, sqlDone.Error!, "sql", ct);
 
