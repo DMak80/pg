@@ -39,6 +39,14 @@ docker run --rm \
   -v "$ROOT/deploy/tls:/src:ro" -v deploy_pgw-api-tls:/tls alpine:3.20 \
   sh -c "cp /src/ca.pem /src/pgserver.crt /src/pgserver.key /src/healthcheck.crt /src/healthcheck.key /tls/"
 
+# SdGenerator (t15): publish НА ХОСТЕ → compose build пакует только вывод
+# (канон E2E-образов; сборка не «тихая» — [PHASE] и тайминг).
+echo ">>> [PHASE] publish Metrics.SdGenerator ($(date +%H:%M:%S))"
+dotnet publish "$ROOT/src/Metrics.SdGenerator/Metrics.SdGenerator.csproj" \
+  -c Release -o "$ROOT/artifacts/sd-generator/publish" --nologo \
+  || { echo "❌ publish SdGenerator не удался"; exit 1; }
+echo ">>> [PHASE] publish SdGenerator готов ($(date +%H:%M:%S))"
+
 echo ">>> поднимаю стенд (docker compose --profile full --profile kafka --profile valkey --profile metrics up -d --build)"
 # Docker Desktop отдаёт хост-порт recreated-контейнера с задержкой (com.docke
 # держит публикацию после удаления старого контейнера; при пересборке образа

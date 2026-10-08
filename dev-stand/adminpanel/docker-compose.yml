@@ -525,10 +525,38 @@ services:
       # file_sd-таргет pgworker (host-порт параметризуется PGW_API_HOST_PORT;
       # файл перезаписывается 00-up.sh in place, prometheus перечитывает сам).
       - ./metrics/prometheus/pgworker-targets.json:/etc/prometheus/pgworker-targets.json:ro
+      # file_sd-таргеты реальных Patroni-нод — пишет sd-generator (t15, arch/18 §5.4).
+      - prometheus-sd:/etc/prometheus/sd:ro
       - prometheus-data:/prometheus
       # Скрейп воркеров за mTLS (t03, О4): TLS-пакет ro (tls_config prometheus.yml).
       - ../../deploy/tls:/tls:ro
     command: ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.retention.time=7d"]
+
+  # file_sd-генератор реальных Patroni-нод (t15, arch/18 §5.4): тик читает
+  # /pgworker/portalloc/ (read-only) и пишет таргеты в volume Prometheus.
+  # Локально собираемый образ — в registry НЕ класть (канон AGENTS.md).
+  # Publish выполняется НА ХОСТЕ (00-up.sh) в artifacts/sd-generator/publish.
+  # Контекст — корень репо: BuildKit-песочница Docker Desktop не читает
+  # dockerfile вне контекста, поэтому путь publish-вывода передаётся через
+  # SD_PUBLISH_DIR (в образ попадает ТОЛЬКО publish-вывод — канон E2E-образов).
+  sd-generator:
+    build:
+      context: ../..
+      dockerfile: docker/Metrics.SdGenerator.Dockerfile
+      args:
+        SD_PUBLISH_DIR: artifacts/sd-generator/publish
+    image: sdgenerator:dev
+    container_name: as-sd-generator
+    restart: unless-stopped
+    profiles: ["metrics"]
+    volumes:
+      - prometheus-sd:/sd
+    environment:
+      SdGenerator__Etcd__Endpoints__0: http://etcd1:2379
+      SdGenerator__Etcd__Endpoints__1: http://etcd2:2379
+      SdGenerator__Etcd__Endpoints__2: http://etcd3:2379
+      SdGenerator__OutputPath: /sd/patroni-nodes.json
+    depends_on: [etcd1, etcd2, etcd3]
 
   grafana:
     image: grafana/grafana:13.0.8
@@ -567,5 +595,6 @@ volumes:
   kfw-snapshots:
   vw-snapshots:
   prometheus-data:
+  prometheus-sd:
   grafana-data:
   alertmanager-data:
