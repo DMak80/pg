@@ -12,12 +12,12 @@
      "targets": [{"expr": "up{job=\"patroni-nodes\"}", "legendFormat": "{{cluster}}/{{shard}}/{{node}}", "refId": "A"}]},
     {"type": "timeseries", "title": "Patroni role (real)", "gridPos": {"x":8,"y":9,"w":16,"h":5},
      "targets": [
-      {"expr": "patroni_master", "legendFormat": "master {{scope}}/{{name}}", "refId": "A"},
+      {"expr": "patroni_primary", "legendFormat": "master {{scope}}/{{name}}", "refId": "A"},
       {"expr": "patroni_replica", "legendFormat": "replica {{scope}}/{{name}}", "refId": "B"},
       {"expr": "patroni_sync_standby", "legendFormat": "sync_standby {{scope}}/{{name}}", "refId": "C"}]},
     {"type": "timeseries", "title": "Replica replay lag, s (real)", "gridPos": {"x":0,"y":14,"w":12,"h":5},
-     "targets": [{"expr": "time() - patroni_xlog_replay_timestamp", "legendFormat": "{{scope}}/{{name}}", "refId": "A"}]},
+     "targets": [{"expr": "time() - patroni_xlog_replayed_timestamp", "legendFormat": "{{scope}}/{{name}}", "refId": "A"}]},
     {"type": "timeseries", "title": "Timeline (real)", "gridPos": {"x":12,"y":14,"w":12,"h":5},
-     "targets": [{"expr": "patroni_timeline", "legendFormat": "{{scope}}/{{name}}", "refId": "A"}]}
+     "targets": [{"expr": "patroni_postgres_timeline", "legendFormat": "{{scope}}/{{name}}", "refId": "A"}]}
   ]
 }

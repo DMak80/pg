@@ -94,7 +94,7 @@ groups:
           summary: "Patroni-нода {{ $labels.instance }} ({{ $labels.cluster }}/{{ $labels.shard }}/{{ $labels.node }}) недоскрейпится 5мин"
           description: "нода в rebuild — штатный сценарий (~90с), порог терпит; runbook — arch/18 §2.5"
       - alert: PatroniReplicaLagHigh
-        expr: time() - patroni_xlog_replay_timestamp > 30
+        expr: time() - patroni_xlog_replayed_timestamp > 30
         for: 5m
         labels: {severity: warning}
         annotations:

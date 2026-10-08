@@ -134,9 +134,16 @@ static (DNS-имена сети стенда).
 
 Словарь реальных Patroni-нод — нативные серии REST `/metrics` (spilo,
 Patroni 4.x); канон-минимум, на который пишутся дашборд/алерты:
-`patroni_master`, `patroni_replica`, `patroni_sync_standby`,
-`patroni_timeline`, `patroni_xlog_replay_timestamp`, `patroni_version`,
-`patroni_postgres_running` (лейблы `scope`, `name` — сам Patroni).
+`patroni_primary`, `patroni_replica`, `patroni_sync_standby`,
+`patroni_postgres_timeline`, `patroni_xlog_replayed_timestamp`,
+`patroni_version`, `patroni_postgres_running` (лейблы `scope`, `name` —
+сам Patroni; роли — отдельными сериями: primary/replica/sync_standby/
+standby_leader/quorum_standby). Словарь зафиксирован фактом
+docker-E2E (§6, M3): полный фактический набор шире — 23 серии
+(`patroni_dcs_last_seen`, `patroni_xlog_received/replayed_location`,
+`patroni_postgres_streaming/state/server_version`, `patroni_pending_restart`,
+`patroni_is_paused`, `patroni_postmaster_start_time`, …); расширяют его
+только фактом того же прогона.
 Два словаря сосуществуют: эмуляторный `pg_replica_lag_seconds` (стенд без
 PgWorker-кластеров) и нативный `patroni_*` (реальные ноды); фактический
 набор фиксирует docker-E2E (§6). Таргеты реальных нод — file_sd из
