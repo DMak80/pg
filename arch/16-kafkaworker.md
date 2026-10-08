@@ -389,8 +389,9 @@ placement constraint, `publish mode=host`. Объекты для сверок �
 | `/kafkaworker/reassignments/<C>` | процесс I: put при работе, del по завершении | `{"mode","drain_broker"?,"partitions_total","partitions_remaining","submitted_unix","updated_unix","instance","last_error"?}` (15 §4) |
 | `/kafkaworker/regens/<C>` | процесс J: put при старте первого пересоздания, del по сходимости | `{"brokers_total","brokers_remaining","current_broker"?,"updated_unix","instance","last_error"?}` (15 §4) — прогресс rolling-регенерации |
 | `/kafkaworker/locks/portalloc` | захват секции довыделения портов (t91, §2.1) | `{"instance":"<id>","since_unix":…}` — lease TTL 15 с, txn `version==0` + put-with-lease; del + revoke lease по завершении секции (arch/15 §4) |
+| `/kafkaworker/ticket_outcomes/<C>` | исход заявки: экспирация (t10) или успешный финал | `{"kind":"password-app"\|"password-admin"\|"ca"\|"rebalance","outcome":"expired"\|"done","reason"?:"waiting-cluster"\|…,"requested_unix","requested_by","finished_unix"}` — перезаписывается каждым новым исходом (любого вида); чистка — демонтаж X2; панель читает (алерт `kafka-ticket-expired`) |
 | `/kafkaworker/rebalances/<C>` | процесс I: del по завершении ребалансировки | заявка панели, дожившая до факта == план (порядок «сначала факт, потом del заявки» — повтор тика после сбоя del безвреден) |
-| `/kafkaworker/{claims,work,portalloc}/<C>*` + `/kafkaworker/{rotations,admin_rotations,rebalances,reassignments,regens}/<C>` | TO_REMOVE, финал X2 | del — **очистка координации включает заявки и прогресс**: остаточные заявки/прогресс не переживают удаление кластера (иначе вечные алерты `kafka-rotation-pending`/`kafka-rebalance-pending`) |
+| `/kafkaworker/{claims,work,portalloc}/<C>*` + `/kafkaworker/{rotations,admin_rotations,rebalances,reassignments,regens,ticket_outcomes}/<C>` | TO_REMOVE, финал X2 | del — **очистка координации включает заявки, прогресс и исходы**: остаточные заявки/прогресс не переживают удаление кластера (иначе вечные алерты `kafka-rotation-pending`/`kafka-rebalance-pending`) |
 
 ## 4. Секреты
 
@@ -426,9 +427,27 @@ env, панелью не меняется.
 SecurityMigrator (M, до всего Active)**; надзор (C) → converger (E, вкл.
 ACL) → reassignment (I, тик `ReassignIntervalSec` — drain
 TO_REMOVE-брокеров с репликами и заявка ребалансировки) → scale-проход
-remove (G) → add (F) → ротация (H, по одному за тик — app или admin) →
-регенерация (J, одно пересоздание за тик) → TopicSync (D, тик
-`TopicSyncIntervalSec`).
+remove (G) → add (F) → ротация паролей (H, по одному за тик — app или
+admin) → ротация CA (K) → регенерация (J, одно пересоздание за тик) →
+TopicSync (D, тик `TopicSyncIntervalSec`).
+
+**Возрастная самозачистка заявок (t10)**: заявка (ротации пароля app/admin,
+CA-ротации, ребалансировки) старше `RotationTicketTimeoutSec` (возраст — по
+`requested_unix` payload) снимается самим воркером в точке waiting-исхода
+ТОЛЬКО при строгом «не начато» — тройной гвард: заявка жива ∧ окно ротации
+не открыто (staging `ca_next_*` отсутствует) ∧ журнал соответствующего
+процесса не в незавершённой мутационной фазе (H: фаза роли
+`phase-a`/`rotated-commit`/`phase-c`; K: `rotate-ca` вне `{done, waiting-*}`;
+ребалансировка: прогресс-ключ balance не жив). Любой из предикатов ложен —
+обычный waiting БЕЗ экспирации (слепой кластер посреди A/R — передержка:
+waiting-точки достижимы и при живом staging/журнале, waiting сам по себе
+«не начато» НЕ доказывает). Действие: journal-фаза `expired` (терминальная,
+с reason) → ОДНА txn `[del заявки][put /kafkaworker/ticket_outcomes/<C>]`
+(формат — §3.2) → счёт `worker_operation_total{result=expired}`. НАЧАТАЯ
+операция (staging жив, мутационная фаза журнала, батчи balance подаются)
+таймаутом не снимается — только панельный алерт стагнации
+(adminpanel/03 §7.4). Снятие не теряет заявку навсегда: оператор повторяет
+её после устранения причины (исход виден панели).
 Reassignment стоит перед remove — к моменту G дренируемый брокер уже пуст.
 Все операции — только под живым клэймом `<C>`;
 journal-before-manipulations. Kafka-шаги Active (E–J, D) пропускаются на
@@ -591,10 +610,26 @@ describe-all; реплики есть → journal-ожидание: процес
   заявки]` — клиенты перечитывают etcd и переподключаются с NEW;
 - **C)** rolling пересоздание с JAAS только NEW (снятие OLD-пользователя).
 
+Guard'ы: кластер не поднят (нет endpoints/кредов) или не отвечает
+DescribeCluster (слепой преф-чек проходится каждым тиком, в т.ч. посреди
+фазы A) → journal `waiting-cluster`; **открытое окно CA-ротации K**
+(staging `ca_next_*` жив) → journal `waiting-ca-window` (передержка —
+rolling-и не смешиваются; окно доиграет K этим же/следующими тиками,
+затем H продолжит). Живая, но НЕ начатая ca-заявка H НЕ гейтит
+(приоритет H перед K, t10): при обеих живых заявках H доигрывает свою
+(del заявки в фазе B), затем K исполняет свою — взаимное ожидание двух
+заявок (дедлок) невозможно. Возрастная самозачистка (t10) — в
+waiting-исходе ТОЛЬКО при гварде «не начато» §5: журнал роли показывает
+незавершённую мутацию (`phase-a`/`rotated-commit`/`phase-c` — заявка
+уже раскатывается, слепота кластера в середине A — передержка) → чистый
+waiting без экспирации; стагнация начатой ротации — зона панельного
+алерта `kafka-rotation-stale`.
+
 Отказ между фазами безопасен (оба креда валидны; перезапуск идёт с
 записанной фазой из journal). Окно «часть брокеров знает только NEW»
 невозможно по построению. Снапшоты P12 «до» (старт ротации) и «после»
-(финал). Битая заявка — мусор: del с journal (панель до того получает
+(финал; вместе с ним — put `ticket_outcomes/<C>` outcome=done). Битая
+заявка — мусор: del с journal (панель до того получает
 409 «уже запрошена»). Уведомление в UI-модалке: выполнять в тихое окно
 (rolling-рестарты). Ротация admin не трогает app-кред и inter; воркер
 переключается на NEW-кред клиента после B (следующий снапшот-тик).
@@ -624,10 +659,17 @@ describe-all (метаданные всех топиков **включая `__`
   `min(config.replication_factor, число целей)`, internal — формулы §2.1;
   первая реплика (лидер) сохраняется, добор остальных — наименее загруженные
   живые брокеры, детерминизм сортировкой (topic, partition, brokerId).
-  Сходимость = факт == план по всем партициям → del заявки.
+  Сходимость = факт == план по всем партициям → del заявки + put
+  `ticket_outcomes/<C>` outcome=done (kind=rebalance, t10).
 - **Цели переезда** — только `RUNNING`-брокеры (не TO_REMOVE/REMOVING/
   PROVISIONING/UNREACHABLE). Заявка balance при живых drain-кандидатах
   ждёт (journal waiting-drain): сначала демонтаж, потом баланс.
+  Возрастная самозачистка (t10): заявка balance старше
+  `RotationTicketTimeoutSec`, чьи батчи не подаются (waiting-drain или
+  передержка слепой пробы — прогресс-ключ balance не жив), снимается как
+  не-начатая (§5 «Возрастная самозачистка», kind=rebalance); ИДУЩАЯ
+  ребалансировка (прогресс-ключ жив) таймаутом не снимается — стагнацию
+  `partitions_remaining` закрывает панельный алерт `kafka-reassignment-stale`.
 - **Завершение** (критерий по факту метаданных): drain — drain-брокер
   отсутствует в Replicas всех партиций и затронутые топики без USR
   (ISR == assignment); баланс — факт == план. Слепая проба — никаких
@@ -709,15 +751,27 @@ C committed → все брокеры на NEW: ОДНА txn [compare
 финал: снапшот P12 «после» + journal phase=done
 ```
 
-Guard'ы и отказоустойчивость — образец H: клэйм-гвард; кластер не поднят
-(нет endpoints/кредов/CA) → journal waiting-cluster (премиграционный
-кластер — waiting до миграции M); живой reassignment (`reassignments/<C>`)
+Guard'ы и отказоустойчивость — образец H; порядок точек — зеркало valkey
+K0.3→K0.5 (arch/21 §5 K): ПЕРВЫМ делом после чтения заявки/журнала —
+детект открытого окна (staging `ca_next_*` жив ИЛИ журнал `rotate-ca` вне
+`{done, waiting-*}`) → доигрывание P→D→R→C БЕЗ ждущих guard'ов и БЕЗ
+экспирации (слепой кластер посреди R — передержка: rolling стоит на
+ожидании сходимости, окно не сиротеет — заявка жива). Окно не открыто →
+ждущие guard'ы: клэйм-гвард; кластер не поднят (нет endpoints/кредов/CA)
+→ journal waiting-cluster (премиграционный кластер — waiting до миграции
+M); живая пароль-ротация H → waiting-password-rotation (H доиграет и K
+продолжит — приоритет H, t10); живой reassignment (`reassignments/<C>`)
 или regen (`regens/<C>`) → waiting без действий (rolling не смешивается
-с чужими); отказ между фазами безопасен — повтор продолжает по journal-фазе
+с чужими). Экспирация (t10) действует в этих waiting-точках ТОЛЬКО под
+тройным гвардом «не начато» §5 (staging отсутствует ∧ журнал rotate-ca
+не в мутационной фазе): ca-заявка старше `RotationTicketTimeoutSec` →
+§5 «Возрастная самозачистка». Отказ между
+фазами безопасен — повтор продолжает по journal-фазе
 (re-entry идемпотентен: staging в etcd стабилен, bundle-проверка, трек
 rolling). Truststore брокеров остаётся bundle после коммита до следующего
 пересоздания (безвредно — доверие OLD не возвращает утраченную силу сертов;
-env выравнивается надзором C). Endpoint API —
+env выравнивается надзором C). Финал K4 — вместе с journal done put
+`ticket_outcomes/<C>` outcome=done. Endpoint API —
 `POST /api/kafka/clusters/{c}/ca/rotate` (§1.1); заявка уже стоит → 409.
 
 ### M. SecurityMigrator (премиграционные кластеры → канон t03)
@@ -733,7 +787,13 @@ minISR на середине, поэтому миграция — **полный
 
 ```
 M0 claim + journal(op=migrate-security); снапшот P12 «до»; guard'ы:
-   живых ротаций/reassignment/regens нет (передержка journal-waiting)
+   передёргивают только НАЧАТЫЕ операции — живые прогресс-ключи
+   (`reassignments/<C>`, `regens/<C>`) и открытое окно CA-ротации
+   (staging `ca_next_*`) → передержка journal-waiting; живые ЗАЯВКИ
+   (rotations/admin_rotations/ca_rotations/rebalances) миграцию НЕ
+   гейтят (t10): на премиграционном кластере их исполнение не начато
+   (H/K сами уходят в waiting-cluster до миграции) — после M заявки
+   исполнятся штатно; взаимное ожидание M↔заявка невозможно
 M1 ensure: CA (ca_pem/ca_key) + admin-кред txn put-if-absent
 M2 stop ВСЕХ контейнеров брокеров кластера разом → пересоздание всех
    с каноническим env §2.2/§2.3 (SASL_SSL, authorizer, JAAS admin+app;
@@ -780,6 +840,15 @@ t03; панель обновляется тем же релизом). После
 - **Отказ etcd**: контрол-плейн заморожен; живые брокеры от него не
   зависят. **Отказ docker-хоста**: размещение фиксировано (portalloc);
   нода UNREACHABLE → сценарии надзора.
+- **Самозачистка зависших заявок (t10)**: заявки ротаций/ребалансировки
+  не висят вечно — не-начатая заявка старше `RotationTicketTimeoutSec`
+  снимается воркером в waiting-точке под тройным гвардом не-начатости
+  (staging отсутствует ∧ журнал процесса не в мутационной фазе ∧ прогресс
+  не жив — §5; waiting сам по себе «не начато» не доказывает); исход —
+  `ticket_outcomes/<C>`, метрика expired; начатые операции доигрываются
+  идемпотентно по факту (takeover/ретраи). Дедлоки заявок исключены
+  порядком ветки: H доигрывает до K (приоритет), M не гейтится
+  не-начатыми заявками.
 - **Переживание данных (решение 2026-09-28)**: бэкапов Kafka нет и не
   заводится — данные Kafka невосстановимы из бэкапов, RPO держится
   RF×minISR: долговечность обеспечивает репликация, а не копирование
@@ -843,7 +912,10 @@ KafkaWorker:Loops { ScanIntervalSec=5, KeepaliveSec=5, ErrorDelayMs=2000,
                     # watchdog зависших циклов: порог = Multiplier × порог healthz
                     # loops-alive; Enabled=false — компонент не регистрируется
 KafkaWorker:Thresholds { BrokerBootSec=600, NodeDeadSec=90, ReassignExecSec=180,
-                         ReassignRetrySubmitSec=120 }
+                         ReassignRetrySubmitSec=120, RotationTicketTimeoutSec=3600 }
+                         # RotationTicketTimeoutSec (t10): возраст не-начатой
+                         # заявки (ротации app/admin/CA, ребалансировка), после
+                         # которого воркер снимает её в waiting-точке (§5)
 KafkaWorker:Parallelism { MaxClusters=4 }
 KafkaWorker:Snapshots { Dir="/snapshots", RetentionFiles=10 }
 KafkaWorker:AdvertisedClientHost=null   # null → адрес docker-хоста ноды (placement)
