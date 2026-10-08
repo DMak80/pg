@@ -9,12 +9,14 @@ cd "$(dirname "$0")/.."
 # демо-контейнер сида valkey (arch/04 §2.4): создан воркером вне compose.
 docker rm -f vwk-demo-node1 >/dev/null 2>&1 || true
 if [ "${1:-}" = "-v" ]; then
-  # Профили как в 00-up (full + kafka + valkey): воркеры не должны переживать
-  # teardown со стёртым etcd (adopt-repair: полный прогон детерминирован).
-  docker compose --profile full --profile kafka --profile valkey down -v --remove-orphans
+  # Профили как в 00-up (full + kafka + valkey + metrics): воркеры не должны
+  # переживать teardown со стёртым etcd (adopt-repair: полный прогон
+  # детерминирован). metrics обязателен: живой as-prometheus держит
+  # external-сеть pgw-metrics — deploy-down не снесёт её (t15, arch/18 §5.4).
+  docker compose --profile full --profile kafka --profile valkey --profile metrics down -v --remove-orphans
   echo "✓ стенд разобран (данные стёрты)"
 else
-  docker compose --profile full --profile kafka --profile valkey down --remove-orphans
+  docker compose --profile full --profile kafka --profile valkey --profile metrics down --remove-orphans
   echo "✓ стенд разобран (etcd-data сохранён)"
 fi
 
