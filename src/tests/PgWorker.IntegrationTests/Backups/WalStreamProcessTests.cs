@@ -58,7 +58,9 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         StubScaleDriver driver,
         TimeProvider? clock = null,
         Action<string, string, long?>? uploadedAgeObserver = null,
-        Action<string, string, long?>? lagObserver = null)
+        Action<string, string, long?>? lagObserver = null,
+        TimeSpan? watchdogWindow = null,
+        Shared.Core.Hosting.ILoopProgress? progress = null)
         => new(
             fixture.Gateway, [fixture.Endpoint], driver,
             new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
@@ -70,7 +72,49 @@ public class WalStreamProcessTests(EtcdFixture fixture)
             clock ?? TimeProvider.System,
             lagObserver,
             null,
-            uploadedAgeObserver);
+            uploadedAgeObserver,
+            watchdogWindow,
+            progress);
+
+    // Счётчик прогресс-отметок (аудит долгих фаз, код-ревью B3).
+    private sealed class MarkCounter : Shared.Core.Hosting.ILoopProgress
+    {
+        public int Marks;
+        public void Mark() => Marks++;
+    }
+
+    // AAA (код-ревью B3): аудируемая фаза create агента передаёт progress —
+    // итерации поллинга дают Mark (окно без progress = молчание для watchdog).
+    [Fact]
+    public async Task Аудируемый_create_агента_итерации_дают_Mark()
+    {
+        // Arrange — «медленный daemon отпускает»: первые 2 вызова висят 2.5 c
+        // (дольше таймаута итерации — пол 1 c из Math.Max(TicksPerSecond, window/2)
+        // при окне 0.5 c), 3-й — мгновенный успех
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("ap9");
+        (await _claims.TryClaimClusterAsync("ap9", ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        sql.SlotsByDsn.GetOrAdd(SourceDsn(16001, "ap9"), _ => []).Add("pgw_bkp_ap9_shard1");
+        var s3 = new FakeBackupS3();
+        var driver = new StubScaleDriver
+        {
+            AgentEnsureDelay = TimeSpan.FromSeconds(2.5),
+            SlowAgentEnsures = 2,
+        };
+        var marks = new MarkCounter();
+        var process = BuildProcess(Options(), sql, s3, driver,
+            progress: marks, watchdogWindow: TimeSpan.FromSeconds(0.5));
+
+        // Act — тик: create агента → 2 таймаут-итерации + успешная третья
+        (await process.TickAsync(BuildSnap("ap9"), null, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — Mark рос с итерациями: 2 таймаут-итерации + успешная = ≥ 3
+        // (не «один на весь вызов» и не ноль)
+        marks.Marks.Should().BeGreaterThanOrEqualTo(3,
+            "итерации поллинга аудируемой фазы дают Mark (spec §1.2 п.4)");
+        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-ap9-shard1-shard1a");
+    }
 
     // Тест-опции: VerifyIntervalSec=0 — контроль выполняется КАЖДЫМ тиком (AAA).
     private static BackupsRuntimeOptions Options(int verify = 0, int lag = 1024, int stale = 300) => new(
@@ -1124,6 +1168,196 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         walGone.Error.Should().Contain("слот");
         sql.SlotsByDsn.Values.Should().Contain(s => s.Contains($"pgw_bkp_{cluster}_shard1"),
             "recreateSlot immediate+reserved на мастере (t07)");
+    }
+
+    // AAA (t19 AC1): lost-слот мастера при живом sync — тик НЕ пишет BROKEN,
+    // слот мастера пересоздан (drop+create), журнальная фаза slot-recreate/<X>.
+    [Fact]
+    public async Task Lost_слот_мастера_при_живом_sync_не_BROKEN_recreate_журнал()
+    {
+        // Arrange — два источника (мастер shard1a + sync shard1b); слот мастера
+        // существует, но lost; слот sync жив; ключ wal ACTIVE (цепочка жива)
+        var ct = TestContext.Current.CancellationToken;
+        var patroni = await FakePatroni.StartAsync(SyncClusterJson, ct);
+        await using var patroniOwner = patroni;
+        var cluster = $"sl1{Guid.NewGuid().ToString("N")[..6]}";
+        await SeedTwoNodeAsync(new FakeWalSqlExecutor(), patroni, cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        var masterDsn = SourceDsn(16001, cluster);
+        sql.SlotsByDsn.GetOrAdd(masterDsn, _ => []).Add($"pgw_bkp_{cluster}_shard1");
+        sql.LostByDsn.GetOrAdd(masterDsn, _ => []).Add($"pgw_bkp_{cluster}_shard1");
+        sql.SlotsByDsn.GetOrAdd(SourceDsn(16002, cluster), _ => []).Add($"pgw_bkp_{cluster}_shard1");
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, cluster, 1, 2);
+        var driver = new StubScaleDriver();
+        var writer = new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]);
+        var liveWal = new WalStreamState(
+            WalStreamStatus.Active, $"pgw_bkp_{cluster}_shard1", "shard1a",
+            "000000010000000000000001", "000000010000000000000002",
+            "000000010000000000000002", 1757500000, 0, null);
+        await writer.WriteIfChangedAsync(cluster, "shard1", liveWal, ct);
+        var process = BuildProcess(Options(verify: 3600), sql, s3, driver);
+        var backups = new ClusterBackups(cluster, null,
+            new Dictionary<string, ShardBackups>
+            {
+                ["shard1"] = new(FullShard("000000010000000000000001").Full, liveWal),
+            });
+
+        // Act
+        (await process.TickAsync(BuildTwoNodeSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — не BROKEN; слот мастера пересоздан (drop+create); журнал пишет
+        // фазу ДО мутации; агент мастера не снимался
+        var wal = await ReadWal(cluster);
+        wal!.State.Should().NotBe(WalStreamStatus.Broken,
+            "lost одного источника при живом втором — не BROKEN (spec §3.2)");
+        sql.Calls.Should().Contain(c => c.Op == "drop" && c.Dsn == masterDsn,
+            "FakeSql фиксирует drop потерянного слота");
+        sql.Calls.Should().Contain(c => c.Op == "create" && c.Dsn == masterDsn,
+            "FakeSql фиксирует create пересозданного слота");
+        sql.LostByDsn[masterDsn].Should().NotContain($"pgw_bkp_{cluster}_shard1",
+            "после recreate слот жив");
+        var journal = await fixture.Gateway.GetAsync(
+            fixture.Endpoint, $"/pgworker/work/{cluster}", ct);
+        journal.Value!.Value.Should().Contain("slot-recreate/shard1");
+        journal.Value.Value.Should().Contain("wal_status=lost");
+        driver.RemovedBackupAgents.Should().NotContain(
+            n => n.Contains("shard1", StringComparison.Ordinal), "агенты не трогаются");
+    }
+
+    // AAA (фаза A2 — «повторный тик на здоровом слоте — нулевые мутации»):
+    // тик на здоровых (не lost) слотах — нулевые мутации слотов
+    // и никаких журнальных фаз slot-recreate.
+    [Fact]
+    public async Task Тик_на_здоровых_слотах_нулевые_мутации()
+    {
+        // Arrange — два источника, оба слота живы; ключ ACTIVE; цепочка сплошная
+        var ct = TestContext.Current.CancellationToken;
+        var patroni = await FakePatroni.StartAsync(SyncClusterJson, ct);
+        await using var patroniOwner = patroni;
+        var cluster = $"sl2{Guid.NewGuid().ToString("N")[..6]}";
+        await SeedTwoNodeAsync(new FakeWalSqlExecutor(), patroni, cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        sql.SlotsByDsn.GetOrAdd(SourceDsn(16001, cluster), _ => []).Add($"pgw_bkp_{cluster}_shard1");
+        sql.SlotsByDsn.GetOrAdd(SourceDsn(16002, cluster), _ => []).Add($"pgw_bkp_{cluster}_shard1");
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, cluster, 1, 2);
+        var driver = new StubScaleDriver();
+        var process = BuildProcess(Options(), sql, s3, driver);
+        var backups = new ClusterBackups(cluster, null,
+            new Dictionary<string, ShardBackups>
+            {
+                ["shard1"] = FullShard("000000010000000000000001"),
+            });
+
+        // Act — два тика (контроль + супервиз)
+        (await process.TickAsync(BuildTwoNodeSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
+        (await process.TickAsync(BuildTwoNodeSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — ни одного вызова мутации слота; журнал без slot-recreate
+        sql.Calls.Should().BeEmpty("здоровый слот не трогается (фаза A2)");
+        var journal = await fixture.Gateway.GetAsync(
+            fixture.Endpoint, $"/pgworker/work/{cluster}", ct);
+        (journal.Value?.Value ?? "").Should().NotContain("slot-recreate");
+    }
+
+    // AAA (t19 AC2): lost на ВСЕХ источниках при живом (ACTIVE) ключе — BROKEN,
+    // recreateSlot на мастере, error различает lost от «исчез».
+    [Fact]
+    public async Task Lost_слотов_всех_источников_при_живой_цепочке_BROKEN()
+    {
+        // Arrange — оба слота существуют и lost; ключ ACTIVE; агент жив
+        var ct = TestContext.Current.CancellationToken;
+        var patroni = await FakePatroni.StartAsync(SyncClusterJson, ct);
+        await using var patroniOwner = patroni;
+        var cluster = $"sl3{Guid.NewGuid().ToString("N")[..6]}";
+        await SeedTwoNodeAsync(new FakeWalSqlExecutor(), patroni, cluster);
+        (await _claims.TryClaimClusterAsync(cluster, ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        foreach (var port in new[] { 16001, 16002 })
+        {
+            var dsn = SourceDsn(port, cluster);
+            sql.SlotsByDsn.GetOrAdd(dsn, _ => []).Add($"pgw_bkp_{cluster}_shard1");
+            sql.LostByDsn.GetOrAdd(dsn, _ => []).Add($"pgw_bkp_{cluster}_shard1");
+        }
+        var s3 = new FakeBackupS3();
+        SeedSegments(s3, cluster, 1, 2);
+        var driver = new StubScaleDriver();
+        driver.BackupAgentObjects.Add(new DockerContainer(
+            $"id-agent-{cluster}", [$"/pgw-backup-wal-{cluster}-shard1-shard1a"], "running", "img"));
+        var writer = new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]);
+        var liveWal = new WalStreamState(
+            WalStreamStatus.Active, $"pgw_bkp_{cluster}_shard1", "shard1a",
+            "000000010000000000000001", "000000010000000000000002",
+            "000000010000000000000002", 1757500000, 0, null);
+        await writer.WriteIfChangedAsync(cluster, "shard1", liveWal, ct);
+        var process = BuildProcess(Options(), sql, s3, driver);
+        var backups = new ClusterBackups(cluster, null,
+            new Dictionary<string, ShardBackups>
+            {
+                ["shard1"] = new(FullShard("000000010000000000000001").Full, liveWal),
+            });
+
+        // Act
+        (await process.TickAsync(BuildTwoNodeSnap(cluster), backups, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — BROKEN, error содержит lost; слот мастера пересоздан (recreateSlot)
+        var wal = await ReadWal(cluster);
+        wal!.State.Should().Be(WalStreamStatus.Broken);
+        wal.Error.Should().Contain("lost", "error различает потерю и исчезновение (spec §3.2)");
+        sql.Calls.Should().Contain(c => c.Op == "drop" && c.Dsn == SourceDsn(16001, cluster),
+            "BreakAsync recreateSlot: lost-слот мастера пересоздаётся immediate+reserved");
+        driver.RemovedBackupAgents.Should().NotBeEmpty("BROKEN останавливает агентов");
+    }
+
+    // AAA (t19 AC3): ensure-ветка (ключ wal = BROKEN) + существующий lost-слот —
+    // EnsureSlotAlive recreates (не пропускает по идемпотентности), новый BROKEN не пишется.
+    [Fact]
+    public async Task Ensure_ветка_BROKEN_ключ_lost_слот_recreate()
+    {
+        // Arrange — однонодовый кластер; wal-состояние BROKEN передано тиком (как
+        // в cb-кейсах: и ключ в etcd, и backups-аргумент); слот есть, но lost
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("sl4");
+        (await _claims.TryClaimClusterAsync("sl4", ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        var masterDsn = SourceDsn(16001, "sl4");
+        sql.SlotsByDsn.GetOrAdd(masterDsn, _ => []).Add("pgw_bkp_sl4_shard1");
+        sql.LostByDsn.GetOrAdd(masterDsn, _ => []).Add("pgw_bkp_sl4_shard1");
+        var s3 = new FakeBackupS3(); // пустой префикс wal/
+        var driver = new StubScaleDriver();
+        var brokenWal = new WalStreamState(
+            WalStreamStatus.Broken, "pgw_bkp_sl4_shard1", "shard1a",
+            "000000010000000000000001", "000000010000000000000001",
+            "000000010000000000000001", 1757500000, null, "дыра WAL-цепочки");
+        var writer = new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]);
+        await writer.WriteIfChangedAsync("sl4", "shard1", brokenWal, ct);
+        var process = BuildProcess(Options(), sql, s3, driver);
+        var backups = new ClusterBackups("sl4", null,
+            new Dictionary<string, ShardBackups> { ["shard1"] = new([], brokenWal) });
+
+        // Act
+        var result = await process.TickAsync(BuildSnap("sl4"), backups, ct);
+
+        // Assert — ensure-ветка полечила lost (drop+create), тик успешен
+        result.IsSuccess.Should().BeTrue();
+        sql.Calls.Should().Contain(c => c.Op == "drop" && c.Dsn == masterDsn,
+            "lost в ensure-ветке лечится recreate, а не пропуском (критерий 3)");
+        sql.Calls.Should().Contain(c => c.Op == "create" && c.Dsn == masterDsn);
+        sql.LostByDsn[masterDsn].Should().NotContain("pgw_bkp_sl4_shard1");
+
+        // Новый BROKEN не пишется лечением слота: BreakAsync-ветка не стреляла —
+        // агенты не снимались, error-текст lost-BROKEN не появился. (Сам ключ при
+        // этом переписывается ШТАТНЫМ контролем BROKEN-ключа — контроль каждый тик,
+        // наблюдение из фактов ключа (ratchet chain_start + last_uploaded); это
+        // pre-existing семантика контроля, не ветки слота.)
+        driver.RemovedBackupAgents.Should().BeEmpty(
+            "BreakAsync не стрелял — ensure-ветка лечит lost без BROKEN-записи");
+        var walAfter = await ReadWal("sl4");
+        walAfter!.Error.Should().NotContain("пересними полный бэкап",
+            "новой BROKEN-записи от ветки слота нет — лечение тихое (критерий 3)");
     }
 
     // AAA («sync появился»): тик 1 single-node (sync не резолвится) → один агент;

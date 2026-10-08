@@ -14,6 +14,7 @@ public sealed class HealthState(TimeProvider clock) : Shared.Core.Hosting.ILoopP
     private DateTimeOffset? _lastReconcileActivity;
     private DateTimeOffset? _lastKeepaliveTick;
     private DateTimeOffset? _lastSnapshotTick;
+    private DateTimeOffset? _lastSnapshotActivity;
     private DateTimeOffset? _lastSnapshotTaken;
     private int _claimsHeld;
 
@@ -71,6 +72,18 @@ public sealed class HealthState(TimeProvider clock) : Shared.Core.Hosting.ILoopP
         }
     }
 
+    /// <summary>Пульс сна snapshot-цикла (активность БЕЗ тика, зеркально
+    /// MarkReconcileActivity): законное ожидание длиннее порога сноса watchdog;
+    /// читает только watchdog (виталити берёт позднейший из тика и пульса), healthz
+    /// loops-alive — по тикам (семантика не меняется).</summary>
+    public void MarkSnapshotActivity()
+    {
+        lock (_sync)
+        {
+            _lastSnapshotActivity = clock.GetUtcNow();
+        }
+    }
+
     /// <summary>Успешно снятый снапшот (snapshot-freshness).</summary>
     public void MarkSnapshotTaken()
     {
@@ -88,7 +101,7 @@ public sealed class HealthState(TimeProvider clock) : Shared.Core.Hosting.ILoopP
             return new HealthSnapshot(
                 _lastEtcdOk, _lastReconcileTick, _lastKeepaliveTick,
                 _lastSnapshotTick, _lastSnapshotTaken, _claimsHeld,
-                _lastReconcileActivity);
+                _lastReconcileActivity, _lastSnapshotActivity);
         }
     }
 }
@@ -101,4 +114,5 @@ public sealed record HealthSnapshot(
     DateTimeOffset? LastSnapshotTick,
     DateTimeOffset? LastSnapshotTaken,
     int ClaimsHeld,
-    DateTimeOffset? LastReconcileActivity);
+    DateTimeOffset? LastReconcileActivity,
+    DateTimeOffset? LastSnapshotActivity);

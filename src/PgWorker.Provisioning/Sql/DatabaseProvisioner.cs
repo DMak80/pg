@@ -34,6 +34,21 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
 
     private static readonly TimeSpan FirstRetryDelay = TimeSpan.FromSeconds(1);
 
+    // Поллинг-инвариант (arch/14 §6): одиночная SQL-операция не молчит дольше
+    // окна проверки watchdog — таймауты подключения и команды = половина окна
+    // (7 c при дефолтах 15 c); зависшая операция → исключение → transient-фейл,
+    // а не молчание до дефолтных Npgsql 15/30 c.
+    private const int SqlTimeoutSec = 7;
+
+    private static NpgsqlConnection OpenConnection(string dsn)
+    {
+        var csb = new NpgsqlConnectionStringBuilder(dsn) { Timeout = SqlTimeoutSec };
+        return new NpgsqlConnection(csb.ConnectionString);
+    }
+
+    private static NpgsqlCommand CreateCommand(NpgsqlConnection conn, string sql)
+        => new(sql, conn) { CommandTimeout = SqlTimeoutSec };
+
     // Шаблон идентификатора БД (valid_dbname из init-cluster.sh): защита от
     // SQL-инъекций через имя кластера, заявленное панелью.
     [GeneratedRegex("^[a-z_][a-z0-9_]*$", RegexOptions.CultureInvariant)]
@@ -143,10 +158,9 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
         {
             await pipeline.ExecuteAsync(async token =>
             {
-                await using var conn = new NpgsqlConnection(dsn);
+                await using var conn = OpenConnection(dsn);
                 await conn.OpenAsync(token);
-                await using var cmd = conn.CreateCommand();
-                cmd.CommandText = sql;
+                await using var cmd = CreateCommand(conn, sql);
                 await cmd.ExecuteNonQueryAsync(token);
             }, ct);
             return Result.Success();
@@ -165,10 +179,9 @@ public sealed partial class DatabaseProvisioner : ISqlExecutor
         {
             var value = await pipeline.ExecuteAsync(async token =>
             {
-                await using var conn = new NpgsqlConnection(dsn);
+                await using var conn = OpenConnection(dsn);
                 await conn.OpenAsync(token);
-                await using var cmd = conn.CreateCommand();
-                cmd.CommandText = sql;
+                await using var cmd = CreateCommand(conn, sql);
                 return await cmd.ExecuteScalarAsync(token);
             }, ct);
             return Result<object?>.Success(value is DBNull ? null : value);

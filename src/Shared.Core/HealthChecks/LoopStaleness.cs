@@ -1,8 +1,8 @@
 namespace Shared.Core.HealthChecks;
 
-/// <summary>Пороги staleness циклов воркера — единый источник для healthz
-/// loops-alive и watchdog (healthz — формулы как есть, watchdog — ×Multiplier):
-/// вынесены из *WorkerHealth без изменения значений.</summary>
+/// <summary>Пороги staleness циклов воркера — потребитель ТОЛЬКО healthz
+/// loops-alive (Degraded-окно); watchdog порог сноса вычисляет от собственных
+/// опций (Multiplier × CheckIntervalSec) и эти формулы не читает.</summary>
 public static class LoopStaleness
 {
     /// <summary>Быстрые циклы (reconcile/keepalive/orphan-sweep):

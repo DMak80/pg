@@ -856,16 +856,24 @@ t03; панель обновляется тем же релизом). После
   §2.1; отставание реплик видно метрикой USR, §7). Подсистема бэкапов
   [19-backups.md](19-backups.md) покрывает только PG-шарды.
 - **Watchdog зависших циклов**: внутренний компонент `LoopWatchdog`
-  (Shared.Core, `BackgroundService`) следит за возрастом активности (тик или
+  (Shared.Core, `BackgroundService`) следит за активностью (тик или
   прогресс-отметка; глубоких долгих фаз у KafkaWorker нет — ожидания
-  расползаются по тикам) циклов
-  (reconcile/keepalive/snapshot) по отметкам `HealthState`; staleness
-  сверх порога (`Loops:Watchdog:Multiplier` × порог healthz loops-alive)
+  расползаются по тикам; сон snapshot-лидера длиннее окна проверки —
+  пульсирующим сном, t19) циклов
+  (reconcile/keepalive/snapshot) по отметкам `HealthState`; возраст
+  активности сверх порога `Loops:Watchdog:Multiplier` ×
+  `Loops:Watchdog:CheckIntervalSec` («2 по 15» = 30 с, t19; порог
+  healthz loops-alive в формуле НЕ участвует — watchdog знает только
+  свои опции, `WatchdogOptions` без изменений; сон snapshot-лидера
+  длиннее порога — пульсирующим сном, t19; интервалы
+  `ScanIntervalSec`/`KeepaliveSec` < порога сноса — fail-fast старта,
+  общий `WatchdogConfigGuard` в Program.cs трёх воркеров, t19)
   → журнал (critical) + метрика `worker_watchdog_restarts_total{loop}` +
   graceful `StopApplication` — контейнер поднимает docker-политика, lease
-  гаснут ≤15 с, takeover вторым инстансом. Механика (пороги, grace старта,
-  границы) — канон [14-pgworker.md](14-pgworker.md) §6; формулы — общий
-  хелпер `LoopStaleness` Shared.Core.
+  гаснут ≤15 с, takeover вторым инстансом. Механика (инварианты живости/
+  поллинга, границы) — канон [14-pgworker.md](14-pgworker.md) §6; формулы
+  порогов healthz loops-alive — общий хелпер `LoopStaleness` Shared.Core
+  (healthz watchdog больше не потребляет).
 
 ## 7. Наблюдаемость
 
@@ -909,8 +917,11 @@ KafkaWorker:Loops { ScanIntervalSec=5, KeepaliveSec=5, ErrorDelayMs=2000,
                     TopicSyncIntervalSec=15, ReassignIntervalSec=15,
                     ReassignBatchPartitions=10,
                     Watchdog { Enabled=true, Multiplier=2, CheckIntervalSec=15, StopDelaySec=1 } }
-                    # watchdog зависших циклов: порог = Multiplier × порог healthz
-                    # loops-alive; Enabled=false — компонент не регистрируется
+                    # watchdog зависших циклов (t19): порог сноса = Multiplier ×
+                    # CheckIntervalSec («2 по 15» = 30 с); порог healthz в
+                    # формуле НЕ участвует; Enabled=false — компонент не
+                    # регистрируется; ScanIntervalSec/KeepaliveSec < порога
+                    # сноса — fail-fast старта
 KafkaWorker:Thresholds { BrokerBootSec=600, NodeDeadSec=90, ReassignExecSec=180,
                          ReassignRetrySubmitSec=120, RotationTicketTimeoutSec=3600 }
                          # RotationTicketTimeoutSec (t10): возраст не-начатой

@@ -4,7 +4,8 @@ using Shared.Core.DI;
 namespace AdminPanel.Core.Alerting.Rules;
 
 // slot-wal-lost (critical): wal_status='lost' — WAL срезан, слот догонит только
-// пересозданием (P4, arch/03 §4); источник — SQL-проба.
+// пересозданием (P4, arch/03 §4); источник — SQL-проба. Страховка: lost-слот
+// воркер пересоздаёт сам (auto-recreate) — алерт гаснет после лечения.
 [InjectAsSingleton(typeof(IAlertRule))]
 public sealed class SlotWalLostRule : IAlertRule
 {
@@ -27,9 +28,9 @@ public sealed class SlotWalLostRule : IAlertRule
                 $"слот {slot.SlotName} шарда {cluster.Name}/{shard.Name}: wal_status=lost — WAL срезан, источник догонит только пересозданием (P4)",
                 new Dictionary<string, string> { ["walStatus"] = "lost" },
                 null,
-                "wal_status=lost: WAL срезан — слот физически не догонит, реплика потеряла данные; слот обязан догонять до горизонта retention",
-                AlertRemedy.OperatorRunbook,
-                "запустите recreate ноды (API панели) — воркер пересоздаст реплику с basebackup; потерянный слот почистите по runbook");
+                "wal_status=lost: WAL срезан — воркер пересоздаёт слот сам (recreate + возврат агента от хвоста S3); алерт гаснет после лечения",
+                AlertRemedy.WorkerAuto,
+                "воркер пересоздаёт lost-слот автоматически; алерт висит — воркер не лечит: журнал backup-wal / healthz");
         }
     }
 }

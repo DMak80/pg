@@ -50,7 +50,10 @@ builder.Services.AddSingleton(sp =>
 // embedded DNS (t09; arch/16 §7): PooledConnectionLifetime + IPv4-first резолв.
 // EtcdGateway-синглтон захвачен HttpClient навсегда — ротация handler'ов фабрики
 // на него не действует, поэтому явный SocketsHttpHandler.
-builder.Services.AddHttpClient("etcd")
+// Поллинг-инвариант (arch/16 §6): одиночный HTTP-вызов к etcd не молчит дольше
+// окна проверки watchdog — таймаут = половина окна (7.5 c при дефолтах); зависший
+// запрос → исключение → transient-фейл тика, а не молчание до дефолтных 100 c.
+builder.Services.AddHttpClient("etcd", c => c.Timeout = TimeSpan.FromSeconds(7.5))
     .ConfigurePrimaryHttpMessageHandler(EtcdConnectCallback.CreateHandler);
 
 // Fail-fast при старте: без etcd-endpoints воркер бессмысленен (hosts — в DI-фабрике драйвера);
@@ -424,6 +427,12 @@ builder.Services.AddLoopWatchdog(
     loopsWatchdog,
     (sp, loop) => sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>()
         .WatchdogRestart(loop));
+// fail-fast инварианта живости (arch/16 §8): тики быстрых циклов чаще порога
+// сноса (Multiplier × CheckIntervalSec); конфиг watchdog не меняется
+var loopsCfg = builder.Configuration.GetSection("KafkaWorker:Loops").Get<LoopsOptions>() ?? new LoopsOptions();
+if (loopsWatchdog.Enabled)
+    Shared.Core.Hosting.WatchdogConfigGuard.EnsureFastLoopsBelowStaleThreshold(
+        loopsCfg.ScanIntervalSec, loopsCfg.KeepaliveSec, loopsWatchdog);
 
 var app = builder.Build();
 if (app.Services.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)
