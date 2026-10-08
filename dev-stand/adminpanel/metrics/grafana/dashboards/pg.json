@@ -7,6 +7,17 @@
     {"type": "stat", "title": "Patroni nodes up", "gridPos": {"x":16,"y":0,"w":8,"h":4},
      "targets": [{"expr": "up{job=\"patroni\"}", "legendFormat": "{{instance}}", "refId": "A"}]},
     {"type": "stat", "title": "Control plane up", "gridPos": {"x":16,"y":4,"w":8,"h":5},
-     "targets": [{"expr": "up{job=~\"pgworker|adminpanel\"}", "legendFormat": "{{job}}", "refId": "A"}]}
+     "targets": [{"expr": "up{job=~\"pgworker|adminpanel\"}", "legendFormat": "{{job}}", "refId": "A"}]},
+    {"type": "stat", "title": "Patroni nodes up (real)", "gridPos": {"x":0,"y":9,"w":8,"h":5},
+     "targets": [{"expr": "up{job=\"patroni-nodes\"}", "legendFormat": "{{cluster}}/{{shard}}/{{node}}", "refId": "A"}]},
+    {"type": "timeseries", "title": "Patroni role (real)", "gridPos": {"x":8,"y":9,"w":16,"h":5},
+     "targets": [
+      {"expr": "patroni_master", "legendFormat": "master {{scope}}/{{name}}", "refId": "A"},
+      {"expr": "patroni_replica", "legendFormat": "replica {{scope}}/{{name}}", "refId": "B"},
+      {"expr": "patroni_sync_standby", "legendFormat": "sync_standby {{scope}}/{{name}}", "refId": "C"}]},
+    {"type": "timeseries", "title": "Replica replay lag, s (real)", "gridPos": {"x":0,"y":14,"w":12,"h":5},
+     "targets": [{"expr": "time() - patroni_xlog_replay_timestamp", "legendFormat": "{{scope}}/{{name}}", "refId": "A"}]},
+    {"type": "timeseries", "title": "Timeline (real)", "gridPos": {"x":12,"y":14,"w":12,"h":5},
+     "targets": [{"expr": "patroni_timeline", "legendFormat": "{{scope}}/{{name}}", "refId": "A"}]}
   ]
 }
