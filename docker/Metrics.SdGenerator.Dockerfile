@@ -1,4 +1,3 @@
-# syntax=docker/dockerfile:1
 
 # Образ SdGenerator (t15, arch/18 §5.4): dotnet publish НА ХОСТЕ (инкрементально,
 # секунды), в контейнер — ТОЛЬКО publish-вывод (runtime-слой, без sdk/исходников).
