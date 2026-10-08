@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Text.Json;
 using Shared.Core;
 using Shared.Etcd.Client;
@@ -18,9 +19,12 @@ namespace ValkeyWorker.Provisioning.Processes;
 /// del staging, del заявки) → K4 (снапшот + done). Эксклюзивный второй шаг
 /// Active-ветки: окно открыто ⇒ InProgress ⇒ надзор/конвергер/ротация
 /// кредов в тике не идут (решение пользователя, spec §2.4). Ждущие исходы
-/// (waiting-*) вентиль НЕ блокируют. Вызывается только держателем клэйма
-/// &lt;C&gt;; состояние — только в etcd. Отказ etcd/docker между фазами —
-/// Failed c last_error в journal (spec §5).
+/// (waiting-*) вентиль НЕ блокируют. t10: K0.3 WindowOpenAsync уводит
+/// открытое окно в доигрывание мимо ждущих точек — K0.5 достижима только
+/// при закрытом окне и экспирационна (не-начатая ca-заявка старее порога
+/// снимается под тройным гвардом §3.1); финал K4 пишет исход done.
+/// Вызывается только держателем клэйма &lt;C&gt;; состояние — только в etcd.
+/// Отказ etcd/docker между фазами — Failed c last_error в journal (spec §5).
 /// </summary>
 public sealed class CaRotator(
     IEtcdGateway gateway,
@@ -40,6 +44,14 @@ public sealed class CaRotator(
     private const string PhaseCommitted = "committed";
 
     private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+
+    // t10: экспирация не-начатых ca-заявок в K0.5-точках + исходы финалов.
+    private readonly TicketExpirator _tickets = new(gateway, endpoints);
+
+    // Аудит последней живой заявки (для исхода done на финале после del
+    // заявки фазой C; рестарт в окне до финала — исход с фактическим
+    // временем финала, requested_by опущен).
+    private readonly ConcurrentDictionary<string, TicketRequestAudit?> _ticketAudit = new();
 
     /// <summary>Итог тика: NotNeeded — no-op ветки; Waiting — заявка жива,
     /// окно НЕ открыто (ветка продолжается); InProgress — окно открыто/
@@ -62,6 +74,8 @@ public sealed class CaRotator(
         var ticket = await GetAsync(TicketKey(cluster), ct);
         if (!ticket.IsSuccess)
             return Result<RotationOutcome>.Failed(ticket.Error!);
+        if (ticket.Value is not null)
+            _ticketAudit[cluster] = TicketOutcomes.ParseAudit(ticket.Value.Value);
         var journalState = await journal.ReadAsync(cluster, ct);
         if (!journalState.IsSuccess)
             return Result<RotationOutcome>.Failed(journalState.Error!);
@@ -90,15 +104,19 @@ public sealed class CaRotator(
         if (ticket.Value is null)
             return Result<RotationOutcome>.Success(RotationOutcome.NotNeeded);
 
-        // K0.5: ждущие причины (исход Waiting, БЕЗ мутаций; journal-запись фазы).
+        // K0.5: ждущие причины (экспирационные, t10 — дооконная ветка: K0.3
+        // уводит открытое окно в доигрывание, staging-предикат гварда истинен
+        // по построению; mutationLive — явная проверка журнала).
         if (snap.Endpoints is null || snap.AdminPassword is null || snap.AppPassword is null
             || snap.CaPem is null || snap.CaKey is null)
-            return await WaitAsync(cluster, "waiting-cluster", ct);
+            return await WaitAsync(cluster, "waiting-cluster",
+                ticket.Value?.Value, CaMutationLive(journalState.Value), ct);
         var passwordAlive = await PasswordRotationAliveAsync(cluster, journalState.Value, ct);
         if (!passwordAlive.IsSuccess)
             return Result<RotationOutcome>.Failed(passwordAlive.Error!);
         if (passwordAlive.Value)
-            return await WaitAsync(cluster, "waiting-password-rotation", ct);
+            return await WaitAsync(cluster, "waiting-password-rotation",
+                ticket.Value?.Value, CaMutationLive(journalState.Value), ct);
 
         // K0.6: перечитка config — TO_REMOVE: демонтаж B всё почистит.
         var removed = await ConfigRemovedAsync(cluster, ct);
@@ -282,7 +300,16 @@ public sealed class CaRotator(
             ProcessCommon.ParsePortAlloc(kv.Value));
     }
 
-    // Окно открыто: staging есть ИЛИ journal rotate-ca вне {done, waiting-*}.
+    // Третий предикат гварда экспирации (§3.1): журнал rotate-ca в мутационной
+    // фазе — вне {done, waiting-*}; K0.3 WindowOpenAsync использует то же
+    // условие как детектор открытого окна (staging ставится в P и живёт до C;
+    // waiting-фазы — дооконные передержки).
+    private static bool CaMutationLive(WorkState? journalState)
+        => journalState is { Op: Op } j
+           && j.Phase != PhaseDone
+           && !j.Phase.StartsWith("waiting-", StringComparison.Ordinal);
+
+    // Окно открыто: staging есть ИЛИ журнал rotate-ca вне {done, waiting-*}.
     private async Task<Result<bool>> WindowOpenAsync(string cluster, WorkState? journalState, CancellationToken ct)
     {
         var nextKey = await GetAsync(NextKeyKey(cluster), ct);
@@ -293,9 +320,7 @@ public sealed class CaRotator(
             return Result<bool>.Failed(nextPem.Error!);
         if (nextKey.Value is not null || nextPem.Value is not null)
             return Result<bool>.Success(true);
-        return Result<bool>.Success(journalState is { Op: Op } j
-            && j.Phase != PhaseDone
-            && !j.Phase.StartsWith("waiting-", StringComparison.Ordinal));
+        return Result<bool>.Success(CaMutationLive(journalState));
     }
 
     // Живая ротация креда (spec §5 K0.5): заявка rotations ИЛИ стейт
@@ -375,9 +400,17 @@ public sealed class CaRotator(
             : Result<(string, string)>.Failed(written.Error!);
     }
 
-    // Финал K4: снапшот «после» + journal done (идемпотентно).
+    // Финал K4: исход done ДО journal done (t10) — провал put → тик Failed →
+    // хвост afterCommit (K0.2) повторит финал; put идемпотентен. Затем
+    // снапшот «после» + journal done (идемпотентно).
     private async Task<Result<RotationOutcome>> FinishAsync(string cluster, CancellationToken ct)
     {
+        var outcomeDone = await _tickets.WriteDoneAsync(
+            TicketOutcomes.Key("/valkeyworker", cluster), TicketOutcomes.KindCa,
+            _ticketAudit.GetValueOrDefault(cluster), DateTimeOffset.UtcNow.ToUnixTimeSeconds(), ct);
+        if (!outcomeDone.IsSuccess)
+            return Result<RotationOutcome>.Failed(outcomeDone.Error!);
+        _ticketAudit.TryRemove(cluster, out _);
         if (snapshot is not null)
         {
             var after = await snapshot(ct);
@@ -390,9 +423,30 @@ public sealed class CaRotator(
             : Result<RotationOutcome>.Failed(done.Error!);
     }
 
-    // Ждущий исход: journal-запись + Waiting (без мутаций; заявка жива).
-    private async Task<Result<RotationOutcome>> WaitAsync(string cluster, string phase, CancellationToken ct)
+    // Ждущий исход с экспирацией под гвардом (t10): ca-заявка старее порога и
+    // гвард пройден (K0.5 достижима ТОЛЬКО при закрытом окне — K0.3
+    // WindowOpenAsync уводит открытое в доигрывание: staging-предикат истинен
+    // по построению; mutationLive — явная проверка журнала) → снятие
+    // (kind=ca), иначе journal-waiting. Фаза expired — непрефиксованная
+    // (терминальная, FinalPhases); исход тика — Waiting (экспирация штатна,
+    // вентиль не блокирует). Payload null — снимать нечего (хвост).
+    private async Task<Result<RotationOutcome>> WaitAsync(
+        string cluster, string phase, string? ticketPayload, bool mutationLive, CancellationToken ct)
     {
+        if (ticketPayload is not null)
+        {
+            var expired = await _tickets.TryExpireAsync(
+                journal, cluster, Op, claims.InstanceId,
+                TicketOutcomes.Key("/valkeyworker", cluster), TicketOutcomes.KindCa,
+                TicketKey(cluster), ticketPayload, phase,
+                options.RotationTicketTimeoutSec, DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                mutationLive, ct);
+            if (!expired.IsSuccess)
+                return Result<RotationOutcome>.Failed(expired.Error!);
+            if (expired.Value)
+                return Result<RotationOutcome>.Success(RotationOutcome.Waiting); // заявка снята штатно
+        }
+
         var waiting = await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, null, ct);
         return waiting.IsSuccess
             ? Result<RotationOutcome>.Success(RotationOutcome.Waiting)

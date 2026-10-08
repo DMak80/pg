@@ -10,7 +10,8 @@ namespace ValkeyWorker.Provisioning.Processes;
 /// потом etcd»: ошибка docker-хоста оставляет etcd-декларацию нетронутой —
 /// следующий тик повторит демонтаж (тома данных нет; TLS-volume t06 чистится
 /// в X1). X2 чистит координацию
-/// ВКЛЮЧАЯ заявки ротаций и стейт доигрывания (work/&lt;C&gt;/rotation); финальной
+/// ВКЛЮЧАЯ заявки ротаций, стейт доигрывания (work/&lt;C&gt;/rotation) и исходы
+/// заявок ticket_outcomes/&lt;C&gt; (t10); финальной
 /// journal-записи ПОСЛЕ чистки нет (образец kfw: запись done воскресила бы
 /// удалённый work/&lt;C&gt; — координация &lt;C&gt; обязана остаться пустой).
 /// Успех = пустой префикс домена (verify) + ЯВНО снятый клэйм. Снапшоты P12
@@ -65,8 +66,9 @@ public sealed class DeprovisioningProcess(
         if (!volumeRemoved.IsSuccess)
             return Fail(cluster, volumeRemoved.Error!, "remove-tls-volume");
 
-        // X2: etcd после docker — домен + координация ВКЛЮЧАЯ заявки ротаций
-        // и стейт доигрывания ротации (work/<C>/rotation).
+        // X2: etcd после docker — домен + координация ВКЛЮЧАЯ заявки ротаций,
+        // стейт доигрывания ротации (work/<C>/rotation) и исходы заявок
+        // ticket_outcomes/<C> (t10 — иначе вечный алерт с мёртвого кластера).
         var domainDel = await DeletePrefixAsync($"/valkey/clusters/{cluster}/", ct);
         if (!domainDel.IsSuccess)
             return Fail(cluster, domainDel.Error!, "delete-domain");
@@ -78,6 +80,7 @@ public sealed class DeprovisioningProcess(
                      $"/valkeyworker/portalloc/{cluster}",
                      $"/valkeyworker/rotations/{cluster}",
                      $"/valkeyworker/ca_rotations/{cluster}",
+                     $"/valkeyworker/ticket_outcomes/{cluster}", // исходы заявок не переживают кластер (t10)
                  })
         {
             var del = await DeleteKeyAsync(key, ct);

@@ -109,9 +109,15 @@ public class CaRotatorTests
             => Etcd.PutAsync("http://etcd:2379", key, value, null, TestContext.Current.CancellationToken)
                 .GetAwaiter().GetResult();
 
+        // Свежая заявка: K0.5-точки экспирационные (t10) — старую они сняли бы.
         public void SeedTicket(string cluster)
             => Put($"/valkeyworker/ca_rotations/{cluster}",
-                $$"""{"requested_unix":1756500000,"requested_by":"it"}""");
+                $$"""{"requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 10}},"requested_by":"it"}""");
+
+        // Старая заявка (возраст > порога) — для кейсов экспирации (t10).
+        public void SeedOldTicket(string cluster)
+            => Put($"/valkeyworker/ca_rotations/{cluster}",
+                $$"""{"requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 3700}},"requested_by":"it"}""");
     }
 
     [Fact]
@@ -540,5 +546,108 @@ public class CaRotatorTests
         rig.Snapshots.Should().Contain("shot");
         rig.Driver.Removed.Should().BeEmpty();
         rig.Valkey.LastCaPem.Should().BeNull("PING в хвосте не выполняется");
+    }
+
+    // ===== t10: экспирация K0.5-точек под гвардом; окно уводит в доигрывание =====
+
+    [Fact]
+    public async Task Run_ClusterDown_OldCaTicket_Expired()
+    {
+        // Arrange — K0.5-точка: нет endpoints (SeedBare) + заявка старая.
+        var rig = Rig.Create();
+        rig.SeedBare("c20");
+        rig.SeedOldTicket("c20");
+
+        // Act
+        var outcome = await rig.Rotator.RunAsync(rig.Snapshot("c20"), TestContext.Current.CancellationToken);
+
+        // Assert — заявка снята; исход kind=ca reason=waiting-cluster; тик —
+        // Waiting (экспирация штатна, вентиль не блокирует).
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.Message);
+        outcome.Value.Should().Be(ValkeyWorker.Provisioning.Processes.CaRotator.RotationOutcome.Waiting);
+        rig.Get("/valkeyworker/ca_rotations/c20").Should().BeNull();
+        var outcomeJson = rig.Get("/valkeyworker/ticket_outcomes/c20");
+        outcomeJson.Should().Contain("\"kind\":\"ca\"")
+            .And.Contain("\"outcome\":\"expired\"")
+            .And.Contain("\"reason\":\"waiting-cluster\"");
+    }
+
+    [Fact]
+    public async Task Run_PasswordRotationAlive_OldCaTicket_Expired()
+    {
+        // Arrange — K0.5-точка: живая ротация кредов + старая ca-заявка.
+        var rig = Rig.Create();
+        rig.SeedTls("c21");
+        rig.SeedOldTicket("c21");
+        rig.Put("/valkeyworker/rotations/c21",
+            """{"role":"app","requested_unix":1756500000,"requested_by":"it"}""");
+
+        // Act
+        var outcome = await rig.Rotator.RunAsync(rig.Snapshot("c21"), TestContext.Current.CancellationToken);
+
+        // Assert — expired reason=waiting-password-rotation.
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.Message);
+        rig.Get("/valkeyworker/ca_rotations/c21").Should().BeNull();
+        rig.Get("/valkeyworker/ticket_outcomes/c21").Should().Contain("\"reason\":\"waiting-password-rotation\"");
+    }
+
+    [Fact]
+    public async Task Run_WindowOpen_OldCaTicket_NotExpired()
+    {
+        // Arrange — AC3: staging жив (K0.3 → доигрывание) + заявка старая.
+        // Окно ОСТАНАВЛИВАЕТСЯ инжектом отказа C-txn (>=5 success-операций) —
+        // доигрывание не доходит до снятия заявки фазой C.
+        var rig = Rig.Create();
+        rig.SeedTls("c22");
+        rig.SeedOldTicket("c22");
+        rig.SeedWindow("c22");
+        rig.Etcd.TxnFault = req => req.Success.Count >= 5
+            ? Result<Shared.Etcd.Client.TxnResult>.Failed(new ApplicationException("инжект: отказ C-txn"))
+            : null;
+
+        // Act
+        var outcome = await rig.Rotator.RunAsync(rig.Snapshot("c22"), TestContext.Current.CancellationToken);
+
+        // Assert — заявка НЕ снята экспирацией (окно уводит в доигрывание мимо
+        // экспирационных точек); ticket_outcomes нет; journal ≠ expired.
+        rig.Get("/valkeyworker/ca_rotations/c22").Should().NotBeNull();
+        rig.Get("/valkeyworker/ticket_outcomes/c22").Should().BeNull();
+        rig.Get("/valkeyworker/work/c22").Should().NotContain("expired");
+    }
+
+    [Fact]
+    public async Task Run_FreshCaTicket_WaitingCluster()
+    {
+        // Arrange — свежая заявка, кластер не поднят.
+        var rig = Rig.Create();
+        rig.SeedBare("c23");
+        rig.SeedTicket("c23");
+
+        // Act
+        var outcome = await rig.Rotator.RunAsync(rig.Snapshot("c23"), TestContext.Current.CancellationToken);
+
+        // Assert — Waiting; заявка жива; исхода нет.
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.Message);
+        outcome.Value.Should().Be(ValkeyWorker.Provisioning.Processes.CaRotator.RotationOutcome.Waiting);
+        rig.Get("/valkeyworker/ca_rotations/c23").Should().NotBeNull();
+        rig.Get("/valkeyworker/ticket_outcomes/c23").Should().BeNull();
+        rig.Get("/valkeyworker/work/c23").Should().Contain("waiting-cluster");
+    }
+
+    [Fact]
+    public async Task Run_FullRotation_WritesDoneOutcome()
+    {
+        // Arrange — канонический кластер + заявка (полный цикл P→D→R→C→K4).
+        var rig = Rig.Create();
+        rig.SeedTls("c24");
+        rig.SeedTicket("c24");
+
+        // Act
+        var outcome = await rig.Rotator.RunAsync(rig.Snapshot("c24"), TestContext.Current.CancellationToken);
+
+        // Assert — исход done kind=ca.
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.Message);
+        var outcomeJson = rig.Get("/valkeyworker/ticket_outcomes/c24");
+        outcomeJson.Should().Contain("\"kind\":\"ca\"").And.Contain("\"outcome\":\"done\"");
     }
 }
