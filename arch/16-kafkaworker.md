@@ -759,8 +759,11 @@ K0.3→K0.5 (arch/21 §5 K): ПЕРВЫМ делом после чтения з�
 ожидании сходимости, окно не сиротеет — заявка жива). Окно не открыто →
 ждущие guard'ы: клэйм-гвард; кластер не поднят (нет endpoints/кредов/CA)
 → journal waiting-cluster (премиграционный кластер — waiting до миграции
-M); живая пароль-ротация H → waiting-password-rotation (H доиграет и K
-продолжит — приоритет H, t10); живой reassignment (`reassignments/<C>`)
+M); живая пароль-ротация H (заявка `rotations/<C>`/`admin_rotations/<C>`
+ИЛИ журнал `rotate` в мутационной фазе роли `phase-a`/`rotated-commit`/
+`phase-c`, вкл. `admin:`-префиксы; терминальные `done`/`expired` — не
+живые: expired пишется только вне мутаций) → waiting-password-rotation
+(H доиграет и K продолжит — приоритет H, t10); живой reassignment (`reassignments/<C>`)
 или regen (`regens/<C>`) → waiting без действий (rolling не смешивается
 с чужими). Экспирация (t10) действует в этих waiting-точках ТОЛЬКО под
 тройным гвардом «не начато» §5 (staging отсутствует ∧ журнал rotate-ca

@@ -323,11 +323,21 @@ public sealed class CaRotator(
         return Result<bool>.Success(CaMutationLive(journalState));
     }
 
+    // Живая (мутационная) фаза пароль-ротации E по журналу: op=rotate в фазе
+    // e1-added/e2-committed (e1-pending — фаза стейта, в журнал не пишется).
+    // Терминальные (done/expired) и waiting-фазы — НЕ живые: expired пишется
+    // только вне мутаций (инвариант t10) — иначе терминальный expired навечно
+    // гейтил бы свежую ca-заявку в waiting-password-rotation.
+    private static bool PasswordMutationLive(WorkState? journalState)
+        => journalState is { Op: "rotate" } r
+           && r.Phase is "e1-added" or "e2-committed";
+
     // Живая ротация креда (spec §5 K0.5): заявка rotations ИЛИ стейт
-    // work/<C>/rotation с фазой e1-pending|e1-added|e2-committed.
+    // work/<C>/rotation с фазой e1-pending|e1-added|e2-committed ИЛИ журнал
+    // rotate в мутационной фазе (e1-added/e2-committed).
     private async Task<Result<bool>> PasswordRotationAliveAsync(string cluster, WorkState? journalState, CancellationToken ct)
     {
-        if (journalState is { Op: "rotate" } r && r.Phase != PhaseDone)
+        if (PasswordMutationLive(journalState))
             return Result<bool>.Success(true);
         var passwordTicket = await GetAsync($"/valkeyworker/rotations/{cluster}", ct);
         if (!passwordTicket.IsSuccess)

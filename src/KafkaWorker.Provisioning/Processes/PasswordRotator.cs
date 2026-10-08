@@ -266,6 +266,16 @@ public sealed class PasswordRotator(
                || j.Phase == role.Phase(PhaseCommitted)
                || j.Phase == role.Phase("phase-c"));
 
+    // Живая (мутационная) фаза пароль-ротации ЛЮБОЙ роли: op=rotate в фазе
+    // phase-a/rotated-commit/phase-c (вкл. admin:-префиксы). Терминальные
+    // (done/expired) и waiting-фазы — НЕ живые: expired пишется только вне
+    // мутаций (инвариант t10). Гвард K0.5 CaRotator «живая пароль-ротация»
+    // обязан считать живой только мутацию — иначе терминальный expired
+    // навечно гейтил бы свежую ca-заявку в waiting-password-rotation.
+    internal static bool PasswordMutationLive(WorkState? journalState)
+        => RoleMutationLive(journalState, RotationRole.App)
+           || RoleMutationLive(journalState, RotationRole.Admin);
+
     // Waiting-исход роли с экспирацией под гвардом (t10): живая заявка старее
     // порога И гвард пройден (staging отсутствует — по построению ветки, т.к.
     // ca-window guard стоит РАНЬШЕ обеих waiting-cluster точек; mutationLive —

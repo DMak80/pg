@@ -120,6 +120,10 @@ public sealed class CaRotator(
 
         // Guard: живая пароль-ротация (H, app/admin) — rolling-ы не смешиваются
         // (журнал один). Живая admin-заявка H — та же семья (приоритет H, t10).
+        // «Живость по журналу» — ТОЛЬКО мутационные фазы роли (phase-a/
+        // rotated-commit/phase-c): терминальный expired не живой (пишется
+        // только вне мутаций) — иначе свежая ca-заявка после экспирации
+        // пароль-заявки крутилась бы в waiting до собственного таймаута.
         var passwordTicket = await GetAsync($"/kafkaworker/rotations/{cluster}", ct);
         if (!passwordTicket.IsSuccess)
             return Result.Failed(passwordTicket.Error!);
@@ -127,7 +131,7 @@ public sealed class CaRotator(
         if (!adminTicket.IsSuccess)
             return Result.Failed(adminTicket.Error!);
         if (passwordTicket.Value is not null || adminTicket.Value is not null
-            || journalState.Value is { Op: "rotate" } r && r.Phase != "done")
+            || PasswordRotator.PasswordMutationLive(journalState.Value))
         {
             return await WaitAsync(cluster, "waiting-password-rotation", ticketPayload,
                 CaMutationLive(journalState.Value), ct);

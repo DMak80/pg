@@ -635,6 +635,55 @@ public class CaRotatorTests
     }
 
     [Fact]
+    public async Task Run_RotateJournalExpired_NoPasswordAlive_PlaysThrough()
+    {
+        // Arrange — журнал rotate в ТЕРМИНАЛЬНОЙ фазе expired (пароль-заявку
+        // сняла экспирация), парольной заявки/стейта нет; ca-заявка свежая.
+        // Expired пишется только вне мутаций — гвард «живая пароль-ротация»
+        // обязан пропустить терминальную фазу.
+        var rig = Rig.Create();
+        rig.SeedTls("c26");
+        rig.SeedTicket("c26");
+        await rig.Journal.WritePhaseAsync(
+            "c26", "rotate", "expired", "i1", null, TestContext.Current.CancellationToken);
+
+        // Act
+        var outcome = await rig.Rotator.RunAsync(rig.Snapshot("c26"), TestContext.Current.CancellationToken);
+
+        // Assert — НЕ waiting-password-rotation: полный цикл P→D→R→C→K4
+        // (заявка снята, исход done, журнал done).
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.Message);
+        rig.Get("/valkeyworker/ca_rotations/c26").Should().BeNull();
+        rig.Get("/valkeyworker/ticket_outcomes/c26").Should().Contain("\"outcome\":\"done\"");
+        (await rig.Journal.ReadAsync("c26", TestContext.Current.CancellationToken)).Value!.Phase
+            .Should().Be("done");
+    }
+
+    [Theory]
+    [InlineData("e1-added")]
+    [InlineData("e2-committed")]
+    public async Task Run_RotateJournalMutationPhase_WaitsPasswordRotation(string phase)
+    {
+        // Arrange — журнал rotate в МУТАЦИОННОЙ фазе E (SETUSER/коммит в
+        // полёте); парольной заявки/стейта нет; ca-заявка свежая.
+        var rig = Rig.Create();
+        rig.SeedTls("c27");
+        rig.SeedTicket("c27");
+        await rig.Journal.WritePhaseAsync(
+            "c27", "rotate", phase, "i1", null, TestContext.Current.CancellationToken);
+
+        // Act
+        var outcome = await rig.Rotator.RunAsync(rig.Snapshot("c27"), TestContext.Current.CancellationToken);
+
+        // Assert — waiting-password-rotation; ca-заявка жива; исхода нет.
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.Message);
+        (await rig.Journal.ReadAsync("c27", TestContext.Current.CancellationToken)).Value!.Phase
+            .Should().Be("waiting-password-rotation");
+        rig.Get("/valkeyworker/ca_rotations/c27").Should().NotBeNull();
+        rig.Get("/valkeyworker/ticket_outcomes/c27").Should().BeNull();
+    }
+
+    [Fact]
     public async Task Run_FullRotation_WritesDoneOutcome()
     {
         // Arrange — канонический кластер + заявка (полный цикл P→D→R→C→K4).
