@@ -1,749 +1,740 @@
-# t15-prometheus-file-sd — план реализации
+# t15-prometheus-file-sd — план реализации (дельта 3: единая сеть мониторинга)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Метрики реальных Patroni-нод кластеров PgWorker собираются Prometheus'ом стенда: мини-сервис `sd-generator` тиком читает `/pgworker/portalloc/` из etcd (read-only, с failover по endpoints) и атомарно пишет file_sd JSON в volume Prometheus; джоба `patroni-nodes`, алерты и панели на нативные `patroni_*`.
+**Spec:** `docs/superpowers/2026-10-08-t15-prometheus-file-sd/spec.md` (ревизия 3, ключевой раздел «Дельта 3 (единая сеть)»; план не спорит со spec — executors читают оба).
 
-**Architecture:** Новый независимый .NET mini-сервис `src/Metrics.SdGenerator` (console + hosted service, Kestrel только для самонаблюдения `/metrics`) в профиле `metrics` dev-стенда. Контракт etcd НЕ меняется — генератор «немой читатель» portalloc (как панель). Чистая функция маппинга `Kv → file_sd-группы`, атомарная запись при diff (tmp+rename, byte-compare), консервативная свежесть (ошибка etcd не трогает файл). Приёмка: unit → integration (живой etcd) → docker-E2E (реальный кластер + настоящий Prometheus). arch-first: правки arch/18 до кода (Ф0).
+**Статус ветки:** ревизия 1 исполнена и зелёная; этот план — дельта 3 поверх неё, в той же ветке/Worktree.
 
-**Tech Stack:** .NET 10 (`Nullable=enable`, `TreatWarningsAsErrors=true`), System.Diagnostics.Metrics + OTel Prometheus-экспортёр (уже в `Shared.Metrics`), xUnit v3 + FluentAssertions + Testcontainers; Prometheus file_sd (JSON-группы `targets`+`labels`).
+## Ревизия 1 — исполнено, зелёный гейт (не исполнять повторно)
 
-**Spec:** `docs/superpowers/2026-10-08-t15-prometheus-file-sd/spec.md` (в этом же каталоге; план не спорит со spec — executors читают оба).
+Задачи 1–12 ниже ПОЛНОСТЬЮ реализованы, все гейты зелёные (коммиты
+`0e2ea09…fa22da74` + `8c2dfb98` + `0627cb92`); их тексты удалены из плана,
+канон — git-история и `docs/superpowers/…/` архива задач. Сводка сделанного
+(точки, на которые опирается дельта 3):
+
+- [x] Task 1 — arch/18 §2.5/§5.2/§5.4/§6/§8 (словарь `patroni_*` 23 серии,
+      джобы `patroni-nodes`/`sd-generator`, паттерн file_sd).
+- [x] Task 2 — каркас `src/Metrics.SdGenerator` (опции, Kestrel `/metrics`).
+- [x] Task 3 — `TargetMapping` (маппинг `host:patroni`, чистая функция).
+- [x] Task 4 — `SdFileWriter` (атомарная запись при diff).
+- [x] Task 5 — `SdGeneratorLoop` + failover + самонаблюдение + wiring.
+- [x] Task 6 — `docker/Metrics.SdGenerator.Dockerfile` (publish на хосте).
+- [x] Task 7 — стенд: сервис `sd-generator` (профиль metrics) + 00-up.sh.
+- [x] Task 8 — prometheus.yml (2 джобы) + rules.yml (3 алерта, 21 рул) + чек 65.
+- [x] Task 9 — дашборд `pg.json` (4 панели real).
+- [x] Task 10 — integration-тесты генератора на живом etcd.
+- [x] Task 11 — docker-E2E `E2ePatroniFileSdScenarios` (host-форвардинг-контур
+      + `WithExtraHost` — именно это перерабатывает дельта 3).
+- [x] Task 12 — мерж-гейт-прогоны ревизии 1 (roadmap-гейт самого трека — Д6).
+
+## Goal (дельта 3)
+
+Метрики реальных Patroni-нод собираются Prometheus'ом по сетевым адресам
+ЕДИНОЙ docker-сети контура — и в E2E, и в стенде/поставке: воркер подключает
+создаваемые ноды к сети контура (`PgWorker:Docker:ScrapeNetwork`) и дописывает
+в portalloc опциональные поля `alias`/`net`; генератор строит таргет
+`alias:8008` (запись без `alias` — деградационная advertised-ветка `host:patroni`);
+deploy-компоуз объявляет сеть `pgw-metrics` с воркерами (aliases
+`pgworker`/`pgworker-2`); стендовый as-prometheus аттачит её как external;
+extra_hosts из as-prometheus удаляются полностью; `pgworker-targets.json`
+переходит на сетевые адреса; E2E-класс живёт в одной сети окружения без
+`host.docker.internal` вообще. Результат: скрейп не зависит от
+host-форвардинга ни в одном контуре (spec §1).
+
+## Architecture (дельта 3)
+
+- **Per-node сетевая идентичность в portalloc** (spec «Дельта 3», §3.2):
+  конфиг-ключ `PgWorker:Docker:ScrapeNetwork` — имя сети контура (НЕ
+  переключатель режима). Задан → движок при создании/ensure канонической ноды
+  Ensure-attach'ит её к этой сети поверх основной `pgw-net-<C>` (инвариант
+  arch/14 §2.1 не трогается, wal-агенты не подключаются; усыновлённые `object`
+  — обходятся, R9), а точки записи portalloc дописывают в запись ноды
+  nullable-поля `alias` (полное docker-имя `pgw-<C>-<X>-<n>`, резолвится
+  user-defined DNS) и `net` (информационное, для инспекции etcd). Сеть
+  контура движком НЕ создаётся и НЕ удаляется; отсутствует — fail-fast
+  провижининга (diagnose в ошибке). Пустой ключ — поведение воркера бинарно
+  идентично ревизии 1: ни attach, ни полей.
+- **Генератор** (spec §3.3): per-node правило в `TargetMapping` — `alias` есть
+  → `<alias>:8008` (контейнерный порт Patroni REST, именованная константа);
+  нет → `host:patroni` (деградационная ветка: легаси-записи, усыновлённые).
+  Фильтры/детерминизм — без изменений; конфигурация генератора не меняется
+  (сеть ему не нужна: etcd по compose-DNS, таргеты резолвит Prometheus).
+- **Стенд/поставка** (spec §3.4): `deploy/docker-compose.yml` объявляет сеть
+  `pgw-metrics` (`name: ${PGW_METRICS_NETWORK:-pgw-metrics}`), pgworker/
+  pgworker-2 — в ней с aliases; env `PgWorker__Docker__ScrapeNetwork:
+  ${PGW_SCRAPE_NETWORK:-pgw-metrics}`. Стендовый as-prometheus — external-attach
+  второй сетью, extra_hosts (`host.docker.internal` и `local`) удаляются
+  полностью. 00-up.sh поднимает deploy-контур ДО стендового компоуза (сеть
+  создаётся до external-attach), 90-down — в обратном порядке; осиротевшей
+  сети не остаётся. SAN серта `pgserver` расширяется `DNS:pgworker-2`
+  (Prometheus сверяет имя сетевого таргета с SAN — прецедент t07 в gen.sh).
+- **E2E** (spec §3.5): `E2ePatroniFileSdScenarios` — одна сеть окружения
+  класса: sd-generator читает etcd по alias `e2e-etcdN:2379`, prometheus
+  скрейпит ноды по `alias:8008`, `WithExtraHost`-ов нет (регрессия
+  host-форвардинга ловится конструктивно), воркер получает
+  `PgWorker__Docker__ScrapeNetwork = <имя сети окружения>`; ассерты — сетевые
+  `scrapeUrl` без `host.docker.internal`.
+
+Приёмка: unit → integration (живой etcd) → docker-E2E (сетевой контур +
+полный E2e-контур на дефолте поставки — provisioning/portalloc меняются,
+канон AGENTS.md) → стенд 00-up/65/90-down. arch-first: правки arch/14 + arch/18
+до кода (Д0).
+
+**Tech Stack:** без изменений ревизии 1 (.NET 10, `Nullable=enable`,
+`TreatWarningsAsErrors=true`, CPM без новых пакетов, xUnit v3 + FluentAssertions
++ Testcontainers; Prometheus file_sd).
 
 ## Global Constraints
 
-- Работа ТОЛЬКО в worktree `/Users/demakaev/ZCodeProject/worktrees/feat-t15-prometheus-file-sd` (ветка `feat-t15-prometheus-file-sd`); команды ниже — из корня worktree (пути относительные).
-- .NET 10, `LangVersion=latest`, `Nullable=enable`, **`TreatWarningsAsErrors=true`** (`src/Directory.Build.props` наследуется) — сборка обязана быть 0 warnings.
-- Централизованное версионирование (CPM, `src/Directory.Packages.props`): НОВЫХ пакетов нет — OTel/xunit/FluentAssertions/Testcontainers уже запинены.
-- Контракт etcd НЕ меняется (spec §2): генератор — read-only потребитель `/pgworker/portalloc/<C>`; ноль новых etcd-ключей, ноль записей.
-- Код PgWorker/KafkaWorker/ValkeyWorker/AdminPanel НЕ меняется (spec §5). Единственное исключение — тестовая инфраструктура `src/tests/PgWorker.IntegrationTests/E2e/E2eEnvironment.cs` (сборка e2e-образа генератора + публичный доступ к сети контура) — это не код воркеров.
-- Лейблы конечны (spec §2, M1): у таргетов только `cluster`, `shard`, `node`; самонаблюдение — серия без лейблов.
-- Порты docker-контейнеров в тестах — ТОЛЬКО динамические (`assignRandomHostPort: true` + `GetMappedPublicPort`, либо `E2eEnvironment.ReserveWindowPort`); никаких литералов портов в ассертах.
-- Каждый интеграционный/E2E тест полностью чистит за собой (teardown при любом исходе + ассерт чистоты); телеметрия E2E: `[PHASE]`-метки фаз, docker-логи в teardown до удаления, `MarkFailed()` для упавших.
-- Образ `sdgenerator:dev` / `sdgenerator:e2e` — локально собираемые, в registry `192.168.0.1:5000` НЕ класть; `images.txt` НЕ меняется (базы `aspnet:10.0`, `prom/prometheus:v3.14.0`, `etcd:v3.5.21` уже зеркалированы).
-- E2E-образ: publish НА ХОСТЕ, в контейнер — только publish-вывод (runtime-слой, без sdk-стадии и `COPY src/`); вывод сборки — с `[PHASE]`-меткой и таймингом.
-- `BrokerBootSec`-подобные таймауты интеграционных фикстур ≤ 100 с; ожидания в тестах — поллом ≤ 500 мс с общим бюджетом.
-- Комментарии/доки — русский; идентификаторы — английские; тесты — с AAA-комментариями.
-- Коммиты в стиле репо: `feat(t15): …` / `test(t15): …` / `docs(t15): …` (описание на русском).
-- Перезапуск упавших тестов «для выяснения» запрещён: сначала анализ логов/артефактов (`/tmp/pgw-e2e-artifacts-<guid>/`, `/tmp/pgw-e2e-static-*.log`).
+- Работа ТОЛЬКО в worktree `/Users/demakaev/ZCodeProject/worktrees/feat-t15-prometheus-file-sd` (ветка `feat-t15-prometheus-file-sd`); команды — из корня worktree (пути относительные).
+- Базовые правила — [`../../AGENTS.base.md`](../../../AGENTS.base.md) (прочитать до исполнения) и [`../../AGENTS.md`](../../../AGENTS.md): буква приказа, язык русский, AAA-тесты, зачистка серий, телеметрия E2E.
+- .NET 10, `TreatWarningsAsErrors=true` — сборка 0 warnings; идентификаторы английские, комментарии/доки русские.
+- **Дельта 3 ТРОГАЕТ код воркера** (отличие от ревизии 1): `PgWorker.Core/Model`, `PgWorker.Docker/Drivers/ClusterDriver.cs`, `PgWorker.App/Options.cs`+`Program.cs`, `src/PgWorker.Provisioning/Processes/*` — точечно, по ключу `ScrapeNetwork`; БЕЗ ключа поведение бинарно идентично базе (ни attach, ни полей) — это отдельные юнит-ассерты.
+- Контракт etcd расширяется ТОЛЬКО значением существующего ключа `/pgworker/portalloc/<C>` (опциональные поля, пишет воркер; spec §2): ноль новых ключей, генератор по-прежнему только `RangeAsync`.
+- НОВЫХ внешних docker-образов и записей в `images.txt` нет; локально собираемые образы в registry `192.168.0.1:5000` НЕ класть.
+- Порты в тестах — ТОЛЬКО динамические (`assignRandomHostPort: true` + `GetMappedPublicPort`, окно `E2eEnvironment`); контейнерный порт `8008` — константа контракта ноды (именованная в коде), не host-порт.
+- Каждый интеграционный/E2E тест — полный teardown при любом исходе + ассерт чистоты; `[PHASE]`-метки фаз; `MarkFailed()` для упавших; docker-логи до удалений; перезапуск упавших тестов «для выяснения» запрещён.
+- Между тестовыми СЕРИЯМИ — зачистка (контейнеры/тома/сети/`docker network prune -f` при осиротевших `pgw-net-*`): серии не накладываются.
+- Коммиты: `feat(t15): …` / `test(t15): …` / `docs(t15): …` (описание на русском).
+- Ограничения spec §5 действуют целиком (advertised-адреса не меняются, alias не попадает в dsn/endpoints/пробы; `patroni <= 0` не скрейпится; Patroni REST без tls_config; джоба pgworker остаётся mTLS).
 
-## Карта файлов
+## Карта файлов (дельта 3)
 
 | Файл | Ответственность |
 |---|---|
-| `arch/18-metrics.md` | Ф0: §2.5 словарь `patroni_*`, §5.2 джобы `patroni-nodes`/`sd-generator`, §5.4 реализованный паттерн, §6 приёмка, §8 конфиг `SdGenerator:*` |
-| `src/Metrics.SdGenerator/Metrics.SdGenerator.csproj` | новый mini-сервис (Worker SDK, FrameworkReference AspNetCore для Kestrel) |
-| `src/Metrics.SdGenerator/SdGeneratorOptions.cs` | `[Config]`-опции + нормализация интервала |
-| `src/Metrics.SdGenerator/TargetMapping.cs` | чистая функция portalloc → file_sd-группы + сериализация JSON |
-| `src/Metrics.SdGenerator/SdFileWriter.cs` | атомарная запись файла при diff (tmp+rename) |
-| `src/Metrics.SdGenerator/SdGeneratorMetrics.cs` | константы `MeterName`/`LastSuccessInstrument` (каркас Task 2 — компилируемость Program.cs) + ObservableGauge `sd_generator.last_success_timestamp_seconds` (Meter через ctor — DI-канон; реализация Task 5) |
-| `src/Metrics.SdGenerator/EtcdFailover.cs` | копия паттерна failover (без ProjectReference на воркеров) |
-| `src/Metrics.SdGenerator/SdGeneratorLoop.cs` | тик: failover-Range → Map → Write; консервативная свежесть |
-| `src/Metrics.SdGenerator/SdGeneratorHostedService.cs` | BackgroundService с PeriodicTimer |
-| `src/Metrics.SdGenerator/Program.cs` | HostApplicationBuilder-точка входа: DI, Kestrel `/metrics`, hosted service |
-| `src/Metrics.SdGenerator/appsettings.json` | дефолты `SdGenerator:*` |
-| `docker/Metrics.SdGenerator.Dockerfile` | runtime-слой, COPY publish-вывода (контекст = каталог publish) |
-| `dev-stand/adminpanel/docker-compose.yml` | сервис `sd-generator` (профиль metrics) + volume `prometheus-sd` + маунт в prometheus |
-| `dev-stand/adminpanel/checks/00-up.sh` | publish генератора на хосте перед compose up (с [PHASE]) |
-| `dev-stand/adminpanel/metrics/prometheus/prometheus.yml` | джобы `patroni-nodes` (file_sd), `sd-generator` (static) |
-| `dev-stand/adminpanel/metrics/prometheus/rules.yml` | +3 алерта в группу `pg` |
-| `dev-stand/adminpanel/metrics/grafana/dashboards/pg.json` | +4 панели «real» |
-| `dev-stand/adminpanel/checks/65-metrics.sh` | строгий all-up БЕЗ patroni-nodes + условный шаг 2.1; счётчик алертов ≥ 21, самоскрейп sd-generator |
-| `src/tests/Metrics.SdGenerator.UnitTests/*` | unit: маппинг, writer, loop, метрика, интервал |
-| `src/tests/Metrics.SdGenerator.IntegrationTests/*` | integration: живой etcd (testcontainers), цикл/файл/свежесть |
-| `src/tests/PgWorker.IntegrationTests/E2e/E2eEnvironment.cs` | публичный `EnsureSdImageAsync` (сборка `sdgenerator:e2e`, лениво — из сценария); публичный доступ к сети контура |
-| `src/tests/PgWorker.IntegrationTests/E2e/E2ePatroniFileSdScenarios.cs` | docker-E2E: кластер → таргеты up → серии → демонтаж → исчезли |
-| `src/PgWorker.slnx` | +3 проекта (svc, unit, integration) |
-| `arch/roadmap/reliability.md`, `arch/roadmap/reliability-report.md` | мерж-гейт: снятие t15 + перенос строки + сводка N |
+| `arch/14-pgworker.md` | Д0: §2.1 — оговорка scrape-сети к per-cluster-инварианту; §2.4 п.2 — опц. поля `alias`/`net` записи ноды; §3.3 таблица — формат ключа portalloc |
+| `arch/18-metrics.md` | Д0: §2.5 — семантика таргетов (alias→8008 штатно, advertised — деградационно); §5.2 — сетевые таргеты джобы pgworker, extra_hosts удалён; §5.4 — единая сеть `pgw-metrics`; §6 — приёмка дельты |
+| `src/PgWorker.App/Options.cs` | Д1: `DockerOptions.ScrapeNetwork` (string, дефолт пусто) |
+| `src/PgWorker.Core/Model/Domain.cs` | Д1: `NodeAddress` + nullable `ScrapeAlias`/`ScrapeNetwork` |
+| `src/PgWorker.Core/Model/Portalloc.cs` | Д1: `PortallocEntry` поля `alias`/`net` (симметричная сериализация) + `PortallocIdentity.Decorate` |
+| `src/PgWorker.Docker/Drivers/ClusterDriver.cs` | Д1: `PlainClusterDriver` ctor + Ensure-attach в `EnsureNodeAsync` |
+| `src/PgWorker.App/Program.cs` | Д1: валидация `ScrapeNetwork` (Swarm — fail-fast), прокидывание в драйвер и процессы |
+| `src/PgWorker.Provisioning/Processes/ProvisioningProcess.cs` | Д1: decorate в `SerializePortAlloc`; перенос scrape-полей в `AdoptRunningContainersAsync` |
+| `src/PgWorker.Provisioning/Processes/AddShardProcess.cs` | Д1: decorate на put portalloc |
+| `src/PgWorker.Provisioning/Processes/AdoptionProcess.cs` | Д1: decorate на merge/repair put |
+| `src/PgWorker.Provisioning/Processes/RemoveShardProcess.cs` | Д1: БЕЗ правок кода — preserve через симметрию Parse/Serialize (юнит-доказательство) |
+| `src/tests/PgWorker.UnitTests/Model/PortallocTests.cs` + новый `PortallocIdentityTests.cs` | Д1: юниты сериализации/RMW/decorate |
+| `src/tests/PgWorker.UnitTests/Docker/ClusterDriverTests.cs` | Д1: юниты Ensure-attach (FakeEngine) |
+| `src/Metrics.SdGenerator/TargetMapping.cs` | Д2: alias-ветка + константа 8008 |
+| `src/tests/Metrics.SdGenerator.UnitTests/TargetMappingTests.cs` | Д2: обе ветки, смешанный контур |
+| `src/tests/Metrics.SdGenerator.IntegrationTests/SdGeneratorIntegrationTests.cs` | Д2: put с alias → сетевой таргет |
+| `deploy/docker-compose.yml` | Д3: сеть `pgw-metrics` + aliases воркеров + env-ключ |
+| `deploy/.env.example` | Д3: `PGW_METRICS_NETWORK`/`PGW_SCRAPE_NETWORK` |
+| `deploy/tls/gen.sh` | Д3: SAN `DNS:pgworker-2` в pgserver-серте (+перегенерация по отсутствию) |
+| `dev-stand/adminpanel/docker-compose.yml` | Д3: as-prometheus external-attach, удаление extra_hosts |
+| `dev-stand/adminpanel/checks/00-up.sh` | Д3: сетевые pgworker-targets, порядок deploy→стенд, sync env |
+| `dev-stand/adminpanel/checks/90-down.sh` | Д3: обратный порядок (стенд → deploy) |
+| `dev-stand/adminpanel/checks/65-metrics.sh` | Д3: сетевой ассерт шага 2.1 (логика без изменений) |
+| `src/tests/PgWorker.IntegrationTests/E2e/E2ePatroniFileSdScenarios.cs` | Д4: единая сеть класса, сетевые ассерты |
+| `arch/roadmap/reliability.md`, `arch/roadmap/reliability-report.md` | Д6: мерж-гейт трека (НЕ в execute) |
 
-## Контракт типов (единственное место определения; задачи повторяют сигнатуры)
+## Контракт типов (дельта 3; задачи повторяют сигнатуры)
 
 ```csharp
-// SdGeneratorOptions.cs
-public sealed class SdGeneratorOptions
+// src/PgWorker.App/Options.cs — DockerOptions
+/// <summary>Имя docker-сети контура мониторинга поставки (ревизия 3 t15):
+/// задано → движок Ensure-attach'ит канонические ноды к ней (поверх
+/// pgw-net-<C>) и точки записи portalloc дописывают alias/net. Пусто —
+/// поведение идентично базе (ни attach, ни полей). Не поддерживается в
+/// Mode=Swarm (fail-fast старта).</summary>
+public string ScrapeNetwork { get; set; } = "";
+
+// src/PgWorker.Core/Model/Domain.cs
+public sealed record NodeAddress(
+    string Host, NodePorts Ports, string? Object = null,
+    string? ScrapeAlias = null, string? ScrapeNetwork = null);
+
+// src/PgWorker.Core/Model/Portalloc.cs
+private sealed record PortallocEntry( // JSON: host,pg,patroni,doorman,object?,alias?,net?
+    string Host, int Pg, int Patroni, int Doorman,
+    string? Object = null,
+    [property: JsonPropertyName("alias")] string? Alias = null,
+    [property: JsonPropertyName("net")] string? Net = null);
+
+/// <summary>Сетевая идентичность записей portalloc (ревизия 3): при заданном
+/// ключе ScrapeNetwork каноническим записям (без object) дописываются
+/// alias = pgw-<C>-<X>-<n> (из ключа "<X>/<n>") и net = имя сети. Чистая,
+/// идемпотентная; null/пустой ключ — словарь без изменений.</summary>
+public static class PortallocIdentity
 {
-    public const int DefaultRefreshIntervalSec = 15;
-    public EtcdOptions Etcd { get; set; } = new();
-    public int RefreshIntervalSec { get; set; } = DefaultRefreshIntervalSec;
-    public string OutputPath { get; set; } = "/sd/patroni-nodes.json";
-    public MetricsOptions Metrics { get; set; } = new();   // Shared.Metrics.MetricsOptions
-    public sealed class EtcdOptions { public string[] Endpoints { get; set; } = []; }
-    // <=0 → 15 (паттерн §4.2 valkey; warning-лог — в Program.cs при старте)
-    public static int NormalizeInterval(int value)
-        => value <= 0 ? DefaultRefreshIntervalSec : value;
+    public static IReadOnlyDictionary<string, NodeAddress> Decorate(
+        IReadOnlyDictionary<string, NodeAddress> addresses,
+        string cluster, string? scrapeNetwork);
 }
 
-// TargetMapping.cs
-public sealed record SdTargetGroup(string Target, string Cluster, string Shard, string Node);
+// src/PgWorker.Docker/Drivers/ClusterDriver.cs — PlainClusterDriver
+public sealed class PlainClusterDriver(
+    IReadOnlyList<HostEndpoint> hosts, DockerEngineFactory factory,
+    bool enableDoorman, string nodeImage = "pgworker-node:dev",
+    string? advertisedHost = null, IReadOnlySet<string>? pgtuneExclude = null,
+    string? scrapeNetwork = null) : IClusterDriver;
+// EnsureNodeAsync: заданный ключ → идемпотентный attach контейнера ноды к
+// scrapeNetwork (inspect.Networks → NetworkConnectAsync; сети нет — Failed,
+// fail-fast); усыновлённые (object) — без attach; NetworkConnectAsync docker
+// принимает повторно как no-op — идемпотентность API (DockerEngine.cs:254).
+
+// src/Metrics.SdGenerator/TargetMapping.cs
+private sealed record PortallocEntry(
+    string Host, int Pg, int Patroni, int Doorman,
+    [property: JsonPropertyName("alias")] string? Alias = null);
 public static class TargetMapping
 {
-    public const string PortallocPrefix = "/pgworker/portalloc/";
-    // Kv[] → группы; warn(cluster, error) вызывается на битые/незнакомые записи (skip)
-    public static IReadOnlyList<SdTargetGroup> Map(IReadOnlyList<Kv> kvs, Action<string, string> warn);
-    // Детерминированный file_sd JSON: [{"targets":["h:p"],"labels":{cluster,shard,node}}…]
-    public static string Serialize(IReadOnlyList<SdTargetGroup> groups);
-}
-
-// SdFileWriter.cs
-public sealed class SdFileWriter(string path)
-{
-    /// true — файл перезаписан (tmp+rename); false — контент не изменился (mtime не тронут)
-    public bool WriteIfChanged(string content);
-}
-
-// SdGeneratorMetrics.cs — Meter приходит через ctor (канон репо: DI-Meter из
-// AddAppMetrics, паттерн KafkaWorker.App; standalone/юниты — свой). Meter в
-// Dispose НЕ диспозим — он принадлежит владельцу/DI (канон WorkerMetricsInstrumentation).
-public sealed class SdGeneratorMetrics(System.Diagnostics.Metrics.Meter meter, TimeProvider time) : IDisposable
-{
-    public const string MeterName = "SdGenerator";
-    public const string LastSuccessInstrument = "sd_generator.last_success_timestamp_seconds";
-    public long? LastSuccessUnix { get; }        // null — серия не эмитится (до первого успеха)
-    public void MarkSuccess();                   // обновляет стейт ObservableGauge
-}
-
-// SdGeneratorLoop.cs
-public sealed class SdGeneratorLoop(
-    IEtcdGateway etcd, string[] endpoints, SdFileWriter writer,
-    SdGeneratorMetrics metrics, ILogger<SdGeneratorLoop> logger)
-{
-    /// true — успешный тик (пустой префикс = успех); false — ошибка чтения
-    /// (warning-лог, файл и last_success НЕ тронуты)
-    public async Task<bool> TickAsync(CancellationToken ct);
-}
-
-// SdGeneratorHostedService.cs
-internal sealed class SdGeneratorHostedService(
-    SdGeneratorOptions options, SdGeneratorLoop loop, ILogger<SdGeneratorHostedService> logger)
-    : BackgroundService;   // PeriodicTimer(TimeSpan.FromSeconds(NormalizeInterval(RefreshIntervalSec)))
-```
-
-Свой DTO парсинга portalloc (генератор НЕ ссылается на PgWorker.Core — независимость):
-
-```csharp
-// TargetMapping.cs (вложенный): {"<shard>/<node>": {"host","pg","patroni","doorman"}}
-private sealed record PortallocEntry(string Host, int Pg, int Patroni, int Doorman);
-```
-
----
-
-### Task 1: Ф0 — контракт arch/18 (arch-first, до кода)
-
-**Вход (предусловие):** spec одобрен; worktree чист (кроме `docs/superpowers/…t15…/spec.md`).
-
-**Действие (Files):** Modify `arch/18-metrics.md` — пять правок по spec §3.1. Тексты вставок:
-
-1. **§2.5** — заменить абзац «Узлы, создаваемые PgWorker в per-cluster сетях…» и дополнить секцию словарём нативных серий (после существующего текста об эмуляторах):
-
-```markdown
-Словарь реальных Patroni-нод — нативные серии REST `/metrics` (spilo,
-Patroni 4.x); канон-минимум, на который пишутся дашборд/алерты:
-`patroni_master`, `patroni_replica`, `patroni_sync_standby`,
-`patroni_timeline`, `patroni_xlog_replay_timestamp`, `patroni_version`,
-`patroni_postgres_running` (лейблы `scope`, `name` — сам Patroni).
-Два словаря сосуществуют: эмуляторный `pg_replica_lag_seconds` (стенд без
-PgWorker-кластеров) и нативный `patroni_*` (реальные ноды); фактический
-набор фиксирует docker-E2E (§6). Таргеты реальных нод — file_sd из
-portalloc (§5.2 `patroni-nodes`, §5.4): узлы PgWorker скрейпятся по
-host-публикациям портов Patroni, per-cluster сети для этого не нужны.
-```
-
-2. **§5.2** — две новые строки таблицы джоб:
-
-```markdown
-| `patroni-nodes` | file_sd `/etc/prometheus/sd/patroni-nodes.json` (scheme http — Patroni REST без TLS, t22 вне скоупа; источник файла — генератор §5.4 из `/pgworker/portalloc/`) | §2.5 нативные `patroni_*` |
-| `sd-generator` | static: имя сети стенда `sd-generator:8080` (профиль `metrics`) | самонаблюдение генератора §5.4 |
-```
-
-3. **§5.4** — заменить «file_sd из etcd-снапшота — опция будущих задач» на реализованный паттерн:
-
-```markdown
-Прод-мультихост: Prometheus рядом с docker-хостами, таргеты нод — из
-advertise-адресов portalloc; паттерн реализован в стенде: file_sd-генератор
-`sd-generator` (профиль `metrics`, `src/Metrics.SdGenerator`) тиком читает
-`/pgworker/portalloc/` (read-only, без клэймов) и пишет
-`sd/patroni-nodes.json` в volume Prometheus; таргет ноды = advertised host +
-patroni-порт (host-публикация) — на мульти-хосте адреса честны, достижимость
-скрейпа — зона сетевой политики прода. Граница: Kafka/Valkey-ноды без HTTP
-metrics-эндпоинта наблюдаются доменными сериями коллекторов воркеров
-(§2.3/§2.6); расширение словаря их нод — отдельные задачи.
-```
-
-4. **§6** — дополнить пункт «Тестирование» строками приёмки t15 (unit-маппинг; integration-цикл с etcd-фикстурой; docker-E2E «кластер → таргет up → демонтаж → таргет исчез», фиксирует фактический набор `patroni_*`).
-
-5. **§8** — дополнить блок конфигурации:
-
-```
-SdGenerator:Etcd:Endpoints[]           # узлы HA-контура
-SdGenerator:RefreshIntervalSec=15      # <=0 → 15 + warning
-SdGenerator:OutputPath=/sd/patroni-nodes.json
-SdGenerator:Metrics { Enabled=true, Path="/metrics" }
-```
-
-- [ ] Step 1: Внести пять правок в `arch/18-metrics.md` (тексты выше; вычитка тона окружающего текста).
-- [ ] Step 2: Коммит: `git add arch/18-metrics.md docs/superpowers/2026-10-08-t15-prometheus-file-sd/ && git commit -m "docs(t15): контракт наблюдаемости реальных Patroni-нод (arch/18 §2.5/§5.2/§5.4/§6/§8) + spec"`.
-
-**Выход:** контракт в истории; точка отсчёта код-задач.
-
-**Проверка:** `git show --stat HEAD` — один коммит arch+spec; `grep -c "patroni-nodes" arch/18-metrics.md` ≥ 3.
-
-**Spec:** §3.1 (таблица правок), §2 (arch-first).
-
----
-
-### Task 2: Каркас `src/Metrics.SdGenerator` + опции (unit на нормализацию интервала)
-
-**Вход:** Task 1 закоммичен.
-
-**Действие (Files):**
-- Create `src/Metrics.SdGenerator/Metrics.SdGenerator.csproj`:
-
-```xml
-<Project Sdk="Microsoft.NET.Sdk.Worker">
-    <ItemGroup>
-        <InternalsVisibleTo Include="Metrics.SdGenerator.UnitTests"/>
-    </ItemGroup>
-    <ItemGroup>
-        <FrameworkReference Include="Microsoft.AspNetCore.App"/>
-    </ItemGroup>
-    <ItemGroup>
-        <ProjectReference Include="..\Shared.Core\Shared.Core.csproj"/>
-        <ProjectReference Include="..\Shared.Etcd\Shared.Etcd.csproj"/>
-        <ProjectReference Include="..\Shared.Metrics\Shared.Metrics.csproj"/>
-    </ItemGroup>
-</Project>
-```
-
-- Create `src/Metrics.SdGenerator/SdGeneratorOptions.cs` — сигнатуры из контракта типов (включая `NormalizeInterval`); XML-doc комментарии по-русски.
-- Create `src/Metrics.SdGenerator/appsettings.json`:
-
-```json
-{
-  "Logging": { "LogLevel": { "Default": "Information", "Microsoft.Hosting.Lifetime": "Information" } },
-  "SdGenerator": {
-    "Etcd": { "Endpoints": [ "http://localhost:2379" ] },
-    "RefreshIntervalSec": 15,
-    "OutputPath": "/sd/patroni-nodes.json",
-    "Metrics": { "Enabled": true, "Path": "/metrics" }
-  }
+    /// <summary>Контейнерный порт Patroni REST — константа контракта ноды
+    /// (arch/14 §2.1), не host-порт.</summary>
+    public const int PatroniRestPort = 8008;
+    // Правило per-node: Alias не пуст → $"{Alias}:{PatroniRestPort}";
+    // иначе → $"{Host}:{Patroni}" (деградационная ветка). Остальное без изменений.
 }
 ```
 
-- Create `src/Metrics.SdGenerator/SdGeneratorMetrics.cs` — минимальный каркас: только константы из контракта типов (реализация ObservableGauge/`MarkSuccess`/Dispose — Task 5). Файл нужен уже в Task 2: Program.cs ниже ссылается на `SdGeneratorMetrics.MeterName`, без класса гейт Task 2 (`dotnet build` → PASS) падает на CS0103:
-
-```csharp
-namespace Metrics.SdGenerator;
-
-// Каркас Task 2: только константы — на MeterName ссылается Program.cs
-// (AddAppMetrics); ctor(meter, time), LastSuccessUnix, MarkSuccess, Dispose — Task 5.
-public sealed class SdGeneratorMetrics
-{
-    public const string MeterName = "SdGenerator";
-    public const string LastSuccessInstrument = "sd_generator.last_success_timestamp_seconds";
-}
-```
-
-- Create `src/Metrics.SdGenerator/Program.cs` — минимальный каркас (цикл подключит Task 5):
-
-```csharp
-using Metrics.SdGenerator;
-using Shared.Etcd.Client;
-using Shared.Metrics;
-
-var builder = WebApplication.CreateBuilder(args);
-builder.Services.Configure<SdGeneratorOptions>(builder.Configuration.GetSection("SdGenerator"));
-// Самонаблюдение (arch/18 §5.2 job sd-generator): AddAppMetrics при Enabled=true
-// регистрирует OTel-провайдер и DI-Meter с именем SdGenerator; инструментарий
-// (Task 5) берёт этот Meter из DI (канон KafkaWorker.App). Enabled=false —
-// провайдера/Meter в DI нет, SdGeneratorMetrics создаст свой (пишем «в никуда»).
-builder.Services.AddAppMetrics(SdGeneratorMetrics.MeterName,
-    builder.Configuration.GetSection("SdGenerator:Metrics"));
-builder.Services.AddHttpClient("etcd");
-builder.Services.AddSingleton<IEtcdGateway>(sp =>
-    new EtcdGateway(sp.GetRequiredService<IHttpClientFactory>().CreateClient("etcd")));
-// TODO(t15 Task 5): SdFileWriter, SdGeneratorMetrics, SdGeneratorLoop, HostedService
-var app = builder.Build();
-app.MapAppMetrics();
-app.Run();
-```
-
-- Create `src/tests/Metrics.SdGenerator.UnitTests/Metrics.SdGenerator.UnitTests.csproj` (копия структуры `src/tests/Shared.Metrics.UnitTests/*.csproj`: xunit.v3, FluentAssertions, coverlet; ProjectReference на `../../Metrics.SdGenerator/Metrics.SdGenerator.csproj`).
-- Modify `src/PgWorker.slnx`: в `/common/` проект `Metrics.SdGenerator/Metrics.SdGenerator.csproj`; в `/tests/` — `tests/Metrics.SdGenerator.UnitTests/...`.
-
-- [ ] Step 1: Создать тесты нормализации (AAA):
-
-```csharp
-public class SdGeneratorOptionsTests
-{
-    [Theory]
-    [InlineData(0, 15)] [InlineData(-5, 15)] [InlineData(1, 1)] [InlineData(15, 15)] [InlineData(60, 60)]
-    public void NormalizeInterval_ClampsNonPositive(int given, int expected)
-    {
-        // Act
-        var actual = SdGeneratorOptions.NormalizeInterval(given);
-        // Assert
-        actual.Should().Be(expected);
-    }
-}
-```
-
-- [ ] Step 2: `dotnet test src/tests/Metrics.SdGenerator.UnitTests -c Release` — FAIL (проекта нет) → создать csproj/опции/каркас/slnx-строки → PASS.
-- [ ] Step 3: `dotnet build src/PgWorker.slnx -c Release` — 0 errors, 0 warnings.
-- [ ] Step 4: `cd src/Metrics.SdGenerator && dotnet run` вручную НЕ поднимать (правило: PgWorker всегда в докере; генератор тоже поставляется образом — Task 6); вместо этого smoke: `ASPNETCORE_URLS=http://127.0.0.1:18099 dotnet src/Metrics.SdGenerator/bin/Release/net10.0/Metrics.SdGenerator.dll & sleep 3; curl -fsS http://127.0.0.1:18099/metrics | head -3; kill %1` — ожидание: HTTP 200, `# HELP`/`# TYPE` (или пустой экспорт до первого инструмента — после Task 5 серия появится).
-- [ ] Step 5: Коммит `feat(t15): каркас Metrics.SdGenerator (опции, Kestrel /metrics, slnx)`.
-
-**Выход:** собирающийся сервис-каркас с `/metrics`; опции с нормализацией.
-
-**Проверка:** шаги 2–4 зелёные; `grep -c "Metrics.SdGenerator" src/PgWorker.slnx` = 2.
-
-**Spec:** §3.2 (мини-сервис, `[Config]`-паттерн), §3.5 (конфигурация), §6.1 (дефолт `<=0` → 15).
-
 ---
 
-### Task 3: Маппинг `TargetMapping` (чистая функция, TDD)
+### Д0: arch-first — контракт единой сети (arch/14 + arch/18, до кода)
 
-**Вход:** Task 2.
+**Вход (предусловие):** spec ревизии 3 одобрен; worktree чист (кроме
+`docs/superpowers/…t15…/spec.md` + этого plan.md); ревизия 1 зелёная.
 
 **Действие (Files):**
-- Create `src/Metrics.SdGenerator/TargetMapping.cs`: `SdTargetGroup`, `Map`, `Serialize`, DTO `PortallocEntry` (контракт типов). Правила `Map`:
-  - ключ `/pgworker/portalloc/<C>` (кластер = последний сегмент ключа; чужие префиксы игнорируются фильтром `key.StartsWith(PortallocPrefix)`);
-  - JSON-значение — словарь `"<shard>/<node>" → {host,pg,patroni,doorman}`; поле `object` и любые незнакомые поля игнорируются (толерантность панели: state-значения развиваются);
-  - на каждую запись с `patroni > 0` — группа `Target = $"{host}:{patroni}"`;
-  - `patroni <= 0` (усыптлённые) — пропуск без warning (штатная семантика, arch/14 §2.4);
-  - битый JSON / не-словарь / нечисловые порты — пропуск записи ключа ЦЕЛИКОМ + `warn(cluster, error)`;
-  - `host` пустой — как битая запись (warn+skip);
-  - порядок групп детерминирован: сортировка по (Cluster, Shard, Node);
-  - пустой список Kv → пустой список (serialize → `[]`).
-- `Serialize`: `JsonSerializer` без отступов, порядок полей фиксорован: `targets`, `labels{cluster,shard,node}`.
 
-- Test `src/tests/Metrics.SdGenerator.UnitTests/TargetMappingTests.cs` — кейсы (каждый — отдельный `[Fact]` с AAA-комментарием; `Kv` из `Shared.Etcd.Client`, `ModRevision: 1`):
+1. Modify `arch/14-pgworker.md`:
+   - **§2.1**, абзац «Ноды кластера и wal-агенты подключаются к per-cluster
+     docker-сети `pgw-net-<C>`…» — дополнить в конец абзаца оговорку (тон
+     окружающего текста):
 
-| Кейс | Вход (Kv) | Ожидание |
-|---|---|---|
-| Одна нода | ключ `/pgworker/portalloc/c1`, value `{"shard1/shard1a":{"host":"h1","pg":5432,"patroni":8008,"doorman":6432}}` | 1 группа `("h1:8008","c1","shard1","shard1a")` |
-| Усыптлённая нода | `...{"patroni":0}...` (вторая запись словаря) | группы нет, warn НЕ вызван |
-| Битый JSON | value `{"shard1/` | 0 групп, warn вызван с `c1` |
-| Незнакомое поле | value с доп. `"object":"x","extra":true` | группа есть |
-| Пустой префикс | `[]` Kv | `Serialize → "[]"` |
-| Детерминизм | 2 кластера × 2 шарда × 2 ноды в перемешанном порядке | группы отсортированы (Cluster,Shard,Node); два вызова на один вход — равные списки |
-| Формат | одна группа | JSON: `[{"targets":["h1:8008"],"labels":{"cluster":"c1","shard":"shard1","node":"shard1a"}}]` |
-| Чужой ключ | `/pgworker/portallocX/c1` | 0 групп, warn НЕ вызван |
+     ```markdown
+     Дополнительно, при заданном `PgWorker:Docker:ScrapeNetwork` (ревизия 3
+     t15 — имя docker-сети контура мониторинга поставки) канонические ноды
+     Ensure-attach'ятся движком к этой сети (поверх `pgw-net-<C>`, идемпотентно
+     по inspect; wal-агенты НЕ подключаются — им scrape-сеть не нужна). Сеть
+     контура движком НЕ создаётся и НЕ удаляется (владелец — поставка/сценарий);
+     отсутствует при включённом ключе — fail-fast провижининга с diagnose.
+     Усыновлённые контейнеры (`object`) не подключаются (R9 — чужой контейнер
+     движок не трогает). Назначение сети — скрейп Prometheus по сетевым
+     адресам (arch/18 §5.4); клиентская адресация (dsn/endpoints/пробы)
+     сетью НЕ меняется (advertised-правило §2.4 п.5).
+     ```
 
-- [ ] Step 1: Написать тесты таблицы → `dotnet test src/tests/Metrics.SdGenerator.UnitTests -c Release` FAIL (типа нет).
-- [ ] Step 2: Реализовать `TargetMapping` → тесты PASS.
-- [ ] Step 3: Коммит `feat(t15): маппинг portalloc → file_sd-таргеты (чистая функция)`.
+   - **§2.4 п.2**, фразу «Запись ноды: `{"host","pg","patroni","doorman"}` +
+     опциональное `"object"` (§5 J): …» дополнить (сразу после описания
+     `object`):
 
-**Выход:** детерминированный маппинг с толерантностью к битым записям.
+     ```markdown
+     + опциональные `"alias"`/`"net"` (ревизия 3 t15): сетевая идентичность
+     ноды для скрейпа — пишутся ТОЛЬКО каноническим нодам при заданном
+     `PgWorker:Docker:ScrapeNetwork` (`alias` = полное docker-имя
+     `pgw-<C>-<X>-<n>`, глобально уникально, резолвится user-defined DNS сети
+     контура; `net` = имя сети контура — информационное, для инспекции etcd).
+     Read-modify-write portalloc (remove-shard, adoption-merge, repair) поля
+     сохраняет, а не стирает (симметричная сериализация). `alias` НЕ входит в
+     dsn/endpoints/панельные пробы (потребитель один — file_sd-генератор
+     arch/18 §5.4); записи без полей — легаси/деградационный контур.
+     ```
 
-**Проверка:** все `[Fact]` зелёные; `dotnet build src/PgWorker.slnx -c Release` 0 warnings.
+   - **§3.3**, строка таблицы `/pgworker/portalloc/<C>` — формат значения
+     дополнить опц. полями: `(+опц. "object" для усыновлённых, §5 J;
+     +опц. "alias"/"net" сетевой идентичности при
+     PgWorker:Docker:ScrapeNetwork, §2.4 п.2)`.
 
-**Spec:** §3.2 (маппинг), §6.1 (unit-критерии 1).
+2. Modify `arch/18-metrics.md`:
+   - **§2.5**, последний абзац секции («Таргеты реальных нод — file_sd из
+     portalloc… узлы PgWorker скрейпятся по host-публикациям портов Patroni,
+     per-cluster сети для этого не нужны») заменить на:
+
+     ```markdown
+     Таргеты реальных нод — file_sd из portalloc (§5.2 `patroni-nodes`, §5.4).
+     Семантика per-node: запись с `"alias"` → сетевой таргет
+     `<alias>:8008` (контейнерный порт Patroni REST; штатная ветка единой
+     сети контура — arch/14 §2.4); запись без `"alias"` (легаси-переходный
+     контур, усыновлённая нода) → advertised `host:patroni` по host-публикации
+     — деградационная ветка: адрес честен из portalloc, тихая потеря наблюдения
+     живой ноды хуже запасной ветки той же чистой функции. Фильтр
+     `patroni <= 0` (усыптлённые) действует в обеих ветках.
+     ```
+
+   - **§5.2**, строку джобы `pgworker` заменить: таргеты — сетевые
+     `pgworker:8080`/`pgworker-2:8080` (file_sd `pgworker-targets.json`,
+     пишет 00-up.sh; mTLS без изменений — сетевой адрес не меняет транспорт;
+     SAN серверного серта покрывает compose-DNS-имена, deploy/tls/gen.sh).
+     После таблицы/абзаца про tls_config дополнить одной фразой: extra_hosts
+     (`host.docker.internal`, `local`) из as-prometheus удалены — все таргеты
+     прометея сетевые (сеть стенда + external `pgw-metrics`, §5.4).
+   - **§5.4**, первый абзац заменить на семантику единой сети:
+
+     ```markdown
+     Единая сеть контура `pgw-metrics`: объявляет deploy-компоуз поставки
+     (`name: ${PGW_METRICS_NETWORK:-pgw-metrics}`) — в ней deploy-воркеры
+     PgWorker (aliases `pgworker`/`pgworker-2`), Prometheus (external-attach
+     из стендового компоуза) и подключаемые движком кластерные ноды
+     (PgWorker:Docker:ScrapeNetwork, arch/14 §2.1/§2.4): скрейп
+     patroni-nodes — по `alias:8008` из portalloc, джоба pgworker — по
+     сетевым адресам воркеров; host-форвардинг и extra_hosts из контура
+     скрейпа удалены. Advertised-ветка (запись без alias) — деградационная:
+     легаси-записи/усыновлённые/чужой контур без сети — адрес честен,
+     достижимость — зона сетевой политики той поставки (сетевая семантика —
+     single-хост-контур «дома»). Граница: Kafka/Valkey-ноды без HTTP
+     metrics-эндпоинта наблюдаются доменными сериями коллекторов воркеров
+     (§2.3/§2.6); расширение словаря их нод — отдельные задачи.
+     ```
+
+   - **§6**, пункт «docker-E2E (file_sd-генератор §5.4)» дополнить: контур
+     единой сети окружения класса (воркер с `ScrapeNetwork`, ноды attached —
+     inspect подтверждает membership, таргеты up по `alias:8008`, в scrapeUrl
+     нет `host.docker.internal`); пункт «E2E-чек стенда» дополнить: таргеты
+     pgworker — сетевые, extra_hosts отсутствуют, 00-up/90-down не оставляют
+     осиротевшей сети; добавить пункт-строку: дефолт без ключа
+     `ScrapeNetwork` не ломает кластерные пути (маркер `Scale_AddEmptyShard`
+     на свежем Release).
+
+- [ ] Step 1: Внести правки (вычитка тона окружающего текста; текущее
+      состояние без истории).
+- [ ] Step 2: Коммит: `git add arch/14-pgworker.md arch/18-metrics.md && git commit -m "docs(t15): дельта 3 — единая сеть мониторинга (arch/14 §2.1/§2.4/§3, arch/18 §2.5/§5.2/§5.4/§6)"`.
+
+**Выход:** контракт дельты в истории до кода; точка отсчёта Д1–Д5.
+
+**Проверка:** `git show --stat HEAD` — один коммит; `grep -c "ScrapeNetwork" arch/14-pgworker.md` ≥ 3; `grep -c "pgw-metrics" arch/18-metrics.md` ≥ 2; в arch/18 §5.2 нет «host-публикация deploy-compose» в строке джобы pgworker.
+
+**Spec:** §3.1 (таблица правок), §2 (arch-first), «Дельта 3».
 
 ---
 
-### Task 4: Атомарная запись `SdFileWriter` (TDD)
+### Д1: Воркер — ключ ScrapeNetwork, поля alias/net, Ensure-attach, decorate точек записи
 
-**Вход:** Task 3.
+**Вход:** Д0 закоммичен.
 
 **Действие (Files):**
-- Create `src/Metrics.SdGenerator/SdFileWriter.cs` — контракт типов; реализация: `File.Exists` + byte-compare (`File.ReadAllBytes` vs `Encoding.UTF8.GetBytes(content)`) → при равенстве вернуть `false`; иначе записать `path + ".tmp"` → `File.Move(tmp, path, overwrite: true)` → `true`.
 
-- Test `src/tests/Metrics.SdGenerator.UnitTests/SdFileWriterTests.cs` (temp-каталог `Path.Combine(Path.GetTempPath(), Guid...)`, cleanup в finally):
-  - `Write_CreatesFile_WhenAbsent`: первый вызов `true`, файл существует, контент совпал.
-  - `Write_Skips_WhenUnchanged`: два вызова подряд одним контентом — второй `false`; `File.GetLastWriteTimeUtc` НЕ изменился (снимок между вызовами).
-  - `Write_Rewrites_WhenChanged`: контент A → B: `true`, файл = B; `.tmp`-файла не осталось (`Directory.GetFiles(dir, "*.tmp")` пусто).
+1. `src/PgWorker.App/Options.cs` — `DockerOptions.ScrapeNetwork` (контракт
+   типов; XML-doc по-русски, дефолт `""`).
+2. `src/PgWorker.Core/Model/Domain.cs` — `NodeAddress` + nullable
+   `ScrapeAlias`/`ScrapeNetwork` в конце параметров (позиционные вызовы
+   `new NodeAddress(host, ports, obj)` не ломаются).
+3. `src/PgWorker.Core/Model/Portalloc.cs`:
+   - `PortallocEntry` — поля `Alias`/`Net` (JSON `alias`/`net`, контракт
+     типов); `ToAddress`/`From` переносят оба поля; сериализация уже
+     `WhenWritingNull` — записи без полей бинарно те же, Parse симметричен
+     (RMW сохраняет).
+   - `PortallocIdentity.Decorate` (контракт типов): для каждой записи без
+     `Object` при непустом `scrapeNetwork` —
+     `ScrapeAlias = $"pgw-{cluster}-{key.Replace('/', '-')}"`,
+     `ScrapeNetwork = scrapeNetwork`; записи с `Object` — как есть
+     (усыптлённые без alias — деградационная ветка генератора);
+     идемпотентно (повторный Decorate не меняет JSON).
+4. `src/PgWorker.Docker/Drivers/ClusterDriver.cs` — `PlainClusterDriver`:
+   - ctor-параметр `string? scrapeNetwork = null` (контракт типов);
+   - `EnsureNodeAsync`, ветка «существующий контейнер, порты совпали» —
+     ПОСЛЕ ensure-инварианта кластер-сети и ПЕРЕД `return`: при заданном
+     ключе и `!inspect.Value.Networks.Contains(scrapeNetwork)` →
+     `engine.NetworkConnectAsync(scrapeNetwork, name, ct)` (ошибка → throw —
+     fail-fast; усыновлённый `object` возвращается раньше — attach не
+     выполняется);
+   - ветка «новый контейнер» — после `StartContainerAsync` при заданном
+     ключе: `NetworkConnectAsync(scrapeNetwork, name, ct)` (docker принимает
+     повторный connect как no-op — идемпотентность; сети нет — 404 →
+     `Result.Failed`, провижининг несёт diagnose в journal/`last_error`).
+     Сеть контура движком НЕ создаётся и НЕ удаляется (`EnsureNetworkAsync`
+     только для `pgw-net-<C>`; демонтаж гасит membership сам — контейнер
+     удаляется).
+5. `src/PgWorker.App/Program.cs`:
+   - валидация старта рядом с AdvertisedHost: непустой
+     `docker.ScrapeNetwork` + `Mode=Swarm` → `ApplicationException`
+     («PgWorker:Docker:ScrapeNetwork не поддерживается в Mode=Swarm —
+     сетевой attach нод реализован для plain-контейнеров»); обоснование:
+     swarm-Ensure — сервисы, второй сети у сервиса нет в MVP, молчаливое
+     игнорирование ключа недопустимо (fail-fast по прецеденту AdvertisedHost);
+   - `new PlainClusterDriver(..., docker.ScrapeNetwork)` (строка ~254).
+6. Процессы — параметр `string? scrapeNetwork = null` в primary-ctor
+   (создаются в Program.cs — прокинуть `docker.ScrapeNetwork`):
+   - `ProvisioningProcess`: `SerializePortAlloc` →
+     `Portalloc.Serialize(PortallocIdentity.Decorate(addresses, cluster, scrapeNetwork))`
+     (cluster передать параметром; покрывает обе точки CommitPortAllocAsync);
+     в `AdoptRunningContainersAsync` при перезаписи `existing[key] = fact`
+     переносить scrape-поля текущей записи: `fact = fact with {
+     ScrapeAlias = current?.ScrapeAlias, ScrapeNetwork = current?.ScrapeNetwork }`
+     — ОБЯЗАТЕЛЬНО: без переноса record-Equals(current с alias, fact без
+     alias) = false на каждом тике → вечная перезапись portalloc;
+   - `AddShardProcess` (put на ~242): `Portalloc.Serialize(existing)` →
+     Decorate;
+   - `AdoptionProcess` (put на ~142 merge и ~328 repair): аналогично
+     (142 — фактически object-записи, Decorate их пропускает; 328 — после
+     переаллокации detached-нод новые канонические записи ПОЛУЧАЮТ alias);
+   - `RemoveShardProcess` — БЕЗ правок кода: preserve достигается
+     симметрией Parse→Serialize (юнит Д1 доказывает); меньше касаний — надёжнее.
+7. Юниты (AAA, русские комментарии):
+   - `src/tests/PgWorker.UnitTests/Model/PortallocTests.cs` — дополнить:
+     `Serialize_WithScrapeFields_WritesAliasNet` (JSON содержит
+     `"alias":"pgw-c1-s1-s1a"`, `"net":"pgw-metrics"`); `RoundTrip_PreservesScrapeFields`
+     (RMW-цикл parse→serialize без Decorate — поля на месте: это и есть
+     preserve remove-shard/чужих RMW); `Serialize_WithoutScrapeFields_NoFields`
+     (бинарно базе: `DoesNotContain("\"alias\"")`, `DoesNotContain("\"net\"")`);
+     `Parse_LegacyJsonWithAlias_StillWorks` (толерантность).
+   - Create `src/tests/PgWorker.UnitTests/Model/PortallocIdentityTests.cs`:
+     `Decorate_CanonicalNode_AddsAliasNet` (ключ `"s1/s1a"` кластера `c1` →
+     alias `pgw-c1-s1-s1a`, net переданный); `Decorate_AdoptedObject_Skipped`
+     (object-запись без полей); `Decorate_Idempotent` (двойной Decorate —
+     равный JSON); `Decorate_EmptyKey_ReturnsAsIs` (null/"" — словарь не
+     тронут, записи без полей).
+   - `src/tests/PgWorker.UnitTests/Docker/ClusterDriverTests.cs` — дополнить
+     (FakeEngine пишет вызовы в `Calls`, строки 56–61): 
+     `EnsureNode_ScrapeNetwork_ExistingContainer_Attaches` (контейнер есть,
+     порты совпали, сетей нет → `Calls` содержит
+     `("network-connect", "pgw-metrics:<имя>")`); 
+     `EnsureNode_ScrapeNetwork_AlreadyAttached_NoConnect` (inspect.Networks
+     содержит сеть → connect НЕ вызван); 
+     `EnsureNode_ScrapeNetwork_NewContainer_AfterStart` (контейнера нет →
+     create+start+connect); 
+     `EnsureNode_NoScrapeNetwork_NoConnect` (ключ null → ни одного
+     network-connect сверх кластер-инварианта); 
+     `EnsureNode_ScrapeNetworkMissing_FailsFast` (FakeEngine
+     `NetworkConnectAsync` → `Result.Failed(new ApplicationException("network pgw-metrics not found"))`
+     → `EnsureNodeAsync` `IsSuccess == false`, ошибка содержит имя сети);
+     `EnsureNode_AdoptedObject_NoScrapeAttach` (object-контейнер → connect
+     не вызван). `NewPlainDriver` — перегрузка с `scrapeNetwork`.
 
-- [ ] Step 1: тесты → FAIL. Step 2: реализация → PASS. Step 3: коммит `feat(t15): атомарная запись file_sd при diff (tmp+rename, mtime не дёргается)`.
+- [ ] Step 1: Юниты (7+4 файлов) → `dotnet test src/tests/PgWorker.UnitTests -c Release --filter 'FullyQualifiedName~Portalloc|FullyQualifiedName~ClusterDriver'` FAIL.
+- [ ] Step 2: Реализация (пп. 1–6) → тесты PASS; `dotnet build src/PgWorker.slnx -c Release` — 0 warnings.
+- [ ] Step 3: Дефолт-регрессия: весь `src/tests/PgWorker.UnitTests` зелёный (ключ не задан — поведение базы не сломано).
+- [ ] Step 4: Коммит `feat(t15): сетевая идентичность нод — ScrapeNetwork, alias/net в portalloc, Ensure-attach движка`.
 
-**Выход:** безопасная запись, не будоражащая mtime.
+**Выход:** воркер подключает ноды к сети контура и несёт alias/net в portalloc; без ключа — бинарно база.
 
-**Проверка:** unit зелёные; в репо нет `*.tmp` хвостов.
+**Проверка:** шаги 1–3 зелёные; `grep -n "ScrapeNetwork" src/PgWorker.App/Options.cs src/PgWorker.Core/Model/Portalloc.cs src/PgWorker.Docker/Drivers/ClusterDriver.cs` — определения на месте; в `RemoveShardProcess.cs` diff пуст.
 
-**Spec:** §2 («запись файла минимальна»), §3.2.
+**Spec:** «Дельта 3» (portalloc-поля, attach, fail-fast), §3.2, §5 (ограничение опциональности), §6.1.
 
 ---
 
-### Task 5: Метрика самонаблюдения + цикл `SdGeneratorLoop` + hosted service + wiring
+### Д2: Генератор — сетевой таргет alias:8008 + advertised-fallback
 
-**Вход:** Tasks 2–4.
+**Вход:** Д1 закоммичен.
 
 **Действие (Files):**
-- Modify `src/Metrics.SdGenerator/SdGeneratorMetrics.cs` — расширить каркас Task 2 (только константы) до контракта типов. **Meter приходит через ctor-параметр**, внутри класса `new Meter(...)` НЕ создаётся: при `Enabled=true` `AddAppMetrics` уже зарегистрировал в DI Meter с тем же именем (`Shared.Metrics/MetricsModuleExtensions.cs:30` — `new Meter(serviceName)` + `services.AddSingleton(meter)`), канон репо — писать в DI-Meter (`sp.GetRequiredService<Meter>()`, `src/KafkaWorker.App/Program.cs:37–41`); два живых Meter с одним именем в процессе — не канон. `ObservableGauge<double>(LastSuccessInstrument, …)` создаётся на переданном meter из стейта `long? _lastSuccessUnix` (null — измерений нет, серия не эмитится); `MarkSuccess()` пишет `time.GetUtcNow().ToUnixTimeSeconds()`; `Dispose` — только прекращает эмиссию гейджа (флаг: колбэк после Dispose не отдаёт серии), **Meter НЕ диспозим** — он принадлежит владельцу/DI (канон `WorkerMetricsInstrumentation.cs:604–606`).
-- Create `src/Metrics.SdGenerator/EtcdFailover.cs` — копия паттерна (не ProjectReference — прецедент дублей воркеров), адаптация без `EtcdWriteUnavailableException`:
 
-```csharp
-using Shared.Core;
-namespace Metrics.SdGenerator;
+1. `src/Metrics.SdGenerator/TargetMapping.cs`:
+   - DTO `PortallocEntry` + `Alias` (JSON `alias`, контракт типов;
+     PropertyNameCaseInsensitive уже включён);
+   - константа `PatroniRestPort = 8008` (контракт типов);
+   - в `MapKey`: после фильтра `patroni <= 0` — per-node правило:
+     `Target = !string.IsNullOrWhiteSpace(entry.Alias)
+       ? $"{entry.Alias}:{PatroniRestPort}"
+       : $"{entry.Host}:{entry.Patroni}"`;
+     фильтры (битый JSON, без shard/node-разделителя, пустой host),
+     детерминизм (Cluster, Shard, Node) — без изменений. Пустой `alias`
+     (`""`/whitespace) трактуется как отсутствие — advertised-ветка.
+2. `src/tests/Metrics.SdGenerator.UnitTests/TargetMappingTests.cs` — дополнить:
+   `Map_WithAlias_NetworkTarget` (запись с `"alias":"pgw-c1-s1-s1a"` →
+   Target `pgw-c1-s1-s1a:8008`, порты записи host-публикации НЕ участвуют);
+   `Map_WithoutAlias_AdvertisedTarget` (та же запись без alias → `h1:8008`
+   по host:patroni); `Map_MixedContour_PerNode` (в одном ключе записи с alias
+   и без → покомпонентно: alias-запись сетевая, без-alias — advertised);
+   `Map_AliasSuspended_Skipped` (`patroni:0` + alias → группы нет, warn не
+   вызван); `Map_AliasEmpty_FallsBack` (`alias:""` → advertised);
+   `Serialize_NetworkTarget_Format` (JSON-формат группы не изменился).
+3. `src/tests/Metrics.SdGenerator.IntegrationTests/SdGeneratorIntegrationTests.cs`
+   — дополнить тест `Put_PortallocWithAlias_NetworkTarget`: put
+   `/pgworker/portalloc/c2` значения с `"alias":"pgw-c2-s1-s1a"` (host/pg/
+   patroni/doorman — произвольные фактические) → `LoopAsync` → true; файл
+   содержит `"pgw-c2-s1-s1a:8008"` и НЕ содержит `host:patroni` этой записи;
+   лейблы cluster/shard/node на месте. (put/del/свежесть — покрыты базой,
+   не дублировать.)
 
-// Failover по endpoints (паттерн EtcdFailover воркеров): первый успешный
-// выигрывает; все недоступны — последняя ошибка наружу (тик = warning-лог).
-internal static class EtcdFailover
-{
-    public static async Task<Result<T>> CallAsync<T>(string[] endpoints, Func<string, Task<Result<T>>> call)
-    {
-        Result<T>? last = null;
-        foreach (var endpoint in endpoints)
-        {
-            var result = await call(endpoint);
-            if (result.IsSuccess)
-                return result;
-            last = result;
-        }
-        return last!;
-    }
-}
-```
+- [ ] Step 1: Юнит-кейсы → FAIL. Step 2: реализация → PASS; `dotnet build src/PgWorker.slnx -c Release` 0 warnings.
+- [ ] Step 3: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/Metrics.SdGenerator.IntegrationTests -c Release` — зелёный; зачистка серии (`docker ps -a --filter name=/testcontainers/ -q | wc -l` → 0).
+- [ ] Step 4: Коммит `feat(t15): сетевые таргеты генератора — alias:8008, advertised — деградационная ветка`.
 
-- Create `src/Metrics.SdGenerator/SdGeneratorLoop.cs` — контракт типов. `TickAsync`:
-  1. `var range = await EtcdFailover.CallAsync(endpoints, ep => etcd.RangeAsync(ep, TargetMapping.PortallocPrefix, ct));`
-  2. `!range.IsSuccess` → `logger.LogWarning("чтение portalloc не удалось: {Error}", …)`, `return false` — файл/метрика НЕ тронуты (консервативная свежесть);
-  3. `var groups = TargetMapping.Map(range.Value, (c, e) => logger.LogWarning("пропуск portalloc {Cluster}: {Error}", c, e));`
-  4. `writer.WriteIfChanged(TargetMapping.Serialize(groups))`;
-  5. `metrics.MarkSuccess()` (пустой префикс = успех) → `return true`.
-- Create `src/Metrics.SdGenerator/SdGeneratorHostedService.cs` — `BackgroundService`: интервал `SdGeneratorOptions.NormalizeInterval(options.Value.RefreshIntervalSec)`; при `RefreshIntervalSec <= 0` — один warning-лог на старте («интервал <=0 → 15», паттерн valkey); цикл `PeriodicTimer`, тик = `loop.TickAsync(ct)` (исключение из тика — catch + warning, хост жив; отмена — выход).
-- Modify `src/Metrics.SdGenerator/Program.cs` — заменить TODO-блок на DI-регистрацию: `SdFileWriter` (из `IOptions<SdGeneratorOptions>.Value.OutputPath`), `SdGeneratorMetrics` — `sp => new SdGeneratorMetrics(sp.GetService<System.Diagnostics.Metrics.Meter>() ?? new Meter(SdGeneratorMetrics.MeterName), TimeProvider.System)` (DI-Meter при `Enabled=true`; fallback свой при `Enabled=false` — `AddAppMetrics` тогда Meter в DI не кладёт, пишем «в никуда», хост не падает), `SdGeneratorLoop`, `AddHostedService<SdGeneratorHostedService>`.
+**Выход:** генератор штатно строит сетевые таргеты; смешанный контур маппится покомпонентно.
 
-- Test `src/tests/Metrics.SdGenerator.UnitTests/SdGeneratorLoopTests.cs` — фейк `IEtcdGateway` (ручная реализация интерфейса в тестах: словарь возвращаемых `Result` по endpoint) + `SdGeneratorMetrics` со своим `new Meter("sd-unit")` (standalone-тестируемость — через ctor-параметр) и `TimeProvider.System` (пакет `Microsoft.Extensions.TimeProvider.Testing` НЕ подключён — ассертить `LastSuccessUnix` ∈ [now-5, now]). Кейсы:
+**Проверка:** шаги 1–3 зелёные; `grep -n "PatroniRestPort" src/Metrics.SdGenerator/TargetMapping.cs` — константа именованная (никаких голых `8008` в логике таргета).
 
-| Кейс | Фейк возвращает | Ассерты |
-|---|---|---|
-| Успех пишет файл и метрику | 1 ключ portalloc (как Task 3) | `TickAsync` → true; файл = Serialize(групп); `LastSuccessUnix` > null |
-| Пустой префикс = успех | `[]` | true; файл `[]`; метрика обновилась |
-| Ошибка etcd — всё стоит | Failed на все endpoints | false; файл НЕ создан (или контент прежний); `LastSuccessUnix` прежний |
-| Failover на второй endpoint | ep1 Failed, ep2 успех | true; файл написан |
-| Запись только при diff | два тика подряд одинаковый range | mtime файла не изменился (снимок между тиками) |
-
-- Test `src/tests/Metrics.SdGenerator.UnitTests/SdGeneratorMetricsTests.cs`: конструируется со своим Meter; `MarkSuccess` дважды — `LastSuccessUnix` не убывает; новый `MeterListener` не нужен (свойство — стейт; имя инструмента проверяет константа + integration/E2E против реального scrape — чек 65/E2E).
-
-- [ ] Step 1: тесты (loop+metrics) → FAIL. Step 2: реализация трёх классов (EtcdFailover, Loop, HostedService) + расширение `SdGeneratorMetrics` + wiring Program.cs → PASS. Step 3: `dotnet build src/PgWorker.slnx -c Release` 0 warnings; smoke из Task 2 теперь отдаёт `sd_generator_last_success_timestamp_seconds` только после тика (с мёртвым etcd серии нет — корректно). Step 4: коммит `feat(t15): цикл генератора с failover, консервативной свежестью и самонаблюдением`.
-
-**Выход:** работающий сервис целиком (code-complete генератора).
-
-**Проверка:** unit зелёные; smoke: `SdGenerator__Etcd__Endpoints__0=http://127.0.0.1:1 SdGenerator__RefreshIntervalSec=2 SdGenerator__OutputPath=/tmp/sd-test.json dotnet …dll` → в логе warning «чтение portalloc не удалось», процесс жив, файл не создан (Ctrl-C/kill по timeout).
-
-**Spec:** §2 (консервативная свежесть, таргеты из реплицированной истины), §3.2 (цикл/маппинг/самонаблюдение), §6.1.
+**Spec:** §3.3, §6.1 (unit), §6.2 (integration).
 
 ---
 
-### Task 6: Образ `docker/Metrics.SdGenerator.Dockerfile`
+### Д3: Стенд/поставка — сеть pgw-metrics, external-attach, демонтаж extra_hosts
 
-**Вход:** Task 5.
+**Вход:** Д1–Д2 закоммичены (ключ/env осмысленны); docker жив.
 
 **Действие (Files):**
-- Create `docker/Metrics.SdGenerator.Dockerfile` (канон E2E-образов — `PgWorker.Wal.E2E.Dockerfile`):
 
-```dockerfile
-# syntax=docker/dockerfile:1
+1. `deploy/docker-compose.yml`:
+   - корневая секция:
 
-# Образ SdGenerator (t15, arch/18 §5.4): dotnet publish НА ХОСТЕ (инкрементально,
-# секунды), в контейнер — ТОЛЬКО publish-вывод (runtime-слой, без sdk/исходников).
-# Контекст сборки — каталог артефактов (узкий; канон AGENTS.md):
-#   dotnet publish src/Metrics.SdGenerator/Metrics.SdGenerator.csproj \
-#     -c Release -o artifacts/sd-generator/publish
-#   docker build -f docker/Metrics.SdGenerator.Dockerfile -t sdgenerator:dev \
-#     artifacts/sd-generator/publish
-FROM mcr.microsoft.com/dotnet/aspnet:10.0
-WORKDIR /app
-COPY . ./
-ENV ASPNETCORE_HTTP_PORTS=8080
-EXPOSE 8080
-ENTRYPOINT ["dotnet", "Metrics.SdGenerator.dll"]
-```
+     ```yaml
+     # Единая сеть контура мониторинга (t15 ревизия 3, arch/18 §5.4):
+     # deploy-проект ВЛАДЕЕТ сетью — в ней deploy-воркеры PgWorker (aliases),
+     # Prometheus (external-attach стендового компоуза) и кластерные ноды
+     # (attach движком, PgWorker:Docker:ScrapeNetwork). Предсказуемое имя —
+     # для внешних потребителей (prometheus external-сеть).
+     networks:
+       pgw-metrics:
+         name: ${PGW_METRICS_NETWORK:-pgw-metrics}
+     ```
 
-- [ ] Step 1: publish на хосте: `dotnet publish src/Metrics.SdGenerator/Metrics.SdGenerator.csproj -c Release -o artifacts/sd-generator/publish --nologo` (каталог под `.gitignore`-строкой `artifacts/`).
-- [ ] Step 2: `docker build -f docker/Metrics.SdGenerator.Dockerfile -t sdgenerator:dev artifacts/sd-generator/publish` — успех.
-- [ ] Step 3: smoke контейнера (мёртвый etcd, динамический порт): `docker run --rm -d --name sd-smoke -p 0:8080 -e SdGenerator__Etcd__Endpoints__0=http://127.0.0.1:1 -e SdGenerator__OutputPath=/sd/patroni-nodes.json sdgenerator:dev; P=$(docker port sd-smoke 8080/tcp | head -1 | cut -d: -f2); sleep 3; curl -fsS http://localhost:$P/metrics | head -2; docker logs sd-smoke 2>&1 | grep -c "чтение portalloc" ≥ 1; docker rm -f sd-smoke`.
-- [ ] Step 4: коммит `feat(t15): runtime-образ SdGenerator (publish на хосте)`.
+   - `x-pgworker-env` (общий анкор, получают оба инстанса):
 
-**Выход:** собираемый локальный образ; в registry НЕ кладётся.
+     ```yaml
+       # Сеть контура скрейпа (t15 ревизия 3): имя сети, к которой движок
+       # Ensure-attach'ит создаваемые ноды; portalloc несёт alias/net,
+       # sd-generator строит таргеты <alias>:8008 (arch/14 §2.4, arch/18 §5.4).
+       PgWorker__Docker__ScrapeNetwork: ${PGW_SCRAPE_NETWORK:-pgw-metrics}
+     ```
 
-**Проверка:** шаги 1–3 зелёные; `docker images sdgenerator` — тег `dev` есть; в `dev-stand/images/images.txt` НЕТ новых строк.
+     (имя env — `PGW_SCRAPE_NETWORK`; вариант `PGW_SCRAKE_NETWORK` из
+     §3.4 spec — опечатка, канон — `PGW_SCRAPE_NETWORK` из приказа
+     пользователя и §3.6 spec).
+   - сервисы `pgworker`/`pgworker-2` — добавить сети (aliases различаются,
+     default сохраняется явно — compose не подключает default при указанном
+     `networks:`):
 
-**Spec:** §3.5 (образ), §5 (ограничение registry).
+     ```yaml
+     networks:
+       default: {}
+       pgw-metrics:
+         aliases: [pgworker]     # у pgworker-2: [pgworker-2]
+     ```
 
----
+     Host-публикации 8080/8083, mTLS-серт, extra_hosts `local`/`host.docker.internal`
+     (etcd/advertised — НЕ скрейп) — без изменений.
+2. `deploy/.env.example` — блок «Единая сеть мониторинга (t15 ревизия 3)»:
 
-### Task 7: Стенд — compose-сервис `sd-generator` + publish-шаг `00-up.sh`
+   ```bash
+   # Единая сеть контура мониторинга: объявляет deploy-compose (воркеры),
+   # external-attach — стендовый Prometheus; ноды подключает PgWorker
+   # (ScrapeNetwork). Переименование — синхронно в стендовом METRICS_NETWORK.
+   PGW_METRICS_NETWORK=pgw-metrics
+   PGW_SCRAPE_NETWORK=pgw-metrics
+   ```
 
-**Вход:** Task 6.
+3. `deploy/tls/gen.sh` — SAN pgserver-серта дополнить `DNS:pgworker-2` и
+   перегенерацией по отсутствию (паттерн t07 того же файла, строки 36–41):
+   `if [ ! -f pgserver.crt ] || ! openssl x509 -in pgserver.crt -noout -text 2>/dev/null | grep -q 'DNS:pgworker-2'; then issue pgserver pgworker serverAuth "DNS:pgworker,DNS:pgworker-2,DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1"; fi`
+   — ОБЯЗАТЕЛЬНО: сетевой таргет `pgworker-2:8080` верифицируется прометеем
+   против SAN (сегодня серт покрывает только `DNS:pgworker` — чек 65 упадёт
+   на шаге 2).
+4. `dev-stand/adminpanel/docker-compose.yml`:
+   - сервис `prometheus`: УДАЛИТЬ `extra_hosts` ЦЕЛИКОМ (обе записи —
+     `host.docker.internal:host-gateway` из ревизии 1 и `local:host-gateway`
+     из 0627cb92); добавить сети:
 
-**Действие (Files):**
-- Modify `dev-stand/adminpanel/docker-compose.yml` — в блок мониторинга (после `prometheus`), по spec §3.3:
+     ```yaml
+     networks:
+       default: {}
+       pgw-metrics: {}   # внешняя сеть контура (deploy-compose) — таргеты
+                         # pgworker/pgworker-2/patroni-nodes (t15 ревизия 3)
+     ```
 
-```yaml
-  # file_sd-генератор реальных Patroni-нод (t15, arch/18 §5.4): тик читает
-  # /pgworker/portalloc/ (read-only) и пишет таргеты в volume Prometheus.
-  # Локально собираемый образ — в registry НЕ класть (канон AGENTS.md).
-  sd-generator:
-    build:
-      context: ../../artifacts/sd-generator/publish
-      dockerfile: ../../docker/Metrics.SdGenerator.Dockerfile
-    image: sdgenerator:dev
-    container_name: as-sd-generator
-    restart: unless-stopped
-    profiles: ["metrics"]
-    volumes:
-      - prometheus-sd:/sd
-    environment:
-      SdGenerator__Etcd__Endpoints__0: http://etcd1:2379
-      SdGenerator__Etcd__Endpoints__1: http://etcd2:2379
-      SdGenerator__Etcd__Endpoints__2: http://etcd3:2379
-      SdGenerator__OutputPath: /sd/patroni-nodes.json
-    depends_on: [etcd1, etcd2, etcd3]
-```
+   - корневые сети: `pgw-metrics: { name: ${METRICS_NETWORK:-pgw-metrics}, external: true }`.
+     sd-generator — БЕЗ изменений (сеть стенда: etcd по compose-DNS, файл в
+     volume; таргеты резолвит Prometheus).
+5. `dev-stand/adminpanel/checks/00-up.sh`:
+   - строки 14–19: `pgworker-targets.json` — сетевые адреса:
 
-  В сервис `prometheus` добавить маунт к существующим volumes: `- prometheus-sd:/etc/prometheus/sd:ro`; в корневые `volumes:` добавить `prometheus-sd:`.
-  (Если compose не примет dockerfile за пределами context — вариант из spec §3.3: `context: ../..` + `dockerfile: docker/Metrics.SdGenerator.Dockerfile` и в Dockerfile `COPY artifacts/sd-generator/publish/ ./`; проверить `docker compose config` и выбрать рабочий, зафиксировав комментарий в YAML.)
-- Modify `dev-stand/adminpanel/checks/00-up.sh` — перед `compose up` (после TLS-пакета):
+     ```bash
+     printf '[{"targets": ["pgworker:8080", "pgworker-2:8080"]}]\n' \
+       > metrics/prometheus/pgworker-targets.json
+     ```
 
-```bash
-# SdGenerator (t15): publish НА ХОСТЕ → compose build пакует только вывод
-# (канон E2E-образов; сборка не «тихая» — [PHASE] и тайминг).
-echo ">>> [PHASE] publish Metrics.SdGenerator ($(date +%H:%M:%S))"
-dotnet publish "$ROOT/src/Metrics.SdGenerator/Metrics.SdGenerator.csproj" \
-  -c Release -o "$ROOT/artifacts/sd-generator/publish" --nologo \
-  || { echo "❌ publish SdGenerator не удался"; exit 1; }
-echo ">>> [PHASE] publish SdGenerator готов ($(date +%H:%M:%S))"
-```
+     (host-порты `PGW_API_HOST_PORT*` остаются — advertise/чеки/панель, не скрейп);
+   - перенос ПОДЪЁМА deploy-контура ВЫШЕ стендового `compose up` (строка 50):
+     блок «deploy/.env sync + `docker compose --env-file deploy/.env up -d
+     --build --force-recreate pgworker pgworker-2` (с ретраями порта)»
+     переносится из §1b к позиции сразу после publish SdGenerator; причина —
+     external-сеть `pgw-metrics` стендового компоуза обязана существовать ДО
+     `compose up` (иначе «network declared as external, but could not be
+     found»). Проверки healthz×2 и `/pgworker/api/`-ключей ОСТАЮТСЯ в §1b
+     (после etcd-кворума — они требуют живой etcd, поднятый стендовым
+     компоузом); меняется только момент старта контейнеров deploy;
+   - `.env`-sync дополнить ключами `PGW_METRICS_NETWORK`/`PGW_SCRAPE_NETWORK`
+     (по образцу `PGW_API_HOST_PORT`, строки 110–120: существующий
+     `deploy/.env` не содержит новых ключей после апгрейда — sed/append).
+6. `dev-stand/adminpanel/checks/90-down.sh` — после стендового down добавить
+   deploy-разбор (обратный порядок: стенд → deploy сносит `pgw-metrics`):
 
-- [ ] Step 1: Внести правки compose + 00-up.sh.
-- [ ] Step 2: Валидация без подъёма: `bash -n dev-stand/adminpanel/checks/00-up.sh`; `cd dev-stand/adminpanel && docker compose --profile metrics config -q`.
-- [ ] Step 3: Коммит `feat(t15): сервис sd-generator в профиле metrics + publish на хосте в 00-up.sh`.
+   ```bash
+   # t15 ревизия 3: deploy-контур разбирается ПОСЛЕ стендового — compose down
+   # deploy-проекта сносит сеть pgw-metrics (её владелец), осиротевшей сети не
+   # остаётся. Воркеры deploy больше НЕ переживают 90-down — подъём 00-up.sh.
+   if [ -f "$ROOT/deploy/.env" ]; then
+     (cd "$ROOT/deploy" && docker compose --env-file .env down ${1:+-v} --remove-orphans) \
+       || echo "⚠ deploy down не удался (docker network ls | grep pgw-metrics)"
+   fi
+   ```
 
-**Выход:** полный стенд поднимает генератор; volume стыкуется с Prometheus.
+   (`$1 = -v` синхронно сносит и deploy-тома — семантика «стереть данные»).
+7. `dev-stand/adminpanel/checks/65-metrics.sh` — ТОЛЬКО усиление ассерта шага
+   2.1 (логика чека не меняется): при `pn_total > 0` все таргеты patroni-nodes
+   сетевые — `scrapeUrl` без `host.docker.internal` и с портом 8008:
 
-**Проверка:** шаг 2 без ошибок; (живой подъём — гейт Task 12).
+   ```bash
+   if [ "$pn_total" -gt 0 ]; then
+     bad_net=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[]
+       | select(.labels.job=="patroni-nodes")
+       | select(.scrapeUrl | contains("host.docker.internal") or (test(":8008/metrics$") | not))] | length')
+     [ "$bad_net" -eq 0 ] || { echo "  ❌ patroni-nodes: $bad_net таргетов не сетевые (host-форвардинг/не :8008)"; exit 1; }
+   fi
+   ```
 
-**Spec:** §3.3, §6.4.
+- [ ] Step 1: Правки семи файлов.
+- [ ] Step 2: Статическая валидация: `cd dev-stand/adminpanel && docker compose --profile metrics config -q`; `cd deploy && docker compose --env-file .env.example config -q` (обязательные секреты из example валидны); `bash -n dev-stand/adminpanel/checks/{00-up,90-down,65-metrics}.sh`.
+- [ ] Step 3: SAN-гейт: `bash deploy/tls/gen.sh && openssl x509 -in deploy/tls/pgserver.crt -noout -text | grep -q 'DNS:pgworker-2'`.
+- [ ] Step 4: Коммит `feat(t15): единая сеть pgw-metrics — deploy-компоуз, external-attach прометея, сетевые pgworker-targets, демонтаж extra_hosts`.
 
----
+**Выход:** поставка и стенд живут в единой сети контура; host-форвардинг из скрейпа удалён.
 
-### Task 8: `prometheus.yml` (2 джобы) + `rules.yml` (3 алерта) + чек 65
+**Проверка:** шаги 2–3 зелёные; `grep -c "extra_hosts" dev-stand/adminpanel/docker-compose.yml` — упоминания только у воркеров (as-prometheus без); в `00-up.sh` deploy-up идёт раньше стендового `compose up`; `grep -n "pgworker:8080" dev-stand/adminpanel/checks/00-up.sh` есть.
 
-**Вход:** Task 7.
-
-**Действие (Files):**
-- Modify `dev-stand/adminpanel/metrics/prometheus/prometheus.yml` — добавить в конец `scrape_configs`:
-
-```yaml
-  - job_name: patroni-nodes      # реальные ноды PgWorker (t15, arch/18 §2.5/§5.4)
-    scheme: http                 # Patroni REST без TLS — t22 вне скоупа
-    file_sd_configs:
-      - files: ["/etc/prometheus/sd/patroni-nodes.json"]
-        refresh_interval: 30s
-  - job_name: sd-generator       # самонаблюдение генератора (arch/18 §5.4)
-    static_configs: [{targets: ["sd-generator:8080"]}]
-```
-
-- Modify `dev-stand/adminpanel/metrics/prometheus/rules.yml` — в группу `pg` (после `PgReplicaLagHigh`) три правила по spec §3.4:
-
-```yaml
-      - alert: PatroniNodeDown
-        expr: up{job="patroni-nodes"} == 0
-        for: 5m
-        labels: {severity: warning}
-        annotations:
-          summary: "Patroni-нода {{ $labels.instance }} ({{ $labels.cluster }}/{{ $labels.shard }}/{{ $labels.node }}) недоскрейпится 5мин"
-          description: "нода в rebuild — штатный сценарий (~90с), порог терпит; runbook — arch/18 §2.5"
-      - alert: PatroniReplicaLagHigh
-        expr: time() - patroni_xlog_replay_timestamp > 30
-        for: 5m
-        labels: {severity: warning}
-        annotations:
-          summary: "реплика {{ $labels.name }} ({{ $labels.scope }}) отстаёт >30с"
-          description: "зеркало PgReplicaLagHigh на нативных сериях; серия есть только у реплик; runbook — arch/18 §2.5"
-      - alert: SdGeneratorStalled
-        expr: time() - sd_generator_last_success_timestamp_seconds > 300
-        for: 0m
-        labels: {severity: warning}
-        annotations:
-          summary: "file_sd-генератор не тикает >5мин"
-          description: "фиксированный порог ≥3×RefreshIntervalSec(15с); runbook — arch/18 §5.4"
-```
-
-- Modify `dev-stand/adminpanel/checks/65-metrics.sh`:
-  - **шаг 2 (строгий «все up», строки 64–76): исключить `job="patroni-nodes"` из jq-фильтров** — и из `up_count`, и из `total`, и из `bad` (иначе `total` останется больше и чек зависнет/упадёт):
-
-```bash
-# 2) все scrape-джобы up, КРОМЕ patroni-nodes (t15): down-таргеты этой джобы —
-#    легитимное состояние (rebuild ноды ~90с — arch/18 §2.5; остановленный
-#    эмулятор демо-кластера; устаревший file_sd при лежачем etcd) — её проверка
-#    условная, шаг 2.1; остальные джобы (включая sd-generator) — строго все up.
-up_count=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[] | select(.labels.job!="patroni-nodes" and .health=="up")] | length')
-total=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[] | select(.labels.job!="patroni-nodes")] | length')
-# цикл ожидания и ассерт bad — те же, но bad тоже с исключением:
-bad=$(curl -fsS "$PROM/api/v1/targets" | jq -r '[.data.activeTargets[] | select(.labels.job!="patroni-nodes" and .health!="up")] | .[] | .labels.job+"/"+.labels.instance' | tr '\n' ' ')
-```
-
-  - **новый шаг 2.1 (после «все up»)** — file_sd валиден + условная проверка patroni-nodes (без строгого all-up: живость канала = ≥1 up; единичные down — зона алерта `PatroniNodeDown` (`for: 5m`), не чека):
-
-```bash
-# 2.1) patroni-nodes (t15): файл file_sd существует/валиден; таргеты — условно:
-#      ≥1 up = канал скрейпа жив; единичные down не роняют чек (rebuild/остановка).
-docker exec as-prometheus sh -c 'test -s /etc/prometheus/sd/patroni-nodes.json' \
-  || { echo "  ❌ /etc/prometheus/sd/patroni-nodes.json отсутствует/пуст (жив ли as-sd-generator? docker logs as-sd-generator)"; exit 1; }
-docker exec as-prometheus cat /etc/prometheus/sd/patroni-nodes.json | jq -e 'type=="array"' >/dev/null \
-  || { echo "  ❌ file_sd patroni-nodes.json — не JSON-массив"; exit 1; }
-pn_total=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[] | select(.labels.job=="patroni-nodes")] | length')
-pn_up=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[] | select(.labels.job=="patroni-nodes" and .health=="up")] | length')
-if [ "$pn_total" -eq 0 ]; then
-  echo "  patroni-nodes: кластеров PgWorker на стенде нет — file_sd пуст (корректно)"
-elif [ "$pn_up" -ge 1 ]; then
-  echo "  patroni-nodes: $pn_up/$pn_total up (единичные down — зона алерта PatroniNodeDown)"
-else
-  echo "  ❌ patroni-nodes: все $pn_total таргетов down (file_sd устарел? Patroni-REST нод живы?)"; exit 1
-fi
-```
-
-  - шаг 4: порог `[ "$rules" -ge 21 ]` + текст «(18 + 3 t15: patroni-nodes)»;
-  - шаг 3 (серии): добавить цикл-поиск `sd_generator_last_success_timestamp_seconds` (по образцу valkey-цикла: 30×2 с, обязательна при живом профиле metrics).
-
-- [ ] Step 1: Правки трёх файлов.
-- [ ] Step 2: Валидация конфигов прометеуса его же инструментом (образ уже локален): `docker run --rm -v "$PWD/dev-stand/adminpanel/metrics/prometheus:/cfg:ro" --entrypoint promtool prom/prometheus:v3.14.0 check config /cfg/prometheus.yml` — «SUCCESS».
-- [ ] Step 3: `bash -n dev-stand/adminpanel/checks/65-metrics.sh`.
-- [ ] Step 4: Коммит `feat(t15): джобы patroni-nodes/sd-generator, 3 алерта группы pg, чек 65 → 21 рул + условный patroni-nodes`.
-
-**Выход:** конфигурация мониторинга готова; чек знает новые серии/джобы и терпит легитимные down-таргеты patroni-nodes.
-
-**Проверка:** шаги 2–3 зелёные; `grep -c "alert:" dev-stand/adminpanel/metrics/prometheus/rules.yml` = 21; в шаге 2 чека 65 jq-фильтры up_count/total/bad содержат `select(.labels.job!="patroni-nodes"`, а условная проверка — только в шаге 2.1.
-
-**Spec:** §3.2 (джоба sd-generator), §3.3 (джоба patroni-nodes), §3.4 (алерты), §6.4 (чек: ≥21, patroni-nodes при наличии up — условно, самоскрейп).
+**Spec:** §3.4, §3.6, «Дельта 3» (порядок подъёма/разбора), §6.5.
 
 ---
 
-### Task 9: Дашборд `pg.json` — 4 новые панели
+### Д4: E2E — E2ePatroniFileSd на единой сети окружения класса
 
-**Вход:** Task 8.
+**Вход:** Д1–Д3 закоммичены; Release собирается; docker жив.
 
-**Действие (Files):** Modify `dev-stand/adminpanel/metrics/grafana/dashboards/pg.json` — дополнить (существующие 3 панели не трогать) рядами ниже (gridPos y=9), datasource-стиль скопировать из соседних панелей файла:
+**Действие (Files):** Modify
+`src/tests/PgWorker.IntegrationTests/E2e/E2ePatroniFileSdScenarios.cs`
+(правки ТОЛЬКО сценария; `E2eEnvironment` уже даёт `Net`/`NetName`/
+`StartHostAsync(extraEnv)`/`EnsureSdImageAsync`):
 
-| Панель | type | expr |
-|---|---|---|
-| «Patroni nodes up (real)» | stat | `up{job="patroni-nodes"}` (legend `{{cluster}}/{{shard}}/{{node}}`) |
-| «Patroni role (real)» | timeseries | `patroni_master` / `patroni_replica` / `patroni_sync_standby` (legend `{{scope}}/{{name}}`) |
-| «Replica replay lag, s (real)» | timeseries | `time() - patroni_xlog_replay_timestamp` (legend `{{scope}}/{{name}}`) |
-| «Timeline (real)» | timeseries | `patroni_timeline` (legend `{{scope}}/{{name}}`) |
+1. **Контур мониторинга — единая сеть, БЕЗ host-форвардинга:**
+   - у `sdGen` и `prom` УДАЛИТЬ `.WithExtraHost("host.docker.internal", "host-gateway")`
+     (регрессия host-форвардинга ловится конструктивно: резолва нет → скрейп
+     умер → тест красный);
+   - `sdGen` env: вместо `http://host.docker.internal:<etcdPort>` — список по
+     числу узлов окружения:
+     `for (var i = 0; i < Fx.EtcdEndpoints.Count; i++) … SdGenerator__Etcd__Endpoints__{i} = $"http://e2e-etcd{i + 1}:2379"`
+     (алиасы сети окружения — `WithNetworkAliases($"e2e-etcd{i+1}")`,
+     E2eEnvironment.cs:352); вычисление `etcdPort` удалить.
+2. **Воркер:** `await Fx.StartHostAsync("s1", ct: ct, extraEnv: new()
+   { ["PgWorker__Docker__ScrapeNetwork"] = Fx.NetName })` — движок подключает
+   ноды к сети окружения, portalloc несёт alias/net.
+3. **Ассерты (заменяют host-портовую логику):**
+   - `PatroniPortsAsync` → `PatroniAliasesAsync(cluster)`: DTO записи
+     дополнить `Alias` (JSON `alias`); ассерт: все 4 записи имеют непустой
+     `alias` вида `pgw-<cluster>-…` и `net == Fx.NetName` (доказательство
+     Д1-контура в E2E);
+   - `PatroniTargetsUpAsync`: `health == "up"`; `scrapeUrl` —
+     `http://<alias>:8008/metrics`: `Uri.Host` ∈ aliases, `Uri.Port == 8008`
+     (именованная константа сценария, синхрон с `TargetMapping.PatroniRestPort`);
+     и НАПРЯМУЮЙ ассерт: ни один `scrapeUrl` (обе джобы: patroni-nodes и
+     sd-generator) не содержит `host.docker.internal` — канон ревизии 3;
+   - факультативно (cheap, канон чистоты): после провижининга — один
+     `docker inspect <имя-ноды>` на подтверждение membership в `Fx.NetName`
+     (`NetworkSettings.Networks` содержит) — spec §6.4 «inspect подтверждает
+     membership».
+4. Канон-минимум серий, демонтаж, teardown, телеметрия — БЕЗ изменений
+   (сетевые адреса не меняют ни словарь, ни lifecycle).
 
-- [ ] Step 1: Внести панели (валидный JSON; id/ui IsPackable — новые id max+1..+4).
-- [ ] Step 2: `jq empty dev-stand/adminpanel/metrics/grafana/dashboards/pg.json` — валидность.
-- [ ] Step 3: Коммит `feat(t15): панели реальных Patroni-нод в pg.json`.
+- [ ] Step 1: Переработка сценария; `dotnet build src/PgWorker.slnx -c Release` 0 warnings.
+- [ ] Step 2: Прогон: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~E2ePatroniFileSd` — зелёный (E2eFixture соберёт Release; фазы — с `[PHASE]`).
+- [ ] Step 3: Зачистка серии: `docker ps -a --filter name=pgw- -q | wc -l` → 0; `docker volume ls -q | grep -c pgw-sd` → 0; `docker network ls | grep pgw` → пусто (или только чужие живые прогоны); артефакты `/tmp/pgw-e2e-artifacts-<guid>/` содержат логи prom/sdgen и `patroni-series-fact.txt`.
+- [ ] Step 4: Коммит `test(t15): E2E file_sd в единой сети окружения — alias-таргеты, ноль host-форвардинга`.
 
-**Выход:** оператор видит реальные ноды рядом с эмуляторными панелями.
+**Выход:** сквозная приёмка сетевого контура на реальном кластере.
 
-**Проверка:** jq-валидность; `python3 -c "import json;d=json.load(open('dev-stand/adminpanel/metrics/grafana/dashboards/pg.json'));print(len(d['panels']))"` → 7.
+**Проверка:** шаг 2 зелёный; в логе прогона `scrapeUrl`-ассерты прошли на сетевых адресах; в git-diff сценария нет `WithExtraHost`.
 
-**Spec:** §3.4 (дашборд), решение 3 (эмуляторные панели не меняются).
-
----
-
-### Task 10: Integration-тесты `src/tests/Metrics.SdGenerator.IntegrationTests` (живой etcd)
-
-**Вход:** Tasks 5–6; локальный docker жив (`PGW_TEST_DOCKER`).
-
-**Действие (Files):**
-- Create `src/tests/Metrics.SdGenerator.IntegrationTests/Metrics.SdGenerator.IntegrationTests.csproj` — копия структуры PgWorker.IntegrationTests (Testcontainers, xunit.v3, FluentAssertions) + ProjectReference на генератор; `xunit.runner.json` НЕ нужен (без E2E-параллелизма, тестов мало).
-- Create `EtcdFixture.cs` — копия паттерна `src/tests/PgWorker.IntegrationTests/Etcd/EtcdFixture.cs` (quay.io/coreos/etcd:v3.5.21, `WithPortBinding(2379, assignRandomHostPort: true)`, POST-ретрай готовности 30×1 с), С ОДНОЙ АДАПТАЦИЕЙ: старт отложен из `IAsyncLifetime` в явный `StartAsync` (нужен сценарий «мёртвый порт → ожил»):
-
-```csharp
-public sealed class EtcdFixture : IAsyncDisposable
-{
-    public EtcdFixture(int? hostPort = null) { /* ctor копии */ }
-    public string Endpoint { get; private set; } = "";
-    public EtcdGateway Gateway { get; }
-    public Task StartAsync(CancellationToken ct);   // старт контейнера + WaitReady
-    public ValueTask DisposeAsync();                // контейнер + http
-}
-```
-
-- Create тесты (`SdGeneratorIntegrationTests.cs`, AAA-комментарии; общий хелпер `LoopAsync()` — собирает `SdGeneratorLoop` с реальным `EtcdGateway`, `OutputPath` в temp, `SdGeneratorMetrics` (свой `new Meter("sd-it")` — ctor-параметр), `NullLogger`):
-
-| Тест | Сценарий | Ассерты |
-|---|---|---|
-| `Put_Portalloc_TargetAppears` | `put /pgworker/portalloc/c1 = {"shard1/shard1a":{"host":"h1","pg":1,"patroni":8008,"doorman":0}}` → `TickAsync` | true; файл содержит `"h1:8008"` и все три лейбла; `LastSuccessUnix` not null |
-| `Delete_TargetDisappears` | put → тик → `DeleteAsync` ключа → тик | второй файл = `[]` |
-| `EtcdDown_FileAndLastSuccessUntouched_ThenCatchUp` | fixture НЕ стартована (порт из `ReserveHostPort()`): тик на мёртвый порт → put невозможен; файл pre-written `X`, lastSuccess=null | тик false; файл байт-в-байт `X`; lastSuccess null; затем `fixture.StartAsync` на том же порту → put → тик → true, файл обновлён («догоняет») |
-| `EmptyPrefix_EmptyArray_IsSuccess` | пустой etcd → тик | true; файл `[]`; lastSuccess not null |
-| `HostedService_RefreshesWithinInterval` | `SdGeneratorHostedService` (RefreshIntervalSec=1) `StartAsync`; put; `WaitForAsync(файл содержит, 10 s)` | файл появился без ручного тика; `StopAsync` в finally |
-
-- [ ] Step 1: csproj + fixture + тесты; `dotnet build src/PgWorker.slnx -c Release` (slnx: +integration-проект в `/tests/`).
-- [ ] Step 2: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/Metrics.SdGenerator.IntegrationTests -c Release` — все зелёные; фикстуры DisposeAsync (testcontainers чистит).
-- [ ] Step 3: Зачистка серии: `docker ps -a --filter name=/testcontainers/ -q | wc -l` → 0 (ryuk подобрал); осиротевших сетей нет: `docker network ls | grep -c sd-` → 0.
-- [ ] Step 4: Коммит `test(t15): integration-цикл генератора на живом etcd (put/del/свежесть/догон)`.
-
-**Выход:** поведение тика доказано на настоящем etcd.
-
-**Проверка:** шаги 2–3 зелёные.
-
-**Spec:** §6.2 (integration-критерии), §4 Ф3.
+**Spec:** §3.5, §6.4.
 
 ---
 
-### Task 11: docker-E2E `E2ePatroniFileSd` (реальный кластер + настоящий Prometheus)
+### Д5: Перегон — юниты → интеграции → docker-E2E → стенд
 
-**Вход:** Task 10; Release-бинарь собирается; docker жив.
+**Вход:** Д0–Д4 закоммичены.
 
-**Действие (Files):**
-- Modify `src/tests/PgWorker.IntegrationTests/E2e/E2eEnvironment.cs`:
-  1. `public const string SdImage = "sdgenerator:e2e";` + `private static bool _sdImageReady;` + **`public static async Task EnsureSdImageAsync(CancellationToken ct)`** — точная копия `EnsureWalImageAsync` (E2eEnvironment.cs:1088) с заменами: проект `src/Metrics.SdGenerator/Metrics.SdGenerator.csproj`, вывод `artifacts/e2e/sdgenerator`, `-f docker/Metrics.SdGenerator.Dockerfile`, тег `SdImage`, флаг `_sdImageReady`, лог-файлы `/tmp/pgw-e2e-static-process-sd-e2e-{publish,build}.log`; `[PHASE]`-метки и `StaticGate` (сериализация сборок) сохранены. Вызов — **НЕ в `EnsureStaticAsync`/`StartOnceAsync`** (прецедент wal вызывается из `StartOnceAsync` внутри ветки `if (withMinio)` — E2eEnvironment.cs:424–427; общий путь заставил бы КАЖДУЮ E2E-серию, включая кейс-маркер `Scale_AddEmptyShard` гейта Task 12, платить сборкой `sdgenerator:e2e`), а **из самого сценария `E2ePatroniFileSd`** — лениво, перед стартом контейнера (метод для этого публичный; `_root` к моменту вызова уже инициализирован — сценарий зовёт после `E2eEnvironment.StartAsync`, где `EnsureStaticAsync` отработал).
-  2. Публичный доступ к сети контура для контейнеров сценария:
+**Действие:** последовательный перегон с зачисткой ПОСЛЕ КАЖДОЙ серии
+(дождаться финальной строки прогона; между сериями — контроль
+`docker ps`/`networks`, `docker network prune -f` при осиротевших
+`pgw-net-*`; фазы > 60 с — `[PHASE]`-отчёт «почему долго»).
 
-```csharp
-    /// <summary>Docker-сеть окружения — контейнерам сценариев (t15: sd-generator
-    /// и тестовый Prometheus в одном контуре с etcd окружения).</summary>
-    public INetwork Net => _net;
-```
+- [ ] Step 1: `dotnet build src/PgWorker.slnx -c Release` — 0 errors, 0 warnings.
+- [ ] Step 2: Юниты: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Release --filter 'FullyQualifiedName~UnitTests'` — зелёные. Зачистка-контроль.
+- [ ] Step 3: Интеграции генератора: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~Metrics.SdGenerator.IntegrationTests` — зелёные; зачистка (testcontainers/ryuk, сети).
+- [ ] Step 4: docker-E2E PgWorker на свежем Release — ПОЛНЫЙ контур
+  (дельта трогает provisioning/portalloc — канон AGENTS.md):
+  `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~PgWorker.IntegrationTests.E2e`
+  — зелёный; внутрь входят кейс-маркер `Scale_AddEmptyShard` (дефолт
+  E2eEnvironment: ключ ScrapeNetwork НЕ задан → attach нет → деградационный
+  дефолт поставки не ломает кластерные пути, spec §4 Д5/§6.6) и сетевой
+  `E2ePatroniFileSd`. Зачистка после серии. При ресурсных проблемах хоста —
+  разбить на серии (E2ePatroniFileSd отдельно от остальных) с зачисткой
+  между ними.
+- [ ] Step 5: Стенд: `bash dev-stand/adminpanel/checks/00-up.sh` — полный
+  подъём зелёный; затем `bash dev-stand/adminpanel/checks/65-metrics.sh` —
+  зелёный, при этом:
+  - таргеты джобы pgworker — сетевые `pgworker:8080`/`pgworker-2:8080`, оба up:
+    `curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[] | select(.labels.job=="pgworker") | .labels.instance + ":" + .health]'`
+    → `["pgworker:8080:up","pgworker-2:8080:up"]`;
+  - `docker inspect as-prometheus --format '{{json .NetworkSettings.Networks}}' | jq 'keys'` содержит сеть pgw-metrics; extra_hosts пуст;
+  - шаг 2.1 — patroni-nodes: на стенде кластеров PgWorker нет → file_sd
+    пуст (корректно), сетевой ассерт не срабатывает.
+- [ ] Step 6: `bash dev-stand/adminpanel/checks/90-down.sh` — зелёный;
+  ассерт чистоты сети: `docker network ls --format '{{.Name}}' | grep -x pgw-metrics`
+  → пусто (deploy-down снёс); `docker ps --filter name=deploy- -q` → пусто.
+  Повторный 00-up → 65 (идемпотентность цикла, сеть пересоздалась).
+- [ ] Step 7: `git status` чист; все серии зелёные — ветка готова к Фазе 8 (мерж — только по явной просьбе пользователя).
 
-- Create `src/tests/PgWorker.IntegrationTests/E2e/E2ePatroniFileSdScenarios.cs` — структура сценария (канон класса: `DockerTrait.SkipIfUnavailable()`, `await using var fx = await E2eEnvironment.StartAsync("patroni-file-sd", ct: ct)`, `try/catch → fx.MarkFailed()`, копии хелперов `SeedClusterAsync`/`ProvisionedAsync`/`SetToRemoveAsync` из `E2eScaleScenarios`/`E2eScenarios`):
-  1. **Контур мониторинга:** `await E2eEnvironment.EnsureSdImageAsync(ct);` (ленивая сборка образа — только этой серией); `IVolume sdVol = new VolumeBuilder().WithName($"pgw-sd-{fx.ClusterTag}").Build(); await sdVol.CreateAsync(ct);` тестовый `prometheus.yml` (в `fx.ArtifactsDir`; scrape_interval 3 s, evaluation 3 s; джоба `patroni-nodes` file_sd `/etc/prometheus/sd/patroni-nodes.json` refresh 3 s; джоба `sd-generator` static `sd-generator:8080`); контейнеры (оба `WithNetwork(fx.Net)`, `WithExtraHost("host.docker.internal", "host-gateway")`):
-     - `sd-gen`: образ `E2eEnvironment.SdImage`, **`WithNetworkAliases("sd-generator")`** — DNS-имя `sd-generator` из static-таргета prometheus.yml резолвится в docker-сети только по имени/alias контейнера, а testcontainers присваивает контейнеру случайное имя (прецедент: `WithNetworkAliases("e2e-minio")` для MinIO/mc — E2eEnvironment.cs:404); без алиаса самоскрейп не соберётся и ассерт серии `sd_generator_last_success_timestamp_seconds` упадёт. Далее: volume → `/sd` (rw), env `SdGenerator__Etcd__Endpoints__0 = http://host.docker.internal:<порт etcd из fx.EtcdEndpoints>`, `SdGenerator__OutputPath=/sd/patroni-nodes.json`, `SdGenerator__RefreshIntervalSec=2`;
-     - `prom`: `prom/prometheus:v3.14.0`, volume → `/etc/prometheus/sd` (ro), bind-mount конфига → `/etc/prometheus/prometheus.yml` (ro), `WithPortBinding(9090, assignRandomHostPort: true)`; старт и `GetMappedPublicPort(9090)`.
-  2. **Кластер:** `SeedClusterAsync(cluster)` → `fx.StartHostAsync("s1")` → `WaitForAsync(ProvisionedAsync, 360 s)` (как `Scale_AddEmptyShard`).
-  3. **Таргеты up:** `WaitForAsync`: `GET http://localhost:<promPort>/api/v1/targets` (JsonDocument) → `activeTargets` с `labels.job == "patroni-nodes"`: ≥ 4 (2 шарда × 2 реплики), все `health == "up"`, `scrapeUrl` содержит `host.docker.internal:` и фактический patroni-порт нод (порты читать из `/pgworker/portalloc/<C>` через `fx.Gateway`, не хардкод).
-  4. **Канон-минимум серий (M3-факт):** `GET /api/v1/query?query=<имя>` для всех 7: `patroni_master`, `patroni_replica`, `patroni_sync_standby`, `patroni_timeline`, `patroni_xlog_replay_timestamp`, `patroni_version`, `patroni_postgres_running` — каждая `data.result` непуста; плюс `sd_generator_last_success_timestamp_seconds` непуста (самоскрейп генератора — через network-alias из п.1).
-  5. **Демонтаж:** `SetToRemoveAsync(cluster)` → `WaitForAsync`: portalloc-ключ `/pgworker/portalloc/<C>` исчез (`GetAsync` → null) → таргеты `patroni-nodes` в `/api/v1/targets` = 0.
-  6. **Teardown (finally, любой исход):** stop/rm `prom`, `sd-gen` (docker-логи в `fx.ArtifactsDir` ПЕРЕД удалением — канон телеметрии); `sdVol.DisposeAsync()`; ассерт чистоты: `docker volume ls` без `pgw-sd-<tag>`; окружение сносит своё (`fx` await using). `[PHASE]`-строки перед каждым долгим ожиданием (сборка образа, провижининг, таргеты, демонтаж).
+**Выход:** дельта 3 доказана на всех контурах: юниты, живой etcd, docker-E2E (сетевой + дефолт поставки), стенд (подъём/чек/разбор без сирот).
 
-- [ ] Step 1: Правки `E2eEnvironment.cs` (публичный `EnsureSdImageAsync` + сеть) — `dotnet build src/PgWorker.slnx -c Release` 0 warnings.
-- [ ] Step 2: Сценарий целиком.
-- [ ] Step 3: Прогон: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~E2ePatroniFileSd` — зелёный (E2eFixture соберёт Release сам; первый прогон дольше — сборка образа, это фиксируется `[PHASE]`).
-- [ ] Step 4: Зачистка после серии: `docker ps -a --filter name=pgw- -q | wc -l` → 0; `docker volume ls -q | grep -c pgw-sd` → 0; `docker network ls | grep -c pgw-net` → 0 (или только чужие живые прогоны).
-- [ ] Step 5: Коммит `test(t15): docker-E2E file_sd — кластер → таргеты up → серии → демонтаж → чисто`.
+**Проверка:** шаги 1–6 зелёные; после Step 6 `docker network ls | grep -c pgw-metrics` → 0.
 
-**Выход:** сквозная приёмка t15 на реальном контуре.
-
-**Проверка:** шаг 3 зелёный; артефакты в `/tmp/pgw-e2e-artifacts-<guid>/` содержат логи обоих контейнеров.
-
-**Spec:** §4 Ф4, §6.3, §6.5 (канонизация словаря фактом).
+**Spec:** §4 (фазы Д5), §6.3–§6.6.
 
 ---
 
-### Task 12: Мерж-гейт трека reliability (полный прогон + roadmap одним коммитом)
+### Д6: Мерж-гейт трека reliability — в execute НЕ выполнять
 
-**Вход:** Tasks 1–11 закоммичены; юнит/интеграция/E2E локально зелёные.
+**Вход:** Д5 зелёный; пользователь одобрил мерж (Фаза 8 dev-flow).
 
-**Действие (Files):** прогон всего + финальные документные правки.
+**Действие (Files):** roadmap-гейт ОДНИМ мерж-коммитом с кодом дельты
+(правки готовятся на этапе мержа, НЕ в execute этого плана):
 
-- [ ] Step 1: Сборка: `dotnet build src/PgWorker.slnx -c Release` — 0 warnings.
-- [ ] Step 2: Юниты: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Release --filter 'FullyQualifiedName~UnitTests'` — зелёные. Зачистка между сериями (контроль `docker ps`/networks — канон AGENTS.md).
-- [ ] Step 3: Интеграции t15: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~Metrics.SdGenerator.IntegrationTests` — зелёные; зачистка серии (Task 10 Step 3).
-- [ ] Step 4: E2E на свежем Release (новый сервис в контуре стенда — кейс-маркер обязателен): `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter FullyQualifiedName~Scale_AddEmptyShard` и `... --filter FullyQualifiedName~E2ePatroniFileSd` — зелёные (сборка `sdgenerator:e2e` происходит только в серии E2ePatroniFileSd — ленивый вызов); после КАЖДОЙ серии — зачистка (`docker ps -a --filter name=pgw-`, `docker network prune -f` при осиротевших `pgw-net-*`).
-- [ ] Step 5: Стенд: `bash dev-stand/adminpanel/checks/00-up.sh` — полный подъём зелёный (профиль metrics поднял `as-sd-generator`); `bash dev-stand/adminpanel/checks/65-metrics.sh` — зелёный (21 рул, серия `sd_generator_last_success_timestamp_seconds` в TSDB, файл `/etc/prometheus/sd/patroni-nodes.json` валиден, строгий all-up — без patroni-nodes, шаг 2.1 — условно). Любая фаза > 60 с — собрать логи и `[PHASE]`-отчёт «почему долго».
-- [ ] Step 6: Roadmap-гейт (тем же мерж-коммитом, что и код — правки сейчас, коммит на мерже):
-  - `arch/roadmap/reliability.md`: удалить пункт `t15-prometheus-file-sd` (строка списка N-трека; `←`-ссылок на t15 нет — проверить `grep -n t15`).
-  - `arch/roadmap/reliability-report.md`: (а) таблица «Осталось» — строку `t15-prometheus-file-sd | file_sd для скрейпа реальных нод | P3 | N` удалить; (б) таблица «Сделано в рамках трека» — добавить строку вида: `| t15-prometheus-file-sd | — (мерж-коммит t15) | независимый file_sd-канал наблюдения реальных Patroni-нод (характеристика N): сервис sd-generator (профиль metrics, read-only читатель /pgworker/portalloc/) атомарно пишет таргеты host:patroni в volume Prometheus, джоба patroni-nodes скрейпит нативные patroni_* (канон-минимум 7 серий фиксирован docker-E2E), алерты PatroniNodeDown/PatroniReplicaLagHigh/SdGeneratorStalled + панели pg.json; граница — Kafka/Valkey-ноды остаются на доменных сериях коллекторов |`; (в) сводка N: убрать «метрики реальных нод не собираются», дописать «реальные Patroni-ноды скрейпятся Prometheus по file_sd из portalloc (sd-generator, независим от панели/воркеров)»; (г) «Открытые разрывы»: убрать «прод-ноды недоскрейпимы (`t15`);», добавить «Kafka/Valkey-ноды без HTTP metrics-эндпоинта — только доменные серии коллекторов (расширение — будущие задачи)».
-- [ ] Step 7: Финальный статус ветки: `git status` чист; дальше — merge-gate пользователя (мерж в main и пуш — ТОЛЬКО по явной просьбе).
+- `arch/roadmap/reliability.md` — удалить пункт `t15-prometheus-file-sd`
+  (проверить `grep -n t15`: `←`-ссылок на t15 нет);
+- `arch/roadmap/reliability-report.md` — строку таблицы «Осталось»
+  (`t15-prometheus-file-sd | file_sd для скрейпа реальных нод | P3 | N`)
+  перенести в «Сделано в рамках трека»: независимый file_sd-канал наблюдения
+  реальных Patroni-нод (характеристика N) — sd-generator читает
+  `/pgworker/portalloc/` и пишет таргеты `alias:8008` единой сети контура
+  `pgw-metrics` (воркеры+ноды+Prometheus, ScrapeNetwork-attach движком),
+  host-форвардинг и extra_hosts из скрейпа удалены во всех контурах
+  (стенд/поставка/E2E); advertised-ветка — деградационная для легаси/
+  усыновлённых; граница — Kafka/Valkey-ноды на доменных сериях коллекторов;
+- сводка N: убрать «метрики реальных нод не собираются», дописать сетевой
+  канал; «Открытые разрывы»: убрать «прод-ноды недоскрейпимы (`t15`)»;
+- правки arch/14 + arch/18 (Д0) — в этом же мерж-коммите (spec §6.7).
 
-**Выход:** ветка готова к мержу; roadmap/report синхронны мерж-коммиту.
+**Выход:** roadmap синхронен мерж-коммиту; исторических пометок нет.
 
-**Проверка:** все шаги 1–5 зелёные; `grep -rn "t15" arch/roadmap/reliability.md` → пусто; в reliability-report.md t15 — только в «Сделано».
+**Проверка (на этапе мержа):** `grep -rn "t15" arch/roadmap/reliability.md` → пусто; в reliability-report.md t15 только в «Сделано».
 
-**Spec:** §6.4, §6.6 (мерж-гейт одним коммитом), §4 Ф5.
+**Spec:** §6.7.
 
 ---
 
 ## Self-Review (выполнен при написании)
 
-- **Покрытие спеки:** §3.1→Task 1; §3.2 (цикл/маппинг/самонаблюдение/джоба)→Tasks 2–5, 8; §3.3→Tasks 7–8; §3.4→Tasks 8–9; §3.5→Task 2/6; §6.1→Tasks 3–5; §6.2→Task 10; §6.3→Task 11; §6.4→Tasks 7–8, 12 (проверка patroni-nodes в чеке 65 — условная, без строгого all-up: down-таргеты джобы легитимны, живость канала = ≥1 up при наличии таргетов); §6.5→Tasks 11–12 (серия — E2E+чек 65); §6.6→Task 12. Ограничения §5 — в Global Constraints (код воркеров не трогаем, registry, images.txt, patroni=0, single-host extra_hosts).
-- **Placeholder-скан:** TBD/TODO нет; TODO-комментарий в Program.cs Task 2 — временный артефакт каркаса, закрывается Task 5 (шаг wiring).
-- **Консистентность типов:** сигнатуры Tasks 3–5 совпадают с контрактом типов (WriteIfChanged/Map/Serialize/TickAsync/MarkSuccess/NormalizeInterval); `SdGeneratorMetrics` принимает Meter через ctor (DI-канон: DI-Meter из `AddAppMetrics`, fallback свой при `Enabled=false`; Meter не диспозим — канон `WorkerMetricsInstrumentation`); класс появляется уже в Task 2 с одними константами `MeterName`/`LastSuccessInstrument` (Program.cs и его `AddAppMetrics(SdGeneratorMetrics.MeterName, …)` компилируются на гейте Task 2 — без CS0103), полную реализацию по контракту получает в Task 5; имена env `SdGenerator__*` едины в Task 2/6/7/11.
-- **E2E-инфраструктура:** сборка `sdgenerator:e2e` — лениво из сценария `E2ePatroniFileSd` (публичный `EnsureSdImageAsync`), чужие серии и кейс-маркер гейта её не платят; static-таргет `sd-generator:8080` в тестовом prometheus.yml резолвится через `WithNetworkAliases("sd-generator")` (testcontainers даёт контейнеру случайное имя); чек 65 шаг 2 считает строгость только на джобах без `patroni-nodes` (up_count/total/bad — с исключением), условная проверка джобы — целиком в шаге 2.1.
+- **Покрытие спеки:** «Дельта 3»+§3.1→Д0; §3.2→Д1 (ключ, поля, attach,
+  decorate, fail-fast, усыновлённые); §3.3→Д2; §3.4/§3.6→Д3 (включая
+  продиктованный кодом SAN `DNS:pgworker-2` — без него mTLS-джоба на
+  `pgworker-2:8080` падает на верификации серта, прецедент t07 gen.sh);
+  §3.5→Д4; §4-фазы→Д0–Д6; §6.1→Д1; §6.2→Д2; §6.3→Д2(интеграция)/Д4;
+  §6.4→Д4; §6.5→Д3/Д5; §6.6→Д5 (маркер в полном E2E-контуре — дельта трогает
+  provisioning/portalloc, полный прогон каноничен AGENTS.md); §6.7→Д6.
+- **Разрешённые детали (обоснования в текстах задач):** имя env
+  `PGW_SCRAPE_NETWORK` (опечатка спеки §3.4 опровергнута приказом и §3.6);
+  `RemoveShardProcess` без правок (preserve = симметрия Parse/Serialize,
+  юнит-доказательство); перенос scrape-полей в `AdoptRunningContainersAsync`
+  (иначе record-Equals даёт вечную перезапись portalloc при заданном ключе);
+  fail-fast `ScrapeNetwork`+Swarm в валидации старта (прецедент AdvertisedHost);
+  90-down разбирает deploy-контур (прямое следствие spec — сеть не сиротеть);
+  decorate на adoption-merge 142 — единообразие точек записи при фактическом
+  no-op (object-записи).
+- **Placeholder-скан:** TBD/TODO нет; все сигнатуры — в контракте типов.
+- **Консистентность:** константа 8008 именована (`TargetMapping.PatroniRestPort`,
+  дубль в сценарии E2E — DTO генератора независим от Core); `WhenWritingNull`
+  уже в `Portalloc.Json` — «бинарно те же» доказуемо; FakeEngine уже пишет
+  network-connect в `Calls`; `EtcdEndpoints.Count`/`NetName`/`extraEnv` уже
+  публичны в `E2eEnvironment` — Д4 не требует его правок; внешние образы и
+  `images.txt` не тронуты; тесты — динамические порты, teardown, `[PHASE]`,
+  AAA.

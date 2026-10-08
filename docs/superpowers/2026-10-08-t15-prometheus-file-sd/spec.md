@@ -1,8 +1,9 @@
 # t15-prometheus-file-sd — file_sd из etcd-снапшота для скрейпа реальных нод
 
-**Фаза 1 dev-flow (spec).** Roadmap: `arch/roadmap/reliability.md` (тег
-`t15-prometheus-file-sd`, P3 — наблюдаемость, характеристика N; отчёт —
-`arch/roadmap/reliability-report.md`, строка в «Осталось»).
+**Фаза 1 dev-flow (spec, ревизия 3 — единая сеть мониторинга и кластеров).**
+Roadmap: `arch/roadmap/reliability.md` (тег `t15-prometheus-file-sd`, P3 —
+наблюдаемость, характеристика N; отчёт — `arch/roadmap/reliability-report.md`,
+строка в «Осталось»).
 
 Решения пользователя по развилкам (зафиксированы до дизайна):
 
@@ -14,27 +15,41 @@
    `metrics`), независимый от панели и воркеров (устойчивость контура
    мониторинга, характеристика N), переиспользует `Shared.Etcd`.
 3. **Словарь реальных нод — нативные `patroni_*`** (генерация нод PgWorker не
-   трогается); дашборд `pg.json` и группа алертов `pg` дополняются под них,
+   трогается); дашборд `pg.json` и группа алертов `pg` пишутся под них,
    эмуляторный словарь (`pg_replica_lag_seconds`) не меняется.
 4. **Приёмка — тесты + docker-E2E** (генератор + настоящий `prom/prometheus` +
    реальный кластер в E2E-контуре); чек 65 не утяжеляется созданием кластеров.
+5. **(Ревизия 3, приказ пользователя) ЕДИНАЯ docker-сеть на весь контур** — и
+   в E2E-классе, и в проде/стенде: мониторинг (Prometheus, sd-generator) и
+   кластерные ноды живут в ОДНОЙ сети, скрейп полностью по сетевым адресам
+   (`alias:8008`), дополнительных сетей для скрейпа и extra_hosts-костылей в
+   контуре НЕТ. «Это и надо сделать и все» — вопросов больше не задавать,
+   детали решает спека с обоснованиями.
 
 ## 1. Цель
 
-Метрики реальных Patroni-нод кластеров PgWorker собираются Prometheus'ом
-стенда. Сейчас ноды, создаваемые PgWorker, живут в per-cluster сетях
-(`pgw-net-<C>`), недостижимых для Prometheus стека мониторинга: таргеты
-Prometheus — static/file_sd только для сервисов стенда и эмуляторов
-(arch/18 §2.5/§5.2), поэтому Patroni-ноды прод-кластеров невидимы для
-мониторинга — репликация/HA реальных кластеров наблюдаемы только панелью.
+Метрики реальных Patroni-нод кластеров PgWorker собираются Prometheus'ом по
+сетевым адресам единой docker-сети, где вместе живут мониторинг и кластерные
+ноды. Ноды, создаваемые PgWorker, поднимаются в per-cluster сетях
+(`pgw-net-<C>`) с host-публикациями портов; стендовый Prometheus знает о них
+только через file_sd-канал генератора, а таргеты ревизии 1 шли по
+`host.docker.internal:<host-порт>` — скрейп зависел от host-форвардинга и
+extra_hosts-моста.
 
 Замыкающие элементы:
 
 - **file_sd-генератор** — сервис, который тиком читает etcd (read-only,
-  закрепления портов `/pgworker/portalloc/<C>`) и пишет file_sd JSON в volume,
-  смонтированный в Prometheus; таргет ноды = `advertised host` + `patroni`-порт
-  (host-публикация) — Prometheus скрейпит по публикуемым портам, per-cluster
-  сети не нужны.
+  закрепления `/pgworker/portalloc/<C>`) и пишет file_sd JSON в volume,
+  смонтированный в Prometheus.
+- **Per-node сетевая идентичность в portalloc**: воркер подключает ноды к
+  сети контура (`PgWorker:Docker:ScrapeNetwork` — имя сети поставки) и
+  дописывает в запись ноды `alias`/`net`; генератор строит таргет
+  `alias:8008` (контейнерный порт Patroni REST).
+- **Единая сеть контура**: сеть мониторинга `pgw-metrics` (объявляет
+  deploy-компоуз поставки) — в ней deploy-воркеры PgWorker (aliases
+  `pgworker`/`pgworker-2`), Prometheus и кластерные ноды; джоба `pgworker` и
+  `pgworker-targets.json` переходят на сетевые адреса, extra_hosts
+  `host-gateway` из as-prometheus удаляется.
 - **Scrape-джоба `patroni-nodes`** с file_sd; словарь нативных серий Patroni
   (`patroni_*`), дашборд и алерты Prometheus на них.
 - **Граница словаря** — arch/18 фиксирует: Kafka/Valkey-ноды без HTTP
@@ -42,198 +57,287 @@ Prometheus — static/file_sd только для сервисов стенда 
   file_sd-механика расширяема на новые домены отдельными задачами.
 
 Результат: независимый от панели канал наблюдения репликации/HA реальных
-кластеров (характеристика N), симметрично каналу бэкапов t14.
+кластеров (характеристика N) без зависимости скрейпа от host-форвардинга ни
+в одном контуре (стенд, прод-поставка «дома», E2E).
+
+## Дельта 3 (единая сеть) — что меняется в ревизии 3
+
+**Реализованная база**: генератор `src/Metrics.SdGenerator` (read-only
+`/pgworker/portalloc/`, file_sd, тик, самонаблюдение), docker-E2E
+`E2ePatroniFileSdScenarios` (host-форвардинг-контур), стенд + чек 65
+(21 рул), словарь Patroni 4.x канонизирован в arch/18 §2.5 по E2E-факту
+(23 серии; фактические имена `patroni_primary`/`patroni_postgres_timeline`/
+`patroni_xlog_replayed_timestamp`). Ревизия 2 спроектировала сетевые таргеты
+как E2E-only режим с advertised-целью для прода — **ревизия 3 отменяет это
+разделение по приказу пользователя**: единая сеть — единственный режим.
+
+**Мотивировка (приказ пользователя)**: «е2е тестирование всего этого живет в
+одной докер сети и не требует дополнительных сетей, на проде также будет
+одна сеть для мониторинга для кластеров». Дополнительных сетей для скрейпа
+не заводим; extra_hosts-мост `host.docker.internal:host-gateway` в
+as-prometheus — временный костыль, удаляется.
+
+**Дизайн дельты**:
+
+- **Per-node сетевая идентичность в portalloc.** Конфиг
+  `PgWorker:Docker:ScrapeNetwork` — ИМЯ сети контура (сети мониторинга
+  поставки; стенд/прод задают env `PGW_SCRAPE_NETWORK`, E2E — имя сети
+  окружения класса). Это НЕ переключатель режима, а параметр поставки:
+  задан — движок при создании/ensure канонической ноды подключает её к этой
+  сети (дополнительный attach поверх основной `pgw-net-<C>`; инвариант
+  arch/14 §2.1 «нода и wal-агенты в одной сети кластера» не трогается,
+  wal-агенты не подключаются) и точки записи portalloc дописывают в запись
+  ноды опциональные поля: `"alias"` — сетевое имя ноды (полное docker-имя
+  `pgw-<C>-<X>-<n>`, глобально уникально, резолвится user-defined DNS),
+  `"net"` — имя сети контура (информационное: alias резолвим только в ней;
+  генератором не читается — для инспекции etcd/отладки). Поля живут в
+  доменной модели `NodeAddress`/`PortallocEntry` (nullable, симметричная
+  сериализация): read-modify-write portalloc воркером (remove-shard,
+  adoption-merge, repair) поля сохраняет, а не стирает. Существующие
+  потребители (панель `(Host, Patroni)`, `PortAllocIndex`, генератор)
+  незнакомые поля игнорируют.
+- **Генератор — сетевой таргет штатно, advertised — деградационная ветка
+  per-node** (решение спеки, без дополнительной сложности): запись с
+  `alias` → `alias:8008`; запись без `alias` (легаси-запись переходного
+  контура, усыновлённая нода) → `host:patroni`, как реализовано в базе.
+  Обоснование: advertised-ветка уже существует в коде (удаление — новый
+  фильтр «alias обязателен», а не упрощение); тихая потеря наблюдения живой
+  ноды на переходном/чужом контуре хуже запасной ветки той же чистой функции
+  (канон максимальной надёжности, AGENTS.base.md §9); отдельного
+  «режима» нет — одно per-node правило. Фильтр `patroni <= 0` (усыптлённые
+  без Patroni-REST) действует в обеих ветках.
+- **Усыновлённые ноды (`object`)**: attach чужого контейнера и alias не
+  пишутся (R9 — чужой контейнер движок не трогает) — деградационная ветка
+  advertised; в сетевых контурах поставки усыновлённых нет.
+- **Сеть контура `pgw-metrics`** (решение спеки): объявляет
+  `deploy/docker-compose.yml` — поставка владеет контуром воркеров и
+  кластеров (прод-канон), предсказуемое имя
+  `name: ${PGW_METRICS_NETWORK:-pgw-metrics}`; сервисы pgworker/pgworker-2
+  подключены к ней с aliases `pgworker`/`pgworker-2` (их host-публикации
+  8080/8083 остаются — панель/чеки ходят по advertise, это не скрейп).
+  Стендовый as-prometheus подсоединяет её как external-сеть (второй сетью
+  рядом с сетью adminpanel-stand, где живут adminpanel/kafkaworker/
+  valkeyworker/sd-generator — их скрейп уже сетевой по compose-DNS и не
+  меняется); **extra_hosts `host.docker.internal:host-gateway` из
+  as-prometheus удаляется** — все таргеты прометея сетевые:
+  adminpanel/kafkaworker/valkeyworker (сеть стенда), pgworker/pgworker-2 и
+  patroni-nodes (сеть pgw-metrics). sd-generator сеть pgw-metrics НЕ нужна:
+  он читает etcd (сеть стенда, compose-DNS) и пишет файл (volume) — таргеты
+  резолвит Prometheus. 00-up.sh пишет `pgworker-targets.json` сетевыми
+  адресами `["pgworker:8080","pgworker-2:8080"]` (mTLS-джоба не меняется);
+  порядок подъёма: deploy-контур (создаёт сеть) → стендовый компоуз
+  (external-attach); 90-down — в обратном порядке (стенд → deploy сносит
+  сеть; осиротевшей сети не остаётся).
+- **Демонтаж/rebuild**: scrape-сеть для движка — чужая (принадлежит
+  поставке/сценарию), движок её не создаёт и не удаляет (удаляет только
+  `pgw-net-<C>`; сети нет при включённом ключе — fail-fast провижининга с
+  diagnose); снос контейнера ноды сам гасит membership; rebuild повторяет
+  attach идемпотентно (Ensure-инвариант), alias детерминирован именем —
+  portalloc не меняется.
+- **E2E-класс `E2ePatroniFileSdScenarios`**: одна сеть окружения на класс
+  (etcd/sd-generator/prometheus/ноды вместе): sd-generator → etcd по alias
+  `e2e-etcd1:2379`, prometheus → ноды по `alias:8008`;
+  `WithExtraHost(host.docker.internal, host-gateway)` из sd-generator и
+  prometheus отсутствует — регрессия host-форвардинга ловится конструктивно
+  (резолва нет → скрейп умер → тест красный). Воркер получает
+  `PgWorker__Docker__ScrapeNetwork = <имя сети окружения>` (extraEnv
+  `StartHostAsync`). Публикации нод 5432/8008 остаются (host-воркер: пробы/
+  DSN/AdvertisedEndpoints нод→etcd — вне контура мониторинга; «ноль
+  host-форвардинга» = скрейп и чтение etcd генератором). Host-публикация
+  9090 прометеуса — для ассертов тест-процесса (динамический порт).
+- **MULTI-HOST-оговорка**: сетевая семантика — single-хост-контур «дома»
+  (AGENTS.base.md §9: система запущена дома, enterprise-решения не нужны);
+  запись чужой сети/хоста без alias честно уходит в деградационную ветку
+  advertised (адрес из portalloc корректен, достижимость — зона сетевой
+  политики той поставки).
 
 ## 2. Принципы
 
-- **arch-first**: контракт наблюдаемости — `arch/18` (правки Ф0, ДО кода:
-  §2.5 словарь `patroni_*`, §5.2 джоба `patroni-nodes`, §5.4 паттерн
-  file_sd реализован, §6/§8 — тесты и конфигурация). **Контракт etcd НЕ
-  меняется**: генератор — немой read-only читатель существующих
-  `/pgworker/portalloc/<C>` (как панель — «немой читатель», ноль новых
-  etcd-ключей, ноль записей).
+- **arch-first**: контракт portalloc — `arch/14` §2.4/§3 (опциональные поля
+  сетевой идентичности, конфиг-ключ, attach-семантика), контракт
+  наблюдаемости — `arch/18` §2.5/§5.2/§5.4/§6 (сетевые таргеты — штатная
+  семантика, advertised — деградационная ветка; сетевые таргеты джобы
+  pgworker; extra_hosts удалён) — правки ДО кода. **Чтение генератором etcd
+  — по-прежнему только `RangeAsync` по `/pgworker/portalloc/`**: ноль новых
+  etcd-ключей, ноль записей генератором; дельта расширяет ЗНАЧЕНИЕ
+  существующего ключа (опциональные поля, пишет воркер).
+- **Единая сеть — единственный режим**: контур поставки задаёт имя сети
+  (`ScrapeNetwork`), все скрейпы Prometheus — по сетевым адресам;
+  host-форвардинг и extra_hosts из контура скрейпа удалены. Изолированная
+  сеть E2E-класса — та же семантика (сеть окружения класса), не отдельный
+  режим.
+- **advertised-адреса нод не меняются**: `host`/`pg`/`patroni`/`doorman`
+  portalloc-записи, dsn, endpoints, панельные пробы — как были (advertised-
+  правило arch/16: адреса обязаны резолвиться клиентами — alias в dsn/
+  endpoints НЕ попадает, потребитель alias один: генератор). Сетевая
+  идентичность — дополнительная, не замена адресации клиентов.
 - **Генератор независим от наблюдаемых** (характеристика N): падение
   панели/воркеров не ослепляет мониторинг нод; генератор — часть стека
-  мониторинга (профиль `metrics`), а не воркеров. Прецедент независимости —
-  канал бэкапов t14.
+  мониторинга.
 - **Таргеты — из реплицированной истины**: единственный источник — portalloc
-  в etcd (закрепление портов переживает rebuild ноды). Фильтр по статусам
-  кластеров НЕ вводится: portalloc-ключ сносится демонтажом (X2), создаётся
-  провижинингом — список таргетов самосинхронизируется с реальностью без
-  чтения `states`. Единственный фильтр — `patroni > 0` (усыптлённые ноды без
-  Patroni-REST не скрейпимы, arch/14 §2.4).
+  в etcd. Фильтр по статусам кластеров НЕ вводится (portalloc-ключ сносится
+  демонтажом X2, создаётся провижинингом — самосинхронизация). Фильтры
+  записи: `patroni > 0`; сетевая ветка — при наличии `alias`.
 - **Консервативная свежесть**: ошибка чтения etcd — файл таргетов НЕ
-  трогается (прежние таргеты живут), `sd_generator_last_success_timestamp_
-  seconds` не двигается, тик не падает (warning-лог) — паттерн коллекторов
-  Kafka/Valkey (arch/18 §4). Пустой префикс (кластеров нет) — валидный `[]`,
-  успех.
+  трогается, `sd_generator_last_success_timestamp_seconds` не двигается, тик
+  не падает (warning-лог) — паттерн коллекторов (arch/18 §4). Пустой
+  префикс — валидный `[]`, успех.
 - **Лейблы конечны** (arch/18 §2, риск M1): у таргетов — только `cluster`,
   `shard`, `node`; самонаблюдение генератора — серия без лейблов.
-- **MULTI-HOST-честность**: таргет = `host:port` из portalloc-записи (host —
-  advertised-имя docker-хоста ноды, arch/14 §2.4 п.5) — на мульти-хосте
-  адреса остаются корректными; достижимость скрейпа — зона сетевой политики
-  прода (§5.4 паттерн документируется, таргеты честны).
 - **Запись файла минимальна**: file_sd JSON перезаписывается только при
-  изменении контента (byte-compare), атомарно (tmp + rename) — mtime не
-  дёргается впустую, Prometheus перечитывает по факту изменения.
+  изменении контента (byte-compare), атомарно (tmp + rename).
 
 ## 3. Структура/компоненты
 
-### 3.1. Правки контракта arch/18 (Ф0, до кода)
+### 3.1. Правки контракта arch/ (до кода)
 
-| Секция | Правка |
+| Документ | Правка |
 |---|---|
-| §2.5 | Словарь реальных Patroni-нод: нативные серии REST `/metrics` (spilo, Patroni 4.x) — канон-минимум, на который пишутся дашборд/алерты: `patroni_master`, `patroni_replica`, `patroni_sync_standby`, `patroni_timeline`, `patroni_xlog_replay_timestamp`, `patroni_version`, `patroni_postgres_running` (лейблы `scope`, `name` — сам Patroni). Эмуляторы остаются на `pg_replica_lag_seconds` — два словаря сосуществуют: эмуляторный (стенд без PgWorker-кластеров) и нативный (реальные ноды); фактический набор фиксирует docker-E2E (паттерн M3) |
-| §5.2 | Новая строка таблицы джоб: `patroni-nodes` — file_sd `sd/patroni-nodes.json`, scheme http (Patroni REST без TLS — t22 вне скоуба), source: генератор из `/pgworker/portalloc/` |
-| §5.4 | Паттерн реализован в стенде: file_sd-генератор `sd-generator` (профиль metrics) читает portalloc и пишет таргеты в volume; прод-мультихост — тот же паттерн рядом с Prometheus (адреса из portalloc честны для мульти-хоста); граница: Kafka/Valkey-ноды без HTTP metrics-эндпоинта — доменные метрики через коллекторы воркеров (§2.3/§2.6), расширение словаря их нод — отдельные задачи |
-| §6 | Приёмка: unit-маппинг portalloc→таргеты, integration-цикл с etcd-фикстурой, docker-E2E «реальный кластер → таргет up → демонтаж → таргет исчез» |
-| §8 | Секция конфигурации `SdGenerator:*` |
+| `arch/14` §2.4 (+ таблица ключей §3, §2.1-оговорка) | Формат записи portalloc: опциональные поля `"alias"`/`"net"` (сетевая идентичность ноды для скрейпа; пишутся только каноническим нодам при заданном `PgWorker:Docker:ScrapeNetwork` — имени сети контура поставки); движок: дополнительный attach нод к сети контура (поверх `pgw-net-<C>`, wal-агенты не подключаются), scrape-сеть движком не создаётся/не удаляется, отсутствует — fail-fast; RMW portalloc поля сохраняет; усыновлённые (`object`) — без полей. Оговорка: alias не входит в dsn/endpoints/панельные пробы (advertised-правило arch/16 не затронуто) |
+| `arch/18` §2.5 | Семантика таргетов: `alias` в записи → `alias:8008` (контейнерный порт Patroni REST — штатная ветка единой сети), без `alias` → advertised `host:patroni` (деградационная ветка: легаси-записи, усыновлённые); фильтр `patroni <= 0` в обеих |
+| `arch/18` §5.2 | Джоба `pgworker` — сетевые таргеты `pgworker:8080`/`pgworker-2:8080` (file_sd 00-up.sh, mTLS без изменений); extra_hosts из as-prometheus удалён |
+| `arch/18` §5.4 | Единая сеть контура `pgw-metrics` (объявляет deploy-компоуз поставки, имя `PGW_METRICS_NETWORK`, дефолт `pgw-metrics`): Prometheus + deploy-воркеры + кластерные ноды; таргеты нод — `alias:8008` из portalloc; advertised-ветка — деградационная; граница Kafka/Valkey — без изменений |
+| `arch/18` §6 | Приёмка: сетевой E2E (attach, alias-таргеты up, отсутствие host-форвардинга), сетевой стенд (чек 65), дефолт-конфиг без ключа не ломает кластерные пути |
 
-`arch/14`/`arch/15`/`arch/20`/`arch/21` НЕ меняются (контракт portalloc
-существует; новый потребитель — читатель).
+### 3.2. Воркер: сетевая идентичность нод (дельта к PgWorker.Docker/Core)
 
-### 3.2. Генератор — `src/Metrics.SdGenerator`
+- **`PgWorker:Docker:ScrapeNetwork`** (`DockerOptions`, string, дефолт
+  пусто): имя сети контура поставки. Стенд/прод — env-ключ
+  `PGW_SCRAPE_NETWORK` в deploy-compose (дефолт `pgw-metrics`); E2E — extraEnv
+  `StartHostAsync` с именем сети окружения класса. Пусто — attach не
+  делается (деградационный контур без сетевой идентичности: записи без
+  alias → advertised-таргеты).
+- **`NodeAddress`/`PortallocEntry`** (`PgWorker.Core/Model/Portalloc.cs`):
+  nullable `ScrapeAlias`/`ScrapeNetwork` (JSON `alias`/`net`,
+  `WhenWritingNull` — записи без полей бинарно те же, что в базе);
+  `Portalloc.Serialize/Parse` — симметрично (RMW сохраняет).
+- **`ClusterDriver.EnsureNode`**: при заданном ключе — Ensure-attach
+  контейнера канонической ноды к сети контура (идемпотентно по
+  `inspect.Networks`, паттерн кластер-сетевого инварианта; сети нет —
+  fail-fast с diagnose; усыновлённые — обходятся). Точки записи portalloc
+  (provision/add-shard/adoption/repair) при заданном ключе дописывают
+  `alias` = `NodeName(C, X, n)` и `net` = значение ключа.
 
-.NET mini-сервис (console + hosted service; паттерн поставки воркеров):
-`HostApplicationBuilder` + фоновый цикл + Kestrel только для самонаблюдения
-`/metrics` (порт compose-сети, http — доверенная сеть, паттерн джобы
-`adminpanel`).
+### 3.3. Генератор: сетевые таргеты (дельта к Metrics.SdGenerator)
 
-- **Цикл** (`SdGeneratorLoop`, тик `SdGenerator:RefreshIntervalSec`, дефолт
-  15, `<=0` → 15 + warning-лог — паттерн §4.2 valkey):
-  `IEtcdGateway.RangeAsync("/pgworker/portalloc/")` c перебором endpoints
-  (`EtcdFailover`-паттерн) → парсинг закреплений → сборка таргетов →
-  атомарная запись при diff.
-- **Маппинг** (чистая функция, тестируется unit'ами): ключ
-  `/pgworker/portalloc/<C>` (JSON `{"<X>/<n>":{"host","pg","patroni","doorman",...}}`)
-  → на каждую ноду с `patroni > 0` группу file_sd:
-  `{"targets":["<host>:<patroni>"],"labels":{"cluster":"<C>","shard":"<X>","node":"<n>"}}`.
-  Порядок групп детерминирован (cluster, shard, node). Битые/незнакомые
-  JSON-записи — пропуск записи с warning-логом (толерантность панели,
-  arch/adminpanel: «state-значения строкой — система развивается»).
-- **Самонаблюдение** (`Shared.Metrics`, Meter `SdGenerator`):
-  `sd_generator_last_success_timestamp_seconds` (gauge; обновляется только при
-  успешном тике — консервативно, пустой префикс = успех).
-- **Сам скрейп**: джоба `sd-generator` в prometheus.yml — static
-  `sd-generator:8080`, http (сеть стенда).
+- **`TargetMapping`**: DTO записи + nullable `alias`; per-node правило:
+  `alias` есть → `<alias>:<PatroniRestPort>` (константа 8008 — контейнерный
+  порт контракта ноды, в коде именованная), иначе → `<host>:<patroni>`;
+  фильтры записи (`patroni <= 0`, битый JSON, отсутствие shard/node-
+  разделителя, пустой host) — без изменений; детерминизм порядка (cluster,
+  shard, node) — тот же.
+- Чтение — только `RangeAsync("/pgworker/portalloc/")`; конфигурация
+  генератора — без изменений (сеть ему не нужна: etcd — compose-DNS сети
+  стенда, таргеты резолвит Prometheus).
 
-### 3.3. Стенд: сервис и Prometheus (профиль `metrics`)
+### 3.4. Стенд: единая сеть контура (дельта deploy/dev-stand)
 
-`dev-stand/adminpanel/docker-compose.yml`:
+- **`deploy/docker-compose.yml`**: сеть `pgw-metrics`
+  (`name: ${PGW_METRICS_NETWORK:-pgw-metrics}`); pgworker/pgworker-2 — в ней
+  с aliases `pgworker`/`pgworker-2`; env `PgWorker__Docker__ScrapeNetwork:
+  ${PGW_SCRAKE_NETWORK:-pgw-metrics}`. Host-публикации 8080/8083 и mTLS —
+  без изменений (панель/чеки — не скрейп).
+- **`dev-stand/adminpanel/docker-compose.yml`** (as-prometheus):
+  external-сеть `pgw-metrics` (имя — env `METRICS_NETWORK`), **удалён
+  `extra_hosts: host.docker.internal:host-gateway`**. sd-generator — без
+  изменений (сеть стенда: etcd по compose-DNS, файл в volume).
+- **`checks/00-up.sh`**: `pgworker-targets.json` — сетевые таргеты
+  `[{"targets":["pgworker:8080","pgworker-2:8080"]}]` (host-порты остаются
+  в env для advertise/чеков); порядок подъёма — deploy-контур раньше
+  стендового компоуза (сеть создаётся до external-attach).
+- **`checks/90-down.sh`**: обратный порядок (стендовый компоуз down → deploy
+  down сносит pgw-metrics) — осиротевшей сети не остаётся.
+- Правила/дашборд/чек 65 — без изменений контента (21 рул); ассерты чека —
+  таргеты сетевые при их наличии.
 
-```yaml
-  sd-generator:
-    build: { context: ../.., dockerfile: docker/Metrics.SdGenerator.Dockerfile }
-    image: sdgenerator:dev            # локально собираемый — в registry НЕ класть
-    container_name: as-sd-generator
-    profiles: ["metrics"]
-    volumes:
-      - prometheus-sd:/sd             # rw — пишет file_sd
-    environment:
-      SdGenerator__Etcd__Endpoints__0..2: http://etcd1..3:2379   # сеть стенда
-      SdGenerator__OutputPath: /sd/patroni-nodes.json
-  prometheus:
-    volumes:
-      - prometheus-sd:/etc/prometheus/sd:ro   # новый маунт к существующим
-```
+### 3.5. E2E-класс `E2ePatroniFileSdScenarios` (переработка контура)
 
-`metrics/prometheus/prometheus.yml` — новая джоба:
+- Одна сеть окружения на класс: sd-generator и prometheus в `Fx.Net` БЕЗ
+  `WithExtraHost`; скрейп prometheus→ноды по `alias:8008`, самоскрейп по
+  alias `sd-generator:8080`, чтение sd-generator→etcd по alias окружения
+  `http://e2e-etcd1:2379`.
+- Воркер: `extraEnv` с `PgWorker__Docker__ScrapeNetwork = <имя сети
+  окружения>` — движок подключает ноды, portalloc несёт alias/net.
+- Ассерты: таргеты `patroni-nodes` up; `scrapeUrl` — сетевые
+  `http://<alias-ноды>:8008/metrics`, в таргетах НЕТ `host.docker.internal`;
+  канон-минимум `patroni_*` в TSDB (23 серии — E2E-факт); демонтаж →
+  portalloc-ключ исчез, таргеты = 0. Порты — динамические (окно контура);
+  полный teardown + ассерт чистоты — канон e2e-isolation.
 
-```yaml
-  - job_name: patroni-nodes        # реальные ноды PgWorker (t15, arch/18 §2.5)
-    file_sd_configs:
-      - files: ["/etc/prometheus/sd/patroni-nodes.json"]
-      - refresh_interval: 30s
-```
+### 3.6. Образ и конфигурация
 
-`pgworker-targets.json` (перезапись 00-up.sh) не меняется — прецедент
-file_sd сохраняется, механика расширяется.
+`docker/Metrics.SdGenerator.Dockerfile` и `SdGenerator:*` — без изменений;
+новые env: `PGW_METRICS_NETWORK`/`PGW_SCRAPE_NETWORK` (deploy-compose),
+`METRICS_NETWORK` (стендовый external-attach).
 
-### 3.4. Алерты и дашборд
-
-`rules.yml` — три новых правила:
-
-| Alert | Expr | Severity/for |
-|---|---|---|
-| `PatroniNodeDown` | `up{job="patroni-nodes"} == 0` | warning / 5m (нода в rebuild — штатный сценарий, порог терпит пересоздание ~90 с) |
-| `PatroniReplicaLagHigh` | `time() - patroni_xlog_replay_timestamp > 30` | warning / 5m (серия есть только у реплик — зеркало `PgReplicaLagHigh` эмуляторов) |
-| `SdGeneratorStalled` | `time() - sd_generator_last_success_timestamp_seconds > 300` | warning / 0m (фиксированный порог ≥ 3×RefreshIntervalSec по образцу коллекторов §4) |
-
-`dashboards/pg.json` — панели: «Patroni nodes up (real)»
-(`up{job="patroni-nodes"}` by cluster/shard/node), «Patroni role»
-(`patroni_master`/`patroni_replica` by scope/name), «Replica replay lag, s»
-(`time() - patroni_xlog_replay_timestamp`), «Timeline» (`patroni_timeline`).
-Существующие эмуляторные панели остаются.
-
-### 3.5. Образ и конфигурация
-
-- `docker/Metrics.SdGenerator.Dockerfile` — runtime-слой с `COPY` publish-вывода
-  (сборка на хосте — канон E2E-образов; база `mcr.microsoft.com/dotnet/aspnet:
-  10.0` уже в images.txt, новых внешних образов нет).
-- Конфигурация (`[Config]`-паттерн, env-оверрайды compose):
-
-```
-SdGenerator:Etcd:Endpoints[]          # узлы HA-контура (as-etcd-1/2/3)
-SdGenerator:RefreshIntervalSec = 15   # <=0 → 15 + warning
-SdGenerator:OutputPath = /sd/patroni-nodes.json
-SdGenerator:Metrics { Enabled=true, Path="/metrics" }   # самонаблюдение
-```
-
-## 4. Фазы
+## 4. Фазы (дельта 3)
 
 | # | Фаза | Содержимое |
 |---|---|---|
-| Ф0 | arch-first | Правки `arch/18` §2.5/§5.2/§5.4/§6/§8 (§3.1) — контракт до кода |
-| Ф1 | Генератор | `src/Metrics.SdGenerator` (цикл, маппинг, самонаблюдение), `docker/Metrics.SdGenerator.Dockerfile`, unit-тесты `src/tests/Metrics.SdGenerator.UnitTests` |
-| Ф2 | Стенд и мониторинг | compose-сервис + volume, `prometheus.yml` (джобы `patroni-nodes`, `sd-generator`), `rules.yml` (+3 алерта), `pg.json`, счётчик алертов чека 65 → `>= 21` (18+3) |
-| Ф3 | Integration | `src/tests/Metrics.SdGenerator.IntegrationTests`: etcd-фикстура (testcontainers, динамический порт) → цикл генератора → ассерты файла (появление/обновление/исчезновение таргетов, недоступный etcd не трогает файл, `last_success` стоит) |
-| Ф4 | docker-E2E | `src/tests/PgWorker.IntegrationTests`, класс E2E `E2ePatroniFileSd`: контур E2eFixture (etcd + PgWorker + реальный кластер) + контейнер sd-generator + контейнер `prom/prometheus` с file_sd на общий volume → создание кластера (динамические порта, `Scale_AddEmptyShard`-подобная механика) → таргеты `patroni-nodes` up, серии `patroni_*` в TSDB → демонтаж кластера → таргеты исчезли. Полный teardown контура (канон E2E-изоляции) |
-| Ф5 | Мерж-гейт | Roadmap-гейт трека (см. §6, п. 6) |
+| Д0 | arch-first | Правки `arch/14` §2.1/§2.4/§3 и `arch/18` §2.5/§5.2/§5.4/§6 (§3.1) — контракт до кода |
+| Д1 | Воркер | `ScrapeNetwork`-ключ, `NodeAddress`/`PortallocEntry` (alias/net, симметричная сериализация), Ensure-attach в `ClusterDriver.EnsureNode`, дописывание полей в точках записи portalloc; unit-тесты (сериализация/RMW-сохранение/дефолт без полей/fail-fast без сети) |
+| Д2 | Генератор | `TargetMapping` alias→`alias:8008` + advertised-ветка; unit (обе ветки, фильтры, детерминизм, смешанный контур) + integration-дельта (put/del записи с alias, живой etcd) |
+| Д3 | Стенд | deploy-compose сеть `pgw-metrics` + aliases + env-ключи, as-prometheus external-attach + удаление extra_hosts, 00-up.sh сетевые pgworker-targets, 90-down порядок; чек 65 зелёный (таргеты сетевые) |
+| Д4 | E2E | Переработка `E2ePatroniFileSdScenarios` на единую сеть класса (§3.5); зелёный прогон |
+| Д5 | Перегон | docker-E2E маркер `Scale_AddEmptyShard` на свежем Release — дефолт-конфиг E2eEnvironment (ключ не задан, attach нет) не ломает кластерные пути (проверка деградационного дефолта поставки); полный прогон серии по ресурсам |
+| Д6 | Мерж-гейт | Roadmap-гейт трека (см. §6, п. 7) |
 
 ## 5. Ограничения
 
-- Код PgWorker/KafkaWorker/ValkeyWorker/AdminPanel НЕ меняется (решение 3:
-  нативные `patroni_*`, без custom-SQL в SPILO_CONFIGURATION): воркеры не
-  узнают о скрейпе; обязательный docker-E2E воркеров не триггерится, E2E Ф4 —
-  приёмка самой t15.
-- Kafka/Valkey-ноды не скрейпятся (нет HTTP metrics-эндпоинта; JMX/RESP-
-  exporter'ы — отдельные задачи при потребности); их доменные метрики уже
-  живут у воркеров (§2.3/§2.6).
-- Ноды с `patroni = 0` (усыптлённые, Patroni-REST сайдкаром/отсутствует) в
-  таргеты не попадают — их живость закрывают панельные SQL-пробы (arch/14 §5 C).
-- Демо-кластер стенда — усыновлённые postgres-контейнеры с hc-эмуляторами:
-  если adopt-закрепление несёт `patroni ≠ 0`, таргеты эмуляторов появятся в
-  `patroni-nodes` параллельно со static-джобой `patroni` (другой
-  `instance`-адрес host-публикации) — дублирование серий между джобами
-  допустимо (различаются `job`-лейблом).
-- Patroni REST — открытый HTTP (arch/13, t22 вне скоуба): скрейп без
-  tls_config, доверенная зона хост-публикаций.
-- Образ `sdgenerator:dev` локально собираемый — в registry не попадает
-  (канон AGENTS.md); новых строк в `images.txt` нет.
-- Стенд single-host: advertised host нод `host.docker.internal` (контейнер
-  Prometheus уже с `extra_hosts: host-gateway`); мульти-хост-достижимость —
-  прод-паттерн §5.4, таргеты portalloc честны.
+- Чтение генератором etcd — только `Range` по `/pgworker/portalloc/`;
+  генератор не пишет в etcd ничего и никогда.
+- Правка движка опциональна по ключу: без `ScrapeNetwork` поведение воркера
+  бинарно идентично базе (ни attach, ни полей) — E2E-серии без ключа и
+  деградационные контуры живут advertised-веткой; смена ключа на живом
+  контуре (конвергенция alias существующих записей) вне скоуба — ключ
+  задаётся поставкой до провижининга.
+- Сетевая семантика — single-хост-контур «дома» (AGENTS.base.md §9);
+  записи без alias (чужая сеть/хост, легаси) — advertised-ветка, адрес
+  честен из portalloc.
+- Ноды с `patroni = 0` не скрейпятся (живость — панельные SQL-пробы,
+  arch/14 §5 C); усыновлённые — advertised-ветка (R9).
+- Kafka/Valkey-ноды не скрейпятся (граница arch/18 §5.4); доменные метрики —
+  коллекторы воркеров.
+- Patroni REST — открытый HTTP (t22 вне скоуба): скрейп без tls_config;
+  джоба pgworker остаётся mTLS (сетевой адрес — не смена транспорта).
+- Порты в тестах — динамические (окно контура, зонды); контейнерный порт
+  8008 — константа контракта ноды (именованная в коде), не host-порт.
+- E2E: полный teardown контура при любом исходе + ассерт чистоты; телеметрия
+  до удалений — канон e2e-launch.
+- Публикации нод 5432/8008 и host-публикации API воркеров остаются (панель,
+  чеки, SQL-клиенты, host-воркер E2E — не скрейп-контур).
+- Образ `sdgenerator:dev` — локально собираемый, в registry не попадает;
+  новых внешних образов нет.
 
 ## 6. Критерии приёмки
 
-1. **Unit**: маппинг `portalloc → file_sd` — лейблы cluster/shard/node,
-   `targets = host:patroni`, пропуск `patroni ≤ 0`, пропуск битых записей,
-   пустой префикс → `[]`, детерминизм порядка, дефолт интервала `<=0` → 15.
-2. **Integration** (живой etcd): put portalloc → таргет в файле ≤ интервала;
-   del → таргет исчез; недоступный etcd → файл и `last_success` не изменились;
-   восстановление → догоняет.
-3. **docker-E2E**: реальный кластер PgWorker в E2E-контуре — таргеты
-   `patroni-nodes` up в настоящем Prometheus, канон-минимум `patroni_*`
-   (§3.1) в TSDB (факт фиксирован тестом); демонтаж кластера — таргеты
-   исчезли; контур полностью зачищен teardown'ом.
-4. **Стенд**: полный подъём `00-up.sh` зелёный (профиль metrics поднимает
-   `sd-generator`); чек 65 — алерт-рулов `>= 21`, таргеты `patroni-nodes`
-   при их наличии up; сервис `sd-generator` самоскрейпится.
-5. **Словарь канонизирован**: `sd_generator_last_success_timestamp_seconds`
-   и `patroni_*`-минимум зафиксированы тестами против arch/18 (факт — M3).
-6. **Мерж-гейт трека reliability** (одним мерж-коммитом): пункт `t15` снят
+1. **Unit (воркер)**: сериализация portalloc с/без `ScrapeNetwork`; RMW-цикл
+   (parse→serialize) сохраняет alias/net; дефолт — записи без полей (бинарно
+   базе); `Portalloc.Parse` толерантен к записям с полями; заданный ключ при
+   отсутствующей сети — fail-fast.
+2. **Unit (генератор)**: alias → `alias:8008`, без alias → `host:patroni`;
+   фильтры (`patroni <= 0`, битые записи, без shard/node) в обеих ветках;
+   детерминизм порядка; смешанный контур (часть записей с alias) маппится
+   покомпонентно.
+3. **Integration (генератор, живой etcd)**: put записи с alias → сетевой
+   таргет ≤ интервала; del → исчез; недоступный etcd → файл и `last_success`
+   не изменились.
+4. **docker-E2E (единая сеть класса)**: ноды attached к сети окружения
+   (inspect подтверждает membership), таргеты `patroni-nodes` up по
+   `alias:8008`, в `scrapeUrl` нет `host.docker.internal`, sd-generator читает
+   etcd по alias сети; канон-минимум `patroni_*` (23 серии — фикс
+   E2E-фактом) в TSDB; демонтаж → таргеты = 0; teardown чист.
+5. **Стенд (единая сеть контура)**: чек 65 зелёный — таргеты pgworker
+   сетевые (`pgworker:8080`/`pgworker-2:8080`), extra_hosts в as-prometheus
+   отсутствует, таргеты patroni-nodes при наличии — сетевые; 00-up/90-down
+   не оставляют осиротевшей сети `pgw-metrics`.
+6. **docker-E2E (дефолт поставки)**: маркер `Scale_AddEmptyShard` на свежем
+   Release зелёный — конфиг без ключа (attach нет) не ломает
+   провижининг/кластерные инварианты.
+7. **Мерж-гейт трека reliability** (одним мерж-коммитом): пункт `t15` снят
    из `arch/roadmap/reliability.md`; в `arch/roadmap/reliability-report.md`
-   строка перенесена в «Сделано» (merge-коммит + что изменилось в N), из
-   сводки N убрано «метрики реальных нод не собираются» и слабое место
-   «прод-ноды недоскрейпимы» — заменено на file_sd-канал нод (оговаривается
-   граница Kafka/Valkey-нод); `arch/18` правки Ф0 в этом же коммите.
+   строка перенесена в «Сделано» (merge-коммит + что изменилось в N: канал
+   file_sd нод в единой сети мониторинга и кластеров, без host-форвардинга
+   во всех контурах), из сводки N убрано «метрики реальных нод не
+   собираются» / «прод-ноды недоскрейпимы»; правки `arch/14`/`arch/18` (Д0) —
+   в этом же коммите.
