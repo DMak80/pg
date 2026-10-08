@@ -284,7 +284,9 @@ public class PartitionReassignerProcessTests
         var rig = await NewRig();
         rig.Etcd.Seed("/kafka/clusters/events/brokers/broker4/state", "TO_REMOVE");
         rig.Admin.Topics = [new KafkaTopicView("orders", 2, [[1, 2, 4], [1, 2]])];
-        rig.Etcd.Seed(TicketKey, """{"requested_unix":1756500123,"requested_by":"ops"}""");
+        // Свежая заявка: waiting-drain — экспирационная точка (t10), старую сняло бы.
+        rig.Etcd.Seed(TicketKey,
+            $$"""{"requested_unix":{{rig.Time.Utc.ToUnixTimeSeconds() - 10}},"requested_by":"ops"}""");
 
         // Act
         var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
@@ -358,5 +360,188 @@ public class PartitionReassignerProcessTests
         // Assert: мутации запрещены.
         result.IsSuccess.Should().BeFalse();
         result.Error!.Message.Should().Contain("клэйм");
+    }
+
+    // ===== t10: экспирация заявки rebalances под тройным гвардом §3.1 =====
+
+    private static string OutcomeKey => "/kafkaworker/ticket_outcomes/events";
+
+    // Возраст относительно часов процесса (FixedTimeProvider рига).
+    private static void SeedOldTicket(Fakes.FakeEtcd etcd, long nowUnix)
+        => etcd.Seed(TicketKey,
+            $$"""{"requested_unix":{{nowUnix - 3700}},"requested_by":"ops"}""");
+
+    [Fact]
+    public async Task Run_EternalDrain_OldRebalanceTicket_Expired()
+    {
+        // Arrange: drain-кандидат TO_REMOVE + заявка старая; прогресса нет.
+        var rig = await NewRig();
+        rig.Etcd.Seed("/kafka/clusters/events/brokers/broker4/state", "TO_REMOVE");
+        rig.Admin.Topics = [new KafkaTopicView("orders", 2, [[1, 2, 4], [2, 4, 1]])];
+        SeedOldTicket(rig.Etcd, rig.Time.Utc.ToUnixTimeSeconds());
+
+        // Act
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: заявка снята (del), исход kind=rebalance reason=waiting-drain;
+        // drain-прогресс balance не создан (тик завершён экспирацией).
+        result.IsSuccess.Should().BeTrue();
+        rig.Etcd.Store.Keys.Should().NotContain(TicketKey);
+        var outcome = rig.Etcd.Store[OutcomeKey].Value;
+        outcome.Should().Contain("\"kind\":\"rebalance\"")
+            .And.Contain("\"outcome\":\"expired\"")
+            .And.Contain("\"reason\":\"waiting-drain\"");
+        rig.Etcd.Store.Keys.Should().NotContain(ProgressKey);
+    }
+
+    [Fact]
+    public async Task Run_ClusterDown_OldRebalanceTicket_Expired()
+    {
+        // Arrange: endpoints нет; заявка старая; прогресс-ключ НЕ жив; staging нет.
+        var rig = await NewRig();
+        rig.Etcd.Store.Remove("/kafka/clusters/events/endpoints");
+        SeedOldTicket(rig.Etcd, rig.Time.Utc.ToUnixTimeSeconds());
+
+        // Act
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: заявка снята; исход reason=waiting-cluster; Success.
+        result.IsSuccess.Should().BeTrue();
+        rig.Etcd.Store.Keys.Should().NotContain(TicketKey);
+        var outcome = rig.Etcd.Store[OutcomeKey].Value;
+        outcome.Should().Contain("\"kind\":\"rebalance\"")
+            .And.Contain("\"reason\":\"waiting-cluster\"");
+    }
+
+    [Fact]
+    public async Task Run_ClusterDownWithLiveBalance_TicketNotExpired()
+    {
+        // Arrange (AC3): endpoints нет + прогресс mode=balance жив + заявка старая —
+        // идущая ребалансировка не снимается (гвард previous работает и в
+        // endpoints-точке).
+        var rig = await NewRig();
+        rig.Etcd.Store.Remove("/kafka/clusters/events/endpoints");
+        rig.Etcd.Seed(ProgressKey,
+            """{"mode":"balance","partitions_total":1,"partitions_remaining":1,"submitted_unix":1,"updated_unix":2,"instance":"x"}""");
+        SeedOldTicket(rig.Etcd, rig.Time.Utc.ToUnixTimeSeconds());
+
+        // Act
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: заявка ЖИВА (гвард: батчи balance идут); journal waiting-cluster;
+        // исхода нет.
+        result.IsSuccess.Should().BeTrue();
+        rig.Etcd.Store.Keys.Should().Contain(TicketKey);
+        rig.Etcd.Store.Keys.Should().NotContain(OutcomeKey);
+        var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
+        state.Value!.Phase.Should().Be("waiting-cluster");
+    }
+
+    [Fact]
+    public async Task Run_BlindProbe_OldRebalanceTicket_Expired()
+    {
+        // Arrange: DescribeTopics слепой + заявка старая; прогресс balance НЕ жив;
+        // staging нет.
+        var rig = await NewRig();
+        rig.Admin.TopicsError = new ApplicationException("kafka: timeout");
+        SeedOldTicket(rig.Etcd, rig.Time.Utc.ToUnixTimeSeconds());
+
+        // Act
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: заявка снята; исход reason=waiting-cluster; Success.
+        result.IsSuccess.Should().BeTrue();
+        rig.Etcd.Store.Keys.Should().NotContain(TicketKey);
+        rig.Etcd.Store[OutcomeKey].Value.Should().Contain("\"reason\":\"waiting-cluster\"");
+    }
+
+    [Fact]
+    public async Task Run_LiveBalanceProgress_OldTicket_NotExpired()
+    {
+        // Arrange (AC3): прогресс mode=balance жив + заявка старая — батчи идут,
+        // заявку не снимает даже достижимая экспирационная точка (здесь точек нет —
+        // кластер жив и зряч, drain нет; баланс доигрывается по факту).
+        var rig = await NewRig();
+        rig.Admin.Topics = [new KafkaTopicView("orders", 2, [[1, 2], [2, 1]])];
+        rig.Etcd.Seed(ProgressKey,
+            """{"mode":"balance","partitions_total":2,"partitions_remaining":2,"submitted_unix":1,"updated_unix":2,"instance":"x"}""");
+        SeedOldTicket(rig.Etcd, rig.Time.Utc.ToUnixTimeSeconds());
+
+        // Act
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: заявка жива, прогресс обновлён (mode=balance), подача была.
+        result.IsSuccess.Should().BeTrue();
+        rig.Etcd.Store.Keys.Should().Contain(TicketKey);
+        rig.Etcd.Store.Keys.Should().NotContain(OutcomeKey);
+        ReadProgress(rig.Etcd).Mode.Should().Be("balance");
+        rig.Driver.Execs.Should().HaveCount(1);
+    }
+
+    [Fact]
+    public async Task Run_OpenCaWindow_OldRebalanceTicket_NotExpired()
+    {
+        // Arrange (AC3): staging ca_next_* жив + заявка старая (прогресс не жив) —
+        // гвард: окно ротации открыто, снятие запрещено; точки waiting-cluster
+        // (endpoints нет) даёт чистый waiting.
+        var rig = await NewRig();
+        rig.Etcd.Store.Remove("/kafka/clusters/events/endpoints");
+        rig.Etcd.Seed("/kafka/clusters/events/ca_next_key", "next-key");
+        rig.Etcd.Seed("/kafka/clusters/events/ca_next_pem", "next-pem");
+        SeedOldTicket(rig.Etcd, rig.Time.Utc.ToUnixTimeSeconds());
+
+        // Act
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: заявка ЖИВА; journal waiting-cluster; исхода нет.
+        result.IsSuccess.Should().BeTrue();
+        rig.Etcd.Store.Keys.Should().Contain(TicketKey);
+        rig.Etcd.Store.Keys.Should().NotContain(OutcomeKey);
+        var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
+        state.Value!.Phase.Should().Be("waiting-cluster");
+    }
+
+    [Fact]
+    public async Task Run_FreshTicket_WaitingDrain()
+    {
+        // Arrange: возраст < порога; drain-кандидат жив.
+        var rig = await NewRig();
+        rig.Etcd.Seed("/kafka/clusters/events/brokers/broker4/state", "TO_REMOVE");
+        rig.Admin.Topics = [new KafkaTopicView("orders", 2, [[1, 2, 4], [2, 4, 1]])];
+        rig.Etcd.Seed(TicketKey,
+            $$"""{"requested_unix":{{rig.Time.Utc.ToUnixTimeSeconds() - 10}},"requested_by":"ops"}""");
+
+        // Act
+        var result = await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: waiting-drain; заявка жива; исхода нет.
+        result.IsSuccess.Should().BeTrue();
+        rig.Etcd.Store.Keys.Should().Contain(TicketKey);
+        rig.Etcd.Store.Keys.Should().NotContain(OutcomeKey);
+        var state = await rig.Journal.ReadAsync("events", CancellationToken.None);
+        state.Value!.Phase.Should().Be("waiting-drain");
+    }
+
+    [Fact]
+    public async Task Run_BalanceConverged_WritesDoneOutcome()
+    {
+        // Arrange: заявка жива; факт RF=2 при трёх живых — план добирает до RF=3.
+        var rig = await NewRig();
+        rig.Admin.Topics = [new KafkaTopicView("orders", 2, [[1, 2], [2, 1]])];
+        rig.Etcd.Seed(TicketKey, """{"requested_unix":1756500123,"requested_by":"ops"}""");
+
+        // Act: тик 1 подаёт батч; кластер «доехал» — тик 2 снимает заявку.
+        (await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None))
+            .IsSuccess.Should().BeTrue();
+        rig.Admin.Topics = [new KafkaTopicView("orders", 2, [[1, 2, 3], [2, 1, 3]])];
+        (await rig.Process.RunAsync(await Snapshot(rig.Etcd), CancellationToken.None))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert: исход done kind=rebalance с аудитом заявки; заявка удалена.
+        rig.Etcd.Store.Keys.Should().NotContain(TicketKey);
+        var outcome = rig.Etcd.Store[OutcomeKey].Value;
+        outcome.Should().Contain("\"kind\":\"rebalance\"")
+            .And.Contain("\"outcome\":\"done\"")
+            .And.Contain("\"requested_unix\":1756500123");
     }
 }

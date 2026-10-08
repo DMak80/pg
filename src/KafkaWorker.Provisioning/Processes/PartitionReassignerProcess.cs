@@ -35,6 +35,12 @@ public sealed record ReassignProgress(
 /// (панель), заявка снимается по сходимости. Слепая проба — никаких подач
 /// (собственная слепота воркера не повод трогать партиции), прошлый
 /// прогресс-ключ не трогается. Прогресс-ключ пишет только держатель клэйма.
+/// <para>t10: не-начатая заявка rebalances старее порога снимается в трёх
+/// передержках (waiting-cluster по endpoints / слепой пробе, waiting-drain)
+/// под тройным гвардом §3.1 (прогресс mode=balance не жив ∧ staging ca_next_*
+/// отсутствует — идущая ребалансировка не снимается никогда, её стагнацию
+/// закрывает панельный stale-алерт). Финал balance пишет исход done в
+/// ticket_outcomes/&lt;C&gt;.</para>
 /// </summary>
 public sealed class PartitionReassignerProcess(
     IEtcdGateway etcd,
@@ -59,6 +65,13 @@ public sealed class PartitionReassignerProcess(
     private readonly ConcurrentDictionary<string, long> _lastOk = new();
     private readonly ConcurrentDictionary<string, (string Signature, long Unix)> _lastSubmit = new();
 
+    // t10: экспирация не-начатых заявок rebalances + исходы финалов.
+    private readonly TicketExpirator _tickets = new(etcd, endpoints);
+
+    // Аудит заявки (для исхода done; рестарт между сходимостью и del теряет
+    // аудит — исход пишется с фактическим временем финала).
+    private readonly ConcurrentDictionary<string, TicketRequestAudit?> _ticketAudit = new();
+
     public async Task<Result> RunAsync(KafkaClusterSnapshot snap, CancellationToken ct)
     {
         var cluster = snap.Cluster;
@@ -78,14 +91,38 @@ public sealed class PartitionReassignerProcess(
         if (!ticket.IsSuccess)
             return ticket.Error!;
         var hasTicket = ticket.Value is not null;
+        if (hasTicket)
+            _ticketAudit[cluster] = TicketOutcomes.ParseAudit(ticket.Value!.Value);
+
+        // Прогресс-ключ: total сохраняется между тиками, submitted — для дедупа.
+        // Чтение ВЫШЕ проверки «кластер не поднят» (t10): решение «идущая
+        // balance» нужно во всех трёх точках экспирации, включая самую раннюю —
+        // endpoints-точку.
+        var progressKv = await GetAsync(ProgressKey(cluster), ct);
+        if (!progressKv.IsSuccess)
+            return progressKv.Error!;
+        var previous = ParseProgress(progressKv.Value);
 
         // Кластер не поднят (endpoints/креды появляются на K5): жива заявка —
-        // журнал-ожидание; иначе нечего двигать.
+        // waiting/экспирация под тройным гвардом (t10); иначе нечего двигать.
         if (snap.Endpoints is null || snap.AppUser is null || snap.AppPassword is null)
         {
             if (hasTicket)
+            {
+                var expired = await TryExpireRebalanceAsync(
+                    cluster, ticket.Value!.Value, "waiting-cluster", previous, now, ct);
+                if (!expired.IsSuccess)
+                    return expired.Error!;
+                if (expired.Value)
+                {
+                    _lastOk[cluster] = now;
+                    return Result.Success(); // заявка снята штатно — тик не ошибка
+                }
+
                 return await JournalAsync(cluster, "waiting-cluster",
                     "кластер не поднят — ребалансировка ждёт endpoints/кредов", ct);
+            }
+
             return Result.Success();
         }
 
@@ -95,6 +132,19 @@ public sealed class PartitionReassignerProcess(
         var described = await admin.DescribeTopicsAsync(includeInternal: true, ct);
         if (!described.IsSuccess)
         {
+            if (hasTicket)
+            {
+                var expired = await TryExpireRebalanceAsync(
+                    cluster, ticket.Value!.Value, "waiting-cluster", previous, now, ct);
+                if (!expired.IsSuccess)
+                    return expired.Error!;
+                if (expired.Value)
+                {
+                    _lastOk[cluster] = now;
+                    return Result.Success(); // заявка снята штатно
+                }
+            }
+
             var blind = await journal.WritePhaseAsync(cluster, Op, "waiting-cluster", claims.InstanceId,
                 $"метаданные недоступны — слепая проба, подач нет: {described.Error!.Message}", ct);
             if (!blind.IsSuccess)
@@ -103,12 +153,6 @@ public sealed class PartitionReassignerProcess(
             return Result.Success();
         }
         var all = described.Value;
-
-        // Прогресс-ключ: total сохраняется между тиками, submitted — для дедупа.
-        var progressKv = await GetAsync(ProgressKey(cluster), ct);
-        if (!progressKv.IsSuccess)
-            return progressKv.Error!;
-        var previous = ParseProgress(progressKv.Value);
 
         // D2: drain-кандидаты — ТОЛЬКО по state=TO_REMOVE (без фильтра по
         // факту реплик: завершённость проверяется ниже по свежим метаданным
@@ -120,9 +164,19 @@ public sealed class PartitionReassignerProcess(
 
         if (drainCandidate is not null)
         {
-            // Заявка balance ждёт — сначала демонтаж (spec §5.3 B1).
+            // Заявка balance ждёт/экспирируется (t10) — сначала демонтаж (spec §5.3 B1).
             if (hasTicket)
             {
+                var expired = await TryExpireRebalanceAsync(
+                    cluster, ticket.Value!.Value, "waiting-drain", previous, now, ct);
+                if (!expired.IsSuccess)
+                    return expired.Error!;
+                if (expired.Value)
+                {
+                    _lastOk[cluster] = now;
+                    return Result.Success(); // заявка снята штатно
+                }
+
                 var waiting = await journal.WritePhaseAsync(cluster, Op, "waiting-drain", claims.InstanceId,
                     $"идёт drain {drainCandidate.Name} — заявка ребалансировки ждёт", ct);
                 if (!waiting.IsSuccess)
@@ -149,6 +203,32 @@ public sealed class PartitionReassignerProcess(
         }
 
         return await RunBalanceAsync(snap, all, previous, now, ct);
+    }
+
+    // Экспирация заявки rebalances под тройным гвардом §3.1 (t10): заявка старее
+    // порога и НЕ начата — прогресс-ключ balance не жив (предикат 3: батчи не
+    // подаются) И окно ротации не открыто (предикат 2: staging ca_next_* —
+    // CA-окно K не смешивается с решением о заявке, гвард общий). Идущая
+    // ребалансировка (mode=balance жив) не снимается никогда — её стагнацию
+    // закрывает панельный kafka-reassignment-stale. Гвард по previous
+    // обязателен во ВСЕХ точках (включая «кластер не поднят»).
+    private async Task<Result<bool>> TryExpireRebalanceAsync(
+        string cluster, string ticketPayload, string reason, ReassignProgress? previous, long now, CancellationToken ct)
+    {
+        var stagingKey = await GetAsync(CaNextKeyKey(cluster), ct);
+        if (!stagingKey.IsSuccess)
+            return Result<bool>.Failed(stagingKey.Error!);
+        var stagingPem = await GetAsync(CaNextPemKey(cluster), ct);
+        if (!stagingPem.IsSuccess)
+            return Result<bool>.Failed(stagingPem.Error!);
+        var mutationLive = previous is { Mode: "balance" }
+            || stagingKey.Value is not null
+            || stagingPem.Value is not null;
+        return await _tickets.TryExpireAsync(
+            journal, cluster, Op, claims.InstanceId,
+            TicketOutcomes.Key("/kafkaworker", cluster), TicketOutcomes.KindRebalance,
+            RebalanceKey(cluster), ticketPayload, reason,
+            options.RotationTicketTimeoutSec, now, mutationLive, ct);
     }
 
     // D3–D6: drain-сценарий.
@@ -252,6 +332,15 @@ public sealed class PartitionReassignerProcess(
         var plan = ReassignPlanner.PlanBalance(all, targets, snap.Config.ReplicationFactor);
         if (ReassignPlanner.Pending(all, plan).Count == 0)
         {
+            // Исход done ДО del заявки (t10): после del ветка сходимости
+            // недостижима (B1-cancelled) — провал etcd между del и исходом
+            // терял бы done навсегда; put идемпотентен, повтор ветки перезапишет.
+            var outcomeDone = await _tickets.WriteDoneAsync(
+                TicketOutcomes.Key("/kafkaworker", cluster), TicketOutcomes.KindRebalance,
+                _ticketAudit.GetValueOrDefault(cluster), now, ct);
+            if (!outcomeDone.IsSuccess)
+                return Fail(cluster, outcomeDone.Error!, "writing-outcome");
+
             // Сходимость: сначала факт, потом del — повтор тика доиграет.
             var delTicket = await DeleteAsync(RebalanceKey(cluster), prefix: false, ct);
             if (!delTicket.IsSuccess)
@@ -259,6 +348,7 @@ public sealed class PartitionReassignerProcess(
             var delProgress = await DeleteAsync(ProgressKey(cluster), prefix: false, ct);
             if (!delProgress.IsSuccess)
                 return Fail(cluster, delProgress.Error!, "deleting-progress");
+            _ticketAudit.TryRemove(cluster, out _);
 
             _lastOk[cluster] = now;
             return await journal.WritePhaseAsync(cluster, Op, "done", claims.InstanceId,
@@ -417,6 +507,11 @@ public sealed class PartitionReassignerProcess(
     public static string RebalanceKey(string cluster) => $"/kafkaworker/rebalances/{cluster}";
 
     public static string ProgressKey(string cluster) => $"/kafkaworker/reassignments/{cluster}";
+
+    // staging-ключи CA-окна K (t10): предикат 2 гварда экспирации.
+    private static string CaNextKeyKey(string cluster) => $"/kafka/clusters/{cluster}/ca_next_key";
+
+    private static string CaNextPemKey(string cluster) => $"/kafka/clusters/{cluster}/ca_next_pem";
 
     // Failover-обёртки: первый успешный endpoint выигрывает.
     private async Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)

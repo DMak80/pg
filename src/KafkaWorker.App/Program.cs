@@ -298,7 +298,8 @@ builder.Services.AddSingleton(sp =>
         sp.GetRequiredService<IKafkaAdminClientFactory>(),
         new ReassignOptions(
             opts.Loops.ReassignIntervalSec, opts.Loops.ReassignBatchPartitions,
-            opts.Thresholds.ReassignExecSec, opts.Thresholds.ReassignRetrySubmitSec),
+            opts.Thresholds.ReassignExecSec, opts.Thresholds.ReassignRetrySubmitSec,
+            opts.Thresholds.RotationTicketTimeoutSec),
         sp.GetRequiredService<TimeProvider>());
 });
 builder.Services.AddSingleton(sp => new RemoveBrokerProcess(
