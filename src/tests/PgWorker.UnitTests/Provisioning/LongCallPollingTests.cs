@@ -8,8 +8,11 @@ namespace PgWorker.UnitTests.Provisioning;
 
 // Поллинг-инвариант долгих одиночных вызовов: вызов драйвера не молчит дольше
 // окна проверки watchdog — итерации с таймаутом короче окна, Mark ПО ФАКТУ
-// итерации + лог elapsed (включая завершающую успешную); ошибка драйвера —
-// наверх без повторов; бюджет фазы — граница (PatroniBootSec-семантика).
+// итерации + лог elapsed (включая завершающую успешную); отмена по
+// итерационному таймауту (брошенная вызовом ИЛИ проглоченная им в
+// Result.Failed) — повтор до бюджета (spec §1.2 п.4); ошибка вызова
+// неотменного характера — наверх без повторов; внешний ct — проброс OCE;
+// бюджет фазы — граница (PatroniBootSec-семантика).
 public sealed class LongCallPollingTests
 {
     private sealed class MarkCounter : Shared.Core.Hosting.ILoopProgress
@@ -96,9 +99,193 @@ public sealed class LongCallPollingTests
             progress, new CollectingLogger(),
             TimeSpan.FromMilliseconds(300), TimeSpan.FromSeconds(2), CancellationToken.None);
 
-        // Assert: существующий бюджет — граница фазы (PatroniBootSec-семантика)
+        // Assert: существующий бюджет — граница фазы (PatroniBootSec-семантика),
+        // ошибка — не раньше исчерпания (несколько итераций успели пройти)
         result.IsSuccess.Should().BeFalse();
         result.Error!.Message.Should().Contain("бюджет");
+        progress.Marks.Should().BeGreaterThanOrEqualTo(2,
+            "ошибка бюджета — только после нескольких таймаут-итераций, не раньше");
+    }
+
+    // AAA (spec §1.2 п.4, разбор E2E-маркера «SQL-скаляр не выполнен …
+    // The operation was canceled»): вызов-обёртка ПРОГЛОТИЛА отмену
+    // итерационного таймаута в Result.Failed (OCE в цепочке ошибки) —
+    // это «итерация не уложилась», а не ошибка: повтор до успеха на 2-й.
+    [Fact]
+    public async Task ПроглоченнаяОтмена_FailedСОЧЕ_ПовторяетсяДоУспеха()
+    {
+        // Arrange: таймаут итерации 300 мс; 1-й вызов «висит», ловит отмену
+        // токена и возвращает Failed с OCE в цепочке (как DatabaseProvisioner);
+        // 2-й вызов — успех
+        var progress = new MarkCounter();
+        var logger = new CollectingLogger();
+        var calls = 0;
+
+        // Act
+        var result = await LongCallPolling.EnsureAsync(
+            "sql шарда shard3",
+            async token =>
+            {
+                calls++;
+                if (calls >= 2)
+                    return Result.Success(); // 2-я итерация — «медленный daemon отпустил»
+                try
+                {
+                    await Task.Delay(TimeSpan.FromMilliseconds(600), token); // дольше таймаута 300 мс
+                }
+                catch (OperationCanceledException)
+                {
+                    return Result.Failed(new ApplicationException(
+                        "SQL-скаляр не выполнен [dsn]: The operation was canceled",
+                        new OperationCanceledException()));
+                }
+
+                return Result.Success();
+            },
+            progress, logger,
+            TimeSpan.FromMilliseconds(300), TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        // Assert: успех (ошибка отмены НЕ ушла наверх), ровно 2 итерации,
+        // elapsed-логи: таймаут-повтор + завершающая успешная
+        result.IsSuccess.Should().BeTrue();
+        calls.Should().Be(2);
+        logger.Messages.Should().Contain(m => m.Contains("отменена по таймауту"),
+            "итерация с проглоченной отменой логируется как таймаут-повтор");
+        logger.Messages.Should().Contain(m => m.Contains("успех"),
+            "завершающая успешная итерация логируется с elapsed");
+    }
+
+    // AAA (бюджет, проглоченная отмена): вызов вечно возвращает Failed с OCE —
+    // повтор идёт до исчерпания бюджета, ошибка бюджета — не раньше.
+    [Fact]
+    public async Task ВечнаяПроглоченнаяОтмена_БюджетИсчерпан_НеРаньше()
+    {
+        // Arrange: таймаут 200 мс, бюджет 1 с (≈5 итераций); каждый вызов
+        // «висит» до таймаута и возвращает Failed с OCE в цепочке
+        var progress = new MarkCounter();
+        var calls = 0;
+
+        // Act
+        var result = await LongCallPolling.EnsureAsync(
+            "sql шарда shard3",
+            async token =>
+            {
+                calls++;
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(10), token);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+
+                return Result.Failed(new ApplicationException(
+                    "SQL-скаляр не выполнен [dsn]: The operation was canceled",
+                    new OperationCanceledException()));
+            },
+            progress, new CollectingLogger(),
+            TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(1), CancellationToken.None);
+
+        // Assert: ошибка бюджета (обработка процесса — прежняя, A5 идемпотентен),
+        // не раньше нескольких итераций
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Message.Should().Contain("бюджет");
+        calls.Should().BeGreaterThanOrEqualTo(3,
+            "повторы до бюджета — ошибка не раньше исчерпания (spec §1.2 п.4)");
+    }
+
+    // AAA (внешний ct, брошенная отмена): отмена внешнего токена пробрасывает
+    // OperationCanceledException наружу немедленно — не трактуется как таймаут.
+    [Fact]
+    public async Task ВнешняяОтмена_ПробросOceНаружу()
+    {
+        // Arrange: внешний токен отменён до вызова; вызов уважает токен
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var calls = 0;
+
+        // Act + Assert: OCE наружу с первой итерации
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            LongCallPolling.EnsureAsync(
+                "create/start ноды shard1a",
+                async token =>
+                {
+                    calls++;
+                    await Task.Delay(TimeSpan.FromSeconds(10), token);
+                    return Result.Success();
+                },
+                new MarkCounter(), new CollectingLogger(),
+                TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30), cts.Token));
+        calls.Should().Be(1, "внешняя отмена — немедленный проброс, без повторов");
+    }
+
+    // AAA (внешний ct, проглоченная отмена): вызов вернул Failed с OCE при
+    // отменённом внешнем токене — проброс OCE, не «ошибка» и не повтор.
+    [Fact]
+    public async Task ПроглоченнаяВнешняяОтмена_ПробросOceНаружу()
+    {
+        // Arrange: внешний токен отменён; вызов глотает OCE в Result.Failed
+        using var cts = new CancellationTokenSource();
+        cts.Cancel();
+        var calls = 0;
+
+        // Act + Assert
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            LongCallPolling.EnsureAsync(
+                "sql шарда shard3",
+                async token =>
+                {
+                    calls++;
+                    try
+                    {
+                        await Task.Delay(TimeSpan.FromSeconds(10), token);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                    }
+
+                    return Result.Failed(new ApplicationException(
+                        "SQL-скаляр не выполнен [dsn]: The operation was canceled",
+                        new OperationCanceledException()));
+                },
+                new MarkCounter(), new CollectingLogger(),
+                TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(30), cts.Token));
+        calls.Should().Be(1);
+    }
+
+    // AAA (контр-кейс «(а)»): ошибка вызова НЕотменного характера при
+    // сработавшем итерационном таймауте — наверх как есть, без повторов
+    // (поллинг ловит молчание, не сбои).
+    [Fact]
+    public async Task ОшибкаНеотменногоХарактера_НаверхБезПовторов()
+    {
+        // Arrange: таймаут 200 мс; вызов «висит», ловит отмену токена, но
+        // возвращает FAILED с ошибкой валидации (OCE в цепочке НЕТ)
+        var calls = 0;
+
+        // Act
+        var result = await LongCallPolling.EnsureAsync(
+            "sql шарда shard3",
+            async token =>
+            {
+                calls++;
+                try
+                {
+                    await Task.Delay(TimeSpan.FromSeconds(10), token);
+                }
+                catch (OperationCanceledException)
+                {
+                }
+
+                return Result.Failed(new ApplicationException("хост не в таблице Docker:Hosts"));
+            },
+            new MarkCounter(), new CollectingLogger(),
+            TimeSpan.FromMilliseconds(200), TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        // Assert: ошибка наверх первым вызовом (тик повторит), поллинг не крутится
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Message.Should().Contain("хост не в таблице");
+        calls.Should().Be(1, "неотменная ошибка — наверх без повторов (spec §1.2 п.4а)");
     }
 
     // Локальная копия образца Shared.Core.UnitTests: счётчик StopApplication.
