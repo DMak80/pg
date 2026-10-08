@@ -17,3 +17,12 @@ else
   docker compose --profile full --profile kafka --profile valkey down --remove-orphans
   echo "✓ стенд разобран (etcd-data сохранён)"
 fi
+
+# t15 (arch/18 §5.4): deploy-контур разбирается ПОСЛЕ стендового — compose down
+# deploy-проекта сносит сеть pgw-metrics (её владелец), осиротевшей сети не
+# остаётся. Воркеры deploy больше НЕ переживают 90-down — подъём 00-up.sh.
+ROOT="$(cd ../.. && pwd)"
+if [ -f "$ROOT/deploy/.env" ]; then
+  (cd "$ROOT/deploy" && docker compose --env-file .env down ${1:+-v} --remove-orphans) \
+    || echo "⚠ deploy down не удался (docker network ls | grep pgw-metrics)"
+fi

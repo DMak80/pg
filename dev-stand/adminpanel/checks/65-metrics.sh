@@ -89,7 +89,13 @@ pn_up=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[] | select(.
 if [ "$pn_total" -eq 0 ]; then
   echo "  patroni-nodes: кластеров PgWorker на стенде нет — file_sd пуст (корректно)"
 elif [ "$pn_up" -ge 1 ]; then
-  echo "  patroni-nodes: $pn_up/$pn_total up (единичные down — зона алерта PatroniNodeDown)"
+  # t15 (ревизия 3): таргеты patroni-nodes — сетевые: scrapeUrl без
+  # host-форвардинга и с контейнерным портом :8008 (alias-таргеты, arch/18 §5.4).
+  bad_net=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[]
+    | select(.labels.job=="patroni-nodes")
+    | select(.scrapeUrl | contains("host.docker.internal") or (test(":8008/metrics$") | not))] | length')
+  [ "$bad_net" -eq 0 ] || { echo "  ❌ patroni-nodes: $bad_net таргетов не сетевые (host-форвардинг/не :8008)"; exit 1; }
+  echo "  patroni-nodes: $pn_up/$pn_total up, таргеты сетевые (:8008)"
 else
   echo "  ❌ patroni-nodes: все $pn_total таргетов down (file_sd устарел? Patroni-REST нод живы?)"; exit 1
 fi

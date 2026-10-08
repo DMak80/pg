@@ -7,8 +7,9 @@ alerting:
     - static_configs:
         - targets: ["alertmanager:9093"]
 scrape_configs:
-  # Host-публикация pgworker параметризуется (PGW_API_HOST_PORT, коллизии
-  # на хосте) — target держится в file_sd-файле (переписывает 00-up.sh).
+  # Таргеты — сетевые адреса deploy-воркеров (aliases pgworker/pgworker-2 в
+  # единой сети контура pgw-metrics, t15 arch/18 §5.2) — файл file_sd пишет
+  # 00-up.sh; host-публикации API остаются для advertise/чеков/панели.
   - job_name: pgworker            # deploy-compose (mTLS, t03)
     scheme: https
     tls_config:

@@ -70,6 +70,11 @@ x-pgworker-env: &pgworker-env
   # io_method/io_workers выключены, пока Spilo-18 не проверен на liburing.
   PgWorker__Pgtune__ExcludeParams__0: ${PGW_PGTUNE_EXCLUDE_0:-io_method}
   PgWorker__Pgtune__ExcludeParams__1: ${PGW_PGTUNE_EXCLUDE_1:-io_workers}
+  # Сеть контура скрейпа (t15, arch/18 §5.4): имя сети, к которой движок
+  # Ensure-attach'ит создаваемые ноды; portalloc несёт alias/net,
+  # sd-generator строит таргеты <alias>:8008 (arch/14 §2.4). Пусто —
+  # деградационный контур без сетевой идентичности (advertised-таргеты).
+  PgWorker__Docker__ScrapeNetwork: ${PGW_SCRAPE_NETWORK:-pgw-metrics}
 
 x-pgworker-base: &pgworker-base
   build:
@@ -180,6 +185,13 @@ services:
       # Хост-публикация API параметризуется (коллизии на хосте, прецедент
       # METRICS_*_PORT стенда); внутри контейнера канонический 8080.
       - "${PGW_API_HOST_PORT:-8080}:8080"
+    networks:
+      # default сохраняется явно: compose не подключает default при указанном networks.
+      default: {}
+      # Единая сеть контура мониторинга (t15, arch/18 §5.4): Prometheus
+      # (external-attach стендового компоуза) скрейпит воркеров по alias.
+      pgw-metrics:
+        aliases: [pgworker]
     environment:
       <<: *pgworker-env
       PgWorker__Api__AdvertiseUrl: ${PGW_API_ADVERTISE_URL:-https://host.docker.internal:${PGW_API_HOST_PORT:-8080}}
@@ -192,6 +204,12 @@ services:
     <<: *pgworker-base
     ports:
       - "${PGW_API_HOST_PORT2:-8083}:8080"
+    networks:
+      default: {}
+      # Единая сеть контура мониторинга (t15): alias pgworker-2 — сетевой
+      # таргет джобы pgworker (SAN серта pgserver покрывает, deploy/tls/gen.sh).
+      pgw-metrics:
+        aliases: [pgworker-2]
     environment:
       <<: *pgworker-env
       PgWorker__Api__AdvertiseUrl: https://host.docker.internal:${PGW_API_HOST_PORT2:-8083}
@@ -252,6 +270,15 @@ services:
     image: pgworker-wal:dev
     profiles: ["build"]
     entrypoint: ["true"]
+
+# Единая сеть контура мониторинга (t15, arch/18 §5.4): deploy-проект ВЛАДЕЕТ
+# сетью — в ней deploy-воркеры PgWorker (aliases), Prometheus (external-attach
+# стендового компоуза) и кластерные ноды (attach движком,
+# PgWorker:Docker:ScrapeNetwork). Предсказуемое имя — для внешних потребителей
+# (prometheus external-сеть).
+networks:
+  pgw-metrics:
+    name: ${PGW_METRICS_NETWORK:-pgw-metrics}
 
 volumes:
   pgw-snapshots:

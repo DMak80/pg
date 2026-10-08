@@ -518,15 +518,20 @@ services:
     container_name: as-prometheus
     profiles: ["metrics"]
     ports: ["${METRICS_PROMETHEUS_PORT:-9090}:9090"]
-    # host.docker.internal — scrape pgworker (deploy-проект); local — advertise-хост
-    # portalloc (как у воркеров выше): таргеты patroni-nodes = local:<host-порт
-    # публикации Patroni> (t15, arch/18 §5.4 — скрейп по host-публикациям).
-    extra_hosts: ["host.docker.internal:host-gateway", "local:host-gateway"]
+    networks:
+      # default (сеть стенда) сохраняется явно: compose не подключает default
+      # при указанном networks.
+      default: {}
+      # Внешняя сеть контура мониторинга (t15, arch/18 §5.4; владелец —
+      # deploy-compose): таргеты pgworker/pgworker-2 (aliases) и
+      # patroni-nodes (<alias>:8008 из portalloc). Мосты host-форвардинга
+      # демонтажены — все таргеты прометея сетевые.
+      pgw-metrics: {}
     volumes:
       - ./metrics/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./metrics/prometheus/rules.yml:/etc/prometheus/rules.yml:ro
-      # file_sd-таргет pgworker (host-порт параметризуется PGW_API_HOST_PORT;
-      # файл перезаписывается 00-up.sh in place, prometheus перечитывает сам).
+      # file_sd-таргет pgworker (сетевые адреса пишет 00-up.sh; файл
+      # перезаписывается in place, prometheus перечитывает сам).
       - ./metrics/prometheus/pgworker-targets.json:/etc/prometheus/pgworker-targets.json:ro
       # file_sd-таргеты реальных Patroni-нод — пишет sd-generator (t15, arch/18 §5.4).
       - prometheus-sd:/etc/prometheus/sd:ro
@@ -589,6 +594,16 @@ services:
     entrypoint: ["/bin/sh", "/etc/alertmanager/entrypoint.sh"]
     environment:
       METRICS_ALERT_WEBHOOK_URL: ${METRICS_ALERT_WEBHOOK_URL:-}
+
+# Внешняя сеть контура мониторинга (t15, arch/18 §5.4): владелец —
+# deploy-compose (создаёт при up, сносит при down); стендовый Prometheus
+# аттачит её для скрейпа pgworker/pgworker-2/patroni-nodes. 00-up.sh
+# поднимает deploy-контур ДО стендового компоуза — сеть существует к
+# external-attach; 90-down.sh разбирает в обратном порядке.
+networks:
+  pgw-metrics:
+    name: ${METRICS_NETWORK:-pgw-metrics}
+    external: true
 
 volumes:
   etcd1-data:

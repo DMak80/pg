@@ -33,16 +33,18 @@ subjectAltName=$san"
   rm -f "$name.csr"
 }
 
-# t03+t07: старый server-серт без DNS:valkeyworker (t03) или без
+# t07+t15: старый server-серт без DNS:valkeyworker (t03) или без
 # DNS:kafkaworker-2/DNS:valkeyworker-2 (стендовые вторые инстансы, t07 —
 # Prometheus проверяет имя таргета против SAN) — перегенерируем (CA жив).
 if [ ! -f server.crt ] || ! openssl x509 -in server.crt -noout -text 2>/dev/null | grep -q 'DNS:kafkaworker-2'; then
   issue server kafkaworker serverAuth "$SERVER_SAN"
 fi
 
-if [ ! -f pgserver.crt ]; then
-  # серверный pgworker (SAN покрывает compose-DNS, localhost, host-gateway — R13)
-  issue pgserver pgworker serverAuth "DNS:pgworker,DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1"
+# t15: сетевой таргет pgworker-2:8080 (единая сеть контура) верифицируется
+# Prometheus'ом против SAN — серт без DNS:pgworker-2 перегенерируем (CA жив).
+if [ ! -f pgserver.crt ] || ! openssl x509 -in pgserver.crt -noout -text 2>/dev/null | grep -q 'DNS:pgworker-2'; then
+  # серверный pgworker (SAN покрывает compose-DNS aliases, localhost, host-gateway — R13)
+  issue pgserver pgworker serverAuth "DNS:pgworker,DNS:pgworker-2,DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1"
 fi
 
 # клиентские (различимость в журналах сервера, независимый отзыв)
