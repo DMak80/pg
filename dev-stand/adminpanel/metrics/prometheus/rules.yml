@@ -84,6 +84,29 @@ groups:
         annotations:
           summary: "реплика {{ $labels.node }} ({{ $labels.scope }}) отстаёт >30с"
           description: "scrape Patroni-эмуляторов; runbook — arch/18 §2.5"
+      # t15 (arch/18 §2.5/§5.4): реальные Patroni-ноды — нативные patroni_*
+      # (file_sd patroni-nodes) и самонаблюдение генератора.
+      - alert: PatroniNodeDown
+        expr: up{job="patroni-nodes"} == 0
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "Patroni-нода {{ $labels.instance }} ({{ $labels.cluster }}/{{ $labels.shard }}/{{ $labels.node }}) недоскрейпится 5мин"
+          description: "нода в rebuild — штатный сценарий (~90с), порог терпит; runbook — arch/18 §2.5"
+      - alert: PatroniReplicaLagHigh
+        expr: time() - patroni_xlog_replay_timestamp > 30
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "реплика {{ $labels.name }} ({{ $labels.scope }}) отстаёт >30с"
+          description: "зеркало PgReplicaLagHigh на нативных сериях; серия есть только у реплик; runbook — arch/18 §2.5"
+      - alert: SdGeneratorStalled
+        expr: time() - sd_generator_last_success_timestamp_seconds > 300
+        for: 0m
+        labels: {severity: warning}
+        annotations:
+          summary: "file_sd-генератор не тикает >5мин"
+          description: "фиксированный порог ≥3×RefreshIntervalSec(15с); runbook — arch/18 §5.4"
   # t14 (arch/18 §2.7): бэкап-домен — зеркало подмножества панельных правил
   # (независимый от панели канал; etcd-источник истины статусов остаётся).
   - name: backups
