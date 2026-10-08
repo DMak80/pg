@@ -1,39 +1,62 @@
-# t19-slot-auto-recreate — план реализации
+# t19-slot-auto-recreate — план реализации (домены A + B)
 
 > **Для исполняющих агентов:** ОБЯЗАТЕЛЬНЫЙ SUB-SKILL: superpowers:subagent-driven-development
 > (рекомендуется) или superpowers:executing-plans — исполнять по задаче за раз.
 > Шаги используют синтаксис чекбоксов (`- [ ]`) для отслеживания.
 
-**Цель:** автоматическое лечение потерянных wal-слотов (`wal_status='lost'`) воркером
-вместо ручного операторского разбора: lost одного источника при живом втором —
-авто-recreate слота без BROKEN; lost/исчезновение всех источников — существующий
-BROKEN-путь t07 с пересъёмом полного.
+**Цель:** два домена одной задачи. **A — слоты:** автоматическое лечение
+потерянных wal-слотов (`wal_status='lost'`) воркером вместо ручного разбора
+(lost одного источника при живом втором — авто-recreate без BROKEN;
+lost/исчезновение всех — существующий BROKEN-путь t07). **B — watchdog/поллинг:**
+устранение ложного сноса воркера watchdog'ом на легитимно долгих одиночных
+вызовах provisioning: healthz-порог исключается из формулы порога сноса —
+`StaleAfter = Multiplier × CheckIntervalSec` (= 2×15 = 30 с, единый для всех
+циклов), `WatchdogOptions`/`LoopWatchdog`/`LoopHeartbeat` — без изменений;
+долгие фазы обязаны поллить процесс отметками активности + лог elapsed.
 
-**Архитектура:** SQL-слой (`IWalSqlExecutor`) расширяется зондом
-`SlotProbeAsync` (существование + `wal_status`) и идемпотентными
-`EnsureSlotAliveAsync`/`RecreateSlotAsync`; `WalStreamProcess` шаг (3) переводит
-правило «слот исчез» с `All(!Exists)` на `All(!Alive)` (`alive = Exists && WalStatus != "lost"`),
-добавляет ветку «lost при живом втором источнике» (recreate + журнальная фаза
-`slot-recreate/<X>`, не BROKEN); панель меняет remedy `slot-wal-lost` на
-`WorkerAuto`; runbook получает раздел «Потеря wal-слота». Приёмник, RecreateNodeHandler,
-NodeSupervisor, etcd-схема — не меняются.
+**Архитектура:** домен A — SQL-слой (`SlotProbeAsync`/`EnsureSlotAliveAsync`/
+`RecreateSlotAsync`), правило `WalStreamProcess` (`alive = Exists && WalStatus != "lost"`),
+панель `WorkerAuto`, runbook. Домен B — единственная правка формулы в виталити
+трёх воркеров (`StaleAfter = Multiplier × CheckIntervalSec`, без
+`LoopStaleness`-вычислений; `LoopStaleness` остаётся потребителем только
+healthz); общий хелпер пульсирующего сна `PulsingDelay` (перенос
+`DelayTickingAsync` sweeper'а, чанк короче окна 15 с); `HealthState.
+MarkSnapshotActivity` (пульс сна snapshot без тика); долгие одиночные вызовы
+provisioning — поллинг-итерации с таймаутом короче окна (`LongCallPolling`:
+Mark по факту + лог elapsed); fail-fast валидация старта scan/keepalive < порога
+сноса (30 с). Механика `LoopWatchdog`, healthz (формулы, loops-alive,
+Degraded-окно), конфигурация (appsettings/deploy-env) — не меняются.
 
 **Стек:** .NET 10, C# (`LangVersion=latest`, `Nullable=enable`,
 `TreatWarningsAsErrors=true`), Npgsql, xunit.v3 + FluentAssertions (AAA),
 testcontainers (динамические порты), docker E2E на свежем Release.
 
 **Спека:** `docs/superpowers/2026-10-08-t19-slot-auto-recreate/spec.md`
-(исполнитель читает spec и этот план; план аргументируется от spec).
+(переписана под два домена; исполнитель читает spec и этот план).
 
 Все пути в плане — от корня worktree `/Users/demakaev/ZCodeProject/worktrees/feat-t19-slot-auto-recreate`.
+
+**Статус исполнения:** Задачи 1–6 (домен A) уже реализованы в ветке
+(коммиты `936d6229`…`219d994b`: SQL-слой, интеграция lost-рецепта, правило
+WalStreamProcess, панель, docs, E2E-сценарий) — НЕ исполнять повторно, отметить
+чекбоксы выполненных шагов и перейти к Задаче 8. Задача 7 (мерж-гейт) — после
+Задач 8–11 (домен B).
 
 ## Глобальные ограничения (из spec §5 и AGENTS.md — обязательны для каждой задачи)
 
 - .NET 10, `Nullable=enable`, `TreatWarningsAsErrors=true`: сборка обязана быть
   0 warning / 0 error; все новые публичные члены — русские doc-комментарии.
-- НЕ трогаем: `RecreateNodeHandler`, `NodeSupervisor`, HA-надзор,
+- Домен A — НЕ трогаем: `RecreateNodeHandler`, `NodeSupervisor`, HA-надзор,
   `src/PgWorker.WalReceiver` (образ `pgworker-wal`), SQL-пробу панели.
-- НЕТ новых etcd-ключей/полей ключа `wal`; НЕТ конфиг-опций (автоматика — дефолт).
+- Домен B — НЕ трогаем: `WatchdogOptions`/`LoopHeartbeat`/`LoopWatchdog`-компонент
+  (механика сноса, grace, firing — прежние; правится ТОЛЬКО источник вычисления
+  `StaleAfter` в виталити); healthz (формулы `LoopStaleness`, секция loops-alive,
+  Degraded-окно); конфигурацию — appsettings ×3 и `deploy/.env.example` — вовсе;
+  процессы KafkaWorker/ValkeyWorker (кроме виталити-вычисления порога и пульса
+  сна snapshot-цикла — вынужденный минимум общей семантики); анти-луп рестартов
+  не вводим; словарь метрики `worker_watchdog_restarts_total` (arch/18) без изменений.
+- НЕТ новых etcd-ключей/полей ключа `wal`; новых конфиг-опций нет (конфигурация —
+  включая watchdog — не меняется вовсе).
 - Панель остаётся читателем; словарь таблицы arch/adminpanel/03-panels.md не меняется.
 - Тесты docker: порты только динамические (`WithPortBinding(..., assignRandomHostPort:
   true)` + `GetMappedPublicPort`, либо зонд свободного порта) — никаких литералов.
@@ -46,9 +69,9 @@ testcontainers (динамические порты), docker E2E на свеже
   текстах (runbook, правило панели) НЕ пишем атрибуцию «(t19)» (мерж-коммит задачи
   вычищает теги слитых задач — пишем сразу без тега).
 - Тесты — AAA-комментарии (`// Arrange`, `// Act`, `// Assert`).
-- arch/19-backups.md уже обновлён фазой spec (arch-first): §3 «Слот», «Правила
-  непрерывности», §10 — при расхождении реализации с каноном правится канон в той
-  же задаче, где расхождение возникло.
+- arch-каноны обновлены фазой spec (arch-first): arch/19 (домен A), arch/14 §6/
+  §5 A/§8 + arch/16/21 §6/§8 (домен B) — правки канона только при расхождении
+  с реализацией, в той же задаче, где расхождение возникло.
 
 ---
 
@@ -76,7 +99,8 @@ testcontainers (динамические порты), docker E2E на свеже
 --filter "FullyQualifiedName~WalSqlTests|FullyQualifiedName~WalStreamProcessTests"`
 → все PASS; после серии — зачистка (Задача 7, шаг Г).
 
-**Связь со spec:** §3.1 (полностью), критерий 3/4 (частично — API), Ф4-Ф1.
+**Связь со spec:** §3.1 «SQL-слой» (полностью), критерий 4 (частично — контракт
+API), фаза A1.
 
 **Interfaces (производит):**
 
@@ -379,7 +403,7 @@ git commit -m "feat(t19): SQL-слой слота — зонд SlotProbeAsync (�
 src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~WalSqlTests"` → PASS
 (оба Fact); зачистка серии.
 
-**Связь со spec:** §4 Ф1 (lost-рецепт), критерий 4.
+**Связь со spec:** фаза A1 (lost-рецепт на реальном PG), критерий 4.
 
 - [ ] **Шаг 1: Добавить Fact (failing — поведение ещё не проверено end-to-end на lost)**
 
@@ -474,7 +498,7 @@ Run: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx 
 
 ```bash
 git add -A
-git commit -m "test(t19): интеграция lost-рецепта на реальном PG — max_slot_wal_keep_size=16MB + генерация WAL/checkpoint до wal_status=lost, EnsureSlotAlive лечит идемпотентно, живой слот не трогается (restart_lsn) (spec §4 Ф1, критерий 4)"
+git commit -m "test(t19): интеграция lost-рецепта на реальном PG — max_slot_wal_keep_size=16MB + генерация WAL/checkpoint до wal_status=lost, EnsureSlotAlive лечит идемпотентно, живой слот не трогается (restart_lsn) (фаза A1, критерий 4)"
 ```
 
 ---
@@ -497,7 +521,9 @@ ensure-ветка лечит lost; здоровый слот — нулевые 
 src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~WalStreamProcessTests"` →
 все PASS (новые + существующие).
 
-**Связь со spec:** §3.2, критерии 1, 2, 3, 7; Ф4-Ф2.
+**Связь со spec:** §3.1 «Правило в WalStreamProcess — шаг (3)», критерии 1, 2, 3
+и фаза A2 (повторный тик на здоровом слоте — нулевые мутации — не номерной
+критерий, требование фазы), фаза A2.
 
 - [ ] **Шаг 1: Новые failing-тесты (4 Fact) в `WalStreamProcessTests`**
 
@@ -505,7 +531,7 @@ src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~WalStreamProcessTests"` 
 Вставить после `Слот_исчез_правило_всех_нод`:
 
 ```csharp
-// AAA (t19 AC1): lost-слот мастера при живом sync — тик НЕ пишет BROKEN,
+// AAA (критерий 1): lost-слот мастера при живом sync — тик НЕ пишет BROKEN,
 // слот мастера пересоздан (drop+create), журнальная фаза slot-recreate/<X>.
 [Fact]
 public async Task Lost_слот_мастера_при_живом_sync_не_BROKEN_recreate_журнал()
@@ -546,7 +572,7 @@ public async Task Lost_слот_мастера_при_живом_sync_не_BROKE
     // фазу ДО мутации; агент мастера не снимался
     var wal = await ReadWal(cluster);
     wal!.State.Should().NotBe(WalStreamStatus.Broken,
-        "lost одного источника при живом втором — не BROKEN (spec §3.2)");
+        "lost одного источника при живом втором — не BROKEN (spec §3.1)");
     sql.Calls.Should().Contain(c => c.Op == "drop" && c.Dsn == masterDsn,
         "FakeSql фиксирует drop потерянного слота");
     sql.Calls.Should().Contain(c => c.Op == "create" && c.Dsn == masterDsn,
@@ -561,7 +587,8 @@ public async Task Lost_слот_мастера_при_живом_sync_не_BROKE
         n => n.Contains("shard1", StringComparison.Ordinal), "агенты не трогаются");
 }
 
-// AAA (t19 AC7): тик на здоровых (не lost) слотах — нулевые мутации слотов
+// AAA (фаза A2 — «повторный тик на здоровом слоте — нулевые мутации»):
+// тик на здоровых (не lost) слотах — нулевые мутации слотов
 // и никаких журнальных фаз slot-recreate.
 [Fact]
 public async Task Тик_на_здоровых_слотах_нулевые_мутации()
@@ -602,7 +629,7 @@ public async Task Тик_на_здоровых_слотах_нулевые_му�
 добавить после кейса A:
 
 ```csharp
-// AAA (t19 AC2): lost на ВСЕХ источниках при живом (ACTIVE) ключе — BROKEN,
+// AAA (критерий 2): lost на ВСЕХ источниках при живом (ACTIVE) ключе — BROKEN,
 // recreateSlot на мастере, error различает lost от «исчез».
 [Fact]
 public async Task Lost_слотов_всех_источников_при_живой_цепочке_BROKEN()
@@ -643,7 +670,7 @@ public async Task Lost_слотов_всех_источников_при_жив�
     // Assert — BROKEN, error содержит lost; слот мастера пересоздан (recreateSlot)
     var wal = await ReadWal(cluster);
     wal!.State.Should().Be(WalStreamStatus.Broken);
-    wal.Error.Should().Contain("lost", "error различает потерю и исчезновение (spec §3.2)");
+    wal.Error.Should().Contain("lost", "error различает потерю и исчезновение (spec §3.1)");
     sql.Calls.Should().Contain(c => c.Op == "drop" && c.Dsn == SourceDsn(16001, cluster),
         "BreakAsync recreateSlot: lost-слот мастера пересоздаётся immediate+reserved");
     driver.RemovedBackupAgents.Should().NotBeEmpty("BROKEN останавливает агентов");
@@ -654,7 +681,7 @@ public async Task Lost_слотов_всех_источников_при_жив�
 duplicate-пропуск) — однонодовая конфигурация:
 
 ```csharp
-// AAA (t19 AC3): ensure-ветка (ключ wal = BROKEN) + существующий lost-слот —
+// AAA (критерий 3): ensure-ветка (ключ wal = BROKEN) + существующий lost-слот —
 // EnsureSlotAlive recreates (не пропускает по идемпотентности), новый BROKEN не пишется.
 [Fact]
 public async Task Ensure_ветка_BROKEN_ключ_lost_слот_recreate()
@@ -803,7 +830,7 @@ Run: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx 
 
 ```bash
 git add -A
-git commit -m "feat(t19): правило WalStreamProcess — зонд alive (существование+wal_status): lost одного источника при живом втором — авто-recreate + журнальная фаза slot-recreate/<X> без BROKEN; lost всех при живой цепочке — BROKEN с error-дискриминацией lost/исчез; ensure-ветка лечит lost (spec §3.2)"
+git commit -m "feat(t19): правило WalStreamProcess — зонд alive (существование+wal_status): lost одного источника при живом втором — авто-recreate + журнальная фаза slot-recreate/<X> без BROKEN; lost всех при живой цепочке — BROKEN с error-дискриминацией lost/исчез; ensure-ветка лечит lost (spec §3.1, критерии 1/2/3)"
 ```
 
 ---
@@ -823,7 +850,7 @@ git commit -m "feat(t19): правило WalStreamProcess — зонд alive (с
 "FullyQualifiedName~AlertHintRemedyTests|FullyQualifiedName~HaAlertRulesTests"` →
 все PASS.
 
-**Связь со spec:** §3.3 (панель), критерий 6, Ф4-Ф3.
+**Связь со spec:** §3.1 «Наблюдаемость A» (панель), фаза A3.
 
 - [ ] **Шаг 1: Failing-ассерты в `HaAlertRulesTests.SlotWalLost_LostSlot_Critical`**
 
@@ -864,7 +891,7 @@ Run: `dotnet test src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~AlertH
 
 ```bash
 git add -A
-git commit -m "feat(t19): панель slot-wal-lost — ремеди WorkerAuto (воркер пересоздаёт слот сам), hint/remedy-text без ручного разбора; алерт — страховка, гаснет после лечения (spec §3.3)"
+git commit -m "feat(t19): панель slot-wal-lost — ремеди WorkerAuto (воркер пересоздаёт слот сам), hint/remedy-text без ручного разбора; алерт — страховка, гаснет после лечения (spec §3.1 «Наблюдаемость A», фаза A3)"
 ```
 
 ---
@@ -885,7 +912,9 @@ remedy; канон соответствует коду.
 **Проверка:** тексты на месте; в них нет атрибуций «(tNN)» и исторических
 пассажей; `git diff --stat` — только три файла docs/arch.
 
-**Связь со spec:** §3.3 (runbook/docs), критерий 6/8.
+**Связь со spec:** §3.1 «Наблюдаемость A» (runbook/docs/adminpanel), критерий 10
+(раздел «Потеря wal-слота»; раздел watchdog — Задача 11), критерий 12 (arch/19),
+фаза A3.
 
 - [ ] **Шаг 1: Раздел runbook**
 
@@ -942,7 +971,7 @@ sync-standby):
 
 ```bash
 git add -A
-git commit -m "docs(t19): runbook — раздел «Потеря wal-слота (автоматика)»: механика среза, лечение воркером, границы RPO; docs/adminpanel — slot-wal-lost ремеди WorkerAuto; arch/19 сверен с реализацией (spec §3.3)"
+git commit -m "docs(t19): runbook — раздел «Потеря wal-слота (автоматика)»: механика среза, лечение воркером, границы RPO; docs/adminpanel — slot-wal-lost ремеди WorkerAuto; arch/19 сверен с реализацией (spec §3.1 «Наблюдаемость A», критерии 10/12, фаза A3)"
 ```
 
 ---
@@ -964,7 +993,7 @@ sync-архивации лечится воркером без BROKEN, без д
 src/PgWorker.slnx -c Release --filter "FullyQualifiedName~WalStream_SlotLostAutoRecreate"`
 → PASS; `[PHASE]`-строки в выводе; teardown чист (guid-контур окружения).
 
-**Связь со spec:** §4 Ф4, критерий 5; мерж-гейт AGENTS (E2E на свежем Release).
+**Связь со spec:** фаза A4, критерий 5; мерж-гейт AGENTS (E2E на свежем Release).
 
 Механика сценария (детерминизация): снос агента мастера воркер компенсирует
 супервизом за один тик (ScanIntervalSec=1 в E2E) — слот не успеет потеряться.
@@ -1114,7 +1143,7 @@ public async Task WalStream_SlotLostAutoRecreate_NoBroken()
             var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
             return workKv?.Value?.Contains("slot-recreate/shard1") == true;
         }, TimeSpan.FromSeconds(120), ct);
-        journaled.Should().BeTrue("воркер обязан записать фазу slot-recreate (spec §3.2)");
+        journaled.Should().BeTrue("воркер обязан записать фазу slot-recreate (spec §3.1)");
 
         // Assert 2 — слот мастера жив (не lost)
         var healed = await E2eFixture.WaitForAsync(
@@ -1192,14 +1221,14 @@ Run: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx 
 
 ```bash
 git add -A
-git commit -m "test(t19): E2E автолечения lost-слота — двойная архивация, снос агента мастера + стоп воркера, WAL до фактического wal_status=lost, возврат воркера: журнал slot-recreate, слот жив, агент поднят, ключ без BROKEN, цепочка непрерывна, last_uploaded растёт (spec §4 Ф4, критерий 5)"
+git commit -m "test(t19): E2E автолечения lost-слота — двойная архивация, снос агента мастера + стоп воркера, WAL до фактического wal_status=lost, возврат воркера: журнал slot-recreate, слот жив, агент поднят, ключ без BROKEN, цепочка непрерывна, last_uploaded растёт (фаза A4, критерий 5)"
 ```
 
 ---
 
-## Задача 7 — Мерж-гейт: полная верификация на свежем Release + зачистка серий
+## Задача 7 — Мерж-гейт (оба домена, критерии 1–12, блокирующий — 9): полная верификация на свежем Release + зачистка серий
 
-**Вход:** Задачи 1–6 слиты.
+**Вход:** Задачи 1–6 (домен A, исполнены) и Задачи 8–11 (домен B) слиты.
 
 **Действие:** последовательные серии с зачисткой ПОСЛЕ КАЖДОЙ (AGENTS:
 контейнеры/сети/тома искажают следующую серию; никогда не запускать следующую
@@ -1207,10 +1236,12 @@ git commit -m "test(t19): E2E автолечения lost-слота — дво�
 
 **Выход:** все серии зелёные на свежем Release; артефактов серий нет.
 
-**Проверка:** команды ниже + пустые счётчики残留-контейнеров/сетей.
+**Проверка:** команды ниже + пустые счётчики остаточных контейнеров/сетей.
 
-**Связь со spec:** критерии 1–7 (сквозная верификация), мерж-гейт AGENTS
-(E2E на свежем Release: кейс-маркер + wal-кейс t19).
+**Связь со spec:** критерии 1–12 сквозная верификация (блокирующий — 9:
+E2E-маркер Scale_AddEmptyShard + WalStream-кейс домена A + SecondInstance),
+мерж-гейт AGENTS (E2E на свежем Release: кейс-маркер + wal-кейс t19 +
+SecondInstance).
 
 - [ ] **Шаг А: Сборка Release 0/0**
 
@@ -1245,22 +1276,25 @@ docker network prune -f
 testcontainers подбирает ryuk, сети per-cluster — движком, вручную prune).
 Повторять `grep -c` до нуля перед следующей серией.
 
-- [ ] **Шаг Д: E2E мерж-гейт на свежем Release**
+- [ ] **Шаг Д: E2E мерж-гейт на свежем Release (критерий 9 — блокирующий)**
 
 ```bash
 DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~Scale_AddEmptyShard"
 # зачистка (шаг Г), затем:
 DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~WalStream_SlotLostAutoRecreate"
+# зачистка (шаг Г), затем:
+DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~SecondInstance"
 ```
-Ожидание: оба PASS (по AGENTS: кейс-маркер + wal-кейс задачи; сборка Release
-фикстурой инкрементальна). Между прогонами — шаг Г. Упавший сценарий:
+Ожидание: все три PASS — `Scale_AddEmptyShard` после внедрения домена B
+(приказ: «НЕЛЬЗЯ ЗАКРЫВАТЬ ПОКА НЕ РАБОТАЕТ»), WalStream-кейс домена A,
+SecondInstance-регресс (критерий 9). Между прогонами — шаг Г. Упавший сценарий:
 `MarkFailed` сохраняет окружение — разбор по логам без перезапуска.
 
 - [ ] **Шаг Е: Финальная сверка плана со spec (Self-Review)**
 
-Пройти критерии приёмки 1–8 spec и убедиться: каждый закрыт задачей 1–6
-(критерий 8 — arch/19 уже обновлён spec-фазой, сверен в Задаче 5). Пробел —
-добавить задачу, не откладывать.
+Пройти критерии приёмки 1–12 spec и убедиться: каждый закрыт — домен A
+задачами 1–6, домен B задачами 8–11, кросс-доменные (11 — Enabled=false;
+12 — arch-контракты) — задачами 8 и 11. Пробел — добавить задачу, не откладывать.
 
 - [ ] **Шаг Ж: Commit (если остались правки само-ревью)**
 
@@ -1271,27 +1305,920 @@ git add -A && git commit -m "chore(t19): мерж-гейт — серии Releas
 
 ---
 
+## Задача 8 — Домен B1: виталити ×3 — порог сноса от собственных опций watchdog
+
+**Вход (предусловие):** домен A исполнен (Задачи 1–6); текущие виталити трёх
+воркеров вычисляют `StaleAfter = LoopStaleness.*(scan, keepalive[, snapshot]) ×
+Multiplier` (в E2E при scan=1/keepalive=1: healthz-порог 18 с → 36 с);
+`LoopWatchdog`/`WatchdogOptions`/`LoopHeartbeat` работают (снос при
+`age > StaleAfter`, одно наблюдение, grace `2×StaleAfter`).
+
+**Действие (файлы):**
+- Modify: `src/PgWorker.App/LoopsVitality.cs`, `src/KafkaWorker.App/LoopsVitality.cs`,
+  `src/ValkeyWorker.App/LoopsVitality.cs` — единственный источник порога:
+  `StaleAfter = Multiplier × CheckIntervalSec` (30 с при дефолтах, ЕДИНЫЙ для
+  всех циклов); виталити перестают читать `LoopStaleness`.
+- Modify: `src/Shared.Core/HealthChecks/LoopStaleness.cs` — только
+  doc-комментарий (потребитель — только healthz; формулы не меняются).
+- Modify: `src/tests/PgWorker.UnitTests/App/LoopsVitalityTests.cs`,
+  `src/tests/KafkaWorker.UnitTests/App/LoopsVitalityTests.cs`,
+  `src/tests/ValkeyWorker.UnitTests/App/LoopsVitalityTests.cs` — ассерты порога
+  30 с у всех циклов, независимость от интервалов циклов.
+- Modify: `src/tests/Shared.Core.UnitTests/Hosting/LoopWatchdogTests.cs` —
+  удалить тест `Symmetry_WatchdogThreshold_IsHealthzTimesMultiplier`
+  (кодирует отвергнутую healthz-зависимость); формулы `LoopStalenessTests`
+  оставить (потребитель healthz); кейсы `LoopWatchdog` НЕ переписывать
+  (компонент не менялся).
+
+НЕ трогать: `src/Shared.Core/Hosting/LoopWatchdog.cs` (`WatchdogOptions`:
+`Enabled=true`/`Multiplier=2`/`CheckIntervalSec=15`/`StopDelaySec=1`;
+`LoopHeartbeat.StaleAfter`; `ILoopsVitality`-сигнатура; механика сноса/grace),
+healthz ×3 (`watchdog.StaleLoop`-формат), интеграционные
+`src/tests/PgWorker.IntegrationTests/Hosting/LoopWatchdogTests.cs` (FakeVitality
+строит порог сам, компонент не менялся).
+
+**Выход:** `LoopHeartbeat.StaleAfter` = 30 с при дефолтах у ВСЕХ циклов трёх
+воркеров; порог не зависит от `ScanIntervalSec`/`KeepaliveSec`/
+`SnapshotIntervalMin` (в E2E при scan=1 — 30 с, а не 36); `LoopStaleness`
+читает только healthz; `WatchdogOptions`/`LoopHeartbeat`/`LoopWatchdog` —
+без изменений (существующие юниты зелёные).
+
+**Проверка:** `dotnet build src/PgWorker.slnx -c Debug` → 0/0;
+`DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Debug --filter
+"FullyQualifiedName~Shared.Core.UnitTests"` → PASS (LoopWatchdog-юниты без правок);
+`DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Debug --filter
+"FullyQualifiedName~LoopsVitalityTests"` → PASS (юниты ×3 воркеров).
+
+**Связь со spec:** §1.2 п.1–п.3/диагноз, §2 п.8, §3.2 Shared.Core (правка
+виталити), фаза B1, критерии 6, 11, 12.
+
+**Interfaces (производит):** сигнатуры прежние (`LoopHeartbeat(string Name,
+DateTimeOffset? LastActivityAt, TimeSpan StaleAfter)`, `ILoopsVitality.Snapshot()`);
+содержательное изменение — значение `StaleAfter` из `Multiplier × CheckIntervalSec`.
+
+- [ ] **Шаг 1: Failing-юниты нового порога (LoopsVitalityTests ×3)**
+
+PgWorker (Kafka/Valkey — зеркально, перечни без orphan-sweep; их Options-типы
+свои — `KafkaWorkerOptions`/`ValkeyWorkerOptions`):
+
+```csharp
+[Fact]
+public void Snapshot_AllFourLoops_StaleAfterFromWatchdogOptions()
+{
+    // Arrange: дефолты Loops (scan=5, keepalive=5, snapshot=360 мин) — прежде
+    // давали fast=60 c / snapshot-часы; теперь порог единый 2×15=30 c
+    var health = new HealthState(TimeProvider.System);
+    var sut = new PgWorkerLoopsVitality(Options, health);
+
+    // Act
+    var beats = sut.Snapshot();
+
+    // Assert: StaleAfter = Multiplier × CheckIntervalSec у ВСЕХ циклов (критерий 6)
+    beats.Select(b => b.Name).Should().Equal("reconcile", "keepalive", "snapshot", "orphan-sweep");
+    beats.Should().OnlyContain(b => b.StaleAfter == TimeSpan.FromSeconds(30));
+    beats.Should().OnlyContain(b => b.LastActivityAt == null); // циклы ещё не тикали
+}
+
+[Fact]
+public void Snapshot_ПорогНеЗависитОтИнтерваловЦиклов_E2E_30_а_не_36()
+{
+    // Arrange: E2E-параметры scan=1/keepalive=1 — прежняя формула давала
+    // 2×(3×1+15)=36 c (диагноз: healthz-порог 18 в формуле); новая — 30 c
+    var options = new FixedOptionsMonitor(new PgWorkerOptions
+    {
+        Loops = new LoopsOptions { ScanIntervalSec = 1, KeepaliveSec = 1, SnapshotIntervalMin = 360 },
+    });
+    var sut = new PgWorkerLoopsVitality(options, new HealthState(TimeProvider.System));
+
+    // Act
+    var beats = sut.Snapshot();
+
+    // Assert: порог от опций watchdog, не от интервалов циклов
+    beats.Should().OnlyContain(b => b.StaleAfter == TimeSpan.FromSeconds(30));
+}
+
+[Fact]
+public void Snapshot_КастомныйПорог_ОтОпцийWatchdog()
+{
+    // Arrange: Multiplier=3, CheckIntervalSec=20 → порог 60 c (конфигурируемость
+    // прежняя — окном и множителем, без healthz)
+    var options = new FixedOptionsMonitor(new PgWorkerOptions
+    {
+        Loops = new LoopsOptions
+        {
+            ScanIntervalSec = 5, KeepaliveSec = 5,
+            Watchdog = new Shared.Core.Hosting.WatchdogOptions { Multiplier = 3, CheckIntervalSec = 20 },
+        },
+    });
+    var sut = new PgWorkerLoopsVitality(options, new HealthState(TimeProvider.System));
+
+    // Act/Assert
+    sut.Snapshot().Should().OnlyContain(b => b.StaleAfter == TimeSpan.FromSeconds(60));
+}
+```
+
+Существующие кейсы `Snapshot_PassesHealthStateTicks`/
+`Snapshot_ReconcileActivity_UpdatedWithoutTick` — оставить (источник активности
+не меняется). Порог-ассерты старой формулы (60 с / snapshot-часы) — заменить
+перечисленными выше.
+
+- [ ] **Шаг 2: Прогон → FAIL (порог ещё от LoopStaleness)**
+
+Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~LoopsVitalityTests"`
+Ожидание: FAIL — `StaleAfter` = 60 с (fast) / формула snapshot, а не 30 с.
+
+- [ ] **Шаг 3: Реализация — виталити ×3**
+
+`PgWorkerLoopsVitality.Snapshot()` (Kafka/Valkey — зеркально, перечень короче):
+
+```csharp
+public IReadOnlyList<LoopHeartbeat> Snapshot()
+{
+    // Порог сноса — от собственных опций watchdog (t19-B, arch/14 §6):
+    // Multiplier × CheckIntervalSec = 30 c при дефолтах, ЕДИНЫЙ для всех
+    // циклов; healthz-порог (LoopStaleness) в формуле не участвует.
+    var watchdog = options.CurrentValue.Loops.Watchdog;
+    var staleAfter = TimeSpan.FromSeconds(
+        Math.Max(1, watchdog.Multiplier) * Math.Max(1, watchdog.CheckIntervalSec));
+    var snap = health.Snapshot();
+    return
+    [
+        // активность = тик или прогресс-отметка; keepalive/snapshot/orphan-sweep —
+        // активность = тик (долгих фаз нет; сон snapshot — пульс B2)
+        new LoopHeartbeat("reconcile", snap.LastReconcileActivity, staleAfter),
+        new LoopHeartbeat("keepalive", snap.LastKeepaliveTick, staleAfter),
+        new LoopHeartbeat("snapshot", snap.LastSnapshotTick, staleAfter),
+        new LoopHeartbeat("orphan-sweep", snap.LastOrphanSweepTick, staleAfter),
+    ];
+}
+```
+
+(using `Shared.Core.HealthChecks` из виталити исчезает — убрать, если остаётся
+неиспользуемым; `TreatWarningsAsErrors`.)
+
+`LoopStaleness.cs` — doc-комментарий класса: «единый источник для healthz
+loops-alive и watchdog…» → «пороги staleness циклов — потребитель ТОЛЬКО
+healthz loops-alive (Degraded-окно); watchdog порог сноса вычисляет от
+собственных опций (Multiplier × CheckIntervalSec) и эти формулы не читает».
+Формулы не трогать.
+
+- [ ] **Шаг 4: Удалить отвергнутую симметрию в Shared.Core.UnitTests**
+
+В `src/tests/Shared.Core.UnitTests/Hosting/LoopWatchdogTests.cs`: удалить
+`Symmetry_WatchdogThreshold_IsHealthzTimesMultiplier` (кодировала зависимость
+порога watchdog от healthz-формулы — отвергнуто диагнозом «ПРИЧИНА НЕ Multiplier
+а 18»); `LoopStalenessTests`-формулы и все кейсы `LoopWatchdog` (grace/firing/
+Enabled) — без изменений.
+
+- [ ] **Шаг 5: Сборка + прогоны → зелёный; Commit**
+
+Run: `dotnet build src/PgWorker.slnx -c Debug` → 0/0;
+`DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~Shared.Core.UnitTests"` → PASS;
+`DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~LoopsVitalityTests"` → PASS.
+
+```bash
+git add -A
+git commit -m "feat(t19-B): порог сноса watchdog — от собственных опций: StaleAfter = Multiplier × CheckIntervalSec (30 c при дефолтах, единый для всех циклов) в виталити трёх воркеров; healthz-порог (LoopStaleness) из формулы исключён — потребитель только healthz; WatchdogOptions/LoopHeartbeat/LoopWatchdog без изменений (механика/grace прежние); юниты: 30 c при дефолтах и в E2E-параметрах scan=1 (30, а не 36) (spec §3.2 B1, критерии 6/11)"
+```
+
+---
+
+## Задача 9 — Домен B2: пульсирующий сон, MarkSnapshotActivity, fail-fast старта
+
+**Вход:** Задача 8 слита (порог сноса = `Multiplier × CheckIntervalSec` = 30 с
+при дефолтах, единый; сны длиннее 30 с теперь обязаны пульсировать).
+
+**Действие (файлы):**
+- Create: `src/Shared.Core/Hosting/PulsingDelay.cs` — общий хелпер пульсирующего
+  сна (чанк короче окна проверки 15 с, по умолчанию половина окна).
+- Create: `src/Shared.Core/Hosting/WatchdogConfigGuard.cs` — fail-fast валидация
+  scan/keepalive < порога сноса.
+- Modify: `src/PgWorker.App/HealthState.cs` — `MarkSnapshotActivity()` + поле
+  `HealthSnapshot.LastSnapshotActivity`.
+- Modify: `src/PgWorker.App/Loops/SnapshotLoop.cs` — лидерные сны длиннее
+  порога (SnapshotIntervalMin, retry-сон RetryIntervalSec) — пульсом.
+- Modify: `src/PgWorker.App/Loops/BackupOrphanSweeperLoop.cs` — переход
+  `DelayTickingAsync` на общий хелпер (локальный метод удалить).
+- Modify: `src/KafkaWorker.App/HealthState.cs`, `src/ValkeyWorker.App/HealthState.cs`
+  — `MarkSnapshotActivity()` + поле снимка (зеркально PgWorker).
+- Modify: `src/KafkaWorker.App/Loops/SnapshotLoop.cs`,
+  `src/ValkeyWorker.App/Loops/SnapshotLoop.cs` — сон лидера пульсом.
+- Modify: `src/PgWorker.App/LoopsVitality.cs`, `src/KafkaWorker.App/LoopsVitality.cs`,
+  `src/ValkeyWorker.App/LoopsVitality.cs` — snapshot-цикл: активность =
+  позднейший из тика и пульса сна.
+- Modify: `src/PgWorker.App/Program.cs`, `src/KafkaWorker.App/Program.cs`,
+  `src/ValkeyWorker.App/Program.cs` — вызов fail-fast валидатора ×3 (решение
+  пользователя: всем трём воркерам, см. Шаг 5).
+- Test: `src/tests/Shared.Core.UnitTests/Hosting/PulsingDelayTests.cs` (create),
+  `src/tests/Shared.Core.UnitTests/Hosting/WatchdogConfigGuardTests.cs` (create),
+  юниты пульса в LoopsVitalityTests ×3 + HealthState (существующие файлы).
+
+НЕ трогать: `appsettings.json` ×3 и `deploy/.env.example` — конфигурация
+watchdog не меняется вовсе (фикс — только в вычислении порога кодом, Задача 8).
+
+**Выход:** законные ожидания длиннее порога (сон snapshot-лидера, интервал
+sweeper'а, retry-сон выгрузки) пульсируют отметками активности без тика —
+snapshot-сон любой длины не сносит watchdog; чанк пульса короче окна 15 с;
+старт невозможен при scan/keepalive ≥ порога сноса (30 с) с понятной ошибкой —
+у всех трёх воркеров (решение пользователя: guard ×3).
+
+**Проверка:** сборка 0/0; `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx
+-c Debug --filter "FullyQualifiedName~PulsingDelay|FullyQualifiedName~WatchdogConfigGuard|FullyQualifiedName~LoopsVitalityTests"`
+→ PASS (юниты трёх воркеров).
+
+**Связь со spec:** §2 п.12, §3.2 (PgWorker.App, Shared.Core-хелпер, валидация),
+фаза B2, критерий 7.
+
+- [ ] **Шаг 1: Failing-юниты хелпера и валидатора (Shared.Core.UnitTests/Hosting)**
+
+```csharp
+// PulsingDelayTests: законный длинный сон пульсирует отметками чаще окна.
+public sealed class PulsingDelayTests
+{
+    [Fact]
+    public async Task SleepAsync_ЧанкКорочеОкна_ОтметкаНаКаждыйЧанк()
+    {
+        // Arrange: сон 3 c при окне 1 c → чанк = max(1 c, 0.5 c) = 1 c
+        // (в проде окно 15 c → чанк 7.5 c < 15 c)
+        var pulses = 0;
+
+        // Act
+        await PulsingDelay.SleepAsync(
+            TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(1), () => pulses++,
+            TestContext.Current.CancellationToken);
+
+        // Assert: отметки в каждом чанке (несколько чанков покрыты), каждый
+        // чанк короче окна — активность обновляется чаще проверки
+        pulses.Should().BeGreaterThanOrEqualTo(2);
+    }
+
+    [Fact]
+    public async Task SleepAsync_Отмена_ВыходитБыстро()
+    {
+        // Arrange: долгий сон + отмена через 300 мс
+        using var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
+        var pulses = 0;
+
+        // Act
+        await PulsingDelay.SleepAsync(
+            TimeSpan.FromSeconds(60), TimeSpan.FromSeconds(1), () => pulses++, cts.Token);
+
+        // Assert: вышел по отмене, а не спал минуту
+        pulses.Should().BeLessThanOrEqualTo(1);
+    }
+}
+```
+
+(Во втором кейсе `Task.Delay(step, ct)` бросит `OperationCanceledException` —
+тест оборачивает вызов в `try/catch (OperationCanceledException)`; суть: выход
+≤ ~1 c.)
+
+```csharp
+// WatchdogConfigGuardTests: инвариант живости старта — тики быстрых циклов
+// чаще ПОРОГА СНОСА (Multiplier × CheckIntervalSec), не окна.
+public sealed class WatchdogConfigGuardTests
+{
+    [Fact]
+    public void ScanМеньшеПорога_НеБросает()
+    {
+        // Arrange/Act/Assert: дефолты (5/5, порог 2×15=30) — старт разрешён
+        var act = () => WatchdogConfigGuard.EnsureFastLoopsBelowStaleThreshold(
+            5, 5, new WatchdogOptions());
+        act.Should().NotThrow();
+    }
+
+    [Theory]
+    [InlineData(30, 5, 2, 15)] // scan == порогу 30
+    [InlineData(5, 30, 2, 15)] // keepalive == порогу
+    [InlineData(60, 5, 2, 15)] // scan > порога
+    [InlineData(5, 5, 4, 15)]  // порог 60, scan 5 — ок (контроль позитивного на кастоме)
+    public void ГраницыПорога_FailFastЛиРазрешение(int scan, int keepalive, int multiplier, int window)
+    {
+        // Arrange
+        var watchdog = new WatchdogOptions { Multiplier = multiplier, CheckIntervalSec = window };
+        var threshold = multiplier * window;
+        var act = () => WatchdogConfigGuard.EnsureFastLoopsBelowStaleThreshold(scan, keepalive, watchdog);
+
+        // Act/Assert: scan/keepalive ≥ порога → понятная ошибка с направлением
+        // лечения (увеличить CheckIntervalSec/Multiplier); меньше — не бросает
+        if (Math.Max(scan, keepalive) >= threshold)
+            act.Should().Throw<ApplicationException>()
+                .Which.Message.Should().Contain("CheckIntervalSec");
+        else
+            act.Should().NotThrow();
+    }
+}
+```
+
+- [ ] **Шаг 2: Прогон → FAIL (типы не существуют)**
+
+Run: `dotnet build src/PgWorker.slnx -c Debug` — FAIL компиляции.
+
+- [ ] **Шаг 3: Реализация `PulsingDelay` и `WatchdogConfigGuard`**
+
+```csharp
+namespace Shared.Core.Hosting;
+
+/// <summary>Пульсирующий сон: законные ожидания длиннее порога сноса watchdog —
+/// чанками короче окна проверки (CheckIntervalSec; по умолчанию половина окна),
+/// каждый чанк — колбэк-отметка активности БЕЗ тика (healthz loops-alive
+/// семантику не меняет). Перенос паттерна
+/// BackupOrphanSweeperLoop.DelayTickingAsync в общий код.</summary>
+public static class PulsingDelay
+{
+    public static async Task SleepAsync(TimeSpan total, TimeSpan checkWindow, Action pulse, CancellationToken ct)
+    {
+        var chunk = TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, checkWindow.Ticks / 2));
+        var remaining = total;
+        while (remaining > TimeSpan.Zero && !ct.IsCancellationRequested)
+        {
+            var step = chunk < remaining ? chunk : remaining;
+            await Task.Delay(step, ct);
+            remaining -= step;
+            pulse();
+        }
+    }
+}
+```
+
+```csharp
+namespace Shared.Core.Hosting;
+
+/// <summary>Fail-fast инвариант живости старта: тики быстрых циклов
+/// (reconcile/keepalive) обязаны приходить чаще ПОРОГА СНОСА watchdog
+/// (Multiplier × CheckIntervalSec = 30 c при дефолтах) — новый порог фиксирован
+/// опциями watchdog и, в отличие от прежней healthz-зависимой формулы, не
+/// растёт вместе с интервалами циклов: кастомный scan ≥ 30 с дал бы
+/// гарантированный ложный само-снос. Выравнивание — увеличить
+/// CheckIntervalSec/Multiplier.</summary>
+public static class WatchdogConfigGuard
+{
+    public static void EnsureFastLoopsBelowStaleThreshold(
+        int scanIntervalSec, int keepaliveSec, WatchdogOptions watchdog)
+    {
+        var threshold = TimeSpan.FromSeconds(
+            Math.Max(1, watchdog.Multiplier) * Math.Max(1, watchdog.CheckIntervalSec));
+        var slowest = TimeSpan.FromSeconds(Math.Max(1, Math.Max(scanIntervalSec, keepaliveSec)));
+        if (slowest >= threshold)
+            throw new ApplicationException(
+                $"Loops:ScanIntervalSec/KeepaliveSec ({slowest.TotalSeconds:F0} c) обязаны быть МЕНЬШЕ порога сноса watchdog " +
+                $"({threshold.TotalSeconds:F0} c = Multiplier({watchdog.Multiplier}) × CheckIntervalSec({watchdog.CheckIntervalSec})): " +
+                "тики быстрых циклов чаще порога — иначе watchdog сносит живой воркер; увеличьте CheckIntervalSec/Multiplier");
+    }
+}
+```
+
+- [ ] **Шаг 4: `MarkSnapshotActivity` ×3 + виталити snapshot + сны**
+
+PgWorker `HealthState` (Kafka/Valkey — зеркально в свои файлы):
+
+```csharp
+private DateTimeOffset? _lastSnapshotActivity;
+
+/// <summary>Пульс сна snapshot-цикла (активность БЕЗ тика, зеркально
+/// MarkReconcileActivity): законное ожидание длиннее порога сноса watchdog;
+/// читает только watchdog (виталити берёт позднейший из тика и пульса), healthz
+/// loops-alive — по тикам (семантика не меняется).</summary>
+public void MarkSnapshotActivity()
+{
+    lock (_sync)
+    {
+        _lastSnapshotActivity = clock.GetUtcNow();
+    }
+}
+```
+
+`HealthSnapshot` — добавить позиционное поле `DateTimeOffset? LastSnapshotActivity`
+(последним) и передавать в `Snapshot()`.
+
+Виталити ×3 (внутри `Snapshot()`, порог — из Задачи 8) — snapshot-цикл отдаёт
+позднейший факт:
+
+```csharp
+// snapshot: тик ИЛИ пульс сна — позднейший факт активности (сны длиннее
+// порога 30 c пульсируют MarkSnapshotActivity, B2)
+var snapshotActivity = snap.LastSnapshotTick is { } tick && snap.LastSnapshotActivity is { } pulse
+    ? (tick > pulse ? tick : pulse)
+    : snap.LastSnapshotTick ?? snap.LastSnapshotActivity;
+```
+
+`SnapshotLoop` (×3, лидерная ветка): `await Task.Delay(delay, stoppingToken);` →
+
+```csharp
+// Сон длиннее порога сноса — пульсирующий (чанк < окна проверки 15 c):
+// MarkSnapshotActivity — активность без тика (healthz loops-alive не меняется)
+await Shared.Core.Hosting.PulsingDelay.SleepAsync(delay,
+    TimeSpan.FromSeconds(options.CurrentValue.Loops.Watchdog.CheckIntervalSec),
+    health.MarkSnapshotActivity, stoppingToken);
+```
+
+Не-лидерный сон `ScanIntervalSec` — НЕ трогать: при scan < 30 c (инвариант
+шага 5) тик обновляет активность сам; snapshot-цикл не-лидера жив тиками.
+
+`BackupOrphanSweeperLoop`: тело `DelayTickingAsync` заменить вызовом
+`PulsingDelay.SleepAsync(total, TimeSpan.FromSeconds(options.CurrentValue.Loops.Watchdog.CheckIntervalSec),
+health.MarkOrphanSweepTick, ct)`; локальный метод удалить; связанные тесты
+(grep `DelayTickingAsync` в тестах) перевести на общий хелпер.
+
+- [ ] **Шаг 5: fail-fast в Program.cs ×3 — всем трём воркерам (решение
+  пользователя; конфиг НЕ меняется)**
+
+Рядом с биндом `loopsWatchdog` (после него; исполнитель сверяет фактическое
+место чтения Loops-опций) — одна и та же вставка в `src/PgWorker.App/Program.cs`,
+`src/KafkaWorker.App/Program.cs` и `src/ValkeyWorker.App/Program.cs`; отличается
+только имя секции (`PgWorker:Loops` / `KafkaWorker:Loops` / `ValkeyWorker:Loops`):
+
+```csharp
+// fail-fast инварианта живости (arch/14 §8): тики быстрых циклов чаще порога
+// сноса (Multiplier × CheckIntervalSec); конфиг watchdog не меняется
+var loopsCfg = builder.Configuration.GetSection("PgWorker:Loops").Get<LoopsOptions>() ?? new LoopsOptions();
+if (loopsWatchdog.Enabled)
+    Shared.Core.Hosting.WatchdogConfigGuard.EnsureFastLoopsBelowStaleThreshold(
+        loopsCfg.ScanIntervalSec, loopsCfg.KeepaliveSec, loopsWatchdog);
+```
+
+Юниты guard — общие в Shared.Core (`WatchdogConfigGuardTests`, Шаг 1); охват
+×3 обеспечивается самой вставкой во все три Program.cs.
+
+`appsettings.json` ×3 и `deploy/.env.example` — БЕЗ ИЗМЕНЕНИЙ (критерий 10:
+конфигурация watchdog прежняя — `Enabled=true, Multiplier=2, CheckIntervalSec=15,
+StopDelaySec=1`).
+
+- [ ] **Шаг 6: Юниты воркеров (LoopsVitalityTests ×3 + HealthState)**
+
+```csharp
+[Fact]
+public void Snapshot_ПульсСнаБезТика_ЖивостьБезТика()
+{
+    // Arrange: сон snapshot-лидера — только пульс активности, тика нет
+    var health = new HealthState(TimeProvider.System);
+    health.MarkSnapshotActivity();
+    var sut = new PgWorkerLoopsVitality(Options, health);
+
+    // Act
+    var beats = sut.Snapshot();
+
+    // Assert: активность snapshot-цикла свежая (watchdog не firing), тик
+    // остался null — healthz loops-alive по тикам, семантика не меняется
+    beats.First(b => b.Name == "snapshot").LastActivityAt.Should().NotBeNull();
+    health.Snapshot().LastSnapshotTick.Should().BeNull();
+    health.Snapshot().LastSnapshotActivity.Should().NotBeNull();
+}
+```
+
+Kafka/Valkey — зеркально (перечень без orphan-sweep). Также юнит «тик позднее
+пульса → позднейший факт» (MarkSnapshotActivity, затем MarkSnapshotTick;
+ассерт `LastActivityAt` снимка виталити равен тику).
+
+- [ ] **Шаг 7: Сборка + прогоны; Commit**
+
+Run: `dotnet build src/PgWorker.slnx -c Debug` → 0/0;
+`DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~PulsingDelay|FullyQualifiedName~WatchdogConfigGuard|FullyQualifiedName~LoopsVitalityTests"` → PASS.
+
+```bash
+git add -A
+git commit -m "feat(t19-B): пульсирующий сон — общий PulsingDelay (чанк короче окна 15 c; перенос DelayTickingAsync sweeper'а), MarkSnapshotActivity ×3 + сны SnapshotLoop длиннее порога пульсом (активность без тика, healthz loops-alive не меняется); fail-fast scan/keepalive < порога сноса (Multiplier × CheckIntervalSec); конфигурация не меняется (spec §3.2 B2, критерий 7)"
+```
+
+---
+
+## Задача 10 — Домен B3: поллинг долгих фаз provisioning (+ аудит create-вызовов reconcile)
+
+**Вход:** Задачи 8–9 слиты (порог сноса = 30 с при дефолтах; `ILoopProgress`
+доставляет отметки в процессы; пульс-хелпер доступен).
+
+**Действие (файлы):**
+- Create: `src/PgWorker.Provisioning/Processes/LongCallPolling.cs` — поллинг-обёртка.
+- Modify: `src/PgWorker.Provisioning/Processes/ProvisioningProcess.cs` —
+  `EnsureNodesAsync`: create/start ноды через поллинг; конструктору добавить
+  `TimeSpan watchdogWindow` и `ILogger logger`.
+- Modify: `src/PgWorker.Provisioning/Processes/AddShardProcess.cs` — то же для
+  своего `EnsureNodesAsync`.
+- Modify: `src/PgWorker.App/Program.cs` — фабрики процессов передают окно
+  проверки (из `Loops:Watchdog:CheckIntervalSec`, 15 с при дефолтах) и логгер.
+- Modify (аудит той же фазой): `src/PgWorker.Backups/WalStreamProcess.cs`
+  (`EnsureAgentsAsync` → `driver.EnsureBackupAgentAsync` под поллингом),
+  create-вызовы джобов бэкапов/restore/drill (`BackupProcess`/
+  `RestoreProcess`/`RestoreDrillProcess` → `EnsureJobAsync`-подобные вызовы
+  драйвера — сверить по grep `Ensure.*Async` в `src/PgWorker.Backups`).
+- Test: `src/tests/PgWorker.UnitTests/Provisioning/LongCallPollingTests.cs` (create),
+  контрактный связный кейс watchdog×поллинг — там же (create).
+
+**Выход:** одиночный вызов драйвера не молчит дольше окна проверки 15 с:
+create/start ноды (и create агентов/джобов) выполняется идемпотентными
+итерациями с таймаутом короче окна (практично — половина, 7.5 с); каждая
+итерация — `Mark()` по факту + лог elapsed; бюджеты — существующие
+(`PatroniBootSec`, `ProvisionRetry*`); живая фаза любой длительности
+неуязвима (итерации → отметки), висящий вызов без итераций ловится не позднее
+порога + окно (≤ 45 с при дефолтах).
+
+**Проверка:** сборка 0/0;
+`DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Debug --filter
+"FullyQualifiedName~LongCallPolling"` → PASS; регресс контрактов provisioning:
+`DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Debug
+--filter "FullyQualifiedName~RepairContractTests|FullyQualifiedName~ShardScaleContractTests"` → PASS (после — зачистка, шаг Г Задачи 7).
+
+**Связь со spec:** §1.2 п.4, §2 п.9–п.11, §3.2 Provisioning, фаза B3, критерий 8.
+
+- [ ] **Шаг 1: Failing-юниты `LongCallPolling`**
+
+```csharp
+// LongCallPollingTests: поллинг-инвариант долгих одиночных вызовов.
+// Масштаб юнита: таймауты/бюджеты уменьшены (0.5 c/10 c); в проде итерация
+// ≤ 7.5 c (< окна 15 c), живая фаза любой длительности неуязвима отметками.
+public sealed class LongCallPollingTests
+{
+    private sealed class MarkCounter : Shared.Core.Hosting.ILoopProgress
+    {
+        public int Marks;
+        public void Mark() => Marks++;
+    }
+
+    private sealed class CollectingLogger : ILogger<Provisioning.Processes.LongCallPolling>
+    {
+        public List<string> Messages { get; } = [];
+        public IDisposable? BeginScope<TState>(TState state) where TState : notnull => null;
+        public bool IsEnabled(LogLevel logLevel) => true;
+        public void Log<TState>(LogLevel level, EventId eventId, TState state, Exception? e,
+            Func<TState, Exception?, string> formatter) => Messages.Add(formatter(state, e));
+    }
+
+    [Fact]
+    public async Task ДолгийВызов_ИтерацииИдут_MarkПоФактуЛогElapsed()
+    {
+        // Arrange: вызов «висит» 3 c (медленный daemon — дольше порога сноса
+        // в масштабе юнита; в проде аналогично фазе > 30 c), таймаут итерации
+        // 0.5 c, бюджет 10 c; завершается успехом на 4-й попытке
+        var progress = new MarkCounter();
+        var logger = new CollectingLogger();
+        var calls = 0;
+
+        // Act
+        var result = await Provisioning.Processes.LongCallPolling.EnsureAsync(
+            "create/start ноды shard1a",
+            async token => { calls++; await Task.Delay(TimeSpan.FromSeconds(3), token); return calls >= 4 ? Result.Success() : Result.Failed(new ApplicationException("не успел")); },
+            progress, logger,
+            TimeSpan.FromMilliseconds(500), TimeSpan.FromSeconds(10), CancellationToken.None);
+
+        // Assert: итерации поллинга шли (первые 3 попытки сняты таймаутом),
+        // каждая — Mark ПО ФАКТУ + лог elapsed (включая завершающую успешную);
+        // итог — успех
+        result.IsSuccess.Should().BeTrue();
+        calls.Should().BeGreaterThanOrEqualTo(4);
+        progress.Marks.Should().BeGreaterThanOrEqualTo(calls, "отметка на каждую итерацию");
+        logger.Messages.Count(m => m.Contains("уже") && m.Contains("shard1a"))
+            .Should().BeGreaterThanOrEqualTo(calls,
+                "elapsed-лог на КАЖДОЙ итерации, включая успешную (буква приказа п.4)");
+        logger.Messages.Should().Contain(m => m.Contains("успех"),
+            "завершающая успешная итерация тоже логируется с elapsed");
+    }
+
+    [Fact]
+    public async Task ОшибкаДрайвера_НаверхБезПоллинга()
+    {
+        // Arrange: драйвер отвечает быстрой ошибкой — поллинг не крутится
+        var progress = new MarkCounter();
+        var calls = 0;
+
+        // Act
+        var result = await Provisioning.Processes.LongCallPolling.EnsureAsync(
+            "create/start ноды shard1a",
+            _ => { calls++; return Task.FromResult(Result.Failed(new ApplicationException("docker down"))); },
+            progress, new CollectingLogger(),
+            TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        // Assert: ошибка — наверх первым вызовом (тир повторит), отметка одна — по факту итерации
+        result.IsSuccess.Should().BeFalse();
+        calls.Should().Be(1);
+        progress.Marks.Should().Be(1, "отметка не ставится без фактической итерации");
+    }
+
+    [Fact]
+    public async Task БюджетИсчерпан_FailedНаверх()
+    {
+        // Arrange: вызов никогда не завершается, бюджет 2 c < вечности
+        var progress = new MarkCounter();
+
+        // Act
+        var result = await Provisioning.Processes.LongCallPolling.EnsureAsync(
+            "create/start ноды shard1a",
+            token => Task.Delay(TimeSpan.FromHours(1), token).ContinueWith(_ => Result.Success()),
+            progress, new CollectingLogger(),
+            TimeSpan.FromMilliseconds(300), TimeSpan.FromSeconds(2), CancellationToken.None);
+
+        // Assert: существующий бюджет — граница фазы (PatroniBootSec-семантика)
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Message.Should().Contain("бюджет");
+    }
+}
+```
+
+И связный контракт (watchdog × поллинг — критерий 8; масштаб: окно 1 c ×
+Multiplier 2 → порог 2 с — аналог продовых 15×2=30):
+
+```csharp
+[Fact]
+public async Task Связка_ПоллингИдёт_WatchdogНеСносит_ВисящийВызовБезИтераций_Сносит()
+{
+    // Arrange: HealthState + виталити PgWorker (порог от опций: 2×1=2 c —
+    // масштабированный аналог продового 2×15=30 c) + LoopWatchdog (механика
+    // прежняя: снос при возрасте активности > StaleAfter)
+    var health = new PgWorker.App.HealthState(TimeProvider.System);
+    var options = new FixedOptionsMonitor(new PgWorkerOptions
+    {
+        Loops = new LoopsOptions
+        {
+            ScanIntervalSec = 1, KeepaliveSec = 1, SnapshotIntervalMin = 360,
+            Watchdog = new Shared.Core.Hosting.WatchdogOptions { Multiplier = 2, CheckIntervalSec = 1 },
+        },
+    });
+    var vitality = new PgWorker.App.PgWorkerLoopsVitality(options, health);
+    var lifetime = new FakeLifetime(); // локальная копия образца Shared.Core.UnitTests
+    using var cts = new CancellationTokenSource();
+    // опции для watchdog — отдельным экземпляром (класс, не record: без with)
+    using var watchdog = new Shared.Core.Hosting.LoopWatchdog(
+        vitality, lifetime, Microsoft.Extensions.Logging.Abstractions.NullLogger<Shared.Core.Hosting.LoopWatchdog>.Instance,
+        TimeProvider.System,
+        new Shared.Core.Hosting.WatchdogOptions { Enabled = true, Multiplier = 2, CheckIntervalSec = 1, StopDelaySec = 0 });
+
+    // Act 1: «долгая фаза» 4 c (дольше порога 2 c) — итерации поллинга дают
+    // отметки чаще порога: живая фаза любой длительности неуязвима
+    await watchdog.StartAsync(cts.Token);
+    var phaseEnd = DateTimeOffset.UtcNow.AddSeconds(4);
+    while (DateTimeOffset.UtcNow < phaseEnd)
+    {
+        await Task.Delay(TimeSpan.FromMilliseconds(300));
+        health.Mark(); // итерация поллинга ПО ФАКТУ
+    }
+
+    // Assert 1: сноса нет — активность обновляется, возраст < StaleAfter
+    lifetime.StopCalls.Should().Be(0, "итерации поллинга — не зависание (критерий 8)");
+
+    // Act 2: «висящий вызов» — отметок нет 4 c (возраст > порога 2 c + окно)
+    await Task.Delay(TimeSpan.FromSeconds(4));
+
+    // Assert 2: снос при возрасте активности > StaleAfter (механика прежняя)
+    lifetime.StopCalls.Should().Be(1, "висящий вызов без итераций — снос (критерий 8)");
+    cts.Cancel();
+}
+```
+
+(`FixedOptionsMonitor` — существующий хелпер юнитов воркера; `FakeLifetime` —
+локальная копия образца из Shared.Core.UnitTests. Vitалити в связке — реальный
+`PgWorkerLoopsVitality` с порогом от опций — заодно регресс формулы Задачи 8.)
+
+- [ ] **Шаг 2: Прогон → FAIL (тип не существует)**
+
+- [ ] **Шаг 3: Реализация `LongCallPolling`**
+
+```csharp
+using System.Diagnostics;
+using Microsoft.Extensions.Logging;
+using PgWorker.Core;
+using Shared.Core.Hosting;
+
+namespace PgWorker.Provisioning.Processes;
+
+/// <summary>Поллинг-инвариант долгих одиночных вызовов (arch/14 §6): одиночный
+/// вызов драйвера не молчит дольше окна проверки watchdog — попытка с
+/// таймаутом короче окна (практично — половина); незавершение → идемпотентный
+/// повтор (ensure-семантика: повторный create → уже-есть → идентифицирующий
+/// инспект подтверждает состояние). Каждая итерация — отметка прогресса ПО
+/// ФАКТУ + лог elapsed («сколько фаза уже занимает»). Ошибка драйвера
+/// (Result.Failed) — наверх без повторов (следующий тик продолжит): поллинг
+/// ловит молчание, не сбои. Общий бюджет фазы — существующие пороги
+/// (PatroniBootSec-семантика). Отметка «в обмен на ничто» запрещена: Mark
+/// только у исполненной итерации.</summary>
+public static class LongCallPolling
+{
+    public static async Task<Result> EnsureAsync(
+        string phase, Func<CancellationToken, Task<Result>> call,
+        ILoopProgress? progress, ILogger logger,
+        TimeSpan singleCallTimeout, TimeSpan budget, CancellationToken ct)
+    {
+        var started = Stopwatch.GetTimestamp();
+        for (var attempt = 1; ; attempt++)
+        {
+            using var attemptCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            attemptCts.CancelAfter(singleCallTimeout);
+            try
+            {
+                var result = await call(attemptCts.Token);
+                progress?.Mark();
+                // elapsed-лог на КАЖДОЙ итерации, включая завершающую успешную
+                // (буква приказа п.4: «каждая итерация поллинга даёт отметку
+                // активности И пишет в лог elapsed»)
+                logger.LogInformation(
+                    "provisioning: фаза {Phase}: уже {Elapsed:F0} c (итерация {Attempt}: {Outcome})",
+                    phase, Stopwatch.GetElapsedTime(started).TotalSeconds, attempt,
+                    result.IsSuccess ? "успех" : $"ошибка: {result.Error?.Message}");
+                return result;
+            }
+            catch (OperationCanceledException) when (!ct.IsCancellationRequested && attemptCts.IsCancellationRequested)
+            {
+                // итерация завершилась таймаутом — факт итерации: отметка + elapsed
+                progress?.Mark();
+                logger.LogInformation(
+                    "provisioning: фаза {Phase}: уже {Elapsed:F0} c (итерация {Attempt}: вызов не завершился за {Timeout:F0} c — идемпотентный повтор)",
+                    phase, Stopwatch.GetElapsedTime(started).TotalSeconds, attempt, singleCallTimeout.TotalSeconds);
+            }
+
+            if (Stopwatch.GetElapsedTime(started) >= budget)
+                return Result.Failed(new ApplicationException(
+                    $"фаза {phase}: бюджет {budget.TotalSeconds:F0} c исчерпан ({attempt} итераций)"));
+        }
+    }
+}
+```
+
+- [ ] **Шаг 4: `EnsureNodesAsync` ×2 под поллинг + конструкторы + Program.cs**
+
+`ProvisioningProcess`/`AddShardProcess`: в конструктор добавить параметры
+`TimeSpan watchdogWindow` (окно проверки `CheckIntervalSec`, 15 с при дефолтах)
+и `ILogger logger` (после `progress`); вызов create/start ноды заменить на:
+
+```csharp
+// Поллинг create/start (arch/14 §5 A P2.1): одиночный вызов таймаутом
+// короче окна проверки (половина — 7.5 c при дефолтах), идемпотентный повтор;
+// каждая итерация — Mark по факту + лог elapsed (внутри LongCallPolling)
+var ensured = await LongCallPolling.EnsureAsync(
+    $"create/start ноды {node.Name}",
+    token => driver.EnsureNodeAsync(
+        topology, node.Name, topology.Nodes[node.Name], clusterSecrets, etcdEndpoints, resources,
+        tuning, syncStrict, token),
+    progress, logger,
+    TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, watchdogWindow.Ticks / 2)),
+    TimeSpan.FromSeconds(placementOpts.PatroniBootSec), ct);
+if (!ensured.IsSuccess)
+    return ensured;
+```
+
+Существующий `progress?.Mark()` после вызова удалить (Mark теперь внутри
+итераций поллинга — по факту, не после всего вызова). Program.cs (обе фабрики,
+`ProvisioningProcess` и `AddShardProcess`) — передать
+`TimeSpan.FromSeconds(opts.Loops.Watchdog.CheckIntervalSec)` и
+`sp.GetRequiredService<ILogger<ProvisioningProcess>>()` /
+`<AddShardProcess>`.
+
+- [ ] **Шаг 5: Аудит create-вызовов reconcile той же фазой**
+
+`WalStreamProcess.EnsureAgentsAsync` — вызов `driver.EnsureBackupAgentAsync(...)`
+обернуть `LongCallPolling.EnsureAsync($"create агента {d.Name}", ...)` (окно
+передать параметром конструктора WalStreamProcess аналогично provisioning —
+`TimeSpan watchdogWindow`; Program.cs фабрика WalStreamProcess — передать).
+Create джобов (`BackupProcess`/`RestoreProcess`/`RestoreDrillProcess` — grep
+`EnsureJob\|CreateJob\|EnsureBackupJob` в `src/PgWorker.Backups`) — тот же
+паттерн: одиночный create-вызов драйвера под поллингом с тем же окном.
+Правки сигнатур — минимальные (параметр окна), тесты процессов с фейками —
+актуализировать (новые параметры конструктора: окно 15 с, логгер NullLogger).
+
+- [ ] **Шаг 6: Сборка + прогоны (юниты + контракты); Commit**
+
+Run: `dotnet build src/PgWorker.slnx -c Debug` → 0/0;
+`DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~LongCallPolling"` → PASS;
+`DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~RepairContractTests|FullyQualifiedName~ShardScaleContractTests"` → PASS; зачистка (шаг Г Задачи 7).
+
+```bash
+git add -A
+git commit -m "feat(t19-B): поллинг долгих фаз — LongCallPolling (одиночный вызов таймаутом короче окна 15 c — практично половина, идемпотентный повтор, Mark по факту итерации + лог elapsed, бюджеты существующие); EnsureNodesAsync provisioning/add-shard и create wal-агентов/джобов под поллингом; окно проверки передаётся из Program.cs (spec §3.2 B3, критерий 8)"
+```
+
+---
+
+## Задача 11 — Домен B4: runbook-watchdog + блокирующая E2E-приёмка домена B
+
+**Вход:** Задачи 8–10 слиты.
+
+**Действие (файлы):**
+- Modify: `docs/runbook.md` — раздел «Watchdog зависших циклов воркера»
+  обновить формулу порога (без healthz-зависимости).
+- Verify: `arch/14-pgworker.md` §6/§5 A/§8, `arch/16-kafkaworker.md`/`arch/21-valkeyworker.md`
+  §6/§8 — сверка с реализацией (обновлены spec-фазой arch-first; правка — только
+  при расхождении); `appsettings.json` ×3 и `deploy/.env.example` — конфиг
+  прежний (`Enabled=true, Multiplier=2, CheckIntervalSec=15, StopDelaySec=1`).
+
+**Выход:** runbook описывает порог `Multiplier × CheckIntervalSec` = 30 с
+(единый, без healthz-зависимости), прежнюю механику/grace, поллинг/пульс,
+fail-fast; E2E-приёмка домена B зелёная (маркер Scale_AddEmptyShard —
+блокирующий критерий задачи).
+
+**Проверка:** тексты соответствуют коду; шаг Д Задачи 7 — три серии зелёные.
+
+**Связь со spec:** §3.2 (конфигурация/документация), фаза B4, критерии 9, 10, 12.
+
+- [ ] **Шаг 1: Обновить раздел runbook**
+
+```markdown
+## Watchdog зависших циклов воркера
+
+Внутренний watchdog каждого воркера (PgWorker/KafkaWorker/ValkeyWorker) следит
+за возрастом активности фоновых циклов (активность = тик или прогресс-отметка
+долгой фазы: бутстрап нод, cutover переездов, PING-циклы готовности,
+reconcile/keepalive/snapshot; у PgWorker ещё orphan-sweep) и самолечит
+зависание «без исключения»: возраст активности сверх порога → graceful
+self-stop (тот же механизм, что `POST /api/restart`) → контейнер поднимает
+docker-политика `restart: unless-stopped` → lease гаснут ≤15 с → клэймы
+мигрируют второму инстансу.
+
+Порог сноса — от собственных опций watchdog: `Multiplier × CheckIntervalSec`
+(2 × 15 = 30 с при дефолтах, единый для всех циклов). Порог healthz (Degraded
+loops-alive, формулы от интервалов циклов) в формуле НЕ участвует — healthz
+остаётся наблюдательной гранью со своей семантикой. Проверка раз в
+`CheckIntervalSec`; одного наблюдения превышения достаточно; стартовый grace
+первого проявления цикла — 2×порога.
+
+Почему это безопасно для долгих операций: легитимно долгие фазы (create/start
+нод, джобы, ожидания готовности) поллингуются — каждая итерация даёт отметку
+активности и elapsed-лог; законные длинные сны (snapshot-интервал, интервал
+sweeper'а, retry-сон выгрузки) пульсируют чанками короче окна проверки.
+Воркер не стартует, если `ScanIntervalSec`/`KeepaliveSec` ≥ порога сноса
+(fail-fast: увеличьте `CheckIntervalSec`/`Multiplier`).
+
+Видимость: метрика `worker_watchdog_restarts_total{loop}` и critical-журнал.
+Поведение при `Loops:Watchdog:Enabled=false` прежнее — компонент не
+регистрируется. «Завис весь процесс» (healthz не отвечает) — зона docker
+HEALTHCHECK, не watchdog.
+```
+
+- [ ] **Шаг 2: Сверка arch и конфигов (без правки при совпадении)**
+
+Прочитать arch/14 §6/§5 A/§8, arch/16/21 §6/§8: формулировки обязаны совпадать
+с реализацией Задач 8–10 (порог = `Multiplier` × `CheckIntervalSec` = 30 с,
+единый; healthz из формулы исключён; `WatchdogOptions` без изменений, механика/
+grace прежние; поллинг-инвариант; fail-fast; конфиг-блоки прежние). Расхождение —
+минимальная правка канона в этом же шаге. `appsettings.json` ×3 и
+`deploy/.env.example` — не менялись (сверить `git diff` пуст).
+
+- [ ] **Шаг 3: Блокирующая E2E-приёмка домена B**
+
+Выполнить шаг Д Задачи 7 (три серии: `Scale_AddEmptyShard` → зачистка →
+`WalStream_SlotLostAutoRecreate` → зачистка → `SecondInstance`) на свежем
+Release. `Scale_AddEmptyShard` ЗЕЛЁНЫЙ — блокирующий критерий задачи
+(приказ: «НЕЛЬЗЯ ЗАКРЫВАТЬ ПОКА НЕ РАБОТАЕТ»). Упавший сценарий — разбор по
+артефактам телеметрии (`MarkFailed` сохранил окружение), без перезапуска.
+
+- [ ] **Шаг 4: Commit**
+
+```bash
+git add -A
+git commit -m "docs(t19-B): runbook — порог сноса watchdog от собственных опций (Multiplier × CheckIntervalSec = 30 c, единый; healthz из формулы исключён, Degraded-окно прежнее), поллинг/пульс/fail-fast; arch/14/16/21 и конфигурация сверены (без изменений); E2E-приёмка домена B: Scale_AddEmptyShard + WalStream + SecondInstance зелёные (spec §3.2 B4, критерии 9/10/12)"
+```
+
+---
+
 ## Само-ревью плана (выполнено при написании)
 
-- **Покрытие spec:** §3.1 → Задача 1; §3.2 → Задача 3 (+миграция BreakAsync в
-  Задаче 1); §3.3 → Задачи 4–5; §3.4 (приёмник не трогаем) — отражено в
-  ограничениях; §4 Ф1–Ф4 → Задачи 1–2 / 3 / 4–5 / 6–7; критерии 1,2,3,7 →
-  Задача 3 (тесты A/B/C/D); критерий 4 → Задача 2; критерий 5 → Задачи 6–7;
-  критерий 6 → Задачи 4–5; критерий 8 → Задача 5 (сверка).
-- **Отклонения от буквы spec с обоснованием:** (1) «юнит-тесты SQL-текстов» —
-  исполняются интеграцией на реальном PG (WalSqlTests): в проекте нет
-  Npgsql-моков, тексты реально прогоняются; юнит-поведение правила —
-  WalStreamProcessTests на FakeSql (соответствует сложившейся структуре тестов).
-  (2) Нагрузка INSERT+pg_switch_wal вместо pgbench — pgbench отсутствует в
-  образе ноды; эффект (форсированное закрытие сегментов) идентичен, образец —
-  AC2/AC3 того же файла. (3) В пользовательских текстах (правило панели,
-  runbook) атрибуция «(t19)» опущена — правило AGENTS о исторических пассажах
-  в docs/arch; мерж-коммит не должен оставлять теги слитой задачи.
-  (4) E2E-сценарий дополняет «снос агента» остановкой/возвратом воркера — без
-  этого супервиз (ScanIntervalSec=1) возвращает агента раньше среза и lost
-  невоспроизводим; стоп/старт — существующий паттерн E2eScenarios («смерть
-  контроллера»), система не мокается.
-- **Типы/сигнатуры:** `SlotProbeAsync` возвращает `Result<(bool Exists, string?
-  WalStatus)>` — единообразно в интерфейсе, Npgsql-реализации, фейке и вызове
-  процесса; фазы журнала `slot-recreate/{shard.Name}` — одинаково в коде и
-  ассертах (Задачи 3/6); `LostByDsn`/`Calls` фейка — только в тестах.
+- **Покрытие spec (домен A):** §3.1 → Задача 1; §3.2-правило → Задача 3
+  (+миграция BreakAsync в Задаче 1); §3.3 → Задачи 4–5; §3.4 (приёмник не
+  трогаем) — отражено в ограничениях; фазы A1–A4 → Задачи 1–2 / 3 / 4–5 / 6;
+  критерии 1,2,3 → Задача 3 (тесты A/B/C), 7 — тест D; критерий 4 → Задача 2;
+  критерий 5 → Задачи 6–7.
+- **Покрытие spec (домен B):** §1.2 п.1–п.3 (диагноз/фикс формулы) → Задача 8;
+  §3.2 Shared.Core (хелпер пульса) и PgWorker.App (пульс/fail-fast) → Задача 9;
+  §3.2 Provisioning (поллинг-инвариант + аудит create-вызовов) → Задача 10;
+  §3.2 конфигурация/документация → Задачи 9 (НЕ-правка конфига) и 11; фазы
+  B1–B4 → Задачи 8/9/10/11; критерии 6 → 8, 7 → 9, 8 → 10, 9 → 7(Д)+11,
+  10 → 11 (runbook + конфиг без изменений), 11 (Enabled=false — существующие
+  юниты без правок) и 12 (arch-сверка — Задача 11).
+- **Порядок исполнения:** Задачи 1–6 (домен A) уже в ветке (коммиты
+  `936d6229`…`219d994b`) — не исполнять повторно; Задачи 8–11 строго по
+  порядку (B2 требует порог B1 — сны длиннее 30 с обязаны пульсировать;
+  B3 — хелперы/семантику B1–B2); Задача 7 — последней (мерж-гейт обоих доменов).
+- **Отклонения от буквы spec с обоснованием (домен A):** (1) «юнит-тесты
+  SQL-текстов» — исполняются интеграцией на реальном PG (WalSqlTests): в
+  проекте нет Npgsql-моков, тексты реально прогоняются; юнит-поведение правила —
+  WalStreamProcessTests на FakeSql. (2) Нагрузка INSERT+pg_switch_wal вместо
+  pgbench — pgbench отсутствует в образе ноды; эффект идентичен (AC2/AC3 того
+  же файла). (3) В пользовательских текстах атрибуция «(t19)» опущена — правило
+  AGENTS о исторических пассажах в docs/arch. (4) E2E-сценарий дополняет «снос
+  агента» остановкой/возвратом воркера — иначе супервиз (ScanIntervalSec=1)
+  возвращает агента раньше среза и lost невоспроизводим (паттерн «смерть
+  контроллера» E2eScenarios, система не мокается).
+- **Чтения по букве приказа (домен B, финальная редакция):** (1) `WatchdogOptions`/
+  `LoopHeartbeat`/`LoopWatchdog`/`ILoopsVitality`-сигнатура/healthz-формат —
+  без изменений вовсе; правится ТОЛЬКО источник вычисления `StaleAfter` в
+  виталити ×3 (= `Multiplier × CheckIntervalSec`, 30 с, единый). (2) Механика
+  сноса прежняя: возраст > StaleAfter, одно наблюдение, grace null-активности
+  2×StaleAfter — «2 по 15» это ФОРМУЛА ПОРОГА, не счётчик проверок (spec §8).
+  (3) Удалён тест `Symmetry_WatchdogThreshold_IsHealthzTimesMultiplier` —
+  кодировал отвергнутую healthz-зависимость; интеграционные LoopWatchdogTests
+  не трогаются (FakeVitality строит порог сам, компонент не менялся). (4)
+  Не-лидерные сны SnapshotLoop не пульсируются — при scan < 30 c тик обновляет
+  активность сам (fail-fast гарантирует scan/keepalive < порога). (5) Аудит
+  create-вызовов (wal-агенты, джобы) включён в Задачу 10 той же фазой — слепая
+  зона едина (spec §8). (6) Таймаут поллинг-итерации и чанк пульса — половина
+  окна 15 с (реализационный выбор внутри инвариантов, spec §8). (7) Fail-fast —
+  против ПОРОГА СНОСА (30 с), не окна: порог фиксирован опциями и не растёт с
+  интервалами циклов (spec §8); охват — все три воркера (решение пользователя:
+  guard в Program.cs ×3, Шаг 5 Задачи 9).
+- **Типы/сигнатуры:** `SlotProbeAsync` → `Result<(bool Exists, string? WalStatus)>`;
+  фазы журнала `slot-recreate/{shard.Name}` — одинаково в коде и ассертах;
+  `LoopHeartbeat(string Name, DateTimeOffset? LastActivityAt, TimeSpan StaleAfter)`
+  — сигнатура прежняя, значение `StaleAfter` из `Multiplier × CheckIntervalSec`;
+  `WatchdogOptions { Enabled, Multiplier=2, CheckIntervalSec=15, StopDelaySec=1 }`
+  — без изменений; `PulsingDelay.SleepAsync(total, checkWindow, pulse, ct)`
+  (чанк = половина окна); `WatchdogConfigGuard.EnsureFastLoopsBelowStaleThreshold(
+  scan, keepalive, watchdog)`; `LongCallPolling.EnsureAsync(phase, call,
+  progress, logger, singleCallTimeout, budget, ct)`; `HealthState.
+  MarkSnapshotActivity()` + `HealthSnapshot.LastSnapshotActivity` —
+  единообразно в задачах 8–10 и ассертах.
