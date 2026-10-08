@@ -2,6 +2,7 @@
 
     <ItemGroup>
         <InternalsVisibleTo Include="Metrics.SdGenerator.UnitTests"/>
+        <InternalsVisibleTo Include="Metrics.SdGenerator.IntegrationTests"/>
     </ItemGroup>
 
     <ItemGroup>

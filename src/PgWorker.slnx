@@ -54,6 +54,7 @@
     <Folder Name="/tests/">
         <Project Path="tests/Shared.Metrics.UnitTests/Shared.Metrics.UnitTests.csproj" />
         <Project Path="tests/Metrics.SdGenerator.UnitTests/Metrics.SdGenerator.UnitTests.csproj" />
+        <Project Path="tests/Metrics.SdGenerator.IntegrationTests/Metrics.SdGenerator.IntegrationTests.csproj" />
         <Project Path="tests/Shared.Core.UnitTests/Shared.Core.UnitTests.csproj" />
         <Project Path="tests/Shared.Etcd.UnitTests/Shared.Etcd.UnitTests.csproj" />
         <Project Path="tests/Shared.Docker.UnitTests/Shared.Docker.UnitTests.csproj" />
