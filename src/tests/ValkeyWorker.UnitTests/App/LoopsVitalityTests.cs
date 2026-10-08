@@ -67,6 +67,24 @@ public sealed class LoopsVitalityTests
     }
 
     [Fact]
+    public void Snapshot_ПульсСнаБезТика_ЖивостьБезТика()
+    {
+        // Arrange: сон snapshot-лидера — только пульс активности, тика нет
+        var health = new HealthState(TimeProvider.System);
+        health.MarkSnapshotActivity();
+        var sut = new ValkeyWorkerLoopsVitality(Options, health);
+
+        // Act
+        var beats = sut.Snapshot();
+
+        // Assert: активность snapshot-цикла свежая (watchdog не firing), тик
+        // остался null — healthz loops-alive по тикам, семантика не меняется
+        beats.First(b => b.Name == "snapshot").LastActivityAt.Should().NotBeNull();
+        health.Snapshot().LastSnapshotTick.Should().BeNull();
+        health.Snapshot().LastSnapshotActivity.Should().NotBeNull();
+    }
+
+    [Fact]
     public void Snapshot_PassesHealthStateTicks()
     {
         // Arrange

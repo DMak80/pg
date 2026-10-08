@@ -12,6 +12,13 @@ public sealed class LoopsVitalityTests
         Loops = new LoopsOptions { ScanIntervalSec = 5, KeepaliveSec = 5, SnapshotIntervalMin = 360 },
     });
 
+    // Собственный FakeTimeProvider (новый пакет НЕ тащим, CPM чистый).
+    private sealed class FakeTimeProvider : TimeProvider
+    {
+        public DateTimeOffset Now;
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
     [Fact]
     public void Snapshot_AllFourLoops_StaleAfterFromWatchdogOptions()
     {
@@ -64,6 +71,42 @@ public sealed class LoopsVitalityTests
 
         // Act/Assert
         sut.Snapshot().Should().OnlyContain(b => b.StaleAfter == TimeSpan.FromSeconds(60));
+    }
+
+    [Fact]
+    public void Snapshot_ПульсСнаБезТика_ЖивостьБезТика()
+    {
+        // Arrange: сон snapshot-лидера — только пульс активности, тика нет
+        var health = new HealthState(TimeProvider.System);
+        health.MarkSnapshotActivity();
+        var sut = new PgWorkerLoopsVitality(Options, health);
+
+        // Act
+        var beats = sut.Snapshot();
+
+        // Assert: активность snapshot-цикла свежая (watchdog не firing), тик
+        // остался null — healthz loops-alive по тикам, семантика не меняется
+        beats.First(b => b.Name == "snapshot").LastActivityAt.Should().NotBeNull();
+        health.Snapshot().LastSnapshotTick.Should().BeNull();
+        health.Snapshot().LastSnapshotActivity.Should().NotBeNull();
+    }
+
+    [Fact]
+    public void Snapshot_ТикПозднееПульса_ПозднейшийФакт()
+    {
+        // Arrange: пульс сна, затем тик снимка ПОЗЖЕ пульса — виталити отдаёт тик
+        var clock = new FakeTimeProvider { Now = DateTimeOffset.UnixEpoch.AddHours(1) };
+        var health = new HealthState(clock);
+        health.MarkSnapshotActivity();
+        clock.Now = clock.Now.AddMinutes(10); // тик позже пульса
+        health.MarkSnapshotTick();
+        var sut = new PgWorkerLoopsVitality(Options, health);
+
+        // Act
+        var beats = sut.Snapshot();
+
+        // Assert: позднейший факт — тик (не пульс)
+        beats.First(b => b.Name == "snapshot").LastActivityAt.Should().Be(health.Snapshot().LastSnapshotTick);
     }
 
     [Fact]

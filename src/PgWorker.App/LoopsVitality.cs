@@ -20,13 +20,19 @@ public sealed class PgWorkerLoopsVitality(
         var staleAfter = TimeSpan.FromSeconds(
             Math.Max(1, watchdog.Multiplier) * Math.Max(1, watchdog.CheckIntervalSec));
         var snap = health.Snapshot();
+
+        // snapshot: тик ИЛИ пульс сна — позднейший факт активности (сны длиннее
+        // порога 30 c пульсируют MarkSnapshotActivity, B2)
+        var snapshotActivity = snap.LastSnapshotTick is { } tick && snap.LastSnapshotActivity is { } pulse
+            ? (tick > pulse ? tick : pulse)
+            : snap.LastSnapshotTick ?? snap.LastSnapshotActivity;
         return
         [
-            // активность = тик или прогресс-отметка; keepalive/snapshot/orphan-sweep —
+            // активность = тик или прогресс-отметка; keepalive/orphan-sweep —
             // активность = тик (долгих фаз нет; сон snapshot — пульс B2)
             new LoopHeartbeat("reconcile", snap.LastReconcileActivity, staleAfter),
             new LoopHeartbeat("keepalive", snap.LastKeepaliveTick, staleAfter),
-            new LoopHeartbeat("snapshot", snap.LastSnapshotTick, staleAfter),
+            new LoopHeartbeat("snapshot", snapshotActivity, staleAfter),
             new LoopHeartbeat("orphan-sweep", snap.LastOrphanSweepTick, staleAfter),
         ];
     }

@@ -423,6 +423,12 @@ builder.Services.AddLoopWatchdog(
     loopsWatchdog,
     (sp, loop) => sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>()
         .WatchdogRestart(loop));
+// fail-fast инварианта живости (arch/16 §8): тики быстрых циклов чаще порога
+// сноса (Multiplier × CheckIntervalSec); конфиг watchdog не меняется
+var loopsCfg = builder.Configuration.GetSection("KafkaWorker:Loops").Get<LoopsOptions>() ?? new LoopsOptions();
+if (loopsWatchdog.Enabled)
+    Shared.Core.Hosting.WatchdogConfigGuard.EnsureFastLoopsBelowStaleThreshold(
+        loopsCfg.ScanIntervalSec, loopsCfg.KeepaliveSec, loopsWatchdog);
 
 var app = builder.Build();
 if (app.Services.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Api.Tls.AllowInsecureHttp)
