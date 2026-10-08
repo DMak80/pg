@@ -37,9 +37,16 @@ public sealed class BackupProcess(
     TimeProvider time,
     ILogger<BackupProcess> logger,
     Func<CancellationToken, Task<Result>>? snapshot = null,
-    Action<string, IReadOnlyDictionary<string, (long? LastValidUnix, long MaxAgeSec)>>? fullAgeObserver = null)
+    Action<string, IReadOnlyDictionary<string, (long? LastValidUnix, long MaxAgeSec)>>? fullAgeObserver = null,
+    TimeSpan? watchdogWindow = null)
 {
     private const string Op = "backups";
+
+    // Окно проверки watchdog для поллинга create-вызовов (дефолт — продовые 15 c)
+    // и бюджет фазы create/start джоба (PatroniBootSec-семантика существующих
+    // бюджетов; исчерпание — transient: continue, супервизия повторит следующим тиком).
+    private TimeSpan WatchdogWindow => watchdogWindow ?? TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan JobCreateBudget = TimeSpan.FromSeconds(120);
 
     public async Task<Result<ProcessOutcome>> TickAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
@@ -230,12 +237,29 @@ public sealed class BackupProcess(
             // запустит следующим тиком (spec §2.4).
             var spec = BackupJobSpec.Build(options, cluster, shard.Name, id, source.Value, creds.Value.BackupPassword);
             var name = BackupNames.ContainerName(cluster, shard.Name, id);
-            var createdContainer = await engine.CreateContainerAsync(spec, name, ct);
-            if (!createdContainer.IsSuccess)
-                continue;
-            var started = await engine.StartContainerAsync(name, ct);
-            if (!started.IsSuccess)
-                continue;
+            // Поллинг create/start джоба (arch/14 §6 инвариант поллинга; аудит
+            // spec §3.2): одиночный вызов движка не молчит дольше окна проверки —
+            // итерации с таймаутом короче окна; ensure-семантика: контейнер уже
+            // есть → только старт (304 already-started = успех движка).
+            var launched = await LongCallPolling.EnsureAsync(
+                $"create/start джоба {name}",
+                async token =>
+                {
+                    var list = await engine.ListContainersAsync(name, all: true, token);
+                    if (!list.IsSuccess)
+                        return Result.Failed(list.Error!);
+                    if (list.Value.Any(c => c.Names.Contains(name)))
+                        return await engine.StartContainerAsync(name, token);
+                    var createdContainer = await engine.CreateContainerAsync(spec, name, token);
+                    if (!createdContainer.IsSuccess)
+                        return createdContainer;
+                    return await engine.StartContainerAsync(name, token);
+                },
+                null, logger,
+                TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
+                JobCreateBudget, ct);
+            if (!launched.IsSuccess)
+                continue; // transient — PLANNED остаётся, супервизия повторит запуск
 
             var running = planned with { State = FullBackupStatus.Running };
             var putRunning = await PutAsync(BackupNames.FullKey(cluster, shard.Name, id), BackupStatusJson.Serialize(running), ct);
@@ -350,17 +374,37 @@ public sealed class BackupProcess(
             // тике / только что созданный; 304 already-started = успех движка).
             if (active.State == FullBackupStatus.Planned && found is not { State: "running" or "exited" })
             {
+                // Поллинг create/start джоба — тот же инвариант (arch/14 §6):
+                // ensure-семантика — контейнер уже есть → только старт.
                 if (found is null)
                 {
                     var spec = BackupJobSpec.Build(options, cluster, shard.Name, active.Id, source, backupPassword);
-                    var created = await engine.CreateContainerAsync(spec, name, ct);
-                    if (!created.IsSuccess)
+                    var launched = await LongCallPolling.EnsureAsync(
+                        $"create джоба {name}",
+                        async token =>
+                        {
+                            var created = await engine.CreateContainerAsync(spec, name, token);
+                            if (!created.IsSuccess)
+                                return created;
+                            return await engine.StartContainerAsync(name, token);
+                        },
+                        null, logger,
+                        TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
+                        JobCreateBudget, ct);
+                    if (!launched.IsSuccess)
                         continue; // transient — следующий тик повторит запуск
                 }
-
-                var started = await engine.StartContainerAsync(name, ct);
-                if (!started.IsSuccess)
-                    continue;
+                else
+                {
+                    var started = await LongCallPolling.EnsureAsync(
+                        $"start джоба {name}",
+                        token => engine.StartContainerAsync(name, token),
+                        null, logger,
+                        TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
+                        JobCreateBudget, ct);
+                    if (!started.IsSuccess)
+                        continue; // transient — следующий тик повторит запуск
+                }
 
                 var running = active with { State = FullBackupStatus.Running };
                 var putRunning = await PutAsync(

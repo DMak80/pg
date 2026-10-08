@@ -48,9 +48,15 @@ public sealed class WalStreamProcess(
     TimeProvider clock,
     Action<string, string, long?>? lagObserver = null,
     ILogger? logger = null,
-    Action<string, string, long?>? uploadedAgeObserver = null) // t14: uploaded-age (arch/18 §2.7)
+    Action<string, string, long?>? uploadedAgeObserver = null, // t14: uploaded-age (arch/18 §2.7)
+    TimeSpan? watchdogWindow = null)
 {
     private const string Op = "backup-wal";
+
+    // Бюджет фазы create wal-агента (PatroniBootSec-семантика существующих
+    // бюджетов; ~16 итераций поллинга по 7.5 c; исчерпание — transient-фейл тика,
+    // следующий тик повторит подъём агента).
+    private static readonly TimeSpan AgentCreateBudget = TimeSpan.FromSeconds(120);
 
     // Расписание контроля (list S3 — не каждый тик): ключ cluster/shard → unix последнего прохода.
     // При BROKEN-ключе шарда расписание НЕ действует — контроль каждый тик (t07).
@@ -373,8 +379,17 @@ public sealed class WalStreamProcess(
                     RestartPolicy: "no");
 
                 // Хост агента = docker-хост своего источника (per-cluster сеть на нём).
-                var ensured = await driver.EnsureBackupAgentAsync(
-                    cluster, shard, d.Src.Node, spec, d.Src.Addr.Host, ct);
+                // Поллинг create агента (arch/14 §6 инвариант поллинга): одиночный
+                // вызов таймаутом короче окна проверки (половина — 7.5 c при
+                // дефолтах), идемпотентный повтор; каждая итерация — лог elapsed.
+                var ensured = await LongCallPolling.EnsureAsync(
+                    $"create агента {d.Name}",
+                    token => driver.EnsureBackupAgentAsync(
+                        cluster, shard, d.Src.Node, spec, d.Src.Addr.Host, token),
+                    null, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
+                    TimeSpan.FromTicks(Math.Max(
+                        TimeSpan.TicksPerSecond, (watchdogWindow ?? TimeSpan.FromSeconds(15)).Ticks / 2)),
+                    AgentCreateBudget, ct);
                 if (!ensured.IsSuccess)
                     throw new ApplicationException($"подъём агента {d.Name}: {ensured.Error!.Message}");
             }

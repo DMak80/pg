@@ -42,9 +42,13 @@ public sealed class RestoreProcess(
     ThresholdsOptions thresholds,
     TimeProvider time,
     ILogger<RestoreProcess>? logger = null,
-    Action<string, string, string>? restoreObserver = null) // (cluster, shard, ok|failed) — t14, arch/18 §2.7
+    Action<string, string, string>? restoreObserver = null, // (cluster, shard, ok|failed) — t14, arch/18 §2.7
+    TimeSpan? watchdogWindow = null)
 {
     private const string Op = "backup-restore";
+
+    // Окно проверки watchdog для поллинга create-вызовов (дефолт — продовые 15 c).
+    private TimeSpan WatchdogWindow => watchdogWindow ?? TimeSpan.FromSeconds(15);
 
     public async Task<Result<ProcessOutcome>> TickAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
@@ -561,9 +565,18 @@ public sealed class RestoreProcess(
                 cluster, shard.Name, op.Id);
         }
 
-        var firstEnsure = await driver.EnsureNodeAsync(
-            topology, first, firstAddr, clusterSecrets, etcdEndpoints, resources, null,
-            snap.Config.SyncStrict, ct); // t06: bootstrap восстановленной ноды несёт strict кластера
+        // Поллинг create/start (arch/14 §6 инвариант поллинга): одиночный вызов
+        // таймаутом короче окна проверки (половина), идемпотентный повтор;
+        // бюджет — существующий порог PatroniBootSec. t06: bootstrap
+        // восстановленной ноды несёт strict кластера.
+        var firstEnsure = await LongCallPolling.EnsureAsync(
+            $"create/start ноды {first}",
+            token => driver.EnsureNodeAsync(
+                topology, first, firstAddr, clusterSecrets, etcdEndpoints, resources, null,
+                snap.Config.SyncStrict, token),
+            null, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreProcess>.Instance,
+            TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
+            TimeSpan.FromSeconds(thresholds.PatroniBootSec), ct);
         if (!firstEnsure.IsSuccess)
             return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
                 firstEnsure.Error!.Message, ct);
@@ -591,9 +604,15 @@ public sealed class RestoreProcess(
                     $"нода {node} шарда {shard.Name} не найдена в portalloc", ct);
                 return Result<ProcessOutcome>.Success(ProcessOutcome.Done);
             }
-            var ensured = await driver.EnsureNodeAsync(
-                topology, node, addr, clusterSecrets, etcdEndpoints, resources, null,
-                snap.Config.SyncStrict, ct);
+            // Поллинг create/start реплики — тот же инвариант (arch/14 §6).
+            var ensured = await LongCallPolling.EnsureAsync(
+                $"create/start ноды {node}",
+                token => driver.EnsureNodeAsync(
+                    topology, node, addr, clusterSecrets, etcdEndpoints, resources, null,
+                    snap.Config.SyncStrict, token),
+                null, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreProcess>.Instance,
+                TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
+                TimeSpan.FromSeconds(thresholds.PatroniBootSec), ct);
             if (!ensured.IsSuccess)
                 return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
                     ensured.Error!.Message, ct);
