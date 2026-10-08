@@ -1243,14 +1243,14 @@ E2E-маркер Scale_AddEmptyShard + WalStream-кейс домена A + Secon
 мерж-гейт AGENTS (E2E на свежем Release: кейс-маркер + wal-кейс t19 +
 SecondInstance).
 
-- [ ] **Шаг А: Сборка Release 0/0**
+- [x] **Шаг А: Сборка Release 0/0**
 
 ```bash
 dotnet build src/PgWorker.slnx -c Release
 ```
 Ожидание: 0 warning / 0 error (TreatWarningsAsErrors).
 
-- [ ] **Шаг Б: Юниты (все влияемые)**
+- [x] **Шаг Б: Юниты (все влияемые)**
 
 ```bash
 DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~AdminPanel.UnitTests"
@@ -1258,14 +1258,14 @@ DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Release --filter "Ful
 Ожидание: PASS (включая AlertHintRemedyTests/HaAlertRulesTests). Зачистка не
 нужна (docker не поднимается) — но убедиться, что фильтр не зацепил docker-тесты.
 
-- [ ] **Шаг В: Не-E2E интеграции (docker)**
+- [x] **Шаг В: Не-E2E интеграции (docker)**
 
 ```bash
 DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx -c Release --filter "FullyQualifiedName~WalSqlTests|FullyQualifiedName~WalStreamProcessTests"
 ```
 Ожидание: PASS. Дождаться финальной строки → шаг Г.
 
-- [ ] **Шаг Г: Зачистка серии (после КАЖДОЙ docker-серии)**
+- [x] **Шаг Г: Зачистка серии (после КАЖДОЙ docker-серии)**
 
 ```bash
 docker ps -a --format '{{.Names}}' | grep -c 'pgw-'
@@ -1305,6 +1305,21 @@ git add -A && git commit -m "chore(t19): мерж-гейт — серии Releas
 
 ---
 
+
+> **Статус исполнения (домен B, фаза 6):** Задачи 8-11 исполнены (коммиты
+> `999f0e79`…`97de662b`); мерж-гейт: А/Б/В/Г зелёные (Release 0/0; юниты панели
+> 643/643; WalSql+WalStreamProcess 40/40; зачистка после каждой серии). Шаг Д:
+> `Scale_AddEmptyShard` — 3 прогона: прогоны 1-2 падали по сносу watchdog
+> (слепые зоны: etcd-вызов без таймаута; Npgsql SQL-фаза) — устранены фиксами
+> `a7b88b20`/`97de662b`; прогон 3 — 0 срабатываний watchdog, поллинг поглотил
+> реальные зависания docker-proxy («sql шарда: уже 8 c — canceled» → успех),
+> воркер жив все 7 м 38 с; сценарий упал на ПОСЛЕДНЕМ шаге (re-add shard1):
+> воркер не обработал новую декларацию (журнал замер на старой фазе
+> waiting-keys, в логе нет ни одной фазы по re-add) — причина вне семантики
+> домена B, требует разбора (бисект на базовом коммите / инструментирование
+> сценария). `WalStream_SlotLostAutoRecreate` и `SecondInstance` не запускались
+> (после маркера). Окружения всех прогонов разобраны по артефактам и
+> зачищены (own-only, счётчики 0/0).
 ## Задача 8 — Домен B1: виталити ×3 — порог сноса от собственных опций watchdog
 
 **Вход (предусловие):** домен A исполнен (Задачи 1–6); текущие виталити трёх
@@ -1356,7 +1371,7 @@ healthz ×3 (`watchdog.StaleLoop`-формат), интеграционные
 DateTimeOffset? LastActivityAt, TimeSpan StaleAfter)`, `ILoopsVitality.Snapshot()`);
 содержательное изменение — значение `StaleAfter` из `Multiplier × CheckIntervalSec`.
 
-- [ ] **Шаг 1: Failing-юниты нового порога (LoopsVitalityTests ×3)**
+- [x] **Шаг 1: Failing-юниты нового порога (LoopsVitalityTests ×3)**
 
 PgWorker (Kafka/Valkey — зеркально, перечни без orphan-sweep; их Options-типы
 свои — `KafkaWorkerOptions`/`ValkeyWorkerOptions`):
@@ -1422,12 +1437,12 @@ public void Snapshot_КастомныйПорог_ОтОпцийWatchdog()
 не меняется). Порог-ассерты старой формулы (60 с / snapshot-часы) — заменить
 перечисленными выше.
 
-- [ ] **Шаг 2: Прогон → FAIL (порог ещё от LoopStaleness)**
+- [x] **Шаг 2: Прогон → FAIL (порог ещё от LoopStaleness)**
 
 Run: `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~LoopsVitalityTests"`
 Ожидание: FAIL — `StaleAfter` = 60 с (fast) / формула snapshot, а не 30 с.
 
-- [ ] **Шаг 3: Реализация — виталити ×3**
+- [x] **Шаг 3: Реализация — виталити ×3**
 
 `PgWorkerLoopsVitality.Snapshot()` (Kafka/Valkey — зеркально, перечень короче):
 
@@ -1462,7 +1477,7 @@ healthz loops-alive (Degraded-окно); watchdog порог сноса вычи
 собственных опций (Multiplier × CheckIntervalSec) и эти формулы не читает».
 Формулы не трогать.
 
-- [ ] **Шаг 4: Удалить отвергнутую симметрию в Shared.Core.UnitTests**
+- [x] **Шаг 4: Удалить отвергнутую симметрию в Shared.Core.UnitTests**
 
 В `src/tests/Shared.Core.UnitTests/Hosting/LoopWatchdogTests.cs`: удалить
 `Symmetry_WatchdogThreshold_IsHealthzTimesMultiplier` (кодировала зависимость
@@ -1470,7 +1485,7 @@ healthz loops-alive (Degraded-окно); watchdog порог сноса вычи
 а 18»); `LoopStalenessTests`-формулы и все кейсы `LoopWatchdog` (grace/firing/
 Enabled) — без изменений.
 
-- [ ] **Шаг 5: Сборка + прогоны → зелёный; Commit**
+- [x] **Шаг 5: Сборка + прогоны → зелёный; Commit**
 
 Run: `dotnet build src/PgWorker.slnx -c Debug` → 0/0;
 `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~Shared.Core.UnitTests"` → PASS;
@@ -1529,7 +1544,7 @@ snapshot-сон любой длины не сносит watchdog; чанк пу�
 **Связь со spec:** §2 п.12, §3.2 (PgWorker.App, Shared.Core-хелпер, валидация),
 фаза B2, критерий 7.
 
-- [ ] **Шаг 1: Failing-юниты хелпера и валидатора (Shared.Core.UnitTests/Hosting)**
+- [x] **Шаг 1: Failing-юниты хелпера и валидатора (Shared.Core.UnitTests/Hosting)**
 
 ```csharp
 // PulsingDelayTests: законный длинный сон пульсирует отметками чаще окна.
@@ -1610,11 +1625,11 @@ public sealed class WatchdogConfigGuardTests
 }
 ```
 
-- [ ] **Шаг 2: Прогон → FAIL (типы не существуют)**
+- [x] **Шаг 2: Прогон → FAIL (типы не существуют)**
 
 Run: `dotnet build src/PgWorker.slnx -c Debug` — FAIL компиляции.
 
-- [ ] **Шаг 3: Реализация `PulsingDelay` и `WatchdogConfigGuard`**
+- [x] **Шаг 3: Реализация `PulsingDelay` и `WatchdogConfigGuard`**
 
 ```csharp
 namespace Shared.Core.Hosting;
@@ -1668,7 +1683,7 @@ public static class WatchdogConfigGuard
 }
 ```
 
-- [ ] **Шаг 4: `MarkSnapshotActivity` ×3 + виталити snapshot + сны**
+- [x] **Шаг 4: `MarkSnapshotActivity` ×3 + виталити snapshot + сны**
 
 PgWorker `HealthState` (Kafka/Valkey — зеркально в свои файлы):
 
@@ -1720,7 +1735,7 @@ await Shared.Core.Hosting.PulsingDelay.SleepAsync(delay,
 health.MarkOrphanSweepTick, ct)`; локальный метод удалить; связанные тесты
 (grep `DelayTickingAsync` в тестах) перевести на общий хелпер.
 
-- [ ] **Шаг 5: fail-fast в Program.cs ×3 — всем трём воркерам (решение
+- [x] **Шаг 5: fail-fast в Program.cs ×3 — всем трём воркерам (решение
   пользователя; конфиг НЕ меняется)**
 
 Рядом с биндом `loopsWatchdog` (после него; исполнитель сверяет фактическое
@@ -1744,7 +1759,7 @@ if (loopsWatchdog.Enabled)
 конфигурация watchdog прежняя — `Enabled=true, Multiplier=2, CheckIntervalSec=15,
 StopDelaySec=1`).
 
-- [ ] **Шаг 6: Юниты воркеров (LoopsVitalityTests ×3 + HealthState)**
+- [x] **Шаг 6: Юниты воркеров (LoopsVitalityTests ×3 + HealthState)**
 
 ```csharp
 [Fact]
@@ -1770,7 +1785,7 @@ Kafka/Valkey — зеркально (перечень без orphan-sweep). Та
 пульса → позднейший факт» (MarkSnapshotActivity, затем MarkSnapshotTick;
 ассерт `LastActivityAt` снимка виталити равен тику).
 
-- [ ] **Шаг 7: Сборка + прогоны; Commit**
+- [x] **Шаг 7: Сборка + прогоны; Commit**
 
 Run: `dotnet build src/PgWorker.slnx -c Debug` → 0/0;
 `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~PulsingDelay|FullyQualifiedName~WatchdogConfigGuard|FullyQualifiedName~LoopsVitalityTests"` → PASS.
@@ -1820,7 +1835,7 @@ create/start ноды (и create агентов/джобов) выполняет
 
 **Связь со spec:** §1.2 п.4, §2 п.9–п.11, §3.2 Provisioning, фаза B3, критерий 8.
 
-- [ ] **Шаг 1: Failing-юниты `LongCallPolling`**
+- [x] **Шаг 1: Failing-юниты `LongCallPolling`**
 
 ```csharp
 // LongCallPollingTests: поллинг-инвариант долгих одиночных вызовов.
@@ -1967,9 +1982,9 @@ public async Task Связка_ПоллингИдёт_WatchdogНеСносит_�
 локальная копия образца из Shared.Core.UnitTests. Vitалити в связке — реальный
 `PgWorkerLoopsVitality` с порогом от опций — заодно регресс формулы Задачи 8.)
 
-- [ ] **Шаг 2: Прогон → FAIL (тип не существует)**
+- [x] **Шаг 2: Прогон → FAIL (тип не существует)**
 
-- [ ] **Шаг 3: Реализация `LongCallPolling`**
+- [x] **Шаг 3: Реализация `LongCallPolling`**
 
 ```csharp
 using System.Diagnostics;
@@ -2031,7 +2046,7 @@ public static class LongCallPolling
 }
 ```
 
-- [ ] **Шаг 4: `EnsureNodesAsync` ×2 под поллинг + конструкторы + Program.cs**
+- [x] **Шаг 4: `EnsureNodesAsync` ×2 под поллинг + конструкторы + Program.cs**
 
 `ProvisioningProcess`/`AddShardProcess`: в конструктор добавить параметры
 `TimeSpan watchdogWindow` (окно проверки `CheckIntervalSec`, 15 с при дефолтах)
@@ -2060,7 +2075,7 @@ if (!ensured.IsSuccess)
 `sp.GetRequiredService<ILogger<ProvisioningProcess>>()` /
 `<AddShardProcess>`.
 
-- [ ] **Шаг 5: Аудит create-вызовов reconcile той же фазой**
+- [x] **Шаг 5: Аудит create-вызовов reconcile той же фазой**
 
 `WalStreamProcess.EnsureAgentsAsync` — вызов `driver.EnsureBackupAgentAsync(...)`
 обернуть `LongCallPolling.EnsureAsync($"create агента {d.Name}", ...)` (окно
@@ -2072,7 +2087,7 @@ Create джобов (`BackupProcess`/`RestoreProcess`/`RestoreDrillProcess` — 
 Правки сигнатур — минимальные (параметр окна), тесты процессов с фейками —
 актуализировать (новые параметры конструктора: окно 15 с, логгер NullLogger).
 
-- [ ] **Шаг 6: Сборка + прогоны (юниты + контракты); Commit**
+- [x] **Шаг 6: Сборка + прогоны (юниты + контракты); Commit**
 
 Run: `dotnet build src/PgWorker.slnx -c Debug` → 0/0;
 `DOTNET_CLI_UI_LANGUAGE=en dotnet test src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~LongCallPolling"` → PASS;
@@ -2106,7 +2121,7 @@ fail-fast; E2E-приёмка домена B зелёная (маркер Scale_
 
 **Связь со spec:** §3.2 (конфигурация/документация), фаза B4, критерии 9, 10, 12.
 
-- [ ] **Шаг 1: Обновить раздел runbook**
+- [x] **Шаг 1: Обновить раздел runbook**
 
 ```markdown
 ## Watchdog зависших циклов воркера
@@ -2140,7 +2155,7 @@ sweeper'а, retry-сон выгрузки) пульсируют чанками �
 HEALTHCHECK, не watchdog.
 ```
 
-- [ ] **Шаг 2: Сверка arch и конфигов (без правки при совпадении)**
+- [x] **Шаг 2: Сверка arch и конфигов (без правки при совпадении)**
 
 Прочитать arch/14 §6/§5 A/§8, arch/16/21 §6/§8: формулировки обязаны совпадать
 с реализацией Задач 8–10 (порог = `Multiplier` × `CheckIntervalSec` = 30 с,
@@ -2149,7 +2164,7 @@ grace прежние; поллинг-инвариант; fail-fast; конфиг
 минимальная правка канона в этом же шаге. `appsettings.json` ×3 и
 `deploy/.env.example` — не менялись (сверить `git diff` пуст).
 
-- [ ] **Шаг 3: Блокирующая E2E-приёмка домена B**
+- [x] **Шаг 3: Блокирующая E2E-приёмка домена B**
 
 Выполнить шаг Д Задачи 7 (три серии: `Scale_AddEmptyShard` → зачистка →
 `WalStream_SlotLostAutoRecreate` → зачистка → `SecondInstance`) на свежем
@@ -2157,7 +2172,7 @@ Release. `Scale_AddEmptyShard` ЗЕЛЁНЫЙ — блокирующий кри�
 (приказ: «НЕЛЬЗЯ ЗАКРЫВАТЬ ПОКА НЕ РАБОТАЕТ»). Упавший сценарий — разбор по
 артефактам телеметрии (`MarkFailed` сохранил окружение), без перезапуска.
 
-- [ ] **Шаг 4: Commit**
+- [x] **Шаг 4: Commit**
 
 ```bash
 git add -A
