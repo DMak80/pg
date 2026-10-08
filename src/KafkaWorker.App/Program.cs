@@ -50,7 +50,10 @@ builder.Services.AddSingleton(sp =>
 // embedded DNS (t09; arch/16 §7): PooledConnectionLifetime + IPv4-first резолв.
 // EtcdGateway-синглтон захвачен HttpClient навсегда — ротация handler'ов фабрики
 // на него не действует, поэтому явный SocketsHttpHandler.
-builder.Services.AddHttpClient("etcd")
+// Поллинг-инвариант (arch/16 §6): одиночный HTTP-вызов к etcd не молчит дольше
+// окна проверки watchdog — таймаут = половина окна (7.5 c при дефолтах); зависший
+// запрос → исключение → transient-фейл тика, а не молчание до дефолтных 100 c.
+builder.Services.AddHttpClient("etcd", c => c.Timeout = TimeSpan.FromSeconds(7.5))
     .ConfigurePrimaryHttpMessageHandler(EtcdConnectCallback.CreateHandler);
 
 // Fail-fast при старте: без etcd-endpoints воркер бессмысленен (hosts — в DI-фабрике драйвера);

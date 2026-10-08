@@ -100,8 +100,12 @@ builder.Services.AddSingleton(sp =>
 // Секреты per-install (Д7, spec §10): не в git, не в etcd — только env процесса.
 builder.Services.AddSingleton(_ => SecretsFromEnv());
 
-builder.Services.AddHttpClient("etcd");
-builder.Services.AddHttpClient("patroni");
+// Поллинг-инвариант (arch/14 §6): одиночный HTTP-вызов к etcd не молчит дольше
+// окна проверки watchdog — таймаут = половина окна (7.5 c при дефолтах); зависший
+// запрос (протухшее соединение) → исключение → transient-фейл тика, а не молчание
+// до дефолтных 100 c HttpClient (разбор E2E-маркера: reconcile молчал 37 c).
+builder.Services.AddHttpClient("etcd", c => c.Timeout = TimeSpan.FromSeconds(7.5));
+builder.Services.AddHttpClient("patroni", c => c.Timeout = TimeSpan.FromSeconds(7.5));
 
 // etcd-клиент (HTTP JSON gateway /v3/*) + координация (клэймы/лидерство, журнал).
 // Единое место литерала префикса etcd-ключей (t09): Shared-координация параметризована.
