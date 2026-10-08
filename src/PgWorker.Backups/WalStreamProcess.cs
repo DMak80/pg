@@ -184,10 +184,10 @@ public sealed class WalStreamProcess(
         foreach (var src in sources)
         {
             var dsn = ShardEndpoints.AdminDsn(src.Addr, snap.Config.DbName, secrets);
-            var exists = await sql.SlotExistsAsync(dsn, slot, ct);
-            if (!exists.IsSuccess)
-                throw new ApplicationException($"слот-зонд {slot}@{src.Node}: {exists.Error!.Message}");
-            slotProbes.Add((src, dsn, exists.Value));
+            var probe = await sql.SlotProbeAsync(dsn, slot, ct);
+            if (!probe.IsSuccess)
+                throw new ApplicationException($"слот-зонд {slot}@{src.Node}: {probe.Error!.Message}");
+            slotProbes.Add((src, dsn, probe.Value.Exists));
         }
 
         if (slotProbes.All(p => !p.Exists))
@@ -227,7 +227,7 @@ public sealed class WalStreamProcess(
             // все; immediate+reserved).
             foreach (var missing in slotProbes)
             {
-                var created = await sql.EnsureSlotAsync(missing.Dsn, slot, ct);
+                var created = await sql.EnsureSlotAliveAsync(missing.Dsn, slot, ct);
                 if (!created.IsSuccess)
                     throw new ApplicationException(
                         $"ensure слота {slot}@{missing.Src.Node}: {created.Error!.Message}");
@@ -239,7 +239,7 @@ public sealed class WalStreamProcess(
             // ensure на источниках, где слота нет (разные инстансы независимы).
             foreach (var missing in slotProbes.Where(p => !p.Exists))
             {
-                var created = await sql.EnsureSlotAsync(missing.Dsn, slot, ct);
+                var created = await sql.EnsureSlotAliveAsync(missing.Dsn, slot, ct);
                 if (!created.IsSuccess)
                     throw new ApplicationException(
                         $"ensure слота {slot}@{missing.Src.Node}: {created.Error!.Message}");
@@ -736,7 +736,7 @@ public sealed class WalStreamProcess(
         {
             // Ошибка ensure — исключение наверх (пер-шардовый catch → журнал;
             // следующий тик повторит — идемпотентно).
-            var ensured = await sql.EnsureSlotAsync(adminDsn, slot, ct);
+            var ensured = await sql.EnsureSlotAliveAsync(adminDsn, slot, ct);
             if (!ensured.IsSuccess)
                 throw new ApplicationException($"ensure слота {slot}: {ensured.Error!.Message}");
         }

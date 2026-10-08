@@ -15,7 +15,7 @@ public class WalSqlTests
     private const string Password = "pgw-test-su";
 
     [Fact]
-    public async Task EnsureSlot_идемпотентен_CurrentWal_возвращает_lsn_и_tli()
+    public async Task Probe_EnsureAlive_Recreate_идемпотентны_на_живом_и_отсутствующем_слоте()
     {
         // Arrange
         DockerTrait.SkipIfUnavailable();
@@ -33,19 +33,26 @@ public class WalSqlTests
         var sql = new NpgsqlWalSqlExecutor();
 
         // Act
-        var before = await sql.SlotExistsAsync(dsn, "pgw_bkp_test", ct);
-        var created = await sql.EnsureSlotAsync(dsn, "pgw_bkp_test", ct);
-        var again = await sql.EnsureSlotAsync(dsn, "pgw_bkp_test", ct);
-        var exists = await sql.SlotExistsAsync(dsn, "pgw_bkp_test", ct);
+        var before = await sql.SlotProbeAsync(dsn, "pgw_bkp_test", ct);
+        var ensured = await sql.EnsureSlotAliveAsync(dsn, "pgw_bkp_test", ct);
+        var again = await sql.EnsureSlotAliveAsync(dsn, "pgw_bkp_test", ct);
+        var probe = await sql.SlotProbeAsync(dsn, "pgw_bkp_test", ct);
         var wal = await sql.CurrentWalAsync(dsn, ct);
+        // recreate на отсутствующем слоте: drop без undefined_object-ошибки → create
+        var recreatedMissing = await sql.RecreateSlotAsync(dsn, "pgw_bkp_other", ct);
+        var probeOther = await sql.SlotProbeAsync(dsn, "pgw_bkp_other", ct);
 
         // Assert
-        before.Value.Should().BeFalse();
-        created.IsSuccess.Should().BeTrue();
-        again.IsSuccess.Should().BeTrue("повтор create при живом слоте — идемпотентность (duplicate_object)");
-        exists.Value.Should().BeTrue();
+        before.Value.Exists.Should().BeFalse();
+        before.Value.WalStatus.Should().BeNull("строки нет — статус отсутствует");
+        ensured.IsSuccess.Should().BeTrue();
+        again.IsSuccess.Should().BeTrue("повтор при живом слоте — идемпотентность");
+        probe.Value.Exists.Should().BeTrue();
+        probe.Value.WalStatus.Should().NotBe("lost", "свежий reserved-слот жив");
         wal.IsSuccess.Should().BeTrue();
         wal.Value.Lsn.Should().MatchRegex("^[0-9A-F]+/[0-9A-F]+$");
         wal.Value.Tli.Should().BeGreaterThanOrEqualTo(1);
+        recreatedMissing.IsSuccess.Should().BeTrue("drop отсутствующего (undefined_object) — норм");
+        probeOther.Value.Exists.Should().BeTrue();
     }
 }
