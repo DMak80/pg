@@ -138,10 +138,13 @@ public class E2ePatroniFileSdScenarios
             Console.WriteLine(
                 $"[PHASE] e2e[{Fx.Slug}]: факт словаря patroni_*: {string.Join(", ", fact)}");
 
-            // Канон-минимум arch/18 §2.5 (M3): проверяются только серии,
-            // которые фактически эмитит этот Patroni (см. словарь факта выше).
+            // Канон-минимум arch/18 §2.5 (M3-факт прогона: словарь Patroni 4.x —
+            // роли отдельными сериями, patroni_primary вместо master,
+            // patroni_postgres_timeline и patroni_xlog_replayed_timestamp).
             foreach (var series in new[]
                      {
+                         "patroni_primary", "patroni_replica", "patroni_sync_standby",
+                         "patroni_postgres_timeline", "patroni_xlog_replayed_timestamp",
                          "patroni_version", "patroni_postgres_running",
                          "sd_generator_last_success_timestamp_seconds",
                      })
