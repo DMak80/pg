@@ -5,8 +5,10 @@ using Shared.Etcd.Client;
 
 namespace Metrics.SdGenerator;
 
-// Группа file_sd: один таргет (host:patroni) + фиксированные лейблы
-// cluster/shard/node (лейблы конечны — arch/18 §2, риск M1).
+// Группа file_sd: один таргет + фиксированные лейблы
+// cluster/shard/node (лейблы конечны — arch/18 §2, риск M1). Таргет — сетевой
+// <alias>:8008 (запись с alias, единая сеть контура) либо advertised
+// host:patroni по host-публикации (без alias — легаси/усыновлённые, arch/18 §2.5).
 public sealed record SdTargetGroup(string Target, string Cluster, string Shard, string Node);
 
 // Чистая функция маппинга /pgworker/portalloc/<C> → file_sd-группы (spec §3.2):
@@ -16,13 +18,18 @@ public static class TargetMapping
 {
     public const string PortallocPrefix = "/pgworker/portalloc/";
 
+    /// <summary>Контейнерный порт Patroni REST — константа контракта ноды
+    /// (arch/14 §2.1), не host-порт: сетевой таргет едины сети контура.</summary>
+    public const int PatroniRestPort = 8008;
+
     // DTO записи portalloc (формат — PgWorker.Core PortallocEntry, без ссылки на Core:
     // генератор независим от воркеров; незнакомые поля — игнор).
     private sealed record PortallocEntry(
         [property: JsonPropertyName("host")] string Host,
         [property: JsonPropertyName("pg")] int Pg,
         [property: JsonPropertyName("patroni")] int Patroni,
-        [property: JsonPropertyName("doorman")] int Doorman);
+        [property: JsonPropertyName("doorman")] int Doorman,
+        [property: JsonPropertyName("alias")] string? Alias = null);
 
     private static readonly JsonSerializerOptions Json = new()
     {
@@ -93,12 +100,19 @@ public static class TargetMapping
             }
 
             // patroni <= 0 — усыплённая нода (штатная семантика arch/14 §2.4):
-            // без Patroni-REST не скрейпима, пропуск без warning.
+            // без Patroni-REST не скрейпима, пропуск без warning — в обеих ветках.
             if (entry.Patroni <= 0)
                 continue;
 
+            // Per-node правило (t15, arch/18 §2.5): alias есть → сетевой таргет
+            // <alias>:<контейнерный порт> (порты host-публикации не участвуют);
+            // пустой alias — отсутствие (advertised-ветка, как без поля).
+            var target = !string.IsNullOrWhiteSpace(entry.Alias)
+                ? string.Create(CultureInfo.InvariantCulture, $"{entry.Alias}:{PatroniRestPort}")
+                : string.Create(CultureInfo.InvariantCulture, $"{entry.Host}:{entry.Patroni}");
+
             groups.Add(new SdTargetGroup(
-                Target: string.Create(CultureInfo.InvariantCulture, $"{entry.Host}:{entry.Patroni}"),
+                Target: target,
                 Cluster: cluster,
                 Shard: name[..separator],
                 Node: name[(separator + 1)..]));

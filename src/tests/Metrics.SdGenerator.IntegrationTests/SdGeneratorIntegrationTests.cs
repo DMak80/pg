@@ -76,6 +76,34 @@ public class SdGeneratorIntegrationTests
         harness.Metrics.LastSuccessUnix.Should().NotBeNull();
     }
 
+    // AAA (t15 ревизия 3, arch/18 §2.5): запись с alias → сетевой таргет
+    // <alias>:8008 в файле; host-публикация записи в таргет НЕ попадает.
+    [Fact]
+    public async Task Put_PortallocWithAlias_NetworkTarget()
+    {
+        // Arrange: живой etcd; запись с сетевой идентичностью (patroni=18008 —
+        // host-публикация, таргет обязан быть контейнерным :8008).
+        var ct = TestContext.Current.CancellationToken;
+        await using var fx = new EtcdFixture();
+        await fx.StartAsync(ct);
+        await using var harness = NewLoop(fx.Endpoint);
+        const string value =
+            """{"s1/s1a":{"host":"h9","pg":15432,"patroni":18008,"doorman":16432,"alias":"pgw-c2-s1-s1a"}}""";
+
+        // Act: put portalloc с alias → тик
+        (await fx.Gateway.PutAsync(fx.Endpoint, "/pgworker/portalloc/c2", value, null, ct)).IsSuccess.Should().BeTrue();
+        var ok = await LoopAsync(harness, ct);
+
+        // Assert: сетевой таргет на месте, advertised-адрес записи не участвует.
+        ok.Should().BeTrue();
+        var file = await File.ReadAllTextAsync(harness.Path, ct);
+        file.Should().Contain("\"pgw-c2-s1-s1a:8008\"");
+        file.Should().NotContain("h9:18008");
+        file.Should().Contain("\"cluster\":\"c2\"");
+        file.Should().Contain("\"shard\":\"s1\"");
+        file.Should().Contain("\"node\":\"s1a\"");
+    }
+
     [Fact]
     public async Task Delete_TargetDisappears()
     {
