@@ -84,6 +84,34 @@ public sealed class LoopsVitalityTests
         health.Snapshot().LastSnapshotActivity.Should().NotBeNull();
     }
 
+    // Собственный FakeTimeProvider (как в PgWorker-файле: новый пакет НЕ тащим).
+    private sealed class FakeTimeProvider : TimeProvider
+    {
+        public DateTimeOffset Now;
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
+    // Зеркало PgWorker-кейса «позднейший факт»: пульс сна, затем тик снимка
+    // ПОЗЖЕ пульса — виталити отдаёт тик (FakeTimeProvider: метки «позже»
+    // гарантированы явным продвижением часов, не реальным временем).
+    [Fact]
+    public void Snapshot_ТикПозднееПульса_ПозднейшийФакт()
+    {
+        // Arrange: пульс сна, затем тик снимка ПОЗЖЕ пульса — виталити отдаёт тик
+        var clock = new FakeTimeProvider { Now = DateTimeOffset.UnixEpoch.AddHours(1) };
+        var health = new HealthState(clock);
+        health.MarkSnapshotActivity();
+        clock.Now = clock.Now.AddMinutes(10); // тик позже пульса
+        health.MarkSnapshotTick();
+        var sut = new ValkeyWorkerLoopsVitality(Options, health);
+
+        // Act
+        var beats = sut.Snapshot();
+
+        // Assert: позднейший факт — тик (не пульс)
+        beats.First(b => b.Name == "snapshot").LastActivityAt.Should().Be(health.Snapshot().LastSnapshotTick);
+    }
+
     [Fact]
     public void Snapshot_PassesHealthStateTicks()
     {

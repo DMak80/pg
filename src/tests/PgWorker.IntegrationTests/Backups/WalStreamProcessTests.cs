@@ -58,7 +58,9 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         StubScaleDriver driver,
         TimeProvider? clock = null,
         Action<string, string, long?>? uploadedAgeObserver = null,
-        Action<string, string, long?>? lagObserver = null)
+        Action<string, string, long?>? lagObserver = null,
+        TimeSpan? watchdogWindow = null,
+        Shared.Core.Hosting.ILoopProgress? progress = null)
         => new(
             fixture.Gateway, [fixture.Endpoint], driver,
             new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
@@ -70,7 +72,49 @@ public class WalStreamProcessTests(EtcdFixture fixture)
             clock ?? TimeProvider.System,
             lagObserver,
             null,
-            uploadedAgeObserver);
+            uploadedAgeObserver,
+            watchdogWindow,
+            progress);
+
+    // Счётчик прогресс-отметок (аудит долгих фаз, код-ревью B3).
+    private sealed class MarkCounter : Shared.Core.Hosting.ILoopProgress
+    {
+        public int Marks;
+        public void Mark() => Marks++;
+    }
+
+    // AAA (код-ревью B3): аудируемая фаза create агента передаёт progress —
+    // итерации поллинга дают Mark (окно без progress = молчание для watchdog).
+    [Fact]
+    public async Task Аудируемый_create_агента_итерации_дают_Mark()
+    {
+        // Arrange — «медленный daemon отпускает»: первые 2 вызова висят 2.5 c
+        // (дольше таймаута итерации — пол 1 c из Math.Max(TicksPerSecond, window/2)
+        // при окне 0.5 c), 3-й — мгновенный успех
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("ap9");
+        (await _claims.TryClaimClusterAsync("ap9", ct)).Value.Should().BeTrue();
+        var sql = new FakeWalSqlExecutor();
+        sql.SlotsByDsn.GetOrAdd(SourceDsn(16001, "ap9"), _ => []).Add("pgw_bkp_ap9_shard1");
+        var s3 = new FakeBackupS3();
+        var driver = new StubScaleDriver
+        {
+            AgentEnsureDelay = TimeSpan.FromSeconds(2.5),
+            SlowAgentEnsures = 2,
+        };
+        var marks = new MarkCounter();
+        var process = BuildProcess(Options(), sql, s3, driver,
+            progress: marks, watchdogWindow: TimeSpan.FromSeconds(0.5));
+
+        // Act — тик: create агента → 2 таймаут-итерации + успешная третья
+        (await process.TickAsync(BuildSnap("ap9"), null, ct)).IsSuccess.Should().BeTrue();
+
+        // Assert — Mark рос с итерациями: 2 таймаут-итерации + успешная = ≥ 3
+        // (не «один на весь вызов» и не ноль)
+        marks.Marks.Should().BeGreaterThanOrEqualTo(3,
+            "итерации поллинга аудируемой фазы дают Mark (spec §1.2 п.4)");
+        driver.EnsuredBackupAgents.Should().Contain("pgw-backup-wal-ap9-shard1-shard1a");
+    }
 
     // Тест-опции: VerifyIntervalSec=0 — контроль выполняется КАЖДЫМ тиком (AAA).
     private static BackupsRuntimeOptions Options(int verify = 0, int lag = 1024, int stale = 300) => new(

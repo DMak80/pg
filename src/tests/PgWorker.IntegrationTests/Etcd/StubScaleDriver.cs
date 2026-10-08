@@ -37,15 +37,25 @@ public sealed class StubScaleDriver : IClusterDriver
     // сеть нод проставляет реальный драйвер; ревью Ф7 №1).
     public List<ContainerSpec> EnsuredAgentSpecs = [];
 
-    public Task<Result> EnsureBackupAgentAsync(
+    // «Медленный daemon отпускает» (код-ревью B3): первые SlowAgentEnsures
+    // вызовов create агента длятся AgentEnsureDelay (снимаются таймаутом
+    // итерации поллинга), далее — мгновенно.
+    public TimeSpan AgentEnsureDelay { get; set; }
+    public int SlowAgentEnsures { get; set; }
+    private int _agentEnsureCalls;
+
+    public async Task<Result> EnsureBackupAgentAsync(
         string cluster, string shard, string node, ContainerSpec spec, string host, CancellationToken ct)
     {
+        _agentEnsureCalls++;
+        if (_agentEnsureCalls <= SlowAgentEnsures)
+            await Task.Delay(AgentEnsureDelay, ct);
         var name = BackupAgentNames.Container(cluster, shard, node);
         EnsuredBackupAgents.Add(name);
         EnsuredAgentSpecs.Add(spec);
         if (BackupAgentObjects.All(c => !c.Names.Contains("/" + name)))
             BackupAgentObjects.Add(new DockerContainer($"id-{name}", ["/" + name], "running", spec.Image));
-        return Task.FromResult(Result.Success());
+        return Result.Success();
     }
 
     public Task<Result> RemoveBackupAgentsAsync(string cluster, string? shard, CancellationToken ct)

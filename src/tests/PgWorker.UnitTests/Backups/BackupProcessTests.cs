@@ -142,11 +142,21 @@ public class BackupProcessTests
                 : Result<string>.Failed(new KeyNotFoundException(idOrName)));
         }
 
-        public Task<Result> CreateContainerAsync(ContainerSpec spec, string name, CancellationToken ct)
+        // «Медленный daemon отпускает» (код-ревью B3): первые SlowCreates вызовов
+        // create контейнера длятся CreateDelay (снимаются таймаутом итерации
+        // поллинга), далее — мгновенно.
+        public TimeSpan CreateDelay { get; set; }
+        public int SlowCreates { get; set; }
+        private int _createCalls;
+
+        public async Task<Result> CreateContainerAsync(ContainerSpec spec, string name, CancellationToken ct)
         {
+            _createCalls++;
+            if (_createCalls <= SlowCreates)
+                await Task.Delay(CreateDelay, ct);
             Created.Add((name, spec));
             Containers[name] = new ContainerRec(Guid.NewGuid().ToString("N"), "created", -1, "");
-            return Task.FromResult(Result.Success());
+            return Result.Success();
         }
 
         public Task<Result> StartContainerAsync(string idOrName, CancellationToken ct)
@@ -298,7 +308,9 @@ public class BackupProcessTests
     private static async Task<Rig> NewRig(
         bool claim = true, bool seedPortalloc = true, BackupsRuntimeOptions? options = null,
         Fakes.FakeEtcd? etcdOverride = null,
-        Action<string, IReadOnlyDictionary<string, (long? LastValidUnix, long MaxAgeSec)>>? observer = null)
+        Action<string, IReadOnlyDictionary<string, (long? LastValidUnix, long MaxAgeSec)>>? observer = null,
+        TimeSpan? watchdogWindow = null,
+        Shared.Core.Hosting.ILoopProgress? progress = null)
     {
         var store = etcdOverride ?? new Fakes.FakeEtcd();
         SeedCluster(store);
@@ -319,7 +331,9 @@ public class BackupProcessTests
             new ShardEndpoints(store, [Ep], probe), sql, ensurer,
             claims, journal, Secrets, options ?? new BackupsRuntimeOptions { Enabled = true },
             TimeProvider.System, NullLogger<BackupProcess>.Instance, snapshot: null,
-            fullAgeObserver: observer);
+            fullAgeObserver: observer,
+            watchdogWindow: watchdogWindow,
+            progress: progress);
         return new Rig(store, sql, engine, driver, ensurer, claims, journal, process);
     }
 
@@ -413,6 +427,40 @@ public class BackupProcessTests
         // journal-before-manipulations: phase started/shard1/<id>
         (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.Phase
             .Should().Be($"started/shard1/{id}");
+    }
+
+    // Счётчик прогресс-отметок (аудит долгих фаз, код-ревью B3).
+    private sealed class MarkCounter : Shared.Core.Hosting.ILoopProgress
+    {
+        public int Marks;
+        public void Mark() => Marks++;
+    }
+
+    // AAA (код-ревью B3): аудируемая фаза create/start джоба передаёт progress —
+    // итерации поллинга дают Mark (окно без progress = молчание для watchdog).
+    [Fact]
+    public async Task Аудируемый_create_джоба_итерации_дают_Mark()
+    {
+        // Arrange — «медленный daemon отпускает»: первые 2 create висят 2.5 c
+        // (дольше таймаута итерации — пол 1 c из Math.Max(TicksPerSecond, window/2)
+        // при окне 0.5 c), 3-й — мгновенный успех
+        var marks = new MarkCounter();
+        var rig = await NewRig(
+            watchdogWindow: TimeSpan.FromSeconds(0.5),
+            progress: marks);
+        rig.Engine.CreateDelay = TimeSpan.FromSeconds(2.5);
+        rig.Engine.SlowCreates = 2;
+
+        // Act — тик: PLANNED → create/start джоба → 2 таймаут-итерации + успешная
+        var outcome = await rig.Process.TickAsync(await Snapshot(rig.Etcd), [], CancellationToken.None);
+
+        // Assert — Mark рос с итерациями: 2 таймаут-итерации + успешная = ≥ 3;
+        // джоб при этом создан и запущен (повтор идемпотентен)
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        marks.Marks.Should().BeGreaterThanOrEqualTo(3,
+            "итерации поллинга аудируемой фазы дают Mark (spec §1.2 п.4)");
+        rig.Engine.Created.Should().NotBeEmpty("джоб создан после таймаут-итераций");
+        rig.Engine.Started.Should().NotBeEmpty("старт после идемпотентного повтора");
     }
 
     // AAA: pg_hba-гвард на усвоенной ноде (object) — exec в её контейнер,

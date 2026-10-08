@@ -49,7 +49,8 @@ public sealed class WalStreamProcess(
     Action<string, string, long?>? lagObserver = null,
     ILogger? logger = null,
     Action<string, string, long?>? uploadedAgeObserver = null, // t14: uploaded-age (arch/18 §2.7)
-    TimeSpan? watchdogWindow = null)
+    TimeSpan? watchdogWindow = null,
+    Shared.Core.Hosting.ILoopProgress? progress = null) // аудит долгих фаз: итерации поллинга дают Mark (spec §1.2 п.4)
 {
     private const string Op = "backup-wal";
 
@@ -386,7 +387,7 @@ public sealed class WalStreamProcess(
                     $"create агента {d.Name}",
                     token => driver.EnsureBackupAgentAsync(
                         cluster, shard, d.Src.Node, spec, d.Src.Addr.Host, token),
-                    null, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
+                    progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
                     TimeSpan.FromTicks(Math.Max(
                         TimeSpan.TicksPerSecond, (watchdogWindow ?? TimeSpan.FromSeconds(15)).Ticks / 2)),
                     AgentCreateBudget, ct);

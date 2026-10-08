@@ -37,7 +37,8 @@ public sealed class RestoreDrillProcess(
     TimeProvider time,
     ILogger<RestoreDrillProcess> logger,
     Action<string, string, string>? drillObserver = null, // (cluster, shard, ok|failed) — t14, arch/18 §2.7
-    TimeSpan? watchdogWindow = null)
+    TimeSpan? watchdogWindow = null,
+    Shared.Core.Hosting.ILoopProgress? progress = null) // аудит долгих фаз: итерации поллинга дают Mark (spec §1.2 п.4)
 {
     public const string Op = "backup-drill";
 
@@ -192,7 +193,7 @@ public sealed class RestoreDrillProcess(
                     return created;
                 return await engine.StartContainerAsync(jobName, token);
             },
-            null, logger,
+            progress, logger,
             TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
             JobCreateBudget, ct);
         if (!launched.IsSuccess)
@@ -309,7 +310,7 @@ public sealed class RestoreDrillProcess(
                         return created;
                     return await engine.StartContainerAsync(containerName, token);
                 },
-                null, logger,
+                progress, logger,
                 TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
                 JobCreateBudget, ct);
             return;

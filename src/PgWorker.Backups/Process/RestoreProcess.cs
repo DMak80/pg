@@ -43,7 +43,8 @@ public sealed class RestoreProcess(
     TimeProvider time,
     ILogger<RestoreProcess>? logger = null,
     Action<string, string, string>? restoreObserver = null, // (cluster, shard, ok|failed) — t14, arch/18 §2.7
-    TimeSpan? watchdogWindow = null)
+    TimeSpan? watchdogWindow = null,
+    Shared.Core.Hosting.ILoopProgress? progress = null) // аудит долгих фаз: итерации поллинга дают Mark (spec §1.2 п.4)
 {
     private const string Op = "backup-restore";
 
@@ -574,7 +575,7 @@ public sealed class RestoreProcess(
             token => driver.EnsureNodeAsync(
                 topology, first, firstAddr, clusterSecrets, etcdEndpoints, resources, null,
                 snap.Config.SyncStrict, token),
-            null, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreProcess>.Instance,
+            progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreProcess>.Instance,
             TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
             TimeSpan.FromSeconds(thresholds.PatroniBootSec), ct);
         if (!firstEnsure.IsSuccess)
@@ -610,7 +611,7 @@ public sealed class RestoreProcess(
                 token => driver.EnsureNodeAsync(
                     topology, node, addr, clusterSecrets, etcdEndpoints, resources, null,
                     snap.Config.SyncStrict, token),
-                null, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreProcess>.Instance,
+                progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreProcess>.Instance,
                 TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
                 TimeSpan.FromSeconds(thresholds.PatroniBootSec), ct);
             if (!ensured.IsSuccess)

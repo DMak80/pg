@@ -38,7 +38,8 @@ public sealed class BackupProcess(
     ILogger<BackupProcess> logger,
     Func<CancellationToken, Task<Result>>? snapshot = null,
     Action<string, IReadOnlyDictionary<string, (long? LastValidUnix, long MaxAgeSec)>>? fullAgeObserver = null,
-    TimeSpan? watchdogWindow = null)
+    TimeSpan? watchdogWindow = null,
+    Shared.Core.Hosting.ILoopProgress? progress = null) // аудит долгих фаз: итерации поллинга дают Mark (spec §1.2 п.4)
 {
     private const string Op = "backups";
 
@@ -255,7 +256,7 @@ public sealed class BackupProcess(
                         return createdContainer;
                     return await engine.StartContainerAsync(name, token);
                 },
-                null, logger,
+                progress, logger,
                 TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
                 JobCreateBudget, ct);
             if (!launched.IsSuccess)
@@ -388,7 +389,7 @@ public sealed class BackupProcess(
                                 return created;
                             return await engine.StartContainerAsync(name, token);
                         },
-                        null, logger,
+                        progress, logger,
                         TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
                         JobCreateBudget, ct);
                     if (!launched.IsSuccess)
@@ -399,7 +400,7 @@ public sealed class BackupProcess(
                     var started = await LongCallPolling.EnsureAsync(
                         $"start джоба {name}",
                         token => engine.StartContainerAsync(name, token),
-                        null, logger,
+                        progress, logger,
                         TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
                         JobCreateBudget, ct);
                     if (!started.IsSuccess)

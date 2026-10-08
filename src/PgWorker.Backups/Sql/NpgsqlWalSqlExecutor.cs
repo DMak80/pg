@@ -63,11 +63,11 @@ public sealed class NpgsqlWalSqlExecutor : IWalSqlExecutor
             await connection.OpenAsync(ct);
             try
             {
-                await using var drop = new NpgsqlCommand(
-                    "SELECT pg_drop_replication_slot($1)", connection)
-                {
-                    Parameters = { new() { Value = slot } },
-                };
+                // drop — с тем же таймаутом, что остальные SQL (SqlTimeoutSec=7 <
+                // половины окна watchdog): одиночный вызов не молчит дольше окна
+                // проверки (Npgsql-дефолт 30 c давал бы худший случай ~37 c с create).
+                await using var drop = BoundCommand("SELECT pg_drop_replication_slot($1)", connection);
+                drop.Parameters.Add(new() { Value = slot });
                 await drop.ExecuteNonQueryAsync(ct);
             }
             catch (PostgresException e) when (e.SqlState == "42704") // undefined_object
