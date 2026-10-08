@@ -294,15 +294,16 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture)
             await UpAsync(rig, cluster, budgetSec: 200);
             var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
 
-            // Юзер-топик (30 партиций RF=2): у internal-топиков RF-цель
+            // Юзер-топик (100 партиций RF=2): у internal-топиков RF-цель
             // min(3, цели) и снижение config RF их не двигает; малое число
-            // партиций сходится между тиками — прогресс не поймать. 30
-            // партиций = 3 батча — окно идущей balance в десятки секунд
-            // (прецедент ReassignmentTests).
+            // партиций сходится между тиками — прогресс не поймать. 100
+            // партиций = 10 батчей — окно идущей balance в минуты даже под
+            // нагрузкой серии (флак 30-партиционного варианта: сходимость
+            // обгоняла тики) (прецедент ReassignmentTests).
             var topic = $"rebrto-{fixture.RunTag}";
             using (var admin = (await fixture.DiscoveryAdminBuilderAsync(cluster, "admin")).Build())
                 await admin.CreateTopicsAsync(
-                    [new TopicSpecification { Name = topic, NumPartitions = 30, ReplicationFactor = 2 }],
+                    [new TopicSpecification { Name = topic, NumPartitions = 100, ReplicationFactor = 2 }],
                     new CreateTopicsOptions { RequestTimeout = TimeSpan.FromSeconds(15) });
 
             // --- Act/Assert 1: вечный drain-кандидат + старая заявка → expired.
@@ -366,7 +367,7 @@ public class RotationTimeoutTests(KafkaClusterFixture fixture)
                 + "; outcome=" + outcomeAfterBalance);
             var progressLive = await fixture.GetAsync($"/kafkaworker/reassignments/{cluster}");
             progressLive.Should().NotBeNull(
-                "balance не сошлась между сэмплами (30 партиций — окно десятки секунд); "
+                "balance не сошлась между сэмплами (100 партиций — окно в минуты); "
                 + "journal=" + await fixture.GetAsync($"/kafkaworker/work/{cluster}"))
                 .And.Contain("\"balance\"");
 
