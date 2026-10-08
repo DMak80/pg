@@ -204,4 +204,30 @@ public class DeprovisioningProcessTests
         result.Error!.Message.Should().Contain("клэйм не наш");
         etcd.Store.Should().ContainKey("/kafka/clusters/events/config");
     }
+
+    [Fact]
+    public async Task Run_CleansAllRotationTicketsAndOutcomes()
+    {
+        // Arrange (t10): полный набор заявок + исходы — демонтаж чистит ВСЁ
+        // (инвариант «заявка не переживает кластер»).
+        var rig = await NewRig((etcd, _) =>
+        {
+            etcd.Seed("/kafkaworker/admin_rotations/events", """{"requested_unix":1756500110,"requested_by":"admin"}""");
+            etcd.Seed("/kafkaworker/ca_rotations/events", """{"requested_unix":1756500120,"requested_by":"admin"}""");
+            etcd.Seed("/kafkaworker/rebalances/events", """{"requested_unix":1756500130,"requested_by":"ops"}""");
+            etcd.Seed("/kafkaworker/ticket_outcomes/events",
+                """{"kind":"password-app","outcome":"expired","reason":"waiting-cluster","requested_unix":1756500140,"finished_unix":1756503700}""");
+        });
+
+        // Act
+        var result = await rig.Process.RunAsync("events", ["broker1", "broker2"], CancellationToken.None);
+
+        // Assert: НИ ОДНОГО из этих ключей не осталось.
+        result.IsSuccess.Should().BeTrue();
+        rig.Etcd.Store.Should().NotContainKey("/kafkaworker/rotations/events");
+        rig.Etcd.Store.Should().NotContainKey("/kafkaworker/admin_rotations/events");
+        rig.Etcd.Store.Should().NotContainKey("/kafkaworker/ca_rotations/events");
+        rig.Etcd.Store.Should().NotContainKey("/kafkaworker/rebalances/events");
+        rig.Etcd.Store.Should().NotContainKey("/kafkaworker/ticket_outcomes/events");
+    }
 }
