@@ -1489,7 +1489,7 @@ healthz loops-alive (Degraded-окно); watchdog порог сноса вычи
 а 18»); `LoopStalenessTests`-формулы и все кейсы `LoopWatchdog` (grace/firing/
 Enabled) — без изменений.
 
-- [ ] **Шаг 4а (код-ревью, minor): doc-комментарии `LoopsOptions.Watchdog` ×3**
+- [x] **Шаг 4а (код-ревью, minor): doc-комментарии `LoopsOptions.Watchdog` ×3**
 
 В `src/PgWorker.App/Options.cs`, `src/KafkaWorker.App/Options.cs`,
 `src/ValkeyWorker.App/Options.cs` — doc-комментарий свойства `Watchdog` в
@@ -1809,7 +1809,7 @@ Kafka/Valkey — зеркально (перечень без orphan-sweep). Та
 пульса → позднейший факт» (MarkSnapshotActivity, затем MarkSnapshotTick;
 ассерт `LastActivityAt` снимка виталити равен тику).
 
-- [ ] **Шаг 6а (код-ревью, minor): юнит «позднейший факт» — зеркально для всех
+- [x] **Шаг 6а (код-ревью, minor): юнит «позднейший факт» — зеркально для всех
   трёх воркеров**
 
 Юнит «тик позднее пульса → позднейший факт» добавить не только для PgWorker,
@@ -2146,7 +2146,7 @@ Create джобов (`BackupProcess`/`RestoreProcess`/`RestoreDrillProcess` — 
 Правки сигнатур — минимальные (параметр окна), тесты процессов с фейками —
 актуализировать (новые параметры конструктора: окно 15 с, логгер NullLogger).
 
-- [ ] **Шаг 5а (код-ревью, blocker): `ILoopProgress` в аудируемых процессах —
+- [x] **Шаг 5а (код-ревью, blocker): `ILoopProgress` в аудируемых процессах —
   окно без прогресса не даёт Mark (spec §1.2 п.4)**
 
 Расхождение план↔spec: поллинг без `progress` итерируется молча — watchdog не
@@ -2239,7 +2239,7 @@ public async Task Аудируемый_create_агента_итерации_да
 `ILoopProgress? progress = null, TimeSpan? watchdogWindow = null`; аналогичный
 кейс — по одному на джоб-create процесс при наличии там поллинга.)
 
-- [ ] **Шаг 5б (код-ревью): SQL-таймаут drop-команды `RecreateSlotAsync` —
+- [x] **Шаг 5б (код-ревью): SQL-таймаут drop-команды `RecreateSlotAsync` —
   через `BoundCommand` (код домена A, инвариант домена B)**
 
 `src/PgWorker.Backups/Sql/NpgsqlWalSqlExecutor.cs`, `RecreateSlotAsync`:
@@ -2262,7 +2262,7 @@ src/PgWorker.slnx -c Debug --filter "FullyQualifiedName~WalSqlTests"` → PASS
 (регресс: create/probe/recreate идемпотентность); WalStreamProcessTests → PASS.
 Зачистка серии (шаг Г Задачи 7).
 
-- [ ] **Шаг 5в (сводный прогон дельты ревью-фиксов + commit)**
+- [x] **Шаг 5в (сводный прогон дельты ревью-фиксов + commit)**
 
 Покрывает ВСЕ дельта-шаги (4а Задачи 8, 6а Задачи 9, 5а/5б Задачи 10) одним
 прогоном на Release:
