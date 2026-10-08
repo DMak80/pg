@@ -86,18 +86,37 @@ docker exec as-prometheus cat /etc/prometheus/sd/patroni-nodes.json | jq -e 'typ
   || { echo "  ❌ file_sd patroni-nodes.json — не JSON-массив"; exit 1; }
 pn_total=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[] | select(.labels.job=="patroni-nodes")] | length')
 pn_up=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[] | select(.labels.job=="patroni-nodes" and .health=="up")] | length')
+# t15 (ревизия 3, spec §6 п.5): классификация по scrapeUrl — alias-таргеты
+# канонических кластеров (<alias>:8008, контейнерный порт) vs advertised
+# усыновлённого контура (host-публикация local:<порт>: R9 — alias усыновлённым
+# не пишется, extra_hosts-моста больше нет).
+pn_net=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[]
+  | select(.labels.job=="patroni-nodes")
+  | select(.scrapeUrl | test(":8008/metrics$"))] | length')
 if [ "$pn_total" -eq 0 ]; then
   echo "  patroni-nodes: кластеров PgWorker на стенде нет — file_sd пуст (корректно)"
-elif [ "$pn_up" -ge 1 ]; then
-  # t15 (ревизия 3): таргеты patroni-nodes — сетевые: scrapeUrl без
-  # host-форвардинга и с контейнерным портом :8008 (alias-таргеты, arch/18 §5.4).
+elif [ "$pn_net" -gt 0 ]; then
+  # alias-таргеты есть — строгий режим: сетевые без host-форвардинга,
+  # канонический контур не ослеп (все down — фейл).
   bad_net=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[]
     | select(.labels.job=="patroni-nodes")
-    | select(.scrapeUrl | contains("host.docker.internal") or (test(":8008/metrics$") | not))] | length')
-  [ "$bad_net" -eq 0 ] || { echo "  ❌ patroni-nodes: $bad_net таргетов не сетевые (host-форвардинг/не :8008)"; exit 1; }
-  echo "  patroni-nodes: $pn_up/$pn_total up, таргеты сетевые (:8008)"
+    | select(.scrapeUrl | test(":8008/metrics$"))
+    | select(.scrapeUrl | contains("host.docker.internal"))] | length')
+  [ "$bad_net" -eq 0 ] || { echo "  ❌ patroni-nodes: $bad_net alias-таргетов с host-форвардингом"; exit 1; }
+  net_up=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[]
+    | select(.labels.job=="patroni-nodes" and .health=="up")
+    | select(.scrapeUrl | test(":8008/metrics$"))] | length')
+  [ "$net_up" -ge 1 ] || { echo "  ❌ patroni-nodes: все $pn_net alias-таргетов down (канонический контур ослеп: file_sd устарел? Patroni-REST нод живы?)"; exit 1; }
+  adv_down=$(( (pn_total - pn_net) - (pn_up - net_up) ))
+  echo "  patroni-nodes: $net_up/$pn_net alias-таргетов up (сетевые :8008)${adv_down:+; advertised down: $adv_down — деградационная зона (spec §6 п.5)}"
 else
-  echo "  ❌ patroni-nodes: все $pn_total таргетов down (file_sd устарел? Patroni-REST нод живы?)"; exit 1
+  # только advertised усыновлённого контура — деградационная зона: их
+  # наблюдение несёт джоба patroni (static hc*:8008, шаг 2); warning, не фейл.
+  if [ "$pn_up" -ge 1 ]; then
+    echo "  patroni-nodes: $pn_up/$pn_total up (advertised усыновлённого контура)"
+  else
+    echo "  ⚠ patroni-nodes: все $pn_total advertised-таргетов усыновлённого контура down — деградационная зона (spec t15 §6 п.5); наблюдение контура — джоба patroni (шаг 2: $patroni_up up)"
+  fi
 fi
 
 # 3) серии словаря у живых таргетов (канонические имена arch/18 §2).
