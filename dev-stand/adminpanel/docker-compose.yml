@@ -518,7 +518,10 @@ services:
     container_name: as-prometheus
     profiles: ["metrics"]
     ports: ["${METRICS_PROMETHEUS_PORT:-9090}:9090"]
-    extra_hosts: ["host.docker.internal:host-gateway"]  # scrape pgworker (deploy-проект)
+    # host.docker.internal — scrape pgworker (deploy-проект); local — advertise-хост
+    # portalloc (как у воркеров выше): таргеты patroni-nodes = local:<host-порт
+    # публикации Patroni> (t15, arch/18 §5.4 — скрейп по host-публикациям).
+    extra_hosts: ["host.docker.internal:host-gateway", "local:host-gateway"]
     volumes:
       - ./metrics/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
       - ./metrics/prometheus/rules.yml:/etc/prometheus/rules.yml:ro
