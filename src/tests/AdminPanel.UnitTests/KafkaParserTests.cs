@@ -388,4 +388,68 @@ public class KafkaParserTests
         result.Progress.Should().BeEmpty();
         result.Errors.Should().ContainSingle();
     }
+
+    // ===== t10: ca_rotations + ticket_outcomes (arch/15 §4) =====
+
+    [Fact]
+    public void CaRotations_ValidAndBroken()
+    {
+        // Arrange: валидная ca-заявка (формат ротаций — без role) + битый JSON.
+        var kvs = new List<Kv>
+        {
+            new("/kafkaworker/ca_rotations/events", """{"requested_unix":1750000300,"requested_by":"it"}""", 1),
+            new("/kafkaworker/ca_rotations/broken", "{oops", 2),
+        };
+
+        // Act
+        var parsed = KafkaParser.ParseCaRotations(kvs);
+
+        // Assert
+        parsed.Tickets.Should().ContainSingle().Which.Should().Be(
+            new KafkaCaRotationTicket("events", 1750000300, "it"));
+        parsed.Errors.Should().ContainSingle(e => e.Key == "/kafkaworker/ca_rotations/broken");
+    }
+
+    [Fact]
+    public void CaRotations_UnknownShapeIsError()
+    {
+        // Arrange: неканонический ключ под /kafkaworker/ca_rotations/.
+        var kvs = new List<Kv> { new("/kafkaworker/ca_rotations/x/y", "{}", 1) };
+
+        // Act
+        var parsed = KafkaParser.ParseCaRotations(kvs);
+
+        // Assert
+        parsed.Tickets.Should().BeEmpty();
+        parsed.Errors.Should().ContainSingle().Which.Key.Should().Be("/kafkaworker/ca_rotations/x/y");
+    }
+
+    [Fact]
+    public void TicketOutcomes_ValidAndBroken()
+    {
+        // Arrange: исход expired с reason/requested_by + исход done без
+        // опциональных полей + битый JSON + нет обязательного поля (t10).
+        var kvs = new List<Kv>
+        {
+            new("/kafkaworker/ticket_outcomes/events",
+                """{"kind":"password-app","outcome":"expired","reason":"waiting-cluster","requested_unix":1750000000,"requested_by":"admin","finished_unix":1750003600}""", 1),
+            new("/kafkaworker/ticket_outcomes/shop",
+                """{"kind":"ca","outcome":"done","requested_unix":1750000000,"finished_unix":1750000500}""", 2),
+            new("/kafkaworker/ticket_outcomes/broken", "{oops", 3),
+            new("/kafkaworker/ticket_outcomes/nokind", """{"outcome":"done","requested_unix":1,"finished_unix":2}""", 4),
+        };
+
+        // Act
+        var parsed = KafkaParser.ParseTicketOutcomes(kvs);
+
+        // Assert: обязательные поля прочитаны, опциональные — null без ошибки.
+        parsed.Tickets.Should().HaveCount(2);
+        parsed.Tickets.Single(t => t.Cluster == "events").Should().Be(new KafkaTicketOutcome(
+            "events", "password-app", "expired", "waiting-cluster", 1750000000, "admin", 1750003600));
+        var done = parsed.Tickets.Single(t => t.Cluster == "shop");
+        done.Reason.Should().BeNull();
+        done.RequestedBy.Should().BeNull();
+        parsed.Errors.Select(e => e.Key).Should().Contain("/kafkaworker/ticket_outcomes/broken")
+            .And.Contain("/kafkaworker/ticket_outcomes/nokind");
+    }
 }

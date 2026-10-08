@@ -21,6 +21,8 @@ public sealed record KafkaSnapshot(
     IReadOnlyList<KeyParseError> ParseErrors,       // битые JSON kafka-ключей (arch/15 §6)
     int UnknownKeyCount,
     IReadOnlyList<KafkaRotationTicket>? AdminRotations = null, // /kafkaworker/admin_rotations/ (t03, arch/15 §4)
+    IReadOnlyList<KafkaCaRotationTicket>? CaRotations = null,  // /kafkaworker/ca_rotations/ (t10, arch/15 §4)
+    IReadOnlyList<KafkaTicketOutcome>? TicketOutcomes = null,  // /kafkaworker/ticket_outcomes/ (t10, arch/15 §4)
     WorkerApiCert? WorkerApiCert = null);        // целевой серт API KafkaWorker (adminpanel/02 §9.9)
 
 // Кластер /kafka/clusters/<C>/ (arch/15 §2): config + state + факт (brokers/topics/endpoints).
@@ -139,3 +141,13 @@ public sealed record KafkaRegenProgress(
     string? CurrentBroker,
     long UpdatedUnix,
     string? LastError);
+
+// Заявка CA-ротации /kafkaworker/ca_rotations/<C> (t10, arch/15 §4):
+// payload {"requested_unix","requested_by"} — без role (формат ротаций).
+public sealed record KafkaCaRotationTicket(string Cluster, long RequestedUnix, string? RequestedBy);
+
+// Исход заявки /kafkaworker/ticket_outcomes/<C> (t10, arch/15 §4): последний
+// исход заявки кластера (expired|done), перезаписывается каждым новым исходом.
+public sealed record KafkaTicketOutcome(
+    string Cluster, string Kind, string Outcome, string? Reason,
+    long RequestedUnix, string? RequestedBy, long FinishedUnix);

@@ -10,7 +10,8 @@ using Microsoft.Extensions.Options;
 namespace AdminPanel.Etcd;
 
 // Единственный писатель kafka-снапшота (арх/02 §10): тик RefreshIntervalSeconds,
-// range /kafka/clusters/ + /kafkaworker/rotations/ на активном endpoint
+// range /kafka/clusters/ + /kafkaworker/rotations/ + /kafkaworker/ca_rotations/
+// + /kafkaworker/ticket_outcomes/ (t10) на активном endpoint
 // (sticky + failover, опции общие с pg-циклом EtcdOptions). Транспортный провал
 // любого чтения роняет тик: прежние данные, EtcdReachable=false, счётчик отказов.
 // Регистрация — явно в ModuleExtensions.AddKafka().
@@ -78,12 +79,15 @@ public sealed class KafkaSnapshotRefresher(
         var clustersKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Clusters, ct);
         var rotationsKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Rotations, ct);
         var adminRotationsKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.AdminRotations, ct);
+        var caRotationsKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.CaRotations, ct);
+        var ticketOutcomesKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.TicketOutcomes, ct);
         var rebalancesKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Rebalances, ct);
         var reassignmentsKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Reassignments, ct);
         var regensKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.Regens, ct);
         var workerApiKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApi, ct);
         var certKv = await RangeWithFailoverAsync(endpoints, active, Prefixes.WorkerApiCert, ct);
         if (!clustersKv.IsSuccess || !rotationsKv.IsSuccess || !adminRotationsKv.IsSuccess
+            || !caRotationsKv.IsSuccess || !ticketOutcomesKv.IsSuccess
             || !rebalancesKv.IsSuccess || !reassignmentsKv.IsSuccess || !regensKv.IsSuccess
             || !workerApiKv.IsSuccess || !certKv.IsSuccess)
             return FailTick(previous, now, "KV-чтения etcd не удались");
@@ -94,6 +98,8 @@ public sealed class KafkaSnapshotRefresher(
         var clusters = KafkaParser.ParseClusters(clustersKv.Value);
         var rotations = KafkaParser.ParseRotations(rotationsKv.Value);
         var adminRotations = KafkaParser.ParseAdminRotations(adminRotationsKv.Value);
+        var caRotations = KafkaParser.ParseCaRotations(caRotationsKv.Value); // t10
+        var ticketOutcomes = KafkaParser.ParseTicketOutcomes(ticketOutcomesKv.Value); // t10
         var rebalances = KafkaParser.ParseRebalances(rebalancesKv.Value);
         var reassignments = KafkaParser.ParseReassignments(reassignmentsKv.Value);
         var regens = KafkaParser.ParseRegens(regensKv.Value);
@@ -120,11 +126,14 @@ public sealed class KafkaSnapshotRefresher(
             workerHealthStore.Current ?? [], // health-проб воркера вносит успешный тик (t09; arch/02 §2.3.2)
             previous?.Probes ?? [],       // пробы переживают отказ etcd (симметрия pg spec §4.3)
             Alerts: [],
-            [.. clusters.Errors, .. rotations.Errors, .. adminRotations.Errors, .. rebalances.Errors,
+            [.. clusters.Errors, .. rotations.Errors, .. adminRotations.Errors, .. caRotations.Errors,
+                .. ticketOutcomes.Errors, .. rebalances.Errors,
                 .. reassignments.Errors, .. regens.Errors, .. workerApi.Errors, .. secretsErrors,
                 .. WorkerCertParser.ErrorsOf(certParsed)],
             clusters.UnknownKeyCount,
             AdminRotations: adminRotations.Tickets,
+            CaRotations: caRotations.Tickets,
+            TicketOutcomes: ticketOutcomes.Tickets,
             WorkerApiCert: certParsed.Cert);
 
         store.Replace(built with { Alerts = alertEngine.Evaluate(built, previous, securityReady) });
@@ -276,6 +285,8 @@ public sealed class KafkaSnapshotRefresher(
         public const string Clusters = "/kafka/clusters/";
         public const string Rotations = "/kafkaworker/rotations/";
         public const string AdminRotations = "/kafkaworker/admin_rotations/";
+        public const string CaRotations = "/kafkaworker/ca_rotations/"; // t10
+        public const string TicketOutcomes = "/kafkaworker/ticket_outcomes/"; // t10
         public const string Rebalances = "/kafkaworker/rebalances/";
         public const string Reassignments = "/kafkaworker/reassignments/";
         public const string Regens = "/kafkaworker/regens/";

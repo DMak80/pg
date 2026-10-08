@@ -21,6 +21,8 @@ public class ValkeyRefresherTests
 
         public IReadOnlyList<Kv> RotationsKv { get; set; } = [];
 
+        public IReadOnlyList<Kv> TicketOutcomesKv { get; set; } = [];
+
         public IReadOnlyList<Kv> WorkerApiKv { get; set; } = [];
 
         public IReadOnlyList<Kv> WorkerApiCertKv { get; set; } = [];
@@ -34,6 +36,7 @@ public class ValkeyRefresherTests
                 {
                     "/valkey/clusters/" => ClustersKv,
                     "/valkeyworker/rotations/" => RotationsKv,
+                    "/valkeyworker/ticket_outcomes/" => TicketOutcomesKv,
                     "/valkeyworker/api/" => WorkerApiKv,
                     "/workers/api_tls/valkeyworker" => WorkerApiCertKv,
                     _ => [],
@@ -165,6 +168,34 @@ public class ValkeyRefresherTests
         snapshot.ParseErrors.Select(e => e.Key).Should()
             .OnlyContain(k => k.StartsWith("/valkeyworker/rotations/", StringComparison.Ordinal));
         snapshot.UnknownKeyCount.Should().Be(1); // future_feature
+    }
+
+    // t10: исходы заявок /valkeyworker/ticket_outcomes/ читаются в снапшот;
+    // битый исход — ParseErrors (тик не падает).
+    [Fact]
+    public async Task RefreshOnce_TicketOutcomes_InSnapshot_BrokenIsParseError()
+    {
+        // Arrange: канон + исход expired + битый исход.
+        var gateway = DemoGateway();
+        gateway.TicketOutcomesKv =
+        [
+            new Kv("/valkeyworker/ticket_outcomes/live",
+                """{"kind":"password-app","outcome":"expired","reason":"waiting-cluster","requested_unix":1750000000,"requested_by":"it","finished_unix":1750003600}""", 11),
+            new Kv("/valkeyworker/ticket_outcomes/broken", "{oops", 12),
+        ];
+        var store = new ValkeySnapshotStore();
+        var refresher = New(gateway, store, endpoints: "http://e1");
+
+        // Act
+        var result = await refresher.RefreshOnceAsync(CancellationToken.None);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue();
+        var snapshot = store.Current;
+        snapshot!.TicketOutcomes.Should().ContainSingle().Which.Should().Be(
+            new ValkeyTicketOutcome("live", "password-app", "expired", "waiting-cluster",
+                1750000000, "it", 1750003600));
+        snapshot.ParseErrors.Should().Contain(e => e.Key == "/valkeyworker/ticket_outcomes/broken");
     }
 
     // t06: ca_pem попадает в internal-стор (рядом с admin-кредами); запись без

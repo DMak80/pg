@@ -32,6 +32,16 @@ public sealed record KafkaRegensParseResult(
     IReadOnlyList<KafkaRegenProgress> Progress,
     IReadOnlyList<KeyParseError> Errors);
 
+// Результат разбора очереди CA-ротаций /kafkaworker/ca_rotations/ (t10).
+public sealed record KafkaCaRotationsParseResult(
+    IReadOnlyList<KafkaCaRotationTicket> Tickets,
+    IReadOnlyList<KeyParseError> Errors);
+
+// Результат разбора исходов заявок /kafkaworker/ticket_outcomes/ (t10).
+public sealed record KafkaTicketOutcomesParseResult(
+    IReadOnlyList<KafkaTicketOutcome> Tickets,
+    IReadOnlyList<KeyParseError> Errors);
+
 // Парсер kafka-домена: чистые функции Kv[] → модель, битые значения не бросают
 // исключений — порождают KeyParseError (порт стиля ClustersParser; arch/15 §6).
 public static class KafkaParser
@@ -203,6 +213,92 @@ public static class KafkaParser
 
                 tickets.Add(new KafkaRotationTicket(
                     segments[3], requested.Value, JsonValues.ReadString(root, "requested_by")));
+            }
+            catch (JsonException e)
+            {
+                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+            }
+        }
+
+        return new(tickets, errors);
+    }
+
+    // Заявка CA-ротации /kafkaworker/ca_rotations/<C> (t10, arch/15 §4):
+    // формат ротаций app/admin — requested_unix обязателен (порт ParseAdminRotations).
+    public static KafkaCaRotationsParseResult ParseCaRotations(IReadOnlyList<Kv> kvs)
+    {
+        var tickets = new List<KafkaCaRotationTicket>();
+        var errors = new List<KeyParseError>();
+        foreach (var kv in kvs)
+        {
+            // "/kafkaworker/ca_rotations/<C>" → ["", "kafkaworker", "ca_rotations", <C>]
+            var segments = kv.Key.Split('/');
+            if (segments.Length != 4 || segments[3].Length == 0)
+            {
+                errors.Add(new(kv.Key, "ожидается /kafkaworker/ca_rotations/<cluster>"));
+                continue;
+            }
+
+            try
+            {
+                using var doc = JsonDocument.Parse(kv.Value);
+                var root = doc.RootElement;
+                var requested = JsonValues.ReadLong(root, "requested_unix");
+                if (requested is null)
+                {
+                    errors.Add(new(kv.Key, "нет поля requested_unix"));
+                    continue;
+                }
+
+                tickets.Add(new KafkaCaRotationTicket(
+                    segments[3], requested.Value, JsonValues.ReadString(root, "requested_by")));
+            }
+            catch (JsonException e)
+            {
+                errors.Add(new(kv.Key, $"битый JSON: {e.Message}"));
+            }
+        }
+
+        return new(tickets, errors);
+    }
+
+    // Исходы заявок /kafkaworker/ticket_outcomes/<C> (t10, arch/15 §4):
+    // обязательны kind/outcome/requested_unix/finished_unix (outcome —
+    // толерантно-строковый, без enum); reason/requested_by опциональны.
+    public static KafkaTicketOutcomesParseResult ParseTicketOutcomes(IReadOnlyList<Kv> kvs)
+    {
+        var tickets = new List<KafkaTicketOutcome>();
+        var errors = new List<KeyParseError>();
+        foreach (var kv in kvs)
+        {
+            // "/kafkaworker/ticket_outcomes/<C>" → ["", "kafkaworker", "ticket_outcomes", <C>]
+            var segments = kv.Key.Split('/');
+            if (segments.Length != 4 || segments[3].Length == 0)
+            {
+                errors.Add(new(kv.Key, "ожидается /kafkaworker/ticket_outcomes/<cluster>"));
+                continue;
+            }
+
+            try
+            {
+                using var doc = JsonDocument.Parse(kv.Value);
+                var root = doc.RootElement;
+                var kind = JsonValues.ReadString(root, "kind");
+                var outcome = JsonValues.ReadString(root, "outcome");
+                var requested = JsonValues.ReadLong(root, "requested_unix");
+                var finished = JsonValues.ReadLong(root, "finished_unix");
+                if (kind is null || outcome is null || requested is null || finished is null)
+                {
+                    errors.Add(new(kv.Key, "нет обязательных полей kind/outcome/requested_unix/finished_unix"));
+                    continue;
+                }
+
+                tickets.Add(new KafkaTicketOutcome(
+                    segments[3], kind, outcome,
+                    JsonValues.ReadString(root, "reason"),
+                    requested.Value,
+                    JsonValues.ReadString(root, "requested_by"),
+                    finished.Value));
             }
             catch (JsonException e)
             {
