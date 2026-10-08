@@ -130,8 +130,18 @@ WorkerLoopStalled), вечные серии не копятся.
 Метрики репликации НЕ дублирует воркер: Prometheus скрейпит `:8008/metrics`
 Patroni-нод (arch/08). Стенд: Patroni-эмуляторы (`hc*`) отдают минимальный
 набор `pg_replica_lag_seconds{scope,node}` (расширение emulator.py); таргеты —
-static (DNS-имена сети стенда). Узлы, создаваемые PgWorker в per-cluster
-сетях, в контуре стендового Prometheus недостижимы — см. ограничение §5.4.
+static (DNS-имена сети стенда).
+
+Словарь реальных Patroni-нод — нативные серии REST `/metrics` (spilo,
+Patroni 4.x); канон-минимум, на который пишутся дашборд/алерты:
+`patroni_master`, `patroni_replica`, `patroni_sync_standby`,
+`patroni_timeline`, `patroni_xlog_replay_timestamp`, `patroni_version`,
+`patroni_postgres_running` (лейблы `scope`, `name` — сам Patroni).
+Два словаря сосуществуют: эмуляторный `pg_replica_lag_seconds` (стенд без
+PgWorker-кластеров) и нативный `patroni_*` (реальные ноды); фактический
+набор фиксирует docker-E2E (§6). Таргеты реальных нод — file_sd из
+portalloc (§5.2 `patroni-nodes`, §5.4): узлы PgWorker скрейпятся по
+host-публикациям портов Patroni, per-cluster сети для этого не нужны.
 
 ### 2.6. Valkey-домен (коллектор ValkeyWorker §4)
 
@@ -272,6 +282,8 @@ TCP-проба (не тяжёлый AdminClient); лежачая нода сто
 | `valkeyworker` | имя сети стенда `valkeyworker:8080` (профиль `valkey`; хост-публикации нет — чеки ходят изнутри контейнера) | §2.1–2.2, §2.6 |
 | `adminpanel` | имя сети стенда `adminpanel:8080` (хост-публикация 5050 — только для браузера/чеков) | §2.4 |
 | `patroni` | static: `hc1a:8008, hc1b:8008, hc2a:8008, hc2b:8008` | §2.5 |
+| `patroni-nodes` | file_sd `/etc/prometheus/sd/patroni-nodes.json` (scheme http — Patroni REST без TLS, t22 вне скоупа; источник файла — генератор §5.4 из `/pgworker/portalloc/`) | §2.5 нативные `patroni_*` |
+| `sd-generator` | static: имя сети стенда `sd-generator:8080` (профиль `metrics`) | самонаблюдение генератора §5.4 |
 
 Джобы воркеров — `scheme: https` + `tls_config {ca_file: /tls/ca.pem,
 cert_file: /tls/prometheus.crt, key_file: /tls/prometheus.key}` (t03: /metrics
@@ -290,12 +302,17 @@ slaves/коллектор),
 `dashboards/backups.json` (бэкап-домен §2.7: возраст полных vs per-cluster
 порог, WAL-лаг/тишина загрузок, исходы verify/restore/drill).
 
-### 5.4. Прод-паттерн (документируется, вне кода)
+### 5.4. Таргеты нод: file_sd из portalloc (реализация в стенде, прод — тот же паттерн)
 
 Прод-мультихост: Prometheus рядом с docker-хостами, таргеты нод — из
-advertise-адресов portalloc (file_sd из etcd-снапшота — опция будущих задач);
-узлы в per-cluster сетях скрейпятся Prometheus'ом, прикреплённым к этим сетям
-(или federate через воркер — roadmap). В скоуп t04 не входит.
+advertise-адресов portalloc; паттерн реализован в стенде: file_sd-генератор
+`sd-generator` (профиль `metrics`, `src/Metrics.SdGenerator`) тиком читает
+`/pgworker/portalloc/` (read-only, без клэймов) и пишет
+`sd/patroni-nodes.json` в volume Prometheus; таргет ноды = advertised host +
+patroni-порт (host-публикация) — на мульти-хосте адреса честны, достижимость
+скрейпа — зона сетевой политики прода. Граница: Kafka/Valkey-ноды без HTTP
+metrics-эндпоинта наблюдаются доменными сериями коллекторов воркеров
+(§2.3/§2.6); расширение словаря их нод — отдельные задачи.
 
 ## 6. Тестирование (канон уровня)
 
@@ -308,6 +325,19 @@ advertise-адресов portalloc (file_sd из etcd-снапшота — оп�
   text-format, содержит канонические имена §2 (фиксирует фактические
   экспортированные имена против словаря); `/metrics` не требует ApiKey; valkey — все 15 имён §2.6 при живом демо-кластере (live-WAF
   с реальным docker), живая/остановленная нода — LastSuccess стоит, тик не падает.
+- **Unit (file_sd-генератор §5.4)**: маппинг portalloc → file_sd-группы
+  (лейблы cluster/shard/node, `targets = host:patroni`, пропуск `patroni ≤ 0`,
+  битых записей и чужих префиксов, пустой префикс → `[]`, детерминизм порядка),
+  атомарная запись при diff, консервативная свежесть цикла, дефолт интервала
+  `<=0` → 15.
+- **Integration (file_sd-генератор §5.4)**: цикл генератора с живым etcd
+  (testcontainers, динамический порт) — put portalloc → таргет в файле,
+  del → таргет исчез, недоступный etcd — файл и `last_success` не изменились,
+  восстановление → догоняет; hosted-сервис освежает файл по интервалу.
+- **docker-E2E (file_sd-генератор §5.4)**: реальный кластер PgWorker в
+  E2E-контуре + настоящий Prometheus — таргеты `patroni-nodes` up, канон-минимум
+  нативных `patroni_*` §2.5 в TSDB (фактический набор фиксирует тест),
+  демонтаж кластера → таргеты исчезли; контур полностью зачищен teardown'ом.
 - **E2E-чек стенда**: `checks/65-metrics.sh` — профиль `metrics` поднят,
   все scrape-джобы `up`, дашборды загружены, алерт-рулы зарегистрированы
   (`/api/v1/rules`, счётчик включает группу `backups` §2.7),
@@ -330,6 +360,10 @@ advertise-адресов portalloc (file_sd из etcd-снапшота — оп�
 <Service>:Metrics { Enabled=true, Path="/metrics" }   # все сервисы
 KafkaWorker:Metrics { CollectIntervalSec=30 }          # коллектор §4
 ValkeyWorker:Metrics { CollectIntervalSec=30 }          # коллектор §4.2
+SdGenerator:Etcd:Endpoints[]           # узлы HA-контура
+SdGenerator:RefreshIntervalSec=15      # <=0 → 15 + warning
+SdGenerator:OutputPath=/sd/patroni-nodes.json
+SdGenerator:Metrics { Enabled=true, Path="/metrics" }
 # стенд (env-override compose):
 METRICS_PROMETHEUS_PORT=9090, METRICS_GRAFANA_PORT=3000,
 METRICS_ALERTMANAGER_PORT=9093, METRICS_ALERT_WEBHOOK_URL=   # пусто — только UI
