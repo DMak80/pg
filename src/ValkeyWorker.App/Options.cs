@@ -156,6 +156,10 @@ public sealed class ThresholdsOptions
 
     /// <summary>Молчание ноды дольше порога → UNREACHABLE + пересоздание (C).</summary>
     public int NodeDeadSec { get; set; } = 90;
+
+    /// <summary>Возраст не-начатой заявки (ротации кредов/CA valkey), после
+    /// которого воркер снимает её в waiting-точке (t10, arch/21 §8).</summary>
+    public int RotationTicketTimeoutSec { get; set; } = 3600;
 }
 
 /// <summary>Параллелизм обработки кластеров тика.</summary>
