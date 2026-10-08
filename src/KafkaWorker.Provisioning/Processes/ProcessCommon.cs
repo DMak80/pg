@@ -24,9 +24,10 @@ public sealed record ProvisioningOptions(
     int BrokerBootSec,
     int NodeDeadSec,
     string? AdvertisedClientHost,
-    string NodeImage)
+    string NodeImage,
+    int RotationTicketTimeoutSec = 3600)
 {
-    public static ProvisioningOptions Default { get; } = new(16000, 16999, 600, 90, null, "apache/kafka:4.0.0");
+    public static ProvisioningOptions Default { get; } = new(16000, 16999, 600, 90, null, "apache/kafka:4.0.0", 3600);
 }
 
 /// <summary>

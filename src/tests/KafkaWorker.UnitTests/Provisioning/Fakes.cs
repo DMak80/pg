@@ -117,7 +117,9 @@ internal static class Fakes
                 OnTxnBeforeCompare?.Invoke(req);
                 succeeded = req.Compare.All(c => c.Target switch
                 {
-                    TxnTarget.Version => Store.TryGetValue(c.Key, out var e) ? e.Version == c.Num : c.Num == 0,
+                    TxnTarget.Version => c.Pred == TxnPredicate.Greater
+                        ? Store.TryGetValue(c.Key, out var ge) && ge.Version > c.Num // Exists (t10)
+                        : Store.TryGetValue(c.Key, out var e) ? e.Version == c.Num : c.Num == 0,
                     TxnTarget.Value => Store.TryGetValue(c.Key, out var e) && e.Value == c.Arg,
                     TxnTarget.ModRevision => Store.TryGetValue(c.Key, out var e) && e.ModRevision == c.Num,
                     _ => false,
