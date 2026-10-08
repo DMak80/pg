@@ -3,6 +3,7 @@ using PgWorker.App;
 using PgWorker.App.Loops;
 using PgWorker.Backups.Supervisor;
 using PgWorker.UnitTests.Provisioning;
+using Shared.Core.Hosting;
 
 namespace PgWorker.UnitTests.App;
 
@@ -54,16 +55,18 @@ public sealed class BackupOrphanSweeperLoopTests
     [Fact]
     public async Task DelayTickingAsync_TicksInChunks_DoesNotSleepWholeInterval()
     {
-        // Arrange: лидерный сон 600 c чанками по 1 c — тики без 600-с паузы
-        var (loop, health, cts) = Create(scanIntervalSec: 1, supervisorIntervalSec: 600);
+        // Arrange: сон лидера sweeper'а — общий хелпер пульсирующего сна
+        // (PulsingDelay): Supervisor:IntervalSec 600 c чанками короче окна —
+        // тики живости без 600-с паузы
+        var health = new HealthState(TimeProvider.System);
 
-        // Act: 2,5 c сна чанками → ≥2 отметки, затем отмена
-        var task = loop.DelayTickingAsync(TimeSpan.FromSeconds(600), cts.Token);
+        // Act: 2,5 c сна чанками по 1 c (окно 2 c → чанк 1 c) → ≥2 отметки, затем отмена
+        var task = PulsingDelay.SleepAsync(
+            TimeSpan.FromSeconds(600), TimeSpan.FromSeconds(2),
+            health.MarkOrphanSweepTick, TestContext.Current.CancellationToken);
         for (var i = 0; i < 50; i++)
             await Task.Delay(50, TestContext.Current.CancellationToken);
         var ticksInWindow = health.Snapshot().LastOrphanSweepTick;
-        cts.Cancel();
-        await Task.WhenAny(task, Task.Delay(5000, TestContext.Current.CancellationToken));
 
         // Assert: за окно ≪ 600 c отметки уже есть — сон не глушит живость
         ticksInWindow.Should().NotBeNull();

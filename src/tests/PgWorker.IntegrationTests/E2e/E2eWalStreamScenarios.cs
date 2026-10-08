@@ -524,6 +524,173 @@ public class E2eWalStreamScenarios
         }
     }
 
+    // AAA (критерий 5): lost-слот мастера при живой sync-архивации — воркер лечит
+    // сам (recreate + журнальная фаза slot-recreate), ключ НЕ BROKEN, агент
+    // возвращается, цепочка WalChain непрерывна, last_uploaded растёт без дыры.
+    // Детерминизация: между сносом агента мастера и возвратом воркера (Kill/старт —
+    // паттерн «смерть контроллера») живой sync-агент продолжает доставку, WAL
+    // генерится до фактического wal_status='lost'.
+    [Fact]
+    public async Task WalStream_SlotLostAutoRecreate_NoBroken()
+    {
+        // Arrange — двухнодовый шард (двойная архивация), оба агента живы, доставка идёт
+        DockerTrait.SkipIfUnavailable();
+        var ct = TestContext.Current.CancellationToken;
+        var (fx, app, cluster, adminDsn, masterNode) = await StartWalScenarioAsync("wal-t19", "shopt19", ct);
+        await using var envOwner = fx;
+        await using var appOwner = app; // kill воркера ниже — dispose идемпотентен
+        var slot = $"pgw_bkp_{cluster}_shard1";
+        var agentName = $"pgw-backup-wal-{cluster}-shard1-{masterNode}";
+        var writer = new PgWorker.Backups.WalStatusWriter(G, [Endpoint]);
+        var hostEndpoint = Fx.S3Endpoint.Replace(
+            "host.docker.internal:", "localhost:", StringComparison.Ordinal);
+        await using var backupS3 = new PgWorker.Backups.BackupS3(
+            new PgWorker.Backups.BackupsRuntimeOptions
+            {
+                Enabled = true,
+                S3Endpoint = hostEndpoint,
+                S3Bucket = Bucket,
+                S3AccessKey = "minioadmin",
+                S3SecretKey = "minioadmin",
+                S3PathStyle = true,
+            });
+
+        try
+        {
+            // Нагрузка ПЕРВАЯ — Patroni выбирает sync при живом потоке репликации (AC3)
+            await GenerateWalAsync(adminDsn, ct);
+            var bothAgents = await E2eFixture.WaitForAsync(async () =>
+            {
+                var ps = await Fx.RunDockerAsync(
+                [
+                    "ps", "--filter", $"name=pgw-backup-wal-{cluster}-shard1-",
+                    "--format", "{{.Names}} {{.State}}",
+                ], ct);
+                return ps.Split('\n', StringSplitOptions.RemoveEmptyEntries)
+                    .Count(l => l.EndsWith("running")) >= 2;
+            }, TimeSpan.FromSeconds(300), ct);
+            bothAgents.Should().BeTrue("двойная архивация — оба агента обязаны подняться");
+
+            // Малый потолок WAL под слотом на мастере (динамика reload — без рестарта)
+            await using (var conn = new NpgsqlConnection(adminDsn))
+            {
+                await conn.OpenAsync(ct);
+                await using var alter = new NpgsqlCommand(
+                    "ALTER SYSTEM SET max_slot_wal_keep_size = '16MB'", conn);
+                await alter.ExecuteNonQueryAsync(ct);
+                await using var reload = new NpgsqlCommand("SELECT pg_reload_conf()", conn);
+                await reload.ExecuteNonQueryAsync(ct);
+            }
+
+            // Фиксация «до»: ключ ACTIVE и его last_uploaded (согласованный срез)
+            var before = await E2eFixture.WaitForAsync(async () =>
+            {
+                var read = await writer.ReadAsync(cluster, "shard1", ct);
+                return read.IsSuccess
+                       && read.Value is { State: PgWorker.Etcd.Parsing.WalStreamStatus.Active };
+            }, TimeSpan.FromSeconds(120), ct);
+            before.Should().BeTrue("до потери — ключ ACTIVE");
+            var beforeWal = (await writer.ReadAsync(cluster, "shard1", ct)).Value!;
+
+            // Act 1 — снос агента мастера + стоп воркера (супервиз не вернёт агента
+            // до воспроизведения lost; sync-агент жив — доставка продолжается)
+            Console.WriteLine($"[PHASE] wal-t19: docker rm -f {agentName} + kill воркера");
+            await Fx.RunDockerAsync(["rm", "-f", agentName], ct);
+            app.Kill();
+
+            // Act 2 — генерация WAL до фактического lost (поллинг зонда; INSERT-нагрузка
+            // вместо pgbench — pgbench недоступен в образе ноды, эффект идентичен)
+            var lost = await E2eFixture.WaitForAsync(async () =>
+            {
+                for (var i = 0; i < 2; i++)
+                {
+                    await using var conn = new NpgsqlConnection(adminDsn);
+                    await conn.OpenAsync(ct);
+                    await using var insert = new NpgsqlCommand(
+                        "INSERT INTO wal_load(payload) SELECT repeat('x', 1048576) FROM generate_series(1, 32)", conn);
+                    await insert.ExecuteNonQueryAsync(ct);
+                    await using var switchWal = new NpgsqlCommand("SELECT pg_switch_wal()", conn);
+                    await switchWal.ExecuteScalarAsync(ct);
+                }
+
+                await using (var conn = new NpgsqlConnection(adminDsn))
+                {
+                    await conn.OpenAsync(ct);
+                    await using var checkpoint = new NpgsqlCommand("CHECKPOINT", conn);
+                    await checkpoint.ExecuteNonQueryAsync(ct);
+                }
+                return await SlotWalStatusAsync(cluster, "shard1", masterNode, ct) == "lost";
+            }, TimeSpan.FromSeconds(180), ct);
+            Console.WriteLine($"[PHASE] wal-t19: слот мастера lost={lost} (бюджет 180 c)");
+            lost.Should().BeTrue("64 MiB WAL при потолке 16 MiB + checkpoint обязаны срезать слот мастера");
+
+            // Act 3 — возврат воркера: тик лечит (recreate слота + журнал slot-recreate,
+            // супервиз поднимает агента мастера; клэйм убитого истекает ≤ 15-20 c)
+            Console.WriteLine("[PHASE] wal-t19: старт воркера — автолечение");
+            await using var app2Owner = await StartWalHostAsync("wal-t19b", ct);
+
+            // Assert 1 — журнальная фаза slot-recreate
+            var journaled = await E2eFixture.WaitForAsync(async () =>
+            {
+                var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
+                return workKv?.Value?.Contains("slot-recreate/shard1") == true;
+            }, TimeSpan.FromSeconds(120), ct);
+            journaled.Should().BeTrue("воркер обязан записать фазу slot-recreate (spec §3.2)");
+
+            // Assert 2 — слот мастера жив (не lost)
+            var healed = await E2eFixture.WaitForAsync(
+                async () => await SlotWalStatusAsync(cluster, "shard1", masterNode, ct) is not ("lost" or null),
+                TimeSpan.FromSeconds(120), ct);
+            healed.Should().BeTrue("recreate возвращает живой слот");
+
+            // Assert 3 — агент мастера снова running (супервиз)
+            var agentBack = await E2eFixture.WaitForAsync(async () =>
+            {
+                var ps = await Fx.RunDockerAsync(
+                    ["ps", "--filter", $"name=^{agentName}$", "--format", "{{.State}}"], ct);
+                return ps.Trim() == "running";
+            }, TimeSpan.FromSeconds(120), ct);
+            agentBack.Should().BeTrue("супервиз поднимает агента мастера после recreate");
+
+            // Assert 4 — ключ wal: BROKEN не возникал (поллинг срезом), финал ACTIVE;
+            // last_uploaded СТРОГО растёт от «до потери» (sync доставлял + мастер вернулся)
+            PgWorker.Etcd.Parsing.WalStreamStatus? sawStatus = null;
+            var recovered = await E2eFixture.WaitForAsync(async () =>
+            {
+                var read = await writer.ReadAsync(cluster, "shard1", ct);
+                if (!read.IsSuccess || read.Value is null)
+                    return false;
+                sawStatus = read.Value.State;
+                if (sawStatus == PgWorker.Etcd.Parsing.WalStreamStatus.Broken)
+                    return true; // немедленный фейл ниже
+                return sawStatus == PgWorker.Etcd.Parsing.WalStreamStatus.Active;
+            }, TimeSpan.FromSeconds(180), ct);
+            sawStatus.Should().NotBe(PgWorker.Etcd.Parsing.WalStreamStatus.Broken,
+                "lost одного источника при живом втором — BROKEN запрещён (критерий 5)");
+            recovered.Should().BeTrue("ключ обязан вернуться в ACTIVE");
+            var afterWal = (await writer.ReadAsync(cluster, "shard1", ct)).Value!;
+            var beforeSeg = PgWorker.Backups.WalFileName.TryParse(beforeWal.LastUploadedSegment)!.Value;
+            var afterSeg = PgWorker.Backups.WalFileName.TryParse(afterWal.LastUploadedSegment)!.Value;
+            ((long)afterSeg.Log * 256 + afterSeg.Seg).Should().BeGreaterThan(
+                (long)beforeSeg.Log * 256 + beforeSeg.Seg,
+                "last_uploaded_segment растёт без дыры (живой sync достраивал хвост)");
+
+            // Assert 5 — цепочка WalChain непрерывна от chain_start
+            var list = await backupS3.ListWalAsync(cluster, "shard1", ct: ct);
+            list.IsSuccess.Should().BeTrue();
+            var chain = PgWorker.Backups.WalChain.Check(
+                PgWorker.Backups.WalFileName.TryParse(afterWal.ChainStartSegment)!.Value,
+                list.Value.Select(o => o.Name));
+            chain.IsContinuous.Should().BeTrue(chain.GapError ?? "цепочка непрерывна после автолечения");
+        }
+        catch (Exception ex)
+        {
+            Fx.MarkFailed(); // артефакты телеметрии переживают teardown (канон e2e-launch)
+            await WalScenarioDiagDumpAsync(cluster, "t19: " + ex.Message);
+            throw;
+        }
+    }
+
     // AAA (AC4): остановка мастера — агент sync-реплики продолжает цепочку без дыр;
     // после promote воркер пересоздаёт агентов на новых ролях; ключ не BROKEN.
 
@@ -738,8 +905,11 @@ public class E2eWalStreamScenarios
         var cluster = $"{clusterPrefix}{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         var app = await StartWalHostAsync(slug, ct);
+        // Потолок 600 с: provisioning на перегруженной машине доходит до DONE за
+        // 7–8 попыток (ноды живы, но readiness-пробы patroni прогреваются дольше
+        // бюджета); зелёный путь не меняется — опрос выходит по факту DONE.
         var provisioned = await E2eFixture.WaitForAsync(
-            () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(360), ct);
+            () => ProvisionedAsync(cluster), TimeSpan.FromSeconds(600), ct);
         provisioned.Should().BeTrue("provisioning обязан дойти до DONE до WAL-нагрузки");
         Console.WriteLine($"[PHASE] {slug}: provisioning DONE за " +
             (DateTimeOffset.UtcNow.ToUnixTimeSeconds() - phaseStart) + " c от старта");
@@ -860,6 +1030,25 @@ public class E2eWalStreamScenarios
         return (entry.GetProperty("host").GetString()!, entry.GetProperty("pg").GetInt32(),
             primary!);
 
+    }
+
+    // wal_status слота бэкапа на указанной ноде (portalloc pg-порт): null = слота нет.
+    private async Task<string?> SlotWalStatusAsync(string cluster, string shard, string node, CancellationToken ct)
+    {
+        var kv = await G.GetAsync(Endpoint, $"/pgworker/portalloc/{cluster}", ct);
+        kv.Value.Should().NotBeNull("portalloc пишется при provisioning");
+        var entries = JsonSerializer.Deserialize<Dictionary<string, JsonElement>>(kv.Value!.Value)!;
+        var dsn = DatabaseProvisioner.BuildAdminDsn("localhost",
+            entries[$"{shard}/{node}"].GetProperty("pg").GetInt32(), cluster,
+            new InstallSecrets(E2eFixture.SuPassword, "", "", ""));
+        await using var conn = new NpgsqlConnection(dsn);
+        await conn.OpenAsync(ct);
+        await using var cmd = new NpgsqlCommand(
+            "SELECT wal_status::text FROM pg_replication_slots WHERE slot_name = @slot", conn)
+        {
+            Parameters = { new() { ParameterName = "slot", Value = $"pgw_bkp_{cluster}_{shard}" } },
+        };
+        return (string?)await cmd.ExecuteScalarAsync(ct);
     }
 
     // Нагрузка под admin/superuser: CREATE TABLE + 30 циклов INSERT больших строк

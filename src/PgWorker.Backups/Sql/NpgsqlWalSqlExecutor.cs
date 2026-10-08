@@ -3,41 +3,97 @@ using PgWorker.Core;
 
 namespace PgWorker.Backups.Sql;
 
-/// <summary>Npgsql-исполнение слот/LSN-SQL (t03): без ретраев — процесс ретраит
+/// <summary>Npgsql-исполнение слот/LSN-SQL: без ретраев — процесс ретраит
 /// тиками; ошибка → Result.Failed (transient).</summary>
 public sealed class NpgsqlWalSqlExecutor : IWalSqlExecutor
 {
-    public async Task<Result<bool>> SlotExistsAsync(string adminDsn, string slot, CancellationToken ct)
+    // Поллинг-инвариант (arch/14 §6): одиночная SQL-проба/операция слота не молчит
+    // дольше окна проверки watchdog — таймауты подключения и команды = половина
+    // окна (7 c при дефолтах); зависшая операция → transient-фейл, тик повторит.
+    private const int SqlTimeoutSec = 7;
+
+    private static NpgsqlConnection OpenConnection(string adminDsn)
+    {
+        var csb = new NpgsqlConnectionStringBuilder(adminDsn) { Timeout = SqlTimeoutSec };
+        return new NpgsqlConnection(csb.ConnectionString);
+    }
+
+    private static NpgsqlCommand BoundCommand(string sql, NpgsqlConnection connection)
+        => new(sql, connection) { CommandTimeout = SqlTimeoutSec };
+
+    public async Task<Result<(bool Exists, string? WalStatus)>> SlotProbeAsync(string adminDsn, string slot, CancellationToken ct)
     {
         try
         {
-            await using var connection = new NpgsqlConnection(adminDsn);
+            await using var connection = OpenConnection(adminDsn);
             await connection.OpenAsync(ct);
-            await using var command = new NpgsqlCommand(
-                "SELECT EXISTS (SELECT 1 FROM pg_replication_slots WHERE slot_name = $1)",
-                connection) { Parameters = { new() { Value = slot } } };
-            var exists = (bool)(await command.ExecuteScalarAsync(ct))!;
-            return Result<bool>.Success(exists);
+            await using var command = BoundCommand(
+                "SELECT wal_status FROM pg_replication_slots WHERE slot_name = $1", connection);
+            command.Parameters.Add(new() { Value = slot });
+            await using var reader = await command.ExecuteReaderAsync(ct);
+            if (!await reader.ReadAsync(ct))
+                return Result<(bool, string?)>.Success((false, null)); // строки нет
+            // null-статус существующего слота (старые PG/edge) — как живой: лечим только 'lost'
+            var status = reader.IsDBNull(0) ? null : reader.GetString(0);
+            return Result<(bool, string?)>.Success((true, status));
         }
         catch (Exception e)
         {
-            return Result<bool>.Failed(new ApplicationException($"слот-зонд {slot}: {e.Message}", e));
+            return Result<(bool, string?)>.Failed(new ApplicationException($"слот-зонд {slot}: {e.Message}", e));
         }
     }
 
-    public async Task<Result> EnsureSlotAsync(string adminDsn, string slot, CancellationToken ct)
+    public async Task<Result> EnsureSlotAliveAsync(string adminDsn, string slot, CancellationToken ct)
+    {
+        var probe = await SlotProbeAsync(adminDsn, slot, ct);
+        if (!probe.IsSuccess)
+            return Result.Failed(probe.Error!);
+        if (!probe.Value.Exists)
+            return await CreateSlotAsync(adminDsn, slot, ct); // отсутствует → create
+        if (probe.Value.WalStatus == "lost")
+            return await RecreateSlotAsync(adminDsn, slot, ct); // потерян → drop+create
+        return Result.Success(); // жив — не трогать
+    }
+
+    public async Task<Result> RecreateSlotAsync(string adminDsn, string slot, CancellationToken ct)
     {
         try
         {
-            await using var connection = new NpgsqlConnection(adminDsn);
+            await using var connection = OpenConnection(adminDsn);
             await connection.OpenAsync(ct);
-            // immediate+reserved: WAL копится на мастере до подтверждения приёма (§3);
-            // повтор при живом слоте падает duplicate_object — идемпотентность проверкой выше.
-            await using var command = new NpgsqlCommand(
-                "SELECT pg_create_physical_replication_slot($1, true)", connection)
+            try
             {
-                Parameters = { new() { Value = slot } },
-            };
+                // drop — с тем же таймаутом, что остальные SQL (SqlTimeoutSec=7 <
+                // половины окна watchdog): одиночный вызов не молчит дольше окна
+                // проверки (Npgsql-дефолт 30 c давал бы худший случай ~37 c с create).
+                await using var drop = BoundCommand("SELECT pg_drop_replication_slot($1)", connection);
+                drop.Parameters.Add(new() { Value = slot });
+                await drop.ExecuteNonQueryAsync(ct);
+            }
+            catch (PostgresException e) when (e.SqlState == "42704") // undefined_object
+            {
+                // слота нет — drop пропущен, create ниже создаст
+            }
+
+            return await CreateSlotAsync(adminDsn, slot, ct);
+        }
+        catch (Exception e)
+        {
+            return Result.Failed(new ApplicationException($"recreate слота {slot}: {e.Message}", e));
+        }
+    }
+
+    // immediate+reserved (arch/19 §3): повтор при живом слоте — duplicate_object →
+    // успех (идемпотентность); общий create для ensure/recreate.
+    private static async Task<Result> CreateSlotAsync(string adminDsn, string slot, CancellationToken ct)
+    {
+        try
+        {
+            await using var connection = OpenConnection(adminDsn);
+            await connection.OpenAsync(ct);
+            await using var command = BoundCommand(
+                "SELECT pg_create_physical_replication_slot($1, true)", connection);
+            command.Parameters.Add(new() { Value = slot });
             await command.ExecuteNonQueryAsync(ct);
             return Result.Success();
         }
@@ -47,7 +103,7 @@ public sealed class NpgsqlWalSqlExecutor : IWalSqlExecutor
         }
         catch (Exception e)
         {
-            return Result.Failed(new ApplicationException($"ensure слота {slot}: {e.Message}", e));
+            return Result.Failed(new ApplicationException($"create слота {slot}: {e.Message}", e));
         }
     }
 
@@ -55,9 +111,9 @@ public sealed class NpgsqlWalSqlExecutor : IWalSqlExecutor
     {
         try
         {
-            await using var connection = new NpgsqlConnection(adminDsn);
+            await using var connection = OpenConnection(adminDsn);
             await connection.OpenAsync(ct);
-            await using var command = new NpgsqlCommand(
+            await using var command = BoundCommand(
                 "SELECT pg_current_wal_lsn()::text, (pg_control_checkpoint()).timeline_id", connection);
             await using var reader = await command.ExecuteReaderAsync(ct);
             await reader.ReadAsync(ct);

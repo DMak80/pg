@@ -7,25 +7,54 @@ using PgWorker.Core;
 namespace PgWorker.IntegrationTests.Backups;
 
 // Фейковый SQL-слой: слоты в памяти per-инстансу (t27: ключ — adminDsn источника,
-// слоты разных нод независимы), LSN управляется тестом (AAA-Act).
+// слоты разных нод независимы), LSN управляется тестом (AAA-Act). LostByDsn —
+// подмножество слотов в wal_status='lost' (t19); Calls — журнал мутаций
+// (create/drop) для ассертов идемпотентности.
 public sealed class FakeWalSqlExecutor : IWalSqlExecutor
 {
     public ConcurrentDictionary<string, HashSet<string>> SlotsByDsn { get; } = new();
 
+    // Слоты в статусе lost (подмножество SlotsByDsn того же DSN).
+    public ConcurrentDictionary<string, HashSet<string>> LostByDsn { get; } = new();
+
+    // Журнал мутаций слота: ("create"|"drop", dsn, slot) — для ассертов
+    // «нулевых мутаций» и «drop+create».
+    public List<(string Op, string Dsn, string Slot)> Calls { get; } = [];
+
     public (string Lsn, int Tli) Current { get; set; } = ("0/1000000", 1);
 
-    public Task<Result<bool>> SlotExistsAsync(string adminDsn, string slot, CancellationToken ct)
-        => Task.FromResult(Result<bool>.Success(
-            SlotsByDsn.TryGetValue(adminDsn, out var slots) && slots.Contains(slot)));
+    public Task<Result<(bool Exists, string? WalStatus)>> SlotProbeAsync(string adminDsn, string slot, CancellationToken ct)
+        => Task.FromResult(Result<(bool, string?)>.Success(
+            SlotsByDsn.TryGetValue(adminDsn, out var slots) && slots.Contains(slot)
+                ? (true, IsLost(adminDsn, slot) ? "lost" : "reserved")
+                : (false, null)));
 
-    public Task<Result> EnsureSlotAsync(string adminDsn, string slot, CancellationToken ct)
+    public Task<Result> EnsureSlotAliveAsync(string adminDsn, string slot, CancellationToken ct)
     {
+        var exists = SlotsByDsn.TryGetValue(adminDsn, out var slots) && slots.Contains(slot);
+        if (exists && !IsLost(adminDsn, slot))
+            return Task.FromResult(Result.Success()); // жив — не трогать
+        return RecreateSlotAsync(adminDsn, slot, ct); // отсутствует/lost → drop-допуск + create
+    }
+
+    public Task<Result> RecreateSlotAsync(string adminDsn, string slot, CancellationToken ct)
+    {
+        if (IsLost(adminDsn, slot))
+        {
+            Calls.Add(("drop", adminDsn, slot));
+            LostByDsn.GetOrAdd(adminDsn, _ => []).Remove(slot);
+        }
+
+        Calls.Add(("create", adminDsn, slot));
         SlotsByDsn.GetOrAdd(adminDsn, _ => []).Add(slot);
         return Task.FromResult(Result.Success());
     }
 
     public Task<Result<(string Lsn, int Tli)>> CurrentWalAsync(string adminDsn, CancellationToken ct)
         => Task.FromResult(Result<(string, int)>.Success(Current));
+
+    private bool IsLost(string adminDsn, string slot)
+        => LostByDsn.TryGetValue(adminDsn, out var lost) && lost.Contains(slot);
 }
 
 // Фейковый S3 (поверхность IBackupS3): объекты в памяти, стартовое наполнение —

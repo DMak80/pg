@@ -2,6 +2,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using PgWorker.Backups.Supervisor;
+using Shared.Core.Hosting;
 
 namespace PgWorker.App.Loops;
 
@@ -45,9 +46,14 @@ internal sealed class BackupOrphanSweeperLoop(
                     if (!result.IsSuccess)
                         logger.LogWarning("orphan-sweep: {Error}", result.Error?.Message);
 
-                    await DelayTickingAsync(
+                    // Сон лидера чанками короче окна проверки watchdog с отметкой
+                    // живости в каждом чанке (общий хелпер): Supervisor:IntervalSec
+                    // (600 c) ≫ порога сноса — непрерывный сон без отметок дал бы
+                    // ложный self-restart watchdog'ом.
+                    await PulsingDelay.SleepAsync(
                         TimeSpan.FromSeconds(options.CurrentValue.Backups.Supervisor.IntervalSec),
-                        stoppingToken);
+                        TimeSpan.FromSeconds(options.CurrentValue.Loops.Watchdog.CheckIntervalSec),
+                        health.MarkOrphanSweepTick, stoppingToken);
                 }
                 else
                 {
@@ -76,22 +82,6 @@ internal sealed class BackupOrphanSweeperLoop(
                     break;
                 }
             }
-        }
-    }
-
-    // Сон лидера чанками ScanIntervalSec с тиком живости в каждом чанке:
-    // Supervisor:IntervalSec (600 c) ≫ порога быстрых циклов — непрерывный сон без
-    // тиков дал бы ложный self-restart watchdog'ом (порог sweeper'а — как у быстрых).
-    internal async Task DelayTickingAsync(TimeSpan total, CancellationToken ct)
-    {
-        var remaining = total;
-        var chunk = TimeSpan.FromSeconds(Math.Max(1, options.CurrentValue.Loops.ScanIntervalSec));
-        while (remaining > TimeSpan.Zero && !ct.IsCancellationRequested)
-        {
-            var step = chunk < remaining ? chunk : remaining;
-            await Task.Delay(step, ct);
-            remaining -= step;
-            health.MarkOrphanSweepTick();
         }
     }
 }

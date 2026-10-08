@@ -48,9 +48,16 @@ public sealed class WalStreamProcess(
     TimeProvider clock,
     Action<string, string, long?>? lagObserver = null,
     ILogger? logger = null,
-    Action<string, string, long?>? uploadedAgeObserver = null) // t14: uploaded-age (arch/18 §2.7)
+    Action<string, string, long?>? uploadedAgeObserver = null, // t14: uploaded-age (arch/18 §2.7)
+    TimeSpan? watchdogWindow = null,
+    Shared.Core.Hosting.ILoopProgress? progress = null) // аудит долгих фаз: итерации поллинга дают Mark (spec §1.2 п.4)
 {
     private const string Op = "backup-wal";
+
+    // Бюджет фазы create wal-агента (PatroniBootSec-семантика существующих
+    // бюджетов; ~16 итераций поллинга по 7.5 c; исчерпание — transient-фейл тика,
+    // следующий тик повторит подъём агента).
+    private static readonly TimeSpan AgentCreateBudget = TimeSpan.FromSeconds(120);
 
     // Расписание контроля (list S3 — не каждый тик): ключ cluster/shard → unix последнего прохода.
     // При BROKEN-ключе шарда расписание НЕ действует — контроль каждый тик (t07).
@@ -175,22 +182,26 @@ public sealed class WalStreamProcess(
             return;
         }
 
-        // (3) Ensure слота per-instance (t27 §3.3 п.3): имя слота одно и то же на
-        //     КАЖДОЙ ноде-источнике (слоты разных инстансов независимы); правило
-        //     «слот исчез» (t07) — BROKEN только если слота нет НИ на одном
-        //     источнике при живой цепочке (живой слот на любой ноде держит WAL);
-        //     recreate при инвалидации — на мастере. Ensure идемпотентен.
-        var slotProbes = new List<(WalSource Src, string Dsn, bool Exists)>();
+        // (3) Слот per-instance (t27 §3.3 п.3; t19 arch/19 §3): имя слота одно и то же
+        //     на КАЖДОЙ ноде-источнике (слоты разных инстансов независимы); зонд —
+        //     существование И wal_status: alive = существует и НЕ lost. BROKEN —
+        //     слоты ВСЕХ источников исчезли ИЛИ потеряны при живой цепочке (живой слот
+        //     на любой ноде держит WAL); lost одного при живом втором — авто-recreate
+        //     без BROKEN (потерянный агент вернётся от хвоста S3 ретраем приёмника).
+        var slotProbes = new List<(WalSource Src, string Dsn, bool Exists, string? WalStatus)>();
         foreach (var src in sources)
         {
             var dsn = ShardEndpoints.AdminDsn(src.Addr, snap.Config.DbName, secrets);
-            var exists = await sql.SlotExistsAsync(dsn, slot, ct);
-            if (!exists.IsSuccess)
-                throw new ApplicationException($"слот-зонд {slot}@{src.Node}: {exists.Error!.Message}");
-            slotProbes.Add((src, dsn, exists.Value));
+            var probe = await sql.SlotProbeAsync(dsn, slot, ct);
+            if (!probe.IsSuccess)
+                throw new ApplicationException($"слот-зонд {slot}@{src.Node}: {probe.Error!.Message}");
+            slotProbes.Add((src, dsn, probe.Value.Exists, probe.Value.WalStatus));
         }
+        // null-статус существующего слота (старые PG/edge) — живой: лечим только явный lost
+        static bool Alive((WalSource Src, string Dsn, bool Exists, string? WalStatus) p)
+            => p.Exists && p.WalStatus != "lost";
 
-        if (slotProbes.All(p => !p.Exists))
+        if (slotProbes.All(p => !Alive(p)))
         {
             if (chainKnown && wal!.State is WalStreamStatus.Active or WalStreamStatus.Degraded)
             {
@@ -211,38 +222,51 @@ public sealed class WalStreamProcess(
                         claims.InstanceId, invalid, ct);
                 }
 
-                // BROKEN + слот пересоздаётся immediate+reserved СРАЗУ (t07, spec §3.2):
-                // к старту пересъёма полного слот уже держит позицию ≤ wal_start нового.
+                // BROKEN + слот пересоздаётся immediate+reserved СРАЗУ (t07); error
+                // различает «исчез» / «потерян (lost)» по факту зонда (t19)
+                var anyExists = slotProbes.Any(p => p.Exists);
                 await BreakAsync(cluster, shard.Name, wal, slot, masterRef, adminDsn, ct,
                     baseStart: wal.LastUploadedSegment is { Length: > 0 }
                         ? wal.LastUploadedSegment : wal.ChainStartSegment,
                     baseLast: wal.LastUploadedSegment,
                     baseUnix: wal.LastUploadedUnix ?? clock.GetUtcNow().ToUnixTimeSeconds(),
-                    error: $"слот {slot} исчез при живой цепочке (инвалидация max_slot_wal_keep_size?) — пересними полный бэкап",
+                    error: anyExists
+                        ? $"слот {slot} потерян (wal_status=lost) на всех источниках при живой цепочке — пересними полный бэкап"
+                        : $"слот {slot} исчез при живой цепочке (инвалидация max_slot_wal_keep_size?) — пересними полный бэкап",
                     recreateSlot: true);
                 return;
             }
 
-            // Первый старт ИЛИ BROKEN-ключ: ensure на КАЖДОМ источнике (где нет —
-            // все; immediate+reserved).
-            foreach (var missing in slotProbes)
+            // Первый старт ИЛИ BROKEN-ключ: ensure-alive на КАЖДОМ источнике
+            // (отсутствует → create; lost → recreate — пустой префикс wal/ + lost лечится
+            // recreate без BROKEN, свежий слот держит текущую позицию).
+            foreach (var dead in slotProbes)
             {
-                var created = await sql.EnsureSlotAsync(missing.Dsn, slot, ct);
-                if (!created.IsSuccess)
-                    throw new ApplicationException(
-                        $"ensure слота {slot}@{missing.Src.Node}: {created.Error!.Message}");
+                var ensured = await sql.EnsureSlotAliveAsync(dead.Dsn, slot, ct);
+                if (!ensured.IsSuccess)
+                    throw new ApplicationException($"ensure слота {slot}@{dead.Src.Node}: {ensured.Error!.Message}");
             }
         }
         else
         {
-            // Живой слот есть хотя бы на одной ноде — не BROKEN (t27 §3.3 п.3):
-            // ensure на источниках, где слота нет (разные инстансы независимы).
+            // lost при живом втором источнике — НЕ BROKEN: recreate потерянного
+            // (journal-before-manipulations, arch/17: фаза ДО мутации — видимость
+            // действия при падении между drop и create; тик повторит).
+            foreach (var lost in slotProbes.Where(p => p.Exists && p.WalStatus == "lost"))
+            {
+                await journal.WritePhaseAsync(cluster, Op, $"slot-recreate/{shard.Name}", claims.InstanceId,
+                    $"{lost.Src.Node}: слот {slot} wal_status=lost — слот пересоздан, агент вернётся от хвоста S3", ct);
+                var recreated = await sql.RecreateSlotAsync(lost.Dsn, slot, ct);
+                if (!recreated.IsSuccess)
+                    throw new ApplicationException($"recreate слота {slot}@{lost.Src.Node}: {recreated.Error!.Message}");
+            }
+
+            // отсутствующие на живых источниках → create (ensure-идемпотентность, t27)
             foreach (var missing in slotProbes.Where(p => !p.Exists))
             {
-                var created = await sql.EnsureSlotAsync(missing.Dsn, slot, ct);
+                var created = await sql.EnsureSlotAliveAsync(missing.Dsn, slot, ct);
                 if (!created.IsSuccess)
-                    throw new ApplicationException(
-                        $"ensure слота {slot}@{missing.Src.Node}: {created.Error!.Message}");
+                    throw new ApplicationException($"ensure слота {slot}@{missing.Src.Node}: {created.Error!.Message}");
             }
         }
 
@@ -356,8 +380,17 @@ public sealed class WalStreamProcess(
                     RestartPolicy: "no");
 
                 // Хост агента = docker-хост своего источника (per-cluster сеть на нём).
-                var ensured = await driver.EnsureBackupAgentAsync(
-                    cluster, shard, d.Src.Node, spec, d.Src.Addr.Host, ct);
+                // Поллинг create агента (arch/14 §6 инвариант поллинга): одиночный
+                // вызов таймаутом короче окна проверки (половина — 7.5 c при
+                // дефолтах), идемпотентный повтор; каждая итерация — лог elapsed.
+                var ensured = await LongCallPolling.EnsureAsync(
+                    $"create агента {d.Name}",
+                    token => driver.EnsureBackupAgentAsync(
+                        cluster, shard, d.Src.Node, spec, d.Src.Addr.Host, token),
+                    progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
+                    TimeSpan.FromTicks(Math.Max(
+                        TimeSpan.TicksPerSecond, (watchdogWindow ?? TimeSpan.FromSeconds(15)).Ticks / 2)),
+                    AgentCreateBudget, ct);
                 if (!ensured.IsSuccess)
                     throw new ApplicationException($"подъём агента {d.Name}: {ensured.Error!.Message}");
             }
@@ -736,7 +769,7 @@ public sealed class WalStreamProcess(
         {
             // Ошибка ensure — исключение наверх (пер-шардовый catch → журнал;
             // следующий тик повторит — идемпотентно).
-            var ensured = await sql.EnsureSlotAsync(adminDsn, slot, ct);
+            var ensured = await sql.EnsureSlotAliveAsync(adminDsn, slot, ct);
             if (!ensured.IsSuccess)
                 throw new ApplicationException($"ensure слота {slot}: {ensured.Error!.Message}");
         }

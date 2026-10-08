@@ -40,7 +40,8 @@ public sealed class PgWorkerHealth(
             degraded.Add($"docker-хост {failed.Key} недоступен");
 
         // loops-alive: возраст последнего тика каждого цикла (пассивно, HealthState);
-        // пороги — общий хелпер LoopStaleness (healthz и watchdog читают одну формулу).
+        // пороги — общий хелпер LoopStaleness (потребитель — только healthz;
+        // watchdog порог сноса считает от собственных опций — формулы не читает).
         var loops = options.CurrentValue.Loops;
         var staleAfter = Shared.Core.HealthChecks.LoopStaleness.FastLoops(loops.ScanIntervalSec, loops.KeepaliveSec);
         var snapshotStaleAfter = Shared.Core.HealthChecks.LoopStaleness.SnapshotLoop(loops.ScanIntervalSec, loops.SnapshotIntervalMin);

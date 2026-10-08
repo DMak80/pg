@@ -465,6 +465,10 @@ public class HaAlertRulesTests
         var alert = alerts.Should().ContainSingle().Subject;
         alert.Severity.Should().Be(AlertSeverity.Critical);
         alert.Id.Should().Be("slot-wal-lost:demo/s1/move_bucket_3");
+        alert.Remedy.Should().Be(AlertRemedy.WorkerAuto,
+            "lost-слот лечит воркер автоматически — ручной разбор не нужен");
+        alert.RemedyText.Should().Contain("воркер");
+        alert.Hint.Should().NotContain("runbook", "ручной разбор не предлагается");
     }
 
     [Fact]

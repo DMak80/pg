@@ -36,9 +36,17 @@ public sealed class RestoreDrillProcess(
     BackupsRuntimeOptions options,
     TimeProvider time,
     ILogger<RestoreDrillProcess> logger,
-    Action<string, string, string>? drillObserver = null) // (cluster, shard, ok|failed) — t14, arch/18 §2.7
+    Action<string, string, string>? drillObserver = null, // (cluster, shard, ok|failed) — t14, arch/18 §2.7
+    TimeSpan? watchdogWindow = null,
+    Shared.Core.Hosting.ILoopProgress? progress = null) // аудит долгих фаз: итерации поллинга дают Mark (spec §1.2 п.4)
 {
     public const string Op = "backup-drill";
+
+    // Окно проверки watchdog для поллинга create-вызовов (дефолт — продовые 15 c)
+    // и бюджет фазы create/start drill-джоба (PatroniBootSec-семантика: исчерпание
+    // — transient, RUNNING-ключ остаётся, тик досоздаст по имени).
+    private TimeSpan WatchdogWindow => watchdogWindow ?? TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan JobCreateBudget = TimeSpan.FromSeconds(120);
 
     public async Task<Result<ProcessOutcome>> TickAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
@@ -168,13 +176,28 @@ public sealed class RestoreDrillProcess(
             return Result<ProcessOutcome>.Failed(put.Error!);
 
         var jobName = BackupNames.DrillContainerName(cluster, shard, id);
-        var created = await engine.CreateContainerAsync(
-            DrillJobSpec.Build(options, cluster, shard, id, backupId), jobName, ct);
-        if (!created.IsSuccess)
+        // Поллинг create/start джоба (arch/14 §6 инвариант поллинга; аудит
+        // spec §3.2): ensure-семантика — контейнер уже есть → только старт.
+        var launched = await LongCallPolling.EnsureAsync(
+            $"create/start drill-джоба {jobName}",
+            async token =>
+            {
+                var list = await engine.ListContainersAsync(jobName, all: true, token);
+                if (!list.IsSuccess)
+                    return Result.Failed(list.Error!);
+                if (list.Value.Any(c => c.Names.Contains(jobName)))
+                    return await engine.StartContainerAsync(jobName, token);
+                var created = await engine.CreateContainerAsync(
+                    DrillJobSpec.Build(options, cluster, shard, id, backupId), jobName, token);
+                if (!created.IsSuccess)
+                    return created;
+                return await engine.StartContainerAsync(jobName, token);
+            },
+            progress, logger,
+            TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
+            JobCreateBudget, ct);
+        if (!launched.IsSuccess)
             return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // transient — RUNNING остаётся, тик досоздаст по имени
-        var started = await engine.StartContainerAsync(jobName, ct);
-        if (!started.IsSuccess)
-            return Result<ProcessOutcome>.Success(ProcessOutcome.Done); // transient
 
         await journal.WritePhaseAsync(cluster, Op, $"started/{shard}/{id}", claims.InstanceId, null, ct);
         logger.LogInformation("{Op} {cluster}/{shard}: drill-джоб {job} запущен (полный {backupId})",
@@ -276,9 +299,20 @@ public sealed class RestoreDrillProcess(
             }
 
             // Молодой RUNNING без контейнера — статус не трогаем (transient).
-            await engine.CreateContainerAsync(
-                DrillJobSpec.Build(options, cluster, shard, drill.Id, drill.BackupId), containerName, ct);
-            await engine.StartContainerAsync(containerName, ct);
+            // Поллинг create/start — тот же инвариант (arch/14 §6).
+            await LongCallPolling.EnsureAsync(
+                $"create/start drill-джоба {containerName}",
+                async token =>
+                {
+                    var created = await engine.CreateContainerAsync(
+                        DrillJobSpec.Build(options, cluster, shard, drill.Id, drill.BackupId), containerName, token);
+                    if (!created.IsSuccess)
+                        return created;
+                    return await engine.StartContainerAsync(containerName, token);
+                },
+                progress, logger,
+                TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
+                JobCreateBudget, ct);
             return;
         }
 
