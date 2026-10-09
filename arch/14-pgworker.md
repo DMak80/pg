@@ -1634,6 +1634,7 @@ PgWorker:Api { AdvertiseUrl, EnableSeedEndpoint=false,
 | R13 | SAN серверного серта API не покрывает фактический advertise-хост → строгие клиенты (curl, Prometheus server_name) получают TLS-отказ | канон SAN-набора пакета: `pgworker`, `localhost`, `host.docker.internal`, `127.0.0.1` (§1.1); генерация — `deploy/tls/gen.sh` с полным SAN; панель валидирует цепочку (CustomRootTrust) — hostname-check не ломает её даже при расхождении, строгие клиенты защищены каноном SAN |
 | R14 | SSH-туннель без pinned host-key — MITM на первичном подключении (TOFU) | `PgWorker:Docker:Ssh:FingerprintSha256` — pin строго; не задан → accept + warning-лог при старте хоста (диагностируемое ослабление); канон прода — pin задан |
 | R15 | Plaintext `tcp://:2375` к Engine API остаётся технически возможным (dev/тесты) | канон §2.2.1: прод — только 2376+mTLS или ssh; plaintext → warning-лог воркера на каждом старте хоста; 2375 в firewall-матрице arch/13 §2 отсутствует (default deny) |
+| R16 | Компрометация `ca.key` = выпуск серверных сертов REST/API от имени установки | ключ в TLS-томе поставки (ro), права 600, в etcd/registry не попадает; на стенде панель/as-prometheus монтируют `deploy/tls` целиком (bind ro — домашний контур, принято; точечное монтирование — опция поставки); потеря deploy-хоста = потеря `ca.key` — обязательный бэкап пакета `deploy/tls` (runbook), серты живых нод не инвалидируются |
 
 ---
 
