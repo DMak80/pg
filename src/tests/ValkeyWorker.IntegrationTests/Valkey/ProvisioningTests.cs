@@ -30,15 +30,30 @@ public class ProvisioningTests(ValkeyClusterFixture fx)
         // Assert: процесс done.
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
 
-        // Контейнер: имя vwk-<C>-node1, образ 9.1.2, Cmd с persistence off.
+        // Контейнер: имя vwk-<C>-node1, образ 9.1.2; Cmd — обёртка env-TLS
+        // (sh -c раскатка + exec valkey-server), persistence off в args.
         var objects = await fx.Driver.ListNodeObjectsAsync(cluster, TestContext.Current.CancellationToken);
         objects.Value.Should().ContainSingle().Which.Should().Be($"vwk-{cluster}-node1");
         var args = await fx.Driver.NodeArgsAsync(cluster, "node1", TestContext.Current.CancellationToken);
         args.Value.Should().NotBeNull();
-        args.Value![0].Should().Be("valkey-server");
-        var saveIndex = args.Value.ToList().IndexOf("--save");
-        args.Value[saveIndex + 1].Should().Be("", "persistence off: --save \"\"");
-        args.Value.Should().Contain("--appendonly").And.Contain("no");
+        args.Value!.Should().HaveCount(3);
+        args.Value[0].Should().Be("sh");
+        args.Value[1].Should().Be("-c");
+        args.Value[2].Should().StartWith("umask 077; mkdir -p /tls;");
+        args.Value[2].Should().Contain("exec 'valkey-server'");
+        args.Value[2].Should().Contain("'--save' ''", "persistence off: --save \"\"");
+        args.Value[2].Should().Contain("'--appendonly' 'no'");
+        args.Value[2].Should().Contain("'--tls-cert-file' '/tls/node.crt'");
+
+        // Env-модель: контейнер несёт VALKEY_TLS_{CERT,KEY,CA}; CA == etcd-факту.
+        var env = await fx.Driver.NodeEnvAsync(cluster, "node1", TestContext.Current.CancellationToken);
+        env.IsSuccess.Should().BeTrue(env.Error?.Message);
+        env.Value.Should().NotBeNull();
+        env.Value.Should().ContainKeys("VALKEY_TLS_CERT", "VALKEY_TLS_KEY", "VALKEY_TLS_CA");
+        env.Value!["VALKEY_TLS_CERT"].Should().Contain("BEGIN CERTIFICATE");
+        env.Value["VALKEY_TLS_KEY"].Should().Contain("BEGIN PRIVATE KEY");
+        var envCa = await fx.GetAsync($"/valkey/clusters/{cluster}/ca_pem");
+        env.Value["VALKEY_TLS_CA"].Trim().Should().Be(envCa!.Trim(), "CA env == ca_pem кластера");
 
         // Креды: 32 симв; PING admin-кредом → PONG.
         var adminPassword = await fx.GetAsync($"/valkey/clusters/{cluster}/admin_password");
@@ -63,7 +78,7 @@ public class ProvisioningTests(ValkeyClusterFixture fx)
         (await fx.GetAsync($"/valkeyworker/work/{cluster}")).Should().Contain("done");
     }
 
-    // t06: новый кластер TLS-only — ca-ключи в etcd, volume с тремя файлами,
+    // t06: новый кластер TLS-only — ca-ключи в etcd, env VALKEY_TLS_* у ноды,
     // app-кред roundtrip по TLS, plain-подключение отклонено, ACL-матрица прежняя.
     [Fact]
     public async Task NewCluster_TlsOnly_PlainRejected()
@@ -88,13 +103,15 @@ public class ProvisioningTests(ValkeyClusterFixture fx)
         ValkeyPki.TryParseCertificate(caPem, out _).Should().BeTrue();
         ValkeyPki.TryParseRsaKey(caKey, out _).Should().BeTrue();
 
-        // Assert 2: TLS-volume существует, tar содержит три файла.
+        // Assert 2: endpoints записаны; env контейнера — VALKEY_TLS_* c CA
+        // из etcd (env-модель: TLS-материал доставляется env ноды).
         var endpoints = (await fx.GetAsync($"/valkey/clusters/{cluster}/endpoints"))!;
         var port = int.Parse(endpoints.Split(':')[1]);
-        var tar = (await fx.Driver.GetTlsArchiveAsync(cluster, ValkeyClusterFixture.DockerHost, fx.Options.NodeImage, TestContext.Current.CancellationToken)).Value;
-        tar.Should().NotBeNull();
-        TarArchive.Read(tar!)
-            .Keys.Should().BeEquivalentTo("node.crt", "node.key", "ca.pem");
+        var nodeEnv = await fx.Driver.NodeEnvAsync(cluster, "node1", TestContext.Current.CancellationToken);
+        nodeEnv.IsSuccess.Should().BeTrue(nodeEnv.Error?.Message);
+        nodeEnv.Value.Should().NotBeNull();
+        nodeEnv.Value.Should().ContainKeys("VALKEY_TLS_CERT", "VALKEY_TLS_KEY", "VALKEY_TLS_CA");
+        nodeEnv.Value!["VALKEY_TLS_CA"].Trim().Should().Be(caPem.Trim(), "CA env == ca_pem кластера");
 
         // Assert 3: app-кред roundtrip по TLS с ca_pem из etcd.
         var appPassword = (await fx.GetAsync($"/valkey/clusters/{cluster}/app_password"))!;

@@ -215,18 +215,20 @@ internal static class Fakes
     }
 
     /// <summary>
-    /// In-memory docker-драйвер: контейнеры {имя → факт}, подмена args/лимитов
-    /// живого контейнера (кейсы V3 «существующий с иными args → пересоздание»),
+    /// In-memory docker-драйвер: контейнеры {имя → факт}, подмена args/env/лимитов
+    /// живого контейнера (кейсы V3 «существующий с иными cmd/env → пересоздание»),
     /// настраиваемая занятость портов, флаги «движок недоступен» (слепой inspect
     /// → Result.Failed) и «контейнер снесён» (объекта нет — положительное
-    /// свидетельство смерти).
+    /// свидетельство смерти). Env живого контейнера — источник TLS-факта;
+    /// легаси-тома старой volume-модели — in-memory множество (легаси-чистка).
     /// </summary>
     internal sealed class FakeDriver : IClusterDriver
     {
         private readonly object _gate = new();
 
         public sealed record ContainerFact(
-            string Host, int HostPort, decimal? Cpu, long? Mem, IReadOnlyList<string> Args, string Image, string? Id);
+            string Host, int HostPort, decimal? Cpu, long? Mem, IReadOnlyList<string> Args,
+            IReadOnlyDictionary<string, string>? Env, string Image, string? Id);
 
         // Имя → факт последнего Ensure. Удалённые исчезают (S7 «объекта нет»).
         public readonly Dictionary<string, ContainerFact> Containers = [];
@@ -242,6 +244,8 @@ internal static class Fakes
         public bool ArgsFault { get; set; }
 
         public bool EndpointFault { get; set; }
+
+        public bool EnvFault { get; set; }
 
         // Контейнер есть, но не running (stop) — жив, но PING не отвечает.
         public readonly HashSet<string> Stopped = [];
@@ -285,7 +289,7 @@ internal static class Fakes
                 var name = PlainClusterDriver.NodeName(spec.Cluster, spec.NodeName);
                 Ensured.Add(spec);
                 Containers[name] = new ContainerFact(
-                    spec.Host, spec.ClientHostPort, spec.CpuCores, spec.MemoryBytes, spec.Args, spec.Image,
+                    spec.Host, spec.ClientHostPort, spec.CpuCores, spec.MemoryBytes, spec.Args, spec.Env, spec.Image,
                     Guid.NewGuid().ToString("N")[..12]);
                 Stopped.Remove(name);
             }
@@ -363,6 +367,26 @@ internal static class Fakes
             }
         }
 
+        // Env живой ноды (сверки V3/надзора/R): контейнер без env (премиграционный
+        // канон) отдаёт пустой словарь — фактический env есть всегда (PATH и пр.).
+        public Task<Result<IReadOnlyDictionary<string, string>?>> NodeEnvAsync(
+            string cluster, string nodeName, CancellationToken ct)
+        {
+            if (EnvFault)
+                return Task.FromResult(Result<IReadOnlyDictionary<string, string>?>.Failed(
+                    new ApplicationException("docker host mute")));
+
+            lock (_gate)
+            {
+                var fact = Containers.GetValueOrDefault(PlainClusterDriver.NodeName(cluster, nodeName));
+                return Task.FromResult(Result<IReadOnlyDictionary<string, string>?>.Success(
+                    fact is null ? null : fact.Env ?? EmptyEnv));
+            }
+        }
+
+        private static readonly IReadOnlyDictionary<string, string> EmptyEnv =
+            new Dictionary<string, string>();
+
         public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
         {
             lock (_gate)
@@ -373,57 +397,21 @@ internal static class Fakes
             }
         }
 
-        // TLS-volume (t06): in-memory хранилище tar-архивов (cluster, host) → tar;
-        // отсутствие — null (GetTlsArchive), RemoveTlsVolume — 404 = успех.
-        public readonly Dictionary<(string Cluster, string Host), byte[]> TlsVolumes = [];
+        // Легаси-тома старой volume-модели (env-TLS миграция живых кластеров):
+        // in-memory множество имён; CleanupLegacyVolumeAsync удаляет своё имя.
+        public readonly HashSet<string> LegacyVolumes = [];
 
-        // Фильтр-инъекция: хост → Failed (симуляция «хост не в таблице Docker:Hosts»).
-        public Func<string, bool>? TlsVolumeFault { get; set; }
+        // Инъекция отказа легаси-чистки (409 volume-in-use): true → Failed.
+        public Func<string, bool>? LegacyVolumeDeleteFault { get; set; }
 
-        public Task<Result> EnsureTlsVolumeAsync(string cluster, string host, CancellationToken ct)
-        {
-            if (TlsVolumeFault?.Invoke(host) == true)
-                return Task.FromResult(Result.Failed(new ApplicationException($"host {host} mute")));
-
-            lock (_gate)
-            {
-                TlsVolumes.TryAdd((cluster, host), []);
-            }
-
-            return Task.FromResult(Result.Success());
-        }
-
-        public Task<Result> PutTlsArchiveAsync(string cluster, string host, byte[] tar, string image, CancellationToken ct)
-        {
-            if (TlsVolumeFault?.Invoke(host) == true)
-                return Task.FromResult(Result.Failed(new ApplicationException($"host {host} mute")));
-
-            lock (_gate)
-            {
-                TlsVolumes[(cluster, host)] = tar;
-            }
-
-            return Task.FromResult(Result.Success());
-        }
-
-        public Task<Result<byte[]?>> GetTlsArchiveAsync(string cluster, string host, string image, CancellationToken ct)
-        {
-            if (TlsVolumeFault?.Invoke(host) == true)
-                return Task.FromResult(Result<byte[]?>.Failed(new ApplicationException($"host {host} mute")));
-
-            lock (_gate)
-            {
-                var found = TlsVolumes.TryGetValue((cluster, host), out var tar) && tar.Length > 0 ? tar : null;
-                return Task.FromResult(Result<byte[]?>.Success(found));
-            }
-        }
-
-        public Task<Result> RemoveTlsVolumeAsync(string cluster, CancellationToken ct)
+        public Task<Result> CleanupLegacyVolumeAsync(string cluster, CancellationToken ct)
         {
             lock (_gate)
             {
-                foreach (var key in TlsVolumes.Keys.Where(k => k.Cluster == cluster).ToList())
-                    TlsVolumes.Remove(key);
+                var name = $"vwk-{cluster}-tls";
+                if (LegacyVolumeDeleteFault?.Invoke(name) == true)
+                    return Task.FromResult(Result.Failed(new ApplicationException("volume in use")));
+                LegacyVolumes.Remove(name);
             }
 
             return Task.FromResult(Result.Success());

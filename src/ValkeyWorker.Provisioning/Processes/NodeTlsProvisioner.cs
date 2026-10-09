@@ -1,79 +1,61 @@
 using System.Security.Cryptography.X509Certificates;
-using Shared.Core;
 using ValkeyWorker.Core.Valkey;
-using ValkeyWorker.Docker.Drivers;
 
 namespace ValkeyWorker.Provisioning.Processes;
 
 /// <summary>
-/// Ensure TLS-материала ноды (t06, arch/21 §2/V3): named volume
-/// vwk-&lt;C&gt;-tls с node.crt/node.key/ca.pem. Валидность = ca.pem совпадает с
-/// текущим CA кластера, node.crt подписан этим CA, SAN покрывает advertised-
-/// хост, NotAfter в будущем → переиспользование; иначе — перевыпуск
-/// (IssueNodeCertificate) и запись tar поверх. PING по TLS в процессах —
-/// финальный критерий (spec §5). Вызывается ДО EnsureNodeAsync (файлы сертов
-/// обязаны быть в volume к старту контейнера).
+/// TLS-материал ноды (env-TLS, arch/21 §2/V3): PEM серта/ключа/CA доставляется
+/// env контейнера VALKEY_TLS_{CERT,KEY,CA} (значения — многострочный PEM);
+/// cmd-обёртка NodeArgsBuilder.BuildCmd раскатывает их в /tls при старте.
+/// Валидность факта = CA == ожидаемому (Trim-сравнение), цепочка валидна,
+/// key↔cert, NotAfter жив, SAN покрывает advertised-хост DNS|IP → пропуск;
+/// иначе — пересоздание со свежим env (свежий серт случаен — сверка по
+/// валидности IsValidNodeEnv, не побайтовая). Нормализация \n → переносы —
+/// на границе сверки (etcd-канон значений «одной строкой с \n» — arch/20 §2.1).
 /// </summary>
-public sealed class NodeTlsProvisioner(
-    IClusterDriver driver,
-    string nodeImage,
-    TimeProvider? clock = null)
+public static class NodeTlsProvisioner
 {
-    public const string MountPath = "/tls";
-
-    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
-
-    public async Task<Result> EnsureNodeTlsAsync(
-        string cluster, string node, string host, string advertisedHost,
-        string caPem, string caKeyPem, CancellationToken ct)
+    /// <summary>Env ноды: свежий серт (CN=node&lt;k&gt;, SAN advertised, подпись ca_key).</summary>
+    public static IReadOnlyDictionary<string, string> BuildNodeTlsEnv(
+        string caPem, string caKeyPem, string node, string advertisedHost)
     {
-        var volume = await driver.EnsureTlsVolumeAsync(cluster, host, ct);
-        if (!volume.IsSuccess)
-            return volume;
-
-        var existing = await driver.GetTlsArchiveAsync(cluster, host, nodeImage, ct);
-        if (!existing.IsSuccess)
-            return existing;
-        if (existing.Value is { } tar && IsValidTar(tar, advertisedHost, caPem, _clock))
-            return Result.Success(); // валидный серт уже в volume — переиспользование
-
         var (certPem, keyPem) = ValkeyPki.IssueNodeCertificate(caPem, caKeyPem, node, advertisedHost);
-        var entries = new[]
+        return new Dictionary<string, string>
         {
-            new TarArchive.Entry("node.crt", 0b1_1010_0100, System.Text.Encoding.UTF8.GetBytes(certPem)), // 0o644
-            // Ключ 0o644 (не 0o600): процесс ноды в образе стартует НЕ root
-            // (entrypoint gosu valkey, uid 999) и не читает root:root 0600.
-            // Изоляция секрета — периметром контейнера: volume монтируется
-            // ТОЛЬКО в контейнер ноды (arch/21 §2).
-            new TarArchive.Entry("node.key", 0b1_1010_0100, System.Text.Encoding.UTF8.GetBytes(keyPem)),  // 0o644
-            new TarArchive.Entry("ca.pem", 0b1_1010_0100, System.Text.Encoding.UTF8.GetBytes(caPem)),
+            ["VALKEY_TLS_CERT"] = certPem,
+            ["VALKEY_TLS_KEY"] = keyPem,
+            ["VALKEY_TLS_CA"] = caPem,
         };
-        return await driver.PutTlsArchiveAsync(cluster, host, TarArchive.Build(entries), nodeImage, ct);
     }
 
-    // Валидность факта (идемпотентность по факту, spec §2.4): ca.pem == текущему
-    // CA, серт подписан им, SAN покрывает advertised, срок жив.
-    internal static bool IsValidTar(byte[] tar, string advertisedHost, string caPem, TimeProvider clock)
+    // Валидность факта по env (идемпотентность по факту, arch/21 §2): CA ==
+    // ожидаемому, серт подписан им, key↔cert, SAN покрывает advertised,
+    // срок жив. env==null/нет ключей — false (объекта/материала нет).
+    internal static bool IsValidNodeEnv(
+        IReadOnlyDictionary<string, string>? env, string advertisedHost, string caPem, TimeProvider clock)
     {
         try
         {
-            var files = TarArchive.Read(tar);
-            if (!files.TryGetValue("ca.pem", out var caBytes)
-                || !files.TryGetValue("node.crt", out var certBytes)
-                || !files.TryGetValue("node.key", out var keyBytes))
+            if (env is null
+                || !env.TryGetValue("VALKEY_TLS_CERT", out var certPem)
+                || !env.TryGetValue("VALKEY_TLS_KEY", out var keyPem)
+                || !env.TryGetValue("VALKEY_TLS_CA", out var envCa))
                 return false;
-            if (System.Text.Encoding.UTF8.GetString(caBytes).Trim() != caPem.Trim())
+            certPem = NormalizePem(certPem);
+            keyPem = NormalizePem(keyPem);
+            envCa = NormalizePem(envCa);
+            if (envCa.Trim() != caPem.Trim())
                 return false; // чужой/старый CA — перевыпуск
-            if (!ValkeyPki.TryParseCertificate(PemOf(certBytes), out var cert) || cert is null)
+            if (!ValkeyPki.TryParseCertificate(certPem, out var cert) || cert is null)
                 return false;
             using (cert)
             {
                 if (!Shared.Tls.TlsChain.ValidateChain(cert, ParseCa(caPem)))
                     return false;
-                // Ключ обязан соответствовать серту (t06-ревью): неатомарная
-                // запись могла оставить несовпадающую пару — она проходит
-                // проверку наличия, но валит boot ноды вечно.
-                if (!KeyMatchesCertificate(PemOf(keyBytes), cert))
+                // Ключ обязан соответствовать серту: неатомарное обновление могло
+                // оставить несовпадающую пару — она проходит проверку наличия,
+                // но валит boot ноды вечно.
+                if (!KeyMatchesCertificate(keyPem, cert))
                     return false;
                 if (cert.NotAfter < clock.GetUtcNow())
                     return false;
@@ -89,12 +71,16 @@ public sealed class NodeTlsProvisioner(
         catch (Exception e) when (e is ArgumentException or FormatException
             or ApplicationException or System.Security.Cryptography.CryptographicException)
         {
-            return false; // битый tar/PEM/ключ — перевыпуск
+            return false; // битый PEM/ключ — перевыпуск
         }
     }
 
-    // Открытый ключ серта == публичная часть node.key (PKCS#8 RSA).
-    private static bool KeyMatchesCertificate(string keyPem, System.Security.Cryptography.X509Certificates.X509Certificate2 cert)
+    // etcd-канон «одной строкой с \n» → многострочный PEM (граница сверки).
+    private static string NormalizePem(string value)
+        => value.Replace("\\n", "\n", StringComparison.Ordinal);
+
+    // Открытый ключ серта == публичная часть VALKEY_TLS_KEY (PKCS#8 RSA).
+    private static bool KeyMatchesCertificate(string keyPem, X509Certificate2 cert)
     {
         using var key = System.Security.Cryptography.RSA.Create();
         key.ImportFromPem(keyPem);
@@ -103,8 +89,6 @@ public sealed class NodeTlsProvisioner(
             && key.ExportSubjectPublicKeyInfo().AsSpan()
                 .SequenceEqual(certKey.ExportSubjectPublicKeyInfo());
     }
-
-    private static string PemOf(byte[] bytes) => System.Text.Encoding.UTF8.GetString(bytes);
 
     private static X509Certificate2 ParseCa(string caPem)
         => ValkeyPki.TryParseCertificate(caPem, out var ca) && ca is not null

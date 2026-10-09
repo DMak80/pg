@@ -1,3 +1,4 @@
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using FluentAssertions;
 using ValkeyWorker.Core.Valkey;
@@ -6,153 +7,200 @@ using Xunit;
 
 namespace ValkeyWorker.UnitTests.Provisioning;
 
-// NodeTlsProvisioner (t06, arch/21 §2/V3): ensure volume+серт ноды,
-// переиспользование валидного факта, перевыпуск при чужом CA/SAN-дрейфе/сроке.
+// NodeTlsProvisioner (env-TLS, arch/21 §2): сборка env VALKEY_TLS_{CERT,KEY,CA}
+// со свежим сертом ноды и валидность факта по env (идемпотентность по факту).
 public class NodeTlsProvisionerTests
 {
     private static readonly FixedTimeProvider Clock = new();
 
-    private const string Image = "valkey/valkey:9.1.2";
+    private static (string CaPem, string CaKeyPem) NewCa(string cluster)
+        => ValkeyPki.GenerateCa(cluster);
 
-    private static (Fakes.FakeDriver Driver, NodeTlsProvisioner Provisioner) NewRig()
-    {
-        var driver = new Fakes.FakeDriver();
-        return (driver, new NodeTlsProvisioner(driver, Image, Clock));
-    }
-
+    // AAA: BuildNodeTlsEnv — три ключа env, CA == входному, серт валиден против CA
     [Fact]
-    public async Task Ensure_WritesVolumeTar()
+    public void BuildNodeTlsEnv_ТриКлючаИВалидныйСерт()
     {
-        // Arrange — пустой volume, валидная CA-пара
-        var (driver, provisioner) = NewRig();
-        var (caPem, caKeyPem) = ValkeyPki.GenerateCa("c1");
+        // Arrange — валидная CA-пара кластера
+        var (caPem, caKeyPem) = NewCa("c1");
 
         // Act
-        var result = await provisioner.EnsureNodeTlsAsync(
-            "c1", "node1", "h1", "localhost", caPem, caKeyPem, TestContext.Current.CancellationToken);
+        var env = NodeTlsProvisioner.BuildNodeTlsEnv(caPem, caKeyPem, "node1", "localhost");
 
-        // Assert — tar с тремя файлами записан (права файлов — 0644: процесс ноды
-        // в образе НЕ root, см. NodeTlsProvisioner; кодирование mode — TarArchiveTests).
-        result.IsSuccess.Should().BeTrue(result.Error?.Message);
-        var tar = driver.TlsVolumes[("c1", "h1")];
-        var files = TarArchive.Read(tar);
-        files.Keys.Should().BeEquivalentTo("node.crt", "node.key", "ca.pem");
-        files["ca.pem"].Should().Equal(Encoding.UTF8.GetBytes(caPem));
+        // Assert — набор ключей канона arch/21 §2 и валидность факта
+        env.Keys.Should().BeEquivalentTo("VALKEY_TLS_CERT", "VALKEY_TLS_KEY", "VALKEY_TLS_CA");
+        env["VALKEY_TLS_CA"].Should().Be(caPem);
+        NodeTlsProvisioner.IsValidNodeEnv(env, "localhost", caPem, Clock).Should().BeTrue();
     }
 
-    [Fact]
-    public async Task Ensure_ValidTar_KeyCertMismatch_Reissues()
+    // AAA: SAN покрывает advertised-хост — DNS и IP формы
+    [Theory]
+    [InlineData("cache.example.local")]
+    [InlineData("127.0.0.1")]
+    public void BuildNodeTlsEnv_SanПокрываетAdvertised(string advertised)
     {
-        // Arrange — валидный tar, но node.key от ЧУЖОГО серта (неатомарная
-        // запись т06-ревью): факт невалиден, обязателен перевыпуск
-        var (driver, provisioner) = NewRig();
-        var (caPem, caKeyPem) = ValkeyPki.GenerateCa("c1");
-        await provisioner.EnsureNodeTlsAsync(
-            "c1", "node1", "h1", "localhost", caPem, caKeyPem, TestContext.Current.CancellationToken);
-        var before = driver.TlsVolumes[("c1", "h1")];
-
-        // Подмена ключа: свежая пара RSA, не связанная с node.crt
-        using var foreignRsa = System.Security.Cryptography.RSA.Create(2048);
-        var foreignKeyPem = foreignRsa.ExportPkcs8PrivateKeyPem();
-        var files = TarArchive.Read(before);
-        var tampered = TarArchive.Build(
-        [
-            new TarArchive.Entry("node.crt", 0b1_1010_0100, files["node.crt"]),
-            new TarArchive.Entry("node.key", 0b1_1010_0100, Encoding.UTF8.GetBytes(foreignKeyPem)),
-            new TarArchive.Entry("ca.pem", 0b1_1010_0100, files["ca.pem"]),
-        ]);
-        driver.TlsVolumes[("c1", "h1")] = tampered;
+        // Arrange
+        var (caPem, caKeyPem) = NewCa("c1");
 
         // Act
-        var result = await provisioner.EnsureNodeTlsAsync(
-            "c1", "node1", "h1", "localhost", caPem, caKeyPem, TestContext.Current.CancellationToken);
+        var env = NodeTlsProvisioner.BuildNodeTlsEnv(caPem, caKeyPem, "node1", advertised);
 
-        // Assert — перевыпуск: tar переписан, ключ соответствует серту
-        result.IsSuccess.Should().BeTrue(result.Error?.Message);
-        driver.TlsVolumes[("c1", "h1")].Should().NotBeSameAs(tampered);
-        NodeTlsProvisioner.IsValidTar(
-            driver.TlsVolumes[("c1", "h1")], "localhost", caPem, Clock).Should().BeTrue();
+        // Assert — SAN серта покрывает advertised (DNS|IP по правилу §2)
+        ValkeyPki.TryParseCertificate(env["VALKEY_TLS_CERT"], out var cert).Should().BeTrue();
+        using (var parsed = cert!)
+        {
+            var san = parsed.Extensions
+                .OfType<X509SubjectAlternativeNameExtension>()
+                .First();
+            if (System.Net.IPAddress.TryParse(advertised, out var ip))
+                san.EnumerateIPAddresses().Should().Contain(ip);
+            else
+                san.EnumerateDnsNames().Should().Contain(advertised);
+        }
     }
 
+    // AAA: key↔cert — приватный ключ env соответствует серту (PKCS#8)
     [Fact]
-    public async Task Ensure_ValidTar_MatchingKey_Reused()
+    public void BuildNodeTlsEnv_КлючСоответствуетСерту()
     {
-        // Arrange — валидный tar с СОГЛАСОВАННОЙ парой ключ↔серт
-        var (driver, provisioner) = NewRig();
-        var (caPem, caKeyPem) = ValkeyPki.GenerateCa("c1");
-        await provisioner.EnsureNodeTlsAsync(
-            "c1", "node1", "h1", "localhost", caPem, caKeyPem, TestContext.Current.CancellationToken);
-        var before = driver.TlsVolumes[("c1", "h1")];
-
-        // Act — проверка валидности согласованном набора
-        var valid = NodeTlsProvisioner.IsValidTar(before, "localhost", caPem, Clock);
-
-        // Assert — пара ключ↔серт сходится → факт валиден
-        valid.Should().BeTrue();
-    }
-
-    [Fact]
-    public async Task Ensure_ReusesValidCert()
-    {
-        // Arrange — первый ensure записал валидный серт
-        var (driver, provisioner) = NewRig();
-        var (caPem, caKeyPem) = ValkeyPki.GenerateCa("c1");
-        await provisioner.EnsureNodeTlsAsync(
-            "c1", "node1", "h1", "localhost", caPem, caKeyPem, TestContext.Current.CancellationToken);
-        var before = driver.TlsVolumes[("c1", "h1")];
-
-        // Act — второй вызов (re-run/пересоздание контейнера)
-        var result = await provisioner.EnsureNodeTlsAsync(
-            "c1", "node1", "h1", "localhost", caPem, caKeyPem, TestContext.Current.CancellationToken);
-
-        // Assert — переиспользование: tar не переписан.
-        result.IsSuccess.Should().BeTrue();
-        driver.TlsVolumes[("c1", "h1")].Should().BeSameAs(before);
-    }
-
-    [Fact]
-    public async Task Ensure_ReissuesOnForeignCa()
-    {
-        // Arrange — в volume серты чужого CA, ensure с текущим CA кластера
-        var (driver, provisioner) = NewRig();
-        var (foreignPem, foreignKey) = ValkeyPki.GenerateCa("foreign");
-        await provisioner.EnsureNodeTlsAsync(
-            "c1", "node1", "h1", "localhost", foreignPem, foreignKey, TestContext.Current.CancellationToken);
-        var (caPem, caKeyPem) = ValkeyPki.GenerateCa("c1");
+        // Arrange
+        var (caPem, caKeyPem) = NewCa("c1");
 
         // Act
-        var result = await provisioner.EnsureNodeTlsAsync(
-            "c1", "node1", "h1", "localhost", caPem, caKeyPem, TestContext.Current.CancellationToken);
+        var env = NodeTlsProvisioner.BuildNodeTlsEnv(caPem, caKeyPem, "node1", "localhost");
 
-        // Assert — перезапись: ca.pem в volume == текущий CA, серт подписан им.
-        result.IsSuccess.Should().BeTrue();
-        var files = TarArchive.Read(driver.TlsVolumes[("c1", "h1")]);
-        Encoding.UTF8.GetString(files["ca.pem"]).Should().Be(caPem);
-        ValkeyPki.TryParseCertificate(Encoding.UTF8.GetString(files["node.crt"]), out var cert).Should().BeTrue();
-        using var caCert = System.Security.Cryptography.X509Certificates.X509Certificate2.CreateFromPem(caPem);
-        cert!.Issuer.Should().Be(caCert.Subject);
+        // Assert — публичные части совпадают
+        using var key = System.Security.Cryptography.RSA.Create();
+        key.ImportFromPem(env["VALKEY_TLS_KEY"]);
+        ValkeyPki.TryParseCertificate(env["VALKEY_TLS_CERT"], out var cert).Should().BeTrue();
+        using (var parsed = cert!)
+        {
+            using var certKey = parsed.GetRSAPublicKey();
+            key.ExportSubjectPublicKeyInfo().AsSpan()
+                .SequenceEqual(certKey!.ExportSubjectPublicKeyInfo()).Should().BeTrue();
+        }
     }
 
+    // AAA: PEM в env — многострочный (переносы в значении; \n-форма etcd — наружи)
     [Fact]
-    public async Task Ensure_ReissuesOnSanDrift()
+    public void BuildNodeTlsEnv_PemМногстрочный()
     {
-        // Arrange — серт в volume выпущен под старый advertised-хост
-        var (driver, provisioner) = NewRig();
-        var (caPem, caKeyPem) = ValkeyPki.GenerateCa("c1");
-        await provisioner.EnsureNodeTlsAsync(
-            "c1", "node1", "h1", "old.host", caPem, caKeyPem, TestContext.Current.CancellationToken);
-        var before = driver.TlsVolumes[("c1", "h1")];
+        // Arrange
+        var (caPem, caKeyPem) = NewCa("c1");
 
-        // Act — advertised сменился
-        var result = await provisioner.EnsureNodeTlsAsync(
-            "c1", "node1", "h1", "new.host", caPem, caKeyPem, TestContext.Current.CancellationToken);
+        // Act
+        var env = NodeTlsProvisioner.BuildNodeTlsEnv(caPem, caKeyPem, "node1", "localhost");
 
-        // Assert — перезапись (SAN обязан покрывать новый advertised).
-        result.IsSuccess.Should().BeTrue();
-        driver.TlsVolumes[("c1", "h1")].Should().NotBeSameAs(before);
-        var files = TarArchive.Read(driver.TlsVolumes[("c1", "h1")]);
-        ValkeyPki.TryParseCertificate(Encoding.UTF8.GetString(files["node.crt"]), out var cert).Should().BeTrue();
-        cert!.Extensions.OfType<System.Security.Cryptography.X509Certificates.X509SubjectAlternativeNameExtension>()
-            .First().EnumerateDnsNames().Should().Contain("new.host");
+        // Assert — значение env несёт PEM с реальными переносами строк
+        env["VALKEY_TLS_CA"].Should().Contain("\n");
+        env["VALKEY_TLS_CERT"].Should().Contain("\n-----END CERTIFICATE-----");
+    }
+
+    // ── IsValidNodeEnv ──
+
+    // AAA: валидный env → true; null/нет ключа → false
+    [Fact]
+    public void IsValidNodeEnv_ВалидныйИОтсутствующий()
+    {
+        // Arrange
+        var (caPem, caKeyPem) = NewCa("c1");
+        var env = NodeTlsProvisioner.BuildNodeTlsEnv(caPem, caKeyPem, "node1", "localhost");
+
+        // Act / Assert
+        NodeTlsProvisioner.IsValidNodeEnv(env, "localhost", caPem, Clock).Should().BeTrue();
+        NodeTlsProvisioner.IsValidNodeEnv(null, "localhost", caPem, Clock).Should().BeFalse();
+        NodeTlsProvisioner.IsValidNodeEnv(
+            new Dictionary<string, string>(), "localhost", caPem, Clock).Should().BeFalse();
+        NodeTlsProvisioner.IsValidNodeEnv(
+            new Dictionary<string, string> { ["VALKEY_TLS_CA"] = caPem }, "localhost", caPem, Clock)
+            .Should().BeFalse(); // нет CERT/KEY
+    }
+
+    // AAA: чужой CA в env → false (сверка Trim-сравнением CA)
+    [Fact]
+    public void IsValidNodeEnv_ЧужойCa_False()
+    {
+        // Arrange — env от CA#1, ожидание — CA#2
+        var (ca1, ca1Key) = NewCa("c1");
+        var (ca2, _) = NewCa("c2");
+        var env = NodeTlsProvisioner.BuildNodeTlsEnv(ca1, ca1Key, "node1", "localhost");
+
+        // Act / Assert
+        NodeTlsProvisioner.IsValidNodeEnv(env, "localhost", ca2, Clock).Should().BeFalse();
+    }
+
+    // AAA: истёкший NotAfter → false
+    [Fact]
+    public void IsValidNodeEnv_ИстёкшийСерт_False()
+    {
+        // Arrange — серт валиден по «сейчас», но просрочен по будущим часам
+        var (caPem, caKeyPem) = NewCa("c1");
+        var env = NodeTlsProvisioner.BuildNodeTlsEnv(caPem, caKeyPem, "node1", "localhost");
+        var future = new FixedTimeProvider
+        {
+            Utc = new DateTimeOffset(2046, 1, 1, 0, 0, 0, TimeSpan.Zero), // серт/CA — 10 лет
+        };
+
+        // Act / Assert
+        NodeTlsProvisioner.IsValidNodeEnv(env, "localhost", caPem, future).Should().BeFalse();
+    }
+
+    // AAA: key≠cert → false (неатомарная запись могла оставить чужую пару)
+    [Fact]
+    public void IsValidNodeEnv_КлючНеСоответствуетСерту_False()
+    {
+        // Arrange — подмена ключа свежей парой RSA
+        var (caPem, caKeyPem) = NewCa("c1");
+        var env = NodeTlsProvisioner.BuildNodeTlsEnv(caPem, caKeyPem, "node1", "localhost");
+        using var foreign = System.Security.Cryptography.RSA.Create(2048);
+        var tampered = new Dictionary<string, string>(env)
+        {
+            ["VALKEY_TLS_KEY"] = foreign.ExportPkcs8PrivateKeyPem(),
+        };
+
+        // Act / Assert
+        NodeTlsProvisioner.IsValidNodeEnv(tampered, "localhost", caPem, Clock).Should().BeFalse();
+    }
+
+    // AAA: SAN-drift (advertised сменился, серт выпущен под старый) → false
+    [Fact]
+    public void IsValidNodeEnv_SanDrift_False()
+    {
+        // Arrange — серт под old.host, сверка с new.host
+        var (caPem, caKeyPem) = NewCa("c1");
+        var env = NodeTlsProvisioner.BuildNodeTlsEnv(caPem, caKeyPem, "node1", "old.host");
+
+        // Act / Assert
+        NodeTlsProvisioner.IsValidNodeEnv(env, "new.host", caPem, Clock).Should().BeFalse();
+    }
+
+    // AAA: битый PEM в env → false (перевыпуск, не исключение)
+    [Fact]
+    public void IsValidNodeEnv_БитыйPem_False()
+    {
+        // Arrange
+        var (caPem, _) = NewCa("c1");
+        var env = new Dictionary<string, string>
+        {
+            ["VALKEY_TLS_CERT"] = "не PEM",
+            ["VALKEY_TLS_KEY"] = "не PEM",
+            ["VALKEY_TLS_CA"] = caPem,
+        };
+
+        // Act / Assert
+        NodeTlsProvisioner.IsValidNodeEnv(env, "localhost", caPem, Clock).Should().BeFalse();
+    }
+
+    // AAA: \n-нормализация — env с экранированными переносами сводится к валидному
+    [Fact]
+    public void IsValidNodeEnv_ПереносыСЭкранированием_Валиден()
+    {
+        // Arrange — etcd-канон «одной строкой с \n» на границе сверки
+        var (caPem, caKeyPem) = NewCa("c1");
+        var env = NodeTlsProvisioner.BuildNodeTlsEnv(caPem, caKeyPem, "node1", "localhost");
+        var flat = env.ToDictionary(
+            p => p.Key, p => p.Value.Replace("\n", "\\n", StringComparison.Ordinal));
+
+        // Act / Assert — нормализация \n → переносы на границе сверки
+        NodeTlsProvisioner.IsValidNodeEnv(flat, "localhost", caPem, Clock).Should().BeTrue();
     }
 }

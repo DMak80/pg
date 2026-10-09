@@ -46,7 +46,7 @@ public sealed class ValkeyClusterFixture : IAsyncLifetime
     public const string AdvertisedClientHost = "localhost";
 
     // Имя единственного docker-хоста рига (HostEndpoint в InitializeAsync);
-    // portalloc/TLS-volume вызовы тестов ссылаются на него.
+    // portalloc/node-env вызовы тестов ссылаются на него.
     public const string DockerHost = "local";
 
     // Окно хост-портов публикации нод — динамическое (вне стендовой зоны).
@@ -116,10 +116,8 @@ public sealed class ValkeyClusterFixture : IAsyncLifetime
 
     public async ValueTask DisposeAsync()
     {
-        // Демонтаж кластеров прогона (per-cluster сетей у домена нет; TLS-том
-        // vwk-<C>-tls чистится всегда — успешный X1 снимает его сам, здесь
-        // страховка для сценариев без демонтажа); 404/ошибки — лучшее усилие
-        // (прогон завершён).
+        // Демонтаж кластеров прогона (per-cluster сетей и TLS-томов у домена
+        // нет — env-модель); 404/ошибки — лучшее усилие (прогон завершён).
         var ct = CancellationToken.None;
         foreach (var cluster in _clusters)
         {
@@ -134,10 +132,6 @@ public sealed class ValkeyClusterFixture : IAsyncLifetime
                     var node = name[$"vwk-{cluster}-".Length..];
                     await Driver.RemoveNodeAsync(cluster, node, ct);
                 }
-
-                // TLS-volume кластера (t06, шаг 9.4): ПОСЛЕ сноса контейнеров —
-                // volume «in use» docker удалять отказывается.
-                await Driver.RemoveTlsVolumeAsync(cluster, ct);
             }
             catch
             {
@@ -173,12 +167,13 @@ public sealed class ValkeyClusterFixture : IAsyncLifetime
     public ClusterSecretEnsurer NewSecretEnsurer() =>
         new(Gateway, [Endpoint]);
 
-    public NodeTlsProvisioner NewTlsProvisioner() => new(Driver, Options.NodeImage);
+    // env-TLS: NodeTlsProvisioner — статический (env входит в spec создания),
+    // отдельная фабрика ригу не нужна.
 
     public ProvisioningProcess NewProvisioning(ClaimStore claims, WorkJournal journal,
         PortAllocLock portLock, PortAllocIndex portIndex, IClusterSecretEnsurer secrets) =>
         new(Gateway, [Endpoint], Driver, claims, journal, portLock, portIndex, secrets,
-            NewTlsProvisioner(), new ValkeyConnection(TimeSpan.FromSeconds(2)), Options);
+            new ValkeyConnection(TimeSpan.FromSeconds(2)), Options);
 
     public DeprovisioningProcess NewDeprovisioning(ClaimStore claims, WorkJournal journal) =>
         new(Gateway, [Endpoint], Driver, claims, journal);
@@ -187,7 +182,7 @@ public sealed class ValkeyClusterFixture : IAsyncLifetime
         PortAllocHealer healer, int nodeDeadSec = 90) =>
         new(Gateway, [Endpoint], Driver, claims, journal,
             new ValkeyConnection(TimeSpan.FromSeconds(2)),
-            Options with { NodeDeadSec = nodeDeadSec }, healer, NewTlsProvisioner());
+            Options with { NodeDeadSec = nodeDeadSec }, healer);
 
     public PortAllocHealer NewHealer(ClaimStore claims, WorkJournal journal, PortAllocLock portLock,
         PortAllocIndex portIndex) =>

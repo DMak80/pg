@@ -19,12 +19,15 @@ public class TlsMigratorTests
 
     private static readonly FixedTimeProvider Clock = new();
 
-    private const string Image = "valkey/valkey:9.1.2";
-
     private static readonly IReadOnlyList<string> TlsArgs =
         ["valkey-server", "--tls-port", "6379", "--port", "0"];
     private static readonly IReadOnlyList<string> PlainArgs =
         ["valkey-server", "--appendonly", "no"];
+
+    // Args живого контейнера на env-модели — cmd-обёртка (детект --tls-port
+    // обязан работать по вхождению подстроки, не точному равенству элемента).
+    private static readonly IReadOnlyList<string> WrapperArgs =
+        ["sh", "-c", "umask 077; mkdir -p /tls; exec valkey-server '--tls-port' '6379' '--port' '0'"];
 
     private sealed class Rig
     {
@@ -43,7 +46,6 @@ public class TlsMigratorTests
                 rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims,
                 new WorkJournal("/valkeyworker", rig.Etcd, ["http://etcd:2379"]),
                 new ValkeyWorker.Provisioning.Processes.ClusterSecretEnsurer(rig.Etcd, ["http://etcd:2379"]),
-                new ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner(rig.Driver, Image, Clock),
                 rig.Valkey, Options,
                 async _ =>
                 {
@@ -70,7 +72,7 @@ public class TlsMigratorTests
             Etcd.Seed($"/valkeyworker/portalloc/{cluster}", "{\"node1\":{\"host\":\"h1\",\"client\":" + port + "}}");
             Driver.Containers[$"vwk-{cluster}-node1"] =
                 new Fakes.FakeDriver.ContainerFact("h1", port, 2m, 1024L * 1024 * 1024,
-                    PlainArgs, "valkey/valkey:9.1.2", "id-plain");
+                    PlainArgs, null, "valkey/valkey:9.1.2", "id-plain");
         }
 
         public ValkeyClusterSnapshot Snapshot(string cluster)
@@ -129,6 +131,25 @@ public class TlsMigratorTests
             .NeedsMigration(snap, TlsArgs).Should().BeFalse();
     }
 
+    // env-TLS: args живого контейнера — обёртка ["sh","-c","…--tls-port…"]:
+    // детект по вхождению подстроки (точное равенство элемента всегда false).
+    [Fact]
+    public void NeedsMigration_WrapperArgs_False()
+    {
+        // Arrange — CA есть, живой контейнер на env-модели (cmd-обёртка).
+        var (caPem, caKeyPem) = ValkeyPki.GenerateCa("c1");
+        var snap = ValkeySnapshotParser.Parse(
+        [
+            new Kv("/valkey/clusters/c1/config", """{"nodes":1,"maxmemory_bytes":1,"maxmemory_policy":"allkeys-lru","created_unix":1}""", 1),
+            new Kv("/valkey/clusters/c1/ca_pem", caPem, 1),
+            new Kv("/valkey/clusters/c1/ca_key", caKeyPem, 1),
+        ]).Value.Clusters.Single();
+
+        // Act / Assert — TLS-флаг внутри строки обёртки: миграция не нужна
+        ValkeyWorker.Provisioning.Processes.TlsMigrator
+            .NeedsMigration(snap, WrapperArgs).Should().BeFalse();
+    }
+
     [Fact]
     public async Task Run_MigratesPlainCluster_PhasesT0T3()
     {
@@ -141,15 +162,17 @@ public class TlsMigratorTests
         // Act
         var outcome = await rig.Migrator.RunAsync(snap, TestContext.Current.CancellationToken);
 
-        // Assert — InProgress; контейнер пересоздан с TLS-args ТЕМ ЖЕ портом;
-        // volume записан; ca_pem/ca_key появились; journal доведён до done;
-        // PING-мок позван; снапшоты «до»/«после» сняты.
+        // Assert — InProgress; контейнер пересоздан с cmd-обёрткой TLS-args
+        // ТЕМ ЖЕ портом и env VALKEY_TLS_*; ca_pem/ca_key появились; journal
+        // доведён до done; PING-мок позван; снапшоты «до»/«после» сняты.
         outcome.IsSuccess.Should().BeTrue(outcome.Error?.Message);
         outcome.Value.Should().Be(ValkeyWorker.Provisioning.Processes.TlsMigrator.MigrationOutcome.InProgress);
         var ensured = rig.Driver.Ensured.Should().ContainSingle().Subject;
         ensured.ClientHostPort.Should().Be(17001, "portalloc не меняется");
-        ensured.Args.Should().Contain("--tls-port").And.Contain("--port");
-        rig.Driver.TlsVolumes[(cluster, "h1")].Should().NotBeEmpty();
+        ensured.Args.Should().HaveCount(3);
+        ensured.Args[0].Should().Be("sh");
+        ensured.Args[2].Should().Contain("--tls-port").And.Contain("--port");
+        ensured.Env.Should().NotBeNull().And.ContainKeys("VALKEY_TLS_CERT", "VALKEY_TLS_KEY", "VALKEY_TLS_CA");
         rig.Etcd.Store[$"/valkey/clusters/{cluster}/ca_pem"].Value.Should().NotBeNullOrEmpty();
         rig.Etcd.Store[$"/valkey/clusters/{cluster}/ca_key"].Value.Should().NotBeNullOrEmpty();
         var journal = rig.Etcd.Store[$"/valkeyworker/work/{cluster}"].Value;
@@ -168,16 +191,16 @@ public class TlsMigratorTests
         (await rig.Migrator.RunAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken))
             .IsSuccess.Should().BeTrue();
         var ensuredAfterFirst = rig.Driver.Ensured.Count;
-        var tarBefore = rig.Driver.TlsVolumes[(cluster, "h1")];
+        var envBefore = rig.Driver.Containers[$"vwk-{cluster}-node1"].Env;
 
         // Act — повторный тик по каноническому кластеру.
         var outcome = await rig.Migrator.RunAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
 
-        // Assert — NotNeeded; docker не тронут (ни новых Ensured, ни переписи volume).
+        // Assert — NotNeeded; docker не тронут (ни новых Ensured, env прежний).
         outcome.IsSuccess.Should().BeTrue(outcome.Error?.Message);
         outcome.Value.Should().Be(ValkeyWorker.Provisioning.Processes.TlsMigrator.MigrationOutcome.NotNeeded);
         rig.Driver.Ensured.Count.Should().Be(ensuredAfterFirst);
-        rig.Driver.TlsVolumes[(cluster, "h1")].Should().BeSameAs(tarBefore);
+        rig.Driver.Containers[$"vwk-{cluster}-node1"].Env.Should().BeSameAs(envBefore);
     }
 
     [Fact]
@@ -203,7 +226,6 @@ public class TlsMigratorTests
         // клэйм жив (наш).
         outcome.IsSuccess.Should().BeTrue();
         rig.Driver.Ensured.Should().BeEmpty();
-        rig.Driver.TlsVolumes.Should().BeEmpty();
         var journal = rig.Etcd.Store[$"/valkeyworker/work/{cluster}"].Value;
         journal.Should().Contain("aborted-state-changed");
         rig.Claims.IsMine(cluster).Should().BeTrue();

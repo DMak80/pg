@@ -14,7 +14,6 @@ public class CaRotationTests(ValkeyClusterFixture fx)
 {
     private CaRotator NewCaRotator(ClaimStore claims)
         => new(fx.Gateway, [fx.Endpoint], fx.Driver, claims, fx.NewJournal(),
-            fx.NewTlsProvisioner(),
             new ValkeyConnection(TimeSpan.FromSeconds(2)), fx.Options);
 
     // Канонический TLS-кластер (образец TlsMigrationTests.PlainCluster_MigratesToTls):
@@ -48,7 +47,7 @@ public class CaRotationTests(ValkeyClusterFixture fx)
         // Миграция T доигрывает тиками до NotNeeded (канон TLS-кластер).
         var migrator = new TlsMigrator(
             fx.Gateway, [fx.Endpoint], fx.Driver, claims, fx.NewJournal(),
-            fx.NewSecretEnsurer(), fx.NewTlsProvisioner(),
+            fx.NewSecretEnsurer(),
             new ValkeyConnection(TimeSpan.FromSeconds(2)), fx.Options);
         while (true)
         {
@@ -156,7 +155,7 @@ public class CaRotationTests(ValkeyClusterFixture fx)
     [Fact]
     public async Task CrashBetweenRAndC_FactDetectSkipsRecreate()
     {
-        // Arrange: серт NEW УЖЕ в volume («краш после R до C»): факт-детект
+        // Arrange: контейнер УЖЕ на NEW-CA («краш после R до C»): факт-детект
         // обязан пропустить пересоздание (Id контейнера неизменен) и коммитить.
         var cluster = fx.Cluster("carotr");
         var ct = TestContext.Current.CancellationToken;
@@ -167,10 +166,20 @@ public class CaRotationTests(ValkeyClusterFixture fx)
         await fx.PutAsync($"/valkey/clusters/{cluster}/ca_next_pem", nextPem);
         await fx.PutAsync($"/valkey/clusters/{cluster}/ca_next_key", nextKey);
         await fx.PutAsync($"/valkey/clusters/{cluster}/ca_pem", oldCaPem + "\n" + nextPem);
-        var ensured = await fx.NewTlsProvisioner().EnsureNodeTlsAsync(
-            cluster, "node1", ValkeyClusterFixture.DockerHost, ValkeyClusterFixture.AdvertisedClientHost,
-            nextPem, nextKey, ct);
-        ensured.IsSuccess.Should().BeTrue(ensured.Error?.Message);
+        // env-модель: «R завершён, краш до C» — контейнер уже пересоздан с
+        // env от NEW (env меняется только пересозданием; сид вручную доигрывает
+        // фазу R, как её оставил бы рухнувший инстанс).
+        var creds = await fx.NewSecretEnsurer().EnsureAsync(cluster, ct);
+        creds.IsSuccess.Should().BeTrue(creds.Error?.Message);
+        (await fx.Driver.RemoveNodeAsync(cluster, "node1", ct)).IsSuccess.Should().BeTrue();
+        var ensuredNode = await fx.Driver.EnsureNodeAsync(new(
+            cluster, "node1", ValkeyClusterFixture.DockerHost, port, fx.Options.NodeImage,
+            NodeArgsBuilder.BuildCmd(NodeArgsBuilder.Build(
+                536870912, "allkeys-lru", creds.Value.AdminPassword, creds.Value.AppPassword)),
+            1m, 1024L * 1024 * 1024,
+            Env: NodeTlsProvisioner.BuildNodeTlsEnv(
+                nextPem, nextKey, "node1", ValkeyClusterFixture.AdvertisedClientHost)), ct);
+        ensuredNode.IsSuccess.Should().BeTrue(ensuredNode.Error?.Message);
         var idBefore = ContainerId($"vwk-{cluster}-node1");
         idBefore.Should().NotBeEmpty();
 
@@ -178,15 +187,18 @@ public class CaRotationTests(ValkeyClusterFixture fx)
         var journal = await RotateToCompletionAsync(cluster, claims);
         journal.Should().Contain("done", $"доигрывание после краша R/C: {journal}");
 
-        // Assert: пересоздания НЕ было; коммит от NEW. Живой valkey-процесс
-        // держит серт, загруженный при старте (OLD): перезапись volume сертом
-        // NEW вступает при следующем пересоздании (надзор/следующий тик R) —
-        // потому PING отвечает по OLD-якорю, а не NEW (окно доверия живо).
+        // Assert: пересоздания НЕ было; коммит от NEW. В env-модели «краш
+        // после R до C» = контейнер уже пересоздан с env от NEW (env меняется
+        // только пересозданием) — факт-детект R видит валидный env и сразу
+        // коммитит; нода живёт с NEW-сертом.
         ContainerId($"vwk-{cluster}-node1").Should().Be(idBefore, "факт-детект: контейнер не тронут");
         (await fx.GetAsync($"/valkey/clusters/{cluster}/ca_pem")).Should().Be(nextPem);
         (await fx.GetAsync($"/valkey/clusters/{cluster}/ca_next_key")).Should().BeNull();
-        RespProbe.ExecuteTls("localhost", port, "admin", adminPw, oldCaPem, "PING").Ok
-            .Should().BeTrue("живой процесс продолжает OLD-серт до пересоздания");
+        var nodeEnv = await fx.Driver.NodeEnvAsync(cluster, "node1", ct);
+        nodeEnv.Value.Should().NotBeNull();
+        nodeEnv.Value!["VALKEY_TLS_CA"].Trim().Should().Be(nextPem.Trim(), "env ноды — NEW CA");
+        RespProbe.ExecuteTls("localhost", port, "admin", adminPw, nextPem, "PING").Ok
+            .Should().BeTrue("нода поднята с сертом NEW (R завершён до краша)");
     }
 
     [Fact]

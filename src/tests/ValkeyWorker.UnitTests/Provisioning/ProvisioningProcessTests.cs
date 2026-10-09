@@ -18,9 +18,6 @@ public class ProvisioningProcessTests
 
     private static readonly FixedTimeProvider Clock = new();
 
-    // Образ ноды (константа рига — как ValkeyProvisioningOptions).
-    private const string Image = "valkey/valkey:9.1.2";
-
     private sealed class Rig
     {
         // Единый журнал порядка операций etcd+docker (тест секции portalloc).
@@ -46,7 +43,6 @@ public class ProvisioningProcessTests
                     rig.Etcd, ["http://etcd:2379"],
                     NullLogger<ValkeyWorker.Provisioning.Processes.PortAllocIndex>.Instance),
                 new ValkeyWorker.Provisioning.Processes.ClusterSecretEnsurer(rig.Etcd, ["http://etcd:2379"]),
-                new ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner(rig.Driver, Image, Clock),
                 rig.Valkey, Options,
                 withSnapshot
                     ? async _ =>
@@ -90,12 +86,17 @@ public class ProvisioningProcessTests
         // Act: один тик процесса.
         var result = await rig.Process.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
 
-        // Assert: контейнер создан с каноническими параметрами; дискавери в etcd.
+        // Assert: контейнер создан с каноническими параметрами (Cmd — обёртка
+        // env-TLS + env VALKEY_TLS_*); дискавери в etcd.
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         var ensured = rig.Driver.Ensured.Should().ContainSingle().Subject;
         ensured.NodeName.Should().Be("node1");
         ensured.Image.Should().Be("valkey/valkey:9.1.2");
-        ensured.Args.Should().Contain("--appendonly", "no");
+        ensured.Args.Should().HaveCount(3);
+        ensured.Args[0].Should().Be("sh");
+        ensured.Args[1].Should().Be("-c");
+        ensured.Args[2].Should().Contain("'--appendonly' 'no'");
+        ensured.Env.Should().NotBeNull().And.ContainKeys("VALKEY_TLS_CERT", "VALKEY_TLS_KEY", "VALKEY_TLS_CA");
         ensured.CpuCores.Should().Be(2m);
         ensured.MemoryBytes.Should().Be(1024L * 1024 * 1024);
 
@@ -121,10 +122,12 @@ public class ProvisioningProcessTests
         rig.Snapshots.Should().HaveCount(2);
     }
 
+    // Р9 (env-TLS): валидный env + каноническая Cmd-обёртка → пересоздания НЕТ
+    // (свежий серт случаен — сверка по валидности, не побайтовая).
     [Fact]
     public async Task ИдемпотентныйReRun_БезИзменений()
     {
-        // Arrange: первый тик довёл кластер до RUNNING.
+        // Arrange: первый тик довёл кластер до RUNNING (env записан).
         const string cluster = "rerun";
         var rig = Rig.Create(withSnapshot: false);
         rig.SeedCluster(cluster);
@@ -136,7 +139,7 @@ public class ProvisioningProcessTests
         // Act: второй тик на готовом кластере.
         var result = await rig.Process.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
 
-        // Assert: контейнер совпадает по image/args/порту/лимитам — без пересоздания.
+        // Assert: контейнер совпадает по image/cmd/порту/лимитам/env — без пересоздания.
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         rig.Driver.Ensured.Count.Should().Be(ensuredAfterFirst);
         rig.Driver.Removed.Should().BeEmpty();
@@ -145,7 +148,8 @@ public class ProvisioningProcessTests
     [Fact]
     public async Task СверкаВ3_ИныеАргс_ПересозданиеСКаноническими()
     {
-        // Arrange: после первого тика подменяем args живого контейнера.
+        // Arrange: после первого тика подменяем Cmd живого контейнера (дрейф
+        // строки обёртки — maxmemory 999 вместо канонического значения).
         const string cluster = "drift";
         var rig = Rig.Create(withSnapshot: false);
         rig.SeedCluster(cluster);
@@ -153,21 +157,22 @@ public class ProvisioningProcessTests
         (await rig.Process.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken))
             .IsSuccess.Should().BeTrue();
 
-        var liveArgs = rig.Driver.Containers["vwk-drift-node1"].Args.ToArray();
-        liveArgs[Array.IndexOf(liveArgs, "--maxmemory") + 1] = "999";
+        var live = rig.Driver.Containers["vwk-drift-node1"];
+        var driftedArgs = live.Args.ToArray();
+        driftedArgs[2] = driftedArgs[2].Replace("'--maxmemory' '536870912'", "'--maxmemory' '999'", StringComparison.Ordinal);
         rig.Driver.Containers["vwk-drift-node1"] =
-            new Fakes.FakeDriver.ContainerFact("h1", rig.Driver.Containers["vwk-drift-node1"].HostPort,
-                null, null, liveArgs, "valkey/valkey:9.1.2", "drifted");
+            new Fakes.FakeDriver.ContainerFact("h1", live.HostPort,
+                null, null, driftedArgs, live.Env, "valkey/valkey:9.1.2", "drifted");
 
         // Act: тик над «дрейфовавшим» контейнером.
         var result = await rig.Process.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
 
-        // Assert: пересоздан с каноническими args (Ensure второй, Remove зафиксирован).
+        // Assert: пересоздан с канонической обёрткой (Ensure второй, Remove зафиксирован).
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         rig.Driver.Ensured.Should().HaveCount(2);
         rig.Driver.Removed.Should().Contain("vwk-drift-node1");
         rig.Driver.Containers["vwk-drift-node1"].Args.Should().Equal(
-            rig.Driver.Ensured[0].Args);
+            rig.Driver.Ensured[^1].Args);
     }
 
     [Fact]
@@ -307,9 +312,10 @@ public class ProvisioningProcessTests
         rig.Etcd.Store["/valkey/clusters/pinned/endpoints"].Value.Should().Be("localhost:17555");
     }
 
-    // t06: V3 пишет TLS-volume и поднимает контейнер с TLS-args и TlsVolume.
+    // env-TLS: V3 поднимает контейнер с env VALKEY_TLS_* и cmd-обёрткой
+    // (TLS-volume не создаётся — томов в модели нет).
     [Fact]
-    public async Task Provision_V3_WritesTlsVolumeAndStartsContainer()
+    public async Task Provision_V3_EnvAndCmdWrapper()
     {
         // Arrange: заявка NOT_INITIALIZED.
         const string cluster = "tlsprov";
@@ -320,15 +326,18 @@ public class ProvisioningProcessTests
         // Act: тик provisioning.
         var result = await rig.Process.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
 
-        // Assert: volume записан (3 файла), spec.TlsVolume = vwk-<C>-tls,
-        // args содержат --tls-port, ca_pem/ca_key появились в etcd (V2).
+        // Assert: spec несёт env (серт валиден против ca_pem из V2) и
+        // cmd-обёртку с раскаткой /tls; ca_pem/ca_key появились в etcd (V2).
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
-        TarArchive.Read(rig.Driver.TlsVolumes[(cluster, "h1")])
-            .Keys.Should().BeEquivalentTo("node.crt", "node.key", "ca.pem");
         var ensured = rig.Driver.Ensured.Should().ContainSingle().Subject;
-        ensured.TlsVolume.Should().Be($"vwk-{cluster}-tls");
-        ensured.Args.Should().Contain("--tls-port");
-        rig.Etcd.Store[$"/valkey/clusters/{cluster}/ca_pem"].Value.Should().NotBeNullOrEmpty();
+        var caPem = rig.Etcd.Store[$"/valkey/clusters/{cluster}/ca_pem"].Value;
+        caPem.Should().NotBeNullOrEmpty();
         rig.Etcd.Store[$"/valkey/clusters/{cluster}/ca_key"].Value.Should().NotBeNullOrEmpty();
+        ensured.Env.Should().NotBeNull();
+        ensured.Env!["VALKEY_TLS_CA"].Should().Be(caPem);
+        ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner.IsValidNodeEnv(
+            ensured.Env, "localhost", caPem, Clock).Should().BeTrue();
+        ensured.Args[0].Should().Be("sh");
+        ensured.Args[2].Should().Contain("--tls-port").And.Contain("/tls/node.crt");
     }
 }

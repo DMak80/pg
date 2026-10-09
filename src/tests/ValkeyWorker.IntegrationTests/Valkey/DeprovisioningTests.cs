@@ -28,13 +28,11 @@ public class DeprovisioningTests(ValkeyClusterFixture fx)
         var deprovision = fx.NewDeprovisioning(claims, fx.NewJournal());
         var result = await deprovision.TickAsync((await fx.RequireSnapshotAsync(cluster))!, TestContext.Current.CancellationToken);
 
-        // Assert: успех; контейнера нет; TLS-volume vwk-<C>-tls снят (X1, t06);
-        // префиксы домена и координации пусты.
+        // Assert: успех; контейнера нет (TLS-тома в env-модели нет; env-ассерты
+        // чистоты — этап Э4); префиксы домена и координации пусты.
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         (await fx.Driver.ListNodeObjectsAsync(cluster, TestContext.Current.CancellationToken))
             .Value.Should().BeEmpty();
-        (await fx.Driver.GetTlsArchiveAsync(cluster, ValkeyClusterFixture.DockerHost, fx.Options.NodeImage, TestContext.Current.CancellationToken))
-            .Value.Should().BeNull("TLS-volume удалён демонтажем (X1)");
         foreach (var prefix in new[]
                  {
                      $"/valkey/clusters/{cluster}/",

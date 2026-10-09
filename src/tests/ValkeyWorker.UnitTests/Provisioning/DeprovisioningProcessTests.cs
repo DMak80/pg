@@ -53,7 +53,7 @@ public class DeprovisioningProcessTests
                 """{"phase":"e2-committed","role":"app","old":"o","new":"n","requested_by":"api"}""");
             Etcd.Seed($"/valkeyworker/rotations/{cluster}", """{"role":"app"}""");
             Driver.Containers[$"vwk-{cluster}-node1"] =
-                new Fakes.FakeDriver.ContainerFact("h1", 17001, null, null, ["valkey-server"], "valkey/valkey:9.1.2", "id1");
+                new Fakes.FakeDriver.ContainerFact("h1", 17001, null, null, ["valkey-server"], null, "valkey/valkey:9.1.2", "id1");
         }
 
         public ValkeyClusterSnapshot Snapshot(string cluster)
@@ -71,6 +71,7 @@ public class DeprovisioningProcessTests
         const string cluster = "dep";
         var rig = Rig.Create();
         rig.SeedCluster(cluster);
+        rig.Driver.LegacyVolumes.Add($"vwk-{cluster}-tls"); // легаси-том старой модели
         await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
 
         // Act
@@ -84,6 +85,10 @@ public class DeprovisioningProcessTests
         etcdIndex.Should().BeGreaterThan(dockerIndex, "порядок arch/21 §5 B: сначала docker, потом etcd");
 
         rig.Driver.Containers.Should().NotContainKey($"vwk-{cluster}-node1");
+        // X1 (env-TLS): remove-tls-volume-шага НЕТ — легаси-том демонтаж не
+        // трогает (чистка домена: контейнеры + etcd; том убирает легаси-чистка
+        // надзора ЖИВОГО кластера, здесь надзора больше нет).
+        rig.Driver.LegacyVolumes.Should().Contain($"vwk-{cluster}-tls");
         rig.Etcd.Store.Keys.Where(k => k.StartsWith($"/valkey/clusters/{cluster}/")).Should().BeEmpty();
         rig.Etcd.Store.Keys.Where(k => k.Contains($"/valkeyworker/portalloc/{cluster}")).Should().BeEmpty();
         rig.Etcd.Store.Keys.Where(k => k.Contains($"/valkeyworker/rotations/{cluster}")).Should().BeEmpty();
