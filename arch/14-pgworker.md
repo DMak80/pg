@@ -333,6 +333,19 @@ rebuild — пересоздание контейнера пишет и новы
   (advertised-правило §2.4 п.5).
 - Callback мастер-ключа — `on_start` + `on_role_change` (в `on_start` Patroni
   роль аргументами не передаёт — скрипт узнаёт её сам по `GET /primary`).
+- **Механика REST-TLS ноды** (REST `:8008` — только HTTPS, arch/13 §4): env
+  `SSL_RESTAPI_CERTIFICATE`/`SSL_RESTAPI_PRIVATE_KEY`/`SSL_RESTAPI_CA` (PEM,
+  выпускает воркер из per-install CA при сборке env; материализация файлов
+  и `restapi.certfile/keyfile/cafile` — штатный Spilo); секция `restapi`
+  SPILO_CONFIGURATION: `connect_address: <полное имя ноды>:8008` (DNS
+  per-cluster сети, перекрывает шаблонный IP; api_url в DCS = DNS из SAN) +
+  `authentication {username, password}` — per-cluster пара `rest_password`
+  (§4 группа 1; unsafe-эндпоинты). Серт ноды — не etcd-состояние (генерация +
+  кеш процесса, канон серверных сертов KafkaWorker). Lease-скрипт
+  мастер-ключа (P11) в `on_start` опрашивает
+  `https://127.0.0.1:8008/primary` с верификацией по ca-файлу ноды
+  (entrypoint материализует PEM из env в файл и пишет путь строкой в
+  pgw-node.env — PEM в KEY=VALUE-файл не переносится).
 
 Роли внутри:
 
@@ -523,6 +536,11 @@ authz-плагины вне скоупа, граница зафиксирова�
    смены мастера потребители читают из проб Patroni (`/primary` по
    patroni-портам portalloc) или `pg_is_in_recovery`, а не из сравнения
    значений ключа.
+6. **SAN-канон серта REST-эндпоинта ноды** (§2.1): DNS `<n>` (короткий alias
+   в `pgw-net-<C>`) + DNS `pgw-<C>-<X>-<n>` (полное docker-имя) + IP
+   `127.0.0.1` (loopback lease-скрипта). Advertised-хост в SAN не входит —
+   клиенты advertised-адресов верифицируют цепочку без hostname-проверки
+   (arch/13 §4).
 
 Сам PgWorker — контейнер с примонтированным `/var/run/docker.sock` (plain на
 одном хосте / swarm manager), volume под снапшоты etcd, env-секреты (§8).
