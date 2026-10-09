@@ -34,8 +34,7 @@ lease-клэймы, [20](20-valkey-clusters.md) §3); смерть контро�
 Границы (что НЕ входит): реплики/sentinel/cluster-топологии
 (кеш восполним, шардирование не нужно); панель valkey-домена (t03);
 клиентская библиотека Puzzle (t04); persistence RDB/AOF — off по канону
-(кеш восполним); квоты томов — томов нет (TLS-volume `vwk-<C>-tls` —
-секреты, не данные).
+(кеш восполним); квоты томов — томов нет.
 
 ---
 
@@ -119,11 +118,10 @@ per-install API-CA; клиенты без валидного серта — от
   при создании (политика — из декларации, канон-дефолт `allkeys-lru`,
   [20](20-valkey-clusters.md) §2) + converge D (`CONFIG SET`) при мутациях
   декларации — без рестартов.
-- **Persistence off**: без volume данных, `--save ""`/`--appendonly no`
+- **Persistence off**: без тома данных, `--save ""`/`--appendonly no`
   (детали флагов — t02; канон фиксирует: без тома данных, снапшоты
   RDB/AOF не пишутся). Потеря контейнера = холодный старт кеша
-  (документированное поведение). TLS-volume сертов — отдельный named
-  volume (ниже).
+  (документированное поведение).
 - **TLS клиентского порта (t06)**: нода слушает `--tls-port 6379
   --port 0` — тот же клиентский host-порт из portalloc (контейнерный 6379
   слушает TLS, plain закрыт); `endpoints`/portalloc не меняются (адреса
@@ -134,23 +132,28 @@ per-install API-CA; клиенты без валидного серта — от
   Серт ноды: CN=`node<k>`, SAN только advertised-хоста (DNS|IP по правилу
   §2), 10 лет, RSA-2048, EKU ServerAuth, подпись `ca_key`, NotAfter зажат
   в CA (генерация — CertificateRequest .NET, без внешних инструментов).
-  Доставка — named volume `vwk-<C>-tls`: воркер пишет `node.crt`/
-  `node.key`/`ca.pem` ДО старта контейнера, mount → `/tls`. Транспорт —
-  короткоживущий helper-контейнер (образ ноды) с примонтированным volume:
-  запись — exec в helper (права — `chmod` из заголовка tar), чтение — GET
-  container-archive сквозь mount (переупаковка tar в корень); helper
-  удаляется в `finally` при любом исходе; механизм самодостаточен — не
-  полагается на рестарты демона. Права всех трёх файлов — 0644: процесс
-  valkey в образе НЕ root (entrypoint gosu, uid 999) и обязан читать ключ;
-  изоляция секрета — периметром контейнера (volume монтируется только в
-  контейнер ноды). Volume переживает пересоздания контейнера (перевыпуск
-  серта — при смене CA/SAN/истечении), удаляется в X1 демонтажа. Объекты
-  домена: кластер = контейнер(ы) `vwk-<C>-node<k>` + volume `vwk-<C>-tls`.
+  Доставка — PEM в env контейнера ноды (`VALKEY_TLS_CERT`/`VALKEY_TLS_KEY`/
+  `VALKEY_TLS_CA`, значения — многострочный PEM): при старте cmd-обёртка
+  `["sh","-c","umask 077; mkdir -p /tls; printf %s \"$VALKEY_TLS_CERT\" >
+  /tls/node.crt; printf %s \"$VALKEY_TLS_KEY\" > /tls/node.key;
+  printf %s \"$VALKEY_TLS_CA\" > /tls/ca.pem; exec valkey-server <args>"]`
+  раскатывает PEM в `/tls` (каталог в ФС контейнера, не том) и exec'ает
+  valkey-server с каноническим набором аргументов (args — прежний канон
+  `NodeArgsBuilder.Build`, shell-экранированный; единая точка канона
+  обёртки — `NodeArgsBuilder.BuildCmd`). Entrypoint образа при
+  `$1 == sh` делает `exec "$@"` как есть — обёртка срабатывает ДО
+  valkey-server. Uid: gosu-ветка entrypoint срабатывает только при
+  `$1 == valkey-server` — с обёрткой valkey-server стартует от root,
+  файлы `/tls/*` — 0600 root (umask 077); изоляция секрета — периметром
+  контейнера (env виден из `docker inspect` ноды — доступ к inspect/демону
+  = доступ к docker-хосту). Перевыпуск серта (смена CA/SAN/истечение) —
+  пересозданием контейнера со свежим env. Объекты домена: кластер =
+  контейнер(ы) `vwk-<C>-node<k>`.
   **Ротация CA (t07, §5 K)**: серт ноды в фазе R перевыпускается от НОВОЙ
-  CA (`ca_next_key` staging), `ca.pem` в volume — НОВЫЙ CA (НЕ bundle —
+  CA (`ca_next_key` staging), `VALKEY_TLS_CA` в env — НОВЫЙ CA (НЕ bundle —
   отличие от kafka truststore: `--tls-auth-clients no`, нода клиентов не
-  валидирует, файл — только материал issuer'а; после коммита C
-  `ca.pem`(volume) == `ca_pem`(etcd) == NEW — переиспользование при
+  валидирует, CA — только материал issuer'а; после коммита C
+  env-CA == `ca_pem`(etcd) == NEW — переиспользование при
   следующих пересозданиях).
 - **Сеть**: per-cluster сеть НЕ создаётся (нет inter-node трафика;
   клиентский доступ — публикация host-порта из portalloc; контейнер живёт
@@ -184,9 +187,9 @@ per-install API-CA; клиенты без валидного серта — от
 Клиент Engine API — общий `Shared.Docker` (порт t07-унификации движка;
 канон-суперсет: start 304-идемпотентен, create при отсутствии образа —
 pull+retry, exec-ошибка включает stdout, label контейнеров/сервисов —
-`valkeyworker`); TLS-volume-транспорт (helper-контейнер, tar-архив) —
-методы `Shared.Docker` (`EnsureVolumeAsync`/`PutVolumeArchiveAsync`/
-`GetVolumeArchiveAsync`/`DeleteVolumeAsync`).
+`valkeyworker`); env-инспекция контейнеров/сервисов
+(`InspectContainerEnvAsync`/`InspectServiceEnvAsync`) — источник факта
+env нод для сверок (V3 re-run, надзор C, фаза R ротации).
 
 ## 3. Контракт etcd
 
@@ -203,7 +206,7 @@ pull+retry, exec-ошибка включает stdout, label контейнер�
 | `/valkey/clusters/<C>/config` | заявка (nodes/maxmemory_*/created_unix) + `state` (NOT_INITIALIZED/TO_REMOVE/отсутствует=Active) — целиком, вкл. state-заявки |
 | `/valkey/clusters/<C>/nodes/node<k>/state` | заявки панели NOT_INITIALIZED/TO_REMOVE (+ свои записи — сверка) |
 | `/valkey/clusters/<C>/nodes/node<k>/resources` | лимиты контейнера (cpu/mem; disk — инфо) |
-| `/valkey/clusters/<C>/ca_pem`/`ca_key` | сверка серта volume с текущим CA кластера (переиспользование/перевыпуск), PING-пробы по TLS |
+| `/valkey/clusters/<C>/ca_pem`/`ca_key` | сверка env серта ноды с текущим CA кластера (переиспользование/перевыпуск), подпись свежих сертов, PING-пробы по TLS |
 | `/valkey/clusters/<C>/ca_next_key` + `ca_next_pem` | staging НОВОЙ CA в окне ротации (K, t07): подпись серта фазы R, источник bundle; вне ротации ключей нет |
 | `/valkeyworker/rotations/<C>` | заявка ротации креда (`role`: app\|admin) — процесс E |
 | `/valkeyworker/ca_rotations/<C>` | заявка ротации CA/сертов — процесс K (t07) |
@@ -269,14 +272,14 @@ op=rotate-ca фаза вне {done, waiting-*}) ⇒ InProgress ⇒ надзор/
 ротация кредов в этом тике не идут; ждущие исходы K (waiting-*) ветку НЕ
 блокируют (ротация кредов доиграет этим же тиком ниже по ветке).
 Основание эксклюзивности (отличие от kafka §5 K, где CaRotator — последним
-с guard'ами): у valkey серт в volume сверяется только при пересоздании
-ноды («env-сверки» надзора нет) — пересоздание надзором в окне D→R
-собрало бы OLD-серт от bundle+OLD-key, а после коммита C нода осталась бы
-с недоверенным сертом до следующего пересоздания (самокоррекции нет); в
-окне пересоздает ТОЛЬКО CaRotator (фаза R — она же лечение: мёртвая нода
-пересоздаётся ротацией, преф-чека живости нет — отличие от kafka, где
-rolling мёртвого кластера ронял ISR; nodes=1, persistence off — кеш
-восполним).
+с guard'ами): env-сверка надзора валидирует серт ноды против одного
+issuer'а `ca_pem` — в окне D→R это bundle, корректная сверка невозможна,
+а пересоздание надзором в окне собрало бы OLD-серт от OLD-key; после
+коммита C нода осталась бы с недоверенным сертом до пересоздания
+следующим тиком надзора; в окне пересоздает ТОЛЬКО CaRotator (фаза R —
+она же лечение: мёртвая нода пересоздаётся ротацией, преф-чека живости
+нет — отличие от kafka, где rolling мёртвого кластера ронял ISR; nodes=1,
+persistence off — кеш восполним).
 
 ### A. ProvisioningProcess (V0–V5)
 
@@ -290,11 +293,12 @@ V2 ensure секретов: admin + app + CA (`ca_pem`/`ca_key` t06) — txn
    put-if-absent по отсутствующим из шести ключей
    (проигрыш → re-read существующих)
 V3 контейнер (аргументы ACL/maxmemory из декларации и кредов, TLS-args
-   t06, лимиты resources, клиентский host-порт) + state=PROVISIONING;
-   серт ноды: NodeTlsProvisioner — ensure volume vwk-<C>-tls с
-   node.crt/node.key/ca.pem (переиспользование валидного; отсутствие/
-   битость/чужой CA/SAN-drift — перевыпуск) ДО EnsureNodeAsync;
-   существующий (re-run) — сверка (вкл. TLS-args) и пропуск
+   t06, лимиты resources, клиентский host-порт; env ноды
+   VALKEY_TLS_{CERT,KEY,CA} со свежим сертом — NodeTlsProvisioner.
+   BuildNodeTlsEnv; Cmd — cmd-обёртка раскатки §2) + state=PROVISIONING;
+   существующий (re-run) — сверка: Cmd == канонической обёртке + env
+   валиден против ca_pem (IsValidNodeEnv) + порт + лимиты → пропуск;
+   иначе — RemoveNode + EnsureNode со свежим env
 V4 ждать готовности: PING с admin-кредом по TLS отвечает (бюджет
    NodeBootSec, транзиент-толерантно) → state=RUNNING
 V5 put endpoints (advertised host:clientPort); config: txn
@@ -309,9 +313,10 @@ V5 put endpoints (advertised host:clientPort); config: txn
 
 ```
 X0 claim + journal(op=deprovision); снапшот «до»
-X1 docker: удалить контейнер vwk-<C>-* (404 = ок); удалить volume
-   vwk-<C>-tls (t06; 404 = ок) — тома данных нет, TLS-том секретов
-   чистится; порядок «сначала docker, потом etcd»
+X1 docker: удалить контейнеры vwk-<C>-* (перечисление ListNodeObjects +
+   RemoveNode; 404 = ок) — TLS-материал жил в env контейнеров,
+   отдельного docker-объекта у домена нет; порядок «сначала docker,
+   потом etcd»
 X2 etcd: del --prefix /valkey/clusters/<C>/ (заберёт и ca_next_* staging)
    + del /valkeyworker/{claims,work,portalloc,rotations,ca_rotations}/<C>*
    — очистка координации ВКЛЮЧАЯ заявки ротаций (кредов и CA)
@@ -324,10 +329,23 @@ X3 снапшот «после»; клэйм снят явно (del + revoke lea
 
 - **Снесённый контейнер** (docker-факт, не зависит от пробы) →
   пересоздание с аргументами из текущей декларации и кредов etcd
-  (вкл. TLS-args t06: NodeTlsProvisioner обеспечивает volume/серт —
-  volume жив и валиден = переиспользование; CA в etcd отсутствует —
-  пересоздание отложено, warning «миграция T доиграет»),
-  `state=PROVISIONING`; в `RUNNING` переводит следующий цикл по PING.
+  (вкл. TLS: env со свежим сертом от `ca_key` + cmd-обёртка §2;
+  CA в etcd отсутствует — пересоздание отложено, warning «миграция T
+  доиграет»), `state=PROVISIONING`; в `RUNNING` переводит следующий
+  цикл по PING.
+- **Сверка env живой ноды** (supervisable): env контейнера отсутствует
+  (NodeEnvAsync → null) или невалиден против `snap.CaPem`
+  (`NodeTlsProvisioner.IsValidNodeEnv`: CA == ожидаемому, цепочка
+  валидна, key↔cert, NotAfter жив, SAN покрывает advertised) →
+  пересоздание с env + cmd-обёрткой (дисциплина «одно пересоздание за
+  тик», journal-warning). Свежий серт случаен — сверка по валидности,
+  не побайтовая (Cmd-обёртка детерминирована — сверяется точно).
+- **Легаси-чистка**: после успешной обработки нод, если ВСЕ ноды
+  кластера на env-модели — удаление осиротевшего тома `vwk-<C>-tls`
+  старой volume-модели на всех engine'ах (`DeleteVolumeAsync`;
+  404 = успех; 409 volume-in-use — НЕ фейлит тик надзора и НЕ пишется
+  в warnings: безусловный ретрай следующим тиком, вызов — каждым тиком
+  надзора, пока том не уйдёт).
 - **Автоконверге лимитов `resources`** (применение изменений заявки): тик
   сверяет лимиты живого контейнера (inspect: NanoCpus/Memory) с
   `nodes/node<k>/resources` (cpu/mem; disk — инфо-поле, не сверяется) —
@@ -422,8 +440,9 @@ T0 claim + journal(op=migrate-tls, phase=started); снапшот «до»
 T1 ensure CA + кредов (txn put-if-absent, единый механизм с V2);
    re-read; journal ensured-ca; перечитка config (гонка TO_REMOVE
    посреди миграции — abort: journal aborted-state-changed, клэйм жив)
-T2 пересоздание контейнера с каноническими TLS-args: серт ноды в
-   volume (NodeTlsProvisioner), RemoveNode → EnsureNode с теми же
+T2 пересоздание контейнера с каноническими TLS-args: env со свежим
+   сертом ноды (NodeTlsProvisioner.BuildNodeTlsEnv) + cmd-обёртка §2;
+   RemoveNode → EnsureNode с теми же
    лимитами и портом portalloc (порт/адреса не меняются); journal
    recreated; state=PROVISIONING
 T3 ждать готовности: PING по TLS (бюджет NodeBootSec, цикл 100 мс) →
@@ -481,12 +500,13 @@ D  phase-d → txn [compare value(ca_pem)==OLD][put ca_pem = OLD + "\n" +
 R  phase-r → одно пересоздание node1 с перевыпуском серта от NEW CA
    (лечение ЛЮБОГО состояния ноды — преф-чека живости нет: мёртвая нода
    пересоздаётся здесь же; отличие от kafka, где rolling мёртвого
-   кластера ронял ISR). Детект по факту (GetTlsArchive →
-   IsValidTar(tar, advertised, nextPem)): валидный NEW-серт уже в volume
-   ⇒ R done (идемпотентность рестарта воркера без in-memory трека);
-   иначе NodeTlsProvisioner.EnsureNodeTls (ca.pem volume = NEW, подпись
-   ca_next_key — §2) → RemoveNode → EnsureNode (args/лимиты/порт из
-   декларации и portalloc — адреса не меняются) → state=PROVISIONING →
+   кластера ронял ISR). Детект по факту (NodeEnvAsync →
+   IsValidNodeEnv(env, advertised, nextPem)): валидный NEW-серт уже
+   в env контейнера ⇒ R done (идемпотентность рестарта воркера без
+   in-memory трека); иначе RemoveNode → EnsureNode с env от
+   ca_next_key/ca_next_pem (VALKEY_TLS_CA = NEW, НЕ bundle — §2)
+   и cmd-обёрткой (args/лимиты/порт из декларации и portalloc — адреса
+   не меняются) → state=PROVISIONING →
    AwaitBoot: PING по TLS с доверием nextPem (якорь OLD/bundle здесь
    неверен: одноблочный парсер доверия, серт уже NEW) в бюджете
    NodeBootSec → state=RUNNING. Перечитка config перед R: TO_REMOVE —
@@ -503,7 +523,7 @@ K4 финал: снапшот P12 «после» + journal phase=done + put
 
 Отказ между фазами безопасен: staging/bundle-состояния в etcd стабильны,
 повтор тика доигрывает по факту (staging есть? bundle содержит nextPem?
-серт volume валиден против nextPem?). Читатели с одноблочным парсингом
+env серта ноды валиден против nextPem?). Читатели с одноблочным парсингом
 `ca_pem` (панельные пробы, метрики-коллектор — OLD-first в bundle) в окне
 D→C транзиентно недоверяют NEW-серту: окно = секунды (один poll-цикл),
 самокоррекция после коммита C; клиенты библиотеки дискавери строят
@@ -512,11 +532,11 @@ D→C транзиентно недоверяют NEW-серту: окно = с�
 ## 6. Надёжность
 
 - **Идемпотентность**: каждый шаг перепроверяет факт (контейнер есть?
-  PING по TLS отвечает? конфиг == декларации? ACL-план == канону? серт
-  volume валиден против текущего CA — в окне ротации против staging
-  `ca_next_pem`? bundle уже содержит nextPem?); именование
-  детерминировано (`vwk-<C>-node<k>`, порты в portalloc, volume
-  `vwk-<C>-tls`).
+  PING по TLS отвечает? конфиг == декларации? ACL-план == канону? env
+  серта ноды валиден против текущего CA — в окне ротации против staging
+  `ca_next_pem`? bundle уже содержит nextPem?); именование и cmd-обёртка
+  детерминированы (`vwk-<C>-node<k>`, порты в portalloc; свежий серт
+  случаен — env сверяется по валидности `IsValidNodeEnv`, не побайтово).
 - **Транспорт проб/команд (t06)**: все RESP-соединения воркера к нодам
   (V4-проба, надзор C, converger D, ротатор E) — TLS: SslStream + ручная
   валидация цепочки против `ca_pem` кластера (CustomRootTrust, системные
