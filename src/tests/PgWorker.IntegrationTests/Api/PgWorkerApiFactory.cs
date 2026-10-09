@@ -44,12 +44,21 @@ public sealed class PgApiFixture : IAsyncLifetime
 
     public PgWorkerApiFactory Factory { get; }
 
+    // Статический тестовый REST-CA (t22, arch/14 §4 гр.3): один RSA-2048 CA
+    // на фикстуру — WAF-хосты получают его через те же env PGW_REST_TLS_*,
+    // что и прод (двойной семантики нет; fail-fast не роняет серии).
+    public static (string CaPem, string CaKeyPem) RestTestCa => RestCa.Value;
+    private static readonly Lazy<(string CaPem, string CaKeyPem)> RestCa =
+        new(() => E2e.E2eTestPki.GenerateCa("waf-rest"));
+
     public PgApiFixture()
     {
         Environment.SetEnvironmentVariable("PGW_PG_SUPERUSER_PASSWORD", "x");
         Environment.SetEnvironmentVariable("PGW_PG_STANDBY_PASSWORD", "x");
         Environment.SetEnvironmentVariable("PGW_BUCKET_ADMIN_PASSWORD", "x");
         Environment.SetEnvironmentVariable("PGW_BUCKET_MOVER_PASSWORD", "x");
+        Environment.SetEnvironmentVariable("PGW_REST_TLS_CA", RestTestCa.CaPem);
+        Environment.SetEnvironmentVariable("PGW_REST_TLS_CA_KEY", RestTestCa.CaKeyPem);
         Factory = new PgWorkerApiFactory(Etcd);
     }
 
@@ -63,5 +72,7 @@ public sealed class PgApiFixture : IAsyncLifetime
         Environment.SetEnvironmentVariable("PGW_PG_STANDBY_PASSWORD", null);
         Environment.SetEnvironmentVariable("PGW_BUCKET_ADMIN_PASSWORD", null);
         Environment.SetEnvironmentVariable("PGW_BUCKET_MOVER_PASSWORD", null);
+        Environment.SetEnvironmentVariable("PGW_REST_TLS_CA", null);
+        Environment.SetEnvironmentVariable("PGW_REST_TLS_CA_KEY", null);
     }
 }

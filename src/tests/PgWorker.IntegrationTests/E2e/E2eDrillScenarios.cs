@@ -397,7 +397,8 @@ public class E2eDrillScenarios
     // Резолв фактического primary — по пробам Patroni /primary (t02-подход
     // WaitForMasterAsync: master-ключ host:0 при EnableDoorman=false
     // недискриминантен); primary появляется после dsn/RUNNING — ждём.
-    private static readonly HttpClient PatroniHttp = new() { Timeout = TimeSpan.FromSeconds(3) };
+    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
 
     private async Task<(string Host, int Port, string Node)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
@@ -414,7 +415,7 @@ public class E2eDrillScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"http://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];

@@ -51,7 +51,7 @@ public class ShardEndpointsSyncTests(EtcdFixture fixture)
                 ["shard1/s1b"] = new("127.0.0.1", new NodePorts(16002, patroniPort, 17002)),
             }), null, ct);
         return new ShardEndpoints(
-            fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient()));
+            fixture.Gateway, [fixture.Endpoint], new ShardProbe(FakePatroni.CreateProbeClient()));
     }
 
     private static ShardSpec Shard() => new("shard1", 2, "host=s1a dbname=c1", "s1a:17001",

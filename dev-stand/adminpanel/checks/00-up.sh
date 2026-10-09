@@ -37,9 +37,10 @@ bash "$ROOT/deploy/tls/gen.sh"
 # Наполнение deploy-volume pgw-api-tls пакетом (ro-монтирование воркером);
 # имя volume — с префиксом compose-проекта deploy (как его создаёт compose).
 docker volume create deploy_pgw-api-tls >/dev/null
+# ca.key — выпуск REST-сертов нод (R16: бэкап пакета — runbook)
 docker run --rm \
   -v "$ROOT/deploy/tls:/src:ro" -v deploy_pgw-api-tls:/tls alpine:3.20 \
-  sh -c "cp /src/ca.pem /src/pgserver.crt /src/pgserver.key /src/healthcheck.crt /src/healthcheck.key /tls/"
+  sh -c "cp /src/ca.pem /src/ca.key /src/pgserver.crt /src/pgserver.key /src/healthcheck.crt /src/healthcheck.key /tls/"
 
 # SdGenerator (t15): publish НА ХОСТЕ → compose build пакует только вывод
 # (канон E2E-образов; сборка не «тихая» — [PHASE] и тайминг).

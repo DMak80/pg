@@ -157,4 +157,117 @@ public class ShardProbeTests
         b.Value.Should().BeNull();
         c.Value.Should().BeNull();
     }
+    // ── t22: https-транспорт + basic-auth мутаций (arch/14 §5 C) ──
+
+    // AAA: все URI — https (REST :8008 — TLS-only; HttpClient сам не строит схему)
+    [Fact]
+    public async Task AllRequests_UseHttpsScheme()
+    {
+        // Arrange: перехватываем URI всех GET-методов.
+        var uris = new List<Uri>();
+        var probe = new ShardProbe(new HttpClient(new FakeHandler(r =>
+        {
+            uris.Add(r.RequestUri!);
+            return Json(200, """{"members":[]}""");
+        })));
+
+        // Act: GET-эндпоинты + мутации (мок-200).
+        await probe.GetClusterAsync(Node, CancellationToken.None);
+        await probe.IdentifyAsync(Node, CancellationToken.None);
+        await probe.IsPrimaryAsync(Node, CancellationToken.None);
+        await probe.GetConfigAsync(Node, CancellationToken.None);
+        await probe.PatchConfigAsync(Node, "{}", "pw", CancellationToken.None);
+        await probe.SwitchoverAsync(Node, "shard1a", "pw", CancellationToken.None);
+
+        // Assert: каждая схема https, порт — patroni-порт ноды.
+        uris.Should().HaveCount(6);
+        uris.Should().OnlyContain(u => u.Scheme == "https" && u.Port == 18008);
+    }
+
+    // AAA: PATCH /config несёт Authorization: Basic base64(patroni:pwd)
+    [Fact]
+    public async Task PatchConfig_CarriesBasicAuthHeader()
+    {
+        // Arrange
+        HttpRequestMessage? captured = null;
+        var probe = new ShardProbe(new HttpClient(new FakeHandler(r =>
+        {
+            captured = r;
+            return Json(200, "");
+        })));
+
+        // Act
+        await probe.PatchConfigAsync(Node, "{}", "SecretPass000000000000000000A", CancellationToken.None);
+
+        // Assert: заголовок — base64 пары patroni:pwd (константа username).
+        var expected = Convert.ToBase64String(Encoding.UTF8.GetBytes("patroni:SecretPass000000000000000000A"));
+        captured!.Headers.Authorization!.Scheme.Should().Be("Basic");
+        captured.Headers.Authorization.Parameter.Should().Be(expected);
+        captured.Method.Should().Be(HttpMethod.Patch);
+    }
+
+    // AAA: POST /switchover несёт basic-auth
+    [Fact]
+    public async Task Switchover_CarriesBasicAuthHeader()
+    {
+        // Arrange
+        HttpRequestMessage? captured = null;
+        var probe = new ShardProbe(new HttpClient(new FakeHandler(r =>
+        {
+            captured = r;
+            return Json(200, "");
+        })));
+
+        // Act
+        await probe.SwitchoverAsync(Node, "shard1a", "SecretPass000000000000000000A", CancellationToken.None);
+
+        // Assert
+        var expected = Convert.ToBase64String(Encoding.UTF8.GetBytes("patroni:SecretPass000000000000000000A"));
+        captured!.Headers.Authorization!.Parameter.Should().Be(expected);
+        captured.Method.Should().Be(HttpMethod.Post);
+    }
+
+    // AAA: GET-эндпоинты (/cluster, /config) — БЕЗ Authorization (не требуется
+    // Patroni, семантика health-check HAProxy)
+    [Fact]
+    public async Task GetEndpoints_DoNotCarryAuthorization()
+    {
+        // Arrange
+        HttpRequestMessage? clusterReq = null;
+        HttpRequestMessage? configReq = null;
+        var probe = new ShardProbe(new HttpClient(new FakeHandler(r =>
+        {
+            if (r.RequestUri!.AbsolutePath.EndsWith("/cluster", StringComparison.Ordinal))
+                clusterReq = r;
+            else
+                configReq = r;
+            return Json(200, """{"members":[]}""");
+        })));
+
+        // Act
+        await probe.GetClusterAsync(Node, CancellationToken.None);
+        await probe.GetConfigAsync(Node, CancellationToken.None);
+
+        // Assert: GET-запросы без заголовка аутентификации.
+        clusterReq!.Headers.Authorization.Should().BeNull();
+        configReq!.Headers.Authorization.Should().BeNull();
+    }
+
+    // AAA: 401 на мутацию → Result.Failed с кодом в сообщении
+    [Fact]
+    public async Task PatchConfig_Unauthorized_FailedWithCode()
+    {
+        // Arrange: Patroni отвечает 401 (окно rolling-ротации пар).
+        var probe = new ShardProbe(new HttpClient(new FakeHandler(_ => new HttpResponseMessage
+        {
+            StatusCode = HttpStatusCode.Unauthorized,
+        })));
+
+        // Act
+        var result = await probe.PatchConfigAsync(Node, "{}", "pw", CancellationToken.None);
+
+        // Assert: честный Failed (код в сообщении — диагностика окна ротации).
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Message.Should().Contain("401");
+    }
 }

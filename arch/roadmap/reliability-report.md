@@ -82,13 +82,13 @@ docker-E2E host-kill'ом (kill посреди надзорной операци
 
 ~50 правил алертов с Hint/Remedy (панель), HA/бэкапы/workers-панели,
 healthz с секциями; метрики реальных Patroni-нод собираются Prometheus'ом
-напрямую (file_sd из portalloc, единая сеть мониторинга). Слабое место —
-«молчание»: без внешней нотификации и истории деградация невидима, если
-никто не смотрит в панель.
+напрямую (file_sd из portalloc, единая сеть мониторинга), REST :8008 —
+TLS per-install CA + basic-auth мутаций (пробы/скрейп по https). Слабое
+место — «молчание»: без внешней нотификации и истории деградация невидима,
+если никто не смотрит в панель.
 
 Открытые разрывы: нотификации и истории нет (`t13`); expiry сертификатов
-не мониторится (`t16`); Patroni REST без
-TLS/аутентификации (`t22`).
+не мониторится (`t16`).
 
 ## База: что уже сделано (срез 2026-09-28)
 
@@ -122,7 +122,6 @@ TLS/аутентификации (`t22`).
 | `t13-alert-notifications` | внешняя нотификация алертов + история | P3 | N |
 | `t16-cert-expiry-monitoring` | мониторинг сроков сертификатов | P3 | N |
 | `t21-host-failure-scenarios` | сценарии отказа docker-хоста/DC | P4 | R |
-| `t22-patroni-rest-tls` | TLS/аутентификация Patroni REST :8008 | P4 | N |
 
 Смежное вне трека: `t02-external-secret-manager` (pgworker-трек) —
 секреты вне etcd; закрыт вместе с ним — строку сюда не переносим,
@@ -136,6 +135,7 @@ TLS/аутентификации (`t22`).
 | Тег | Merge | Влияние на характеристику |
 |---|---|---|
 | `t20-kfw-vwk-takeover-e2e` | — (мерж-коммит t20-kfw-vwk-takeover-e2e) | takeover второго инстанса KafkaWorker/ValkeyWorker при внезапной смерти держателя клэйма доказан docker-E2E host-kill'ом (характеристика R): `KafkaE2eTakeoverTests` — kill держателя посреди provisioning 3-брокерного кластера (якорь broker1+state+claims): выживший доводит без дублей, клэйм/дискавери мигрируют ≤TTL, admin-дискавери видит 3 брокера, TO_REMOVE-демонтаж выжившим ≤60 с; `ValkeyE2eTakeoverTests` — kill держателя посреди демонтажа (якорь pre-X0): выживший доигрывает X0–X3 одним тиком, терминальная чистота ≤15 с, I2 — конструктивная цепь + документальный лог survivor'а; оба кейса — kill доказательно в держателя (резолв claims→api→порт) и новое окружение Kfw-E2E с двумя инстансами воркера. Попутно закрыт корень 409-хвоста демонтажа Valkey (~100 с → 2,2 с): env-TLS — серты нод PEM в env (`VALKEY_TLS_*`) + cmd-обёртка старта (модель KafkaWorker, arch/21 arch-first): TLS-том и helper-механика `Put/GetVolumeArchive`/`sleep 120` демонтированы из движка и модели (TarArchive — мёртвый код), миграция живых кластеров надзорной env-сверкой + легаси-чистка осиротевших томов; чек 51 и runbook синхронизированы. Приёмка: build 0/0; юниты Valkey 265/265 + Pg 1061/1061; интеграции Valkey 49/49 (docker); оба takeover-кейса + Scale_AddEmptyShard зелёные; код-ревью OK ×2 (полный дифф + контрольное на фиксы) |
+| `t22-patroni-rest-tls` | — (мерж-коммит t22-patroni-rest-tls) | внутренняя зона кластера без открытого HTTP, мутационная грань REST за аутентификацией (N): Patroni REST :8008 — TLS с серверными сертами нод из per-install API-CA (выпуск и кеш процесса воркера, SAN — имена нод; Spilo поднимает REST-TLS штатно из env) + basic-auth per-cluster `rest_password` (седьмой ensure-ключ ClusterSecretEnsurer, ротация — четвёртый секрет процесса I: rolling-пересоздание нод общим шагом надзора ≤1 нода/тик с сохранением volume, окно `rest_pending` журнала, txn-коммит после применения на всех нодах); все клиенты :8008 — единая https-ветка (воркер, Patroni-ноды, master-lease P11 по loopback ca-файлу, панель, Prometheus-скрейп, эмуляторы стенда); живые легаси-кластеры конвергируют шагом надзора без rebuild/UNREACHABLE; граница ca.key — риск R16 (TLS-том поставки ro, бэкап пакета — runbook)
 | `t15-prometheus-file-sd` | — (мерж-коммит t15-prometheus-file-sd) | метрики реальных Patroni-нод собираются Prometheus'ом напрямую (N): мини-сервис `sd-generator` (профиль metrics) тиком 15 с читает `/pgworker/portalloc/` read-only (failover по endpoints, консервативная свежесть — ошибка etcd не трогает файл) и атомарно (tmp+rename, diff-only) пишет file_sd JSON в volume Prometheus; словарь — нативные `patroni_*` Patroni 4.x (канон-минимум по E2E-факту, полный набор 23 серии — arch/18 §2.5), джобы `patroni-nodes`/`sd-generator`, алерты `PatroniNodeDown`/`PatroniReplicaLagHigh`/`SdGeneratorStalled` (рулов 21), панели «(real)» в pg.json, чек 65 с условным шагом 2.1; единая сеть мониторинга `pgw-metrics` — deploy объявляет, воркеры (aliases) и кластерные ноды (ensure-attach движком, опц. поля `alias`/`net` в portalloc с RMW-preserve) внутри, Prometheus external-attach, extra_hosts демонтированы полностью, таргеты `alias:8008` с advertised-деградацией для записей без alias (усыновлённый демо-кластер стенда — static-джоба `patroni`); E2E `E2ePatroniFileSd` — единый контур одной сетью без host-форвардинга; попутно канон «пульс конечного внешнего вызова» (arch/14 §6 + arch/19 §5: AmazonS3Config.Timeout + S3Pulse на все S3-вызовы бэкап-процессов, честная MarkOrphanSweepActivity) — watchdog больше не гасит воркер на легитимно долгих S3-операциях (корень хронических падений Backup_FailsOnBadS3/Backup_Deprovision), заявки E2E 8Gi→2Gi, детерминизм WalReceiverCoreTests |
 | `t19-slot-auto-recreate` | — (мерж-коммит t19-slot-auto-recreate) | потерянный wal-слот закрывается автоматикой без оператора (D, R): зонд слота — существование+`wal_status` на каждом источнике (мастер+sync — закрывает невидимую панели sync-сторону); lost одного при живом втором — авто-recreate слота (drop+create immediate+reserved, журнальная фаза `slot-recreate` до мутации) без BROKEN, потерянный агент возвращается от хвоста S3 вечным ретраем приёмника; lost/исчезновение всех источников — BROKEN + пересъём полного (путь t07); ремеди `slot-wal-lost` — WorkerAuto, runbook-раздел «Потеря wal-слота». Попутно (watchdog/поллинг): порог сноса = `Multiplier × CheckIntervalSec` (30 с единый, healthz-порог из формулы исключён — устранён ложный self-restart на легитимно долгих фазах), поллинг долгих фаз (итерации короче окна 15 с: Mark+elapsed-лог на каждой, отмена итерации по таймауту — повтор до бюджета, а не фейл), таймауты etcd/patroni/SQL 7–7,5 с, пульсирующий сон, fail-fast конфига ×3 воркера |
 | `t12-loop-watchdog` | — (мерж-коммит t12-loop-watchdog) | зависший без исключения цикл самолечется self-restart'ом за ~минуту (внутренний LoopWatchdog Shared.Core у всех трёх воркеров, порог ×2 от healthz, graceful StopApplication — путь POST /api/restart), lease гаснут ≤15 с, takeover вторым инстансом не блокируется; BackupOrphanSweeperLoop получил тики живости (loops-alive + watchdog), метрика worker_watchdog_restarts_total{loop}, runbook-раздел |

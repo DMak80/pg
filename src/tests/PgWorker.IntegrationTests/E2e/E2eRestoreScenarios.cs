@@ -672,7 +672,8 @@ public class E2eRestoreScenarios
 
     // Published pg-порт мастера шарда из portalloc (резолв фактического primary
     // по пробам Patroni /primary; host-клиент — localhost).
-    private static readonly HttpClient PatroniHttp = new() { Timeout = TimeSpan.FromSeconds(3) };
+    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
 
     private async Task<(string Host, int Port)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
@@ -689,7 +690,7 @@ public class E2eRestoreScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"http://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];

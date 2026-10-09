@@ -31,7 +31,13 @@ public static class ModuleExtensions
                 }
 
                 client.Timeout = TimeSpan.FromSeconds(seconds);
-            });
+            })
+           // TLS Patroni REST (t22): цепочка к per-install ServerCA из WorkerTls —
+           // тот же корень доверия, что обращениям в API воркеров.
+           .ConfigurePrimaryHttpMessageHandler(sp =>
+                PatroniRestProbe.BuildTlsHandler(
+                    sp.GetRequiredService<IOptions<AdminPanel.Etcd.Workers.WorkerApiOptions>>()
+                       .Value.WorkerTls));
 
         // Kafka-проба (план B6): отдельный тик DescribeCluster, состояние — свой стор
         // (в снапшот вносит KafkaSnapshotRefresher); адаптер Confluent — единственный.

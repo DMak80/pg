@@ -6,10 +6,12 @@ namespace PgWorker.Provisioning.Processes;
 
 /// <summary>Итог ensure кластерных кредов (t02, arch/14 §4 / arch/19 §7): app
 /// (приложения), mover (роль bucket_mover переездов), bucket_admin (DSN-точка
-/// входа), backup (роль backup_exec полных бэкапов t02-backups). Все значения
-/// гарантированно существуют в etcd после EnsureAsync.</summary>
+/// входа), backup (роль backup_exec полных бэкапов t02-backups), rest
+/// (basic-auth Patroni REST :8008, t22; username — константа patroni).
+/// Все значения гарантированно существуют в etcd после EnsureAsync.</summary>
 public sealed record ClusterCredentials(
-    AppCredentials App, string MoverPassword, AppCredentials BucketAdmin, string BackupPassword);
+    AppCredentials App, string MoverPassword, AppCredentials BucketAdmin, string BackupPassword,
+    string RestPassword);
 
 /// <summary>
 /// Ensure per-cluster кредов (t02, arch/14 §4 / arch/19 §7): чтение
@@ -33,10 +35,11 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
     private const string DefaultAppUser = "app";
     private const string DefaultBucketAdminUser = "bucket_admin";
 
-    // Сырое чтение шести ключей: null — ключ отсутствует (добирается txn-ом).
+    // Сырое чтение семи ключей: null — ключ отсутствует (добирается txn-ом).
     private sealed record RawSecrets(
         string? AppUser, string? AppPassword, string? MoverPassword,
-        string? BucketAdminUser, string? BucketAdminPassword, string? BackupPassword);
+        string? BucketAdminUser, string? BucketAdminPassword, string? BackupPassword,
+        string? RestPassword);
 
     public async Task<Result<ClusterCredentials>> EnsureAsync(
         string cluster, ClusterConfig config, CancellationToken ct)
@@ -51,30 +54,38 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
 
         // Отсутствующие добираем txn NotExists: существующие не переписываем
         // (идемпотентность re-run — spec §2.5); bucket_admin-вход — config.
-        var desiredAppUser = current.AppUser ?? DefaultAppUser;
-        var desiredAppPassword = current.AppPassword ?? AppSecretGenerator.Generate();
-        var desiredMover = current.MoverPassword ?? AppSecretGenerator.Generate();
-        var desiredAdminUser = current.BucketAdminUser ?? config.BucketAdminUser ?? DefaultBucketAdminUser;
-        var desiredAdminPassword = current.BucketAdminPassword
-            ?? config.BucketAdminPassword ?? AppSecretGenerator.Generate();
-        var desiredBackupPassword = current.BackupPassword ?? AppSecretGenerator.Generate();
+        var desiredAppUser = NonEmptyOrDefault(current.AppUser, DefaultAppUser);
+        var desiredAppPassword = NonEmptyOrDefault(current.AppPassword, AppSecretGenerator.Generate());
+        var desiredMover = NonEmptyOrDefault(current.MoverPassword, AppSecretGenerator.Generate());
+        var desiredAdminUser = !string.IsNullOrWhiteSpace(current.BucketAdminUser) ? current.BucketAdminUser.Trim()
+            : config.BucketAdminUser ?? DefaultBucketAdminUser;
+        var desiredAdminPassword = !string.IsNullOrWhiteSpace(current.BucketAdminPassword) ? current.BucketAdminPassword.Trim()
+            : config.BucketAdminPassword ?? AppSecretGenerator.Generate();
+        var desiredBackupPassword = NonEmptyOrDefault(current.BackupPassword, AppSecretGenerator.Generate());
+        var desiredRestPassword = NonEmptyOrDefault(current.RestPassword, AppSecretGenerator.Generate());
 
+        // Put-if-absent: отсутствующий ключ — compare NotExists; ключ с ПУСТЫМ
+        // значением (битое состояние) — compare ValueEqual по фактическому raw —
+        // txn добирает пустое (канон «ensure гарантирует значения после вызова»).
         var compare = new List<TxnCompare>();
         var put = new List<TxnOp>();
-        void AddIfAbsent(string key, string value, bool exists)
+        void AddIfAbsent(string key, string value, string? current)
         {
-            if (exists)
-                return;
-            compare.Add(TxnCompare.NotExists(key));
+            if (!string.IsNullOrWhiteSpace(current))
+                return; // существующее непустое не переписываем
+            compare.Add(current is null
+                ? TxnCompare.NotExists(key)
+                : TxnCompare.ValueEqual(key, current));
             put.Add(new TxnOp.Put(key, value, null));
         }
 
-        AddIfAbsent(UserKey(cluster), desiredAppUser, current.AppUser is not null);
-        AddIfAbsent(PasswordKey(cluster), desiredAppPassword, current.AppPassword is not null);
-        AddIfAbsent(MoverKey(cluster), desiredMover, current.MoverPassword is not null);
-        AddIfAbsent(BucketAdminUserKey(cluster), desiredAdminUser, current.BucketAdminUser is not null);
-        AddIfAbsent(BucketAdminPasswordKey(cluster), desiredAdminPassword, current.BucketAdminPassword is not null);
-        AddIfAbsent(BackupKey(cluster), desiredBackupPassword, current.BackupPassword is not null);
+        AddIfAbsent(UserKey(cluster), desiredAppUser, current.AppUser);
+        AddIfAbsent(PasswordKey(cluster), desiredAppPassword, current.AppPassword);
+        AddIfAbsent(MoverKey(cluster), desiredMover, current.MoverPassword);
+        AddIfAbsent(BucketAdminUserKey(cluster), desiredAdminUser, current.BucketAdminUser);
+        AddIfAbsent(BucketAdminPasswordKey(cluster), desiredAdminPassword, current.BucketAdminPassword);
+        AddIfAbsent(BackupKey(cluster), desiredBackupPassword, current.BackupPassword);
+        AddIfAbsent(RestKey(cluster), desiredRestPassword, current.RestPassword);
 
         // Txn с failover по endpoints (образец ReadAsync ниже): упавший
         // endpoint → следующий; ни один не ответил — Failed(lastError).
@@ -109,22 +120,30 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
 
         return Result<ClusterCredentials>.Failed(new ApplicationException(
             $"ensure per-cluster кредов {cluster}: после txn ключи неполны " +
-            $"(app_user: {final.Value.AppUser is not null}, app_password: {final.Value.AppPassword is not null}, " +
-            $"mover_password: {final.Value.MoverPassword is not null}, " +
-            $"bucket_admin_user: {final.Value.BucketAdminUser is not null}, " +
-            $"bucket_admin_password: {final.Value.BucketAdminPassword is not null}, " +
-            $"backup_password: {final.Value.BackupPassword is not null})"));
+            $"(app_user: {Filled(final.Value.AppUser)}, app_password: {Filled(final.Value.AppPassword)}, " +
+            $"mover_password: {Filled(final.Value.MoverPassword)}, " +
+            $"bucket_admin_user: {Filled(final.Value.BucketAdminUser)}, " +
+            $"bucket_admin_password: {Filled(final.Value.BucketAdminPassword)}, " +
+            $"backup_password: {Filled(final.Value.BackupPassword)}, " +
+            $"rest_password: {Filled(final.Value.RestPassword)})"));
     }
 
+    // Полнота — ЗНАЧИМЫЕ значения: пробельно-пустой ключ (битое состояние)
+    // НЕ полон — ensure добирает его txn-ом (put-if-absent на пустое).
     private static bool IsComplete(RawSecrets s)
-        => s.AppUser is { Length: > 0 } && s.AppPassword is { Length: > 0 }
-           && s.MoverPassword is { Length: > 0 }
-           && s.BucketAdminUser is { Length: > 0 } && s.BucketAdminPassword is { Length: > 0 }
-           && s.BackupPassword is { Length: > 0 };
+        => Filled(s.AppUser) && Filled(s.AppPassword)
+           && Filled(s.MoverPassword)
+           && Filled(s.BucketAdminUser) && Filled(s.BucketAdminPassword)
+           && Filled(s.BackupPassword)
+           && Filled(s.RestPassword);
+
+    private static bool Filled(string? value)
+        => !string.IsNullOrWhiteSpace(value);
 
     private static ClusterCredentials ToCredentials(RawSecrets s)
         => new(new AppCredentials(s.AppUser!, s.AppPassword!), s.MoverPassword!,
-            new AppCredentials(s.BucketAdminUser!, s.BucketAdminPassword!), s.BackupPassword!);
+            new AppCredentials(s.BucketAdminUser!, s.BucketAdminPassword!), s.BackupPassword!,
+            s.RestPassword!);
 
     private static string UserKey(string cluster) => $"/clusters/{cluster}/app_user";
 
@@ -138,7 +157,9 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
 
     private static string BackupKey(string cluster) => $"/clusters/{cluster}/backup_password";
 
-    // Чтение шести ключей с failover по endpoints (паттерн ReadPortAllocAsync):
+    private static string RestKey(string cluster) => $"/clusters/{cluster}/rest_password";
+
+    // Чтение семи ключей с failover по endpoints (паттерн ReadPortAllocAsync):
     // упавший endpoint → следующий; на живом — все шесть Get подряд.
     private async Task<Result<RawSecrets>> ReadAsync(string cluster, CancellationToken ct)
     {
@@ -187,18 +208,31 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
                 continue;
             }
 
+            var restPassword = await etcd.GetAsync(endpoint, RestKey(cluster), ct);
+            if (!restPassword.IsSuccess)
+            {
+                lastError = restPassword;
+                continue;
+            }
+
             return Result<RawSecrets>.Success(new RawSecrets(
-                TrimOrNull(user.Value?.Value),
-                TrimOrNull(password.Value?.Value),
-                TrimOrNull(mover.Value?.Value),
-                TrimOrNull(adminUser.Value?.Value),
-                TrimOrNull(adminPassword.Value?.Value),
-                TrimOrNull(backupPassword.Value?.Value)));
+                RawOrNull(user.Value?.Value),
+                RawOrNull(password.Value?.Value),
+                RawOrNull(mover.Value?.Value),
+                RawOrNull(adminUser.Value?.Value),
+                RawOrNull(adminPassword.Value?.Value),
+                RawOrNull(backupPassword.Value?.Value),
+                RawOrNull(restPassword.Value?.Value)));
         }
 
         return Result<RawSecrets>.Failed(lastError!.Error!);
     }
 
-    private static string? TrimOrNull(string? raw)
-        => string.IsNullOrWhiteSpace(raw) ? null : raw.Trim();
+    // null — ключ отсутствует; пробельно-пустой raw — как есть (compare по нему);
+    // иначе trimmed значение.
+    private static string? RawOrNull(string? raw)
+        => raw is null || string.IsNullOrWhiteSpace(raw) ? raw : raw.Trim();
+
+    private static string NonEmptyOrDefault(string? current, string fallback)
+        => !string.IsNullOrWhiteSpace(current) ? current.Trim() : fallback;
 }

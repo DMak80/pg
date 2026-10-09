@@ -174,7 +174,7 @@ public class BackupVerifyProcessTests
         public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct) => throw NotSupported();
         public Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
             InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
-            bool syncStrict, CancellationToken ct) => throw NotSupported();
+            bool syncStrict, string restPassword, CancellationToken ct) => throw NotSupported();
         public Task<Result> RemoveNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct) => throw NotSupported();
         public Task<Result> StopNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct) => throw NotSupported();
         public Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct) => throw NotSupported();
@@ -183,7 +183,11 @@ public class BackupVerifyProcessTests
         public Task<Result<string>> ExecNodeAsync(string cluster, string shard, string node,
             IReadOnlyList<string> cmd, CancellationToken ct) => throw NotSupported();
         public Task<Result<string>> ExecContainerAsync(string containerName, IReadOnlyList<string> cmd, CancellationToken ct) => throw NotSupported();
-        public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct) => throw NotSupported();
+            public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
+        string cluster, string shard, string nodeName, CancellationToken ct) => Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Success(
+            (IReadOnlyDictionary<string, string>)new Dictionary<string, string>()));
+
+public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct) => throw NotSupported();
     }
 
     // ── Сид-хелперы ──

@@ -219,6 +219,8 @@ public class ClusterSnapshotParserTests
         snap.App.Should().NotBeNull();
         snap.App!.User.Should().Be("app");
         snap.App.Password.Should().Be("Kj9mP2qR7sT3vW5xYz1aBc4dEf6Gh8Jk");
+        // rest_password (t22, basic-auth Patroni REST) — ключ кластера в снапшоте
+        snap.RestPassword.Should().Be("Rest0Pass0000000000000000000000A");
         // bucket_admin-поля config не задеты (механизм сохраняется)
         snap.Config.BucketAdminUser.Should().BeNull();
         snap.Config.BucketAdminPassword.Should().BeNull();

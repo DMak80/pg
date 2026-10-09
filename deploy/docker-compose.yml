@@ -36,6 +36,9 @@ x-pgworker-env: &pgworker-env
   PGW_API_TLS_CERT_PATH: /tls/pgserver.crt
   PGW_API_TLS_KEY_PATH: /tls/pgserver.key
   PGW_API_TLS_CLIENT_CA_PATH: /tls/ca.pem
+  # REST-TLS нод (t22, arch/14 §8): per-install CA + ключ выпуска сертов
+  PGW_REST_TLS_CA_PATH: /tls/ca.pem
+  PGW_REST_TLS_CA_KEY_PATH: /tls/ca.key
   PgWorker__Api__EnableSeedEndpoint: ${PGW_API_ENABLE_SEED:-false}
   # Подсистема бэкапов (arch/19, t01): каркас — Enabled=false default;
   # S3-креды per-install только env (PGW_BACKUP_S3_*, deploy/.env.example).

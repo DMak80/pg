@@ -18,7 +18,7 @@ public class ClusterSecretEnsurerTests
     private static ClusterSecretEnsurer Sut(Fakes.FakeEtcd etcd) => new(etcd, [Ep]);
 
     [Fact]
-    public async Task Ensure_NoKeys_GeneratesAllFive()
+    public async Task Ensure_NoKeys_GeneratesAllSeven()
     {
         // Arrange — пустой etcd
         var etcd = new Fakes.FakeEtcd();
@@ -26,18 +26,100 @@ public class ClusterSecretEnsurerTests
         // Act
         var result = await Sut(etcd).EnsureAsync("shop", Config, CancellationToken.None);
 
-        // Assert — пять ключей созданы, тройка возвращена
+        // Assert — семь ключей созданы (вкл. rest_password t22), креды возвращены
         result.IsSuccess.Should().BeTrue();
         result.Value.App.User.Should().Be("app");
         result.Value.App.Password.Should().MatchRegex("^[A-Za-z0-9]{32}$");
         result.Value.MoverPassword.Should().MatchRegex("^[A-Za-z0-9]{32}$");
         result.Value.BucketAdmin.User.Should().Be("bucket_admin");
         result.Value.BucketAdmin.Password.Should().MatchRegex("^[A-Za-z0-9]{32}$");
+        result.Value.BackupPassword.Should().MatchRegex("^[A-Za-z0-9]{32}$");
+        result.Value.RestPassword.Should().MatchRegex("^[A-Za-z0-9]{32}$");
         etcd.Store["/clusters/shop/app_user"].Value.Should().Be("app");
         etcd.Store["/clusters/shop/app_password"].Value.Should().Be(result.Value.App.Password);
         etcd.Store["/clusters/shop/mover_password"].Value.Should().Be(result.Value.MoverPassword);
         etcd.Store["/clusters/shop/bucket_admin_user"].Value.Should().Be("bucket_admin");
         etcd.Store["/clusters/shop/bucket_admin_password"].Value.Should().Be(result.Value.BucketAdmin.Password);
+        etcd.Store["/clusters/shop/rest_password"].Value.Should().Be(result.Value.RestPassword);
+    }
+
+    [Fact]
+    public async Task Ensure_RestPasswordExists_NotOverwritten()
+    {
+        // Arrange — шесть ключей + внешний rest_password (put-if-absent, t22)
+        var etcd = new Fakes.FakeEtcd();
+        etcd.Seed("/clusters/shop/app_user", "app");
+        etcd.Seed("/clusters/shop/app_password", "OldPassword0000000000000000000A");
+        etcd.Seed("/clusters/shop/mover_password", "OldMoverPass0000000000000000000A");
+        etcd.Seed("/clusters/shop/bucket_admin_user", "ba_user");
+        etcd.Seed("/clusters/shop/bucket_admin_password", "OldBaPass000000000000000000000A");
+        etcd.Seed("/clusters/shop/backup_password", "OldBackupPass0000000000000000000A");
+        etcd.Seed("/clusters/shop/rest_password", "OldRestPass0000000000000000000000A");
+
+        // Act
+        var result = await Sut(etcd).EnsureAsync("shop", Config, CancellationToken.None);
+
+        // Assert — существующий rest_password не перезаписан (put-if-absent)
+        result.IsSuccess.Should().BeTrue();
+        result.Value.RestPassword.Should().Be("OldRestPass0000000000000000000000A");
+        etcd.Store["/clusters/shop/rest_password"].Value.Should().Be("OldRestPass0000000000000000000000A");
+        etcd.Txns.Should().BeEmpty("полный набор — txn не нужен");
+    }
+
+    [Fact]
+    public async Task Ensure_SixKeysWithoutRest_PutsOnlyRest()
+    {
+        // Arrange — шестёрка t02/backup есть, rest_password отсутствует
+        // (кластер, созданный до t22 — добираем только седьмой ключ)
+        var etcd = new Fakes.FakeEtcd();
+        etcd.Seed("/clusters/shop/app_user", "app");
+        etcd.Seed("/clusters/shop/app_password", "pa0000000000000000000000000000A");
+        etcd.Seed("/clusters/shop/mover_password", "pm0000000000000000000000000000A");
+        etcd.Seed("/clusters/shop/bucket_admin_user", "bucket_admin");
+        etcd.Seed("/clusters/shop/bucket_admin_password", "pba00000000000000000000000000A");
+        etcd.Seed("/clusters/shop/backup_password", "pbk000000000000000000000000000A");
+
+        // Act
+        var result = await Sut(etcd).EnsureAsync("shop", Config, CancellationToken.None);
+
+        // Assert — txn содержит ТОЛЬКО put rest_password (сравнение NotExists
+        // ровно одного ключа); существующие не тронуты.
+        result.IsSuccess.Should().BeTrue();
+        etcd.Store["/clusters/shop/rest_password"].Value
+            .Should().MatchRegex("^[A-Za-z0-9]{32}$")
+            .And.Be(result.Value.RestPassword);
+        etcd.Txns.Should().ContainSingle();
+        etcd.Txns.Single().Compare.Should().ContainSingle()
+            .Which.Key.Should().Be("/clusters/shop/rest_password");
+    }
+
+    [Fact]
+    public async Task Ensure_EmptyValueKey_RefilledByTxnValueEqual()
+    {
+        // Arrange — ключ существует, но с ПУСТЫМ значением (битое состояние):
+        // NotExists-compare не сработал бы — добор идёт через ValueEqual по raw
+        var etcd = new Fakes.FakeEtcd();
+        etcd.Seed("/clusters/shop/app_user", "app");
+        etcd.Seed("/clusters/shop/app_password", "pa0000000000000000000000000000A");
+        etcd.Seed("/clusters/shop/mover_password", "pm0000000000000000000000000000A");
+        etcd.Seed("/clusters/shop/bucket_admin_user", "bucket_admin");
+        etcd.Seed("/clusters/shop/bucket_admin_password", "pba00000000000000000000000000A");
+        etcd.Seed("/clusters/shop/backup_password", "pbk000000000000000000000000000A");
+        etcd.Seed("/clusters/shop/rest_password", " ");
+
+        // Act
+        var result = await Sut(etcd).EnsureAsync("shop", Config, CancellationToken.None);
+
+        // Assert — пустое значение заменено сгенерированным; compare — ValueEqual
+        // по фактическому raw (" "), ensure гарантирует значения после вызова
+        result.IsSuccess.Should().BeTrue();
+        etcd.Store["/clusters/shop/rest_password"].Value
+            .Should().MatchRegex("^[A-Za-z0-9]{32}$")
+            .And.Be(result.Value.RestPassword);
+        etcd.Txns.Should().ContainSingle();
+        var compare = etcd.Txns.Single().Compare.Single();
+        compare.Key.Should().Be("/clusters/shop/rest_password");
+        compare.Arg.Should().Be(" ", "compare по фактическому raw пустого значения");
     }
 
     [Fact]
@@ -65,7 +147,7 @@ public class ClusterSecretEnsurerTests
     [Fact]
     public async Task Ensure_ExistingKeys_ReturnsAndDoesNotRegenerate()
     {
-        // Arrange — все шесть ключей уже есть (повторный тик/re-run)
+        // Arrange — все семь ключей уже есть (повторный тик/re-run)
         var etcd = new Fakes.FakeEtcd();
         etcd.Seed("/clusters/shop/app_user", "app");
         etcd.Seed("/clusters/shop/app_password", "OldPassword0000000000000000000A");
@@ -73,6 +155,7 @@ public class ClusterSecretEnsurerTests
         etcd.Seed("/clusters/shop/bucket_admin_user", "ba_user");
         etcd.Seed("/clusters/shop/bucket_admin_password", "OldBaPass000000000000000000000A");
         etcd.Seed("/clusters/shop/backup_password", "OldBackupPass0000000000000000000A");
+        etcd.Seed("/clusters/shop/rest_password", "OldRestPass0000000000000000000000A");
 
         // Act
         var result = await Sut(etcd).EnsureAsync("shop", Config, CancellationToken.None);
@@ -84,6 +167,7 @@ public class ClusterSecretEnsurerTests
         result.Value.BucketAdmin.User.Should().Be("ba_user");
         result.Value.BucketAdmin.Password.Should().Be("OldBaPass000000000000000000000A");
         result.Value.BackupPassword.Should().Be("OldBackupPass0000000000000000000A");
+        result.Value.RestPassword.Should().Be("OldRestPass0000000000000000000000A");
         etcd.Txns.Should().BeEmpty("существующие ключи не переписываются txn");
     }
 

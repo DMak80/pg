@@ -63,13 +63,15 @@ public class E2ePatroniFileSdScenarios
                   evaluation_interval: 3s
                 scrape_configs:
                   - job_name: patroni-nodes
-                    scheme: http
+                    scheme: https
+                    tls_config:
+                      ca_file: /etc/prometheus/ca.pem
                     file_sd_configs:
                       - files: ["/etc/prometheus/sd/patroni-nodes.json"]
                         refresh_interval: 3s
                   - job_name: sd-generator
                     static_configs:
-                      - targets: ["sd-generator:8080"]
+                        - targets: ["sd-generator:8080"]
                 """, ct);
 
             // Контур мониторинга — единая сеть окружения класса (t15 ревизия 3):
@@ -100,6 +102,9 @@ public class E2ePatroniFileSdScenarios
                 .WithNetwork(Fx.Net)
                 .WithVolumeMount($"pgw-sd-{Fx.ClusterTag}", "/etc/prometheus/sd", AccessMode.ReadOnly)
                 .WithBindMount(promConfigPath, "/etc/prometheus/prometheus.yml")
+                // CA контура для https-скрейпа patroni-nodes (t22: rest-ca.pem
+                // фиксстура пишет в ArtifactsDir при старте окружения).
+                .WithBindMount(Path.Combine(Fx.ArtifactsDir, "rest-ca.pem"), "/etc/prometheus/ca.pem", AccessMode.ReadOnly)
                 .WithPortBinding(9090, assignRandomHostPort: true)
                 .Build();
 
@@ -363,9 +368,10 @@ public class E2ePatroniFileSdScenarios
             .ToList();
     }
 
-    // Все таргеты patroni-nodes up, scrapeUrl — сетевые http://<alias>:8008:
-    // Uri.Host ∈ alias'ам portalloc, Uri.Port — контейнерный порт контракта
-    // (host-публикации записи в таргете НЕ участвуют).
+    // Все таргеты patroni-nodes up, scrapeUrl — сетевые https://<alias>:8008
+    // (tls_config ca_file контура; alias = SAN серта ноды): Uri.Host ∈ alias'ам
+    // portalloc, Uri.Port — контейнерный порт контракта (host-публикации записи
+    // в таргете НЕ участвуют).
     private async Task<bool> PatroniTargetsUpAsync(HttpClient http, int promPort, List<string> aliases)
     {
         List<(string? Health, string? Url)> targets;

@@ -28,13 +28,22 @@ public class NodeConfigBuildersTests
     private static readonly HashSet<string> DefaultExclude =
         new(["io_method", "io_workers"], StringComparer.Ordinal);
 
+    // Фабрика тестового REST-TLS-материала ноды (t22): PEM-заглушки + пара.
+    // Реальная генерация серта — RestCertificateCache (драйвер, задача 17).
+    public static NodeRestTls TestRestTls(string password = "Rest0Pass0000000000000000000000A")
+        => new(
+            "-----BEGIN CERTIFICATE-----\nMIIBtest-node\n-----END CERTIFICATE-----\n",
+            "-----BEGIN PRIVATE KEY-----\nMIIBtest-key\n-----END PRIVATE KEY-----\n",
+            "-----BEGIN CERTIFICATE-----\nMIIBtest-ca\n-----END CERTIFICATE-----\n",
+            password);
+
     [Fact]
     public void SpiloEnv_ContainsPatroniAndPgParameters()
     {
         // Arrange: топология шарда из 2 нод и адреса etcd.
 
         // Act: генерируем env контейнера ноды.
-        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false);
+        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls());
 
         // Assert: SPILO_CONFIGURATION несёт канон таймингов (t09: полы Patroni
         // 4.x — ttl=20/loop_wait=1/retry_timeout=3), P3 (wal_level),
@@ -50,12 +59,65 @@ public class NodeConfigBuildersTests
     }
 
     [Fact]
+    public void SpiloEnv_RestTlsPemCarriedByteInByte()
+    {
+        // Arrange: REST-TLS-материал ноды (PEM с реальными переносами строк).
+        var rest = TestRestTls();
+
+        // Act: сборка env.
+        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", rest);
+
+        // Assert: значения SSL_RESTAPI_* равны входным PEM байт-в-байт
+        // (Spilo пишет значение в файл буквально — факт §2 п.2 спеки t22).
+        env["SSL_RESTAPI_CERTIFICATE"].Should().Be(rest.CertPem);
+        env["SSL_RESTAPI_PRIVATE_KEY"].Should().Be(rest.KeyPem);
+        env["SSL_RESTAPI_CA"].Should().Be(rest.CaPem);
+        env["SSL_RESTAPI_CERTIFICATE"].Should().Contain("-----BEGIN CERTIFICATE-----");
+        env["SSL_RESTAPI_PRIVATE_KEY"].Should().Contain("\n", "PEM с реальными переносами строк");
+    }
+
+    [Fact]
+    public void SpiloEnv_RestPasswordHashIsSha256Hex()
+    {
+        // Arrange: пара rest (эффективная) — "Rest0Pass…".
+        // Act: сборка env.
+        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls());
+
+        // Assert: PGW_REST_PASSWORD_HASH = короткий sha256-hex пары (hex-lower) —
+        // факт «контейнер несёт эту пару» для инспекции rolling-ротации.
+        env["PGW_REST_PASSWORD_HASH"].Should().Be(RestRotation.PasswordHash("Rest0Pass0000000000000000000000A"));
+        env["PGW_REST_PASSWORD_HASH"].Should().MatchRegex("^[0-9a-f]{64}$");
+    }
+
+    [Fact]
+    public void SpiloEnv_SpiloConfigurationContainsRestapiSection()
+    {
+        // Arrange: материал + имя ноды shard1a (cluster=shop, shard=shard1).
+        // Act: сборка env.
+        var spilo = SpiloEnvBuilder.Build(
+            Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls())["SPILO_CONFIGURATION"];
+
+        // Assert: секция restapi верхнего уровня — connect_address DNS-именем
+        // ноды (SAN серта; перекрывает шаблонный IP), authentication — пара
+        // per-cluster; listen НЕ переопределён (шаблонный :8008 корректен).
+        spilo.Should().Contain("restapi:");
+        spilo.Should().Contain("connect_address: \"pgw-shop-shard1-shard1a:8008\"");
+        spilo.Should().Contain("authentication:");
+        spilo.Should().Contain("username: patroni");
+        spilo.Should().Contain("password: \"Rest0Pass0000000000000000000000A\"");
+        spilo.Should().NotContain("listen");
+        // bootstrap-секция не изменена (restapi — дополнение, не замена)
+        spilo.Should().Contain("bootstrap:");
+        spilo.Should().Contain("on_role_change: /home/postgres/master-lease.py");
+    }
+
+    [Fact]
     public void SpiloEnv_ContainsScopeAndEtcdHosts()
     {
         // Arrange: scope = "<C>-<X>" и список etcd-эндпоинтов.
 
         // Act: генерируем env контейнера ноды.
-        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false);
+        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls());
 
         // Assert: идентификация Patroni-кластера и адреса DCS на месте.
         env["SCOPE"].Should().Be("shop-shard1");
@@ -70,7 +132,7 @@ public class NodeConfigBuildersTests
         // Arrange: секреты установки (Д7).
 
         // Act: генерируем все три конфига.
-        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false);
+        var env = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls());
         var doorman = DoormanConfigBuilder.Build("shop", 55);
         var haproxy = HaproxyConfigBuilder.Build(Topology);
 
@@ -93,7 +155,7 @@ public class NodeConfigBuildersTests
         var secrets = new InstallSecrets("su", "sb", "adm", "mov");
 
         // Act
-        var env = SpiloEnvBuilder.Build(topology, new EtcdEndpoints(["http://etcd:2379"]), secrets, syncStrict: false);
+        var env = SpiloEnvBuilder.Build(topology, new EtcdEndpoints(["http://etcd:2379"]), secrets, syncStrict: false, "shard1a", TestRestTls());
 
         // Assert — app-пароль в env контейнера не попадает (spec §2.4, критерий 6);
         // bucket_admin-механизм env не тронут
@@ -127,7 +189,7 @@ public class NodeConfigBuildersTests
         var tuning = PgTune.Calculate(new PgTuneInput(
             18, PgTuneOsType.Linux, PgTuneDbType.Oltp, 8388608, PgTuneMemoryUnit.KB,
             4, 60, PgTuneHdType.Ssd, PgTuneDbSize.MidRam));
-        var spilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, tuning, DefaultExclude)["SPILO_CONFIGURATION"];
+        var spilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls(), tuning, DefaultExclude)["SPILO_CONFIGURATION"];
 
         // Assert: PGTune-параметры в YAML (в кавычках, стиль текущего блока).
         spilo.Should().Contain("max_connections: \"60\"");
@@ -172,7 +234,7 @@ public class NodeConfigBuildersTests
         var dwTuning = PgTune.Calculate(new PgTuneInput(
             18, PgTuneOsType.Linux, PgTuneDbType.Dw, 8388608, PgTuneMemoryUnit.KB,
             4, 60, PgTuneHdType.Ssd, PgTuneDbSize.MidRam));
-        var dwSpilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, dwTuning, DefaultExclude)["SPILO_CONFIGURATION"];
+        var dwSpilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls(), dwTuning, DefaultExclude)["SPILO_CONFIGURATION"];
 
         // Assert: wal_level: logical сохранён при dw.
         dwSpilo.Should().Contain("wal_level: logical");
@@ -190,7 +252,7 @@ public class NodeConfigBuildersTests
             72, 60, PgTuneHdType.Ssd, PgTuneDbSize.MidRam));
         tuning["io_method"].Should().Be("worker");
         tuning["io_workers"].Should().Be("18");
-        var spilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, tuning, DefaultExclude)["SPILO_CONFIGURATION"];
+        var spilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls(), tuning, DefaultExclude)["SPILO_CONFIGURATION"];
 
         // Assert: исключённые параметры в YAML отсутствуют вовсе (никаких
         // пустых значений), остальные PGTune-параметры на месте.
@@ -231,7 +293,7 @@ public class NodeConfigBuildersTests
         // Arrange/Act: tuning == null — прежний путь (изолированные пути/тесты).
 
         // Assert: хардкод-набор не изменён (константы канона остаются в нём).
-        var spilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false)["SPILO_CONFIGURATION"];
+        var spilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict: false, "shard1a", TestRestTls())["SPILO_CONFIGURATION"];
         spilo.Should().Contain("max_connections: \"60\"");
         spilo.Should().Contain("shared_buffers: \"2GB\"");
         spilo.Should().Contain("random_page_cost: \"1.1\"");
@@ -247,7 +309,7 @@ public class NodeConfigBuildersTests
     {
         // Arrange — топология/секреты фикстуры файла.
         // Act
-        var spilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict)["SPILO_CONFIGURATION"];
+        var spilo = SpiloEnvBuilder.Build(Topology, Etcd, Secrets, syncStrict, "shard1a", TestRestTls())["SPILO_CONFIGURATION"];
 
         // Assert
         spilo.Should().Contain(expected).And.Contain("synchronous_mode: true");

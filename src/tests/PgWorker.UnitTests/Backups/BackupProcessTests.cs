@@ -247,14 +247,18 @@ public class BackupProcessTests
         public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct) => throw NotSupported();
         public Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
             InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
-            bool syncStrict, CancellationToken ct) => throw NotSupported();
+            bool syncStrict, string restPassword, CancellationToken ct) => throw NotSupported();
         public Task<Result> RemoveNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct) => throw NotSupported();
         public Task<Result> StopNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct) => throw NotSupported();
         public Task<Result<DataPresence>> NodeDataPresenceAsync(string cluster, string shard, string node, CancellationToken ct) => throw NotSupported();
         public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
             string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct) => throw NotSupported();
         // ExecContainerAsync — реализован выше (pg_hba-гвард object-нод)
-        public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct) => throw NotSupported();
+            public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
+        string cluster, string shard, string nodeName, CancellationToken ct) => Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Success(
+            (IReadOnlyDictionary<string, string>)new Dictionary<string, string>()));
+
+public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct) => throw NotSupported();
 
         // WAL-агенты (t03): в тестах джобов не используются.
         public Task<Result> EnsureBackupAgentAsync(
@@ -273,7 +277,8 @@ public class BackupProcessTests
             Calls++;
             return Task.FromResult(Result<ClusterCredentials>.Success(new ClusterCredentials(
                 new AppCredentials("app", "app-pw"), "mover-pw",
-                new AppCredentials("bucket_admin", "admin-pw"), "pw0000000000000000000000000000A")));
+                new AppCredentials("bucket_admin", "admin-pw"), "pw0000000000000000000000000000A",
+                "restpw000000000000000000000000000A")));
         }
     }
 

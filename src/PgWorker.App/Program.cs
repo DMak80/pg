@@ -36,6 +36,8 @@ var builder = WebApplication.CreateBuilder(args);
 ApiTlsEndpoints.ApplyEnvOverrides(builder.Configuration);
 DockerEnvBindings.ApplyTlsEnvOverrides(builder.Configuration);
 DockerEnvBindings.ApplySshEnvOverrides(builder.Configuration);
+// REST-TLS нод (t22, arch/14 §4 гр.3): PGW_REST_TLS_* — до всего остального.
+DockerEnvBindings.ApplyRestTlsEnvOverrides(builder.Configuration);
 
 // Конфигурация: appsettings.json + env-оверрайды PgWorker__* (пример — в корне проекта).
 builder.Services.Configure<PgWorkerOptions>(builder.Configuration.GetSection("PgWorker"));
@@ -61,6 +63,11 @@ builder.Services.AddOptions<PgWorkerOptions>()
         "PgWorker:Pgtune: DbVersion 10..18; DbType web|oltp|dw|mixed (desktop запрещён — несовместим с P3); " +
         "HdType ssd|san|hdd|nvme; DbSize less_ram|mid_ram|greater_ram; Connections 20..999999; " +
         "ExcludeParams — только имена вывода PGTune (§5.2). Память/CPU — не здесь: заявки etcd request_{cpu,mem}")
+    // REST-TLS нод (t22, arch/14 §8): поставка без TLS-пакета считается битой —
+    // HTTP-режим провижининга не существует (симметрия запрета Pgtune:DbType=desktop).
+    .Validate(o => o.Docker.RestTls.IsComplete(),
+        "PgWorker:Docker:RestTls обязателен: оба PGW_REST_TLS_{CA,CA_KEY}[_PATH] " +
+        "(per-install CA для REST-TLS нод; HTTP-режим не существует)")
     .ValidateOnStart();
 
 // Управляемый серт API (spec §3.2 п.1): чтение ключа /workers/api_tls/pgworker
@@ -100,12 +107,43 @@ builder.Services.AddSingleton(sp =>
 // Секреты per-install (Д7, spec §10): не в git, не в etcd — только env процесса.
 builder.Services.AddSingleton(_ => SecretsFromEnv());
 
+// REST-TLS нод (t22, arch/14 §8): per-install CA + ключ выпуска сертов;
+// резолв PEM|PATH и разбор на старте — битый/неполный пакет fail-fast.
+builder.Services.AddSingleton(sp =>
+{
+    var tls = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Docker.RestTls;
+    var caPem = tls.CaPem ?? Shared.Tls.TlsMaterial.ReadPemFile(tls.CaPath);
+    var caKeyPem = tls.CaKeyPem ?? Shared.Tls.TlsMaterial.ReadPemFile(tls.CaKeyPath);
+    if (!RestTlsOptions.IsValidPemPair(caPem, caKeyPem)
+        || !RestPki.TryParseCertificate(caPem!, out var ca) || ca is null)
+        throw new ApplicationException(
+            "PgWorker:Docker:RestTls: per-install CA не задан/не разбирается — " +
+            "оба PGW_REST_TLS_{CA,CA_KEY}[_PATH] обязательны (REST-TLS нод; HTTP-режим не существует)");
+    return new RestTlsMaterial(caPem!, caKeyPem!, ca);
+});
+
 // Поллинг-инвариант (arch/14 §6): одиночный HTTP-вызов к etcd не молчит дольше
 // окна проверки watchdog — таймаут = половина окна (7.5 c при дефолтах); зависший
 // запрос (протухшее соединение) → исключение → transient-фейл тика, а не молчание
 // до дефолтных 100 c HttpClient (разбор E2E-маркера: reconcile молчал 37 c).
 builder.Services.AddHttpClient("etcd", c => c.Timeout = TimeSpan.FromSeconds(7.5));
-builder.Services.AddHttpClient("patroni", c => c.Timeout = TimeSpan.FromSeconds(7.5));
+// Клиент Patroni REST (t22, arch/14 §5 C): https к host:patroni-port portalloc;
+// верификация цепочки к per-install CA без hostname-проверки (канон P17
+// «require, не verify-full»: адрес ноды — из реплицированного portalloc;
+// образец — CustomRootTrust панели). Таймауты не меняются (7.5 c клиент).
+builder.Services.AddHttpClient("patroni", c => c.Timeout = TimeSpan.FromSeconds(7.5))
+    .ConfigurePrimaryHttpMessageHandler(sp =>
+    {
+        var ca = sp.GetRequiredService<RestTlsMaterial>().Ca;
+        return new SocketsHttpHandler
+        {
+            SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+            {
+                RemoteCertificateValidationCallback = (_, certificate, _, _) =>
+                    Shared.Tls.TlsChain.ValidateChain(certificate, ca),
+            },
+        };
+    });
 
 // etcd-клиент (HTTP JSON gateway /v3/*) + координация (клэймы/лидерство, журнал).
 // Единое место литерала префикса etcd-ключей (t09): Shared-координация параметризована.
@@ -206,6 +244,14 @@ builder.Services.AddSingleton(sp => new RestartHandler(
     sp.GetRequiredService<IHostApplicationLifetime>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<RestartHandler>()));
 
+// Кеш серверных сертов REST-эндпоинтов нод (t22, arch/14 §2.1): из per-install
+// CA (RestTlsMaterial) — один на процесс воркера, обе реализации драйвера.
+builder.Services.AddSingleton(sp =>
+{
+    var material = sp.GetRequiredService<RestTlsMaterial>();
+    return new RestCertificateCache(material.CaPem, material.CaKeyPem);
+});
+
 // docker: драйвер по режиму (Plain: таблица Hosts; Swarm: manager endpoint).
 // AdvertisedHost (advertised-правило arch/16): только Plain + ровно один хост —
 // advertised-имя одно на таблицу, при мульти-хосте порты разных хостов склеились
@@ -252,7 +298,8 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
         if (string.IsNullOrWhiteSpace(docker.SwarmManager))
             throw new ApplicationException("PgWorker:Docker:Mode=Swarm требует PgWorker:Docker:SwarmManager");
         return new SwarmClusterDriver(docker.SwarmManager, factory, docker.EnableDoorman, docker.Images.Node,
-            pgtuneExclude: pgtuneExclude);
+            pgtuneExclude: pgtuneExclude,
+            restCertificates: sp.GetRequiredService<RestCertificateCache>());
     }
 
     var hosts = docker.Hosts
@@ -261,8 +308,11 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
     if (hosts.Count == 0)
         throw new ApplicationException("PgWorker:Docker:Mode=Plain требует непустую таблицу PgWorker:Docker:Hosts");
     return new PlainClusterDriver(hosts, factory, docker.EnableDoorman, docker.Images.Node, docker.AdvertisedHost,
-        pgtuneExclude: pgtuneExclude, scrapeNetwork: docker.ScrapeNetwork);
+        pgtuneExclude: pgtuneExclude, scrapeNetwork: docker.ScrapeNetwork,
+        restCertificates: sp.GetRequiredService<RestCertificateCache>());
 });
+
+
 
 // Фабрика входов PGTune (spec.md §4.3): runtime-склейка PgWorker:Pgtune
 // (валидированы fail-fast'ом старта); расчёт — per-shard на EnsureNode-путях.
@@ -380,6 +430,7 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
         sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.PatroniBootSec),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<InstallSecrets>(),
+    sp.GetRequiredService<IClusterSecretEnsurer>(),
     sp.GetRequiredService<IAppParamsEnsurer>(),
     sp.GetRequiredService<PgtuneInputsFactory>(),
     sp.GetRequiredService<PgtuneSettings>(),
@@ -525,6 +576,7 @@ builder.Services.AddSingleton(sp => new ClusterSecretRotator(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<ISqlExecutor>(),
+    sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ShardProbe>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),

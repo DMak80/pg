@@ -317,7 +317,8 @@ public class DcsConfigConvergenceTests
         // Act: env → вырезаем YAML-блок parameters → JSON живого конфига.
         var spilo = SpiloEnvBuilder.Build(
             topology, new EtcdEndpoints(["http://e1:2379"]),
-            new InstallSecrets("su", "sb", "adm", "mov"), syncStrict: false, tuning, null)["SPILO_CONFIGURATION"];
+            new InstallSecrets("su", "sb", "adm", "mov"), syncStrict: false,
+            "shard1a", NodeConfigBuildersTests.TestRestTls(), tuning, null)["SPILO_CONFIGURATION"];
         var lines = spilo.Split('\n')
             .SkipWhile(l => !l.TrimEnd().EndsWith("parameters:", StringComparison.Ordinal))
             .Skip(1)

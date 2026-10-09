@@ -3,6 +3,7 @@
 # rejoin s1a репликой (spec t10 §7.4). Только full-профиль.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+ROOT="$(cd ../.. && pwd)"
 
 BASE="${ADMINPANEL_URL:-http://localhost:5050}"
 JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
@@ -59,13 +60,13 @@ for i in $(seq 1 10); do [ "$(ect get /clusters/demo/shards/s1/master --print-va
 ect get /service/demo-s1/leader --print-value-only | jq -e '.name == "s1b"' >/dev/null \
   || { echo "❌ leader не s1b"; exit 1; }
 echo "  master-ключ и leader у s1b"
-curl -fsS -o /dev/null http://127.0.0.1:8012/primary \
+curl -fsS -o /dev/null --cacert "$ROOT/deploy/tls/ca.pem" https://127.0.0.1:8012/primary \
   || { echo "❌ hc1b /primary != 200"; exit 1; }
 # Patroni-REST эмулятора обновляется с задержкой после promote (hc1a переписывает
 # members не мгновенно) — поллинг, как у остальных ассертов чека.
 patroni_ok=1
 for i in $(seq 1 15); do
-  if curl -fsS -m 3 http://127.0.0.1:8011/cluster | jq -e \
+  if curl -fsS -m 3 --cacert "$ROOT/deploy/tls/ca.pem" https://127.0.0.1:8011/cluster | jq -e \
     'any(.members[]; .name=="s1b" and .role=="master")
      and any(.members[]; .name=="s1a" and .state=="stopped")' >/dev/null 2>&1; then
     patroni_ok=0; break

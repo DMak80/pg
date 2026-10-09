@@ -258,14 +258,15 @@ public class E2eStrictScenarios
         return JsonSerializer.Deserialize<Dictionary<string, NodeAddr>>(kv.Value, Json) ?? [];
     }
 
-    private static readonly HttpClient PatroniHttp = new() { Timeout = TimeSpan.FromSeconds(3) };
+    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
 
     // GET /config живого Patroni (образец E2eScenarios:523): порт из portalloc.
     // Ответ Patroni — pretty-JSON (пробелы после двоеточий), поэтому strict
     // читается разбором JSON, а не подстрочным поиском; null — поля нет/не-bool.
     private static async Task<bool?> PatroniSyncStrictAsync(int patroniPort, CancellationToken ct)
     {
-        using var response = await PatroniHttp.GetAsync($"http://localhost:{patroniPort}/config", ct);
+        using var response = await PatroniHttp.GetAsync($"https://localhost:{patroniPort}/config", ct);
         response.IsSuccessStatusCode.Should().BeTrue("Patroni /config доступен");
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
         return doc.RootElement.TryGetProperty("synchronous_mode_strict", out var strict)

@@ -19,7 +19,8 @@ public sealed record WorkState(
     [property: JsonPropertyName("fail_first_unix")] long? FailFirstUnix = null,
     [property: JsonPropertyName("retry_not_before_unix")] long? RetryNotBeforeUnix = null,
     [property: JsonPropertyName("last_failover")] HaSupervisionFact? LastFailover = null,
-    [property: JsonPropertyName("last_rebuild")] HaSupervisionFact? LastRebuild = null);
+    [property: JsonPropertyName("last_rebuild")] HaSupervisionFact? LastRebuild = null,
+    [property: JsonPropertyName("rest_pending")] string? RestPending = null);
 
 /// <summary>Серия подряд идущих фейлов процесса (бэкофф ретраев, arch/14 §3.3/§5 A):
 /// живёт в {prefix}/work/&lt;C&gt;, пишется фейлом, переносится фазами, сбрасывается Done.</summary>
@@ -38,11 +39,13 @@ public sealed record HaSupervisionFact(
 /// <summary>Пара фактов тика надзора: null внутри = факта вида нет/сброшен.</summary>
 public sealed record HaSupervisionFacts(HaSupervisionFact? LastFailover, HaSupervisionFact? LastRebuild);
 
-/// <summary>Состояние надзора из work-ключа одним чтением: трек + факты.</summary>
+/// <summary>Состояние надзора из work-ключа одним чтением: трек + факты +
+/// окно REST-ротации (rest_pending, t22 arch/14 §5 I).</summary>
 public sealed record SupervisionState(
     IReadOnlyDictionary<string, long> Unreachable,
     HaSupervisionFact? LastFailover,
-    HaSupervisionFact? LastRebuild);
+    HaSupervisionFact? LastRebuild,
+    string? RestPending = null);
 
 // Обёртка над {prefix}/work/<C> (t09: общий журнал Pg/Kfw, префикс — параметр ctor):
 // чистая etcd-запись фаз процессов (крах оставляет самодокументирующийся след;
@@ -84,10 +87,13 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
     // unreachable — трек недоступности надзора (t09: фазовые записи в тике
     // надзора — конвергенция DCS/брокеров — обязаны его сохранять, иначе
     // пороги сбрасываются каждой фазовой записью).
+    // restPending — пара REST-ротации «в полёте» (t22, arch/14 §5 I): не задан
+    // и не dropRestPending — carry-forward (как unreachable/facts); сброс —
+    // фазовой записью done ротатора (dropRestPending=true).
     public async Task<Result> WritePhaseAsync(
         string cluster, string op, string phase, string instance, string? lastError, CancellationToken ct,
         RetrySeries? series = null, IReadOnlyDictionary<string, long>? unreachable = null,
-        HaSupervisionFacts? facts = null)
+        HaSupervisionFacts? facts = null, string? restPending = null, bool dropRestPending = false)
     {
         // t09 (унификация с Pg, фикс AC6): фазовая запись БЕЗ явного трека
         // сохраняет существующий (fix сброса порогов NodeDead/BrokerDead;
@@ -95,25 +101,28 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
         // перезапись актуальным множеством — только WriteSupervisionAsync);
         // прочие процессы пишут фазы в тот же ключ {prefix}/work/<C> каждый тик
         // и раньше стирали трек → supervise перечитывал пустоту и пороги не
-        // истекали никогда.
+        // истекали никогда. Аналогично переносится rest_pending.
         IReadOnlyDictionary<string, long>? track = unreachable;
         HaSupervisionFact? carryFailover = facts?.LastFailover;
         HaSupervisionFact? carryRebuild = facts?.LastRebuild;
-        if (track is null)
+        string? carryRest = restPending;
+        if (track is null || (carryRest is null && !dropRestPending))
         {
             var current = await ReadAsync(cluster, ct);
             if (!current.IsSuccess)
                 return current;
-            track = current.Value?.Unreachable;
+            track ??= current.Value?.Unreachable;
             // carry-forward фактов (arch/14 §3.3): фазовая запись без явных
             // фактов сохраняет существующие из ключа (как unreachable).
             carryFailover ??= current.Value?.LastFailover;
             carryRebuild ??= current.Value?.LastRebuild;
+            if (carryRest is null && !dropRestPending)
+                carryRest = current.Value?.RestPending;
         }
 
         var payload = new WorkState(op, phase, instance, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), lastError,
             track, series?.FailCount, series?.FailFirstUnix, series?.RetryNotBeforeUnix,
-            carryFailover, carryRebuild);
+            carryFailover, carryRebuild, carryRest);
         var put = await WithFailoverAsync(endpoint => gateway.PutAsync(
             endpoint, WorkKey(cluster), JsonSerializer.Serialize(payload, Json), lease: null, ct));
         if (put.IsSuccess)
@@ -145,17 +154,25 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
     // facts — HA-факты тика (arch/14 §3.3: facts=null → поля опускаются —
     // kfw/vwk-ключи фактов не несут; Pg-надзор передаёт всегда, в т.ч.
     // null-полями внутри = сброс/флап).
+    // rest_pending (t22): carry-forward — супервизионная запись НЕ затирает
+    // окно REST-ротации (pending между тиками ротатора жив).
     // ВНИМАНИЕ: стационарная запись надзора событие PhaseWritten НЕ эмитит —
     // supervise подавлен в фазовых сериях (arch/18 §2.2, решение ревью Ф4-2).
-    public Task<Result> WriteSupervisionAsync(
+    public async Task<Result> WriteSupervisionAsync(
         string cluster, string instance, IReadOnlyDictionary<string, long> unreachable,
         string? lastError, CancellationToken ct, HaSupervisionFacts? facts = null)
-        => WithFailoverAsync(endpoint => gateway.PutAsync(
+    {
+        var current = await ReadAsync(cluster, ct);
+        if (!current.IsSuccess)
+            return current;
+        return await WithFailoverAsync(endpoint => gateway.PutAsync(
             endpoint, WorkKey(cluster),
             JsonSerializer.Serialize(new WorkState("supervise", "supervising", instance,
                 DateTimeOffset.UtcNow.ToUnixTimeSeconds(), lastError, unreachable,
-                LastFailover: facts?.LastFailover, LastRebuild: facts?.LastRebuild), Json),
+                LastFailover: facts?.LastFailover, LastRebuild: facts?.LastRebuild,
+                RestPending: current.Value?.RestPending), Json),
             lease: null, ct));
+    }
 
     // Прочитать трек недоступности (null = журнала нет/поля нет).
     public async Task<Result<IReadOnlyDictionary<string, long>>> ReadUnreachableAsync(string cluster, CancellationToken ct)
@@ -178,7 +195,7 @@ public sealed class WorkJournal(string keyPrefix, IEtcdGateway gateway, string[]
 
         return Result<SupervisionState>.Success(new SupervisionState(
             state.Value?.Unreachable ?? (IReadOnlyDictionary<string, long>)new Dictionary<string, long>(),
-            state.Value?.LastFailover, state.Value?.LastRebuild));
+            state.Value?.LastFailover, state.Value?.LastRebuild, state.Value?.RestPending));
     }
 
     private string WorkKey(string cluster) => $"{keyPrefix}/work/{cluster}";

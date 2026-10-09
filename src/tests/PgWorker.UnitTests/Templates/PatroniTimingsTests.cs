@@ -22,7 +22,8 @@ public class PatroniTimingsTests
         // Act: генерируем env и сверяем канон через DcsConfigConvergence.
         var spilo = SpiloEnvBuilder.Build(
             topology, new EtcdEndpoints(["http://e1:2379"]),
-            new InstallSecrets("su", "sb", "adm", "mov"), syncStrict: false)["SPILO_CONFIGURATION"];
+            new InstallSecrets("su", "sb", "adm", "mov"), syncStrict: false,
+            "shard1a", NodeConfigBuildersTests.TestRestTls())["SPILO_CONFIGURATION"];
         var selfPatch = DcsConfigConvergence.DivergencePatch(
             $$"""{"ttl":{{PatroniTimings.Ttl}},"loop_wait":{{PatroniTimings.LoopWait}},"retry_timeout":{{PatroniTimings.RetryTimeout}},"synchronous_mode":true,"synchronous_mode_strict":false}""",
             syncStrict: false, null);

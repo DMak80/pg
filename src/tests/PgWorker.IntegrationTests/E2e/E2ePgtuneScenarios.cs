@@ -313,7 +313,8 @@ public class E2ePgtuneScenarios
 
     // ===== Хелперы (приёмы E2eScaleScenarios, scoped на кластер) =====
 
-    private static readonly HttpClient PatroniHttp = new() { Timeout = TimeSpan.FromSeconds(3) };
+    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
 
     // Сид кластера в стиле панели (02 §9.1): заявки request_* опциональны —
     // сценарий отсутствия заявок сеет без них.
@@ -393,7 +394,7 @@ public class E2ePgtuneScenarios
     // (разбор по инциденту первого прогона t11, 2026-09-14).
     private static async Task<string?> GetPatroniParameterAsync(int patroniPort, string name, CancellationToken ct)
     {
-        using var response = await PatroniHttp.GetAsync($"http://localhost:{patroniPort}/config", ct);
+        using var response = await PatroniHttp.GetAsync($"https://localhost:{patroniPort}/config", ct);
         response.IsSuccessStatusCode.Should().BeTrue($"GET /config → HTTP {(int)response.StatusCode}");
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
         var root = doc.RootElement;
@@ -416,7 +417,7 @@ public class E2ePgtuneScenarios
     // Поле корня GET /patroni (например, pending_restart) raw-текстом ("true").
     private static async Task<string?> GetPatroniFieldAsync(int patroniPort, string field, CancellationToken ct)
     {
-        using var response = await PatroniHttp.GetAsync($"http://localhost:{patroniPort}/patroni", ct);
+        using var response = await PatroniHttp.GetAsync($"https://localhost:{patroniPort}/patroni", ct);
         if (!response.IsSuccessStatusCode)
             return null;
         using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
@@ -510,7 +511,7 @@ public class E2ePgtuneScenarios
                     try
                     {
                         using var response = await PatroniHttp.GetAsync(
-                            $"http://localhost:{addr.Patroni}/primary", ct);
+                            $"https://localhost:{addr.Patroni}/primary", ct);
                         if (!response.IsSuccessStatusCode)
                             continue;
                         var node = nodeKey.Split('/')[1];

@@ -242,7 +242,7 @@ public class E2eWalStreamMasterDownScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"http://localhost:{addr.GetProperty("patroni").GetInt32()}/cluster", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/cluster", ct);
                     if (!response.IsSuccessStatusCode) continue;
                     using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
                     foreach (var member in doc.RootElement.GetProperty("members").EnumerateArray())
@@ -364,7 +364,7 @@ public class E2eWalStreamMasterDownScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"http://localhost:{addr.GetProperty("patroni").GetInt32()}/cluster", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/cluster", ct);
                     if (!response.IsSuccessStatusCode) continue;
                     var body = await response.Content.ReadAsStringAsync(ct);
                     return $"[{key}] " + body[..Math.Min(700, body.Length)];
@@ -485,7 +485,8 @@ public class E2eWalStreamMasterDownScenarios
     // Резолв фактического primary — по пробам Patroni /primary (t02-подход
     // WaitForMasterAsync: master-ключ host:0 при EnableDoorman=false
     // недискриминантен); primary появляется после dsn/RUNNING — ждём.
-    private static readonly HttpClient PatroniHttp = new() { Timeout = TimeSpan.FromSeconds(3) };
+    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
 
     private async Task<(string Host, int Port, string Node)> MasterPgAsync(string cluster, string shard, CancellationToken ct)
     {
@@ -502,7 +503,7 @@ public class E2eWalStreamMasterDownScenarios
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"http://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];

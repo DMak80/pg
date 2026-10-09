@@ -174,7 +174,7 @@ docker-restart-политики (не deploy-канон) процесс оста
 | `POST /api/clusters/{c}/moves/finalize` | заявка уборки старого шарда | 02 §9.7.3 |
 | `POST /api/clusters/{c}/moves/abort` | заявка отмены переезда | 02 §9.7.4 |
 | `DELETE /api/clusters/{c}/moves/{bucket}` | отмена стоящей заявки (del ключа) | 02 §9.7.5 |
-| `POST /api/clusters/{c}/secrets/rotate` | заявка ротации per-cluster секретов (app + bucket_admin + mover) | 02 §9.8 |
+| `POST /api/clusters/{c}/secrets/rotate` | заявка ротации per-cluster секретов (app + bucket_admin + mover + `rest_password`) | 02 §9.8 |
 | `PUT /api/clusters/{c}/config` | мутация per-cluster опции `synchronous_mode_strict` | 02 §9.10: RMW-txn по mod_revision; гварды — кластер Active |
 | `POST /api/clusters/{c}/shards/{x}/restore` | заявка восстановления шарда из бэкапа (PITR latest/target_time, source-override; `confirm` = имя шарда) | пишет статус `/pgworker/backups/<C>/<X>/restore/<id>` сам (клэйм `<C>`; arch/19 §3.5): гварды — кластер Active, шард заявлен, максимум один активный restore на шард |
 | `POST /api/clusters/{c}/backups/policy` | приём per-cluster политики бэкапов (t06; замещение целиком — arch/19 §4); тело дополнительно принимает `"drill":{"interval_days":int}` (reliability t02; валидация [0..3650]; поле отсутствует → секция `drill` в записываемую policy не кладётся — кластер живёт на глобальном дефолте; замещение целиком сохраняется) | пишет ключ `/pgworker/backups/<C>/policy` сам (клэйм `<C>`; arch/19 §4) |
@@ -333,6 +333,19 @@ rebuild — пересоздание контейнера пишет и новы
   (advertised-правило §2.4 п.5).
 - Callback мастер-ключа — `on_start` + `on_role_change` (в `on_start` Patroni
   роль аргументами не передаёт — скрипт узнаёт её сам по `GET /primary`).
+- **Механика REST-TLS ноды** (REST `:8008` — только HTTPS, arch/13 §4): env
+  `SSL_RESTAPI_CERTIFICATE`/`SSL_RESTAPI_PRIVATE_KEY`/`SSL_RESTAPI_CA` (PEM,
+  выпускает воркер из per-install CA при сборке env; материализация файлов
+  и `restapi.certfile/keyfile/cafile` — штатный Spilo); секция `restapi`
+  SPILO_CONFIGURATION: `connect_address: <полное имя ноды>:8008` (DNS
+  per-cluster сети, перекрывает шаблонный IP; api_url в DCS = DNS из SAN) +
+  `authentication {username, password}` — per-cluster пара `rest_password`
+  (§4 группа 1; unsafe-эндпоинты). Серт ноды — не etcd-состояние (генерация +
+  кеш процесса, канон серверных сертов KafkaWorker). Lease-скрипт
+  мастер-ключа (P11) в `on_start` опрашивает
+  `https://127.0.0.1:8008/primary` с верификацией по ca-файлу ноды
+  (entrypoint материализует PEM из env в файл и пишет путь строкой в
+  pgw-node.env — PEM в KEY=VALUE-файл не переносится).
 
 Роли внутри:
 
@@ -523,6 +536,11 @@ authz-плагины вне скоупа, граница зафиксирова�
    смены мастера потребители читают из проб Patroni (`/primary` по
    patroni-портам portalloc) или `pg_is_in_recovery`, а не из сравнения
    значений ключа.
+6. **SAN-канон серта REST-эндпоинта ноды** (§2.1): DNS `<n>` (короткий alias
+   в `pgw-net-<C>`) + DNS `pgw-<C>-<X>-<n>` (полное docker-имя) + IP
+   `127.0.0.1` (loopback lease-скрипта). Advertised-хост в SAN не входит —
+   клиенты advertised-адресов верифицируют цепочку без hostname-проверки
+   (arch/13 §4).
 
 Сам PgWorker — контейнер с примонтированным `/var/run/docker.sock` (plain на
 одном хосте / swarm manager), volume под снапшоты etcd, env-секреты (§8).
@@ -642,7 +660,7 @@ arch/adminpanel/02 §2.3.1); координационные `leader`/`claims`/`i
 | `/pgworker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика; необязательно для работы) |
 | `/pgworker/api/<id>` | lease TTL 15 с | **дискавери API воркера** (§1.1): `{"url":"https://<host>:<port>","instance":"<id>","since_unix":…,"cert_thumbprint"?}` — ставит сам инстанс при старте; ключ жив = инстанс жив и его URL валиден. Читает панель (единственный способ найти API воркера) и оператор; в UI — только сводка инстансов на грани «Воркеры» (03 §3) |
 | `/pgworker/moves/<C>/bucket_<i>` | обычный | заявка на плановый переезд/откат/уборку/отмену (t01): `{"op":"move\|rollback\|finalize\|abort","to":…,"old_shard":…,"skip_reverse":…,"resume":…,"force":…,"requested_unix":…,"requested_by":…}`. Успех или перманентный валидационный отказ → ключ удаляется; transient-сбой → остаётся, фазы — в статус-ключе бакета. Обрабатывается только держателем клэйма `<C>`; одновременно — старейшая заявка кластера. Deprovisioning D2 чистит `/pgworker/moves/<C>/` (префикс). |
-| `/pgworker/rotations/<C>` | обычный | заявка на ротацию per-cluster секретов ВСЕГО кластера — app, bucket_admin, bucket_mover (панель, клэйм-txn `version==0` + put): `{"requested_unix":<unix>,"requested_by":"<username панели>"}`. Выполняет держатель клэйма `<C>` (§5 I): ALTER ROLE трёх ролей на мастере каждого поднятого шарда → атомарный txn-коммит (put `app_password`+`mover_password`+`bucket_admin_password`, перезапись dsn-ключей, del заявки). Уже стоит → панель получает 409 (идемпотентность повтора). Deprovisioning D2 удаляет ключ точечно. |
+| `/pgworker/rotations/<C>` | обычный | заявка на ротацию per-cluster секретов ВСЕГО кластера — app, bucket_mover, bucket_admin И `rest_password` (панель, клэйм-txn `version==0` + put): `{"requested_unix":<unix>,"requested_by":"<username панели>"}`. Выполняет держатель клэйма `<C>` (§5 I): ALTER ROLE трёх ролей на мастере каждого поднятого шарда + rolling-пересоздание нод для `rest_password` → атомарный txn-коммит (put `app_password`+`mover_password`+`bucket_admin_password`+`rest_password`, перезапись dsn-ключей, del заявки; для rest — rolling-пересоздание + txn-коммит). Уже стоит → панель получает 409 (идемпотентность повтора). Deprovisioning D2 удаляет ключ точечно. |
 | `/pgworker/etcd-snapshots` | обычный | **статус выгрузки снапшотов etcd в S3** (reliability t08): `{"enabled":bool,"state":"OK"\|"FAILED","last_uploaded_unix":N,"last_object":"etcd/snapshot-<id>.db","last_sha256":"<hex>","size_bytes":N,"interval_min":360,"error"?:"…"}`. Каждый снятый слепок выгружается; статус-ключ обновляется после каждой выгрузки. `last_uploaded_unix` — семантика «покрытия», не времени put-запроса: метка снятия последнего слепка, чьё содержимое подтверждённо доставлено в S3 фактическим upload'ом; поле двигается каждым успешным проходом sink'а (иначе детект отставания и stale-алерт врут на живом контуре). `last_object` — объект последней выгрузки, реально лежащий в S3; `last_sha256` — sha256 этой выгрузки (наблюдаемость). Пишет ТОЛЬКО инстанс PgWorker, выполнивший экспорт-операцию (лидер снапшотов или процесс в точках изменений — put одним ключом без RMW); панель читает (adminpanel/02 §2.3.1). Наблюдаемость; источником для восстановления НЕ является (etcd мёртв — ключа нет). |
 
 Смежный ключ вне префикса `/pgworker/` — **`/workers/api_tls/pgworker`**
@@ -669,6 +687,15 @@ compare (routing=старое значение, config.mod_revision) — «пр�
    `bucket_admin_password` (DSN-точка входа; попадают в dsn-ключ шарда и env
    контейнера ноды) — t02: канон для всех трёх ролей один, ensure P1.5/R1/
    adopt txn put-if-absent (для bucket_admin вход — config JSON или генерация).
+   Четвёртый per-cluster секрет — `rest_password` (etcd, ensure txn
+   put-if-absent, `AppSecretGenerator`, 32 симв): basic-auth пара Patroni REST
+   `:8008` (мутационные эндпоинты; username — константа `patroni`, отдельного
+   user-ключа нет: Patroni требует пару username+password в конфиге каждой
+   ноды). Ротация — процесс I (заявка панели, применение — rolling-пересоздание
+   нод, §5 I). Экспозиция — класс `app_password`/`mover_password` (etcd без
+   per-key ACL; парсеры панели его не разбирают, в UI не попадает); вынос
+   секретов из etcd — `t02-external-secret-manager` (pgworker-трек), класс
+   экспозиции не расширяется.
 2. **per-install, из env PgWorker** (не в git, не в etcd — P12/P17):
    `PGW_PG_SUPERUSER_PASSWORD`, `PGW_PG_STANDBY_PASSWORD`,
    `PGW_BUCKET_ADMIN_PASSWORD`, `PGW_BUCKET_MOVER_PASSWORD` — с t02 это
@@ -686,6 +713,11 @@ compare (routing=старое значение, config.mod_revision) — «пр�
    etcd-ключа — материал входящей грани, не исходящих коммуникаций
    (docker/PG/etcd-транспорт воркера его не использует; валидация при
    записи — adminpanel/02 §9.9); `PGW_API_KEY` исключён (заменён mTLS).
+   REST-TLS нод: `PGW_REST_TLS_CA`/`PGW_REST_TLS_CA_KEY` (`…_PATH`-варианты
+   из TLS-тома `/tls`) — per-install API-CA и его ключ для выпуска серверных
+   сертов REST-эндпоинтов нод (`SSL_RESTAPI_*`, §2.1); отсутствие/неполнота
+   пары — fail-fast валидации старта воркера (HTTP-режим провижининга не
+   существует; WAF-фикстуры передают тестовый CA — двойной семантики нет).
 
 ---
 
@@ -792,6 +824,9 @@ P2 на каждый шард X:
         max(10, max_connections − 5) (§2.1, §8), callback on_role_change →
         lease-скрипт мастер-ключа; doorman: пул <dbname>, TLS require;
         haproxy: бэкенды всех Patroni-нод шарда), env-секреты (§4);
+        дополнительно REST-TLS-материал (§2.1): `SSL_RESTAPI_*` PEM +
+        секция `restapi` SPILO_CONFIGURATION с `connect_address`/
+        `authentication` из per-cluster `rest_password`;
         nodes/<n>/state=PROVISIONING; при существовании (re-run) — сверить
         имя И порты: фактические public-биндинги контейнера (inspect)
         обязаны совпадать с планом (5432→pg, 8008→patroni, 6432→doorman);
@@ -870,7 +905,9 @@ D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый �
   state=PROVISIONING→RUNNING; как и rebuild ниже — с тюнингом от АКТУАЛЬНЫХ
   `request_*` на момент пересоздания (PgtuneInputsFactory.Create, §2.1:
   пересчёт на каждый EnsureNode-путь).
-- Patroni-REST каждой ноды (`GET /cluster`, timeout 3 с). Нода недоступна
+- Patroni-REST каждой ноды по HTTPS (`GET /cluster`, timeout 3 с; верификация
+  цепочки к kfw-install-ca без hostname-проверки — arch/13 §4; адрес —
+  `host:patroni-port` portalloc). Нода недоступна
   дольше `NodeDeadSec` (90 с, конфиг) и **не лидер** и кворум шарда жив
   (мертва максимум одна нода: живых ≥ max(1, nodes−1) — обобщение «≥2»
   фазы исполнения для 2-нодовых шардов) → **rebuild**: удалить контейнер + volume, создать
@@ -906,7 +943,8 @@ D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый �
   `postgresql.parameters` =
   merge(PGTune ∪ канон) от актуальных заявок `request_{cpu,mem}` и опций
   `PgWorker:Pgtune`, пересчёт на каждый тик конвергенции, БЕЗ фиксации в
-  etcd) → ОДИН PATCH /config: обновляет расходящиеся значения, добавляет
+  etcd) → ОДИН PATCH /config (несёт `Authorization: Basic` per-cluster —
+  `rest_password`, §4 группа 1; GET-запросы заголовок не несут): обновляет расходящиеся значения, добавляет
   отсутствующие и удаляет лишние (null-патч — параметр исчез из PGTune-вывода
   при смене заявок или добавлен в `ExcludeParams`; «старое не живёт параллельно
   канону», включая вручную записанные оператором ключи — канал переопределения
@@ -977,6 +1015,27 @@ D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый �
   (как P2.5'). Модель снапшота уже несёт наличие ключа — прогон без
   etcd-запросов, put только для отсутствующих; после первого обеспечения
   последующие тики — no-op.
+- **Общий шаг пересоздания нод с ДВУМЯ входами** (пересоздание живого
+  канонического контейнера с сохранением volume): (а) REST-TLS-конвергенция
+  живых канонических нод — инспекция env существующего контейнера
+  (отсутствие `SSL_RESTAPI_CERTIFICATE`), не более одного пересоздания на
+  тик надзора кластера; живой TLS-лидер — сначала graceful-switchover
+  (кред — пара фактического поколения ноды: ключ etcd, в окне ротации до
+  txn — OLD), затем снос следующим тиком (семантика TO_RECREATE-soft);
+  легаси-http лидер — soft транспортно недостижим (https-проба отказывает:
+  нода слушает голый http) — жёсткий снос с failover-выборами Patroni и
+  паузой записи на окно выборов, failover-свидетель — живая по DCS-членству
+  реплика (`/service/<scope>/members/<n>` state running — heartbeat мимо
+  REST), без свидетеля шаг ждёт: осознанная граница однократной миграции,
+  не штатный режим; volume сохраняется; гвард кворума; (б) заказ
+  rolling-ротации REST-пары от процесса I (§5 I) — та же механика (ротация
+  всегда soft: её ноды — TLS), критерий выбора ноды — hash пары в env
+  (`PGW_REST_PASSWORD_HASH`). Шаг — до проб шарда в тике; перед первым
+  пересозданием входа конвергенции — ensure `rest_password` (паттерн
+  app_params-миграции). Гварды окна ротации (`rest_pending` в журнале
+  работы, §5 I): PATCH `/config` (конвергенция DCS) и RecreateMarked
+  soft-switchover — skip тика (мутации ретраются после txn-коммита);
+  ускорение failover мёртвого лидера — DCS-ключ, работает.
 
 Границы надзора (t06): шард без `dsn` — домен AddShardProcess (пробы/
 самовосстановление/UNREACHABLE-переходы не трогаем — state нод входит в
@@ -1156,31 +1215,66 @@ bucket_mover (`mover_password`) и bucket_admin (`bucket_admin_user`/
 R0 заявка есть → journal op=rotate-app-password phase=started; клэйм-гвард
    (имя op сохранено — совместимость журналов, образец RotationRole.Phase
    arch/16 §5 H)
-R1 ensure пер-cluster тройки (P1.5): {app_user, app_password},
-   {mover_password}, {bucket_admin_user, bucket_admin_password} — OLD-значения
-R2 NEW = сгенерировать ×3 (32 симв [A-Za-z0-9]); для каждого шарда С dsn
+R1 ensure пер-cluster четвёрки (P1.5): {app_user, app_password},
+   {mover_password}, {bucket_admin_user, bucket_admin_password},
+   {rest_password} — OLD-значения
+R2 NEW = сгенерировать ×4 (32 симв [A-Za-z0-9]); для каждого шарда С dsn
    (поднятого; шард без dsn — домен AddShard: роли создадутся по свежим
-   кредам): мастер (master-ключ → Patroni fallback) → admin-DSN →
+   кредам; для rest — skip: его ноды создадутся с новой парой после R3):
+   мастер (master-ключ → Patroni fallback) → admin-DSN →
    ALTER ROLE app / bucket_admin / bucket_mover PASSWORD '<NEW>' (реплики
    получают pg_authid физической репликацией). Любой сбой → transient:
    journal last_error, заявка жива, следующий тик повторяет С НАЧАЛА со
    свежими NEW (ALTER идемпотентен перезаписью — регенерация между тиками
-   безопасна)
+   безопасна). Для rest_password — ROLLING-пересоздание нод кластера общим
+   шагом надзора (§5 C: ≤1 нода/тик, лидер — soft-switchover со сносом
+   следующим тиком, volume сохраняется, гварды кворума/restore/TO_REMOVE):
+   пара NEW «в полёте» фиксируется полем `rest_pending` журнала работы
+   (фаза rotate-rest-start) — повтор тиками ПРОДОЛЖАЕТ проход с той же
+   парой (регенерация между тиками обнуляла бы прогресс rolling; потеря
+   поля — проход начинается заново со свежей парой, безопасно); прогресс
+   по нодам — факт env (`PGW_REST_PASSWORD_HASH`, инспекция) —
+   takeover-безопасен; есть нода с hash != hash(NEW) → окно открыто, тик
+   ЖДЁТ (фаза rotate-rest-rolling); все ноды несут hash(NEW) → R2 завершён
+   (драйверы без honest env-инспекции — Swarm-заглушка §5 C — окно НЕ
+   удерживают: rolling-шаг там no-op, приведение их env к ключу — зона
+   t11-swarm-running-inspection; restore/TO_REMOVE-шарды и усыновлённые
+   ноды гейт пропускает — как шаг пересоздания §5 C)
 R3 все шарды OK → ОДНА txn: [compare value==OLD для app_password,
-   mover_password, bucket_admin_password и КАЖДОГО dsn-ключа шардов]
+   mover_password, bucket_admin_password, rest_password и КАЖДОГО
+   dsn-ключа шардов]
    [put app_password=NEW_app; put mover_password=NEW_mover; put
-   bucket_admin_password=NEW_admin; перезапись dsn-ключей всех шардов
+   bucket_admin_password=NEW_admin; put rest_password=NEW_rest
+   (коммит после применения на ВСЕХ нодах); перезапись dsn-ключей всех шардов
    (пароль bucket_admin заменён regex-ом по conninfo); del
    /pgworker/rotations/<C>] — коммит и снятие заявки неразделимы. Compare
    dsn закрывает гонку с внешней записью dsn (репарация P11) в окне
    ротации. Compare проигран (внешняя запись etcdctl) → re-read, ретрай
-   тиком со свежими OLD
-R4 снапшот P12 (точка изменения) + journal phase=done
+   тиком со свежими OLD (для rest — повтор прохода со свежей парой,
+   новое rest_pending, повторный rolling идемпотентен)
+R4 снапшот P12 (точка изменения) + journal phase=done (сброс rest_pending —
+   фазовой записью done)
 ```
 
 Пока R3 не прошёл, креды в etcd НЕ меняются — приложения работают со
 старыми паролями; окно расхождения (часть шардов уже с NEW, etcd со OLD)
 существует только при transient-отказе посередине и закрывается ретраями.
+**Окно rolling rest-ротации** (от первого пересоздания входа ротации до
+R3): ноды разных поколений несут разные пары (dual-auth у Patroni нет) →
+межнодовые REST-вызовы между поколениями получают 401 — HA-инициации
+Patroni (fetch_node_status/switchover) деградированы; запись/репликация/
+DCS-heartbeat/master-ключ НЕ затронуты (мимо REST). Гварды окна: до R3
+воркер не инициирует через REST кластера ни switchover (RecreateMarked-soft,
+§5 C), ни PATCH `/config` (конвергенция DCS — транзиент-skip тика);
+подавленные мутации ретраются после txn; ускорение failover мёртвого
+лидера — DCS-ключ etcd, работает. Сборка env нод в окне берёт пару из
+`rest_pending` (эффективная пара: pending ?? ключ); все EnsureNode-пути
+окна (rebuild, TO_RECREATE, конвергенция после закрытия) не расширяют
+окно — пересоздание любым путём ставит NEW-пару. Вход конвергенции
+REST-TLS в окне приостанавливается (не тянуть два входа к одной ноде);
+после R3 недомигрированные ноды дорабатываются обычным порядком.
+Длительность окна — единицы минут (2–3 ноды × пересоздание со своим
+PGDATA + тик soft-switchover), записи не рвёт.
 После R3 клиенты обязаны перечитать креды из etcd (живые пулы реконнектятся
 с ошибкой до перечитывания — плановая операция, выполнять в тихое окно;
 предупреждение — в UI-модалке панели). Специфика ролей: **bucket_admin**
@@ -1449,7 +1543,15 @@ PgWorker:Docker { Mode: Plain|Swarm, Hosts[{Name,Endpoint}],
                   SwarmManager, PortRange{From,To}, Images{Node}, EnableDoorman,
                   Tls {CaPem|CaPath, ClientCertPem|Path, ClientKeyPem|Path},   # §2.2.1
                   Ssh {KeyPem|KeyPath, RemoteDaemonHost=127.0.0.1,
-                       RemoteDaemonPort=2376, FingerprintSha256?} }            # §2.2.1
+                       RemoteDaemonPort=2376, FingerprintSha256?},             # §2.2.1
+                  RestTls {CaPem|CaPath, CaKeyPem|CaKeyPath} }                 # REST-TLS :8008 (§2.1/§4):
+                                                                               # per-install CA + ключ выпуска
+                                                                               # серверных сертов REST-эндпоинтов
+                                                                               # нод; env-имена PGW_REST_TLS_*;
+                                                                               # оба обязательны — fail-fast
+                                                                               # старта (симметрия запрета
+                                                                               # Pgtune:DbType=desktop);
+                                                                               # WAF-фикстуры — тестовый CA
 PgWorker:Loops { ScanIntervalSec=5, KeepaliveSec=5, SnapshotIntervalMin=360,
                  ErrorDelayMs=2000,
                  Watchdog { Enabled=true, Multiplier=2, CheckIntervalSec=15, StopDelaySec=1 } }
@@ -1515,7 +1617,8 @@ PgWorker:Api { AdvertiseUrl, EnableSeedEndpoint=false,
                   # URL API (достижимый панелью) в /pgworker/api/<id> — https://;
                   # демо-сид-эндпоинт за флагом; AllowInsecureHttp — только WAF-тесты
 # секреты — env PGW_* (§4): per-install пароли + PGW_API_TLS_* / PGW_DOCKER_TLS_* /
-#   PGW_DOCKER_SSH_* (t03); PGW_API_KEY исключён (§1.1 — mTLS вместо X-Api-Key)
+#   PGW_DOCKER_SSH_* (t03); PGW_REST_TLS_* — REST-TLS нод (§2.1); PGW_API_KEY
+#   исключён (§1.1 — mTLS вместо X-Api-Key)
 ```
 
 Флаг `EnableDoorman=false` (риск R1): узел без пулера — компромисс для
@@ -1542,6 +1645,7 @@ PgWorker:Api { AdvertiseUrl, EnableSeedEndpoint=false,
 | R13 | SAN серверного серта API не покрывает фактический advertise-хост → строгие клиенты (curl, Prometheus server_name) получают TLS-отказ | канон SAN-набора пакета: `pgworker`, `localhost`, `host.docker.internal`, `127.0.0.1` (§1.1); генерация — `deploy/tls/gen.sh` с полным SAN; панель валидирует цепочку (CustomRootTrust) — hostname-check не ломает её даже при расхождении, строгие клиенты защищены каноном SAN |
 | R14 | SSH-туннель без pinned host-key — MITM на первичном подключении (TOFU) | `PgWorker:Docker:Ssh:FingerprintSha256` — pin строго; не задан → accept + warning-лог при старте хоста (диагностируемое ослабление); канон прода — pin задан |
 | R15 | Plaintext `tcp://:2375` к Engine API остаётся технически возможным (dev/тесты) | канон §2.2.1: прод — только 2376+mTLS или ssh; plaintext → warning-лог воркера на каждом старте хоста; 2375 в firewall-матрице arch/13 §2 отсутствует (default deny) |
+| R16 | Компрометация `ca.key` = выпуск серверных сертов REST/API от имени установки | ключ в TLS-томе поставки (ro), права 600, в etcd/registry не попадает; на стенде панель/as-prometheus монтируют `deploy/tls` целиком (bind ro — домашний контур, принято; точечное монтирование — опция поставки); потеря deploy-хоста = потеря `ca.key` — обязательный бэкап пакета `deploy/tls` (runbook), серты живых нод не инвалидируются |
 
 ---
 

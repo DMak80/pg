@@ -21,8 +21,18 @@ public class DockerDriverTests
 
     private static IDockerEngine NewEngine() => Factory.Create("unix:///var/run/docker.sock", hostAlias: Host);
 
+    // REST-TLS кеш драйвера (t22): тестовый CA — выпуск серверных сертов нод.
+    private static readonly RestCertificateCache RestCertificates = NewRestCache();
+
+    private static RestCertificateCache NewRestCache()
+    {
+        var (caPem, caKeyPem) = PgWorker.IntegrationTests.E2e.E2eTestPki.GenerateCa("driver-it");
+        return new RestCertificateCache(caPem, caKeyPem);
+    }
+
     private static PlainClusterDriver NewDriver()
-        => new([new HostEndpoint(Host, "unix:///var/run/docker.sock")], Factory, enableDoorman: false, AlpineImage);
+        => new([new HostEndpoint(Host, "unix:///var/run/docker.sock")], Factory, enableDoorman: false,
+            AlpineImage, restCertificates: RestCertificates);
 
     private static ShardTopology Topology(string cluster, NodeAddress addr) => new(
         cluster, "s1", $"{cluster}-s1",
@@ -102,8 +112,8 @@ public class DockerDriverTests
         var addr = new NodeAddress(Host, new NodePorts(25102, 25103, 25104));
 
         // Act — повторный Ensure с тем же именем
-        var first = await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
-        var second = await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
+        var first = await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+        var second = await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
         await using var engine = NewEngine();
         var list = await engine.ListContainersAsync(ContainerName(cluster), all: true, CancellationToken.None);
 
@@ -126,7 +136,7 @@ public class DockerDriverTests
         await CleanupAsync(cluster);
         var driver = NewDriver();
         var addr = new NodeAddress(Host, new NodePorts(25105, 25106, 25107));
-        await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
+        await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
 
         // Act — удаление и его повтор (все объекты уже исчезли)
         var removed = await driver.RemoveNodeAsync(cluster, "s1", "n1", CancellationToken.None);

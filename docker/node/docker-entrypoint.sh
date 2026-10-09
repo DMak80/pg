@@ -32,6 +32,15 @@ fi
 chown postgres:postgres /home/postgres/pgw-node.env
 chmod 600 /home/postgres/pgw-node.env
 
+# REST-TLS: CA верификации loopback-клиента (https://127.0.0.1:8008/primary,
+# t22) материализуется в файл — PEM в KEY=VALUE-файл pgw-node.env не переносится.
+if [ -n "$SSL_RESTAPI_CA" ]; then
+    printf '%s\n' "$SSL_RESTAPI_CA" > /home/postgres/pgw-node-ca.pem
+    chown postgres:postgres /home/postgres/pgw-node-ca.pem
+    chmod 600 /home/postgres/pgw-node-ca.pem
+    echo "PGW_NODE_CA=/home/postgres/pgw-node-ca.pem" >> /home/postgres/pgw-node.env
+fi
+
 # Patroni запускается под postgres (chpst): каталоги данных должны быть его.
 mkdir -p /home/postgres/pgroot /home/postgres/pgdata
 chown -R postgres:postgres /home/postgres/pgroot /home/postgres/pgdata
