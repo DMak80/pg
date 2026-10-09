@@ -11,8 +11,9 @@ namespace Shared.Metrics.Worker;
 public sealed class WorkerMetricsInstrumentation : IDisposable
 {
     // Терминальные фазы — фактический словарь журналов обоих воркеров (arch/18 §2.2).
+    // expired — возрастное снятие не-начатой заявки (t10).
     public static readonly IReadOnlySet<string> FinalPhases =
-        new HashSet<string> { "done", "failed", "crashed", "rejected", "cancelled" };
+        new HashSet<string> { "done", "failed", "crashed", "rejected", "cancelled", "expired" };
 
     // Ops без терминальной фазы: supervise (стационарные записи, часть через
     // WriteSupervisionAsync мимо события) и evacuate (только waiting-*/blocked-moving).
@@ -51,7 +52,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         var loopTicks = meter.CreateCounter<long>(
             "worker.loop.ticks", description: "Тики циклов воркера (arch/18 §2.2)");
         var operations = meter.CreateCounter<long>(
-            "worker.operation.total", description: "Завершённые операции (result: ok/error)");
+            "worker.operation.total", description: "Завершённые операции (result: ok/error/expired)");
         var backupVerify = meter.CreateCounter<long>(
             "pgworker_backup_verify_total", description: "Результаты verify полных бэкапов (arch/19 §5, t04)");
         var backupRestore = meter.CreateCounter<long>(
@@ -543,8 +544,9 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
     //    стационарные записи (часть — через WriteSupervisionAsync мимо события),
     //    живость надзора закрывает WorkerLoopStalled (решение ревью Ф4-2);
     //  - терминальные фазы (FinalPhases, фактический словарь журналов обоих
-    //    воркеров): done, failed, crashed, rejected, cancelled → ProcessFinished +
-    //    Operation(process, ok: phase == "done"); skipped — промежуточная
+    //    воркеров): done, failed, crashed, rejected, cancelled, expired →
+    //    ProcessFinished + Operation(process, result: done → ok, expired →
+    //    expired, прочие → error); skipped — промежуточная
     //    (AdoptionProcess: skipped → далее обязательно done/failed) — НЕ терминальная;
     //  - прочие → ProcessPhase (startedAt контролируется first-seen внутри).
     public void OnJournalPhase(string cluster, string process, string phase)
@@ -556,7 +558,7 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
             if (FinalPhases.Contains(phase))
             {
                 ProcessFinished(cluster, process);
-                Operation(process, ok: phase == "done");
+                Operation(process, phase == "done" ? "ok" : phase == "expired" ? "expired" : "error");
                 return;
             }
             ProcessPhase(cluster, process, phase, _clock.GetUtcNow());
@@ -567,13 +569,12 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
         }
     }
 
-    // Завершённая операция: counter worker_operation_total{operation, result}
-    // → worker_operation_total; result ∈ {"ok","error"}.
-    public void Operation(string operation, bool ok)
+    // Завершённая операция: counter worker_operation_total{operation, result};
+    // result ∈ {"ok","error","expired"} (expired — снята возрастным таймаутом, t10).
+    public void Operation(string operation, string result)
     {
         try
         {
-            var result = ok ? "ok" : "error";
             OperationMark(operation, result);
             lock (_lock)
             {
@@ -586,6 +587,8 @@ public sealed class WorkerMetricsInstrumentation : IDisposable
             // Пассивный наблюдатель.
         }
     }
+
+    public void Operation(string operation, bool ok) => Operation(operation, ok ? "ok" : "error");
 
     // Снапшот снят: источник worker_snapshot_age_seconds (value = now - at).
     public void SnapshotTaken(DateTimeOffset at)

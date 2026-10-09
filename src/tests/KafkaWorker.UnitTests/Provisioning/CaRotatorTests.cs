@@ -185,7 +185,7 @@ public class CaRotatorTests
         // Arrange — нет CA/админов (премиграционный): только заявка
         var etcd = new FakeEtcd();
         etcd.Seed($"/kafkaworker/ca_rotations/{Cluster}",
-            """{"requested_unix":1756900100,"requested_by":"admin"}""");
+            $$"""{"requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 10}},"requested_by":"admin"}"""); // свежая: старую K0.5-точка сняла бы экспирацией (t10)
         var driver = new FakeKafkaDriver();
         var admin = ReadyAdmin();
 
@@ -203,5 +203,231 @@ public class CaRotatorTests
     private sealed class FakeAdminFactory(FakeKafkaAdminClient client) : IKafkaAdminClientFactory
     {
         public IKafkaAdminClient Create(string bootstrap, string user, string password, string? caPem) => client;
+    }
+
+    // ===== t10: экспирация дооконных waiting-точек; окно уводит в доигрывание =====
+
+    [Fact]
+    public async Task Run_ClusterDown_OldCaTicket_Expired()
+    {
+        // Arrange — дооконная ветка: endpoints нет (кластер не поднят); заявка старая.
+        var etcd = SeedEtcd();
+        var snap = Snapshot(etcd, etcd.Store[$"/kafka/clusters/{Cluster}/ca_pem"].Value,
+            etcd.Store[$"/kafka/clusters/{Cluster}/ca_key"].Value) with { Endpoints = null };
+
+        // Act — тик CaRotator.
+        var result = await Sut(etcd, new FakeKafkaDriver(), ReadyAdmin()).RunAsync(snap, CancellationToken.None);
+
+        // Assert — заявка снята; исход expired kind=ca reason=waiting-cluster; Success.
+        result.IsSuccess.Should().BeTrue();
+        etcd.Store.Should().NotContainKey($"/kafkaworker/ca_rotations/{Cluster}");
+        var outcome = etcd.Store[$"/kafkaworker/ticket_outcomes/{Cluster}"].Value;
+        outcome.Should().Contain("\"kind\":\"ca\"")
+            .And.Contain("\"outcome\":\"expired\"")
+            .And.Contain("\"reason\":\"waiting-cluster\"");
+        (await new WorkJournal("/kafkaworker", etcd, [Ep]).ReadAsync(Cluster, CancellationToken.None)).Value!.Phase
+            .Should().Be("expired");
+    }
+
+    [Fact]
+    public async Task Run_PasswordRotationAlive_OldCaTicket_Expired()
+    {
+        // Arrange — дооконная ветка: живая пароль-ротация (заявка rotations/<C>).
+        var etcd = SeedEtcd();
+        etcd.Seed($"/kafkaworker/rotations/{Cluster}",
+            """{"requested_unix":1756900200,"requested_by":"it"}""");
+
+        // Act — тик CaRotator.
+        var result = await Sut(etcd, new FakeKafkaDriver(), ReadyAdmin())
+            .RunAsync(Snapshot(etcd, etcd.Store[$"/kafka/clusters/{Cluster}/ca_pem"].Value,
+                etcd.Store[$"/kafka/clusters/{Cluster}/ca_key"].Value), CancellationToken.None);
+
+        // Assert — expired reason=waiting-password-rotation.
+        result.IsSuccess.Should().BeTrue();
+        etcd.Store.Should().NotContainKey($"/kafkaworker/ca_rotations/{Cluster}");
+        var outcome = etcd.Store[$"/kafkaworker/ticket_outcomes/{Cluster}"].Value;
+        outcome.Should().Contain("\"reason\":\"waiting-password-rotation\"");
+    }
+
+    [Fact]
+    public async Task Run_RotateJournalExpired_NoPasswordTickets_PlaysThrough()
+    {
+        // Arrange — журнал rotate в ТЕРМИНАЛЬНОЙ фазе expired (пароль-заявку
+        // сняла экспирация), парольных заявок нет; ca-заявка свежая. Expired
+        // пишется только вне мутаций — гвард «живая пароль-ротация» обязан
+        // пропустить терминальную фазу (иначе свежая ca-заявка крутилась бы
+        // в waiting-password-rotation до собственного таймаута).
+        var etcd = SeedEtcd();
+        etcd.Seed($"/kafkaworker/ca_rotations/{Cluster}",
+            $$"""{"requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 10}},"requested_by":"it"}""");
+        await new WorkJournal("/kafkaworker", etcd, [Ep]).WritePhaseAsync(
+            Cluster, "rotate", "expired", "inst1", null, CancellationToken.None);
+        var driver = new FakeKafkaDriver();
+
+        // Act — тик CaRotator.
+        var result = await Sut(etcd, driver, ReadyAdmin())
+            .RunAsync(Snapshot(etcd, etcd.Store[$"/kafka/clusters/{Cluster}/ca_pem"].Value,
+                etcd.Store[$"/kafka/clusters/{Cluster}/ca_key"].Value), CancellationToken.None);
+
+        // Assert — НЕ waiting-password-rotation: K идёт дальше по ветке и
+        // доигрывает ротацию до конца (done + исход done).
+        result.IsSuccess.Should().BeTrue();
+        etcd.Store.Should().NotContainKey($"/kafkaworker/ca_rotations/{Cluster}");
+        etcd.Store[$"/kafkaworker/ticket_outcomes/{Cluster}"].Value
+            .Should().Contain("\"outcome\":\"done\"");
+        (await new WorkJournal("/kafkaworker", etcd, [Ep]).ReadAsync(Cluster, CancellationToken.None)).Value!.Phase
+            .Should().Be("done");
+        driver.Removed.Should().HaveCount(2);
+    }
+
+    [Theory]
+    [InlineData("phase-a")]
+    [InlineData("rotated-commit")]
+    [InlineData("phase-c")]
+    [InlineData("admin:phase-a")]
+    public async Task Run_RotateJournalMutationPhase_WaitsPasswordRotation(string phase)
+    {
+        // Arrange — журнал rotate в МУТАЦИОННОЙ фазе роли (брокеры несут JAAS
+        // [OLD, NEW] либо окно C не закрыто; admin:-префикс — та же роль);
+        // парольных заявок нет; ca-заявка свежая.
+        var etcd = SeedEtcd();
+        etcd.Seed($"/kafkaworker/ca_rotations/{Cluster}",
+            $$"""{"requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 10}},"requested_by":"it"}""");
+        await new WorkJournal("/kafkaworker", etcd, [Ep]).WritePhaseAsync(
+            Cluster, "rotate", phase, "inst1", null, CancellationToken.None);
+
+        // Act — тик CaRotator.
+        var result = await Sut(etcd, new FakeKafkaDriver(), ReadyAdmin())
+            .RunAsync(Snapshot(etcd, etcd.Store[$"/kafka/clusters/{Cluster}/ca_pem"].Value,
+                etcd.Store[$"/kafka/clusters/{Cluster}/ca_key"].Value), CancellationToken.None);
+
+        // Assert — waiting-password-rotation; ca-заявка жива; исхода нет.
+        result.IsSuccess.Should().BeTrue();
+        (await new WorkJournal("/kafkaworker", etcd, [Ep]).ReadAsync(Cluster, CancellationToken.None)).Value!.Phase
+            .Should().Be("waiting-password-rotation");
+        etcd.Store.Should().ContainKey($"/kafkaworker/ca_rotations/{Cluster}");
+        etcd.Store.Should().NotContainKey($"/kafkaworker/ticket_outcomes/{Cluster}");
+    }
+
+    [Fact]
+    public async Task Run_ReassignmentAlive_OldCaTicket_Expired()
+    {
+        // Arrange — дооконная ветка: живой reassignments-прогресс (режим balance).
+        var etcd = SeedEtcd();
+        etcd.Seed($"/kafkaworker/reassignments/{Cluster}", """{"mode":"balance"}""");
+
+        // Act — тик CaRotator.
+        var result = await Sut(etcd, new FakeKafkaDriver(), ReadyAdmin())
+            .RunAsync(Snapshot(etcd, etcd.Store[$"/kafka/clusters/{Cluster}/ca_pem"].Value,
+                etcd.Store[$"/kafka/clusters/{Cluster}/ca_key"].Value), CancellationToken.None);
+
+        // Assert — expired reason=waiting-reassignment.
+        result.IsSuccess.Should().BeTrue();
+        etcd.Store.Should().NotContainKey($"/kafkaworker/ca_rotations/{Cluster}");
+        var outcome = etcd.Store[$"/kafkaworker/ticket_outcomes/{Cluster}"].Value;
+        outcome.Should().Contain("\"reason\":\"waiting-reassignment\"");
+    }
+
+    [Fact]
+    public async Task Run_BlindPrecheck_OldCaTicket_Expired()
+    {
+        // Arrange — дооконная ветка: поля живы, DescribeCluster слепой (без ClusterView).
+        var etcd = SeedEtcd();
+        var admin = new FakeKafkaAdminClient(); // DescribeCluster → Failed
+
+        // Act — тик CaRotator.
+        var result = await Sut(etcd, new FakeKafkaDriver(), admin)
+            .RunAsync(Snapshot(etcd, etcd.Store[$"/kafka/clusters/{Cluster}/ca_pem"].Value,
+                etcd.Store[$"/kafka/clusters/{Cluster}/ca_key"].Value), CancellationToken.None);
+
+        // Assert — expired reason=waiting-cluster.
+        result.IsSuccess.Should().BeTrue();
+        etcd.Store.Should().NotContainKey($"/kafkaworker/ca_rotations/{Cluster}");
+        var outcome = etcd.Store[$"/kafkaworker/ticket_outcomes/{Cluster}"].Value;
+        outcome.Should().Contain("\"reason\":\"waiting-cluster\"");
+    }
+
+    [Fact]
+    public async Task Run_StagingAliveNoEndpoints_OldCaTicket_NotExpired()
+    {
+        // Arrange — AC3a: staging жив ∧ endpoints НЕТ ∧ заявка старая.
+        var etcd = SeedEtcd();
+        etcd.Seed($"/kafka/clusters/{Cluster}/ca_next_key", UnitCa.CaKey); // валидный PEM: окно доигрывается с R-пересозданием
+        etcd.Seed($"/kafka/clusters/{Cluster}/ca_next_pem", UnitCa.CaPem);
+        var snap = Snapshot(etcd, etcd.Store[$"/kafka/clusters/{Cluster}/ca_pem"].Value,
+            etcd.Store[$"/kafka/clusters/{Cluster}/ca_key"].Value) with { Endpoints = null };
+
+        // Act — тик CaRotator.
+        var result = await Sut(etcd, new FakeKafkaDriver(), ReadyAdmin()).RunAsync(snap, CancellationToken.None);
+
+        // Assert — window-open ветка: заявка НЕ снята (доигрывание/передержка,
+        // мимо экспирационных точек), ticket_outcomes нет, journal ≠ expired.
+        result.IsSuccess.Should().BeTrue();
+        etcd.Store.Should().ContainKey($"/kafkaworker/ca_rotations/{Cluster}");
+        etcd.Store.Should().NotContainKey($"/kafkaworker/ticket_outcomes/{Cluster}");
+        (await new WorkJournal("/kafkaworker", etcd, [Ep]).ReadAsync(Cluster, CancellationToken.None)).Value!.Phase
+            .Should().NotBe("expired");
+    }
+
+    [Fact]
+    public async Task Run_StagingAlivePasswordTicket_OldCaTicket_NotExpired()
+    {
+        // Arrange — AC3b: staging жив ∧ живая пароль-заявка ∧ ca-заявка старая.
+        var etcd = SeedEtcd();
+        etcd.Seed($"/kafka/clusters/{Cluster}/ca_next_key", UnitCa.CaKey); // валидный PEM: окно доигрывается с R-пересозданием
+        etcd.Seed($"/kafka/clusters/{Cluster}/ca_next_pem", UnitCa.CaPem);
+        etcd.Seed($"/kafkaworker/rotations/{Cluster}",
+            """{"requested_unix":1756900200,"requested_by":"it"}""");
+        // R не сходится (view 1 брокер из 2) — окно остаётся открытым на передержке.
+        var admin = ReadyAdmin(1);
+
+        // Act — тик CaRotator.
+        var result = await Sut(etcd, new FakeKafkaDriver(), admin)
+            .RunAsync(Snapshot(etcd, etcd.Store[$"/kafka/clusters/{Cluster}/ca_pem"].Value,
+                etcd.Store[$"/kafka/clusters/{Cluster}/ca_key"].Value), CancellationToken.None);
+
+        // Assert — window-open ветка: ca-заявка НЕ снята, ticket_outcomes нет.
+        result.IsSuccess.Should().BeTrue();
+        etcd.Store.Should().ContainKey($"/kafkaworker/ca_rotations/{Cluster}");
+        etcd.Store.Should().NotContainKey($"/kafkaworker/ticket_outcomes/{Cluster}");
+    }
+
+    [Fact]
+    public async Task Run_FreshCaTicket_WaitingCluster()
+    {
+        // Arrange — дооконная ветка: endpoints нет; возраст < порога.
+        var etcd = SeedEtcd();
+        etcd.Seed($"/kafkaworker/ca_rotations/{Cluster}",
+            $$"""{"requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 10}},"requested_by":"it"}""");
+        var snap = Snapshot(etcd, etcd.Store[$"/kafka/clusters/{Cluster}/ca_pem"].Value,
+            etcd.Store[$"/kafka/clusters/{Cluster}/ca_key"].Value) with { Endpoints = null };
+
+        // Act — тик CaRotator.
+        var result = await Sut(etcd, new FakeKafkaDriver(), ReadyAdmin()).RunAsync(snap, CancellationToken.None);
+
+        // Assert — journal waiting-cluster, заявка жива.
+        result.IsSuccess.Should().BeTrue();
+        etcd.Store.Should().ContainKey($"/kafkaworker/ca_rotations/{Cluster}");
+        (await new WorkJournal("/kafkaworker", etcd, [Ep]).ReadAsync(Cluster, CancellationToken.None)).Value!.Phase
+            .Should().Be("waiting-cluster");
+        etcd.Store.Should().NotContainKey($"/kafkaworker/ticket_outcomes/{Cluster}");
+    }
+
+    [Fact]
+    public async Task Run_FullRotation_WritesDoneOutcome()
+    {
+        // Arrange — живая заявка, кластер канонический.
+        var etcd = SeedEtcd();
+        var driver = new FakeKafkaDriver();
+        var oldPem = etcd.Store[$"/kafka/clusters/{Cluster}/ca_pem"].Value;
+
+        // Act — один тик доводит P→D→R→C→финал (фейки мгновенны).
+        var result = await Sut(etcd, driver, ReadyAdmin()).RunAsync(Snapshot(etcd, oldPem,
+            etcd.Store[$"/kafka/clusters/{Cluster}/ca_key"].Value), CancellationToken.None);
+
+        // Assert — ticket_outcomes outcome=done kind=ca.
+        result.IsSuccess.Should().BeTrue();
+        var outcome = etcd.Store[$"/kafkaworker/ticket_outcomes/{Cluster}"].Value;
+        outcome.Should().Contain("\"kind\":\"ca\"").And.Contain("\"outcome\":\"done\"");
     }
 }

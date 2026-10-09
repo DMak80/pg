@@ -299,4 +299,86 @@ public class ValkeyAlertRulesTests
         // Assert
         withoutAlert.Should().NotContain(x => x.Kind == "valkey-security-missing");
     }
+
+    // ===== t10 (arch/03 §8.4): stale-ротации и ticket-expired =====
+
+    // Снапшот с ротационным набором (t10): канонический Active-кластер live +
+    // заявки/исходы в именованных списках.
+    private static ValkeySnapshot RotationSnapshot(
+        IReadOnlyList<ValkeyRotationTicket>? rotations = null,
+        IReadOnlyList<ValkeyCaRotationTicket>? caRotations = null,
+        IReadOnlyList<ValkeyTicketOutcome>? outcomes = null) => new(
+        Now, EtcdReachable: true, ConsecutiveFailures: 0,
+        [ActiveCluster() with { HasCaPem = true }],
+        Rotations: rotations ?? [],
+        WorkerEndpoints: [new WorkerEndpoint("vwk1", "https://valkeyworker:8080", 1)],
+        WorkerHealth: [], Probes: [], Alerts: [], ParseErrors: [], UnknownKeyCount: 0,
+        CaRotations: caRotations ?? [],
+        TicketOutcomes: outcomes ?? []);
+
+    [Fact]
+    public void RotationStale_BeyondThreshold_Warning()
+    {
+        // Arrange: заявка ротации пароля старше порога 1800 с.
+        var next = RotationSnapshot(
+            rotations: [new ValkeyRotationTicket("live", "app", NowUnix - 1801, "it")]);
+
+        // Act / Assert: warning valkey-rotation-stale.
+        var a = Evaluate(next).Should().ContainSingle(x => x.Kind == "valkey-rotation-stale").Subject;
+        a.Severity.Should().Be(AlertSeverity.Warning);
+        a.Target.Should().Be("live");
+    }
+
+    [Fact]
+    public void RotationStale_BelowThreshold_NoAlert()
+    {
+        // Arrange: свежая заявка.
+        var next = RotationSnapshot(
+            rotations: [new ValkeyRotationTicket("live", "app", NowUnix - 60, "it")]);
+
+        // Act / Assert
+        Evaluate(next).Should().NotContain(x => x.Kind == "valkey-rotation-stale");
+    }
+
+    [Fact]
+    public void CaRotationStale_BeyondThreshold_Warning()
+    {
+        // Arrange: ca-заявка старше порога.
+        var next = RotationSnapshot(
+            caRotations: [new ValkeyCaRotationTicket("live", NowUnix - 1801, "it")]);
+
+        // Act / Assert
+        var a = Evaluate(next).Should().ContainSingle(x => x.Kind == "valkey-ca-rotation-stale").Subject;
+        a.Severity.Should().Be(AlertSeverity.Warning);
+    }
+
+    [Fact]
+    public void TicketExpired_WarningWithReasonHint()
+    {
+        // Arrange: исход expired с reason.
+        var next = RotationSnapshot(outcomes:
+        [
+            new ValkeyTicketOutcome("live", "password-app", "expired", "waiting-cluster",
+                NowUnix - 4000, "it", NowUnix - 100),
+        ]);
+
+        // Act / Assert: warning valkey-ticket-expired; Hint упоминает reason.
+        var a = Evaluate(next).Should().ContainSingle(x => x.Kind == "valkey-ticket-expired").Subject;
+        a.Severity.Should().Be(AlertSeverity.Warning);
+        a.Hint.Should().Contain("waiting-cluster");
+    }
+
+    [Fact]
+    public void TicketOutcome_Done_NoExpiredAlert()
+    {
+        // Arrange: исход done — повторная успешная ротация гасит алерт (AC13).
+        var next = RotationSnapshot(outcomes:
+        [
+            new ValkeyTicketOutcome("live", "password-app", "done", null,
+                NowUnix - 4000, "it", NowUnix - 100),
+        ]);
+
+        // Act / Assert
+        Evaluate(next).Should().NotContain(x => x.Kind == "valkey-ticket-expired");
+    }
 }

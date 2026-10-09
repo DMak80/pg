@@ -17,9 +17,16 @@ namespace KafkaWorker.Provisioning.Processes;
 /// замены сертов) → R (rolling-пересоздание брокеров по одному: серт подписан
 /// NEW CA, truststore = bundle, том жив) → C (атомарный txn: ca_pem/ca_key ←
 /// NEW, del staging, del заявки — OLD-ключ уничтожается перезаписью) → снапшот
-/// P12 + done. Guard'ы — образец H (§5): клэйм, waiting-cluster, waiting при
-/// живой пароль-ротации/reassignment (rolling-ы не смешиваются). Вызывается
-/// только держателем клэйма &lt;C&gt;.
+/// P12 + done. Вызывается только держателем клэйма &lt;C&gt;.
+/// <para>Структура тика (t10, зеркалит valkey K0.2→K0.5): K0.2 хвост committed →
+/// доигрывание финала; K0.3 детект ОТКРЫТОГО окна (staging жив ИЛИ журнал
+/// rotate-ca вне {done, waiting-*}) → доигрывание P→D→R→C БЕЗ ждущих guard'ов
+/// и БЕЗ экспирации (окно не сиротеет: слепой кластер посреди R — передержка);
+/// K0.4 заявки нет → no-op; K0.5 дооконные ждущие guard'ы (waiting-cluster /
+/// waiting-password-rotation / waiting-reassignment) — ЭКСПИРАЦИОННЫЕ под
+/// тройным гвардом §3.1 (staging-предикат истинен по построению ветки — K0.3
+/// уводит открытое окно мимо, журнал — явной проверкой). Финал K4 пишет исход
+/// done в ticket_outcomes/&lt;C&gt;.</para>
 /// </summary>
 public sealed class CaRotator(
     IEtcdGateway etcd,
@@ -40,6 +47,13 @@ public sealed class CaRotator(
     // начинается заново (env от NEW CA идемпотентен).
     private readonly ConcurrentDictionary<(string Cluster, string Phase), HashSet<string>> _rolled = new();
 
+    // t10: экспирация не-начатых заявок + исходы финалов.
+    private readonly TicketExpirator _tickets = new(etcd, endpoints);
+
+    // Аудит заявки текущей ротации (для исхода done; рестарт в окне C→финал
+    // теряет аудит — исход пишется с фактическим временем финала).
+    private readonly ConcurrentDictionary<string, TicketRequestAudit?> _ticketAudit = new();
+
     public async Task<Result> RunAsync(KafkaClusterSnapshot snap, CancellationToken ct)
     {
         var cluster = snap.Cluster;
@@ -55,44 +69,89 @@ public sealed class CaRotator(
         if (!journalState.IsSuccess)
             return Result.Failed(journalState.Error!);
 
-        // Хвост после C (заявка снята, done не записан — сбой между C и финалом):
-        // идемпотентное завершение — снапшот + done, staging/rolling не трогаем.
+        // Аудит живой заявки — для исхода done финала K4.
+        if (ticket.Value is not null)
+            _ticketAudit[cluster] = TicketOutcomes.ParseAudit(ticket.Value.Value);
+
+        // K0.2 (t10): хвост после C (заявка снята, done не записан — сбой между
+        // C и финалом): идемпотентное завершение — снапшот + done, staging/rolling
+        // не трогаем.
         var afterCommit = journalState.Value is { Op: Op } j && j.Phase == PhaseCommitted;
         if (afterCommit && ticket.Value is null)
             return await FinishAsync(cluster, ct);
 
+        // K0.3 (t10, зеркалит valkey): окно открыто — staging жив ИЛИ журнал
+        // rotate-ca в мутационной фазе (вне {done, waiting-*}) — доигрывание
+        // P→D→R→C БЕЗ ждущих guard'ов и БЕЗ экспирации: слепой кластер посреди R —
+        // передержка (rolling стоит на ожидании сходимости); потеря endpoints или
+        // появление пароль-заявки при живом staging в waiting-точки НЕ уводят —
+        // окно не сиротеет, заявка жива.
+        var stagingKey = await GetAsync(NextKeyKey(cluster), ct);
+        if (!stagingKey.IsSuccess)
+            return Result.Failed(stagingKey.Error!);
+        var stagingPem = await GetAsync(NextPemKey(cluster), ct);
+        if (!stagingPem.IsSuccess)
+            return Result.Failed(stagingPem.Error!);
+        var stagingLive = stagingKey.Value is not null || stagingPem.Value is not null;
+        if (stagingLive || CaMutationLive(journalState.Value))
+        {
+            if (snap.CaPem is null || snap.CaKey is null)
+                return Result.Failed(new ApplicationException(
+                    $"rotate-ca {cluster}: окно открыто, но ca_pem/ca_key отсутствуют — внешняя порча, ретрай тиком"));
+            return await PhasesAsync(snap, ct);
+        }
+
+        // K0.4 (t10): заявки нет, хвостов нет — no-op.
         if (ticket.Value is null)
-            return Result.Success(); // заявки нет, хвостов нет — no-op
+            return Result.Success();
+        var ticketPayload = ticket.Value.Value; // живая заявка (не null — K0.4)
+
+        // K0.5 (t10) — дооконные ждущие guard'ы (экспирационные под тройным
+        // гвардом §3.1; staging-предикат истинен по построению ветки — K0.3
+        // уводит открытое окно мимо; журнал — явной проверкой ниже).
 
         // Кластер не поднят / не канонический: ждём (заявка жива — ротация не теряется).
         if (snap.Endpoints is null || snap.AppPassword is null || snap.AdminPassword is null
             || snap.CaPem is null || snap.CaKey is null)
         {
-            return await WaitAsync(cluster, "waiting-cluster", ct);
+            return await WaitAsync(cluster, "waiting-cluster", ticketPayload,
+                CaMutationLive(journalState.Value), ct);
         }
 
-        // Guard: живая пароль-ротация (H) — rolling-ы не смешиваются (журнал один).
+        // Guard: живая пароль-ротация (H, app/admin) — rolling-ы не смешиваются
+        // (журнал один). Живая admin-заявка H — та же семья (приоритет H, t10).
+        // «Живость по журналу» — ТОЛЬКО мутационные фазы роли (phase-a/
+        // rotated-commit/phase-c): терминальный expired не живой (пишется
+        // только вне мутаций) — иначе свежая ca-заявка после экспирации
+        // пароль-заявки крутилась бы в waiting до собственного таймаута.
         var passwordTicket = await GetAsync($"/kafkaworker/rotations/{cluster}", ct);
         if (!passwordTicket.IsSuccess)
             return Result.Failed(passwordTicket.Error!);
-        if (passwordTicket.Value is not null
-            || journalState.Value is { Op: "rotate" } r && r.Phase != "done")
+        var adminTicket = await GetAsync($"/kafkaworker/admin_rotations/{cluster}", ct);
+        if (!adminTicket.IsSuccess)
+            return Result.Failed(adminTicket.Error!);
+        if (passwordTicket.Value is not null || adminTicket.Value is not null
+            || PasswordRotator.PasswordMutationLive(journalState.Value))
         {
-            return await WaitAsync(cluster, "waiting-password-rotation", ct);
+            return await WaitAsync(cluster, "waiting-password-rotation", ticketPayload,
+                CaMutationLive(journalState.Value), ct);
         }
 
-        // Guard: живой reassignment (I) — rolling не смешивается с переносом реплик.
+        // Guard: живой reassignment (I) или regen — rolling не смешивается с
+        // чужими мутациями (spec §3.2 K: regen гейтит так же — фаза едина,
+        // прецедент SecurityMigrator M0).
         var reassignment = await GetAsync($"/kafkaworker/reassignments/{cluster}", ct);
         if (!reassignment.IsSuccess)
             return Result.Failed(reassignment.Error!);
         if (reassignment.Value is not null)
-            return await WaitAsync(cluster, "waiting-reassignment", ct);
-
-        // Живые брокеры ротации (TO_REMOVE/REMOVING исключены — их разбирает G).
-        var brokers = snap.Brokers
-            .Where(b => b.State is not "TO_REMOVE" and not "REMOVING")
-            .OrderBy(b => b.Name, StringComparer.Ordinal)
-            .ToList();
+            return await WaitAsync(cluster, "waiting-reassignment", ticketPayload,
+                CaMutationLive(journalState.Value), ct);
+        var regen = await GetAsync($"/kafkaworker/regens/{cluster}", ct);
+        if (!regen.IsSuccess)
+            return Result.Failed(regen.Error!);
+        if (regen.Value is not null)
+            return await WaitAsync(cluster, "waiting-reassignment", ticketPayload,
+                CaMutationLive(journalState.Value), ct);
 
         // Преф-чек: кластер отвечает DescribeCluster до rolling (ротация
         // недоступного кластера бессмысленна — ждём, брокеры не трогаем).
@@ -100,7 +159,23 @@ public sealed class CaRotator(
         if (!alive.IsSuccess)
             return Result.Failed(alive.Error!);
         if (!alive.Value)
-            return await WaitAsync(cluster, "waiting-cluster", ct);
+            return await WaitAsync(cluster, "waiting-cluster", ticket.Value.Value,
+                CaMutationLive(journalState.Value), ct);
+
+        return await PhasesAsync(snap, ct);
+    }
+
+    // Хвост фаз (P→D→R→C→финал): вызывается ТОЛЬКО из доигрывания окна (K0.3)
+    // или после пройденных дооконных guard'ов (K0.5) — логика фаз без изменений.
+    private async Task<Result> PhasesAsync(KafkaClusterSnapshot snap, CancellationToken ct)
+    {
+        var cluster = snap.Cluster;
+
+        // Живые брокеры ротации (TO_REMOVE/REMOVING исключены — их разбирает G).
+        var brokers = snap.Brokers
+            .Where(b => b.State is not "TO_REMOVE" and not "REMOVING")
+            .OrderBy(b => b.Name, StringComparer.Ordinal)
+            .ToList();
 
         // Фаза P: staging НОВОЙ CA — одна на жизнь ротации (в etcd, а не в памяти —
         // переживает рестарт воркера, в отличие от NEW-паролей H).
@@ -112,7 +187,9 @@ public sealed class CaRotator(
         // Фаза D: bundle OLD+NEW в точке дискавери ДО замены сертов — клиенты,
         // перечитавшие ca_pem, доверяют сертам обоих поколений. Идемпотентно:
         // bundle уже содержит nextPem — put пропускается.
-        var caPem = snap.CaPem;
+        // ca_pem гарантирован вызывающей веткой: K0.3 (аномалия-защита окна)
+        // или K0.5 (проверка «кластер не поднят»).
+        var caPem = snap.CaPem!;
         if (!caPem.Contains(nextPem))
         {
             var markedD = await journal.WritePhaseAsync(cluster, Op, "phase-d", claims.InstanceId, null, ct);
@@ -164,7 +241,9 @@ public sealed class CaRotator(
         return await FinishAsync(cluster, ct);
     }
 
-    // Финал: снапшот P12 «после» + journal done + очистка треков (идемпотентно).
+    // Финал: снапшот P12 «после» + исход done + journal done + очистка треков
+    // (идемпотентно; хвост afterCommit доиграет финал повторно — put исхода
+    // идемпотентен).
     private async Task<Result> FinishAsync(string cluster, CancellationToken ct)
     {
         if (snapshot is not null)
@@ -175,13 +254,38 @@ public sealed class CaRotator(
         }
 
         _rolled.TryRemove((cluster, "phase-r"), out _);
+
+        // Исход done ДО journal done (t10): провал put → тик Failed → финал
+        // повторится хвостом afterCommit — исход не теряется.
+        var outcomeDone = await _tickets.WriteDoneAsync(
+            TicketOutcomes.Key("/kafkaworker", cluster), TicketOutcomes.KindCa,
+            _ticketAudit.GetValueOrDefault(cluster), DateTimeOffset.UtcNow.ToUnixTimeSeconds(), ct);
+        if (!outcomeDone.IsSuccess)
+            return Result.Failed(outcomeDone.Error!);
+        _ticketAudit.TryRemove(cluster, out _);
+
         var done = await journal.WritePhaseAsync(cluster, Op, "done", claims.InstanceId, null, ct);
         return done.IsSuccess ? Result.Success() : Result.Failed(done.Error!);
     }
 
-    // Ждущий исход: journal-запись + успех тика (заявка жива — продолжим позже).
-    private async Task<Result> WaitAsync(string cluster, string phase, CancellationToken ct)
+    // Ждущий исход с экспирацией под гвардом (t10): ca-заявка старее порога и
+    // гвард пройден (дооконная ветка: staging отсутствует по построению K0.3;
+    // mutationLive — явная проверка журнала) → снятие (kind=ca), иначе
+    // journal-waiting. Фаза expired — непрефиксованная (терминальная, FinalPhases).
+    private async Task<Result> WaitAsync(
+        string cluster, string phase, string ticketPayload, bool mutationLive, CancellationToken ct)
     {
+        var expired = await _tickets.TryExpireAsync(
+            journal, cluster, Op, claims.InstanceId,
+            TicketOutcomes.Key("/kafkaworker", cluster), TicketOutcomes.KindCa,
+            TicketKey(cluster), ticketPayload, phase,
+            options.RotationTicketTimeoutSec, DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+            mutationLive, ct);
+        if (!expired.IsSuccess)
+            return Result.Failed(expired.Error!);
+        if (expired.Value)
+            return Result.Success(); // заявка снята штатно
+
         var waiting = await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, null, ct);
         return waiting.IsSuccess ? Result.Success() : Result.Failed(waiting.Error!);
     }
@@ -287,11 +391,23 @@ public sealed class CaRotator(
     private async Task<Result<bool>> WaitForBrokersAsync(
         KafkaClusterSnapshot snap, int expected, CancellationToken ct)
     {
+        // Передержка окна (t10): DescribeCluster невозможен без endpoints —
+        // считаем «не сошлось» (rolling стоит, следующий тик повторит).
+        if (snap.Endpoints is null)
+            return Result<bool>.Success(false);
         await using var admin = adminFactory.Create(
             snap.Endpoints!, snap.AdminUser ?? "admin", snap.AdminPassword!, snap.CaPem);
         var view = await admin.DescribeClusterAsync(ct);
         return Result<bool>.Success(view.IsSuccess && view.Value.Brokers.Count >= expected);
     }
+
+    // Третий предикат гварда экспирации (§3.1) и он же — детектор открытого
+    // окна (K0.3): журнал rotate-ca в мутационной фазе — вне {done, waiting-*}
+    // (staging ставится в P и живёт до C; waiting-фазы — дооконные передержки).
+    private static bool CaMutationLive(WorkState? journalState)
+        => journalState is { Op: Op } j
+           && j.Phase != "done"
+           && !j.Phase.StartsWith("waiting-", StringComparison.Ordinal);
 
     private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> ReadPortAllocAsync(
         string cluster, CancellationToken ct)

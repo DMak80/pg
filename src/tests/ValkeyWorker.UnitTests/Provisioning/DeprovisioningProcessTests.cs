@@ -162,4 +162,24 @@ public class DeprovisioningProcessTests
             .Should().BeEmpty("префиксный del домена забирает staging ca_next_*");
         rig.Etcd.Store.Should().NotContainKey($"/valkeyworker/claims/{cluster}");
     }
+
+    [Fact]
+    public async Task Run_CleansTicketOutcomes()
+    {
+        // Arrange (t10): исходы заявок не переживают кластер — X2 удаляет
+        // /valkeyworker/ticket_outcomes/<C> вместе с прочей координацией.
+        const string cluster = "depout";
+        var rig = Rig.Create();
+        rig.SeedCluster(cluster);
+        rig.Etcd.Seed($"/valkeyworker/ticket_outcomes/{cluster}",
+            """{"kind":"password-app","outcome":"expired","reason":"waiting-cluster","requested_unix":1756500100,"finished_unix":1756503700}""");
+        await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
+
+        // Act
+        var result = await rig.Process.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+
+        // Assert
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        rig.Etcd.Store.Should().NotContainKey($"/valkeyworker/ticket_outcomes/{cluster}");
+    }
 }

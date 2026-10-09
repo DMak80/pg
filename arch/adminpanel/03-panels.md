@@ -720,12 +720,16 @@ clustersCritical — critical-алерты `kafka-broker-not-running`/
 ```text
 KafkaClusterSummaryDto: name, state(ACTIVE|NOT_INITIALIZED|TO_REMOVE),
     brokersTotal, brokersRunning, topicsCount, endpoints,
-    rotationPending(bool), rebalancePending(bool)
+    rotationPending(bool), caRotationPending(bool), rebalancePending(bool)
 KafkaClusterDto: name, state, replicationFactor, minInSyncReplicas,
     defaultPartitions, defaultRetentionMs, createdUnix, endpoints,
     brokers[KafkaBrokerDto], topics[KafkaTopicDto], groups[KafkaGroupDto]
     (волна C — из пробы), rotation{requestedUnix, requestedBy}?(nullable),
+    caRotation{requestedUnix, requestedBy}?(nullable — t10),
     rebalance{requestedUnix, requestedBy}?(nullable),
+    ticketOutcome{kind(password-app|password-admin|ca|rebalance),
+    outcome(expired|done), reason?, requestedUnix, requestedBy,
+    finishedUnix}?(nullable — ключа нет = исходов не было; t10),
     reassignment{mode(drain|balance), drainBroker?, partitionsTotal,
     partitionsRemaining, updatedUnix}?(nullable — ключа нет = операции нет)
 KafkaBrokerDto: name, state(raw: NOT_INITIALIZED|PROVISIONING|RUNNING|
@@ -787,8 +791,10 @@ ProblemDetails в теле формы. Двойной клик — блокир�
 Чистая функция `KafkaSnapshot (prev, next) → Alert[]`; пороги —
 `AdminPanel:KafkaAlerts`. sinceUnix — по стабильному `id = kind:target`
 (§2-механика). Ротационный алерт живёт только у живого кластера: заявка
-ротации удаляется демонтажем кластера (arch/16 X-фазы) — вечный
-`kafka-rotation-pending` невозможен по построению.
+ротации удаляется демонтажем кластера (arch/16 X-фазы), исполнением или
+возрастным таймаутом не-начатой (arch/16 §5, t10) — вечный
+`kafka-rotation-pending` невозможен по построению; зависание ДО снятия
+видно stale-алертом, факт снятия — алертом исхода.
 
 | kind | severity | Условие |
 |---|---|---|
@@ -796,7 +802,12 @@ ProblemDetails в теле формы. Двойной клик — блокир�
 | `kafka-cluster-to-remove` | info | state=TO_REMOVE |
 | `kafka-broker-not-running` | critical | Active-кластер, broker state ∉ {RUNNING}, кроме fresh-PROVISIONING (< 60 с) |
 | `kafka-endpoints-missing` | critical | Active без `endpoints` |
-| `kafka-rotation-pending` | info | живая заявка ротации `/kafkaworker/rotations/<C>` |
+| `kafka-rotation-pending` | info | живая заявка ротации `/kafkaworker/rotations/<C>` или `/kafkaworker/admin_rotations/<C>` |
+| `kafka-ca-rotation-pending` | info | живая заявка CA-ротации `/kafkaworker/ca_rotations/<C>` (t10) |
+| `kafka-rotation-stale` | warning | заявка ротации (app/admin) жива дольше `RotationStaleSeconds` (1800; до таймаута воркера остаётся полчаса) — t10 |
+| `kafka-ca-rotation-stale` | warning | заявка CA-ротации жива дольше `RotationStaleSeconds` (1800) — t10 |
+| `kafka-rebalance-stale` | warning | заявка ребалансировки жива дольше `RotationStaleSeconds` (1800) — t10 |
+| `kafka-ticket-expired` | warning | `/kafkaworker/ticket_outcomes/<C>` outcome=expired — заявка снята таймаутом воркера (не-начатая, возраст > `RotationTicketTimeoutSec`); Hint: устранить причину reason и повторить заявку (t10) |
 | `kafka-rebalance-pending` | info | живая заявка ребалансировки `/kafkaworker/rebalances/<C>` |
 | `kafka-reassignment-stale` | warning | прогресс-ключ `/kafkaworker/reassignments/<C>` жив, но `partitions_remaining` не двигается дольше `ReassignStaleSec` (900) — drain/баланс буксует |
 | `kafka-key-malformed` | warning | kafka-ключ не разобран (parseError) |
@@ -840,7 +851,11 @@ ValkeyClusterSummaryDto: name, state(ACTIVE|NOT_INITIALIZED|TO_REMOVE),
     rotationPending(bool), maxmemoryBytes, maxmemoryPolicy
 ValkeyClusterDto: name, state, nodesTotal(=1), maxmemoryBytes,
     maxmemoryPolicy, createdUnix, endpoints, nodesList[ValkeyNodeDto],
-    rotation{role(app|admin), requestedUnix, requestedBy}?(nullable)
+    rotation{role(app|admin), requestedUnix, requestedBy}?(nullable),
+    caRotation{requestedUnix, requestedBy}?(nullable — t10),
+    ticketOutcome{kind(password-app|password-admin|ca), outcome(expired|done),
+    reason?, requestedUnix, requestedBy, finishedUnix}?(nullable — исходов
+    не было; t10)
 ValkeyNodeDto: name(=node1), state(raw: NOT_INITIALIZED|PROVISIONING|
     RUNNING|UNREACHABLE|REMOVING|TO_REMOVE), cpu, memGi, diskGi
     (nullable — заявка resources), live(bool|null — из пробы PING;
@@ -883,8 +898,10 @@ allkeys-lru); группа «Ресурсы ноды»: CPU/память/дис�
 Чистая функция `ValkeySnapshot (prev, next) → Alert[]`; пороги —
 `AdminPanel:ValkeyAlerts`. sinceUnix — по стабильному `id = kind:target`
 (§2-механика). Ротационный алерт живёт только у живого кластера: заявка
-ротации удаляется исполнением E2/E3 или демонтажом кластера (arch/21 X2) —
-вечный `valkey-rotation-pending` невозможен по построению.
+ротации удаляется исполнением E2/E3/K-C, демонтажом кластера (arch/21 X2)
+или возрастным таймаутом не-начатой (arch/21 §5 E/K, t10) — вечный
+`valkey-rotation-pending` невозможен по построению; зависание ДО снятия
+видно stale-алертом, факт снятия — алертом исхода.
 
 | kind | severity | Условие |
 |---|---|---|
@@ -893,6 +910,9 @@ allkeys-lru); группа «Ресурсы ноды»: CPU/память/дис�
 | `valkey-node-not-running` | critical | Active-кластер, нода state ∉ {RUNNING}, кроме fresh-PROVISIONING (< 60 с) |
 | `valkey-endpoints-missing` | critical | Active без `endpoints` (arch/20 §5) |
 | `valkey-rotation-pending` | info | живая заявка ротации `/valkeyworker/rotations/<C>` |
+| `valkey-rotation-stale` | warning | заявка ротации креда жива дольше `RotationStaleSeconds` (1800) — t10 |
+| `valkey-ca-rotation-stale` | warning | заявка CA-ротации жива дольше `RotationStaleSeconds` (1800) — t10 |
+| `valkey-ticket-expired` | warning | `/valkeyworker/ticket_outcomes/<C>` outcome=expired — заявка снята таймаутом воркера; Hint: устранить причину reason и повторить заявку (t10) |
 | `valkey-key-malformed` | warning | valkey-ключ не разобран (parseError; arch/20 §5) |
 | `worker-api-unreachable` | critical | нет живых ключей `/valkeyworker/api/` (02 §2.3.3) — valkey-мутации панели 503; target `valkeyworker` |
 | `worker-unhealthy` | warning | живой ключ, но `/healthz` ≠ 200 (02 §2.3.3); target `valkeyworker/<id>` |

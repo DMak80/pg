@@ -5,7 +5,8 @@ using Microsoft.Extensions.Options;
 namespace AdminPanel.Core.Kafka.KafkaAlerting;
 
 // Чистая функция (KafkaSnapshot next, prev) → Alert[] — кластерные kinds волны B
-// каталога arch/03 §7.4 (probe-алерты волн C добавляются сюда же). sinceUnix —
+// каталога arch/03 §7.4 (probe-алерты волн C добавляются сюда же; t10 —
+// ca-rotation-pending, stale-ротации, ticket-expired). sinceUnix —
 // по стабильному id из prev.Alerts (механика pg AlertEngine); сортировка
 // severity → kind → target.
 public interface IKafkaAlertEngine
@@ -206,6 +207,76 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 AlertRemedy.WorkerAuto,
                 "батчи подаёт воркер, заявку снимет по сходимости; висит — проверьте живые брокеры (fallback-exec)");
 
+        // ===== t10 (arch/03 §7.4): видимость зависших ротационных заявок =====
+
+        var rotationNowUnix = next.BuiltAtUtc.ToUnixTimeSeconds();
+
+        // kafka-ca-rotation-pending (info): живая заявка CA-ротации — порт
+        // kafka-rotation-pending, только живых кластеров.
+        foreach (var ca in (next.CaRotations ?? []).Where(r => alive.Contains(r.Cluster)))
+            yield return new Alert(
+                $"kafka-ca-rotation-pending:{ca.Cluster}",
+                AlertSeverity.Info,
+                "kafka-ca-rotation-pending",
+                ca.Cluster,
+                $"ротация CA/сертов кластера {ca.Cluster} заявлена, исполняется воркером (окно двойного доверия P/D/R/C)",
+                new Dictionary<string, string>
+                {
+                    ["requestedBy"] = ca.RequestedBy ?? "unknown",
+                    ["requestedUnix"] = ca.RequestedUnix.ToString(),
+                },
+                null,
+                "заявка CA-ротации жива (ключ /kafkaworker/ca_rotations/<C>): воркер играет окно двойного доверия (брокеры перезапускаются по одному) и снимет ключ",
+                AlertRemedy.WorkerAuto,
+                "ротацию исполняет воркер, ключ исчезнет; висит — проверьте journal (waiting-фаза)");
+
+        // Stale-алерты ротационных заявок (t10, warning): живая заявка старше
+        // RotationStaleSeconds — видимость ДО возрастного снятия воркером.
+        // Пароль-ротации app/admin — один алерт на кластер по старейшей заявке;
+        // CA и rebalances — свои kinds.
+        foreach (var group in next.Rotations
+                     .Concat(next.AdminRotations ?? [])
+                     .Where(r => alive.Contains(r.Cluster))
+                     .GroupBy(r => r.Cluster, StringComparer.Ordinal))
+        {
+            var age = rotationNowUnix - group.MinBy(r => r.RequestedUnix)!.RequestedUnix;
+            if (age > _options.RotationStaleSeconds)
+                yield return RotationStaleAlert("kafka-rotation-stale", group.Key, age, "ротация пароля");
+        }
+        foreach (var ca in (next.CaRotations ?? []).Where(r => alive.Contains(r.Cluster)))
+        {
+            var age = rotationNowUnix - ca.RequestedUnix;
+            if (age > _options.RotationStaleSeconds)
+                yield return RotationStaleAlert("kafka-ca-rotation-stale", ca.Cluster, age, "ротация CA/сертов");
+        }
+        foreach (var rebalance in next.Rebalances.Where(r => alive.Contains(r.Cluster)))
+        {
+            var age = rotationNowUnix - rebalance.RequestedUnix;
+            if (age > _options.RotationStaleSeconds)
+                yield return RotationStaleAlert("kafka-rebalance-stale", rebalance.Cluster, age, "ребалансировка партиций");
+        }
+
+        // kafka-ticket-expired (warning, t10): заявка снята возрастным таймаутом
+        // воркера — устранить причину и повторить; гаснет перезаписью исхода done.
+        foreach (var outcome in (next.TicketOutcomes ?? []).Where(
+                     o => o.Outcome == "expired" && alive.Contains(o.Cluster)))
+            yield return new Alert(
+                $"kafka-ticket-expired:{outcome.Cluster}",
+                AlertSeverity.Warning,
+                "kafka-ticket-expired",
+                outcome.Cluster,
+                $"заявка кластера {outcome.Cluster} снята возрастным таймаутом воркера (kind={outcome.Kind}, причина: {outcome.Reason ?? "не указана"})",
+                new Dictionary<string, string>
+                {
+                    ["kind"] = outcome.Kind,
+                    ["reason"] = outcome.Reason ?? "",
+                    ["finishedUnix"] = outcome.FinishedUnix.ToString(),
+                },
+                null,
+                $"устранить причину ({outcome.Reason ?? "см. reason в исходе"}) и повторить заявку",
+                AlertRemedy.OperatorRunbook,
+                "устраните причину waiting-фазы (waiting-cluster — поднимите кластер; waiting-reassignment — дождитесь исполнения) и повторите заявку; успешная ротация перезапишет исход done и алерт погаснет");
+
         // Стагнация reassignment (t02): прогресс жив, но partitions_remaining не
         // двигается дольше ReassignStaleSec. Пара (prev, next): остаток тот же
         // и стоит дольше порога; prev нет — алерт по возрасту updated_unix.
@@ -372,6 +443,25 @@ public sealed class KafkaAlertEngine(IOptions<KafkaAlertsOptions> options) : IKa
                 AlertRemedy.OperatorRunbook,
                 "разберите потребителей группы (скорость/партиционирование/живость инстансов) — панель и воркер консьюмерами не управляют");
     }
+
+    // Stale-алерт ротационной заявки (t10): warning с возрастом и остатком до
+    // возрастного снятия (связность stale = RotationTicketTimeoutSec/2 — spec §2).
+    private Alert RotationStaleAlert(string kind, string cluster, long age, string what)
+        => new(
+            $"{kind}:{cluster}",
+            AlertSeverity.Warning,
+            kind,
+            cluster,
+            $"{what} кластера {cluster} не начата дольше {age} c (порог {_options.RotationStaleSeconds} c) — исполнитель не стартует",
+            new Dictionary<string, string>
+            {
+                ["ageSec"] = age.ToString(),
+                ["staleSec"] = _options.RotationStaleSeconds.ToString(),
+            },
+            null,
+            $"заявка не начата дольше {_options.RotationStaleSeconds} c — до возрастного снятия воркером осталось {Math.Max(0, 2 * _options.RotationStaleSeconds - age)} c; проверьте journal (waiting-фаза)",
+            AlertRemedy.WorkerAuto,
+            "воркер снимет заявку возрастным таймаутом (t10); висит — проверьте journal воркера и доступность кластера");
 
     // kafka-broker-not-running + kafka-endpoints-missing (только Active-кластер).
     private IEnumerable<Alert> BrokerAlerts(

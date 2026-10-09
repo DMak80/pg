@@ -22,6 +22,12 @@ namespace KafkaWorker.Provisioning.Processes;
 /// креда валидны; повтор продолжает: заявку — с начала A идемпотентно, после
 /// B — по journal-фазе). Снапшоты P12 «до/после». Вызывается только держателем
 /// клэйма &lt;C&gt;.
+/// <para>Гвард K (t10): H гейтится ТОЛЬКО открытым окном CA-ротации (staging
+/// ca_next_{key,pem}) — живая, но не начатая ca-заявка H не гейтит (приоритет H
+/// перед K разрывает дедлок H↔K). Ждущие точки waiting-cluster — экспирационные
+/// под тройным гвардом §3.1 (журнал роли — третий предикат); точка
+/// waiting-ca-window не экспирационная (staging жив по построению точки).
+/// Финал ротации пишет исход done в ticket_outcomes/&lt;C&gt;.</para>
 /// </summary>
 public sealed class PasswordRotator(
     IEtcdGateway etcd,
@@ -65,6 +71,14 @@ public sealed class PasswordRotator(
     // ему собраться; B обязана закоммитить пароль, разосланный НА ВСЕХ брокерах).
     private readonly ConcurrentDictionary<(string Cluster, string Role), string> _newPasswords = new();
 
+    // t10: экспирация не-начатых заявок + исходы финалов.
+    private readonly TicketExpirator _tickets = new(etcd, endpoints);
+
+    // Аудит последней живой заявки роли (для исхода done на финале после del
+    // заявки фазой B; рестарт в окне B→done теряет аудит — исход пишется с
+    // фактическим временем финала).
+    private readonly ConcurrentDictionary<(string Cluster, string Role), TicketRequestAudit?> _ticketAudit = new();
+
     public async Task<Result> RunAsync(KafkaClusterSnapshot snap, CancellationToken ct)
     {
         var cluster = snap.Cluster;
@@ -107,26 +121,31 @@ public sealed class PasswordRotator(
         if (ticket.Value is null && !afterCommit)
             return Result<bool>.Success(false); // заявки нет, фазы C не висит — no-op
 
-        // Guard: живая CA-ротация (K, t07) — rolling-ы не смешиваются (журнал
-        // кластера один; env-пересборки K и H на одном брокере конфликтуют).
-        var caTicket = await GetAsync($"/kafkaworker/ca_rotations/{cluster}", ct);
-        if (!caTicket.IsSuccess)
-            return Result<bool>.Failed(caTicket.Error!);
-        if (caTicket.Value is not null)
-        {
-            var waitingCa = await journal.WritePhaseAsync(
-                cluster, Op, role.Phase("waiting-ca-rotation"), claims.InstanceId, null, ct);
-            return waitingCa.IsSuccess ? Result<bool>.Success(true) : Result<bool>.Failed(waitingCa.Error!);
-        }
+        // Аудит живой заявки — для исхода done на финале (заявку снимет фаза B).
+        if (ticket.Value is not null)
+            _ticketAudit[(cluster, role.Name)] = TicketOutcomes.ParseAudit(ticket.Value.Value);
+
+        // Guard: открытое окно CA-ротации K (staging жив) — rolling-ы не смешиваются.
+        // Живая, но НЕ начатая ca-заявка H НЕ гейтит (приоритет H перед K, t10):
+        // при обеих живых заявках H доигрывает свою (del в фазе B), затем K — свою.
+        var nextKey = await GetAsync($"/kafka/clusters/{cluster}/ca_next_key", ct);
+        if (!nextKey.IsSuccess)
+            return Result<bool>.Failed(nextKey.Error!);
+        var nextPem = await GetAsync($"/kafka/clusters/{cluster}/ca_next_pem", ct);
+        if (!nextPem.IsSuccess)
+            return Result<bool>.Failed(nextPem.Error!);
+        if (nextKey.Value is not null || nextPem.Value is not null)
+            return await WaitOrExpireAsync(
+                snap, role, ticket.Value, "waiting-ca-window", mutationLive: true, ct);
 
         if (snap.Endpoints is null || snap.AppPassword is null || snap.AdminPassword is null)
         {
-            // Кластер не поднят: ждём (заявка жива — ротация не теряется).
+            // Кластер не поднят. AfterCommit-хвост без заявки — no-op (экспирировать
+            // нечего); живая заявка — waiting/экспирация под гвардом журнала роли (t10).
             if (ticket.Value is null)
                 return Result<bool>.Success(false);
-            var waiting = await journal.WritePhaseAsync(
-                cluster, Op, role.Phase("waiting-cluster"), claims.InstanceId, null, ct);
-            return waiting.IsSuccess ? Result<bool>.Success(true) : Result<bool>.Failed(waiting.Error!);
+            return await WaitOrExpireAsync(snap, role, ticket.Value, "waiting-cluster",
+                RoleMutationLive(journalState.Value, role), ct);
         }
 
         // Живые брокеры ротации (TO_REMOVE/REMOVING исключены — их разбирает G).
@@ -139,11 +158,8 @@ public sealed class PasswordRotator(
         // недоступного кластера бессмысленна — ждём, брокеры не трогаем).
         var alive = await WaitForBrokersAsync(snap, 1, ct);
         if (!alive.Value)
-        {
-            var waitingCluster = await journal.WritePhaseAsync(
-                cluster, Op, role.Phase("waiting-cluster"), claims.InstanceId, null, ct);
-            return waitingCluster.IsSuccess ? Result<bool>.Success(true) : Result<bool>.Failed(waitingCluster.Error!);
-        }
+            return await WaitOrExpireAsync(snap, role, ticket.Value, "waiting-cluster",
+                RoleMutationLive(journalState.Value, role), ct);
 
         if (ticket.Value is not null)
         {
@@ -224,8 +240,71 @@ public sealed class PasswordRotator(
         _rolled.TryRemove((cluster, role.Name, "phase-c"), out _);
         _snapshotBeforeDone.TryRemove((cluster, role.Name), out _);
         _newPasswords.TryRemove((cluster, role.Name), out _);
+
+        // Финал (t10): исход done ДО journal done (провал put → тик Failed →
+        // финал повторится по afterCommit-хвосту; исход не теряется).
+        var nowUnix = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        var kind = role == RotationRole.Admin ? TicketOutcomes.KindPasswordAdmin : TicketOutcomes.KindPasswordApp;
+        var outcomeDone = await _tickets.WriteDoneAsync(
+            TicketOutcomes.Key("/kafkaworker", cluster), kind,
+            _ticketAudit.GetValueOrDefault((cluster, role.Name)), nowUnix, ct);
+        if (!outcomeDone.IsSuccess)
+            return Result<bool>.Failed(outcomeDone.Error!);
+        _ticketAudit.TryRemove((cluster, role.Name), out _);
+
         var done = await journal.WritePhaseAsync(cluster, Op, role.Phase(PhaseDone), claims.InstanceId, null, ct);
         return Result<bool>.Success(done.IsSuccess);
+    }
+
+    // Третий предикат гварда экспирации (§3.1): незавершённая мутационная фаза
+    // роли (phase-a/rotated-commit/phase-c, включая admin:-префиксы через
+    // role.Phase) — брокеры уже несут JAAS [OLD, NEW] либо окно C не закрыто:
+    // снятие заявки запрещено при любом возрасте.
+    private static bool RoleMutationLive(WorkState? journalState, RotationRole role)
+        => journalState is { Op: Op } j
+           && (j.Phase == role.Phase("phase-a")
+               || j.Phase == role.Phase(PhaseCommitted)
+               || j.Phase == role.Phase("phase-c"));
+
+    // Живая (мутационная) фаза пароль-ротации ЛЮБОЙ роли: op=rotate в фазе
+    // phase-a/rotated-commit/phase-c (вкл. admin:-префиксы). Терминальные
+    // (done/expired) и waiting-фазы — НЕ живые: expired пишется только вне
+    // мутаций (инвариант t10). Гвард K0.5 CaRotator «живая пароль-ротация»
+    // обязан считать живой только мутацию — иначе терминальный expired
+    // навечно гейтил бы свежую ca-заявку в waiting-password-rotation.
+    internal static bool PasswordMutationLive(WorkState? journalState)
+        => RoleMutationLive(journalState, RotationRole.App)
+           || RoleMutationLive(journalState, RotationRole.Admin);
+
+    // Waiting-исход роли с экспирацией под гвардом (t10): живая заявка старее
+    // порога И гвард пройден (staging отсутствует — по построению ветки, т.к.
+    // ca-window guard стоит РАНЬШЕ обеих waiting-cluster точек; mutationLive —
+    // третий предикат) → снятие (journal expired + txn [del][put исход]),
+    // иначе обычный journal-waiting. ticket = null (afterCommit-хвост C без
+    // заявки) — ТОЛЬКО waiting, без экспирации. Фаза expired — БЕЗ role-префикса
+    // (терминальная, совпадение с FinalPhases метрики); префикс admin: — только
+    // у обычных waiting-фаз ниже.
+    private async Task<Result<bool>> WaitOrExpireAsync(
+        KafkaClusterSnapshot snap, RotationRole role, Kv? ticket, string phase, bool mutationLive, CancellationToken ct)
+    {
+        var cluster = snap.Cluster;
+        if (ticket is not null)
+        {
+            var kind = role == RotationRole.Admin
+                ? TicketOutcomes.KindPasswordAdmin : TicketOutcomes.KindPasswordApp;
+            var expired = await _tickets.TryExpireAsync(
+                journal, cluster, Op, claims.InstanceId,
+                TicketOutcomes.Key("/kafkaworker", cluster), kind, ticket.Key, ticket.Value,
+                phase, options.RotationTicketTimeoutSec,
+                DateTimeOffset.UtcNow.ToUnixTimeSeconds(), mutationLive, ct);
+            if (!expired.IsSuccess)
+                return Result<bool>.Failed(expired.Error!);
+            if (expired.Value)
+                return Result<bool>.Success(true); // заявка снята штатно — тик не ошибка
+        }
+
+        var waiting = await journal.WritePhaseAsync(cluster, Op, role.Phase(phase), claims.InstanceId, null, ct);
+        return waiting.IsSuccess ? Result<bool>.Success(true) : Result<bool>.Failed(waiting.Error!);
     }
 
     // Rolling-пересоздание: RemoveNode(том жив) → EnsureNode; окно ротации —

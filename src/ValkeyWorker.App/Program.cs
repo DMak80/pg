@@ -231,7 +231,8 @@ builder.Services.AddSingleton(sp => new PasswordRotator(
     sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
-    sp.GetRequiredService<IValkeyConnection>()));
+    sp.GetRequiredService<IValkeyConnection>(),
+    rotationTicketTimeoutSec: sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Thresholds.RotationTicketTimeoutSec));
 
 // HTTP API воркера (arch/21 §1.1): мутации декларативного контракта
 // valkey-домена — хендлеры-синглтоны.
@@ -346,7 +347,8 @@ static ValkeyWorker.Provisioning.Processes.ValkeyProvisioningOptions ToProvision
     opts.Thresholds.NodeBootSec,
     opts.Thresholds.NodeDeadSec,
     opts.AdvertisedClientHost,
-    opts.Docker.Images.Node);
+    opts.Docker.Images.Node,
+    opts.Thresholds.RotationTicketTimeoutSec);
 
 // Делегат снапшота для процессов (P12 «до/после» в точках изменений).
 static Func<CancellationToken, Task<Result>> SnapshotDelegate(SnapshotJob job)

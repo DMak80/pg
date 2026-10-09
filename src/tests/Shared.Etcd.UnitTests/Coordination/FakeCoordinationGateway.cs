@@ -79,8 +79,10 @@ internal sealed class FakeCoordinationGateway : IEtcdGateway
         Txns.Add(req);
         var succeeded = req.Compare.All(c => c.Target switch
         {
-            TxnTarget.Version => !Store.ContainsKey(c.Key) && c.Num == 0
-                || (Store.ContainsKey(c.Key) && c.Num != 0),
+            TxnTarget.Version => c.Pred == TxnPredicate.Greater
+                ? Store.ContainsKey(c.Key) // version > Num (Num=0) ⇔ ключ существует — Exists (t10)
+                : !Store.ContainsKey(c.Key) && c.Num == 0
+                    || (Store.ContainsKey(c.Key) && c.Num != 0),
             TxnTarget.Value => Store.TryGetValue(c.Key, out var v) && v == c.Arg,
             TxnTarget.ModRevision => true, // fake не моделирует ревизии
             _ => false,

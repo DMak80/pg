@@ -14,8 +14,9 @@ namespace KafkaWorker.Provisioning.Processes;
 /// SecurityMigrator (t03, arch/16 §5 M): converge-миграция премиграционного
 /// кластера (SASL_PLAINTEXT) в канон t03 (SASL_SSL + authorizer). Детект —
 /// чистая функция NeedsMigration (etcd-поля CA/admin отсутствуют ИЛИ env
-/// живого контейнера без KAFKA_SSL_TRUSTSTORE_TYPE). Фазы: M0 guard'ы живых
-/// операций (ротации/rebalance/reassignment/regen → journal-waiting);
+/// живого контейнера без KAFKA_SSL_TRUSTSTORE_TYPE). Фазы: M0 guard'ы НАЧАТЫХ
+/// операций (живые прогресс-ключи reassignments/regens и открытое CA-окно
+/// staging → journal-waiting; живые ЗАЯВКИ миграцию не гейтят, t10);
 /// M1 ensure секретов (CA+admin+app одной txn); M2 rolling-пересоздание ВСЕХ
 /// живых брокеров разом (том сохраняется; порты/сеть/roles из portalloc — без
 /// изменений); M3 ожидание готовности (DescribeCluster с admin-кредом по CLIENT
@@ -41,8 +42,8 @@ public sealed class SecurityMigrator(
     // неготовности — диагностика, не клэйм (образец ProvisioningProcess).
     private readonly ConcurrentDictionary<string, long> _bootWaitSince = new();
 
-    private const string PhaseWaitingRotation = "waiting-rotation";
     private const string PhaseWaitingReassignment = "waiting-reassignment";
+    private const string PhaseWaitingCaWindow = "waiting-ca-window";
     private const string PhaseWaitingBrokers = "waiting-brokers";
     private const string PhaseDone = "done";
 
@@ -216,27 +217,26 @@ public sealed class SecurityMigrator(
             : Result<MigrationOutcome>.Failed(done.Error!);
     }
 
-    // M0: живые операции блокируют миграцию (journal-waiting, InProgress).
-    private async Task<(string Phase, string Key)?> GuardAliveOperationsAsync(
-        string cluster, CancellationToken ct)
+    // M0: передёргивают только НАЧАТЫЕ операции (t10): живые прогресс-ключи
+    // (reassignments/regens) и открытое CA-окно (staging ca_next_*). Живые ЗАЯВКИ
+    // (rotations/admin_rotations/ca_rotations/rebalances) миграцию НЕ гейтят:
+    // на премиграционном кластере их исполнение не могло начаться (H/K сами
+    // уходят в waiting-cluster до миграции) — после M заявки исполнятся;
+    // взаимное ожидание M↔заявка невозможно.
+    private async Task<(string Phase, string Key)?> GuardAliveOperationsAsync(string cluster, CancellationToken ct)
     {
-        foreach (var (phase, prefix) in new[]
-                 {
-                     (PhaseWaitingRotation, "/kafkaworker/rotations/"),
-                     (PhaseWaitingRotation, "/kafkaworker/admin_rotations/"),
-                     (PhaseWaitingReassignment, "/kafkaworker/rebalances/"),
-                 })
-        {
-            var ticket = await GetAsync($"{prefix}{cluster}", ct);
-            if (ticket.IsSuccess && ticket.Value is not null)
-                return (phase, $"{prefix}{cluster}");
-        }
-
         foreach (var prefix in new[] { "/kafkaworker/reassignments/", "/kafkaworker/regens/" })
         {
             var progress = await GetAsync($"{prefix}{cluster}", ct);
             if (progress.IsSuccess && progress.Value is not null)
                 return (PhaseWaitingReassignment, $"{prefix}{cluster}");
+        }
+
+        foreach (var key in new[] { $"/kafka/clusters/{cluster}/ca_next_key", $"/kafka/clusters/{cluster}/ca_next_pem" })
+        {
+            var staging = await GetAsync(key, ct);
+            if (staging.IsSuccess && staging.Value is not null)
+                return (PhaseWaitingCaWindow, key);
         }
 
         return null;

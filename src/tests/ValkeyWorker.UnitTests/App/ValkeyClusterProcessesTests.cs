@@ -178,8 +178,10 @@ public class ValkeyClusterProcessesTests
         // состояние журнала «rotate done», а НЕ waiting-фаза K.
         var rig = new Rig();
         rig.SeedTlsCanonical("gate2");
+        // t10: K0.5-точка экспирационная — заявка СВЕЖАЯ (возраст < порога),
+        // интент кейса — семантика вентиля (K waiting не блокирует E), не возраст.
         rig.Etcd.Seed("/valkeyworker/ca_rotations/gate2",
-            """{"requested_unix":1756500000,"requested_by":"it"}""");
+            $$"""{"requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 10}},"requested_by":"it"}""");
         rig.Etcd.Seed("/valkeyworker/rotations/gate2",
             """{"role":"app","requested_unix":1756500000,"requested_by":"it"}""");
 

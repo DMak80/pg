@@ -26,6 +26,14 @@ namespace ValkeyWorker.Provisioning.Processes;
 /// фазе e2-committed даже без заявки (краш между E2 и E3 — без стейта OLD
 /// остался бы валидным навсегда). Ротация admin не трогает app и наоборот.
 /// Битая заявка — мусор: del с journal.
+/// <para>t10: кластер не поднят (нет endpoints/admin-креда/ca_pem) при живой
+/// заявке БЕЗ стейта — waiting-cluster + Success (тик кластера не фейлится,
+/// миграция T доведёт кластер); в этой точке заявка старее порога снимается
+/// (kind=password-&lt;role&gt;) под тройным гвардом §3.1 — по построению точки:
+/// предикат 1 — заявка жива; предикат 2 — окно CA закрыто (при открытом окне
+/// вентиль Active-ветки E не вызывает); предикат 3 — стейт отсутствует (ветка
+/// state-is-null; живой стейт = начатая ротация — доигрывание, Failed без
+/// экспирации). Финал E3 пишет исход done в ticket_outcomes/&lt;C&gt;.</para>
 /// </summary>
 public sealed class PasswordRotator(
     IEtcdGateway gateway,
@@ -33,12 +41,17 @@ public sealed class PasswordRotator(
     ClaimStore claims,
     WorkJournal journal,
     IValkeyConnection valkey,
-    Func<string>? generator = null) // генератор NEW (дефолт — канон 32 симв)
+    Func<string>? generator = null, // генератор NEW (дефолт — канон 32 симв)
+    int rotationTicketTimeoutSec = 3600)
 {
     private const string Op = "rotate";
     private const string PhaseE1Pending = "e1-pending";
     private const string PhaseE1 = "e1-added";
     private const string PhaseE2 = "e2-committed";
+
+    // t10: экспирация не-начатых заявок + исходы финалов.
+    private readonly TicketExpirator _tickets = new(gateway, endpoints);
+    private readonly int _timeoutSec = rotationTicketTimeoutSec;
 
     // Payload стейта доигрывания (ключ work/<C>/rotation, arch/20 §3 — camelCase).
     // Request — исходный payload заявки rotations/<C>: compare условного del
@@ -78,6 +91,30 @@ public sealed class PasswordRotator(
             if (request.Value is null)
                 return Result.Success();
 
+            // Кластер не поднят при ОТСУТСТВУЮЩЕМ стейте — заявка не начата:
+            // waiting-cluster + Success (t10: тик кластера не фейлится, миграция
+            // T доведёт кластер, ротация исполнится после; стейт жив — ротация
+            // НАЧАТА, доигрывание ниже). Тройной гвард §3.1 по построению точки:
+            // заявка жива (предикат 1); окно CA закрыто — при открытом окне
+            // вентиль Active-ветки E не вызывает (arch/21 §5 K, предикат 2);
+            // стейт отсутствует — ветка state-is-null (предикат 3).
+            if (snap.Endpoints is null || snap.AdminUser is null || snap.AdminPassword is null || snap.CaPem is null)
+            {
+                var role2 = role is "app" or "admin" ? role : "app"; // битая роль — экспирация с каноничным kind
+                var expired = await _tickets.TryExpireAsync(
+                    journal, cluster, Op, claims.InstanceId,
+                    TicketOutcomes.Key("/valkeyworker", cluster), $"password-{role2}",
+                    ProcessCommon.RotationKey(cluster), requestPayload, "waiting-cluster",
+                    _timeoutSec, DateTimeOffset.UtcNow.ToUnixTimeSeconds(), mutationLive: false, ct);
+                if (!expired.IsSuccess)
+                    return expired.Error!;
+                if (expired.Value)
+                    return Result.Success();
+                var waiting = await journal.WritePhaseAsync(
+                    cluster, Op, "waiting-cluster", claims.InstanceId, null, ct);
+                return waiting;
+            }
+
             // Битая заявка (role не app|admin) — мусор: del с journal.
             if (role is not ("app" or "admin"))
             {
@@ -106,11 +143,6 @@ public sealed class PasswordRotator(
         ValkeyClusterSnapshot snap, string cluster, string role, string? requestedBy,
         string requestPayload, CancellationToken ct)
     {
-        // Active-кластер: endpoints + admin-кред + ca_pem (TLS t06) обязательны.
-        if (snap.Endpoints is null || snap.AdminUser is null || snap.AdminPassword is null || snap.CaPem is null)
-            return Result<RotationState>.Failed(new ApplicationException(
-                $"rotate {cluster}: нет endpoints/admin-креда/ca_pem — ротация невозможна"));
-
         // OLD — текущее значение etcd (failover); NEW — генерация.
         var oldPasswordKey = $"/valkey/clusters/{cluster}/{role}_password";
         var oldRead = await GetWithFailoverAsync(oldPasswordKey, ct);
@@ -236,10 +268,20 @@ public sealed class PasswordRotator(
         if (!e3.IsSuccess)
             return e3.Error!;
 
-        // Стейт исчерпан (доигрывание завершено) + journal done.
+        // Стейт исчерпан (доигрывание завершено) + исход done (t10) + journal done.
         var cleared = await DeleteStateAsync(cluster, ct);
         if (!cleared.IsSuccess)
             return cleared.Error!;
+
+        // Исход финала (t10): done гасит expired-алерт панели перезаписью.
+        // Аудит — из payload заявки в стейте; рестарт-хвост без стейта — фактическое время.
+        var audit = state.Request is { } payload ? TicketOutcomes.ParseAudit(payload) : null;
+        var outcomeDone = await _tickets.WriteDoneAsync(
+            TicketOutcomes.Key("/valkeyworker", cluster), $"password-{role}", audit,
+            DateTimeOffset.UtcNow.ToUnixTimeSeconds(), ct);
+        if (!outcomeDone.IsSuccess)
+            return outcomeDone.Error!;
+
         return await journal.WritePhaseAsync(
             cluster, Op, "done", claims.InstanceId, $"role={role} by={state.RequestedBy}", ct);
     }

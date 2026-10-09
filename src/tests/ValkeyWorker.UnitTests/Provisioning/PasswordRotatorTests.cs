@@ -418,4 +418,123 @@ public class PasswordRotatorTests
         rig.Etcd.Store[$"/valkeyworker/work/junk"].Value.Should().Contain("invalid-request");
         rig.Etcd.Store[$"/valkey/clusters/junk/app_password"].Value.Should().Be(OldApp);
     }
+
+    // ===== t10: waiting-cluster-семантика + экспирация при незнающем кластере =====
+
+    [Fact]
+    public async Task Tick_ClusterDownNoState_OldTicket_Expired()
+    {
+        // Arrange (AC7): нет endpoints + нет стейта + заявка старая.
+        const string cluster = "down";
+        var rig = new Rig();
+        rig.SeedActive(cluster);
+        rig.Etcd.Seed($"/valkeyworker/rotations/{cluster}",
+            $$"""{"role":"app","requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 3700}},"requested_by":"it"}""");
+        await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
+        var snap = rig.Snapshot(cluster) with { Endpoints = null };
+
+        // Act
+        var result = await rig.Rotator.TickAsync(snap, TestContext.Current.CancellationToken);
+
+        // Assert: Success (тик кластера не фейлится); заявка снята; исход
+        // kind=password-app reason=waiting-cluster.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        rig.Etcd.Store.Should().NotContainKey($"/valkeyworker/rotations/{cluster}");
+        var outcome = rig.Etcd.Store[$"/valkeyworker/ticket_outcomes/{cluster}"].Value;
+        outcome.Should().Contain("\"kind\":\"password-app\"")
+            .And.Contain("\"outcome\":\"expired\"")
+            .And.Contain("\"reason\":\"waiting-cluster\"");
+    }
+
+    [Fact]
+    public async Task Tick_ClusterDownNoState_FreshTicket_WaitsWithSuccess()
+    {
+        // Arrange (AC7): нет endpoints + нет стейта + заявка свежая.
+        const string cluster = "fresh";
+        var rig = new Rig();
+        rig.SeedActive(cluster);
+        rig.Etcd.Seed($"/valkeyworker/rotations/{cluster}",
+            $$"""{"role":"app","requested_unix":{{DateTimeOffset.UtcNow.ToUnixTimeSeconds() - 10}},"requested_by":"it"}""");
+        await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
+        var snap = rig.Snapshot(cluster) with { Endpoints = null };
+
+        // Act
+        var result = await rig.Rotator.TickAsync(snap, TestContext.Current.CancellationToken);
+
+        // Assert: Success (НЕ Failed); journal waiting-cluster; заявка жива.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        var state = await new WorkJournal("/valkeyworker", rig.Etcd, ["http://etcd:2379"])
+            .ReadAsync(cluster, TestContext.Current.CancellationToken);
+        state.Value!.Phase.Should().Be("waiting-cluster");
+        rig.Etcd.Store.Should().ContainKey($"/valkeyworker/rotations/{cluster}");
+        rig.Etcd.Store.Should().NotContainKey($"/valkeyworker/ticket_outcomes/{cluster}");
+    }
+
+    [Fact]
+    public async Task Tick_LiveState_NoEndpoints_FailsAndKeepsTicket()
+    {
+        // Arrange (AC3): стейт e1-added жив + нет endpoints — ротация НАЧАТА.
+        const string cluster = "live";
+        var stateKey = $"/valkeyworker/work/{cluster}/rotation";
+        var rig = new Rig();
+        rig.SeedActive(cluster);
+        rig.Etcd.Seed($"/valkeyworker/rotations/{cluster}",
+            """{"role":"app","requested_unix":1756500000,"requested_by":"panel"}""");
+        rig.Etcd.Seed(stateKey,
+            $$"""{"phase":"e1-added","role":"app","old":"{{OldApp}}","new":"NewPassword0123456789abcdef0123456789abcd","requested_by":"panel"}""");
+        await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
+        var snap = rig.Snapshot(cluster) with { Endpoints = null };
+
+        // Act
+        var result = await rig.Rotator.TickAsync(snap, TestContext.Current.CancellationToken);
+
+        // Assert: Failed (доигрывание — третий предикат гварда ложен), заявка/
+        // стейт живы, исхода нет.
+        result.IsSuccess.Should().BeFalse("доигрывание начатой ротации без endpoints невозможно");
+        rig.Etcd.Store.Should().ContainKey($"/valkeyworker/rotations/{cluster}");
+        rig.Etcd.Store.Should().ContainKey(stateKey);
+        rig.Etcd.Store.Should().NotContainKey($"/valkeyworker/ticket_outcomes/{cluster}");
+    }
+
+    [Fact]
+    public async Task Tick_BrokenPayload_NoExpiry()
+    {
+        // Arrange (AC4): нет endpoints + нет стейта + payload без requested_unix.
+        const string cluster = "broken";
+        var rig = new Rig();
+        rig.SeedActive(cluster);
+        rig.Etcd.Seed($"/valkeyworker/rotations/{cluster}",
+            """{"role":"app","requested_by":"it"}""");
+        await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
+        var snap = rig.Snapshot(cluster) with { Endpoints = null };
+
+        // Act
+        var result = await rig.Rotator.TickAsync(snap, TestContext.Current.CancellationToken);
+
+        // Assert: заявка жива (параноидальный отказ), waiting-cluster.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        rig.Etcd.Store.Should().ContainKey($"/valkeyworker/rotations/{cluster}");
+        rig.Etcd.Store.Should().NotContainKey($"/valkeyworker/ticket_outcomes/{cluster}");
+    }
+
+    [Fact]
+    public async Task Tick_FullRotation_WritesDoneOutcome()
+    {
+        // Arrange (AC8): полная ротация на живом кластере.
+        const string cluster = "fulldone";
+        var rig = new Rig();
+        rig.SeedActive(cluster);
+        rig.SeedRotation(cluster, "app");
+        await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
+
+        // Act
+        var result = await rig.Rotator.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
+
+        // Assert: исход done kind=password-app.
+        result.IsSuccess.Should().BeTrue(result.Error?.Message);
+        var outcome = rig.Etcd.Store[$"/valkeyworker/ticket_outcomes/{cluster}"].Value;
+        outcome.Should().Contain("\"kind\":\"password-app\"")
+            .And.Contain("\"outcome\":\"done\"")
+            .And.Contain("\"requested_unix\":1756500000");
+    }
 }

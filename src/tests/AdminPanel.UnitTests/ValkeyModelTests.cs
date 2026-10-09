@@ -54,4 +54,40 @@ public sealed class ValkeyModelTests
         // Assert — null (не undefined): фронтенд-бейдж не рендерится
         dto.CaRotation.Should().BeNull();
     }
+
+    [Fact]
+    public void MapDetails_TicketOutcome_MapsToDto()
+    {
+        // Arrange (t10): исход expired кластера live.
+        var outcome = new ValkeyTicketOutcome(
+            "live", "password-app", "expired", "waiting-cluster", 1750000000, "it", 1750003600);
+        var cluster = new ValkeyClusterInfo(
+            "live", ValkeyClusterState.Active, 1, 536870912L, "allkeys-lru",
+            1756500000, "localhost:17001", []);
+
+        // Act
+        var dto = ValkeyMappers.MapDetails(cluster, outcome);
+
+        // Assert — поле проброшено в API-DTO (JSON ticketOutcome — строка исхода).
+        dto.TicketOutcome.Should().NotBeNull();
+        dto.TicketOutcome!.Kind.Should().Be("password-app");
+        dto.TicketOutcome.Outcome.Should().Be("expired");
+        dto.TicketOutcome.Reason.Should().Be("waiting-cluster");
+        dto.TicketOutcome.FinishedUnix.Should().Be(1750003600);
+    }
+
+    [Fact]
+    public void MapDetails_NoTicketOutcome_NullField()
+    {
+        // Arrange — исходов нет.
+        var cluster = new ValkeyClusterInfo(
+            "live", ValkeyClusterState.Active, 1, 536870912L, "allkeys-lru",
+            1756500000, "localhost:17001", []);
+
+        // Act
+        var dto = ValkeyMappers.MapDetails(cluster);
+
+        // Assert — null (строка исхода UI не рендерится).
+        dto.TicketOutcome.Should().BeNull();
+    }
 }

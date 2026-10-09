@@ -18,6 +18,7 @@ public sealed record ValkeySnapshot(
     IReadOnlyList<KeyParseError> ParseErrors,          // битые JSON valkey-ключей (arch/20 §5)
     int UnknownKeyCount,
     IReadOnlyList<ValkeyCaRotationTicket>? CaRotations = null, // /valkeyworker/ca_rotations/ (t07, 02 §11.1)
+    IReadOnlyList<ValkeyTicketOutcome>? TicketOutcomes = null, // /valkeyworker/ticket_outcomes/ (t10, arch/20 §3)
     WorkerApiCert? WorkerApiCert = null);              // целевой серт /workers/api_tls/valkeyworker (arch/02 §9.9)
 
 // Кластер /valkey/clusters/<C>/ (arch/20 §2): config + state + факт (nodes/endpoints).
@@ -53,6 +54,12 @@ public sealed record ValkeyRotationTicket(
 // payload {"requested_unix","requested_by"} — без role.
 public sealed record ValkeyCaRotationTicket(
     string Cluster, long RequestedUnix, string? RequestedBy);
+
+// Исход заявки /valkeyworker/ticket_outcomes/<C> (t10, arch/20 §3): последний
+// исход заявки кластера (expired|done), перезаписывается каждым новым исходом.
+public sealed record ValkeyTicketOutcome(
+    string Cluster, string Kind, string Outcome, string? Reason,
+    long RequestedUnix, string? RequestedBy, long FinishedUnix);
 
 // Результат live-пробы кластера (spec §4.6): одна нода в v1.
 public sealed record ValkeyProbeResult(
