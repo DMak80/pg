@@ -123,11 +123,15 @@ public sealed class NodeSupervisor(
         // 1.7) Общий шаг пересоздания нод REST-TLS (t22, arch/14 §5 C): вход
         // «конвергенция» (легаси-контейнеры без SSL_RESTAPI_*) и вход «ротация»
         // (hash env != hash(pending) журнала) — единая механика, ≤1 пересоздание
-        // на тик кластера, лидер — soft-switchover со сносом следующим тиком,
-        // volume сохраняется. РАНЬШЕ проб шарда (флап проб легаси-http нод не
-        // успевает породить rebuild/UNREACHABLE).
+        // на тик кластера, volume сохраняется. Ветви лидера (spec §5.5):
+        // живой TLS-лидер — soft-switchover (снос следующим тиком); легаси-http
+        // лидер входа конвергенции — жёсткий снос с выборами Patroni под
+        // DCS-свидетелем (реплика state running — heartbeat мимо REST).
+        // РАНЬШЕ проб шарда (флап проб легаси-http нод не успевает породить
+        // rebuild/UNREACHABLE).
         var restRecreated = await RecreateRestTlsNodesAsync(
-            cluster, snap, addresses.Value, restoring, restPassword, supervision.Value.RestPending, ct);
+            cluster, snap, addresses.Value, restoring, restPassword,
+            ensuredSecrets.Value.RestPassword, supervision.Value.RestPending, ct);
         if (!restRecreated.IsSuccess)
             return Fail(restRecreated.Error!);
 
@@ -497,19 +501,22 @@ public sealed class NodeSupervisor(
     // (а) конвергенция живых канонических нод, созданных до TLS (нет
     // SSL_RESTAPI_CERTIFICATE в env); (б) rolling-ротация REST-пары (hash env !=
     // hash(pending) журнала). Единая механика: инспекция env контейнера, ≤1
-    // пересоздание на тик кластера, живой лидер — сначала graceful-switchover
-    // (снос следующим тиком, семантика TO_RECREATE-soft), мёртвая нода — сразу,
-    // volume сохраняется (stop + rm force БЕЗ RemoveNodeAsync — он сносит
-    // pgw-…-data), гвард кворума (свидетель-план помимо кандидата). В окне
-    // ротации её кандидаты доминируют (после закрытия недомигрированные
-    // дорабатываются входом конвергенции); Swarm (SupportsRunningInspection=
-    // false) — шаг no-op (заглушка инспекции). Источник пароля пересоздания —
-    // результат ensure (легаси кластер: snap.RestPassword == null до ensure),
-    // НЕ снапшот тика.
+    // пересоздание на тик кластера, volume сохраняется (stop + rm force БЕЗ
+    // RemoveNodeAsync — он снёс бы pgw-…-data), гвард кворума (свидетель-план
+    // помимо кандидата). Ветви лидера (spec §5.5): живой TLS-лидер — сначала
+    // graceful-switchover (снос следующим тиком, семантика TO_RECREATE-soft;
+    // кред — пара ФАКТИЧЕСКОГО поколения ноды — ключ etcd, до txn R3 это OLD:
+    // effective=NEW дала бы вечный 401 на ноде со OLD), легаси-http лидер входа
+    // конвергенции — жёсткий снос с выборами Patroni под DCS-свидетелем (без
+    // свидетеля шаг ждёт — лидерство в пустоту не сносим). В окне ротации её
+    // кандидаты доминируют; Swarm (SupportsRunningInspection=false) — шаг no-op
+    // (заглушка инспекции). Источник пароля ПЕРЕСОЗДАНИЯ — эффективная пара
+    // (ensure-результат либо pending), снапшот не используется.
     private async Task<Result> RecreateRestTlsNodesAsync(
         string cluster, ClusterSnapshot snap,
         IReadOnlyDictionary<string, NodeAddress> addresses,
-        HashSet<string> restoring, string restPassword, string? restPending, CancellationToken ct)
+        HashSet<string> restoring, string restPassword, string restKeyPassword,
+        string? restPending, CancellationToken ct)
     {
         if (!driver.SupportsRunningInspection)
             return Result.Success(); // Swarm: инспекция env — заглушка, шаг no-op
@@ -557,17 +564,40 @@ public sealed class NodeSupervisor(
                     return scopeKvs;
                 var leader = ClusterSnapshotParser.ParseService(scopeKvs.Value).FirstOrDefault()?.LeaderName;
 
-                // Живой лидер — soft-switchover (снос следующим тиком; снапшот
-                // тика устареет сам). Мёртвая нода (в т.ч. мёртвый лидер) — сразу:
-                // EnsureNodeAsync поднимет контейнер, Patroni вернёт ноду репликой.
-                if (leader == node.Name && await probe.IsAliveAsync(addr, ct))
+                if (leader == node.Name)
                 {
-                    var switched = await probe.SwitchoverAsync(addr, node.Name, effective, ct);
-                    if (!switched.IsSuccess)
-                        return switched;
-                    await journal.WritePhaseAsync(cluster, "supervise",
-                        $"rest-tls-switchover/{shard.Name}/{node.Name}", claims.InstanceId, null, ct);
-                    return Result.Success(); // одно действие на тик кластера
+                    if (await probe.IsAliveAsync(addr, ct))
+                    {
+                        // Живой TLS-лидер — soft (снос следующим тиком; снапшот
+                        // тика устареет сам). Кред — пара фактического поколения
+                        // ноды: ключ etcd (в окне ротации до txn R3 — OLD);
+                        // отказ switchover — тиковый ретрай (return Failed),
+                        // окно живёт (spec §5.5).
+                        var switched = await probe.SwitchoverAsync(addr, node.Name, restKeyPassword, ct);
+                        if (!switched.IsSuccess)
+                            return switched;
+                        await journal.WritePhaseAsync(cluster, "supervise",
+                            $"rest-tls-switchover/{shard.Name}/{node.Name}", claims.InstanceId, null, ct);
+                        return Result.Success(); // одно действие на тик кластера
+                    }
+
+                    // https-проба лидера не подтверждена. Вход ротации (окно
+                    // открыто): ноды ротации — TLS, значит лидер МЁРТВ — снос
+                    // сразу (канон TO_RECREATE: EnsureNode поднимет контейнер,
+                    // Patroni вернёт ноду репликой). Вход конвергенции: это
+                    // легаси-http лидер (soft транспортно недостижим — слушает
+                    // голый http) — жёсткий снос с выборами Patroni допускаем
+                    // ТОЛЬКО под DCS-свидетелем: реплика state running по
+                    // /service/<scope>/members/<n> (heartbeat Patroni ходит
+                    // через etcd, мимо REST — REST-проба легаси-контура не
+                    // работает); свидетеля нет — ждём тика, лидерство в пустоту
+                    // не сносим (spec §5.5, рев.3).
+                    if (restPending is null && !HasRunningDcsWitness(scopeKvs.Value, node.Name))
+                    {
+                        await journal.WritePhaseAsync(cluster, "supervise",
+                            $"rest-tls-wait-witness/{shard.Name}/{node.Name}", claims.InstanceId, null, ct);
+                        return Result.Success(); // ждём свидетеля — тик здоров
+                    }
                 }
 
                 // Пересоздание с сохранением volume: stop + rm force движка
@@ -605,6 +635,27 @@ public sealed class NodeSupervisor(
         }
 
         return Result.Success();
+    }
+
+    // DCS-свидетель жёсткого сноса лидера (t22, spec §5.5 рев.3): реплика scope,
+    // живая по ЧЛЕНСТВУ — /service/<scope>/members/<n> со state running.
+    // Heartbeat Patroni ходит через etcd (мимо REST), поэтому свидетель жив
+    // даже в легаси-http контуре, где REST-проба воркера не работает. Пробелы
+    // JSON нормализуем (Patroni/emulator пишут с разделителями json.dumps).
+    private static bool HasRunningDcsWitness(IReadOnlyList<Kv> scopeKvs, string candidate)
+    {
+        foreach (var kv in scopeKvs)
+        {
+            // "/service/<scope>/members/<n>" → ["", "service", <scope>, "members", <n>]
+            var segments = kv.Key.Split('/');
+            if (segments.Length != 5 || segments[3] != "members" || segments[4] == candidate)
+                continue;
+            if (kv.Value.Replace(" ", string.Empty)
+                    .Contains("\"state\":\"running\"", StringComparison.Ordinal))
+                return true;
+        }
+
+        return false;
     }
 
     // Operator-triggered recreate (TO_RECREATE): оператор панелью просит
