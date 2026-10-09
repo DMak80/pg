@@ -824,6 +824,9 @@ P2 на каждый шард X:
         max(10, max_connections − 5) (§2.1, §8), callback on_role_change →
         lease-скрипт мастер-ключа; doorman: пул <dbname>, TLS require;
         haproxy: бэкенды всех Patroni-нод шарда), env-секреты (§4);
+        дополнительно REST-TLS-материал (§2.1): `SSL_RESTAPI_*` PEM +
+        секция `restapi` SPILO_CONFIGURATION с `connect_address`/
+        `authentication` из per-cluster `rest_password`;
         nodes/<n>/state=PROVISIONING; при существовании (re-run) — сверить
         имя И порты: фактические public-биндинги контейнера (inspect)
         обязаны совпадать с планом (5432→pg, 8008→patroni, 6432→doorman);
@@ -902,7 +905,9 @@ D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый �
   state=PROVISIONING→RUNNING; как и rebuild ниже — с тюнингом от АКТУАЛЬНЫХ
   `request_*` на момент пересоздания (PgtuneInputsFactory.Create, §2.1:
   пересчёт на каждый EnsureNode-путь).
-- Patroni-REST каждой ноды (`GET /cluster`, timeout 3 с). Нода недоступна
+- Patroni-REST каждой ноды по HTTPS (`GET /cluster`, timeout 3 с; верификация
+  цепочки к kfw-install-ca без hostname-проверки — arch/13 §4; адрес —
+  `host:patroni-port` portalloc). Нода недоступна
   дольше `NodeDeadSec` (90 с, конфиг) и **не лидер** и кворум шарда жив
   (мертва максимум одна нода: живых ≥ max(1, nodes−1) — обобщение «≥2»
   фазы исполнения для 2-нодовых шардов) → **rebuild**: удалить контейнер + volume, создать
@@ -938,7 +943,8 @@ D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый �
   `postgresql.parameters` =
   merge(PGTune ∪ канон) от актуальных заявок `request_{cpu,mem}` и опций
   `PgWorker:Pgtune`, пересчёт на каждый тик конвергенции, БЕЗ фиксации в
-  etcd) → ОДИН PATCH /config: обновляет расходящиеся значения, добавляет
+  etcd) → ОДИН PATCH /config (несёт `Authorization: Basic` per-cluster —
+  `rest_password`, §4 группа 1; GET-запросы заголовок не несут): обновляет расходящиеся значения, добавляет
   отсутствующие и удаляет лишние (null-патч — параметр исчез из PGTune-вывода
   при смене заявок или добавлен в `ExcludeParams`; «старое не живёт параллельно
   канону», включая вручную записанные оператором ключи — канал переопределения
@@ -1009,6 +1015,20 @@ D3 снапшот P12; успех = пустой /clusters/<C>/ + снятый �
   (как P2.5'). Модель снапшота уже несёт наличие ключа — прогон без
   etcd-запросов, put только для отсутствующих; после первого обеспечения
   последующие тики — no-op.
+- **Общий шаг пересоздания нод с ДВУМЯ входами** (пересоздание живого
+  канонического контейнера с сохранением volume): (а) REST-TLS-конвергенция
+  живых канонических нод — инспекция env существующего контейнера
+  (отсутствие `SSL_RESTAPI_CERTIFICATE`), не более одного пересоздания на
+  тик надзора кластера; живой лидер — сначала graceful-switchover, затем
+  снос следующим тиком (семантика TO_RECREATE-soft); volume сохраняется;
+  гвард кворума; (б) заказ rolling-ротации REST-пары от процесса I (§5 I) —
+  та же механика, критерий выбора ноды — hash пары в env
+  (`PGW_REST_PASSWORD_HASH`). Шаг — до проб шарда в тике; перед первым
+  пересозданием входа конвергенции — ensure `rest_password` (паттерн
+  app_params-миграции). Гварды окна ротации (`rest_pending` в журнале
+  работы, §5 I): PATCH `/config` (конвергенция DCS) и RecreateMarked
+  soft-switchover — skip тика (мутации ретраются после txn-коммита);
+  ускорение failover мёртвого лидера — DCS-ключ, работает.
 
 Границы надзора (t06): шард без `dsn` — домен AddShardProcess (пробы/
 самовосстановление/UNREACHABLE-переходы не трогаем — state нод входит в
@@ -1188,31 +1208,62 @@ bucket_mover (`mover_password`) и bucket_admin (`bucket_admin_user`/
 R0 заявка есть → journal op=rotate-app-password phase=started; клэйм-гвард
    (имя op сохранено — совместимость журналов, образец RotationRole.Phase
    arch/16 §5 H)
-R1 ensure пер-cluster тройки (P1.5): {app_user, app_password},
-   {mover_password}, {bucket_admin_user, bucket_admin_password} — OLD-значения
-R2 NEW = сгенерировать ×3 (32 симв [A-Za-z0-9]); для каждого шарда С dsn
+R1 ensure пер-cluster четвёрки (P1.5): {app_user, app_password},
+   {mover_password}, {bucket_admin_user, bucket_admin_password},
+   {rest_password} — OLD-значения
+R2 NEW = сгенерировать ×4 (32 симв [A-Za-z0-9]); для каждого шарда С dsn
    (поднятого; шард без dsn — домен AddShard: роли создадутся по свежим
-   кредам): мастер (master-ключ → Patroni fallback) → admin-DSN →
+   кредам; для rest — skip: его ноды создадутся с новой парой после R3):
+   мастер (master-ключ → Patroni fallback) → admin-DSN →
    ALTER ROLE app / bucket_admin / bucket_mover PASSWORD '<NEW>' (реплики
    получают pg_authid физической репликацией). Любой сбой → transient:
    journal last_error, заявка жива, следующий тик повторяет С НАЧАЛА со
    свежими NEW (ALTER идемпотентен перезаписью — регенерация между тиками
-   безопасна)
+   безопасна). Для rest_password — ROLLING-пересоздание нод кластера общим
+   шагом надзора (§5 C: ≤1 нода/тик, лидер — soft-switchover со сносом
+   следующим тиком, volume сохраняется, гварды кворума/restore/TO_REMOVE):
+   пара NEW «в полёте» фиксируется полем `rest_pending` журнала работы
+   (фаза rotate-rest-start) — повтор тиками ПРОДОЛЖАЕТ проход с той же
+   парой (регенерация между тиками обнуляла бы прогресс rolling; потеря
+   поля — проход начинается заново со свежей парой, безопасно); прогресс
+   по нодам — факт env (`PGW_REST_PASSWORD_HASH`, инспекция) —
+   takeover-безопасен; есть нода с hash != hash(NEW) → окно открыто, тик
+   ЖДЁТ (фаза rotate-rest-rolling); все ноды несут hash(NEW) → R2 завершён
 R3 все шарды OK → ОДНА txn: [compare value==OLD для app_password,
-   mover_password, bucket_admin_password и КАЖДОГО dsn-ключа шардов]
+   mover_password, bucket_admin_password, rest_password и КАЖДОГО
+   dsn-ключа шардов]
    [put app_password=NEW_app; put mover_password=NEW_mover; put
-   bucket_admin_password=NEW_admin; перезапись dsn-ключей всех шардов
+   bucket_admin_password=NEW_admin; put rest_password=NEW_rest
+   (коммит после применения на ВСЕХ нодах); перезапись dsn-ключей всех шардов
    (пароль bucket_admin заменён regex-ом по conninfo); del
    /pgworker/rotations/<C>] — коммит и снятие заявки неразделимы. Compare
    dsn закрывает гонку с внешней записью dsn (репарация P11) в окне
    ротации. Compare проигран (внешняя запись etcdctl) → re-read, ретрай
-   тиком со свежими OLD
-R4 снапшот P12 (точка изменения) + journal phase=done
+   тиком со свежими OLD (для rest — повтор прохода со свежей парой,
+   новое rest_pending, повторный rolling идемпотентен)
+R4 снапшот P12 (точка изменения) + journal phase=done (сброс rest_pending —
+   фазовой записью done)
 ```
 
 Пока R3 не прошёл, креды в etcd НЕ меняются — приложения работают со
 старыми паролями; окно расхождения (часть шардов уже с NEW, etcd со OLD)
 существует только при transient-отказе посередине и закрывается ретраями.
+**Окно rolling rest-ротации** (от первого пересоздания входа ротации до
+R3): ноды разных поколений несут разные пары (dual-auth у Patroni нет) →
+межнодовые REST-вызовы между поколениями получают 401 — HA-инициации
+Patroni (fetch_node_status/switchover) деградированы; запись/репликация/
+DCS-heartbeat/master-ключ НЕ затронуты (мимо REST). Гварды окна: до R3
+воркер не инициирует через REST кластера ни switchover (RecreateMarked-soft,
+§5 C), ни PATCH `/config` (конвергенция DCS — транзиент-skip тика);
+подавленные мутации ретраются после txn; ускорение failover мёртвого
+лидера — DCS-ключ etcd, работает. Сборка env нод в окне берёт пару из
+`rest_pending` (эффективная пара: pending ?? ключ); все EnsureNode-пути
+окна (rebuild, TO_RECREATE, конвергенция после закрытия) не расширяют
+окно — пересоздание любым путём ставит NEW-пару. Вход конвергенции
+REST-TLS в окне приостанавливается (не тянуть два входа к одной ноде);
+после R3 недомигрированные ноды дорабатываются обычным порядком.
+Длительность окна — единицы минут (2–3 ноды × пересоздание со своим
+PGDATA + тик soft-switchover), записи не рвёт.
 После R3 клиенты обязаны перечитать креды из etcd (живые пулы реконнектятся
 с ошибкой до перечитывания — плановая операция, выполнять в тихое окно;
 предупреждение — в UI-модалке панели). Специфика ролей: **bucket_admin**
