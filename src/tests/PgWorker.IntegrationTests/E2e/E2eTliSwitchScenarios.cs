@@ -890,7 +890,8 @@ public sealed class TliSwitchContext : IAsyncLifetime
         return Convert.ToString(await cmd.ExecuteScalarAsync(ct)) ?? "";
     }
 
-    private static readonly HttpClient PatroniHttp = new() { Timeout = TimeSpan.FromSeconds(3) };
+    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
 
     // Published pg-порт мастера шарда из portalloc (host-клиент: localhost).
     // Резолв фактического primary — по пробам Patroni /primary (t02-подход
@@ -911,7 +912,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"http://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/primary", ct);
                     if (response.IsSuccessStatusCode)
                     {
                         primary = key.Split('/')[1];
@@ -951,7 +952,7 @@ public sealed class TliSwitchContext : IAsyncLifetime
                 try
                 {
                     using var response = await PatroniHttp.GetAsync(
-                        $"http://localhost:{addr.GetProperty("patroni").GetInt32()}/cluster", ct);
+                        $"https://localhost:{addr.GetProperty("patroni").GetInt32()}/cluster", ct);
                     if (!response.IsSuccessStatusCode) continue;
                     using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(ct));
                     foreach (var member in doc.RootElement.GetProperty("members").EnumerateArray())

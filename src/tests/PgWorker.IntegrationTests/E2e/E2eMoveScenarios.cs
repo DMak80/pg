@@ -435,7 +435,8 @@ public class E2eMoveScenarios(ITestOutputHelper output)
     private sealed record MasterInfo(string Node, int Port, int PatroniPort, string Dsn);
 
     // Пробы Patroni из теста (семантика /primary, arch/14 §5 C).
-    private static readonly HttpClient PatroniHttp = new() { Timeout = TimeSpan.FromSeconds(3) };
+    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
 
     private async Task<MasterInfo> MasterInfoAsync(string shard, CancellationToken ct)
     {
@@ -457,7 +458,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
                     try
                     {
                         using var response = await PatroniHttp.GetAsync(
-                            $"http://localhost:{addr.Patroni}/primary", ct);
+                            $"https://localhost:{addr.Patroni}/primary", ct);
                         if (!response.IsSuccessStatusCode)
                             continue;
                         var node = nodeKey.Split('/')[1];
@@ -479,10 +480,15 @@ public class E2eMoveScenarios(ITestOutputHelper output)
     private async Task EnableSyncModeAsync(string shard, CancellationToken ct)
     {
         var master = await MasterInfoAsync(shard, ct);
-        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
-        using var response = await http.PatchAsync(
-            $"http://localhost:{master.PatroniPort}/config",
-            new StringContent("""{"synchronous_mode":true}""", Encoding.UTF8, "application/json"), ct);
+        // t22: мутация Patroni — https с доверием CA контура + basic-auth
+        // per-cluster (unsafe-эндпоинт без Authorization закрыт 401).
+        var restPassword = (await G.GetAsync(Endpoint, $"/clusters/{Cluster}/rest_password", ct))
+            .Value!.Value;
+        using var http = E2eEnvironment.CreatePatroniHttpsClient();
+        using var response = await http.SendAsync(
+            E2eEnvironment.PatroniPatch($"https://localhost:{master.PatroniPort}/config",
+                restPassword, """{"synchronous_mode":true}"""),
+            ct);
         response.IsSuccessStatusCode.Should().BeTrue(
             $"Patroni {shard} должен принять PATCH /config (получили HTTP {(int)response.StatusCode})");
 

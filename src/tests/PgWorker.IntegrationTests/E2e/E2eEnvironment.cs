@@ -142,6 +142,10 @@ public sealed class E2eEnvironment : IAsyncDisposable
             : $"http://host.docker.internal:{minio.GetMappedPublicPort(9000)}";
         ArtifactsDir = Path.Combine(Path.GetTempPath(), $"pgw-e2e-artifacts-{runId}");
         Directory.CreateDirectory(ArtifactsDir);
+        // REST-TLS CA контура (t22): тот же per-install CA, что mTLS API —
+        // артефакт для разбора падений и ручных curl-проверок контура.
+        File.WriteAllText(Path.Combine(ArtifactsDir, "rest-ca.pem"), _installCa.CaPem);
+        File.WriteAllText(Path.Combine(ArtifactsDir, "rest-ca.key"), _installCa.CaKeyPem);
     }
 
     public string Slug { get; }
@@ -153,6 +157,45 @@ public sealed class E2eEnvironment : IAsyncDisposable
     public static string InstallCaPem => _installCa.CaPem;
 
     public static string InstallCaKeyPem => _installCa.CaKeyPem;
+
+    /// <summary>https-клиент Patroni-проб сценариев (t22): REST :8008 нод —
+    /// TLS; верификация цепочки к per-contour CA (hostname не сверяется — SAN
+    /// серта несёт имена сетей, сценарии ходят по host-публикациям).</summary>
+    public static HttpClient CreatePatroniHttpsClient()
+        => new(new SocketsHttpHandler
+        {
+            SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+            {
+                RemoteCertificateValidationCallback = (_, certificate, _, _) =>
+                {
+                    var cert = certificate as X509Certificate2
+                        ?? (certificate is null ? null : new X509Certificate2(certificate));
+                    if (cert is null)
+                        return false;
+                    _installCaCert ??= X509Certificate2.CreateFromPem(_installCa.CaPem);
+                    return Shared.Tls.TlsChain.ValidateChain(cert, _installCaCert);
+                },
+            },
+        })
+        {
+            Timeout = TimeSpan.FromSeconds(3),
+        };
+
+    private static X509Certificate2? _installCaCert;
+
+    /// <summary>Мутация Patroni REST сценарием (t22): unsafe-эндпоинт — basic-auth
+    /// per-cluster (patroni:&lt;rest_password из etcd&gt;); отправляется клиентом
+    /// CreatePatroniHttpsClient (https + доверие CA контура).</summary>
+    public static HttpRequestMessage PatroniPatch(string url, string restPassword, string json)
+    {
+        var request = new HttpRequestMessage(HttpMethod.Patch, url)
+        {
+            Content = new StringContent(json, Encoding.UTF8, "application/json"),
+        };
+        request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue(
+            "Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"patroni:{restPassword}")));
+        return request;
+    }
 
     /// <summary>Каталог телеметрии прогона (docs/e2e-launch.md): docker-логи
     /// контейнеров (снимаются ПЕРЕД любым удалением), inspect'ы, host.log'ы
@@ -571,6 +614,11 @@ public sealed class E2eEnvironment : IAsyncDisposable
             ["PGW_API_TLS_CERT"] = _serverCertPem,
             ["PGW_API_TLS_KEY"] = _serverKeyPem,
             ["PGW_API_TLS_CLIENT_CA"] = _installCa.CaPem,
+            // REST-TLS нод (t22): per-contour CA (тот же, что mTLS API) — все
+            // E2E-контуры создают ноды в TLS-режиме (дефолт поставки, http-режима
+            // в тестах нет).
+            ["PGW_REST_TLS_CA"] = _installCa.CaPem,
+            ["PGW_REST_TLS_CA_KEY"] = _installCa.CaKeyPem,
             // WAF-ModuleInitializer (TestEnv, MetricsApiFactory.cs) ставит
             // process-env PgWorker__Api__Tls__AllowInsecureHttp=true — дочерние
             // процессы наследуют её, и воркер стартует на dev-серте без mTLS

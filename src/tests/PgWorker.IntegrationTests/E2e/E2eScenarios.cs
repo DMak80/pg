@@ -551,7 +551,8 @@ public class E2eScenarios(ITestOutputHelper output)
     private sealed record MasterAddr(string Node, string Host, int Pg, int Doorman);
 
     // Пробы Patroni из теста (семантика /primary, arch/14 §5 C).
-    private static readonly HttpClient PatroniHttp = new() { Timeout = TimeSpan.FromSeconds(3) };
+    // t22: Patroni REST нод — https (цепочка к per-contour CA, без hostname)
+    private static readonly HttpClient PatroniHttp = E2eEnvironment.CreatePatroniHttpsClient();
 
     // Фактический primary шарда по пробам Patroni: нода, отвечающая 200 на
     // GET /primary. Null — primary недоступен (failover-окно/шард мёртв).
@@ -565,7 +566,7 @@ public class E2eScenarios(ITestOutputHelper output)
             try
             {
                 using var response = await PatroniHttp.GetAsync(
-                    $"http://localhost:{addr.Patroni}/primary", ct);
+                    $"https://localhost:{addr.Patroni}/primary", ct);
                 if (response.IsSuccessStatusCode)
                     return key.Split('/')[1];
             }
