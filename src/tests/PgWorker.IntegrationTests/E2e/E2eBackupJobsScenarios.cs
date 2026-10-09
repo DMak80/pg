@@ -105,9 +105,20 @@ public class E2eBackupJobsScenarios
         var cluster = $"bkclean{Fx.ClusterTag}";
         await SeedClusterAsync(cluster);
         await using var app = await StartBackupHostAsync("bkclean", ct);
-        var started = await E2eFixture.WaitForAsync(
-            async () => (await FullKeysAsync(cluster, "shard1")).Count > 0,
-            TimeSpan.FromSeconds(300), ct);
+        // Полл с защитой транзиента (паттерн остальных сценариев): чтение fulls
+        // на старте контура может транзиентно отказать → .Value null → NRE
+        // вместо честного повтора полла.
+        var started = await E2eFixture.WaitForAsync(async () =>
+        {
+            try
+            {
+                return (await FullKeysAsync(cluster, "shard1")).Count > 0;
+            }
+            catch (Exception)
+            {
+                return false; // транзиент чтения — попытка повторится поллом
+            }
+        }, TimeSpan.FromSeconds(300), ct);
         started.Should().BeTrue("подсистема должна начать первую попытку");
 
         // Act — state=TO_REMOVE (панель-семантика §4.2)
@@ -259,7 +270,7 @@ public class E2eBackupJobsScenarios
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}a/state", "NOT_INITIALIZED", null, ct);
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}b/state", "NOT_INITIALIZED", null, ct);
             await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_cpu", "2", null, ct);
-            await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_mem", "8Gi", null, ct);
+            await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_mem", "2Gi", null, ct);
         }
 
         for (var i = 0; i < 2; i++)

@@ -334,7 +334,7 @@ public class E2eMoveScenarios(ITestOutputHelper output)
             await G.PutAsync(Endpoint, $"/clusters/{Cluster}/shards/{shard}/nodes/{shard}a/state", "NOT_INITIALIZED", null, ct);
             await G.PutAsync(Endpoint, $"/clusters/{Cluster}/shards/{shard}/nodes/{shard}b/state", "NOT_INITIALIZED", null, ct);
             await G.PutAsync(Endpoint, $"/service/{Cluster}-{shard}/request_cpu", "2", null, ct);
-            await G.PutAsync(Endpoint, $"/service/{Cluster}-{shard}/request_mem", "8Gi", null, ct);
+            await G.PutAsync(Endpoint, $"/service/{Cluster}-{shard}/request_mem", "2Gi", null, ct);
         }
 
         for (var i = 0; i < 6; i++)
