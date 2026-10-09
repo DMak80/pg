@@ -21,8 +21,18 @@ public class DockerDriverTests
 
     private static IDockerEngine NewEngine() => Factory.Create("unix:///var/run/docker.sock", hostAlias: Host);
 
+    // REST-TLS кеш драйвера (t22): тестовый CA — выпуск серверных сертов нод.
+    private static readonly RestCertificateCache RestCertificates = NewRestCache();
+
+    private static RestCertificateCache NewRestCache()
+    {
+        var (caPem, caKeyPem) = PgWorker.IntegrationTests.E2e.E2eTestPki.GenerateCa("driver-it");
+        return new RestCertificateCache(caPem, caKeyPem);
+    }
+
     private static PlainClusterDriver NewDriver()
-        => new([new HostEndpoint(Host, "unix:///var/run/docker.sock")], Factory, enableDoorman: false, AlpineImage);
+        => new([new HostEndpoint(Host, "unix:///var/run/docker.sock")], Factory, enableDoorman: false,
+            AlpineImage, restCertificates: RestCertificates);
 
     private static ShardTopology Topology(string cluster, NodeAddress addr) => new(
         cluster, "s1", $"{cluster}-s1",
