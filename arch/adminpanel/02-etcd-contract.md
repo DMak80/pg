@@ -360,13 +360,19 @@ override из `HostMap` при точном совпадении ключа → 
 ### 6.1. Patroni REST `:8008` (по умолчанию включена)
 
 - Для каждого HA-scope и каждого его member (host из `/service/…/members/`):
-  `GET http://<host>:8008/cluster` (timeout 3 c) → JSON Patroni:
-  `members[]{name,role,state,timeline,lag,host,port}`. Адрес `<host>:8008`
+  `GET https://<host>:<port>/cluster` (timeout 3 c) → JSON Patroni:
+  `members[]{name,role,state,timeline,lag,host,port}`. Транспорт — TLS
+  с доверием per-install CA (bind `deploy/tls` → `/tls-workers/ca.pem`,
+  уже смонтирован; env `WORKERS_PANEL_TLS_SERVER_CA_PATH`); hostname-проверка
+  не выполняется (верификация цепочки — канон P17-стиль, прецедент
+  CustomRootTrust). Basic-auth не требуется (GET-эндпоинт вне зоны
+  authentication). Адрес `<host>:8008`
   прогоняется через `HostMap` (порядок разрешения — §6): на стенде `:8008`
   слушает patroni-эмулятор `hc*` — отдельный контейнер, опубликованный на
   хосте под другим портом.
 - Даёт: фактическое состояние нод (`running`/`streaming`/`stopped`), лаг
   реплик в байтах, timeline — то, чего в etcd-DCS нет «в реальном времени».
+  User-Agent `AdminPanel` — идентификация панели в журналах REST.
 - Порт `:8008` и путь — стандарт Patroni (pg (этот монорепозиторий) `arch/01-architecture.md`,
   HAProxy health-check использует те же).
 
