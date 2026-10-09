@@ -572,4 +572,106 @@ public class ClusterSecretRotatorTests
         rig.Etcd.Store.Should().NotContainKey("/pgworker/rotations/shop");
     }
 
+    // ── t22 рев.3, П2: гварды R2-rest гейта — окно не удерживают ──
+
+    // Общий ассерт коммита: заявка снята, ключ rest_password — NEW, pending сброшен.
+    private static async Task AssertWindowCommittedAsync(Rig rig)
+    {
+        rig.Etcd.Store.Should().NotContainKey("/pgworker/rotations/shop", "окно закрыто txn-коммитом");
+        rig.Etcd.Store["/clusters/shop/rest_password"].Value
+            .Should().MatchRegex("^[A-Za-z0-9]{32}$");
+        (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.RestPending
+            .Should().BeNull("фаза done сбросила окно");
+    }
+
+    // AAA: restore-шард (PLANNED/RUNNING/REJOINING — те же факты, что надзор)
+    // НЕ удерживает окно: его ноды создадутся с новой парой после R3.
+    [Fact]
+    public async Task Rotate_RestoreShard_DoesNotHoldRestWindow()
+    {
+        // Arrange: shard1 — активная restore (демонтаж владеет restore-процессом);
+        // env shard1 расходится (чужой hash), shard2 конвергентен.
+        var etcd = new Fakes.FakeEtcd();
+        SeedCluster(etcd);
+        etcd.Seed("/pgworker/backups/shop/shard1/restore/r1",
+            """{"state":"RUNNING","backup_id":"f1","source":"shard1","target":"shop-new","node":"pgw-r1","requested_unix":1755900000,"requested_by":"admin"}""");
+        SeedTicket(etcd);
+        var rig = await NewRig(etcd);
+        rig.Driver.InspectEnvOverride = (shard, node) => shard == "shard1"
+            ? new Dictionary<string, string>
+            {
+                [RestRotation.EnvCert] = "cert",
+                [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("Stale0Pass0000000000000000000000X"),
+            }
+            : ReadNodeEnvFromJournal(rig.Etcd, shard, node);
+
+        // Act
+        var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: restore-шард не инспектируется гейтом — txn коммитит.
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        await AssertWindowCommittedAsync(rig);
+    }
+
+    // AAA: усыновлённая нода (object) не инспектируется — пустой словарь по
+    // каноническому имени не показатель; окно ею не удерживается.
+    [Fact]
+    public async Task Rotate_AdoptedNode_DoesNotHoldRestWindow()
+    {
+        // Arrange: обе ноды shard1 — object (внешняя orchestration), env расходится.
+        var rig = await NewRig();
+        SeedTicket(rig.Etcd);
+        var raw = rig.Etcd.Store["/pgworker/portalloc/shop"].Value;
+        var parsed = Portalloc.Parse("shop", raw).Value!;
+        var mutable = parsed.ToDictionary(p => p.Key, p => p.Value);
+        mutable["shard1/shard1a"] = mutable["shard1/shard1a"] with { Object = "external-a" };
+        mutable["shard1/shard1b"] = mutable["shard1/shard1b"] with { Object = "external-b" };
+        rig.Etcd.Store["/pgworker/portalloc/shop"] =
+            new Fakes.FakeEtcd.Entry(Portalloc.Serialize(mutable), 2, 2);
+        var inspected = new List<string>();
+        rig.Driver.InspectEnvOverride = (shard, node) =>
+        {
+            if (shard == "shard1")
+                inspected.Add(node); // не должен зваться
+            return shard == "shard1"
+                ? new Dictionary<string, string>
+                {
+                    [RestRotation.EnvCert] = "cert",
+                    [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("Stale0Pass0000000000000000000000X"),
+                }
+                : ReadNodeEnvFromJournal(rig.Etcd, shard, node); // shard2 конвергентен
+        };
+
+        // Act
+        var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: object-ноды пропущены гейтом — txn коммитит.
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        inspected.Should().BeEmpty("object-ноды не инспектируются");
+        await AssertWindowCommittedAsync(rig);
+    }
+
+    // AAA: драйвер без честной инспекции (Swarm-заглушка) — окно НЕ удерживается
+    // (rolling-шаг там no-op, вечное ожидание лишь блокировало бы ротацию).
+    [Fact]
+    public async Task Rotate_SwarmInspection_FastPassRestWindow()
+    {
+        // Arrange: Swarm-семантика инспекции; env расходится у всех нод.
+        var rig = await NewRig();
+        SeedTicket(rig.Etcd);
+        rig.Driver.SupportsRunningInspection = false;
+        rig.Driver.InspectEnvOverride = (shard, node) => new Dictionary<string, string>
+        {
+            [RestRotation.EnvCert] = "cert",
+            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("Stale0Pass0000000000000000000000X"),
+        };
+
+        // Act
+        var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: гейт отключён — txn коммитит (приведение env Swarm-нод — t11).
+        outcome.IsSuccess.Should().BeTrue(outcome.Error?.ToString());
+        await AssertWindowCommittedAsync(rig);
+    }
+
 }

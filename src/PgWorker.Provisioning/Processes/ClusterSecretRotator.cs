@@ -4,6 +4,7 @@ using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
 using PgWorker.Docker.Drivers;
+using PgWorker.Etcd.Parsing;
 using Shared.Etcd.Client;
 using PgWorker.Provisioning.Probes;
 using PgWorker.Provisioning.Sql;
@@ -166,24 +167,40 @@ public sealed partial class ClusterSecretRotator(
             }
         }
 
-        // R2-rest rolling-гейт (t22): ноды dsn-шардов обязаны нести hash(NEW)
-        // до txn — катит общий шаг надзора (≤1 нода/тик; вход ротации). Есть
-        // расхождение → окно открыто: тик ЖДЁТ (Done — ретрай тиком; заявка и
-        // pending живы). Шард без dsn — skip (ноды создадутся с новой парой
-        // после R3). Rotator сам REST-мутаций не делает (гварды окна — надзор).
-        foreach (var shard in snap.Shards.Where(s => s.Dsn is not null))
+        // R2-rest rolling-гейт (t22, arch/14 §5 I): ноды dsn-шардов обязаны нести
+        // hash(NEW) до txn — катит общий шаг надзора (≤1 нода/тик; вход ротации).
+        // Гварды зеркалят надзор (§5 C): restore-шард (демонтаж — restore-процесс,
+        // его ноды создадутся с новой парой) и TO_REMOVE — skip; усыновлённые
+        // (object) — инспекция по каноническому имени пуста, не показатель — skip.
+        // Драйвер БЕЗ честной инспекции (Swarm-заглушка SupportsRunningInspection=
+        // false) — окно НЕ удерживаем: сам rolling-шаг там no-op (заглушка), вечное
+        // ожидание лишь блокировало бы ротацию четвёрки; приведение env Swarm-нод к
+        // ключу — домен t11 (реализация running-inspection). Есть расхождение →
+        // окно открыто: тик ЖДЁТ (Done — ретрай тиком; заявка и pending живы).
+        // Rotator сам REST-мутаций не делает (гварды окна — надзор).
+        var restoring = await ReadRestoringShardsAsync(cluster, ct);
+        if (!restoring.IsSuccess)
+            return await FailAsync(cluster, restoring.Error!, "backups-read", ct);
+        if (driver.SupportsRunningInspection)
         {
-            foreach (var node in shard.Nodes)
+            foreach (var shard in snap.Shards.Where(s => s.Dsn is not null && !s.ToRemove
+                                                              && !restoring.Value.Contains(s.Name)))
             {
-                if (node.State is NodeState.Quarantined or NodeState.Removing)
-                    continue;
-                var env = await driver.InspectNodeEnvAsync(cluster, shard.Name, node.Name, ct);
-                if (!env.IsSuccess)
-                    return await FailAsync(cluster, env.Error!, $"inspect/{shard.Name}/{node.Name}", ct);
-                if (!string.Equals(env.Value.GetValueOrDefault(RestRotation.EnvPasswordHash),
-                        RestRotation.PasswordHash(newRestPassword), StringComparison.Ordinal))
-                    return await Finish(cluster, $"rotate-rest-rolling/{shard.Name}/{node.Name}",
-                        ProcessOutcome.Done, ct);
+                foreach (var node in shard.Nodes)
+                {
+                    if (node.State is NodeState.Quarantined or NodeState.Removing)
+                        continue;
+                    if (addresses.Value.TryGetValue($"{shard.Name}/{node.Name}", out var addr)
+                        && addr.Object is not null)
+                        continue; // усыновлённая — внешняя orchestration, не инспектируем
+                    var env = await driver.InspectNodeEnvAsync(cluster, shard.Name, node.Name, ct);
+                    if (!env.IsSuccess)
+                        return await FailAsync(cluster, env.Error!, $"inspect/{shard.Name}/{node.Name}", ct);
+                    if (!string.Equals(env.Value.GetValueOrDefault(RestRotation.EnvPasswordHash),
+                            RestRotation.PasswordHash(newRestPassword), StringComparison.Ordinal))
+                        return await Finish(cluster, $"rotate-rest-rolling/{shard.Name}/{node.Name}",
+                            ProcessOutcome.Done, ct);
+                }
             }
         }
 
@@ -255,6 +272,26 @@ public sealed partial class ClusterSecretRotator(
     private static string RestKey(string cluster) => $"/clusters/{cluster}/rest_password";
 
     private static string DsnKey(string cluster, string shard) => $"/clusters/{cluster}/shards/{shard}/dsn";
+
+    // restore-шарды кластера (PLANNED/RUNNING/REJOINING) — те же факты, что
+    // гварды надзора (t05 §3.4): демонтажем владеет restore-процесс, окно
+    // REST-ротации такие шарды не удержывают (ноды создадутся с новой парой).
+    private async Task<Result<HashSet<string>>> ReadRestoringShardsAsync(string cluster, CancellationToken ct)
+    {
+        var range = await RangeAsync("/pgworker/backups/", ct);
+        if (!range.IsSuccess)
+            return Result<HashSet<string>>.Failed(range.Error!);
+        var parsed = BackupsParser.Parse(range.Value, out _);
+        if (!parsed.IsSuccess)
+            return Result<HashSet<string>>.Failed(parsed.Error!);
+        var restoring = new HashSet<string>();
+        if (parsed.Value.FirstOrDefault(b => b.Cluster == cluster) is { } mine)
+            foreach (var (shard, status) in mine.Shards)
+                if (status.Restores.Any(r => r.State
+                        is RestoreStatus.Planned or RestoreStatus.Running or RestoreStatus.Rejoining))
+                    restoring.Add(shard);
+        return Result<HashSet<string>>.Success(restoring);
+    }
 
     // Валидная заявка: JSON с числовым requested_unix (панель §9.8 п.3).
     private static bool IsWellFormed(string raw)
@@ -366,6 +403,9 @@ public sealed partial class ClusterSecretRotator(
     // Failover-обёртки: первый успешный endpoint выигрывает (образец AddShardProcess).
     private async Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
         => await WithFailoverAsync(endpoint => etcd.GetAsync(endpoint, key, ct));
+
+    private async Task<Result<IReadOnlyList<Kv>>> RangeAsync(string prefix, CancellationToken ct)
+        => await WithFailoverAsync(endpoint => etcd.RangeAsync(endpoint, prefix, ct));
 
     private async Task<Result> DeleteAsync(string key, CancellationToken ct)
     {
