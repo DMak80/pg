@@ -43,7 +43,7 @@
 | PgWorker (сверяющий демон P11) | Patroni REST :8008 + etcd :2379 | 8008, 2379 | HTTPS, basic-auth per-cluster (мутации) + etcd | сверка `.../master` ↔ Patroni REST, автокоррекция ключа |
 | Patroni-нода | Patroni-ноды своего кластера | 8008 | HTTPS (межнодовые, basic-auth кластера) | fetch_node_status, switchover |
 | lease-скрипт ноды (P11) | `127.0.0.1:8008` той же ноды | 8008 | HTTPS (ca-файл ноды) | определение роли ноды в `on_start` |
-| HAProxy-синкеры (динамические адреса) | etcd + Patroni нод кластера | 2379, 8008 | etcd watch + `GET /whoami` (валидация идентичности) | топология из etcd → runtime API HAProxy ([11](11-bucket-sharding.md) §4) |
+| HAProxy-синкеры (динамические адреса) | etcd + Patroni нод кластера | 2379, 8008 | etcd watch + `GET /whoami` (валидация идентичности) по HTTPS (доверие ca.pem, health-GET без basic-auth — синкеры клиенты `:8008` по TLS, как все, §3 п.4; реализация фронтенд-слоя — планируемый слой, матрица канонизирует целевой транспорт) | топология из etcd → runtime API HAProxy ([11](11-bucket-sharding.md) §4) |
 | mover / opsbox (admin) | HAProxy шардов, etcd | 5432, 2379 | SQL (mover-роль) + etcdctl | переезды бакетов, снапшоты P12 |
 | админка (admin) | Patroni, etcd, HAProxy | 8008, 2379, 5432 (+7000 stats) | patronictl, etcdctl, psql | эксплуатация; PG `:5432` **напрямую** — только аварийно |
 | мониторинг (doorman/etcd metrics) | doorman metrics, etcd metrics | 6432, 2379 | HTTP scrape | метрики, алерты (P21) |
