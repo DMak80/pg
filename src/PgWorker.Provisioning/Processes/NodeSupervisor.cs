@@ -221,7 +221,7 @@ public sealed class NodeSupervisor(
             if (restoring.Contains(shard.Name))
                 continue; // t05 §3.4: конфиг DCS восстановит свежеподнятая нода
             var converged = await ConvergeDcsConfigAsync(cluster, shard, addresses.Value,
-                snap.Config.SyncStrict, track, haFacts, ct);
+                snap.Config.SyncStrict, track, haFacts, restPassword, ct);
             if (!converged.IsSuccess)
                 return Fail(converged.Error!);
         }
@@ -354,7 +354,8 @@ public sealed class NodeSupervisor(
     // недоступности текущего тика.
     private async Task<Result> ConvergeDcsConfigAsync(
         string cluster, ShardSpec shard, IReadOnlyDictionary<string, NodeAddress> addresses,
-        bool syncStrict, Dictionary<string, long> track, HaFactState haFacts, CancellationToken ct)
+        bool syncStrict, Dictionary<string, long> track, HaFactState haFacts,
+        string restPassword, CancellationToken ct)
     {
         var probeNode = addresses
             .Where(p => p.Key.StartsWith($"{shard.Name}/", StringComparison.Ordinal))
@@ -392,7 +393,7 @@ public sealed class NodeSupervisor(
         if (divergence.Patch is null)
             return Result.Success(); // конвергентно — мутаций нет
 
-        var applied = await probe.PatchConfigAsync(probeNode, divergence.Patch, ct);
+        var applied = await probe.PatchConfigAsync(probeNode, divergence.Patch, restPassword, ct);
         if (!applied.IsSuccess)
             return Result.Success(); // транзиент — патч следующим тиком
 
@@ -516,7 +517,7 @@ public sealed class NodeSupervisor(
                 // тиком, когда нода уже не лидер (снапшот тика устареет сам собой).
                 if (alive && mode != "hard")
                 {
-                    var switched = await probe.SwitchoverAsync(addr, node.Name, ct);
+                    var switched = await probe.SwitchoverAsync(addr, node.Name, restPassword, ct);
                     if (!switched.IsSuccess)
                         return switched;
                     continue;

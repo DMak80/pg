@@ -1,6 +1,9 @@
+using System.Net.Http.Headers;
+using System.Text;
 using System.Text.Json;
 using PgWorker.Core;
 using PgWorker.Core.Model;
+using PgWorker.Core.Templates;
 
 namespace PgWorker.Provisioning.Probes;
 
@@ -151,15 +154,20 @@ public sealed class ShardProbe(HttpClient http)
 
     // Частичный патч динамического DCS-конфига (PATCH /config, arch/14 §5 C,
     // t09): Patroni мержит документ в DCS-конфиг и раздаёт нодам в пределах
-    // loop_wait. Не-2xx/транспорт → Failed (ретрай следующим тиком).
-    public async Task<Result> PatchConfigAsync(NodeAddress node, string patchJson, CancellationToken ct)
+    // loop_wait. Мутационный эндпоинт — basic-auth per-cluster (t22, §5.4
+    // спеки: GET-методы заголовок не несут). Не-2xx/транспорт → Failed
+    // (ретрай следующим тиком).
+    public async Task<Result> PatchConfigAsync(
+        NodeAddress node, string patchJson, string restPassword, CancellationToken ct)
     {
         try
         {
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(ProbeTimeout);
             using var content = new StringContent(patchJson, System.Text.Encoding.UTF8, "application/json");
-            using var response = await http.PatchAsync(BuildUri(node, "config"), content, timeout.Token);
+            using var request = new HttpRequestMessage(HttpMethod.Patch, BuildUri(node, "config")) { Content = content };
+            SetBasicAuth(request, restPassword);
+            using var response = await http.SendAsync(request, timeout.Token);
             if (!response.IsSuccessStatusCode)
                 return Result.Failed(new ApplicationException(
                     $"Patroni {node.Host}:{node.Ports.Patroni} PATCH /config → HTTP {(int)response.StatusCode}"));
@@ -178,7 +186,8 @@ public sealed class ShardProbe(HttpClient http)
     // переведёт лидерство на лучшую реплику (sync-standby) без паузы записи.
     // Таймаут больше пробы: switchover выполняется в рамках запроса и занимает
     // пару loop_wait-циклов Patroni.
-    public async Task<Result> SwitchoverAsync(NodeAddress leader, string leaderName, CancellationToken ct)
+    public async Task<Result> SwitchoverAsync(
+        NodeAddress leader, string leaderName, string restPassword, CancellationToken ct)
     {
         try
         {
@@ -186,7 +195,12 @@ public sealed class ShardProbe(HttpClient http)
             timeout.CancelAfter(TimeSpan.FromSeconds(15));
             using var content = new StringContent(
                 $$"""{"leader":"{{leaderName}}"}""", System.Text.Encoding.UTF8, "application/json");
-            using var response = await http.PostAsync(BuildUri(leader, "switchover"), content, timeout.Token);
+            using var request = new HttpRequestMessage(HttpMethod.Post, BuildUri(leader, "switchover"))
+            {
+                Content = content,
+            };
+            SetBasicAuth(request, restPassword);
+            using var response = await http.SendAsync(request, timeout.Token);
             if (!response.IsSuccessStatusCode)
                 return Result.Failed(new ApplicationException(
                     $"Patroni {leader.Host}:{leader.Ports.Patroni} /switchover → HTTP {(int)response.StatusCode}"));
@@ -200,6 +214,15 @@ public sealed class ShardProbe(HttpClient http)
         }
     }
 
+    // Authorization: Basic base64(patroni:<rest_password>) — мутационные
+    // эндпоинты REST (t22, arch/14 §5 C); GET-эндпоинты заголовок не несут.
+    private static void SetBasicAuth(HttpRequestMessage request, string restPassword)
+        => request.Headers.Authorization = new AuthenticationHeaderValue(
+            "Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes($"{RestRotation.RestUsername}:{restPassword}")));
+
+    // REST :8008 — только https (t22, arch/13 §4): верификация цепочки к
+    // per-install CA выполняется HttpClient «patroni» (hostname не сверяется —
+    // адрес из реплицированного portalloc, канон P17).
     private static Uri BuildUri(NodeAddress node, string path)
-        => new($"http://{node.Host}:{node.Ports.Patroni}/{path}");
+        => new($"https://{node.Host}:{node.Ports.Patroni}/{path}");
 }

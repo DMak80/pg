@@ -127,7 +127,23 @@ builder.Services.AddSingleton(sp =>
 // запрос (протухшее соединение) → исключение → transient-фейл тика, а не молчание
 // до дефолтных 100 c HttpClient (разбор E2E-маркера: reconcile молчал 37 c).
 builder.Services.AddHttpClient("etcd", c => c.Timeout = TimeSpan.FromSeconds(7.5));
-builder.Services.AddHttpClient("patroni", c => c.Timeout = TimeSpan.FromSeconds(7.5));
+// Клиент Patroni REST (t22, arch/14 §5 C): https к host:patroni-port portalloc;
+// верификация цепочки к per-install CA без hostname-проверки (канон P17
+// «require, не verify-full»: адрес ноды — из реплицированного portalloc;
+// образец — CustomRootTrust панели). Таймауты не меняются (7.5 c клиент).
+builder.Services.AddHttpClient("patroni", c => c.Timeout = TimeSpan.FromSeconds(7.5))
+    .ConfigurePrimaryHttpMessageHandler(sp =>
+    {
+        var ca = sp.GetRequiredService<RestTlsMaterial>().Ca;
+        return new SocketsHttpHandler
+        {
+            SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+            {
+                RemoteCertificateValidationCallback = (_, certificate, _, _) =>
+                    Shared.Tls.TlsChain.ValidateChain(certificate, ca),
+            },
+        };
+    });
 
 // etcd-клиент (HTTP JSON gateway /v3/*) + координация (клэймы/лидерство, журнал).
 // Единое место литерала префикса etcd-ключей (t09): Shared-координация параметризована.
