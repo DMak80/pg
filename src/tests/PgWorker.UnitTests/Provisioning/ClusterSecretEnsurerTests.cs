@@ -94,6 +94,35 @@ public class ClusterSecretEnsurerTests
     }
 
     [Fact]
+    public async Task Ensure_EmptyValueKey_RefilledByTxnValueEqual()
+    {
+        // Arrange — ключ существует, но с ПУСТЫМ значением (битое состояние):
+        // NotExists-compare не сработал бы — добор идёт через ValueEqual по raw
+        var etcd = new Fakes.FakeEtcd();
+        etcd.Seed("/clusters/shop/app_user", "app");
+        etcd.Seed("/clusters/shop/app_password", "pa0000000000000000000000000000A");
+        etcd.Seed("/clusters/shop/mover_password", "pm0000000000000000000000000000A");
+        etcd.Seed("/clusters/shop/bucket_admin_user", "bucket_admin");
+        etcd.Seed("/clusters/shop/bucket_admin_password", "pba00000000000000000000000000A");
+        etcd.Seed("/clusters/shop/backup_password", "pbk000000000000000000000000000A");
+        etcd.Seed("/clusters/shop/rest_password", " ");
+
+        // Act
+        var result = await Sut(etcd).EnsureAsync("shop", Config, CancellationToken.None);
+
+        // Assert — пустое значение заменено сгенерированным; compare — ValueEqual
+        // по фактическому raw (" "), ensure гарантирует значения после вызова
+        result.IsSuccess.Should().BeTrue();
+        etcd.Store["/clusters/shop/rest_password"].Value
+            .Should().MatchRegex("^[A-Za-z0-9]{32}$")
+            .And.Be(result.Value.RestPassword);
+        etcd.Txns.Should().ContainSingle();
+        var compare = etcd.Txns.Single().Compare.Single();
+        compare.Key.Should().Be("/clusters/shop/rest_password");
+        compare.Arg.Should().Be(" ", "compare по фактическому raw пустого значения");
+    }
+
+    [Fact]
     public async Task Ensure_ConfigHasBucketAdmin_UsesConfigValues()
     {
         // Arrange — config с per-cluster bucket_admin (панель задала при создании)
