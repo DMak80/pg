@@ -76,14 +76,22 @@ public sealed class BackupS3 : IBackupS3, IAsyncDisposable
     private readonly AmazonS3Client _client;
     private readonly string _bucket;
 
-    public BackupS3(BackupsRuntimeOptions options)
+    // Пер-попыточный таймаут S3-запроса (arch/14 §6 «пульс конечного внешнего
+    // вызова», arch/19 §5): короче окна проверки watchdog — симметрия таймаутов
+    // etcd/patroni/SQL (t19). Дефолт — полокна (10 с при дефолтных опциях);
+    // фабрика передаёт производный от Loops:Watchdog:CheckIntervalSec.
+    private static readonly TimeSpan DefaultRequestTimeout = TimeSpan.FromSeconds(10);
+
+    public BackupS3(BackupsRuntimeOptions options, TimeSpan? requestTimeout = null)
     {
         _bucket = options.S3Bucket;
+        var timeout = requestTimeout is { } t && t >= TimeSpan.FromSeconds(1) ? t : DefaultRequestTimeout;
         var config = new AmazonS3Config
         {
             ServiceURL = options.S3Endpoint,
             ForcePathStyle = options.S3PathStyle,
             AuthenticationRegion = options.S3Region,
+            Timeout = timeout,
         };
         _client = new AmazonS3Client(
             new BasicAWSCredentials(options.S3AccessKey, options.S3SecretKey), config);

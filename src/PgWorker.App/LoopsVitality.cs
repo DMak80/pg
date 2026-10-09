@@ -21,19 +21,26 @@ public sealed class PgWorkerLoopsVitality(
             Math.Max(1, watchdog.Multiplier) * Math.Max(1, watchdog.CheckIntervalSec));
         var snap = health.Snapshot();
 
-        // snapshot: тик ИЛИ пульс сна — позднейший факт активности (сны длиннее
-        // порога 30 c пульсируют MarkSnapshotActivity, B2)
+        // snapshot: тик ИЛИ пульс — позднейший факт активности (сон длиннее
+        // порога пульсирует MarkSnapshotActivity, B2; S3-вызовы выгрузки —
+        // MarkSnapshotActivity вокруг вызова, arch/14 §6)
         var snapshotActivity = snap.LastSnapshotTick is { } tick && snap.LastSnapshotActivity is { } pulse
             ? (tick > pulse ? tick : pulse)
             : snap.LastSnapshotTick ?? snap.LastSnapshotActivity;
+        // orphan-sweep: тик ИЛИ пульс — зеркально snapshot (S3-проход сверки
+        // пульсирует MarkOrphanSweepActivity вокруг вызовов, arch/14 §6);
+        // тики ≠ активность — healthz loops-alive читает только тики
+        var orphanActivity = snap.LastOrphanSweepTick is { } oTick && snap.LastOrphanSweepActivity is { } oPulse
+            ? (oTick > oPulse ? oTick : oPulse)
+            : snap.LastOrphanSweepTick ?? snap.LastOrphanSweepActivity;
         return
         [
-            // активность = тик или прогресс-отметка; keepalive/orphan-sweep —
-            // активность = тик (долгих фаз нет; сон snapshot — пульс B2)
+            // активность = тик или прогресс-отметка; keepalive — только тик
+            // (долгих фаз нет)
             new LoopHeartbeat("reconcile", snap.LastReconcileActivity, staleAfter),
             new LoopHeartbeat("keepalive", snap.LastKeepaliveTick, staleAfter),
             new LoopHeartbeat("snapshot", snapshotActivity, staleAfter),
-            new LoopHeartbeat("orphan-sweep", snap.LastOrphanSweepTick, staleAfter),
+            new LoopHeartbeat("orphan-sweep", orphanActivity, staleAfter),
         ];
     }
 }

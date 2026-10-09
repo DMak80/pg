@@ -39,6 +39,20 @@ internal sealed class BackupOrphanSweeperLoop(
 
                 if (claims.IsLeader && options.CurrentValue.Backups.Enabled)
                 {
+                    // Проход может длиться дольше окна watchdog (порт сноса 30 c):
+                    // S3-вызовы сверки на недоступном endpoint идут до
+                    // пер-попыточного таймаута клиента (bad-S3 — штатный
+                    // прод-контур, arch/19 §5 «transient — следующий проход»).
+                    // Пульс АКТИВНОСТИ (MarkOrphanSweepActivity, зеркально
+                    // snapshot-ветке; тики ≠ активность — healthz loops-alive
+                    // читает только тики) каждые полокна проверки: «проход
+                    // жив», watchdog не гасит цикл посреди сверки (arch/14 §6).
+                    using var sweepPulse = new Timer(
+                        _ => health.MarkOrphanSweepActivity(), null,
+                        TimeSpan.Zero,
+                        TimeSpan.FromTicks(Math.Max(
+                            TimeSpan.TicksPerSecond,
+                            TimeSpan.FromSeconds(options.CurrentValue.Loops.Watchdog.CheckIntervalSec).Ticks / 2)));
                     // Ошибка прохода — лог (SweepAsync сам Result; transient-отказы
                     // S3/etcd повторит следующий проход). Реестр в etcd переживает
                     // смену лидера — продолжение с факта, не с нуля.

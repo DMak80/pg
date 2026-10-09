@@ -192,6 +192,17 @@ public sealed class DockerOptions
     /// </summary>
     public string? AdvertisedHost { get; set; }
 
+    /// <summary>
+    /// Имя docker-сети контура мониторинга поставки (t15, arch/14 §2.1/§2.4,
+    /// arch/18 §5.4): задано → движок Ensure-attach'ит канонические ноды к ней
+    /// (поверх pgw-net-<C>) и точки записи portalloc дописывают alias/net,
+    /// sd-generator строит таргеты <alias>:8008. Пусто — поведение идентично
+    /// базе (ни attach, ни полей). Сеть принадлежит поставке/сценарию (движок
+    /// не создаёт и не удаляет); отсутствует при включённом ключе — fail-fast
+    /// провижининга. Не поддерживается в Mode=Swarm (fail-fast старта).
+    /// </summary>
+    public string ScrapeNetwork { get; set; } = "";
+
     /// <summary>TLS к Engine API (arch/14 §2.2.1, t03); null — без TLS (unix/dev).</summary>
     public DockerTlsOptions? Tls { get; set; }
 

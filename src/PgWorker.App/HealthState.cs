@@ -17,6 +17,7 @@ public sealed class HealthState(TimeProvider clock) : Shared.Core.Hosting.ILoopP
     private DateTimeOffset? _lastSnapshotActivity;
     private DateTimeOffset? _lastSnapshotTaken;
     private DateTimeOffset? _lastOrphanSweepTick;
+    private DateTimeOffset? _lastOrphanSweepActivity;
     private int _claimsHeld;
 
     /// <summary>Успешный цикл чтения etcd (Range /clusters/ + /service/).</summary>
@@ -103,6 +104,18 @@ public sealed class HealthState(TimeProvider clock) : Shared.Core.Hosting.ILoopP
         }
     }
 
+    /// <summary>Пульс активности orphan-sweep (S3-проход сверки, зеркально
+    /// MarkSnapshotActivity): законное ожидание/проход длиннее порога сноса
+    /// watchdog; читает только watchdog (виталити берёт позднейший из тика и
+    /// пульса), healthz loops-alive — по тикам (семантика не меняется).</summary>
+    public void MarkOrphanSweepActivity()
+    {
+        lock (_sync)
+        {
+            _lastOrphanSweepActivity = clock.GetUtcNow();
+        }
+    }
+
     /// <summary>Immutable-снимок состояний для health-пробы.</summary>
     public HealthSnapshot Snapshot()
     {
@@ -111,7 +124,8 @@ public sealed class HealthState(TimeProvider clock) : Shared.Core.Hosting.ILoopP
             return new HealthSnapshot(
                 _lastEtcdOk, _lastReconcileTick, _lastKeepaliveTick,
                 _lastSnapshotTick, _lastSnapshotTaken, _claimsHeld,
-                _lastOrphanSweepTick, _lastReconcileActivity, _lastSnapshotActivity);
+                _lastOrphanSweepTick, _lastReconcileActivity, _lastSnapshotActivity,
+                _lastOrphanSweepActivity);
         }
     }
 }
@@ -126,4 +140,5 @@ public sealed record HealthSnapshot(
     int ClaimsHeld,
     DateTimeOffset? LastOrphanSweepTick,
     DateTimeOffset? LastReconcileActivity,
-    DateTimeOffset? LastSnapshotActivity);
+    DateTimeOffset? LastSnapshotActivity,
+    DateTimeOffset? LastOrphanSweepActivity);

@@ -58,6 +58,11 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// джобовым (та же ветка withMinio) — pgworker-wal:e2e.</summary>
     public const string WalImage = "pgworker-wal:e2e";
 
+    /// <summary>Образ file_sd-генератора (t15, arch/18 §5.4): собирается ЛЕНИВО —
+    /// из сценария E2ePatroniFileSd (EnsureSdImageAsync), чтобы остальные E2E-серии
+    /// (включая кейс-маркер Scale_AddEmptyShard) не платили этой сборкой.</summary>
+    public const string SdImage = "sdgenerator:e2e";
+
     private const string MinioUser = "minioadmin";
     private const string MinioPassword = "minioadmin";
     private const string BucketName = "pgworker-backups";
@@ -168,6 +173,10 @@ public sealed class E2eEnvironment : IAsyncDisposable
     /// при haEtcd=false — один (прежняя семантика).</summary>
     public IReadOnlyList<string> EtcdEndpoints { get; }
 
+    /// <summary>Docker-сеть окружения — контейнерам сценариев (t15: sd-generator
+    /// и тестовый Prometheus в одном контуре с etcd окружения).</summary>
+    public INetwork Net => _net;
+
     /// <summary>Имя ПЕРВОЙ etcd-ноды окружения (pgw-ee1-{runId}) для docker cp/exec
     /// etcdctl в restore-verify сценариях (t08, публичное — как OwnEtcd.ContainerName).
     /// Ноды именуются pgw-ee{i+1}-{runId} (t09ha: 1-3 узла) — имя pgw-ee-{runId}
@@ -215,6 +224,7 @@ public sealed class E2eEnvironment : IAsyncDisposable
     private static HttpClient _healthHttp = null!;
     private static bool _jobImageReady;
     private static bool _walImageReady;
+    private static bool _sdImageReady;
 
     /// <summary>Подъём окружения: сеть → etcd (wait-стратегия /health) →
     /// опционально MinIO + bucket. Хост-порты — зонд свободного порта; advertise
@@ -1114,6 +1124,45 @@ public sealed class E2eEnvironment : IAsyncDisposable
                 logFile: "/tmp/pgw-e2e-static-process-wal-e2e-build.log");
             StaticPhase($"e2e-image {WalImage}: готов за {sw.Elapsed.TotalSeconds:F0} с (publish+build)");
             _walImageReady = true;
+        }
+        finally
+        {
+            StaticGate.Release();
+        }
+    }
+
+    // Образ file_sd-генератора (t15, arch/18 §5.4): .NET-сервис — publish НА
+    // ХОСТЕ (инкрементально, секунды), в образ — только готовый вывод
+    // (docker/Metrics.SdGenerator.Dockerfile, runtime-слой; канон AGENTS.md).
+    // Вызов — лениво из сценария E2ePatroniFileSd: чужие серии и кейс-маркер
+    // гейта эту сборку не платят.
+    public static async Task EnsureSdImageAsync(CancellationToken ct)
+    {
+        if (_sdImageReady)
+            return;
+        await StaticGate.WaitAsync(ct);
+        try
+        {
+            if (_sdImageReady)
+                return;
+            var outDir = Path.Combine(_root, "artifacts", "e2e", "sdgenerator");
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            StaticPhase($"e2e-image {SdImage}: dotnet publish SdGenerator (host)…");
+            // NoMsBuildReuseEnv + бюджет — канон EnsureWalImageAsync (пайп stdout).
+            await E2eFixture.RunProcessAsync("dotnet",
+            [
+                "publish", $"{_root}/src/Metrics.SdGenerator/Metrics.SdGenerator.csproj",
+                "-c", "Release", "-o", outDir, "--nologo",
+            ], ct, timeout: TimeSpan.FromMinutes(10), env: E2eFixture.NoMsBuildReuseEnv,
+                logFile: "/tmp/pgw-e2e-static-process-sd-e2e-publish.log");
+            StaticPhase($"e2e-image {SdImage}: publish готов за {sw.Elapsed.TotalSeconds:F0} с — docker build (контекст artifacts/e2e/sdgenerator)…");
+            await E2eFixture.RunProcessAsync("docker",
+            [
+                "build", "-f", $"{_root}/docker/Metrics.SdGenerator.Dockerfile", "-t", SdImage, outDir,
+            ], ct, timeout: TimeSpan.FromMinutes(10),
+                logFile: "/tmp/pgw-e2e-static-process-sd-e2e-build.log");
+            StaticPhase($"e2e-image {SdImage}: готов за {sw.Elapsed.TotalSeconds:F0} с (publish+build)");
+            _sdImageReady = true;
         }
         finally
         {

@@ -93,6 +93,12 @@ public class WalReceiverCoreTests
         public int OpenCalls;
         public int StartCalls;
         public ulong? StartLsn;
+
+        // ПЕРВАЯ позиция START_REPLICATION: transient-переподключение стартует
+        // заново от свежего хвоста S3 и перезаписывает StartLsn — ассерты старта
+        // (от хвоста/слота) проверяют начальную позицию, а не исход гонки
+        // «переподключение vs отмена теста».
+        public ulong? FirstStartLsn;
         public ulong? ConfirmedLsn;
         public bool SegmentSizeMismatch;
         public bool ThrowOnStreamExhausted;
@@ -112,6 +118,7 @@ public class WalReceiverCoreTests
         {
             StartCalls++;
             StartLsn = startLsn;
+            FirstStartLsn ??= startLsn;
             return Task.FromResult(Result.Success());
         }
 
@@ -207,7 +214,7 @@ public class WalReceiverCoreTests
         // Assert — код чистой отмены; подтверждение = конец сегмента ...000002
         code.Should().Be(0);
         source.ConfirmedLsn.Should().Be(EndLsn(2));
-        source.StartLsn.Should().Be(0); // пустой префикс → старт от restart_lsn=0
+        source.FirstStartLsn.Should().Be(0); // пустой префикс → старт от restart_lsn=0
 
         // Assert — журнал подтверждений: ровно по одному на сегмент, строго по порядку
         // (confirm k происходит сразу после успешного put k — никогда не опережает)
@@ -271,8 +278,9 @@ public class WalReceiverCoreTests
         var (code, _) = await run;
 
         // Assert — старт НЕ от слота (0), а от конца непрерывного хвоста S3
+        // (первая START_REPLICATION: reconnect после отмены не участвует)
         code.Should().Be(0);
-        source.StartLsn.Should().Be(EndLsn(1));
+        source.FirstStartLsn.Should().Be(EndLsn(1));
     }
 
     [Fact]

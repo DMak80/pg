@@ -26,8 +26,13 @@ public sealed class EtcdSnapshotSink(
     int retentionObjects,
     int timeoutSec,
     string instanceId,
-    int intervalMin) : ISnapshotSink
+    int intervalMin,
+    Action? pulse = null, // пульс активности snapshot-цикла (MarkSnapshotActivity): S3-шаги выгрузки — «пульс конечного вызова» (arch/14 §6), путь SnapshotLoop
+    TimeSpan? pulsePeriod = null) : ISnapshotSink
 {
+    // Период пульса — полокна проверки watchdog (инъекция от Program:
+    // CheckIntervalSec-производный; дефолт — полокна при дефолтных опциях).
+    private TimeSpan PulsePeriod => pulsePeriod ?? TimeSpan.FromSeconds(10);
     public async Task<Result> ExportAsync(string snapshotFileName, byte[] data, long? revision, CancellationToken ct)
     {
         // Шаги под бюджетом таймаута: единый linked-токен на попытку.
@@ -50,7 +55,7 @@ public sealed class EtcdSnapshotSink(
         var taken = EtcdSnapshotStatus.TakenUnixFromName(snapshotFileName) ?? now;
 
         var objKey = $"{EtcdExportRetention.Prefix}{snapshotFileName}"; // etcd/snapshot-<id>.db
-        var put = await s3.PutObjectAsync(objKey, data, sha, step.Token);
+        var put = await PulseAsync(token => s3.PutObjectAsync(objKey, data, sha, token), step.Token);
         if (!put.IsSuccess)
             return await FailAsync(last.Value, put.Error!, ct);
 
@@ -60,9 +65,11 @@ public sealed class EtcdSnapshotSink(
         // НЕ $"{objKey}.meta.json": ключ snapshot-<id>.db.meta.json ретенция
         // (EtcdExportRetention.Select) разобрал бы как мету с id snapshot-<id>.db
         // без пары .db.db → сирота → снос первым же ретенционным проходом.
-        var metaPut = await s3.PutObjectAsync(
-            $"{EtcdExportRetention.Prefix}{snapshotFileName[..^".db".Length]}.meta.json",
-            System.Text.Encoding.UTF8.GetBytes(meta), null, step.Token);
+        var metaPut = await PulseAsync(
+            token => s3.PutObjectAsync(
+                $"{EtcdExportRetention.Prefix}{snapshotFileName[..^".db".Length]}.meta.json",
+                System.Text.Encoding.UTF8.GetBytes(meta), null, token),
+            step.Token);
         if (!metaPut.IsSuccess)
             return await FailAsync(last.Value, metaPut.Error!, ct);
 
@@ -139,13 +146,13 @@ public sealed class EtcdSnapshotSink(
     // Ретенция: list префикса → чистый отбор → batch-delete.
     private async Task<Result> ApplyRetentionAsync(CancellationToken ct)
     {
-        var listed = await s3.ListPrefixAsync(EtcdExportRetention.Prefix, ct: ct);
+        var listed = await PulseAsync(token => s3.ListPrefixAsync(EtcdExportRetention.Prefix, ct: token), ct);
         if (!listed.IsSuccess)
             return Result.Failed(listed.Error!);
         var stale = EtcdExportRetention.Select(listed.Value, retentionObjects);
         return stale.Count == 0
             ? Result.Success()
-            : await s3.DeleteKeysAsync(stale, ct);
+            : await PulseAsync(token => s3.DeleteKeysAsync(stale, token), ct);
     }
 
     // Неудача: статус FAILED + error, поля последнего успеха сохраняются.
@@ -180,4 +187,29 @@ public sealed class EtcdSnapshotSink(
         => Directory.Exists(dir)
             ? Directory.GetFiles(dir, "snapshot-*.db").OrderByDescending(f => f, StringComparer.Ordinal).FirstOrDefault()
             : null;
+
+    /// <summary>S3-вызов с пульсом активности snapshot-цикла (arch/14 §6
+    /// «пульс конечного внешнего вызова»): пер-попыточный таймаут несёт
+    /// клиент (BackupS3), бюджет попытки — linked-CTS ExportAsync; пульс
+    /// живёт ровно вокруг вызова. Путь SnapshotLoop — канал
+    /// MarkSnapshotActivity (не reconcile), поэтому Action, а не ILoopProgress.</summary>
+    private async Task<Result<T>> PulseAsync<T>(
+        Func<CancellationToken, Task<Result<T>>> call, CancellationToken ct)
+    {
+        using var timer = pulse is null
+            ? null
+            : new Timer(_ => pulse(), null, TimeSpan.Zero, PulsePeriod);
+        return await call(ct);
+    }
+
+    // Негенерик-перегрузка: вызовы без значения (put/delete → Result).
+    private async Task<Result> PulseAsync(
+        Func<CancellationToken, Task<Result>> call, CancellationToken ct)
+    {
+        using var timer = pulse is null
+            ? null
+            : new Timer(_ => pulse(), null, TimeSpan.Zero, PulsePeriod);
+        return await call(ct);
+    }
 }
+

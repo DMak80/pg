@@ -121,13 +121,17 @@ public interface IClusterDriver
 // нод), несёт advertised-имя — единый namespace адресов с записями portalloc;
 // внутренние имена остаются ключами движков. Внешние находки усыновления
 // (object) advertised не получают — их адресация операторская (R9-симметрия).
+// scrapeNetwork (t15, arch/14 §2.1, arch/18 §5.4): имя сети контура мониторинга
+// поставки — задано → Ensure-attach канонических нод к ней поверх pgw-net-<C>
+// (скрейп Prometheus по alias:8008); пусто → поведение идентично базе.
 public sealed class PlainClusterDriver(
     IReadOnlyList<HostEndpoint> hosts,
     DockerEngineFactory factory,
     bool enableDoorman,
     string nodeImage = "pgworker-node:dev",
     string? advertisedHost = null,
-    IReadOnlySet<string>? pgtuneExclude = null) : IClusterDriver
+    IReadOnlySet<string>? pgtuneExclude = null,
+    string? scrapeNetwork = null) : IClusterDriver
 {
     // Label-ключ контейнеров/сервисов pg-домена (t07: ключ — параметр спеки
     // движка LabelKey; читателей label в коде нет, docker-inspect-косметика).
@@ -246,6 +250,16 @@ public sealed class PlainClusterDriver(
                             throw connected.Error!;
                     }
 
+                    // Ensure-attach к scrape-сети контура мониторинга (t15,
+                    // arch/14 §2.1/§2.4): идемпотентно по inspect; сети нет на
+                    // хосте — fail-fast с diagnose (владелец сети — поставка).
+                    if (scrapeNetwork is { Length: > 0 } && (inspect.Value.Networks ?? []).All(n => n != scrapeNetwork))
+                    {
+                        var scraped = await engine.NetworkConnectAsync(scrapeNetwork, name, ct);
+                        if (!scraped.IsSuccess)
+                            throw scraped.Error!;
+                    }
+
                     return; // контейнер на месте с планом — идемпотентность
                 }
 
@@ -264,6 +278,17 @@ public sealed class PlainClusterDriver(
             var started = await engine.StartContainerAsync(name, ct);
             if (!started.IsSuccess)
                 throw started.Error!;
+
+            // Attach новой ноды к scrape-сети контура (t15, arch/14 §2.1):
+            // повторный connect docker принимает как no-op (идемпотентность);
+            // сети нет (404) — Result.Failed с diagnose, провижининг несёт
+            // ошибку в journal/last_error (fail-fast, а не молчаливый пропуск).
+            if (scrapeNetwork is { Length: > 0 })
+            {
+                var scraped = await engine.NetworkConnectAsync(scrapeNetwork, name, ct);
+                if (!scraped.IsSuccess)
+                    throw scraped.Error!;
+            }
         });
     }
 

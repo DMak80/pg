@@ -112,9 +112,10 @@ public class E2eScenarios(ITestOutputHelper output)
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}a/state", "NOT_INITIALIZED", null, ct);
             await G.PutAsync(Endpoint, $"/clusters/{cluster}/shards/{shard}/nodes/{shard}b/state", "NOT_INITIALIZED", null, ct);
             await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_cpu", "2", null, ct);
-            // 8Gi: лимит памяти применяется к контейнеру (rework №5); 2G хватало
-            // бы только заявке — Spilo с shared_buffers=2GB был бы убит cgroup.
-            await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_mem", "8Gi", null, ct);
+            // 2Gi: лимит памяти применяется к контейнеру (rework №5); 4 ноды
+            // × 8Gi = 32GiB заявок душили 8-ГБ docker-VM (E2E-хост), 2Gi
+            // достаточно для Spilo в тест-нагрузке (PGTune от 2Gi).
+            await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_mem", "2Gi", null, ct);
         }
 
         for (var i = 0; i < 6; i++)

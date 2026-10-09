@@ -61,19 +61,63 @@ for u in "$MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/metrics" "$MTLS htt
 done
 echo "  /metrics трёх сервисов: 200 text-format"
 
-# 2) все scrape-джобы up (ждать прогрева: 15с scrape + оценка rules)
+# 2) все scrape-джобы up, КРОМЕ patroni-nodes (t15): down-таргеты этой джобы —
+#    легитимное состояние (rebuild ноды ~90с — arch/18 §2.5; остановленный
+#    эмулятор демо-кластера; устаревший file_sd при лежачем etcd) — её проверка
+#    условная, шаг 2.1; остальные джобы (включая sd-generator) — строго все up.
 up_count=""
 for i in $(seq 1 30); do
-  up_count=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[] | select(.health=="up")] | length')
-  total=$(curl -fsS "$PROM/api/v1/targets" | jq '.data.activeTargets | length')
+  up_count=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[] | select(.labels.job!="patroni-nodes" and .health=="up")] | length')
+  total=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[] | select(.labels.job!="patroni-nodes")] | length')
   [ "${total:-0}" -gt 0 ] && [ "$up_count" -eq "$total" ] && break
   sleep 2
 done
-bad=$(curl -fsS "$PROM/api/v1/targets" | jq -r '[.data.activeTargets[] | select(.health!="up")] | .[] | .labels.job+"/"+.labels.instance' | tr '\n' ' ')
+bad=$(curl -fsS "$PROM/api/v1/targets" | jq -r '[.data.activeTargets[] | select(.labels.job!="patroni-nodes" and .health!="up")] | .[] | .labels.job+"/"+.labels.instance' | tr '\n' ' ')
 [ -z "$bad" ] || { echo "  ❌ таргеты не up: $bad"; exit 1; }
 patroni_up=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[] | select(.labels.job=="patroni" and .health=="up")] | length')
 [ "$patroni_up" -ge 2 ] || { echo "  ❌ patroni-эмуляторы: up только $patroni_up (<2)"; exit 1; }
-echo "  scrape-джобы up (включая patroni: $patroni_up)"
+echo "  scrape-джобы up (включая patroni: $patroni_up; patroni-nodes — шаг 2.1)"
+
+# 2.1) patroni-nodes (t15): файл file_sd существует/валиден; таргеты — условно:
+#      ≥1 up = канал скрейпа жив; единичные down не роняют чек (rebuild/остановка).
+docker exec as-prometheus sh -c 'test -s /etc/prometheus/sd/patroni-nodes.json' \
+  || { echo "  ❌ /etc/prometheus/sd/patroni-nodes.json отсутствует/пуст (жив ли as-sd-generator? docker logs as-sd-generator)"; exit 1; }
+docker exec as-prometheus cat /etc/prometheus/sd/patroni-nodes.json | jq -e 'type=="array"' >/dev/null \
+  || { echo "  ❌ file_sd patroni-nodes.json — не JSON-массив"; exit 1; }
+pn_total=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[] | select(.labels.job=="patroni-nodes")] | length')
+pn_up=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[] | select(.labels.job=="patroni-nodes" and .health=="up")] | length')
+# t15 (ревизия 3, spec §6 п.5): классификация по scrapeUrl — alias-таргеты
+# канонических кластеров (<alias>:8008, контейнерный порт) vs advertised
+# усыновлённого контура (host-публикация local:<порт>: R9 — alias усыновлённым
+# не пишется, extra_hosts-моста больше нет).
+pn_net=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[]
+  | select(.labels.job=="patroni-nodes")
+  | select(.scrapeUrl | test(":8008/metrics$"))] | length')
+if [ "$pn_total" -eq 0 ]; then
+  echo "  patroni-nodes: кластеров PgWorker на стенде нет — file_sd пуст (корректно)"
+elif [ "$pn_net" -gt 0 ]; then
+  # alias-таргеты есть — строгий режим: сетевые без host-форвардинга,
+  # канонический контур не ослеп (все down — фейл).
+  bad_net=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[]
+    | select(.labels.job=="patroni-nodes")
+    | select(.scrapeUrl | test(":8008/metrics$"))
+    | select(.scrapeUrl | contains("host.docker.internal"))] | length')
+  [ "$bad_net" -eq 0 ] || { echo "  ❌ patroni-nodes: $bad_net alias-таргетов с host-форвардингом"; exit 1; }
+  net_up=$(curl -fsS "$PROM/api/v1/targets" | jq '[.data.activeTargets[]
+    | select(.labels.job=="patroni-nodes" and .health=="up")
+    | select(.scrapeUrl | test(":8008/metrics$"))] | length')
+  [ "$net_up" -ge 1 ] || { echo "  ❌ patroni-nodes: все $pn_net alias-таргетов down (канонический контур ослеп: file_sd устарел? Patroni-REST нод живы?)"; exit 1; }
+  adv_down=$(( (pn_total - pn_net) - (pn_up - net_up) ))
+  echo "  patroni-nodes: $net_up/$pn_net alias-таргетов up (сетевые :8008)${adv_down:+; advertised down: $adv_down — деградационная зона (spec §6 п.5)}"
+else
+  # только advertised усыновлённого контура — деградационная зона: их
+  # наблюдение несёт джоба patroni (static hc*:8008, шаг 2); warning, не фейл.
+  if [ "$pn_up" -ge 1 ]; then
+    echo "  patroni-nodes: $pn_up/$pn_total up (advertised усыновлённого контура)"
+  else
+    echo "  ⚠ patroni-nodes: все $pn_total advertised-таргетов усыновлённого контура down — деградационная зона (spec t15 §6 п.5); наблюдение контура — джоба patroni (шаг 2: $patroni_up up)"
+  fi
+fi
 
 # 3) серии словаря у живых таргетов (канонические имена arch/18 §2).
 #    worker/pg — гарантированы живыми циклами воркера и эмуляторами.
@@ -94,6 +138,15 @@ for i in $(seq 1 30); do
 done
 [ -n "$valkey_found" ] \
   || { echo "❌ серия valkey_collector_last_success_timestamp_seconds не найдена в TSDB (жив valkeyworker? шаг 0)"; exit 1; }
+# самонаблюдение генератора (t15): живой профиль metrics обязан скрейпить
+# sd-generator — серия last_success в TSDB (успех консервативен: пустой префикс = успех).
+sd_found=""
+for i in $(seq 1 30); do
+  curl -fsS --data-urlencode "query=sd_generator_last_success_timestamp_seconds" "$PROM/api/v1/query" \
+    | jq -e '.data.result | length > 0' >/dev/null 2>&1 && { sd_found=1; break; }; sleep 2
+done
+[ -n "$sd_found" ] \
+  || { echo "❌ серия sd_generator_last_success_timestamp_seconds не найдена в TSDB (жив as-sd-generator? docker logs as-sd-generator)"; exit 1; }
 if timeout 2 bash -c '</dev/tcp/localhost/16001' 2>/dev/null; then
   curl -fsS --data-urlencode "query=kafka_collector_last_success_timestamp_seconds" "$PROM/api/v1/query" \
     | jq -e '.data.result | length > 0' >/dev/null \
@@ -103,10 +156,10 @@ else
   echo "  серии словаря arch/18 §2 в TSDB (kafka-серия пропущена: брокеров нет — консервативная свежесть, arch/18 §4)"
 fi
 
-# 4) rules зарегистрированы (18 алертов: 11 + 7 группы backups §2.7)
+# 4) rules зарегистрированы (21 алерт: 11 + 7 группы backups §2.7 + 3 t15 patroni-nodes)
 rules=$(curl -fsS "$PROM/api/v1/rules" | jq '[.data.groups[].rules[] | select(.type=="alerting")] | length')
-[ "$rules" -ge 18 ] || { echo "  ❌ алерт-рулы: $rules < 18"; exit 1; }
-echo "  rules: $rules алертов зарегистрировано"
+[ "$rules" -ge 21 ] || { echo "  ❌ алерт-рулы: $rules < 21"; exit 1; }
+echo "  rules: $rules алертов зарегистрировано (18 + 3 t15: patroni-nodes)"
 
 # 5) Grafana: дашборды провиженены (basic admin/admin — стенд)
 ds=$(curl -fsS -u admin:admin "$GRAFANA/api/search?type=dash-db" | jq 'length')

@@ -14,8 +14,10 @@ ROOT="$(cd ../.. && pwd)"
 export PGW_API_HOST_PORT="${PGW_API_HOST_PORT:-8080}"
 export PGW_API_HOST_PORT2="${PGW_API_HOST_PORT2:-8083}"
 [ "${PGW_API_ADVERTISE_URL:-}" ] || export PGW_API_ADVERTISE_URL="https://host.docker.internal:${PGW_API_HOST_PORT}"
-printf '[{"targets": ["host.docker.internal:%s", "host.docker.internal:%s"]}]\n' \
-  "$PGW_API_HOST_PORT" "$PGW_API_HOST_PORT2" \
+# t15: таргеты джобы pgworker — сетевые адреса deploy-воркеров (aliases в
+# pgw-metrics); host-порты PGW_API_HOST_PORT* остаются — advertise/чеки/панель,
+# не скрейп (arch/18 §5.2).
+printf '[{"targets": ["pgworker:8080", "pgworker-2:8080"]}]\n' \
   > metrics/prometheus/pgworker-targets.json
 
 # Arrange: инструменты хоста
@@ -38,6 +40,60 @@ docker volume create deploy_pgw-api-tls >/dev/null
 docker run --rm \
   -v "$ROOT/deploy/tls:/src:ro" -v deploy_pgw-api-tls:/tls alpine:3.20 \
   sh -c "cp /src/ca.pem /src/pgserver.crt /src/pgserver.key /src/healthcheck.crt /src/healthcheck.key /tls/"
+
+# SdGenerator (t15): publish НА ХОСТЕ → compose build пакует только вывод
+# (канон E2E-образов; сборка не «тихая» — [PHASE] и тайминг).
+echo ">>> [PHASE] publish Metrics.SdGenerator ($(date +%H:%M:%S))"
+dotnet publish "$ROOT/src/Metrics.SdGenerator/Metrics.SdGenerator.csproj" \
+  -c Release -o "$ROOT/artifacts/sd-generator/publish" --nologo \
+  || { echo "❌ publish SdGenerator не удался"; exit 1; }
+echo ">>> [PHASE] publish SdGenerator готов ($(date +%H:%M:%S))"
+
+# 1b-ранний) PgWorker deploy-контур — ДО стендового компоуза (t15, arch/18 §5.4):
+#     стендовый Prometheus аттачит сеть pgw-metrics как external — она обязана
+#     существовать к `compose up` (иначе «network declared as external, but
+#     could not be found»); владельца сети поднимаем первым. Секреты
+#     per-install — deploy/.env (нет файла → dev-шаблон .env.example;
+#     deploy/.env в .gitignore). force-recreate + --build: контейнер
+#     deploy-проекта поднимался бы из УСТАРЕВШЕГО образа pgworker:dev
+#     (например, сид сеял бы старые аномалии), а его etcd-клиент держит кеш
+#     DNS/коннектов умершего etcd — свежий процесс из свежего образа надёжнее.
+#     healthz/api-ключи проверяются ниже в §1b (после etcd-кворума стендового
+#     компоуза — живой etcd нужен и воркерам, и проверкам).
+[ -f "$ROOT/deploy/.env" ] || cp "$ROOT/deploy/.env.example" "$ROOT/deploy/.env"
+# Синхронизация хост-порта API в .env: пересоздания pgworker из чеков
+# (05-seed force-recreate) в свежих оболочках интерполируют compose из .env —
+# bind обязан совпасть с уже занятой публикацией (чеки порт читают из .env).
+if grep -q '^PGW_API_HOST_PORT=' "$ROOT/deploy/.env"; then
+  sed -i.bak "s/^PGW_API_HOST_PORT=.*/PGW_API_HOST_PORT=$PGW_API_HOST_PORT/" "$ROOT/deploy/.env" && rm -f "$ROOT/deploy/.env.bak"
+else
+  printf 'PGW_API_HOST_PORT=%s\n' "$PGW_API_HOST_PORT" >> "$ROOT/deploy/.env"
+fi
+# t07: тот же sync для второго инстанса — чеки читают порт из .env.
+if grep -q '^PGW_API_HOST_PORT2=' "$ROOT/deploy/.env"; then
+  sed -i.bak "s/^PGW_API_HOST_PORT2=.*/PGW_API_HOST_PORT2=$PGW_API_HOST_PORT2/" "$ROOT/deploy/.env" && rm -f "$ROOT/deploy/.env.bak"
+else
+  printf 'PGW_API_HOST_PORT2=%s\n' "$PGW_API_HOST_PORT2" >> "$ROOT/deploy/.env"
+fi
+# t15: единая сеть мониторинга — sync в .env (deploy/.env после апгрейда не
+#     содержит новых ключей; стендовый METRICS_NETWORK синхронен дефолту).
+for k in PGW_METRICS_NETWORK PGW_SCRAPE_NETWORK; do
+  v="${!k:-pgw-metrics}"
+  if grep -q "^$k=" "$ROOT/deploy/.env"; then
+    sed -i.bak "s/^$k=.*/$k=$v/" "$ROOT/deploy/.env" && rm -f "$ROOT/deploy/.env.bak"
+  else
+    printf '%s=%s\n' "$k" "$v" >> "$ROOT/deploy/.env"
+  fi
+done
+# тот же race порта (Docker Desktop отдаёт публикацию с задержкой) — ретрай.
+pg_up_ok=0
+for _ in 1 2 3; do
+  if ( cd "$ROOT/deploy" && docker compose --env-file "$ROOT/deploy/.env" up -d --build --force-recreate pgworker pgworker-2 2>&1 | tail -2 ); then
+    pg_up_ok=1; break
+  fi
+  echo "  pgworker up не удался (порт не отдан после recreate) — пауза 15 c"; sleep 15
+done
+[ "$pg_up_ok" = 1 ] || { echo "❌ pgworker не поднялся за 3 попытки (docker logs deploy-pgworker-1)"; exit 1; }
 
 echo ">>> поднимаю стенд (docker compose --profile full --profile kafka --profile valkey --profile metrics up -d --build)"
 # Docker Desktop отдаёт хост-порт recreated-контейнера с задержкой (com.docke
@@ -83,42 +139,15 @@ docker build -q -f "$ROOT/docker/PgWorker.Backup.Dockerfile" -t pgworker-backup:
   || { echo "❌ образ pgworker-backup не собрался (docker/PgWorker.Backup.Dockerfile)"; exit 1; }
 echo "  образ pgworker-backup:dev готов"
 
-# 1b) PgWorker (стенд = полная система; контур ВСЕГДА один — etcd-кластер стенда):
-#     воркеры (2 инстанса, t07) из deploy/docker-compose.yml ходят в as-etcd-1/2/3
-#     через хост (PGW_ETCD_ENDPOINT_0..2=host.docker.internal:2379/2381/2383 —
-#     дефолты deploy/docker-compose.yml, t09; advertise as-etcd-1/2/3);
-#     Patroni-ноды, которые он создаёт, ходят в DCS по тому же advertise.
-#     Секреты per-install — deploy/.env (нет файла → dev-шаблон .env.example;
-#     deploy/.env в .gitignore). Поднимается ДО сида: pg-сид наливается его
-#     API POST /api/seed/demo (spec §3.5). force-recreate + --build: контейнер
-#     deploy-проекта переживает 90-down (другой compose-проект) и поднимался бы
-#     из УСТАРЕВШЕГО образа pgworker:dev (например, сид сеял бы старые аномалии),
-#     а его etcd-клиент держит кеш DNS/коннектов умершего etcd — свежий процесс
-#     из свежего образа надёжнее.
-[ -f "$ROOT/deploy/.env" ] || cp "$ROOT/deploy/.env.example" "$ROOT/deploy/.env"
-# Синхронизация хост-порта API в .env: пересоздания pgworker из чеков
-# (05-seed force-recreate) в свежих оболочках интерполируют compose из .env —
-# bind обязан совпасть с уже занятой публикацией (чеки порт читают из .env).
-if grep -q '^PGW_API_HOST_PORT=' "$ROOT/deploy/.env"; then
-  sed -i.bak "s/^PGW_API_HOST_PORT=.*/PGW_API_HOST_PORT=$PGW_API_HOST_PORT/" "$ROOT/deploy/.env" && rm -f "$ROOT/deploy/.env.bak"
-else
-  printf 'PGW_API_HOST_PORT=%s\n' "$PGW_API_HOST_PORT" >> "$ROOT/deploy/.env"
-fi
-# t07: тот же sync для второго инстанса — чеки читают порт из .env.
-if grep -q '^PGW_API_HOST_PORT2=' "$ROOT/deploy/.env"; then
-  sed -i.bak "s/^PGW_API_HOST_PORT2=.*/PGW_API_HOST_PORT2=$PGW_API_HOST_PORT2/" "$ROOT/deploy/.env" && rm -f "$ROOT/deploy/.env.bak"
-else
-  printf 'PGW_API_HOST_PORT2=%s\n' "$PGW_API_HOST_PORT2" >> "$ROOT/deploy/.env"
-fi
-# тот же race порта (Docker Desktop отдаёт публикацию с задержкой) — ретрай.
-pg_up_ok=0
-for _ in 1 2 3; do
-  if ( cd "$ROOT/deploy" && docker compose --env-file "$ROOT/deploy/.env" up -d --build --force-recreate pgworker pgworker-2 2>&1 | tail -2 ); then
-    pg_up_ok=1; break
-  fi
-  echo "  pgworker up не удался (порт не отдан после recreate) — пауза 15 c"; sleep 15
-done
-[ "$pg_up_ok" = 1 ] || { echo "❌ pgworker не поднялся за 3 попытки (docker logs deploy-pgworker-1)"; exit 1; }
+# 1b) PgWorker готовность (стенд = полная система; контур ВСЕГДА один —
+#     etcd-кластер стенда): воркеры (2 инстанса, t07) из deploy/docker-compose.yml
+#     ходят в as-etcd-1/2/3 через хост (PGW_ETCD_ENDPOINT_0..2=
+#     host.docker.internal:2379/2381/2383 — дефолты deploy/docker-compose.yml,
+#     t09; advertise as-etcd-1/2/3); Patroni-ноды, которые он создаёт, ходят
+#     в DCS по тому же advertise. Контейнеры deploy подняты ДО стендового
+#     компоуза (§1b-ранний — сеть pgw-metrics внешняя для прометея); здесь —
+#     проверки живости (нужен собранный etcd-кворум выше). Поднимается до
+#     сида: pg-сид наливается его API POST /api/seed/demo (spec §3.5).
 MTLS="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem --cert $ROOT/deploy/tls/healthcheck.crt --key $ROOT/deploy/tls/healthcheck.key"
 for i in $(seq 1 60); do $MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
 $MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null \

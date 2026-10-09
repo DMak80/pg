@@ -33,9 +33,13 @@ public sealed class BackupVerifyProcess(
     BackupsRuntimeOptions options,
     TimeProvider time,
     ILogger<BackupVerifyProcess> logger,
-    Action<string, string, string>? verifyObserver = null) // (cluster, shard, result: ok|failed|transient)
+    Action<string, string, string>? verifyObserver = null, // (cluster, shard, result: ok|failed|transient)
+    TimeSpan? watchdogWindow = null, // период S3-пульса — полокна (образец сверстников)
+    Shared.Core.Hosting.ILoopProgress? progress = null) // S3-вызовы — пульс S3Pulse (arch/14 §6)
 {
     private const string Op = "backup-verify";
+
+    private TimeSpan WatchdogWindow => watchdogWindow ?? TimeSpan.FromSeconds(15);
 
     public async Task<Result<ProcessOutcome>> TickAsync(
         ClusterSnapshot snap, IReadOnlyList<ClusterBackups> backups, CancellationToken ct)
@@ -165,14 +169,14 @@ public sealed class BackupVerifyProcess(
 
         // (4) Цепочка: list wal/ + list набора + строгие TLI-переходы (по содержимому
         //     history при наличии). Transient list/GET → шард-skip, статус не трогаем.
-        var walList = await s3.ListAsync(cluster, shard, "wal/", ct: ct);
+        var walList = await S3Pulse.CallAsync(progress, token => s3.ListAsync(cluster, shard, "wal/", ct: token), ct, WatchdogWindow / 2);
         if (!walList.IsSuccess)
         {
             observe(cluster, shard, "transient");
             return;
         }
 
-        var setList = await s3.ListAsync(cluster, shard, $"full/{id}/pg_wal/", ct: ct);
+        var setList = await S3Pulse.CallAsync(progress, token => s3.ListAsync(cluster, shard, $"full/{id}/pg_wal/", ct: token), ct, WatchdogWindow / 2);
         if (!setList.IsSuccess)
         {
             observe(cluster, shard, "transient");
@@ -209,7 +213,7 @@ public sealed class BackupVerifyProcess(
             if (WalFileName.TryParseHistory(obj.Name) is not { } tli
                 || tli <= start.Value.Tli || tli > endSegment.Tli)
                 continue;
-            var content = await s3.GetObjectAsync(cluster, shard, $"wal/{obj.Name}", ct);
+            var content = await S3Pulse.CallAsync(progress, token => s3.GetObjectAsync(cluster, shard, $"wal/{obj.Name}", token), ct, WatchdogWindow / 2);
             if (!content.IsSuccess)
             {
                 observe(cluster, shard, "transient");

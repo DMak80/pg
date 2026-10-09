@@ -238,6 +238,15 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
                 "PgWorker:Docker:AdvertisedHost требует ровно один хост в PgWorker:Docker:Hosts (single-host/tunnel)");
     }
 
+    // ScrapeNetwork (t15, arch/18 §5.4): сетевой attach нод реализован для
+    // plain-контейнеров; swarm-Ensure — сервисы, второй сети у сервиса нет в
+    // MVP — молчаливое игнорирование ключа недопустимо (fail-fast, прецедент
+    // AdvertisedHost).
+    if (!string.IsNullOrWhiteSpace(docker.ScrapeNetwork)
+        && string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
+        throw new ApplicationException(
+            "PgWorker:Docker:ScrapeNetwork не поддерживается в Mode=Swarm — сетевой attach нод реализован для plain-контейнеров");
+
     if (string.Equals(docker.Mode, "Swarm", StringComparison.OrdinalIgnoreCase))
     {
         if (string.IsNullOrWhiteSpace(docker.SwarmManager))
@@ -252,7 +261,7 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
     if (hosts.Count == 0)
         throw new ApplicationException("PgWorker:Docker:Mode=Plain требует непустую таблицу PgWorker:Docker:Hosts");
     return new PlainClusterDriver(hosts, factory, docker.EnableDoorman, docker.Images.Node, docker.AdvertisedHost,
-        pgtuneExclude: pgtuneExclude);
+        pgtuneExclude: pgtuneExclude, scrapeNetwork: docker.ScrapeNetwork);
 });
 
 // Фабрика входов PGTune (spec.md §4.3): runtime-склейка PgWorker:Pgtune
@@ -285,7 +294,12 @@ builder.Services.AddSingleton(sp =>
             opts.Snapshots.Export.RetentionObjects,
             opts.Snapshots.Export.TimeoutSec,
             sp.GetRequiredService<ClaimStore>().InstanceId,
-            opts.Loops.SnapshotIntervalMin)
+            opts.Loops.SnapshotIntervalMin,
+            // Пульс S3-шагов выгрузки — канал snapshot (MarkSnapshotActivity,
+            // не reconcile): путь SnapshotLoop, arch/14 §6; период — полокна
+            // проверки watchdog (CheckIntervalSec-производный).
+            () => sp.GetRequiredService<HealthState>().MarkSnapshotActivity(),
+            TimeSpan.FromSeconds(Math.Max(1, opts.Loops.Watchdog.CheckIntervalSec / 2)))
         : null!;
 });
 
@@ -342,7 +356,8 @@ builder.Services.AddSingleton(sp =>
         SnapshotDelegate(job),
         sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>(),
         TimeSpan.FromSeconds(opts.Loops.Watchdog.CheckIntervalSec),
-        sp.GetRequiredService<ILogger<ProvisioningProcess>>());
+        sp.GetRequiredService<ILogger<ProvisioningProcess>>(),
+        opts.Docker.ScrapeNetwork);
 });
 builder.Services.AddSingleton(sp => new DeprovisioningProcess(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -350,7 +365,8 @@ builder.Services.AddSingleton(sp => new DeprovisioningProcess(
     sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
-    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
+    sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 builder.Services.AddSingleton(sp => new NodeSupervisor(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
@@ -403,7 +419,8 @@ builder.Services.AddSingleton(sp =>
             opts.Thresholds.ProvisionRetryBaseSec, opts.Thresholds.ProvisionRetryMaxSec),
         sp.GetRequiredService<EtcdEndpoints>(),
         sp.GetRequiredService<PgtuneInputsFactory>(),
-        SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()));
+        SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
+        opts.Docker.ScrapeNetwork);
 });
 
 // Ensure per-cluster app-секрета (spec §4.1): чтение/txn put-if-absent
@@ -452,7 +469,8 @@ builder.Services.AddSingleton(sp =>
         SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
         sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>(),
         TimeSpan.FromSeconds(opts.Loops.Watchdog.CheckIntervalSec),
-        sp.GetRequiredService<ILogger<AddShardProcess>>());
+        sp.GetRequiredService<ILogger<AddShardProcess>>(),
+        opts.Docker.ScrapeNetwork);
 });
 builder.Services.AddSingleton(sp => new RemoveShardProcess(
     sp.GetRequiredService<IEtcdGateway>(),
@@ -605,7 +623,8 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.RetentionProcess(
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Backups.ToRuntime(),
     sp.GetRequiredService<TimeProvider>(),
-    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.RetentionProcess>()));
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.RetentionProcess>(),
+    sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 // S3-клиент с горячей конфигурацией (ревью Ф7 №3): включение/смена секции
 // Backups без рестарта воркера пересоздаёт клиента при первом же вызове
 // (асимметрия «выключение работает, включение нет» устранена).
@@ -624,7 +643,9 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupVerifyProcess(
     sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.ToRuntime(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.BackupVerifyProcess>(),
-    sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupVerify));
+    sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupVerify,
+    TimeSpan.FromSeconds(sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Loops.Watchdog.CheckIntervalSec),
+    sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 
 // Дрилл восстановимости (reliability t02, arch/19 §3.6): супервиз drill-джоба,
 // отбор/валидация/запуск, доводимый снос; runtime — как у verify.
@@ -657,6 +678,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Supervisor.BackupSuperv
         ? sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.ToRuntime()
         : null,
     sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Supervisor.BackupSupervisorProcess>()));
 
 // Глобальный проход сирот S3 (t07, arch/19 §4): реестр /pgworker/backups/orphans
@@ -805,7 +827,11 @@ file sealed class ReloadableBackupS3(IOptionsMonitor<PgWorkerOptions> options) :
                 current = DisabledBackupS3.Instance;
             else
             {
-                _current ??= (runtime, new BackupS3(runtime));
+                // Пер-попыточный таймаут — производный окна watchdog (полокна,
+                // arch/14 §6 / arch/19 §5): S3-вызов конечен, пульс S3Pulse
+                // вокруг него легитимен.
+                _current ??= (runtime, new BackupS3(runtime, TimeSpan.FromSeconds(
+                    Math.Max(1, options.CurrentValue.Loops.Watchdog.CheckIntervalSec / 2))));
                 current = _current.Value.Client;
             }
         }

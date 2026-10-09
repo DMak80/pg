@@ -25,7 +25,8 @@ public sealed class RetentionProcess(
     WorkJournal journal,
     BackupsRuntimeOptions options,
     TimeProvider time,
-    ILogger<RetentionProcess> logger)
+    ILogger<RetentionProcess> logger,
+    Shared.Core.Hosting.ILoopProgress? progress = null) // S3-вызовы — пульс S3Pulse (канон t19)
 {
     private const string Op = "backups-retention";
 
@@ -136,7 +137,7 @@ public sealed class RetentionProcess(
             && !(selection.Delete.Count > 0 && f.Id == selection.Delete[0])).ToList();
         if (RetentionPlanner.LatestVerifiedWalStart(remaining) is { } cutoff)
         {
-            var listed = await s3.ListPrefixAsync($"{cluster}/{shard}/wal/", ct: ct);
+            var listed = await S3Pulse.CallAsync(progress, token => s3.ListPrefixAsync($"{cluster}/{shard}/wal/", ct: token), ct);
             if (!listed.IsSuccess)
                 throw new ApplicationException($"list wal: {listed.Error!.Message}");
             var doomed = RetentionPlanner.SelectWalForDeletion(
@@ -144,7 +145,7 @@ public sealed class RetentionProcess(
             if (doomed.Count > 0)
             {
                 var keys = doomed.Select(n => $"{cluster}/{shard}/wal/{n}").ToList();
-                var deleted = await s3.DeleteKeysAsync(keys, ct);
+                var deleted = await S3Pulse.CallAsync(progress, token => s3.DeleteKeysAsync(keys, token), ct);
                 if (!deleted.IsSuccess)
                     throw new ApplicationException($"delete wal: {deleted.Error!.Message}");
                 await journal.WritePhaseAsync(cluster, Op, $"wal-trimmed/{shard}/{doomed.Count}",
@@ -174,16 +175,16 @@ public sealed class RetentionProcess(
         string cluster, string shard, FullBackupState deleting, CancellationToken ct)
     {
         var prefix = $"{cluster}/{shard}/full/{deleting.Id}/";
-        var listed = await s3.ListPrefixAsync(prefix, ct: ct);
+        var listed = await S3Pulse.CallAsync(progress, token => s3.ListPrefixAsync(prefix, ct: token), ct);
         if (!listed.IsSuccess)
             throw new ApplicationException($"list {prefix}: {listed.Error!.Message}");
         if (listed.Value.Count > 0)
         {
             var keys = listed.Value.Select(o => o.Key).ToList();
-            var deleted = await s3.DeleteKeysAsync(keys, ct);
+            var deleted = await S3Pulse.CallAsync(progress, token => s3.DeleteKeysAsync(keys, token), ct);
             if (!deleted.IsSuccess)
                 throw new ApplicationException($"delete {prefix}: {deleted.Error!.Message}");
-            var recheck = await s3.ListPrefixAsync(prefix, ct: ct);
+            var recheck = await S3Pulse.CallAsync(progress, token => s3.ListPrefixAsync(prefix, ct: token), ct);
             if (!recheck.IsSuccess || recheck.Value.Count > 0)
                 throw new ApplicationException($"удаление {prefix} не завершилось — повторит следующий проход");
         }
@@ -211,7 +212,7 @@ public sealed class RetentionProcess(
             return Result.Success();
         _lastStoragePassUnix = nowUnix;
 
-        var listed = await s3.ListPrefixAsync("", ct: ct);
+        var listed = await S3Pulse.CallAsync(progress, token => s3.ListPrefixAsync("", ct: token), ct);
         if (!listed.IsSuccess)
             return Result.Failed(listed.Error!); // transient: повтор тика
 

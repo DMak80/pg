@@ -32,7 +32,8 @@ public sealed class AdoptionProcess(
     PlacementOptions placementOpts,
     EtcdEndpoints etcdEndpoints,
     PgtuneInputsFactory pgtune,
-    Func<CancellationToken, Task<Result>>? snapshot = null)
+    Func<CancellationToken, Task<Result>>? snapshot = null,
+    string? scrapeNetwork = null)
 {
     private const string Op = "adopt";
 
@@ -139,7 +140,11 @@ public sealed class AdoptionProcess(
             merged[$"{shard}/{name}"] = node.ToAddress();
         }
 
-        var put = await PutAsync($"/pgworker/portalloc/{cluster}", Portalloc.Serialize(merged), ct);
+        // t15 (arch/14 §2.4): decorate сетевой идентичности при заданном ключе —
+        // merge-записи здесь object-факты усыновления, Decorate их пропускает
+        // (единообразие всех точек записи portalloc).
+        var put = await PutAsync($"/pgworker/portalloc/{cluster}",
+            Portalloc.Serialize(PortallocIdentity.Decorate(merged, cluster, scrapeNetwork)), ct);
         if (!put.IsSuccess)
             return await FailAsync(cluster, put.Error!, ct);
 
@@ -325,7 +330,10 @@ public sealed class AdoptionProcess(
 
                 if (changed)
                 {
-                    var put = await PutAsync($"/pgworker/portalloc/{cluster}", Portalloc.Serialize(merged), ct);
+                    // t15: repair-put несёт decorate — новые канонические записи
+                    // после переаллокации detached-нод ПОЛУЧАЮТ alias/net.
+                    var put = await PutAsync($"/pgworker/portalloc/{cluster}",
+                        Portalloc.Serialize(PortallocIdentity.Decorate(merged, cluster, scrapeNetwork)), ct);
                     if (!put.IsSuccess)
                         return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(put.Error!);
                     await journal.WritePhaseAsync(cluster, Op, "repaired-portalloc", claims.InstanceId, null, ct);

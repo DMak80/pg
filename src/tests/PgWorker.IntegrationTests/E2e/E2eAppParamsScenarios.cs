@@ -78,7 +78,7 @@ public class E2eAppParamsScenarios
             // Заявки ресурсов панель-создания (arch/14 §2.1 п.4): pgtune-фаза
             // provisioning требует их обязательно (f6d4574: дефолтов нет).
             await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_cpu", "2", null, ct);
-            await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_mem", "8Gi", null, ct);
+            await G.PutAsync(Endpoint, $"/service/{cluster}-{shard}/request_mem", "2Gi", null, ct);
         }
 
         for (var i = 0; i < 2; i++)

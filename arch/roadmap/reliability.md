@@ -40,9 +40,6 @@ P3 (t13–t17) — наблюдаемость, P4 (t20–t22) — долговр
 - **`t13-alert-notifications`** — внешняя нотификация алертов + история:
   алерты живут в памяти панели (при её падении невидимы, истории нет);
   Alertmanager стенда стоит с пустым `METRICS_ALERT_WEBHOOK_URL` (arch/18).
-- **`t15-prometheus-file-sd`** — file_sd из etcd-снапшота для скрейпа
-  реальных нод: per-cluster сети недостижимы для Prometheus стенда
-  (arch/18 §5.4) — метрики Patroni/Kafka/Valkey прод-нод не собираются.
 - **`t16-cert-expiry-monitoring`** — мониторинг сроков сертификатов
   (API-серты воркеров/панели, серты нод): expiry нигде не проверяется.
 - **`t20-kfw-vwk-takeover-e2e`** — host-kill E2E для KafkaWorker /

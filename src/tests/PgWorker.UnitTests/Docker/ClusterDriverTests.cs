@@ -53,10 +53,14 @@ public class ClusterDriverTests
 
         // t24 (arch/14 §2.1): подключение контейнера к сети кластера —
         // ensure-инвариант; записываем для юнит-проверок лечения ноды.
+        // t15: scrape-сеть — единственный потребитель с отказом «сети нет»
+        // (fail-fast провижининга) — override результата по сетям.
+        public Func<string, Result>? NetworkConnectFailure = null;
+
         public Task<Result> NetworkConnectAsync(string network, string container, CancellationToken ct)
         {
             Calls.Add(("network-connect", $"{network}:{container}"));
-            return Task.FromResult(Result.Success());
+            return Task.FromResult(NetworkConnectFailure?.Invoke(network) ?? Result.Success());
         }
 
         public Task<Result> PingAsync(CancellationToken ct)
@@ -195,9 +199,10 @@ public class ClusterDriverTests
 
     private static readonly EtcdEndpoints Etcd = new(["http://etcd:2379"]);
 
-    private static PlainClusterDriver NewPlainDriver(FakeEngine engine, string? advertisedHost = null)
+    private static PlainClusterDriver NewPlainDriver(FakeEngine engine, string? advertisedHost = null,
+        string? scrapeNetwork = null)
         => new([new HostEndpoint("h1", "fake://h1")], new FakeFactory(engine), enableDoorman: true,
-            advertisedHost: advertisedHost);
+            advertisedHost: advertisedHost, scrapeNetwork: scrapeNetwork);
 
     // AAA: Ф7-live — имена нод НЕуникальны между кластерами одного docker-хоста
     // (pgw-canon-/pgw-canon10-/pgw-smoke- все с hostname/alias "shard1a"):
@@ -738,6 +743,145 @@ public class ClusterDriverTests
             Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
 
         // Assert
+        result.IsSuccess.Should().BeTrue();
+        engine.Calls.Should().NotContain(c => c.Call == "network-connect");
+        engine.Calls.Should().NotContain(c => c.Call == "create");
+    }
+
+    // AAA (t15 ревизия 3, arch/14 §2.1): ключ ScrapeNetwork задан — существующая
+    // нода с планом портов Ensure-attach'ится к сети контура мониторинга
+    // (поверх pgw-net-<C>, идемпотентно по inspect).
+    [Fact]
+    public async Task EnsureNode_ScrapeNetwork_ExistingContainer_Attaches()
+    {
+        // Arrange — контейнер на месте с планом портов, в сети кластера, scrape-сети нет.
+        var engine = new FakeEngine
+        {
+            Containers = [new DockerContainer("id-1", ["pgw-shop-shard1-shard1a"], "running", "img")],
+            Inspects = new Dictionary<string, DockerContainerInspect>
+            {
+                ["id-1"] = new("id-1", "shard1a", ["shard1a"], [],
+                    [new PortMap(5432, 15432), new PortMap(8008, 18008), new PortMap(6432, 16432)],
+                    Networks: ["pgw-net-shop"]),
+            },
+        };
+        var driver = NewPlainDriver(engine, scrapeNetwork: "pgw-metrics");
+
+        // Act
+        var result = await driver.EnsureNodeAsync(
+            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
+
+        // Assert — connect к scrape-сети, без пересоздания.
+        result.IsSuccess.Should().BeTrue();
+        engine.Calls.Should().Contain(c =>
+            c.Call == "network-connect" && c.Arg!.Equals("pgw-metrics:pgw-shop-shard1-shard1a"));
+        engine.Calls.Should().NotContain(c => c.Call == "create");
+    }
+
+    // AAA (t15 ревизия 3): нода уже в scrape-сети — идемпотентность, connect не вызывается.
+    [Fact]
+    public async Task EnsureNode_ScrapeNetwork_AlreadyAttached_NoConnect()
+    {
+        // Arrange — контейнер в обеих сетях (кластерной и scrape).
+        var engine = new FakeEngine
+        {
+            Containers = [new DockerContainer("id-1", ["pgw-shop-shard1-shard1a"], "running", "img")],
+            Inspects = new Dictionary<string, DockerContainerInspect>
+            {
+                ["id-1"] = new("id-1", "shard1a", ["shard1a"], [],
+                    [new PortMap(5432, 15432), new PortMap(8008, 18008), new PortMap(6432, 16432)],
+                    Networks: ["pgw-net-shop", "pgw-metrics"]),
+            },
+        };
+        var driver = NewPlainDriver(engine, scrapeNetwork: "pgw-metrics");
+
+        // Act
+        var result = await driver.EnsureNodeAsync(
+            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
+
+        // Assert — ни одного connect (кластер-инвариант и scrape уже держит inspect).
+        result.IsSuccess.Should().BeTrue();
+        engine.Calls.Should().NotContain(c => c.Call == "network-connect");
+    }
+
+    // AAA (t15 ревизия 3): новый контейнер — attach к scrape-сети после старта.
+    [Fact]
+    public async Task EnsureNode_ScrapeNetwork_NewContainer_AfterStart()
+    {
+        // Arrange — контейнера нет; ключ задан.
+        var engine = new FakeEngine();
+        var driver = NewPlainDriver(engine, scrapeNetwork: "pgw-metrics");
+
+        // Act
+        var result = await driver.EnsureNodeAsync(
+            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
+
+        // Assert — create → start → connect scrape-сети.
+        result.IsSuccess.Should().BeTrue();
+        engine.Calls.Select(c => c.Call).Should().ContainInOrder("create", "start", "network-connect");
+        engine.Calls.Should().Contain(c =>
+            c.Call == "network-connect" && c.Arg!.Equals("pgw-metrics:pgw-shop-shard1-shard1a"));
+    }
+
+    // AAA (t15 ревизия 3): ключ не задан — ни одного network-connect сверх
+    // кластер-инварианта (поведение бинарно базе).
+    [Fact]
+    public async Task EnsureNode_NoScrapeNetwork_NoConnect()
+    {
+        // Arrange — новый контейнер, ключ null.
+        var engine = new FakeEngine();
+        var driver = NewPlainDriver(engine);
+
+        // Act
+        var result = await driver.EnsureNodeAsync(
+            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
+
+        // Assert — create/start есть, connect нет вовсе.
+        result.IsSuccess.Should().BeTrue();
+        engine.Calls.Select(c => c.Call).Should().ContainInOrder("create", "start");
+        engine.Calls.Should().NotContain(c => c.Call == "network-connect");
+    }
+
+    // AAA (t15 ревизия 3, arch/14 §2.1): scrape-сети нет на docker-хосте —
+    // fail-fast с diagnose (имя сети в ошибке), не молчаливый пропуск.
+    [Fact]
+    public async Task EnsureNode_ScrapeNetworkMissing_FailsFast()
+    {
+        // Arrange — движок отвечает 404 «сеть не найдена» на connect.
+        var engine = new FakeEngine
+        {
+            NetworkConnectFailure = network => Result.Failed(
+                new ApplicationException($"network {network} not found")),
+        };
+        var driver = NewPlainDriver(engine, scrapeNetwork: "pgw-metrics");
+
+        // Act
+        var result = await driver.EnsureNodeAsync(
+            Topology(Addr), "shard1a", Addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
+
+        // Assert — провижининг несёт diagnose с именем сети.
+        result.IsSuccess.Should().BeFalse();
+        result.Error!.Message.Should().Contain("pgw-metrics");
+    }
+
+    // AAA (t15 ревизия 3, R9): усыновлённая нода (object) — чужой контейнер,
+    // scrape-attach не выполняется.
+    [Fact]
+    public async Task EnsureNode_AdoptedObject_NoScrapeAttach()
+    {
+        // Arrange — object-контейнер при заданном ключе.
+        var engine = new FakeEngine
+        {
+            Containers = [new DockerContainer("id1", ["foreign-1"], "running", "img")],
+        };
+        var driver = NewPlainDriver(engine, scrapeNetwork: "pgw-metrics");
+        var addr = new NodeAddress("h1", new NodePorts(15432, 18008, 16432), Object: "foreign-1");
+
+        // Act
+        var result = await driver.EnsureNodeAsync(
+            Topology(addr), "shard1a", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
+
+        // Assert — чужой контейнер не тронут.
         result.IsSuccess.Should().BeTrue();
         engine.Calls.Should().NotContain(c => c.Call == "network-connect");
         engine.Calls.Should().NotContain(c => c.Call == "create");

@@ -7,8 +7,9 @@ alerting:
     - static_configs:
         - targets: ["alertmanager:9093"]
 scrape_configs:
-  # Host-публикация pgworker параметризуется (PGW_API_HOST_PORT, коллизии
-  # на хосте) — target держится в file_sd-файле (переписывает 00-up.sh).
+  # Таргеты — сетевые адреса deploy-воркеров (aliases pgworker/pgworker-2 в
+  # единой сети контура pgw-metrics, t15 arch/18 §5.2) — файл file_sd пишет
+  # 00-up.sh; host-публикации API остаются для advertise/чеков/панели.
   - job_name: pgworker            # deploy-compose (mTLS, t03)
     scheme: https
     tls_config:
@@ -35,3 +36,10 @@ scrape_configs:
     static_configs: [{targets: ["adminpanel:8080"]}]
   - job_name: patroni             # эмуляторы :8008 (arch/18 §2.5)
     static_configs: [{targets: ["hc1a:8008", "hc1b:8008", "hc2a:8008", "hc2b:8008"]}]
+  - job_name: patroni-nodes       # реальные ноды PgWorker (t15, arch/18 §2.5/§5.4)
+    scheme: http                  # Patroni REST без TLS — t22 вне скоупа
+    file_sd_configs:
+      - files: ["/etc/prometheus/sd/patroni-nodes.json"]
+        refresh_interval: 30s
+  - job_name: sd-generator        # самонаблюдение генератора (arch/18 §5.4)
+    static_configs: [{targets: ["sd-generator:8080"]}]
