@@ -47,10 +47,13 @@ if [ ! -f pgserver.crt ] || ! openssl x509 -in pgserver.crt -noout -text 2>/dev/
   issue pgserver pgworker serverAuth "DNS:pgworker,DNS:pgworker-2,DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1"
 fi
 
+# t22: серт эмуляторов Patroni-REST стенда (hc1a..hc2b + host-публикации 8011–8022)
+[ -f hc.crt ] || issue hc hc serverAuth "DNS:hc1a,DNS:hc1b,DNS:hc2a,DNS:hc2b,IP:127.0.0.1"
+
 # клиентские (различимость в журналах сервера, независимый отзыв)
 [ -f panel.crt ]      || issue panel      panel      clientAuth ""
 [ -f seed.crt ]       || issue seed       seed       clientAuth ""
 [ -f prometheus.crt ] || issue prometheus prometheus clientAuth ""
 [ -f healthcheck.crt ] || issue healthcheck healthcheck clientAuth ""
 chmod 600 ca.key ./*.key
-echo "✓ TLS-пакет kfw-install-ca: ca.pem, server.* (kafkaworker+valkeyworker), pgserver.*, panel.*, seed.*, prometheus.*, healthcheck.*"
+echo "✓ TLS-пакет kfw-install-ca: ca.pem, server.* (kafkaworker+valkeyworker), pgserver.*, hc.*, panel.*, seed.*, prometheus.*, healthcheck.*"

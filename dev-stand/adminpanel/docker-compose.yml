@@ -291,6 +291,10 @@ services:
       CLUSTER: demo
       SHARD: s1
       MEMBERS: s1a,s1b
+      HC_TLS_CERT: /tls/hc.crt
+      HC_TLS_KEY: /tls/hc.key
+    volumes:
+      - ../../deploy/tls:/tls:ro
     depends_on: [s1a]
 
   hc1b:
@@ -304,6 +308,10 @@ services:
       CLUSTER: demo
       SHARD: s1
       MEMBERS: s1a,s1b
+      HC_TLS_CERT: /tls/hc.crt
+      HC_TLS_KEY: /tls/hc.key
+    volumes:
+      - ../../deploy/tls:/tls:ro
     depends_on: [s1b]
 
   hc2a:
@@ -317,6 +325,10 @@ services:
       CLUSTER: demo
       SHARD: s2
       MEMBERS: s2a,s2b
+      HC_TLS_CERT: /tls/hc.crt
+      HC_TLS_KEY: /tls/hc.key
+    volumes:
+      - ../../deploy/tls:/tls:ro
     depends_on: [s2a]
 
   hc2b:
@@ -330,6 +342,10 @@ services:
       CLUSTER: demo
       SHARD: s2
       MEMBERS: s2a,s2b
+      HC_TLS_CERT: /tls/hc.crt
+      HC_TLS_KEY: /tls/hc.key
+    volumes:
+      - ../../deploy/tls:/tls:ro
     depends_on: [s2b]
 
   # Панель — ВСЕГДА в докере (AGENTS.md): в сети стенда резолвит ноды напрямую

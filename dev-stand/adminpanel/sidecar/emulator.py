@@ -6,6 +6,7 @@ import base64
 import json
 import os
 import socket
+import ssl
 import threading
 import time
 import urllib.request
@@ -227,4 +228,15 @@ class Handler(BaseHTTPRequestHandler):
 
 print(f"{NODE}: эмулятор scope {SCOPE}, members={MEMBERS}", flush=True)
 threading.Thread(target=poll_loop, daemon=True).start()
-ThreadingHTTPServer(("0.0.0.0", 8008), Handler).serve_forever()
+
+# REST :8008 — ТОЛЬКО HTTPS (t22): серт hc из per-install CA (deploy/tls);
+# HTTP-режима не существует — отсутствие серта = падение с diagnose.
+cert = os.getenv("HC_TLS_CERT", "")
+key = os.getenv("HC_TLS_KEY", "")
+if not cert or not key:
+    raise SystemExit("emulator: HC_TLS_CERT/HC_TLS_KEY обязательны (HTTPS-only, стенд поднимается 00-up.sh)")
+httpd = ThreadingHTTPServer(("0.0.0.0", 8008), Handler)
+ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+ctx.load_cert_chain(cert, key)
+httpd.socket = ctx.wrap_socket(httpd.socket, server_side=True)
+httpd.serve_forever()
