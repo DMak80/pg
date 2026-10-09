@@ -8,10 +8,11 @@ using Xunit;
 namespace ValkeyWorker.IntegrationTests.E2e;
 
 // Docker-E2E ValkeyWorker (spec §6.3, кейс-маркер мерж-гейта): свежий Release
-// valkeyworker:e2e → API-create → контейнер vwk-<C>-node1 → дискавери →
-// RESP app-кред по TLS → DELETE → чистота (вкл. том vwk-<C>-tls, t06).
-// Изоляция по docs/e2e-isolation.md, телеметрия по docs/e2e-launch.md.
-// Гейт: PGW_TEST_DOCKER=1.
+// valkeyworker:e2e → API-create → контейнер vwk-<C>-node1 (env-TLS:
+// VALKEY_TLS_* + cmd-обёртка, тома нет) → дискавери →
+// RESP app-кред по TLS → DELETE → чистота (отсутствие TLS-тома проверяется —
+// в env-модели он не создаётся). Изоляция по docs/e2e-isolation.md,
+// телеметрия по docs/e2e-launch.md. Гейт: PGW_TEST_DOCKER=1.
 public class ValkeyE2eLifecycleTests
 {
     [Fact]
@@ -122,9 +123,11 @@ public class ValkeyE2eLifecycleTests
         // Act 6: teardown + ассерт чистоты (вкл. тома тега) — в DisposeAsync.
     }
 
-    // t06-маркер мерж-гейта (spec §4.9): TLS-only жизненный цикл — args ноды
-    // с --tls-port 6379/--port 0, ca_pem/ca_key в etcd, RESP roundtrip по TLS,
-    // plain отклонён, после удаления ни тома vwk-<C>-tls, ни ключей.
+    // t06-маркер мерж-гейта (spec §4.9): TLS-only жизненный цикл (env-модель) —
+    // нода поднята с env VALKEY_TLS_* и cmd-обёрткой (в args — экранированные
+    // '--tls-port' '6379'/'--port' '0'), ca_pem/ca_key в etcd, RESP roundtrip
+    // по TLS, plain отклонён, после удаления ни ключей, ни TLS-тома
+    // (в env-модели том не создаётся — отсутствие проверяется).
     [Fact]
     public async Task Tls_ClusterLifecycleTlsOnly()
     {
@@ -179,11 +182,15 @@ public class ValkeyE2eLifecycleTests
                     && await fx.ContainerAliveAsync($"vwk-{cluster}-node1");
             }, TimeSpan.FromSeconds(100), ct);
 
-            // Assert 1: args ноды — канонический TLS-набор (docker inspect).
+            // Assert 1: args ноды — cmd-обёртка env-TLS (docker inspect .Args:
+            // ["sh","-c","<раскатка>; exec valkey-server <экранированные args>"]).
             var args = await fx.ContainerArgsJsonAsync($"vwk-{cluster}-node1");
-            args.Should().Contain("--tls-port").And.Contain("\"6379\"")
-                .And.Contain("--port").And.Contain("\"0\"")
-                .And.Contain("--tls-cert-file").And.Contain("--tls-auth-clients");
+            args.Should().Contain("\"sh\",\"-c\",\"umask 077; mkdir -p /tls;")
+                .And.Contain("exec 'valkey-server'")
+                .And.Contain("'--tls-port' '6379'")
+                .And.Contain("'--port' '0'")
+                .And.Contain("'--tls-cert-file' '/tls/node.crt'")
+                .And.Contain("'--tls-auth-clients' 'no'");
 
             // Assert 2: дискавери-ключи — endpoints прежний формат,
             // ca_pem/ca_key существуют, PEM валиден.

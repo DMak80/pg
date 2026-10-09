@@ -32,7 +32,7 @@ public class PortAllocHealerTests
         // Arrange: portalloc-ключа нет; контейнер жив на published-порту.
         var (healer, etcd, driver, _) = NewRig();
         driver.Containers["vwk-demo-node1"] =
-            new Fakes.FakeDriver.ContainerFact("h1", 17042, null, null, ["valkey-server"], "valkey/valkey:9.1.2", "id1");
+            new Fakes.FakeDriver.ContainerFact("h1", 17042, null, null, ["valkey-server"], null, "valkey/valkey:9.1.2", "id1");
 
         // Act
         var result = await healer.HealNodePortAsync("demo", "node1", TestContext.Current.CancellationToken);
@@ -55,7 +55,7 @@ public class PortAllocHealerTests
         // симуляция: pre-запись чужого ключа сразу (NotExists проиграет).
         var (healer, etcd, driver, _) = NewRig();
         driver.Containers["vwk-demo-node1"] =
-            new Fakes.FakeDriver.ContainerFact("h1", 17042, null, null, ["valkey-server"], "valkey/valkey:9.1.2", "id1");
+            new Fakes.FakeDriver.ContainerFact("h1", 17042, null, null, ["valkey-server"], null, "valkey/valkey:9.1.2", "id1");
         etcd.Seed("/valkeyworker/portalloc/demo", """{"node1":{"host":"h2","client":17100}}""");
 
         // Act

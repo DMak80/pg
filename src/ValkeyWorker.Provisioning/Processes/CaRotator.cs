@@ -14,8 +14,9 @@ namespace ValkeyWorker.Provisioning.Processes;
 /// по заявке /valkeyworker/ca_rotations/&lt;C&gt; — окно двойного доверия без
 /// остановки обслуживания. Фазы: P (staging ca_next_* put-if-absent) →
 /// D (ca_pem = bundle OLD+NEW — перечитавшие дискавери доверяют обоим) →
-/// R (пересоздание node1 с сертом от NEW; факт-детект IsValidTar — без
-/// in-memory-треков, nodes=1) → C (атомарный txn: ca_pem/ca_key ← NEW,
+/// R (пересоздание node1 с env от NEW; факт-детект IsValidNodeEnv по env
+/// контейнера — без in-memory-треков, nodes=1) → C (атомарный txn:
+/// ca_pem/ca_key ← NEW,
 /// del staging, del заявки) → K4 (снапшот + done). Эксклюзивный второй шаг
 /// Active-ветки: окно открыто ⇒ InProgress ⇒ надзор/конвергер/ротация
 /// кредов в тике не идут (решение пользователя, spec §2.4). Ждущие исходы
@@ -32,7 +33,6 @@ public sealed class CaRotator(
     IClusterDriver driver,
     ClaimStore claims,
     WorkJournal journal,
-    NodeTlsProvisioner tlsProvisioner,
     IValkeyConnection valkey,
     ValkeyProvisioningOptions options,
     Func<CancellationToken, Task<Result>>? snapshot = null,
@@ -169,18 +169,18 @@ public sealed class CaRotator(
     {
         var cluster = snap.Cluster;
 
-        // R.1: факт-детект — валидный NEW-серт в TLS-volume ⇒ R завершён.
+        // R.1: факт-детект — валидный NEW-серт в env контейнера ⇒ R завершён.
         var addresses = await ReadPortAllocAsync(cluster, ct);
         if (!addresses.IsSuccess)
             return Result<RotationOutcome>.Failed(addresses.Error!);
         if (!addresses.Value.TryGetValue("node1", out var address))
             return Result<RotationOutcome>.Failed(new ApplicationException(
                 $"rotate-ca {cluster}: node1 не закреплён в portalloc"));
-        var archive = await driver.GetTlsArchiveAsync(cluster, address.Host, options.NodeImage, ct);
-        if (!archive.IsSuccess)
-            return await FailAsync(cluster, archive.Error!, "phase-r", ct);
-        if (archive.Value is { } tar && NodeTlsProvisioner.IsValidTar(tar,
-                options.AdvertisedClientHost ?? address.Host, nextPem, _clock))
+        var envResult = await driver.NodeEnvAsync(cluster, "node1", ct);
+        if (!envResult.IsSuccess)
+            return await FailAsync(cluster, envResult.Error!, "phase-r", ct);
+        if (envResult.Value is { } env && NodeTlsProvisioner.IsValidNodeEnv(
+                env, options.AdvertisedClientHost ?? address.Host, nextPem, _clock))
             return await CommitAsync(cluster, nextPem, nextKey, ct);
 
         // R.2: гонка TO_REMOVE перед пересозданием — abort.
@@ -190,14 +190,10 @@ public sealed class CaRotator(
         if (removed.Value)
             return await AbortAsync(cluster);
 
-        // R.3: серт/ca.pem volume = NEW (НЕ bundle: --tls-auth-clients no),
-        // journal phase-r, RemoveNode → EnsureNode (порт/лимиты прежние —
-        // порт из portalloc, лимиты из декларации resources ноды).
-        var tls = await tlsProvisioner.EnsureNodeTlsAsync(
-            cluster, "node1", address.Host, options.AdvertisedClientHost ?? address.Host,
-            nextPem, nextKey, ct);
-        if (!tls.IsSuccess)
-            return await FailAsync(cluster, tls.Error!, "phase-r", ct);
+        // R.3: env от ca_next_key/ca_next_pem (VALKEY_TLS_CA = NEW, НЕ bundle:
+        // --tls-auth-clients no), journal phase-r, RemoveNode → EnsureNode
+        // (порт/лимиты прежние — порт из portalloc, лимиты из декларации
+        // resources ноды; Cmd — обёртка).
         var markedR = await journal.WritePhaseAsync(cluster, Op, "phase-r", claims.InstanceId, null, ct);
         if (!markedR.IsSuccess)
             return Result<RotationOutcome>.Failed(markedR.Error!);
@@ -207,13 +203,15 @@ public sealed class CaRotator(
         var args = NodeArgsBuilder.Build(
             snap.Config?.MaxmemoryBytes ?? 0, snap.Config?.MaxmemoryPolicy ?? "allkeys-lru",
             snap.AdminPassword!, snap.AppPassword!);
+        var advertised = options.AdvertisedClientHost ?? address.Host;
         var removedNode = await driver.RemoveNodeAsync(cluster, "node1", ct);
         if (!removedNode.IsSuccess)
             return await FailAsync(cluster, removedNode.Error!, "phase-r/node1", ct);
         var ensured = await driver.EnsureNodeAsync(new ValkeyNodeSpec(
-            cluster, "node1", address.Host, address.ClientPort, options.NodeImage, args,
+            cluster, "node1", address.Host, address.ClientPort, options.NodeImage,
+            NodeArgsBuilder.BuildCmd(args),
             limits?.Cpu, limits?.MemBytes,
-            TlsVolume: PlainClusterDriver.TlsVolumeName(cluster)), ct);
+            Env: NodeTlsProvisioner.BuildNodeTlsEnv(nextPem, nextKey, "node1", advertised)), ct);
         if (!ensured.IsSuccess)
             return await FailAsync(cluster, ensured.Error!, "phase-r/node1", ct);
         var provisioning = await ProcessCommon.WriteNodeStateAsync(

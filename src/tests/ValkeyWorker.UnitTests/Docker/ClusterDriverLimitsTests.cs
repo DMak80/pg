@@ -44,8 +44,6 @@ public class ClusterDriverLimitsTests
         public Task<Result<bool>> VolumeExistsAsync(string name, CancellationToken ct) => throw NotUsed();
         public Task<Result> EnsureVolumeAsync(string name, CancellationToken ct) => throw NotUsed();
         public Task<Result> DeleteVolumeAsync(string name, CancellationToken ct) => throw NotUsed();
-        public Task<Result> PutVolumeArchiveAsync(string name, byte[] tar, string image, CancellationToken ct) => throw NotUsed();
-        public Task<Result<byte[]?>> GetVolumeArchiveAsync(string name, string image, CancellationToken ct) => throw NotUsed();
         public Task<Result<IReadOnlyList<DockerSwarmNode>>> ListNodesAsync(CancellationToken ct) => throw NotUsed();
         public Task<Result> CreateServiceAsync(ServiceSpec spec, CancellationToken ct) => throw NotUsed();
         public Task<Result> RemoveServiceAsync(string name, CancellationToken ct) => throw NotUsed();

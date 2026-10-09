@@ -13,12 +13,12 @@ namespace ValkeyWorker.Docker.Drivers;
 public sealed record HostEndpoint(string Name, string Endpoint);
 
 /// <summary>
-/// Спецификация ноды для docker-драйвера: Args готовит NodeArgsBuilder
-/// (детерминирован от декларации/кредов etcd — arch/21 §4.5.1); драйвер только
-/// размещает (хост, host-порт публикации 6379, лимиты; volume данных нет,
-/// per-cluster сети нет — arch/21 §2). TlsVolume — named volume TLS-секретов
-/// (t06): драйвер монтирует его в /tls; записи файлов в volume —
-/// NodeTlsProvisioner ДО EnsureNodeAsync.
+/// Спецификация ноды для docker-драйвера: Args = cmd-обёртка
+/// NodeArgsBuilder.BuildCmd (детерминирована от декларации/кредов etcd —
+/// arch/21 §2), Env — TLS-материал VALKEY_TLS_{CERT,KEY,CA} (свежий серт
+/// ноды; обёртка раскатывает PEM в /tls при старте); драйвер только
+/// размещает (хост, host-порт публикации 6379, лимиты; томов нет,
+/// per-cluster сети нет — arch/21 §2).
 /// </summary>
 public sealed record ValkeyNodeSpec(
     string Cluster,
@@ -29,7 +29,7 @@ public sealed record ValkeyNodeSpec(
     IReadOnlyList<string> Args,
     decimal? CpuCores,
     long? MemoryBytes,
-    string? TlsVolume = null);
+    IReadOnlyDictionary<string, string>? Env = null);
 
 // Инспекция размещения ноды (E9-реконструкция portalloc / надзор C): Host —
 // хост размещения, ClientHostPort — published host-порт ноды (6379), Running —
@@ -39,8 +39,9 @@ public sealed record NodeEndpointInspection(string Host, int ClientHostPort, boo
 
 // Унифицированное управление нодой в обоих режимах (порт драйверов kfw с
 // упрощениями домена — arch/21 §2): объекты — контейнер/сервис
-// vwk-<C>-node<k> + named volume TLS-секретов vwk-<C>-tls (t06); volume
-// данных нет, per-cluster сетей нет.
+// vwk-<C>-node<k>; TLS-материал — env контейнера, томов и per-cluster сетей
+// нет (легаси-том vwk-<C>-tls старой volume-модели убирает
+// CleanupLegacyVolumeAsync — утилита миграции надзора).
 // Идемпотентность: существующий объект сверяется по имени и не пересоздаётся
 // (решение о сверке/замене — у процессов V3/надзора); 404 на удалении /
 // 409 на создании — успех (движок).
@@ -57,8 +58,7 @@ public interface IClusterDriver
     // сервис с constraint node.id==<id>, publish mode=host).
     Task<Result> EnsureNodeAsync(ValkeyNodeSpec spec, CancellationToken ct);
 
-    // Остановить и удалить ноду (volume данных нет; TLS-volume НЕ удаляется —
-    // переживает пересоздания, чистится отдельно RemoveTlsVolumeAsync; 404 = успех).
+    // Остановить и удалить ноду (томов нет; 404 = успех).
     Task<Result> RemoveNodeAsync(string cluster, string nodeName, CancellationToken ct);
 
     // Фактические лимиты контейнера/сервиса ноды (автоконверге C): null =
@@ -71,29 +71,26 @@ public interface IClusterDriver
     Task<Result<NodeEndpointInspection?>> InspectNodeEndpointAsync(
         string cluster, string nodeName, CancellationToken ct);
 
-    // Cmd (args) живой ноды — сверка V3 (image+args+порт+лимиты): plain —
+    // Cmd (обёртка) живой ноды — сверка V3 (image+cmd+порт+лимиты): plain —
     // перебор хостов InspectContainerCmdAsync(vwk-<C>-node<k>), swarm —
     // InspectServiceCmdAsync; null = объекта нет.
     Task<Result<IReadOnlyList<string>?>> NodeArgsAsync(string cluster, string nodeName, CancellationToken ct);
 
+    // Env живой ноды — источник TLS-факта (сверки V3/надзора/фазы R):
+    // plain — перебор хостов InspectContainerEnvAsync, swarm —
+    // InspectServiceEnvAsync; null = объекта нет.
+    Task<Result<IReadOnlyDictionary<string, string>?>> NodeEnvAsync(
+        string cluster, string nodeName, CancellationToken ct);
+
     // Имена объектов нод кластера (vwk-<C>-*): сверка декларации + сироты (X1).
     Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct);
 
-    // TLS-volume кластера (t06, arch/21 §2): ensure named volume vwk-<C>-tls.
-    Task<Result> EnsureTlsVolumeAsync(string cluster, string host, CancellationToken ct);
-
-    // Запись tar-архива сертов (node.crt/node.key/ca.pem) в volume ДО старта;
-    // image — образ helper-контейнера (запись exec'ом изнутри — volume-archive
-    // API локальных томов демоны без swarm не поддерживают).
-    Task<Result> PutTlsArchiveAsync(string cluster, string host, byte[] tar, string image, CancellationToken ct);
-
-    // Чтение tar-архива сертов (валидность решает NodeTlsProvisioner);
-    // null = volume/архива нет.
-    Task<Result<byte[]?>> GetTlsArchiveAsync(string cluster, string host, string image, CancellationToken ct);
-
-    // Демонтаж TLS-volume (X1): volume нод-локален — перебор ВСЕХ engines
-    // (plain — таблица хостов; swarm — ноды таблицы + manager), 404 = успех.
-    Task<Result> RemoveTlsVolumeAsync(string cluster, CancellationToken ct);
+    // Легаси-чистка миграции (надзор C): удаление осиротевшего тома
+    // vwk-<C>-tls старой volume-модели на ВСЕХ engines (plain — таблица
+    // хостов; swarm — ноды таблицы + manager); 404 = успех (идемпотентность
+    // движка); 409 volume-in-use → Failed — ретрай следующим тиком надзора
+    // (тик надзора этим НЕ фейлится, warnings не пишет — вызов безусловный).
+    Task<Result> CleanupLegacyVolumeAsync(string cluster, CancellationToken ct);
 }
 
 // Plain-режим: контейнеры на перечисленных хостах, per-host Engine API.
@@ -114,10 +111,6 @@ public sealed class PlainClusterDriver(
         => new(
             limits.NanoCpus > 0 ? limits.NanoCpus / 1_000_000_000m : null,
             limits.MemoryBytes > 0 ? limits.MemoryBytes : null);
-
-    // Имя named volume TLS-секретов кластера (t06, arch/21 §2): переживает
-    // пересоздания контейнера, демонтаж — RemoveTlsVolumeAsync (X1).
-    public static string TlsVolumeName(string cluster) => $"vwk-{cluster}-tls";
 
     private readonly Dictionary<string, IDockerEngine> _engines = hosts.ToDictionary(
         h => h.Name,
@@ -180,16 +173,16 @@ public sealed class PlainClusterDriver(
                 spec.Image,
                 [new PortMap(ClientContainerPort, spec.ClientHostPort)],
                 spec.NodeName,
-                // Cmd — args флаги valkey-server: аргументы образного
-                // docker-entrypoint.sh (ResetEntrypoint=false по умолчанию).
+                // Cmd — обёртка env-TLS: раскатка PEM из env в /tls + exec
+                // valkey-server (аргументы образного docker-entrypoint.sh,
+                // ResetEntrypoint=false по умолчанию).
                 Cmd: spec.Args,
                 CpuCores: (double?)spec.CpuCores,
                 MemoryBytes: spec.MemoryBytes,
                 LabelKey: LabelKey,
                 Label: spec.Cluster,
-                // TLS-volume монтируется в /tls (t06) — файлы записывает
-                // NodeTlsProvisioner ДО EnsureNodeAsync.
-                Binds: spec.TlsVolume is { Length: > 0 } v ? new[] { v + ":/tls" } : null);
+                // TLS-материал — env контейнера (VALKEY_TLS_{CERT,KEY,CA}).
+                Env: spec.Env);
 
             var created = await engine.CreateContainerAsync(containerSpec, name, ct);
             if (!created.IsSuccess)
@@ -207,9 +200,7 @@ public sealed class PlainClusterDriver(
             var name = NodeName(cluster, nodeName);
             foreach (var engine in _engines.Values)
             {
-                // 404 на каждом шаге — успех (движок); TLS-volume НЕ удаляется —
-                // переживает пересоздания контейнера (arch/21 §2); демонтаж —
-                // RemoveTlsVolumeAsync в X1.
+                // 404 на каждом шаге — успех (движок); томов у домена нет.
                 var stopped = await engine.StopContainerAsync(name, timeoutSec: 10, ct);
                 if (!stopped.IsSuccess)
                     throw stopped.Error!;
@@ -257,7 +248,7 @@ public sealed class PlainClusterDriver(
         return Result<NodeLimits?>.Success(null);
     }
 
-    // Args живой ноды (сверка V3): перебор хостов, первый найденный.
+    // Cmd живой ноды (сверка V3): перебор хостов, первый найденный.
     public async Task<Result<IReadOnlyList<string>?>> NodeArgsAsync(
         string cluster, string nodeName, CancellationToken ct)
     {
@@ -272,6 +263,23 @@ public sealed class PlainClusterDriver(
         }
 
         return Result<IReadOnlyList<string>?>.Success(null);
+    }
+
+    // Env живой ноды (сверки V3/надзора/фазы R): перебор хостов, первый найденный.
+    public async Task<Result<IReadOnlyDictionary<string, string>?>> NodeEnvAsync(
+        string cluster, string nodeName, CancellationToken ct)
+    {
+        var name = NodeName(cluster, nodeName);
+        foreach (var engine in _engines.Values)
+        {
+            var env = await engine.InspectContainerEnvAsync(name, ct);
+            if (!env.IsSuccess)
+                return env;
+            if (env.Value is not null)
+                return env;
+        }
+
+        return Result<IReadOnlyDictionary<string, string>?>.Success(null);
     }
 
     // E9-реконструкция: перебор хостов — первый, где контейнер есть,
@@ -293,41 +301,14 @@ public sealed class PlainClusterDriver(
         return Result<NodeEndpointInspection?>.Success(null);
     }
 
-    // TLS-volume (t06): объём живёт на хосте размещения ноды — engine по host
-    // (как EnsureNodeAsync; отсутствующий хост → Failed тем же текстом).
-    public async Task<Result> EnsureTlsVolumeAsync(string cluster, string host, CancellationToken ct)
-    {
-        if (!_engines.TryGetValue(host, out var engine))
-            return Result.Failed(new ApplicationException(
-                $"хост {host} не в таблице Docker:Hosts (кластер {cluster}, TLS-volume)"));
-        return await engine.EnsureVolumeAsync(TlsVolumeName(cluster), ct);
-    }
-
-    public async Task<Result> PutTlsArchiveAsync(
-        string cluster, string host, byte[] tar, string image, CancellationToken ct)
-    {
-        if (!_engines.TryGetValue(host, out var engine))
-            return Result.Failed(new ApplicationException(
-                $"хост {host} не в таблице Docker:Hosts (кластер {cluster}, TLS-volume)"));
-        return await engine.PutVolumeArchiveAsync(TlsVolumeName(cluster), tar, image, ct);
-    }
-
-    public async Task<Result<byte[]?>> GetTlsArchiveAsync(
-        string cluster, string host, string image, CancellationToken ct)
-    {
-        if (!_engines.TryGetValue(host, out var engine))
-            return Result<byte[]?>.Failed(new ApplicationException(
-                $"хост {host} не в таблице Docker:Hosts (кластер {cluster}, TLS-volume)"));
-        return await engine.GetVolumeArchiveAsync(TlsVolumeName(cluster), image, ct);
-    }
-
-    // Демонтаж (X1): volume не привязан к ноде — перебор ВСЕХ хостов
-    // (404 = успех на каждом).
-    public async Task<Result> RemoveTlsVolumeAsync(string cluster, CancellationToken ct)
+    // Легаси-чистка (надзор C): том нод-локален — перебор ВСЕХ хостов;
+    // 404 = успех на каждом (идемпотентность движка), 409 → Failed
+    // (безусловный ретрай следующим тиком надзора).
+    public async Task<Result> CleanupLegacyVolumeAsync(string cluster, CancellationToken ct)
     {
         foreach (var engine in _engines.Values)
         {
-            var removed = await engine.DeleteVolumeAsync(TlsVolumeName(cluster), ct);
+            var removed = await engine.DeleteVolumeAsync($"vwk-{cluster}-tls", ct);
             if (!removed.IsSuccess)
                 return removed;
         }
@@ -340,9 +321,9 @@ public sealed class PlainClusterDriver(
 }
 
 // Swarm-режим: сервисы через manager endpoint, replicas=1, constraint node.id==<id>.
-// hosts — endpoint'ы Engine API swarm-нод (по имени ноды, опционально): нужен
-// TLS-volume (t06-ревью) — named volume нод-локален, запись архива через manager
-// кладёт серты не на ноду размещения. Нет ноды в таблице (однонодовый Docker
+// hosts — endpoint'ы Engine API swarm-нод (по имени ноды, опционально):
+// нужен легаси-том старой volume-модели нод-локален — CleanupLegacyVolumeAsync
+// обходит и ноды таблицы. Нет ноды в таблице (однонодовый Docker
 // Desktop/swarm) — manager engine (поведение не меняется).
 public sealed class SwarmClusterDriver(
     string managerEndpoint,
@@ -389,12 +370,12 @@ public sealed class SwarmClusterDriver(
                 spec.Image,
                 [new PortMap(PlainClusterDriver.ClientContainerPort, spec.ClientHostPort)],
                 spec.NodeName,
-                Cmd: spec.Args, // args образного entrypoint (ResetEntrypoint=false)
+                Cmd: spec.Args, // обёртка env-TLS (args образного entrypoint, ResetEntrypoint=false)
                 CpuCores: (double?)spec.CpuCores,
                 MemoryBytes: spec.MemoryBytes,
                 LabelKey: PlainClusterDriver.LabelKey,
                 Label: spec.Cluster,
-                Binds: spec.TlsVolume is { Length: > 0 } v ? new[] { v + ":/tls" } : null);
+                Env: spec.Env); // TLS-материал — env сервиса
             var serviceSpec = new ServiceSpec(
                 PlainClusterDriver.NodeName(spec.Cluster, spec.NodeName),
                 template,
@@ -421,10 +402,15 @@ public sealed class SwarmClusterDriver(
             : Result<NodeLimits?>.Success(null);
     }
 
-    // Args сервиса ноды (сверка V3): Spec.TaskTemplate.ContainerSpec.Cmd.
+    // Cmd сервиса ноды (сверка V3): Spec.TaskTemplate.ContainerSpec.Cmd.
     public Task<Result<IReadOnlyList<string>?>> NodeArgsAsync(
         string cluster, string nodeName, CancellationToken ct)
         => _engine.InspectServiceCmdAsync(PlainClusterDriver.NodeName(cluster, nodeName), ct);
+
+    // Env сервиса ноды (сверки V3/надзора/фазы R).
+    public Task<Result<IReadOnlyDictionary<string, string>?>> NodeEnvAsync(
+        string cluster, string nodeName, CancellationToken ct)
+        => _engine.InspectServiceEnvAsync(PlainClusterDriver.NodeName(cluster, nodeName), ct);
 
     // E9-реконструкция: published-порт и хост таска отдаёт одна инспекция
     // движка (swarm-фолбэк по running-таску — один HTTP-раунд ListTasks);
@@ -450,34 +436,15 @@ public sealed class SwarmClusterDriver(
     public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct)
         => _engine.ListServicesAsync($"vwk-{cluster}-", ct);
 
-    // TLS-volume (t06-ревью): volume нод-локален — ensure на ноде размещения
-    // (запись сертов Put'ом идёт туда же); ноды нет в таблице (однонодовый
-    // контур) — manager engine.
-    public Task<Result> EnsureTlsVolumeAsync(string cluster, string host, CancellationToken ct)
-        => ResolveNodeEngine(host).EnsureVolumeAsync(PlainClusterDriver.TlsVolumeName(cluster), ct);
-
-    // Архив сертов — через engine НОДЫ размещения (t06-ревью): volume нод-локален.
-    public Task<Result> PutTlsArchiveAsync(
-        string cluster, string host, byte[] tar, string image, CancellationToken ct)
-        => ResolveNodeEngine(host).PutVolumeArchiveAsync(PlainClusterDriver.TlsVolumeName(cluster), tar, image, ct);
-
-    public Task<Result<byte[]?>> GetTlsArchiveAsync(
-        string cluster, string host, string image, CancellationToken ct)
-        => ResolveNodeEngine(host).GetVolumeArchiveAsync(PlainClusterDriver.TlsVolumeName(cluster), image, ct);
-
-    // Нода размещения из таблицы hosts; нет записи (однонодовый контур) — manager.
-    private IDockerEngine ResolveNodeEngine(string host)
-        => _nodeEngines.TryGetValue(host, out var engine) ? engine : _engine;
-
-    // Демонтаж (X1, t06-ревью): volume нод-локален — DELETE на КАЖДОМ engine
-    // таблицы нод + manager (реальный volume мог быть создан Docker'ом при
-    // helper-create на ноде размещения; manager-копия — при ensure по
-    // fallback); 404 = успех на каждом.
-    public async Task<Result> RemoveTlsVolumeAsync(string cluster, CancellationToken ct)
+    // Легаси-чистка (надзор C): том старой volume-модели нод-локален — DELETE
+    // на КАЖДОМ engine таблицы нод + manager (реальный volume мог жить на
+    // ноде размещения; manager-копия — при ensure по fallback); 404 = успех
+    // на каждом, 409 → Failed (безусловный ретрай тиком надзора).
+    public async Task<Result> CleanupLegacyVolumeAsync(string cluster, CancellationToken ct)
     {
         foreach (var engine in _nodeEngines.Values.Append(_engine))
         {
-            var removed = await engine.DeleteVolumeAsync(PlainClusterDriver.TlsVolumeName(cluster), ct);
+            var removed = await engine.DeleteVolumeAsync($"vwk-{cluster}-tls", ct);
             if (!removed.IsSuccess)
                 return removed;
         }

@@ -33,7 +33,6 @@ public sealed class NodeSupervisor(
     IValkeyConnection valkey,
     ValkeyProvisioningOptions options,
     PortAllocHealer healer,
-    NodeTlsProvisioner tlsProvisioner,
     TimeProvider? clock = null) // clock — тестовый порог NodeDeadSec (FixedTimeProvider)
 {
     private const string Op = "supervise";
@@ -66,6 +65,9 @@ public sealed class NodeSupervisor(
         var warnings = new List<string>();
         var unreachable = new Dictionary<string, long>(
             (await journal.ReadUnreachableAsync(cluster, ct)).Value ?? new Dictionary<string, long>());
+        // Все ли ноды кластера на env-модели (легаси-чистка тома — только когда
+        // старой volume-модели не осталось: непроверенная/отложенная нода — нет).
+        var allEnvModel = true;
 
         foreach (var node in snap.Nodes.Keys.OrderBy(n => n, StringComparer.Ordinal))
         {
@@ -134,6 +136,40 @@ public sealed class NodeSupervisor(
                 }
             }
 
+            // Сверка env живой ноды (env-TLS, arch/21 §5 C): env отсутствует
+            // или невалиден против ca_pem → пересоздание с env + cmd-обёрткой
+            // (дисциплина «одно пересоздание за тик», journal-warning).
+            // Непроверяемая нода (foreign PROVISIONING) сбрасывает флаг
+            // легаси-чистки — модель ноды неизвестна.
+            if (supervisable)
+            {
+                var envResult = await driver.NodeEnvAsync(cluster, node, ct);
+                if (!envResult.IsSuccess)
+                    return envResult.Error!;
+                var advertised = options.AdvertisedClientHost ?? address.Value.Host;
+                if (!NodeTlsProvisioner.IsValidNodeEnv(envResult.Value, advertised, snap.CaPem, _clock))
+                {
+                    if (!recreated)
+                    {
+                        warnings.Add($"env серта ноды {node} отсутствует/невалиден — пересоздание с env");
+                        var rebuilt = await RecreateAsync(snap, node, address.Value, "tls-env invalid", ct);
+                        if (!rebuilt.IsSuccess)
+                            return rebuilt.Error!;
+                        recreated = true;
+                        unreachable.Remove(node);
+                        continue;
+                    }
+
+                    allEnvModel = false;
+                    warnings.Add($"env серта {node} невалиден — отложено до следующего тика");
+                    continue;
+                }
+            }
+            else
+            {
+                allEnvModel = false; // foreign PROVISIONING — модель ноды не проверена
+            }
+
             // PING-проба admin-кредом по advertised-адресу (не published), по TLS (t06).
             var ping = await valkey.PingAsync(
                 new ValkeyEndpoint(
@@ -193,6 +229,14 @@ public sealed class NodeSupervisor(
         var converge = await ConvergeEndpointsAsync(snap, ct);
         if (!converge.IsSuccess)
             return converge;
+
+        // Легаси-чистка (env-TLS миграция живых кластеров, arch/21 §5 C):
+        // все ноды на env-модели — удалить осиротевший том vwk-<C>-tls старой
+        // volume-модели. 404 = успех; 409 volume-in-use НЕ фейлит тик и НЕ
+        // пишется в warnings — безусловный ретрай следующим тиком (вызов
+        // каждым тиком, пока том не уйдёт; Failed утилиты тик не роняет).
+        if (allEnvModel)
+            await driver.CleanupLegacyVolumeAsync(cluster, ct);
 
         // Стационарная запись надзора (трек first_seen + warning-и тика).
         return await journal.WriteSupervisionAsync(
@@ -269,7 +313,8 @@ public sealed class NodeSupervisor(
             nodeEntry.GetProperty("client").GetInt32()));
     }
 
-    // Пересоздание ноды (те же креды/порт/лимиты — args из etcd-актуального).
+    // Пересоздание ноды (те же креды/порт/лимиты — args из etcd-актуального);
+    // env-TLS: свежий env от ca_key/ca_pem + cmd-обёртка (кеш восполним).
     private async Task<Result> RecreateAsync(
         ValkeyClusterSnapshot snap, string node, NodeAddress address, string reason, CancellationToken ct)
     {
@@ -280,23 +325,17 @@ public sealed class NodeSupervisor(
             snap.Config?.MaxmemoryBytes ?? 0, snap.Config?.MaxmemoryPolicy ?? "allkeys-lru",
             snap.AdminPassword!, snap.AppPassword!);
 
-        // TLS (t06, arch/21 §5 C): серт в volume ДО EnsureNodeAsync; volume жив и
-        // валиден — переиспользование, иначе перевыпуск (кеш восполним).
-        var advertised = options.AdvertisedClientHost ?? address.Host;
-        var tls = await tlsProvisioner.EnsureNodeTlsAsync(
-            cluster, node, address.Host, advertised, snap.CaPem!, snap.CaKey!, ct);
-        if (!tls.IsSuccess)
-            return tls;
-
         // Контейнер мог остаться живым (UNREACHABLE/лимиты) — сначала снос.
         var removed = await driver.RemoveNodeAsync(cluster, node, ct);
         if (!removed.IsSuccess)
             return removed;
 
+        var advertised = options.AdvertisedClientHost ?? address.Host;
         var ensured = await driver.EnsureNodeAsync(new ValkeyNodeSpec(
-            cluster, node, address.Host, address.ClientPort, options.NodeImage, args,
+            cluster, node, address.Host, address.ClientPort, options.NodeImage,
+            NodeArgsBuilder.BuildCmd(args),
             limits?.Cpu, limits?.MemBytes,
-            TlsVolume: PlainClusterDriver.TlsVolumeName(cluster)), ct);
+            Env: NodeTlsProvisioner.BuildNodeTlsEnv(snap.CaPem!, snap.CaKey!, node, advertised)), ct);
         if (!ensured.IsSuccess)
             return ensured;
 

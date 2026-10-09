@@ -32,7 +32,6 @@ public class ValkeyClusterProcessesTests
             var journal = new WorkJournal("/valkeyworker", Etcd, ["http://etcd:2379"]);
             var options = new ValkeyWorker.Provisioning.Processes.ValkeyProvisioningOptions(
                 17000, 17999, 100, 90, "localhost", "valkey/valkey:9.1.2");
-            var tlsProvisioner = new ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner(Driver, Image, Clock);
             Processes = new ValkeyClusterProcesses(
                 Etcd, new FixedOptionsMonitor(new ValkeyWorkerOptions
                 {
@@ -47,7 +46,7 @@ public class ValkeyClusterProcessesTests
                         Etcd, ["http://etcd:2379"],
                         NullLogger<ValkeyWorker.Provisioning.Processes.PortAllocIndex>.Instance),
                     new ValkeyWorker.Provisioning.Processes.ClusterSecretEnsurer(Etcd, ["http://etcd:2379"]),
-                    tlsProvisioner, Valkey, options),
+                    Valkey, options),
                 new ValkeyWorker.Provisioning.Processes.DeprovisioningProcess(
                     Etcd, ["http://etcd:2379"], Driver, Claims, journal),
                 new ValkeyWorker.Provisioning.Processes.NodeSupervisor(
@@ -59,7 +58,7 @@ public class ValkeyClusterProcessesTests
                             Etcd, ["http://etcd:2379"],
                             NullLogger<ValkeyWorker.Provisioning.Processes.PortAllocIndex>.Instance),
                         options),
-                    tlsProvisioner, Clock),
+                    Clock),
                 new ValkeyWorker.Provisioning.Processes.ConfigConverger(
                     Valkey, Etcd, ["http://etcd:2379"], journal),
                 new ValkeyWorker.Provisioning.Processes.PasswordRotator(
@@ -68,10 +67,10 @@ public class ValkeyClusterProcessesTests
                 new ValkeyWorker.Provisioning.Processes.TlsMigrator(
                     Etcd, ["http://etcd:2379"], Driver, Claims, journal,
                     new ValkeyWorker.Provisioning.Processes.ClusterSecretEnsurer(Etcd, ["http://etcd:2379"]),
-                    tlsProvisioner, Valkey, options, snapshot: null, Clock),
+                    Valkey, options, null, Clock),
                 new ValkeyWorker.Provisioning.Processes.CaRotator(
                     Etcd, ["http://etcd:2379"], Driver, Claims, journal,
-                    tlsProvisioner, Valkey, options, snapshot: null, Clock),
+                    Valkey, options, null, Clock),
                 NullLogger<ValkeyClusterProcesses>.Instance);
         }
 
@@ -94,7 +93,13 @@ public class ValkeyClusterProcessesTests
             Etcd.Seed($"/valkeyworker/portalloc/{cluster}", "{\"node1\":{\"host\":\"h1\",\"client\":" + port + "}}");
             Driver.Containers[$"vwk-{cluster}-node1"] =
                 new Fakes.FakeDriver.ContainerFact("h1", port, 2m, 1024L * 1024 * 1024,
-                    ["valkey-server", "--tls-port", "6379", "--port", "0"], Image, "id-tls");
+                    ValkeyWorker.Provisioning.Processes.NodeArgsBuilder.BuildCmd(
+                        ValkeyWorker.Provisioning.Processes.NodeArgsBuilder.Build(
+                            536870912, "allkeys-lru",
+                            "AdminPassword0123456789abcdef12345", "AppPassword0123456789abcdef12345")),
+                    ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner.BuildNodeTlsEnv(
+                        caPem, caKeyPem, "node1", "localhost"),
+                    Image, "id-tls");
         }
 
         // Чтение журнала работы кластера (ассерты вентиля).
@@ -116,7 +121,7 @@ public class ValkeyClusterProcessesTests
             Etcd.Seed($"/valkeyworker/portalloc/{cluster}", "{\"node1\":{\"host\":\"h1\",\"client\":" + port + "}}");
             Driver.Containers[$"vwk-{cluster}-node1"] =
                 new Fakes.FakeDriver.ContainerFact("h1", port, 2m, 1024L * 1024 * 1024,
-                    ["valkey-server", "--appendonly", "no"], "valkey/valkey:9.1.2", "id-plain");
+                    ["valkey-server", "--appendonly", "no"], null, "valkey/valkey:9.1.2", "id-plain");
         }
     }
 
@@ -136,9 +141,10 @@ public class ValkeyClusterProcessesTests
         var journal = rig.Etcd.Store["/valkeyworker/work/tlsfirst"].Value;
         journal.Should().Contain("\"migrate-tls\"").And.Contain("\"done\"");
         journal.Should().NotContain("supervis");
-        // Контейнер пересоздан с TLS-args (миграция T2).
+        // Контейнер пересоздан с cmd-обёрткой TLS (миграция T2, env-модель).
         rig.Driver.Ensured.Should().ContainSingle();
-        rig.Driver.Ensured[0].Args.Should().Contain("--tls-port");
+        rig.Driver.Ensured[0].Args.Should().HaveCount(3);
+        rig.Driver.Ensured[0].Args[2].Should().Contain("--tls-port");
     }
 
     [Fact]

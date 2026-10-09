@@ -30,16 +30,22 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
 
     private readonly IContainer _etcd;
     private readonly IContainer _worker;
+    private readonly IContainer? _worker2; // двухинстансный контур (StartTwoAsync)
+    private readonly IContainer[] _workers; // воркеры окружения: 1 или 2 (teardown/телеметрия)
+    private readonly string[] _workerNames; // docker-имена воркеров (ассерт чистоты)
     private readonly INetwork _net;
     private readonly HttpClient _gatewayHttp = new();
 
     private bool _failed;
 
     private readonly string _runId;
+    private readonly int _api1Port;
+    private readonly int? _api2Port; // двухинстансный контур; null — одиночный
 
     private ValkeyE2eEnvironment(
         string slug, string runId, string netName, INetwork net, IContainer etcd, IContainer worker,
-        string etcdEndpoint, string artifactsDir, string apiBaseUrl, string clientPem, string clientKeyPem)
+        string etcdEndpoint, string artifactsDir, string apiBaseUrl, string clientPem, string clientKeyPem,
+        IContainer? worker2 = null, int? api2Port = null)
     {
         Slug = slug;
         _runId = runId;
@@ -47,11 +53,18 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         _net = net;
         _etcd = etcd;
         _worker = worker;
+        _worker2 = worker2;
+        _workers = worker2 is null ? [worker] : [worker, worker2];
+        _workerNames = worker2 is null
+            ? [$"vwk-ew-{runId}"]
+            : [$"vwk-ew1-{runId}", $"vwk-ew2-{runId}"];
         EtcdEndpoint = etcdEndpoint;
         ArtifactsDir = artifactsDir;
         ApiBaseUrl = apiBaseUrl;
         Gateway = new EtcdGateway(_gatewayHttp);
         (ClientPem, ClientKeyPem) = (clientPem, clientKeyPem);
+        _api1Port = new Uri(apiBaseUrl).Port;
+        _api2Port = api2Port;
     }
 
     public string Slug { get; }
@@ -63,6 +76,37 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
 
     /// <summary>База API воркера (https://localhost:{динамический порт}).</summary>
     public string ApiBaseUrl { get; }
+
+    // ── Двухинстансный контур (StartTwoAsync): базовые URL/порты/имена ОБИХ
+    // воркеров — основа резолва держателя клэйма (порт из claims.instance →
+    // api-ключ → url → сопоставление с Api1/Api2Port). В одиночном контуре
+    // (StartAsync) Api1* дублирует ApiBaseUrl, вторые члены — исключение.
+
+    /// <summary>База API первого воркера (vwk-ew1): в одиночном — сам контур.</summary>
+    public string Api1BaseUrl => ApiBaseUrl;
+
+    /// <summary>Хост-порт API первого воркера (резолв держателя клэйма).</summary>
+    public int Api1Port => _api1Port;
+
+    /// <summary>База API второго воркера (vwk-ew2) — только StartTwoAsync.</summary>
+    public string Api2BaseUrl
+        => _api2Port is { } port
+            ? $"https://localhost:{port}"
+            : throw new InvalidOperationException("второго API нет: окружение поднято StartAsync (одиночный контур)");
+
+    /// <summary>Хост-порт API второго воркера — только StartTwoAsync.</summary>
+    public int Api2Port
+        => _api2Port
+           ?? throw new InvalidOperationException("второго API нет: окружение поднято StartAsync (одиночный контур)");
+
+    /// <summary>Docker-имя первого воркера (vwk-ew1-{runId}; одиночный — vwk-ew).</summary>
+    public string Worker1Name => _workerNames[0];
+
+    /// <summary>Docker-имя второго воркера (vwk-ew2-{runId}) — только StartTwoAsync.</summary>
+    public string Worker2Name
+        => _worker2 is null
+            ? throw new InvalidOperationException("второго воркера нет: окружение поднято StartAsync (одиночный контур)")
+            : _workerNames[1];
 
     public string ClusterTag => _runId[..8];
 
@@ -167,6 +211,123 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         }
     }
 
+    /// <summary>Подъём ДВУХИНСТАНСНОГО контура (spec t20 §5.2): тот же каркас,
+    /// что StartAsync (TLS-пакет, сеть, etcd, образ, retry), но ДВА контейнера
+    /// vwk-ew1/ew2-{runId} с общими TLS/etcd/PortRange (гонки portalloc закрывает
+    /// клэйм кластера) и УНИКАЛЬНЫМ Api__AdvertiseUrl каждому (одинаковые URL
+    /// гасят оба дискавери-ключа). Ускоренные циклы/пороги — env-оверрайдами.
+    /// Поведение одиночного StartAsync не меняется.</summary>
+    public static async Task<ValkeyE2eEnvironment> StartTwoAsync(string slug)
+    {
+        if (Environment.GetEnvironmentVariable("PGW_TEST_DOCKER") != "1")
+            throw new InvalidOperationException("E2E требует PGW_TEST_DOCKER=1 (иначе Skip в тесте)");
+
+        var runId = Guid.NewGuid().ToString("N");
+        var artifactsDir = Path.Combine(Path.GetTempPath(), $"pgw-e2e-artifacts-{runId}");
+        Directory.CreateDirectory(Path.Combine(artifactsDir, "tls"));
+
+        // Статический ассет процесса: образ valkeyworker:e2e (Release из Dockerfile).
+        await BuildImageAsync();
+
+        // TLS-пакет окружения: self-signed CA + server + client (PEM в артефакты);
+        // пакет ОБЩИЙ для обоих инстансов — один mTLS-клиент годит обоим
+        // (спека t20 §8 — mTLS-клиент к выжившему).
+        var (caPem, caKeyPem) = GenerateCa("vwk-e2e");
+        var (serverCert, serverKey) = IssueCert(caPem, caKeyPem, "valkeyworker");
+        var (clientCert, clientKey) = IssueCert(caPem, caKeyPem, "e2e-client");
+        var tlsDir = Path.Combine(artifactsDir, "tls");
+        await File.WriteAllTextAsync(Path.Combine(tlsDir, "ca.pem"), caPem);
+        await File.WriteAllTextAsync(Path.Combine(tlsDir, "server.crt"), serverCert);
+        await File.WriteAllTextAsync(Path.Combine(tlsDir, "server.key"), serverKey);
+        await File.WriteAllTextAsync(Path.Combine(tlsDir, "client.key"), clientKey);
+
+        for (var attempt = 1; ; attempt++)
+        {
+            var netName = $"vwk-en-{runId}";
+            var net = new NetworkBuilder().WithName(netName).Build();
+            var etcdPort = FreePort();
+            var etcd = new ContainerBuilder(EtcdImage)
+                .WithName($"vwk-ee-{runId}")
+                .WithPortBinding(etcdPort, 2379)
+                .WithCommand("etcd", "--name=test", "--data-dir=/etcd-data",
+                    "--listen-client-urls=http://0.0.0.0:2379",
+                    "--advertise-client-urls=http://127.0.0.1:2379")
+                .Build();
+            var api1Port = FreePort();
+            var api2Port = FreePort();
+            var portRange = ValkeyWorker.IntegrationTests.Valkey.FreePortWindow.Find();
+
+            IContainer WorkerContainer(int apiPort, string name)
+                => new ContainerBuilder(WorkerImage)
+                    .WithName(name)
+                    .WithNetwork(net)
+                    .WithPortBinding(apiPort, 8080)
+                    .WithBindMount("/var/run/docker.sock", "/var/run/docker.sock")
+                    .WithBindMount(tlsDir, "/tls")
+                    .WithEnvironment(new Dictionary<string, string>
+                    {
+                        ["ValkeyWorker__Etcd__Endpoints__0"] = $"http://host.docker.internal:{etcdPort}",
+                        ["ValkeyWorker__AdvertisedClientHost"] = "host.docker.internal",
+                        // Уникальный AdvertiseUrl каждому инстансу (t07): одинаковые
+                        // URL гасят оба дискавери-ключа.
+                        ["ValkeyWorker__Api__AdvertiseUrl"] = $"https://host.docker.internal:{apiPort}",
+                        ["ValkeyWorker__Docker__PortRange__From"] = portRange.From.ToString(),
+                        ["ValkeyWorker__Docker__PortRange__To"] = (portRange.From + 64).ToString(),
+                        ["VWK_API_TLS_CERT_PATH"] = "/tls/server.crt",
+                        ["VWK_API_TLS_KEY_PATH"] = "/tls/server.key",
+                        ["VWK_API_TLS_CLIENT_CA_PATH"] = "/tls/ca.pem",
+                        // Ускоренные циклы/пороги takeover-сценария (spec §3 — env-оверрайды,
+                        // §12-Р2): тик держателя 1 с, бут ноды ≤100 с.
+                        ["ValkeyWorker__Loops__ScanIntervalSec"] = "1",
+                        ["ValkeyWorker__Loops__KeepaliveSec"] = "1",
+                        ["ValkeyWorker__Loops__ErrorDelayMs"] = "500",
+                        ["ValkeyWorker__Thresholds__NodeBootSec"] = "100",
+                    })
+                    .WithExtraHost("host.docker.internal", "host-gateway")
+                    .Build();
+
+            var worker1 = WorkerContainer(api1Port, $"vwk-ew1-{runId}");
+            var worker2 = WorkerContainer(api2Port, $"vwk-ew2-{runId}");
+
+            try
+            {
+                await net.CreateAsync();
+                await etcd.StartAsync();
+                await worker1.StartAsync();
+                await worker2.StartAsync();
+                var environment = new ValkeyE2eEnvironment(slug, runId, netName, net, etcd, worker1,
+                    $"http://localhost:{etcdPort}", artifactsDir,
+                    $"https://localhost:{api1Port}", clientCert, clientKey,
+                    worker2, api2Port);
+                await environment.WriteAsync("README-cleanup.txt",
+                    "# Зачистка окружения прогона (own-only):\n"
+                    + $"docker rm -f vwk-ew1-{runId} vwk-ew2-{runId} vwk-ee-{runId}\n"
+                    + $"docker ps -aq --filter name=vwk-{environment.ClusterTag} | xargs -r docker rm -f\n"
+                    + $"docker volume ls -q --filter name=vwk-{environment.ClusterTag} | xargs -r docker volume rm -f\n"
+                    + $"docker network rm {netName}\n");
+                return environment;
+            }
+            catch (Exception ex) when (attempt < 3
+                && ex.Message.Contains("network", StringComparison.OrdinalIgnoreCase))
+            {
+                // ретрай только на распознанную гонку сети — подъём заново
+                await SafeStopAsync(worker2, remove: true);
+                await SafeStopAsync(worker1, remove: true);
+                await SafeStopAsync(etcd, remove: true);
+                try { await net.DeleteAsync(); } catch { /* уже нет */ }
+                continue;
+            }
+            catch (Exception)
+            {
+                await SafeStopAsync(worker2, remove: true);
+                await SafeStopAsync(worker1, remove: true);
+                await SafeStopAsync(etcd, remove: true);
+                try { await net.DeleteAsync(); } catch { /* уже нет */ }
+                throw;
+            }
+        }
+    }
+
     private static async Task BuildImageAsync()
     {
         if (Environment.GetEnvironmentVariable("PGW_TEST_E2E_NOBUILD") == "1")
@@ -195,6 +356,68 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
             ?? throw new InvalidOperationException("корень репо (docker/ValkeyWorker.Dockerfile) не найден");
     }
 
+    // ── Хелперы docker-CLI (канон KafkaE2eEnvironment.RunProcessAsync:
+    // таймаут убивает дерево, вывод — в исключение) ──
+
+    /// <summary>docker-CLI: вывод stdout; ненулевой exit/таймаут — исключение
+    /// с выводом процесса (зависший процесс умирает по бюджету 2 мин).</summary>
+    public Task<string> RunDockerAsync(IReadOnlyList<string> args, CancellationToken ct)
+        => RunProcessAsync("docker", [.. args], ct, TimeSpan.FromMinutes(2));
+
+    private static async Task<string> RunProcessAsync(
+        string file, string[] args, CancellationToken ct, TimeSpan timeout)
+    {
+        var psi = new ProcessStartInfo(file, args)
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        using var process = Process.Start(psi)
+            ?? throw new ApplicationException($"не удалось запустить {file}");
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(timeout);
+        // Оба потока параллельно и БЕЗ токена бюджета: при kill по бюджету пайпы
+        // закрываются и накопленный вывод доступен (канон E2eFixture).
+        var outTask = process.StandardOutput.ReadToEndAsync();
+        var errTask = process.StandardError.ReadToEndAsync();
+        try
+        {
+            await process.WaitForExitAsync(timeoutCts.Token);
+            var output = await outTask;
+            var error = await errTask;
+            if (process.ExitCode != 0)
+                throw new ApplicationException($"{file} {string.Join(' ', args)} → {process.ExitCode}: {error.Trim()}");
+            return output.Trim();
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Бюджет исчерпан: убиваем дерево, вывод — в диагностику.
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+                // процесс мог уже выйти
+            }
+
+            var drained = "";
+            try
+            {
+                drained = string.Join("", await Task.WhenAll(outTask, errTask).WaitAsync(TimeSpan.FromSeconds(5)));
+            }
+            catch (TimeoutException)
+            {
+                // пайп завис — вывод недоступен
+            }
+
+            throw new ApplicationException(
+                $"{file} {string.Join(' ', args)} не завершился за {timeout.TotalSeconds:0} c — убит; хвост:\n{drained}");
+        }
+    }
+
     // mTLS-клиент API (клиентский серт окружения — от per-install CA;
     // PFX round-trip — macOS SslStream требует экспортируемый ключ).
     public HttpClient CreateApiHttpClient()
@@ -212,6 +435,26 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
             },
         })
         { BaseAddress = new Uri(ApiBaseUrl) };
+    }
+
+    // Перегрузка для двухинстансного контура (спека t20 §8 — mTLS-клиент к выжившему): тот же mTLS-клиент
+    // (TLS-пакет общий — один клиент годится ЛЮБОМУ из двух инстансов), но с
+    // заданным BaseAddress (базовый URL выжившего резолвится по факту kill).
+    public HttpClient CreateApiHttpClient(string baseUrl)
+    {
+        var pemCert = X509Certificate2.CreateFromPem(ClientPem, ClientKeyPem);
+        var clientCert = X509CertificateLoader.LoadPkcs12(
+            pemCert.Export(X509ContentType.Pkcs12), null);
+        return new HttpClient(new SocketsHttpHandler
+        {
+            SslOptions = new()
+            {
+                EnabledSslProtocols = System.Security.Authentication.SslProtocols.Tls12,
+                ClientCertificates = [clientCert],
+                RemoteCertificateValidationCallback = (_, _, _, _) => true, // self-signed e2e-CA
+            },
+        })
+        { BaseAddress = new Uri(baseUrl) };
     }
 
     // docker-факт: имя живого контейнера окружения (префикс/тег прогона).
@@ -244,7 +487,8 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         return process.ExitCode == 0 ? output.Trim() : string.Empty;
     }
 
-    // Факт существования named volume (точное имя) — чистота X1 (t06).
+    // Факт существования named volume (точное имя) — в env-модели используется
+    // как проверка ОТСУТСТВИЯ тома (per-cluster TLS-тома не создаётся).
     public async Task<bool> VolumeExistsAsync(string name)
     {
         var inspect = new ProcessStartInfo("docker", $"volume inspect {name}")
@@ -259,10 +503,11 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
     }
 
     // Телеметрия (docs/e2e-launch.md §1): docker-логи+inspect всех контейнеров
-    // окружения — ДО любого удаления; вызывается в teardown и на slow-phase.
+    // окружения (воркеры — 1 или 2 + etcd) — ДО любого удаления; вызывается в
+    // teardown и на slow-phase.
     public async Task CollectDiagnosticsAsync(string mark)
     {
-        foreach (var name in new[] { $"vwk-ew-{_runId}", $"vwk-ee-{_runId}" })
+        foreach (var name in _workerNames.Append($"vwk-ee-{_runId}"))
         {
             await ShellToFileAsync("docker", $"logs --tail 2000 {name}",
                 Path.Combine(ArtifactsDir, $"container-{name}-{mark}.log"));
@@ -326,19 +571,22 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         {
             // docs/e2e-launch.md §3: упавший сценарий — контейнеры ОСТАНОВИТЬ,
             // не удалить (тома/сети/etcd остаются для разбора).
-            await SafeStopAsync(_worker, remove: false);
+            foreach (var worker in _workers)
+                await SafeStopAsync(worker, remove: false);
             await SafeStopAsync(_etcd, remove: false);
             return;
         }
 
-        await SafeStopAsync(_worker, remove: true);
+        foreach (var worker in _workers)
+            await SafeStopAsync(worker, remove: true);
         await SafeStopAsync(_etcd, remove: true);
         try { await _net.DeleteAsync(); } catch { /* уже нет */ }
         _gatewayHttp.Dispose();
 
         // Ассерт чистоты: ни контейнера, ни сети, ни тома своего окружения
-        // (тома vwk-<C>-tls — X1 демонтажа, t06).
-        foreach (var name in new[] { $"vwk-ew-{_runId}", $"vwk-ee-{_runId}" })
+        // (томов тега быть не должно — per-cluster TLS-том в env-модели не
+        // создаётся); двухинстансный контур проверяет ОБА имени воркеров.
+        foreach (var name in _workerNames.Append($"vwk-ee-{_runId}"))
         {
             var inspect = new ProcessStartInfo("docker", $"inspect {name}")
             { RedirectStandardOutput = true, RedirectStandardError = true };

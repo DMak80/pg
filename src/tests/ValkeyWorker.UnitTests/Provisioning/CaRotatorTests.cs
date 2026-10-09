@@ -30,7 +30,6 @@ public class CaRotatorTests
         public Fakes.FakeValkeyConnection Valkey = new() { TrustAnyPassword = true };
         public ClaimStore Claims = null!;
         public WorkJournal Journal = null!;
-        public ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner Tls = null!;
         public List<string> Snapshots = [];
         public ValkeyWorker.Provisioning.Processes.CaRotator Rotator = null!;
 
@@ -39,10 +38,9 @@ public class CaRotatorTests
             var rig = new Rig();
             rig.Claims = new ClaimStore("/valkeyworker", ["http://etcd:2379"], rig.Etcd, TimeProvider.System);
             rig.Journal = new WorkJournal("/valkeyworker", rig.Etcd, ["http://etcd:2379"]);
-            rig.Tls = new ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner(rig.Driver, Image, Clock);
             rig.Rotator = new ValkeyWorker.Provisioning.Processes.CaRotator(
                 rig.Etcd, ["http://etcd:2379"], rig.Driver, rig.Claims, rig.Journal,
-                rig.Tls, rig.Valkey, Options,
+                rig.Valkey, Options,
                 async _ =>
                 {
                     rig.Snapshots.Add("shot");
@@ -52,8 +50,9 @@ public class CaRotatorTests
             return rig;
         }
 
-        // Канонический TLS-кластер (миграция T уже отработала): креды, CA-ключи,
-        // endpoints, portalloc, контейнер с TLS-args, клэйм наш.
+        // Канонический TLS-кластер на env-модели (миграция T уже отработала):
+        // креды, CA-ключи, endpoints, portalloc, контейнер с env VALKEY_TLS_*
+        // (серт текущего CA), клэйм наш.
         public string SeedTls(string cluster, int port = 17001)
         {
             Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken).GetAwaiter().GetResult();
@@ -71,7 +70,10 @@ public class CaRotatorTests
             Etcd.Seed($"/valkeyworker/portalloc/{cluster}", "{\"node1\":{\"host\":\"h1\",\"client\":" + port + "}}");
             Driver.Containers[$"vwk-{cluster}-node1"] =
                 new Fakes.FakeDriver.ContainerFact("h1", port, 2m, 1024L * 1024 * 1024,
-                    ["valkey-server", "--tls-port", "6379", "--port", "0"], Image, "id-tls");
+                    ["valkey-server", "--tls-port", "6379", "--port", "0"],
+                    ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner.BuildNodeTlsEnv(
+                        caPem, caKeyPem, "node1", "localhost"),
+                    Image, "id-tls");
             return caPem;
         }
 
@@ -82,6 +84,17 @@ public class CaRotatorTests
             Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken).GetAwaiter().GetResult();
             Etcd.Seed($"/valkey/clusters/{cluster}/config",
                 """{"nodes":1,"maxmemory_bytes":536870912,"maxmemory_policy":"allkeys-lru","created_unix":1756500000}""");
+        }
+
+        // Подмена env живого контейнера (факт R-детекта): серт от указанной CA.
+        public void EnsureNodeEnv(string cluster, string caPem, string caKeyPem)
+        {
+            var name = $"vwk-{cluster}-node1";
+            Driver.Containers[name] = Driver.Containers[name] with
+            {
+                Env = ValkeyWorker.Provisioning.Processes.NodeTlsProvisioner.BuildNodeTlsEnv(
+                    caPem, caKeyPem, "node1", "localhost"),
+            };
         }
 
         // Ручное открытие окна (посев staging ca_next_*): K0.3 срабатывает по
@@ -302,8 +315,7 @@ public class CaRotatorTests
         rig.SeedTicket("c9");
         var (nextPem, nextKey) = rig.SeedWindow("c9");
         rig.Put("/valkey/clusters/c9/ca_pem", oldPem + "\n" + nextPem);
-        await rig.Tls.EnsureNodeTlsAsync("c9", "node1", "h1", "localhost",
-            nextPem, nextKey, TestContext.Current.CancellationToken); // R: факт-детект true
+        rig.EnsureNodeEnv("c9", nextPem, nextKey); // R: факт-детект true (env = NEW)
         var revisionBefore = rig.Etcd.Store["/valkey/clusters/c9/ca_pem"].ModRevision;
         rig.Etcd.TxnFault = req => req.Success.Count >= 5
             ? Result<Shared.Etcd.Client.TxnResult>.Failed(new ApplicationException("инжект: отказ C-txn"))
@@ -354,7 +366,7 @@ public class CaRotatorTests
         rig.SeedTicket("r1");
 
         // Act — ОДИН тик проводит весь цикл (nodes=1: «rolling» = одно
-        // пересоздание; EnsureNodeTls кладёт серт NEW в volume)
+        // пересоздание; R кладёт серт NEW в env контейнера)
         var outcome = await rig.Rotator.RunAsync(rig.Snapshot("r1"), TestContext.Current.CancellationToken);
 
         // Assert — коммит: ca_pem/ca_key = NEW, staging/заявка удалены, done
@@ -372,16 +384,14 @@ public class CaRotatorTests
     [Fact]
     public async Task PhaseR_FactDetect_ValidNewTar_SkipsRecreate()
     {
-        // Arrange — staging есть, bundle есть, серт NEW УЖЕ в volume (рестарт
-        // воркера посреди R): факт-детект обязан пропустить пересоздание
+        // Arrange — staging есть, bundle есть, серт NEW УЖЕ в env контейнера
+        // (рестарт воркера посреди R): факт-детект обязан пропустить пересоздание
         var rig = Rig.Create();
         var oldPem = rig.SeedTls("r2");
         rig.SeedTicket("r2");
         var (nextPem, nextKey) = rig.SeedWindow("r2");
         rig.Put("/valkey/clusters/r2/ca_pem", oldPem + "\n" + nextPem);
-        var ensured = await rig.Tls.EnsureNodeTlsAsync("r2", "node1", "h1", "localhost",
-            nextPem, nextKey, TestContext.Current.CancellationToken);
-        ensured.IsSuccess.Should().BeTrue(ensured.Error?.Message);
+        rig.EnsureNodeEnv("r2", nextPem, nextKey); // серт NEW уже в env контейнера
         rig.Driver.Removed.Clear();
         var containerBefore = rig.Driver.Containers[$"vwk-r2-node1"].Id;
 
@@ -398,7 +408,7 @@ public class CaRotatorTests
     [Fact]
     public async Task PhaseR_RecreatesNode_FromNewCa_ThenBoots()
     {
-        // Arrange — staging+bundle есть, серт в volume — OLD (факт-детект
+        // Arrange — staging+bundle есть, серт в env — OLD (факт-детект
         // false); декларация ресурсов node1 — для ассерта лимитов (spec §7.1:
         // «порт/лимиты из portalloc/декларации»)
         var rig = Rig.Create();
@@ -408,15 +418,14 @@ public class CaRotatorTests
         rig.SeedTicket("r3");
         var (nextPem, nextKey) = rig.SeedWindow("r3");
         rig.Put("/valkey/clusters/r3/ca_pem", oldPem + "\n" + nextPem);
-        await rig.Tls.EnsureNodeTlsAsync("r3", "node1", "h1", "localhost",
-            oldPem, rig.Get("/valkey/clusters/r3/ca_key")!, TestContext.Current.CancellationToken);
 
         // Act
         var outcome = await rig.Rotator.RunAsync(rig.Snapshot("r3"), TestContext.Current.CancellationToken);
 
         // Assert — пересоздание: RemoveNode+EnsureNode звались с портом из
-        // portalloc (ClientHostPort=17005) и лимитами из декларации
-        // (CpuCores=2, MemoryBytes=1Gi); state RUNNING; PING — якорь NEW.
+        // portalloc (ClientHostPort=17005), лимитами из декларации
+        // (CpuCores=2, MemoryBytes=1Gi) и env от ca_next_* (VALKEY_TLS_CA ==
+        // NEW, НЕ bundle); state RUNNING; PING — якорь NEW.
         // Removed содержит ПОЛНОЕ имя контейнера («vwk-r3-node1»), не «node1»
         // (FakeDriver.RemoveNodeAsync → PlainClusterDriver.NodeName).
         outcome.Value.Should().Be(ValkeyWorker.Provisioning.Processes.CaRotator.RotationOutcome.InProgress);
@@ -426,7 +435,10 @@ public class CaRotatorTests
             && s.ClientHostPort == 17005
             && s.CpuCores == 2m
             && s.MemoryBytes == 1024L * 1024 * 1024
-            && s.TlsVolume == ValkeyWorker.Docker.Drivers.PlainClusterDriver.TlsVolumeName("r3"));
+            && s.Env != null
+            && s.Env["VALKEY_TLS_CA"] == nextPem
+            && s.Env.ContainsKey("VALKEY_TLS_CERT")
+            && s.Env.ContainsKey("VALKEY_TLS_KEY"));
         rig.Get("/valkey/clusters/r3/nodes/node1/state").Should().Be("RUNNING");
         rig.Valkey.LastCaPem.Should().Be(nextPem, "AwaitBoot — якорь NEW (одноблочный парсер)");
     }
@@ -465,8 +477,7 @@ public class CaRotatorTests
         rig.SeedTicket("r5");
         var (nextPem, nextKey) = rig.SeedWindow("r5");
         rig.Put("/valkey/clusters/r5/ca_pem", oldPem + "\n" + nextPem);
-        await rig.Tls.EnsureNodeTlsAsync("r5", "node1", "h1", "localhost",
-            nextPem, nextKey, TestContext.Current.CancellationToken);
+        rig.EnsureNodeEnv("r5", nextPem, nextKey); // R: факт-детект true
         rig.Etcd.OnTxnBeforeCompare = req =>
         {
             if (req.Success.Count(o => o is TxnOp.Put) >= 2)
@@ -494,8 +505,7 @@ public class CaRotatorTests
         var oldPem = rig.SeedTls("r6");
         var (nextPem, nextKey) = rig.SeedWindow("r6");
         rig.Put("/valkey/clusters/r6/ca_pem", oldPem + "\n" + nextPem);
-        await rig.Tls.EnsureNodeTlsAsync("r6", "node1", "h1", "localhost",
-            nextPem, nextKey, TestContext.Current.CancellationToken);
+        rig.EnsureNodeEnv("r6", nextPem, nextKey); // R: факт-детект true
 
         // Act — заявки нет, но окно открыто (staging): доигрывание до C
         var outcome = await rig.Rotator.RunAsync(rig.Snapshot("r6"), TestContext.Current.CancellationToken);

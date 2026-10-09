@@ -6,8 +6,8 @@ namespace ValkeyWorker.IntegrationTests.Valkey;
 
 // TlsMigrator на реальном valkey/valkey:9.1.2 (t06, spec §4.9): премиграционный
 // plain-контейнер (аргументы старого канона, ca-ключей нет) → тик мигратора →
-// контейнер пересоздан с каноническими TLS-args на ТОМ ЖЕ host-порту, volume
-// vwk-<C>-tls записан, ca_pem/ca_key появились, PING по TLS отвечает, journal
+// контейнер пересоздан с cmd-обёрткой TLS-канона и env VALKEY_TLS_* на ТОМ ЖЕ
+// host-порту, ca_pem/ca_key появились, PING по TLS отвечает, journal
 // op=migrate-tls доведён до done; повторный тик — NotNeeded (контейнер не тронут).
 [Collection(ValkeyClusterCollection.Name)]
 public class TlsMigrationTests(ValkeyClusterFixture fx)
@@ -16,7 +16,7 @@ public class TlsMigrationTests(ValkeyClusterFixture fx)
     public async Task PlainCluster_MigratesToTls()
     {
         // Arrange: симуляция премиграционного кластера — заявка, portalloc,
-        // контейнер СТАРЫМ каноном вручную (args без TLS-хвоста, без volume),
+        // контейнер СТАРЫМ каноном вручную (args без TLS-хвоста, без env),
         // endpoints/state проставлены руками, ca-ключей НЕТ.
         var cluster = fx.Cluster("tlsmig");
         await fx.SeedClusterAsync(cluster);
@@ -35,7 +35,7 @@ public class TlsMigrationTests(ValkeyClusterFixture fx)
         var port = fx.NextPort();
         await fx.PutAsync($"/valkeyworker/portalloc/{cluster}",
             "{\"node1\":{\"host\":\"local\",\"client\":" + port + "}}");
-        // Контейнер старым каноном: args БЕЗ TLS-хвоста, TlsVolume: null.
+        // Контейнер старым каноном: args БЕЗ TLS-хвоста, env VALKEY_TLS_* нет.
         var plainArgs = NodeArgsBuilder.Build(
             536870912, "allkeys-lru", ensured.Value.AdminPassword, ensured.Value.AppPassword)
             .TakeWhile((arg, i) => arg != "--tls-port").ToArray();
@@ -53,29 +53,32 @@ public class TlsMigrationTests(ValkeyClusterFixture fx)
         // Act: тик мигратора.
         var migrator = new TlsMigrator(
             fx.Gateway, [fx.Endpoint], fx.Driver, claims, fx.NewJournal(),
-            fx.NewSecretEnsurer(), fx.NewTlsProvisioner(),
+            fx.NewSecretEnsurer(),
             new ValkeyWorker.Core.Valkey.ValkeyConnection(TimeSpan.FromSeconds(2)),
             fx.Options);
         var outcome = await migrator.RunAsync(await fx.RequireSnapshotAsync(cluster), ct);
 
-        // Assert: InProgress; контейнер пересоздан (Id сменился) с TLS-args;
-        // host-порт ТОТ ЖЕ; volume записан; ca_pem появился; PING по TLS;
-        // journal op=migrate-tls → done.
+        // Assert: InProgress; контейнер пересоздан (Id сменился) с cmd-обёрткой
+        // TLS-канона и env VALKEY_TLS_*; host-порт ТОТ ЖЕ; ca_pem появился;
+        // PING по TLS; journal op=migrate-tls → done.
         outcome.IsSuccess.Should().BeTrue(outcome.Error?.Message);
         outcome.Value.Should().Be(TlsMigrator.MigrationOutcome.InProgress);
         var idAfter = ContainerId($"vwk-{cluster}-node1");
         idAfter.Should().NotBe(idBefore, "контейнер пересоздан (не рестартнут)");
         var args = (await fx.Driver.NodeArgsAsync(cluster, "node1", ct)).Value!;
-        args.Should().Contain("--tls-port").And.Contain("--port");
-        args[args.ToList().IndexOf("--port") + 1].Should().Be("0");
+        args.Should().HaveCount(3);
+        args[0].Should().Be("sh");
+        args[1].Should().Be("-c");
+        args[2].Should().Contain("'--tls-port' '6379'").And.Contain("'--port' '0'");
         var endpoints = (await fx.GetAsync($"/valkey/clusters/{cluster}/endpoints"))!;
         int.Parse(endpoints.Split(':')[1]).Should().Be(port, "portalloc не меняется");
-        var tar = (await fx.Driver.GetTlsArchiveAsync(cluster, ValkeyClusterFixture.DockerHost, fx.Options.NodeImage, ct)).Value;
-        tar.Should().NotBeNull();
-        TarArchive.Read(tar!)
-            .Keys.Should().BeEquivalentTo("node.crt", "node.key", "ca.pem");
         var caPem = (await fx.GetAsync($"/valkey/clusters/{cluster}/ca_pem"))!;
         caPem.Should().Contain("BEGIN CERTIFICATE");
+        // env-модель: контейнер несёт VALKEY_TLS_{CERT,KEY,CA}; CA == ca_pem.
+        var nodeEnv = await fx.Driver.NodeEnvAsync(cluster, "node1", ct);
+        nodeEnv.Value.Should().NotBeNull();
+        nodeEnv.Value.Should().ContainKeys("VALKEY_TLS_CERT", "VALKEY_TLS_KEY", "VALKEY_TLS_CA");
+        nodeEnv.Value!["VALKEY_TLS_CA"].Trim().Should().Be(caPem.Trim(), "CA env == ca_pem миграции");
         var ping = RespProbe.ExecuteTls("localhost", port, "admin", ensured.Value.AdminPassword, caPem, "PING");
         ping.Ok.Should().BeTrue(ping.Error);
         var journal = (await fx.GetAsync($"/valkeyworker/work/{cluster}"))!;
@@ -89,9 +92,9 @@ public class TlsMigrationTests(ValkeyClusterFixture fx)
     }
 
     [Fact]
-    public async Task Deprovision_AfterMigration_CleansVolumeAndKeys()
+    public async Task Deprovision_AfterMigration_CleansClusterAndKeys()
     {
-        // Arrange: plain-кластер → миграция (volume+ca-ключи) → демонтаж.
+        // Arrange: plain-кластер → миграция (env+ca-ключи) → демонтаж.
         var cluster = fx.Cluster("tlsdep");
         await fx.SeedClusterAsync(cluster);
         var claims = fx.NewClaimStore();
@@ -115,12 +118,11 @@ public class TlsMigrationTests(ValkeyClusterFixture fx)
 
         var migrator = new TlsMigrator(
             fx.Gateway, [fx.Endpoint], fx.Driver, claims, fx.NewJournal(),
-            fx.NewSecretEnsurer(), fx.NewTlsProvisioner(),
+            fx.NewSecretEnsurer(),
             new ValkeyWorker.Core.Valkey.ValkeyConnection(TimeSpan.FromSeconds(2)),
             fx.Options);
         (await migrator.RunAsync(await fx.RequireSnapshotAsync(cluster), ct))
             .IsSuccess.Should().BeTrue();
-        (await fx.Driver.GetTlsArchiveAsync(cluster, ValkeyClusterFixture.DockerHost, fx.Options.NodeImage, ct)).Value.Should().NotBeNull();
 
         // Act: демонтаж X0–X3 (TO_REMOVE + тик депровижининга).
         await fx.PutAsync($"/valkey/clusters/{cluster}/config",
@@ -128,11 +130,10 @@ public class TlsMigrationTests(ValkeyClusterFixture fx)
         var deprovision = fx.NewDeprovisioning(claims, fx.NewJournal());
         var result = await deprovision.TickAsync(await fx.RequireSnapshotAsync(cluster), ct);
 
-        // Assert: ни контейнера, НЕТ volume vwk-<C>-tls, пустой префикс etcd.
+        // Assert: ни контейнера, пустой префикс etcd (TLS-тома в модели нет;
+        // env-ассерты чистоты — этап Э4).
         result.IsSuccess.Should().BeTrue(result.Error?.Message);
         (await fx.Driver.ListNodeObjectsAsync(cluster, ct)).Value.Should().BeEmpty();
-        (await fx.Driver.GetTlsArchiveAsync(cluster, ValkeyClusterFixture.DockerHost, fx.Options.NodeImage, ct)).Value.Should().BeNull(
-            "TLS-volume удалён демонтажем (X1)");
         var prefix = await fx.Gateway.RangeAsync(fx.Endpoint, $"/valkey/clusters/{cluster}/", ct);
         prefix.Value.Should().BeEmpty();
     }

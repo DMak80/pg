@@ -15,7 +15,8 @@ namespace ValkeyWorker.Provisioning.Processes;
 /// без --tls-port). Фазы: T0 journal-before-manipulations + снапшот «до»;
 /// T1 ensure CA+кредов (txn put-if-absent) + перечитка config (гонка
 /// TO_REMOVE — abort); T2 пересоздание контейнера с каноническими TLS-args
-/// (серт в volume, порт/лимиты те же — portalloc не меняется); T3 PING по TLS
+/// (env со свежим сертом + cmd-обёртка, порт/лимиты те же — portalloc не
+/// меняется); T3 PING по TLS
 /// (бюджет NodeBootSec, цикл 100 мс) → state=RUNNING, снапшот «после», journal
 /// done. Идемпотентность по факту: канонический кластер → NotNeeded;
 /// отработавший миграцию кластер неотличим от поднятого канонически.
@@ -28,7 +29,6 @@ public sealed class TlsMigrator(
     ClaimStore claims,
     WorkJournal journal,
     IClusterSecretEnsurer secrets,
-    NodeTlsProvisioner tlsProvisioner,
     IValkeyConnection valkey,
     ValkeyProvisioningOptions options,
     Func<CancellationToken, Task<Result>>? snapshot = null,
@@ -50,9 +50,12 @@ public sealed class TlsMigrator(
     /// <summary>
     /// Чистый детект премиграционного кластера (arch/21 §5 T): ca_pem/ca_key в
     /// etcd отсутствуют ИЛИ живой контейнер собран без --tls-port (старый канон).
+    /// Args живого контейнера — cmd-обёртка ["sh","-c","…--tls-port…"], поэтому
+    /// детект — по вхождению подстроки в элементы, не точное равенство.
     /// </summary>
     public static bool NeedsMigration(ValkeyClusterSnapshot snap, IReadOnlyList<string>? liveNodeArgs)
-        => snap.CaPem is null || snap.CaKey is null || liveNodeArgs?.Contains("--tls-port") != true;
+        => snap.CaPem is null || snap.CaKey is null
+           || liveNodeArgs?.Any(a => a.Contains("--tls-port", StringComparison.Ordinal)) != true;
 
     public async Task<Result<MigrationOutcome>> RunAsync(ValkeyClusterSnapshot snap, CancellationToken ct)
     {
@@ -113,12 +116,15 @@ public sealed class TlsMigrator(
         if (await ConfigRemovedAsync(cluster, ct))
             return await AbortAsync(cluster);
 
-        // T2: пересоздание контейнера с каноническими TLS-args (серты в volume,
-        // порт/лимиты те же — portalloc не меняется); уже-TLS контейнер не трогаем.
+        // T2: пересоздание контейнера с каноническими TLS-args (env со свежим
+        // сертом + обёртка, порт/лимиты те же — portalloc не меняется);
+        // уже-TLS контейнер не трогаем. Args живого — обёртка: детект
+        // --tls-port по вхождению подстроки (не точное равенство элемента).
         var nodeArgs = await driver.NodeArgsAsync(cluster, "node1", ct);
         if (!nodeArgs.IsSuccess)
             return await FailAsync(cluster, nodeArgs.Error!, "recreated", ct);
-        if (nodeArgs.Value is not { } args || !args.Contains("--tls-port"))
+        if (nodeArgs.Value is not { } args
+            || !args.Any(a => a.Contains("--tls-port", StringComparison.Ordinal)))
         {
             var recreated = await RecreateNodeAsync(snap, ensured.Value, ct);
             if (!recreated.IsSuccess)
@@ -148,8 +154,9 @@ public sealed class TlsMigrator(
             : Result<MigrationOutcome>.Failed(finished.Error!);
     }
 
-    // T2: RecreateNodeAsync — RemoveNode → EnsureNodeTls → EnsureNode с
-    // каноническими TLS-args; лимиты — из декларации; порт — из portalloc.
+    // T2: RecreateNodeAsync — RemoveNode → EnsureNode с env со свежим сертом
+    // и cmd-обёрткой; лимиты — из декларации; порт — из portalloc (тома в
+    // модели нет; осиротевший легаси-том уберёт легаси-чистка надзора).
     private async Task<Result> RecreateNodeAsync(
         ValkeyClusterSnapshot snap, ValkeyCredentials creds, CancellationToken ct)
     {
@@ -172,16 +179,12 @@ public sealed class TlsMigrator(
         if (!removed.IsSuccess)
             return removed;
 
-        var tls = await tlsProvisioner.EnsureNodeTlsAsync(
-            cluster, "node1", address.Host, options.AdvertisedClientHost ?? address.Host,
-            creds.CaPem, creds.CaKey, ct);
-        if (!tls.IsSuccess)
-            return tls;
-
         var ensured = await driver.EnsureNodeAsync(new ValkeyNodeSpec(
-            cluster, "node1", address.Host, address.ClientPort, options.NodeImage, args,
+            cluster, "node1", address.Host, address.ClientPort, options.NodeImage,
+            NodeArgsBuilder.BuildCmd(args),
             limits?.Cpu, limits?.MemBytes,
-            TlsVolume: PlainClusterDriver.TlsVolumeName(cluster)), ct);
+            Env: NodeTlsProvisioner.BuildNodeTlsEnv(
+                creds.CaPem, creds.CaKey, "node1", options.AdvertisedClientHost ?? address.Host)), ct);
         if (!ensured.IsSuccess)
             return ensured;
 

@@ -166,9 +166,6 @@ builder.Services.AddSingleton(sp => new PortAllocHealer(
     sp.GetRequiredService<PortAllocLock>(),
     sp.GetRequiredService<PortAllocIndex>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value)));
-builder.Services.AddSingleton(sp => new NodeTlsProvisioner(
-    sp.GetRequiredService<IClusterDriver>(),
-    ToProvisioningOptions(sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value).NodeImage));
 builder.Services.AddSingleton(sp => new TlsMigrator(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints,
@@ -176,7 +173,6 @@ builder.Services.AddSingleton(sp => new TlsMigrator(
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IClusterSecretEnsurer>(),
-    sp.GetRequiredService<NodeTlsProvisioner>(),
     sp.GetRequiredService<IValkeyConnection>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
@@ -186,7 +182,6 @@ builder.Services.AddSingleton(sp => new CaRotator(
     sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
-    sp.GetRequiredService<NodeTlsProvisioner>(),
     sp.GetRequiredService<IValkeyConnection>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
@@ -199,7 +194,6 @@ builder.Services.AddSingleton(sp => new ProvisioningProcess(
     sp.GetRequiredService<PortAllocLock>(),
     sp.GetRequiredService<PortAllocIndex>(),
     sp.GetRequiredService<IClusterSecretEnsurer>(),
-    sp.GetRequiredService<NodeTlsProvisioner>(),
     sp.GetRequiredService<IValkeyConnection>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value),
     SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
@@ -219,8 +213,7 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IValkeyConnection>(),
     ToProvisioningOptions(sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value),
-    sp.GetRequiredService<PortAllocHealer>(),
-    sp.GetRequiredService<NodeTlsProvisioner>()));
+    sp.GetRequiredService<PortAllocHealer>()));
 builder.Services.AddSingleton(sp => new ConfigConverger(
     sp.GetRequiredService<IValkeyConnection>(),
     sp.GetRequiredService<IEtcdGateway>(),

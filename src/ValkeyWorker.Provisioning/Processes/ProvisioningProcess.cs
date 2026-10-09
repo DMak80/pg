@@ -29,7 +29,6 @@ public sealed class ProvisioningProcess(
     PortAllocLock portLock,
     PortAllocIndex portIndex,
     IClusterSecretEnsurer secrets,
-    NodeTlsProvisioner tlsProvisioner,
     IValkeyConnection valkey,
     ValkeyProvisioningOptions options,
     Func<CancellationToken, Task<Result>>? snapshot = null,
@@ -277,15 +276,16 @@ public sealed class ProvisioningProcess(
                 snap.Config?.MaxmemoryBytes ?? 0, snap.Config?.MaxmemoryPolicy ?? "allkeys-lru",
                 creds.AdminPassword, creds.AppPassword);
 
-            // V3 TLS (t06, arch/21 §2): серт ноды в volume ДО EnsureNodeAsync —
-            // файлы обязаны существовать к старту контейнера (--tls-cert-file).
+            // V3 TLS (env-TLS, arch/21 §2): env со свежим сертом ноды входит в
+            // spec создания; Cmd — детерминированная обёртка раскатки+exec.
+            // Env собирается ЛЕНИВО (ниже, при решении пересоздавать): keygen
+            // RSA-2048 не тратится на валидную ноду в каждом re-run тике.
             var advertised = options.AdvertisedClientHost ?? address.Host;
-            var tls = await tlsProvisioner.EnsureNodeTlsAsync(
-                cluster, node, address.Host, advertised, creds.CaPem, creds.CaKey, ct);
-            if (!tls.IsSuccess)
-                return tls;
+            var cmd = NodeArgsBuilder.BuildCmd(args);
 
-            // Сверка re-run (V3): image + args + порт + лимиты — полное совпадение → пропуск.
+            // Сверка re-run (V3): Cmd-обёртка + порт + лимиты + валидность env —
+            // полное совпадение → пропуск. Env-сверка — последняя (парсинг
+            // серта дороже прочих), только при совпадении Cmd/порта/лимитов.
             var existingArgs = await driver.NodeArgsAsync(cluster, node, ct);
             if (!existingArgs.IsSuccess)
                 return existingArgs.Error!;
@@ -296,16 +296,27 @@ public sealed class ProvisioningProcess(
             if (!existingEndpoint.IsSuccess)
                 return existingEndpoint.Error!;
 
-            var matches = existingArgs.Value is { } liveArgs
-                && liveArgs.SequenceEqual(args)
+            // Дешёвые сверки — до чтения env (docker-вызов): Cmd-обёртка, лимиты, порт.
+            var shapeMatches = existingArgs.Value is { } liveArgs
+                && liveArgs.SequenceEqual(cmd)
                 && LimitsMatch(existingResources.Value, limits)
                 && existingEndpoint.Value is { } liveEndpoint
                 && liveEndpoint.ClientHostPort == address.ClientPort;
+
+            var matches = false;
+            if (shapeMatches)
+            {
+                var existingEnv = await driver.NodeEnvAsync(cluster, node, ct);
+                if (!existingEnv.IsSuccess)
+                    return existingEnv.Error!;
+                matches = NodeTlsProvisioner.IsValidNodeEnv(
+                    existingEnv.Value, advertised, creds.CaPem, _clock);
+            }
             if (matches)
                 continue;
 
-            // Расхождение (или иные args/лимиты/порт) → пересоздание с каноническими
-            // параметрами; объекта нет → сразу создание.
+            // Расхождение (или иные cmd/лимиты/порт/невалидный env) → пересоздание
+            // с каноническими параметрами; объекта нет → сразу создание.
             if (existingArgs.Value is not null || existingEndpoint.Value is not null)
             {
                 var removed = await driver.RemoveNodeAsync(cluster, node, ct);
@@ -313,10 +324,14 @@ public sealed class ProvisioningProcess(
                     return removed;
             }
 
+            // Ленивая сборка env: только здесь — сверка провалена, решено
+            // пересоздавать ноду (свежий серт, spec t20 §4.1).
+            var env = NodeTlsProvisioner.BuildNodeTlsEnv(creds.CaPem, creds.CaKey, node, advertised);
+
             var ensured = await driver.EnsureNodeAsync(new ValkeyNodeSpec(
-                cluster, node, address.Host, address.ClientPort, options.NodeImage, args,
+                cluster, node, address.Host, address.ClientPort, options.NodeImage, cmd,
                 limits?.Cpu, limits?.MemBytes,
-                TlsVolume: PlainClusterDriver.TlsVolumeName(cluster)), ct);
+                Env: env), ct);
             progress?.Mark(); // heartbeat: create/start контейнера ноды — долгая фаза
             if (!ensured.IsSuccess)
                 return ensured;
