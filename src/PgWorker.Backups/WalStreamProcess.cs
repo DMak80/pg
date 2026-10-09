@@ -546,7 +546,11 @@ public sealed class WalStreamProcess(
         _lastVerifyUnix[key] = now;
 
         // Истина прогресса — объекты S3 (arch/19 §3): list префикса wal/.
-        var listed = await s3.ListWalAsync(cluster, shard, ct: ct);
+        // Пульс прогресса на время вызова (канон t19): прямой S3-вызов на
+        // недоступном endpoint может висеть до HttpClient-таймаута без отметок —
+        // watchdog (порт сноса 30 c) гасил reconcile посреди wal-контроля
+        // (bad-S3 — штатный контур, transient повторит следующий тик).
+        var listed = await S3PulseAsync(token => s3.ListWalAsync(cluster, shard, ct: token), ct);
         if (!listed.IsSuccess)
             throw new ApplicationException($"list S3 {cluster}/{shard}/wal: {listed.Error!.Message}");
         var objects = listed.Value;
@@ -733,7 +737,8 @@ public sealed class WalStreamProcess(
             }
 
             var sha256 = Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(content));
-            var put = await s3.PutObjectAsync($"{cluster}/{shard}/wal/{fileName}", content, sha256, ct);
+            var put = await S3PulseAsync(
+                token => s3.PutObjectAsync($"{cluster}/{shard}/wal/{fileName}", content, sha256, token), ct);
             if (!put.IsSuccess)
                 throw new ApplicationException($"put history {fileName}: {put.Error!.Message}");
             logger?.LogInformation("backup-wal: history {File} доложена контролем ({Bytes} байт)",
@@ -821,4 +826,17 @@ public sealed class WalStreamProcess(
                 wal with { State = WalStreamStatus.Stopped }, ct);
         Observe(cluster, shard, null, null); // t14: STOPPED — серии исчезают
     }
+
+    /// <summary>S3-вызовы этого процесса — с пульсом прогресса (S3Pulse, канон
+    /// t19): прямой вызов на недоступном endpoint висит до HttpClient-таймаута
+    /// без отметок — watchdog гасил reconcile посреди wal-контроля (bad-S3 —
+    /// штатный контур, transient повторит следующий тик).</summary>
+    private async Task<Result<T>> S3PulseAsync<T>(
+        Func<CancellationToken, Task<Result<T>>> call, CancellationToken ct)
+        => await S3Pulse.CallAsync(progress, call, ct);
+
+    // Негенерик-перегрузка: вызовы без значения (PutObjectAsync → Result).
+    private async Task<Result> S3PulseAsync(
+        Func<CancellationToken, Task<Result>> call, CancellationToken ct)
+        => await S3Pulse.CallAsync(progress, call, ct);
 }

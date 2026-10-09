@@ -9,8 +9,11 @@ namespace PgWorker.Provisioning.Processes;
 /// Deprovisioning — безопасное удаление кластера (задача 20; spec §6.4 B,
 /// arch/14 §5 B). D1 удаляет ноды (и сироты-контейнеры по имени pgw-<C>-*) ДО
 /// чистки etcd — «мёртвые» ключи при сбое безвредны (кластер в TO_REMOVE,
-/// повторный тик продолжает). Успех = пустой /clusters/&lt;C&gt; + ЯВНО снятый
+/// повторный тик продолжает). Успех = пустой /clusters/&lt;C&gt;/ + ЯВНО снятый
 /// клэйм (del + revoke lease, не ждём TTL — ревизия 2 плана, №5).
+/// progress — heartbeat-отметки долгих фаз (канон t19: ILoopProgress до всех
+/// EnsureAsync-сайтов; демонтаж — docker-шаги по 15–25 с каждый на медленном
+/// хосте, без Mark watchdog (порог 30 с) гасил reconcile посреди D1/D1').
 /// </summary>
 public sealed class DeprovisioningProcess(
     IEtcdGateway etcd,
@@ -18,7 +21,8 @@ public sealed class DeprovisioningProcess(
     IClusterDriver driver,
     ClaimStore claims,
     WorkJournal journal,
-    Func<CancellationToken, Task<Result>>? snapshot = null) : IClusterProcess
+    Func<CancellationToken, Task<Result>>? snapshot = null,
+    Shared.Core.Hosting.ILoopProgress? progress = null) : IClusterProcess
 {
     private const string Op = "deprovision";
 
@@ -38,12 +42,14 @@ public sealed class DeprovisioningProcess(
 
         // D1' (t03, arch/19 §3): WAL-агенты бэкапов кластера — вниз ДО нод (idempotent
         // по префиксу pgw-backup-wal-<C>-); etcd-ключи чистит D2 ниже.
+        progress?.Mark(); // heartbeat: демонтаж начинается, дальше — docker-шаги
         var agents = await driver.RemoveBackupAgentsAsync(cluster, shard: null, ct);
         if (!agents.IsSuccess)
             return await FailAsync(cluster, agents.Error!, "removing-agents", ct);
 
         // Джобы полных бэкапов (t02, arch/19 §4): вниз рядом с агентами —
         // «мёртвые» ключи при сбое безвредны (кластер в TO_REMOVE, тик продолжит).
+        progress?.Mark(); // heartbeat: снос джобов (docker rm + staging)
         var jobs = await driver.RemoveBackupJobsAsync(cluster, ct);
         if (!jobs.IsSuccess)
             return await FailAsync(cluster, jobs.Error!, "removing-jobs", ct);
@@ -54,6 +60,7 @@ public sealed class DeprovisioningProcess(
             return await FailAsync(cluster, removed.Error!, "removing-nodes", ct);
 
         // Guard D2: docker-объектов кластера не осталось — только теперь чистим etcd.
+        progress?.Mark(); // heartbeat: контрольный список объектов
         var objects = await driver.ListNodeObjectsAsync(cluster, ct);
         if (!objects.IsSuccess)
             return await FailAsync(cluster, objects.Error!, "listing-objects", ct);
@@ -67,6 +74,7 @@ public sealed class DeprovisioningProcess(
         // D2: del prefix /clusters/<C>/ + заявки request_* + префиксы service-скопов
         // + /pgworker/portalloc, /pgworker/work и заявки переездов /pgworker/moves/<C>/
         // (spec §4.2, arch/14 §5 B; t01 spec §5.3 — заявки не переживают кластер).
+        progress?.Mark(); // heartbeat: переходим к etcd-очистке
         var cleaned = await CleanKeysAsync(cluster, snap, ct);
         if (!cleaned.IsSuccess)
             return await FailAsync(cluster, cleaned.Error!, "cleaning-keys", ct);
@@ -107,12 +115,16 @@ public sealed class DeprovisioningProcess(
                     return marked;
             }
 
+            // heartbeat: RemoveNode = stop(10 c) + rm + volume на медленном хосте
+            // до ~25 c; без отметки цепочка из 4+ нод гарантирует watchdog-тишину.
+            progress?.Mark();
             var removed = await driver.RemoveNodeAsync(cluster, shard.Name, node.Name, ct);
             if (!removed.IsSuccess)
                 return removed;
         }
 
         // Сироты: контейнер есть, nodes-ключа нет (сбое-хвост прошлых фаз).
+        progress?.Mark(); // heartbeat: контрольный список сирот
         var objects = await driver.ListNodeObjectsAsync(cluster, ct);
         if (!objects.IsSuccess)
             return objects;
@@ -130,6 +142,7 @@ public sealed class DeprovisioningProcess(
 
             var shardName = string.Join("-", tail[..^1]);
             var nodeName = tail[^1];
+            progress?.Mark(); // heartbeat: снос сироты (тот же docker-набор)
             var removed = await driver.RemoveNodeAsync(cluster, shardName, nodeName, ct);
             if (!removed.IsSuccess)
                 return removed;
@@ -137,6 +150,7 @@ public sealed class DeprovisioningProcess(
 
         // Джобы бэкапов кластера (t02, arch/19 §4): убиваем до чистки etcd —
         // «мёртвые» ключи при сбое безвредны (кластер в TO_REMOVE, тик продолжит).
+        progress?.Mark(); // heartbeat: страховочный снос джобов
         var jobs = await driver.RemoveBackupJobsAsync(cluster, ct);
         if (!jobs.IsSuccess)
             return jobs;

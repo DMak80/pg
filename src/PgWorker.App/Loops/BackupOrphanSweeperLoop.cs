@@ -39,6 +39,19 @@ internal sealed class BackupOrphanSweeperLoop(
 
                 if (claims.IsLeader && options.CurrentValue.Backups.Enabled)
                 {
+                    // Проход может длиться дольше окна watchdog (порт сноса 30 c):
+                    // S3-list на недоступном endpoint висит до HttpClient-таймаута
+                    // (bad-S3 — штатный прод-контур, arch/19 §4 «transient — следующий
+                    // проход»), а прямой s3-вызов внутри SweepAsync не несёт
+                    // прогресс-отметок. Пульс MarkOrphanSweepTick каждые полокна
+                    // проверки — «проход жива», watchdog не гасит приложение посреди
+                    // сверки (канон t19: долгие фазы — heartbeat-отметки).
+                    using var sweepPulse = new Timer(
+                        _ => health.MarkOrphanSweepTick(), null,
+                        TimeSpan.Zero,
+                        TimeSpan.FromTicks(Math.Max(
+                            TimeSpan.TicksPerSecond,
+                            TimeSpan.FromSeconds(options.CurrentValue.Loops.Watchdog.CheckIntervalSec).Ticks / 2)));
                     // Ошибка прохода — лог (SweepAsync сам Result; transient-отказы
                     // S3/etcd повторит следующий проход). Реестр в etcd переживает
                     // смену лидера — продолжение с факта, не с нуля.

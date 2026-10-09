@@ -301,6 +301,11 @@ internal sealed class ReconcileLoop(
     private async Task RunClusterOpAsync(
         string cluster, string op, Func<Task<Result<ProcessOutcome>>> call, CancellationToken ct)
     {
+        // heartbeat (канон t19): завершение каждой операции кластера — активность
+        // тика; долгие операции отмечают прогресс сами (provisioning/deprovision/
+        // supervisor-S3), стыки между ними закрывает эта отметка — на медленном
+        // хосте цепочка операций без отметок давала watchdog-тишину > порога.
+        health.MarkReconcileActivity();
         try
         {
             await LogOutcomeAsync(cluster, op, await call());
@@ -313,6 +318,7 @@ internal sealed class ReconcileLoop(
         {
             await LogCrashAsync(cluster, op, ex);
         }
+        health.MarkReconcileActivity(); // heartbeat: операция завершена — тик жив
     }
 
     // Надзор: результат — SuperviseOutcome (мёртвые шарды); null = не прошёл

@@ -360,7 +360,8 @@ builder.Services.AddSingleton(sp => new DeprovisioningProcess(
     sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),
-    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>())));
+    SnapshotDelegate(sp.GetRequiredService<SnapshotJob>()),
+    sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 builder.Services.AddSingleton(sp => new NodeSupervisor(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
@@ -617,7 +618,8 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.RetentionProcess(
     sp.GetRequiredService<WorkJournal>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Backups.ToRuntime(),
     sp.GetRequiredService<TimeProvider>(),
-    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.RetentionProcess>()));
+    sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.RetentionProcess>(),
+    sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 // S3-клиент с горячей конфигурацией (ревью Ф7 №3): включение/смена секции
 // Backups без рестарта воркера пересоздаёт клиента при первом же вызове
 // (асимметрия «выключение работает, включение нет» устранена).
@@ -669,6 +671,7 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.Supervisor.BackupSuperv
         ? sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.ToRuntime()
         : null,
     sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.Supervisor.BackupSupervisorProcess>()));
 
 // Глобальный проход сирот S3 (t07, arch/19 §4): реестр /pgworker/backups/orphans

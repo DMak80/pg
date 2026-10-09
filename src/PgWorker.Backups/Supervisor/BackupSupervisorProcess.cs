@@ -26,6 +26,7 @@ public sealed class BackupSupervisorProcess(
     WorkJournal journal,
     Func<BackupsRuntimeOptions?> runtime,
     TimeProvider time,
+    Shared.Core.Hosting.ILoopProgress? progress = null,
     ILogger? logger = null)
 {
     private const string Op = "backup-supervisor";
@@ -102,7 +103,7 @@ public sealed class BackupSupervisorProcess(
     private async Task SweepShardAsync(
         string cluster, string shard, ShardBackups? shardBackups, CancellationToken ct)
     {
-        var listed = await s3.ListFullsAsync(cluster, shard, ct: ct);
+        var listed = await S3PulseAsync(token => s3.ListFullsAsync(cluster, shard, ct: token), ct);
         if (!listed.IsSuccess)
             throw new ApplicationException($"list fulls {cluster}/{shard}: {listed.Error!.Message}");
 
@@ -110,16 +111,16 @@ public sealed class BackupSupervisorProcess(
         foreach (var id in unowned)
         {
             var prefix = $"{cluster}/{shard}/full/{id}/";
-            var objects = await s3.ListPrefixAsync(prefix, ct: ct);
+            var objects = await S3PulseAsync(token => s3.ListPrefixAsync(prefix, ct: token), ct);
             if (!objects.IsSuccess)
                 throw new ApplicationException($"list {prefix}: {objects.Error!.Message}");
             if (objects.Value.Count > 0)
             {
-                var deleted = await s3.DeleteKeysAsync(
-                    objects.Value.Select(o => o.Key).ToList(), ct);
+                var deleted = await S3PulseAsync(token => s3.DeleteKeysAsync(
+                    objects.Value.Select(o => o.Key).ToList(), token), ct);
                 if (!deleted.IsSuccess)
                     throw new ApplicationException($"delete {prefix}: {deleted.Error!.Message}");
-                var recheck = await s3.ListPrefixAsync(prefix, ct: ct);
+                var recheck = await S3PulseAsync(token => s3.ListPrefixAsync(prefix, ct: token), ct);
                 if (!recheck.IsSuccess || recheck.Value.Count > 0)
                     throw new ApplicationException(
                         $"удаление {prefix} не завершилось — повторит следующий проход");
@@ -132,4 +133,17 @@ public sealed class BackupSupervisorProcess(
                 Op, cluster, shard, id);
         }
     }
+
+    /// <summary>S3-вызовы сверки — с пульсом прогресса (S3Pulse, канон t19):
+    /// прямой вызов на недоступном endpoint висит до HttpClient-таймаута без
+    /// отметок — watchdog (порт сноса 30 c) гасил reconcile посреди сверки
+    /// (bad-S3 — штатный прод-контур, arch/19 §4 «transient — следующий проход»).</summary>
+    private async Task<Result<T>> S3PulseAsync<T>(
+        Func<CancellationToken, Task<Result<T>>> call, CancellationToken ct)
+        => await S3Pulse.CallAsync(progress, call, ct);
+
+    // Негенерик-перегрузка: вызовы без значения (DeleteKeysAsync → Result).
+    private async Task<Result> S3PulseAsync(
+        Func<CancellationToken, Task<Result>> call, CancellationToken ct)
+        => await S3Pulse.CallAsync(progress, call, ct);
 }

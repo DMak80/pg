@@ -125,7 +125,7 @@ public sealed class RestoreDrillProcess(
 
         // 1. Манифест: upload t02 не атомарен — частичный префикс отсеиваем
         // (t05-образец); отказ — валидационный FAILED без джоба.
-        var manifest = await s3.DownloadTextAsync(cluster, shard, $"full/{backupId}/backup_manifest", ct);
+        var manifest = await S3Pulse.CallAsync(progress, token => s3.DownloadTextAsync(cluster, shard, $"full/{backupId}/backup_manifest", token), ct);
         if (!manifest.IsSuccess)
             return await FailValidationAsync(cluster, shard, backupId, nowUnix,
                 $"полный {backupId} без backup_manifest (недокачан/бит)", ct);
@@ -134,7 +134,7 @@ public sealed class RestoreDrillProcess(
         var walStart = fresh.WalStartSegment;
         if (walStart is not { Length: > 0 })
         {
-            var label = await s3.DownloadTextAsync(cluster, shard, $"full/{backupId}/backup_label", ct);
+            var label = await S3Pulse.CallAsync(progress, token => s3.DownloadTextAsync(cluster, shard, $"full/{backupId}/backup_label", token), ct);
             walStart = label.IsSuccess ? Restore.BackupLabel.WalStartSegment(label.Value) : null;
             if (walStart is null)
                 return await FailValidationAsync(cluster, shard, backupId, nowUnix,

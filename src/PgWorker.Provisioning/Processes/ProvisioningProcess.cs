@@ -376,6 +376,9 @@ public sealed class ProvisioningProcess(
         var byNode = snap.Shards
             .SelectMany(s => s.Nodes.Select(n => (Key: $"{s.Name}/{n.Name}", Name: n.Name)))
             .ToList();
+        // heartbeat (t19-канон): инспект — пачка docker list+inspect по всем нодам
+        // (2–7.5 c каждый, 4+ ноды) — без Mark на медленном хосте даёт watchdog-тишину.
+        progress?.Mark();
         var discovered = await driver.InspectNodesAsync(
             cluster, byNode.Select(p => p.Name).Distinct().ToList(), ct);
         if (!discovered.IsSuccess)

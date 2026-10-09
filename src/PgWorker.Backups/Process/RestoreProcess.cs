@@ -162,7 +162,7 @@ public sealed class RestoreProcess(
         {
             // DR-ветка (source-override или etcd-статусов нет): новейший = max Id
             // (id — сортируемая метка времени, Ordinal).
-            var fulls = await s3.ListFullsAsync(srcC, srcX, ct: ct);
+            var fulls = await S3Pulse.CallAsync(progress, token => s3.ListFullsAsync(srcC, srcX, ct: token), ct);
             if (!fulls.IsSuccess)
                 return await TransientAsync(cluster, $"s3-unavailable/{shard.Name}/{op.Id}",
                     fulls.Error!.Message, ct);
@@ -180,7 +180,7 @@ public sealed class RestoreProcess(
         // джоб оставляет частичный префикс full/<id>/, а при DR etcd-статусов
         // нет; инвариант «префикс ⇔ манифест» механикой t02 НЕ обеспечивается →
         // частичный кандидат отсеивается проверкой манифеста.
-        var manifest = await s3.DownloadTextAsync(srcC, srcX, $"full/{backupId}/backup_manifest", ct);
+        var manifest = await S3Pulse.CallAsync(progress, token => s3.DownloadTextAsync(srcC, srcX, $"full/{backupId}/backup_manifest", token), ct);
         if (!manifest.IsSuccess)
         {
             await FailPermanentAsync(cluster, shard.Name, op,
@@ -193,7 +193,7 @@ public sealed class RestoreProcess(
         string? walStart = ownFresh?.WalStartSegment;
         if (walStart is not { Length: > 0 })
         {
-            var label = await s3.DownloadTextAsync(srcC, srcX, $"full/{backupId}/backup_label", ct);
+            var label = await S3Pulse.CallAsync(progress, token => s3.DownloadTextAsync(srcC, srcX, $"full/{backupId}/backup_label", token), ct);
             walStart = label.IsSuccess ? Restore.BackupLabel.WalStartSegment(label.Value) : null;
             if (walStart is null)
             {
@@ -212,7 +212,7 @@ public sealed class RestoreProcess(
 
         // 6. Непрерывность WAL-цепочки от стартовой точки (WalChain t03):
         // дыра → permanent с границами; S3-отказ → transient (статус не меняем).
-        var wal = await s3.ListWalAsync(srcC, srcX, ct: ct);
+        var wal = await S3Pulse.CallAsync(progress, token => s3.ListWalAsync(srcC, srcX, ct: token), ct);
         if (!wal.IsSuccess)
             return await TransientAsync(cluster, $"s3-unavailable/{shard.Name}/{op.Id}",
                 wal.Error!.Message, ct);
