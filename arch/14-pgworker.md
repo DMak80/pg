@@ -1236,6 +1236,10 @@ R2 NEW = сгенерировать ×4 (32 симв [A-Za-z0-9]); для каж
    по нодам — факт env (`PGW_REST_PASSWORD_HASH`, инспекция) —
    takeover-безопасен; есть нода с hash != hash(NEW) → окно открыто, тик
    ЖДЁТ (фаза rotate-rest-rolling); все ноды несут hash(NEW) → R2 завершён
+   (драйверы без honest env-инспекции — Swarm-заглушка §5 C — окно НЕ
+   удерживают: rolling-шаг там no-op, приведение их env к ключу — зона
+   t11-swarm-running-inspection; restore/TO_REMOVE-шарды и усыновлённые
+   ноды гейт пропускает — как шаг пересоздания §5 C)
 R3 все шарды OK → ОДНА txn: [compare value==OLD для app_password,
    mover_password, bucket_admin_password, rest_password и КАЖДОГО
    dsn-ключа шардов]
