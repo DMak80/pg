@@ -76,7 +76,7 @@ public class ClusterSecretRotatorTests
     }
 
     private sealed record Rig(Fakes.FakeEtcd Etcd, Fakes.FakeSql Sql, ClaimStore Claims,
-        WorkJournal Journal, ClusterSecretRotator Rotator);
+        WorkJournal Journal, ClusterSecretRotator Rotator, Fakes.FakeDriver Driver);
 
     private static async Task<Rig> NewRig(Fakes.FakeEtcd? etcd = null, Fakes.FakeSql? sql = null)
     {
@@ -89,10 +89,48 @@ public class ClusterSecretRotatorTests
         store.Txns.Clear(); // отсечь claim-txn: ассерты — только про txn ротации
         var journal = new WorkJournal("/pgworker", store, [Ep]);
         var probe = new ShardProbe(new HttpClient(new DeadHandler()));
+        var driver = new Fakes.FakeDriver
+        {
+            // t22: инспекция env нод — «rolling завершён» (hash pending журнала;
+            // pending нет — считаем конвергентным: ключ кластера уже NEW после
+            // прошлых тиков теста).
+            InspectEnvOverride = (shard, node) => ReadNodeEnvFromJournal(store, shard, node),
+        };
         var rotator = new ClusterSecretRotator(
-            store, [Ep], usedSql, probe, claims, journal, Secrets,
+            store, [Ep], usedSql, driver, probe, claims, journal, Secrets,
             new ClusterSecretEnsurer(store, [Ep]), snapshot: null);
-        return new Rig(store, usedSql, claims, journal, rotator);
+        return new Rig(store, usedSql, claims, journal, rotator, driver);
+    }
+
+    // t22: env ноды по журналу ротации — hash(rest_pending) (rolling завершён);
+    // pending нет — hash ключа rest_password (конвергентно).
+    private static IReadOnlyDictionary<string, string> ReadNodeEnvFromJournal(
+        Fakes.FakeEtcd etcd, string shard, string node)
+    {
+        var pending = ParseRestPending(etcd.Store.GetValueOrDefault("/pgworker/work/shop")?.Value);
+        var key = pending ?? etcd.Store.GetValueOrDefault("/clusters/shop/rest_password")?.Value ?? "";
+        return new Dictionary<string, string>
+        {
+            [RestRotation.EnvCert] = "cert",
+            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash(key),
+        };
+    }
+
+    private static string? ParseRestPending(string? journalJson)
+    {
+        if (journalJson is null)
+            return null;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(journalJson);
+            return doc.RootElement.TryGetProperty("rest_pending", out var p) && p.ValueKind == System.Text.Json.JsonValueKind.String
+                ? p.GetString()
+                : null;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
     }
 
     private static void SeedTicket(Fakes.FakeEtcd etcd, string raw =
@@ -336,8 +374,12 @@ public class ClusterSecretRotatorTests
         SeedTicket(etcd);
         var journal = new WorkJournal("/pgworker", etcd, [Ep]);
         var probe = new ShardProbe(new HttpClient(new DeadHandler()));
+        var driver = new Fakes.FakeDriver
+        {
+            InspectEnvOverride = (shard, node) => ReadNodeEnvFromJournal(etcd, shard, node),
+        };
         var rotator = new ClusterSecretRotator(
-            etcd, [Ep], new Fakes.FakeSql(), probe,
+            etcd, [Ep], new Fakes.FakeSql(), driver, probe,
             new ClaimStore("/pgworker", [Ep], etcd, TimeProvider.System), journal, Secrets,
             new ClusterSecretEnsurer(etcd, [Ep]), snapshot: null);
 
@@ -350,4 +392,184 @@ public class ClusterSecretRotatorTests
         etcd.Store["/clusters/shop/app_password"].Value
             .Should().Be("OldPassword000000000000000000A");
     }
+    // ── t22: rest-ветка ротации (четвёртый секрет, arch/14 §5 I) ──
+
+    // AAA (а): заявка → фаза rotate-rest-start фиксирует NEW в rest_pending;
+    // rolling-гейт открыт (нода с чужим hash) — txn НЕ выполняется.
+    [Fact]
+    public async Task Rotate_RestStart_FixesPendingAndWaitsRolling()
+    {
+        // Arrange: заявка; инспекция env — нода несёт ЧУЖОЙ hash (rolling идёт).
+        var rig = await NewRig();
+        SeedTicket(rig.Etcd);
+        rig.Driver.InspectEnvOverride = (shard, node) => new Dictionary<string, string>
+        {
+            [RestRotation.EnvCert] = "cert",
+            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("Foreign0Pass0000000000000000000X"),
+        };
+
+        // Act
+        var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: фаза rotate-rest-start зафиксировала pending NEW (32 симв),
+        // txn коммита НЕТ (окно открыто), заявка жива.
+        outcome.Value.Should().Be(ProcessOutcome.Done);
+        var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        work.Value!.RestPending.Should().MatchRegex("^[A-Za-z0-9]{32}$");
+        work.Value.Phase.Should().StartWith("rotate-rest-rolling/");
+        rig.Etcd.Store.Should().ContainKey("/pgworker/rotations/shop");
+        // txn-коммита не было: rest_password в Store — ensure-значение, НЕ pending
+        rig.Etcd.Store["/clusters/shop/rest_password"].Value
+            .Should().NotBe(work.Value.RestPending);
+    }
+
+    // AAA (б): повторный тик при недомигрированной ноде — проход продолжается
+    // С ТОЙ ЖЕ парой (NEW не регенерируется), txn НЕ выполняется.
+    [Fact]
+    public async Task Rotate_RestRolling_ContinuesSamePending()
+    {
+        // Arrange: тик 1 зафиксировал pending; rolling не завершён.
+        var rig = await NewRig();
+        SeedTicket(rig.Etcd);
+        rig.Driver.InspectEnvOverride = (shard, node) => new Dictionary<string, string>
+        {
+            [RestRotation.EnvCert] = "cert",
+            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("Foreign0Pass0000000000000000000X"),
+        };
+        (await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None))
+            .Value.Should().Be(ProcessOutcome.Done);
+        var pending1 = (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.RestPending;
+
+        // Act: повторный тик (rolling всё ещё открыт).
+        (await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None))
+            .Value.Should().Be(ProcessOutcome.Done);
+
+        // Assert: pending не изменился (та же пара в полёте).
+        var pending2 = (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.RestPending;
+        pending2.Should().Be(pending1, "регенерация между тиками обнуляла бы прогресс rolling");
+        rig.Etcd.Store.Should().ContainKey("/pgworker/rotations/shop", "заявка жива");
+    }
+
+    // AAA (в): все ноды несут hash(NEW) → txn: compare rest_password==OLD,
+    // put NEW, del заявки; pending сброшен фазой done.
+    [Fact]
+    public async Task Rotate_RestCommit_TxnComparePutAndPendingDrop()
+    {
+        // Arrange: тик 1 — pending зафиксирован; rolling завершён (override
+        // возвращает hash(pending) — дефолт NewRig-хелпера уже это делает).
+        var rig = await NewRig();
+        SeedTicket(rig.Etcd);
+        // Тик 1: rolling открыт (чужой hash) — pending зафиксирован, txn нет.
+        rig.Driver.InspectEnvOverride = (shard, node) => new Dictionary<string, string>
+        {
+            [RestRotation.EnvCert] = "cert",
+            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("Foreign0Pass0000000000000000000X"),
+        };
+        (await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None))
+            .Value.Should().Be(ProcessOutcome.Done);
+        var pending = (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.RestPending;
+        pending.Should().NotBeNull("тик 1 зафиксировал пару, txn не было");
+
+        // Act: rolling завершён — повторный тик несёт txn-коммит.
+        rig.Driver.InspectEnvOverride = (shard, node) => ReadNodeEnvFromJournal(rig.Etcd, shard, node);
+        var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: rest_password==NEW, заявка удалена, pending сброшен.
+        outcome.Value.Should().Be(ProcessOutcome.Done);
+        rig.Etcd.Store["/clusters/shop/rest_password"].Value.Should().Be(pending);
+        rig.Etcd.Store.Should().NotContainKey("/pgworker/rotations/shop");
+        var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        work.Value!.RestPending.Should().BeNull("фаза done сбрасывает pending");
+        work.Value.Phase.Should().Be("done");
+    }
+
+    // AAA (г): проигрыш compare (внешняя запись etcdctl) — commit-conflict,
+    // pending сброшен — повторный проход со свежей парой.
+    [Fact]
+    public async Task Rotate_RestCompareConflict_PendingDropped()
+    {
+        // Arrange: pending зафиксирован, rolling завершён; ВНЕШНЯЯ запись
+        // rest_password мимо ротации.
+        var rig = await NewRig();
+        SeedTicket(rig.Etcd);
+        // Тик 1: rolling открыт (чужой hash) — pending зафиксирован, txn нет.
+        rig.Driver.InspectEnvOverride = (shard, node) => new Dictionary<string, string>
+        {
+            [RestRotation.EnvCert] = "cert",
+            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("Foreign0Pass0000000000000000000X"),
+        };
+        (await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None))
+            .Value.Should().Be(ProcessOutcome.Done);
+        // Rolling завершён (default-хелпер); ВНЕШНЯЯ запись dsn ПОСЛЕ чтения
+        // снапшота тика — compare dsn проиграет (честный конфликт SQL-секретов).
+        rig.Driver.InspectEnvOverride = (shard, node) => ReadNodeEnvFromJournal(rig.Etcd, shard, node);
+        var snap = await Snapshot(rig.Etcd);
+        rig.Etcd.Store["/clusters/shop/shards/shard1/dsn"] =
+            new Fakes.FakeEtcd.Entry("host=h9 dbname=shop user=bucket_admin", 9, 9);
+
+        // Act: тик коммита — compare проигран (dsn изменился).
+        var outcome = await rig.Rotator.TickAsync(snap, CancellationToken.None);
+
+        // Assert: commit-conflict + pending сброшен (свежая пара в повторе).
+        outcome.IsSuccess.Should().BeFalse();
+        var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        work.Value!.Phase.Should().Be("commit-conflict");
+        work.Value.RestPending.Should().BeNull("повторный проход — со свежей парой");
+    }
+
+    // AAA (д): потеря pending (журнал перезаписан без поля) — свежая пара,
+    // повторный rolling идемпотентен.
+    [Fact]
+    public async Task Rotate_RestPendingLost_FreshPair()
+    {
+        // Arrange: тик 1 зафиксировал pending; журнал «потерял» поле.
+        var rig = await NewRig();
+        SeedTicket(rig.Etcd);
+        (await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None))
+            .Value.Should().Be(ProcessOutcome.Done);
+        var pending1 = (await rig.Journal.ReadAsync("shop", CancellationToken.None)).Value!.RestPending;
+        await rig.Journal.WritePhaseAsync("shop", "rotate-app-password", "rotate-rest-rolling", "i1", null,
+            CancellationToken.None, dropRestPending: true);
+
+        // Act: тик — фиксирует НОВУЮ пару (rolling по override завершён сразу).
+        var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: новая пара ≠ потерянная; txn коммитит её (идемпотентность).
+        outcome.Value.Should().Be(ProcessOutcome.Done);
+        rig.Etcd.Store["/clusters/shop/rest_password"].Value
+            .Should().NotBe(pending1).And.MatchRegex("^[A-Za-z0-9]{32}$");
+    }
+
+    // AAA (ж): шард без dsn — его ноды не инспектируются (skip; ноды создадутся
+    // с новой парой после R3).
+    [Fact]
+    public async Task Rotate_ShardWithoutDsn_NotInspected()
+    {
+        // Arrange: второй шард без dsn; инспекция только для dsn-шардов.
+        var rig = await NewRig();
+        SeedTicket(rig.Etcd);
+        var inspected = new List<string>();
+        rig.Driver.InspectEnvOverride = (shard, node) =>
+        {
+            inspected.Add(shard);
+            return new Dictionary<string, string>
+            {
+                [RestRotation.EnvCert] = "cert",
+                [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash(
+                    ParseRestPending(rig.Etcd.Store.GetValueOrDefault("/pgworker/work/shop")?.Value)
+                    ?? rig.Etcd.Store.GetValueOrDefault("/clusters/shop/rest_password")?.Value ?? ""),
+            };
+        };
+        // шард2 без dsn: перезапишем пустой строкой-«нет ключа» — уберём dsn.
+        rig.Etcd.Store.Remove("/clusters/shop/shards/shard2/dsn");
+
+        // Act
+        var outcome = await rig.Rotator.TickAsync(await Snapshot(rig.Etcd), CancellationToken.None);
+
+        // Assert: инспекция только shard1; txn коммитит (шард2 — skip, R3 не ждёт его).
+        outcome.Value.Should().Be(ProcessOutcome.Done);
+        inspected.Should().OnlyContain(sh => sh == "shard1");
+        rig.Etcd.Store.Should().NotContainKey("/pgworker/rotations/shop");
+    }
+
 }

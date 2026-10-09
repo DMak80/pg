@@ -3,6 +3,7 @@ using System.Text.RegularExpressions;
 using PgWorker.Core;
 using PgWorker.Core.Model;
 using PgWorker.Core.Templates;
+using PgWorker.Docker.Drivers;
 using Shared.Etcd.Client;
 using PgWorker.Provisioning.Probes;
 using PgWorker.Provisioning.Sql;
@@ -11,7 +12,10 @@ namespace PgWorker.Provisioning.Processes;
 
 /// <summary>
 /// Ротация per-cluster секретов по заявке /pgworker/rotations/&lt;C&gt; (t02,
-/// arch/14 §5 I / arch/19 §7): app + bucket_admin + bucket_mover + backup_exec.
+/// arch/14 §5 I / arch/19 §7): app + bucket_admin + bucket_mover + backup_exec
+/// + rest_password (t22: basic-auth Patroni REST — rolling-пересоздание нод
+/// общим шагом надзора, пара NEW «в полёте» — rest_pending журнала; txn-коммит
+/// R3 после применения на всех нодах; гварды окна — в NodeSupervisor).
 /// R1 ensure кредов → R2 ALTER ROLE ролей на мастере каждого шарда с dsn
 /// (backup_exec — через gexec-гвард: роли может не быть при выключенных бэкапах;
 /// реплики получают pg_authid физической репликацией) → R3 атомарный txn
@@ -28,6 +32,7 @@ public sealed partial class ClusterSecretRotator(
     IEtcdGateway etcd,
     string[] endpoints,
     ISqlExecutor db,
+    IClusterDriver driver,
     ShardProbe probe,
     ClaimStore claims,
     WorkJournal journal,
@@ -87,6 +92,27 @@ public sealed partial class ClusterSecretRotator(
         var newBucketAdminPassword = AppSecretGenerator.Generate();
         var newBackupPassword = AppSecretGenerator.Generate();
         var addresses = await ReadPortAllocAsync(cluster, ct);
+
+        // R2-rest (t22, arch/14 §5 I): пара NEW «в полёте» — rest_pending
+        // журнала: повторные тики ПРОДОЛЖАЮТ проход с той же парой (регенерация
+        // обнуляла бы прогресс rolling); потери поля (битый журнал) — свежая
+        // пара, повторный rolling идемпотентен.
+        var work = await journal.ReadAsync(cluster, ct);
+        if (!work.IsSuccess)
+            return await FailAsync(cluster, work.Error!, "journal-read", ct);
+        string newRestPassword;
+        if (work.Value?.RestPending is { } pending)
+        {
+            newRestPassword = pending;
+        }
+        else
+        {
+            newRestPassword = AppSecretGenerator.Generate();
+            var fixedPending = await journal.WritePhaseAsync(cluster, Op, "rotate-rest-start",
+                claims.InstanceId, null, ct, restPending: newRestPassword);
+            if (!fixedPending.IsSuccess)
+                return Result<ProcessOutcome>.Failed(fixedPending.Error!);
+        }
         if (!addresses.IsSuccess)
             return await FailAsync(cluster, addresses.Error!, "portalloc", ct);
 
@@ -140,6 +166,27 @@ public sealed partial class ClusterSecretRotator(
             }
         }
 
+        // R2-rest rolling-гейт (t22): ноды dsn-шардов обязаны нести hash(NEW)
+        // до txn — катит общий шаг надзора (≤1 нода/тик; вход ротации). Есть
+        // расхождение → окно открыто: тик ЖДЁТ (Done — ретрай тиком; заявка и
+        // pending живы). Шард без dsn — skip (ноды создадутся с новой парой
+        // после R3). Rotator сам REST-мутаций не делает (гварды окна — надзор).
+        foreach (var shard in snap.Shards.Where(s => s.Dsn is not null))
+        {
+            foreach (var node in shard.Nodes)
+            {
+                if (node.State is NodeState.Quarantined or NodeState.Removing)
+                    continue;
+                var env = await driver.InspectNodeEnvAsync(cluster, shard.Name, node.Name, ct);
+                if (!env.IsSuccess)
+                    return await FailAsync(cluster, env.Error!, $"inspect/{shard.Name}/{node.Name}", ct);
+                if (!string.Equals(env.Value.GetValueOrDefault(RestRotation.EnvPasswordHash),
+                        RestRotation.PasswordHash(newRestPassword), StringComparison.Ordinal))
+                    return await Finish(cluster, $"rotate-rest-rolling/{shard.Name}/{node.Name}",
+                        ProcessOutcome.Done, ct);
+            }
+        }
+
         // R3: атомарный коммит — новые креды + перезапись dsn + снятие заявки
         // ОДНОЙ txn (нет двойной ротации из-за сбоя между put и del). Compare по
         // OLD-кредам и по прочитанным dsn: внешняя запись etcdctl между R1 и R3
@@ -150,6 +197,7 @@ public sealed partial class ClusterSecretRotator(
             TxnCompare.ValueEqual(MoverKey(cluster), creds.MoverPassword),
             TxnCompare.ValueEqual(BucketAdminPasswordKey(cluster), creds.BucketAdmin.Password),
             TxnCompare.ValueEqual(BackupKey(cluster), creds.BackupPassword),
+            TxnCompare.ValueEqual(RestKey(cluster), creds.RestPassword),
         };
         var ops = new List<TxnOp>
         {
@@ -157,6 +205,7 @@ public sealed partial class ClusterSecretRotator(
             new TxnOp.Put(MoverKey(cluster), newMoverPassword, null),
             new TxnOp.Put(BucketAdminPasswordKey(cluster), newBucketAdminPassword, null),
             new TxnOp.Put(BackupKey(cluster), newBackupPassword, null),
+            new TxnOp.Put(RestKey(cluster), newRestPassword, null),
             new TxnOp.Delete(TicketKey(cluster), Prefix: false),
         };
         foreach (var shard in snap.Shards.Where(s => s.Dsn is not null))
@@ -175,7 +224,7 @@ public sealed partial class ClusterSecretRotator(
             return await FailAsync(cluster,
                 new ApplicationException(
                     "креды/dsn изменились с момента чтения (внешняя запись?) — ретрай тиком"),
-                "commit-conflict", ct);
+                "commit-conflict", ct, dropRestPending: true);
 
         // R4: снапшот P12 (точка изменения, best-effort делегат) + journal done.
         if (snapshot is not null)
@@ -185,7 +234,7 @@ public sealed partial class ClusterSecretRotator(
                 return await FailAsync(cluster, shot.Error!, "snapshot", ct);
         }
 
-        return await Finish(cluster, "done", ProcessOutcome.Done, ct);
+        return await Finish(cluster, "done", ProcessOutcome.Done, ct, dropRestPending: true);
     }
 
     // Замена password= в conninfo dsn-ключа (пароль bucket_admin внутри dsn).
@@ -202,6 +251,8 @@ public sealed partial class ClusterSecretRotator(
     private static string BucketAdminPasswordKey(string cluster) => $"/clusters/{cluster}/bucket_admin_password";
 
     private static string BackupKey(string cluster) => $"/clusters/{cluster}/backup_password";
+
+    private static string RestKey(string cluster) => $"/clusters/{cluster}/rest_password";
 
     private static string DsnKey(string cluster, string shard) => $"/clusters/{cluster}/shards/{shard}/dsn";
 
@@ -294,18 +345,21 @@ public sealed partial class ClusterSecretRotator(
     }
 
     private async Task<Result<ProcessOutcome>> Finish(
-        string cluster, string phase, ProcessOutcome outcome, CancellationToken ct)
+        string cluster, string phase, ProcessOutcome outcome, CancellationToken ct,
+        bool dropRestPending = false)
     {
-        var written = await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, null, ct);
+        var written = await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, null, ct,
+            dropRestPending: dropRestPending);
         return written.IsSuccess
             ? Result<ProcessOutcome>.Success(outcome)
             : Result<ProcessOutcome>.Failed(written.Error!);
     }
 
     private async Task<Result<ProcessOutcome>> FailAsync(
-        string cluster, Exception error, string phase, CancellationToken ct)
+        string cluster, Exception error, string phase, CancellationToken ct, bool dropRestPending = false)
     {
-        await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, error.Message, ct);
+        await journal.WritePhaseAsync(cluster, Op, phase, claims.InstanceId, error.Message, ct,
+            dropRestPending: dropRestPending);
         return Result<ProcessOutcome>.Failed(error);
     }
 

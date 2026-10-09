@@ -576,6 +576,7 @@ builder.Services.AddSingleton(sp => new ClusterSecretRotator(
     sp.GetRequiredService<IEtcdGateway>(),
     sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Etcd.Endpoints,
     sp.GetRequiredService<ISqlExecutor>(),
+    sp.GetRequiredService<IClusterDriver>(),
     sp.GetRequiredService<ShardProbe>(),
     sp.GetRequiredService<ClaimStore>(),
     sp.GetRequiredService<WorkJournal>(),

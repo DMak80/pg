@@ -402,9 +402,14 @@ internal sealed class FakeDriver : IClusterDriver
         // месте» (существующие тесты надзора: шаг no-op); кейсы шага затирают
         // NodeEnvs управляемым env (легаси без серта / чужой hash).
         public bool DefaultNodeEnvIsLegacy { get; set; }
+        // t22-ротация: оверрайд env инспекции (кейс «нода несёт hash(pending)» —
+        // тесты ротатора читают журнал напрямую).
+        public Func<string, string, IReadOnlyDictionary<string, string>>? InspectEnvOverride { get; set; }
         public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
             string cluster, string shard, string nodeName, CancellationToken ct)
         {
+            if (InspectEnvOverride is { } over)
+                return Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Success(over(shard, nodeName)));
             if (NodeEnvs.TryGetValue($"{shard}/{nodeName}", out var env))
                 return Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Success(env));
             return Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Success(
