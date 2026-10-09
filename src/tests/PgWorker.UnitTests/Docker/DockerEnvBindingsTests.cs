@@ -46,4 +46,27 @@ public class DockerEnvBindingsTests
         config["PgWorker:Docker:Ssh:KeyPath"].Should().Be("/secrets/id_pgworker");
         config["PgWorker:Docker:Ssh:FingerprintSha256"].Should().Be("SHA256:abcdef");
     }
+
+    [Fact]
+    public void ApplyRestTlsEnvOverrides_AllFourKeysMapped()
+    {
+        // Arrange: REST-TLS-пакет (t22) — PEM-значения и _PATH-файлы.
+        var env = new Dictionary<string, string>
+        {
+            ["PGW_REST_TLS_CA"] = "ca-pem",
+            ["PGW_REST_TLS_CA_PATH"] = "/tls/ca.pem",
+            ["PGW_REST_TLS_CA_KEY"] = "ca-key-pem",
+            ["PGW_REST_TLS_CA_KEY_PATH"] = "/tls/ca.key",
+        };
+        var config = new ConfigurationManager();
+
+        // Act
+        DockerEnvBindings.ApplyRestTlsEnvOverrides(config, key => env.GetValueOrDefault(key));
+
+        // Assert: каждая env попадает в свой конфиг-ключ (арх/14 §8).
+        config["PgWorker:Docker:RestTls:CaPem"].Should().Be("ca-pem");
+        config["PgWorker:Docker:RestTls:CaPath"].Should().Be("/tls/ca.pem");
+        config["PgWorker:Docker:RestTls:CaKeyPem"].Should().Be("ca-key-pem");
+        config["PgWorker:Docker:RestTls:CaKeyPath"].Should().Be("/tls/ca.key");
+    }
 }

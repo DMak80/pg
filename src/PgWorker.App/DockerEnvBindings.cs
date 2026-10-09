@@ -27,6 +27,16 @@ internal static class DockerEnvBindings
         ("PGW_DOCKER_SSH_FINGERPRINT", "PgWorker:Docker:Ssh:FingerprintSha256"),
     ];
 
+    // REST-TLS нод (t22, arch/14 §4 гр.3): per-install CA + ключ выпуска
+    // серверных сертов REST-эндпоинтов нод; PEM-дуализм значение/_PATH-файл.
+    private static readonly (string Env, string Key)[] RestTlsBindings =
+    [
+        ("PGW_REST_TLS_CA", "PgWorker:Docker:RestTls:CaPem"),
+        ("PGW_REST_TLS_CA_PATH", "PgWorker:Docker:RestTls:CaPath"),
+        ("PGW_REST_TLS_CA_KEY", "PgWorker:Docker:RestTls:CaKeyPem"),
+        ("PGW_REST_TLS_CA_KEY_PATH", "PgWorker:Docker:RestTls:CaKeyPath"),
+    ];
+
     // Перенос env TLS → конфиг; getenv-инъекция — для юнит-теста (без окружения).
     public static void ApplyTlsEnvOverrides(ConfigurationManager configuration, Func<string, string?>? getenv = null)
         => Apply(configuration, TlsBindings, getenv);
@@ -34,6 +44,10 @@ internal static class DockerEnvBindings
     // Перенос env SSH → конфиг; getenv-инъекция — для юнит-теста (без окружения).
     public static void ApplySshEnvOverrides(ConfigurationManager configuration, Func<string, string?>? getenv = null)
         => Apply(configuration, SshBindings, getenv);
+
+    // Перенос env REST-TLS → конфиг; getenv-инъекция — для юнит-теста.
+    public static void ApplyRestTlsEnvOverrides(ConfigurationManager configuration, Func<string, string?>? getenv = null)
+        => Apply(configuration, RestTlsBindings, getenv);
 
     private static void Apply(ConfigurationManager configuration, (string Env, string Key)[] bindings, Func<string, string?>? getenv)
     {

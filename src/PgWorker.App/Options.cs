@@ -208,6 +208,50 @@ public sealed class DockerOptions
 
     /// <summary>SSH-туннели ssh://-хостов (arch/14 §2.2.1, t03); null — дефолты.</summary>
     public SshTunnelOptions? Ssh { get; set; }
+
+    /// <summary>
+    /// REST-TLS нод (t22, arch/14 §8): per-install API-CA и его ключ для
+    /// выпуска серверных сертов REST-эндпоинтов нод. Оба обязательны —
+    /// fail-fast старта (HTTP-режим провижининга не существует); WAF-фикстуры
+    /// передают тестовый CA.
+    /// </summary>
+    public RestTlsOptions RestTls { get; set; } = new();
+}
+
+/// <summary>REST-TLS нод (arch/14 §4 гр.3/§8): per-install CA (CaPem|CaPath) +
+/// ключ выпуска сертов (CaKeyPem|CaKeyPath); env-имена PGW_REST_TLS_*.</summary>
+public sealed class RestTlsOptions
+{
+    /// <summary>PEM per-install API-CA (или CA_PATH файл из TLS-тома /tls).</summary>
+    public string? CaPem { get; set; }
+
+    public string? CaPath { get; set; }
+
+    /// <summary>PEM приватного ключа CA PKCS#8 (или CA_KEY_PATH файл).</summary>
+    public string? CaKeyPem { get; set; }
+
+    public string? CaKeyPath { get; set; }
+
+    /// <summary>Полнота пары (PEM или путь) — предикат fail-fast старта.</summary>
+    public bool IsComplete() =>
+        HasMaterial(CaPem, CaPath) && HasMaterial(CaKeyPem, CaKeyPath);
+
+    private static bool HasMaterial(string? pem, string? path) =>
+        !string.IsNullOrWhiteSpace(pem) || !string.IsNullOrWhiteSpace(path);
+
+    /// <summary>Разбираемость пары PEM (валидация старта): серт CA + RSA-ключ.</summary>
+    public static bool IsValidPemPair(string? caPem, string? caKeyPem)
+    {
+        if (string.IsNullOrWhiteSpace(caPem) || string.IsNullOrWhiteSpace(caKeyPem))
+            return false;
+        if (!PgWorker.Core.Templates.RestPki.TryParseCertificate(caPem, out var ca))
+            return false;
+        using var caScope = ca;
+        if (!PgWorker.Core.Templates.RestPki.TryParseRsaKey(caKeyPem, out var key))
+            return false;
+        using var keyScope = key;
+        return true;
+    }
 }
 
 /// <summary>Хост plain-режима: {Name, Endpoint} (tcp://host:2375 | unix:///var/run/docker.sock).</summary>

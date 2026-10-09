@@ -36,6 +36,8 @@ var builder = WebApplication.CreateBuilder(args);
 ApiTlsEndpoints.ApplyEnvOverrides(builder.Configuration);
 DockerEnvBindings.ApplyTlsEnvOverrides(builder.Configuration);
 DockerEnvBindings.ApplySshEnvOverrides(builder.Configuration);
+// REST-TLS нод (t22, arch/14 §4 гр.3): PGW_REST_TLS_* — до всего остального.
+DockerEnvBindings.ApplyRestTlsEnvOverrides(builder.Configuration);
 
 // Конфигурация: appsettings.json + env-оверрайды PgWorker__* (пример — в корне проекта).
 builder.Services.Configure<PgWorkerOptions>(builder.Configuration.GetSection("PgWorker"));
@@ -61,6 +63,11 @@ builder.Services.AddOptions<PgWorkerOptions>()
         "PgWorker:Pgtune: DbVersion 10..18; DbType web|oltp|dw|mixed (desktop запрещён — несовместим с P3); " +
         "HdType ssd|san|hdd|nvme; DbSize less_ram|mid_ram|greater_ram; Connections 20..999999; " +
         "ExcludeParams — только имена вывода PGTune (§5.2). Память/CPU — не здесь: заявки etcd request_{cpu,mem}")
+    // REST-TLS нод (t22, arch/14 §8): поставка без TLS-пакета считается битой —
+    // HTTP-режим провижининга не существует (симметрия запрета Pgtune:DbType=desktop).
+    .Validate(o => o.Docker.RestTls.IsComplete(),
+        "PgWorker:Docker:RestTls обязателен: оба PGW_REST_TLS_{CA,CA_KEY}[_PATH] " +
+        "(per-install CA для REST-TLS нод; HTTP-режим не существует)")
     .ValidateOnStart();
 
 // Управляемый серт API (spec §3.2 п.1): чтение ключа /workers/api_tls/pgworker
@@ -99,6 +106,21 @@ builder.Services.AddSingleton(sp =>
 
 // Секреты per-install (Д7, spec §10): не в git, не в etcd — только env процесса.
 builder.Services.AddSingleton(_ => SecretsFromEnv());
+
+// REST-TLS нод (t22, arch/14 §8): per-install CA + ключ выпуска сертов;
+// резолв PEM|PATH и разбор на старте — битый/неполный пакет fail-fast.
+builder.Services.AddSingleton(sp =>
+{
+    var tls = sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Docker.RestTls;
+    var caPem = tls.CaPem ?? Shared.Tls.TlsMaterial.ReadPemFile(tls.CaPath);
+    var caKeyPem = tls.CaKeyPem ?? Shared.Tls.TlsMaterial.ReadPemFile(tls.CaKeyPath);
+    if (!RestTlsOptions.IsValidPemPair(caPem, caKeyPem)
+        || !RestPki.TryParseCertificate(caPem!, out var ca) || ca is null)
+        throw new ApplicationException(
+            "PgWorker:Docker:RestTls: per-install CA не задан/не разбирается — " +
+            "оба PGW_REST_TLS_{CA,CA_KEY}[_PATH] обязательны (REST-TLS нод; HTTP-режим не существует)");
+    return new RestTlsMaterial(caPem!, caKeyPem!, ca);
+});
 
 // Поллинг-инвариант (arch/14 §6): одиночный HTTP-вызов к etcd не молчит дольше
 // окна проверки watchdog — таймаут = половина окна (7.5 c при дефолтах); зависший
