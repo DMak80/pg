@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Security.Cryptography.X509Certificates;
 using AdminPanel.Core;
 using Shared.Core.DI;
 using Microsoft.Extensions.Options;
@@ -8,7 +9,9 @@ namespace AdminPanel.Probes;
 // Результат Patroni-пробы одного члена: обогащение HaMember + статус попытки (spec §4.6).
 public sealed record PatroniMemberResult(HaMemberProbe Enrichment, ProbeResult Result);
 
-// Проба члена HA-скопа: GET http://<host>:8008/cluster (arch/02 §6.1).
+// Проба члена HA-скопа: GET https://<host>:8008/cluster (arch/02 §6.1 — TLS
+// per-install CA + basic-auth только unsafe-эндпоинтам; GET /cluster — без
+// кредов, t22).
 public interface IPatroniRestProbe
 {
     Task<PatroniMemberResult> ProbeAsync(HaScope scope, HaMember member, CancellationToken ct);
@@ -35,7 +38,7 @@ public sealed class PatroniRestProbe(
 
     public async Task<PatroniMemberResult> ProbeAsync(HaScope scope, HaMember member, CancellationToken ct)
     {
-        var url = $"http://{HostMapResolver.Resolve(options.Value.HostMap, member.Host, member.Port ?? RestPort)}/cluster";
+        var url = $"https://{HostMapResolver.Resolve(options.Value.HostMap, member.Host, member.Port ?? RestPort)}/cluster";
         var started = Stopwatch.GetTimestamp();
         var at = time.GetUtcNow();
         try
@@ -64,6 +67,42 @@ public sealed class PatroniRestProbe(
                 new ProbeResult(
                     $"{scope.Scope}/{member.Name}", "patroni", false,
                     Stopwatch.GetElapsedTime(started).TotalMilliseconds, e.Message, at));
+        }
+    }
+
+    // TLS-handler пробы (t22, arch/adminpanel/02 §6.1): верификация цепочки к
+    // per-install ServerCA из WorkerTls (ServerCaPem ?? ServerCaPath — env
+    // WORKERS_PANEL_TLS_SERVER_CA[_PATH]; ОДИН корень доверия на установку),
+    // hostname НЕ сверяется (P17-канон: SAN серта ноды — имена сетей, панель
+    // ходит по отображённым адресам). Чтение CA ленивое (первый хендшейк),
+    // загруженный сертификат кешируется на жизнь handler'а. Клиентских кредов
+    // нет: GET /cluster вне зоны authentication Patroni.
+    public static HttpMessageHandler BuildTlsHandler(AdminPanel.Etcd.Workers.WorkerTlsOptions tls)
+    {
+        var handler = new SocketsHttpHandler { PooledConnectionLifetime = TimeSpan.FromMinutes(5) };
+        X509Certificate2? ca = null;
+        handler.SslOptions.RemoteCertificateValidationCallback = (_, certificate, _, _) =>
+        {
+            var cert2 = certificate as X509Certificate2
+                ?? (certificate is null ? null : new X509Certificate2(certificate));
+            if (cert2 is null)
+                return false;
+            ca ??= LoadCa(tls);
+            return ca is not null && Shared.Tls.TlsChain.ValidateChain(cert2, ca);
+        };
+        return handler;
+    }
+
+    private static X509Certificate2? LoadCa(AdminPanel.Etcd.Workers.WorkerTlsOptions tls)
+    {
+        try
+        {
+            var pem = tls.ServerCaPem ?? Shared.Tls.TlsMaterial.ReadPemFile(tls.ServerCaPath);
+            return pem is null ? null : Shared.Tls.TlsMaterial.LoadPem(pem);
+        }
+        catch (Exception)
+        {
+            return null; // пакет TLS не читается — панель не доверяет ничему
         }
     }
 }
