@@ -278,8 +278,9 @@ public sealed class ProvisioningProcess(
 
             // V3 TLS (env-TLS, arch/21 §2): env со свежим сертом ноды входит в
             // spec создания; Cmd — детерминированная обёртка раскатки+exec.
+            // Env собирается ЛЕНИВО (ниже, при решении пересоздавать): keygen
+            // RSA-2048 не тратится на валидную ноду в каждом re-run тике.
             var advertised = options.AdvertisedClientHost ?? address.Host;
-            var env = NodeTlsProvisioner.BuildNodeTlsEnv(creds.CaPem, creds.CaKey, node, advertised);
             var cmd = NodeArgsBuilder.BuildCmd(args);
 
             // Сверка re-run (V3): Cmd-обёртка + порт + лимиты + валидность env —
@@ -302,8 +303,6 @@ public sealed class ProvisioningProcess(
                 && existingEndpoint.Value is { } liveEndpoint
                 && liveEndpoint.ClientHostPort == address.ClientPort;
 
-            // Env-сверка — последняя (парсинг серта дороже прочих), только при
-            // совпадении Cmd/порта/лимитов.
             var matches = false;
             if (shapeMatches)
             {
@@ -324,6 +323,10 @@ public sealed class ProvisioningProcess(
                 if (!removed.IsSuccess)
                     return removed;
             }
+
+            // Ленивая сборка env: только здесь — сверка провалена, решено
+            // пересоздавать ноду (свежий серт, spec t20 §4.1).
+            var env = NodeTlsProvisioner.BuildNodeTlsEnv(creds.CaPem, creds.CaKey, node, advertised);
 
             var ensured = await driver.EnsureNodeAsync(new ValkeyNodeSpec(
                 cluster, node, address.Host, address.ClientPort, options.NodeImage, cmd,

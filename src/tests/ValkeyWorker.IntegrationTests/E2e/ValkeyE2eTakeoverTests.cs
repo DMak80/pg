@@ -111,7 +111,7 @@ public class ValkeyE2eTakeoverTests
 
             // Доп-проверка env-модели (docker inspect, вне тиков): env контейнера
             // ноды несёт VALKEY_TLS_{CERT,KEY,CA}; CA == per-cluster ca_pem.
-            var nodeEnv = await GetContainerEnvAsync($"vwk-{cluster}-node1");
+            var nodeEnv = await GetContainerEnvAsync(fx, $"vwk-{cluster}-node1", ct);
             nodeEnv.Should().ContainKey("VALKEY_TLS_CERT", "серт ноды доставляется env контейнера (env-модель)");
             nodeEnv.Should().ContainKey("VALKEY_TLS_KEY", "ключ ноды доставляется env контейнера (env-модель)");
             nodeEnv.Should().ContainKey("VALKEY_TLS_CA", "CA ноды доставляется env контейнера (env-модель)");
@@ -147,16 +147,15 @@ public class ValkeyE2eTakeoverTests
                 if (await GetOrNullAsync(fx, $"/valkeyworker/claims/{cluster}", ct) is null)
                     return false;
                 // (в) демонтаж в полёте: контейнер ноды ещё существует (docker ps -a
-                // — в теле условия; docker-CLI в тиках запрещён) ИЛИ work уже
-                // ставился X0 (ставится в X0, живёт до X2).
-                var containerExists = (await ListContainersAsync($"vwk-{cluster}-node1", all: true)).Count > 0;
+                // — в теле условия; docker-CLI в тиках запрещён).
+                var containerExists = (await ListContainersAsync(fx, $"vwk-{cluster}-node1", all: true)).Count > 0;
                 var work = await GetOrNullAsync(fx, $"/valkeyworker/work/{cluster}", ct);
                 var x0Started = work is not null && JsonStringField(work, "op") == "deprovision";
                 // (г) пре-факт I2: X0 жертвы НЕ начат — work отсутствует ИЛИ его
                 // op != deprovision (хвост прошлого цикла op=provision/phase=done
                 // демонтажом не является). Совместно с (в): контейнер существует
                 // И X0 никем ещё не ставился.
-                return (containerExists || x0Started) && !x0Started;
+                return containerExists && !x0Started;
             }, TimeSpan.FromSeconds(30), ct,
                 progress: async () =>
                 {
@@ -204,8 +203,8 @@ public class ValkeyE2eTakeoverTests
                 + $"config={Trunc(configAtKill ?? "нет")}");
 
             // docker kill держателя (без рестарта — воскресать не должен,
-            // доносит ТОЛЬКО выживший).
-            await RunDockerAsync($"kill {holderName}");
+            // доносит ТОЛЬКО выживший; бюджет/kill-дерева — канон окружения).
+            await fx.RunDockerAsync(["kill", holderName], ct);
 
             // Идентификатор survivor-инстанса: api-ключ с url-портом выжившего
             // (его дискавери живёт с A1 — независимо от kill).
@@ -261,7 +260,7 @@ public class ValkeyE2eTakeoverTests
             // (survivor проходит X0→X2 одним тиком; превышение без объяснения
             // по логам — фейл фазы, разбор по телеметрии).
             var cleaned = await ValkeyE2ePhase.WaitAsync(fx, "takeover-wait-clean", async () =>
-                (await ListContainersAsync($"vwk-{cluster}-node1", all: true)).Count == 0
+                (await ListContainersAsync(fx, $"vwk-{cluster}-node1", all: true)).Count == 0
                 && (await RangeAsync(fx, $"/valkey/clusters/{cluster}/", ct)).Count == 0
                 && await CoordinationGoneAsync(fx, cluster, ct),
                 TimeSpan.FromSeconds(15), ct,
@@ -283,17 +282,18 @@ public class ValkeyE2eTakeoverTests
             // демонтаж (logger ValkeyClusterProcesses «deprovision {C}: ok»;
             // обработчик DELETE такую строку не пишет — подтверждено grep'ом
             // логов прогона e055e1e0: у жертвы 0 вхождений).
-            var survivorLog = await RunDockerAsync($"logs {survivorName}");
+            var survivorLog = await fx.RunDockerAsync(["logs", survivorName], ct);
             survivorLog.Should().Contain($"deprovision {cluster}",
                 "документальный факт I2: демонтаж кластера исполнил survivor — жертва убита до X0 и не рестартована");
 
             // I3: нет дублей и остатков — контейнеров префикса кластера ровно 0
             // (вкл. stopped; docker-проверки вне тиков), томов префикса нет —
             // env-модель, у домена нет docker-объектов кроме контейнеров нод.
-            (await ListContainersAsync($"vwk-{cluster}", all: true)).Should().BeEmpty(
+            (await ListContainersAsync(fx, $"vwk-{cluster}", all: true)).Should().BeEmpty(
                 "контейнеров префикса кластера нет — дублей/остатков после takeover нет (I3)");
-            (await RunDockerAsync($"volume ls -q --filter name=vwk-{cluster}")).Should().BeEmpty(
-                "томов префикса кластера нет — env-модель их не создаёт (I3)");
+            (await fx.RunDockerAsync(
+                    ["volume", "ls", "-q", "--filter", $"name=vwk-{cluster}"], ct))
+                .Should().BeEmpty("томов префикса кластера нет — env-модель их не создаёт (I3)");
 
             // I4: контроль-плейн цел — portalloc снят демонтажом X2 (входит в
             // терминальную чистоту; продублирован явным ассертом для отчёта).
@@ -378,10 +378,10 @@ public class ValkeyE2eTakeoverTests
 
     // Env контейнера как словарь (json-формат docker inspect: переносы PEM
     // экранированы JSON, после парса — реальные переносы в значении).
-    private static async Task<IReadOnlyDictionary<string, string>> GetContainerEnvAsync(string name)
+    private static async Task<IReadOnlyDictionary<string, string>> GetContainerEnvAsync(
+        ValkeyE2eEnvironment fx, string name, CancellationToken ct)
     {
-        var raw = await RunDockerAsync(
-            $"inspect {name} --format \"{{{{json .Config.Env}}}}\"");
+        var raw = await fx.RunDockerAsync(["inspect", name, "--format", "{{json .Config.Env}}"], ct);
         var env = new Dictionary<string, string>();
         foreach (var item in JsonDocument.Parse(raw).RootElement.EnumerateArray())
         {
@@ -393,28 +393,17 @@ public class ValkeyE2eTakeoverTests
         return env;
     }
 
-    // docker-CLI сценария (kill/ps/inspect): вывод — в исключение.
-    private static async Task<string> RunDockerAsync(string args)
-    {
-        var startInfo = new System.Diagnostics.ProcessStartInfo("docker", args)
-        {
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-        using var process = System.Diagnostics.Process.Start(startInfo)!;
-        var output = await process.StandardOutput.ReadToEndAsync();
-        var error = await process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync();
-        if (process.ExitCode != 0)
-            throw new ApplicationException($"docker {args} → {process.ExitCode}: {error.Trim()}");
-        return output.Trim();
-    }
-
     // Имена контейнеров по префиксу (вкл. stopped при all=true) — I3: без дублей.
-    private static async Task<List<string>> ListContainersAsync(string prefix, bool all = false)
+    private static async Task<List<string>> ListContainersAsync(
+        ValkeyE2eEnvironment fx, string prefix, bool all = false)
     {
-        var args = $"ps --format {{{{.Names}}}}{(all ? " -a" : "")} --filter name={prefix}";
-        var output = await RunDockerAsync(args);
+        // Список аргументов собирается поэлементно: шаблон {{.Names}} содержит
+        // пробел и НЕ должен резаться парсером командной строки.
+        var args = new List<string> { "ps", "--format", "{{.Names}}" };
+        if (all)
+            args.Add("-a");
+        args.AddRange(["--filter", $"name={prefix}"]);
+        var output = await fx.RunDockerAsync(args, CancellationToken.None);
         return output.Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             .Where(n => n.StartsWith(prefix, StringComparison.Ordinal))
             .ToList();

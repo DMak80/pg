@@ -230,7 +230,8 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         await BuildImageAsync();
 
         // TLS-пакет окружения: self-signed CA + server + client (PEM в артефакты);
-        // пакет ОБЩИЙ для обоих инстансов — один mTLS-клиент годит обоим (spec §7 A6).
+        // пакет ОБЩИЙ для обоих инстансов — один mTLS-клиент годит обоим
+        // (спека t20 §8 — mTLS-клиент к выжившему).
         var (caPem, caKeyPem) = GenerateCa("vwk-e2e");
         var (serverCert, serverKey) = IssueCert(caPem, caKeyPem, "valkeyworker");
         var (clientCert, clientKey) = IssueCert(caPem, caKeyPem, "e2e-client");
@@ -355,6 +356,68 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
             ?? throw new InvalidOperationException("корень репо (docker/ValkeyWorker.Dockerfile) не найден");
     }
 
+    // ── Хелперы docker-CLI (канон KafkaE2eEnvironment.RunProcessAsync:
+    // таймаут убивает дерево, вывод — в исключение) ──
+
+    /// <summary>docker-CLI: вывод stdout; ненулевой exit/таймаут — исключение
+    /// с выводом процесса (зависший процесс умирает по бюджету 2 мин).</summary>
+    public Task<string> RunDockerAsync(IReadOnlyList<string> args, CancellationToken ct)
+        => RunProcessAsync("docker", [.. args], ct, TimeSpan.FromMinutes(2));
+
+    private static async Task<string> RunProcessAsync(
+        string file, string[] args, CancellationToken ct, TimeSpan timeout)
+    {
+        var psi = new ProcessStartInfo(file, args)
+        {
+            UseShellExecute = false,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            CreateNoWindow = true,
+        };
+        using var process = Process.Start(psi)
+            ?? throw new ApplicationException($"не удалось запустить {file}");
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        timeoutCts.CancelAfter(timeout);
+        // Оба потока параллельно и БЕЗ токена бюджета: при kill по бюджету пайпы
+        // закрываются и накопленный вывод доступен (канон E2eFixture).
+        var outTask = process.StandardOutput.ReadToEndAsync();
+        var errTask = process.StandardError.ReadToEndAsync();
+        try
+        {
+            await process.WaitForExitAsync(timeoutCts.Token);
+            var output = await outTask;
+            var error = await errTask;
+            if (process.ExitCode != 0)
+                throw new ApplicationException($"{file} {string.Join(' ', args)} → {process.ExitCode}: {error.Trim()}");
+            return output.Trim();
+        }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+        {
+            // Бюджет исчерпан: убиваем дерево, вывод — в диагностику.
+            try
+            {
+                process.Kill(entireProcessTree: true);
+            }
+            catch
+            {
+                // процесс мог уже выйти
+            }
+
+            var drained = "";
+            try
+            {
+                drained = string.Join("", await Task.WhenAll(outTask, errTask).WaitAsync(TimeSpan.FromSeconds(5)));
+            }
+            catch (TimeoutException)
+            {
+                // пайп завис — вывод недоступен
+            }
+
+            throw new ApplicationException(
+                $"{file} {string.Join(' ', args)} не завершился за {timeout.TotalSeconds:0} c — убит; хвост:\n{drained}");
+        }
+    }
+
     // mTLS-клиент API (клиентский серт окружения — от per-install CA;
     // PFX round-trip — macOS SslStream требует экспортируемый ключ).
     public HttpClient CreateApiHttpClient()
@@ -374,7 +437,7 @@ public sealed class ValkeyE2eEnvironment : IAsyncDisposable
         { BaseAddress = new Uri(ApiBaseUrl) };
     }
 
-    // Перегрузка для двухинстансного контура (spec t20 §7 A6): тот же mTLS-клиент
+    // Перегрузка для двухинстансного контура (спека t20 §8 — mTLS-клиент к выжившему): тот же mTLS-клиент
     // (TLS-пакет общий — один клиент годится ЛЮБОМУ из двух инстансов), но с
     // заданным BaseAddress (базовый URL выжившего резолвится по факту kill).
     public HttpClient CreateApiHttpClient(string baseUrl)

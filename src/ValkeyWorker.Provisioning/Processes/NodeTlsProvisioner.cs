@@ -11,19 +11,26 @@ namespace ValkeyWorker.Provisioning.Processes;
 /// key↔cert, NotAfter жив, SAN покрывает advertised-хост DNS|IP → пропуск;
 /// иначе — пересоздание со свежим env (свежий серт случаен — сверка по
 /// валидности IsValidNodeEnv, не побайтовая). Нормализация \n → переносы —
-/// на границе сверки (etcd-канон значений «одной строкой с \n» — arch/20 §2.1).
+/// единый хелпер NormalizePem на границах сборки И сверки (etcd-канон
+/// «одной строкой с \n» — arch/20 §2.1 — не меняется).
 /// </summary>
 public static class NodeTlsProvisioner
 {
-    /// <summary>Env ноды: свежий серт (CN=node&lt;k&gt;, SAN advertised, подпись ca_key).</summary>
+    /// <summary>Env ноды: свежий серт (CN=node&lt;k&gt;, SAN advertised, подпись ca_key);
+    /// значения — нормализованный многострочный PEM (граница сборки, §4.1).</summary>
     public static IReadOnlyDictionary<string, string> BuildNodeTlsEnv(
         string caPem, string caKeyPem, string node, string advertisedHost)
     {
+        // Нормализация на границе сборки: вход из etcd-канона «одной строкой
+        // с \n» → многострочный PEM (IssueNodeCertificate требует настоящих
+        // переносов); свежевыпущенные PEM — уже многострочные (идемпотентно).
+        caPem = NormalizePem(caPem);
+        caKeyPem = NormalizePem(caKeyPem);
         var (certPem, keyPem) = ValkeyPki.IssueNodeCertificate(caPem, caKeyPem, node, advertisedHost);
         return new Dictionary<string, string>
         {
-            ["VALKEY_TLS_CERT"] = certPem,
-            ["VALKEY_TLS_KEY"] = keyPem,
+            ["VALKEY_TLS_CERT"] = NormalizePem(certPem),
+            ["VALKEY_TLS_KEY"] = NormalizePem(keyPem),
             ["VALKEY_TLS_CA"] = caPem,
         };
     }
@@ -75,7 +82,9 @@ public static class NodeTlsProvisioner
         }
     }
 
-    // etcd-канон «одной строкой с \n» → многострочный PEM (граница сверки).
+    // etcd-канон «одной строкой с \n» → многострочный PEM; границы сборки и
+    // сверки — один хелпер (идемпотентен на уже-многострочном PEM: в base64-
+    // теле и заголовках PEM нет последовательности «\n»).
     private static string NormalizePem(string value)
         => value.Replace("\\n", "\n", StringComparison.Ordinal);
 

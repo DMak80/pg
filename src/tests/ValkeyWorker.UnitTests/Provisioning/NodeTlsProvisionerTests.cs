@@ -82,7 +82,7 @@ public class NodeTlsProvisionerTests
 
     // AAA: PEM в env — многострочный (переносы в значении; \n-форма etcd — наружи)
     [Fact]
-    public void BuildNodeTlsEnv_PemМногстрочный()
+    public void BuildNodeTlsEnv_PemМногострочный()
     {
         // Arrange
         var (caPem, caKeyPem) = NewCa("c1");
@@ -93,6 +93,28 @@ public class NodeTlsProvisionerTests
         // Assert — значение env несёт PEM с реальными переносами строк
         env["VALKEY_TLS_CA"].Should().Contain("\n");
         env["VALKEY_TLS_CERT"].Should().Contain("\n-----END CERTIFICATE-----");
+    }
+
+    // AAA: нормализация \n → переносы на границе сборки — CA-пара в etcd-каноне
+    // «одной строкой с \n» даёт многострочный PEM во всех значениях env
+    // (единый хелпер со сверкой, симметрии — spec t20 §4.1)
+    [Fact]
+    public void BuildNodeTlsEnv_ПереносыСЭкранированием_МногострочныйEnv()
+    {
+        // Arrange — CA-пара «сплющена» в etcd-канон (реальные переносы → \n)
+        var (caPem, caKeyPem) = NewCa("c1");
+        var flatCa = caPem.Replace("\n", "\\n", StringComparison.Ordinal);
+        var flatKey = caKeyPem.Replace("\n", "\\n", StringComparison.Ordinal);
+
+        // Act
+        var env = NodeTlsProvisioner.BuildNodeTlsEnv(flatCa, flatKey, "node1", "localhost");
+
+        // Assert — все значения env — многострочный PEM без \n-эскейпов;
+        // собранный env валиден против исходного (многострочного) ca_pem
+        env["VALKEY_TLS_CA"].Should().Contain("\n").And.NotContain("\\n");
+        env["VALKEY_TLS_CERT"].Should().Contain("\n-----END CERTIFICATE-----");
+        env["VALKEY_TLS_KEY"].Should().Contain("\n-----END PRIVATE KEY-----");
+        NodeTlsProvisioner.IsValidNodeEnv(env, "localhost", caPem, Clock).Should().BeTrue();
     }
 
     // ── IsValidNodeEnv ──
