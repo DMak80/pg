@@ -34,9 +34,12 @@ public interface IClusterDriver
     // SPILO_CONFIGURATION (merge(PGTune ∪ канон)) и doorman-бюджет; null →
     // прежний хардкод-набор (изолированные пути). syncStrict — per-cluster
     // опция synchronous_mode_strict из config кластера (t06, arch/14 §3).
+    // restPassword — эффективная per-cluster REST-пара (t22, arch/14 §2.1/§5 I:
+    // pending окна ротации ?? ключ кластера; резолвор RestRotation.EffectivePassword
+    // у вызывающих процессов).
     Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
         InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources,
-        PgTuneResult? tuning, bool syncStrict, CancellationToken ct);
+        PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct);
 
     // Остановить и удалить ноду + volume (404 = успех). swarm: service rm
     // (volume остаётся на ноде таска — manager не управляет volume нод).
@@ -124,6 +127,9 @@ public interface IClusterDriver
 // scrapeNetwork (t15, arch/14 §2.1, arch/18 §5.4): имя сети контура мониторинга
 // поставки — задано → Ensure-attach канонических нод к ней поверх pgw-net-<C>
 // (скрейп Prometheus по alias:8008); пусто → поведение идентично базе.
+// restCertificates (t22, arch/14 §2.1): кеш серверных сертов REST-эндпоинтов
+// нод (DI-синглтон из per-install CA); null — только изолированные юнит-пути
+// драйвера без BuildSpec (HTTP-режима не существует — BuildSpec fail-fast).
 public sealed class PlainClusterDriver(
     IReadOnlyList<HostEndpoint> hosts,
     DockerEngineFactory factory,
@@ -131,7 +137,8 @@ public sealed class PlainClusterDriver(
     string nodeImage = "pgworker-node:dev",
     string? advertisedHost = null,
     IReadOnlySet<string>? pgtuneExclude = null,
-    string? scrapeNetwork = null) : IClusterDriver
+    string? scrapeNetwork = null,
+    RestCertificateCache? restCertificates = null) : IClusterDriver
 {
     // Label-ключ контейнеров/сервисов pg-домена (t07: ключ — параметр спеки
     // движка LabelKey; читателей label в коде нет, docker-inspect-косметика).
@@ -198,7 +205,7 @@ public sealed class PlainClusterDriver(
 
     public async Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
         InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources,
-        PgTuneResult? tuning, bool syncStrict, CancellationToken ct)
+        PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct)
     {
         if (!_engines.TryGetValue(addr.Host, out var engine))
         {
@@ -271,7 +278,7 @@ public sealed class PlainClusterDriver(
                     throw removed.Error!;
             }
 
-            var spec = BuildSpec(topology, nodeName, addr, secrets, etcd, resources, tuning, syncStrict);
+            var spec = BuildSpec(topology, nodeName, addr, secrets, etcd, resources, tuning, syncStrict, restPassword);
             var created = await engine.CreateContainerAsync(spec, name, ct);
             if (!created.IsSuccess)
                 throw created.Error!;
@@ -683,19 +690,20 @@ public sealed class PlainClusterDriver(
     // минус pgtuneExclude), doorman-бюджет — от рассчитанного max_connections
     // (P15); tuning == null → прежний хардкод-набор и бюджет 55. syncStrict —
     // per-cluster опция synchronous_mode_strict из config кластера (t06).
+    // restPassword — эффективная REST-пара; серт ноды выпускается из кеша
+    // (t22): restCertificates == null — fail-fast (HTTP-режима не существует).
     internal ContainerSpec BuildSpec(ShardTopology topology, string nodeName, NodeAddress addr,
         InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
-        bool syncStrict)
+        bool syncStrict, string restPassword)
     {
+        if (restCertificates is null)
+            throw new ApplicationException(
+                "BuildSpec: RestCertificateCache не передан драйверу — REST-TLS материал ноды " +
+                "обязателен (HTTP-режим провижининга не существует, arch/14 §2.1)");
+        var (certPem, keyPem) = restCertificates.GetOrCreate(topology.Cluster, topology.Shard, nodeName);
         var env = new Dictionary<string, string>(
             SpiloEnvBuilder.Build(topology, etcd, secrets, syncStrict, nodeName,
-                // t22 задача 17: BuildSpec выпускает серт ноды из RestCertificateCache
-                // и несёт эффективную rest-пару; до неё — временный материал.
-                new NodeRestTls(
-                    "-----BEGIN CERTIFICATE-----\n(t22-17)\n-----END CERTIFICATE-----\n",
-                    "-----BEGIN PRIVATE KEY-----\n(t22-17)\n-----END PRIVATE KEY-----\n",
-                    "-----BEGIN CERTIFICATE-----\n(t22-17)\n-----END CERTIFICATE-----\n",
-                    "(t22-17)"),
+                new NodeRestTls(certPem, keyPem, restCertificates.CaPem, restPassword),
                 tuning, pgtuneExclude))
         {
             // Адрес этой ноды для lease-скрипта мастер-ключа (P11) и сверок.
@@ -846,7 +854,8 @@ public sealed class SwarmClusterDriver(
     DockerEngineFactory factory,
     bool enableDoorman,
     string nodeImage = "pgworker-node:dev",
-    IReadOnlySet<string>? pgtuneExclude = null) : IClusterDriver
+    IReadOnlySet<string>? pgtuneExclude = null,
+    RestCertificateCache? restCertificates = null) : IClusterDriver
 {
     private readonly IDockerEngine _engine = factory.Create(managerEndpoint, hostAlias: null);
 
@@ -878,7 +887,7 @@ public sealed class SwarmClusterDriver(
 
     public async Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
         InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources,
-        PgTuneResult? tuning, bool syncStrict, CancellationToken ct)
+        PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct)
     {
         return await Result.FromAsync(async () =>
         {
@@ -894,8 +903,12 @@ public sealed class SwarmClusterDriver(
             if (target is null)
                 throw new ApplicationException($"swarm-нода с Hostname={addr.Host} не найдена");
 
-            var plain = new PlainClusterDriver([], new DockerEngineFactory(), enableDoorman, nodeImage, pgtuneExclude: pgtuneExclude);
-            var template = plain.BuildSpec(topology, nodeName, addr, secrets, etcd, resources, tuning, syncStrict);
+            // Внутренний plain для BuildSpec — со СВОИМ кешем сертов (t22: без
+            // кеша внутренний BuildSpec упал бы fail-fast'ом REST-TLS).
+            var plain = new PlainClusterDriver(
+                [], new DockerEngineFactory(), enableDoorman, nodeImage,
+                pgtuneExclude: pgtuneExclude, restCertificates: restCertificates);
+            var template = plain.BuildSpec(topology, nodeName, addr, secrets, etcd, resources, tuning, syncStrict, restPassword);
             var spec = new ServiceSpec(
                 PlainClusterDriver.NodeName(topology.Cluster, topology.Shard, nodeName),
                 template,

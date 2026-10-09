@@ -15,6 +15,9 @@ public sealed class RestCertificateCache(string caCertPem, string caKeyPem)
 {
     private readonly ConcurrentDictionary<(string Cluster, string Shard, string Node, string CaHash), (string CertPem, string KeyPem)> _certificates = new();
 
+    /// <summary>PEM per-install CA (для SSL_RESTAPI_CA env нод).</summary>
+    public string CaPem => caCertPem;
+
     /// <summary>Серт ноды: полное имя pgw-{cluster}-{shard}-{node} строится внутри.</summary>
     public (string CertPem, string KeyPem) GetOrCreate(string cluster, string shard, string nodeName)
     {

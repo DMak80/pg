@@ -228,6 +228,14 @@ builder.Services.AddSingleton(sp => new RestartHandler(
     sp.GetRequiredService<IHostApplicationLifetime>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<RestartHandler>()));
 
+// Кеш серверных сертов REST-эндпоинтов нод (t22, arch/14 §2.1): из per-install
+// CA (RestTlsMaterial) — один на процесс воркера, обе реализации драйвера.
+builder.Services.AddSingleton(sp =>
+{
+    var material = sp.GetRequiredService<RestTlsMaterial>();
+    return new RestCertificateCache(material.CaPem, material.CaKeyPem);
+});
+
 // docker: драйвер по режиму (Plain: таблица Hosts; Swarm: manager endpoint).
 // AdvertisedHost (advertised-правило arch/16): только Plain + ровно один хост —
 // advertised-имя одно на таблицу, при мульти-хосте порты разных хостов склеились
@@ -274,7 +282,8 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
         if (string.IsNullOrWhiteSpace(docker.SwarmManager))
             throw new ApplicationException("PgWorker:Docker:Mode=Swarm требует PgWorker:Docker:SwarmManager");
         return new SwarmClusterDriver(docker.SwarmManager, factory, docker.EnableDoorman, docker.Images.Node,
-            pgtuneExclude: pgtuneExclude);
+            pgtuneExclude: pgtuneExclude,
+            restCertificates: sp.GetRequiredService<RestCertificateCache>());
     }
 
     var hosts = docker.Hosts
@@ -283,8 +292,11 @@ builder.Services.AddSingleton<IClusterDriver>(sp =>
     if (hosts.Count == 0)
         throw new ApplicationException("PgWorker:Docker:Mode=Plain требует непустую таблицу PgWorker:Docker:Hosts");
     return new PlainClusterDriver(hosts, factory, docker.EnableDoorman, docker.Images.Node, docker.AdvertisedHost,
-        pgtuneExclude: pgtuneExclude, scrapeNetwork: docker.ScrapeNetwork);
+        pgtuneExclude: pgtuneExclude, scrapeNetwork: docker.ScrapeNetwork,
+        restCertificates: sp.GetRequiredService<RestCertificateCache>());
 });
+
+
 
 // Фабрика входов PGTune (spec.md §4.3): runtime-склейка PgWorker:Pgtune
 // (валидированы fail-fast'ом старта); расчёт — per-shard на EnsureNode-путях.

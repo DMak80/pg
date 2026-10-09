@@ -570,11 +570,21 @@ public sealed class RestoreProcess(
         // таймаутом короче окна проверки (половина), идемпотентный повтор;
         // бюджет — существующий порог PatroniBootSec. t06: bootstrap
         // восстановленной ноды несёт strict кластера.
+        // Эффективная REST-пара restore-пути (t22, arch/14 §5 I): окно ротации
+        // не расширяется — EnsureNode любым путём ставит pending-пару (журнал
+        // работы читается тем же резолвором, что и в надзоре).
+        var work = await journal.ReadAsync(cluster, ct);
+        if (!work.IsSuccess)
+            return await TransientAsync(cluster, $"docker-unavailable/{shard.Name}/{op.Id}",
+                work.Error!.Message, ct);
+        var restPassword = RestRotation.EffectivePassword(snap.RestPassword, work.Value?.RestPending)
+            ?? throw new ApplicationException(
+                $"restore {cluster}: rest_password кластера неизвестен (нет ключа и pending)");
         var firstEnsure = await LongCallPolling.EnsureAsync(
             $"create/start ноды {first}",
             token => driver.EnsureNodeAsync(
                 topology, first, firstAddr, clusterSecrets, etcdEndpoints, resources, null,
-                snap.Config.SyncStrict, token),
+                snap.Config.SyncStrict, restPassword, token),
             progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreProcess>.Instance,
             TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
             TimeSpan.FromSeconds(thresholds.PatroniBootSec), ct);
@@ -610,7 +620,7 @@ public sealed class RestoreProcess(
                 $"create/start ноды {node}",
                 token => driver.EnsureNodeAsync(
                     topology, node, addr, clusterSecrets, etcdEndpoints, resources, null,
-                    snap.Config.SyncStrict, token),
+                    snap.Config.SyncStrict, restPassword, token),
                 progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger<RestoreProcess>.Instance,
                 TimeSpan.FromTicks(Math.Max(TimeSpan.TicksPerSecond, WatchdogWindow.Ticks / 2)),
                 TimeSpan.FromSeconds(thresholds.PatroniBootSec), ct);

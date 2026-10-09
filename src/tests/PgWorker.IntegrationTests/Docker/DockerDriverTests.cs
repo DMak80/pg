@@ -102,8 +102,8 @@ public class DockerDriverTests
         var addr = new NodeAddress(Host, new NodePorts(25102, 25103, 25104));
 
         // Act — повторный Ensure с тем же именем
-        var first = await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
-        var second = await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
+        var first = await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
+        var second = await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
         await using var engine = NewEngine();
         var list = await engine.ListContainersAsync(ContainerName(cluster), all: true, CancellationToken.None);
 
@@ -126,7 +126,7 @@ public class DockerDriverTests
         await CleanupAsync(cluster);
         var driver = NewDriver();
         var addr = new NodeAddress(Host, new NodePorts(25105, 25106, 25107));
-        await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, ct: CancellationToken.None);
+        await driver.EnsureNodeAsync(Topology(cluster, addr), "n1", addr, Secrets, Etcd, resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw", ct: CancellationToken.None);
 
         // Act — удаление и его повтор (все объекты уже исчезли)
         var removed = await driver.RemoveNodeAsync(cluster, "s1", "n1", CancellationToken.None);

@@ -101,12 +101,16 @@ public sealed class StubScaleDriver : IClusterDriver
     public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct)
         => Task.FromResult(Result<IReadOnlySet<(string, int)>>.Success(BusyPorts));
 
+    // t22: restPassword каждого EnsureNode-вызова (окно ротации не расширяется).
+    public readonly Dictionary<string, string> EnsuredRestPasswords = new();
+
     public Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
         InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
-        bool syncStrict, CancellationToken ct)
+        bool syncStrict, string restPassword, CancellationToken ct)
     {
         EnsuredNodes.Add($"{topology.Shard}/{nodeName}");
         NodeObjects.Add($"pgw-{topology.Cluster}-{topology.Shard}-{nodeName}");
+        EnsuredRestPasswords[$"{topology.Shard}/{nodeName}"] = restPassword;
         return Task.FromResult(Result.Success());
     }
 

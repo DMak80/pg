@@ -77,6 +77,12 @@ public sealed class NodeSupervisor(
             return Fail(supervision.Error!);
         var track = new Dictionary<string, long>(supervision.Value.Unreachable);
         var haFacts = HaFactState.FromStored(supervision.Value.LastFailover, supervision.Value.LastRebuild);
+        // Эффективная REST-пара тика (t22, arch/14 §5 I): pending окна ротации ??
+        // ключ кластера — единый резолвор всех EnsureNode-путей надзора.
+        var restPassword = RestRotation.EffectivePassword(snap.RestPassword, supervision.Value.RestPending)
+            ?? throw new ApplicationException(
+                $"supervise {cluster}: rest_password кластера неизвестен (нет ключа и pending) — " +
+                "запуск StepAsync до ensure секрета не поддерживается");
 
         var addresses = await ReadPortAllocAsync(cluster, ct);
         if (!addresses.IsSuccess)
@@ -88,7 +94,7 @@ public sealed class NodeSupervisor(
         var declaredSnap = restoring.Count == 0
             ? snap
             : snap with { Shards = snap.Shards.Where(s => !restoring.Contains(s.Name)).ToList() };
-        var declared = await EnsureDeclaredNodesAsync(cluster, declaredSnap, addresses.Value, track, haFacts, ct);
+        var declared = await EnsureDeclaredNodesAsync(cluster, declaredSnap, addresses.Value, track, haFacts, restPassword, ct);
         if (!declared.IsSuccess)
             return Fail(declared.Error!);
 
@@ -126,11 +132,11 @@ public sealed class NodeSupervisor(
 
             // Operator-triggered recreate (TO_RECREATE): оператор панелью просит
             // пересоздать ноду — rebuild немедленно, без ожидания NodeDeadSec.
-            var recreated = await RecreateMarkedNodesAsync(cluster, snap, shard, addresses.Value, track, haFacts, ct);
+            var recreated = await RecreateMarkedNodesAsync(cluster, snap, shard, addresses.Value, track, haFacts, restPassword, ct);
             if (!recreated.IsSuccess)
                 return Fail(recreated.Error!);
 
-            var shardTrack = await SuperviseShardAsync(cluster, snap, shard, addresses.Value, track, haFacts, ct);
+            var shardTrack = await SuperviseShardAsync(cluster, snap, shard, addresses.Value, track, haFacts, restPassword, ct);
             if (!shardTrack.IsSuccess)
                 return Fail(shardTrack.Error!);
 
@@ -232,7 +238,7 @@ public sealed class NodeSupervisor(
     private async Task<Result> EnsureDeclaredNodesAsync(
         string cluster, ClusterSnapshot snap,
         IReadOnlyDictionary<string, NodeAddress> addresses,
-        Dictionary<string, long> track, HaFactState haFacts, CancellationToken ct)
+        Dictionary<string, long> track, HaFactState haFacts, string restPassword, CancellationToken ct)
     {
         var objects = await driver.ListNodeObjectsAsync(cluster, ct);
         if (!objects.IsSuccess)
@@ -316,7 +322,7 @@ public sealed class NodeSupervisor(
                 var ensured = await driver.EnsureNodeAsync(
                     topology, node.Name, topology.Nodes[node.Name], secrets,
                     etcdForNodes ?? new EtcdEndpoints(endpoints), resources, tuning,
-                    snap.Config.SyncStrict, ct);
+                    snap.Config.SyncStrict, restPassword, ct);
                 if (!ensured.IsSuccess)
                     return ensured;
             }
@@ -469,7 +475,7 @@ public sealed class NodeSupervisor(
     private async Task<Result> RecreateMarkedNodesAsync(
         string cluster, ClusterSnapshot snap, ShardSpec shard,
         IReadOnlyDictionary<string, NodeAddress> addresses,
-        Dictionary<string, long> track, HaFactState haFacts, CancellationToken ct)
+        Dictionary<string, long> track, HaFactState haFacts, string restPassword, CancellationToken ct)
     {
         var marked = shard.Nodes.Where(n => n.State == NodeState.ToRecreate).ToList();
         if (marked.Count == 0)
@@ -548,7 +554,7 @@ public sealed class NodeSupervisor(
             var ensured = await driver.EnsureNodeAsync(
                 topology, node.Name, addr, secrets,
                 etcdForNodes ?? new EtcdEndpoints(endpoints), resources, tuning,
-                snap.Config.SyncStrict, ct);
+                snap.Config.SyncStrict, restPassword, ct);
             if (!ensured.IsSuccess)
                 return ensured;
 
@@ -590,7 +596,7 @@ public sealed class NodeSupervisor(
     private async Task<Result> SuperviseShardAsync(
         string cluster, ClusterSnapshot snap, ShardSpec shard,
         IReadOnlyDictionary<string, NodeAddress> addresses,
-        Dictionary<string, long> track, HaFactState haFacts, CancellationToken ct)
+        Dictionary<string, long> track, HaFactState haFacts, string restPassword, CancellationToken ct)
     {
         var scope = $"{cluster}-{shard.Name}";
         var scopeKvs = await RangeAsync($"/service/{scope}/", ct);
@@ -728,7 +734,7 @@ public sealed class NodeSupervisor(
                 var ensured = await driver.EnsureNodeAsync(
                     topology, name, addr, secrets,
                     etcdForNodes ?? new EtcdEndpoints(endpoints), resources, tuning,
-                    snap.Config.SyncStrict, ct);
+                    snap.Config.SyncStrict, restPassword, ct);
                 if (!ensured.IsSuccess)
                     return ensured;
                 var rebuilding = await PutAsync(

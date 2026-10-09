@@ -424,7 +424,7 @@ public sealed class AdoptionProcess(
 
                 var ensured = await driver.EnsureNodeAsync(
                     topology, nodeName, addr, secrets, etcdEndpoints, resources, tuning,
-                    snap.Config.SyncStrict, ct);
+                    snap.Config.SyncStrict, creds.RestPassword, ct);
                 if (!ensured.IsSuccess)
                     return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(ensured.Error!);
                 recreated = true;

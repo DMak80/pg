@@ -36,7 +36,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         new ClusterConfig(cluster, 2, cluster, null, ClusterState.Active),
         [new ShardSpec(shard, 1, $"host=shard1a dbname={cluster}", "shard1a:17001",
             [new NodeSpec(shard, "shard1a", NodeState.Running)])],
-        []);
+        [], RestPassword: "Key0Pass00000000000000000000000A");
 
     private static BackupsRuntimeOptions Options() => new(
         Enabled: true,
@@ -410,7 +410,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         public bool SupportsRunningInspection => inner.SupportsRunningInspection;
         public Task<Result<IReadOnlyList<HostInfo>>> GetHostsAsync(CancellationToken ct) => inner.GetHostsAsync(ct);
         public Task<Result<IReadOnlySet<(string Host, int Port)>>> GetBusyPortsAsync(CancellationToken ct) => inner.GetBusyPortsAsync(ct);
-        public Task<Result> EnsureNodeAsync(ShardTopology t, string n, NodeAddress a, InstallSecrets s, EtcdEndpoints e, NodeResources? r, PgTuneResult? tuning, bool syncStrict, CancellationToken ct) => inner.EnsureNodeAsync(t, n, a, s, e, r, tuning, syncStrict, ct);
+        public Task<Result> EnsureNodeAsync(ShardTopology t, string n, NodeAddress a, InstallSecrets s, EtcdEndpoints e, NodeResources? r, PgTuneResult? tuning, bool syncStrict, string restPassword, CancellationToken ct) => inner.EnsureNodeAsync(t, n, a, s, e, r, tuning, syncStrict, restPassword, ct);
         public Task<Result> RemoveNodeAsync(string c, string sh, string node, CancellationToken ct) => inner.RemoveNodeAsync(c, sh, node, ct);
         public Task<Result> StopNodeAsync(string c, string sh, string node, CancellationToken ct) => inner.StopNodeAsync(c, sh, node, ct);
         public Task<Result<DataPresence>> NodeDataPresenceAsync(string c, string sh, string node, CancellationToken ct) => inner.NodeDataPresenceAsync(c, sh, node, ct);
@@ -431,7 +431,7 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         [new ShardSpec(shard, 2, $"host=shard1a dbname={cluster}", "shard1a:17001",
             [new NodeSpec(shard, "shard1a", NodeState.Running),
              new NodeSpec(shard, "shard1b", NodeState.Running)])],
-        []);
+        [], RestPassword: "Key0Pass00000000000000000000000A");
 
     private async Task SeedTwoNodeAllocAsync()
     {
@@ -835,8 +835,38 @@ public class RestoreProcessTests(OwnedEtcdFixture fixture) : IClassFixture<Owned
         result.Value.Should().Be(ProcessOutcome.InProgress);
         inner.EnsuredNodes.Should().Contain("shard1/shard1a");
         inner.EnsuredNodes.Should().NotContain("shard1/shard1b");
+        // t22: без окна ротации — ключ кластера (эффективная пара restore-пути)
+        inner.EnsuredRestPasswords["shard1/shard1a"].Should().Be("Key0Pass00000000000000000000000A");
         (await ReadRestoresAsync("c1", "shard1")).Single(r => r.Id == op.Id)
             .State.Should().Be(RestoreStatus.Rejoining);
+    }
+
+    [Fact]
+    public async Task Rejoin_окно_ротации_ensure_несёт_pending_пару()
+    {
+        // Arrange — REJOINING; журнал работы несёт rest_pending (окно rolling
+        // REST-ротации): EnsureNode-путь restore окно НЕ расширяет — нода
+        // поднимается с NEW-парой (арх/14 §5 I).
+        var ct = TestContext.Current.CancellationToken;
+        await SeedAsync("c1");
+        var inner = new StubScaleDriver();
+        var driver = new TestDriver(inner, new FakeBackupEngine());
+        var process = BuildProcess(new FakeBackupS3(), driver,
+            patroni: new PatroniHandler { Ready = false });
+        var op = await SeedRestoreAsync("c1", "shard1", "20260911122002Z",
+            backupId: "20260910120000Z", state: RestoreStatus.Rejoining);
+        await fixture.Gateway.PutAsync(fixture.Endpoint, "/pgworker/work/c1",
+            """{"op":"rotate-app-password","phase":"rotate-rest-rolling","instance":"i","updated_unix":1,"rest_pending":"New0Pass00000000000000000000000B"}""",
+            null, ct);
+        (await _claims.TryClaimClusterAsync("c1", ct)).Value.Should().BeTrue();
+
+        // Act
+        var result = await process.TickAsync(BuildSnap(), await BackupsFromEtcdAsync("c1"), ct);
+
+        // Assert — драйвер получил pending-пару (не ключ кластера Key0…).
+        result.IsSuccess.Should().BeTrue(result.Error?.ToString());
+        inner.EnsuredRestPasswords["shard1/shard1a"].Should().Be("New0Pass00000000000000000000000B");
+        op.Should().NotBeNull();
     }
 
     [Fact]

@@ -302,7 +302,7 @@ internal static class Fakes
 
         public Task<Result> EnsureNodeAsync(ShardTopology topology, string nodeName, NodeAddress addr,
             InstallSecrets secrets, EtcdEndpoints etcd, NodeResources? resources, PgTuneResult? tuning,
-            bool syncStrict, CancellationToken ct)
+            bool syncStrict, string restPassword, CancellationToken ct)
         {
             lock (_gate)
             {

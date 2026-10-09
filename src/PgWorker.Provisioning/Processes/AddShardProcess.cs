@@ -127,7 +127,7 @@ public sealed partial class AddShardProcess(
             MoverPassword = creds.Value.MoverPassword,
         };
         var ensured = await EnsureNodesAsync(cluster, shard, topology, resources, tuning,
-            clusterSecrets, snap.Config.SyncStrict, ct);
+            clusterSecrets, snap.Config.SyncStrict, creds.Value.RestPassword, ct);
         if (!ensured.IsSuccess)
             return await FailAsync(cluster, ensured.Error!, "ensure-nodes", ct);
 
@@ -274,7 +274,8 @@ public sealed partial class AddShardProcess(
     // syncStrict — per-cluster опция из config (t06): bootstrap ноды несёт strict кластера.
     private async Task<Result> EnsureNodesAsync(
         string cluster, ShardSpec shard, ShardTopology topology, NodeResources? resources,
-        PgTuneResult tuning, InstallSecrets clusterSecrets, bool syncStrict, CancellationToken ct)
+        PgTuneResult tuning, InstallSecrets clusterSecrets, bool syncStrict,
+        string restPassword, CancellationToken ct)
     {
         foreach (var node in shard.Nodes)
         {
@@ -296,7 +297,7 @@ public sealed partial class AddShardProcess(
                 $"create/start ноды {node.Name}",
                 token => driver.EnsureNodeAsync(
                     topology, node.Name, topology.Nodes[node.Name], clusterSecrets, etcdEndpoints, resources,
-                    tuning, syncStrict, token),
+                    tuning, syncStrict, restPassword, token),
                 progress, logger ?? Microsoft.Extensions.Logging.Abstractions.NullLogger.Instance,
                 TimeSpan.FromTicks(Math.Max(
                     TimeSpan.TicksPerSecond, (watchdogWindow ?? TimeSpan.FromSeconds(15)).Ticks / 2)),
