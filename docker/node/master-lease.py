@@ -8,6 +8,7 @@
 import base64
 import json
 import os
+import ssl
 import sys
 import time
 import urllib.request
@@ -33,11 +34,17 @@ def load_env_file():
 
 
 def local_role():
-    """Фактическая роль этой ноды: GET /primary локального Patroni (для
-    on_start Patroni не передаёт роль аргументами)."""
+    """Фактическая роль этой ноды: GET /primary локального Patroni по https
+    (верификация серта по ca-файлу ноды; 127.0.0.1 — в SAN, t22) — для
+    on_start Patroni не передаёт роль аргументами."""
+    ca = os.getenv("PGW_NODE_CA", "")
+    if not ca:
+        print("master-lease: PGW_NODE_CA не задан — https /primary недоступен", flush=True)
+        return None
     try:
-        req = urllib.request.Request("http://127.0.0.1:8008/primary")
-        with urllib.request.urlopen(req, timeout=3) as r:
+        ctx = ssl.create_default_context(cafile=ca)
+        req = urllib.request.Request("https://127.0.0.1:8008/primary")
+        with urllib.request.urlopen(req, timeout=3, context=ctx) as r:
             return "master" if r.status == 200 else "replica"
     except Exception:
         return None  # Patroni недоступен — ничего не делаем
