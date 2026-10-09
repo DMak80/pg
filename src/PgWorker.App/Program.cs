@@ -294,7 +294,12 @@ builder.Services.AddSingleton(sp =>
             opts.Snapshots.Export.RetentionObjects,
             opts.Snapshots.Export.TimeoutSec,
             sp.GetRequiredService<ClaimStore>().InstanceId,
-            opts.Loops.SnapshotIntervalMin)
+            opts.Loops.SnapshotIntervalMin,
+            // Пульс S3-шагов выгрузки — канал snapshot (MarkSnapshotActivity,
+            // не reconcile): путь SnapshotLoop, arch/14 §6; период — полокна
+            // проверки watchdog (CheckIntervalSec-производный).
+            () => sp.GetRequiredService<HealthState>().MarkSnapshotActivity(),
+            TimeSpan.FromSeconds(Math.Max(1, opts.Loops.Watchdog.CheckIntervalSec / 2)))
         : null!;
 });
 
@@ -638,7 +643,9 @@ builder.Services.AddSingleton(sp => new PgWorker.Backups.BackupVerifyProcess(
     sp.GetRequiredService<IOptionsMonitor<PgWorkerOptions>>().CurrentValue.Backups.ToRuntime(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILoggerFactory>().CreateLogger<PgWorker.Backups.BackupVerifyProcess>(),
-    sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupVerify));
+    sp.GetRequiredService<Shared.Metrics.Worker.WorkerMetricsInstrumentation>().BackupVerify,
+    TimeSpan.FromSeconds(sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Loops.Watchdog.CheckIntervalSec),
+    sp.GetRequiredService<Shared.Core.Hosting.ILoopProgress>()));
 
 // Дрилл восстановимости (reliability t02, arch/19 §3.6): супервиз drill-джоба,
 // отбор/валидация/запуск, доводимый снос; runtime — как у verify.
@@ -820,7 +827,11 @@ file sealed class ReloadableBackupS3(IOptionsMonitor<PgWorkerOptions> options) :
                 current = DisabledBackupS3.Instance;
             else
             {
-                _current ??= (runtime, new BackupS3(runtime));
+                // Пер-попыточный таймаут — производный окна watchdog (полокна,
+                // arch/14 §6 / arch/19 §5): S3-вызов конечен, пульс S3Pulse
+                // вокруг него легитимен.
+                _current ??= (runtime, new BackupS3(runtime, TimeSpan.FromSeconds(
+                    Math.Max(1, options.CurrentValue.Loops.Watchdog.CheckIntervalSec / 2))));
                 current = _current.Value.Client;
             }
         }

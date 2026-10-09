@@ -3,31 +3,36 @@ using Shared.Core.Hosting;
 
 namespace PgWorker.Backups;
 
-/// <summary>S3-вызов с пульсом прогресса (канон t19 — «итерация жива»): прямой
-/// вызов на недоступном endpoint висит до HttpClient-таймаута (100 c) без
-/// отметок — watchdog (порт сноса 2×CheckIntervalSec = 30 c) гасит цикл
-/// посреди операции. Пульс Mark каждые 10 с (полокна проверки) держит
-/// активность; transient-отказ возвращает Result.Failed — следующий тик
-/// повторит (семантика вызова не меняется). Вызов обязан оставаться
-/// идемпотентным к отмене: отмена итерации не вводится — пульс не влияет на
-/// таймауты вызова (их несут процессы/CTS поверх).</summary>
+/// <summary>«Пульс конечного внешнего вызова» (arch/14 §6, arch/19 §5):
+/// одиночный S3-вызов не поллингуется (идемпотентный повтор внутри фазы
+/// бессмысленен) — его конечность гарантирует пер-попыточный таймаут клиента
+/// (BackupS3: AmazonS3Config.Timeout, полокна watchdog), а на время вызова
+/// цикл держит пульс активности по расписанию (период — полокна проверки,
+/// инъектируется вызывающими/тестами; дефолт 10 с при дефолтных опциях).
+/// Отметка-по-расписанию НЕ маскирует зависание: вызов умирает таймаутом →
+/// transient-фail тика → повтор следующим тиком/проходом/retry; пульс живёт
+/// ровно вокруг одного вызова (слепое окно = одна логическая S3-операция).</summary>
 public static class S3Pulse
 {
-    /// <summary>Период пульса: активность не реже полокна проверки watchdog.</summary>
-    public static readonly TimeSpan Period = TimeSpan.FromSeconds(10);
+    /// <summary>Дефолт периода: полокна проверки watchdog при дефолтных
+    /// опциях (CheckIntervalSec=15); вызывающие с известным окном передают
+    /// производный период явно.</summary>
+    public static readonly TimeSpan DefaultPeriod = TimeSpan.FromSeconds(10);
 
     public static async Task<Result<T>> CallAsync<T>(
-        ILoopProgress? progress, Func<CancellationToken, Task<Result<T>>> call, CancellationToken ct)
+        ILoopProgress? progress, Func<CancellationToken, Task<Result<T>>> call, CancellationToken ct,
+        TimeSpan? period = null)
     {
-        using var pulse = new Timer(_ => progress?.Mark(), null, TimeSpan.Zero, Period);
+        using var pulse = new Timer(_ => progress?.Mark(), null, TimeSpan.Zero, period ?? DefaultPeriod);
         return await call(ct);
     }
 
     // Негенерик-перегрузка: вызовы без значения (DeleteKeysAsync → Result).
     public static async Task<Result> CallAsync(
-        ILoopProgress? progress, Func<CancellationToken, Task<Result>> call, CancellationToken ct)
+        ILoopProgress? progress, Func<CancellationToken, Task<Result>> call, CancellationToken ct,
+        TimeSpan? period = null)
     {
-        using var pulse = new Timer(_ => progress?.Mark(), null, TimeSpan.Zero, Period);
+        using var pulse = new Timer(_ => progress?.Mark(), null, TimeSpan.Zero, period ?? DefaultPeriod);
         return await call(ct);
     }
 }

@@ -833,10 +833,10 @@ public sealed class WalStreamProcess(
     /// штатный контур, transient повторит следующий тик).</summary>
     private async Task<Result<T>> S3PulseAsync<T>(
         Func<CancellationToken, Task<Result<T>>> call, CancellationToken ct)
-        => await S3Pulse.CallAsync(progress, call, ct);
+        => await S3Pulse.CallAsync(progress, call, ct, (watchdogWindow ?? TimeSpan.FromSeconds(15)) / 2);
 
     // Негенерик-перегрузка: вызовы без значения (PutObjectAsync → Result).
     private async Task<Result> S3PulseAsync(
         Func<CancellationToken, Task<Result>> call, CancellationToken ct)
-        => await S3Pulse.CallAsync(progress, call, ct);
+        => await S3Pulse.CallAsync(progress, call, ct, (watchdogWindow ?? TimeSpan.FromSeconds(15)) / 2);
 }

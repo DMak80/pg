@@ -143,4 +143,27 @@ public sealed class LoopsVitalityTests
         health.Snapshot().LastReconcileTick.Should().BeNull();
         health.Snapshot().LastReconcileActivity.Should().NotBeNull();
     }
+
+
+    // AAA: orphan-sweep — тик ИЛИ пульс активности (зеркально snapshot): долгий
+    // S3-проход пульсирует MarkOrphanSweepActivity — heartbeat не stale, хотя
+    // тиков нет; тик без пульса — тоже валиден.
+    [Fact]
+    public void Snapshot_OrphanSweep_TakesLatestOfTickOrActivity()
+    {
+        // Arrange
+        var health = new HealthState(TimeProvider.System);
+        var sut = new PgWorkerLoopsVitality(Options, health);
+        health.MarkOrphanSweepTick();
+        var tickBeat = sut.Snapshot().First(b => b.Name == "orphan-sweep");
+        System.Threading.Thread.Sleep(10);
+        health.MarkOrphanSweepActivity(); // пульс НОВЕЕ тика
+
+        // Act
+        var beat = sut.Snapshot().First(b => b.Name == "orphan-sweep");
+
+        // Assert: heartbeat отражает позднейший факт (пульс), не застрял на тике.
+        beat.LastActivityAt.Should().BeAfter(tickBeat.LastActivityAt!.Value);
+    }
 }
+
