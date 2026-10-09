@@ -65,11 +65,12 @@ public sealed record BucketRoute(int Id, string? Owner, BucketMoveState? Status,
 
 /// <summary>Полный снапшот кластера: config + шарды + все N маршрутов бакетов
 /// + per-cluster креды (app — spec §4.1; mover/bucket_admin — t02, arch/14
-/// §3.3; null до первого ensure — потребители применяют env-fallback).</summary>
+/// §3.3; rest — t22 basic-auth Patroni REST; null до первого ensure —
+/// потребители применяют env-fallback).</summary>
 public sealed record ClusterSnapshot(ClusterConfig Config, IReadOnlyList<ShardSpec> Shards,
     IReadOnlyList<BucketRoute> Routing, AppCredentials? App = null,
     string? MoverPassword = null, string? BucketAdminUser = null,
-    string? BucketAdminPassword = null);
+    string? BucketAdminPassword = null, string? RestPassword = null);
 
 /// <summary>Тройка портов ноды, выделенная аллокатором (pg/patroni/doorman).</summary>
 public sealed record NodePorts(int Pg, int Patroni, int Doorman);

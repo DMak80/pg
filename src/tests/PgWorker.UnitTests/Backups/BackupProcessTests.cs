@@ -275,7 +275,8 @@ public class BackupProcessTests
             Calls++;
             return Task.FromResult(Result<ClusterCredentials>.Success(new ClusterCredentials(
                 new AppCredentials("app", "app-pw"), "mover-pw",
-                new AppCredentials("bucket_admin", "admin-pw"), "pw0000000000000000000000000000A")));
+                new AppCredentials("bucket_admin", "admin-pw"), "pw0000000000000000000000000000A",
+                "restpw000000000000000000000000000A")));
         }
     }
 

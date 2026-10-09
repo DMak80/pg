@@ -6,10 +6,12 @@ namespace PgWorker.Provisioning.Processes;
 
 /// <summary>Итог ensure кластерных кредов (t02, arch/14 §4 / arch/19 §7): app
 /// (приложения), mover (роль bucket_mover переездов), bucket_admin (DSN-точка
-/// входа), backup (роль backup_exec полных бэкапов t02-backups). Все значения
-/// гарантированно существуют в etcd после EnsureAsync.</summary>
+/// входа), backup (роль backup_exec полных бэкапов t02-backups), rest
+/// (basic-auth Patroni REST :8008, t22; username — константа patroni).
+/// Все значения гарантированно существуют в etcd после EnsureAsync.</summary>
 public sealed record ClusterCredentials(
-    AppCredentials App, string MoverPassword, AppCredentials BucketAdmin, string BackupPassword);
+    AppCredentials App, string MoverPassword, AppCredentials BucketAdmin, string BackupPassword,
+    string RestPassword);
 
 /// <summary>
 /// Ensure per-cluster кредов (t02, arch/14 §4 / arch/19 §7): чтение
@@ -33,10 +35,11 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
     private const string DefaultAppUser = "app";
     private const string DefaultBucketAdminUser = "bucket_admin";
 
-    // Сырое чтение шести ключей: null — ключ отсутствует (добирается txn-ом).
+    // Сырое чтение семи ключей: null — ключ отсутствует (добирается txn-ом).
     private sealed record RawSecrets(
         string? AppUser, string? AppPassword, string? MoverPassword,
-        string? BucketAdminUser, string? BucketAdminPassword, string? BackupPassword);
+        string? BucketAdminUser, string? BucketAdminPassword, string? BackupPassword,
+        string? RestPassword);
 
     public async Task<Result<ClusterCredentials>> EnsureAsync(
         string cluster, ClusterConfig config, CancellationToken ct)
@@ -58,6 +61,7 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
         var desiredAdminPassword = current.BucketAdminPassword
             ?? config.BucketAdminPassword ?? AppSecretGenerator.Generate();
         var desiredBackupPassword = current.BackupPassword ?? AppSecretGenerator.Generate();
+        var desiredRestPassword = current.RestPassword ?? AppSecretGenerator.Generate();
 
         var compare = new List<TxnCompare>();
         var put = new List<TxnOp>();
@@ -75,6 +79,7 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
         AddIfAbsent(BucketAdminUserKey(cluster), desiredAdminUser, current.BucketAdminUser is not null);
         AddIfAbsent(BucketAdminPasswordKey(cluster), desiredAdminPassword, current.BucketAdminPassword is not null);
         AddIfAbsent(BackupKey(cluster), desiredBackupPassword, current.BackupPassword is not null);
+        AddIfAbsent(RestKey(cluster), desiredRestPassword, current.RestPassword is not null);
 
         // Txn с failover по endpoints (образец ReadAsync ниже): упавший
         // endpoint → следующий; ни один не ответил — Failed(lastError).
@@ -113,18 +118,21 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
             $"mover_password: {final.Value.MoverPassword is not null}, " +
             $"bucket_admin_user: {final.Value.BucketAdminUser is not null}, " +
             $"bucket_admin_password: {final.Value.BucketAdminPassword is not null}, " +
-            $"backup_password: {final.Value.BackupPassword is not null})"));
+            $"backup_password: {final.Value.BackupPassword is not null}, " +
+            $"rest_password: {final.Value.RestPassword is not null})"));
     }
 
     private static bool IsComplete(RawSecrets s)
         => s.AppUser is { Length: > 0 } && s.AppPassword is { Length: > 0 }
            && s.MoverPassword is { Length: > 0 }
            && s.BucketAdminUser is { Length: > 0 } && s.BucketAdminPassword is { Length: > 0 }
-           && s.BackupPassword is { Length: > 0 };
+           && s.BackupPassword is { Length: > 0 }
+           && s.RestPassword is { Length: > 0 };
 
     private static ClusterCredentials ToCredentials(RawSecrets s)
         => new(new AppCredentials(s.AppUser!, s.AppPassword!), s.MoverPassword!,
-            new AppCredentials(s.BucketAdminUser!, s.BucketAdminPassword!), s.BackupPassword!);
+            new AppCredentials(s.BucketAdminUser!, s.BucketAdminPassword!), s.BackupPassword!,
+            s.RestPassword!);
 
     private static string UserKey(string cluster) => $"/clusters/{cluster}/app_user";
 
@@ -137,6 +145,8 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
     private static string BucketAdminPasswordKey(string cluster) => $"/clusters/{cluster}/bucket_admin_password";
 
     private static string BackupKey(string cluster) => $"/clusters/{cluster}/backup_password";
+
+    private static string RestKey(string cluster) => $"/clusters/{cluster}/rest_password";
 
     // Чтение шести ключей с failover по endpoints (паттерн ReadPortAllocAsync):
     // упавший endpoint → следующий; на живом — все шесть Get подряд.
@@ -187,13 +197,21 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
                 continue;
             }
 
+            var restPassword = await etcd.GetAsync(endpoint, RestKey(cluster), ct);
+            if (!restPassword.IsSuccess)
+            {
+                lastError = restPassword;
+                continue;
+            }
+
             return Result<RawSecrets>.Success(new RawSecrets(
                 TrimOrNull(user.Value?.Value),
                 TrimOrNull(password.Value?.Value),
                 TrimOrNull(mover.Value?.Value),
                 TrimOrNull(adminUser.Value?.Value),
                 TrimOrNull(adminPassword.Value?.Value),
-                TrimOrNull(backupPassword.Value?.Value)));
+                TrimOrNull(backupPassword.Value?.Value),
+                TrimOrNull(restPassword.Value?.Value)));
         }
 
         return Result<RawSecrets>.Failed(lastError!.Error!);

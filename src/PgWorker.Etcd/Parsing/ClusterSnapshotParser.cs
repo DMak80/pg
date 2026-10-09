@@ -34,6 +34,8 @@ public static class ClusterSnapshotParser
         public string? MoverPassword;
         public string? BucketAdminUser;
         public string? BucketAdminPassword;
+        // rest_password (t22, arch/14 §4 гр.1): basic-auth Patroni REST :8008
+        public string? RestPassword;
         public readonly Dictionary<string, ShardAcc> Shards = [];
         public readonly Dictionary<int, string> Routing = [];
         public readonly Dictionary<int, string> StatusRaw = [];
@@ -160,6 +162,10 @@ public static class ClusterSnapshotParser
                     acc.BucketAdminPassword = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
                     break;
 
+                case "rest_password" when segments.Length == 4:
+                    acc.RestPassword = string.IsNullOrWhiteSpace(kv.Value) ? null : kv.Value.Trim();
+                    break;
+
                 default:
                     // система развивается — неизвестный ключ не ошибка, просто игнор
                     break;
@@ -223,7 +229,7 @@ public static class ClusterSnapshotParser
             ? new AppCredentials(u, p)
             : null;
         return new ClusterSnapshot(config, shards, routing, app,
-            acc.MoverPassword, acc.BucketAdminUser, acc.BucketAdminPassword);
+            acc.MoverPassword, acc.BucketAdminUser, acc.BucketAdminPassword, acc.RestPassword);
     }
 
     private static ClusterConfig ParseConfig(string cluster, string? raw, List<string> errors)

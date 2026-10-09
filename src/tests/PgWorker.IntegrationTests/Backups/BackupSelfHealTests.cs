@@ -239,6 +239,7 @@ public class BackupSelfHealTests(EtcdFixture fixture)
             => Task.FromResult(Result<ClusterCredentials>.Success(new ClusterCredentials(
                 new AppCredentials("app", "pw"), "moverpw000000000000000000000000A",
                 new AppCredentials("bucket_admin", "bapw"),
-                "backuppw00000000000000000000000A")));
+                "backuppw00000000000000000000000A",
+                "restpw00000000000000000000000A")));
     }
 }
