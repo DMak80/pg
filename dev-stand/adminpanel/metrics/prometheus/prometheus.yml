@@ -34,10 +34,15 @@ scrape_configs:
     static_configs: [{targets: ["valkeyworker:8080", "valkeyworker-2:8080"]}]
   - job_name: adminpanel          # сеть стенда
     static_configs: [{targets: ["adminpanel:8080"]}]
-  - job_name: patroni             # эмуляторы :8008 (arch/18 §2.5)
+  - job_name: patroni             # эмуляторы :8008 (arch/18 §2.5) — TLS per-install CA
+    scheme: https
+    tls_config:
+      ca_file: /tls/ca.pem
     static_configs: [{targets: ["hc1a:8008", "hc1b:8008", "hc2a:8008", "hc2b:8008"]}]
   - job_name: patroni-nodes       # реальные ноды PgWorker (t15, arch/18 §2.5/§5.4)
-    scheme: http                  # Patroni REST без TLS — t22 вне скоупа
+    scheme: https
+    tls_config:
+      ca_file: /tls/ca.pem
     file_sd_configs:
       - files: ["/etc/prometheus/sd/patroni-nodes.json"]
         refresh_interval: 30s
