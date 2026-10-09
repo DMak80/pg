@@ -688,7 +688,15 @@ public sealed class PlainClusterDriver(
         bool syncStrict)
     {
         var env = new Dictionary<string, string>(
-            SpiloEnvBuilder.Build(topology, etcd, secrets, syncStrict, tuning, pgtuneExclude))
+            SpiloEnvBuilder.Build(topology, etcd, secrets, syncStrict, nodeName,
+                // t22 задача 17: BuildSpec выпускает серт ноды из RestCertificateCache
+                // и несёт эффективную rest-пару; до неё — временный материал.
+                new NodeRestTls(
+                    "-----BEGIN CERTIFICATE-----\n(t22-17)\n-----END CERTIFICATE-----\n",
+                    "-----BEGIN PRIVATE KEY-----\n(t22-17)\n-----END PRIVATE KEY-----\n",
+                    "-----BEGIN CERTIFICATE-----\n(t22-17)\n-----END CERTIFICATE-----\n",
+                    "(t22-17)"),
+                tuning, pgtuneExclude))
         {
             // Адрес этой ноды для lease-скрипта мастер-ключа (P11) и сверок.
             ["PGW_NODE_HOST"] = addr.Host,

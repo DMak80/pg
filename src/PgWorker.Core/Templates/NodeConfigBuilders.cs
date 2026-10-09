@@ -19,6 +19,13 @@ public sealed record InstallSecrets(string SuPassword, string StandbyPassword,
     string BucketAdminUser = "bucket_admin");
 
 /// <summary>
+/// REST-TLS материал ноды (t22, arch/14 §2.1): PEM серта/ключа/CA
+/// REST-эндпоинта (выпускает воркер из per-install CA, кеш процесса) +
+/// эффективная per-cluster REST-пара (rest_password; окно ротации — pending).
+/// </summary>
+public sealed record NodeRestTls(string CertPem, string KeyPem, string CaPem, string RestPassword);
+
+/// <summary>
 /// ENV контейнера pgworker-node для Spilo/Patroni. SPILO_CONFIGURATION —
 /// YAML-строка по эталону arch/configs/postgres/pg.env с правками PgWorker:
 /// P11 (канонические тайминги PatroniTimings: ttl=20/loop_wait=1/
@@ -43,7 +50,8 @@ public static class SpiloEnvBuilder
 {
     public static IReadOnlyDictionary<string, string> Build(
         ShardTopology topology, EtcdEndpoints etcd, InstallSecrets secrets,
-        bool syncStrict, PgTuneResult? tuning = null, IReadOnlySet<string>? excludeParams = null)
+        bool syncStrict, string nodeName, NodeRestTls rest,
+        PgTuneResult? tuning = null, IReadOnlySet<string>? excludeParams = null)
     {
         // Patroni DCS: Spilo строит его из env ETCD3_HOSTS (etcd v3 API; наш etcd
         // 3.5 без v2). Формат — "host:port" БЕЗ scheme (полный URL Patroni
@@ -51,12 +59,22 @@ public static class SpiloEnvBuilder
         var etcdHosts = string.Join(",", etcd.Http.Select(StripScheme));
         var etcdUrls = string.Join(",", etcd.Http);
         var masterKey = $"/clusters/{topology.Cluster}/shards/{topology.Shard}/master";
+        // Полное имя ноды — SAN серта и connect_address REST (арх/14 §2.4 п.6).
+        var nodeFullName = RestCertificateCache.NodeFullName(topology.Cluster, topology.Shard, nodeName);
 
         return new Dictionary<string, string>
         {
             // Идентификация Patroni-кластера (scope глобально уникален, arch/11 §2).
             ["SCOPE"] = topology.Scope,
             ["ETCD3_HOSTS"] = etcdHosts,
+
+            // REST-TLS ноды (t22, арх/14 §2.1): PEM с реальными переносами строк
+            // (Spilo пишет значение в файл буквально); хеш эффективной пары —
+            // факт для инспекции (rolling-ротация), сам пароль — в YAML ниже.
+            ["SSL_RESTAPI_CERTIFICATE"] = rest.CertPem,
+            ["SSL_RESTAPI_PRIVATE_KEY"] = rest.KeyPem,
+            ["SSL_RESTAPI_CA"] = rest.CaPem,
+            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash(rest.RestPassword),
 
             // Учётные данные PostgreSQL (bootstrap Spilo).
             ["PGUSER_SUPERUSER"] = "postgres",
@@ -86,8 +104,16 @@ public static class SpiloEnvBuilder
             // канон) при tuning != null, иначе прежний хардкод-набор; тайминги —
             // из канона PatroniTimings (полы Patroni 4.x, t09); strict —
             // per-cluster опция из config кластера (t06, arch/14 §2.1/§3).
+            // restapi (t22): connect_address DNS-именем (перекрывает шаблонный
+            // IP контейнера; api_url в DCS = DNS из SAN), authentication —
+            // per-cluster REST-пара (мутационные эндпоинты); listen не задаём.
             ["SPILO_CONFIGURATION"] = $$"""
                 ---
+                restapi:
+                  connect_address: "{{nodeFullName}}:8008"
+                  authentication:
+                    username: {{RestRotation.RestUsername}}
+                    password: "{{rest.RestPassword}}"
                 bootstrap:
                   dcs:
                     ttl: {{PatroniTimings.Ttl}}

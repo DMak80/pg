@@ -27,6 +27,6 @@ public sealed class RestCertificateCache(string caCertPem, string caKeyPem)
 
     // Канон полного имени ноды (arch/14 §2.1): pgw-<C>-<X>-<n> — alias в
     // per-cluster сети, имя контейнера в pgw-metrics, connect_address REST.
-    internal static string NodeFullName(string cluster, string shard, string nodeName)
+    public static string NodeFullName(string cluster, string shard, string nodeName)
         => $"pgw-{cluster}-{shard}-{nodeName}";
 }
