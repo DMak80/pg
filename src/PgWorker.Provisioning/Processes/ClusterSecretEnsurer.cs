@@ -159,7 +159,7 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
 
     private static string RestKey(string cluster) => $"/clusters/{cluster}/rest_password";
 
-    // Чтение шести ключей с failover по endpoints (паттерн ReadPortAllocAsync):
+    // Чтение семи ключей с failover по endpoints (паттерн ReadPortAllocAsync):
     // упавший endpoint → следующий; на живом — все шесть Get подряд.
     private async Task<Result<RawSecrets>> ReadAsync(string cluster, CancellationToken ct)
     {
