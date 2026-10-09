@@ -37,7 +37,7 @@
 | `2379/tcp` | Patroni/HAProxy → etcd client API |
 | `2380/tcp` | etcd ↔ etcd (peer gossip/raft) |
 | `5432/tcp` | Patroni(leader) → Patroni(replica) streaming replication; HAProxy → PG |
-| `8008/tcp` | HAProxy/мониторинг → Patroni REST API |
+| `8008/tcp` | HAProxy/мониторинг → Patroni REST API — HTTPS (серт kfw-install-ca; unsafe-эндпоинты — basic-auth per-cluster) |
 | `22/tcp` | ssh (админ) |
 
 **Важно:** все эти адреса должны быть **стабильны** (статические IP или постоянные DNS).
