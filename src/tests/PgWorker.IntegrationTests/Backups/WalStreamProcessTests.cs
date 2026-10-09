@@ -63,7 +63,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         Shared.Core.Hosting.ILoopProgress? progress = null)
         => new(
             fixture.Gateway, [fixture.Endpoint], driver,
-            new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
+            new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(FakePatroni.CreateProbeClient())),
             sql, s3,
             new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]),
             _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
@@ -295,7 +295,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var lags = new List<(string Cluster, string Shard, long? Lag)>();
         var process = new WalStreamProcess(
             fixture.Gateway, [fixture.Endpoint], driver,
-            new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
+            new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(FakePatroni.CreateProbeClient())),
             sql, s3, new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]),
             _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => Options(), new InstallSecrets("su", "sb", "adm", "mv"),
@@ -334,7 +334,7 @@ public class WalStreamProcessTests(EtcdFixture fixture)
         var lags = new List<(string Cluster, string Shard, long? Lag)>();
         var process = new WalStreamProcess(
             fixture.Gateway, [fixture.Endpoint], driver,
-            new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(new HttpClient())),
+            new ShardEndpoints(fixture.Gateway, [fixture.Endpoint], new ShardProbe(FakePatroni.CreateProbeClient())),
             sql, s3, new WalStatusWriter(fixture.Gateway, [fixture.Endpoint]),
             _claims, new WorkJournal("/pgworker", fixture.Gateway, [fixture.Endpoint]),
             () => Options(), new InstallSecrets("su", "sb", "adm", "mv"),

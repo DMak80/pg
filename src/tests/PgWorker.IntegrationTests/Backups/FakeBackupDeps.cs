@@ -1,5 +1,10 @@
 using System.Collections.Concurrent;
 using System.Net;
+using System.Security.Cryptography.X509Certificates;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Logging;
 using PgWorker.Backups;
 using PgWorker.Backups.Sql;
 using PgWorker.Core;
@@ -223,55 +228,58 @@ public sealed class FakeBackupS3 : IBackupS3
 
 }
 
-/// <summary>Фейк Patroni REST (t27): HttpListener на свободном порту (зонд
+/// <summary>Фейк Patroni REST (t27): Kestrel https на свободном порту (зонд
 /// TcpListener(0) — никаких литералов), отдаёт заданный /cluster-JSON; teardown
-/// при любом исходе. Живёт до DisposeAsync — тест управляет появлением sync.</summary>
+/// при любом исходе. Живёт до DisposeAsync — тест управляет появлением sync.
+/// t22: :8008 — TLS; серт из статической тестовой CA, клиенты проб берутся
+/// CreateProbeClient() (доверие цепочкой, hostname не сверяется).</summary>
 public sealed class FakePatroni : IAsyncDisposable
 {
-    private readonly HttpListener _listener = new();
+    // Тестовая CA фейка: один сертификат SAN 127.0.0.1 на процесс тестов.
+    private static readonly (string CaPem, string CaKeyPem) Ca = E2e.FakePatroniPki.Ca;
+
+    private WebApplication _app = null!;
 
     private FakePatroni(int port)
     {
         Port = port;
-        _listener.Prefixes.Add($"http://127.0.0.1:{port}/");
     }
 
     public int Port { get; }
 
-    private string Body { get; set; } = "";
+    private string Body { get; init; } = "";
+
+    // HttpClient ShardProbe-путей теста: https с доверием CA фейка.
+    public static HttpClient CreateProbeClient()
+        => new(new SocketsHttpHandler
+        {
+            SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+            {
+                RemoteCertificateValidationCallback = (_, certificate, _, _) =>
+                {
+                    var cert = certificate as X509Certificate2
+                        ?? (certificate is null ? null : new X509Certificate2(certificate));
+                    return cert is not null
+                        && Shared.Tls.TlsChain.ValidateChain(cert, E2e.FakePatroniPki.CaCert);
+                },
+            },
+        });
 
     public static async Task<FakePatroni> StartAsync(string body, CancellationToken ct)
     {
         var port = FreePort();
         var fake = new FakePatroni(port) { Body = body };
-        fake._listener.Start();
-        _ = fake.ServeLoopAsync(ct);
-        await Task.Delay(50, ct); // листенер начал принимать
-        return fake;
-    }
 
-    private async Task ServeLoopAsync(CancellationToken ct)
-    {
-        while (!ct.IsCancellationRequested)
-        {
-            try
-            {
-                var context = await _listener.GetContextAsync();
-                var buffer = System.Text.Encoding.UTF8.GetBytes(Body);
-                context.Response.ContentType = "application/json";
-                context.Response.ContentLength64 = buffer.Length;
-                await context.Response.OutputStream.WriteAsync(buffer, ct);
-                context.Response.Close();
-            }
-            catch (Exception) when (ct.IsCancellationRequested)
-            {
-                break; // штатная остановка теста
-            }
-            catch (HttpListenerException)
-            {
-                break;
-            }
-        }
+        var builder = WebApplication.CreateBuilder();
+        builder.Logging.ClearProviders();
+        builder.WebHost.ConfigureKestrel(o =>
+            o.Listen(IPAddress.Loopback, port,
+                lo => lo.UseHttps(E2e.FakePatroniPki.ServerCert)));
+        var app = builder.Build();
+        app.MapGet("/cluster", () => Results.Text(fake.Body, "application/json"));
+        await app.StartAsync(ct);
+        fake._app = app;
+        return fake;
     }
 
     // Свободный порт: зонд TcpListener(0) (динамические порты везде).
@@ -291,7 +299,7 @@ public sealed class FakePatroni : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
-        _listener.Close();
-        await Task.CompletedTask;
+        await _app.StopAsync();
+        await _app.DisposeAsync();
     }
 }
