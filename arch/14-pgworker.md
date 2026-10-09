@@ -174,7 +174,7 @@ docker-restart-политики (не deploy-канон) процесс оста
 | `POST /api/clusters/{c}/moves/finalize` | заявка уборки старого шарда | 02 §9.7.3 |
 | `POST /api/clusters/{c}/moves/abort` | заявка отмены переезда | 02 §9.7.4 |
 | `DELETE /api/clusters/{c}/moves/{bucket}` | отмена стоящей заявки (del ключа) | 02 §9.7.5 |
-| `POST /api/clusters/{c}/secrets/rotate` | заявка ротации per-cluster секретов (app + bucket_admin + mover) | 02 §9.8 |
+| `POST /api/clusters/{c}/secrets/rotate` | заявка ротации per-cluster секретов (app + bucket_admin + mover + `rest_password`) | 02 §9.8 |
 | `PUT /api/clusters/{c}/config` | мутация per-cluster опции `synchronous_mode_strict` | 02 §9.10: RMW-txn по mod_revision; гварды — кластер Active |
 | `POST /api/clusters/{c}/shards/{x}/restore` | заявка восстановления шарда из бэкапа (PITR latest/target_time, source-override; `confirm` = имя шарда) | пишет статус `/pgworker/backups/<C>/<X>/restore/<id>` сам (клэйм `<C>`; arch/19 §3.5): гварды — кластер Active, шард заявлен, максимум один активный restore на шард |
 | `POST /api/clusters/{c}/backups/policy` | приём per-cluster политики бэкапов (t06; замещение целиком — arch/19 §4); тело дополнительно принимает `"drill":{"interval_days":int}` (reliability t02; валидация [0..3650]; поле отсутствует → секция `drill` в записываемую policy не кладётся — кластер живёт на глобальном дефолте; замещение целиком сохраняется) | пишет ключ `/pgworker/backups/<C>/policy` сам (клэйм `<C>`; arch/19 §4) |
@@ -642,7 +642,7 @@ arch/adminpanel/02 §2.3.1); координационные `leader`/`claims`/`i
 | `/pgworker/instances/<id>` | lease TTL 15 с | живость инстансов (диагностика; необязательно для работы) |
 | `/pgworker/api/<id>` | lease TTL 15 с | **дискавери API воркера** (§1.1): `{"url":"https://<host>:<port>","instance":"<id>","since_unix":…,"cert_thumbprint"?}` — ставит сам инстанс при старте; ключ жив = инстанс жив и его URL валиден. Читает панель (единственный способ найти API воркера) и оператор; в UI — только сводка инстансов на грани «Воркеры» (03 §3) |
 | `/pgworker/moves/<C>/bucket_<i>` | обычный | заявка на плановый переезд/откат/уборку/отмену (t01): `{"op":"move\|rollback\|finalize\|abort","to":…,"old_shard":…,"skip_reverse":…,"resume":…,"force":…,"requested_unix":…,"requested_by":…}`. Успех или перманентный валидационный отказ → ключ удаляется; transient-сбой → остаётся, фазы — в статус-ключе бакета. Обрабатывается только держателем клэйма `<C>`; одновременно — старейшая заявка кластера. Deprovisioning D2 чистит `/pgworker/moves/<C>/` (префикс). |
-| `/pgworker/rotations/<C>` | обычный | заявка на ротацию per-cluster секретов ВСЕГО кластера — app, bucket_admin, bucket_mover (панель, клэйм-txn `version==0` + put): `{"requested_unix":<unix>,"requested_by":"<username панели>"}`. Выполняет держатель клэйма `<C>` (§5 I): ALTER ROLE трёх ролей на мастере каждого поднятого шарда → атомарный txn-коммит (put `app_password`+`mover_password`+`bucket_admin_password`, перезапись dsn-ключей, del заявки). Уже стоит → панель получает 409 (идемпотентность повтора). Deprovisioning D2 удаляет ключ точечно. |
+| `/pgworker/rotations/<C>` | обычный | заявка на ротацию per-cluster секретов ВСЕГО кластера — app, bucket_mover, bucket_admin И `rest_password` (панель, клэйм-txn `version==0` + put): `{"requested_unix":<unix>,"requested_by":"<username панели>"}`. Выполняет держатель клэйма `<C>` (§5 I): ALTER ROLE трёх ролей на мастере каждого поднятого шарда + rolling-пересоздание нод для `rest_password` → атомарный txn-коммит (put `app_password`+`mover_password`+`bucket_admin_password`+`rest_password`, перезапись dsn-ключей, del заявки; для rest — rolling-пересоздание + txn-коммит). Уже стоит → панель получает 409 (идемпотентность повтора). Deprovisioning D2 удаляет ключ точечно. |
 | `/pgworker/etcd-snapshots` | обычный | **статус выгрузки снапшотов etcd в S3** (reliability t08): `{"enabled":bool,"state":"OK"\|"FAILED","last_uploaded_unix":N,"last_object":"etcd/snapshot-<id>.db","last_sha256":"<hex>","size_bytes":N,"interval_min":360,"error"?:"…"}`. Каждый снятый слепок выгружается; статус-ключ обновляется после каждой выгрузки. `last_uploaded_unix` — семантика «покрытия», не времени put-запроса: метка снятия последнего слепка, чьё содержимое подтверждённо доставлено в S3 фактическим upload'ом; поле двигается каждым успешным проходом sink'а (иначе детект отставания и stale-алерт врут на живом контуре). `last_object` — объект последней выгрузки, реально лежащий в S3; `last_sha256` — sha256 этой выгрузки (наблюдаемость). Пишет ТОЛЬКО инстанс PgWorker, выполнивший экспорт-операцию (лидер снапшотов или процесс в точках изменений — put одним ключом без RMW); панель читает (adminpanel/02 §2.3.1). Наблюдаемость; источником для восстановления НЕ является (etcd мёртв — ключа нет). |
 
 Смежный ключ вне префикса `/pgworker/` — **`/workers/api_tls/pgworker`**
@@ -669,6 +669,15 @@ compare (routing=старое значение, config.mod_revision) — «пр�
    `bucket_admin_password` (DSN-точка входа; попадают в dsn-ключ шарда и env
    контейнера ноды) — t02: канон для всех трёх ролей один, ensure P1.5/R1/
    adopt txn put-if-absent (для bucket_admin вход — config JSON или генерация).
+   Четвёртый per-cluster секрет — `rest_password` (etcd, ensure txn
+   put-if-absent, `AppSecretGenerator`, 32 симв): basic-auth пара Patroni REST
+   `:8008` (мутационные эндпоинты; username — константа `patroni`, отдельного
+   user-ключа нет: Patroni требует пару username+password в конфиге каждой
+   ноды). Ротация — процесс I (заявка панели, применение — rolling-пересоздание
+   нод, §5 I). Экспозиция — класс `app_password`/`mover_password` (etcd без
+   per-key ACL; парсеры панели его не разбирают, в UI не попадает); вынос
+   секретов из etcd — `t02-external-secret-manager` (pgworker-трек), класс
+   экспозиции не расширяется.
 2. **per-install, из env PgWorker** (не в git, не в etcd — P12/P17):
    `PGW_PG_SUPERUSER_PASSWORD`, `PGW_PG_STANDBY_PASSWORD`,
    `PGW_BUCKET_ADMIN_PASSWORD`, `PGW_BUCKET_MOVER_PASSWORD` — с t02 это
@@ -686,6 +695,11 @@ compare (routing=старое значение, config.mod_revision) — «пр�
    etcd-ключа — материал входящей грани, не исходящих коммуникаций
    (docker/PG/etcd-транспорт воркера его не использует; валидация при
    записи — adminpanel/02 §9.9); `PGW_API_KEY` исключён (заменён mTLS).
+   REST-TLS нод: `PGW_REST_TLS_CA`/`PGW_REST_TLS_CA_KEY` (`…_PATH`-варианты
+   из TLS-тома `/tls`) — per-install API-CA и его ключ для выпуска серверных
+   сертов REST-эндпоинтов нод (`SSL_RESTAPI_*`, §2.1); отсутствие/неполнота
+   пары — fail-fast валидации старта воркера (HTTP-режим провижининга не
+   существует; WAF-фикстуры передают тестовый CA — двойной семантики нет).
 
 ---
 
@@ -1449,7 +1463,15 @@ PgWorker:Docker { Mode: Plain|Swarm, Hosts[{Name,Endpoint}],
                   SwarmManager, PortRange{From,To}, Images{Node}, EnableDoorman,
                   Tls {CaPem|CaPath, ClientCertPem|Path, ClientKeyPem|Path},   # §2.2.1
                   Ssh {KeyPem|KeyPath, RemoteDaemonHost=127.0.0.1,
-                       RemoteDaemonPort=2376, FingerprintSha256?} }            # §2.2.1
+                       RemoteDaemonPort=2376, FingerprintSha256?},             # §2.2.1
+                  RestTls {CaPem|CaPath, CaKeyPem|CaKeyPath} }                 # REST-TLS :8008 (§2.1/§4):
+                                                                               # per-install CA + ключ выпуска
+                                                                               # серверных сертов REST-эндпоинтов
+                                                                               # нод; env-имена PGW_REST_TLS_*;
+                                                                               # оба обязательны — fail-fast
+                                                                               # старта (симметрия запрета
+                                                                               # Pgtune:DbType=desktop);
+                                                                               # WAF-фикстуры — тестовый CA
 PgWorker:Loops { ScanIntervalSec=5, KeepaliveSec=5, SnapshotIntervalMin=360,
                  ErrorDelayMs=2000,
                  Watchdog { Enabled=true, Multiplier=2, CheckIntervalSec=15, StopDelaySec=1 } }
@@ -1515,7 +1537,8 @@ PgWorker:Api { AdvertiseUrl, EnableSeedEndpoint=false,
                   # URL API (достижимый панелью) в /pgworker/api/<id> — https://;
                   # демо-сид-эндпоинт за флагом; AllowInsecureHttp — только WAF-тесты
 # секреты — env PGW_* (§4): per-install пароли + PGW_API_TLS_* / PGW_DOCKER_TLS_* /
-#   PGW_DOCKER_SSH_* (t03); PGW_API_KEY исключён (§1.1 — mTLS вместо X-Api-Key)
+#   PGW_DOCKER_SSH_* (t03); PGW_REST_TLS_* — REST-TLS нод (§2.1); PGW_API_KEY
+#   исключён (§1.1 — mTLS вместо X-Api-Key)
 ```
 
 Флаг `EnableDoorman=false` (риск R1): узел без пулера — компромисс для
