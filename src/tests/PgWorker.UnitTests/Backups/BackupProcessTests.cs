@@ -256,7 +256,11 @@ public class BackupProcessTests
         public Task<Result<IReadOnlyDictionary<string, DiscoveredNode>>> InspectNodesAsync(
             string cluster, IReadOnlyCollection<string> nodeNames, CancellationToken ct) => throw NotSupported();
         // ExecContainerAsync — реализован выше (pg_hba-гвард object-нод)
-        public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct) => throw NotSupported();
+            public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
+        string cluster, string shard, string nodeName, CancellationToken ct) => Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Success(
+            (IReadOnlyDictionary<string, string>)new Dictionary<string, string>()));
+
+public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, CancellationToken ct) => throw NotSupported();
 
         // WAL-агенты (t03): в тестах джобов не используются.
         public Task<Result> EnsureBackupAgentAsync(

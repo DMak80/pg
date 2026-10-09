@@ -430,6 +430,7 @@ builder.Services.AddSingleton(sp => new NodeSupervisor(
         sp.GetRequiredService<IOptions<PgWorkerOptions>>().Value.Thresholds.PatroniBootSec),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<InstallSecrets>(),
+    sp.GetRequiredService<IClusterSecretEnsurer>(),
     sp.GetRequiredService<IAppParamsEnsurer>(),
     sp.GetRequiredService<PgtuneInputsFactory>(),
     sp.GetRequiredService<PgtuneSettings>(),

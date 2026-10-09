@@ -36,6 +36,7 @@ public sealed class NodeSupervisor(
     ThresholdsOptions thresholds,
     TimeProvider clock,
     InstallSecrets secrets,
+    IClusterSecretEnsurer appSecret,
     IAppParamsEnsurer appParams,
     PgtuneInputsFactory pgtune,
     PgtuneSettings pgtuneSettings,
@@ -77,12 +78,17 @@ public sealed class NodeSupervisor(
             return Fail(supervision.Error!);
         var track = new Dictionary<string, long>(supervision.Value.Unreachable);
         var haFacts = HaFactState.FromStored(supervision.Value.LastFailover, supervision.Value.LastRebuild);
-        // Эффективная REST-пара тика (t22, arch/14 §5 I): pending окна ротации ??
-        // ключ кластера — единый резолвор всех EnsureNode-путей надзора.
-        var restPassword = RestRotation.EffectivePassword(snap.RestPassword, supervision.Value.RestPending)
-            ?? throw new ApplicationException(
-                $"supervise {cluster}: rest_password кластера неизвестен (нет ключа и pending) — " +
-                "запуск StepAsync до ensure секрета не поддерживается");
+        // Ensure per-cluster кредов + эффективная REST-пара тика (t22, arch/14
+        // §5 I): ensure идемпотентен (put-if-absent) — легаси-кластер без
+        // rest_password получает ключ ДО любого EnsureNode-пути тика; пара —
+        // pending окна ротации ?? ensure-результат (НЕ снапшот тика: он читан
+        // до ensure).
+        var ensuredSecrets = await appSecret.EnsureAsync(cluster, snap.Config, ct);
+        if (!ensuredSecrets.IsSuccess)
+            return Fail(ensuredSecrets.Error!);
+        var restPassword = RestRotation.EffectivePassword(
+            ensuredSecrets.Value.RestPassword, supervision.Value.RestPending)
+            ?? ensuredSecrets.Value.RestPassword;
 
         var addresses = await ReadPortAllocAsync(cluster, ct);
         if (!addresses.IsSuccess)
@@ -114,6 +120,17 @@ public sealed class NodeSupervisor(
                 return Fail(migrated.Error!);
         }
 
+        // 1.7) Общий шаг пересоздания нод REST-TLS (t22, arch/14 §5 C): вход
+        // «конвергенция» (легаси-контейнеры без SSL_RESTAPI_*) и вход «ротация»
+        // (hash env != hash(pending) журнала) — единая механика, ≤1 пересоздание
+        // на тик кластера, лидер — soft-switchover со сносом следующим тиком,
+        // volume сохраняется. РАНЬШЕ проб шарда (флап проб легаси-http нод не
+        // успевает породить rebuild/UNREACHABLE).
+        var restRecreated = await RecreateRestTlsNodesAsync(
+            cluster, snap, addresses.Value, restoring, restPassword, supervision.Value.RestPending, ct);
+        if (!restRecreated.IsSuccess)
+            return Fail(restRecreated.Error!);
+
         // 2) Пробы + сценарии недоступности (трек в work-журнале, план №4).
         var deadShards = new List<string>();
 
@@ -132,7 +149,8 @@ public sealed class NodeSupervisor(
 
             // Operator-triggered recreate (TO_RECREATE): оператор панелью просит
             // пересоздать ноду — rebuild немедленно, без ожидания NodeDeadSec.
-            var recreated = await RecreateMarkedNodesAsync(cluster, snap, shard, addresses.Value, track, haFacts, restPassword, ct);
+            var recreated = await RecreateMarkedNodesAsync(cluster, snap, shard, addresses.Value, track, haFacts,
+                restPassword, supervision.Value.RestPending, ct);
             if (!recreated.IsSuccess)
                 return Fail(recreated.Error!);
 
@@ -221,7 +239,7 @@ public sealed class NodeSupervisor(
             if (restoring.Contains(shard.Name))
                 continue; // t05 §3.4: конфиг DCS восстановит свежеподнятая нода
             var converged = await ConvergeDcsConfigAsync(cluster, shard, addresses.Value,
-                snap.Config.SyncStrict, track, haFacts, restPassword, ct);
+                snap.Config.SyncStrict, track, haFacts, restPassword, supervision.Value.RestPending, ct);
             if (!converged.IsSuccess)
                 return Fail(converged.Error!);
         }
@@ -355,7 +373,7 @@ public sealed class NodeSupervisor(
     private async Task<Result> ConvergeDcsConfigAsync(
         string cluster, ShardSpec shard, IReadOnlyDictionary<string, NodeAddress> addresses,
         bool syncStrict, Dictionary<string, long> track, HaFactState haFacts,
-        string restPassword, CancellationToken ct)
+        string restPassword, string? restPending, CancellationToken ct)
     {
         var probeNode = addresses
             .Where(p => p.Key.StartsWith($"{shard.Name}/", StringComparison.Ordinal))
@@ -387,6 +405,16 @@ public sealed class NodeSupervisor(
             // тика, транзиент-ретрай (как в EnsureNode-путях).
             var tuning = pgtune.Create(resources);
             desired = PgParametersCanon.Desired(tuning, pgtuneSettings.ExcludeParams);
+        }
+
+        // Гвард окна REST-ротации (t22, arch/14 §5 I): до txn-коммита воркер не
+        // инициирует PATCH /config кластера по REST — транзиент-skip тика,
+        // конвергенция повторится после закрытия окна.
+        if (restPending is not null)
+        {
+            await journal.WritePhaseAsync(cluster, "supervise", "dcs-converge-skipped-rest-window",
+                claims.InstanceId, null, ct);
+            return Result.Success();
         }
 
         var divergence = DcsConfigConvergence.Analyze(config.Value, syncStrict, desired);
@@ -465,6 +493,120 @@ public sealed class NodeSupervisor(
             : Result<FailoverAcceleration>.Failed(deleted.Error!);
     }
 
+    // Общий шаг пересоздания нод REST-TLS (t22, arch/14 §5 C/§5 I): ДВА входа —
+    // (а) конвергенция живых канонических нод, созданных до TLS (нет
+    // SSL_RESTAPI_CERTIFICATE в env); (б) rolling-ротация REST-пары (hash env !=
+    // hash(pending) журнала). Единая механика: инспекция env контейнера, ≤1
+    // пересоздание на тик кластера, живой лидер — сначала graceful-switchover
+    // (снос следующим тиком, семантика TO_RECREATE-soft), мёртвая нода — сразу,
+    // volume сохраняется (stop + rm force БЕЗ RemoveNodeAsync — он сносит
+    // pgw-…-data), гвард кворума (свидетель-план помимо кандидата). В окне
+    // ротации её кандидаты доминируют (после закрытия недомигрированные
+    // дорабатываются входом конвергенции); Swarm (SupportsRunningInspection=
+    // false) — шаг no-op (заглушка инспекции). Источник пароля пересоздания —
+    // результат ensure (легаси кластер: snap.RestPassword == null до ensure),
+    // НЕ снапшот тика.
+    private async Task<Result> RecreateRestTlsNodesAsync(
+        string cluster, ClusterSnapshot snap,
+        IReadOnlyDictionary<string, NodeAddress> addresses,
+        HashSet<string> restoring, string restPassword, string? restPending, CancellationToken ct)
+    {
+        if (!driver.SupportsRunningInspection)
+            return Result.Success(); // Swarm: инспекция env — заглушка, шаг no-op
+
+        foreach (var shard in snap.Shards.Where(s => s.Dsn is not null && !s.ToRemove))
+        {
+            if (restoring.Contains(shard.Name))
+                continue; // владелец шарда — restore-процесс
+
+            foreach (var node in shard.Nodes)
+            {
+                if (node.State is NodeState.Quarantined or NodeState.Removing)
+                    continue; // карантин/демонтаж — вне надзора
+                if (!addresses.TryGetValue($"{shard.Name}/{node.Name}", out var addr) || addr.Object is not null)
+                    continue; // записи нет / усыновлённая (object) — чужой контейнер (R9)
+
+                var env = await driver.InspectNodeEnvAsync(cluster, shard.Name, node.Name, ct);
+                if (!env.IsSuccess)
+                    return env;
+
+                // Кандидат по входу: ротация (окно открыто) — hash env !=
+                // hash(pending); конвергенция (окна нет) — легаси-контейнер
+                // без серта.
+                var candidate = restPending is not null
+                    ? !string.Equals(
+                        env.Value.GetValueOrDefault(RestRotation.EnvPasswordHash),
+                        RestRotation.PasswordHash(restPending), StringComparison.Ordinal)
+                    : !env.Value.ContainsKey(RestRotation.EnvCert);
+                if (!candidate)
+                    continue;
+
+                // Гвард кворума: свидетель-план (не карантин/демонтаж) помимо
+                // кандидата — иначе снос оставит шард без источника basebackup.
+                if (!shard.Nodes.Any(n => n.Name != node.Name
+                        && n.State is not NodeState.Quarantined and not NodeState.Removing))
+                    continue;
+
+                // Пароль пересоздания — эффективная пара тика (ensure-результат
+                // либо pending; снапшот не используется).
+                var effective = restPassword;
+
+                var scope = $"{cluster}-{shard.Name}";
+                var scopeKvs = await RangeAsync($"/service/{scope}/", ct);
+                if (!scopeKvs.IsSuccess)
+                    return scopeKvs;
+                var leader = ClusterSnapshotParser.ParseService(scopeKvs.Value).FirstOrDefault()?.LeaderName;
+
+                // Живой лидер — soft-switchover (снос следующим тиком; снапшот
+                // тика устареет сам). Мёртвая нода (в т.ч. мёртвый лидер) — сразу:
+                // EnsureNodeAsync поднимет контейнер, Patroni вернёт ноду репликой.
+                if (leader == node.Name && await probe.IsAliveAsync(addr, ct))
+                {
+                    var switched = await probe.SwitchoverAsync(addr, node.Name, effective, ct);
+                    if (!switched.IsSuccess)
+                        return switched;
+                    await journal.WritePhaseAsync(cluster, "supervise",
+                        $"rest-tls-switchover/{shard.Name}/{node.Name}", claims.InstanceId, null, ct);
+                    return Result.Success(); // одно действие на тик кластера
+                }
+
+                // Пересоздание с сохранением volume: stop + rm force движка
+                // (паттерн port-mismatch-ветки EnsureNodeAsync; RemoveNodeAsync
+                // снёс бы data-volume). Движок хоста ноды; null — transient.
+                var engine = driver.EngineFor(addr.Host);
+                if (engine is null)
+                    return Result.Failed(new ApplicationException(
+                        $"supervise {cluster}: docker-хост {addr.Host} не известен (rest-tls шаг)"));
+                var containerName = $"pgw-{cluster}-{shard.Name}-{node.Name}";
+                var stopped = await engine.StopContainerAsync(containerName, timeoutSec: 10, ct);
+                if (!stopped.IsSuccess)
+                    return stopped;
+                var removed = await engine.RemoveContainerAsync(containerName, force: true, ct);
+                if (!removed.IsSuccess)
+                    return removed;
+
+                var topology = TopologyOf(cluster, snap, shard.Name, addresses);
+                var resources = await ReadShardResourcesAsync(cluster, shard.Name, ct);
+                var tuning = pgtune.Create(resources);
+                var ensuredNode = await driver.EnsureNodeAsync(
+                    topology, node.Name, addr, secrets,
+                    etcdForNodes ?? new EtcdEndpoints(endpoints), resources, tuning,
+                    snap.Config.SyncStrict, effective, ct);
+                if (!ensuredNode.IsSuccess)
+                    return ensuredNode;
+
+                // Фазовая запись (трек carry-forward): оператор видит миграцию.
+                var phase = restPending is not null
+                    ? $"rest-rotate-rolled/{shard.Name}/{node.Name}"
+                    : $"rest-tls-migrated/{shard.Name}/{node.Name}";
+                await journal.WritePhaseAsync(cluster, "supervise", phase, claims.InstanceId, null, ct);
+                return Result.Success(); // ≤1 пересоздание на тик кластера
+            }
+        }
+
+        return Result.Success();
+    }
+
     // Operator-triggered recreate (TO_RECREATE): оператор панелью просит
     // пересоздать ноду — rebuild немедленно, без ожидания NodeDeadSec.
     // Режим в маркере nodes/<n>/recreate (панель): soft — живой лидер сначала
@@ -476,7 +618,8 @@ public sealed class NodeSupervisor(
     private async Task<Result> RecreateMarkedNodesAsync(
         string cluster, ClusterSnapshot snap, ShardSpec shard,
         IReadOnlyDictionary<string, NodeAddress> addresses,
-        Dictionary<string, long> track, HaFactState haFacts, string restPassword, CancellationToken ct)
+        Dictionary<string, long> track, HaFactState haFacts,
+        string restPassword, string? restPending, CancellationToken ct)
     {
         var marked = shard.Nodes.Where(n => n.State == NodeState.ToRecreate).ToList();
         if (marked.Count == 0)
@@ -517,6 +660,16 @@ public sealed class NodeSupervisor(
                 // тиком, когда нода уже не лидер (снапшот тика устареет сам собой).
                 if (alive && mode != "hard")
                 {
+                    // Гвард окна REST-ротации (t22, §5.5): switchover через REST до
+                    // txn-коммита подавлен — skip тика (журнал), мутация
+                    // ретрается после закрытия окна.
+                    if (restPending is not null)
+                    {
+                        await journal.WritePhaseAsync(cluster, "supervise", "recreate-skipped-rest-window",
+                            claims.InstanceId, $"{shard.Name}/{node.Name}", ct);
+                        continue;
+                    }
+
                     var switched = await probe.SwitchoverAsync(addr, node.Name, restPassword, ct);
                     if (!switched.IsSuccess)
                         return switched;

@@ -218,7 +218,79 @@ internal static class Fakes
     // Записывающий мок драйвера кластера: порядок вызовов проверяют тесты.
     // Потокобезопасен: EnsureNode идёт параллельно по нодам/шардам —
     // обычные List-ы теряли записи (флaky-тесты).
-    internal sealed class FakeDriver : IClusterDriver
+    // Стаб ensure кластерных кредов (t22): шаг пересоздания REST-TLS берёт пару
+// из РЕЗУЛЬТАТА ensure (легаси-кластер без ключа в снапшоте).
+internal sealed class FakeSecretEnsurer : IClusterSecretEnsurer
+{
+    public const string RestPassword = "EnsuredRest0Pass0000000000000000A";
+
+    public Task<Result<ClusterCredentials>> EnsureAsync(
+        string cluster, ClusterConfig config, CancellationToken ct)
+        => Task.FromResult(Result<ClusterCredentials>.Success(new ClusterCredentials(
+            new AppCredentials("app", "app-pw"), "mover-pw",
+            new AppCredentials("bucket_admin", "admin-pw"), "backup-pw",
+            RestPassword)));
+}
+
+// Фейк docker-движка для шага пересоздания REST-TLS (t22): трекер stop/rm
+// контейнера (volume НЕ трогается — RemoveVolumeAsync считает вызовы).
+internal sealed class FakeContainerEngine : IDockerEngine
+{
+    public readonly List<string> Stopped = [];
+    public readonly List<string> Removed = [];
+    public readonly List<string> RemovedVolumes = [];
+
+    public Task<Result> StopContainerAsync(string idOrName, int timeoutSec, CancellationToken ct)
+    {
+        Stopped.Add(idOrName);
+        return Task.FromResult(Result.Success());
+    }
+
+    public Task<Result> RemoveContainerAsync(string idOrName, bool force, CancellationToken ct)
+    {
+        Removed.Add(idOrName);
+        return Task.FromResult(Result.Success());
+    }
+
+    public Task<Result> RemoveVolumeAsync(string name, CancellationToken ct)
+    {
+        RemovedVolumes.Add(name);
+        return Task.FromResult(Result.Success());
+    }
+
+    // Остальные члены — стабы (шаг их не использует).
+    public Task<Result> PingAsync(CancellationToken ct) => Task.FromResult(Result.Success());
+    public Task<Result<IReadOnlyList<DockerContainer>>> ListContainersAsync(string namePrefix, bool all, CancellationToken ct) => Task.FromResult(Result<IReadOnlyList<DockerContainer>>.Success([]));
+    public Task<Result<DockerContainerInspect>> InspectContainerAsync(string id, CancellationToken ct) => Task.FromResult(Result<DockerContainerInspect>.Failed(new NotSupportedException()));
+    public Task<Result<string>> GetContainerLogsAsync(string idOrName, int tail, CancellationToken ct) => Task.FromResult(Result<string>.Success(""));
+    public Task<Result> CreateContainerAsync(ContainerSpec spec, string name, CancellationToken ct) => Task.FromResult(Result.Success());
+    public Task<Result> StartContainerAsync(string idOrName, CancellationToken ct) => Task.FromResult(Result.Success());
+    public Task<Result<string>> ExecAsync(string containerId, IReadOnlyList<string> cmd, CancellationToken ct) => Task.FromResult(Result<string>.Success(""));
+    public Task<Result> EnsureNetworkAsync(string name, CancellationToken ct) => Task.FromResult(Result.Success());
+    public Task<Result> DeleteNetworkAsync(string name, CancellationToken ct) => Task.FromResult(Result.Success());
+    public Task<Result> NetworkConnectAsync(string network, string container, CancellationToken ct) => Task.FromResult(Result.Success());
+    public Task<Result<bool>> VolumeExistsAsync(string name, CancellationToken ct) => Task.FromResult(Result<bool>.Success(true));
+    public Task<Result> EnsureVolumeAsync(string name, CancellationToken ct) => Task.FromResult(Result.Success());
+    public Task<Result> DeleteVolumeAsync(string name, CancellationToken ct) => Task.FromResult(Result.Success());
+    public Task<Result> PutVolumeArchiveAsync(string name, byte[] tar, string image, CancellationToken ct) => Task.FromResult(Result.Success());
+    public Task<Result<byte[]?>> GetVolumeArchiveAsync(string name, string image, CancellationToken ct) => Task.FromResult(Result<byte[]?>.Success(null));
+    public Task<Result<IReadOnlyList<DockerSwarmNode>>> ListNodesAsync(CancellationToken ct) => Task.FromResult(Result<IReadOnlyList<DockerSwarmNode>>.Success([]));
+    public Task<Result> CreateServiceAsync(ServiceSpec spec, CancellationToken ct) => Task.FromResult(Result.Success());
+    public Task<Result> RemoveServiceAsync(string name, CancellationToken ct) => Task.FromResult(Result.Success());
+    public Task<Result<IReadOnlyList<string>>> ListServicesAsync(string namePrefix, CancellationToken ct) => Task.FromResult(Result<IReadOnlyList<string>>.Success([]));
+    public Task<Result<IReadOnlyList<DockerTask>>> ListTasksAsync(string serviceName, CancellationToken ct) => Task.FromResult(Result<IReadOnlyList<DockerTask>>.Success([]));
+    public Task<Result<IReadOnlySet<(string Host, int Port)>>> BusyPortsAsync(CancellationToken ct) => Task.FromResult(Result<IReadOnlySet<(string, int)>>.Success(new HashSet<(string, int)>()));
+    public Task<Result<NodeLimits?>> InspectContainerResourcesAsync(string name, CancellationToken ct) => Task.FromResult(Result<NodeLimits?>.Success(null));
+    public Task<Result<NodeLimits?>> InspectServiceResourcesAsync(string name, CancellationToken ct) => Task.FromResult(Result<NodeLimits?>.Success(null));
+    public Task<Result<IReadOnlyDictionary<string, string>?>> InspectContainerEnvAsync(string idOrName, CancellationToken ct) => Task.FromResult(Result<IReadOnlyDictionary<string, string>?>.Success(null));
+    public Task<Result<IReadOnlyDictionary<string, string>?>> InspectServiceEnvAsync(string name, CancellationToken ct) => Task.FromResult(Result<IReadOnlyDictionary<string, string>?>.Success(null));
+    public Task<Result<IReadOnlyList<string>?>> InspectContainerCmdAsync(string idOrName, CancellationToken ct) => Task.FromResult(Result<IReadOnlyList<string>?>.Success(null));
+    public Task<Result<IReadOnlyList<string>?>> InspectServiceCmdAsync(string name, CancellationToken ct) => Task.FromResult(Result<IReadOnlyList<string>?>.Success(null));
+    public Task<Result<DockerNodeEndpoint?>> InspectNodeEndpointAsync(string name, int containerPort, CancellationToken ct) => Task.FromResult(Result<DockerNodeEndpoint?>.Success(null));
+    public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+}
+
+internal sealed class FakeDriver : IClusterDriver
     {
         private readonly object _gate = new();
 
@@ -229,6 +301,10 @@ internal static class Fakes
         public readonly List<string> EnsuredNodes = [];
         public readonly List<(string Node, NodeResources? Resources)> EnsuredDetails = [];
         public readonly List<bool> EnsuredSyncStrict = []; // t06: strict из EnsureNode-вызовов
+        // t22: env живых контейнеров (ключ "<shard>/<node>" → env-словарь; нет
+        // записи — пустой) + переданный restPassword каждого EnsureNode-вызова.
+        public readonly Dictionary<string, IReadOnlyDictionary<string, string>> NodeEnvs = new();
+        public readonly Dictionary<string, string> EnsuredRestPasswords = new();
         public readonly List<string> RemovedNodes = [];
         public readonly List<string> StoppedNodes = [];
         public readonly List<(string Node, IReadOnlyList<string> Cmd)> Executed = [];
@@ -309,9 +385,35 @@ internal static class Fakes
                 EnsuredNodes.Add($"{topology.Shard}/{nodeName}");
                 EnsuredDetails.Add((nodeName, resources));
                 EnsuredSyncStrict.Add(syncStrict); // t06: значение фиксируется для ассертов
+                EnsuredRestPasswords[$"{topology.Shard}/{nodeName}"] = restPassword;
+                // Пересоздание шагом REST-TLS — новый контейнер несёт полный env
+                // (серт + hash фактической пары): тестовая семантика «ensure пишет env».
+                NodeEnvs[$"{topology.Shard}/{nodeName}"] = new Dictionary<string, string>
+                {
+                    [RestRotation.EnvCert] = "-----BEGIN CERTIFICATE-----\nunit\n-----END CERTIFICATE-----\n",
+                    [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash(restPassword),
+                };
             }
 
             return Task.FromResult(EnsureResultByNode is { } f ? f(nodeName) : Result.Success());
+        }
+
+        // t22: env живого контейнера (шаг пересоздания). Дефолт — «TLS уже на
+        // месте» (существующие тесты надзора: шаг no-op); кейсы шага затирают
+        // NodeEnvs управляемым env (легаси без серта / чужой hash).
+        public bool DefaultNodeEnvIsLegacy { get; set; }
+        public Task<Result<IReadOnlyDictionary<string, string>>> InspectNodeEnvAsync(
+            string cluster, string shard, string nodeName, CancellationToken ct)
+        {
+            if (NodeEnvs.TryGetValue($"{shard}/{nodeName}", out var env))
+                return Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Success(env));
+            return Task.FromResult(Result<IReadOnlyDictionary<string, string>>.Success(
+                DefaultNodeEnvIsLegacy
+                    ? (IReadOnlyDictionary<string, string>)new Dictionary<string, string>()
+                    : new Dictionary<string, string>
+                    {
+                        [RestRotation.EnvCert] = "-----BEGIN CERTIFICATE-----\nunit\n-----END CERTIFICATE-----\n",
+                    }));
         }
 
         public Task<Result> RemoveNodeAsync(string cluster, string shard, string nodeName, CancellationToken ct)
@@ -412,7 +514,8 @@ internal static class Fakes
         // t05: чистка restore-джобов шарда (remove-shard) — помним вызовы.
         public List<(string Cluster, string Shard)> RemovedRestoreJobs { get; } = [];
 
-        public IDockerEngine? EngineFor(string host) => null;
+        public IDockerEngine? Engine { get; set; }
+        public IDockerEngine? EngineFor(string host) => Engine;
 
         public Task<Result> RemoveBackupJobsAsync(string cluster, CancellationToken ct)
         {

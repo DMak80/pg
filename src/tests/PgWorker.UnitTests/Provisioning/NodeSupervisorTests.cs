@@ -120,6 +120,7 @@ public class NodeSupervisorTests
         var supervisor = new NodeSupervisor(
             etcd, [Ep], driver, probe, sql ?? new Fakes.FakeSql(), claims, journal,
             Thresholds, TimeProvider.System, Secrets,
+            new Fakes.FakeSecretEnsurer(),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"),
             Fakes.PgtuneFactory(), Fakes.PgtuneSettings(),
             log is not null ? log : NullLogger<NodeSupervisor>.Instance,
@@ -1231,6 +1232,7 @@ public class NodeSupervisorTests
         var supervisor = new NodeSupervisor(
             etcd, [Ep], driver, Probe(port => port >= 18100 ? Ok() : Down()), new Fakes.FakeSql(),
             claims, journal, Thresholds, TimeProvider.System, Secrets,
+            new Fakes.FakeSecretEnsurer(),
             new AppParamsEnsurer(etcd, [Ep], "sslmode=require"),
             Fakes.PgtuneFactory(), Fakes.PgtuneSettings(), NullLogger<NodeSupervisor>.Instance);
 
@@ -1731,4 +1733,232 @@ public class NodeSupervisorTests
         rig.Etcd.Store["/clusters/shop/shards/shard1/nodes/shard1c/state"].Value
             .Should().Be("REMOVING");
     }
+
+    // ── t22: общий шаг пересоздания нод REST-TLS (арх/14 §5 C) ──
+
+    // AAA (а): вход конвергенции — легаси-контейнер без серта пересоздан;
+    // пароль EnsureNode — из РЕЗУЛЬТАТА ensure (легаси-кластер: снапшот без
+    // rest_password); volume-механика: stop+rm force движка, НЕ RemoveNodeAsync.
+    [Fact]
+    public async Task RestTlsStep_LegacyContainer_RecreatedWithEnsuredPair()
+    {
+        // Arrange: легаси-контейнер shard1a без SSL_RESTAPI_CERTIFICATE;
+        // ключа rest_password в снапшоте нет (кластер до t22).
+        var rig = await NewRig(_ => Ok(), nodeObjects: ["pgw-shop-shard1-shard1a", "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c"]);
+        rig.Etcd.Store.Remove("/clusters/shop/rest_password");
+        rig.Driver.NodeEnvs["shard1/shard1a"] = new Dictionary<string, string>(); // легаси
+        rig.Driver.NodeEnvs["shard1/shard1b"] = new Dictionary<string, string>
+        {
+            [RestRotation.EnvCert] = "cert-b",
+        };
+        rig.Driver.NodeEnvs["shard1/shard1c"] = new Dictionary<string, string>
+        {
+            [RestRotation.EnvCert] = "cert-c",
+        };
+        var engine = new Fakes.FakeContainerEngine();
+        rig.Driver.Engine = engine;
+
+        // Act: тик надзора.
+        var result = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: нода пересоздана с парой ensure; env несёт серт и hash пары;
+        // stop/rm через движок (volume жив — RemoveNodeAsync не звался).
+        result.IsSuccess.Should().BeTrue(result.Error?.ToString());
+        rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
+        rig.Driver.EnsuredNodes.Should().NotContain("shard1/shard1b", "TLS-нода не кандидат");
+        rig.Driver.EnsuredRestPasswords["shard1/shard1a"]
+            .Should().Be(Fakes.FakeSecretEnsurer.RestPassword, "пара — из результата ensure, не снапшота");
+        rig.Driver.NodeEnvs["shard1/shard1a"].Should().ContainKey(RestRotation.EnvCert);
+        rig.Driver.NodeEnvs["shard1/shard1a"][RestRotation.EnvPasswordHash]
+            .Should().Be(RestRotation.PasswordHash(Fakes.FakeSecretEnsurer.RestPassword));
+        engine.Stopped.Should().ContainSingle().Which.Should().Be("pgw-shop-shard1-shard1a");
+        engine.Removed.Should().ContainSingle().Which.Should().Be("pgw-shop-shard1-shard1a");
+        engine.RemovedVolumes.Should().BeEmpty("volume сохраняется (не RemoveNodeAsync)");
+        rig.Driver.RemovedNodes.Should().BeEmpty();
+        // ensure-вызов в начале тика подтверждается интеграционным тестом
+        // задачи 23 (живой etcd); здесь — стаб FakeSecretEnsurer без записи.
+    }
+
+    // AAA (б): повторный тик — no-op (после пересоздания env несёт серт).
+    [Fact]
+    public async Task RestTlsStep_SecondTick_NoOp()
+    {
+        // Arrange: обе ноды уже TLS.
+        var rig = await NewRig(_ => Ok(), nodeObjects: ["pgw-shop-shard1-shard1a", "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c"]);
+        rig.Driver.NodeEnvs["shard1/shard1a"] = new Dictionary<string, string> { [RestRotation.EnvCert] = "cert-a" };
+        rig.Driver.NodeEnvs["shard1/shard1b"] = new Dictionary<string, string> { [RestRotation.EnvCert] = "cert-b" };
+        rig.Driver.NodeEnvs["shard1/shard1c"] = new Dictionary<string, string> { [RestRotation.EnvCert] = "cert-c" };
+
+        // Act
+        var result = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: пересозданий нет.
+        result.IsSuccess.Should().BeTrue();
+        rig.Driver.EnsuredNodes.Should().BeEmpty();
+    }
+
+    // AAA (в): живой лидер — первый тик только switchover, снос — следующим
+    // тиком после смены лидера (семантика TO_RECREATE-soft).
+    [Fact]
+    public async Task RestTlsStep_LiveLeader_SwitchoverFirst()
+    {
+        // Arrange: shard1a — живой лидер scope, контейнер легаси.
+        var rig = await NewRig(_ => Ok(), nodeObjects: ["pgw-shop-shard1-shard1a", "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c"]);
+        rig.Etcd.Seed("/service/shop-shard1/leader", "shard1a");
+        rig.Driver.NodeEnvs["shard1/shard1a"] = new Dictionary<string, string>();
+        rig.Driver.NodeEnvs["shard1/shard1b"] = new Dictionary<string, string> { [RestRotation.EnvCert] = "cert-b" };
+        rig.Driver.NodeEnvs["shard1/shard1c"] = new Dictionary<string, string> { [RestRotation.EnvCert] = "cert-c" };
+        var engine = new Fakes.FakeContainerEngine();
+        rig.Driver.Engine = engine;
+
+        // Act-1: тик — switchover, сноса нет.
+        var result1 = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+        result1.IsSuccess.Should().BeTrue(result1.Error?.ToString());
+        rig.Driver.EnsuredNodes.Should().BeEmpty("живой лидер не сносится в первом тике (soft)");
+        engine.Stopped.Should().BeEmpty();
+
+        // Act-2: лидер переехал — следующий тик сносит и пересоздает ноду.
+        rig.Etcd.Store["/service/shop-shard1/leader"] =
+            new Fakes.FakeEtcd.Entry("shard1b", 2, 2);
+        var result2 = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: нода снесена и пересоздана (уже не лидер).
+        result2.IsSuccess.Should().BeTrue(result2.Error?.ToString());
+        rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
+    }
+
+    // AAA (г): ≤1 пересоздание на тик кластера (две легаси-ноды).
+    [Fact]
+    public async Task RestTlsStep_TwoLegacyNodes_OnePerTick()
+    {
+        // Arrange: обе ноды легаси.
+        var rig = await NewRig(_ => Ok(), nodeObjects: ["pgw-shop-shard1-shard1a", "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c"]);
+        rig.Driver.NodeEnvs["shard1/shard1a"] = new Dictionary<string, string>();
+        rig.Driver.NodeEnvs["shard1/shard1b"] = new Dictionary<string, string>();
+        rig.Driver.NodeEnvs["shard1/shard1c"] = new Dictionary<string, string> { [RestRotation.EnvCert] = "cert-c" };
+        rig.Driver.Engine = new Fakes.FakeContainerEngine();
+
+        // Act
+        var result = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: ровно одно пересоздание на тик.
+        result.IsSuccess.Should().BeTrue(result.Error?.ToString());
+        rig.Driver.EnsuredNodes.Should().HaveCount(1);
+    }
+
+    // AAA (д): гварды — усыновлённая нода (object) не тронута (R9).
+    [Fact]
+    public async Task RestTlsStep_AdoptedNode_Skipped()
+    {
+        // Arrange: адрес shard1a — object (усыновлённая), легаси-контейнер.
+        var rig = await NewRig(_ => Ok(), nodeObjects: ["pgw-shop-shard1-shard1a", "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c"]);
+        var raw = rig.Etcd.Store["/pgworker/portalloc/shop"].Value;
+        var parsed = PgWorker.Core.Model.Portalloc.Parse("shop", raw).Value!;
+        var mutable = parsed.ToDictionary(p => p.Key, p => p.Value);
+        mutable["shard1/shard1a"] = mutable["shard1/shard1a"] with { Object = "external-container" };
+        rig.Etcd.Store["/pgworker/portalloc/shop"] =
+            new Fakes.FakeEtcd.Entry(PgWorker.Core.Model.Portalloc.Serialize(mutable), 2, 2);
+        rig.Driver.NodeEnvs["shard1/shard1a"] = new Dictionary<string, string>(); // легаси, но object
+        rig.Driver.NodeEnvs["shard1/shard1b"] = new Dictionary<string, string> { [RestRotation.EnvCert] = "cert-b" };
+        rig.Driver.NodeEnvs["shard1/shard1c"] = new Dictionary<string, string> { [RestRotation.EnvCert] = "cert-c" };
+        rig.Driver.Engine = new Fakes.FakeContainerEngine();
+
+        // Act
+        var result = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: усыновлённая нода не тронута.
+        result.IsSuccess.Should().BeTrue();
+        rig.Driver.EnsuredNodes.Should().BeEmpty();
+    }
+
+    // AAA (е): вход ротации — env с чужим hash → пересоздание с pending-парой;
+    // hash совпадает — нода не тронута.
+    [Fact]
+    public async Task RestTlsStep_RotationPending_HashMismatchRecreates()
+    {
+        // Arrange: окно ротации (rest_pending NEW); shard1a несёт hash OLD.
+        var rig = await NewRig(_ => Ok(), nodeObjects: ["pgw-shop-shard1-shard1a", "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c"]);
+        await rig.Journal.WritePhaseAsync("shop", "rotate-app-password", "rotate-rest-start", "i1", null,
+            CancellationToken.None, restPending: "New0Pass00000000000000000000000B");
+        rig.Driver.NodeEnvs["shard1/shard1a"] = new Dictionary<string, string>
+        {
+            [RestRotation.EnvCert] = "cert-a",
+            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("Old0Pass00000000000000000000000A"),
+        };
+        rig.Driver.NodeEnvs["shard1/shard1b"] = new Dictionary<string, string>
+        {
+            [RestRotation.EnvCert] = "cert-b",
+            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("New0Pass00000000000000000000000B"),
+        };
+        rig.Driver.NodeEnvs["shard1/shard1c"] = new Dictionary<string, string>
+        {
+            [RestRotation.EnvCert] = "cert-c",
+            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("New0Pass00000000000000000000000B"),
+        };
+        rig.Driver.Engine = new Fakes.FakeContainerEngine();
+
+        // Act
+        var result = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: shard1a пересоздан с pending-парой; shard1b (hash NEW) не тронут.
+        result.IsSuccess.Should().BeTrue(result.Error?.ToString());
+        rig.Driver.EnsuredRestPasswords["shard1/shard1a"].Should().Be("New0Pass00000000000000000000000B");
+        rig.Driver.EnsuredNodes.Should().Contain("shard1/shard1a");
+        rig.Driver.EnsuredNodes.Should().NotContain("shard1/shard1b");
+    }
+
+    // AAA (ж): гварды окна — при открытом rest_pending PATCH /config не уходит
+    // (транзиент-skip тика), RecreateMarked-soft не зовёт switchover.
+    [Fact]
+    public async Task RestWindowGuards_PatchAndSoftSwitchoverSuppressed()
+    {
+        // Arrange: окно ротации + расхождение DCS-конфига + TO_RECREATE-soft
+        // маркер живой ноды-лидера.
+        var patches = 0;
+        var posts = 0;
+        var rig = await NewRig(
+            _ => Ok(),
+            nodeObjects: ["pgw-shop-shard1-shard1a", "pgw-shop-shard1-shard1b", "pgw-shop-shard1-shard1c"],
+            respondRaw: r =>
+            {
+                if (r.Method == HttpMethod.Patch)
+                    patches++;
+                if (r.Method == HttpMethod.Post)
+                    posts++;
+                return Ok();
+            });
+        await rig.Journal.WritePhaseAsync("shop", "rotate-app-password", "rotate-rest-start", "i1", null,
+            CancellationToken.None, restPending: "New0Pass00000000000000000000000B");
+        rig.Etcd.Seed("/service/shop-shard1/config",
+            """{"ttl":5,"loop_wait":1,"retry_timeout":3,"synchronous_mode":true,"synchronous_mode_strict":true}""");
+        rig.Etcd.Seed("/clusters/shop/shards/shard1/nodes/shard1a/state", "TO_RECREATE");
+        rig.Etcd.Seed("/service/shop-shard1/leader", "shard1a");
+        rig.Driver.NodeEnvs["shard1/shard1a"] = new Dictionary<string, string>
+        {
+            [RestRotation.EnvCert] = "cert-a",
+            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("New0Pass00000000000000000000000B"),
+        };
+        rig.Driver.NodeEnvs["shard1/shard1b"] = new Dictionary<string, string>
+        {
+            [RestRotation.EnvCert] = "cert-b",
+            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("New0Pass00000000000000000000000B"),
+        };
+        rig.Driver.NodeEnvs["shard1/shard1c"] = new Dictionary<string, string>
+        {
+            [RestRotation.EnvCert] = "cert-c",
+            [RestRotation.EnvPasswordHash] = RestRotation.PasswordHash("New0Pass00000000000000000000000B"),
+        };
+        rig.Driver.Engine = new Fakes.FakeContainerEngine();
+
+        // Act
+        var result = await rig.Supervisor.TickAsync(await Snapshot(rig.Etcd), null, CancellationToken.None);
+
+        // Assert: мутации REST подавлены (PATCH/switchover), фаза skip в журнале.
+        result.IsSuccess.Should().BeTrue(result.Error?.ToString());
+        patches.Should().Be(0, "PATCH /config подавлен в окне ротации");
+        posts.Should().Be(0, "soft-switchover подавлен в окне ротации");
+        var work = await rig.Journal.ReadAsync("shop", CancellationToken.None);
+        work.Value!.Phase.Should().BeOneOf("dcs-converge-skipped-rest-window", "recreate-skipped-rest-window");
+    }
+
 }
