@@ -148,13 +148,18 @@ docker-E2E (§6, M3): полный фактический набор шире �
 Два словаря сосуществуют: эмуляторный `pg_replica_lag_seconds` (стенд без
 PgWorker-кластеров) и нативный `patroni_*` (реальные ноды); фактический
 набор фиксирует docker-E2E (§6). Таргеты реальных нод — file_sd из
-portalloc (§5.2 `patroni-nodes`, §5.4). Семантика per-node: запись с
-`"alias"` → сетевой таргет `<alias>:8008` (контейнерный порт Patroni REST;
-штатная ветка единой сети контура — [14](14-pgworker.md) §2.4); запись без
+portalloc (§5.2 `patroni-nodes`, §5.4); скрейп реальных нод —
+`scheme: https` + `tls_config.ca_file` (REST `:8008` — TLS, arch/13 §4).
+Семантика per-node: запись с `"alias"` → сетевой таргет `<alias>:8008`
+(контейнерный порт Patroni REST;
+штатная ветка единой сети контура — [14](14-pgworker.md) §2.4),
+верифицируется полностью (имя = SAN серта); запись без
 `"alias"` (легаси-переходный контур, усыновлённая нода) → advertised
-`host:patroni` по host-публикации — деградационная ветка: адрес честен из
-portalloc, тихая потеря наблюдения живой ноды хуже запасной ветки той же
-чистой функции. Фильтр `patroni <= 0` (усыплены) действует в обеих ветках.
+`host:patroni` по host-публикации — деградационная ветка: не только
+достижимость, но и TLS-верификация имени по advertised-хосту не
+гарантируется (SAN его не несёт) — таргет уходит в down; в поставке таких
+таргетов нет (демо-кластер несёт static-джобу `patroni`). Фильтр
+`patroni <= 0` (усыплены) действует в обеих ветках.
 
 ### 2.6. Valkey-домен (коллектор ValkeyWorker §4)
 
@@ -295,9 +300,14 @@ TCP-проба (не тяжёлый AdminClient); лежачая нода сто
 | `valkeyworker` | имя сети стенда `valkeyworker:8080` (профиль `valkey`; хост-публикации нет — чеки ходят изнутри контейнера) | §2.1–2.2, §2.6 |
 | `adminpanel` | имя сети стенда `adminpanel:8080` (хост-публикация 5050 — только для браузера/чеков) | §2.4 |
 | `patroni` | static: `hc1a:8008, hc1b:8008, hc2a:8008, hc2b:8008` | §2.5 |
-| `patroni-nodes` | file_sd `/etc/prometheus/sd/patroni-nodes.json` (scheme http — Patroni REST без TLS, t22 вне скоупа; источник файла — генератор §5.4 из `/pgworker/portalloc/`) | §2.5 нативные `patroni_*` |
+| `patroni-nodes` | file_sd `/etc/prometheus/sd/patroni-nodes.json` (источник файла — генератор §5.4 из `/pgworker/portalloc/`) | §2.5 нативные `patroni_*` |
 | `sd-generator` | static: имя сети стенда `sd-generator:8080` (профиль `metrics`) | самонаблюдение генератора §5.4 |
 
+Джобы `patroni-nodes` и `patroni` (эмуляторы `hc*`) — `scheme: https` +
+тот же `tls_config {ca_file: /tls/ca.pem}` (без клиентского серта —
+`verify_client` у REST нет; серт нод выпускает воркер из per-install CA —
+arch/14 §2.1, серт эмуляторов — `hc` из того же CA, `deploy/tls/gen.sh`;
+REST-скрейп нод и эмуляторов — по TLS одного per-install CA, §5.4).
 Джобы воркеров — `scheme: https` + `tls_config {ca_file: /tls/ca.pem,
 cert_file: /tls/prometheus.crt, key_file: /tls/prometheus.key}` (t03: /metrics
 обоих воркеров — за mTLS, arch/14 §1.1/arch/16 §1.1; клиентский серт
@@ -337,7 +347,9 @@ single-хост-контур «дома»).
 `src/Metrics.SdGenerator`): тиком читает `/pgworker/portalloc/`
 (read-only, `RangeAsync`, без клэймов) и пишет `sd/patroni-nodes.json` в
 volume Prometheus; таргет ноды — per-node правило §2.5 (`alias:8008`
-штатно, `host:patroni` деградационно). Сеть `pgw-metrics` генератору не
+штатно, `host:patroni` деградационно). Механика file_sd/единой сети —
+без изменений; фиксируется: REST-скрейп нод и эмуляторов — по TLS одного
+per-install CA (§5.2). Сеть `pgw-metrics` генератору не
 нужна: etcd читает по compose-DNS сети стенда, таргеты резолвит
 Prometheus. Граница: Kafka/Valkey-ноды без HTTP metrics-эндпоинта
 наблюдаются доменными сериями коллекторов воркеров (§2.3/§2.6);
@@ -377,11 +389,14 @@ Prometheus. Граница: Kafka/Valkey-ноды без HTTP metrics-эндпо
   провижининг/кластерные пути.
 - **E2E-чек стенда**: `checks/65-metrics.sh` — профиль `metrics` поднят,
   все scrape-джобы `up` (таргеты pgworker — сетевые `pgworker:8080`/
-  `pgworker-2:8080`, extra_hosts в as-prometheus отсутствуют), дашборды
+  `pgworker-2:8080`, extra_hosts в as-prometheus отсутствуют; patroni/
+  patroni-nodes — по https), дашборды
   загружены, алерт-рулы зарегистрированы
   (`/api/v1/rules`, счётчик включает группу `backups` §2.7),
   Alertmanager жив; 00-up/90-down не оставляют осиротевшей сети
-  `pgw-metrics`.
+  `pgw-metrics`. Приёмка REST-TLS — docker-E2E REST-TLS
+  (E2ePatroniRestTlsScenarios) + https-ассерты docker-E2E file_sd
+  (таргеты `patroni-nodes` up по https-скрейпу).
 
 ## 7. Подключение нового .NET-проекта
 
