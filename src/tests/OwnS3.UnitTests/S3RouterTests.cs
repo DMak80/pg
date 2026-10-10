@@ -3,9 +3,11 @@ using OwnS3.App.Routing;
 namespace OwnS3.UnitTests;
 
 // Таблица маршрутов 22 операций (arch/owns3/02; порядок — референс api-router.go,
-// spec §3.4). Дискриминатор = наличие query-ключа; UploadPart-семейство = оба
-// ключа (partNumber И uploadId); одиночные параметры — вне-наборные не-сабресурсы,
-// игнорируются (глава 02 §1).
+// spec §3.4). Дискриминатор = наличие query-ключа, КРОМЕ list-type —
+// дискриминатор СО ЗНАЧЕНИЕМ: матчится ровно «2», иное/пустое → маршрут v1
+// (глава 02: list-type=2 — обязательный дискриминатор; поведение референса).
+// UploadPart-семейство = оба ключа (partNumber И uploadId); одиночные
+// параметры — вне-наборные не-сабресурсы, игнорируются (глава 02 §1).
 public sealed class S3RouterTests
 {
     // (метод, путь, query, copy-source) → ожидаемая операция
@@ -18,6 +20,8 @@ public sealed class S3RouterTests
         { "GET",     "/b",                "uploads",   false, S3Operation.ListMultipartUploads },
         { "GET",     "/b",                "versions",  false, S3Operation.ListObjectVersions },
         { "GET",     "/b",                "list-type=2", false, S3Operation.ListObjectsV2 },
+        { "GET",     "/b",                "list-type=1", false, S3Operation.ListObjects }, // иное значение → v1 (референс)
+        { "GET",     "/b",                "list-type=",  false, S3Operation.ListObjects }, // пустое значение → v1
         { "GET",     "/b",                "",          false, S3Operation.ListObjects },
         { "GET",     "/b",                "prefix=x&marker=y", false, S3Operation.ListObjects }, // листинговые параметры — не дискриминаторы
         // бакет: прочие методы

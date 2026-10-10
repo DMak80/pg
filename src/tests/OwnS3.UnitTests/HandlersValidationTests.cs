@@ -207,6 +207,36 @@ public sealed class HandlersValidationTests
         act.Should().Throw<S3ProtocolException>().Which.Code.Should().Be(S3ErrorCode.EntityTooLarge);
     }
 
+    // — response-* → канонические имена заголовков ответа —
+
+    [Theory]
+    [InlineData("response-cache-control", "Cache-Control")]
+    [InlineData("response-content-disposition", "Content-Disposition")]
+    [InlineData("response-content-encoding", "Content-Encoding")]
+    [InlineData("response-content-language", "Content-Language")]
+    [InlineData("response-content-type", "Content-Type")]
+    [InlineData("response-expires", "Expires")]
+    public void ResponseOverrideHeaderName_MapsToCanonicalHeaderNames(string queryName, string expected)
+    {
+        // Arrange / Act
+        var header = ObjectHandlers.ResponseOverrideHeaderName(queryName);
+
+        // Assert: в ответе ставятся канонические имена, не «response-*»
+        header.Should().Be(expected);
+    }
+
+    [Theory]
+    [InlineData("response-x-custom")]
+    [InlineData("response-foo")]
+    public void ResponseOverrideHeaderName_UnknownResponseParameters_Ignored(string queryName)
+    {
+        // Arrange / Act
+        var header = ObjectHandlers.ResponseOverrideHeaderName(queryName);
+
+        // Assert: прочие response-* не отображаются в заголовки — игнорируются
+        header.Should().BeNull();
+    }
+
     // — copy-source / copy-source-range —
 
     [Fact]

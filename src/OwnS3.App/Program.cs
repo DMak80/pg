@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using OwnS3.App;
@@ -17,7 +18,10 @@ using Shared.Metrics;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.Configure<OwnS3Options>(builder.Configuration.GetSection(OwnS3Options.SectionName));
-builder.Services.AddSingleton(TimeProvider.System);
+// TryAdd: системные часы — дефолт; тестовый хост (WAF) может подменить время
+// своей регистрацией до Program — тогда остаётся подмена (детерминированные
+// skew/окно-кейсы интеграционных тестов).
+builder.Services.TryAddSingleton(TimeProvider.System);
 
 // Fail-fast root-пары (arch/owns3/05 §1): user >= 3, password >= 8, оба непусты.
 builder.Services.AddOptions<OwnS3Options>()

@@ -131,12 +131,15 @@ public static class ObjectHandlers
             // Validate: имя бакета
             BucketHandlers.EnsureBucketName(context.Bucket);
 
-            // Parse: XML Delete; битый → MalformedXML; лимит 0/1000 — MalformedXML
-            using var reader = new StreamReader(context.Http.Body);
+            // Parse: XML Delete; битый → MalformedXML; лимит 0/1000 — MalformedXML.
+            // Тело — через HashingBodyStream (глава 02: Content-MD5 опционален,
+            // проверяется при наличии — сверка не обходится и для XML-тел).
+            var body = new HashingBodyStream(context.Http.Body, null,
+                context.Http.Headers.ContentMD5.ToString() is { Length: > 0 } md5 ? md5 : null);
+            using var reader = new StreamReader(body);
             var request = S3Xml.Deserialize<DeleteRequest>(await reader.ReadToEndAsync(ct));
             var keys = request.Objects.Select(o => o.Key).ToList();
             OperationValidation.ValidateDeleteKeys(keys.Count);
-            // Content-MD5 при наличии проверяется телом-обёрткой (глава 02).
 
             // Act
             var results = await Store.DeleteObjectsAsync(context.Bucket, keys, request.Quiet, ct);
@@ -286,12 +289,25 @@ public static class ObjectHandlers
         {
             if (name is null || value is null || !name.StartsWith("response-", StringComparison.Ordinal))
                 continue;
-            var headerName = name["response-".Length..].Replace('-', '.');
-            if (headerName is "content.type") headerName = "Content-Type";
-            if (headerName is "content.language") headerName = "Content-Language";
-            context.Response.Headers[headerName] = value;
+            var headerName = ResponseOverrideHeaderName(name);
+            if (headerName is not null)
+                context.Response.Headers[headerName] = value;
         }
     }
+
+    // Маппинг response-* → канонические имена заголовков: в ответе ставятся
+    // КАНОНИЧЕСКИЕ имена (Cache-Control, …), не «response-*»; прочие
+    // response-* игнорируются.
+    internal static string? ResponseOverrideHeaderName(string queryName) => queryName switch
+    {
+        "response-cache-control" => "Cache-Control",
+        "response-content-disposition" => "Content-Disposition",
+        "response-content-encoding" => "Content-Encoding",
+        "response-content-language" => "Content-Language",
+        "response-content-type" => "Content-Type",
+        "response-expires" => "Expires",
+        _ => null,
+    };
 
     internal static long ResolveContentLength(S3HandlerContext context)
     {

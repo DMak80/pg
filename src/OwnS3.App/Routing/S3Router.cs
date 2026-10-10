@@ -52,7 +52,9 @@ public static class S3Router
                     var q when q.Contains("location") => new S3Route(S3Operation.GetBucketLocation, path.Bucket, null, null),
                     var q when q.Contains("uploads") => new S3Route(S3Operation.ListMultipartUploads, path.Bucket, null, null),
                     var q when q.Contains("versions") => new S3Route(S3Operation.ListObjectVersions, path.Bucket, null, null),
-                    var q when q.Contains("list-type") => new S3Route(S3Operation.ListObjectsV2, path.Bucket, null, null),
+                    // list-type — дискриминатор СО ЗНАЧЕНИЕМ (глава 02: обязательный
+                    // дискриминатор list-type=2); иное/пустое значение → маршрут v1.
+                    var q when QueryValue(rawQuery, "list-type") == "2" => new S3Route(S3Operation.ListObjectsV2, path.Bucket, null, null),
                     _ => new S3Route(S3Operation.ListObjects, path.Bucket, null, null),
                 },
                 "PUT" => new S3Route(S3Operation.CreateBucket, path.Bucket, null, null),
@@ -98,5 +100,19 @@ public static class S3Router
             keys.Add(eq < 0 ? pair : pair[..eq]);
         }
         return keys;
+    }
+
+    // Значение первого вхождения query-ключа (null — ключ отсутствует;
+    // «key» без «=» → пустое значение).
+    private static string? QueryValue(string rawQuery, string name)
+    {
+        foreach (var pair in rawQuery.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var eq = pair.IndexOf('=');
+            var key = eq < 0 ? pair : pair[..eq];
+            if (string.Equals(key, name, StringComparison.Ordinal))
+                return eq < 0 ? string.Empty : pair[(eq + 1)..];
+        }
+        return null;
     }
 }
