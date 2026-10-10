@@ -30,9 +30,16 @@ SignedHeaders=..., Signature=...`.
 3. Canonical query string: все query-параметры (включая
    дискриминаторы операций и `response-*`), отсортированные по ключу
    (потом по значению), `key=value` с URI-кодированием; компоненты
-   сортировки — до кодирования.
+   сортировки — до кодирования. **Кодирование значений и ключей — RFC 3986: пробел → `%20`, литеральный
+   `+` → `%2B`**; «плюс как пробел» — семантика form-декодирования при
+   разборе query-параметров и в канонизации не участвует (стандарт SigV4;
+   референс: `getCanonicalRequest` — `Form.Encode()` даёт пробел как `+`
+   (form-кодирование), `ReplaceAll("+", "%20")` возвращает `%20`;
+   литеральный `+` на входе уже `%2B` и не затрагивается).
 4. Canonical headers: имена в нижнем регистре, отсортированы по имени,
-   `name:value\n` (значение — с усечёнными по краям пробелами); `host`
+   `name:value\n` (значение — с усечёнными по краям пробелами и схлопнутыми внутренними
+   последовательностями пробелов в один пробел — Trimall стандарта SigV4;
+   референс: `signV4TrimAll` — `strings.Fields` → join одним пробелом); `host`
    обязателен;
    `x-amz-content-sha256` входит в подписанный список, когда клиент
    его подписал.
@@ -75,6 +82,24 @@ SignedHeaders), `x-amz-date` (формат `yyyyMMdd'T'HHmmss'Z'`, UTC;
 подписи и прав на анонимный доступ → **403** `AccessDenied`
 (public-доступа нет — все запросы аутентифицируются, глава 05).
 
+**Несуществующий accessKey** (в `Authorization`/`X-Amz-Credential`) → **403**
+`InvalidAccessKeyId` (Message «The AWS access key Id you provided does not
+exist in our records.»). Проверяется до сверки подписи: подпись неизвестного
+ключа не вычисляется (критерий — референс: `ErrInvalidAccessKeyID` 403).
+
+**Отсутствие/невалидный формат `x-amz-date`** (и `Date` при подстановке) →
+**400** `AuthorizationHeaderMalformed` (Message «Missing/Invalid x-amz-date
+header»); отдельный код не заводится (критерий — референс:
+`ErrMissingDateHeader`/`ErrMalformedDate` → 400).
+
+**Алгоритм, отличный от `AWS4-HMAC-SHA256`** (в `Authorization`, включая
+SigV2-заголовок `AWS …`) → **400** `InvalidRequest` (Message «The
+authorization mechanism you have provided is not supported. Please use
+AWS4-HMAC-SHA256.») — семантика «механизм не поддерживается» ≠
+«малформированный заголовок», отдельный код не заводится (критерий —
+референс: `ErrSignatureVersionNotSupported` → Code `InvalidRequest`, 400;
+документированное поведение Amazon S3 для SigV2).
+
 ## 2. Presigned URL
 
 Подпись в query-параметрах (без `Authorization`-заголовка):
@@ -96,7 +121,18 @@ SignedHeaders), `x-amz-date` (формат `yyyyMMdd'T'HHmmss'Z'`, UTC;
   референс: `signature-v4-parser.go`, порог 604800).
 - **Просроченный presigned** (прошло больше `X-Amz-Expires` с
   `X-Amz-Date`) → **403** `AccessDenied`.
-- Clock skew ±15 минут применяется и к `X-Amz-Date`.
+- **Skew для presigned — только на будущее**: `X-Amz-Date > now + 15 минут`
+  → **403** `RequestTimeTooSkewed`; для прошедших дат skew-отказов НЕТ —
+  URL валиден всё время окна. Просрочка — строгое неравенство
+  `now − X-Amz-Date > X-Amz-Expires` → **403** `AccessDenied`
+  (непросроченный presigned принимается независимо от возраста)
+  (критерий — референс: Abs-skew `auth-handler.go` — только
+  заголовочно-подписанные типы; presigned
+  (`doesPresignedSignatureMatch`, `signature-v4.go`) — «дата из будущего
+  за skew» + просрочка `now − date > Expires`; отступление: «будущее за
+  skew» у референса — `AccessDenied`, ownS3 нормализует в
+  `RequestTimeTooSkewed` — единый код каталога «время вне допуска»,
+  статус 403 совпадает).
 - **Разрешённые операции через presigned** — ровно потребности
   клиентов бэкапов и `mc` (критерий — стандарт S3 допускает per-API
   ограничение): `GetObject`, `PutObject`, `DeleteObject`, `HeadObject`,
@@ -176,6 +212,17 @@ AWS4-HMAC-SHA256-PAYLOAD\n<date>\n<scope>\n<подпись чанка N-1>\n<sha
 (`STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER`, поддерживается).
 Иначе PUT завершится 400 `InvalidRequest` — это требуется учесть
 при приёмке t39 (настройка клиентов бэкапов и `mc`).
+
+**Невалидный синтаксис aws-chunked-фрейма** → **400** `InvalidRequest`
+(Message «Malformed chunked encoding»); **лимит одного чанка — 16 МиБ**
+(`maxChunkSize = 16 << 20`; превышение — тот же исход 400 `InvalidRequest`)
+(критерий — референс: `errMalformedEncoding`/`errChunkTooBig` → 400).
+
+**Чанковые режимы применяются только к PUT с телом** (`PutObject`,
+`UploadPart`): значение `x-amz-content-sha256` = `STREAMING-*` на прочих
+методах → **400** `InvalidRequest` (критерий — референс:
+`isRequestSignStreamingV4` = значение заголовка ∧ `MethodPut`; стандарт
+SigV4).
 
 ## 4. XML-схемы
 
@@ -295,8 +342,9 @@ application/xml` — у всех XML-ответов (charset UTF-8). Кодир�
 | `AuthorizationHeaderMalformed` | 400 | некорректная структура Authorization/scope |
 | `AuthorizationQueryParametersError` | 400 | некорректные presigned-параметры; Expires > 604800; presigned вне разрешённых операций |
 | `SignatureDoesNotMatch` | 403 | несовпадение подписи (заголовочной, чанка, трейлера) |
+| `InvalidAccessKeyId` | 403 | accessKey не существует (раздел 1) |
 | `AccessDenied` | 403 | нет прав (глава 05); анонимный запрос; просроченный presigned |
-| `RequestTimeTooSkewed` | 403 | x-amz-date вне ±15 минут |
+| `RequestTimeTooSkewed` | 403 | x-amz-date вне ±15 минут (заголовочная подпись); X-Amz-Date в будущем дальше now + 15 минут (presigned) |
 | `BadDigest` | 400 | несовпадение Content-MD5; несовпадение trailer-checksum |
 | `NoSuchUpload` | 404 | uploadId не существует / повторные Complete/Abort |
 | `InvalidArgument` | 400 | невалидные аргументы: partNumber вне 1–10000, encoding-type ≠ url, metadata-directive, пустой x-amz-object-attributes, `x-amz-copy-source-range` — невалидный или вне размера источника (обе причины в один код, как в референсе) |
@@ -330,3 +378,14 @@ application/xml` — у всех XML-ответов (charset UTF-8). Кодир�
   отправляют его на крупных PUT).
 - Кодирование пути: percent-кодирование сегментов сохраняется как
   отправлено клиентом (canonical URI повторяет кодирование запроса).
+
+**OPTIONS-запрос** → пустой ответ **200** без CORS-заголовков, до
+аутентификации (CORS-модели нет; критерий — референс: ранний `return` в
+`errorResponseHandler`).
+
+**Запрос, не матчатщийся ни на одну из 22 операций** (метод+path+query), и
+запрос с известным путём, но неподдерживаемым методом → **400**
+`InvalidArgument` (Message «Unsupported request»); отдельный код не
+заводится (критерий — референс: `ErrUnknownAPIRequest` 400; простота).
+Вне-наборные query-параметры-не-сабресурсы (например `x-id`) при этом
+игнорируются (глава 02, раздел 1).

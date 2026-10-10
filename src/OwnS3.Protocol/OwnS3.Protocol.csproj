@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <ItemGroup>
+        <InternalsVisibleTo Include="OwnS3.UnitTests"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="System.IO.Hashing"/>
+    </ItemGroup>
+
+</Project>

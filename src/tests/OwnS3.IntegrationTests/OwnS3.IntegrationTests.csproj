@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+    <ItemGroup>
+        <Using Include="Xunit"/>
+        <Using Include="FluentAssertions"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <PackageReference Include="coverlet.collector">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
+        <PackageReference Include="FluentAssertions"/>
+        <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing"/>
+        <PackageReference Include="Microsoft.NET.Test.Sdk"/>
+        <PackageReference Include="xunit.runner.visualstudio">
+            <PrivateAssets>all</PrivateAssets>
+            <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+        </PackageReference>
+        <PackageReference Include="xunit.v3"/>
+    </ItemGroup>
+
+    <ItemGroup>
+        <ProjectReference Include="..\..\OwnS3.App\OwnS3.App.csproj"/>
+    </ItemGroup>
+
+    <!-- Независимый signer юнитов — общий тестовый клиент подписи -->
+    <ItemGroup>
+        <Compile Include="..\OwnS3.UnitTests\TestSigV4Signer.cs" Link="TestSigV4Signer.cs"/>
+        <Compile Include="..\OwnS3.UnitTests\TestVectors.cs" Link="TestVectors.cs"/>
+    </ItemGroup>
+
+</Project>
