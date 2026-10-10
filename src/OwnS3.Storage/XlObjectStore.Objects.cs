@@ -314,8 +314,4 @@ public sealed partial class XlObjectStore
         public override void SetLength(long value) => throw new NotSupportedException();
         public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
-
-
-    public Task<ListPage> ListObjectsAsync(string bucket, ListQuery query, CancellationToken ct) =>
-        ThrowUnavailable<ListPage>(); // t37: реализация в Task 9 плана
 }

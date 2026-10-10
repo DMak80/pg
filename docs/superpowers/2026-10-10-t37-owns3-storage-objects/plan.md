@@ -1,4 +1,4 @@
-# t37-owns3-storage-objects: план реализации (rev.5, приказ пользователя: только BCL, без unsafe/P-Invoke)
+# t37-owns3-storage-objects: план реализации (rev.6: BCL-only без unsafe/P-Invoke; CopyObject на net10 — всегда fallback-копирование, вариант A)
 
 > **Для исполняющих агентов:** ОБЯЗАТЕЛЬНЫЙ саб-скилл: superpowers:subagent-driven-development (рекомендуется) или superpowers:executing-plans — исполнять по задачам; шаги отмечаются чекбоксами (`- [ ]`). Каждый шаг несёт Вход/Действие/Выход/Проверку/Связь со spec.
 
@@ -6,7 +6,7 @@
 
 **Архитектура:** `OwnS3.Storage` — чистая библиотека (без ASP.NET): `XlVolume` (том, чистки) + `XlObjectStore` (реализация `IObjectStore`) + кодирование путей/метафайл/листинг/условия как отдельные классы; коммит-поинт любой записи — атомарная замена `xl.meta` (rename). `OwnS3.App` подставляет `XlObjectStore` в DI, инициализирует том fail-fast до Kestrel, фоновые чистки 15 мин, `/healthz` с пробой тома.
 
-**Технологии:** .NET 10, C# (`Nullable=enable`, `TreatWarningsAsErrors=true`), xunit.v3 + FluentAssertions, `TimeProvider` (тесты — фиксированное время), IncrementalHash (MD5/SHA-256), `File.CreateHardLink`, `FileStream.Flush(flushToDisk: true)` — только стандартные API .NET (см. ограничение 9).
+**Технологии:** .NET 10, C# (`Nullable=enable`, `TreatWarningsAsErrors=true`), xunit.v3 + FluentAssertions, `TimeProvider` (тесты — фиксированное время), IncrementalHash (MD5/SHA-256), `FileStream.Flush(flushToDisk: true)` — только стандартные API .NET (см. ограничение 9); CopyObject на net10 — побайтовое копирование (хардлинк — точка включения на net11, P11).
 
 **Спека:** `docs/superpowers/2026-10-10-t37-owns3-storage-objects/spec.md` (план аргументирует от спеки; исполнители читают оба документа).
 
@@ -38,6 +38,7 @@
 - **P8. Конвенция ETag.** `xl.meta` хранит hex-значение БЕЗ кавычек; доменные значения, идущие в HTTP-заголовок/XML — В КАВЫЧКАХ: `PutResult.ETag`, `ObjectMetadata.ETag`, `ObjectAttributes.ETag`, `ListEntry.ETag` (Contents/ETag листинга — как у Get/Head, канон 02 §3); `ConditionalEvaluator.ETagMatches` сравнивает нормализованно (кавычки снимаются с обеих сторон).
 - **P9. Байтовый порядок ключей.** Единый порядок сортировки/сравнения (листинги, ListBuckets, маркеры) — строгий лексикографический по UTF-8 байтам (канон 02 §3, решение пользователя). Сравнение реализует `Utf8ByteOrder` (создаётся в Task 1; побайтовое сравнение UTF-8; string Ordinal НЕ подходит — расходится с байтовым на символах вне BMP: UTF-16 ставит сурогаты D800–DFFF ниже U+E000–U+FFFF). Все места: сортировка детей, emit-фильтры, marker/continuation, сортировка ListBuckets — только через `Utf8ByteOrder`.
 - **P10. Conditional в GetObjectAttributes (решение координатора).** GetObjectAttributes обрабатывает conditional-заголовки по таблице канона 02 §1 как GET-семантика (`ifModifiedSinceApplies: true`): провал `If-Match`/`If-Unmodified-Since` → бросок `PreconditionFailed` (412); попадание `If-None-Match`/`If-Modified-Since` → исход Not-Modified обёрткой `ObjectAttributesResult` (флагом с метаданными, не броском — 304 обязан нести заголовки `ETag`/`Last-Modified`, философия §5.3). Контракт `IObjectStore.GetObjectAttributesAsync` расширяется параметром `ObjectConditions?` (доменная правка уровня §5, разрешена решением координатора).
+- **P11. CopyObject на net10 — всегда fallback-копирование (вариант A, решение пользователя).** `File.CreateHardLink` отсутствует в net10.0 (API .NET 11 Preview), P/Invoke/unsafe запрещены (ограничение 9) — выбран вариант A: на net10 линк постоянно «неудачен», работает fallback-ветка (побайтовое копирование `part.1` + fsync). Семантика Q2 «жёсткая ссылка + fallback при неудаче link» сохранена: на net10 link всегда неудачен; спека и каноны НЕ меняются (arch про CopyObject требует атомарный коммит и ETag-семантику — механика данных не предписана). Точка включения хардлинка — единственный метод `TryCreateHardLink` (Task 8): при переходе монорепо на net11 включается одной правкой в нём. Цена (осознанная): CopyObject большого объекта — полный IO-проход.
 
 ---
 
@@ -655,14 +656,23 @@ public static AppliedByteRange? Resolve(ByteRange? range, string? ifRange, strin
 - Create: `src/OwnS3.Storage/XlObjectStore.Copy.cs` (partial)
 - Test: дополнение `XlObjectStoreObjectTests.cs` (или отдельный `XlObjectStoreCopyTests.cs` с той же фикстурой)
 
-**`CopyObjectAsync(CopyRequest, ct)` (спека §4.3 Copy + решение Q2):**
+**`CopyObjectAsync(CopyRequest, ct)` (спека §4.3 Copy + решение Q2, реализация Q2 — fallback-ветка на net10, P11/вариант A):**
 1. Источник: `EnsureBucket(SourceBucket)` → NoSuchBucket; `XlMetaFile.Read` → NoSuchKey.
 2. Conditional источника: `Evaluate(request.SourceConditions, src.ETag, src.ModTime, ifModifiedSinceApplies: false)`; исход `NotModified` ИЛИ `PreconditionFailed` → бросок `PreconditionFailed` (copy — не GET/HEAD: If-None-Match-попадание = 412).
 3. `src.Size > 5 ГБ` → `ObjectStoreException(EntityTooLarge)` (App не валидирует copy по длине).
-4. Приёмник: `EnsureBucket(DestBucket)`. Staging: `tmp/<guid>/<newUuid>/part.1` — `File.CreateHardLink(destPath, srcPartPath)` (стандартный BCL-метод `System.IO.File`, ограничению 9 соответствует); при отказе link (`IOException`/`PlatformNotSupportedException`) — побайтовое копирование + `logger.LogWarning` (fallback Q2).
+4. Приёмник: `EnsureBucket(DestBucket)`. Staging: `tmp/<guid>/<newUuid>/part.1` — выделенный метод:
+
+```csharp
+// Единственная точка включения хардлинка: File.CreateHardLink — API .NET 11
+// (в net10.0 отсутствует; P/Invoke запрещён ограничением 9). При переходе
+// монорепо на net11 включается одной правкой здесь (P11, вариант A).
+private static bool TryCreateHardLink(string sourcePath, string destPath) => false;
+```
+
+   Вызов: `if (!TryCreateHardLink(srcPart, stagedPart)) { побайтовое копирование srcPart → stagedPart; FileStream.Flush(flushToDisk: true); logger.LogWarning("хардлинк недоступен (нет BCL-API в net10.0) — побайтовое копирование"); }`. На net10 основная ветка — всегда fallback-копирование; семантика Q2 сохранена (link «постоянно неудачен»), ограничение 9 соблюдено, спека/каноны не меняются (arch требует атомарный коммит и ETag-семантику, механика данных не предписана).
 5. `xl.meta`: `COPY` → ContentType/UserMetadata источника; `REPLACE` → `request.NewMetadata`; etag/sha256/Size — наследованы; VersionId новый; ModTime = now; коммит — `CommitStagedObjectAsync` (включая src == dest). Возврат `PutResult('"'+ src.ETag + '"')` (кавычки, P8).
 
-Тестовый хук fallback (внутренний): `internal Func<string, string, bool>? HardLinkProbe;` — задан и вернул false → fallback-ветка.
+Тестовый хук (внутренний): `internal Func<string, string, bool>? HardLinkProbe;` — при заданном подменяет `TryCreateHardLink` (проверка fallback-семантики и линк-ветки без реального хардлинка на net10).
 
 **`GetObjectAttributesAsync(bucket, key, attributes, maxParts, partNumberMarker, conditions, ct)` (P10 — conditional по таблице канона 02 §1, GET-семантика):**
 1. `EnsureBucket`; `XlMetaFile.Read` → NoSuchKey.
@@ -674,8 +684,9 @@ public static AppliedByteRange? Resolve(ByteRange? range, string? ifRange, strin
   - Действие: кейсы:
     - `Copy_ContentAndInheritedMetadata_CopyDirective` (ContentType/UserMetadata источника; ETag копии == ETag источника — в кавычках);
     - `Copy_ReplaceDirective_UsesNewMetadata`;
-    - `Copy_SurvivesSourceDeletion` — copy → удалить источник → Get копии без ошибок целостности;
-    - `Copy_FallbackToByteCopy_Works` (`HardLinkProbe = (_,_) => false`);
+    - `Copy_SurvivesSourceDeletion` — copy → удалить источник → Get копии без ошибок целостности (на net10 копия имеет собственные байты — ассерт не требует реального хардлинка; кейс сохраняется и для будущей net11-механики);
+    - `Copy_DefaultNet10_AlwaysFallback_ByteCopy` — БЕЗ хука: дефолт net10 → побайтовое копирование, копия валидна, содержимое совпадает с источником (P11/вариант A);
+    - `Copy_HardLinkProbeTrue_TakesLinkBranch` — `HardLinkProbe = (s, d) => { File.Copy(s, d); return true; }` (имитация успешного линка): линк-ветка отработала без собственного копирования, объект валиден (фиксация ветвления для будущей net11-механики);
     - `Copy_SourceConditions_Fail412` (If-Match не совпал; и If-None-Match совпал → 412, не 304);
     - `Copy_MissingSource_NoSuchKey`; `Copy_MissingDestBucket_NoSuchBucket`;
     - `Copy_SourceTooLarge_EntityTooLarge` — `XlMetaFile.Write` поверх xl.meta живого объекта с `Size = 5 ГБ + 1`;
@@ -685,7 +696,7 @@ public static AppliedByteRange? Resolve(ByteRange? range, string? ifRange, strin
     - `Attributes_Missing_NoSuchKey`; `Attributes_MissingBucket_NoSuchBucket`.
   - Выход: тест-кейсы.
   - Проверка: фильтр `~XlObjectStoreObjectTests` → падают Copy/Attributes-кейсы.
-  - Связь со spec: §4.3 (Copy), §4.1, §11 Q2, P10 (conditional Attributes).
+  - Связь со spec: §4.3 (Copy), §4.1, §11 Q2 (реализация — fallback-ветка на net10, P11/вариант A), P10 (conditional Attributes).
 
 - [ ] **Шаг 2. Реализовать**
   - Вход: красные кейсы.
@@ -696,7 +707,7 @@ public static AppliedByteRange? Resolve(ByteRange? range, string? ifRange, strin
 
 - [ ] **Шаг 3. Коммит**
   - Вход: зелёный прогон.
-  - Действие: `git commit -m "feat(owns3-storage): CopyObject (хардлинк+fallback, COPY/REPLACE) + GetObjectAttributes (conditional 412/304, ETag quoted, синтетическая 1 часть)"`.
+  - Действие: `git commit -m "feat(owns3-storage): CopyObject (fallback-копирование на net10, точка включения хардлинка для net11, COPY/REPLACE) + GetObjectAttributes (conditional 412/304, ETag quoted, синтетическая 1 часть)"`.
   - Выход: коммит.
   - Проверка: `git log -1`.
   - Связь со spec: фаза 4 §7.
@@ -984,10 +995,12 @@ catch (Exception ex)
 
 ---
 
-## Саморевью плана rev.5 (выполнено при написании)
+## Саморевью плана rev.6 (выполнено при написании)
+
+- **Решение пользователя (конфликт Task 8, вариант A):** `File.CreateHardLink` отсутствует в net10.0 (API .NET 11 Preview), P/Invoke/unsafe запрещены ограничением 9 — выбран вариант A: на net10 всегда fallback-ветка. Новое решение P11; Task 8 п.4 переписан: выделенный `TryCreateHardLink` (всегда `false` на net10, комментарий-точка включения для net11, сниппет приведён), основная ветка — побайтовое копирование `part.1` + `Flush(flushToDisk: true)` + warning «хардлинк недоступен»; обоснование (семантика Q2 сохранена, arch не меняется, ограничение 9 соблюдено) и цена (полный IO-проход на CopyObject) — в P11 и тексте Task 8. Тесты: `Copy_DefaultNet10_AlwaysFallback_ByteCopy` (дефолт, без хука) и `Copy_HardLinkProbeTrue_TakesLinkBranch` (имитация линка через хук); `Copy_SurvivesSourceDeletion` — без требования реального хардлинка; `HardLinkProbe` — тест-хюк как было. Коммит-сообщение Task 8 и «Технологии» шапки синхронизированы.
 
 - **Приказ пользователя (BCL-only):** новое глобальное ограничение 9 (запрет unsafe/`AllowUnsafeBlocks`/`LibraryImport`/P-Invoke). Компонент `DirectoryFsync` и его сниппет/шаги УДАЛЕНЫ из Task 3 (заголовок/Files/Interfaces/шаг 2/коммит-сообщение очищены); вместо него — глобальное примечание Task 3 (fsync каталогов не выполняется: BCL-API нет, канон 04 / спека §4.3 п.2 допускают best-effort). Task 6: п.3 — fsync только файлов (`Flush(flushToDisk: true)`), fsync каталогов staging/dataDir убран; п.4 — место бывшего fsync каталога коммит-цикла (единственное упомянутое приказом место) — diagnostic-warning в лог. Task 2 — ссылка «fsync каталога после rename не выполняется (примечание Task 3)». P4 и «Технологии» шапки переписаны под BCL-only. Task 12 шаг 1 — проверка отсутствия `unsafe`/`LibraryImport`/`DllImport` в коде задач.
-- **Проверка остаточных упоминаний:** `File.CreateHardLink` (стандартный метод `System.IO.File`), `DriveInfo`, `Base64Url`, `FileStream.Flush(flushToDisk: true)` — BCL, разрешены; других P/Invoke/unsafe-механик в плане нет.
+- **Проверка остаточных упоминаний:** `DriveInfo`, `Base64Url`, `FileStream.Flush(flushToDisk: true)` — BCL, разрешены; других P/Invoke/unsafe-механик в плане нет; `File.CreateHardLink` из механики исключён (P11 — точка включения на net11).
 - **Контроль прежних замечаний (ревью-1/2/3):** порядок кодирования Task 1 (маркер после экранирования, 255 после приклейки), `Utf8ByteOrder` в Task 1 (зависимости T1→T4→T6/T9), logger `ListWalker(XlVolume, ILogger?)`, DI до Build/Initialize после (Task 10 п.1), ListBuckets сортировка (Task 4), формула маркеров (Task 9 п.2), orphan без xl.meta (Task 3), метрики диска (Task 10), ETag кавычки P8 (вкл. ListEntry/Attributes), байтовый порядок P9, изоляция том+имена по кейсам (ограничение 8, Task 10/11), skip-инвариант префикса (Task 9), спецслучай `%` декодирования (Task 1), fsync tmp-файла xl.meta (Task 2/P4), Attributes-conditional P10 (Task 5/8/11) — все сохранены.
 - **Покрытие спеки:** фазы §7.0–7.7 → Task 0–12; критерии §10.1–10.10 — все со ссылками (Task 12 шаг 4).
 - **Типы:** консистентность `ObjectContent`/`AppliedByteRange`/`ObjectReadOptions`/`ObjectAttributesResult`/`ToMetadata(string, XlMetaRecord)`/`Utf8ByteOrder`/`ListWalker(XlVolume, ILogger?)` проверена по всем задачам.
