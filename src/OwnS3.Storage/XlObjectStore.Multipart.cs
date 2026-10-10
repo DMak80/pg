@@ -169,12 +169,115 @@ public sealed partial class XlObjectStore
         IReadOnlyList<PartEtag> parts, CancellationToken ct) =>
         ThrowUnavailable<CompleteResult>(); // t38, Task 6–7
 
+    // ListParts (канон 02 §5): части из parts.json по возрастанию; marker — строго после;
+    // maxParts null = 1000; битый parts.json при живой записи → NoSuchUpload (спека §4.1,
+    // ReadPartsOrThrow — единый исход с UploadPart/Complete).
     public Task<PartsPage> ListPartsAsync(string bucket, string key, string uploadId,
-        int? maxParts, int? partNumberMarker, CancellationToken ct) =>
-        ThrowUnavailable<PartsPage>(); // t38, Task 5
+        int? maxParts, int? partNumberMarker, UploadVisibility visibility, CancellationToken ct)
+    {
+        EnsureBucket(bucket);
+        ResolveUploadOrThrow(bucket, key, uploadId, visibility);
+        var uploadDir = MultipartJournals.UploadDirPath(
+            MultipartJournals.KeyDir(volume.MultipartDir, bucket, key), uploadId);
+        var parts = ReadPartsOrThrow(uploadDir);
+        var marker = partNumberMarker ?? 0;
+        var selected = parts.Where(p => p.PartNumber > marker)
+            .OrderBy(p => p.PartNumber)
+            .Take(maxParts ?? 1000)
+            .Select(p => new PartEntry(p.PartNumber, '"' + p.ETag + '"', p.Size,
+                DateTimeOffset.FromUnixTimeMilliseconds(p.ModTimeMs)))
+            .ToList();
+        var truncated = parts.Count(p => p.PartNumber > marker) > selected.Count;
+        return Task.FromResult(new PartsPage(selected, truncated,
+            truncated ? selected[^1].PartNumber : null));
+    }
 
-    public Task<UploadsPage> ListMultipartUploadsAsync(string bucket, UploadsQuery query, CancellationToken ct) =>
-        ThrowUnavailable<UploadsPage>(); // t38, Task 5
+    // ListMultipartUploads (канон 02 §5, М10): сбор всех записей бакета из sha-каталогов,
+    // сортировка ключ(UTF-8 байты)→initiatedMs→uploadId, фильтры prefix/маркер-пара,
+    // свёртка delimiter, max-uploads с подсчётом CommonPrefixes.
+    public Task<UploadsPage> ListMultipartUploadsAsync(string bucket, UploadsQuery query, CancellationToken ct)
+    {
+        EnsureBucket(bucket);
+        var all = new List<MultipartJournals.UploadJournalEntry>();
+        if (Directory.Exists(volume.MultipartDir))
+            foreach (var keyDir in Directory.EnumerateDirectories(volume.MultipartDir))
+            {
+                try
+                {
+                    all.AddRange(MultipartJournals.ReadUploads(MultipartJournals.UploadsJsonPath(keyDir))
+                        .Where(e => e.Bucket == bucket));
+                }
+                catch (JsonException ex)
+                {
+                    // Битый журнал одного ключа не валит листинг бакета (спека §4.1)
+                    _logger.LogWarning(ex, "Битый uploads.json в {KeyDir}: ключ пропущен", keyDir);
+                }
+            }
+        // Видимость (М9): read-only — только свои
+        all = all.Where(e => query.Visibility is not UploadVisibility.Owned(var owner)
+                             || e.AccessKey == owner).ToList();
+        // Сортировка М10
+        all.Sort((l, r) =>
+        {
+            var byKey = Utf8ByteOrder.Compare(l.Key, r.Key);
+            if (byKey != 0) return byKey;
+            var byTime = l.InitiatedMs.CompareTo(r.InitiatedMs);
+            return byTime != 0 ? byTime : string.CompareOrdinal(l.UploadId, r.UploadId);
+        });
+        // prefix
+        if (query.Prefix is not null)
+            all = all.Where(e => Utf8ByteOrder.StartsWith(e.Key, query.Prefix)).ToList();
+        // маркер-пара (М10): строго после записи-маркера в порядке выдачи; маркер-CP
+        // (NextKeyMarker = префикс) — при delimiter ключи этого префикса пропускаются
+        // ЦЕЛИКОМ: уже выданный CommonPrefix не свёртывается повторно (без дублей)
+        if (query.KeyMarker is not null)
+        {
+            var markerIndex = all.FindIndex(e => Utf8ByteOrder.Compare(e.Key, query.KeyMarker) == 0
+                && query.UploadIdMarker is not null && e.UploadId == query.UploadIdMarker);
+            all = markerIndex >= 0
+                ? all.Skip(markerIndex + 1).ToList()
+                : all.Where(e => Utf8ByteOrder.Compare(e.Key, query.KeyMarker) > 0
+                    && (query.Delimiter is null
+                        || !Utf8ByteOrder.StartsWith(e.Key, query.KeyMarker))).ToList();
+        }
+        // Свёртка delimiter + пагинация (uploads + CP вместе ≤ max-uploads, М10)
+        var maxUploads = query.MaxUploads ?? 1000;
+        var uploads = new List<UploadEntry>();
+        var prefixes = new List<CommonPrefixEntry>();
+        bool truncated = false;
+        string? nextKey = null, nextUploadId = null;
+        foreach (var e in all)
+        {
+            string? commonPrefix = null;
+            if (query.Delimiter is not null)
+            {
+                var idx = e.Key.IndexOf(query.Delimiter, query.Prefix?.Length ?? 0, StringComparison.Ordinal);
+                if (idx >= 0)
+                    commonPrefix = e.Key[..(idx + query.Delimiter.Length)];
+            }
+            var isSeenPrefix = commonPrefix is not null
+                && prefixes.Any(p => p.Prefix == commonPrefix) ? (bool?)true : null;
+            if (uploads.Count + prefixes.Count >= maxUploads
+                && (commonPrefix is null || isSeenPrefix != true))
+            {
+                truncated = true; // осталась невыданная позиция
+                break;
+            }
+            if (commonPrefix is null)
+            {
+                uploads.Add(new UploadEntry(e.Key, e.UploadId,
+                    DateTimeOffset.FromUnixTimeMilliseconds(e.InitiatedMs)));
+                nextKey = e.Key; nextUploadId = e.UploadId;
+            }
+            else if (isSeenPrefix != true)
+            {
+                prefixes.Add(new CommonPrefixEntry(commonPrefix));
+                nextKey = commonPrefix; nextUploadId = null;
+            }
+        }
+        return Task.FromResult(new UploadsPage(uploads, prefixes, truncated,
+            truncated ? nextKey : null, truncated ? nextUploadId : null));
+    }
 
     private static Task<T> ThrowUnavailable<T>() => throw new ObjectStoreUnavailableException();
 }

@@ -1,4 +1,5 @@
 using System.Globalization;
+using OwnS3.App.Access;
 using OwnS3.App.Pipeline;
 using OwnS3.App.Routing;
 using OwnS3.Protocol.Auth;
@@ -162,10 +163,15 @@ public static class MultipartHandlers
             var markerRaw = QueryValue(context, "part-number-marker");
             var marker = int.TryParse(markerRaw, NumberStyles.Integer, CultureInfo.InvariantCulture, out var m) ? m : 0;
 
+            // Видимость загрузок (канон 05 §3): read-only — только свои
+            var visibility = context.Request.Identity.Policy == AccessPolicy.ReadOnly
+                ? UploadVisibility.OwnedBy(context.Request.Identity.AccessKey)
+                : UploadVisibility.AllUploads;
+
             // Act
             var page = await Store.ListPartsAsync(context.Bucket, context.Key, uploadId,
                 maxParts == OperationValidation.DefaultPagingLimit ? null : maxParts,
-                marker == 0 ? null : marker, ct);
+                marker == 0 ? null : marker, visibility, ct);
 
             // Respond: ListPartsResult (Initiator/Owner — заполнители)
             await context.WriteXmlAsync(S3Xml.Serialize(new ListPartsResult
@@ -202,10 +208,16 @@ public static class MultipartHandlers
             var maxUploads = OperationValidation.ParsePagingLimit(QueryValue(context, "max-uploads"), "max-uploads");
             var encodingType = OperationValidation.ParseEncodingType(QueryValue(context, "encoding-type"));
 
+            // Видимость загрузок (канон 05 §3): read-only — только свои
+            var visibility = context.Request.Identity.Policy == AccessPolicy.ReadOnly
+                ? UploadVisibility.OwnedBy(context.Request.Identity.AccessKey)
+                : UploadVisibility.AllUploads;
+
             // Act
             var page = await Store.ListMultipartUploadsAsync(context.Bucket, new UploadsQuery(
                 prefix, delimiter, keyMarker, uploadIdMarker,
-                maxUploads == OperationValidation.DefaultPagingLimit ? null : maxUploads, encodingType), ct);
+                maxUploads == OperationValidation.DefaultPagingLimit ? null : maxUploads, encodingType,
+                visibility), ct);
 
             // Respond: ListMultipartUploadsResult (Owner/Initiator — заполнители)
             await context.WriteXmlAsync(S3Xml.Serialize(new ListMultipartUploadsResult

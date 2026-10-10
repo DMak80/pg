@@ -1,3 +1,6 @@
+using System.Text.Json;
+using Microsoft.Extensions.Logging;
+
 namespace OwnS3.Storage;
 
 // Бакетные операции XlObjectStore (спека §4.6).
@@ -14,14 +17,29 @@ public sealed partial class XlObjectStore
         return Task.CompletedTask;
     }
 
-    // Нет → NoSuchBucket; в поддереве есть xl.meta → BucketNotEmpty; иначе
-    // каталог бакета и служебная мета — в .trash по отдельности.
+    // Нет → NoSuchBucket; в поддереве есть xl.meta ИЛИ живые multipart-загрузки →
+    // BucketNotEmpty; иначе каталог бакета и служебная мета — в .trash по отдельности.
     public Task DeleteBucketAsync(string bucket, CancellationToken ct)
     {
         EnsureBucket(bucket);
-        // t38: проверка живых multipart-загрузок (в t37 их физически нет)
         if (Directory.EnumerateFiles(BucketRoot(bucket), "xl.meta", SearchOption.AllDirectories).Any())
             throw new ObjectStoreException(ObjectStoreErrorCode.BucketNotEmpty);
+        // Живые multipart-загрузки бакета блокируют удаление (канон 02 §1/§5):
+        // активная запись = запись с существующим каталогом загрузки (М2)
+        if (Directory.Exists(volume.MultipartDir))
+            foreach (var keyDir in Directory.EnumerateDirectories(volume.MultipartDir))
+            {
+                List<MultipartJournals.UploadJournalEntry> uploads;
+                try { uploads = MultipartJournals.ReadUploads(MultipartJournals.UploadsJsonPath(keyDir)); }
+                catch (JsonException ex)
+                {
+                    _logger.LogWarning(ex, "Битый uploads.json в {KeyDir} при DeleteBucket: пропущен", keyDir);
+                    continue;
+                }
+                if (uploads.Any(e => e.Bucket == bucket
+                        && Directory.Exists(MultipartJournals.UploadDirPath(keyDir, e.UploadId))))
+                    throw new ObjectStoreException(ObjectStoreErrorCode.BucketNotEmpty);
+            }
         volume.MoveToTrash(BucketRoot(bucket));
         var metaDir = Path.Combine(volume.BucketsMetaDir, bucket);
         if (Directory.Exists(metaDir))

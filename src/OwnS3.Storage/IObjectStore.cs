@@ -35,6 +35,6 @@ public interface IObjectStore
         IReadOnlyList<PartEtag> parts, CancellationToken ct);
     Task AbortMultipartUploadAsync(string bucket, string key, string uploadId, CancellationToken ct);
     Task<PartsPage> ListPartsAsync(string bucket, string key, string uploadId,
-        int? maxParts, int? partNumberMarker, CancellationToken ct);
+        int? maxParts, int? partNumberMarker, UploadVisibility visibility, CancellationToken ct);
     Task<UploadsPage> ListMultipartUploadsAsync(string bucket, UploadsQuery query, CancellationToken ct);
 }
