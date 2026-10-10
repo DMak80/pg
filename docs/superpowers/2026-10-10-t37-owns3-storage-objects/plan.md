@@ -1,4 +1,4 @@
-# t37-owns3-storage-objects: план реализации (rev.7: BCL-only; CopyObject — fallback на net10; дефекты Фазы 7 П-1…П-7 синхронизированы в механики)
+# t37-owns3-storage-objects: план реализации (rev.8: BCL-only; CopyObject — fallback на net10; П-1…П-7 синхронизированы; номинальный синк — CopyObjectAsync возвращает расширенный PutResult, отдельный CopyResult не вводится)
 
 > **Для исполняющих агентов:** ОБЯЗАТЕЛЬНЫЙ саб-скилл: superpowers:subagent-driven-development (рекомендуется) или superpowers:executing-plans — исполнять по задачам; шаги отмечаются чекбоксами (`- [ ]`). Каждый шаг несёт Вход/Действие/Выход/Проверку/Связь со spec.
 
@@ -438,18 +438,20 @@ public sealed record ObjectAttributesResult(ObjectAttributes? Attributes, Object
 // modTime ЗАПИСИ, не UtcNow обработки.
 // 1) ObjectAttributes + поле LastModified (200-ветка GetObjectAttributes: заголовок
 //    Last-Modified = modTime объекта);
-// 2) CopyObjectAsync возвращает CopyResult(ETag, LastModified=modTime новой записи):
-//    CopyObjectResult.LastModified = modTime, не UtcNow.
+// 2) PutResult расширяется полем LastModified, CopyObjectAsync возвращает Task<PutResult>
+//    (переиспользование вместо отдельного CopyResult — состав полей идентичен; синк rev.8):
+//    CopyObjectResult.LastModified = modTime новой записи, не UtcNow; PutObjectAsync
+//    заполняет оба поля (modTime записи).
 public sealed record ObjectAttributes(string ETag, long ObjectSize, string StorageClass,
     ObjectPartsAttributes? Parts, DateTimeOffset LastModified);
-public sealed record CopyResult(string ETag, DateTimeOffset LastModified);
+public sealed record PutResult(string ETag, DateTimeOffset LastModified);
 
-// IObjectStore.cs (спека §5.2 + P10 + П-6):
+// IObjectStore.cs (спека §5.2 + P10 + П-6 + синк rev.8):
 Task<ObjectContent> HeadObjectAsync(string bucket, string key, ObjectReadOptions? options, CancellationToken ct);
 Task<ObjectAttributesResult> GetObjectAttributesAsync(string bucket, string key,
     IReadOnlyList<ObjectAttributeName> attributes, int? maxParts, int? partNumberMarker,
     ObjectConditions? conditions, CancellationToken ct);
-Task<CopyResult> CopyObjectAsync(CopyRequest request, CancellationToken ct);
+Task<PutResult> CopyObjectAsync(CopyRequest request, CancellationToken ct);
 
 public enum ConditionalOutcome { Proceed, NotModified, PreconditionFailed }
 
@@ -529,7 +531,7 @@ public static AppliedByteRange? Resolve(ByteRange? range, string? ifRange, strin
 4. `GetObjectAttributesHandler` (P10 + П-6): `var conditions = ReadOptions(context).Conditions;` → передача последним аргументом `GetObjectAttributesAsync`; ответ: `if (result.NotModifiedMetadata is { } nm) { StatusCode = 304; Headers.ETag = nm.ETag; Headers.LastModified = nm.LastModified.ToString("R"); return; }`; 200-ветка: заголовок `Last-Modified = result.Attributes!.LastModified.ToString("R")` — modTime объекта, НЕ `DateTimeOffset.UtcNow` (т36-дефект); остальной код использует `result.Attributes!`.
 5. `CopyObjectHandler` (П-6): `CopyObjectResult.LastModified = S3HandlerContext.FormatDate(result.LastModified)` — modTime НОВОЙ записи (не UtcNow); `ETag = result.ETag`.
 6. `S3Middleware`: `catch (XlInvalidArgumentException ex)` → `WriteErrorAsync(new S3Error(S3ErrorCode.InvalidArgument, ..., MessageOverride: ex.Message))` — ПЕРЕД `catch (ObjectStoreException)`.
-7. `NotWiredObjectStore`: `HeadObjectAsync(bucket, key, options, ct)` → `Throw<ObjectContent>()`; `GetObjectAttributesAsync(..., conditions, ct)` → `Throw<ObjectAttributesResult>()`; `CopyObjectAsync(request, ct)` → `Throw<CopyResult>()`; тест `NotWiredObjectStoreTests.BodylessMethods` — вызовы с `null!` для новых параметров.
+7. `NotWiredObjectStore`: `HeadObjectAsync(bucket, key, options, ct)` → `Throw<ObjectContent>()`; `GetObjectAttributesAsync(..., conditions, ct)` → `Throw<ObjectAttributesResult>()`; `CopyObjectAsync(request, ct)` → `Throw<PutResult>()`; тест `NotWiredObjectStoreTests.BodylessMethods` — вызовы с `null!` для новых параметров.
 
 - [ ] **Шаг 1. Написать падающие тесты**
   - Вход: interfaces Task 5 определены.
@@ -582,7 +584,7 @@ public static AppliedByteRange? Resolve(ByteRange? range, string? ifRange, strin
    - `target` существует → старый `XlMetaFile.Read(target, out _)` (нет файла — нет старого) → `Directory.Move(dataDir, target/<versionId "N">)` → `XlMetaFile.Write(target, record)` (bkp→tmp→rename, КОММИТ) → старый `target/<oldVersionId "N">` существует → `volume.MoveToTrash(...)`.
    - После коммита (место, где ранее планировался fsync каталога — приказ пользователя, примечание Task 3): `logger.LogWarning("fsync каталога объекта не выполняется (только BCL, приказ пользователя): {Target}", target)` — diagnostic-warning для наблюдаемости.
 5. `finally`: `staging` существует → `Directory.Delete(staging, recursive: true)` (при любом отказе — спека §4.3 п.4).
-6. Возврат `PutResult('"' + etag + '"')` (кавычки — P8).
+6. Возврат `PutResult('"' + etag + '"', record.ModTime)` (ETag в кавычках — P8; LastModified = modTime записи — расширенный PutResult, синк rev.8).
 
 **`DeleteObjectAsync`** (спека §4.3, канон 04 §4 п.5): `EnsureBucket`; `xl.meta` нет → успех (идемпотентность); `MoveToTrash(xl.meta)`; `MoveToTrash(dataDir)` — ПО ОТДЕЛЬНОСТИ, цели `.trash/<guid>`; опустевший `ObjectDir` (нет записей) → `Directory.Delete`; каталоги-префиксы не трогать.
 
@@ -695,7 +697,7 @@ private static bool TryCreateHardLink(string sourcePath, string destPath) => fal
 ```
 
    Вызов: `if (!TryCreateHardLink(srcPart, stagedPart)) { побайтовое копирование srcPart → stagedPart; FileStream.Flush(flushToDisk: true); logger.LogWarning("хардлинк недоступен (нет BCL-API в net10.0) — побайтовое копирование"); }`. На net10 основная ветка — всегда fallback-копирование; семантика Q2 сохранена (link «постоянно неудачен»), ограничение 9 соблюдено, спека/каноны не меняются (arch требует атомарный коммит и ETag-семантику, механика данных не предписана).
-5. `xl.meta`: `COPY` → ContentType/UserMetadata источника; `REPLACE` → `request.NewMetadata`; etag/sha256/Size — наследованы; VersionId новый; ModTime = now; коммит — `CommitStagedObjectAsync` (включая src == dest). Возврат `new CopyResult('"'+ src.ETag + '"', record.ModTime)` — ETag в кавычках (P8), LastModified = modTime новой записи (П-6: хендлер строит `CopyObjectResult.LastModified` из него, не из UtcNow).
+5. `xl.meta`: `COPY` → ContentType/UserMetadata источника; `REPLACE` → `request.NewMetadata`; etag/sha256/Size — наследованы; VersionId новый; ModTime = now; коммит — `CommitStagedObjectAsync` (включая src == dest). Возврат `new PutResult('"'+ src.ETag + '"', record.ModTime)` (расширенный PutResult, синк rev.8) — ETag в кавычках (P8), LastModified = modTime новой записи (П-6: хендлер строит `CopyObjectResult.LastModified` из него, не из UtcNow).
 
 Тестовый хук (внутренний, П-5): `internal Func<string, string, bool>? HardLinkProbe;` — семантика вызова строго: `bool linked = HardLinkProbe is null ? TryCreateHardLink(sourcePath, destPath) : HardLinkProbe(sourcePath, destPath);` (при заданном хуке ПОЛНОСТЬЮ подменяет TryCreateHardLink — проверка fallback-семантики и линк-ветки без реального хардлинка на net10).
 
@@ -707,7 +709,7 @@ private static bool TryCreateHardLink(string sourcePath, string destPath) => fal
 - [ ] **Шаг 1. Написать падающий тест**
   - Вход: Put/Get/Head готовы (Task 6–7); сигнатура Attributes-контракта из Task 5.
   - Действие: кейсы:
-    - `Copy_ContentAndInheritedMetadata_CopyDirective` (ContentType/UserMetadata источника; ETag копии == ETag источника — в кавычках; `CopyResult.LastModified` == modTime новой записи фиксированного TimeProvider — П-6);
+    - `Copy_ContentAndInheritedMetadata_CopyDirective` (ContentType/UserMetadata источника; ETag копии == ETag источника — в кавычках; `PutResult.LastModified` == modTime новой записи фиксированного TimeProvider — П-6);
     - `Copy_ReplaceDirective_UsesNewMetadata`;
     - `Copy_SurvivesSourceDeletion` — copy → удалить источник → Get копии без ошибок целостности (на net10 копия имеет собственные байты — ассерт не требует реального хардлинка; кейс сохраняется и для будущей net11-механики);
     - `Copy_DefaultNet10_AlwaysFallback_ByteCopy` — БЕЗ хука: дефолт net10 → побайтовое копирование, копия валидна, содержимое совпадает с источником (P11/вариант A);
@@ -1036,7 +1038,7 @@ catch (Exception ex)
 - **П-3 (major, Task 9):** порядок фильтров Walk исправлен — `after` сравнивается по КАНДИДАТУ эмиссии (CP после свёртки); CP ≤ after → пропуск CP-поддерева целиком; тест `Paging_Page2AfterCommonPrefixBoundary_NoDuplicateCp`.
 - **П-4 (major, Task 9):** производительность DirectoryCursor — ОБЯЗАТЕЛЬНА (сортировка детей один раз; кэш наличия xl.meta; merge по первому неисчерпанному/куче; subtree-skip — инвариант rev.4+ и CP-skip); обоснование — spec §9 (десятки тысяч ключей).
 - **П-5 (minor, Task 8):** семантика HardLinkProbe — явная формула `HardLinkProbe is null ? TryCreateHardLink(s,d) : HardLinkProbe(s,d)`; тест `Copy_HardLinkProbeTrue_TakesLinkBranch` присутствует.
-- **П-6 (minor, Task 5/8):** доменные правки §5-уровня: `ObjectAttributes.LastModified` (200-ветка Attributes: заголовок Last-Modified = modTime объекта, не UtcNow), `CopyResult(ETag, LastModified)` (CopyObjectResult.LastModified = modTime новой записи); помечено в Task 5 Interfaces, реализация — Task 8, ассерты — в тестах.
+- **П-6 (minor, Task 5/8):** доменные правки §5-уровня: `ObjectAttributes.LastModified` (200-ветка Attributes: заголовок Last-Modified = modTime объекта, не UtcNow), `CopyObjectAsync → Task<PutResult>` c расширенным `PutResult(ETag, LastModified)` (переиспользование вместо отдельного CopyResult — состав полей идентичен, синк rev.8; CopyObjectResult.LastModified = modTime новой записи); помечено в Task 5 Interfaces, реализация — Task 8, ассерты — в тестах.
 - **П-7 (minor):** (1) `XlMetaFile.Read`: основной повреждён + bkp отсутствует → `XlIntegrityException` (500), тест `Read_CorruptedMainWithoutBkp_ThrowsIntegrity_NotFileNotFound`; (2) Task 9: IsTruncated при ровно maxKeys — lookahead-шаг (усечение только при наличии следующего кандидата), тест `MaxKeys_ExactlyItemCount_NotTruncated`; NextMarker/NextContinuationToken вычисляются только при IsTruncated; (3) Task 10 Files: OwnS3Options.DataDir-комментарий без исторических атрибуций.
 
 - **Решение пользователя (конфликт Task 8, вариант A):** `File.CreateHardLink` отсутствует в net10.0 (API .NET 11 Preview), P/Invoke/unsafe запрещены ограничением 9 — выбран вариант A: на net10 всегда fallback-ветка. Новое решение P11; Task 8 п.4 переписан: выделенный `TryCreateHardLink` (всегда `false` на net10, комментарий-точка включения для net11, сниппет приведён), основная ветка — побайтовое копирование `part.1` + `Flush(flushToDisk: true)` + warning «хардлинк недоступен»; обоснование (семантика Q2 сохранена, arch не меняется, ограничение 9 соблюдено) и цена (полный IO-проход на CopyObject) — в P11 и тексте Task 8. Тесты: `Copy_DefaultNet10_AlwaysFallback_ByteCopy` (дефолт, без хука) и `Copy_HardLinkProbeTrue_TakesLinkBranch` (имитация линка через хук); `Copy_SurvivesSourceDeletion` — без требования реального хардлинка; `HardLinkProbe` — тест-хюк как было. Коммит-сообщение Task 8 и «Технологии» шапки синхронизированы.
