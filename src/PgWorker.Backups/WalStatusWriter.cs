@@ -35,7 +35,7 @@ public sealed class WalStatusWriter(IEtcdGateway etcd, string[] endpoints)
 
     public async Task<Result<WalStreamState?>> ReadAsync(string cluster, string shard, CancellationToken ct)
     {
-        Result<Kv?>? last = null;
+        Result<Kv?> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.GetAsync(endpoint, Key(cluster, shard), ct);
@@ -50,15 +50,15 @@ public sealed class WalStatusWriter(IEtcdGateway etcd, string[] endpoints)
             return Parse(cluster, shard, kv.Value);
         }
 
-        return Result<WalStreamState?>.Failed(last?.Error
-            ?? new ApplicationException("нет живых endpoints etcd"));
+        return Result<WalStreamState?>.Failed(last.Error
+            ?? new EtcdUnreachableException("etcd endpoints не заданы"));
     }
 
     public async Task<Result> WriteIfChangedAsync(
         string cluster, string shard, WalStreamState state, CancellationToken ct)
     {
         var payload = ToJson(state);
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var current = await etcd.GetAsync(endpoint, Key(cluster, shard), ct);
@@ -81,7 +81,7 @@ public sealed class WalStatusWriter(IEtcdGateway etcd, string[] endpoints)
             return Result.Success();
         }
 
-        return Result.Failed(last?.Error ?? new ApplicationException("нет живых endpoints etcd"));
+        return Result.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
     }
 
     private static Result<WalStreamState?> Parse(string cluster, string shard, string raw)

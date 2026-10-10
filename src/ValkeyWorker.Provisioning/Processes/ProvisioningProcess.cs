@@ -506,7 +506,7 @@ public sealed class ProvisioningProcess(
     // Отдельный цикл для non-generic Result (Result<T>-хелпер его не покрывает).
     private async Task<Result> PutWithFailoverAsync(string key, string value, CancellationToken ct)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await gateway.PutAsync(endpoint, key, value, null, ct);
@@ -515,7 +515,7 @@ public sealed class ProvisioningProcess(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     private Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
@@ -524,7 +524,7 @@ public sealed class ProvisioningProcess(
     internal static async Task<Result<T>> WithFailoverAsync<T>(
         string[] endpoints, Func<string, Task<Result<T>>> call)
     {
-        Result<T>? last = null;
+        Result<T> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await call(endpoint);
@@ -533,7 +533,7 @@ public sealed class ProvisioningProcess(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> ReadPortAllocAsync(

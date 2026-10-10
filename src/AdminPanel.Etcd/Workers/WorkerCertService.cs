@@ -286,7 +286,7 @@ public sealed class WorkerCertService(
     // Не-generic перегрузка для вызовов Task<Result>.
     private async Task<Result> WithEtcdAsync(Func<string, Task<Result>> call)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in etcdOptions.Value.Endpoints)
         {
             var result = await call(endpoint);
@@ -295,13 +295,13 @@ public sealed class WorkerCertService(
             last = result;
         }
 
-        return last ?? Result.Failed(new EtcdUnreachableException("AdminPanel:Etcd:Endpoints не заданы"));
+        return last.Error ?? new EtcdUnreachableException("AdminPanel:Etcd:Endpoints не заданы");
     }
 
     // Failover по endpoint'ам панели: первый успешный ответ выигрывает.
     private async Task<Result<T>> WithEtcdAsync<T>(Func<string, Task<Result<T>>> call)
     {
-        Result<T>? last = null;
+        Result<T> last = default;
         foreach (var endpoint in etcdOptions.Value.Endpoints)
         {
             var result = await call(endpoint);
@@ -310,6 +310,6 @@ public sealed class WorkerCertService(
             last = result;
         }
 
-        return last ?? Result<T>.Failed(new EtcdUnreachableException("AdminPanel:Etcd:Endpoints не заданы"));
+        return last.Error ?? new EtcdUnreachableException("AdminPanel:Etcd:Endpoints не заданы");
     }
 }

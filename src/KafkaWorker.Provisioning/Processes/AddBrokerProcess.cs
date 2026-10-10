@@ -343,7 +343,7 @@ public sealed class AddBrokerProcess(
 
     private async Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
     {
-        Result<Kv?>? last = null;
+        Result<Kv?> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.GetAsync(endpoint, key, ct);
@@ -352,12 +352,12 @@ public sealed class AddBrokerProcess(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.PutAsync(endpoint, key, value, null, ct);
@@ -366,12 +366,12 @@ public sealed class AddBrokerProcess(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
     {
-        Result<TxnResult>? last = null;
+        Result<TxnResult> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.TxnAsync(endpoint, req, ct);
@@ -380,6 +380,6 @@ public sealed class AddBrokerProcess(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 }

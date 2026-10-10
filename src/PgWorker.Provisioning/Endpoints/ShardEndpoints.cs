@@ -34,7 +34,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
     public async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> ReadPortAllocAsync(
         string cluster, CancellationToken ct)
     {
-        Result<Kv?>? last = null;
+        Result<Kv?> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.GetAsync(endpoint, $"/pgworker/portalloc/{cluster}", ct);
@@ -51,7 +51,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
             return Portalloc.Parse(cluster, kv.Value);
         }
 
-        return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(last!.Error!);
+        return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
     }
 
     // Мастер шарда для SQL (adopt-repair §3.3, arch/14 §5 F — цепочка):
@@ -167,7 +167,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
     // Точечный GET с failover-обёрткой (паттерн ReadPortAllocAsync).
     private async Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
     {
-        Result<Kv?>? last = null;
+        Result<Kv?> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.GetAsync(endpoint, key, ct);
@@ -180,7 +180,7 @@ public sealed partial class ShardEndpoints(IEtcdGateway etcd, string[] endpoints
             return result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     // ── DSN-билдеры ──

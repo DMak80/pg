@@ -354,7 +354,7 @@ static async Task<Result<IReadOnlyList<ValkeyWorker.Core.Model.ValkeyClusterSnap
 {
     var gateway = sp.GetRequiredService<IEtcdGateway>();
     var endpoints = sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints;
-    Result<IReadOnlyList<Kv>>? last = null;
+    Result<IReadOnlyList<Kv>> last = default;
     foreach (var endpoint in endpoints)
     {
         var range = await gateway.RangeAsync(endpoint, "/valkey/clusters/", ct);
@@ -370,7 +370,7 @@ static async Task<Result<IReadOnlyList<ValkeyWorker.Core.Model.ValkeyClusterSnap
             : Result<IReadOnlyList<ValkeyWorker.Core.Model.ValkeyClusterSnapshot>>.Failed(parsed.Error!);
     }
 
-    return Result<IReadOnlyList<ValkeyWorker.Core.Model.ValkeyClusterSnapshot>>.Failed(last!.Error!);
+    return Result<IReadOnlyList<ValkeyWorker.Core.Model.ValkeyClusterSnapshot>>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
 }
 
 // Источник адресов нод коллектора: Range /valkeyworker/portalloc/ →
@@ -382,7 +382,7 @@ static async Task<Result<IReadOnlyDictionary<string, IReadOnlyDictionary<string,
     var gateway = sp.GetRequiredService<IEtcdGateway>();
     var logger = sp.GetRequiredService<ILogger<ValkeyMetricsCollector>>();
     var endpoints = sp.GetRequiredService<IOptions<ValkeyWorkerOptions>>().Value.Etcd.Endpoints;
-    Result<IReadOnlyList<Kv>>? last = null;
+    Result<IReadOnlyList<Kv>> last = default;
     foreach (var endpoint in endpoints)
     {
         var range = await gateway.RangeAsync(endpoint, "/valkeyworker/portalloc/", ct);
@@ -410,7 +410,7 @@ static async Task<Result<IReadOnlyDictionary<string, IReadOnlyDictionary<string,
         return Result<IReadOnlyDictionary<string, IReadOnlyDictionary<string, ValkeyWorker.Core.Model.NodeAddress>>>.Success(allocs);
     }
 
-    return Result<IReadOnlyDictionary<string, IReadOnlyDictionary<string, ValkeyWorker.Core.Model.NodeAddress>>>.Failed(last!.Error!);
+    return Result<IReadOnlyDictionary<string, IReadOnlyDictionary<string, ValkeyWorker.Core.Model.NodeAddress>>>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
 }
 
 // WAF-тесты (ValkeyWorker.IntegrationTests/Api, задача 13): точка входа как public partial.

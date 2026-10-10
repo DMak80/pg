@@ -823,7 +823,7 @@ public sealed class RestoreProcess(
         string cluster, string shard, RestoreOperationState state, CancellationToken ct)
     {
         var value = Restore.RestoreStatusJson.Serialize(state);
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.PutAsync(endpoint, BackupNames.RestoreKey(cluster, shard, state.Id),
@@ -833,7 +833,7 @@ public sealed class RestoreProcess(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     // permanent-отказ: FAILED + finished_unix + причина + журнал (повтор заявки — оператор).

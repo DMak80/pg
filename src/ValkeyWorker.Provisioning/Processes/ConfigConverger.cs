@@ -154,7 +154,7 @@ public sealed class ConfigConverger(
     private async Task<(decimal? Cpu, long? MemBytes)?> ReadNodeLimitsAsync(
         string cluster, string node, CancellationToken ct)
     {
-        Result<Kv?>? last = null;
+        Result<Kv?> last = default;
         foreach (var endpoint in endpoints)
         {
             var kv = await gateway.GetAsync(endpoint, $"/valkey/clusters/{cluster}/nodes/{node}/resources", ct);

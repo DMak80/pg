@@ -307,7 +307,7 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
     // Failover по endpoints: первый успешный ответ выигрывает; все недоступны → последняя ошибка.
     private async Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
     {
-        Result<T>? last = null;
+        Result<T> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await call(endpoint);
@@ -316,12 +316,12 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     private async Task<Result> WithFailoverAsync(Func<string, Task<Result>> call)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await call(endpoint);
@@ -330,7 +330,7 @@ public sealed class ClaimStore(string keyPrefix, string[] endpoints, IEtcdGatewa
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     // Value claim'а: {"instance","since_unix"} (spec §4.3).

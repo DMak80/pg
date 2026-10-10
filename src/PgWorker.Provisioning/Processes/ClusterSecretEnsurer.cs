@@ -92,7 +92,7 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
         // Замечание: txn.IsSuccess=false — транспортный сбой вызова; проигрыш
         // compare (txn.Value.Succeeded=false) — НЕ сбой: законный исход
         // put-if-absent, обрабатывается re-read ниже.
-        Result<TxnResult>? lastTxnError = null;
+        Result<TxnResult> lastTxnError = default;
         var txnDone = false;
         foreach (var endpoint in endpoints)
         {
@@ -108,7 +108,7 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
         }
 
         if (!txnDone)
-            return Result<ClusterCredentials>.Failed(lastTxnError!.Error!);
+            return Result<ClusterCredentials>.Failed(lastTxnError.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
 
         // Re-read: txn мог проиграть (гонка) — актуальны существующие значения.
         var final = await ReadAsync(cluster, ct);
@@ -163,7 +163,7 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
     // упавший endpoint → следующий; на живом — все шесть Get подряд.
     private async Task<Result<RawSecrets>> ReadAsync(string cluster, CancellationToken ct)
     {
-        Result<Kv?>? lastError = null;
+        Result<Kv?> lastError = default;
         foreach (var endpoint in endpoints)
         {
             var user = await etcd.GetAsync(endpoint, UserKey(cluster), ct);
@@ -225,7 +225,7 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
                 RawOrNull(restPassword.Value?.Value)));
         }
 
-        return Result<RawSecrets>.Failed(lastError!.Error!);
+        return Result<RawSecrets>.Failed(lastError.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
     }
 
     // null — ключ отсутствует; пробельно-пустой raw — как есть (compare по нему);

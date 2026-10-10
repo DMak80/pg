@@ -3,7 +3,10 @@ using System.Runtime.ExceptionServices;
 
 namespace Shared.Core;
 
-public abstract record Result(Exception? Error = null)
+// Результат операции: успех (Error == null) либо ошибка. Значимый тип — создание
+// и цепочки Bind/Map/Apply не аллоцируют; комбинаторы ветвятся напрямую (раннее
+// ветвление), пробрасывая исходный Exception без пересоздания.
+public readonly record struct Result(Exception? Error = null)
 {
     public bool IsSuccess => Error == null;
 
@@ -33,13 +36,12 @@ public abstract record Result(Exception? Error = null)
         }
     }
 
-    public static Result Success()
-        => ResultSuccess.Instance;
+    public static Result Success() => default;
 
     public static Result Failed(Exception error)
         => error.StackTrace == null
-            ? new ResultError(ExceptionDispatchInfo.SetCurrentStackTrace(error))
-            : new ResultError(error);
+            ? new Result(ExceptionDispatchInfo.SetCurrentStackTrace(error))
+            : new Result(error);
 
     public static implicit operator Exception(Result r)
         => r.Error ?? throw new NullReferenceException();
@@ -47,156 +49,86 @@ public abstract record Result(Exception? Error = null)
     public static implicit operator Result(Exception e)
         => Failed(e);
 
-    public abstract Result Bind(Func<Result> func);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public Result Bind(Func<Result> func)
+        => IsSuccess ? func() : this;
 
-    public abstract Result<T> Bind<T>(Func<Result<T>> func);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public Result<T> Bind<T>(Func<Result<T>> func)
+        => IsSuccess ? func() : Result<T>.Failed(Error!);
 
-    public abstract Result<T> Map<T>(Func<T> func);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public Result<T> Map<T>(Func<T> func)
+        => IsSuccess ? Result<T>.Success(func()) : Result<T>.Failed(Error!);
 
-    public abstract Result Apply(Action action);
+    public Result Apply(Action action)
+    {
+        if (IsSuccess)
+        {
+            action();
+        }
 
-    public abstract T Match<T>(Func<T> onSuccess, Func<Exception, T> onFailure);
+        return this;
+    }
 
-    public abstract ValueTask<T> MatchAsync<T>(Func<ValueTask<T>> onSuccess, Func<Exception, ValueTask<T>> onFailure);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public T Match<T>(Func<T> onSuccess, Func<Exception, T> onFailure)
+        => IsSuccess ? onSuccess() : onFailure(Error!);
 
-    public abstract Result Throw();
+    // Свёртка без async-машины: обе ветки уже возвращают ValueTask
+    public ValueTask<T> MatchAsync<T>(Func<ValueTask<T>> onSuccess, Func<Exception, ValueTask<T>> onFailure)
+        => IsSuccess ? onSuccess() : onFailure(Error!);
 
-    public abstract bool Next<T>(IEnumerator<T> enumerator);
+    public Result Throw()
+        => IsSuccess ? this : throw Error!;
 
-    public abstract ValueTask<Result> BindAsync(Func<ValueTask<Result>> func);
+    // «Итератор с коротким замыканием»: на ошибке не двигаем перечислитель
+    public bool Next<T>(IEnumerator<T> enumerator)
+        => IsSuccess && enumerator.MoveNext();
 
-    public abstract ValueTask<Result<T>> BindAsync<T>(Func<ValueTask<Result<T>>> func);
+    // Async-комбинаторы: fail-ветка возвращается синхронно (completed ValueTask),
+    // без входа в async-состояние
+    public ValueTask<Result> BindAsync(Func<ValueTask<Result>> func)
+        => IsSuccess ? func() : ValueTask.FromResult(Failed(Error!));
 
-    public abstract ValueTask<Result<T>> MapAsync<T>(Func<ValueTask<T>> func);
+    public ValueTask<Result<T>> BindAsync<T>(Func<ValueTask<Result<T>>> func)
+        => IsSuccess ? func() : ValueTask.FromResult(Result<T>.Failed(Error!));
 
-    public abstract ValueTask<Result> ApplyAsync(Func<ValueTask> action);
+    public async ValueTask<Result<T>> MapAsync<T>(Func<ValueTask<T>> func)
+        => IsSuccess ? Result<T>.Success(await func()) : Result<T>.Failed(Error!);
+
+    public async ValueTask<Result> ApplyAsync(Func<ValueTask> action)
+    {
+        if (IsSuccess)
+        {
+            await action();
+        }
+
+        return this;
+    }
 
     public static Result<T> FromValue<T>(T? value, string error)
         where T : class
         => value == null
-            ? new ResultError<T>(new ApplicationException(error))
-            : new ResultSuccess<T>(value);
+            ? Result<T>.Failed(new ApplicationException(error))
+            : Result<T>.Success(value);
 
-    public abstract ValueTask<Result> MapSuccessAsync(
+    // Поведение унаследовано от классовой версии: селектор «чужой» ветки не
+    // вызывается, а Result-варианты на ошибке возвращают Success()
+    public ValueTask<Result> MapSuccessAsync(
         Func<Result, CancellationToken, ValueTask<Result>> func,
-        CancellationToken ct);
+        CancellationToken ct)
+        => IsSuccess ? func(this, ct) : ValueTask.FromResult(Success());
 
-    public abstract ValueTask<Result> MapFailedAsync(
+    public ValueTask<Result> MapFailedAsync(
         Func<Result, CancellationToken, ValueTask<Result>> func,
-        CancellationToken ct);
+        CancellationToken ct)
+        => IsSuccess ? ValueTask.FromResult(this) : func(this, ct);
 }
 
-public record ResultSuccess : Result
-{
-    public static readonly ResultSuccess Instance = new();
-
-    private ResultSuccess()
-    {
-    }
-
-    public override Result Bind(Func<Result> func)
-        => func();
-
-    public override Result<T> Bind<T>(Func<Result<T>> func)
-        => func();
-
-    public override Result<T> Map<T>(Func<T> func)
-        => ResultSuccess<T>.Success(func());
-
-    public override Result Apply(Action action)
-    {
-        action();
-        return this;
-    }
-
-    public override T Match<T>(Func<T> onSuccess, Func<Exception, T> onFailure)
-        => onSuccess();
-
-    public override ValueTask<T> MatchAsync<T>(Func<ValueTask<T>> onSuccess, Func<Exception, ValueTask<T>> onFailure)
-        => onSuccess();
-
-    public override Result Throw()
-        => this;
-
-    public override bool Next<T>(IEnumerator<T> enumerator)
-        => enumerator.MoveNext();
-
-    public override ValueTask<Result> BindAsync(Func<ValueTask<Result>> func)
-        => func();
-
-    public override ValueTask<Result<T>> BindAsync<T>(Func<ValueTask<Result<T>>> func)
-        => func();
-
-    public override async ValueTask<Result<T>> MapAsync<T>(Func<ValueTask<T>> func)
-        => ResultSuccess<T>.Success(await func());
-
-    public override async ValueTask<Result> ApplyAsync(Func<ValueTask> action)
-    {
-        await action();
-        return this;
-    }
-
-    public override ValueTask<Result> MapSuccessAsync(
-        Func<Result, CancellationToken, ValueTask<Result>> func,
-        CancellationToken ct)
-        => func(this, ct);
-
-    public override ValueTask<Result> MapFailedAsync(
-        Func<Result, CancellationToken, ValueTask<Result>> func,
-        CancellationToken ct)
-        => new(this);
-}
-
-public record ResultError(Exception Error) : Result(Error)
-{
-    public override Result Bind(Func<Result> func)
-        => this;
-
-    public override Result<T> Bind<T>(Func<Result<T>> func)
-        => Result<T>.Failed(Error!);
-
-    public override Result<T> Map<T>(Func<T> func)
-        => Result<T>.Failed(Error!);
-
-    public override Result Apply(Action action)
-        => this;
-
-    public override T Match<T>(Func<T> onSuccess, Func<Exception, T> onFailure)
-        => onFailure(Error!);
-
-    public override ValueTask<T> MatchAsync<T>(Func<ValueTask<T>> onSuccess, Func<Exception, ValueTask<T>> onFailure)
-        => onFailure(Error!);
-
-    public override Result Throw()
-        => throw Error!;
-
-    public override bool Next<T>(IEnumerator<T> enumerator)
-        => false;
-
-    public override ValueTask<Result> BindAsync(Func<ValueTask<Result>> func)
-        => new(Error!);
-
-    public override ValueTask<Result<T>> BindAsync<T>(Func<ValueTask<Result<T>>> func)
-        => new(Error!);
-
-    public override ValueTask<Result<T>> MapAsync<T>(Func<ValueTask<T>> func)
-        => new(Error!);
-
-    public override ValueTask<Result> ApplyAsync(Func<ValueTask> action)
-        => new(this);
-
-    public override ValueTask<Result> MapSuccessAsync(
-        Func<Result, CancellationToken, ValueTask<Result>> func,
-        CancellationToken ct)
-        => new(this);
-
-    public override ValueTask<Result> MapFailedAsync(
-        Func<Result, CancellationToken, ValueTask<Result>> func,
-        CancellationToken ct)
-        => func(this, ct);
-}
-
-public abstract record Result<T>(T Value, Exception? Error = null)
+// См. Result: то же для команд/запросов со значением. Value валиден только при
+// IsSuccess; на ошибке — default.
+public readonly record struct Result<T>(T Value = default!, Exception? Error = null)
 {
     public bool IsSuccess => Error == null;
 
@@ -224,13 +156,12 @@ public abstract record Result<T>(T Value, Exception? Error = null)
         }
     }
 
-    public static Result<T> Success(T value)
-        => new ResultSuccess<T>(value);
+    public static Result<T> Success(T value) => new(Value: value);
 
     public static Result<T> Failed(Exception error)
         => error.StackTrace == null
-            ? new ResultError<T>(ExceptionDispatchInfo.SetCurrentStackTrace(error))
-            : new ResultError<T>(error);
+            ? new Result<T>(Error: ExceptionDispatchInfo.SetCurrentStackTrace(error))
+            : new Result<T>(Error: error);
 
     public static implicit operator Exception(Result<T> r)
         => r.Error ?? throw new NullReferenceException();
@@ -242,149 +173,76 @@ public abstract record Result<T>(T Value, Exception? Error = null)
         => Success(value);
 
     public static implicit operator Result(Result<T> r)
+        => r.IsSuccess ? Result.Success() : Result.Failed(r.Error!);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public Result Bind(Func<T, Result> func)
+        => IsSuccess ? func(Value) : Result.Failed(Error!);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public Result<T> Bind(Func<T, Result<T>> func)
+        => IsSuccess ? func(Value) : this;
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public Result<TU> Bind<TU>(Func<T, Result<TU>> func)
+        => IsSuccess ? func(Value) : Result<TU>.Failed(Error!);
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public Result<TU> Map<TU>(Func<T, TU> func)
+        => IsSuccess ? Result<TU>.Success(func(Value)) : Result<TU>.Failed(Error!);
+
+    public Result<T> Apply(Action<T> action)
     {
-        return r.Bind(_ => Result.Success());
-    }
+        if (IsSuccess)
+        {
+            action(Value);
+        }
 
-    public abstract Result Bind(Func<T, Result> func);
-
-    public abstract Result<T> Bind(Func<T, Result<T>> func);
-
-    public abstract Result<TU> Bind<TU>(Func<T, Result<TU>> func);
-
-    public abstract Result<TU> Map<TU>(Func<T, TU> func);
-
-    public abstract Result<T> Apply(Action<T> action);
-
-    public abstract TU Match<TU>(Func<T, TU> onSuccess, Func<Exception, TU> onFailure);
-
-    public abstract Result<T> Throw();
-
-    public abstract ValueTask<Result> BindAsync(Func<T, ValueTask<Result>> func);
-
-    public abstract ValueTask<Result<T>> BindAsync(Func<T, ValueTask<Result<T>>> func);
-
-    public abstract ValueTask<Result<TU>> BindAsync<TU>(Func<T, ValueTask<Result<TU>>> func);
-
-    public abstract ValueTask<Result<TU>> MapAsync<TU>(Func<T, ValueTask<TU>> func);
-
-    public abstract ValueTask<Result<T>> ApplyAsync(Func<T, ValueTask> action);
-
-    public abstract ValueTask<Result<T>> MapSuccessAsync(Func<Result<T>, ValueTask<Result<T>>> func);
-
-    public abstract ValueTask<Result<T>> MapFailedAsync(Func<Result<T>, ValueTask<Result<T>>> func);
-
-    public abstract ValueTask<Result> MapSuccessAsync(Func<Result<T>, ValueTask<Result>> func);
-
-    public abstract ValueTask<Result> MapFailedAsync(Func<Result<T>, ValueTask<Result>> func);
-}
-
-public record ResultSuccess<T>(T Value) : Result<T>(Value)
-{
-    public override Result<T> Throw()
-        => this;
-
-    public override ValueTask<Result> BindAsync(Func<T, ValueTask<Result>> func)
-        => func(Value);
-
-    public override ValueTask<Result<T>> BindAsync(Func<T, ValueTask<Result<T>>> func)
-        => func(Value);
-
-    public override ValueTask<Result<TU>> BindAsync<TU>(Func<T, ValueTask<Result<TU>>> func)
-        => func(Value);
-
-    public override async ValueTask<Result<TU>> MapAsync<TU>(Func<T, ValueTask<TU>> func)
-        => Result<TU>.Success(await func(Value));
-
-    public override async ValueTask<Result<T>> ApplyAsync(Func<T, ValueTask> action)
-    {
-        await action(Value);
         return this;
     }
 
-    public override ValueTask<Result<T>> MapSuccessAsync(Func<Result<T>, ValueTask<Result<T>>> func)
-        => func(this);
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    public TU Match<TU>(Func<T, TU> onSuccess, Func<Exception, TU> onFailure)
+        => IsSuccess ? onSuccess(Value) : onFailure(Error!);
 
-    public override ValueTask<Result<T>> MapFailedAsync(Func<Result<T>, ValueTask<Result<T>>> func)
-        => new(this);
+    public Result<T> Throw()
+        => IsSuccess ? this : throw Error!;
 
-    public override ValueTask<Result> MapSuccessAsync(Func<Result<T>, ValueTask<Result>> func)
-        => func(this);
+    public ValueTask<Result> BindAsync(Func<T, ValueTask<Result>> func)
+        => IsSuccess ? func(Value) : ValueTask.FromResult(Result.Failed(Error!));
 
-    public override ValueTask<Result> MapFailedAsync(Func<Result<T>, ValueTask<Result>> func)
-        => new(Result.Success());
+    public ValueTask<Result<T>> BindAsync(Func<T, ValueTask<Result<T>>> func)
+        => IsSuccess ? func(Value) : ValueTask.FromResult(this);
 
-    public override Result Bind(Func<T, Result> func)
-        => func(Value);
+    public ValueTask<Result<TU>> BindAsync<TU>(Func<T, ValueTask<Result<TU>>> func)
+        => IsSuccess ? func(Value) : ValueTask.FromResult(Result<TU>.Failed(Error!));
 
-    public override Result<T> Bind(Func<T, Result<T>> func)
-        => func(Value);
+    public async ValueTask<Result<TU>> MapAsync<TU>(Func<T, ValueTask<TU>> func)
+        => IsSuccess ? Result<TU>.Success(await func(Value)) : Result<TU>.Failed(Error!);
 
-    public override Result<TU> Bind<TU>(Func<T, Result<TU>> func)
-        => func(Value);
-
-    public override Result<TU> Map<TU>(Func<T, TU> func)
-        => Result<TU>.Success(func(Value));
-
-    public override Result<T> Apply(Action<T> action)
+    public async ValueTask<Result<T>> ApplyAsync(Func<T, ValueTask> action)
     {
-        action(Value);
+        if (IsSuccess)
+        {
+            await action(Value);
+        }
+
         return this;
     }
 
-    public override TU Match<TU>(Func<T, TU> onSuccess, Func<Exception, TU> onFailure)
-        => onSuccess(Value);
-}
+    // Поведение унаследовано от классовой версии: на «чужом» исходе Result-варианты
+    // возвращают Success(), T-варианты — исходный результат
+    public ValueTask<Result<T>> MapSuccessAsync(Func<Result<T>, ValueTask<Result<T>>> func)
+        => IsSuccess ? func(this) : ValueTask.FromResult(this);
 
-public record ResultError<T>(Exception Error) : Result<T>(default!, Error)
-{
-    public override Result<T> Throw()
-        => throw Error!;
+    public ValueTask<Result<T>> MapFailedAsync(Func<Result<T>, ValueTask<Result<T>>> func)
+        => IsSuccess ? ValueTask.FromResult(this) : func(this);
 
-    public override ValueTask<Result> BindAsync(Func<T, ValueTask<Result>> func)
-        => new(Result.Failed(Error!));
+    public ValueTask<Result> MapSuccessAsync(Func<Result<T>, ValueTask<Result>> func)
+        => IsSuccess ? func(this) : ValueTask.FromResult(Result.Success());
 
-    public override ValueTask<Result<T>> BindAsync(Func<T, ValueTask<Result<T>>> func)
-        => new(this);
-
-    public override ValueTask<Result<TU>> BindAsync<TU>(Func<T, ValueTask<Result<TU>>> func)
-        => new(Result<TU>.Failed(Error!));
-
-    public override ValueTask<Result<TU>> MapAsync<TU>(Func<T, ValueTask<TU>> func)
-        => new(Result<TU>.Failed(Error!));
-
-    public override ValueTask<Result<T>> ApplyAsync(Func<T, ValueTask> action)
-        => new(this);
-
-    public override ValueTask<Result<T>> MapSuccessAsync(Func<Result<T>, ValueTask<Result<T>>> func)
-        => new(this);
-
-    public override ValueTask<Result<T>> MapFailedAsync(Func<Result<T>, ValueTask<Result<T>>> func)
-        => func(this);
-
-    public override ValueTask<Result> MapSuccessAsync(Func<Result<T>, ValueTask<Result>> func)
-        => new(Result.Success());
-
-    public override ValueTask<Result> MapFailedAsync(Func<Result<T>, ValueTask<Result>> func)
-        => func(this);
-
-    public override Result Bind(Func<T, Result> func)
-        => Result.Failed(Error!);
-
-    public override Result<T> Bind(Func<T, Result<T>> func)
-        => this;
-
-    public override Result<TU> Bind<TU>(Func<T, Result<TU>> func)
-        => Result<TU>.Failed(Error!);
-
-    public override Result<TU> Map<TU>(Func<T, TU> func)
-        => Result<TU>.Failed(Error!);
-
-    public override Result<T> Apply(Action<T> action)
-        => this;
-
-    public override TU Match<TU>(Func<T, TU> onSuccess, Func<Exception, TU> onFailure)
-        => onFailure(Error!);
+    public ValueTask<Result> MapFailedAsync(Func<Result<T>, ValueTask<Result>> func)
+        => IsSuccess ? ValueTask.FromResult(Result.Success()) : func(this);
 }
 
 public static class ResultExtensions

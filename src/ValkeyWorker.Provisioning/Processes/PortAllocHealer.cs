@@ -106,7 +106,7 @@ public sealed class PortAllocHealer(
     private async Task<Result<IReadOnlyDictionary<string, NodeAddress>>> ReadPortAllocAsync(
         string cluster, CancellationToken ct)
     {
-        Result<Kv?>? last = null;
+        Result<Kv?> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.GetAsync(endpoint, ProcessCommon.PortAllocKey(cluster), ct);
@@ -122,7 +122,7 @@ public sealed class PortAllocHealer(
             return Result<IReadOnlyDictionary<string, NodeAddress>>.Success(ParsePortAlloc(kv.Value));
         }
 
-        return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(last!.Error!);
+        return Result<IReadOnlyDictionary<string, NodeAddress>>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
     }
 
     // Формат arch/20 §3: {"node<k>":{"host":"h","client":17001}}.
@@ -160,7 +160,7 @@ public sealed class PortAllocHealer(
 
     private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
     {
-        Result<TxnResult>? last = null;
+        Result<TxnResult> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.TxnAsync(endpoint, req, ct);
@@ -169,6 +169,6 @@ public sealed class PortAllocHealer(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 }

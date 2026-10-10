@@ -22,7 +22,7 @@ internal class Handler(IServiceProviderHelper spHelper, IServiceProvider sp) : I
     public async ValueTask<Result<T>> HandleQuery<Q, T>(Q query, CancellationToken ct)
         where Q : IQuery<T>
     {
-        Result<T> result = null!;
+        Result<T> result = default;
         await Tracing.ActivityT(
             TypeName<Q>(),
             ActivityKind.Server,
@@ -37,7 +37,7 @@ internal class Handler(IServiceProviderHelper spHelper, IServiceProvider sp) : I
     public async ValueTask<Result<T>> HandleCommand<C, T>(C command, CancellationToken ct)
         where C : ICommand<T>
     {
-        Result<T> result = null!;
+        Result<T> result = default;
         await Tracing.ActivityT(
             TypeName<C>(),
             ActivityKind.Server,

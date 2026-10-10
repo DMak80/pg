@@ -9,7 +9,7 @@ internal static class EtcdFailover
 {
     public static async Task<Result<T>> CallAsync<T>(string[] endpoints, Func<string, Task<Result<T>>> call)
     {
-        Result<T>? last = null;
+        Result<T> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await call(endpoint);
@@ -17,6 +17,6 @@ internal static class EtcdFailover
                 return result;
             last = result;
         }
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 }

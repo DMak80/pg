@@ -73,7 +73,7 @@ public sealed class MoveStatusStore(IEtcdGateway gateway, string[] endpoints)
 
     private async Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
     {
-        Result<T>? last = null;
+        Result<T> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await call(endpoint);
@@ -82,12 +82,12 @@ public sealed class MoveStatusStore(IEtcdGateway gateway, string[] endpoints)
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     private async Task<Result> WithFailoverAsync(Func<string, Task<Result>> call)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await call(endpoint);
@@ -96,6 +96,6 @@ public sealed class MoveStatusStore(IEtcdGateway gateway, string[] endpoints)
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 }

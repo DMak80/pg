@@ -499,7 +499,7 @@ public sealed class WalStreamProcess(
     // исключение (поймается пер-шардовой обёрткой → журнал), null = ключа нет.
     private async Task<Kv?> GetAsync(string key, CancellationToken ct)
     {
-        Result<Kv?>? last = null;
+        Result<Kv?> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.GetAsync(endpoint, key, ct);
@@ -512,7 +512,7 @@ public sealed class WalStreamProcess(
             return result.Value;
         }
 
-        if (last is not null)
+        if (!last.IsSuccess)
             throw new ApplicationException($"get {key}: {last.Error!.Message}");
         return null;
     }

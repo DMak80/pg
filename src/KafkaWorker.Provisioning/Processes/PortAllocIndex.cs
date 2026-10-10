@@ -58,7 +58,7 @@ public sealed class PortAllocIndex(
     // Failover-обёртка: первый успешный endpoint выигрывает (паттерн процессов).
     private async Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
     {
-        Result<T>? last = null;
+        Result<T> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await call(endpoint);
@@ -67,6 +67,6 @@ public sealed class PortAllocIndex(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 }

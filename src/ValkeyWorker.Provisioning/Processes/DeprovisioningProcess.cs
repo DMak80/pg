@@ -111,7 +111,7 @@ public sealed class DeprovisioningProcess(
 
     private async Task<Result> DeletePrefixAsync(string prefix, CancellationToken ct)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var del = await gateway.DeleteAsync(endpoint, prefix, prefix: true, ct);
@@ -120,12 +120,12 @@ public sealed class DeprovisioningProcess(
             last = del;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     private async Task<Result> DeleteKeyAsync(string key, CancellationToken ct)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var del = await gateway.DeleteAsync(endpoint, key, prefix: false, ct);
@@ -134,6 +134,6 @@ public sealed class DeprovisioningProcess(
             last = del;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 }

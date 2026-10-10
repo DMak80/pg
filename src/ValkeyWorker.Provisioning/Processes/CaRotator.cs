@@ -519,7 +519,7 @@ public sealed class CaRotator(
 
     private async Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
     {
-        Result<Kv?>? last = null;
+        Result<Kv?> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await gateway.GetAsync(endpoint, key, ct);
@@ -528,12 +528,12 @@ public sealed class CaRotator(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
     {
-        Result<TxnResult>? last = null;
+        Result<TxnResult> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await gateway.TxnAsync(endpoint, req, ct);
@@ -542,6 +542,6 @@ public sealed class CaRotator(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 }

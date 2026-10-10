@@ -121,7 +121,7 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
     // Чтение шести ключей с failover по endpoints.
     private async Task<Result<RawSecrets?>> ReadAsync(string cluster, CancellationToken ct)
     {
-        Result? lastError = null;
+        Result lastError = default;
         foreach (var endpoint in endpoints)
         {
             var read = await ReadSixAsync(endpoint, cluster, ct);
@@ -137,7 +137,7 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
                 TrimOrNull(v[3]), TrimOrNull(v[4]), TrimOrNull(v[5])));
         }
 
-        return Result<RawSecrets?>.Failed(lastError!.Error!);
+        return Result<RawSecrets?>.Failed(lastError.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
     }
 
     // Чтение шести ключей одного endpoint'а: null-значения — ключ отсутствует.
@@ -166,7 +166,7 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
 
     private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
     {
-        Result<TxnResult>? last = null;
+        Result<TxnResult> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.TxnAsync(endpoint, req, ct);
@@ -175,7 +175,7 @@ public sealed class ClusterSecretEnsurer(IEtcdGateway etcd, string[] endpoints) 
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     private static string? TrimOrNull(string? raw)

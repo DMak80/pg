@@ -398,7 +398,7 @@ public sealed class NodeSupervisor(
 
     private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
     {
-        Result<TxnResult>? last = null;
+        Result<TxnResult> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await gateway.TxnAsync(endpoint, req, ct);
@@ -407,6 +407,6 @@ public sealed class NodeSupervisor(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 }

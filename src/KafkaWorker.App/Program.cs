@@ -470,7 +470,7 @@ static async Task<Result<IReadOnlyList<KafkaClusterSnapshot>>> SnapshotClustersA
 {
     var gateway = sp.GetRequiredService<IEtcdGateway>();
     var endpoints = sp.GetRequiredService<IOptions<KafkaWorkerOptions>>().Value.Etcd.Endpoints;
-    Result<IReadOnlyList<Kv>>? last = null;
+    Result<IReadOnlyList<Kv>> last = default;
     foreach (var endpoint in endpoints)
     {
         var range = await gateway.RangeAsync(endpoint, "/kafka/clusters/", ct);
@@ -483,7 +483,7 @@ static async Task<Result<IReadOnlyList<KafkaClusterSnapshot>>> SnapshotClustersA
         return KafkaSnapshotParser.Parse(range.Value);
     }
 
-    return Result<IReadOnlyList<KafkaClusterSnapshot>>.Failed(last!.Error!);
+    return Result<IReadOnlyList<KafkaClusterSnapshot>>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
 }
 
 // WAF-тесты (KafkaWorker.IntegrationTests/Api): точка входа как public partial.

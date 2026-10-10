@@ -107,7 +107,7 @@ public class PasswordRotatorTests
         // Отказ только E2-txn (compare value==OLD); прочие txn — штатно (null).
         rig.Etcd.TxnFault = req => req.Compare.Any(c => c.Target == TxnTarget.Value
             && c.Key == $"/valkey/clusters/{cluster}/app_password")
-            ? Result<TxnResult>.Failed(new ApplicationException("etcd txn failed"))
+            ? new ApplicationException("etcd txn failed")
             : null;
 
         var first = await rig.Rotator.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
@@ -147,7 +147,7 @@ public class PasswordRotatorTests
         await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
         var statePuts = 0;
         rig.Etcd.PutFault = key => key == stateKey && ++statePuts >= 2
-            ? Result.Failed(new ApplicationException("etcd put failed"))
+            ? new ApplicationException("etcd put failed")
             : null;
 
         var first = await rig.Rotator.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);
@@ -249,7 +249,7 @@ public class PasswordRotatorTests
         await rig.Claims.TryClaimClusterAsync(cluster, TestContext.Current.CancellationToken);
         var statePuts = 0;
         rig.Etcd.PutFault = key => key == stateKey && ++statePuts >= 3
-            ? Result.Failed(new ApplicationException("etcd put failed"))
+            ? new ApplicationException("etcd put failed")
             : null;
 
         var first = await rig.Rotator.TickAsync(rig.Snapshot(cluster), TestContext.Current.CancellationToken);

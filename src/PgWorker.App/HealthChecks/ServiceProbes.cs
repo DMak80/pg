@@ -25,7 +25,7 @@ public sealed class ServiceProbes(
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
         timeout.CancelAfter(ProbeTimeout);
 
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in options.CurrentValue.Etcd.Endpoints)
         {
             var range = await etcd.RangeAsync(endpoint, "/pgworker/", timeout.Token);
@@ -34,7 +34,7 @@ public sealed class ServiceProbes(
             last = Result.Failed(range.Error!);
         }
 
-        return last ?? Result.Failed(new ApplicationException("PgWorker:Etcd:Endpoints не заданы"));
+        return last.Error ?? new ApplicationException("PgWorker:Etcd:Endpoints не заданы");
     }
 
     /// <summary>docker-хосты: ping каждого (plain: таблица Hosts; swarm: manager).</summary>

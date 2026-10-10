@@ -195,7 +195,7 @@ public sealed class BackupOrphanSweeper(
     // Range hold/заявок сирот (failover по endpoints — образец RangeClustersAsync).
     private async Task<Result<IReadOnlyList<Kv>>> RangeKeysAsync(string prefix, CancellationToken ct)
     {
-        Result<IReadOnlyList<Kv>>? last = null;
+        Result<IReadOnlyList<Kv>> last = default;
         foreach (var endpoint in endpoints)
         {
             var range = await etcd.RangeAsync(endpoint, prefix, ct);
@@ -204,7 +204,7 @@ public sealed class BackupOrphanSweeper(
             last = range;
         }
 
-        return Result<IReadOnlyList<Kv>>.Failed(last?.Error
+        return Result<IReadOnlyList<Kv>>.Failed(last.Error
             ?? new ApplicationException($"range {prefix}: нет живых endpoints etcd"));
     }
 
@@ -212,7 +212,7 @@ public sealed class BackupOrphanSweeper(
     // PutRegistryAsync; prefix: false — точный ключ, не префикс).
     private async Task<Result> DeleteKeyAsync(string key, CancellationToken ct)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var del = await etcd.DeleteAsync(endpoint, key, prefix: false, ct);
@@ -221,7 +221,7 @@ public sealed class BackupOrphanSweeper(
             last = del;
         }
 
-        return Result.Failed(last?.Error ?? new ApplicationException(
+        return Result.Failed(last.Error ?? new ApplicationException(
             $"del {key}: нет живых endpoints"));
     }
 
@@ -232,7 +232,7 @@ public sealed class BackupOrphanSweeper(
     // Чтение /clusters/ (failover по endpoints) — владельцы префиксов.
     private async Task<Result<IReadOnlyList<Kv>>> RangeClustersAsync(CancellationToken ct)
     {
-        Result<IReadOnlyList<Kv>>? last = null;
+        Result<IReadOnlyList<Kv>> last = default;
         foreach (var endpoint in endpoints)
         {
             var range = await etcd.RangeAsync(endpoint, "/clusters/", ct);
@@ -241,14 +241,14 @@ public sealed class BackupOrphanSweeper(
             last = range;
         }
 
-        return Result<IReadOnlyList<Kv>>.Failed(last?.Error
-            ?? new ApplicationException("нет живых endpoints etcd"));
+        return Result<IReadOnlyList<Kv>>.Failed(last.Error
+            ?? new EtcdUnreachableException("etcd endpoints не заданы"));
     }
 
     // Чтение реестра (failover по endpoints); ключа нет → null; битый → null.
     private async Task<OrphanRegistry.Registry?> ReadRegistryAsync(CancellationToken ct)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.GetAsync(endpoint, OrphanRegistry.Key, ct);
@@ -261,7 +261,7 @@ public sealed class BackupOrphanSweeper(
             return result.Value is { } kv ? OrphanRegistry.Parse(kv.Value) : null;
         }
 
-        if (last is not null)
+        if (!last.IsSuccess)
             throw new ApplicationException($"get {OrphanRegistry.Key}: {last.Error!.Message}");
         return null;
     }
@@ -269,7 +269,7 @@ public sealed class BackupOrphanSweeper(
     // Failover-put реестра (образец WalStreamProcess.PutAsync).
     private async Task<Result> PutRegistryAsync(OrphanRegistry.Registry registry, CancellationToken ct)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var put = await etcd.PutAsync(
@@ -279,7 +279,7 @@ public sealed class BackupOrphanSweeper(
             last = put;
         }
 
-        return Result.Failed(last?.Error ?? new ApplicationException(
+        return Result.Failed(last.Error ?? new ApplicationException(
             $"put {OrphanRegistry.Key}: нет живых endpoints"));
     }
 }

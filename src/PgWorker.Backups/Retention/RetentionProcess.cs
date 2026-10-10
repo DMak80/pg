@@ -269,7 +269,7 @@ public sealed class RetentionProcess(
     // Failover-обёртки (образец BackupProcess.PutAsync / WalStreamProcess.GetAsync).
     private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.PutAsync(endpoint, key, value, null, ct);
@@ -278,12 +278,12 @@ public sealed class RetentionProcess(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     private async Task<Result> DeleteAsync(string key, CancellationToken ct)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.DeleteAsync(endpoint, key, prefix: false, ct);
@@ -292,6 +292,6 @@ public sealed class RetentionProcess(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 }

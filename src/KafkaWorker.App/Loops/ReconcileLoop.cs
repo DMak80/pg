@@ -243,7 +243,7 @@ internal sealed class ReconcileLoop(
     private async Task<Result<IReadOnlyList<Kv>>> RangeWithFailoverAsync(
         string[] endpoints, string prefix, CancellationToken ct)
     {
-        Result<IReadOnlyList<Kv>>? last = null;
+        Result<IReadOnlyList<Kv>> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.RangeAsync(endpoint, prefix, ct);
@@ -252,6 +252,6 @@ internal sealed class ReconcileLoop(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 }

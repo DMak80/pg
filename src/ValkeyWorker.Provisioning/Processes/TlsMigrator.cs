@@ -297,7 +297,7 @@ public sealed class TlsMigrator(
 
     private async Task<Result<Kv?>> GetWithFailoverAsync(string key, CancellationToken ct)
     {
-        Result<Kv?>? last = null;
+        Result<Kv?> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await gateway.GetAsync(endpoint, key, ct);
@@ -306,6 +306,6 @@ public sealed class TlsMigrator(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 }

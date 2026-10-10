@@ -446,3 +446,46 @@ POST `/switchover` и др.) — basic-auth per-cluster (`rest_password` из et
   доверяются клиентам старого `ca.pem`, доверие контура ломается.
   Порядок аварии: остановить воркеры (иначе выпустят серты из нового CA) →
   восстановить пакет из бэкапа → стартовать воркеры.
+
+## Запуск docker-E2E серий
+
+Все E2E-серии (PgWorker, KafkaWorker, ValkeyWorker и docker-профиль драйверов)
+гейтятся одной переменной `PGW_TEST_DOCKER=1` — без неё тесты помечаются
+Skip (CI без docker остаётся зелёным). E2E-окружения собирают Release сами
+(инкрементальный no-op — секунды); `PGW_TEST_E2E_NOBUILD=1` — только для
+бисекта/отладки конкретного бинаря.
+
+Полные серии (по одной, не поверх друг друга и не поверх поднятого dev-стенда;
+правила телеметрии и поведения при падении — [docs/e2e-launch.md](e2e-launch.md),
+изоляция окружений — [docs/e2e-isolation.md](e2e-isolation.md); внешние образы
+зеркалируются — `dev-stand/images/pull-images.sh`):
+
+```bash
+# PgWorker — полная E2E-серия (E2e*Scenarios; канон параллелизма N=5 контуров,
+# ~19–22 мин; время и потолок — src/tests/PgWorker.IntegrationTests/xunit.runner.json)
+DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/PgWorker.IntegrationTests \
+    -c Release --filter FullyQualifiedName~PgWorker.IntegrationTests.E2e
+
+# PgWorker — docker-профиль драйверов (ExecDriver/DockerDriver/RestTls/RestRotation/…)
+DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/PgWorker.IntegrationTests \
+    -c Release --filter FullyQualifiedName~PgWorker.IntegrationTests.Docker
+
+# KafkaWorker — E2E (lifecycle + host-kill takeover, окружение Kfw-E2E)
+DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/KafkaWorker.IntegrationTests \
+    -c Release --filter FullyQualifiedName~KafkaWorker.IntegrationTests.E2e
+
+# ValkeyWorker — E2E (lifecycle + host-kill takeover)
+DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/ValkeyWorker.IntegrationTests \
+    -c Release --filter FullyQualifiedName~ValkeyWorker.IntegrationTests.E2e
+```
+
+Кейс-маркер быстрой проверки (мерж-гейт задач воркеров, см. AGENTS.md):
+
+```bash
+DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/PgWorker.slnx \
+    -c Release --filter FullyQualifiedName~Scale_AddEmptyShard
+```
+
+После жёстких срезов серий проверять осиротевшие сети движка
+(`docker network ls | grep -E 'kfw-net|pgw-.*-net'` при нуле контейнеров):
+`docker network prune -f` — страховочный гейт между сериями.

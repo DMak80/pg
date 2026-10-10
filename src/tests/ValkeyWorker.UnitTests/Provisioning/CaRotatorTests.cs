@@ -318,7 +318,7 @@ public class CaRotatorTests
         rig.EnsureNodeEnv("c9", nextPem, nextKey); // R: факт-детект true (env = NEW)
         var revisionBefore = rig.Etcd.Store["/valkey/clusters/c9/ca_pem"].ModRevision;
         rig.Etcd.TxnFault = req => req.Success.Count >= 5
-            ? Result<Shared.Etcd.Client.TxnResult>.Failed(new ApplicationException("инжект: отказ C-txn"))
+            ? new ApplicationException("инжект: отказ C-txn")
             : null;
 
         // Act
@@ -612,7 +612,7 @@ public class CaRotatorTests
         rig.SeedOldTicket("c22");
         rig.SeedWindow("c22");
         rig.Etcd.TxnFault = req => req.Success.Count >= 5
-            ? Result<Shared.Etcd.Client.TxnResult>.Failed(new ApplicationException("инжект: отказ C-txn"))
+            ? new ApplicationException("инжект: отказ C-txn")
             : null;
 
         // Act

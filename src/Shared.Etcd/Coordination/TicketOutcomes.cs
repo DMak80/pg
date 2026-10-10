@@ -132,7 +132,7 @@ public sealed class TicketExpirator(IEtcdGateway gateway, string[] endpoints)
 
     private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
     {
-        Result<TxnResult>? last = null;
+        Result<TxnResult> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await gateway.TxnAsync(endpoint, req, ct);
@@ -140,12 +140,12 @@ public sealed class TicketExpirator(IEtcdGateway gateway, string[] endpoints)
                 return result;
             last = result;
         }
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await gateway.PutAsync(endpoint, key, value, null, ct);
@@ -153,6 +153,6 @@ public sealed class TicketExpirator(IEtcdGateway gateway, string[] endpoints)
                 return result;
             last = result;
         }
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 }

@@ -44,7 +44,7 @@ public sealed class AppParamsEnsurer(IEtcdGateway etcd, string[] endpoints, stri
     // Failover-обёртка: первый успешный endpoint выигрывает (образец AppSecretEnsurer).
     private async Task<Result<TxnResult>> TxnAsync(TxnRequest req, CancellationToken ct)
     {
-        Result<TxnResult>? last = null;
+        Result<TxnResult> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.TxnAsync(endpoint, req, ct);
@@ -53,6 +53,6 @@ public sealed class AppParamsEnsurer(IEtcdGateway etcd, string[] endpoints, stri
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 }

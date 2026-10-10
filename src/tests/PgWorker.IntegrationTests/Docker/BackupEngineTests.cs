@@ -84,14 +84,14 @@ public class BackupEngineTests
             }
             await Task.Delay(500, ct);
         }
-        var logs = exited is null ? null : await engine.GetContainerLogsAsync(name, tail: 50, ct);
+        Result<string> logs = exited is null ? default : await engine.GetContainerLogsAsync(name, tail: 50, ct);
         var removed = await engine.RemoveContainerAsync(name, force: true, ct);
 
         // Assert — tmpfs смонтирован, extra_hosts зарезолвился, удаление идемпотентно.
         created.IsSuccess.Should().BeTrue(created.Error?.ToString());
         started.IsSuccess.Should().BeTrue(started.Error?.ToString());
         exited.Should().NotBeNull("контейнер обязан выйти");
-        logs!.Value.Should().Contain("tmpfs on /backup-staging");
+        logs.Value.Should().Contain("tmpfs on /backup-staging");
         logs.Value.Should().Contain("host.docker.internal");
         removed.IsSuccess.Should().BeTrue();
     }

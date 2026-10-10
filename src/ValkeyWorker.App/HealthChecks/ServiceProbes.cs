@@ -29,7 +29,7 @@ public sealed class ServiceProbes(
 
         try
         {
-            Result? last = null;
+            Result last = default;
             foreach (var endpoint in options.CurrentValue.Etcd.Endpoints)
             {
                 var range = await etcd.RangeAsync(endpoint, "/valkeyworker/", timeout.Token);
@@ -38,7 +38,7 @@ public sealed class ServiceProbes(
                 last = Result.Failed(range.Error!);
             }
 
-            return last ?? Result.Failed(new ApplicationException("ValkeyWorker:Etcd:Endpoints не заданы"));
+            return last.Error ?? new ApplicationException("ValkeyWorker:Etcd:Endpoints не заданы");
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

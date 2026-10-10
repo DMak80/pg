@@ -515,7 +515,7 @@ public sealed class AdoptionProcess(
     // Failover-обёртки: первый успешный endpoint выигрывает (паттерн ShardEndpoints).
     private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.PutAsync(endpoint, key, value, lease: null, ct);
@@ -524,14 +524,14 @@ public sealed class AdoptionProcess(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     // Put-if-absent (txn NotExists = version==0): операторские nodes-ключи не
     // перезаписываются; эталон txn — ClaimStore.TryPutLeasedKeyAsync.
     private async Task<Result> TxnPutIfAbsentAsync(string key, string value, CancellationToken ct)
     {
-        Result<TxnResult>? last = null;
+        Result<TxnResult> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.TxnAsync(endpoint, TxnRequest.Of(
@@ -542,7 +542,7 @@ public sealed class AdoptionProcess(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     // Заявки ресурсов шарда (arch/14 §2.1 п.4): ОБЯЗАТЕЛЬНЫ — и лимиты ноды,
@@ -561,7 +561,7 @@ public sealed class AdoptionProcess(
 
     private async Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
     {
-        Result<Kv?>? last = null;
+        Result<Kv?> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.GetAsync(endpoint, key, ct);
@@ -570,12 +570,12 @@ public sealed class AdoptionProcess(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     private async Task<Result<IReadOnlyList<Kv>>> RangeAsync(string prefix, CancellationToken ct)
     {
-        Result<IReadOnlyList<Kv>>? last = null;
+        Result<IReadOnlyList<Kv>> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.RangeAsync(endpoint, prefix, ct);
@@ -584,6 +584,6 @@ public sealed class AdoptionProcess(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 }

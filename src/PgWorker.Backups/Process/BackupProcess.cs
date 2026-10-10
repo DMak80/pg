@@ -528,7 +528,7 @@ public sealed class BackupProcess(
     }    // Failover-обёртка put: первый успешный endpoint выигрывает (образец DeprovisioningProcess).
     private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.PutAsync(endpoint, key, value, null, ct);
@@ -537,6 +537,6 @@ public sealed class BackupProcess(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 }

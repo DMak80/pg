@@ -419,7 +419,7 @@ public sealed class NodeSupervisor(
 
     private async Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
     {
-        Result<Kv?>? last = null;
+        Result<Kv?> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.GetAsync(endpoint, key, ct);
@@ -428,12 +428,12 @@ public sealed class NodeSupervisor(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     private async Task<Result> PutAsync(string key, string value, CancellationToken ct)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.PutAsync(endpoint, key, value, null, ct);
@@ -442,7 +442,7 @@ public sealed class NodeSupervisor(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     // Txn через failover (порт ProvisioningProcess.TxnAsync — RMW-сравнения
@@ -452,7 +452,7 @@ public sealed class NodeSupervisor(
 
     private async Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
     {
-        Result<T>? last = null;
+        Result<T> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await call(endpoint);
@@ -461,6 +461,6 @@ public sealed class NodeSupervisor(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 }

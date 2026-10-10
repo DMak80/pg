@@ -73,7 +73,7 @@ public static class ProcessCommon
     public static async Task<Result<string?>> ReadNodeStateAsync(
         IEtcdGateway gateway, string[] endpoints, string cluster, string node, CancellationToken ct)
     {
-        Result<Kv?>? last = null;
+        Result<Kv?> last = default;
         foreach (var endpoint in endpoints)
         {
             var read = await gateway.GetAsync(endpoint, NodeStateKey(cluster, node), ct);
@@ -87,14 +87,14 @@ public static class ProcessCommon
             return Result<string?>.Success(string.IsNullOrWhiteSpace(value) ? null : value.Trim());
         }
 
-        return Result<string?>.Failed(last!.Error!);
+        return Result<string?>.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
     }
 
     // Запись state ноды (failover по endpoints).
     public static async Task<Result> WriteNodeStateAsync(
         IEtcdGateway gateway, string[] endpoints, string cluster, string node, string state, CancellationToken ct)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var put = await gateway.PutAsync(endpoint, NodeStateKey(cluster, node), state, null, ct);
@@ -103,7 +103,7 @@ public static class ProcessCommon
             last = put;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     // Claimed-check: мутации — только держателем живого клэйма (arch/21 §6).

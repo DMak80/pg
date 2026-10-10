@@ -151,7 +151,7 @@ public sealed class MasterKeyReconciler(IEtcdGateway etcd, string[] endpoints, S
 
     private async Task<Result<T>> WithFailoverAsync<T>(Func<string, Task<Result<T>>> call)
     {
-        Result<T>? last = null;
+        Result<T> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await call(endpoint);
@@ -160,12 +160,12 @@ public sealed class MasterKeyReconciler(IEtcdGateway etcd, string[] endpoints, S
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     private async Task<Result> WithFailoverAsync(Func<string, Task<Result>> call)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await call(endpoint);
@@ -174,6 +174,6 @@ public sealed class MasterKeyReconciler(IEtcdGateway etcd, string[] endpoints, S
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 }

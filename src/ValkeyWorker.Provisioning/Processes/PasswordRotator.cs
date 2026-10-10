@@ -361,7 +361,7 @@ public sealed class PasswordRotator(
 
     private async Task<Result> PutWithFailoverAsync(string key, string value, CancellationToken ct)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await gateway.PutAsync(endpoint, key, value, null, ct);
@@ -370,12 +370,12 @@ public sealed class PasswordRotator(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     private async Task<Result> DeleteWithFailoverAsync(string key, CancellationToken ct)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var del = await gateway.DeleteAsync(endpoint, key, prefix: false, ct);
@@ -384,12 +384,12 @@ public sealed class PasswordRotator(
             last = del;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     private async Task<Result<TxnResult>> TxnWithFailoverAsync(TxnRequest req, CancellationToken ct)
     {
-        Result<TxnResult>? last = null;
+        Result<TxnResult> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await gateway.TxnAsync(endpoint, req, ct);
@@ -398,6 +398,6 @@ public sealed class PasswordRotator(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 }

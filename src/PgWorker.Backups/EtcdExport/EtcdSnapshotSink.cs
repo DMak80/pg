@@ -124,7 +124,7 @@ public sealed class EtcdSnapshotSink(
     /// null-значение = ключа ещё нет.</summary>
     public async Task<Result<EtcdSnapshotStatus?>> ReadStatusAsync(CancellationToken ct)
     {
-        Result<Kv?>? last = null;
+        Result<Kv?> last = default;
         foreach (var endpoint in etcdEndpoints)
         {
             var got = await etcd.GetAsync(endpoint, EtcdSnapshotStatusJson.Key, ct);
@@ -139,8 +139,8 @@ public sealed class EtcdSnapshotSink(
                 : Result<EtcdSnapshotStatus?>.Success(EtcdSnapshotStatusJson.Parse(kv.Value));
         }
 
-        return Result<EtcdSnapshotStatus?>.Failed(last?.Error
-            ?? new ApplicationException("нет живых endpoints etcd"));
+        return Result<EtcdSnapshotStatus?>.Failed(last.Error
+            ?? new EtcdUnreachableException("etcd endpoints не заданы"));
     }
 
     // Ретенция: list префикса → чистый отбор → batch-delete.
@@ -168,7 +168,7 @@ public sealed class EtcdSnapshotSink(
 
     private async Task<Result> PutStatusAsync(string json, CancellationToken ct)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in etcdEndpoints)
         {
             var put = await etcd.PutAsync(endpoint, EtcdSnapshotStatusJson.Key, json, lease: null, ct);
@@ -177,7 +177,7 @@ public sealed class EtcdSnapshotSink(
             last = put;
         }
 
-        return Result.Failed(last?.Error ?? new ApplicationException("нет живых endpoints etcd"));
+        return Result.Failed(last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы"));
     }
 
     // Новейший локальный слепок (имя — таймстемп, Ordinal-сортировка = время).

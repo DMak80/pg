@@ -50,13 +50,13 @@ internal static class Fakes
         // тест успевает переписать ключ и сломать ModRevisionEqual.
         public Action<TxnRequest>? OnTxnBeforeCompare { get; set; }
 
-        // Сбой-инъекция txn (ошибка захвата PortAllocLock → Result.Failed):
-        // фильтр по содержимому — null = txn исполняется штатно.
-        public Func<TxnRequest, Result<TxnResult>?>? TxnFault { get; set; }
+        // Сбой-инъекция txn (отказ захвата PortAllocLock): фильтр по
+        // содержимому — null = txn исполняется штатно.
+        public Func<TxnRequest, Exception?>? TxnFault { get; set; }
 
         // Сбой-инъекция put (отказ записи стейта ротации после E1): фильтр
         // по ключу — null = put исполняется штатно.
-        public Func<string, Result?>? PutFault { get; set; }
+        public Func<string, Exception?>? PutFault { get; set; }
 
         private long _rev;
         private long _lease;
@@ -94,8 +94,8 @@ internal static class Fakes
 
         public Task<Result> PutAsync(string endpoint, string key, string value, long? lease, CancellationToken ct)
         {
-            if (PutFault?.Invoke(key) is { } failed)
-                return Task.FromResult(failed);
+            if (PutFault?.Invoke(key) is { } putEx)
+                return Task.FromResult(Result.Failed(putEx));
 
             lock (_gate)
             {
@@ -128,8 +128,8 @@ internal static class Fakes
 
         public Task<Result<TxnResult>> TxnAsync(string endpoint, TxnRequest req, CancellationToken ct)
         {
-            if (TxnFault?.Invoke(req) is { } failed)
-                return Task.FromResult(failed);
+            if (TxnFault?.Invoke(req) is { } txnEx)
+                return Task.FromResult(Result<TxnResult>.Failed(txnEx));
 
             bool succeeded;
             lock (_gate)

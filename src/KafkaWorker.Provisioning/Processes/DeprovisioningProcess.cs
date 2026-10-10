@@ -150,7 +150,7 @@ public sealed class DeprovisioningProcess(
 
     private async Task<Result<Kv?>> GetAsync(string key, CancellationToken ct)
     {
-        Result<Kv?>? last = null;
+        Result<Kv?> last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.GetAsync(endpoint, key, ct);
@@ -159,12 +159,12 @@ public sealed class DeprovisioningProcess(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 
     private async Task<Result> DeleteAsync(string keyOrPrefix, bool prefix, CancellationToken ct)
     {
-        Result? last = null;
+        Result last = default;
         foreach (var endpoint in endpoints)
         {
             var result = await etcd.DeleteAsync(endpoint, keyOrPrefix, prefix, ct);
@@ -173,6 +173,6 @@ public sealed class DeprovisioningProcess(
             last = result;
         }
 
-        return last!;
+        return last.Error ?? new EtcdUnreachableException("etcd endpoints не заданы");
     }
 }
