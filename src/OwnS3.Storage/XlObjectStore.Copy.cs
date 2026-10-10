@@ -128,13 +128,21 @@ public sealed partial class XlObjectStore
         //    (канон 02 §5 GetObjectAttributes; простой PUT — part.1, М8)
         var dataParts = EnumerateDataParts(ObjectDir(bucket, key), meta.DataDirName);
         var marker = partNumberMarker ?? 0;
+        var limit = maxParts ?? 1000;
+        // max-parts=0: пустой список частей без усечения (конвенция ListWalker t37)
+        if (limit == 0)
+            return Task.FromResult(new ObjectAttributesResult(new ObjectAttributes(
+                '"' + meta.ETag + '"', meta.Size, "STANDARD",
+                new ObjectPartsAttributes(dataParts.Count, marker, NextPartNumberMarker: null,
+                    MaxParts: 0, IsTruncated: false, Parts: []),
+                meta.ModTime), null));
         var selected = dataParts.Where(p => p.Number > marker)
-            .Take(maxParts ?? 1000)
+            .Take(limit)
             .Select(p => (p.Number, p.Size))
             .ToList();
         var truncated = dataParts.Count(p => p.Number > marker) > selected.Count;
         var parts = new ObjectPartsAttributes(dataParts.Count, marker,
-            truncated ? selected[^1].Number : null, maxParts ?? 1000, truncated, selected);
+            truncated && selected.Count > 0 ? selected[^1].Number : null, limit, truncated, selected);
         var result = new ObjectAttributes('"' + meta.ETag + '"', meta.Size, "STANDARD", parts, meta.ModTime);
         return Task.FromResult(new ObjectAttributesResult(result, null));
     }

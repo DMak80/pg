@@ -33,7 +33,9 @@ public sealed partial class XlObjectStore
         XlMetaFile.Write(uploadDir, record);
         lock (_commitLock)
         {
-            var uploads = MultipartJournals.ReadUploads(MultipartJournals.UploadsJsonPath(keyDir));
+            // Битый журнал ключа — как у остальных операций (М2/спека §4.1):
+            // warning + NoSuchUpload, не сырой JsonException → 500
+            var uploads = ReadUploadsOrThrow(keyDir);
             uploads.Add(new MultipartJournals.UploadJournalEntry(uploadId, bucket, key,
                 now.ToUnixTimeMilliseconds(), initiatorAccessKey));
             MultipartJournals.WriteUploads(MultipartJournals.UploadsJsonPath(keyDir), uploads);
@@ -101,7 +103,7 @@ public sealed partial class XlObjectStore
         ResolveUploadOrThrow(bucket, key, uploadId, visibility: null);
         var keyDir = MultipartJournals.KeyDir(volume.MultipartDir, bucket, key);
         var uploadDir = MultipartJournals.UploadDirPath(keyDir, uploadId);
-        var tmpPath = Path.Combine(uploadDir, MultipartJournals.PartTmpFileName(partNumber));
+        var tmpPath = Path.Combine(uploadDir, MultipartJournals.PartTmpFileNameUnique(partNumber));
         // Тело: MD5-инкремент + счётчик + fsync (длина ≠ contentLength → XlIntegrityException,
         // остаточный случай — конвейер уже проверил тело)
         string etagHex;
@@ -211,7 +213,7 @@ public sealed partial class XlObjectStore
         // 5. Срез источника → part.N.tmp приёмника (MD5-инкремент + счётчик + fsync)
         var keyDir = MultipartJournals.KeyDir(volume.MultipartDir, request.DestBucket, request.DestKey);
         var uploadDir = MultipartJournals.UploadDirPath(keyDir, request.UploadId);
-        var tmpPath = Path.Combine(uploadDir, MultipartJournals.PartTmpFileName(request.PartNumber));
+        var tmpPath = Path.Combine(uploadDir, MultipartJournals.PartTmpFileNameUnique(request.PartNumber));
         var (etagHex, total) = await CopySliceToFileAsync(
             ObjectDir(request.SourceBucket, request.SourceKey), src.DataDirName, start, length, tmpPath);
         // 6. Коммит части (rename + upsert parts.json под _commitLock)
@@ -285,9 +287,14 @@ public sealed partial class XlObjectStore
             ResolveUploadOrThrow(bucket, key, uploadId, visibility: null);
             var journal = ReadPartsOrThrow(uploadDir);
             ValidateManifestAgainstJournal(parts, journal);
-            // 3. Попытка (М7): attempt.json — dataDir текущей сборки (идемпотентность повтора)
-            var dataDirName = MultipartJournals.ReadAttempt(uploadDir)?.DataDir
-                              ?? Guid.NewGuid().ToString("N");
+            // 3. Попытка (М7): attempt.json — dataDir текущей сборки (идемпотентность
+            // повтора); не-Guid маркер = битый/несовпадающий — трактуется как
+            // отсутствующий (новая попытка; старый недособранный dataDir — orphan
+            // по порогу 1 ч), иначе Guid.Parse даст перманентный 500 повторов
+            var attempted = MultipartJournals.ReadAttempt(uploadDir)?.DataDir;
+            var dataDirName = attempted is not null && Guid.TryParseExact(attempted, "N", out var parsed)
+                ? parsed.ToString("N")
+                : Guid.NewGuid().ToString("N");
             MultipartJournals.WriteAttempt(uploadDir, new MultipartJournals.AttemptMarker(dataDirName));
             var target = ObjectDir(bucket, key);
             var dataDir = Path.Combine(target, dataDirName);
@@ -379,15 +386,20 @@ public sealed partial class XlObjectStore
             MultipartJournals.KeyDir(volume.MultipartDir, bucket, key), uploadId);
         var parts = ReadPartsOrThrow(uploadDir);
         var marker = partNumberMarker ?? 0;
+        var limit = maxParts ?? 1000;
+        // max-parts=0: пустая страница БЕЗ усечения (конвенция ListWalker t37 —
+        // не вечный пагинационный цикл из-за IsTruncated без маркера)
+        if (limit == 0)
+            return Task.FromResult(new PartsPage([], IsTruncated: false, NextPartNumberMarker: null));
         var selected = parts.Where(p => p.PartNumber > marker)
             .OrderBy(p => p.PartNumber)
-            .Take(maxParts ?? 1000)
+            .Take(limit)
             .Select(p => new PartEntry(p.PartNumber, '"' + p.ETag + '"', p.Size,
                 DateTimeOffset.FromUnixTimeMilliseconds(p.ModTimeMs)))
             .ToList();
         var truncated = parts.Count(p => p.PartNumber > marker) > selected.Count;
         return Task.FromResult(new PartsPage(selected, truncated,
-            truncated ? selected[^1].PartNumber : null));
+            truncated && selected.Count > 0 ? selected[^1].PartNumber : null));
     }
 
     // ListMultipartUploads (канон 02 §5, М10): сбор всех записей бакета из sha-каталогов,
@@ -432,14 +444,25 @@ public sealed partial class XlObjectStore
         {
             var markerIndex = all.FindIndex(e => Utf8ByteOrder.Compare(e.Key, query.KeyMarker) == 0
                 && query.UploadIdMarker is not null && e.UploadId == query.UploadIdMarker);
+            // Префикс-пропуск — ТОЛЬКО для маркера-CP (NextKeyMarker = сам префикс,
+            // оканчивается на delimiter): уже выданный CommonPrefix не сворачивается
+            // повторно. Обычный key-marker без delimiter-суффикса — стандартное
+            // «строго после пары» (строковый префикс key-marker НЕ выкидывает
+            // соседние ключи: «a/x» не должен пропускать «a/x2», канон 02 §5)
+            var markerIsCommonPrefix = query.Delimiter is not null
+                && Utf8ByteOrder.EndsWith(query.KeyMarker, query.Delimiter);
             all = markerIndex >= 0
                 ? all.Skip(markerIndex + 1).ToList()
                 : all.Where(e => Utf8ByteOrder.Compare(e.Key, query.KeyMarker) > 0
-                    && (query.Delimiter is null
+                    && (!markerIsCommonPrefix
                         || !Utf8ByteOrder.StartsWith(e.Key, query.KeyMarker))).ToList();
         }
         // Свёртка delimiter + пагинация (uploads + CP вместе ≤ max-uploads, М10)
         var maxUploads = query.MaxUploads ?? 1000;
+        // max-uploads=0: пустая страница без усечения (конвенция ListWalker t37)
+        if (maxUploads == 0)
+            return Task.FromResult(new UploadsPage([], [], IsTruncated: false,
+                NextKeyMarker: null, NextUploadIdMarker: null));
         var uploads = new List<UploadEntry>();
         var prefixes = new List<CommonPrefixEntry>();
         bool truncated = false;

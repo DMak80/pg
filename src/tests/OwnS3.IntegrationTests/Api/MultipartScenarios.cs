@@ -548,4 +548,36 @@ public sealed class MultipartScenarios(OwnS3AppFactory factory) : IClassFixture<
         XDocument.Parse(await list.Content.ReadAsStringAsync(TestContext.Current.CancellationToken))
             .Root!.Elements(S3Ns + "Part").Should().ContainSingle();
     }
+
+    [Theory]
+    [InlineData("PUT", "?partNumber=1&uploadId={0}", "part")]
+    [InlineData("POST", "?uploadId={0}", "manifest")]
+    [InlineData("DELETE", "?uploadId={0}", "")]
+    public async Task Reader_MultipartMutations_403AccessDenied(string method, string queryTemplate,
+        string bodyKind)
+    {
+        // Arrange: admin — бакет, writer — живая загрузка; reader выполняет мутацию
+        // (UploadPart с телом / Complete с манифестом / Abort)
+        var client = NewClient();
+        await client.SendSignedAsync("PUT", "/b-mp-ro3", credentials: OwnS3TestClient.Admin());
+        var uploadId = await CreateUploadAsync(client, "b-mp-ro3", "obj", credentials: OwnS3TestClient.Writer());
+        byte[]? body = bodyKind switch
+        {
+            "part" => Encoding.UTF8.GetBytes("part"),
+            "manifest" => Encoding.UTF8.GetBytes(
+                """<?xml version="1.0" encoding="utf-8"?><CompleteMultipartUpload xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Part><PartNumber>1</PartNumber><ETag>"x"</ETag></Part></CompleteMultipartUpload>"""),
+            _ => null,
+        };
+
+        // Act: read-only на мутацию — право отсекается ДО Storage (матрица 05 §3)
+        var response = await client.SendSignedAsync(method, "/b-mp-ro3/obj" +
+            queryTemplate.Replace("{0}", uploadId), body: body, credentials: OwnS3TestClient.Reader());
+
+        // Assert: 403 AccessDenied; загрузка writer не пострадала (ListParts жив)
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await RoutingScenarios.ErrorXmlAsync(response)).Should().Be("AccessDenied");
+        var list = await client.SendSignedAsync("GET", $"/b-mp-ro3/obj?uploadId={uploadId}",
+            credentials: OwnS3TestClient.Writer());
+        list.StatusCode.Should().Be(HttpStatusCode.OK);
+    }
 }

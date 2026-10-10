@@ -46,6 +46,13 @@ internal static class MultipartJournals
 
     public static string PartTmpFileName(int partNumber) => $"part.{partNumber}.tmp";
 
+    // Уникальный tmp на попытку записи части (ревью t38): параллельные
+    // UploadPart/UploadPartCopy одного partNumber пишут в РАЗНЫЕ tmp-файлы —
+    // без IOException у второго writer'а; результат линеаризуется rename'ом
+    // под _commitLock (last-writer-wins, спека §2.4).
+    public static string PartTmpFileNameUnique(int partNumber) =>
+        $"part.{partNumber}.{Guid.NewGuid():N}.tmp";
+
     // Чтение: файла нет ИЛИ пустой → []; JsonException — наружу (политику решает
     // вызывающий: операции — warning + NoSuchUpload; чистка — mtime-прокси).
     public static List<UploadJournalEntry> ReadUploads(string path) =>

@@ -150,8 +150,9 @@ public class XlObjectStoreMultipartTests(StoreFixture fixture) : IClassFixture<S
         MultipartJournals.ReadParts(MultipartJournals.PartsJsonPath(uploadDir))
             .Should().ContainSingle().Which.Should().Match<MultipartJournals.PartJournalEntry>(p =>
                 p.PartNumber == 1 && p.ETag == md5 && p.Size == payload.Length);
-        // tmp-файл не остался
-        File.Exists(Path.Combine(uploadDir, MultipartJournals.PartTmpFileName(1))).Should().BeFalse();
+        // tmp-файлов не осталось (уникальные part.1.<guid>.tmp переименованы)
+        Directory.EnumerateFiles(uploadDir, "part.1*")
+            .Where(f => Path.GetFileName(f) != "part.1").Should().BeEmpty();
     }
 
     [Fact]
@@ -1153,5 +1154,155 @@ public class XlObjectStoreMultipartTests(StoreFixture fixture) : IClassFixture<S
         // Assert
         await act.Should().ThrowAsync<ObjectStoreException>()
             .Where(e => e.Code == ObjectStoreErrorCode.EntityTooLarge);
+    }
+
+    [Fact]
+    public async Task ListParts_MaxPartsZero_EmptyPageNotTruncated()
+    {
+        // Arrange: загрузка с двумя частями
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "z0-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        await Store.UploadPartAsync("b", "z0-key", uploadId, 1, new MemoryStream([1]), 1,
+            TestContext.Current.CancellationToken);
+        await Store.UploadPartAsync("b", "z0-key", uploadId, 2, new MemoryStream([2]), 1,
+            TestContext.Current.CancellationToken);
+
+        // Act: max-parts=0 — валидный вход (App пропускает 0 в Storage)
+        var page = await Store.ListPartsAsync("b", "z0-key", uploadId, 0, null,
+            UploadVisibility.AllUploads, TestContext.Current.CancellationToken);
+
+        // Assert: пустая страница БЕЗ усечения — конвенция ListWalker t37
+        page.Parts.Should().BeEmpty();
+        page.IsTruncated.Should().BeFalse();
+        page.NextPartNumberMarker.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task ListMultipartUploads_MaxUploadsZero_EmptyPageNotTruncated()
+    {
+        // Arrange: изолированный бакет с живой загрузкой
+        await Store.CreateBucketAsync("b-z0-uploads", TestContext.Current.CancellationToken);
+        await Store.CreateMultipartUploadAsync("b-z0-uploads", "k", Meta, "writer",
+            TestContext.Current.CancellationToken);
+
+        // Act: max-uploads=0
+        var page = await Store.ListMultipartUploadsAsync("b-z0-uploads", new UploadsQuery(null, null,
+            null, null, 0, null, UploadVisibility.AllUploads), TestContext.Current.CancellationToken);
+
+        // Assert: пустая страница без усечения — нет вечного пагинационного цикла
+        page.Uploads.Should().BeEmpty();
+        page.CommonPrefixes.Should().BeEmpty();
+        page.IsTruncated.Should().BeFalse();
+        page.NextKeyMarker.Should().BeNull();
+        page.NextUploadIdMarker.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task GetObjectAttributes_MaxPartsZero_EmptyPartsNotTruncated()
+    {
+        // Arrange: multipart-объект из одной малой части (единственная — без лимита 5 МиБ)
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "z0-attr", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var bytes = Encoding.UTF8.GetBytes("z");
+        var put = await Store.UploadPartAsync("b", "z0-attr", uploadId, 1, new MemoryStream(bytes),
+            bytes.Length, TestContext.Current.CancellationToken);
+        await Store.CompleteMultipartUploadAsync("b", "z0-attr", uploadId,
+            [new PartEtag(1, put.ETag)], TestContext.Current.CancellationToken);
+
+        // Act: x-amz-max-parts=0
+        var result = await Store.GetObjectAttributesAsync("b", "z0-attr",
+            [ObjectAttributeName.ObjectParts], 0, null, null, TestContext.Current.CancellationToken);
+
+        // Assert: пустой список частей без усечения; PartsCount и ETag на месте
+        result.Attributes!.Parts!.PartsCount.Should().Be(1);
+        result.Attributes.Parts.Parts.Should().BeEmpty();
+        result.Attributes.Parts.IsTruncated.Should().BeFalse();
+        result.Attributes.Parts.NextPartNumberMarker.Should().BeNull();
+        result.Attributes.ETag.Should().NotBeNullOrEmpty();
+    }
+
+    [Fact]
+    public async Task ListMultipartUploads_KeyMarkerNotCpPrefix_KeepsStringPrefixedKeys()
+    {
+        // Arrange: изолированный бакет; ключи a/1, a/1x (строковый префикс «a/1»,
+        // но НЕ CP-префикс «a/»), c; delimiter «/»
+        await Store.CreateBucketAsync("b-km-cp", TestContext.Current.CancellationToken);
+        await Store.CreateMultipartUploadAsync("b-km-cp", "a/1", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        await Store.CreateMultipartUploadAsync("b-km-cp", "a/1x", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        await Store.CreateMultipartUploadAsync("b-km-cp", "c", Meta, "writer",
+            TestContext.Current.CancellationToken);
+
+        // Act: key-marker «a/1» (не оканчивается на delimiter — НЕ маркер-CP):
+        // выдача строго после пары, строковый префикс не выкидывает «a/1x»
+        var page = await Store.ListMultipartUploadsAsync("b-km-cp", new UploadsQuery(null, "/", "a/1",
+            null, null, null, UploadVisibility.AllUploads), TestContext.Current.CancellationToken);
+
+        // Assert: «a/1x» не потерян (свёрнут в CP «a/»), ключ «c» после; полнота 02 §5
+        page.CommonPrefixes.Select(p => p.Prefix).Should().Equal("a/");
+        page.Uploads.Select(u => u.Key).Should().Equal("c");
+        page.IsTruncated.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task UploadPart_ParallelSamePartNumber_BothSucceedConsistentJournal()
+    {
+        // Arrange: загрузка; две параллельные записи одного номера (уникальные tmp)
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "par-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var first = Encoding.UTF8.GetBytes("parallel-first-body");
+        var second = Encoding.UTF8.GetBytes("2nd");
+        var tasks = new[]
+        {
+            Store.UploadPartAsync("b", "par-key", uploadId, 1, new MemoryStream(first),
+                first.Length, TestContext.Current.CancellationToken),
+            Store.UploadPartAsync("b", "par-key", uploadId, 1, new MemoryStream(second),
+                second.Length, TestContext.Current.CancellationToken),
+        };
+
+        // Act: обе завершаются — ни IOException от FileShare.None на общем tmp
+        var results = await Task.WhenAll(tasks);
+
+        // Assert: обе PutResult валидны; журнал — согласованная пара ровно с ОДНОЙ
+        // записью (last-writer-wins линеаризован rename'ом под _commitLock);
+        // размер файла = размеру записи журнала; tmp-остатков нет
+        var uploadDir = MultipartJournals.UploadDirPath(
+            MultipartJournals.KeyDir(Volume.MultipartDir, "b", "par-key"), uploadId);
+        var journal = MultipartJournals.ReadParts(MultipartJournals.PartsJsonPath(uploadDir));
+        journal.Should().ContainSingle();
+        var fileSize = new FileInfo(Path.Combine(uploadDir, "part.1")).Length;
+        fileSize.Should().Be(journal[0].Size);
+        new[] { first.Length, second.Length }.Should().Contain((int)fileSize);
+        Directory.EnumerateFiles(uploadDir, "part.1*")
+            .Where(f => Path.GetFileName(f) != "part.1").Should().BeEmpty();
+        results.Should().OnlyContain(r => r.ETag.StartsWith("\""));
+    }
+
+    [Fact]
+    public async Task Complete_BrokenAttemptMarker_NewAttemptRecovers()
+    {
+        // Arrange: живая загрузка с частью; attempt.json с НЕ-Guid dataDir (битый маркер)
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "bam-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var bytes = Encoding.UTF8.GetBytes("bam");
+        var put = await Store.UploadPartAsync("b", "bam-key", uploadId, 1, new MemoryStream(bytes),
+            bytes.Length, TestContext.Current.CancellationToken);
+        var uploadDir = MultipartJournals.UploadDirPath(
+            MultipartJournals.KeyDir(Volume.MultipartDir, "b", "bam-key"), uploadId);
+        File.WriteAllText(MultipartJournals.AttemptJsonPath(uploadDir),
+            """{"dataDir":"not-a-guid-at-all"}""");
+
+        // Act: Complete обязан траковать битый маркер как отсутствующий (М7) —
+        // новая попытка, а не перманентный 500 от Guid.Parse
+        var result = await Store.CompleteMultipartUploadAsync("b", "bam-key", uploadId,
+            [new PartEtag(1, put.ETag)], TestContext.Current.CancellationToken);
+
+        // Assert: объект собран новой попыткой; в каталоге объекта один Guid-dataDir
+        var head = await Store.HeadObjectAsync("b", "bam-key", null, TestContext.Current.CancellationToken);
+        head.Metadata.ETag.Should().Be(result.ETag);
+        head.Metadata.Size.Should().Be(bytes.Length);
+        var objectDir = Path.Combine(Root, "b", XlPathEncoder.EncodePath("bam-key"));
+        Directory.EnumerateDirectories(objectDir).Should().ContainSingle();
     }
 }
