@@ -1,14 +1,18 @@
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using OwnS3.App;
+using OwnS3.App.Access;
+using OwnS3.App.Pipeline;
+using OwnS3.Storage;
 using Shared.Metrics;
 
 // Точка входа ownS3 (arch/owns3/01 §3, arch/owns3/05): Kestrel-хост S3-грани,
 // конфигурация OwnS3:* / OWNS3_*, fail-fast root-пары, /healthz и /metrics.
-// Протокольный конвейер (роутинг/подпись/права) — задачи 9–10.
+// Протокольный конвейер (роутинг/подпись/права) — S3Middleware.
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -27,6 +31,11 @@ builder.Services.AddOptions<OwnS3Options>()
 // серии ownS3_*_total/ownS3_request_duration_seconds совпадают со словарём главы 05).
 builder.Services.AddAppMetrics("ownS3", builder.Configuration.GetSection("OwnS3:Metrics"));
 
+// Домен: реестр учёток + объектный слой t36 — заглушка (реализация xl — t37).
+builder.Services.AddSingleton<AccessKeyRegistry>();
+builder.Services.AddSingleton<IObjectStore, NotWiredObjectStore>();
+builder.Services.AddSingleton<OwnS3Metrics>();
+
 var app = builder.Build();
 
 // Kestrel: any-IP, h1+h2c (arch/owns3/03 §6), лимит тела отключён — лимит 5 ГБ
@@ -35,6 +44,11 @@ builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = null);
 var options = app.Services.GetRequiredService<IOptions<OwnS3Options>>().Value;
 app.Urls.Clear();
 app.Urls.Add($"http://*:{options.Server.Port}");
+
+// S3-конвейер: RequestId → OPTIONS → роутер → подпись → права → хендлер →
+// ошибки → метрики/лог. Map-эндпоинты исполняются в конце; изоляция служебных
+// путей — шаг 0 S3Middleware.
+app.UseMiddleware<S3Middleware>();
 
 // Вне S3-конвейера: healthz (в t36 — 200 без валидации тома; том — t37) и metrics.
 app.MapGet("/healthz", () => Results.Ok());
