@@ -55,18 +55,7 @@ multipart → приёмка клиентами → erasure coding.
 
 ## Задачи
 
-- **`t37-owns3-storage-objects`** — xl-хранение
-  и основные операции: раскладка бакетов/объектов/`part.N`, запись
-  через `.owns3.sys/tmp` с атомарным rename-коммитом, `xl.meta`
-  (версионирование формата), корзина tmp/.trash; бакеты
-  Create/Delete/Head/List/GetBucketLocation; объекты
-  Put/Get/Head/Delete/DeleteObjects/Copy/GetObjectAttributes
-  (conditional, Range, ETag); листинги v1/V2 (лексикографический
-  порядок, continuation-токены, лимит) и ListObjectVersions.
-  Референс: `cmd/xl-storage.go`, `cmd/xl-storage-format-v2.go`,
-  `cmd/erasure-object.go`, `cmd/bucket-handlers.go`,
-  `cmd/object-handlers.go`, `cmd/bucket-listobjects-handlers.go`.
-- **`t38-owns3-multipart`** ← `t37-owns3-storage-objects` —
+- **`t38-owns3-multipart`** —
   multipart-цикл: CreateMultipartUpload/UploadPart/UploadPartCopy/
   CompleteMultipartUpload/AbortMultipartUpload/ListParts/
   ListMultipartUploads; раскладка
