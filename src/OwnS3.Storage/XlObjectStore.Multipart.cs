@@ -165,9 +165,42 @@ public sealed partial class XlObjectStore
     public Task<PutResult> UploadPartCopyAsync(PartCopyRequest request, CancellationToken ct) =>
         ThrowUnavailable<PutResult>(); // t38, Task 10
 
+    // Complete — шаг 1 (Task 6): сверка манифеста; успешная сверка — временная
+    // граница ObjectStoreUnavailableException до полной сборки (Task 7).
     public Task<CompleteResult> CompleteMultipartUploadAsync(string bucket, string key, string uploadId,
-        IReadOnlyList<PartEtag> parts, CancellationToken ct) =>
-        ThrowUnavailable<CompleteResult>(); // t38, Task 6–7
+        IReadOnlyList<PartEtag> parts, CancellationToken ct)
+    {
+        EnsureBucket(bucket);
+        var keyDir = MultipartJournals.KeyDir(volume.MultipartDir, bucket, key);
+        var uploadDir = MultipartJournals.UploadDirPath(keyDir, uploadId);
+        lock (_commitLock)
+        {
+            ResolveUploadOrThrow(bucket, key, uploadId, visibility: null);
+            var journal = ReadPartsOrThrow(uploadDir);
+            ValidateManifestAgainstJournal(parts, journal);
+        }
+        throw new ObjectStoreUnavailableException(); // сборка — Task 7
+    }
+
+    // Сверка манифеста Complete с parts.json (канон 02 §5): каждая пара манифеста —
+    // номер существует ∧ ETag совпал (кавычки снимаются, hex в lowercase); каждая
+    // часть кроме последней ≥ MinPartSize. Провал — InvalidPart.
+    internal static void ValidateManifestAgainstJournal(IReadOnlyList<PartEtag> manifest,
+        List<MultipartJournals.PartJournalEntry> journal)
+    {
+        var byNumber = journal.ToDictionary(p => p.PartNumber);
+        for (var i = 0; i < manifest.Count; i++)
+        {
+            var (number, etagRaw) = manifest[i];
+            if (!byNumber.TryGetValue(number, out var uploaded))
+                throw new ObjectStoreException(ObjectStoreErrorCode.InvalidPart);
+            var expected = etagRaw.Trim('"').ToLowerInvariant();
+            if (!string.Equals(uploaded.ETag, expected, StringComparison.Ordinal))
+                throw new ObjectStoreException(ObjectStoreErrorCode.InvalidPart);
+            if (i < manifest.Count - 1 && uploaded.Size < MinPartSize)
+                throw new ObjectStoreException(ObjectStoreErrorCode.InvalidPart);
+        }
+    }
 
     // ListParts (канон 02 §5): части из parts.json по возрастанию; marker — строго после;
     // maxParts null = 1000; битый parts.json при живой записи → NoSuchUpload (спека §4.1,

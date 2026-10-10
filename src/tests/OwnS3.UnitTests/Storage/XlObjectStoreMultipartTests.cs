@@ -505,4 +505,95 @@ public class XlObjectStoreMultipartTests(StoreFixture fixture) : IClassFixture<S
         await del.Should().NotThrowAsync();
     }
 
+    [Fact]
+    public async Task Complete_WrongEtag_InvalidPart()
+    {
+        // Arrange: одна часть загружена, манифест с чужим ETag
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "ci-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var bytes = Encoding.UTF8.GetBytes("part");
+        await Store.UploadPartAsync("b", "ci-key", uploadId, 1, new MemoryStream(bytes),
+            bytes.Length, TestContext.Current.CancellationToken);
+
+        // Act
+        var act = async () => await Store.CompleteMultipartUploadAsync("b", "ci-key", uploadId,
+            [new PartEtag(1, "\"deadbeef\"")], TestContext.Current.CancellationToken);
+
+        // Assert
+        await act.Should().ThrowAsync<ObjectStoreException>()
+            .Where(e => e.Code == ObjectStoreErrorCode.InvalidPart);
+    }
+
+    [Fact]
+    public async Task Complete_MissingPartNumber_InvalidPart()
+    {
+        // Arrange: загружена только часть 1; манифест ссылается на номер 2
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "mn-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var bytes = Encoding.UTF8.GetBytes("part");
+        await Store.UploadPartAsync("b", "mn-key", uploadId, 1, new MemoryStream(bytes),
+            bytes.Length, TestContext.Current.CancellationToken);
+
+        // Act
+        var act = async () => await Store.CompleteMultipartUploadAsync("b", "mn-key", uploadId,
+            [new PartEtag(2, "\"whatever\"")], TestContext.Current.CancellationToken);
+
+        // Assert: несуществующая часть манифеста — InvalidPart
+        await act.Should().ThrowAsync<ObjectStoreException>()
+            .Where(e => e.Code == ObjectStoreErrorCode.InvalidPart);
+    }
+
+    [Fact]
+    public async Task Complete_SmallPartNotLast_InvalidPart()
+    {
+        // Arrange: две части по 3 байта — первая < 5 МиБ и НЕ последняя
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "sp-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var first = Encoding.UTF8.GetBytes("aaa");
+        var second = Encoding.UTF8.GetBytes("bbb");
+        var e1 = await Store.UploadPartAsync("b", "sp-key", uploadId, 1, new MemoryStream(first),
+            first.Length, TestContext.Current.CancellationToken);
+        var e2 = await Store.UploadPartAsync("b", "sp-key", uploadId, 2, new MemoryStream(second),
+            second.Length, TestContext.Current.CancellationToken);
+
+        // Act
+        var act = async () => await Store.CompleteMultipartUploadAsync("b", "sp-key", uploadId,
+            [new PartEtag(1, e1.ETag), new PartEtag(2, e2.ETag)], TestContext.Current.CancellationToken);
+
+        // Assert: первая часть манифеста < MinPartSize — InvalidPart (канон 02 §1)
+        await act.Should().ThrowAsync<ObjectStoreException>()
+            .Where(e => e.Code == ObjectStoreErrorCode.InvalidPart);
+    }
+
+    [Fact]
+    public async Task Complete_EtagWithoutQuotesAndUpperHex_Matches()
+    {
+        // Arrange: манифест без кавычек / в UPPER — нормализация сверки (канон 02 §5)
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "nq-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var bytes = Encoding.UTF8.GetBytes("one-small-part");
+        var put = await Store.UploadPartAsync("b", "nq-key", uploadId, 1, new MemoryStream(bytes),
+            bytes.Length, TestContext.Current.CancellationToken);
+        var normalized = put.ETag.Trim('"').ToUpperInvariant();
+
+        // Act: Complete с ненормализованным ETag — сверка проходит; успех сборки
+        // закрывается Task 7, здесь исход ObjectStoreUnavailable (временная граница)
+        var act = async () => await Store.CompleteMultipartUploadAsync("b", "nq-key", uploadId,
+            [new PartEtag(1, normalized)], TestContext.Current.CancellationToken);
+
+        // Assert: НЕ InvalidPart (нормализация сработала); временная граница шага
+        await act.Should().ThrowAsync<ObjectStoreUnavailableException>();
+    }
+
+    [Fact]
+    public async Task Complete_UnknownUpload_NoSuchUpload()
+    {
+        // Arrange / Act
+        var act = async () => await Store.CompleteMultipartUploadAsync("b", "k", "no-such",
+            [new PartEtag(1, "\"x\"")], TestContext.Current.CancellationToken);
+
+        // Assert
+        await act.Should().ThrowAsync<ObjectStoreException>()
+            .Where(e => e.Code == ObjectStoreErrorCode.NoSuchUpload);
+    }
 }
