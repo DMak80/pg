@@ -186,7 +186,7 @@ public sealed partial class XlObjectStore
         return results;
     }
 
-    // — чтение (спека §4.4): conditional-таблица, Range/If-Range, полная
+    // — чтение (спека §4.4): conditional-таблица, Range, полная
     // SHA-256 сверка ДО передачи любых байтов клиенту —
 
     // Чтение каталога объекта; отсутствие записи → NoSuchKey.
@@ -222,8 +222,8 @@ public sealed partial class XlObjectStore
             throw new ObjectStoreException(ObjectStoreErrorCode.PreconditionFailed);
         if (outcome == ConditionalOutcome.NotModified)
             return Task.FromResult(new ObjectContent(ToMetadata(key, meta), Stream.Null, NotModified: true, Range: null));
-        // 3. Range/If-Range (сверка — с ETag всего объекта, P8)
-        var range = RangeResolver.Resolve(options.Range, options.IfRange, meta.ETag, meta.Size);
+        // 3. Range (заголовок условного диапазона не поддерживается — канон 02 §1)
+        var range = RangeResolver.Resolve(options.Range, meta.Size);
         // 4. Полная SHA-256 сверка ДО отдачи: Range не влияет на хэш (Q1);
         //    многочастевое тело — последовательный проход по всем part.N (М8)
         var partPaths = EnumerateDataParts(ObjectDir(bucket, key), meta.DataDirName)
@@ -247,7 +247,7 @@ public sealed partial class XlObjectStore
             throw new ObjectStoreException(ObjectStoreErrorCode.PreconditionFailed);
         if (outcome == ConditionalOutcome.NotModified)
             return Task.FromResult(new ObjectContent(ToMetadata(key, meta), Stream.Null, NotModified: true, Range: null));
-        var range = RangeResolver.Resolve(options?.Range, options?.IfRange, meta.ETag, meta.Size);
+        var range = RangeResolver.Resolve(options?.Range, meta.Size);
         return Task.FromResult(new ObjectContent(ToMetadata(key, meta), Stream.Null, NotModified: false, Range: range));
     }
 

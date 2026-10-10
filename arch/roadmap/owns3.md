@@ -19,11 +19,11 @@ MinIO-кластера) живёт параллельно на переходн�
 
 Границы начального этапа:
 
-- **22 операции**: объекты PutObject/GetObject/HeadObject/DeleteObject/
+- **21 операция**: объекты PutObject/GetObject/HeadObject/DeleteObject/
   DeleteObjects/CopyObject/GetObjectAttributes; листинги
   ListObjects(v1)/ListObjectsV2/ListObjectVersions; бакеты
   CreateBucket/DeleteBucket/HeadBucket/ListBuckets/GetBucketLocation;
-  multipart CreateMultipartUpload/UploadPart/UploadPartCopy/
+  multipart CreateMultipartUpload/UploadPart/
   CompleteMultipartUpload/AbortMultipartUpload/ListParts/
   ListMultipartUploads. Сабресурсы объекта (ACL/tagging/lock/…),
   конфигурации бакета (versioning/lifecycle/replication/…) и S3-Express

@@ -2,7 +2,7 @@ using OwnS3.App.Routing;
 
 namespace OwnS3.UnitTests;
 
-// Таблица маршрутов 22 операций (arch/owns3/02; порядок — референс api-router.go,
+// Таблица маршрутов 21 операции (arch/owns3/02; порядок — референс api-router.go,
 // spec §3.4). Дискриминатор = наличие query-ключа, КРОМЕ list-type —
 // дискриминатор СО ЗНАЧЕНИЕМ: матчится ровно «2», иное/пустое → маршрут v1
 // (глава 02: list-type=2 — обязательный дискриминатор; поведение референса).
@@ -35,7 +35,6 @@ public sealed class S3RouterTests
         { "GET",     "/b/k",              "",          false, S3Operation.GetObject },
         { "HEAD",    "/b/k",              "",          false, S3Operation.HeadObject },
         // объект PUT: copy-семейство и part-семейство раньше PutObject
-        { "PUT",     "/b/k",              "partNumber=1&uploadId=x", true,  S3Operation.UploadPartCopy },
         { "PUT",     "/b/k",              "partNumber=1&uploadId=x", false, S3Operation.UploadPart },
         { "PUT",     "/b/k",              "",          true,  S3Operation.CopyObject },
         { "PUT",     "/b/k",              "",          false, S3Operation.PutObject },
@@ -73,7 +72,7 @@ public sealed class S3RouterTests
     {
         // Arrange / Act
         var route = S3Router.Route(method, path, query, copySource: false);
-        // Assert: сабресурс известен, но вне набора 22 операций → 501
+        // Assert: сабресурс известен, но вне набора 21 операции → 501
         route.Operation.Should().Be(S3Operation.None);
         route.RejectedSubresource.Should().Be(subresource);
     }

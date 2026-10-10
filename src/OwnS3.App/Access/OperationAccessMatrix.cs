@@ -21,7 +21,7 @@ public static class OperationAccessMatrix
         {
             S3Operation.PutObject, S3Operation.DeleteObject, S3Operation.DeleteObjects,
             S3Operation.CopyObject, S3Operation.GetObjectAttributes,
-            S3Operation.CreateMultipartUpload, S3Operation.UploadPart, S3Operation.UploadPartCopy,
+            S3Operation.CreateMultipartUpload, S3Operation.UploadPart,
             S3Operation.CompleteMultipartUpload, S3Operation.AbortMultipartUpload,
         };
 

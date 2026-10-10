@@ -205,18 +205,6 @@ public sealed class ObjectStorageScenarios(OwnS3AppFactory factory) : IClassFixt
         // Assert
         failed.StatusCode.Should().Be(HttpStatusCode.PreconditionFailed);
         (await ErrorXmlAsync(failed)).Should().Be("PreconditionFailed");
-
-        // Act: If-Range совпал → 206; не совпал → 200 полным
-        var ifRangeMatch = await client.SendSignedAsync("GET", "/b-cond/c",
-            headers: new Dictionary<string, string> { ["Range"] = "bytes=2-3", ["If-Range"] = etag });
-        var ifRangeMiss = await client.SendSignedAsync("GET", "/b-cond/c",
-            headers: new Dictionary<string, string> { ["Range"] = "bytes=2-3", ["If-Range"] = "\"other\"" });
-
-        // Assert
-        ifRangeMatch.StatusCode.Should().Be(HttpStatusCode.PartialContent);
-        (await BodyAsync(ifRangeMatch)).Should().Be("ll"); // bytes 2-3 объекта «hello»
-        ifRangeMiss.StatusCode.Should().Be(HttpStatusCode.OK);
-        (await BodyAsync(ifRangeMiss)).Should().Be("hello");
     }
 
     [Fact]

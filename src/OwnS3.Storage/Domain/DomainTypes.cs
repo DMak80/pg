@@ -18,7 +18,7 @@ public sealed record ObjectConditions(string? IfMatch, string? IfNoneMatch,
 
 public sealed record ByteRange(long? Start, long? End);
 
-public sealed record ObjectReadOptions(ObjectConditions? Conditions, ByteRange? Range, string? IfRange);
+public sealed record ObjectReadOptions(ObjectConditions? Conditions, ByteRange? Range);
 
 // Применённый диапазон: start/end включительно + полный размер объекта.
 public sealed record AppliedByteRange(long Start, long End, long Total);
@@ -33,10 +33,6 @@ public sealed record ObjectAttributesResult(ObjectAttributes? Attributes, Object
 
 public sealed record CopyRequest(string SourceBucket, string SourceKey, string DestBucket, string DestKey,
     bool ReplaceMetadata, ObjectUploadMetadata? NewMetadata, ObjectConditions? SourceConditions);
-
-public sealed record PartCopyRequest(string SourceBucket, string SourceKey,
-    string DestBucket, string DestKey, string UploadId, int PartNumber,
-    ByteRange? SourceRange, ObjectConditions? SourceConditions);
 
 public sealed record DeletedKeyResult(string Key, bool Deleted, string? ErrorCode, string? ErrorMessage);
 

@@ -5,7 +5,7 @@ using OwnS3.Protocol.Auth;
 
 namespace OwnS3.IntegrationTests.Api;
 
-// Роутинг 22 операций (глава 02) на реальном объектном слое: немутационные
+// Роутинг 21 операции (глава 02) на реальном объектном слое: немутационные
 // кейсы — на никогда не создаваемом бакете «bucket» (404 NoSuchBucket/NoSuchKey;
 // multipart-операции — реальные исходы Storage t38); мутационные — на уникальном
 // бакете своего кейса; GetBucketLocation — полный успех 200; вне-наборные
@@ -99,7 +99,7 @@ public sealed class RoutingScenarios(OwnS3AppFactory factory) : IClassFixture<Ow
     }
 
     [Fact]
-    public async Task UploadPart_And_UploadPartCopy_ReachStorage()
+    public async Task UploadPart_ReachesStorage()
     {
         // Arrange
         var client = NewClient();
@@ -107,14 +107,10 @@ public sealed class RoutingScenarios(OwnS3AppFactory factory) : IClassFixture<Ow
         // Act
         var uploadPart = await client.SendSignedAsync("PUT", "/bucket/key?partNumber=1&uploadId=u",
             body: Encoding.UTF8.GetBytes("part"));
-        var uploadPartCopy = await client.SendSignedAsync("PUT", "/bucket/key?partNumber=1&uploadId=u",
-            headers: new Dictionary<string, string> { ["x-amz-copy-source"] = "/bucket/src" });
 
-        // Assert: бакет не существует — реальные исходы Storage (404 NoSuchBucket)
+        // Assert: бакет не существует — реальный исход Storage (404 NoSuchBucket)
         uploadPart.StatusCode.Should().Be(HttpStatusCode.NotFound);
         (await ErrorXmlAsync(uploadPart)).Should().Be("NoSuchBucket");
-        uploadPartCopy.StatusCode.Should().Be(HttpStatusCode.NotFound);
-        (await ErrorXmlAsync(uploadPartCopy)).Should().Be("NoSuchBucket");
     }
 
     [Fact]

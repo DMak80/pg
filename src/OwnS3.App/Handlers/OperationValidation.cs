@@ -91,25 +91,6 @@ public static class OperationValidation
         return (decoded[1..slash], decoded[(slash + 1)..]);
     }
 
-    // x-amz-copy-source-range: bytes=a-b; невалидный синтаксис или a > b —
-    // InvalidArgument (обе причины в один код; глава 02 UploadPartCopy).
-    public static Storage.ByteRange? ParseCopySourceRange(string? value)
-    {
-        if (value is null)
-            return null;
-        if (!value.StartsWith("bytes=", StringComparison.Ordinal))
-            throw new S3ProtocolException(S3ErrorCode.InvalidArgument, "The x-amz-copy-source-range value is invalid");
-        var spec = value["bytes=".Length..];
-        var dash = spec.IndexOf('-');
-        if (dash <= 0 || dash == spec.Length - 1)
-            throw new S3ProtocolException(S3ErrorCode.InvalidArgument, "The x-amz-copy-source-range value is invalid");
-        if (!long.TryParse(spec[..dash], NumberStyles.Integer, CultureInfo.InvariantCulture, out var start)
-            || !long.TryParse(spec[(dash + 1)..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var end)
-            || start < 0 || end < 0 || start > end)
-            throw new S3ProtocolException(S3ErrorCode.InvalidArgument, "The x-amz-copy-source-range value is invalid");
-        return new Storage.ByteRange(start, end);
-    }
-
     // Range Get/Head: одиночная спецификация распознаётся (bytes=a-b | a- | -N);
     // множественная — трактуется как отсутствующая (200 полным объектом);
     // форматная невалидность (a > b, bytes=-0) — InvalidRange (глава 02).

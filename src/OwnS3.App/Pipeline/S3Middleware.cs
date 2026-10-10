@@ -26,7 +26,7 @@ public sealed class S3Middleware(
     ILogger<S3Middleware> logger,
     IEnumerable<Handlers.IOperationHandler> handlers)
 {
-    // Словарь диспетчеризации: операция → хендлер (22 хендлера протокольного контура).
+    // Словарь диспетчеризации: операция → хендлер (21 хендлер протокольного контура).
     private readonly IReadOnlyDictionary<Routing.S3Operation, Handlers.IOperationHandler> _handlers =
         handlers.ToDictionary(h => h.Operation);
     public async Task InvokeAsync(HttpContext context)
@@ -58,7 +58,7 @@ public sealed class S3Middleware(
                     return;
                 }
 
-                // Шаг 3: роутер 22 операций.
+                // Шаг 3: роутер 21 операции.
                 var model = S3ModelFactory.Create(context);
                 var hasCopySource = context.Request.Headers.ContainsKey("x-amz-copy-source");
                 var route = S3Router.Route(method, model.RawPath, model.RawQuery, hasCopySource);

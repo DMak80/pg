@@ -3,7 +3,7 @@ using OwnS3.App.Routing;
 
 namespace OwnS3.UnitTests;
 
-// Матрица прав (arch/owns3/05 §3): параметризованная проверка 3 роли × 22 операции.
+// Матрица прав (arch/owns3/05 §3): параметризованная проверка 3 роли × 21 операции.
 public sealed class OperationAccessMatrixTests
 {
     // read-only: чтения и справочники (+ ListParts/ListMultipartUploads — допуск
@@ -21,7 +21,7 @@ public sealed class OperationAccessMatrixTests
         .. ReadOnly,
         S3Operation.PutObject, S3Operation.DeleteObject, S3Operation.DeleteObjects,
         S3Operation.CopyObject, S3Operation.GetObjectAttributes,
-        S3Operation.CreateMultipartUpload, S3Operation.UploadPart, S3Operation.UploadPartCopy,
+        S3Operation.CreateMultipartUpload, S3Operation.UploadPart,
         S3Operation.CompleteMultipartUpload, S3Operation.AbortMultipartUpload,
     ];
 

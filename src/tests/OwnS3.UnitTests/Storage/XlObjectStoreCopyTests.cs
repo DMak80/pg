@@ -23,7 +23,7 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
 
     private async Task<string> ReadBodyAsync(string bucket, string key)
     {
-        var content = await Store.GetObjectAsync(bucket, key, new ObjectReadOptions(null, null, null),
+        var content = await Store.GetObjectAsync(bucket, key, new ObjectReadOptions(null, null),
             TestContext.Current.CancellationToken);
         using var reader = new StreamReader(content.Body);
         return await reader.ReadToEndAsync(TestContext.Current.CancellationToken);

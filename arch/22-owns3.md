@@ -23,7 +23,7 @@ MinIO ([../minio](../../minio), Go) — точечный референс «ка
 
 ## Границы начального этапа
 
-- **22 операции** API (объекты/листинги/бакеты/multipart) — полный
+- **21 операция** API (объекты/листинги/бакеты/multipart) — полный
   контракт в главе 02.
 - Бакеты без versioning (`ListObjectVersions` — unversioned-семантика).
 - Single-drive без erasure coding и репликации.
@@ -37,7 +37,7 @@ MinIO ([../minio](../../minio), Go) — точечный референс «ка
 ## Главы канона
 
 - [owns3/01-overview.md](owns3/01-overview.md) — место в системе, клиенты, состав проектов, durability-ограничения, таблица ключевых решений;
-- [owns3/02-operations.md](owns3/02-operations.md) — полный контракт 22 операций + общие семантики (ETag, conditional, Range);
+- [owns3/02-operations.md](owns3/02-operations.md) — полный контракт 21 операции + общие семантики (ETag, conditional, Range);
 - [owns3/03-protocol.md](owns3/03-protocol.md) — SigV4 (заголовочная/presigned/чанковая), XML-схемы, формат ошибок, транспорт;
 - [owns3/04-storage.md](owns3/04-storage.md) — xl-хранение single-drive: раскладка, `xl.meta`, `.owns3.sys`, атомарность, чистки;
 - [owns3/05-access-config.md](owns3/05-access-config.md) — учётки, матрица прав, конфиг/env, health/метрики, запуск в докере.

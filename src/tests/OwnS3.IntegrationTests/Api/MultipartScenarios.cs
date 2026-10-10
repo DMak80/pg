@@ -212,46 +212,6 @@ public sealed class MultipartScenarios(OwnS3AppFactory factory) : IClassFixture<
     }
 
     [Fact]
-    public async Task UploadPartCopy_WholeAndRange()
-    {
-        // Arrange: источник 5 МиБ + «hello» (PUT; первая часть манифеста обязана
-        // быть ≥ 5 МиБ — канон 02 §1); загрузка приёмника
-        var client = NewClient();
-        await client.SendSignedAsync("PUT", "/b-mp-upc", credentials: OwnS3TestClient.Admin());
-        byte[] source = [.. FiveMiB, .. Encoding.UTF8.GetBytes("hello")];
-        await client.SendSignedAsync("PUT", "/b-mp-upc/src", body: source);
-        var uploadId = await CreateUploadAsync(client, "b-mp-upc", "dst");
-
-        // Act: вся копия — часть 1; диапазон хвоста [1,3] — часть 2
-        var whole = await client.SendSignedAsync("PUT", $"/b-mp-upc/dst?partNumber=1&uploadId={uploadId}",
-            headers: new Dictionary<string, string> { ["x-amz-copy-source"] = "/b-mp-upc/src" });
-        var ranged = await client.SendSignedAsync("PUT", $"/b-mp-upc/dst?partNumber=2&uploadId={uploadId}",
-            headers: new Dictionary<string, string>
-            {
-                ["x-amz-copy-source"] = "/b-mp-upc/src",
-                ["x-amz-copy-source-range"] = $"bytes={source.Length - 3}-{source.Length - 1}",
-            });
-        var wholeXml = XDocument.Parse(await whole.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).Root!;
-        var rangedXml = XDocument.Parse(await ranged.Content.ReadAsStringAsync(TestContext.Current.CancellationToken)).Root!;
-        var e1 = wholeXml.Element(S3Ns + "ETag")!.Value.Trim('"');
-        var e2 = rangedXml.Element(S3Ns + "ETag")!.Value.Trim('"');
-
-        // Assert: ETag части 1 = md5(источника); части 2 = md5("llo")
-        e1.Should().Be(Convert.ToHexString(MD5.HashData(source)).ToLowerInvariant());
-        e2.Should().Be(Convert.ToHexString(MD5.HashData("llo"u8.ToArray())).ToLowerInvariant());
-
-        // Act: Complete из обеих частей
-        var composite = await CompleteAsync(client, "b-mp-upc", "dst", uploadId,
-            [(1, "\"" + e1 + "\""), (2, "\"" + e2 + "\"")]);
-
-        // Assert: тело = источник + «llo»
-        composite.Should().Be(CompositeEtag(e1, e2));
-        var get = await client.SendSignedAsync("GET", "/b-mp-upc/dst");
-        (await get.Content.ReadAsByteArrayAsync(TestContext.Current.CancellationToken))
-            .Should().Equal([.. source, .. "llo"u8.ToArray()]);
-    }
-
-    [Fact]
     public async Task Copy_MultipartSource_InheritsCompositeEtag()
     {
         // Arrange: multipart-источник

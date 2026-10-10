@@ -1,14 +1,12 @@
 namespace OwnS3.Storage;
 
 // Резолв одиночного Range канона 02 §1: a-b, a-, -N; обрезка end по размеру,
-// суффикс длиннее объекта, пустой объект, If-Range (сильный ETag: совпал —
-// применять Range; не совпал или дата-форма — 200 полным объектом).
+// суффикс длиннее объекта, пустой объект. Заголовок условного диапазона
+// каноном не поддерживается (02 §1): ответ определяется только Range.
 public static class RangeResolver
 {
-    public static AppliedByteRange? Resolve(ByteRange? range, string? ifRange, string etag, long size)
+    public static AppliedByteRange? Resolve(ByteRange? range, long size)
     {
-        if (ifRange is not null && !ConditionalEvaluator.ETagMatches(ifRange, etag))
-            return null;                       // If-Range не совпал (или дата) → 200 полным
         if (range is null)
             return null;
         if (size == 0)

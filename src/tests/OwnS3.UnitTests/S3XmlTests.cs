@@ -195,21 +195,6 @@ public sealed class S3XmlTests
     }
 
     [Fact]
-    public void Serialize_CopyPartResult_MatchesSample()
-    {
-        // Arrange
-        var value = new CopyPartResult { LastModified = Date, ETag = "\"e1\"" };
-        const string Expected =
-            """<?xml version="1.0" encoding="utf-8"?><CopyPartResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><LastModified>2026-01-01T00:00:00.000Z</LastModified><ETag>"e1"</ETag></CopyPartResult>""";
-
-        // Act
-        var actual = S3Xml.Serialize(value);
-
-        // Assert
-        actual.Should().Be(Expected);
-    }
-
-    [Fact]
     public void Serialize_GetObjectAttributesOutput_MatchesSample()
     {
         // Arrange

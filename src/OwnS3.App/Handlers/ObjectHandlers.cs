@@ -318,7 +318,7 @@ public static class ObjectHandlers
         return new ObjectUploadMetadata(contentType, userMetadata);
     }
 
-    // Опции чтения: conditional + Range + If-Range (парсинг формата; оценка — Storage).
+    // Опции чтения: conditional + Range (парсинг формата; оценка — Storage).
     internal static ObjectReadOptions ReadOptions(S3HandlerContext context)
     {
         ObjectConditions? conditions = null;
@@ -333,8 +333,7 @@ public static class ObjectHandlers
                 ifModifiedSince, ifUnmodifiedSince);
 
         var range = OperationValidation.ParseRange(context.Http.Headers.Range.ToString());
-        var ifRange = context.Http.Headers["If-Range"].FirstOrDefault();
-        return new ObjectReadOptions(conditions, range, ifRange is { Length: > 0 } ? ifRange : null);
+        return new ObjectReadOptions(conditions, range);
     }
 
     // response-*: переопределения заголовков ответа (любой подписанный GET, глава 02).

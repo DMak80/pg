@@ -1,6 +1,6 @@
 namespace OwnS3.App.Routing;
 
-// Операции S3-грани ownS3 (глава 02): 22 операции + None (не-матч/501-сабресурс).
+// Операции S3-грани ownS3 (глава 02): 21 операция + None (не-матч/501-сабресурс).
 public enum S3Operation
 {
     None,
@@ -22,7 +22,6 @@ public enum S3Operation
     GetObjectAttributes,
     CreateMultipartUpload,
     UploadPart,
-    UploadPartCopy,
     CompleteMultipartUpload,
     AbortMultipartUpload,
     ListParts,

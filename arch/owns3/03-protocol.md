@@ -136,7 +136,7 @@ AWS4-HMAC-SHA256.») — семантика «механизм не поддер
 - **Разрешённые операции через presigned** — ровно потребности
   клиентов бэкапов и `mc` (критерий — стандарт S3 допускает per-API
   ограничение): `GetObject`, `PutObject`, `DeleteObject`, `HeadObject`,
-  `CreateMultipartUpload`, `UploadPart`, `UploadPartCopy`,
+  `CreateMultipartUpload`, `UploadPart`,
   `CompleteMultipartUpload`, `AbortMultipartUpload`, `ListParts`.
   Обращение прочих операций через presigned → **400**
   `AuthorizationQueryParametersError`.
@@ -287,7 +287,6 @@ application/xml` — у всех XML-ответов (charset UTF-8). Кодир�
 
 <!-- копирование и атрибуты -->
 <CopyObjectResult><LastModified>…</LastModified><ETag>"…"</ETag></CopyObjectResult>
-<CopyPartResult><LastModified>…</LastModified><ETag>"…"</ETag></CopyPartResult>
 <GetObjectAttributesOutput><ETag>"…"</ETag><ObjectSize>…</ObjectSize>
   <StorageClass>STANDARD</StorageClass>
   <ObjectParts><PartsCount>1</PartsCount><PartNumberMarker>0</PartNumberMarker>
@@ -383,7 +382,7 @@ application/xml` — у всех XML-ответов (charset UTF-8). Кодир�
 аутентификации (CORS-модели нет; критерий — референс: ранний `return` в
 `errorResponseHandler`).
 
-**Запрос, не матчатщийся ни на одну из 22 операций** (метод+path+query), и
+**Запрос, не матчатщийся ни на одну из 21 операции** (метод+path+query), и
 запрос с известным путём, но неподдерживаемым методом → **400**
 `InvalidArgument` (Message «Unsupported request»); отдельный код не
 заводится (критерий — референс: `ErrUnknownAPIRequest` 400; простота).

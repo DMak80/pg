@@ -52,7 +52,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
     {
         // Arrange / Act
         var result = await PutAsync(Store, "b", "roundtrip", "hello");
-        var content = await Store.GetObjectAsync("b", "roundtrip", new ObjectReadOptions(null, null, null),
+        var content = await Store.GetObjectAsync("b", "roundtrip", new ObjectReadOptions(null, null),
             TestContext.Current.CancellationToken);
         using var reader = new StreamReader(content.Body);
 
@@ -74,7 +74,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
     {
         // Arrange / Act
         var act = async () => await Store.GetObjectAsync("b", "missing-key",
-            new ObjectReadOptions(null, null, null), TestContext.Current.CancellationToken);
+            new ObjectReadOptions(null, null), TestContext.Current.CancellationToken);
 
         // Assert
         await act.Should().ThrowAsync<ObjectStoreException>()
@@ -89,7 +89,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
 
         // Act
         var content = await Store.GetObjectAsync("b", "range-206",
-            new ObjectReadOptions(null, new ByteRange(2, 3), null), TestContext.Current.CancellationToken);
+            new ObjectReadOptions(null, new ByteRange(2, 3)), TestContext.Current.CancellationToken);
         using var reader = new StreamReader(content.Body);
         var body = await reader.ReadToEndAsync(TestContext.Current.CancellationToken);
 
@@ -111,7 +111,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         File.WriteAllBytes(part, bytes);
 
         // Act
-        var act = async () => await Store.GetObjectAsync("b", key, new ObjectReadOptions(null, range, null),
+        var act = async () => await Store.GetObjectAsync("b", key, new ObjectReadOptions(null, range),
             TestContext.Current.CancellationToken);
         var message = (await act.Should().ThrowAsync<XlIntegrityException>()).Which.Message;
         return message;
@@ -141,7 +141,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
 
         // Act: If-Match совпал → полный объект
         var content = await Store.GetObjectAsync("b", "cond-ifmatch",
-            new ObjectReadOptions(new ObjectConditions(etag, null, null, null), null, null),
+            new ObjectReadOptions(new ObjectConditions(etag, null, null, null), null),
             TestContext.Current.CancellationToken);
 
         // Assert
@@ -156,7 +156,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
 
         // Act
         var act = async () => await Store.GetObjectAsync("b", "cond-412",
-            new ObjectReadOptions(new ObjectConditions("\"other\"", null, null, null), null, null),
+            new ObjectReadOptions(new ObjectConditions("\"other\"", null, null, null), null),
             TestContext.Current.CancellationToken);
 
         // Assert
@@ -173,7 +173,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
 
         // Act
         var content = await Store.GetObjectAsync("b", "cond-inm",
-            new ObjectReadOptions(new ObjectConditions(null, etag, null, null), null, null),
+            new ObjectReadOptions(new ObjectConditions(null, etag, null, null), null),
             TestContext.Current.CancellationToken);
         using (content.Body)
         {
@@ -194,7 +194,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
 
         // Act
         var content = await Store.GetObjectAsync("b", "cond-ims",
-            new ObjectReadOptions(new ObjectConditions(null, null, since, null), null, null),
+            new ObjectReadOptions(new ObjectConditions(null, null, since, null), null),
             TestContext.Current.CancellationToken);
         using (content.Body)
         {
@@ -212,7 +212,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
 
         // Act
         var act = async () => await Store.GetObjectAsync("b", "cond-ius",
-            new ObjectReadOptions(new ObjectConditions(null, null, null, since), null, null),
+            new ObjectReadOptions(new ObjectConditions(null, null, null, since), null),
             TestContext.Current.CancellationToken);
 
         // Assert
@@ -229,7 +229,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
 
         // Act
         var content = await Store.GetObjectAsync("b", "cond-prio",
-            new ObjectReadOptions(new ObjectConditions(etag, etag, null, null), null, null),
+            new ObjectReadOptions(new ObjectConditions(etag, etag, null, null), null),
             TestContext.Current.CancellationToken);
 
         // Assert: не 304 — условие If-None-Match не применилось
@@ -248,7 +248,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
 
         // Act
         var content = await Store.GetObjectAsync("b", "range-forms",
-            new ObjectReadOptions(null, new ByteRange(start, end), null), TestContext.Current.CancellationToken);
+            new ObjectReadOptions(null, new ByteRange(start, end)), TestContext.Current.CancellationToken);
         using var reader = new StreamReader(content.Body);
         var body = await reader.ReadToEndAsync(TestContext.Current.CancellationToken);
 
@@ -265,7 +265,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
 
         // Act
         var act = async () => await Store.GetObjectAsync("b", "range-416",
-            new ObjectReadOptions(null, new ByteRange(6, null), null), TestContext.Current.CancellationToken);
+            new ObjectReadOptions(null, new ByteRange(6, null)), TestContext.Current.CancellationToken);
 
         // Assert
         await act.Should().ThrowAsync<ObjectStoreException>()
@@ -280,7 +280,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
 
         // Act
         var act = async () => await Store.GetObjectAsync("b", "range-empty",
-            new ObjectReadOptions(null, new ByteRange(0, null), null), TestContext.Current.CancellationToken);
+            new ObjectReadOptions(null, new ByteRange(0, null)), TestContext.Current.CancellationToken);
 
         // Assert
         await act.Should().ThrowAsync<ObjectStoreException>()
@@ -293,65 +293,12 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         // Arrange / Act
         await PutAsync(Store, "b", "range-emptyfull", "");
         var content = await Store.GetObjectAsync("b", "range-emptyfull",
-            new ObjectReadOptions(null, null, null), TestContext.Current.CancellationToken);
+            new ObjectReadOptions(null, null), TestContext.Current.CancellationToken);
         using var reader = new StreamReader(content.Body);
 
         // Assert: без Range пустой объект читается (200)
         content.Range.Should().BeNull();
         (await reader.ReadToEndAsync(TestContext.Current.CancellationToken)).Should().Be("");
-    }
-
-    [Fact]
-    public async Task Get_IfRange_Match206()
-    {
-        // Arrange
-        await PutAsync(Store, "b", "ifrange-match", "abcdef");
-        var etag = "\"" + TestHashes.Md5Hex("abcdef") + "\"";
-
-        // Act
-        var content = await Store.GetObjectAsync("b", "ifrange-match",
-            new ObjectReadOptions(null, new ByteRange(2, 3), etag), TestContext.Current.CancellationToken);
-        using var reader = new StreamReader(content.Body);
-        var body = await reader.ReadToEndAsync(TestContext.Current.CancellationToken);
-
-        // Assert: сильный ETag совпал — Range применён
-        body.Should().Be("cd");
-        content.Range.Should().Be(new AppliedByteRange(2, 3, 6));
-    }
-
-    [Fact]
-    public async Task Get_IfRange_Mismatch200()
-    {
-        // Arrange
-        await PutAsync(Store, "b", "ifrange-miss", "abcdef");
-
-        // Act
-        var content = await Store.GetObjectAsync("b", "ifrange-miss",
-            new ObjectReadOptions(null, new ByteRange(2, 3), "\"other\""), TestContext.Current.CancellationToken);
-        using var reader = new StreamReader(content.Body);
-        var body = await reader.ReadToEndAsync(TestContext.Current.CancellationToken);
-
-        // Assert: несовпал — полный объект (200)
-        body.Should().Be("abcdef");
-        content.Range.Should().BeNull();
-    }
-
-    [Fact]
-    public async Task Get_IfRange_DateForm200()
-    {
-        // Arrange: дата-форма If-Range — трактуется как несовпадение
-        await PutAsync(Store, "b", "ifrange-date", "abcdef");
-        var ifRangeDate = TestVectors.FixedTime.ToString("R");
-
-        // Act
-        var content = await Store.GetObjectAsync("b", "ifrange-date",
-            new ObjectReadOptions(null, new ByteRange(2, 3), ifRangeDate), TestContext.Current.CancellationToken);
-        using var reader = new StreamReader(content.Body);
-        var body = await reader.ReadToEndAsync(TestContext.Current.CancellationToken);
-
-        // Assert
-        body.Should().Be("abcdef");
-        content.Range.Should().BeNull();
     }
 
     [Fact]
@@ -384,7 +331,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
 
         // Act
         var content = await Store.HeadObjectAsync("b", "head-range",
-            new ObjectReadOptions(null, new ByteRange(2, 3), null), TestContext.Current.CancellationToken);
+            new ObjectReadOptions(null, new ByteRange(2, 3)), TestContext.Current.CancellationToken);
         using (content.Body)
         {
             // Assert: 206-семантика — диапазон применён, тела нет
@@ -402,7 +349,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
 
         // Act
         var content = await Store.HeadObjectAsync("b", "head-inm",
-            new ObjectReadOptions(new ObjectConditions(null, etag, null, null), null, null),
+            new ObjectReadOptions(new ObjectConditions(null, etag, null, null), null),
             TestContext.Current.CancellationToken);
 
         // Assert
@@ -423,7 +370,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         await PutAsync(Store, "b", key, "payload-" + key.Length);
 
         // Act
-        var content = await Store.GetObjectAsync("b", key, new ObjectReadOptions(null, null, null),
+        var content = await Store.GetObjectAsync("b", key, new ObjectReadOptions(null, null),
             TestContext.Current.CancellationToken);
         using var reader = new StreamReader(content.Body);
 
