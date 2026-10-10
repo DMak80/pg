@@ -30,7 +30,7 @@
 
 | Фаза спеки | Задачи плана |
 |---|---|
-| 1. Arch-правки (девять дополнений) | Задача 1 |
+| 1. Arch-правки (десять дополнений) | Задача 1 |
 | 2. Каркас решений | Задача 2 |
 | 3. Protocol: заголовочная SigV4 | Задачи 3–4 |
 | 4. Protocol: presigned + чанковая | Задачи 5–6 |
@@ -61,7 +61,7 @@
 
 ---
 
-### Задача 1: Arch-правки — девять дополнений в `arch/owns3/03-protocol.md`
+### Задача 1: Arch-правки — десять дополнений в `arch/owns3/03-protocol.md`
 
 **Вход (предусловие):** worktree чист (кроме `docs/superpowers/**`), ветка `feat-t36-owns3-protocol`; спека одобрена; arch-first — правки канона ДО любого кода.
 
@@ -69,10 +69,10 @@
 - Modify: `arch/owns3/03-protocol.md`
 
 **Interfaces:**
-- Consumes: spec §3.1 (таблица девяти пробелов с решениями и критериями).
-- Produces: канон, по которому строятся задачи 3–11; каталог ошибок главы 03 §5 расширяется кодом `InvalidAccessKeyId`; §1 дополняется Trimall-семантикой (п.4), исходом для неподдерживаемого алгоритма и правилом percent-кодирования query (п.3).
+- Consumes: spec §3.1 (таблица десяти пробелов с решениями и критериями).
+- Produces: канон, по которому строятся задачи 3–11; каталог ошибок главы 03 §5 расширяется кодом `InvalidAccessKeyId`; §1 дополняется Trimall-семантикой (п.4), исходом для неподдерживаемого алгоритма и правилом percent-кодирования query (п.3); §2 получает presigned-skew-семантику «только будущее + строгая граница просрочки» (п.10, с уточнением условия `RequestTimeTooSkewed` в таблице §5).
 
-**Действия (внести ровно девять правок, без перестройки остального текста):**
+**Действия (внести ровно десять правок, без перестройки остального текста):**
 
 - [ ] **Шаг 1.1. Правка §1 (исходы проверки подписи) — пробелы 1 и 2.** В конец раздела 1 (после абзаца «Исходы проверки подписи») добавить два абзаца:
 
@@ -125,7 +125,27 @@ AWS4-HMAC-SHA256.») — семантика «механизм не поддер
 литеральный `+` на входе уже `%2B` и не затрагивается).
 ```
 
-- [ ] **Шаг 1.6. Правка §3 (чанковая подпись) — пробелы 3 и 4.** В конец раздела 3 добавить два абзаца:
+- [ ] **Шаг 1.6. Правка §2 и таблицы §5 — пробел 10 (presigned-skew: только будущее + строгая просрочка).** Две точки правки:
+  (а) в разделе 2 строку «Clock skew ±15 минут применяется и к `X-Amz-Date`.» заменить на:
+
+```markdown
+**Skew для presigned — только на будущее**: `X-Amz-Date > now + 15 минут`
+→ **403** `RequestTimeTooSkewed`; для прошедших дат skew-отказов НЕТ —
+URL валиден всё время окна. Просрочка — строгое неравенство
+`now − X-Amz-Date > X-Amz-Expires` → **403** `AccessDenied`
+(непросроченный presigned принимается независимо от возраста)
+(критерий — референс: Abs-skew `auth-handler.go` — только
+заголовочно-подписанные типы; presigned
+(`doesPresignedSignatureMatch`, `signature-v4.go`) — «дата из будущего
+за skew» + просрочка `now − date > Expires`; отступление: «будущее за
+skew» у референса — `AccessDenied`, ownS3 нормализует в
+`RequestTimeTooSkewed` — единый код каталога «время вне допуска»,
+статус 403 совпадает).
+```
+
+  (б) в таблице §5 условие строки `RequestTimeTooSkewed` заменить на: «x-amz-date вне ±15 минут (заголовочная подпись); X-Amz-Date в будущем дальше now + 15 минут (presigned)».
+
+- [ ] **Шаг 1.7. Правка §3 (чанковая подпись) — пробелы 3 и 4.** В конец раздела 3 добавить два абзаца:
 
 ```markdown
 **Невалидный синтаксис aws-chunked-фрейма** → **400** `InvalidRequest`
@@ -140,7 +160,7 @@ AWS4-HMAC-SHA256.») — семантика «механизм не поддер
 SigV4).
 ```
 
-- [ ] **Шаг 1.7. Правка §6 (транспорт и стиль) — пробелы 5 и 6.** В конец раздела 6 добавить два абзаца:
+- [ ] **Шаг 1.8. Правка §6 (транспорт и стиль) — пробелы 5 и 6.** В конец раздела 6 добавить два абзаца:
 
 ```markdown
 **OPTIONS-запрос** → пустой ответ **200** без CORS-заголовков, до
@@ -155,21 +175,21 @@ SigV4).
 игнорируются (глава 02, раздел 1).
 ```
 
-- [ ] **Шаг 1.8. Проверка.** Прочитать изменённый файл: все девять правок на месте (§1 — п. 1–2 и 7–9; §3 — п. 3–4; §5 — строка `InvalidAccessKeyId`; §6 — п. 5–6); прочие разделы/главы не тронуты (`git diff --stat` — один файл).
+- [ ] **Шаг 1.9. Проверка.** Прочитать изменённый файл: все десять правок на месте (§1 — п. 1–2 и 7–9; §2 — п. 10; §3 — п. 3–4; §5 — строка `InvalidAccessKeyId` и уточнение условия `RequestTimeTooSkewed`; §6 — п. 5–6); прочие разделы/главы не тронуты (`git diff --stat` — один файл).
 
-- [ ] **Шаг 1.9. Коммит.**
+- [ ] **Шаг 1.10. Коммит.**
 
 ```bash
 cd /Users/demakaev/ZCodeProject/worktrees/feat-t36-owns3-protocol && \
   git add arch/owns3/03-protocol.md && \
-  git commit -m "arch(owns3): девять дополнений главы 03 — пробелы протокола t36 (arch-first)"
+  git commit -m "arch(owns3): десять дополнений главы 03 — пробелы протокола t36, вкл. presigned-skew (только будущее)"
 ```
 
 **Проверка задачи:** `git -C /Users/demakaev/ZCodeProject/worktrees/feat-t36-owns3-protocol diff HEAD~1 --stat` — ровно `arch/owns3/03-protocol.md`.
 
-**Выход:** канон главы 03 закрывает все девять пробелов; код последующих задач ссылается на канон, а не на спеку.
+**Выход:** канон главы 03 закрывает все десять пробелов; код последующих задач ссылается на канон, а не на спеку.
 
-**Связь со spec:** §3.1 (таблица девяти пробелов), принцип 1 (arch-first), критерий приёмки 1.
+**Связь со spec:** §3.1 (таблица десяти пробелов), принцип 1 (arch-first), критерий приёмки 1.
 
 ---
 
@@ -644,7 +664,7 @@ cd /Users/demakaev/ZCodeProject/worktrees/feat-t36-owns3-protocol && \
   - `SigV4Core.StringToSign(amzDate, scope, canonical)`, `SigV4Core.SigningKey(secretKey, date, region)` → byte[], `SigV4Core.SignHex(key, stringToSign)` → string (hex); `SigV4Core.EmptySha256` = `e3b0c442...855`.
   - `SigV4HeaderVerifier(TimeProvider).Verify(S3RequestModel, Func<string, string?> secretResolver)` → `SigV4Result`:
     - `Ok(AccessKey, SeedSignature, AmzDate, Scope, PayloadHashMode Mode)` — SeedSignature = подпись запроса (для чанковой цепочки);
-    - `Fail(S3ErrorCode Code, string? Detail = null)` — `SignatureDoesNotMatch` / `AuthorizationHeaderMalformed` / `RequestTimeTooSkewed` / `InvalidAccessKeyId` / `InvalidRequest` (payload-значение вне перечня; неподдерживаемый алгоритм Authorization — arch-правка 8) / `AccessDenied`-семантика НЕ здесь (аноним определяет App).
+    - `Fail(S3ErrorCode Code, string? Detail = null)` — `SignatureDoesNotMatch` / `AuthorizationHeaderMalformed` / `RequestTimeTooSkewed` (Abs-skew ±15 мин — ТОЛЬКО заголовочный режим, arch-правка 10 разделяет семантики) / `InvalidAccessKeyId` / `InvalidRequest` (payload-значение вне перечня; неподдерживаемый алгоритм Authorization — arch-правка 8) / `AccessDenied`-семантика НЕ здесь (аноним определяет App).
   - `S3ProtocolException(S3ErrorCode Code, string Message)`.
 
 - [ ] **Шаг 4.1. `TestVectors.cs`** — литералы всех шести векторов из таблицы выше (константы: `GetObjCreqSha`, `GetObjSignature`, `ListObjSignature`, `PresignedSignature`, `PutBodySha`, `PutSignature`, `Chunk1Signature`, `Chunk0Signature`, `Crc32B64`, `Sha256B64`, `TrailerSignature`, учётка/дата/регион/host). Плюс фиксация даты «сейчас» для skew-тестов: `FixedTime = 2013-05-24T00:05:00Z` (внутри ±15 мин от 20130524T000000Z) и `SkewedTime = 2013-05-24T00:20:00Z` (вне).
@@ -689,7 +709,7 @@ public static class TestSigV4Signer
 
 (Реализовать тела методов полностью — канонизация своя, через `StringBuilder` + `HMACSHA256`; при неверной реализации вектор 1 не сойдётся, что и является проверкой signer'а.)
 
-- [ ] **Шаг 4.3. Падающие тесты верификатора** `SigV4HeaderVerifierTests.cs` — по покрытию §3.5: позитив (вектор 1: собрать `S3RequestModel` с заголовками `host/range/x-amz-content-sha256/x-amz-date` и `Authorization` с подписью `f0e8bd...`; resolver отдаёт секрет векторной учётки; TimeProvider = FixedTime → `Ok`); битая подпись (последний байт hex заменён) → `SignatureDoesNotMatch`; битый scope (`s3`→`sns`) → `AuthorizationHeaderMalformed`; неподдерживаемый алгоритм: `Authorization: AWS AKID:base64` (SigV2) и `AWS4-HMAC-SHA512 Credential=...` → `InvalidRequest` с Message «The authorization mechanism you have provided is not supported. Please use AWS4-HMAC-SHA256.» (arch-правка 8); skew > 15 мин (`FakeTimeProvider`/кастомный `TimeProvider` на SkewedTime) → `RequestTimeTooSkewed`; несуществующий accessKey (resolver → null) → `InvalidAccessKeyId`; отсутствие `x-amz-date` и `Date` → `AuthorizationHeaderMalformed` (arch-правка 2); **невалидная строка `x-amz-date`** (не формат `yyyyMMdd'T'HHmmss'Z'`: `2013-05-24T00:00:00Z` и `garbage`) → тот же `AuthorizationHeaderMalformed` (arch-правка 2: Missing/Invalid — оба исхода покрыты); `UNSIGNED-PAYLOAD`-позитив (через signer); hex-sha256 с телом (вектор 4: PUT, canonical URI `/test%24file.text`); payload-значение вне перечня (`x-amz-content-sha256: STREAMING-UNSIGNED-PAYLOAD-TRAILER`) → `InvalidRequest`; канонизация: `+`→`%2B` в query-значении (arch-правка 9: пробел → `%20`, литеральный `+` → `%2B`), многозначные заголовки (join через запятую), Trimall — краевые пробелы И внутренние последовательности (`a  b \t c` → `a b c`, arch-правка 7), регистр имён (`X-Amz-Date` == `x-amz-date`), `host` отсутствует в SignedHeaders → `SignatureDoesNotMatch`. Вектор 2 (query `max-keys=2&prefix=J`) — позитив через signer и литерал.
+- [ ] **Шаг 4.3. Падающие тесты верификатора** `SigV4HeaderVerifierTests.cs` — по покрытию §3.5: позитив (вектор 1: собрать `S3RequestModel` с заголовками `host/range/x-amz-content-sha256/x-amz-date` и `Authorization` с подписью `f0e8bd...`; resolver отдаёт секрет векторной учётки; TimeProvider = FixedTime → `Ok`); битая подпись (последний байт hex заменён) → `SignatureDoesNotMatch`; битый scope (`s3`→`sns`) → `AuthorizationHeaderMalformed`; неподдерживаемый алгоритм: `Authorization: AWS AKID:base64` (SigV2) и `AWS4-HMAC-SHA512 Credential=...` → `InvalidRequest` с Message «The authorization mechanism you have provided is not supported. Please use AWS4-HMAC-SHA256.» (arch-правка 8); skew заголовочной подписи > 15 мин (`FakeTimeProvider`/кастомный `TimeProvider` на SkewedTime) → `RequestTimeTooSkewed` (Abs-skew ±15 мин — заголовочный режим; для presigned семантика иная — arch-правка 10, задача 5); несуществующий accessKey (resolver → null) → `InvalidAccessKeyId`; отсутствие `x-amz-date` и `Date` → `AuthorizationHeaderMalformed` (arch-правка 2); **невалидная строка `x-amz-date`** (не формат `yyyyMMdd'T'HHmmss'Z'`: `2013-05-24T00:00:00Z` и `garbage`) → тот же `AuthorizationHeaderMalformed` (arch-правка 2: Missing/Invalid — оба исхода покрыты); `UNSIGNED-PAYLOAD`-позитив (через signer); hex-sha256 с телом (вектор 4: PUT, canonical URI `/test%24file.text`); payload-значение вне перечня (`x-amz-content-sha256: STREAMING-UNSIGNED-PAYLOAD-TRAILER`) → `InvalidRequest`; канонизация: `+`→`%2B` в query-значении (arch-правка 9: пробел → `%20`, литеральный `+` → `%2B`), многозначные заголовки (join через запятую), Trimall — краевые пробелы И внутренние последовательности (`a  b \t c` → `a b c`, arch-правка 7), регистр имён (`X-Amz-Date` == `x-amz-date`), `host` отсутствует в SignedHeaders → `SignatureDoesNotMatch`. Вектор 2 (query `max-keys=2&prefix=J`) — позитив через signer и литерал.
 
 Пример позитивного теста (AAA):
 
@@ -760,26 +780,26 @@ cd /Users/demakaev/ZCodeProject/worktrees/feat-t36-owns3-protocol && \
 - Test: `src/tests/OwnS3.UnitTests/PresignedRequestVerifierTests.cs`
 
 **Interfaces:**
-- Consumes: `SigV4Core`, `CanonicalRequestBuilder`, `S3RequestModel`; arch/owns3/03 §2.
+- Consumes: `SigV4Core`, `CanonicalRequestBuilder`, `S3RequestModel`; arch/owns3/03 §2 (после arch-правки 10: skew presigned — только на будущее, просрочка — строгое неравенство).
 - Produces (задача 9): `S3PresignedOperations.Allowed` — `IReadOnlySet<string>` из 10 имён: `GetObject, PutObject, DeleteObject, HeadObject, CreateMultipartUpload, UploadPart, UploadPartCopy, CompleteMultipartUpload, AbortMultipartUpload, ListParts`; `PresignedRequestVerifier(TimeProvider).Verify(S3RequestModel, string operation, Func<string, string?> secretResolver)` → `SigV4Result` (те же Ok/Fail; `Ok.SeedSignature` = query-подпись).
 
-- [ ] **Шаг 5.1. Падающие тесты** по покрытию §3.5: валидный presigned (вектор 3: GET `/test.txt`, query-параметры `X-Amz-Algorithm/-Credential/-Date/-Expires=86400/-SignedHeaders=host/-Signature`, resolver — секрет вектора, FixedTime) → Ok; просроченный (`X-Amz-Date` + `Expires` в прошлом относительно времени провайдера) → `AccessDenied`; `Expires=604801` → `AuthorizationQueryParametersError`; `Expires=-1`/не число → `AuthorizationQueryParametersError`; отсутствие любого из 6 обязательных параметров (`X-Amz-Algorithm`, `X-Amz-Credential`, `X-Amz-Date`, `X-Amz-Expires`, `X-Amz-SignedHeaders`, `X-Amz-Signature` — параметризованно по каждому, спека §3.2 «все параметры обязательны; отсутствие → `AuthorizationQueryParametersError`») → `AuthorizationQueryParametersError`; операция вне списка (`ListObjects`) → `AuthorizationQueryParametersError`; skew ±15 мин → `RequestTimeTooSkewed`; несуществующий accessKey → `InvalidAccessKeyId`; битая подпись → `SignatureDoesNotMatch`; canonical query = все параметры КРОМЕ `X-Amz-Signature` (позитив вектора 3 фиксирует это: подпихнуть лишний `response-content-type` в query — должен входить в подпись; signer-позитив).
+- [ ] **Шаг 5.1. Падающие тесты** по покрытию §3.5 (skew-кейсы — по arch-правке 10; ЗАМЕНЯЮТ ошибочный прежний юнит вида `Verify_SkewedXAmzDate_RequestTimeTooSkewed`, проверявший Abs-skew прошедшей даты — такой исход в каноне отсутствует): валидный presigned (вектор 3: GET `/test.txt`, query-параметры `X-Amz-Algorithm/-Credential/-Date/-Expires=86400/-SignedHeaders=host/-Signature`, resolver — секрет вектора, FixedTime) → Ok; **использование через N > 15 мин внутри окна** (TimeProvider = дата подписи + 20 мин, `X-Amz-Expires=86400`) → Ok — Abs-skew для прошедших дат отсутствует (arch-правка 10); **дата в будущем дальше +15 мин** (подпись «из будущего»: TimeProvider = дата подписи − 20 мин) → 403 `RequestTimeTooSkewed` (arch-правка 10; отступление от референса — нормализация `AccessDenied` → `RequestTimeTooSkewed`); **просрочка — строгое неравенство** `now − X-Amz-Date > X-Amz-Expires` → 403 `AccessDenied`; кейс границы: `now − X-Amz-Date == X-Amz-Expires` (ровно на границе, Expires=60) → Ok; `Expires=604801` → `AuthorizationQueryParametersError`; `Expires=-1`/не число → `AuthorizationQueryParametersError`; отсутствие любого из 6 обязательных параметров (`X-Amz-Algorithm`, `X-Amz-Credential`, `X-Amz-Date`, `X-Amz-Expires`, `X-Amz-SignedHeaders`, `X-Amz-Signature` — параметризованно по каждому, спека §3.2 «все параметры обязательны; отсутствие → `AuthorizationQueryParametersError`») → `AuthorizationQueryParametersError`; операция вне списка (`ListObjects`) → `AuthorizationQueryParametersError`; несуществующий accessKey → `InvalidAccessKeyId`; битая подпись → `SignatureDoesNotMatch`; canonical query = все параметры КРОМЕ `X-Amz-Signature` (позитив вектора 3 фиксирует это: подпихнуть лишний `response-content-type` в query — должен входить в подпись; signer-позитив).
 
-- [ ] **Шаг 5.2. Реализация**: parse query-параметров (регистр значений `X-Amz-*` сохраняется); payload-строка canonical = `UNSIGNED-PAYLOAD`; expiry-проверка: `X-Amz-Date + Expires < now − skew` → AccessDenied; порядок проверок: полнота всех 6 параметров → операция в списке → resolver → дата формат/skew → Expires диапазон → просрочка → подпись.
+- [ ] **Шаг 5.2. Реализация**: parse query-параметров (регистр значений `X-Amz-*` сохраняется); payload-строка canonical = `UNSIGNED-PAYLOAD`; порядок проверок (arch-правка 10): полнота всех 6 параметров → операция в списке → resolver → формат даты → **будущее-skew** (`X-Amz-Date > now + 15 мин` → `RequestTimeTooSkewed`; прошедшие даты skew-проверкой НЕ отвергаются) → диапазон `Expires` → **просрочка строго** (`now − X-Amz-Date > X-Amz-Expires` → `AccessDenied`) → подпись.
 
 - [ ] **Шаг 5.3. Прогон + коммит.**
 
 ```bash
 cd /Users/demakaev/ZCodeProject/worktrees/feat-t36-owns3-protocol/src && dotnet test tests/OwnS3.UnitTests -c Release && \
 cd .. && git add src/OwnS3.Protocol src/tests/OwnS3.UnitTests && \
-  git commit -m "feat(owns3-protocol): presigned SigV4 — 10 операций, Expires<=604800, skew, просрочка"
+  git commit -m "feat(owns3-protocol): presigned SigV4 — 10 операций, Expires<=604800, skew только на будущее (arch-правка 10), строгая просрочка"
 ```
 
-**Проверка задачи:** все presigned-исходы §3.5 покрыты зелёными тестами, включая отсутствие каждого из 6 параметров.
+**Проверка задачи:** все presigned-исходы §3.5 покрыты зелёными тестами: позитив «N > 15 мин внутри окна → Ok», негатив «будущее дальше +15 мин → 403», строгая просрочка с кейсом границы, отсутствие каждого из 6 параметров.
 
 **Выход:** `PresignedRequestVerifier` для конвейера.
 
-**Связь со spec:** §3.2 (presigned: «все параметры обязательны» — все 6), §3.5, критерии 2, 6.
+**Связь со spec:** §3.2 (presigned: все 6 параметров; skew-семантика arch-правки 10), §3.5 (обязательные кейсы presigned), критерии 2, 6.
 
 ---
 
@@ -810,35 +830,36 @@ public sealed record AwsChunkedReadingContext(
     IReadOnlyList<string> TrailerNames);   // имена из x-amz-trailer, нижний регистр
 ```
 
-поведение: чтение данных чанков; ошибка — `S3ProtocolException` с каноническим кодом (`SignatureDoesNotMatch` — чанк/трейлер-подпись; `InvalidRequest` — битый фрейм/чанк > 16 МиБ/несовпадение `x-amz-decoded-content-length`; `BadDigest` — trailer-checksum). После финального 0-чанка (и трейлеров) — `EOF`.
+поведение: чтение данных чанков; ошибка — `S3ProtocolException` с каноническим кодом (`SignatureDoesNotMatch` — чанк/трейлер-подпись; `InvalidRequest` — битый фрейм/недопустимая hex-подпись фрейма/чанк > 16 МиБ/несовпадение `x-amz-decoded-content-length`; `BadDigest` — trailer-checksum). После финального 0-чанка (и трейлеров) — `EOF`.
 
 - [ ] **Шаг 6.1. Падающие тесты** `AwsChunkedReaderTests.cs` по покрытию §3.5 (тела строит `TestSigV4Signer.BuildChunkedBody`):
   - валидный мультичанковый поток (2 чанка данных + 0-чанк; seed/дата/регион векторные) читается полностью, содержимое равно конкатенации чанков; EOF после 0-чанка;
   - вектор 5: тело из одного чанка `Welcome to Amazon S3.` с подписью `c115618c...` и 0-чанком `b01db302...` — чтение успешно (фиксирует цепочку литералами: подписи фреймов в теле — литералы вектора);
-  - битая подпись чанка N=2 (порча hex в фрейме) → при чтении ДАННЫХ чанка 2 (не раньше) бросается `S3ProtocolException(SignatureDoesNotMatch)`; данные чанка 1 уже прочитаны (проверить: прочитанное до исключения == чанк 1);
-  - битый фрейм (`;chunk-signature=` отсутствует / размер не-hex / нет `\r\n`) → `InvalidRequest` «Malformed chunked encoding»;
+  - битая подпись чанка N=2 (порча hex в фрейме — валидные 64 hex, но неверное значение) → при чтении ДАННЫХ чанка 2 (не раньше) бросается `S3ProtocolException(SignatureDoesNotMatch)`; данные чанка 1 уже прочитаны (проверить: прочитанное до исключения == чанк 1);
+  - битый фрейм → `InvalidRequest` «Malformed chunked encoding»: `;chunk-signature=` отсутствует / размер не-hex / нет `\r\n` / **подпись фрейма не-hex (например `chunk-signature=ZZ...`) или не 64 hex-символа (63/65)** — hex-валидация подписи ДО сравнения (impl-фикс код-ревью: не-hex вход в декодер/компаратор недопустим);
   - чанк > 16 МиБ (размерный hex `1000001`) → `InvalidRequest` (лимит 16 МиБ, arch-правка 3) — тест с фреймом, объявляющим размер больше лимита (данные не нужны: отказ по заголовку фрейма);
   - сумма данных ≠ `x-amz-decoded-content-length` → `InvalidRequest` при EOF;
   - трейлер-режим (вектор 6): 0-чанк + `x-amz-checksum-crc32: Ox7nCg==` + `x-amz-trailer-signature: 570042c8...` — чтение успешно; сверка crc32 пройдена;
-  - `BadDigest`: crc32-трейлер с другим base64 → `S3ProtocolException(BadDigest)`; sha256-трейлер с корректным `RM591nyV...` — ок; crc32c (значение построит signer через `System.IO.Hashing.Crc32C`) — ок; sha1 (signer, BCL) — ок;
+  - **known-answer контрольных сумм** (фиксация против endian-ошибок при base64-кодировании; impl-фикс код-ревью): CRC32C(`"123456789"`) = `0xE3069283` → base64 `4waSgw==` (эталон RFC 3720); CRC32(`"123456789"`) = `0xCBF43926` → base64 `y/Q5Jg==` (эталон ISO-HDLC) — через те же функции подсчёта/кодирования, что использует ридер для trailer-checksum;
+  - `BadDigest`: crc32-трейлер с другим base64 → `S3ProtocolException(BadDigest)`; sha256-трейлер с корректным `RM591nyV...` — ок; crc32c-трейлер с корректным `4waSgw==` (для тела `123456789`) — ок; sha1 (signer, BCL) — ок;
   - неподдерживаемое имя трейлера (`x-amz-checksum-crc64nvme`) → `InvalidRequest` «Unsupported trailer header»;
   - битая trailer-подпись → `SignatureDoesNotMatch`.
 
-- [ ] **Шаг 6.2. Реализация `AwsChunkedReader.cs`**: конечный автомат чтения (заголовок фрейма `<hex>;chunk-signature=<hex64>\r\n` → данные → `\r\n`); цепочка: string-to-sign чанка = `AWS4-HMAC-SHA256-PAYLOAD\n<AmzDate>\n<Scope>\n<пред. подпись>\n<sha256("")>\n<sha256(чанк)>`; постоянное сравнение подписей (`FixedTimeEqual`); после 0-чанка в trailer-режиме — чтение trailer-строк до `x-amz-trailer-signature:<hex>`: string-to-sign = `AWS4-HMAC-SHA256-TRAILER\n<AmzDate>\n<Scope>\n<подпись 0-чанка>\n<sha256(трейлер-строки, каждая с \n)>` (референс `getTrailerChunkSignature`; строка трейлера при отсутствии завершающего `\n` — нормализуется добавлением, как в референсе); контрольные суммы считаются по декодированным данным по ходу чтения (CRC32/CRC32C — `System.IO.Hashing`, SHA-1/SHA-256 — BCL), сверка при EOF; счётчик прочитанных байт против `DecodedContentLength`.
+- [ ] **Шаг 6.2. Реализация `AwsChunkedReader.cs`**: конечный автомат чтения (заголовок фрейма `<hex>;chunk-signature=<hex64>\r\n` → данные → `\r\n`); **hex-валидация подписи фрейма** — ровно 64 символа `[0-9a-f]` (регистр по референсу — нижний hex), иначе `InvalidRequest` до какого-либо декодирования/сравнения; цепочка: string-to-sign чанка = `AWS4-HMAC-SHA256-PAYLOAD\n<AmzDate>\n<Scope>\n<пред. подпись>\n<sha256("")>\n<sha256(чанк)>`; постоянное сравнение подписей (`FixedTimeEqual`); после 0-чанка в trailer-режиме — чтение trailer-строк до `x-amz-trailer-signature:<hex>`: string-to-sign = `AWS4-HMAC-SHA256-TRAILER\n<AmzDate>\n<Scope>\n<подпись 0-чанка>\n<sha256(трейлер-строки, каждая с \n)>` (референс `getTrailerChunkSignature`; строка трейлера при отсутствии завершающего `\n` — нормализуется добавлением, как в референсе); контрольные суммы считаются по декодированным данным по ходу чтения (CRC32/CRC32C — `System.IO.Hashing` с big-endian упаковкой результата в 4 байта перед base64, SHA-1/SHA-256 — BCL), сверка при EOF; счётчик прочитанных байт против `DecodedContentLength`.
 
 - [ ] **Шаг 6.3. Прогон + коммит.**
 
 ```bash
 cd /Users/demakaev/ZCodeProject/worktrees/feat-t36-owns3-protocol/src && dotnet test tests/OwnS3.UnitTests -c Release && \
 cd .. && git add src/OwnS3.Protocol src/tests/OwnS3.UnitTests && \
-  git commit -m "feat(owns3-protocol): AwsChunkedReader — фрейминг aws-chunked, цепочка подписей, трейлеры, лимит 16 МиБ"
+  git commit -m "feat(owns3-protocol): AwsChunkedReader — фрейминг aws-chunked (hex-валидация подписи), цепочка, трейлеры, лимит 16 МиБ, known-answer CRC32C"
 ```
 
-**Проверка задачи:** все чанковые сценарии §3.5 зелёные, включая векторные подписи цепочки/трейлера.
+**Проверка задачи:** все чанковые сценарии §3.5 зелёные, включая векторные подписи цепочки/трейлера, hex-валидацию подписи фрейма и known-answer CRC32C/CRC32.
 
 **Выход:** обёртка тела для чанковых PUT — используется аутентификатором задачи 9; сверка тела «по ходу» наблюдаема в интеграционных тестах (задача 11).
 
-**Связь со spec:** §3.2 (чанковая подпись), §3.5, критерии 2, 6; риск-митигация «чанковая подпись — сложнейшая часть».
+**Связь со spec:** §3.2 (чанковая подпись), §3.5, критерии 2, 6; риск-митигация «чанковая подпись — сложнейшая часть»; impl-фиксы код-ревью (г) hex-валидация и (д) known-answer.
 
 ---
 
@@ -857,7 +878,7 @@ cd .. && git add src/OwnS3.Protocol src/tests/OwnS3.UnitTests && \
 - Consumes: arch/owns3/03 §4 (XML-схемы-образцы — источник эталонов; «недопустимые кодпоинты — числовыми ссылками»), §5 (таблица маппинга + `InvalidAccessKeyId` из задачи 1).
 - Produces (задачи 9–11):
   - `enum S3ErrorCode` — ровно 25 значений по канонной таблице §5 (+ `InvalidAccessKeyId` из arch-правки 1): `NoSuchBucket, NoSuchKey, BucketAlreadyExists` (справочный алиас стандарта 409, ownS3 не эмитирует), `BucketAlreadyOwnedByYou, BucketNotEmpty, InvalidRange, PreconditionFailed, NotModified, EntityTooLarge, InvalidPart, InvalidPartOrder, MalformedXML, AuthorizationHeaderMalformed, AuthorizationQueryParametersError, SignatureDoesNotMatch, InvalidAccessKeyId, AccessDenied, RequestTimeTooSkewed, BadDigest, NoSuchUpload, InvalidArgument, InvalidBucketName, InvalidRequest, NotImplemented, InternalError`. СЛУЖЕБНОГО значения для заглушки Storage в enum НЕТ: `ObjectStoreUnavailableException` — исключение Storage, App ловит его по типу и отвечает `InternalError` (задача 9).
-  - `S3ErrorCatalog.Get(S3ErrorCode)` → `S3ErrorInfo(string Code, int HttpStatus, string Message)` — сообщения/статусы точно по таблице §5 (вкл. `NotImplemented` Message «A header you provided implies functionality that is not implemented»).
+  - `S3ErrorCatalog.Get(S3ErrorCode)` → `S3ErrorInfo(string Code, int HttpStatus, string Message)` — сообщения/статусы точно по таблице §5 (вкл. `NotImplemented` Message «A header you provided implies functionality that is not implemented»; условие `RequestTimeTooSkewed` — по arch-правке 10: заголовочная ±15 мин / presigned только будущее).
   - `S3Error { S3ErrorCode Code; string? Resource; string? RequestId; string? HostId; string? MessageOverride }` + `S3ErrorXmlWriter.Write(S3Error)` → string (канонический `<Error><Code/><Message/><Resource/><RequestId/><HostId/></Error>`).
   - `S3Xml.Serialize<T>(T value)` / `S3Xml.Deserialize<T>(string xml)` — namespace `http://s3.amazonaws.com/doc/2006-03-01/`; сериализация через безопасный writer (см. шаг 7.3): спецсимволы — XML-сущности, недопустимые для XML 1.0 кодпоинты в значениях — числовыми ссылками `&#x<hex>;` (спека §3.2/канон §4); десериализация нераспарсиваемого → `S3ProtocolException(MalformedXML)`. Единое имя хелпера — `S3Xml` (используется хендлерами задачи 10 и тестами).
   - Ответные XML-типы (12, по образцам §4): `ListBucketResult` (+`ContentsEntry`, `CommonPrefixEntry`; поля v1/V2 опциональны), `ListVersionsResult` (+`VersionEntry`), `DeleteResult` (+`DeletedEntry`, `DeleteErrorEntry`), `InitiateMultipartUploadResult`, `CompleteMultipartUploadResult`, `ListPartsResult` (+`PartEntry`), `ListMultipartUploadsResult` (+`UploadEntry`), `ListAllMyBucketsResult` (+`OwnerEntry`, `BucketEntry`), `LocationConstraint` (пустой элемент), `CopyObjectResult`, `CopyPartResult`, `GetObjectAttributesOutput` (+`ObjectParts`, `AttributesPartEntry`).
@@ -921,7 +942,7 @@ cd .. && git add src/OwnS3.Protocol src/tests/OwnS3.UnitTests && \
 
 **Выход:** `Protocol` реализует главу 03 целиком (все компоненты §3.2 готовы, вкл. кодирование недопустимых кодпоинтов).
 
-**Связь со spec:** §3.2 (XML: «недопустимые кодпоинты — числовыми ссылками»), §3.5 («сериализация всех схем §4 — сравнение с эталонными XML-строками, вкл. спецсимволы/кодпоинты»), критерии 2, 6; ревью-фиксы повторного ревью №1/№2.
+**Связь со spec:** §3.2 (XML: «недопустимые кодпоинты — числовыми ссылками»), §3.5 («сериализация всех схем §4 — сравнение с эталонными XML-строками, вкл. спецсимволы/кодпоинты»), критерии 2, 6.
 
 ---
 
@@ -1057,7 +1078,7 @@ cd .. && git add src/OwnS3.Storage src/tests/OwnS3.UnitTests && \
 
 **Выход:** граница t37 — сигнатуры контракта финализированы планом и закреплены кодом.
 
-**Связь со spec:** §3.3 (весь раздел), решения пользователя 1–2, критерий 3; риск «сигнатуры уточнятся в t37» — митигирован явным контрактом.
+**Связь со spec:** §3.3 (весь раздел), решения пользователя 1–2, критерий 3.
 
 ---
 
@@ -1078,7 +1099,7 @@ cd .. && git add src/OwnS3.Storage src/tests/OwnS3.UnitTests && \
 - Consumes: `SigV4HeaderVerifier`, `PresignedRequestVerifier`, `S3PresignedOperations`, `PayloadHashModeClassifier`, `AwsChunkedReader` (Protocol); `IObjectStore`/`ObjectStoreUnavailableException` (Storage); `AddAppMetrics`/`MapAppMetrics` (Shared.Metrics).
 - Produces (задача 10–11): `S3Operation` — enum 22 значений + `None`; `S3Route { S3Operation Operation; string? Bucket; string? Key; string? RejectedSubresource }`; `S3Router.Route(method, rawPath, rawQuery, hasCopySource) → S3Route`; `AuthenticatedIdentity(string AccessKey, AccessPolicy Policy)`; `S3Middleware` — точка диспетчеризации хендлеров (задача 10 встраивает словарь операция→хендлер вместо точечного стаба); `OwnS3Metrics(Meter)` с `RequestCompleted(string operation, int code, TimeSpan duration)`; структурный лог запроса (шаг 9.7 п.8).
 
-- [ ] **Шаг 9.1. Падающие тесты роутера** `S3RouterTests.cs` — ПОЛНАЯ таблица маршрутов (порядок специфичное→общее; дискриминатор = НАЛИЧИЕ query-ключа, значение игнорируется; `x-amz-copy-source` — заголовочный дискриминатор):
+- [ ] **Шаг 9.1. Падающие тесты роутера** `S3RouterTests.cs` — ПОЛНАЯ таблица маршрутов (порядок специфичное→общее; дискриминатор = НАЛИЧИЕ query-ключа со значением, игнорируемым при матчинге, КРОМЕ `list-type` — дискриминатор СО ЗНАЧЕНИЕМ: матчится ровно `list-type=2` (канон гл. 02: «`list-type=2` — обязательный дискриминатор»); `?list-type` с иным или пустым значением → маршрут ListObjects v1 — поведение референса; `x-amz-copy-source` — заголовочный дискриминатор):
 
 ```csharp
 using OwnS3.App.Routing;
@@ -1086,9 +1107,11 @@ using OwnS3.App.Routing;
 namespace OwnS3.UnitTests;
 
 // Таблица маршрутов 22 операций (arch/owns3/02; порядок — референс api-router.go,
-// spec §3.4). Дискриминатор = наличие query-ключа; UploadPart-семейство = оба
-// ключа (partNumber И uploadId); одиночные параметры — вне-наборные не-сабресурсы,
-// игнорируются (глава 02 §1).
+// spec §3.4). Дискриминатор = наличие query-ключа (значение игнорируется),
+// КРОМЕ list-type: дискриминатор со значением — матчится ровно "2"; иное
+// значение/пусто → маршрут v1 (референс ведёт себя как v1). UploadPart-семейство
+// = оба ключа (partNumber И uploadId); одиночные параметры — вне-наборные
+// не-сабресурсы, игнорируются (глава 02 §1).
 public sealed class S3RouterTests
 {
     // (метод, путь, query, copy-source) → ожидаемая операция
@@ -1101,6 +1124,8 @@ public sealed class S3RouterTests
         { "GET",     "/b",                "uploads",   false, S3Operation.ListMultipartUploads },
         { "GET",     "/b",                "versions",  false, S3Operation.ListObjectVersions },
         { "GET",     "/b",                "list-type=2", false, S3Operation.ListObjectsV2 },
+        { "GET",     "/b",                "list-type=1", false, S3Operation.ListObjects }, // иное значение → v1 (референс)
+        { "GET",     "/b",                "list-type=",  false, S3Operation.ListObjects }, // пустое значение → v1
         { "GET",     "/b",                "",          false, S3Operation.ListObjects },
         { "GET",     "/b",                "prefix=x&marker=y", false, S3Operation.ListObjects }, // листинговые параметры — не дискриминаторы
         // бакет: прочие методы
@@ -1181,7 +1206,7 @@ public sealed class S3RouterTests
 - [ ] **Шаг 9.2. Реализация роутера.** `S3Operation` — enum: `None` + 22 значения (по одному разу, без дублей): `ListBuckets, CreateBucket, DeleteBucket, HeadBucket, GetBucketLocation, ListObjects, ListObjectsV2, ListObjectVersions, ListMultipartUploads, DeleteObjects, PutObject, CopyObject, GetObject, HeadObject, DeleteObject, GetObjectAttributes, CreateMultipartUpload, UploadPart, UploadPartCopy, CompleteMultipartUpload, AbortMultipartUpload, ListParts`. `S3Router`:
   1. разбор пути `S3PathParser.Parse` (сырой путь — для подписи остаётся нетронутым в модели);
   2. проверка вне-наборных сабресурсов — 24 имени из перечня спеки §3.4 (`acl, tagging, retention, legal-hold, torrent, restore, versioning, lifecycle, replication, encryption, policy, cors, website, notification, accelerate, object-lock, logging, metrics, inventory, intelligent-tiering, ownershipControls, publicAccessBlock, requestPayment, select`) плюс `attributes` на не-GET-методах (глава 02 §1: «?attributes-конфигурации вне контракта GetObjectAttributes» — расширение перечня самим планом) → `RejectedSubresource` (501);
-  3. матчинг по таблице шага 9.1 (метод → path-форма → дискриминаторы по порядку);
+  3. матчинг по таблице шага 9.1 (метод → path-форма → дискриминаторы по порядку); `list-type` — дискриминатор СО ЗНАЧЕНИЕМ: `ListObjectsV2` матчится только при `list-type=2`; `list-type` с иным/пустым значением маршрутизируется как v1 (референс);
   4. не-матч → `None` без сабресурса (400).
   Имя операции для метрик: `S3Operation.None` + сабресурс → метка = имя сабресурса; чистый не-матч → `unknown`.
 
@@ -1189,12 +1214,12 @@ public sealed class S3RouterTests
 
 - [ ] **Шаг 9.4. Реализация доступа.** `AccessPolicy` enum (`ReadOnly, ReadWrite, Admin`); `AccessKeyRecord(string AccessKey, string SecretKey, AccessPolicy Policy)`; `AccessKeyRegistry(OwnS3Options)` — root-пара становится записью с ключом = `Root:User`, secret = `Root:Password`, policy = Admin; `OperationAccessMatrix.IsAllowed(AccessPolicy, S3Operation) → bool` — статическая таблица (замечание t36: read-only допускается к ListParts/ListMultipartUploads без фильтра «своих» — фильтр появляется в t38, spec §3.4 шаг 5).
 
-- [ ] **Шаг 9.5. `S3ModelFactory`** — `HttpRequest → S3RequestModel` (сырые `Request.Path.Value`/`Request.QueryString.Value` без декодирования; host; заголовки; `OpenBody = () => request.Body` — Kestrel-поток читается один раз).
+- [ ] **Шаг 9.5. `S3ModelFactory`** — `HttpRequest → S3RequestModel`: сырой путь и query извлекаются из `IHttpRequestFeature.RawTarget` (`HttpContext.Features.Get<IHttpRequestFeature>()!.RawTarget`, сплит по первому `?` → путь и query) — `Request.Path`/`Request.QueryString` ASP.NET НЕсут частично декодированные значения и для подписи НЕ годятся: canonical URI обязан строиться по байтам, как прислал клиент (impl-фикс код-ревью: RawTarget — единственный источник сырой строки request-line); host; заголовки; `OpenBody = () => request.Body` (Kestrel-поток читается один раз).
 
 - [ ] **Шаг 9.6. `S3Authenticator`** — выбор режима (арх-канон §1–2 и решения §3.4 шаг 4):
   - нет `Authorization` и нет `X-Amz-Algorithm` в query → аноним → `AccessDenied` (403);
   - `Authorization` присутствует → `SigV4HeaderVerifier`; при payload-режиме Streaming/StreamingTrailer: заголовочная подпись верифицируется с payload-строкой = значению режима (seed), тело оборачивается `AwsChunkedReader` (контекст из `x-amz-decoded-content-length`, `x-amz-trailer`);
-  - иначе (presigned-параметры) → `PresignedRequestVerifier` с именем операции от роутера;
+  - иначе (presigned-параметры) → `PresignedRequestVerifier` с именем операции от роутера (skew-семантика presigned — arch-правка 10, внутри верификатора);
   - результат — `AuthenticatedIdentity` (из `AccessKeyRegistry`: найденный ключ; не найден → `InvalidAccessKeyId` через верификаторы).
   
   `OwnS3Metrics`:
@@ -1247,14 +1272,14 @@ public sealed class OwnS3Metrics(Meter meter)
 cd /Users/demakaev/ZCodeProject/worktrees/feat-t36-owns3-protocol/src && \
   dotnet build PgWorker.slnx -c Release && dotnet test tests/OwnS3.UnitTests -c Release && \
 cd .. && git add src/OwnS3.App src/tests/OwnS3.UnitTests && \
-  git commit -m "feat(owns3-app): конвейер S3 — RequestId/OPTIONS/роутер 22 операций/SigV4-аутентификация/матрица прав/ошибки/метрики/структурный лог"
+  git commit -m "feat(owns3-app): конвейер S3 — RequestId/OPTIONS/роутер 22 операций (list-type=2 по значению)/RawTarget-модель/SigV4/матрица/ошибки/метрики/лог"
 ```
 
-**Проверка задачи:** юниты роутера (вся таблица, 501/400-исходы раздельными Theory) и матрицы (3×22) зелёные; сборка решения зелёная.
+**Проверка задачи:** юниты роутера (вся таблица, вкл. `list-type` со значением 2/1/пусто; 501/400-исходы раздельными Theory) и матрицы (3×22) зелёные; сборка решения зелёная.
 
-**Выход:** работающий конвейер до хендлерного слоя; `S3Route`/`AuthenticatedIdentity` — вход хендлеров; структурный лог запроса.
+**Выход:** работающий конвейер до хендлерного слоя; `S3Route`/`AuthenticatedIdentity` — вход хендлеров; структурный лог запроса; модель строится по `RawTarget`.
 
-**Связь со spec:** §3.4 (конвейер, вся секция, вкл. п.8 — структурный лог), §3.5 (юниты матрицы), решения пользователя 1/4, критерии 4–5.
+**Связь со spec:** §3.4 (конвейер, вся секция, вкл. п.8 — структурный лог; роутер — дискриминатор `list-type=2` по канону гл. 02), §3.5 (юниты матрицы), решения пользователя 1/4, критерии 4–5; plan-фикс код-ревью №6 (list-type по значению) и impl-фикс (а) (RawTarget).
 
 ---
 
@@ -1273,7 +1298,7 @@ cd .. && git add src/OwnS3.App src/tests/OwnS3.UnitTests && \
 - Test: `src/tests/OwnS3.UnitTests/HandlersValidationTests.cs` (чистые валидации аргументов без хоста)
 
 **Interfaces:**
-- Consumes: `S3Route`, `AuthenticatedIdentity`, `IObjectStore`, XML-типы и хелпер `S3Xml` (задача 7), `S3Error`/каталог.
+- Consumes: `S3Route`, `AuthenticatedIdentity`, `IObjectStore`, XML-типы и хелпер `S3Xml` (задача 7), `S3Error`/каталог, `HashingBodyStream`.
 - Produces (задача 11): `IOperationHandler { Task HandleAsync(S3HandlerContext context); }` — `S3HandlerContext` несёт `HttpContext`, `S3Route`, `AuthenticatedIdentity`, requestId; базовый класс даёт парсинг/валидацию/вызовы Storage. Скелет:
 
 ```csharp
@@ -1297,7 +1322,7 @@ public abstract class OperationHandlerBase(IObjectStore store) : IOperationHandl
 }
 ```
 
-- [ ] **Шаг 10.1. Валидации (падающие юниты).** `HandlersValidationTests.cs` — тестируемые чистые функции каркаса: `partNumber` (отсутствует/не число/0/10001 → `InvalidArgument`; 1 и 10000 → ок); лимит DeleteObjects (0 ключей → `MalformedXML`; 1001 → `MalformedXML`; 1000 → ок); Complete-манифест (пустой → `MalformedXML`; порядок 1,3,2 → `InvalidPartOrder`; строго возрастающий — ок); `encoding-type` (`url` ок; `xml` → `InvalidArgument`); `max-keys`/`max-parts`/`max-uploads` (дефолт 1000; > 1000 обрезается до 1000; отрицательное → `InvalidArgument`); `x-amz-metadata-directive` (СТРОГО `COPY`/`REPLACE` — точное сравнение, как в референсе; `copy` в нижнем регистре → `InvalidArgument`; `MERGE` → `InvalidArgument`); `x-amz-object-attributes` (пустой/отсутствует → `InvalidArgument`; `ETag,ObjectSize` ок; `Checksum` → вне-наборная грань — `NotImplemented` 501 по главе 02); EntityTooLarge (Content-Length 5 ГБ + 1 → `EntityTooLarge`; ровно 5 ГБ — ок; чанковый режим — по `x-amz-decoded-content-length`).
+- [ ] **Шаг 10.1. Валидации (падающие юниты).** `HandlersValidationTests.cs` — тестируемые чистые функции каркаса: `partNumber` (отсутствует/не число/0/10001 → `InvalidArgument`; 1 и 10000 → ок); лимит DeleteObjects (0 ключей → `MalformedXML`; 1001 → `MalformedXML`; 1000 → ок); Complete-манифест (пустой → `MalformedXML`; порядок 1,3,2 → `InvalidPartOrder`; строго возрастающий — ок); `encoding-type` (`url` ок; `xml` → `InvalidArgument`); `max-keys`/`max-parts`/`max-uploads` (дефолт 1000; > 1000 обрезается до 1000; отрицательное → `InvalidArgument`); `x-amz-metadata-directive` (СТРОГО `COPY`/`REPLACE` — точное сравнение, как в референсе; `copy` в нижнем регистре → `InvalidArgument`; `MERGE` → `InvalidArgument`); `x-amz-object-attributes` (пустой/отсутствует → `InvalidArgument`; `ETag,ObjectSize` ок; `Checksum` → вне-наборная грань — `NotImplemented` 501 по главе 02); **парсер `response-*` → канонические имена заголовков** (юнит-маппинг: `response-cache-control` → `Cache-Control`, `response-content-disposition` → `Content-Disposition`, `response-content-encoding` → `Content-Encoding`, `response-content-language` → `Content-Language`, `response-content-type` → `Content-Type`, `response-expires` → `Expires`; прочие `response-*` игнорируются — impl-фикс код-ревью: в ответе ставятся КАНОНИЧЕСКИЕ имена, не `response-*`); EntityTooLarge (Content-Length 5 ГБ + 1 → `EntityTooLarge`; ровно 5 ГБ — ок; чанковый режим — по `x-amz-decoded-content-length`).
 
 - [ ] **Шаг 10.2. `HashingBodyStream.cs`** — обёртка `Stream`: читает сквозь, параллельно считает SHA-256 (режим hex) и MD5 (при `Content-MD5`); по завершении (EOF/Dispose) — сверка: sha256 ≠ `x-amz-content-sha256` → `S3ProtocolException(InvalidRequest)`; MD5 ≠ заголовка → `S3ProtocolException(BadDigest)`.
 
@@ -1324,9 +1349,9 @@ public sealed class GetBucketLocationHandler(IObjectStore store) : OperationHand
 
 - [ ] **Шаг 10.4. Объектные хендлеры.** Каждый — парсинг/валидация по контракту главы 02 → тело (при наличии) через `HashingBodyStream` → Storage → ответ-заголовки. Специфика t36:
   - `PutObject`: `Content-Type` (дефолт `application/octet-stream`), `x-amz-meta-*` → `ObjectUploadMetadata.UserMetadata` (без префикса), `x-amz-storage-class` игнорируется, EntityTooLarge по Content-Length; тело → `Store.PutObjectAsync` (заглушка: drain + 500).
-  - `GetObject`/`HeadObject`: парсинг `response-*` (переопределения заголовков ответа применяются к ответу), conditional-заголовки и `Range`/`If-Range` — парсинг формата (RFC 7231-даты невалидные игнорируются; Range-спецификация распознаётся одиночная) и передача в `ObjectReadOptions`; ETag/LastModified-заголовки — только с данными (t37).
+  - `GetObject`/`HeadObject`: парсинг `response-*` — переопределения применяются к ответу заголовками с КАНОНИЧЕСКИМИ именами (`Cache-Control`, `Content-Disposition`, `Content-Encoding`, `Content-Language`, `Content-Type`, `Expires`; при `response-expires` — заголовок `Expires`); conditional-заголовки и `Range`/`If-Range` — парсинг формата (RFC 7231-даты невалидные игнорируются; Range-спецификация распознаётся одиночная) и передача в `ObjectReadOptions`; ETag/LastModified-заголовки — только с данными (t37).
   - `DeleteObject`: 204 в успехе (заглушка кинет 500 — это ожидаемо: финальный шаг не работает без Storage).
-  - `DeleteObjects`: XML `Delete` → `MalformedXML`-валидации (лимит 1000, пусто) → `Store.DeleteObjectsAsync(keys, quiet)` → `DeleteResult`-XML.
+  - `DeleteObjects`: XML `Delete` читается из тела, ОБЁРНУТОГО в `HashingBodyStream` — при `Content-MD5` сверка MD5 при дочитывании XML → `BadDigest` (глава 02: Content-MD5 опционален, проверяется при наличии; impl-фикс код-ревью: сверка не обходится и для XML-тел) → `MalformedXML`-валидации (лимит 1000, пусто) → `Store.DeleteObjectsAsync(keys, quiet)` → `DeleteResult`-XML.
   - `CopyObject`: `x-amz-copy-source` парсинг (`/<bucket>/<key>`, URL-декодирование; невалидный → `InvalidArgument`), `x-amz-metadata-directive` (строго COPY/REPLACE), copy-условия; `Store.CopyObjectAsync`.
   - `GetObjectAttributes`: `x-amz-object-attributes` (список через запятую; `Checksum` и прочие вне набора → 501); `x-amz-max-parts`/`x-amz-part-number-marker`; conditional парсинг; `Store.GetObjectAttributesAsync`.
 - [ ] **Шаг 10.5. Листинговые хендлеры.** Общие парсеры query (`prefix/delimiter/marker/start-after/continuation-token/max-keys/encoding-type/fetch-owner/key-marker`; max-keys=0 — валидный пустой листинг) → `ListQuery` с вариантом V1/V2/Versions → `Store.ListObjectsAsync`. `encoding-type ≠ url` → `InvalidArgument`.
@@ -1339,14 +1364,14 @@ public sealed class GetBucketLocationHandler(IObjectStore store) : OperationHand
 cd /Users/demakaev/ZCodeProject/worktrees/feat-t36-owns3-protocol/src && \
   dotnet build PgWorker.slnx -c Release && dotnet test tests/OwnS3.UnitTests -c Release && \
 cd .. && git add src/OwnS3.App src/tests/OwnS3.UnitTests && \
-  git commit -m "feat(owns3-app): 22 хендлера протокольного контура + GetBucketLocation полностью + HashingBodyStream"
+  git commit -m "feat(owns3-app): 22 хендлера протокольного контура + GetBucketLocation полностью + HashingBodyStream (вкл. DeleteObjects MD5)"
 ```
 
-**Проверка задачи:** юниты валидаций зелёные (вкл. строгое `COPY`/`REPLACE`); сборка зелёная; ручная дым-проверка хост-процессом НЕ выполняется (канон arch/owns3/01 §5) — дым остаётся интеграционным тестам задачи 11.
+**Проверка задачи:** юниты валидаций зелёные (вкл. строгое `COPY`/`REPLACE` и маппинг `response-*` → канонические имена заголовков); сборка зелёная; ручная дым-проверка хост-процессом НЕ выполняется (канон arch/owns3/01 §5) — дым остаётся интеграционным тестам задачи 11.
 
 **Выход:** полный протокольный контур 22 операций; конвейер финален для t37/t38.
 
-**Связь со spec:** §3.4.1 (вся секция; metadata-directive строго COPY/REPLACE), решение пользователя 1, критерии 4–5; границы НЕ-целей (conditional/Range-оценка — t37; multipart-механика — t38) соблюдены: заголовки парсятся, не оцениваются.
+**Связь со spec:** §3.4.1 (вся секция; metadata-directive строго COPY/REPLACE; сверки тел — при наличии тела, вкл. DeleteObjects), решение пользователя 1, критерии 4–5; границы НЕ-целей (conditional/Range-оценка — t37; multipart-механика — t38) соблюдены: заголовки парсятся, не оцениваются; impl-фиксы код-ревью (б) DeleteObjects-MD5 и (в) канонические имена response-overrides.
 
 ---
 
@@ -1368,19 +1393,19 @@ cd .. && git add src/OwnS3.App src/tests/OwnS3.UnitTests && \
 
 **Interfaces:**
 - Consumes: `OwnS3AppFactory` (задача 2), `TestSigV4Signer` (задача 4), Protocol-типы.
-- Produces: зелёная интеграционная сюита — критерий приёмки 7 (+ фиксация fail-fast и структурного лога).
+- Produces: зелёная интеграционная сюита — критерий приёмки 7 (+ фиксация fail-fast, структурного лога, RawTarget-пути, presigned-skew).
 
-- [ ] **Шаг 11.1. `OwnS3TestClient` + фикстура** — `HttpClient` + `HttpRequestMessage` с полным контролем сырого пути/заголовков: `SignHeader(method, path, query, headers, body)` (заголовочная подпись), `BuildPresignedUrl(...)`, `BuildChunkedPut(...)` (aws-chunked тело, трейлеры). Фикстура-коллекция: один `OwnS3AppFactory` на все классы (паттерн `KafkaApiCollection`); фабрика без портов и контейнеров. В фабрику добавить тестовый `ILoggerProvider` (потокобезопасный сборщик записей, `factory.LogEntries`) через `ConfigureLogging` — для проверки структурного лога (шаг 11.7).
+- [ ] **Шаг 11.1. `OwnS3TestClient` + фикстура** — `HttpClient` + `HttpRequestMessage` с полным контролем сырого пути/заголовков: `SignHeader(method, path, query, headers, body)` (заголовочная подпись по сырому пути), `BuildPresignedUrl(...)` (с параметром «дата подписи» — для кейсов окна/будущего), `BuildChunkedPut(...)` (aws-chunked тело, трейлеры). Фикстура-коллекция: один `OwnS3AppFactory` на все классы (паттерн `KafkaApiCollection`); фабрика без портов и контейнеров; `TimeProvider` хоста заменяется на фиксированный тестовый (WAF-овverride DI `TimeProvider` → `FixedTimeProvider` векторной даты) — deterministic skew/окно-кейсы. В фабрику добавить тестовый `ILoggerProvider` (потокобезопасный сборщик записей, `factory.LogEntries`) через `ConfigureLogging` — для проверки структурного лога (шаг 11.7).
 
-- [ ] **Шаг 11.2. `RoutingScenarios.cs`** (AAA): каждая из 21 операций с заглушкой (все, КРОМЕ полностью протокольной `GetBucketLocation`) с валидной подписью writer-ключа → ответ 500 `InternalError` с XML `InternalError` (сигнатура «операция определена и дошла до заглушки»; параметризованный Theory по таблице маршрутов задачи 9 без строки GetBucketLocation); **GetBucketLocation — отдельный сценарий**: подписанный `GET /{bucket}?location` → 200, тело — пустой `LocationConstraint` (полный успех без объектного слоя, spec §3.4.1; ожидаемая серия метрики `code="200"` — шаг 11.7); вне-наборные сабресурсы (`?acl` GET/PUT/DELETE, `?tagging`, `?versioning`, `?policy`, `?select`) → 501 `NotImplemented` ДО аутентификации (тест с битой подписью — исход тот же 501); не-матч (POST `/{bucket}`, PATCH `/{bucket}/{key}`) → 400 `InvalidArgument`; OPTIONS любой путь → 200 пустой без CORS-заголовков.
+- [ ] **Шаг 11.2. `RoutingScenarios.cs`** (AAA): каждая из 21 операций с заглушкой (все, КРОМЕ полностью протокольной `GetBucketLocation`) с валидной подписью writer-ключа → ответ 500 `InternalError` с XML `InternalError` (сигнатура «операция определена и дошла до заглушки»; параметризованный Theory по таблице маршрутов задачи 9 без строки GetBucketLocation); `list-type` — интеграционная фиксация значения-дискриминатора: `GET /{bucket}?list-type=1` с подписью по этому query → 500 `InternalError` с метрикой `operation="ListObjects"` (v1, не V2 — plan-фикс №6); **кодированный ключ — фиксация RawTarget-пути** (impl-фикс (а)): GET `/b/caf%C3%A9` и GET `/b/100%25` (ключ `100%` — литеральный процент) с заголовочной подписью, построенной по СЫРОМУ кодированному пути (signer подписывает `caf%C3%A9`/`100%25` как есть) → 500 `InternalError` (операция определена, подпись сошлась — модель получила путь из `IHttpRequestFeature.RawTarget`, а не декодированный `Request.Path`); **GetBucketLocation — отдельный сценарий**: подписанный `GET /{bucket}?location` → 200, тело — пустой `LocationConstraint` (полный успех без объектного слоя, spec §3.4.1; ожидаемая серия метрики `code="200"` — шаг 11.7); вне-наборные сабресурсы (`?acl` GET/PUT/DELETE, `?tagging`, `?versioning`, `?policy`, `?select`) → 501 `NotImplemented` ДО аутентификации (тест с битой подписью — исход тот же 501); не-матч (POST `/{bucket}`, PATCH `/{bucket}/{key}`) → 400 `InvalidArgument`; OPTIONS любой путь → 200 пустой без CORS-заголовков.
 
-- [ ] **Шаг 11.3. `AuthScenarios.cs`**: валидная подпись → до заглушки (500); битая → 403 `SignatureDoesNotMatch`; аноним → 403 `AccessDenied`; skew (x-amz-date +20 мин) → 403 `RequestTimeTooSkewed`; несуществующий ключ → 403 `InvalidAccessKeyId`; битый scope → 400 `AuthorizationHeaderMalformed`; невалидная строка x-amz-date → 400 `AuthorizationHeaderMalformed` (arch-правка 2, оба исхода); SigV2-заголовок (`Authorization: AWS …`) и иной алгоритм → 400 `InvalidRequest` с Message «The authorization mechanism you have provided is not supported. Please use AWS4-HMAC-SHA256.» (arch-правка 8); presigned: валидный GetObject → 500 (заглушка), просроченный → 403 `AccessDenied`, `Expires=604801` → 400 `AuthorizationQueryParametersError`, отсутствие любого из 6 параметров → 400, операция вне 10 (ListObjects presigned) → 400.
+- [ ] **Шаг 11.3. `AuthScenarios.cs`**: валидная подпись → до заглушки (500); битая → 403 `SignatureDoesNotMatch`; аноним → 403 `AccessDenied`; skew заголовочной подписи (x-amz-date +20 мин) → 403 `RequestTimeTooSkewed`; несуществующий ключ → 403 `InvalidAccessKeyId`; битый scope → 400 `AuthorizationHeaderMalformed`; невалидная строка x-amz-date → 400 `AuthorizationHeaderMalformed` (arch-правка 2, оба исхода); SigV2-заголовок (`Authorization: AWS …`) и иной алгоритм → 400 `InvalidRequest` с Message «The authorization mechanism you have provided is not supported. Please use AWS4-HMAC-SHA256.» (arch-правка 8); presigned — все исходы §3.2 с skew-семантикой arch-правки 10: валидный GetObject → 500 (заглушка); **использование через N > 15 мин внутри окна `X-Amz-Expires` → Ok-до-заглушки (500)** — Abs-skew для прошедших дат отсутствует; **`X-Amz-Date` в будущем дальше +15 мин → 403 `RequestTimeTooSkewed`**; просрочка (`now − X-Amz-Date > X-Amz-Expires`) → 403 `AccessDenied`; `Expires=604801` → 400 `AuthorizationQueryParametersError`; отсутствие любого из 6 параметров → 400; операция вне 10 (ListObjects presigned) → 400.
 
 - [ ] **Шаг 11.4. `AccessScenarios.cs`** (репрезентативный набор §3.5): reader GET `/{bucket}/{key}` → 500 (прошёл права, упал в заглушку); reader PUT → 403 `AccessDenied`; writer PUT → 500; writer CreateBucket → 403; admin CreateBucket → 500; reader ListParts/ListMultipartUploads → 500 (допуск без фильтра — t36-решение).
 
 - [ ] **Шаг 11.5. `ErrorFormatScenarios.cs`**: XML-структура `Error` — парсинг ответа (все 5 элементов присутствуют: Code/Message/Resource/RequestId/HostId); `RequestId` — валидный GUID, равен заголовку `x-amz-request-id`; `HostId` = `owns3-test`; `Resource` = path-style путь запроса; HEAD-ошибка (`HEAD /no-bucket/k` битой подписью → 403) — тело пустое; каждый ответ (успех/ошибка) несёт `x-amz-request-id`.
 
-- [ ] **Шаг 11.6. `BodyIntegrityScenarios.cs`**: PUT с hex-sha256 и порченным телом (подпись по другому хэшу) → 400 `InvalidRequest` (drain-сверка состоялась); PUT с корректным sha256 → 500 (заглушка после полной сверки); Content-MD5 несовпадение → 400 `BadDigest`; чанковый PUT: валидное тело (signer строит) → 500 после полной цепочки; битая подпись чанка 2 → 403 `SignatureDoesNotMatch`; битый trailer-checksum → 400 `BadDigest`; `STREAMING-*` на GET → 400 `InvalidRequest`.
+- [ ] **Шаг 11.6. `BodyIntegrityScenarios.cs`**: PUT с hex-sha256 и порченным телом (подпись по другому хэшу) → 400 `InvalidRequest` (drain-сверка состоялась); PUT с корректным sha256 → 500 (заглушка после полной сверки); Content-MD5 несовпадение (PUT) → 400 `BadDigest`; **POST `/{bucket}?delete` с валидным `Delete`-XML и несовпадающим `Content-MD5` → 400 `BadDigest`** (сверка тела DeleteObjects через `HashingBodyStream` — impl-фикс (б); контрольный кейс с корректным MD5 → 500 заглушки); чанковый PUT: валидное тело (signer строит) → 500 после полной цепочки; битая подпись чанка 2 → 403 `SignatureDoesNotMatch`; битый trailer-checksum → 400 `BadDigest`; `STREAMING-*` на GET → 400 `InvalidRequest`.
 
 - [ ] **Шаг 11.7. `MetricsHealthScenarios.cs`**: после нескольких запросов `/metrics` содержит `ownS3_requests_total{operation="GetObject",code="500"}` и (после сценария GetBucketLocation шага 11.2) `ownS3_requests_total{operation="GetBucketLocation",code="200"}`, а также `ownS3_request_duration_seconds` с лейблом operation (факт-форму лейблов OTel фиксирует тест по прогону — как `Shared.Metrics.UnitTests`; при отличии канонической формы от факта — правка той же комиссией по образцу правила arch/18 M3); счётчики растут между двумя запросами; `/healthz` → 200; `/metrics` не требует подписи (S3-конвейер пропускает — фиксация шага 0 задачи 9); **структурный лог**: после запроса GetObject в `factory.LogEntries` есть запись уровня Information, содержащая requestId (== заголовку `x-amz-request-id` ответа), operation=`GetObject`, bucket, key, метод, статус и durationMs — все семь полей спеки §3.4 п.8.
 
@@ -1401,14 +1426,14 @@ cd /Users/demakaev/ZCodeProject/worktrees/feat-t36-owns3-protocol/src && \
 ```bash
 cd /Users/demakaev/ZCodeProject/worktrees/feat-t36-owns3-protocol && \
   git add src/tests/OwnS3.IntegrationTests && \
-  git commit -m "test(owns3): интеграционные сценарии WAF — роутинг/подпись/права/ошибки/сверки тел/метрики+лог/healthz/fail-fast"
+  git commit -m "test(owns3): интеграционные сценарии WAF — роутинг (list-type, кодированный ключ)/подпись (presigned-skew arch-10)/права/ошибки/сверки тел (DeleteObjects MD5)/метрики+лог/healthz/fail-fast"
 ```
 
 **Проверка задачи:** `dotnet test` обеих OwnS3-сюит зелёный; `docker ps` после прогона не содержит новых контейнеров.
 
-**Выход:** критерии приёмки 6–7 закрыты тестами; fail-fast и структурный лог зафиксированы.
+**Выход:** критерии приёмки 6–7 закрыты тестами; fail-fast, структурный лог, RawTarget-путь и presigned-skew зафиксированы.
 
-**Связь со spec:** §3.5 (IntegrationTests, все сценарии, вкл. «GetBucketLocation → 200 с пустым LocationConstraint»), решения пользователя 3, критерии 6–7.
+**Связь со spec:** §3.5 (IntegrationTests, все сценарии, вкл. «GetBucketLocation → 200» и presigned-кейсы arch-правки 10), решения пользователя 3, критерии 6–7.
 
 ---
 
@@ -1462,12 +1487,12 @@ cd /Users/demakaev/ZCodeProject/worktrees/feat-t36-owns3-protocol && \
 
 ---
 
-## Self-Review плана (выполнен после ревью Фазы 4, двух итераций)
+## Self-Review плана (выполнен после ревью Фазы 4 ×2 и код-ревью Фазы 7)
 
-1. **Покрытие спеки:** §3.1 (девять arch-правок, вкл. №7 Trimall, №8 неподдерживаемый алгоритм, №9 percent-кодирование query) → задача 1 (шаги 1.1–1.7) с отражением в задачах 3–4 (Trimall, `+`→`%2B`, InvalidRequest-алгоритм, оба исхода x-amz-date) и 11 (сценарий SigV2); §3.2 → задачи 3–7 (вкл. числовые ссылки недопустимых кодпоинтов — задача 7); §3.3 → задача 8; §3.4/§3.4.1 (вкл. п.8 — структурный лог) → задачи 9–10; §3.5 → юниты 3–8, 10 + задача 11; §3.6 → задача 2; фазы §4 → таблица соответствия; критерии 1–10 → задачи 1–12. Пробелов нет.
-2. **Замечания первого ревью закрыты** (кратко, детали в предыдущей ревизии): №1 `+`→`%2B`; №2 без `dotnet run`; №3 GetBucketLocation-200; №4 структурный лог; №5 все 6 presigned-параметров; №6 без служебного enum-кода; №7 строгое COPY/REPLACE; №8 17/19, пропуск служебных путей п.0, единый `S3Xml`, enum без дублей + атрибуция 24+1.
-3. **Findings повторного ревью закрыты:** №1 — задача 7: шаг 7.3 (безопасный writer: делегирующая обёртка XmlWriter, `WriteString` пропускает допустимые диапазоны XML 1.0, недопустимые кодпоинты — числовыми ссылками `&#x<hex>;` через `WriteRaw`; без механизма — исключение XmlWriter → 500 вместо канонического ответа) + юниты шага 7.1 п.3 (`key\u0001x` → `key&#x1;x`; `\u000C` → `&#xC;`); №2 — шаг 7.1 п.1: параметризованное покрытие ВСЕХ 12 ответных схем побайтовыми эталонами (таблица кейсов с заполняемыми полями + полный пример-эталон InitiateMultipartUploadResult); №3 — шаг 4.3: кейс невалидной строки `x-amz-date` (`2013-05-24T00:00:00Z`/`garbage`) → 400 `AuthorizationHeaderMalformed` (оба исхода arch-правки 2), продублирован в шаге 11.3.
-4. **Синхронизация со спекой (9 arch-правок):** задача 1 — девять правок (новый шаг 1.5: §1 п.3 канона — пробел → `%20`, литеральный `+` → `%2B`, «плюс как пробел» — только form-декодирование при разборе; обоснование `getCanonicalRequest`), счётчики и проверки обновлены («девять», §1 — п. 1–2 и 7–9); задачи 3–4 ссылаются на arch-правку 9; заголовок задачи 7 отражает расширенный охват.
+1. **Покрытие спеки:** §3.1 (десять arch-правок, вкл. №7 Trimall, №8 неподдерживаемый алгоритм, №9 percent-кодирование query, №10 presigned-skew «только будущее + строгая просрочка») → задача 1 (шаги 1.1–1.8) с отражением в задачах 3–5, 9, 11; §3.2 → задачи 3–7; §3.3 → задача 8; §3.4/§3.4.1 (вкл. п.8 — структурный лог) → задачи 9–10; §3.5 → юниты 3–8, 10 + задача 11 (вкл. обязательные presigned-кейсы §3.5); §3.6 → задача 2; фазы §4 → таблица соответствия; критерии 1–10 → задачи 1–12. Пробелов нет.
+2. **Замечания ревью Фазы 4 (обе итерации) закрыты:** `+`→`%2B` (арх-правка 9); без `dotnet run`; GetBucketLocation-200 отдельным сценарием; структурный лог; все 6 presigned-параметров; без служебного enum-кода; строгое COPY/REPLACE; 17/19 методов; пропуск служебных путей п.0; единый `S3Xml`; enum без дублей + атрибуция 24+1; числовые ссылки кодпоинтов + безопасный writer; 12 ответных эталонов; оба исхода x-amz-date.
+3. **Код-ревью Фазы 7 отражено в плане:** plan-finding №6 — `list-type` как дискриминатор СО ЗНАЧЕНИЕМ «2» (шаг 9.1: кейсы `list-type=1`/`list-type=` → v1; шаг 9.2 п.3; интеграционная фиксация в шаге 11.2 с метрикой `operation="ListObjects"`); impl-фиксы как требования/тесты: (а) `S3ModelFactory` — путь/query из `IHttpRequestFeature.RawTarget` (шаг 9.5) + интеграционные кейсы кодированного ключа `caf%C3%A9`/`100%25` с подписью по сырому пути (шаг 11.2); (б) DeleteObjects — тело через `HashingBodyStream`, Content-MD5 → `BadDigest` (шаг 10.4; интеграционный кейс в шаге 11.6); (в) `response-*` → канонические имена заголовков (`Cache-Control`, `Content-Disposition`, `Content-Encoding`, `Content-Language`, `Content-Type`, `Expires`) — юнит-маппинг (шаг 10.1) и применение (шаг 10.4); (г) hex-валидация подписи фрейма (ровно 64 hex) до декодирования/сравнения → `InvalidRequest` (шаги 6.1/6.2); (д) known-answer CRC32C(`"123456789"`) = `0xE3069283` → base64 `4waSgw==` (RFC 3720) и CRC32 = `0xCBF43926` → `y/Q5Jg==` (ISO-HDLC) — юниты шага 6.1, big-endian упаковка в шаге 6.2. Замечания к коду (impl), не меняющие границ/проверок шагов, в план не переносились.
+4. **Синхронизация со спекой (10 arch-правок):** задача 1 — новый шаг 1.6 с готовым текстом обеих точек правки №10 (замена формулировки §2 «Clock skew ±15 минут применяется и к X-Amz-Date» на skew-только-в-будущее + строгое `now − X-Amz-Date > X-Amz-Expires`; условие строки `RequestTimeTooSkewed` в таблице §5 — заголовочная ±15 мин / presigned только будущее); счётчики и проверки «десять» (§1 — п. 1–2 и 7–9, §2 — п. 10, §3 — п. 3–4, §5 — строка + уточнение, §6 — п. 5–6); задача 4 — skew заголовочной подписи помечен Abs-семантикой (разграничение с arch-правкой 10); задача 5 — шаг 5.1 ЗАМЕНЯЕТ ошибочный юнит Abs-skew прошедшей даты на кейсы §3.5 (позитив «N > 15 мин внутри окна → Ok», негатив «будущее дальше +15 мин → 403», строгая просрочка с кейсом границы `== Expires → Ok`), порядок проверок шага 5.2 переписан; задача 11 — presigned-кейсы шага 11.3 + фиксированный `TimeProvider` хоста в шаге 11.1.
 5. **Консистентность типов:** `S3RequestModel`/`S3HeaderCollection` (задача 3) используются в 4–6, 9; `SigV4Result.Ok.SeedSignature` — вход `AwsChunkedReadingContext.SeedSignature` (4→6); `IObjectStore` (8) потребляется хендлерами (10) и маппится конвейером (9); `S3Xml.Serialize` объявлен в задаче 7 и использован в 10; имена `TestVectors`/`TestSigV4Signer` совпадают в юнитах и интеграционных (линк-включение).
 6. **Плейсхолдеры:** единственные «…» остались в скелете `TestSigV4Signer` (задача 4) — каркас с точными сигнатурами и явно описанной реализацией через BCL; шаг 4.2 требует полной реализации. Прочие шаги содержат фактический контент.
-7. **Делегированные плану решения зафиксированы:** полная таблица маршрутов (шаг 9.1, раздельные Theory на 501/400), финальные сигнатуры `IObjectStore` (задача 8), тест-векторы (таблица в шапке), расширение перечня сабресурсов `attributes`-на-не-GET (шаг 9.2, атрибуция плану).
+7. **Делегированные плану решения зафиксированы:** полная таблица маршрутов (шаг 9.1, раздельные Theory на 501/400, list-type по значению), финальные сигнатуры `IObjectStore` (задача 8), тест-векторы (таблица в шапке; known-answer CRC32C/CRC32 вычислены независимо), расширение перечня сабресурсов `attributes`-на-не-GET (шаг 9.2, атрибуция плану).

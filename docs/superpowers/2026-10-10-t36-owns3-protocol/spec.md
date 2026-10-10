@@ -173,9 +173,11 @@
 | 7 | §1 п.4 фиксирует только усечение значений canonical headers по краям; схлопывание внутренних последовательностей пробелов (Trimall стандарта SigV4) не зафиксировано | Дополнить §1 п.4: значение заголовка — усечение по краям **и** схлопывание внутренних последовательностей пробелов в один пробел | стандарт SigV4 (Trimall); референс: `signV4TrimAll` (`signature-v4-utils.go`: `strings.Fields` → join одним пробелом) |
 | 8 | Исход при алгоритме в `Authorization`, отличном от `AWS4-HMAC-SHA256` (вкл. SigV2-заголовок `AWS …`), не зафиксирован | → 400 **`InvalidRequest`**, Message «The authorization mechanism you have provided is not supported. Please use AWS4-HMAC-SHA256.» (дополнить §1, «Исходы проверки подписи») | референс: `ErrSignatureVersionNotSupported` → Code `InvalidRequest`, 400 (`api-errors.go`); документированное поведение Amazon S3 для SigV2; семантика «механизм не поддерживается» ≠ «малформированный заголовок» — отдельный код не заводится |
 | 9 | §1 п.3 («`key=value` с URI-кодированием») не фиксирует правило для пробела и `+` — типовая ловушка: «плюс как пробел» — семантика form-декодирования query при разборе, а не канонизации | Дополнить §1 п.3: percent-кодирование RFC 3986 — **пробел → `%20`, литеральный `+` → `%2B`**; «плюс как пробел» применяется только при разборе query-параметров (form-декодирование), в канонизации не участвует | стандарт SigV4; референс: `getCanonicalRequest` (`signature-v4.go`): `Form.Encode()` даёт пробел как `+` (form-кодирование), `ReplaceAll("+", "%20")` заменяет его на `%20`; литеральный `+` на входе уже `%2B` и не затрагивается |
+| 10 | Строка §2 «Clock skew ±15 минут применяется и к `X-Amz-Date`» противоречит самому §2 (максимум `X-Amz-Expires` 604800; «просроченный → AccessDenied» — значит непросроченный обязан приниматься) и референсу: буквальное прочтение ограничивает фактическую жизнь presigned 15 минутами | Заменить формулировку §2: skew для presigned применяется **только к будущему** — `X-Amz-Date > now + 15 мин` → 403 `RequestTimeTooSkewed`; для прошедших дат skew-отказов нет — URL валиден всё время окна: просрочка определяется строго как `now − X-Amz-Date > X-Amz-Expires` → 403 `AccessDenied`; уточнить условие `RequestTimeTooSkewed` в таблице §5 (заголовочная подпись: ±15 мин; presigned: только будущее) | референс: Abs-skew (`auth-handler.go`) — только заголовочно-подписанные типы; для presigned (`signature-v4.go`, `doesPresignedSignatureMatch`) — «дата из будущего за skew» + просрочка `now − date > Expires`; отступление: «будущее за skew» у референса — Code `AccessDenied` («Request is not valid yet»), ownS3 нормализует в `RequestTimeTooSkewed` — единый код каталога «время вне допуска», статус 403 совпадает |
 
 Правки вносятся в соответствующие разделы главы 03 (§1 — п. 1–2 и 7–9,
-§3 — п. 3–4, §6 — п. 5–6; таблица §5 — строка `InvalidAccessKeyId`).
+§2 — п. 10, §3 — п. 3–4, §6 — п. 5–6; таблица §5 — строка
+`InvalidAccessKeyId` и уточнение условия `RequestTimeTooSkewed`).
 Прочие главы не затрагиваются.
 
 ### 3.2. `src/OwnS3.Protocol` — чистые типы протокола
@@ -246,9 +248,12 @@ query, коллекция заголовков (регистронезависи
 **SigV4 — presigned** (глава 03 §2): `PresignedRequestVerifier` —
 `X-Amz-Algorithm/-Credential/-Date/-Expires/-SignedHeaders/-Signature`;
 все параметры обязательны (отсутствие → `AuthorizationQueryParametersError`
-400); `Expires` ∈ [0, 604800] (нарушение → тот же 400); просрочка
-(`X-Amz-Date` + `Expires` в прошлом, с учётом skew) → 403 `AccessDenied`;
-skew ±15 мин к `X-Amz-Date` → `RequestTimeTooSkewed`; payload-строка
+400); `Expires` ∈ [0, 604800] (нарушение → тот же 400); **skew — только
+на будущее**: `X-Amz-Date > now + 15 мин` → 403 `RequestTimeTooSkewed`
+(arch-правка §3.1 п. 10); просрочка — строгое `now − X-Amz-Date >
+X-Amz-Expires` → 403 `AccessDenied`; непросроченный presigned
+принимается всё время окна независимо от возраста (никакого Abs-skew
+для прошедших дат); payload-строка
 canonical request — `UNSIGNED-PAYLOAD`; canonical query — все параметры
 запроса кроме `X-Amz-Signature`. Список разрешённых операций (ровно 10 по
 канону: GetObject, PutObject, DeleteObject, HeadObject,
@@ -536,7 +541,10 @@ UseAuthentication/Authorization ASP.NET не используются — SigV4 
   (спецсимволы пути, пробел → `%20` и литеральный `+` → `%2B` в query,
   многозначные заголовки, Trimall —
   краевые и внутренние пробельные последовательности, регистр имён),
-  presigned (валидный; просроченный; Expires > 604800; отсутствующие
+  presigned (валидный; **использование через N > 15 мин внутри окна
+  `X-Amz-Expires` → Ok** — Abs-skew для прошедших дат отсутствует;
+  `X-Amz-Date` в будущем дальше +15 мин → 403 `RequestTimeTooSkewed`;
+  просроченный → 403 `AccessDenied`; Expires > 604800; отсутствующие
   параметры; операция вне разрешённых 10).
 - **AwsChunkedReader**: корректный мультичанковый поток + финальный
   0-чанк; битая подпись чанка (в момент чтения); битый фрейм; чанк > 16
@@ -569,8 +577,10 @@ UseAuthentication/Authorization ASP.NET не используются — SigV4 
     (все методы); не-матч → 400 `InvalidArgument`; OPTIONS → 200 пустой;
   - **аутентификация**: валидная подпись проходит до заглушки (500);
     битая → 403 `SignatureDoesNotMatch`; анонимный → 403 `AccessDenied`;
-    skew → 403 `RequestTimeTooSkewed`; несуществующий ключ → 403
-    `InvalidAccessKeyId`; presigned — все исходы §3.2;
+    skew заголовочной подписи (±15 мин) → 403 `RequestTimeTooSkewed`;
+    несуществующий ключ → 403
+    `InvalidAccessKeyId`; presigned — все исходы §3.2 (вкл. «через
+    N > 15 мин внутри окна → Ok»);
   - **права**: матрица трёх ролей по репрезентативному набору операций
     (read-only: GET ok, PUT → 403; read-write: PUT ok-до-заглушки,
     CreateBucket → 403; admin: CreateBucket ok-до-заглушки);
@@ -609,8 +619,10 @@ UseAuthentication/Authorization ASP.NET не используются — SigV4 
 компонентом своей фазы (TDD на фазе кода — по скиллу разработки);
 интеграционные — фазой 8.
 
-1. **Arch-правки** (§3.1): девять дополнений в
-   `arch/owns3/03-protocol.md` (arch-first — до любого кода).
+1. **Arch-правки** (§3.1): десять дополнений в
+   `arch/owns3/03-protocol.md` (arch-first — до любого кода; п. 10 —
+   исправление противоречивой формулировки §2 о skew presigned, вкл.
+   уточнение условия `RequestTimeTooSkewed` в таблице §5).
 2. **Каркас решений**: 5 csproj (Protocol/Storage/App/UnitTests/
    IntegrationTests), строка в `PgWorker.slnx`, `System.IO.Hashing` в
    `Directory.Packages.props`, `OwnS3Options` + `Program`-минимум
@@ -662,15 +674,18 @@ UseAuthentication/Authorization ASP.NET не используются — SigV4 
 
 ## 6. Критерии приёмки
 
-1. **Arch-правки внесены**: все девять дополнений §3.1 — в
+1. **Arch-правки внесены**: все десять дополнений §3.1 — в
    `arch/owns3/03-protocol.md` (вкл. `InvalidAccessKeyId` в таблицу §5,
    Trimall-семантику значений заголовков в §1 п.4, исход для
-   неподдерживаемого алгоритма Authorization в §1 и правило
-   percent-кодирования query в §1 п.3); изменений прочих глав
+   неподдерживаемого алгоритма Authorization в §1, правило
+   percent-кодирования query в §1 п.3 и presigned-skew-семантику в §2
+   «только будущее + строгая граница просрочки» с уточнением условия
+   `RequestTimeTooSkewed` в таблице §5); изменений прочих глав
    нет; правки — первой фазой, до кода.
 2. **`src/OwnS3.Protocol`**: реализует главу 03 целиком — SigV4
    заголовочная (canonical request/string-to-sign/signing key,
-   constant-time), presigned (10 операций, 604800, skew), чанковая
+   constant-time), presigned (10 операций, 604800, skew только на
+   будущее + строгая граница просрочки), чанковая
    (фрейминг, цепочка, трейлеры, 16 МиБ, decoded-length), XML-схемы всех
    ответов/запросов, полный каталог ошибок главы 03 §5 + `InvalidAccessKeyId`,
    валидация имён бакета/ключа, path-style; без ASP.NET-зависимостей.
