@@ -13,6 +13,8 @@ namespace OwnS3.Protocol.Auth;
 // контрольных сумм декодированного тела. Отказы: SignatureDoesNotMatch (чанк/
 // трейлер), InvalidRequest (битый фрейм, чанк > 16 МиБ, decoded-length),
 // BadDigest (trailer-checksum).
+// Чтение — через внутренний буфер: асинхронная дорога (Kestrel запрещает
+// синхронный IO тела) и синхронная (in-memory источники) разделяют парсер.
 public sealed class AwsChunkedReader : Stream
 {
     private const int MaxChunkSize = 16 << 20;   // maxChunkSize референса
@@ -29,6 +31,7 @@ public sealed class AwsChunkedReader : Stream
     private readonly Stream _inner;
     private readonly AwsChunkedReadingContext _ctx;
     private readonly byte[] _chunkBuffer = new byte[MaxChunkSize];
+    private readonly byte[] _io = new byte[64 * 1024];
     private readonly Dictionary<string, string> _receivedTrailers = new(StringComparer.Ordinal);
     private readonly byte[] _lineBuffer = new byte[4096];
 
@@ -43,6 +46,8 @@ public sealed class AwsChunkedReader : Stream
     private int _chunkLength;
     private long _totalDecoded;
     private bool _finished;
+    private int _ioStart;
+    private int _ioEnd;
 
     public AwsChunkedReader(Stream inner, AwsChunkedReadingContext context)
     {
@@ -80,37 +85,86 @@ public sealed class AwsChunkedReader : Stream
             return 0;
         if (_chunkOffset == _chunkLength)
         {
-            ReadNextFrame();
+            ReadNextFrameSync();
             if (_finished)
                 return 0;
         }
+        return CopyFromChunk(buffer, offset, count);
+    }
 
-        var available = _chunkLength - _chunkOffset;
-        var toCopy = Math.Min(available, count);
+    public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+    {
+        if (_finished)
+            return 0;
+        if (_chunkOffset == _chunkLength)
+        {
+            await ReadNextFrameAsync(cancellationToken);
+            if (_finished)
+                return 0;
+        }
+        return CopyFromChunk(buffer, offset, count);
+    }
+
+    private int CopyFromChunk(byte[] buffer, int offset, int count)
+    {
+        var toCopy = Math.Min(_chunkLength - _chunkOffset, count);
         Array.Copy(_chunkBuffer, _chunkOffset, buffer, offset, toCopy);
         _chunkOffset += toCopy;
         return toCopy;
     }
 
-    // Заголовок фрейма → данные (в буфер) → сверка подписи цепочки.
-    private void ReadNextFrame()
+    // — загрузка фрейма (общий парсер, синх/асинк источники байтов) —
+
+    private void ReadNextFrameSync()
     {
-        var header = ReadLine();
+        ParseFrameHeader(ReadLineSync());
+        ReadExactSync(_chunkBuffer, _frameSize);
+        ExpectCrlfSync();
+        VerifyFrame(_frameSize);
+        if (_frameSize == 0)
+        {
+            if (_ctx.WithTrailers)
+                ReadTrailers();
+            else
+                Finish();
+        }
+    }
+
+    private async Task ReadNextFrameAsync(CancellationToken ct)
+    {
+        ParseFrameHeader(await ReadLineAsync(ct));
+        await ReadExactAsync(_chunkBuffer, _frameSize, ct);
+        await ExpectCrlfAsync(ct);
+        VerifyFrame(_frameSize);
+        if (_frameSize == 0)
+        {
+            if (_ctx.WithTrailers)
+                await ReadTrailersAsync(ct);
+            else
+                Finish();
+        }
+    }
+
+    // Разбор заголовка фрейма: размер + подпись (заполняет _frameSize/_frameSignature).
+    private void ParseFrameHeader(string header)
+    {
         var separatorIndex = header.IndexOf(";chunk-signature=", StringComparison.Ordinal);
         if (separatorIndex <= 0 || separatorIndex + ";chunk-signature=".Length + 64 != header.Length)
             throw new S3ProtocolException(S3ErrorCode.InvalidRequest, "Malformed chunked encoding");
 
         var sizeHex = header[..separatorIndex];
-        var signature = header[(separatorIndex + ";chunk-signature=".Length)..];
+        _frameSignature = header[(separatorIndex + ";chunk-signature=".Length)..];
 
-        if (!TryParseHexSize(sizeHex, out var size) || size > MaxChunkSize)
+        if (!TryParseHexSize(sizeHex, out _frameSize) || _frameSize > MaxChunkSize)
             throw new S3ProtocolException(S3ErrorCode.InvalidRequest, "Malformed chunked encoding");
+    }
 
-        // Данные чанка читаются целиком до сверки подписи (в подписи — sha256 чанка).
-        ReadExactly(_chunkBuffer, size);
-        ExpectCrlf();
+    // Сверка подписи чанка цепочкой + обновление контрольных сумм (общее ядро).
+    private void VerifyFrame(int size)
+    {
         _totalDecoded += size;
 
+        // Данные чанка читаются целиком до сверки подписи (в подписи — sha256 чанка).
         var chunkSha = SigV4Core.HexSha256(size == 0 ? [] : _chunkBuffer[..size]);
         var stringToSign =
             $"{ChunkStringToSignAlgorithm}\n{_ctx.AmzDate}\n{_ctx.Scope}\n{_previousSignature}\n" +
@@ -120,7 +174,7 @@ public sealed class AwsChunkedReader : Stream
             SigV4Core.SigningKey(_ctx.SecretKey, scopeDate, scopeRegion), stringToSign);
 
         if (!CryptographicOperations.FixedTimeEquals(
-                Convert.FromHexString(expected), Convert.FromHexString(signature)))
+                Convert.FromHexString(expected), Convert.FromHexString(_frameSignature)))
             throw new S3ProtocolException(S3ErrorCode.SignatureDoesNotMatch);
 
         _previousSignature = expected;
@@ -132,53 +186,73 @@ public sealed class AwsChunkedReader : Stream
         _crc32c?.Append(_chunkBuffer.AsSpan(0, size));
         _sha1?.AppendData(_chunkBuffer, 0, size);
         _sha256?.AppendData(_chunkBuffer, 0, size);
-
-        if (size == 0)
-        {
-            if (_ctx.WithTrailers)
-                ReadTrailers();
-            else
-                Finish();
-        }
     }
 
-    // Трейлеры: строки name:value до x-amz-trailer-signature:<sig>; подпись —
-    // по конкатенации строк (каждая с \n — нормализация референса).
+    private int _frameSize;
+    private string _frameSignature = string.Empty;
+
+    // — трейлеры (sync/async дороги; парсинг строки — общий) —
+
     private void ReadTrailers()
     {
         var trailerString = new StringBuilder();
-        string? trailerSignature = null;
-        while (trailerSignature is null)
+        while (true)
         {
-            var line = ReadLine();
-            if (line.StartsWith(TrailerSignatureHeader, StringComparison.Ordinal))
-            {
-                trailerSignature = line[TrailerSignatureHeader.Length..].Trim();
+            if (ParseTrailerLine(ReadLineSync(), trailerString, out _))
                 break;
-            }
+        }
+        VerifyTrailers(trailerString.ToString());
+    }
 
-            var colon = line.IndexOf(':', StringComparison.Ordinal);
-            if (colon <= 0)
-                throw new S3ProtocolException(S3ErrorCode.InvalidRequest, "Malformed chunked encoding");
-            var name = line[..colon].Trim().ToLowerInvariant();
-            if (!_ctx.TrailerNames.Contains(name, StringComparer.Ordinal))
-                throw new S3ProtocolException(S3ErrorCode.InvalidRequest, "Malformed chunked encoding");
-            _receivedTrailers[name] = line[(colon + 1)..].Trim();
+    private async Task ReadTrailersAsync(CancellationToken ct)
+    {
+        var trailerString = new StringBuilder();
+        while (true)
+        {
+            if (ParseTrailerLine(await ReadLineAsync(ct), trailerString, out _))
+                break;
+        }
+        VerifyTrailers(trailerString.ToString());
+    }
 
-            trailerString.Append(name).Append(':').Append(_receivedTrailers[name]).Append('\n');
+    // Одна строка трейлеров; true — строка была x-amz-trailer-signature (конец).
+    private bool ParseTrailerLine(string line, StringBuilder trailerString, out string? signature)
+    {
+        if (line.StartsWith(TrailerSignatureHeader, StringComparison.Ordinal))
+        {
+            signature = line[TrailerSignatureHeader.Length..].Trim();
+            _pendingTrailerSignature = signature;
+            return true;
         }
 
+        var colon = line.IndexOf(':', StringComparison.Ordinal);
+        if (colon <= 0)
+            throw new S3ProtocolException(S3ErrorCode.InvalidRequest, "Malformed chunked encoding");
+        var name = line[..colon].Trim().ToLowerInvariant();
+        if (!_ctx.TrailerNames.Contains(name, StringComparer.Ordinal))
+            throw new S3ProtocolException(S3ErrorCode.InvalidRequest, "Malformed chunked encoding");
+        _receivedTrailers[name] = line[(colon + 1)..].Trim();
+
+        trailerString.Append(name).Append(':').Append(_receivedTrailers[name]).Append('\n');
+        signature = null;
+        return false;
+    }
+
+    private string? _pendingTrailerSignature;
+
+    private void VerifyTrailers(string trailerString)
+    {
         var (scopeDate, scopeRegion) = SplitScope();
         var stringToSign =
             $"{TrailerStringToSignAlgorithm}\n{_ctx.AmzDate}\n{_ctx.Scope}\n{_previousSignature}\n" +
-            $"{SigV4Core.HexSha256(Encoding.UTF8.GetBytes(trailerString.ToString()))}";
+            $"{SigV4Core.HexSha256(Encoding.UTF8.GetBytes(trailerString))}";
         var expected = SigV4Core.SignHex(
             SigV4Core.SigningKey(_ctx.SecretKey, scopeDate, scopeRegion), stringToSign);
         byte[] expectedBytes, signatureBytes;
         try
         {
             expectedBytes = Convert.FromHexString(expected);
-            signatureBytes = Convert.FromHexString(trailerSignature);
+            signatureBytes = Convert.FromHexString(_pendingTrailerSignature ?? string.Empty);
         }
         catch (FormatException)
         {
@@ -248,43 +322,132 @@ public sealed class AwsChunkedReader : Stream
         }
     }
 
-    // Строка до \n (терминатор съедается); \r перед \n срезается; лимит буфера —
-    // защита от потока без терминатора.
-    private string ReadLine()
+    // — источники байтов: синхронная и асинхронная дороги через общий буфер —
+
+    private void FillSync()
     {
-        var length = 0;
-        int b;
-        while ((b = _inner.ReadByte()) >= 0)
-        {
-            if (b == '\n')
-            {
-                var span = _lineBuffer.AsSpan(0, length);
-                if (length > 0 && span[^1] == '\r')
-                    span = span[..^1];
-                return Encoding.ASCII.GetString(span);
-            }
-            if (length == _lineBuffer.Length)
-                throw new S3ProtocolException(S3ErrorCode.InvalidRequest, "Malformed chunked encoding");
-            _lineBuffer[length++] = (byte)b;
-        }
-        throw new S3ProtocolException(S3ErrorCode.InvalidRequest, "Malformed chunked encoding");
+        _ioStart = 0;
+        _ioEnd = _inner.Read(_io, 0, _io.Length);
     }
 
-    private void ReadExactly(byte[] buffer, int count)
+    private async Task FillAsync(CancellationToken ct)
+    {
+        _ioStart = 0;
+        _ioEnd = await _inner.ReadAsync(_io.AsMemory(0, _io.Length), ct);
+    }
+
+    private void Compact()
+    {
+        if (_ioStart == 0)
+            return;
+        Array.Copy(_io, _ioStart, _io, 0, _ioEnd - _ioStart);
+        _ioEnd -= _ioStart;
+        _ioStart = 0;
+    }
+
+    private int LineFromBuffer()
+    {
+        // Возвращает длину строки (без \n) или -1, если полной строки нет в буфере.
+        for (var i = _ioStart; i < _ioEnd; i++)
+        {
+            if (_io[i] == '\n')
+                return i - _ioStart;
+        }
+        return -1;
+    }
+
+    private string DecodeLine(int length)
+    {
+        var span = _io.AsSpan(_ioStart, length);
+        if (length > 0 && span[^1] == '\r')
+            span = span[..^1];
+        _ioStart += length + 1;   // терминатор съедается
+        return Encoding.ASCII.GetString(span);
+    }
+
+    private string ReadLineSync()
+    {
+        while (true)
+        {
+            var length = LineFromBuffer();
+            if (length >= 0)
+                return DecodeLine(length);
+            Compact();
+            if (_ioEnd == _io.Length)
+                throw new S3ProtocolException(S3ErrorCode.InvalidRequest, "Malformed chunked encoding");
+            FillSync();
+            if (_ioEnd == 0)
+                throw new S3ProtocolException(S3ErrorCode.InvalidRequest, "Malformed chunked encoding");
+        }
+    }
+
+    private async Task<string> ReadLineAsync(CancellationToken ct)
+    {
+        while (true)
+        {
+            var length = LineFromBuffer();
+            if (length >= 0)
+                return DecodeLine(length);
+            Compact();
+            if (_ioEnd == _io.Length)
+                throw new S3ProtocolException(S3ErrorCode.InvalidRequest, "Malformed chunked encoding");
+            await FillAsync(ct);
+            if (_ioEnd == 0)
+                throw new S3ProtocolException(S3ErrorCode.InvalidRequest, "Malformed chunked encoding");
+        }
+    }
+
+    private void ReadExactSync(byte[] target, int count)
     {
         var offset = 0;
         while (offset < count)
         {
-            var read = _inner.Read(buffer, offset, count - offset);
-            if (read <= 0)
-                throw new S3ProtocolException(S3ErrorCode.InvalidRequest, "Malformed chunked encoding");
-            offset += read;
+            if (_ioStart == _ioEnd)
+            {
+                FillSync();
+                if (_ioEnd == 0)
+                    throw new S3ProtocolException(S3ErrorCode.InvalidRequest, "Malformed chunked encoding");
+            }
+            var toCopy = Math.Min(count - offset, _ioEnd - _ioStart);
+            Array.Copy(_io, _ioStart, target, offset, toCopy);
+            _ioStart += toCopy;
+            offset += toCopy;
         }
     }
 
-    private void ExpectCrlf()
+    private async Task ReadExactAsync(byte[] target, int count, CancellationToken ct)
     {
-        if (_inner.ReadByte() != '\r' || _inner.ReadByte() != '\n')
+        var offset = 0;
+        while (offset < count)
+        {
+            if (_ioStart == _ioEnd)
+            {
+                await FillAsync(ct);
+                if (_ioEnd == 0)
+                    throw new S3ProtocolException(S3ErrorCode.InvalidRequest, "Malformed chunked encoding");
+            }
+            var toCopy = Math.Min(count - offset, _ioEnd - _ioStart);
+            Array.Copy(_io, _ioStart, target, offset, toCopy);
+            _ioStart += toCopy;
+            offset += toCopy;
+        }
+    }
+
+    private void ExpectCrlfSync()
+    {
+        ReadExactSync(_lineBuffer, 2);
+        ExpectCrlfBytes();
+    }
+
+    private async Task ExpectCrlfAsync(CancellationToken ct)
+    {
+        await ReadExactAsync(_lineBuffer, 2, ct);
+        ExpectCrlfBytes();
+    }
+
+    private void ExpectCrlfBytes()
+    {
+        if (_lineBuffer[0] != '\r' || _lineBuffer[1] != '\n')
             throw new S3ProtocolException(S3ErrorCode.InvalidRequest, "Malformed chunked encoding");
     }
 }

@@ -1,3 +1,4 @@
+using Microsoft.Extensions.Options;
 using OwnS3.App.Access;
 using OwnS3.App;
 
@@ -17,7 +18,7 @@ public sealed class AccessKeyRegistryTests
     public void Registry_RootKey_HasAdminPolicy()
     {
         // Arrange / Act
-        var registry = new AccessKeyRegistry(Options());
+        var registry = new AccessKeyRegistry(Microsoft.Extensions.Options.Options.Create(Options()));
 
         // Assert: root аутентифицируется как обычный ключ admin (глава 05 §1)
         var record = registry.Find("root");
@@ -30,10 +31,10 @@ public sealed class AccessKeyRegistryTests
     public void Registry_StaticKeys_MapToPolicies()
     {
         // Arrange / Act
-        var registry = new AccessKeyRegistry(Options(
+        var registry = new AccessKeyRegistry(Microsoft.Extensions.Options.Options.Create(Options(
             ("reader", "reader-secret", "read-only"),
             ("writer", "writer-secret", "read-write"),
-            ("admin", "admin-secret", "admin")));
+            ("admin", "admin-secret", "admin"))));
 
         // Assert
         registry.Find("reader")!.Policy.Should().Be(AccessPolicy.ReadOnly);
@@ -45,7 +46,7 @@ public sealed class AccessKeyRegistryTests
     public void Registry_UnknownKey_ReturnsNull()
     {
         // Arrange / Act
-        var registry = new AccessKeyRegistry(Options(("reader", "reader-secret", "read-only")));
+        var registry = new AccessKeyRegistry(Microsoft.Extensions.Options.Options.Create(Options(("reader", "reader-secret", "read-only"))));
 
         // Assert
         registry.Find("nobody").Should().BeNull();
@@ -56,7 +57,7 @@ public sealed class AccessKeyRegistryTests
     {
         // Arrange: policy вне {read-only, read-write, admin}
         // Act
-        var act = () => new AccessKeyRegistry(Options(("bad", "bad-secret", "full-access")));
+        var act = () => new AccessKeyRegistry(Microsoft.Extensions.Options.Options.Create(Options(("bad", "bad-secret", "full-access"))));
 
         // Assert: отказ построения реестра (fail-fast конфигурации)
         act.Should().Throw<ArgumentException>();
