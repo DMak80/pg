@@ -1,0 +1,127 @@
+using Microsoft.Extensions.Logging;
+
+namespace OwnS3.Storage;
+
+// CopyObject (хардлинк + fallback на побайтовое копирование, спека §4.3/Q2)
+// и GetObjectAttributes (conditional по GET-семантике, P10).
+public sealed partial class XlObjectStore
+{
+    private const long MaxCopySize = 5L * 1024 * 1024 * 1024; // 5 ГБ (канон 02 §1)
+
+    // Тестовый хук fallback: задан и вернул false — принудительное побайтовое копирование.
+    internal Func<string, string, bool>? HardLinkProbe;
+
+    public async Task<PutResult> CopyObjectAsync(CopyRequest request, CancellationToken ct)
+    {
+        // 1. Источник (bkp-фолбэк tolerated — warning в ReadObjectMeta не подходит:
+        // EnsureBucket отдельно, ключ другой)
+        EnsureBucket(request.SourceBucket);
+        XlMetaRecord src;
+        try
+        {
+            src = XlMetaFile.Read(ObjectDir(request.SourceBucket, request.SourceKey), out var fromBackup);
+            if (fromBackup)
+                _logger.LogWarning("xl.meta источника {Bucket}/{Key} прочитан из страховочной копии",
+                    request.SourceBucket, request.SourceKey);
+        }
+        catch (FileNotFoundException)
+        {
+            throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchKey);
+        }
+        // 2. Conditional источника: copy — не GET/HEAD (If-Modified-Since не
+        // применяется); NotModified ИЛИ PreconditionFailed → 412
+        var outcome = ConditionalEvaluator.Evaluate(request.SourceConditions, src.ETag, src.ModTime,
+            ifModifiedSinceApplies: false);
+        if (outcome != ConditionalOutcome.Proceed)
+            throw new ObjectStoreException(ObjectStoreErrorCode.PreconditionFailed);
+        // 3. Лимит копии (App не валидирует copy по длине)
+        if (src.Size > MaxCopySize)
+            throw new ObjectStoreException(ObjectStoreErrorCode.EntityTooLarge);
+        // 4. Приёмник + staging: новый part.1 — жёсткая ссылка на источник (Q2);
+        //    при отказе link — побайтовое копирование (warning)
+        EnsureBucket(request.DestBucket);
+        var versionId = Guid.NewGuid();
+        var staging = Path.Combine(volume.TmpDir, Guid.NewGuid().ToString("N"));
+        var dataDir = Path.Combine(staging, versionId.ToString("N"));
+        Directory.CreateDirectory(dataDir);
+        try
+        {
+            var srcPart = Path.Combine(ObjectDir(request.SourceBucket, request.SourceKey),
+                src.DataDirName, "part.1");
+            var destPart = Path.Combine(dataDir, "part.1");
+            CopyPart(srcPart, destPart);
+            // 5. xl.meta: метаданные по директиве; etag/sha256/Size наследованы;
+            //    versionId/modTime новые
+            var (contentType, userMetadata) = request.ReplaceMetadata && request.NewMetadata is not null
+                ? (request.NewMetadata.ContentType, request.NewMetadata.UserMetadata)
+                : (src.ContentType, src.UserMetadata);
+            var record = new XlMetaRecord(versionId, src.Size, timeProvider.GetUtcNow(), src.ETag,
+                contentType, userMetadata, EmptyHeaders, src.ContentSha256);
+            XlMetaFile.Write(staging, record);
+            return await CommitStagedObjectAsync(request.DestBucket, request.DestKey, record, staging, ct);
+        }
+        finally
+        {
+            if (Directory.Exists(staging))
+                Directory.Delete(staging, recursive: true);
+        }
+    }
+
+    // part.1 копии: хардлинк — мгновенная копия (Q2); на net10.0 BCL-API хардлинка
+    // нет (File.CreateHardLink появился в net11) — fallback-копирование всегда.
+    private void CopyPart(string srcPart, string destPart)
+    {
+        if ((HardLinkProbe is null || HardLinkProbe(srcPart, destPart))
+            && TryCreateHardLink(srcPart, destPart))
+            return;
+        _logger.LogWarning(
+            "хардлинк недоступен (нет BCL-API в net10.0) — побайтовое копирование {Src} → {Dst}",
+            srcPart, destPart);
+        using (var src = new FileStream(srcPart, FileMode.Open, FileAccess.Read, FileShare.Read))
+        using (var dst = new FileStream(destPart, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            src.CopyTo(dst);
+            dst.Flush(flushToDisk: true);
+        }
+    }
+
+    // Точка включения хардлинка: на net10.0 стандартного API нет — всегда false;
+    // при переходе на net11 включить File.CreateHardLink(source, dest) одной
+    // правкой здесь (Q2: копирование станет мгновенным).
+    private static bool TryCreateHardLink(string source, string dest) => false;
+
+    // GetObjectAttributes (P10): conditional по таблице канона 02 §1 как
+    // GET-семантика; unversioned-объект — одна синтетическая часть.
+    public Task<ObjectAttributesResult> GetObjectAttributesAsync(string bucket, string key,
+        IReadOnlyList<ObjectAttributeName> attributes, int? maxParts, int? partNumberMarker,
+        ObjectConditions? conditions, CancellationToken ct)
+    {
+        // 1. Запись
+        EnsureBucket(bucket);
+        XlMetaRecord meta;
+        try
+        {
+            meta = XlMetaFile.Read(ObjectDir(bucket, key), out var fromBackup);
+            if (fromBackup)
+                _logger.LogWarning("xl.meta объекта {Bucket}/{Key} прочитан из страховочной копии", bucket, key);
+        }
+        catch (FileNotFoundException)
+        {
+            throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchKey);
+        }
+        // 2. Conditional (GET-семантика): 412 / 304-обёртка с метаданными (философия §5.3)
+        var outcome = ConditionalEvaluator.Evaluate(conditions, meta.ETag, meta.ModTime,
+            ifModifiedSinceApplies: true);
+        if (outcome == ConditionalOutcome.PreconditionFailed)
+            throw new ObjectStoreException(ObjectStoreErrorCode.PreconditionFailed);
+        if (outcome == ConditionalOutcome.NotModified)
+            return Task.FromResult(new ObjectAttributesResult(null, ToMetadata(key, meta)));
+        // 3. Атрибуты: ETag В КАВЫЧКАХ (P8 — хендлер ставит значение в HTTP-заголовок);
+        //    фильтрацию по запрошенным делает App
+        var parts = new ObjectPartsAttributes(PartsCount: 1, PartNumberMarker: partNumberMarker ?? 0,
+            NextPartNumberMarker: null, MaxParts: maxParts ?? 1000, IsTruncated: false,
+            Parts: [(1, meta.Size)]);
+        var result = new ObjectAttributes('"' + meta.ETag + '"', meta.Size, "STANDARD", parts);
+        return Task.FromResult(new ObjectAttributesResult(result, null));
+    }
+}

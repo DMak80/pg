@@ -316,14 +316,6 @@ public sealed partial class XlObjectStore
     }
 
 
-    public Task<PutResult> CopyObjectAsync(CopyRequest request, CancellationToken ct) =>
-        ThrowUnavailable<PutResult>(); // t37: реализация в Task 8 плана
-
-    public Task<ObjectAttributesResult> GetObjectAttributesAsync(string bucket, string key,
-        IReadOnlyList<ObjectAttributeName> attributes, int? maxParts, int? partNumberMarker,
-        ObjectConditions? conditions, CancellationToken ct) =>
-        ThrowUnavailable<ObjectAttributesResult>(); // t37: реализация в Task 8 плана
-
     public Task<ListPage> ListObjectsAsync(string bucket, ListQuery query, CancellationToken ct) =>
         ThrowUnavailable<ListPage>(); // t37: реализация в Task 9 плана
 }
