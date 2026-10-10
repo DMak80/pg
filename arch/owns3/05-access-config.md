@@ -55,7 +55,11 @@ health и метрики, правила запуска. Операции — г
 
 - Root — права `admin`.
 - «Свои» загрузки — созданные тем же access key: владелец фиксируется
-  в `uploads.json` при CreateMultipartUpload (глава 04).
+  в `uploads.json` при CreateMultipartUpload (глава 04). Для read-only
+  чужая загрузка неотличима от несуществующей: `ListParts` по чужому
+  uploadId → **404 `NoSuchUpload`** (фильтр видимости — право на саму
+  операцию у read-only есть); `ListMultipartUploads` фильтрует список
+  по владельцу.
 - **Отказ в правах — `AccessDenied` (403)** в формате ошибок главы 03.
 - Граница матрицы: справочник бакетов (`HeadBucket`/`ListBuckets`/
   `GetBucketLocation`) доступен всем ролям — нужен целевым клиентам
