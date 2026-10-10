@@ -32,7 +32,8 @@ SignedHeaders=..., Signature=...`.
    (потом по значению), `key=value` с URI-кодированием; компоненты
    сортировки — до кодирования.
 4. Canonical headers: имена в нижнем регистре, отсортированы по имени,
-   `name:value\n` (значение — тримmed); `host` обязателен;
+   `name:value\n` (значение — с усечёнными по краям пробелами); `host`
+   обязателен;
    `x-amz-content-sha256` входит в подписанный список, когда клиент
    его подписал.
 5. `x-amz-content-sha256` — значение заголовка (или
@@ -166,6 +167,16 @@ AWS4-HMAC-SHA256-PAYLOAD\n<date>\n<scope>\n<подпись чанка N-1>\n<sha
 `STREAMING-UNSIGNED-PAYLOAD-TRAILER` (неподписанное тело) и прочие
 вне двух режимов → 400 `InvalidRequest`.
 
+**Требование к клиентам** (следствие отказа от
+`STREAMING-UNSIGNED-PAYLOAD-TRAILER`): свежие AWS SDK .NET с
+включёнными по умолчанию flexible checksums шлюют `PutObject` именно
+в этом режиме — клиент обязан отключить вычисление checksum по
+умолчанию (RequestChecksumCalculation = WHEN_REQUIRED) либо
+использовать подписанный trailer-режим
+(`STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER`, поддерживается).
+Иначе PUT завершится 400 `InvalidRequest` — это требуется учесть
+при приёмке t39 (настройка клиентов бэкапов и `mc`).
+
 ## 4. XML-схемы
 
 Namespace всех XML-ответов:
@@ -274,7 +285,7 @@ application/xml` — у всех XML-ответов (charset UTF-8). Кодир�
 | `BucketAlreadyExists` | 409 | **не эмитируется ownS3** — справочный алиас стандарта; CreateBucket существующего отвечает `BucketAlreadyOwnedByYou` (владельческой модели нет) |
 | `BucketAlreadyOwnedByYou` | 409 | CreateBucket: бакет уже существует |
 | `BucketNotEmpty` | 409 | DeleteBucket непустого бакета |
-| `InvalidRange` | 416 | Range вне размера объекта; `bytes=-0`; `a > b` (глава 02) |
+| `InvalidRange` | 416 | `Range`-заголовок GetObject/HeadObject вне размера объекта; `bytes=-0`; `a > b` (глава 02) — у copy-операций не используется |
 | `PreconditionFailed` | 412 | провал conditional (глава 02, раздел 1) |
 | `NotModified` | 304 | 304-исход conditional GET/HEAD (тела нет) |
 | `EntityTooLarge` | 400 | объект/часть > 5 ГБ (глава 02, лимиты) |
@@ -288,7 +299,7 @@ application/xml` — у всех XML-ответов (charset UTF-8). Кодир�
 | `RequestTimeTooSkewed` | 403 | x-amz-date вне ±15 минут |
 | `BadDigest` | 400 | несовпадение Content-MD5; несовпадение trailer-checksum |
 | `NoSuchUpload` | 404 | uploadId не существует / повторные Complete/Abort |
-| `InvalidArgument` | 400 | невалидные аргументы: partNumber вне 1–10000, encoding-type ≠ url, metadata-directive, пустой x-amz-object-attributes, copy-source-range синтаксис |
+| `InvalidArgument` | 400 | невалидные аргументы: partNumber вне 1–10000, encoding-type ≠ url, metadata-directive, пустой x-amz-object-attributes, `x-amz-copy-source-range` — невалидный или вне размера источника (обе причины в один код, как в референсе) |
 | `InvalidBucketName` | 400 | имя бакета нарушает правила (раздел 6) |
 | `InvalidRequest` | 400 | неподдерживаемый `x-amz-content-sha256`; несовпадение sha256 тела; unsupported trailer header; несвязанный `x-amz-decoded-content-length` |
 | `NotImplemented` | 501 | вне-наборные грани (глава 02, раздел 1) |
