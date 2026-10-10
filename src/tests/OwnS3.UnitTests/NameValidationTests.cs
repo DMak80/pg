@@ -8,7 +8,7 @@ public sealed class NameValidationTests
 {
     [Theory]
     [InlineData("my-bucket")]
-    [InlineData("a1")]
+    [InlineData("ab1")]
     [InlineData("000")]
     [InlineData("example-bucket-with-long-but-valid-name-0123456789-abcdefghij")]
     public void BucketName_Valid(string name)

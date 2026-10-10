@@ -57,9 +57,9 @@ public sealed class S3PathParserTests
     }
 
     [Fact]
-    public void Parse_TrailingSlash_EmptyLastSegmentIgnored()
+    public void Parse_TrailingSlash_KeptInKey()
     {
-        // Arrange / Act: пустой сегмент на конце не даёт пустого хвоста ключа
+        // Arrange / Act: хвостовой слэш — часть ключа (пустой последний сегмент)
         var path = S3PathParser.Parse("/b/k/");
         // Assert
         path.Bucket.Should().Be("b");

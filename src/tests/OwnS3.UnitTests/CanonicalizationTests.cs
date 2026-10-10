@@ -26,7 +26,7 @@ public sealed class CanonicalizationTests
     public void EncodeQuery_SortsBeforeEncoding_AndEncodesSpacesAsPercent20()
     {
         // Arrange: НЕотсортированные пары со спецсимволами и '+'
-        var pairs = new[] { ("prefix", "a b"), ("marker", "z"), ("max-keys", "2") };
+        (string Name, string? Value)[] pairs = [("prefix", "a b"), ("marker", "z"), ("max-keys", "2")];
         // Act
         var actual = UriEncoding.EncodeQuery(pairs);
         // Assert: сортировка по ключу до кодирования, пробел → %20 (не '+');
@@ -38,10 +38,21 @@ public sealed class CanonicalizationTests
     public void EncodeQuery_EncodesPlusInValueAsPercent2B()
     {
         // Arrange: значение со знаком '+'
-        var pairs = new[] { ("prefix", "a+b") };
+        (string Name, string? Value)[] pairs = [("prefix", "a+b")];
         // Act
         var actual = UriEncoding.EncodeQuery(pairs);
         // Assert: RFC 3986-кодирование значения — '+' → %2B (не остаётся литералом)
         actual.Should().Be("prefix=a%2Bb");
+    }
+
+    [Fact]
+    public void EncodeQuery_NullValue_EncodedAsEmpty()
+    {
+        // Arrange: значение null → пустое (дискриминаторы вида ?uploads)
+        (string Name, string? Value)[] pairs = [("uploads", null)];
+        // Act
+        var actual = UriEncoding.EncodeQuery(pairs);
+        // Assert
+        actual.Should().Be("uploads=");
     }
 }
