@@ -121,7 +121,18 @@ AWS4-HMAC-SHA256.») — семантика «механизм не поддер
   референс: `signature-v4-parser.go`, порог 604800).
 - **Просроченный presigned** (прошло больше `X-Amz-Expires` с
   `X-Amz-Date`) → **403** `AccessDenied`.
-- Clock skew ±15 минут применяется и к `X-Amz-Date`.
+- **Skew для presigned — только на будущее**: `X-Amz-Date > now + 15 минут`
+  → **403** `RequestTimeTooSkewed`; для прошедших дат skew-отказов НЕТ —
+  URL валиден всё время окна. Просрочка — строгое неравенство
+  `now − X-Amz-Date > X-Amz-Expires` → **403** `AccessDenied`
+  (непросроченный presigned принимается независимо от возраста)
+  (критерий — референс: Abs-skew `auth-handler.go` — только
+  заголовочно-подписанные типы; presigned
+  (`doesPresignedSignatureMatch`, `signature-v4.go`) — «дата из будущего
+  за skew» + просрочка `now − date > Expires`; отступление: «будущее за
+  skew» у референса — `AccessDenied`, ownS3 нормализует в
+  `RequestTimeTooSkewed` — единый код каталога «время вне допуска»,
+  статус 403 совпадает).
 - **Разрешённые операции через presigned** — ровно потребности
   клиентов бэкапов и `mc` (критерий — стандарт S3 допускает per-API
   ограничение): `GetObject`, `PutObject`, `DeleteObject`, `HeadObject`,
@@ -333,7 +344,7 @@ application/xml` — у всех XML-ответов (charset UTF-8). Кодир�
 | `SignatureDoesNotMatch` | 403 | несовпадение подписи (заголовочной, чанка, трейлера) |
 | `InvalidAccessKeyId` | 403 | accessKey не существует (раздел 1) |
 | `AccessDenied` | 403 | нет прав (глава 05); анонимный запрос; просроченный presigned |
-| `RequestTimeTooSkewed` | 403 | x-amz-date вне ±15 минут |
+| `RequestTimeTooSkewed` | 403 | x-amz-date вне ±15 минут (заголовочная подпись); X-Amz-Date в будущем дальше now + 15 минут (presigned) |
 | `BadDigest` | 400 | несовпадение Content-MD5; несовпадение trailer-checksum |
 | `NoSuchUpload` | 404 | uploadId не существует / повторные Complete/Abort |
 | `InvalidArgument` | 400 | невалидные аргументы: partNumber вне 1–10000, encoding-type ≠ url, metadata-directive, пустой x-amz-object-attributes, `x-amz-copy-source-range` — невалидный или вне размера источника (обе причины в один код, как в референсе) |
