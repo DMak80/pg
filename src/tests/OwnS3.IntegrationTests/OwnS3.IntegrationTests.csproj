@@ -24,4 +24,10 @@
         <ProjectReference Include="..\..\OwnS3.App\OwnS3.App.csproj"/>
     </ItemGroup>
 
+    <!-- Независимый signer юнитов — общий тестовый клиент подписи -->
+    <ItemGroup>
+        <Compile Include="..\OwnS3.UnitTests\TestSigV4Signer.cs" Link="TestSigV4Signer.cs"/>
+        <Compile Include="..\OwnS3.UnitTests\TestVectors.cs" Link="TestVectors.cs"/>
+    </ItemGroup>
+
 </Project>

@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using Microsoft.Extensions.Options;
 
 namespace OwnS3.App.Access;
 
@@ -9,9 +10,9 @@ public sealed class AccessKeyRegistry
 {
     private readonly ConcurrentDictionary<string, AccessKeyRecord> _records = new(StringComparer.Ordinal);
 
-    public AccessKeyRegistry(OwnS3Options options)
+    public AccessKeyRegistry(IOptions<OwnS3Options> options)
     {
-        foreach (var key in options.AccessKeys)
+        foreach (var key in options.Value.AccessKeys)
         {
             var record = new AccessKeyRecord(key.AccessKey, key.SecretKey, ParsePolicy(key.Policy));
             if (!_records.TryAdd(record.AccessKey, record))
@@ -19,7 +20,7 @@ public sealed class AccessKeyRegistry
         }
 
         // Root — полный доступ (глава 05 §1), аутентифицируется как обычный ключ.
-        var root = new AccessKeyRecord(options.Root.User, options.Root.Password, AccessPolicy.Admin);
+        var root = new AccessKeyRecord(options.Value.Root.User, options.Value.Root.Password, AccessPolicy.Admin);
         _records[root.AccessKey] = root;
     }
 

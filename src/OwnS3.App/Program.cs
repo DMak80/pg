@@ -104,11 +104,11 @@ builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
 builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
     sp.GetRequiredService<OwnS3.App.Handlers.MultipartHandlers.ListMultipartUploadsHandler>());
 
-var app = builder.Build();
-
 // Kestrel: any-IP, h1+h2c (arch/owns3/03 §6), лимит тела отключён — лимит 5 ГБ
 // уровня хендлера (глава 02), не транспорта.
 builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = null);
+
+var app = builder.Build();
 var options = app.Services.GetRequiredService<IOptions<OwnS3Options>>().Value;
 app.Urls.Clear();
 app.Urls.Add($"http://*:{options.Server.Port}");
