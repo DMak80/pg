@@ -1000,4 +1000,158 @@ public class XlObjectStoreMultipartTests(StoreFixture fixture) : IClassFixture<S
         await body.ReadExactlyAsync(tail, TestContext.Current.CancellationToken);
         tail.Should().Equal("ccc"u8.ToArray());
     }
+
+    [Fact]
+    public async Task UploadPartCopy_WholeObject_EtagIsRangeMd5()
+    {
+        // Arrange: источник «hello» (простой PUT); живая загрузка приёмника
+        await Store.PutObjectAsync("b", "upc-src", new MemoryStream(Encoding.UTF8.GetBytes("hello")),
+            5, Meta, TestContext.Current.CancellationToken);
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "upc-dst", Meta, "writer",
+            TestContext.Current.CancellationToken);
+
+        // Act
+        var result = await Store.UploadPartCopyAsync(new PartCopyRequest("b", "upc-src", "b", "upc-dst",
+            uploadId, 1, null, null), TestContext.Current.CancellationToken);
+
+        // Assert: ETag = md5("hello"); часть в журнале приёмника; источник не изменился
+        result.ETag.Should().Be("\"5d41402abc4b2a76b9719d911017c592\"");
+        result.LastModified.Should().Be(TestVectors.FixedTime);
+        var uploadDir = MultipartJournals.UploadDirPath(
+            MultipartJournals.KeyDir(Volume.MultipartDir, "b", "upc-dst"), uploadId);
+        MultipartJournals.ReadParts(MultipartJournals.PartsJsonPath(uploadDir))
+            .Should().ContainSingle().Which.Size.Should().Be(5);
+        var src = await Store.GetObjectAsync("b", "upc-src", new ObjectReadOptions(null, null, null),
+            TestContext.Current.CancellationToken);
+        using var reader = new StreamReader(src.Body);
+        (await reader.ReadToEndAsync(TestContext.Current.CancellationToken)).Should().Be("hello");
+    }
+
+    [Fact]
+    public async Task UploadPartCopy_RangeFromMultipartSource_PartAssemblesToObject()
+    {
+        // Arrange: источник — multipart-объект (5 МиБ 0xAA + «ccc»); загрузка приёмника
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "mpc-src", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var e1 = await UploadBigPartAsync(Store, "b", "mpc-src", uploadId, 1, 5 * 1024 * 1024, 0xAA);
+        var e2 = await UploadBigPartAsync(Store, "b", "mpc-src", uploadId, 2, 3, (byte)'c');
+        await Store.CompleteMultipartUploadAsync("b", "mpc-src", uploadId,
+            [new PartEtag(1, e1), new PartEtag(2, e2)], TestContext.Current.CancellationToken);
+        var dstUploadId = await Store.CreateMultipartUploadAsync("b", "mpc-dst", Meta, "writer",
+            TestContext.Current.CancellationToken);
+
+        // Act: диапазон через стык частей источника (2 последних байта первой + все 3 второй)
+        var start = 5 * 1024 * 1024 - 2;
+        var result = await Store.UploadPartCopyAsync(new PartCopyRequest("b", "mpc-src", "b", "mpc-dst",
+            dstUploadId, 1, new ByteRange(start, start + 4), null), TestContext.Current.CancellationToken);
+
+        // Assert: ETag части = md5 среза; приёмник собирается Complete'ом в читаемый объект
+        var slice = new byte[] { 0xAA, 0xAA, (byte)'c', (byte)'c', (byte)'c' };
+        var expected = Convert.ToHexString(System.Security.Cryptography.MD5.HashData(slice)).ToLowerInvariant();
+        result.ETag.Should().Be("\"" + expected + "\"");
+        await Store.CompleteMultipartUploadAsync("b", "mpc-dst", dstUploadId,
+            [new PartEtag(1, result.ETag)], TestContext.Current.CancellationToken);
+        var content = await Store.GetObjectAsync("b", "mpc-dst", new ObjectReadOptions(null, null, null),
+            TestContext.Current.CancellationToken);
+        using var body = content.Body;
+        var bytes = new byte[body.Length];
+        await body.ReadExactlyAsync(bytes, TestContext.Current.CancellationToken);
+        bytes.Should().Equal(slice);
+    }
+
+    [Fact]
+    public async Task UploadPartCopy_RangeBeyondSource_InvalidArgument()
+    {
+        // Arrange: источник 5 байт; загрузка приёмника
+        await Store.PutObjectAsync("b", "ba-src", new MemoryStream(Encoding.UTF8.GetBytes("hello")),
+            5, Meta, TestContext.Current.CancellationToken);
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "ba-dst", Meta, "writer",
+            TestContext.Current.CancellationToken);
+
+        // Act: start = size источника — выход за размер
+        var act = async () => await Store.UploadPartCopyAsync(new PartCopyRequest("b", "ba-src", "b", "ba-dst",
+            uploadId, 1, new ByteRange(5, 6), null), TestContext.Current.CancellationToken);
+
+        // Assert: InvalidArgument 400 (невалидный/выходящий диапазон — один код)
+        await act.Should().ThrowAsync<XlInvalidArgumentException>();
+    }
+
+    [Fact]
+    public async Task UploadPartCopy_SourceConditionFailed_PreconditionFailed()
+    {
+        // Arrange: источник; загрузка приёмника; If-Match чужой
+        await Store.PutObjectAsync("b", "pc-src", new MemoryStream(Encoding.UTF8.GetBytes("hello")),
+            5, Meta, TestContext.Current.CancellationToken);
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "pc-dst", Meta, "writer",
+            TestContext.Current.CancellationToken);
+
+        // Act
+        var act = async () => await Store.UploadPartCopyAsync(new PartCopyRequest("b", "pc-src", "b", "pc-dst",
+            uploadId, 1, null, new ObjectConditions("\"foreign\"", null, null, null)),
+            TestContext.Current.CancellationToken);
+
+        // Assert: 412 (как CopyObject t37)
+        await act.Should().ThrowAsync<ObjectStoreException>()
+            .Where(e => e.Code == ObjectStoreErrorCode.PreconditionFailed);
+    }
+
+    [Fact]
+    public async Task UploadPartCopy_UnknownUpload_NoSuchUpload()
+    {
+        // Arrange: источник есть; загрузки приёмника нет
+        await Store.PutObjectAsync("b", "uu-src", new MemoryStream(Encoding.UTF8.GetBytes("hello")),
+            5, Meta, TestContext.Current.CancellationToken);
+
+        // Act
+        var act = async () => await Store.UploadPartCopyAsync(new PartCopyRequest("b", "uu-src", "b", "uu-dst",
+            "no-such", 1, null, null), TestContext.Current.CancellationToken);
+
+        // Assert
+        await act.Should().ThrowAsync<ObjectStoreException>()
+            .Where(e => e.Code == ObjectStoreErrorCode.NoSuchUpload);
+    }
+
+    [Fact]
+    public async Task UploadPartCopy_MissingSource_NoSuchKey()
+    {
+        // Arrange: только загрузка приёмника; источника нет
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "mk-dst", Meta, "writer",
+            TestContext.Current.CancellationToken);
+
+        // Act
+        var act = async () => await Store.UploadPartCopyAsync(new PartCopyRequest("b", "no-such-src", "b", "mk-dst",
+            uploadId, 1, null, null), TestContext.Current.CancellationToken);
+
+        // Assert
+        await act.Should().ThrowAsync<ObjectStoreException>()
+            .Where(e => e.Code == ObjectStoreErrorCode.NoSuchKey);
+    }
+
+    [Fact]
+    public async Task UploadPartCopy_RangeOver5Gb_EntityTooLarge()
+    {
+        // Arrange: источник-заготовка «5 ГБ + 1» — ПРЯМОЙ посев xl.meta (Size), без записи
+        // 5 ГБ на диск: ветка EntityTooLarge срабатывает по src.Size ДО чтения данных
+        // (шаг 4 алгоритма — резолв диапазона/лимит; срез шага 5 не открывается). part.1-
+        // макет — формальная валидность раскладки, данные никогда не читаются
+        var size = 5L * 1024 * 1024 * 1024 + 1;
+        var versionId = Guid.NewGuid();
+        var srcDir = Path.Combine(Root, "b", XlPathEncoder.EncodePath("big-src"));
+        var dataDir = Path.Combine(srcDir, versionId.ToString("N"));
+        Directory.CreateDirectory(dataDir);
+        File.WriteAllText(Path.Combine(dataDir, "part.1"), "x");
+        XlMetaFile.Write(srcDir, new XlMetaRecord(versionId, size, TestVectors.FixedTime,
+            "big-src-etag", "application/octet-stream",
+            new Dictionary<string, string>(), new Dictionary<string, string>(), "big-src-sha"));
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "big-dst", Meta, "writer",
+            TestContext.Current.CancellationToken);
+
+        // Act: диапазон длиной 5 ГБ + 1 (> MaxPartSize) — отказ ДО чтения данных
+        var act = async () => await Store.UploadPartCopyAsync(new PartCopyRequest("b", "big-src", "b", "big-dst",
+            uploadId, 1, new ByteRange(0, 5L * 1024 * 1024 * 1024), null), TestContext.Current.CancellationToken);
+
+        // Assert
+        await act.Should().ThrowAsync<ObjectStoreException>()
+            .Where(e => e.Code == ObjectStoreErrorCode.EntityTooLarge);
+    }
 }

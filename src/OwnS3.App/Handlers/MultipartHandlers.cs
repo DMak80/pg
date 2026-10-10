@@ -95,10 +95,10 @@ public static class MultipartHandlers
                     OperationValidation.ParseHttpDate(context.Http.Headers["x-amz-copy-source-if-modified-since"].FirstOrDefault()),
                     OperationValidation.ParseHttpDate(context.Http.Headers["x-amz-copy-source-if-unmodified-since"].FirstOrDefault()))), ct);
 
-            // Respond: CopyPartResult
+            // Respond: CopyPartResult (LastModified — modTime части, не UtcNow)
             await context.WriteXmlAsync(S3Xml.Serialize(new CopyPartResult
             {
-                LastModified = S3HandlerContext.FormatDate(DateTimeOffset.UtcNow),
+                LastModified = S3HandlerContext.FormatDate(result.LastModified),
                 ETag = result.ETag,
             }), ct);
         }
