@@ -185,11 +185,21 @@ MinIO — `format.json` в `cmd/format-erasure.go`). Поля:
 - Каталог загрузки: `.owns3.sys/multipart/<sha256(bucket/object)>/<uploadID>/`
   — `part.N` загруженных частей + `xl.meta` загрузки (метаданные
   будущего объекта из CreateMultipartUpload: contentType,
-  user-metadata, etag заголовков; дата инициации).
+  user-metadata, etag заголовков; дата инициации) + **журнал частей
+  `parts.json`**: записи `{partNumber, etag (hex-MD5, без кавычек),
+  size, modTime}` — источник ListParts и сверки манифеста Complete;
+  обновляется атомарно (tmp + rename) вместе с заменой файла части.
 - **Журнал активных загрузок** — `uploads.json` в каталоге
-  `<sha256(bucket/object)>/`: записи `{uploadId, initiation-время,
-  access key создателя}` (создатель — для матрицы видимости глава 05);
-  обновляется при Create/Complete/Abort.
+  `<sha256(bucket/object)>/`: записи `{uploadId, bucket, key,
+  initiation-время, access key создателя}` (bucket/key — обратная
+  расшифровка sha256-каталога для листинга ListMultipartUploads
+  бакета; создатель — для матрицы видимости глава 05); обновляется
+  при Create/Complete/Abort.
+- **Механизм идемпотентности Complete** — маркер попытки `attempt.json`
+  в каталоге `<uploadID>/` (`dataDir` — имя каталога данных текущей
+  сборки в целевом объекте): повторный Complete после сбоя до
+  коммит-поинта доиспользует уже перенесённые части из этой попытки;
+  удаляется вместе с каталогом загрузки.
 - **Complete**: части rename'ами собираются из каталога загрузки в
   `<dataDir-uuid>/part.N` целевого объекта; **последним** атомарно
   ставится новый `xl.meta` с составным ETag

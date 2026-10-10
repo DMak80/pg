@@ -7,9 +7,9 @@ namespace OwnS3.IntegrationTests.Api;
 
 // Полный HTTP-цикл 15 операций t37 через подписанные запросы (спека §8):
 // Put/Head/Get/List(v1/V2/Versions)/Copy/Attributes/Delete/DeleteObjects,
-// Range/conditional исходы, вложенные ключи, байтовый порядок листинга,
-// multipart — 500 до t38. Правило имён: каждый кейс — уникальный бакет
-// СВОЕГО кейса (ограничение 8); multipart — на никогда не создаваемом «bucket».
+// Range/conditional исходы, вложенные ключи, байтовый порядок листинга.
+// Правило имён: каждый кейс — уникальный бакет СВОЕГО кейса (ограничение 8);
+// multipart-исходы без данных — на никогда не создаваемом «bucket».
 public sealed class ObjectStorageScenarios(OwnS3AppFactory factory) : IClassFixture<OwnS3AppFactory>
 {
     private static readonly string HelloEtag = "\"5d41402abc4b2a76b9719d911017c592\""; // md5("hello")
@@ -423,10 +423,10 @@ public sealed class ObjectStorageScenarios(OwnS3AppFactory factory) : IClassFixt
     }
 
     [Fact]
-    public async Task Multipart_Operations_Still500()
+    public async Task Multipart_Operations_ReachStorage()
     {
-        // Arrange: бакет «bucket» никогда не создаётся — до Storage дело не доходит,
-        // заглушки multipart-методов отвечают 500 InternalError (критерий §10.8)
+        // Arrange: бакет «bucket» никогда не создаётся — операции дошли до
+        // Storage и отвечают реальным исходом NoSuchBucket (t38)
         var client = NewClient();
 
         // Act
@@ -434,11 +434,11 @@ public sealed class ObjectStorageScenarios(OwnS3AppFactory factory) : IClassFixt
         var part = await client.SendSignedAsync("PUT", "/bucket/key?partNumber=1&uploadId=u",
             body: Encoding.UTF8.GetBytes("part"));
 
-        // Assert
-        create.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
-        (await ErrorXmlAsync(create)).Should().Be("InternalError");
-        part.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
-        (await ErrorXmlAsync(part)).Should().Be("InternalError");
+        // Assert: бакет не создан — 404 NoSuchBucket от Storage (заглушек нет)
+        create.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await ErrorXmlAsync(create)).Should().Be("NoSuchBucket");
+        part.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await ErrorXmlAsync(part)).Should().Be("NoSuchBucket");
     }
 
     // Слияние словарей заголовков (короткий локальный хелпер кейса Attributes).

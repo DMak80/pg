@@ -12,6 +12,7 @@ public sealed class XlVolume(string root, TimeProvider timeProvider, ILogger? lo
     private const int CurrentFormatVersion = 1;
     private const string Mode = "XL Single";
     private static readonly TimeSpan AgeThreshold = TimeSpan.FromHours(1);
+    private static readonly TimeSpan AbandonedUploadThreshold = TimeSpan.FromHours(24);
 
     // Модель volume.json (канон 04 §3).
     private sealed record VolumeInfo(string Magic, int FormatVersion, string VolumeId, string Mode);
@@ -62,19 +63,21 @@ public sealed class XlVolume(string root, TimeProvider timeProvider, ILogger? lo
         // best-effort (механизм без fsync-каталога — не отказ)
         // Старт: tmp/* — БЕЗУСЛОВНО (незакоммиченный staging; закоммиченных
         // данных там не бывает по построению — канон 04 §6), затем возрастные
-        // .trash/orphan.
+        // .trash/orphan и брошенные multipart-загрузки.
         WipeTmp();
         CleanAged();
+        CleanupAbandonedUploads();
         Initialized = true;
     }
 
-    // Фоновый проход: ТОЛЬКО возрастные .trash и orphan-dataDir (порог 1 ч);
-    // tmp НЕ трогается — на старте процесса может идти in-flight PUT со staging
-    // (безусловная очистка tmp — только на старте, спека §4.7/канон 04 §6;
-    // multipart — t38).
+    // Фоновый проход: возрастные .trash и orphan-dataDir (порог 1 ч), брошенные
+    // multipart-загрузки (порог 24 ч); tmp НЕ трогается — на старте процесса
+    // может идти in-flight PUT со staging (безусловная очистка tmp — только на
+    // старте, спека §4.7/канон 04 §6).
     public Task RunCleanupAsync(CancellationToken ct)
     {
         CleanAged();
+        CleanupAbandonedUploads();
         return Task.CompletedTask;
     }
 
@@ -217,8 +220,61 @@ public sealed class XlVolume(string root, TimeProvider timeProvider, ILogger? lo
         }
     }
 
-    private bool IsAged(string path) =>
-        timeProvider.GetUtcNow() - File.GetLastWriteTimeUtc(path) > AgeThreshold;
+    private bool IsAged(string path) => IsAged(path, AgeThreshold);
+
+    // Обобщение на произвольный порог (чистки .trash/orphan — 1 ч, загрузки — 24 ч).
+    private bool IsAged(string path, TimeSpan threshold) =>
+        timeProvider.GetUtcNow() - File.GetLastWriteTimeUtc(path) > threshold;
+
+    // Брошенные загрузки — 24 ч от initiation (канон 04 §5–6): чистится стартом и
+    // каждым фоновым проходом. Без _commitLock XlObjectStore: порог 24 ч исключает
+    // коллизию с живой загрузкой; гонка с Complete может оставить «призрачную» запись
+    // (каталога уже нет) — она не разрешается как загрузка и уходит следующим проходом.
+    private void CleanupAbandonedUploads()
+    {
+        if (!Directory.Exists(MultipartDir))
+            return;
+        var nowMs = timeProvider.GetUtcNow().ToUnixTimeMilliseconds();
+        foreach (var keyDir in Directory.EnumerateDirectories(MultipartDir))
+        {
+            var uploadsPath = MultipartJournals.UploadsJsonPath(keyDir);
+            List<MultipartJournals.UploadJournalEntry> uploads;
+            try
+            {
+                uploads = MultipartJournals.ReadUploads(uploadsPath);
+            }
+            catch (JsonException ex)
+            {
+                // Битый журнал (спека §4.1): warning; записи недоступны — только mtime-прокси
+                logger?.LogWarning(ex, "Битый uploads.json в {KeyDir}: записи не читаются, каталоги чистятся по mtime", keyDir);
+                uploads = [];
+            }
+            var kept = new List<MultipartJournals.UploadJournalEntry>();
+            foreach (var entry in uploads)
+            {
+                if (nowMs - entry.InitiatedMs > AbandonedUploadThreshold.TotalMilliseconds)
+                    TrashIfExists(MultipartJournals.UploadDirPath(keyDir, entry.UploadId));
+                else
+                    kept.Add(entry);
+            }
+            // Каталоги без живой записи (журнал бит/утрачен/запись удалена): mtime-прокси
+            foreach (var uploadDir in Directory.EnumerateDirectories(keyDir))
+                if (kept.All(e => e.UploadId != Path.GetFileName(uploadDir))
+                    && IsAged(uploadDir, AbandonedUploadThreshold))
+                    MoveToTrash(uploadDir);
+            if (kept.Count != uploads.Count)
+                MultipartJournals.WriteUploads(uploadsPath, kept);
+            // Опустевший sha-каталог (журнал пуст И каталогов загрузок нет) удаляется
+            if (kept.Count == 0 && !Directory.EnumerateDirectories(keyDir).Any())
+                Directory.Delete(keyDir, recursive: true); // в нём только uploads.json
+        }
+    }
+
+    private void TrashIfExists(string path)
+    {
+        if (Directory.Exists(path))
+            MoveToTrash(path);
+    }
 
     private static void DeleteRecursive(string path)
     {

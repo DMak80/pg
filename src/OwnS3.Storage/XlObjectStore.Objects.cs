@@ -224,13 +224,15 @@ public sealed partial class XlObjectStore
             return Task.FromResult(new ObjectContent(ToMetadata(key, meta), Stream.Null, NotModified: true, Range: null));
         // 3. Range/If-Range (сверка — с ETag всего объекта, P8)
         var range = RangeResolver.Resolve(options.Range, options.IfRange, meta.ETag, meta.Size);
-        // 4. Полная SHA-256 сверка ДО отдачи: Range не влияет на хэш (Q1)
-        var partPath = Path.Combine(ObjectDir(bucket, key), meta.DataDirName, "part.1");
-        VerifyChecksum(partPath, meta);
-        // 5. Тело: полный объект или срез (Seek + ограничение длины диапазона)
+        // 4. Полная SHA-256 сверка ДО отдачи: Range не влияет на хэш (Q1);
+        //    многочастевое тело — последовательный проход по всем part.N (М8)
+        var partPaths = EnumerateDataParts(ObjectDir(bucket, key), meta.DataDirName)
+            .Select(p => p.Path).ToList();
+        VerifyChecksum(partPaths, meta);
+        // 5. Тело: составной поток (полный объект или срез Range)
         Stream body = range is null
-            ? new FileStream(partPath, FileMode.Open, FileAccess.Read, FileShare.Read)
-            : new RangeSliceStream(partPath, range);
+            ? new MultipartBodyStream(partPaths, 0, meta.Size)
+            : new MultipartBodyStream(partPaths, range.Start, range.End - range.Start + 1);
         return Task.FromResult(new ObjectContent(ToMetadata(key, meta), body, NotModified: false, Range: range));
     }
 
@@ -249,69 +251,50 @@ public sealed partial class XlObjectStore
         return Task.FromResult(new ObjectContent(ToMetadata(key, meta), Stream.Null, NotModified: false, Range: range));
     }
 
-    // Полный проход SHA-256 по part.1; расхождение — невосстановимая порча:
-    // клиенту байты не отдаются (канон 04 §2).
-    private static void VerifyChecksum(string partPath, XlMetaRecord meta)
+    // Перечисление частей данных записи (М8): part.N в dataDir, номер из имени,
+    // размер из файла, по возрастанию номеров; пусто → XlIntegrityException
+    // (запись без данных — порча). Простой PUT — ровно part.1 (частный случай).
+    internal static List<(int Number, string Path, long Size)> EnumerateDataParts(string objectDir, string dataDirName)
+    {
+        var dataDir = Path.Combine(objectDir, dataDirName);
+        if (!Directory.Exists(dataDir))
+            throw new XlIntegrityException($"Каталог данных отсутствует: {dataDir}");
+        var parts = new List<(int Number, string Path, long Size)>();
+        foreach (var file in Directory.EnumerateFiles(dataDir, "part.*"))
+        {
+            var name = Path.GetFileName(file);
+            if (!int.TryParse(name["part.".Length..], out var number))
+                continue; // не-числовые суффиксы — не части
+            parts.Add((number, file, new FileInfo(file).Length));
+        }
+        if (parts.Count == 0)
+            throw new XlIntegrityException($"Запись без данных (нет part.N): {dataDir}");
+        parts.Sort((left, right) => left.Number.CompareTo(right.Number));
+        return parts;
+    }
+
+    // Полный проход SHA-256 по всем частям (конкатенация в порядке номеров);
+    // расхождение — невосстановимая порча: клиенту байты не отдаются (канон 04 §2).
+    private static void VerifyChecksum(IReadOnlyList<string> partPaths, XlMetaRecord meta)
     {
         string actual;
-        using (var stream = new FileStream(partPath, FileMode.Open, FileAccess.Read, FileShare.Read))
-            actual = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+        using (var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+        {
+            var buffer = new byte[64 * 1024];
+            foreach (var path in partPaths)
+                using (var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+                {
+                    int read;
+                    while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+                        sha.AppendData(buffer, 0, read);
+                }
+            actual = Convert.ToHexString(sha.GetHashAndReset()).ToLowerInvariant();
+        }
         if (actual != meta.ContentSha256)
             throw new XlIntegrityException(
                 $"checksum mismatch: объект {meta.VersionId:N}, ожидается {meta.ContentSha256}, факт {actual}");
     }
 
-    // Тело-срез для Range-чтения: FileStream с позиции start, читается ровно
-    // длина диапазона (чистый BCL, освобождает вызывающий).
-    private sealed class RangeSliceStream : Stream
-    {
-        private readonly FileStream _inner;
-        private long _remaining;
-
-        public RangeSliceStream(string partPath, AppliedByteRange range)
-        {
-            _inner = new FileStream(partPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-            _inner.Seek(range.Start, SeekOrigin.Begin);
-            _remaining = range.End - range.Start + 1;
-        }
-
-        public override bool CanRead => true;
-        public override bool CanSeek => false;
-        public override bool CanWrite => false;
-        public override long Length => _remaining;
-        public override long Position
-        {
-            get => _inner.Position;
-            set => throw new NotSupportedException();
-        }
-
-        public override int Read(byte[] buffer, int offset, int count)
-        {
-            if (_remaining <= 0)
-                return 0;
-            var read = _inner.Read(buffer, offset, (int)Math.Min(count, _remaining));
-            _remaining -= read;
-            return read;
-        }
-
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing)
-                _inner.Dispose();
-            base.Dispose(disposing);
-        }
-
-        public override void Flush() { }
-        public override int Read(Span<byte> buffer)
-        {
-            if (_remaining <= 0)
-                return 0;
-            var read = _inner.Read(buffer[..(int)Math.Min(buffer.Length, _remaining)]);
-            _remaining -= read;
-            return read;
-        }
-        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
-        public override void SetLength(long value) => throw new NotSupportedException();
-        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
-    }
+    // Тело-срез Range — MultipartBodyStream с параметрами (startOffset, length);
+    // простой PUT — частный случай одной части (М8).
 }

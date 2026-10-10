@@ -27,7 +27,7 @@ public interface IObjectStore
 
     // multipart
     Task<string> CreateMultipartUploadAsync(string bucket, string key,
-        ObjectUploadMetadata metadata, CancellationToken ct);                          // → uploadId (UUID v4)
+        ObjectUploadMetadata metadata, string initiatorAccessKey, CancellationToken ct); // → uploadId (UUID v4); владелец — в uploads.json (канон 05)
     Task<PutResult> UploadPartAsync(string bucket, string key, string uploadId, int partNumber,
         Stream body, long contentLength, CancellationToken ct);
     Task<PutResult> UploadPartCopyAsync(PartCopyRequest request, CancellationToken ct);
@@ -35,6 +35,6 @@ public interface IObjectStore
         IReadOnlyList<PartEtag> parts, CancellationToken ct);
     Task AbortMultipartUploadAsync(string bucket, string key, string uploadId, CancellationToken ct);
     Task<PartsPage> ListPartsAsync(string bucket, string key, string uploadId,
-        int? maxParts, int? partNumberMarker, CancellationToken ct);
+        int? maxParts, int? partNumberMarker, UploadVisibility visibility, CancellationToken ct);
     Task<UploadsPage> ListMultipartUploadsAsync(string bucket, UploadsQuery query, CancellationToken ct);
 }

@@ -64,7 +64,17 @@ public sealed record PartsPage(IReadOnlyList<PartEntry> Parts, bool IsTruncated,
 public sealed record UploadEntry(string Key, string UploadId, DateTimeOffset Initiated);
 
 public sealed record UploadsQuery(string? Prefix, string? Delimiter, string? KeyMarker,
-    string? UploadIdMarker, int? MaxUploads, string? EncodingType);
+    string? UploadIdMarker, int? MaxUploads, string? EncodingType, UploadVisibility Visibility);
+
+/// <summary>Видимость загрузок для ListParts/ListMultipartUploads (канон 05 §3):
+/// все — read-write/admin; только свои — read-only (чужая = несуществующая).</summary>
+public abstract record UploadVisibility
+{
+    public static readonly UploadVisibility AllUploads = new All();
+    public static UploadVisibility OwnedBy(string accessKey) => new Owned(accessKey);
+    public sealed record All : UploadVisibility;
+    public sealed record Owned(string AccessKey) : UploadVisibility;
+}
 
 public sealed record UploadsPage(IReadOnlyList<UploadEntry> Uploads, IReadOnlyList<CommonPrefixEntry> CommonPrefixes,
     bool IsTruncated, string? NextKeyMarker, string? NextUploadIdMarker);

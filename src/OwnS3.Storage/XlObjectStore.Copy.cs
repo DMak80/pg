@@ -46,10 +46,12 @@ public sealed partial class XlObjectStore
         Directory.CreateDirectory(dataDir);
         try
         {
-            var srcPart = Path.Combine(ObjectDir(request.SourceBucket, request.SourceKey),
-                src.DataDirName, "part.1");
-            var destPart = Path.Combine(dataDir, "part.1");
-            CopyPart(srcPart, destPart);
+            // 4. Пофайловый перенос частей источника (простой PUT — ровно part.1;
+            //    multipart — все, М8): хардлинк-точка t37 на каждую часть;
+            //    etag/sha256/Size наследуются из записи источника
+            foreach (var (_, partPath, _) in EnumerateDataParts(
+                         ObjectDir(request.SourceBucket, request.SourceKey), src.DataDirName))
+                CopyPart(partPath, Path.Combine(dataDir, Path.GetFileName(partPath)));
             // 5. xl.meta: метаданные по директиве; etag/sha256/Size наследованы;
             //    versionId/modTime новые
             var (contentType, userMetadata) = request.ReplaceMetadata && request.NewMetadata is not null
@@ -122,10 +124,25 @@ public sealed partial class XlObjectStore
             return Task.FromResult(new ObjectAttributesResult(null, ToMetadata(key, meta)));
         // 3. Атрибуты: ETag В КАВЫЧКАХ (P8 — хендлер ставит значение в HTTP-заголовок);
         //    LastModified — modTime записи (заголовок Last-Modified ответа);
-        //    фильтрацию по запрошенным делает App
-        var parts = new ObjectPartsAttributes(PartsCount: 1, PartNumberMarker: partNumberMarker ?? 0,
-            NextPartNumberMarker: null, MaxParts: maxParts ?? 1000, IsTruncated: false,
-            Parts: [(1, meta.Size)]);
+        //    фильтрацию по запрошенным делает App. Части — реальные файлы dataDir
+        //    (канон 02 §5 GetObjectAttributes; простой PUT — part.1, М8)
+        var dataParts = EnumerateDataParts(ObjectDir(bucket, key), meta.DataDirName);
+        var marker = partNumberMarker ?? 0;
+        var limit = maxParts ?? 1000;
+        // max-parts=0: пустой список частей без усечения (конвенция ListWalker t37)
+        if (limit == 0)
+            return Task.FromResult(new ObjectAttributesResult(new ObjectAttributes(
+                '"' + meta.ETag + '"', meta.Size, "STANDARD",
+                new ObjectPartsAttributes(dataParts.Count, marker, NextPartNumberMarker: null,
+                    MaxParts: 0, IsTruncated: false, Parts: []),
+                meta.ModTime), null));
+        var selected = dataParts.Where(p => p.Number > marker)
+            .Take(limit)
+            .Select(p => (p.Number, p.Size))
+            .ToList();
+        var truncated = dataParts.Count(p => p.Number > marker) > selected.Count;
+        var parts = new ObjectPartsAttributes(dataParts.Count, marker,
+            truncated && selected.Count > 0 ? selected[^1].Number : null, limit, truncated, selected);
         var result = new ObjectAttributes('"' + meta.ETag + '"', meta.Size, "STANDARD", parts, meta.ModTime);
         return Task.FromResult(new ObjectAttributesResult(result, null));
     }

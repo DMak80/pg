@@ -23,4 +23,8 @@ public static class Utf8ByteOrder
     // байтов префикса корректно на любой позиции начала строки).
     public static bool StartsWith(string value, string prefix) =>
         Encoding.UTF8.GetBytes(value).AsSpan().StartsWith(Encoding.UTF8.GetBytes(prefix));
+
+    // Байтовый суффикс (распознавание маркера-CP по delimiter-окончанию, М10).
+    public static bool EndsWith(string value, string suffix) =>
+        Encoding.UTF8.GetBytes(value).AsSpan().EndsWith(Encoding.UTF8.GetBytes(suffix));
 }

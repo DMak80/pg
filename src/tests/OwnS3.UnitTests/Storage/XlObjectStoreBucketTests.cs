@@ -4,8 +4,7 @@ using OwnS3.Storage;
 namespace OwnS3.UnitTests.Storage;
 
 // Бакетные операции XlObjectStore + BucketMetaStore: CRUD, исходы
-// BucketAlreadyOwnedByYou/BucketNotEmpty/NoSuchBucket, сортировка ListBuckets,
-// multipart-заглушки (NotWired-семантика).
+// BucketAlreadyOwnedByYou/BucketNotEmpty/NoSuchBucket, сортировка ListBuckets.
 public class XlObjectStoreBucketTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "owns3-test-" + Guid.NewGuid().ToString("N"));
@@ -126,65 +125,5 @@ public class XlObjectStoreBucketTests : IDisposable
         // CreationDate каждого — из bucket.json (фиксированный TimeProvider)
         buckets.Select(b => b.Name).Should().Equal("a-bucket", "z-bucket");
         buckets.Should().OnlyContain(b => b.CreationDate == TestVectors.FixedTime);
-    }
-
-    [Theory]
-    [MemberData(nameof(MultipartInvocations))]
-    public async Task MultipartMethods_ThrowUnavailable(Func<XlObjectStore, Task> call)
-    {
-        // Arrange / Act
-        var act = async () => await call(_store);
-
-        // Assert: 7 multipart-методов — заглушки до t38 (NotWired-семантика)
-        await act.Should().ThrowAsync<ObjectStoreUnavailableException>();
-    }
-
-    public static IEnumerable<object[]> MultipartInvocations()
-    {
-        yield return [new Func<XlObjectStore, Task>(s => s.CreateMultipartUploadAsync("b", "k",
-            new ObjectUploadMetadata("text/plain", new Dictionary<string, string>()), default))];
-        yield return [new Func<XlObjectStore, Task>(s => s.UploadPartCopyAsync(null!, default))];
-        yield return [new Func<XlObjectStore, Task>(s => s.CompleteMultipartUploadAsync("b", "k", "u", [], default))];
-        yield return [new Func<XlObjectStore, Task>(s => s.AbortMultipartUploadAsync("b", "k", "u", default))];
-        yield return [new Func<XlObjectStore, Task>(s => s.ListPartsAsync("b", "k", "u", null, null, default))];
-        yield return [new Func<XlObjectStore, Task>(s => s.ListMultipartUploadsAsync("b", null!, default))];
-    }
-
-    [Fact]
-    public async Task UploadPart_DrainsBodyBeforeThrowing()
-    {
-        // Arrange
-        var body = new CountingStream(new MemoryStream(new byte[1024]));
-
-        // Act
-        var act = async () => await _store.UploadPartAsync("b", "k", "u", 1, body, 1024, CancellationToken.None);
-
-        // Assert: тело дочитано до отказа (drain — сверка конвейера наблюдаема)
-        await act.Should().ThrowAsync<ObjectStoreUnavailableException>();
-        body.BytesRead.Should().Be(1024);
-    }
-
-    // Счётчик прочитанного — фиксация drain-семантики (паттерн NotWired-тестов).
-    private sealed class CountingStream(Stream inner) : Stream
-    {
-        public long BytesRead { get; private set; }
-
-        public override bool CanRead => inner.CanRead;
-        public override bool CanSeek => inner.CanSeek;
-        public override bool CanWrite => inner.CanWrite;
-        public override long Length => inner.Length;
-        public override long Position { get => inner.Position; set => inner.Position = value; }
-
-        public override int Read(byte[] buffer, int offset, int count)
-        {
-            var read = inner.Read(buffer, offset, count);
-            BytesRead += read;
-            return read;
-        }
-
-        public override void Flush() => inner.Flush();
-        public override long Seek(long offset, SeekOrigin origin) => inner.Seek(offset, origin);
-        public override void SetLength(long value) => inner.SetLength(value);
-        public override void Write(byte[] buffer, int offset, int count) => inner.Write(buffer, offset, count);
     }
 }

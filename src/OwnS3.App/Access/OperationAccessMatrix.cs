@@ -3,8 +3,8 @@ using OwnS3.App.Routing;
 namespace OwnS3.App.Access;
 
 // Матрица прав (arch/owns3/05 §3): роль → минимальные права на операцию.
-// Замечание t36: read-only допускается к ListParts/ListMultipartUploads без
-// фильтра «своих» загрузок — фильтр появляется с данными загрузок (t38).
+// ListParts/ListMultipartUploads для read-only — только свои загрузки:
+// хендлеры передают UploadVisibility.OwnedBy в Storage (канон 05 §3).
 public static class OperationAccessMatrix
 {
     private static readonly IReadOnlySet<S3Operation> ReadOnly =

@@ -5,11 +5,11 @@ using OwnS3.Protocol.Auth;
 
 namespace OwnS3.IntegrationTests.Api;
 
-// Роутинг 22 операций (глава 02) на реальном объектном слое (t37): немутационные
-// кейсы — на никогда не создаваемом бакете «bucket» (404 NoSuchBucket/NoSuchKey,
-// multipart — 500 заглушки до t38); мутационные — на уникальном бакете своего
-// кейса; GetBucketLocation — полный успех 200; вне-наборные сабресурсы — 501 до
-// аутентификации; не-матч — 400; OPTIONS — 200 без CORS.
+// Роутинг 22 операций (глава 02) на реальном объектном слое: немутационные
+// кейсы — на никогда не создаваемом бакете «bucket» (404 NoSuchBucket/NoSuchKey;
+// multipart-операции — реальные исходы Storage t38); мутационные — на уникальном
+// бакете своего кейса; GetBucketLocation — полный успех 200; вне-наборные
+// сабресурсы — 501 до аутентификации; не-матч — 400; OPTIONS — 200 без CORS.
 public sealed class RoutingScenarios(OwnS3AppFactory factory) : IClassFixture<OwnS3AppFactory>
 {
     private OwnS3TestClient NewClient() => new(factory.CreateClient());
@@ -25,14 +25,14 @@ public sealed class RoutingScenarios(OwnS3AppFactory factory) : IClassFixture<Ow
         { "GET",     "/bucket?prefix=x",             HttpStatusCode.NotFound,             "NoSuchBucket" },
         { "GET",     "/bucket?list-type=2",          HttpStatusCode.NotFound,             "NoSuchBucket" },
         { "GET",     "/bucket?versions",             HttpStatusCode.NotFound,             "NoSuchBucket" },
-        // multipart-заглушки — 500 InternalError (граница t38)
-        { "GET",     "/bucket?uploads",              HttpStatusCode.InternalServerError,  "InternalError" },
+        // multipart — реальные исходы Storage (t38): бакета нет — NoSuchBucket
+        { "GET",     "/bucket?uploads",              HttpStatusCode.NotFound,             "NoSuchBucket" },
         { "GET",     "/bucket/key",                  HttpStatusCode.NotFound,             "NoSuchBucket" },
         { "HEAD",    "/bucket/key",                  HttpStatusCode.NotFound,             null }, // HEAD: только статус
         { "DELETE",  "/bucket/key",                  HttpStatusCode.NotFound,             "NoSuchBucket" },
-        { "DELETE",  "/bucket/key?uploadId=u",       HttpStatusCode.InternalServerError,  "InternalError" },
-        { "GET",     "/bucket/key?uploadId=u",       HttpStatusCode.InternalServerError,  "InternalError" },
-        { "POST",    "/bucket/key?uploads",          HttpStatusCode.InternalServerError,  "InternalError" },
+        { "DELETE",  "/bucket/key?uploadId=u",       HttpStatusCode.NotFound,             "NoSuchBucket" },
+        { "GET",     "/bucket/key?uploadId=u",       HttpStatusCode.NotFound,             "NoSuchBucket" },
+        { "POST",    "/bucket/key?uploads",          HttpStatusCode.NotFound,             "NoSuchBucket" },
         { "GET",     "/bucket/key?attributes",       HttpStatusCode.NotFound,             "NoSuchBucket" },
     };
 
@@ -110,9 +110,11 @@ public sealed class RoutingScenarios(OwnS3AppFactory factory) : IClassFixture<Ow
         var uploadPartCopy = await client.SendSignedAsync("PUT", "/bucket/key?partNumber=1&uploadId=u",
             headers: new Dictionary<string, string> { ["x-amz-copy-source"] = "/bucket/src" });
 
-        // Assert: multipart-заглушки — не меняются (до t38)
-        uploadPart.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
-        uploadPartCopy.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+        // Assert: бакет не существует — реальные исходы Storage (404 NoSuchBucket)
+        uploadPart.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await ErrorXmlAsync(uploadPart)).Should().Be("NoSuchBucket");
+        uploadPartCopy.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await ErrorXmlAsync(uploadPartCopy)).Should().Be("NoSuchBucket");
     }
 
     [Fact]
@@ -140,8 +142,9 @@ public sealed class RoutingScenarios(OwnS3AppFactory factory) : IClassFixture<Ow
         var response = await NewClient().SendSignedAsync("POST", "/bucket/key?uploadId=u",
             body: Encoding.UTF8.GetBytes(xml));
 
-        // Assert: multipart-заглушка (до t38)
-        response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+        // Assert: бакет не существует — 404 NoSuchBucket от Storage (t38)
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await ErrorXmlAsync(response)).Should().Be("NoSuchBucket");
     }
 
     [Theory]

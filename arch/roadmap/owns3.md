@@ -55,16 +55,7 @@ multipart → приёмка клиентами → erasure coding.
 
 ## Задачи
 
-- **`t38-owns3-multipart`** —
-  multipart-цикл: CreateMultipartUpload/UploadPart/UploadPartCopy/
-  CompleteMultipartUpload/AbortMultipartUpload/ListParts/
-  ListMultipartUploads; раскладка
-  `.owns3.sys/multipart/<sha256(bucket/object)>/<uploadID>/`
-  (журнал активных uploadID — uploads.json), сборка Complete
-  rename'ами частей, составной ETag, чистка брошенных загрузок по
-  возрасту. Референс: `cmd/erasure-multipart.go`,
-  `cmd/object-multipart-handlers.go`.
-- **`t39-owns3-e2e`** ← `t38-owns3-multipart` — приёмочная грань:
+- **`t39-owns3-e2e`** — приёмочная грань:
   интеграционные/E2E тесты реальными клиентами (AWS SDK .NET — простые
   PUT/GET, multipart, conditional, Range; `mc`), dev-стенд сервис в
   докере (образ — по правилам E2E-образов (сборка .NET на хосте,
