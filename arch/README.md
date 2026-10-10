@@ -113,6 +113,8 @@ arch/
 │                                  + клиентский дискавери (endpoints/ACL-креды app)
 ├── 21-valkeyworker.md         ← ★ ValkeyWorker: оркестратор Valkey-кластеров
 │                                  (provisioning/deprovisioning/надзор/converge/ротация кред)
+├── 22-owns3.md                ← ★ ownS3: собственное S3-хранилище
+│                                  (критерий — стандарт S3 API; MinIO — точечный референс, не копия)
 ├── configs/
 │   ├── etcd/
 │   │   ├── docker-compose.yml
@@ -217,3 +219,6 @@ arch/
 18. [21-valkeyworker.md](21-valkeyworker.md) — оркестратор ValkeyWorker:
     декларативный жизненный цикл Valkey-кластеров (standalone-кеш,
     ACL-креды, converge, ротация без рестартов; задачи — [roadmap/valkey.md](roadmap/valkey.md)).
+19. [22-owns3.md](22-owns3.md) — собственное S3-хранилище ownS3:
+    критерий — стандарт S3 API (MinIO — точечный референс, не копия;
+    задачи — [roadmap/owns3.md](roadmap/owns3.md)).
