@@ -23,8 +23,9 @@ public static class MultipartHandlers
             ObjectHandlers.EnsureObjectKey(context.Key);
             var metadata = ObjectHandlers.UploadMetadata(context, contentTypeDefault: "application/octet-stream");
 
-            // Act
-            var uploadId = await Store.CreateMultipartUploadAsync(context.Bucket, context.Key, metadata, ct);
+            // Act: инициатор — владелец загрузки в uploads.json (канон 05 §3)
+            var uploadId = await Store.CreateMultipartUploadAsync(context.Bucket, context.Key, metadata,
+                context.Request.Identity!.AccessKey, ct);
 
             // Respond: InitiateMultipartUploadResult
             await context.WriteXmlAsync(S3Xml.Serialize(new InitiateMultipartUploadResult

@@ -27,7 +27,7 @@ public interface IObjectStore
 
     // multipart
     Task<string> CreateMultipartUploadAsync(string bucket, string key,
-        ObjectUploadMetadata metadata, CancellationToken ct);                          // → uploadId (UUID v4)
+        ObjectUploadMetadata metadata, string initiatorAccessKey, CancellationToken ct); // → uploadId (UUID v4); владелец — в uploads.json (канон 05)
     Task<PutResult> UploadPartAsync(string bucket, string key, string uploadId, int partNumber,
         Stream body, long contentLength, CancellationToken ct);
     Task<PutResult> UploadPartCopyAsync(PartCopyRequest request, CancellationToken ct);
