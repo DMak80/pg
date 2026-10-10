@@ -1,4 +1,4 @@
-# t37-owns3-storage-objects: план реализации (rev.4, после третьего ревью Фазы 4)
+# t37-owns3-storage-objects: план реализации (rev.5, приказ пользователя: только BCL, без unsafe/P-Invoke)
 
 > **Для исполняющих агентов:** ОБЯЗАТЕЛЬНЫЙ саб-скилл: superpowers:subagent-driven-development (рекомендуется) или superpowers:executing-plans — исполнять по задачам; шаги отмечаются чекбоксами (`- [ ]`). Каждый шаг несёт Вход/Действие/Выход/Проверку/Связь со spec.
 
@@ -6,7 +6,7 @@
 
 **Архитектура:** `OwnS3.Storage` — чистая библиотека (без ASP.NET): `XlVolume` (том, чистки) + `XlObjectStore` (реализация `IObjectStore`) + кодирование путей/метафайл/листинг/условия как отдельные классы; коммит-поинт любой записи — атомарная замена `xl.meta` (rename). `OwnS3.App` подставляет `XlObjectStore` в DI, инициализирует том fail-fast до Kestrel, фоновые чистки 15 мин, `/healthz` с пробой тома.
 
-**Технологии:** .NET 10, C# (`Nullable=enable`, `TreatWarningsAsErrors=true`), xunit.v3 + FluentAssertions, `TimeProvider` (тесты — фиксированное время), IncrementalHash (MD5/SHA-256), `File.CreateHardLink` + P/Invoke fsync каталога (Unix).
+**Технологии:** .NET 10, C# (`Nullable=enable`, `TreatWarningsAsErrors=true`), xunit.v3 + FluentAssertions, `TimeProvider` (тесты — фиксированное время), IncrementalHash (MD5/SHA-256), `File.CreateHardLink`, `FileStream.Flush(flushToDisk: true)` — только стандартные API .NET (см. ограничение 9).
 
 **Спека:** `docs/superpowers/2026-10-10-t37-owns3-storage-objects/spec.md` (план аргументирует от спеки; исполнители читают оба документа).
 
@@ -24,13 +24,14 @@
 6. Каждая задача заканчивается зелёным прогоном своих тестов и коммитом; тесты запускаются с `DOTNET_CLI_UI_LANGUAGE=en`.
 7. Чистки тестовой среды: temp-тома удаляются в teardown тестов (`finally`/`Dispose`); docker не используется — контейнерной зачистки нет.
 8. **Изоляция интеграционных кейсов:** том на класс (`IClassFixture`) НЕ достаточен — xUnit рандомизирует порядок кейсов внутри класса. Правило: мутационные кейсы работают на уникальном имени бакета СВОЕГО кейса (`b-<суффикс>`), немутационные — на никогда не создаваемом имени `bucket`; порядок кейсов внутри класса тогда неважен.
+9. **Только стандартные API .NET (BCL) — приказ пользователя:** запрещён unsafe в любом виде (ключевое слово `unsafe`, блоки, `AllowUnsafeBlocks` в csproj, `LibraryImport` — генератор эмитит unsafe) и P/Invoke в любом виде (`DllImport`, вызовы libc/native). Следствие: fsync каталогов НЕ выполняется — стандартного BCL-API не существует (см. примечание Task 3).
 
 ## Проектные решения плана (в рамках формата спеки, применяются всеми задачами)
 
 - **P1. dataDir-имя = versionId записи.** Формат `xl.meta` (спека §4.2) не хранит отдельного поля dataDir; имя каталога данных `<uuid>/part.1` := `VersionId` записи (оба — UUID v4 «новый на каждую запись», канон 04 §1/§2). Orphan-чистка: Guid-подкаталоги каталога объекта ≠ versionId текущего `xl.meta` (или при отсутствии/битости `xl.meta` — все Guid-подкаталоги, см. Task 3).
 - **P2. `XlInvalidArgumentException(message) : Exception`** — доменный 400-исход Storage (лимит сегмента 255 байт, невалидный continuation-token). `InvalidArgument` в `ObjectStoreErrorCode` отсутствует и не добавляется (ограничение 5); App ловит по типу и маппит в `S3ErrorCode.InvalidArgument`.
 - **P3. `XlIntegrityException(message) : Exception`** — невосстановимая порча (битые `xl.meta`+`xl.meta.bkp`, checksum-mismatch при чтении, несоответствие фактической длины тела заявленной). Попадает в catch-all `S3Middleware` → 500 `InternalError` с диагностикой в лог.
-- **P4. Файловый IO в Storage — синхронный** (локальный том, надёжность и простота); методы контракта — async-обёртки (`Task.FromResult`/`ValueTask`). fsync-дисциплина (спека §4.3 п.2): `FileStream.Flush(flushToDisk: true)` для КАЖДОГО записываемого файла (`part.1` и временного файла `xl.meta` до его rename); каталог — P/Invoke `open`+`fsync`+`close` (Unix), прочие платформы — no-op (best-effort, warning в лог вызывающего).
+- **P4. Файловый IO в Storage — синхронный** (локальный том, надёжность и простота); методы контракта — async-обёртки (`Task.FromResult`/`ValueTask`). fsync-дисциплина (спека §4.3 п.2) в рамках BCL: `FileStream.Flush(flushToDisk: true)` для КАЖДОГО записываемого файла (`part.1` и временного файла `xl.meta` до его rename); fsync КАТАЛОГОВ не выполняется — стандартного BCL-API нет, P/Invoke запрещён (ограничение 9, примечание Task 3); вместо него в коммит-цикле записи — diagnostic-warning в лог (Task 6 п.4).
 - **P5. Время.** Все метки времени — через `TimeProvider` (мс, UTC). Тесты: существующий `FixedTimeProvider` (`src/tests/OwnS3.UnitTests/TestVectors.cs`) задаёт «сейчас» записи → modTime детерминирован; возраст `.trash`/orphan в тестах чисток — `File.SetLastWriteTimeUtc(...)` в прошлое.
 - **P6. Транзитные заглушки `XlObjectStore`.** Класс появляется в задаче 4 со всеми методами; нереализованные на момент задачи методы бросают `ObjectStoreUnavailableException` (UploadPart — drain + бросок, семантика NotWired); каждая следующая задача заменяет свою группу методов на реализацию. После задачи 8 заглушечными остаются только multipart-методы (до t38).
 - **P7. Файлы Storage** — в корне `src/OwnS3.Storage/` (соответствие таблице спеки §4.1); `XlObjectStore` — partial: `XlObjectStore.cs` (ctor/хелперы), `XlObjectStore.Buckets.cs`, `XlObjectStore.Objects.cs`, `XlObjectStore.Copy.cs`, `XlObjectStore.List.cs`, `XlObjectStore.Multipart.cs`. Тесты — `src/tests/OwnS3.UnitTests/Storage/`.
@@ -221,7 +222,7 @@ uint16 userMetadataCount | (string key, string value)* |
 uint16 headersCount | (string name, string value)* |
 string contentSha256
 ```
-`string` = `uint16 byteLength + UTF-8 bytes`. Длины писать вручную (`BinaryPrimitives`/`MemoryStream` + `BinaryWriter` для чисел; 7-bit-префикс `BinaryWriter.Write(string)` НЕ подходит). Чтение: любое несоответствие (обрыв данных, magic ≠ `OWS3`, formatVersion ≠ 1, recordVersion ≠ 1, остаточные байты) → `XlIntegrityException`. `ETag` в записи — hex без кавычек (P8). `Write`: временный файл `xl.meta.tmp` создаётся/пишется через `FileStream` с `Flush(flushToDisk: true)` и закрывается ДО `File.Move(tmp, xl.meta, overwrite: true)` (fsync tmp-файла до rename; fsync каталога после rename — ответственность вызывающего, Task 6).
+`string` = `uint16 byteLength + UTF-8 bytes`. Длины писать вручную (`BinaryPrimitives`/`MemoryStream` + `BinaryWriter` для чисел; 7-bit-префикс `BinaryWriter.Write(string)` НЕ подходит). Чтение: любое несоответствие (обрыв данных, magic ≠ `OWS3`, formatVersion ≠ 1, recordVersion ≠ 1, остаточные байты) → `XlIntegrityException`. `ETag` в записи — hex без кавычек (P8). `Write`: временный файл `xl.meta.tmp` создаётся/пишется через `FileStream` с `Flush(flushToDisk: true)` и закрывается ДО `File.Move(tmp, xl.meta, overwrite: true)` (fsync tmp-файла до rename; fsync каталога после rename не выполняется — примечание Task 3).
 
 - [ ] **Шаг 1. Написать падающий тест**
   - Вход: интерфейс Task 2 определён.
@@ -232,7 +233,7 @@ string contentSha256
 
 - [ ] **Шаг 2. Реализовать**
   - Вход: красный тест.
-  - Действие: `XlMetaFile.cs` + `XlIntegrityException.cs` по формату (Write — с fsync временного файла до rename).
+  - Действие: `XlMetaFile.cs` + `XlIntegrityException.cs` по формату (Write — с fsync временного файла до rename; только BCL — ограничение 9).
   - Выход: метафайл готов.
   - Проверка: фильтр `~XlMetaFileTests` → PASS.
   - Связь со spec: §4.2, §4.3 п.2.
@@ -246,35 +247,18 @@ string contentSha256
 
 ---
 
-### Task 3: XlVolume — том, volume.json, чистки + DirectoryFsync (фаза 1)
+### Task 3: XlVolume — том, volume.json, чистки (фаза 1)
+
+> **Примечание (глобальное, ограничение 9 — приказ пользователя): fsync каталогов НЕ выполняется.** Стандартного BCL-API fsync каталога не существует, P/Invoke и unsafe запрещены. Канон 04 / спека §4.3 п.2 допускают best-effort: платформа/механизм без fsync-каталога → warning в лог, не отказ. Следствие для надёжности: fsync ФАЙЛОВ (`part.1`, tmp-файл `xl.meta` через `FileStream.Flush(flushToDisk: true)`) выполняется полностью; durability каталогных метаданных — на усмотрение ОС. Компонент `DirectoryFsync` из ранних ревизий плана УДАЛЁН.
 
 **Файлы:**
-- Create: `src/OwnS3.Storage/XlVolume.cs`, `src/OwnS3.Storage/DirectoryFsync.cs`
+- Create: `src/OwnS3.Storage/XlVolume.cs`
 - Modify: `src/OwnS3.Storage/OwnS3.Storage.csproj` — добавить `<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" />` (версия 10.0.9 уже в `src/Directory.Packages.props`)
 - Test: `src/tests/OwnS3.UnitTests/Storage/XlVolumeTests.cs`
 
 **Interfaces (производит):**
 ```csharp
 namespace OwnS3.Storage;
-
-// fsync каталога (Unix): open+fsync+close; прочие платформы — no-op (best-effort).
-// P/Invoke через LibraryImport: требует partial-класса и ЯВНОГО маршалинга
-// строковых параметров (LPStr) — см. сигнатуры ниже.
-internal static partial class DirectoryFsync
-{
-    [LibraryImport("libc", SetLastError = true)]
-    private static partial int open([MarshalAs(UnmanagedType.LPStr)] string path, int flags); // O_RDONLY = 0
-
-    [LibraryImport("libc", SetLastError = true)]
-    private static partial int fsync(int fd);
-
-    [LibraryImport("libc", SetLastError = true)]
-    private static partial int close(int fd);
-
-    // Sync(directoryPath): только Linux/macOS (RuntimeInformation.IsOSPlatform),
-    // иначе no-op; ошибки libc — проглотить (best-effort, спека §4.3 п.2).
-    public static void Sync(string directoryPath);
-}
 
 // Том xl (канон 04 §1/§3/§6). Один экземпляр на процесс; после Initialize —
 // служебная структура готова, чистки старта выполнены.
@@ -331,14 +315,14 @@ public sealed class XlVolume(string root, TimeProvider timeProvider, ILogger? lo
 
 - [ ] **Шаг 2. Реализовать**
   - Вход: красный тест.
-  - Действие: `XlVolume.cs`, `DirectoryFsync.cs` (сигнатуры P/Invoke — с `[MarshalAs(UnmanagedType.LPStr)]` в partial-классе), PackageReference в csproj.
+  - Действие: `XlVolume.cs` по Interfaces/Детали выше (только BCL — ограничение 9), PackageReference в csproj.
   - Выход: том готов.
   - Проверка: весь `OwnS3.UnitTests` без фильтра → PASS (регрессий нет).
   - Связь со spec: §4.7.
 
 - [ ] **Шаг 3. Коммит**
   - Вход: зелёный прогон.
-  - Действие: `git commit -m "feat(owns3-storage): XlVolume — volume.json fail-fast, старт/фоновые чистки (orphan вкл. без xl.meta), DirectoryFsync"`.
+  - Действие: `git commit -m "feat(owns3-storage): XlVolume — volume.json fail-fast, старт/фоновые чистки (orphan вкл. без xl.meta)"`.
   - Выход: коммит.
   - Проверка: `git log -1 --stat`.
   - Связь со spec: фаза 1 §7.
@@ -566,10 +550,11 @@ public static AppliedByteRange? Resolve(ByteRange? range, string? ifRange, strin
 **`PutObjectAsync` — последовательность (спека §4.3, реализовать точно):**
 1. `EnsureBucket` → NoSuchBucket.
 2. `staging = Path.Combine(volume.TmpDir, Guid.NewGuid().ToString("N"))`; `versionId = Guid.NewGuid()`; `dataDir = staging/<versionId "N">`; `part.1 = dataDir/part.1`.
-3. Копирование тела → `(etag, sha256)`; `xl.meta` = `XlMetaRecord(versionId, actualLength, now, etag, metadata.ContentType, metadata.UserMetadata, EmptyHeaders, sha256)` (ETag — hex без кавычек, P8); `XlMetaFile.Write(staging, record)` (fsync tmp-файла внутри Write); fsync: `part.1` — `FileStream.Flush(true)` при записи, каталоги — `DirectoryFsync.Sync(dataDir)` и `Sync(staging)` (ошибка fsync каталога → `logger.LogWarning`, не отказ).
+3. Копирование тела → `(etag, sha256)`; `xl.meta` = `XlMetaRecord(versionId, actualLength, now, etag, metadata.ContentType, metadata.UserMetadata, EmptyHeaders, sha256)` (ETag — hex без кавычек, P8); `XlMetaFile.Write(staging, record)` (fsync tmp-файла внутри Write). fsync файлов: `part.1` — `FileStream.Flush(flushToDisk: true)` при записи (чистый BCL, ограничение 9). fsync КАТАЛОГОВ (`dataDir`, `staging`) не выполняется (примечание Task 3).
 4. Коммит `CommitStagedObjectAsync`: `target = ObjectDir(bucket, key)`:
    - `target` НЕ существует → `Directory.CreateDirectory(Path.GetDirectoryName(target))` → `Directory.Move(staging, target)` (единый rename = коммит);
-   - `target` существует → старый `XlMetaFile.Read(target, out _)` (нет файла — нет старого) → `Directory.Move(dataDir, target/<versionId "N">)` → `XlMetaFile.Write(target, record)` (bkp→tmp→rename, КОММИТ) → старый `target/<oldVersionId "N">` существует → `volume.MoveToTrash(...)`; после коммита `DirectoryFsync.Sync(target)`.
+   - `target` существует → старый `XlMetaFile.Read(target, out _)` (нет файла — нет старого) → `Directory.Move(dataDir, target/<versionId "N">)` → `XlMetaFile.Write(target, record)` (bkp→tmp→rename, КОММИТ) → старый `target/<oldVersionId "N">` существует → `volume.MoveToTrash(...)`.
+   - После коммита (место, где ранее планировался fsync каталога — приказ пользователя, примечание Task 3): `logger.LogWarning("fsync каталога объекта не выполняется (только BCL, приказ пользователя): {Target}", target)` — diagnostic-warning для наблюдаемости.
 5. `finally`: `staging` существует → `Directory.Delete(staging, recursive: true)` (при любом отказе — спека §4.3 п.4).
 6. Возврат `PutResult('"' + etag + '"')` (кавычки — P8).
 
@@ -600,7 +585,7 @@ public static AppliedByteRange? Resolve(ByteRange? range, string? ifRange, strin
 
 - [ ] **Шаг 2. Реализовать**
   - Вход: красный тест.
-  - Действие: `XlObjectStore.Objects.cs` (Get/Head/Attributes — остаются транзитными заглушками до Task 7/8).
+  - Действие: `XlObjectStore.Objects.cs` (Get/Head/Attributes — остаются транзитными заглушками до Task 7/8); только BCL — ограничение 9.
   - Выход: коммит-цикл записи готов.
   - Проверка: весь юнит-проект → PASS.
   - Связь со spec: §4.3.
@@ -674,7 +659,7 @@ public static AppliedByteRange? Resolve(ByteRange? range, string? ifRange, strin
 1. Источник: `EnsureBucket(SourceBucket)` → NoSuchBucket; `XlMetaFile.Read` → NoSuchKey.
 2. Conditional источника: `Evaluate(request.SourceConditions, src.ETag, src.ModTime, ifModifiedSinceApplies: false)`; исход `NotModified` ИЛИ `PreconditionFailed` → бросок `PreconditionFailed` (copy — не GET/HEAD: If-None-Match-попадание = 412).
 3. `src.Size > 5 ГБ` → `ObjectStoreException(EntityTooLarge)` (App не валидирует copy по длине).
-4. Приёмник: `EnsureBucket(DestBucket)`. Staging: `tmp/<guid>/<newUuid>/part.1` — `File.CreateHardLink(destPath, srcPartPath)`; при отказе link (`IOException`/`PlatformNotSupportedException`) — побайтовое копирование + `logger.LogWarning` (fallback Q2).
+4. Приёмник: `EnsureBucket(DestBucket)`. Staging: `tmp/<guid>/<newUuid>/part.1` — `File.CreateHardLink(destPath, srcPartPath)` (стандартный BCL-метод `System.IO.File`, ограничению 9 соответствует); при отказе link (`IOException`/`PlatformNotSupportedException`) — побайтовое копирование + `logger.LogWarning` (fallback Q2).
 5. `xl.meta`: `COPY` → ContentType/UserMetadata источника; `REPLACE` → `request.NewMetadata`; etag/sha256/Size — наследованы; VersionId новый; ModTime = now; коммит — `CommitStagedObjectAsync` (включая src == dest). Возврат `PutResult('"'+ src.ETag + '"')` (кавычки, P8).
 
 Тестовый хук fallback (внутренний): `internal Func<string, string, bool>? HardLinkProbe;` — задан и вернул false → fallback-ветка.
@@ -852,7 +837,7 @@ catch (Exception ex)
 ```
 
    `/healthz`: `app.MapGet("/healthz", () => volume.CheckHealth() ? Results.Ok() : Results.StatusCode(StatusCodes.Status503ServiceUnavailable));` (замыкание на `volume`).
-2. **`VolumeCleanupService : BackgroundService`** (ctor: `XlVolume volume, OwnS3Metrics metrics, ILogger<VolumeCleanupService> logger`): в `ExecuteAsync` СНАЧАЛА немедленный проход (старт-чистки уже сделаны `Initialize` — повтор безвреден; главное — метрики диска заполнены сразу, без 15-мин ожидания), затем `PeriodicTimer(TimeSpan.FromMinutes(15))`. Проход: stopwatch → `volume.RunCleanupAsync(ct)` → дисковые метрики (`DriveInfo(volume.Root)`: `TotalSize`, `TotalFreeSpace`; used = total − free; недоступен `DriveInfo` → warning, значения не трогать) → `logger.LogInformation("[CLEANUP] durationMs={Ms}", ...)`; исключение тика — лог Error, сервис живёт.
+2. **`VolumeCleanupService : BackgroundService`** (ctor: `XlVolume volume, OwnS3Metrics metrics, ILogger<VolumeCleanupService> logger`): в `ExecuteAsync` СНАЧАЛА немедленный проход (старт-чистки уже сделаны `Initialize` — повтор безвреден; главное — метрики диска заполнены сразу, без 15-мин ожидания), затем `PeriodicTimer(TimeSpan.FromMinutes(15))`. Проход: stopwatch → `volume.RunCleanupAsync(ct)` → дисковые метрики (`DriveInfo(volume.Root)` — BCL: `TotalSize`, `TotalFreeSpace`; used = total − free; недоступен `DriveInfo` → warning, значения не трогать) → `logger.LogInformation("[CLEANUP] durationMs={Ms}", ...)`; исключение тика — лог Error, сервис живёт.
 3. **`OwnS3Metrics`**: поля `internal long DiskUsedBytes/DiskTotalBytes` (Interlocked) + `meter.CreateObservableGauge<long>("ownS3.disk.used.bytes", () => DiskUsedBytes, unit: "By")` и `"ownS3.disk.total.bytes"` (финальные имена `ownS3_disk_used_bytes`/`ownS3_disk_total_bytes` — прецедент `ownS3_requests_total`).
 4. **`OwnS3AppFactory`**: поле `public string TempVolumeDir { get; } = Path.Combine(Path.GetTempPath(), "owns3-waf-" + Guid.NewGuid().ToString("N"));`; конфиг `["OwnS3:DataDir"] = TempVolumeDir`; `protected override void Dispose(bool)` → `base` + `Directory.Delete(TempVolumeDir, true)` в try/catch.
 5. Удаление `NotWiredObjectStore.cs` + `NotWiredObjectStoreTests.cs`.
@@ -959,7 +944,7 @@ catch (Exception ex)
   - Вход: все задачи 0–11 закрыты.
   - Действие: `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/OwnS3.App/OwnS3.App.csproj -c Release` (тянет Protocol+Storage+Shared.Metrics).
   - Выход: артефакт сборки.
-  - Проверка: 0 Error / 0 Warning (`TreatWarningsAsErrors` — любой warning = ошибка).
+  - Проверка: 0 Error / 0 Warning (`TreatWarningsAsErrors` — любой warning = ошибка); в коде задач нет `unsafe`/`LibraryImport`/`DllImport` (ограничение 9).
   - Связь со spec: §7 фаза 7, §10.9.
 
 - [ ] **Шаг 2. Юниты**
@@ -999,13 +984,11 @@ catch (Exception ex)
 
 ---
 
-## Саморевью плана rev.4 (выполнено при написании)
+## Саморевью плана rev.5 (выполнено при написании)
 
-- **Ревью-3 п.1 (порядок кодирования):** Task 1 — шаги переупорядочены: (2) escape+спецслучаи каждого сегмента (вкл. экранирование литерального `__XLDIR__`), (3) приклейка маркера `__XLDIR__` к последнему уже КОДИРОВАННОМУ сегменту, (4) проверка 255 байт ПОСЛЕ приклейки. Векторы сходятся: `dir/` → `dir__XLDIR__`, `a//` → `a/%__XLDIR__`, литерал `x__XLDIR__` → `x__XLDIR_%5F`; добавлен вектор `x__XLDIR__/` → `x__XLDIR_%5F__XLDIR__` (roundtrip проверен).
-- **Ревью-3 п.2 (зависимость Task 4→Task 9):** `Utf8ByteOrder.cs` + `Utf8ByteOrderTests` перенесены в Task 1 (заголовок задачи обновлён: «XlPathEncoder + Utf8ByteOrder»); Task 4 помечен «использует Utf8ByteOrder из Task 1»; из Files/Interfaces/тестов Task 9 убраны (осталась ссылка).
-- **Ревью-3 п.3 (logger ListWalker):** конструктор `ListWalker(XlVolume volume, ILogger? logger = null)`; `XlObjectStore.List` передаёт свой логгер; текст п.3 алгоритма — `logger?.LogWarning` при битом xl.meta; добавлен тест `List_BrokenXlMeta_SkippedWithWarning`.
-- **Ревью-3 п.4 (LibraryImport):** Task 3 — сниппет `DirectoryFsync` оформлен как `internal static partial class` с `[LibraryImport]` + `[MarshalAs(UnmanagedType.LPStr)]` на строковом параметре `open` (требования source-generator маршалинга); сигнатуры `fsync`/`close` включены.
-- **Контроль прежних замечаний (ревью-1/2):** DI до Build/Initialize после (Task 10 п.1), ListBuckets сортировка (Task 4), формула маркеров (Task 9 п.2), orphan без xl.meta (Task 3), метрики диска (Task 10), ETag кавычки P8 (вкл. ListEntry/Attributes), байтовый порядок P9, изоляция том+имена по кейсам (ограничение 8, Task 10/11), skip-инвариант префикса (Task 9), спецслучай `%` декодирования (Task 1), fsync tmp-файла xl.meta (Task 2/P4), Attributes-conditional P10 (Task 5/8/11) — все сохранены.
+- **Приказ пользователя (BCL-only):** новое глобальное ограничение 9 (запрет unsafe/`AllowUnsafeBlocks`/`LibraryImport`/P-Invoke). Компонент `DirectoryFsync` и его сниппет/шаги УДАЛЕНЫ из Task 3 (заголовок/Files/Interfaces/шаг 2/коммит-сообщение очищены); вместо него — глобальное примечание Task 3 (fsync каталогов не выполняется: BCL-API нет, канон 04 / спека §4.3 п.2 допускают best-effort). Task 6: п.3 — fsync только файлов (`Flush(flushToDisk: true)`), fsync каталогов staging/dataDir убран; п.4 — место бывшего fsync каталога коммит-цикла (единственное упомянутое приказом место) — diagnostic-warning в лог. Task 2 — ссылка «fsync каталога после rename не выполняется (примечание Task 3)». P4 и «Технологии» шапки переписаны под BCL-only. Task 12 шаг 1 — проверка отсутствия `unsafe`/`LibraryImport`/`DllImport` в коде задач.
+- **Проверка остаточных упоминаний:** `File.CreateHardLink` (стандартный метод `System.IO.File`), `DriveInfo`, `Base64Url`, `FileStream.Flush(flushToDisk: true)` — BCL, разрешены; других P/Invoke/unsafe-механик в плане нет.
+- **Контроль прежних замечаний (ревью-1/2/3):** порядок кодирования Task 1 (маркер после экранирования, 255 после приклейки), `Utf8ByteOrder` в Task 1 (зависимости T1→T4→T6/T9), logger `ListWalker(XlVolume, ILogger?)`, DI до Build/Initialize после (Task 10 п.1), ListBuckets сортировка (Task 4), формула маркеров (Task 9 п.2), orphan без xl.meta (Task 3), метрики диска (Task 10), ETag кавычки P8 (вкл. ListEntry/Attributes), байтовый порядок P9, изоляция том+имена по кейсам (ограничение 8, Task 10/11), skip-инвариант префикса (Task 9), спецслучай `%` декодирования (Task 1), fsync tmp-файла xl.meta (Task 2/P4), Attributes-conditional P10 (Task 5/8/11) — все сохранены.
 - **Покрытие спеки:** фазы §7.0–7.7 → Task 0–12; критерии §10.1–10.10 — все со ссылками (Task 12 шаг 4).
-- **Типы:** консистентность `ObjectContent`/`AppliedByteRange`/`ObjectReadOptions`/`ObjectAttributesResult`/`ToMetadata(string, XlMetaRecord)`/`Utf8ByteOrder`/`ListWalker(XlVolume, ILogger?)` проверена по всем задачам; компиляционные зависимости задач упорядочены (T1 → T4 → T6/T9).
+- **Типы:** консистентность `ObjectContent`/`AppliedByteRange`/`ObjectReadOptions`/`ObjectAttributesResult`/`ToMetadata(string, XlMetaRecord)`/`Utf8ByteOrder`/`ListWalker(XlVolume, ILogger?)` проверена по всем задачам.
 - **Плейсхолдеры:** отсутствуют.
