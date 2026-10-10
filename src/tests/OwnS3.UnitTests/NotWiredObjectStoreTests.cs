@@ -27,11 +27,11 @@ public sealed class NotWiredObjectStoreTests
         yield return [new Func<NotWiredObjectStore, Task>(s => s.BucketExistsAsync("b", default))];
         yield return [new Func<NotWiredObjectStore, Task>(s => s.ListBucketsAsync(default))];
         yield return [new Func<NotWiredObjectStore, Task>(s => s.GetObjectAsync("b", "k", null!, default))];
-        yield return [new Func<NotWiredObjectStore, Task>(s => s.HeadObjectAsync("b", "k", default))];
+        yield return [new Func<NotWiredObjectStore, Task>(s => s.HeadObjectAsync("b", "k", null!, default))];
         yield return [new Func<NotWiredObjectStore, Task>(s => s.DeleteObjectAsync("b", "k", default))];
         yield return [new Func<NotWiredObjectStore, Task>(s => s.DeleteObjectsAsync("b", ["k"], false, default))];
         yield return [new Func<NotWiredObjectStore, Task>(s => s.CopyObjectAsync(null!, default))];
-        yield return [new Func<NotWiredObjectStore, Task>(s => s.GetObjectAttributesAsync("b", "k", [], null, null, default))];
+        yield return [new Func<NotWiredObjectStore, Task>(s => s.GetObjectAttributesAsync("b", "k", [], null, null, null!, default))];
         yield return [new Func<NotWiredObjectStore, Task>(s => s.ListObjectsAsync("b", null!, default))];
         yield return [new Func<NotWiredObjectStore, Task>(s => s.CreateMultipartUploadAsync("b", "k", null!, default))];
         yield return [new Func<NotWiredObjectStore, Task>(s => s.UploadPartCopyAsync(null!, default))];

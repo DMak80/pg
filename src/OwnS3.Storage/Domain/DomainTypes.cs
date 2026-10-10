@@ -11,15 +11,23 @@ public sealed record PutResult(string ETag);
 public sealed record ObjectMetadata(string Key, string ETag, long Size, DateTimeOffset LastModified,
     string ContentType, IReadOnlyDictionary<string, string> UserMetadata);
 
-/// <summary>Содержимое объекта; Body освобождает вызывающий.</summary>
-public sealed record ObjectContent(ObjectMetadata Metadata, Stream Body);
-
 public sealed record ObjectConditions(string? IfMatch, string? IfNoneMatch,
-    DateTimeOffset? IfModifiedSince, DateTimeOffset? IfUnmodifiedSince);     // оценка — t37
+    DateTimeOffset? IfModifiedSince, DateTimeOffset? IfUnmodifiedSince);
 
-public sealed record ByteRange(long? Start, long? End);                       // оценка — t37
+public sealed record ByteRange(long? Start, long? End);
 
-public sealed record ObjectReadOptions(ObjectConditions? Conditions, ByteRange? Range);
+public sealed record ObjectReadOptions(ObjectConditions? Conditions, ByteRange? Range, string? IfRange);
+
+// Применённый диапазон: start/end включительно + полный размер объекта.
+public sealed record AppliedByteRange(long Start, long End, long Total);
+
+// NotModified=true: Body=Stream.Null, Metadata заполнен (ETag/LastModified для 304).
+// Range != null: применённый диапазон; Body — Stream части объекта (у Head — Stream.Null).
+public sealed record ObjectContent(ObjectMetadata Metadata, Stream Body, bool NotModified, AppliedByteRange? Range);
+
+// Исход GetObjectAttributes (P10): NotModifiedMetadata != null → 304 (Metadata несёт
+// ETag/LastModified для заголовков); иначе Attributes заполнены.
+public sealed record ObjectAttributesResult(ObjectAttributes? Attributes, ObjectMetadata? NotModifiedMetadata);
 
 public sealed record CopyRequest(string SourceBucket, string SourceKey, string DestBucket, string DestKey,
     bool ReplaceMetadata, ObjectUploadMetadata? NewMetadata, ObjectConditions? SourceConditions);

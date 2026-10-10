@@ -15,8 +15,9 @@ public sealed partial class XlObjectStore
         CancellationToken ct) =>
         ThrowUnavailable<ObjectContent>(); // t37: реализация в Task 7 плана
 
-    public Task<ObjectMetadata> HeadObjectAsync(string bucket, string key, CancellationToken ct) =>
-        ThrowUnavailable<ObjectMetadata>(); // t37: реализация в Task 7 плана
+    public Task<ObjectContent> HeadObjectAsync(string bucket, string key, ObjectReadOptions? options,
+        CancellationToken ct) =>
+        ThrowUnavailable<ObjectContent>(); // t37: реализация в Task 7 плана
 
     public Task DeleteObjectAsync(string bucket, string key, CancellationToken ct) =>
         throw new ObjectStoreUnavailableException(); // t37: реализация в Task 6 плана
@@ -28,10 +29,10 @@ public sealed partial class XlObjectStore
     public Task<PutResult> CopyObjectAsync(CopyRequest request, CancellationToken ct) =>
         ThrowUnavailable<PutResult>(); // t37: реализация в Task 8 плана
 
-    public Task<ObjectAttributes> GetObjectAttributesAsync(string bucket, string key,
+    public Task<ObjectAttributesResult> GetObjectAttributesAsync(string bucket, string key,
         IReadOnlyList<ObjectAttributeName> attributes, int? maxParts, int? partNumberMarker,
-        CancellationToken ct) =>
-        ThrowUnavailable<ObjectAttributes>(); // t37: реализация в Task 8 плана
+        ObjectConditions? conditions, CancellationToken ct) =>
+        ThrowUnavailable<ObjectAttributesResult>(); // t37: реализация в Task 8 плана
 
     public Task<ListPage> ListObjectsAsync(string bucket, ListQuery query, CancellationToken ct) =>
         ThrowUnavailable<ListPage>(); // t37: реализация в Task 9 плана

@@ -116,6 +116,13 @@ public sealed class S3Middleware(
                 });
             }
         }
+        catch (XlInvalidArgumentException ex)
+        {
+            // Доменный 400-исход Storage (лимит сегмента, битый continuation-token)
+            await WriteErrorAsync(context, new S3Error(S3ErrorCode.InvalidArgument,
+                Resource: path, RequestId: requestId, HostId: options.Value.HostId,
+                MessageOverride: ex.Message));
+        }
         catch (ObjectStoreException ex)
         {
             // Доменные исходы объектного слоя → S3-код по каталогу.

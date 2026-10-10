@@ -22,14 +22,16 @@ public sealed class NotWiredObjectStore : IObjectStore
 
     public Task<ObjectContent> GetObjectAsync(string bucket, string key, ObjectReadOptions options, CancellationToken ct) =>
         Throw<ObjectContent>();
-    public Task<ObjectMetadata> HeadObjectAsync(string bucket, string key, CancellationToken ct) => Throw<ObjectMetadata>();
+    public Task<ObjectContent> HeadObjectAsync(string bucket, string key, ObjectReadOptions? options, CancellationToken ct) =>
+        Throw<ObjectContent>();
     public Task DeleteObjectAsync(string bucket, string key, CancellationToken ct) => Throw();
     public Task<IReadOnlyList<DeletedKeyResult>> DeleteObjectsAsync(string bucket,
         IReadOnlyList<string> keys, bool quiet, CancellationToken ct) => Throw<IReadOnlyList<DeletedKeyResult>>();
     public Task<PutResult> CopyObjectAsync(CopyRequest request, CancellationToken ct) => Throw<PutResult>();
-    public Task<ObjectAttributes> GetObjectAttributesAsync(string bucket, string key,
-        IReadOnlyList<ObjectAttributeName> attributes, int? maxParts, int? partNumberMarker, CancellationToken ct) =>
-        Throw<ObjectAttributes>();
+    public Task<ObjectAttributesResult> GetObjectAttributesAsync(string bucket, string key,
+        IReadOnlyList<ObjectAttributeName> attributes, int? maxParts, int? partNumberMarker,
+        ObjectConditions? conditions, CancellationToken ct) =>
+        Throw<ObjectAttributesResult>();
 
     public Task<ListPage> ListObjectsAsync(string bucket, ListQuery query, CancellationToken ct) => Throw<ListPage>();
 
