@@ -35,9 +35,18 @@ builder.Services.AddOptions<OwnS3Options>()
 // серии ownS3_*_total/ownS3_request_duration_seconds совпадают со словарём главы 05).
 builder.Services.AddAppMetrics("ownS3", builder.Configuration.GetSection("OwnS3:Metrics"));
 
-// Домен: реестр учёток + объектный слой t36 — заглушка (реализация xl — t37).
+// Домен: реестр учёток + том и объектный слой t37 (xl-хранение, канон 04).
 builder.Services.AddSingleton<AccessKeyRegistry>();
-builder.Services.AddSingleton<IObjectStore, NotWiredObjectStore>();
+builder.Services.AddSingleton(sp => new XlVolume(
+    sp.GetRequiredService<IOptions<OwnS3Options>>().Value.DataDir,
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILogger<XlVolume>>()));
+builder.Services.AddSingleton<IObjectStore>(sp => new XlObjectStore(
+    sp.GetRequiredService<XlVolume>(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILogger<XlObjectStore>>()));
+builder.Services.AddSingleton<BucketMetaStore>();
+builder.Services.AddHostedService<VolumeCleanupService>();
 builder.Services.AddSingleton<OwnS3Metrics>();
 
 // 22 хендлера протокольного контура (spec §3.4.1) — диспетчеризация по операции.
@@ -122,8 +131,25 @@ app.Urls.Add($"http://*:{options.Server.Port}");
 // путей — шаг 0 S3Middleware.
 app.UseMiddleware<S3Middleware>();
 
-// Вне S3-конвейера: healthz (в t36 — 200 без валидации тома; том — t37) и metrics.
-app.MapGet("/healthz", () => Results.Ok());
+// Том данных (arch/owns3/04 §3/§6): fail-fast до старта Kestrel — невалидный
+// том = диагностика + ненулевой exit (спека §6.1). XlVolume уже в DI — берём
+// тот же инстанс, который получат XlObjectStore и VolumeCleanupService.
+var volume = app.Services.GetRequiredService<XlVolume>();
+try
+{
+    volume.Initialize();
+}
+catch (Exception ex)
+{
+    app.Logger.LogCritical(ex, "Том ownS3 {DataDir} невалиден — отказ старта", options.DataDir);
+    Environment.Exit(1);
+}
+
+// Вне S3-конвейера: healthz (том валиден + touch-проба записи, спека §6.2)
+// и metrics.
+app.MapGet("/healthz", () => volume.CheckHealth()
+    ? Results.Ok()
+    : Results.StatusCode(StatusCodes.Status503ServiceUnavailable));
 app.MapAppMetrics();
 
 await app.RunAsync();

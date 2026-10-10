@@ -4,20 +4,22 @@ using System.Text;
 namespace OwnS3.IntegrationTests.Api;
 
 // Права (глава 05 §3): репрезентативный набор ролей — reader/writer/admin.
-[Collection(OwnS3TestCollection.Name)]
-public sealed class AccessScenarios(OwnS3AppFactory factory)
+// Том на класс (IClassFixture); мутационный кейс — на уникальном бакете СВОЕГО
+// кейса, немутационные — на никогда не создаваемом «bucket».
+public sealed class AccessScenarios(OwnS3AppFactory factory) : IClassFixture<OwnS3AppFactory>
 {
     private OwnS3TestClient NewClient() => new(factory.CreateClient());
 
     [Fact]
-    public async Task Reader_GetObject_PassesRights_ReachesStub()
+    public async Task Reader_GetObject_PassesRights_ReachesStorage()
     {
-        // Arrange / Act
+        // Arrange / Act: бакет не создавался — 404 от Storage (права пройдены)
         var response = await NewClient().SendSignedAsync("GET", "/bucket/key",
             credentials: OwnS3TestClient.Reader());
 
-        // Assert: права пройдены — падение в заглушку
-        response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+        // Assert
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await RoutingScenarios.ErrorXmlAsync(response)).Should().Be("NoSuchBucket");
     }
 
     [Fact]
@@ -33,14 +35,15 @@ public sealed class AccessScenarios(OwnS3AppFactory factory)
     }
 
     [Fact]
-    public async Task Writer_PutObject_PassesRights_ReachesStub()
+    public async Task Writer_PutObject_PassesRights_ReachesStorage()
     {
-        // Arrange / Act
+        // Arrange / Act: бакета нет — 404 от Storage
         var response = await NewClient().SendSignedAsync("PUT", "/bucket/key",
             credentials: OwnS3TestClient.Writer(), body: Encoding.UTF8.GetBytes("x"));
 
         // Assert
-        response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await RoutingScenarios.ErrorXmlAsync(response)).Should().Be("NoSuchBucket");
     }
 
     [Fact]
@@ -55,14 +58,15 @@ public sealed class AccessScenarios(OwnS3AppFactory factory)
     }
 
     [Fact]
-    public async Task Admin_CreateBucket_PassesRights_ReachesStub()
+    public async Task Admin_CreateBucket_PassesRights_CreatesBucket()
     {
-        // Arrange / Act
-        var response = await NewClient().SendSignedAsync("PUT", "/bucket",
+        // Arrange / Act: уникальный бакет СВОЕГО кейса (ограничение 8)
+        var response = await NewClient().SendSignedAsync("PUT", "/b-admin",
             credentials: OwnS3TestClient.Admin());
 
-        // Assert
-        response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+        // Assert: право admin — бакет реально создан на томе
+        response.StatusCode.Should().Be(HttpStatusCode.OK);
+        Directory.Exists(Path.Combine(factory.TempVolumeDir, "b-admin")).Should().BeTrue();
     }
 
     [Theory]
@@ -75,7 +79,7 @@ public sealed class AccessScenarios(OwnS3AppFactory factory)
         var response = await NewClient().SendSignedAsync("GET", pathAndQuery,
             credentials: OwnS3TestClient.Reader());
 
-        // Assert
+        // Assert: multipart-заглушки — 500 (до t38)
         response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
     }
 }

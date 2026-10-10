@@ -38,8 +38,20 @@ public static class ObjectHandlers
                 Sha256HexOrNull(context),
                 context.Http.Headers.ContentMD5.ToString() is { Length: > 0 } md5 ? md5 : null);
 
-            // Act
-            var result = await Store.PutObjectAsync(context.Bucket, context.Key, body, contentLength, metadata, ct);
+            // Act: отказ Storage ДО чтения тела (NoSuchBucket) не должен скрывать
+            // сверки целостности конвейера — тело дочитывается и при исключении
+            // (drain-семантика t36: BadDigest/InvalidRequest/чанковая подпись
+            // наблюдаются до проброса исхода Storage)
+            PutResult result;
+            try
+            {
+                result = await Store.PutObjectAsync(context.Bucket, context.Key, body, contentLength, metadata, ct);
+            }
+            catch
+            {
+                await DrainBodyAsync(body, ct);
+                throw;
+            }
 
             // Respond: 200 + ETag (тела нет)
             context.Response.StatusCode = 200;
@@ -365,6 +377,18 @@ public static class ObjectHandlers
     {
         var value = context.Http.Headers["x-amz-content-sha256"].FirstOrDefault();
         return value is { Length: 64 } ? value : null;
+    }
+
+    // Дочитать тело до конца: сверки подписи/хэшей конвейера (HashingBodyStream/
+    // AwsChunkedReader) наблюдаются и при отказе Storage до чтения тела —
+    // их исход перекрывает пробрасываемый исход Storage (спека §8).
+    private static async Task DrainBodyAsync(Stream body, CancellationToken ct)
+    {
+        var buffer = new byte[64 * 1024];
+        while (await body.ReadAsync(buffer, ct) > 0)
+        {
+            // только чтение — сверки делают обёртки тела конвейера
+        }
     }
 
     private static ObjectConditions CopyConditions(S3HandlerContext context)

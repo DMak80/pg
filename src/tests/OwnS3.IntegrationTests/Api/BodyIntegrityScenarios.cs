@@ -9,15 +9,14 @@ namespace OwnS3.IntegrationTests.Api;
 
 // Сверки целостности тела (глава 03 §1/§3): sha256-режим, Content-MD5,
 // чанковая подпись и трейлеры — отказы при порче, полный drain при валидных.
-[Collection(OwnS3TestCollection.Name)]
-public sealed class BodyIntegrityScenarios(OwnS3AppFactory factory)
+public sealed class BodyIntegrityScenarios(OwnS3AppFactory factory) : IClassFixture<OwnS3AppFactory>
 {
     private static readonly byte[] Body = Encoding.UTF8.GetBytes("hello world");
 
     private OwnS3TestClient NewClient() => new(factory.CreateClient());
 
     [Fact]
-    public async Task PutObject_CorrectSha256_ReachesStubAfterFullVerification()
+    public async Task PutObject_CorrectSha256_ReachesStorageAfterFullVerification()
     {
         // Arrange: подпись с фактическим hex-sha256 тела
         var payload = Convert.ToHexString(SHA256.HashData(Body)).ToLowerInvariant();
@@ -26,8 +25,9 @@ public sealed class BodyIntegrityScenarios(OwnS3AppFactory factory)
         var response = await NewClient().SendSignedAsync("PUT", "/bucket/key",
             payloadString: payload, body: Body);
 
-        // Assert: сверка прошла (drain заглушки) — 500 от заглушки
-        response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+        // Assert: сверка прошла — запрос дошёл до Storage (бакета нет)
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await RoutingScenarios.ErrorXmlAsync(response)).Should().Be("NoSuchBucket");
     }
 
     [Fact]
@@ -61,7 +61,7 @@ public sealed class BodyIntegrityScenarios(OwnS3AppFactory factory)
     }
 
     [Fact]
-    public async Task ChunkedPut_ValidChain_ReachesStubAfterFullVerification()
+    public async Task ChunkedPut_ValidChain_ReachesStorageAfterFullVerification()
     {
         // Arrange: подпись с payload-строкой режима; seed из подписи запроса
         var client = NewClient();
@@ -97,8 +97,9 @@ public sealed class BodyIntegrityScenarios(OwnS3AppFactory factory)
         // Act
         var response = await client.Http.SendAsync(request, TestContext.Current.CancellationToken);
 
-        // Assert: полная цепочка сверкана — 500 от заглушки
-        response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+        // Assert: полная цепочка сверкана — дошло до Storage (бакета нет)
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await RoutingScenarios.ErrorXmlAsync(response)).Should().Be("NoSuchBucket");
     }
 
     [Fact]
@@ -222,7 +223,7 @@ public sealed class BodyIntegrityScenarios(OwnS3AppFactory factory)
     }
 
     [Fact]
-    public async Task DeleteObjects_CorrectContentMd5_ReachesStub()
+    public async Task DeleteObjects_CorrectContentMd5_ReachesStorage()
     {
         // Arrange: контрольный кейс — корректный MD5 того же XML
         var xml = """<?xml version="1.0" encoding="utf-8"?><Delete xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Object><Key>k</Key></Object><Quiet>false</Quiet></Delete>""";
@@ -233,8 +234,9 @@ public sealed class BodyIntegrityScenarios(OwnS3AppFactory factory)
             headers: new Dictionary<string, string> { ["Content-MD5"] = md5 },
             body: Encoding.UTF8.GetBytes(xml));
 
-        // Assert: сверка пройдена — запрос дошёл до заглушки
-        response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+        // Assert: сверка пройдена — запрос дошёл до Storage (бакета нет)
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await RoutingScenarios.ErrorXmlAsync(response)).Should().Be("NoSuchBucket");
     }
 
     private static int IndexOf(byte[] haystack, byte[] needle, int start)
