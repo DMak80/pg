@@ -122,10 +122,17 @@ public sealed partial class XlObjectStore
             return Task.FromResult(new ObjectAttributesResult(null, ToMetadata(key, meta)));
         // 3. Атрибуты: ETag В КАВЫЧКАХ (P8 — хендлер ставит значение в HTTP-заголовок);
         //    LastModified — modTime записи (заголовок Last-Modified ответа);
-        //    фильтрацию по запрошенным делает App
-        var parts = new ObjectPartsAttributes(PartsCount: 1, PartNumberMarker: partNumberMarker ?? 0,
-            NextPartNumberMarker: null, MaxParts: maxParts ?? 1000, IsTruncated: false,
-            Parts: [(1, meta.Size)]);
+        //    фильтрацию по запрошенным делает App. Части — реальные файлы dataDir
+        //    (канон 02 §5 GetObjectAttributes; простой PUT — part.1, М8)
+        var dataParts = EnumerateDataParts(ObjectDir(bucket, key), meta.DataDirName);
+        var marker = partNumberMarker ?? 0;
+        var selected = dataParts.Where(p => p.Number > marker)
+            .Take(maxParts ?? 1000)
+            .Select(p => (p.Number, p.Size))
+            .ToList();
+        var truncated = dataParts.Count(p => p.Number > marker) > selected.Count;
+        var parts = new ObjectPartsAttributes(dataParts.Count, marker,
+            truncated ? selected[^1].Number : null, maxParts ?? 1000, truncated, selected);
         var result = new ObjectAttributes('"' + meta.ETag + '"', meta.Size, "STANDARD", parts, meta.ModTime);
         return Task.FromResult(new ObjectAttributesResult(result, null));
     }

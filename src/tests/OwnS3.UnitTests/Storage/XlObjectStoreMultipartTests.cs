@@ -794,4 +794,175 @@ public class XlObjectStoreMultipartTests(StoreFixture fixture) : IClassFixture<S
         head.Metadata.ETag.Should().Be(result.ETag);
         head.Metadata.Size.Should().Be(5 * 1024 * 1024 + 3);
     }
+
+    [Fact]
+    public async Task Get_MultipartObject_BodyIsConcatOfParts()
+    {
+        // Arrange: объект из частей 5 МиБ (0xAA) + «ccc»
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "read-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var e1 = await UploadBigPartAsync(Store, "b", "read-key", uploadId, 1, 5 * 1024 * 1024, 0xAA);
+        var e2 = await UploadBigPartAsync(Store, "b", "read-key", uploadId, 2, 3, (byte)'c');
+        var result = await Store.CompleteMultipartUploadAsync("b", "read-key", uploadId,
+            [new PartEtag(1, e1), new PartEtag(2, e2)], TestContext.Current.CancellationToken);
+
+        // Act
+        var content = await Store.GetObjectAsync("b", "read-key", new ObjectReadOptions(null, null, null),
+            TestContext.Current.CancellationToken);
+        using var body = content.Body;
+        var bytes = new byte[body.Length];
+        await body.ReadExactlyAsync(bytes, TestContext.Current.CancellationToken);
+
+        // Assert: тело = конкатенация; хвост — «ccc»; conditional по составному ETag:
+        // If-None-Match совпал → 304-семантика (NotModified-обёртка)
+        bytes.Length.Should().Be(5 * 1024 * 1024 + 3);
+        bytes[^3..].Should().Equal("ccc"u8.ToArray());
+        var notModified = await Store.GetObjectAsync("b", "read-key",
+            new ObjectReadOptions(new ObjectConditions(null, result.ETag, null, null), null, null),
+            TestContext.Current.CancellationToken);
+        notModified.NotModified.Should().BeTrue();
+    }
+
+    [Fact]
+    public async Task Get_MultipartObject_RangeAcrossPartBoundary_206()
+    {
+        // Arrange: части 5 МиБ + 3 байта; срез (5*1024*1024 - 2, 5*1024*1024 + 2) — через стык
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "rng-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var e1 = await UploadBigPartAsync(Store, "b", "rng-key", uploadId, 1, 5 * 1024 * 1024, 0xAA);
+        var e2 = await UploadBigPartAsync(Store, "b", "rng-key", uploadId, 2, 3, (byte)'c');
+        await Store.CompleteMultipartUploadAsync("b", "rng-key", uploadId,
+            [new PartEtag(1, e1), new PartEtag(2, e2)], TestContext.Current.CancellationToken);
+
+        // Act
+        var start = 5 * 1024 * 1024 - 2;
+        var content = await Store.GetObjectAsync("b", "rng-key",
+            new ObjectReadOptions(null, new ByteRange(start, start + 4), null),
+            TestContext.Current.CancellationToken);
+        using var body = content.Body;
+        var bytes = new byte[body.Length];
+        await body.ReadExactlyAsync(bytes, TestContext.Current.CancellationToken);
+
+        // Assert: 206, срез = 2 байта хвоста первой части + 3 второй; сверка пройдена ДО байтов
+        content.Range.Should().NotBeNull();
+        bytes.Should().Equal([(byte)0xAA, (byte)0xAA, (byte)'c', (byte)'c', (byte)'c']);
+    }
+
+    [Fact]
+    public async Task Get_MultipartObject_RangeStartsExactlyAtPartBoundary_206()
+    {
+        // Arrange: части 5 МиБ + «ccc»; срез начинается РОВНО на границе частей —
+        // регресс-кейс скетча MultipartBodyStream (skip == size части обязан
+        // переводить старт в следующую часть с позиции 0, а не в первую часть)
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "bnd-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var e1 = await UploadBigPartAsync(Store, "b", "bnd-key", uploadId, 1, 5 * 1024 * 1024, 0xAA);
+        var e2 = await UploadBigPartAsync(Store, "b", "bnd-key", uploadId, 2, 3, (byte)'c');
+        await Store.CompleteMultipartUploadAsync("b", "bnd-key", uploadId,
+            [new PartEtag(1, e1), new PartEtag(2, e2)], TestContext.Current.CancellationToken);
+
+        // Act
+        var start = 5 * 1024 * 1024;
+        var content = await Store.GetObjectAsync("b", "bnd-key",
+            new ObjectReadOptions(null, new ByteRange(start, start + 2), null),
+            TestContext.Current.CancellationToken);
+        using var body = content.Body;
+        var bytes = new byte[body.Length];
+        await body.ReadExactlyAsync(bytes, TestContext.Current.CancellationToken);
+
+        // Assert: 206; срез = ТОЛЬКО вторая часть («ccc»), ни байта первой
+        content.Range.Should().NotBeNull();
+        bytes.Should().Equal("ccc"u8.ToArray());
+    }
+
+    [Fact]
+    public async Task Get_MultipartObject_Range_IfRangeMismatch_Full200()
+    {
+        // Arrange: multipart-объект; If-Range с чужим ETag → 200 полным телом
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "ifr-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var e1 = await UploadBigPartAsync(Store, "b", "ifr-key", uploadId, 1, 5 * 1024 * 1024, 0xAA);
+        var e2 = await UploadBigPartAsync(Store, "b", "ifr-key", uploadId, 2, 3, (byte)'c');
+        await Store.CompleteMultipartUploadAsync("b", "ifr-key", uploadId,
+            [new PartEtag(1, e1), new PartEtag(2, e2)], TestContext.Current.CancellationToken);
+
+        // Act
+        var content = await Store.GetObjectAsync("b", "ifr-key",
+            new ObjectReadOptions(null, new ByteRange(0, 2), "\"foreign-etag\""),
+            TestContext.Current.CancellationToken);
+        using var body = content.Body;
+
+        // Assert: If-Range не совпал → Range не применяется, 200 полным телом
+        content.Range.Should().BeNull();
+        body.Length.Should().Be(5 * 1024 * 1024 + 3);
+    }
+
+    [Fact]
+    public async Task Get_MultipartObject_CorruptedPart_500BeforeBytes()
+    {
+        // Arrange: порча байта в part.1 закоммиченного объекта
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "cor-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var e1 = await UploadBigPartAsync(Store, "b", "cor-key", uploadId, 1, 5 * 1024 * 1024, 0xAA);
+        var e2 = await UploadBigPartAsync(Store, "b", "cor-key", uploadId, 2, 3, (byte)'c');
+        await Store.CompleteMultipartUploadAsync("b", "cor-key", uploadId,
+            [new PartEtag(1, e1), new PartEtag(2, e2)], TestContext.Current.CancellationToken);
+        var objectDir = Path.Combine(Root, "b", XlPathEncoder.EncodePath("cor-key"));
+        var dataDir = Directory.EnumerateDirectories(objectDir).Single();
+        var partPath = Path.Combine(objectDir, dataDir, "part.1");
+        using (var fs = new FileStream(partPath, FileMode.Open, FileAccess.Write, FileShare.None))
+        {
+            fs.Seek(100, SeekOrigin.Begin);
+            fs.WriteByte(0x00);
+        }
+
+        // Act / Assert: сверка по конкатенации ДО отдачи — XlIntegrityException (500), байтов нет
+        var act = async () => await Store.GetObjectAsync("b", "cor-key",
+            new ObjectReadOptions(null, null, null), TestContext.Current.CancellationToken);
+        await act.Should().ThrowAsync<XlIntegrityException>();
+    }
+
+    [Fact]
+    public async Task GetObjectAttributes_MultipartObject_RealPartsWithPagination()
+    {
+        // Arrange: 3 части (5 МиБ, 5 МиБ, 3 байта)
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "attr-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var e1 = await UploadBigPartAsync(Store, "b", "attr-key", uploadId, 1, 5 * 1024 * 1024, 0x01);
+        var e2 = await UploadBigPartAsync(Store, "b", "attr-key", uploadId, 2, 5 * 1024 * 1024, 0x02);
+        var e3 = await UploadBigPartAsync(Store, "b", "attr-key", uploadId, 3, 3, 0x03);
+        var complete = await Store.CompleteMultipartUploadAsync("b", "attr-key", uploadId,
+            [new PartEtag(1, e1), new PartEtag(2, e2), new PartEtag(3, e3)], TestContext.Current.CancellationToken);
+
+        // Act: страница maxParts=2, продолжение
+        var page1 = await Store.GetObjectAttributesAsync("b", "attr-key",
+            [ObjectAttributeName.ObjectParts], 2, null, null, TestContext.Current.CancellationToken);
+        var page2 = await Store.GetObjectAttributesAsync("b", "attr-key",
+            [ObjectAttributeName.ObjectParts], 2, page1.Attributes!.Parts!.NextPartNumberMarker, null,
+            TestContext.Current.CancellationToken);
+
+        // Assert: реальные части/размеры; PartsCount=3; составной ETag
+        page1.Attributes!.Parts!.PartsCount.Should().Be(3);
+        page1.Attributes.Parts.IsTruncated.Should().BeTrue();
+        page1.Attributes.Parts.Parts.Should().Equal([(1, 5L * 1024 * 1024), (2, 5L * 1024 * 1024)]);
+        page2.Attributes!.Parts!.Parts.Should().Equal([(3, 3L)]);
+        page1.Attributes.ETag.Should().Be(complete.ETag);
+    }
+
+    [Fact]
+    public async Task GetObjectAttributes_SimplePut_SyntheticSinglePart()
+    {
+        // Arrange: простой PUT-объект — частный случай «ровно part.1» (М8)
+        await Store.PutObjectAsync("b", "put-attr", new MemoryStream(Encoding.UTF8.GetBytes("hello")),
+            5, Meta, TestContext.Current.CancellationToken);
+
+        // Act
+        var attributes = await Store.GetObjectAttributesAsync("b", "put-attr",
+            [ObjectAttributeName.ObjectParts], null, null, null, TestContext.Current.CancellationToken);
+
+        // Assert: одна синтетическая часть (1, 5) — получена перечислением dataDir
+        attributes.Attributes!.Parts!.PartsCount.Should().Be(1);
+        attributes.Attributes.Parts.Parts.Should().Equal([(1, 5L)]);
+        attributes.Attributes.ObjectSize.Should().Be(5);
+    }
 }
