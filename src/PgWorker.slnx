@@ -51,6 +51,11 @@
         <Project Path="AdminPanel.Etcd/AdminPanel.Etcd.csproj" />
         <Project Path="AdminPanel.Probes/AdminPanel.Probes.csproj" />
     </Folder>
+    <Folder Name="/owns3/">
+        <Project Path="OwnS3.Protocol/OwnS3.Protocol.csproj" />
+        <Project Path="OwnS3.Storage/OwnS3.Storage.csproj" />
+        <Project Path="OwnS3.App/OwnS3.App.csproj" />
+    </Folder>
     <Folder Name="/tests/">
         <Project Path="tests/Shared.Metrics.UnitTests/Shared.Metrics.UnitTests.csproj" />
         <Project Path="tests/Metrics.SdGenerator.UnitTests/Metrics.SdGenerator.UnitTests.csproj" />
@@ -66,5 +71,7 @@
         <Project Path="tests/KafkaWorker.IntegrationTests/KafkaWorker.IntegrationTests.csproj" />
         <Project Path="tests/ValkeyWorker.UnitTests/ValkeyWorker.UnitTests.csproj" />
         <Project Path="tests/ValkeyWorker.IntegrationTests/ValkeyWorker.IntegrationTests.csproj" />
+        <Project Path="tests/OwnS3.UnitTests/OwnS3.UnitTests.csproj" />
+        <Project Path="tests/OwnS3.IntegrationTests/OwnS3.IntegrationTests.csproj" />
     </Folder>
 </Solution>
