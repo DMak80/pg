@@ -96,6 +96,9 @@ public sealed class ObjectStorageScenarios(OwnS3AppFactory factory) : IClassFixt
         var copyXml = XDocument.Parse(await BodyAsync(copy));
         copyXml.Root!.Name.LocalName.Should().Be("CopyObjectResult");
         copyXml.Root.Element(S3Ns + "ETag")!.Value.Should().Be(HelloEtag); // наследован
+        // LastModified — modTime новой записи (фиксированное время хоста), не UtcNow
+        copyXml.Root.Element(S3Ns + "LastModified")!.Value
+            .Should().Be("2013-05-24T00:05:00.000Z");
         var getCopy = await client.SendSignedAsync("GET", "/b-cycle/copy-key");
         (await BodyAsync(getCopy)).Should().Be("hello");
 
@@ -104,6 +107,8 @@ public sealed class ObjectStorageScenarios(OwnS3AppFactory factory) : IClassFixt
             headers: new Dictionary<string, string> { ["x-amz-object-attributes"] = "ETag,ObjectSize,ObjectParts" });
         attrs.StatusCode.Should().Be(HttpStatusCode.OK);
         attrs.Headers.ETag!.Tag.Should().Be(HelloEtag);
+        attrs.Content!.Headers.LastModified.Should().Be(OwnS3AppFactory.HostTime,
+            "Last-Modified — modTime объекта, не UtcNow обработки");
         var attrsXml = XDocument.Parse(await BodyAsync(attrs));
         attrsXml.Root!.Name.LocalName.Should().Be("GetObjectAttributesOutput");
         attrsXml.Root.Element(S3Ns + "ETag")!.Value.Should().Be(HelloEtag);

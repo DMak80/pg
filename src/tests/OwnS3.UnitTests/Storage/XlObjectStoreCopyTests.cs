@@ -41,9 +41,11 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
             ReplaceMetadata: false, NewMetadata: null, SourceConditions: null),
             TestContext.Current.CancellationToken);
 
-        // Assert: содержимое скопировано; метаданные источника; ETag наследован (P8, в кавычках)
+        // Assert: содержимое скопировано; метаданные источника; ETag наследован
+        // (P8, в кавычках); LastModified — modTime новой записи
         (await ReadBodyAsync("b", "copy-dst")).Should().Be("hello");
         result.ETag.Should().Be(HelloEtagQuoted);
+        result.LastModified.Should().Be(TestVectors.FixedTime);
         var dst = await Store.HeadObjectAsync("b", "copy-dst", null, TestContext.Current.CancellationToken);
         dst.Metadata.ContentType.Should().Be("text/csv");
         dst.Metadata.UserMetadata.Should().ContainKey("src").WhoseValue.Should().Be("yes");
@@ -104,6 +106,35 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
 
         // Assert
         (await ReadBodyAsync("b", "fb-dst")).Should().Be("hello");
+    }
+
+    [Fact]
+    public async Task Copy_HardLinkProbeTrue_TakesLinkBranch()
+    {
+        // Arrange: хук имитирует УСПЕШНЫЙ линк (фиксация линк-ветвления для
+        // net11): CopyPart обязан вернуться сразу, БЕЗ побайтового копирования
+        await Store.PutObjectAsync("b", "link-src", new MemoryStream(Encoding.UTF8.GetBytes("hello")),
+            5, SourceMeta, TestContext.Current.CancellationToken);
+        Store.HardLinkProbe = (_, _) => true;
+
+        // Act
+        try
+        {
+            await Store.CopyObjectAsync(new CopyRequest("b", "link-src", "b", "link-dst",
+                false, null, null), TestContext.Current.CancellationToken);
+        }
+        finally
+        {
+            Store.HardLinkProbe = null;
+        }
+
+        // Assert: копия закоммичена, но part.1 НЕ создан копированием —
+        // fallback-ветка не выполнялась (линк-имитация не пишет байтов)
+        var dst = await Store.HeadObjectAsync("b", "link-dst", null, TestContext.Current.CancellationToken);
+        dst.Metadata.Size.Should().Be(5);
+        var objectDir = Path.Combine(Root, "b", "link-dst");
+        var dataDir = Path.Combine(objectDir, XlMetaFile.Read(objectDir, out _).DataDirName);
+        File.Exists(Path.Combine(dataDir, "part.1")).Should().BeFalse();
     }
 
     [Fact]
@@ -218,6 +249,7 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
         var attrs = result.Attributes!;
         attrs.ETag.Should().Be(HelloEtagQuoted);
         attrs.ObjectSize.Should().Be(5);
+        attrs.LastModified.Should().Be(TestVectors.FixedTime, "LastModified — modTime записи, не UtcNow");
         attrs.StorageClass.Should().Be("STANDARD");
         attrs.Parts!.PartsCount.Should().Be(1);
         attrs.Parts.MaxParts.Should().Be(1000);

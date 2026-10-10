@@ -95,6 +95,23 @@ public class XlMetaFileTests : IDisposable
     }
 
     [Fact]
+    public void Read_CorruptedMain_NoBkp_ThrowsIntegrity()
+    {
+        // Arrange: первая запись (bkp не создаётся — старого xl.meta не было),
+        // основной затирается мусором
+        Directory.CreateDirectory(_dir);
+        XlMetaFile.Write(_dir, SampleRecord());
+        File.WriteAllText(Path.Combine(_dir, "xl.meta"), "мусор");
+
+        // Act
+        var act = () => XlMetaFile.Read(_dir, out _);
+
+        // Assert: битый основной + отсутствие bkp — невосстановимая порча
+        // (500 InternalError), НЕ «объекта нет» (404) — спека §4.2
+        act.Should().Throw<XlIntegrityException>();
+    }
+
+    [Fact]
     public void Read_BothCorrupted_ThrowsIntegrity()
     {
         // Arrange

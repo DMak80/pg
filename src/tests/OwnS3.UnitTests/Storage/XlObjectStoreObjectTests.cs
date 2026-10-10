@@ -58,6 +58,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
 
         // Assert: ETag = md5("hello") hex В КАВЫЧКАХ (P8); тело/метаданные на месте
         result.ETag.Should().Be("\"5d41402abc4b2a76b9719d911017c592\"");
+        result.LastModified.Should().Be(TestVectors.FixedTime);
         (await reader.ReadToEndAsync(TestContext.Current.CancellationToken)).Should().Be("hello");
         content.Metadata.ETag.Should().Be("\"5d41402abc4b2a76b9719d911017c592\"");
         content.Metadata.Size.Should().Be(5);

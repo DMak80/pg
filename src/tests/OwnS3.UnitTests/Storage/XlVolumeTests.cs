@@ -130,6 +130,25 @@ public class XlVolumeTests : IDisposable
     }
 
     [Fact]
+    public async Task RunCleanup_DoesNotTouchInFlightStaging()
+    {
+        // Arrange: staging идущего PUT; безусловная очистка tmp — только на
+        // старте (спека §4.7/канон 04 §6), фон tmp НЕ трогает
+        Volume.Initialize();
+        var staged = Path.Combine(Volume.TmpDir, Guid.NewGuid().ToString("N"), "data");
+        Directory.CreateDirectory(staged);
+        File.WriteAllText(Path.Combine(staged, "part.1"), "partial");
+        File.SetLastWriteTimeUtc(staged, DateTime.UtcNow.AddHours(-2)); // даже «старый»
+
+        // Act
+        await Volume.RunCleanupAsync(CancellationToken.None);
+
+        // Assert: in-flight staging не вытирается фоновой чисткой
+        Directory.Exists(staged).Should().BeTrue();
+        File.Exists(Path.Combine(staged, "part.1")).Should().BeTrue();
+    }
+
+    [Fact]
     public void Initialize_RemovesAgedTrash_KeepsFresh()
     {
         // Arrange
@@ -209,6 +228,34 @@ public class XlVolumeTests : IDisposable
 
         // Assert
         Directory.Exists(nested).Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("b")]        // ключ верхнего уровня из 32 hex
+    [InlineData("nested")]   // вложенный ключ <префикс>/<32 hex>
+    public async Task Cleanup_KeepsObjectWithHexGuidKey_AfterAging(string parent)
+    {
+        // Arrange: живой объект, чей ключ-сегмент — 32 hex (парсится
+        // Guid.TryParseExact("N")); «старый» каталог с xl.meta внутри —
+        // объект, а не orphan-dataDir-кандидат
+        Volume.Initialize();
+        const string hexKey = "0102030405064708890a0b0c0d0e0f10";
+        var versionId = Guid.NewGuid();
+        var objectDir = Path.Combine([Root, parent, hexKey]);
+        Directory.CreateDirectory(objectDir);
+        XlMetaFile.Write(objectDir, MetaRecord(versionId));
+        var dataDir = Path.Combine(objectDir, versionId.ToString("N"));
+        Directory.CreateDirectory(dataDir);
+        File.WriteAllText(Path.Combine(dataDir, "part.1"), "x");
+        File.SetLastWriteTimeUtc(objectDir, DateTime.UtcNow.AddHours(-2));
+        File.SetLastWriteTimeUtc(dataDir, DateTime.UtcNow.AddHours(-2));
+
+        // Act
+        await Volume.RunCleanupAsync(CancellationToken.None);
+
+        // Assert: объект жив — xl.meta и текущий dataDir на месте
+        XlMetaFile.Read(objectDir, out _).DataDirName.Should().Be(versionId.ToString("N"));
+        Directory.Exists(dataDir).Should().BeTrue();
     }
 
     [Fact]

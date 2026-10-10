@@ -60,14 +60,21 @@ public sealed class XlVolume(string root, TimeProvider timeProvider, ILogger? lo
         Directory.CreateDirectory(ConfigDir);
         // fsync каталогов опущен: стандартного BCL-API нет, спека §4.3 п.2 —
         // best-effort (механизм без fsync-каталога — не отказ)
-        Cleanup();
+        // Старт: tmp/* — БЕЗУСЛОВНО (незакоммиченный staging; закоммиченных
+        // данных там не бывает по построению — канон 04 §6), затем возрастные
+        // .trash/orphan.
+        WipeTmp();
+        CleanAged();
         Initialized = true;
     }
 
-    // Фоновый проход (те же пороги .trash/orphan 1 ч; multipart — t38).
+    // Фоновый проход: ТОЛЬКО возрастные .trash и orphan-dataDir (порог 1 ч);
+    // tmp НЕ трогается — на старте процесса может идти in-flight PUT со staging
+    // (безусловная очистка tmp — только на старте, спека §4.7/канон 04 §6;
+    // multipart — t38).
     public Task RunCleanupAsync(CancellationToken ct)
     {
-        Cleanup();
+        CleanAged();
         return Task.CompletedTask;
     }
 
@@ -142,15 +149,19 @@ public sealed class XlVolume(string root, TimeProvider timeProvider, ILogger? lo
             throw new InvalidOperationException($"Том {Root}: режим «{info.Mode}» не «{Mode}» — отказ старта");
     }
 
-    // Старт и фон — один и тот же проход (канон 04 §6): tmp — безусловно,
-    // .trash и orphan-dataDir — порог 1 ч от mtime.
-    private void Cleanup()
+    // Стартовая безусловная очистка tmp (канон 04 §6: это незакоммиченный
+    // staging — при старте процесса in-flight PUT быть не может).
+    private void WipeTmp()
     {
-        // tmp/*: незакоммиченный staging — удаляется безусловно
-        if (Directory.Exists(TmpDir))
-            foreach (var entry in Directory.EnumerateFileSystemEntries(TmpDir))
-                DeleteRecursive(entry);
+        if (!Directory.Exists(TmpDir))
+            return;
+        foreach (var entry in Directory.EnumerateFileSystemEntries(TmpDir))
+            DeleteRecursive(entry);
+    }
 
+    // Возрастные чистки (старт и фон — одни и те же пороги, канон 04 §6).
+    private void CleanAged()
+    {
         // .trash/*: содержимое никогда не читается клиентами — только возраст
         if (Directory.Exists(TrashDir))
             foreach (var entry in Directory.EnumerateFileSystemEntries(TrashDir))
@@ -189,8 +200,12 @@ public sealed class XlVolume(string root, TimeProvider timeProvider, ILogger? lo
         foreach (var sub in Directory.EnumerateDirectories(directory))
         {
             var name = Path.GetFileName(sub);
-            // Не-Guid подкаталоги — сегменты вложенных ключей: спуск внутрь
-            if (!Guid.TryParseExact(name, "N", out _))
+            // Guid-имя БЕЗ xl.meta внутри — dataDir-кандидат (в dataDir лежит
+            // лишь part.N). Guid-имя С xl.meta — это каталог объекта с 32-hex
+            // ключом-сегментом (валидный ключ, Guid.TryParseExact("N")) — живой
+            // объект: рекурсивный обход, никакой чистки самого каталога.
+            var looksLikeDataDir = Guid.TryParseExact(name, "N", out _) && !File.Exists(Path.Combine(sub, "xl.meta"));
+            if (!looksLikeDataDir)
             {
                 CleanupOrphansInSubtree(sub);
                 continue;

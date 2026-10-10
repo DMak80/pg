@@ -75,7 +75,7 @@ public sealed partial class XlObjectStore
             // (спека §4.3 п.2 best-effort, приказ пользователя)
             _logger.LogWarning("fsync каталога объекта не выполняется (только BCL, приказ пользователя): {Target}", target);
         }
-        return new PutResult('"' + record.ETag + '"');
+        return new PutResult('"' + record.ETag + '"', record.ModTime);
     }
 
     // Перезапись: rename нового dataDir рядом со старым → замена xl.meta →

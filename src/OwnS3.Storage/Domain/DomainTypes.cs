@@ -6,7 +6,9 @@ public sealed record BucketEntry(string Name, DateTimeOffset CreationDate);
 
 public sealed record ObjectUploadMetadata(string ContentType, IReadOnlyDictionary<string, string> UserMetadata);
 
-public sealed record PutResult(string ETag);
+// LastModified — modTime закоммиченной записи: CopyObjectResult несёт время
+// объекта, а не UtcNow обработки.
+public sealed record PutResult(string ETag, DateTimeOffset LastModified);
 
 public sealed record ObjectMetadata(string Key, string ETag, long Size, DateTimeOffset LastModified,
     string ContentType, IReadOnlyDictionary<string, string> UserMetadata);
@@ -72,4 +74,5 @@ public enum ObjectAttributeName { ETag, ObjectSize, StorageClass, ObjectParts }
 public sealed record ObjectPartsAttributes(int PartsCount, int PartNumberMarker, int? NextPartNumberMarker,
     int MaxParts, bool IsTruncated, IReadOnlyList<(int PartNumber, long Size)> Parts);
 
-public sealed record ObjectAttributes(string ETag, long ObjectSize, string StorageClass, ObjectPartsAttributes? Parts);
+public sealed record ObjectAttributes(string ETag, long ObjectSize, string StorageClass,
+    ObjectPartsAttributes? Parts, DateTimeOffset LastModified);

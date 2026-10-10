@@ -222,10 +222,11 @@ public static class ObjectHandlers
                 sourceBucket, sourceKey, context.Bucket, context.Key,
                 directive == "REPLACE", newMetadata, CopyConditions(context)), ct);
 
-            // Respond: CopyObjectResult
+            // Respond: CopyObjectResult — LastModified новой записи (modTime),
+            // не времени обработки
             await context.WriteXmlAsync(S3Xml.Serialize(new CopyObjectResult
             {
-                LastModified = S3HandlerContext.FormatDate(DateTimeOffset.UtcNow),
+                LastModified = S3HandlerContext.FormatDate(result.LastModified),
                 ETag = result.ETag,
             }), ct);
         }
@@ -286,7 +287,7 @@ public static class ObjectHandlers
                     : null,
             };
             context.Response.Headers.ETag = attrs.ETag;
-            context.Response.Headers.LastModified = DateTimeOffset.UtcNow.ToString("R");
+            context.Response.Headers.LastModified = attrs.LastModified.ToString("R");
             await context.WriteXmlAsync(S3Xml.Serialize(output), ct);
         }
     }

@@ -56,7 +56,11 @@ public static class XlMetaFile
         }
         catch (XlIntegrityException)
         {
-            // Основной битый — страховочная копия (диагностика порчи, не клиентам)
+            // Основной битый: bkp отсутствует — невосстановимая порча (500,
+            // спека §4.2), НЕ маскируется под «объекта нет» (404)
+            if (!File.Exists(bkpPath))
+                throw;
+            // Страховочная копия (диагностика порчи, не клиентам)
             fromBackup = true;
             return ReadFile(bkpPath);
         }

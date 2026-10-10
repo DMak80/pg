@@ -270,6 +270,75 @@ public class XlObjectStoreListTests(StoreFixture fixture) : IClassFixture<StoreF
     }
 
     [Fact]
+    public async Task Delimiter_MarkerContinuation_AfterCommonPrefix()
+    {
+        // Arrange: усечение НА CommonPrefix — продолжение строго после CP
+        var b = await NewBucketAsync();
+        foreach (var key in new[] { "a/1", "a/2", "b" })
+            await PutAsync(b, key);
+
+        // Act: страница 1 — только CP «a/»
+        var page1 = await ListAsync(b, Q(delimiter: "/", maxKeys: 1));
+
+        // Assert
+        Prefixes(page1).Should().Equal("a/");
+        Keys(page1).Should().BeEmpty();
+        page1.IsTruncated.Should().BeTrue();
+
+        // Act: страница 2 по continuation-токену (== CP «a/»)
+        var page2 = await ListAsync(b, Q(delimiter: "/", token: page1.NextContinuationToken));
+
+        // Assert: CP «a/» НЕ пере-эмитится; только «b»
+        Prefixes(page2).Should().BeEmpty();
+        Keys(page2).Should().Equal("b");
+        page2.KeyCount.Should().Be(1);
+        page2.IsTruncated.Should().BeFalse();
+
+        // Act: v1 marker = CP «a/» — тот же исход
+        var v1 = await ListAsync(b, Q(delimiter: "/", marker: "a/", variant: ListVariant.V1));
+
+        // Assert
+        Prefixes(v1).Should().BeEmpty();
+        Keys(v1).Should().Equal("b");
+    }
+
+    [Fact]
+    public async Task MaxKeys_ExactlyTotal_NotTruncated()
+    {
+        // Arrange: ровно maxKeys эмитов — усечения нет (S3: IsTruncated=false,
+        // лишней пустой страницы не будет)
+        var b = await NewBucketAsync();
+        foreach (var key in new[] { "k1", "k2", "k3" })
+            await PutAsync(b, key);
+
+        // Act
+        var page = await ListAsync(b, Q(maxKeys: 3));
+
+        // Assert
+        Keys(page).Should().Equal("k1", "k2", "k3");
+        page.IsTruncated.Should().BeFalse();
+        page.NextContinuationToken.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task MaxKeys_ExactlyTotal_WithDelimiter_NotTruncated()
+    {
+        // Arrange: CP + ключ ровно по maxKeys
+        var b = await NewBucketAsync();
+        foreach (var key in new[] { "a/1", "b" })
+            await PutAsync(b, key);
+
+        // Act
+        var page = await ListAsync(b, Q(delimiter: "/", maxKeys: 2));
+
+        // Assert
+        Prefixes(page).Should().Equal("a/");
+        Keys(page).Should().Equal("b");
+        page.IsTruncated.Should().BeFalse();
+        page.NextContinuationToken.Should().BeNull();
+    }
+
+    [Fact]
     public async Task MaxKeys_Zero_EmptyNotTruncated()
     {
         // Arrange

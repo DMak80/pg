@@ -1,4 +1,4 @@
-# t37-owns3-storage-objects: план реализации (rev.6: BCL-only без unsafe/P-Invoke; CopyObject на net10 — всегда fallback-копирование, вариант A)
+# t37-owns3-storage-objects: план реализации (rev.7: BCL-only; CopyObject — fallback на net10; дефекты Фазы 7 П-1…П-7 синхронизированы в механики)
 
 > **Для исполняющих агентов:** ОБЯЗАТЕЛЬНЫЙ саб-скилл: superpowers:subagent-driven-development (рекомендуется) или superpowers:executing-plans — исполнять по задачам; шаги отмечаются чекбоксами (`- [ ]`). Каждый шаг несёт Вход/Действие/Выход/Проверку/Связь со spec.
 
@@ -28,7 +28,7 @@
 
 ## Проектные решения плана (в рамках формата спеки, применяются всеми задачами)
 
-- **P1. dataDir-имя = versionId записи.** Формат `xl.meta` (спека §4.2) не хранит отдельного поля dataDir; имя каталога данных `<uuid>/part.1` := `VersionId` записи (оба — UUID v4 «новый на каждую запись», канон 04 §1/§2). Orphan-чистка: Guid-подкаталоги каталога объекта ≠ versionId текущего `xl.meta` (или при отсутствии/битости `xl.meta` — все Guid-подкаталоги, см. Task 3).
+- **P1. dataDir-имя = versionId записи.** Формат `xl.meta` (спека §4.2) не хранит отдельного поля dataDir; имя каталога данных `<uuid>/part.1` := `VersionId` записи (оба — UUID v4 «новый на каждую запись», канон 04 §1/§2). Orphan-чистка: Guid-подкаталог БЕЗ собственного `xl.meta` — dataDir-кандидат (в dataDir лежит лишь part.1); не чистится только текущий dataDir читаемого `xl.meta` каталога; каталог с `xl.meta` (в т.ч. с 32-hex именем-ключом) никогда не классифицируется как dataDir (классификация — Task 3, П-1).
 - **P2. `XlInvalidArgumentException(message) : Exception`** — доменный 400-исход Storage (лимит сегмента 255 байт, невалидный continuation-token). `InvalidArgument` в `ObjectStoreErrorCode` отсутствует и не добавляется (ограничение 5); App ловит по типу и маппит в `S3ErrorCode.InvalidArgument`.
 - **P3. `XlIntegrityException(message) : Exception`** — невосстановимая порча (битые `xl.meta`+`xl.meta.bkp`, checksum-mismatch при чтении, несоответствие фактической длины тела заявленной). Попадает в catch-all `S3Middleware` → 500 `InternalError` с диагностикой в лог.
 - **P4. Файловый IO в Storage — синхронный** (локальный том, надёжность и простота); методы контракта — async-обёртки (`Task.FromResult`/`ValueTask`). fsync-дисциплина (спека §4.3 п.2) в рамках BCL: `FileStream.Flush(flushToDisk: true)` для КАЖДОГО записываемого файла (`part.1` и временного файла `xl.meta` до его rename); fsync КАТАЛОГОВ не выполняется — стандартного BCL-API нет, P/Invoke запрещён (ограничение 9, примечание Task 3); вместо него в коммит-цикле записи — diagnostic-warning в лог (Task 6 п.4).
@@ -202,9 +202,13 @@ public static class XlMetaFile
     // Строгая десериализация одного файла; битая структура/magic/версия — XlIntegrityException.
     public static XlMetaRecord ReadFile(string path);
 
-    // Чтение каталога объекта: xl.meta → при порче фолбэк xl.meta.bkp (fromBackup=true);
-    // отсутствие обоих файлов — FileNotFoundException (вызывающий транслирует в NoSuchKey);
-    // оба битые — XlIntegrityException.
+    // Чтение каталога объекта — полная матрица исходов (П-7.1, ревью Фазы 7):
+    //  - оба файла отсутствуют → FileNotFoundException (вызывающий транслирует в NoSuchKey);
+    //  - основной валиден → чтение основного (fromBackup=false);
+    //  - основной повреждён, bkp валиден → чтение bkp (fromBackup=true);
+    //  - основной повреждён, bkp ОТСУТСТВУЕТ → XlIntegrityException (500: данные
+    //    есть, но нечитаемы — НЕ FileNotFoundException/404);
+    //  - оба повреждены → XlIntegrityException.
     public static XlMetaRecord Read(string objectDir, out bool fromBackup);
 
     // Запись xl.meta в каталог: существующий xl.meta копируется в xl.meta.bkp →
@@ -227,7 +231,7 @@ string contentSha256
 
 - [ ] **Шаг 1. Написать падающий тест**
   - Вход: интерфейс Task 2 определён.
-  - Действие: `XlMetaFileTests` (temp-каталог `Path.Combine(Path.GetTempPath(), "owns3-test-" + Guid.NewGuid())`, удаление в `finally`): `SerializeDeserialize_Roundtrip` (все поля: userMetadata 2 пары, headers 1 пара, etag hex без кавычек, sha256 64 hex); `WriteRead_ThroughFile_Roundtrip`; `Write_Overwrite_CreatesBkpAndReplaces` (v1, v2 → xl.meta = v2, xl.meta.bkp = v1); `Read_CorruptedMain_FallsBackToBkp` (Write v1, Write v2, затереть `xl.meta` мусором → Read = v1, `fromBackup=true`); `Read_BothCorrupted_ThrowsIntegrity`; `ReadFile_BadMagic_ThrowsIntegrity`; `ReadFile_UnknownFormatVersion_ThrowsIntegrity`; `ReadFile_TruncatedPayload_ThrowsIntegrity`.
+  - Действие: `XlMetaFileTests` (temp-каталог `Path.Combine(Path.GetTempPath(), "owns3-test-" + Guid.NewGuid())`, удаление в `finally`): `SerializeDeserialize_Roundtrip` (все поля: userMetadata 2 пары, headers 1 пара, etag hex без кавычек, sha256 64 hex); `WriteRead_ThroughFile_Roundtrip`; `Write_Overwrite_CreatesBkpAndReplaces` (v1, v2 → xl.meta = v2, xl.meta.bkp = v1); `Read_CorruptedMain_FallsBackToBkp` (Write v1, Write v2, затереть `xl.meta` мусором → Read = v1, `fromBackup=true`); `Read_CorruptedMainWithoutBkp_ThrowsIntegrity_NotFileNotFound` (только xl.meta, затёрт мусором, bkp нет → `XlIntegrityException` — 500-семантика, не 404; П-7.1); `Read_BothCorrupted_ThrowsIntegrity`; `ReadFile_BadMagic_ThrowsIntegrity`; `ReadFile_UnknownFormatVersion_ThrowsIntegrity`; `ReadFile_TruncatedPayload_ThrowsIntegrity`.
   - Выход: файл теста.
   - Проверка: прогон с фильтром `~XlMetaFileTests` → ошибка компиляции.
   - Связь со spec: §4.1 (XlMetaFile), §4.2 (формат), §4.4 п.1 (bkp-фолбэк).
@@ -276,11 +280,15 @@ public sealed class XlVolume(string root, TimeProvider timeProvider, ILogger? lo
 
     // Создание на пустом томе ИЛИ валидация существующего volume.json
     // (отсутствие при непустом томе / чужой magic / версия > 1 / режим не
-    // "XL Single" — исключение fail-fast, канон 04 §3). Затем старт-чистки §6:
-    // tmp/* — безусловно; .trash/* и orphan-dataDir старше 1 ч (mtime).
+    // "XL Single" — исключение fail-fast, канон 04 §3). Затем СТАРТ-чистки §6:
+    // tmp/* — БЕЗУСЛОВНО (старт: in-flight загрузок нет — только здесь tmp
+    // и очищается безусловно); .trash/* и orphan-dataDir старше 1 ч (mtime).
     public void Initialize();
 
-    // Фоновый проход (те же пороги .trash/orphan 1 ч; multipart — t38).
+    // ФОНОВЫЙ проход (П-2, ревью Фазы 7): только .trash/orphan по порогу 1 ч;
+    // tmp НЕ трогает — гонка с in-flight PUT (удаление staging = молчаливая
+    // порча коммита: 200 без dataDir). Безусловная очистка tmp — ТОЛЬКО в
+    // Initialize. Multipart — t38.
     public Task RunCleanupAsync(CancellationToken ct);
 
     // volume.json валиден + touch-проба записи в tmp (создать+удалить файл).
@@ -293,7 +301,10 @@ public sealed class XlVolume(string root, TimeProvider timeProvider, ILogger? lo
 
 **Детали:**
 - `volume.json`: JSON `{"magic":"OWNS3-VOL","formatVersion":1,"volumeId":"<uuid N>","mode":"XL Single"}`; `File.WriteAllText` + `JsonSerializer` (BCL, пакет не нужен).
-- **Orphan-чистка (старт и фон — один и тот же код)**: рекурсивный обход поддеревьев бакетов (каталоги 1-го уровня тома, кроме `.owns3.sys`); в КАЖДОМ каталоге поддерева подкаталоги, чьё имя парсится `Guid.TryParse(..., "N")` и чей mtime старше 1 ч → `MoveToTrash`, ЗА ИСКЛЮЧЕНИЕМ текущего dataDir — `VersionId.ToString("N")` читаемого `xl.meta` ЭТОГО каталога, если `xl.meta` есть и валиден. Отсутствие или битость `xl.meta` каталога НЕ блокирует чистку его Guid-подкаталогов (orphan после краша Delete между двумя rename: `xl.meta` уже в `.trash`, dataDir-каталог остался — чистится по возрасту). Битый `xl.meta` — `logger.LogWarning`, не трогать сам файл. Не-Guid подкаталоги — сегменты вложенных ключей, не трогать.
+- **Orphan-чистка (старт и фон — один код по .trash/orphan; tmp — только старт, П-2)**: рекурсивный обход поддеревьев бакетов (каталоги 1-го уровня тома, кроме `.owns3.sys`). Классификация каждого подкаталога (П-1, ревью Фазы 7 — прежняя формулировка «чистить Guid-подкаталоги в каждом каталоге» удаляла живые объекты с 32-hex ключами):
+  - подкаталог содержит `xl.meta` → это каталог объекта/ключа — НЕ удаляется ВООБЩЕ (даже если имя — 32-hex: сегменты ключей произвольны); `xl.meta` читается (битый → `logger.LogWarning`, файл не трогать); текущий dataDir этой записи (`VersionId "N"`) исключается из чистки внутри; обход продолжается рекурсивно внутрь;
+  - подкаталог БЕЗ `xl.meta`, имя парсится `Guid.TryParse(..., "N")` → dataDir-кандидат (в dataDir лежит лишь `part.1` — `xl.meta` в нём не бывает): mtime старше 1 ч → `MoveToTrash`. Отсутствие/битость `xl.meta` у РОДИТЕЛЯ не блокирует чистку (краш Delete между двумя rename: `xl.meta` уже в `.trash`, dataDir-сирота остался — чистится по возрасту);
+  - подкаталог БЕЗ `xl.meta`, имя НЕ Guid → промежуточный каталог-префикс вложенных ключей → рекурсивный обход, не удаляется.
 - **Порог 1 ч** = `timeProvider.GetUtcNow() - File.GetLastWriteTimeUtc(path) > TimeSpan.FromHours(1)`.
 - `RunCleanupAsync` — синхронная реализация в `Task.FromResult`-обёртке.
 
@@ -306,7 +317,9 @@ public sealed class XlVolume(string root, TimeProvider timeProvider, ILogger? lo
     - `Initialize_ClearsTmpUnconditionally`;
     - `Initialize_RemovesAgedTrash_KeepsFresh` (`File.SetLastWriteTimeUtc`: −2 ч удалён, −1 мин остался);
     - `Initialize_KeepsCurrentDataDir_MovesAgedOrphan` — раскладка руками: `b/k/xl.meta` (запись VersionId V через `XlMetaFile.Write`), `b/k/<V>/part.1`, лишний `b/k/<other-guid>/part.1` mtime −2 ч → после Initialize лишний в `.trash/`, `<V>` на месте;
+    - `Cleanup_ObjectKeyLookingLikeGuid_Survives` (П-1) — объект с ключом из 32-hex символов (валидный Guid "N"): `b/<32hex>/xl.meta` + `b/<32hex>/<uuid>/part.1`, mtime каталога −3 ч → после чистки объект ЦЕЛИКОМ на месте (xl.meta и dataDir не тронуты — каталог с xl.meta не классифицируется как dataDir-кандидат);
     - `Cleanup_RemovesGuidDataDir_WithoutXlMeta` — каталог `b/k/<guid>/part.1` mtime −2 ч, `xl.meta` у `b/k` ОТСУТСТВУЕТ (краш Delete между rename) → `RunCleanupAsync` → Guid-каталог в `.trash/`;
+    - `RunCleanup_IgnoresTmp` (П-2) — после Initialize создать в `tmp/` staging-каталог с `part.1` (имитация in-flight PUT) → `RunCleanupAsync` → staging НЕ тронут (фоновый проход tmp не чистит);
     - `Cleanup_KeepsNonGuidSubdirs` — `b/k/nested-key/xl.meta` не тронут;
     - `RunCleanup_SameThresholds` (пороги `.trash`/orphan без Initialize);
     - `CheckHealth_TrueOnValidVolume`; `CheckHealth_FalseWhenTmpMissing`.
@@ -421,11 +434,22 @@ public sealed record ObjectContent(ObjectMetadata Metadata, Stream Body, bool No
 // ETag/LastModified для заголовков); иначе Attributes заполнены.
 public sealed record ObjectAttributesResult(ObjectAttributes? Attributes, ObjectMetadata? NotModifiedMetadata);
 
-// IObjectStore.cs (спека §5.2 + P10):
+// П-6 (ревью Фазы 7, доменная правка уровня §5 контракта кода): LastModified в ответах —
+// modTime ЗАПИСИ, не UtcNow обработки.
+// 1) ObjectAttributes + поле LastModified (200-ветка GetObjectAttributes: заголовок
+//    Last-Modified = modTime объекта);
+// 2) CopyObjectAsync возвращает CopyResult(ETag, LastModified=modTime новой записи):
+//    CopyObjectResult.LastModified = modTime, не UtcNow.
+public sealed record ObjectAttributes(string ETag, long ObjectSize, string StorageClass,
+    ObjectPartsAttributes? Parts, DateTimeOffset LastModified);
+public sealed record CopyResult(string ETag, DateTimeOffset LastModified);
+
+// IObjectStore.cs (спека §5.2 + P10 + П-6):
 Task<ObjectContent> HeadObjectAsync(string bucket, string key, ObjectReadOptions? options, CancellationToken ct);
 Task<ObjectAttributesResult> GetObjectAttributesAsync(string bucket, string key,
     IReadOnlyList<ObjectAttributeName> attributes, int? maxParts, int? partNumberMarker,
     ObjectConditions? conditions, CancellationToken ct);
+Task<CopyResult> CopyObjectAsync(CopyRequest request, CancellationToken ct);
 
 public enum ConditionalOutcome { Proceed, NotModified, PreconditionFailed }
 
@@ -502,9 +526,10 @@ public static AppliedByteRange? Resolve(ByteRange? range, string? ifRange, strin
    - `content.Range is { } r` → `StatusCode = 206`, `Headers.ContentRange = $"bytes {r.Start}-{r.End}/{r.Total}"`, `ContentLength = r.End - r.Start + 1`, тело — как обычно;
    - иначе текущее поведение 200.
 3. `HeadObjectHandler`: `await Store.HeadObjectAsync(bucket, key, options, ct)` → те же ветки 304/206/200 без тела (206: `ContentRange` + `ContentLength = r.End - r.Start + 1`; 304: только ETag/Last-Modified).
-4. `GetObjectAttributesHandler` (P10): `var conditions = ReadOptions(context).Conditions;` → передача последним аргументом `GetObjectAttributesAsync`; ответ: `if (result.NotModifiedMetadata is { } nm) { StatusCode = 304; Headers.ETag = nm.ETag; Headers.LastModified = nm.LastModified.ToString("R"); return; }`; остальной код использует `result.Attributes!`.
-5. `S3Middleware`: `catch (XlInvalidArgumentException ex)` → `WriteErrorAsync(new S3Error(S3ErrorCode.InvalidArgument, ..., MessageOverride: ex.Message))` — ПЕРЕД `catch (ObjectStoreException)`.
-6. `NotWiredObjectStore`: `HeadObjectAsync(bucket, key, options, ct)` → `Throw<ObjectContent>()`; `GetObjectAttributesAsync(..., conditions, ct)` → `Throw<ObjectAttributesResult>()`; тест `NotWiredObjectStoreTests.BodylessMethods` — вызовы с `null!` для новых параметров.
+4. `GetObjectAttributesHandler` (P10 + П-6): `var conditions = ReadOptions(context).Conditions;` → передача последним аргументом `GetObjectAttributesAsync`; ответ: `if (result.NotModifiedMetadata is { } nm) { StatusCode = 304; Headers.ETag = nm.ETag; Headers.LastModified = nm.LastModified.ToString("R"); return; }`; 200-ветка: заголовок `Last-Modified = result.Attributes!.LastModified.ToString("R")` — modTime объекта, НЕ `DateTimeOffset.UtcNow` (т36-дефект); остальной код использует `result.Attributes!`.
+5. `CopyObjectHandler` (П-6): `CopyObjectResult.LastModified = S3HandlerContext.FormatDate(result.LastModified)` — modTime НОВОЙ записи (не UtcNow); `ETag = result.ETag`.
+6. `S3Middleware`: `catch (XlInvalidArgumentException ex)` → `WriteErrorAsync(new S3Error(S3ErrorCode.InvalidArgument, ..., MessageOverride: ex.Message))` — ПЕРЕД `catch (ObjectStoreException)`.
+7. `NotWiredObjectStore`: `HeadObjectAsync(bucket, key, options, ct)` → `Throw<ObjectContent>()`; `GetObjectAttributesAsync(..., conditions, ct)` → `Throw<ObjectAttributesResult>()`; `CopyObjectAsync(request, ct)` → `Throw<CopyResult>()`; тест `NotWiredObjectStoreTests.BodylessMethods` — вызовы с `null!` для новых параметров.
 
 - [ ] **Шаг 1. Написать падающие тесты**
   - Вход: interfaces Task 5 определены.
@@ -670,19 +695,19 @@ private static bool TryCreateHardLink(string sourcePath, string destPath) => fal
 ```
 
    Вызов: `if (!TryCreateHardLink(srcPart, stagedPart)) { побайтовое копирование srcPart → stagedPart; FileStream.Flush(flushToDisk: true); logger.LogWarning("хардлинк недоступен (нет BCL-API в net10.0) — побайтовое копирование"); }`. На net10 основная ветка — всегда fallback-копирование; семантика Q2 сохранена (link «постоянно неудачен»), ограничение 9 соблюдено, спека/каноны не меняются (arch требует атомарный коммит и ETag-семантику, механика данных не предписана).
-5. `xl.meta`: `COPY` → ContentType/UserMetadata источника; `REPLACE` → `request.NewMetadata`; etag/sha256/Size — наследованы; VersionId новый; ModTime = now; коммит — `CommitStagedObjectAsync` (включая src == dest). Возврат `PutResult('"'+ src.ETag + '"')` (кавычки, P8).
+5. `xl.meta`: `COPY` → ContentType/UserMetadata источника; `REPLACE` → `request.NewMetadata`; etag/sha256/Size — наследованы; VersionId новый; ModTime = now; коммит — `CommitStagedObjectAsync` (включая src == dest). Возврат `new CopyResult('"'+ src.ETag + '"', record.ModTime)` — ETag в кавычках (P8), LastModified = modTime новой записи (П-6: хендлер строит `CopyObjectResult.LastModified` из него, не из UtcNow).
 
-Тестовый хук (внутренний): `internal Func<string, string, bool>? HardLinkProbe;` — при заданном подменяет `TryCreateHardLink` (проверка fallback-семантики и линк-ветки без реального хардлинка на net10).
+Тестовый хук (внутренний, П-5): `internal Func<string, string, bool>? HardLinkProbe;` — семантика вызова строго: `bool linked = HardLinkProbe is null ? TryCreateHardLink(sourcePath, destPath) : HardLinkProbe(sourcePath, destPath);` (при заданном хуке ПОЛНОСТЬЮ подменяет TryCreateHardLink — проверка fallback-семантики и линк-ветки без реального хардлинка на net10).
 
 **`GetObjectAttributesAsync(bucket, key, attributes, maxParts, partNumberMarker, conditions, ct)` (P10 — conditional по таблице канона 02 §1, GET-семантика):**
 1. `EnsureBucket`; `XlMetaFile.Read` → NoSuchKey.
 2. `ConditionalEvaluator.Evaluate(conditions, meta.ETag, meta.ModTime, ifModifiedSinceApplies: true)`: `PreconditionFailed` → бросок `ObjectStoreException(PreconditionFailed)` (412); `NotModified` → `new ObjectAttributesResult(null, ToMetadata(key, meta))` (304 с заголовками ETag/Last-Modified — их ставит хендлер, Task 5 п.4).
-3. Успех: `ObjectPartsAttributes(PartsCount: 1, PartNumberMarker: partNumberMarker ?? 0, NextPartNumberMarker: null, MaxParts: maxParts ?? 1000, IsTruncated: false, Parts: [(1, meta.Size)])`; возврат `ObjectAttributesResult(new ObjectAttributes('"'+meta.ETag+'"', meta.Size, "STANDARD", parts), null)` — **ETag В КАВЫЧКАХ** (P8: хендлер ставит значение прямо в HTTP-заголовок `ETag`); фильтрацию по запрошенным делает App.
+3. Успех: `ObjectPartsAttributes(PartsCount: 1, PartNumberMarker: partNumberMarker ?? 0, NextPartNumberMarker: null, MaxParts: maxParts ?? 1000, IsTruncated: false, Parts: [(1, meta.Size)])`; возврат `ObjectAttributesResult(new ObjectAttributes('"'+meta.ETag+'"', meta.Size, "STANDARD", parts, meta.ModTime), null)` — **ETag В КАВЫЧКАХ** (P8), `LastModified = meta.ModTime` (П-6: заголовок Last-Modified 200-ветки — modTime объекта); фильтрацию по запрошенным делает App.
 
 - [ ] **Шаг 1. Написать падающий тест**
   - Вход: Put/Get/Head готовы (Task 6–7); сигнатура Attributes-контракта из Task 5.
   - Действие: кейсы:
-    - `Copy_ContentAndInheritedMetadata_CopyDirective` (ContentType/UserMetadata источника; ETag копии == ETag источника — в кавычках);
+    - `Copy_ContentAndInheritedMetadata_CopyDirective` (ContentType/UserMetadata источника; ETag копии == ETag источника — в кавычках; `CopyResult.LastModified` == modTime новой записи фиксированного TimeProvider — П-6);
     - `Copy_ReplaceDirective_UsesNewMetadata`;
     - `Copy_SurvivesSourceDeletion` — copy → удалить источник → Get копии без ошибок целостности (на net10 копия имеет собственные байты — ассерт не требует реального хардлинка; кейс сохраняется и для будущей net11-механики);
     - `Copy_DefaultNet10_AlwaysFallback_ByteCopy` — БЕЗ хука: дефолт net10 → побайтовое копирование, копия валидна, содержимое совпадает с источником (P11/вариант A);
@@ -691,7 +716,7 @@ private static bool TryCreateHardLink(string sourcePath, string destPath) => fal
     - `Copy_MissingSource_NoSuchKey`; `Copy_MissingDestBucket_NoSuchBucket`;
     - `Copy_SourceTooLarge_EntityTooLarge` — `XlMetaFile.Write` поверх xl.meta живого объекта с `Size = 5 ГБ + 1`;
     - `Copy_SameKey_MetadataRewrite` (src == dest, REPLACE);
-    - `Attributes_ETagQuoted_SizeStorageClass_PartsSyntheticOne` (ETag в кавычках; Parts=[(1,size)], PartsCount=1, MaxParts=1000/переданный);
+    - `Attributes_ETagQuoted_SizeStorageClass_PartsSyntheticOne` (ETag в кавычках; `LastModified == meta.ModTime` — П-6; Parts=[(1,size)], PartsCount=1, MaxParts=1000/переданный);
     - `Attributes_Conditional_IfMatchFailed_Throws412`; `Attributes_Conditional_IfNoneMatchMatch_ReturnsNotModifiedMetadata` (Attributes == null, NotModifiedMetadata.ETag в кавычках); `Attributes_Conditional_IfModifiedSince_NotModified`; `Attributes_Conditional_IfUnmodifiedSince_Failed412` (P10);
     - `Attributes_Missing_NoSuchKey`; `Attributes_MissingBucket_NoSuchBucket`.
   - Выход: тест-кейсы.
@@ -757,14 +782,21 @@ internal sealed class DirectoryCursor : IKeyCursor
 **Алгоритм `Walk` (реализовать точно; решение пользователя major-2):**
 1. `maxKeys = query.MaxKeys ?? 1000`; `maxKeys == 0` → `ListPage([], [], IsTruncated: false, null, null, 0)`.
 2. **Маркер:** `after` = V2: декодированный `continuation-token` (`Base64Url.DecodeFromString` → UTF-8; битый → `XlInvalidArgumentException("Invalid continuation token")`) **??** `startAfter` (токен выигрывает); V1: `marker`; Versions: `marker` (хендлер t36 уже кладёт туда `key-marker`). `null`, если источник не задан.
-3. Курсор корня = `DirectoryCursor("")`; цикл `PeekKey`:
-   - `key == null` → конец; `after != null && Utf8ByteOrder.Compare(key, after) <= 0` → `MoveNext()`, продолжить (строго после маркера);
-   - префикс: `!Utf8ByteOrder.StartsWith(key, prefix)` → `MoveNext()`, продолжить (корректность — фильтром; спуск по сегментам префикса — только оптимизация, опциональна по spec §9);
-   - эмит: `rest = key[prefix.Length..]`; при `delimiter != null` и `rest` содержит delimiter — `commonPrefix = prefix + rest[..idx + delimiter.Length]`, дедуп против последнего эмитнутого префикса, эмит в CommonPrefixes; иначе — чтение `xl.meta` объекта (`XlMetaFile.Read`; при `XlIntegrityException` — `logger?.LogWarning(...)`, ключ пропускается — листинг не роняет один битый объект) и эмит `ListEntry(key, '"'+meta.ETag+'"', meta.Size, meta.ModTime)` (ETag в кавычках — P8, Contents/ETag как у Get/Head). Любой эмит увеличивает счётчик; при `count == maxKeys` → `IsTruncated = true`, стоп (`lastEmitted` = последний эмит — ключ или common prefix).
-4. `NextMarker` (v1) = `lastEmitted` — только при `delimiter != null` (без delimiter клиент продолжает по последнему `Contents/Key`); `NextContinuationToken` (V2) = `Base64Url.EncodeToString(UTF8(lastEmitted))`.
-5. `KeyCount = Contents.Count + CommonPrefixes.Count`; Variant (V1/V2/Versions) на обход НЕ влияет — обёртки добавляет App.
+3. Курсор корня = `DirectoryCursor("")`; цикл `PeekKey`. ПОРЯДОК ФИЛЬТРОВ обязателен (П-3, ревью Фазы 7: сравнение `after` идёт по КАНДИДАТУ эмиссии — CP после свёртки, не по сырому ключу; иначе CommonPrefix дублируется на странице 2):
+   - `key == null` → конец обхода;
+   - префикс: `!Utf8ByteOrder.StartsWith(key, prefix)` → `MoveNext()`, продолжить;
+   - **вычислить КАНДИДАТА эмиссии**: `rest = key[prefix.Length..]`; при `delimiter != null` и `rest` содержит delimiter — кандидат = `commonPrefix = prefix + rest[..idx + delimiter.Length]` (дедуп против последнего эмитнутого CP); иначе кандидат = сам ключ (сравнение и skip идут по строке ключа — БЕЗ чтения xl.meta);
+   - `after != null && Utf8ByteOrder.Compare(кандидат, after) <= 0` → `MoveNext()`, продолжить — СТРОГО ПОСЛЕ маркера, ПО КАНДИДАТУ: если кандидат — CP ≤ after, все последующие ключи этого CP-поддерева сворачиваются в тот же CP → пропуск всего поддерева (CP-skip);
+   - эмит кандидата: CP → CommonPrefixes; ключ → чтение `xl.meta` (`XlMetaFile.Read`; при `XlIntegrityException` — `logger?.LogWarning(...)`, ключ пропускается — листинг не роняет один битый объект) и `ListEntry(key, '"'+meta.ETag+'"', meta.Size, meta.ModTime)` в Contents (ETag в кавычках — P8, Contents/ETag как у Get/Head); `lastEmitted` = кандидат; счётчик эмитов `count++`.
+4. **Усечение (П-7.2, ревью Фазы 7):** при `count == maxKeys` — НЕ стоп сразу: выполнить ОДИН lookahead-шаг (следующий `PeekKey` + префикс-фильтр + свёртка, без эмита) — `IsTruncated = (следующий кандидат существует)`; элементов ровно maxKeys и больше кандидатов нет → `IsTruncated = false` (ложное усечение заставляло бы клиента запрашивать пустую страницу 2).
+5. `NextMarker` (v1) = `lastEmitted` — только при `delimiter != null` (без delimiter клиент продолжает по последнему `Contents/Key`); `NextContinuationToken` (V2) = `Base64Url.EncodeToString(UTF8(lastEmitted))` — вычисляются ТОЛЬКО при `IsTruncated = true`.
+6. `KeyCount = Contents.Count + CommonPrefixes.Count`; Variant (V1/V2/Versions) на обход НЕ влияет — обёртки добавляет App.
 
-**Skip-оптимизация (необязательная; исправленный инвариант, ревью M-2):** при перечислении детей уровня (отсортированы по `Utf8ByteOrder(имя)`) ребёнок C пропускается, ТОЛЬКО если существует следующий брат R, лениво вычисленный `minKey(R) <= after` — И — имя C НЕ является байтовым префиксом имени R. Обоснование: если имя C не префикс R, существует позиция различия внутри имени C — любой ключ поддерева C меньше `minKey(R)` на этом байте → все ключи C ≤ after, skip корректен. Если имя C — байтовый префикс имени R (например, дети `m` и `m!z`), инвариант ЛОЖЕН: при after=`m!z` ключи `m0`, `mz` > after, но `minKey(R)=m!z ≤ after` — поддерево C пропускалось бы ошибочно; в этом случае C НЕ пропускается (emit-фильтр п.3 корректно отсечёт лишнее). Emit-фильтр и skip используют одну семантику сравнения (`Utf8ByteOrder`, полные ключи).
+**Требования производительности DirectoryCursor (ОБЯЗАТЕЛЬНЫ; П-4, ревью Фазы 7 — spec §9: бакеты бэкапов, десятки тысяч ключей):**
+- дети уровня сортируются ОДИН раз при загрузке курсора (`Utf8ByteOrder` по декодированным именам) — без пересортировки на каждом шаге;
+- наличие `xl.meta` каталога кэшируется при загрузке курсора (один `File.Exists` на каталог, не на каждый `PeekKey`);
+- k-way merge — по позиции первого неисчерпанного ребёнка либо по куче (`PriorityQueue`): `PeekKey`/`MoveNext` без сканирования всех детей;
+- subtree-skip по маркеру — обязателен, два правила: (а) инвариант rev.4+ — при перечислении отсортированных детей уровня ребёнок C пропускается, ТОЛЬКО если существует следующий брат R, лениво вычисленный `minKey(R) <= after` — И — имя C НЕ является байтовым префиксом имени R (если имя C — префикс имени R, инвариант ложен: при after=`m!z` и детях `m`, `m!z` ключи `m0`, `mz` > after терялись бы — контрпример теста `Marker_SkipSiblingPrefixTrap`); (б) CP-skip п.3 (кандидат-CP ≤ after → пропуск CP-поддерева целиком). Emit-фильтр и оба skip-правила используют ОДНУ семантику сравнения (`Utf8ByteOrder`, полные ключи/кандидаты).
 
 - [ ] **Шаг 1. Написать падающий тест**
   - Вход: Put-контур готов (фикстура с PUT-хелпером); `Utf8ByteOrder` и его тесты — из Task 1.
@@ -780,7 +812,9 @@ internal sealed class DirectoryCursor : IKeyCursor
     - `Marker_StrictlyAfter_SkipsSubtree` (after "a/x": "a/w" нет, "a/y" есть, "b" есть);
     - `ContinuationToken_Paging_Deterministic` (3 ключа, maxKeys=2 → токен → страница 2; повторный вызов — тот же результат);
     - `ContinuationToken_Invalid_InvalidArgument`; `StartAfter_IgnoredWhenTokenPresent`;
+    - `Paging_Page2AfterCommonPrefixBoundary_NoDuplicateCp` (П-3) — ключи "logs/a", "logs/b", "root", delimiter "/", maxKeys=1 → страница 1: CP "logs/", truncated, NextMarker/токен = "logs/"; страница 2 (after = "logs/") → Contents ["root"], CP "logs/" ОТСУТСТВУЕТ (after сравнивается по кандидату-CP после свёртки);
     - `MaxKeys_Zero_EmptyNotTruncated`;
+    - `MaxKeys_ExactlyItemCount_NotTruncated` (П-7.2) — 3 ключа, maxKeys=3 → все эмитнуты, `IsTruncated=false`, NextMarker/токен = null (lookahead не нашёл следующего кандидата); контр-кейс maxKeys=2 → truncated;
     - `NextMarker_V1_OnlyWithDelimiter`;
     - `KeyCount_V2_SumsContentsAndPrefixes`;
     - `Versions_SameWalkAsV1`;
@@ -808,7 +842,7 @@ internal sealed class DirectoryCursor : IKeyCursor
 ### Task 10: App-стыковка — DI, fail-fast, чистки, метрики диска, healthz, изоляция и переработка сценариев (фаза 6)
 
 **Файлы:**
-- Modify: `src/OwnS3.App/Program.cs`, `src/OwnS3.App/Pipeline/OwnS3Metrics.cs`
+- Modify: `src/OwnS3.App/Program.cs`, `src/OwnS3.App/Pipeline/OwnS3Metrics.cs`, `src/OwnS3.App/OwnS3Options.cs` (комментарий `DataDir` — текущее состояние без исторических атрибуций: «Каталог тома данных ownS3 (arch/owns3/04 §1; конфигурация — глава 05)»; П-7.3)
 - Create: `src/OwnS3.App/Pipeline/VolumeCleanupService.cs`
 - Delete: `src/OwnS3.Storage/NotWiredObjectStore.cs`, `src/tests/OwnS3.UnitTests/NotWiredObjectStoreTests.cs`
 - Modify (изоляция): `src/tests/OwnS3.IntegrationTests/Api/OwnS3AppFactory.cs` (temp-том + Dispose), и классы `AccessScenarios.cs`, `AuthScenarios.cs`, `BodyIntegrityScenarios.cs`, `MetricsHealthScenarios.cs`, `RoutingScenarios.cs` — перевод на `IClassFixture<OwnS3AppFactory>` + разводка имён бакетов ПО КЕЙСАМ; `ErrorFormatScenarios.cs`/`FailFastScenarios.cs` остаются в `OwnS3TestCollection`
@@ -848,7 +882,7 @@ catch (Exception ex)
 ```
 
    `/healthz`: `app.MapGet("/healthz", () => volume.CheckHealth() ? Results.Ok() : Results.StatusCode(StatusCodes.Status503ServiceUnavailable));` (замыкание на `volume`).
-2. **`VolumeCleanupService : BackgroundService`** (ctor: `XlVolume volume, OwnS3Metrics metrics, ILogger<VolumeCleanupService> logger`): в `ExecuteAsync` СНАЧАЛА немедленный проход (старт-чистки уже сделаны `Initialize` — повтор безвреден; главное — метрики диска заполнены сразу, без 15-мин ожидания), затем `PeriodicTimer(TimeSpan.FromMinutes(15))`. Проход: stopwatch → `volume.RunCleanupAsync(ct)` → дисковые метрики (`DriveInfo(volume.Root)` — BCL: `TotalSize`, `TotalFreeSpace`; used = total − free; недоступен `DriveInfo` → warning, значения не трогать) → `logger.LogInformation("[CLEANUP] durationMs={Ms}", ...)`; исключение тика — лог Error, сервис живёт.
+2. **`VolumeCleanupService : BackgroundService`** (ctor: `XlVolume volume, OwnS3Metrics metrics, ILogger<VolumeCleanupService> logger`): в `ExecuteAsync` СНАЧАЛА немедленный проход (старт-чистки уже сделаны `Initialize` — повтор безвреден; главное — метрики диска заполнены сразу, без 15-мин ожидания), затем `PeriodicTimer(TimeSpan.FromMinutes(15))`. Проход: stopwatch → `volume.RunCleanupAsync(ct)` (фоновый проход tmp НЕ трогает — П-2: безусловная очистка tmp только в Initialize) → дисковые метрики (`DriveInfo(volume.Root)` — BCL: `TotalSize`, `TotalFreeSpace`; used = total − free; недоступен `DriveInfo` → warning, значения не трогать) → `logger.LogInformation("[CLEANUP] durationMs={Ms}", ...)`; исключение тика — лог Error, сервис живёт.
 3. **`OwnS3Metrics`**: поля `internal long DiskUsedBytes/DiskTotalBytes` (Interlocked) + `meter.CreateObservableGauge<long>("ownS3.disk.used.bytes", () => DiskUsedBytes, unit: "By")` и `"ownS3.disk.total.bytes"` (финальные имена `ownS3_disk_used_bytes`/`ownS3_disk_total_bytes` — прецедент `ownS3_requests_total`).
 4. **`OwnS3AppFactory`**: поле `public string TempVolumeDir { get; } = Path.Combine(Path.GetTempPath(), "owns3-waf-" + Guid.NewGuid().ToString("N"));`; конфиг `["OwnS3:DataDir"] = TempVolumeDir`; `protected override void Dispose(bool)` → `base` + `Directory.Delete(TempVolumeDir, true)` в try/catch.
 5. Удаление `NotWiredObjectStore.cs` + `NotWiredObjectStoreTests.cs`.
@@ -995,7 +1029,15 @@ catch (Exception ex)
 
 ---
 
-## Саморевью плана rev.6 (выполнено при написании)
+## Саморевью плана rev.7 (выполнено при написании)
+
+- **П-1 (blocker, Task 3/P1):** orphan-чистка переписана на классификацию подкаталогов: каталог с `xl.meta` — каталог объекта/ключа, НЕ удаляется никогда (в т.ч. 32-hex имена); Guid-подкаталог БЕЗ `xl.meta` — dataDir-кандидат (в dataDir лежит лишь part.1) по возрасту 1 ч; не-Guid без `xl.meta` — префикс, рекурсия. Тест `Cleanup_ObjectKeyLookingLikeGuid_Survives`; краш-кейс Delete чистится (`Cleanup_RemovesGuidDataDir_WithoutXlMeta`).
+- **П-2 (blocker, Task 3/10):** безусловная очистка tmp — ТОЛЬКО в `Initialize` (старт: in-flight нет); `RunCleanupAsync` tmp НЕ трогает (гонка с in-flight PUT: молчаливая порча коммита) — однозначно в Interfaces-комментариях XlVolume и в VolumeCleanupService; тест `RunCleanup_IgnoresTmp`.
+- **П-3 (major, Task 9):** порядок фильтров Walk исправлен — `after` сравнивается по КАНДИДАТУ эмиссии (CP после свёртки); CP ≤ after → пропуск CP-поддерева целиком; тест `Paging_Page2AfterCommonPrefixBoundary_NoDuplicateCp`.
+- **П-4 (major, Task 9):** производительность DirectoryCursor — ОБЯЗАТЕЛЬНА (сортировка детей один раз; кэш наличия xl.meta; merge по первому неисчерпанному/куче; subtree-skip — инвариант rev.4+ и CP-skip); обоснование — spec §9 (десятки тысяч ключей).
+- **П-5 (minor, Task 8):** семантика HardLinkProbe — явная формула `HardLinkProbe is null ? TryCreateHardLink(s,d) : HardLinkProbe(s,d)`; тест `Copy_HardLinkProbeTrue_TakesLinkBranch` присутствует.
+- **П-6 (minor, Task 5/8):** доменные правки §5-уровня: `ObjectAttributes.LastModified` (200-ветка Attributes: заголовок Last-Modified = modTime объекта, не UtcNow), `CopyResult(ETag, LastModified)` (CopyObjectResult.LastModified = modTime новой записи); помечено в Task 5 Interfaces, реализация — Task 8, ассерты — в тестах.
+- **П-7 (minor):** (1) `XlMetaFile.Read`: основной повреждён + bkp отсутствует → `XlIntegrityException` (500), тест `Read_CorruptedMainWithoutBkp_ThrowsIntegrity_NotFileNotFound`; (2) Task 9: IsTruncated при ровно maxKeys — lookahead-шаг (усечение только при наличии следующего кандидата), тест `MaxKeys_ExactlyItemCount_NotTruncated`; NextMarker/NextContinuationToken вычисляются только при IsTruncated; (3) Task 10 Files: OwnS3Options.DataDir-комментарий без исторических атрибуций.
 
 - **Решение пользователя (конфликт Task 8, вариант A):** `File.CreateHardLink` отсутствует в net10.0 (API .NET 11 Preview), P/Invoke/unsafe запрещены ограничением 9 — выбран вариант A: на net10 всегда fallback-ветка. Новое решение P11; Task 8 п.4 переписан: выделенный `TryCreateHardLink` (всегда `false` на net10, комментарий-точка включения для net11, сниппет приведён), основная ветка — побайтовое копирование `part.1` + `Flush(flushToDisk: true)` + warning «хардлинк недоступен»; обоснование (семантика Q2 сохранена, arch не меняется, ограничение 9 соблюдено) и цена (полный IO-проход на CopyObject) — в P11 и тексте Task 8. Тесты: `Copy_DefaultNet10_AlwaysFallback_ByteCopy` (дефолт, без хука) и `Copy_HardLinkProbeTrue_TakesLinkBranch` (имитация линка через хук); `Copy_SurvivesSourceDeletion` — без требования реального хардлинка; `HardLinkProbe` — тест-хюк как было. Коммит-сообщение Task 8 и «Технологии» шапки синхронизированы.
 

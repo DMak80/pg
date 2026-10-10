@@ -69,10 +69,14 @@ public sealed partial class XlObjectStore
 
     // part.1 копии: хардлинк — мгновенная копия (Q2); на net10.0 BCL-API хардлинка
     // нет (File.CreateHardLink появился в net11) — fallback-копирование всегда.
+    // HardLinkProbe (тест-хук) полностью заменяет попытку линка: false —
+    // принудительный fallback, true — имитация успешного линка (фиксация
+    // линк-ветвления для net11).
     private void CopyPart(string srcPart, string destPart)
     {
-        if ((HardLinkProbe is null || HardLinkProbe(srcPart, destPart))
-            && TryCreateHardLink(srcPart, destPart))
+        var linked = HardLinkProbe is null ? TryCreateHardLink(srcPart, destPart)
+                                           : HardLinkProbe(srcPart, destPart);
+        if (linked)
             return;
         _logger.LogWarning(
             "хардлинк недоступен (нет BCL-API в net10.0) — побайтовое копирование {Src} → {Dst}",
@@ -117,11 +121,12 @@ public sealed partial class XlObjectStore
         if (outcome == ConditionalOutcome.NotModified)
             return Task.FromResult(new ObjectAttributesResult(null, ToMetadata(key, meta)));
         // 3. Атрибуты: ETag В КАВЫЧКАХ (P8 — хендлер ставит значение в HTTP-заголовок);
+        //    LastModified — modTime записи (заголовок Last-Modified ответа);
         //    фильтрацию по запрошенным делает App
         var parts = new ObjectPartsAttributes(PartsCount: 1, PartNumberMarker: partNumberMarker ?? 0,
             NextPartNumberMarker: null, MaxParts: maxParts ?? 1000, IsTruncated: false,
             Parts: [(1, meta.Size)]);
-        var result = new ObjectAttributes('"' + meta.ETag + '"', meta.Size, "STANDARD", parts);
+        var result = new ObjectAttributes('"' + meta.ETag + '"', meta.Size, "STANDARD", parts, meta.ModTime);
         return Task.FromResult(new ObjectAttributesResult(result, null));
     }
 }
