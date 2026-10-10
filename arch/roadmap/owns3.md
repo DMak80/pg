@@ -55,14 +55,7 @@ multipart → приёмка клиентами → erasure coding.
 
 ## Задачи
 
-- **`t36-owns3-protocol`** — каркас сервиса и
-  протоколная обвязка: HTTP-грань, роутинг 22 операций (скелеты
-  хендлеров), проверка подписи SigV4 + presigned + чанковая потоковая
-  (фрейминг aws-chunked), XML-сериализация, формат S3-ошибок,
-  учётки/доступ; юниты на тест-векторах подписи. Референс:
-  `cmd/api-router.go`, `cmd/auth-handler.go`, `cmd/signature-v4*.go`,
-  `cmd/streaming-signature-v4.go`.
-- **`t37-owns3-storage-objects`** ← `t36-owns3-protocol` — xl-хранение
+- **`t37-owns3-storage-objects`** — xl-хранение
   и основные операции: раскладка бакетов/объектов/`part.N`, запись
   через `.owns3.sys/tmp` с атомарным rename-коммитом, `xl.meta`
   (версионирование формата), корзина tmp/.trash; бакеты
