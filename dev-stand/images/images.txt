@@ -5,6 +5,7 @@
 # запрещено — в registry они не попадают никогда (docs/runbook.md).
 alpine:3.20
 apache/kafka:4.0.0
+dxflrs/garage:v2.1.0
 ghcr.io/zalando/spilo-18:4.1-p2
 grafana/grafana:13.0.8
 mcr.microsoft.com/dotnet/aspnet:10.0

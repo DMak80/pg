@@ -25,6 +25,8 @@
 | [kafkaworker.md](kafkaworker.md) | сервис KafkaWorker: топики, ребалансировка, безопасность, метрики, дискавери-библиотека |
 | [backup.md](backup.md) | подсистема бэкапов шардов (владелец PgWorker): полные/WAL-бэкапы, проверки, восстановление, ретенция, супервизор |
 | [valkey.md](valkey.md) | Valkey-домен: канон etcd-контракта, сервис ValkeyWorker (provisioning/надзор), UI панели, дискавери-библиотека Puzzle |
+| [s3.md](s3.md) | S3-хранилище бэкапов: кластеры MinIO (состав/гео-placement/диски), replication-mesh, синхронность/связность, панель |
+| [owns3.md](owns3.md) | собственный S3-сервис ownS3 (.NET): SigV4/XML-протокол, xl-хранение single-drive, объекты/листинги, multipart, приёмка клиентами; далее erasure coding (Рид—Соломон) |
 | [reliability.md](reliability.md) | сквозная надёжность: восстановимость данных, самовосстанавливаемость, наблюдаемость (аудит 2026-09-28) |
 
 Живой срез по треку reliability — [reliability-report.md](reliability-report.md)
