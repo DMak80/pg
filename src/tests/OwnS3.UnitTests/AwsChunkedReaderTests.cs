@@ -108,6 +108,56 @@ public sealed class AwsChunkedReaderTests
     }
 
     [Fact]
+    public void Read_NonHexFrameSignature_InvalidRequest()
+    {
+        // Arrange: подпись фрейма — 64 символа, но не hex (hex-валидация
+        // до декодирования/сравнения — impl-фикс код-ревью)
+        var body = Encoding.ASCII.GetBytes("a;chunk-signature=" + new string('Z', 64) + "\r\n");
+        using var reader = new AwsChunkedReader(new MemoryStream(body), Context(1));
+
+        // Act
+        var act = () => ReadAll(reader);
+
+        // Assert
+        act.Should().Throw<S3ProtocolException>()
+            .Which.Code.Should().Be(S3ErrorCode.InvalidRequest);
+    }
+
+    [Theory]
+    [InlineData(63)]
+    [InlineData(65)]
+    public void Read_FrameSignatureWrongLength_InvalidRequest(int signatureLength)
+    {
+        // Arrange: подпись фрейма не 64 hex-символов (63/65)
+        var body = Encoding.ASCII.GetBytes("a;chunk-signature=" + new string('a', signatureLength) + "\r\n");
+        using var reader = new AwsChunkedReader(new MemoryStream(body), Context(1));
+
+        // Act
+        var act = () => ReadAll(reader);
+
+        // Assert
+        act.Should().Throw<S3ProtocolException>()
+            .Which.Code.Should().Be(S3ErrorCode.InvalidRequest);
+    }
+
+    [Fact]
+    public void Checksums_KnownAnswerVectors_Rfc3720()
+    {
+        // Arrange: known-answer «123456789» — фиксация против endian-ошибок
+        // при base64-упаковке; функции те же, что в сверке трейлеров ридера
+        var data = Encoding.ASCII.GetBytes("123456789");
+
+        // Act: Crc32C.Hash уже big-endian; Crc32 — little-endian + Reverse
+        var crc32c = Convert.ToBase64String(Crc32C.Hash(data));
+        var crc32 = Convert.ToBase64String(Crc32.Hash(data).Reverse().ToArray());
+
+        // Assert: CRC32C = 0xE3069283 → «4waSgw==» (эталон RFC 3720);
+        // CRC32 = 0xCBF43926 → «y/Q5Jg==» (эталон ISO-HDLC)
+        crc32c.Should().Be("4waSgw==");
+        crc32.Should().Be("y/Q5Jg==");
+    }
+
+    [Fact]
     public void Read_NonHexSize_InvalidRequest()
     {
         // Arrange: размер не в hex

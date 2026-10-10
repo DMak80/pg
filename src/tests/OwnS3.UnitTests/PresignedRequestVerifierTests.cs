@@ -86,7 +86,8 @@ public sealed class PresignedRequestVerifierTests
     [Fact]
     public void Verify_Expired_AccessDenied()
     {
-        // Arrange: время действия истекло (даже с допуском skew)
+        // Arrange: now − X-Amz-Date > X-Amz-Expires — строгая просрочка
+        // (arch-правка 10: без skew-допуска)
         var model = PresignedModel(expires: "1");
         var sut = SutAt(TestVectors.SkewedTime); // now = +20 мин; истёк в +1 с
 
@@ -159,17 +160,56 @@ public sealed class PresignedRequestVerifierTests
     }
 
     [Fact]
-    public void Verify_SkewedXAmzDate_RequestTimeTooSkewed()
+    public void Verify_UsedAfter15MinutesInsideWindow_Ok()
     {
-        // Arrange: X-Amz-Date вне ±15 мин от времени провайдера (глава 03 §2)
+        // Arrange: использование через N > 15 мин после подписи внутри окна
+        // X-Amz-Expires — Abs-skew для прошедших дат отсутствует (arch-правка 10)
         var model = PresignedModel();
-        var sut = SutAt(TestVectors.SkewedTime);
+        var sut = SutAt(TestVectors.SkewedTime); // now = дата подписи + 20 мин; окно 86400 с
 
         // Act
         var result = sut.Verify(model, "GetObject", Resolver);
 
-        // Assert
+        // Assert: непросроченный presigned принимается независимо от возраста
+        result.Should().BeOfType<SigV4Result.Ok>();
+    }
+
+    [Fact]
+    public void Verify_FutureDateBeyond15Minutes_RequestTimeTooSkewed()
+    {
+        // Arrange: X-Amz-Date в будущем дальше now + 15 минут (подпись «из
+        // будущего»: now = дата подписи − 20 мин) — arch-правка 10
+        var model = PresignedModel();
+        var sut = SutAt(TestSigV4Signer.DefaultDate.AddMinutes(-20));
+
+        // Act
+        var result = sut.Verify(model, "GetObject", Resolver);
+
+        // Assert: отступление от референса — нормализация в RequestTimeTooSkewed
         AssertFail(result, S3ErrorCode.RequestTimeTooSkewed);
+    }
+
+    [Fact]
+    public void Verify_ExactlyAtExpiryBoundary_Ok()
+    {
+        // Arrange: now − X-Amz-Date == X-Amz-Expires (ровно на границе, Expires=60)
+        // — просрочка строгое неравенство, граница ещё валидна (arch-правка 10);
+        // подпись пересчитана signer'ом: Expires входит в canonical query
+        var canonicalQuery =
+            "X-Amz-Algorithm=AWS4-HMAC-SHA256" +
+            "&X-Amz-Credential=" + TestVectors.AccessKey + "%2F20130524%2Fus-east-1%2Fs3%2Faws4_request" +
+            "&X-Amz-Date=20130524T000000Z&X-Amz-Expires=60&X-Amz-SignedHeaders=host";
+        var signature = TestSigV4Signer.HeaderSignature(TestVectors.SecretKey, "GET", "/test.txt",
+            canonicalQuery, [("host", TestVectors.Host)],
+            PayloadHashModeClassifier.UnsignedPayloadValue, TestSigV4Signer.DefaultDate, TestVectors.Region);
+        var model = PresignedModel(expires: "60", signature: signature);
+        var sut = SutAt(TestSigV4Signer.DefaultDate.AddSeconds(60));
+
+        // Act
+        var result = sut.Verify(model, "GetObject", Resolver);
+
+        // Assert: граница окна — не просрочка
+        result.Should().BeOfType<SigV4Result.Ok>();
     }
 
     [Fact]

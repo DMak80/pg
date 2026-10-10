@@ -155,6 +155,12 @@ public sealed class AwsChunkedReader : Stream
         var sizeHex = header[..separatorIndex];
         _frameSignature = header[(separatorIndex + ";chunk-signature=".Length)..];
 
+        // Hex-валидация подписи фрейма ДО декодирования/сравнения: ровно 64
+        // символа [0-9a-f] (нижний hex референса); не-hex вход в декодер
+        // недопустим (иначе FormatException вместо канонического 400).
+        if (_frameSignature.Any(c => c is not ((>= '0' and <= '9') or (>= 'a' and <= 'f'))))
+            throw new S3ProtocolException(S3ErrorCode.InvalidRequest, "Malformed chunked encoding");
+
         if (!TryParseHexSize(sizeHex, out _frameSize) || _frameSize > MaxChunkSize)
             throw new S3ProtocolException(S3ErrorCode.InvalidRequest, "Malformed chunked encoding");
     }

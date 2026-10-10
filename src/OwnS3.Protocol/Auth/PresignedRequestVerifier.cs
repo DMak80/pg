@@ -8,8 +8,8 @@ namespace OwnS3.Protocol.Auth;
 // Верификатор presigned SigV4 (arch/owns3/03 §2): подпись в query-параметрах,
 // тело не подписывается (payload-строка UNSIGNED-PAYLOAD), canonical query —
 // все параметры кроме X-Amz-Signature. Порядок проверок: полнота 6 параметров →
-// операция в списке → resolver → дата формат/skew → Expires диапазон →
-// просрочка → подпись.
+// операция в списке → resolver → формат даты → будущее-skew → диапазон
+// Expires → просрочка (строго) → подпись.
 public sealed class PresignedRequestVerifier(TimeProvider timeProvider)
 {
     private const long MaxExpiresSeconds = 604800;
@@ -54,26 +54,28 @@ public sealed class PresignedRequestVerifier(TimeProvider timeProvider)
         if (secret is null)
             return new SigV4Result.Fail(S3ErrorCode.InvalidAccessKeyId);
 
-        // Дата: формат обязателен; skew-семантика (глава 03 §2): просрочка
-        // оценивается раньше skew-отказа (окно давно позади — AccessDenied),
-        // skew остаётся для дат из будущего и «валидных окон вне ±15 минут».
+        // Дата: формат обязателен (глава 03 §2).
         if (!DateTimeOffset.TryParseExact(amzDate, "yyyyMMdd'T'HHmmss'Z'", CultureInfo.InvariantCulture,
                 DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out var requestTime))
             return new SigV4Result.Fail(S3ErrorCode.AuthorizationQueryParametersError);
         var now = timeProvider.GetUtcNow();
+
+        // Skew presigned — только на будущее (arch-правка 10): X-Amz-Date дальше
+        // now + 15 минут → RequestTimeTooSkewed; прошедшие даты skew-проверкой
+        // не отвергаются — URL валиден всё время окна.
+        if (requestTime - now > MaxSkew)
+            return new SigV4Result.Fail(S3ErrorCode.RequestTimeTooSkewed);
 
         // Expires ∈ [0, 604800]; невалидное значение — тот же код (глава 03 §2).
         if (!long.TryParse(expires, NumberStyles.Integer, CultureInfo.InvariantCulture, out var expiresSeconds)
             || expiresSeconds < 0 || expiresSeconds > MaxExpiresSeconds)
             return new SigV4Result.Fail(S3ErrorCode.AuthorizationQueryParametersError);
 
-        // Просрочка: X-Amz-Date + Expires в прошлом относительно now − skew → 403 AccessDenied.
-        if (requestTime.AddSeconds(expiresSeconds) < now - MaxSkew)
+        // Просрочка — строгое неравенство now − X-Amz-Date > X-Amz-Expires →
+        // AccessDenied (arch-правка 10): непросроченный presigned принимается
+        // независимо от возраста.
+        if (now - requestTime > TimeSpan.FromSeconds(expiresSeconds))
             return new SigV4Result.Fail(S3ErrorCode.AccessDenied);
-
-        // Clock skew ±15 минут к X-Amz-Date (глава 03 §2).
-        if (Math.Abs((now - requestTime).TotalMinutes) > MaxSkew.TotalMinutes)
-            return new SigV4Result.Fail(S3ErrorCode.RequestTimeTooSkewed);
 
         // Canonical query — все параметры запроса кроме X-Amz-Signature.
         var canonicalQuery = UriEncoding.EncodeQuery(pairs.Where(p =>
