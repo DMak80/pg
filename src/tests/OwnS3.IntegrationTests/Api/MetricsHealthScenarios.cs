@@ -65,6 +65,24 @@ public sealed class MetricsHealthScenarios(OwnS3AppFactory factory)
     }
 
     [Fact]
+    public async Task ListTypeValueOne_RoutesToListObjectsV1()
+    {
+        // Arrange: GET /{bucket}?list-type=1 — list-type-дискриминатор СО
+        // ЗНАЧЕНИЕМ «2»; иное значение → маршрут v1 (глава 02, референс);
+        // серия метрик в общем хосте неоднозначна (V2-запросы соседних
+        // сценариев) — операция фиксируется структурным логом этого запроса
+        var client = NewClient();
+
+        // Act
+        var response = await client.SendSignedAsync("GET", "/bucket?list-type=1");
+        var requestId = response.Headers.GetValues("x-amz-request-id").Single();
+
+        // Assert: лог этого requestId — операция ListObjects (v1), не V2
+        factory.LogEntries.Should().Contain(e =>
+            !string.IsNullOrEmpty(e.Message) && e.Message.Contains(requestId) && e.Message.Contains("operation=ListObjects bucket="));
+    }
+
+    [Fact]
     public async Task StructuredLog_ContainsAllSevenFields()
     {
         // Arrange

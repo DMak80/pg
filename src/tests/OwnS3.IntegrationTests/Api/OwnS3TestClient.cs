@@ -27,7 +27,9 @@ public sealed class OwnS3TestClient(HttpClient http)
         DateTimeOffset? at = null, string region = "us-east-1")
     {
         var credentials2 = credentials ?? Writer();
-        var date = at ?? DateTimeOffset.UtcNow;
+        // По умолчанию подпись датой фиксированного времени хоста (HostTime) —
+        // верификаторы видят её через WAF-override TimeProvider (шаг 11.1).
+        var date = at ?? OwnS3AppFactory.HostTime;
         var payload = payloadString ?? PayloadHashModeClassifier.UnsignedPayloadValue;
 
         var (path, query) = SplitPathQuery(pathAndQuery);
@@ -72,7 +74,7 @@ public sealed class OwnS3TestClient(HttpClient http)
     public string BuildPresignedUrl(string method, string pathAndQuery, Credentials credentials,
         long expiresSeconds = 86400, DateTimeOffset? at = null, string region = "us-east-1")
     {
-        var date = at ?? DateTimeOffset.UtcNow;
+        var date = at ?? OwnS3AppFactory.HostTime;
         var amzDate = TestSigV4Signer.AmzDateOf(date);
         var credential = $"{credentials.AccessKey}/{amzDate[..8]}/{region}/s3/aws4_request";
         var pairs = new List<(string Name, string? Value)>

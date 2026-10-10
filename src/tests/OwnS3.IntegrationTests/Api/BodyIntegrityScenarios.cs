@@ -65,7 +65,7 @@ public sealed class BodyIntegrityScenarios(OwnS3AppFactory factory)
     {
         // Arrange: подпись с payload-строкой режима; seed из подписи запроса
         var client = NewClient();
-        var date = DateTimeOffset.UtcNow;
+        var date = OwnS3AppFactory.HostTime;
         var payload = PayloadHashModeClassifier.StreamingValue;
 
         // Заголовочная подпись с режимной payload-строкой (seed) — как SendSignedAsync,
@@ -107,7 +107,7 @@ public sealed class BodyIntegrityScenarios(OwnS3AppFactory factory)
         // Arrange: 2-чанковое тело, hex подписи второго фрейма испорчен
         var data = Encoding.UTF8.GetBytes("0123456789abcdefghij");
         var client = NewClient();
-        var date = DateTimeOffset.UtcNow;
+        var date = OwnS3AppFactory.HostTime;
         var payload = PayloadHashModeClassifier.StreamingValue;
         var host = client.Http.BaseAddress!.Authority;
         var headers = new List<(string, string)>
@@ -152,7 +152,7 @@ public sealed class BodyIntegrityScenarios(OwnS3AppFactory factory)
     {
         // Arrange: трейлер crc32 от другого содержимого (подпись трейлера корректна)
         var client = NewClient();
-        var date = DateTimeOffset.UtcNow;
+        var date = OwnS3AppFactory.HostTime;
         var payload = PayloadHashModeClassifier.StreamingTrailerValue;
         var host = client.Http.BaseAddress!.Authority;
         var wrongCrc = Crc32.Hash("other"u8.ToArray()).Reverse().ToArray();
@@ -201,6 +201,40 @@ public sealed class BodyIntegrityScenarios(OwnS3AppFactory factory)
         // Assert
         response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
         (await RoutingScenarios.ErrorXmlAsync(response)).Should().Be("InvalidRequest");
+    }
+
+    [Fact]
+    public async Task DeleteObjects_ContentMd5Mismatch_400BadDigest()
+    {
+        // Arrange: валидный Delete-XML + Content-MD5 от другого содержимого —
+        // сверка тела DeleteObjects через HashingBodyStream (глава 02)
+        var xml = """<?xml version="1.0" encoding="utf-8"?><Delete xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Object><Key>k</Key></Object><Quiet>false</Quiet></Delete>""";
+        var wrongMd5 = Convert.ToBase64String(MD5.HashData("other"u8));
+
+        // Act
+        var response = await NewClient().SendSignedAsync("POST", "/bucket?delete",
+            headers: new Dictionary<string, string> { ["Content-MD5"] = wrongMd5 },
+            body: Encoding.UTF8.GetBytes(xml));
+
+        // Assert: сверка MD5 при дочитывании XML-тела — BadDigest
+        response.StatusCode.Should().Be(HttpStatusCode.BadRequest);
+        (await RoutingScenarios.ErrorXmlAsync(response)).Should().Be("BadDigest");
+    }
+
+    [Fact]
+    public async Task DeleteObjects_CorrectContentMd5_ReachesStub()
+    {
+        // Arrange: контрольный кейс — корректный MD5 того же XML
+        var xml = """<?xml version="1.0" encoding="utf-8"?><Delete xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Object><Key>k</Key></Object><Quiet>false</Quiet></Delete>""";
+        var md5 = Convert.ToBase64String(MD5.HashData(Encoding.UTF8.GetBytes(xml)));
+
+        // Act
+        var response = await NewClient().SendSignedAsync("POST", "/bucket?delete",
+            headers: new Dictionary<string, string> { ["Content-MD5"] = md5 },
+            body: Encoding.UTF8.GetBytes(xml));
+
+        // Assert: сверка пройдена — запрос дошёл до заглушки
+        response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
     }
 
     private static int IndexOf(byte[] haystack, byte[] needle, int start)

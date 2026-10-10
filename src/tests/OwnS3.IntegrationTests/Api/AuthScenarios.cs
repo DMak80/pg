@@ -50,10 +50,10 @@ public sealed class AuthScenarios(OwnS3AppFactory factory)
     [Fact]
     public async Task SkewedDate_403()
     {
-        // Arrange: x-amz-date на 20 минут в будущем
+        // Arrange: x-amz-date на 20 минут в будущем относительно HostTime
         // Act
         var response = await NewClient().SendSignedAsync("GET", "/bucket/key",
-            at: DateTimeOffset.UtcNow.AddMinutes(20));
+            at: OwnS3AppFactory.HostTime.AddMinutes(20));
 
         // Assert
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
@@ -77,7 +77,7 @@ public sealed class AuthScenarios(OwnS3AppFactory factory)
     {
         // Arrange: сервис в scope — sns (заголовок малформирован)
         var client = NewClient();
-        var date = DateTimeOffset.UtcNow;
+        var date = OwnS3AppFactory.HostTime;
         var secret = OwnS3AppFactory.WriterSecretKey;
         var headers = new List<(string, string)>
         {
@@ -114,7 +114,7 @@ public sealed class AuthScenarios(OwnS3AppFactory factory)
     {
         // Arrange: подпись по валидной дате, заголовок подменён на битый формат
         var client = NewClient();
-        var date = DateTimeOffset.UtcNow;
+        var date = OwnS3AppFactory.HostTime;
         var secret = OwnS3AppFactory.WriterSecretKey;
         var headers = new List<(string, string)>
         {
@@ -174,10 +174,11 @@ public sealed class AuthScenarios(OwnS3AppFactory factory)
     [Fact]
     public async Task Presigned_Expired_403()
     {
-        // Arrange: подпись вчерашним днём, окно 60 с — давно истекло
+        // Arrange: подпись задолго до HostTime, окно 60 с — строгая просрочка
+        // now − X-Amz-Date > X-Amz-Expires (arch-правка 10)
         var client = NewClient();
         var url = client.BuildPresignedUrl("GET", "/bucket/key", OwnS3TestClient.Writer(),
-            expiresSeconds: 60, at: DateTimeOffset.UtcNow.AddDays(-1));
+            expiresSeconds: 60, at: OwnS3AppFactory.HostTime.AddDays(-1));
 
         // Act
         var response = await client.SendPresignedAsync("GET", url);
@@ -185,6 +186,39 @@ public sealed class AuthScenarios(OwnS3AppFactory factory)
         // Assert
         response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
         (await RoutingScenarios.ErrorXmlAsync(response)).Should().Be("AccessDenied");
+    }
+
+    [Fact]
+    public async Task Presigned_UsedAfter15MinutesInsideWindow_ReachesStub()
+    {
+        // Arrange: presigned подписан 20 минут назад, окно 86400 с — Abs-skew
+        // для прошедших дат отсутствует (arch-правка 10): URL валиден всё окно
+        var client = NewClient();
+        var url = client.BuildPresignedUrl("GET", "/bucket/key", OwnS3TestClient.Writer(),
+            expiresSeconds: 86400, at: OwnS3AppFactory.HostTime.AddMinutes(-20));
+
+        // Act
+        var response = await client.SendPresignedAsync("GET", url);
+
+        // Assert: внутри окна — подпись валидна, запрос дошёл до заглушки
+        response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+    }
+
+    [Fact]
+    public async Task Presigned_FutureDateBeyond15Minutes_403()
+    {
+        // Arrange: X-Amz-Date на 20 минут в будущем от HostTime — дальше
+        // now + 15 минут (arch-правка 10: skew presigned — только на будущее)
+        var client = NewClient();
+        var url = client.BuildPresignedUrl("GET", "/bucket/key", OwnS3TestClient.Writer(),
+            expiresSeconds: 86400, at: OwnS3AppFactory.HostTime.AddMinutes(20));
+
+        // Act
+        var response = await client.SendPresignedAsync("GET", url);
+
+        // Assert: отступление от референса — нормализация в RequestTimeTooSkewed
+        response.StatusCode.Should().Be(HttpStatusCode.Forbidden);
+        (await RoutingScenarios.ErrorXmlAsync(response)).Should().Be("RequestTimeTooSkewed");
     }
 
     [Fact]

@@ -124,6 +124,24 @@ public sealed class RoutingScenarios(OwnS3AppFactory factory)
         response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
     }
 
+    [Theory]
+    [InlineData("/bucket/caf%C3%A9")]   // ключ «café» — UTF-8 percent-кодирование
+    [InlineData("/bucket/100%25")]      // ключ «100%» — литеральный процент
+    public async Task EncodedKey_SignedByRawPath_ReachesObjectStore(string pathAndQuery)
+    {
+        // Arrange: подпись по СЫРОМУ кодированному пути (модель строится из
+        // IHttpRequestFeature.RawTarget — не декодированного Request.Path)
+        var client = NewClient();
+
+        // Act
+        var response = await client.SendSignedAsync("GET", pathAndQuery);
+
+        // Assert: подпись сошлась на сырых байтах пути — операция определена
+        // и дошла до заглушки
+        response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+        (await ErrorXmlAsync(response)).Should().Be("InternalError");
+    }
+
     [Fact]
     public async Task GetBucketLocation_Returns200WithEmptyLocationConstraint()
     {
@@ -148,7 +166,7 @@ public sealed class RoutingScenarios(OwnS3AppFactory factory)
 
         // Act
         var response = await client.SendSignedAsync(method, "/bucket/key?acl",
-            at: DateTimeOffset.UtcNow.AddHours(1)); // skew-невалидная подпись
+            at: OwnS3AppFactory.HostTime.AddHours(1)); // skew-невалидная подпись
 
         // Assert
         response.StatusCode.Should().Be(HttpStatusCode.NotImplemented);
