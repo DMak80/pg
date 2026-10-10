@@ -576,13 +576,16 @@ public class XlObjectStoreMultipartTests(StoreFixture fixture) : IClassFixture<S
             bytes.Length, TestContext.Current.CancellationToken);
         var normalized = put.ETag.Trim('"').ToUpperInvariant();
 
-        // Act: Complete с ненормализованным ETag — сверка проходит; успех сборки
-        // закрывается Task 7, здесь исход ObjectStoreUnavailable (временная граница)
-        var act = async () => await Store.CompleteMultipartUploadAsync("b", "nq-key", uploadId,
+        // Act: Complete с ненормализованным ETag — нормализация, успешная сборка
+        var result = await Store.CompleteMultipartUploadAsync("b", "nq-key", uploadId,
             [new PartEtag(1, normalized)], TestContext.Current.CancellationToken);
 
-        // Assert: НЕ InvalidPart (нормализация сработала); временная граница шага
-        await act.Should().ThrowAsync<ObjectStoreUnavailableException>();
+        // Assert: НЕ InvalidPart (нормализация сработала); составной ETag от реального etag
+        var composite = "1-" + Convert.ToHexString(System.Security.Cryptography.MD5.HashData(
+            Encoding.ASCII.GetBytes(put.ETag.Trim('"')))).ToLowerInvariant();
+        result.ETag.Should().Be("\"" + composite + "\"");
+        var head = await Store.HeadObjectAsync("b", "nq-key", null, TestContext.Current.CancellationToken);
+        head.Metadata.Size.Should().Be(bytes.Length);
     }
 
     [Fact]
@@ -595,5 +598,200 @@ public class XlObjectStoreMultipartTests(StoreFixture fixture) : IClassFixture<S
         // Assert
         await act.Should().ThrowAsync<ObjectStoreException>()
             .Where(e => e.Code == ObjectStoreErrorCode.NoSuchUpload);
+    }
+
+    // Загрузка большой части (5 МиБ) с возвратом etag hex без кавычек.
+    internal static async Task<string> UploadBigPartAsync(XlObjectStore store, string bucket, string key,
+        string uploadId, int partNumber, int size, byte fill)
+    {
+        var bytes = PartBytes(size, fill);
+        var result = await store.UploadPartAsync(bucket, key, uploadId, partNumber,
+            new MemoryStream(bytes), bytes.Length, TestContext.Current.CancellationToken);
+        return result.ETag.Trim('"');
+    }
+
+    [Fact]
+    public async Task Complete_CommitsObject_CompositeEtagAndLayout()
+    {
+        // Arrange: 2 части: 5 МиБ + 3 байта
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "cc-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var etag1 = await UploadBigPartAsync(Store, "b", "cc-key", uploadId, 1, 5 * 1024 * 1024, 0xAA);
+        var etag2 = await UploadBigPartAsync(Store, "b", "cc-key", uploadId, 2, 3, 0xBB);
+        var manifest = new List<PartEtag> { new(1, etag1), new(2, etag2) };
+
+        // Act
+        var result = await Store.CompleteMultipartUploadAsync("b", "cc-key", uploadId, manifest,
+            TestContext.Current.CancellationToken);
+
+        // Assert: составной ETag «2-md5(concat)» В КАВЫЧКАХ; объект виден Get/Head/List;
+        // xl.meta: Size/ContentType/UserMetadata; загрузка зачищена
+        var concat = etag1 + etag2;
+        var composite = "2-" + Convert.ToHexString(
+            System.Security.Cryptography.MD5.HashData(Encoding.ASCII.GetBytes(concat))).ToLowerInvariant();
+        result.ETag.Should().Be("\"" + composite + "\"");
+        var head = await Store.HeadObjectAsync("b", "cc-key", null, TestContext.Current.CancellationToken);
+        head.Metadata.ETag.Should().Be("\"" + composite + "\"");
+        head.Metadata.Size.Should().Be(5 * 1024 * 1024 + 3);
+        head.Metadata.ContentType.Should().Be("text/plain");
+        head.Metadata.UserMetadata.Should().ContainKey("k").WhoseValue.Should().Be("v");
+        var listed = await Store.ListObjectsAsync("b", new ListQuery(null, null, null, null, null, null, null, false, ListVariant.V1),
+            TestContext.Current.CancellationToken);
+        listed.Contents.Any(e => e.Key == "cc-key").Should().BeTrue();
+        var keyDir = MultipartJournals.KeyDir(Volume.MultipartDir, "b", "cc-key");
+        MultipartJournals.ReadUploads(MultipartJournals.UploadsJsonPath(keyDir)).Should().BeEmpty();
+        Directory.Exists(MultipartJournals.UploadDirPath(keyDir, uploadId)).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Complete_CrashBeforeCommit_IdempotentRetryReusesParts()
+    {
+        // Arrange: загрузка 5 МиБ + 3 байта; хук сбоя после переноса, до коммита
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "cr-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var etag1 = await UploadBigPartAsync(Store, "b", "cr-key", uploadId, 1, 5 * 1024 * 1024, 0xAA);
+        var etag2 = await UploadBigPartAsync(Store, "b", "cr-key", uploadId, 2, 3, 0xBB);
+        var manifest = new List<PartEtag> { new(1, etag1), new(2, etag2) };
+        Store.CompletePreCommitProbe = () => throw new IOException("crash before commit");
+
+        // Act: сбойная попытка
+        var crashed = async () => await Store.CompleteMultipartUploadAsync("b", "cr-key", uploadId,
+            manifest, TestContext.Current.CancellationToken);
+        await crashed.Should().ThrowAsync<IOException>();
+        Store.CompletePreCommitProbe = null;
+
+        // Assert до повтора: объект НЕ виден; загрузка жива (ListParts работает)
+        var missing = async () => await Store.GetObjectAsync("b", "cr-key",
+            new ObjectReadOptions(null, null, null), TestContext.Current.CancellationToken);
+        await missing.Should().ThrowAsync<ObjectStoreException>().Where(e => e.Code == ObjectStoreErrorCode.NoSuchKey);
+        var parts = await Store.ListPartsAsync("b", "cr-key", uploadId, null, null,
+            UploadVisibility.AllUploads, TestContext.Current.CancellationToken);
+        parts.Parts.Should().HaveCount(2);
+
+        // Act: повторный Complete — идемпотентен (доиспользование переноса, тот же dataDir)
+        var result = await Store.CompleteMultipartUploadAsync("b", "cr-key", uploadId, manifest,
+            TestContext.Current.CancellationToken);
+        var head = await Store.HeadObjectAsync("b", "cr-key", null, TestContext.Current.CancellationToken);
+        head.Metadata.ETag.Should().Be(result.ETag);
+        // dataDir попытки переиспользован: в каталоге объекта ровно один Guid-dataDir
+        var objectDir = Path.Combine(Root, "b", XlPathEncoder.EncodePath("cr-key"));
+        Directory.EnumerateDirectories(objectDir).Count().Should().Be(1);
+    }
+
+    [Fact]
+    public async Task Complete_AfterSuccess_SecondComplete_NoSuchUpload()
+    {
+        // Arrange: успешная сборка из одной малой части (единственная — без лимита 5 МиБ)
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "sc-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var bytes = Encoding.UTF8.GetBytes("single");
+        var put = await Store.UploadPartAsync("b", "sc-key", uploadId, 1, new MemoryStream(bytes),
+            bytes.Length, TestContext.Current.CancellationToken);
+        var manifest = new List<PartEtag> { new(1, put.ETag) };
+        await Store.CompleteMultipartUploadAsync("b", "sc-key", uploadId, manifest,
+            TestContext.Current.CancellationToken);
+
+        // Act: повторный Complete завершённой загрузки
+        var second = async () => await Store.CompleteMultipartUploadAsync("b", "sc-key", uploadId, manifest,
+            TestContext.Current.CancellationToken);
+
+        // Assert: NoSuchUpload (канон 02 §5); объект жив
+        await second.Should().ThrowAsync<ObjectStoreException>()
+            .Where(e => e.Code == ObjectStoreErrorCode.NoSuchUpload);
+        var head = await Store.HeadObjectAsync("b", "sc-key", null, TestContext.Current.CancellationToken);
+        head.Metadata.Size.Should().Be(bytes.Length);
+    }
+
+    [Fact]
+    public async Task Complete_ExtraPartsNotInManifest_TrashedWithUploadDir()
+    {
+        // Arrange: части 1,2 (валидный манифест) + лишняя часть 3
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "ex-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var etag1 = await UploadBigPartAsync(Store, "b", "ex-key", uploadId, 1, 5 * 1024 * 1024, 0xAA);
+        var etag2 = await UploadBigPartAsync(Store, "b", "ex-key", uploadId, 2, 3, 0xBB);
+        await UploadBigPartAsync(Store, "b", "ex-key", uploadId, 3, 4, 0xCC);
+        var manifest = new List<PartEtag> { new(1, etag1), new(2, etag2) };
+
+        // Act
+        await Store.CompleteMultipartUploadAsync("b", "ex-key", uploadId, manifest,
+            TestContext.Current.CancellationToken);
+
+        // Assert: объект = 2 части (лишняя часть 3 ушла в .trash с каталогом загрузки)
+        var objectDir = Path.Combine(Root, "b", XlPathEncoder.EncodePath("ex-key"));
+        var dataDir = Directory.EnumerateDirectories(objectDir).Single();
+        Directory.EnumerateFiles(dataDir).Select(Path.GetFileName).OrderBy(n => n)
+            .Should().Equal(["part.1", "part.2"]);
+        var head = await Store.HeadObjectAsync("b", "ex-key", null, TestContext.Current.CancellationToken);
+        head.Metadata.Size.Should().Be(5 * 1024 * 1024 + 3);
+    }
+
+    [Fact]
+    public async Task Complete_NewObjectDir_PrefixesCreated()
+    {
+        // Arrange: ключ с вложенными сегментами «deep/nested/key»
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "deep/nested/key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var bytes = Encoding.UTF8.GetBytes("deep");
+        var put = await Store.UploadPartAsync("b", "deep/nested/key", uploadId, 1, new MemoryStream(bytes),
+            bytes.Length, TestContext.Current.CancellationToken);
+
+        // Act
+        await Store.CompleteMultipartUploadAsync("b", "deep/nested/key", uploadId,
+            [new PartEtag(1, put.ETag)], TestContext.Current.CancellationToken);
+
+        // Assert: каталоги-префиксы созданы, объект читается
+        var head = await Store.HeadObjectAsync("b", "deep/nested/key", null, TestContext.Current.CancellationToken);
+        head.Metadata.Size.Should().Be(bytes.Length);
+    }
+
+    [Fact]
+    public async Task Complete_OverwriteExistingObject_OldDataDirTrashed()
+    {
+        // Arrange: простой PUT до Complete поверх
+        await Store.PutObjectAsync("b", "ov-key", new MemoryStream(Encoding.UTF8.GetBytes("old")),
+            3, Meta, TestContext.Current.CancellationToken);
+        var objectDir = Path.Combine(Root, "b", XlPathEncoder.EncodePath("ov-key"));
+        var oldDataDir = Directory.EnumerateDirectories(objectDir).Single();
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "ov-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var bytes = Encoding.UTF8.GetBytes("new-object");
+        var put = await Store.UploadPartAsync("b", "ov-key", uploadId, 1, new MemoryStream(bytes),
+            bytes.Length, TestContext.Current.CancellationToken);
+
+        // Act: Complete перезаписывает существующий объект
+        await Store.CompleteMultipartUploadAsync("b", "ov-key", uploadId,
+            [new PartEtag(1, put.ETag)], TestContext.Current.CancellationToken);
+
+        // Assert: старый dataDir в .trash (в каталоге объекта один новый dataDir);
+        // xl.meta новый; содержимое — новое
+        Directory.EnumerateDirectories(objectDir).Should().ContainSingle();
+        Directory.Exists(oldDataDir).Should().BeFalse();
+        var head = await Store.HeadObjectAsync("b", "ov-key", null, TestContext.Current.CancellationToken);
+        head.Metadata.Size.Should().Be(bytes.Length);
+    }
+
+    [Fact]
+    public async Task Complete_DoseUploadAfterCrash_Allowed()
+    {
+        // Arrange: сбойный Complete после переноса части 1; часть 2 ещё не загружена
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "du-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var etag1 = await UploadBigPartAsync(Store, "b", "du-key", uploadId, 1, 5 * 1024 * 1024, 0xAA);
+        Store.CompletePreCommitProbe = () => throw new IOException("crash");
+        var crashed = async () => await Store.CompleteMultipartUploadAsync("b", "du-key", uploadId,
+            [new PartEtag(1, etag1)], TestContext.Current.CancellationToken);
+        await crashed.Should().ThrowAsync<IOException>();
+        Store.CompletePreCommitProbe = null;
+
+        // Act: дозагрузка части 2 заново и успешная сборка
+        var etag2 = await UploadBigPartAsync(Store, "b", "du-key", uploadId, 2, 3, 0xBB);
+        var result = await Store.CompleteMultipartUploadAsync("b", "du-key", uploadId,
+            new List<PartEtag> { new(1, etag1), new(2, etag2) }, TestContext.Current.CancellationToken);
+
+        // Assert: объект собран (спека §2.3 — дозагрузка после сбоя разрешена)
+        var head = await Store.HeadObjectAsync("b", "du-key", null, TestContext.Current.CancellationToken);
+        head.Metadata.ETag.Should().Be(result.ETag);
+        head.Metadata.Size.Should().Be(5 * 1024 * 1024 + 3);
     }
 }

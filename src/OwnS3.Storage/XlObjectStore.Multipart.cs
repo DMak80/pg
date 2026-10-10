@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
@@ -165,8 +166,15 @@ public sealed partial class XlObjectStore
     public Task<PutResult> UploadPartCopyAsync(PartCopyRequest request, CancellationToken ct) =>
         ThrowUnavailable<PutResult>(); // t38, Task 10
 
-    // Complete — шаг 1 (Task 6): сверка манифеста; успешная сверка — временная
-    // граница ObjectStoreUnavailableException до полной сборки (Task 7).
+    // Тест-хук сбоя между переносом частей и коммитом (по образцу HardLinkProbe t37):
+    // задан → вызывается ПОСЛЕ переноса всех частей и ДО записи xl.meta объекта;
+    // исключение хука эмулирует крах процесса до коммит-поинта.
+    internal Action? CompletePreCommitProbe;
+
+    // Complete (канон 02 §5, спека §4.2 шаги 1–9): весь под _commitLock; сверка →
+    // попытка (attempt.json) → перенос частей rename'ами → составной ETag + SHA-256 →
+    // КОММИТ xl.meta (единственная точка видимости) → зачистка (старый dataDir,
+    // запись журнала, каталог загрузки).
     public Task<CompleteResult> CompleteMultipartUploadAsync(string bucket, string key, string uploadId,
         IReadOnlyList<PartEtag> parts, CancellationToken ct)
     {
@@ -175,11 +183,70 @@ public sealed partial class XlObjectStore
         var uploadDir = MultipartJournals.UploadDirPath(keyDir, uploadId);
         lock (_commitLock)
         {
+            // 1–2. Разрешение + сверка (ReadPartsOrThrow: битый журнал → NoSuchUpload)
             ResolveUploadOrThrow(bucket, key, uploadId, visibility: null);
             var journal = ReadPartsOrThrow(uploadDir);
             ValidateManifestAgainstJournal(parts, journal);
+            // 3. Попытка (М7): attempt.json — dataDir текущей сборки (идемпотентность повтора)
+            var dataDirName = MultipartJournals.ReadAttempt(uploadDir)?.DataDir
+                              ?? Guid.NewGuid().ToString("N");
+            MultipartJournals.WriteAttempt(uploadDir, new MultipartJournals.AttemptMarker(dataDirName));
+            var target = ObjectDir(bucket, key);
+            var dataDir = Path.Combine(target, dataDirName);
+            Directory.CreateDirectory(dataDir); // создаёт и каталоги-префиксы
+            // 4. Перенос частей (идемпотентность: перенесённое не трогать)
+            foreach (var (number, _) in parts)
+            {
+                var dest = Path.Combine(dataDir, MultipartJournals.PartFileName(number));
+                if (File.Exists(dest))
+                    continue;
+                var src = Path.Combine(uploadDir, MultipartJournals.PartFileName(number));
+                if (!File.Exists(src))
+                    throw new ObjectStoreException(ObjectStoreErrorCode.InvalidPart);
+                File.Move(src, dest);
+            }
+            // 5. Точка сбоя (тест-хук)
+            CompletePreCommitProbe?.Invoke();
+            // 6. Составной ETag (М6) + SHA-256 полным проходом по dataDir
+            var journalByNumber = journal.ToDictionary(p => p.PartNumber);
+            var concat = string.Concat(parts.Select(p => journalByNumber[p.PartNumber].ETag));
+            var compositeEtag = parts.Count + "-" + Convert.ToHexString(
+                MD5.HashData(Encoding.ASCII.GetBytes(concat))).ToLowerInvariant();
+            string sha256Hex;
+            using (var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
+            {
+                var buffer = new byte[64 * 1024];
+                foreach (var (number, _) in parts)
+                    using (var stream = new FileStream(
+                        Path.Combine(dataDir, MultipartJournals.PartFileName(number)),
+                        FileMode.Open, FileAccess.Read, FileShare.Read))
+                    {
+                        int read;
+                        while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
+                            sha.AppendData(buffer, 0, read);
+                    }
+                sha256Hex = Convert.ToHexString(sha.GetHashAndReset()).ToLowerInvariant();
+            }
+            // 7–8. xl.meta объекта и КОММИТ (единственная точка видимости)
+            var uploadMeta = XlMetaFile.Read(uploadDir, out _);
+            var size = parts.Sum(p => journalByNumber[p.PartNumber].Size);
+            var record = new XlMetaRecord(Guid.Parse(dataDirName), size, timeProvider.GetUtcNow(),
+                compositeEtag, uploadMeta.ContentType, uploadMeta.UserMetadata, EmptyHeaders, sha256Hex);
+            var oldDataDir = ReadCurrentDataDirOrNull(target);
+            XlMetaFile.Write(target, record);
+            // 9. Зачистка после коммита
+            if (oldDataDir is not null && oldDataDir != dataDirName)
+            {
+                var oldPath = Path.Combine(target, oldDataDir);
+                if (Directory.Exists(oldPath))
+                    volume.MoveToTrash(oldPath);
+            }
+            var uploads = MultipartJournals.ReadUploads(MultipartJournals.UploadsJsonPath(keyDir));
+            uploads.RemoveAll(e => e.UploadId == uploadId && e.Bucket == bucket && e.Key == key);
+            MultipartJournals.WriteUploads(MultipartJournals.UploadsJsonPath(keyDir), uploads);
+            volume.MoveToTrash(uploadDir);
+            return Task.FromResult(new CompleteResult('"' + compositeEtag + '"'));
         }
-        throw new ObjectStoreUnavailableException(); // сборка — Task 7
     }
 
     // Сверка манифеста Complete с parts.json (канон 02 §5): каждая пара манифеста —
