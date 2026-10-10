@@ -72,13 +72,17 @@ public class E2ePgtuneScenarios
             spilo.Should().NotContain("io_workers", $"pgw-{cluster}-{shard}-{node}");
         }
 
-        // Assert: env нод одного прохода идентичен (SPILO_CONFIGURATION не несёт
-        // per-node ключей PGW_NODE_HOST/PGW_NODE_NAME — они отдельно в env).
+        // Assert: env нод одного прохода идентичен по РАСЧЁТУ (SPILO_CONFIGURATION
+        // несёт ровно один пер-нодовый ключ — restapi.connect_address t22
+        // (arch/14 §2.4 п.6); он нормализуется, прочие строки обязаны совпадать).
         var spilos = new List<string>();
         foreach (var shard in new[] { "shard1", "shard2" })
         foreach (var node in new[] { $"{shard}a", $"{shard}b" })
             spilos.Add((await ContainerEnvAsync($"pgw-{cluster}-{shard}-{node}", ct))["SPILO_CONFIGURATION"]);
-        spilos.Distinct().Should().ContainSingle("все ноды одного прохода получают один расчёт");
+        spilos
+            .Select(s => string.Join('\n', s.Split('\n').Where(l => !l.Contains("connect_address"))))
+            .Distinct()
+            .Should().ContainSingle("все ноды одного прохода получают один расчёт");
 
         // Assert: doorman-бюджет синхронизирован от рассчитанного max_connections
         // (P15: 60 − 5 = 55, пол 10).

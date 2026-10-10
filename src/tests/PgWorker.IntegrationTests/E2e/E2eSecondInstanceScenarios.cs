@@ -198,6 +198,11 @@ public class E2eSecondInstanceScenarios
             ["PgWorker__Api__Tls__AllowInsecureHttp"] = "false",
             ["PgWorker__Api__AdvertiseUrl"] = $"https://host.docker.internal:{hostPort}",
 
+            // REST-TLS нод (t22): per-install CA — fail-fast старта без пары
+            // CA/CA_KEY (как у хостовых инстансов фикстуры; http-режима нет).
+            ["PGW_REST_TLS_CA"] = E2eEnvironment.InstallCaPem,
+            ["PGW_REST_TLS_CA_KEY"] = E2eEnvironment.InstallCaKeyPem,
+
             ["ASPNETCORE_URLS"] = "https://+:8080",
             ["DOTNET_ENVIRONMENT"] = "Production",
         };

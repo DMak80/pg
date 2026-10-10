@@ -99,7 +99,10 @@ public class E2eWalStreamMasterDownScenarios
             var repaired = await E2ePhase.WaitAsync(Fx, "wal-ac4-repair", async () =>
             {
                 var workKv = await GetOrNullAsync($"/pgworker/work/{cluster}");
-                stillUnreachable = workKv?.Value?.Contains("unreachable") == true;
+                // unreachable — карта «нода → first_seen» (WorkJournal): пустой
+                // объект = недоступных нет; подстрочный Contains по JSON нельзя —
+                // ключ присутствует всегда, даже пустым.
+                stillUnreachable = workKv?.Value is { } w && UnreachableNodes(w).Count > 0;
                 if (!stillUnreachable)
                     return true;
                 window++;
@@ -563,5 +566,16 @@ public class E2eWalStreamMasterDownScenarios
         var dsn = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/dsn");
         var node = await GetOrNullAsync($"/clusters/{cluster}/shards/shard1/nodes/shard1a/state");
         return dsn is not null && node is { Value: "RUNNING" };
+    }
+
+    // Ноды в unreachable-треке work-JSON: карта «нода → first_seen_unix»
+    // (WorkJournal); пустой объект/отсутствие — недоступных нет.
+    private static IReadOnlyList<string> UnreachableNodes(string workJson)
+    {
+        using var doc = JsonDocument.Parse(workJson);
+        return doc.RootElement.TryGetProperty("unreachable", out var map)
+            && map.ValueKind == JsonValueKind.Object
+                ? map.EnumerateObject().Select(p => p.Name).ToList()
+                : [];
     }
 }
