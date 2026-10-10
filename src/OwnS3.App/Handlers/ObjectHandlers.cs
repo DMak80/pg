@@ -38,8 +38,20 @@ public static class ObjectHandlers
                 Sha256HexOrNull(context),
                 context.Http.Headers.ContentMD5.ToString() is { Length: > 0 } md5 ? md5 : null);
 
-            // Act
-            var result = await Store.PutObjectAsync(context.Bucket, context.Key, body, contentLength, metadata, ct);
+            // Act: отказ Storage ДО чтения тела (NoSuchBucket) не должен скрывать
+            // сверки целостности конвейера — тело дочитывается и при исключении
+            // (drain-семантика t36: BadDigest/InvalidRequest/чанковая подпись
+            // наблюдаются до проброса исхода Storage)
+            PutResult result;
+            try
+            {
+                result = await Store.PutObjectAsync(context.Bucket, context.Key, body, contentLength, metadata, ct);
+            }
+            catch
+            {
+                await DrainBodyAsync(body, ct);
+                throw;
+            }
 
             // Respond: 200 + ETag (тела нет)
             context.Response.StatusCode = 200;
@@ -62,18 +74,34 @@ public static class ObjectHandlers
             // Act
             var content = await Store.GetObjectAsync(context.Bucket, context.Key, options, ct);
 
-            // Respond: 200 (206 — при Range в t37) + заголовки + тело
+            // Respond: 304 без тела с ETag/Last-Modified; 206 + Content-Range при
+            // применённом Range; иначе 200 (глава 02 §1)
             await using (content.Body)
             {
-                context.Response.StatusCode = 200;
                 context.Response.ContentType = content.Metadata.ContentType;
                 context.Response.Headers.ETag = content.Metadata.ETag;
                 context.Response.Headers.LastModified = content.Metadata.LastModified.ToString("R");
-                context.Response.Headers.ContentLength = content.Metadata.Size;
                 context.Response.Headers.AcceptRanges = "bytes";
                 foreach (var (name, value) in content.Metadata.UserMetadata)
                     context.Response.Headers["x-amz-meta-" + name] = value;
                 ApplyResponseOverrides(context);
+                if (content.NotModified)
+                {
+                    // 304 обязан идти без тела, но с заголовками идентичности
+                    context.Response.StatusCode = 304;
+                    return;
+                }
+                if (content.Range is { } r)
+                {
+                    context.Response.StatusCode = 206;
+                    context.Response.Headers.ContentRange = $"bytes {r.Start}-{r.End}/{r.Total}";
+                    context.Response.Headers.ContentLength = r.End - r.Start + 1;
+                }
+                else
+                {
+                    context.Response.StatusCode = 200;
+                    context.Response.Headers.ContentLength = content.Metadata.Size;
+                }
                 await content.Body.CopyToAsync(context.Response.Body, ct);
             }
         }
@@ -91,18 +119,33 @@ public static class ObjectHandlers
             var options = ReadOptions(context);
 
             // Act
-            var metadata = await Store.HeadObjectAsync(context.Bucket, context.Key, ct);
+            var content = await Store.HeadObjectAsync(context.Bucket, context.Key, options, ct);
 
-            // Respond: заголовки GetObject без тела (глава 02)
-            context.Response.StatusCode = 200;
+            // Respond: те же исходы, что GetObject, без тела (глава 02 §1)
+            var metadata = content.Metadata;
             context.Response.ContentType = metadata.ContentType;
             context.Response.Headers.ETag = metadata.ETag;
             context.Response.Headers.LastModified = metadata.LastModified.ToString("R");
-            context.Response.Headers.ContentLength = metadata.Size;
             context.Response.Headers.AcceptRanges = "bytes";
             foreach (var (name, value) in metadata.UserMetadata)
                 context.Response.Headers["x-amz-meta-" + name] = value;
             ApplyResponseOverrides(context);
+            if (content.NotModified)
+            {
+                context.Response.StatusCode = 304;
+                return;
+            }
+            if (content.Range is { } r)
+            {
+                context.Response.StatusCode = 206;
+                context.Response.Headers.ContentRange = $"bytes {r.Start}-{r.End}/{r.Total}";
+                context.Response.Headers.ContentLength = r.End - r.Start + 1;
+            }
+            else
+            {
+                context.Response.StatusCode = 200;
+                context.Response.Headers.ContentLength = metadata.Size;
+            }
         }
     }
 
@@ -179,10 +222,11 @@ public static class ObjectHandlers
                 sourceBucket, sourceKey, context.Bucket, context.Key,
                 directive == "REPLACE", newMetadata, CopyConditions(context)), ct);
 
-            // Respond: CopyObjectResult
+            // Respond: CopyObjectResult — LastModified новой записи (modTime),
+            // не времени обработки
             await context.WriteXmlAsync(S3Xml.Serialize(new CopyObjectResult
             {
-                LastModified = S3HandlerContext.FormatDate(DateTimeOffset.UtcNow),
+                LastModified = S3HandlerContext.FormatDate(result.LastModified),
                 ETag = result.ETag,
             }), ct);
         }
@@ -201,17 +245,28 @@ public static class ObjectHandlers
             var attributes = ParseObjectAttributes(
                 context.Http.Headers["x-amz-object-attributes"].FirstOrDefault());
 
-            // Parse: пагинация ObjectParts + conditional
+            // Parse: пагинация ObjectParts + conditional (GET-семантика, P10)
             var maxParts = PagingLimit(context, "x-amz-max-parts");
             var partNumberMarker = int.TryParse(context.Http.Headers["x-amz-part-number-marker"].FirstOrDefault(),
                 NumberStyles.Integer, CultureInfo.InvariantCulture, out var marker) ? marker : 0;
+            var conditions = ReadOptions(context).Conditions;
 
             // Act
-            var attrs = await Store.GetObjectAttributesAsync(context.Bucket, context.Key, attributes,
+            var result = await Store.GetObjectAttributesAsync(context.Bucket, context.Key, attributes,
                 maxParts == OperationValidation.DefaultPagingLimit ? null : maxParts,
-                partNumberMarker == 0 ? null : partNumberMarker, ct);
+                partNumberMarker == 0 ? null : partNumberMarker, conditions, ct);
 
-            // Respond: GetObjectAttributesOutput — только запрошенные элементы
+            // Respond: Not-Modified → 304 без тела с ETag/Last-Modified (P10)
+            if (result.NotModifiedMetadata is { } nm)
+            {
+                context.Response.StatusCode = 304;
+                context.Response.Headers.ETag = nm.ETag;
+                context.Response.Headers.LastModified = nm.LastModified.ToString("R");
+                return;
+            }
+            var attrs = result.Attributes!;
+
+            // GetObjectAttributesOutput — только запрошенные элементы
             var requested = new HashSet<string>(context.Http.Headers["x-amz-object-attributes"].ToString()
                 .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries), StringComparer.Ordinal);
             var output = new GetObjectAttributesOutput
@@ -232,7 +287,7 @@ public static class ObjectHandlers
                     : null,
             };
             context.Response.Headers.ETag = attrs.ETag;
-            context.Response.Headers.LastModified = DateTimeOffset.UtcNow.ToString("R");
+            context.Response.Headers.LastModified = attrs.LastModified.ToString("R");
             await context.WriteXmlAsync(S3Xml.Serialize(output), ct);
         }
     }
@@ -263,7 +318,7 @@ public static class ObjectHandlers
         return new ObjectUploadMetadata(contentType, userMetadata);
     }
 
-    // Опции чтения: conditional + Range (парсинг формата; оценка — t37).
+    // Опции чтения: conditional + Range + If-Range (парсинг формата; оценка — Storage).
     internal static ObjectReadOptions ReadOptions(S3HandlerContext context)
     {
         ObjectConditions? conditions = null;
@@ -278,7 +333,8 @@ public static class ObjectHandlers
                 ifModifiedSince, ifUnmodifiedSince);
 
         var range = OperationValidation.ParseRange(context.Http.Headers.Range.ToString());
-        return new ObjectReadOptions(conditions, range);
+        var ifRange = context.Http.Headers["If-Range"].FirstOrDefault();
+        return new ObjectReadOptions(conditions, range, ifRange is { Length: > 0 } ? ifRange : null);
     }
 
     // response-*: переопределения заголовков ответа (любой подписанный GET, глава 02).
@@ -322,6 +378,18 @@ public static class ObjectHandlers
     {
         var value = context.Http.Headers["x-amz-content-sha256"].FirstOrDefault();
         return value is { Length: 64 } ? value : null;
+    }
+
+    // Дочитать тело до конца: сверки подписи/хэшей конвейера (HashingBodyStream/
+    // AwsChunkedReader) наблюдаются и при отказе Storage до чтения тела —
+    // их исход перекрывает пробрасываемый исход Storage (спека §8).
+    private static async Task DrainBodyAsync(Stream body, CancellationToken ct)
+    {
+        var buffer = new byte[64 * 1024];
+        while (await body.ReadAsync(buffer, ct) > 0)
+        {
+            // только чтение — сверки делают обёртки тела конвейера
+        }
     }
 
     private static ObjectConditions CopyConditions(S3HandlerContext context)

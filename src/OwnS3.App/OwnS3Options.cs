@@ -1,7 +1,7 @@
 namespace OwnS3.App;
 
 // Конфигурация ownS3 (arch/owns3/05 §4): секция OwnS3 / env OWNS3_*.
-// DataDir в t36 читается, но не используется (том — t37).
+// DataDir — корень тома данных xl-хранения (arch/owns3/04 §1; env OWNS3_DATA_DIR).
 public sealed class OwnS3Options
 {
     public const string SectionName = "OwnS3";

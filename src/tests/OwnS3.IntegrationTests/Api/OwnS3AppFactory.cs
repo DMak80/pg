@@ -31,6 +31,9 @@ public sealed class OwnS3AppFactory : WebApplicationFactory<Program>
 
     private readonly ConcurrentQueue<(LogLevel Level, string Message)> _logEntries = new();
 
+    // Томат данных сценария (спека §6.5): temp-каталог, полный teardown в Dispose.
+    public string TempVolumeDir { get; } = Path.Combine(Path.GetTempPath(), "owns3-waf-" + Guid.NewGuid().ToString("N"));
+
     public IReadOnlyList<(LogLevel Level, string Message)> LogEntries => [.. _logEntries];
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -38,6 +41,7 @@ public sealed class OwnS3AppFactory : WebApplicationFactory<Program>
         builder.UseEnvironment("Testing");
         builder.ConfigureAppConfiguration((_, cfg) => cfg.AddInMemoryCollection(new Dictionary<string, string?>
         {
+            ["OwnS3:DataDir"] = TempVolumeDir,
             ["OwnS3:Root:User"] = "root",
             ["OwnS3:Root:Password"] = "rootpassword",
             ["OwnS3:HostId"] = "owns3-test",
@@ -64,6 +68,24 @@ public sealed class OwnS3AppFactory : WebApplicationFactory<Program>
             services.RemoveAll<TimeProvider>();
             services.AddSingleton<TimeProvider>(new FixedTimeProvider(HostTime));
         });
+    }
+
+    // Teardown (спека §6.5): temp-том удаляется при любом исходе.
+    protected override void Dispose(bool disposing)
+    {
+        base.Dispose(disposing);
+        if (disposing)
+        {
+            try
+            {
+                if (Directory.Exists(TempVolumeDir))
+                    Directory.Delete(TempVolumeDir, recursive: true);
+            }
+            catch (IOException)
+            {
+                // хост мог ещё держать файлы — том в temp, ОС уберёт
+            }
+        }
     }
 
     // Провайдер-коллектор логов для проверки структурного лога запросов.

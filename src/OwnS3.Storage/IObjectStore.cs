@@ -13,13 +13,14 @@ public interface IObjectStore
     Task<PutResult> PutObjectAsync(string bucket, string key, Stream body, long contentLength,
         ObjectUploadMetadata metadata, CancellationToken ct);
     Task<ObjectContent> GetObjectAsync(string bucket, string key, ObjectReadOptions options, CancellationToken ct);
-    Task<ObjectMetadata> HeadObjectAsync(string bucket, string key, CancellationToken ct);
+    Task<ObjectContent> HeadObjectAsync(string bucket, string key, ObjectReadOptions? options, CancellationToken ct);
     Task DeleteObjectAsync(string bucket, string key, CancellationToken ct);           // идемпотентен (204-семантика)
     Task<IReadOnlyList<DeletedKeyResult>> DeleteObjectsAsync(string bucket,
         IReadOnlyList<string> keys, bool quiet, CancellationToken ct);
     Task<PutResult> CopyObjectAsync(CopyRequest request, CancellationToken ct);
-    Task<ObjectAttributes> GetObjectAttributesAsync(string bucket, string key,
-        IReadOnlyList<ObjectAttributeName> attributes, int? maxParts, int? partNumberMarker, CancellationToken ct);
+    Task<ObjectAttributesResult> GetObjectAttributesAsync(string bucket, string key,
+        IReadOnlyList<ObjectAttributeName> attributes, int? maxParts, int? partNumberMarker,
+        ObjectConditions? conditions, CancellationToken ct);
 
     // листинги
     Task<ListPage> ListObjectsAsync(string bucket, ListQuery query, CancellationToken ct);

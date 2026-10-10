@@ -6,19 +6,19 @@ namespace OwnS3.IntegrationTests.Api;
 
 // Аутентификация (глава 03 §1–2 + арх-правки 2/8): все исходы заголовочного
 // режима и presigned.
-[Collection(OwnS3TestCollection.Name)]
-public sealed class AuthScenarios(OwnS3AppFactory factory)
+public sealed class AuthScenarios(OwnS3AppFactory factory) : IClassFixture<OwnS3AppFactory>
 {
     private OwnS3TestClient NewClient() => new(factory.CreateClient());
 
     [Fact]
-    public async Task ValidSignature_ReachesStub_500()
+    public async Task ValidSignature_ReachesStorage()
     {
         // Arrange / Act
         var response = await NewClient().SendSignedAsync("GET", "/bucket/key");
 
-        // Assert: подпись прошла, запрос дошёл до заглушки
-        response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+        // Assert: подпись прошла, запрос дошёл до Storage (бакета нет)
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await RoutingScenarios.ErrorXmlAsync(response)).Should().Be("NoSuchBucket");
     }
 
     [Fact]
@@ -160,15 +160,16 @@ public sealed class AuthScenarios(OwnS3AppFactory factory)
     }
 
     [Fact]
-    public async Task Presigned_GetObject_ReachesStub()
+    public async Task Presigned_GetObject_ReachesStorage()
     {
         // Arrange / Act
         var client = NewClient();
         var url = client.BuildPresignedUrl("GET", "/bucket/key", OwnS3TestClient.Writer());
         var response = await client.SendPresignedAsync("GET", url);
 
-        // Assert
-        response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+        // Assert: подпись валидна, запрос дошёл до Storage (бакета нет)
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await RoutingScenarios.ErrorXmlAsync(response)).Should().Be("NoSuchBucket");
     }
 
     [Fact]
@@ -189,7 +190,7 @@ public sealed class AuthScenarios(OwnS3AppFactory factory)
     }
 
     [Fact]
-    public async Task Presigned_UsedAfter15MinutesInsideWindow_ReachesStub()
+    public async Task Presigned_UsedAfter15MinutesInsideWindow_ReachesStorage()
     {
         // Arrange: presigned подписан 20 минут назад, окно 86400 с — Abs-skew
         // для прошедших дат отсутствует (arch-правка 10): URL валиден всё окно
@@ -200,8 +201,9 @@ public sealed class AuthScenarios(OwnS3AppFactory factory)
         // Act
         var response = await client.SendPresignedAsync("GET", url);
 
-        // Assert: внутри окна — подпись валидна, запрос дошёл до заглушки
-        response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+        // Assert: внутри окна — подпись валидна, запрос дошёл до Storage (бакета нет)
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
+        (await RoutingScenarios.ErrorXmlAsync(response)).Should().Be("NoSuchBucket");
     }
 
     [Fact]
