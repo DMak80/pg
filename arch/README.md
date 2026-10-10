@@ -114,7 +114,8 @@ arch/
 ├── 21-valkeyworker.md         ← ★ ValkeyWorker: оркестратор Valkey-кластеров
 │                                  (provisioning/deprovisioning/надзор/converge/ротация кред)
 ├── 22-owns3.md                ← ★ ownS3: собственное S3-хранилище
-│                                  (критерий — стандарт S3 API; MinIO — точечный референс, не копия)
+│                                  (критерий — стандарт S3 API; MinIO — точечный референс, не копия;
+│                                  главы канона — owns3/)
 ├── configs/
 │   ├── etcd/
 │   │   ├── docker-compose.yml
@@ -221,4 +222,5 @@ arch/
     ACL-креды, converge, ротация без рестартов; задачи — [roadmap/valkey.md](roadmap/valkey.md)).
 19. [22-owns3.md](22-owns3.md) — собственное S3-хранилище ownS3:
     критерий — стандарт S3 API (MinIO — точечный референс, не копия;
-    задачи — [roadmap/owns3.md](roadmap/owns3.md)).
+    задачи — [roadmap/owns3.md](roadmap/owns3.md)); главы канона
+    (01 обзор … 05 доступ/эксплуатация) — [owns3/](owns3/).
