@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
@@ -89,12 +90,76 @@ public sealed partial class XlObjectStore
         return entry;
     }
 
-    // UploadPart — заглушка до Task 4 (drain до отказа — сверка конвейера наблюдаема).
+    // UploadPart (канон 02 §5/04 §5): тело → part.N.tmp БЕЗ лока (fsync), затем под
+    // _commitLock — согласованная пара rename части + upsert parts.json (М3).
     public async Task<PutResult> UploadPartAsync(string bucket, string key, string uploadId, int partNumber,
         Stream body, long contentLength, CancellationToken ct)
     {
-        await DrainAsync(body, ct);
-        throw new ObjectStoreUnavailableException(); // t38, Task 4
+        EnsureBucket(bucket);
+        ResolveUploadOrThrow(bucket, key, uploadId, visibility: null);
+        var keyDir = MultipartJournals.KeyDir(volume.MultipartDir, bucket, key);
+        var uploadDir = MultipartJournals.UploadDirPath(keyDir, uploadId);
+        var tmpPath = Path.Combine(uploadDir, MultipartJournals.PartTmpFileName(partNumber));
+        // Тело: MD5-инкремент + счётчик + fsync (длина ≠ contentLength → XlIntegrityException,
+        // остаточный случай — конвейер уже проверил тело)
+        string etagHex;
+        long total;
+        using (var md5 = IncrementalHash.CreateHash(HashAlgorithmName.MD5))
+        using (var file = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None))
+        {
+            var buffer = new byte[64 * 1024];
+            total = 0;
+            int read;
+            while ((read = await body.ReadAsync(buffer, ct)) > 0)
+            {
+                file.Write(buffer, 0, read);
+                md5.AppendData(buffer, 0, read);
+                total += read;
+            }
+            file.Flush(flushToDisk: true);
+            etagHex = Convert.ToHexString(md5.GetHashAndReset()).ToLowerInvariant();
+        }
+        if (total != contentLength)
+            throw new XlIntegrityException(
+                $"Фактическая длина части {total} не совпадает с заявленной {contentLength}");
+        var modTime = timeProvider.GetUtcNow();
+        await Task.Yield(); // async-контракт при синхронном файловом IO (P4 t37)
+        lock (_commitLock)
+        {
+            CommitPartFile(uploadDir, partNumber, tmpPath, etagHex, total, modTime);
+        }
+        return new PutResult('"' + etagHex + '"', modTime);
+    }
+
+    // Коммит части (UploadPart/UploadPartCopy): rename + upsert parts.json —
+    // согласованная пара под _commitLock вызывающего (М3).
+    private void CommitPartFile(string uploadDir, int partNumber, string tmpPath,
+        string etagHex, long size, DateTimeOffset modTime)
+    {
+        File.Move(tmpPath, Path.Combine(uploadDir, MultipartJournals.PartFileName(partNumber)),
+            overwrite: true);
+        var parts = ReadPartsOrThrow(uploadDir);
+        parts.RemoveAll(p => p.PartNumber == partNumber);
+        parts.Add(new MultipartJournals.PartJournalEntry(partNumber, etagHex, size,
+            modTime.ToUnixTimeMilliseconds()));
+        parts.Sort((left, right) => left.PartNumber.CompareTo(right.PartNumber));
+        MultipartJournals.WriteParts(MultipartJournals.PartsJsonPath(uploadDir), parts);
+    }
+
+    // Журнал частей загрузки: битый parts.json (JsonException) — warning + загрузка
+    // недоступна (NoSuchUpload) — единообразно с ListParts/Complete (спека §4.1:
+    // потеря целостности журнала — загрузка недоступна). Файла нет — пустой список.
+    internal List<MultipartJournals.PartJournalEntry> ReadPartsOrThrow(string uploadDir)
+    {
+        try
+        {
+            return MultipartJournals.ReadParts(MultipartJournals.PartsJsonPath(uploadDir));
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "Битый parts.json загрузки в {UploadDir}: загрузка недоступна", uploadDir);
+            throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload);
+        }
     }
 
     public Task<PutResult> UploadPartCopyAsync(PartCopyRequest request, CancellationToken ct) =>
@@ -110,16 +175,6 @@ public sealed partial class XlObjectStore
 
     public Task<UploadsPage> ListMultipartUploadsAsync(string bucket, UploadsQuery query, CancellationToken ct) =>
         ThrowUnavailable<UploadsPage>(); // t38, Task 5
-
-    // Дочитать тело до конца: сверка подписи/хэшей конвейером наблюдаема в тестах.
-    private static async Task DrainAsync(Stream body, CancellationToken ct)
-    {
-        var buffer = new byte[64 * 1024];
-        while (await body.ReadAsync(buffer, ct) > 0)
-        {
-            // только чтение — сверку делает обёртка тела конвейера
-        }
-    }
 
     private static Task<T> ThrowUnavailable<T>() => throw new ObjectStoreUnavailableException();
 }

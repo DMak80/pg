@@ -127,4 +127,142 @@ public class XlObjectStoreMultipartTests(StoreFixture fixture) : IClassFixture<S
         await resolve.Should().ThrowAsync<ObjectStoreException>()
             .Where(e => e.Code == ObjectStoreErrorCode.NoSuchUpload);
     }
+
+    [Fact]
+    public async Task UploadPart_WritesPartFileAndJournal_EtagQuoted()
+    {
+        // Arrange
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "up-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var payload = Encoding.UTF8.GetBytes("part-one");
+
+        // Act
+        var result = await Store.UploadPartAsync("b", "up-key", uploadId, 1,
+            new MemoryStream(payload), payload.Length, TestContext.Current.CancellationToken);
+
+        // Assert: ETag = md5(payload) hex В КАВЫЧКАХ (P8); part.1 на диске; запись parts.json
+        var md5 = Convert.ToHexString(System.Security.Cryptography.MD5.HashData(payload)).ToLowerInvariant();
+        result.ETag.Should().Be("\"" + md5 + "\"");
+        result.LastModified.Should().Be(TestVectors.FixedTime);
+        var uploadDir = MultipartJournals.UploadDirPath(
+            MultipartJournals.KeyDir(Volume.MultipartDir, "b", "up-key"), uploadId);
+        File.Exists(Path.Combine(uploadDir, "part.1")).Should().BeTrue();
+        MultipartJournals.ReadParts(MultipartJournals.PartsJsonPath(uploadDir))
+            .Should().ContainSingle().Which.Should().Match<MultipartJournals.PartJournalEntry>(p =>
+                p.PartNumber == 1 && p.ETag == md5 && p.Size == payload.Length);
+        // tmp-файл не остался
+        File.Exists(Path.Combine(uploadDir, MultipartJournals.PartTmpFileName(1))).Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task UploadPart_SamePartNumber_LastWriterWins()
+    {
+        // Arrange
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "lw-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+
+        // Act: две записи одного номера (первая больше)
+        var first = Encoding.UTF8.GetBytes("first-version-of-part");
+        var second = Encoding.UTF8.GetBytes("2nd");
+        await Store.UploadPartAsync("b", "lw-key", uploadId, 1, new MemoryStream(first),
+            first.Length, TestContext.Current.CancellationToken);
+        await Store.UploadPartAsync("b", "lw-key", uploadId, 1, new MemoryStream(second),
+            second.Length, TestContext.Current.CancellationToken);
+
+        // Assert: файл и журнал — от последней записи (согласованная пара)
+        var uploadDir = MultipartJournals.UploadDirPath(
+            MultipartJournals.KeyDir(Volume.MultipartDir, "b", "lw-key"), uploadId);
+        new FileInfo(Path.Combine(uploadDir, "part.1")).Length.Should().Be(second.Length);
+        MultipartJournals.ReadParts(MultipartJournals.PartsJsonPath(uploadDir))
+            .Should().ContainSingle().Which.Size.Should().Be(second.Length);
+    }
+
+    [Fact]
+    public async Task UploadPart_UnknownUpload_NoSuchUpload()
+    {
+        // Arrange / Act
+        var act = async () => await Store.UploadPartAsync("b", "k", "no-such", 1,
+            new MemoryStream([1]), 1, TestContext.Current.CancellationToken);
+
+        // Assert: несуществующий uploadId — NoSuchUpload
+        await act.Should().ThrowAsync<ObjectStoreException>()
+            .Where(e => e.Code == ObjectStoreErrorCode.NoSuchUpload);
+    }
+
+    [Fact]
+    public async Task UploadPart_AfterAbort_NoSuchUpload()
+    {
+        // Arrange
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "ab-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        await Store.AbortMultipartUploadAsync("b", "ab-key", uploadId, TestContext.Current.CancellationToken);
+
+        // Act
+        var act = async () => await Store.UploadPartAsync("b", "ab-key", uploadId, 1,
+            new MemoryStream([1]), 1, TestContext.Current.CancellationToken);
+
+        // Assert: после Abort загрузка мертва (канон 02 §5)
+        await act.Should().ThrowAsync<ObjectStoreException>()
+            .Where(e => e.Code == ObjectStoreErrorCode.NoSuchUpload);
+    }
+
+    [Fact]
+    public async Task UploadPart_LengthMismatch_XlIntegrity()
+    {
+        // Arrange
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "len-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var uploadDir = MultipartJournals.UploadDirPath(
+            MultipartJournals.KeyDir(Volume.MultipartDir, "b", "len-key"), uploadId);
+
+        // Act: заявлено 10, тело 3 байта
+        var act = async () => await Store.UploadPartAsync("b", "len-key", uploadId, 1,
+            new MemoryStream([1, 2, 3]), 10, TestContext.Current.CancellationToken);
+
+        // Assert: XlIntegrityException; ни part.1, ни записи журнала
+        await act.Should().ThrowAsync<XlIntegrityException>();
+        File.Exists(Path.Combine(uploadDir, "part.1")).Should().BeFalse();
+        MultipartJournals.ReadParts(MultipartJournals.PartsJsonPath(uploadDir)).Should().BeEmpty();
+    }
+
+    [Fact]
+    public async Task UploadPart_TwoParts_JournalSortedByNumber()
+    {
+        // Arrange
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "sort-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var uploadDir = MultipartJournals.UploadDirPath(
+            MultipartJournals.KeyDir(Volume.MultipartDir, "b", "sort-key"), uploadId);
+
+        // Act: загрузка №2, затем №1
+        await Store.UploadPartAsync("b", "sort-key", uploadId, 2,
+            new MemoryStream([2]), 1, TestContext.Current.CancellationToken);
+        await Store.UploadPartAsync("b", "sort-key", uploadId, 1,
+            new MemoryStream([1]), 1, TestContext.Current.CancellationToken);
+
+        // Assert: журнал по возрастанию номеров [1, 2]
+        MultipartJournals.ReadParts(MultipartJournals.PartsJsonPath(uploadDir))
+            .Select(p => p.PartNumber).Should().Equal(1, 2);
+    }
+
+    [Fact]
+    public async Task UploadPart_BrokenPartsJson_NoSuchUpload()
+    {
+        // Arrange: parts.json перезаписан мусором при живой записи uploads.json
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "bp-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        await Store.UploadPartAsync("b", "bp-key", uploadId, 1,
+            new MemoryStream([1]), 1, TestContext.Current.CancellationToken);
+        var uploadDir = MultipartJournals.UploadDirPath(
+            MultipartJournals.KeyDir(Volume.MultipartDir, "b", "bp-key"), uploadId);
+        File.WriteAllText(MultipartJournals.PartsJsonPath(uploadDir), "{broken");
+
+        // Act: вторая часть в загрузку с битым журналом частей
+        var act = async () => await Store.UploadPartAsync("b", "bp-key", uploadId, 2,
+            new MemoryStream([2]), 1, TestContext.Current.CancellationToken);
+
+        // Assert: NoSuchUpload — единообразно с Complete/ListParts (спека §4.1)
+        await act.Should().ThrowAsync<ObjectStoreException>()
+            .Where(e => e.Code == ObjectStoreErrorCode.NoSuchUpload);
+    }
 }
