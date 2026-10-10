@@ -466,7 +466,7 @@ implies functionality that is not implemented» (формат ошибки — �
   по алфавиту имён.
 - **Ошибки**: `AccessDenied` (403 — права, глава 05).
 - **Семантика**: все бакеты тома; `CreationDate` — время создания
-  каталога бакета.
+  бакета из `bucket.json` (глава 04).
 
 ### GetBucketLocation
 
