@@ -36,6 +36,74 @@ builder.Services.AddSingleton<AccessKeyRegistry>();
 builder.Services.AddSingleton<IObjectStore, NotWiredObjectStore>();
 builder.Services.AddSingleton<OwnS3Metrics>();
 
+// 22 хендлера протокольного контура (spec §3.4.1) — диспетчеризация по операции.
+builder.Services.AddSingleton<OwnS3.App.Handlers.BucketHandlers.ListBucketsHandler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.BucketHandlers.CreateBucketHandler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.BucketHandlers.DeleteBucketHandler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.BucketHandlers.HeadBucketHandler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.BucketHandlers.GetBucketLocationHandler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.ObjectHandlers.PutObjectHandler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.ObjectHandlers.GetObjectHandler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.ObjectHandlers.HeadObjectHandler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.ObjectHandlers.DeleteObjectHandler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.ObjectHandlers.DeleteObjectsHandler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.ObjectHandlers.CopyObjectHandler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.ObjectHandlers.GetObjectAttributesHandler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.ListHandlers.ListObjectsHandler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.ListHandlers.ListObjectsV2Handler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.ListHandlers.ListObjectVersionsHandler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.MultipartHandlers.CreateMultipartUploadHandler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.MultipartHandlers.UploadPartHandler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.MultipartHandlers.UploadPartCopyHandler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.MultipartHandlers.CompleteMultipartUploadHandler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.MultipartHandlers.AbortMultipartUploadHandler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.MultipartHandlers.ListPartsHandler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.MultipartHandlers.ListMultipartUploadsHandler>();
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.BucketHandlers.ListBucketsHandler>());
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.BucketHandlers.CreateBucketHandler>());
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.BucketHandlers.DeleteBucketHandler>());
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.BucketHandlers.HeadBucketHandler>());
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.BucketHandlers.GetBucketLocationHandler>());
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.ObjectHandlers.PutObjectHandler>());
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.ObjectHandlers.GetObjectHandler>());
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.ObjectHandlers.HeadObjectHandler>());
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.ObjectHandlers.DeleteObjectHandler>());
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.ObjectHandlers.DeleteObjectsHandler>());
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.ObjectHandlers.CopyObjectHandler>());
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.ObjectHandlers.GetObjectAttributesHandler>());
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.ListHandlers.ListObjectsHandler>());
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.ListHandlers.ListObjectsV2Handler>());
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.ListHandlers.ListObjectVersionsHandler>());
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.MultipartHandlers.CreateMultipartUploadHandler>());
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.MultipartHandlers.UploadPartHandler>());
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.MultipartHandlers.UploadPartCopyHandler>());
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.MultipartHandlers.CompleteMultipartUploadHandler>());
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.MultipartHandlers.AbortMultipartUploadHandler>());
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.MultipartHandlers.ListPartsHandler>());
+builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
+    sp.GetRequiredService<OwnS3.App.Handlers.MultipartHandlers.ListMultipartUploadsHandler>());
+
 var app = builder.Build();
 
 // Kestrel: any-IP, h1+h2c (arch/owns3/03 §6), лимит тела отключён — лимит 5 ГБ

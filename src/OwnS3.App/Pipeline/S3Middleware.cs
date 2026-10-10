@@ -23,8 +23,12 @@ public sealed class S3Middleware(
     OwnS3Metrics metrics,
     Shared.Metrics.MetricsOptions metricsOptions,
     IOptions<OwnS3Options> options,
-    ILogger<S3Middleware> logger)
+    ILogger<S3Middleware> logger,
+    IEnumerable<Handlers.IOperationHandler> handlers)
 {
+    // Словарь диспетчеризации: операция → хендлер (22 хендлера протокольного контура).
+    private readonly IReadOnlyDictionary<Routing.S3Operation, Handlers.IOperationHandler> _handlers =
+        handlers.ToDictionary(h => h.Operation);
     public async Task InvokeAsync(HttpContext context)
     {
         // Шаг 0: служебные пути — точное совпадение, запрос уходит в endpoint'ы.
@@ -148,9 +152,13 @@ public sealed class S3Middleware(
         }
     }
 
-    // Стаб задачи 9: до хендлеров (задача 10) — единый 500 InternalError.
+    // Диспетчеризация: хендлер по операции; отсутствующий — 500 InternalError.
     private Task DispatchAsync(HttpContext context, RequestContext requestContext)
     {
+        if (_handlers.TryGetValue(requestContext.Route.Operation, out var handler))
+            return handler.HandleAsync(
+                new Handlers.S3HandlerContext(context, requestContext), context.RequestAborted);
+
         context.Response.StatusCode = StatusCodes.Status500InternalServerError;
         return WriteErrorBodyAsync(context, new S3Error(S3ErrorCode.InternalError,
             Resource: requestContext.Model.RawPath, RequestId: requestContext.RequestId,
