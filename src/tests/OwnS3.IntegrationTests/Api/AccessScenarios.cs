@@ -72,14 +72,14 @@ public sealed class AccessScenarios(OwnS3AppFactory factory) : IClassFixture<Own
     [Theory]
     [InlineData("/bucket/key?uploadId=u")]        // ListParts
     [InlineData("/bucket?uploads")]               // ListMultipartUploads
-    public async Task Reader_MultipartListings_PassWithoutOwnerFilter(string pathAndQuery)
+    public async Task Reader_MultipartListings_PassRights_ReachStorage(string pathAndQuery)
     {
-        // Arrange / Act: read-only допуск к листингам загрузок без фильтра «своих» —
-        // фильтр появляется с данными загрузок (t38, spec §3.4 шаг 5)
+        // Arrange / Act: read-only допуск к листингам загрузок — право есть;
+        // фильтр «своих» применяется к данным загрузок (канон 05 §3, t38)
         var response = await NewClient().SendSignedAsync("GET", pathAndQuery,
             credentials: OwnS3TestClient.Reader());
 
-        // Assert: multipart-заглушки — 500 (до t38)
-        response.StatusCode.Should().Be(HttpStatusCode.InternalServerError);
+        // Assert: право пройдено, запрос дошёл до Storage — бакета нет (404)
+        response.StatusCode.Should().Be(HttpStatusCode.NotFound);
     }
 }
