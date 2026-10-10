@@ -58,7 +58,8 @@ public sealed class XlVolume(string root, TimeProvider timeProvider, ILogger? lo
         Directory.CreateDirectory(TrashDir);
         Directory.CreateDirectory(BucketsMetaDir);
         Directory.CreateDirectory(ConfigDir);
-        DirectoryFsync.Sync(SysDir);
+        // fsync каталогов опущен: стандартного BCL-API нет, спека §4.3 п.2 —
+        // best-effort (механизм без fsync-каталога — не отказ)
         Cleanup();
         Initialized = true;
     }
