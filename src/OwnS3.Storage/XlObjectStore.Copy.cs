@@ -46,10 +46,12 @@ public sealed partial class XlObjectStore
         Directory.CreateDirectory(dataDir);
         try
         {
-            var srcPart = Path.Combine(ObjectDir(request.SourceBucket, request.SourceKey),
-                src.DataDirName, "part.1");
-            var destPart = Path.Combine(dataDir, "part.1");
-            CopyPart(srcPart, destPart);
+            // 4. Пофайловый перенос частей источника (простой PUT — ровно part.1;
+            //    multipart — все, М8): хардлинк-точка t37 на каждую часть;
+            //    etag/sha256/Size наследуются из записи источника
+            foreach (var (_, partPath, _) in EnumerateDataParts(
+                         ObjectDir(request.SourceBucket, request.SourceKey), src.DataDirName))
+                CopyPart(partPath, Path.Combine(dataDir, Path.GetFileName(partPath)));
             // 5. xl.meta: метаданные по директиве; etag/sha256/Size наследованы;
             //    versionId/modTime новые
             var (contentType, userMetadata) = request.ReplaceMetadata && request.NewMetadata is not null

@@ -965,4 +965,39 @@ public class XlObjectStoreMultipartTests(StoreFixture fixture) : IClassFixture<S
         attributes.Attributes.Parts.Parts.Should().Equal([(1, 5L)]);
         attributes.Attributes.ObjectSize.Should().Be(5);
     }
+
+    [Fact]
+    public async Task Copy_MultipartSource_InheritsCompositeEtagAndParts()
+    {
+        // Arrange: multipart-объект (5 МиБ + 3 байта)
+        var uploadId = await Store.CreateMultipartUploadAsync("b", "cpsrc-key", Meta, "writer",
+            TestContext.Current.CancellationToken);
+        var e1 = await UploadBigPartAsync(Store, "b", "cpsrc-key", uploadId, 1, 5 * 1024 * 1024, 0xAA);
+        var e2 = await UploadBigPartAsync(Store, "b", "cpsrc-key", uploadId, 2, 3, (byte)'c');
+        var complete = await Store.CompleteMultipartUploadAsync("b", "cpsrc-key", uploadId,
+            [new PartEtag(1, e1), new PartEtag(2, e2)], TestContext.Current.CancellationToken);
+
+        // Act
+        var copy = await Store.CopyObjectAsync(new CopyRequest("b", "cpsrc-key", "b", "cpdst-key",
+            ReplaceMetadata: false, NewMetadata: null, SourceConditions: null),
+            TestContext.Current.CancellationToken);
+
+        // Assert: составной ETag/Size наследованы (arch-правка §3.5/Q3); тело копии читается;
+        // dataDir копии содержит обе части
+        copy.ETag.Should().Be(complete.ETag);
+        var dst = await Store.HeadObjectAsync("b", "cpdst-key", null, TestContext.Current.CancellationToken);
+        dst.Metadata.ETag.Should().Be(complete.ETag);
+        dst.Metadata.Size.Should().Be(5 * 1024 * 1024 + 3);
+        var dstObjectDir = Path.Combine(Root, "b", XlPathEncoder.EncodePath("cpdst-key"));
+        var dstDataDir = Directory.EnumerateDirectories(dstObjectDir).Single();
+        Directory.EnumerateFiles(dstDataDir).Select(Path.GetFileName).OrderBy(n => n)
+            .Should().Equal(["part.1", "part.2"]);
+        var content = await Store.GetObjectAsync("b", "cpdst-key",
+            new ObjectReadOptions(null, new ByteRange(5 * 1024 * 1024, 5 * 1024 * 1024 + 2), null),
+            TestContext.Current.CancellationToken);
+        using var body = content.Body;
+        var tail = new byte[body.Length];
+        await body.ReadExactlyAsync(tail, TestContext.Current.CancellationToken);
+        tail.Should().Equal("ccc"u8.ToArray());
+    }
 }
