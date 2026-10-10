@@ -186,15 +186,135 @@ public sealed partial class XlObjectStore
         return results;
     }
 
-    // — транзитные заглушки до задач 7–9 (P6) —
+    // — чтение (спека §4.4): conditional-таблица, Range/If-Range, полная
+    // SHA-256 сверка ДО передачи любых байтов клиенту —
+
+    // Чтение каталога объекта; отсутствие записи → NoSuchKey.
+    private XlMetaRecord ReadObjectMeta(string bucket, string key)
+    {
+        EnsureBucket(bucket);
+        try
+        {
+            var meta = XlMetaFile.Read(ObjectDir(bucket, key), out var fromBackup);
+            if (fromBackup)
+                _logger.LogWarning("xl.meta объекта {Bucket}/{Key} прочитан из страховочной копии", bucket, key);
+            return meta;
+        }
+        catch (FileNotFoundException)
+        {
+            throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchKey);
+        }
+    }
+
+    // Доменное представление записи: ETag HTTP-значение — в кавычках (P8).
+    private static ObjectMetadata ToMetadata(string key, XlMetaRecord record) =>
+        new(key, '"' + record.ETag + '"', record.Size, record.ModTime, record.ContentType, record.UserMetadata);
 
     public Task<ObjectContent> GetObjectAsync(string bucket, string key, ObjectReadOptions options,
-        CancellationToken ct) =>
-        ThrowUnavailable<ObjectContent>(); // t37: реализация в Task 7 плана
+        CancellationToken ct)
+    {
+        // 1. Запись (с фолбэком bkp)
+        var meta = ReadObjectMeta(bucket, key);
+        // 2. Conditional (GET-семантика: If-Modified-Since применяется)
+        var outcome = ConditionalEvaluator.Evaluate(options.Conditions, meta.ETag, meta.ModTime,
+            ifModifiedSinceApplies: true);
+        if (outcome == ConditionalOutcome.PreconditionFailed)
+            throw new ObjectStoreException(ObjectStoreErrorCode.PreconditionFailed);
+        if (outcome == ConditionalOutcome.NotModified)
+            return Task.FromResult(new ObjectContent(ToMetadata(key, meta), Stream.Null, NotModified: true, Range: null));
+        // 3. Range/If-Range (сверка — с ETag всего объекта, P8)
+        var range = RangeResolver.Resolve(options.Range, options.IfRange, meta.ETag, meta.Size);
+        // 4. Полная SHA-256 сверка ДО отдачи: Range не влияет на хэш (Q1)
+        var partPath = Path.Combine(ObjectDir(bucket, key), meta.DataDirName, "part.1");
+        VerifyChecksum(partPath, meta);
+        // 5. Тело: полный объект или срез (Seek + ограничение длины диапазона)
+        Stream body = range is null
+            ? new FileStream(partPath, FileMode.Open, FileAccess.Read, FileShare.Read)
+            : new RangeSliceStream(partPath, range);
+        return Task.FromResult(new ObjectContent(ToMetadata(key, meta), body, NotModified: false, Range: range));
+    }
 
     public Task<ObjectContent> HeadObjectAsync(string bucket, string key, ObjectReadOptions? options,
-        CancellationToken ct) =>
-        ThrowUnavailable<ObjectContent>(); // t37: реализация в Task 7 плана
+        CancellationToken ct)
+    {
+        // Шаги 1–3 те же; данных не читает — сверка не выполняется (канон 04 §2)
+        var meta = ReadObjectMeta(bucket, key);
+        var outcome = ConditionalEvaluator.Evaluate(options?.Conditions, meta.ETag, meta.ModTime,
+            ifModifiedSinceApplies: true);
+        if (outcome == ConditionalOutcome.PreconditionFailed)
+            throw new ObjectStoreException(ObjectStoreErrorCode.PreconditionFailed);
+        if (outcome == ConditionalOutcome.NotModified)
+            return Task.FromResult(new ObjectContent(ToMetadata(key, meta), Stream.Null, NotModified: true, Range: null));
+        var range = RangeResolver.Resolve(options?.Range, options?.IfRange, meta.ETag, meta.Size);
+        return Task.FromResult(new ObjectContent(ToMetadata(key, meta), Stream.Null, NotModified: false, Range: range));
+    }
+
+    // Полный проход SHA-256 по part.1; расхождение — невосстановимая порча:
+    // клиенту байты не отдаются (канон 04 §2).
+    private static void VerifyChecksum(string partPath, XlMetaRecord meta)
+    {
+        string actual;
+        using (var stream = new FileStream(partPath, FileMode.Open, FileAccess.Read, FileShare.Read))
+            actual = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+        if (actual != meta.ContentSha256)
+            throw new XlIntegrityException(
+                $"checksum mismatch: объект {meta.VersionId:N}, ожидается {meta.ContentSha256}, факт {actual}");
+    }
+
+    // Тело-срез для Range-чтения: FileStream с позиции start, читается ровно
+    // длина диапазона (чистый BCL, освобождает вызывающий).
+    private sealed class RangeSliceStream : Stream
+    {
+        private readonly FileStream _inner;
+        private long _remaining;
+
+        public RangeSliceStream(string partPath, AppliedByteRange range)
+        {
+            _inner = new FileStream(partPath, FileMode.Open, FileAccess.Read, FileShare.Read);
+            _inner.Seek(range.Start, SeekOrigin.Begin);
+            _remaining = range.End - range.Start + 1;
+        }
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => _remaining;
+        public override long Position
+        {
+            get => _inner.Position;
+            set => throw new NotSupportedException();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (_remaining <= 0)
+                return 0;
+            var read = _inner.Read(buffer, offset, (int)Math.Min(count, _remaining));
+            _remaining -= read;
+            return read;
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+                _inner.Dispose();
+            base.Dispose(disposing);
+        }
+
+        public override void Flush() { }
+        public override int Read(Span<byte> buffer)
+        {
+            if (_remaining <= 0)
+                return 0;
+            var read = _inner.Read(buffer[..(int)Math.Min(buffer.Length, _remaining)]);
+            _remaining -= read;
+            return read;
+        }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
 
     public Task<PutResult> CopyObjectAsync(CopyRequest request, CancellationToken ct) =>
         ThrowUnavailable<PutResult>(); // t37: реализация в Task 8 плана

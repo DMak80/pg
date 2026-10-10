@@ -21,7 +21,7 @@ public sealed class StoreFixture : IAsyncLifetime
             NullLogger<XlObjectStore>.Instance);
     }
 
-    public async ValueTask InitializeAsync() => await Store.CreateBucketAsync("b", CancellationToken.None);
+    public async ValueTask InitializeAsync() => await Store.CreateBucketAsync("b", TestContext.Current.CancellationToken);
 
     public ValueTask DisposeAsync()
     {
@@ -45,16 +45,389 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
 
     private static Task<PutResult> PutAsync(XlObjectStore store, string bucket, string key, string content) =>
         store.PutObjectAsync(bucket, key, new MemoryStream(Encoding.UTF8.GetBytes(content)),
-            Encoding.UTF8.GetByteCount(content), Meta, CancellationToken.None);
+            Encoding.UTF8.GetByteCount(content), Meta, TestContext.Current.CancellationToken);
 
     [Fact]
     public async Task PutGet_Roundtrip_ContentMetadataEtag()
     {
         // Arrange / Act
         var result = await PutAsync(Store, "b", "roundtrip", "hello");
+        var content = await Store.GetObjectAsync("b", "roundtrip", new ObjectReadOptions(null, null, null),
+            TestContext.Current.CancellationToken);
+        using var reader = new StreamReader(content.Body);
 
-        // Assert: ETag = md5("hello") hex В КАВЫЧКАХ (P8)
+        // Assert: ETag = md5("hello") hex В КАВЫЧКАХ (P8); тело/метаданные на месте
         result.ETag.Should().Be("\"5d41402abc4b2a76b9719d911017c592\"");
+        (await reader.ReadToEndAsync(TestContext.Current.CancellationToken)).Should().Be("hello");
+        content.Metadata.ETag.Should().Be("\"5d41402abc4b2a76b9719d911017c592\"");
+        content.Metadata.Size.Should().Be(5);
+        content.Metadata.ContentType.Should().Be("text/plain");
+        content.Metadata.UserMetadata.Should().ContainKey("k").WhoseValue.Should().Be("v");
+        content.Metadata.LastModified.Should().Be(TestVectors.FixedTime);
+        content.NotModified.Should().BeFalse();
+        content.Range.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Get_Missing_NoSuchKey()
+    {
+        // Arrange / Act
+        var act = async () => await Store.GetObjectAsync("b", "missing-key",
+            new ObjectReadOptions(null, null, null), TestContext.Current.CancellationToken);
+
+        // Assert
+        await act.Should().ThrowAsync<ObjectStoreException>()
+            .Where(ex => ex.Code == ObjectStoreErrorCode.NoSuchKey);
+    }
+
+    [Fact]
+    public async Task Get_Range206_ReturnsSlice_TotalIsFullSize()
+    {
+        // Arrange
+        await PutAsync(Store, "b", "range-206", "abcdef");
+
+        // Act
+        var content = await Store.GetObjectAsync("b", "range-206",
+            new ObjectReadOptions(null, new ByteRange(2, 3), null), TestContext.Current.CancellationToken);
+        using var reader = new StreamReader(content.Body);
+        var body = await reader.ReadToEndAsync(TestContext.Current.CancellationToken);
+
+        // Assert: тело — срез, Range несёт полный размер объекта
+        body.Should().Be("cd");
+        content.Range.Should().Be(new AppliedByteRange(2, 3, 6));
+    }
+
+    private async Task<string> TamperAndGetAsync(string key, byte tamperByte, ByteRange? range)
+    {
+        // Arrange: порча одного байта part.1 — checksum-сверка обязана упасть
+        // ДО передачи каких-либо байтов клиенту (канон 04 §2)
+        await PutAsync(Store, "b", key, "abcdef");
+        var objectDir = Path.Combine(Root, "b", XlPathEncoder.EncodePath(key));
+        var meta = XlMetaFile.Read(objectDir, out _);
+        var part = Path.Combine(objectDir, meta.DataDirName, "part.1");
+        var bytes = File.ReadAllBytes(part);
+        bytes[tamperByte] ^= 0xFF;
+        File.WriteAllBytes(part, bytes);
+
+        // Act
+        var act = async () => await Store.GetObjectAsync("b", key, new ObjectReadOptions(null, range, null),
+            TestContext.Current.CancellationToken);
+        var message = (await act.Should().ThrowAsync<XlIntegrityException>()).Which.Message;
+        return message;
+    }
+
+    [Fact]
+    public async Task Get_TamperedData_ThrowsIntegrityBeforeBody()
+    {
+        // Arrange / Act / Assert: порча внутри запрошенного диапазона
+        await TamperAndGetAsync("tamper-inside", tamperByte: 2, range: null);
+    }
+
+    [Fact]
+    public async Task Get_RangeChecksummed_FullObjectHash_TamperedOutsideRange_ThrowsIntegrity()
+    {
+        // Arrange / Act / Assert: хэш — ВСЕГО объекта: порча байта 0 вне Range 4-5
+        // всё равно роняет GET (критерий §10.2)
+        await TamperAndGetAsync("tamper-outside", tamperByte: 0, range: new ByteRange(4, 5));
+    }
+
+    [Fact]
+    public async Task Get_Conditional_IfMatch_Ok()
+    {
+        // Arrange
+        await PutAsync(Store, "b", "cond-ifmatch", "hello");
+        var etag = "\"5d41402abc4b2a76b9719d911017c592\"";
+
+        // Act: If-Match совпал → полный объект
+        var content = await Store.GetObjectAsync("b", "cond-ifmatch",
+            new ObjectReadOptions(new ObjectConditions(etag, null, null, null), null, null),
+            TestContext.Current.CancellationToken);
+
+        // Assert
+        content.NotModified.Should().BeFalse();
+    }
+
+    [Fact]
+    public async Task Get_Conditional_IfMatch_Failed412()
+    {
+        // Arrange
+        await PutAsync(Store, "b", "cond-412", "hello");
+
+        // Act
+        var act = async () => await Store.GetObjectAsync("b", "cond-412",
+            new ObjectReadOptions(new ObjectConditions("\"other\"", null, null, null), null, null),
+            TestContext.Current.CancellationToken);
+
+        // Assert
+        await act.Should().ThrowAsync<ObjectStoreException>()
+            .Where(ex => ex.Code == ObjectStoreErrorCode.PreconditionFailed);
+    }
+
+    [Fact]
+    public async Task Get_Conditional_IfNoneMatch_Match_NotModifiedFlag()
+    {
+        // Arrange
+        await PutAsync(Store, "b", "cond-inm", "hello");
+        var etag = "\"5d41402abc4b2a76b9719d911017c592\"";
+
+        // Act
+        var content = await Store.GetObjectAsync("b", "cond-inm",
+            new ObjectReadOptions(new ObjectConditions(null, etag, null, null), null, null),
+            TestContext.Current.CancellationToken);
+        using (content.Body)
+        {
+            // Assert: флаг NotModified, Body = Stream.Null, Metadata заполнен для 304
+            content.NotModified.Should().BeTrue();
+            content.Body.Should().BeSameAs(Stream.Null);
+            content.Metadata.ETag.Should().Be(etag);
+            content.Metadata.LastModified.Should().Be(TestVectors.FixedTime);
+        }
+    }
+
+    [Fact]
+    public async Task Get_Conditional_IfModifiedSince_NotModified()
+    {
+        // Arrange: объект не менялся после даты клиента (modTime обрезан до секунд)
+        await PutAsync(Store, "b", "cond-ims", "hello");
+        var since = TestVectors.FixedTime; // == modTime (обрезка мс)
+
+        // Act
+        var content = await Store.GetObjectAsync("b", "cond-ims",
+            new ObjectReadOptions(new ObjectConditions(null, null, since, null), null, null),
+            TestContext.Current.CancellationToken);
+        using (content.Body)
+        {
+            // Assert
+            content.NotModified.Should().BeTrue();
+        }
+    }
+
+    [Fact]
+    public async Task Get_Conditional_IfUnmodifiedSince_Failed412()
+    {
+        // Arrange: объект менялся ПОСЛЕ границы клиента
+        await PutAsync(Store, "b", "cond-ius", "hello");
+        var since = TestVectors.FixedTime.AddSeconds(-10);
+
+        // Act
+        var act = async () => await Store.GetObjectAsync("b", "cond-ius",
+            new ObjectReadOptions(new ObjectConditions(null, null, null, since), null, null),
+            TestContext.Current.CancellationToken);
+
+        // Assert
+        await act.Should().ThrowAsync<ObjectStoreException>()
+            .Where(ex => ex.Code == ObjectStoreErrorCode.PreconditionFailed);
+    }
+
+    [Fact]
+    public async Task Get_Conditional_IfMatch_PriorityOverIfNoneMatch()
+    {
+        // Arrange: оба заданы и совпали — If-Match решает единолично (Proceed)
+        await PutAsync(Store, "b", "cond-prio", "hello");
+        var etag = "\"5d41402abc4b2a76b9719d911017c592\"";
+
+        // Act
+        var content = await Store.GetObjectAsync("b", "cond-prio",
+            new ObjectReadOptions(new ObjectConditions(etag, etag, null, null), null, null),
+            TestContext.Current.CancellationToken);
+
+        // Assert: не 304 — условие If-None-Match не применилось
+        content.NotModified.Should().BeFalse();
+    }
+
+    [Theory]
+    [InlineData(null, -2L, "ef", 4L, 5L, 6L)]           // суффикс bytes=-2
+    [InlineData(2L, null, "cdef", 2L, 5L, 6L)]          // bytes=2- (открытый конец)
+    [InlineData(2L, 100L, "cdef", 2L, 5L, 6L)]           // end за размером обрезан
+    public async Task Get_Range_Forms(long? start, long? end, string expected,
+        long expStart, long expEnd, long total)
+    {
+        // Arrange
+        await PutAsync(Store, "b", "range-forms", "abcdef");
+
+        // Act
+        var content = await Store.GetObjectAsync("b", "range-forms",
+            new ObjectReadOptions(null, new ByteRange(start, end), null), TestContext.Current.CancellationToken);
+        using var reader = new StreamReader(content.Body);
+        var body = await reader.ReadToEndAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        body.Should().Be(expected);
+        content.Range.Should().Be(new AppliedByteRange(expStart, expEnd, total));
+    }
+
+    [Fact]
+    public async Task Get_Range_StartOutOfBounds_416()
+    {
+        // Arrange
+        await PutAsync(Store, "b", "range-416", "abcdef");
+
+        // Act
+        var act = async () => await Store.GetObjectAsync("b", "range-416",
+            new ObjectReadOptions(null, new ByteRange(6, null), null), TestContext.Current.CancellationToken);
+
+        // Assert
+        await act.Should().ThrowAsync<ObjectStoreException>()
+            .Where(ex => ex.Code == ObjectStoreErrorCode.InvalidRange);
+    }
+
+    [Fact]
+    public async Task Get_Range_EmptyObject_416()
+    {
+        // Arrange: пустой объект + Range — нет валидных диапазонов
+        await PutAsync(Store, "b", "range-empty", "");
+
+        // Act
+        var act = async () => await Store.GetObjectAsync("b", "range-empty",
+            new ObjectReadOptions(null, new ByteRange(0, null), null), TestContext.Current.CancellationToken);
+
+        // Assert
+        await act.Should().ThrowAsync<ObjectStoreException>()
+            .Where(ex => ex.Code == ObjectStoreErrorCode.InvalidRange);
+    }
+
+    [Fact]
+    public async Task Get_EmptyObject_Full_200()
+    {
+        // Arrange / Act
+        await PutAsync(Store, "b", "range-emptyfull", "");
+        var content = await Store.GetObjectAsync("b", "range-emptyfull",
+            new ObjectReadOptions(null, null, null), TestContext.Current.CancellationToken);
+        using var reader = new StreamReader(content.Body);
+
+        // Assert: без Range пустой объект читается (200)
+        content.Range.Should().BeNull();
+        (await reader.ReadToEndAsync(TestContext.Current.CancellationToken)).Should().Be("");
+    }
+
+    [Fact]
+    public async Task Get_IfRange_Match206()
+    {
+        // Arrange
+        await PutAsync(Store, "b", "ifrange-match", "abcdef");
+        var etag = "\"" + TestHashes.Md5Hex("abcdef") + "\"";
+
+        // Act
+        var content = await Store.GetObjectAsync("b", "ifrange-match",
+            new ObjectReadOptions(null, new ByteRange(2, 3), etag), TestContext.Current.CancellationToken);
+        using var reader = new StreamReader(content.Body);
+        var body = await reader.ReadToEndAsync(TestContext.Current.CancellationToken);
+
+        // Assert: сильный ETag совпал — Range применён
+        body.Should().Be("cd");
+        content.Range.Should().Be(new AppliedByteRange(2, 3, 6));
+    }
+
+    [Fact]
+    public async Task Get_IfRange_Mismatch200()
+    {
+        // Arrange
+        await PutAsync(Store, "b", "ifrange-miss", "abcdef");
+
+        // Act
+        var content = await Store.GetObjectAsync("b", "ifrange-miss",
+            new ObjectReadOptions(null, new ByteRange(2, 3), "\"other\""), TestContext.Current.CancellationToken);
+        using var reader = new StreamReader(content.Body);
+        var body = await reader.ReadToEndAsync(TestContext.Current.CancellationToken);
+
+        // Assert: несовпал — полный объект (200)
+        body.Should().Be("abcdef");
+        content.Range.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Get_IfRange_DateForm200()
+    {
+        // Arrange: дата-форма If-Range — трактуется как несовпадение
+        await PutAsync(Store, "b", "ifrange-date", "abcdef");
+        var ifRangeDate = TestVectors.FixedTime.ToString("R");
+
+        // Act
+        var content = await Store.GetObjectAsync("b", "ifrange-date",
+            new ObjectReadOptions(null, new ByteRange(2, 3), ifRangeDate), TestContext.Current.CancellationToken);
+        using var reader = new StreamReader(content.Body);
+        var body = await reader.ReadToEndAsync(TestContext.Current.CancellationToken);
+
+        // Assert
+        body.Should().Be("abcdef");
+        content.Range.Should().BeNull();
+    }
+
+    [Fact]
+    public async Task Head_ReturnsMetadata_WithoutReadingData()
+    {
+        // Arrange: порча part.1 — HEAD данных не читает, сверка не выполняется
+        await PutAsync(Store, "b", "head-meta", "hello");
+        var objectDir = Path.Combine(Root, "b", "head-meta");
+        var meta = XlMetaFile.Read(objectDir, out _);
+        var part = Path.Combine(objectDir, meta.DataDirName, "part.1");
+        var bytes = File.ReadAllBytes(part);
+        bytes[0] ^= 0xFF;
+        File.WriteAllBytes(part, bytes);
+
+        // Act
+        var content = await Store.HeadObjectAsync("b", "head-meta", null, TestContext.Current.CancellationToken);
+        using (content.Body)
+        {
+            // Assert
+            content.Metadata.Size.Should().Be(5);
+            content.NotModified.Should().BeFalse();
+        }
+    }
+
+    [Fact]
+    public async Task Head_Range_AppliedByteRange()
+    {
+        // Arrange
+        await PutAsync(Store, "b", "head-range", "abcdef");
+
+        // Act
+        var content = await Store.HeadObjectAsync("b", "head-range",
+            new ObjectReadOptions(null, new ByteRange(2, 3), null), TestContext.Current.CancellationToken);
+        using (content.Body)
+        {
+            // Assert: 206-семантика — диапазон применён, тела нет
+            content.Range.Should().Be(new AppliedByteRange(2, 3, 6));
+            content.Body.Should().BeSameAs(Stream.Null);
+        }
+    }
+
+    [Fact]
+    public async Task Head_IfNoneMatch_NotModified()
+    {
+        // Arrange
+        await PutAsync(Store, "b", "head-inm", "hello");
+        var etag = "\"5d41402abc4b2a76b9719d911017c592\"";
+
+        // Act
+        var content = await Store.HeadObjectAsync("b", "head-inm",
+            new ObjectReadOptions(new ObjectConditions(null, etag, null, null), null, null),
+            TestContext.Current.CancellationToken);
+
+        // Assert
+        content.NotModified.Should().BeTrue();
+    }
+
+    [Theory]
+    [InlineData("a//b")]
+    [InlineData(".")]
+    [InlineData("100%")]
+    [InlineData("lit%2E")]
+    [InlineData("x__XLDIR__")]
+    [InlineData("dir/")]
+    [InlineData("café/юникод/ключ")]
+    public async Task Get_SpecialKeys_Roundtrip(string key)
+    {
+        // Arrange
+        await PutAsync(Store, "b", key, "payload-" + key.Length);
+
+        // Act
+        var content = await Store.GetObjectAsync("b", key, new ObjectReadOptions(null, null, null),
+            TestContext.Current.CancellationToken);
+        using var reader = new StreamReader(content.Body);
+
+        // Assert: Get по исходному ключу возвращает записанное
+        (await reader.ReadToEndAsync(TestContext.Current.CancellationToken)).Should().Be("payload-" + key.Length);
     }
 
     [Fact]
@@ -92,7 +465,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         var body = new MemoryStream(new byte[3]);
 
         // Act
-        var act = async () => await Store.PutObjectAsync("b", "len-mismatch", body, 5, Meta, CancellationToken.None);
+        var act = async () => await Store.PutObjectAsync("b", "len-mismatch", body, 5, Meta, TestContext.Current.CancellationToken);
 
         // Assert: остаточный случай — XlIntegrityException; staging удалён
         await act.Should().ThrowAsync<XlIntegrityException>();
@@ -127,7 +500,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
 
         // Act
         var act = async () => await Store.PutObjectAsync("b", "body-throws", new ThrowingStream(), 100,
-            Meta, CancellationToken.None);
+            Meta, TestContext.Current.CancellationToken);
 
         // Assert: прерванный PUT невидим и не оставляет staging (критерий §10.4)
         await act.Should().ThrowAsync<IOException>();
@@ -158,7 +531,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         var current = XlMetaFile.Read(objectDir, out _).DataDirName;
         foreach (var dir in Directory.GetDirectories(objectDir).Where(d => Path.GetFileName(d) != current))
             File.SetLastWriteTimeUtc(dir, DateTime.UtcNow.AddHours(-2));
-        await Volume.RunCleanupAsync(CancellationToken.None);
+        await Volume.RunCleanupAsync(TestContext.Current.CancellationToken);
 
         // Assert: остался ровно один dataDir — текущий (критерий §10.6)
         Directory.GetDirectories(objectDir).Should().ContainSingle(Path.Combine(objectDir, current));
@@ -182,8 +555,8 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         // Arrange: бакет есть, объекта нет
 
         // Act / Assert: отсутствие объекта — успех (204-семантика канона 02 §1)
-        await Store.DeleteObjectAsync("b", "missing-key", CancellationToken.None);
-        await Store.DeleteObjectAsync("b", "missing-key", CancellationToken.None);
+        await Store.DeleteObjectAsync("b", "missing-key", TestContext.Current.CancellationToken);
+        await Store.DeleteObjectAsync("b", "missing-key", TestContext.Current.CancellationToken);
     }
 
     [Fact]
@@ -193,7 +566,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         await PutAsync(Store, "b", "removed", "hello");
 
         // Act
-        await Store.DeleteObjectAsync("b", "removed", CancellationToken.None);
+        await Store.DeleteObjectAsync("b", "removed", TestContext.Current.CancellationToken);
 
         // Assert: ни xl.meta, ни каталога объекта
         Directory.Exists(Path.Combine(Root, "b", "removed")).Should().BeFalse();
@@ -207,7 +580,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         await PutAsync(Store, "b", "a/b", "nested");
 
         // Act
-        await Store.DeleteObjectAsync("b", "a", CancellationToken.None);
+        await Store.DeleteObjectAsync("b", "a", TestContext.Current.CancellationToken);
 
         // Assert: удаление a не затрагивает a/b (критерий §10.5)
         XlMetaFile.Read(Path.Combine(Root, "b", "a", "b"), out _).Size.Should().Be(6);
@@ -221,7 +594,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         await PutAsync(Store, "b", "dir/", "x");
 
         // Act
-        await Store.DeleteObjectAsync("b", "dir/", CancellationToken.None);
+        await Store.DeleteObjectAsync("b", "dir/", TestContext.Current.CancellationToken);
 
         // Assert
         Directory.Exists(Path.Combine(Root, "b", "dir__XLDIR__")).Should().BeFalse();
@@ -238,7 +611,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         File.SetLastWriteTimeUtc(dataDir, DateTime.UtcNow.AddHours(-2));
 
         // Act
-        await Volume.RunCleanupAsync(CancellationToken.None);
+        await Volume.RunCleanupAsync(TestContext.Current.CancellationToken);
 
         // Assert: orphan без xl.meta убирается чисткой
         Directory.Exists(dataDir).Should().BeFalse();
@@ -251,7 +624,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
         await PutAsync(Store, "b", "mix-1", "v1");
 
         // Act
-        var results = await Store.DeleteObjectsAsync("b", ["mix-1", "mix-2"], quiet: false, CancellationToken.None);
+        var results = await Store.DeleteObjectsAsync("b", ["mix-1", "mix-2"], quiet: false, TestContext.Current.CancellationToken);
 
         // Assert: per-key исходы; несуществующий ключ — успех
         results.Should().HaveCount(2);
@@ -262,7 +635,7 @@ public class XlObjectStoreObjectTests(StoreFixture fixture) : IClassFixture<Stor
     public async Task DeleteObjects_MissingBucket_NoSuchBucket()
     {
         // Arrange / Act
-        var act = async () => await Store.DeleteObjectsAsync("missing", ["k"], false, CancellationToken.None);
+        var act = async () => await Store.DeleteObjectsAsync("missing", ["k"], false, TestContext.Current.CancellationToken);
 
         // Assert
         await act.Should().ThrowAsync<ObjectStoreException>()
