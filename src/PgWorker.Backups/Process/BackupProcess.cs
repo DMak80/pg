@@ -387,10 +387,11 @@ public sealed class BackupProcess(
                 // ensure-семантика — контейнер уже есть → только старт.
                 if (found is null)
                 {
-                    // Контур-режим (t41): адрес источника — имя ноды :5432 сети
-                    // контура (node-факт статуса найден в portalloc выше —
-                    // источник резолвился по нему); прод — portalloc-адрес.
-                    var jobSource = options.ContourNetwork is { Length: > 0 }
+                    // Контур-режим (t41, симметрия планового тика выше): имя
+                    // ноды :5432 сети контура — ТОЛЬКО для канонической ноды
+                    // portalloc (Object null); object-нода (усыновлённая)
+                    // остаётся на portalloc-адресе. Прод — portalloc-адрес.
+                    var jobSource = options.ContourNetwork is { Length: > 0 } && source.Object is null
                         ? source with { Host = active.Node, Ports = source.Ports with { Pg = 5432 } }
                         : source;
                     var spec = BackupJobSpec.Build(options, cluster, shard.Name, active.Id, jobSource, backupPassword);
