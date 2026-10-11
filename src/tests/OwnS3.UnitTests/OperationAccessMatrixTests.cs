@@ -37,6 +37,8 @@ public sealed class OperationAccessMatrixTests
             data.Add(AccessPolicy.ReadOnly, operation, ReadOnly.Contains(operation));
             data.Add(AccessPolicy.ReadWrite, operation, ReadWrite.Contains(operation));
             data.Add(AccessPolicy.Admin, operation, true);
+            // A13 (t35): replication-политика не проходит ни одну операцию
+            data.Add(AccessPolicy.Replication, operation, false);
         }
         return data;
     }

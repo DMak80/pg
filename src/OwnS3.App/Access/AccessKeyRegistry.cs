@@ -32,6 +32,7 @@ public sealed class AccessKeyRegistry
         "read-only" => AccessPolicy.ReadOnly,
         "read-write" => AccessPolicy.ReadWrite,
         "admin" => AccessPolicy.Admin,
-        _ => throw new ArgumentException($"Неизвестная policy access key: '{policy}' (допустимо read-only/read-write/admin)"),
+        "replication" => AccessPolicy.Replication, // peer-креды mesh (t35, глава 05 §3)
+        _ => throw new ArgumentException($"Неизвестная policy access key: '{policy}' (допустимо read-only/read-write/admin/replication)"),
     };
 }
