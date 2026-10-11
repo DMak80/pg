@@ -256,7 +256,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
                 }
             }
 
-            return new PutResult('"' + record.ETag + '"', record.ModTime);
+            return new PutResult('"' + record.ETag + '"', record.ModTime, record.Size, record.ContentSha256);
         }
     }
 
@@ -1376,7 +1376,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
             WriteUploads(bucket, key, updated);
             TrashUpload(bucket, key, uploadId);
             // ETag — quoted (формат PutResult коммит-пути Put/Complete)
-            return new CompleteResult('"' + record.ETag + '"');
+            return new CompleteResult('"' + record.ETag + '"', record.ModTime, record.Size, record.ContentSha256);
         }
     }
 

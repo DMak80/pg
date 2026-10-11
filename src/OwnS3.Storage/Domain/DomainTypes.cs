@@ -7,8 +7,10 @@ public sealed record BucketEntry(string Name, DateTimeOffset CreationDate);
 public sealed record ObjectUploadMetadata(string ContentType, IReadOnlyDictionary<string, string> UserMetadata);
 
 // LastModified — modTime закоммиченной записи: CopyObjectResult несёт время
-// объекта, а не UtcNow обработки.
-public sealed record PutResult(string ETag, DateTimeOffset LastModified);
+// объекта, а не UtcNow обработки. Size/ContentSha256Hex — метаданные события
+// репликации object-put (глава 07 §3): хендлер собирает событие из результата
+// коммит-поинта без повторного чтения xl-меты.
+public sealed record PutResult(string ETag, DateTimeOffset LastModified, long Size, string ContentSha256Hex);
 
 public sealed record ObjectMetadata(string Key, string ETag, long Size, DateTimeOffset LastModified,
     string ContentType, IReadOnlyDictionary<string, string> UserMetadata);
@@ -50,8 +52,10 @@ public sealed record ListPage(IReadOnlyList<ListEntry> Contents, IReadOnlyList<C
 
 public sealed record PartEtag(int PartNumber, string ETag);
 
-/// <summary>Составной ETag «N-md5» — вычисляет реализация хранения.</summary>
-public sealed record CompleteResult(string ETag);
+/// <summary>Составной ETag «N-md5» — вычисляет реализация хранения.
+/// LastModified/Size/ContentSha256Hex — метаданные события репликации
+/// object-put (глава 07 §3), из закоммиченной записи.</summary>
+public sealed record CompleteResult(string ETag, DateTimeOffset LastModified, long Size, string ContentSha256Hex);
 
 public sealed record PartEntry(int PartNumber, string ETag, long Size, DateTimeOffset LastModified);
 
