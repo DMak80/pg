@@ -53,3 +53,8 @@ MinIO ([../minio](../../minio), Go) — точечный референс «ка
 
 Развитие — трек [roadmap/owns3.md](roadmap/owns3.md); новые задачи
 после приёмочной грани (миграция с MinIO).
+
+ownS3 — платформа нод пула S3-кластеров хранилища бэкапов: управление пулом —
+трек [roadmap/s3.md](roadmap/s3.md), канон [23-s3-clusters.md](23-s3-clusters.md)
++ [24-s3worker.md](24-s3worker.md); межсерверная mesh-репликация ownS3 — задача
+`t35-owns3-replication`.
