@@ -272,37 +272,51 @@ public sealed class ErasureHealService(ErasurePool pool, ErasureXlDrive drive,
             var online = set.Where(d => d.Online).ToList();
             if (online.Count < 2)
                 continue;
-            // эталонные журналы/файлы каждого uploadDir — с первого диска, где они есть;
-            // выравнивание ДВУСТОРОННЕЕ per-file replace: журнал reference замещает
-            // локальный при отличии (не только copy-if-missing) — устаревшие записи
-            // (Abort/Complete, выполненные при offline-диска) с вернувшегося диска
-            // не воскрешают «призрачную» загрузку в листингах (канон 06 §8:
+            // эталонные журналы/файлы uploadDir: reference-носитель КАЖДОГО файла —
+            // свежий по mtime (Abort/Complete при offline-диске оставили свежий
+            // журнал на носителях операции; устаревшая копия вернувшегося диска
+            // замещается, а не разносится — двусторонняя конвергенция, канон 06 §8
             // «рассинхрон после отказов выравнивается heal»)
             var multipartRoots = online
                 .Select(d => (Disk: d, Root: Path.Combine(d.Root, ".owns3.sys", "multipart")))
                 .Where(x => Directory.Exists(x.Root))
                 .ToList();
-            foreach (var reference in multipartRoots)
+            var carriers = new Dictionary<string, List<(string Root, string Path)>>(StringComparer.Ordinal);
+            foreach (var (_, root) in multipartRoots)
             {
-                foreach (var peer in multipartRoots.Where(x => x.Disk.Position != reference.Disk.Position))
+                foreach (var file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
                 {
-                    foreach (var file in Directory.EnumerateFiles(reference.Root, "*", SearchOption.AllDirectories))
-                    {
-                        var relative = Path.GetRelativePath(reference.Root, file);
-                        // шардовые части НЕ копируются (каждый диск держит свой шард —
-                        // восстановление только реконструкцией ниже); bitrot-sidecar — копируется
-                        var name = Path.GetFileName(file);
-                        var isReplicable = name is "uploads.json" or "parts.json" or "attempt.json"
-                            or "xl.meta" or "xl.meta.bkp" || name.EndsWith(".bitrot");
-                        if (!isReplicable)
-                            continue;
-                        var target = Path.Combine(peer.Root, relative);
-                        if (File.Exists(target)
-                            && File.ReadAllBytes(target).SequenceEqual(File.ReadAllBytes(file)))
-                            continue; // синхронизирован
-                        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-                        File.Copy(file, target, overwrite: true);
-                    }
+                    // шардовые части НЕ копируются (каждый диск держит свой шард —
+                    // восстановление только реконструкцией ниже); bitrot-sidecar — копируется
+                    var name = Path.GetFileName(file);
+                    var isReplicable = name is "uploads.json" or "parts.json" or "attempt.json"
+                        or "xl.meta" or "xl.meta.bkp" || name.EndsWith(".bitrot");
+                    if (!isReplicable)
+                        continue;
+                    var relative = Path.GetRelativePath(root, file);
+                    if (!carriers.TryGetValue(relative, out var list))
+                        carriers[relative] = list = [];
+                    list.Add((root, file));
+                }
+            }
+
+            foreach (var list in carriers.Values)
+            {
+                if (list.Count < 2)
+                    continue;
+                // reference — носитель с новейшим mtime файла
+                var (referenceRoot, referencePath) = list
+                    .OrderByDescending(f => File.GetLastWriteTimeUtc(f.Path))
+                    .First();
+                var referenceBytes = File.ReadAllBytes(referencePath);
+                foreach (var (peerRoot, peerPath) in list)
+                {
+                    if (peerRoot == referenceRoot)
+                        continue;
+                    if (File.Exists(peerPath) && File.ReadAllBytes(peerPath).SequenceEqual(referenceBytes))
+                        continue; // синхронизирован
+                    Directory.CreateDirectory(Path.GetDirectoryName(peerPath)!);
+                    File.Copy(referencePath, peerPath, overwrite: true);
                 }
             }
 

@@ -845,20 +845,36 @@ public sealed partial class ErasureXlDrive : IXlDrive
 
     public List<MultipartJournals.UploadJournalEntry> ReadUploads(string bucket, string key)
     {
-        // Отсутствие журнала на диске — «этого диска мнение: загрузок нет»:
-        // опрашиваем остальные (реплики могли создаться, пока диск был offline);
-        // достижимый диск без файла есть → журнал пуст; не прочитал никто → 503
-        var reachable = false;
+        // Журнал реплицирован на диски сета, но НЕДО-реплицирован при отказах:
+        // ReadList отсутствие файла трактует как [] — первый опрошенный диск
+        // без uploads.json НЕ означает «загрузок нет». Отсутствие файла — «нет
+        // мнения у диска»: опрашиваем ВСЕ онлайн-диски и сливаем носители
+        // (union по uploadId, содержимое записи неизменно после создания) —
+        // пустой журнал не затирает непустые реплики, Create поверх частично
+        // реплицированного журнала не теряет записи. Фантомная запись (Abort/
+        // Complete при offline-диске) отсеивается uploadDir-гейтом операций и
+        // выравнивается heal (свежий reference по mtime).
+        var merged = new Dictionary<string, MultipartJournals.UploadJournalEntry>();
+        var opinion = false;
         foreach (var disk in SetOf(bucket, key).Where(d => d.Online))
         {
+            var path = MultipartJournals.UploadsJsonPath(
+                Path.GetDirectoryName(UploadDirOnDisk(disk, bucket, key, "x"))!);
             try
             {
-                return MultipartJournals.ReadUploads(MultipartJournals.UploadsJsonPath(
-                    Path.GetDirectoryName(UploadDirOnDisk(disk, bucket, key, "x"))!));
+                if (!File.Exists(path))
+                {
+                    opinion = true; // достижимый диск без файла: «мнение: пусто» —
+                    continue;        // итог решают ВСЕ носители, не первый опрошенный
+                }
+
+                foreach (var entry in MultipartJournals.ReadUploads(path))
+                    merged.TryAdd(entry.UploadId, entry);
+                opinion = true;
             }
-            catch (FileNotFoundException)
+            catch (JsonException ex)
             {
-                reachable = true; // диск читается, журнала на нём нет — следующий
+                _logger.LogWarning(ex, "EC: битый uploads.json на диске {Position} ({Path})", disk.Position, path);
             }
             catch (IOException)
             {
@@ -866,8 +882,8 @@ public sealed partial class ErasureXlDrive : IXlDrive
             }
         }
 
-        if (reachable)
-            return [];
+        if (opinion)
+            return [.. merged.Values];
         throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum);
     }
 
@@ -991,6 +1007,47 @@ public sealed partial class ErasureXlDrive : IXlDrive
         // тот же путь шардирования, но потоки — сразу в каталоги загрузки
         var upload = staging as ErasureUploadStaging
             ?? throw new ArgumentException("требуется EC upload-staging", nameof(staging));
+
+        // Повторная заливка части: недо-переносы прошлых попыток Complete (part.N
+        // в attempt-/orphan-dataDir объекта — каталогах без упоминания в живой
+        // xl.meta) обязаны уйти — иначе повторный Complete скипнет устаревший
+        // dest при НОВОМ sidecar: SHA-проход упадёт или закоммитится битое
+        foreach (var disk in upload.SetDisks.Where(d => d.Online))
+        {
+            var objectDir = ObjectDirOnDisk(disk, upload.Bucket, upload.Key);
+            if (!Directory.Exists(objectDir))
+                continue;
+            string? liveDataDir = null;
+            try
+            {
+                if (File.Exists(Path.Combine(objectDir, "xl.meta")))
+                    liveDataDir = XlMetaFile.Read(objectDir, out _).DataDirName;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "EC: чтение xl.meta {Bucket}/{Key} на диске {Position} при перезаливке части",
+                    upload.Bucket, upload.Key, disk.Position);
+            }
+
+            foreach (var dataDir in Directory.EnumerateDirectories(objectDir))
+            {
+                if (Path.GetFileName(dataDir) == liveDataDir)
+                    continue; // живая версия объекта — не трогаем
+                try
+                {
+                    var stale = Path.Combine(dataDir, $"part.{partNumber}");
+                    if (File.Exists(stale))
+                        File.Delete(stale);
+                }
+                catch (Exception ex)
+                {
+                    MarkOfflineIfIo(disk, ex);
+                    _logger.LogWarning(ex, "EC: удаление устаревшего переноса части на диске {Position} не прошло",
+                        disk.Position);
+                }
+            }
+        }
+
         var codec = CodecFor(upload.Parity);
         var online = upload.SetDisks.Where(d => d.Online).ToList();
         var streams = new Stream[codec.TotalShards];
@@ -1071,13 +1128,44 @@ public sealed partial class ErasureXlDrive : IXlDrive
             var writeQuorum0 = ErasureQuorum.Write(_pool.Topology.SetSize - _defaultParity, _defaultParity);
             if (online.Count < writeQuorum0)
                 throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum);
-            var attempted = MultipartJournals.ReadAttempt(UploadDirOnDisk(online[0], bucket, key, uploadId))?.DataDir;
+            // attempt — с ПЕРВОГО НОСИТЕЛЯ сета (частичный WriteAttempt при I/O-сбое:
+            // повтор Complete с другим первым диском обязан получить ТОТ ЖЕ dataDir —
+            // иначе перенесённые части не находятся и загрузка не Completable)
+            string? attempted = null;
+            foreach (var disk in online)
+            {
+                try
+                {
+                    var marker = MultipartJournals.ReadAttempt(UploadDirOnDisk(disk, bucket, key, uploadId));
+                    if (marker is not null)
+                    {
+                        attempted = marker.DataDir;
+                        break;
+                    }
+                }
+                catch (IOException ex)
+                {
+                    MarkOfflineIfIo(disk, ex);
+                    _logger.LogWarning(ex, "EC: чтение attempt на диске {Position} не прошло", disk.Position);
+                }
+            }
+
             var dataDirName = attempted is not null && Guid.TryParseExact(attempted, "N", out var parsed)
                 ? parsed.ToString("N")
                 : Guid.NewGuid().ToString("N");
             foreach (var disk in online)
-                MultipartJournals.WriteAttempt(UploadDirOnDisk(disk, bucket, key, uploadId),
-                    new MultipartJournals.AttemptMarker(dataDirName));
+            {
+                try
+                {
+                    MultipartJournals.WriteAttempt(UploadDirOnDisk(disk, bucket, key, uploadId),
+                        new MultipartJournals.AttemptMarker(dataDirName));
+                }
+                catch (Exception ex)
+                {
+                    MarkOfflineIfIo(disk, ex);
+                    _logger.LogWarning(ex, "EC: запись attempt на диске {Position} не прошла", disk.Position);
+                }
+            }
 
             // composite ETag из журнала
             var journal = ReadParts(bucket, key, uploadId);

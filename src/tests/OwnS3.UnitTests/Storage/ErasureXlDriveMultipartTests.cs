@@ -165,6 +165,118 @@ public class ErasureXlDriveMultipartTests : IDisposable
     }
 
     [Fact]
+    public async Task ReadUploads_JournalMissingOnFirstDisk_UnionWithReplicas()
+    {
+        // Arrange: загрузка создана (журнал реплицирован на все диски); затем
+        // uploads.json удалён на диске 0 — имитация частичной репликации
+        // (загрузка создана, пока диск был offline)
+        var uploadId = await CreateUploadAsync("union");
+        await UploadPartAsync("union", uploadId, 1, RandomBytes(64, 3));
+        var journal0 = Directory.EnumerateFiles(
+            Path.Combine(_roots[0], ".owns3.sys", "multipart"), "uploads.json",
+            SearchOption.AllDirectories).Single();
+        File.Delete(journal0);
+
+        // Act
+        var uploads = _drive.ReadUploads("b", "union");
+
+        // Assert: загрузка видна — отсутствие файла ≠ «мнение: пусто»,
+        // носители сета сливаются union'ом
+        uploads.Should().ContainSingle(e => e.UploadId == uploadId,
+            "реплики журнала на остальных дисках обязаны читаться");
+    }
+
+    [Fact]
+    public async Task CreateUpload_OverPartiallyReplicatedJournal_DoesNotLoseEntries()
+    {
+        // Arrange: загрузка id1 ключа; журнал диска 0 удалён (частичная
+        // репликация после возврата диска)
+        var id1 = await CreateUploadAsync("keep");
+        var journal0 = Directory.EnumerateFiles(
+            Path.Combine(_roots[0], ".owns3.sys", "multipart"), "uploads.json",
+            SearchOption.AllDirectories).Single();
+        File.Delete(journal0);
+
+        // Act: механика CreateMultipartUpload поверх (ReadUploads → add →
+        // WriteUploads на все онлайн-диски) — union база не теряет id1
+        var id2 = Guid.NewGuid().ToString("N");
+        var merged = _drive.ReadUploads("b", "keep");
+        merged.Add(new MultipartJournals.UploadJournalEntry(id2, "b", "keep",
+            DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(), "root"));
+        _drive.WriteUploads("b", "keep", merged);
+
+        // Assert: обе записи на КАЖДОМ диске сета (пустой журнал диска 0
+        // не затёр непустые реплики при обратной записи)
+        for (var i = 0; i < 4; i++)
+        {
+            var journal = Directory.EnumerateFiles(
+                Path.Combine(_roots[i], ".owns3.sys", "multipart"), "uploads.json",
+                SearchOption.AllDirectories).Single();
+            var ids = MultipartJournals.ReadUploads(journal).Select(e => e.UploadId).ToList();
+            ids.Should().Contain(id1, "запись id1 пережила Create поверх частичной реплики (диск {0})", i);
+            ids.Should().Contain(id2);
+        }
+    }
+
+    [Fact]
+    public async Task Complete_AttemptOnNonFirstDisk_ReusedSameDataDir()
+    {
+        // Arrange: загрузка с частью; attempt-маркер существует ТОЛЬКО на диске 2
+        // (частичный WriteAttempt при I/O-сбое первого) — известный dataDir
+        var body = RandomBytes(300_000, 9);
+        var uploadId = await CreateUploadAsync("attempt");
+        await UploadPartAsync("attempt", uploadId, 1, body);
+        var attemptDataDir = Guid.NewGuid().ToString("N");
+        var uploadDir2 = Directory.EnumerateFiles(
+                Path.Combine(_roots[2], ".owns3.sys", "multipart"), "parts.json",
+                SearchOption.AllDirectories).Single();
+        MultipartJournals.WriteAttempt(Path.GetDirectoryName(uploadDir2)!,
+            new MultipartJournals.AttemptMarker(attemptDataDir));
+        var etag = Convert.ToHexString(System.Security.Cryptography.MD5.HashData(body)).ToLowerInvariant();
+
+        // Act: Complete — attempt обязан читаться с носителя, а не с online[0]
+        await CompleteAsync("attempt", uploadId, [new PartEtag(1, '"' + etag + '"')]);
+
+        // Assert: объект собран в dataDir attempt-маркера (новый не сгенерирован)
+        var meta = _drive.TryReadMeta("b", "attempt");
+        meta!.VersionId.ToString("N").Should().Be(attemptDataDir,
+            "повтор использует attempt любого носителя сета — иначе перенесённое не находилось бы");
+    }
+
+    [Fact]
+    public async Task UploadPart_Reupload_PurgesStaleAttemptTransfer()
+    {
+        // Arrange: загрузка part.1=body1; Complete сорвался посреди переноса
+        // (part.1 удалён с дисков 2,3 → InvalidPart, перенос на 0,1 остался)
+        var body1 = RandomBytes(300_000, 11);
+        var body2 = RandomBytes(300_000, 12);
+        var uploadId = await CreateUploadAsync("reupload");
+        await UploadPartAsync("reupload", uploadId, 1, body1);
+        var etag1 = Convert.ToHexString(System.Security.Cryptography.MD5.HashData(body1)).ToLowerInvariant();
+        var lostPartPaths = _roots.Skip(2).Select(root =>
+            Directory.EnumerateFiles(Path.Combine(root, ".owns3.sys", "multipart"), "part.1",
+                SearchOption.AllDirectories).Single()).ToList();
+        foreach (var path in lostPartPaths)
+            File.Delete(path);
+        var firstComplete = () => CompleteAsync("reupload", uploadId, [new PartEtag(1, '"' + etag1 + '"')]);
+        await firstComplete.Should().ThrowAsync<ObjectStoreException>()
+            .Where(e => e.Code == ObjectStoreErrorCode.InvalidPart);
+
+        // Act: перезаливка части новым телом → Complete
+        await UploadPartAsync("reupload", uploadId, 1, body2);
+        var etag2 = Convert.ToHexString(System.Security.Cryptography.MD5.HashData(body2)).ToLowerInvariant();
+        await CompleteAsync("reupload", uploadId, [new PartEtag(1, '"' + etag2 + '"')]);
+
+        // Assert: объект == НОВОЕ тело (устаревший перенос не скипнулся
+        // при новом sidecar — SHA/шарды согласованы)
+        var meta = _drive.TryReadMeta("b", "reupload");
+        using var stream = _drive.OpenData("b", "reupload", meta!, 0, meta!.Size);
+        using var target = new MemoryStream();
+        await stream.CopyToAsync(target, TestContext.Current.CancellationToken);
+        target.ToArray().Should().Equal(body2);
+    }
+
+    [Fact]
     public async Task Complete_FailedTransfer_RetrySucceeds_WithoutPartLoss()
     {
         // Arrange: загрузка из одной части; перенос Complete сорвётся посреди —

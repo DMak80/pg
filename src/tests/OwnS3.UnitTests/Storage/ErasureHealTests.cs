@@ -277,4 +277,51 @@ public class ErasureHealTests : IDisposable
         using var stream = _drive.OpenData("b", "mp-heal", meta!, 0, meta!.Size);
         ReadAll(stream).Should().Equal([.. part1, .. part2]);
     }
+
+    [Fact]
+    public async Task HealUploads_StaleJournalOnReturnedDisk_ReplacedByFreshMajority()
+    {
+        // Arrange: загрузка «stale» была удалена (Abort) при живых дисках 0–2 —
+        // их журналы НЕ содержат записи; диск 3 вернулся с УСТАРЕВШЕЙ копией
+        // (запись ещё жива, mtime сдвинут в прошлое) — фантом не должен
+        // разнестись на сет и обязан уступить свежему большинству
+        var uploadId = Guid.NewGuid().ToString("N");
+        _drive.CreateUploadDir("b", "stale", uploadId, new XlMetaRecord(Guid.Parse(uploadId), 0,
+            DateTimeOffset.UnixEpoch, "", "text/plain", new Dictionary<string, string>(),
+            new Dictionary<string, string>(), ""));
+        _drive.WriteUploads("b", "stale",
+        [
+            new MultipartJournals.UploadJournalEntry(uploadId, "b", "stale",
+                DateTimeOffset.UnixEpoch.ToUnixTimeMilliseconds(), "root"),
+        ]);
+
+        // Abort-семантика на носителях операции (0–2): запись удалена, mtime = now
+        var freshRoots = _roots.Take(3).ToList();
+        foreach (var root in freshRoots)
+        {
+            var journal = Directory.EnumerateFiles(
+                Path.Combine(root, ".owns3.sys", "multipart"), "uploads.json",
+                SearchOption.AllDirectories).Single();
+            MultipartJournals.WriteUploads(journal, []);
+        }
+
+        // диск 3: устаревшая копия с записью, mtime в прошлое (вернулся диск)
+        var staleJournal = Directory.EnumerateFiles(
+            Path.Combine(_roots[3], ".owns3.sys", "multipart"), "uploads.json",
+            SearchOption.AllDirectories).Single();
+        File.SetLastWriteTimeUtc(staleJournal, DateTime.UtcNow.AddHours(-1));
+
+        // Act: heal-проход — reference по mtime (свежий выигрывает)
+        await _heal.RunPassAsync(CancellationToken.None);
+
+        // Assert: устаревшая копия замещена — фантомная запись не разнесена
+        foreach (var root in _roots)
+        {
+            var journal = Directory.EnumerateFiles(
+                Path.Combine(root, ".owns3.sys", "multipart"), "uploads.json",
+                SearchOption.AllDirectories).Single();
+            MultipartJournals.ReadUploads(journal).Should().NotContain(e => e.UploadId == uploadId,
+                "устаревший журнал вернувшегося диска замещён свежим majority (диск {0})", root);
+        }
+    }
 }
