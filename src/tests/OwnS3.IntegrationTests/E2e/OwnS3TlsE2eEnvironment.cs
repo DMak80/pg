@@ -70,7 +70,7 @@ public sealed class OwnS3TlsE2eEnvironment : IAsyncDisposable
     public string ContainerName => _containerName;
 
     /// <summary>S3-грань с хоста: HTTPS-only, динамический порт; SAN серта
-    /// покрывает localhost — SDK с AWS_CA_BUNDLE и HttpClient с тестовым CA.</summary>
+    /// покрывает localhost — SDK с фабрикой доверия тестового CA.</summary>
     public string S3BaseUrl => $"https://localhost:{_hostPort}";
 
     /// <summary>S3-грань изнутри docker-сети (mc: docker run --network); SAN
@@ -80,7 +80,7 @@ public sealed class OwnS3TlsE2eEnvironment : IAsyncDisposable
     /// <summary>Файл ca.pem тестовой CA (bind-mount для mc-сценария, SSL_CERT_FILE).</summary>
     public string CaPemPath => Path.Combine(_tlsDir, "ca.pem");
 
-    /// <summary>PEM тестовой CA строкой (AWS_CA_BUNDLE — материал значением).</summary>
+    /// <summary>PEM тестовой CA строкой (материал тестового зеркала фабрики доверия SDK).</summary>
     public string CaPem { get; private set; } = "";
 
     /// <summary>Тег прогона (8 hex) — компонент имён бакетов сценариев.</summary>

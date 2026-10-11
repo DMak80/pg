@@ -19,7 +19,9 @@ public sealed record BackupsRuntimeOptions(
     // t03: path-style — MinIO и облако одним клиентом (BackupS3).
     bool S3PathStyle = true,
     // t42 (arch/19 §7): путь ca.pem per-install CA — доверие https S3-endpoint;
-    // null — http-endpoint, поведение прежнее. Program воркера выставляет AWS_CA_BUNDLE.
+    // null — http-endpoint, поведение прежнее; при заданном пути BackupS3 ставит
+    // фабрику доверия S3CaHttpClientFactory (env AWS_CA_BUNDLE линейкой
+    // AWSSDK.Core 3.7.x не читается).
     string? S3CaBundlePath = null,
     string JobImage = "pgworker-backup:dev",
     int RetryBaseSec = 300,
