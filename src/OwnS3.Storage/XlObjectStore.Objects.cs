@@ -13,7 +13,7 @@ public sealed partial class XlObjectStore
         // 1. Бакет
         EnsureBucket(bucket);
         // 2. Staging драйва (versionId/dataDir — за драйвом, нормализация в WriteMeta)
-        using var staging = Drive.CreateStaging();
+        using var staging = Drive.CreateStaging(bucket, key);
         try
         {
             // 3. Тело → part.1 (MD5+SHA-256 исходника, fsync — внутри драйва)

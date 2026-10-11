@@ -138,7 +138,7 @@ public sealed class SingleXlDrive(XlVolume volume, TimeProvider timeProvider, IL
         }
     }
 
-    public IXlStaging CreateStaging()
+    public IXlStaging CreateStaging(string bucket, string key)
     {
         var versionId = Guid.NewGuid();
         var stagingDir = Path.Combine(volume.TmpDir, Guid.NewGuid().ToString("N"));

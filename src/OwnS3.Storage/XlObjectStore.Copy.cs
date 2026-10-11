@@ -24,7 +24,7 @@ public sealed partial class XlObjectStore
         // 4. Приёмник + staging: перенос частей источника драйвом (простой PUT —
         //    ровно part.1; multipart — все, М8); etag/sha256/Size наследуются
         EnsureBucket(request.DestBucket);
-        using var staging = Drive.CreateStaging();
+        using var staging = Drive.CreateStaging(request.DestBucket, request.DestKey);
         try
         {
             Drive.CopyPartsToStaging(staging, request.SourceBucket, request.SourceKey, src);

@@ -42,7 +42,9 @@ public interface IXlDrive
 
     /// null — объекта нет; кворумная недоступность — ObjectStoreException(Insufficient*).
     XlMetaRecord? TryReadMeta(string bucket, string key);
-    IXlStaging CreateStaging();
+
+    /// Staging записи ключа (EC: сет ключа определяется bucket/key — SIPMOD).
+    IXlStaging CreateStaging(string bucket, string key);
     Task<PartDigest> WritePartAsync(IXlStaging staging, int partNumber, Stream body,
         long contentLength, CancellationToken ct);       // single: тело → part.N; EC: шардирование
     void CopyPartsToStaging(IXlStaging staging, string srcBucket, string srcKey,

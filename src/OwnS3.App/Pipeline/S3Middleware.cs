@@ -203,6 +203,8 @@ public sealed class S3Middleware(
         ObjectStoreErrorCode.PreconditionFailed => S3ErrorCode.PreconditionFailed,
         ObjectStoreErrorCode.NotModified => S3ErrorCode.NotModified,
         ObjectStoreErrorCode.EntityTooLarge => S3ErrorCode.EntityTooLarge,
+        ObjectStoreErrorCode.InsufficientReadQuorum => S3ErrorCode.InsufficientReadQuorum,
+        ObjectStoreErrorCode.InsufficientWriteQuorum => S3ErrorCode.InsufficientWriteQuorum,
         _ => S3ErrorCode.InternalError,
     };
 }

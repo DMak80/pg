@@ -29,6 +29,8 @@ public enum S3ErrorCode
     InvalidRequest,
     NotImplemented,
     InternalError,
+    InsufficientReadQuorum,
+    InsufficientWriteQuorum,
 }
 
 // Информация кода ошибки для ответа (арх-таблица маппинга главы 03 §5).
@@ -63,6 +65,8 @@ public static class S3ErrorCatalog
         [S3ErrorCode.InvalidRequest] = new("InvalidRequest", 400, "Invalid Request"),
         [S3ErrorCode.NotImplemented] = new("NotImplemented", 501, "A header you provided implies functionality that is not implemented"),
         [S3ErrorCode.InternalError] = new("InternalError", 500, "We encountered an internal error, please try again."),
+        [S3ErrorCode.InsufficientReadQuorum] = new("InsufficientReadQuorum", 503, "The read quorum of the erasure set is not available. Please try again later."),
+        [S3ErrorCode.InsufficientWriteQuorum] = new("InsufficientWriteQuorum", 503, "The write quorum of the erasure set is not available. Please try again later."),
     };
 
     public static S3ErrorInfo Get(S3ErrorCode code) =>
