@@ -154,10 +154,15 @@ public static class ListHandlers
             string.Equals(QueryValue(context, "fetch-owner"), "true", StringComparison.Ordinal));
     }
 
-    private static string? QueryValue(S3HandlerContext context, string name) =>
-        OwnS3.Protocol.Auth.CanonicalRequestBuilder.QueryPairs(context.Request.Model.RawQuery)
+    private static string? QueryValue(S3HandlerContext context, string name)
+    {
+        var value = OwnS3.Protocol.Auth.CanonicalRequestBuilder.QueryPairs(context.Request.Model.RawQuery)
             .FirstOrDefault(p => string.Equals(p.Name, name, StringComparison.OrdinalIgnoreCase))
             .Value;
+        // Пустое значение query-параметра = параметр не задан (S3-семантика;
+        // mc ls --recursive шлёт «delimiter=» для полного листинга).
+        return string.IsNullOrEmpty(value) ? null : value;
+    }
 
     // encoding-type=url: ключи и префиксы ответа URL-кодированы (глава 02).
     private static string? Encode(string? value, string? encodingType) =>
