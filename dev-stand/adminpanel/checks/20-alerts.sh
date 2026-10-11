@@ -144,7 +144,7 @@ ect del /clusters/demo/shards/shard2/master >/dev/null
 echo "  master-ключ shard2 удалён"
 wait_alert shard-no-master demo/shard2 critical
 echo "  shard-no-master -> demo/shard2 (critical)"
-shard2_master="$(api /api/ha/demo-shard2 | jq -r '.leaderName + \":5432\"')"
+shard2_master="$(api /api/ha/demo-shard2 | jq -r '.leaderName + ":5432"')"
 [ -n "$shard2_master" ] && [ "$shard2_master" != ":5432" ] \
   || { echo "❌ /api/ha/demo-shard2: пустой leaderName для возврата master-ключа"; exit 1; }
 ect put /clusters/demo/shards/shard2/master "$shard2_master" >/dev/null
