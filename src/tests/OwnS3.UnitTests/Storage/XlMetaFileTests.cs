@@ -196,4 +196,162 @@ public class XlMetaFileTests : IDisposable
         var act = () => XlMetaFile.Read(_dir, out _);
         act.Should().Throw<FileNotFoundException>();
     }
+
+    // ── запись v2 (EC-поля + bitrot, канон 06 §5 в правке Task 0) ──
+
+    private static XlMetaEcInfo SampleEc(byte ecIndex = 2) => new(
+        EcAlgo: "reedsolomon",
+        EcM: 3, EcN: 4, EcBSize: 1024 * 1024,
+        EcIndex: ecIndex,
+        EcDist: [2, 0, 3, 1],
+        Parts:
+        [
+            new XlMetaPartBitrot(
+                SourceSize: 1_500_000,
+                BlockHashes:
+                [
+                    // шард-мажор: [shard][block] — уникальное значение на каждую пару
+                    new[] { HashByte(0, 0), HashByte(0, 1) },
+                    new[] { HashByte(1, 0), HashByte(1, 1) },
+                    new[] { HashByte(2, 0), HashByte(2, 1) },
+                    new[] { HashByte(3, 0), HashByte(3, 1) },
+                ]),
+        ]);
+
+    private static byte[] HashByte(byte shard, byte block)
+    {
+        var hash = new byte[32];
+        hash[0] = shard;
+        hash[1] = block;
+        return hash;
+    }
+
+    [Fact]
+    public void RoundTrip_V2_AllEcFieldsSurvive()
+    {
+        // Arrange
+        var record = SampleRecord() with { Ec = SampleEc() };
+        Directory.CreateDirectory(_dir);
+        XlMetaFile.Write(_dir, record);
+
+        // Act
+        var read = XlMetaFile.ReadFile(Path.Combine(_dir, "xl.meta"));
+
+        // Assert — эквивалентность всех полей, включая полный 2D-набор хэшей
+        read.Should().BeEquivalentTo(record, options => options.WithStrictOrdering());
+        read.Ec.Should().NotBeNull();
+        read.Ec!.Parts[0].SourceSize.Should().Be(1_500_000);
+    }
+
+    [Fact]
+    public void RoundTrip_V2_PreservesShardMajorLayout()
+    {
+        // Arrange: ecN=4, blockCount=2 → 8 хэшей: раскладка побайтово воспроизведена
+        var record = SampleRecord() with { Ec = SampleEc() };
+        Directory.CreateDirectory(_dir);
+        XlMetaFile.Write(_dir, record);
+
+        // Act
+        var read = XlMetaFile.ReadFile(Path.Combine(_dir, "xl.meta"));
+
+        // Assert — уникальное значение на каждую пару (shard, block) в исходной раскладке
+        var hashes = read.Ec!.Parts[0].BlockHashes;
+        hashes.Length.Should().Be(4);
+        hashes[0].Length.Should().Be(2);
+        hashes[3][1][0].Should().Be(3);
+        hashes[3][1][1].Should().Be(1);
+        hashes[0][1][0].Should().Be(0);
+        hashes[0][1][1].Should().Be(1);
+    }
+
+    [Fact]
+    public void Write_V1_ReadableByNewReader()
+    {
+        // Arrange: запись без Ec (v1)
+        var record = SampleRecord();
+        Directory.CreateDirectory(_dir);
+        XlMetaFile.Write(_dir, record);
+
+        // Act
+        var read = XlMetaFile.ReadFile(Path.Combine(_dir, "xl.meta"));
+
+        // Assert
+        read.Ec.Should().BeNull();
+        read.Should().BeEquivalentTo(record);
+    }
+
+    [Fact]
+    public void Write_NullEc_WritesV1()
+    {
+        // Arrange/Act: байты записи содержат recordVersion 1 (offset 5..6, LE)
+        Directory.CreateDirectory(_dir);
+        XlMetaFile.Write(_dir, SampleRecord());
+        var bytes = File.ReadAllBytes(Path.Combine(_dir, "xl.meta"));
+
+        // Assert
+        bytes[5].Should().Be(1);
+        bytes[6].Should().Be(0);
+    }
+
+    [Fact]
+    public void Write_Ec_WritesV2()
+    {
+        // Arrange/Act
+        Directory.CreateDirectory(_dir);
+        XlMetaFile.Write(_dir, SampleRecord() with { Ec = SampleEc() });
+        var bytes = File.ReadAllBytes(Path.Combine(_dir, "xl.meta"));
+
+        // Assert — recordVersion 2
+        bytes[5].Should().Be(2);
+        bytes[6].Should().Be(0);
+    }
+
+    [Fact]
+    public void Read_V2Truncated_Throws()
+    {
+        // Arrange: обрыв в bitrot-хвосте
+        Directory.CreateDirectory(_dir);
+        XlMetaFile.Write(_dir, SampleRecord() with { Ec = SampleEc() });
+        var bytes = File.ReadAllBytes(Path.Combine(_dir, "xl.meta"));
+        File.WriteAllBytes(Path.Combine(_dir, "xl.meta"), bytes[..^10]);
+
+        // Act / Assert
+        var act = () => XlMetaFile.ReadFile(Path.Combine(_dir, "xl.meta"));
+        act.Should().Throw<XlIntegrityException>();
+    }
+
+    [Fact]
+    public void Read_V2ResidualBytes_Throws()
+    {
+        // Arrange: лишние байты после bitrot-хвоста
+        Directory.CreateDirectory(_dir);
+        XlMetaFile.Write(_dir, SampleRecord() with { Ec = SampleEc() });
+        var bytes = File.ReadAllBytes(Path.Combine(_dir, "xl.meta"));
+        File.WriteAllBytes(Path.Combine(_dir, "xl.meta"), [.. bytes, .. new byte[] { 9 }]);
+
+        // Act / Assert
+        var act = () => XlMetaFile.ReadFile(Path.Combine(_dir, "xl.meta"));
+        act.Should().Throw<XlIntegrityException>();
+    }
+
+    [Fact]
+    public void RoundTrip_EmptyBlocks()
+    {
+        // Arrange: объект size 0 — partCount 1, blockCount 0 (канон 06 §4 «пустой объект»)
+        var ec = SampleEc() with
+        {
+            Parts = [new XlMetaPartBitrot(0, [[], [], [], []])],
+        };
+        var record = SampleRecord() with { Size = 0, Ec = ec };
+        Directory.CreateDirectory(_dir);
+        XlMetaFile.Write(_dir, record);
+
+        // Act
+        var read = XlMetaFile.ReadFile(Path.Combine(_dir, "xl.meta"));
+
+        // Assert
+        read.Ec!.Parts[0].SourceSize.Should().Be(0);
+        read.Ec!.Parts[0].BlockHashes.Should().HaveCount(4);
+        read.Ec!.Parts[0].BlockHashes.Should().OnlyContain(shard => shard.Length == 0);
+    }
 }
