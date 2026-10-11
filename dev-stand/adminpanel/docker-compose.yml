@@ -361,6 +361,10 @@ services:
     restart: unless-stopped
     ports:
       - "5050:8080"
+    extra_hosts:
+      # ownS3 живёт в deploy-компоузе: панель резолвит хост-публикацию
+      # host.docker.internal в шлюз docker-хоста (Linux-паритет).
+      - "host.docker.internal:host-gateway"
     environment:
       ASPNETCORE_ENVIRONMENT: Stand
       AdminPanel__Etcd__Endpoints__0: http://etcd1:2379
@@ -383,13 +387,18 @@ services:
       WORKERS_PANEL_TLS_CERT_PATH: /tls-workers/panel.crt
       WORKERS_PANEL_TLS_KEY_PATH: /tls-workers/panel.key
       WORKERS_PANEL_TLS_SERVER_CA_PATH: /tls-workers/ca.pem
-      # t08: грань «Хранилище бэкапов» — read-only инвентарь MinIO из сети
-      # стенда (minio:9000 — compose-DNS; панель всегда в докере). Креды —
-      # стендовые дефолты as-minio; прод — per-install env (arch/19 §7).
-      AdminPanel__Backups__S3__Endpoint: http://minio:9000
+      # t41: грань «Хранилище бэкапов» — read-only инвентарь ownS3
+      # (deploy-compose, другая compose-сеть): панель ходит через
+      # хост-публикацию host.docker.internal:9010 (extra_hosts host-gateway —
+      # Linux-паритет, прецедент deploy-воркеров). Креды — read-only ключ
+      # panel-reader (стендовые примеры = OWNS3_ACCESS_KEYS__1__* в
+      # deploy/.env; прод — per-install env, arch/19 §7). as-minio
+      # (full-профиль) — переходный read-only-архив, см.
+      # docs/owns3-migration.md.
+      AdminPanel__Backups__S3__Endpoint: http://host.docker.internal:9010
       AdminPanel__Backups__S3__Bucket: pgworker-backups
-      AdminPanel__Backups__S3__AccessKey: minioadmin
-      AdminPanel__Backups__S3__SecretKey: minioadmin
+      AdminPanel__Backups__S3__AccessKey: panel-reader
+      AdminPanel__Backups__S3__SecretKey: panel-reader-pwd
     volumes:
       # HostMap (s1a:8008 → hc1a:8008) — только JSON: env не собирает ключи
       # словаря с "__" (см. комментарий в самом файле)
