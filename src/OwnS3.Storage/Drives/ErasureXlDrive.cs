@@ -273,7 +273,26 @@ public sealed partial class ErasureXlDrive : IXlDrive
 
     // ── заглушки зон, реализуемых Task 9–12 ──
 
-    public Task RunCleanupAsync(CancellationToken ct) => throw new NotImplementedException(); // Task 12
+    // Чистки per-disk (канон 06 §10): на каждом онлайн-диске — возрастные
+    // .trash/orphan (1 ч), брошенные загрузки (24 ч), фантом-записи (локальная
+    // кворумная сверка отсутствия с онлайн-корнями сета).
+    public Task RunCleanupAsync(CancellationToken ct)
+    {
+        foreach (var set in _pool.Sets)
+        {
+            var peerRoots = set.Where(d => d.Online).Select(d => d.Root).ToList();
+            var k = _pool.Topology.SetSize - _defaultParity;
+            foreach (var disk in set.Where(d => d.Online))
+            {
+                var janitor = new XlDiskJanitor(disk.Root, _timeProvider, _logger);
+                janitor.CleanAged();
+                janitor.CleanupAbandonedUploads();
+                janitor.CleanPhantoms(peerRoots, k);
+            }
+        }
+
+        return Task.CompletedTask;
+    }
 
     // Формат пула валиден + touch-проба на каждом онлайн-диске (спека §4.3);
     // деградация НЕ роняет healthz — она наблюдается в /admin/storage.
