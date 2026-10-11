@@ -97,7 +97,9 @@ EC-расширение):
 
 - Объект (bucket + ключ) закрепляется за одним сетом: **индекс сета =
   SipHash-2-4(deploymentId-ключ, «bucket/object») % число сетов** (алгоритм
-  `SIPMOD`; SipHash — `System.IO.Hashing`, ключ — 16 байт deploymentId).
+  `SIPMOD`; SipHash-2-4 — собственная реализация
+  `OwnS3.Storage.Erasure.SipHash24` с тест-векторами референса Aumasson/DJB —
+  пакет `System.IO.Hashing` SipHash не содержит; ключ — 16 байт deploymentId).
   Детерминированность: тот же ключ всегда в тот же сет, пока жив формат тома.
 - Multipart-загрузка закрепляется за сетом своего ключа при
   CreateMultipartUpload (uploadId не мигрирует между сетами).

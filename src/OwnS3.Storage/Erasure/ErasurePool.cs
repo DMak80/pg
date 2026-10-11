@@ -1,4 +1,3 @@
-using System.IO.Hashing;
 using System.Text;
 using Microsoft.Extensions.Logging;
 
@@ -12,10 +11,11 @@ public sealed class ErasureDisk
     public required int Position { get; init; }    // позиция в списке путей
     public required int PositionInSet { get; init; } // j = position % setSize
 
-    public required string DiskId { get; internal set; }
+    // заполняется Initialize/заменой диска (внутри сборки)
+    public string DiskId { get; internal set; } = string.Empty;
 
     // Каталог доступен и I/O жив; перепроверка тикером 30 с и heal (канон 06 §7).
-    public required bool Online { get; internal set; }
+    public bool Online { get; internal set; }
 }
 
 // Пул сетов (канон 06 §2–3, §7): Initialize по правилам старта; SIPMOD;
@@ -51,8 +51,6 @@ public sealed class ErasurePool : IDisposable
                 SetIndex = i / topology.SetSize,
                 Position = i,
                 PositionInSet = i % topology.SetSize,
-                DiskId = string.Empty,
-                Online = false,
             };
         }
 
@@ -76,7 +74,7 @@ public sealed class ErasurePool : IDisposable
     {
         var keyBytes = DeploymentId.ToByteArray().AsSpan(0, 16);
         var data = Encoding.UTF8.GetBytes(bucket + "/" + key);
-        var hash = SipHash.Hash(keyBytes, data);
+        var hash = SipHash24.Hash(keyBytes, data);
         return (int)(hash % (ulong)Topology.SetCount);
     }
 
@@ -213,7 +211,7 @@ public sealed class ErasurePool : IDisposable
         foreach (var i in validIndexes.Skip(1))
         {
             var info = ErasureVolumeInfo.Read(Disks[i].Root);
-            ValidateAgainstReference(info, Disks[i]);
+            ValidateAgainstReference(info, reference, Disks[i]);
             if (info.DiskId == reference.DiskId)
                 throw new InvalidOperationException(
                     $"EC-старт: позиция {i} ({Disks[i].Root}) несёт diskId позиции {referenceIndex} — подмена дисков запрещена");
@@ -275,20 +273,26 @@ public sealed class ErasurePool : IDisposable
                 replacementDiskIds[position] = Guid.NewGuid().ToString("N");
         }
 
+        string[][] effectiveSets;
         if (replacementDiskIds.Count > 0)
         {
-            var newSets = reference.Sets.Select(set => set.ToArray()).ToArray();
+            effectiveSets = reference.Sets.Select(set => set.ToArray()).ToArray();
             foreach (var (position, diskId) in replacementDiskIds)
-                newSets[position / Topology.SetSize][position % Topology.SetSize] = diskId;
-            // пишем обновлённый формат на все онлайн-диски (замена выполняется при
-            // старте, heal потом доливает — канон 06 §9)
+                effectiveSets[position / Topology.SetSize][position % Topology.SetSize] = diskId;
+            // пишем обновлённый формат на онлайн-диски с валидным форматом
+            // (замена выполняется при старте, heal потом доливает — канон 06 §9);
+            // формат кандидата пишет финальный цикл ниже
             foreach (var disk in Disks)
             {
-                if (states[disk.Position] != DiskState.Valid && !replacementDiskIds.ContainsKey(disk.Position))
+                if (states[disk.Position] != DiskState.Valid)
                     continue;
                 var info = ErasureVolumeInfo.Read(disk.Root);
-                ErasureVolumeInfo.Write(disk.Root, info with { Sets = newSets });
+                ErasureVolumeInfo.Write(disk.Root, info with { Sets = effectiveSets });
             }
+        }
+        else
+        {
+            effectiveSets = reference.Sets.Select(set => set.ToArray()).ToArray();
         }
 
         // финальное состояние дисков: identity/online + идемпотентная структура + старт-tmp
@@ -304,7 +308,7 @@ public sealed class ErasurePool : IDisposable
                 ErasureVolumeInfo.Write(disk.Root, new ErasureVolumeInfo(
                     reference.Magic, reference.FormatVersion, reference.VolumeId, reference.Mode,
                     reference.DeploymentId, newDiskId, reference.SetSize,
-                    reference.Sets.Select(set => set.ToArray()).ToArray(),
+                    effectiveSets,
                     reference.Distribution, reference.DistributionAlgo));
                 disk.DiskId = newDiskId;
             }
@@ -348,6 +352,9 @@ public sealed class ErasurePool : IDisposable
         if (info.DistributionAlgo != ErasureVolumeInfo.DistributionAlgoValue)
             throw new InvalidOperationException(
                 $"EC-старт: distributionAlgo «{info.DistributionAlgo}» не поддерживается — отказ");
+        if (info.Sets.Length * info.SetSize != Disks.Count)
+            throw new InvalidOperationException(
+                $"EC-старт: формат ожидает {info.Sets.Length * info.SetSize} дисков, конфигурация даёт {Disks.Count} — расширение/изменение числа путей живого тома запрещено");
         if (info.Sets.Length != Topology.SetCount || info.Sets.Any(set => set.Length != Topology.SetSize))
             throw new InvalidOperationException(
                 $"EC-старт: sets формата не согласуются с топологией {Topology.DriveCount}/{Topology.SetSize} — отказ");
@@ -356,23 +363,26 @@ public sealed class ErasurePool : IDisposable
     }
 
     // Согласованность валидного диска с эталоном (подмена топологий запрещена).
-    private void ValidateAgainstReference(ErasureVolumeInfo info, ErasureDisk disk)
+    private void ValidateAgainstReference(ErasureVolumeInfo info, ErasureVolumeInfo reference, ErasureDisk disk)
     {
-        if (info.Magic != ErasureVolumeInfo.MagicValue
-            || info.Mode != ErasureVolumeInfo.ModeValue
-            || info.DeploymentId != ErasureVolumeInfo.Read(Disks.First(d => d.Position == 0 && Probe(0) == DiskState.Valid) is { } _ ? referenceDeploymentCache ??= ErasureVolumeInfo.Read(Disks.First().Root).DeploymentId : string.Empty).DeploymentId)
-        {
-            // согласование ниже — по полям напрямую (без хитрых выражений)
-        }
-
-        if (info.DeploymentId != _referenceDeploymentId)
+        if (info.DeploymentId != reference.DeploymentId)
             throw new InvalidOperationException(
                 $"EC-старт: диск {disk.Position}: deploymentId не совпадает с эталоном — смешение топологий запрещено");
-        if (info.SetSize != Topology.SetSize)
+        if (info.VolumeId != reference.VolumeId)
+            throw new InvalidOperationException(
+                $"EC-старт: диск {disk.Position}: volumeId не совпадает с эталоном — смешение томов запрещено");
+        if (info.SetSize != reference.SetSize)
             throw new InvalidOperationException($"EC-старт: диск {disk.Position}: setSize не совпадает с эталоном — отказ");
+        if (!info.Distribution.SequenceEqual(reference.Distribution))
+            throw new InvalidOperationException(
+                $"EC-старт: диск {disk.Position}: distribution не совпадает с эталоном — отказ");
+        if (info.DistributionAlgo != reference.DistributionAlgo)
+            throw new InvalidOperationException(
+                $"EC-старт: диск {disk.Position}: distributionAlgo не совпадает с эталоном — отказ");
+        if (info.FormatVersion != reference.FormatVersion)
+            throw new InvalidOperationException(
+                $"EC-старт: диск {disk.Position}: версия формата не совпадает с эталоном — отказ");
     }
-
-    private string? _referenceDeploymentId;
 
     // Служебная структура .owns3.sys/{tmp,multipart,.trash,buckets,config} —
     // идемпотентно (параллель XlVolume.Initialize в single, канон 06 §2).
@@ -435,7 +445,7 @@ public sealed class ErasurePool : IDisposable
         for (var j = setSize - 1; j >= 1; j--)
         {
             var data = Encoding.UTF8.GetBytes("distribution/" + j);
-            var hash = SipHash.Hash(key, data);
+            var hash = SipHash24.Hash(key, data);
             var r = (int)(hash % (ulong)(j + 1));
             (perm[j], perm[r]) = (perm[r], perm[j]);
         }
