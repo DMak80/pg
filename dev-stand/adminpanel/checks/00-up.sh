@@ -105,14 +105,13 @@ for k in PGW_METRICS_NETWORK PGW_SCRAPE_NETWORK; do
     printf '%s=%s\n' "$k" "$v" >> "$ROOT/deploy/.env"
   fi
 done
-# Стендовый тик лупов воркера = 1 c (конвергенция demo ≤45 c: провижининг
-# движется фазами между тиками, межтиковые ожидания — домино хвоста гейта).
-# ПРОД ключа не ставит: дефолт appsettings (5 c) не меняется.
-k="PgWorker__Loops__ScanIntervalSec"
-if grep -q "^$k=" "$ROOT/deploy/.env"; then
-  sed -i.bak "s/^$k=.*/$k=1/" "$ROOT/deploy/.env" && rm -f "$ROOT/deploy/.env.bak"
-else
-  printf '%s=%s\n' "$k" "1" >> "$ROOT/deploy/.env"
+# Тик лупов воркера — прод-дефолт appsettings (5 c). Стендовый override 1 c
+# проверен и отозван: конвергенцию demo не ускоряет (доминирует Spilo-фаза,
+# 57-58 c во всех прогонах), а подбор moves-заявок воркером стал обгонять
+# панельный тик 3 c — грань панели «очередь заявок» теряла видимость заявки
+# (чек 60, rollback bucket_6).
+if grep -q '^PgWorker__Loops__ScanIntervalSec=' "$ROOT/deploy/.env"; then
+  sed -i.bak '/^PgWorker__Loops__ScanIntervalSec=/d' "$ROOT/deploy/.env" && rm -f "$ROOT/deploy/.env.bak"
 fi
 
 echo ">>> поднимаю стенд (docker compose --profile full --profile kafka --profile valkey --profile metrics up -d --build)"
