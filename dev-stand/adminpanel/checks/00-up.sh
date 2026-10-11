@@ -103,6 +103,15 @@ for k in PGW_METRICS_NETWORK PGW_SCRAPE_NETWORK; do
     printf '%s=%s\n' "$k" "$v" >> "$ROOT/deploy/.env"
   fi
 done
+# Стендовый тик лупов воркера = 1 c (конвергенция demo ≤45 c: провижининг
+# движется фазами между тиками, межтиковые ожидания — домино хвоста гейта).
+# ПРОД ключа не ставит: дефолт appsettings (5 c) не меняется.
+k="PgWorker__Loops__ScanIntervalSec"
+if grep -q "^$k=" "$ROOT/deploy/.env"; then
+  sed -i.bak "s/^$k=.*/$k=1/" "$ROOT/deploy/.env" && rm -f "$ROOT/deploy/.env.bak"
+else
+  printf '%s=%s\n' "$k" "1" >> "$ROOT/deploy/.env"
+fi
 
 echo ">>> поднимаю стенд (docker compose --profile full --profile kafka --profile valkey --profile metrics up -d --build)"
 # Docker Desktop отдаёт хост-порт recreated-контейнера с задержкой (com.docke
@@ -245,6 +254,11 @@ conv_mark() {
   printf -v "$var" '%s' "$now"
   phase "demo: $label — $((now - conv_t0)) c"
 }
+# Дельта порога от conv_t0; незакрытый порог — прочерк (не «отрицательное время»).
+conv_delta() {
+  local v="$1"
+  [ -n "${!v:-}" ] && echo "$(( ${!v} - conv_t0 ))" || echo "-"
+}
 # Подфаза 1: первый контейнер ноды demo в RUNNING (движок create/start).
 demo_containers_up() { [ -n "$(docker ps -q --filter name='^pgw-demo-' 2>/dev/null)" ]; }
 # Хост-порт Patroni REST (8008) ноды из её публикаций portalloc (пусто — нет).
@@ -252,10 +266,13 @@ patroni_rest_port() {
   docker port "$1" 8008 2>/dev/null | awk -F: '/:/{print $NF}' | tail -1
 }
 # Подфаза 2: REST каждой ноды отвечает /cluster (TLS per-install; -k —
-# телеметрия подъёма, не проверка PKI).
+# телеметрия подъёма, не проверка PKI). Нод ещё нет → порог НЕ достигнут
+# (пустой список — не успех).
 demo_patroni_ok() {
-  local c p
-  for c in $(docker ps --filter name='^pgw-demo-' --format '{{.Names}}'); do
+  local cs c p
+  cs="$(docker ps --filter name='^pgw-demo-' --format '{{.Names}}')"
+  [ -n "$cs" ] || return 1
+  for c in $cs; do
     p="$(patroni_rest_port "$c")"
     [ -n "$p" ] || return 1
     curl -skf -m 2 "https://localhost:${p}/cluster" 2>/dev/null | grep -q '"members"' || return 1
@@ -302,7 +319,7 @@ done
 demo_ready || { echo "❌ demo не сошёлся за 600 c (docker logs deploy-pgworker-1; docker ps | grep pgw-demo)"; exit 1; }
 [ -n "$t_status" ] || t_status="$(date +%s)"   # сняты быстрее первого опроса — порог = гейт
 conv_done="$(date +%s)"
-phase "demo: конвергенция $((conv_done - conv_t0)) c (фазы: сеть/контейнеры $((t_containers - conv_t0)), patroni $((t_patroni - conv_t0)), leader $((t_leader - conv_t0)), streaming $((t_streaming - conv_t0)), status $((t_status - conv_t0)))"
+phase "demo: конвергенция $((conv_done - conv_t0)) c (фазы: сеть/контейнеры $(conv_delta t_containers), patroni $(conv_delta t_patroni), leader $(conv_delta t_leader), streaming $(conv_delta t_streaming), status $(conv_delta t_status))"
 echo "  demo: Active, ноды RUNNING, status-ключи бакетов сняты (shard1/shard2 × a/b)"
 
 # 7) kafkaworker жив ×2 (t07): по два lease-ключа /kafkaworker/api/ и
