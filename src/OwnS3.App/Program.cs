@@ -41,6 +41,40 @@ foreach (var (env, key) in new[]
     if (!string.IsNullOrEmpty(value))
         builder.Configuration[key] = value;
 }
+// Скаляры OWNS3_REPLICATION_* (t35, глава 07 §11) → OwnS3:Replication:*.
+foreach (var (env, key) in new[]
+         {
+             ("OWNS3_REPLICATION_OUTBOX_BUDGET_BYTES", "OwnS3:Replication:OutboxBudgetBytes"),
+             ("OWNS3_REPLICATION_INFLIGHT_WINDOW", "OwnS3:Replication:InflightWindow"),
+             ("OWNS3_REPLICATION_PARALLELISM", "OwnS3:Replication:Parallelism"),
+             ("OWNS3_REPLICATION_MAX_RATE_BYTES", "OwnS3:Replication:MaxRateBytes"),
+             ("OWNS3_REPLICATION_BACKOFF_MAX_SEC", "OwnS3:Replication:BackoffMaxSec"),
+             ("OWNS3_REPLICATION_DISK_FREE_MIN_BYTES", "OwnS3:Replication:DiskFreeMinBytes"),
+             ("OWNS3_REPLICATION_TOMBSTONE_RETENTION_HOURS", "OwnS3:Replication:TombstoneRetentionHours"),
+             ("OWNS3_REPLICATION_RECONCILE_INTERVAL_HOURS", "OwnS3:Replication:ReconcileIntervalHours"),
+             ("OWNS3_REPLICATION_FETCH_QUEUE_MAX", "OwnS3:Replication:FetchQueueMax"),
+         })
+{
+    var value = Environment.GetEnvironmentVariable(env);
+    if (!string.IsNullOrEmpty(value))
+        builder.Configuration[key] = value;
+}
+// Массив OWNS3_REPLICATION_TARGETS__<i>__* (глава 07 §2: seed первого старта) —
+// скан до первого пропуска индекса.
+for (var i = 0; ; i++)
+{
+    var name = Environment.GetEnvironmentVariable($"OWNS3_REPLICATION_TARGETS__{i}__NAME");
+    var endpoint = Environment.GetEnvironmentVariable($"OWNS3_REPLICATION_TARGETS__{i}__ENDPOINT");
+    var accessKey = Environment.GetEnvironmentVariable($"OWNS3_REPLICATION_TARGETS__{i}__ACCESSKEY");
+    var secretKey = Environment.GetEnvironmentVariable($"OWNS3_REPLICATION_TARGETS__{i}__SECRETKEY");
+    if (string.IsNullOrEmpty(name) && string.IsNullOrEmpty(endpoint) && string.IsNullOrEmpty(accessKey))
+        break;
+    builder.Configuration[$"OwnS3:Replication:Targets:{i}:Name"] = name;
+    builder.Configuration[$"OwnS3:Replication:Targets:{i}:Endpoint"] = endpoint;
+    builder.Configuration[$"OwnS3:Replication:Targets:{i}:AccessKey"] = accessKey;
+    builder.Configuration[$"OwnS3:Replication:Targets:{i}:SecretKey"] = secretKey;
+}
+
 // Массив статических ключей OWNS3_ACCESS_KEYS__<i>__* (глава 05 §2:
 // индексная нумерация массива в env — конвенция .NET): сканируем до
 // первого пропуска индекса.
@@ -149,6 +183,22 @@ builder.Services.AddSingleton<OwnS3.Replication.Inbound.FetchQueueRegistry>();
 builder.Services.AddSingleton<OwnS3.Replication.Inbound.IOutcomeCounters>(
     OwnS3.Replication.Inbound.NullOutcomeCounters.Instance);
 builder.Services.AddSingleton<OwnS3.Replication.Inbound.NotificationInbox>();
+// Журнал доставки и sink событий хендлеров (глава 07 §3/§4): активен при ≥1 соседе,
+// иначе Null (байт-в-байт Existing-регресс — каталога outbox на томе нет)
+builder.Services.AddSingleton(sp => new OwnS3.Replication.Outbox.OutboxJournal(
+    Path.Combine(ReplicationSysDir(sp), "outbox"),
+    sp.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value.OutboxBudgetBytes,
+    sp.GetRequiredService<ILogger<OwnS3.Replication.Outbox.OutboxJournal>>()));
+builder.Services.AddSingleton<OwnS3.Replication.IReplicationEventSink>(sp =>
+{
+    var targets = sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>();
+    if (!targets.Active)
+        return OwnS3.Replication.NullReplicationEventSink.Instance;
+    return new OwnS3.Replication.ReplicationEventSink(
+        sp.GetRequiredService<OwnS3.Replication.Outbox.OutboxJournal>(), targets,
+        sp.GetRequiredService<OwnS3.Replication.Lww.TombstoneStore>(),
+        sp.GetRequiredService<IOptions<OwnS3Options>>().Value.HostId ?? Environment.MachineName);
+});
 builder.Services.AddSingleton(sp => new OwnS3.App.Handlers.ReplicationHandlers(
     sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>(),
     sp.GetRequiredService<OwnS3.Replication.Inbound.NotificationInbox>(),

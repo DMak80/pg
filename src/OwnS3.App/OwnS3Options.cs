@@ -13,6 +13,8 @@ public sealed class OwnS3Options
     public AccessKeyOptions[] AccessKeys { get; set; } = [];
     public string? HostId { get; set; }
     public TlsOptions Tls { get; set; } = new();
+    // Mesh-репликация (t35, глава 07 §11): секция OwnS3:Replication / OWNS3_REPLICATION_*.
+    public OwnS3.Replication.ReplicationOptions Replication { get; set; } = new();
 }
 
 // EC-параметры (канон 05 §4/06 §1): SetSize null = авто (наибольший делитель N
