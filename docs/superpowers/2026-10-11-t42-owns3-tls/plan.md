@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** ownS3 умеет HTTPS-only на порту сервера по per-install сертификату (fail-fast на битый материал), подсистема бэкапов (SDK воркера, wal-приёмник, джобы с `mc`) доверяет per-install CA при https-endpoint; стенд остаётся HTTP-only.
+**Goal:** ownS3 умеет HTTPS-only на порту сервера по per-install сертификату (fail-fast на битый материал), подсистема бэкапов (SDK воркера/WAL-приёмника, `mc` в джобах) доверяет per-install CA при https-endpoint; стенд остаётся HTTP-only.
 
-**Architecture:** TLS — опция: материал (PEM или `_PATH`) задан → Kestrel слушает `https://*:{port}` с сертификатом (один порт, один режим, без редиректов); не задан — поведение не меняется ни на бит (HTTP). Загрузка материала — общий `Shared.Tls.TlsMaterial`, серт выпускает `deploy/tls/gen.sh` из единой `kfw-install-ca`. Клиенты доверяют CA штатно: AWS SDK .NET — env `AWS_CA_BUNDLE` (воркер выставляет процессу из `PgWorker:Backups:S3:CaBundlePath`; агенты/джобы материализуют PEM из env `S3_CA_PEM`), `mc` — `SSL_CERT_FILE`.
+**Architecture:** TLS — опция: материал (PEM или `_PATH`) задан → Kestrel слушает `https://*:{port}` с сертификатом (один порт, один режим, без редиректов); не задан — поведение не меняется ни на бит (HTTP). Загрузка материала — общий `Shared.Tls.TlsMaterial`, серт выпускает `deploy/tls/gen.sh` из единой `kfw-install-ca`. Клиенты доверяют CA: AWS SDK .NET — программная фабрика HttpClient `S3CaHttpClientFactory` (валидация корня цепочки сервера по отпечатку per-install CA; ставится конструктором `BackupS3` только при заданном `CaBundlePath` — env `AWS_CA_BUNDLE` линейкой AWSSDK.Core 3.7.x не читается, эмпирический факт E2E t42, spec §2 п.5/§5); агенты/джобы получают CA значением PEM через env `S3_CA_PEM` и материализуют в файл (SDK-клиент приёмника — та же фабрика через `S3CaBundlePath`; `mc` — `SSL_CERT_FILE`).
 
 **Tech Stack:** .NET 10 (`Nullable=enable`, `TreatWarningsAsErrors=true`), xUnit + FluentAssertions (AAA-комментарии), testcontainers (динамические порты), openssl CLI в gen.sh, `CertificateRequest` BCL для тестовых CA.
 
@@ -15,9 +15,10 @@
 - .NET 10, `TreatWarningsAsErrors=true`, `Nullable=enable`; новые NuGet-пакеты НЕ добавляются; централизованное версионирование `Directory.Packages.props` (spec §5).
 - Серты в gen.sh — `openssl` CLI; тестовые CA/серты — `CertificateRequest` из BCL (spec §5).
 - Docker-образ ownS3 не меняется; локальные образы в registry `192.168.0.1:5000` не кладутся (spec §5).
+- Доверие CA у AWS SDK .NET — ТОЛЬКО программная фабрика HttpClient `S3CaHttpClientFactory` (валидация корня цепочки по отпечатку CA; ExtraStore + AllowUnknownCertificateAuthority, без revocation — внутренний контур): env `AWS_CA_BUNDLE` линейкой AWSSDK.Core 3.7.x не читается — эмпирический факт E2E t42 (строки в сборке отсутствуют; соединение без системного доверия даёт `PartialChain`) — spec §2 п.5/§5. `mc` (Go) — `SSL_CERT_FILE`.
 - Тесты: ТОЛЬКО динамические порты (`WithPortBinding(..., assignRandomHostPort: true)` / зонд свободных портов), полный teardown при любом исходе + ассерт чистоты, таймауты серий ≤ 100 с, никаких хардкод-портов (spec §5, AGENTS.md).
 - Матрица прав ownS3 (arch/owns3/05 §3) в тестах: CreateBucket/DeleteBucket — только admin/root-клиент; read-write (Writer) — объектные операции и multipart. Бакет-операции в SDK-сценариях делает Root/Admin-клиент по образцу `AwsSdkSimpleScenarios` (PutGet_Roundtrip: root создаёт бакет, writer пишет).
-- Инсталляция без `OWNS3_TLS_*` / без `PGW_BACKUP_S3_CA_BUNDLE_PATH` не меняет поведение ни на бит (spec §2 п.1, AC1/AC5).
+- Инсталляция без `OWNS3_TLS_*` / без `PGW_BACKUP_S3_CA_BUNDLE_PATH` не меняет поведение ни на бит: фабрика не ставится, env-набор джобов прежний (spec §2 п.1, AC1/AC5).
 - Один порт, один режим: без HTTP→HTTPS-редиректов, без второго порта, mTLS нет — `ClientCertificateMode` не трогаем (spec §1, §2 п.2, §3.1).
 - WAF-тесты ownS3 НЕ доводят исполнение до веток `Environment.Exit(1)` Program.cs (fail-fast режима/тома/TLS): под WebApplicationFactory top-level-код исполняется in-process, exit убьёт весь testhost. Ветки fail-fast Program проверяются docker-кейсом (шаг 5.4), юнитами покрыт сам резолвер (шаги 1.1/1.2).
 - Комментарии/документация — по-русски; идентификаторы — английские.
@@ -431,9 +432,9 @@ public static class OwnS3Tls
   (б) в секции PGW_BACKUP_* (после `#PGW_BACKUP_S3_ADVERTISED_ENDPOINT=`, строка 92) добавить:
   ```
   # Доверие CA при https S3-endpoint (t42, arch/19 §7): путь ca.pem ВНУТРИ контейнера
-  # воркера (ro-монтирование TLS-пакета установки, /tls/ca.pem). SDK воркера получает
-  # AWS_CA_BUNDLE, джобы/агенты — S3_CA_PEM; операторский mc — SSL_CERT_FILE=<ca.pem>.
-  # Стенд (http-endpoint) — не задавать.
+  # воркера (ro-монтирование TLS-пакета установки, /tls/ca.pem). SDK-клиент воркера —
+  # фабрика доверия из CaBundlePath (BackupS3), джобы/агенты — S3_CA_PEM;
+  # операторский mc — SSL_CERT_FILE=<ca.pem>. Стенд (http-endpoint) — не задавать.
   #PGW_BACKUP_S3_CA_BUNDLE_PATH=/tls/ca.pem
   ```
   Выход: инструкции на месте; стендовые сервисы не изменились.
@@ -452,22 +453,39 @@ public static class OwnS3Tls
 
 ---
 
-### Task 3: воркер — S3CaBundlePath и AWS_CA_BUNDLE процесса
+### Task 3: воркер — S3CaBundlePath, хелпер BackupCaPem, фабрика доверия S3CaHttpClientFactory
 
 **Вход:** Task 2 слит.
 
-**Выход:** конфиг `PgWorker:Backups:S3:CaBundlePath` (env `PGW_BACKUP_S3_CA_BUNDLE_PATH` через compose) → runtime-опция `S3CaBundlePath` → Program воркера выставляет `AWS_CA_BUNDLE` процессу до создания любых S3-клиентов. `BackupS3` не меняется.
+**Выход:** конфиг `PgWorker:Backups:S3:CaBundlePath` (env `PGW_BACKUP_S3_CA_BUNDLE_PATH` через compose) → runtime-опция `S3CaBundlePath`; `BackupS3` при заданном пути ставит SDK-фабрику HttpClient `S3CaHttpClientFactory` — валидация корня цепочки сервера по отпечатку per-install CA; путь не задан — фабрика не ставится, поведение прежнее. Program воркера env процесса НЕ трогает (механизм `AWS_CA_BUNDLE` не используется — линейкой AWSSDK.Core 3.7.x не читается, эмпирический факт E2E t42; spec §2 п.5/§5). Юниты (прокидывание опций, хелпер, фабрика) зелёные.
 
-**Спека:** §3.4 (воркер), AC5 (первая половина). Канон: arch/19 §7/§9.
+**Спека:** §3.4 (воркер: опции + фабрика в BackupS3), §2 п.5, §5 (механизм фабрики); AC5 (первая половина). Канон: arch/19 §7/§9.
 
 **Files:**
 - Modify: `src/PgWorker.Backups/Options.cs` — `BackupsRuntimeOptions` (строки 7–64).
+- Create: `src/PgWorker.Backups/BackupCaPem.cs`.
+- Create: `src/PgWorker.Backups/S3CaHttpClientFactory.cs`.
+- Modify: `src/PgWorker.Backups/BackupS3.cs` — конструктор ставит фабрику при `S3CaBundlePath`.
 - Modify: `src/PgWorker.App/Options.cs` — `BackupsS3Options` (строки 618–638) и `ToRuntime()` (строки 472–510).
-- Modify: `src/PgWorker.App/Program.cs` — после `DockerEnvBindings.ApplyRestTlsEnvOverrides(builder.Configuration);` (строка 40).
 - Modify: `deploy/docker-compose.yml` — `x-pgworker-env` (после строки 54).
-- Test: `src/tests/PgWorker.UnitTests/App/BackupsOptionsTests.cs` — дополнить.
+- Test: `src/tests/PgWorker.UnitTests/App/BackupsOptionsTests.cs` — дополнить; `src/tests/PgWorker.UnitTests/Backups/BackupCaPemTests.cs`, `src/tests/PgWorker.UnitTests/Backups/BackupS3CaTests.cs` — новые.
 
-**Interfaces (Produces):** `BackupsRuntimeOptions.S3CaBundlePath : string?` (null = http/прежде); `BackupsS3Options.CaBundlePath : string?`.
+**Interfaces (Produces):**
+```csharp
+namespace PgWorker.Backups;
+// BackupsRuntimeOptions.S3CaBundlePath : string? (null = http/прежде); BackupsS3Options.CaBundlePath : string?
+public static class BackupCaPem
+{
+    public const string EnvName = "S3_CA_PEM";
+    // null — путь не задан; нечитаемый/пустой файл — InvalidOperationException (диагностика с путём).
+    public static string? ReadIfConfigured(BackupsRuntimeOptions opts);
+}
+// Фабрика SDK-доверия CA: HttpClient с валидацией корня цепочки сервера по отпечатку CA.
+public static class S3CaHttpClientFactory
+{
+    public static HttpClient CreateHttpClient(X509Certificate2 ca);
+}
+```
 
 - [ ] **Шаг 3.1. Тест прокидывания (красный)**
 
@@ -494,97 +512,38 @@ public static class OwnS3Tls
   Проверка: `dotnet build src/tests/PgWorker.UnitTests -c Debug` (фон) → FAIL компиляции.
   Спека: §3.4 (поле S3CaBundlePath в опциях).
 
-- [ ] **Шаг 3.2. Реализация опций + AWS_CA_BUNDLE + compose**
+- [ ] **Шаг 3.2. Опции + хелпер BackupCaPem + compose**
 
   Действие:
   (а) `src/PgWorker.Backups/Options.cs` — в `BackupsRuntimeOptions` после `bool S3PathStyle = true,` добавить:
   ```csharp
   // t42 (arch/19 §7): путь ca.pem per-install CA — доверие https S3-endpoint;
-  // null — http-endpoint, поведение прежнее. Program воркера выставляет AWS_CA_BUNDLE.
+  // null — http-endpoint, поведение прежнее. BackupS3 при заданном пути ставит
+  // фабрику доверия S3CaHttpClientFactory (шаг 3.3).
   string? S3CaBundlePath = null,
   ```
   (б) `src/PgWorker.App/Options.cs` — в `BackupsS3Options` после `AdvertisedEndpoint` (строка 637):
   ```csharp
   /// <summary>Путь CA-bundle (ca.pem) для доверия https S3-endpoint (t42,
   /// arch/19 §7; env PGW_BACKUP_S3_CA_BUNDLE_PATH → compose-биндинг).
-  /// Пусто — http-endpoint, SDK-доверие системное.</summary>
+  /// Пусто — http-endpoint, фабрика доверия не ставится.</summary>
   public string? CaBundlePath { get; set; }
   ```
   в `ToRuntime()` после `S3PathStyle: S3.PathStyle,` добавить `S3CaBundlePath: S3.CaBundlePath,`.
-  (в) `src/PgWorker.App/Program.cs` — сразу после `DockerEnvBindings.ApplyRestTlsEnvOverrides(builder.Configuration);` (строка 40):
-  ```csharp
-  // Доверие CA https S3-endpoint (t42, arch/19 §7): AWS SDK читает AWS_CA_BUNDLE
-  // при создании клиента — выставляем ДО ленивых BackupS3-фабрик (EtcdSnapshotSink,
-  // ReloadableBackupS3). Env деплоя меняются recreate контейнера — хот-релоада пути нет.
-  var s3CaBundlePath = builder.Configuration["PgWorker:Backups:S3:CaBundlePath"];
-  if (!string.IsNullOrWhiteSpace(s3CaBundlePath))
-      Environment.SetEnvironmentVariable("AWS_CA_BUNDLE", s3CaBundlePath);
-  ```
-  (г) `deploy/docker-compose.yml` — в `x-pgworker-env` после строки `PgWorker__Backups__S3__AdvertisedEndpoint` (54) добавить:
-  ```yaml
-    # Доверие CA https S3-endpoint (t42, arch/19 §7): путь ca.pem в контейнере
-    # (ro-монтирование TLS-пакета, прод); пусто — http, прежнее поведение.
-    PgWorker__Backups__S3__CaBundlePath: ${PGW_BACKUP_S3_CA_BUNDLE_PATH:-}
-  ```
-  Выход: путь доходит до SDK без правки `BackupS3`.
-  Проверка (фон): `dotnet test src/tests/PgWorker.UnitTests -c Debug --filter FullyQualifiedName~BackupsOptionsTests` → PASS; `PGW_PG_SUPERUSER_PASSWORD=x PGW_PG_STANDBY_PASSWORD=x PGW_BUCKET_ADMIN_PASSWORD=x PGW_BUCKET_MOVER_PASSWORD=x OWNS3_ROOT_USER=x OWNS3_ROOT_PASSWORD=y docker compose -f deploy/docker-compose.yml config -q` → exit 0 (обязательные env-заглушки — см. примечание шага 2.2).
-  Спека: §3.4 (воркер), §2 п.5 (штатный механизм SDK), AC5.
-
-- [ ] **Шаг 3.3. Коммит**
-
-  Действие:
-  ```bash
-  git add src/PgWorker.Backups/Options.cs src/PgWorker.App/Options.cs src/PgWorker.App/Program.cs deploy/docker-compose.yml src/tests/PgWorker.UnitTests/App/BackupsOptionsTests.cs
-  git commit -m "t42: воркер — PgWorker:Backups:S3:CaBundlePath → AWS_CA_BUNDLE процесса"
-  ```
-  Проверка: `git status --porcelain` → пусто.
-  Спека: фаза 4 (часть «воркер»).
-
----
-
-### Task 4: S3_CA_PEM — спеки джобов, агент, приёмник, bash-материализация
-
-**Вход:** Task 3 слит (`S3CaBundlePath` в runtime-опциях).
-
-**Выход:** все контейнеры бэкапов (джоб полного, verify, restore, drill, wal-агент, приёмник) получают env `S3_CA_PEM` при заданном `S3CaBundlePath` и НЕ получают без него (env-диф прежний); bash-скрипты/скрипты команд материализуют PEM → файл + `SSL_CERT_FILE` (mc) / `AWS_CA_BUNDLE` (SDK приёмника).
-
-**Спека:** §3.4 (агенты/джобы), §2 п.6 (multi-host: PEM значением); AC5 (вторая половина). Канон: arch/19 §7.
-
-**Files:**
-- Create: `src/PgWorker.Backups/BackupCaPem.cs`.
-- Modify: `src/PgWorker.Backups/Job/BackupJobSpec.cs`, `Job/VerifyJobSpec.cs`, `Restore/RestoreJobSpec.cs`, `Drill/DrillJobSpec.cs`, `WalStreamProcess.cs` (AgentEnv, строки 451–474), `VerifyJobCommand.cs` (script), `Restore/RestoreJobCommand.cs` (Script), `docker/backup/entrypoint.sh`.
-- Modify: `src/PgWorker.WalReceiver/WalReceiverOptions.cs`, `Program.cs`.
-- Test: `src/tests/PgWorker.UnitTests/Backups/BackupCaPemTests.cs` (новый) + дополнить `BackupJobSpecTests.cs` (полный джоб И verify-спека — verify-тесты живут в этом файле, отдельного `VerifyJobSpecTests.cs` в репо нет), `RestoreJobSpecTests.cs`, `DrillJobSpecTests.cs`, `WalReceiverOptionsTests.cs`, `WalAgentFactsTests.cs`.
-
-**Interfaces (Produces):**
-```csharp
-namespace PgWorker.Backups;
-public static class BackupCaPem
-{
-    public const string EnvName = "S3_CA_PEM";
-    // null — путь не задан; нечитаемый/пустой файл — InvalidOperationException.
-    public static string? ReadIfConfigured(BackupsRuntimeOptions opts);
-}
-```
-`WalReceiverOptions.S3CaPem : string?` (env `S3_CA_PEM`, опциональный).
-
-- [ ] **Шаг 4.1. Хелпер + его тест**
-
-  Действие: создать `src/PgWorker.Backups/BackupCaPem.cs`:
+  (в) Создать `src/PgWorker.Backups/BackupCaPem.cs` — чтение CA-PEM для фабрики и проброса в контейнеры (используется и шагом 3.3, и Task 4):
   ```csharp
   namespace PgWorker.Backups;
 
-  /// <summary>Материал CA https S3-endpoint для контейнеров джобов/агентов
-  /// (t42, arch/19 §7): файл CA хоста воркера в мульти-хост контейнерам недоступен —
-  /// PEM передаётся значением env S3_CA_PEM и материализуется внутри контейнера
-  /// (mc — SSL_CERT_FILE, AWS SDK — AWS_CA_BUNDLE). null — путь не задан
-  /// (http-endpoint, прежний env-набор).</summary>
+  /// <summary>Материал CA https S3-endpoint (t42, arch/19 §7): воркер читает
+  /// ca.pem по S3CaBundlePath (фабрика доверия — шаг BackupS3, проброс в
+  /// контейнеры — env S3_CA_PEM значением PEM, multi-host). null — путь не
+  /// задан (http-endpoint, прежний env-набор).</summary>
   public static class BackupCaPem
   {
       public const string EnvName = "S3_CA_PEM";
 
       /// <summary>null — CaBundlePath не задан; нечитаемый/пустой файл — исключение
-      /// (спека джоба/тик воркера падает с диагностикой, а не молча без доверия CA).</summary>
+      /// (фабрика/спека джоба падает с диагностикой, а не молча без доверия CA).</summary>
       public static string? ReadIfConfigured(BackupsRuntimeOptions opts)
       {
           if (string.IsNullOrWhiteSpace(opts.S3CaBundlePath))
@@ -613,7 +572,7 @@ public static class BackupCaPem
 
   namespace PgWorker.UnitTests.Backups;
 
-  // CA-PEM для контейнеров (t42, arch/19 §7): без пути — null; файл — Trim-PEM;
+  // CA-PEM (t42, arch/19 §7): без пути — null; файл — Trim-PEM;
   // нет файла/пустой — исключение с путём в диагностике.
   public class BackupCaPemTests
   {
@@ -654,11 +613,79 @@ public static class BackupCaPem
       }
   }
   ```
-  Выход: хелпер с тестами.
-  Проверка: `dotnet test src/tests/PgWorker.UnitTests -c Debug --filter FullyQualifiedName~BackupCaPemTests` (фон) → PASS (4).
-  Спека: §3.4, §2 п.6.
+  (г) `deploy/docker-compose.yml` — в `x-pgworker-env` после строки `PgWorker__Backups__S3__AdvertisedEndpoint` (54) добавить:
+  ```yaml
+    # Доверие CA https S3-endpoint (t42, arch/19 §7): путь ca.pem в контейнере
+    # (ro-монтирование TLS-пакета, прод) — SDK-клиент воркера строит фабрику
+    # доверия из CaBundlePath (BackupS3); пусто — http, прежнее поведение.
+    PgWorker__Backups__S3__CaBundlePath: ${PGW_BACKUP_S3_CA_BUNDLE_PATH:-}
+  ```
+  Выход: путь доходит до runtime-опций; хелпер чтения с диагностикой.
+  Проверка (фон): `dotnet test src/tests/PgWorker.UnitTests -c Debug --filter "FullyQualifiedName~BackupsOptionsTests|FullyQualifiedName~BackupCaPemTests"` → PASS; `PGW_PG_SUPERUSER_PASSWORD=x PGW_PG_STANDBY_PASSWORD=x PGW_BUCKET_ADMIN_PASSWORD=x PGW_BUCKET_MOVER_PASSWORD=x OWNS3_ROOT_USER=x OWNS3_ROOT_PASSWORD=y docker compose -f deploy/docker-compose.yml config -q` → exit 0 (обязательные env-заглушки — см. примечание шага 2.2).
+  Спека: §3.4 (опции, BackupCaPem), AC5.
 
-- [ ] **Шаг 4.2. Спеки джобов и AgentEnv передают S3_CA_PEM (тест → код)**
+- [ ] **Шаг 3.3. Фабрика доверия S3CaHttpClientFactory + BackupS3 (тест → код)**
+
+  Действие (код): создать `src/PgWorker.Backups/S3CaHttpClientFactory.cs` — программное SDK-доверие per-install CA (spec §2 п.5/§5, arch/19 §7):
+  ```csharp
+  // Фабрика HttpClient для AWS SDK (t42, arch/19 §7): HttpClientHandler с
+  // ServerCertificateCustomValidationCallback — строится цепочка серверного
+  // сертификата (leaf, ExtraStore=[CA], AllowUnknownCertificateAuthority, без
+  // revocation — внутренний контур) и корень цепочки сверяется с отпечатком
+  // (SHA256) per-install CA; macOS без стора строит цепочку leaf-only —
+  // эмпирика E2E t42, сверка идёт по элементам цепочки. env AWS_CA_BUNDLE
+  // линейкой AWSSDK.Core 3.7.x не читается — потому фабрика, а не env.
+  public static HttpClient CreateHttpClient(X509Certificate2 ca) { ... }
+  ```
+  (Тело — `HttpClientHandler` + callback сверки отпечатка; полный код — по фактической реализации ветки, юниты ниже фиксируют контракт.)
+  В `src/PgWorker.Backups/BackupS3.cs` — в конструкторе, при `options.S3CaBundlePath is { Length: > 0 }`:
+  ```csharp
+  // Доверие CA https S3-endpoint (t42, arch/19 §7): фабрика ставится ТОЛЬКО при
+  // заданном CaBundlePath (без пути — прежнее поведение); CA читает BackupCaPem
+  // (нечитаемый/пустой файл — исключение с диагностикой старта/фабрики).
+  var caPem = BackupCaPem.ReadIfConfigured(options);
+  if (caPem is not null)
+      config.HttpClientFactory = new S3CaHttpClientFactoryHolder(
+          Shared.Tls.TlsMaterial.LoadPem(caPem));
+  ```
+  (обёртка-держатель `S3CaHttpClientFactoryHolder : IHttpClientFactory` — `CreateHttpClient` SDK; CA — `TlsMaterial.LoadPem(BackupCaPem.ReadIfConfigured(options))`).
+  Действие (тесты): `src/tests/PgWorker.UnitTests/Backups/BackupS3CaTests.cs` — кейсы (AAA):
+  - `Factory_TrustedServerCert_Accepted`: тестовая CA (RSA, self-signed) + серверный серт, подписанный ею (`CertificateRequest` + `Create`, образец NewPki шага 5.1) — валидация фабрики принимает цепочку;
+  - `Factory_ForeignCA_Rejected`: серверный серт ДРУГОЙ CA — валидация отклоняет (отпечаток не совпал);
+  - `BackupS3_CaBundlePathSet_FabrikaСтавится`: конструктор `BackupS3` с `S3CaBundlePath` → файл-CA — исключения нет (фабрика собрана); нечитаемый путь — `InvalidOperationException` с диагностикой `BackupCaPem`;
+  - `BackupS3_WithoutCaBundle_Обычное поведение`: путь null — конструктор без фабрики (наблюдаемо: клиент создаётся, исключений нет).
+  Выход: SDK-доверие CA программной фабрикой; без пути — прежнее поведение.
+  Проверка: `dotnet test src/tests/PgWorker.UnitTests -c Debug --filter FullyQualifiedName~BackupS3CaTests` (фон) → PASS.
+  Спека: §3.4 (BackupS3 — фабрика S3CaHttpClientFactory), §5 (механизм: отпечаток, ExtraStore, без revocation), AC5 (юниты фабрики).
+
+- [ ] **Шаг 3.4. Коммит**
+
+  Действие:
+  ```bash
+  git add src/PgWorker.Backups src/PgWorker.App/Options.cs deploy/docker-compose.yml src/tests/PgWorker.UnitTests
+  git commit -m "t42: воркер — CaBundlePath + фабрика доверия S3CaHttpClientFactory в BackupS3"
+  ```
+  Проверка: `git status --porcelain` → пусто.
+  Спека: фаза 4 (часть «воркер»).
+
+---
+
+### Task 4: S3_CA_PEM — спеки джобов, агент, приёмник, bash-материализация
+
+**Вход:** Task 3 слит (`S3CaBundlePath` + `BackupCaPem` + фабрика в `BackupS3`).
+
+**Выход:** все контейнеры бэкапов (джоб полного, verify, restore, drill, wal-агент, приёмник) получают env `S3_CA_PEM` при заданном `S3CaBundlePath` и НЕ получают без него (env-диф прежний); bash-скрипты/скрипты команд материализуют PEM → файл + `SSL_CERT_FILE` (mc); WalReceiver материализует PEM → файл → `S3CaBundlePath` (SDK-клиент приёмника — та же фабрика доверия из Task 3).
+
+**Спека:** §3.4 (агенты/джобы), §2 п.6 (multi-host: PEM значением); AC5 (вторая половина). Канон: arch/19 §7.
+
+**Files:**
+- Modify: `src/PgWorker.Backups/Job/BackupJobSpec.cs`, `Job/VerifyJobSpec.cs`, `Restore/RestoreJobSpec.cs`, `Drill/DrillJobSpec.cs`, `WalStreamProcess.cs` (AgentEnv, строки 451–474), `VerifyJobCommand.cs` (script), `Restore/RestoreJobCommand.cs` (Script), `docker/backup/entrypoint.sh`.
+- Modify: `src/PgWorker.WalReceiver/WalReceiverOptions.cs`, `Program.cs`.
+- Test: дополнить `BackupJobSpecTests.cs` (полный джоб И verify-спека — verify-тесты живут в этом файле, отдельного `VerifyJobSpecTests.cs` в репо нет), `RestoreJobSpecTests.cs`, `DrillJobSpecTests.cs`, `WalReceiverOptionsTests.cs`, `WalAgentFactsTests.cs`.
+
+**Interfaces (Produces):** env-контракт `S3_CA_PEM` (источник имени — `BackupCaPem.EnvName`, Task 3); `WalReceiverOptions.S3CaPem : string?` (env `S3_CA_PEM`, опциональный).
+
+- [ ] **Шаг 4.1. Спеки джобов и AgentEnv передают S3_CA_PEM (тест → код)**
 
   Действие (тесты): дополнить по паре кейсов (с заданным `S3CaBundlePath` → env несёт PEM-значение; без — ключа нет, юнит-диф AC5) в `BackupJobSpecTests.cs` — ДВЕ пары: для `BackupJobSpec.Build` и для `VerifyJobSpec.Build` (verify-спека тестируется этим же файлом — отдельного `VerifyJobSpecTests.cs` нет), и по одной паре в `RestoreJobSpecTests.cs`, `DrillJobSpecTests.cs`; плюс `WalAgentFactsTests.cs` для `AgentEnv`. Общий паттерн (пример для BackupJobSpecTests):
   ```csharp
@@ -727,7 +754,7 @@ public static class BackupCaPem
   Проверка: `dotnet test src/tests/PgWorker.UnitTests -c Debug --filter "FullyQualifiedName~JobSpecTests|FullyQualifiedName~WalAgentFactsTests"` (фон) → PASS.
   Спека: §3.4 (спеки джобов/агентов), AC5 (юнит-диф).
 
-- [ ] **Шаг 4.3. Bash-материализация: entrypoint.sh + VerifyJobCommand + RestoreJobCommand**
+- [ ] **Шаг 4.2. Bash-материализация: entrypoint.sh + VerifyJobCommand + RestoreJobCommand**
 
   Действие:
   (а) `docker/backup/entrypoint.sh` — после `set -u` (строка 5) добавить:
@@ -758,13 +785,13 @@ public static class BackupCaPem
   Проверка: `dotnet test src/tests/PgWorker.UnitTests -c Debug --filter "FullyQualifiedName~VerifyJobCommandTests|FullyQualifiedName~RestoreJobCommandTests"` (фон) → PASS.
   Спека: §3.4 (entrypoint, verify/restore/drill-команды).
 
-- [ ] **Шаг 4.4. WalReceiver: S3_CA_PEM → файл → AWS_CA_BUNDLE**
+- [ ] **Шаг 4.3. WalReceiver: S3_CA_PEM → файл → S3CaBundlePath (фабрика Task 3)**
 
   Действие:
   (а) `src/PgWorker.WalReceiver/WalReceiverOptions.cs` — в record после `bool S3PathStyle`:
   ```csharp
   // t42 (arch/19 §7): PEM CA https S3-endpoint (материализуется Program приёмника
-  // в файл + AWS_CA_BUNDLE SDK); null — http-endpoint.
+  // в файл → S3CaBundlePath; SDK-клиент приёмника — фабрика из Task 3); null — http-endpoint.
   string? S3CaPem = null);
   ```
   в `WalReceiverEnv.Parse` после `var s3SecretKey = Require("S3_SECRET_KEY");`:
@@ -772,18 +799,31 @@ public static class BackupCaPem
   var s3CaPem = env("S3_CA_PEM"); // опциональный (t42): отсутствие — http-endpoint
   ```
   и в конструктор результата: `..., s3PathStyle, string.IsNullOrWhiteSpace(s3CaPem) ? null : s3CaPem);` (порядок аргументов — по позиции нового поля).
-  (б) `src/PgWorker.WalReceiver/Program.cs` — после Parse/валидации, ПЕРЕД `new BackupS3(...)`:
+  (б) `src/PgWorker.WalReceiver/Program.cs` — после Parse/валидации, ПЕРЕД `new BackupS3(...)`: PEM материализуется в файл и передаётся как `S3CaBundlePath` — `BackupS3` приёмника ставит ту же фабрику доверия (`S3CaHttpClientFactory`, Task 3); env `AWS_CA_BUNDLE` НЕ используется (линейкой AWSSDK.Core 3.7.x не читается, spec §5):
   ```csharp
   // Доверие CA https S3-endpoint (t42, arch/19 §7): PEM материализуется в файл
-  // (multi-host: файла хоста в контейнере нет) и выставляется SDK ДО создания
-  // BackupS3 — AWS SDK читает AWS_CA_BUNDLE при создании клиента.
+  // (multi-host: файла хоста воркера в контейнере нет) и передаётся как
+  // S3CaBundlePath — BackupS3 приёмника ставит фабрику S3CaHttpClientFactory.
+  string? caBundlePath = null;
   if (options.S3CaPem is { Length: > 0 })
   {
-      var caPath = Path.Combine(Path.GetTempPath(), $"s3-ca-{Guid.NewGuid():N}.pem");
-      await File.WriteAllTextAsync(caPath, options.S3CaPem + "\n", cts.Token);
-      Environment.SetEnvironmentVariable("AWS_CA_BUNDLE", caPath);
+      caBundlePath = Path.Combine(Path.GetTempPath(), $"s3-ca-{Guid.NewGuid():N}.pem");
+      await File.WriteAllTextAsync(caBundlePath, options.S3CaPem + "\n", cts.Token);
   }
+
+  // BackupS3 из S3-полей приёмника (реюз математики/клиента Backups);
+  // S3CaBundlePath — путь материализованного CA (фабрика доверия).
+  var s3Options = new BackupsRuntimeOptions(
+      S3Endpoint: options.S3Endpoint,
+      S3Region: options.S3Region,
+      S3Bucket: options.S3Bucket,
+      S3AccessKey: options.S3AccessKey,
+      S3SecretKey: options.S3SecretKey,
+      S3PathStyle: options.S3PathStyle,
+      S3CaBundlePath: caBundlePath);
+  await using var s3 = new BackupS3(s3Options);
   ```
+  (заменяет прежний блок `Environment.SetEnvironmentVariable("AWS_CA_BUNDLE", ...)` — фактическая реализация ветки).
   (в) Тесты `WalReceiverOptionsTests.cs`:
   ```csharp
   // AAA: S3_CA_PEM опционален — без него S3CaPem null (http-endpoint, прежний контракт)
@@ -802,16 +842,16 @@ public static class BackupCaPem
       parsed!.S3CaPem.Should().Be("PEM-BODY");
   }
   ```
-  Выход: приёмник доверяет CA без правки `BackupS3`/`WalReceiverCore`.
+  Выход: приёмник доверяет CA той же фабрикой, что и воркер (без правки `WalReceiverCore`).
   Проверка: `dotnet test src/tests/PgWorker.UnitTests -c Debug --filter FullyQualifiedName~WalReceiverOptionsTests` (фон) → PASS.
-  Спека: §3.4 (WalStreamProcess.AgentEnv + WalReceiver).
+  Спека: §3.4 (WalStreamProcess.AgentEnv + WalReceiver — та же фабрика доверия).
 
-- [ ] **Шаг 4.5. Полные юниты + коммит**
+- [ ] **Шаг 4.4. Полные юниты + коммит**
 
   Действие: `dotnet test src/tests/PgWorker.UnitTests -c Debug` (фон) → PASS целиком.
   ```bash
   git add src/PgWorker.Backups src/PgWorker.WalReceiver docker/backup/entrypoint.sh src/tests/PgWorker.UnitTests
-  git commit -m "t42: S3_CA_PEM — проброс CA в джобы/агенты/приёмник, материализация SSL_CERT_FILE/AWS_CA_BUNDLE"
+  git commit -m "t42: S3_CA_PEM — проброс CA в джобы/агенты/приёмник, материализация SSL_CERT_FILE/CaBundlePath"
   ```
   Проверка: `git status --porcelain` → пусто; юниты зелёные.
   Спека: фаза 4 закрыта.
@@ -822,16 +862,16 @@ public static class BackupCaPem
 
 **Вход:** Tasks 1–4 слиты; образ `owns3:e2e` несёт TLS-код (`OwnS3E2eImage.BuildOnceAsync` соберёт из текущего кода).
 
-**Выход:** `src/tests/OwnS3.IntegrationTests/E2e` — TLS-серия: собственный контур (своя CA+серт `CertificateRequest` на хосте теста, SAN localhost/127.0.0.1/имя контейнера; ro bind-mount сертов; динамический порт), SDK-smoke с `AWS_CA_BUNDLE` (бакет-операции — root-клиент, объектные — writer, по матрице прав arch/owns3/05 §3), `mc` с `SSL_CERT_FILE`, негативные кейсы (клиент без доверия; HTTP на HTTPS-порт; docker-кейс fail-fast — контейнер с одним `OWNS3_TLS_CERT` умирает с exit ≠ 0 и Critical-диагностикой), полный teardown + ассерт чистоты.
+**Выход:** `src/tests/OwnS3.IntegrationTests/E2e` — TLS-серия: собственный контур (своя CA+серт `CertificateRequest` на хосте теста, SAN localhost/127.0.0.1/имя контейнера; ro bind-mount сертов; динамический порт), SDK-smoke с per-install CA тестовым зерналом фабрики воркера (`TlsCaHttpClientFactory`, тот же механизм — spec §3.5; бакет-операции — root-клиент, объектные — writer, по матрице прав arch/owns3/05 §3), `mc` с `SSL_CERT_FILE`, негативные кейсы (клиент без доверия; HTTP на HTTPS-порт; docker-кейс fail-fast — контейнер с одним `OWNS3_TLS_CERT` умирает с exit ≠ 0 и Critical-диагностикой), полный teardown + ассерт чистоты.
 
-**Спека:** §3.5 (E2E), AC2, AC3 (docker-ветка Program), AC7. Канон: docs/e2e-isolation.md, docs/e2e-launch.md, AGENTS.md (E2E-правила).
+**Спека:** §3.5 (E2E, вкл. «SDK с per-install CA — программная валидация цепочки, тот же механизм, что у фабрики воркера»), AC2, AC3 (docker-ветка Program), AC7. Канон: docs/e2e-isolation.md, docs/e2e-launch.md, AGENTS.md (E2E-правила).
 
 **Files:**
 - Create: `src/tests/OwnS3.IntegrationTests/E2e/OwnS3TlsE2eEnvironment.cs`, `AwsSdkTlsScenarios.cs`, `McTlsScenarios.cs`, `TlsNegativeScenarios.cs`.
 
-**Interfaces (Consumes):** `OwnS3E2eImage.BuildOnceAsync(artifactsDir, ct)` (общая сборка образа), `OwnS3E2eClients.CreateS3(baseUrl, …)` — private-перегрузка по baseUrl: для TLS сделать публичную обёртку (шаг 5.1), `DockerTrait.SkipIfUnavailable()`, коллекция `OwnS3E2eCollection.Name` (последовательность с HTTP-сериями → управление env-процесса безопасно).
+**Interfaces (Consumes):** `OwnS3E2eImage.BuildOnceAsync(artifactsDir, ct)` (общая сборка образа), `DockerTrait.SkipIfUnavailable()`, коллекция `OwnS3E2eCollection.Name` (последовательность серий).
 
-- [ ] **Шаг 5.1. TLS-окружение E2E**
+- [ ] **Шаг 5.1. TLS-окружение E2E + тестовое зеркало фабрики**
 
   Действие: создать `OwnS3TlsE2eEnvironment.cs` по образцу `OwnS3E2eEnvironment` (скопировать каркас: runId/os3-en-/os3-vd-/os3-es- префиксы, [PHASE]-телеметрия, MarkFailed/README-cleanup, retry×3, teardown-ассерты own-only — строки 27–404 эталона).
 
@@ -867,90 +907,88 @@ public static class BackupCaPem
       return (ca.ExportCertificatePem(), srv.ExportCertificatePem(), srvRsa.ExportPkcs8PrivateKeyPem());
   }
   ```
-  Контейнер: `WithBindMount(tlsDir, "/tls", AccessMode.ReadOnly)` — ro bind-mount каталога сертов (spec §3.5: «файлы — ro bind-mount»; `AccessMode` из `DotNet.Testcontainers.Builders`, трёхаргументная перегрузка), env `OWNS3_TLS_CERT_PATH=/tls/server.crt`, `OWNS3_TLS_KEY_PATH=/tls/server.key` (+root-пара/ключи как в эталоне) — тем самым env-биндинги `OWNS3_TLS_*_PATH` (spec §3.5) проверяются end-to-end именно здесь. Готовность — БЕЗ http-wait: после `StartAsync` поллить `/healthz` своим HttpClient с доверенным CA (новый `SocketsHttpHandler` + `SslClientAuthenticationOptions` с `RemoteCertificateValidationCallback` сверкой отпечатка CA) — бюджет 30 с, полл 1 с. Публичные члены: `S3BaseUrl => $"https://localhost:{_hostPort}"`, `S3InternalUrl => $"https://{_containerName}:9000"`, `CaPemPath` (файл ca.pem в tlsDir — для mc bind-mount), `CaPem` (строка — для AWS_CA_BUNDLE). Каталог PKI живёт в `ArtifactsDir` и удаляется teardown'ом (в список README-cleanup).
-  В `OwnS3E2eClients.cs` добавить публичную фабрику для произвольного https-baseUrl:
+  Контейнер: `WithBindMount(tlsDir, "/tls", AccessMode.ReadOnly)` — ro bind-mount каталога сертов (spec §3.5: «файлы — ro bind-mount»; `AccessMode` из `DotNet.Testcontainers.Builders`, трёхаргументная перегрузка), env `OWNS3_TLS_CERT_PATH=/tls/server.crt`, `OWNS3_TLS_KEY_PATH=/tls/server.key` (+root-пара/ключи как в эталоне) — тем самым env-биндинги `OWNS3_TLS_*_PATH` (spec §3.5) проверяются end-to-end именно здесь. Готовность — БЕЗ http-wait: после `StartAsync` поллить `/healthz` своим HttpClient с доверенным CA (новый `SocketsHttpHandler` + `SslClientAuthenticationOptions` с `RemoteCertificateValidationCallback` сверкой отпечатка CA) — бюджет 30 с, полл 1 с. Публичные члены: `S3BaseUrl => $"https://localhost:{_hostPort}"`, `S3InternalUrl => $"https://{_containerName}:9000"`, `CaPemPath` (файл ca.pem в tlsDir — для mc bind-mount), `CaPem` (PEM-строка — для тестовой фабрики доверия SDK). Каталог PKI живёт в `ArtifactsDir` и удаляется teardown'ом (в список README-cleanup).
+  Тестовое зеркало фабрики воркера — в `OwnS3E2eClients.cs` публичная фабрика для TLS-окружения (spec §3.5: «тот же механизм, что у фабрики воркера»; фактическая реализация ветки — `TlsCaHttpClientFactory`):
   ```csharp
-  /// <summary>TLS-окружение (t42): клиент против https-грани; доверие CA — env
-  /// AWS_CA_BUNDLE процесса (выставляет сценарий), как у воркера бэкапов.</summary>
+  /// <summary>TLS-окружение (t42): клиент против https-грани; доверие CA —
+  /// тестовое зеркало фабрики воркера (TlsCaHttpClientFactory: валидация корня
+  /// цепочки по отпечатку CA — тот же механизм, что S3CaHttpClientFactory
+  /// BackupS3; env AWS_CA_BUNDLE SDK 3.7.x не читается — spec §3.5/§5).</summary>
   public static IAmazonS3 CreateS3(OwnS3TlsE2eEnvironment fx, OwnS3Role role,
       OwnS3ChecksumMode checksum = OwnS3ChecksumMode.WhenRequired)
-      => CreateS3(fx.S3BaseUrl, role, checksum);
+  {
+      // те же параметры, что private CreateS3(baseUrl, …): ServiceURL=fx.S3BaseUrl,
+      // ForcePathStyle, us-east-1, таймаут, checksum-режим — плюс:
+      // config.HttpClientFactory = TlsCaHttpClientFactory из fx.CaPem;
+  }
   ```
-  Выход: переиспользуемый TLS-контур с ro-монтированием сертов.
+  Выход: переиспользуемый TLS-контур с ro-монтированием сертов; SDK-доверие — зеркалом фабрики воркера.
   Проверка: `dotnet build src/tests/OwnS3.IntegrationTests -c Debug` (фон) → 0 errors.
-  Спека: §3.5 (контур, CA/серт теста, ro bind-mount, динамический порт, env-биндинги OWNS3_TLS_*).
+  Спека: §3.5 (контур, CA/серт теста, ro bind-mount, динамический порт, env-биндинги OWNS3_TLS_*, SDK — тот же механизм фабрики).
 
 - [ ] **Шаг 5.2. SDK TLS-smoke**
 
-  Действие: `AwsSdkTlsScenarios.cs` (`[Collection(OwnS3E2eCollection.Name)]`, `DockerTrait.SkipIfUnavailable()`). Роли по матрице arch/owns3/05 §3 (образец эталона `AwsSdkSimpleScenarios.PutGet_Roundtrip`: root-клиент создаёт бакет, writer — объектные операции; CreateBucket/DeleteBucket для read-write запрещены):
+  Действие: `AwsSdkTlsScenarios.cs` (`[Collection(OwnS3E2eCollection.Name)]`, `DockerTrait.SkipIfUnavailable()`). Роли по матрице arch/owns3/05 §3 (образец эталона `AwsSdkSimpleScenarios.PutGet_Roundtrip`: root-клиент создаёт бакет, writer — объектные операции; CreateBucket/DeleteBucket для read-write запрещены). Доверие CA — фабрика из шага 5.1 внутри `CreateS3(fx, …)` (без управления env процесса):
   ```csharp
   // AAA: полный smoke по https — put/get/head/list/multipart + /healthz;
-  // доверие — AWS_CA_BUNDLE (механизм SDK воркера бэкапов, t42 AC2).
+  // доверие — тестовое зеркало фабрики воркера (TlsCaHttpClientFactory — тот же
+  // механизм, что S3CaHttpClientFactory BackupS3; t42 AC2, spec §3.5).
   // Бакет создаёт/удаляет root (матрица 05 §3), объекты/multipart — writer.
   [Fact]
-  public async Task Sdk_СA_Bundle_ПолныйSmoke()
+  public async Task Sdk_CaFabrika_ПолныйSmoke()
   {
       DockerTrait.SkipIfUnavailable();
       var ct = TestContext.Current.CancellationToken;
       await OwnS3TlsE2eEnvironment.RunScenarioAsync("t1", async fx =>
       {
-          var prev = Environment.GetEnvironmentVariable("AWS_CA_BUNDLE");
-          Environment.SetEnvironmentVariable("AWS_CA_BUNDLE", fx.CaPemPath);
-          try
-          {
-              using var root = OwnS3E2eClients.CreateS3(fx, OwnS3Role.Root);
-              using var s3 = OwnS3E2eClients.CreateS3(fx, OwnS3Role.Writer);
-              var bucket = $"os3e2e{fx.RunTag}tls";
-              await root.PutBucketAsync(new PutBucketRequest { BucketName = bucket }, ct);
-              var body = OwnS3E2eBytes.Deterministic(256 * 1024, 42);
-              await s3.PutObjectAsync(new PutObjectRequest
-              { BucketName = bucket, Key = "smoke.bin", InputStream = new MemoryStream(body) }, ct);
+          using var root = OwnS3E2eClients.CreateS3(fx, OwnS3Role.Root);
+          using var s3 = OwnS3E2eClients.CreateS3(fx, OwnS3Role.Writer);
+          var bucket = $"os3e2e{fx.RunTag}tls";
+          await root.PutBucketAsync(new PutBucketRequest { BucketName = bucket }, ct);
+          var body = OwnS3E2eBytes.Deterministic(256 * 1024, 42);
+          await s3.PutObjectAsync(new PutObjectRequest
+          { BucketName = bucket, Key = "smoke.bin", InputStream = new MemoryStream(body) }, ct);
 
-              // GET: чтение тела — MemoryStream + CopyToAsync (эталон AwsSdkSimpleScenarios:83–86)
-              using var get = await s3.GetObjectAsync(
-                  new GetObjectRequest { BucketName = bucket, Key = "smoke.bin" }, ct);
-              using var ms = new MemoryStream();
-              await get.ResponseStream.CopyToAsync(ms, ct);
-              ms.ToArray().Should().Equal(body, "GET возвращает байты PUT без искажений");
+          // GET: чтение тела — MemoryStream + CopyToAsync (эталон AwsSdkSimpleScenarios:83–86)
+          using var get = await s3.GetObjectAsync(
+              new GetObjectRequest { BucketName = bucket, Key = "smoke.bin" }, ct);
+          using var ms = new MemoryStream();
+          await get.ResponseStream.CopyToAsync(ms, ct);
+          ms.ToArray().Should().Equal(body, "GET возвращает байты PUT без искажений");
 
-              // HEAD — GetObjectMetadataRequest с BucketName+Key (эталон, строки 93–95)
-              (await s3.GetObjectMetadataAsync(
+          // HEAD — GetObjectMetadataRequest с BucketName+Key (эталон, строки 93–95)
+          (await s3.GetObjectMetadataAsync(
                   new GetObjectMetadataRequest { BucketName = bucket, Key = "smoke.bin" }, ct))
-                  .ContentLength.Should().Be(256 * 1024);
-              (await s3.ListObjectsV2Async(new ListObjectsV2Request { BucketName = bucket }, ct))
-                  .S3Objects.Should().Contain(o => o.Key == "smoke.bin");
+              .ContentLength.Should().Be(256 * 1024);
+          (await s3.ListObjectsV2Async(new ListObjectsV2Request { BucketName = bucket }, ct))
+              .S3Objects.Should().Contain(o => o.Key == "smoke.bin");
 
-              // multipart (2 части × 5 МиБ) — writer: read-write имеет право (05 §3)
-              var upload = await s3.InitiateMultipartUploadAsync(
-                  new InitiateMultipartUploadRequest { BucketName = bucket, Key = "mp.bin" }, ct);
-              var parts = new List<PartETag>();
-              for (var i = 1; i <= 2; i++)
-              {
-                  var resp = await s3.UploadPartAsync(new UploadPartRequest
-                  {
-                      BucketName = bucket, Key = "mp.bin", UploadId = upload.UploadId, PartNumber = i,
-                      InputStream = new MemoryStream(OwnS3E2eBytes.Deterministic(5 * 1024 * 1024, i)),
-                  }, ct);
-                  parts.Add(new PartETag { PartNumber = i, ETag = resp.ETag });
-              }
-              await s3.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
-              { BucketName = bucket, Key = "mp.bin", UploadId = upload.UploadId, PartETags = parts }, ct);
-
-              await s3.DeleteObjectAsync(new DeleteObjectRequest { BucketName = bucket, Key = "smoke.bin" }, ct);
-              await s3.DeleteObjectAsync(new DeleteObjectRequest { BucketName = bucket, Key = "mp.bin" }, ct);
-              await root.DeleteBucketAsync(new DeleteBucketRequest { BucketName = bucket }, ct);
-              // /healthz по https доверенным HttpClient (хелпер окружения шага 5.1)
-              (await fx.HealthzAsync(ct)).Should().BeTrue();
-          }
-          finally
+          // multipart (2 части × 5 МиБ) — writer: read-write имеет право (05 §3)
+          var upload = await s3.InitiateMultipartUploadAsync(
+              new InitiateMultipartUploadRequest { BucketName = bucket, Key = "mp.bin" }, ct);
+          var parts = new List<PartETag>();
+          for (var i = 1; i <= 2; i++)
           {
-              Environment.SetEnvironmentVariable("AWS_CA_BUNDLE", prev);
+              var resp = await s3.UploadPartAsync(new UploadPartRequest
+              {
+                  BucketName = bucket, Key = "mp.bin", UploadId = upload.UploadId, PartNumber = i,
+                  InputStream = new MemoryStream(OwnS3E2eBytes.Deterministic(5 * 1024 * 1024, i)),
+              }, ct);
+              parts.Add(new PartETag { PartNumber = i, ETag = resp.ETag });
           }
+          await s3.CompleteMultipartUploadAsync(new CompleteMultipartUploadRequest
+          { BucketName = bucket, Key = "mp.bin", UploadId = upload.UploadId, PartETags = parts }, ct);
+
+          await s3.DeleteObjectAsync(new DeleteObjectRequest { BucketName = bucket, Key = "smoke.bin" }, ct);
+          await s3.DeleteObjectAsync(new DeleteObjectRequest { BucketName = bucket, Key = "mp.bin" }, ct);
+          await root.DeleteBucketAsync(new DeleteBucketRequest { BucketName = bucket }, ct);
+          // /healthz по https доверенным HttpClient (хелпер окружения шага 5.1)
+          (await fx.HealthzAsync(ct)).Should().BeTrue();
       }, ct);
   }
   ```
   (Бакет пустеет удалением обоих объектов перед DeleteBucket — незачистленный mp.bin давал бы 409 BucketNotEmpty.)
-  Выход: SDK-клиенты (root + writer) проходят полный smoke по https в рамках матрицы прав.
+  Выход: SDK-клиенты (root + writer) проходят полный smoke по https в рамках матрицы прав; механизм доверия — зеркало фабрики воркера.
   Проверка: `DOTNET_CLI_UI_LANGUAGE=en PGW_TEST_DOCKER=1 dotnet test src/tests/OwnS3.IntegrationTests -c Release --filter FullyQualifiedName~AwsSdkTlsScenarios` (фон) → PASS.
   Спека: AC2 (SDK smoke), §3.5; матрица — arch/owns3/05 §3.
 
@@ -1097,7 +1135,7 @@ public static class BackupCaPem
   Действие:
   ```bash
   git add src/tests/OwnS3.IntegrationTests
-  git commit -m "t42: E2E TLS-сценарии ownS3 — SDK AWS_CA_BUNDLE, mc SSL_CERT_FILE, негативные и fail-fast кейсы"
+  git commit -m "t42: E2E TLS-сценарии ownS3 — SDK-фабрика доверия, mc SSL_CERT_FILE, негативные и fail-fast кейсы"
   ```
   Проверка: `git status --porcelain` → пусто; после серии — `docker ps -a | grep os3-` пуст, `docker network ls | grep os3-en-` пуст (зачистка подтверждена).
   Спека: AC7.
@@ -1146,29 +1184,8 @@ public static class BackupCaPem
 
 ---
 
-### Task 3b/5b (fallback): SDK-доверие CA фабрикой HttpClient — вскрыто E2E, одобрено пользователем
+## Self-Review (выполнен при составлении; обновлён по итогам четырёх проходов независимого ревью и синхронизирован с обновлённой спекой после contract-правки Фазы 7: механизм SDK-доверия CA — фабрика S3CaHttpClientFactory, а не env AWS_CA_BUNDLE)
 
-E2E шага 5.2 вскрыл: AWSSDK.Core (3.7.511.8/3.7.501.1) env `AWS_CA_BUNDLE` НЕ
-читает (строки в сборке отсутствуют; соединение с per-install CA даёт
-`PartialChain`). Spec §5 на этот случай описывает fallback: программная
-валидация цепочки CA в фабрике HttpClient BackupS3 (локализованная правка,
-CA тот же) — реализован вместо «BackupS3 не меняется»:
-
-- [ ] **Шаг F1.** `src/PgWorker.Backups/S3CaHttpClientFactory.cs` — фабрика SDK:
-  `CreateHttpClient` с `RemoteCertificateValidationCallback` — корень цепочки
-  (ExtraStore с CA; macOS без стора строит цепочку leaf-only — эмпирика)
-  == отпечаток per-install CA. BackupS3 при `S3CaBundlePath` ставит фабрику
-  (CA — `TlsMaterial.LoadPem(BackupCaPem.ReadIfConfigured(...))`; нечитаемый
-  файл — исключение с диагностикой). Program воркера и WalReceiver больше не
-  выставляют `AWS_CA_BUNDLE` (WalReceiver материализует PEM в файл и передаёт
-  путь в `BackupsRuntimeOptions.S3CaBundlePath`). Юниты `BackupS3CaTests`.
-- [ ] **Шаг F2.** E2E `OwnS3E2eClients.CreateS3(TLS-fx, …)` — тестовое зеркало
-  фабрики (`TlsCaHttpClientFactory`); SDK-сценарий 5.2 — smoke тем же механизмом.
-
----
-
-## Self-Review (выполнен при составлении, обновлён по итогам четырёх проходов независимого ревью)
-
-1. **Покрытие спеки:** §3.1 → Task 1; §3.2 → Task 2 (шаг 2.1); §3.3 → Task 2 (шаги 2.2, 6.4); §3.4 → Tasks 3–4 (воркер шаг 3.2, спеки/агент/приёмник/bash шаги 4.1–4.4, вкл. VerifyJobSpec-кейсы шага 4.2); §3.5 → Task 5 + Task 6; AC1 → 1.4/1.5/6.1/6.2; AC2 → 5.2–5.4; AC3 → 1.1/1.2 (юниты резолвера) + 5.4(3) (docker-кейс Program-ветки Critical+exit≠0 — WAF неприменим, см. Global Constraints); AC4 → 2.1; AC5 → 3.1–3.2/4.1–4.4; AC6 → 2.2/6.4; AC7 → 5.1–5.5/6.2; AC8 → 6.3. Env-биндинги `OWNS3_TLS_*` (spec §3.5 «юниты env-биндингов») — юнитами недостижимы (top-level Program.cs): покрыты end-to-end шагом 5.1 (контейнер поднимается по `OWNS3_TLS_*_PATH`) и 5.4(3) (`OWNS3_TLS_CERT`) — подмена зафиксирована в шаге 1.4, по образцу существующих env-секций. Не-цели спеки (mTLS, vhost-style, второй порт, стендовый TLS-сервис, t41) — в план не входят, задач нет — верно.
-2. **Плейсхолдеры:** конкретный код во всех шагах. Единственные оговорки с уточнением по факту прогона: текст TLS-исключения в 5.4(1) (тип уже зафиксирован — `HttpRequestException`) и хелпер `fx.HealthzAsync` (описан в шаге 5.1 как часть окружения). WAF-кейсов, доводящих исполнение до `Environment.Exit`, в плане нет (Global Constraints).
-3. **Консистентность типов и контрактов:** `TlsOptions` (4 поля) используется `OwnS3Tls.Resolve` и Program; `BackupsRuntimeOptions.S3CaBundlePath : string?` — единое имя в Task 3/4; `BackupCaPem.EnvName = "S3_CA_PEM"` — единый источник для спек/AgentEnv/WalReceiverEnv; `WalReceiverOptions.S3CaPem` — позиционно последний аргумент record (шаг 4.4 синхронизирует конструктор вызова в `WalReceiverEnv.Parse`); SDK-вызовы в 5.2 сверены с эталоном `AwsSdkSimpleScenarios.cs`: HEAD — `GetObjectMetadataRequest { BucketName, Key }` (строки 93–95), чтение тела — `MemoryStream` + `CopyToAsync` (строки 83–86), роли — root создаёт/удаляет бакет, writer — объектные операции и multipart (матрица arch/owns3/05 §3); bind-mount сертов в 5.1 — трёхаргументная ro-перегрузка `WithBindMount(..., AccessMode.ReadOnly)` (соответствие spec §3.5 «ro bind-mount» и Выходу Task 5). Компилируемость сниппетов: `serial` в NewPki — без `using` (byte[] не IDisposable; неявная конвертация в `ReadOnlyMemory<byte>`); шаг 1.3 — единственное using-дополнение `System.Security.Cryptography.X509Certificates` (`ConfigureHttpsDefaults` — instance-метод `KestrelServerOptions` (Microsoft.AspNetCore.Server.Kestrel.Core), вызывается на параметре лямбды без using — как уже используемый `o.Limits`); шаг 5.1 фиксирует using-блок нового файла — `System.Net`, `System.Security.Cryptography`, `System.Security.Cryptography.X509Certificates` сверх каркаса эталона (который эти пространства не содержит); finally в 5.4(3) — try/catch-обёртка `docker rm -f` (лучшее усилие, образец `TryDockerAsync`).
+1. **Покрытие спеки:** §3.1 → Task 1; §3.2 → Task 2 (шаг 2.1); §3.3 → Task 2 (шаги 2.2, 6.4); §3.4 → Tasks 3–4 (воркер: шаги 3.2 опции+хелпер BackupCaPem, 3.3 фабрика S3CaHttpClientFactory в BackupS3; спеки/агент/приёмник/bash шаги 4.1–4.3, приёмник — PEM→файл→S3CaBundlePath, та же фабрика); §3.5 → Task 5 + Task 6 (SDK-сценарии — тестовое зеркало фабрики воркера, шаги 5.1/5.2); §2 п.5/§5 (механизм фабрики) → Global Constraints + шаги 3.3/4.3/5.1; AC1 → 1.4/1.5/6.1/6.2; AC2 → 5.2–5.4; AC3 → 1.1/1.2 (юниты резолвера) + 5.4(3) (docker-кейс Program-ветки Critical+exit≠0 — WAF неприменим, см. Global Constraints); AC4 → 2.1; AC5 → 3.1–3.3 (опции/BackupCaPem/фабрика, юниты BackupS3CaTests) + 4.1–4.3 (S3_CA_PEM-проброс + материализация; юнит-диф env-набора); AC6 → 2.2/6.4; AC7 → 5.1–5.5/6.2; AC8 → 6.3. Env-биндинги `OWNS3_TLS_*` (spec §3.5 «юниты env-биндингов») — юнитами недостижимы (top-level Program.cs): покрыты end-to-end шагом 5.1 (контейнер поднимается по `OWNS3_TLS_*_PATH`) и 5.4(3) (`OWNS3_TLS_CERT`) — подмена зафиксирована в шаге 1.4, по образцу существующих env-секций. Не-цели спеки (mTLS, vhost-style, второй порт, стендовый TLS-сервис, t41) — в план не входят, задач нет — верно. Прежний раздел Task 3b/5b (fallback-фабрика) ликвидирован — его содержимое влито в основные шаги (3.3, 4.3(б), 5.1/5.2) без дублирования.
+2. **Плейсхолдеры:** конкретный код во всех шагах; шаг 3.3 описывает контракт фабрики и кейсы юнитов (реализация — фактическая ветка, прошедшая код-ревью Фазы 7). Единственные оговорки с уточнением по факту прогона: текст TLS-исключения в 5.4(1) (тип уже зафиксирован — `HttpRequestException`) и хелпер `fx.HealthzAsync` (описан в шаге 5.1 как часть окружения). WAF-кейсов, доводящих исполнение до `Environment.Exit`, в плане нет (Global Constraints).
+3. **Консистентность типов и контрактов:** `TlsOptions` (4 поля) используется `OwnS3Tls.Resolve` и Program; `BackupsRuntimeOptions.S3CaBundlePath : string?` — единое имя в Task 3/4 (воркер и WalReceiver-материализация используют один и тот же контракт фабрики через BackupS3); `BackupCaPem.EnvName = "S3_CA_PEM"` — единый источник для спек/AgentEnv/WalReceiverEnv; `WalReceiverOptions.S3CaPem` — позиционно последний аргумент record (шаг 4.3 синхронизирует конструктор вызова в `WalReceiverEnv.Parse`); SDK-вызовы в 5.2 сверены с эталоном `AwsSdkSimpleScenarios.cs`: HEAD — `GetObjectMetadataRequest { BucketName, Key }` (строки 93–95), чтение тела — `MemoryStream` + `CopyToAsync` (строки 83–86), роли — root создаёт/удаляет бакет, writer — объектные операции и multipart (матрица arch/owns3/05 §3); bind-mount сертов в 5.1 — трёхаргументная ro-перегрузка `WithBindMount(..., AccessMode.ReadOnly)` (соответствие spec §3.5 «ro bind-mount» и Выходу Task 5). Механизм SDK-доверия — единый на всех потребителях: фабрика описана один раз (шаг 3.3), WalReceiver приходит к ней через файл `S3CaBundlePath` (шаг 4.3), E2E — через тестовое зеркало `TlsCaHttpClientFactory` (шаги 5.1/5.2); формулировок «Program выставляет процессу AWS_CA_BUNDLE» в плане не осталось — env упоминается только как эмпирически нечитаемый (Global Constraints, шаг 3.3 комментарий). Компилируемость сниппетов: `serial` в NewPki — без `using` (byte[] не IDisposable; неявная конвертация в `ReadOnlyMemory<byte>`); шаг 1.3 — единственное using-дополнение `System.Security.Cryptography.X509Certificates` (`ConfigureHttpsDefaults` — instance-метод `KestrelServerOptions` (Microsoft.AspNetCore.Server.Kestrel.Core), вызывается на параметре лямбды без using — как уже используемый `o.Limits`); шаг 5.1 фиксирует using-блок нового файла — `System.Net`, `System.Security.Cryptography`, `System.Security.Cryptography.X509Certificates` сверх каркаса эталона (который эти пространства не содержит); finally в 5.4(3) — try/catch-обёртка `docker rm -f` (лучшее усилие, образец `TryDockerAsync`).

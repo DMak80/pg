@@ -43,10 +43,12 @@ per-install, а подсистема бэкапов (AWS SDK .NET воркера
 4. **Fail-fast**: невалидный/неполный материал серта (задан один из пары,
    путь не читается, PEM не парсится) — отказ старта с диагностикой в лог,
    как у root-пары (канон 05 §1). Сервис не поднимается «молча на HTTP».
-5. **Клиенты доверяют CA штатными механизмами**: AWS SDK .NET — env
-   `AWS_CA_BUNDLE` (стандартный механизм SDK, поддержка в версии проекта
-   3.7.511.8); `mc` (Go) — env `SSL_CERT_FILE`. Код `BackupS3`
-   (S3-протокол) не меняется.
+5. **Клиенты доверяют CA**: AWS SDK .NET — программная фабрика HttpClient
+   с валидацией корня цепочки сервера по отпечатку CA (env `AWS_CA_BUNDLE`
+   линейкой AWSSDK.Core 3.7.x не читается — эмпирический факт E2E t42);
+   `mc` (Go) — env `SSL_CERT_FILE`. Фабрика ставится конструктором
+   `BackupS3` только при заданном `CaBundlePath` — без пути поведение
+   прежнее.
 6. **Multi-host**: джобы/агенты бэкапов живут на любых docker-хостах —
    файл CA с хоста воркера в их контейнеры не прокидывается; CA передаётся
    значением PEM через env `S3_CA_PEM` и материализуется в файл внутри
@@ -101,18 +103,21 @@ per-install, а подсистема бэкапов (AWS SDK .NET воркера
 
 ### 3.4. Клиентская сторона подсистемы бэкапов
 
-- **Воркер** (`src/PgWorker.Backups` + Program воркера):
+- **Воркер** (`src/PgWorker.Backups`):
   - `BackupsRuntimeOptions`/`Options.cs`: поле `S3CaBundlePath` (конфиг
     `PgWorker:Backups:S3:CaBundlePath`, env
-    `PGW_BACKUP_S3_CA_BUNDLE_PATH`); при заданном пути Program воркера
-    выставляет процессу `AWS_CA_BUNDLE` до создания S3-клиентов.
-  - `BackupS3` (SDK-клиент) — без изменений.
+    `PGW_BACKUP_S3_CA_BUNDLE_PATH`); нечитаемый/пустой файл CA —
+    исключение с диагностикой (`BackupCaPem`).
+  - `BackupS3` (SDK-клиент): при заданном `S3CaBundlePath` ставит
+    SDK-фабрику HttpClient `S3CaHttpClientFactory` — валидация корня
+    цепочки сервера по отпечатку per-install CA; путь не задан — фабрика
+    не ставится, прежнее поведение.
 - **Агенты/джобы** (материал CA — PEM через env `S3_CA_PEM` в контейнеры,
   материализация внутри):
   - `WalStreamProcess.AgentEnv` + `WalReceiver`: при заданном
     `S3CaBundlePath` воркер читает PEM и передаёт `S3_CA_PEM`; WalReceiver
-    пишет PEM во временный файл и выставляет себе `AWS_CA_BUNDLE`
-    (SDK-клиент приёмника).
+    материализует PEM во временный файл и передаёт его как
+    `S3CaBundlePath` (SDK-клиент приёмника — та же фабрика доверия).
   - Спеки джобов `BackupJobSpec`/`VerifyJobSpec`/`RestoreJobSpec`/
     `DrillJobSpec`: аналогично передают `S3_CA_PEM`.
   - Джоб полного бэкапа (`docker/backup/entrypoint.sh`): `S3_CA_PEM` →
@@ -131,7 +136,9 @@ per-install, а подсистема бэкапов (AWS SDK .NET воркера
     задан — Urls `http://`, поведение прежнее).
   - PgWorker.Backups: `S3CaBundlePath` в опциях; спеки джобов/AgentEnv
     передают `S3_CA_PEM` при заданном пути и не передают без него;
-    материализация PEM→файл→env (AWS_CA_BUNDLE/SSL_CERT_FILE) в командах.
+    материализация PEM→файл (CaBundlePath приёмника, `SSL_CERT_FILE`
+    mc-подпроцессов) в командах; фабрика доверия — только при заданном
+    пути.
 - **E2E** (`src/tests/OwnS3.IntegrationTests/E2e`): TLS-сценарии —
   собственный контур по канонам изоляции (`docs/e2e-isolation.md`,
   `docs/e2e-launch.md`): тест генерирует свою CA + серверный серт
@@ -139,7 +146,8 @@ per-install, а подсистема бэкапов (AWS SDK .NET воркера
   поднимает контейнер `owns3:e2e` с `OWNS3_TLS_CERT_PATH`/`_KEY_PATH`
   (файлы — ro bind-mount во временный каталог; динамический хост-порт),
   клиенты:
-  - AWS SDK .NET с CA-bundle (механизм `AWS_CA_BUNDLE`): put/get/head/
+  - AWS SDK .NET с per-install CA (программная валидация цепочки — тот же
+    механизм, что у фабрики воркера): put/get/head/
     list/multipart smoke + `/healthz` по https;
   - `mc` c `SSL_CERT_FILE`: alias → mb → cp → cat → rm → rb;
   - негативный кейс: клиент БЕЗ доверия CA получает TLS-отказ (грань
@@ -155,9 +163,9 @@ per-install, а подсистема бэкапов (AWS SDK .NET воркера
    материала (Shared.Tls) + Kestrel https + fail-fast; юниты.
 3. **TLS-пакет**: `gen.sh` — серт `owns3` (SAN, идемпотентность);
    `.env.example` + compose-комментарии.
-4. **Клиентская сторона бэкапов**: `S3CaBundlePath` (опции, AWS_CA_BUNDLE
-   воркера), `S3_CA_PEM`-проброс в спеки джобов/агентов, материализация
-   (entrypoint.sh, команды джобов, WalReceiver); юниты.
+4. **Клиентская сторона бэкапов**: `S3CaBundlePath` (опции, фабрика
+   доверия в `BackupS3`), `S3_CA_PEM`-проброс в спеки джобов/агентов,
+   материализация (entrypoint.sh, команды джобов, WalReceiver); юниты.
 5. **E2E TLS + прогоны**: TLS-сценарии OwnS3 E2E; полные серии
    OwnS3.UnitTests/IntegrationTests; чек стендовых чеков 46/47 не меняется;
    мерж-гейт: задача трогает `src/PgWorker.Backups` → docker-E2E маркер
@@ -172,10 +180,12 @@ per-install, а подсистема бэкапов (AWS SDK .NET воркера
   локальные образы в registry не кладутся).
 - Тесты: динамические порты, полный teardown, `BrokerBootSec`-подобные
   таймауты ≤ 100 с; никаких хардкод-портов.
-- `AWS_CA_BUNDLE` — механизм AWS SDK .NET (поддерживается линейкой 3.7.х
-  проекта); если E2E вскроет иное поведение конкретной версии — fallback:
-  программная валидация цепочки в фабрике HttpClient `BackupS3`
-  (локализованная правка, контракт arch/19 §7 не меняется — CA тот же).
+- Доверие CA у AWS SDK .NET — программная фабрика HttpClient
+  (`S3CaHttpClientFactory`: корень цепочки сверяется с отпечатком CA,
+  ExtraStore + AllowUnknownCertificateAuthority, без revocation —
+  внутренний контур): env `AWS_CA_BUNDLE` линейкой AWSSDK.Core 3.7.x
+  не читается — эмпирический факт E2E t42 (сборка строки не содержит,
+  соединение без доверия даёт PartialChain).
 - `SSL_CERT_FILE` для `mc` — стандартный механизм Go crypto/x509
   (Unix); проверяется E2E-сценарием с реальным `mc`.
 
@@ -184,7 +194,7 @@ per-install, а подсистема бэкапов (AWS SDK .NET воркера
 1. ownS3 без `OWNS3_TLS_*`: стартует и работает как раньше (HTTP);
    существующие юнит/интеграционные/E2E серии OwnS3 зелёные без правок.
 2. ownS3 с валидным материалом: HTTPS-only на порту сервера —
-   SDK-клиент с CA-bundle и `mc` с `SSL_CERT_FILE` проходят полный smoke
+   SDK-клиент с per-install CA и `mc` с `SSL_CERT_FILE` проходят полный smoke
    (put/get/list/multipart, `/healthz`); HTTP-запрос на HTTPS-порт
    отклоняется; клиент без доверия CA получает TLS-отказ.
 3. Невалидный материал (один из пары / битый PEM / нет файла) — отказ
@@ -192,9 +202,11 @@ per-install, а подсистема бэкапов (AWS SDK .NET воркера
 4. `deploy/tls/gen.sh`: выпускает `owns3.crt/key` идемпотентно (повторный
    запуск — no-op), серт верифицируется против `ca.pem`, SAN покрывает
    owns3/owns3-ec/localhost/host.docker.internal/127.0.0.1.
-5. Воркер с `PGW_BACKUP_S3_CA_BUNDLE_PATH`: процесс получает
-   `AWS_CA_BUNDLE`; спеки джобов/WAL-агента несут `S3_CA_PEM` (юниты);
-   без пути — env-набор джобов идентичен прежнему (юнит-диф).
+5. Воркер с `PGW_BACKUP_S3_CA_BUNDLE_PATH`: `BackupS3` ставит фабрику
+   доверия CA (юниты: фабрика при заданном пути; нечитаемый/пустой файл —
+   исключение); спеки джобов/WAL-агента несут `S3_CA_PEM` (юниты);
+   без пути — фабрика не ставится, env-набор джобов идентичен прежнему
+   (юнит-диф).
 6. Стенд: `00-up.sh`+чекы 46/47 работают без изменений (HTTP-only),
    `gen.sh` в подъёме выпускает серт `owns3` без действий оператора.
 7. E2E TLS-сценарии зелёны; teardown-ассерт чистоты контура проходит.
