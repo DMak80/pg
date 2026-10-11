@@ -44,10 +44,16 @@ public class ClusterDriverTests
 
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
 
+        // t41: ensure сети контура — сеть уже существует у поставки (движок
+        // отвечает 409 already exists) → драйвер трактует как успех.
+        public bool EnsureNetworkFailure = false;
+
         public Task<Result> EnsureNetworkAsync(string name, CancellationToken ct)
         {
             Calls.Add(("ensure-network", name));
-            return Task.FromResult(Result.Success());
+            return Task.FromResult(EnsureNetworkFailure
+                ? Result.Failed(new ApplicationException("docker POST /networks/create ответил 409: already exists"))
+                : Result.Success());
         }
 
         // t24 (arch/14 §2.1): подключение контейнера к сети кластера —
@@ -204,9 +210,10 @@ public class ClusterDriverTests
     private static readonly RestCertificateCache RestCache = new(RestCaPair.CaPem, RestCaPair.CaKeyPem);
 
     private static PlainClusterDriver NewPlainDriver(FakeEngine engine, string? advertisedHost = null,
-        string? scrapeNetwork = null)
+        string? scrapeNetwork = null, string? contourNetwork = null)
         => new([new HostEndpoint("h1", "fake://h1")], new FakeFactory(engine), enableDoorman: true,
-            advertisedHost: advertisedHost, scrapeNetwork: scrapeNetwork, restCertificates: RestCache);
+            advertisedHost: advertisedHost, scrapeNetwork: scrapeNetwork, contourNetwork: contourNetwork,
+            restCertificates: RestCache);
 
     // AAA: Ф7-live — имена нод НЕуникальны между кластерами одного docker-хоста
     // (pgw-canon-/pgw-canon10-/pgw-smoke- все с hostname/alias "shard1a"):
@@ -1209,5 +1216,88 @@ public class ClusterDriverTests
         listed.Value.Should().ContainSingle(n => n == "pgw-shop-shard1-shard1a")
             .And.NotContain(n => n.StartsWith("pgw-backup-wal-", StringComparison.Ordinal));
         agents.Value.Should().ContainSingle(c => c.Names.Contains("pgw-backup-wal-shop-shard1"));
+    }
+
+    // AAA (t41): сеть ноды/ensure по режиму — контур поставки или per-cluster
+    // pgw-net-<C> (прод); alias'ы спеки (nodeName, pgw-<C>-<X>-<n>) не меняются.
+    [Theory]
+    [InlineData(null, "pgw-net-shop")]                           // прод-режим
+    [InlineData("adminpanel-stand-net", "adminpanel-stand-net")] // контур
+    public async Task EnsureNode_Network_ByMode(string? contour, string expectedNetwork)
+    {
+        // Arrange — фейковый движок (нет контейнера → путь создания)
+        var engine = new FakeEngine { Containers = [] };
+        var driver = NewPlainDriver(engine, contourNetwork: contour);
+
+        // Act
+        (await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd,
+            resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw",
+            ct: CancellationToken.None)).IsSuccess.Should().BeTrue();
+
+        // Assert — ensure и спека несут сеть режима; alias'ы на месте
+        engine.Calls.Should().Contain(c => c.Call == "ensure-network" && (string)c.Arg! == expectedNetwork);
+        engine.CreatedSpec!.Network.Should().Be(expectedNetwork);
+        engine.CreatedSpec.NetworkAliases
+            .Should().Contain(new[] { "shard1a", "pgw-shop-shard1-shard1a" });
+    }
+
+    // AAA (t41): wal-агент в контур-режиме создаётся в сети контура (спека
+    // процесса несёт Network: null — сеть назначает драйвер).
+    [Fact]
+    public async Task EnsureBackupAgent_ContourMode_CreatedInContourNetwork()
+    {
+        // Arrange
+        var engine = new FakeEngine { Containers = [] };
+        var driver = NewPlainDriver(engine, contourNetwork: "adminpanel-stand-net");
+        var spec = new ContainerSpec("pgworker-wal:dev", [], "agent-host",
+            Env: new Dictionary<string, string>());
+
+        // Act
+        (await driver.EnsureBackupAgentAsync("shop", "shard1", "shard1a", spec, "h1", CancellationToken.None))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — созданный контейнер агента в сети контура
+        engine.CreatedSpec!.Network.Should().Be("adminpanel-stand-net");
+    }
+
+    // AAA (t41): полный демонтаж ноды — per-cluster сеть удаляется ТОЛЬКО в
+    // прод-режиме; сеть контура принадлежит поставке — движок её не трогает.
+    [Theory]
+    [InlineData(null, "pgw-net-shop")]
+    [InlineData("adminpanel-stand-net", null)]
+    public async Task RemoveNode_NetworkTeardown_ByMode(string? contour, string? expectedDeletedNetwork)
+    {
+        // Arrange — контейнеров кластера нет (демонтаж доходит до сети)
+        var engine = new FakeEngine { Containers = [] };
+        var driver = NewPlainDriver(engine, contourNetwork: contour);
+
+        // Act
+        (await driver.RemoveNodeAsync("shop", "shard1", "shard1a", CancellationToken.None))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — delete-network зовётся с pgw-net-<C> только в прод-режиме
+        var deleted = engine.Calls.Where(c => c.Call == "delete-network").ToList();
+        if (expectedDeletedNetwork is null)
+            deleted.Should().BeEmpty();
+        else
+            deleted.Should().Contain(c => (string)c.Arg! == expectedDeletedNetwork);
+    }
+
+    // AAA (t41): ensure сети контура идемпотентен — сеть уже существует у
+    // поставки (движок отвечает 409 already exists) → успех, не ошибка.
+    [Fact]
+    public async Task EnsureNode_ContourNetworkAlreadyExists409_Success()
+    {
+        // Arrange — ensure-network контура падает «409 already exists»
+        var engine = new FakeEngine { Containers = [], EnsureNetworkFailure = true };
+        var driver = NewPlainDriver(engine, contourNetwork: "adminpanel-stand-net");
+
+        // Act
+        var result = await driver.EnsureNodeAsync(Topology(Addr), "shard1a", Addr, Secrets, Etcd,
+            resources: null, tuning: null, syncStrict: false, restPassword: "rest-test-pw",
+            ct: CancellationToken.None);
+
+        // Assert — 409 = успех (идемпотентность ensure)
+        result.IsSuccess.Should().BeTrue();
     }
 }
