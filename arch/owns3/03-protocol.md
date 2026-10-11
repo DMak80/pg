@@ -211,7 +211,7 @@ AWS4-HMAC-SHA256-PAYLOAD\n<date>\n<scope>\n<подпись чанка N-1>\n<sha
 использовать подписанный trailer-режим
 (`STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER`, поддерживается).
 Иначе PUT завершится 400 `InvalidRequest` — это требуется учесть
-при приёмке t39 (настройка клиентов бэкапов и `mc`).
+при приёмке клиентами (настройка клиентов бэкапов и `mc`).
 
 **Невалидный синтаксис aws-chunked-фрейма** → **400** `InvalidRequest`
 (Message «Malformed chunked encoding»); **лимит одного чанка — 16 МиБ**

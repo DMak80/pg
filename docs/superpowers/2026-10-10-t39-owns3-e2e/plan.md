@@ -264,12 +264,13 @@ git commit -m "feat(t39): снять If-Range и UploadPartCopy с ownS3 пол�
 
 ---
 
-### Задача 2: Docker-образ `docker/OwnS3.Dockerfile` + ручная CLI-проверка (spec §4.1, §5 фаза 2)
+### Задача 2: Docker-образ `docker/OwnS3.Dockerfile` + env-маппинг канона 05 §4 + ручная CLI-проверка (spec §4.1, §5 фаза 2)
 
-**Вход:** Задача 1 слита; прецедент `docker/Metrics.SdGenerator.Dockerfile`; `mcr.microsoft.com/dotnet/aspnet:10.0` в `images.txt`.
+**Вход:** Задача 1 слита (969aa93e, все проверки зелёные); прецедент `docker/Metrics.SdGenerator.Dockerfile`; `mcr.microsoft.com/dotnet/aspnet:10.0` в `images.txt`. На шаге 2.2 Фазы 6 вскрыт дефект вне плана: OwnS3.App не читает канонические env-имена `OWNS3_*` (arch/owns3/05 §4) — стандартный .NET-провайдер ждёт `OwnS3__Root__User` и т.п., трансляции в коде нет → в докере с каноническими env сервис падает на fail-fast валидации (`OptionsValidationException`, `src/OwnS3.App/Program.cs`). Тесты t36–t38 задавали секцию `OwnS3:*` in-memory (`OwnS3AppFactory.cs`) — дефект не был виден до первого докер-запуска. Фикс — шаг 2.2a (одобрен пользователем: вариант 1 — env-маппинг в коде; основание — base-rules §1 «arch — источник истины, код обязан зеркалить канон» и spec §7 «иной фикс — отдельным пунктом плана с обоснованием»).
 
 **Files:**
 - Create: `docker/OwnS3.Dockerfile`
+- Modify: `src/OwnS3.App/Program.cs` (шаг 2.2a — трансляция env-имён канона 05 §4; arch-first: канон уже требует эти имена, код приводится к канону, канон не меняется)
 
 **Interfaces (Produces):** образ `owns3:e2e` (CLI-режим: publish → `docker build … artifacts/e2e/owns3`) — использует Задача 5; compose-режим (`context: ..`, `args.OWNS3_PUBLISH_DIR: artifacts/owns3/publish`) — использует Задача 3.
 
@@ -297,6 +298,58 @@ ENTRYPOINT ["dotnet", "OwnS3.App.dll"]
 
 (В файл НЕ добавлять: `ASPNETCORE_HTTP_PORTS` — Program сам слушает 9000 через `app.Urls`; HEALTHCHECK — curl в aspnet-образе отсутствует, готовность — внешние пробы.)
 
+- [ ] **Шаг 2.2a. Env-маппинг канона 05 §4 (фикс дефекта Фазы 6) — ДО запуска контейнера шага 2.2.**
+
+**Действие:** в `src/OwnS3.App/Program.cs` сразу после `var builder = WebApplication.CreateBuilder(args);` и ДО `builder.Services.Configure<OwnS3Options>(…)` добавить трансляцию канонических env-имён (arch/owns3/05 §4) в конфиг-ключи `OwnS3:*` — env приоритетнее appsettings:
+
+```csharp
+// Env-имена канона arch/owns3/05 §4 (OWNS3_*): стандартный .NET-провайдер
+// ждёт OwnS3__Root__User — транслируем канонические имена в ключи OwnS3:*
+// (env приоритетнее appsettings; t39, фикс дефекта первого докер-запуска).
+foreach (var (env, key) in new[]
+         {
+             ("OWNS3_ROOT_USER", "OwnS3:Root:User"),
+             ("OWNS3_ROOT_PASSWORD", "OwnS3:Root:Password"),
+             ("OWNS3_SERVER_PORT", "OwnS3:Server:Port"),
+             ("OWNS3_DATA_DIR", "OwnS3:DataDir"),
+             ("OWNS3_HOST_ID", "OwnS3:HostId"),
+         })
+{
+    var value = Environment.GetEnvironmentVariable(env);
+    if (!string.IsNullOrEmpty(value))
+        builder.Configuration[key] = value;
+}
+// Массив статических ключей OWNS3_ACCESS_KEYS__<i>__* (глава 05 §2:
+// индексная нумерация массива в env — конвенция .NET): сканируем до
+// первого пропуска индекса.
+for (var i = 0; ; i++)
+{
+    var access = Environment.GetEnvironmentVariable($"OWNS3_ACCESS_KEYS__{i}__ACCESSKEY");
+    var secret = Environment.GetEnvironmentVariable($"OWNS3_ACCESS_KEYS__{i}__SECRETKEY");
+    if (string.IsNullOrEmpty(access) && string.IsNullOrEmpty(secret))
+        break;
+    builder.Configuration[$"OwnS3:AccessKeys:{i}:AccessKey"] = access;
+    builder.Configuration[$"OwnS3:AccessKeys:{i}:SecretKey"] = secret;
+    var policy = Environment.GetEnvironmentVariable($"OWNS3_ACCESS_KEYS__{i}__POLICY");
+    if (!string.IsNullOrEmpty(policy))
+        builder.Configuration[$"OwnS3:AccessKeys:{i}:Policy"] = policy;
+}
+```
+
+После правки — пересобрать publish-вывод и образ (команды шага 2.2 выполняют это заново; publish инкрементален). Существующие Api-тесты (задают `OwnS3:*` in-memory) не затронуты: трансляция только добавляет источник конфигурации из env, при отсутствии `OWNS3_*` поведение прежнее.
+
+**Выход:** сервис в докере с каноническими env `OWNS3_*` проходит fail-fast валидацию и поднимается; env-имена канона 05 §4 читаются кодом (код зеркалит канон).
+
+**Проверка:** прогон шага 2.2 (docker run с `-e OWNS3_ROOT_USER/-e OWNS3_ROOT_PASSWORD`) → `/healthz` 200 и в `docker logs os3-manual-check` нет `OptionsValidationException`; `DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release` — 0 warnings; юниты+интеграция OwnS3 зелёные (регрессии in-memory-конфигурации нет):
+
+```bash
+DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release
+DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/OwnS3.UnitTests -c Release --no-build
+DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/OwnS3.IntegrationTests -c Release --no-build
+```
+
+**Связь со spec:** §7 (отдельный пункт плана с обоснованием против канона — arch-first: канон 05 §4 уже требует имена `OWNS3_*`, код приводится к канону, канон не меняется); предусловие критерия §8 п.7 (стенд-сервис: compose передаёт `OWNS3_ROOT_USER/OWNS3_ROOT_PASSWORD`) и §8 п.1 (E2E-окружение задаёт `OWNS3_*`-env контейнеру).
+
 - [ ] **Шаг 2.2. Ручная CLI-проверка образа** (до интеграции в тесты; порт 19099 — только этот одноразовый ручной прогон, тесты используют динамические):
 
 ```bash
@@ -319,13 +372,13 @@ docker ps -a --filter name=os3- --format '{{.Names}}'
 - [ ] **Шаг 2.3. Коммит:**
 
 ```bash
-git add docker/OwnS3.Dockerfile
-git commit -m "feat(t39): docker/OwnS3.Dockerfile — publish-COPY образ ownS3 (CLI+compose режимы)"
+git add docker/OwnS3.Dockerfile src/OwnS3.App/Program.cs
+git commit -m "feat(t39): docker/OwnS3.Dockerfile (publish-COPY, CLI+compose) + env-маппинг канона 05 §4 (OWNS3_* → OwnS3:*, фикс докер-старта)"
 ```
 
-**Выход:** рецепт образа в репо; доказано — контейнер из publish-вывода стартует и отвечает `/healthz`.
-**Проверка:** шаг 2.2.
-**Связь со spec:** §4.1, §5 фаза 2, §8 п.8.
+**Выход:** рецепт образа в репо; код читает канонические env канона 05 §4; доказано — контейнер из publish-вывода стартует с `OWNS3_*` и отвечает `/healthz`.
+**Проверка:** шаги 2.2a–2.2.
+**Связь со spec:** §4.1, §5 фаза 2, §7 (фикс 2.2a), §8 п.7/п.8.
 
 ---
 
@@ -439,12 +492,15 @@ git commit -m "feat(t39): стенд-сервис owns3 — compose, секци�
 
 ---
 
-### Задача 4: Smoke-чек `46-owns3.sh` (spec §4.2)
+### Задача 4: Фикс trailing-slash (дефект Фазы 6) + smoke-чек `46-owns3.sh` (spec §4.2; §7)
 
-**Вход:** Задача 3 (сервис owns3 поднят локально, порт 9010, root-креды в `deploy/.env`); прецеденты `45-backups-storage.sh`, mc-паттерн `00-up.sh`.
+**Вход:** Задача 3 (сервис owns3 поднят локально, порт 9010, root-креды в `deploy/.env`); прецеденты `45-backups-storage.sh`, mc-паттерн `00-up.sh`. На Фазе 6 вскрыт второй дефект вне плана (доказан телеметрией упавших прогонов, с точностью до запроса): `S3PathParser` (`src/OwnS3.Protocol/Requests/S3PathParser.cs:14–22`) трактует путь `/{bucket}/` (trailing slash, пустой ключ) как объектный запрос с `Key=""` → bucket-level запросы со trailing slash маршрутизируются в объектные операции → 400 `InvalidArgument`. Проявления: AWSSDK .NET `PutBucketAsync` шлёт `PUT /{bucket}/` (лог: `operation=PutObject, key=, status=400`) — блокирует Задачи 6–9 и мерж-гейт 10.3; mc alias-probe `GET /probe-*/?location=` — тот же 400 — блокирует шаг 4.2. Канон 02/03 случай `/{bucket}/` не описывает; референс S3/MinIO трактует его как bucket-level. Фикс — шаг 4.1a, выполняется ПЕРВЫМ в задаче, до прогона 4.2 (одобрен пользователем: вариант 1 — та же схема, что шаг 2.2a; arch-first + принцип Q2 «код согласно AWSSDK.S3»).
 
 **Files:**
 - Create: `dev-stand/adminpanel/checks/46-owns3.sh` (`chmod +x`)
+- Modify: `arch/owns3/03-protocol.md` §6 (шаг 4.1a — формулировка trailing slash, арх-правка первой)
+- Modify: `src/OwnS3.Protocol/Requests/S3PathParser.cs` (шаг 4.1a)
+- Modify: `src/tests/OwnS3.UnitTests/S3PathParserTests.cs`, `S3RouterTests.cs` (шаг 4.1a — юнит-кейсы)
 
 - [ ] **Шаг 4.1. Скрипт чека** (полный текст; mc через хост-публикацию — ephemeral `docker run` с `--add-host host.docker.internal:host-gateway`, без `--network`, прецедент формы — ephemeral run из `00-up.sh`; бакет уникален ts-суффиксом; чистка — trap при любом исходе):
 
@@ -515,6 +571,132 @@ echo "  mc (host.docker.internal:${PORT}): mb→cp→ls→cat(sha256=источ�
 echo "✓ owns3-чек зелёный (healthz + metrics + mc-smoke, :${PORT})"
 ```
 
+- [ ] **Шаг 4.1a. Фикс trailing-slash `/{bucket}/` (arch-first, до прогона 4.2).**
+
+**Действие (по порядку):**
+
+(1) Arch-правка ПЕРВОЙ — `arch/owns3/03-protocol.md` §6, пункт «**Path-style only**» (после абзаца «бакет всегда в пути…»), добавить формулировку:
+
+```
+- Путь `/{bucket}/` (trailing slash, пустой ключ) — bucket-level запрос:
+  пустой ключ трактуется как его отсутствие (прецедент S3/MinIO; реальные
+  клиенты — AWS SDK .NET `CreateBucket`, mc probe — шлют именно так).
+  Ключи с внутренними пустыми сегментами (`a//b`) — прежняя семантика
+  (пустые сегменты сохраняются); подпись не затрагивается — canonical URI
+  строится из raw-target.
+```
+
+(2) Код — `src/OwnS3.Protocol/Requests/S3PathParser.cs`: дополнить шапку-комментарий (строки 3–4) формой `/{bucket}/`, и после строки `var rawKey = path[(slash + 1)..];` (строка 19) вставить:
+
+```csharp
+        // /{bucket}/ (trailing slash, пустой ключ) — bucket-level запрос
+        // (канон 03 §6): пустой ключ = его отсутствие; внутренние пустые
+        // сегменты (a//b) не затрагиваются — rawKey непустой.
+        if (rawKey.Length == 0)
+            return new S3Path(bucket, null);
+```
+
+Итог метода `Parse` (для сверки):
+
+```csharp
+    public static S3Path Parse(string rawPath)
+    {
+        // Срезается только ведущий '/': хвостовой слэш — часть ключа S3
+        // (кроме вырожденного /{bucket}/ — bucket-level, ниже).
+        var path = rawPath.StartsWith('/') ? rawPath[1..] : rawPath;
+        if (path.Length == 0)
+            return new S3Path(null, null);
+
+        var slash = path.IndexOf('/');
+        if (slash < 0)
+            return new S3Path(path, null);
+
+        var bucket = path[..slash];
+        var rawKey = path[(slash + 1)..];
+        // /{bucket}/ (trailing slash, пустой ключ) — bucket-level запрос
+        // (канон 03 §6): пустой ключ = его отсутствие; внутренние пустые
+        // сегменты (a//b) не затрагиваются — rawKey непустой.
+        if (rawKey.Length == 0)
+            return new S3Path(bucket, null);
+        // Декодирование по сегментам: пустые сегменты сохраняются (ключи со слэшами).
+        var decodedKey = string.Join("/", rawKey.Split('/').Select(Uri.UnescapeDataString));
+        return new S3Path(bucket, decodedKey);
+    }
+```
+
+(3) Пересборка стенд-сервиса (ДО интеграционной проверки): контейнер стенда поднят шагом 3.5 compose-билдом из ПРЕ-фикс артефактов `artifacts/owns3/publish` — пересобирается фиксом (прецедент: 2.2a оговаривал пересборку своего контейнера):
+
+```bash
+DOTNET_CLI_UI_LANGUAGE=en dotnet publish src/OwnS3.App/OwnS3.App.csproj \
+  -c Release -o artifacts/owns3/publish --nologo
+( cd deploy && docker compose --env-file .env up -d --build --force-recreate owns3 )
+for i in $(seq 1 30); do curl -sf http://localhost:9010/healthz >/dev/null 2>&1 && break; sleep 2; done
+curl -sf http://localhost:9010/healthz && echo " OWNS3-REBUILT-OK"
+```
+Критерий: `OWNS3-REBUILT-OK` (стенд-контейнер несёт фикс; инкрементальный publish — секунды).
+
+(4) Юнит-кейсы — `src/tests/OwnS3.UnitTests/S3PathParserTests.cs`: шапку-комментарий файла дополнить формой `/{bucket}/` (bucket-level, канон 03 §6); добавить два Fact'а (стиль файла):
+
+```csharp
+    [Fact]
+    public void Parse_BucketTrailingSlash_BucketLevel_NoKey()
+    {
+        // Arrange / Act: /{bucket}/ — bucket-level (канон 03 §6: пустой ключ
+        // трактуется как его отсутствие; AWS SDK CreateBucket шлёт PUT /{bucket}/)
+        var path = S3PathParser.Parse("/b/");
+        // Assert
+        path.Bucket.Should().Be("b");
+        path.Key.Should().BeNull();
+    }
+
+    [Fact]
+    public void Parse_InnerEmptySegments_PreservedInKey()
+    {
+        // Arrange / Act: a//b — внутренние пустые сегменты сохраняются
+        var path = S3PathParser.Parse("/b/a//b");
+        // Assert
+        path.Bucket.Should().Be("b");
+        path.Key.Should().Be("a//b");
+    }
+```
+
+(существующий `Parse_BucketOnly` `("/b")` — прежнее поведение, остаётся зелёным без правок).
+
+`src/tests/OwnS3.UnitTests/S3RouterTests.cs` — в Theory-таблицу `Routes` добавить строки (bucket-операции через trailing slash):
+
+```csharp
+        // /{bucket}/ — bucket-level (канон 03 §6): маршрутизация как без слэша
+        { "PUT",     "/b/",               "",         false, S3Operation.CreateBucket },
+        { "GET",     "/b/",               "",         false, S3Operation.ListObjects },
+        { "HEAD",    "/b/",               "",         false, S3Operation.HeadBucket },
+        { "GET",     "/b/",               "location", false, S3Operation.GetBucketLocation },
+```
+
+(строка `{ "GET", "/b/k", "", false, S3Operation.GetObject }` — объектный путь без trailing slash — прежнее поведение, уже в таблице).
+
+(5) Коммит фикса (arch + код + тесты одним коммитом — прецедент шага 1.27):
+
+```bash
+git add arch/owns3/03-protocol.md src/OwnS3.Protocol/Requests/S3PathParser.cs \
+        src/tests/OwnS3.UnitTests/S3PathParserTests.cs src/tests/OwnS3.UnitTests/S3RouterTests.cs
+git commit -m "fix(t39): /{bucket}/ — bucket-level (канон 03 §6, прецедент S3/MinIO) — S3PathParser: пустой ключ = отсутствие; юнит-кейсы"
+```
+
+**Выход:** bucket-level запросы с trailing slash (`PUT /{bucket}/` SDK, `GET /probe-*/?location=` mc) маршрутизируются в bucket-операции, а не в объектные с пустым ключом; разблокированы шаг 4.2 (mc-smoke) и Задачи 6–9 (SDK PutBucketAsync).
+
+**Проверка:**
+
+```bash
+DOTNET_CLI_UI_LANGUAGE=en dotnet build src/PgWorker.slnx -c Release
+DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/OwnS3.UnitTests -c Release --no-build \
+  --filter "FullyQualifiedName~S3PathParserTests|FullyQualifiedName~S3RouterTests"
+DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/OwnS3.UnitTests -c Release --no-build
+DOTNET_CLI_UI_LANGUAGE=en dotnet test src/tests/OwnS3.IntegrationTests -c Release --no-build
+```
+Критерий: build 0 warnings; целевые кейсы и полные прогоны зелёные (регрессий парсера/роутера/подписи нет — подпись не затрагивается, canonical URI строится из raw-target). Интеграционно: повтор шага 4.2 на ПЕРЕСОБРАННОМ контейнере (п.3 — mc-smoke проходит, alias-probe больше не получает 400). SDK-сторона подтверждается при прогоне Задачи 6 — отдельного действия здесь не требует: E2E-образ строится из текущего исходника, фикс подтянется автоматически.
+
+**Связь со spec:** §7 (отдельный пункт плана с обоснованием: канон 02/03 случай не описывал — arch-first правка 03 §6 первой, код зеркалит канон); принцип решений Q1/Q2 «код согласно AWSSDK.S3/реальным клиентам»; предусловие критериев §8 п.2 (SDK), п.4 (mc), п.5 (метрики после SDK-трафика).
+
 - [ ] **Шаг 4.2. Исполняемость, синтаксис, прогон, зачистка стенда:**
 
 ```bash
@@ -532,9 +714,9 @@ git add dev-stand/adminpanel/checks/46-owns3.sh
 git commit -m "feat(t39): чек 46-owns3.sh — healthz/metrics/mc-smoke стендового ownS3 с самоочисткой"
 ```
 
-**Выход:** стендовый smoke-чек в наборе чеков; зелёный на частично поднятом контуре.
-**Проверка:** шаг 4.2.
-**Связь со spec:** §4.2 (чек), §8 п.7.
+**Выход:** trailing-slash `/{bucket}/` — bucket-level (арх+код+тесты, шаг 4.1a); стендовый smoke-чек в наборе чеков; зелёный на частично поднятом контуре.
+**Проверка:** шаги 4.1a (юниты/build) и 4.2 (прогон чека).
+**Связь со spec:** §4.2 (чек), §7 (фикс 4.1a), §8 п.4/п.7 (предусловия фикса — mc-критерий п.4).
 
 ---
 
@@ -2387,13 +2569,22 @@ bash dev-stand/adminpanel/checks/46-owns3.sh
 3. §7, пункт «**Глобальная `AWSConfigs.RequestChecksumCalculation`**: …» заменить на: «- **Flexible checksums per-client** (`AmazonS3Config.RequestChecksumCalculation`): фабрика задаёт режим на каждом клиенте; env `AWS_REQUEST_CHECKSUM_CALCULATION` (статический кеш SDK) серией не используется — влияние окружения исключено.»
 4. §9, п.8: «…глобальная статика `AWSConfigs.RequestChecksumCalculation` не терпит параллельных переключателей; изоляция окружений при этом полная (per-class).» заменить на: «…настройка checksum — per-client (`AmazonS3Config.RequestChecksumCalculation`; глобальной статики в AWSSDK.Core 3.7.501.1 нет), последовательность — консервативная мера; изоляция окружений полная (per-class).»
 5. §6 «Тестовая стратегия»: «Сами E2E-классы последовательны (одна коллекция — изоляция глобальной `AWSConfigs`; окружения при этом независимы).» заменить на: «Сами E2E-классы последовательны (одна коллекция — последовательный прогон, консервативная мера против глобального состояния SDK; окружения при этом независимы).» — формулировка «изоляция глобальной AWSConfigs» ложна (статики нет).
+6. Блок «Правки ревью спеки (решения пользователя)» (§0-шапка, после пункта Q2) — добавить пункт, снимающий расхождение spec ↔ фактический канон (третья контрактовая правка вне перечня §3 и декларации не-целей «иные контрактовые изменения — вне t39»):
+
+```
+- **Trailing slash `/{bucket}/` — bucket-level** (внесено шагом 4.1a плана,
+  решение пользователя по схеме Q1/Q2 — фикс дефекта Фазы 6): правка
+  03 §6 — пустой ключ трактуется как его отсутствие (прецедент S3/MinIO;
+  AWS SDK CreateBucket и mc probe шлют именно так).
+```
 
 Контроль:
 
 ```bash
 grep -n "AWSConfigs.RequestChecksumCalculation" docs/superpowers/2026-10-10-t39-owns3-e2e/spec.md
+grep -cn "bucket-level" docs/superpowers/2026-10-10-t39-owns3-e2e/spec.md
 ```
-Критерий: совпадения — ТОЛЬКО в негативных формулировках («глобальной статики `AWSConfigs.RequestChecksumCalculation` … нет — проверено»); утверждений о существовании/использовании глобальной статики не осталось.
+Критерий: первая команда — совпадения ТОЛЬКО в негативных формулировках («глобальной статики `AWSConfigs.RequestChecksumCalculation` … нет — проверено»); утверждений о существовании/использовании глобальной статики не осталось. Вторая — ≥ 1 (пункт о trailing slash в блоке «Правки ревью спеки» на месте — spec больше не расходится с фактическим каноном 03 §6).
 
 - [ ] **Шаг 10.7. Roadmap/arch-чистка тега t39 (мерж-гейт — тем же мерж-коммитом, правило AGENTS.md):**
 
@@ -2431,7 +2622,7 @@ git commit -m "docs(t39): мерж-гейт — spec per-client checksum (фак
                  │                                            ├─► Задача 7 (multipart)
                  │                                            ├─► Задача 8 (mc)
                  │                                            └─► Задача 9 (metrics)
-                 └─► Задача 3 (стенд) ──► Задача 4 (чек 46)
+                 └─► Задача 3 (стенд) ──► Задача 4 (фикс 4.1a trailing-slash + чек 46)
 Все ──► Задача 10 (мерж-гейт + roadmap/arch-чистка)
 ```
 
@@ -2442,10 +2633,10 @@ git commit -m "docs(t39): мерж-гейт — spec per-client checksum (фак
 | 1. E2E-серия зелёная, автосборка, NOBUILD | 5.6, 10.3, 10.4 |
 | 2. AWS SDK простые+multipart (21 операция, без If-Range/UploadPartCopy) | 6.3, 7.2 |
 | 3. Оба режима flexible checksums (per-client — факт SDK) | 6.3 (WHEN_SUPPORTED-факт; остальные — WHEN_REQUIRED) |
-| 4. mc-клиент, sha256 roundtrip | 8.2 |
+| 4. mc-клиент, sha256 roundtrip | 4.1a (trailing-slash), 8.2 |
 | 5. healthz/metrics в докер-контуре | 5.6, 9.2 |
 | 6. Изоляция/телеметрия/чистота, MarkFailed | 5.6–5.8, 10.3 |
-| 7. Стенд-сервис, порт 9010, чек 46 | 3.5, 4.2, 10.5 |
+| 7. Стенд-сервис, порт 9010, чек 46 | 2.2a (env-маппинг), 3.5, 4.2, 10.5 |
 | 8. Образ publish-COPY, без registry | 2.2 |
 | 9. If-Range и UploadPartCopy сняты полностью (канон 21, grep-гейт, нерегрессии) | 1.1, 1.24–1.25, 10.2 |
 | 10. Секция OWNS3_* в .env.example | 3.2 |
@@ -2459,3 +2650,5 @@ git commit -m "docs(t39): мерж-гейт — spec per-client checksum (фак
 3. **Типы/сигнатуры:** имена членов SDK сверены с пакетом (шапка «Факты»); `ObjectReadOptions(Conditions, Range)` консистентен в З1.2–1.9; `RangeResolver.Resolve(ByteRange?, long)` — З1.3/1.4; `IObjectStore` без `UploadPartCopyAsync` — З1.18/1.19; остаточная маршрутизация `PUT ?partNumber&uploadId`+`x-amz-copy-source` → `UploadPart` (З1.11, сверка 1.26); API окружения З5 используется в З6–З9 без расхождений; `OwnS3E2eCollection.Name` — З5.3 и `[Collection]` всех классов.
 4. **Ревью Фазы 4 (CHANGES_REQUESTED) — все позиции закрыты:** (1) CommonPrefixes по семантике ListWalker «первый delimiter после prefix» — двухзапросный ассерт в З6.2; (2) `RunDockerOrNullAsync(args, ct)` — сигнатура и вызовы согласованы; (3) mc-smoke чека 46 — через хост-публикацию `host.docker.internal:${PORT}` (канон 05 §6, spec §4.2 п.3); (4) фазовая телеметрия — phases.log (UTC) для всех фаз вкл. сборочные, `LogPhaseAsync` с slow-phase-диагностикой > 60 с, причина `failed` в RunScenarioAsync; для сборочных фаз docker-диагностика неприменима (контейнера нет) — обосновано, их полные логи в `ArtifactsDir/process-build-*.log`; (5–6) шапки-комментарии MultipartHandlers (12–14) и S3PresignedOperations («ровно 9») включены в шаги зачистки — grep-гейт 1.24 чист; (7) счёт If-Range-вхождений убран из «Входа» Задачи 1 (гейт 1.24 — исчерпывающая проверка); дополнение — шаг 10.6 приводит spec к per-client факту SDK.
 5. **Повторное ревью Фазы 4 (6 low, тексто-ссылочные) — закрыты:** (1) преамбула 4.1 синхронна телу (хост-публикация, `--add-host host-gateway`, без `--network`); (2) устаревающие счётчики «22» (10 строк — S3Operation:3, S3Router:5, S3Middleware:29/:61, IObjectStore:3, RoutingScenarios:8, S3RouterTests:5/:76, OperationAccessMatrixTests:6; Program:52 — в 1.15) переписываются на «21» в шагах 1.10/1.11/1.15/1.18/1.22 + контроль-гейт 1.24 расширен шаблоном `22 операц|22 хендлера`; (3) шаг 10.7 дополнен правками `arch/22-owns3.md:47` и упоминания t39 внутри пункта t40 roadmap (~:67); (4) в 10.6 добавлена пятая замена (spec §6 — «изоляция глобальной AWSConfigs» → консервативная мера); (5) `DisposeAsync` обёрнут в `Stopwatch` + `LogPhaseAsync("teardown", sw)` в обеих ветках (код; doc-комментарий уже декларирует все фазы); (6) ссылки критерия §8 п.11 исправлены на 10.6+10.7 (таблица и саморевью).
+6. **Фаза 6, дефект вне плана (шаг 2.2) — закрыт шагом 2.2a:** OwnS3.App не читал канонические env `OWNS3_*` (арх 05 §4) — .NET-провайдер ждёт `OwnS3__*`, в докере сервис падал на fail-fast (тесты t36–t38 задавали конфиг in-memory, дефект не был виден). Фикс (одобрен пользователем, вариант 1): трансляция env → ключи `OwnS3:*` в Program.cs (~35 строк, env приоритетнее appsettings, все имена 05 §4 вкл. `OWNS3_ACCESS_KEYS__<i>__*`); arch-first — код приводится к канону, канон не меняется; основание — base-rules §1 + spec §7. Коммит — шаг 2.3 (Program.cs добавлен в git add).
+7. **Фаза 6, второй дефект вне плана (trailing slash) — закрыт шагом 4.1a:** `S3PathParser` трактовал `/{bucket}/` как объектный запрос с `Key=""` → 400 на `PUT /{bucket}/` (AWSSDK `PutBucketAsync`) и `GET /probe-*/?location=` (mc alias-probe) — блокировал 4.2 и Задачи 6–9. Фикс (одобрен пользователем, вариант 1 — схема 2.2a): arch-first правка `arch/owns3/03-protocol.md` §6 ПЕРВОЙ («`/{bucket}/` — bucket-level: пустой ключ = его отсутствие, прецедент S3/MinIO; `a//b` — прежняя семантика; подпись не затрагивается — canonical URI из raw-target») + одна ветка в `S3PathParser.Parse` (`rawKey.Length == 0 → new S3Path(bucket, null)`) + юнит-кейсы парсера/роутера; коммит arch+код+тесты вместе (шаг 4.1a п.5). Вставлен ДО первого заблокированного шага (4.2), нумерация не тронута. Контрольное ревью 4.1a (3 замечания) закрыто: (a) в 4.1a добавлена пересборка стенд-сервиса (п.3: publish → `compose up -d --build --force-recreate owns3` → healthz-гейт — контейнер 3.5 собран из пре-фикс артефактов); (b) решение пользователя зафиксировано в spec шестой заменой шага 10.6 (пункт в блоке «Правки ревью спеки» — «03 §6: `/{bucket}/` — bucket-level, внесено шагом 4.1a, схема Q1/Q2»); (c) форвард-ссылка на 6.3 убрана из критерия 4.1a («SDK-сторона подтверждается при прогоне Задачи 6 — E2E-образ строится из текущего исходника»), якорь вставки уточнён (строка 19), шапка S3PathParserTests.cs дополняется формой `/{bucket}/`.

@@ -167,8 +167,9 @@ public sealed class AwsSdkSimpleScenarios
         var ct = TestContext.Current.CancellationToken;
 
         // AAA: Range — закрытый bytes=10-20 (206 + срез), открытый bytes=N-,
-        // суффикс -5, end за размером → 206 с обрезкой. If-Range-кейсов нет:
-        // поддержка снята с ownS3 (spec §3.3/§4.6), SDK заголовок не шлёт
+        // суффикс -5, end за размером → 206 с обрезкой. Кейсов условного
+        // диапазона нет: поддержка снята с ownS3 (spec §3.3/§4.6), SDK
+        // заголовок не шлёт
         await OwnS3E2eEnvironment.RunScenarioAsync("s4", async fx =>
         {
             using var admin = OwnS3E2eClients.CreateS3(fx, OwnS3Role.Root);

@@ -16,6 +16,10 @@ E2E-каноны проекта — `AGENTS.base.md` §13, `docs/e2e-isolation.m
   Общий принцип пользователя: всё, что не поддерживает AWSSDK.S3, убирается
   из кода в рамках текущей задачи; код приводится согласно описанию
   AWSSDK.S3.
+- **Trailing slash `/{bucket}/` — bucket-level** (внесено шагом 4.1a плана,
+  решение пользователя по схеме Q1/Q2 — фикс дефекта Фазы 6): правка
+  03 §6 — пустой ключ трактуется как его отсутствие (прецедент S3/MinIO;
+  AWS SDK CreateBucket и mc probe шлют именно так).
 
 ## 1. Цель
 
@@ -329,19 +333,18 @@ echo ">>> [PHASE] publish OwnS3 готов ($(date +%H:%M:%S))"
   { `ServiceURL = env.S3BaseUrl`, `ForcePathStyle = true`,
   `AuthenticationRegion = "us-east-1"`, `Timeout = 10 s` } +
   `BasicAWSCredentials` (root/writer/reader/admin — литералы окружения).
-- **Flexible checksums** (канон 03 §3): `Amazon.Util.AWSConfigs.
-  RequestChecksumCalculation` — глобальная статика SDK. Основные Facts
-  работают в `WHEN_REQUIRED` (режим, в который обязан быть настроен клиент
-  бэкапов: без него свежий SDK шлёт неподдерживаемый
-  `STREAMING-UNSIGNED-PAYLOAD-TRAILER` → 400). Отдельный Fact переводит
-  конфигурацию в `WHEN_SUPPORTED` — SDK сам использует поддерживаемый
-  ownS3 чанковый режим с подписанными трейлерами
-  (`STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER` + `x-amz-checksum-*`).
-  Изоляция глобалки: ВСЕ E2E-классы ownS3 — одна xunit-коллекция с
-  `DisableParallelization = true` (последовательные Facts; режим
-  устанавливается первой строкой каждого Fact — идемпотентно и
-  детерминированно). In-memory `Api`-сценарии AWS SDK не используют —
-  параллельность коллекций не конфликтует.
+- **Flexible checksums** (канон 03 §3): настройка per-client —
+  `AmazonS3Config.RequestChecksumCalculation` (enum
+  `Amazon.Runtime.RequestChecksumCalculation`: `WHEN_REQUIRED`/`WHEN_SUPPORTED`;
+  глобальной статики `AWSConfigs.RequestChecksumCalculation` в AWSSDK.Core
+  3.7.501.1 нет — проверено по пакету). Фабрика принимает режим: основные
+  Facts создают клиента в `WHEN_REQUIRED` (режим, в который обязан быть
+  настроен клиент бэкапов: без него свежий SDK шлёт неподдерживаемый
+  `STREAMING-UNSIGNED-PAYLOAD-TRAILER` → 400), отдельный Fact — в
+  `WHEN_SUPPORTED` (SDK сам использует чанковый режим с подписанными
+  трейлерами). E2E-классы последовательны одной коллекцией
+  (консервативная мера; глобального состояния серия не имеет). In-memory
+  `Api`-сценарии AWS SDK не используют.
 - Сверка ETag: тест сам считает MD5 тела (простой PUT) и составной
   `<N>-<md5(concat hex-ETag'ов)>` (multipart) — по формулам канона 02 §1.
 
@@ -387,8 +390,8 @@ minio/mc:RELEASE.2025-08-13T08-35-41Z` (тег уже в `images.txt` и зап�
    delimiter → `CommonPrefixes`; пагинация max-keys=5 до исчерпания
    (IsTruncated/NextContinuationToken); GetObjectAttributes →
    ETag/ObjectSize/StorageClass.
-7. `ChecksumTrailer_PutGet_WhenSupported`: перевод
-   `AWSConfigs.RequestChecksumCalculation = WHEN_SUPPORTED` → PUT с
+7. `ChecksumTrailer_PutGet_WhenSupported`: клиент фабрики в режиме
+   `WHEN_SUPPORTED` → PUT с
    вычисляемыми SDK чексуммами (трейлерный чанковый режим) → 200; GET →
    байты равны; ETag = MD5 (трейлеры не меняют ETag-правило). Приёмка
    канона 03 §3 реальным клиентом.
@@ -552,7 +555,7 @@ E2E-классов.
 - **Изоляция**: per-class окружение (сеть+контейнер+том, guid в именах);
   никаких общих контуров; E2E-прогоны параллельны с чем угодно — помех
   нет конструктивно. Сами E2E-классы последовательны (одна коллекция —
-  изоляция глобальной `AWSConfigs`; окружения при этом независимы).
+  последовательный прогон, консервативная мера против глобального состояния SDK; окружения при этом независимы).
 - **Детерминированность**: тела фиксированы seed; имена бакетов содержат
   тег окружения; никаких снов — готовность wait-стратегиями, внутренние
   ожидания поллом 0.5 с с конечным бюджетом (подъём ≤ 30 с; весь Fact —
@@ -579,11 +582,7 @@ E2E-классов.
   целевые клиенты (AWS SDK, mc) такой операции не имеют — сценария нет.
   Копия объекта > 5 ГБ (`CopyObject` `EntityTooLarge`) — аналогично
   client-side (канон 02, формулировка обновлена §3.4).
-- **Глобальная `AWSConfigs.RequestChecksumCalculation`**: переключение
-  режимов — только в последовательной E2E-коллекции; при будущих
-  параллельных AWS-тестах в проекте — пересмотреть (env
-  `AWS_REQUEST_CHECKSUM_CALCULATION` читается статически один раз —
-  переключение внутри процесса единственный вариант).
+- **Flexible checksums per-client** (`AmazonS3Config.RequestChecksumCalculation`): фабрика задаёт режим на каждом клиенте; env `AWS_REQUEST_CHECKSUM_CALCULATION` (статический кеш SDK) серией не используется — влияние окружения исключено.
 - **Формат вывода `mc`** (ls/stat) меняется между версиями — образ запинен
   тегом из `images.txt`; парсинг минимальный (наличие ключа в выводе),
   без хрупких колонок.
@@ -700,9 +699,10 @@ E2E-классов.
 7. **Гейт `PGW_TEST_DOCKER=1`** — единая env docker-серий монорепо
    (прецеденты PgWorker/KafkaWorker), а не новая переменная.
 8. **E2E-классы последовательны одной коллекцией** — единственное
-   нефункциональное ограничение: глобальная статика
-   `AWSConfigs.RequestChecksumCalculation` не терпит параллельных
-   переключателей; изоляция окружений при этом полная (per-class).
+   нефункциональное ограничение: настройка checksum — per-client
+   (`AmazonS3Config.RequestChecksumCalculation`; глобальной статики в
+   AWSSDK.Core 3.7.501.1 нет), последовательность — консервативная мера;
+   изоляция окружений полная (per-class).
 9. **Персистентность тома через рестарт и сценарий «PgWorker-бэкап против
    ownS3» — не-цели** (буква roadmap-пункта; второе — t41). E2E-прогон
    полной серии — это и есть мерж-гейт (серия маленькая; отдельный
