@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
-# Подъём полного стенда (профили full + kafka + valkey) и приведение в рабочее
-# состояние: реплики, sync-standby, инвентарь схем (spec t10 §7.1), живой
-# kafkaworker, живой valkeyworker + сид demo (t03). Управление кафкой входит в
-# стенд всегда (не только e2e-гейтом): без воркера kafka-домен панели глух —
-# отсюда «глупые» алерты и разборы.
+# Подъём полного стенда (профили full + kafka + valkey + metrics) до рабочего
+# состояния, по порядку: publish-фазы образов ([PHASE]: SdGenerator, OwnS3,
+# wal-агент; остальные — compose build) → стендовый compose (владелец сети
+# adminpanel-stand-net) → deploy-контур (contour-override: воркеры + ownS3) →
+# bucket-сид ownS3 → POST /api/clusters (канонический demo движком) → панель +
+# прометей. Управление кафкой входит в стенд всегда (не только e2e-гейтом):
+# без воркера kafka-домен панели глух — отсюда «глупые» алерты и разборы.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(cd ../.. && pwd)"
