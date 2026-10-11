@@ -37,6 +37,9 @@ ETag/mtime объектов после mirror меняются (пересозд
   только admin).
 - Стендовый env панели уже на ownS3 (compose) — панель read-only, переводу
   не мешает.
+- Стенд — один контур одна сеть: endpoint воркера/панели —
+  `http://owns3:9000` (имя стендовой сети); миграция выполняется СНАРУЖИ
+  через хост-публикации `:9000`/`:9010`.
 
 ## 3. Команды
 
@@ -71,16 +74,15 @@ MC "mc alias set src http://host.docker.internal:9000 minioadmin minioadmin >/de
 ### 3.3. Переключение
 
 1. Правка `deploy/.env`:
-   `PGW_BACKUP_S3_ENDPOINT=http://host.docker.internal:9010`,
+   `PGW_BACKUP_S3_ENDPOINT=http://owns3:9000` (имя стендовой сети;
+   advertised НЕ задаётся — равен endpoint),
    `PGW_BACKUP_S3_ACCESS_KEY=pgw-backups-writer`,
-   `PGW_BACKUP_S3_SECRET_KEY=<writer-secret>` (= `OWNS3_ACCESS_KEYS__0__*`);
-   при нестандартной сети джобов/агентов —
-   `PGW_BACKUP_S3_ADVERTISED_ENDPOINT`.
+   `PGW_BACKUP_S3_SECRET_KEY=<writer-secret>` (= `OWNS3_ACCESS_KEYS__0__*`).
 2. Рестарт подсистемы: `00-up.sh` (пересоздаст pgworker-инстанты и owns3)
    либо точечно: `cd deploy && docker compose --env-file .env up -d
    --force-recreate pgworker pgworker-2 owns3`.
 3. Панель: `docker compose up -d --force-recreate adminpanel` (стендовый
-   compose, при изменении её env).
+   compose; её env уже `http://owns3:9000`).
 
 Окно «проход 2 → рестарт воркера» НЕ требует остановки подсистемы: недостающие
 WAL-сегменты окна агент досылает из удерживаемого слотом WAL после
@@ -140,8 +142,8 @@ src/pgworker-backups"` — тихий рост невозможен (ворке�
 
 ## 5. Откат (ownS3 деградирует в переходный период)
 
-Env-флип назад: `PGW_BACKUP_S3_ENDPOINT=http://host.docker.internal:9000`,
-креды `minioadmin/minioadmin` → рестарт (п. 3.3.2). Дыра MinIO за окно работы
+Env-флип назад: `PGW_BACKUP_S3_ENDPOINT=http://minio:9000` (compose-DNS
+as-minio стендовой сети), креды `minioadmin/minioadmin` → рестарт (п. 3.3.2). Дыра MinIO за окно работы
 с ownS3 самозаживляется штатно: WAL-агенты стартуют от хвоста MinIO и досылают
 дыру из удерживаемого слотом WAL (в пределах `max_slot_wal_keep_size` —
 долгие окна недопустимы, это аварийный путь); полные переснимет планировщик
@@ -154,3 +156,29 @@ Env-флип назад: `PGW_BACKUP_S3_ENDPOINT=http://host.docker.internal:900
 health-гвард из `00-up.sh`, чек 45 уже против ownS3, упоминания переходного
 периода — из README/env-шаблона. Осознанная потеря старых данных тома, если
 не сохранены иначе.
+
+## 7. Тестовый прогон процедуры (стенд без живых цепочек в MinIO)
+
+Когда as-minio пуст (свежий стенд), процедура доказывается тестовым прогоном:
+
+1. **Bucket-сид в as-minio**: `MC "mc alias set src http://localhost:9000
+   minioadmin minioadmin >/dev/null && mc mb --ignore-existing
+   src/pgworker-backups"` (as-minio — сервис стендового компоуза; bucket
+   сидируется только здесь — 00-up.sh его больше не создаёт).
+2. **Временный env-флип на MinIO**: `PGW_BACKUP_S3_ENDPOINT=http://minio:9000`,
+   креды `minioadmin/minioadmin` → рестарт `pgworker pgworker-2` (контур-
+   override) → дождаться ≥1 COMPLETED-полного на шард + wal-объекты в
+   as-minio (наблюдение — панель/etcd; полные снимает планировщик).
+3. **Процедура §3 целиком**: mirror×3 (снаружи `:9000`→`:9010`) → гейт §3.5 →
+   переключение на `http://owns3:9000` → рестарт.
+4. **Чистка тестовых цепочек** (возврат стенда к рабочему состоянию):
+   - вернуть `deploy/.env` (`http://owns3:9000`, writer-ключ) — если не
+     возвращено шагом 3;
+   - удалить перенесённые тестовые цепочки из ownS3 и as-minio:
+     `mc rm --recursive --force <alias>/pgworker-backups/demo/` в ОБОИХ
+     хранилищах (только тестовые префиксы, созданные прогоном);
+   - etcd-статусы тестовых полных/wal-ключи: подсистема сойдётся сама
+     (супервизор/ретенция уберут осиротевшие записи; форсировать руками
+     не нужно).
+   Прогон на стенде с ЖИВЫМИ цепочками — шаги 1–3 без чистки (данные
+   остаются рабочими).

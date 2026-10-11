@@ -152,12 +152,11 @@ Quick-режим: `checks/90-down.sh -v && checks/05-seed.sh` → зелёные
 ## Отладка
 
 - контейнеры: `docker compose ps`, логи `docker compose logs <сервис>`;
-  ноды — по имени сервиса (`s1a`…), контейнеры — `as-*` (не конфликтуют
-  со стендом pg (этот монорепозиторий));
+  канонические ноды demo — контейнеры движка `pgw-demo-*` (`docker ps | grep pgw-`);
 - etcd: `docker compose exec etcd1 etcdctl --endpoints=http://localhost:2379 get / --prefix --keys-only`;
 - живые ключи API воркеров (lease TTL 15 c): `etcdctl get /pgworker/api/ --prefix`
   и `/kafkaworker/api/` — ключ есть = инстанс жив и URL валиден;
-- эмуляторы: `curl 127.0.0.1:8011/cluster | jq .` (8011/8012/8021/8022);
+- Patroni нод: portalloc-порты из `/pgworker/portalloc/demo` ( REST `:18xxx`);
 - панель (докер): логи `docker compose logs adminpanel`, API —
   `curl -b jar $BASE/api/overview`.
 
