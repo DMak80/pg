@@ -253,9 +253,10 @@ implies functionality that is not implemented» (формат ошибки — �
 - **HTTP**: `PUT /{bucket}/{key+}` при наличии заголовка
   `x-amz-copy-source` (дискриминатор от `PutObject`); query-параметры
   отсутствуют.
-- **Заголовки**: `x-amz-copy-source: /<src-bucket>/<src-key>` —
-  обязателен (URL-кодированный; только внутренний источник — внешний
-  S3 не копируется); `x-amz-metadata-directive`: `COPY` (дефолт) /
+- **Заголовки**: `x-amz-copy-source: <src-bucket>/<src-key>` —
+  обязателен (URL-кодированный; AWS SDK .NET шлёт без ведущего слэша —
+  форма с ведущим `/` также принимается; только внутренний источник —
+  внешний S3 не копируется); `x-amz-metadata-directive`: `COPY` (дефолт) /
   `REPLACE` — перенос user-metadata и Content-Type источника либо
   замена заголовками запроса; `x-amz-storage-class` — принимается и
   игнорируется; `x-amz-meta-*`/`Content-Type` — новые метаданные при

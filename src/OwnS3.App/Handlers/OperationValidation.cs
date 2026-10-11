@@ -77,18 +77,21 @@ public static class OperationValidation
         return directive;
     }
 
-    // x-amz-copy-source: /<bucket>/<key>, URL-декодированный (глава 02).
+    // x-amz-copy-source: <bucket>/<key> или /<bucket>/<key>, URL-декодированный
+    // (глава 02; AWS SDK .NET шлёт без ведущего слэша — обе формы принимаются).
     public static (string Bucket, string Key) ParseCopySource(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
             throw new S3ProtocolException(S3ErrorCode.InvalidArgument, "Copy Source must mention the source bucket and key");
         var decoded = Uri.UnescapeDataString(value);
-        if (!decoded.StartsWith('/') || decoded.Length < 3)
+        if (decoded.StartsWith('/'))
+            decoded = decoded[1..];
+        if (decoded.Length < 3)
             throw new S3ProtocolException(S3ErrorCode.InvalidArgument, "Copy Source must mention the source bucket and key");
-        var slash = decoded.IndexOf('/', 1);
-        if (slash < 0 || slash == decoded.Length - 1)
+        var slash = decoded.IndexOf('/');
+        if (slash <= 0 || slash == decoded.Length - 1)
             throw new S3ProtocolException(S3ErrorCode.InvalidArgument, "Copy Source must mention the source bucket and key");
-        return (decoded[1..slash], decoded[(slash + 1)..]);
+        return (decoded[..slash], decoded[(slash + 1)..]);
     }
 
     // Range Get/Head: одиночная спецификация распознаётся (bytes=a-b | a- | -N);

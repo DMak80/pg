@@ -119,7 +119,10 @@ public sealed class AwsChunkedReader : Stream
     {
         ParseFrameHeader(ReadLineSync());
         ReadExactSync(_chunkBuffer, _frameSize);
-        ExpectCrlfSync();
+        // Терминатор данных — только у НЕПУСТЫХ чанков (канон 03 §3: после
+        // строки 0-чанка сразу идут трейлеры TRAILER-режима / конец потока).
+        if (_frameSize > 0)
+            ExpectCrlfSync();
         VerifyFrame(_frameSize);
         if (_frameSize == 0)
         {
@@ -134,7 +137,9 @@ public sealed class AwsChunkedReader : Stream
     {
         ParseFrameHeader(await ReadLineAsync(ct));
         await ReadExactAsync(_chunkBuffer, _frameSize, ct);
-        await ExpectCrlfAsync(ct);
+        // Терминатор данных — только у НЕПУСТЫХ чанков (канон 03 §3).
+        if (_frameSize > 0)
+            await ExpectCrlfAsync(ct);
         VerifyFrame(_frameSize);
         if (_frameSize == 0)
         {
