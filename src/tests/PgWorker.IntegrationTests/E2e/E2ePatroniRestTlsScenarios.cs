@@ -149,12 +149,23 @@ public class E2ePatroniRestTlsScenarios
             await using (var p2 = await Fx.StartHostAsync("rtls-p2", extraEnv: extraEnv, ct: ct))
             {
                 // Тик надзора обязан пересоздать легаси-ноду с REST-TLS env.
+                // t41-фикс гоночного окна: env читается и у Created-контейнера
+                // (между create и start recreate-пути) — критерий конвергенции
+                // обязан требовать ЖИВУЮ ноду, иначе marker-exec ниже падает
+                // на незапущенном контейнере.
                 var migrated = await E2ePhase.WaitAsync(fx, "rtls-convergence",
-                    async () => (await Fx.RunDockerAsync(
-                        ["inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", legacy], ct))
-                    .Contains("SSL_RESTAPI_CERTIFICATE"),
+                    async () =>
+                    {
+                        var state = await Fx.RunDockerAsync(
+                            ["inspect", "-f", "{{.State.Status}}", legacy], ct);
+                        if (!state.Trim().Equals("running", StringComparison.Ordinal))
+                            return false;
+                        var env = await Fx.RunDockerAsync(
+                            ["inspect", "-f", "{{range .Config.Env}}{{println .}}{{end}}", legacy], ct);
+                        return env.Contains("SSL_RESTAPI_CERTIFICATE");
+                    },
                     TimeSpan.FromSeconds(120), ct);
-                migrated.Should().BeTrue("шаг конвергенции обязан довести легаси-ноду до TLS-env");
+                migrated.Should().BeTrue("шаг конвергенции обязан довести легаси-ноду до живой ноды с TLS-env");
 
                 // Volume пережил пересоздание (маркер на месте).
                 var marker = await Fx.RunDockerAsync(
