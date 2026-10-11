@@ -83,103 +83,31 @@ Patroni `http://<host>:8008`). SQL-хосты compose-сети резолвят�
   named volumes `etcd1-data`/`etcd2-data`/`etcd3-data` (переживают
   `docker compose down`); healthcheck `etcdctl endpoint health`.
 
-### 2.2. `seed` — демо-сид через API воркеров (обоих профилей)
+### 2.2. pg-демо-контур (канонический) и сид API воркеров
 
-**Сид идёт через API воркеров** (ответственность изменений etcd — у воркеров;
-прямая запись etcdctl'ом упразднена): скрипт наливки ждёт `/healthz`
-воркера и делает `POST /api/seed/demo` (PgWorker — pg-контур, arch/14
-§1.1.1; KafkaWorker — kafka-контур, arch/16 §1.1; эндпоинт включён env-ом
-`EnableSeedEndpoint=true` только в стенд-образах). Воркер пишет тот же
-демо-набор ключей, что и прежний etcdctl-скрипт (состав ниже — 1:1; времена
-— динамические от `now`; значения — 1:1 сид-фикстуры `EtcdSeed`
-интеграционных тестов). Идемпотентность прежняя: живой `/clusters/demo/config`
-(или `/kafka/clusters/events/config`) → no-op.
+Pg-демо-контур — канонический кластер движка: `00-up.sh` после healthz
+воркера зовёт `POST /api/clusters` (mTLS healthcheck-парой; тело — имя
+`demo`, 16 бакетов, 2 шарда, 2 реплики, request_cpu=2/request_mem=2Gi,
+request_disk=100Gi). Идемпотентность: живой `/clusters/demo/config` → 409;
+пересборка demo — полный цикл стенда (`90-down.sh -v` → `00-up.sh`). Движок
+провижинит Spilo-ноды с Patroni (arch/14), портами portalloc (публикации —
+наружу, оператор/дебаг), инициализацией БД/ролей/схем `bucket_%`, переводом
+в Active; wait-гейт `00-up.sh` — Active, ноды RUNNING, status-ключи бакетов
+сняты. Сид `POST /api/seed/demo` pg-веткой стендом НЕ наливается (эндпоинт
+остаётся в коде, no-op на живом кластере); kafka/valkey-ветки `05-seed.sh` —
+без изменений. Демо-аномалии UI насыпает чек 20-alerts сам.
 
-Порядок наливки: воркер должен быть Поднян (полный стенд `00-up.sh`
-поднимает PgWorker и KafkaWorker до сида). Скрипт наливки (`05-seed.sh`)
-жизнью воркера после наливки НЕ управляет: потребитель сида решает сам.
-Чек `50-kafka-api.sh` после наливки kafka-сида управляет жизнью воркера
-сам — поднимает kafkaworker, ждёт живой ключ `/kafkaworker/api/<id>` и тик
-kafka-снапшота панели, гоняет мутации через панель→прокси→API живого
-воркера и останавливает воркера финальным шагом: end-state полного прогона
-«после сида kafkaworker остановлен». Совместимость сида с живым воркером:
-у сида нет контейнеров брокеров → пробы воркера слепые (arch/16 §5 C:
-слепая проба = бездействие) → сидовые заявки (lifecycle/rotate/rebalance)
-не исполняются, статичные данные стабильны; прежнее правило «профили seed
-и kafka не смешивать» смягчено до этого инварианта. PgWorker после pg-сида
-остаётся жить (полная система). В quick-профиле (без PG-нод и эмуляторов)
-сид наливается тем же эндпоинтом временно поднятым воркером.
+### 2.3. Единая стендовая сеть (контур стенда)
 
-Демо-набор pg-контура (пишет PgWorker `POST /api/seed/demo`):
-
-- кластер `demo`: `config` `{"buckets":16,"dbname":"demo","created_unix":…}`;
-- шарды `s1`, `s2`: `dsn` `host=s1a,s1b port=5432 dbname=demo user=postgres`
-  (s2 → `s2a,s2b`), `replicas` = `1`; плюс `master`-ключи **статично**
-  (`s1a:5432`, `s2a:5432`) — в quick-профиле эмуляторов нет, ключи живут
-  без lease; в full эмуляторы-мастера переписывают их с lease (§2.3);
-- `routing` всех 16 бакетов фикс-раскладкой (s1 — 10, s2 — 6) — в точности
-  значения `EtcdSeed` интеграционных тестов (seed.sh обязан писать те же);
-- **живые** статус-кейи переездов для UI: `bucket_3` = `SYNCING`
-  (свежий `updated_unix` = `now − 60`), `bucket_7` = `ABORTING` c
-  `phase: "cleanup"` (`now − 900`), `bucket_11` = `FROZEN` с **протухшим**
-  `updated_unix` = `now − 7200` (старше порога `StaleMoveSeconds` — сразу
-  виден алерт `move-stale`). Времена — динамические от `now`, чтобы
-  аномалии были живыми; интеграционные фикстуры (`EtcdSeed`) используют
-  зафиксированные эквиваленты той же раскладки (10/6, те же owner/target);
-- журнал `/clusters/demo/heals/bucket_5` (одна запись `restore-heal`);
-- HA-DCS `/service/demo-s1/` и `/service/demo-s2/`: `leader`,
-  `members/s1a` (`conn_url: s1a:5432`, `role: master`), `members/s1b`
-  (`role: replica`), `optime/leader`, `initialize` — статично (quick);
-  в full эмуляторы переписывают `members/<node>` и `leader`/`optime/leader`
-  с lease (§2.3);
-- стендовая топология `/cluster/nodes/s1a|s1b|s2a|s2b` (в full-профиле её
-  вместо сида пишут эмуляторы, в quick — сам сид, чтобы блок «стендовая
-  топология» был виден).
-
-Сид перезапускаем повторным `POST /api/seed/demo` (например,
-`checks/05-seed.sh`) после `down -v` — идемпотентность и «не портить
-существующее» гарантирует эндпоинт (живой config → no-op).
-
-### 2.3. `s1a/s1b/s2a/s2b` + `hc1a/hc1b/hc2a/hc2b` (профиль `full`)
-
-- PG-ноды: `postgres:18`, `wal_level=logical`, trust (только стенд);
-  s1b/s2b — физические реплики через `pg_basebackup -R` (паттерн compose
-  скопирован из `arch/stand/docker-compose.yml`, упрощён: без
-  HAProxy/hasync — панель подключается к нодам напрямую по multi-host DSN
-  `host=s1a,s1b`, что Npgsql разрешает через `TargetSessionAttributes`).
-  Ноды `s*a` — **self-healing**: при пустом `PGDATA` если пир — мастер,
-  клонируются от него репликой (иначе первый старт — initdb-мастер);
-  паттерн `s2a` из pg (этот монорепозиторий) — он даёт повторные прогоны e2e после failover
-  (30-й чек пересоздаёт s1a репликой s1b).
-- Инвентарь: `00-up.sh` создаёт на мастерах БД `demo` и схемы `bucket_%` —
-  по одному на **ACTIVE**-бакет владельца (s1 — 8, s2 — 5; статусные
-  бакеты переездов исключены — так сверяет `inventory-mismatch`,
-  сверка только по ACTIVE). Итого 13 схем; расхождение с routing —
-  алерт `inventory-mismatch` (проверяется 40-м чеком с обратным знаком).
-- `hc*` — patroni-эмуляторы (python, образ из `dev-stand/adminpanel/sidecar/`;
-  развитие `arch/stand/sidecar/rolecheck.py`): 
-  - REST `:8008`: `GET /cluster` → JSON в формате Patroni
-    (`members[]{name,role,state,timeline,lag,host,port}`) — всегда 200,
-    пока жив контейнер эмулятора: состав членов scope задан env
-    (`MEMBERS=s1a,s1b`), каждый опрашивается по PG (роль —
-    `pg_is_in_recovery()`); недоступная нода — `state: "stopped"` с
-    последней известной ролью (Patroni ведёт себя так же, а панели
-    нужна запись с `name` каждого member'а — иначе ошибка пробы);
-    `GET /primary` → 200 только на мастере, `GET /replica` — 200 только
-    на реплике (503 — PG ноды недоступна);
-  - мастер шейвит `/clusters/demo/shards/<X>/master` = `<host>:5432`
-    **с lease TTL 5 c** (продление раз в 1 c) — воспроизведение
-    Patroni-callback `on_role_change`; тем же lease-циклом мастер пишет
-    `/service/<scope>/leader` = `{"name":"<node>"}` и `optime/leader`
-    (`pg_current_wal_lsn()`) — смерть мастера гасит все три ключа ≤ 5 c
-    (алерты `shard-no-master` + `shard-no-leader`), promote реплики —
-    возобновляет от её имени;
-  - каждая нода регистрируется в `/service/demo-s<X>/members/<node>`
-    (роль/state живьём из PG) и `/cluster/nodes/<node>` (lease TTL 5 c);
-    lease продлевается **только пока PG ноды отвечает** — смерть ноды
-    убирает её из DCS через TTL, как у Patroni.
-Рестарт-политика эмуляторов — без `always` (урок pg (этот монорепозиторий)-стенда: рестарт
-сайдкара не должен реанимировать остановленную ноду).
+Стенд — ОДИН контур = ОДНА стендовая сеть `adminpanel-stand-net` (владелец —
+стендовый compose; deploy-проект подключается external, override
+`docker-compose.contour.yml`): в ней etcd-контур, панель, воркеры, ноды demo
+(`pgw-demo-*`, поднимает движок), wal-агенты, ephemeral-джобы бэкапов,
+ownS3 (alias `owns3:9000` внутри, `:9010` наружу) и мониторинг; у каждого
+контейнера — ровно одна сеть. Усыновлённые as-ноды/patroni-эмуляторы/HostMap
+— демонтированы; панель пробирует канонические ноды по advertised-адресам
+portalloc напрямую (extra_hosts панели — резолв advertised-имени
+docker-хоста `host.docker.internal`, не контурный переход).
 
 ### 2.4. `valkeyworker` (профиль `valkey`; t03)
 
@@ -246,22 +174,24 @@ member'ов scope'а).
 
 | Скрипт | Сценарий | Ожидание |
 |---|---|---|
-| `00-up.sh` | `docker compose --profile full --profile kafka --profile valkey up -d` + wait-on-healthy (etcd, PG-реплики, seed, heartbeat kafkaworker/valkeyworker, healthz панели); затем БД `demo` + 13 схем `bucket_%` (§2.3) и `synchronous_standby_names` (ALTER SYSTEM — паттерн pg (этот монорепозиторий): не флагами `-c`); шаг 9 — pg-контур полной системы: `pgw-stand-etcd` (`dev-stand/compose.yaml`, хост-2379) + PgWorker (`deploy/docker-compose.yml`, секреты `deploy/.env`) | стенд поднят (полная система: панель + PG + kafka + valkey + PgWorker), сид на месте, реплики streaming |
-| `10-smoke-api.sh` | панель против стенда: login → 401 без cookie, `/api/overview`, `/api/etcd/status`, `/api/clusters/demo`, `/api/ha/demo-s1`, `/api/alerts` | 200, структура, сидированные данные видны |
-| `20-alerts.sh` | seeded-аномалии: FROZEN-протухший → `move-stale`, `bucket_7` → `move-aborting`; затем `shard-no-master` (critical): в full перед `etcdctl del master`-ключа s2 остановить эмуляторы `hc2a`/`hc2b` (keepalive перепишет ключ), в конце вернуть и дождаться восстановления lease (в quick эмуляторов нет — просто del/put) | алерты появляются ≤ 2 тиков; после восстановления гаснут |
-| `30-failover.sh` | `docker stop s1a` → lease гаснет → `shard-no-master` + `shard-no-leader` (`leader`-ключ тоже под lease, §2.3); promote s1b руками (`pg_ctl promote`) → эмулятор s1b берёт lease, алерты гаснут, Patroni-REST показывает нового мастера; финал — rejoin: `docker compose rm -sf s1a && up -d s1a` (self-healing клон от s1b) + sync-names на s1b | цикл алерт→успокоение; стенд снова консистентен для 40 |
-| `40-live-probes.sh` | панель (в докере, сеть стенда): `/api/ha/demo-s1` содержит lag/state от Patroni-REST (пробы идут на `hc1a:8008`/`hc1b:8008` через `HostMap` §2.3); `/api/clusters/demo` shards[].runtime заполнен (sync-standby, инвентарь 8+5 ACTIVE-схем — `inventory-mismatch` нет; SQL-пробы напрямую на `s1a:5432`/`s1b:5432`) | поля не null, probe-ошибок нет |
+| `00-up.sh` | стендовый compose (владелец сети `adminpanel-stand-net`, профили full/kafka/valkey/metrics) → deploy-контур contour-override (воркеры + owns3 external-сетью) → wait-on-healthy (etcd, heartbeat kafkaworker/valkeyworker, healthz панели) → `POST /api/clusters` (канонический demo) + wait-гейт конвергенции (Active, ноды RUNNING, status-ключи бакетов сняты) | стенд поднят (полная система: панель + канонический PG-demo + kafka + valkey + PgWorker + owns3, один контур одна сеть) |
+| `05-seed.sh` | сид через API воркеров — только kafka/valkey-ветки (pg-ветка не наливается: demo создаёт `00-up.sh` через `POST /api/clusters`) | сид на месте, идемпотентно (живой config → no-op) |
+| `10-smoke-api.sh` | панель против стенда: login → 401 без cookie, `/api/overview`, `/api/etcd/status`, `/api/clusters/demo`, `/api/ha/demo-shard1`, `/api/alerts`; мастер-ассерты без хардкода адресов нод (portalloc-динамичны: `masterAddress` непуст) | 200, структура, данные живого demo видны |
+| `20-alerts.sh` | сценарии на живом каноническом кластере: move туда-обратно (`demo/shard1`↔`demo/shard2`); `shard-no-master` (critical): `etcdctl del /clusters/demo/shards/shard2/master` → алерт → возврат ключа фактическим мастером (значение — из API) → гашение; демо-аномалии UI насыпает сам | алерты появляются ≤ 2 тиков; после восстановления гаснут |
+| `30-failover.sh` | kill мастера по leader-ключу `/clusters/demo/shards/shard1/master` (`docker kill pgw-demo-shard1-<node>`) → Patroni (DCS etcd) промотит реплику — wait нового мастера (leader-ключ сменился, lease жив) → надзор движка rejoin'ит убитую ноду (wait RUNNING) | цикл алерт→успокоение; финал — оба члена RUNNING, master-ключ жив |
+| `40-live-probes.sh` | панель (в докере, стендовая сеть): Patroni/SQL-пробы — advertised portalloc-адреса нод (из `/api/clusters/demo`: patroni `:18xxx`, pg `:15xxx` через `host.docker.internal`); `/api/ha/demo-shard1` lag/state заполнены, инвентарь ACTIVE-схем сверен | поля не null, probe-ошибок нет, `inventory-mismatch` нет |
 | `43-etcd-ha.sh` (t09) | кворум/health/member list; stop as-etcd-2 → запись/healthz/master-ключ живы; start → снова 3/3 | каждый шаг ≤ бюджета |
-| `45-backups-storage.sh` | налив mc-контейнером тестовых объектов в bucket бэкапов → `curl /api/backups/storage`: configured/health/дерево (t08, 02 §2.5) | `configured=true`, health ok, дерево содержит налитый префикс |
+| `45-backups-storage.sh` | грань «Хранилище бэкапов» против ownS3 (контур: `owns3:9000` внутри / `:9010` снаружи): гвард healthz `:9010`, идемпотентный mc-налив снаружи (`demo/shard1`), дерево — реальные бэкапы demo + налив, `clusterOk == null` | `configured=true`, health api/live ok, дерево `demo/shard1` с полными |
 | `51-valkey-api.sh` (t03) | valkey-домен против живого воркера (профиль `valkey`): сид `demo` → панель видит кластер (список/детали/нода RUNNING/endpoints), live-PING `live=true`; полный цикл мутаций через панель→прокси→API воркера: create (RunTag-имя) → NOT_INITIALIZED → RUNNING ≤ бюджета тиков, config-мутация (maxmemory converge), resources (пересоздание контейнера), ротации app+admin (заявки 202, исполнение окном двух паролей), delete → контейнера и ключей нет; 409-ветки (имя занято, двойная ротация) | каждый шаг ≤ бюджета; после delete — ни контейнера `vwk-<tag>-*`, ни ключей `/valkey/clusters/<tag>/` |
-| `90-down.sh` | разбор (с опцией `-v` — стереть данные); t03: останавливает valkeyworker и удаляет демо-контейнер `vwk-demo-node1` | — |
+| `60-move-ops.sh` | операции переездов через панель→API воркера на живом demo; гвард — живой `/clusters/demo/config` (не NOT_INITIALIZED) + ноды RUNNING (wait до 60 c) | заявки исполняются, бакеты переезжают (`demo/shard1`↔`demo/shard2`) |
+| `90-down.sh` | разбор: стендовый + deploy compose-проекты + движковые `pgw-*`-контейнеры/тома/сети (созданы Engine API — compose их не трогает) + страховочный prune сетей (с опцией `-v` — стереть данные) | контура не осталось (контейнеры/сети/тома) |
 
 Скрипты — bash+jq (как в pg (этот монорепозиторий)), гоняются вручную и в рамках задачи
 `t10-dev-stand`; CI не требуют (интеграционные тесты используют Testcontainers,
 не стенд). Полный e2e-прогон — последовательность `00 → 10 → 20 → 30 → 40`
 (панель — сервис стенда, поднимается шагом 00; порядок важен: 30-й меняет
-топологию s1
-и возвращает её в консистентный вид rejoin'ом; 40-й рассчитан на неё);
+топологию demo (Patroni-failover)
+и возвращает её в консистентный вид rejoin'ом надзора; 40-й рассчитан на неё);
 `90` — разбор. Повторный прогон — с чистого состояния (`90 -v` → `00`).
 
 ## 4. Отличия от стенда `arch/stand` (осознанные)
@@ -269,8 +199,6 @@ member'ов scope'а).
 | В pg (этот монорепозиторий) | У нас | Почему |
 |---|---|---|
 | HAProxy per-шард + hasync (топология из etcd) | нет HAProxy; DSN multi-host прямо на ноды | панель читает и probe'ит, клиентский роутинг ей не нужен; минус 4 контейнера |
-| сайдкар = `/primary` + регистрация IP | то же + полноценный `/cluster` (Patroni-формат) + master-lease шардового ключа | панели нужны Patroni-REST-данные и живой lease-сценарий |
-| сайдкары в netns нод (`network_mode: service:…`) | отдельные контейнеры в общей сети, `:8008`/`:5432` опубликованы на хост (§1) | панель достигает эмуляторы и PG по compose-DNS (`:8008` — через `HostMap` §2.3); lease-ключ пишет эмулятор с именем хоста ноды — номинальные адреса проб в etcd расходятся с реальными слушателями, расхождение закрывает маппинг |
 | opsbox с etcdctl/psql | нет; роль ops выполняют host-скрипты + `docker compose exec etcd etcdctl` | меньше движущихся частей |
 
 ## 5. Быстрый старт (для README)
