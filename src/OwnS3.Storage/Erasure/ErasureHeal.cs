@@ -20,6 +20,9 @@ public sealed class ErasureHealService(ErasurePool pool, ErasureXlDrive drive,
 
     public bool IsRunning { get; private set; }
 
+    /// Завершение прохода: число вылеченных объектов (метрики OwnS3EcMetrics).
+    public event Action<long>? PassCompleted;
+
     // POST /admin/heal: запуск внепланового прохода (идущий продолжается —
     // параллельный не создаётся).
     public void RequestPass()
@@ -55,6 +58,7 @@ public sealed class ErasureHealService(ErasurePool pool, ErasureXlDrive drive,
                 await HealBucketAsync(bucket.Name, ct);
             HealUploads();
             _lastPassAt = timeProvider.GetUtcNow();
+            PassCompleted?.Invoke(_healedObjects);
         }
         finally
         {

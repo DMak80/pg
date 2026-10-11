@@ -19,7 +19,8 @@ public class VolumeCleanupServiceTests
         var drive = new SingleXlDrive(volume, TimeProvider.System);
         var metrics = new OwnS3Metrics(new Meter("owns3-test-" + Guid.NewGuid().ToString("N")));
         var logger = new CollectingLogger();
-        var service = new VolumeCleanupService(drive, volume, metrics, logger);
+        var service = new VolumeCleanupService(drive,
+            new OwnS3.App.StorageModeInfo(IsErasure: false, [root], Topology: null), metrics, logger);
         try
         {
             // Act: старт → немедленный проход → стоп (периодический цикл не ждём)
