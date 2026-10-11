@@ -18,16 +18,21 @@ api() { curl -fsS -b "$JAR" "$BASE$1"; }
 has_alert() { api /api/alerts | jq -e --arg k "$1" --arg t "$2" 'any(.[]; .kind==$k and .target==$t)' >/dev/null; }
 wait_no_alert() { for i in $(seq 1 120); do has_alert "$1" "$2" || return 0; sleep 1; done; echo "❌ алерт $1 -> $2 не погас за 120 c"; return 1; }
 
-# Arrange: мастер shard1 — по master-ключу (фактический, portalloc-динамичен);
-# нода = имя до ':' минус префикс шарда; контейнер движка pgw-demo-shard1-<node>.
+# Arrange: мастер shard1 — по DCS leader-ключу Patroni (имя ноды; master-ключ
+# кластера несёт portalloc-формат advertised-хоста); контейнер движка
+# pgw-demo-shard1-<node>.
+m1_raw="$(ect get /service/demo-shard1/leader --print-value-only 2>/dev/null)"
+m1_node="$(echo "$m1_raw" | jq -r '.name // empty' 2>/dev/null)"
+[ -n "$m1_node" ] || m1_node="$m1_raw"
+[ -n "$m1_node" ] && [ "$m1_node" != "null" ] \
+  || { echo "❌ DCS leader demo-shard1 пуст"; exit 1; }
 m1="$(ect get /clusters/demo/shards/shard1/master --print-value-only)"
-m1_node="${m1%%:*}"
-[ -n "$m1_node" ] && [ "$m1_node" != "$m1" ] \
-  || { echo "❌ master-ключ shard1 пуст/невалиден: '$m1'"; exit 1; }
+[ -n "$m1" ] \
+  || { echo "❌ master-ключ shard1 пуст"; exit 1; }
 m1_container="pgw-demo-shard1-${m1_node}"
 docker inspect "$m1_container" >/dev/null 2>&1 \
   || { echo "❌ контейнер мастера $m1_container не найден (docker ps | grep pgw-demo)"; exit 1; }
-echo "  мастер shard1: $m1 (контейнер $m1_container)"
+echo "  мастер shard1: $m1 (DCS leader $m1_node, контейнер $m1_container)"
 
 # Act 1: отказ мастера (kill контейнера движка)
 echo ">>> [PHASE] docker kill $m1_container ($(date +%H:%M:%S))"
