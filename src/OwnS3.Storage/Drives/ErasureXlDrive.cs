@@ -1,3 +1,4 @@
+using System.Text;
 using Microsoft.Extensions.Logging;
 using OwnS3.Storage.Erasure;
 
@@ -121,16 +122,16 @@ public sealed partial class ErasureXlDrive : IXlDrive
     // Distribution формата тома (общая для всех сетов; читается с первого валидного).
     private int[] ReadDistribution(IReadOnlyList<ErasureDisk> setDisks)
     {
-        foreach (var disk in setDisks)
+        foreach (var disk in setDisks.Where(d => d.Online))
         {
             var info = ErasureVolumeInfo.Read(disk.Root);
             return info.Distribution;
         }
 
-        throw new InvalidOperationException("EC: сет без валидных дисков");
+        throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum);
     }
 
-    public async Task<PartDigest> WritePartAsync(IXlStaging staging, int partNumber, Stream body,
+    private async Task<PartDigest> WriteObjectPartAsync(IXlStaging staging, int partNumber, Stream body,
         long contentLength, CancellationToken ct)
     {
         var erasureStaging = RequireErasureStaging(staging);
@@ -638,27 +639,398 @@ public sealed partial class ErasureXlDrive : IXlDrive
             throw new XlIntegrityException($"EC: все копии xl.meta ключа {key} битые");
         }
     }
-    public List<MultipartJournals.UploadJournalEntry> ReadUploads(string bucket, string key) =>
-        throw new NotImplementedException();
-    public void WriteUploads(string bucket, string key, List<MultipartJournals.UploadJournalEntry> uploads) =>
-        throw new NotImplementedException();
-    public IReadOnlyList<string> ListUploadKeyDirs() => throw new NotImplementedException();
+    // ── multipart: журналы на дисках сета ключа (канон 06 §8) ──
+    // Журналы пишутся tmp+rename на все онлайн-диски сета, читаются с любого
+    // успешного; рассинхрон после отказов выравнивается heal (Task 13).
+
+    private IReadOnlyList<ErasureDisk> SetOf(string bucket, string key) =>
+        _pool.Sets[_pool.PickSetIndex(bucket, key)];
+
+    private string UploadDirOnDisk(ErasureDisk disk, string bucket, string key, string uploadId) =>
+        Path.Combine(disk.Root, ".owns3.sys", "multipart",
+            MultipartJournals.KeyDir(string.Empty, bucket, key).Trim('/'), uploadId);
+
+    private static string KeyDirName(string bucket, string key) =>
+        MultipartJournals.KeyDir(string.Empty, bucket, key).Trim('/');
+
+    public List<MultipartJournals.UploadJournalEntry> ReadUploads(string bucket, string key)
+    {
+        foreach (var disk in SetOf(bucket, key).Where(d => d.Online))
+        {
+            try
+            {
+                return MultipartJournals.ReadUploads(MultipartJournals.UploadsJsonPath(
+                    Path.GetDirectoryName(UploadDirOnDisk(disk, bucket, key, "x"))!));
+            }
+            catch (FileNotFoundException)
+            {
+                return [];
+            }
+            catch (IOException)
+            {
+                // следующий диск
+            }
+        }
+
+        throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum);
+    }
+
+    public void WriteUploads(string bucket, string key, List<MultipartJournals.UploadJournalEntry> uploads)
+    {
+        foreach (var disk in SetOf(bucket, key).Where(d => d.Online))
+        {
+            var keyDir = Path.Combine(disk.Root, ".owns3.sys", "multipart", KeyDirName(bucket, key));
+            Directory.CreateDirectory(keyDir);
+            MultipartJournals.WriteUploads(MultipartJournals.UploadsJsonPath(keyDir), uploads);
+        }
+    }
+
+    public IReadOnlyList<string> ListUploadKeyDirs() =>
+        _pool.Disks.Where(d => d.Online)
+            .SelectMany(disk =>
+            {
+                var multipartRoot = Path.Combine(disk.Root, ".owns3.sys", "multipart");
+                return Directory.Exists(multipartRoot)
+                    ? Directory.EnumerateDirectories(multipartRoot).Select(dir =>
+                        Path.Combine(disk.Root, ".owns3.sys", "multipart", Path.GetFileName(dir)))
+                    : [];
+            })
+            .Distinct()
+            .ToList();
+
     public List<MultipartJournals.UploadJournalEntry> ReadUploadsByKeyDir(string keyDirPath) =>
-        throw new NotImplementedException();
-    public bool UploadDirExists(string bucket, string key, string uploadId) => throw new NotImplementedException();
-    public void CreateUploadDir(string bucket, string key, string uploadId, XlMetaRecord uploadRecord) =>
-        throw new NotImplementedException();
-    public XlMetaRecord ReadUploadMeta(string bucket, string key, string uploadId) =>
-        throw new NotImplementedException();
-    public void TrashUpload(string bucket, string key, string uploadId) => throw new NotImplementedException();
-    public List<MultipartJournals.PartJournalEntry> ReadParts(string bucket, string key, string uploadId) =>
-        throw new NotImplementedException();
+        MultipartJournals.ReadUploads(MultipartJournals.UploadsJsonPath(keyDirPath));
+
+    public bool UploadDirExists(string bucket, string key, string uploadId) =>
+        SetOf(bucket, key).Any(disk => disk.Online
+            && Directory.Exists(UploadDirOnDisk(disk, bucket, key, uploadId)));
+
+    public void CreateUploadDir(string bucket, string key, string uploadId, XlMetaRecord uploadRecord)
+    {
+        // xl.meta загрузки — v1 (не объект); каталоги на всех онлайн-дисках сета
+        foreach (var disk in SetOf(bucket, key).Where(d => d.Online))
+        {
+            var uploadDir = UploadDirOnDisk(disk, bucket, key, uploadId);
+            Directory.CreateDirectory(uploadDir);
+            XlMetaFile.Write(uploadDir, uploadRecord);
+        }
+    }
+
+    public XlMetaRecord ReadUploadMeta(string bucket, string key, string uploadId)
+    {
+        foreach (var disk in SetOf(bucket, key).Where(d => d.Online))
+        {
+            var uploadDir = UploadDirOnDisk(disk, bucket, key, uploadId);
+            if (Directory.Exists(uploadDir))
+                return XlMetaFile.Read(uploadDir, out _);
+        }
+
+        throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload);
+    }
+
+    public void TrashUpload(string bucket, string key, string uploadId)
+    {
+        foreach (var disk in SetOf(bucket, key).Where(d => d.Online))
+        {
+            var uploadDir = UploadDirOnDisk(disk, bucket, key, uploadId);
+            if (Directory.Exists(uploadDir))
+                MoveToTrash(disk, uploadDir);
+        }
+    }
+
+    public List<MultipartJournals.PartJournalEntry> ReadParts(string bucket, string key, string uploadId)
+    {
+        foreach (var disk in SetOf(bucket, key).Where(d => d.Online))
+        {
+            var uploadDir = UploadDirOnDisk(disk, bucket, key, uploadId);
+            if (Directory.Exists(uploadDir))
+                return MultipartJournals.ReadParts(MultipartJournals.PartsJsonPath(uploadDir));
+        }
+
+        throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload);
+    }
+
+    // Staging части ВНУТРИ загрузки: шардирование пишет part.N прямо в
+    // каталоги загрузки на дисках сета (tmp не нужен — UploadPart-файл не виден
+    // до parts.json), PartResults копятся для Complete.
+    private sealed class ErasureUploadStaging : IXlStaging
+    {
+        public required string Bucket { get; init; }
+        public required string Key { get; init; }
+        public required string UploadId { get; init; }
+        public required Dictionary<int, ErasurePartResult> PartResults { get; init; }
+        public required int Parity { get; init; }
+        public required IReadOnlyList<ErasureDisk> SetDisks { get; init; }
+        public required int[] Distribution { get; init; }
+
+        public void Dispose()
+        {
+            // части загрузки остаются в каталоге загрузки — их чистит Abort/чистки
+        }
+    }
+
     public IXlStaging CreateUploadStaging(string bucket, string key, string uploadId) =>
-        throw new NotImplementedException();
-    public void CommitUploadPart(IXlStaging staging, int partNumber, string etagHex, long size, DateTimeOffset modTime) =>
-        throw new NotImplementedException();
+        new ErasureUploadStaging
+        {
+            Bucket = bucket,
+            Key = key,
+            UploadId = uploadId,
+            PartResults = new Dictionary<int, ErasurePartResult>(),
+            Parity = _defaultParity,
+            SetDisks = SetOf(bucket, key),
+            Distribution = ReadDistribution(SetOf(bucket, key)),
+        };
+
+    public async Task<PartDigest> WriteUploadPartAsync(IXlStaging staging, int partNumber, Stream body,
+        long contentLength, CancellationToken ct)
+    {
+        // тот же путь шардирования, но потоки — сразу в каталоги загрузки
+        var upload = staging as ErasureUploadStaging
+            ?? throw new ArgumentException("требуется EC upload-staging", nameof(staging));
+        var codec = CodecFor(upload.Parity);
+        var online = upload.SetDisks.Where(d => d.Online).ToList();
+        var streams = new Stream[codec.TotalShards];
+        try
+        {
+            for (var j = 0; j < codec.TotalShards; j++)
+            {
+                var disk = online.FirstOrDefault(d => d.PositionInSet == upload.Distribution[j]);
+                streams[j] = disk is not null
+                    ? new FileStream(Path.Combine(UploadDirOnDisk(disk, upload.Bucket, upload.Key, upload.UploadId),
+                        $"part.{partNumber}"), FileMode.Create, FileAccess.Write, FileShare.None)
+                    : new MemoryStream();
+            }
+
+            using var writer = new ErasureBlockWriter(codec, streams);
+            await writer.WriteAsync(body, contentLength, ct);
+            var result = await writer.CompleteAsync();
+            upload.PartResults[partNumber] = result;
+            return new PartDigest(result.ETagHex, result.Sha256Hex, result.SourceLength);
+        }
+        finally
+        {
+            foreach (var stream in streams)
+                stream?.Dispose();
+        }
+    }
+
+    public void CommitUploadPart(IXlStaging staging, int partNumber, string etagHex, long size, DateTimeOffset modTime)
+    {
+        var upload = staging as ErasureUploadStaging
+            ?? throw new ArgumentException("требуется EC upload-staging", nameof(staging));
+        var k = _pool.Topology.SetSize - upload.Parity;
+        var writeQuorum = ErasureQuorum.Write(k, upload.Parity);
+        var successes = 0;
+        foreach (var disk in upload.SetDisks.Where(d => d.Online))
+        {
+            var uploadDir = UploadDirOnDisk(disk, upload.Bucket, upload.Key, upload.UploadId);
+            if (!Directory.Exists(uploadDir))
+                continue;
+            try
+            {
+                var parts = MultipartJournals.ReadParts(MultipartJournals.PartsJsonPath(uploadDir));
+                parts.RemoveAll(p => p.PartNumber == partNumber);
+                parts.Add(new MultipartJournals.PartJournalEntry(partNumber, etagHex, size,
+                    modTime.ToUnixTimeMilliseconds()));
+                parts.Sort((l, r) => l.PartNumber.CompareTo(r.PartNumber));
+                MultipartJournals.WriteParts(MultipartJournals.PartsJsonPath(uploadDir), parts);
+                WritePartBitrot(uploadDir, partNumber, upload.PartResults);
+                successes++;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "EC: CommitUploadPart на диске {Position} не прошёл", disk.Position);
+            }
+        }
+
+        if (successes < writeQuorum)
+            throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum);
+    }
+
+    // Complete: attempt.json → по-дисковые rename частей uploadDir/part.N →
+    // dataDir/part.N → xl.meta v2 (per-disk EcIndex) → кворумный коммит → зачистка.
+    // Composite ETag — из журнала; SHA-256 — проходом ErasureBlockReader по частям.
     public CompleteResult CommitMultipart(string bucket, string key, string uploadId,
-        IReadOnlyList<PartEtag> manifest, XlMetaRecord newRecord) => throw new NotImplementedException();
+        IReadOnlyList<PartEtag> manifest, XlMetaRecord newRecord)
+    {
+        lock (_commitLock)
+        {
+            var set = SetOf(bucket, key);
+            // resolve под локом (повтор после зачистки — NoSuchUpload)
+            var uploads = ReadUploads(bucket, key);
+            if (uploads.All(e => e.UploadId != uploadId) || !UploadDirExists(bucket, key, uploadId))
+                throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload);
+
+            // attempt.json — dataDir текущей сборки (идемпотентность повтора, 04 §5)
+            var online = set.Where(d => d.Online).ToList();
+            var writeQuorum0 = ErasureQuorum.Write(_pool.Topology.SetSize - _defaultParity, _defaultParity);
+            if (online.Count < writeQuorum0)
+                throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum);
+            var attempted = MultipartJournals.ReadAttempt(UploadDirOnDisk(online[0], bucket, key, uploadId))?.DataDir;
+            var dataDirName = attempted is not null && Guid.TryParseExact(attempted, "N", out var parsed)
+                ? parsed.ToString("N")
+                : Guid.NewGuid().ToString("N");
+            foreach (var disk in online)
+                MultipartJournals.WriteAttempt(UploadDirOnDisk(disk, bucket, key, uploadId),
+                    new MultipartJournals.AttemptMarker(dataDirName));
+
+            // composite ETag из журнала
+            var journal = ReadParts(bucket, key, uploadId);
+            var journalByNumber = journal.ToDictionary(p => p.PartNumber);
+            var concat = string.Concat(manifest.Select(p => journalByNumber[p.PartNumber].ETag));
+            var compositeEtag = manifest.Count + "-" + Convert.ToHexString(
+                System.Security.Cryptography.MD5.HashData(Encoding.ASCII.GetBytes(concat))).ToLowerInvariant();
+            var size = manifest.Sum(p => journalByNumber[p.PartNumber].Size);
+
+            // staging сборки: перенос частей в tmp-каталоги → коммит-схема записи
+            var staging = (ErasureStaging)CreateStaging(bucket, key);
+            try
+            {
+                var stagingVersionId = staging.VersionId.ToString("N");
+                foreach (var (disk, stagingDir) in staging.StagingDirs)
+                {
+                    var uploadDir = UploadDirOnDisk(disk, bucket, key, uploadId);
+                    var targetDataDir = Path.Combine(stagingDir, stagingVersionId);
+                    foreach (var (number, _) in manifest)
+                    {
+                        var dest = Path.Combine(targetDataDir, $"part.{number}");
+                        if (File.Exists(dest))
+                            continue;
+                        var src = Path.Combine(uploadDir, $"part.{number}");
+                        if (!File.Exists(src))
+                            throw new ObjectStoreException(ObjectStoreErrorCode.InvalidPart);
+                        File.Move(src, dest);
+                    }
+                }
+
+                // bitrot-хэши частей: SHA-256 итога — проходом ErasureBlockReader по частям
+                string sha256Hex;
+                var codec = CodecFor(staging.Parity);
+                using (var sha = System.Security.Cryptography.IncrementalHash
+                           .CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256))
+                {
+                    foreach (var (number, _) in manifest)
+                    {
+                        var readers = new Stream?[codec.TotalShards];
+                        for (var j = 0; j < codec.TotalShards; j++)
+                        {
+                            var disk = staging.StagingDirs.Keys
+                                .FirstOrDefault(d => d.PositionInSet == staging.Distribution[j]);
+                            if (disk is null)
+                                continue;
+                            var path = Path.Combine(staging.StagingDirs[disk], stagingVersionId, $"part.{number}");
+                            if (File.Exists(path))
+                                readers[j] = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                        }
+
+                        var hashes = ReadPartBitrot(UploadDirOnDisk(online[0], bucket, key, uploadId), number,
+                            staging.Parity);
+                        var partResult = new ErasurePartResult(string.Empty, string.Empty,
+                            journalByNumber[number].Size,
+                            hashes.Length > 0 ? hashes[0].Length : 0, hashes);
+                        staging.PartResults[number] = partResult;
+                        using var reader = new ErasureBlockReader(codec, readers, partResult, 0,
+                            journalByNumber[number].Size);
+                        var buffer = new byte[64 * 1024];
+                        int read;
+                        while ((read = reader.ReadAsync(buffer, 0, buffer.Length, CancellationToken.None)
+                                   .GetAwaiter().GetResult()) > 0)
+                            sha.AppendData(buffer, 0, read);
+                    }
+
+                    sha256Hex = Convert.ToHexString(sha.GetHashAndReset()).ToLowerInvariant();
+                }
+
+                var record = newRecord with
+                {
+                    VersionId = Guid.Parse(dataDirName), Size = size, ETag = compositeEtag,
+                    ContentSha256 = sha256Hex,
+                };
+
+                // xl.meta v2 per-disk (EcIndex) + bitrot-хэши частей загрузки
+                WriteMeta(staging, record);
+                // подмена dataDir staging на attempt-dataDir (идемпотентность 04 §5)
+                foreach (var (disk, stagingDir) in staging.StagingDirs)
+                {
+                    var from = Path.Combine(stagingDir, staging.VersionId.ToString("N"));
+                    var to = Path.Combine(stagingDir, dataDirName);
+                    if (!Directory.Exists(to))
+                        Directory.Move(from, to);
+                    var diskRecord = staging.DiskRecords[disk] with { VersionId = Guid.Parse(dataDirName) };
+                    XlMetaFile.Write(stagingDir, diskRecord);
+                    staging.DiskRecords[disk] = diskRecord;
+                }
+
+                record = record with { VersionId = Guid.Parse(dataDirName) };
+                _ = stagingVersionId;
+                var putResult = Commit(bucket, key, record, staging);
+
+                // зачистка: журнал + каталог загрузки
+                var updated = ReadUploads(bucket, key);
+                updated.RemoveAll(e => e.UploadId == uploadId && e.Bucket == bucket && e.Key == key);
+                WriteUploads(bucket, key, updated);
+                TrashUpload(bucket, key, uploadId);
+                return new CompleteResult(putResult.ETag);
+            }
+            finally
+            {
+                staging.Dispose();
+            }
+        }
+    }
+
+    // ── sidecar bitrot-файлы частей загрузки ──
+    // part.<N>.bitrot: [uint32 ecN][uint32 blockCount][ecN × blockCount × 32 Б] —
+    // транзитное состояние загрузки (источник bitrot-записей xl.meta при Complete);
+    // после Complete удаляется вместе с каталогом загрузки.
+
+    private static void WritePartBitrot(string uploadDir, int partNumber,
+        Dictionary<int, ErasurePartResult> partResults)
+    {
+        if (!partResults.TryGetValue(partNumber, out var result))
+            return;
+        var ecN = (uint)result.ShardBlockHashes.Length;
+        var blockCount = ecN > 0 ? (uint)result.ShardBlockHashes[0].Length : 0u;
+        using var ms = new MemoryStream();
+        var header = new byte[8];
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(0, 4), ecN);
+        System.Buffers.Binary.BinaryPrimitives.WriteUInt32LittleEndian(header.AsSpan(4, 4), blockCount);
+        ms.Write(header);
+        for (var shard = 0; shard < ecN; shard++)
+            for (var block = 0; block < blockCount; block++)
+                ms.Write(result.ShardBlockHashes[shard][block]);
+        File.WriteAllBytes(Path.Combine(uploadDir, $"part.{partNumber}.bitrot"), ms.ToArray());
+    }
+
+    private static byte[][][] ReadPartBitrot(string uploadDir, int partNumber, int parity)
+    {
+        var path = Path.Combine(uploadDir, $"part.{partNumber}.bitrot");
+        if (!File.Exists(path))
+            throw new ObjectStoreException(ObjectStoreErrorCode.InvalidPart);
+        var data = File.ReadAllBytes(path);
+        var ecN = (int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(0, 4));
+        var blockCount = (int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(4, 4));
+        var hashes = new byte[ecN][][];
+        var offset = 8;
+        for (var shard = 0; shard < ecN; shard++)
+        {
+            hashes[shard] = new byte[blockCount][];
+            for (var block = 0; block < blockCount; block++)
+            {
+                hashes[shard][block] = data.AsSpan(offset, 32).ToArray();
+                offset += 32;
+            }
+        }
+
+        return hashes;
+    }
+
+    // Перегрузка IXlDrive.WritePartAsync направляет upload-staging на шардирование в загрузку.
+    public Task<PartDigest> WritePartAsync(IXlStaging staging, int partNumber, Stream body,
+        long contentLength, CancellationToken ct) =>
+        staging is ErasureUploadStaging
+            ? WriteUploadPartAsync(staging, partNumber, body, contentLength, ct)
+            : WriteObjectPartAsync(staging, partNumber, body, contentLength, ct);
 
     // ── внутренняя механика ──
 

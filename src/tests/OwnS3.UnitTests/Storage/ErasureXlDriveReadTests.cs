@@ -112,10 +112,12 @@ public class ErasureXlDriveReadTests : IDisposable
     [Fact]
     public async Task Get_BitrotCorruption_ReadsAndFlagsShard()
     {
-        // Arrange: порча байта part.1 на диске 2
+        // Arrange: порча байта part.1 на диске, держащем data-шард 0 (EcDist записи)
         var body = RandomBytes(500_000);
         var meta = await PutAsync("b", "bitrot", body);
-        var partPath = Path.Combine(_roots[2], "b", "bitrot", meta.DataDirName, "part.1");
+        var dataShardDisk = _pool.Sets[_pool.PickSetIndex("b", "bitrot")]
+            .Single(d => d.PositionInSet == meta.Ec!.EcDist[0]);
+        var partPath = Path.Combine(dataShardDisk.Root, "b", "bitrot", meta.DataDirName, "part.1");
         var bytes = File.ReadAllBytes(partPath);
         bytes[777] ^= 0xFF;
         File.WriteAllBytes(partPath, bytes);
@@ -198,9 +200,44 @@ public class ErasureXlDriveReadTests : IDisposable
         act.Should().Throw<XlIntegrityException>();
     }
 
-    [Fact(Skip = "до Task 11")]
+    [Fact]
     public async Task EnumerateParts_ReturnsSourceSizes()
     {
-        // Многочастевой объект — собирается CommitMultipart из Task 11
+        // Arrange: многочастевой объект через EC multipart (Task 11)
+        const int partSize = 6 * 1024 * 1024;
+        var part1 = RandomBytes(partSize, 41);
+        var part2 = RandomBytes(partSize / 2, 42);
+        var uploadId = Guid.NewGuid().ToString("N");
+        _drive.CreateUploadDir("b", "parts", uploadId, new XlMetaRecord(Guid.Parse(uploadId), 0,
+            DateTimeOffset.UnixEpoch, "", "text/plain", new Dictionary<string, string>(),
+            new Dictionary<string, string>(), ""));
+        _drive.WriteUploads("b", "parts",
+        [
+            new MultipartJournals.UploadJournalEntry(uploadId, "b", "parts",
+                DateTimeOffset.UnixEpoch.ToUnixTimeMilliseconds(), "root"),
+        ]);
+        foreach (var (number, body) in new[] { (1, part1), (2, part2) })
+        {
+            using var staging = _drive.CreateUploadStaging("b", "parts", uploadId);
+            var digest = await _drive.WritePartAsync(staging, number, new MemoryStream(body), body.LongLength,
+                CancellationToken.None);
+            _drive.CommitUploadPart(staging, number, digest.ETagHex, digest.Length, DateTimeOffset.UnixEpoch);
+        }
+
+        var etag1 = Convert.ToHexString(System.Security.Cryptography.MD5.HashData(part1)).ToLowerInvariant();
+        var etag2 = Convert.ToHexString(System.Security.Cryptography.MD5.HashData(part2)).ToLowerInvariant();
+        _drive.CommitMultipart("b", "parts", uploadId,
+        [
+            new PartEtag(1, '"' + etag1 + '"'),
+            new PartEtag(2, '"' + etag2 + '"'),
+        ], new XlMetaRecord(Guid.Empty, 0, DateTimeOffset.UnixEpoch, "", "text/plain",
+            new Dictionary<string, string>(), new Dictionary<string, string>(), ""));
+        var meta = _drive.TryReadMeta("b", "parts");
+
+        // Act
+        var parts = _drive.EnumerateParts("b", "parts", meta!);
+
+        // Assert — исходные размеры частей (GetObjectAttributes без декодирования)
+        parts.Should().Equal((1, (long)partSize), (2, (long)(partSize / 2)));
     }
 }
