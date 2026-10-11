@@ -59,4 +59,28 @@ public class RestoreJobSpecTests
         // Assert
         spec.Env!["TARGET_TIME"].Should().BeEmpty();
     }
+
+    // AAA: CaBundlePath задан → S3_CA_PEM значением (t42, arch/19 §7)
+    [Fact]
+    public void Build_CaBundle_ПередаётPemЗначением()
+    {
+        var caPath = Path.Combine(Path.GetTempPath(), $"ca-{Guid.NewGuid():N}.pem");
+        File.WriteAllText(caPath, "-----BEGIN CERTIFICATE-----\nxyz\n-----END CERTIFICATE-----\n");
+        var spec = RestoreJobSpec.Build(
+            new BackupsRuntimeOptions(S3Endpoint: "http://minio:9000", S3Bucket: "bkt",
+                S3AccessKey: "ak", S3SecretKey: "sk") { S3CaBundlePath = caPath },
+            "c1", "shard1", "id9", "vol", "", "srcc", "srcx");
+        spec.Env!["S3_CA_PEM"].Should().Be("-----BEGIN CERTIFICATE-----\nxyz\n-----END CERTIFICATE-----");
+    }
+
+    // AAA: без CaBundlePath env-набор прежний — S3_CA_PEM отсутствует (юнит-диф, AC5)
+    [Fact]
+    public void Build_БезCaBundle_НетS3CaPem()
+    {
+        var spec = RestoreJobSpec.Build(
+            new BackupsRuntimeOptions(S3Endpoint: "http://minio:9000", S3Bucket: "bkt",
+                S3AccessKey: "ak", S3SecretKey: "sk"),
+            "c1", "shard1", "id9", "vol", "", "srcc", "srcx");
+        spec.Env!.Should().NotContainKey("S3_CA_PEM");
+    }
 }

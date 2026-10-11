@@ -142,4 +142,41 @@ public class BackupJobSpecTests
         withQuota.VolumeName.Should().BeEmpty();
         noQuota.VolumeName.Should().Be(BackupNames.VerifyVolumeName("c1", "s1", "id1"));
     }
+
+    // AAA: CaBundlePath задан → env несёт S3_CA_PEM значением PEM (t42, arch/19 §7)
+    [Fact]
+    public void Build_CaBundle_ПередаётPemЗначением()
+    {
+        var caPath = Path.Combine(Path.GetTempPath(), $"ca-{Guid.NewGuid():N}.pem");
+        File.WriteAllText(caPath, "-----BEGIN CERTIFICATE-----\nxyz\n-----END CERTIFICATE-----\n");
+        var spec = BackupJobSpec.Build(_opts with { S3CaBundlePath = caPath },
+            "demo", "s1", "id1", new NodeAddress("h", new NodePorts(5432, 8008, 6432)), "pw");
+        spec.Env!["S3_CA_PEM"].Should().Be("-----BEGIN CERTIFICATE-----\nxyz\n-----END CERTIFICATE-----");
+    }
+
+    // AAA: без CaBundlePath env-набор прежний — S3_CA_PEM отсутствует (юнит-диф, AC5)
+    [Fact]
+    public void Build_БезCaBundle_НетS3CaPem()
+    {
+        var spec = BackupJobSpec.Build(_opts, "demo", "s1", "id1",
+            new NodeAddress("h", new NodePorts(5432, 8008, 6432)), "pw");
+        spec.Env!.Should().NotContainKey("S3_CA_PEM");
+    }
+
+    // AAA: verify-спека — CaBundlePath задан → S3_CA_PEM значением; без — нет
+    [Fact]
+    public void VerifyJobSpec_CaBundle_ПередаётPemЗначением()
+    {
+        var caPath = Path.Combine(Path.GetTempPath(), $"ca-{Guid.NewGuid():N}.pem");
+        File.WriteAllText(caPath, "-----BEGIN CERTIFICATE-----\nxyz\n-----END CERTIFICATE-----\n");
+        var spec = VerifyJobSpec.Build(_opts with { S3CaBundlePath = caPath }, "c1", "s1", "id1");
+        spec.Env!["S3_CA_PEM"].Should().Be("-----BEGIN CERTIFICATE-----\nxyz\n-----END CERTIFICATE-----");
+    }
+
+    [Fact]
+    public void VerifyJobSpec_БезCaBundle_НетS3CaPem()
+    {
+        var spec = VerifyJobSpec.Build(_opts, "c1", "s1", "id1");
+        spec.Env!.Should().NotContainKey("S3_CA_PEM");
+    }
 }

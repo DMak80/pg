@@ -25,6 +25,16 @@ public static class Program
         };
         AppDomain.CurrentDomain.ProcessExit += (_, _) => cts.Cancel();
 
+        // Доверие CA https S3-endpoint (t42, arch/19 §7): PEM материализуется в файл
+        // (multi-host: файла хоста в контейнере нет) и выставляется SDK ДО создания
+        // BackupS3 — AWS SDK читает AWS_CA_BUNDLE при создании клиента.
+        if (options.S3CaPem is { Length: > 0 })
+        {
+            var caPath = Path.Combine(Path.GetTempPath(), $"s3-ca-{Guid.NewGuid():N}.pem");
+            await File.WriteAllTextAsync(caPath, options.S3CaPem + "\n", cts.Token);
+            Environment.SetEnvironmentVariable("AWS_CA_BUNDLE", caPath);
+        }
+
         // BackupS3 из S3-полей приёмника (реюз математики/клиента Backups).
         var s3Options = new BackupsRuntimeOptions(
             S3Endpoint: options.S3Endpoint,

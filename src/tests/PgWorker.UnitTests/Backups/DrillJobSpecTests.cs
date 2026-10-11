@@ -85,4 +85,30 @@ public class DrillJobSpecTests
         markers.Result!.Ok.Should().BeTrue();
         markers.Result.RestoredToLsn.Should().Be("0/42");
     }
+
+    // AAA: CaBundlePath задан → env несёт S3_CA_PEM значением (t42, arch/19 §7)
+    [Fact]
+    public void Build_CaBundle_ПередаётPemЗначением()
+    {
+        var caPath = Path.Combine(Path.GetTempPath(), $"ca-{Guid.NewGuid():N}.pem");
+        File.WriteAllText(caPath, "-----BEGIN CERTIFICATE-----\nxyz\n-----END CERTIFICATE-----\n");
+
+        // Act
+        var spec = DrillJobSpec.Build(Opts() with { S3CaBundlePath = caPath },
+            "c1", "shard1", "id7", "20261001090000Z");
+
+        // Assert
+        spec.Env!["S3_CA_PEM"].Should().Be("-----BEGIN CERTIFICATE-----\nxyz\n-----END CERTIFICATE-----");
+    }
+
+    // AAA: без CaBundlePath env-набор прежний — S3_CA_PEM отсутствует (юнит-диф, AC5)
+    [Fact]
+    public void Build_БезCaBundle_НетS3CaPem()
+    {
+        // Arrange / Act
+        var spec = DrillJobSpec.Build(Opts(), "c1", "shard1", "id7", "20261001090000Z");
+
+        // Assert
+        spec.Env!.Should().NotContainKey("S3_CA_PEM");
+    }
 }

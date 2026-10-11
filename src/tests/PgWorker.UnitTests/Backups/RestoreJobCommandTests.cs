@@ -165,4 +165,11 @@ public class RestoreJobCommandTests
         RestoreJobCommand.EnvDataDir.Should().Be("PGW_RESTORE_DATA_DIR");
         RestoreJobCommand.EnvPgdata.Should().Be("PGW_RESTORE_PGDATA");
     }
+
+    // AAA: скрипт материализует S3_CA_PEM → SSL_CERT_FILE (t42, arch/19 §7)
+    [Fact]
+    public void Build_МатериализуетCaPem_и_SslCertFile()
+    {
+        RestoreJobCommand.Build()[2].Should().Contain("S3_CA_PEM").And.Contain("SSL_CERT_FILE");
+    }
 }

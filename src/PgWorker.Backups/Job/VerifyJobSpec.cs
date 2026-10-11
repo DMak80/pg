@@ -24,6 +24,10 @@ public static class VerifyJobSpec
             [VerifyJobCommand.EnvMcHostVariable] =
                 VerifyJobCommand.McHost(opts.AgentS3Endpoint, opts.S3AccessKey, opts.S3SecretKey),
         };
+        // t42 (arch/19 §7): CA https-endpoint — PEM значением (multi-host), материализация внутри контейнера
+        var caPem = BackupCaPem.ReadIfConfigured(opts);
+        if (caPem is not null)
+            env[BackupCaPem.EnvName] = caPem;
         return new ContainerSpec(
             Image: opts.JobImage,
             Env: env,
