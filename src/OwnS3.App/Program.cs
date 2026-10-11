@@ -11,6 +11,7 @@ using OwnS3.App.Pipeline;
 using OwnS3.Storage;
 using OwnS3.Storage.Erasure;
 using Shared.Metrics;
+using System.Diagnostics.Metrics;
 using System.Security.Cryptography.X509Certificates; // X509Certificate2? tlsCert
 
 // Точка входа ownS3 (arch/owns3/01 §3, arch/owns3/05): Kestrel-хост S3-грани,
@@ -179,9 +180,12 @@ builder.Services.AddSingleton<OwnS3.Storage.IReplicaStore>(sp => new OwnS3.Stora
     sp.GetRequiredService<IXlDrive>(), sp.GetRequiredService<TimeProvider>()));
 builder.Services.AddSingleton<OwnS3.Replication.Lww.ReplicaApplier>();
 builder.Services.AddSingleton<OwnS3.Replication.Inbound.FetchQueueRegistry>();
-// Счётчики исходов: no-op-заглушка до wiring'а боевых метрик (координатор, задача 12)
+// Счётчики исходов приёма (задача 12): боевой ReplicationMetrics — реализация
+// IOutcomeCounters (точки инкремента — inbox и фетчер, каждый со своим sourceName)
+builder.Services.AddSingleton(sp => new OwnS3.Replication.ReplicationMetrics(
+    sp.GetService<Meter>() ?? new Meter("ownS3")));
 builder.Services.AddSingleton<OwnS3.Replication.Inbound.IOutcomeCounters>(
-    OwnS3.Replication.Inbound.NullOutcomeCounters.Instance);
+    sp => sp.GetRequiredService<OwnS3.Replication.ReplicationMetrics>());
 builder.Services.AddSingleton<OwnS3.Replication.Inbound.NotificationInbox>();
 // Журнал доставки и sink событий хендлеров (глава 07 §3/§4): активен при ≥1 соседе,
 // иначе Null (байт-в-байт Existing-регресс — каталога outbox на томе нет)
@@ -205,6 +209,35 @@ builder.Services.AddSingleton(sp => new OwnS3.App.Handlers.ReplicationHandlers(
     sp.GetRequiredService<OwnS3.Storage.IReplicaStore>(),
     sp.GetRequiredService<OwnS3.Replication.Lww.TombstoneStore>(),
     sp.GetRequiredService<IOptions<OwnS3Options>>().Value.HostId ?? Environment.MachineName));
+
+// Hosted-координатор репликации (задача 12): исполнители per-сосед, цикл
+// обслуживания (§8-а), graceful stop; без соседей — неактивен. Free-disk —
+// по первому диску (single — корень тома; EC — min по дискам, глава 07 §11).
+builder.Services.AddSingleton<OwnS3.Replication.ReplicationState>(sp => new OwnS3.Replication.ReplicationState(
+    Path.Combine(ReplicationSysDir(sp), "state.json")));
+// Watermark-курсоры приёма per-target (глава 07 §5): дебаунс-персист, graceful-flush при stop
+builder.Services.AddSingleton(sp => new OwnS3.Replication.Cursors.TargetCursors(
+    Path.Combine(ReplicationSysDir(sp), "cursors"), sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton<OwnS3.Replication.ReplicationMaintenance>();
+builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp =>
+    new OwnS3.Replication.ReplicationCoordinator(
+        sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>(),
+        sp.GetRequiredService<OwnS3.Replication.Outbox.OutboxJournal>(),
+        sp.GetRequiredService<OwnS3.Replication.Cursors.TargetCursors>(),
+        ReplicationTransportFactory(sp),
+        sp.GetRequiredService<OwnS3.Replication.Lww.ReplicaApplier>(),
+        sp.GetRequiredService<OwnS3.Replication.Inbound.FetchQueueRegistry>(),
+        sp.GetRequiredService<OwnS3.Replication.Inbound.IOutcomeCounters>(),
+        sp.GetRequiredService<OwnS3.Replication.ReplicationState>(),
+        sp.GetRequiredService<OwnS3.Replication.ReplicationMaintenance>(),
+        sp.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value,
+        sp.GetRequiredService<IOptions<OwnS3Options>>().Value.HostId ?? Environment.MachineName,
+        () => new DriveInfo(sp.GetRequiredService<StorageModeInfo>().DataRoots[0]).AvailableFreeSpace,
+        sp.GetRequiredService<TimeProvider>(),
+        sp.GetRequiredService<ILogger<OwnS3.Replication.ReplicationCoordinator>>(),
+        sp.GetRequiredService<OwnS3.Replication.ReplicationMetrics>(),
+        sp.GetRequiredService<ILogger<OwnS3.Replication.Notifier.NotificationDispatcher>>(),
+        sp.GetRequiredService<ILogger<OwnS3.Replication.Fetching.ObjectFetcher>>()));
 builder.Services.AddHostedService<VolumeCleanupService>();
 builder.Services.AddHostedService<ErasureHealHostedService>();
 builder.Services.AddSingleton<OwnS3Metrics>();
@@ -348,6 +381,12 @@ await app.RunAsync();
 // Служебный контур репликации: .owns3.sys/replication на первом диске (глава 07 §11).
 static string ReplicationSysDir(IServiceProvider sp) => Path.Combine(
     sp.GetRequiredService<StorageModeInfo>().DataRoots[0], ".owns3.sys", "replication");
+
+// Исходящий транспорт mesh (глава 07 §6): HttpClient per-цель строит ReplicationHttpClient
+// (таймаут 10 с, подпись SigV4Signer кредами цели).
+static OwnS3.Replication.Transport.IReplicationTransport ReplicationTransportFactory(IServiceProvider sp) =>
+    new OwnS3.Replication.Transport.ReplicationHttpClient(new HttpClient(),
+        sp.GetRequiredService<TimeProvider>());
 
 /// <summary>Маркер для WebApplicationFactory интеграционных тестов.</summary>
 public partial class Program;
