@@ -33,6 +33,10 @@ post() { curl -s -b "$JAR" -X POST "$BASE$1" -H 'Content-Type: application/json'
 code() { curl -s -o /dev/null -w '%{http_code}' -b "$JAR" "$@"; }
 ect()  { docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 "$@"; }
 now()  { date +%s; }
+# t41: раскладка каноническая (движок) — owner статуса = фактический routing,
+# target = другой шард; иначе routing==target → abort отвергается «осознанно».
+other() { [ "$1" = shard1 ] && echo shard2 || echo shard1; }
+routing_of() { ect get "/clusters/demo/buckets/routing/$1" --print-value-only; }
 
 # Сводная проверка тика панели (детали демо-кластера читаются).
 for i in $(seq 1 15); do
@@ -43,8 +47,9 @@ api /api/clusters/demo | jq -e '.name == "demo"' >/dev/null \
 echo "  панель жива, демо-кластер читается"
 
 # ── 1) abort: свежий статус без force → 409; с force → 201; отмена заявки → 204/404.
+own3="$(routing_of bucket_3)"; tgt3="$(other "$own3")"
 ect put /clusters/demo/buckets/status/bucket_3 \
-  "{\"bucket\":\"bucket_3\",\"state\":\"SYNCING\",\"owner\":\"shard1\",\"target\":\"shard2\",\"started_unix\":$(now),\"updated_unix\":$(now),\"phase\":\"copy\"}" >/dev/null
+  "{\"bucket\":\"bucket_3\",\"state\":\"SYNCING\",\"owner\":\"$own3\",\"target\":\"$tgt3\",\"started_unix\":$(now),\"updated_unix\":$(now),\"phase\":\"copy\"}" >/dev/null
 c="$(code -X POST "$BASE/api/clusters/demo/moves/abort" -H 'Content-Type: application/json' -d '{"bucket":3}')"
 [ "$c" = 409 ] || { echo "❌ abort свежий без force = $c, ожидался 409"; exit 1; }
 c="$(code -X POST "$BASE/api/clusters/demo/moves/abort" -H 'Content-Type: application/json' -d '{"bucket":3,"force":true}')"
@@ -65,8 +70,9 @@ echo "  abort: свежий 409 → force 201 (идентичность) → с�
 ect del /clusters/demo/buckets/status/bucket_3 >/dev/null
 
 # ── 2) abort: несвежий статус без force → 201 (force в JSON нет); ACTIVE → 409.
+own7="$(routing_of bucket_7)"; tgt7="$(other "$own7")"
 ect put /clusters/demo/buckets/status/bucket_7 \
-  "{\"bucket\":\"bucket_7\",\"state\":\"ABORTING\",\"owner\":\"shard2\",\"target\":\"shard1\",\"started_unix\":$(( $(now) - 300 )),\"updated_unix\":$(( $(now) - 300 )),\"phase\":\"cleanup\"}" >/dev/null
+  "{\"bucket\":\"bucket_7\",\"state\":\"ABORTING\",\"owner\":\"$own7\",\"target\":\"$tgt7\",\"started_unix\":$(( $(now) - 300 )),\"updated_unix\":$(( $(now) - 300 )),\"phase\":\"cleanup\"}" >/dev/null
 c="$(code -X POST "$BASE/api/clusters/demo/moves/abort" -H 'Content-Type: application/json' -d '{"bucket":7}')"
 [ "$c" = 201 ] || { echo "❌ abort несвежий без force = $c, ожидался 201"; exit 1; }
 ect get /pgworker/moves/demo/bucket_7 --print-value-only | grep -q '"force"' \
@@ -79,8 +85,9 @@ ect del /clusters/demo/buckets/status/bucket_7 >/dev/null
 echo "  abort: несвежий 201 (force опущен); ACTIVE → 409"
 
 # ── 3) abort: routing==target без force → 409 «осознанно».
+own2="$(routing_of bucket_2)"
 ect put /clusters/demo/buckets/status/bucket_2 \
-  "{\"bucket\":\"bucket_2\",\"state\":\"FROZEN\",\"owner\":\"shard1\",\"target\":\"shard1\",\"started_unix\":$(( $(now) - 300 )),\"updated_unix\":$(( $(now) - 300 )),\"phase\":\"cutover-wait\"}" >/dev/null
+  "{\"bucket\":\"bucket_2\",\"state\":\"FROZEN\",\"owner\":\"$own2\",\"target\":\"$own2\",\"started_unix\":$(( $(now) - 300 )),\"updated_unix\":$(( $(now) - 300 )),\"phase\":\"cutover-wait\"}" >/dev/null
 resp="$(post /api/clusters/demo/moves/abort '{"bucket":2}')"
 echo "$resp" | jq -e '.detail // empty' 2>/dev/null | grep -q "осознанно" \
   || { echo "❌ abort routing==target: ожидался 409 с «осознанно», получено: $resp"; exit 1; }
@@ -114,13 +121,14 @@ api /api/clusters/demo | jq -e '.work != null and .work.op == "rollback" and .wo
 echo "  отвергнутый rollback: заявка исчезла, причина — в «Журнале воркера»"
 
 # ── 6) finalize: oldShard=владельцу → 409; несуществующий → 404; валидный → 201.
-c="$(code -X POST "$BASE/api/clusters/demo/moves/finalize" -H 'Content-Type: application/json' -d '{"bucket":0,"oldShard":"shard1"}')"
-[ "$c" = 409 ] || { echo "❌ finalize oldShard=owner = $c, ожидался 409"; exit 1; }
+own0="$(routing_of bucket_0)"; notown0="$(other "$own0")"
+c="$(code -X POST "$BASE/api/clusters/demo/moves/finalize" -H 'Content-Type: application/json' -d "{\"bucket\":0,\"oldShard\":\"$own0\"}")"
+[ "$c" = 409 ] || { echo "❌ finalize oldShard=owner($own0) = $c, ожидался 409"; exit 1; }
 c="$(code -X POST "$BASE/api/clusters/demo/moves/finalize" -H 'Content-Type: application/json' -d '{"bucket":0,"oldShard":"shard9"}')"
 [ "$c" = 404 ] || { echo "❌ finalize oldShard=shard9 = $c, ожидался 404"; exit 1; }
-c="$(code -X POST "$BASE/api/clusters/demo/moves/finalize" -H 'Content-Type: application/json' -d '{"bucket":0,"oldShard":"shard2"}')"
-[ "$c" = 201 ] || { echo "❌ finalize oldShard=shard2 = $c, ожидался 201"; exit 1; }
-ect get /pgworker/moves/demo/bucket_0 --print-value-only | grep -q '"old_shard":"shard2"' \
+c="$(code -X POST "$BASE/api/clusters/demo/moves/finalize" -H 'Content-Type: application/json' -d "{\"bucket\":0,\"oldShard\":\"$notown0\"}")"
+[ "$c" = 201 ] || { echo "❌ finalize oldShard=$notown0 = $c, ожидался 201"; exit 1; }
+ect get /pgworker/moves/demo/bucket_0 --print-value-only | grep -q "\"old_shard\":\"$notown0\"" \
   || { echo "❌ ключ finalize без old_shard"; exit 1; }
 c="$(code -X DELETE "$BASE/api/clusters/demo/moves/bucket_0")"
 [ "$c" = 204 ] || { echo "❌ снятие finalize = $c"; exit 1; }

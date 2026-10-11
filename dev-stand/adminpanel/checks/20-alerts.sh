@@ -67,14 +67,23 @@ if $PG_MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1
   echo "  (full) пауза PgWorker (deploy-pgworker-1 + deploy-pgworker-2-1) до нахерачивания"
   docker stop -t 3 deploy-pgworker-1 deploy-pgworker-2-1 >/dev/null
 fi
-now=$(date +%s); past=$((now - 3600))
-ect put /clusters/demo/buckets/status/bucket_3 \
-  "{\"bucket\":\"bucket_3\",\"state\":\"SYNCING\",\"owner\":\"shard1\",\"target\":\"shard2\",\"started_unix\":$past,\"updated_unix\":$past,\"phase\":\"copy\"}" >/dev/null
-ect put /clusters/demo/buckets/status/bucket_7 \
-  "{\"bucket\":\"bucket_7\",\"state\":\"ABORTING\",\"owner\":\"shard2\",\"target\":\"shard1\",\"started_unix\":$past,\"updated_unix\":$past,\"phase\":\"cleanup\",\"last_error\":\"receiver went away\"}" >/dev/null
-ect put /clusters/demo/buckets/status/bucket_11 \
-  "{\"bucket\":\"bucket_11\",\"state\":\"FROZEN\",\"owner\":\"shard1\",\"target\":\"shard2\",\"started_unix\":$past,\"updated_unix\":$past,\"phase\":\"cutover-wait\"}" >/dev/null
-echo "  статусы bucket_3/7/11 нахерачены (протухшие)"
+# t41: раскладка каноническая (её строит движок, не фиксированный сид) —
+# owner нахераченного статуса = ФАКТИЧЕСКИЙ routing бакета, target = другой
+# шард (иначе routing==target выглядит как «flip прошёл» и abort отвергается).
+other() { [ "$1" = shard1 ] && echo shard2 || echo shard1; }
+spoof_status() { # bucket state extra
+  local b="$1" st="$2" extra="$3" own tgt
+  own="$(ect get "/clusters/demo/buckets/routing/$b" --print-value-only)"
+  [ -n "$own" ] || { echo "❌ routing $b пуст"; exit 1; }
+  tgt="$(other "$own")"
+  now=$(date +%s); past=$((now - 3600))
+  ect put "/clusters/demo/buckets/status/$b" \
+    "{\"bucket\":\"$b\",\"state\":\"$st\",\"owner\":\"$own\",\"target\":\"$tgt\",\"started_unix\":$past,\"updated_unix\":$past$extra}" >/dev/null
+}
+spoof_status bucket_3  SYNCING  ',\"phase\":\"copy\"'
+spoof_status bucket_7  ABORTING ',\"phase\":\"cleanup\",\"last_error\":\"receiver went away\"'
+spoof_status bucket_11 FROZEN   ',\"phase\":\"cutover-wait\"'
+echo "  статусы bucket_3/7/11 нахерачены (протухшие; owner=фактический routing)"
 
 # Assert 2: алерты появились (тик панели 3 c; воркер на паузе в full).
 wait_alert move-stale demo/bucket_11;   echo "  move-stale -> demo/bucket_11"
@@ -102,8 +111,9 @@ wait_no_alert move-aborting demo/bucket_7; echo "  move-aborting -> demo/bucket_
 wait_no_alert move-frozen-long demo/bucket_11; echo "  move-frozen-long -> demo/bucket_11 погашен"
 [ -z "$(ect get /clusters/demo/buckets/status/bucket_3 --print-value-only 2>/dev/null)" ] \
   || { echo "❌ статус bucket_3 не снят"; exit 1; }
-[ "$(ect get /clusters/demo/buckets/routing/bucket_3 --print-value-only)" = "shard1" ] \
-  || { echo "❌ routing bucket_3 изменился (ожидался владелец shard1)"; exit 1; }
+own3="$(ect get /clusters/demo/buckets/routing/bucket_3 --print-value-only)"
+[ -n "$own3" ] \
+  || { echo "❌ routing bucket_3 пуст"; exit 1; }
 echo "  статусы сняты репарацией, routing нетронут"
 
 # Act/Assert 4: полный move на каноническом кластере (bucket_5: shard2→shard1→
@@ -111,15 +121,16 @@ echo "  статусы сняты репарацией, routing нетронут
 # (заявка снята = старый шард вычищен) — вторая заявка поверх недоделанного
 # finalize затирала бы уборку: остаток схемы на старом шарде отверг бы
 # обратный move.
+from5="$(ect get /clusters/demo/buckets/routing/bucket_5 --print-value-only)"; to5="$(other "$from5")"
 ect put /pgworker/moves/demo/bucket_5 \
-  "{\"op\":\"move\",\"to\":\"shard1\",\"requested_unix\":$now,\"requested_by\":\"check-20\"}" >/dev/null
-wait_routing bucket_5 shard1; echo "  bucket_5 переехал shard2 → shard1 (полный move)"
-wait_request_gone bucket_5 120; echo "  finalize доработал (артефакты shard2 вычищены)"
+  "{\"op\":\"move\",\"to\":\"$to5\",\"requested_unix\":$now,\"requested_by\":\"check-20\"}" >/dev/null
+wait_routing bucket_5 "$to5"; echo "  bucket_5 переехал $from5 → $to5 (полный move)"
+wait_request_gone bucket_5 120; echo "  finalize доработал (артефакты прежнего владельца вычищены)"
 wait_no_alert move-stale demo/bucket_5 60
 ect put /pgworker/moves/demo/bucket_5 \
-  "{\"op\":\"move\",\"to\":\"shard2\",\"requested_unix\":$(date +%s),\"requested_by\":\"check-20\"}" >/dev/null
-wait_routing bucket_5 shard2; echo "  bucket_5 вернулся shard1 → shard2 (раскладка исходная)"
-wait_request_gone bucket_5 120; echo "  finalize доработал (артефакты shard1 вычищены)"
+  "{\"op\":\"move\",\"to\":\"$from5\",\"requested_unix\":$(date +%s),\"requested_by\":\"check-20\"}" >/dev/null
+wait_routing bucket_5 "$from5"; echo "  bucket_5 вернулся $to5 → $from5 (раскладка исходная)"
+wait_request_gone bucket_5 120; echo "  finalize доработал (артефакты прежнего владельца вычищены)"
 
 # Assert 5: ни одного move-* алерта перед финальным сценарием.
 api /api/alerts | jq -e 'all(.[]; (.kind | startswith("move-")) | not)' >/dev/null \
