@@ -134,7 +134,7 @@ public class OutboxJournalTests : IClassFixture<OutboxJournalFixture>
         journal.ReadBatch(activeStart - 1, 10).Select(e => e.SeqNo).Should().Contain(activeStart);
         var appended = Append(journal, 99);
         appended.SeqNo.Should().Be(7);
-        journal.ReadBatch(6, 10).Select(e => e.SeqNo).Should().ContainInOrder(6, 7);
+        journal.ReadBatch(5, 10).Select(e => e.SeqNo).Should().ContainInOrder(6, 7);
     }
 
     [Fact]

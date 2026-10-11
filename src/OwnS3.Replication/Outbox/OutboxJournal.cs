@@ -237,7 +237,7 @@ public sealed class OutboxJournal : IDisposable
         if (!Directory.Exists(_outboxDir))
             return [];
         return Directory.GetFiles(_outboxDir, "seg-*.log")
-            .Select(Path.GetFileName)
+            .Select(file => Path.GetFileName(file))
             .Select(name => long.TryParse(name.AsSpan(4, name.Length - 8), out var v) ? v : 0)
             .Where(v => v > 0)
             .OrderBy(v => v)
