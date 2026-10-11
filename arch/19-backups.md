@@ -821,6 +821,18 @@ s3://<bucket>/<C>/<X>/
   контейнера (t02/t03); тот же комплект S3 обслуживает и выгрузку etcd-снапшотов
   (t08: `Snapshots:Export` — см. [14-pgworker.md](14-pgworker.md) §8);
   второй набор S3-секретов не заводится.
+- **Доверие CA при https-endpoint** (TLS-режим ownS3,
+  [owns3/03-protocol.md](owns3/03-protocol.md) §6): per-install CA
+  (`ca.pem` TLS-пакета `deploy/tls/`). Воркер: env
+  `PGW_BACKUP_S3_CA_BUNDLE_PATH` → конфиг
+  `PgWorker:Backups:S3:CaBundlePath`; при старте воркер выставляет
+  процессу стандартный `AWS_CA_BUNDLE` этим путём — SDK-клиент воркера
+  (BackupS3, снапшеты etcd) доверяет CA без изменений клиента. Агент/джоб
+  (контейнер на любом docker-хосте — файл хоста воркера в нём недоступен):
+  CA передаётся значением PEM в env `S3_CA_PEM`; команда джоба/агента
+  материализует PEM во временный файл и выставляет `AWS_CA_BUNDLE`
+  (AWS SDK .NET) и `SSL_CERT_FILE` (mc — Go-рантайм). http-endpoint —
+  переменные не заданы, поведение прежнее.
 - **Per-cluster БД-роль** `backup_exec` (LOGIN + REPLICATION): пароль
   per-cluster `/clusters/<C>/backup_password` — по образцу t02-секретов
   (ensure put-if-absent, ротация в общем тикете §9.8, 32 симв
@@ -847,7 +859,8 @@ s3://<bucket>/<C>/<X>/
 ## 9. Конфигурация
 
 - Секция `PgWorker:Backups` (каркас t01): `Enabled=false`,
-  `S3 { Endpoint, Region, Bucket, AccessKey, SecretKey, PathStyle=true }`,
+  `S3 { Endpoint, Region, Bucket, AccessKey, SecretKey, PathStyle=true,
+  CaBundlePath="" (путь ca.pem per-install CA — доверие https-endpoint, §7) }`,
   `Policy { Retention { Days=1, Weeks=1, Months=1 }, FullMaxAgeSec=86400,
   VerifyOnCreate=true, VerifyIntervalSec=604800 }` (t04: период
   перепроверки оставшихся полных — `verify.interval_sec` policy-ключа
