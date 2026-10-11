@@ -50,10 +50,13 @@ SAN `hc1a,hc1b,hc2a,hc2b` + `127.0.0.1` — host-публикации 8011–802
 и т.д.).
 
 Панель (t08) получает env грани «Хранилище бэкапов»:
-`AdminPanel__Backups__S3__Endpoint=http://minio:9000`,
-`...__Bucket=pgworker-backups`, `...__AccessKey/SecretKey=minioadmin`
-(стендовые дефолты as-minio; прод — per-install env) — панель и as-minio
-в одной compose-сети, `minio` резолвится напрямую (docker-only панели).
+`AdminPanel__Backups__S3__Endpoint=http://host.docker.internal:9010`,
+`...__Bucket=pgworker-backups`,
+`...__AccessKey/SecretKey=panel-reader/panel-reader-pwd` (read-only ключ
+ownS3, arch/owns3/05 §2; стендовые примеры, прод — per-install env) —
+ownS3 живёт в deploy-компоузе (другая compose-сеть), панель ходит через
+хост-публикацию (`extra_hosts` host-gateway); path-style — дефолт
+appsettings.
 
 `as-etcd-1/2/3` — **единственный etcd полной системы** — 3 узла ОДНИМ
 кластером (кворум 2/3; рецепт — arch/04 §8, зеркало прода): advertise
