@@ -274,6 +274,14 @@ services:
       OWNS3_ROOT_PASSWORD: ${OWNS3_ROOT_PASSWORD:?задайте секрет}
     volumes:
       - owns3-data:/data
+  # TLS-опция ПРОД-инсталляции (t42, arch/owns3/05 §6): раскомментировать —
+  # грань станет HTTPS-only на том же порту 9000 (серт owns3 из deploy/tls/gen.sh,
+  # PEM-альтернатива — OWNS3_TLS_CERT/KEY). Добавить строку к volumes выше и
+  # ключи к environment выше. Стенд живёт HTTP-only — не включать.
+  #   - ./tls:/tls:ro
+  # environment:
+  #   OWNS3_TLS_CERT_PATH: /tls/owns3.crt
+  #   OWNS3_TLS_KEY_PATH: /tls/owns3.key
 
   # ownS3 XL Erasure (t40, arch/owns3/06 §1): второй режим хранения — тот же
   # образ owns3:dev (build НЕ дублируется: профиль поднимается на образе,

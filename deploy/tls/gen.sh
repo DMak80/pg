@@ -47,6 +47,14 @@ if [ ! -f pgserver.crt ] || ! openssl x509 -in pgserver.crt -noout -text 2>/dev/
   issue pgserver pgworker serverAuth "DNS:pgworker,DNS:pgworker-2,DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1"
 fi
 
+# t42: серверный серт ownS3 (arch/owns3/03 §6/05 §4): S3-грань по TLS в
+# прод-инсталляциях из единой kfw-install-ca; SAN — compose-имена сервисов,
+# хост-публикация и локальные клиенты. Идемпотентность по SAN-маркеру
+# DNS:owns3-ec (серт старого выпуска перегенерируется, CA жив).
+if [ ! -f owns3.crt ] || ! openssl x509 -in owns3.crt -noout -text 2>/dev/null | grep -q 'DNS:owns3-ec'; then
+  issue owns3 owns3 serverAuth "DNS:owns3,DNS:owns3-ec,DNS:localhost,DNS:host.docker.internal,IP:127.0.0.1"
+fi
+
 # t22: серт эмуляторов Patroni-REST стенда (hc1a..hc2b + host-публикации 8011–8022)
 [ -f hc.crt ] || issue hc hc serverAuth "DNS:hc1a,DNS:hc1b,DNS:hc2a,DNS:hc2b,IP:127.0.0.1"
 
@@ -56,4 +64,4 @@ fi
 [ -f prometheus.crt ] || issue prometheus prometheus clientAuth ""
 [ -f healthcheck.crt ] || issue healthcheck healthcheck clientAuth ""
 chmod 600 ca.key ./*.key
-echo "✓ TLS-пакет kfw-install-ca: ca.pem, server.* (kafkaworker+valkeyworker), pgserver.*, hc.*, panel.*, seed.*, prometheus.*, healthcheck.*"
+echo "✓ TLS-пакет kfw-install-ca: ca.pem, server.* (kafkaworker+valkeyworker), pgserver.*, hc.*, panel.*, seed.*, prometheus.*, healthcheck.*, owns3.*"
