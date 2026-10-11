@@ -173,6 +173,23 @@ public class BackupsOptionsTests
         runtime.WalStaleSec.Should().Be(300);
     }
 
+    // AAA: CaBundlePath прокидывается в runtime (t42, arch/19 §7) — null по умолчанию
+    [Fact]
+    public void ToRuntime_склеивает_CaBundlePath()
+    {
+        var options = new PgWorkerOptions
+        {
+            Backups = new BackupsOptions { S3 = new BackupsS3Options { CaBundlePath = "/tls/ca.pem" } },
+        };
+        options.Backups.ToRuntime().S3CaBundlePath.Should().Be("/tls/ca.pem");
+    }
+
+    [Fact]
+    public void ToRuntime_без_CaBundle_дает_null()
+    {
+        new BackupsOptions().ToRuntime().S3CaBundlePath.Should().BeNull();
+    }
+
     // ---- t06: ретенция/квота ----
 
     [Fact]

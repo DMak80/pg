@@ -481,6 +481,7 @@ public sealed class BackupsOptions
         S3AccessKey: S3.AccessKey,
         S3SecretKey: S3.SecretKey,
         S3PathStyle: S3.PathStyle,
+        S3CaBundlePath: S3.CaBundlePath,
         JobImage: Job.Image,
         RetryBaseSec: Retry.BaseSec,
         RetryMaxSec: Retry.MaxSec,
@@ -635,6 +636,11 @@ public sealed class BackupsS3Options
     /// Moves:AdvertisedPublisherHost). Реализация-деталь t03 (env-адресация агента,
     /// arch/19 §7); стенд-включение подсистемы — t02.</summary>
     public string? AdvertisedEndpoint { get; set; }
+
+    /// <summary>Путь CA-bundle (ca.pem) для доверия https S3-endpoint (t42,
+    /// arch/19 §7; env PGW_BACKUP_S3_CA_BUNDLE_PATH → compose-биндинг).
+    /// Пусто — http-endpoint, SDK-доверие системное.</summary>
+    public string? CaBundlePath { get; set; }
 }
 
 /// <summary>Дефолт per-cluster политики: ключ

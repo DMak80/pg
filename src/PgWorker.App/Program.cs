@@ -39,6 +39,13 @@ DockerEnvBindings.ApplySshEnvOverrides(builder.Configuration);
 // REST-TLS нод (t22, arch/14 §4 гр.3): PGW_REST_TLS_* — до всего остального.
 DockerEnvBindings.ApplyRestTlsEnvOverrides(builder.Configuration);
 
+// Доверие CA https S3-endpoint (t42, arch/19 §7): AWS SDK читает AWS_CA_BUNDLE
+// при создании клиента — выставляем ДО ленивых BackupS3-фабрик (EtcdSnapshotSink,
+// ReloadableBackupS3). Env деплоя меняются recreate контейнера — хот-релоада пути нет.
+var s3CaBundlePath = builder.Configuration["PgWorker:Backups:S3:CaBundlePath"];
+if (!string.IsNullOrWhiteSpace(s3CaBundlePath))
+    Environment.SetEnvironmentVariable("AWS_CA_BUNDLE", s3CaBundlePath);
+
 // Конфигурация: appsettings.json + env-оверрайды PgWorker__* (пример — в корне проекта).
 builder.Services.Configure<PgWorkerOptions>(builder.Configuration.GetSection("PgWorker"));
 // Fail-fast: advertise без URL бессмысленен; http-advertise запрещён при mTLS-каноне (arch/14 §1.1).
