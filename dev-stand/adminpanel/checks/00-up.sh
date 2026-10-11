@@ -7,6 +7,13 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 ROOT="$(cd ../.. && pwd)"
+# Телеметрия прогона (канон docs/e2e-launch.md — «никакой тихой фазы»):
+# [PHASE]-строки дублируются в phases.log (append; разбор прогона — по хвосту).
+PHASES_LOG="${PGW_STAND_PHASES_LOG:-/tmp/pgw-stand-phases.log}"
+phase() {
+  echo ">>> [PHASE] $*"
+  echo "[$(date +%H:%M:%S)] [PHASE] $*" >> "$PHASES_LOG"
+}
 # Хост-публикация API pgworker параметризуется (коллизии портов на хосте;
 # канон 8080, второй инстанс — 8083, t07). Advertise обязан совпадать с
 # фактической публикацией (панель и чеки стучатся по advertise),
@@ -200,6 +207,7 @@ echo "  pgworker жив ×2 (:${PGW_API_HOST_PORT:-8080} + :${PGW_API_HOST_PORT2
 #     Идемпотентность: живой config → 409 (перезапуск 00-up на живом стенде —
 #     no-op); пересборка demo — полный цикл (90-down.sh -v → 00-up.sh).
 echo ">>> [PHASE] создание кластера demo (POST /api/clusters, $(date +%H:%M:%S))"
+conv_t0="$(date +%s)"   # старт конвергенции: ДО POST (пороги — дельты от него)
 create_code="$(curl -s -o /tmp/pgw-create-demo.json -w '%{http_code}' -m 10 \
   --cacert "$ROOT/deploy/tls/ca.pem" --cert "$ROOT/deploy/tls/healthcheck.crt" \
   --key "$ROOT/deploy/tls/healthcheck.key" \
@@ -213,8 +221,10 @@ case "$create_code" in
 esac
 
 # Wait-гейт конвергенции (arch/14: Active = config без NOT_INITIALIZED, все
-# ноды RUNNING, status/bucket_* СНЯТЫ): бюджет 600 c (Spilo-инициализация),
-# [PHASE]-метки.
+# ноды RUNNING, status/bucket_* СНЯТЫ): бюджет 600 c (Spilo-инициализация —
+# аварийный потолок, не норма), пофазовая телеметрия с [PHASE]-метками в
+# журнал + phases.log: сеть/контейнеры → Patroni REST per-node → leader-ключ
+# → реплики streaming → снятие status-ключей → Active + суммарная строка.
 echo ">>> [PHASE] жду конвергенцию demo (бюджет 600 c, $(date +%H:%M:%S))"
 demo_ready() {
   conf="$(ect get /clusters/demo/config --print-value-only 2>/dev/null || true)"
@@ -226,8 +236,73 @@ demo_ready() {
   done
   [ -z "$(ect get /clusters/demo/buckets/status/ --prefix --keys-only 2>/dev/null)" ] || return 1
 }
-for i in $(seq 1 300); do demo_ready && break; sleep 2; done
+# Порог подфазы: первый вызов фиксирует метку и печатает [PHASE] с дельтой
+# от conv_t0; повторные — no-op (порог уже достигнут).
+conv_mark() {
+  local var="$1" label="$2"
+  [ -n "${!var:-}" ] && return 0
+  local now; now="$(date +%s)"
+  printf -v "$var" '%s' "$now"
+  phase "demo: $label — $((now - conv_t0)) c"
+}
+# Подфаза 1: первый контейнер ноды demo в RUNNING (движок create/start).
+demo_containers_up() { [ -n "$(docker ps -q --filter name='^pgw-demo-' 2>/dev/null)" ]; }
+# Хост-порт Patroni REST (8008) ноды из её публикаций portalloc (пусто — нет).
+patroni_rest_port() {
+  docker port "$1" 8008 2>/dev/null | awk -F: '/:/{print $NF}' | tail -1
+}
+# Подфаза 2: REST каждой ноды отвечает /cluster (TLS per-install; -k —
+# телеметрия подъёма, не проверка PKI).
+demo_patroni_ok() {
+  local c p
+  for c in $(docker ps --filter name='^pgw-demo-' --format '{{.Names}}'); do
+    p="$(patroni_rest_port "$c")"
+    [ -n "$p" ] || return 1
+    curl -skf -m 2 "https://localhost:${p}/cluster" 2>/dev/null | grep -q '"members"' || return 1
+  done
+}
+# Подфаза 3: leader-ключи обоих шардов (Patroni select leader, DCS etcd).
+demo_leader_ok() {
+  local s
+  for s in shard1 shard2; do
+    [ -n "$(ect get "/clusters/demo/shards/$s/master" --print-value-only 2>/dev/null)" ] || return 1
+  done
+}
+# Подфаза 4: у каждого шарда есть стримящая реплика (member state=streaming
+# в /cluster; форма ответа Patroni — с пробелом и без, grep-Eq покрывает).
+demo_streaming_ok() {
+  local s c p found out
+  for s in shard1 shard2; do
+    found=""
+    for c in $(docker ps --filter "name=pgw-demo-$s-" --format '{{.Names}}'); do
+      p="$(patroni_rest_port "$c")"
+      [ -n "$p" ] || continue
+      out="$(curl -sk -m 2 "https://localhost:${p}/cluster" 2>/dev/null || true)"
+      if echo "$out" | grep -Eq '"state": ?"streaming"'; then found=1; break; fi
+    done
+    [ -n "$found" ] || return 1
+  done
+}
+t_containers=""; t_patroni=""; t_leader=""; t_streaming=""; t_status=""
+seen_status_keys=""
+conv_deadline=$((conv_t0 + 600))
+while [ "$(date +%s)" -lt "$conv_deadline" ]; do
+  [ -n "$t_containers" ] || { demo_containers_up && conv_mark t_containers "сеть/контейнеры: первый pgw-demo-* RUNNING"; }
+  [ -n "$t_patroni" ] || { demo_patroni_ok && conv_mark t_patroni "patroni REST: все ноды отвечают /cluster"; }
+  [ -n "$t_leader" ] || { demo_leader_ok && conv_mark t_leader "leader-ключи shard1+shard2"; }
+  [ -n "$t_streaming" ] || { demo_streaming_ok && conv_mark t_streaming "реплики streaming"; }
+  status_keys_now="$(ect get /clusters/demo/buckets/status/ --prefix --keys-only 2>/dev/null || true)"
+  [ -n "$status_keys_now" ] && seen_status_keys=1
+  if [ -z "$t_status" ] && [ -n "$seen_status_keys" ] && [ -z "$status_keys_now" ]; then
+    conv_mark t_status "status-ключи бакетов сняты"
+  fi
+  demo_ready && break
+  sleep 1
+done
 demo_ready || { echo "❌ demo не сошёлся за 600 c (docker logs deploy-pgworker-1; docker ps | grep pgw-demo)"; exit 1; }
+[ -n "$t_status" ] || t_status="$(date +%s)"   # сняты быстрее первого опроса — порог = гейт
+conv_done="$(date +%s)"
+phase "demo: конвергенция $((conv_done - conv_t0)) c (фазы: сеть/контейнеры $((t_containers - conv_t0)), patroni $((t_patroni - conv_t0)), leader $((t_leader - conv_t0)), streaming $((t_streaming - conv_t0)), status $((t_status - conv_t0)))"
 echo "  demo: Active, ноды RUNNING, status-ключи бакетов сняты (shard1/shard2 × a/b)"
 
 # 7) kafkaworker жив ×2 (t07): по два lease-ключа /kafkaworker/api/ и
