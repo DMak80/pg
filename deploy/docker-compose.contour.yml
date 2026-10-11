@@ -1,0 +1,43 @@
+# Контур-режим стенда (t41, arch/14 §2.1, arch/owns3/05 §6): ВСЕ сервисы
+# deploy-проекта — в ОДНОЙ внешней стендовой сети (владелец — стендовый
+# compose). Сбрасываются ОБЕ сети базового файла: default-сеть deploy-проекта
+# и pgw-metrics (у воркеров) — контейнеров в двух сетях нет, отдельные сети
+# deploy-проекта на стенде не создаются. Подъём: docker compose -f
+#   docker-compose.yml -f docker-compose.contour.yml --env-file .env up -d …
+# Прод: файл НЕ применяется (сети базового файла, вкл. pgw-metrics).
+name: deploy
+
+networks:
+  contour:
+    name: ${PGW_CONTOUR_NETWORK:?задайте PGW_CONTOUR_NETWORK (имя стендовой сети)}
+    external: true
+  # Объявление базового файла снимается: сеть pgw-metrics на стенде не
+  # создаётся (ни один сервис после override на неё не ссылается).
+  pgw-metrics: !reset null
+
+services:
+  pgworker:
+    networks:
+      default: !reset null
+      pgw-metrics: !reset null
+      contour:
+        aliases: [pgworker]
+  pgworker-2:
+    networks:
+      default: !reset null
+      pgw-metrics: !reset null
+      contour:
+        aliases: [pgworker-2]
+  kafkaworker:
+    networks: { default: !reset null, contour: {} }
+  kafkaworker-2:
+    networks: { default: !reset null, contour: {} }
+  valkeyworker:
+    networks: { default: !reset null, contour: {} }
+  valkeyworker-2:
+    networks: { default: !reset null, contour: {} }
+  owns3:
+    networks:
+      default: !reset null
+      contour:
+        aliases: [owns3]
