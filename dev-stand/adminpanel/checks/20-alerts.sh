@@ -80,9 +80,9 @@ spoof_status() { # bucket state extra
   ect put "/clusters/demo/buckets/status/$b" \
     "{\"bucket\":\"$b\",\"state\":\"$st\",\"owner\":\"$own\",\"target\":\"$tgt\",\"started_unix\":$past,\"updated_unix\":$past$extra}" >/dev/null
 }
-spoof_status bucket_3  SYNCING  ',\"phase\":\"copy\"'
-spoof_status bucket_7  ABORTING ',\"phase\":\"cleanup\",\"last_error\":\"receiver went away\"'
-spoof_status bucket_11 FROZEN   ',\"phase\":\"cutover-wait\"'
+spoof_status bucket_3  SYNCING  ',"phase":"copy"'
+spoof_status bucket_7  ABORTING ',"phase":"cleanup","last_error":"receiver went away"'
+spoof_status bucket_11 FROZEN   ',"phase":"cutover-wait"'
 echo "  статусы bucket_3/7/11 нахерачены (протухшие; owner=фактический routing)"
 
 # Assert 2: алерты появились (тик панели 3 c; воркер на паузе в full).
