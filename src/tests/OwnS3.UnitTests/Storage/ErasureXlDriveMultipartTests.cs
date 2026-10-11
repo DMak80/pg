@@ -164,6 +164,47 @@ public class ErasureXlDriveMultipartTests : IDisposable
         meta1!.VersionId.Should().NotBe(Guid.Empty);
     }
 
+    [Fact]
+    public async Task Complete_FailedTransfer_RetrySucceeds_WithoutPartLoss()
+    {
+        // Arrange: загрузка из одной части; перенос Complete сорвётся посреди —
+        // шардовый part.1 удалён с дисков 2 и 3 сета (копии сохранены): после
+        // переноса на дисках 0,1 носителей 2 < k=3 → InvalidPart. При схеме
+        // tmp-staging сбой сносил ПЕРЕНЕСЁННОЕ со всех дисков — повтор был
+        // InvalidPart навсегда; перенос в dataDir цели сохраняет части
+        var body = RandomBytes(5 * 1024 * 1024, 7);
+        var uploadId = await CreateUploadAsync("retry-transfer");
+        await UploadPartAsync("retry-transfer", uploadId, 1, body);
+        var etag = Convert.ToHexString(System.Security.Cryptography.MD5.HashData(body)).ToLowerInvariant();
+        var lostPartPaths = _roots.Skip(2).Select(root =>
+            Directory.EnumerateFiles(Path.Combine(root, ".owns3.sys", "multipart"), "part.1",
+                SearchOption.AllDirectories).Single()).ToList();
+        var savedCopies = lostPartPaths.Select(File.ReadAllBytes).ToList();
+        foreach (var path in lostPartPaths)
+            File.Delete(path);
+
+        // Act — первый Complete: InvalidPart (перенос на 0,1 уже прошёл)
+        var firstAct = () => CompleteAsync("retry-transfer", uploadId, [new PartEtag(1, '"' + etag + '"')]);
+        await firstAct.Should().ThrowAsync<ObjectStoreException>()
+            .Where(e => e.Code == ObjectStoreErrorCode.InvalidPart);
+
+        // Arrange2: «источники вернулись» — part.1 восстановлен на дисках 2,3
+        foreach (var (path, copy) in lostPartPaths.Zip(savedCopies))
+            File.WriteAllBytes(path, copy);
+
+        // Act2 — повтор Complete доезжает: перенесённое на 0,1 не потеряно
+        // (dest skip), возвратившиеся источники переносятся, коммит успешен
+        await CompleteAsync("retry-transfer", uploadId, [new PartEtag(1, '"' + etag + '"')]);
+
+        // Assert — объект закоммичен и читается исходником
+        var meta = _drive.TryReadMeta("b", "retry-transfer");
+        meta.Should().NotBeNull();
+        using var stream = _drive.OpenData("b", "retry-transfer", meta!, 0, meta!.Size);
+        using var target = new MemoryStream();
+        await stream.CopyToAsync(target, TestContext.Current.CancellationToken);
+        target.ToArray().Should().Equal(body);
+    }
+
     private async Task<CompleteResult?> AssertCompleteRetryAsync(string key, string uploadId, string etag,
         CompleteResult first)
     {

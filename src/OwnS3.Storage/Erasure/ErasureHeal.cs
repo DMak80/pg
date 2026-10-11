@@ -273,7 +273,11 @@ public sealed class ErasureHealService(ErasurePool pool, ErasureXlDrive drive,
             if (online.Count < 2)
                 continue;
             // эталонные журналы/файлы каждого uploadDir — с первого диска, где они есть;
-            // недостающее на других — копия (журналы/attempt/меты идентичны по содержанию)
+            // выравнивание ДВУСТОРОННЕЕ per-file replace: журнал reference замещает
+            // локальный при отличии (не только copy-if-missing) — устаревшие записи
+            // (Abort/Complete, выполненные при offline-диска) с вернувшегося диска
+            // не воскрешают «призрачную» загрузку в листингах (канон 06 §8:
+            // «рассинхрон после отказов выравнивается heal»)
             var multipartRoots = online
                 .Select(d => (Disk: d, Root: Path.Combine(d.Root, ".owns3.sys", "multipart")))
                 .Where(x => Directory.Exists(x.Root))
@@ -293,11 +297,11 @@ public sealed class ErasureHealService(ErasurePool pool, ErasureXlDrive drive,
                         if (!isReplicable)
                             continue;
                         var target = Path.Combine(peer.Root, relative);
-                        if (!File.Exists(target))
-                        {
-                            Directory.CreateDirectory(Path.GetDirectoryName(target)!);
-                            File.Copy(file, target);
-                        }
+                        if (File.Exists(target)
+                            && File.ReadAllBytes(target).SequenceEqual(File.ReadAllBytes(file)))
+                            continue; // синхронизирован
+                        Directory.CreateDirectory(Path.GetDirectoryName(target)!);
+                        File.Copy(file, target, overwrite: true);
                     }
                 }
             }

@@ -228,6 +228,11 @@ public sealed partial class XlObjectStore
                 // Битый журнал одного ключа не валит листинг бакета (спека §4.1)
                 _logger.LogWarning(ex, "Битый uploads.json в {KeyDir}: ключ пропущен", keyDirPath);
             }
+            catch (FileNotFoundException)
+            {
+                // keyDir есть, журнала нет (рассинхрон носителей после отказов) —
+                // загрузок этого ключа не видно, не ошибка листинга
+            }
         }
 
         // Видимость (М9): read-only — только свои

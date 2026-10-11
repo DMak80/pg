@@ -416,6 +416,10 @@ public sealed partial class ErasureXlDrive : IXlDrive
                 _logger.LogWarning(ex, "Битый uploads.json в {KeyDir} при DeleteBucket: пропущен", keyDirPath);
                 continue;
             }
+            catch (FileNotFoundException)
+            {
+                continue; // keyDir есть, журнала нет — загрузок этого ключа нет
+            }
 
             if (uploads.Any(e => e.Bucket == bucket && UploadDirExists(e.Bucket, e.Key, e.UploadId)))
                 throw new ObjectStoreException(ObjectStoreErrorCode.BucketNotEmpty);
@@ -611,29 +615,45 @@ public sealed partial class ErasureXlDrive : IXlDrive
         var windowStart = offset;
         var windowEnd = offset + length;
         var partStart = 0L;
-        for (var i = 0; i < ec.Parts.Count && partStart < windowEnd; i++)
+        Stream?[] currentReaders = [];
+        try
         {
-            var part = ec.Parts[i];
-            var partEnd = partStart + part.SourceSize;
-            if (partEnd > windowStart)
+            for (var i = 0; i < ec.Parts.Count && partStart < windowEnd; i++)
             {
-                var localOffset = Math.Max(0, windowStart - partStart);
-                var localEnd = Math.Min(partEnd, windowEnd);
-                var result = new ErasurePartResult(string.Empty, string.Empty, part.SourceSize,
-                    part.BlockHashes.Length > 0 ? part.BlockHashes[0].Length : 0, part.BlockHashes);
-                var readers = OpenShardStreams(set, bucket, key, meta, i + 1, ec);
+                var part = ec.Parts[i];
+                var partEnd = partStart + part.SourceSize;
+                if (partEnd > windowStart)
+                {
+                    var localOffset = Math.Max(0, windowStart - partStart);
+                    var localEnd = Math.Min(partEnd, windowEnd);
+                    var result = new ErasurePartResult(string.Empty, string.Empty, part.SourceSize,
+                        part.BlockHashes.Length > 0 ? part.BlockHashes[0].Length : 0, part.BlockHashes);
+                    currentReaders = OpenShardStreams(set, bucket, key, meta, i + 1, ec);
 
-                // Порог ДО декодирования — по per-object parity записи (TryReadMeta
-                // консервативен по default k): живых источников части < k объекта →
-                // кворумная недоступность 503, не 500 InternalError от ридера
-                if (readers.Count(r => r is not null) < ec.EcM)
-                    throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum);
+                    // Порог ДО декодирования — по per-object parity записи (TryReadMeta
+                    // консервативен по default k): живых источников части < k объекта →
+                    // кворумная недоступность 503, не 500 InternalError от ридера
+                    if (currentReaders.Count(r => r is not null) < ec.EcM)
+                        throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum);
 
-                shardStreams.AddRange(readers.Where(r => r is not null)!);
-                windows.Add(new ErasureBlockReader(codec, readers, result, localOffset, localEnd - partStart - localOffset));
+                    shardStreams.AddRange(currentReaders.Where(r => r is not null)!);
+                    windows.Add(new ErasureBlockReader(codec, currentReaders, result,
+                        localOffset, localEnd - partStart - localOffset));
+                    currentReaders = [];
+                }
+
+                partStart = partEnd;
             }
-
-            partStart = partEnd;
+        }
+        catch
+        {
+            // 503-путь (и любой сбой сборки окна): уже открытые шард-потоки этой и
+            // предыдущих частей никто не закроет — поток-обёртка не создана
+            foreach (var stream in currentReaders)
+                stream?.Dispose();
+            foreach (var stream in shardStreams)
+                stream.Dispose();
+            throw;
         }
 
         return new ErasureObjectStream(windows, shardStreams);
@@ -825,6 +845,10 @@ public sealed partial class ErasureXlDrive : IXlDrive
 
     public List<MultipartJournals.UploadJournalEntry> ReadUploads(string bucket, string key)
     {
+        // Отсутствие журнала на диске — «этого диска мнение: загрузок нет»:
+        // опрашиваем остальные (реплики могли создаться, пока диск был offline);
+        // достижимый диск без файла есть → журнал пуст; не прочитал никто → 503
+        var reachable = false;
         foreach (var disk in SetOf(bucket, key).Where(d => d.Online))
         {
             try
@@ -834,7 +858,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
             }
             catch (FileNotFoundException)
             {
-                return [];
+                reachable = true; // диск читается, журнала на нём нет — следующий
             }
             catch (IOException)
             {
@@ -842,6 +866,8 @@ public sealed partial class ErasureXlDrive : IXlDrive
             }
         }
 
+        if (reachable)
+            return [];
         throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum);
     }
 
@@ -1061,109 +1087,149 @@ public sealed partial class ErasureXlDrive : IXlDrive
                 System.Security.Cryptography.MD5.HashData(Encoding.ASCII.GetBytes(concat))).ToLowerInvariant();
             var size = manifest.Sum(p => journalByNumber[p.PartNumber].Size);
 
-            // staging сборки: перенос частей в tmp-каталоги → коммит-схема записи
-            var staging = (ErasureStaging)CreateStaging(bucket, key);
-            try
+            // Перенос частей СРАЗУ в dataDir цели per-disk (модель single 04 §5):
+            // персистентное место, не tmp-staging — сбой посреди Complete не теряет
+            // перенесённое (повтор доезжает: dest существует → skip); uploadDir не
+            // опустошается до кворумного коммита. Отсутствие шард-носителя части
+            // на отдельном диске — деградация (кворум ниже), не фатально.
+            var distribution = ReadDistribution(SetOf(bucket, key));
+            var parity = _defaultParity;
+            var codec = CodecFor(parity);
+            foreach (var disk in online)
             {
-                var stagingVersionId = staging.VersionId.ToString("N");
-                foreach (var (disk, stagingDir) in staging.StagingDirs)
+                try
                 {
                     var uploadDir = UploadDirOnDisk(disk, bucket, key, uploadId);
-                    var targetDataDir = Path.Combine(stagingDir, stagingVersionId);
+                    var dataDir = Path.Combine(ObjectDirOnDisk(disk, bucket, key), dataDirName);
+                    Directory.CreateDirectory(dataDir); // создаёт и каталоги-префиксы ключа
                     foreach (var (number, _) in manifest)
                     {
-                        var dest = Path.Combine(targetDataDir, $"part.{number}");
+                        var dest = Path.Combine(dataDir, $"part.{number}");
                         if (File.Exists(dest))
-                            continue;
+                            continue; // перенесено прошлой попыткой — идемпотентность
                         var src = Path.Combine(uploadDir, $"part.{number}");
                         if (!File.Exists(src))
-                            throw new ObjectStoreException(ObjectStoreErrorCode.InvalidPart);
+                            continue; // шард этого диска отсутствует — кворум носителей ниже
                         File.Move(src, dest);
                     }
                 }
-
-                // bitrot-хэши частей: SHA-256 итога — проходом ErasureBlockReader по частям
-                string sha256Hex;
-                var codec = CodecFor(staging.Parity);
-                using (var sha = System.Security.Cryptography.IncrementalHash
-                           .CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256))
+                catch (Exception ex)
                 {
-                    foreach (var (number, _) in manifest)
-                    {
-                        var readers = new Stream?[codec.TotalShards];
-                        try
-                        {
-                            for (var j = 0; j < codec.TotalShards; j++)
-                            {
-                                var disk = staging.StagingDirs.Keys
-                                    .FirstOrDefault(d => d.PositionInSet == staging.Distribution[j]);
-                                if (disk is null)
-                                    continue;
-                                var path = Path.Combine(staging.StagingDirs[disk], stagingVersionId, $"part.{number}");
-                                if (File.Exists(path))
-                                    readers[j] = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-                            }
+                    MarkOfflineIfIo(disk, ex);
+                    _logger.LogWarning(ex, "EC: перенос части Complete на диске {Position} не прошёл", disk.Position);
+                }
+            }
 
-                            // sidecar — с первого диска, где файл есть (диски сета;
-                            // рассинхрон носителей выравнивается heal)
-                            var hashes = ReadPartBitrot(
-                                online.Select(d => UploadDirOnDisk(d, bucket, key, uploadId)).ToList(), number);
-                            var partResult = new ErasurePartResult(string.Empty, string.Empty,
-                                journalByNumber[number].Size,
-                                hashes.Length > 0 ? hashes[0].Length : 0, hashes);
-                            staging.PartResults[number] = partResult;
-                            using var reader = new ErasureBlockReader(codec, readers, partResult, 0,
-                                journalByNumber[number].Size);
-                            var buffer = new byte[64 * 1024];
-                            int read;
-                            while ((read = reader.ReadAsync(buffer, 0, buffer.Length, CancellationToken.None)
-                                       .GetAwaiter().GetResult()) > 0)
-                                sha.AppendData(buffer, 0, read);
-                        }
-                        finally
+            // кворум шард-носителей каждой части (после переноса): меньше k —
+            // InvalidPart (части сохранены в dataDir — повтор доедет при возврате
+            // носителей/heal загрузок)
+            var kShards = codec.DataShards;
+            foreach (var (number, _) in manifest)
+            {
+                var carriers = online.Count(d => File.Exists(Path.Combine(
+                    ObjectDirOnDisk(d, bucket, key), dataDirName, $"part.{number}")));
+                if (carriers < kShards)
+                    throw new ObjectStoreException(ObjectStoreErrorCode.InvalidPart);
+            }
+
+            // bitrot-хэши частей (sidecar остаётся в uploadDir до зачистки):
+            // SHA-256 итога — проходом ErasureBlockReader по перенесённым частям
+            string sha256Hex;
+            var partResults = new Dictionary<int, ErasurePartResult>();
+            using (var sha = System.Security.Cryptography.IncrementalHash
+                       .CreateHash(System.Security.Cryptography.HashAlgorithmName.SHA256))
+            {
+                foreach (var (number, _) in manifest)
+                {
+                    var readers = new Stream?[codec.TotalShards];
+                    try
+                    {
+                        for (var j = 0; j < codec.TotalShards; j++)
                         {
-                            foreach (var stream in readers)
-                                stream?.Dispose();
+                            var disk = online
+                                .FirstOrDefault(d => d.PositionInSet == distribution[j]);
+                            if (disk is null)
+                                continue;
+                            var path = Path.Combine(ObjectDirOnDisk(disk, bucket, key), dataDirName, $"part.{number}");
+                            if (File.Exists(path))
+                                readers[j] = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
                         }
+
+                        var hashes = ReadPartBitrot(
+                            online.Select(d => UploadDirOnDisk(d, bucket, key, uploadId)).ToList(), number);
+                        var partResult = new ErasurePartResult(string.Empty, string.Empty,
+                            journalByNumber[number].Size,
+                            hashes.Length > 0 ? hashes[0].Length : 0, hashes);
+                        partResults[number] = partResult;
+                        using var reader = new ErasureBlockReader(codec, readers, partResult, 0,
+                            journalByNumber[number].Size);
+                        var buffer = new byte[64 * 1024];
+                        int read;
+                        while ((read = reader.ReadAsync(buffer, 0, buffer.Length, CancellationToken.None)
+                                   .GetAwaiter().GetResult()) > 0)
+                            sha.AppendData(buffer, 0, read);
+                    }
+                    finally
+                    {
+                        foreach (var stream in readers)
+                            stream?.Dispose();
+                    }
+                }
+
+                sha256Hex = Convert.ToHexString(sha.GetHashAndReset()).ToLowerInvariant();
+            }
+
+            var record = newRecord with
+            {
+                VersionId = Guid.Parse(dataDirName), Size = size, ETag = compositeEtag,
+                ContentSha256 = sha256Hex,
+            };
+
+            // Кворумный коммит: xl.meta v2 (свой EcIndex) tmp+rename ПРЯМО в
+            // каталог объекта на каждом онлайн-диске (без tmp-staging — его
+            // Dispose сносил бы перенесённые части при сбое); старый dataDir
+            // прежней версии объекта — в .trash после записи новой меты
+            var writeQuorum = ErasureQuorum.Write(kShards, parity);
+            var committed = 0;
+            foreach (var disk in online)
+            {
+                try
+                {
+                    var objectDir = ObjectDirOnDisk(disk, bucket, key);
+                    var diskRecord = record with
+                    {
+                        Ec = BuildEcInfo(partResults, distribution, disk.PositionInSet, parity),
+                    };
+                    string? oldDataDir = null;
+                    var oldMetaPath = Path.Combine(objectDir, "xl.meta");
+                    if (File.Exists(oldMetaPath))
+                    {
+                        var previous = XlMetaFile.Read(objectDir, out _);
+                        oldDataDir = previous.DataDirName != dataDirName ? previous.DataDirName : null;
                     }
 
-                    sha256Hex = Convert.ToHexString(sha.GetHashAndReset()).ToLowerInvariant();
+                    XlMetaFile.Write(objectDir, diskRecord);
+                    if (oldDataDir is not null && Directory.Exists(Path.Combine(objectDir, oldDataDir)))
+                        MoveToTrash(disk, Path.Combine(objectDir, oldDataDir));
+                    committed++;
                 }
-
-                var record = newRecord with
+                catch (Exception ex)
                 {
-                    VersionId = Guid.Parse(dataDirName), Size = size, ETag = compositeEtag,
-                    ContentSha256 = sha256Hex,
-                };
-
-                // xl.meta v2 per-disk (EcIndex) + bitrot-хэши частей загрузки
-                WriteMeta(staging, record);
-                // подмена dataDir staging на attempt-dataDir (идемпотентность 04 §5)
-                foreach (var (disk, stagingDir) in staging.StagingDirs)
-                {
-                    var from = Path.Combine(stagingDir, staging.VersionId.ToString("N"));
-                    var to = Path.Combine(stagingDir, dataDirName);
-                    if (!Directory.Exists(to))
-                        Directory.Move(from, to);
-                    var diskRecord = staging.DiskRecords[disk] with { VersionId = Guid.Parse(dataDirName) };
-                    XlMetaFile.Write(stagingDir, diskRecord);
-                    staging.DiskRecords[disk] = diskRecord;
+                    MarkOfflineIfIo(disk, ex);
+                    _logger.LogWarning(ex, "EC: коммит Complete на диске {Position} не прошёл", disk.Position);
                 }
-
-                record = record with { VersionId = Guid.Parse(dataDirName) };
-                var putResult = Commit(bucket, key, record, staging);
-
-                // зачистка: журнал + каталог загрузки
-                var updated = ReadUploads(bucket, key);
-                updated.RemoveAll(e => e.UploadId == uploadId && e.Bucket == bucket && e.Key == key);
-                WriteUploads(bucket, key, updated);
-                TrashUpload(bucket, key, uploadId);
-                return new CompleteResult(putResult.ETag);
             }
-            finally
-            {
-                staging.Dispose();
-            }
+
+            if (committed < writeQuorum)
+                throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum);
+
+            // зачистка: журнал + каталог загрузки
+            var updated = ReadUploads(bucket, key);
+            updated.RemoveAll(e => e.UploadId == uploadId && e.Bucket == bucket && e.Key == key);
+            WriteUploads(bucket, key, updated);
+            TrashUpload(bucket, key, uploadId);
+            // ETag — quoted (формат PutResult коммит-пути Put/Complete)
+            return new CompleteResult('"' + record.ETag + '"');
         }
     }
 
@@ -1240,11 +1306,16 @@ public sealed partial class ErasureXlDrive : IXlDrive
         ?? throw new ArgumentException($"требуется EC-staging, получен {staging.GetType().Name}", nameof(staging));
 
     // xl.meta-запись для диска (свой EcIndex) — собирается из record + bitrot staging.
-    internal XlMetaEcInfo BuildEcInfo(ErasureStaging staging, int positionInSet)
+    internal XlMetaEcInfo BuildEcInfo(ErasureStaging staging, int positionInSet) =>
+        BuildEcInfo(staging.PartResults, staging.Distribution, positionInSet, staging.Parity);
+
+    // xl.meta-EC для записи из результатов шардирования частей (per-disk EcIndex).
+    internal XlMetaEcInfo BuildEcInfo(IReadOnlyDictionary<int, ErasurePartResult> partResults,
+        int[] distribution, int positionInSet, int parity)
     {
-        var m = staging.Parity;
+        var m = parity;
         var n = _pool.Topology.SetSize;
-        var parts = staging.PartResults.OrderBy(p => p.Key)
+        var parts = partResults.OrderBy(p => p.Key)
             .Select(p => new XlMetaPartBitrot(p.Value.SourceLength, p.Value.ShardBlockHashes))
             .ToList();
         return new XlMetaEcInfo(
@@ -1253,7 +1324,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
             (byte)n,
             (uint)ReedSolomonCodec.ErasureBlockMaxSize,
             (byte)positionInSet,
-            staging.Distribution.Select(d => (byte)d).ToArray(),
+            distribution.Select(d => (byte)d).ToArray(),
             parts);
     }
 
