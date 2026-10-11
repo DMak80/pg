@@ -17,7 +17,6 @@ public sealed class ErasureBlockReader : IDisposable
     private readonly long _length;
     private readonly int _fullShardLen;
     private readonly HashSet<int> _corruptedShards = [];
-    private readonly List<(int Index, Stream Stream)> _openStreams = [];
 
     private long _delivered;
     private int _currentBlockIndex = -1;
@@ -224,7 +223,7 @@ public sealed class ErasureBlockReader : IDisposable
 
     public void Dispose()
     {
-        // шард-потоки принадлежат вызывающему; закрываем только собственные клоны (нет)
-        _openStreams.Clear();
+        // шард-потоки принадлежат вызывающему (закрывает ErasureObjectStream) —
+        // собственного неосвобождаемого состояния нет
     }
 }

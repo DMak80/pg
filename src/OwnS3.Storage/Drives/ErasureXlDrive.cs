@@ -64,6 +64,9 @@ public sealed partial class ErasureXlDrive : IXlDrive
 
     private ErasurePool Pool => _pool;
 
+    // default parity драйва (конвенция parity загрузок — heal Complete-семантики)
+    internal int DefaultParity => _defaultParity;
+
     // Ошибка I/O переводит диск сета в offline до ближайшей успешной
     // перепроверки (тикер 30 с / heal-проход — канон 06 §7): операции не
     // бьются об умерший диск до конца таймера.
@@ -305,8 +308,9 @@ public sealed partial class ErasureXlDrive : IXlDrive
         return Task.CompletedTask;
     }
 
-    // Формат пула валиден + touch-проба на каждом онлайн-диске (спека §4.3);
-    // деградация НЕ роняет healthz — она наблюдается в /admin/storage.
+    // Формат пула валиден + touch-проба записи на каждом онлайн-диске (канон
+    // 05 §5/спека §4.3 — как single XlVolume.CheckHealth); деградация НЕ роняет
+    // healthz — она наблюдается в /admin/storage.
     public bool CheckHealth()
     {
         var online = _pool.Disks.Where(d => d.Online).ToList();
@@ -322,6 +326,9 @@ public sealed partial class ErasureXlDrive : IXlDrive
             {
                 return false;
             }
+
+            if (!_pool.ProbeDiskAlive(disk))
+                return false; // read-only/умерший диск — том не доступен на запись
         }
 
         return true;
@@ -412,6 +419,18 @@ public sealed partial class ErasureXlDrive : IXlDrive
 
             if (uploads.Any(e => e.Bucket == bucket && UploadDirExists(e.Bucket, e.Key, e.UploadId)))
                 throw new ObjectStoreException(ObjectStoreErrorCode.BucketNotEmpty);
+        }
+
+        // Кворум ≥ writeQuorum КАЖДОГО сета (канон 06 §8 — как CreateBucket):
+        // трэш только по онлайн-дискам без кворума оставил бы фантомные
+        // бакеты/ключи на offline-дисках — воскреснут при возврате, их не
+        // вычищают ни heal (только живое-в-консенсусе), ни чистки (порог)
+        var deleteQuorum = ErasureQuorum.Write(
+            _pool.Topology.SetSize - _defaultParity, _defaultParity);
+        foreach (var set in _pool.Sets)
+        {
+            if (set.Count(d => d.Online) < deleteQuorum)
+                throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum);
         }
 
         foreach (var disk in _pool.Disks.Where(d => d.Online))
@@ -588,6 +607,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
         var codec = CodecFor(ec.EcN - ec.EcM);
         var set = _pool.Sets[_pool.PickSetIndex(bucket, key)];
         var windows = new List<ErasureBlockReader>();
+        var shardStreams = new List<Stream>(); // владение — ErasureObjectStream
         var windowStart = offset;
         var windowEnd = offset + length;
         var partStart = 0L;
@@ -602,13 +622,21 @@ public sealed partial class ErasureXlDrive : IXlDrive
                 var result = new ErasurePartResult(string.Empty, string.Empty, part.SourceSize,
                     part.BlockHashes.Length > 0 ? part.BlockHashes[0].Length : 0, part.BlockHashes);
                 var readers = OpenShardStreams(set, bucket, key, meta, i + 1, ec);
+
+                // Порог ДО декодирования — по per-object parity записи (TryReadMeta
+                // консервативен по default k): живых источников части < k объекта →
+                // кворумная недоступность 503, не 500 InternalError от ридера
+                if (readers.Count(r => r is not null) < ec.EcM)
+                    throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum);
+
+                shardStreams.AddRange(readers.Where(r => r is not null)!);
                 windows.Add(new ErasureBlockReader(codec, readers, result, localOffset, localEnd - partStart - localOffset));
             }
 
             partStart = partEnd;
         }
 
-        return new ErasureObjectStream(windows);
+        return new ErasureObjectStream(windows, shardStreams);
     }
 
     // Шард-потоки части N по позициям EcDist записи: поток j — с диска
@@ -1063,30 +1091,40 @@ public sealed partial class ErasureXlDrive : IXlDrive
                     foreach (var (number, _) in manifest)
                     {
                         var readers = new Stream?[codec.TotalShards];
-                        for (var j = 0; j < codec.TotalShards; j++)
+                        try
                         {
-                            var disk = staging.StagingDirs.Keys
-                                .FirstOrDefault(d => d.PositionInSet == staging.Distribution[j]);
-                            if (disk is null)
-                                continue;
-                            var path = Path.Combine(staging.StagingDirs[disk], stagingVersionId, $"part.{number}");
-                            if (File.Exists(path))
-                                readers[j] = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
-                        }
+                            for (var j = 0; j < codec.TotalShards; j++)
+                            {
+                                var disk = staging.StagingDirs.Keys
+                                    .FirstOrDefault(d => d.PositionInSet == staging.Distribution[j]);
+                                if (disk is null)
+                                    continue;
+                                var path = Path.Combine(staging.StagingDirs[disk], stagingVersionId, $"part.{number}");
+                                if (File.Exists(path))
+                                    readers[j] = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+                            }
 
-                        var hashes = ReadPartBitrot(UploadDirOnDisk(online[0], bucket, key, uploadId), number,
-                            staging.Parity);
-                        var partResult = new ErasurePartResult(string.Empty, string.Empty,
-                            journalByNumber[number].Size,
-                            hashes.Length > 0 ? hashes[0].Length : 0, hashes);
-                        staging.PartResults[number] = partResult;
-                        using var reader = new ErasureBlockReader(codec, readers, partResult, 0,
-                            journalByNumber[number].Size);
-                        var buffer = new byte[64 * 1024];
-                        int read;
-                        while ((read = reader.ReadAsync(buffer, 0, buffer.Length, CancellationToken.None)
-                                   .GetAwaiter().GetResult()) > 0)
-                            sha.AppendData(buffer, 0, read);
+                            // sidecar — с первого диска, где файл есть (диски сета;
+                            // рассинхрон носителей выравнивается heal)
+                            var hashes = ReadPartBitrot(
+                                online.Select(d => UploadDirOnDisk(d, bucket, key, uploadId)).ToList(), number);
+                            var partResult = new ErasurePartResult(string.Empty, string.Empty,
+                                journalByNumber[number].Size,
+                                hashes.Length > 0 ? hashes[0].Length : 0, hashes);
+                            staging.PartResults[number] = partResult;
+                            using var reader = new ErasureBlockReader(codec, readers, partResult, 0,
+                                journalByNumber[number].Size);
+                            var buffer = new byte[64 * 1024];
+                            int read;
+                            while ((read = reader.ReadAsync(buffer, 0, buffer.Length, CancellationToken.None)
+                                       .GetAwaiter().GetResult()) > 0)
+                                sha.AppendData(buffer, 0, read);
+                        }
+                        finally
+                        {
+                            foreach (var stream in readers)
+                                stream?.Dispose();
+                        }
                     }
 
                     sha256Hex = Convert.ToHexString(sha.GetHashAndReset()).ToLowerInvariant();
@@ -1113,7 +1151,6 @@ public sealed partial class ErasureXlDrive : IXlDrive
                 }
 
                 record = record with { VersionId = Guid.Parse(dataDirName) };
-                _ = stagingVersionId;
                 var putResult = Commit(bucket, key, record, staging);
 
                 // зачистка: журнал + каталог загрузки
@@ -1153,14 +1190,27 @@ public sealed partial class ErasureXlDrive : IXlDrive
         File.WriteAllBytes(Path.Combine(uploadDir, $"part.{partNumber}.bitrot"), ms.ToArray());
     }
 
-    private static byte[][][] ReadPartBitrot(string uploadDir, int partNumber, int parity)
+    // sidecar части с первого диска-носителя файла (диски сета; рассинхрон
+    // носителей после отказов выравнивается heal); нигде нет — InvalidPart.
+    internal static byte[][][] ReadPartBitrot(IReadOnlyList<string> uploadDirs, int partNumber)
     {
-        var path = Path.Combine(uploadDir, $"part.{partNumber}.bitrot");
-        if (!File.Exists(path))
+        byte[]? data = null;
+        foreach (var uploadDir in uploadDirs)
+        {
+            var path = Path.Combine(uploadDir, $"part.{partNumber}.bitrot");
+            if (File.Exists(path))
+            {
+                data = File.ReadAllBytes(path);
+                break;
+            }
+        }
+
+        if (data is null || data.Length < 8)
             throw new ObjectStoreException(ObjectStoreErrorCode.InvalidPart);
-        var data = File.ReadAllBytes(path);
         var ecN = (int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(0, 4));
         var blockCount = (int)System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(4, 4));
+        if (8 + (long)ecN * blockCount * 32 != data.Length)
+            throw new ObjectStoreException(ObjectStoreErrorCode.InvalidPart); // битый sidecar
         var hashes = new byte[ecN][][];
         var offset = 8;
         for (var shard = 0; shard < ecN; shard++)

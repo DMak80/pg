@@ -253,7 +253,9 @@ public static class XlMetaFile
     }
 
     // Разбор v2-хвоста (канон 06 §5 в правке Task 0; размер bitrot-секции части —
-    // 8 + 4 + ecN × blockCount × 32 байт).
+    // 8 + 4 + ecN × blockCount × 32 байт). Битый blockCount/ecN валидируется ДО
+    // аллокации: объявленная секция больше остатка данных → XlIntegrityException
+    // (иначе гигабайтный alloc по мусорному uint32 — OOM вместо ясной порчи).
     private static XlMetaEcInfo ReadEcTail(string path, byte[] data, ref int offset)
     {
         var ecAlgo = ReadString(data, ref offset);
@@ -268,6 +270,8 @@ public static class XlMetaFile
             ecDist[i] = data[offset++];
         var partCount = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(offset, 2));
         offset += 2;
+        if (ecN is < 1 or > 16)
+            throw new XlIntegrityException($"xl.meta {path}: ecN={ecN} вне 1..16 — битая структура");
         var parts = new XlMetaPartBitrot[partCount];
         for (var p = 0; p < partCount; p++)
         {
@@ -275,6 +279,11 @@ public static class XlMetaFile
             offset += 8;
             var blockCount = (int)BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(offset, 4));
             offset += 4;
+            // размер bitrot-хвоста части — сверься с остатком данных ДО аллокации
+            var bitrotBytes = (long)ecN * blockCount * 32;
+            if (blockCount < 0 || data.Length - offset < bitrotBytes)
+                throw new XlIntegrityException(
+                    $"xl.meta {path}: bitrot-хвост части {p + 1} (blockCount={blockCount}, ecN={ecN}) не помещается в остаток данных — битая структура");
             var hashes = new byte[ecN][][];
             for (var shard = 0; shard < ecN; shard++)
             {

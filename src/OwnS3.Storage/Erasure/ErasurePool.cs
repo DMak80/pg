@@ -60,7 +60,7 @@ public sealed class ErasurePool : IDisposable
             .ToArray();
     }
 
-    public Guid DeploymentId { get; }
+    public Guid DeploymentId { get; private set; }
 
     public ErasureTopology Topology { get; }
 
@@ -109,6 +109,10 @@ public sealed class ErasurePool : IDisposable
                 disk.Online = ProbeAlive(disk);
         }
     }
+
+    // Единичная touch-проба записи диска (healthz — канон 05 §5: том доступен
+    // на запись; наблюдение без мутации online-трекинга — его обновляет тикер).
+    public bool ProbeDiskAlive(ErasureDisk disk) => ProbeAlive(disk);
 
     // Фоновый тикер online-перепроверки (канон 06 §7).
     public IDisposable StartOnlineTicker()
@@ -208,6 +212,9 @@ public sealed class ErasurePool : IDisposable
         var reference = ErasureVolumeInfo.Read(Disks[referenceIndex].Root);
 
         ValidateReference(reference, referenceIndex);
+
+        // форматы валидных дисков читаются ОДИН раз (кэш циклов ниже)
+        var formats = new Dictionary<int, ErasureVolumeInfo> { [referenceIndex] = reference };
         foreach (var i in validIndexes.Skip(1))
         {
             var info = ErasureVolumeInfo.Read(Disks[i].Root);
@@ -215,6 +222,7 @@ public sealed class ErasurePool : IDisposable
             if (info.DiskId == reference.DiskId)
                 throw new InvalidOperationException(
                     $"EC-старт: позиция {i} ({Disks[i].Root}) несёт diskId позиции {referenceIndex} — подмена дисков запрещена");
+            formats[i] = info;
         }
 
         // изменения числа путей против sets формата — отказ
@@ -231,14 +239,18 @@ public sealed class ErasurePool : IDisposable
 
         foreach (var i in validIndexes)
         {
-            var info = ErasureVolumeInfo.Read(Disks[i].Root);
-            if (info.DiskId != expectedDiskIds[i])
+            if (formats[i].DiskId != expectedDiskIds[i])
                 throw new InvalidOperationException(
                     $"EC-старт: позиция {i} ({Disks[i].Root}) несёт diskId вне sets своей позиции — отказ");
-            if (states[i] == DiskState.ForeignContent)
-                throw new InvalidOperationException(
-                    $"EC-старт: позиция {i} ({Disks[i].Root}) содержит посторонние данные — отказ");
         }
+
+        // deploymentId живого тома восстанавливается из формата: SIPMOD-ключ
+        // PickSetIndex обязан совпадать между рестартами процесса — «тот же
+        // ключ всегда в тот же сет, пока жив формат тома» (канон 06 §3)
+        if (!Guid.TryParseExact(reference.DeploymentId, "N", out var volumeDeploymentId))
+            throw new InvalidOperationException(
+                $"EC-старт: позиция {referenceIndex}: deploymentId формата «{reference.DeploymentId}» не GUID — отказ");
+        DeploymentId = volumeDeploymentId;
 
         // per-set замена кандидатов: живые старые >= k, заменяемых < k
         var replacementDiskIds = new Dictionary<int, string>();
@@ -279,16 +291,11 @@ public sealed class ErasurePool : IDisposable
             effectiveSets = reference.Sets.Select(set => set.ToArray()).ToArray();
             foreach (var (position, diskId) in replacementDiskIds)
                 effectiveSets[position / Topology.SetSize][position % Topology.SetSize] = diskId;
-            // пишем обновлённый формат на онлайн-диски с валидным форматом
+            // пишем обновлённый формат на валидные диски (из кэша чтений)
             // (замена выполняется при старте, heal потом доливает — канон 06 §9);
             // формат кандидата пишет финальный цикл ниже
-            foreach (var disk in Disks)
-            {
-                if (states[disk.Position] != DiskState.Valid)
-                    continue;
-                var info = ErasureVolumeInfo.Read(disk.Root);
-                ErasureVolumeInfo.Write(disk.Root, info with { Sets = effectiveSets });
-            }
+            foreach (var i in validIndexes)
+                ErasureVolumeInfo.Write(Disks[i].Root, formats[i] with { Sets = effectiveSets });
         }
         else
         {
@@ -301,7 +308,7 @@ public sealed class ErasurePool : IDisposable
             var disk = Disks[i];
             if (states[i] == DiskState.Valid)
             {
-                disk.DiskId = ErasureVolumeInfo.Read(disk.Root).DiskId;
+                disk.DiskId = formats[i].DiskId;
             }
             else if (replacementDiskIds.TryGetValue(i, out var newDiskId))
             {

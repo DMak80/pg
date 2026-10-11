@@ -270,6 +270,36 @@ public class ErasurePoolTests : IDisposable
     }
 
     [Fact]
+    public void Initialize_ExistingVolume_RestoresDeploymentId_PickSetIndexStableAcrossRestarts()
+    {
+        // Arrange: 8 путей (2 сета) — пул A создаёт том; распределение ключей
+        // фиксируется (между сетами обязаны быть оба значения — 100 ключей)
+        var roots = Enumerable.Range(0, 8).Select(_ => NewRoot()).ToList();
+        Guid deploymentA;
+        Dictionary<string, int> expected;
+        using (var poolA = new ErasurePool(roots, new ErasureTopology(8, 4, 1), TimeProvider.System))
+        {
+            poolA.Initialize();
+            deploymentA = poolA.DeploymentId;
+            expected = Enumerable.Range(0, 100)
+                .ToDictionary(t => "key" + t, t => poolA.PickSetIndex("b", "key" + t));
+        }
+
+        expected.Values.Distinct().Should().HaveCount(2, "предусловие: ключи в обоих сетах");
+
+        // Act: рестарт процесса — новый пул на тех же корнях живого тома
+        using var poolB = new ErasurePool(roots, new ErasureTopology(8, 4, 1), TimeProvider.System);
+        poolB.Initialize();
+
+        // Assert: deploymentId восстановлен из volume.json — SIPMOD-ключ тот же,
+        // ни один ключ не «переезжает» между сетами (канон 06 §3)
+        poolB.DeploymentId.Should().Be(deploymentA,
+            "deploymentId живого тома восстанавливается из формата, а не генерируется заново");
+        foreach (var (key, setIndex) in expected)
+            poolB.PickSetIndex("b", key).Should().Be(setIndex, "ключ {0} не мигрирует между сетами", key);
+    }
+
+    [Fact]
     public void PickSetIndex_DependsOnDeploymentId()
     {
         // Arrange: два пула (разные deploymentId) на одинаковых путях-состояниях

@@ -225,4 +225,56 @@ public class ErasureHealTests : IDisposable
         set.Writable.Should().BeTrue();
         set.Drives.Single(d => d.Position == 2).Online.Should().BeFalse("деградация видна в статусе");
     }
+
+    [Fact]
+    public async Task Heal_MissingUploadPart_Reconstructed_CompleteSucceeds()
+    {
+        // Arrange: multipart-загрузка из 2 частей; шардовая part.2 удалена
+        // с одного диска сета (возврат диска после отказа — часть недолита)
+        var part1 = new byte[700_000];
+        new Random(21).NextBytes(part1);
+        var part2 = new byte[300_000];
+        new Random(22).NextBytes(part2);
+        var uploadId = Guid.NewGuid().ToString("N");
+        _drive.CreateUploadDir("b", "mp-heal", uploadId, new XlMetaRecord(Guid.Parse(uploadId), 0,
+            DateTimeOffset.UnixEpoch, "", "text/plain", new Dictionary<string, string>(),
+            new Dictionary<string, string>(), ""));
+        _drive.WriteUploads("b", "mp-heal",
+        [
+            new MultipartJournals.UploadJournalEntry(uploadId, "b", "mp-heal",
+                DateTimeOffset.UnixEpoch.ToUnixTimeMilliseconds(), "root"),
+        ]);
+        string etag1, etag2;
+        using (var staging = _drive.CreateUploadStaging("b", "mp-heal", uploadId))
+        {
+            var d1 = await _drive.WritePartAsync(staging, 1, new MemoryStream(part1), part1.LongLength,
+                CancellationToken.None);
+            _drive.CommitUploadPart(staging, 1, d1.ETagHex, d1.Length, DateTimeOffset.UnixEpoch);
+            etag1 = d1.ETagHex;
+            var d2 = await _drive.WritePartAsync(staging, 2, new MemoryStream(part2), part2.LongLength,
+                CancellationToken.None);
+            _drive.CommitUploadPart(staging, 2, d2.ETagHex, d2.Length, DateTimeOffset.UnixEpoch);
+            etag2 = d2.ETagHex;
+        }
+
+        var setIndex = _pool.PickSetIndex("b", "mp-heal");
+        var disk = _pool.Sets[setIndex][1];
+        var multipartRoot = Path.Combine(disk.Root, ".owns3.sys", "multipart");
+        var part2Path = Directory.EnumerateFiles(multipartRoot, "part.2", SearchOption.AllDirectories).Single();
+        File.Delete(part2Path);
+
+        // Act: heal-проход реконструирует недостающую шард-часть загрузки
+        await _heal.RunPassAsync(CancellationToken.None);
+
+        // Assert: часть восстановлена; Complete успешен; объект читается исходником
+        File.Exists(part2Path).Should().BeTrue("шардовая часть загрузки реконструирована heal (канон 06 §9)");
+        _drive.CommitMultipart("b", "mp-heal", uploadId,
+        [
+            new PartEtag(1, etag1), new PartEtag(2, etag2),
+        ], new XlMetaRecord(Guid.Empty, 0, DateTimeOffset.UnixEpoch, "", "text/plain",
+            new Dictionary<string, string>(), new Dictionary<string, string>(), ""));
+        var meta = _drive.TryReadMeta("b", "mp-heal");
+        using var stream = _drive.OpenData("b", "mp-heal", meta!, 0, meta!.Size);
+        ReadAll(stream).Should().Equal([.. part1, .. part2]);
+    }
 }

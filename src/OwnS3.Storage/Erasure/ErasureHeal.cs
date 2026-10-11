@@ -263,7 +263,7 @@ public sealed class ErasureHealService(ErasurePool pool, ErasureXlDrive drive,
         }
     }
 
-    // ── multipart-зурналы/части (рассинхрон после отказов) ──
+    // ── multipart-журналы/части (рассинхрон после отказов) ──
 
     private void HealUploads()
     {
@@ -286,7 +286,7 @@ public sealed class ErasureHealService(ErasurePool pool, ErasureXlDrive drive,
                     {
                         var relative = Path.GetRelativePath(reference.Root, file);
                         // шардовые части НЕ копируются (каждый диск держит свой шард —
-                        // восстановление только реконструкцией); bitrot-sidecar — копируется
+                        // восстановление только реконструкцией ниже); bitrot-sidecar — копируется
                         var name = Path.GetFileName(file);
                         var isReplicable = name is "uploads.json" or "parts.json" or "attempt.json"
                             or "xl.meta" or "xl.meta.bkp" || name.EndsWith(".bitrot");
@@ -298,6 +298,98 @@ public sealed class ErasureHealService(ErasurePool pool, ErasureXlDrive drive,
                             Directory.CreateDirectory(Path.GetDirectoryName(target)!);
                             File.Copy(file, target);
                         }
+                    }
+                }
+            }
+
+            HealUploadParts(set, multipartRoots);
+        }
+    }
+
+    // Реконструкция недостающих шардовых part.N живых загрузок сета (канон 06 §9:
+    // «отсутствующие части multipart-загрузок/журналы — аналогично» — часть
+    // загрузки тот же шардовый поток): источники — другие диски сета с bitrot-
+    // сверкой по sidecar, дозапись tmp+rename (RestoreShardFile). Parity —
+    // конвенция загрузок драйва (default parity), исходный размер части —
+    // parts.json журнала.
+    private void HealUploadParts(IReadOnlyList<ErasureDisk> set,
+        List<(ErasureDisk Disk, string Root)> multipartRoots)
+    {
+        // каталоги загрузок сета (по parts.json; relative от multipart-корня)
+        var uploadDirs = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var (_, root) in multipartRoots)
+            foreach (var partsJson in Directory.EnumerateFiles(root, "parts.json", SearchOption.AllDirectories))
+                uploadDirs.Add(Path.GetRelativePath(root, Path.GetDirectoryName(partsJson)!));
+
+        // distribution формата тома — с первого онлайн-диска сета
+        var formatDisk = set.FirstOrDefault(d => d.Online);
+        byte[] dist;
+        try
+        {
+            dist = ErasureVolumeInfo.Read(formatDisk!.Root).Distribution.Select(d => (byte)d).ToArray();
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "EC heal: формат тома недоступен — реконструкция частей загрузок пропущена");
+            return;
+        }
+
+        var parity = drive.DefaultParity;
+        var codec = new ReedSolomonCodec(set.Count - parity, parity);
+        var ec = new XlMetaEcInfo("reedsolomon", (byte)(set.Count - parity), (byte)set.Count,
+            (uint)BlockSize, 0, dist, []);
+
+        foreach (var relative in uploadDirs)
+        {
+            // эталонный журнал частей — с первого носителя
+            List<MultipartJournals.PartJournalEntry> entries;
+            try
+            {
+                var partsPath = multipartRoots
+                    .Select(r => Path.Combine(r.Root, relative, "parts.json"))
+                    .First(File.Exists);
+                entries = MultipartJournals.ReadParts(partsPath);
+            }
+            catch (Exception ex)
+            {
+                logger.LogWarning(ex, "EC heal: parts.json {Relative} недоступен — пропуск загрузки", relative);
+                continue;
+            }
+
+            foreach (var entry in entries)
+            {
+                foreach (var (disk, root) in multipartRoots)
+                {
+                    var partPath = Path.Combine(root, relative, $"part.{entry.PartNumber}");
+                    if (File.Exists(partPath))
+                        continue;
+
+                    // bitrot-хэши части — sidecar (реплицирован выше; носители сета)
+                    byte[][][] hashes;
+                    try
+                    {
+                        hashes = ErasureXlDrive.ReadPartBitrot(
+                            multipartRoots.Select(r => Path.Combine(r.Root, relative)).ToList(),
+                            entry.PartNumber);
+                    }
+                    catch (ObjectStoreException ex)
+                    {
+                        logger.LogWarning(ex,
+                            "EC heal: sidecar части {Part} {Relative} нигде нет — часть не реконструируется",
+                            entry.PartNumber, relative);
+                        continue;
+                    }
+
+                    if (RestoreShardFile(codec, set, ec, disk,
+                            d => Path.Combine(
+                                multipartRoots.First(r => r.Disk.Position == d.Position).Root,
+                                relative, $"part.{entry.PartNumber}"),
+                            entry.PartNumber, entry.Size, hashes))
+                    {
+                        _healedShards++;
+                        logger.LogInformation(
+                            "EC heal: часть {Part} загрузки {Relative} реконструирована на диске {Position}",
+                            entry.PartNumber, relative, disk.Position);
                     }
                 }
             }
