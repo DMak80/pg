@@ -13,6 +13,7 @@
         <ProjectReference Include="..\OwnS3.Protocol\OwnS3.Protocol.csproj"/>
         <ProjectReference Include="..\OwnS3.Storage\OwnS3.Storage.csproj"/>
         <ProjectReference Include="..\Shared.Metrics\Shared.Metrics.csproj"/>
+        <ProjectReference Include="..\Shared.Tls\Shared.Tls.csproj"/>
     </ItemGroup>
 
 </Project>

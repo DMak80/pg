@@ -11,6 +11,7 @@ using OwnS3.App.Pipeline;
 using OwnS3.Storage;
 using OwnS3.Storage.Erasure;
 using Shared.Metrics;
+using System.Security.Cryptography.X509Certificates; // X509Certificate2? tlsCert
 
 // Точка входа ownS3 (arch/owns3/01 §3, arch/owns3/05): Kestrel-хост S3-грани,
 // конфигурация OwnS3:* / OWNS3_*, fail-fast root-пары, /healthz и /metrics.
@@ -30,6 +31,10 @@ foreach (var (env, key) in new[]
              ("OWNS3_EC_SET_SIZE", "OwnS3:Ec:SetSize"),
              ("OWNS3_EC_PARITY", "OwnS3:Ec:Parity"),
              ("OWNS3_HOST_ID", "OwnS3:HostId"),
+             ("OWNS3_TLS_CERT", "OwnS3:Tls:ServerCertPem"),
+             ("OWNS3_TLS_KEY", "OwnS3:Tls:ServerKeyPem"),
+             ("OWNS3_TLS_CERT_PATH", "OwnS3:Tls:ServerCertPath"),
+             ("OWNS3_TLS_KEY_PATH", "OwnS3:Tls:ServerKeyPath"),
          })
 {
     var value = Environment.GetEnvironmentVariable(env);
@@ -190,14 +195,36 @@ builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
 builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
     sp.GetRequiredService<OwnS3.App.Handlers.MultipartHandlers.ListMultipartUploadsHandler>());
 
-// Kestrel: any-IP, h1+h2c (arch/owns3/03 §6), лимит тела отключён — лимит 5 ГБ
-// уровня хендлера (глава 02), не транспорта.
-builder.WebHost.ConfigureKestrel(o => o.Limits.MaxRequestBodySize = null);
+// Kestrel: any-IP, h1+h2c (HTTP) / h2-by-ALPN (HTTPS) (arch/owns3/03 §6),
+// лимит тела отключён — лимит 5 ГБ уровня хендлера (глава 02), не транспорта.
+// TLS-опция (t42): сертификат резолвится ниже ПОСЛЕ Build (fail-fast) но ДО
+// старта прослушивания — Kestrel строит bindings при RunAsync, замыкание
+// читает уже заполненную переменную.
+X509Certificate2? tlsCert = null;
+builder.WebHost.ConfigureKestrel(o =>
+{
+    o.Limits.MaxRequestBodySize = null;
+    o.ConfigureHttpsDefaults(h => h.ServerCertificate = tlsCert);
+});
 
 var app = builder.Build();
 var options = app.Services.GetRequiredService<IOptions<OwnS3Options>>().Value;
+
+// TLS-материал (t42, arch/owns3/03 §6 / 05 §4): резолв fail-fast ДО старта
+// прослушивания — неполный/битый материал = Critical + exit 1 (как режим/том
+// ниже), НЕ «молча на HTTP». Материал задан — HTTPS-only на том же порту.
+try
+{
+    tlsCert = OwnS3Tls.Resolve(options.Tls);
+}
+catch (Exception ex)
+{
+    app.Logger.LogCritical(ex, "OwnS3:Tls: невалидный TLS-материал — отказ старта (env OWNS3_TLS_*)");
+    Environment.Exit(1);
+}
+
 app.Urls.Clear();
-app.Urls.Add($"http://*:{options.Server.Port}");
+app.Urls.Add($"{(tlsCert is null ? "http" : "https")}://*:{options.Server.Port}");
 
 // S3-конвейер: RequestId → OPTIONS → роутер → подпись → права → хендлер →
 // ошибки → метрики/лог. Map-эндпоинты исполняются в конце; изоляция служебных

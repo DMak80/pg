@@ -12,6 +12,7 @@ public sealed class OwnS3Options
     public RootOptions Root { get; set; } = new();
     public AccessKeyOptions[] AccessKeys { get; set; } = [];
     public string? HostId { get; set; }
+    public TlsOptions Tls { get; set; } = new();
 }
 
 // EC-параметры (канон 05 §4/06 §1): SetSize null = авто (наибольший делитель N
@@ -39,4 +40,14 @@ public sealed class AccessKeyOptions
     public string AccessKey { get; set; } = string.Empty;
     public string SecretKey { get; set; } = string.Empty;
     public string Policy { get; set; } = "read-only";
+}
+
+// TLS-материал HTTPS-грани (arch/owns3/05 §4): PEM-значения или _PATH-файлы;
+// env OWNS3_TLS_{CERT,KEY}[_PATH]. Пусто — HTTP-режим (стенд).
+public sealed class TlsOptions
+{
+    public string? ServerCertPem { get; set; }
+    public string? ServerKeyPem { get; set; }
+    public string? ServerCertPath { get; set; }
+    public string? ServerKeyPath { get; set; }
 }

@@ -52,4 +52,50 @@ public sealed class FailFastScenarios
         // Assert: контрольный кейс — хост стартует
         client.Should().NotBeNull();
     }
+
+    // TLS не задан — хост стартует как раньше (AC1: поведение по умолчанию не меняется).
+    [Fact]
+    public void TlsEmpty_StartsHttp()
+    {
+        using var factory = new TlsFactory();
+        using var client = factory.CreateClient();
+        client.Should().NotBeNull();
+    }
+
+    private sealed class TlsFactory : WebApplicationFactory<Program>
+    {
+        // Томат данных (образец OwnS3AppFactory.TempVolumeDir): дефолтный /data
+        // в testhost недоступен/невалиден — без подмены старт упал бы в fail-fast
+        // режима/тома (Environment.Exit) ещё до этого кейса.
+        private readonly string _volumeDir =
+            Path.Combine(Path.GetTempPath(), "owns3-tls-waf-" + Guid.NewGuid().ToString("N"));
+
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            builder.UseEnvironment("Testing");
+            builder.ConfigureAppConfiguration((_, cfg) => cfg.AddInMemoryCollection(new Dictionary<string, string?>
+            {
+                ["OwnS3:DataDir"] = _volumeDir,
+                ["OwnS3:Root:User"] = "root",
+                ["OwnS3:Root:Password"] = "rootpassword",
+            }));
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            base.Dispose(disposing);
+            if (disposing)
+            {
+                try
+                {
+                    if (Directory.Exists(_volumeDir))
+                        Directory.Delete(_volumeDir, recursive: true);
+                }
+                catch (IOException)
+                {
+                    // хост мог ещё держать файлы — том в temp, ОС уберёт
+                }
+            }
+        }
+    }
 }
