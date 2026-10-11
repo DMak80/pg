@@ -3,10 +3,21 @@ using System.Text;
 
 namespace OwnS3.Storage;
 
-// Запись-версия unversioned-объекта (формат — спека §4.2 / канон 04 §2).
+// EC-часть записи v2 (канон 06 §5; EcIndex — позиция диска этой копии).
+public sealed record XlMetaEcInfo(string EcAlgo, byte EcM, byte EcN, uint EcBSize, byte EcIndex,
+    byte[] EcDist, IReadOnlyList<XlMetaPartBitrot> Parts);
+
+// Bitrot-запись части: исходный размер + полный 2D-набор хэшей (канон 06 §5
+// в правке Task 0). BlockHashes[shardIndex][blockIndex] — 32 байта; shardIndex
+// 0..ecN-1, раскладка шард-мажор.
+public sealed record XlMetaPartBitrot(long SourceSize, byte[][][] BlockHashes);
+
+// Запись-версия unversioned-объекта (формат — спека §4.2 / канон 04 §2);
+// запись v2 несёт EC-поля (канон 06 §5): v1-записи читаются с Ec == null,
+// single-том v2-записей не пишет (спека §4.1).
 public sealed record XlMetaRecord(Guid VersionId, long Size, DateTimeOffset ModTime, string ETag,
     string ContentType, IReadOnlyDictionary<string, string> UserMetadata,
-    IReadOnlyDictionary<string, string> Headers, string ContentSha256)
+    IReadOnlyDictionary<string, string> Headers, string ContentSha256, XlMetaEcInfo? Ec = null)
 {
     // Имя каталога данных = versionId (P1: dataDir-имя — versionId записи).
     public string DataDirName => VersionId.ToString("N");
@@ -20,7 +31,6 @@ public static class XlMetaFile
     private const string BackupFileName = "xl.meta.bkp";
     private const string TmpFileName = "xl.meta.tmp";
     private const byte FormatVersion = 1;
-    private const ushort RecordVersion = 1;
 
     // Строгая десериализация одного файла; битая структура/magic/версия —
     // XlIntegrityException. Отсутствие файла — FileNotFoundException.
@@ -97,14 +107,19 @@ public static class XlMetaFile
     // Сериализация: magic | uint8 formatVersion | uint16 recordVersion | 16B versionId |
     // int64 size | uint64 modTimeUnixMs | string etag | string contentType |
     // uint16 userMetadataCount | пары string | uint16 headersCount | пары string |
-    // string contentSha256. string = uint16 byteLength + UTF-8 байты.
+    // string contentSha256 [| v2-хвост: string ecAlgo | uint8 ecM | uint8 ecN |
+    // uint32 ecBSize | uint8 ecIndex | uint8 distCount + distCount×uint8 ecDist |
+    // uint16 partCount | на часть: uint64 sourceSize | uint32 blockCount |
+    // для каждого j=0..ecN−1: blockCount×32 Б HighwayHash-256 (шард-мажор)].
+    // string = uint16 byteLength + UTF-8 байты.
     private static byte[] Serialize(XlMetaRecord r)
     {
         using var ms = new MemoryStream(256);
         ms.Write("OWS3"u8);
         ms.WriteByte(FormatVersion);
+        var recordVersion = (ushort)(r.Ec is null ? 1 : 2);
         var version = new byte[2];
-        BinaryPrimitives.WriteUInt16LittleEndian(version, RecordVersion);
+        BinaryPrimitives.WriteUInt16LittleEndian(version, recordVersion);
         ms.Write(version);
         ms.Write(r.VersionId.ToByteArray());
         var size = new byte[8];
@@ -118,7 +133,56 @@ public static class XlMetaFile
         WriteCountAndPairs(ms, r.UserMetadata);
         WriteCountAndPairs(ms, r.Headers);
         WriteString(ms, r.ContentSha256);
+        if (r.Ec is { } ec)
+        {
+            WriteEcTail(ms, ec);
+        }
+
         return ms.ToArray();
+    }
+
+    // Побайтовый v2-хвост (канон 06 §5 в правке Task 0).
+    private static void WriteEcTail(Stream stream, XlMetaEcInfo ec)
+    {
+        WriteString(stream, ec.EcAlgo);
+        stream.WriteByte(ec.EcM);
+        stream.WriteByte(ec.EcN);
+        var bsize = new byte[4];
+        BinaryPrimitives.WriteUInt32LittleEndian(bsize, ec.EcBSize);
+        stream.Write(bsize);
+        stream.WriteByte(ec.EcIndex);
+        stream.WriteByte((byte)ec.EcDist.Length);
+        foreach (var d in ec.EcDist)
+            stream.WriteByte(d);
+        var partCount = new byte[2];
+        BinaryPrimitives.WriteUInt16LittleEndian(partCount, (ushort)ec.Parts.Count);
+        stream.Write(partCount);
+        foreach (var part in ec.Parts)
+        {
+            var sourceSize = new byte[8];
+            BinaryPrimitives.WriteInt64LittleEndian(sourceSize, part.SourceSize);
+            stream.Write(sourceSize);
+            var blockCount = new byte[4];
+            var blockCountValue = part.BlockHashes.Length > 0 ? part.BlockHashes[0].Length : 0;
+            BinaryPrimitives.WriteUInt32LittleEndian(blockCount, (uint)blockCountValue);
+            stream.Write(blockCount);
+            for (var shard = 0; shard < ec.EcN; shard++)
+            {
+                var hashes = shard < part.BlockHashes.Length ? part.BlockHashes[shard] : [];
+                for (var block = 0; block < blockCountValue; block++)
+                {
+                    var hash = block < hashes.Length ? hashes[block] : new byte[32];
+                    stream.Write(hash.Length == 32 ? hash : PadTo32(hash));
+                }
+            }
+        }
+    }
+
+    private static byte[] PadTo32(byte[] hash)
+    {
+        var padded = new byte[32];
+        Array.Copy(hash, padded, Math.Min(hash.Length, 32));
+        return padded;
     }
 
     private static void WriteString(Stream stream, string value)
@@ -143,7 +207,7 @@ public static class XlMetaFile
     }
 
     // Строгий разбор: любое несоответствие (обрыв, magic, версии, остаточные
-    // байты) — XlIntegrityException.
+    // байты) — XlIntegrityException. recordVersion 1 → v1 (Ec == null), 2 → v2.
     private static XlMetaRecord Parse(string path, byte[] data)
     {
         try
@@ -155,8 +219,9 @@ public static class XlMetaFile
             if (data[offset] != FormatVersion)
                 throw new XlIntegrityException($"xl.meta {path}: неизвестная версия формата {data[offset]}");
             offset++;
-            if (BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(offset, 2)) != RecordVersion)
-                throw new XlIntegrityException($"xl.meta {path}: неизвестная версия записи");
+            var recordVersion = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(offset, 2));
+            if (recordVersion is not (1 or 2))
+                throw new XlIntegrityException($"xl.meta {path}: неизвестная версия записи {recordVersion}");
             offset += 2;
             var versionId = new Guid(data.AsSpan(offset, 16).ToArray());
             offset += 16;
@@ -169,16 +234,71 @@ public static class XlMetaFile
             var userMetadata = ReadPairs(data, ref offset);
             var headers = ReadPairs(data, ref offset);
             var contentSha256 = ReadString(data, ref offset);
+            XlMetaEcInfo? ec = null;
+            if (recordVersion == 2)
+            {
+                ec = ReadEcTail(path, data, ref offset);
+            }
+
             if (offset != data.Length)
                 throw new XlIntegrityException($"xl.meta {path}: остаточные байты ({data.Length - offset})");
             return new XlMetaRecord(versionId, size, DateTimeOffset.FromUnixTimeMilliseconds((long)modTimeMs),
-                etag, contentType, userMetadata, headers, contentSha256);
+                etag, contentType, userMetadata, headers, contentSha256, ec);
         }
         catch (Exception ex) when (ex is XlIntegrityException or ArgumentOutOfRangeException or IndexOutOfRangeException)
         {
             // Обрыв данных — та же невосстановимая порча структуры
             throw new XlIntegrityException($"xl.meta {path}: битая структура ({ex.Message})");
         }
+    }
+
+    // Разбор v2-хвоста (канон 06 §5 в правке Task 0; размер bitrot-секции части —
+    // 8 + 4 + ecN × blockCount × 32 байт). Битый blockCount/ecN валидируется ДО
+    // аллокации: объявленная секция больше остатка данных → XlIntegrityException
+    // (иначе гигабайтный alloc по мусорному uint32 — OOM вместо ясной порчи).
+    private static XlMetaEcInfo ReadEcTail(string path, byte[] data, ref int offset)
+    {
+        var ecAlgo = ReadString(data, ref offset);
+        var ecM = data[offset++];
+        var ecN = data[offset++];
+        var ecBSize = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(offset, 4));
+        offset += 4;
+        var ecIndex = data[offset++];
+        var distCount = data[offset++];
+        var ecDist = new byte[distCount];
+        for (var i = 0; i < distCount; i++)
+            ecDist[i] = data[offset++];
+        var partCount = BinaryPrimitives.ReadUInt16LittleEndian(data.AsSpan(offset, 2));
+        offset += 2;
+        if (ecN is < 1 or > 16)
+            throw new XlIntegrityException($"xl.meta {path}: ecN={ecN} вне 1..16 — битая структура");
+        var parts = new XlMetaPartBitrot[partCount];
+        for (var p = 0; p < partCount; p++)
+        {
+            var sourceSize = BinaryPrimitives.ReadInt64LittleEndian(data.AsSpan(offset, 8));
+            offset += 8;
+            var blockCount = (int)BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(offset, 4));
+            offset += 4;
+            // размер bitrot-хвоста части — сверься с остатком данных ДО аллокации
+            var bitrotBytes = (long)ecN * blockCount * 32;
+            if (blockCount < 0 || data.Length - offset < bitrotBytes)
+                throw new XlIntegrityException(
+                    $"xl.meta {path}: bitrot-хвост части {p + 1} (blockCount={blockCount}, ecN={ecN}) не помещается в остаток данных — битая структура");
+            var hashes = new byte[ecN][][];
+            for (var shard = 0; shard < ecN; shard++)
+            {
+                hashes[shard] = new byte[blockCount][];
+                for (var block = 0; block < blockCount; block++)
+                {
+                    hashes[shard][block] = data.AsSpan(offset, 32).ToArray();
+                    offset += 32;
+                }
+            }
+
+            parts[p] = new XlMetaPartBitrot(sourceSize, hashes);
+        }
+
+        return new XlMetaEcInfo(ecAlgo, ecM, ecN, ecBSize, ecIndex, ecDist, parts);
     }
 
     private static string ReadString(byte[] data, ref int offset)

@@ -1,14 +1,11 @@
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using Microsoft.Extensions.Logging;
 
 namespace OwnS3.Storage;
 
-// Multipart-операции XlObjectStore — все 6 канона 02 §5: CreateMultipartUpload,
-// UploadPart, CompleteMultipartUpload, AbortMultipartUpload,
-// ListParts, ListMultipartUploads. Журналы и раскладка — канон 04 §5
-// (MultipartJournals); многочастевое чтение — MultipartBodyStream (Objects).
+// Multipart-операции XlObjectStore — все 6 канона 02 §5 поверх IXlDrive:
+// валидации/видимость/идемпотентность здесь; журналы, каталоги загрузок,
+// rename-коммиты — драйв (канон 04 §5).
 public sealed partial class XlObjectStore
 {
     // Лимиты канона 02 §1: минимальная часть (кроме последней) 5 МиБ;
@@ -16,64 +13,65 @@ public sealed partial class XlObjectStore
     internal const long MinPartSize = 5L * 1024 * 1024;
     internal const long MaxPartSize = 5L * 1024 * 1024 * 1024;
 
+    // Сериализация журнальных пар журнала ключа (append/remove) — один лок
+    // уровня store (commit-циклы частей/Complete — лок драйва).
+    private readonly object _journalLock = new();
+
     // CreateMultipartUpload (канон 02 §5/04 §5): каталог загрузки + xl.meta
-    // загрузки ДО записи в журнале (каталог без записи — невидим); запись
-    // журнала — под _commitLock.
+    // загрузки ДО записи в журнале (каталог без записи — невидим).
     public Task<string> CreateMultipartUploadAsync(string bucket, string key,
         ObjectUploadMetadata metadata, string initiatorAccessKey, CancellationToken ct)
     {
         EnsureBucket(bucket);
         var uploadId = Guid.NewGuid().ToString("N"); // формат N (канон 04 §5)
-        var keyDir = MultipartJournals.KeyDir(volume.MultipartDir, bucket, key);
-        var uploadDir = MultipartJournals.UploadDirPath(keyDir, uploadId);
-        Directory.CreateDirectory(uploadDir);
         var now = timeProvider.GetUtcNow();
         var record = new XlMetaRecord(Guid.Parse(uploadId), 0, now, "",
             metadata.ContentType, metadata.UserMetadata, EmptyHeaders, ""); // М4
-        XlMetaFile.Write(uploadDir, record);
-        lock (_commitLock)
+        Drive.CreateUploadDir(bucket, key, uploadId, record);
+        lock (_journalLock)
         {
             // Битый журнал ключа — как у остальных операций (М2/спека §4.1):
             // warning + NoSuchUpload, не сырой JsonException → 500
-            var uploads = ReadUploadsOrThrow(keyDir);
+            var uploads = ReadUploadsOrThrow(bucket, key);
             uploads.Add(new MultipartJournals.UploadJournalEntry(uploadId, bucket, key,
                 now.ToUnixTimeMilliseconds(), initiatorAccessKey));
-            MultipartJournals.WriteUploads(MultipartJournals.UploadsJsonPath(keyDir), uploads);
+            Drive.WriteUploads(bucket, key, uploads);
         }
+
         return Task.FromResult(uploadId);
     }
 
-    // Abort (канон 02 §5/04 §5): под _commitLock — разрешение, удаление записи,
+    // Abort (канон 02 §5/04 §5): под _journalLock — разрешение, удаление записи,
     // каталог в .trash. Повторный Abort после успешного — NoSuchUpload.
     public Task AbortMultipartUploadAsync(string bucket, string key, string uploadId, CancellationToken ct)
     {
         EnsureBucket(bucket);
-        var keyDir = MultipartJournals.KeyDir(volume.MultipartDir, bucket, key);
-        lock (_commitLock)
+        lock (_journalLock)
         {
-            var uploads = ReadUploadsOrThrow(keyDir);
+            var uploads = ReadUploadsOrThrow(bucket, key);
             var entry = uploads.FirstOrDefault(e =>
                 e.UploadId == uploadId && e.Bucket == bucket && e.Key == key)
                 ?? throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload);
-            if (!Directory.Exists(MultipartJournals.UploadDirPath(keyDir, uploadId)))
+            if (!Drive.UploadDirExists(bucket, key, uploadId))
                 throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload); // М2: призрачная запись
             uploads.Remove(entry);
-            MultipartJournals.WriteUploads(MultipartJournals.UploadsJsonPath(keyDir), uploads);
-            volume.MoveToTrash(MultipartJournals.UploadDirPath(keyDir, uploadId));
+            Drive.WriteUploads(bucket, key, uploads);
+            Drive.TrashUpload(bucket, key, uploadId);
         }
+
         return Task.CompletedTask;
     }
 
     // Журнал ключа: битый JSON — warning + NoSuchUpload (М2); файла нет — пусто.
-    internal List<MultipartJournals.UploadJournalEntry> ReadUploadsOrThrow(string keyDir)
+    internal List<MultipartJournals.UploadJournalEntry> ReadUploadsOrThrow(string bucket, string key)
     {
         try
         {
-            return MultipartJournals.ReadUploads(MultipartJournals.UploadsJsonPath(keyDir));
+            return Drive.ReadUploads(bucket, key);
         }
         catch (JsonException ex)
         {
-            _logger.LogWarning(ex, "Битый uploads.json в {KeyDir}: загрузки ключа недоступны", keyDir);
+            _logger.LogWarning(ex, "Битый uploads.json ключа {Bucket}/{Key}: загрузки недоступны", bucket, key);
             throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload);
         }
     }
@@ -82,176 +80,87 @@ public sealed partial class XlObjectStore
     internal MultipartJournals.UploadJournalEntry ResolveUploadOrThrow(
         string bucket, string key, string uploadId, UploadVisibility? visibility)
     {
-        var keyDir = MultipartJournals.KeyDir(volume.MultipartDir, bucket, key);
-        var uploads = ReadUploadsOrThrow(keyDir);
+        var uploads = ReadUploadsOrThrow(bucket, key);
         var entry = uploads.FirstOrDefault(e =>
             e.UploadId == uploadId && e.Bucket == bucket && e.Key == key)
             ?? throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload);
-        if (!Directory.Exists(MultipartJournals.UploadDirPath(keyDir, uploadId)))
+        if (!Drive.UploadDirExists(bucket, key, uploadId))
             throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload);
         if (visibility is UploadVisibility.Owned(var owner) && entry.AccessKey != owner)
             throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload);
         return entry;
     }
 
-    // UploadPart (канон 02 §5/04 §5): тело → part.N.tmp БЕЗ лока (fsync), затем под
-    // _commitLock — согласованная пара rename части + upsert parts.json (М3).
+    // UploadPart (канон 02 §5/04 §5): тело → уникальный tmp в каталоге загрузки
+    // (fsync, БЕЗ лока), затем согласованная пара rename части + upsert
+    // parts.json под локом драйва (М3).
     public async Task<PutResult> UploadPartAsync(string bucket, string key, string uploadId, int partNumber,
         Stream body, long contentLength, CancellationToken ct)
     {
         EnsureBucket(bucket);
         ResolveUploadOrThrow(bucket, key, uploadId, visibility: null);
-        var keyDir = MultipartJournals.KeyDir(volume.MultipartDir, bucket, key);
-        var uploadDir = MultipartJournals.UploadDirPath(keyDir, uploadId);
-        var tmpPath = Path.Combine(uploadDir, MultipartJournals.PartTmpFileNameUnique(partNumber));
-        // Тело: MD5-инкремент + счётчик + fsync (длина ≠ contentLength → XlIntegrityException,
-        // остаточный случай — конвейер уже проверил тело)
-        string etagHex;
-        long total;
-        using (var md5 = IncrementalHash.CreateHash(HashAlgorithmName.MD5))
-        using (var file = new FileStream(tmpPath, FileMode.Create, FileAccess.Write, FileShare.None))
-        {
-            var buffer = new byte[64 * 1024];
-            total = 0;
-            int read;
-            while ((read = await body.ReadAsync(buffer, ct)) > 0)
-            {
-                file.Write(buffer, 0, read);
-                md5.AppendData(buffer, 0, read);
-                total += read;
-            }
-            file.Flush(flushToDisk: true);
-            etagHex = Convert.ToHexString(md5.GetHashAndReset()).ToLowerInvariant();
-        }
-        if (total != contentLength)
-            throw new XlIntegrityException(
-                $"Фактическая длина части {total} не совпадает с заявленной {contentLength}");
-        var modTime = timeProvider.GetUtcNow();
-        await Task.Yield(); // async-контракт при синхронном файловом IO (P4 t37)
-        lock (_commitLock)
-        {
-            CommitPartFile(uploadDir, partNumber, tmpPath, etagHex, total, modTime);
-        }
-        return new PutResult('"' + etagHex + '"', modTime);
-    }
-
-    // Коммит части (UploadPart): rename + upsert parts.json —
-    // согласованная пара под _commitLock вызывающего (М3).
-    private void CommitPartFile(string uploadDir, int partNumber, string tmpPath,
-        string etagHex, long size, DateTimeOffset modTime)
-    {
-        File.Move(tmpPath, Path.Combine(uploadDir, MultipartJournals.PartFileName(partNumber)),
-            overwrite: true);
-        var parts = ReadPartsOrThrow(uploadDir);
-        parts.RemoveAll(p => p.PartNumber == partNumber);
-        parts.Add(new MultipartJournals.PartJournalEntry(partNumber, etagHex, size,
-            modTime.ToUnixTimeMilliseconds()));
-        parts.Sort((left, right) => left.PartNumber.CompareTo(right.PartNumber));
-        MultipartJournals.WriteParts(MultipartJournals.PartsJsonPath(uploadDir), parts);
-    }
-
-    // Журнал частей загрузки: битый parts.json (JsonException) — warning + загрузка
-    // недоступна (NoSuchUpload) — единообразно с ListParts/Complete (спека §4.1:
-    // потеря целостности журнала — загрузка недоступна). Файла нет — пустой список.
-    internal List<MultipartJournals.PartJournalEntry> ReadPartsOrThrow(string uploadDir)
-    {
+        using var staging = Drive.CreateUploadStaging(bucket, key, uploadId);
+        // Тело: MD5-инкремент + счётчик + fsync (длина ≠ contentLength →
+        // XlIntegrityException; staging-tmp удаляется Dispose при отказе)
+        PartDigest digest;
         try
         {
-            return MultipartJournals.ReadParts(MultipartJournals.PartsJsonPath(uploadDir));
+            digest = await Drive.WritePartAsync(staging, partNumber, body, contentLength, ct);
+        }
+        catch
+        {
+            staging.Dispose();
+            throw;
+        }
+
+        var modTime = timeProvider.GetUtcNow();
+        await Task.Yield(); // async-контракт при синхронном файловом IO (P4 t37)
+        try
+        {
+            Drive.CommitUploadPart(staging, partNumber, digest.ETagHex, digest.Length, modTime);
         }
         catch (JsonException ex)
         {
-            _logger.LogWarning(ex, "Битый parts.json загрузки в {UploadDir}: загрузка недоступна", uploadDir);
+            // Битый parts.json — загрузка недоступна (единый исход с ListParts/Complete)
+            _logger.LogWarning(ex, "Битый parts.json загрузки {UploadId}: загрузка недоступна", uploadId);
+            throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload);
+        }
+
+        return new PutResult('"' + digest.ETagHex + '"', modTime);
+    }
+
+    // Журнал частей загрузки: битый parts.json (JsonException) — warning + загрузка
+    // недоступна (NoSuchUpload) — единообразно с ListParts/Complete (спека §4.1).
+    internal List<MultipartJournals.PartJournalEntry> ReadPartsOrThrow(string bucket, string key, string uploadId)
+    {
+        try
+        {
+            return Drive.ReadParts(bucket, key, uploadId);
+        }
+        catch (JsonException ex)
+        {
+            _logger.LogWarning(ex, "Битый parts.json загрузки {UploadId}: загрузка недоступна", uploadId);
             throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload);
         }
     }
 
-    // Тест-хук сбоя между переносом частей и коммитом (по образцу HardLinkProbe t37):
-    // задан → вызывается ПОСЛЕ переноса всех частей и ДО записи xl.meta объекта;
-    // исключение хука эмулирует крах процесса до коммит-поинта.
-    internal Action? CompletePreCommitProbe;
-
-    // Complete (канон 02 §5, спека §4.2 шаги 1–9): весь под _commitLock; сверка →
-    // попытка (attempt.json) → перенос частей rename'ами → составной ETag + SHA-256 →
-    // КОММИТ xl.meta (единственная точка видимости) → зачистка (старый dataDir,
-    // запись журнала, каталог загрузки).
-    public Task<CompleteResult> CompleteMultipartUploadAsync(string bucket, string key, string uploadId,
+    // Complete (канон 02 §5, спека §4.2): сверка здесь, коммит-цикл (attempt →
+    // перенос частей → composite ETag + SHA-256 → КОММИТ xl.meta → зачистка) —
+    // драйв под своим commit-локом (идемпотентность попытки М7 — attempt.json).
+    public async Task<CompleteResult> CompleteMultipartUploadAsync(string bucket, string key, string uploadId,
         IReadOnlyList<PartEtag> parts, CancellationToken ct)
     {
         EnsureBucket(bucket);
-        var keyDir = MultipartJournals.KeyDir(volume.MultipartDir, bucket, key);
-        var uploadDir = MultipartJournals.UploadDirPath(keyDir, uploadId);
-        lock (_commitLock)
-        {
-            // 1–2. Разрешение + сверка (ReadPartsOrThrow: битый журнал → NoSuchUpload)
-            ResolveUploadOrThrow(bucket, key, uploadId, visibility: null);
-            var journal = ReadPartsOrThrow(uploadDir);
-            ValidateManifestAgainstJournal(parts, journal);
-            // 3. Попытка (М7): attempt.json — dataDir текущей сборки (идемпотентность
-            // повтора); не-Guid маркер = битый/несовпадающий — трактуется как
-            // отсутствующий (новая попытка; старый недособранный dataDir — orphan
-            // по порогу 1 ч), иначе Guid.Parse даст перманентный 500 повторов
-            var attempted = MultipartJournals.ReadAttempt(uploadDir)?.DataDir;
-            var dataDirName = attempted is not null && Guid.TryParseExact(attempted, "N", out var parsed)
-                ? parsed.ToString("N")
-                : Guid.NewGuid().ToString("N");
-            MultipartJournals.WriteAttempt(uploadDir, new MultipartJournals.AttemptMarker(dataDirName));
-            var target = ObjectDir(bucket, key);
-            var dataDir = Path.Combine(target, dataDirName);
-            Directory.CreateDirectory(dataDir); // создаёт и каталоги-префиксы
-            // 4. Перенос частей (идемпотентность: перенесённое не трогать)
-            foreach (var (number, _) in parts)
-            {
-                var dest = Path.Combine(dataDir, MultipartJournals.PartFileName(number));
-                if (File.Exists(dest))
-                    continue;
-                var src = Path.Combine(uploadDir, MultipartJournals.PartFileName(number));
-                if (!File.Exists(src))
-                    throw new ObjectStoreException(ObjectStoreErrorCode.InvalidPart);
-                File.Move(src, dest);
-            }
-            // 5. Точка сбоя (тест-хук)
-            CompletePreCommitProbe?.Invoke();
-            // 6. Составной ETag (М6) + SHA-256 полным проходом по dataDir
-            var journalByNumber = journal.ToDictionary(p => p.PartNumber);
-            var concat = string.Concat(parts.Select(p => journalByNumber[p.PartNumber].ETag));
-            var compositeEtag = parts.Count + "-" + Convert.ToHexString(
-                MD5.HashData(Encoding.ASCII.GetBytes(concat))).ToLowerInvariant();
-            string sha256Hex;
-            using (var sha = IncrementalHash.CreateHash(HashAlgorithmName.SHA256))
-            {
-                var buffer = new byte[64 * 1024];
-                foreach (var (number, _) in parts)
-                    using (var stream = new FileStream(
-                        Path.Combine(dataDir, MultipartJournals.PartFileName(number)),
-                        FileMode.Open, FileAccess.Read, FileShare.Read))
-                    {
-                        int read;
-                        while ((read = stream.Read(buffer, 0, buffer.Length)) > 0)
-                            sha.AppendData(buffer, 0, read);
-                    }
-                sha256Hex = Convert.ToHexString(sha.GetHashAndReset()).ToLowerInvariant();
-            }
-            // 7–8. xl.meta объекта и КОММИТ (единственная точка видимости)
-            var uploadMeta = XlMetaFile.Read(uploadDir, out _);
-            var size = parts.Sum(p => journalByNumber[p.PartNumber].Size);
-            var record = new XlMetaRecord(Guid.Parse(dataDirName), size, timeProvider.GetUtcNow(),
-                compositeEtag, uploadMeta.ContentType, uploadMeta.UserMetadata, EmptyHeaders, sha256Hex);
-            var oldDataDir = ReadCurrentDataDirOrNull(target);
-            XlMetaFile.Write(target, record);
-            // 9. Зачистка после коммита
-            if (oldDataDir is not null && oldDataDir != dataDirName)
-            {
-                var oldPath = Path.Combine(target, oldDataDir);
-                if (Directory.Exists(oldPath))
-                    volume.MoveToTrash(oldPath);
-            }
-            var uploads = MultipartJournals.ReadUploads(MultipartJournals.UploadsJsonPath(keyDir));
-            uploads.RemoveAll(e => e.UploadId == uploadId && e.Bucket == bucket && e.Key == key);
-            MultipartJournals.WriteUploads(MultipartJournals.UploadsJsonPath(keyDir), uploads);
-            volume.MoveToTrash(uploadDir);
-            return Task.FromResult(new CompleteResult('"' + compositeEtag + '"'));
-        }
+        // 1–2. Разрешение + сверка (ReadPartsOrThrow: битый журнал → NoSuchUpload)
+        ResolveUploadOrThrow(bucket, key, uploadId, visibility: null);
+        var journal = ReadPartsOrThrow(bucket, key, uploadId);
+        ValidateManifestAgainstJournal(parts, journal);
+        // Шаблон записи: метаданные загрузки; versionId/size/etag/sha — драйв
+        var uploadMeta = Drive.ReadUploadMeta(bucket, key, uploadId);
+        var newRecord = new XlMetaRecord(Guid.Empty, 0, timeProvider.GetUtcNow(), "",
+            uploadMeta.ContentType, uploadMeta.UserMetadata, EmptyHeaders, "");
+        await Task.Yield(); // async-контракт при синхронном файловом IO
+        return Drive.CommitMultipart(bucket, key, uploadId, parts, newRecord);
     }
 
     // Сверка манифеста Complete с parts.json (канон 02 §5): каждая пара манифеста —
@@ -282,9 +191,7 @@ public sealed partial class XlObjectStore
     {
         EnsureBucket(bucket);
         ResolveUploadOrThrow(bucket, key, uploadId, visibility);
-        var uploadDir = MultipartJournals.UploadDirPath(
-            MultipartJournals.KeyDir(volume.MultipartDir, bucket, key), uploadId);
-        var parts = ReadPartsOrThrow(uploadDir);
+        var parts = ReadPartsOrThrow(bucket, key, uploadId);
         var marker = partNumberMarker ?? 0;
         var limit = maxParts ?? 1000;
         // max-parts=0: пустая страница БЕЗ усечения (конвенция ListWalker t37 —
@@ -302,27 +209,32 @@ public sealed partial class XlObjectStore
             truncated && selected.Count > 0 ? selected[^1].PartNumber : null));
     }
 
-    // ListMultipartUploads (канон 02 §5, М10): сбор всех записей бакета из sha-каталогов,
+    // ListMultipartUploads (канон 02 §5, М10): сбор всех записей бакета,
     // сортировка ключ(UTF-8 байты)→initiatedMs→uploadId, фильтры prefix/маркер-пара,
     // свёртка delimiter, max-uploads с подсчётом CommonPrefixes.
     public Task<UploadsPage> ListMultipartUploadsAsync(string bucket, UploadsQuery query, CancellationToken ct)
     {
         EnsureBucket(bucket);
         var all = new List<MultipartJournals.UploadJournalEntry>();
-        if (Directory.Exists(volume.MultipartDir))
-            foreach (var keyDir in Directory.EnumerateDirectories(volume.MultipartDir))
+        foreach (var keyDirPath in Drive.ListUploadKeyDirs())
+        {
+            try
             {
-                try
-                {
-                    all.AddRange(MultipartJournals.ReadUploads(MultipartJournals.UploadsJsonPath(keyDir))
-                        .Where(e => e.Bucket == bucket));
-                }
-                catch (JsonException ex)
-                {
-                    // Битый журнал одного ключа не валит листинг бакета (спека §4.1)
-                    _logger.LogWarning(ex, "Битый uploads.json в {KeyDir}: ключ пропущен", keyDir);
-                }
+                all.AddRange(Drive.ReadUploadsByKeyDir(keyDirPath)
+                    .Where(e => e.Bucket == bucket));
             }
+            catch (JsonException ex)
+            {
+                // Битый журнал одного ключа не валит листинг бакета (спека §4.1)
+                _logger.LogWarning(ex, "Битый uploads.json в {KeyDir}: ключ пропущен", keyDirPath);
+            }
+            catch (FileNotFoundException)
+            {
+                // keyDir есть, журнала нет (рассинхрон носителей после отказов) —
+                // загрузок этого ключа не видно, не ошибка листинга
+            }
+        }
+
         // Видимость (М9): read-only — только свои
         all = all.Where(e => query.Visibility is not UploadVisibility.Owned(var owner)
                              || e.AccessKey == owner).ToList();
@@ -357,6 +269,7 @@ public sealed partial class XlObjectStore
                     && (!markerIsCommonPrefix
                         || !Utf8ByteOrder.StartsWith(e.Key, query.KeyMarker))).ToList();
         }
+
         // Свёртка delimiter + пагинация (uploads + CP вместе ≤ max-uploads, М10)
         var maxUploads = query.MaxUploads ?? 1000;
         // max-uploads=0: пустая страница без усечения (конвенция ListWalker t37)
@@ -376,6 +289,7 @@ public sealed partial class XlObjectStore
                 if (idx >= 0)
                     commonPrefix = e.Key[..(idx + query.Delimiter.Length)];
             }
+
             var isSeenPrefix = commonPrefix is not null
                 && prefixes.Any(p => p.Prefix == commonPrefix) ? (bool?)true : null;
             if (uploads.Count + prefixes.Count >= maxUploads
@@ -384,6 +298,7 @@ public sealed partial class XlObjectStore
                 truncated = true; // осталась невыданная позиция
                 break;
             }
+
             if (commonPrefix is null)
             {
                 uploads.Add(new UploadEntry(e.Key, e.UploadId,
@@ -396,6 +311,7 @@ public sealed partial class XlObjectStore
                 nextKey = commonPrefix; nextUploadId = null;
             }
         }
+
         return Task.FromResult(new UploadsPage(uploads, prefixes, truncated,
             truncated ? nextKey : null, truncated ? nextUploadId : null));
     }

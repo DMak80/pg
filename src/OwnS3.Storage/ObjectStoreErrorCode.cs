@@ -17,4 +17,6 @@ public enum ObjectStoreErrorCode
     PreconditionFailed,
     NotModified,
     EntityTooLarge,
+    InsufficientReadQuorum,
+    InsufficientWriteQuorum,
 }

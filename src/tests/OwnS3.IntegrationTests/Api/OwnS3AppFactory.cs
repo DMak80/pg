@@ -14,7 +14,7 @@ namespace OwnS3.IntegrationTests.Api;
 // — in-memory секция OwnS3 с root-парой и тремя статическими ключами (роли
 // read-only/read-write/admin). Тестовые креды фиксированы литералами.
 // Дополнительно собирает записи структурного лога (потокобезопасно).
-public sealed class OwnS3AppFactory : WebApplicationFactory<Program>
+public class OwnS3AppFactory : WebApplicationFactory<Program>
 {
     // Детерминированное время хоста (шаг 11.1): skew/окно-кейсы не зависят от
     // системных часов; тестовый клиент по умолчанию подписывает этой датой.

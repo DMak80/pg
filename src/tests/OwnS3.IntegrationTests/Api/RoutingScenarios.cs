@@ -10,9 +10,16 @@ namespace OwnS3.IntegrationTests.Api;
 // multipart-операции — реальные исходы Storage t38); мутационные — на уникальном
 // бакете своего кейса; GetBucketLocation — полный успех 200; вне-наборные
 // сабресурсы — 501 до аутентификации; не-матч — 400; OPTIONS — 200 без CORS.
-public sealed class RoutingScenarios(OwnS3AppFactory factory) : IClassFixture<OwnS3AppFactory>
+// Параметризация режима (t40): логика — в базе, single/EC-наследники
+// объявляют фикстуру/коллекцию.
+public abstract class RoutingScenariosBase(OwnS3AppFactory factory)
 {
-    private OwnS3TestClient NewClient() => new(factory.CreateClient());
+    protected OwnS3TestClient NewClient() => new(factory.CreateClient());
+
+    // «Бакет реально создан на томе» — платформенная проверка режима
+    // (single: каталог тома; EC-наследник: каталог на каждом диске пула).
+    protected virtual void AssertBucketExistsOnVolume(string bucket) =>
+        Directory.Exists(Path.Combine(factory.TempVolumeDir, bucket)).Should().BeTrue();
 
     // Немутационные операции (бакет «bucket» никогда не создаётся):
     // (метод, путь+query, ожидаемый статус, ожидаемый код ошибки XML или null).
@@ -71,7 +78,7 @@ public sealed class RoutingScenarios(OwnS3AppFactory factory) : IClassFixture<Ow
 
         // Assert: бакет реально создан на томе
         response.StatusCode.Should().Be(HttpStatusCode.OK);
-        Directory.Exists(Path.Combine(factory.TempVolumeDir, "b-create")).Should().BeTrue();
+        AssertBucketExistsOnVolume("b-create");
     }
 
     [Fact]
@@ -244,3 +251,7 @@ public sealed class RoutingScenarios(OwnS3AppFactory factory) : IClassFixture<Ow
             : xml.Root.Name.LocalName;
     }
 }
+
+// single-режим: свой том на класс (как до t40); проверка бакета — базовая.
+public sealed class RoutingScenarios(OwnS3AppFactory factory) : RoutingScenariosBase(factory),
+    IClassFixture<OwnS3AppFactory>;

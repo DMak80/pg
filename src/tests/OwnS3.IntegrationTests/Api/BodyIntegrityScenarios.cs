@@ -9,11 +9,13 @@ namespace OwnS3.IntegrationTests.Api;
 
 // Сверки целостности тела (глава 03 §1/§3): sha256-режим, Content-MD5,
 // чанковая подпись и трейлеры — отказы при порче, полный drain при валидных.
-public sealed class BodyIntegrityScenarios(OwnS3AppFactory factory) : IClassFixture<OwnS3AppFactory>
+// Параметризация режима (t40): логика — в базе, single/EC-наследники
+// объявляют фикстуру/коллекцию.
+public abstract class BodyIntegrityScenariosBase(OwnS3AppFactory factory)
 {
     private static readonly byte[] Body = Encoding.UTF8.GetBytes("hello world");
 
-    private OwnS3TestClient NewClient() => new(factory.CreateClient());
+    protected OwnS3TestClient NewClient() => new(factory.CreateClient());
 
     [Fact]
     public async Task PutObject_CorrectSha256_ReachesStorageAfterFullVerification()
@@ -251,3 +253,7 @@ public sealed class BodyIntegrityScenarios(OwnS3AppFactory factory) : IClassFixt
         return -1;
     }
 }
+
+// single-режим: свой том на класс (как до t40).
+public sealed class BodyIntegrityScenarios(OwnS3AppFactory factory) : BodyIntegrityScenariosBase(factory),
+    IClassFixture<OwnS3AppFactory>;

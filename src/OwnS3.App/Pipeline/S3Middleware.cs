@@ -58,6 +58,50 @@ public sealed class S3Middleware(
                     return;
                 }
 
+                // Шаг 2.5: админ-грань /admin/* (канон 05 §7) — до роутинга 21 операций:
+                // те же шаги подписи SigV4, права admin/root (прочим 403 AccessDenied).
+                if (context.Request.Path.StartsWithSegments("/admin"))
+                {
+                    var isAdminPath = context.Request.Path.Value is "/admin/storage" or "/admin/heal";
+                    if (!isAdminPath)
+                    {
+                        await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.InvalidArgument,
+                            Resource: context.Request.Path, RequestId: requestId, HostId: options.Value.HostId,
+                            MessageOverride: "Unknown admin resource"));
+                        return;
+                    }
+
+                    operationLabel = "admin";
+                    var adminModel = S3ModelFactory.Create(context);
+                    var adminAuthenticator = new S3Authenticator(
+                        new SigV4HeaderVerifier(timeProvider), new PresignedRequestVerifier(timeProvider), registry);
+                    var adminOutcome = adminAuthenticator.Authenticate(context, adminModel, S3Operation.None);
+                    if (adminOutcome.Error is not null)
+                    {
+                        await WriteErrorAsync(context, new S3Error(adminOutcome.Error.Code,
+                            Resource: adminModel.RawPath, RequestId: requestId, HostId: options.Value.HostId,
+                            MessageOverride: adminOutcome.Error.Message));
+                        return;
+                    }
+
+                    if (adminOutcome.Identity!.Policy != Access.AccessPolicy.Admin)
+                    {
+                        await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.AccessDenied,
+                            Resource: adminModel.RawPath, RequestId: requestId, HostId: options.Value.HostId));
+                        return;
+                    }
+
+                    if (HttpMethods.IsGet(method) && context.Request.Path.Value == "/admin/storage")
+                        await Handlers.AdminHandlers.HandleStorageAsync(context);
+                    else if (HttpMethods.IsPost(method) && context.Request.Path.Value == "/admin/heal")
+                        await Handlers.AdminHandlers.HandleHealAsync(context);
+                    else
+                        await WriteErrorAsync(context, new S3Error(OwnS3.Protocol.Errors.S3ErrorCode.InvalidArgument,
+                            Resource: adminModel.RawPath, RequestId: requestId, HostId: options.Value.HostId,
+                            MessageOverride: "Method not allowed for admin resource"));
+                    return;
+                }
+
                 // Шаг 3: роутер 21 операции.
                 var model = S3ModelFactory.Create(context);
                 var hasCopySource = context.Request.Headers.ContainsKey("x-amz-copy-source");
@@ -203,6 +247,8 @@ public sealed class S3Middleware(
         ObjectStoreErrorCode.PreconditionFailed => S3ErrorCode.PreconditionFailed,
         ObjectStoreErrorCode.NotModified => S3ErrorCode.NotModified,
         ObjectStoreErrorCode.EntityTooLarge => S3ErrorCode.EntityTooLarge,
+        ObjectStoreErrorCode.InsufficientReadQuorum => S3ErrorCode.InsufficientReadQuorum,
+        ObjectStoreErrorCode.InsufficientWriteQuorum => S3ErrorCode.InsufficientWriteQuorum,
         _ => S3ErrorCode.InternalError,
     };
 }

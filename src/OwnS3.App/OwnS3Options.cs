@@ -8,9 +8,18 @@ public sealed class OwnS3Options
 
     public ServerOptions Server { get; set; } = new();
     public string DataDir { get; set; } = "/data";
+    public EcOptions Ec { get; set; } = new();
     public RootOptions Root { get; set; } = new();
     public AccessKeyOptions[] AccessKeys { get; set; } = [];
     public string? HostId { get; set; }
+}
+
+// EC-параметры (канон 05 §4/06 §1): SetSize null = авто (наибольший делитель N
+// из {16,8,4}); parity — default для НОВЫХ объектов (per-object, канон 06 §1).
+public sealed class EcOptions
+{
+    public int? SetSize { get; set; }
+    public int Parity { get; set; } = 2;
 }
 
 public sealed class ServerOptions

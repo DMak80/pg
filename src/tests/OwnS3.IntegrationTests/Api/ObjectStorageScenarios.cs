@@ -10,7 +10,9 @@ namespace OwnS3.IntegrationTests.Api;
 // Range/conditional исходы, вложенные ключи, байтовый порядок листинга.
 // Правило имён: каждый кейс — уникальный бакет СВОЕГО кейса (ограничение 8);
 // multipart-исходы без данных — на никогда не создаваемом «bucket».
-public sealed class ObjectStorageScenarios(OwnS3AppFactory factory) : IClassFixture<OwnS3AppFactory>
+// Параметризация режима (t40): логика — в базе, single/EC-наследники
+// объявляют фикстуру/коллекцию.
+public abstract class ObjectStorageScenariosBase(OwnS3AppFactory factory)
 {
     private static readonly string HelloEtag = "\"5d41402abc4b2a76b9719d911017c592\""; // md5("hello")
 
@@ -18,7 +20,7 @@ public sealed class ObjectStorageScenarios(OwnS3AppFactory factory) : IClassFixt
     // в этих документах даёт null).
     private static readonly XNamespace S3Ns = "http://s3.amazonaws.com/doc/2006-03-01/";
 
-    private OwnS3TestClient NewClient() => new(factory.CreateClient());
+    protected OwnS3TestClient NewClient() => new(factory.CreateClient());
 
     private static async Task<string> BodyAsync(HttpResponseMessage response) =>
         await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
@@ -451,3 +453,7 @@ public sealed class ObjectStorageScenarios(OwnS3AppFactory factory) : IClassFixt
         return result;
     }
 }
+
+// single-режим: свой том на класс (как до t40).
+public sealed class ObjectStorageScenarios(OwnS3AppFactory factory) : ObjectStorageScenariosBase(factory),
+    IClassFixture<OwnS3AppFactory>;

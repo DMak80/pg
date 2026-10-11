@@ -653,13 +653,13 @@ public class XlObjectStoreMultipartTests(StoreFixture fixture) : IClassFixture<S
         var etag1 = await UploadBigPartAsync(Store, "b", "cr-key", uploadId, 1, 5 * 1024 * 1024, 0xAA);
         var etag2 = await UploadBigPartAsync(Store, "b", "cr-key", uploadId, 2, 3, 0xBB);
         var manifest = new List<PartEtag> { new(1, etag1), new(2, etag2) };
-        Store.CompletePreCommitProbe = () => throw new IOException("crash before commit");
+        fixture.Drive.CompletePreCommitProbe = () => throw new IOException("crash before commit");
 
         // Act: сбойная попытка
         var crashed = async () => await Store.CompleteMultipartUploadAsync("b", "cr-key", uploadId,
             manifest, TestContext.Current.CancellationToken);
         await crashed.Should().ThrowAsync<IOException>();
-        Store.CompletePreCommitProbe = null;
+        fixture.Drive.CompletePreCommitProbe = null;
 
         // Assert до повтора: объект НЕ виден; загрузка жива (ListParts работает)
         var missing = async () => await Store.GetObjectAsync("b", "cr-key",
@@ -779,11 +779,11 @@ public class XlObjectStoreMultipartTests(StoreFixture fixture) : IClassFixture<S
         var uploadId = await Store.CreateMultipartUploadAsync("b", "du-key", Meta, "writer",
             TestContext.Current.CancellationToken);
         var etag1 = await UploadBigPartAsync(Store, "b", "du-key", uploadId, 1, 5 * 1024 * 1024, 0xAA);
-        Store.CompletePreCommitProbe = () => throw new IOException("crash");
+        fixture.Drive.CompletePreCommitProbe = () => throw new IOException("crash");
         var crashed = async () => await Store.CompleteMultipartUploadAsync("b", "du-key", uploadId,
             [new PartEtag(1, etag1)], TestContext.Current.CancellationToken);
         await crashed.Should().ThrowAsync<IOException>();
-        Store.CompletePreCommitProbe = null;
+        fixture.Drive.CompletePreCommitProbe = null;
 
         // Act: дозагрузка части 2 заново и успешная сборка
         var etag2 = await UploadBigPartAsync(Store, "b", "du-key", uploadId, 2, 3, 0xBB);
