@@ -25,7 +25,7 @@ open http://localhost:5050
 | Профиль | Состав | Для чего |
 |---|---|---|
 | quick (по умолчанию) | etcd + панель | цикл бэкенд-разработки: сиды — через `checks/05-seed.sh` (поднимает воркеров); Patroni/SQL-пробы закономерно падают (нод нет) |
-| full | + s1a/s1b, s2a/s2b, hc1a/hc1b, hc2a/hc2b, minio (бэкапы, :9000/:9001) | live-пробы, failover, e2e |
+| full | + s1a/s1b, s2a/s2b, hc1a/hc1b, hc2a/hc2b, as-minio (переходный архив, :9000/:9001) | live-пробы, failover, e2e |
 | kafka | + kafkaworker | живой воркер: управление кафкой; входит в полный подъём `00-up.sh` (full+kafka) всегда; e2e — чек `55-kafka-e2e.sh` (волна C) |
 | metrics | + prometheus (:9090), grafana (:3000, admin/admin), alertmanager (:9093) | мониторинг полной системы: дашборды, алерты §3.7; входит в 00-up.sh (arch/18 §5) |
 
@@ -47,17 +47,23 @@ open http://localhost:5050
   запускается и после серии чеков — сам поднимает остановленного kafkaworker'а.
 - Канон мониторинга — `../../arch/18-metrics.md` §5.
 
-## MinIO (подсистема бэкапов, arch/19)
+## Хранилище бэкапов (ownS3, arch/19 + arch/owns3)
 
-Профиль `full`: `as-minio` — S3 API `:9000`, консоль `:9001` (стендовые креды
-`minioadmin`/`minioadmin`, только локальный стенд); bucket `pgworker-backups`
-создаёт `00-up.sh` (`mc mb --ignore-existing`, идемпотентно). Воркер
-(deploy-проект) ходит публикацией `host.docker.internal:9000`; включение
-подсистемы — с t02 (env-блок `PGW_BACKUP_S3_*` в `deploy/.env.example`).
-Панель читает bucket read-only (t08, грань «Хранилище бэкапов»): env
+Хранилище бэкапов стенда — **ownS3** (deploy-контур, хост-публикация `:9010`):
+bucket `pgworker-backups` создаёт `00-up.sh` (`mc mb --ignore-existing`
+root-кредами, идемпотентно); воркер (deploy-проект) ходит публикацией
+`host.docker.internal:9010` writer-ключом `pgw-backups-writer`
+(env-блок `PGW_BACKUP_S3_*` = `OWNS3_ACCESS_KEYS__0__*` в `deploy/.env`,
+один комплект — arch/19 §7). Панель читает bucket read-only (грань
+«Хранилище бэкапов»): ключ `panel-reader`, env
 `AdminPanel__Backups__S3__*` сервиса `adminpanel`; проверка —
 `checks/45-backups-storage.sh` (mc-налив тестовых объектов → configured/
-health/дерево/objects/без секретов).
+health/дерево/objects/без секретов), smoke ownS3 — `checks/46-owns3.sh`.
+
+Профиль `full`: `as-minio` (S3 API `:9000`, консоль `:9001`, креды
+`minioadmin`/`minioadmin`) — переходный read-only-архив старых цепочек:
+новых объектов не получает, снос — по критерию готовности
+(`docs/owns3-migration.md`).
 
 **HA-etcd (t09)**: контур всегда 3 узла (`as-etcd-1/2/3`, порты
 2379/2381/2383, env `ETCD{1,2,3}_HOST_PORT` при коллизиях);
