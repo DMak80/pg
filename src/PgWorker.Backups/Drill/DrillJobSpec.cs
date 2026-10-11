@@ -34,6 +34,10 @@ public static class DrillJobSpec
             // arch/14 §2.1; инцидент E2E-гейта t05).
             [Restore.RestoreJobCommand.EnvPgdata] = $"{dataDir}/pgroot/data",
         };
+        // t42 (arch/19 §7): CA https-endpoint — PEM значением (multi-host), материализация внутри контейнера
+        var caPem = BackupCaPem.ReadIfConfigured(opts);
+        if (caPem is not null)
+            env[BackupCaPem.EnvName] = caPem;
         return new ContainerSpec(
             Image: opts.JobImage,
             Env: env,

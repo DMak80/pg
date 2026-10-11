@@ -448,7 +448,7 @@ public sealed class WalStreamProcess(
 
     // env контейнера агента-приёмника (t27 §3.1): СЕКРЕТЫ — только env, в argv/логи
     // не попадают; приёмник читает Environment.GetEnvironmentVariable (WalReceiverEnv).
-    private static IReadOnlyDictionary<string, string> AgentEnv(
+    internal static IReadOnlyDictionary<string, string> AgentEnv(
         BackupsRuntimeOptions options, string cluster, string shard, string slot,
         string pgHost, int pgPort, string password)
     {
@@ -470,6 +470,10 @@ public sealed class WalStreamProcess(
         };
         if (options.S3Region is { Length: > 0 } region)
             env["S3_REGION"] = region;
+        // t42 (arch/19 §7): CA https-endpoint — PEM значением (multi-host), материализация внутри контейнера
+        var caPem = BackupCaPem.ReadIfConfigured(options);
+        if (caPem is not null)
+            env[BackupCaPem.EnvName] = caPem;
         return env;
     }
 

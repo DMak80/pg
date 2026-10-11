@@ -25,6 +25,17 @@ public static class Program
         };
         AppDomain.CurrentDomain.ProcessExit += (_, _) => cts.Cancel();
 
+        // Доверие CA https S3-endpoint (t42, spec §5 fallback): PEM env материализуется
+        // в файл (multi-host: файла хоста в контейнере нет); путь идёт в runtime-опции
+        // BackupS3 — per-install CA доверяется фабрикой HttpClient (AWSSDK.Core env
+        // AWS_CA_BUNDLE не читает, доказано E2E t42).
+        string? s3CaBundlePath = null;
+        if (options.S3CaPem is { Length: > 0 })
+        {
+            s3CaBundlePath = Path.Combine(Path.GetTempPath(), $"s3-ca-{Guid.NewGuid():N}.pem");
+            await File.WriteAllTextAsync(s3CaBundlePath, options.S3CaPem + "\n", cts.Token);
+        }
+
         // BackupS3 из S3-полей приёмника (реюз математики/клиента Backups).
         var s3Options = new BackupsRuntimeOptions(
             S3Endpoint: options.S3Endpoint,
@@ -32,7 +43,8 @@ public static class Program
             S3Bucket: options.S3Bucket,
             S3AccessKey: options.S3AccessKey,
             S3SecretKey: options.S3SecretKey,
-            S3PathStyle: options.S3PathStyle);
+            S3PathStyle: options.S3PathStyle,
+            S3CaBundlePath: s3CaBundlePath);
         await using var s3 = new BackupS3(s3Options);
 
         return await WalReceiverCore.RunAsync(

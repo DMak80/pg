@@ -195,4 +195,20 @@ public class WalReceiverOptionsTests
         all.Should().NotContain("secret-password");
         all.Should().NotContain("secret-key");
     }
+
+    // AAA: S3_CA_PEM опционален — без него S3CaPem null (http-endpoint, прежний контракт)
+    [Fact]
+    public void Parse_БезS3CaPem_ДаетNull()
+    {
+        WalReceiverEnv.Parse(k => Valid().TryGetValue(k, out var v) ? v : null, out _)
+            !.S3CaPem.Should().BeNull();
+    }
+
+    // AAA: S3_CA_PEM передан — попадает в опции значением
+    [Fact]
+    public void Parse_S3CaPem_Значение()
+    {
+        var parsed = WalReceiverEnv.Parse(k => With("S3_CA_PEM", "PEM-BODY").TryGetValue(k, out var v) ? v : null, out _);
+        parsed!.S3CaPem.Should().Be("PEM-BODY");
+    }
 }

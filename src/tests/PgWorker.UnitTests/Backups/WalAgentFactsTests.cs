@@ -59,4 +59,18 @@ public class WalAgentFactsTests
         facts.Should().ContainSingle(f =>
             f.Node == "shard1a" && f.State == WalAgentPresence.Exited);
     }
+
+    // AAA: AgentEnv передаёт S3_CA_PEM при заданном пути; без пути — не передаёт
+    [Fact]
+    public void AgentEnv_CaBundle_ПередачаПравильная()
+    {
+        var caPath = Path.Combine(Path.GetTempPath(), $"ca-{Guid.NewGuid():N}.pem");
+        File.WriteAllText(caPath, "PEM-BODY");
+        var withCa = WalStreamProcess.AgentEnv(
+            new BackupsRuntimeOptions { S3CaBundlePath = caPath }, "c1", "s1", "slot", "h", 5432, "pw");
+        var withoutCa = WalStreamProcess.AgentEnv(
+            new BackupsRuntimeOptions { S3CaBundlePath = null }, "c1", "s1", "slot", "h", 5432, "pw");
+        withCa["S3_CA_PEM"].Should().Be("PEM-BODY");
+        withoutCa.Should().NotContainKey("S3_CA_PEM");
+    }
 }

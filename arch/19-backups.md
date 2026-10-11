@@ -833,6 +833,22 @@ s3://<bucket>/<C>/<X>/
   `PGW_BACKUP_S3_ADVERTISED_ENDPOINT` не задаётся — равен endpoint);
   хост-публикация хранилища — только для внешних потребителей (чеки с хоста,
   mc-миграция, оператор). Прод — endpoint per-install (выше).
+- **Доверие CA при https-endpoint** (TLS-режим ownS3,
+  [owns3/03-protocol.md](owns3/03-protocol.md) §6): per-install CA
+  (`ca.pem` TLS-пакета `deploy/tls/`). Воркер: env
+  `PGW_BACKUP_S3_CA_BUNDLE_PATH` → конфиг
+  `PgWorker:Backups:S3:CaBundlePath`; при заданном пути SDK-клиент воркера
+  (BackupS3, снапшеты etcd) доверяет CA **программно — фабрика HttpClient
+  с валидацией корня цепочки сервера по отпечатку CA** (env `AWS_CA_BUNDLE`
+  линейкой AWSSDK.Core 3.7.x не читается — эмпирический факт); путь не
+  задан (http-endpoint) — фабрика не ставится, поведение прежнее;
+  нечитаемый/пустой файл CA — отказ с диагностикой. Агент/джоб (контейнер
+  на любом docker-хосте — файл хоста воркера в нём недоступен): CA
+  передаётся значением PEM в env `S3_CA_PEM`; агент-приёмник материализует
+  PEM во временный файл и передаёт его тем же `CaBundlePath` (та же
+  фабрика доверия); mc-джобы (полный бэкап, verify, restore) материализуют
+  PEM в файл и выставляют `SSL_CERT_FILE` (mc — Go-рантайм).
+  http-endpoint — переменные не заданы, поведение прежнее.
 - **Per-cluster БД-роль** `backup_exec` (LOGIN + REPLICATION): пароль
   per-cluster `/clusters/<C>/backup_password` — по образцу t02-секретов
   (ensure put-if-absent, ротация в общем тикете §9.8, 32 симв
@@ -859,7 +875,8 @@ s3://<bucket>/<C>/<X>/
 ## 9. Конфигурация
 
 - Секция `PgWorker:Backups` (каркас t01): `Enabled=false`,
-  `S3 { Endpoint, Region, Bucket, AccessKey, SecretKey, PathStyle=true }`,
+  `S3 { Endpoint, Region, Bucket, AccessKey, SecretKey, PathStyle=true,
+  CaBundlePath="" (путь ca.pem per-install CA — доверие https-endpoint, §7) }`,
   `Policy { Retention { Days=1, Weeks=1, Months=1 }, FullMaxAgeSec=86400,
   VerifyOnCreate=true, VerifyIntervalSec=604800 }` (t04: период
   перепроверки оставшихся полных — `verify.interval_sec` policy-ключа

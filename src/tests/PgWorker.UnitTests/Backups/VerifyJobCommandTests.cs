@@ -46,4 +46,11 @@ public class VerifyJobCommandTests
         // Assert
         value.Should().Be("http://ak%2F1:sk%3A2@minio:9000");
     }
+
+    // AAA: скрипт материализует S3_CA_PEM → SSL_CERT_FILE (t42, arch/19 §7)
+    [Fact]
+    public void Build_МатериализуетCaPem_и_SslCertFile()
+    {
+        VerifyJobCommand.Build()[2].Should().Contain("S3_CA_PEM").And.Contain("SSL_CERT_FILE");
+    }
 }

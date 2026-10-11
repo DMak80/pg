@@ -1,4 +1,6 @@
+using System.Net.Security;
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Amazon.Runtime;
 using Amazon.S3;
@@ -34,8 +36,23 @@ public static class OwnS3E2eClients
         OwnS3ChecksumMode checksum = OwnS3ChecksumMode.WhenRequired, int maxErrorRetry = 4)
         => CreateS3(fx.S3BaseUrl, role, checksum, maxErrorRetry);
 
+    /// <summary>TLS-окружение (t42): клиент против https-грани; доверие per-install
+    /// CA — фабрика HttpClient с RemoteCertificateValidationCallback против CA
+    /// окружения (зеркало механизма BackupS3, spec §5 fallback: AWSSDK.Core env
+    /// AWS_CA_BUNDLE не читает — доказано этим E2E).</summary>
+    public static IAmazonS3 CreateS3(OwnS3TlsE2eEnvironment fx, OwnS3Role role,
+        OwnS3ChecksumMode checksum = OwnS3ChecksumMode.WhenRequired)
+        => CreateS3(fx.S3BaseUrl, role, checksum, ca: LoadCa(fx.CaPem));
+
+    // Загрузка CA из PEM (PFX-реимпорт — как в продукте Shared.Tls.TlsMaterial.LoadPem).
+    private static X509Certificate2 LoadCa(string pem)
+    {
+        var ca = X509Certificate2.CreateFromPem(pem);
+        return X509CertificateLoader.LoadPkcs12(ca.Export(X509ContentType.Pkcs12), null);
+    }
+
     private static IAmazonS3 CreateS3(string baseUrl, OwnS3Role role, OwnS3ChecksumMode checksum,
-        int maxErrorRetry = 4)
+        int maxErrorRetry = 4, X509Certificate2? ca = null)
     {
         var (access, secret) = role switch
         {
@@ -56,7 +73,42 @@ public static class OwnS3E2eClients
                 ? RequestChecksumCalculation.WHEN_REQUIRED
                 : RequestChecksumCalculation.WHEN_SUPPORTED,
         };
+        // Per-install CA (t42): RemoteCertificateValidationCallback сверяет корень
+        // цепочки с CA; CA — в ExtraStore (macOS: без стора цепочка leaf-only).
+        if (ca is not null)
+            config.HttpClientFactory = new TlsCaHttpClientFactory(ca);
         return new AmazonS3Client(new BasicAWSCredentials(access, secret), config);
+    }
+
+    /// <summary>Тестовое зеркало S3CaHttpClientFactory (PgWorker.Backups): фабрика
+    /// SDK с валидацией корня цепочки против per-install CA.</summary>
+    private sealed class TlsCaHttpClientFactory(X509Certificate2 ca) : HttpClientFactory
+    {
+        public override HttpClient CreateHttpClient(IClientConfig clientConfig)
+        {
+            // SocketsHttpHandler: HttpClientHandler.SslOptions в net10.0 отсутствует
+            // (зеркало S3CaHttpClientFactory).
+            var handler = new SocketsHttpHandler
+            {
+                SslOptions = new SslClientAuthenticationOptions
+                {
+                    RemoteCertificateValidationCallback = (_, cert, chain, _) =>
+                    {
+                        if (cert is null || chain is null)
+                            return false;
+                        chain.ChainPolicy.RevocationMode = X509RevocationMode.NoCheck;
+                        chain.ChainPolicy.VerificationFlags =
+                            X509VerificationFlags.AllowUnknownCertificateAuthority;
+                        chain.ChainPolicy.ExtraStore.Add(ca);
+                        if (!chain.Build(new X509Certificate2(cert)))
+                            return false;
+                        var root = chain.ChainElements[^1].Certificate;
+                        return string.Equals(root.Thumbprint, ca.Thumbprint, StringComparison.OrdinalIgnoreCase);
+                    },
+                },
+            };
+            return new HttpClient(handler);
+        }
     }
 }
 

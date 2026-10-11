@@ -3,6 +3,11 @@
 # stdout-маркеры JSON (воркер парсирует свои строки), итог — result-JSON и
 # exit-код; etcd контейнеру неизвестен. Все параметры — env (PGW_BK_*).
 set -u
+# Доверие CA https-endpoint (t42, arch/19 §7): PEM из env — в файл + SSL_CERT_FILE (mc, Go).
+if [ -n "${S3_CA_PEM:-}" ]; then
+  printf '%s\n' "$S3_CA_PEM" > /tmp/s3-ca.pem
+  export SSL_CERT_FILE=/tmp/s3-ca.pem
+fi
 STAGING="${PGW_BK_STAGING_DIR:-/backup-staging}"
 
 LOG() { printf '%s\n' "$1"; }

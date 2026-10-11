@@ -52,6 +52,9 @@ x-pgworker-env: &pgworker-env
   # S3 из контейнеров агентов/джобов (single-host: host.docker.internal; пусто
   # → ENDPOINT как есть — паттерн Etcd:AdvertisedEndpoints, t03).
   PgWorker__Backups__S3__AdvertisedEndpoint: ${PGW_BACKUP_S3_ADVERTISED_ENDPOINT:-}
+  # Доверие CA https S3-endpoint (t42, arch/19 §7): путь ca.pem в контейнере
+  # (ro-монтирование TLS-пакета, прод); пусто — http, прежнее поведение.
+  PgWorker__Backups__S3__CaBundlePath: ${PGW_BACKUP_S3_CA_BUNDLE_PATH:-}
   # Образ джоба полного бэкапа (t02): тег = дефолт Job.Image; сборка —
   # build-сервис pgworker-backup ниже (compose build) или 00-up.sh.
   PgWorker__Backups__Job__Image: ${PGW_BACKUP_JOB_IMAGE:-pgworker-backup:dev}
@@ -289,6 +292,14 @@ services:
       OWNS3_ACCESS_KEYS__1__POLICY: ${OWNS3_ACCESS_KEYS__1__POLICY:-}
     volumes:
       - owns3-data:/data
+  # TLS-опция ПРОД-инсталляции (t42, arch/owns3/05 §6): раскомментировать —
+  # грань станет HTTPS-only на том же порту 9000 (серт owns3 из deploy/tls/gen.sh,
+  # PEM-альтернатива — OWNS3_TLS_CERT/KEY). Добавить строку к volumes выше и
+  # ключи к environment выше. Стенд живёт HTTP-only — не включать.
+  #   - ./tls:/tls:ro
+  # environment:
+  #   OWNS3_TLS_CERT_PATH: /tls/owns3.crt
+  #   OWNS3_TLS_KEY_PATH: /tls/owns3.key
 
   # ownS3 XL Erasure (t40, arch/owns3/06 §1): второй режим хранения — тот же
   # образ owns3:dev (build НЕ дублируется: профиль поднимается на образе,

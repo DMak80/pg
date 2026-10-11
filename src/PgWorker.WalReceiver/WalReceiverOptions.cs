@@ -17,7 +17,11 @@ public sealed record WalReceiverOptions(
     string S3Bucket,
     string S3AccessKey,
     string S3SecretKey,
-    bool S3PathStyle);
+    bool S3PathStyle,
+    // t42 (arch/19 §7): PEM CA https S3-endpoint (материализуется Program приёмника
+    // в файл → S3CaBundlePath: SDK-клиент — фабрика HttpClient с валидацией корня
+    // цепочки по отпечатку CA); null — http-endpoint.
+    string? S3CaPem = null);
 
 /// <summary>Парсер env-контракта приёмника (arch/19 §3.1): невалидный env → null +
 /// список ошибок. Значения СЕКРЕТНЫХ ключей (PG_PASSWORD, S3_SECRET_KEY) в тексты
@@ -58,6 +62,7 @@ public static class WalReceiverEnv
         var s3Bucket = Require("S3_BUCKET");
         var s3AccessKey = Require("S3_ACCESS_KEY");
         var s3SecretKey = Require("S3_SECRET_KEY");
+        var s3CaPem = env("S3_CA_PEM"); // опциональный (t42): отсутствие — http-endpoint
 
         var s3PathStyle = true;
         var pathStyleText = env("S3_PATHSTYLE");
@@ -87,6 +92,7 @@ public static class WalReceiverEnv
             pgHost, pgPort, pgUser, pgPassword, pgDbname,
             slot, cluster, shard,
             s3Endpoint, string.IsNullOrWhiteSpace(s3Region) ? null : s3Region,
-            s3Bucket, s3AccessKey, s3SecretKey, s3PathStyle);
+            s3Bucket, s3AccessKey, s3SecretKey, s3PathStyle,
+            string.IsNullOrWhiteSpace(s3CaPem) ? null : s3CaPem);
     }
 }
