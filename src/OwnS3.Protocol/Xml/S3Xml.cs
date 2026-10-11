@@ -31,9 +31,21 @@ public static class S3Xml
         return Encoding.UTF8.GetString(stream.ToArray());
     }
 
-    public static T Deserialize<T>(string xml) where T : class
+    // DeleteObjects: mc/minio-go шлют канонический образец главы 03 §4 БЕЗ
+    // xmlns — XmlSerializer требует namespace корня. Нормализация ТОЛЬКО
+    // отсутствующего namespace (namespace-форма AWS-клиентов не затрагивается).
+    public static string EnsureRootNamespace(string xml, string rootName)
     {
-        try
+        var trimmed = xml.TrimStart();
+        var bare = "<" + rootName + ">";
+        if (!trimmed.StartsWith(bare, StringComparison.Ordinal))
+            return xml;   // корень не в ожидаемой без-ns форме — как есть
+        var at = xml.Length - trimmed.Length + bare.Length - 1; // перед '>' корня
+        return xml[..at] + $" xmlns=\"{S3XmlNamespace.Value}\"" + xml[at..];
+    }
+
+    public static T Deserialize<T>(string xml) where T : class
+    {        try
         {
             using var reader = new StringReader(xml);
             var serializer = new XmlSerializer(typeof(T));

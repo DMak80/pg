@@ -180,7 +180,10 @@ public static class ObjectHandlers
             var body = new HashingBodyStream(context.Http.Body, null,
                 context.Http.Headers.ContentMD5.ToString() is { Length: > 0 } md5 ? md5 : null);
             using var reader = new StreamReader(body);
-            var request = S3Xml.Deserialize<DeleteRequest>(await reader.ReadToEndAsync(ct));
+            // mc/minio-go шлют Delete-XML без xmlns (образец 03 §4) —
+            // нормализация корня; ns-форма AWS-клиентов не затрагивается.
+            var manifestXml = S3Xml.EnsureRootNamespace(await reader.ReadToEndAsync(ct), "Delete");
+            var request = S3Xml.Deserialize<DeleteRequest>(manifestXml);
             var keys = request.Objects.Select(o => o.Key).ToList();
             OperationValidation.ValidateDeleteKeys(keys.Count);
 
