@@ -126,6 +126,35 @@ builder.Services.AddSingleton<IObjectStore>(sp => new XlObjectStore(
     sp.GetRequiredService<IXlDrive>(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILogger<XlObjectStore>>()));
+
+// Replication-контур приёма (t35, глава 07): состав mesh (targets.json — источник
+// истины, env-seed — первый старт), tombstones, LWW-аплайер, fetch-очереди, приёмник
+// уведомлений; путь состояния — .owns3.sys/replication/ на служебном контуре первого
+// диска (глава 07 §11). Рассылка (outbox/notifier) и события хендлеров — задача 10.
+builder.Services.Configure<OwnS3.Replication.ReplicationOptions>(
+    builder.Configuration.GetSection(OwnS3.Replication.ReplicationOptions.SectionName));
+builder.Services.AddSingleton(sp =>
+    sp.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value);
+builder.Services.AddSingleton(sp => OwnS3.Replication.ReplicationTargets.Load(
+    ReplicationSysDir(sp),
+    sp.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value.Targets,
+    sp.GetRequiredService<ILogger<OwnS3.Replication.ReplicationTargets>>()));
+builder.Services.AddSingleton(sp => new OwnS3.Replication.Lww.TombstoneStore(
+    Path.Combine(ReplicationSysDir(sp), "tombstones")));
+builder.Services.AddSingleton<OwnS3.Storage.IReplicaStore>(sp => new OwnS3.Storage.ReplicaStore(
+    sp.GetRequiredService<IXlDrive>(), sp.GetRequiredService<TimeProvider>()));
+builder.Services.AddSingleton<OwnS3.Replication.Lww.ReplicaApplier>();
+builder.Services.AddSingleton<OwnS3.Replication.Inbound.FetchQueueRegistry>();
+// Счётчики исходов: no-op-заглушка до wiring'а боевых метрик (координатор, задача 12)
+builder.Services.AddSingleton<OwnS3.Replication.Inbound.IOutcomeCounters>(
+    OwnS3.Replication.Inbound.NullOutcomeCounters.Instance);
+builder.Services.AddSingleton<OwnS3.Replication.Inbound.NotificationInbox>();
+builder.Services.AddSingleton(sp => new OwnS3.App.Handlers.ReplicationHandlers(
+    sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>(),
+    sp.GetRequiredService<OwnS3.Replication.Inbound.NotificationInbox>(),
+    sp.GetRequiredService<OwnS3.Storage.IReplicaStore>(),
+    sp.GetRequiredService<OwnS3.Replication.Lww.TombstoneStore>(),
+    sp.GetRequiredService<IOptions<OwnS3Options>>().Value.HostId ?? Environment.MachineName));
 builder.Services.AddHostedService<VolumeCleanupService>();
 builder.Services.AddHostedService<ErasureHealHostedService>();
 builder.Services.AddSingleton<OwnS3Metrics>();
@@ -265,6 +294,10 @@ app.MapGet("/healthz", () => drive.CheckHealth()
 app.MapAppMetrics();
 
 await app.RunAsync();
+
+// Служебный контур репликации: .owns3.sys/replication на первом диске (глава 07 §11).
+static string ReplicationSysDir(IServiceProvider sp) => Path.Combine(
+    sp.GetRequiredService<StorageModeInfo>().DataRoots[0], ".owns3.sys", "replication");
 
 /// <summary>Маркер для WebApplicationFactory интеграционных тестов.</summary>
 public partial class Program;

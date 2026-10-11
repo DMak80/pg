@@ -28,6 +28,10 @@ public class OwnS3AppFactory : WebApplicationFactory<Program>
     public const string WriterSecretKey = "testwritersecret";
     public const string AdminAccessKey = "testadmin";
     public const string AdminSecretKey = "testadminsecret";
+    // Peer-ключ mesh (t35, A13): политика replication; в targets НЕ числится
+    // (фиктивный сосед в сценариях задаёт accessKey отдельно).
+    public const string ReplicationAccessKey = "testpeer";
+    public const string ReplicationSecretKey = "testpeersecret";
 
     private readonly ConcurrentQueue<(LogLevel Level, string Message)> _logEntries = new();
 
@@ -54,6 +58,9 @@ public class OwnS3AppFactory : WebApplicationFactory<Program>
             ["OwnS3:AccessKeys:2:AccessKey"] = AdminAccessKey,
             ["OwnS3:AccessKeys:2:SecretKey"] = AdminSecretKey,
             ["OwnS3:AccessKeys:2:Policy"] = "admin",
+            ["OwnS3:AccessKeys:3:AccessKey"] = ReplicationAccessKey,
+            ["OwnS3:AccessKeys:3:SecretKey"] = ReplicationSecretKey,
+            ["OwnS3:AccessKeys:3:Policy"] = "replication",
         }));
         builder.ConfigureLogging(logging =>
         {
