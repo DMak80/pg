@@ -26,6 +26,11 @@ public sealed class S3RouterTests
         { "GET",     "/b",                "prefix=x&marker=y", false, S3Operation.ListObjects }, // листинговые параметры — не дискриминаторы
         // бакет: прочие методы
         { "PUT",     "/b",                "",          false, S3Operation.CreateBucket },
+        // /{bucket}/ — bucket-level (канон 03 §6): маршрутизация как без слэша
+        { "PUT",     "/b/",               "",          false, S3Operation.CreateBucket },
+        { "GET",     "/b/",               "",          false, S3Operation.ListObjects },
+        { "HEAD",    "/b/",               "",          false, S3Operation.HeadBucket },
+        { "GET",     "/b/",               "location",  false, S3Operation.GetBucketLocation },
         { "DELETE",  "/b",                "",          false, S3Operation.DeleteBucket },
         { "HEAD",    "/b",                "",          false, S3Operation.HeadBucket },
         { "POST",    "/b",                "delete",    false, S3Operation.DeleteObjects },
