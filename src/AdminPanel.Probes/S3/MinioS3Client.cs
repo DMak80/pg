@@ -28,11 +28,12 @@ public interface IMinioS3
         string? prefix, string? continuationToken, int maxKeys, CancellationToken ct);
 
     /// <summary>Health: ApiOk — ListBuckets прошёл (API жив + креды валидны),
-    /// LiveOk — GET /minio/health/live, 404 → фолбэк GET /healthz (канон
-    /// ownS3; HttpClient, без SigV4); ClusterOk — GET /minio/health/cluster,
-    /// null — эндпоинт не отвечает/не поддерживается (вкл. 404 — не
-    /// MinIO-контур); drives-поля тела cluster парсятся толерантно (нет
-    /// полей/битый JSON → Drives null).</summary>
+    /// LiveOk — GET /minio/health/live, 404/403 → фолбэк GET /healthz (канон
+    /// ownS3; HttpClient, без SigV4; 403 — канонический ответ ownS3 на
+    /// анонимный запрос вне /healthz и /metrics); ClusterOk — GET
+    /// /minio/health/cluster, null — эндпоинт не отвечает/не поддерживается
+    /// (вкл. 404/403 — не MinIO-контур); drives-поля тела cluster парсятся
+    /// толерантно (нет полей/битый JSON → Drives null).</summary>
     Task<MinioHealth> GetHealthAsync(CancellationToken ct);
 }
 
@@ -142,17 +143,21 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
     {
         var buckets = await ListBucketsAsync(ct);
         var live = await ProbeHealthAsync("/minio/health/live", withDrives: false, ct);
-        // ownS3-фолбэк: 404 = «хранилище не MinIO» (эндпоинт жив, путь не
-        // поддерживается) — повтор по канону ownS3 /healthz (без подписи);
-        // 200 → live, 503/иное → down. Фолбэк ТОЛЬКО по 404: мёртвый endpoint
-        // (нет ответа) вторую пробу не крутит.
-        if (live.StatusCode == 404)
+        // ownS3-фолбэк: 404/403 = «хранилище не MinIO» (эндпоинт жив, путь
+        // не поддерживается): 404 — несуществующий путь, 403 — канонический
+        // ответ ownS3 на анонимный запрос вне /healthz и /metrics
+        // (arch/owns3/03; пробы идут без SigV4). Повтор — по канону ownS3
+        // /healthz (без подписи); 200 → live, 503/иное → down. Фолбэк
+        // ТОЛЬКО по статусу ответа: мёртвый endpoint (нет ответа) вторую
+        // пробу не крутит.
+        if (live.StatusCode is 404 or 403)
             live = await ProbeHealthAsync("/healthz", withDrives: false, ct);
         var cluster = await ProbeHealthAsync("/minio/health/cluster", withDrives: true, ct);
 
-        // 200 → true; 503 → false (degraded); нет ответа или 404 (эндпоинт
-        // не поддерживается — не MinIO-контур) → null; drives при 404 нет.
-        bool? clusterOk = cluster.StatusCode is null or 404
+        // 200 → true; 503 → false (degraded); нет ответа или 404/403
+        // (эндпоинт не поддерживается — не MinIO-контур) → null; drives
+        // при 404/403 нет.
+        bool? clusterOk = cluster.StatusCode is null or 404 or 403
             ? null
             : cluster.StatusCode == 200;
 
@@ -161,7 +166,7 @@ public sealed class MinioS3Client : IMinioS3, IAsyncDisposable
             buckets.IsSuccess ? null : buckets.Error!.Message,
             live.StatusCode == 200,
             clusterOk,
-            cluster.StatusCode == 404 ? null : cluster.Drives);
+            cluster.StatusCode is 404 or 403 ? null : cluster.Drives);
     }
 
     // GET {endpoint}{relativePath}; отсутствие ответа — null-статус; тело
