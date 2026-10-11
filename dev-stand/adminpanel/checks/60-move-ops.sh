@@ -10,6 +10,7 @@ cd "$(dirname "$0")/.."
 
 BASE="${ADMINPANEL_URL:-http://localhost:5050}"
 JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
+ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 
 # Arrange (t41): канонический demo жив (config без NOT_INITIALIZED, ноды
 # RUNNING; создаёт 00-up.sh POST /api/clusters) — wait до 60 c; панель отвечает.
@@ -94,21 +95,49 @@ echo "$resp" | jq -e '.detail // empty' 2>/dev/null | grep -q "осознанн�
 ect del /clusters/demo/buckets/status/bucket_2 >/dev/null
 echo "  abort: routing==target без force → 409 «осознанно»"
 
-# ── 4) rollback: ACTIVE-бакет → 201 (op=rollback); очередь панели видит; снятие → 204.
+# ── 4) rollback: ACTIVE-бакет → 201 (op=rollback); снятие → 204 (грань мутации;
+# воркер подбирает заявку первым тиком — очередь в живой системе эфемерна).
 c="$(code -X POST "$BASE/api/clusters/demo/moves/rollback" -H 'Content-Type: application/json' -d '{"buckets":[6]}')"
 [ "$c" = 201 ] || { echo "❌ rollback ACTIVE = $c, ожидался 201"; exit 1; }
 ect get /pgworker/moves/demo/bucket_6 --print-value-only | grep -q '"op":"rollback"' \
   || { echo "❌ ключ rollback-заявки не содержит op=rollback"; exit 1; }
-# окно 30 c: панельный тик 3 c, воркер подбирает заявку тиком reconciler'а —
-# окно обязано гарантированно накрывать панельный тик (гонка подбора).
-for i in $(seq 1 30); do
-  api /api/clusters/demo | jq -e 'any(.pendingMoves[]; .bucketId == 6 and .op == "rollback")' >/dev/null 2>&1 && break; sleep 1;
-done
-api /api/clusters/demo | jq -e 'any(.pendingMoves[]; .bucketId == 6 and .op == "rollback")' >/dev/null \
-  || { echo "❌ очередь панели не видит rollback-заявку bucket_6"; exit 1; }
 c="$(code -X DELETE "$BASE/api/clusters/demo/moves/bucket_6")"
 [ "$c" = 204 ] || { echo "❌ снятие rollback = $c"; exit 1; }
-echo "  rollback: 201 → очередь панели видит → снятие 204"
+echo "  rollback: 201 → ключ op=rollback → снятие 204"
+
+# ── 4б) очередь панели видит rollback-заявку (детерминированно): панель
+# показывает очередь снапшотом (тик 3 c), воркер подбирает заявку первым тиком
+# (~≤5 c) — на живых исполнителях видимость гоночна. Исполнителей останавливаем
+# (панель жива независимо; мутации панели в этой фазе не нужны), заявку кладёт
+# чек напрямую в etcd (паттерн сценария 5); после проверки — снятие и возврат
+# воркеров (паттерн шага 0).
+workers_up() {
+  local port="$1"
+  curl -fsS -m 3 --cacert "$ROOT/deploy/tls/ca.pem" --cert "$ROOT/deploy/tls/healthcheck.crt" \
+    --key "$ROOT/deploy/tls/healthcheck.key" "https://localhost:${port}/healthz" >/dev/null 2>&1
+}
+pgw1_port="$(grep -E '^PGW_API_HOST_PORT=' "$ROOT/deploy/.env" | tail -1 | cut -d= -f2)"
+pgw2_port="$(grep -E '^PGW_API_HOST_PORT2=' "$ROOT/deploy/.env" | tail -1 | cut -d= -f2)"
+workers_return() {
+  docker start deploy-pgworker-1 deploy-pgworker-2-1 >/dev/null 2>&1 || true
+  for i in $(seq 1 60); do
+    workers_up "${pgw1_port:-8080}" && workers_up "${pgw2_port:-8083}" && return 0
+    sleep 1
+  done
+  echo "❌ pgworker не ожил после возврата (docker logs deploy-pgworker-1 deploy-pgworker-2-1)"; exit 1
+}
+docker stop deploy-pgworker-1 deploy-pgworker-2-1 >/dev/null
+ect put /pgworker/moves/demo/bucket_8 \
+  '{"op":"rollback","requested_unix":'"$(now)"',"requested_by":"e2e"}' >/dev/null
+seen=""
+for i in $(seq 1 30); do
+  api /api/clusters/demo | jq -e 'any(.pendingMoves[]; .bucketId == 8 and .op == "rollback")' >/dev/null 2>&1 && { seen=1; break; }
+  sleep 1
+done
+ect del /pgworker/moves/demo/bucket_8 >/dev/null
+workers_return
+[ "$seen" = 1 ] || { echo "❌ очередь панели не видит rollback-заявку (bucket_8)"; exit 1; }
+echo "  очередь панели видит rollback-заявку (снапшот, исполнители остановлены)"
 
 # ── 5) rollback-заявка остаётся: процесс отвергает (нет подписки) → work-журнал.
 ect put /pgworker/moves/demo/bucket_4 \
