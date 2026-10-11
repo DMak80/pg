@@ -99,7 +99,9 @@ c="$(code -X POST "$BASE/api/clusters/demo/moves/rollback" -H 'Content-Type: app
 [ "$c" = 201 ] || { echo "❌ rollback ACTIVE = $c, ожидался 201"; exit 1; }
 ect get /pgworker/moves/demo/bucket_6 --print-value-only | grep -q '"op":"rollback"' \
   || { echo "❌ ключ rollback-заявки не содержит op=rollback"; exit 1; }
-for i in $(seq 1 10); do
+# окно 30 c: панельный тик 3 c, воркер подбирает заявку тиком reconciler'а —
+# окно обязано гарантированно накрывать панельный тик (гонка подбора).
+for i in $(seq 1 30); do
   api /api/clusters/demo | jq -e 'any(.pendingMoves[]; .bucketId == 6 and .op == "rollback")' >/dev/null 2>&1 && break; sleep 1;
 done
 api /api/clusters/demo | jq -e 'any(.pendingMoves[]; .bucketId == 6 and .op == "rollback")' >/dev/null \
