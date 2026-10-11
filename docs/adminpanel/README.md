@@ -24,7 +24,7 @@ Patroni REST/SQL (тик 15 c), 25 правил алертов.
 | `src/Shared.Core` | Каркас из референса `Puzzle` (/common/, t08): attribute-DI, CQRS, `Result`, health-checks |
 | `src/tests/` | Unit (xunit v3 + FluentAssertions) + Integration (Testcontainers: etcd, postgres:18) |
 | [`frontend/`](frontend/package.json) | SPA (React+Vite+TS+Mantine); сборка в `src/AdminPanel.Api/wwwroot` |
-| [`dev-stand/adminpanel/`](../../dev-stand/adminpanel/README.md) | Docker-стенд quick/full (etcd + шардированная PG + patroni-эмуляторы) и e2e-чеки |
+| [`dev-stand/adminpanel/`](../../dev-stand/adminpanel/README.md) | Docker-стенд — один контур одна сеть (etcd + канонический PG-demo движком + PgWorker/ownS3 + мониторинг) и e2e-чеки |
 | `Dockerfile`, `.dockerignore` | Многостадийная сборка образа (node → publish → runtime) |
 | `docs/adminpanel/superpowers/` | История задач (spec/plan по каждой) |
 
@@ -34,7 +34,7 @@ Patroni REST/SQL (тик 15 c), 25 правил алертов.
 # терминал 1 — панель (http://localhost:5050, логин admin/admin из appsettings.Development.json)
 dotnet run --project src/AdminPanel.Api
 
-# терминал 2 — стенд full (etcd+сид+2 PG-шарда+эмуляторы); quick: docker compose up -d
+# терминал 2 — полный стенд одним скриптом (канонический demo, ownS3, мониторинг); quick-профиль: docker compose up -d
 cd dev-stand/adminpanel && checks/00-up.sh
 
 open http://localhost:5050
