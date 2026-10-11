@@ -64,6 +64,15 @@ public sealed partial class ErasureXlDrive : IXlDrive
 
     private ErasurePool Pool => _pool;
 
+    // Ошибка I/O переводит диск сета в offline до ближайшей успешной
+    // перепроверки (тикер 30 с / heal-проход — канон 06 §7): операции не
+    // бьются об умерший диск до конца таймера.
+    private static void MarkOfflineIfIo(ErasureDisk disk, Exception ex)
+    {
+        if (ex is IOException or UnauthorizedAccessException or DirectoryNotFoundException)
+            disk.Online = false;
+    }
+
     // Кодек сета для parity записи (per-object parity, канон 06 §1).
     private ReedSolomonCodec CodecFor(int parity)
     {
@@ -211,6 +220,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
                 }
                 catch (Exception ex)
                 {
+                    MarkOfflineIfIo(disk, ex);
                     _logger.LogWarning(ex, "EC: коммит на диске {Position} ({Root}) не прошёл", disk.Position, disk.Root);
                 }
             }
@@ -358,6 +368,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
                 }
                 catch (Exception ex)
                 {
+                    MarkOfflineIfIo(disk, ex);
                     _logger.LogWarning(ex, "EC: CreateBucket на диске {Position} не прошёл", disk.Position);
                 }
             }
@@ -673,6 +684,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
             }
             catch (Exception ex)
             {
+                MarkOfflineIfIo(disk, ex);
                 _logger.LogWarning(ex, "EC: Delete на диске {Position} не прошёл", disk.Position);
             }
         }
@@ -977,6 +989,7 @@ public sealed partial class ErasureXlDrive : IXlDrive
             }
             catch (Exception ex)
             {
+                MarkOfflineIfIo(disk, ex);
                 _logger.LogWarning(ex, "EC: CommitUploadPart на диске {Position} не прошёл", disk.Position);
             }
         }

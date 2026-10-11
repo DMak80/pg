@@ -39,11 +39,13 @@ sigv4_get() { # <access> <secret>
   scope="${amz_date}/us-east-1/s3/aws4_request"
   sts="$(printf 'AWS4-HMAC-SHA256\n%s\n%s\n%s' "$ts" "$scope" \
     "$(printf '%s' "$canonical" | openssl dgst -sha256 -hex | sed 's/^.* //')")"
+  # AWS4-деривация: промежуточные ключи — БАЙТЫ (hex-строка через hexkey,
+  # не -hmac: текстовый hmac от hex- representation даёт неверную подпись)
   k_date="$(printf '%s' "$amz_date" | openssl dgst -sha256 -hmac "AWS4${secret}" -hex | sed 's/^.* //')"
-  k_region="$(printf '%s' us-east-1 | openssl dgst -sha256 -hmac "$k_date" -hex | sed 's/^.* //')"
-  k_service="$(printf '%s' s3 | openssl dgst -sha256 -hmac "$k_region" -hex | sed 's/^.* //')"
-  k_signing="$(printf '%s' aws4_request | openssl dgst -sha256 -hmac "$k_service" -hex | sed 's/^.* //')"
-  signature="$(printf '%s' "$sts" | openssl dgst -sha256 -hmac "$k_signing" -hex | sed 's/^.* //')"
+  k_region="$(printf '%s' us-east-1 | openssl dgst -sha256 -mac HMAC -macopt hexkey:"$k_date" -hex | sed 's/^.* //')"
+  k_service="$(printf '%s' s3 | openssl dgst -sha256 -mac HMAC -macopt hexkey:"$k_region" -hex | sed 's/^.* //')"
+  k_signing="$(printf '%s' aws4_request | openssl dgst -sha256 -mac HMAC -macopt hexkey:"$k_service" -hex | sed 's/^.* //')"
+  signature="$(printf '%s' "$sts" | openssl dgst -sha256 -mac HMAC -macopt hexkey:"$k_signing" -hex | sed 's/^.* //')"
   status="$(curl -s -o /tmp/os3ec-admin-body -w '%{http_code}' \
     -H "x-amz-date: ${ts}" \
     -H "x-amz-content-sha256: ${payload_hash}" \
