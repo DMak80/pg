@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Репарация + усыновление воркером: нахераченные извне ключи → алерты →
-# гашение РЕАЛЬНЫМ ремонтом живого PgWorker + полный move на усыновлённом
-# кластере + прежний сценарий shard-no-master (adopt-repair spec §3.6).
+# Репарация: нахераченные извне ключи → алерты → гашение РЕАЛЬНЫМ ремонтом
+# живого PgWorker + полный move на каноническом кластере (demo/shard1|shard2)
+# + сценарий shard-no-master с возвратом фактическим мастером (t41).
 # Quick (без PgWorker/PG) — только появление алертов.
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -69,11 +69,11 @@ if $PG_MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1
 fi
 now=$(date +%s); past=$((now - 3600))
 ect put /clusters/demo/buckets/status/bucket_3 \
-  "{\"bucket\":\"bucket_3\",\"state\":\"SYNCING\",\"owner\":\"s1\",\"target\":\"s2\",\"started_unix\":$past,\"updated_unix\":$past,\"phase\":\"copy\"}" >/dev/null
+  "{\"bucket\":\"bucket_3\",\"state\":\"SYNCING\",\"owner\":\"shard1\",\"target\":\"shard2\",\"started_unix\":$past,\"updated_unix\":$past,\"phase\":\"copy\"}" >/dev/null
 ect put /clusters/demo/buckets/status/bucket_7 \
-  "{\"bucket\":\"bucket_7\",\"state\":\"ABORTING\",\"owner\":\"s2\",\"target\":\"s1\",\"started_unix\":$past,\"updated_unix\":$past,\"phase\":\"cleanup\",\"last_error\":\"receiver went away\"}" >/dev/null
+  "{\"bucket\":\"bucket_7\",\"state\":\"ABORTING\",\"owner\":\"shard2\",\"target\":\"shard1\",\"started_unix\":$past,\"updated_unix\":$past,\"phase\":\"cleanup\",\"last_error\":\"receiver went away\"}" >/dev/null
 ect put /clusters/demo/buckets/status/bucket_11 \
-  "{\"bucket\":\"bucket_11\",\"state\":\"FROZEN\",\"owner\":\"s1\",\"target\":\"s2\",\"started_unix\":$past,\"updated_unix\":$past,\"phase\":\"cutover-wait\"}" >/dev/null
+  "{\"bucket\":\"bucket_11\",\"state\":\"FROZEN\",\"owner\":\"shard1\",\"target\":\"shard2\",\"started_unix\":$past,\"updated_unix\":$past,\"phase\":\"cutover-wait\"}" >/dev/null
 echo "  статусы bucket_3/7/11 нахерачены (протухшие)"
 
 # Assert 2: алерты появились (тик панели 3 c; воркер на паузе в full).
@@ -102,60 +102,44 @@ wait_no_alert move-aborting demo/bucket_7; echo "  move-aborting -> demo/bucket_
 wait_no_alert move-frozen-long demo/bucket_11; echo "  move-frozen-long -> demo/bucket_11 погашен"
 [ -z "$(ect get /clusters/demo/buckets/status/bucket_3 --print-value-only 2>/dev/null)" ] \
   || { echo "❌ статус bucket_3 не снят"; exit 1; }
-[ "$(ect get /clusters/demo/buckets/routing/bucket_3 --print-value-only)" = "s1" ] \
-  || { echo "❌ routing bucket_3 изменился (ожидался владелец s1)"; exit 1; }
+[ "$(ect get /clusters/demo/buckets/routing/bucket_3 --print-value-only)" = "shard1" ] \
+  || { echo "❌ routing bucket_3 изменился (ожидался владелец shard1)"; exit 1; }
 echo "  статусы сняты репарацией, routing нетронут"
 
-# Assert 3.5: усыновление — portalloc внешнего кластера восстановлен: ВСЕ 4 ноды
-# (s1a/s1b/s2a/s2b) с object-контейнерами as-* (spec §3.6 Assert 5 / §7.1).
-alloc="$(ect get /pgworker/portalloc/demo --print-value-only 2>/dev/null || true)"
-echo "$alloc" | jq -e 'has("s1/s1a") and has("s1/s1b") and has("s2/s2a") and has("s2/s2b")
-  and ([.[].object] | all(. != null and startswith("as-")))' >/dev/null \
-  || { echo "❌ portalloc/demo: ожидались все 4 ноды с object: as-* — получено: $alloc"; exit 1; }
-echo "  portalloc/demo: все 4 ноды усыновлены (object: as-*)"
-
-# Act/Assert 4: полный move на усыновлённом кластере (bucket_5: s2→s1→s2;
-# возврат раскладки — чек 40 ждёт инвентарь 10+6, spec §3.6). Между ходами
-# ждём завершения auto-finalize (заявка снята = старый шард вычищен) — вторая
-# заявка поверх недоделанного finalize затирала бы уборку: остаток схемы на
-# старом шарде отверг бы обратный move.
+# Act/Assert 4: полный move на каноническом кластере (bucket_5: shard2→shard1→
+# shard2; возврат раскладки). Между ходами ждём завершения auto-finalize
+# (заявка снята = старый шард вычищен) — вторая заявка поверх недоделанного
+# finalize затирала бы уборку: остаток схемы на старом шарде отверг бы
+# обратный move.
 ect put /pgworker/moves/demo/bucket_5 \
-  "{\"op\":\"move\",\"to\":\"s1\",\"requested_unix\":$now,\"requested_by\":\"check-20\"}" >/dev/null
-wait_routing bucket_5 s1; echo "  bucket_5 переехал s2 → s1 (полный move на усыновлённом)"
-wait_request_gone bucket_5 120; echo "  finalize доработал (артефакты s2 вычищены)"
+  "{\"op\":\"move\",\"to\":\"shard1\",\"requested_unix\":$now,\"requested_by\":\"check-20\"}" >/dev/null
+wait_routing bucket_5 shard1; echo "  bucket_5 переехал shard2 → shard1 (полный move)"
+wait_request_gone bucket_5 120; echo "  finalize доработал (артефакты shard2 вычищены)"
 wait_no_alert move-stale demo/bucket_5 60
 ect put /pgworker/moves/demo/bucket_5 \
-  "{\"op\":\"move\",\"to\":\"s2\",\"requested_unix\":$(date +%s),\"requested_by\":\"check-20\"}" >/dev/null
-wait_routing bucket_5 s2; echo "  bucket_5 вернулся s1 → s2 (раскладка исходная)"
-wait_request_gone bucket_5 120; echo "  finalize доработал (артефакты s1 вычищены)"
+  "{\"op\":\"move\",\"to\":\"shard2\",\"requested_unix\":$(date +%s),\"requested_by\":\"check-20\"}" >/dev/null
+wait_routing bucket_5 shard2; echo "  bucket_5 вернулся shard1 → shard2 (раскладка исходная)"
+wait_request_gone bucket_5 120; echo "  finalize доработал (артефакты shard1 вычищены)"
 
 # Assert 5: ни одного move-* алерта перед финальным сценарием.
 api /api/alerts | jq -e 'all(.[]; (.kind | startswith("move-")) | not)' >/dev/null \
   || { echo "❌ остались move-* алерты"; exit 1; }
 echo "  move-* алертов нет"
 
-# Act 6 / Assert 7: прежний сценарий shard-no-master (сохранён из действующего
-# чека, t10 §7.3): после усыновления мастер-ключ s2 пишет внешний HA-контур
-# (эмуляторы) — стоп эмуляторов + удаление ключа по-прежнему корректны.
-full=0
-if docker compose ps --services --filter status=running 2>/dev/null | grep -qx hc2a; then
-  full=1
-  echo "  (full) стоп эмуляторов s2: hc2a/hc2b"
-  docker compose stop hc2a hc2b >/dev/null
-fi
-ect del /clusters/demo/shards/s2/master >/dev/null
-echo "  master-ключ s2 удалён"
-wait_alert shard-no-master demo/s2 critical
-echo "  shard-no-master -> demo/s2 (critical)"
-if [ "$full" = 1 ]; then
-  docker compose start hc2a hc2b >/dev/null
-  echo "  (full) эмуляторы s2 запущены — lease восстановится сам (<=3 c)"
-else
-  ect put /clusters/demo/shards/s2/master 's2a:5432' >/dev/null
-  echo "  (quick) ключ возвращён статично"
-fi
-wait_no_alert shard-no-master demo/s2
-echo "  shard-no-master -> demo/s2 погас"
+# Act 6 / Assert 7: shard-no-master (critical) на каноническом кластере:
+# удаление master-ключа шарда → алерт → возврат ключа ФАКТИЧЕСКИМ мастером
+# (Patroni-lease живых нод перепишет; значение — из HA-грани панели).
+ect del /clusters/demo/shards/shard2/master >/dev/null
+echo "  master-ключ shard2 удалён"
+wait_alert shard-no-master demo/shard2 critical
+echo "  shard-no-master -> demo/shard2 (critical)"
+shard2_master="$(api /api/ha/demo-shard2 | jq -r '.leaderName + \":5432\"')"
+[ -n "$shard2_master" ] && [ "$shard2_master" != ":5432" ] \
+  || { echo "❌ /api/ha/demo-shard2: пустой leaderName для возврата master-ключа"; exit 1; }
+ect put /clusters/demo/shards/shard2/master "$shard2_master" >/dev/null
+echo "  master-ключ shard2 возвращён фактическим мастером ($shard2_master)"
+wait_no_alert shard-no-master demo/shard2
+echo "  shard-no-master -> demo/shard2 погас"
 
 echo "✓ alerts/repair-сценарий зелёный (появление → ремонт → гашение; move туда-обратно; shard-no-master)"
 

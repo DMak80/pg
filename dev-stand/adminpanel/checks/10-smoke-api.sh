@@ -37,22 +37,26 @@ api /api/etcd/status | jq -e \
 echo "  /api/etcd/status: $(api /api/etcd/status | jq -r '.endpoints[0].version') reachable"
 
 api /api/clusters/demo | jq -e \
-  '([.shards[] | select(.name=="s1")][0].masterAddress == "s1a:5432")
-  and (.buckets | length) == 16
-  and .heals[0].bucket == "bucket_5"' >/dev/null \
-  || { echo "❌ /api/clusters/demo: master/buckets/heals"; exit 1; }
-echo "  /api/clusters/demo: master s1a:5432, 16 бакетов, heal bucket_5"
+  '([.shards[] | select(.name=="shard1")][0].masterAddress | length > 0)
+  and (.buckets | length) == 16' >/dev/null \
+  || { echo "❌ /api/clusters/demo: master/buckets"; exit 1; }
+echo "  /api/clusters/demo: master=$(api /api/clusters/demo | jq -r '[.shards[] | select(.name=="shard1")][0].masterAddress'), 16 бакетов"
 
 # /api/ha обогащается пробами (тик 15 c): на холодном старте панель могла
 # поймать окно «PG ещё поднимается» (replica/stopped) — ждём свежей пробы.
+# Адрес нод portalloc-динамичен — гварды без хардкода: leader непуст,
+# members 2, у лидера роль master.
 ha1_ok() {
-  api /api/ha/demo-s1 | jq -e \
-    '.leaderName == "s1a" and (.members | length) == 2
-     and ([.members[] | select(.name=="s1a")][0].role == "master")' >/dev/null
+  local leader
+  leader="$(api /api/ha/demo-shard1 | jq -r '.leaderName // empty')"
+  [ -n "$leader" ] \
+    && api /api/ha/demo-shard1 | jq -e --arg l "$leader" \
+        '(.members | length) == 2
+         and ([.members[] | select(.name == $l)][0].role == "master")' >/dev/null
 }
 for i in $(seq 1 25); do ha1_ok && break; sleep 1; done
-ha1_ok || { echo "❌ /api/ha/demo-s1: leader/members"; exit 1; }
-echo "  /api/ha/demo-s1: leader s1a, 2 члена"
+ha1_ok || { echo "❌ /api/ha/demo-shard1: leader/members"; exit 1; }
+echo "  /api/ha/demo-shard1: leader $(api /api/ha/demo-shard1 | jq -r '.leaderName'), 2 члена"
 
 # Чистый подъём = согласованный кластер (adopt-repair spec §3.6): сид больше
 # не сеет аномалий — в алертах нет вечных move-* (нахерачивает и гасит чек 20).

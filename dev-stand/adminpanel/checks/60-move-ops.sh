@@ -11,9 +11,16 @@ cd "$(dirname "$0")/.."
 BASE="${ADMINPANEL_URL:-http://localhost:5050}"
 JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
 
-# Arrange: демо-сид жив (идемпотентен), панель отвечает, etcd под рукой.
-[ -n "$(docker compose exec -T etcd1 etcdctl get /clusters/demo/config --print-value-only 2>/dev/null)" ] \
-  || { "$PWD/checks/05-seed.sh" pg; }
+# Arrange (t41): канонический demo жив (config без NOT_INITIALIZED, ноды
+# RUNNING; создаёт 00-up.sh POST /api/clusters) — wait до 60 c; панель отвечает.
+demo_live() {
+  local conf
+  conf="$(docker compose exec -T etcd1 etcdctl get /clusters/demo/config --print-value-only 2>/dev/null || true)"
+  [ -n "$conf" ] && ! echo "$conf" | grep -q '"state":"NOT_INITIALIZED"' \
+    && [ "$(docker compose exec -T etcd1 etcdctl get /clusters/demo/shards/shard1/nodes/shard1a/state --print-value-only 2>/dev/null)" = "RUNNING" ]
+}
+for i in $(seq 1 30); do demo_live && break; sleep 2; done
+demo_live || { echo "❌ demo не жив (config/ноды; запусти checks/00-up.sh)"; exit 1; }
 for i in $(seq 1 60); do curl -fsS "$BASE/api/healthz" >/dev/null 2>&1 && break; sleep 1; done
 curl -fsS "$BASE/api/healthz" >/dev/null || { echo "❌ панель не отвечает: $BASE"; exit 1; }
 curl -fsS -c "$JAR" -o /dev/null -X POST "$BASE/api/auth/login" \
@@ -37,7 +44,7 @@ echo "  панель жива, демо-кластер читается"
 
 # ── 1) abort: свежий статус без force → 409; с force → 201; отмена заявки → 204/404.
 ect put /clusters/demo/buckets/status/bucket_3 \
-  "{\"bucket\":\"bucket_3\",\"state\":\"SYNCING\",\"owner\":\"s1\",\"target\":\"s2\",\"started_unix\":$(now),\"updated_unix\":$(now),\"phase\":\"copy\"}" >/dev/null
+  "{\"bucket\":\"bucket_3\",\"state\":\"SYNCING\",\"owner\":\"shard1\",\"target\":\"shard2\",\"started_unix\":$(now),\"updated_unix\":$(now),\"phase\":\"copy\"}" >/dev/null
 c="$(code -X POST "$BASE/api/clusters/demo/moves/abort" -H 'Content-Type: application/json' -d '{"bucket":3}')"
 [ "$c" = 409 ] || { echo "❌ abort свежий без force = $c, ожидался 409"; exit 1; }
 c="$(code -X POST "$BASE/api/clusters/demo/moves/abort" -H 'Content-Type: application/json' -d '{"bucket":3,"force":true}')"
@@ -59,7 +66,7 @@ ect del /clusters/demo/buckets/status/bucket_3 >/dev/null
 
 # ── 2) abort: несвежий статус без force → 201 (force в JSON нет); ACTIVE → 409.
 ect put /clusters/demo/buckets/status/bucket_7 \
-  "{\"bucket\":\"bucket_7\",\"state\":\"ABORTING\",\"owner\":\"s2\",\"target\":\"s1\",\"started_unix\":$(( $(now) - 300 )),\"updated_unix\":$(( $(now) - 300 )),\"phase\":\"cleanup\"}" >/dev/null
+  "{\"bucket\":\"bucket_7\",\"state\":\"ABORTING\",\"owner\":\"shard2\",\"target\":\"shard1\",\"started_unix\":$(( $(now) - 300 )),\"updated_unix\":$(( $(now) - 300 )),\"phase\":\"cleanup\"}" >/dev/null
 c="$(code -X POST "$BASE/api/clusters/demo/moves/abort" -H 'Content-Type: application/json' -d '{"bucket":7}')"
 [ "$c" = 201 ] || { echo "❌ abort несвежий без force = $c, ожидался 201"; exit 1; }
 ect get /pgworker/moves/demo/bucket_7 --print-value-only | grep -q '"force"' \
@@ -73,7 +80,7 @@ echo "  abort: несвежий 201 (force опущен); ACTIVE → 409"
 
 # ── 3) abort: routing==target без force → 409 «осознанно».
 ect put /clusters/demo/buckets/status/bucket_2 \
-  "{\"bucket\":\"bucket_2\",\"state\":\"FROZEN\",\"owner\":\"s1\",\"target\":\"s1\",\"started_unix\":$(( $(now) - 300 )),\"updated_unix\":$(( $(now) - 300 )),\"phase\":\"cutover-wait\"}" >/dev/null
+  "{\"bucket\":\"bucket_2\",\"state\":\"FROZEN\",\"owner\":\"shard1\",\"target\":\"shard1\",\"started_unix\":$(( $(now) - 300 )),\"updated_unix\":$(( $(now) - 300 )),\"phase\":\"cutover-wait\"}" >/dev/null
 resp="$(post /api/clusters/demo/moves/abort '{"bucket":2}')"
 echo "$resp" | jq -e '.detail // empty' 2>/dev/null | grep -q "осознанно" \
   || { echo "❌ abort routing==target: ожидался 409 с «осознанно», получено: $resp"; exit 1; }
@@ -107,13 +114,13 @@ api /api/clusters/demo | jq -e '.work != null and .work.op == "rollback" and .wo
 echo "  отвергнутый rollback: заявка исчезла, причина — в «Журнале воркера»"
 
 # ── 6) finalize: oldShard=владельцу → 409; несуществующий → 404; валидный → 201.
-c="$(code -X POST "$BASE/api/clusters/demo/moves/finalize" -H 'Content-Type: application/json' -d '{"bucket":0,"oldShard":"s1"}')"
+c="$(code -X POST "$BASE/api/clusters/demo/moves/finalize" -H 'Content-Type: application/json' -d '{"bucket":0,"oldShard":"shard1"}')"
 [ "$c" = 409 ] || { echo "❌ finalize oldShard=owner = $c, ожидался 409"; exit 1; }
-c="$(code -X POST "$BASE/api/clusters/demo/moves/finalize" -H 'Content-Type: application/json' -d '{"bucket":0,"oldShard":"s9"}')"
-[ "$c" = 404 ] || { echo "❌ finalize oldShard=s9 = $c, ожидался 404"; exit 1; }
-c="$(code -X POST "$BASE/api/clusters/demo/moves/finalize" -H 'Content-Type: application/json' -d '{"bucket":0,"oldShard":"s2"}')"
-[ "$c" = 201 ] || { echo "❌ finalize oldShard=s2 = $c, ожидался 201"; exit 1; }
-ect get /pgworker/moves/demo/bucket_0 --print-value-only | grep -q '"old_shard":"s2"' \
+c="$(code -X POST "$BASE/api/clusters/demo/moves/finalize" -H 'Content-Type: application/json' -d '{"bucket":0,"oldShard":"shard9"}')"
+[ "$c" = 404 ] || { echo "❌ finalize oldShard=shard9 = $c, ожидался 404"; exit 1; }
+c="$(code -X POST "$BASE/api/clusters/demo/moves/finalize" -H 'Content-Type: application/json' -d '{"bucket":0,"oldShard":"shard2"}')"
+[ "$c" = 201 ] || { echo "❌ finalize oldShard=shard2 = $c, ожидался 201"; exit 1; }
+ect get /pgworker/moves/demo/bucket_0 --print-value-only | grep -q '"old_shard":"shard2"' \
   || { echo "❌ ключ finalize без old_shard"; exit 1; }
 c="$(code -X DELETE "$BASE/api/clusters/demo/moves/bucket_0")"
 [ "$c" = 204 ] || { echo "❌ снятие finalize = $c"; exit 1; }
