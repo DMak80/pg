@@ -390,4 +390,49 @@ public class ErasureXlDriveMultipartTests : IDisposable
         // Assert
         parts.Should().ContainSingle().Which.PartNumber.Should().Be(1);
     }
+
+    [Fact]
+    public async Task ReadUploadsByKeyDir_JournalMissingOnFirstCarrier_ReadsReplica()
+    {
+        // Arrange: журнал недоехал до первого носителя keyDir (каталог есть,
+        // uploads.json нет — I/O-сбой WriteUploads после CreateDirectory);
+        // реплики журнала живы на остальных дисках сета
+        var uploadId = await CreateUploadAsync("gate");
+        var keyDirPath = _drive.ListUploadKeyDirs().Single();
+        File.Delete(Path.Combine(keyDirPath, "uploads.json"));
+
+        // Act: журнал читается с первого носителя, где реплика есть и валидна
+        var uploads = _drive.ReadUploadsByKeyDir(keyDirPath);
+
+        // Assert: живая загрузка видна — гейт DeleteBucket/листинги не слепы
+        uploads.Should().Contain(u => u.UploadId == uploadId);
+    }
+
+    [Fact]
+    public async Task UploadPart_UploadDirDeleted_PhantomDirRecreated_NoDirectoryNotFound()
+    {
+        // Arrange: фантомная загрузка (Abort при offline-диске + возврат): запись
+        // в журнале есть, каталоги загрузки на носителях удалены
+        var uploadId = await CreateUploadAsync("phantom");
+        foreach (var root in _roots)
+        {
+            var uploadDir = Directory
+                .GetDirectories(Path.Combine(root, ".owns3.sys", "multipart"), "*", SearchOption.AllDirectories)
+                .FirstOrDefault(d => Path.GetFileName(d) == uploadId);
+            if (uploadDir is not null)
+                Directory.Delete(uploadDir, recursive: true);
+        }
+
+        // Act: шард-потоки открываются в пересозданные каталоги — не сырой
+        // DirectoryNotFoundException (500), итог решает кворум CommitUploadPart
+        using var staging = _drive.CreateUploadStaging("b", "phantom", uploadId);
+        var body = RandomBytes(1024, 11);
+        var digest = await _drive.WritePartAsync(staging, 1, new MemoryStream(body), body.LongLength,
+            CancellationToken.None);
+        _drive.CommitUploadPart(staging, 1, digest.ETagHex, digest.Length, DateTimeOffset.UnixEpoch);
+
+        // Assert: часть зафиксирована журналом частей
+        _drive.ReadParts("b", "phantom", uploadId)
+            .Should().ContainSingle().Which.PartNumber.Should().Be(1);
+    }
 }

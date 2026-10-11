@@ -324,4 +324,45 @@ public class ErasureHealTests : IDisposable
                 "устаревший журнал вернувшегося диска замещён свежим majority (диск {0})", root);
         }
     }
+
+    [Fact]
+    public async Task HealUploads_JournalCopyWaitsForDriveJournalLock()
+    {
+        // Arrange: загрузка с журналом на всех дисках; копия на одном носителе
+        // устарела (пустая, старый mtime — reference на остальных свежее)
+        var uploadId = Guid.NewGuid().ToString("N");
+        _drive.CreateUploadDir("b", "lock-key", uploadId, new XlMetaRecord(Guid.Parse(uploadId), 0,
+            DateTimeOffset.UnixEpoch, "", "text/plain", new Dictionary<string, string>(),
+            new Dictionary<string, string>(), ""));
+        _drive.WriteUploads("b", "lock-key",
+        [
+            new MultipartJournals.UploadJournalEntry(uploadId, "b", "lock-key",
+                DateTimeOffset.UnixEpoch.ToUnixTimeMilliseconds(), "root"),
+        ]);
+        var keyDirPath = _drive.ListUploadKeyDirs().Single();
+        var stalePath = Path.Combine(_roots[^1], ".owns3.sys", "multipart",
+            Path.GetFileName(keyDirPath), "uploads.json");
+        var staleBytes = "[]"u8.ToArray();
+        File.WriteAllBytes(stalePath, staleBytes);
+        File.SetLastWriteTimeUtc(stalePath, DateTime.UtcNow.AddHours(-1));
+
+        // Act: JournalLock драйва удерживается — heal-копии журналов ждут его,
+        // устаревшая копия не трогается; после освобождения проход довыравнивает.
+        // Enter/Exit — в одном потоке (Monitor требует того же потока): между
+        // ними только синхронный код
+        var staleBefore = File.ReadAllBytes(stalePath);
+        var ct = TestContext.Current.CancellationToken;
+        Monitor.Enter(_drive.JournalLock);
+        var pass = Task.Run(() => _heal.RunPassAsync(ct).GetAwaiter().GetResult(), ct);
+        Thread.Sleep(300);
+        File.ReadAllBytes(stalePath).Should().Equal(staleBefore,
+            "heal-копии журналов сериализованы JournalLock — при удержании лока копия не трогается");
+        Monitor.Exit(_drive.JournalLock);
+        var finished = await Task.WhenAny(pass, Task.Delay(5000, ct));
+        finished.Should().Be(pass, "после освобождения JournalLock heal-проход завершается");
+
+        // Assert: устаревшая копия выровнена по свежему reference
+        File.ReadAllBytes(stalePath).Should().NotEqual(staleBytes);
+        _drive.ReadUploads("b", "lock-key").Should().ContainSingle(u => u.UploadId == uploadId);
+    }
 }

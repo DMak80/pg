@@ -300,23 +300,30 @@ public sealed class ErasureHealService(ErasurePool pool, ErasureXlDrive drive,
                 }
             }
 
-            foreach (var list in carriers.Values)
+            // Копии журналов — под JournalLock драйва (сериализация с журнальными
+            // операциями): вне лока микросекундное окно между чтением эталона и
+            // записью копии позволяло перезаписать свежую запись клиента старым
+            // содержимым — mtime копии закреплял откат на следующем проходе
+            lock (drive.JournalLock)
             {
-                if (list.Count < 2)
-                    continue;
-                // reference — носитель с новейшим mtime файла
-                var (referenceRoot, referencePath) = list
-                    .OrderByDescending(f => File.GetLastWriteTimeUtc(f.Path))
-                    .First();
-                var referenceBytes = File.ReadAllBytes(referencePath);
-                foreach (var (peerRoot, peerPath) in list)
+                foreach (var list in carriers.Values)
                 {
-                    if (peerRoot == referenceRoot)
+                    if (list.Count < 2)
                         continue;
-                    if (File.Exists(peerPath) && File.ReadAllBytes(peerPath).SequenceEqual(referenceBytes))
-                        continue; // синхронизирован
-                    Directory.CreateDirectory(Path.GetDirectoryName(peerPath)!);
-                    File.Copy(referencePath, peerPath, overwrite: true);
+                    // reference — носитель с новейшим mtime файла
+                    var (referenceRoot, referencePath) = list
+                        .OrderByDescending(f => File.GetLastWriteTimeUtc(f.Path))
+                        .First();
+                    var referenceBytes = File.ReadAllBytes(referencePath);
+                    foreach (var (peerRoot, peerPath) in list)
+                    {
+                        if (peerRoot == referenceRoot)
+                            continue;
+                        if (File.Exists(peerPath) && File.ReadAllBytes(peerPath).SequenceEqual(referenceBytes))
+                            continue; // синхронизирован
+                        Directory.CreateDirectory(Path.GetDirectoryName(peerPath)!);
+                        File.Copy(referencePath, peerPath, overwrite: true);
+                    }
                 }
             }
 
