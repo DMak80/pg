@@ -79,8 +79,17 @@ MC "mc alias set src http://host.docker.internal:9000 minioadmin minioadmin >/de
    `PGW_BACKUP_S3_ACCESS_KEY=pgw-backups-writer`,
    `PGW_BACKUP_S3_SECRET_KEY=<writer-secret>` (= `OWNS3_ACCESS_KEYS__0__*`).
 2. Рестарт подсистемы: `00-up.sh` (пересоздаст pgworker-инстанты и owns3)
-   либо точечно: `cd deploy && docker compose --env-file .env up -d
-   --force-recreate pgworker pgworker-2 owns3`.
+   либо точечно (стенд — контур-override): `cd deploy && docker compose -f
+   docker-compose.yml -f docker-compose.contour.yml --env-file .env up -d
+   --force-recreate pgworker pgworker-2 owns3` + пересоздание wal-агентов
+   (шаг 2а — ОБЯЗАТЕЛЕН).
+2а. Пересоздание wal-агентов: агенты несут S3-endpoint в env контейнера и
+   НЕ пересоздаются рестартом воркера — живой агент со старым endpoint
+   продолжает писать в прежнее хранилище, контроль цепочки видит лишь
+   «тишину загрузок» на новом (факт тестового прогона t41). Снос:
+   `docker ps -aq --filter name='pgw-backup-wal-' --format '{{.ID}}' |
+   xargs -r docker rm -f` — воркер пересоздаёт их тиком со свежим env
+   (stateless; догон цепочки от хвоста нового хранилища).
 3. Панель: `docker compose up -d --force-recreate adminpanel` (стендовый
    compose; её env уже `http://owns3:9000`).
 
@@ -143,7 +152,9 @@ src/pgworker-backups"` — тихий рост невозможен (ворке�
 ## 5. Откат (ownS3 деградирует в переходный период)
 
 Env-флип назад: `PGW_BACKUP_S3_ENDPOINT=http://minio:9000` (compose-DNS
-as-minio стендовой сети), креды `minioadmin/minioadmin` → рестарт (п. 3.3.2). Дыра MinIO за окно работы
+as-minio стендовой сети), креды `minioadmin/minioadmin` → рестарт (п. 3.3.2
++ пересоздание wal-агентов п. 3.3.2а — endpoint в их env тоже меняется).
+Дыра MinIO за окно работы
 с ownS3 самозаживляется штатно: WAL-агенты стартуют от хвоста MinIO и досылают
 дыру из удерживаемого слотом WAL (в пределах `max_slot_wal_keep_size` —
 долгие окна недопустимы, это аварийный путь); полные переснимет планировщик
@@ -167,8 +178,12 @@ health-гвард из `00-up.sh`, чек 45 уже против ownS3, упом
    сидируется только здесь — 00-up.sh его больше не создаёт).
 2. **Временный env-флип на MinIO**: `PGW_BACKUP_S3_ENDPOINT=http://minio:9000`,
    креды `minioadmin/minioadmin` → рестарт `pgworker pgworker-2` (контур-
-   override) → дождаться ≥1 COMPLETED-полного на шард + wal-объекты в
-   as-minio (наблюдение — панель/etcd; полные снимает планировщик).
+   override) + пересоздание wal-агентов (п. 3.3.2а) → дождаться ≥1
+   COMPLETED-полного на шард + wal-объекты в as-minio (наблюдение — панель/
+   etcd; полные снимает планировщик — на свежих цепочках ускоряется штатной
+   per-cluster политикой `full_max_age_sec=600` (PUT
+   /api/clusters/demo/backups/policy), вернуть 86400 после прогона;
+   WAL-генерация — обычной клиентской записью в демо-базы).
 3. **Процедура §3 целиком**: mirror×3 (снаружи `:9000`→`:9010`) → гейт §3.5 →
    переключение на `http://owns3:9000` → рестарт.
 4. **Чистка тестовых цепочек** (возврат стенда к рабочему состоянию):
