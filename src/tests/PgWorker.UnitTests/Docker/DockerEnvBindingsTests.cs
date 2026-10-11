@@ -69,4 +69,25 @@ public class DockerEnvBindingsTests
         config["PgWorker:Docker:RestTls:CaKeyPem"].Should().Be("ca-key-pem");
         config["PgWorker:Docker:RestTls:CaKeyPath"].Should().Be("/tls/ca.key");
     }
+
+    // AAA (t41): PgWorker:Docker:ContourNetwork биндится в DockerOptions
+    // (режим сети контура; значение приносит env PgWorker__Docker__ContourNetwork
+    // из deploy-compose — PGW_CONTOUR_NETWORK сам по себе не маппится).
+    [Fact]
+    public void ContourNetwork_Binds_FromConfigTree()
+    {
+        // Arrange — in-memory-конфиг: узел PgWorker:Docker тем же путём,
+        // каким его кладут appsettings/env-провайдер PgWorker__*.
+        var config = new ConfigurationManager();
+        config.AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["PgWorker:Docker:ContourNetwork"] = "adminpanel-stand-net",
+        });
+
+        // Act
+        var options = config.GetSection("PgWorker").Get<PgWorkerOptions>()!;
+
+        // Assert
+        options.Docker.ContourNetwork.Should().Be("adminpanel-stand-net");
+    }
 }

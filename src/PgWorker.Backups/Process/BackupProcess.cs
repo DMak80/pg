@@ -221,10 +221,18 @@ public sealed class BackupProcess(
             var id = BackupPlanner.NextId(fulls.Select(f => f.Id), time.GetUtcNow().UtcDateTime);
             // node-факт — имя ноды-источника из portalloc; не нашли (рассинхрон
             // portalloc) — журнал-факт host, тик не валим (spec §3.1).
-            var node = addresses.Value.FirstOrDefault(p =>
+            var nodeKv = addresses.Value.FirstOrDefault(p =>
                     p.Key.StartsWith($"{shard.Name}/", StringComparison.Ordinal)
-                    && p.Value.Host == source.Value.Host && p.Value.Ports == source.Value.Ports)
-                .Key?.Split('/')[1] ?? source.Value.Host;
+                    && p.Value.Host == source.Value.Host && p.Value.Ports == source.Value.Ports);
+            var node = nodeKv.Key?.Split('/')[1] ?? source.Value.Host;
+
+            // Режим сети контура (t41, arch/14 §2.1/§19 §2): адрес источника
+            // канонической ноды — её имя в сети контура :5432 (симметрия
+            // ResolveNodeRef §3 и повтора/активного тика ниже); object-нода
+            // (усыновлённая) — portalloc-адрес, прод — portalloc-адрес.
+            var jobSource = options.ContourNetwork is { Length: > 0 } && nodeKv.Key is not null && nodeKv.Value.Object is null
+                ? source.Value with { Host = node, Ports = source.Value.Ports with { Pg = 5432 } }
+                : source.Value;
 
             // journal-before-manipulations: PLANNED до создания контейнера.
             var planned = new FullBackupState(
@@ -233,10 +241,11 @@ public sealed class BackupProcess(
             if (!put.IsSuccess)
                 return Result<ProcessOutcome>.Failed(put.Error!);
 
-            // Джоб-контейнер на docker-хосте источника (extra_hosts, без портов);
-            // сбой create/start — PLANNED остаётся, S-супервизия идемпотентно
-            // запустит следующим тиком (spec §2.4).
-            var spec = BackupJobSpec.Build(options, cluster, shard.Name, id, source.Value, creds.Value.BackupPassword);
+            // Джоб-контейнер на docker-хосте источника (прод: extra_hosts;
+            // контур: сеть поставки — спека режима T7); сбой create/start —
+            // PLANNED остаётся, S-супервизия идемпотентно запустит следующим
+            // тиком (spec §2.4).
+            var spec = BackupJobSpec.Build(options, cluster, shard.Name, id, jobSource, creds.Value.BackupPassword);
             var name = BackupNames.ContainerName(cluster, shard.Name, id);
             // Поллинг create/start джоба (arch/14 §6 инвариант поллинга; аудит
             // spec §3.2): одиночный вызов движка не молчит дольше окна проверки —
@@ -379,7 +388,14 @@ public sealed class BackupProcess(
                 // ensure-семантика — контейнер уже есть → только старт.
                 if (found is null)
                 {
-                    var spec = BackupJobSpec.Build(options, cluster, shard.Name, active.Id, source, backupPassword);
+                    // Контур-режим (t41, симметрия планового тика выше): имя
+                    // ноды :5432 сети контура — ТОЛЬКО для канонической ноды
+                    // portalloc (Object null); object-нода (усыновлённая)
+                    // остаётся на portalloc-адресе. Прод — portalloc-адрес.
+                    var jobSource = options.ContourNetwork is { Length: > 0 } && source.Object is null
+                        ? source with { Host = active.Node, Ports = source.Ports with { Pg = 5432 } }
+                        : source;
+                    var spec = BackupJobSpec.Build(options, cluster, shard.Name, active.Id, jobSource, backupPassword);
                     var launched = await LongCallPolling.EnsureAsync(
                         $"create джоба {name}",
                         async token =>

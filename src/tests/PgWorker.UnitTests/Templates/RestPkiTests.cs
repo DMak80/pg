@@ -66,6 +66,25 @@ public class RestPkiTests
         cert.NotAfter.Should().BeOnOrBefore(ca.NotAfter);
     }
 
+    // AAA (t41): свежий per-install CA (NotBefore = now, как deploy/tls/gen.sh
+    // без backdate) — серт ноды обязан зажимать NotBefore в NotBefore CA:
+    // skew-запас «сутки назад» моложе издателя быть не может (Create отвергает
+    // notBefore < issuer.NotBefore — блокировал провижининг канонического demo).
+    [Fact]
+    public void IssueNodeCertificate_FreshCa_NotBeforeClamped()
+    {
+        // Arrange: CA, выпущенный СЕЙЧАС (notBeforeOffset = 0).
+        var (caPem, caKeyPem) = TestRestCa.Generate(notBeforeOffset: TimeSpan.Zero);
+
+        // Act: выпуск серта ноды (штатный skew-запас now-1сутки зажимается).
+        var (certPem, _) = RestPki.IssueNodeCertificate(caPem, caKeyPem, "n1", "pgw-c1-s1-n1");
+
+        // Assert: серт выпущен; NotBefore не раньше NotBefore CA.
+        using var ca = X509Certificate2.CreateFromPem(caPem);
+        using var cert = X509Certificate2.CreateFromPem(certPem);
+        cert.NotBefore.Should().BeOnOrAfter(ca.NotBefore);
+    }
+
     [Fact]
     public void IssueNodeCertificate_CertificateValidatesAgainstCaChain()
     {
@@ -103,7 +122,8 @@ public class RestPkiTests
 // KafkaWorker / E2eTestPki.GenerateCa); срок параметризуется кейсом зажима.
 public static class TestRestCa
 {
-    public static (string CaPem, string CaKeyPem) Generate(TimeSpan? validity = null)
+    public static (string CaPem, string CaKeyPem) Generate(
+        TimeSpan? validity = null, TimeSpan? notBeforeOffset = null)
     {
         using var rsa = RSA.Create(2048);
         var request = new CertificateRequest(
@@ -111,7 +131,7 @@ public static class TestRestCa
             HashAlgorithmName.SHA256, RSASignaturePadding.Pkcs1);
         request.CertificateExtensions.Add(new X509BasicConstraintsExtension(true, false, 0, true));
         using var ca = request.CreateSelfSigned(
-            DateTimeOffset.UtcNow.AddDays(-1),
+            DateTimeOffset.UtcNow.Add(notBeforeOffset ?? TimeSpan.FromDays(-1)),
             DateTimeOffset.UtcNow.Add(validity ?? TimeSpan.FromDays(3650)));
         return (ca.ExportCertificatePem(), ca.GetRSAPrivateKey()!.ExportPkcs8PrivateKeyPem());
     }
