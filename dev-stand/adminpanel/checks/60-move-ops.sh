@@ -6,11 +6,14 @@
 # (демо-сид аномалий не сеет — образец 20-alerts.sh): updated_unix=now —
 # «свежий» (abort 409), now-300 — «несвежий» (>AbortMinAgeSec=120, <repair 600).
 set -euo pipefail
-cd "$(dirname "$0")/.."
+# Корень репо — только от расположения самого скрипта (никаких cwd-зависимостей
+# и абсолютных путей): checks → adminpanel → dev-stand → корень.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../../.." && pwd)"
+cd "$SCRIPT_DIR/.."
 
 BASE="${ADMINPANEL_URL:-http://localhost:5050}"
 JAR="$(mktemp)"; trap 'rm -f "$JAR"' EXIT
-ROOT="$(cd "$(dirname "$0")/../../.." && pwd)"
 
 # Arrange (t41): канонический demo жив (config без NOT_INITIALIZED, ноды
 # RUNNING; создаёт 00-up.sh POST /api/clusters) — wait до 60 c; панель отвечает.
