@@ -20,11 +20,21 @@ else
   echo "✓ стенд разобран (etcd-data сохранён)"
 fi
 
-# t15 (arch/18 §5.4): deploy-контур разбирается ПОСЛЕ стендового — compose down
-# deploy-проекта сносит сеть pgw-metrics (её владелец), осиротевшей сети не
-# остаётся. Воркеры deploy больше НЕ переживают 90-down — подъём 00-up.sh.
+# t15/t41: deploy-контур разбирается ПОСЛЕ стендового — теми же файлами, что
+# поднимался (контур-override), compose down deploy-проекта сносит свои сети;
+# стендовую сеть adminpanel-stand-net сносит стендовый down выше (владелец).
+# Воркеры deploy больше НЕ переживают 90-down — подъём 00-up.sh.
 ROOT="$(cd ../.. && pwd)"
 if [ -f "$ROOT/deploy/.env" ]; then
-  (cd "$ROOT/deploy" && docker compose --env-file .env down ${1:+-v} --remove-orphans) \
-    || echo "⚠ deploy down не удался (docker network ls | grep pgw-metrics)"
+  (cd "$ROOT/deploy" && docker compose -f docker-compose.yml -f docker-compose.contour.yml \
+    --env-file .env down ${1:+-v} --remove-orphans) \
+    || echo "⚠ deploy down не удался (docker network ls | grep -E 'pgw-metrics|adminpanel-stand-net')"
 fi
+
+# Канонические контейнеры движка (t41): pgw-demo-* ноды, wal-агенты, джобы —
+# созданы Engine API (не compose), полный down их не трогает. Снос явно +
+# страховочный prune сетей (README-cleanup).
+docker ps -aq --filter name='^pgw-' --format '{{.ID}}' | xargs -r docker rm -f
+docker volume ls -q --filter name='^pgw-' --format '{{.Name}}' | xargs -r docker volume rm -f
+docker network ls --filter name='^pgw-net-' --format '{{.Name}}' | xargs -r docker network rm 2>/dev/null || true
+docker network prune -f

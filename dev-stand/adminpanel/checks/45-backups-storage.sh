@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Грань «Хранилище бэкапов» (t08, arch/04 §3, AC10): налив тестовых объектов
-# mc-контейнером → /api/backups/storage (configured/health/дерево),
-# on-demand objects, отсутствие секретов в DTO. Панель — всегда в докере.
+# Грань «Хранилище бэкапов» против ownS3 (t41: контур — owns3:9000 внутри /
+# :9010 снаружи; t08, arch/04 §3): идемпотентный mc-налив тестовых объектов
+# снаружи → /api/backups/storage (configured/health/дерево demo/shard1),
+# on-demand objects, отсутствие секретов в DTO; дерево несут реальные
+# бэкапы demo (налив — гарантия минимума до первого тика планировщика).
+# Панель — всегда в докере.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -36,10 +39,10 @@ echo "  панель жива ($BASE), login ok"
 docker run --rm --add-host host.docker.internal:host-gateway \
   --entrypoint /bin/sh minio/mc:RELEASE.2025-08-13T08-35-41Z \
   -c "mc alias set a http://host.docker.internal:${OWNS3_PORT} '$OWNS3_ROOT_USER' '$OWNS3_ROOT_PASSWORD' >/dev/null \
-      && echo data | mc pipe a/pgworker-backups/demo/s1/full/20260913a/base.tar \
-      && echo wal  | mc pipe a/pgworker-backups/demo/s1/wal/000000010000000000000001" \
+      && echo data | mc pipe a/pgworker-backups/demo/shard1/full/20260913a/base.tar \
+      && echo wal  | mc pipe a/pgworker-backups/demo/shard1/wal/000000010000000000000001" \
   || { echo "❌ mc-налив в ownS3/pgworker-backups не прошёл (:${OWNS3_PORT})"; exit 1; }
-echo "  налиты demo/s1/full/20260913a/base.tar и demo/s1/wal/…01 (ownS3)"
+echo "  налиты demo/shard1/full/20260913a/base.tar и demo/shard1/wal/…01 (ownS3)"
 
 # Ждём инвентарь-тик панели (интервал 60 c — ретрай до 70 c). ВАЖНО: ждать
 # надо ИМЕННО налитое дерево — configured/health зелёные сразу от первого
@@ -50,7 +53,7 @@ tree_ok() {
   api /api/backups/storage | jq -e \
     '.configured == true and .health.apiOk == true and .health.liveOk == true and .health.clusterOk == null
      and any(.clusters[]?; .cluster == "demo")
-     and any(.clusters[] | select(.cluster == "demo") | .shards[]; .shard == "s1" and .fullsCount >= 1)' >/dev/null
+     and any(.clusters[] | select(.cluster == "demo") | .shards[]; .shard == "shard1" and .fullsCount >= 1)' >/dev/null
 }
 for i in $(seq 1 70); do tree_ok && break; sleep 1; done
 tree_ok || { echo "❌ /api/backups/storage: configured/health/дерево demo не зелёные за 70 c (инвентарь-тик?)"; exit 1; }
@@ -62,13 +65,13 @@ echo "  /api/backups/storage: configured=true, health api/live ok, cluster n/a (
 # Дерево: кластер demo налит, шард s1 несёт полный бэкап.
 echo "$storage" | jq -e 'any(.clusters[]?; .cluster == "demo")' >/dev/null \
   || { echo "❌ дерево инвентаря: кластера demo нет"; exit 1; }
-echo "$storage" | jq -e 'any(.clusters[] | select(.cluster == "demo") | .shards[]; .shard == "s1" and .fullsCount >= 1)' >/dev/null \
-  || { echo "❌ дерево инвентаря: demo/s1 без полных"; exit 1; }
-echo "  дерево: demo/s1, fullsCount>=1"
+echo "$storage" | jq -e 'any(.clusters[] | select(.cluster == "demo") | .shards[]; .shard == "shard1" and .fullsCount >= 1)' >/dev/null \
+  || { echo "❌ дерево инвентаря: demo/shard1 без полных"; exit 1; }
+echo "  дерево: demo/shard1, fullsCount>=1"
 
 # On-demand objects (единственный прямой выход панели в MinIO на запрос).
-api '/api/backups/objects?prefix=demo/s1/&maxKeys=1' | jq -e '(.items | length) == 1' >/dev/null \
-  || { echo "❌ /api/backups/objects?prefix=demo/s1/&maxKeys=1: страница не из 1 объекта"; exit 1; }
+api '/api/backups/objects?prefix=demo/shard1/&maxKeys=1' | jq -e '(.items | length) == 1' >/dev/null \
+  || { echo "❌ /api/backups/objects?prefix=demo/shard1/&maxKeys=1: страница не из 1 объекта"; exit 1; }
 echo "  objects: maxKeys=1 → ровно 1 объект"
 
 # Секреты S3 не отдаются никогда (AC8).
