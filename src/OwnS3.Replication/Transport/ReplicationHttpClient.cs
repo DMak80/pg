@@ -51,7 +51,7 @@ public sealed class ReplicationHttpClient : IReplicationTransport
         {
             response.Dispose();
             // Ключ неизвестен — приёмник состояние не меняет (глава 07 §6)
-            return new FetchResult(Body: null, ModTimeUnixMs: 0, ContentSha256: string.Empty,
+            return new FetchResult(Body: null, ContentLength: 0, ModTimeUnixMs: 0, ContentSha256: string.Empty,
                 ETag: string.Empty, ContentType: string.Empty, UserMetadata: FrozenEmpty, TombstoneUnixMs: null);
         }
         response.EnsureSuccessStatusCode();
@@ -68,7 +68,7 @@ public sealed class ReplicationHttpClient : IReplicationTransport
         {
             var empty = await response.Content.ReadAsByteArrayAsync(ct);
             response.Dispose();
-            return new FetchResult(Body: null, ModTimeUnixMs: 0, ContentSha256: string.Empty,
+            return new FetchResult(Body: null, ContentLength: 0, ModTimeUnixMs: 0, ContentSha256: string.Empty,
                 ETag: string.Empty, ContentType: string.Empty, UserMetadata: FrozenEmpty, TombstoneUnixMs: tombstone);
         }
 
@@ -81,6 +81,7 @@ public sealed class ReplicationHttpClient : IReplicationTransport
         var body = await response.Content.ReadAsStreamAsync(ct);
         return new FetchResult(
             Body: body,
+            ContentLength: response.Content.Headers.ContentLength ?? -1,
             ModTimeUnixMs: long.TryParse(modTimeText, out var modTime) ? modTime : 0,
             ContentSha256: sha ?? string.Empty,
             ETag: etag ?? string.Empty,

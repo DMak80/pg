@@ -68,6 +68,9 @@ public sealed class ReplicationHandlers(ReplicationTargets targets, Notification
                 context.Response.ContentType = opened.Metadata.ContentType;
             foreach (var (name, value) in opened.Metadata.UserMetadata)
                 context.Response.Headers[$"x-amz-meta-{name}"] = value;
+            // Явная длина: потоковая отдача без Content-Length → chunked →
+            // приёмник не знает длину для xl-коммита (глава 07 §6)
+            context.Response.ContentLength = opened.Metadata.Size;
             await opened.Body.CopyToAsync(context.Response.Body, context.RequestAborted);
             opened.Body.Dispose();
             return;

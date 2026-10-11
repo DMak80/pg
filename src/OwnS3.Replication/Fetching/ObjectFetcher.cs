@@ -159,7 +159,7 @@ public sealed class ObjectFetcher
             await using (result.Body)
             {
                 var applyResult = await _applier.ApplyObjectAsync(task.Bucket, task.Key, result.Body,
-                    contentLength: result.Body.Length,
+                    contentLength: result.ContentLength,
                     new ReplicaObjectMetadata(
                         DateTimeOffset.FromUnixTimeMilliseconds(result.ModTimeUnixMs),
                         result.ETag.Trim('"'), result.ContentSha256, result.ContentType,

@@ -24,8 +24,8 @@ public sealed record BucketEntryDto(string Name, long CreationDateUnixMs);
 
 // Исход фетча: 200-объект (Body + заголовки x-owns3-repl-*), 200-tombstone
 // (TombstoneUnixMs, Body=null), 404 (Body=null, TombstoneUnixMs=null — ключ неизвестен).
-public sealed record FetchResult(Stream? Body, long ModTimeUnixMs, string ContentSha256, string ETag,
-    string ContentType, IReadOnlyDictionary<string, string> UserMetadata, long? TombstoneUnixMs);
+public sealed record FetchResult(Stream? Body, long ContentLength, long ModTimeUnixMs, string ContentSha256,
+    string ETag, string ContentType, IReadOnlyDictionary<string, string> UserMetadata, long? TombstoneUnixMs);
 
 // JSON-опции транспорта: camelCase + kebab-case enum событий (совместимо с гранью).
 public static class ReplicationTransportJson

@@ -60,7 +60,7 @@ public sealed class FakeFetchTransport : IReplicationTransport
     public Queue<object?> Outcomes { get; } = new();
 
     public static FetchResult BodyResult(byte[] body, long modMs, string sha) =>
-        new(new MemoryStream(body), modMs, sha, "\"etag\"", "application/x-test",
+        new(new MemoryStream(body), body.Length, modMs, sha, "\"etag\"", "application/x-test",
             new Dictionary<string, string>(), TombstoneUnixMs: null);
 
     public Task<FetchResult> FetchObjectAsync(TargetRecord target, string bucket, string key, CancellationToken ct)
@@ -74,8 +74,8 @@ public sealed class FakeFetchTransport : IReplicationTransport
         return Task.FromResult(outcome switch
         {
             Exception ex => throw ex,
-            long tomb => new FetchResult(null, 0, "", "", "", new Dictionary<string, string>(), tomb),
-            null => new FetchResult(null, 0, "", "", "", new Dictionary<string, string>(), null),
+            long tomb => new FetchResult(null, 0, 0, "", "", "", new Dictionary<string, string>(), tomb),
+            null => new FetchResult(null, 0, 0, "", "", "", new Dictionary<string, string>(), null),
             FetchResult r => r,
             _ => throw new InvalidOperationException("неизвестный исход"),
         });
