@@ -129,9 +129,10 @@ WorkerLoopStalled), вечные серии не копятся.
 ### 2.5. PG-репликация — scrape Patroni напрямую
 
 Метрики репликации НЕ дублирует воркер: Prometheus скрейпит `:8008/metrics`
-Patroni-нод (arch/08). Стенд: Patroni-эмуляторы (`hc*`) отдают минимальный
-набор `pg_replica_lag_seconds{scope,node}` (расширение emulator.py); таргеты —
-static (DNS-имена сети стенда).
+Patroni-нод (arch/08). Таргеты реальных нод — file_sd из portalloc (§5.2
+`patroni-nodes`, §5.4); эмуляторный набор `pg_replica_lag_seconds{scope,node}`
+(hc-эмуляторы) демонтирован вместе с эмуляторами — стенд скрейпит только
+реальные ноды.
 
 Словарь реальных Patroni-нод — нативные серии REST `/metrics` (spilo,
 Patroni 4.x); канон-минимум, на который пишутся дашборд/алерты:
@@ -145,8 +146,8 @@ docker-E2E (§6, M3): полный фактический набор шире �
 `patroni_postgres_streaming/state/server_version`, `patroni_pending_restart`,
 `patroni_is_paused`, `patroni_postmaster_start_time`, …); расширяют его
 только фактом того же прогона.
-Два словаря сосуществуют: эмуляторный `pg_replica_lag_seconds` (стенд без
-PgWorker-кластеров) и нативный `patroni_*` (реальные ноды); фактический
+Словарь стенда — нативный `patroni_*` реальных нод (эмуляторный
+`pg_replica_lag_seconds` демонтирован вместе с hc-эмуляторами); фактический
 набор фиксирует docker-E2E (§6). Таргеты реальных нод — file_sd из
 portalloc (§5.2 `patroni-nodes`, §5.4); скрейп реальных нод —
 `scheme: https` + `tls_config.ca_file` (REST `:8008` — TLS, arch/13 §4).
@@ -158,7 +159,7 @@ portalloc (§5.2 `patroni-nodes`, §5.4); скрейп реальных нод �
 `host:patroni` по host-публикации — деградационная ветка: не только
 достижимость, но и TLS-верификация имени по advertised-хосту не
 гарантируется (SAN его не несёт) — таргет уходит в down; в поставке таких
-таргетов нет (демо-кластер несёт static-джобу `patroni`). Фильтр
+таргетов нет. Фильтр
 `patroni <= 0` (усыплены) действует в обеих ветках.
 
 ### 2.6. Valkey-домен (коллектор ValkeyWorker §4)
@@ -295,19 +296,17 @@ TCP-проба (не тяжёлый AdminClient); лежачая нода сто
 
 | Job | Таргеты | Что снимает |
 |---|---|---|
-| `pgworker` | сетевые `pgworker:8080`, `pgworker-2:8080` (file_sd `pgworker-targets.json`, пишет 00-up.sh; deploy-воркеры с aliases в сети `pgw-metrics`, §5.4) | §2.1–2.2 |
+| `pgworker` | сетевые `pgworker:8080`, `pgworker-2:8080` (file_sd `pgworker-targets.json`, пишет 00-up.sh; deploy-воркеры с aliases в стендовой сети контура — прод `pgw-metrics`, §5.4) | §2.1–2.2 |
 | `kafkaworker` | имя сети стенда `kafkaworker:8080` (хост-публикация 8082 — только для чеков, Prometheus её не использует; fallback не предусмотрен) | §2.1–2.3 |
 | `valkeyworker` | имя сети стенда `valkeyworker:8080` (профиль `valkey`; хост-публикации нет — чеки ходят изнутри контейнера) | §2.1–2.2, §2.6 |
 | `adminpanel` | имя сети стенда `adminpanel:8080` (хост-публикация 5050 — только для браузера/чеков) | §2.4 |
-| `patroni` | static: `hc1a:8008, hc1b:8008, hc2a:8008, hc2b:8008` | §2.5 |
 | `patroni-nodes` | file_sd `/etc/prometheus/sd/patroni-nodes.json` (источник файла — генератор §5.4 из `/pgworker/portalloc/`) | §2.5 нативные `patroni_*` |
 | `sd-generator` | static: имя сети стенда `sd-generator:8080` (профиль `metrics`) | самонаблюдение генератора §5.4 |
 
-Джобы `patroni-nodes` и `patroni` (эмуляторы `hc*`) — `scheme: https` +
+Джоба `patroni-nodes` — `scheme: https` +
 тот же `tls_config {ca_file: /tls/ca.pem}` (без клиентского серта —
 `verify_client` у REST нет; серт нод выпускает воркер из per-install CA —
-arch/14 §2.1, серт эмуляторов — `hc` из того же CA, `deploy/tls/gen.sh`;
-REST-скрейп нод и эмуляторов — по TLS одного per-install CA, §5.4).
+arch/14 §2.1; REST-скрейп нод — по TLS одного per-install CA, §5.4).
 Джобы воркеров — `scheme: https` + `tls_config {ca_file: /tls/ca.pem,
 cert_file: /tls/prometheus.crt, key_file: /tls/prometheus.key}` (t03: /metrics
 обоих воркеров — за mTLS, arch/14 §1.1/arch/16 §1.1; клиентский серт
@@ -315,8 +314,8 @@ cert_file: /tls/prometheus.crt, key_file: /tls/prometheus.key}` (t03: /metrics
 прометеуса монтирует TLS-пакет стенда ro; сетевой адрес не меняет
 транспорт). Джоба `adminpanel` — http (панель
 без TLS на стенде, вне скоупа t03). extra_hosts (`host.docker.internal`,
-`local`) из as-prometheus удалены — все таргеты прометея сетевые (сеть
-стенда + external `pgw-metrics`, §5.4); SAN серверного серта покрывает
+`local`) из as-prometheus удалены — все таргеты прометея сетевые (единая
+стендовая сеть контура, §5.4); SAN серверного серта покрывает
 compose-DNS-имена (deploy/tls/gen.sh).
 
 ### 5.3. Дашборды (Grafana provisioning, JSON в репо)
