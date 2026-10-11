@@ -96,30 +96,6 @@ for k in PGW_METRICS_NETWORK PGW_SCRAPE_NETWORK; do
     printf '%s=%s\n' "$k" "$v" >> "$ROOT/deploy/.env"
   fi
 done
-# ownS3 (t39): готовность — healthz-проба хост-публикации (порт синхронен с
-#     deploy/.env, дефолт 9010).
-OWNS3_PORT="$(grep -E '^OWNS3_HOST_PORT=' "$ROOT/deploy/.env" 2>/dev/null | tail -1 | cut -d= -f2 || true)"
-OWNS3_PORT="${OWNS3_PORT:-9010}"
-for i in $(seq 1 30); do curl -sf "http://localhost:${OWNS3_PORT}/healthz" >/dev/null 2>&1 && break; sleep 2; done
-curl -sf "http://localhost:${OWNS3_PORT}/healthz" >/dev/null \
-  || { echo "❌ owns3 не ожил за 60 c (:${OWNS3_PORT}/healthz; docker compose -p deploy logs owns3)"; exit 1; }
-echo "  owns3 жив (http://localhost:${OWNS3_PORT}/healthz)"
-
-# ownS3: bucket бэкапов — идемпотентный сид root-кредами; хост-переход НАРУЖУ
-# (bucket-сид — чек-подобная операция с хоста; внутри контура адресация
-# owns3:9000 — arch/owns3/05 §2-3:
-# CreateBucket — только admin, воркер bucket не создаёт — как и раньше с
-# as-minio). Ephemeral mc ходит через хост-публикацию (прецедент чека 46);
-# стоит ДО проверок pgworker: подсистема бэкапов стартует против готового
-# bucket (S3-недоступность и так transient-ретраи тика, arch/19 §5).
-OWNS3_ROOT_USER="$(grep -E '^OWNS3_ROOT_USER=' "$ROOT/deploy/.env" | tail -1 | cut -d= -f2)"
-OWNS3_ROOT_PASSWORD="$(grep -E '^OWNS3_ROOT_PASSWORD=' "$ROOT/deploy/.env" | tail -1 | cut -d= -f2)"
-docker run --rm --add-host host.docker.internal:host-gateway \
-  --entrypoint /bin/sh minio/mc:RELEASE.2025-08-13T08-35-41Z \
-  -c "mc alias set own http://host.docker.internal:${OWNS3_PORT} '$OWNS3_ROOT_USER' '$OWNS3_ROOT_PASSWORD' >/dev/null \
-      && mc mb --ignore-existing own/pgworker-backups >/dev/null" \
-  || { echo "❌ bucket pgworker-backups не создан в ownS3 (:${OWNS3_PORT})"; exit 1; }
-echo "  bucket pgworker-backups готов в ownS3 (:${OWNS3_PORT})"
 
 echo ">>> поднимаю стенд (docker compose --profile full --profile kafka --profile valkey --profile metrics up -d --build)"
 # Docker Desktop отдаёт хост-порт recreated-контейнера с задержкой (com.docke
@@ -149,6 +125,31 @@ for _ in 1 2 3; do
   echo "  deploy up не удался (порт не отдан после recreate) — пауза 15 c"; sleep 15
 done
 [ "$pg_up_ok" = 1 ] || { echo "❌ deploy-контур не поднялся за 3 попытки (docker logs deploy-pgworker-1)"; exit 1; }
+
+# ownS3 (t39): готовность — healthz-проба хост-публикации (порт синхронен с
+#     deploy/.env, дефолт 9010).
+OWNS3_PORT="$(grep -E '^OWNS3_HOST_PORT=' "$ROOT/deploy/.env" 2>/dev/null | tail -1 | cut -d= -f2 || true)"
+OWNS3_PORT="${OWNS3_PORT:-9010}"
+for i in $(seq 1 30); do curl -sf "http://localhost:${OWNS3_PORT}/healthz" >/dev/null 2>&1 && break; sleep 2; done
+curl -sf "http://localhost:${OWNS3_PORT}/healthz" >/dev/null \
+  || { echo "❌ owns3 не ожил за 60 c (:${OWNS3_PORT}/healthz; docker compose -p deploy logs owns3)"; exit 1; }
+echo "  owns3 жив (http://localhost:${OWNS3_PORT}/healthz)"
+
+# ownS3: bucket бэкапов — идемпотентный сид root-кредами; хост-переход НАРУЖУ
+# (bucket-сид — чек-подобная операция с хоста; внутри контура адресация
+# owns3:9000 — arch/owns3/05 §2-3:
+# CreateBucket — только admin, воркер bucket не создаёт — как и раньше с
+# as-minio). Ephemeral mc ходит через хост-публикацию (прецедент чека 46);
+# стоит ДО проверок pgworker: подсистема бэкапов стартует против готового
+# bucket (S3-недоступность и так transient-ретраи тика, arch/19 §5).
+OWNS3_ROOT_USER="$(grep -E '^OWNS3_ROOT_USER=' "$ROOT/deploy/.env" | tail -1 | cut -d= -f2)"
+OWNS3_ROOT_PASSWORD="$(grep -E '^OWNS3_ROOT_PASSWORD=' "$ROOT/deploy/.env" | tail -1 | cut -d= -f2)"
+docker run --rm --add-host host.docker.internal:host-gateway \
+  --entrypoint /bin/sh minio/mc:RELEASE.2025-08-13T08-35-41Z \
+  -c "mc alias set own http://host.docker.internal:${OWNS3_PORT} '$OWNS3_ROOT_USER' '$OWNS3_ROOT_PASSWORD' >/dev/null \
+      && mc mb --ignore-existing own/pgworker-backups >/dev/null" \
+  || { echo "❌ bucket pgworker-backups не создан в ownS3 (:${OWNS3_PORT})"; exit 1; }
+echo "  bucket pgworker-backups готов в ownS3 (:${OWNS3_PORT})"
 
 ect() { docker compose exec -T etcd1 etcdctl --endpoints=http://localhost:2379 "$@"; }
 
