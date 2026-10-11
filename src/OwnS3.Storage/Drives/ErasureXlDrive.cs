@@ -272,12 +272,144 @@ public sealed partial class ErasureXlDrive : IXlDrive
 
     // ── заглушки зон, реализуемых Task 9–12 ──
 
-    public Task RunCleanupAsync(CancellationToken ct) => throw new NotImplementedException();
-    public bool CheckHealth() => throw new NotImplementedException();
-    public bool BucketExists(string bucket) => throw new NotImplementedException();
-    public void CreateBucket(string bucket) => throw new NotImplementedException();
-    public void DeleteBucket(string bucket) => throw new NotImplementedException();
-    public IReadOnlyList<BucketEntry> ListBuckets() => throw new NotImplementedException();
+    public Task RunCleanupAsync(CancellationToken ct) => throw new NotImplementedException(); // Task 12
+
+    // Формат пула валиден + touch-проба на каждом онлайн-диске (спека §4.3);
+    // деградация НЕ роняет healthz — она наблюдается в /admin/storage.
+    public bool CheckHealth()
+    {
+        var online = _pool.Disks.Where(d => d.Online).ToList();
+        if (online.Count == 0)
+            return false;
+        foreach (var disk in online)
+        {
+            try
+            {
+                ErasureVolumeInfo.Read(disk.Root);
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    // ── бакеты: на дисках ВСЕХ сетов (канон 06 §8) ──
+
+    public bool BucketExists(string bucket) =>
+        bucket != ".owns3.sys" && _pool.Sets
+            .Where(set => set.Count(d => d.Online) >= ErasureQuorum.Read(
+                _pool.Topology.SetSize - _defaultParity, _defaultParity))
+            .SelectMany(set => set)
+            .Any(disk => Directory.Exists(Path.Combine(disk.Root, bucket)));
+
+    public void CreateBucket(string bucket)
+    {
+        // каталоги + bucket.json на дисках всех сетов, кворум ≥ writeQuorum каждого сета
+        foreach (var set in _pool.Sets)
+        {
+            var successes = 0;
+            var writeQuorum = ErasureQuorum.Write(_pool.Topology.SetSize - _defaultParity, _defaultParity);
+            foreach (var disk in set)
+            {
+                if (!disk.Online)
+                    continue;
+                try
+                {
+                    Directory.CreateDirectory(Path.Combine(disk.Root, bucket));
+                    var metaDir = Path.Combine(disk.Root, ".owns3.sys", "buckets", bucket);
+                    Directory.CreateDirectory(metaDir);
+                    File.WriteAllText(Path.Combine(metaDir, "bucket.json"),
+                        "{\"createdAt\":" + _timeProvider.GetUtcNow().ToUnixTimeMilliseconds() + "}");
+                    successes++;
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "EC: CreateBucket на диске {Position} не прошёл", disk.Position);
+                }
+            }
+
+            if (successes < writeQuorum)
+                throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum);
+        }
+    }
+
+    public void DeleteBucket(string bucket)
+    {
+        // emptiness по всем сетам (объекты/живые загрузки), trash per-disk
+        foreach (var set in _pool.Sets)
+        {
+            foreach (var disk in set.Where(d => d.Online))
+            {
+                var bucketRoot = Path.Combine(disk.Root, bucket);
+                if (!Directory.Exists(bucketRoot))
+                    continue;
+                if (Directory.EnumerateFiles(bucketRoot, "xl.meta", SearchOption.AllDirectories).Any())
+                    throw new ObjectStoreException(ObjectStoreErrorCode.BucketNotEmpty);
+                // живые multipart-загрузки бакета блокируют удаление (загрузки — Task 11)
+            }
+        }
+
+        foreach (var disk in _pool.Disks.Where(d => d.Online))
+        {
+            var bucketRoot = Path.Combine(disk.Root, bucket);
+            if (Directory.Exists(bucketRoot))
+                MoveToTrash(disk, bucketRoot);
+            var metaDir = Path.Combine(disk.Root, ".owns3.sys", "buckets", bucket);
+            if (Directory.Exists(metaDir))
+                MoveToTrash(disk, metaDir);
+        }
+    }
+
+    public IReadOnlyList<BucketEntry> ListBuckets()
+    {
+        // консенсус по любому сету с read-кворумом (канон 06 §8); все сеты < k → 503
+        var threshold = _pool.Topology.SetSize - _defaultParity;
+        foreach (var set in _pool.Sets)
+        {
+            var online = set.Where(d => d.Online).ToList();
+            if (online.Count < threshold)
+                continue;
+            var names = online.SelectMany(disk => Directory.EnumerateDirectories(disk.Root))
+                .Select(Path.GetFileName)
+                .Where(name => name is not null && name != ".owns3.sys")
+                .Select(name => name!)
+                .Distinct()
+                .ToList();
+            names.Sort(Utf8ByteOrder.Compare);
+            return names.Select(TryReadBucketCreation).ToList();
+        }
+
+        throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum);
+    }
+
+    // CreationDate из bucket.json первого успешного чтения (файла нет → epoch).
+    private BucketEntry TryReadBucketCreation(string name)
+    {
+        foreach (var disk in _pool.Disks.Where(d => d.Online))
+        {
+            var path = Path.Combine(disk.Root, ".owns3.sys", "buckets", name, "bucket.json");
+            if (!File.Exists(path))
+                continue;
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllText(path));
+                var created = doc.RootElement.TryGetProperty("createdAt", out var createdAt)
+                    && createdAt.TryGetInt64(out var ms)
+                    ? DateTimeOffset.FromUnixTimeMilliseconds(ms)
+                    : DateTimeOffset.FromUnixTimeMilliseconds(0);
+                return new BucketEntry(name, created);
+            }
+            catch (System.Text.Json.JsonException)
+            {
+                // битая мета — не роняет листинг
+            }
+        }
+
+        return new BucketEntry(name, DateTimeOffset.FromUnixTimeMilliseconds(0));
+    }
     public XlMetaRecord? TryReadMeta(string bucket, string key)
     {
         var set = _pool.Sets[_pool.PickSetIndex(bucket, key)];
@@ -386,11 +518,126 @@ public sealed partial class ErasureXlDrive : IXlDrive
             throw new XlIntegrityException(
                 $"checksum mismatch: объект {meta.VersionId:N}, ожидается {meta.ContentSha256}, факт {actual} (реконструкция)");
     }
-    public void Delete(string bucket, string key, XlMetaRecord meta) => throw new NotImplementedException();
+    // Delete: rename каталога объекта в .trash/ на каждом диске сета (кворум
+    // ≥ writeQuorum; недоступные диски выравниваются при возврате: живое-в-
+    // консенсусе доливается heal; фантом-записи чистятся по порогу — канон 06 §8).
+    public void Delete(string bucket, string key, XlMetaRecord meta)
+    {
+        var set = _pool.Sets[_pool.PickSetIndex(bucket, key)];
+        var k = meta.Ec?.EcM ?? (byte)(_pool.Topology.SetSize - _defaultParity);
+        var m = meta.Ec is { } ec ? (byte)(ec.EcN - ec.EcM) : (byte)_defaultParity;
+        var writeQuorum = ErasureQuorum.Write(k, m);
+        var successes = 0;
+        foreach (var disk in set)
+        {
+            if (!disk.Online)
+                continue;
+            var target = ObjectDirOnDisk(disk, bucket, key);
+            if (!Directory.Exists(target))
+                continue; // записи нет (деградированная запись/фантом — heal/чистки)
+            try
+            {
+                MoveToTrash(disk, target);
+                successes++;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "EC: Delete на диске {Position} не прошёл", disk.Position);
+            }
+        }
+
+        if (successes < writeQuorum)
+            throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientWriteQuorum);
+    }
     public IReadOnlyList<(int Number, long Size)> EnumerateParts(string bucket, string key, XlMetaRecord meta) =>
         meta.Ec?.Parts.Select((part, index) => (index + 1, part.SourceSize)).ToList()
         ?? throw new XlIntegrityException($"запись {bucket}/{key} без EC-полей в EC-томе");
-    public IXlObjectCursor EnumerateObjects(string bucket) => throw new NotImplementedException();
+    // Листинг объектов: предусловие — во ВСЕХ сетах онлайн ≥ k (канон 06 §7:
+    // неполный листинг опаснее недоступности); merge DirectoryCursor-курсоров
+    // корней бакета онлайн-дисков всех сетов (куча по PeekKey), дедуп по ключу,
+    // мета — с первого диска нахождения (битая — следующий диск сета).
+    public IXlObjectCursor EnumerateObjects(string bucket)
+    {
+        var threshold = _pool.Topology.SetSize - _defaultParity;
+        foreach (var set in _pool.Sets)
+        {
+            if (set.Count(d => d.Online) < threshold)
+                throw new ObjectStoreException(ObjectStoreErrorCode.InsufficientReadQuorum);
+        }
+
+        return new ErasureObjectCursor(_pool, bucket);
+    }
+
+    // Курсор ключей бакета поверх всех сетов: k-way merge по PeekKey (Utf8ByteOrder),
+    // дедуп — по продвижению всех курсоров с равным ключом.
+    private sealed class ErasureObjectCursor(ErasurePool pool, string bucket) : IXlObjectCursor
+    {
+        private readonly List<(ErasureDisk Disk, DirectoryCursor Cursor, string ObjectRoot)> _cursors = pool.Disks
+            .Where(d => d.Online)
+            .Select(disk => (disk,
+                new DirectoryCursor(Path.Combine(disk.Root, bucket), ownKey: null, prefix: string.Empty, after: null),
+                Path.Combine(disk.Root, bucket)))
+            .ToList();
+
+        private static readonly IComparer<string> KeyComparer =
+            Comparer<string>.Create(Uf8Compare);
+
+        private static int Uf8Compare(string left, string right) => Utf8ByteOrder.Compare(left, right);
+
+        public string? PeekKey
+        {
+            get
+            {
+                string? best = null;
+                foreach (var (_, cursor, _) in _cursors)
+                {
+                    var key = cursor.PeekKey;
+                    if (key is null)
+                        continue;
+                    if (best is null || KeyComparer.Compare(key, best) < 0)
+                        best = key;
+                }
+
+                return best;
+            }
+        }
+
+        public void MoveNext()
+        {
+            var key = PeekKey;
+            if (key is null)
+                return;
+            // продвижение ВСЕХ курсоров с этим ключом — дедуп
+            foreach (var (_, cursor, _) in _cursors)
+            {
+                if (cursor.PeekKey == key)
+                    cursor.MoveNext();
+            }
+        }
+
+        public XlMetaRecord ReadCurrentMeta()
+        {
+            var key = PeekKey
+                ?? throw new InvalidOperationException("курсор исчерпан — ReadCurrentMeta без ключа");
+            // мета с первого диска нахождения; битая — пробуется следующий
+            foreach (var (_, cursor, root) in _cursors)
+            {
+                if (cursor.PeekKey != key)
+                    continue;
+                var objectDir = Path.Combine([root, .. XlPathEncoder.EncodePath(key).Split('/')]);
+                try
+                {
+                    return XlMetaFile.Read(objectDir, out _);
+                }
+                catch (XlIntegrityException)
+                {
+                    // битая копия — следующий диск сета
+                }
+            }
+
+            throw new XlIntegrityException($"EC: все копии xl.meta ключа {key} битые");
+        }
+    }
     public List<MultipartJournals.UploadJournalEntry> ReadUploads(string bucket, string key) =>
         throw new NotImplementedException();
     public void WriteUploads(string bucket, string key, List<MultipartJournals.UploadJournalEntry> uploads) =>
