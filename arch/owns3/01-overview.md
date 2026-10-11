@@ -21,7 +21,7 @@
         ▼                                                ▼
    ┌────────────────────────────────────────────────────────────┐
    │ ownS3 — standalone-сервис (докер-контейнер)                │
-   │   src/OwnS3.App — Kestrel :9000: SigV4, роутинг 22 операций│
+   │   src/OwnS3.App — Kestrel :9000: SigV4, роутинг 21 операции│
    │   src/OwnS3.Storage — xl-хранение                          │
    │                            │                               │
    │                            ▼                               │
@@ -39,14 +39,14 @@
 - **ownS3 — standalone-сервис, не воркер**: без etcd-контракта, без
   provisioning-проектов, без лидерства — один процесс, один том.
 - **Отношение к MinIO**: ownS3 — **целевая замена MinIO** подсистемы
-  бэкапов после приёмки t39: клиенты переключаются env-endpoint'ом,
-  код клиентов не меняется. Трек
+  бэкапов после приёмочной грани клиентами: клиенты переключаются
+  env-endpoint'ом, код клиентов не меняется. Трек
   [roadmap/s3.md](../roadmap/s3.md) (t31–t34, MinIO-кластера как
   объект управления системы) живёт параллельно на переходный период.
 
 ## 2. Границы начального этапа
 
-- **22 операции** (детальные контракты — глава
+- **21 операция** (детальные контракты — глава
   [02-operations.md](02-operations.md)):
   - объекты (7): `PutObject`, `GetObject`, `HeadObject`, `DeleteObject`,
     `DeleteObjects`, `CopyObject`, `GetObjectAttributes`;
@@ -54,8 +54,8 @@
     `ListObjectVersions`;
   - бакеты (5): `CreateBucket`, `DeleteBucket`, `HeadBucket`,
     `ListBuckets`, `GetBucketLocation`;
-  - multipart (7): `CreateMultipartUpload`, `UploadPart`,
-    `UploadPartCopy`, `CompleteMultipartUpload`, `AbortMultipartUpload`,
+  - multipart (6): `CreateMultipartUpload`, `UploadPart`,
+    `CompleteMultipartUpload`, `AbortMultipartUpload`,
     `ListParts`, `ListMultipartUploads`.
 - **Бакеты без versioning**: `ListObjectVersions` — unversioned-семантика
   (текущие объекты, без delete markers и `VersionId`-полей).
@@ -77,7 +77,7 @@
 |---|---|---|
 | `src/OwnS3.Protocol` | чистые типы протокола: канонизация/проверка SigV4 (заголовочная, presigned, чанковая потоковая), XML-схемы запросов/ответов, формат S3-ошибок, ETag-семантика | без ASP.NET, без диска |
 | `src/OwnS3.Storage` | xl-модель хранения: раскладка каталогов, чтение/запись `xl.meta`, `.owns3.sys`, атомарный коммит, multipart на диске, чистки | без HTTP |
-| `src/OwnS3.App` | хост Kestrel: роутинг 22 операций, хендлеры, конфиг/env (`OwnS3:*` / `OWNS3_*`), health/метрики (канон [18-metrics.md](../18-metrics.md), каркас `Shared.Metrics`), стыковка Protocol×Storage | — |
+| `src/OwnS3.App` | хост Kestrel: роутинг 21 операции, хендлеры, конфиг/env (`OwnS3:*` / `OWNS3_*`), health/метрики (канон [18-metrics.md](../18-metrics.md), каркас `Shared.Metrics`), стыковка Protocol×Storage | — |
 | `src/tests/OwnS3.UnitTests`, `src/tests/OwnS3.IntegrationTests` | юниты (тест-векторы подписи, XML) и контурные тесты | — |
 
 Границы зависимостей: `Protocol` и `Storage` не зависят от `App` и друг
@@ -100,8 +100,7 @@
 - **ownS3 всегда запускается в докере** (никогда хост-процессом — как
   PgWorker); том данных — единственный persistent-volume.
 - **Env-секреты** (root-пара, статические ключи) — из env-файла по
-  образцу `deploy/.env.example` воркеров (env-шаблон ownS3 создаётся в
-  t39; состав секрета фиксирует глава
+  образцу `deploy/.env.example` воркеров (состав секрета фиксирует глава
   [05-access-config.md](05-access-config.md)).
 - **Правила образа**: сборка .NET на хосте (`dotnet publish`), в образ
   `COPY`-ируется только publish-вывод (runtime-слой; правило
@@ -109,8 +108,9 @@
   не кладётся; базовый runtime-образ — из существующих `images.txt`
   (новых внешних образов нет). Прод-Dockerfile поставки — отдельный
   процесс.
-- Детальная модель dev-стенд-сервиса — t39; здесь зафиксированы только
-  правила образа.
+- Модель запуска в докере (стенд-сервис, env-шаблон, E2E-серия) —
+  глава [05-access-config.md](05-access-config.md) §6; здесь
+  зафиксированы только правила образа.
 
 ## 6. Durability и отказы
 

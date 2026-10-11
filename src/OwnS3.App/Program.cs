@@ -17,6 +17,38 @@ using Shared.Metrics;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Env-имена канона arch/owns3/05 §4 (OWNS3_*): стандартный .NET-провайдер
+// ждёт OwnS3__Root__User — транслируем канонические имена в ключи OwnS3:*
+// (env приоритетнее appsettings; t39, фикс дефекта первого докер-запуска).
+foreach (var (env, key) in new[]
+         {
+             ("OWNS3_ROOT_USER", "OwnS3:Root:User"),
+             ("OWNS3_ROOT_PASSWORD", "OwnS3:Root:Password"),
+             ("OWNS3_SERVER_PORT", "OwnS3:Server:Port"),
+             ("OWNS3_DATA_DIR", "OwnS3:DataDir"),
+             ("OWNS3_HOST_ID", "OwnS3:HostId"),
+         })
+{
+    var value = Environment.GetEnvironmentVariable(env);
+    if (!string.IsNullOrEmpty(value))
+        builder.Configuration[key] = value;
+}
+// Массив статических ключей OWNS3_ACCESS_KEYS__<i>__* (глава 05 §2:
+// индексная нумерация массива в env — конвенция .NET): сканируем до
+// первого пропуска индекса.
+for (var i = 0; ; i++)
+{
+    var access = Environment.GetEnvironmentVariable($"OWNS3_ACCESS_KEYS__{i}__ACCESSKEY");
+    var secret = Environment.GetEnvironmentVariable($"OWNS3_ACCESS_KEYS__{i}__SECRETKEY");
+    if (string.IsNullOrEmpty(access) && string.IsNullOrEmpty(secret))
+        break;
+    builder.Configuration[$"OwnS3:AccessKeys:{i}:AccessKey"] = access;
+    builder.Configuration[$"OwnS3:AccessKeys:{i}:SecretKey"] = secret;
+    var policy = Environment.GetEnvironmentVariable($"OWNS3_ACCESS_KEYS__{i}__POLICY");
+    if (!string.IsNullOrEmpty(policy))
+        builder.Configuration[$"OwnS3:AccessKeys:{i}:Policy"] = policy;
+}
+
 builder.Services.Configure<OwnS3Options>(builder.Configuration.GetSection(OwnS3Options.SectionName));
 // TryAdd: системные часы — дефолт; тестовый хост (WAF) может подменить время
 // своей регистрацией до Program — тогда остаётся подмена (детерминированные
@@ -49,7 +81,7 @@ builder.Services.AddSingleton<BucketMetaStore>();
 builder.Services.AddHostedService<VolumeCleanupService>();
 builder.Services.AddSingleton<OwnS3Metrics>();
 
-// 22 хендлера протокольного контура (spec §3.4.1) — диспетчеризация по операции.
+// 21 хендлер протокольного контура (spec §3.4.1) — диспетчеризация по операции.
 builder.Services.AddSingleton<OwnS3.App.Handlers.BucketHandlers.ListBucketsHandler>();
 builder.Services.AddSingleton<OwnS3.App.Handlers.BucketHandlers.CreateBucketHandler>();
 builder.Services.AddSingleton<OwnS3.App.Handlers.BucketHandlers.DeleteBucketHandler>();
@@ -67,7 +99,6 @@ builder.Services.AddSingleton<OwnS3.App.Handlers.ListHandlers.ListObjectsV2Handl
 builder.Services.AddSingleton<OwnS3.App.Handlers.ListHandlers.ListObjectVersionsHandler>();
 builder.Services.AddSingleton<OwnS3.App.Handlers.MultipartHandlers.CreateMultipartUploadHandler>();
 builder.Services.AddSingleton<OwnS3.App.Handlers.MultipartHandlers.UploadPartHandler>();
-builder.Services.AddSingleton<OwnS3.App.Handlers.MultipartHandlers.UploadPartCopyHandler>();
 builder.Services.AddSingleton<OwnS3.App.Handlers.MultipartHandlers.CompleteMultipartUploadHandler>();
 builder.Services.AddSingleton<OwnS3.App.Handlers.MultipartHandlers.AbortMultipartUploadHandler>();
 builder.Services.AddSingleton<OwnS3.App.Handlers.MultipartHandlers.ListPartsHandler>();
@@ -106,8 +137,6 @@ builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
     sp.GetRequiredService<OwnS3.App.Handlers.MultipartHandlers.CreateMultipartUploadHandler>());
 builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
     sp.GetRequiredService<OwnS3.App.Handlers.MultipartHandlers.UploadPartHandler>());
-builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
-    sp.GetRequiredService<OwnS3.App.Handlers.MultipartHandlers.UploadPartCopyHandler>());
 builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>
     sp.GetRequiredService<OwnS3.App.Handlers.MultipartHandlers.CompleteMultipartUploadHandler>());
 builder.Services.AddSingleton<OwnS3.App.Handlers.IOperationHandler>(sp =>

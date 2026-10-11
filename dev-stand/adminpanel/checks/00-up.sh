@@ -50,6 +50,14 @@ dotnet publish "$ROOT/src/Metrics.SdGenerator/Metrics.SdGenerator.csproj" \
   || { echo "❌ publish SdGenerator не удался"; exit 1; }
 echo ">>> [PHASE] publish SdGenerator готов ($(date +%H:%M:%S))"
 
+# ownS3 (t39, arch/owns3/05 §6): publish НА ХОСТЕ → compose build пакует только
+# вывод (канон E2E-образов; сборка не «тихая» — [PHASE] и тайминг).
+echo ">>> [PHASE] publish OwnS3.App ($(date +%H:%M:%S))"
+dotnet publish "$ROOT/src/OwnS3.App/OwnS3.App.csproj" \
+  -c Release -o "$ROOT/artifacts/owns3/publish" --nologo \
+  || { echo "❌ publish OwnS3 не удался"; exit 1; }
+echo ">>> [PHASE] publish OwnS3 готов ($(date +%H:%M:%S))"
+
 # 1b-ранний) PgWorker deploy-контур — ДО стендового компоуза (t15, arch/18 §5.4):
 #     стендовый Prometheus аттачит сеть pgw-metrics как external — она обязана
 #     существовать к `compose up` (иначе «network declared as external, but
@@ -89,12 +97,21 @@ done
 # тот же race порта (Docker Desktop отдаёт публикацию с задержкой) — ретрай.
 pg_up_ok=0
 for _ in 1 2 3; do
-  if ( cd "$ROOT/deploy" && docker compose --env-file "$ROOT/deploy/.env" up -d --build --force-recreate pgworker pgworker-2 2>&1 | tail -2 ); then
+  if ( cd "$ROOT/deploy" && docker compose --env-file "$ROOT/deploy/.env" up -d --build --force-recreate pgworker pgworker-2 owns3 2>&1 | tail -2 ); then
     pg_up_ok=1; break
   fi
   echo "  pgworker up не удался (порт не отдан после recreate) — пауза 15 c"; sleep 15
 done
 [ "$pg_up_ok" = 1 ] || { echo "❌ pgworker не поднялся за 3 попытки (docker logs deploy-pgworker-1)"; exit 1; }
+
+# ownS3 (t39): готовность — healthz-проба хост-публикации (порт синхронен с
+# deploy/.env, дефолт 9010; бэкапы остаются на as-minio).
+OWNS3_PORT="$(grep -E '^OWNS3_HOST_PORT=' "$ROOT/deploy/.env" 2>/dev/null | tail -1 | cut -d= -f2 || true)"
+OWNS3_PORT="${OWNS3_PORT:-9010}"
+for i in $(seq 1 30); do curl -sf "http://localhost:${OWNS3_PORT}/healthz" >/dev/null 2>&1 && break; sleep 2; done
+curl -sf "http://localhost:${OWNS3_PORT}/healthz" >/dev/null \
+  || { echo "❌ owns3 не ожил за 60 c (:${OWNS3_PORT}/healthz; docker compose -p deploy logs owns3)"; exit 1; }
+echo "  owns3 жив (http://localhost:${OWNS3_PORT}/healthz)"
 
 echo ">>> поднимаю стенд (docker compose --profile full --profile kafka --profile valkey --profile metrics up -d --build)"
 # Docker Desktop отдаёт хост-порт recreated-контейнера с задержкой (com.docke

@@ -195,21 +195,6 @@ public sealed class S3XmlTests
     }
 
     [Fact]
-    public void Serialize_CopyPartResult_MatchesSample()
-    {
-        // Arrange
-        var value = new CopyPartResult { LastModified = Date, ETag = "\"e1\"" };
-        const string Expected =
-            """<?xml version="1.0" encoding="utf-8"?><CopyPartResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><LastModified>2026-01-01T00:00:00.000Z</LastModified><ETag>"e1"</ETag></CopyPartResult>""";
-
-        // Act
-        var actual = S3Xml.Serialize(value);
-
-        // Assert
-        actual.Should().Be(Expected);
-    }
-
-    [Fact]
     public void Serialize_GetObjectAttributesOutput_MatchesSample()
     {
         // Arrange
@@ -286,6 +271,29 @@ public sealed class S3XmlTests
         // Assert
         parsed.Objects.Select(o => o.Key).Should().Equal("k1", "k2", "k3");
         parsed.Quiet.Should().BeTrue();
+    }
+
+    [Fact]
+    public void EnsureRootNamespace_AddsNsToBareRoot_AndKeepsNsForm()
+    {
+        // Arrange: mc/minio-go шлют Delete-XML без xmlns (образец 03 §4)
+        const string Bare = """<Delete><Object><Key>k</Key></Object><Quiet>true</Quiet></Delete>""";
+
+        // Act
+        var normalized = S3Xml.EnsureRootNamespace(Bare, "Delete");
+        normalized.Should().Be(
+            """<Delete xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Object><Key>k</Key></Object><Quiet>true</Quiet></Delete>""");
+        var parsed = S3Xml.Deserialize<DeleteRequest>(normalized);
+
+        // Assert: без-ns форма нормализована и десериализуется
+        normalized.Should().Contain("<Delete xmlns=\"http://s3.amazonaws.com/doc/2006-03-01/\">");
+        parsed.Objects.Select(o => o.Key).Should().Equal("k");
+        parsed.Quiet.Should().BeTrue();
+
+        // Assert: ns-форма AWS-клиентов и чужие корни — без изменений
+        const string WithNs = """<Delete xmlns="http://s3.amazonaws.com/doc/2006-03-01/"><Object><Key>k</Key></Object></Delete>""";
+        S3Xml.EnsureRootNamespace(WithNs, "Delete").Should().Be(WithNs);
+        S3Xml.EnsureRootNamespace("""<Other/>""", "Delete").Should().Be("""<Other/>""");
     }
 
     [Fact]

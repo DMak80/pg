@@ -43,6 +43,56 @@ public sealed class AwsChunkedReaderTests
         secondRead.Should().Be(0);
     }
 
+    // Стрим, отдающий максимум max байтов за чтение: любая граница фрейма
+    // (вкл. разрыв заголовка чанка по границе внутреннего буфера ридера)
+    // оказывается «разорванной» — регресс потерянного хвоста FillAsync.
+    private sealed class FragmentedStream(byte[] data, int max) : Stream
+    {
+        private int _pos;
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => data.Length;
+        public override long Position { get => _pos; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var take = Math.Min(Math.Min(count, max), data.Length - _pos);
+            Array.Copy(data, _pos, buffer, offset, take);
+            _pos += take;
+            return take;
+        }
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct)
+            => Task.FromResult(Read(buffer, offset, count));
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    [Fact]
+    public async Task Read_FragmentedSource_KeepsFrameSyncAcrossBufferBoundaries()
+    {
+        // Arrange: крупное тело (64+ чанков по 80 КиБ — как AWS SDK), источник
+        // дробит поток микрочастями: заголовки чанков рвутся по границам
+        // внутреннего 64-КиБ буфера ридера — синхронизация фреймов обязана
+        // сохраняться (FillAsync дочитывает в свободный хвост, не затирая).
+        var data = new byte[5 * 1024 * 1024];
+        new Random(101).NextBytes(data);
+        var body = TestSigV4Signer.BuildChunkedBody(TestVectors.SecretKey, data,
+            TestVectors.GetObjSignature, TestSigV4Signer.DefaultDate, TestVectors.Region,
+            chunkSize: 80 * 1024);
+        await using var source = new FragmentedStream(body, max: 7);
+        using var reader = new AwsChunkedReader(source, Context(data.Length));
+
+        // Act
+        using var output = new MemoryStream();
+        await reader.CopyToAsync(output, TestContext.Current.CancellationToken);
+
+        // Assert: все 5 МиБ декодированы без рассинхрона фреймов
+        output.ToArray().Should().Equal(data);
+    }
+
     [Fact]
     public void Read_AwsVector5_ChunkChainSignaturesValid()
     {

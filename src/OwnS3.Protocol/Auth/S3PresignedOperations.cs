@@ -1,6 +1,6 @@
 namespace OwnS3.Protocol.Auth;
 
-// Разрешённые операции через presigned (arch/owns3/03 §2): ровно 10 —
+// Разрешённые операции через presigned (arch/owns3/03 §2): ровно 9 —
 // потребности клиентов бэкапов и mc.
 public static class S3PresignedOperations
 {
@@ -12,7 +12,6 @@ public static class S3PresignedOperations
         "HeadObject",
         "CreateMultipartUpload",
         "UploadPart",
-        "UploadPartCopy",
         "CompleteMultipartUpload",
         "AbortMultipartUpload",
         "ListParts",

@@ -2,7 +2,8 @@ using OwnS3.Protocol.Requests;
 
 namespace OwnS3.UnitTests;
 
-// Парсер path-style пути (arch/owns3/03 §6): /, /{bucket}, /{bucket}/{key+};
+// Парсер path-style пути (arch/owns3/03 §6): /, /{bucket}, /{bucket}/
+// (bucket-level: пустой ключ = его отсутствие), /{bucket}/{key+};
 // сегменты ключа URL-декодируются, слэши — часть ключа.
 public sealed class S3PathParserTests
 {
@@ -24,6 +25,27 @@ public sealed class S3PathParserTests
         // Assert
         path.Bucket.Should().Be("b");
         path.Key.Should().BeNull();
+    }
+
+    [Fact]
+    public void Parse_BucketTrailingSlash_BucketLevel_NoKey()
+    {
+        // Arrange / Act: /{bucket}/ — bucket-level (канон 03 §6: пустой ключ
+        // трактуется как его отсутствие; AWS SDK CreateBucket шлёт PUT /{bucket}/)
+        var path = S3PathParser.Parse("/b/");
+        // Assert
+        path.Bucket.Should().Be("b");
+        path.Key.Should().BeNull();
+    }
+
+    [Fact]
+    public void Parse_InnerEmptySegments_PreservedInKey()
+    {
+        // Arrange / Act: a//b — внутренние пустые сегменты сохраняются
+        var path = S3PathParser.Parse("/b/a//b");
+        // Assert
+        path.Bucket.Should().Be("b");
+        path.Key.Should().Be("a//b");
     }
 
     [Fact]

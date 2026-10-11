@@ -119,7 +119,10 @@ public sealed class AwsChunkedReader : Stream
     {
         ParseFrameHeader(ReadLineSync());
         ReadExactSync(_chunkBuffer, _frameSize);
-        ExpectCrlfSync();
+        // Терминатор данных — только у НЕПУСТЫХ чанков (канон 03 §3: после
+        // строки 0-чанка сразу идут трейлеры TRAILER-режима / конец потока).
+        if (_frameSize > 0)
+            ExpectCrlfSync();
         VerifyFrame(_frameSize);
         if (_frameSize == 0)
         {
@@ -134,7 +137,9 @@ public sealed class AwsChunkedReader : Stream
     {
         ParseFrameHeader(await ReadLineAsync(ct));
         await ReadExactAsync(_chunkBuffer, _frameSize, ct);
-        await ExpectCrlfAsync(ct);
+        // Терминатор данных — только у НЕПУСТЫХ чанков (канон 03 §3).
+        if (_frameSize > 0)
+            await ExpectCrlfAsync(ct);
         VerifyFrame(_frameSize);
         if (_frameSize == 0)
         {
@@ -150,7 +155,8 @@ public sealed class AwsChunkedReader : Stream
     {
         var separatorIndex = header.IndexOf(";chunk-signature=", StringComparison.Ordinal);
         if (separatorIndex <= 0 || separatorIndex + ";chunk-signature=".Length + 64 != header.Length)
-            throw new S3ProtocolException(S3ErrorCode.InvalidRequest, "Malformed chunked encoding");
+            throw new S3ProtocolException(S3ErrorCode.InvalidRequest,
+                $"Malformed chunked encoding (заголовок фрейма после {_totalDecoded} декодированных байтов: «{Trunc(header)}»)");
 
         var sizeHex = header[..separatorIndex];
         _frameSignature = header[(separatorIndex + ";chunk-signature=".Length)..];
@@ -159,11 +165,16 @@ public sealed class AwsChunkedReader : Stream
         // символа [0-9a-f] (нижний hex референса); не-hex вход в декодер
         // недопустим (иначе FormatException вместо канонического 400).
         if (_frameSignature.Any(c => c is not ((>= '0' and <= '9') or (>= 'a' and <= 'f'))))
-            throw new S3ProtocolException(S3ErrorCode.InvalidRequest, "Malformed chunked encoding");
+            throw new S3ProtocolException(S3ErrorCode.InvalidRequest,
+                $"Malformed chunked encoding (подпись фрейма после {_totalDecoded} декодированных байтов: «{Trunc(header)}»)");
 
         if (!TryParseHexSize(sizeHex, out _frameSize) || _frameSize > MaxChunkSize)
-            throw new S3ProtocolException(S3ErrorCode.InvalidRequest, "Malformed chunked encoding");
+            throw new S3ProtocolException(S3ErrorCode.InvalidRequest,
+                $"Malformed chunked encoding (размер фрейма после {_totalDecoded} декодированных байтов: «{Trunc(header)}»)");
     }
+
+    // Диагностический хвост строки (только ASCII-часть фрейма — короткая).
+    private static string Trunc(string s) => s.Length <= 96 ? s : s[..96] + "…";
 
     // Сверка подписи чанка цепочкой + обновление контрольных сумм (общее ядро).
     private void VerifyFrame(int size)
@@ -332,14 +343,20 @@ public sealed class AwsChunkedReader : Stream
 
     private void FillSync()
     {
-        _ioStart = 0;
-        _ioEnd = _inner.Read(_io, 0, _io.Length);
+        // Дочитка в свободный хвост: после Compact данные прижаты к началу,
+        // перезапись с 0 затирала непрочитанный хвост (рассинхрон фреймов,
+        // когда заголовок чанка разорван границей буфера).
+        if (_ioStart == _ioEnd)
+            _ioStart = _ioEnd = 0;
+        _ioEnd += _inner.Read(_io, _ioEnd, _io.Length - _ioEnd);
     }
 
     private async Task FillAsync(CancellationToken ct)
     {
-        _ioStart = 0;
-        _ioEnd = await _inner.ReadAsync(_io.AsMemory(0, _io.Length), ct);
+        // Дочитка в свободный хвост (см. FillSync — инвариант [_ioStart,_ioEnd)).
+        if (_ioStart == _ioEnd)
+            _ioStart = _ioEnd = 0;
+        _ioEnd += await _inner.ReadAsync(_io.AsMemory(_ioEnd, _io.Length - _ioEnd), ct);
     }
 
     private void Compact()

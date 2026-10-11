@@ -8,7 +8,7 @@ namespace OwnS3.UnitTests;
 // object-attributes, EntityTooLarge.
 public sealed class HandlersValidationTests
 {
-    // — partNumber (UploadPart/UploadPartCopy) —
+    // — partNumber (UploadPart) —
 
     [Theory]
     [InlineData(null)]
@@ -261,20 +261,5 @@ public sealed class HandlersValidationTests
 
         // Assert
         act.Should().Throw<S3ProtocolException>().Which.Code.Should().Be(S3ErrorCode.InvalidArgument);
-    }
-
-    [Fact]
-    public void ParseCopySourceRange_Valid_AndInvalid()
-    {
-        // Arrange / Act / Assert: валидный диапазон
-        OperationValidation.ParseCopySourceRange("bytes=0-99").Should().Be(
-            new OwnS3.Storage.ByteRange(0, 99));
-        // невалидный синтаксис и a > b — один код InvalidArgument (глава 02)
-        var act1 = () => OperationValidation.ParseCopySourceRange("bytes=99-0");
-        var act2 = () => OperationValidation.ParseCopySourceRange("chunk=0-99");
-        act1.Should().Throw<S3ProtocolException>().Which.Code.Should().Be(S3ErrorCode.InvalidArgument);
-        act2.Should().Throw<S3ProtocolException>().Which.Code.Should().Be(S3ErrorCode.InvalidArgument);
-        // отсутствие — нет диапазона (весь источник)
-        OperationValidation.ParseCopySourceRange(null).Should().BeNull();
     }
 }

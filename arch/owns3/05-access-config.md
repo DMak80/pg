@@ -50,7 +50,7 @@ health и метрики, правила запуска. Операции — г
 | `PutObject` | — | ✓ | ✓ |
 | `DeleteObject`, `DeleteObjects` | — | ✓ | ✓ |
 | `CopyObject`, `GetObjectAttributes` | — | ✓ | ✓ |
-| `CreateMultipartUpload`, `UploadPart`, `UploadPartCopy`, `CompleteMultipartUpload`, `AbortMultipartUpload` | — | ✓ | ✓ |
+| `CreateMultipartUpload`, `UploadPart`, `CompleteMultipartUpload`, `AbortMultipartUpload` | — | ✓ | ✓ |
 | `CreateBucket`, `DeleteBucket` | — | — | ✓ |
 
 - Root — права `admin`.
@@ -96,19 +96,41 @@ health и метрики, правила запуска. Операции — г
 | `ownS3_disk_total_bytes` | gauge | размер тома данных |
 
 Расширенный состав (по частям, очередям чисток) — задачами
-эксплуатации, не каноном t35.
+эксплуатации, не каноном этой главы.
 
 ## 6. Запуск в докере
 
 - **Образ**: сборка .NET на хосте (`dotnet publish`) + runtime-слой с
   `COPY` publish-вывода (правило E2E-образов; прод-Dockerfile поставки —
-  отдельный процесс, не канон t35). Базовый runtime-образ — из
-  существующих `images.txt` (новых внешних образов нет); локально
-  собираемый образ в registry `192.168.0.1:5000` **не кладётся**.
-- **Том данных**: bind/volume на `OWNS3_DATA_DIR` — единственный
-  persistent-volume (глава 01).
-- **Env-секреты**: через env-файл по образцу deploy-воркеров
-  (`deploy/.env.example`); env-шаблон ownS3 создаётся в t39 — канон
-  фиксирует состав: root-пара + статические ключи (п. 1–2).
-- ownS3 всегда запускается в докере (никогда хост-процессом — глава
-  01); детальная модель dev-стенд-сервиса — t39.
+  отдельный процесс). Dockerfile — `docker/OwnS3.Dockerfile` (базовый
+  runtime-образ aspnet из существующих `images.txt`, новых внешних
+  образов нет; `ARG OWNS3_PUBLISH_DIR` — путь вывода publish по образцу
+  `docker/Metrics.SdGenerator.Dockerfile`): CLI-сборка — узким контекстом
+  каталога артефактов publish, compose-сборка — контекстом корня
+  репозитория с переданным ARG. Теги: `owns3:dev` — стенд/локальный
+  контур, `owns3:e2e` — E2E-тесты; локально собираемые образы в registry
+  `192.168.0.1:5000` **не кладутся**.
+- **Стенд/локальный контур — сервис `owns3` в `deploy/docker-compose.yml`**
+  (по образцу воркеров): env-секреты из `deploy/.env` (шаблон — секция
+  `OWNS3_*` в `deploy/.env.example`: обязательная root-пара п. 1,
+  опциональные статические ключи п. 2), публикация
+  `${OWNS3_HOST_PORT:-9010}:9000` (порты 9000/9001 хоста заняты
+  `as-minio` полного стенда — ownS3 продолжает портовой ряд), том
+  `owns3-data` → `OWNS3_DATA_DIR` (`/data`) — единственный
+  persistent-volume (глава 01). Подъём — `dev-stand/adminpanel/checks/
+  00-up.sh` (publish на хосте → compose build), smoke-проверки —
+  `checks/46-owns3.sh` (`/healthz`, `/metrics`, операции `mc` против
+  хост-публикации). До перевода подсистемы бэкапов (roadmap
+  `t41-owns3-minio-migration`) стендовые бэкапы остаются на `as-minio`:
+  ownS3 живёт в стендовом контуре параллельно, `PGW_BACKUP_S3_*`
+  не меняются.
+- **E2E реальными клиентами** — серия
+  `src/tests/OwnS3.IntegrationTests/E2e` (AWS SDK .NET и `mc` против
+  собственного контейнера `owns3:e2e`): гейт `PGW_TEST_DOCKER=1`,
+  автосборка Release на каждом прогоне (`PGW_TEST_E2E_NOBUILD=1` —
+  бисект/отладка конкретного бинаря), изоляция и зачистка контуров —
+  каноны `docs/e2e-isolation.md` / `docs/e2e-launch.md`. Клиентская
+  настройка flexible checksums (глава 03 §3) проверяется приёмкой в
+  обоих режимах: `WHEN_REQUIRED` (основной) и `WHEN_SUPPORTED`
+  (чанковая подпись с трейлерами).
+- ownS3 всегда запускается в докере (никогда хост-процессом — глава 01).

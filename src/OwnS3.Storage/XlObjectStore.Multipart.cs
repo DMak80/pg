@@ -5,8 +5,8 @@ using Microsoft.Extensions.Logging;
 
 namespace OwnS3.Storage;
 
-// Multipart-операции XlObjectStore — все 7 канона 02 §5: CreateMultipartUpload,
-// UploadPart, UploadPartCopy, CompleteMultipartUpload, AbortMultipartUpload,
+// Multipart-операции XlObjectStore — все 6 канона 02 §5: CreateMultipartUpload,
+// UploadPart, CompleteMultipartUpload, AbortMultipartUpload,
 // ListParts, ListMultipartUploads. Журналы и раскладка — канон 04 §5
 // (MultipartJournals); многочастевое чтение — MultipartBodyStream (Objects).
 public sealed partial class XlObjectStore
@@ -135,7 +135,7 @@ public sealed partial class XlObjectStore
         return new PutResult('"' + etagHex + '"', modTime);
     }
 
-    // Коммит части (UploadPart/UploadPartCopy): rename + upsert parts.json —
+    // Коммит части (UploadPart): rename + upsert parts.json —
     // согласованная пара под _commitLock вызывающего (М3).
     private void CommitPartFile(string uploadDir, int partNumber, string tmpPath,
         string etagHex, long size, DateTimeOffset modTime)
@@ -164,106 +164,6 @@ public sealed partial class XlObjectStore
             _logger.LogWarning(ex, "Битый parts.json загрузки в {UploadDir}: загрузка недоступна", uploadDir);
             throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchUpload);
         }
-    }
-
-    // UploadPartCopy (канон 02 §5, спека §4.2): разрешение приёмника → чтение источника →
-    // conditional → резолв/лимит диапазона → срез по границам частей в part.N.tmp →
-    // коммит части (механика UploadPart).
-    public async Task<PutResult> UploadPartCopyAsync(PartCopyRequest request, CancellationToken ct)
-    {
-        // 1. Приёмник
-        EnsureBucket(request.DestBucket);
-        ResolveUploadOrThrow(request.DestBucket, request.DestKey, request.UploadId, visibility: null);
-        // 2. Источник
-        EnsureBucket(request.SourceBucket);
-        XlMetaRecord src;
-        try
-        {
-            src = XlMetaFile.Read(ObjectDir(request.SourceBucket, request.SourceKey), out var fromBackup);
-            if (fromBackup)
-                _logger.LogWarning("xl.meta источника {Bucket}/{Key} прочитан из страховочной копии",
-                    request.SourceBucket, request.SourceKey);
-        }
-        catch (FileNotFoundException)
-        {
-            throw new ObjectStoreException(ObjectStoreErrorCode.NoSuchKey);
-        }
-        // 3. Conditional источника (copy — не GET/HEAD; провал → 412, как CopyObject t37)
-        var outcome = ConditionalEvaluator.Evaluate(request.SourceConditions, src.ETag, src.ModTime,
-            ifModifiedSinceApplies: false);
-        if (outcome != ConditionalOutcome.Proceed)
-            throw new ObjectStoreException(ObjectStoreErrorCode.PreconditionFailed);
-        // 4. Резолв диапазона: null → весь объект; выход за размер → InvalidArgument;
-        //    длина > MaxPartSize → EntityTooLarge (ДО чтения данных)
-        long start, end;
-        if (request.SourceRange is { } range)
-        {
-            (start, end) = (range.Start!.Value, range.End!.Value);
-            if (start >= src.Size || end >= src.Size)
-                throw new XlInvalidArgumentException(
-                    $"Диапазон копирования [{start}, {end}] выходит за размер источника {src.Size}");
-        }
-        else
-        {
-            (start, end) = (0, src.Size - 1);
-        }
-        var length = end - start + 1;
-        if (length > MaxPartSize)
-            throw new ObjectStoreException(ObjectStoreErrorCode.EntityTooLarge);
-        // 5. Срез источника → part.N.tmp приёмника (MD5-инкремент + счётчик + fsync)
-        var keyDir = MultipartJournals.KeyDir(volume.MultipartDir, request.DestBucket, request.DestKey);
-        var uploadDir = MultipartJournals.UploadDirPath(keyDir, request.UploadId);
-        var tmpPath = Path.Combine(uploadDir, MultipartJournals.PartTmpFileNameUnique(request.PartNumber));
-        var (etagHex, total) = await CopySliceToFileAsync(
-            ObjectDir(request.SourceBucket, request.SourceKey), src.DataDirName, start, length, tmpPath);
-        // 6. Коммит части (rename + upsert parts.json под _commitLock)
-        var modTime = timeProvider.GetUtcNow();
-        lock (_commitLock)
-        {
-            CommitPartFile(uploadDir, request.PartNumber, tmpPath, etagHex, total, modTime);
-        }
-        // 7. Возврат
-        return new PutResult('"' + etagHex + '"', modTime);
-    }
-
-    // Срез источника по границам частей (спека §4.3): маппинг offset → части,
-    // последовательное чтение ровно length байтов с записью в часть приёмника.
-    private static async Task<(string ETagHex, long Total)> CopySliceToFileAsync(
-        string sourceObjectDir, string sourceDataDirName, long start, long length, string destPath)
-    {
-        using var md5 = IncrementalHash.CreateHash(HashAlgorithmName.MD5);
-        long copied = 0;
-        using (var file = new FileStream(destPath, FileMode.Create, FileAccess.Write, FileShare.None))
-        {
-            var buffer = new byte[64 * 1024];
-            foreach (var (_, partPath, partSize) in EnumerateDataParts(sourceObjectDir, sourceDataDirName))
-            {
-                if (start >= partSize)
-                {
-                    start -= partSize; // диапазон начинается дальше этой части
-                    continue;
-                }
-                using var src = new FileStream(partPath, FileMode.Open, FileAccess.Read, FileShare.Read);
-                src.Seek(start, SeekOrigin.Begin);
-                start = 0;
-                while (copied < length)
-                {
-                    var want = (int)Math.Min(buffer.Length, length - copied);
-                    var read = await src.ReadAsync(buffer.AsMemory(0, want));
-                    if (read == 0)
-                        break; // часть исчерпана — следующая
-                    file.Write(buffer, 0, read);
-                    md5.AppendData(buffer, 0, read);
-                    copied += read;
-                }
-                if (copied >= length)
-                    break;
-            }
-            file.Flush(flushToDisk: true);
-        }
-        if (copied != length)
-            throw new XlIntegrityException($"Срез источника короче заявленного: {copied} из {length}");
-        return (Convert.ToHexString(md5.GetHashAndReset()).ToLowerInvariant(), copied);
     }
 
     // Тест-хук сбоя между переносом частей и коммитом (по образцу HardLinkProbe t37):

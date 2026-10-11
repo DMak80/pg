@@ -77,37 +77,21 @@ public static class OperationValidation
         return directive;
     }
 
-    // x-amz-copy-source: /<bucket>/<key>, URL-декодированный (глава 02).
+    // x-amz-copy-source: <bucket>/<key> или /<bucket>/<key>, URL-декодированный
+    // (глава 02; AWS SDK .NET шлёт без ведущего слэша — обе формы принимаются).
     public static (string Bucket, string Key) ParseCopySource(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
             throw new S3ProtocolException(S3ErrorCode.InvalidArgument, "Copy Source must mention the source bucket and key");
         var decoded = Uri.UnescapeDataString(value);
-        if (!decoded.StartsWith('/') || decoded.Length < 3)
+        if (decoded.StartsWith('/'))
+            decoded = decoded[1..];
+        if (decoded.Length < 3)
             throw new S3ProtocolException(S3ErrorCode.InvalidArgument, "Copy Source must mention the source bucket and key");
-        var slash = decoded.IndexOf('/', 1);
-        if (slash < 0 || slash == decoded.Length - 1)
+        var slash = decoded.IndexOf('/');
+        if (slash <= 0 || slash == decoded.Length - 1)
             throw new S3ProtocolException(S3ErrorCode.InvalidArgument, "Copy Source must mention the source bucket and key");
-        return (decoded[1..slash], decoded[(slash + 1)..]);
-    }
-
-    // x-amz-copy-source-range: bytes=a-b; невалидный синтаксис или a > b —
-    // InvalidArgument (обе причины в один код; глава 02 UploadPartCopy).
-    public static Storage.ByteRange? ParseCopySourceRange(string? value)
-    {
-        if (value is null)
-            return null;
-        if (!value.StartsWith("bytes=", StringComparison.Ordinal))
-            throw new S3ProtocolException(S3ErrorCode.InvalidArgument, "The x-amz-copy-source-range value is invalid");
-        var spec = value["bytes=".Length..];
-        var dash = spec.IndexOf('-');
-        if (dash <= 0 || dash == spec.Length - 1)
-            throw new S3ProtocolException(S3ErrorCode.InvalidArgument, "The x-amz-copy-source-range value is invalid");
-        if (!long.TryParse(spec[..dash], NumberStyles.Integer, CultureInfo.InvariantCulture, out var start)
-            || !long.TryParse(spec[(dash + 1)..], NumberStyles.Integer, CultureInfo.InvariantCulture, out var end)
-            || start < 0 || end < 0 || start > end)
-            throw new S3ProtocolException(S3ErrorCode.InvalidArgument, "The x-amz-copy-source-range value is invalid");
-        return new Storage.ByteRange(start, end);
+        return (decoded[..slash], decoded[(slash + 1)..]);
     }
 
     // Range Get/Head: одиночная спецификация распознаётся (bytes=a-b | a- | -N);

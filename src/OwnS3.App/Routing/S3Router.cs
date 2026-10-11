@@ -2,7 +2,7 @@ using OwnS3.Protocol.Requests;
 
 namespace OwnS3.App.Routing;
 
-// Роутер 22 операций (arch/owns3/02; порядок специфичное→общее — референс
+// Роутер 21 операции (arch/owns3/02; порядок специфичное→общее — референс
 // api-router.go): path-style разбор, query-дискриминаторы по наличию ключа,
 // заголовочный дискриминатор x-amz-copy-source. Вне-наборные сабресурсы
 // (глава 02 §1) и attributes-на-не-GET → RejectedSubresource (501 до аутентификации);
@@ -74,7 +74,6 @@ public static class S3Router
                 _ => new S3Route(S3Operation.GetObject, path.Bucket, path.Key, null),
             },
             "HEAD" => new S3Route(S3Operation.HeadObject, path.Bucket, path.Key, null),
-            "PUT" when hasPartNumber && hasUploadId && copySource => new S3Route(S3Operation.UploadPartCopy, path.Bucket, path.Key, null),
             "PUT" when hasPartNumber && hasUploadId => new S3Route(S3Operation.UploadPart, path.Bucket, path.Key, null),
             "PUT" when copySource => new S3Route(S3Operation.CopyObject, path.Bucket, path.Key, null),
             "PUT" => new S3Route(S3Operation.PutObject, path.Bucket, path.Key, null),

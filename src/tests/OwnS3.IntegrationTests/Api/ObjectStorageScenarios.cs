@@ -132,6 +132,18 @@ public sealed class ObjectStorageScenarios(OwnS3AppFactory factory) : IClassFixt
         multiXml.Root.Elements().Where(e => e.Name.LocalName == "Deleted")
             .Select(e => e.Element(S3Ns + "Key")!.Value).Should().Equal("copy-key", "no-such");
 
+        // DeleteObjects без xmlns (mc/minio-go, образец 03 §4) — нормализация
+        // корня хендлером: тот же исход, что у ns-формы AWS-клиентов
+        await client.SendSignedAsync("PUT", "/b-cycle/bare-ns",
+            body: Encoding.UTF8.GetBytes("x"));
+        var bareNs = """<Delete><Object><Key>bare-ns</Key></Object><Quiet>true</Quiet></Delete>""";
+        var bareDelete = await client.SendSignedAsync("POST", "/b-cycle?delete",
+            body: Encoding.UTF8.GetBytes(bareNs));
+        bareDelete.StatusCode.Should().Be(HttpStatusCode.OK);
+        var afterBare = await client.SendSignedAsync("GET", "/b-cycle/bare-ns");
+        afterBare.StatusCode.Should().Be(HttpStatusCode.NotFound,
+            "без-ns multi-delete удаляет объект (как mc rm)");
+
         // остатний объект (юникод-ключ) — удалить перед удалением бакета
         await client.SendSignedAsync("DELETE", "/b-cycle/nested/caf%C3%A9.txt");
 
@@ -205,18 +217,6 @@ public sealed class ObjectStorageScenarios(OwnS3AppFactory factory) : IClassFixt
         // Assert
         failed.StatusCode.Should().Be(HttpStatusCode.PreconditionFailed);
         (await ErrorXmlAsync(failed)).Should().Be("PreconditionFailed");
-
-        // Act: If-Range совпал → 206; не совпал → 200 полным
-        var ifRangeMatch = await client.SendSignedAsync("GET", "/b-cond/c",
-            headers: new Dictionary<string, string> { ["Range"] = "bytes=2-3", ["If-Range"] = etag });
-        var ifRangeMiss = await client.SendSignedAsync("GET", "/b-cond/c",
-            headers: new Dictionary<string, string> { ["Range"] = "bytes=2-3", ["If-Range"] = "\"other\"" });
-
-        // Assert
-        ifRangeMatch.StatusCode.Should().Be(HttpStatusCode.PartialContent);
-        (await BodyAsync(ifRangeMatch)).Should().Be("ll"); // bytes 2-3 объекта «hello»
-        ifRangeMiss.StatusCode.Should().Be(HttpStatusCode.OK);
-        (await BodyAsync(ifRangeMiss)).Should().Be("hello");
     }
 
     [Fact]

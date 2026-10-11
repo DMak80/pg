@@ -249,13 +249,6 @@ public sealed class CopyObjectResult
     public string ETag { get; set; } = "";
 }
 
-[XmlRoot("CopyPartResult", Namespace = S3XmlNamespace.Value)]
-public sealed class CopyPartResult
-{
-    public string LastModified { get; set; } = "";
-    public string ETag { get; set; } = "";
-}
-
 [XmlRoot("GetObjectAttributesOutput", Namespace = S3XmlNamespace.Value)]
 public sealed class GetObjectAttributesOutput
 {

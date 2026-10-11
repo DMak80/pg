@@ -136,7 +136,7 @@ AWS4-HMAC-SHA256.») — семантика «механизм не поддер
 - **Разрешённые операции через presigned** — ровно потребности
   клиентов бэкапов и `mc` (критерий — стандарт S3 допускает per-API
   ограничение): `GetObject`, `PutObject`, `DeleteObject`, `HeadObject`,
-  `CreateMultipartUpload`, `UploadPart`, `UploadPartCopy`,
+  `CreateMultipartUpload`, `UploadPart`,
   `CompleteMultipartUpload`, `AbortMultipartUpload`, `ListParts`.
   Обращение прочих операций через presigned → **400**
   `AuthorizationQueryParametersError`.
@@ -211,7 +211,7 @@ AWS4-HMAC-SHA256-PAYLOAD\n<date>\n<scope>\n<подпись чанка N-1>\n<sha
 использовать подписанный trailer-режим
 (`STREAMING-AWS4-HMAC-SHA256-PAYLOAD-TRAILER`, поддерживается).
 Иначе PUT завершится 400 `InvalidRequest` — это требуется учесть
-при приёмке t39 (настройка клиентов бэкапов и `mc`).
+при приёмке клиентами (настройка клиентов бэкапов и `mc`).
 
 **Невалидный синтаксис aws-chunked-фрейма** → **400** `InvalidRequest`
 (Message «Malformed chunked encoding»); **лимит одного чанка — 16 МиБ**
@@ -287,7 +287,6 @@ application/xml` — у всех XML-ответов (charset UTF-8). Кодир�
 
 <!-- копирование и атрибуты -->
 <CopyObjectResult><LastModified>…</LastModified><ETag>"…"</ETag></CopyObjectResult>
-<CopyPartResult><LastModified>…</LastModified><ETag>"…"</ETag></CopyPartResult>
 <GetObjectAttributesOutput><ETag>"…"</ETag><ObjectSize>…</ObjectSize>
   <StorageClass>STANDARD</StorageClass>
   <ObjectParts><PartsCount>1</PartsCount><PartNumberMarker>0</PartNumberMarker>
@@ -363,6 +362,12 @@ application/xml` — у всех XML-ответов (charset UTF-8). Кодир�
   path-style по умолчанию). Запрос с virtual-host-закодированным бакетом
   (бакет в первом сегменте домена) маршрутизируется как path-style —
   бакет из host не извлекается (критерий — решения главы 01).
+- Путь `/{bucket}/` (trailing slash, пустой ключ) — bucket-level запрос:
+  пустой ключ трактуется как его отсутствие (прецедент S3/MinIO; реальные
+  клиенты — AWS SDK .NET `CreateBucket`, mc probe — шлют именно так).
+  Ключи с внутренними пустыми сегментами (`a//b`) — прежняя семантика
+  (пустые сегменты сохраняются); подпись не затрагивается — canonical URI
+  строится из raw-target.
 - **HTTP/1.1 — основной транспорт**. HTTP/2 при Kestrel
   (h2c cleartext / за терминирующим прокси) **принимается**: семантика
   всех операций и подписи неизменна (подпись не зависит от версии
@@ -383,7 +388,7 @@ application/xml` — у всех XML-ответов (charset UTF-8). Кодир�
 аутентификации (CORS-модели нет; критерий — референс: ранний `return` в
 `errorResponseHandler`).
 
-**Запрос, не матчатщийся ни на одну из 22 операций** (метод+path+query), и
+**Запрос, не матчатщийся ни на одну из 21 операции** (метод+path+query), и
 запрос с известным путём, но неподдерживаемым методом → **400**
 `InvalidArgument` (Message «Unsupported request»); отдельный код не
 заводится (критерий — референс: `ErrUnknownAPIRequest` 400; простота).

@@ -180,7 +180,10 @@ public static class ObjectHandlers
             var body = new HashingBodyStream(context.Http.Body, null,
                 context.Http.Headers.ContentMD5.ToString() is { Length: > 0 } md5 ? md5 : null);
             using var reader = new StreamReader(body);
-            var request = S3Xml.Deserialize<DeleteRequest>(await reader.ReadToEndAsync(ct));
+            // mc/minio-go шлют Delete-XML без xmlns (образец 03 §4) —
+            // нормализация корня; ns-форма AWS-клиентов не затрагивается.
+            var manifestXml = S3Xml.EnsureRootNamespace(await reader.ReadToEndAsync(ct), "Delete");
+            var request = S3Xml.Deserialize<DeleteRequest>(manifestXml);
             var keys = request.Objects.Select(o => o.Key).ToList();
             OperationValidation.ValidateDeleteKeys(keys.Count);
 
@@ -318,7 +321,7 @@ public static class ObjectHandlers
         return new ObjectUploadMetadata(contentType, userMetadata);
     }
 
-    // Опции чтения: conditional + Range + If-Range (парсинг формата; оценка — Storage).
+    // Опции чтения: conditional + Range (парсинг формата; оценка — Storage).
     internal static ObjectReadOptions ReadOptions(S3HandlerContext context)
     {
         ObjectConditions? conditions = null;
@@ -333,8 +336,7 @@ public static class ObjectHandlers
                 ifModifiedSince, ifUnmodifiedSince);
 
         var range = OperationValidation.ParseRange(context.Http.Headers.Range.ToString());
-        var ifRange = context.Http.Headers["If-Range"].FirstOrDefault();
-        return new ObjectReadOptions(conditions, range, ifRange is { Length: > 0 } ? ifRange : null);
+        return new ObjectReadOptions(conditions, range);
     }
 
     // response-*: переопределения заголовков ответа (любой подписанный GET, глава 02).

@@ -122,7 +122,10 @@ public static class TestSigV4Signer
     {
         body.Write(Encoding.ASCII.GetBytes($"{size:x};chunk-signature={signature}\r\n"));
         body.Write(chunk);
-        body.Write(Encoding.ASCII.GetBytes("\r\n"));
+        // Терминатор данных — только у НЕПУСТЫХ чанков (канон 03 §3: после
+        // 0-чанка сразу идут трейлеры TRAILER-режима / конец потока).
+        if (size > 0)
+            body.Write(Encoding.ASCII.GetBytes("\r\n"));
     }
 
     private static byte[] Hmac(byte[] key, byte[] data) => HMACSHA256.HashData(key, data);

@@ -47,7 +47,7 @@ internal static class MultipartJournals
     public static string PartTmpFileName(int partNumber) => $"part.{partNumber}.tmp";
 
     // Уникальный tmp на попытку записи части (ревью t38): параллельные
-    // UploadPart/UploadPartCopy одного partNumber пишут в РАЗНЫЕ tmp-файлы —
+    // UploadPart одного partNumber пишут в РАЗНЫЕ tmp-файлы —
     // без IOException у второго writer'а; результат линеаризуется rename'ом
     // под _commitLock (last-writer-wins, спека §2.4).
     public static string PartTmpFileNameUnique(int partNumber) =>

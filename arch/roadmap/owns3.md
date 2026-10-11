@@ -11,19 +11,19 @@
 переноса его механики целиком (раскладка хранения на диске —
 единственное, что берётся у MinIO сознательно, см. границы этапа).
 
-ownS3 — целевое S3-хранилище подсистемы бэкапов: после приёмки t39
-оно вытесняет MinIO (клиенты переключаются env-endpoint'ом, без
-изменений кода клиентов); миграция данных MinIO→ownS3 — задача
-`t41-owns3-minio-migration`. Трек [s3.md](s3.md) (t31–t34,
-MinIO-кластера) живёт параллельно на переходный период.
+ownS3 — целевое S3-хранилище подсистемы бэкапов: после приёмочной
+грани клиентами оно вытесняет MinIO (клиенты переключаются
+env-endpoint'ом, без изменений кода клиентов); миграция данных
+MinIO→ownS3 — задача `t41-owns3-minio-migration`. Трек [s3.md](s3.md)
+(t31–t34, MinIO-кластера) живёт параллельно на переходный период.
 
 Границы начального этапа:
 
-- **22 операции**: объекты PutObject/GetObject/HeadObject/DeleteObject/
+- **21 операция**: объекты PutObject/GetObject/HeadObject/DeleteObject/
   DeleteObjects/CopyObject/GetObjectAttributes; листинги
   ListObjects(v1)/ListObjectsV2/ListObjectVersions; бакеты
   CreateBucket/DeleteBucket/HeadBucket/ListBuckets/GetBucketLocation;
-  multipart CreateMultipartUpload/UploadPart/UploadPartCopy/
+  multipart CreateMultipartUpload/UploadPart/
   CompleteMultipartUpload/AbortMultipartUpload/ListParts/
   ListMultipartUploads. Сабресурсы объекта (ACL/tagging/lock/…),
   конфигурации бакета (versioning/lifecycle/replication/…) и S3-Express
@@ -55,16 +55,9 @@ multipart → приёмка клиентами → erasure coding.
 
 ## Задачи
 
-- **`t39-owns3-e2e`** — приёмочная грань:
-  интеграционные/E2E тесты реальными клиентами (AWS SDK .NET — простые
-  PUT/GET, multipart, conditional, Range; `mc`), dev-стенд сервис в
-  докере (образ — по правилам E2E-образов (сборка .NET на хосте,
-  publish-COPY; локально собираемый образ в registry не кладётся),
-  env-секреты), health/метрики;
-  изоляция и зачистка контуров — по канонам E2E проекта.
-- **`t40-owns3-erasure-coding`** ← `t39-owns3-e2e` — хранение с
+- **`t40-owns3-erasure-coding`** — хранение с
   кодами Рида—Соломона по образцу MinIO (в начальной версии
-  t36–t39 не реализуется): multi-drive тома и erasure-сеты,
+  не реализуется): multi-drive тома и erasure-сеты,
   распределение объектов по сетам (у MinIO — SIPMOD+PARITY),
   кодирование/декодирование шардов data+parity, кворумы записи/чтения,
   работа в деградации (потеря дисков до parity), bitrot-контроль
@@ -74,11 +67,11 @@ multipart → приёмка клиентами → erasure coding.
   задачи. Референс: `cmd/erasure-coding.go`, `cmd/erasure-encode.go`,
   `cmd/erasure-decode.go`, `cmd/erasure-sets.go`,
   `cmd/erasure-object.go`, `cmd/format-erasure.go`.
-- **`t41-owns3-minio-migration`** ← `t39-owns3-e2e` — перевод
+- **`t41-owns3-minio-migration`** — перевод
   подсистемы бэкапов с MinIO на ownS3: выбор пути (перезаливка цепочек
   бэкапов / `mc mirror` / новый цикл ретенции), гонка двух хранилищ
   на переход, критерий готовности к отказу от MinIO; состав
   фиксируется спекой t41.
-- **`t42-owns3-tls`** ← `t39-owns3-e2e` — TLS-опция S3-грани:
+- **`t42-owns3-tls`** — TLS-опция S3-грани:
   per-install сертификат, режим HTTP-only для стенда, доверие CA у
   клиентов (SDK бэкапов, `mc`).

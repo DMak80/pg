@@ -9,7 +9,7 @@ using OwnS3.Storage;
 namespace OwnS3.App.Handlers;
 
 // Multipart-операции (глава 02 §5): CreateMultipartUpload, UploadPart,
-// UploadPartCopy, CompleteMultipartUpload, AbortMultipartUpload, ListParts,
+// CompleteMultipartUpload, AbortMultipartUpload, ListParts,
 // ListMultipartUploads. Протокольные контуры t36; дисковая механика — t38.
 public static class MultipartHandlers
 {
@@ -66,41 +66,6 @@ public static class MultipartHandlers
             // Respond: 200 + ETag части
             context.Response.StatusCode = 200;
             context.Response.Headers.ETag = result.ETag;
-        }
-    }
-
-    public sealed class UploadPartCopyHandler(IObjectStore store) : OperationHandlerBase(store)
-    {
-        public override S3Operation Operation => S3Operation.UploadPartCopy;
-
-        public override async Task HandleAsync(S3HandlerContext context, CancellationToken ct)
-        {
-            // Validate: partNumber + источник (copy-source, copy-source-range)
-            BucketHandlers.EnsureBucketName(context.Bucket);
-            ObjectHandlers.EnsureObjectKey(context.Key);
-            var partNumber = OperationValidation.ParsePartNumber(QueryValue(context, "partNumber"));
-            var uploadId = RequiredQuery(context, "uploadId");
-            var (sourceBucket, sourceKey) = OperationValidation.ParseCopySource(
-                context.Http.Headers["x-amz-copy-source"].FirstOrDefault());
-            var sourceRange = OperationValidation.ParseCopySourceRange(
-                context.Http.Headers["x-amz-copy-source-range"].FirstOrDefault());
-
-            // Act
-            var result = await Store.UploadPartCopyAsync(new PartCopyRequest(
-                sourceBucket, sourceKey, context.Bucket, context.Key, uploadId, partNumber,
-                sourceRange,
-                new ObjectConditions(
-                    context.Http.Headers["x-amz-copy-source-if-match"].FirstOrDefault(),
-                    context.Http.Headers["x-amz-copy-source-if-none-match"].FirstOrDefault(),
-                    OperationValidation.ParseHttpDate(context.Http.Headers["x-amz-copy-source-if-modified-since"].FirstOrDefault()),
-                    OperationValidation.ParseHttpDate(context.Http.Headers["x-amz-copy-source-if-unmodified-since"].FirstOrDefault()))), ct);
-
-            // Respond: CopyPartResult (LastModified — modTime части, не UtcNow)
-            await context.WriteXmlAsync(S3Xml.Serialize(new CopyPartResult
-            {
-                LastModified = S3HandlerContext.FormatDate(result.LastModified),
-                ETag = result.ETag,
-            }), ct);
         }
     }
 
