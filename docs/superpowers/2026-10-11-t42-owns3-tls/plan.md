@@ -1146,6 +1146,27 @@ public static class BackupCaPem
 
 ---
 
+### Task 3b/5b (fallback): SDK-доверие CA фабрикой HttpClient — вскрыто E2E, одобрено пользователем
+
+E2E шага 5.2 вскрыл: AWSSDK.Core (3.7.511.8/3.7.501.1) env `AWS_CA_BUNDLE` НЕ
+читает (строки в сборке отсутствуют; соединение с per-install CA даёт
+`PartialChain`). Spec §5 на этот случай описывает fallback: программная
+валидация цепочки CA в фабрике HttpClient BackupS3 (локализованная правка,
+CA тот же) — реализован вместо «BackupS3 не меняется»:
+
+- [ ] **Шаг F1.** `src/PgWorker.Backups/S3CaHttpClientFactory.cs` — фабрика SDK:
+  `CreateHttpClient` с `RemoteCertificateValidationCallback` — корень цепочки
+  (ExtraStore с CA; macOS без стора строит цепочку leaf-only — эмпирика)
+  == отпечаток per-install CA. BackupS3 при `S3CaBundlePath` ставит фабрику
+  (CA — `TlsMaterial.LoadPem(BackupCaPem.ReadIfConfigured(...))`; нечитаемый
+  файл — исключение с диагностикой). Program воркера и WalReceiver больше не
+  выставляют `AWS_CA_BUNDLE` (WalReceiver материализует PEM в файл и передаёт
+  путь в `BackupsRuntimeOptions.S3CaBundlePath`). Юниты `BackupS3CaTests`.
+- [ ] **Шаг F2.** E2E `OwnS3E2eClients.CreateS3(TLS-fx, …)` — тестовое зеркало
+  фабрики (`TlsCaHttpClientFactory`); SDK-сценарий 5.2 — smoke тем же механизмом.
+
+---
+
 ## Self-Review (выполнен при составлении, обновлён по итогам четырёх проходов независимого ревью)
 
 1. **Покрытие спеки:** §3.1 → Task 1; §3.2 → Task 2 (шаг 2.1); §3.3 → Task 2 (шаги 2.2, 6.4); §3.4 → Tasks 3–4 (воркер шаг 3.2, спеки/агент/приёмник/bash шаги 4.1–4.4, вкл. VerifyJobSpec-кейсы шага 4.2); §3.5 → Task 5 + Task 6; AC1 → 1.4/1.5/6.1/6.2; AC2 → 5.2–5.4; AC3 → 1.1/1.2 (юниты резолвера) + 5.4(3) (docker-кейс Program-ветки Critical+exit≠0 — WAF неприменим, см. Global Constraints); AC4 → 2.1; AC5 → 3.1–3.2/4.1–4.4; AC6 → 2.2/6.4; AC7 → 5.1–5.5/6.2; AC8 → 6.3. Env-биндинги `OWNS3_TLS_*` (spec §3.5 «юниты env-биндингов») — юнитами недостижимы (top-level Program.cs): покрыты end-to-end шагом 5.1 (контейнер поднимается по `OWNS3_TLS_*_PATH`) и 5.4(3) (`OWNS3_TLS_CERT`) — подмена зафиксирована в шаге 1.4, по образцу существующих env-секций. Не-цели спеки (mTLS, vhost-style, второй порт, стендовый TLS-сервис, t41) — в план не входят, задач нет — верно.

@@ -8,6 +8,8 @@
         <ProjectReference Include="..\PgWorker.Etcd\PgWorker.Etcd.csproj"/>
         <ProjectReference Include="..\PgWorker.Docker\PgWorker.Docker.csproj"/>
         <ProjectReference Include="..\PgWorker.Provisioning\PgWorker.Provisioning.csproj"/>
+        <!-- t42: TlsMaterial.LoadPem — материал CA для S3CaHttpClientFactory (spec §5). -->
+        <ProjectReference Include="..\Shared.Tls\Shared.Tls.csproj"/>
     </ItemGroup>
 
     <ItemGroup>

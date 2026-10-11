@@ -93,6 +93,13 @@ public sealed class BackupS3 : IBackupS3, IAsyncDisposable
             AuthenticationRegion = options.S3Region,
             Timeout = timeout,
         };
+        // Доверие CA https S3-endpoint (t42, spec §5 fallback): AWSSDK.Core env
+        // AWS_CA_BUNDLE не читает (доказано E2E t42) — per-install CA доверяется
+        // фабрикой HttpClient. Путь не задан (http-endpoint) — прежнее поведение.
+        // Нечитаемый/пустой файл CA — исключение с диагностикой (BackupCaPem).
+        if (!string.IsNullOrWhiteSpace(options.S3CaBundlePath))
+            config.HttpClientFactory = new S3CaHttpClientFactory(
+                Shared.Tls.TlsMaterial.LoadPem(BackupCaPem.ReadIfConfigured(options)!));
         _client = new AmazonS3Client(
             new BasicAWSCredentials(options.S3AccessKey, options.S3SecretKey), config);
     }
