@@ -171,10 +171,10 @@ echo "  образ pgworker-backup:dev готов"
 #     ходят в as-etcd-1/2/3 через хост (PGW_ETCD_ENDPOINT_0..2=
 #     host.docker.internal:2379/2381/2383 — дефолты deploy/docker-compose.yml,
 #     t09; advertise as-etcd-1/2/3); Patroni-ноды, которые он создаёт, ходят
-#     в DCS по тому же advertise. Контейнеры deploy подняты ДО стендового
-#     компоуза (§1b-ранний — сеть pgw-metrics внешняя для прометея); здесь —
-#     проверки живости (нужен собранный etcd-кворум выше). Поднимается до
-#     сида: pg-сид наливается его API POST /api/seed/demo (spec §3.5).
+#     в DCS по тому же advertise. Порядок подъёма: стендовый компоуз —
+#     владелец сети adminpanel-stand-net (выше); deploy-контур подключается
+#     к ней external (contour-override). Здесь — проверки живости (нужен
+#     собранный etcd-кворум выше); demo создаётся ниже (1c, POST /api/clusters).
 MTLS="curl -fsS -m 3 --cacert $ROOT/deploy/tls/ca.pem --cert $ROOT/deploy/tls/healthcheck.crt --key $ROOT/deploy/tls/healthcheck.key"
 for i in $(seq 1 60); do $MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null 2>&1 && break; sleep 1; done
 $MTLS https://localhost:${PGW_API_HOST_PORT:-8080}/healthz >/dev/null \

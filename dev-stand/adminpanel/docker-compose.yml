@@ -97,10 +97,11 @@ services:
     volumes:
       - etcd3-data:/var/etcd/data
 
-  # MinIO — S3-хранилище бэкапов (arch/19 §5, t01): каркас подсистемы в
-  # стенде; PgWorker (deploy-проект) ходит публикацией host:9000. Креды —
-  # стендовые дефолты (ТОЛЬКО локальный стенд; прод — per-install S3, arch/19
-  # §7). Bucket pgworker-backups создаёт 00-up.sh (mc mb, идемпотентно).
+  # MinIO — переходный read-only-архив бэкапов (arch/19 §5): подсистема
+  # бэкапов пишет в ownS3 (deploy-проект, alias owns3:9000 в стендовой сети);
+  # as-minio новых объектов не получает, bucket в нём не сидится (критерий
+  # сноса — docs/owns3-migration.md §7). Креды — стендовые дефолты (ТОЛЬКО
+  # локальный стенд; прод — per-install S3, arch/19 §7).
   minio:
     image: minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: as-minio
@@ -390,12 +391,7 @@ services:
     environment:
       METRICS_ALERT_WEBHOOK_URL: ${METRICS_ALERT_WEBHOOK_URL:-}
 
-# Внешняя сеть контура мониторинга (t15, arch/18 §5.4): владелец —
-# deploy-compose (создаёт при up, сносит при down); стендовый Prometheus
-# аттачит её для скрейпа pgworker/pgworker-2/patroni-nodes. 00-up.sh
-# поднимает deploy-контур ДО стендового компоуза — сеть существует к
-# external-attach; 90-down.sh разбирает в обратном порядке.
-# Стенд — ОДИН контур = ОДНА сеть (t41, arch/adminpanel/04 §2.3): в ней ВСЕ
+# Стенд — ОДИН контур = ОДНА сеть (arch/adminpanel/04 §2.3): в ней ВСЕ
 # контейнеры стенда; deploy-проект подключается external
 # (docker-compose.contour.yml). Явное имя — для PGW_CONTOUR_NETWORK.
 networks:
