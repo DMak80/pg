@@ -228,8 +228,9 @@ public sealed class BackupProcess(
 
             // Режим сети контура (t41, arch/14 §2.1/§19 §2): адрес источника
             // канонической ноды — её имя в сети контура :5432 (симметрия
-            // ResolveNodeRef §3); усыновлённая (object)/прод — portalloc-адрес.
-            var jobSource = options.ContourNetwork is { Length: > 0 } && nodeKv.Key is not null
+            // ResolveNodeRef §3 и повтора/активного тика ниже); object-нода
+            // (усыновлённая) — portalloc-адрес, прод — portalloc-адрес.
+            var jobSource = options.ContourNetwork is { Length: > 0 } && nodeKv.Key is not null && nodeKv.Value.Object is null
                 ? source.Value with { Host = node, Ports = source.Value.Ports with { Pg = 5432 } }
                 : source.Value;
 

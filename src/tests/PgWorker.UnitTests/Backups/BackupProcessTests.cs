@@ -487,6 +487,36 @@ public Task<Result<IReadOnlyList<string>>> ListNodeObjectsAsync(string cluster, 
         spec.Env!["PGW_BK_DSN"].Should().Contain("port=15433");
     }
 
+    // AAA (t41): плановый тик — контур-DSN с именем ноды :5432 ТОЛЬКО для
+    // канонической ноды portalloc (симметрия повтора/активного тика);
+    // object-нода (усыновлённая) остаётся на portalloc-адресе.
+    [Fact]
+    public async Task PlannedTick_ContourDsn_OnlyCanonicalNode()
+    {
+        // Arrange — portalloc с object-нодами (усыновлённые, arch/14 §5 J);
+        // мастер-ключ — имя ноды:doorman0 (резолв byName, как у усвоенных стендов).
+        var etcd = new Fakes.FakeEtcd();
+        var rig = await NewRig(etcdOverride: etcd,
+            options: new BackupsRuntimeOptions { Enabled = true, ContourNetwork = "adminpanel-stand-net" });
+        var alloc = new Dictionary<string, NodeAddress>
+        {
+            ["shard1/shard1a"] = new("local", new NodePorts(15433, 18011, 0), Object: "as-shard1a"),
+            ["shard1/shard1b"] = new("local", new NodePorts(15434, 18012, 0), Object: "as-shard1b"),
+        };
+        etcd.Seed("/pgworker/portalloc/shop", Portalloc.Serialize(alloc));
+        etcd.Seed("/clusters/shop/shards/shard1/master", "shard1a:0");
+
+        // Act — тик планировщика полных (COMPLETED нет → due): джоб создаётся.
+        (await rig.Process.TickAsync(await Snapshot(rig.Etcd), [], CancellationToken.None))
+            .IsSuccess.Should().BeTrue();
+
+        // Assert — DSN джоба: portalloc-адрес object-ноды (local:15433),
+        // НЕ имя ноды :5432 сети контура
+        var (_, spec) = rig.Engine.Created.Should().ContainSingle().Subject;
+        spec.Env!["PGW_BK_DSN"].Should().Contain("host=local");
+        spec.Env!["PGW_BK_DSN"].Should().Contain("port=15433");
+    }
+
     // Счётчик прогресс-отметок (аудит долгих фаз, код-ревью B3).
     private sealed class MarkCounter : Shared.Core.Hosting.ILoopProgress
     {
