@@ -23,7 +23,8 @@ public sealed class ReplicationCoordinator(ReplicationTargets targets, OutboxJou
     TargetCursors cursors, IReplicationTransport transport, ReplicaApplier applier,
     FetchQueueRegistry queues,
     IOutcomeCounters counters, ReplicationState state, ReplicationMaintenance maintenance,
-    ReplicationOptions options, string originHostId, Func<long> getFreeDiskBytes,
+    Reconcile.ReconcileRunner reconcile, ReplicationOptions options, string originHostId,
+    Func<long> getFreeDiskBytes,
     TimeProvider timeProvider, ILogger<ReplicationCoordinator> logger,
     ReplicationMetrics metrics, ILogger<NotificationDispatcher> dispatcherLogger,
     ILogger<ObjectFetcher> fetcherLogger) : BackgroundService
@@ -46,19 +47,21 @@ public sealed class ReplicationCoordinator(ReplicationTargets targets, OutboxJou
 
         // Маркер: при старте — сразу грязный (до готовности, глава 07 §7)
         state.MarkDirty();
-        var dirtyStart = !state.WasCleanShutdown();
-        if (dirtyStart)
+        // Триггеры reconcile главы 07 §9: (2) старт на пустом томе и (3) грязная
+        // остановка — стартовый проход по всем соседям (на пустом томе нет state.json —
+        // маркер грязный — тот же механизм)
+        if (!state.WasCleanShutdown())
         {
-            // Грязная остановка (крах/kill без drain; «пустой том» — тот же маркер):
-            // стартовый reconcile-проход по всем соседям (глава 07 §9, триггеры 2/3 —
-            // вызов ReconcileRunner подключается задачей 13)
             logger.LogWarning("Грязный старт репликации (маркер state.json) — стартовый reconcile по всем соседям");
+            foreach (var neighbor in targets.Snapshot)
+                reconcile.Trigger(neighbor.Name, stoppingToken);
         }
 
         StartExecutors(targets.Snapshot);
+        // Триггер §9 (1): добавление соседа — reconcile по НОВОМУ (в OnTargetsChanged)
         targets.TargetsChanged += OnTargetsChanged;
 
-        // Цикл обслуживания: проход при старте и периодически 60 с (§8-а)
+        // Триггер §9 (4): периодический reconcile по расписанию + цикл обслуживания §8-а
         await RunMaintenanceLoopAsync(stoppingToken);
     }
 
@@ -101,13 +104,22 @@ public sealed class ReplicationCoordinator(ReplicationTargets targets, OutboxJou
                 logger.LogInformation("Сосед {Target} выведен — исполнители остановлены (курсор сохранён)", name);
             }
         }
+        // Добавленные — те, кого ещё нет среди исполнителей (§9 триггер 1)
+        HashSet<string> addedNames;
+        lock (_lock)
+            addedNames = snapshot.Select(t => t.Name).ToHashSet(StringComparer.Ordinal)
+                .Except(_executors.Keys).ToHashSet(StringComparer.Ordinal);
         StartExecutors(snapshot);
+        foreach (var name in addedNames)
+            reconcile.Trigger(name, CancellationToken.None);
     }
 
-    // Цикл обслуживания: проход при старте и каждые 60 с (§8-а; graceful по cancel).
+    // Цикл обслуживания: проход при старте и каждые 60 с (§8-а) + периодический
+    // reconcile раз в ReconcileIntervalHours (§9 триггер 4); graceful по cancel.
     private async Task RunMaintenanceLoopAsync(CancellationToken ct)
     {
         var timerPeriod = MaintenancePeriod;
+        var nextReconcile = timeProvider.GetUtcNow().AddHours(options.ReconcileIntervalHours);
         try
         {
             while (!ct.IsCancellationRequested)
@@ -119,6 +131,12 @@ public sealed class ReplicationCoordinator(ReplicationTargets targets, OutboxJou
                 catch (Exception ex)
                 {
                     logger.LogWarning(ex, "Проход обслуживания репликации не удался");
+                }
+                if (timeProvider.GetUtcNow() >= nextReconcile)
+                {
+                    foreach (var neighbor in targets.Snapshot)
+                        reconcile.Trigger(neighbor.Name, ct);
+                    nextReconcile = timeProvider.GetUtcNow().AddHours(options.ReconcileIntervalHours);
                 }
                 await Task.Delay(timerPeriod, ct);
             }

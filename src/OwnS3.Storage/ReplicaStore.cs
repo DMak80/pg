@@ -103,6 +103,8 @@ public sealed class ReplicaStore(IXlDrive drive, TimeProvider time) : IReplicaSt
         drive.DeleteBucket(bucket);
     }
 
+    public IReadOnlyList<BucketEntry> ListBuckets() => drive.ListBuckets();
+
     // Реплика объекта может прийти раньше события bucket-create (дыра/порядок
     // доставки): бакет создаётся по месту с CreationDate = modTime объекта.
     private void EnsureBucket(string bucket)

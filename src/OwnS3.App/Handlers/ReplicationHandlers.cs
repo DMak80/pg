@@ -91,9 +91,11 @@ public sealed class ReplicationHandlers(ReplicationTargets targets, Notification
         var bucket = context.Request.Query["bucket"].FirstOrDefault();
         if (string.IsNullOrEmpty(bucket))
         {
-            // Ветка без bucket (состав бакетов — backfill) добавляется задачей reconcile (глава 07 §9)
-            context.Response.StatusCode = StatusCodes.Status400BadRequest;
-            await context.Response.WriteAsJsonAsync(new { error = "bucket query parameter required" },
+            // Листинг без bucket — состав бакетов (backfill reconcile, глава 07 §6/§9)
+            var buckets = store.ListBuckets()
+                .Select(b => new BucketEntryDto(b.Name, b.CreationDate.ToUnixTimeMilliseconds())).ToList();
+            context.Response.StatusCode = StatusCodes.Status200OK;
+            await context.Response.WriteAsJsonAsync(new ReplicationBucketsResponse(buckets), Json,
                 context.RequestAborted);
             return;
         }

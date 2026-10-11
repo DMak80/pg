@@ -20,6 +20,7 @@ public sealed class ReplicationMetrics : IOutcomeCounters
     private readonly ConcurrentDictionary<string, long> _fetchQueueDepth = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, double> _fetchLagSeconds = new(StringComparer.Ordinal);
     private readonly ConcurrentDictionary<string, long> _fetchPaused = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, long> _reconcilePosition = new(StringComparer.Ordinal);
 
     private readonly Counter<long> _notified;
     private readonly Counter<long> _retries;
@@ -57,6 +58,9 @@ public sealed class ReplicationMetrics : IOutcomeCounters
         meter.CreateObservableGauge<long>("ownS3.replication.fetch.paused",
             () => _fetchPaused.Select(p => new Measurement<long>(p.Value, new KeyValuePair<string, object?>("source", p.Key))),
             description: "1 — фетчи на паузе (нет места)");
+        meter.CreateObservableGauge<long>("ownS3.replication.reconcile.position",
+            () => _reconcilePosition.Select(p => new Measurement<long>(p.Value, new KeyValuePair<string, object?>("source", p.Key))),
+            description: "Прогресс reconcile (обработано ключей)");
     }
 
     public void SetLinkOnline(string target, bool online) =>
@@ -84,6 +88,9 @@ public sealed class ReplicationMetrics : IOutcomeCounters
 
     public void SetFetchPaused(string source, bool paused) =>
         _fetchPaused[source] = paused ? 1 : 0;
+
+    public void SetReconcilePosition(string source, long processed) =>
+        _reconcilePosition[source] = processed;
 
     public void Fetched(string source) =>
         _fetched.Add(1, new KeyValuePair<string, object?>("source", source));
@@ -118,4 +125,5 @@ public sealed class ReplicationMetrics : IOutcomeCounters
     internal long FetchQueueDepthOf(string source) => _fetchQueueDepth.TryGetValue(source, out var v) ? v : 0;
     internal double FetchLagOf(string source) => _fetchLagSeconds.TryGetValue(source, out var v) ? v : 0;
     internal long FetchPausedOf(string source) => _fetchPaused.TryGetValue(source, out var v) ? v : 0;
+    internal long ReconcilePositionOf(string source) => _reconcilePosition.TryGetValue(source, out var v) ? v : 0;
 }

@@ -219,6 +219,16 @@ builder.Services.AddSingleton<OwnS3.Replication.ReplicationState>(sp => new OwnS
 builder.Services.AddSingleton(sp => new OwnS3.Replication.Cursors.TargetCursors(
     Path.Combine(ReplicationSysDir(sp), "cursors"), sp.GetRequiredService<TimeProvider>()));
 builder.Services.AddSingleton<OwnS3.Replication.ReplicationMaintenance>();
+// Reconcile / backfill (глава 07 §9): гарантийный контур сходимости
+builder.Services.AddSingleton(sp => new OwnS3.Replication.Reconcile.ReconcileRunner(
+    sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>(),
+    sp.GetRequiredService<OwnS3.Storage.IReplicaStore>(),
+    sp.GetRequiredService<OwnS3.Replication.Lww.ReplicaApplier>(),
+    sp.GetRequiredService<OwnS3.Replication.Inbound.FetchQueueRegistry>(),
+    ReplicationTransportFactory(sp),
+    Path.Combine(ReplicationSysDir(sp), "reconcile"),
+    sp.GetRequiredService<ILogger<OwnS3.Replication.Reconcile.ReconcileRunner>>(),
+    sp.GetRequiredService<OwnS3.Replication.ReplicationMetrics>()));
 builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp =>
     new OwnS3.Replication.ReplicationCoordinator(
         sp.GetRequiredService<OwnS3.Replication.ReplicationTargets>(),
@@ -230,6 +240,7 @@ builder.Services.AddSingleton<Microsoft.Extensions.Hosting.IHostedService>(sp =>
         sp.GetRequiredService<OwnS3.Replication.Inbound.IOutcomeCounters>(),
         sp.GetRequiredService<OwnS3.Replication.ReplicationState>(),
         sp.GetRequiredService<OwnS3.Replication.ReplicationMaintenance>(),
+        sp.GetRequiredService<OwnS3.Replication.Reconcile.ReconcileRunner>(),
         sp.GetRequiredService<IOptions<OwnS3.Replication.ReplicationOptions>>().Value,
         sp.GetRequiredService<IOptions<OwnS3Options>>().Value.HostId ?? Environment.MachineName,
         () => new DriveInfo(sp.GetRequiredService<StorageModeInfo>().DataRoots[0]).AvailableFreeSpace,

@@ -36,4 +36,7 @@ public interface IReplicaStore
 
     void ApplyBucketCreate(string bucket, DateTimeOffset creationDate); // идемпотентно: есть → skip
     void ApplyBucketDelete(string bucket);                    // пустой → удалить; непустой → ObjectStoreException(BucketNotEmpty)
+
+    // Состав бакетов (листинг replication-грани без bucket — backfill reconcile, глава 07 §6).
+    IReadOnlyList<BucketEntry> ListBuckets();
 }
