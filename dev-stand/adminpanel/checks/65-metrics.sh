@@ -109,12 +109,14 @@ elif [ "$pn_net" -gt 0 ]; then
 fi
 
 # 3) серии словаря у живых таргетов (канонические имена arch/18 §2).
-#    worker/pg — гарантированы живыми циклами воркера и живыми pg-нодами demo.
+#    worker/pg — воркеровые серии дают живые циклы воркера; pg-грань —
+#    нативные patroni_* серии скрейпа patroni-nodes (канон-минимум arch/18
+#    §2.5; эмуляторная pg_replica_lag_seconds демонтирована с hc-эмуляторами).
 #    kafka-серия — ТОЛЬКО при живых брокерах: сидовой кластер стенда «слепой»
 #    (endpoints слушает только в e2e 55-го), сбор коллектора консервативно
 #    неуспешен и kafka_collector_last_success честно НЕ обновляется
 #    (алерт KafkaCollectorStalled в этот период горит — это корректно, arch/18 §4).
-for s in worker_loop_ticks_total pg_replica_lag_seconds; do
+for s in worker_loop_ticks_total patroni_postgres_running patroni_xlog_replayed_timestamp; do
   curl -fsS --data-urlencode "query=$s" "$PROM/api/v1/query" | jq -e '.data.result | length > 0' >/dev/null \
     || { echo "  ❌ серия $s не найдена в TSDB"; exit 1; }
 done
