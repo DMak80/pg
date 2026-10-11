@@ -61,6 +61,13 @@ health и метрики, правила запуска. Операции — г
   операцию у read-only есть); `ListMultipartUploads` фильтрует список
   по владельцу.
 - **Отказ в правах — `AccessDenied` (403)** в формате ошибок главы 03.
+- **Политика `replication`** — peer-креды mesh-инсталляции: доступ
+  ТОЛЬКО к replication-грани (глава
+  [07-replication.md](07-replication.md) §6); на все 21 операцию — «—»
+  (ни одна строка матрицы replication-ключ не действует). Ключи
+  `read-only`/`read-write`/`admin` на replication-грани — тоже 403
+  (изоляция peer-доступа, глава 07 §6). Ключи этой политики клиентам
+  не выдаются.
 - Граница матрицы: справочник бакетов (`HeadBucket`/`ListBuckets`/
   `GetBucketLocation`) доступен всем ролям — нужен целевым клиентам
   (инициализация SDK вызывает локацию/список); мутации бакетов —
@@ -83,6 +90,16 @@ health и метрики, правила запуска. Операции — г
 | `OWNS3_HOST_ID` | `OwnS3:HostId` | идентификатор инстанса (`HostId` ошибок, глава 03) | имя контейнера |
 | `OWNS3_TLS_CERT` / `OWNS3_TLS_CERT_PATH` | `OwnS3:Tls:ServerCertPem` / `OwnS3:Tls:ServerCertPath` | серверный сертификат HTTPS (PEM-значение / путь к файлу); задан вместе с ключом — включает TLS-режим (глава 03 §6) | нет — HTTP-режим |
 | `OWNS3_TLS_KEY` / `OWNS3_TLS_KEY_PATH` | `OwnS3:Tls:ServerKeyPem` / `OwnS3:Tls:ServerKeyPath` | ключ серверного сертификата (PEM-значение / путь к файлу) | нет — HTTP-режим |
+| `OWNS3_REPLICATION_TARGETS__<i>__{NAME,ENDPOINT,ACCESSKEY,SECRETKEY}` | `OwnS3:Replication:Targets:<i>:*` | seed состава mesh первого старта (источник истины — targets.json тома, глава 07 §2) | пусто = репликация неактивна |
+| `OWNS3_REPLICATION_OUTBOX_BUDGET_BYTES` | `OwnS3:Replication:OutboxBudgetBytes` | bounded-бюджет журнала доставки (глава 07 §4) | **2147483648** (2 ГиБ) |
+| `OWNS3_REPLICATION_INFLIGHT_WINDOW` | `OwnS3:Replication:InflightWindow` | окно in-flight notifier'а (глава 07 §8) | **64** |
+| `OWNS3_REPLICATION_PARALLELISM` | `OwnS3:Replication:Parallelism` | параллелизм фетчей на источник (глава 07 §7) | **1** |
+| `OWNS3_REPLICATION_MAX_RATE_BYTES` | `OwnS3:Replication:MaxRateBytes` | троттлинг фетчей, байт/с; 0 — безлимит (глава 07 §7) | **0** |
+| `OWNS3_REPLICATION_BACKOFF_MAX_SEC` | `OwnS3:Replication:BackoffMaxSec` | потолок эксп-бэкоффа notifier/фетчера (глава 07 §7/§8) | **60** |
+| `OWNS3_REPLICATION_DISK_FREE_MIN_BYTES` | `OwnS3:Replication:DiskFreeMinBytes` | watermark свободного места фетчей — пауза ниже порога (глава 07 §7) | **1073741824** (1 ГиБ) |
+| `OWNS3_REPLICATION_TOMBSTONE_RETENTION_HOURS` | `OwnS3:Replication:TombstoneRetentionHours` | retention tombstones (глава 07 §7) | **168** (7 суток) |
+| `OWNS3_REPLICATION_RECONCILE_INTERVAL_HOURS` | `OwnS3:Replication:ReconcileIntervalHours` | период reconcile (глава 07 §9) | **24** |
+| `OWNS3_REPLICATION_FETCH_QUEUE_MAX` | `OwnS3:Replication:FetchQueueMax` | ёмкость fetch-очереди на источник (глава 07 §7) | **10000** |
 
 Материал TLS: задан только один из пары серт/ключ, файл пути не читается
 или PEM невалиден — **отказ старта** (fail-fast, как root-пара п. 1);
@@ -113,6 +130,10 @@ single-режиме не экспортируются):
 | `ownS3_ec_set_writable{set}` | gauge | 1 — онлайн-дисков сета ≥ write-кворума |
 | `ownS3_heal_passes_total` | counter | завершённые heal-проходы |
 | `ownS3_heal_objects_total` | counter | объекты, восстановленные heal |
+
+Метрики mesh-репликации — таблица главы
+[07-replication.md](07-replication.md) §10 (14 серий `ownS3_replication_*`;
+экспортируются при активной репликации — без соседей серий нет).
 
 Расширенный состав (по частям, очередям чисток) — задачами
 эксплуатации, не каноном этой главы.
@@ -176,12 +197,14 @@ single-режиме не экспортируются):
   собственным контуром (тест генерирует свою CA/серт).
 - ownS3 всегда запускается в докере (никогда хост-процессом — глава 01).
 
-## 7. Админ-грань (erasure-режим)
+## 7. Админ-грань
 
-Наблюдение и управление состоянием EC-тома — вне 21 операции S3, отдельные
-эндпоинты ownS3 тем же конвейером подписи (SigV4; права — `policy=admin`
-или root, прочим **403** `AccessDenied`; матрица п. 3 на них не
-распространяется — грань служебная):
+Наблюдение и управление вне 21 операции S3, отдельные эндпоинты ownS3
+тем же конвейером подписи (SigV4; права — `policy=admin` или root,
+прочим — включая `replication` — **403** `AccessDenied`; матрица п. 3
+на них не распространяется — грань служебная).
+
+**Erasure-режим:**
 
 - **`GET /admin/storage`** — статус: режим, топология (сеты/диски: путь,
   diskId, online), деградация сетов (readable/writable), состояние heal
@@ -191,6 +214,20 @@ single-режиме не экспортируются):
   продолжается (параллельный не создаётся).
 - В single-режиме оба эндпоинта отвечают статусом single-тома без сетов
   (грань доступна всегда — единый интерфейс наблюдения).
+
+**Mesh-репликация** (контракты — глава [07-replication.md](07-replication.md);
+`status` включает счётчики исходов — глава 07 §10):
+
+- **`PUT /admin/replication/targets`** — идемпотентная замена полного
+  списка соседей: **202 Accepted**; персист targets.json, hot-apply без
+  даунтайма S3-грани (глава 07 §2).
+- **`GET /admin/replication/status`** — активность, состояние журнала и
+  стейт/счётчики по каждому соседу (глава 07 §10). JSON.
+- **`POST /admin/replication/reconcile`** — внеплановый reconcile-проход:
+  **202**; идущий продолжается, параллельный не создаётся (глава 07 §9).
+- **`GET /admin/replication/sync-report?bucket=&prefix=&marker=`** —
+  отчёт листинга этого сервера со свёрткой `aggregateHash` — попарная
+  сверка листингов (глава 07 §10). JSON.
 
 ## 8. Стенд-сервис erasure-режима
 
