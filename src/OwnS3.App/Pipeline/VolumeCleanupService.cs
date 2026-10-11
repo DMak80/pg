@@ -7,7 +7,7 @@ namespace OwnS3.App.Pipeline;
 // (старт-чистки уже выполнены Initialize — повтор безвреден; главное — метрики
 // диска заполнены сразу), далее каждые 15 минут. Исключение тика — лог Error,
 // сервис живёт.
-public sealed class VolumeCleanupService(XlVolume volume, OwnS3Metrics metrics,
+public sealed class VolumeCleanupService(IXlDrive drive, XlVolume volume, OwnS3Metrics metrics,
     ILogger<VolumeCleanupService> logger) : BackgroundService
 {
     private static readonly TimeSpan Period = TimeSpan.FromMinutes(15);
@@ -46,7 +46,7 @@ public sealed class VolumeCleanupService(XlVolume volume, OwnS3Metrics metrics,
         var stopwatch = Stopwatch.StartNew();
         try
         {
-            await volume.RunCleanupAsync(ct);
+            await drive.RunCleanupAsync(ct);
             UpdateDiskGauges();
         }
         catch (Exception ex)

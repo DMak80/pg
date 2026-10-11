@@ -91,7 +91,7 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
         // Arrange: хук принудительно валит хардлинк — fallback-ветка
         await Store.PutObjectAsync("b", "fb-src", new MemoryStream(Encoding.UTF8.GetBytes("hello")),
             5, SourceMeta, TestContext.Current.CancellationToken);
-        Store.HardLinkProbe = (_, _) => false;
+        fixture.Drive.HardLinkProbe = (_, _) => false;
 
         // Act
         try
@@ -101,7 +101,7 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
         }
         finally
         {
-            Store.HardLinkProbe = null;
+            fixture.Drive.HardLinkProbe = null;
         }
 
         // Assert
@@ -115,7 +115,7 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
         // net11): CopyPart обязан вернуться сразу, БЕЗ побайтового копирования
         await Store.PutObjectAsync("b", "link-src", new MemoryStream(Encoding.UTF8.GetBytes("hello")),
             5, SourceMeta, TestContext.Current.CancellationToken);
-        Store.HardLinkProbe = (_, _) => true;
+        fixture.Drive.HardLinkProbe = (_, _) => true;
 
         // Act
         try
@@ -125,7 +125,7 @@ public class XlObjectStoreCopyTests(StoreFixture fixture) : IClassFixture<StoreF
         }
         finally
         {
-            Store.HardLinkProbe = null;
+            fixture.Drive.HardLinkProbe = null;
         }
 
         // Assert: копия закоммичена, но part.1 НЕ создан копированием —

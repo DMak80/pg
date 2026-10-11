@@ -67,17 +67,23 @@ builder.Services.AddOptions<OwnS3Options>()
 // серии ownS3_*_total/ownS3_request_duration_seconds совпадают со словарём главы 05).
 builder.Services.AddAppMetrics("ownS3", builder.Configuration.GetSection("OwnS3:Metrics"));
 
-// Домен: реестр учёток + том и объектный слой t37 (xl-хранение, канон 04).
+// Домен: реестр учёток + том и объектный слой (xl-хранение, канон 04).
+// Размещение — за IXlDrive: single-инсталляция — SingleXlDrive над XlVolume
+// (EC-режим собирается своей DI-развилкой, канон 06 §1).
 builder.Services.AddSingleton<AccessKeyRegistry>();
 builder.Services.AddSingleton(sp => new XlVolume(
     sp.GetRequiredService<IOptions<OwnS3Options>>().Value.DataDir,
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILogger<XlVolume>>()));
-builder.Services.AddSingleton<IObjectStore>(sp => new XlObjectStore(
+builder.Services.AddSingleton(sp => new SingleXlDrive(
     sp.GetRequiredService<XlVolume>(),
     sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILogger<SingleXlDrive>>()));
+builder.Services.AddSingleton<IXlDrive>(sp => sp.GetRequiredService<SingleXlDrive>());
+builder.Services.AddSingleton<IObjectStore>(sp => new XlObjectStore(
+    sp.GetRequiredService<IXlDrive>(),
+    sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILogger<XlObjectStore>>()));
-builder.Services.AddSingleton<BucketMetaStore>();
 builder.Services.AddHostedService<VolumeCleanupService>();
 builder.Services.AddSingleton<OwnS3Metrics>();
 
@@ -161,12 +167,12 @@ app.Urls.Add($"http://*:{options.Server.Port}");
 app.UseMiddleware<S3Middleware>();
 
 // Том данных (arch/owns3/04 §3/§6): fail-fast до старта Kestrel — невалидный
-// том = диагностика + ненулевой exit (спека §6.1). XlVolume уже в DI — берём
+// том = диагностика + ненулевой exit (спека §6.1). Драйв уже в DI — берём
 // тот же инстанс, который получат XlObjectStore и VolumeCleanupService.
-var volume = app.Services.GetRequiredService<XlVolume>();
+var drive = app.Services.GetRequiredService<IXlDrive>();
 try
 {
-    volume.Initialize();
+    drive.Initialize();
 }
 catch (Exception ex)
 {
@@ -176,7 +182,7 @@ catch (Exception ex)
 
 // Вне S3-конвейера: healthz (том валиден + touch-проба записи, спека §6.2)
 // и metrics.
-app.MapGet("/healthz", () => volume.CheckHealth()
+app.MapGet("/healthz", () => drive.CheckHealth()
     ? Results.Ok()
     : Results.StatusCode(StatusCodes.Status503ServiceUnavailable));
 app.MapAppMetrics();

@@ -16,9 +16,10 @@ public class VolumeCleanupServiceTests
         var root = Path.Combine(Path.GetTempPath(), "owns3-test-" + Guid.NewGuid().ToString("N"));
         var volume = new XlVolume(root, TimeProvider.System);
         volume.Initialize();
+        var drive = new SingleXlDrive(volume, TimeProvider.System);
         var metrics = new OwnS3Metrics(new Meter("owns3-test-" + Guid.NewGuid().ToString("N")));
         var logger = new CollectingLogger();
-        var service = new VolumeCleanupService(volume, metrics, logger);
+        var service = new VolumeCleanupService(drive, volume, metrics, logger);
         try
         {
             // Act: старт → немедленный проход → стоп (периодический цикл не ждём)

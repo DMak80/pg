@@ -11,13 +11,15 @@ public sealed class StoreFixture : IAsyncLifetime
 {
     public string Root { get; } = Path.Combine(Path.GetTempPath(), "owns3-test-" + Guid.NewGuid().ToString("N"));
     public XlVolume Volume { get; }
+    public SingleXlDrive Drive { get; }
     public XlObjectStore Store { get; }
 
     public StoreFixture()
     {
         Volume = new XlVolume(Root, TimeProvider.System);
         Volume.Initialize();
-        Store = new XlObjectStore(Volume, new FixedTimeProvider(TestVectors.FixedTime),
+        Drive = new SingleXlDrive(Volume, new FixedTimeProvider(TestVectors.FixedTime));
+        Store = new XlObjectStore(Drive, new FixedTimeProvider(TestVectors.FixedTime),
             NullLogger<XlObjectStore>.Instance);
     }
 
