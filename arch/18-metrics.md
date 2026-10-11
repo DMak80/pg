@@ -130,9 +130,7 @@ WorkerLoopStalled), вечные серии не копятся.
 
 Метрики репликации НЕ дублирует воркер: Prometheus скрейпит `:8008/metrics`
 Patroni-нод (arch/08). Таргеты реальных нод — file_sd из portalloc (§5.2
-`patroni-nodes`, §5.4); эмуляторный набор `pg_replica_lag_seconds{scope,node}`
-(hc-эмуляторы) демонтирован вместе с эмуляторами — стенд скрейпит только
-реальные ноды.
+`patroni-nodes`, §5.4).
 
 Словарь реальных Patroni-нод — нативные серии REST `/metrics` (spilo,
 Patroni 4.x); канон-минимум, на который пишутся дашборд/алерты:
@@ -146,11 +144,8 @@ docker-E2E (§6, M3): полный фактический набор шире �
 `patroni_postgres_streaming/state/server_version`, `patroni_pending_restart`,
 `patroni_is_paused`, `patroni_postmaster_start_time`, …); расширяют его
 только фактом того же прогона.
-Словарь стенда — нативный `patroni_*` реальных нод (эмуляторный
-`pg_replica_lag_seconds` демонтирован вместе с hc-эмуляторами); фактический
-набор фиксирует docker-E2E (§6). Таргеты реальных нод — file_sd из
-portalloc (§5.2 `patroni-nodes`, §5.4); скрейп реальных нод —
-`scheme: https` + `tls_config.ca_file` (REST `:8008` — TLS, arch/13 §4).
+Скрейп реальных нод — `scheme: https` + `tls_config.ca_file`
+(REST `:8008` — TLS, arch/13 §4).
 Семантика per-node: запись с `"alias"` → сетевой таргет `<alias>:8008`
 (контейнерный порт Patroni REST;
 штатная ветка единой сети контура — [14](14-pgworker.md) §2.4),
@@ -347,7 +342,7 @@ single-хост-контур «дома»).
 (read-only, `RangeAsync`, без клэймов) и пишет `sd/patroni-nodes.json` в
 volume Prometheus; таргет ноды — per-node правило §2.5 (`alias:8008`
 штатно, `host:patroni` деградационно). Механика file_sd/единой сети —
-без изменений; фиксируется: REST-скрейп нод и эмуляторов — по TLS одного
+без изменений; фиксируется: REST-скрейп нод — по TLS одного
 per-install CA (§5.2). Сеть `pgw-metrics` генератору не
 нужна: etcd читает по compose-DNS сети стенда, таргеты резолвит
 Prometheus. Граница: Kafka/Valkey-ноды без HTTP metrics-эндпоинта
