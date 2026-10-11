@@ -52,7 +52,7 @@ ha1_ok() {
   [ -n "$leader" ] \
     && api /api/ha/demo-shard1 | jq -e --arg l "$leader" \
         '(.members | length) == 2
-         and ([.members[] | select(.name == $l)][0].role == "master")' >/dev/null
+         and ([.members[] | select(.name == $l)][0].role == "leader")' >/dev/null
 }
 for i in $(seq 1 25); do ha1_ok && break; sleep 1; done
 ha1_ok || { echo "❌ /api/ha/demo-shard1: leader/members"; exit 1; }
